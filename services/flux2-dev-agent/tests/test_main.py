@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.image_store import ImageStore
+from app.backend_resolver import BackendResolver
 from app.main import build_app
 
 
@@ -40,6 +41,7 @@ def client(tmp_path: Path) -> TestClient:
         image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
         backend_resolver=backend_resolver,
         default_aspect_ratio="16:9",
+        inbound_service_token="csk-image-test",
     )
     return TestClient(app)
 
@@ -53,6 +55,7 @@ def test_health_returns_200(client: TestClient):
 def test_chat_completions_returns_openai_shape(client: TestClient):
     resp = client.post(
         "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-image-test"},
         json={
             "model": "image-generator",
             "messages": [{"role": "user", "content": "畫一張坦克"}],
@@ -65,9 +68,25 @@ def test_chat_completions_returns_openai_shape(client: TestClient):
     assert "![](" in body["choices"][0]["message"]["content"]
 
 
+def test_chat_completions_rejects_missing_or_wrong_csp_credential(
+    client: TestClient,
+):
+    body = {
+        "model": "image-generator",
+        "messages": [{"role": "user", "content": "畫一張坦克"}],
+    }
+    assert client.post("/v1/chat/completions", json=body).status_code == 401
+    assert client.post(
+        "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-other-agent"},
+        json=body,
+    ).status_code == 401
+
+
 def test_chat_completions_rejects_empty_messages(client: TestClient):
     resp = client.post(
         "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-image-test"},
         json={"model": "image-generator", "messages": []},
     )
     assert resp.status_code == 422
@@ -124,11 +143,13 @@ def test_chat_completions_returns_502_when_flux_fails(tmp_path: Path):
         image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
         backend_resolver=backend_resolver,
         default_aspect_ratio="16:9",
+        inbound_service_token="csk-image-test",
     )
     client = TestClient(app)
 
     resp = client.post(
         "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-image-test"},
         json={
             "model": "image-generator",
             "messages": [{"role": "user", "content": "畫一張坦克"}],
@@ -142,6 +163,121 @@ def test_chat_completions_returns_502_when_flux_fails(tmp_path: Path):
     assert "simulated backend crash" not in str(body)
 
 
+def test_formal_authority_denial_makes_no_downstream_model_call(tmp_path: Path):
+    """A failed CSP authority refresh must stop before FluxClient creation."""
+    translator = AsyncMock()
+    translator.translate.return_value = "x"
+
+    class _DeniedFetcher:
+        governance_required = True
+
+        async def get(self):
+            return None, None
+
+    resolver = BackendResolver(
+        fetcher=_DeniedFetcher(),
+        fallback_endpoint="http://env-flux:8000",
+        fallback_model="env-model",
+        governance_required=True,
+    )
+    factory_calls: list[tuple[str, str]] = []
+
+    def flux_factory(endpoint: str, model: str):
+        factory_calls.append((endpoint, model))
+        raise AssertionError("downstream Flux client must not be constructed")
+
+    app = build_app(
+        translator=translator,
+        flux_client_factory=flux_factory,
+        image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
+        backend_resolver=resolver,
+        default_aspect_ratio="16:9",
+        inbound_service_token="csk-image-test",
+    )
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-image-test"},
+        json={
+            "model": "image-generator",
+            "messages": [{"role": "user", "content": "畫一張坦克"}],
+        },
+    )
+
+    assert resp.status_code == 502
+    assert factory_calls == []
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-CSP-Service-Token": "csk-image-test", "X-ANILA-User-Id": "EMP0007"},
+        {"X-CSP-Service-Token": "csk-image-test", "X-ANILA-Task-Id": "77"},
+    ],
+)
+def test_formal_callback_requires_task_and_forwarded_user_before_model_call(
+    tmp_path: Path, headers: dict[str, str]
+):
+    translator = AsyncMock()
+    resolver = AsyncMock()
+    factory_calls: list[tuple[str, str]] = []
+
+    def factory(endpoint: str, model: str):
+        factory_calls.append((endpoint, model))
+        raise AssertionError("formal callback validation must precede Flux client creation")
+
+    app = build_app(
+        translator=translator,
+        flux_client_factory=factory,
+        image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
+        backend_resolver=resolver,
+        default_aspect_ratio="16:9",
+        inbound_service_token="csk-image-test",
+        governed_callback_required=True,
+    )
+
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers=headers,
+        json={
+            "model": "image-generator",
+            "messages": [{"role": "user", "content": "draw"}],
+        },
+    )
+
+    assert response.status_code == 400
+    assert factory_calls == []
+    resolver.resolve.assert_not_called()
+
+
+def test_formal_callback_rejects_missing_inbound_service_token_before_model_call(
+    tmp_path: Path,
+):
+    resolver = AsyncMock()
+    app = build_app(
+        translator=AsyncMock(),
+        flux_client_factory=lambda *_args: (_ for _ in ()).throw(AssertionError("no flux")),
+        image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
+        backend_resolver=resolver,
+        default_aspect_ratio="16:9",
+        inbound_service_token="",
+        governed_callback_required=True,
+    )
+
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={"X-ANILA-Task-Id": "77", "X-ANILA-User-Id": "EMP0007"},
+        json={
+            "model": "image-generator",
+            "messages": [{"role": "user", "content": "draw"}],
+        },
+    )
+
+    assert response.status_code == 503
+    resolver.resolve.assert_not_called()
+
+
 def test_chat_completions_streaming_emits_sse_with_content(client: TestClient):
     """Regression test: when ``stream=True`` the endpoint must emit
     SSE chunks including a delta.content with the markdown image. The
@@ -151,6 +287,7 @@ def test_chat_completions_streaming_emits_sse_with_content(client: TestClient):
     """
     resp = client.post(
         "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-image-test"},
         json={
             "model": "image-generator",
             "stream": True,

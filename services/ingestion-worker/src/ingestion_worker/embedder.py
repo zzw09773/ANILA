@@ -31,6 +31,7 @@ import logging
 import httpx
 
 from anila_core.ingestion.errors import EmbedError
+from anila_core.memory import EMBED_DIM, EMBED_NATIVE_DIM, truncate_embedding
 
 from ingestion_worker.settings import WorkerSettings
 
@@ -108,6 +109,14 @@ class Embedder:
                 user_message="Embedding endpoint timed out.",
                 details={"timeout_s": self._settings.embedding_timeout_seconds},
             ) from e
+        except httpx.RequestError as e:
+            raise EmbedError(
+                code="E_EMBED_MODEL_DOWN",
+                retryable=True,
+                severity="error",
+                user_message="Embedding endpoint is temporarily unreachable.",
+                details={"cause": type(e).__name__},
+            ) from e
 
         if r.status_code != 200:
             raise EmbedError(
@@ -145,22 +154,6 @@ class Embedder:
                 },
             ) from e
 
-        # Server-side truncation isn't supported (proxy ignores OpenAI's
-        # ``dimensions`` parameter as of 2026-04-25), so we drop the
-        # tail dims here. NV-embed-V2 native 4096 → schema 4000 = drop 96.
-        # Truncation must happen *before* dim assert so the assertion
-        # checks the post-truncation shape.
-        target_dim = self._settings.embedding_dim
-        truncated_vectors: list[list[float]] = []
-        for v in vectors:
-            if len(v) >= target_dim:
-                truncated_vectors.append(v[:target_dim])
-            else:
-                # Endpoint returned fewer dims than the schema — that's
-                # the model-mismatch error code, not a truncation case.
-                truncated_vectors.append(v)
-        vectors = truncated_vectors
-
         if len(vectors) != len(texts):
             raise EmbedError(
                 code="E_EMBED_MODEL_DOWN",
@@ -173,22 +166,48 @@ class Embedder:
                 details={"input_count": len(texts), "output_count": len(vectors)},
             )
 
-        # Dim contract — fail fast, don't let asyncpg complain mid-INSERT.
-        expected = self._settings.embedding_dim
+        if self._settings.embedding_dim != EMBED_DIM:
+            raise EmbedError(
+                code="E_EMBED_DIM_MISMATCH",
+                retryable=False,
+                severity="error",
+                user_message=(
+                    f"Worker embedding_dim is {self._settings.embedding_dim}, but the "
+                    f"shared storage contract requires {EMBED_DIM}."
+                ),
+                details={
+                    "got": self._settings.embedding_dim,
+                    "expected": EMBED_DIM,
+                    "source": "worker_settings",
+                },
+            )
+
+        # Use the platform's single embedding contract: only an already-normalized
+        # 4000-d vector or NV-Embed's native 4096-d vector is accepted.  In
+        # particular, an arbitrary overlong vector must never be silently sliced
+        # into a syntactically valid but semantically corrupt database value.
+        normalized_vectors: list[list[float]] = []
         for i, v in enumerate(vectors):
-            if len(v) != expected:
+            try:
+                normalized_vectors.append(truncate_embedding(v))
+            except ValueError as exc:
                 raise EmbedError(
                     code="E_EMBED_DIM_MISMATCH",
                     retryable=False,
                     severity="error",
                     user_message=(
-                        f"Embedding {i} is {len(v)}-d but the schema requires "
-                        f"{expected}-d. The collection was created against a "
-                        f"different model — recreate the collection or change "
-                        f"the embedding model env."
+                        f"Embedding {i} is {len(v)}-d; the shared contract accepts "
+                        f"only {EMBED_DIM}-d storage vectors or {EMBED_NATIVE_DIM}-d "
+                        "native vectors."
                     ),
-                    details={"got": len(v), "expected": expected, "index": i},
-                )
+                    details={
+                        "got": len(v),
+                        "expected": EMBED_DIM,
+                        "native": EMBED_NATIVE_DIM,
+                        "index": i,
+                    },
+                ) from exc
+        vectors = normalized_vectors
 
         # Sprint 5 / Chunk W: usage tracking happens on the CSP side
         # (proxy_service.proxy_request writes the token_usage row with

@@ -104,7 +104,7 @@ def test_flush_posts_to_frozen_endpoint_with_service_token() -> None:
                                        "span_type": "agent.run.finished",
                                        "name": "x", "started_at": "t",
                                        "status": "ok"}]}
-    assert call["headers"]["X-CSP-Service-Token"] == "csk-token"
+    assert call["headers"]["Authorization"] == "Bearer csk-token"
     assert exp.stats()["sent"] == 1
 
 
@@ -121,6 +121,28 @@ def test_flush_groups_by_trace_id() -> None:
         {"span_id": "1"}, {"span_id": "3"}
     ]
     assert by_url["http://csp.local/v1/traces/t-B/spans"] == [{"span_id": "2"}]
+
+
+def test_shared_exporter_keeps_request_task_and_user_context_isolated() -> None:
+    sink: list = []
+    exp = _make_exporter(sink)
+    first = TraceSession(
+        exp, "trace-A", task_id="41", user_identity="990000001"
+    )
+    second = TraceSession(
+        exp, "trace-B", task_id="42", user_identity="990000002"
+    )
+    with first.span("agent.run.finished", "a"):
+        pass
+    with second.span("agent.run.finished", "b"):
+        pass
+    exp.flush()
+
+    by_trace = {call["url"].split("/")[-2]: call for call in sink}
+    assert by_trace["trace-A"]["headers"]["X-ANILA-Task-Id"] == "41"
+    assert by_trace["trace-A"]["headers"]["X-ANILA-User-Id"] == "990000001"
+    assert by_trace["trace-B"]["headers"]["X-ANILA-Task-Id"] == "42"
+    assert by_trace["trace-B"]["headers"]["X-ANILA-User-Id"] == "990000002"
 
 
 def test_batch_capped_at_256() -> None:
@@ -149,7 +171,16 @@ def test_no_token_omits_header() -> None:
     )
     exp.enqueue("t", {"span_id": "a"})
     exp.flush()
-    assert "X-CSP-Service-Token" not in sink[0]["headers"]
+    assert "Authorization" not in sink[0]["headers"]
+
+
+def test_explicit_non_bearer_header_remains_supported() -> None:
+    sink: list = []
+    exp = _make_exporter(sink, header_name="X-Custom-Trace-Token")
+    exp.enqueue("t", {"span_id": "a"})
+    exp.flush()
+    assert sink[0]["headers"]["X-Custom-Trace-Token"] == "csk-token"
+
 
 
 # ---------------------------------------------------------------------------

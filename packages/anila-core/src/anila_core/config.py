@@ -27,9 +27,20 @@ from __future__ import annotations
 from typing import Optional
 
 try:
-    from pydantic_settings import BaseSettings  # type: ignore[import]
     from pydantic import Field
-    from pydantic_settings import SettingsConfigDict  # type: ignore[import]
+    from pydantic_settings import (  # type: ignore[import]
+        BaseSettings,
+        DotEnvSettingsSource,
+        EnvSettingsSource,
+        PydanticBaseSettingsSource,
+        SettingsConfigDict,
+    )
+
+    class _KnownFieldsDotEnvSettingsSource(DotEnvSettingsSource):
+        """Load recognized dotenv fields without forwarding unrelated keys."""
+
+        def __call__(self) -> dict[str, object]:
+            return EnvSettingsSource.__call__(self)
 
     class Settings(BaseSettings):
         """Application-wide configuration loaded from environment variables."""
@@ -61,6 +72,44 @@ try:
             default=None,
             description="Service-to-service token CSP injects; agents verify this header.",
         )
+        # Formal Router R3 registry reads use a named CSP service-client token;
+        # the legacy fleet token is intentionally not accepted by the CSP
+        # internal registry endpoint.  Deployments may still inject the value
+        # under the existing ``CSP_SERVICE_TOKEN`` environment name while the
+        # package-side field keeps the intent explicit.
+        csp_registry_service_token: Optional[str] = Field(
+            default=None,
+            description="Named service-client token for CSP internal registry reads.",
+        )
+        csp_agent_service_token: Optional[str] = Field(
+            default=None,
+            description=(
+                "Named Router service-client token for the pending CSP "
+                "internal Agent dispatch seam."
+            ),
+        )
+        csp_inference_service_token: Optional[str] = Field(
+            default=None,
+            description=(
+                "Named Router service-client token for CSP internal primary "
+                "model inference; preferred over the registry token."
+            ),
+        )
+        csp_jwks_url: Optional[str] = Field(
+            default=None,
+            description=(
+                "CSP JWKS URL used to verify router-context/v1; when unset "
+                "the Router derives /.well-known/jwks.json from csp_base_url."
+            ),
+        )
+        router_context_issuer: str = Field(
+            default="https://anila.internal/csp",
+            description="Exact issuer accepted for CSP router-context/v1 JWTs.",
+        )
+        allow_legacy_agent_dispatch: bool = Field(
+            default=False,
+            description="Explicit compatibility-only DISPATCH adapter switch.",
+        )
 
         # ── API / Auth ────────────────────────────────────────────────
         api_key: Optional[str] = Field(
@@ -70,6 +119,13 @@ try:
         api_dev_mode: bool = Field(
             default=False,
             description="Disable auth checks when True (development only).",
+        )
+        cookie_secure: bool = Field(
+            default=True,
+            description=(
+                "Read the formal __Host- session cookie. False selects the "
+                "distinct anila_dev_* name for explicit HTTP-only tests/dev."
+            ),
         )
 
         # ── Sessions (Sprint 9) ───────────────────────────────────────
@@ -87,7 +143,34 @@ try:
             env_file=".env",
             env_file_encoding="utf-8",
             case_sensitive=False,
+            extra="forbid",
         )
+
+        @classmethod
+        def settings_customise_sources(
+            cls,
+            settings_cls: type[BaseSettings],
+            init_settings: PydanticBaseSettingsSource,
+            env_settings: PydanticBaseSettingsSource,
+            dotenv_settings: PydanticBaseSettingsSource,
+            file_secret_settings: PydanticBaseSettingsSource,
+        ) -> tuple[PydanticBaseSettingsSource, ...]:
+            if not isinstance(dotenv_settings, DotEnvSettingsSource):
+                raise TypeError("dotenv settings source must be DotEnvSettingsSource")
+            known_dotenv_settings = _KnownFieldsDotEnvSettingsSource(
+                settings_cls,
+                env_file=dotenv_settings.env_file,
+                env_file_encoding=dotenv_settings.env_file_encoding,
+                case_sensitive=dotenv_settings.case_sensitive,
+                env_prefix=dotenv_settings.env_prefix,
+                env_nested_delimiter=dotenv_settings.env_nested_delimiter,
+            )
+            return (
+                init_settings,
+                env_settings,
+                known_dotenv_settings,
+                file_secret_settings,
+            )
 
 except ImportError:
     # Fallback when pydantic-settings is not installed
@@ -100,8 +183,15 @@ except ImportError:
         csp_base_url: str = "http://localhost:8000"
         csp_api_key: str = "not-set"
         csp_service_token: Optional[str] = None
+        csp_registry_service_token: Optional[str] = None
+        csp_agent_service_token: Optional[str] = None
+        csp_inference_service_token: Optional[str] = None
+        csp_jwks_url: Optional[str] = None
+        router_context_issuer: str = "https://anila.internal/csp"
+        allow_legacy_agent_dispatch: bool = False
         api_key: Optional[str] = None
         api_dev_mode: bool = False
+        cookie_secure: bool = True
         session_db_path: str = "./.anila/sessions.db"
 
 

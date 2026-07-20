@@ -3,10 +3,10 @@
 本檔包三件事:
 
 1. **Challenge 簽發 / 驗證** — 用 ``SECRET_KEY`` 簽一條 ``aud="card-challenge"``、
-   ``exp=2min`` 的 JWT,內含 ``nonce``。Pattern 對齊
-   ``external_auth_service.issue_external_state`` 的 OIDC state JWT,**stateless**,
-   不依賴 Redis / DB nonce store。
-2. **PKCS#7 簽章解析** — 委派給 ``card_auth.verify_pkcs7_signature`` (純函式)。
+   ``exp=2min`` 的 JWT,內含 ``nonce`` 與 ``jti``；資料庫保存短效 challenge
+   digest，驗章成功後以原子 DELETE 消耗，跨 worker 阻擋重放。
+2. **PKCS#7 簽章驗證** — 委派給 ``card_auth.verify_pkcs7_signature``，驗 CMS
+   SignerInfo、nonce 與釘選憑證鏈後才抽 claims。
 3. **User get-or-create** — ``username = employee_id``;無對應使用者時自動建立,
    ``local_password_disabled=True`` 確保卡片帳號無法走本地登入後門。
 
@@ -20,18 +20,18 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 
 from jose import jwt as jose_jwt
 from jose.exceptions import JWTError
+from sqlalchemy import delete
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.models.card_login_challenge import CardLoginChallenge
 from app.models.user import User
-from app.services.card_auth import (
-    CardAuthError,
-    CardClaims,
-    verify_pkcs7_signature,
-)
+from app.services.card_auth import CardClaims, verify_pkcs7_signature
 from app.utils.security import hash_password
 
 
@@ -53,6 +53,17 @@ class CardLoginRejected(Exception):
     跟 ``CardAuthError`` (簽章層級失敗) 分開,endpoint 對應不同 HTTP status。
     """
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "card_login_rejected",
+        challenge_jti_hash: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.challenge_jti_hash = challenge_jti_hash
+
 
 class CardRegistrationTokenInvalid(Exception):
     """``registration_token`` 過期 / 簽章不對 / 對應使用者不存在。"""
@@ -61,7 +72,7 @@ class CardRegistrationTokenInvalid(Exception):
 # ─── Challenge 簽發 / 驗證 ─────────────────────────────────────────────────────
 
 
-def issue_card_challenge() -> tuple[str, str, int]:
+def issue_card_challenge(db: Session) -> tuple[str, str, int]:
     """簽發新的 challenge。
 
     Returns:
@@ -69,10 +80,12 @@ def issue_card_challenge() -> tuple[str, str, int]:
         字串、``nonce`` 為明文 (給 client 拿去簽)、``expires_in`` 為剩餘秒數。
     """
     nonce = secrets.token_urlsafe(32)
+    jti = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
     exp = now + timedelta(seconds=CHALLENGE_TTL_SECONDS)
     payload = {
         "aud": CARD_CHALLENGE_AUDIENCE,
+        "jti": jti,
         "nonce": nonce,
         "iat": now,
         "exp": exp,
@@ -80,6 +93,29 @@ def issue_card_challenge() -> tuple[str, str, int]:
     challenge_token = jose_jwt.encode(
         payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM
     )
+
+    # Keep abandoned challenges bounded without a separate cleanup worker.
+    # Issuance is not successful until this shared state is committed; a DB
+    # outage therefore fails closed instead of silently reverting to a
+    # replayable stateless token.
+    try:
+        db.execute(
+            delete(CardLoginChallenge).where(
+                CardLoginChallenge.expires_at <= now
+            )
+        )
+        db.add(
+            CardLoginChallenge(
+                jti=jti,
+                nonce_digest=_digest_nonce(nonce),
+                expires_at=exp,
+            )
+        )
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
     return challenge_token, nonce, CHALLENGE_TTL_SECONDS
 
 
@@ -89,6 +125,12 @@ def decode_card_challenge(challenge_token: str) -> str:
     Raises:
         CardLoginRejected: JWT 過期 / 簽章不對 / aud 錯 / 缺 nonce。
     """
+    nonce, _jti = _decode_card_challenge_claims(challenge_token)
+    return nonce
+
+
+def _decode_card_challenge_claims(challenge_token: str) -> tuple[str, str]:
+    """Validate a challenge JWT and return its nonce and database handle."""
     try:
         payload = jose_jwt.decode(
             challenge_token,
@@ -100,9 +142,48 @@ def decode_card_challenge(challenge_token: str) -> str:
         raise CardLoginRejected(f"challenge_token 無效或過期: {exc}") from exc
 
     nonce = payload.get("nonce")
-    if not nonce:
+    if not isinstance(nonce, str) or not nonce:
         raise CardLoginRejected("challenge_token 缺 nonce")
-    return nonce
+    jti = payload.get("jti")
+    if not isinstance(jti, str) or not (16 <= len(jti) <= 64):
+        raise CardLoginRejected("challenge_token 缺有效 jti")
+    return nonce, jti
+
+
+def _digest_nonce(nonce: str) -> str:
+    return sha256(nonce.encode("utf-8")).hexdigest()
+
+
+def _consume_card_challenge(db: Session, *, jti: str, nonce: str) -> None:
+    """Atomically consume a valid challenge across all CSP workers.
+
+    The CMS signature is verified before this function is called, preventing
+    an attacker who only sees the public challenge token from burning it.  A
+    conditional DELETE gives exactly one successful verifier ``rowcount=1``;
+    replay, expiry, or missing durable state all fail closed.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        result = db.execute(
+            delete(CardLoginChallenge).where(
+                CardLoginChallenge.jti == jti,
+                CardLoginChallenge.nonce_digest == _digest_nonce(nonce),
+                CardLoginChallenge.expires_at > now,
+            )
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            raise CardLoginRejected(
+                "challenge_token 已使用或過期",
+                reason="challenge_replay_or_expired",
+                challenge_jti_hash=sha256(jti.encode("utf-8")).hexdigest(),
+            )
+        db.commit()
+    except CardLoginRejected:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise
 
 
 # ─── Registration token:給 pending 使用者完成註冊用 ────────────────────────────
@@ -164,24 +245,26 @@ def verify_card_and_resolve_user(
     """卡片登入主流程。
 
     1. 驗 challenge_token JWT 還原 nonce (反 replay 第一道防線)。
-    2. Parse PKCS#7 簽章抽 cert claims。簽章本身的密碼學驗證信任使用者 PC
-       上的 HiPKI driver — backend 不重複驗證 (見 ``card_auth`` 模組 docstring)。
+    2. Backend 驗 PKCS#7 SignerInfo、nonce、釘選鏈、X.509 profile 與離線
+       CRL，通過後才抽 signer certificate claims。
     3. ``username = employee_id`` 查 user,找不到就 auto-provision。
 
     Raises:
-        CardAuthError: PKCS#7 解析失敗 (→ HTTP 401)。
+        CardAuthError: PKCS#7 解析／簽章／nonce／憑證鏈驗證失敗 (→ HTTP 401)。
         CardLoginRejected: challenge 無效、或 email 與既有帳號衝突。
     """
     # 解 challenge 取出 nonce:(a) token 過期就拒 (反 replay 第一道);(b) nonce
     # 往下傳給 verify_pkcs7_signature 當 expected eContent,綁定「這次簽章就是對
     # 這次 challenge」(反 replay 第二道,真正的密碼學綁定)。
-    nonce = decode_card_challenge(challenge_token)
+    nonce, jti = _decode_card_challenge_claims(challenge_token)
 
     claims = verify_pkcs7_signature(
         signature_b64=signature_b64,
         expected_nonce=nonce,
         card_serial=card_serial,
     )
+
+    _consume_card_challenge(db, jti=jti, nonce=nonce)
 
     user = _get_or_create_card_user(db, claims)
     return user, claims
@@ -193,7 +276,7 @@ def verify_card_and_resolve_user(
 def _parse_initial_owners() -> set[str]:
     """從 ``settings.CARD_INITIAL_OWNERS`` 解析出員工編號集合。
 
-    支援 CSV 格式 (``"1147259,1090868"``),allow whitespace。空字串回空集合。
+    支援 CSV 格式 (``"990000002,990000001"``),allow whitespace。空字串回空集合。
     """
     raw = settings.CARD_INITIAL_OWNERS or ""
     return {part.strip() for part in raw.split(",") if part.strip()}

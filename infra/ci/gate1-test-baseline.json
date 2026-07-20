@@ -1,0 +1,788 @@
+{
+  "schema_version": 1,
+  "gate": 1,
+  "recorded_on": "2026-07-12",
+  "historical_context": {
+    "source": "docs/gpt-report/ANILA_系統變更計畫書_審查報告.md §3.9",
+    "reported_result": "38 failed / 681 passed / 2 errors",
+    "retained_grouped_causes": [
+      "10 startup-guard failures caused by missing ADMIN_PASSWORD/SECRET_KEY test posture",
+      "3 SQLite-versus-asyncpg mock mismatches",
+      "3 fixture-drift failures",
+      "1 CP950 decoding failure",
+      "1 order-dependent settings pollution failure",
+      "The source report did not retain the remaining nodeids or per-case mapping"
+    ],
+    "retained_detail": "The report retained grouped causes, not the original 38 nodeids. Gate 1 independently reconstructed the exact set from the referenced commit.",
+    "current_reproduction": "23 CSP failures / 811 passed / 1 skipped on the Gate 1 starting tree plus in-flight F4/F5 wiring.",
+    "decision": "The original report's exact 38 failures and 2 setup errors were independently reproduced from f661f5e8 and are recorded below. Current-tree follow-on failures are tracked separately in observed_failures."
+  },
+  "historical_csp_baseline": {
+    "commit": "f661f5e8c9d2d70d4647ef3f67eb5b9624ffc93c",
+    "command": "From an isolated git-archive snapshot: cd services/csp && PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest -q",
+    "evidence": "Independent Windows/Python 3.11 rerun reproduced 38 failed, 681 passed, 1 skipped, 2 errors in 195.70 seconds.",
+    "result": {
+      "failed": 38,
+      "passed": 681,
+      "skipped": 1,
+      "errors": 2
+    },
+    "outcome_groups": [
+      {
+        "id": "HIST-CSP-CREDENTIAL-SECRET",
+        "outcome": "failure",
+        "classification": "platform",
+        "disposition": "resolved",
+        "cause": "The historical runner did not supply the credential-encryption SECRET_KEY, so encryption-dependent cases stopped at the environment contract before their assertions.",
+        "cases": [
+          "tests/test_agent_credentials.py::test_envelope_round_trip",
+          "tests/test_agent_credentials.py::test_verify_rejects_revoked_credential",
+          "tests/test_agent_credentials.py::test_rotation_keeps_previous_token_alive_in_grace",
+          "tests/test_agent_credentials.py::test_rotation_grace_expiry",
+          "tests/test_agent_credentials.py::test_dispatch_prefers_most_recently_changed_credential",
+          "tests/test_agent_credentials.py::test_dispatch_tie_breaks_deterministically_on_credential_id",
+          "tests/test_agent_credentials.py::test_service_client_verify",
+          "tests/test_agent_credentials.py::test_service_client_rotation",
+          "tests/test_agent_credentials.py::test_proxy_cache_invalidation_on_rotation"
+        ],
+        "resolution": "The required CSP job supplies an explicit CI-only SECRET_KEY; no production fallback or committed secret was introduced."
+      },
+      {
+        "id": "HIST-CSP-CREDENTIAL-SQLITE-UTC",
+        "outcome": "failure",
+        "classification": "platform",
+        "disposition": "resolved",
+        "cause": "SQLite returned timezone-naive UTC datetimes while the credential service compared them with timezone-aware UTC values.",
+        "cases": [
+          "tests/test_agent_credentials.py::test_issue_bootstrap_writes_hash_and_expiry",
+          "tests/test_agent_credentials.py::test_bootstrap_exchange_happy_path",
+          "tests/test_agent_credentials.py::test_bootstrap_replay_rejected",
+          "tests/test_agent_credentials.py::test_bootstrap_endpoint_mismatch_rejected",
+          "tests/test_agent_credentials.py::test_bootstrap_expired_rejected",
+          "tests/test_agent_credentials.py::test_verify_resolves_to_agent_identity"
+        ],
+        "resolution": "Legacy SQLite values are normalized to aware UTC at the comparison boundary; PostgreSQL production semantics are unchanged."
+      },
+      {
+        "id": "HIST-CSP-AGENT-REQUEST-DRIFT",
+        "outcome": "failure",
+        "classification": "test-staleness",
+        "disposition": "resolved",
+        "cause": "Registration fixtures no longer satisfied the required request schema and current approval-state contract.",
+        "cases": [
+          "tests/test_agent_registration.py::TestAgentRegistration::test_developer_can_register_agent",
+          "tests/test_agent_registration.py::TestAgentRegistration::test_duplicate_name_rejected",
+          "tests/test_agent_registration.py::TestAllowedAgents::test_admin_can_assign_allowed_agents"
+        ],
+        "resolution": "Fixtures now include base_model_id, the request envelope, pending_connection_test state, and explicit dev endpoint posture."
+      },
+      {
+        "id": "HIST-CSP-DOCS-POLICY-DRIFT",
+        "outcome": "failure",
+        "classification": "test-staleness",
+        "disposition": "resolved",
+        "cause": "Tests expected hidden 404 routes even though the implemented security policy deliberately keeps them admin-gated and returns 401 anonymously.",
+        "cases": [
+          "tests/test_api_docs_gating.py::test_openapi_schema_is_404_by_default",
+          "tests/test_api_docs_gating.py::test_swagger_ui_is_404_by_default"
+        ],
+        "resolution": "Tests pin the actual admin-gated contract and verify anonymous callers cannot read OpenAPI or Swagger content."
+      },
+      {
+        "id": "HIST-CSP-CARD-FIXED-CMS",
+        "outcome": "failure",
+        "classification": "test-staleness",
+        "disposition": "resolved",
+        "cause": "The old fixed CMS fixture signed TBS instead of the issued nonce, so the anti-replay check correctly rejected it and dependent flows cascaded.",
+        "cases": [
+          "tests/test_card_endpoints.py::test_verify_creates_user_and_sets_session_cookies",
+          "tests/test_card_endpoints.py::test_me_reachable_with_card_session_cookie",
+          "tests/test_card_endpoints.py::test_second_login_reuses_existing_user",
+          "tests/test_card_endpoints.py::test_email_collision_with_other_account_is_rejected",
+          "tests/test_card_endpoints.py::test_owner_in_initial_owners_logs_in_directly",
+          "tests/test_card_endpoints.py::test_non_owner_first_swipe_returns_pending_registration",
+          "tests/test_card_endpoints.py::test_complete_registration_with_valid_department",
+          "tests/test_card_endpoints.py::test_complete_registration_with_invalid_department",
+          "tests/test_card_endpoints.py::test_second_swipe_after_registration_returns_pending_approval",
+          "tests/test_card_endpoints.py::test_admin_approval_unblocks_login"
+        ],
+        "resolution": "Gate 0 replaced real-person/fixed CMS material with an ephemeral synthetic CA/card that signs each actual nonce while keeping nonce binding enabled."
+      },
+      {
+        "id": "HIST-CSP-IMAGE-POOL-STUB",
+        "outcome": "failure",
+        "classification": "test-staleness",
+        "disposition": "resolved",
+        "cause": "The fake asyncpg connection lacked the transaction and execute methods added by the formal SET LOCAL RLS scope contract.",
+        "cases": [
+          "tests/test_image_search_contract.py::test_image_search_returns_hits",
+          "tests/test_image_search_contract.py::test_image_search_empty_collection_returns_empty_results",
+          "tests/test_image_search_contract.py::test_image_search_default_top_k_is_8"
+        ],
+        "resolution": "The stub now implements transaction, execute, and fetch and asserts the same scoped access sequence as production."
+      },
+      {
+        "id": "HIST-CSP-CONFIG-RELOAD-POLLUTION",
+        "outcome": "failure",
+        "classification": "test-staleness",
+        "disposition": "resolved",
+        "cause": "Earlier tests reloaded app.config and left multiple incompatible settings singleton identities in the process, causing an order-dependent expired-token assertion.",
+        "cases": [
+          "tests/test_rs256_jwt.py::test_expired_token_rejected"
+        ],
+        "resolution": "Obsolete autouse reload fixtures were removed; focused order-reproduction tests and the required full suite now share one settings identity."
+      },
+      {
+        "id": "HIST-CSP-MIGRATION-CP950",
+        "outcome": "failure",
+        "classification": "platform",
+        "disposition": "resolved",
+        "cause": "Windows configparser decoded alembic.ini as CP950 and failed on UTF-8 content.",
+        "cases": [
+          "tests/test_service_registry.py::TestMigration::test_single_head_in_r1_namespace"
+        ],
+        "resolution": "CI runs on UTF-8 Linux, and local validation sets Python UTF-8 explicitly so the documented Alembic command is deterministic."
+      },
+      {
+        "id": "HIST-CSP-HARD-DELETE-FIXTURES",
+        "outcome": "failure",
+        "classification": "test-staleness",
+        "disposition": "resolved",
+        "cause": "Fixtures used removed Agent fields, omitted required API-key prefix/suffix values, and asserted a bulk SET NULL through a stale ORM identity map.",
+        "cases": [
+          "tests/test_user_hard_delete.py::test_hard_delete_refused_when_user_owns_agents",
+          "tests/test_user_hard_delete.py::test_hard_delete_cascades_api_keys",
+          "tests/test_user_hard_delete.py::test_hard_delete_preserves_audit_history_via_set_null"
+        ],
+        "resolution": "Fixtures match current models and expire the ORM identity map before checking the database-side SET NULL result."
+      },
+      {
+        "id": "HIST-CSP-TEMPLATE-SETUP-POLLUTION",
+        "outcome": "error",
+        "classification": "test-staleness",
+        "disposition": "resolved",
+        "cause": "The same config reload pollution left SECRET_KEY empty when later TestClient lifespan setup executed, producing two setup errors rather than test assertions.",
+        "cases": [
+          "tests/test_template_download.py::test_developer_can_download_template",
+          "tests/test_template_download.py::test_plain_user_cannot_download_template"
+        ],
+        "resolution": "The reload fixtures were removed and the required job owns a deterministic explicit test secret for the entire process."
+      }
+    ]
+  },
+  "required_suites": [
+    {
+      "id": "anila-contracts",
+      "required": true,
+      "status": "passing",
+      "command": "python -m pytest packages/anila-contracts/tests -q && python -m ruff check packages/anila-contracts/src packages/anila-contracts/tests",
+      "evidence": "13 passed; ruff passed"
+    },
+    {
+      "id": "anila-security",
+      "required": true,
+      "status": "passing",
+      "command": "python -m pytest packages/anila-security/tests -q && python -m ruff check packages/anila-security",
+      "evidence": "18 passed; ruff passed"
+    },
+    {
+      "id": "anila-core-unit",
+      "required": true,
+      "status": "passing",
+      "command": "cd packages/anila-core && python -m pytest --ignore=tests/integration tests -q",
+      "evidence": "784 passed, 1 Windows-only symlink skip; Linux CI runs the same required set"
+    },
+    {
+      "id": "anila-agent-unit",
+      "required": true,
+      "status": "passing",
+      "command": "cd packages/anila-agent && python -m pytest -m 'not live' -q",
+      "evidence": "208 passed, 1 live test deselected"
+    },
+    {
+      "id": "ingestion-worker-unit",
+      "required": true,
+      "status": "passing",
+      "command": "cd services/ingestion-worker && python -m pytest tests -q",
+      "evidence": "150 passed"
+    },
+    {
+      "id": "csp-backend",
+      "required": true,
+      "status": "passing",
+      "command": "cd services/csp && python -m pytest -q",
+      "evidence": "852 passed, 1 external-Postgres test skipped; that RLS case is required and passed separately in postgres-rls"
+    },
+    {
+      "id": "postgres-rls",
+      "required": true,
+      "status": "passing",
+      "command": "Require one Alembic head, migrate fresh pgvector/pgvector:pg16, then run core RLS plus Gate 2 classification, SourceSnapshot, memory, ledger, ingestion-image, and auth PostgreSQL contracts",
+      "evidence": "Required postgres-rls workflow wires every registered PostgreSQL skip guard to a named command after a single-head assertion and fresh Alembic upgrade"
+    },
+    {
+      "id": "csp-governance-ui",
+      "required": true,
+      "status": "passing",
+      "command": "cd apps/csp-governance-ui && npm ci && npm test && npm run build",
+      "evidence": "Fresh npm ci passed in clean WSL Linux temp trees on Node 20.19.5 with npm 10.9.2 and 11.12.0; 2 tests and a 758-module Vite production build passed"
+    },
+    {
+      "id": "anila-shell",
+      "required": true,
+      "status": "passing",
+      "command": "cd apps/anila-shell && npm ci && npm test && npm run build",
+      "evidence": "Vitest suite and Vite production build passed on Node 20 Linux"
+    },
+    {
+      "id": "anilalm",
+      "required": true,
+      "status": "passing",
+      "command": "cd apps/anilalm && npm ci && npm run typecheck && VITE_ANILA_PILOT_MODE=false npm run build && VITE_ANILA_PILOT_MODE=true npm run build",
+      "evidence": "Required Node 20 workflow typechecks once and builds both the normal product and signed-pilot postures"
+    },
+    {
+      "id": "contract-smoke",
+      "required": true,
+      "status": "passing",
+      "command": "Run package identity/facade tests for contracts and security across CSP and anila-core",
+      "evidence": "31 standalone package tests, 17 anila-core facade tests, and 48 CSP consumer identity/compatibility tests passed"
+    },
+    {
+      "id": "capability-freeze",
+      "required": true,
+      "status": "passing",
+      "command": "python infra/policy/gate1/check_capability_freeze.py && python -m unittest infra.policy.tests.test_gate1_capability_freeze -v",
+      "evidence": "25 surfaces / 369 entries checked; 8 policy tests passed"
+    },
+    {
+      "id": "deployment-posture",
+      "required": true,
+      "status": "passing",
+      "command": "bash -n deployment scripts && python infra/deployment/scripts/verify-compose-image-lock.py check-wiring && python -m unittest discover -s infra/deployment/tests -v",
+      "evidence": "LF-normalized shell syntax and Compose image-lock wiring passed; complete local discovery passed 77 tests with 1 Windows-only Linux-runtime helper skip that executes on the required Ubuntu runner"
+    },
+    {
+      "id": "gate2-pilot-policy",
+      "required": true,
+      "status": "passing",
+      "command": "python infra/policy/gate2/check_pilot_inference_profile.py --inventory infra/policy/gate2/inference-callsites.v1.json --profile infra/policy/gate2/pilot-profile.disabled-template.json --allow-disabled-template && python -m pytest infra/policy/tests/test_gate2_pilot_inference_profile.py -q",
+      "evidence": "Disabled-template CLI passed and 35 signed-profile schema, signature, distinct-key, inventory-mutation, and ineligible-callsite fail-closed tests passed locally"
+    },
+    {
+      "id": "studio-auth-revocation",
+      "required": true,
+      "status": "passing",
+      "command": "cd services/anila-studio && python -m pytest tests/test_auth.py tests/test_revocation_cache.py tests/test_gate2_scoped_revocation_cache.py -q",
+      "evidence": "41 focused JWT assurance and durable JTI/SID revocation tests passed locally without invoking unrelated artifact or FLUX integration suites"
+    },
+    {
+      "id": "studio-full-durability",
+      "required": true,
+      "status": "passing",
+      "command": "cd services/anila-studio && ANILA_STUDIO_REDIS_TEST_URL=<isolated-redis-7> ANILA_STUDIO_REDIS_DOCKER_CONTAINER=<disposable-container> python -m pytest tests -q",
+      "evidence": "595 tests passed locally with 0 skips against disposable Redis 7 using appendonly=yes and appendfsync=everysec, including four real-Redis durability cases and the five-pipeline AOF restart proof"
+    },
+    {
+      "id": "flux-agent-focused",
+      "required": true,
+      "status": "passing",
+      "command": "cd services/flux2-dev-agent && python -m pytest tests -q",
+      "evidence": "63 focused FLUX agent tests passed locally, including governed CSP task/owner propagation and backend-resolution contracts"
+    }
+  ],
+  "observed_failures": [
+    {
+      "id": "F3-AGENT-WINDOWS-PATH",
+      "suite": "anila-agent-unit",
+      "classification": "test-staleness",
+      "disposition": "resolved",
+      "cases": [
+        "tests/test_multitenant_memory.py::test_tenant_slug_is_single_safe_component[../../etc/passwd]",
+        "tests/test_multitenant_memory.py::test_tenant_slug_is_single_safe_component[a/b/c]",
+        "tests/test_multitenant_memory.py::test_tenant_slug_is_single_safe_component[..]",
+        "tests/test_multitenant_memory.py::test_tenant_slug_is_single_safe_component[../sibling]",
+        "tests/test_multitenant_memory.py::test_tenant_slug_is_single_safe_component[x\\x00y]",
+        "tests/test_multitenant_memory.py::test_tenant_slug_is_single_safe_component[/abs/root]",
+        "tests/test_multitenant_memory.py::test_tenant_slug_is_single_safe_component[..\\..\\win]",
+        "tests/test_multitenant_memory.py::test_tenant_slug_is_single_safe_component[~/secret]",
+        "tests/test_multitenant_memory.py::test_tenant_slug_is_single_safe_component[....//....//]"
+      ],
+      "resolution": "Replaced a hard-coded POSIX string prefix with a Path parent-containment assertion."
+    },
+    {
+      "id": "F3-CORE-STALE-CONTRACTS",
+      "suite": "anila-core-unit",
+      "classification": "test-staleness",
+      "disposition": "resolved",
+      "cases": [
+        "tests/test_chunking_plugins.py::test_hierarchical_pop_resets_deeper_headings",
+        "tests/test_cli_init.py::TestScaffold::test_placeholders_replaced_in_agent_py",
+        "tests/test_g3_retrieval_path_uniqueness.py::test_g3_design_doc_grep_form",
+        "tests/test_router_resume_proxy.py::test_dispatch_pins_owning_agent"
+      ],
+      "resolution": "Aligned the heading-parent assertion with the current tree contract, made UTF-8 and file scanning platform-neutral, and replaced the removed implicit event-loop API."
+    },
+    {
+      "id": "F3-CSP-SQLITE-DATETIME",
+      "suite": "csp-backend",
+      "classification": "platform",
+      "disposition": "resolved",
+      "cases": [
+        "tests/test_agent_credentials.py::test_issue_bootstrap_writes_hash_and_expiry",
+        "tests/test_agent_credentials.py::test_bootstrap_exchange_happy_path",
+        "tests/test_agent_credentials.py::test_bootstrap_replay_rejected",
+        "tests/test_agent_credentials.py::test_bootstrap_endpoint_mismatch_rejected",
+        "tests/test_agent_credentials.py::test_bootstrap_expired_rejected",
+        "tests/test_agent_credentials.py::test_verify_resolves_to_agent_identity",
+        "tests/test_agent_credentials.py::test_rotation_keeps_previous_token_alive_in_grace",
+        "tests/test_agent_credentials.py::test_service_client_rotation"
+      ],
+      "resolution": "Normalize legacy SQLite timezone-naive stored UTC values before Python comparisons; production PostgreSQL semantics remain unchanged."
+    },
+    {
+      "id": "F3-CSP-AGENT-REQUEST-DRIFT",
+      "suite": "csp-backend",
+      "classification": "test-staleness",
+      "disposition": "resolved",
+      "cases": [
+        "tests/test_agent_registration.py::TestAgentRegistration::test_developer_can_register_agent",
+        "tests/test_agent_registration.py::TestAgentRegistration::test_duplicate_name_rejected",
+        "tests/test_agent_registration.py::TestAllowedAgents::test_admin_can_assign_allowed_agents"
+      ],
+      "resolution": "Updated fixtures for required base_model_id, the seven-state approval value, the request envelope, and explicit dev endpoint posture."
+    },
+    {
+      "id": "F3-CSP-DOCS-POLICY-DRIFT",
+      "suite": "csp-backend",
+      "classification": "test-staleness",
+      "disposition": "resolved",
+      "cases": [
+        "tests/test_api_docs_gating.py::test_openapi_schema_is_404_by_default",
+        "tests/test_api_docs_gating.py::test_swagger_ui_is_404_by_default"
+      ],
+      "resolution": "Pinned the current admin-gated contract: anonymous requests receive 401 and never receive the schema or Swagger UI."
+    },
+    {
+      "id": "F3-CSP-IMAGE-POOL-STUB",
+      "suite": "csp-backend",
+      "classification": "test-staleness",
+      "disposition": "resolved",
+      "cases": [
+        "tests/test_image_search_contract.py::test_image_search_returns_hits",
+        "tests/test_image_search_contract.py::test_image_search_empty_collection_returns_empty_results",
+        "tests/test_image_search_contract.py::test_image_search_default_top_k_is_8"
+      ],
+      "resolution": "Brought the asyncpg stub up to the production transaction and SET LOCAL RLS contract."
+    },
+    {
+      "id": "F3-CSP-CONFIG-RELOAD-POLLUTION",
+      "suite": "csp-backend",
+      "classification": "test-staleness",
+      "disposition": "resolved",
+      "cases": [
+        "tests/test_rs256_jwt.py::test_expired_token_rejected",
+        "tests/test_service_registry.py::TestSeedRework::test_env_seed_normalizes_relative_url_to_absolute",
+        "tests/test_service_registry.py::TestSeedRework::test_env_seed_resyncs_absolute_url_and_allowed_origin"
+      ],
+      "resolution": "Removed obsolete autouse fixtures that reloaded app.config and split the process into inconsistent settings singleton identities."
+    },
+    {
+      "id": "F3-CSP-MIGRATION-CWD",
+      "suite": "csp-backend",
+      "classification": "platform",
+      "disposition": "resolved",
+      "cases": [
+        "tests/test_service_registry.py::TestMigration::test_single_head_in_r1_namespace"
+      ],
+      "resolution": "The required job executes the documented command from services/csp with UTF-8 enabled, so alembic.ini is resolved and decoded correctly."
+    },
+    {
+      "id": "F3-CSP-HARD-DELETE-FIXTURES",
+      "suite": "csp-backend",
+      "classification": "test-staleness",
+      "disposition": "resolved",
+      "cases": [
+        "tests/test_user_hard_delete.py::test_hard_delete_refused_when_user_owns_agents",
+        "tests/test_user_hard_delete.py::test_hard_delete_cascades_api_keys",
+        "tests/test_user_hard_delete.py::test_hard_delete_preserves_audit_history_via_set_null"
+      ],
+      "resolution": "Removed deleted Agent fields, supplied required API-key fields, and expired the ORM identity map before asserting the bulk SET NULL result."
+    }
+  ],
+  "allowed_skips": [
+    {
+      "path": "packages/anila-agent/tests/test_live_smoke.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": false,
+      "reason": "Explicit live endpoint smoke requires ANILA_BASE_URL and is outside deterministic required CI."
+    },
+    {
+      "path": "packages/anila-agent/tests/test_service_wrapper.py",
+      "kind": "pytest.importorskip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-agent",
+      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
+      "reason": "The required agent job installs the serving extra, so this compatibility guard does not skip in CI."
+    },
+    {
+      "path": "packages/anila-agent/tests/test_streaming.py",
+      "kind": "pytest.importorskip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-agent",
+      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
+      "reason": "The required agent job installs the serving extra, so this compatibility guard does not skip in CI."
+    },
+    {
+      "path": "packages/anila-agent/tests/test_tracing.py",
+      "kind": "pytest.importorskip",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "backend-agent",
+      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
+      "reason": "The required agent job installs the serving extra, so both FastAPI tracing cases run in CI."
+    },
+    {
+      "path": "packages/anila-core/tests/integration/conftest.py",
+      "kind": "pytest.mark.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/integration -q",
+      "reason": "Local opt-out only; postgres-rls sets ANILA_REQUIRE_RLS_TESTS=1 so an unreachable DB is a hard failure."
+    },
+    {
+      "path": "packages/anila-core/tests/integration/conftest.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/integration -q",
+      "reason": "Local opt-out only; postgres-rls supplies the required admin DSN and cannot take this branch."
+    },
+    {
+      "path": "packages/anila-core/tests/test_shell_tools.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-core",
+      "ci_command_fragment": "python -m pytest --ignore=tests/integration tests -q",
+      "reason": "POSIX-only shell behavior executes on the required ubuntu-latest runner."
+    },
+    {
+      "path": "packages/anila-core/tests/test_workspace.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-core",
+      "ci_command_fragment": "python -m pytest --ignore=tests/integration tests -q",
+      "reason": "Only Windows without symlink privilege skips; the required Linux runner executes the case."
+    },
+    {
+      "path": "services/csp/tests/test_ingestion_images_rls_pg.py",
+      "kind": "pytest.importorskip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_ingestion_images_rls_pg.py -q",
+      "reason": "asyncpg is installed and the case runs in the required postgres-rls job."
+    },
+    {
+      "path": "services/csp/tests/test_ingestion_images_rls_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_ingestion_images_rls_pg.py -q",
+      "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes it."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_auth_races_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_auth_races_pg.py -q",
+      "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes challenge/refresh races plus migration upgrade/downgrade."
+    },
+    {
+      "path": "infra/policy/tests/test_gate2_classification_reconciliation_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest infra/policy/tests/test_gate2_classification_reconciliation_pg.py -q",
+      "reason": "Local policy runs skip without an admin DSN; postgres-rls supplies ANILA_GATE2_TEST_PG_ADMIN_URL and executes migration, downgrade, and mutation-sensitive reconciliation proofs."
+    },
+    {
+      "path": "infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py -q",
+      "reason": "Local policy runs skip without an admin DSN; postgres-rls executes the true-PostgreSQL hierarchy-floor, app-role, and race invariants."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_source_snapshot_sealing_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest services/csp/tests/test_gate2_source_snapshot_sealing_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without an admin DSN; postgres-rls executes SourceSnapshot/Citation immutability, membership, finite-score, and downgrade proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_memory_governance_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_memory_governance_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without GATE2_MEMORY_PG_DSN; postgres-rls executes memory classification migration, trigger, and authorization-lock proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_transaction_ledger_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_gate2_transaction_ledger_pg.py",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls executes concurrent block finalization and same-session admission-lock proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_classification_latch_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_classification_latch_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without a disposable PostgreSQL DSN; postgres-rls supplies ANILA_GATE2_CLASSIFICATION_PG_URL and executes stale-session classification and declassification race proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_pg_atomicity.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_gate2_pg_atomicity.py",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls executes the active-run uniqueness, lock-order, clearance barrier, and retrieval-seal race proofs as csp_app."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_durable_usage_closure_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_durable_usage_closure_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls proves atomic usage, TaskRun, TraceSpan closure and poison-record isolation on PostgreSQL."
+    },
+    {
+      "path": "services/csp/tests/test_gate3_retention_upload_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate3_retention_upload_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE3_RETENTION_PG_URL; postgres-rls runs retention and artifact upload race proofs as csp_app."
+    },
+    {
+      "path": "services/csp/tests/test_retention_lifecycle.py",
+      "kind": "pytest.skip",
+      "count": 4,
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "Only Windows without symlink privilege skips; the required Ubuntu CSP job executes the case."
+    },
+    {
+      "path": "services/csp/tests/test_retention_lifecycle.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "The O_PATH/FIFO probe is available on the required Ubuntu CSP job; other platforms register the guard explicitly."
+    },
+    {
+      "path": "services/csp/tests/test_artifact_blob_store.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "Only platforms without symlink privilege skip; the required Ubuntu CSP job executes the artifact safety case."
+    },
+    {
+      "path": "services/csp/tests/test_artifact_blob_store.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "The O_PATH/FIFO probe is available on the required Ubuntu CSP job; other platforms register the guard explicitly."
+    },
+    {
+      "path": "services/csp/tests/test_ingestion_generations_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest services/csp/tests/test_ingestion_generations_pg.py -q",
+      "reason": "Local CSP runs skip without an admin DSN; postgres-rls creates a disposable database and proves the Gate 3 generation migration, backfill, and downgrade contract."
+    },
+    {
+      "path": "services/ingestion-worker/tests/test_job_state_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "services/ingestion-worker/tests/test_job_state_pg.py",
+      "reason": "The worker unit suite skips without a disposable PostgreSQL DSN; postgres-rls runs lease fencing, reaper grace, retry taxonomy, DLQ, and terminal-write recovery proofs in an isolated database."
+    },
+    {
+      "path": "services/ingestion-worker/tests/test_similarity_relations_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "services/ingestion-worker/tests/test_similarity_relations_pg.py",
+      "reason": "The worker unit suite skips without a disposable PostgreSQL DSN; postgres-rls runs concurrent request dedupe, single-owner claim, expired-lease recovery, and stale-owner fencing proofs."
+    },
+    {
+      "path": "packages/anila-agent/tests/test_r5_service_silver.py",
+      "kind": "pytest.importorskip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-agent",
+      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
+      "reason": "The Silver service tests require the serving extra; the required backend-agent job installs it and must not silently skip the suite."
+    },
+    {
+      "path": "packages/anila-security/tests/test_model_governance.py",
+      "kind": "pytest.importorskip",
+      "count": 1,
+      "required_execution": false,
+      "reason": "The classification-order compatibility assertion is optional when the separate anila-contracts package is not installed; the governance test remains fail-closed for all available contract fields."
+    },
+    {
+      "path": "services/csp/tests/test_gate5_model_governance_receipts_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": false,
+      "reason": "The Gate 5 receipt race proof is an opt-in PostgreSQL test and skips without ANILA_GATE2_LEDGER_PG_URL; local SQLite runs must register the skip rather than hide it."
+    },
+    {
+      "path": "services/csp/tests/test_gate5_r4_session_event_store_pg.py",
+      "kind": "pytest.skip",
+      "count": 5,
+      "required_execution": false,
+      "reason": "The Gate 5 session-event race proof is an opt-in PostgreSQL test and skips when TEST_DATABASE_URL/DATABASE_URL is absent or not migrated; local runs must register the skip rather than hide it."
+    },
+    {
+      "path": "services/csp/tests/test_gate5_r5_durable_resume_authority.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate5_r5_durable_resume_authority.py -q -m integration",
+      "reason": "Only the local SQLite/no-DSN path may skip; postgres-rls sets TEST_POSTGRES_URL to the migrated csp_app database and must execute the two-contender durable resume claim proof."
+    },
+    {
+      "path": "infra/deployment/tests/test_airgap_image_inventory.py",
+      "kind": "self.skipTest",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so both environment guards execute their contract assertions instead of skipping."
+    },
+    {
+      "path": "infra/deployment/tests/test_csp_non_root.py",
+      "kind": "unittest.skipUnless",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner is POSIX and executes the non-root backup helper behavior contract."
+    },
+    {
+      "path": "infra/deployment/tests/test_deployment_containment.py",
+      "kind": "self.skipTest",
+      "count": 4,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so all four registered environment guards across both containment probes execute instead of skipping."
+    },
+    {
+      "path": "infra/deployment/tests/test_model_image_lock.py",
+      "kind": "self.skipTest",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides a usable Docker daemon and executes the image-lock tamper smoke test."
+    },
+    {
+      "path": "infra/deployment/tests/test_model_image_lock.py",
+      "kind": "unittest.skipUnless",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides Docker CLI and executes the image-lock tamper smoke test."
+    },
+    {
+      "path": "infra/deployment/tests/test_production_backup_automation.py",
+      "kind": "unittest.skipUnless",
+      "count": 1,
+      "required_execution": false,
+      "reason": "The disposable Docker restore smoke remains an explicit opt-in controlled by ANILA_RUN_DOCKER_RESTORE_SMOKE; its skip is registered rather than hidden from governance."
+    },
+    {
+      "path": "services/anila-studio/tests/test_auth.py",
+      "kind": "pytest.importorskip",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "backend-studio-full",
+      "ci_command_fragment": "python -m pytest tests -q",
+      "reason": "The required full Studio job installs the dev extra and FastAPI runtime, so both dependency guards execute instead of skipping."
+    },
+    {
+      "path": "services/anila-studio/tests/test_job_store_redis_integration.py",
+      "kind": "pytest.mark.skipif",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "backend-studio-full",
+      "ci_command_fragment": "python -m pytest tests -q",
+      "reason": "The required full Studio job supplies both the isolated Redis URL and its unique disposable container name, so the four real-Redis cases and five-pipeline AOF restart proof execute without skips."
+    },
+    {
+      "path": "infra/deployment/tests/test_slo_window_verifier.py",
+      "kind": "self.skipTest",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "FIFO-creation platform guard; executes on Linux CI where os.mkfifo is present."
+    },
+    {
+      "path": "infra/ci/tests/test_gate5_recorded_provider_adapter.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": false,
+      "reason": "PENDING_CAPTURE skipif guards on the v4 capture fixture's existence; the fixture is committed and always present, so this never skips in required CI."
+    }
+  ],
+  "quarantine": [],
+  "non_required_environment_tests": [
+    {
+      "nodeid": "packages/anila-agent/tests/test_live_smoke.py",
+      "reason": "Explicit live endpoint smoke; requires ANILA_BASE_URL and is not a deterministic unit test."
+    }
+  ]
+}

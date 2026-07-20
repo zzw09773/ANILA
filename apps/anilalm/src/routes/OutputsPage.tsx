@@ -1,33 +1,26 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTheme } from '../theme/ThemeContext'
-import { useArtifactStore } from '../store/artifacts'
-import { listCollections } from '../api/collections'
-import type { Collection, StudioArtifact } from '../types'
+import { useCspArtifactStore } from '../store/cspArtifacts'
+import {
+  listCspArtifacts,
+  type CspArtifactSummary,
+  type CspArtifactType,
+} from '../api/artifacts'
 import { Icon, type IconName } from '../components/Icon'
 import { ThemeSwitch } from '../components/ThemeSwitch'
 import { Spinner } from '../components/Spinner'
-import { Modal } from '../components/Modal'
 import { timeAgo } from '../utils/format'
-import {
-  downloadSlidesJobPptx,
-  downloadReportArtifact,
-  downloadMindmapArtifact,
-  downloadInfographicArtifact,
-  downloadDatatableArtifact,
-  stepLabel,
-} from '../api/studio'
+import { downloadCspArtifact } from '../api/studio'
 
 // 產出中心(/outputs)— 跨知識庫的 Studio 產出總覽。
 //
-// 資料來源是 artifact store(localStorage,按 collection 分桶;見
-// store/artifacts.ts 的 MVP 註記):這頁只做「聚合 + 下載 + 跳工作區」,
-// 不做 job polling — pending 狀態的推進仍由各工作區的 WSStudio 迴圈負責,
-// 這裡以靜態狀態呈現並引導使用者回工作區看進度。
+// 資料來源是 CSP Artifact SSOT。前端 store 僅保存這次登入期間的 API
+// 投影，重新載入與下載都回到 CSP，登出時清空，不能跨使用者沿用。
 // Shell 導覽的「產出中心」入口深連結到這裡(anila-shell shellNav.jsx)。
 
 const KIND_META: Record<
-  StudioArtifact['kind'],
+  CspArtifactType,
   { label: string; colour: string; icon: IconName }
 > = {
   slides: { label: '簡報', colour: '#7C7BFF', icon: 'deck' },
@@ -37,7 +30,7 @@ const KIND_META: Record<
   datatable: { label: '資料表', colour: '#3DD68C', icon: 'table' },
 }
 
-const KIND_ORDER: StudioArtifact['kind'][] = [
+const KIND_ORDER: CspArtifactType[] = [
   'slides',
   'report',
   'mindmap',
@@ -47,98 +40,92 @@ const KIND_ORDER: StudioArtifact['kind'][] = [
 
 interface DownloadAction {
   fmt: string
-  run: (a: StudioArtifact) => Promise<void>
+  run: (a: CspArtifactSummary) => Promise<void>
 }
 
 /**
- * 依 kind + 完成狀態列出可用的下載動作。全部走 api/studio.ts 的既有
- * helper(以 jobId 組 /download/{fmt} URL);legacy v1 report(只有
- * markdown、無 jobId)沒有可下載檔,回空陣列 — 請使用者回工作區檢視。
+ * 依 type + 完成狀態列出可用的權威下載動作。每個格式都只呼叫 CSP
+ * ``/api/artifacts/{id}/download``，不再依賴 Studio 暫存 job URL。
  */
-function downloadActions(a: StudioArtifact): DownloadAction[] {
-  if ((a.state ?? 'done') !== 'done' || !a.jobId) return []
-  const stem = a.title || KIND_META[a.kind].label
-  switch (a.kind) {
-    case 'slides':
-      return [{ fmt: 'pptx', run: () => downloadSlidesJobPptx(a.jobId!, stem) }]
-    case 'report':
-      return (['html', 'pdf', 'docx'] as const)
-        .filter((f) => !a.downloadUrls || a.downloadUrls[f])
-        .map((f) => ({ fmt: f, run: () => downloadReportArtifact(a.jobId!, f, stem) }))
-    case 'mindmap':
-      return (['svg', 'dot'] as const)
-        .filter((f) => !a.downloadUrls || a.downloadUrls[f])
-        .map((f) => ({ fmt: f, run: () => downloadMindmapArtifact(a.jobId!, f, stem) }))
-    case 'infographic':
-      return (['html', 'pdf'] as const)
-        .filter((f) => !a.downloadUrls || a.downloadUrls[f])
-        .map((f) => ({
-          fmt: f,
-          run: () => downloadInfographicArtifact(a.jobId!, f, stem),
-        }))
-    case 'datatable':
-      return (['html', 'csv', 'xlsx'] as const)
-        .filter((f) => !a.downloadUrls || a.downloadUrls[f])
-        .map((f) => ({ fmt: f, run: () => downloadDatatableArtifact(a.jobId!, f, stem) }))
-  }
+function downloadActions(a: CspArtifactSummary): DownloadAction[] {
+  if (a.status !== 'completed') return []
+  const stem = a.title || KIND_META[a.type].label
+  const fmt = {
+    slides: 'pptx',
+    report: 'pdf',
+    mindmap: 'svg',
+    infographic: 'pdf',
+    datatable: 'xlsx',
+  }[a.type]
+  return [{
+    fmt,
+    run: () => downloadCspArtifact(a.id, `${stem}.${fmt}`),
+  }]
 }
 
-type KindFilter = 'all' | StudioArtifact['kind']
+type KindFilter = 'all' | CspArtifactType
 
 export function OutputsPage() {
   const { t } = useTheme()
   const navigate = useNavigate()
 
-  const byCollection = useArtifactStore((s) => s.byCollection)
-  const removeArtifact = useArtifactStore((s) => s.remove)
+  const artifacts = useCspArtifactStore((s) => s.artifacts)
+  const replaceArtifacts = useCspArtifactStore((s) => s.replace)
+  const clearArtifacts = useCspArtifactStore((s) => s.clear)
 
-  const [collections, setCollections] = useState<Collection[]>([])
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
   const [search, setSearch] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   // 下載進行中的 key(`${artifactId}:${fmt}`)與逐列錯誤訊息。
   const [busy, setBusy] = useState<Set<string>>(new Set())
-  const [rowErr, setRowErr] = useState<Record<string, string>>({})
-  const [pendingRemove, setPendingRemove] = useState<StudioArtifact | null>(null)
+  const [rowErr, setRowErr] = useState<Record<number, string>>({})
 
   useEffect(() => {
-    // 只為了把 collectionId 映射成名稱;拿不到(離線/權限)不擋頁面。
-    listCollections({ include_archived: true })
-      .then(({ data }) => setCollections(data))
-      .catch(() => setCollections([]))
-  }, [])
-
-  const collectionName = useMemo(() => {
-    const m = new Map<number, string>()
-    for (const c of collections) m.set(c.id, c.name)
-    return m
-  }, [collections])
+    let cancelled = false
+    clearArtifacts()
+    setLoading(true)
+    setLoadError('')
+    void listCspArtifacts()
+      .then((rows) => {
+        if (!cancelled) replaceArtifacts(rows)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          clearArtifacts()
+          setLoadError('無法從 CSP 載入產出紀錄，請稍後再試。')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [clearArtifacts, replaceArtifacts])
 
   const rows = useMemo(() => {
-    const all = Object.values(byCollection).flat()
-    return all
-      .filter((a) => kindFilter === 'all' || a.kind === kindFilter)
+    return artifacts
+      .filter((a) => kindFilter === 'all' || a.type === kindFilter)
       .filter(
         (a) => !search || (a.title || '').toLowerCase().includes(search.toLowerCase()),
       )
       .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
-  }, [byCollection, kindFilter, search])
+  }, [artifacts, kindFilter, search])
 
-  const totalCount = useMemo(
-    () => Object.values(byCollection).reduce((n, list) => n + list.length, 0),
-    [byCollection],
-  )
+  const totalCount = artifacts.length
 
-  async function handleDownload(a: StudioArtifact, action: DownloadAction) {
+  async function handleDownload(a: CspArtifactSummary, action: DownloadAction) {
     const key = `${a.id}:${action.fmt}`
     setBusy((s) => new Set(s).add(key))
     setRowErr((e) => ({ ...e, [a.id]: '' }))
     try {
       await action.run(a)
     } catch {
-      // 最常見原因:伺服器產出檔已過保存期(24h prune)或服務重啟。
+      // CSP 會在授權、撤銷或完整性檢查失敗時拒絕下載。
       setRowErr((e) => ({
         ...e,
-        [a.id]: '下載失敗 — 產出檔可能已過期,請回工作區重新鑄造。',
+        [a.id]: '下載失敗 — 權限、保存期限或檔案完整性檢查未通過。',
       }))
     } finally {
       setBusy((s) => {
@@ -290,11 +277,22 @@ export function OutputsPage() {
               marginBottom: 20,
             }}
           >
-            此清單記錄在本機瀏覽器;產出檔由伺服器保存 24
-            小時,逾期的項目請回對應工作區重新鑄造。
+            產出清單與下載檔案皆由 CSP 權威保存及授權；瀏覽器不會把產出
+            metadata 寫入 localStorage，登出後也會清空本次工作階段快取。
           </div>
 
-          {rows.length === 0 ? (
+          {loading ? (
+            <div style={{ padding: 40, textAlign: 'center' }}>
+              <Spinner size={18} />
+            </div>
+          ) : loadError ? (
+            <div
+              role="alert"
+              style={{ padding: 20, color: '#FF6B6B', textAlign: 'center' }}
+            >
+              {loadError}
+            </div>
+          ) : rows.length === 0 ? (
             <div
               style={{
                 padding: 40,
@@ -313,16 +311,13 @@ export function OutputsPage() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {rows.map((a) => {
-                const meta = KIND_META[a.kind]
-                const state = a.state ?? 'done'
-                const isPending = state === 'pending'
-                const isFailed = state === 'failed'
+                const meta = KIND_META[a.type]
+                const isPending = a.status === 'queued' || a.status === 'generating'
+                const isFailed = a.status === 'failed'
                 const actions = downloadActions(a)
-                const cName =
-                  collectionName.get(a.collectionId) ?? '(知識庫已刪除或無權限)'
                 return (
                   <div
-                    key={`${a.collectionId}:${a.id}`}
+                    key={a.id}
                     style={{
                       padding: '14px 16px',
                       borderRadius: 10,
@@ -374,15 +369,16 @@ export function OutputsPage() {
                         </span>
                       </div>
                       <div style={{ fontSize: 11.5, color: t.textMuted }}>
-                        {cName} · {a.preset} · {a.createdAt ? timeAgo(a.createdAt) : '—'}
+                        {a.taskId ? `Task #${a.taskId}` : '未綁定 Task'} ·{' '}
+                        {a.classificationLevel} ·{' '}
+                        {a.createdAt ? timeAgo(a.createdAt) : '—'}
                         {isPending && (
                           <span style={{ color: t.accent }}>
-                            {' '}
-                            · {stepLabel(a.step ?? null)}(回工作區看進度)
+                            {' '}· {a.status === 'queued' ? '排隊中' : '生成中'}
                           </span>
                         )}
                         {isFailed && (
-                          <span style={{ color: '#FF6B6B' }}> · {a.error || '鑄造失敗'}</span>
+                          <span style={{ color: '#FF6B6B' }}> · 鑄造失敗</span>
                         )}
                       </div>
                       {rowErr[a.id] && (
@@ -427,42 +423,6 @@ export function OutputsPage() {
                           </button>
                         )
                       })}
-                      <button
-                        onClick={() => navigate(`/c/${a.collectionId}`)}
-                        title="開啟工作區"
-                        style={{
-                          padding: '5px 10px',
-                          borderRadius: 7,
-                          border: `1px solid ${t.border}`,
-                          background: t.surface,
-                          color: t.textMuted,
-                          fontSize: 11.5,
-                          fontWeight: 500,
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 5,
-                        }}
-                      >
-                        <Icon name="arrowR" size={11} />
-                        工作區
-                      </button>
-                      <button
-                        onClick={() => setPendingRemove(a)}
-                        title="從清單移除(不影響伺服器檔案)"
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: 7,
-                          border: `1px solid ${t.border}`,
-                          background: t.surface,
-                          display: 'grid',
-                          placeItems: 'center',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <Icon name="trash" size={12} stroke={t.textMuted} />
-                      </button>
                     </div>
                   </div>
                 )
@@ -472,56 +432,6 @@ export function OutputsPage() {
         </div>
       </main>
 
-      {/* 移除確認 */}
-      <Modal
-        open={pendingRemove !== null}
-        onClose={() => setPendingRemove(null)}
-        ariaLabel="移除產出"
-      >
-        <div style={{ padding: 20 }}>
-          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>移除這筆產出?</div>
-          <div style={{ fontSize: 12.5, color: t.textMuted, marginBottom: 18 }}>
-            只會從本機清單移除「{pendingRemove?.title || '(未命名)'}
-            」,已下載的檔案不受影響。
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button
-              onClick={() => setPendingRemove(null)}
-              style={{
-                padding: '7px 14px',
-                borderRadius: 8,
-                border: `1px solid ${t.border}`,
-                background: t.surface,
-                color: t.text,
-                fontSize: 12.5,
-                cursor: 'pointer',
-              }}
-            >
-              取消
-            </button>
-            <button
-              onClick={() => {
-                if (pendingRemove) {
-                  removeArtifact(pendingRemove.collectionId, pendingRemove.id)
-                }
-                setPendingRemove(null)
-              }}
-              style={{
-                padding: '7px 14px',
-                borderRadius: 8,
-                border: '1px solid #FF6B6B',
-                background: '#FF6B6B18',
-                color: '#FF6B6B',
-                fontSize: 12.5,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              移除
-            </button>
-          </div>
-        </div>
-      </Modal>
     </div>
   )
 }

@@ -79,21 +79,6 @@ def service_token_header(monkeypatch) -> dict[str, str]:
 
 
 @pytest.fixture(autouse=True)
-def _ensure_dev_secret_gate(monkeypatch):
-    """See the matching fixture in ``test_token_revoke_publish.py`` —
-    ``test_startup_security`` leaks a reloaded settings global that
-    invalidates the dev-secret allow flag on subsequent lifespan
-    boots. Re-apply + reload here so we don't depend on test order.
-    """
-    monkeypatch.setenv("ANILA_ALLOW_DEV_SECRET", "1")
-    import importlib
-    import app.config as config_module
-    importlib.reload(config_module)
-    import app.services.startup_security as ss_module
-    importlib.reload(ss_module)
-
-
-@pytest.fixture(autouse=True)
 def _silence_publish(monkeypatch):
     """We don't care about Redis broadcasts in these tests — stub the
     publisher to a no-op so they don't try to open sockets.
@@ -332,4 +317,6 @@ def test_logout_writes_row_visible_to_endpoint(
     revocations = resp.json()["revocations"]
     assert len(revocations) == 1, revocations
     assert revocations[0]["user_id"] == user.id
-    assert revocations[0]["revoked_at_version"] == 1
+    assert revocations[0]["revoked_at_version"] == 0
+    assert revocations[0]["scope"] == "sid"
+    assert len(revocations[0]["session_id_hash"]) == 64

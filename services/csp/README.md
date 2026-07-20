@@ -55,6 +55,8 @@ CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgve
 | 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
 > 部署 image 走 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)（multi-stage、含 `anila-core[rag]`）；`services/csp/Dockerfile` 為**單容器 legacy**（compose 不使用它）。前端治理介面已移為頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，官方藍視覺改版），由 Nginx 提供靜態檔。
+>
+> **Internal package 來源**：`anila-contracts` / `anila-security` / `anila-core` 目前未在 public PyPI 保留。fresh venv 必須從 repo root 同一次執行 `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[rag]' -r services/csp/requirements-dev.txt`；不得以 bare name 從 public index 安裝。
 
 ---
 
@@ -185,7 +187,7 @@ docker compose up -d csp                                 # prod（platform.yml�
 # 內網卡登 bootstrap：infra/deployment/intranet/intranet-deploy.sh
 ```
 
-CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`）。第一次啟動若不存在：`docker network create anila-models-net`。
+CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`）。第一次啟動若不存在，請由 repo root 執行 shared helper：`bash infra/deployment/scripts/ensure-models-network.sh ensure`。
 
 後端本地（不經容器、需自備 PostgreSQL）：`cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`。關鍵環境變數（`app/config.py` / compose）：`DATABASE_URL`（runtime `csp_app`）、`MIGRATION_DATABASE_URL`（升權）、`SECRET_KEY`、`JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID`、`ADMIN_USERNAME` / `ADMIN_PASSWORD`、`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`、`ANILA_ENV`（`production` 觸發 model http fail-closed）、`ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`、`ENABLE_API_DOCS` / `ENABLE_PUBLIC_SHARE`。詳見 [`.env.example`](./.env.example)。
 

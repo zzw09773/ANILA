@@ -18,7 +18,7 @@
 How each role relates to anila-core:
 
 - **Router deployment** ([`anila-core-router`](../../services/anila-core-router/)): directly `import`s Pillar 1 + Pillar 2.
-- **Agent developers**: `anila-core init` produces a non-RAG starter, or `pip install "anila-core[rag]"` and fork [`anila-agent`](../anila-agent/) as the official RAG agent starter template. The `[rag]` extra provides the heavyweight document-parsing packages.
+- **Agent developers**: `anila-core init` produces a non-RAG starter, or install the `[rag]` extra from the monorepo with the local-path command below and fork [`anila-agent`](../anila-agent/) as the official RAG agent starter. Internal distribution names are not published on public PyPI yet; do not run a bare `pip install anila-core`.
 - **ingestion-worker** (Arq async pipeline): consumes only Pillar 2 (`chunking_plugins`, `IngestionError`, `pg_pool`, `pgvector_store`, `credential_crypto`); never touches Pillar 1.
 
 > **Post-redesign repo layout (§17.1)**: the monorepo uses four tiers — `services/` (deployable services, incl. `csp` / `anila-core-router`), `apps/` (frontends), `packages/` (importable packages; this SDK lives here), `infra/` (compose / deploy scripts / nginx / models). The root [`compose.yaml`](../../compose.yaml) is a shim → `include: infra/compose/platform.yml`; deploy scripts live under `infra/deployment/{scripts,intranet}/`. Repo-root positioning: [`../../README.md`](../../README.md).
@@ -42,7 +42,8 @@ How each role relates to anila-core:
 | `python-frontmatter>=1.1` / `pyyaml>=6.0` | agent definition / config loading |
 | `anyio>=4.0` / `aiofiles>=23.0` | async IO |
 | `asyncpg>=0.29` / `pgvector>=0.3` | Pillar 2 `CollectionScopedPgVectorStore` (central ingestion vector store) |
-| `cryptography>=42` | `security.credential_crypto` (AES-GCM + PBKDF2, encrypts `user_llm_credentials`) |
+| `anila-contracts>=1,<2` | standalone classification, event, and Gate 2 governance wire contracts; `anila_core.contracts` is only a facade |
+| `anila-security>=0.1,<0.2` | compatibility facade for legacy `anila_core.security` imports; implementation and `cryptography` dependency live in the standalone package |
 | `aiosqlite>=0.20` | default `sqlite_session` short-term session adapter |
 
 ### Optional extras
@@ -100,7 +101,7 @@ packages/anila-core/
     ├── cli/                  # init / register / status / bootstrap + templates/
     │
     └── ──── Pillar 2 · shared infrastructure ────
-        ├── security/         # credential_crypto (AES-GCM + PBKDF2) + url_guard (SSRF, incl. endpoint_kind split)
+        ├── security/         # backwards-compatible facade over anila-security (no duplicate state)
         ├── storage/          # ports.py (Protocol) + adapters/ (pg_pool · pgvector_store · memory_file_store)
         └── ingestion/        # errors (IngestionError taxonomy) · parser_registry · parsers · docling_parser
             │                 #   · ocr · citation_extractor · relation_resolution
@@ -132,9 +133,8 @@ anila-core is a **library / SDK**, not a long-running service. It's consumed by 
 ### Install & test
 
 ```bash
-pip install -e "./packages/anila-core"          # full Pillar 1 + Pillar 2 core deps
-pip install -e "./packages/anila-core[rag]"     # + heavyweight parsing stack
-pip install -e "./packages/anila-core[rag,dev]" # + pytest / ruff / mypy (to run the full suite)
+pip install -e "./packages/anila-contracts" -e "./packages/anila-security" -e "./packages/anila-core[rag,dev]"
+# One invocation supplies every internal local candidate and prevents public-index resolution of unreserved names.
 
 cd packages/anila-core
 .venv/bin/python -m pytest            # asyncio_mode=auto; testpaths=["tests"]
@@ -178,7 +178,7 @@ print(result.stop_reason, result.turn_count)
 
 ### Full Trace export (opt-in)
 
-Tracing is **additive and fail-open**: with `ANILA_TRACE_ENDPOINT` unset the whole trace path is a no-op and behaviour is byte-identical to before it was wired. When set, spans are POSTed by a background `TraceExporter` to CSP `POST {base}/v1/traces/{trace_id}/spans` (body `{"spans":[…]}`, ≤256/batch, `X-CSP-Service-Token` auth) AND mirrored into the `anila.spans` SSE event.
+Tracing is **additive and fail-open**: with `ANILA_TRACE_ENDPOINT` unset the whole trace path is a no-op and behaviour is byte-identical to before it was wired. When set, spans are POSTed by a background `TraceExporter` to CSP `POST {base}/v1/traces/{trace_id}/spans` (body `{"spans":[…]}`, ≤256/batch, `Authorization: Bearer …` auth) AND mirrored into the `anila.spans` SSE event.
 
 - `ANILA_TRACE_ENDPOINT`: a bare flag (`1`/`true`/`on`/`yes`/`default`) → reuse the router's known `CSP_BASE_URL`; any other value → an explicit trace base URL.
 - `ANILA_TRACE_TOKEN`: the service token for trace export (falls back to `CSP_SERVICE_TOKEN`).
@@ -208,7 +208,7 @@ anila-core register \
 
 ## Security: outbound URL guard (SSRF)
 
-`security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` is the central allow-list for user-supplied endpoint URLs (validated once by CSP at credential create and again by the worker at call time — defense in depth). **Slice 6a** domain-splits the http-relaxation flag by `endpoint_kind` (scheme only; host / IP / DNS / trusted-host checks are identical across kinds):
+The canonical API is `anila_security.validate_outbound_url(url, endpoint_kind="generic")`; `anila_core.security` only re-exports the same objects for compatibility. It is the central allow-list for user-supplied endpoint URLs (validated once by CSP at credential create and again by the worker at call time — defense in depth). **Slice 6a** domain-splits the http-relaxation flag by `endpoint_kind` (scheme only; host / IP / DNS / trusted-host checks are identical across kinds):
 
 - **`model`** — production (`ANILA_ENV` ∈ {`production`,`prod`}) fail-closed rejects http; `ANILA_ALLOW_HTTP_ENDPOINT` cannot rescue it (doc `04` §8 hard rule). Non-production still honours that flag.
 - **`agent`** — http is allowed via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` (for on-prem MLSteam plain-http NodePort agents); legacy `ANILA_ALLOW_HTTP_ENDPOINT` remains a deprecated fallback.
@@ -224,8 +224,8 @@ Fixed host rules: deny list (loopback / `169.254.169.254` metadata / mDNS), inte
 |--------|----------|----------|
 | **anila-core-router** | Pillar 1 + Pillar 2 | `create_router_app()`, QueryEngine, Coordinator, `RemoteAgentRegistry`, service-token middleware, trace SDK |
 | **anila-agent template** (fork point) | Pillar 1 + Pillar 2 + `[rag]` | full runtime + parsing / vision provider |
-| **ingestion-worker** (Arq + Redis) | Pillar 2 only | `chunking_plugins`, `IngestionError`, `pg_pool`, `CollectionScopedPgVectorStore`, `credential_crypto` |
-| **services/csp** (CSP backend) | Pillar 2 (partial) | `credential_crypto` (encrypts `user_llm_credentials`), `url_guard` (SSRF) and other shared primitives |
+| **ingestion-worker** (Arq + Redis) | Pillar 2 + `anila-security` | core ingestion/storage primitives; security primitives imported directly from the thin package |
+| **services/csp** (CSP backend) | `anila-security` + partial core | credential crypto / SSRF depend directly on the thin package; other shared runtime remains in core |
 
 ---
 

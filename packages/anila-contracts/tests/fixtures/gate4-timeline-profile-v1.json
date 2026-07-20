@@ -1,0 +1,12 @@
+{
+  "event_name": "anila.step",
+  "schema_version": "step-event/v1",
+  "lifecycle": [
+    ["skill", "running"],
+    ["skill", "completed"],
+    ["tool", "running"],
+    ["tool", "completed"],
+    ["retrieval", "running"],
+    ["retrieval", "completed"]
+  ]
+}

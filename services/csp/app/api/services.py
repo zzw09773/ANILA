@@ -43,7 +43,7 @@ from app.models.user import User
 from app.modules import launch as launch_mod
 from app.modules import policy as policy_mod
 from app.modules.launch import ManifestFetchError
-from app.schemas.contracts.classification import ClassificationLevel as _CL
+from anila_contracts import Classification as _CL
 from app.schemas.registered_service import (
     AuditCallbackPayload,
     AuditCallbackResponse,
@@ -376,7 +376,6 @@ def launch_service(
     _validate_source_snapshot_access(
         db, current_user, source_snapshot_id, task_id=task_id
     )
-    _validate_launch_entry_url(service)
 
     # 8-step access algorithm with the launch classification as context_level:
     # step 6 (classification clearance) denies when level > service ceiling.
@@ -404,6 +403,11 @@ def launch_service(
             commit=True,
         )
         raise HTTPException(status_code=403, detail="無權啟動此服務")
+
+    # Validate attacker-controlled launch metadata only after the caller has
+    # passed the resource/role/classification gate. Otherwise 400 vs 403 turns
+    # this endpoint into a URL-validity oracle for private services.
+    _validate_launch_entry_url(service)
 
     launch_id = launch_mod.new_launch_id()
     row = launch_mod.create_service_launch(
@@ -544,15 +548,29 @@ def audit_callback(
     if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > _AUDIT_MAX_BYTES:
         raise HTTPException(status_code=413, detail="audit callback payload 過大")
 
-    row = launch_mod.record_service_audit_callback(
-        db,
-        service_id=service.id,
-        launch_id=payload.launch_id,
-        event_type=payload.event_type,
-        payload=body,
-        classification_level=payload.classification_level,
-        integration_key_id=identity.service_client_id,
-    )
+    try:
+        row = launch_mod.record_service_audit_callback(
+            db,
+            service_id=service.id,
+            launch_id=payload.launch_id,
+            event_type=payload.event_type,
+            payload=body,
+            classification_level=payload.classification_level,
+            integration_key_id=identity.service_client_id,
+        )
+    except ValueError as exc:
+        log_audit_event(
+            db,
+            actor=None,
+            action="service.audit_callback",
+            resource_type="registered_service",
+            resource_id=service.id,
+            status="denied",
+            detail="拒絕 audit callback:launch 或分類脈絡無效",
+            metadata={"reason": str(exc), "launch_id": payload.launch_id},
+            commit=True,
+        )
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     db.flush()
     log_audit_event(
         db,
@@ -565,6 +583,7 @@ def audit_callback(
             "event_type": payload.event_type,
             "launch_id": payload.launch_id,
             "trace_id": payload.trace_id,
+            "classification_level": row.classification_level,
             "integration_key_id": identity.service_client_id,
         },
         commit=True,

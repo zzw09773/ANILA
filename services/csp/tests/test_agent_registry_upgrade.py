@@ -17,21 +17,28 @@ session commit,端點以有界輪詢讀回(同 test_trace_endpoints 的跨 sessi
 
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import os
+from pathlib import Path
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.agents import health
+from app.main import app as csp_app
 from app.models.agent import Agent
+from app.models.clearance import ClearanceGrant
+from app.models.task import Task, TaskRun
 from app.models.trace_span import TraceSpan
 from app.schemas.contracts.agents import AgentManifest, RuntimeType
 from app.services import agent_credential_service
+from app.services import startup_security
 from tests.conftest import login, make_agent, make_model, make_user
 
 pytestmark = pytest.mark.filterwarnings("ignore")
@@ -331,6 +338,225 @@ class TestApprovalStateMachine:
 
 
 class TestTraceTest:
+    def test_trace_poll_waits_for_all_required_lifecycle_types(self):
+        """A first callback span must not short-circuit the bounded poll."""
+
+        from unittest.mock import Mock
+
+        first = TraceSpan(span_type="agent.run.started")
+        complete = [
+            TraceSpan(span_type="agent.run.started"),
+            TraceSpan(span_type="agent.model_call.started"),
+            TraceSpan(span_type="agent.model_call.finished"),
+            TraceSpan(span_type="agent.output.started"),
+            TraceSpan(span_type="agent.output.finished"),
+            TraceSpan(span_type="agent.run.finished"),
+        ]
+        db = Mock()
+        db.query.return_value.filter.return_value.all.side_effect = [
+            [first], complete
+        ]
+        rows = asyncio.run(
+            health._poll_trace_spans(
+                db, "trace-poll", timeout_s=1.0, interval_s=0.0
+            )
+        )
+        assert len(rows) == 6
+        assert db.rollback.call_count == 2
+
+    def test_trace_emitter_posts_to_csp_asgi_and_poll_reads_lifecycle(
+        self, client, db, db_engine, monkeypatch
+    ):
+        """Exercise the real Agent emitter → CSP ASGI ingest boundary.
+
+        The fixture deliberately does not insert ``trace_spans`` rows.  The
+        worktree Agent ``TraceEmitter`` POSTs its six pass-blocking lifecycle
+        events to the actual CSP application through ASGITransport; the rows
+        are then read back through both the DB and the owner-protected trace
+        GET endpoint.
+        """
+
+        clearance_issuer = make_user(
+            db, username="tt_asgi_clearance_issuer", role="admin"
+        )
+        owner = make_user(db, username="tt_asgi_owner", role="developer")
+        now = datetime.now(timezone.utc)
+        db.add(
+            ClearanceGrant(
+                subject_user_id=owner.id,
+                max_classification_level="無機密",
+                valid_from=now - timedelta(minutes=1),
+                expires_at=now + timedelta(hours=1),
+                basis_ticket="trace-test-asgi-fixture",
+                issued_by_user_id=clearance_issuer.id,
+            )
+        )
+        db.commit()
+        agent = make_agent(
+            db, owner, name="tt-asgi-agent", approval_status="pending_trace_test"
+        )
+        _issue_cred(db, agent, owner)
+        task = Task(
+            title="ASGI trace-test",
+            task_type="query",
+            requester_user_id=owner.id,
+            status="running",
+            classification_level="無機密",
+            legacy_runtime_call=False,
+            trace_id="tracetest-asgi-callback",
+        )
+        db.add(task)
+        db.flush()
+        db.add(
+            TaskRun(
+                task_id=task.id,
+                run_sequence=1,
+                dispatch_target="agent",
+                status="running",
+                started_at=datetime.now(timezone.utc),
+                classification_level="無機密",
+            )
+        )
+        db.commit()
+        db.refresh(task)
+        token = agent_credential_service.get_active_plaintext_for_agent(
+            db, agent_id=agent.id
+        )
+        assert token
+
+        # Load the Agent implementation from this worktree explicitly.  The
+        # developer environment may have an editable D:\ANILA install, which
+        # must not make this integration test exercise a different checkout.
+        tracing_path = (
+            Path(__file__).resolve().parents[3]
+            / "packages"
+            / "anila-agent"
+            / "anila_agent"
+            / "tracing.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "_gate5_worktree_anila_tracing", tracing_path
+        )
+        assert spec and spec.loader
+        tracing = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tracing)
+
+        real_async_client = httpx.AsyncClient
+
+        class _CspAsgiClient:
+            def __init__(self, *args, **kwargs):
+                del args
+                kwargs.pop("verify", None)
+                self._client = real_async_client(
+                    transport=httpx.ASGITransport(app=csp_app),
+                    base_url="http://csp.local",
+                    **kwargs,
+                )
+
+            async def __aenter__(self):
+                await self._client.__aenter__()
+                return self
+
+            async def __aexit__(self, *exc):
+                return await self._client.__aexit__(*exc)
+
+            async def post(self, url, *, headers=None, json=None):
+                return await self._client.post(url, headers=headers, json=json)
+
+        # TraceEmitter imports httpx lazily at flush time.  Patching the module
+        # only for this test routes its real POST through CSP ASGITransport;
+        # no fake DB writer or direct TraceSpan insert is involved.
+        monkeypatch.setattr(httpx, "AsyncClient", _CspAsgiClient)
+        emitter = tracing.TraceEmitter(
+            trace_id=task.trace_id,
+            endpoint="http://csp.local",
+            api_key=token,
+            agent_id=agent.name,
+            task_id=task.id,
+            user_id=owner.username,
+        )
+
+        async def _emit() -> None:
+            async with emitter.run_span(agent.name):
+                async with emitter.span(tracing.MODEL_CALL, "model"):
+                    pass
+                async with emitter.span(tracing.OUTPUT, "output"):
+                    pass
+            await emitter.flush()
+
+        asyncio.run(_emit())
+
+        # _poll_trace_spans returns only once all six required lifecycle types
+        # are present (or at timeout); this proves the callback batch is what
+        # made the trace-test evidence visible.
+        rows = asyncio.run(
+            health._poll_trace_spans(
+                db,
+                task.trace_id,
+                timeout_s=0.1,
+                interval_s=0.01,
+            )
+        )
+        assert {
+            "agent.run.started",
+            "agent.model_call.started",
+            "agent.model_call.finished",
+            "agent.output.started",
+            "agent.output.finished",
+            "agent.run.finished",
+        } <= {row.span_type for row in rows}
+        assert all(row.task_id == task.id for row in rows)
+
+        db.expire_all()
+        stored = db.query(TraceSpan).filter(TraceSpan.trace_id == task.trace_id).all()
+        assert len(stored) == 6
+        owner_token = login(client, owner.username)
+        response = client.get(
+            f"/api/traces/{task.trace_id}", headers=_bearer(owner_token)
+        )
+        assert response.status_code == 200, response.text
+        assert len(response.json()["spans"]) == 6
+
+    def test_signed_pilot_denies_unapproved_trace_test_before_outbound(
+        self, client, db, monkeypatch
+    ):
+        dev = make_user(db, username="tt_pilot_dev", role="developer")
+        admin = make_user(db, username="tt_pilot_admin", role="admin")
+        agent = make_agent(
+            db, dev, name="tt-pilot-denied", approval_status="pending_trace_test"
+        )
+        _issue_cred(db, agent, admin)
+        monkeypatch.setattr(health.settings, "ANILA_PILOT_MODE", True)
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            startup_security,
+            "_verified_pilot_admission",
+            type(
+                "Admission",
+                (),
+                {
+                    "valid_from": now - timedelta(minutes=1),
+                    "valid_until": now + timedelta(minutes=1),
+                    "enabled_callsites": frozenset({"csp.chat_model"}),
+                },
+            )(),
+        )
+
+        class _NoOutbound:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("trace-test reached outbound client")
+
+        monkeypatch.setattr(health.httpx, "AsyncClient", _NoOutbound)
+        token = login(client, dev.username)
+
+        response = client.post(
+            f"/api/agents/{agent.id}/trace-test", headers=_bearer(token)
+        )
+
+        assert response.status_code == 403
+        assert "pilot" in response.json()["detail"].lower()
+        assert "csp.agent_trace_test" in response.json()["detail"]
+
     def test_pass_transitions_state_and_stamps(
         self, client, db, db_engine, monkeypatch
     ):

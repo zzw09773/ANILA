@@ -1,27 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useTheme } from '../theme/ThemeContext'
-import { useWorkspaceStore } from '../store/workspace'
 import { Modal } from '../components/Modal'
 import { Icon } from '../components/Icon'
-import { Spinner } from '../components/Spinner'
 import { MarkdownPreview } from '../components/MarkdownPreview'
-import { MindmapTree } from './MindmapTree'
 import type {
   DatatableArtifact,
   InfographicArtifact,
-  MindmapArtifact,
   ReportArtifact,
   SlidesArtifact,
   StudioArtifact,
 } from '../types'
-import {
-  downloadReportArtifact,
-  downloadMindmapArtifact,
-  downloadInfographicArtifact,
-  downloadDatatableArtifact,
-  fetchMindmapTree,
-  type MindmapTreeSpec,
-} from '../api/studio'
+import { downloadCspArtifact } from '../api/studio'
 
 interface ArtifactViewerProps {
   open: boolean
@@ -94,7 +83,7 @@ export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps)
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: 22 }}>
-        <ArtifactBody artifact={artifact} onClose={onClose} />
+        <ArtifactBody artifact={artifact} />
       </div>
     </Modal>
   )
@@ -104,56 +93,28 @@ export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps)
 
 function ArtifactHeaderActions({ artifact }: { artifact: StudioArtifact }) {
   const { t } = useTheme()
-  switch (artifact.kind) {
-    case 'report':
-      return <ReportHeaderActions artifact={artifact} />
-    case 'slides':
-      return (
-        <button
-          onClick={() =>
-            downloadAs(
-              `${artifact.title}.json`,
-              JSON.stringify(artifact, null, 2),
-              'application/json',
-            )
-          }
-          title="下載 .json"
-          style={iconBtnStyle(t)}
-        >
-          <Icon name="upload" size={13} stroke={t.textMuted} />
-        </button>
-      )
-    case 'mindmap':
-      return <MindmapHeaderActions artifact={artifact} />
-    case 'infographic':
-      return <InfographicHeaderActions artifact={artifact} />
-    case 'datatable':
-      return <DatatableHeaderActions artifact={artifact} />
-  }
-}
-
-function ReportHeaderActions({ artifact }: { artifact: ReportArtifact }) {
-  const { t } = useTheme()
-  if (artifact.jobId && artifact.downloadUrls) {
+  if (artifact.artifactId) {
+    const extension = {
+      slides: 'pptx',
+      report: 'pdf',
+      mindmap: 'svg',
+      infographic: 'pdf',
+      datatable: 'xlsx',
+    }[artifact.kind]
     return (
-      <>
-        {(['html', 'pdf', 'docx'] as const).map((fmt) =>
-          artifact.downloadUrls?.[fmt] ? (
-            <button
-              key={fmt}
-              onClick={() => downloadReportArtifact(artifact.jobId!, fmt, artifact.title)}
-              title={`下載 ${fmt.toUpperCase()}`}
-              style={fmtBtnStyle(t)}
-            >
-              {fmt.toUpperCase()}
-            </button>
-          ) : null,
-        )}
-      </>
+      <button
+        onClick={() =>
+          downloadCspArtifact(artifact.artifactId!, `${artifact.title}.${extension}`)
+        }
+        title={`從 CSP 下載 ${extension.toUpperCase()}`}
+        style={fmtBtnStyle(t)}
+      >
+        {extension.toUpperCase()}
+      </button>
     )
   }
   // Legacy v1 markdown-only report
-  if (artifact.markdown) {
+  if (artifact.kind === 'report' && artifact.markdown) {
     return (
       <button
         onClick={() =>
@@ -169,159 +130,21 @@ function ReportHeaderActions({ artifact }: { artifact: ReportArtifact }) {
   return null
 }
 
-function MindmapHeaderActions({ artifact }: { artifact: MindmapArtifact }) {
-  const { t } = useTheme()
-  if (!artifact.jobId || !artifact.downloadUrls) return null
-  return (
-    <>
-      {(['svg', 'dot'] as const).map((fmt) =>
-        artifact.downloadUrls?.[fmt] ? (
-          <button
-            key={fmt}
-            onClick={() => downloadMindmapArtifact(artifact.jobId!, fmt, artifact.title)}
-            title={`下載 ${fmt.toUpperCase()}`}
-            style={fmtBtnStyle(t)}
-          >
-            {fmt.toUpperCase()}
-          </button>
-        ) : null,
-      )}
-    </>
-  )
-}
-
-function InfographicHeaderActions({ artifact }: { artifact: InfographicArtifact }) {
-  const { t } = useTheme()
-  if (!artifact.jobId || !artifact.downloadUrls) return null
-  return (
-    <>
-      {(['html', 'pdf'] as const).map((fmt) =>
-        artifact.downloadUrls?.[fmt] ? (
-          <button
-            key={fmt}
-            onClick={() =>
-              downloadInfographicArtifact(artifact.jobId!, fmt, artifact.title)
-            }
-            title={`下載 ${fmt.toUpperCase()}`}
-            style={fmtBtnStyle(t)}
-          >
-            {fmt.toUpperCase()}
-          </button>
-        ) : null,
-      )}
-    </>
-  )
-}
-
-function DatatableHeaderActions({ artifact }: { artifact: DatatableArtifact }) {
-  const { t } = useTheme()
-  if (!artifact.jobId || !artifact.downloadUrls) return null
-  return (
-    <>
-      {(['xlsx', 'csv', 'html'] as const).map((fmt) =>
-        artifact.downloadUrls?.[fmt] ? (
-          <button
-            key={fmt}
-            onClick={() =>
-              downloadDatatableArtifact(artifact.jobId!, fmt, artifact.title)
-            }
-            title={`下載 ${fmt.toUpperCase()}`}
-            style={fmtBtnStyle(t)}
-          >
-            {fmt.toUpperCase()}
-          </button>
-        ) : null,
-      )}
-    </>
-  )
-}
-
 // ── Body (per-kind viewer) ─────────────────────────────────────────
 
-function ArtifactBody({
-  artifact,
-  onClose,
-}: {
-  artifact: StudioArtifact
-  onClose: () => void
-}) {
+function ArtifactBody({ artifact }: { artifact: StudioArtifact }) {
   switch (artifact.kind) {
     case 'report':
       return <ReportBody artifact={artifact} />
     case 'slides':
       return <SlidesViewer slides={(artifact as SlidesArtifact).slides} />
     case 'mindmap':
-      return <MindmapBody artifact={artifact} onClose={onClose} />
+      return <ArtifactPendingOrDone artifact={artifact} formatHint="SVG" />
     case 'infographic':
       return <ArtifactPendingOrDone artifact={artifact} formatHint="HTML / PDF" />
     case 'datatable':
       return <ArtifactPendingOrDone artifact={artifact} formatHint="HTML / CSV / XLSX" />
   }
-}
-
-// ── Mindmap:互動式橫向樹(NotebookLM 式) ─────────────────────────
-//
-// 完成的 job 取 spec JSON 渲染 MindmapTree;點節點 → 問題經 workspace
-// store 的 pendingAsk 交給 WSChat 送出,並關閉 viewer 讓使用者看到對話。
-// 升級前的舊 job 沒有 JSON(後端回 404)→ fallback 到舊的「下載 SVG/DOT」
-// 完成面板。
-
-function MindmapBody({
-  artifact,
-  onClose,
-}: {
-  artifact: MindmapArtifact
-  onClose: () => void
-}) {
-  const { t } = useTheme()
-  const setPendingAsk = useWorkspaceStore((s) => s.setPendingAsk)
-  const state = artifact.state ?? 'done'
-  const jobId = artifact.jobId
-  const [tree, setTree] = useState<MindmapTreeSpec | null>(null)
-  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'unavailable'>(
-    'loading',
-  )
-
-  useEffect(() => {
-    if (state !== 'done' || !jobId) return
-    let alive = true
-    setLoadState('loading')
-    fetchMindmapTree(jobId)
-      .then((spec) => {
-        if (!alive) return
-        setTree(spec)
-        setLoadState('ready')
-      })
-      .catch(() => {
-        if (alive) setLoadState('unavailable')
-      })
-    return () => {
-      alive = false
-    }
-  }, [jobId, state])
-
-  if (state !== 'done' || !jobId || loadState === 'unavailable') {
-    return <ArtifactPendingOrDone artifact={artifact} formatHint="SVG / DOT" />
-  }
-  if (loadState === 'loading' || !tree) {
-    return (
-      <div style={{ padding: '40px 0', display: 'grid', placeItems: 'center' }}>
-        <Spinner size={20} />
-        <div style={{ fontSize: 12, marginTop: 10, color: t.textMuted }}>
-          載入心智圖…
-        </div>
-      </div>
-    )
-  }
-  return (
-    <MindmapTree
-      tree={tree}
-      onAsk={(question) => {
-        setPendingAsk(question)
-        onClose()
-      }}
-    />
-  )
 }
 
 function ReportBody({ artifact }: { artifact: ReportArtifact }) {

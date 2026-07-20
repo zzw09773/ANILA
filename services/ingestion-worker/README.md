@@ -60,7 +60,7 @@ Arq 重試 / 逾時策略（`main.py`）：`max_tries=3`、`job_timeout=300`（�
 
 - 語言 / runtime：Python `>=3.11`；`hatchling` 打包，原始碼在 `src/ingestion_worker`。
 - Job queue：`arq>=0.26`（Redis 後端）。
-- 共用 SDK：`anila-core[rag]>=0.14.0` — parser registry、chunking plugins、`PgPool`、`CollectionScopedPgVectorStore`、`VisionProvider`、`IngestionError` 錯誤體系，以及安全工具（憑證解密 `decrypt_credential`、SSRF 防護 `validate_outbound_url`）。`[rag]` extra 帶入 parser 堆疊（pymupdf4llm、python-docx、odfpy、striprtf、Pillow）。
+- 共用 SDK：`anila-core[rag]>=0.14.0` 提供 parser registry、chunking plugins、`PgPool`、`CollectionScopedPgVectorStore`、`VisionProvider`、`IngestionError`；`anila-contracts>=0.1.0` 提供跨服務 wire 型別；`anila-security>=0.1.0` 獨立提供憑證解密與 SSRF guard。`[rag]` extra 帶入 parser 堆疊（pymupdf4llm、python-docx、odfpy、striprtf、Pillow）。
 - DB / 向量：`asyncpg>=0.29` + `pgvector>=0.3`，寫 csp-db；chunk 向量欄位 `halfvec(4000)`（migration 0015）。
 - HTTP client：`httpx>=0.27`（embedding / VLM / relation-LLM / judge）。
 - 設定：`pydantic-settings>=2.0`（`WorkerSettings`，env 載入，`case_sensitive=False`）。
@@ -111,7 +111,8 @@ cd services/ingestion-worker
 .venv/bin/ruff check src tests
 ```
 
-> 新建虛擬環境時，安裝順序與 Dockerfile 一致：先 `pip install -e 'packages/anila-core[rag]'`，再 `pip install -e 'services/ingestion-worker[dev]'`。
+> 新建虛擬環境時，從目前的 `services/ingestion-worker` 目錄依 Dockerfile
+> 順序執行：`pip install -e ../../packages/anila-contracts -e ../../packages/anila-security -e '../../packages/anila-core[rag]' -e '.[dev]'`。
 
 compose 中（`infra/compose/platform.yml`）：build context = repo root；`depends_on`（皆 `service_healthy`）`csp-db` / `redis` / `csp`；volume `share/uploads/ingestion`（host）→ 容器 `/var/anila/ingestion-uploads`；CMD `arq ingestion_worker.main.WorkerSettings`；`restart: unless-stopped`。**`docker restart` 不重載 `.env`/compose；套設定一律 `up -d`。**
 
@@ -137,13 +138,13 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 | `ENABLE_SIMILARITY_EDGES` | `true` | embedding 相似邊總開關 |
 | `SIMILARITY_TOP_K` / `SIMILARITY_MIN` / `SIMILARITY_MAX_DOCS` | `3` / `0.75` / `500` | 每文件連 K 個近鄰 / cosine 下限 / 超過略過重算 |
 
-> `SECRET_KEY`、`ANILA_ENV`、`ANILA_ALLOW_*` 由 `anila-core` 安全模組消費（憑證解密 / SSRF / http 端點 fail-closed），compose 由環境注入。
+> `SECRET_KEY`、`ANILA_ENV`、`ANILA_ALLOW_*` 由 `anila-security` 消費（憑證解密 / SSRF / http 端點 fail-closed），compose 由環境注入。
 
 ---
 
 ## 與其他服務的關係
 
-- **CSP（治理中心）**：上游。enqueue job + 輪詢進度。**Embedding / VLM / relation-LLM 呼叫一律路由經 CSP `/v1` proxy**（compose 指向 `http://csp:8000/v1`），由 CSP `proxy_service` 統一寫 `token_usage`，worker 不自行記帳（`embed()` 收到的 `user_id` 直接 `del`）。對 CSP 以 **`ingestion-worker` 系統 API key** 認證（Model Gateway 的每服務金鑰；compose 由 `INTERNAL_PLATFORM_API_KEY` 注入）。外連前 `anila-core` 依 `ANILA_ENV` / `ANILA_ALLOW_*` 做 http 端點 fail-closed 與 SSRF 檢查。
+- **CSP（治理中心）**：上游。enqueue job + 輪詢進度。**Embedding / VLM / relation-LLM 呼叫一律路由經 CSP `/v1` proxy**（compose 指向 `http://csp:8000/v1`），由 CSP `proxy_service` 統一寫 `token_usage`，worker 不自行記帳（`embed()` 收到的 `user_id` 直接 `del`）。對 CSP 以 **`ingestion-worker` 系統 API key** 認證（Model Gateway 的每服務金鑰；compose 由 `INTERNAL_PLATFORM_API_KEY` 注入）。外連前 `anila-security` 依 `ANILA_ENV` / `ANILA_ALLOW_*` 做 http 端點 fail-closed 與 SSRF 檢查。
 - **csp-db**：以 `csp_app`（受 RLS）連線；RLS-scoped 寫入用 `SET LOCAL anila.collection_id`。讀 documents / collections / eval_runs / user_llm_credentials，寫 chunks / images / `document_relations` / 狀態 / 計數。
 - **Redis**：Arq 佇列後端。
 - **共用上傳目錄**：CSP 寫、worker 讀；captioned 圖存 `<UPLOAD_DIR>/anila-images/<doc_id>/`。

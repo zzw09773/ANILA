@@ -24,6 +24,78 @@ export interface ChatRequest {
   response_format?: { type: 'json_object' } | { type: 'text' }
   conversationId?: number
   traceId?: string
+  taskId?: string
+  retrieval?: {
+    collectionId: number
+    topK?: number
+    minScore?: number
+    documentIds?: number[]
+  }
+}
+
+export interface RetrievalCitation {
+  index: number
+  chunk_id: number
+  document_id: number
+  filename: string
+  chunk_key: string
+  excerpt: string
+  score: number
+  classification_level: string
+}
+
+export interface RetrievalEvent {
+  state: 'hits' | 'zero_hits'
+  task_id: number
+  source_snapshot_id: number
+  content_hash: string
+  citations: RetrievalCitation[]
+}
+
+function parseRetrievalEvent(payload: string, expectedTaskId?: string): RetrievalEvent {
+  let value: unknown
+  try {
+    value = JSON.parse(payload)
+  } catch {
+    throw new Error('CSP 回傳無法解析的 anila.retrieval event')
+  }
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('CSP 回傳無效的 anila.retrieval event')
+  }
+  const event = value as Partial<RetrievalEvent>
+  if (
+    (event.state !== 'hits' && event.state !== 'zero_hits') ||
+    !Number.isInteger(event.task_id) ||
+    (event.task_id ?? 0) <= 0 ||
+    !Number.isInteger(event.source_snapshot_id) ||
+    (event.source_snapshot_id ?? 0) <= 0 ||
+    typeof event.content_hash !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(event.content_hash) ||
+    !Array.isArray(event.citations)
+  ) {
+    throw new Error('CSP 回傳不符合契約的 anila.retrieval event')
+  }
+  if (expectedTaskId && String(event.task_id) !== expectedTaskId) {
+    throw new Error('anila.retrieval event 的 task_id 與請求不一致')
+  }
+  for (const citation of event.citations) {
+    if (
+      typeof citation !== 'object' ||
+      citation === null ||
+      !Number.isInteger(citation.index) ||
+      !Number.isInteger(citation.chunk_id) ||
+      !Number.isInteger(citation.document_id) ||
+      typeof citation.filename !== 'string' ||
+      typeof citation.chunk_key !== 'string' ||
+      typeof citation.excerpt !== 'string' ||
+      typeof citation.score !== 'number' ||
+      !Number.isFinite(citation.score) ||
+      typeof citation.classification_level !== 'string'
+    ) {
+      throw new Error('anila.retrieval event 含無效 Citation')
+    }
+  }
+  return event as RetrievalEvent
 }
 
 const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? 'gpt-4o-mini'
@@ -39,7 +111,18 @@ function tracingHeaders(req: ChatRequest): Record<string, string> {
     h['X-ANILA-Conversation-Id'] = String(req.conversationId)
   }
   if (req.traceId) h['X-ANILA-Trace-Id'] = req.traceId
+  if (req.taskId) h['X-ANILA-Task-Id'] = req.taskId
   return h
+}
+
+function retrievalExtension(req: ChatRequest) {
+  if (!req.retrieval) return undefined
+  return {
+    collection_id: req.retrieval.collectionId,
+    top_k: req.retrieval.topK ?? 5,
+    min_score: req.retrieval.minScore ?? 0.3,
+    document_ids: req.retrieval.documentIds,
+  }
 }
 
 /**
@@ -61,6 +144,7 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
       max_tokens: req.max_tokens,
       response_format: req.response_format,
       stream: false,
+      anila_retrieval: retrievalExtension(req),
     }),
   })
   if (!res.ok) {
@@ -83,6 +167,7 @@ export async function chatStream(
   req: ChatRequest,
   onDelta: (delta: string, accumulated: string) => void,
   abortSignal?: AbortSignal,
+  onRetrieval?: (event: RetrievalEvent) => void,
 ): Promise<string> {
   const res = await fetch('/v1/chat/completions', {
     method: 'POST',
@@ -98,6 +183,7 @@ export async function chatStream(
       temperature: req.temperature ?? 0.4,
       max_tokens: req.max_tokens,
       stream: true,
+      anila_retrieval: retrievalExtension(req),
     }),
     signal: abortSignal,
   })
@@ -110,6 +196,7 @@ export async function chatStream(
   const decoder = new TextDecoder('utf-8')
   let buffer = ''
   let accumulated = ''
+  let retrievalSeen = false
 
   while (true) {
     const { value, done } = await reader.read()
@@ -124,11 +211,25 @@ export async function chatStream(
       const event = buffer.slice(0, sep)
       buffer = buffer.slice(sep + 2)
       sep = buffer.indexOf('\n\n')
-      const lines = event.split('\n').filter((l) => l.startsWith('data:'))
+      const eventLines = event.split('\n')
+      const eventName = eventLines
+        .find((line) => line.startsWith('event:'))
+        ?.slice(6)
+        .trim()
+      const lines = eventLines.filter((l) => l.startsWith('data:'))
       for (const line of lines) {
         const payload = line.slice(5).trim()
         if (!payload || payload === '[DONE]') continue
         try {
+          if (eventName === 'anila.retrieval') {
+            if (retrievalSeen) {
+              throw new Error('CSP 重複回傳 anila.retrieval event')
+            }
+            const retrieval = parseRetrievalEvent(payload, req.taskId)
+            retrievalSeen = true
+            onRetrieval?.(retrieval)
+            continue
+          }
           const frame = JSON.parse(payload) as {
             choices?: { delta?: { content?: string } }[]
           }
@@ -137,11 +238,15 @@ export async function chatStream(
             accumulated += delta
             onDelta(delta, accumulated)
           }
-        } catch {
+        } catch (error) {
+          if (eventName === 'anila.retrieval') throw error
           // Mid-frame parse error; skip and keep streaming.
         }
       }
     }
+  }
+  if (req.retrieval && !retrievalSeen) {
+    throw new Error('正式 RAG 回應缺少 anila.retrieval evidence event')
   }
   return accumulated
 }

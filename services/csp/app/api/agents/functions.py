@@ -4,6 +4,7 @@ Split verbatim from the former single-module ``app/api/agents.py``
 (behavior-preserving refactor).
 """
 from fastapi import APIRouter, Depends, HTTPException, Request
+from app.config import settings
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -243,6 +244,11 @@ async def suggest_system_prompt(
 
     產出供 dev 貼進 anila-agent ``prompts/system.md``，或前端再存成該 agent 的 preset_prompt。
     """
+    if settings.ANILA_PILOT_MODE and not settings.ENABLE_PILOT_PROMPT_GENERATOR:
+        raise HTTPException(
+            status_code=403,
+            detail="Gate 2 pilot 禁止未經 CSP 收斂的 prompt generator",
+        )
     from app.services.prompt_gen_service import generate_system_prompt
 
     try:

@@ -8,6 +8,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
+# Install the thin wire-contract package before its consumers.
+COPY packages/anila-contracts /tmp/anila-contracts
+RUN pip install --no-cache-dir /tmp/anila-contracts
+
+# Install anila-security first: anila-core retains its legacy security facade
+# as a compatibility API and therefore declares this thin package dependency.
+COPY packages/anila-security /tmp/anila-security
+RUN pip install --no-cache-dir /tmp/anila-security
+
 # Install anila-core SDK (pure runtime — no RAG extras).
 # Router only needs the runtime foundation (api, registry, tools, providers);
 # RAG-specific deps (pgvector / asyncpg / pymupdf4llm) live in AgenticRAG.

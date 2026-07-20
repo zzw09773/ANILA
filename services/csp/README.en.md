@@ -55,6 +55,8 @@ CSP also hosts the **Ingestion knowledge base** (document → chunk → embeddin
 | Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
 > The deployed image uses [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) (multi-stage, bundles `anila-core[rag]`); `services/csp/Dockerfile` is a **single-container legacy** file (compose does not use it). The governance frontend now lives at the top level, [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, "官方藍" visual redesign), served statically by Nginx.
+>
+> **Internal package origin**: `anila-contracts`, `anila-security`, and `anila-core` are not reserved on public PyPI yet. From the repository root, install every reviewed local candidate in one invocation: `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[rag]' -r services/csp/requirements-dev.txt`. Never resolve these names as bare public-index requirements.
 
 ---
 
@@ -185,7 +187,7 @@ docker compose up -d csp                                 # prod (platform.yml)
 # intranet card-login bootstrap: infra/deployment/intranet/intranet-deploy.sh
 ```
 
-CSP joins two networks: `default` (in-stack) and `anila-models-net` (external, reaching `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`). On first boot if it doesn't exist: `docker network create anila-models-net`.
+CSP joins two networks: `default` (in-stack) and `anila-models-net` (external, reaching `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`). If it is missing on first boot, run the shared helper from the repo root: `bash infra/deployment/scripts/ensure-models-network.sh ensure`.
 
 Local backend (no container, bring your own PostgreSQL): `cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`. Key env vars (`app/config.py` / compose): `DATABASE_URL` (runtime `csp_app`), `MIGRATION_DATABASE_URL` (escalated), `SECRET_KEY`, `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID`, `ADMIN_USERNAME` / `ADMIN_PASSWORD`, `CSP_SERVICE_TOKEN`, `MODEL_GATEWAY_API_KEY`, `ANILA_ENV` (`production` triggers the model-http fail-closed), `ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`, `ANILA_TRUSTED_HOSTS`, `REDIS_URL`, `ENABLE_API_DOCS` / `ENABLE_PUBLIC_SHARE`. See [`.env.example`](./.env.example).
 

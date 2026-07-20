@@ -118,8 +118,7 @@ def test_hard_delete_refused_when_user_owns_agents(client: TestClient, db):
         owner_user_id=target.id,
         endpoint_url="http://agent:24786",
         description_for_router="Test agent",
-        is_active=True,
-        is_approved=True,
+        approval_status="approved",
     )
     db.add(agent)
     db.commit()
@@ -145,6 +144,8 @@ def test_hard_delete_cascades_api_keys(client: TestClient, db):
         k = ApiKey(
             user_id=target.id,
             key_hash=f"deadbeef-{n}",
+            key_prefix=f"sk-ci-{n}",
+            key_suffix=f"{n:04d}",
             name=f"k-{n}",
             is_active=True,
         )
@@ -188,6 +189,7 @@ def test_hard_delete_preserves_audit_history_via_set_null(client: TestClient, db
     assert resp.status_code == 200, resp.text
 
     # Audit row 還在，但 actor_user_id = NULL
+    db.expire_all()
     refreshed = db.query(AuditLog).filter(AuditLog.id == audit_id).first()
     assert refreshed is not None
     assert refreshed.actor_user_id is None

@@ -28,6 +28,7 @@ from app.models.service_client import ServiceClient
 from app.models.service_launch import ServiceLaunch
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task
+from app.modules import launch as launch_mod
 from app.services import access_control, agent_credential_service
 from app.services.agent_credential_service import CallerIdentity
 from app.services.auto_seed import sync_env_seeded_services
@@ -223,6 +224,17 @@ class TestAccessAlgorithm:
             is True
         )
 
+    def test_null_classification_ceiling_fails_closed_at_launch(self, db):
+        admin = make_user(db, username="root-null-ceiling", role="admin")
+        svc = _make_service(db, name="null-ceiling", slug="null-ceiling")
+        svc.classification_ceiling = None
+        assert (
+            access_control.can_access_service(
+                db, admin, svc, context_level="無機密"
+            )
+            is False
+        )
+
     def test_migrated_grant_matched_by_platform_link_id(self, db):
         # grant keyed only by the legacy platform_link_id still counts.
         user = make_user(db)
@@ -306,6 +318,27 @@ class TestLaunch:
             .first()
             is not None
         )
+
+    def test_launch_denied_user_cannot_probe_invalid_entry_url(self, client, db):
+        """Access control must run before URL validation.
+
+        Otherwise an ungranted caller can distinguish a malformed/private
+        service from a valid/private service by observing 400 vs 403.
+        """
+        headers = _auth_headers(client, db, username="url-oracle-attacker")
+        svc = _make_service(
+            db,
+            slug="private-invalid-url",
+            name="Private Invalid URL",
+            is_public=False,
+            entry_url="javascript:alert(1)",
+        )
+
+        resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
+
+        assert resp.status_code == 403, resp.text
+        assert "entry_url" not in resp.text
+        assert db.query(ServiceLaunch).count() == 0
 
     def test_launch_unauthenticated_401(self, client, db):
         svc = _make_service(db, is_public=True)
@@ -409,13 +442,25 @@ class TestAuditCallback:
         sc = self._setup(db, monkeypatch)
         # R-SEC (ADR-0008): the service must be bound to the presenting client.
         svc = _make_service(db, service_client_id=sc.id)
+        launch_mod.create_service_launch(
+            db,
+            launch_id="launch_abc",
+            service_id=svc.id,
+            user_id=None,
+            task_id=None,
+            trace_id="trace_abc",
+            classification_level="極機密",
+            source_snapshot_id=None,
+            mode="new_tab",
+        )
+        db.commit()
         resp = client.post(
             f"/api/services/{svc.slug}/audit-callbacks",
             json={
                 "event_type": "analysis.completed",
                 "launch_id": "launch_abc",
                 "trace_id": "trace_abc",
-                "actor": {"employee_id": "123456"},
+                "actor": {"employee_id": "990000001"},
                 "classification_level": "機密",
             },
             headers={"Authorization": f"Bearer {self._GOOD}"},
@@ -426,6 +471,102 @@ class TestAuditCallback:
         row = db.query(ServiceAuditCallback).filter_by(service_id=svc.id).one()
         assert row.event_type == "analysis.completed"
         assert row.integration_key_id is not None
+        # Caller floor 機密 cannot lower the linked launch's 極機密 context.
+        assert row.classification_level == "極機密"
+        assert row.payload["classification_level"] == "極機密"
+        assert resp.json()["classification_level"] == "極機密"
+
+    def test_payload_floor_can_raise_but_not_lower_launch(
+        self, client, db, monkeypatch
+    ):
+        sc = self._setup(db, monkeypatch)
+        svc = _make_service(
+            db,
+            name="callback-floor",
+            slug="callback-floor",
+            service_client_id=sc.id,
+        )
+        launch_mod.create_service_launch(
+            db,
+            launch_id="launch_floor",
+            service_id=svc.id,
+            user_id=None,
+            task_id=None,
+            trace_id=None,
+            classification_level="營業秘密",
+            source_snapshot_id=None,
+            mode="new_tab",
+        )
+        db.commit()
+        resp = client.post(
+            f"/api/services/{svc.slug}/audit-callbacks",
+            json={
+                "event_type": "analysis.completed",
+                "launch_id": "launch_floor",
+                "classification_level": "極機密",
+            },
+            headers={"Authorization": f"Bearer {self._GOOD}"},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["classification_level"] == "極機密"
+
+    def test_missing_launch_and_explicit_null_fail_closed(
+        self, client, db, monkeypatch
+    ):
+        sc = self._setup(db, monkeypatch)
+        svc = _make_service(
+            db,
+            name="callback-invalid",
+            slug="callback-invalid",
+            service_client_id=sc.id,
+        )
+        missing = client.post(
+            f"/api/services/{svc.slug}/audit-callbacks",
+            json={"event_type": "analysis.completed", "launch_id": "missing"},
+            headers={"Authorization": f"Bearer {self._GOOD}"},
+        )
+        assert missing.status_code == 422
+
+        explicit_null = client.post(
+            f"/api/services/{svc.slug}/audit-callbacks",
+            json={"event_type": "analysis.completed", "classification_level": None},
+            headers={"Authorization": f"Bearer {self._GOOD}"},
+        )
+        assert explicit_null.status_code == 422
+
+    def test_cross_service_launch_id_is_rejected(self, client, db, monkeypatch):
+        sc = self._setup(db, monkeypatch)
+        target = _make_service(
+            db,
+            name="callback-target",
+            slug="callback-target",
+            service_client_id=sc.id,
+        )
+        other = _make_service(
+            db,
+            name="callback-other",
+            slug="callback-other",
+            service_client_id=sc.id,
+        )
+        launch_mod.create_service_launch(
+            db,
+            launch_id="launch_other",
+            service_id=other.id,
+            user_id=None,
+            task_id=None,
+            trace_id=None,
+            classification_level="機密",
+            source_snapshot_id=None,
+            mode="new_tab",
+        )
+        db.commit()
+
+        response = client.post(
+            f"/api/services/{target.slug}/audit-callbacks",
+            json={"event_type": "analysis.completed", "launch_id": "launch_other"},
+            headers={"Authorization": f"Bearer {self._GOOD}"},
+        )
+        assert response.status_code == 422
 
     def test_bad_key_401(self, client, db, monkeypatch):
         self._setup(db, monkeypatch)
@@ -671,6 +812,36 @@ class TestCompatFacade:
 
 
 class TestSeedRework:
+    def test_env_seed_normalizes_relative_url_to_absolute(self, db, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "SITE_URL", "https://anila.example.tw")
+        sync_env_seeded_services(
+            db,
+            [{"name": "ANILA LM", "url": "/anilalm", "is_public": False}],
+        )
+        db.commit()
+
+        svc = db.query(RegisteredService).filter_by(name="ANILA LM").one()
+        assert svc.entry_url == "https://anila.example.tw/anilalm"
+        assert svc.allowed_origins == ["https://anila.example.tw"]
+
+    def test_env_seed_resyncs_absolute_url_and_allowed_origin(self, db, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "SITE_URL", "https://old.example.tw")
+        cfg = [{"name": "ANILA LM", "url": "/anilalm"}]
+        sync_env_seeded_services(db, cfg)
+        db.commit()
+
+        monkeypatch.setattr(settings, "SITE_URL", "https://new.example.tw:4443")
+        sync_env_seeded_services(db, cfg)
+        db.commit()
+
+        svc = db.query(RegisteredService).filter_by(name="ANILA LM").one()
+        assert svc.entry_url == "https://new.example.tw:4443/anilalm"
+        assert svc.allowed_origins == ["https://new.example.tw:4443"]
+
     def test_env_seed_keeps_admin_sticky_and_resyncs(self, db):
         cfg = [{"name": "GitLab", "url": "https://gitlab.local", "is_public": True}]
         sync_env_seeded_services(db, cfg)

@@ -30,13 +30,16 @@ class Skill:
         return (m.group(2).strip() if m else text.strip())
 
 
-def _parse_frontmatter(text: str) -> dict:
+def _parse_frontmatter(text: str) -> dict[str, object]:
     m = _FM.match(text)
     if not m:
         return {}
     import yaml
 
-    return yaml.safe_load(m.group(1)) or {}
+    loaded: object = yaml.safe_load(m.group(1))
+    if not isinstance(loaded, dict):
+        return {}
+    return {str(key): value for key, value in loaded.items()}
 
 
 def load_skills(skills_dir: str | os.PathLike[str], *, trusted: bool = False) -> list[Skill]:

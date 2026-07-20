@@ -1,0 +1,62 @@
+{
+  "schema_version": "invocation-command/v1",
+  "invocation_id": "invocation-005",
+  "request_id": "request-006",
+  "task_context": {
+    "schema_version": "task-context/v1",
+    "task_id": 2,
+    "run_id": 1,
+    "requester_user_id": 42,
+    "session_id": "session-007",
+    "conversation_id": 9,
+    "source_scope": "project",
+    "source_snapshot_id": 3,
+    "collection_ids": [11, 12],
+    "classification": "機密",
+    "auth_assurance": {
+      "sid": "sid-008",
+      "amr": ["sc"],
+      "acr": "urn:anila:acr:smart-card",
+      "auth_time": "2026-07-12T01:00:00Z",
+      "break_glass": false
+    }
+  },
+  "trace_context": {
+    "schema_version": "trace-context/v1",
+    "trace_id": "trace-004",
+    "task_id": 2,
+    "run_id": 1,
+    "invocation_id": "invocation-005",
+    "session_id": "session-007",
+    "parent_span_id": "span-parent-001",
+    "classification": "機密"
+  },
+  "target_kind": "agent",
+  "target_id": "research-agent",
+  "source_snapshot_id": 3,
+  "input": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "分析核准資料集的隔離設計"
+      }
+    ],
+    "mode": "retrieval"
+  },
+  "safe_input_summary": {
+    "schema_version": "safe-summary/v1",
+    "text": "已遮罩識別資訊的核准資料集查詢",
+    "classification": "機密",
+    "redacted": true,
+    "policy_ids": ["policy-017", "policy-021"],
+    "source_content_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "classification": "機密",
+  "idempotency_key": "task-002:run-001:invocation-005",
+  "timeout_ms": 120000,
+  "max_steps": 8,
+  "allowed_tools": ["approved_search", "citation_lookup"],
+  "event_protocol": "step-event/v1",
+  "registry_snapshot": "registry-snapshot-010",
+  "manifest_revision": "manifest-revision-012"
+}

@@ -35,7 +35,7 @@ from asyncio import Lock
 
 import httpx
 
-from app.config import settings
+from app.config import is_model_governance_required, settings
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,12 @@ _state: dict = {
     "logged_not_found": False,
 }
 _lock = Lock()
+
+
+def _governance_required() -> bool:
+    """Read the deployment posture at call time, so tests/config reloads work."""
+
+    return is_model_governance_required()
 
 
 def _headers() -> dict[str, str]:
@@ -74,7 +80,8 @@ async def _refresh_image_primary() -> None:
     async with _lock:
         now = time.time()
         if (
-            _state["status"] != "unknown"
+            not _governance_required()
+            and _state["status"] != "unknown"
             and now - _state["fetched_at"] < IMAGE_PRIMARY_TTL_SECONDS
         ):
             return
@@ -89,19 +96,39 @@ async def _refresh_image_primary() -> None:
             httpx.RemoteProtocolError,
         ) as exc:
             logger.warning(
-                "image-primary: 連線 csp 失敗(%s)— 沿用上次快取值", exc
+                "image-primary: 連線 csp 失敗(%s)— %s",
+                exc,
+                (
+                    "formal governance 清除快取並拒絕下游"
+                    if _governance_required()
+                    else "沿用上次快取值"
+                ),
             )
-            _state["status"] = "conn_error"
+            if _governance_required():
+                _state["endpoint"] = None
+                _state["model"] = None
+                _state["status"] = "governance_error"
+            else:
+                _state["status"] = "conn_error"
             _state["fetched_at"] = now
             return
 
         if resp.status_code == 200:
-            data = resp.json()
-            endpoint = str(data.get("endpoint_url") or "").strip()
-            model = str(data.get("name") or "").strip()
-            if endpoint:
+            try:
+                data = resp.json()
+            except (TypeError, ValueError):
+                data = None
+            endpoint_value = (
+                data.get("endpoint_url") if isinstance(data, dict) else None
+            )
+            model_value = data.get("name") if isinstance(data, dict) else None
+            endpoint = (
+                endpoint_value.strip() if isinstance(endpoint_value, str) else ""
+            )
+            model = model_value.strip() if isinstance(model_value, str) else ""
+            if endpoint and model:
                 _state["endpoint"] = endpoint
-                _state["model"] = model or None
+                _state["model"] = model
                 _state["status"] = "ok"
                 _state["logged_not_found"] = False
             else:
@@ -122,9 +149,15 @@ async def _refresh_image_primary() -> None:
         elif resp.status_code in (401, 403):
             logger.warning(
                 "image-primary: csp 拒絕 service token(%s)— "
-                "fallback env FLUX_BACKEND_URL/FLUX_MODEL",
+                "%s",
                 resp.status_code,
+                "formal governance 清除快取並拒絕下游"
+                if _governance_required()
+                else "fallback env FLUX_BACKEND_URL/FLUX_MODEL",
             )
+            if _governance_required():
+                _state["endpoint"] = None
+                _state["model"] = None
             _state["status"] = "auth_error"
         else:
             logger.warning(
@@ -132,6 +165,9 @@ async def _refresh_image_primary() -> None:
                 resp.status_code,
                 resp.text[:200] if resp.text else "",
             )
+            if _governance_required():
+                _state["endpoint"] = None
+                _state["model"] = None
             _state["status"] = "conn_error"
 
         _state["fetched_at"] = now
@@ -150,6 +186,9 @@ async def get_image_primary() -> tuple[str | None, str | None]:
     (``FLUX_BACKEND_URL`` / ``FLUX_MODEL``)。
     """
     now = time.time()
-    if now - _state["fetched_at"] >= IMAGE_PRIMARY_TTL_SECONDS:
+    if (
+        _governance_required()
+        or now - _state["fetched_at"] >= IMAGE_PRIMARY_TTL_SECONDS
+    ):
         await _refresh_image_primary()
     return _resolve()

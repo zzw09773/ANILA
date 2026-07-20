@@ -14,6 +14,7 @@ from urllib.parse import urlencode, urlparse, urlunparse
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
+from anila_contracts import Classification as ClassificationLevel
 
 from app.models.service_launch import ServiceAuditCallback, ServiceLaunch
 
@@ -93,16 +94,47 @@ def record_service_audit_callback(
     launch_id: str | None,
     event_type: str,
     payload: dict | None,
-    classification_level: str | None,
+    classification_level: ClassificationLevel | str,
     integration_key_id: int | None,
 ) -> ServiceAuditCallback:
-    """Append one ``service_audit_callbacks`` row (append-only, no update)."""
+    """Append one callback with ``max(payload floor, launch level)``.
+
+    A caller may raise the floor but can never lower the immutable launch
+    context. A supplied launch id must exist and belong to the same service;
+    malformed persisted launch classification fails closed.
+    """
+    if isinstance(classification_level, ClassificationLevel):
+        payload_floor = classification_level
+    elif isinstance(classification_level, str):
+        payload_floor = ClassificationLevel.from_storage(classification_level)
+    else:
+        raise ValueError("audit callback classification_level must be explicit")
+
+    levels = [payload_floor]
+    if launch_id is not None:
+        launch = (
+            db.query(ServiceLaunch)
+            .filter(ServiceLaunch.launch_id == launch_id)
+            .first()
+        )
+        if launch is None:
+            raise ValueError("audit callback launch_id does not exist")
+        if launch.service_id != service_id:
+            raise ValueError("audit callback launch_id belongs to another service")
+        raw_launch_level = launch.classification_level
+        if not isinstance(raw_launch_level, str):
+            raise ValueError("service launch classification_level is invalid")
+        levels.append(ClassificationLevel.from_storage(raw_launch_level))
+
+    effective_level = ClassificationLevel.max_of(levels).to_storage()
+    stored_payload = dict(payload or {})
+    stored_payload["classification_level"] = effective_level
     row = ServiceAuditCallback(
         service_id=service_id,
         launch_id=launch_id,
         event_type=event_type,
-        payload=payload,
-        classification_level=classification_level,
+        payload=stored_payload,
+        classification_level=effective_level,
         integration_key_id=integration_key_id,
     )
     db.add(row)

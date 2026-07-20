@@ -27,9 +27,11 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -129,6 +131,13 @@ class TaskRun(Base):
     __table_args__ = (
         UniqueConstraint("task_id", "run_sequence",
                          name="uq_task_runs_task_sequence"),
+        Index(
+            "uq_task_runs_one_active_per_task",
+            "task_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+            sqlite_where=text("status IN ('queued', 'running')"),
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

@@ -30,5 +30,14 @@ if [ ! -f "$ANILA_STUDIO_OPENAPI" ]; then
 fi
 
 cd "$ANILALM_ROOT"
-npx openapi-typescript "$ANILA_STUDIO_OPENAPI" -o "$OUT"
+OPENAPI_ARG="$ANILA_STUDIO_OPENAPI"
+OUT_ARG="$OUT"
+# On Windows, `bash` may be WSL while `npx` resolves to the host executable.
+# Windows Node cannot resolve `/mnt/c/...`; hand it native paths explicitly.
+if command -v wslpath >/dev/null 2>&1 \
+  && command -v npx | grep -Eq '^/mnt/[a-zA-Z]/'; then
+  OPENAPI_ARG="$(wslpath -w "$ANILA_STUDIO_OPENAPI")"
+  OUT_ARG="$(wslpath -w "$OUT")"
+fi
+npx openapi-typescript "$OPENAPI_ARG" -o "$OUT_ARG"
 echo "wrote $OUT"

@@ -44,7 +44,10 @@ def _mint_sso_api_key(db: Session, user: User) -> str | None:
     old rows can never be recovered by the SPA anyway.
     """
     model_ids = [
-        row.id for row in db.query(ModelRegistry).filter(ModelRegistry.is_active == True).all()
+        row.id
+        for row in db.query(ModelRegistry)
+        .filter(ModelRegistry.is_active.is_(True))
+        .all()
     ]
     if not model_ids:
         return None
@@ -137,7 +140,7 @@ async def start_oidc_login(
         .filter(
             AuthProvider.id == provider_id,
             AuthProvider.provider_type == "oidc",
-            AuthProvider.is_active == True,
+            AuthProvider.is_active.is_(True),
         )
         .first()
     )
@@ -162,7 +165,7 @@ async def oidc_callback(
         .filter(
             AuthProvider.id == provider_id,
             AuthProvider.provider_type == "oidc",
-            AuthProvider.is_active == True,
+            AuthProvider.is_active.is_(True),
         )
         .first()
     )
@@ -176,7 +179,7 @@ async def oidc_callback(
         # state 內有 PKCE verifier 與 nonce，必須完整傳給 authenticate_oidc_code
         # 才能驗 id_token；任何缺漏由該函式 raise ValueError。
         user = await authenticate_oidc_code(db, provider, code, state_payload)
-        tokens = create_tokens(user)
+        tokens = create_tokens(user, db=db, amr=("oidc",))
         _stamp_last_login(db, user)
         log_audit_event(
             db,
@@ -191,7 +194,7 @@ async def oidc_callback(
             tokens,
             state_payload.get("next_path", "/"),
         )
-        # Cookies carry the session — SPA reads `anila_csrf` (non-httpOnly)
+        # Cookies carry the session — SPA reads `__Host-anila_csrf` (non-httpOnly)
         # on first render and echoes it on mutating requests.
         set_session_cookies(
             html,

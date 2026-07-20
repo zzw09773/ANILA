@@ -9,10 +9,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass
 
-from agents import Agent
+from agents import Agent, FunctionTool, OpenAIChatCompletionsModel, Tool
 
 from anila_agent.cli.output_styles import load_output_style
 from anila_agent.config import AppConfig
@@ -33,10 +34,53 @@ from anila_agent.tools.memory_tools import search_memory
 from anila_agent.tools.rag_tools import DEFAULT_TOOLS
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
+_E2E_ALLOWED_PROFILES = frozenset({"dev", "development", "test", "testing"})
+_E2E_HARNESS_NAME = "gate5-silver"
 
 
 def _flag(name: str) -> bool:
     return os.getenv(name, "0").strip().lower() in _TRUE
+
+
+def validate_e2e_approval_mode() -> bool:
+    """Validate the disposable Gate 5 approval switch before service startup.
+
+    The switch is deliberately not a general-purpose runtime hook.  It may
+    only be enabled by the named Gate 5 harness while the deployment profile
+    is explicitly development/test.  A production process therefore rejects
+    an ambient ``ANILA_E2E_REQUIRE_TOOL_APPROVAL=1`` instead of silently
+    changing its tool-approval semantics.
+    """
+
+    if not _flag("ANILA_E2E_REQUIRE_TOOL_APPROVAL"):
+        return False
+    profile = os.getenv("ANILA_DEPLOYMENT_PROFILE", "production").strip().lower()
+    harness = os.getenv("ANILA_E2E_HARNESS", "").strip()
+    if profile not in _E2E_ALLOWED_PROFILES or harness != _E2E_HARNESS_NAME:
+        raise ValueError(
+            "ANILA_E2E_REQUIRE_TOOL_APPROVAL is test-only: "
+            "requires ANILA_DEPLOYMENT_PROFILE=dev/development/test and "
+            "ANILA_E2E_HARNESS=gate5-silver"
+        )
+    return True
+
+
+def _mark_function_tools_for_approval(tools: list[Tool]) -> list[Tool]:
+    """Mark only SDK ``FunctionTool`` instances as requiring approval.
+
+    ``Tool`` is a union that also contains hosted tools without a
+    ``needs_approval`` dataclass field.  Keep those entries unchanged rather
+    than relying on a union-wide ``dataclasses.replace`` call, which is both
+    unsafe at runtime and rejected by strict mypy.
+    """
+
+    marked: list[Tool] = []
+    for tool in tools:
+        if isinstance(tool, FunctionTool):
+            marked.append(dataclasses.replace(tool, needs_approval=True))
+        else:
+            marked.append(tool)
+    return marked
 
 
 @dataclass
@@ -53,7 +97,7 @@ def build_agent(
     *,
     retriever: Retriever | None = None,
     name: str | None = None,
-    model=None,
+    model: OpenAIChatCompletionsModel | None = None,
     memory_tenant: str | None = None,
     memory_requires_tenant: bool = False,
 ) -> AssembledAgent:
@@ -87,7 +131,15 @@ def build_agent(
     capabilities = load_capabilities()
     policy = load_policy(capabilities)
     enforce_privileged_need_explicit_rules(tool_set, capabilities, policy)
-    tools = apply_policy(tool_set, build_policy_guardrail(policy))
+    tools: list[Tool] = []
+    tools.extend(apply_policy(tool_set, build_policy_guardrail(policy)))
+    # The disposable Gate 5 E2E harness needs one deterministic HITL edge so
+    # it can exercise CSP BLOCKED -> restart -> approve/resume without adding
+    # a write-capable production tool.  The switch is never enabled by the
+    # normal Compose profiles; it only wraps the existing read-only tools with
+    # the Agents SDK's native approval flag when explicitly requested.
+    if validate_e2e_approval_mode():
+        tools = _mark_function_tools_for_approval(tools)
 
     # 接地引用：ANILA_CITED=1 套 concise-cited output style（行內【來源：id】）。
     # 不用 SDK output_type=CitedAnswer——實測自架 reasoning 模型在「工具使用 + 結構化

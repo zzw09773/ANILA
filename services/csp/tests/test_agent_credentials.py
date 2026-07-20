@@ -23,7 +23,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.config import settings
-from app.models.agent_credential import AgentCredential
 from app.models.service_client import ServiceClient
 from app.services import agent_credential_service
 from app.services.service_token_envelope import (
@@ -88,7 +87,10 @@ def test_issue_bootstrap_writes_hash_and_expiry(db):
     assert plaintext.startswith(BOOTSTRAP_TOKEN_PREFIX)
     assert agent.bootstrap_token_hash is not None
     assert agent.bootstrap_token_hash == compute_lookup_hash(plaintext)
-    assert agent.bootstrap_token_expires_at > datetime.now(timezone.utc)
+    expiry = agent.bootstrap_token_expires_at
+    if expiry.tzinfo is None or expiry.utcoffset() is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    assert expiry > datetime.now(timezone.utc)
     assert agent.bootstrap_token_consumed_at is None
     assert agent.bootstrap_token_issued_by == admin.id
 
@@ -464,7 +466,6 @@ def test_proxy_cache_invalidation_on_rotation(db):
     """When a credential rotates, the proxy_service token cache must reflect it."""
     from app.services.proxy_service import (
         _get_cached_agent_token,
-        _resolve_outgoing_service_token,
         invalidate_agent_token_cache,
     )
 

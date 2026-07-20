@@ -243,9 +243,7 @@ async def test_full_pipeline_reaches_done_state(
     assert body["state"] == "done", body
     assert body["title"] == "2024 Q4 業務簡報"
     assert body["chart_count"] == 1
-    assert body["download_urls"] is not None
-    assert body["download_urls"]["html"].endswith("/download/html")
-    assert body["download_urls"]["pdf"].endswith("/download/pdf")
+    assert body["download_urls"] is None
 
     # Files exist on disk
     assert (artifacts_dir / f"{job_id}.html").exists()
@@ -267,12 +265,7 @@ async def test_html_download_returns_html_content(
     await _wait_for_state(client, job_id)
 
     html_resp = await client.get(f"/api/infographics/jobs/{job_id}/download/html")
-    assert html_resp.status_code == 200
-    assert html_resp.headers["content-type"].startswith("text/html")
-    text = html_resp.text
-    assert text.startswith("<!DOCTYPE html>")
-    assert "2024 Q4 業務簡報" in text
-    assert "47%" in text
+    assert html_resp.status_code == 410
 
 
 async def test_pdf_download_returns_pdf_content(
@@ -290,9 +283,7 @@ async def test_pdf_download_returns_pdf_content(
     await _wait_for_state(client, job_id)
 
     pdf_resp = await client.get(f"/api/infographics/jobs/{job_id}/download/pdf")
-    assert pdf_resp.status_code == 200
-    assert pdf_resp.headers["content-type"].startswith("application/pdf")
-    assert pdf_resp.content.startswith(b"%PDF-")
+    assert pdf_resp.status_code == 410
 
 
 async def test_download_unknown_fmt_returns_400(

@@ -1,0 +1,19 @@
+{
+  "schema_version": "task-context/v1",
+  "task_id": 2,
+  "run_id": 1,
+  "requester_user_id": 42,
+  "session_id": "session-007",
+  "conversation_id": 9,
+  "source_scope": "project",
+  "source_snapshot_id": 3,
+  "collection_ids": [11, 12],
+  "classification": "機密",
+  "auth_assurance": {
+    "sid": "sid-008",
+    "amr": ["sc"],
+    "acr": "urn:anila:acr:smart-card",
+    "auth_time": "2026-07-12T01:00:00Z",
+    "break_glass": false
+  }
+}

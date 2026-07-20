@@ -23,6 +23,7 @@ import pytest
 import respx
 
 from anila_core.ingestion.errors import EmbedError
+from anila_core.memory import EMBED_DIM, EMBED_NATIVE_DIM
 
 from ingestion_worker.embedder import Embedder
 from ingestion_worker.settings import WorkerSettings
@@ -53,6 +54,10 @@ def _payload(vectors: list[list[float]]) -> dict:
     return {"data": [{"embedding": v} for v in vectors]}
 
 
+def _vector(value: float, dimension: int = EMBED_DIM) -> list[float]:
+    return [value] * dimension
+
+
 async def test_empty_input_returns_empty_without_http():
     """No texts -> [] and the endpoint is never called."""
     settings = _make_settings()
@@ -73,7 +78,7 @@ async def test_happy_path_truncates_to_schema_dim():
     """4096-d native vectors are truncated client-side to 4000-d."""
     settings = _make_settings(embedding_dim=4000)
     embedder = Embedder(settings)
-    native = [float(i % 7) for i in range(4096)]
+    native = [float(i % 7) for i in range(EMBED_NATIVE_DIM)]
     try:
         with respx.mock:
             respx.post(EMBED_URL).mock(
@@ -81,18 +86,18 @@ async def test_happy_path_truncates_to_schema_dim():
             )
             result = await embedder.embed(["hello world"])
         assert len(result) == 1
-        assert len(result[0]) == 4000
+        assert len(result[0]) == EMBED_DIM
         # Truncation drops the trailing 96 dims, preserving the prefix.
-        assert result[0] == native[:4000]
+        assert result[0] == native[:EMBED_DIM]
     finally:
         await embedder.close()
 
 
 async def test_happy_path_exact_dim_passthrough():
     """Vectors already at the schema dim pass through unchanged."""
-    settings = _make_settings(embedding_dim=8)
+    settings = _make_settings()
     embedder = Embedder(settings)
-    vecs = [[0.1] * 8, [0.2] * 8]
+    vecs = [_vector(0.1), _vector(0.2)]
     try:
         with respx.mock:
             respx.post(EMBED_URL).mock(
@@ -106,7 +111,7 @@ async def test_happy_path_exact_dim_passthrough():
 
 async def test_request_body_shape():
     """The request carries the configured model and the input list."""
-    settings = _make_settings(embedding_model="my-model", embedding_dim=4)
+    settings = _make_settings(embedding_model="my-model")
     embedder = Embedder(settings)
     captured: dict = {}
 
@@ -114,7 +119,7 @@ async def test_request_body_shape():
         import json as _json
 
         captured.update(_json.loads(request.content))
-        return httpx.Response(200, json=_payload([[1.0, 2.0, 3.0, 4.0]]))
+        return httpx.Response(200, json=_payload([_vector(1.0)]))
 
     try:
         with respx.mock:
@@ -203,13 +208,13 @@ async def test_malformed_payload_missing_data_key_raises_model_down():
 
 async def test_count_mismatch_raises_model_down():
     """Fewer vectors than inputs -> E_EMBED_MODEL_DOWN (alignment broken)."""
-    settings = _make_settings(embedding_dim=4)
+    settings = _make_settings()
     embedder = Embedder(settings)
     try:
         with respx.mock:
             # Two inputs, but the endpoint returns only one vector.
             respx.post(EMBED_URL).mock(
-                return_value=httpx.Response(200, json=_payload([[1.0, 2.0, 3.0, 4.0]]))
+                return_value=httpx.Response(200, json=_payload([_vector(1.0)]))
             )
             with pytest.raises(EmbedError) as excinfo:
                 await embedder.embed(["a", "b"])
@@ -228,14 +233,17 @@ async def test_out_of_order_data_index_realigns_vectors():
     embedding 故意用倒序回傳（index=2,0,1 的陣列順序),驗證對齊後仍照
     input 順序（依 index 排序,而非依 data[] 陣列順序）。
     """
-    settings = _make_settings(embedding_dim=2)
+    settings = _make_settings()
     embedder = Embedder(settings)
     # texts = ["a", "b", "c"] -> 對應 index 0, 1, 2；data[] 陣列本身倒序/亂序。
+    first = _vector(1.0)
+    second = _vector(2.0)
+    third = _vector(3.0)
     payload = {
         "data": [
-            {"embedding": [3.0, 3.0], "index": 2},
-            {"embedding": [1.0, 1.0], "index": 0},
-            {"embedding": [2.0, 2.0], "index": 1},
+            {"embedding": third, "index": 2},
+            {"embedding": first, "index": 0},
+            {"embedding": second, "index": 1},
         ]
     }
     try:
@@ -243,21 +251,22 @@ async def test_out_of_order_data_index_realigns_vectors():
             respx.post(EMBED_URL).mock(return_value=httpx.Response(200, json=payload))
             result = await embedder.embed(["a", "b", "c"])
         # 依 index 對齊：a->index0, b->index1, c->index2，不是 data[] 陣列順序。
-        assert result == [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+        assert result == [first, second, third]
     finally:
         await embedder.close()
 
 
 async def test_missing_index_falls_back_to_array_order():
     """端點不回 index 欄位時退回既有行為（依 data[] 陣列順序對齊)。"""
-    settings = _make_settings(embedding_dim=2)
+    settings = _make_settings()
     embedder = Embedder(settings)
-    payload = _payload([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+    vecs = [_vector(1.0), _vector(2.0), _vector(3.0)]
+    payload = _payload(vecs)
     try:
         with respx.mock:
             respx.post(EMBED_URL).mock(return_value=httpx.Response(200, json=payload))
             result = await embedder.embed(["a", "b", "c"])
-        assert result == [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+        assert result == vecs
     finally:
         await embedder.close()
 
@@ -280,5 +289,29 @@ async def test_short_vector_raises_dim_mismatch():
         assert err.details["got"] == 1536
         assert err.details["expected"] == 4000
         assert err.details["index"] == 0
+    finally:
+        await embedder.close()
+
+
+@pytest.mark.parametrize("dimension", [EMBED_DIM - 1, EMBED_NATIVE_DIM + 512])
+async def test_unexpected_embedding_dimension_is_never_returned(dimension):
+    """3999/4608-d responses fail before a caller can write the vector."""
+    embedder = Embedder(_make_settings())
+    try:
+        with respx.mock:
+            respx.post(EMBED_URL).mock(
+                return_value=httpx.Response(200, json=_payload([_vector(0.5, dimension)]))
+            )
+            with pytest.raises(EmbedError) as excinfo:
+                await embedder.embed(["x"])
+        err = excinfo.value
+        assert err.code == "E_EMBED_DIM_MISMATCH"
+        assert err.retryable is False
+        assert err.details == {
+            "got": dimension,
+            "expected": EMBED_DIM,
+            "native": EMBED_NATIVE_DIM,
+            "index": 0,
+        }
     finally:
         await embedder.close()

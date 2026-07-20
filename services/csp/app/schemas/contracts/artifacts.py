@@ -18,7 +18,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 
 
 class ArtifactType(str, enum.Enum):
@@ -32,12 +32,13 @@ class ArtifactType(str, enum.Enum):
 
 
 class ArtifactJobStatus(str, enum.Enum):
-    """doc 02 ArtifactJob.status 四值(逐字)。"""
+    """ArtifactJob runtime and terminal states shared with Studio."""
 
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class ArtifactStatus(str, enum.Enum):
@@ -94,6 +95,12 @@ class ArtifactJobPatch(BaseModel):
     artifact_files: list[dict] | None = None
 
 
+class ArtifactJobLeaseIn(BaseModel):
+    attempt: int = Field(..., ge=1, le=100)
+    lease_token: str = Field(..., min_length=16, max_length=128)
+    lease_seconds: int = Field(..., ge=15, le=900)
+
+
 class ArtifactIn(BaseModel):
     """``POST /v1/artifacts`` body。
 
@@ -111,6 +118,25 @@ class ArtifactIn(BaseModel):
     content_hash: str | None = Field(default=None, max_length=64)
     classification_level: ClassificationLevel | None = None
     file_refs: list[str] = Field(default_factory=list)
+    citation_map: dict | None = None
+    generated_by_model_id: int | None = None
+    generated_by_agent_id: int | None = None
+    metadata: dict | None = None
+
+
+class ArtifactUploadMetadata(BaseModel):
+    """Metadata form part for CSP-owned immutable artifact bytes."""
+
+    artifact_type: ArtifactType
+    title: str = Field(..., min_length=1, max_length=500)
+    job_id: str | None = Field(default=None, max_length=64)
+    task_id: int = Field(..., gt=0)
+    source_snapshot_id: int = Field(..., gt=0)
+    content_sha256: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    content_size: int = Field(..., gt=0)
+    media_type: str = Field(..., min_length=1, max_length=200)
+    original_filename: str = Field(..., min_length=1, max_length=255)
+    classification_level: ClassificationLevel | None = None
     citation_map: dict | None = None
     generated_by_model_id: int | None = None
     generated_by_agent_id: int | None = None
@@ -153,6 +179,24 @@ class ArtifactRegisterResult(BaseModel):
     artifact_id: int
     version_id: int
     classification_level: ClassificationLevel
+    download_url: str | None = None
+
+
+class ArtifactVersionRevokeIn(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+class ArtifactLegalHoldIn(BaseModel):
+    held: bool
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _reason_matches_hold(self) -> "ArtifactLegalHoldIn":
+        if self.held and not (self.reason or "").strip():
+            raise ValueError("啟用 legal hold 必須提供 reason")
+        if not self.held and self.reason is not None:
+            raise ValueError("解除 legal hold 不可保留 reason")
+        return self
 
 
 class ArtifactVersionResult(BaseModel):
@@ -192,6 +236,7 @@ class ArtifactJobOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     expires_at: datetime | None = None
+    durable_attempt: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -202,6 +247,20 @@ class ArtifactVersionOut(BaseModel):
     version: int
     storage_ref: str | None = None
     content_hash: str | None = None
+    blob_size_bytes: int | None = None
+    media_type: str | None = None
+    original_filename: str | None = None
+    is_active: bool = True
+    revoked_at: datetime | None = None
+    revoked_by_user_id: int | None = None
+    revocation_reason: str | None = None
+    lifecycle_state: str = "active"
+    archive_due_at: datetime | None = None
+    archived_at: datetime | None = None
+    erase_due_at: datetime | None = None
+    erased_at: datetime | None = None
+    legal_hold: bool = False
+    legal_hold_reason: str | None = None
     file_refs: list = Field(default_factory=list)
     citation_map: dict | None = None
     generated_by_model_id: int | None = None
@@ -220,7 +279,7 @@ class ExportRecordOut(BaseModel):
     exporter_user_id: int | None = None
     exporter_employee_id: str | None = None
     target_space: str | None = None
-    target_classification_floor: ClassificationLevel | None = None
+    target_classification_floor: ClassificationLevel
     export_format: str | None = None
     policy_decision_id: int | None = None
     decision: str

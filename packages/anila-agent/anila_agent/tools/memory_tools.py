@@ -20,7 +20,7 @@ K_MAX = 10
 @function_tool
 async def search_memory(
     ctx: RunContextWrapper[AnilaRunContext], query: str, k: int = 5
-) -> list[dict]:
+) -> list[dict[str, object]]:
     """檢索長期記憶（使用者偏好、進行中專案、過往工作指引）。
 
     Args:
@@ -32,7 +32,7 @@ async def search_memory(
         return []
     kk = max(K_MIN, min(int(k), K_MAX))
     now = time.time()
-    out: list[dict] = []
+    out: list[dict[str, object]] = []
     for m in await mem.recall_bodies(query, k=kk):
         path = mem.store._path(m.name)
         mtime = path.stat().st_mtime if path.is_file() else now

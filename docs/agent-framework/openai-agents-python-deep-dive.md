@@ -2,9 +2,9 @@
 
 > **目的**：以 `anila-agent` 這個 sub-agent template 的視角,逐 module 對照最新解壓的 openai-agents SDK source,找出 **anila-agent 還沒用、應該借鑑、且工程可行** 的設計 pattern。
 >
-> **Source 位置**：`/home/aia/c1147259/ANILA/anila-agent/templete/openai-agents-python/` (本機,gitignored)
+> **Source 位置**：`$HOME/ANILA/anila-agent/templete/openai-agents-python/` (本機,gitignored)
 > **SDK 版本**:`0.17.3` (`pyproject.toml:3`),`RunState` schema `1.10` (`src/agents/run_state.py:131`)
-> **anila-agent runtime 位置**:`/home/aia/c1147259/ANILA/anila-agent/anila_agent/`
+> **anila-agent runtime 位置**:`$HOME/ANILA/anila-agent/anila_agent/`
 > **既有 reference**:[`runtime-logic-openai-agents-deep-dive.md`](runtime-logic-openai-agents-deep-dive.md) — 該文以 **anila-core 與 AgenticRAG** 兩個 consumer 視角拆 SDK;本文不 contradict、focus 在 **「anila-agent template 跟最新 SDK 的 gap」** 這個獨立角度
 
 ---

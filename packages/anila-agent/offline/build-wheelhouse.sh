@@ -8,6 +8,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
+CONTRACTS_ROOT="$(cd "$ROOT/../anila-contracts" && pwd)"
 WHEELHOUSE="$HERE/wheelhouse"
 
 EXTRAS="${1:-serving,pgvector,csp}"   # 預設不含 litellm；要時傳入 serving,pgvector,csp,litellm
@@ -16,10 +17,12 @@ mkdir -p "$WHEELHOUSE"
 echo ">> 下載 anila-agent[$EXTRAS] 的完整相依閉包到 $WHEELHOUSE"
 python3 -m pip download \
   --dest "$WHEELHOUSE" \
+  "anila-contracts @ file://$CONTRACTS_ROOT" \
   "anila-agent[$EXTRAS] @ file://$ROOT"
 
 echo ">> 把 anila-agent 本身打成 wheel（pip download 只抓相依，不含本套件）"
 python3 -m pip wheel --no-deps --wheel-dir "$WHEELHOUSE" "$ROOT"
+python3 -m pip wheel --no-deps --wheel-dir "$WHEELHOUSE" "$CONTRACTS_ROOT"
 
 echo ">> 完成。wheel 數：$(ls -1 "$WHEELHOUSE"/*.whl 2>/dev/null | wc -l)"
 echo ">> 帶進內網後執行 offline/install.sh（--no-index，全程不連網）。"

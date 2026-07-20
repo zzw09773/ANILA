@@ -1,15 +1,15 @@
 """Admin-managed trusted-host allow-list service.
 
 Sits between [`/api/trusted-hosts`](services/csp/app/api/trusted_hosts.py)
-and the anila-core SSRF guard. Three jobs:
+and the anila-security SSRF guard. Three jobs:
 
 1. **CRUD** with audit logging (every add / remove writes an
    ``audit_log`` row keyed to the acting owner).
 2. **In-memory cache** so the SSRF guard's tight loop doesn't hit the
    DB on every URL validation. TTL refresh + immediate invalidation
    after any mutation in this process.
-3. **anila-core provider hook** — ``register_with_url_guard()`` plugs
-   the cache into ``anila_core.security.register_trusted_host_provider``
+3. **anila-security provider hook** — ``register_with_url_guard()`` plugs
+   the cache into ``anila_security.register_trusted_host_provider``
    so the guard sees DB hosts on top of the ``ANILA_TRUSTED_HOSTS``
    env fallback.
 
@@ -37,7 +37,7 @@ from app.services.audit_service import log_audit_event
 logger = logging.getLogger(__name__)
 
 
-# Cache state — module-level so the anila-core provider hook can read
+# Cache state — module-level so the anila-security provider hook can read
 # without a request-scoped session.
 _cache_lock = threading.RLock()
 _cached_hosts: set[str] = set()
@@ -70,10 +70,10 @@ def _invalidate_cache() -> None:
 def get_cached_hosts() -> set[str]:
     """Return the cached trusted-host set. Refreshes from DB if TTL expired.
 
-    Called by the anila-core ``url_guard`` provider hook on every
+    Called by the anila-security ``url_guard`` provider hook on every
     ``validate_outbound_url`` call; must stay fast. Errors (DB down,
     table missing) return the last good snapshot rather than raising —
-    the env-based fallback in anila-core keeps SSRF guard correct even
+    the env-based fallback in anila-security keeps SSRF guard correct even
     when this provider is degraded.
     """
     global _cache_expires_at, _cached_hosts
@@ -222,17 +222,17 @@ def backfill_from_env(db: Session) -> int:
     return inserted
 
 
-# ── anila-core hookup (called once at app startup) ────────────────────────────
+# ── anila-security hookup (called once at app startup) ────────────────────────
 
 
 def register_with_url_guard() -> None:
-    """Wire the cached host provider into anila-core's SSRF guard.
+    """Wire the cached host provider into anila-security's SSRF guard.
 
     Call this once at CSP app startup AFTER the DB is ready. The
     provider is a callable that returns the current cached set; the
     guard treats the result as additive on top of the env fallback,
     so an empty / failed provider doesn't weaken validation.
     """
-    from anila_core.security import register_trusted_host_provider
+    from anila_security import register_trusted_host_provider
 
     register_trusted_host_provider(get_cached_hosts)

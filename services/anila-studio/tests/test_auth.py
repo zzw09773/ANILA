@@ -9,6 +9,7 @@ revocation_cache are stubbed at the module boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import uuid
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -18,6 +19,9 @@ from fastapi.testclient import TestClient
 from jose import jwt
 
 from app import auth as auth_mod
+
+
+_DEFAULT_AMR = object()
 
 
 # ── RSA key pair for round-trip signing ──────────────────────────────────
@@ -48,18 +52,43 @@ def _sign_jwt(
     type_: str = "access",
     kid: str = "anila-v1",
     exp: int | None = None,
+    amr: list[str] | str | None | object = _DEFAULT_AMR,
+    issuer: str | None = None,
+    audience: str | None = None,
 ) -> str:
     import time
 
+    now = int(time.time())
+    effective_amr = [] if amr is _DEFAULT_AMR else amr
+    acr_by_amr = {
+        "sc": "urn:anila:acr:smart-card",
+        "oidc": "urn:anila:acr:federated",
+        "pwd": "urn:anila:acr:password",
+    }
+    expected_acr = "urn:anila:acr:unspecified"
+    if isinstance(effective_amr, list):
+        for method in ("sc", "oidc", "pwd"):
+            if method in effective_amr:
+                expected_acr = acr_by_amr[method]
+                break
     claims = {
         "sub": sub,
         "username": username,
         "role": role,
         "tv": token_version,
         "type": type_,
-        "iat": int(time.time()),
-        "exp": exp if exp is not None else int(time.time()) + 3600,
+        "iat": now,
+        "exp": exp if exp is not None else now + 3600,
+        "iss": issuer or auth_mod.settings.JWT_ISSUER,
+        "aud": audience or auth_mod.settings.JWT_AUDIENCE,
+        "jti": uuid.uuid4().hex,
+        "sid": uuid.uuid4().hex,
+        "acr": expected_acr,
+        "auth_time": now,
+        "break_glass": False,
     }
+    if effective_amr is not None:
+        claims["amr"] = effective_amr
     return jwt.encode(claims, private_pem, algorithm="RS256", headers={"kid": kid})
 
 
@@ -90,7 +119,14 @@ def patched_deps(monkeypatch, rsa_keypair):
         def ready(self) -> bool:
             return self.ready_flag
 
-        async def is_revoked(self, user_id: int, token_version: int) -> bool:
+        async def is_revoked(
+            self,
+            user_id: int,
+            token_version: int,
+            *,
+            jti: str | None = None,
+            sid: str | None = None,
+        ) -> bool:
             return (user_id, token_version) in self.revoked_set
 
     fake_cache = _FakeCache(revoked_set=set())
@@ -143,6 +179,8 @@ def test_valid_token_passes(client, patched_deps, rsa_keypair):
 
 
 def test_cookie_token_also_works(client, patched_deps, rsa_keypair):
+    assert auth_mod.ACCESS_COOKIE_NAME == "__Host-anila_access_token"
+    assert auth_mod._access_cookie_name(False) == "anila_dev_access_token"
     token = _sign_jwt(rsa_keypair["private_pem"], sub="42")
     resp = client.get(
         "/whoami",
@@ -150,6 +188,17 @@ def test_cookie_token_also_works(client, patched_deps, rsa_keypair):
     )
     assert resp.status_code == 200
     assert resp.json()["id"] == 42
+
+
+def test_legacy_unprefixed_cookie_is_rejected(client, patched_deps, rsa_keypair):
+    token = _sign_jwt(rsa_keypair["private_pem"], sub="42")
+
+    resp = client.get(
+        "/whoami",
+        cookies={"anila_access_token": token},
+    )
+
+    assert resp.status_code == 401
 
 
 def test_bearer_wins_when_both_present(client, patched_deps, rsa_keypair):
@@ -174,7 +223,8 @@ def test_expired_token_returns_401(client, patched_deps, rsa_keypair):
     import time
 
     token = _sign_jwt(
-        rsa_keypair["private_pem"], exp=int(time.time()) - 60
+        rsa_keypair["private_pem"],
+        exp=int(time.time()) - 60,
     )
     resp = client.get(
         "/whoami", headers={"Authorization": f"Bearer {token}"}
@@ -225,6 +275,39 @@ def test_refresh_token_rejected_on_studio_surface(client, patched_deps, rsa_keyp
     assert resp.status_code == 401
 
 
+def test_card_only_studio_accepts_smart_card_token(
+    client, patched_deps, rsa_keypair, monkeypatch,
+):
+    monkeypatch.setattr(auth_mod.settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    token = _sign_jwt(rsa_keypair["private_pem"], amr=["sc"])
+
+    resp = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("amr", "expected_detail"),
+    [
+        (None, "無效的存取權杖"),
+        ([], "此服務僅接受憑證卡登入工作階段"),
+        (["pwd"], "此服務僅接受憑證卡登入工作階段"),
+        (["oidc"], "此服務僅接受憑證卡登入工作階段"),
+        ("sc", "無效的存取權杖"),
+    ],
+)
+def test_card_only_studio_rejects_non_card_bearer(
+    client, patched_deps, rsa_keypair, monkeypatch, amr, expected_detail,
+):
+    monkeypatch.setattr(auth_mod.settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    token = _sign_jwt(rsa_keypair["private_pem"], amr=amr)
+
+    resp = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == expected_detail
+
+
 def test_revoked_token_returns_401(client, patched_deps, rsa_keypair):
     """Token version matches a revocation entry → 401."""
     patched_deps.revoked_set.add((42, 0))
@@ -251,6 +334,49 @@ def test_unknown_kid_returns_401(client, patched_deps, rsa_keypair):
         "/whoami", headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "claim_override",
+    [
+        {"issuer": "https://attacker.invalid"},
+        {"audience": "unrelated-service"},
+    ],
+)
+def test_wrong_trust_domain_returns_401(
+    client, patched_deps, rsa_keypair, claim_override,
+):
+    token = _sign_jwt(rsa_keypair["private_pem"], **claim_override)
+    response = client.get(
+        "/whoami", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 401
+
+
+def test_session_assurance_shape_fails_closed_on_contradictions():
+    import time
+
+    now = int(time.time())
+    valid = {
+        "jti": "j" * 32,
+        "sid": "s" * 32,
+        "iat": now,
+        "amr": ["sc"],
+        "acr": "urn:anila:acr:smart-card",
+        "auth_time": now,
+        "break_glass": False,
+    }
+    assert auth_mod._has_valid_session_assurance(valid)
+    assert not auth_mod._has_valid_session_assurance(
+        {**valid, "acr": "urn:anila:acr:password"}
+    )
+    assert not auth_mod._has_valid_session_assurance(
+        {
+            **valid,
+            "iat": now + auth_mod.settings.JWT_LEEWAY_SECONDS + 120,
+            "auth_time": now + auth_mod.settings.JWT_LEEWAY_SECONDS + 120,
+        }
+    )
 
 
 def test_jwks_fetch_error_returns_503(

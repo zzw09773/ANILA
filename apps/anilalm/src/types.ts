@@ -124,7 +124,7 @@ export interface Citation {
   quote?: string
 }
 
-// ── Studio artifacts (client-side only for MVP) ───────────────────────
+// ── Studio artifact job projection (ephemeral browser coordination) ───
 
 export type ArtifactKind = 'report' | 'slides' | 'mindmap' | 'infographic' | 'datatable'
 
@@ -139,9 +139,7 @@ export type ArtifactKind = 'report' | 'slides' | 'mindmap' | 'infographic' | 'da
  *             was evicted (CSP restart / 404).
  *
  * Report artifacts skip "pending" because their generation is sync;
- * the field is optional and absence implies "done" for backwards
- * compatibility with localStorage rows written before this field
- * existed.
+ * the field is optional and absence implies "done" for older call sites.
  */
 export type ArtifactState = 'pending' | 'done' | 'failed'
 
@@ -160,6 +158,8 @@ interface ArtifactBase {
   step?: string | null
   /** Populated on state="failed" — user-facing reason. */
   error?: string | null
+  /** CSP Artifact SSOT id; authoritative download is unavailable until set. */
+  artifactId?: number
 }
 
 /**

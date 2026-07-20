@@ -21,7 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 
 # doc 05 §6 — 一次正式 agent run 必須產出的 13 個 span type(逐字)。
 REQUIRED_AGENT_SPAN_TYPES: tuple[str, ...] = (
@@ -74,6 +74,9 @@ class TraceSpanIn(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     attributes: dict[str, Any] | None = None
+    # Producer may only raise the task-derived floor.  The ingest service
+    # computes max(task, supplied); omission never means 無機密.
+    classification_level: ClassificationLevel | None = None
 
 
 class TraceSpanOut(BaseModel):

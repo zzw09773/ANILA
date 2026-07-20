@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 import secrets
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -87,7 +88,7 @@ class ReportJobRecord:
     created_at: datetime
     updated_at: datetime
     # Slice 8b: control-plane passthrough, back-filled after artifact register.
-    artifact_id: str | None = None
+    artifact_id: int | None = None
     classification_level: str | None = None
     # Loose handle to the spawned task — kept so cancel_job can call
     # task.cancel() without a separate side-table. Excluded from public
@@ -105,7 +106,7 @@ class ReportJobRecord:
             sections_count=self.sections_count,
             references_count=self.references_count,
             error=self.error,
-            download_urls=self.download_urls,
+            download_urls=None,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
             created_at=self.created_at,
@@ -189,6 +190,9 @@ async def create_job(
 
     await job_lifecycle.on_create(record, report_ctx)
 
+    if settings.STUDIO_DURABLE_SUPERVISOR:
+        return record
+
     updater = ReportJobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
@@ -248,11 +252,19 @@ def artifact_info(rec: ReportJobRecord) -> ArtifactInfo:
         if rec.state == "done"
         else None
     )
+    primary_path = Path(storage_ref) if storage_ref is not None else None
+    primary_bytes = (
+        primary_path.read_bytes()
+        if primary_path is not None and primary_path.is_file()
+        else None
+    )
     return ArtifactInfo(
         artifact_type="report",
         title=rec.title,
         storage_ref=storage_ref,
-        primary_bytes=None,
+        primary_bytes=primary_bytes,
+        original_filename=f"{rec.job_id}.pdf",
+        media_type="application/pdf",
         result_metadata={
             "sections_count": rec.sections_count,
             "references_count": rec.references_count,
@@ -293,7 +305,7 @@ class ReportJobUpdater:
         references_count: int | None = None,
         error: str | None = None,
         download_urls: dict[str, str] | None = None,
-        artifact_id: str | None = None,
+        artifact_id: int | None = None,
         classification_level: str | None = None,
     ) -> None:
         """Patch fields on the current record. Only specified fields are

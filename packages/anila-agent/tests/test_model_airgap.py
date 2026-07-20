@@ -49,6 +49,20 @@ def test_build_model_is_chat_completions_object(monkeypatch):
     assert "gpt-oss-20b:8000" in str(m._client.base_url)
 
 
+def test_official_csp_model_uses_agent_csk_header(monkeypatch):
+    token = "csk-" + ("A" * 43)
+    monkeypatch.setenv("CSP_SERVICE_TOKEN", token)
+    monkeypatch.setattr(model_mod, "_AIRGAP_LOCKED", False)
+    m = model_mod.build_model(
+        _cfg(base_url="https://csp.internal/v1", api_key="EMPTY"),
+        csp_base_url="https://csp.internal",
+        require_csp_endpoint=True,
+    )
+    assert m._client.api_key == token
+    assert m._client.default_headers["X-CSP-Service-Token"] == token
+    assert "X-ANILA-Agent-Id" not in m._client.default_headers
+
+
 def test_max_tokens_floored_when_too_small():
     s = model_mod.build_model_settings(_cfg(settings={"max_tokens": 64, "temperature": 0.2}))
     assert isinstance(s, ModelSettings)

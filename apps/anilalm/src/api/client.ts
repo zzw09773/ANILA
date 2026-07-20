@@ -44,8 +44,17 @@ export const client = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-const CSRF_COOKIE = 'anila_csrf'
+const SECURE_CSRF_COOKIE = '__Host-anila_csrf'
+const DEV_CSRF_COOKIE = 'anila_dev_csrf'
 const MUTATING_METHODS = new Set(['post', 'put', 'patch', 'delete'])
+
+function csrfCookieName(): string {
+  if (typeof window === 'undefined') return SECURE_CSRF_COOKIE
+  const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(window.location.hostname)
+  return window.location.protocol === 'http:' && loopback
+    ? DEV_CSRF_COOKIE
+    : SECURE_CSRF_COOKIE
+}
 
 function readCookie(name: string): string | null {
   if (typeof document === 'undefined') return null
@@ -58,7 +67,7 @@ function readCookie(name: string): string | null {
 // can attach the same header. Empty when the cookie is absent (e.g. pure
 // Bearer flows, which are CSRF-exempt server-side anyway).
 export function csrfHeader(): Record<string, string> {
-  const csrf = readCookie(CSRF_COOKIE)
+  const csrf = readCookie(csrfCookieName())
   return csrf ? { 'X-CSRF-Token': csrf } : {}
 }
 
@@ -69,12 +78,12 @@ client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   }
   // Double-submit CSRF: when there's no Bearer (e.g. the in-memory access token
   // expired/cleared but the httpOnly session cookie lingers), CSP's CSRF
-  // middleware requires X-CSRF-Token to match the non-httpOnly `anila_csrf`
+  // middleware requires X-CSRF-Token to match non-httpOnly `__Host-anila_csrf`
   // cookie on mutating requests. Bearer requests are CSRF-exempt server-side,
   // so sending it always is harmless. Fixes logout 403 after token expiry.
   const method = (config.method ?? 'get').toLowerCase()
   if (MUTATING_METHODS.has(method)) {
-    const csrf = readCookie(CSRF_COOKIE)
+    const csrf = readCookie(csrfCookieName())
     if (csrf) config.headers['X-CSRF-Token'] = csrf
   }
   return config

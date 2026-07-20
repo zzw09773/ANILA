@@ -62,3 +62,18 @@ async def test_partial_fallback_config_still_raises():
     )
     with pytest.raises(FluxBackendUnconfigured):
         await resolver.resolve()
+
+
+@pytest.mark.asyncio
+async def test_formal_governance_never_uses_env_when_authority_missing():
+    fetcher = AsyncMock()
+    fetcher.get.return_value = (None, None)
+    resolver = BackendResolver(
+        fetcher=fetcher,
+        fallback_endpoint="http://env-flux:8000",
+        fallback_model="env-model",
+        governance_required=True,
+    )
+
+    with pytest.raises(FluxBackendUnconfigured, match="formal model governance"):
+        await resolver.resolve()

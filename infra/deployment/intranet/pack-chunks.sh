@@ -47,7 +47,7 @@ if [[ -d "$SRC" ]]; then
   echo "▶ 目錄模式: $SRC ($(du -sh "$SRC" | cut -f1)) → tar 串流切塊"
   # -C 父目錄、打包目錄名:內網端解出來就是 <name>/ 結構。
   # 不加 -h:權重若是 symlink (dev 機) 會打包成連結 — 要打包真實資料請
-  # 對真實路徑跑 (e.g. /home/aia/c1147259/project/Huggingface/<name>)。
+  # 對真實路徑跑 (e.g. $HOME/project/Huggingface/<name>)。
   if [[ -L "$SRC" ]]; then
     echo "⚠ $SRC 是 symlink — 改對真實路徑打包,避免 tar 進去的只是連結:"
     echo "   bash $0 $(readlink -f "$SRC") $OUT $CHUNK"

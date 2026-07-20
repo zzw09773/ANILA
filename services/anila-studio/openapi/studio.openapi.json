@@ -31,7 +31,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -43,7 +43,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -116,7 +116,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -128,7 +128,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -189,7 +189,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -201,7 +201,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -257,7 +257,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -269,7 +269,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -319,7 +319,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -331,7 +331,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -404,7 +404,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -416,7 +416,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -477,7 +477,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -489,7 +489,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -559,7 +559,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -571,7 +571,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -626,7 +626,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -638,7 +638,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -711,7 +711,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -723,7 +723,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -784,7 +784,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -796,7 +796,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -866,7 +866,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -878,7 +878,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -932,7 +932,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -944,7 +944,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -1016,7 +1016,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1028,7 +1028,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -1089,7 +1089,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1101,7 +1101,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -1166,7 +1166,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1178,7 +1178,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -1225,7 +1225,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1237,7 +1237,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -1310,7 +1310,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1322,7 +1322,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -1383,7 +1383,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1395,7 +1395,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -1460,7 +1460,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1472,7 +1472,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Anila Access Token"
+              "title": "  Host-Anila Access Token"
             }
           }
         ],
@@ -1501,7 +1501,7 @@
     "/health": {
       "get": {
         "summary": "Health",
-        "description": "Liveness + readiness gate.\n\n``revocation_cache.ready`` flips to False if Redis disconnects; the\n/health endpoint reports 503 in that window so k8s readiness probes\npull the pod out of the load balancer until it recovers.\n\njwks_client does not expose ``ready`` directly (it has a fallback\nto lazy-fetch on first verify) but its cold-start happens in lifespan\nso by the time we serve traffic it has at least one key cached.",
+        "description": "Liveness + readiness gate.\n\n``revocation_cache.ready`` or artifact reporting readiness flips False;\n/health endpoint reports 503 in that window so k8s readiness probes\npull the pod out of the load balancer until it recovers.\n\njwks_client does not expose ``ready`` directly (it has a fallback\nto lazy-fetch on first verify) but its cold-start happens in lifespan\nso by the time we serve traffic it has at least one key cached.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -1617,7 +1617,7 @@
           "artifact_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -2277,7 +2277,7 @@
           "artifact_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -2398,7 +2398,7 @@
           "artifact_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -2524,7 +2524,7 @@
           "artifact_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -2675,7 +2675,7 @@
           "artifact_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "integer"
               },
               {
                 "type": "null"

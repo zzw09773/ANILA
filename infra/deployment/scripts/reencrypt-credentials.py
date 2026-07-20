@@ -32,7 +32,7 @@ import sys
 # (matches scripts/init_db.py's path bootstrap).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "services", "csp"))
 
-from anila_core.security.credential_crypto import (  # noqa: E402
+from anila_security.credential_crypto import (  # noqa: E402
     encrypt_credential,
     decrypt_credential,
     legacy_fallback_count,

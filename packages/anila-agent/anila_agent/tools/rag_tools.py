@@ -21,7 +21,7 @@ def _clamp_k(k: int) -> int:
 @function_tool
 async def search_documents(
     ctx: RunContextWrapper[AnilaRunContext], query: str, k: int = 5
-) -> list[dict]:
+) -> list[dict[str, object]]:
     """以語意檢索知識庫，回傳最相關的 k 筆片段（依相關度遞減）。
 
     Args:
@@ -36,7 +36,9 @@ async def search_documents(
 
 
 @function_tool
-async def read_document(ctx: RunContextWrapper[AnilaRunContext], doc_id: str) -> dict | None:
+async def read_document(
+    ctx: RunContextWrapper[AnilaRunContext], doc_id: str
+) -> dict[str, object] | None:
     """以 id 取單一文件片段全文；找不到回 null。"""
     doc = await ctx.context.retriever.fetch(doc_id)
     if doc is None:

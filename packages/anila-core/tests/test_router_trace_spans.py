@@ -28,6 +28,15 @@ from anila_core.registry.remote_agent_manifest import (
 from anila_core.tracing.sdk import TraceSession
 
 
+LEGACY_DISPATCH_HEADERS = {"X-ANILA-Legacy-Dispatch": "1"}
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _enable_legacy_dispatch_compat(monkeypatch):
+    """Trace fixtures predate the R3 formal CSP context contract."""
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+
+
 @pytest_asyncio.fixture
 async def db_path(tmp_path: Path):
     db = tmp_path / "router-trace.db"
@@ -40,9 +49,11 @@ class FakeExporter:
 
     def __init__(self) -> None:
         self.spans: list[tuple[str, dict]] = []
+        self.contexts: list[dict] = []
 
-    def enqueue(self, trace_id: str, span: dict) -> None:
+    def enqueue(self, trace_id: str, span: dict, **context) -> None:
         self.spans.append((trace_id, span))
+        self.contexts.append(context)
 
 
 AGENT = RemoteAgentManifest(
@@ -66,10 +77,10 @@ def _patch_registry(monkeypatch) -> None:
 def _install_fake_session(monkeypatch) -> FakeExporter:
     exporter = FakeExporter()
 
-    def fake_make(trace_id):
+    def fake_make(trace_id, **context):
         if not trace_id:
             return None
-        return TraceSession(exporter, trace_id, producer="anila-router")
+        return TraceSession(exporter, trace_id, producer="anila-router", **context)
 
     monkeypatch.setattr(router_server, "_make_trace_session", fake_make)
     return exporter
@@ -109,7 +120,9 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
         yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
         yield {"type": "done"}
 
-    async def fake_stream_agent(agent_id, query, api_key, *, session_id=None):
+    async def fake_stream_agent(
+        agent_id, query, api_key, *, session_id=None, forwarded_headers=None
+    ):
         yield {"type": "content", "content": "hi from agent"}
         yield {"type": "done"}
 
@@ -124,7 +137,13 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-x", "X-ANILA-Trace-Id": "trace-123"},
+        headers={
+            "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
+            "X-ANILA-Trace-Id": "trace-123",
+            "X-ANILA-Task-Id": "73",
+            "X-ANILA-User-Id": "synthetic-trace-user-73",
+        },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
     )
     assert resp.status_code == 200
@@ -154,6 +173,10 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
         "agent.model_call.finished",  # child closes first
         "agent.run.finished",
     ]
+    assert exporter.contexts == [
+        {"task_id": "73", "user_identity": "synthetic-trace-user-73"},
+        {"task_id": "73", "user_identity": "synthetic-trace-user-73"},
+    ]
 
 
 def test_streaming_dispatch_emits_no_spans_when_unconfigured(
@@ -167,7 +190,9 @@ def test_streaming_dispatch_emits_no_spans_when_unconfigured(
         yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
         yield {"type": "done"}
 
-    async def fake_stream_agent(agent_id, query, api_key, *, session_id=None):
+    async def fake_stream_agent(
+        agent_id, query, api_key, *, session_id=None, forwarded_headers=None
+    ):
         yield {"type": "content", "content": "hi"}
         yield {"type": "done"}
 
@@ -182,7 +207,11 @@ def test_streaming_dispatch_emits_no_spans_when_unconfigured(
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-x", "X-ANILA-Trace-Id": "trace-xyz"},
+        headers={
+            "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
+            "X-ANILA-Trace-Id": "trace-xyz",
+        },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
     )
     assert resp.status_code == 200
@@ -190,6 +219,42 @@ def test_streaming_dispatch_emits_no_spans_when_unconfigured(
     # Existing contract preserved: still get trace + meta + DONE.
     assert "event: anila.meta" in resp.text
     assert "data: [DONE]" in resp.text
+
+
+def test_streaming_dispatch_cancelled_terminal_stops_router_success_tail(
+    monkeypatch, db_path: Path
+) -> None:
+    _patch_registry(monkeypatch)
+
+    async def fake_stream_llm(api_key, messages, *, forwarded_headers=None):
+        yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
+        yield {"type": "done"}
+
+    async def fake_stream_agent(
+        agent_id, query, api_key, *, session_id=None, forwarded_headers=None
+    ):
+        yield {
+            "type": "anila_event",
+            "event": "anila.step",
+            "payload": {"status": "cancelled", "step_id": "agent:1"},
+        }
+
+    monkeypatch.setattr(router_server, "_stream_llm_sse", fake_stream_llm)
+    monkeypatch.setattr(router_server, "_stream_agent_sse", fake_stream_agent)
+    app = router_server.create_router_app(session_db_path=str(db_path))
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
+            "X-ANILA-Task-Id": "73",
+        },
+        json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+    )
+    assert response.status_code == 200
+    assert response.text.count("event: anila.step") == 1
+    assert "data: [DONE]" not in response.text
+    assert "event: anila.meta" not in response.text
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +286,11 @@ def test_non_streaming_dispatch_records_spans_when_configured(
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-x", "X-ANILA-Trace-Id": "trace-ns"},
+        headers={
+            "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
+            "X-ANILA-Trace-Id": "trace-ns",
+        },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": False},
     )
     assert resp.status_code == 200
@@ -263,7 +332,11 @@ def test_non_streaming_dispatch_no_spans_when_unconfigured(
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-x", "X-ANILA-Trace-Id": "trace-ns2"},
+        headers={
+            "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
+            "X-ANILA-Trace-Id": "trace-ns2",
+        },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": False},
     )
     # No exception, normal answer, and nothing traced.

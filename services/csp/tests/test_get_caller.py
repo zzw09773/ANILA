@@ -16,15 +16,13 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.database import get_db
 from app.middleware.caller import ACCESS_COOKIE_NAME, Caller, get_caller
 from app.services.api_key_service import create_api_key
 from app.services.auth_service import create_tokens
-from app.models.model_registry import ModelRegistry
-
 from tests.conftest import make_model, make_user
 
 
@@ -104,6 +102,17 @@ def test_jwt_via_cookie_returns_caller(db, client_with_caller):
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["user_id"] == user.id
+
+
+def test_legacy_unprefixed_cookie_is_rejected(db, client_with_caller):
+    user = make_user(db, username="legacy-cookie-user")
+    token = _issue_access_token(user)
+
+    resp = client_with_caller.get(
+        "/_probe", cookies={"anila_access_token": token}
+    )
+
+    assert resp.status_code == 401
 
 
 def test_header_precedes_cookie(db, client_with_caller):

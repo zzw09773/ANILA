@@ -7,12 +7,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
+import uuid
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi")  # serving extra；沒裝就跳過
 
+from agents import RunResultStreaming  # noqa: E402
 from agents.stream_events import RawResponsesStreamEvent  # noqa: E402
 from openai.types.responses import ResponseTextDeltaEvent  # noqa: E402
 
@@ -147,16 +151,135 @@ async def test_stream_error_mid_flight_closes_cleanly(monkeypatch):
     assert saw_done is True
 
 
+async def test_sse_cancellation_cancels_sdk_run_once_without_normal_terminal(monkeypatch):
+    """A downstream disconnect must stop the SDK run, not finish the SSE turn."""
+
+    class _BlockingStreaming:
+        context_wrapper = _FakeCtx()
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.cancel_calls: list[str] = []
+            self.stream_cancelled = False
+
+        async def stream_events(self):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.stream_cancelled = True
+                raise
+            if False:  # keep this an async generator for the SDK-shaped fake
+                yield _delta_event("unreachable")
+
+        def cancel(self, *, mode):
+            self.cancel_calls.append(mode)
+
+    result = _BlockingStreaming()
+    monkeypatch.setattr(service_wrapper, "run_streamed", lambda *a, **k: result)
+
+    stream = service_wrapper._sse_stream(None, "hi", hooks=None)
+    emitted = [await anext(stream)]  # role chunk is emitted before SDK startup
+    read_task = asyncio.create_task(anext(stream))
+    await result.started.wait()
+    read_task.cancel()  # simulate Starlette cancelling after downstream close
+    with pytest.raises(asyncio.CancelledError):
+        await read_task
+
+    await stream.aclose()
+    assert result.stream_cancelled is True
+    assert result.cancel_calls == ["immediate"]
+    assert len(emitted) == 1
+    assert "[DONE]" not in emitted[0]
+    first = json.loads(emitted[0][len("data:") :].strip())
+    assert first["choices"][0]["delta"] == {"role": "assistant"}
+    assert first["choices"][0]["finish_reason"] is None
+
+
+async def test_sse_aclose_cancels_sdk_run_and_closes_inner_stream(monkeypatch):
+    """Direct ``aclose`` injects GeneratorExit and must cancel the SDK run."""
+
+    class _ClosableStreaming:
+        context_wrapper = _FakeCtx()
+
+        def __init__(self):
+            self.cancel_calls: list[str] = []
+            self.content_yielded = asyncio.Event()
+            self.inner_closed = asyncio.Event()
+
+        async def stream_events(self):
+            try:
+                self.content_yielded.set()
+                yield _delta_event("partial")
+                await asyncio.Event().wait()
+            finally:
+                self.inner_closed.set()
+
+        def cancel(self, *, mode):
+            self.cancel_calls.append(mode)
+
+    result = _ClosableStreaming()
+    monkeypatch.setattr(service_wrapper, "run_streamed", lambda *a, **k: result)
+
+    stream = service_wrapper._sse_stream(None, "hi", hooks=None)
+    assert "partial" not in await anext(stream)  # role chunk
+    content_chunk = await anext(stream)
+    assert "partial" in content_chunk
+    assert result.content_yielded.is_set()
+
+    await stream.aclose()
+    await asyncio.wait_for(result.inner_closed.wait(), timeout=1)
+
+    assert result.cancel_calls == ["immediate"]
+    assert '"finish_reason": "stop"' not in content_chunk
+    assert "[DONE]" not in content_chunk
+
+
+def test_pinned_sdk_run_result_streaming_cancel_accepts_immediate_mode():
+    """Pin the SDK API used by the real CancelledError path, not only the fake."""
+    signature = inspect.signature(RunResultStreaming.cancel)
+    mode = signature.parameters.get("mode")
+    assert mode is not None
+    assert mode.kind in {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    }
+    assert mode.default == "immediate"
+    assert "immediate" in str(mode.annotation)
+    signature.bind(object(), mode="immediate")
+
+
 # ---- HTTP 端點層（TestClient）：證明 branch + content-type + auth 守衛 ----
 
 
 def _patch_guards(monkeypatch):
     monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 12)
+    # This specifically exercises the local no-token profile.  R5 tests can
+    # reload the shared module with a csk- configured before this test runs.
+    monkeypatch.setattr(service_wrapper, "CSP_SERVICE_TOKEN", "")
     monkeypatch.setattr(service_wrapper, "ALLOW_NO_SERVICE_TOKEN", True)
     # CspHttpRetriever 建構會驗 api_key 非空（search 重用 agent 的 csk-）。
     monkeypatch.setattr(service_wrapper, "CSP_SEARCH_TOKEN", "csk-test")
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
     monkeypatch.setattr(service_wrapper, "build_agent", lambda *a, **k: object())
+
+
+def _dispatch_headers(*, trace_id: str | None = None) -> dict[str, str]:
+    """The formal endpoint accepts only CSP-bound invocations."""
+
+    assert service_wrapper._ADMISSION is not None
+    nonce = uuid.uuid4().hex
+    headers = {
+        "X-ANILA-Agent-Id": service_wrapper._ADMISSION.manifest.agent_id,
+        "X-ANILA-Task-Id": f"task-streaming-{nonce}",
+        "X-ANILA-Run-Id": f"run-streaming-{nonce}",
+        "X-ANILA-Session-Id": f"session-streaming-{nonce}",
+        "X-ANILA-Invocation-Id": f"inv-streaming-{nonce}",
+        "X-ANILA-Trace-Id": trace_id or f"trace-streaming-{nonce}",
+        "X-ANILA-Classification-Level": "%E7%84%A1%E6%A9%9F%E5%AF%86",
+        "X-ANILA-Idempotency-Key": f"idem-streaming-{nonce}",
+    }
+    return headers
 
 
 def test_http_stream_true_returns_event_stream(monkeypatch):
@@ -171,6 +294,7 @@ def test_http_stream_true_returns_event_stream(monkeypatch):
             "/v1/chat/completions",
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}],
                   "stream": True},
+            headers=_dispatch_headers(),
         )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
@@ -195,6 +319,7 @@ def test_http_stream_false_returns_json(monkeypatch):
         resp = client.post(
             "/v1/chat/completions",
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_dispatch_headers(),
         )
     assert resp.status_code == 200
     body = resp.json()
@@ -208,7 +333,7 @@ def test_http_unauthorized_when_token_required(monkeypatch):
     # 預設 fail-closed：未設 allow_unset 且 expected 非空 → 缺 header 應 401。
     monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 12)
     monkeypatch.setattr(service_wrapper, "ALLOW_NO_SERVICE_TOKEN", False)
-    monkeypatch.setattr(service_wrapper, "CSP_SERVICE_TOKEN", "csk-secret")
+    monkeypatch.setattr(service_wrapper, "CSP_SERVICE_TOKEN", f"csk-{'A' * 43}")
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
     with TestClient(service_wrapper.app) as client:
         resp = client.post(

@@ -28,6 +28,7 @@ import app.models.audit_log       # noqa: F401
 import app.models.department      # noqa: F401
 import app.models.dev_db_credential  # noqa: F401
 import app.models.model_registry  # noqa: F401
+import app.models.model_governance_receipt  # noqa: F401
 import app.models.attachment       # noqa: F401
 import app.models.conversation     # noqa: F401
 import app.models.handoff          # noqa: F401
@@ -35,6 +36,8 @@ import app.models.ingestion        # noqa: F401
 import app.models.message          # noqa: F401
 import app.models.platform_link    # noqa: F401
 import app.models.service_access_grant  # noqa: F401
+import app.models.session_event       # noqa: F401
+import app.models.resume_authority    # noqa: F401
 import app.models.token_usage      # noqa: F401
 import app.models.user             # noqa: F401
 
@@ -46,8 +49,6 @@ config = context.config
 # ``csp_app`` role so RLS actually fires; MIGRATION_DATABASE_URL is the
 # escalated alternative we *only* read here in alembic. Falling back to
 # DATABASE_URL keeps local dev working when the env var isn't split.
-import os
-
 migration_url = os.environ.get("MIGRATION_DATABASE_URL", settings.DATABASE_URL)
 config.set_main_option("sqlalchemy.url", migration_url)
 

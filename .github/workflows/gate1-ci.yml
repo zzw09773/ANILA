@@ -1,0 +1,723 @@
+name: Gate 1 required CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - prod-intranet-card
+  push:
+    branches:
+      - main
+      - prod-intranet-card
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate1-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: utf-8
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  governance:
+    name: Test and capability governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install governance test dependencies
+        run: |
+          python -m pip install pytest cryptography pyyaml
+          python -m pip install -e ./packages/anila-contracts \
+            -e ./packages/anila-security \
+            -e './packages/anila-core[dev]'
+
+      - name: Validate F1/F3 suite and quarantine registry
+        run: |
+          python infra/ci/check_gate1_test_governance.py
+          python -m unittest discover -s infra/ci/tests -v
+          python -m pytest infra/ci/test_lint_zh_tw.py -q
+
+      - name: Test capability-freeze policy
+        run: python -m unittest infra.policy.tests.test_gate1_capability_freeze -v
+
+      - name: Prove Gate 2 signed-pilot policy and disabled template
+        run: |
+          python infra/policy/gate2/check_pilot_inference_profile.py \
+            --inventory infra/policy/gate2/inference-callsites.v1.json \
+            --profile infra/policy/gate2/pilot-profile.disabled-template.json \
+            --allow-disabled-template
+          python -m pytest infra/policy/tests/test_gate2_pilot_inference_profile.py -q
+
+      - name: Enforce capability freeze against trusted PR base
+        if: github.event_name == 'pull_request'
+        run: >-
+          python infra/policy/gate1/check_capability_freeze.py
+          --base-ref "origin/${{ github.base_ref }}"
+          --bootstrap-if-missing
+
+      - name: Enforce capability freeze
+        if: github.event_name != 'pull_request'
+        run: python infra/policy/gate1/check_capability_freeze.py
+
+  deployment-posture:
+    name: Deployment / image-lock posture
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deployment-contract dependencies
+        run: python -m pip install cryptography pyyaml
+
+      - name: Validate deployment shell syntax
+        run: |
+          set -euo pipefail
+          for script in infra/deployment/scripts/*.sh infra/deployment/intranet/*.sh infra/ci/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Verify formal Compose image-lock wiring
+        run: python infra/deployment/scripts/verify-compose-image-lock.py check-wiring
+
+      - name: Run complete deployment contracts
+        run: python -m unittest discover -s infra/deployment/tests -v
+
+  contract-smoke:
+    name: Contract smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SECRET_KEY: gate1-ci-only-secret-key-0123456789abcdef
+      PYTHONPATH: services/csp:packages/anila-core/src
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local contract, security, core, and CSP dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts[dev]"
+          python -m pip install -e "./packages/anila-security[dev]"
+          python -m pip install -e "./packages/anila-core[dev]"
+          python -m pip install -r services/csp/requirements-dev.txt
+
+      - name: Run standalone package contracts
+        run: |
+          python -m pytest packages/anila-contracts/tests packages/anila-security/tests -q
+          python -m ruff check packages/anila-contracts/src packages/anila-contracts/tests
+          python -m ruff check packages/anila-security
+
+      - name: Require G1 writer source contract and consumer compatibility
+        run: |
+          python -m pytest packages/anila-core/tests/test_contracts_facade.py packages/anila-core/tests/test_url_guard_kind_split.py -q
+          python -m unittest infra.policy.tests.test_gate2_classification_reconciliation -v
+          python -m unittest infra.policy.tests.test_gate2_retrieval_governance -v
+          cd services/csp
+          python -m pytest tests/test_anila_contracts_package.py tests/test_url_guard_opt_in.py tests/test_url_guard_providers.py -q
+
+  backend-core:
+    name: Backend / anila-core unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts"
+          python -m pip install -e "./packages/anila-security"
+          python -m pip install -e "./packages/anila-core[dev,rag]"
+
+      - name: Run unit suite
+        working-directory: packages/anila-core
+        run: python -m pytest --ignore=tests/integration tests -q
+
+  backend-agent:
+    name: Backend / anila-agent unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install agent
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts" -e "./packages/anila-agent[dev,serving,pgvector,csp]"
+
+      - name: Run deterministic unit suite
+        working-directory: packages/anila-agent
+        run: python -m pytest -m "not live" -q
+
+      - name: Run strict type check
+        working-directory: packages/anila-agent
+        run: python -m mypy anila_agent
+
+  backend-ingestion:
+    name: Backend / ingestion-worker unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts"
+          python -m pip install -e "./packages/anila-security"
+          python -m pip install -e "./packages/anila-core[rag]"
+          python -m pip install -e "./services/ingestion-worker[dev]"
+
+      - name: Run worker suite
+        working-directory: services/ingestion-worker
+        run: python -m pytest tests -q
+
+  backend-csp:
+    name: Backend / CSP full suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SECRET_KEY: gate1-ci-only-secret-key-0123456789abcdef
+      PYTHONPATH: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local packages and CSP test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            -e "./packages/anila-contracts" \
+            -e "./packages/anila-security" \
+            -e "./packages/anila-core[rag]" \
+            -e "./packages/anila-agent"
+          python -m pip install -r services/csp/requirements-dev.txt
+
+      - name: Run complete CSP suite
+        working-directory: services/csp
+        run: python -m pytest -q
+
+  postgres-rls:
+    name: Backend / PostgreSQL RLS
+    needs: [contract-smoke, backend-core, backend-ingestion, backend-csp]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SECRET_KEY: gate1-ci-only-secret-key-0123456789abcdef
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: csp
+          POSTGRES_USER: csp
+          POSTGRES_PASSWORD: gate1-admin-db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U csp -d csp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install migration and integration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts"
+          python -m pip install -e "./packages/anila-security"
+          python -m pip install -e "./packages/anila-core[dev]"
+          python -m pip install -e "./services/ingestion-worker[dev]"
+          python -m pip install -r services/csp/requirements-dev.txt
+
+      - name: Require a single Alembic head
+        working-directory: services/csp
+        run: |
+          python -c "from alembic.config import Config; from alembic.script import ScriptDirectory; heads = ScriptDirectory.from_config(Config('alembic.ini')).get_heads(); assert len(heads) == 1, f'expected one Alembic head, got {heads}'"
+          python -m alembic heads
+
+      - name: Migrate fresh PostgreSQL to Alembic head
+        working-directory: services/csp
+        env:
+          MIGRATION_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          DATABASE_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          CSP_APP_DB_PASSWORD: gate1-app-db
+          PYTHONPATH: .
+        run: python -m alembic upgrade head
+
+      - name: Prove RLS and mutation sensitivity with app and admin roles
+        working-directory: packages/anila-core
+        env:
+          ANILA_REQUIRE_RLS_TESTS: "1"
+          INTEGRATION_DB_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          INTEGRATION_ADMIN_DB_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+        run: python -m pytest tests/integration -q
+
+      - name: Prove Gate 2 classification reconciliation and mutation sensitivity
+        env:
+          MIGRATION_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+          PYTHONPATH: services/csp
+        run: |
+          python infra/policy/gate2/check_classification_reconciliation.py --sample-size 0
+          python -m pytest infra/policy/tests/test_gate2_classification_reconciliation_pg.py -q
+
+      - name: Prove Gate 2 runtime classification invariants on PostgreSQL
+        env:
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+        run: python -m pytest infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py -q
+
+      - name: Prove Gate 2 SourceSnapshot and Citation sealing on PostgreSQL
+        env:
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+          PYTHONPATH: services/csp
+        run: python -m pytest services/csp/tests/test_gate2_source_snapshot_sealing_pg.py -q
+
+      - name: Prove Gate 2 memory classification governance on PostgreSQL
+        working-directory: services/csp
+        env:
+          GATE2_MEMORY_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_memory_governance_pg.py -q
+
+      - name: Prove Gate 2 transaction-ledger atomicity on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE2_LEDGER_PG_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: >-
+          python -m pytest
+          tests/test_gate2_transaction_ledger_pg.py
+          tests/test_gate2_classification_latch_pg.py
+          tests/test_gate2_pg_atomicity.py
+          -q
+
+      - name: Prove Gate 2 classification latch races on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE2_CLASSIFICATION_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_classification_latch_pg.py -q
+
+      - name: Prove Gate 3 retention and artifact upload races on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE3_RETENTION_PG_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate3_retention_upload_pg.py -q
+
+      - name: Prove Gate 3 ingestion generation migration and backfill
+        env:
+          ANILA_GATE3_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+        run: python -m pytest services/csp/tests/test_ingestion_generations_pg.py -q
+
+      - name: Prove Gate 3 worker lease, DLQ, and similarity concurrency
+        env:
+          ANILA_JOB_STATE_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/gate3_worker_ci
+          ANILA_JOB_STATE_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/gate3_worker_ci
+        run: |
+          python - <<'PY'
+          import asyncio
+          import asyncpg
+
+          async def main() -> None:
+              connection = await asyncpg.connect(
+                  "postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres"
+              )
+              try:
+                  await connection.execute(
+                      "DROP DATABASE IF EXISTS gate3_worker_ci WITH (FORCE)"
+                  )
+                  await connection.execute("CREATE DATABASE gate3_worker_ci")
+              finally:
+                  await connection.close()
+
+          asyncio.run(main())
+          PY
+          python -m pytest \
+            services/ingestion-worker/tests/test_job_state_pg.py \
+            -q --junitxml=/tmp/gate3-worker-lease.xml
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          report = Path("/tmp/gate3-worker-lease.xml")
+          try:
+              root = ET.parse(report).getroot()
+          except (OSError, ET.ParseError) as exc:
+              print("Gate 3 PostgreSQL lease JUnit report is missing or invalid", file=sys.stderr)
+              raise SystemExit(1) from exc
+          cases = root.findall(".//testcase")
+          expected_cases = {
+              ("tests.test_job_state_pg", "test_claim_is_single_owner_and_stale_attempt_cannot_reopen_terminal"),
+              ("tests.test_job_state_pg", "test_reaper_skips_valid_lease_and_recovers_expired_once"),
+              ("tests.test_job_state_pg", "test_reaper_honours_grace_before_recovering_stale_owner"),
+              ("tests.test_job_state_pg", "test_retryable_failure_schedules_durable_attempt_and_permanent_stops"),
+              ("tests.test_job_state_pg", "test_retry_exhaustion_is_one_dead_letter_and_has_no_stuck_lease"),
+              ("tests.test_job_state_pg", "test_terminal_write_db_outage_is_fail_loud_then_reaper_recovers"),
+          }
+          case_ids = [(case.get("classname"), case.get("name")) for case in cases]
+          skipped = [case for case in cases if case.find("skipped") is not None]
+          failures = [case for case in cases if case.find("failure") is not None]
+          errors = [case for case in cases if case.find("error") is not None]
+          if len(cases) != 6:
+              print("Gate 3 PostgreSQL lease suite expected exactly 6 tests", file=sys.stderr)
+              raise SystemExit(1)
+          if len(case_ids) != len(set(case_ids)):
+              print("Gate 3 PostgreSQL lease suite contains duplicate testcase identities", file=sys.stderr)
+              raise SystemExit(1)
+          if set(case_ids) != expected_cases:
+              print("Gate 3 PostgreSQL lease suite does not match exact testcase identities", file=sys.stderr)
+              raise SystemExit(1)
+          if skipped:
+              print("Gate 3 PostgreSQL lease suite contains skipped tests", file=sys.stderr)
+              raise SystemExit(1)
+          if failures:
+              print("Gate 3 PostgreSQL lease suite contains failed tests", file=sys.stderr)
+              raise SystemExit(1)
+          if errors:
+              print("Gate 3 PostgreSQL lease suite contains errored tests", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+          python -m pytest \
+            services/ingestion-worker/tests/test_similarity_relations_pg.py \
+            -q --junitxml=/tmp/gate3-similarity-relations.xml
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          report = Path("/tmp/gate3-similarity-relations.xml")
+          try:
+              root = ET.parse(report).getroot()
+          except (OSError, ET.ParseError) as exc:
+              print("Gate 3 similarity JUnit report is missing or invalid", file=sys.stderr)
+              raise SystemExit(1) from exc
+          cases = root.findall(".//testcase")
+          expected_cases = {
+              ("tests.test_similarity_relations_pg", "test_concurrent_requests_dedupe_to_one_monotonic_row"),
+              ("tests.test_similarity_relations_pg", "test_concurrent_claim_has_one_owner_and_new_request_becomes_followup"),
+              ("tests.test_similarity_relations_pg", "test_expired_lease_is_recovered_once"),
+              ("tests.test_similarity_relations_pg", "test_expired_owner_is_fenced_before_relation_mutation"),
+          }
+          case_ids = [(case.get("classname"), case.get("name")) for case in cases]
+          skipped = [case for case in cases if case.find("skipped") is not None]
+          failures = [case for case in cases if case.find("failure") is not None]
+          errors = [case for case in cases if case.find("error") is not None]
+          if len(cases) != 4:
+              print("Gate 3 similarity suite expected exactly 4 tests", file=sys.stderr)
+              raise SystemExit(1)
+          if len(case_ids) != len(set(case_ids)):
+              print("Gate 3 similarity suite contains duplicate testcase identities", file=sys.stderr)
+              raise SystemExit(1)
+          if set(case_ids) != expected_cases:
+              print("Gate 3 similarity suite does not match exact testcase identities", file=sys.stderr)
+              raise SystemExit(1)
+          if skipped:
+              print("Gate 3 similarity suite contains skipped tests", file=sys.stderr)
+              raise SystemExit(1)
+          if failures:
+              print("Gate 3 similarity suite contains failed tests", file=sys.stderr)
+              raise SystemExit(1)
+          if errors:
+              print("Gate 3 similarity suite contains errored tests", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+
+      - name: Prove Gate 2 durable usage and Full Trace closure on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE2_LEDGER_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_durable_usage_closure_pg.py -q
+
+      - name: Run CSP ingestion-image RLS contract
+        working-directory: services/csp
+        env:
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          DATABASE_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_ingestion_images_rls_pg.py -q
+
+      - name: Run Gate 2 auth concurrency and migration contracts
+        working-directory: services/csp
+        env:
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_auth_races_pg.py -q
+
+      - name: Prove Gate 5 durable resume claim concurrency on PostgreSQL
+        working-directory: services/csp
+        env:
+          TEST_POSTGRES_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          DATABASE_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate5_r5_durable_resume_authority.py -q -m integration
+
+  frontend-governance:
+    name: Frontend / CSP governance UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/csp-governance-ui/package-lock.json
+      - name: Install, test, and build
+        working-directory: apps/csp-governance-ui
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+  frontend-shell:
+    name: Frontend / ANILA Shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/anila-shell/package-lock.json
+      - name: Install, test, and build
+        working-directory: apps/anila-shell
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+  frontend-anilalm:
+    name: Frontend / ANILALM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/anilalm/package-lock.json
+      - name: Install and typecheck
+        working-directory: apps/anilalm
+        run: |
+          npm ci
+          npm run typecheck
+
+      - name: Build normal product posture
+        working-directory: apps/anilalm
+        env:
+          VITE_ANILA_PILOT_MODE: "false"
+        run: npm run build
+
+      - name: Build signed-pilot posture
+        working-directory: apps/anilalm
+        env:
+          VITE_ANILA_PILOT_MODE: "true"
+        run: npm run build
+
+  backend-pptx-renderer:
+    name: Backend / PPTX renderer contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/pptx-renderer/package-lock.json
+      - name: Install production dependencies and audit
+        working-directory: services/pptx-renderer
+        run: |
+          npm ci --omit=dev
+          npm audit --omit=dev --audit-level=moderate
+      - name: Run renderer contracts against the live HTTP boundary
+        working-directory: services/pptx-renderer
+        run: |
+          set -euo pipefail
+          node server.js >renderer.log 2>&1 &
+          renderer_pid=$!
+          trap 'kill "$renderer_pid" 2>/dev/null || true; cat renderer.log' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:7100/health >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$renderer_pid" 2>/dev/null; then
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:7100/health >/dev/null
+          for test_file in tests/test_*.js; do
+            node "$test_file"
+          done
+
+  backend-studio-security:
+    name: Backend / Studio auth and revocation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Studio test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./services/anila-studio[dev]"
+      - name: Run Studio auth and durable revocation contracts
+        working-directory: services/anila-studio
+        run: >-
+          python -m pytest
+          tests/test_auth.py
+          tests/test_revocation_cache.py
+          tests/test_gate2_scoped_revocation_cache.py
+          -q
+
+  backend-studio-full:
+    name: Backend / Studio full suite and Redis durability
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ANILA_STUDIO_REDIS_DOCKER_CONTAINER: anila-gate1-studio-redis-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install complete Studio test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./services/anila-studio[dev]"
+      - name: Start isolated Redis durability target
+        run: |
+          set -euo pipefail
+          docker run --detach \
+            --name "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER" \
+            --publish 127.0.0.1::6379 \
+            redis:7-alpine \
+            redis-server --appendonly yes --appendfsync everysec
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker exec "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER" \
+              redis-cli ping | grep --quiet '^PONG$'; then
+              ready=1
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' \
+              "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER")" != "true" ]; then
+              docker logs "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER"
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER"
+            exit 1
+          fi
+          published=$(docker port \
+            "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER" 6379/tcp | head -n 1)
+          port=${published##*:}
+          case "$port" in
+            ''|*[!0-9]*) echo "invalid Redis published port: $published" >&2; exit 1 ;;
+          esac
+          test "$(docker exec "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER" \
+            redis-cli --raw CONFIG GET appendonly | tail -n 1)" = "yes"
+          test "$(docker exec "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER" \
+            redis-cli --raw CONFIG GET appendfsync | tail -n 1)" = "everysec"
+          echo "ANILA_STUDIO_REDIS_TEST_URL=redis://127.0.0.1:${port}/0" \
+            >> "$GITHUB_ENV"
+      - name: Run complete Studio suite
+        working-directory: services/anila-studio
+        run: python -m pytest tests -q
+      - name: Remove isolated Redis durability target
+        if: ${{ always() }}
+        run: docker rm -f "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER" || true
+
+  backend-flux-agent:
+    name: Backend / FLUX agent governed-hop contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install FLUX agent test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./services/flux2-dev-agent[test]"
+      - name: Run focused FLUX agent suite
+        working-directory: services/flux2-dev-agent
+        run: python -m pytest tests -q

@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
-from fastapi import Cookie, Depends, Header, HTTPException, status
+from fastapi import Cookie, Header, HTTPException, status
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
 
@@ -35,7 +36,21 @@ from app.services import jwks_client, revocation_cache as revocation_cache_mod
 logger = logging.getLogger(__name__)
 
 
-ACCESS_COOKIE_NAME = "anila_access_token"
+SECURE_ACCESS_COOKIE_NAME = "__Host-anila_access_token"
+DEV_ACCESS_COOKIE_NAME = "anila_dev_access_token"
+_ACR_BY_PRIMARY_AMR = {
+    "sc": "urn:anila:acr:smart-card",
+    "oidc": "urn:anila:acr:federated",
+    "pwd": "urn:anila:acr:password",
+}
+_KNOWN_AMR = frozenset(_ACR_BY_PRIMARY_AMR)
+
+
+def _access_cookie_name(secure: bool) -> str:
+    return SECURE_ACCESS_COOKIE_NAME if secure else DEV_ACCESS_COOKIE_NAME
+
+
+ACCESS_COOKIE_NAME = _access_cookie_name(settings.COOKIE_SECURE)
 
 
 @dataclass(frozen=True)
@@ -68,6 +83,53 @@ def _service_unavailable(detail: str) -> HTTPException:
     )
 
 
+def _has_valid_session_assurance(payload: dict) -> bool:
+    """Mirror CSP's signed session-envelope validation at this boundary."""
+    jti = payload.get("jti")
+    sid = payload.get("sid")
+    amr = payload.get("amr")
+    acr = payload.get("acr")
+    auth_time = payload.get("auth_time")
+    issued_at = payload.get("iat")
+    break_glass = payload.get("break_glass")
+    if not isinstance(jti, str) or not jti:
+        return False
+    if not isinstance(sid, str) or not sid:
+        return False
+    if (
+        not isinstance(amr, list)
+        or any(
+            not isinstance(method, str) or method not in _KNOWN_AMR
+            for method in amr
+        )
+        or len(amr) != len(set(amr))
+    ):
+        return False
+    if not isinstance(acr, str) or not acr:
+        return False
+    if (
+        isinstance(auth_time, bool)
+        or not isinstance(auth_time, (int, float))
+        or isinstance(issued_at, bool)
+        or not isinstance(issued_at, (int, float))
+        or auth_time < 0
+        or auth_time > issued_at
+        or issued_at
+        > datetime.now(timezone.utc).timestamp() + settings.JWT_LEEWAY_SECONDS
+    ):
+        return False
+    if not isinstance(break_glass, bool):
+        return False
+    if break_glass:
+        return amr == ["pwd"] and acr == "urn:anila:acr:break-glass"
+    expected_acr = "urn:anila:acr:unspecified"
+    for method in ("sc", "oidc", "pwd"):
+        if method in amr:
+            expected_acr = _ACR_BY_PRIMARY_AMR[method]
+            break
+    return acr == expected_acr
+
+
 async def _verify_jwt(token: str) -> dict:
     """RS256 + JWKS verify; raise 401 on any failure."""
     try:
@@ -97,7 +159,15 @@ async def _verify_jwt(token: str) -> dict:
             token,
             public_key,
             algorithms=list(settings.JWT_ALGORITHMS),
-            options={"verify_aud": False},
+            issuer=settings.JWT_ISSUER,
+            audience=settings.JWT_AUDIENCE,
+            options={
+                "require_exp": True,
+                "require_iat": True,
+                "require_iss": True,
+                "require_aud": True,
+                "require_jti": True,
+            },
         )
     except ExpiredSignatureError as exc:
         raise _unauthorized("權杖已過期，請重新登入") from exc
@@ -105,10 +175,18 @@ async def _verify_jwt(token: str) -> dict:
         logger.debug("JWT verify failed: %s", exc)
         raise _unauthorized("無效的存取權杖") from exc
 
+    if not _has_valid_session_assurance(payload):
+        raise _unauthorized("無效的存取權杖")
     return payload
 
 
-async def _check_revocation(user_id: int, token_version: int) -> None:
+async def _check_revocation(
+    user_id: int,
+    token_version: int,
+    *,
+    jti: str,
+    sid: str,
+) -> None:
     """Consult the cross-service revocation cache.
 
     Fail-closed: if the cache itself is not ready (Redis down / cold-start
@@ -124,7 +202,7 @@ async def _check_revocation(user_id: int, token_version: int) -> None:
             "revocation cache not ready; denying request for user_id=%s", user_id
         )
         raise _service_unavailable("auth deny-list unhealthy")
-    if await cache.is_revoked(user_id, token_version):
+    if await cache.is_revoked(user_id, token_version, jti=jti, sid=sid):
         logger.info(
             "rejecting revoked token: user_id=%s tv=%s", user_id, token_version
         )
@@ -133,12 +211,12 @@ async def _check_revocation(user_id: int, token_version: int) -> None:
 
 async def get_current_user_identity(
     authorization: str | None = Header(default=None),
-    anila_access_token: str | None = Cookie(default=None, alias=ACCESS_COOKIE_NAME),
+    access_cookie: str | None = Cookie(default=None, alias=ACCESS_COOKIE_NAME),
 ) -> CurrentUserIdentity:
     """FastAPI dependency: resolve identity from Bearer header OR cookie.
 
     Mirrors csp's ``get_current_user`` token sourcing precedence
-    (Authorization header wins, anila_access_token cookie is SPA fallback)
+    (Authorization header wins, the formal ``__Host-`` cookie is SPA fallback)
     but uses local RS256 + JWKS verify instead of csp's HS256 + DB.
 
     Returns ``CurrentUserIdentity`` (frozen dataclass). Raises 401 for
@@ -150,8 +228,8 @@ async def get_current_user_identity(
         scheme, _, value = authorization.partition(" ")
         if scheme.lower() == "bearer" and value:
             token = value
-    if token is None and anila_access_token:
-        token = anila_access_token
+    if token is None and access_cookie:
+        token = access_cookie
 
     if not token:
         raise _unauthorized("未登入或權杖已過期")
@@ -164,6 +242,20 @@ async def get_current_user_identity(
     if payload.get("type") != "access":
         raise _unauthorized("無效的存取權杖")
 
+    if settings.REQUIRE_CARD_LOGIN_ONLY:
+        raw_amr = payload.get("amr")
+        methods = (
+            set(raw_amr)
+            if isinstance(raw_amr, list)
+            and all(isinstance(method, str) for method in raw_amr)
+            else set()
+        )
+        if "sc" not in methods:
+            # Studio has no authoritative user DB, so it cannot safely mirror
+            # CSP's DB-current owner/password break-glass exception. Keep this
+            # direct artifact surface strictly smart-card-only.
+            raise _unauthorized("此服務僅接受憑證卡登入工作階段")
+
     sub = payload.get("sub")
     if not sub:
         raise _unauthorized("無效的存取權杖")
@@ -174,7 +266,12 @@ async def get_current_user_identity(
 
     token_version = int(payload.get("tv", 0))
 
-    await _check_revocation(user_id, token_version)
+    await _check_revocation(
+        user_id,
+        token_version,
+        jti=payload["jti"],
+        sid=payload["sid"],
+    )
 
     return CurrentUserIdentity(
         id=user_id,
@@ -202,7 +299,7 @@ def _extract_bearer_for_csp_proxy(authorization: str | None) -> str:
 
 async def get_bearer_token(
     authorization: str | None = Header(default=None),
-    anila_access_token: str | None = Cookie(default=None, alias=ACCESS_COOKIE_NAME),
+    access_cookie: str | None = Cookie(default=None, alias=ACCESS_COOKIE_NAME),
 ) -> str:
     """FastAPI dependency: return the raw bearer token string for csp passthrough.
 
@@ -216,6 +313,6 @@ async def get_bearer_token(
         scheme, _, value = authorization.partition(" ")
         if scheme.lower() == "bearer" and value:
             return value
-    if anila_access_token:
-        return anila_access_token
+    if access_cookie:
+        return access_cookie
     raise _unauthorized("未登入或權杖已過期")

@@ -47,7 +47,7 @@
 ```bash
 git clone <repo> && cd packages/anila-agent
 
-make install                 # 建 .venv 並 editable 安裝（含 dev）
+make install                 # 建 .venv；同時從 ../anila-contracts 本地 editable 安裝（含 dev）
 cp .env.example .env         # 填入 ANILA_BASE_URL / ANILA_MODEL
 make test                    # 198 個單元測試（不連網）
 make lint                    # ruff（anila_agent + tests）

@@ -15,11 +15,10 @@ The pipeline:
   writes a row to ``token_revocations``, and publishes a JSON event
   on the Redis channel ``anila:auth:token-revoke``. See
   ``services/csp/app/services/token_revocation_publisher.py``.
-* **anila-studio** (this module) cold-starts by replaying the last 30
-  days of revocations through ``GET /api/auth/revocations?since=...``
-  (because Redis pub/sub is fire-and-forget — anything published
-  before the subscriber connected is lost forever), THEN subscribes
-  to the live channel.
+* **anila-studio** (this module) first subscribes to the live channel, then
+  replays the last 30 days through
+  ``GET /api/auth/revocations?since=...``. Events arriving during replay queue
+  on the subscribed connection, so there is no replay→subscribe loss window.
 
 Why two paths
 -------------
@@ -31,6 +30,9 @@ each one expired naturally. The HTTP replay closes that gap.
 If we only used HTTP polling, the delay between revoke and effect
 would be the poll interval (multi-second at best). Live pub/sub
 keeps the propagation lag well under a second on a healthy network.
+The periodic HTTP replay remains active while Redis is healthy, so a CSP
+publish failure cannot leave a running subscriber stale forever; the formal
+default bounds that fallback at five seconds.
 
 fail-closed posture
 ===================
@@ -70,6 +72,7 @@ silently "downgrade to TTL-only", which was the v1-plan R14 hole.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -95,7 +98,26 @@ _singleton: "RevocationCache | None" = None
 
 # Payload schema version we natively understand. Anything else gets a
 # warning + best-effort cache write (forward-compat).
-SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSION = 2
+_COMPATIBLE_SCHEMA_VERSIONS = {1, 2}
+
+
+class RevocationPayloadError(RuntimeError):
+    """A durable/live revocation row cannot be safely interpreted."""
+
+
+def _digest_identifier(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _valid_digest(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
 
 
 class RevocationCache:
@@ -129,6 +151,16 @@ class RevocationCache:
             ttl=settings.REVOCATION_CACHE_TTL_SECONDS,
             timer=time.time,
         )
+        self._jti_cache: TTLCache[str, bool] = TTLCache(
+            maxsize=100_000,
+            ttl=settings.REVOCATION_CACHE_TTL_SECONDS,
+            timer=time.time,
+        )
+        self._sid_cache: TTLCache[str, bool] = TTLCache(
+            maxsize=100_000,
+            ttl=settings.REVOCATION_CACHE_TTL_SECONDS,
+            timer=time.time,
+        )
 
         # Readiness gate consumed by ``/health`` and ``auth.py``.
         # False until cold-start sync completes; flips back to False
@@ -139,6 +171,7 @@ class RevocationCache:
         self._redis: AsyncRedis | None = None
         self._pubsub: Any | None = None
         self._subscriber_task: asyncio.Task[None] | None = None
+        self._last_sync_at: datetime | None = None
 
         # Stop signal for the subscriber loop. Set by ``stop()`` so the
         # background task knows we're winding down vs. handling a
@@ -165,35 +198,48 @@ class RevocationCache:
         """
         return self._ready
 
-    async def is_revoked(self, user_id: int, token_version: int) -> bool:
+    async def is_revoked(
+        self,
+        user_id: int,
+        token_version: int,
+        *,
+        jti: str | None = None,
+        sid: str | None = None,
+    ) -> bool:
         """True iff the JWT bearing ``(user_id, token_version)`` has
         been revoked by csp.
 
-        Rule: cached ``revoked_at_version >= token_version`` ⇒ revoked.
-        The ``>=`` is intentional and matches csp's invariant — when
-        csp bumps to version N, every token signed at N-1 or earlier
-        is invalidated, AND the bump represents "tokens up to and
-        including N are now compromised" for the hard-revoke flows.
+        Rule: cached ``revoked_at_version > token_version`` ⇒ revoked.
+        CSP first bumps the user's durable version to N and records N as the
+        revocation boundary. Tokens minted before the bump carry N-1 (or
+        lower); legitimate tokens minted after it carry N and must remain
+        usable.
 
         A cache miss means we have no record of revocation for that
         user, so the token is considered valid. (TTL expiry yields a
         miss too — by then the token has expired naturally.)
         """
+        if jti and self._jti_cache.get(_digest_identifier(jti), False):
+            return True
+        if sid and self._sid_cache.get(_digest_identifier(sid), False):
+            return True
         revoked_at_version = self._cache.get(user_id)
-        if revoked_at_version is None:
-            return False
-        return revoked_at_version >= token_version
+        return (
+            revoked_at_version is not None
+            and revoked_at_version > token_version
+        )
 
     async def start(self, app: Any) -> None:
         """Cold-start sync + subscriber spinup, run once on lifespan.
 
         Steps, in order:
             1. Connect Redis. Raises if we can't even build the client.
-            2. Pull the last 30 days of revocations from csp. Raises
-               on HTTP error — callers (``main.py`` lifespan) decide
-               whether the service starts at all.
-            3. Spawn the subscriber background task.
-            4. Mark ``_ready = True``.
+            2. Subscribe so live events begin queueing.
+            3. Pull the last 30 days of revocations from csp. Raises on HTTP
+               error — callers (``main.py`` lifespan) decide whether the
+               service starts at all.
+            4. Spawn the subscriber background task.
+            5. Mark ``_ready = True``.
 
         Raising on cold-start failure is deliberate: ``main.py``'s
         lifespan will let the exception bubble up, which marks the
@@ -218,15 +264,16 @@ class RevocationCache:
             socket_keepalive=True,
         )
 
-        # Step 2: cold-start sync. Any HTTP error escapes — main.py /
-        # the lifespan owner is the one that decides what to do.
-        await self._cold_start_sync()
-
-        # Step 3: open the pubsub channel + spawn the subscriber.
-        # We open the pubsub here (not inside the task) so any setup
-        # failure surfaces synchronously to the caller.
+        # Step 2: subscribe *before* replay. Redis buffers live events on this
+        # connection while the HTTP replay is in flight, closing the otherwise
+        # unavoidable replay→subscribe loss window.
         self._pubsub = self._redis.pubsub()
         await self._pubsub.subscribe(settings.REDIS_REVOCATION_CHANNEL)
+
+        # Step 3: cold-start sync. Any HTTP error escapes — main.py / the
+        # lifespan owner decides whether the service comes up. Live events that
+        # arrive during this request remain queued on ``self._pubsub``.
+        await self._cold_start_sync()
 
         self._subscriber_task = asyncio.create_task(
             self._run_subscriber(),
@@ -292,8 +339,10 @@ class RevocationCache:
         so any gap during the outage is closed before we re-mark
         ready.
         """
-        since = datetime.now(timezone.utc) - timedelta(
-            seconds=settings.REVOCATION_CACHE_TTL_SECONDS
+        sync_started = datetime.now(timezone.utc)
+        since = self._last_sync_at or (
+            sync_started
+            - timedelta(seconds=settings.REVOCATION_CACHE_TTL_SECONDS)
         )
         url = f"{settings.CSP_BASE_URL}/api/auth/revocations"
         params = {"since": since.isoformat()}
@@ -312,22 +361,20 @@ class RevocationCache:
             response.raise_for_status()
             body = response.json()
 
-        entries = body.get("revocations") or []
+        if not isinstance(body, dict):
+            raise RevocationPayloadError("cold-start response is not an object")
+        entries = body.get("revocations")
+        if not isinstance(entries, list):
+            raise RevocationPayloadError("cold-start revocations is not a list")
         for entry in entries:
-            try:
-                user_id = int(entry["user_id"])
-                version = int(entry["revoked_at_version"])
-            except (KeyError, TypeError, ValueError):
-                logger.warning(
-                    "skipping malformed revocation row during cold-start: %r",
-                    entry,
+            if not isinstance(entry, dict) or not self._apply_payload(entry):
+                raise RevocationPayloadError(
+                    f"malformed revocation row during cold-start: {entry!r}"
                 )
-                continue
-            # ``max`` is defensive — cold-start rows arrive sorted ASC
-            # by ts, so the natural last-writer-wins would already be
-            # the highest; but if csp ever changes that, we still don't
-            # un-revoke anything.
-            self._cache[user_id] = max(self._cache.get(user_id, 0), version)
+        # Use the request start rather than completion as the next cursor. A
+        # row committed while this request was in flight therefore remains in
+        # the next inclusive query, closing the HTTP snapshot boundary.
+        self._last_sync_at = sync_started
 
         logger.info(
             "cold-start sync pulled %d revocation rows from csp since %s",
@@ -412,17 +459,28 @@ class RevocationCache:
         as disconnects.
         """
         assert self._pubsub is not None, "subscriber started before pubsub open"
+        last_reconcile = time.monotonic()
         while not self._stopping.is_set():
-            message = await self._pubsub.get_message(
-                ignore_subscribe_messages=True, timeout=1.0
+            interval = max(
+                0.1,
+                float(settings.REVOCATION_RECONCILE_INTERVAL_SECONDS),
             )
-            if message is None:
-                # Idle tick (no message within the timeout) — not an error.
-                continue
-            if message.get("type") != "message":
+            remaining = max(0.05, interval - (time.monotonic() - last_reconcile))
+            message = await self._pubsub.get_message(
+                ignore_subscribe_messages=True,
+                timeout=min(1.0, remaining),
+            )
+            if message is not None and message.get("type") == "message":
+                self._handle_message(message.get("data"))
+            elif message is not None:
                 # subscribe / unsubscribe confirmations and the like — ignore.
-                continue
-            self._handle_message(message.get("data"))
+                pass
+            if time.monotonic() - last_reconcile >= interval:
+                # Durable polling is the acknowledgement fallback for Redis
+                # pub/sub. Any HTTP/shape failure propagates to the outer loop,
+                # flips readiness false, and triggers reconnect+replay.
+                await self._cold_start_sync()
+                last_reconcile = time.monotonic()
 
     def _handle_message(self, raw: Any) -> None:
         """Parse one Redis message payload and write to the cache.
@@ -432,26 +490,25 @@ class RevocationCache:
         into fail-closed for everyone.
         """
         if raw is None:
-            return
+            raise RevocationPayloadError("revocation event has no payload")
         # redis-py with decode_responses=True hands us a str; without
         # it, bytes. Handle both.
         if isinstance(raw, bytes):
             try:
                 raw = raw.decode("utf-8")
             except UnicodeDecodeError:
-                logger.warning("revocation event: non-UTF-8 payload, dropped")
-                return
+                raise RevocationPayloadError(
+                    "revocation event is not UTF-8"
+                ) from None
         try:
             payload = json.loads(raw)
         except (TypeError, ValueError):
-            logger.warning("revocation event: not JSON, dropped: %r", raw)
-            return
+            raise RevocationPayloadError("revocation event is not JSON") from None
         if not isinstance(payload, dict):
-            logger.warning("revocation event: payload not an object: %r", payload)
-            return
+            raise RevocationPayloadError("revocation event is not an object")
 
         schema_version = payload.get("schema_version")
-        if schema_version != SUPPORTED_SCHEMA_VERSION:
+        if schema_version not in _COMPATIBLE_SCHEMA_VERSIONS:
             # Forward compatibility: log a warning so ops notices a
             # csp upgrade, but trust the stable fields and write to
             # cache anyway.
@@ -462,27 +519,37 @@ class RevocationCache:
                 SUPPORTED_SCHEMA_VERSION,
             )
 
+        if not self._apply_payload(payload):
+            raise RevocationPayloadError("revocation event payload is malformed")
+
+    def _apply_payload(self, payload: dict[str, Any]) -> bool:
+        """Apply one durable/live event without ever widening its scope."""
         try:
             user_id = int(payload["user_id"])
             version = int(payload["revoked_at_version"])
         except (KeyError, TypeError, ValueError):
-            logger.warning(
-                "revocation event: missing/invalid user_id or "
-                "revoked_at_version, dropped: %r",
-                payload,
-            )
-            return
-
-        # Out-of-order safety: never let a stale event un-revoke a
-        # newer one. ``max`` covers both first-write (existing is 0)
-        # and reordering across reconnects.
+            return False
+        if user_id <= 0 or version < 0:
+            return False
+        scope = payload.get("scope") or "user_version"
+        if scope == "jti":
+            digest = payload.get("token_jti_hash")
+            if not _valid_digest(digest):
+                return False
+            self._jti_cache[digest] = True
+            return True
+        if scope == "sid":
+            digest = payload.get("session_id_hash")
+            if not _valid_digest(digest):
+                return False
+            self._sid_cache[digest] = True
+            return True
+        if scope != "user_version":
+            return False
         existing = self._cache.get(user_id, 0)
         if version > existing:
             self._cache[user_id] = version
-        # If version <= existing we keep the existing entry. Touching
-        # it would reset the TTL, which we deliberately don't do —
-        # the TTL anchors to "when we first heard about the revoke"
-        # and is supposed to expire when the JWT itself would have.
+        return True
 
     async def _reconnect(self) -> None:
         """Open a fresh Redis connection + pubsub and replay cold-start.
@@ -519,15 +586,11 @@ class RevocationCache:
             health_check_interval=30,
             socket_keepalive=True,
         )
-        # Cold-start replay BEFORE re-subscribing so we close any gap
-        # that opened during the outage. Order matters: if we
-        # subscribed first, a brand new revocation could arrive
-        # while we're still mid-replay, and the max-version write
-        # rule prevents that from being lost.
-        await self._cold_start_sync()
-
         self._pubsub = self._redis.pubsub()
         await self._pubsub.subscribe(settings.REDIS_REVOCATION_CHANNEL)
+        # Subscribe first so publishes during replay queue on this connection;
+        # replay then closes the preceding disconnected interval.
+        await self._cold_start_sync()
 
 
 def get_revocation_cache() -> RevocationCache:

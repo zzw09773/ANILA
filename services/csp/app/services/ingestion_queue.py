@@ -19,6 +19,9 @@ from typing import Any
 
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
+from anila_security import create_queue_proof
+
+from app.config import settings
 
 
 _REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379")
@@ -34,18 +37,58 @@ async def _get_pool() -> ArqRedis:
     return _pool
 
 
-async def enqueue_ingest_document(document_id: int) -> str:
-    """Enqueue an ``ingest_document`` job for one document.
+def _require_positive_int(value: object, *, field: str) -> int:
+    """Validate an integer identity used by the durable worker contract."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
 
-    Returns the Arq job id (a UUID string) so the API can surface it in
-    the ``ingestion_jobs`` row and let the dev UI poll for completion.
+
+async def enqueue_ingest_document(
+    document_id: int,
+    *,
+    ingestion_job_id: int,
+    attempt_number: int,
+) -> str:
+    """Enqueue one *fenced* ``ingest_document`` attempt.
+
+    This compatibility helper is kept for callers that still publish
+    directly, but it may not create a legacy job with no durable identity.
+    The job identity and attempt are included in both the worker arguments
+    and the HMAC payload, matching the transactional ingestion outbox
+    contract.  The worker then claims the corresponding lease before any
+    ingestion mutation.
     """
+    document_id = _require_positive_int(document_id, field="document_id")
+    ingestion_job_id = _require_positive_int(
+        ingestion_job_id, field="ingestion_job_id"
+    )
+    attempt_number = _require_positive_int(
+        attempt_number, field="attempt_number"
+    )
     pool = await _get_pool()
-    job = await pool.enqueue_job("ingest_document", document_id)
+    payload = {
+        "document_id": document_id,
+        "ingestion_job_id": ingestion_job_id,
+        "attempt_number": attempt_number,
+    }
+    proof = create_queue_proof(
+        settings.INGESTION_QUEUE_HMAC_KEY,
+        task_name="ingest_document",
+        payload=payload,
+    )
+    job = await pool.enqueue_job(
+        "ingest_document",
+        document_id,
+        ingestion_job_id,
+        attempt_number,
+        proof,
+        _job_id=f"ingest-job-{ingestion_job_id}-attempt-{attempt_number}",
+    )
     if job is None:
-        # Arq returns None when a duplicate job_id collides; we don't
-        # set an explicit one, so this branch is theoretically
-        # unreachable. Surface as a clear error if it ever fires.
+        # Arq returns None when the deterministic durable job id already
+        # exists. Surface as a clear error rather than returning an
+        # unverified enqueue result to the caller.
         raise RuntimeError(
             "Arq returned no job — possible duplicate id collision. "
             "Investigate the redis 'arq:' keys."
@@ -55,9 +98,16 @@ async def enqueue_ingest_document(document_id: int) -> str:
 
 async def enqueue_with_metadata(
     document_id: int,
+    *,
+    ingestion_job_id: int,
+    attempt_number: int,
 ) -> dict[str, Any]:
-    """Convenience wrapper returning what the API row insert needs."""
-    job_id = await enqueue_ingest_document(document_id)
+    """Return the Arq identity for a fenced ingestion attempt."""
+    job_id = await enqueue_ingest_document(
+        document_id,
+        ingestion_job_id=ingestion_job_id,
+        attempt_number=attempt_number,
+    )
     return {"arq_job_id": job_id}
 
 
@@ -68,7 +118,13 @@ async def enqueue_evaluator_run(eval_run_id: int) -> str:
     in the same row — caller polls via the GET endpoint.
     """
     pool = await _get_pool()
-    job = await pool.enqueue_job("evaluate_strategies", eval_run_id)
+    payload = {"eval_run_id": eval_run_id}
+    proof = create_queue_proof(
+        settings.INGESTION_QUEUE_HMAC_KEY,
+        task_name="evaluate_strategies",
+        payload=payload,
+    )
+    job = await pool.enqueue_job("evaluate_strategies", eval_run_id, proof)
     if job is None:
         raise RuntimeError(
             "Arq returned no job — possible duplicate id collision."
@@ -76,7 +132,7 @@ async def enqueue_evaluator_run(eval_run_id: int) -> str:
     return job.job_id
 
 
-async def enqueue_reresolve_relations(collection_id: int) -> str:
+async def enqueue_reresolve_relations(collection_id: int, actor_user_id: int) -> str:
     """Enqueue a ``reresolve_collection_relations`` job (document-relations §8).
 
     The worker re-parses every document in the collection, re-extracts rule
@@ -85,7 +141,18 @@ async def enqueue_reresolve_relations(collection_id: int) -> str:
     half asynchronously.
     """
     pool = await _get_pool()
-    job = await pool.enqueue_job("reresolve_collection_relations", collection_id)
+    payload = {
+        "collection_id": collection_id,
+        "actor_user_id": actor_user_id,
+    }
+    proof = create_queue_proof(
+        settings.INGESTION_QUEUE_HMAC_KEY,
+        task_name="reresolve_collection_relations",
+        payload=payload,
+    )
+    job = await pool.enqueue_job(
+        "reresolve_collection_relations", collection_id, actor_user_id, proof,
+    )
     if job is None:
         raise RuntimeError(
             "Arq returned no job — possible duplicate id collision."

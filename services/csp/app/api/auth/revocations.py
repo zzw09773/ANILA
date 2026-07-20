@@ -4,10 +4,10 @@ Split from the original ``app/api/auth.py`` god-module — bodies moved
 verbatim; only this import header is new.
 """
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import List, Literal
 
 from fastapi import Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -17,6 +17,7 @@ from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import require_admin, verify_service_token
 from app.services.token_revocation_publisher import publish_revocation_sync
+from app.services.token_revocation_service import revoke_jti, revoke_sid
 
 from ._common import router
 
@@ -30,6 +31,11 @@ TOKEN_REVOCATION_RETENTION_DAYS = 30
 class RevocationEntry(BaseModel):
     user_id: int
     revoked_at_version: int
+    scope: str = "user_version"
+    token_jti_hash: str | None = None
+    session_id_hash: str | None = None
+    token_type: str | None = None
+    reason: str | None = None
     ts: str
 
 
@@ -40,11 +46,17 @@ class RevocationListResponse(BaseModel):
 
 class RevokeUserTokensRequest(BaseModel):
     user_id: int
+    scope: Literal["user_version", "jti", "sid"] = "user_version"
+    jti: str | None = Field(default=None, min_length=1, max_length=128)
+    sid: str | None = Field(default=None, min_length=1, max_length=128)
+    token_type: Literal["access", "refresh"] | None = None
+    reason: str = Field(default="admin_revoke", min_length=1, max_length=128)
 
 
 class RevokeUserTokensResponse(BaseModel):
     user_id: int
     revoked_at_version: int
+    scope: str = "user_version"
 
 
 def _serialise_ts(ts: datetime) -> str:
@@ -65,18 +77,50 @@ def revoke_user_tokens(
     if user is None:
         raise HTTPException(status_code=404, detail="使用者不存在")
 
-    user.token_version = (user.token_version or 0) + 1
-    revoked_at_version = int(user.token_version or 0)
-    db.add(
-        TokenRevocation(
+    if request.scope == "jti":
+        if not request.jti or request.token_type is None:
+            raise HTTPException(
+                status_code=422,
+                detail="scope=jti 需要 jti 與 token_type",
+            )
+        row = revoke_jti(
+            db,
+            user_id=user.id,
+            jti=request.jti,
+            token_type=request.token_type,
+            reason=request.reason,
+            commit=True,
+        )
+    elif request.scope == "sid":
+        if not request.sid:
+            raise HTTPException(status_code=422, detail="scope=sid 需要 sid")
+        row = revoke_sid(
+            db,
+            user_id=user.id,
+            sid=request.sid,
+            reason=request.reason,
+            commit=True,
+        )
+    else:
+        user.token_version = (user.token_version or 0) + 1
+        revoked_at_version = int(user.token_version or 0)
+        row = TokenRevocation(
             user_id=user.id,
             revoked_at_version=revoked_at_version,
+            scope="user_version",
+            reason=request.reason,
         )
-    )
-    db.commit()
+        db.add(row)
+        db.commit()
+    revoked_at_version = int(row.revoked_at_version)
     publish_revocation_sync(
         user_id=user.id,
         revoked_at_version=revoked_at_version,
+        scope=row.scope,
+        token_jti_hash=row.token_jti_hash,
+        session_id_hash=row.session_id_hash,
+        token_type=row.token_type,
+        reason=row.reason,
     )
     log_audit_event(
         db,
@@ -84,12 +128,13 @@ def revoke_user_tokens(
         action="auth.revoke",
         resource_type="user",
         resource_id=user.id,
-        detail=f"管理員撤銷使用者「{user.username}」現有權杖",
+        detail=f"管理員撤銷使用者「{user.username}」權杖(scope={row.scope})",
         commit=True,
     )
     return RevokeUserTokensResponse(
         user_id=user.id,
         revoked_at_version=revoked_at_version,
+        scope=row.scope,
     )
 
 
@@ -131,6 +176,11 @@ def list_revocations(
             RevocationEntry(
                 user_id=row.user_id,
                 revoked_at_version=row.revoked_at_version,
+                scope=row.scope,
+                token_jti_hash=row.token_jti_hash,
+                session_id_hash=row.session_id_hash,
+                token_type=row.token_type,
+                reason=row.reason,
                 ts=_serialise_ts(row.revoked_at),
             )
             for row in rows

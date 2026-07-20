@@ -45,41 +45,90 @@
 
 ## 3. 分支模型
 
-`main` 是 SSOT。通用 feature、bugfix、docs、測試先進 `main`，再同步 downstream。downstream 之間不要互相 merge；需要跨分支修補時，先進 `main`，再分別 port。另注意：分支 `anila-redesign` 已改用 §17.1 目錄配置（`services/` / `apps/` / `packages/` / `infra/`），該分支的權威文件在 `docs/anila-redesign-docs/`。
+`main` 是 SSOT。通用 feature、bugfix、docs、測試先進 `main`，再同步 downstream。downstream 之間不要互相 merge；需要跨分支修補時，先進 `main`，再分別 port。
+
+### 3.1 現況實測（2026-07-10 量測，改動前請重新量測）
+
+> ⚠ 本節在 2026-07-10 之前的內容已過時，且過時方向會誤導決策。以下為實測結果。
+
+**程式碼已收斂成單一版本。** 六條 downstream 分支中，**五條與 `main` 的差異只有 `.env.example` 一個檔案**，所有程式碼位元組相同：
+
+| Branch | 與 `main` 的非文件差異 |
+|---|---|
+| `dev-public` | 只有 `.env.example` |
+| `prod-public-passwd` | 只有 `.env.example` |
+| `dev-military` | 只有 `.env.example` |
+| `prod-military-passwd` | 只有 `.env.example` |
+| `prod-intranet-card` | 只有 `.env.example` |
+| `trial-military` | 30 個檔案（唯一真正的刪減型分支） |
+
+推論三點：
+
+1. **`prod-intranet-card` 已不是 card/SSO code fork。** `services/csp/app/services/card_auth.py`、`card_auth_service.py`、`auth_service.py`、`api/auth/*` 在它與 `main` 上位元組相同——card/SSO 程式碼已收進 `main`，由 `ENABLE_CARD_LOGIN` / `REQUIRE_CARD_LOGIN_ONLY` 兩個旗標決定行為。舊版所稱的「永久 fork 熱區」不再存在。
+2. **不要用 commit count 判斷 porting 負擔。** `git rev-list --left-right --count` 會顯示 12/11 之類的 divergence，那是 **commit 圖差異**（同語意不同 SHA 的 cherry-pick），不是內容差異。一律用 `git diff --name-only` 看檔案。
+3. **真正的風險已經轉移。** 正式部署身分現在由**可變的環境設定**決定，而不是由不可變的簽章 release artifact 決定。長期解法是單一 code line ＋ 簽章 deployment profile。見 `docs/planning/anila-development-roadmap.md` §2.4 與 Gate 6。
+
+量測指令（不要 checkout）：
+
+```bash
+git fetch --all --prune
+git diff --name-only origin/main origin/<branch> -- . ':(exclude)docs/**' ':(exclude)*.md'
+```
+
+### 3.2 分支表
 
 | Branch | 定位 | 維護重點 |
 |---|---|---|
-| `main` | 開發 SSOT | 所有通用變更來源。 |
-| `dev-public` | 對外網 dev | 目前接近 `main`，保留 dev/public 說明。 |
-| `prod-public-passwd` | 對外網 prod，純帳密 | 目前所在分支。必須維持 code-server 移除；`n8n` / `gitlab` 仍存在，外網部署前若不需要要移除 compose service、nginx location 與導覽 link。 |
-| `dev-military` | 國軍 dev，純帳密 | 目前移除 code-server / n8n / GitLab；同步時避免 dev tooling 回流。 |
-| `prod-military-passwd` | 國軍 prod，純帳密 | 目前移除 n8n / GitLab；code-server 是否保留須由交付規格明確決定。 |
-| `prod-intranet-card` | 中科院內網 prod，SSO + 自然人憑證卡 | 唯一 card/SSO fork；不得用 `main` wholesale merge 覆蓋 auth/card 檔案。 |
-| `trial-military` | 國軍 trial / 展示精簡版 | 刪減型分支；只挑選式 port 核心修補，不做整批 merge。 |
-| `feature/document-relations` | 已被 `main` 包含的舊 feature | 可視為已合併封存，不當新工作來源。 |
+| `main` | 開發 SSOT | 所有通用變更來源。card/SSO 程式碼在此，由旗標切換。 |
+| `dev-public` | 對外網 dev | 程式碼＝`main`；`.env.example` 放寬 dev secret 與 http endpoint。 |
+| `prod-public-passwd` | 對外網 prod，純帳密 | 程式碼＝`main`。見 §3.3 未落實的交付要求。 |
+| `dev-military` | 國軍 dev，純帳密 | 程式碼＝`main`。見 §3.3。 |
+| `prod-military-passwd` | 國軍 prod，純帳密 | 程式碼＝`main`。見 §3.3。 |
+| `prod-intranet-card` | 中科院內網 prod，SSO + 自然人憑證卡 | 程式碼＝`main`；只有 `.env.example` 四個旗標不同（`ANILA_ALLOW_DEV_SECRET=0`、`ANILA_ALLOW_HTTP_ENDPOINT=0`、`ENABLE_CARD_LOGIN=true`、`REQUIRE_CARD_LOGIN_ONLY=true`）。 |
+| `trial-military` | 國軍 trial / 展示精簡版 | **唯一真正的刪減型分支。** 刪除 `DeveloperAgentsView.vue`、`DeveloperGuideView.vue`、`OutputsPage.tsx`、`MindmapTree.tsx`、`infra/deployment/scripts/anila-ops.sh`。前端改動會撞 modify/delete，只挑選式 port。 |
+| `anila-redesign` | 舊重構分支（與 `main` 差 99 檔） | 權威文件在 `docs/anila-redesign-docs/`。`main` 早已採用 `services/`/`apps/`/`packages/`/`infra/` 配置，此分支不再是配置來源。 |
+| `feature/backend-adapter` | 舊 feature 分支 | 不當新工作來源。 |
 
-分支操作規則：
+（`feature/document-relations` 已不存在於 remote，舊表列它是過時資訊。）
+
+### 3.3 尚未落實的交付要求 ⚠
+
+舊版本表格宣稱某些分支「已移除」code-server / n8n / GitLab。**實測：七條分支的 `infra/compose/platform.yml` 全部都含這三個服務，且 `codeserver` 沒有 `profiles:`（預設隨 stack 啟動）。**
+
+| 分支 | 交付要求 | 實測（2026-07-10） |
+|---|---|---|
+| `prod-public-passwd` | code-server 應移除 | **仍在**（n8n / GitLab 亦在） |
+| `dev-military` | code-server / n8n / GitLab 應移除 | **三者皆仍在** |
+| `prod-military-passwd` | n8n / GitLab 應移除；code-server 由交付規格決定 | **皆仍在** |
+
+**安全影響（CRITICAL）**：`codeserver` 以 read-write 掛載 repo root，遮蔽清單只有 `.env` 與 `infra/nginx/certs/server.key` 兩條，而 `anila-ops.sh` 的備份預設落在同一目錄（含 `pg_dump -U csp` 的 superuser 全庫 dump、`.env` 副本、`secrets/*.pem`），nginx `/codeserver` 無 SSO。詳見 `docs/planning/anila-development-roadmap.md` §3.1 C1 與 Gate 0 S1。
+
+### 3.4 分支操作規則
 
 - 分析分支差異時不要 checkout 擾動工作樹；用 `git show <ref>:path`, `git diff`, `git log`, `git cherry` 直接比較 refs。
-- ahead/behind 與 commit count 會誤導。多條 downstream 有語意相同但 SHA 不同的 commit；同步前同時看檔案差異與 cherry 狀態。
+- **ahead/behind 與 commit count 會誤導**（見 §3.1 第 2 點）。多條 downstream 有語意相同但 SHA 不同的 commit；同步前同時看檔案差異與 cherry 狀態。
 - 同步前至少跑：
   - `git status --short --branch`
-  - `git diff --name-status origin/main...<branch>`
-  - `git diff --stat origin/main...<branch>`
-  - `git log --oneline --no-merges origin/main..<branch>`
-  - `git cherry -v origin/main <branch>`
+  - `git fetch --all --prune`
+  - `git diff --name-status origin/main origin/<branch>`
+  - `git diff --stat origin/main origin/<branch>`
+  - `git log --oneline --no-merges origin/main..origin/<branch>`
+  - `git cherry -v origin/main origin/<branch>`
 - commit 標籤維持既有規則：`[card-only]`, `[public-only]`, `[military-only]`, `[dev-only]`, `[security-all]`。
-- `prod-intranet-card` 的 SSO/card 永久 fork 熱區包含 `services/csp/app/api/auth.py`, `users.py`, `auth_providers.py`, `models/user.py`, `services/card_auth*.py`, `services/external_auth_service.py`, `schemas/card.py`, `apps/csp-governance-ui/src/views/LoginView.vue`, `AuthProvidersView.vue`, nginx card/Host allowlist 設定等。
+- **2026-07-10 量測下，五條非 trial downstream 的唯一非文件 tip delta 是 `.env.example`**；這是現況快照，不是永久不變式。port 時不要用 `main` 的版本覆蓋掉分支的旗標姿態；§3.3 的服務移除落實後，compose/nginx 也會成為正式 delta。
+- `trial-military` 是刪減型分支，前端改動會撞 modify/delete，需挑選式 port。
 
-建議同步順序：
+### 3.5 建議同步順序
 
 1. `main` 先完成通用修補與驗證。
 2. `dev-public`。
-3. `prod-public-passwd`，確認 code-server 沒回來，並檢查 n8n/GitLab 暴露策略。
+3. `prod-public-passwd`。
 4. `dev-military`。
 5. `prod-military-passwd`。
-6. `prod-intranet-card` 手動 port，保留 card/SSO fork。
+6. `prod-intranet-card`。
 7. `trial-military` 挑選式 port，只帶安全與核心 bugfix。
+
+（2–6 目前程式碼相同，實務上多為確認 `.env.example` 未被覆蓋。若 §3.3 的服務移除要求落實，這些分支才會重新出現真實的 compose delta。）
 
 ## 4. Compose / 部署規則
 
@@ -166,9 +215,9 @@ Image generation：
 | 範圍 | 指令 / 方法 |
 |---|---|
 | `packages/anila-agent` | `cd packages/anila-agent && make install && make test && make lint`；live endpoint 才跑 `make test-live`。 |
-| `packages/anila-core` | `cd packages/anila-core && pip install -e '.[dev,rag]' && pytest`；DB/RLS 類另跑 `pytest -m integration`；品質跑 `ruff check src tests`, `mypy src`。 |
-| `services/ingestion-worker` | `cd services/ingestion-worker && pip install -e '../../packages/anila-core[rag]' -e '.[dev]' && pytest && ruff check src tests`。 |
-| `services/csp` | `cd services/csp && python -m pytest`；schema/API 改動要驗 Alembic startup。 |
+| `packages/anila-core` | repo root 先跑 `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[dev,rag]'`，再 `cd packages/anila-core && pytest`；DB/RLS 類另跑 `pytest -m integration`；品質跑 `ruff check src tests`, `mypy src`。 |
+| `services/ingestion-worker` | repo root 跑 `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[rag]' -e './services/ingestion-worker[dev]'`，再 `cd services/ingestion-worker && pytest && ruff check src tests`。 |
+| `services/csp` | repo root 跑 `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[rag]' -r services/csp/requirements-dev.txt`，再 `cd services/csp && python -m pytest`；schema/API 改動要驗 Alembic startup。不得用 bare internal distribution name 從 public index 安裝。 |
 | `apps/csp-governance-ui` | `cd apps/csp-governance-ui && npm run build`。 |
 | `apps/anila-shell` | `cd apps/anila-shell && npm test && npm run build`。目前 `e2e/README.md` 是過時殘留，沒有可靠 Playwright spec。 |
 | `apps/anilalm` | `cd apps/anilalm && npm run typecheck && npm run build`；schema 變更後先 `npm run gen:studio-types`。 |

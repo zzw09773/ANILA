@@ -1,0 +1,31 @@
+{
+  "schema_version": "anila.gate2.inference-callsites.v1",
+  "callsites": [
+    {"id":"router.primary","component":"anila-core-router","source":"packages/anila-core/src/anila_core/api/router_server.py","mode":"separate_process_unverified","pilot_eligible":false},
+    {"id":"csp.chat_model","component":"csp","source":"services/csp/app/api/proxy.py","mode":"via_csp","pilot_eligible":true,"controls":{"csp_mediated":true,"task":true,"classification_ceiling":true,"usage":true,"audit":true}},
+    {"id":"csp.agent_dispatch","component":"csp","source":"services/csp/app/api/proxy.py","mode":"external_agent","pilot_eligible":false,"controls":{"csp_mediated":true,"task":true,"classification_ceiling":true,"usage":true,"audit":true}},
+    {"id":"csp.agent_trace_test","component":"csp","source":"services/csp/app/api/agents/health.py","mode":"external_agent_unattributed","pilot_eligible":false,"controls":{"csp_mediated":true,"task":false,"classification_ceiling":false,"usage":false,"audit":true}},
+    {"id":"csp.server_retrieval_embedding","component":"csp","source":"services/csp/app/api/proxy.py","mode":"via_csp","pilot_eligible":true,"controls":{"csp_mediated":true,"task":true,"classification_ceiling":true,"usage":true,"audit":true}},
+    {"id":"csp.standalone_search_embedding","component":"csp","source":"services/csp/app/api/ingestion/search.py","mode":"csp_unattributed","pilot_eligible":false,"controls":{"csp_mediated":true,"task":false,"classification_ceiling":true,"usage":true,"audit":false}},
+    {"id":"csp.public_embedding_api","component":"csp","source":"services/csp/app/api/proxy.py","mode":"public_unattributed","pilot_eligible":false,"controls":{"csp_mediated":true,"task":false,"classification_ceiling":false,"usage":true,"audit":false}},
+    {"id":"csp.image_generation","component":"csp","source":"services/csp/app/api/proxy.py","mode":"gate3_disabled","pilot_eligible":false,"controls":{"csp_mediated":true,"task":true,"classification_ceiling":true,"usage":true,"audit":true}},
+    {"id":"csp.agent_session_resume","component":"csp","source":"services/csp/app/api/proxy.py","mode":"external_agent_unattributed","pilot_eligible":false,"controls":{"csp_mediated":true,"task":false,"classification_ceiling":false,"usage":false,"audit":false}},
+    {"id":"csp.memory_extract","component":"csp","source":"services/csp/app/services/memory_service.py","mode":"via_csp","pilot_eligible":true,"controls":{"csp_mediated":true,"task":true,"classification_ceiling":true,"usage":true,"audit":true}},
+    {"id":"csp.memory_embedding","component":"csp","source":"services/csp/app/services/memory_service.py","mode":"via_csp","pilot_eligible":true,"controls":{"csp_mediated":true,"task":true,"classification_ceiling":true,"usage":true,"audit":true}},
+    {"id":"ingestion.embedding","component":"ingestion-worker","source":"services/ingestion-worker/src/ingestion_worker/embedder.py","mode":"csp_unattributed","pilot_eligible":false,"controls":{"csp_mediated":true,"task":false,"classification_ceiling":true,"usage":true,"audit":false}},
+    {"id":"ingestion.vision_caption","component":"ingestion-worker","source":"packages/anila-core/src/anila_core/providers/vision.py","mode":"csp_unattributed","pilot_eligible":false},
+    {"id":"ingestion.ocr_vision","component":"ingestion-worker","source":"packages/anila-core/src/anila_core/ingestion/ocr.py","mode":"csp_unattributed","pilot_eligible":false},
+    {"id":"agent.runtime_model","component":"anila-agent","source":"packages/anila-agent/anila_agent/runtime/model.py","mode":"direct_unconverged","pilot_eligible":false},
+    {"id":"agent.memory_extract","component":"anila-agent","source":"packages/anila-agent/anila_agent/memory/extract.py","mode":"direct_unconverged","pilot_eligible":false},
+    {"id":"agent.memory_embedding","component":"anila-agent","source":"packages/anila-agent/anila_agent/memory/recall.py","mode":"direct_unconverged","pilot_eligible":false},
+    {"id":"agent.memory_select","component":"anila-agent","source":"packages/anila-agent/anila_agent/memory/recall.py","mode":"direct_unconverged","pilot_eligible":false},
+    {"id":"studio.llm","component":"anila-studio","source":"services/anila-studio/app/services/studio_llm.py","mode":"gate3_disabled","pilot_eligible":false},
+    {"id":"flux_agent.prompt_translation","component":"flux2-dev-agent","source":"services/flux2-dev-agent/app/prompt_translator.py","mode":"gate3_disabled","pilot_eligible":false},
+    {"id":"csp.prompt_generator","component":"csp","source":"services/csp/app/services/prompt_gen_service.py","mode":"direct_unconverged","pilot_eligible":false},
+    {"id":"ingestion.relation_llm","component":"ingestion-worker","source":"services/ingestion-worker/src/ingestion_worker/llm_relations.py","mode":"direct_unconverged","pilot_eligible":false},
+    {"id":"ingestion.judge","component":"ingestion-worker","source":"services/ingestion-worker/src/ingestion_worker/judge.py","mode":"direct_unconverged","pilot_eligible":false},
+    {"id":"studio.flux","component":"anila-studio","source":"services/anila-studio/app/services/flux_image_provider.py","mode":"direct_unconverged","pilot_eligible":false},
+    {"id":"flux_agent.backend","component":"flux2-dev-agent","source":"services/flux2-dev-agent/app/flux_client.py","mode":"direct_unconverged","pilot_eligible":false},
+    {"id":"third_party.agent","component":"csp","source":"services/csp/app/api/proxy.py","mode":"external_agent","pilot_eligible":false}
+  ]
+}

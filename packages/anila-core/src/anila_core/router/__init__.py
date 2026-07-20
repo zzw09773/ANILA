@@ -1,5 +1,100 @@
-"""Tool router — registry, execution, and schema generation."""
+"""Tool routing plus the framework-light Gate 5 RouterRuntime core."""
 
-from .tool_router import ToolRegistry, RouterError, execute_batch
+from .candidate_filter import (
+    AgentRegistryEntry,
+    AgentRegistrySnapshot,
+    CapabilityFilter,
+    CandidateFilterResult,
+    RegistryEntry,
+    RegistrySnapshot,
+    RouterRegistryEntry,
+    RouterRegistrySnapshot,
+    candidate_eligibility_reasons,
+    is_candidate_eligible,
+)
+from .decision_engine import DecisionEngine, DecisionResult, available_registry_entries
+from .execution_runtime import Dispatcher, ExecutionRuntime, RuntimeResult
+from .csp_registry_client import (
+    AgentClient,
+    AgentClientError,
+    CspAgentClient,
+    CspAgentRequest,
+    CspInferenceClient,
+    CspInferenceRequest,
+    CspExecutionGrantMinter,
+    ExecutionGrantEnvelope,
+    InferenceClient,
+    CspRegistryClient,
+    ExecutionGrantMinter,
+    GrantMintUnavailable,
+    NoopExecutionGrantMinter,
+    RegistryClientError,
+    parse_registry_snapshot,
+)
+from .policy_gate import ExecutionGrantInput, PolicyGate
+from .request_context import (
+    RequestContext,
+    RequestContextBuilder,
+    ServerCeilings,
+    UntrustedContentLimitExceeded,
+    UntrustedHistoryItem,
+    extract_untrusted_user_content,
+)
+from .injection_detection import (
+    CanonicalizationLimitExceeded,
+    INJECTION_PATTERN_SET_VERSION,
+    MAX_REQUEST_CONTENT_SCAN_CHARS,
+    canonicalize_for_matching,
+    contains_injection,
+)
+from .tool_router import RouterError, ToolRegistry, execute_batch
 
-__all__ = ["ToolRegistry", "RouterError", "execute_batch"]
+__all__ = [
+    "AgentRegistryEntry",
+    "AgentRegistrySnapshot",
+    "AgentClient",
+    "AgentClientError",
+    "CapabilityFilter",
+    "CandidateFilterResult",
+    "candidate_eligibility_reasons",
+    "DecisionEngine",
+    "DecisionResult",
+    "available_registry_entries",
+    "CspAgentClient",
+    "CspAgentRequest",
+    "CspInferenceClient",
+    "CspInferenceRequest",
+    "CspExecutionGrantMinter",
+    "ExecutionGrantEnvelope",
+    "CspRegistryClient",
+    "ExecutionGrantMinter",
+    "Dispatcher",
+    "ExecutionGrantInput",
+    "ExecutionRuntime",
+    "PolicyGate",
+    "RegistryEntry",
+    "RegistryClientError",
+    "GrantMintUnavailable",
+    "InferenceClient",
+    "NoopExecutionGrantMinter",
+    "RegistrySnapshot",
+    "RequestContext",
+    "RequestContextBuilder",
+    "RouterError",
+    "RouterRegistryEntry",
+    "RouterRegistrySnapshot",
+    "RuntimeResult",
+    "ServerCeilings",
+    "UntrustedContentLimitExceeded",
+    "ToolRegistry",
+    "UntrustedHistoryItem",
+    "extract_untrusted_user_content",
+    "INJECTION_PATTERN_SET_VERSION",
+    "MAX_REQUEST_CONTENT_SCAN_CHARS",
+    "CanonicalizationLimitExceeded",
+    "canonicalize_for_matching",
+    "contains_injection",
+    "is_candidate_eligible",
+    "execute_batch",
+    "parse_registry_snapshot",
+]

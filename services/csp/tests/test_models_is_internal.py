@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.schemas.model_registry import ModelCreate, ModelUpdate, ModelResponse
+from app.schemas.model_registry import ModelCreate, ModelUpdate
 from app.api.models import ENDPOINT_INTERNAL, ENDPOINT_REDACTED, _build_response
 
 
@@ -79,6 +79,7 @@ def _row(is_internal: bool):
         base_model_id=None,
         base_model=None,
         is_internal=is_internal,
+        classification_ceiling="無機密",
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )

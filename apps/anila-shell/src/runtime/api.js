@@ -2,13 +2,13 @@
 //
 // Wave 2: the SPA no longer holds JWT tokens in localStorage or an API Key
 // in sessionStorage. The session lives entirely in httpOnly cookies set by
-// the backend (`anila_access_token`, `anila_refresh_token`). Every fetch
+// the backend (`__Host-anila_access_token`, `__Host-anila_refresh_token`). Every fetch
 // uses `credentials: "include"` so the browser attaches those cookies
 // same-origin (or cross-origin when CORS allow_credentials is set on the
 // server).
 //
 // For mutating requests the server enforces a double-submit CSRF check:
-// we must read the non-httpOnly `anila_csrf` cookie and echo its value as
+// we must read the non-httpOnly `__Host-anila_csrf` cookie and echo its value as
 // an `X-CSRF-Token` header. GET/HEAD/OPTIONS are exempt.
 //
 // The legacy `accessToken` / `apiKey` parameters are kept as optional
@@ -68,9 +68,21 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  * Read the non-httpOnly CSRF cookie. Returns an empty string when not
  * present (pre-login bootstrap, or the user cleared cookies).
  */
+export function csrfCookieName(locationLike) {
+  const location = locationLike ?? (typeof window !== "undefined" ? window.location : null);
+  const loopback =
+    location &&
+    ["localhost", "127.0.0.1", "::1", "[::1]"].includes(location.hostname);
+  return location?.protocol === "http:" && loopback
+    ? "anila_dev_csrf"
+    : "__Host-anila_csrf";
+}
+
 export function readCsrfCookie() {
   if (typeof document === "undefined" || !document.cookie) return "";
-  const match = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
+  const name = csrfCookieName();
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${escaped}=([^;]+)`));
   return match ? decodeURIComponent(match[1]) : "";
 }
 
@@ -126,7 +138,7 @@ async function readError(response) {
 }
 
 export async function refreshJwt() {
-  // Refresh token travels via the `anila_refresh_token` httpOnly cookie;
+  // Refresh token travels via the `__Host-anila_refresh_token` httpOnly cookie;
   // body is empty. Explicit JSON header still required so FastAPI routes
   // OK, even with no body.
   return authRequest("/api/auth/refresh", {

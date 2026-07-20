@@ -6,8 +6,7 @@ Pins the contract:
 - ``/api/auth/me`` accepts the session cookie without any Authorization
   header (the SPA's default flow after login).
 - ``POST /api/auth/refresh`` rotates tokens using only the cookie.
-- ``POST /api/auth/logout`` clears cookies and bumps ``token_version``
-  so any outstanding JWT copies become invalid immediately.
+- ``POST /api/auth/logout`` clears cookies and revokes only the current sid.
 - CSRF middleware rejects mutating cookie-authenticated requests without
   a matching ``X-CSRF-Token`` header.
 """
@@ -15,11 +14,21 @@ Pins the contract:
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 
+from app.config import settings
+from app.middleware import cookies as cookie_mod
 from app.middleware.cookies import (
     ACCESS_COOKIE_NAME,
     CSRF_COOKIE_NAME,
+    DEV_ACCESS_COOKIE_NAME,
+    DEV_CSRF_COOKIE_NAME,
+    DEV_REFRESH_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
+    SECURE_ACCESS_COOKIE_NAME,
+    SECURE_CSRF_COOKIE_NAME,
+    SECURE_REFRESH_COOKIE_NAME,
+    cookie_names,
 )
 
 from tests.conftest import make_user
@@ -49,6 +58,55 @@ def test_login_sets_three_cookies(client: TestClient, db):
     assert body["csrf_token"] == cookies[CSRF_COOKIE_NAME].value
 
 
+def test_testclient_profile_uses_distinct_nonlegacy_dev_names():
+    assert cookie_names(False) == (
+        DEV_ACCESS_COOKIE_NAME,
+        DEV_REFRESH_COOKIE_NAME,
+        DEV_CSRF_COOKIE_NAME,
+    )
+    assert ACCESS_COOKIE_NAME == DEV_ACCESS_COOKIE_NAME
+    assert "anila_access_token" not in cookie_names(False)
+
+
+def test_formal_cookie_headers_enforce_host_prefix_invariants(monkeypatch):
+    monkeypatch.setattr(settings, "COOKIE_SECURE", True)
+    monkeypatch.setattr(cookie_mod, "ACCESS_COOKIE_NAME", SECURE_ACCESS_COOKIE_NAME)
+    monkeypatch.setattr(cookie_mod, "REFRESH_COOKIE_NAME", SECURE_REFRESH_COOKIE_NAME)
+    monkeypatch.setattr(cookie_mod, "CSRF_COOKIE_NAME", SECURE_CSRF_COOKIE_NAME)
+    response = Response()
+
+    cookie_mod.set_session_cookies(
+        response,
+        access_token="synthetic-access",
+        refresh_token="synthetic-refresh",
+    )
+
+    headers = response.headers.getlist("set-cookie")
+    assert len(headers) == 3
+    assert {header.split("=", 1)[0] for header in headers} == {
+        SECURE_ACCESS_COOKIE_NAME,
+        SECURE_REFRESH_COOKIE_NAME,
+        SECURE_CSRF_COOKIE_NAME,
+    }
+    for header in headers:
+        assert "Secure" in header
+        assert "Path=/" in header
+        assert "Domain=" not in header
+    assert all("HttpOnly" in h for h in headers[:2])
+    assert "HttpOnly" not in headers[2]
+
+    cleared = Response()
+    cookie_mod.clear_session_cookies(cleared)
+    clear_headers = cleared.headers.getlist("set-cookie")
+    assert len(clear_headers) == 3
+    for header in clear_headers:
+        assert header.startswith("__Host-")
+        assert "Secure" in header
+        assert "Path=/" in header
+        assert "Domain=" not in header
+        assert "Max-Age=0" in header
+
+
 def test_me_accepts_session_cookie_without_authorization(client: TestClient, db):
     make_user(db, username="bob")
     _login(client, "bob")
@@ -63,8 +121,8 @@ def test_refresh_via_cookie_rotates_tokens(client: TestClient, db):
     make_user(db, username="carol")
     _login(client, "carol")
 
-    # Refresh cookie is scoped to /api/auth/refresh; TestClient jar honors
-    # it. We assert the endpoint succeeds + the JSON body contains a new
+    # __Host- requires Path=/ (the dev profile deliberately matches it).
+    # We assert the endpoint succeeds + the JSON body contains a new
     # access_token; comparing byte-level equality against the prior token
     # is fragile because JWT exp has second precision and login+refresh
     # can land in the same second.
@@ -81,9 +139,13 @@ def test_refresh_via_cookie_rotates_tokens(client: TestClient, db):
     assert client.cookies.get(ACCESS_COOKIE_NAME)
 
 
-def test_logout_clears_cookies_and_bumps_token_version(client: TestClient, db):
+def test_logout_clears_cookies_and_revokes_current_sid(client: TestClient, db):
+    from app.models.auth_session import AuthSession
+    from app.utils.security import decode_token
+
     user = make_user(db, username="dave")
-    _login(client, "dave")
+    login_response = _login(client, "dave")
+    claims = decode_token(login_response.json()["access_token"])
     prior_tv = user.token_version or 0
 
     resp = client.post(
@@ -99,7 +161,9 @@ def test_logout_clears_cookies_and_bumps_token_version(client: TestClient, db):
     assert probe.status_code == 401
 
     db.refresh(user)
-    assert user.token_version == prior_tv + 1
+    assert user.token_version == prior_tv
+    session = db.get(AuthSession, claims["sid"])
+    assert session.revoked_at is not None
 
 
 def test_csrf_required_on_mutating_cookie_request(client: TestClient, db):
@@ -139,3 +203,16 @@ def test_safe_methods_never_need_csrf(client: TestClient, db):
     # GET without X-CSRF-Token succeeds.
     resp = client.get("/api/auth/me")
     assert resp.status_code == 200
+
+
+def test_legacy_refresh_cookie_is_not_accepted(client: TestClient, db):
+    from app.services.auth_service import create_tokens
+
+    user = make_user(db, username="legacy_refresh_cookie")
+    legacy_refresh = create_tokens(user)["refresh_token"]
+    client.cookies.clear()
+    client.cookies.set("anila_refresh_token", legacy_refresh)
+
+    resp = client.post("/api/auth/refresh", json={})
+
+    assert resp.status_code == 401

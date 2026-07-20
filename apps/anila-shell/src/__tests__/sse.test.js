@@ -321,4 +321,14 @@ describe("dispatchSseEvent", () => {
     ).not.toThrow();
     expect(onTodos).not.toHaveBeenCalled();
   });
+
+  it("routes the frozen anila.step envelope to the execution reducer", () => {
+    const onStep = vi.fn();
+    const payload = { schema_version: "step-event/v1", step_id: "tool:1" };
+    dispatchSseEvent(
+      { event: "anila.step", data: JSON.stringify(payload), raw: "" },
+      { onStep, accumulator: makeAccumulator() },
+    );
+    expect(onStep).toHaveBeenCalledWith(payload);
+  });
 });

@@ -33,6 +33,7 @@ def _collection(db, owner: User) -> IngestionCollection:
         name="regs",
         chunking_config={"strategy": "fixed"},
         embedding_model="nvidia/NV-embed-V2",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4000,
         created_by=owner.id,
     )
@@ -151,7 +152,7 @@ def test_parent_first_then_supplement(db, coll):
 
 # ── re-extract: delete old rule, keep manual ─────────────────────────────────
 def test_reextract_replaces_rule_keeps_manual(db, coll):
-    parent_a = _doc(db, coll.id, "甲辦法")
+    _doc(db, coll.id, "甲辦法")
     parent_b = _doc(db, coll.id, "乙辦法")
     child = _doc(db, coll.id, "子規定")
 
@@ -187,7 +188,7 @@ def test_reextract_replaces_rule_keeps_manual(db, coll):
 # ── ambiguous ────────────────────────────────────────────────────────────────
 def test_ambiguous_multiple_matches_left_null(db, coll):
     # two docs share the same normalized title
-    d1 = _doc(db, coll.id, "作業規定")
+    _doc(db, coll.id, "作業規定")
     db.add(
         IngestionDocument(
             collection_id=coll.id, filename="dup.pdf", title="作業規定",

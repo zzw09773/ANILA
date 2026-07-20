@@ -1,0 +1,70 @@
+# External-only NV-Embed proxy mode.
+#
+# Use this file instead of the full model stack when Triton gRPC is provided by
+# another host.  It intentionally defines no nv-embed-triton service or GPU
+# reservation, so the external mode cannot pull or start the local Triton
+# backend by accident.  gRPC is the only Triton transport in this mode.  The
+# shared models network remains external-owned (the shared helper verifies its
+# runtime ``Internal=true, Driver=bridge`` topology); a project-scoped bridge
+# is the proxy's sole egress path.  This file is standalone: never combine it
+# with docker-compose.yml, and never pass --remove-orphans against the base
+# anila-models project.  ``ANILA_EXTERNAL_EMBED_STANDALONE`` is an
+# anti-footgun marker supplied only by external-embed-serve.sh: it makes a
+# bare base-plus-overlay ``docker compose config`` fail, but is not an
+# authentication or a security boundary against someone deliberately setting
+# the environment variable themselves.
+
+name: anila-external-embed
+
+services:
+  nv-embed-proxy:
+    image: embedding-proxy:external
+    container_name: anila-external-embed-nv-embed-proxy
+    build:
+      context: ./src/embedding_proxy
+    labels:
+      com.anila.inference-role: external-shim
+      com.anila.provider-locality: internal_shim
+      com.anila.upstream-locality: external_governed
+      com.anila.upstream-transport: triton-grpc
+      com.anila.egress-network: embedding-egress
+      com.anila.egress-target: "${TRITON_GRPC_URL:?TRITON_GRPC_URL must be set to host:port}"
+      com.anila.upstream-egress-policy-id: "${ANILA_EXTERNAL_EMBED_UPSTREAM_EGRESS_POLICY_ID:?use the signed external embedding upstream egress policy id}"
+      com.anila.standalone-marker: "${ANILA_EXTERNAL_EMBED_STANDALONE:?use external-embed-serve.sh; this overlay must be standalone}"
+    environment:
+      TZ: Asia/Taipei
+      TRITON_GRPC_URL: "${TRITON_GRPC_URL:?TRITON_GRPC_URL must be set to host:port}"
+      MODEL_NAME: nv-embed-v2
+      REQUEST_TIMEOUT: "60"
+      READINESS_TIMEOUT: "5"
+    expose:
+      - "8000"
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    networks:
+      models: {}
+      embedding-egress: {}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=15).status == 200 else 1)\""]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 30s
+
+networks:
+  models:
+    external: true
+    name: "${ANILA_MODELS_NETWORK:-anila-models-net}"
+  embedding-egress:
+    driver: bridge
+    # Keep this explicit in source.  Compose may omit internal:false from its
+    # resolved JSON, so Gate5 treats absence as "not internal" only after it
+    # has verified the dedicated bridge and single-attacher contract.
+    internal: false

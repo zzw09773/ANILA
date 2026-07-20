@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from anila_agent.util.structured import parse_json_object
 
@@ -92,7 +92,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb + 1e-9)
 
 
-def _sorted_by_index(items: list) -> list:
+def _sorted_by_index(items: list[object]) -> list[object]:
     """依 ``data[].index`` 排序，使回應對齊回請求 ``input`` 的原始位置。
 
     OpenAI 相容的批次 embeddings 端點不保證 ``data[]`` 陣列順序等於 ``input``
@@ -100,17 +100,33 @@ def _sorted_by_index(items: list) -> list:
     （非標準/舊端點）時退回原陣列順序（``sorted`` 為穩定排序，此時每個 key
     即原始位置本身，等同不動）。
     """
-    return [
-        item
-        for _, item in sorted(
-            enumerate(items),
-            key=lambda pair: (
-                pair[1]["index"]
-                if isinstance(pair[1], dict) and "index" in pair[1]
-                else pair[0]
-            ),
-        )
-    ]
+    def _index(pair: tuple[int, object]) -> int:
+        position, item = pair
+        if isinstance(item, Mapping):
+            declared = item.get("index")
+            if isinstance(declared, int) and not isinstance(declared, bool):
+                return declared
+        return position
+
+    return [item for _, item in sorted(enumerate(items), key=_index)]
+
+
+def _embedding_values(item: object) -> list[float]:
+    """Validate one OpenAI embedding item before cosine arithmetic."""
+
+    if not isinstance(item, Mapping):
+        raise ValueError("embedding response item must be an object")
+    embedding = item.get("embedding")
+    if not isinstance(embedding, list):
+        raise ValueError("embedding response item missing embedding")
+    values: list[float] = []
+    for value in embedding:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("embedding response contains a non-numeric value")
+        values.append(float(value))
+    if not values:
+        raise ValueError("embedding response is empty")
+    return values
 
 
 def make_embed_fn(
@@ -132,7 +148,13 @@ def make_embed_fn(
             resp.raise_for_status()
             # data[] 陣列順序不保證與 input 對齊；依 index 排序後再對齊
             # （缺 index 時退回陣列順序）。
-            vectors = [d["embedding"] for d in _sorted_by_index(resp.json()["data"])]
+            payload: object = resp.json()
+            data = payload.get("data") if isinstance(payload, Mapping) else None
+            if not isinstance(data, list):
+                raise ValueError("embedding response missing data")
+            vectors = [_embedding_values(item) for item in _sorted_by_index(data)]
+        if not vectors:
+            return []
         q_vec, doc_vecs = vectors[0], vectors[1:]
         ranked = sorted(
             zip(names, doc_vecs, strict=False), key=lambda nv: _cosine(q_vec, nv[1]), reverse=True
@@ -177,7 +199,9 @@ def make_llm_select_fn(
             )
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"].get("content")
-        names = parse_json_object(content).get("names", [])
-        return [n for n in names if isinstance(n, str)][:k]
+        names = parse_json_object(content).get("names")
+        if not isinstance(names, list):
+            return []
+        return [name for name in names if isinstance(name, str)][:k]
 
     return _select

@@ -82,6 +82,18 @@ BOOTSTRAP_DEFAULT_TTL = timedelta(minutes=15)
 ROTATION_GRACE_DEFAULT = timedelta(hours=24)
 
 
+def _stored_datetime_as_utc(value: datetime) -> datetime:
+    """Normalize legacy timezone-naive DB values before Python comparisons.
+
+    PostgreSQL preserves timezone-aware values, while the SQLite unit-test
+    dialect returns ``DateTime`` columns without ``tzinfo``.  The stored
+    contract is UTC in both cases.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 # ---------------------------------------------------------------------------
 # Identity resolved from a ``X-CSP-Service-Token`` header.
 # ---------------------------------------------------------------------------
@@ -161,7 +173,6 @@ def _match_service_client(
         .all()
     )
     for client in candidates:
-        used_previous = False
         try:
             primary_pt = decode_service_token_envelope(client.service_token_envelope)
             if primary_pt and hmac.compare_digest(primary_pt, token):
@@ -179,10 +190,9 @@ def _match_service_client(
             if (
                 previous_pt
                 and client.service_token_previous_expires_at
-                and client.service_token_previous_expires_at > now
+                and _stored_datetime_as_utc(client.service_token_previous_expires_at) > now
                 and hmac.compare_digest(previous_pt, token)
             ):
-                used_previous = True
                 return CallerIdentity(
                     kind="service_client",
                     agent_id=None,
@@ -235,7 +245,7 @@ def _match_agent_credential(
             if (
                 previous_pt
                 and cred.service_token_previous_expires_at
-                and cred.service_token_previous_expires_at > now
+                and _stored_datetime_as_utc(cred.service_token_previous_expires_at) > now
                 and hmac.compare_digest(previous_pt, token)
             ):
                 return CallerIdentity(
@@ -328,7 +338,10 @@ def consume_bootstrap_token(
         raise ValueError("bootstrap token 無效")
 
     now = datetime.now(timezone.utc)
-    if not agent.bootstrap_token_expires_at or agent.bootstrap_token_expires_at <= now:
+    if (
+        not agent.bootstrap_token_expires_at
+        or _stored_datetime_as_utc(agent.bootstrap_token_expires_at) <= now
+    ):
         raise ValueError("bootstrap token 已過期，請請 admin 重新核發")
 
     if agent.bootstrap_token_consumed_at is not None:

@@ -28,6 +28,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.middleware.cookies import ACCESS_COOKIE_NAME
 from app.models.user import User
 from app.services.api_key_service import validate_api_key
 from app.services.auth_service import _load_user_from_payload
@@ -40,12 +41,6 @@ class Caller:
 
     user: User
     api_key_id: int | None
-
-
-# Cookie name reserved for Wave 2 (httpOnly cookie-based JWT). Reading it now
-# is a no-op when the SPA still sends Authorization headers, but it means
-# Wave 2 can ship without touching ``get_caller`` again.
-ACCESS_COOKIE_NAME = "anila_access_token"
 
 
 def _extract_bearer(authorization: str | None) -> str | None:
@@ -68,8 +63,9 @@ def get_caller(
     """Resolve the caller from either a JWT or an API key.
 
     Precedence: Authorization header > cookie. The cookie branch exists for
-    Wave 2's httpOnly SPA flow; today all SPA traffic still comes in via the
-    Authorization header, so this just reserves the wiring.
+    the httpOnly SPA flow. Formal HTTPS uses the host-only ``__Host-`` name;
+    an explicitly insecure dev/test profile uses a distinct ``anila_dev_*``
+    name. The legacy unprefixed cookie is never considered.
     """
     token = _extract_bearer(request.headers.get("Authorization"))
     if token is None:
@@ -88,4 +84,9 @@ def get_caller(
 
     payload = decode_token(token)
     user = _load_user_from_payload(payload, db, "access")
+    # Preserve the already verified JWT assurance projection for the
+    # Router-only CSP header builder.  It is request-local and never exposed
+    # to ordinary model gateways; API-key callers intentionally have no such
+    # claim and therefore cannot satisfy formal Router admission.
+    request.state.auth_claims = payload
     return Caller(user=user, api_key_id=None)

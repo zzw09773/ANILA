@@ -7,34 +7,124 @@ embedder, and the agent-scoped store. Each piece raises
 structured failure into ``ingestion_jobs`` so the dev UI can render a
 useful message.
 
-Concurrency note: this handler is async and will run in the same event
-loop as the Arq worker's main loop. A long-running embedding call
-doesn't block other jobs — they're awaited not blocked on. That's why
-the parser uses pure-Python (no thread offload) for now: the bottleneck
-is the embedding endpoint, not parsing.
+Concurrency note: this handler is async and runs in Arq's shared event loop.
+Network calls are awaited and blocking filesystem/parser work is delegated to
+``document_io.read_and_extract`` so heartbeats, cancellations and unrelated
+jobs continue to make progress.
 """
 
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
+import errno
+import hashlib
 import logging
 import os
+import re as _re
+import stat
+import uuid
 from datetime import datetime, timezone
 from typing import Any
+from anila_security import verify_queue_proof
 
 import asyncpg
 
+from anila_core.contracts import Classification
 from anila_core.ingestion.chunking_plugins import get_chunker
 from anila_core.ingestion.errors import IngestionError, StoreError
 from anila_core.storage.adapters.pg_pool import PgPool
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
+from ingestion_worker.document_io import DocumentParseTimeout, read_and_extract
 from ingestion_worker.embedder import Embedder
-from ingestion_worker.parsers import extract_text
+from ingestion_worker import job_state
 from ingestion_worker.settings import settings
 
 
 logger = logging.getLogger(__name__)
+_ACTIVE_JOB: ContextVar[tuple[int, int, str] | None] = ContextVar(
+    "active_ingestion_job", default=None
+)
+
+
+def _effective_chunk_classification(meta: dict[str, Any]) -> Classification:
+    """Return max(document, collection) using the canonical five-level type.
+
+    Both values are required DB state. Missing, NULL, non-string, or unknown
+    values abort ingestion before source content is embedded or persisted.
+    """
+    parsed: list[Classification] = []
+    for field in (
+        "document_classification_level",
+        "collection_classification_level",
+    ):
+        raw = meta.get(field)
+        if not isinstance(raw, str):
+            raise StoreError(
+                code="E_CLASSIFICATION_INVALID",
+                retryable=False,
+                severity="critical",
+                user_message="文件或知識庫的分類資料無效，已拒絕入庫。",
+                details={"field": field, "value_type": type(raw).__name__},
+            )
+        try:
+            parsed.append(Classification.from_storage(raw))
+        except ValueError as exc:
+            raise StoreError(
+                code="E_CLASSIFICATION_INVALID",
+                retryable=False,
+                severity="critical",
+                user_message="文件或知識庫的分類資料無效，已拒絕入庫。",
+                details={"field": field, "value": raw},
+            ) from exc
+    return Classification.max_of(parsed)
+
+
+def _require_embedding_contract(meta: dict[str, Any]) -> tuple[str, str, int]:
+    """Fail before parsing when worker and collection embedding identity drift.
+
+    A model name is not a weight identity.  The fingerprint must be an
+    explicitly configured SHA-256 value on both sides; it is never derived
+    from the model label.
+    """
+    collection_model = meta.get("embedding_model")
+    collection_fingerprint = meta.get("embedding_fingerprint")
+    collection_dim = meta.get("embedding_dim")
+    worker_fingerprint = settings.embedding_model_fingerprint
+    if (
+        not isinstance(collection_model, str)
+        or not collection_model
+        or not isinstance(collection_fingerprint, str)
+        or _re.fullmatch(r"sha256:[0-9a-f]{64}", collection_fingerprint) is None
+        or not isinstance(collection_dim, int)
+        or collection_dim <= 0
+        or _re.fullmatch(r"sha256:[0-9a-f]{64}", worker_fingerprint) is None
+    ):
+        raise StoreError(
+            code="E_EMBEDDING_CONTRACT_INVALID",
+            retryable=False,
+            severity="critical",
+            user_message="嵌入模型權重契約缺失或格式無效，已拒絕入庫。",
+        )
+    expected = (collection_model, collection_fingerprint, collection_dim)
+    supplied = (
+        settings.embedding_model,
+        worker_fingerprint,
+        settings.embedding_dim,
+    )
+    if supplied != expected:
+        raise StoreError(
+            code="E_EMBEDDING_CONTRACT_MISMATCH",
+            retryable=False,
+            severity="critical",
+            user_message="worker 嵌入模型、權重指紋或維度與知識庫契約不一致。",
+            details={
+                "expected_dim": collection_dim,
+                "supplied_dim": settings.embedding_dim,
+            },
+        )
+    return expected
 
 
 # ── VLM caption injection ────────────────────────────────────────────
@@ -79,8 +169,6 @@ def _get_vision_provider() -> Any | None:
 # Reasoning-preamble patterns gemma4 likes to emit even when the prompt
 # forbids it. We strip them at ingest time rather than fighting the
 # model — same trick Studio does for its slide-spec JSON parser.
-import re as _re
-
 _THINK_BLOCK_RE = _re.compile(
     r"<think(?:ing)?>.*?</think(?:ing)?>", _re.DOTALL | _re.IGNORECASE,
 )
@@ -175,6 +263,254 @@ def _is_uniform_color(
         return False
 
 
+def _image_storage_error(operation: str, exc: BaseException) -> StoreError:
+    """Build a safe, retryable error for image filesystem failures.
+
+    ``str(exc)`` is deliberately not copied into the structured error: an
+    ``OSError`` commonly contains the absolute upload path, which is an
+    implementation detail and may expose deployment layout to callers.  The
+    errno name is useful for operations (ENOSPC/EROFS/EIO/EDQUOT, etc.) and
+    does not contain user content or a path.
+    """
+    raw_errno = getattr(exc, "errno", None)
+    errno_name = errno.errorcode.get(raw_errno) if isinstance(raw_errno, int) else None
+    details: dict[str, Any] = {"operation": operation}
+    if errno_name:
+        details["errno"] = errno_name
+    return StoreError(
+        code="E_IMAGE_STORAGE_UNAVAILABLE",
+        retryable=True,
+        severity="error",
+        user_message="圖片儲存空間暫時無法使用，系統將自動重試。",
+        details=details,
+    )
+
+
+def _image_persistence_error(
+    operation: str,
+    exc: BaseException,
+    *,
+    rows_attempted: int = 0,
+    rows_inserted: int = 0,
+) -> StoreError:
+    """Build a safe, retryable error for image DB/persistence failures."""
+    return StoreError(
+        code="E_IMAGE_PERSISTENCE_FAILED",
+        retryable=True,
+        severity="error",
+        user_message="圖片資料寫入失敗，系統將自動重試。",
+        details={
+            "operation": operation,
+            "cause": type(exc).__name__,
+            "rows_attempted": rows_attempted,
+            "rows_inserted": rows_inserted,
+        },
+    )
+
+
+def _image_reconciliation_error(reason: str) -> StoreError:
+    """Build a non-retryable error for an unsafe image residue state.
+
+    Residue reconciliation is deliberately fail-closed.  An unsafe temp or
+    final path cannot be safely guessed at by a retry, so preserve every copy
+    and require operator intervention instead of misclassifying it as a
+    transient disk error.
+    """
+    return StoreError(
+        code="E_IMAGE_RECONCILIATION_FAILED",
+        retryable=False,
+        severity="critical",
+        user_message="圖片儲存狀態無法安全收斂，已停止處理。",
+        details={"operation": "reconcile", "reason": reason},
+    )
+
+
+def _is_rls_violation(exc: BaseException) -> bool:
+    """Return whether an asyncpg failure is a PostgreSQL RLS denial."""
+    return isinstance(exc, asyncpg.exceptions.InsufficientPrivilegeError) or (
+        getattr(exc, "sqlstate", None) == "42501"
+    )
+
+
+def _image_rls_error(*, rows_attempted: int, rows_inserted: int = 0) -> StoreError:
+    """Build the critical, non-retryable image RLS error.
+
+    Keep SQL text, exception messages, and filesystem paths out of both the
+    user-facing message and structured details.  The exception remains the
+    chained cause for server-side logs only.
+    """
+    return StoreError.rls_violation(
+        user_message="圖片資料寫入違反資料隔離政策，已停止處理。",
+        details={
+            "operation": "db_insert",
+            "reason": "rls_violation",
+            "rows_attempted": rows_attempted,
+            "rows_inserted": rows_inserted,
+        },
+    )
+
+
+def _image_lease_lost_error() -> StoreError:
+    """Build the retryable error used when an image publish loses its fence."""
+    return StoreError(
+        code="E_INGESTION_LEASE_LOST",
+        retryable=True,
+        severity="error",
+        user_message="入庫工作 lease 已失效，拒絕發布舊版本圖片。",
+    )
+
+
+async def _ensure_image_lease(
+    conn: Any,
+    *,
+    ingestion_job_id: int | None,
+    document_id: int,
+    ingestion_lease_token: str | None,
+) -> None:
+    """Fence image mutations against the currently-owned ingestion attempt.
+
+    The caller keeps ``conn`` inside the same transaction used for image
+    upserts/deletes and filesystem publication.  A durable ingestion attempt
+    must therefore prove its job row is still running, unexpired, and owned by
+    the exact lease token before this function returns.  Legacy direct helper
+    calls without a job id retain their existing unfenced behaviour.
+    """
+    if ingestion_job_id is None:
+        return
+    if (
+        isinstance(ingestion_job_id, bool)
+        or not isinstance(ingestion_job_id, int)
+        or ingestion_job_id <= 0
+        or not isinstance(ingestion_lease_token, str)
+        or not ingestion_lease_token
+    ):
+        raise _image_lease_lost_error()
+    lease_owner = await conn.fetchrow(
+        """
+        SELECT id
+          FROM ingestion_jobs
+         WHERE id = $1 AND document_id = $2
+           AND status = 'running'
+           AND lease_token = $3
+           AND lease_expires_at >= now()
+         FOR UPDATE
+        """,
+        ingestion_job_id,
+        document_id,
+        ingestion_lease_token,
+    )
+    if lease_owner is None:
+        raise _image_lease_lost_error()
+
+
+def _cleanup_image_files(paths: list[str]) -> None:
+    """Best-effort cleanup for files written by the current persistence run.
+
+    Cleanup is intentionally non-throwing.  The original storage/DB error is
+    the actionable failure and must remain the exception observed by the job
+    retry path even if an unlink also fails.
+    """
+    for path in dict.fromkeys(paths):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Image persistence cleanup failed (%s)", type(exc).__name__,
+            )
+
+
+def _cleanup_stale_image_temps(images_root: str) -> None:
+    """Remove hard-crash temp residue for one document before a retry.
+
+    A worker job lease serialises persistence attempts for the same document,
+    so direct children matching ``*.tmp-*`` are safe to reconcile here.  Do
+    not follow symlinks or recurse: a symlink/nested directory is an unsafe
+    state and must remain untouched while the job fails closed.
+    """
+    try:
+        root_mode = os.lstat(images_root).st_mode
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise _image_storage_error("reconcile", exc) from exc
+    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+        raise _image_reconciliation_error("unsafe_image_directory")
+
+    try:
+        with os.scandir(images_root) as entries:
+            temp_paths = [
+                entry.path
+                for entry in entries
+                if ".tmp-" in entry.name
+            ]
+    except OSError as exc:
+        raise _image_storage_error("reconcile", exc) from exc
+
+    for temp_path in temp_paths:
+        try:
+            mode = os.lstat(temp_path).st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise _image_storage_error("reconcile", exc) from exc
+        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+            raise _image_reconciliation_error("unsafe_temp_residue")
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise _image_storage_error("reconcile", exc) from exc
+
+
+def _publish_image_files(staged_paths: list[tuple[str, str]]) -> None:
+    """Publish immutable image generations without replacing DB-referenced files.
+
+    Each ``final_path`` contains the image content digest, so it is safe to
+    leave a published file behind when the enclosing DB transaction fails or
+    its COMMIT result is ambiguous.  A successful commit points the row at
+    this path; a failed/unknown commit leaves the new path as an invisible
+    orphan while the old row continues pointing at its old, untouched file.
+    """
+    for temp_path, final_path in staged_paths:
+        try:
+            mode = os.lstat(final_path).st_mode
+        except FileNotFoundError:
+            mode = None
+        except OSError as exc:
+            raise _image_storage_error("publish", exc) from exc
+        if mode is not None and not stat.S_ISREG(mode):
+            raise _image_reconciliation_error("unsafe_final")
+        # ``os.replace`` is atomic and does not follow a destination symlink;
+        # the lstat guard above rejects one already present at this path.
+        # Existing immutable generations are replaced only with the same
+        # digest path, making retries idempotent and content-correct.
+        try:
+            os.replace(temp_path, final_path)
+        except OSError as exc:
+            raise _image_storage_error("publish", exc) from exc
+
+
+def _image_persistence_id(
+    *, page: int | None, digest: str, extension: str, occurrence: int
+) -> str:
+    """Return the stable DB identity for one extracted image occurrence.
+
+    Parser image IDs are intentionally ephemeral: they only connect an
+    ``ImageRef`` to the corresponding placeholder during the *current* parse.
+    They must never become a persistence key, otherwise a retry after reparse
+    creates a new row for the same source image.  The page, content digest,
+    extension, and occurrence among identical images on that page are all
+    deterministic for a parser replay.  ``extension`` also keeps the identity
+    unambiguous if a parser ever reports identical bytes with distinct MIME
+    representations.
+    """
+    page_key = "none" if page is None else str(page)
+    return f"img-p{page_key}-{digest}-{extension.removeprefix('.')}-{occurrence}"
+
+
 async def _persist_images(
     pool: Any,
     collection_id: int,
@@ -182,6 +518,9 @@ async def _persist_images(
     images: dict[str, Any],
     embedder: Any,
     billing_user_id: int | None,
+    *,
+    ingestion_job_id: int | None = None,
+    ingestion_lease_token: str | None = None,
 ) -> int:
     """Write every captioned image to disk + DB so Studio can later
     surface them via vector search.
@@ -189,16 +528,24 @@ async def _persist_images(
     Phase 5 / Sprint X. Each ImageRef whose ``caption`` field is set
     (filled in by ``_caption_images_into`` upstream) gets:
 
-      1. Bytes flushed to ``<UPLOAD_DIR>/anila-images/<doc_id>/<image_id>.<ext>``
-         where the extension comes from ``ref.mime`` (image/png → .png).
+      1. Bytes flushed to an immutable, content-addressed path under
+         ``<UPLOAD_DIR>/anila-images/<doc_id>/``. Only the SHA-256 digest and
+         extension form the filename; parser UUIDs are deliberately excluded
+         so reparse/retry reuses the same blob.
       2. A row inserted into ``ingestion_images`` with the caption + a
-         caption embedding for vector search. ``ON CONFLICT DO NOTHING``
-         on (document_id, image_id) so re-ingesting the same document
-         doesn't duplicate rows; the worker's existing chunk-level
-         delete-and-reinsert dance handles the cleanup of stale rows
-         (see migration 0025: FK to documents is ON DELETE CASCADE so
-         worker's existing ``DELETE FROM ingestion_documents`` already
-         takes care of the orphan case).
+         caption embedding for vector search. ``image_id`` is a deterministic
+         per-document occurrence identity rather than the parser UUID, so
+         ``ON CONFLICT DO UPDATE`` converges after a reparse.  The worker's
+         existing chunk-level delete-and-reinsert dance handles cleanup when a
+         document itself is replaced (see migration 0025: FK to documents is
+         ON DELETE CASCADE).
+
+    When ``ingestion_job_id`` is supplied, the lease token is verified with a
+    ``SELECT ... FOR UPDATE`` in the same transaction that performs every
+    image UPSERT/DELETE and publishes files.  A stale attempt therefore exits
+    before touching either the filesystem or image rows.  Direct helper calls
+    without a durable ingestion job retain the legacy unfenced path used by
+    maintenance/test callers.
 
     Why batch the embedding into a single call: ``Embedder.embed`` is
     HTTP-backed; one call with N captions is much cheaper than N calls
@@ -209,82 +556,197 @@ async def _persist_images(
     Returns the count of images successfully persisted (for log
     correlation).
     """
-    if not images:
-        return 0
     upload_dir = settings.upload_dir
-    images_root = os.path.join(upload_dir, "anila-images", str(document_id))
-    try:
-        os.makedirs(images_root, mode=0o755, exist_ok=True)
-    except OSError as e:
-        # If we can't even mkdir we won't be able to persist anything;
-        # bail loudly so an op-level alert can fire (the rest of ingest
-        # still completes — the captions are already inlined in `text`).
-        logger.error(
-            "Failed to mkdir %s for image persistence: %s", images_root, e,
+
+    # Filter before touching the filesystem. Empty refs and near-uniform PDF
+    # background fills are intentionally legal skips; they must not fail a
+    # document merely because the upload volume is unavailable.
+    candidates: list[dict[str, Any]] = []
+    for source_position, (img_id, ref) in enumerate(images.items()):
+        mime = getattr(ref, "mime", None) or "image/png"
+        ext = ".png" if "png" in mime else (".jpg" if "jpeg" in mime else ".bin")
+        image_bytes = getattr(ref, "image_bytes", b"") or b""
+        if not image_bytes:
+            continue
+        # Defensive filter: drop uniform-color images even when captioning is
+        # disabled/bypassed. These are PDF background rectangles with no
+        # informational value and are a documented legal skip path.
+        if _is_uniform_color(image_bytes):
+            logger.info(
+                "Skipping persist for uniform-color image %s (doc %s)",
+                img_id, document_id,
+            )
+            continue
+        digest = hashlib.sha256(image_bytes).hexdigest()
+        filename = f"{digest}{ext}"
+        rel_path = os.path.join("anila-images", str(document_id), filename)
+        abs_path = os.path.join(upload_dir, rel_path)
+        candidates.append(
+            {
+                "ref": ref,
+                "page": getattr(ref, "page", None),
+                "digest": digest,
+                "extension": ext,
+                "rel_path": rel_path,
+                "abs_path": abs_path,
+                "mime": mime,
+                "image_bytes": image_bytes,
+                # The parser's insertion order represents extraction order.
+                # It is used only to number otherwise indistinguishable
+                # duplicate occurrences, never as a persisted identifier.
+                "source_position": source_position,
+            }
         )
+
+    if not candidates:
+        # A reparse can legitimately yield no persistable images (no images,
+        # empty extraction, or all uniform backgrounds).  It must still
+        # converge this document's existing rows to the empty set.
+        try:
+            async with pool.acquire() as conn, conn.transaction():
+                await _ensure_image_lease(
+                    conn,
+                    ingestion_job_id=ingestion_job_id,
+                    document_id=document_id,
+                    ingestion_lease_token=ingestion_lease_token,
+                )
+                await conn.execute(
+                    f"SET LOCAL anila.collection_id = {int(collection_id)}"
+                )
+                await conn.execute(
+                    """
+                    DELETE FROM ingestion_images
+                    WHERE collection_id = $1
+                      AND document_id = $2
+                      AND image_id <> ALL($3::text[])
+                    """,
+                    collection_id,
+                    document_id,
+                    [],
+                )
+        except asyncio.CancelledError:
+            raise
+        except StoreError as exc:
+            if exc.code == "E_INGESTION_LEASE_LOST":
+                raise
+            raise _image_persistence_error(
+                "db_reconcile", exc, rows_attempted=0, rows_inserted=0
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            if _is_rls_violation(exc):
+                raise _image_rls_error(rows_attempted=0, rows_inserted=0) from exc
+            raise _image_persistence_error(
+                "db_reconcile", exc, rows_attempted=0, rows_inserted=0
+            ) from exc
         return 0
 
-    # Build the to-be-inserted rows AND collect captions for batch embed.
+    # Dict keys are parser-generated UUIDs, so never use them to choose the
+    # order or identity of persisted rows.  Sorting by stable parse metadata
+    # also makes differently ordered mappings converge.  Exact duplicate
+    # images on one page intentionally retain one row per extraction
+    # occurrence, numbered by their parser extraction order.
+    candidates.sort(
+        key=lambda candidate: (
+            candidate["page"] is None,
+            candidate["page"] if candidate["page"] is not None else 0,
+            candidate["digest"],
+            candidate["extension"],
+            candidate["source_position"],
+        )
+    )
+    occurrences: dict[tuple[int | None, str, str], int] = {}
+    for candidate in candidates:
+        occurrence_key = (
+            candidate["page"], candidate["digest"], candidate["extension"]
+        )
+        occurrence = occurrences.get(occurrence_key, 0)
+        occurrences[occurrence_key] = occurrence + 1
+        candidate["image_id"] = _image_persistence_id(
+            page=candidate["page"],
+            digest=candidate["digest"],
+            extension=candidate["extension"],
+            occurrence=occurrence,
+        )
+
+    # Build the to-be-inserted rows AND collect captions for batch embed.  This
+    # is deliberately kept free of filesystem work: durable attempts must
+    # first acquire their lease fence inside the image transaction.
     rows: list[dict[str, Any]] = []
     captions_to_embed: list[str] = []
-    for img_id, ref in images.items():
-        try:
-            mime = getattr(ref, "mime", None) or "image/png"
-            ext = ".png" if "png" in mime else (".jpg" if "jpeg" in mime else ".bin")
-            # Sanitise image_id for the filename (parser uses UUID-ish so
-            # this is paranoia, but cheap insurance against future ID
-            # shapes that could include path separators).
-            safe_img_id = "".join(
-                c if c.isalnum() or c in "-_" else "_" for c in str(img_id)
-            )[:64]
-            rel_path = os.path.join(
-                "anila-images", str(document_id), f"{safe_img_id}{ext}",
-            )
-            abs_path = os.path.join(upload_dir, rel_path)
-            image_bytes = getattr(ref, "image_bytes", b"") or b""
-            if not image_bytes:
-                continue
-            # Defensive filter: drop uniform-color images even if
-            # captioning was disabled / bypassed. Covers the path where
-            # ``settings.enable_image_captions`` is False but the PDF
-            # extractor still produced background-fill rectangles.
-            # Confirmed against doc 1: img_4fd6f21243.jpg (RGB(26,54,93)),
-            # img_d2e6cf287b.jpg and img_6cb40697ca.jpg (RGB(44,82,129)).
-            if _is_uniform_color(image_bytes):
-                logger.info(
-                    "Skipping persist for uniform-color image %s "
-                    "(doc %s) — likely PDF background fill",
-                    img_id, document_id,
-                )
-                continue
-            with open(abs_path, "wb") as f:
-                f.write(image_bytes)
-            try:
-                os.chmod(abs_path, 0o644)
-            except OSError:
-                pass
-
-            caption = getattr(ref, "caption", "") or ""
-            page = getattr(ref, "page", None)
-            alt_text = getattr(ref, "alt_text", "") or None
-            rows.append({
-                "image_id": safe_img_id,
+    written_paths: list[str] = []
+    staged_paths: list[tuple[str, str]] = []
+    staged_final_paths: set[str] = set()
+    stage_exception: BaseException | None = None
+    for candidate in candidates:
+        ref = candidate["ref"]
+        caption = getattr(ref, "caption", "") or ""
+        page = getattr(ref, "page", None)
+        alt_text = getattr(ref, "alt_text", "") or None
+        rows.append(
+            {
+                "image_id": candidate["image_id"],
                 "page": page,
-                "storage_path": rel_path,
-                "mime": mime,
+                "storage_path": candidate["rel_path"],
+                "mime": candidate["mime"],
                 "alt_text": alt_text,
                 "caption": caption,
-                "bytes_size": len(image_bytes),
-            })
-            captions_to_embed.append(caption or alt_text or "image")
-        except Exception as e:  # noqa: BLE001 — per-image best-effort
-            logger.warning(
-                "Skip persisting image %s for doc %s: %s",
-                img_id, document_id, e,
-            )
+                "bytes_size": len(candidate["image_bytes"]),
+            }
+        )
+        captions_to_embed.append(caption or alt_text or "image")
 
     if not rows:
         return 0
+
+    def stage_image_files() -> None:
+        """Write temp blobs; called only after a durable lease is fenced."""
+        nonlocal stage_exception
+        images_root = os.path.join(upload_dir, "anila-images", str(document_id))
+        try:
+            os.makedirs(images_root, mode=0o755, exist_ok=True)
+        except OSError as exc:
+            raise _image_storage_error("mkdir", exc) from exc
+        # A hard crash can leave a UUID-suffixed temp file behind before
+        # publish gets a chance to run.  Reconcile only after the lease fence
+        # so a stale attempt cannot delete a newer retry's temp residue.
+        _cleanup_stale_image_temps(images_root)
+        for candidate in candidates:
+            abs_path = candidate["abs_path"]
+            if abs_path in staged_final_paths:
+                continue
+            temp_path = f"{abs_path}.tmp-{uuid.uuid4().hex}"
+            written_paths.append(temp_path)
+            try:
+                with open(temp_path, "wb") as f:
+                    written = f.write(candidate["image_bytes"])
+                    if written is not None and written != len(candidate["image_bytes"]):
+                        raise OSError(errno.ENOSPC, "short image write")
+            except asyncio.CancelledError:
+                _cleanup_image_files(written_paths)
+                raise
+            except OSError as exc:
+                _cleanup_image_files(written_paths)
+                raise _image_storage_error("write", exc) from exc
+            except Exception as exc:
+                _cleanup_image_files(written_paths)
+                stage_exception = exc
+                raise
+
+            try:
+                os.chmod(temp_path, 0o644)
+            except asyncio.CancelledError:
+                _cleanup_image_files(written_paths)
+                raise
+            except OSError as exc:
+                _cleanup_image_files(written_paths)
+                raise _image_storage_error("chmod", exc) from exc
+            except Exception as exc:
+                _cleanup_image_files(written_paths)
+                stage_exception = exc
+                raise
+
+            staged_paths.append((temp_path, abs_path))
+            staged_final_paths.add(abs_path)
 
     # Embed all captions in one HTTP roundtrip; on failure, persist the
     # rows without an embedding (caption text + storage path are still
@@ -317,54 +779,143 @@ async def _persist_images(
     # start and tries to atof() the literal — surfacing as the
     # "could not convert string to float" we hit on the first
     # deployment of this code path.
-    from pgvector import HalfVector
-
     inserted = 0
-    # Outer transaction so the SET LOCAL GUC takes effect (SET LOCAL is
-    # txn-scoped) and is confined to this acquire — it never leaks to the next
-    # pooled user. ingestion_images is FORCE-RLS (migration 0037): the INSERT
-    # policy (WITH CHECK reuses the collection_id USING expr) only accepts rows
-    # whose collection_id matches anila.collection_id, so we scope it here.
-    async with pool.acquire() as conn, conn.transaction():
+    publish_succeeded = False
+    publish_exception: BaseException | None = None
+
+    async def persist_rows(conn: Any) -> None:
+        """Persist rows and publish blobs on the already-fenced connection."""
+        nonlocal inserted, publish_succeeded, publish_exception
+        from pgvector import HalfVector
+
         await conn.execute(
             f"SET LOCAL anila.collection_id = {int(collection_id)}"
         )
         for i, row in enumerate(rows):
             emb = embeddings[i] if embeddings is not None else None
             emb_value = HalfVector(emb) if emb is not None else None
-            try:
-                # Savepoint per row: a single bad row rolls back to here rather
-                # than aborting the whole batch (preserves the prior best-effort
-                # continue-on-error behaviour now that we're inside a txn).
-                async with conn.transaction():
-                    await conn.execute(
-                        """
-                        INSERT INTO ingestion_images
-                            (collection_id, document_id, image_id, page,
-                             storage_path, mime, alt_text, caption,
-                             bytes_size, embedding)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                        ON CONFLICT (document_id, image_id) DO UPDATE
-                           SET caption     = EXCLUDED.caption,
-                               storage_path= EXCLUDED.storage_path,
-                               bytes_size  = EXCLUDED.bytes_size,
-                               embedding   = EXCLUDED.embedding,
-                               updated_at  = CURRENT_TIMESTAMP
-                        """,
-                        collection_id, document_id, row["image_id"], row["page"],
-                        row["storage_path"], row["mime"], row["alt_text"],
-                        row["caption"], row["bytes_size"], emb_value,
-                    )
-                inserted += 1
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Failed to insert image row %s for doc %s: %s",
-                    row["image_id"], document_id, e,
+            await conn.execute(
+                """
+                INSERT INTO ingestion_images
+                    (collection_id, document_id, image_id, page,
+                     storage_path, mime, alt_text, caption,
+                     bytes_size, embedding)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                ON CONFLICT (document_id, image_id) DO UPDATE
+                   SET mime        = EXCLUDED.mime,
+                       alt_text    = EXCLUDED.alt_text,
+                       caption     = EXCLUDED.caption,
+                       storage_path= EXCLUDED.storage_path,
+                       bytes_size  = EXCLUDED.bytes_size,
+                       embedding   = EXCLUDED.embedding,
+                       updated_at  = CURRENT_TIMESTAMP
+                """,
+                collection_id, document_id, row["image_id"], row["page"],
+                row["storage_path"], row["mime"], row["alt_text"],
+                row["caption"], row["bytes_size"], emb_value,
+            )
+            inserted += 1
+        # The parser UUID is not a persistence identity.  Once all current
+        # deterministic rows are upserted, atomically remove every
+        # legacy/stale row for this document before COMMIT.
+        await conn.execute(
+            """
+            DELETE FROM ingestion_images
+            WHERE collection_id = $1
+              AND document_id = $2
+              AND image_id <> ALL($3::text[])
+            """,
+            collection_id,
+            document_id,
+            [str(row["image_id"]) for row in rows],
+        )
+        try:
+            # Keep the DB transaction open while publishing immutable
+            # generations. Never remove a published generation after entering
+            # COMMIT: the response can be lost after the server accepts it,
+            # and the DB may already point at this path.
+            _publish_image_files(staged_paths)
+            publish_succeeded = True
+        except asyncio.CancelledError:
+            raise
+        except StoreError:
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            # Preserve unexpected publish/programming exceptions rather than
+            # misclassifying them as a DB insert/commit failure.
+            publish_exception = exc
+            raise
+
+    try:
+        # A durable job must fence before *any* filesystem mutation.  Keep
+        # staging, image SQL, and publish under this same transaction. Legacy
+        # direct calls retain the historical staging-before-DB behaviour.
+        if ingestion_job_id is not None:
+            async with pool.acquire() as conn, conn.transaction():
+                await _ensure_image_lease(
+                    conn,
+                    ingestion_job_id=ingestion_job_id,
+                    document_id=document_id,
+                    ingestion_lease_token=ingestion_lease_token,
                 )
+                stage_image_files()
+                await persist_rows(conn)
+        else:
+            stage_image_files()
+            async with pool.acquire() as conn, conn.transaction():
+                await persist_rows(conn)
+    except asyncio.CancelledError:
+        # A cancellation while COMMIT is in flight has an unknown outcome.
+        # Keep every immutable final; removing it could leave a committed row
+        # pointing at a missing blob.  The old row/file remains untouched when
+        # the transaction did not commit.
+        _cleanup_image_files(written_paths)
+        raise
+    except StoreError as exc:
+        _cleanup_image_files(written_paths)
+        if publish_succeeded:
+            if _is_rls_violation(exc):
+                raise _image_rls_error(
+                    rows_attempted=len(rows),
+                    rows_inserted=0,
+                ) from exc
+            raise _image_persistence_error(
+                "db_commit",
+                exc,
+                rows_attempted=len(rows),
+                rows_inserted=0,
+            ) from exc
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _cleanup_image_files(written_paths)
+        if stage_exception is not None:
+            raise stage_exception
+        if publish_exception is not None:
+            raise publish_exception
+        if _is_rls_violation(exc):
+            raise _image_rls_error(
+                rows_attempted=len(rows),
+                rows_inserted=0,
+            ) from exc
+        raise _image_persistence_error(
+            "db_commit" if publish_succeeded else "db_insert",
+            exc,
+            rows_attempted=len(rows),
+            # The surrounding transaction rolls back all prior rows when any
+            # insert or commit fails; do not report pre-rollback progress as
+            # committed.
+            rows_inserted=0,
+        ) from exc
+
     logger.info(
         "Persisted %d/%d images for doc %s (with embedding=%s)",
         inserted, len(rows), document_id, embeddings is not None,
     )
+    # Deliberately retain blobs belonging to rows removed above.  Until a
+    # transaction has a known committed outcome, unlinking one could remove a
+    # file still referenced by a rolled-back/unknown DB state. New retries are
+    # bounded because they reuse digest paths; retention document erasure
+    # lstat-checks and removes every direct file in this document directory.
     return inserted
 
 
@@ -510,7 +1061,12 @@ async def _load_document_meta(
                d.mime_type     AS mime_type,
                d.storage_path  AS storage_path,
                d.uploaded_by   AS uploaded_by,
+               d.classification_level AS document_classification_level,
+               c.classification_level AS collection_classification_level,
                c.chunking_config AS chunking_config,
+               c.embedding_model AS embedding_model,
+               c.embedding_fingerprint AS embedding_fingerprint,
+               c.embedding_dim AS embedding_dim,
                c.created_by    AS owner_user_id
           FROM ingestion_documents d
           JOIN ingestion_collections c ON c.id = d.collection_id
@@ -542,16 +1098,29 @@ async def _update_document_status(
     # parameter being used in both ``SET status = $2`` (varchar column)
     # and ``CASE WHEN $2 = 'indexed'`` (text literal compare). Without
     # the cast it raises AmbiguousParameterError.
+    stage = "complete" if status == "indexed" else status
     sql = """
         UPDATE ingestion_documents
-           SET status = $2::text,
-               chunk_count = COALESCE($3, chunk_count),
-               error_message = $4,
-               indexed_at = CASE WHEN $2::text = 'indexed' THEN now() ELSE indexed_at END
+           SET processing_stage = $2::text,
+               status = CASE
+                   WHEN $2::text = 'complete' THEN 'indexed'
+                   WHEN active_generation_id IS NULL THEN $3::text
+                   ELSE 'indexed'
+               END,
+               chunk_count = COALESCE($4, chunk_count),
+               error_message = $5,
+               indexed_at = CASE WHEN $2::text = 'complete' THEN now() ELSE indexed_at END
          WHERE id = $1
     """
     async with pool.acquire() as conn:
-        await conn.execute(sql, document_id, status, chunk_count, error_message)
+        await conn.execute(
+            sql,
+            document_id,
+            stage,
+            status,
+            chunk_count,
+            error_message,
+        )
 
 
 async def _bump_collection_counters(
@@ -574,14 +1143,37 @@ async def _bump_collection_counters(
         await conn.execute(sql, collection_id, document_count_delta, chunk_count_delta)
 
 
+async def _reconcile_collection_counters(
+    pool: PgPool, collection_id: int
+) -> None:
+    """Delegate exact replacement counters to the canonical chunk store."""
+
+    store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
+    await store.reconcile_collection_counters()
+
+
 async def _record_job_failure(
     pool: PgPool, arq_job_id: str | None, err: IngestionError
 ) -> None:
-    """Mark the matching ingestion_jobs row as failed with the error code.
-
-    Best-effort — failure to update the job row should never re-raise out
-    of the handler (would mask the original error).
-    """
+    """Durably fail/retry the matching job; terminal write errors fail loud."""
+    active = _ACTIVE_JOB.get()
+    if active is not None:
+        job_id, document_id, lease_token = active
+        transition = await job_state.fail_or_retry(
+            pool,
+            job_id=job_id,
+            document_id=document_id,
+            lease_token=lease_token,
+            error_code=err.code,
+            error_message=err.user_message or err.code,
+            retryable=bool(err.retryable),
+            backoff_seconds=settings.job_retry_backoff_seconds,
+        )
+        if transition is None:
+            raise job_state.LeaseLostError(
+                "failure transition rejected because the lease is no longer owned"
+            )
+        return
     if arq_job_id is None:
         return
     sql = """
@@ -593,12 +1185,10 @@ async def _record_job_failure(
                completed_at = now()
          WHERE arq_job_id = $1::text
     """
-    try:
-        async with pool.acquire() as conn:
-            await conn.execute(sql, arq_job_id, err.code, err.user_message)
-    except Exception:
-        # Don't shadow the original IngestionError.
-        pass
+    async with pool.acquire() as conn:
+        result = await conn.execute(sql, arq_job_id, err.code, err.user_message)
+    if result != "UPDATE 1":
+        raise RuntimeError("terminal ingestion job failure update matched no row")
 
 
 async def _update_job(
@@ -618,6 +1208,27 @@ async def _update_job(
     succeeded). Best-effort — silently ignores DB failures so a
     transient blip doesn't kill the actual ingestion.
     """
+    active = _ACTIVE_JOB.get()
+    if active is not None:
+        job_id, _document_id, lease_token = active
+        if succeeded or status == "succeeded":
+            updated = await job_state.succeed(
+                pool,
+                job_id=job_id,
+                lease_token=lease_token,
+                message=progress_message or "ingestion completed",
+            )
+        else:
+            updated = await job_state.progress(
+                pool,
+                job_id=job_id,
+                lease_token=lease_token,
+                progress_pct=progress_pct,
+                progress_message=progress_message,
+            )
+        if not updated:
+            raise job_state.LeaseLostError("lease-fenced job update was rejected")
+        return
     if arq_job_id is None:
         return
     sets = []
@@ -644,15 +1255,64 @@ async def _update_job(
     )
     try:
         async with pool.acquire() as conn:
-            await conn.execute(sql, *args)
+            result = await conn.execute(sql, *args)
     except Exception:
-        pass
+        if succeeded or status in {"succeeded", "failed", "cancelled", "dead_letter"}:
+            raise
+        logger.warning("Non-terminal ingestion progress update failed", exc_info=True)
+        return
+    if (
+        result != "UPDATE 1"
+        and (succeeded or status in {"succeeded", "failed", "cancelled", "dead_letter"})
+    ):
+        raise RuntimeError("terminal ingestion job update matched no row")
 
 
 # ── Handler ─────────────────────────────────────────────────────────────────
 
 
-async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, Any]:
+async def _load_ingestion_authority_user(
+    pool: PgPool,
+    *,
+    ingestion_job_id: int | None,
+    fallback_user_id: int | None,
+) -> int:
+    """Return the user whose live clearance authorizes ingestion work.
+
+    Durable jobs are authorized by the user recorded when the CSP enqueued the
+    job. Direct/test invocations have no job row and therefore use the
+    document uploader/collection owner. Missing or malformed authority is a
+    security boundary failure, never an anonymous/system fallback.
+    """
+    authority_user_id = fallback_user_id
+    if ingestion_job_id is not None:
+        async with pool.acquire() as conn:
+            authority_user_id = await conn.fetchval(
+                "SELECT enqueued_by FROM ingestion_jobs WHERE id=$1",
+                ingestion_job_id,
+            )
+    if (
+        isinstance(authority_user_id, bool)
+        or not isinstance(authority_user_id, int)
+        or authority_user_id <= 0
+    ):
+        raise StoreError(
+            code="E_INTERNAL",
+            retryable=False,
+            severity="error",
+            user_message="Ingestion authority is missing or invalid.",
+            details={"ingestion_job_id": ingestion_job_id},
+        )
+    return authority_user_id
+
+
+async def ingest_document(
+    ctx: dict[str, Any],
+    document_id: int,
+    ingestion_job_id: int | None = None,
+    attempt_number: int = 1,
+    queue_proof: str | None = None,
+) -> dict[str, Any]:
     """Parse → chunk → embed → index one document.
 
     ``ctx`` is Arq's per-call context; the worker config injects the
@@ -662,13 +1322,58 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
     """
     pool: PgPool = ctx["pool"]
     embedder: Embedder = ctx["embedder"]
+    if settings.ingestion_queue_hmac_key:
+        verify_queue_proof(
+            settings.ingestion_queue_hmac_key,
+            task_name="ingest_document",
+            payload={
+                "document_id": document_id,
+                "ingestion_job_id": ingestion_job_id,
+                "attempt_number": attempt_number,
+            },
+            proof=queue_proof,
+        )
     arq_job_id: str | None = ctx.get("job_id")
+    heartbeat_task: asyncio.Task[None] | None = None
+    active_token = None
+    lease_token: str | None = None
+    if ingestion_job_id is not None:
+        lease_token = await job_state.claim_job(
+            pool,
+            job_id=ingestion_job_id,
+            document_id=document_id,
+            attempt_number=attempt_number,
+            lease_seconds=settings.job_lease_seconds,
+        )
+        if lease_token is None:
+            return {
+                "duplicate": True,
+                "ingestion_job_id": ingestion_job_id,
+                "attempt_number": attempt_number,
+            }
+        active_token = _ACTIVE_JOB.set(
+            (ingestion_job_id, document_id, lease_token)
+        )
+        heartbeat_task = asyncio.create_task(
+            job_state.heartbeat_loop(
+                pool,
+                job_id=ingestion_job_id,
+                lease_token=lease_token,
+                lease_seconds=settings.job_lease_seconds,
+                interval_seconds=settings.job_heartbeat_seconds,
+                owner_task=asyncio.current_task(),
+            )
+        )
 
     started_at = datetime.now(timezone.utc)
     await _update_job(pool, arq_job_id, status="running", started=True, progress_pct=5)
     try:
         meta = await _load_document_meta(pool, document_id)
         collection_id = int(meta["collection_id"])
+        embedding_model, embedding_fingerprint, embedding_dim = (
+            _require_embedding_contract(meta)
+        )
+        effective_classification = _effective_chunk_classification(meta)
         storage_path = meta["storage_path"]
         # Bill embedding usage to whoever uploaded the file; fall back
         # to the collection owner when the doc row's uploaded_by is null
@@ -676,25 +1381,53 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         billing_user_id = (
             meta.get("uploaded_by") or meta.get("owner_user_id")
         )
+        authority_user_id = await _load_ingestion_authority_user(
+            pool,
+            ingestion_job_id=ingestion_job_id,
+            fallback_user_id=billing_user_id,
+        )
+
+        from ingestion_worker.evaluator import _require_eval_data_clearance
+
+        async def require_current_clearance() -> None:
+            await _require_eval_data_clearance(
+                pool,
+                user_id=authority_user_id,
+                collection_id=collection_id,
+                document_ids=[document_id],
+            )
+
+        await require_current_clearance()
         if not storage_path or not os.path.exists(storage_path):
             raise StoreError(
                 code="E_INTERNAL",
                 retryable=False,
                 severity="error",
-                user_message=(
-                    f"Uploaded blob missing on disk: {storage_path or '(no path)'}"
-                ),
-                details={"storage_path": storage_path},
+                user_message="上傳檔案目前無法使用。",
+                details={
+                    "reason": "missing_blob",
+                    "has_path": bool(storage_path),
+                },
             )
 
         # 1. Parse — pure function, fast.
         await _update_document_status(pool, document_id, "parsing")
         await _update_job(pool, arq_job_id, progress_pct=15, progress_message="parsing")
-        with open(storage_path, "rb") as f:
-            blob = f.read()
-        text, parse_meta, images = extract_text(
-            meta["filename"], blob, meta["mime_type"],
-        )
+        try:
+            text, parse_meta, images = await read_and_extract(
+                storage_path,
+                meta["filename"],
+                meta["mime_type"],
+                timeout_seconds=settings.parse_timeout_seconds,
+            )
+        except DocumentParseTimeout as exc:
+            raise StoreError(
+                code="E_PARSE_TIMEOUT",
+                retryable=True,
+                severity="error",
+                user_message="文件解析逾時，系統將自動重試。",
+                details={"timeout_s": settings.parse_timeout_seconds},
+            ) from exc
 
         # 1a. Caption embedded images via VLM (when configured).
         # Replaces ``[[IMAGE:<id>]]`` placeholders with VLM-generated
@@ -707,24 +1440,23 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 progress_pct=22,
                 progress_message=f"captioning {len(images)} image(s)",
             )
+            await require_current_clearance()
             text = await _caption_images_into(text, images)
-            # 1b. Persist captioned images to disk + DB so Studio can
-            # vector-search over them (Phase 5). Best-effort: a failure
-            # here doesn't fail ingest — the captions are already inlined
-            # into `text` from step 1a, so retrieval over chunks still
-            # works. Only the image-as-image use case is degraded.
-            try:
-                await _persist_images(
-                    pool, collection_id, document_id, images,
-                    embedder, billing_user_id,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Image persistence failed for doc %s: %s — captions "
-                    "are still inlined in chunks; image-as-image retrieval "
-                    "will be empty for this document.",
-                    document_id, e,
-                )
+
+        # 1b. Persist captioned images to disk + DB so Studio can
+        # vector-search over them (Phase 5). Always call this reconciliation:
+        # a reparse with no images must delete stale rows left by an earlier
+        # parser generation. Image bytes are part of the document's durable
+        # output, so filesystem/DB failures must fail this job and enter the
+        # normal structured retry path. Caption embedding itself remains an
+        # explicit best-effort downgrade in _persist_images: rows are retained
+        # with a NULL embedding.
+        await _persist_images(
+            pool, collection_id, document_id, images,
+            embedder, billing_user_id,
+            ingestion_job_id=ingestion_job_id,
+            ingestion_lease_token=lease_token,
+        )
 
         # 2. Chunk — bounded by document size, also fast.
         # Semantic strategies need embeddings up-front: pre-split into
@@ -747,6 +1479,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             if len(segments) >= 2:
                 # Real path: embed every candidate segment, semantic
                 # chunker does the boundary detection.
+                await require_current_clearance()
                 params["_embeddings"] = await embedder.embed(segments, user_id=billing_user_id)
             elif len(segments) == 1:
                 # Single-segment short-circuit. The chunker checks
@@ -758,11 +1491,59 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             else:
                 params["_embeddings"] = []
         chunks = chunker.chunk(text, parse_meta, params)
+        store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
         if not chunks:
+            # An empty re-index must still remove the previous generation;
+            # otherwise stale chunks remain searchable even though the
+            # document advertises chunk_count=0.
+            if ingestion_job_id is not None:
+                await job_state.ensure_lease(
+                    pool, job_id=ingestion_job_id, lease_token=lease_token
+                )
+            if ingestion_job_id is not None:
+                try:
+                    async with asyncio.timeout(settings.index_timeout_seconds):
+                        await store.stage_and_activate_generation(
+                            document_id=document_id,
+                            source_ingestion_job_id=ingestion_job_id,
+                            source_ingestion_lease_token=lease_token,
+                            embedding_model=embedding_model,
+                            embedding_fingerprint=embedding_fingerprint,
+                            embedding_dim=embedding_dim,
+                            parent_chunks=[],
+                            leaf_chunks=[],
+                            embeddings=[],
+                            classification_level=effective_classification,
+                        )
+                except TimeoutError as exc:
+                    raise StoreError(
+                        code="E_INDEX_TIMEOUT",
+                        retryable=True,
+                        severity="error",
+                        user_message="索引寫入逾時，系統將自動重試。",
+                        details={"timeout_s": settings.index_timeout_seconds},
+                    ) from exc
+            else:
+                await store.replace_document_chunks(
+                    document_id=document_id,
+                    parent_chunks=[],
+                    leaf_chunks=[],
+                    embeddings=[],
+                    classification_level=effective_classification,
+                )
             await _update_document_status(
                 pool, document_id, "indexed",
                 chunk_count=0,
                 error_message=None,
+            )
+            await _reconcile_collection_counters(pool, collection_id)
+            await _update_job(
+                pool,
+                arq_job_id,
+                status="succeeded",
+                succeeded=True,
+                progress_pct=100,
+                progress_message="0 chunks indexed",
             )
             return {"chunk_count": 0, "warning": "no chunks produced"}
 
@@ -793,26 +1574,49 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             pool, arq_job_id, progress_pct=60,
             progress_message=f"embedding {len(leaves)} leaf chunks",
         )
+        await require_current_clearance()
         embeddings = await embedder.embed(
             [c.content for c in leaves], user_id=billing_user_id,
         ) if leaves else []
 
-        # 4. Index — parents first to populate the chunk_key→id map;
-        #    leaves second with their parent_chunk_id resolved.
+        # 4. Index — replace the complete parent/leaf generation in one
+        #    transaction.  A failed leaf write restores the previous rows;
+        #    retries never collide with a partial parent generation.
         await _update_job(pool, arq_job_id, progress_pct=85, progress_message="indexing")
-        store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
-        parent_id_map: dict[str, int] = {}
-        if parents:
-            parent_id_map = await store.add_parent_chunks(
-                document_id=document_id,
-                chunks=parents,
+        if ingestion_job_id is not None:
+            await job_state.ensure_lease(
+                pool, job_id=ingestion_job_id, lease_token=lease_token
             )
-        if leaves:
-            await store.index_chunks(
+        if ingestion_job_id is not None:
+            try:
+                async with asyncio.timeout(settings.index_timeout_seconds):
+                    await store.stage_and_activate_generation(
+                        document_id=document_id,
+                        source_ingestion_job_id=ingestion_job_id,
+                        source_ingestion_lease_token=lease_token,
+                        embedding_model=embedding_model,
+                        embedding_fingerprint=embedding_fingerprint,
+                        embedding_dim=embedding_dim,
+                        parent_chunks=parents,
+                        leaf_chunks=leaves,
+                        embeddings=embeddings,
+                        classification_level=effective_classification,
+                    )
+            except TimeoutError as exc:
+                raise StoreError(
+                    code="E_INDEX_TIMEOUT",
+                    retryable=True,
+                    severity="error",
+                    user_message="索引寫入逾時，系統將自動重試。",
+                    details={"timeout_s": settings.index_timeout_seconds},
+                ) from exc
+        else:
+            await store.replace_document_chunks(
                 document_id=document_id,
-                chunks=leaves,
+                parent_chunks=parents,
+                leaf_chunks=leaves,
                 embeddings=embeddings,
-                parent_id_map=parent_id_map,
+                classification_level=effective_classification,
             )
 
         total_chunks = len(chunks)
@@ -822,9 +1626,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             chunk_count=total_chunks,
             error_message=None,
         )
-        await _bump_collection_counters(
-            pool, collection_id, document_count_delta=1, chunk_count_delta=total_chunks
-        )
+        await _reconcile_collection_counters(pool, collection_id)
 
         # 6. Cross-document relations (best-effort — design v2 §5/§6). The
         #    parsed text only exists here, so we extract citations + deposit
@@ -861,6 +1663,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             from ingestion_worker.settings import settings as _settings
             from ingestion_worker.llm_relations import extract_and_resolve_llm
 
+            await require_current_clearance()
             llm_rel = await extract_and_resolve_llm(
                 pool,
                 collection_id=collection_id,
@@ -881,27 +1684,24 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 document_id, e,
             )
 
-        # 6c. Topic-similarity edges (document-relations / C). Pure-vector
-        #     relations recomputed collection-wide (a new doc shifts everyone's
-        #     nearest neighbours). Best-effort + gated.
+        # 6c. Topic-similarity edges (document-relations / C).  Do not run the
+        #     collection-wide O(N^2) query inline.  One durable row per
+        #     collection debounces bursts and is lease-replayed after crashes.
         try:
             from ingestion_worker.settings import settings as _settings
-            from ingestion_worker.similarity_relations import recompute_similarity_edges
-
-            sim = await recompute_similarity_edges(
-                pool,
-                collection_id=collection_id,
-                run_id=(arq_job_id or f"ingest-{document_id}")[:40],
-                settings=_settings,
+            from ingestion_worker.similarity_relations import (
+                request_similarity_recompute,
             )
-            if sim["edges"]:
-                logger.info(
-                    "collection %s: %d similarity edge(s) (after doc %s)",
-                    collection_id, sim["edges"], document_id,
+
+            if _settings.enable_similarity_edges:
+                await request_similarity_recompute(
+                    pool,
+                    collection_id=collection_id,
+                    debounce_seconds=_settings.similarity_debounce_seconds,
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "Similarity edge recompute failed for collection %s: %s",
+                "Similarity edge recompute request failed for collection %s: %s",
                 collection_id, e,
             )
 
@@ -922,34 +1722,90 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             ).total_seconds(),
         }
 
+    except asyncio.CancelledError:
+        # Arq job timeouts and worker shutdowns arrive as cancellation, which
+        # bypasses ``except Exception`` on modern Python.  Best-effort terminal
+        # writes prevent a permanently running document/job, then preserve the
+        # cancellation so Arq can finish its own timeout/shutdown handling.
+        if _ACTIVE_JOB.get() is None:
+            await _update_document_status(
+                pool,
+                document_id,
+                "failed",
+                error_message="處理已取消或逾時，可重新處理。",
+            )
+            await _update_job(
+                pool,
+                arq_job_id,
+                status="cancelled",
+                succeeded=True,
+                progress_pct=100,
+                progress_message="cancelled or timed out",
+            )
+        else:
+            wrapped = StoreError(
+                code="E_WORKER_CANCELLED",
+                retryable=True,
+                severity="error",
+                user_message="處理已取消或逾時，系統將自動重試。",
+            )
+            await _record_job_failure(pool, arq_job_id, wrapped)
+        raise
     except IngestionError as err:
         # Persist the structured failure for the dev UI / inspector.
-        await _update_document_status(
-            pool, document_id, "failed",
-            error_message=err.user_message or err.code,
-        )
+        if _ACTIVE_JOB.get() is None:
+            await _update_document_status(
+                pool, document_id, "failed",
+                error_message=err.user_message or err.code,
+            )
         await _record_job_failure(pool, arq_job_id, err)
         # Re-raise so Arq's retry policy sees the failure too.
         raise
+    except job_state.LeaseLostError:
+        # Another owner (or the reaper) now controls this logical job.  The
+        # stale attempt must not mutate either the document or terminal state.
+        raise
     except Exception as e:
         # Unknown failure → wrap as E_INTERNAL with bounded leakage.
+        retryable = isinstance(
+            e,
+            (
+                TimeoutError,
+                ConnectionError,
+                asyncpg.PostgresConnectionError,
+                asyncpg.CannotConnectNowError,
+                asyncpg.TooManyConnectionsError,
+            ),
+        )
         wrapped = StoreError(
             code="E_INTERNAL",
-            retryable=False,
+            retryable=retryable,
             severity="error",
             user_message="內部錯誤，請聯絡管理員。",
             details={"cause": type(e).__name__, "message": str(e)[:200]},
         )
-        await _update_document_status(
-            pool, document_id, "failed",
-            error_message=wrapped.user_message,
-        )
+        if _ACTIVE_JOB.get() is None:
+            await _update_document_status(
+                pool, document_id, "failed",
+                error_message=wrapped.user_message,
+            )
         await _record_job_failure(pool, arq_job_id, wrapped)
         raise
+    finally:
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        if active_token is not None:
+            _ACTIVE_JOB.reset(active_token)
 
 
 async def reresolve_collection_relations(
-    ctx: dict[str, Any], collection_id: int
+    ctx: dict[str, Any], collection_id: int,
+    actor_user_id: int,
+    queue_proof: str | None = None,
 ) -> dict[str, Any]:
     """Re-extract + reconcile cross-document relations for a whole collection
     (document-relations §8 ``:reresolve``).
@@ -961,6 +1817,16 @@ async def reresolve_collection_relations(
     rule edges simply remain) — the whole job never fails for one bad blob.
     """
     pool: PgPool = ctx["pool"]
+    if settings.ingestion_queue_hmac_key:
+        verify_queue_proof(
+            settings.ingestion_queue_hmac_key,
+            task_name="reresolve_collection_relations",
+            payload={
+                "collection_id": collection_id,
+                "actor_user_id": actor_user_id,
+            },
+            proof=queue_proof,
+        )
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, filename, mime_type, storage_path "
@@ -969,14 +1835,28 @@ async def reresolve_collection_relations(
         )
 
     docs: list[tuple[int, str]] = []
+    document_ids = [int(row["id"]) for row in rows]
+    async def require_current_clearance() -> None:
+        from ingestion_worker.evaluator import _require_eval_data_clearance
+
+        await _require_eval_data_clearance(
+            pool,
+            user_id=actor_user_id,
+            collection_id=collection_id,
+            document_ids=document_ids,
+        )
+    await require_current_clearance()
     for r in rows:
         sp = r["storage_path"]
         if not sp or not os.path.exists(sp):
             continue
         try:
-            with open(sp, "rb") as f:
-                blob = f.read()
-            text, _meta, _images = extract_text(r["filename"], blob, r["mime_type"])
+            text, _meta, _images = await read_and_extract(
+                sp,
+                r["filename"],
+                r["mime_type"],
+                timeout_seconds=settings.parse_timeout_seconds,
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "reresolve: parse failed for doc %s (%s) — keeping its old "
@@ -987,6 +1867,7 @@ async def reresolve_collection_relations(
 
     from ingestion_worker.relations import reresolve_collection_edges
 
+    await require_current_clearance()
     result = await reresolve_collection_edges(
         pool,
         collection_id=collection_id,
@@ -1002,6 +1883,7 @@ async def reresolve_collection_relations(
     llm_extracted = 0
     for doc_id, doc_text in docs:
         try:
+            await require_current_clearance()
             r = await extract_and_resolve_llm(
                 pool,
                 collection_id=collection_id,
@@ -1016,20 +1898,21 @@ async def reresolve_collection_relations(
                 "reresolve: LLM extraction failed for doc %s: %s", doc_id, e
             )
 
-    # Recompute topic-similarity edges once for the whole collection.
+    # Schedule one durable topic-similarity recompute for the collection.
     sim_edges = 0
     try:
-        from ingestion_worker.similarity_relations import recompute_similarity_edges
-
-        sim = await recompute_similarity_edges(
-            pool,
-            collection_id=collection_id,
-            run_id=f"reresolve-{collection_id}"[:40],
-            settings=_settings,
+        from ingestion_worker.similarity_relations import (
+            request_similarity_recompute,
         )
-        sim_edges = sim["edges"]
+
+        if _settings.enable_similarity_edges:
+            await request_similarity_recompute(
+                pool,
+                collection_id=collection_id,
+                debounce_seconds=_settings.similarity_debounce_seconds,
+            )
     except Exception as e:  # noqa: BLE001
-        logger.warning("reresolve: similarity recompute failed: %s", e)
+        logger.warning("reresolve: similarity recompute request failed: %s", e)
 
     logger.info(
         "reresolve collection %s: %d docs, %d rule edges, %d resolved, %d llm, %d similarity",

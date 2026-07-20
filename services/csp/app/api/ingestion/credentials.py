@@ -25,14 +25,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_security import UnsafeEndpointError, validate_outbound_url
 
 from app.database import get_db
 from app.models.ingestion import UserLlmCredential
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
-from app.services.credential_crypto import encrypt_credential
+from anila_security import encrypt_credential
 
 
 def _check_endpoint_url(url: str) -> None:
@@ -109,7 +109,7 @@ def create_credential(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> CredentialResponse:
     # SSRF guard — reject endpoint URLs pointing at internal/private hosts
-    # before the encrypted row lands in the DB. See anila_core.security.url_guard.
+    # before the encrypted row lands in the DB. See anila_security.url_guard.
     _check_endpoint_url(payload.endpoint_url)
     ciphertext, nonce, tag = encrypt_credential(payload.api_key)
     cred = UserLlmCredential(

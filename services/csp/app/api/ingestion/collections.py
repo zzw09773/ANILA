@@ -19,14 +19,17 @@ traceable.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.ingestion import IngestionCollection
+from app.config import settings
+from app.models.ingestion import IngestionCollection, IngestionDocument, IngestionJob
+from app.models.task import Task
 from app.models.user import User
 from app.schemas.ingestion import (
     CollectionCreate,
@@ -107,11 +110,26 @@ def create_collection(
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
     """Create a new (empty) collection owned by the calling user."""
+    fingerprint = settings.EMBEDDING_MODEL_FINGERPRINT.strip().lower()
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint) is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding weight fingerprint is not configured.",
+        )
+    if (
+        payload.embedding_fingerprint is not None
+        and payload.embedding_fingerprint != fingerprint
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Requested embedding fingerprint does not match deployment.",
+        )
     coll = IngestionCollection(
         name=payload.name,
         description=payload.description,
         chunking_config=payload.chunking_config.model_dump(),
         embedding_model=payload.embedding_model,
+        embedding_fingerprint=fingerprint,
         embedding_dim=payload.embedding_dim,
         status="active",
         document_count=0,
@@ -261,22 +279,43 @@ def delete_collection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Response:
-    """Hard delete a collection.
-
-    CASCADE drops every document and chunk in pgvector. There is no
-    soft-delete here — admin-or-owner only operation, and there's no
-    audit benefit to keeping orphan rows because the audit_log has a
-    timestamped record of the delete itself.
-    """
+    """Archive a collection; the leased retention reaper performs erasure."""
     coll = _require_collection_access(db, current_user, collection_id)
+    active_job = db.query(IngestionJob.id).filter(
+        IngestionJob.collection_id == coll.id,
+        IngestionJob.status.notin_(("succeeded", "failed", "cancelled", "dead_letter")),
+    ).first()
+    active_tasks = db.query(Task).filter(
+        Task.status.notin_(("completed", "failed", "cancelled", "blocked_by_policy"))
+    ).all()
+    if active_job is not None or any(
+        coll.id in (task.selected_collection_ids or []) for task in active_tasks
+    ):
+        raise HTTPException(status_code=409, detail="Collection has active work")
     snapshot = {"name": coll.name, "created_by": coll.created_by}
-    db.delete(coll)
+    if coll.lifecycle_state == "erased":
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    now = datetime.now(timezone.utc)
+    erase_due = now + timedelta(days=settings.RETENTION_INGESTION_ARCHIVE_DAYS)
+    coll.status = "archived"
+    coll.lifecycle_state = "archived"
+    coll.archived_at = coll.archived_at or now
+    coll.erase_due_at = erase_due
+    db.query(IngestionDocument).filter(
+        IngestionDocument.collection_id == coll.id,
+        IngestionDocument.lifecycle_state == "active",
+    ).update({
+        IngestionDocument.lifecycle_state: "archived",
+        IngestionDocument.archived_at: now,
+        IngestionDocument.erase_due_at: erase_due,
+        IngestionDocument.availability_status: "unavailable",
+    }, synchronize_session=False)
     db.commit()
     log_audit_event(
         db,
         commit=True,
         actor=current_user,
-        action="ingestion_collection_delete",
+        action="ingestion_collection_archive",
         resource_type="ingestion_collection",
         resource_id=collection_id,
         metadata=snapshot,

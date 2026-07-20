@@ -17,6 +17,8 @@ to return deterministic fixture data.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 
 # Same shape as other client-based tests — the global conftest only sets the
 # SQLite DB; the lifespan-startup security gate needs an explicit opt-in.
@@ -27,6 +29,10 @@ from fastapi.testclient import TestClient
 
 import app.api.ingestion.search as search_mod
 from app.models.ingestion import IngestionCollection, IngestionDocument
+from app.modules.clearance.service import (
+    grant_collection_access,
+    issue_clearance_grant,
+)
 from app.services.auth_service import create_tokens
 
 from tests.conftest import make_user
@@ -50,12 +56,18 @@ def bob(db):
 
 
 @pytest.fixture
-def alice_collection(db, alice) -> IngestionCollection:
+def clearance_manager(db):
+    return make_user(db, username="clearance-manager", role="admin")
+
+
+@pytest.fixture
+def alice_collection(db, alice, clearance_manager) -> IngestionCollection:
     """Active collection owned by alice with one document."""
     coll = IngestionCollection(
         name="alice-collection",
         chunking_config={"strategy": "semantic"},
         embedding_model="nv-embed",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4096,
         status="active",
         created_by=alice.id,
@@ -74,6 +86,26 @@ def alice_collection(db, alice) -> IngestionCollection:
     db.add(doc)
     db.commit()
     db.refresh(doc)
+    coll._test_doc_id = doc.id
+    now = datetime.now(timezone.utc)
+    grant = issue_clearance_grant(
+        db,
+        actor=clearance_manager,
+        subject_user_id=alice.id,
+        max_classification_level="絕對機密",
+        valid_from=now - timedelta(minutes=5),
+        expires_at=now + timedelta(hours=1),
+        basis_ticket="TEST-CLEARANCE",
+    )
+    grant_collection_access(
+        db,
+        actor=clearance_manager,
+        clearance_grant_id=grant.id,
+        collection_id=coll.id,
+        membership_granted=True,
+        need_to_know=True,
+        basis_ticket="TEST-NTK",
+    )
     return coll
 
 
@@ -93,11 +125,30 @@ class _StubPool:
 
         class _Acq:
             async def __aenter__(self):
+                class _Transaction:
+                    async def __aenter__(self):
+                        return None
+
+                    async def __aexit__(self, *exc):
+                        return False
+
+                async def execute(sql, *args):
+                    return "OK"
+
                 async def fetch(sql, *args):
                     outer.last_sql = sql
                     outer.last_args = args
                     return rows
-                return type("C", (), {"fetch": staticmethod(fetch)})()
+
+                return type(
+                    "C",
+                    (),
+                    {
+                        "execute": staticmethod(execute),
+                        "fetch": staticmethod(fetch),
+                        "transaction": staticmethod(_Transaction),
+                    },
+                )()
 
             async def __aexit__(self, *exc):
                 return False
@@ -106,16 +157,22 @@ class _StubPool:
 
 
 @pytest.fixture(autouse=True)
-def _patch_retrieval(monkeypatch):
+def _patch_retrieval(monkeypatch) -> Iterator[dict[str, object]]:
     """Stub the embedding + pgvector layer so the endpoint logic itself
     is what gets exercised, not the asyncpg / proxy machinery."""
 
-    async def fake_embed_query(db, user, model_name, dim, query):
+    captured: dict[str, object] = {}
+
+    async def fake_embed_query(
+        db, user, model_name, dim, query, *, trusted_classification_level
+    ):
         # Return a vector of the right length; values don't matter — the
         # pool fetch is also stubbed.
+        captured["trusted_classification_level"] = trusted_classification_level
         return [0.1] * dim
 
     monkeypatch.setattr(search_mod, "_embed_query", fake_embed_query)
+    yield captured
 
 
 # ── 200 happy path ────────────────────────────────────────────────────────
@@ -129,7 +186,7 @@ def test_image_search_returns_hits(client: TestClient, db, alice, alice_collecti
         {
             "pk_id": 101,
             "image_id": "img-abc",
-            "document_id": 5001,
+            "document_id": alice_collection._test_doc_id,
             "page": 3,
             "storage_path": "alice/uploads/img-abc.png",
             "mime": "image/png",
@@ -140,7 +197,7 @@ def test_image_search_returns_hits(client: TestClient, db, alice, alice_collecti
         {
             "pk_id": 102,
             "image_id": "img-def",
-            "document_id": 5001,
+            "document_id": alice_collection._test_doc_id,
             "page": 5,
             "storage_path": "alice/uploads/img-def.jpg",
             "mime": "image/jpeg",
@@ -171,7 +228,7 @@ def test_image_search_returns_hits(client: TestClient, db, alice, alice_collecti
                 "mime", "caption", "filename", "score"):
         assert key in first, f"missing field {key} in result: {first}"
     assert first["image_id"] == 101
-    assert first["document_id"] == 5001
+    assert first["document_id"] == alice_collection._test_doc_id
     assert first["page"] == 3
     assert first["mime"] == "image/png"
     assert first["filename"] == "paper.pdf"
@@ -249,7 +306,36 @@ def test_image_search_default_top_k_is_8(
         headers=_bearer(alice),
     )
     assert resp.status_code == 200, resp.text
-    # The LIMIT $4 arg in _retrieve_images is the 4th positional arg.
-    # args order: (collection_id, q_value, max_dist, top_k)
+    # Clearance IDs are applied before ranking.
+    # args: (collection_id, q_value, document_ids, max_dist, top_k)
     assert captured["pool"].last_args is not None
-    assert captured["pool"].last_args[3] == 8
+    assert captured["pool"].last_args[2] == [alice_collection._test_doc_id]
+    assert captured["pool"].last_args[4] == 8
+    assert "i.document_id = ANY($3::bigint[])" in captured["pool"].last_sql
+
+
+def test_image_search_embedding_uses_highest_authorized_classification(
+    client: TestClient,
+    db,
+    alice,
+    alice_collection,
+    monkeypatch,
+    _patch_retrieval,
+):
+    document = db.get(IngestionDocument, alice_collection._test_doc_id)
+    document.classification_level = "極機密"
+    document.classification_source = "test"
+    db.commit()
+    monkeypatch.setattr(search_mod, "get_pool", lambda: _StubPool([]))
+
+    response = client.post(
+        f"/api/ingestion/collections/{alice_collection.id}/images/search",
+        json={"query": "classified diagram"},
+        headers=_bearer(alice),
+    )
+
+    assert response.status_code == 200, response.text
+    assert (
+        _patch_retrieval["trusted_classification_level"]
+        is search_mod.Classification.SECRET
+    )

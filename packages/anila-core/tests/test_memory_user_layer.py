@@ -9,6 +9,7 @@ inputs CSP currently observes in production.
 from __future__ import annotations
 
 import pytest
+from anila_contracts import Classification
 
 from anila_core.memory import long_term as memory_user
 from anila_core.memory.long_term import (
@@ -158,12 +159,21 @@ def test_memory_read_result_encryption_inherited_one_classified_chunk_taints():
     safe = RetrievedChunk(
         id=1, conversation_id=1, role="user", content="x",
         cosine=0.9, is_encrypted=False,
+        classification_level=Classification.UNCLASSIFIED,
+        classification_source="test",
     )
     classified = RetrievedChunk(
         id=2, conversation_id=2, role="assistant", content="y",
         cosine=0.8, is_encrypted=True,
+        classification_level=Classification.TOP_SECRET,
+        classification_source="test",
     )
-    res = MemoryReadResult(block=None, facts_count=0, chunks=[safe, classified])
+    res = MemoryReadResult(
+        block=None,
+        facts_count=0,
+        chunks=[safe, classified],
+        inherited_classification=Classification.TOP_SECRET,
+    )
     assert res.encryption_inherited is True
 
 
@@ -211,7 +221,13 @@ def test_memory_adapter_is_runtime_checkable_protocol():
 
 
 def test_user_fact_dto_is_immutable():
-    fact = UserFactDTO(user_id=1, key="姓名", value="X")
+    fact = UserFactDTO(
+        user_id=1,
+        key="姓名",
+        value="X",
+        classification_level=Classification.UNCLASSIFIED,
+        classification_source="test",
+    )
     with pytest.raises(AttributeError):
         fact.value = "Y"  # type: ignore[misc]
 

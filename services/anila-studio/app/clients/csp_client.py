@@ -47,6 +47,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services.runtime_context import current_runtime_context
 
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,29 @@ def _llm_timeout() -> httpx.Timeout:
 
 
 def _auth_headers(bearer: str) -> dict[str, str]:
+    runtime = current_runtime_context()
+    if runtime is not None:
+        return runtime.headers()
     return {"Authorization": f"Bearer {bearer}"}
+
+
+def _runtime_url(url: str) -> str:
+    """Route durable runners only through CSP's narrow delegation surface."""
+    if current_runtime_context() is None:
+        return url
+    base = settings.CSP_BASE_URL.rstrip("/")
+    if not url.startswith(base):
+        raise CspClientError("runtime delegation 只允許 CSP origin")
+    path = url[len(base):]
+    if path == "/v1/chat/completions":
+        return f"{base}/v1/studio-runtime/chat/completions"
+    if path == "/v1/images/generations":
+        return f"{base}/v1/studio-runtime/images/generations"
+    if path.startswith("/api/ingestion/collections/"):
+        return f"{base}/v1/studio-runtime{path[len('/api/ingestion') :]}"
+    if path.startswith("/api/ingestion/images/"):
+        return f"{base}/v1/studio-runtime{path[len('/api/ingestion') :]}"
+    raise CspClientError(f"runtime delegation endpoint 不在 allow-list: {path}")
 
 
 def _safe_detail(response: httpx.Response) -> str:
@@ -222,6 +245,7 @@ async def _request(
     (no retry, fail-fast).
     """
     headers = _auth_headers(bearer)
+    url = _runtime_url(url)
     timeout = timeout_override if timeout_override is not None else _default_timeout()
     max_attempts = max_attempts_override if max_attempts_override is not None else _MAX_ATTEMPTS
 
@@ -503,6 +527,50 @@ async def proxy_chat_completions(
         # ReadTimeout 不會自己好,retry 4 次只是把總等待時間從 300s 變
         # 1200s 然後一樣失敗。LLM 路徑單次嘗試,失敗就 fail-fast(caller
         # 在 _generate_validated_spec 已有 fallback deck 保底)。
+        max_attempts_override=1,
+    )
+    return response.json()
+
+
+async def proxy_image_generations(
+    *,
+    model: str,
+    prompt: str,
+    n: int,
+    size: str,
+    bearer: str,
+    timeout_seconds: float,
+) -> dict:
+    """Generate images only through Studio's task-bound CSP runtime seam."""
+
+    runtime = current_runtime_context()
+    if runtime is None:
+        raise CspClientError(
+            "formal image inference requires an active StudioRuntimeContext"
+        )
+    # Validate the dedicated runtime credential before constructing any HTTP
+    # transport.  ``_request`` obtains the same headers again, but surfacing
+    # this as a typed CSP failure lets the image provider fail closed without
+    # leaking a configuration exception or attempting an env/raw fallback.
+    try:
+        runtime.headers()
+    except RuntimeError as exc:
+        raise CspClientError("formal image inference requires a valid Studio runtime token") from exc
+    response = await _request(
+        "POST",
+        f"{settings.CSP_BASE_URL.rstrip('/')}/v1/images/generations",
+        bearer=bearer,
+        json_body={
+            "model": model,
+            "prompt": prompt,
+            "n": n,
+            "size": size,
+            "response_format": "b64_json",
+        },
+        timeout_override=httpx.Timeout(
+            timeout=timeout_seconds,
+            connect=settings.INTERNAL_TIMEOUT_CONNECT,
+        ),
         max_attempts_override=1,
     )
     return response.json()

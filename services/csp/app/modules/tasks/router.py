@@ -14,7 +14,8 @@ Slice 2b-A 附加讀面。差異註記:doc 09 create body 例含 ``input``(text)
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -26,6 +27,12 @@ from app.services.auth_service import get_current_user, is_admin_tier
 from . import service
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+
+class TaskCancelOut(BaseModel):
+    task_id: int
+    accepted: bool
+    status: str
 
 
 def _load_task_or_http(db: Session, task_id: int, user: User):
@@ -110,3 +117,65 @@ def list_task_runs(
 ):
     task = _load_task_or_http(db, task_id, current_user)
     return task.runs  # relationship 已按 run_sequence 排序
+
+
+@router.post(
+    "/{task_id}/cancel",
+    response_model=TaskCancelOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def cancel_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Signal the live downstream stream; durable recovery is Gate 5 scope."""
+    task = _load_task_or_http(db, task_id, current_user)
+    if task.status in {"completed", "failed", "cancelled", "blocked_by_policy"}:
+        return TaskCancelOut(task_id=task.id, accepted=False, status=task.status)
+
+    # Import locally so the Task domain stays independent of proxy internals.
+    from app.services.proxy.cancellation import CancellationDisposition, registry
+
+    cancel_result = await registry.cancel(task.id)
+    accepted = cancel_result.accepted
+    response_status = (
+        "cancellation_requested"
+        if cancel_result.disposition is CancellationDisposition.ACCEPTED
+        else (
+            "cancellation_in_progress"
+            if cancel_result.in_progress
+            else task.status
+        )
+    )
+    log_audit_event(
+        db,
+        action="task.cancel_requested",
+        resource_type="task",
+        resource_id=task.id,
+        actor=current_user,
+        status="success" if accepted else "failure",
+        detail=(
+            "已通知執行中串流取消"
+            if cancel_result.disposition is CancellationDisposition.ACCEPTED
+            else (
+                "取消已在處理中，保持串流連線等待終態"
+                if cancel_result.in_progress
+                else "目前沒有同程序執行中串流"
+            )
+        ),
+        metadata={
+            "cancel_disposition": cancel_result.disposition.value,
+            # A duplicate IN_PROGRESS response is accepted for idempotency,
+            # but does not send a second Event signal to the live stream.
+            "in_session_signal_delivered": (
+                cancel_result.disposition is CancellationDisposition.ACCEPTED
+            ),
+        },
+        commit=True,
+    )
+    return TaskCancelOut(
+        task_id=task.id,
+        accepted=accepted,
+        status=response_status,
+    )

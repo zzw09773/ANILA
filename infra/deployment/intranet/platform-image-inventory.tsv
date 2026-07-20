@@ -1,0 +1,22 @@
+# ANILA formal platform air-gap image inventory (machine-readable TSV).
+# Columns: service<TAB>image<TAB>bundle<TAB>activation<TAB>source
+# activation is "default" or "profile:<compose-profile>".
+# source is "built" or "upstream".
+#
+# RULE: adding/removing/renaming a service or image in infra/compose/platform.yml
+# must update this file in the same change. Run:
+#   bash infra/ci/check-airgap-image-inventory.sh
+csp	anila-platform-csp	01-anila-built.tar.gz	default	built
+ingestion-worker	anila-platform-ingestion-worker	01-anila-built.tar.gz	default	built
+router	anila-platform-router	01-anila-built.tar.gz	default	built
+anilalm	anila-platform-anilalm	01-anila-built.tar.gz	default	built
+anila-ui	anila-platform-anila-ui	01-anila-built.tar.gz	default	built
+pptx-renderer	anila-platform-pptx-renderer	01-anila-built.tar.gz	default	built
+anila-studio	anila-platform-anila-studio	01-anila-built.tar.gz	default	built
+anila-agent	anila-platform-anila-agent	01-anila-built.tar.gz	profile:gate5-silver	built
+csp-db	pgvector/pgvector:pg16	02-base.tar.gz	default	upstream
+redis	redis:7-alpine	02-base.tar.gz	default	upstream
+nginx	nginx:alpine	02-base.tar.gz	default	upstream
+n8n	n8nio/n8n:2.29.10	03-cold.tar.gz	default	upstream
+gitlab	gitlab/gitlab-ce:19.1.1-ce.0	03-cold.tar.gz	default	upstream
+codeserver	codercom/code-server:latest	03-cold.tar.gz	profile:developer-tools	upstream

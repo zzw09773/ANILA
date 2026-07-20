@@ -101,6 +101,8 @@ class FluxImageProvider:
     model: str = "flux.2-dev"
     #: 有值才帶 ``Authorization: Bearer``;空字串 = 不帶(內網免驗)。
     api_key: str = ""
+    #: Formal durable jobs use CSP's task-bound Images seam, never ``flux_url``.
+    via_csp_runtime: bool = False
     _semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -344,27 +346,46 @@ class FluxImageProvider:
                 "ignoring on the wire (seed=%s steps=%s guidance=%s)",
                 seed, steps, guidance,
             )
-        headers: dict[str, str] = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
         async with self._semaphore:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                resp = await client.post(
-                    self._images_endpoint(),
-                    json=body,
-                    headers=headers,
+            if self.via_csp_runtime:
+                from app.clients.csp_client import (
+                    CspClientError,
+                    proxy_image_generations,
                 )
-        if resp.status_code != 200:
-            raise FluxBackendError(
-                f"FLUX images API returned {resp.status_code}: {resp.text[:200]}"
-            )
-        try:
-            data = resp.json()
-        except ValueError as e:
-            raise FluxBackendError(
-                f"FLUX images API returned non-JSON body: {resp.text[:200]}"
-            ) from e
+
+                try:
+                    data = await proxy_image_generations(
+                        model=self.model,
+                        prompt=prompt,
+                        n=num_candidates,
+                        size=size,
+                        bearer=self.api_key,
+                        timeout_seconds=self.timeout_seconds,
+                    )
+                except CspClientError as exc:
+                    raise FluxBackendError(
+                        f"CSP governed Images API failed: {exc}"
+                    ) from exc
+            else:
+                headers: dict[str, str] = {}
+                if self.api_key:
+                    headers["Authorization"] = f"Bearer {self.api_key}"
+                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                    resp = await client.post(
+                        self._images_endpoint(),
+                        json=body,
+                        headers=headers,
+                    )
+                if resp.status_code != 200:
+                    raise FluxBackendError(
+                        f"FLUX images API returned {resp.status_code}: {resp.text[:200]}"
+                    )
+                try:
+                    data = resp.json()
+                except ValueError as e:
+                    raise FluxBackendError(
+                        f"FLUX images API returned non-JSON body: {resp.text[:200]}"
+                    ) from e
 
         items = data.get("data")
         if not isinstance(items, list) or not items:
