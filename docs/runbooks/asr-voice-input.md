@@ -17,6 +17,8 @@
 - **資料門檻不變**:ASR 是新增輸入途徑,不改變任何資料分級結論。機敏以上
   production 仍須依 roadmap §6.1 完成對應 Gate 並經權責人書面核准。
 - **兩種部署二選一**(§2、§3)。內部版是內網優先選項(語音不出主機)。
+- **全新 air-gapped 主機從零部署 → 直接看 §1.5 的線性 checklist**(開發機打包 →
+  打包機 build → 實體搬運 → 目標機載入部署 → 驗收 → 回滾,一路照做)。
 
 ---
 
@@ -31,46 +33,187 @@ openssl rand -hex 32          # 產一把,填進兩邊的 .env(見下)
 
 ---
 
-## 1.5 全新 air-gapped 主機:先上平台,ASR 是最後一塊
+## 1.5 全新 air-gapped 主機 — 完整線性部署 checklist(內部版)
 
-若目標主機是**全新且完全內網**(例:先部署整個 ANILA 平台再加語音),ASR 不是
-獨立部署 —— 它掛在平台上,需要 csp/redis 才能認證。順序:
+> 目標情境:一台**全新、完全內網、有 GPU** 的主機(下稱「目標機」),要從零把
+> 整個 ANILA 平台 + 語音輸入部署起來。
+>
+> **ASR 不是獨立部署** —— 它掛在平台上,gateway 要 csp/redis 才能認證。所以
+> 語音是**整個平台部署的最後一步**,不是先做的事。
+>
+> 涉及**三個角色的機器**,別搞混:
+>
+> | 角色 | 需要外網? | 做什麼 |
+> |---|---|---|
+> | **開發機** | — | 產源碼快照(`anila-src.tar.gz`)。就是本 repo 這台。 |
+> | **打包機** | ✅ 要 | 展開源碼,build image + 下載權重,打成 bundle。 |
+> | **目標機 172.16.120.35** | ❌ air-gapped | 只 `docker load` bundle、部署,不 build。 |
+>
+> 平台本體(csp/db/redis/nginx/TLS/JWT/卡登)的部署細節在
+> `docs/runbooks/intranet-zero-to-prod-guide.md` 與 `intranet-deployment-runbook.md`,
+> **本文不重複**;下面只把 ASR 相關步驟嵌在正確的位置。
 
-1. **先把整個平台部署起來** —— 照 `docs/runbooks/intranet-zero-to-prod-guide.md`
-   與 `intranet-deployment-runbook.md`(TLS、JWT keypair、卡登 CRL、DB 密碼那些
-   都在那)。**本文不重複平台級步驟。**
-2. **ASR 已經接進既有 air-gap 管線**(2026-07-18 登記),bundle 會自動帶上,
-   但 decoder 有一個手動步驟(見下)。
-3. 平台起來後,才做 §2 把 ASR 兩個服務加上去。
+### Part A — 開發機:產源碼快照
 
-### 在「有外網」的打包機上(build-and-export)
+- [ ] **A1. 確認工作樹乾淨**(快照才對得回某個 commit,可追溯性的前提)
+  ```bash
+  cd <repo>
+  git status                    # 必須是 "nothing to commit, working tree clean"
+  git log -1 --format='%H %s'   # 記下這個 commit —— 這就是本次部署的版本
+  ```
+- [ ] **A2. 打源碼快照**(免 git,排除會重建/純本機的東西)
+  ```bash
+  cd <repo 上一層>
+  tar czf anila-src.tar.gz \
+    --exclude='.git' --exclude='node_modules' --exclude='.venv' \
+    --exclude='dist' --exclude='__pycache__' --exclude='*.tar.gz' \
+    <repo 目錄名>
+  ```
+- [ ] **A3. 抽檢**:`.venv`/`.git`/`.env` 沒進去、ASR 的碼有進去
+  ```bash
+  tar tzf anila-src.tar.gz | grep -c '\.venv/'          # 應為 0
+  tar tzf anila-src.tar.gz | grep -c 'services/asr-'    # 應 > 0
+  ```
+- [ ] **A4. 把 `anila-src.tar.gz` 搬到打包機**(scp / 內部檔案交換,依你們規定)。
+
+### Part B — 打包機(有外網):build + 打 bundle
+
+- [ ] **B1. 展開源碼**
+  ```bash
+  tar xzf anila-src.tar.gz && cd <repo 目錄名>
+  ```
+- [ ] **B2. ⚠ 手動先 build decoder image**(**這步不能省**)
+  ```bash
+  docker build -t asr-decoder:0.1.0 services/asr-decoder
+  ```
+  理由:model bundle(`04-models.tar.gz`)只 `docker save` **現成的** image、
+  **不會幫你 build**。gateway 不用手動 build(它 source=built,平台 bundle 會自動
+  build)。CUDA base(`nvidia/cuda:12.6.3-cudnn-runtime`)會烘進 decoder 的 image
+  層、`docker save` 一起帶走,**不必單獨處理 base image**。
+  (彩排實測:decoder image build 成功、large-v3 fp16 在 GPU 上 90 秒載入、
+  ~3.3GB VRAM、真實語音解碼正確。)
+- [ ] **B3. 打 bundle**(`WITH_MODELS=1` 才會收 decoder)
+  ```bash
+  WITH_MODELS=1 bash infra/deployment/intranet/build-and-export-for-intranet.sh <輸出目錄>
+  ```
+- [ ] **B4. 確認 ASR 兩個 image 都進了 bundle**
+  ```bash
+  grep asr-decoder <輸出目錄>/MODEL-IMAGE-STATUS.tsv     # 要 "included",不是 "missing"
+  grep asr-gateway <輸出目錄>/PLATFORM-IMAGE-LOCK.tsv    # 應有 asr-gateway 一列
+  ```
+  若 decoder 是 "missing" → B2 沒做或 image tag 不是 `asr-decoder:0.1.0`。
+- [ ] **B5. 下載 large-v3 權重**(走**權重通道**,不進 image bundle)
+  ```bash
+  bash infra/deployment/intranet/download-intranet-models.sh <權重暫存目錄>
+  # 產出 <權重暫存目錄>/faster-whisper-large-v3/(內含 model.bin)
+  ```
+
+### Part C — 實體搬進內網
+
+- [ ] **C1.** 把這些用你們的實體資料閘道搬到目標機:
+  - `<輸出目錄>/*.tar.gz`(所有 image bundle,含 `01-anila-built`、`02-base`、`04-models`…)
+  - `<權重暫存目錄>/faster-whisper-large-v3/`(整個目錄)
+
+### Part D — 目標機 172.16.120.35(air-gapped):載入 + 部署
+
+- [ ] **D1. 載入所有 image bundle**
+  ```bash
+  for f in *.tar.gz; do echo "load $f"; gunzip -c "$f" | docker load; done
+  docker images | grep -E 'asr-decoder|asr-gateway'   # 兩個都要在
+  ```
+- [ ] **D2. 權重就位**:把 `faster-whisper-large-v3/` 放到之後 `ANILA_HF_DIR` 會指到
+  的位置(例:`$ANILA_HF_DIR/faster-whisper-large-v3/model.bin` 存在)。
+- [ ] **D3. ⚠ 先把整個平台部署起來** —— 照
+  `docs/runbooks/intranet-zero-to-prod-guide.md`:TLS 憑證、JWT keypair(缺了
+  JWKS 500、登入炸)、卡登 CRL、DB 密碼、csp/db/redis/nginx 全部。
+  **這是最大的一塊,ASR 之前必須完成。**
+  ```bash
+  # 平台起來後,確認 csp 與 redis 健康(ASR 依賴它們)
+  docker compose -p anila-platform -f infra/compose/platform.yml ps csp redis
+  #   兩個都要 (healthy)
+  ```
+  ⚠ **順序不可顛倒**:gateway 啟動時會硬性去抓 csp 的 JWKS,連不到就退出
+  (fail-closed,與 anila-studio 同款,彩排已證實)。平台的 `depends_on:
+  service_healthy` 會擋住,但你手動起 ASR 時務必先確認上面兩個是 healthy。
+- [ ] **D4. `.env`(repo root)補 ASR 設定**
+  ```bash
+  # 產一把共享密鑰(gateway 與 decoder 必須同值)
+  openssl rand -hex 32
+  ```
+  填進 `.env`:
+  ```ini
+  ASR_DECODER_TOKEN=<上面產的 32-byte hex>
+  ASR_GPU=<這台沒有 LLM 在跑的卡號>   # ⚠ 不要跟 LLM 共卡,推論延遲互擾難 debug
+  ANILA_HF_DIR=<D2 權重的上層目錄>
+  ASR_MODEL_SIZE=large-v3
+  ASR_COMPUTE_TYPE=float16            # H100/V100 都用 float16(V100 int8 反而更慢)
+  ASR_DECODE_URL=http://asr-decoder:9000   # 內部版預設,走內部 network,免 http 旗標
+  # ASR_ALLOW_HTTP_DECODER 維持 0(內部版不需要)
+  ```
+- [ ] **D5. 起 decoder(GPU)**
+  ```bash
+  bash infra/deployment/intranet/model-serve.sh up asr-decoder
+  # 等它 ready(large-v3 冷啟動分鐘級);health 從 503 轉 200:
+  docker exec anila-model-asr-decoder curl -sf http://localhost:9000/health
+  #   {"status":"ok","model":"large-v3","device":"cuda","ready":true}
+  ```
+  卡在 503 不轉 200 → 見 §5 故障矩陣(多半是權重路徑錯 / `ASR_LOCAL_FILES_ONLY`
+  沒開卡在下載 / VRAM 不足)。
+- [ ] **D6. 起 gateway(進平台,profile:asr)**
+  ```bash
+  COMPOSE_PROFILES=asr docker compose -p anila-platform \
+    -f infra/compose/platform.yml up -d asr-gateway
+  # ⚠ 只建 asr-gateway 一個新容器,不會動到平台其他 running 容器。
+  ```
+- [ ] **D7. nginx 載入 `/asr/` 路由 + 麥克風放行**
+  ```bash
+  # anila.conf 是 bind-mount → reload 即可載入新設定,不必 recreate nginx。
+  docker exec anila-nginx nginx -t        # 先驗語法
+  docker exec anila-nginx nginx -s reload
+  ```
+  (`/asr/` location 與平台 server block 的 `Permissions-Policy: microphone=(self)`
+  都在 `anila.conf` 裡,隨源碼快照一起到位。)
+
+### 驗收(在目標機上,用對方法)
+
+- [ ] **V1. decoder health**
+  ```bash
+  docker exec anila-model-asr-decoder curl -sf http://localhost:9000/health   # ready:true
+  ```
+- [ ] **V2. gateway health** —— ⚠ **路徑帶 `/asr` 前綴**,打 `/health` 是 404
+  ```bash
+  docker exec anila-nginx sh -c 'curl -sf http://asr-gateway:8200/asr/health'
+  #   200 = 可用;503 = 撤銷 cache 沒 ready → 查 csp/redis(見 §5)
+  ```
+- [ ] **V3. 瀏覽器端到端**(唯一能驗「按麥克風→出字」的方式,需真人)
+  - 用 **https** 登入平台(卡登或帳密,依部署型態)。
+  - 聊天輸入框旁應出現**麥克風按鈕**。沒出現 = 前端 probe `/asr/health` 非 200
+    (查 profile 有沒有開、gateway health)。
+  - 按麥克風 → 講一句話 → **輸入框下方出現灰字預覽** → 停頓/再按一次 →
+    **定稿進輸入框** → 可編輯後送出(走既有聊天流)。
+  - ⚠ 按了跳權限錯、重登也沒用 → **先查兩件事**:① 網址是不是 https
+    (IP 走 http 拿不到麥克風);② nginx `Permissions-Policy` 有沒有放行
+    (D7 沒 reload 或設定被還原)。這兩個症狀跟「使用者按拒絕」一模一樣。
+
+### 回滾
 
 ```bash
-# gateway:source=built,平台 bundle 會自動 build(已登記在 platform-image-inventory.tsv)
-# decoder:model bundle 只 docker save 現成 image、不 build → 必須先手動 build
-docker build -t asr-decoder:0.1.0 services/asr-decoder      # ⚠ 這步不能省
-#   CUDA base(nvidia/cuda:12.6.3-cudnn-runtime)會烘進 image 層,docker save 一起
-#   帶走,不必單獨處理 base image。
-
-WITH_MODELS=1 bash infra/deployment/intranet/build-and-export-for-intranet.sh <輸出目錄>
-#   platform bundle → 含 asr-gateway;04-models.tar.gz → 含 asr-decoder
-#   打完檢查 MODEL-IMAGE-STATUS.tsv 裡 asr-decoder 是 "included" 而非 "missing"
-
-# large-v3 權重(已登記在 download 腳本;走權重通道,不進 image bundle)
-bash infra/deployment/intranet/download-intranet-models.sh <權重暫存目錄>
+# 只停 ASR,不動平台其他服務:
+docker compose -p anila-platform -f infra/compose/platform.yml stop asr-gateway
+bash infra/deployment/intranet/model-serve.sh down asr-decoder
+docker exec anila-nginx nginx -s reload   # /asr/ location 仍在但 upstream 沒了,
+                                          # 變數式 proxy_pass 不會讓 nginx 崩,回 502
 ```
-
-### 搬進內網、載入
-
-把 bundle + 權重用你們的資料閘道搬到 172.16.120.35,`docker load` 各個 tar.gz,
-權重放到 `ANILA_HF_DIR` 指的位置。之後才走下面 §2。
-
-⚠ **decoder 需要那台主機有 GPU**(內部版的前提)。若目標主機沒有 GPU,內部版
-在該主機不存在 —— 要改用外部版(§3),decoder 另擺一台有卡的機器。
+平台其餘部分完全不受影響。要連 `/asr/` 路由都拿掉,把 `anila.conf` 的該段註解掉
+再 reload —— 但通常不必,沒開 profile 時它只是回 502,不影響別的路由。
 
 ---
 
-## 2. 內部版(decoder 與平台同機,語音不出主機)—— 內網優先
+## 2. 內部版 — 分項說明(§1.5 checklist 的背景補充)
+
+> 全新 air-gapped 主機的**完整照做步驟看 §1.5**。本節是各步驟的背景/理由,
+> 以及「平台已在跑、只是要加 ASR」這種**非全新**情境的精簡版(跳過 Part A–D3,
+> 直接 D4 起)。
 
 decoder 進 `anila-models` stack,gateway 走內部 network 打它,不開 host port。
 
