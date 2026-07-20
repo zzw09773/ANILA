@@ -669,7 +669,10 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
       JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
       REVOCATION_RECONCILE_INTERVAL_SECONDS: "${REVOCATION_RECONCILE_INTERVAL_SECONDS:-5}"
-      REQUIRE_CARD_LOGIN_ONLY: "true"
+      # 跟 csp 用同一個旗標、同樣預設 card-only(安全預設)。csp 改帳密登入時
+      # (REQUIRE_CARD_LOGIN_ONLY=false),gateway 也要一起放行,否則帳密 session
+      # 的 JWT(amr=["pwd"])會被 gateway 擋成 4401 —— 一個 env 同時控制兩者。
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
       # 決定 access cookie 名走哪一軌。瀏覽器的 WS API 不能帶 Authorization
       # header → cookie 是唯一路徑,名字錯就是全部 4401。
       COOKIE_SECURE: "true"
