@@ -36,16 +36,16 @@ class ClearancePolicyDataError(ValueError):
 
 _COMPARTMENT_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9_.-]{0,63}$")
 
+# Every multi-row clearance decision acquires resource rows before authority
+# rows: collection/document and their requirement/compartment rows, then the
+# user/grant rows and finally grant/access association rows.  Governance
+# writes that touch a resource and a grant must use the same order.
+
 
 def _for_update_get(db: Session, model: type, primary_key: int):
     """Serialize governance mutations against runtime FOR SHARE decisions."""
 
-    return (
-        db.query(model)
-        .filter(model.id == primary_key)
-        .with_for_update()
-        .first()
-    )
+    return db.query(model).filter(model.id == primary_key).with_for_update().first()
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,8 +66,7 @@ class DataAccessContext:
         if not isinstance(self.required_classification, Classification):
             raise TypeError("required_classification 必須是 canonical Classification")
         if not isinstance(self.required_compartment_ids, frozenset) or any(
-            compartment_id <= 0
-            for compartment_id in self.required_compartment_ids
+            compartment_id <= 0 for compartment_id in self.required_compartment_ids
         ):
             raise ValueError("required_compartment_ids 必須是正整數 frozenset")
         if not isinstance(self.is_collection_owner, bool):
@@ -99,9 +98,7 @@ def _required_aware_datetime(value: datetime, *, field_name: str) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _classification_from_storage(
-    raw: object, *, field_name: str
-) -> Classification:
+def _classification_from_storage(raw: object, *, field_name: str) -> Classification:
     if isinstance(raw, Classification):
         return raw
     if not isinstance(raw, str):
@@ -293,12 +290,12 @@ def add_grant_compartment(
     compartment_id: int,
 ) -> ClearanceGrantCompartment:
     _assert_manager(actor)
-    grant = _for_update_get(db, ClearanceGrant, clearance_grant_id)
-    if grant is None or grant.revoked_at is not None:
-        raise LookupError("clearance grant 不存在或已撤銷")
     compartment = _for_update_get(db, SecurityCompartment, compartment_id)
     if compartment is None or not compartment.is_active:
         raise LookupError("compartment 不存在或未啟用")
+    grant = _for_update_get(db, ClearanceGrant, clearance_grant_id)
+    if grant is None or grant.revoked_at is not None:
+        raise LookupError("clearance grant 不存在或已撤銷")
     existing = db.get(
         ClearanceGrantCompartment,
         {"clearance_grant_id": grant.id, "compartment_id": compartment.id},
@@ -340,12 +337,12 @@ def grant_collection_access(
     _assert_manager(actor)
     if not membership_granted and not need_to_know:
         raise ValueError("collection grant 至少要包含 membership 或 need-to-know")
-    grant = _for_update_get(db, ClearanceGrant, clearance_grant_id)
-    if grant is None or grant.revoked_at is not None:
-        raise LookupError("clearance grant 不存在或已撤銷")
     collection = _for_update_get(db, IngestionCollection, collection_id)
     if collection is None:
         raise LookupError("collection 不存在")
+    grant = _for_update_get(db, ClearanceGrant, clearance_grant_id)
+    if grant is None or grant.revoked_at is not None:
+        raise LookupError("clearance grant 不存在或已撤銷")
     existing = (
         db.query(CollectionAccessGrant)
         .filter_by(clearance_grant_id=grant.id, collection_id=collection.id)
@@ -560,6 +557,10 @@ def resolve_data_access_context(
         int(row[0])
         for row in db.query(CollectionRequiredCompartment.compartment_id)
         .filter(CollectionRequiredCompartment.collection_id == collection.id)
+        .order_by(
+            CollectionRequiredCompartment.collection_id.asc(),
+            CollectionRequiredCompartment.compartment_id.asc(),
+        )
         .with_for_update(read=True)
         .all()
     }
@@ -568,6 +569,10 @@ def resolve_data_access_context(
             int(row[0])
             for row in db.query(DocumentRequiredCompartment.compartment_id)
             .filter(DocumentRequiredCompartment.document_id == document.id)
+            .order_by(
+                DocumentRequiredCompartment.document_id.asc(),
+                DocumentRequiredCompartment.compartment_id.asc(),
+            )
             .with_for_update(read=True)
             .all()
         )
@@ -575,6 +580,7 @@ def resolve_data_access_context(
         compartments = (
             db.query(SecurityCompartment)
             .filter(SecurityCompartment.id.in_(required_compartments))
+            .order_by(SecurityCompartment.id.asc())
             .with_for_update(read=True)
             .all()
         )
@@ -621,9 +627,36 @@ def evaluate_data_access(
         )
     context = authoritative
 
+    active = _resolve_active_clearance_grants(
+        db,
+        user_id=context.user_id,
+        evaluated_at=context.evaluated_at,
+    )
+    grant_compartments = _load_active_grant_compartments(db, active)
+    collection_access = _load_active_collection_access(
+        db,
+        active,
+        collection_ids={context.collection_id},
+    )
+    return _evaluate_loaded_data_access(
+        context,
+        active=active,
+        grant_compartments=grant_compartments,
+        collection_access=collection_access,
+    )
+
+
+def _resolve_active_clearance_grants(
+    db: Session,
+    *,
+    user_id: int,
+    evaluated_at: datetime,
+) -> list[tuple[ClearanceGrant, Classification]] | None:
+    """Return canonical active grants, or ``None`` for an inactive subject."""
+
     subject = (
         db.query(User)
-        .filter(User.id == context.user_id)
+        .filter(User.id == user_id)
         # User.department is eager-loaded through a nullable LEFT JOIN.
         # PostgreSQL cannot apply FOR SHARE to the nullable join side, so lock
         # only the authoritative User row.
@@ -631,11 +664,11 @@ def evaluate_data_access(
         .first()
     )
     if subject is None or not subject.is_active:
-        return DataAccessDecision(False, "subject_inactive", context)
+        return None
 
     grants = (
         db.query(ClearanceGrant)
-        .filter(ClearanceGrant.subject_user_id == context.user_id)
+        .filter(ClearanceGrant.subject_user_id == user_id)
         .order_by(ClearanceGrant.id.asc())
         .with_for_update(read=True)
         .all()
@@ -664,46 +697,95 @@ def evaluate_data_access(
             grant.expires_at, field_name=f"clearance_grant#{grant.id}.expires_at"
         )
         if expires_at <= valid_from:
-            raise ClearancePolicyDataError(
-                f"clearance_grant#{grant.id} 時間窗非法"
-            )
-        if (
-            grant.revoked_at is None
-            and valid_from <= context.evaluated_at < expires_at
-        ):
+            raise ClearancePolicyDataError(f"clearance_grant#{grant.id} 時間窗非法")
+        if grant.revoked_at is None and valid_from <= evaluated_at < expires_at:
             active.append((grant, level))
 
+    return sorted(active, key=lambda item: (-item[1].rank, item[0].id))
+
+
+def _load_active_grant_compartments(
+    db: Session,
+    active: list[tuple[ClearanceGrant, Classification]] | None,
+) -> dict[int, frozenset[int]]:
+    if not active:
+        return {}
+    grant_ids = [grant.id for grant, _level in active]
+    rows = (
+        db.query(
+            ClearanceGrantCompartment.clearance_grant_id,
+            ClearanceGrantCompartment.compartment_id,
+        )
+        .filter(ClearanceGrantCompartment.clearance_grant_id.in_(grant_ids))
+        .order_by(
+            ClearanceGrantCompartment.clearance_grant_id.asc(),
+            ClearanceGrantCompartment.compartment_id.asc(),
+        )
+        .with_for_update(read=True)
+        .all()
+    )
+    covered: dict[int, set[int]] = {grant_id: set() for grant_id in grant_ids}
+    for grant_id, compartment_id in rows:
+        if grant_id not in covered or compartment_id in covered[grant_id]:
+            raise ClearancePolicyDataError("clearance grant compartment 資料重複或越界")
+        covered[grant_id].add(compartment_id)
+    return {
+        grant_id: frozenset(compartment_ids)
+        for grant_id, compartment_ids in covered.items()
+    }
+
+
+def _load_active_collection_access(
+    db: Session,
+    active: list[tuple[ClearanceGrant, Classification]] | None,
+    *,
+    collection_ids: set[int],
+) -> dict[tuple[int, int], CollectionAccessGrant]:
+    if not active:
+        return {}
+    grant_ids = [grant.id for grant, _level in active]
+    rows = (
+        db.query(CollectionAccessGrant)
+        .filter(
+            CollectionAccessGrant.clearance_grant_id.in_(grant_ids),
+            CollectionAccessGrant.collection_id.in_(collection_ids),
+            CollectionAccessGrant.revoked_at.is_(None),
+        )
+        .order_by(CollectionAccessGrant.id.asc())
+        .with_for_update(read=True)
+        .all()
+    )
+    access_by_key: dict[tuple[int, int], CollectionAccessGrant] = {}
+    for access in rows:
+        key = (access.clearance_grant_id, access.collection_id)
+        if key in access_by_key:
+            raise ClearancePolicyDataError("collection access grant 資料重複")
+        access_by_key[key] = access
+    return access_by_key
+
+
+def _evaluate_loaded_data_access(
+    context: DataAccessContext,
+    *,
+    active: list[tuple[ClearanceGrant, Classification]] | None,
+    grant_compartments: dict[int, frozenset[int]],
+    collection_access: dict[tuple[int, int], CollectionAccessGrant],
+) -> DataAccessDecision:
+    if active is None:
+        return DataAccessDecision(False, "subject_inactive", context)
     if not active:
         return DataAccessDecision(False, "no_active_clearance_grant", context)
 
-    # Prefer the highest single grant that independently satisfies every
-    # predicate. This never composes grants, but avoids accidentally selecting
-    # an older low grant and hiding chunks the same user is explicitly cleared
-    # to read under a later high grant.
-    for grant, level in sorted(
-        active, key=lambda item: (-item[1].rank, item[0].id)
-    ):
+    # One grant must independently satisfy every predicate.  The preloaded
+    # maps only remove duplicate reads/locks; decisions remain per context.
+    for grant, level in active:
         if level < context.required_classification:
             continue
-        covered_compartments = {
-            row[0]
-            for row in db.query(ClearanceGrantCompartment.compartment_id)
-            .filter(ClearanceGrantCompartment.clearance_grant_id == grant.id)
-            .with_for_update(read=True)
-            .all()
-        }
-        if not context.required_compartment_ids.issubset(covered_compartments):
+        if not context.required_compartment_ids.issubset(
+            grant_compartments.get(grant.id, frozenset())
+        ):
             continue
-        access = (
-            db.query(CollectionAccessGrant)
-            .filter_by(
-                clearance_grant_id=grant.id,
-                collection_id=context.collection_id,
-                revoked_at=None,
-            )
-            .with_for_update(read=True)
-            .first()
-        )
+        access = collection_access.get((grant.id, context.collection_id))
         if access is None or not access.need_to_know:
             continue
         if not (context.is_collection_owner or access.membership_granted):
@@ -716,9 +798,217 @@ def evaluate_data_access(
             collection_access_grant_id=access.id,
             authorized_classification=level,
         )
-    return DataAccessDecision(
-        False, "no_single_grant_satisfies_requirements", context
+    return DataAccessDecision(False, "no_single_grant_satisfies_requirements", context)
+
+
+def resolve_and_evaluate_data_access_batch(
+    db: Session,
+    *,
+    user_id: int,
+    collection_ids: list[int],
+    document_ids: list[int],
+    now: datetime | None = None,
+) -> dict[tuple[int, int | None], DataAccessDecision]:
+    """Evaluate a locked collection/document set without per-document queries."""
+
+    if (
+        not collection_ids
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in collection_ids
+        )
+        or len(collection_ids) != len(set(collection_ids))
+    ):
+        raise ValueError("collection_ids 必須是不重複的正整數清單")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        for value in document_ids
+    ) or len(document_ids) != len(set(document_ids)):
+        raise ValueError("document_ids 必須是不重複的正整數清單")
+    evaluated_at = _required_aware_datetime(
+        now or datetime.now(timezone.utc), field_name="evaluated_at"
     )
+    requested_collections = set(collection_ids)
+    requested_documents = set(document_ids)
+
+    collections = (
+        db.query(IngestionCollection)
+        .filter(IngestionCollection.id.in_(requested_collections))
+        .order_by(IngestionCollection.id.asc())
+        .with_for_update(read=True)
+        .all()
+    )
+    if len(collections) != len(requested_collections):
+        raise LookupError("collection 不存在")
+    collection_by_id = {collection.id: collection for collection in collections}
+
+    documents: list[IngestionDocument] = []
+    if requested_documents:
+        documents = (
+            db.query(IngestionDocument)
+            .filter(IngestionDocument.id.in_(requested_documents))
+            .order_by(IngestionDocument.id.asc())
+            .with_for_update(read=True)
+            .all()
+        )
+        if len(documents) != len(requested_documents):
+            raise LookupError("document 不存在")
+        if any(
+            document.collection_id not in requested_collections
+            for document in documents
+        ):
+            raise LookupError("document 不屬於指定 collection")
+
+    collection_requirements: dict[int, set[int]] = {
+        collection_id: set() for collection_id in requested_collections
+    }
+    for collection_id, compartment_id in (
+        db.query(
+            CollectionRequiredCompartment.collection_id,
+            CollectionRequiredCompartment.compartment_id,
+        )
+        .filter(CollectionRequiredCompartment.collection_id.in_(requested_collections))
+        .order_by(
+            CollectionRequiredCompartment.collection_id.asc(),
+            CollectionRequiredCompartment.compartment_id.asc(),
+        )
+        .with_for_update(read=True)
+        .all()
+    ):
+        if compartment_id in collection_requirements[collection_id]:
+            raise ClearancePolicyDataError("collection required compartment 資料重複")
+        collection_requirements[collection_id].add(compartment_id)
+
+    document_requirements: dict[int, set[int]] = {
+        document_id: set() for document_id in requested_documents
+    }
+    if requested_documents:
+        for document_id, compartment_id in (
+            db.query(
+                DocumentRequiredCompartment.document_id,
+                DocumentRequiredCompartment.compartment_id,
+            )
+            .filter(DocumentRequiredCompartment.document_id.in_(requested_documents))
+            .order_by(
+                DocumentRequiredCompartment.document_id.asc(),
+                DocumentRequiredCompartment.compartment_id.asc(),
+            )
+            .with_for_update(read=True)
+            .all()
+        ):
+            if compartment_id in document_requirements[document_id]:
+                raise ClearancePolicyDataError("document required compartment 資料重複")
+            document_requirements[document_id].add(compartment_id)
+
+    required_compartment_ids = set().union(
+        *collection_requirements.values(),
+        *document_requirements.values(),
+    )
+    if required_compartment_ids:
+        compartments = (
+            db.query(SecurityCompartment)
+            .filter(SecurityCompartment.id.in_(required_compartment_ids))
+            .order_by(SecurityCompartment.id.asc())
+            .with_for_update(read=True)
+            .all()
+        )
+        if len(compartments) != len(required_compartment_ids):
+            raise ClearancePolicyDataError("required compartment catalog 不完整")
+        for compartment in compartments:
+            if (
+                not compartment.is_active
+                or not isinstance(compartment.code, str)
+                or _COMPARTMENT_CODE_RE.fullmatch(compartment.code) is None
+            ):
+                raise ClearancePolicyDataError(
+                    f"required compartment#{compartment.id} 已停用或格式無效"
+                )
+
+    contexts: dict[tuple[int, int | None], DataAccessContext] = {}
+    for collection in collections:
+        collection_level = _classification_from_storage(
+            collection.classification_level,
+            field_name=f"collection#{collection.id}",
+        )
+        contexts[(collection.id, None)] = DataAccessContext(
+            user_id=user_id,
+            collection_id=collection.id,
+            document_id=None,
+            required_classification=collection_level,
+            required_compartment_ids=frozenset(collection_requirements[collection.id]),
+            is_collection_owner=collection.created_by == user_id,
+            evaluated_at=evaluated_at,
+        )
+    for document in documents:
+        collection = collection_by_id[document.collection_id]
+        required_level = Classification.max_of(
+            [
+                contexts[(collection.id, None)].required_classification,
+                _classification_from_storage(
+                    document.classification_level,
+                    field_name=f"document#{document.id}",
+                ),
+            ]
+        )
+        contexts[(collection.id, document.id)] = DataAccessContext(
+            user_id=user_id,
+            collection_id=collection.id,
+            document_id=document.id,
+            required_classification=required_level,
+            required_compartment_ids=frozenset(
+                collection_requirements[collection.id]
+                | document_requirements[document.id]
+            ),
+            is_collection_owner=collection.created_by == user_id,
+            evaluated_at=evaluated_at,
+        )
+
+    active = _resolve_active_clearance_grants(
+        db,
+        user_id=user_id,
+        evaluated_at=evaluated_at,
+    )
+    grant_compartments = _load_active_grant_compartments(db, active)
+    collection_access = _load_active_collection_access(
+        db,
+        active,
+        collection_ids=requested_collections,
+    )
+    return {
+        key: _evaluate_loaded_data_access(
+            context,
+            active=active,
+            grant_compartments=grant_compartments,
+            collection_access=collection_access,
+        )
+        for key, context in contexts.items()
+    }
+
+
+def resolve_effective_classification_clearance(
+    db: Session,
+    *,
+    user_id: int,
+    now: datetime | None = None,
+) -> Classification | None:
+    """Return the highest active classification grant for one subject.
+
+    This classification-only seam is for data that has no authoritative
+    collection or document scope.  It deliberately grants no compartment,
+    collection membership, or need-to-know authority.
+    """
+
+    evaluated_at = _required_aware_datetime(
+        now or datetime.now(timezone.utc), field_name="evaluated_at"
+    )
+    active = _resolve_active_clearance_grants(
+        db,
+        user_id=user_id,
+        evaluated_at=evaluated_at,
+    )
+    if not active:
+        return None
+    return active[0][1]
 
 
 def resolve_and_evaluate_data_access(
@@ -750,7 +1040,9 @@ __all__ = [
     "evaluate_data_access",
     "grant_collection_access",
     "issue_clearance_grant",
+    "resolve_effective_classification_clearance",
     "resolve_and_evaluate_data_access",
+    "resolve_and_evaluate_data_access_batch",
     "resolve_data_access_context",
     "revoke_clearance_grant",
     "revoke_collection_access",

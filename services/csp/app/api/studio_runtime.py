@@ -23,7 +23,7 @@ from app.api.ingestion.search import (
     search_collection,
     search_collection_images,
 )
-from app.api.proxy import chat_completions
+from app.api.proxy import _image_generations_impl, chat_completions
 from app.database import get_db
 from app.middleware.caller import Caller
 from app.models.artifact import ArtifactJob
@@ -383,6 +383,27 @@ async def runtime_chat_completions(
     )
     return await chat_completions(
         request=request,
+        caller=Caller(user=binding.user, api_key_id=None),
+        db=db,
+    )
+
+
+@router.post("/images/generations")
+async def runtime_image_generations(
+    request: Request,
+    binding: RuntimeBinding = Depends(require_runtime_binding),
+    db: Session = Depends(get_db),
+):
+    """Task/snapshot/lease-bound Studio entry into the governed Images proxy."""
+
+    _admit_runtime_sink(db, binding)
+    request.state.prevalidated_task_ctx = attach_running_task_run(
+        db,
+        task=binding.task,
+        expected_dispatch_target="studio",
+    )
+    return await _image_generations_impl(
+        request,
         caller=Caller(user=binding.user, api_key_id=None),
         db=db,
     )

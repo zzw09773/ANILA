@@ -21,11 +21,76 @@ from anila_contracts import Classification
 from anila_contracts.classification import ClassificationLevel
 from anila_contracts.contexts import AuthAssurance
 
+from .injection_detection import MAX_REQUEST_CONTENT_SCAN_CHARS
+
 
 _TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:/@-")
 _MAX_HISTORY_ITEMS = 64
 _MAX_HISTORY_TEXT = 16_384
 _MAX_HISTORY_SUMMARY = 4_096
+
+
+class UntrustedContentLimitExceeded(ValueError):
+    """Raised when model-visible caller content exceeds the E1 scan bound."""
+
+
+def extract_untrusted_user_content(
+    messages: Sequence[Mapping[str, Any]] | None,
+    *,
+    input_text: str | None = None,
+    max_chars: int = MAX_REQUEST_CONTENT_SCAN_CHARS,
+) -> str:
+    """Project all model-visible caller content into one bounded scan string.
+
+    The Router model may receive a much larger message history than the
+    context-history retention window.  This helper is the shared canonical
+    seam used by production and the offline adapter: it includes the content
+    of every caller-supplied message role, preserves message order, and never
+    silently truncates the model-visible projection.  ``input_text`` remains
+    only as a compatibility fallback when ``messages`` is absent; production
+    and evaluation both pass the message list so they scan identical bytes.
+
+    A caller-controlled role is not authority.  The formal Router may demote
+    system/developer/assistant roles before inference, but their content still
+    belongs in this untrusted projection.  If the projection would exceed the
+    scan cap, raise rather than scanning a prefix.
+    """
+
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1:
+        raise ValueError("max_chars 必須是正整數")
+    parts: list[str] = []
+    projected_chars = 0
+
+    def append(value: object) -> None:
+        nonlocal projected_chars
+        if not isinstance(value, str) or not value:
+            return
+        separator_cost = 1 if parts else 0
+        projected_chars += separator_cost + len(value)
+        if projected_chars > max_chars:
+            raise UntrustedContentLimitExceeded(
+                "model-visible untrusted content exceeds the enforcement scan cap"
+            )
+        parts.append(value)
+
+    def append_content(value: object) -> None:
+        if isinstance(value, str):
+            append(value)
+        elif isinstance(value, Mapping):
+            for item in value.values():
+                append_content(item)
+        elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            for item in value:
+                append_content(item)
+
+    if messages:
+        for message in messages:
+            if not isinstance(message, Mapping):
+                continue
+            append_content(message.get("content"))
+    else:
+        append(input_text)
+    return "\n".join(parts)
 
 
 def _require_identifier(
@@ -428,8 +493,11 @@ class RequestContextBuilder:
 
 
 __all__ = [
+    "MAX_REQUEST_CONTENT_SCAN_CHARS",
     "RequestContext",
     "RequestContextBuilder",
     "ServerCeilings",
+    "UntrustedContentLimitExceeded",
     "UntrustedHistoryItem",
+    "extract_untrusted_user_content",
 ]

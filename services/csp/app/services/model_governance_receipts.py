@@ -31,11 +31,33 @@ from app.services.model_governance_runtime import (
     ModelGovernanceRuntime,
     ModelInvocationAuthorization,
     ModelInvocationCompletion,
+    governance_required_for_settings,
 )
 
 
 _REQUEST_TYPE = "model_gov"
 _runtime_provider: Callable[[], ModelGovernanceRuntime | None] | None = None
+_AUTHORIZATION_SNAPSHOT_FIELDS = (
+    "schema_version",
+    "invocation_id",
+    "callsite_id",
+    "classification",
+    "gateway_id",
+    "endpoint",
+    "artifact_id",
+    "deployment_id",
+    "provider_binding_id",
+    "provider_locality",
+    "transport_target_sha256",
+    "model_registry_revision",
+    "upstream_provider_locality",
+    "upstream_transport_target_sha256",
+    "egress_policy_id",
+    "upstream_egress_policy_id",
+    "profile_content_sha256",
+    "inventory_sha256",
+    "receipt_context",
+)
 
 
 def set_model_governance_runtime_provider(
@@ -62,12 +84,37 @@ def resolve_model_governance_runtime() -> ModelGovernanceRuntime | None:
         return None
 
 
+def admit_registry_provider(model: Any):
+    """Apply provider authority when configured, preserving disabled dev mode."""
+
+    runtime = resolve_model_governance_runtime()
+    if runtime is None:
+        from app.config import settings
+
+        if governance_required_for_settings(settings) or bool(
+            getattr(settings, "GATE5_MODEL_GOVERNANCE_ENABLED", False)
+        ):
+            raise RuntimeError("model-governance runtime provider is unavailable")
+        return None
+    if not runtime.enabled:
+        return None
+    return runtime.resolve_provider_binding(model)
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _metadata(event: Mapping[str, Any]) -> str:
-    return json.dumps(dict(event), ensure_ascii=False, sort_keys=True, default=str)
+    # Raw provider transport targets are deployment topology and must never be
+    # copied into the durable ledger or audit metadata.  Keep only the signed
+    # ids/revision/locality/hashes/egress and artifact/profile evidence.
+    sanitized = {
+        key: value
+        for key, value in event.items()
+        if key not in {"transport_target", "upstream_transport_target"}
+    }
+    return json.dumps(sanitized, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _non_negative_int(value: Any, field: str) -> int:
@@ -115,6 +162,10 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
         self.db = db
         self.subject = subject
         self._usage_ids: dict[str, int] = {}
+        # A receipt sink may continue the post half of the *same* admitted
+        # invocation.  A fresh sink/process is never allowed to replay its
+        # pre-authorize phase, even when the durable row is completed/failed.
+        self._active_invocations: set[str] = set()
 
     @staticmethod
     def _invocation_id(event: Mapping[str, Any]) -> str:
@@ -132,11 +183,71 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
             .one_or_none()
         )
         if row is not None:
-            if row.user_id != self.subject.user_id or row.model_id != self.subject.model_id:
-                raise RuntimeError("model-governance invocation subject mismatch")
-            callsite_id = event.get("callsite_id")
-            if isinstance(callsite_id, str) and row.callsite_id != callsite_id:
-                raise RuntimeError("model-governance invocation callsite mismatch")
+            try:
+                if row.user_id != self.subject.user_id or row.model_id != self.subject.model_id:
+                    raise RuntimeError("model-governance invocation subject mismatch")
+                callsite_id = event.get("callsite_id")
+                if isinstance(callsite_id, str) and row.callsite_id != callsite_id:
+                    raise RuntimeError("model-governance invocation callsite mismatch")
+                immutable = {
+                    "provider_binding_id": event.get("provider_binding_id"),
+                    "provider_locality": event.get("provider_locality"),
+                    "transport_target_sha256": event.get("transport_target_sha256"),
+                    "model_registry_revision": event.get("model_registry_revision"),
+                    "upstream_provider_locality": event.get("upstream_provider_locality"),
+                    "upstream_transport_target_sha256": event.get(
+                        "upstream_transport_target_sha256"
+                    ),
+                    "egress_policy_id": event.get("egress_policy_id"),
+                    "upstream_egress_policy_id": event.get("upstream_egress_policy_id"),
+                    "profile_content_sha256": event.get("profile_content_sha256"),
+                    "inventory_sha256": event.get("inventory_sha256"),
+                }
+                for field, expected in immutable.items():
+                    if getattr(row, field) != expected:
+                        raise RuntimeError(
+                            f"model-governance invocation {field} replay drift"
+                        )
+                try:
+                    admitted = json.loads(row.metadata_json or "{}")
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "model-governance invocation snapshot is malformed"
+                    ) from exc
+                if not isinstance(admitted, Mapping):
+                    raise RuntimeError(
+                        "model-governance invocation snapshot is malformed"
+                    )
+                current_snapshot = json.loads(_metadata(event))
+                for field in _AUTHORIZATION_SNAPSHOT_FIELDS:
+                    if admitted.get(field) != current_snapshot.get(field):
+                        raise RuntimeError(
+                            f"model-governance invocation {field} replay drift"
+                        )
+                if event.get("phase") == "post":
+                    expected_usage_receipt = (
+                        f"usage:{row.usage_record_id}:pre"
+                        if row.usage_record_id is not None
+                        else None
+                    )
+                    expected_audit_receipt = (
+                        f"audit:{row.pre_audit_id}:pre"
+                        if row.pre_audit_id is not None
+                        else None
+                    )
+                    if (
+                        event.get("pre_usage_receipt") != expected_usage_receipt
+                        or event.get("pre_audit_receipt") != expected_audit_receipt
+                    ):
+                        raise RuntimeError(
+                            "model-governance invocation pre-receipt binding mismatch"
+                        )
+            except Exception:
+                # ``with_for_update`` has acquired the row lock.  A rejected
+                # replay must release it immediately instead of leaving a
+                # session transaction open until the request unwinds.
+                self.db.rollback()
+                raise
         return row
 
     def _new_ledger(self, event: Mapping[str, Any]) -> ModelGovernanceReceipt:
@@ -145,6 +256,18 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
             user_id=self.subject.user_id,
             model_id=self.subject.model_id,
             callsite_id=str(event.get("callsite_id") or "unknown"),
+            provider_binding_id=event.get("provider_binding_id"),
+            provider_locality=event.get("provider_locality"),
+            transport_target_sha256=event.get("transport_target_sha256"),
+            model_registry_revision=event.get("model_registry_revision"),
+            upstream_provider_locality=event.get("upstream_provider_locality"),
+            upstream_transport_target_sha256=event.get(
+                "upstream_transport_target_sha256"
+            ),
+            egress_policy_id=event.get("egress_policy_id"),
+            upstream_egress_policy_id=event.get("upstream_egress_policy_id"),
+            profile_content_sha256=event.get("profile_content_sha256"),
+            inventory_sha256=event.get("inventory_sha256"),
             status="pre",
             metadata_json=_metadata(event),
             created_at=_utc_now(),
@@ -152,6 +275,7 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
         )
         self.db.add(row)
         self.db.flush()
+        self._active_invocations.add(row.invocation_id)
         return row
 
     def _usage_row(self, event: Mapping[str, Any]) -> TokenUsage:
@@ -203,12 +327,19 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
             raise
 
     def _failure_audit(self, event: Mapping[str, Any], detail: str) -> str:
+        invocation_id = self._invocation_id(event)
         self.db.rollback()
         ledger = self._ledger(event)
         if ledger is None:
             ledger = self._new_ledger(event)
-        elif ledger.status in {"completed", "failed"} and ledger.post_audit_id is not None:
-            return f"audit:{ledger.post_audit_id}:post"
+        elif invocation_id not in self._active_invocations:
+            if ledger.status in {"completed", "failed"} and ledger.post_audit_id is not None:
+                # A post-closed row is safe to read back, but never to replay
+                # as a new network authorization.
+                return f"audit:{ledger.post_audit_id}:post"
+            raise RuntimeError(
+                "model-governance invocation already exists; retry requires a new invocation_id"
+            )
         row = self._audit(
             event,
             action="model.governance.failure",
@@ -219,33 +350,31 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
         ledger.post_audit_id = int(row.id)
         ledger.metadata_json = _metadata(event)
         self._commit()
+        self._active_invocations.discard(invocation_id)
         return f"audit:{row.id}"
 
     def record_pre_usage(self, event: Mapping[str, Any]) -> str:
         invocation_id = self._invocation_id(event)
         ledger = self._ledger(event)
         if ledger is not None:
-            if ledger.status == "failed":
-                raise RuntimeError("model-governance invocation is already failed")
-            if ledger.usage_record_id is not None:
-                self._usage_ids[invocation_id] = int(ledger.usage_record_id)
-                return f"usage:{ledger.usage_record_id}:pre"
+            # A durable row in any state means this invocation id has already
+            # entered admission.  Reusing it could authorize a second network
+            # request; fail closed and release the SELECT FOR UPDATE lock.
+            self.db.rollback()
+            raise RuntimeError(
+                "model-governance invocation already exists; retry requires a new invocation_id"
+            )
         if ledger is None:
             try:
                 ledger = self._new_ledger(event)
             except IntegrityError:
-                # A concurrent/retried request won the unique invocation key.
-                # Roll back the failed INSERT, then use the durable row rather
-                # than creating a second usage receipt.
+                # A concurrent request won the unique invocation key.  The
+                # losing request must not reuse its pre-receipt or go on to
+                # network I/O with the same invocation id.
                 self.db.rollback()
-                ledger = self._ledger(event)
-                if ledger is None:
-                    raise
-                if ledger.status == "failed":
-                    raise RuntimeError("model-governance invocation is already failed")
-                if ledger.usage_record_id is not None:
-                    self._usage_ids[invocation_id] = int(ledger.usage_record_id)
-                    return f"usage:{ledger.usage_record_id}:pre"
+                raise RuntimeError(
+                    "model-governance invocation already exists; retry requires a new invocation_id"
+                )
         row = TokenUsage(
             api_key_id=self.subject.api_key_id,
             user_id=self.subject.user_id,
@@ -270,9 +399,15 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
         return f"usage:{row.id}:pre"
 
     def record_pre_audit(self, event: Mapping[str, Any]) -> str:
+        invocation_id = self._invocation_id(event)
         ledger = self._ledger(event)
         if ledger is None or ledger.usage_record_id is None:
             raise RuntimeError("model-governance usage receipt must precede audit")
+        if invocation_id not in self._active_invocations:
+            self.db.rollback()
+            raise RuntimeError(
+                "model-governance invocation already exists; retry requires a new invocation_id"
+            )
         if ledger.status == "failed":
             raise RuntimeError("model-governance invocation is already failed")
         if ledger.pre_audit_id is not None:
@@ -293,9 +428,15 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
         return self._failure_audit(event, "Gate 5 pre-receipt transaction failed; no model request authorized")
 
     def record_post_usage(self, event: Mapping[str, Any]) -> str:
+        invocation_id = self._invocation_id(event)
         ledger = self._ledger(event)
         if ledger is None or ledger.usage_record_id is None:
             raise RuntimeError("model-governance pre receipt is missing")
+        if invocation_id not in self._active_invocations:
+            self.db.rollback()
+            raise RuntimeError(
+                "model-governance invocation already exists; retry requires a new invocation_id"
+            )
         if ledger.status == "failed":
             if ledger.post_audit_id is not None and event.get("outcome") == "failure":
                 return f"usage:{ledger.usage_record_id}:post"
@@ -328,9 +469,15 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
         return f"usage:{row.id}:post"
 
     def record_post_audit(self, event: Mapping[str, Any]) -> str:
+        invocation_id = self._invocation_id(event)
         ledger = self._ledger(event)
         if ledger is None or ledger.usage_record_id is None:
             raise RuntimeError("model-governance pre receipt is missing")
+        if invocation_id not in self._active_invocations:
+            self.db.rollback()
+            raise RuntimeError(
+                "model-governance invocation already exists; retry requires a new invocation_id"
+            )
         if ledger.post_audit_id is not None:
             return f"audit:{ledger.post_audit_id}:post"
         failed = event.get("outcome") == "failure"
@@ -348,6 +495,7 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
         ledger.status = "failed" if failed else "completed"
         ledger.metadata_json = _metadata(event)
         self._commit()
+        self._active_invocations.discard(invocation_id)
         return f"audit:{row.id}:post"
 
     def compensate_post_usage(self, event: Mapping[str, Any]) -> str:
@@ -366,10 +514,12 @@ class GovernedModelInvocation:
         runtime: ModelGovernanceRuntime | None,
         db: Session,
         subject: ReceiptSubject,
+        registry_model: Any | None = None,
     ) -> None:
         self.runtime = runtime
         self.db = db
         self.subject = subject
+        self.registry_model = registry_model
         self.sink = SqlAlchemyReceiptSink(db, subject=subject) if runtime and runtime.enabled else None
         self._closed_invocations: set[str] = set()
 
@@ -380,8 +530,14 @@ class GovernedModelInvocation:
         *,
         subject: ReceiptSubject,
         runtime: ModelGovernanceRuntime | None,
+        registry_model: Any | None = None,
     ) -> "GovernedModelInvocation":
-        return cls(runtime=runtime, db=db, subject=subject)
+        return cls(
+            runtime=runtime,
+            db=db,
+            subject=subject,
+            registry_model=registry_model,
+        )
 
     @classmethod
     def from_provider(
@@ -418,15 +574,15 @@ class GovernedModelInvocation:
             return None
         assert self.runtime is not None
         assert self.sink is not None
-        artifact, deployment = self.runtime.invocation_facts(callsite_id, now=now)
+        if self.registry_model is None:
+            raise RuntimeError("model-governance registry row is required")
         safe_endpoint = endpoint or self.runtime.gateway_endpoint
         return self.runtime.authorize_model_invocation(
             callsite_id,
             classification,
             self.subject.agent_id,
             safe_endpoint,
-            artifact,
-            deployment,
+            registry_model=self.registry_model,
             invocation_id=invocation_id,
             now=now,
             usage_sink=self.sink,
@@ -517,6 +673,7 @@ __all__ = [
     "GovernedModelInvocation",
     "ReceiptSubject",
     "SqlAlchemyReceiptSink",
+    "admit_registry_provider",
     "resolve_model_governance_runtime",
     "set_model_governance_runtime_provider",
 ]

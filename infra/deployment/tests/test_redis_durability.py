@@ -1,3 +1,9 @@
+"""Static Redis Compose contract; proves no runtime durability or replay property.
+
+These tests parse YAML only.  They do not start Redis, write data, restart a
+process, measure RPO, or prove queue replay without loss or duplication.
+"""
+
 from __future__ import annotations
 
 import unittest
@@ -23,9 +29,7 @@ class RedisDurabilityContractTests(unittest.TestCase):
                 self.assertEqual(command[:1], ["redis-server"])
                 self.assertEqual(_argument(command, "--appendonly"), "yes")
                 self.assertEqual(_argument(command, "--appendfsync"), "everysec")
-                self.assertEqual(
-                    _argument(command, "--aof-use-rdb-preamble"), "yes"
-                )
+                self.assertEqual(_argument(command, "--aof-use-rdb-preamble"), "yes")
                 self.assertEqual(_argument(command, "--maxmemory-policy"), "noeviction")
                 expected_volume = (
                     "redis-data:/data"

@@ -32,9 +32,12 @@ if str(SECURITY_SRC) not in sys.path:
     sys.path.insert(0, str(SECURITY_SRC))
 
 from anila_security.model_governance import (  # noqa: E402
+    ProviderLocality,
+    TransportTarget,
     canonical_json,
     inventory_content_sha256,
     profile_content_sha256,
+    transport_target_sha256,
 )
 
 
@@ -46,6 +49,11 @@ DEFAULT_CALLSITE_IDS = (
     "r7.csp.memory",
 )
 SYNTHETIC_PROFILE_ID = "synthetic-gate5-smoke-not-production"
+SYNTHETIC_PROVIDER_BINDING_ID = "provider.gate5-synthetic"
+SYNTHETIC_MODEL_REGISTRY_ID = "model.gate5-synthetic"
+SYNTHETIC_MODEL_REGISTRY_NAME = "synthetic-llm"
+SYNTHETIC_MODEL_REGISTRY_REVISION = "synthetic-registry-1"
+SYNTHETIC_PROVIDER_TARGET = "synthetic-model:8000"
 
 
 def _selected_callsites(
@@ -154,6 +162,27 @@ def generate(
             "ready": True,
         },
     }
+    provider_target = TransportTarget.parse(
+        SYNTHETIC_PROVIDER_TARGET,
+        dns_policy="none",
+        provider_locality=ProviderLocality.INTERNAL_ISOLATED,
+    )
+    provider_binding = {
+        "provider_binding_id": SYNTHETIC_PROVIDER_BINDING_ID,
+        "model_registry_id": SYNTHETIC_MODEL_REGISTRY_ID,
+        "model_registry_name": SYNTHETIC_MODEL_REGISTRY_NAME,
+        "model_registry_revision": SYNTHETIC_MODEL_REGISTRY_REVISION,
+        "provider_locality": ProviderLocality.INTERNAL_ISOLATED.value,
+        "transport_target": provider_target.to_dict(),
+        "transport_target_sha256": transport_target_sha256(provider_target),
+        "upstream_provider_locality": None,
+        "upstream_transport_target": None,
+        "upstream_transport_target_sha256": None,
+        "egress_policy_id": None,
+        "upstream_egress_policy_id": None,
+        "model_artifact_id": artifact["artifact_id"],
+        "deployment_id": deployment["deployment_id"],
+    }
     profile = copy.deepcopy(template)
     profile.update(
         {
@@ -174,11 +203,11 @@ def generate(
                     "usage_sink": call["usage_sink"],
                     "audit_sink": call["audit_sink"],
                     "agent_scope": call["agent_scope"],
-                    "model_artifact_id": artifact["artifact_id"],
-                    "deployment_id": deployment["deployment_id"],
+                    "provider_binding_ids": [SYNTHETIC_PROVIDER_BINDING_ID],
                 }
                 for call in calls
             ],
+            "provider_bindings": [provider_binding],
             "model_artifacts": [artifact],
             "deployments": [deployment],
             "valid_from": (now - timedelta(minutes=5)).isoformat(),

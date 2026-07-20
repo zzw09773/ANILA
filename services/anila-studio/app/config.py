@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.1.0"
     LOG_LEVEL: str = "INFO"
     ANILA_DEPLOYMENT_PROFILE: str = "development"
+    # Formal Gate 5 image inference must obtain current provider authority
+    # from CSP on every request.  Development explicitly sets this false to
+    # retain the legacy TTL/env fallback path.
+    GATE5_MODEL_GOVERNANCE_ENABLED: bool = False
 
     # csp (control plane) HTTP base — used by csp_client for RAG, model
     # registry, LLM proxy, revocations cold-start sync, and (2026-07-06)
@@ -158,15 +162,29 @@ settings = Settings()
 
 
 _FORMAL_PROFILES = {
+    "production",
+    "prod",
     "prod-intranet-card",
     "prod-intranet-card-breakglass",
     "prod-public-passwd",
     "prod-military-passwd",
+    "trial-military",
 }
 
 
 def is_formal_profile() -> bool:
     return settings.ANILA_DEPLOYMENT_PROFILE.strip().lower() in _FORMAL_PROFILES
+
+
+def is_model_governance_required() -> bool:
+    """Return the image-inference posture without needing a CSP success."""
+
+    profile = settings.ANILA_DEPLOYMENT_PROFILE.strip().lower()
+    return (
+        bool(settings.GATE5_MODEL_GOVERNANCE_ENABLED)
+        or profile in _FORMAL_PROFILES
+        or profile.startswith("prod-")
+    )
 
 
 def assert_durable_startup_posture() -> None:

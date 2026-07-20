@@ -20,3 +20,5 @@ docs/
 cht/
 runtime_logic/
 *.log
+**/dist
+.env

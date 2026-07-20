@@ -229,7 +229,13 @@ def _assert_off_host_mount(
     if platform_name == "nt":
         profile = os.environ.get("ANILA_DEPLOYMENT_PROFILE", "").strip().lower()
         override = os.environ.get("ANILA_BACKUP_TEST_ALLOW_WINDOWS_OFFHOST", "")
-        if profile.startswith("prod-") or override != "1":
+        # Keep the non-prefixed exception aligned with the canonical formal set
+        # in infra/policy/gate5/check_deployment_egress.py and CSP startup posture.
+        if (
+            profile.startswith("prod-")
+            or profile == "trial-military"
+            or override != "1"
+        ):
             raise BackupAutomationError(
                 "Windows off-host validation is test-only and forbidden for formal profiles"
             )
@@ -478,24 +484,41 @@ class ProductionBackup:
         tmp.unlink(missing_ok=True)
         logical_hash = hashlib.sha256()
         logical_size = 0
+        capture_purpose = (
+            "PostgreSQL pg_dump capture"
+            if source_argv is not None and "pg_dump" in source_argv
+            else "filesystem archive capture"
+            if source_argv is not None
+            else "backup component capture"
+        )
         with tempfile.TemporaryFile() as source_err, tempfile.TemporaryFile() as age_err:
-            age = subprocess.Popen(
-                ["age", "-R", str(recipients), "-o", str(tmp)],
-                cwd=self.repo_root,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=age_err,
-            )
+            try:
+                age = subprocess.Popen(
+                    ["age", "-R", str(recipients), "-o", str(tmp)],
+                    cwd=self.repo_root,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=age_err,
+                )
+            except OSError as exc:
+                raise BackupAutomationError(
+                    "age encryption process could not start"
+                ) from exc
             assert age.stdin is not None
             source: subprocess.Popen[bytes] | None = None
             try:
                 if source_argv is not None:
-                    source = subprocess.Popen(
-                        source_argv,
-                        cwd=self.repo_root,
-                        stdout=subprocess.PIPE,
-                        stderr=source_err,
-                    )
+                    try:
+                        source = subprocess.Popen(
+                            source_argv,
+                            cwd=self.repo_root,
+                            stdout=subprocess.PIPE,
+                            stderr=source_err,
+                        )
+                    except OSError as exc:
+                        raise BackupAutomationError(
+                            f"{capture_purpose} process could not start"
+                        ) from exc
                     assert source.stdout is not None
                     chunks = iter(lambda: source.stdout.read(1024 * 1024), b"")
                 else:
@@ -515,7 +538,7 @@ class ProductionBackup:
                     age_err.seek(0)
                     detail = age_err.read().decode("utf-8", errors="replace")[-2000:]
                     raise BackupAutomationError(f"age encryption failed: {detail}")
-            except BaseException:
+            except BaseException as exc:
                 if source is not None and source.poll() is None:
                     source.kill()
                     source.wait()
@@ -523,6 +546,10 @@ class ProductionBackup:
                     age.kill()
                     age.wait()
                 tmp.unlink(missing_ok=True)
+                if isinstance(exc, OSError):
+                    raise BackupAutomationError(
+                        f"{capture_purpose} process communication failed"
+                    ) from exc
                 raise
         if logical_size <= 0 or not tmp.is_file():
             tmp.unlink(missing_ok=True)
@@ -1392,12 +1419,17 @@ def restore_smoke(prepared: Path, profile: dict[str, Any]) -> dict[str, Any]:
         ])
         ready = False
         for _ in range(60):
-            result = subprocess.run(
-                ["docker", "exec", name, "pg_isready", "-U", "postgres"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            try:
+                result = subprocess.run(
+                    ["docker", "exec", name, "pg_isready", "-U", "postgres"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            except OSError as exc:
+                raise BackupAutomationError(
+                    "disposable PostgreSQL readiness check could not start"
+                ) from exc
             if result.returncode == 0:
                 ready = True
                 break
@@ -1516,12 +1548,18 @@ def restore_smoke(prepared: Path, profile: dict[str, Any]) -> dict[str, Any]:
         (prepared / "RESTORE_SMOKE.json").write_bytes(_canonical_json(report))
         return report
     finally:
-        subprocess.run(
-            ["docker", "rm", "-f", name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        try:
+            subprocess.run(
+                ["docker", "rm", "-f", name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError as exc:
+            (prepared / "RESTORE_SMOKE.json").unlink(missing_ok=True)
+            raise BackupAutomationError(
+                "disposable PostgreSQL container cleanup could not start"
+            ) from exc
 
 
 def _defaults() -> tuple[Path, Path]:

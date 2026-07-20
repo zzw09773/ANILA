@@ -16,13 +16,16 @@
 # 行為:
 #   * 自動 set -a source repo root .env (INTERNAL_PLATFORM_API_KEY /
 #     ANILA_HF_DIR / *_GPU 等都從那邊來)
-#   * 自動建 anila-models-net internal bridge (不存在時)
+#   * 透過 shared helper 建立/驗證 anila-models-net internal bridge
 #   * 一律帶 --profile intranet,profile 內外的服務都可直接點名
 # ============================================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/infra/models/docker-compose.yml"
+
+# shellcheck disable=SC1091
+source "$REPO_ROOT/infra/deployment/scripts/ensure-models-network.sh"
 
 GROUP_TRIAL=(gpt-oss-20b gemma4 nv-embed-triton nv-embed-proxy)
 GROUP_FLUX=(flux2-dev flux2-dev-agent)
@@ -69,39 +72,9 @@ if not any(isinstance(item, str) and "flux" in item.lower() for item in enabled)
 PY
 }
 
-network_recreate_hint() {
-  cat >&2 <<'EOF'
-安全重建指令（僅限先確認 network 沒有任何 attached containers）：
-  docker network inspect anila-models-net --format '{{json .Containers}}'
-  docker network rm anila-models-net
-  docker network create --driver bridge --internal anila-models-net
-EOF
-}
-
-verify_internal_network() {
-  local internal driver containers
-  internal="$(docker network inspect anila-models-net --format '{{.Internal}}' 2>/dev/null || true)"
-  [[ "$internal" == "true" ]] || {
-    driver="$(docker network inspect anila-models-net --format '{{.Driver}}' 2>/dev/null || echo unknown)"
-    containers="$(docker network inspect anila-models-net --format '{{json .Containers}}' 2>/dev/null || echo unknown)"
-    echo "anila-models-net 必須是 Docker internal bridge (Internal=true, Driver=bridge); actual Internal=${internal:-missing} Driver=$driver Containers=$containers" >&2
-    network_recreate_hint
-    exit 1
-  }
-  driver="$(docker network inspect anila-models-net --format '{{.Driver}}' 2>/dev/null || true)"
-  [[ "$driver" == "bridge" ]] || {
-    echo "anila-models-net driver 必須是 bridge，目前為 $driver" >&2
-    network_recreate_hint
-    exit 1
-  }
-}
-
 ensure_network() {
-  if ! docker network inspect anila-models-net >/dev/null 2>&1; then
-    echo "建立 internal bridge anila-models-net network"
-    docker network create --driver bridge --internal anila-models-net >/dev/null
-  fi
-  verify_internal_network
+  ensure_models_network \
+    || { echo "anila-models-net topology 驗證失敗；拒絕使用或修改既有 network" >&2; exit 1; }
 }
 
 verify_no_running_flux() {

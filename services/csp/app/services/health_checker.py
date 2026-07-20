@@ -22,6 +22,7 @@ from app.models.model_registry import ModelRegistry
 from app.models.agent import Agent
 from app.config import settings
 from app.services.alert_service import resolve_alert_by_fingerprint, upsert_alert
+from app.services.model_governance_receipts import admit_registry_provider
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,32 @@ async def _health_check_loop():
                 )
 
                 for model in models:
+                    try:
+                        admit_registry_provider(model)
+                    except Exception as exc:
+                        status = HEALTH_UNHEALTHY
+                        logger.error(
+                            "模型 %s provider authority 驗證失敗，略過健康探測: %s",
+                            model.name,
+                            exc,
+                        )
+                        upsert_alert(
+                            db,
+                            fingerprint=f"health:model:{model.id}",
+                            category="health",
+                            severity="high",
+                            title=f"模型 {model.display_name} 治理拒絕",
+                            message="provider authority 驗證失敗，未發出健康探測",
+                            source_type="model",
+                            source_id=model.id,
+                            metadata={
+                                "model_name": model.name,
+                                "provider_authority": "denied",
+                            },
+                        )
+                        model.health_status = status
+                        model.health_checked_at = datetime.now(timezone.utc)
+                        continue
                     status = await check_model_health(model.id, model.endpoint_url)
                     if model.health_status != status:
                         logger.info(

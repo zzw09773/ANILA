@@ -1264,18 +1264,18 @@ async def list_models_openai(
     })
 
 
-@router.post("/v1/images/generations")
-async def image_generations(
+async def _image_generations_impl(
     request: Request,
-    caller: Caller = Depends(_image_inference_caller),
-    db: Session = Depends(get_db),
+    *,
+    caller: Caller,
+    db: Session,
 ):
-    """Governed OpenAI Images proxy; raw FLUX endpoints stay off limits.
+    """Shared governed Images implementation for public and Studio seams.
 
     Every image inference is Task-bound, classification-ceiling checked and
-    metered by the same proxy core as chat/embedding. Gate 2's chat-only pilot
-    keeps this route closed; it is the convergence point for later Gate 3
-    artifact-enabled profiles.
+    metered by the same proxy core as chat/embedding.  A narrow internal seam
+    may pre-attach an existing outer TaskRun; that nested call must never open
+    or terminalize a second run.
     """
     raw_task_id = request.headers.get("X-ANILA-Task-Id")
     if not raw_task_id:
@@ -1302,14 +1302,20 @@ async def image_generations(
         db, user=caller.user, api_key_id=caller.api_key_id, model_id=model.id
     ):
         raise HTTPException(status_code=403, detail="無權使用此圖像模型")
-    task_ctx = begin_task_run(
-        db,
-        caller=caller,
-        request_headers=request.headers,
-        dispatch_target="model",
-        resource_type="model",
-        resource_id=str(model.id),
+    task_ctx = getattr(
+        getattr(request, "state", None),
+        "prevalidated_task_ctx",
+        None,
     )
+    if task_ctx is None:
+        task_ctx = begin_task_run(
+            db,
+            caller=caller,
+            request_headers=request.headers,
+            dispatch_target="model",
+            resource_type="model",
+            resource_id=str(model.id),
+        )
     if task_ctx is None:  # header was checked above; defence in depth
         raise HTTPException(status_code=400, detail="圖像推論 Task 綁定失敗")
     if settings.ANILA_PILOT_MODE:
@@ -1349,7 +1355,21 @@ async def image_generations(
         caller_agent_id=(proxy_agent_context[0] if proxy_agent_context else None),
         governance_db=db,
         admitted_classification_level=admitted_level,
+        finalize_task_run_on_completion=(
+            task_ctx.owns_lifecycle if task_ctx else True
+        ),
     )
+
+
+@router.post("/v1/images/generations")
+async def image_generations(
+    request: Request,
+    caller: Caller = Depends(_image_inference_caller),
+    db: Session = Depends(get_db),
+):
+    """Governed public OpenAI Images proxy with unchanged caller policy."""
+
+    return await _image_generations_impl(request, caller=caller, db=db)
 
 
 def _resolve_internal_router_caller(request: Request, db: Session) -> Caller:
@@ -1716,13 +1736,20 @@ async def _chat_completions_impl(
             task_ctx=task_ctx,
         )
         stage = "memory"
-        memory_read = await _inject_memory(
-            db,
-            user.id,
-            body,
-            exclude_conversation_id=conv_id_int,
-            task_ctx=task_ctx,
-        )
+        # The Router-internal route-decision inference is not a user
+        # conversation turn: it has no consuming conversation to bind and its
+        # system template must never receive long-term user memory. Skip
+        # injection entirely — the fail-closed memory policy would otherwise
+        # 503 every formal routing decision on this seam.
+        memory_read = None
+        if not internal_router:
+            memory_read = await _inject_memory(
+                db,
+                user.id,
+                body,
+                exclude_conversation_id=conv_id_int,
+                task_ctx=task_ctx,
+            )
     except HTTPException as exc:
         detail = exc.detail
         code = (
@@ -1952,23 +1979,25 @@ async def _chat_completions_impl(
         started_at = time.time()
         closure_started_at = datetime.now(timezone.utc)
         closure_id = uuid.uuid4().hex
+        effective = admitted_level
         try:
+            if task_ctx is not None:
+                effective = lock_task_run_admission(
+                    governance_db=db,
+                    task_id=task_ctx.task_id,
+                    task_run_id=task_ctx.task_run_id,
+                )
             lock_agent_registry_admission(
                 governance_db=db,
                 agent_id=agent.id,
                 endpoint_url=agent.endpoint_url,
-                admitted_classification_level=admitted_level,
+                admitted_classification_level=effective,
                 registry_user_id=user.id,
                 registry_snapshot_id=registry_snapshot_id,
                 registry_snapshot_revision=registry_snapshot_revision,
                 registry_snapshot_hash=registry_snapshot_hash,
                 registry_manifest_revision=registry_manifest_revision,
                 registry_manifest_sha256=registry_manifest_sha256,
-            )
-            lock_task_run_admission(
-                governance_db=db,
-                task_id=task_ctx.task_id if task_ctx else None,
-                task_run_id=task_ctx.task_run_id if task_ctx else None,
             )
             _guard_outbound(
                 target, endpoint_kind=ENDPOINT_KIND_AGENT
@@ -2039,7 +2068,7 @@ async def _chat_completions_impl(
                             target_id=agent.id,
                             target_name=agent.name,
                             usage=usage_record,
-                            classification_level=admitted_level,
+                            classification_level=effective,
                             callsite="csp.agent_dispatch",
                             finalize_run=task_ctx.owns_lifecycle,
                         ),
@@ -2102,7 +2131,7 @@ async def _chat_completions_impl(
                         target_id=agent.id,
                         target_name=agent.name,
                         error={"code": f"http_{e.status_code}", "message": str(e.detail)},
-                        classification_level=admitted_level,
+                        classification_level=effective,
                         callsite="csp.agent_dispatch",
                         finalize_run=task_ctx.owns_lifecycle,
                     ),
@@ -2126,7 +2155,7 @@ async def _chat_completions_impl(
                             "code": f"http_{e.response.status_code}",
                             "message": str(e),
                         },
-                        classification_level=admitted_level,
+                        classification_level=effective,
                         callsite="csp.agent_dispatch",
                         finalize_run=task_ctx.owns_lifecycle,
                     ),
@@ -2151,7 +2180,7 @@ async def _chat_completions_impl(
                             target_id=agent.id,
                             target_name=agent.name,
                             error={"code": "agent_call_failed", "message": str(e)},
-                            classification_level=admitted_level,
+                            classification_level=effective,
                             callsite="csp.agent_dispatch",
                             finalize_run=task_ctx.owns_lifecycle,
                         ),

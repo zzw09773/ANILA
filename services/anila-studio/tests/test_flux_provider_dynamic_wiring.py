@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import base64
 import importlib
+import json
+import sys
+from types import ModuleType
 
 import httpx
 import pytest
@@ -18,6 +21,7 @@ import respx
 
 from app.config import settings
 from app.schemas.studio import ImageUseCase
+from app.services.runtime_context import StudioRuntimeContext, use_runtime_context
 
 _CSP = settings.CSP_BASE_URL.rstrip("/")
 _PRIMARY_URL = f"{_CSP}/api/models/image-primary"
@@ -43,6 +47,27 @@ def _images_response(png: bytes) -> httpx.Response:
         200,
         json={"created": 1_720_000_000, "data": [{"b64_json": base64.b64encode(png).decode()}]},
     )
+
+
+def _runtime_context() -> StudioRuntimeContext:
+    return StudioRuntimeContext(
+        job_id="studio-formal-image-job",
+        artifact_type="slides",
+        requester_user_id=7,
+        requester_employee_id="EMP0007",
+        collection_id=11,
+        task_id=13,
+        source_snapshot_id=17,
+        trace_id="studio-formal-image-trace",
+        attempt=1,
+        lease_token="lease-token-123456789",
+    )
+
+
+def _enable_formal_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "GATE5_MODEL_GOVERNANCE_ENABLED", True)
+    monkeypatch.setattr(settings, "STUDIO_RUNTIME_SERVICE_TOKEN", "csk-studio-runtime")
+    monkeypatch.setattr(settings, "STUDIO_ARTIFACT_SERVICE_TOKEN", "csk-studio-artifact")
 
 
 @pytest.fixture(autouse=True)
@@ -99,6 +124,254 @@ async def test_csp_404_falls_back_to_env(monkeypatch, tmp_path):
     assert provider is not None
     assert provider.flux_url == "http://env-flux:8000"
     assert provider.model == "env-model"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_authority_revoke_disables_provider_before_second_downstream_call(
+    monkeypatch, tmp_path
+):
+    """Formal mode bypasses TTL and must not call a pinned FLUX endpoint after revoke."""
+    _enable_formal_runtime(monkeypatch)
+    monkeypatch.delenv("FLUX_BACKEND_URL", raising=False)
+    monkeypatch.setenv("FLUX_CACHE_DIR", str(tmp_path / "fc"))
+
+    respx.get(_PRIMARY_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=_primary_payload("http://flux-governed:8000", "model-a"),
+            ),
+            httpx.Response(503, json={"detail": "provider authority revoked"}),
+        ]
+    )
+    downstream = respx.post(
+        f"{_CSP}/v1/studio-runtime/images/generations"
+    ).mock(return_value=_images_response(_PNG_A))
+
+    import app.services.flux_image_primary as primary_mod
+    import app.services.studio_render as render_mod
+
+    with use_runtime_context(_runtime_context()):
+        provider = await render_mod.get_active_flux_provider()
+        assert provider is not None
+        assert provider.via_csp_runtime is True
+        await provider.get_or_generate(
+            "governed prompt", use_case=ImageUseCase.COVER_HERO, seed=99
+        )
+    assert downstream.call_count == 1
+
+    with use_runtime_context(_runtime_context()):
+        revoked_provider = await render_mod.get_active_flux_provider()
+    assert revoked_provider is None
+    assert downstream.call_count == 1
+    # Formal mode did not rely on the TTL; the second get above reached CSP.
+    assert primary_mod._state["endpoint"] is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_multi_image_deck_rechecks_before_each_cache_miss(
+    monkeypatch, tmp_path
+):
+    """Revoke between slides: the second image must not hit the old FLUX URL."""
+    _enable_formal_runtime(monkeypatch)
+    monkeypatch.setenv("FLUX_CACHE_DIR", str(tmp_path / "fc"))
+
+    respx.get(_PRIMARY_URL).mock(
+        side_effect=[
+            # Initial render setup, then the first image's preflight.
+            httpx.Response(
+                200,
+                json=_primary_payload("http://flux-governed:8000", "model-a"),
+            ),
+            httpx.Response(
+                200,
+                json=_primary_payload("http://flux-governed:8000", "model-a"),
+            ),
+            # The second slide is a new cache key and must fail closed here.
+            httpx.Response(503, json={"detail": "provider authority revoked"}),
+        ]
+    )
+    downstream = respx.post(
+        f"{_CSP}/v1/studio-runtime/images/generations"
+    ).mock(return_value=_images_response(_PNG_A))
+
+    import app.services.studio_render as render_mod
+    with use_runtime_context(_runtime_context()):
+        initial_provider = await render_mod.get_active_flux_provider()
+        assert initial_provider is not None
+
+    async def rewrite(**_kwargs):
+        return "governed scene, no text"
+
+    async def accept_first(candidates, **_kwargs):
+        candidate = candidates[0]
+        candidate.accepted = True
+        candidate.vlm_verdict = {"match": True, "has_text": False, "score": 1.0}
+        return candidate
+
+    class _Llm:
+        _bearer = "test-bearer"
+
+        async def complete(self, **_kwargs):
+            return "unused"
+
+    monkeypatch.setattr("app.services.flux_prompt_rewriter.derive_flux_prompt", rewrite)
+    monkeypatch.setattr("app.services.flux_quality_gate.gate_candidates", accept_first)
+
+    # This deck has no diagram slide.  Isolate the optional Graphviz helper so
+    # the image-governance test does not require its unrelated OpenCC import.
+    diagram_renderer = ModuleType("app.services.diagram_renderer")
+
+    async def render_dot_to_png(_dot):
+        return None
+
+    diagram_renderer.render_dot_to_png = render_dot_to_png
+    monkeypatch.setitem(sys.modules, "app.services.diagram_renderer", diagram_renderer)
+
+    with use_runtime_context(_runtime_context()):
+        result = await render_mod._hydrate_images(
+            {
+                "slides": [
+                    {"title": "Cover", "bullets": ["a"], "layout_kind": "cover"},
+                    {
+                        "title": "Content",
+                        "bullets": ["b"],
+                        "layout_kind": "standard",
+                        "image_prompt": "illustration",
+                    },
+                ]
+            },
+            {},
+            bearer="test-bearer",
+            flux_provider=initial_provider,
+            deck_base_seed=1000,
+            llm=_Llm(),
+        )
+
+    assert downstream.call_count == 1
+    assert "image_data" in result["slides"][0]
+    assert "image_data" not in result["slides"][1]
+    assert result["slides"][1]["image_gen_meta"]["fallback"] == "text_only"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_image_transport_uses_only_csp_runtime_headers(
+    monkeypatch, tmp_path
+):
+    _enable_formal_runtime(monkeypatch)
+    monkeypatch.setenv("FLUX_BACKEND_URL", "http://raw-flux-forbidden:8000")
+    monkeypatch.setenv("FLUX_CACHE_DIR", str(tmp_path / "fc"))
+    respx.get(_PRIMARY_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_primary_payload("http://raw-flux-forbidden:8000", "formal-image"),
+        )
+    )
+    governed = respx.post(
+        f"{_CSP}/v1/studio-runtime/images/generations"
+    ).mock(return_value=_images_response(_PNG_A))
+    raw = respx.post("http://raw-flux-forbidden:8000/v1/images/generations").mock(
+        return_value=_images_response(_PNG_B)
+    )
+
+    import app.services.studio_render as render_mod
+
+    with use_runtime_context(_runtime_context()):
+        provider = await render_mod.get_active_flux_provider()
+        assert provider is not None and provider.via_csp_runtime is True
+        images = await provider.get_or_generate(
+            "formal prompt", use_case=ImageUseCase.COVER_HERO, seed=3
+        )
+
+    assert images[0].png_bytes == _PNG_A
+    assert governed.call_count == 1
+    assert raw.call_count == 0
+    request = governed.calls.last.request
+    assert request.headers["x-csp-service-token"] == "csk-studio-runtime"
+    assert request.headers["x-anila-task-id"] == "13"
+    assert request.headers["x-studio-lease-token"] == "lease-token-123456789"
+    assert json.loads(request.content)["model"] == "formal-image"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_image_requires_runtime_context_and_valid_runtime_token(
+    monkeypatch, tmp_path
+):
+    _enable_formal_runtime(monkeypatch)
+    monkeypatch.setenv("FLUX_BACKEND_URL", "http://raw-flux-forbidden:8000")
+    monkeypatch.setenv("FLUX_CACHE_DIR", str(tmp_path / "fc"))
+    respx.get(_PRIMARY_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_primary_payload("http://raw-flux-forbidden:8000", "formal-image"),
+        )
+    )
+    governed = respx.post(
+        f"{_CSP}/v1/studio-runtime/images/generations"
+    ).mock(return_value=_images_response(_PNG_A))
+    raw = respx.post("http://raw-flux-forbidden:8000/v1/images/generations").mock(
+        return_value=_images_response(_PNG_B)
+    )
+
+    import app.services.flux_image_provider as provider_mod
+    import app.services.studio_render as render_mod
+
+    provider = await render_mod.get_active_flux_provider()
+    assert provider is not None and provider.via_csp_runtime is True
+    with pytest.raises(provider_mod.FluxBackendError, match="StudioRuntimeContext"):
+        await provider.get_or_generate(
+            "missing context", use_case=ImageUseCase.COVER_HERO, seed=4
+        )
+
+    monkeypatch.setattr(settings, "STUDIO_RUNTIME_SERVICE_TOKEN", "")
+    with use_runtime_context(_runtime_context()):
+        with pytest.raises(provider_mod.FluxBackendError, match="runtime token"):
+            await provider.get_or_generate(
+                "missing token", use_case=ImageUseCase.COVER_HERO, seed=5
+            )
+
+    assert governed.call_count == 0
+    assert raw.call_count == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_csp_images_failure_never_falls_back_to_raw_endpoint(
+    monkeypatch, tmp_path
+):
+    _enable_formal_runtime(monkeypatch)
+    monkeypatch.setenv("FLUX_BACKEND_URL", "http://raw-flux-forbidden:8000")
+    monkeypatch.setenv("FLUX_CACHE_DIR", str(tmp_path / "fc"))
+    respx.get(_PRIMARY_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_primary_payload("http://raw-flux-forbidden:8000", "formal-image"),
+        )
+    )
+    governed = respx.post(
+        f"{_CSP}/v1/studio-runtime/images/generations"
+    ).mock(return_value=httpx.Response(502, json={"detail": "upstream failed"}))
+    raw = respx.post("http://raw-flux-forbidden:8000/v1/images/generations").mock(
+        return_value=_images_response(_PNG_B)
+    )
+
+    import app.services.flux_image_provider as provider_mod
+    import app.services.studio_render as render_mod
+
+    with use_runtime_context(_runtime_context()):
+        provider = await render_mod.get_active_flux_provider()
+        assert provider is not None
+        with pytest.raises(provider_mod.FluxBackendError, match="CSP governed Images API failed"):
+            await provider.get_or_generate(
+                "csp failure", use_case=ImageUseCase.COVER_HERO, seed=6
+            )
+
+    assert governed.call_count == 1
+    assert raw.call_count == 0
 
 
 # ── csp 有設定 + env 空 → FLUX 可用(關鍵行為變更:不再是啟動時判斷)──

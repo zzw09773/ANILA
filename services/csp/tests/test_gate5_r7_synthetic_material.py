@@ -21,6 +21,7 @@ from app.services.model_governance_receipts import (
 )
 from app.services.proxy import service as proxy_service
 from tests.conftest import make_agent, make_model, make_user
+from anila_security.model_governance import TransportTarget
 
 
 ROOT = Path(__file__).parents[3]
@@ -51,8 +52,23 @@ def _generator():
     return module
 
 
-def _runtime(tmp_path: Path, *, callsite_ids: tuple[str, ...] | None = None):
-    paths = _generator().generate(
+def _runtime(
+    tmp_path: Path,
+    *,
+    callsite_ids: tuple[str, ...] | None = None,
+    registry_model=None,
+    registry_db=None,
+):
+    generator = _generator()
+    if registry_model is not None:
+        # The signed synthetic profile must describe the same registry row as
+        # the frozen model snapshot passed into GovernedModelInvocation.  Keep
+        # this binding test-only; production material is still operator-owned.
+        registry_model.id = 42
+        generator.SYNTHETIC_MODEL_REGISTRY_ID = str(registry_model.id)
+        generator.SYNTHETIC_MODEL_REGISTRY_NAME = str(registry_model.name)
+        generator.SYNTHETIC_PROVIDER_TARGET = str(registry_model.endpoint_url)
+    paths = generator.generate(
         tmp_path / "material",
         callsite_ids=callsite_ids,
     )
@@ -68,6 +84,42 @@ def _runtime(tmp_path: Path, *, callsite_ids: tuple[str, ...] | None = None):
         name: json.loads(path.read_text(encoding="utf-8"))
         for name, path in paths.items()
     }
+    if registry_model is not None:
+        provider = material["profile"]["provider_bindings"][0]
+        target = TransportTarget.from_dict(provider["transport_target"])
+        registry_model.name = provider["model_registry_name"]
+        registry_model.endpoint_url = target.canonical
+        registry_model.provider_locality = provider["provider_locality"]
+        registry_model.transport_target = provider["transport_target"]
+        registry_model.transport_target_sha256 = provider[
+            "transport_target_sha256"
+        ]
+        registry_model.model_registry_revision = provider[
+            "model_registry_revision"
+        ]
+        registry_model.upstream_provider_locality = provider[
+            "upstream_provider_locality"
+        ]
+        registry_model.upstream_transport_target = provider[
+            "upstream_transport_target"
+        ]
+        registry_model.upstream_transport_target_sha256 = provider[
+            "upstream_transport_target_sha256"
+        ]
+        registry_model.egress_policy_id = provider["egress_policy_id"]
+        registry_model.upstream_egress_policy_id = provider[
+            "upstream_egress_policy_id"
+        ]
+        registry_model.is_internal = True
+        registry_model.is_active = True
+        registry_model.classification_ceiling = next(
+            item["classification_ceiling"]
+            for item in material["inventory"]["callsites"]
+            if item["id"] == (callsite_ids or ("r7.csp.memory",))[0]
+        )
+        if registry_db is None:
+            raise AssertionError("registry_db is required for synthetic registry binding")
+        registry_db.commit()
     now = datetime.now(timezone.utc)
     assert runtime.bootstrap(now=now).ready is True
     return runtime, material, now
@@ -77,12 +129,17 @@ def test_generated_memory_material_records_db_receipts_once_around_mock_downstre
     tmp_path: Path,
     db,
 ) -> None:
-    runtime, _material, now = _runtime(tmp_path)
     user = make_user(db, username="gate5-r7-synthetic-memory")
     model = make_model(db, name="gate5-r7-synthetic-memory-model")
+    runtime, _material, now = _runtime(
+        tmp_path,
+        registry_model=model,
+        registry_db=db,
+    )
     governed = GovernedModelInvocation.from_runtime(
         db,
         runtime=runtime,
+        registry_model=model,
         subject=ReceiptSubject(
             user_id=user.id,
             model_id=model.id,
@@ -157,10 +214,6 @@ async def test_verified_agent_csk_selects_agent_callsite_and_records_db_attribut
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SECRET_KEY", "gate5-positive-test-secret")
-    runtime, _material, _now = _runtime(
-        tmp_path,
-        callsite_ids=("r7.csp.proxy-agent",),
-    )
     owner = make_user(db, username="gate5-r7-agent-owner")
     agent = make_agent(
         db,
@@ -176,6 +229,12 @@ async def test_verified_agent_csk_selects_agent_callsite_and_records_db_attribut
     )
     db.commit()
     model = make_model(db, name="gate5-r7-agent-model")
+    runtime, _material, _now = _runtime(
+        tmp_path,
+        callsite_ids=("r7.csp.proxy-agent",),
+        registry_model=model,
+        registry_db=db,
+    )
     request = _request(
         ("Authorization", f"Bearer {csk}"),
         ("X-CSP-Service-Token", csk),
@@ -212,6 +271,7 @@ async def test_verified_agent_csk_selects_agent_callsite_and_records_db_attribut
         governance_agent_id=agent_context[1],
         caller_agent_id=agent_context[0],
         governance_db=db,
+        admitted_classification_level="極機密",
     )
 
     assert response["id"] == "agent-gate5-positive"

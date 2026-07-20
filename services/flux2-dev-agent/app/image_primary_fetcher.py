@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Optional
 
@@ -45,6 +46,35 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_SECONDS = 60.0
+_FORMAL_PROFILES = {
+    "production",
+    "prod",
+    "prod-intranet-card",
+    "prod-intranet-card-breakglass",
+    "prod-public-passwd",
+    "prod-military-passwd",
+    "trial-military",
+}
+
+
+def governance_required_from_env() -> bool:
+    """Resolve the consumer posture without relying on a prior CSP success.
+
+    The explicit Gate 5 flag is the normal wiring.  A production profile is a
+    second fail-closed guard if a deployment forgets to pass that flag.
+    """
+
+    raw = os.environ.get("GATE5_MODEL_GOVERNANCE_ENABLED")
+    if raw is not None:
+        value = raw.strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+        if value in {"0", "false", "no", "off"}:
+            profile = os.environ.get("ANILA_DEPLOYMENT_PROFILE", "").strip().lower()
+            return profile in _FORMAL_PROFILES or profile.startswith("prod-")
+        raise RuntimeError("GATE5_MODEL_GOVERNANCE_ENABLED 必須是布林值")
+    profile = os.environ.get("ANILA_DEPLOYMENT_PROFILE", "").strip().lower()
+    return profile in _FORMAL_PROFILES or profile.startswith("prod-")
 
 
 class ImagePrimaryFetcher:
@@ -55,11 +85,16 @@ class ImagePrimaryFetcher:
         service_token: str,
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         timeout: float = 5.0,
+        governance_required: bool = False,
     ) -> None:
         self._csp_base_url = csp_base_url.rstrip("/")
         self._service_token = service_token
         self._ttl_seconds = ttl_seconds
         self._timeout = timeout
+        # Formal Gate 5 callers must ask CSP for fresh authority before every
+        # image inference.  The development path keeps the historical TTL
+        # cache/fallback behaviour when this is explicitly disabled.
+        self.governance_required = bool(governance_required)
         self._lock = asyncio.Lock()
 
         self._endpoint: Optional[str] = None
@@ -77,10 +112,18 @@ class ImagePrimaryFetcher:
         """
         async with self._lock:
             now = time.monotonic()
-            if self._fetched_at and (now - self._fetched_at) < self._ttl_seconds:
+            if (
+                not self.governance_required
+                and self._fetched_at
+                and (now - self._fetched_at) < self._ttl_seconds
+            ):
                 return self._endpoint, self._model
             await self._refresh(now)
             return self._endpoint, self._model
+
+    def _clear_cache(self) -> None:
+        self._endpoint = None
+        self._model = None
 
     def _log_once(self, state: str, message: str, *, level: int = logging.WARNING) -> None:
         if state == self._last_logged_state:
@@ -98,6 +141,14 @@ class ImagePrimaryFetcher:
                 resp = await client.get(url, headers=headers)
         except Exception as exc:
             self._fetched_at = now
+            if self.governance_required:
+                self._clear_cache()
+                self._log_once(
+                    "governance_conn_error",
+                    "formal image-primary authority fetch 失敗；清除快取並拒絕下游模型呼叫: "
+                    f"{exc}",
+                )
+                return
             self._log_once(
                 "conn_error",
                 "image-primary fetch 失敗，沿用快取值 "
@@ -111,18 +162,31 @@ class ImagePrimaryFetcher:
             try:
                 data = resp.json()
             except Exception:
+                if self.governance_required:
+                    self._clear_cache()
                 self._log_once(
                     "malformed",
                     f"CSP image-primary 回應非 JSON: {resp.text[:200]}",
                 )
                 return
-            endpoint = data.get("endpoint_url")
-            name = data.get("name")
-            if endpoint and name:
+            endpoint = data.get("endpoint_url") if isinstance(data, dict) else None
+            name = data.get("name") if isinstance(data, dict) else None
+            if isinstance(endpoint, str):
+                endpoint = endpoint.strip()
+            if isinstance(name, str):
+                name = name.strip()
+            if (
+                isinstance(endpoint, str)
+                and isinstance(name, str)
+                and endpoint
+                and name
+            ):
                 self._endpoint = endpoint
                 self._model = name
                 self._last_logged_state = None  # reset dedupe on recovery
                 return
+            if self.governance_required:
+                self._clear_cache()
             self._log_once(
                 "malformed",
                 f"CSP image-primary 回應缺少 endpoint_url/name: {str(data)[:200]}",
@@ -133,8 +197,7 @@ class ImagePrimaryFetcher:
             # Admin explicitly hasn't set (404) or has disabled (409) an
             # image primary — honour that and drop any stale cached
             # value so the caller falls back to env.
-            self._endpoint = None
-            self._model = None
+            self._clear_cache()
             self._log_once(
                 "unset",
                 f"CSP 未設定或已停用主圖像模型（{resp.status_code}），改用 env fallback",
@@ -145,8 +208,7 @@ class ImagePrimaryFetcher:
         if resp.status_code in (401, 403):
             # spec 錯誤處理表：無 rotating token 機制 → fallback env。
             # 必須清掉舊快取，否則 token 被撤銷後會永遠沿用最後一次的 CSP 值。
-            self._endpoint = None
-            self._model = None
+            self._clear_cache()
             self._log_once(
                 "auth_failed",
                 f"CSP service token 被拒（{resp.status_code}）；"
@@ -154,6 +216,8 @@ class ImagePrimaryFetcher:
             )
             return
 
+        if self.governance_required:
+            self._clear_cache()
         self._log_once(
             f"http_{resp.status_code}",
             f"CSP image-primary 回應非預期狀態碼 {resp.status_code}: {resp.text[:200]}",

@@ -35,9 +35,12 @@ os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
+from app.api import artifacts as artifact_api
 from app.config import settings
+from app.database import get_db
 from app.models.artifact import Artifact, ArtifactJob, ArtifactVersion, ExportRecord
 from app.models.audit_log import AuditLog
 from app.models.classification import ClassificationEvent
@@ -54,6 +57,7 @@ from app.models.registered_service import RegisteredService
 from app.models.service_client import ServiceClient
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task, TaskRun
+from app.modules.artifacts.blob_store import resolve_blob_path
 from app.schemas.contracts.artifacts import (
     ArtifactJobIn,
     ArtifactJobPatch,
@@ -932,6 +936,166 @@ class TestBindingRule:
 
 
 class TestUploadIdempotency:
+    def test_commit_crash_rolls_back_ledgers_and_removes_published_blob(
+        self, client, db, monkeypatch
+    ):
+        owner = make_user(db, username="artifact_upload_commit_crash")
+        task = _make_task(db, owner, level="機密")
+        run = db.query(TaskRun).filter_by(task_id=task.id).one()
+        snapshot = SourceSnapshot(
+            task_id=task.id,
+            origin="none",
+            source_scope="none",
+            classification_level=task.classification_level,
+        )
+        db.add(snapshot)
+        db.flush()
+        task.source_snapshot_id = snapshot.id
+        lease_token = "test-artifact-lease-token-123"
+        job = ArtifactJob(
+            job_id="artifact-upload-commit-crash",
+            owner_user_id=owner.id,
+            task_id=task.id,
+            source_snapshot_id=snapshot.id,
+            artifact_type="report",
+            status="running",
+            progress=37,
+            message="rendered, awaiting upload",
+            durable_attempt=1,
+            durable_lease_digest=hashlib.sha256(lease_token.encode()).hexdigest(),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        baseline_job = (
+            job.status,
+            job.progress,
+            job.message,
+            job.artifact_id,
+            job.artifact_upload_sha256,
+            job.artifact_upload_metadata_digest,
+        )
+        baseline_task = (
+            task.status,
+            task.updated_at,
+            task.source_snapshot_id,
+            task.classification_level,
+        )
+        baseline_run = (
+            run.status,
+            run.finished_at,
+            run.error,
+            run.usage_record_id,
+        )
+        blob_root = Path(settings.ARTIFACT_BLOB_STORAGE_PATH)
+
+        def override_get_db():
+            yield db
+
+        client.app.dependency_overrides[get_db] = override_get_db
+        original_store_stream = artifact_api.store_stream
+        published_paths: list[Path] = []
+
+        def crash_before_commit(_session):
+            raise RuntimeError("synthetic artifact closure commit crash")
+
+        def store_then_arm_crash(*args, **kwargs):
+            stored = original_store_stream(*args, **kwargs)
+            published_path = resolve_blob_path(blob_root, stored.key)
+            assert published_path.is_file()
+            published_paths.append(published_path)
+            event.listen(db, "before_commit", crash_before_commit, once=True)
+            return stored
+
+        monkeypatch.setattr(artifact_api, "store_stream", store_then_arm_crash)
+        failure_client = TestClient(client.app, raise_server_exceptions=False)
+        try:
+            failed = _register_artifact(
+                failure_client,
+                db,
+                task_id=task.id,
+                snapshot_id=snapshot.id,
+                job_id=job.job_id,
+                lease_token=lease_token,
+            )
+        finally:
+            failure_client.close()
+
+        assert failed.status_code == 500
+        assert published_paths and not published_paths[0].exists()
+        assert [path for path in blob_root.rglob("*") if path.is_file()] == []
+        db.expire_all()
+        assert db.query(Artifact).count() == 0
+        assert db.query(ArtifactVersion).count() == 0
+        assert db.query(ClassificationEvent).filter_by(
+            resource_type="artifact"
+        ).count() == 0
+        assert db.query(AuditLog).filter_by(action="artifact.uploaded").count() == 0
+        restored_task = db.get(Task, task.id)
+        assert (
+            restored_task.status,
+            restored_task.updated_at,
+            restored_task.source_snapshot_id,
+            restored_task.classification_level,
+        ) == baseline_task
+        restored_run = db.get(TaskRun, run.id)
+        assert (
+            restored_run.status,
+            restored_run.finished_at,
+            restored_run.error,
+            restored_run.usage_record_id,
+        ) == baseline_run
+        restored_job = db.get(ArtifactJob, job.job_id)
+        assert (
+            restored_job.status,
+            restored_job.progress,
+            restored_job.message,
+            restored_job.artifact_id,
+            restored_job.artifact_upload_sha256,
+            restored_job.artifact_upload_metadata_digest,
+        ) == baseline_job
+
+        monkeypatch.setattr(artifact_api, "store_stream", original_store_stream)
+        succeeded = _register_artifact(
+            client,
+            db,
+            task_id=task.id,
+            snapshot_id=snapshot.id,
+            job_id=job.job_id,
+            lease_token=lease_token,
+        )
+
+        assert succeeded.status_code == 201, succeeded.text
+        db.expire_all()
+        artifact = db.query(Artifact).one()
+        version = db.query(ArtifactVersion).one()
+        classification = db.query(ClassificationEvent).filter_by(
+            resource_type="artifact", resource_id=str(artifact.id)
+        ).one()
+        audit = db.query(AuditLog).filter_by(action="artifact.uploaded").one()
+        completed_job = db.get(ArtifactJob, job.job_id)
+        assert db.get(Task, task.id).status == "completed"
+        assert db.get(TaskRun, run.id).status == "completed"
+        assert artifact.source_task_id == task.id
+        assert artifact.source_snapshot_id == snapshot.id
+        assert version.artifact_id == artifact.id
+        assert classification.new_level == "機密"
+        assert audit.resource_id == str(artifact.id)
+        assert completed_job.status == baseline_job[0]
+        assert completed_job.progress == baseline_job[1]
+        assert completed_job.message == baseline_job[2]
+        assert completed_job.artifact_id == artifact.id
+        assert completed_job.artifact_upload_sha256 == version.content_hash
+        assert completed_job.artifact_upload_metadata_digest is not None
+        assert version.blob_key is not None
+        stored_path = resolve_blob_path(blob_root, version.blob_key)
+        assert stored_path.is_file()
+        assert stored_path.read_bytes() == b"%PDF-1.7\nreport\n%%EOF"
+        assert [path for path in blob_root.rglob("*") if path.is_file()] == [
+            stored_path
+        ]
+
     def test_crash_window_replay_returns_same_authority_without_new_blob(
         self, client, db, monkeypatch, tmp_path
     ):

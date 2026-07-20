@@ -156,6 +156,186 @@ class CapabilityFreezePolicyTests(unittest.TestCase):
             inventory = policy.collect_inventory(root, mini_baseline)
         self.assertEqual(inventory["artifact.types"], ["audio", "report"])
 
+    def test_recursive_collectors_ignore_venv_but_fail_closed_on_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_root = root / "packages" / "example"
+            source_root.mkdir(parents=True)
+            (source_root / "real.py").write_text(
+                "def Coordinator():\n    return 'repo source'\n",
+                encoding="utf-8",
+            )
+            for directory_name in (".venv", "venv"):
+                virtualenv_root = source_root / directory_name
+                virtualenv_root.mkdir()
+                (virtualenv_root / "pyvenv.cfg").write_text(
+                    "home = /synthetic/python\n",
+                    encoding="utf-8",
+                )
+                dependency_layout = (
+                    ("lib", "python3.11", "site-packages")
+                    if directory_name == ".venv"
+                    else ("Lib", "site-packages")
+                )
+                dependency = (
+                    virtualenv_root.joinpath(*dependency_layout)
+                    / "redis"
+                    / "commands.py"
+                )
+                dependency.parent.mkdir(parents=True)
+                dependency.write_text(
+                    "class Coordinator:\n    pass\n",
+                    encoding="utf-8",
+                )
+
+            mini_baseline = {
+                "schema_version": 1,
+                "surfaces": [
+                    {
+                        "id": "modules",
+                        "collector": {
+                            "type": "python_modules",
+                            "root": "packages/example",
+                        },
+                    },
+                    {
+                        "id": "symbols",
+                        "collector": {
+                            "type": "python_public_symbols",
+                            "root": "packages/example",
+                        },
+                    },
+                    {
+                        "id": "globbed",
+                        "collector": {
+                            "type": "glob_paths",
+                            "patterns": ["packages/example/**/*.py"],
+                        },
+                    },
+                    {
+                        "id": "exposure",
+                        "collector": {
+                            "type": "text_matched_files",
+                            "roots": ["packages"],
+                            "pattern": r"\bCoordinator\b",
+                        },
+                    },
+                ],
+                "reviewed_inventory": {
+                    "modules": [],
+                    "symbols": [],
+                    "globbed": [],
+                    "exposure": [],
+                },
+            }
+            current = policy.collect_inventory(root, mini_baseline)
+            self.assertEqual(current["modules"], ["packages/example/real.py"])
+            self.assertEqual(
+                current["symbols"], ["packages/example/real.py::Coordinator"]
+            )
+            self.assertEqual(current["globbed"], ["packages/example/real.py"])
+            self.assertEqual(current["exposure"], ["packages/example/real.py"])
+            self.assertFalse(
+                any(".venv" in value or "/venv/" in value for values in current.values() for value in values)
+            )
+
+            result = policy.evaluate(
+                mini_baseline,
+                current,
+                {"schema_version": 1, "exceptions": []},
+                dt.date.today(),
+            )
+
+        self.assertFalse(result["passed"])
+        self.assertIn(
+            "exposure::packages/example/real.py",
+            {item["change"] for item in result["violations"]},
+        )
+        self.assertNotIn(
+            "packages/example/.venv/lib/python3.11/site-packages/redis/commands.py",
+            {item["value"] for item in result["violations"]},
+        )
+
+    def test_recursive_collectors_scan_importable_unmarked_venv_source(self) -> None:
+        relative = "packages/example/venv/bridge.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / relative
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                '__all__ = ["Coordinator"]\n'
+                "class Coordinator:\n"
+                "    def spawn_workers_parallel(self):\n"
+                "        return None\n",
+                encoding="utf-8",
+            )
+
+            module_spec = importlib.util.spec_from_file_location(
+                "synthetic_venv_bridge", source
+            )
+            self.assertIsNotNone(module_spec)
+            assert module_spec is not None and module_spec.loader is not None
+            module = importlib.util.module_from_spec(module_spec)
+            module_spec.loader.exec_module(module)
+            self.assertTrue(hasattr(module, "Coordinator"))
+
+            self.assertEqual(
+                policy._python_modules(root, {"root": "packages/example"}),
+                {relative},
+            )
+            self.assertEqual(
+                policy._python_public_symbols(root, {"root": "packages/example"}),
+                {f"{relative}::Coordinator"},
+            )
+            self.assertEqual(
+                policy._python_public_class_methods(
+                    root, {"root": "packages/example"}
+                ),
+                {f"{relative}::Coordinator.spawn_workers_parallel"},
+            )
+            self.assertEqual(
+                policy._python_all_exports(root, {"root": "packages/example"}),
+                {f"{relative}::Coordinator"},
+            )
+            self.assertEqual(
+                policy._glob_paths(
+                    root, {"patterns": ["packages/example/**/*.py"]}
+                ),
+                {relative},
+            )
+            exposure_collector = {
+                "type": "text_matched_files",
+                "roots": ["packages"],
+                "pattern": r"\bCoordinator\b|spawn_workers_parallel",
+            }
+            self.assertEqual(
+                policy._text_matched_files(root, exposure_collector),
+                {relative},
+            )
+            mini_baseline = {
+                "schema_version": 1,
+                "surfaces": [
+                    {
+                        "id": "exposure",
+                        "collector": exposure_collector,
+                    }
+                ],
+                "reviewed_inventory": {"exposure": []},
+            }
+            current = policy.collect_inventory(root, mini_baseline)
+            result = policy.evaluate(
+                mini_baseline,
+                current,
+                {"schema_version": 1, "exceptions": []},
+                dt.date.today(),
+            )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            [item["change"] for item in result["violations"]],
+            [f"exposure::{relative}"],
+        )
+
     def test_pr_cannot_bless_an_addition_by_rewriting_baseline(self) -> None:
         branch_baseline = json.loads(json.dumps(self.baseline))
         branch_baseline["reviewed_inventory"]["artifact.types"].append("audio")

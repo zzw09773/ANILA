@@ -64,11 +64,12 @@ models/inference/        # TensorRT-LLM / Triton 本地建置脈絡與壓測 log
 
 ## 啟動與部署
 
-建議用 `infra/deployment/intranet/model-serve.sh` 包裝（自動 `source` repo 根 `.env`、自動建 `anila-models-net`、一律帶 `--profile intranet` 故 profile 內外服務都可點名）：
+建議用 `infra/deployment/intranet/model-serve.sh` 包裝（自動 `source` repo 根 `.env`、透過 shared `ensure-models-network.sh` 建立/驗證 `anila-models-net`、一律帶 `--profile intranet` 故 profile 內外服務都可點名）：
 
 ```bash
-# 一次性 bootstrap：建網，並讓平台 stack 重新套用網路（restart 不會重掛新網路）
-docker network create anila-models-net
+# 一次性 bootstrap：由 shared helper 建網並 read-back topology；平台 stack
+# 重新套用網路時使用 `up -d`（restart 不會重掛新網路）
+bash infra/deployment/scripts/ensure-models-network.sh ensure
 docker compose up -d csp            # 於 repo 根，經 root shim compose.yaml；csp 加入 anila-models-net
 
 # 日常操作（於 repo 根）
@@ -89,6 +90,26 @@ docker compose -f infra/models/docker-compose.yml down
 ```
 
 > ⚠️ 別用 `START-HERE.sh` / `intranet-deploy.sh` 做模型層小修改——那是 card 一次性 bootstrap。日常生命週期用 `model-serve.sh`；平台側則用 `infra/deployment/scripts/deploy-prod.sh`。改設定一律 `up -d`（`docker restart` 不重載 `.env`／compose）。
+
+### 外部 Triton embedding overlay（standalone）
+
+當 NV-Embed-v2 的 Triton gRPC 在另一台主機（目前 `172.16.120.35:9001`）時，使用專用的 [`docker-compose.external-embed.yml`](./docker-compose.external-embed.yml) 與 [`external-embed-serve.sh`](./external-embed-serve.sh)：
+
+```bash
+export TRITON_GRPC_URL=172.16.120.35:9001   # 僅 exact host:port；DNS/FQDN 同樣可用
+bash infra/deployment/scripts/ensure-models-network.sh ensure
+bash infra/models/external-embed-serve.sh up
+bash infra/models/external-embed-serve.sh smoke
+bash infra/models/external-embed-serve.sh down
+```
+
+此 overlay 是獨立的 Compose project `anila-external-embed`，只定義 `nv-embed-proxy`（不含 Triton、GPU reservation 或本地權重），proxy 只 `expose 8000`，同時加入 shared external `anila-models-net` 與唯一 attacher 的 project-owned `embedding-egress` bridge。shared network 必須先由 helper read-back `Internal=true, Driver=bridge`；overlay 不擁有也不刪除它。
+
+**禁止** `docker compose -f docker-compose.yml -f docker-compose.external-embed.yml ...` 合併使用，也禁止對此 overlay 使用 `--remove-orphans`（會把 cleanup 邊界帶到 `anila-models`）。請只使用 wrapper 的固定 project；wrapper 也不接受額外 compose 檔或 project 參數。
+
+overlay 另要求 `ANILA_EXTERNAL_EMBED_STANDALONE` marker；僅 wrapper 會固定注入它，因此漏用 wrapper 的 base+overlay `config` 會 fail-closed。這是防止誤用的**信任邊界**，不是安全認證：能刻意自行設定 marker 的操作者仍可繞過它，故不可以把它當作 egress 安全控制。
+
+`embedding-egress` 目前只表達 app target + single-attacher topology，**不等同 host firewall 的 exact destination enforcement**；正式 Gate 5 enabled profile 仍須額外提供 host firewall／egress gateway 證據，不能僅因 dedicated bridge 自動通過。
 
 ---
 

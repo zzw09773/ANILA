@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol, TypeVar
+from typing import Any, BinaryIO, Protocol, TypeVar, cast
 
 from agents import RunHooks
 from agents.memory import Session
@@ -43,6 +44,57 @@ TASK_RECORD_SCHEMA_VERSION = "task-record/v1"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SAFE_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _TRecord = TypeVar("_TRecord", bound="TaskRecord")
+
+
+class _WindowsFileLockApi(Protocol):
+    LK_LOCK: int
+    LK_UNLCK: int
+
+    def locking(self, fd: int, mode: int, nbytes: int, /) -> None: ...
+
+
+class _PosixFileLockApi(Protocol):
+    LOCK_EX: int
+    LOCK_UN: int
+
+    def flock(self, fd: int, operation: int, /) -> None: ...
+
+
+def _windows_file_lock_api() -> _WindowsFileLockApi:
+    """Load the Windows-only lock API after the runtime platform check."""
+
+    return cast(_WindowsFileLockApi, importlib.import_module("msvcrt"))
+
+
+def _posix_file_lock_api() -> _PosixFileLockApi:
+    """Load the POSIX-only lock API after the runtime platform check."""
+
+    return cast(_PosixFileLockApi, importlib.import_module("fcntl"))
+
+
+def _acquire_task_file_lock(handle: BinaryIO) -> None:
+    if os.name == "nt":
+        windows_api = _windows_file_lock_api()
+        handle.seek(0)
+        handle.write(b"0")
+        handle.flush()
+        handle.seek(0)
+        windows_api.locking(handle.fileno(), windows_api.LK_LOCK, 1)
+        return
+
+    posix_api = _posix_file_lock_api()
+    posix_api.flock(handle.fileno(), posix_api.LOCK_EX)
+
+
+def _release_task_file_lock(handle: BinaryIO) -> None:
+    if os.name == "nt":
+        windows_api = _windows_file_lock_api()
+        handle.seek(0)
+        windows_api.locking(handle.fileno(), windows_api.LK_UNLCK, 1)
+        return
+
+    posix_api = _posix_file_lock_api()
+    posix_api.flock(handle.fileno(), posix_api.LOCK_UN)
 
 
 class TaskStatus(str, Enum):
@@ -377,30 +429,11 @@ class FileTaskStore:
 
         lock_path = self.root / ".tasks.lock"
         with self._thread_lock, lock_path.open("a+b") as handle:
-            if os.name == "nt":
-                import msvcrt
-
-                handle.seek(0)
-                handle.write(b"0")
-                handle.flush()
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
+            _acquire_task_file_lock(handle)
             try:
                 yield
             finally:
-                if os.name == "nt":
-                    import msvcrt
-
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+                _release_task_file_lock(handle)
 
     @staticmethod
     def _validate_id(value: str, *, field_name: str) -> str:

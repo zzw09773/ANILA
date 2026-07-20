@@ -34,11 +34,18 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.middleware.caller import _extract_bearer, get_caller
+from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task
 from app.models.trace_span import TraceSpan
 from app.models.user import User
+from app.modules.clearance.service import (
+    ClearancePolicyDataError,
+    resolve_effective_classification_clearance,
+    resolve_and_evaluate_data_access_batch,
+)
 from app.modules.tasks import ensure_task_access
 from app.schemas.contracts.traces import SpanProducer, TraceSpanIn, TraceSpanOut
+from app.schemas.contracts.tasks import SourceScope
 from app.services import agent_credential_service
 from app.services.auth_service import get_current_user, is_admin_tier
 from anila_contracts import Classification as ClassificationLevel
@@ -49,6 +56,138 @@ router = APIRouter(tags=["Trace"])
 
 # doc 05 §6 Full Trace callback 一次一批的上限。超過 → 413(語義:payload 過大)。
 _MAX_SPANS_PER_BATCH = 256
+
+
+def _positive_id_set(value: object, *, field: str) -> set[int]:
+    if not isinstance(value, list) or any(
+        isinstance(item, bool) or not isinstance(item, int) or item <= 0
+        for item in value
+    ):
+        raise HTTPException(status_code=403, detail=f"trace {field} 資料無效")
+    result = set(value)
+    if len(result) != len(value):
+        raise HTTPException(status_code=403, detail=f"trace {field} 資料重複")
+    return result
+
+
+def _trace_classification_floor(levels: list[object]) -> ClassificationLevel:
+    try:
+        return ClassificationLevel.max_of(
+            [ClassificationLevel.from_storage(level) for level in levels]
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=403, detail="trace classification 資料無效"
+        ) from exc
+
+
+def _ensure_trace_classification_access(
+    db: Session, *, user: User, required_level: ClassificationLevel
+) -> None:
+    """Require active classification authority without inventing source grants."""
+
+    try:
+        authorized = resolve_effective_classification_clearance(
+            db,
+            user_id=user.id,
+        )
+    except (ClearancePolicyDataError, ValueError) as exc:
+        raise HTTPException(status_code=403, detail="trace clearance 資料無效") from exc
+    if authorized is None or authorized < required_level:
+        raise HTTPException(
+            status_code=403, detail="trace classification clearance 拒絕"
+        )
+
+
+def _ensure_trace_data_access(
+    db: Session, *, task: Task, rows: list[TraceSpan], user: User
+) -> None:
+    """Re-derive source compartments before returning a task-owned trace."""
+
+    try:
+        source_scope = SourceScope(task.source_scope)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=403, detail="trace Task source scope 無效"
+        ) from exc
+    selected_ids = _positive_id_set(
+        task.selected_collection_ids, field="Task collection scope"
+    )
+    classification_levels: list[object] = [
+        task.classification_level,
+        *(row.classification_level for row in rows),
+    ]
+    if task.source_snapshot_id is None:
+        if source_scope is not SourceScope.NONE or selected_ids:
+            raise HTTPException(
+                status_code=403, detail="trace 缺少 SourceSnapshot binding"
+            )
+        _ensure_trace_classification_access(
+            db,
+            user=user,
+            required_level=_trace_classification_floor(classification_levels),
+        )
+        return
+
+    snapshot = db.get(SourceSnapshot, task.source_snapshot_id)
+    if snapshot is None or snapshot.task_id != task.id:
+        raise HTTPException(status_code=403, detail="trace Task/Snapshot binding 不符")
+    if snapshot.source_scope != source_scope.value:
+        raise HTTPException(
+            status_code=403, detail="trace Task/Snapshot source scope 不符"
+        )
+    classification_levels.append(snapshot.classification_level)
+
+    collection_ids = _positive_id_set(
+        snapshot.collection_ids, field="Snapshot collection scope"
+    )
+    document_ids = _positive_id_set(
+        snapshot.document_ids, field="Snapshot document scope"
+    )
+    if not collection_ids:
+        if (
+            source_scope is not SourceScope.NONE
+            or snapshot.origin != "none"
+            or document_ids
+            or selected_ids
+        ):
+            raise HTTPException(
+                status_code=403, detail="trace Snapshot source scope 不完整"
+            )
+        _ensure_trace_classification_access(
+            db,
+            user=user,
+            required_level=_trace_classification_floor(classification_levels),
+        )
+        return
+    if source_scope is SourceScope.NONE or snapshot.origin == "none":
+        raise HTTPException(status_code=403, detail="trace Snapshot source scope 不符")
+    if not collection_ids.issubset(selected_ids):
+        raise HTTPException(
+            status_code=403, detail="trace Snapshot collection scope 不符"
+        )
+
+    required_level = _trace_classification_floor(classification_levels)
+
+    try:
+        decisions = resolve_and_evaluate_data_access_batch(
+            db,
+            user_id=user.id,
+            collection_ids=sorted(collection_ids),
+            document_ids=sorted(document_ids),
+        )
+        for decision in decisions.values():
+            if (
+                not decision.allowed
+                or decision.authorized_classification is None
+                or decision.authorized_classification < required_level
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="trace clearance/compartment 拒絕",
+                )
+    except (LookupError, ClearancePolicyDataError, ValueError) as exc:
+        raise HTTPException(status_code=403, detail="trace clearance 資料無效") from exc
 
 
 def _naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -226,14 +365,27 @@ def get_trace(
     # 存取控制:有任務走 ensure_task_access(admin/owner 全域 bypass + 申請人);
     # 無任務的 trace 僅 admin/owner 可讀(沒有申請人可比對)。
     if task is not None:
+        if any(row.task_id != task.id for row in rows):
+            raise HTTPException(status_code=403, detail="trace span/Task binding 不符")
         try:
             ensure_task_access(db, task_id=task.id, user_id=user.id)
         except PermissionError:
+            raise HTTPException(status_code=403, detail="無權存取此 trace") from None
+        _ensure_trace_data_access(db, task=task, rows=rows, user=user)
+    else:
+        if any(row.task_id is not None for row in rows):
             raise HTTPException(
-                status_code=403, detail="無權存取此 trace"
-            ) from None
-    elif not is_admin_tier(user):
-        raise HTTPException(status_code=403, detail="無權存取此 trace")
+                status_code=403, detail="taskless trace span binding 不符"
+            )
+        if not is_admin_tier(user):
+            raise HTTPException(status_code=403, detail="無權存取此 trace")
+        _ensure_trace_classification_access(
+            db,
+            user=user,
+            required_level=_trace_classification_floor(
+                [row.classification_level for row in rows]
+            ),
+        )
 
     # Flat list, sorted by started_at then span_id. started_at 已於寫入端
     # 正規化為 naive UTC;None 排最前(穩定、跨 DB 一致)。

@@ -80,9 +80,15 @@ def test_pg_pre_post_receipts_commit_together(pg_session_factory):
     event = _event(f"pg-pre-post-{uuid4().hex}")
     db = pg_session_factory()
     sink = SqlAlchemyReceiptSink(db, subject=subject)
-    sink.record_pre_usage(event)
-    sink.record_pre_audit(event)
-    post = dict(event, phase="post", usage={"prompt_tokens": 2, "completion_tokens": 4})
+    pre_usage = sink.record_pre_usage(event)
+    pre_audit = sink.record_pre_audit(event)
+    post = dict(
+        event,
+        phase="post",
+        pre_usage_receipt=pre_usage,
+        pre_audit_receipt=pre_audit,
+        usage={"prompt_tokens": 2, "completion_tokens": 4},
+    )
     sink.record_post_usage(post)
     sink.record_post_audit(post)
 
@@ -104,19 +110,19 @@ def test_pg_pre_post_receipts_commit_together(pg_session_factory):
     db.close()
 
 
-def test_pg_restart_retry_reuses_unique_invocation_ledger(pg_session_factory):
+def test_pg_restart_retry_rejects_unique_invocation_ledger(pg_session_factory):
     subject = _subject(pg_session_factory)
     event = _event(f"pg-retry-{uuid4().hex}")
     first = pg_session_factory()
     sink = SqlAlchemyReceiptSink(first, subject=subject)
-    usage_receipt = sink.record_pre_usage(event)
-    audit_receipt = sink.record_pre_audit(event)
+    sink.record_pre_usage(event)
+    sink.record_pre_audit(event)
     first.close()
 
     restarted = pg_session_factory()
     retry = SqlAlchemyReceiptSink(restarted, subject=subject)
-    assert retry.record_pre_usage(event) == usage_receipt
-    assert retry.record_pre_audit(event) == audit_receipt
+    with pytest.raises(RuntimeError, match="already exists|new invocation_id"):
+        retry.record_pre_usage(event)
     assert (
         restarted.query(ModelGovernanceReceipt)
         .filter(ModelGovernanceReceipt.invocation_id == event["invocation_id"])
@@ -132,22 +138,28 @@ def test_pg_restart_retry_reuses_unique_invocation_ledger(pg_session_factory):
     restarted.close()
 
 
-def test_pg_concurrent_same_invocation_is_exactly_once(pg_session_factory):
+def test_pg_concurrent_same_invocation_has_one_authorization(pg_session_factory):
     subject = _subject(pg_session_factory)
     event = _event(f"pg-race-{uuid4().hex}")
 
-    def worker() -> tuple[str, str]:
+    def worker() -> tuple[str, str] | RuntimeError:
         db = pg_session_factory()
         try:
             sink = SqlAlchemyReceiptSink(db, subject=subject)
-            return sink.record_pre_usage(event), sink.record_pre_audit(event)
+            try:
+                return sink.record_pre_usage(event), sink.record_pre_audit(event)
+            except RuntimeError as exc:
+                return exc
         finally:
             db.close()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: worker(), range(2)))
 
-    assert results[0] == results[1]
+    successes = [item for item in results if isinstance(item, tuple)]
+    failures = [item for item in results if isinstance(item, RuntimeError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
     db = pg_session_factory()
     try:
         assert (

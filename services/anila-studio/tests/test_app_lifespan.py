@@ -228,3 +228,13 @@ def test_formal_profile_refuses_disabled_durable_supervisor(monkeypatch):
     with pytest.raises(RuntimeError, match="DURABLE_SUPERVISOR"):
         with TestClient(app):
             pass
+
+
+def test_trial_military_is_formal_for_durable_startup_posture(monkeypatch):
+    from app.config import assert_durable_startup_posture, settings
+
+    monkeypatch.setattr(settings, "ANILA_DEPLOYMENT_PROFILE", "trial-military")
+    monkeypatch.setattr(settings, "STUDIO_DURABLE_SUPERVISOR", False)
+
+    with pytest.raises(RuntimeError, match="DURABLE_SUPERVISOR"):
+        assert_durable_startup_posture()

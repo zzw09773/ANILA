@@ -24,7 +24,10 @@ from fastapi.responses import StreamingResponse
 from .backend_resolver import BackendResolver
 from .chat_handler import ChatHandler, _BackendResolverProto, _FluxClientCtxProto
 from .flux_client import FluxClient
-from .image_primary_fetcher import ImagePrimaryFetcher
+from .image_primary_fetcher import (
+    ImagePrimaryFetcher,
+    governance_required_from_env,
+)
 from .image_store import ImageStore
 from .prompt_translator import PromptTranslator
 from .schemas import ChatCompletionRequest
@@ -40,6 +43,7 @@ def build_app(
     backend_resolver: _BackendResolverProto,
     default_aspect_ratio: str,
     inbound_service_token: str,
+    governed_callback_required: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="flux2-dev-agent", version="0.1.0")
     handler = ChatHandler(
@@ -87,11 +91,18 @@ def build_app(
             raise HTTPException(status_code=503, detail="agent inbound auth 未設定")
         if not presented or not hmac.compare_digest(presented, inbound_service_token):
             raise HTTPException(status_code=401, detail="無效的 CSP agent credential")
+        task_id = (request.headers.get("X-ANILA-Task-Id") or "").strip()
+        user_identity = (request.headers.get("X-ANILA-User-Id") or "").strip()
+        if governed_callback_required and (not task_id or not user_identity):
+            raise HTTPException(
+                status_code=400,
+                detail="governed image callback 必須綁定 Task 與轉發申請人",
+            )
         try:
             response = await handler.handle(
                 req,
-                task_id=request.headers.get("X-ANILA-Task-Id"),
-                user_identity=request.headers.get("X-ANILA-User-Id"),
+                task_id=task_id or None,
+                user_identity=user_identity or None,
             )
         except Exception:
             logger.exception("flux generation failed")
@@ -152,7 +163,6 @@ def _build_from_env() -> FastAPI:
     # Normal profiles keep the established direct FLUX backend path.  Only
     # the signed Gate 2 pilot overlay explicitly opts into the governed CSP
     # callback path (infra/compose/gate2-pilot.yml).
-    image_via_csp = image_via_csp_raw == "1"
     gemma_model = os.environ.get("GEMMA_MODEL", "gemma4")
     enable_translation = os.environ.get("ENABLE_PROMPT_TRANSLATION", "1") == "1"
     share_dir = Path(os.environ.get("SHARE_DIR", "/share/flux"))
@@ -182,11 +192,20 @@ def _build_from_env() -> FastAPI:
     image_primary_fetcher = ImagePrimaryFetcher(
         csp_base_url=csp_base_url,
         service_token=csp_service_token,
+        governance_required=governance_required_from_env(),
     )
+    image_via_csp = image_primary_fetcher.governance_required or (
+        image_via_csp_raw == "1"
+    )
+    if image_primary_fetcher.governance_required and not csp_service_token:
+        raise RuntimeError(
+            "formal model governance requires FLUX_AGENT_SERVICE_TOKEN"
+        )
     backend_resolver = BackendResolver(
         fetcher=image_primary_fetcher,
         fallback_endpoint=flux_backend_url,
         fallback_model=flux_model,
+        governance_required=image_primary_fetcher.governance_required,
     )
 
     def flux_factory(endpoint: str, model: str) -> FluxClient:
@@ -207,6 +226,7 @@ def _build_from_env() -> FastAPI:
         backend_resolver=backend_resolver,
         default_aspect_ratio=aspect_ratio,
         inbound_service_token=csp_service_token,
+        governed_callback_required=image_via_csp,
     )
 
 

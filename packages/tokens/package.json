@@ -1,0 +1,13 @@
+{
+  "name": "@anila/tokens",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Framework-neutral ANILA design tokens for CSP, ANILA, and ANILALM frontends.",
+  "exports": {
+    "./tokens.css": "./src/tokens.css"
+  },
+  "scripts": {
+    "test": "node scripts/verify.mjs"
+  }
+}

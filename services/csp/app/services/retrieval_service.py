@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
 from anila_contracts import Classification
+from anila_core.memory import EMBED_DIM, EMBED_NATIVE_DIM, truncate_embedding
 from anila_core.storage.adapters.pgvector_store import (
     CollectionScopedPgVectorStore,
 )
@@ -215,6 +216,12 @@ async def embed_query(
 ) -> list[float]:
     """Embed a retrieval query through the metered CSP model gateway."""
 
+    if embedding_dim != EMBED_DIM:
+        raise RetrievalFailure(
+            "embedding_dimension_mismatch",
+            f"collection embedding_dim 為 {embedding_dim}，平台契約要求 {EMBED_DIM}",
+        )
+
     model = db.query(ModelRegistry).filter(ModelRegistry.name == model_name).first()
     if model is None or not model.is_active:
         raise RetrievalFailure(
@@ -281,12 +288,15 @@ async def embed_query(
         for value in raw_vector
     ):
         raise RetrievalFailure("embedding_invalid", "檢索模型回傳非數值向量")
-    if len(raw_vector) < embedding_dim:
+    try:
+        normalized = truncate_embedding(raw_vector)
+    except ValueError as exc:
         raise RetrievalFailure(
             "embedding_dimension_mismatch",
-            f"檢索模型回傳 {len(raw_vector)} 維，低於 collection 的 {embedding_dim} 維",
-        )
-    return [float(value) for value in raw_vector[:embedding_dim]]
+            f"檢索模型回傳 {len(raw_vector)} 維；僅接受 {EMBED_DIM} 或 "
+            f"{EMBED_NATIVE_DIM} 維",
+        ) from exc
+    return [float(value) for value in normalized]
 
 
 def _validate_document_scope(

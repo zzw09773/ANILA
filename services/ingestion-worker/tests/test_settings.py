@@ -327,6 +327,21 @@ def test_job_deadline_posture_rejects_stage_timeout_at_job_timeout(clean_env):
         _fresh(job_timeout_seconds=120, parse_timeout_seconds=120)
 
 
+@pytest.mark.parametrize(
+    "profile", ["prod-intranet-card", "prod-public-passwd", "trial-military"]
+)
+def test_formal_profiles_require_non_development_ingestion_hmac(
+    clean_env, profile
+):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="formal profile"):
+        _fresh(
+            anila_deployment_profile=profile,
+            ingestion_queue_hmac_key="dev-ingestion-queue-hmac-key-change-me",
+        )
+
+
 # ── Module singleton ─────────────────────────────────────────────────────────
 
 

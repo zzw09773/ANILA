@@ -146,8 +146,6 @@ services:
       # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
     volumes:
       - ../../packages/anila-agent:/app/anila-template:ro
-      # Disposable Gate 5 seed helper; mounted only in this development stack.
-      - ../../infra/deployment/scripts/gate5-silver-seed.py:/opt/anila/gate5-silver-seed.py:ro
       # Named volume inherits UID 10001 from the CSP image and is shared with
       # the worker running under the same numeric identity.  A fresh Linux
       # checkout therefore does not get a root-owned bind directory.
@@ -553,7 +551,9 @@ services:
   # ── ANILA UI (admin SPA) ────────────────────────────────────────────────
   anila-ui:
     build:
-      context: ../../apps/anila-shell
+      # repo-root context：同 platform.yml，涵蓋共用設計系統 packages/ui。
+      context: ../..
+      dockerfile: apps/anila-shell/Dockerfile
       args:
         VITE_CSP_BASE_URL: ${ANILA_PUBLIC_CSP_BASE_URL-}
         VITE_ROUTER_BASE_URL: ${ANILA_PUBLIC_ROUTER_BASE_URL:-/router}
@@ -612,7 +612,8 @@ networks:
   default:
     name: anila-dev-net
   # 跟 models stack + live stack 共用的 external network。
-  # 第一次 up 時若不存在,bootstrap: docker network create anila-models-net
+  # 第一次 up 時若不存在，先跑 shared helper:
+  #   bash infra/deployment/scripts/ensure-models-network.sh ensure
   anila-models-net:
     external: true
     name: anila-models-net

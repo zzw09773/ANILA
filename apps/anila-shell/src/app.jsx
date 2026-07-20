@@ -82,6 +82,9 @@ import {
   Dropdown,
 } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
+// 殼層佈局元件（共用設計系統）：AppShell = 全高 flex 容器（overlay/側欄/主欄
+// 三個 slot），Topbar = 主欄頂部工具列外殼。
+import { AppShell, Topbar } from "@anila/ui";
 import {
   AnilaGlyph,
   IconColumns,
@@ -109,6 +112,7 @@ import {
 import { ParallelCompareView } from "./multiagent.jsx";
 import { HandoffMenu, ShareDialog } from "./collab.jsx";
 import { TweaksPanel } from "./tweaks.jsx";
+import { applyTweaks } from "./tweakRuntime.js";
 import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
 import { TraceExplorer } from "./spanTree.jsx";
@@ -219,25 +223,6 @@ export function normalizeAgents(data) {
       requiresEncryption: Boolean(item.requires_encryption),
     })),
   ];
-}
-
-function applyTweaks(t) {
-  const r = document.documentElement;
-  r.setAttribute("data-theme", t.dark ? "dark" : "light");
-  if (t.accent) r.style.setProperty("--accent", t.accent);
-  if (t.density) r.style.setProperty("--density", `${t.density}px`);
-  if (t.sansFamily) {
-    r.style.setProperty(
-      "--font-sans",
-      `"${t.sansFamily}", "Inter", system-ui, sans-serif`,
-    );
-  }
-  if (t.monoFamily) {
-    r.style.setProperty(
-      "--font-mono",
-      `"${t.monoFamily}", ui-monospace, Menlo, monospace`,
-    );
-  }
 }
 
 // ---- Chat Runtime ----------------------------------------------------------
@@ -1927,34 +1912,41 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   }
 
   // ---- render: classified watermark + top bar + messages + composer ----
+  // 殼層容器改用共用設計系統 AppShell（@anila/ui）；密等浮水印與繼承橫幅
+  // 走 overlay slot——內容、props、層級與判斷條件逐字保留（安全元件不動）。
   return (
-    <div style={{ display: "flex", height: "100dvh", background: "var(--bg)", position: "relative" }}>
-      {isClassified && (
-        <ConfidentialWatermark
-          userEmail={user?.email || user?.username}
-          traceId={latestAssistantMessage?.traceId}
-          level={selectedConv?.classificationLevel}
-        />
-      )}
-      {isClassificationInherited && (
-        <div style={{
-          position: "fixed", top: 0, left: 0, right: 0,
-          padding: "8px 16px", zIndex: 200,
-          background: "var(--warning-bg, oklch(0.45 0.15 50 / 0.92))",
-          color: "var(--warning-fg, oklch(0.99 0.005 80))",
-          fontSize: 12, fontWeight: 500,
-          display: "flex", alignItems: "center", gap: 8,
-          borderBottom: "1px solid oklch(0.30 0.10 50 / 0.4)",
-        }}>
-          <IconLock size={14} />
-          <span>
-            此對話因引用過往加密記憶而升級為機密。
-            刪除對話的加密記憶引用可解除（設定 → 記憶）；
-            一旦升級無法在此對話手動退回。
-          </span>
-        </div>
-      )}
-      <Sidebar
+    <AppShell
+      overlay={
+        <>
+          {isClassified && (
+            <ConfidentialWatermark
+              userEmail={user?.email || user?.username}
+              traceId={latestAssistantMessage?.traceId}
+              level={selectedConv?.classificationLevel}
+            />
+          )}
+          {isClassificationInherited && (
+            <div style={{
+              position: "fixed", top: 0, left: 0, right: 0,
+              padding: "8px 16px", zIndex: 200,
+              background: "var(--warning-bg, oklch(0.45 0.15 50 / 0.92))",
+              color: "var(--warning-fg, oklch(0.99 0.005 80))",
+              fontSize: 12, fontWeight: 500,
+              display: "flex", alignItems: "center", gap: 8,
+              borderBottom: "1px solid oklch(0.30 0.10 50 / 0.4)",
+            }}>
+              <IconLock size={14} />
+              <span>
+                此對話因引用過往加密記憶而升級為機密。
+                刪除對話的加密記憶引用可解除（設定 → 記憶）；
+                一旦升級無法在此對話手動退回。
+              </span>
+            </div>
+          )}
+        </>
+      }
+      sidebar={
+        <Sidebar
         conversations={conversations}
         onServerSearch={(q) => searchConversations(authRequest, q)}
         onExportConv={exportConversation}
@@ -1985,16 +1977,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onOpenTagEditor={(id, patch) => updateConv(id, patch)}
         onRenameConv={handleRenameConv}
         onDeleteConv={handleDeleteConv}
-      />
-
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        />
+      }
+    >
         <BannerBar banners={visibleBanners} onDismiss={dismissBanner} />
-        <div style={{
-          display: "flex", alignItems: "center", gap: 10,
-          padding: "10px 18px",
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg)",
-        }}>
+        <Topbar>
           {tweaks.agentSwitcherPosition === "top" && !compareMode ? (
             <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
           ) : (
@@ -2132,7 +2119,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
               }} />
             )}
           </span>
-        </div>
+        </Topbar>
 
         {runtimeError && (
           <div role="alert" aria-live="assertive" style={{
@@ -2293,7 +2280,6 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             />
           )}
         </div>
-      </div>
 
       <SettingsModal
         open={settingsOpen}
@@ -2344,7 +2330,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         request={authRequest}
         toast={toast}
       />
-    </div>
+    </AppShell>
   );
 }
 

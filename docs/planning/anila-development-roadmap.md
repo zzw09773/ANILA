@@ -12,6 +12,33 @@
 
 ---
 
+## 2026-07-17 執行 checkpoint（Gate 5 已完成；Gate 6 維持 NO-GO）
+
+> 本節是目前可驗證狀態；下方較早日期的數字與判定保留作歷史證據。若有衝突，以本節與最新 handoff 為準。
+
+- Gate 5 已完成並 merge（base `bca5af0…`）。Gate 6 最新 engineering work 仍在本地未提交；PR [#32](https://github.com/zzw09773/ANILA/pull/32) 的 remote head 仍為 `5c5a1b2…`，狀態為 `OPEN / Draft / MERGEABLE`。舊 head 的 23 個 checks 雖為綠燈，**不涵蓋本地未提交 diff**；本地 CI 與 exact final Sol／Fable review 均不得宣稱已完成。
+- Provider authority v2 採 Option C：支援 direct `external_governed`、`internal_shim`＋external upstream、`internal_isolated` 等 locality；canonical target 僅接受精確 `host:port` 或 Domain/FQDN。external gRPC embedding 必須是 `host:port`，含糊的 numeric IP 一律拒絕。runtime admission、frozen registry snapshot、receipt/replay 與 `image-primary` 已接線；這仍是工程證據，不是 P9 production acceptance。
+- donkernet Revision D：沒有任何 Compose project 擁有 `anila-models-net`，所有 consumer 都宣告 `external: true`；helper 負責建立 bridge＋`Internal=true` 網路、read-back 與 fail-closed 檢查，且永不自動刪除／重建。此次 canonical live network read-back 為 `Driver=bridge, Internal=false, Containers={}`，因此是 deployment blocker；禁止 auto-fix 或 delete。
+- P9 exporter v2 已具 provider-authority snapshot、redaction 與 fail-closed；但 production packet capture／deny、usage reconciliation 與五方 sign-off 仍缺，`gate6_pass=false`。
+- 模型 live smoke：port `7000` 的 `/v1/models` 為 `gpt-oss-20b`，chat 回傳 `ANILA_GATE6_OK`；port `9001` Triton gRPC ready，1×4096 embedding 為 finite。未來以 external model 為 primary，donkernet 只承載明確列出的少量 internal model。
+- CHT synthetic focused suite 為 **66 passed**；實體卡／reader／vendor HiPKI 與正式矩陣仍是 P8 blocker。
+
+### 目前工程驗證摘要（不等於 P0–P9 acceptance）
+
+| 範圍 | 最新結果 |
+|---|---|
+| policy／deployment／Gate suites | **384 passed / 2 skipped / 88 subtests** |
+| CSP | **1594 passed / 40 skipped** |
+| ingestion-worker | **252 passed / 10 skipped** |
+| anila-core | **903 passed / 10 skipped** |
+| anila-security／Studio | **95 passed / 1 skipped**；**587 passed / 5 skipped** |
+| Flux／Flux-agent／embedding proxy | **15 passed**；**71 passed**；**49 passed** |
+| true PostgreSQL migration／receipt／session／resume | head `r1_0031`；`0031` downgrade→upgrade PASS；**3 receipts、5 sessions、13 resumes** |
+| Ruff／py_compile／Bash | **63 Python**；**63**；**7 shell scripts `bash -n` PASS** |
+| Compose／overlay | dev、models、example 與 prod synthetic locked-digest parse PASS；external overlay verify PASS |
+
+**Gate 6 仍是 NO-GO**：P0–P9 的 production／external evidence、P0 signed profile、P1 restore、P2 fault drill、P3 七日觀測、P4 release envelope、P5 全鏈 matrix、P6 獨立具名人類覆核、P7 法務授權、P8 實體卡，以及 P9 production packet／deny／usage／五方簽核，均不可由上述工程測試取代。
+
 ## 怎麼用這份文件
 
 | 你是 | 讀這幾節 |
@@ -451,6 +478,33 @@ Gate 4（Demo Lane）不在關鍵路徑上。Gate 7 在 Go 之後。**這是工�
 **退出條件 ＝ Go 條件**：P0–P9 全數通過，證據包與 acceptance profile hash 一致，且由 **system owner、data owner、PKI owner、資安與維運五方的人員簽核**。任一條無 owner、無證據、門檻未達或使用事後調整的 profile，結論一律是 No-Go。這時、也只有這時，機密以上的資料可以進入 production。
 
 **Go 只對該 signed release envelope 有效，不是永久授權。** code/image/model/CA/config/topology/enabled feature/data ceiling 任一變更，都必須依 impact matrix 重跑指定的 P1–P9；無法證明不受影響時，預設完整 re-acceptance。
+
+#### Gate 6 分軌（2026-07-18 平台擁有者裁示）：開發者軌 vs 組織驗收軌
+
+> 本專案由一人維護。P0–P9 的 Go 條件**一字不改**（上表仍是唯一的 Go 定義），但工作清單自此分成兩軌：
+> 開發者的收尾清單只含軌一；軌二是移交清單，由組織權責方啟動，不再出現在開發者 backlog。
+
+**軌一：平台開發者軌（工程可完成＝收尾清單）**
+
+- P0–P9 的全部「工程備料」：profile schema／驗證器、drill 與 eval harness、frozen eval、mutation 證據、
+  machine-readable inventory、證據打包——目標是讓進場驗收窗口縮到最短（進場後照清單執行與簽名，
+  而不是進場後才開始查）。
+- **分級與平台設計理由報告**：對長官／政策讀者說明平台為何強制三級資料門檻、fail-closed、簽章
+  acceptance profile 與各 gate 控制；P6（獨立覆核）與 P7（授權裁決）的政策依據寫在此報告，
+  供權責方裁決時引用。
+- P7 的工程配套只到「enabled model／dataset／第三方元件 × 授權條款對照表」為止（隨 P4 manifest
+  交付）；裁決本身屬軌二。
+
+**軌二：組織驗收軌（不在開發者收尾清單；owner 見上表）**
+
+| 項目 | 需要什麼 | 誰啟動 |
+|---|---|---|
+| 進內網驗收窗口 | P0 五方簽章凍結、P1 restore drill、P2 fault drill、P3 七日觀測、P8 實體卡／reader／HiPKI／正式 CA/CRL 用戶端矩陣、P9 production packet capture 與 usage reconciliation | 維運＋各 owner（於平台主機執行，開發者可隨行支援） |
+| P6 獨立具名覆核 | 不同於修補者的人類 reviewer＋signed report（上表原文：1 人＋AI 無法自行滿足） | 長官指派（資安 owner） |
+| P7 法務／授權裁決 | 每個 enabled model／dataset／元件的書面授權裁決（開發者提供對照表） | 法務／採購 owner |
+
+**分軌不是降門檻**：機密以上 production 的 Go 條件仍是 P0–P9 全數通過＋五方簽核；軌二未啟動前，
+可部署的資料分級依 §6.1 封頂（無機密 pilot／營業秘密 pilot 的條件不受本分軌影響）。
 
 ---
 

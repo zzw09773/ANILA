@@ -27,6 +27,7 @@ from anila_security.model_governance import (
     ModelGovernanceAuthorization,
     ModelGovernanceError,
     ModelArtifact,
+    ProviderBinding,
     VerifiedModelGovernanceAuthority,
 )
 
@@ -45,7 +46,10 @@ def governance_required_for_settings(settings: Any) -> bool:
     """Return whether the deployment posture may run without Gate 5 material."""
 
     profile = str(getattr(settings, "ANILA_DEPLOYMENT_PROFILE", "")).strip().lower()
-    return profile in {"production", "prod"} or profile.startswith("prod-")
+    return (
+        profile in {"production", "prod", "trial-military"}
+        or profile.startswith("prod-")
+    )
 
 
 class ModelGovernanceRuntimeError(RuntimeError):
@@ -387,14 +391,42 @@ class ModelGovernanceRuntime:
     ) -> None:
         artifacts = {item.artifact_id: item for item in observed.artifacts}
         deployments = {item.deployment_id: item for item in observed.deployments}
+        fact_pairs: dict[tuple[str, str], str] = {}
         for binding in authority.bindings.values():
-            artifact = authority.model_artifacts[binding.model_artifact_id]
-            deployment = authority.deployments[binding.deployment_id]
+            if binding.provider_binding_ids:
+                for provider_binding_id in binding.provider_binding_ids:
+                    provider = authority.provider_bindings.get(provider_binding_id)
+                    if provider is None:
+                        raise ModelGovernanceRuntimeError(
+                            f"callsite binding {binding.callsite_id} references an "
+                            "unknown provider binding"
+                        )
+                    fact_pairs.setdefault(
+                        (provider.model_artifact_id, provider.deployment_id),
+                        binding.callsite_id,
+                    )
+                continue
+            if binding.model_artifact_id is None or binding.deployment_id is None:
+                raise ModelGovernanceRuntimeError(
+                    f"callsite binding {binding.callsite_id} has no model facts"
+                )
+            fact_pairs.setdefault(
+                (binding.model_artifact_id, binding.deployment_id),
+                binding.callsite_id,
+            )
+
+        for (artifact_id, deployment_id), callsite_id in fact_pairs.items():
+            artifact = authority.model_artifacts.get(artifact_id)
+            deployment = authority.deployments.get(deployment_id)
+            if artifact is None or deployment is None:
+                raise ModelGovernanceRuntimeError(
+                    f"verified model facts are missing for callsite binding {callsite_id}"
+                )
             observed_artifact = artifacts.get(artifact.artifact_id)
             observed_deployment = deployments.get(deployment.deployment_id)
             if observed_artifact is None or observed_deployment is None:
                 raise ModelGovernanceRuntimeError(
-                    f"missing observed facts for callsite binding {binding.callsite_id}"
+                    f"missing observed facts for callsite binding {callsite_id}"
                 )
             _same_artifact(artifact, observed_artifact)
             _same_deployment(deployment, observed_deployment, now=now)
@@ -403,6 +435,7 @@ class ModelGovernanceRuntime:
         self,
         callsite_id: str,
         *,
+        provider_binding_id: str | None = None,
         now: datetime | None = None,
     ) -> tuple[ObservedArtifactFacts, ObservedDeploymentFacts]:
         """Return the current verified artifact/deployment pair for a callsite.
@@ -425,8 +458,27 @@ class ModelGovernanceRuntime:
                 raise ModelGovernanceRuntimeError(
                     "observed governance facts are unavailable"
                 )
-            artifact = authority.model_artifacts[binding.model_artifact_id]
-            deployment = authority.deployments[binding.deployment_id]
+            if provider_binding_id is None and binding.provider_binding_ids:
+                raise ModelGovernanceRuntimeError(
+                    "provider binding identity is required for v2 callsite facts"
+                )
+            if provider_binding_id is None:
+                if binding.model_artifact_id is None or binding.deployment_id is None:
+                    raise ModelGovernanceRuntimeError(
+                        "legacy callsite binding has no model facts"
+                    )
+                artifact_id = binding.model_artifact_id
+                deployment_id = binding.deployment_id
+            else:
+                provider_binding = authority.provider_bindings.get(provider_binding_id)
+                if provider_binding is None:
+                    raise ModelGovernanceRuntimeError(
+                        "provider binding is not present in verified authority"
+                    )
+                artifact_id = provider_binding.model_artifact_id
+                deployment_id = provider_binding.deployment_id
+            artifact = authority.model_artifacts[artifact_id]
+            deployment = authority.deployments[deployment_id]
             observed_artifact = next(
                 (item for item in observed.artifacts if item.artifact_id == artifact.artifact_id),
                 None,
@@ -440,6 +492,158 @@ class ModelGovernanceRuntime:
                     f"observed facts are missing for callsite {callsite_id!r}"
                 )
             return observed_artifact, observed_deployment
+
+    @staticmethod
+    def _provider_binding_matches_model(
+        provider: ProviderBinding,
+        model: Any,
+    ) -> bool:
+        """Compare one signed provider snapshot with one registry row exactly."""
+
+        target = getattr(model, "transport_target", None)
+        upstream_target = getattr(model, "upstream_transport_target", None)
+        return (
+            provider.model_registry_id == str(getattr(model, "id", ""))
+            and provider.model_registry_name == str(getattr(model, "name", ""))
+            and provider.model_registry_revision
+            == getattr(model, "model_registry_revision", None)
+            and provider.provider_locality
+            == getattr(model, "provider_locality", None)
+            and isinstance(target, Mapping)
+            and dict(target) == provider.transport_target.to_dict()
+            and provider.transport_target_sha256
+            == getattr(model, "transport_target_sha256", None)
+            and str(getattr(model, "endpoint_url", ""))
+            == provider.transport_target.canonical
+            and provider.upstream_provider_locality
+            == getattr(model, "upstream_provider_locality", None)
+            and (
+                (provider.upstream_transport_target is None and upstream_target is None)
+                or (
+                    provider.upstream_transport_target is not None
+                    and isinstance(upstream_target, Mapping)
+                    and dict(upstream_target)
+                    == provider.upstream_transport_target.to_dict()
+                )
+            )
+            and provider.upstream_transport_target_sha256
+            == getattr(model, "upstream_transport_target_sha256", None)
+            and provider.egress_policy_id == getattr(model, "egress_policy_id", None)
+            and provider.upstream_egress_policy_id
+            == getattr(model, "upstream_egress_policy_id", None)
+        )
+
+    @classmethod
+    def _resolve_provider_binding_from_authority(
+        cls,
+        authority: VerifiedModelGovernanceAuthority,
+        model: Any,
+    ) -> ProviderBinding:
+        """Resolve one provider row from one already-loaded authority.
+
+        Keeping this helper free of ``_require_ready`` is deliberate: callers
+        that also need callsite/artifact authorization must resolve all of
+        those facts from the same authority object.  Reloading the signed
+        profile between these steps would permit a provider id to survive a
+        profile replacement while its target or revision changes.
+        """
+
+        if getattr(model, "provider_locality", None) in {None, "unclassified"}:
+            raise ModelGovernanceRuntimeError(
+                "unclassified model registry row has no provider authority"
+            )
+        identity_matches = [
+            provider
+            for provider in authority.provider_bindings.values()
+            if provider.model_registry_id == str(getattr(model, "id", ""))
+            and provider.model_registry_name == str(getattr(model, "name", ""))
+        ]
+        if not identity_matches:
+            raise ModelGovernanceRuntimeError(
+                "model registry row is absent from verified provider authority"
+            )
+        if len(identity_matches) != 1:
+            raise ModelGovernanceRuntimeError(
+                "model registry row has multiple verified provider bindings"
+            )
+        provider = identity_matches[0]
+        if not cls._provider_binding_matches_model(provider, model):
+            raise ModelGovernanceRuntimeError(
+                "model registry provider snapshot differs from verified authority"
+            )
+        return provider
+
+    @staticmethod
+    def _invocation_facts_from_authority(
+        authority: VerifiedModelGovernanceAuthority,
+        observed: ObservedGovernanceFacts | None,
+        callsite_id: str,
+        *,
+        provider_binding_id: str | None,
+    ) -> tuple[ObservedArtifactFacts, ObservedDeploymentFacts]:
+        """Project observed facts without reloading the authority."""
+
+        binding = authority.bindings.get(callsite_id)
+        if binding is None:
+            raise ModelGovernanceRuntimeError(
+                f"callsite {callsite_id!r} is not enabled in verified profile"
+            )
+        if observed is None:
+            raise ModelGovernanceRuntimeError(
+                "observed governance facts are unavailable"
+            )
+        if provider_binding_id is None and binding.provider_binding_ids:
+            raise ModelGovernanceRuntimeError(
+                "provider binding identity is required for v2 callsite facts"
+            )
+        if provider_binding_id is None:
+            if binding.model_artifact_id is None or binding.deployment_id is None:
+                raise ModelGovernanceRuntimeError(
+                    "legacy callsite binding has no model facts"
+                )
+            artifact_id = binding.model_artifact_id
+            deployment_id = binding.deployment_id
+        else:
+            provider_binding = authority.provider_bindings.get(provider_binding_id)
+            if provider_binding is None:
+                raise ModelGovernanceRuntimeError(
+                    "provider binding is not present in verified authority"
+                )
+            artifact_id = provider_binding.model_artifact_id
+            deployment_id = provider_binding.deployment_id
+        artifact = authority.model_artifacts[artifact_id]
+        deployment = authority.deployments[deployment_id]
+        observed_artifact = next(
+            (item for item in observed.artifacts if item.artifact_id == artifact.artifact_id),
+            None,
+        )
+        observed_deployment = next(
+            (item for item in observed.deployments if item.deployment_id == deployment.deployment_id),
+            None,
+        )
+        if observed_artifact is None or observed_deployment is None:
+            raise ModelGovernanceRuntimeError(
+                f"observed facts are missing for callsite {callsite_id!r}"
+            )
+        return observed_artifact, observed_deployment
+
+    def resolve_provider_binding(
+        self,
+        model: Any,
+        *,
+        now: datetime | None = None,
+    ) -> ProviderBinding:
+        """Resolve exactly one signed provider snapshot for a registry row.
+
+        This admission is deliberately independent of a callsite.  Activation
+        and probes use it directly; invocation admission additionally asks the
+        authority to prove that the resolved id is allowed by the callsite.
+        """
+
+        current = _now(now)
+        with self._lock:
+            authority = self._require_ready(now=current)
+            return self._resolve_provider_binding_from_authority(authority, model)
 
     def bootstrap(self, *, now: datetime | None = None) -> ModelGovernanceReadiness:
         """Atomically load and verify all mounted governance material."""
@@ -586,6 +790,10 @@ class ModelGovernanceRuntime:
         usage: Mapping[str, Any] | None = None,
         outcome: Literal["success", "failure"] | None = None,
         receipt_context: Mapping[str, Any] | None = None,
+        profile_content_sha256: str,
+        inventory_sha256: str,
+        pre_usage_receipt: str | None = None,
+        pre_audit_receipt: str | None = None,
     ) -> dict[str, Any]:
         event: dict[str, Any] = {
             "schema_version": "anila.gate5.model-governance.receipt.v1",
@@ -597,13 +805,38 @@ class ModelGovernanceRuntime:
             "endpoint": endpoint,
             "artifact_id": authorization.model_artifact.artifact_id,
             "deployment_id": authorization.deployment.deployment_id,
+            "profile_content_sha256": profile_content_sha256,
+            "inventory_sha256": inventory_sha256,
         }
+        provider = authorization.provider_binding
+        if provider is not None:
+            event.update(
+                {
+                    "provider_binding_id": provider.provider_binding_id,
+                    "model_registry_revision": provider.model_registry_revision,
+                    "provider_locality": provider.provider_locality,
+                    "transport_target_sha256": provider.transport_target_sha256,
+                    "upstream_provider_locality": provider.upstream_provider_locality,
+                    "upstream_transport_target_sha256": (
+                        provider.upstream_transport_target_sha256
+                    ),
+                    "egress_policy_id": provider.egress_policy_id,
+                    "upstream_egress_policy_id": provider.upstream_egress_policy_id,
+                }
+            )
         if usage is not None:
             event["usage"] = dict(usage)
         if outcome is not None:
             event["outcome"] = outcome
         if receipt_context is not None:
             event["receipt_context"] = dict(receipt_context)
+        if phase == "post":
+            if not pre_usage_receipt or not pre_audit_receipt:
+                raise ModelGovernanceRuntimeError(
+                    "immutable invocation authorization lacks durable pre receipts"
+                )
+            event["pre_usage_receipt"] = pre_usage_receipt
+            event["pre_audit_receipt"] = pre_audit_receipt
         return event
 
     @staticmethod
@@ -656,9 +889,11 @@ class ModelGovernanceRuntime:
         classification: Any,
         agent_id: str | None,
         endpoint: str,
-        artifact_facts: ObservedArtifactFacts | Mapping[str, Any],
-        deployment_facts: ObservedDeploymentFacts | Mapping[str, Any],
+        artifact_facts: ObservedArtifactFacts | Mapping[str, Any] | None = None,
+        deployment_facts: ObservedDeploymentFacts | Mapping[str, Any] | None = None,
         *,
+        registry_model: Any | None = None,
+        provider_binding_id: str | None = None,
         invocation_id: str | None = None,
         now: datetime | None = None,
         usage_sink: DurableReceiptSink | None = None,
@@ -669,35 +904,63 @@ class ModelGovernanceRuntime:
 
         current = _now(now)
         with self._lock:
+            # Load signed profile, inventory and observed deployment facts once
+            # for the complete admission.  In particular, do not call
+            # resolve_provider_binding()/invocation_facts() here: each public
+            # helper performs its own bootstrap and could observe a different
+            # profile after an operator replaces the mounted file.
             authority = self._require_ready(now=current)
             safe_endpoint = self._validate_endpoint(endpoint)
-            artifact = self._coerce_artifact(artifact_facts)
-            deployment = self._coerce_deployment(deployment_facts)
             observed = self._observed
-            if observed is None:
-                raise ModelGovernanceRuntimeError(
-                    "observed governance facts are unavailable"
+            if registry_model is not None:
+                provider = self._resolve_provider_binding_from_authority(
+                    authority, registry_model
                 )
-            known_artifact = next(
-                (
-                    item
-                    for item in observed.artifacts
-                    if item.artifact_id == artifact.artifact_id
-                ),
-                None,
-            )
-            known_deployment = next(
-                (
-                    item
-                    for item in observed.deployments
-                    if item.deployment_id == deployment.deployment_id
-                ),
-                None,
-            )
-            if known_artifact != artifact or known_deployment != deployment:
-                raise ModelGovernanceRuntimeError(
-                    "invocation facts are not the current observed facts"
+                if (
+                    provider_binding_id is not None
+                    and provider_binding_id != provider.provider_binding_id
+                ):
+                    raise ModelGovernanceRuntimeError(
+                        "provider binding identity changed during admission"
+                    )
+                provider_binding_id = provider.provider_binding_id
+                artifact, deployment = self._invocation_facts_from_authority(
+                    authority,
+                    observed,
+                    callsite_id,
+                    provider_binding_id=provider_binding_id,
                 )
+            else:
+                if artifact_facts is None or deployment_facts is None:
+                    raise ModelGovernanceRuntimeError(
+                        "artifact and deployment facts are required"
+                    )
+                artifact = self._coerce_artifact(artifact_facts)
+                deployment = self._coerce_deployment(deployment_facts)
+                if observed is None:
+                    raise ModelGovernanceRuntimeError(
+                        "observed governance facts are unavailable"
+                    )
+                known_artifact = next(
+                    (
+                        item
+                        for item in observed.artifacts
+                        if item.artifact_id == artifact.artifact_id
+                    ),
+                    None,
+                )
+                known_deployment = next(
+                    (
+                        item
+                        for item in observed.deployments
+                        if item.deployment_id == deployment.deployment_id
+                    ),
+                    None,
+                )
+                if known_artifact != artifact or known_deployment != deployment:
+                    raise ModelGovernanceRuntimeError(
+                        "invocation facts are not the current observed facts"
+                    )
             invocation = invocation_id or f"inv-{uuid.uuid4().hex}"
             if not isinstance(invocation, str) or not invocation.strip():
                 raise ModelGovernanceRuntimeError("invocation_id must be non-empty")
@@ -712,6 +975,7 @@ class ModelGovernanceRuntime:
                     artifact_digest=artifact.digest,
                     artifact_revision=artifact.revision,
                     deployment_image_digest=deployment.image_digest,
+                    provider_binding_id=provider_binding_id,
                 )
             except ModelGovernanceError as exc:
                 raise ModelGovernanceRuntimeError(str(exc)) from exc
@@ -721,6 +985,8 @@ class ModelGovernanceRuntime:
                 endpoint=safe_endpoint,
                 phase="pre",
                 receipt_context=receipt_context,
+                profile_content_sha256=authority.profile_content_sha256,
+                inventory_sha256=authority.inventory_sha256,
             )
             effective_usage_sink = usage_sink or self.usage_sink
             effective_audit_sink = audit_sink or self.audit_sink
@@ -789,16 +1055,12 @@ class ModelGovernanceRuntime:
             raise ModelGovernanceRuntimeError("usage payload must be an object")
         current = _now(now)
         with self._lock:
-            authority = self._require_ready(now=current)
-            if (
-                authority.profile_content_sha256
-                != authorization.authority_profile_content_sha256
-                or authority.inventory_sha256
-                != authorization.authority_inventory_sha256
-            ):
-                raise ModelGovernanceRuntimeError(
-                    "governance authority rotated/revoked before post receipt"
-                )
+            # The outbound request has already happened.  Re-running current
+            # authority admission here can strand its durable pre-receipt if
+            # the profile rotates, expires or is revoked in flight.  Closure
+            # is instead bound to the immutable authorization snapshot and
+            # its durable pre-receipt ids; the sink verifies that snapshot
+            # against the invocation ledger before changing terminal state.
             event = self._event(
                 authorization=authorization.governance,
                 invocation_id=authorization.invocation_id,
@@ -807,6 +1069,10 @@ class ModelGovernanceRuntime:
                 usage=usage,
                 outcome="success",
                 receipt_context=receipt_context,
+                profile_content_sha256=authorization.authority_profile_content_sha256,
+                inventory_sha256=authorization.authority_inventory_sha256,
+                pre_usage_receipt=authorization.pre_usage_receipt,
+                pre_audit_receipt=authorization.pre_audit_receipt,
             )
             effective_usage_sink = usage_sink or self.usage_sink
             effective_audit_sink = audit_sink or self.audit_sink
@@ -887,16 +1153,10 @@ class ModelGovernanceRuntime:
             )
         current = _now(now)
         with self._lock:
-            authority = self._require_ready(now=current)
-            if (
-                authority.profile_content_sha256
-                != authorization.authority_profile_content_sha256
-                or authority.inventory_sha256
-                != authorization.authority_inventory_sha256
-            ):
-                raise ModelGovernanceRuntimeError(
-                    "governance authority rotated/revoked before failure receipt"
-                )
+            # Failure closure follows the same immutable authorization rule as
+            # success closure.  Current authority still controls every new
+            # admission, but cannot make an already-authorized ledger row
+            # permanently non-terminal after outbound I/O.
             event = self._event(
                 authorization=authorization.governance,
                 invocation_id=authorization.invocation_id,
@@ -905,6 +1165,10 @@ class ModelGovernanceRuntime:
                 usage={"status": "failed", "error": str(error)[:512]},
                 outcome="failure",
                 receipt_context=receipt_context,
+                profile_content_sha256=authorization.authority_profile_content_sha256,
+                inventory_sha256=authorization.authority_inventory_sha256,
+                pre_usage_receipt=authorization.pre_usage_receipt,
+                pre_audit_receipt=authorization.pre_audit_receipt,
             )
             effective_usage_sink = usage_sink or self.usage_sink
             effective_audit_sink = audit_sink or self.audit_sink

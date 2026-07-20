@@ -9,8 +9,10 @@ from .candidate_filter import (
     RegistrySnapshot,
     RouterRegistryEntry,
     RouterRegistrySnapshot,
+    candidate_eligibility_reasons,
+    is_candidate_eligible,
 )
-from .decision_engine import DecisionEngine, DecisionResult
+from .decision_engine import DecisionEngine, DecisionResult, available_registry_entries
 from .execution_runtime import Dispatcher, ExecutionRuntime, RuntimeResult
 from .csp_registry_client import (
     AgentClient,
@@ -34,7 +36,16 @@ from .request_context import (
     RequestContext,
     RequestContextBuilder,
     ServerCeilings,
+    UntrustedContentLimitExceeded,
     UntrustedHistoryItem,
+    extract_untrusted_user_content,
+)
+from .injection_detection import (
+    CanonicalizationLimitExceeded,
+    INJECTION_PATTERN_SET_VERSION,
+    MAX_REQUEST_CONTENT_SCAN_CHARS,
+    canonicalize_for_matching,
+    contains_injection,
 )
 from .tool_router import RouterError, ToolRegistry, execute_batch
 
@@ -45,8 +56,10 @@ __all__ = [
     "AgentClientError",
     "CapabilityFilter",
     "CandidateFilterResult",
+    "candidate_eligibility_reasons",
     "DecisionEngine",
     "DecisionResult",
+    "available_registry_entries",
     "CspAgentClient",
     "CspAgentRequest",
     "CspInferenceClient",
@@ -72,8 +85,16 @@ __all__ = [
     "RouterRegistrySnapshot",
     "RuntimeResult",
     "ServerCeilings",
+    "UntrustedContentLimitExceeded",
     "ToolRegistry",
     "UntrustedHistoryItem",
+    "extract_untrusted_user_content",
+    "INJECTION_PATTERN_SET_VERSION",
+    "MAX_REQUEST_CONTENT_SCAN_CHARS",
+    "CanonicalizationLimitExceeded",
+    "canonicalize_for_matching",
+    "contains_injection",
+    "is_candidate_eligible",
     "execute_batch",
     "parse_registry_snapshot",
 ]

@@ -32,6 +32,8 @@ from anila_core.router import (
     RequestContext,
     RequestContextBuilder,
     RuntimeResult,
+    contains_injection,
+    extract_untrusted_user_content,
 )
 from anila_contracts.routing import RouteType
 
@@ -39,16 +41,9 @@ from infra.ci.run_gate5_routing_contract import RoutingRequest
 
 
 _KNOWN_AGENT_IDS = frozenset({"rag-search", "image-generator", "report-generator"})
+_PLAIN_TEXT_CAPABILITIES = frozenset({"text"})
 _HEALTHY = "healthy"
 _TASK_TYPE = "gate5_routing"
-_INJECTION_RE = re.compile(
-    r"(?:ignore\s+(?:all\s+)?(?:previous|prior|earlier)|disregard\s+(?:all\s+)?"
-    r"(?:previous|earlier)|override\s+(?:the\s+)?(?:tool\s+)?policy|"
-    r"prompt\s+injection|jailbreak|system\s+prompt|developer\s+message|"
-    r"role\s*=\s*system|<\|(?:system|developer)\|>|dispatch\s*:|"
-    r"忽略|無視|覆寫|覆蓋|外洩|揭露系統提示|管理員身分)",
-    re.IGNORECASE,
-)
 _CLARIFICATION_RE = re.compile(
     r"(?:\bask\b|\bwhich\b|\btimezone\b|\blacks?\b|\btwice\b|"
     r"\bauthoritative\b|\bwithout\s+(?:naming|choosing)\b|\bshort\s+name\b|"
@@ -60,6 +55,17 @@ _CLARIFICATION_RE = re.compile(
 )
 _STREAMING_RE = re.compile(r"\bstream(?:ing)?\b|串流", re.IGNORECASE)
 _RESUME_RE = re.compile(r"\bresume\b|恢復|中斷的|服務重啟|重啟後", re.IGNORECASE)
+
+# These are the candidate-filter values emitted by the formal Router core for
+# deterministic authorization failures.  They are deliberately kept separate
+# from provider ``reason_codes``: a provider may use any explanatory token,
+# while this projection must trust only the core's candidate-filter result.
+_AUTHORIZATION_DENIAL_REASONS = frozenset(
+    {
+        "INSUFFICIENT_SCOPE",
+        "CLASSIFICATION_EXCEEDS_CEILING",
+    }
+)
 
 
 class FormalR3EvalAdapter:
@@ -100,12 +106,11 @@ class FormalR3EvalAdapter:
 
     @staticmethod
     def _text(request: RoutingRequest) -> str:
-        history = " ".join(
-            item.get("content", "")
-            for item in request.messages
-            if isinstance(item, Mapping) and isinstance(item.get("content"), str)
-        )
-        return f"{request.input} {history}".strip()
+        # The production Router scans this same message projection.  The
+        # legacy ``input`` field is intentionally not prepended: in the
+        # frozen request shape it duplicates the final user message, while
+        # production has no separate input field to scan.
+        return extract_untrusted_user_content(request.messages)
 
     @staticmethod
     def _classification(value: object) -> ClassificationLevel:
@@ -269,7 +274,7 @@ class FormalR3EvalAdapter:
 
     @staticmethod
     def _injection(text: str) -> bool:
-        return bool(_INJECTION_RE.search(text))
+        return contains_injection(text)
 
     @staticmethod
     def _multi_intent(required_capabilities: Sequence[str], text: str) -> bool:
@@ -521,9 +526,18 @@ class FormalR3EvalAdapter:
         )
 
     @staticmethod
-    def _observation(
-        result: RuntimeResult, *, semantic_reason: str
-    ) -> Mapping[str, Any]:
+    def _observation(result: RuntimeResult) -> Mapping[str, Any]:
+        if not getattr(result.decision_result, "valid", True):
+            route = result.decision_result.route_type
+            if route not in {RouteType.CLARIFY, RouteType.DENY}:
+                raise RuntimeError("invalid provider output produced an unsafe route")
+            return {
+                "route_type": route.value,
+                "selected_agent_id": None,
+                "policy_allowed": False,
+                "policy_reason_codes": list(result.decision_result.reason_codes),
+                "fallback": route.value,
+            }
         if result.policy_result is None:
             raise RuntimeError("formal R3 runtime returned no PolicyGate result")
         route = result.decision_result.route_type
@@ -539,11 +553,37 @@ class FormalR3EvalAdapter:
         elif route in {RouteType.DIRECT_ANSWER, RouteType.CLARIFY}:
             # The core gate intentionally reports direct inference as
             # ``not evaluated``.  The frozen R3 metric calls a safe
-            # non-dispatch route policy-allowed, so this is an explicit wire
-            # projection after requiring the PolicyGate result to exist.
+            # non-dispatch route policy-allowed, except when the deterministic
+            # candidate filter has already established an authorization denial.
+            # Provider reason codes are not consulted for this projection.
             if result.policy_result.allowed:
                 raise RuntimeError("non-dispatch route was policy-allowed")
-            policy_allowed = True
+            authorization_denied = not result.candidates.candidates and bool(
+                _AUTHORIZATION_DENIAL_REASONS.intersection(
+                    result.candidates.reason_codes
+                )
+            )
+            specialized_without_eligible_candidate = (
+                bool(
+                    set(result.context.required_capabilities).difference(
+                        _PLAIN_TEXT_CAPABILITIES
+                    )
+                )
+                and not result.candidates.candidates
+            )
+            # CandidateFilter.candidates is the context-aware eligibility set.
+            # A specialized request with no such entry cannot be projected as
+            # policy-allowed merely because a decoy profile advertised a cap.
+            authorization_denied = (
+                authorization_denied or specialized_without_eligible_candidate
+            )
+            policy_allowed = not authorization_denied
+        elif route is RouteType.DENY:
+            if selected is not None or result.policy_result.allowed:
+                raise RuntimeError(
+                    "deny route violated selected-agent/policy observation contract"
+                )
+            policy_allowed = False
         else:
             if result.policy_result.allowed:
                 raise RuntimeError("deny route was policy-allowed")
@@ -552,7 +592,7 @@ class FormalR3EvalAdapter:
             "route_type": route.value,
             "selected_agent_id": selected,
             "policy_allowed": policy_allowed,
-            "policy_reason_codes": [semantic_reason],
+            "policy_reason_codes": list(result.decision_result.reason_codes),
             "fallback": (
                 result.decision.fallback.value
                 if result.decision is not None and result.decision.fallback is not None
@@ -560,7 +600,11 @@ class FormalR3EvalAdapter:
             ),
         }
 
-    def evaluate(self, request: RoutingRequest) -> Mapping[str, Any]:
+    def evaluate_provider_output(
+        self, request: RoutingRequest, provider_output: object
+    ) -> Mapping[str, Any]:
+        """Evaluate untrusted provider bytes through the formal runtime."""
+
         # When the runner is invoked as a file (rather than ``python -m``),
         # its ``__main__`` module and the importable ``infra.ci`` module hold
         # distinct class objects.  Validate the projection structurally so
@@ -570,11 +614,21 @@ class FormalR3EvalAdapter:
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
         context = self._build_context(request)
         snapshot = self._snapshot(request, now=now)
+        result = self.runtime.execute(
+            context,
+            provider_output,
+            snapshot,
+            request_content=self._text(request),
+            now=now,
+        )
+        return self._observation(result)
+
+    def evaluate(self, request: RoutingRequest) -> Mapping[str, Any]:
+        context = self._build_context(request)
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        snapshot = self._snapshot(request, now=now)
         output = self._provider_output(request, context, snapshot, now=now)
-        result = self.runtime.execute(context, output, snapshot, now=now)
-        decoded = json.loads(output)
-        semantic_reason = str(decoded["reason_codes"][0])
-        return self._observation(result, semantic_reason=semantic_reason)
+        return self.evaluate_provider_output(request, output)
 
 
 def build_adapter() -> FormalR3EvalAdapter:

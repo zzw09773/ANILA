@@ -62,6 +62,18 @@ _EXCLUDED_PARTS = {
     "tests",
 }
 _SOURCE_ROOTS = ("packages", "services", "infra/models/src")
+# Python 3.12 (PEP 701) exposes f-string literal segments as dedicated
+# token kinds instead of ``tokenize.STRING``.  Keep the scanner's endpoint
+# detection semantic, while remaining compatible with Python 3.11 where
+# those names do not exist.
+_STRING_TOKEN_TYPES = {
+    tokenize.STRING,
+    *(getattr(tokenize, name) for name in (
+        "FSTRING_START",
+        "FSTRING_MIDDLE",
+        "FSTRING_END",
+    ) if hasattr(tokenize, name)),
+}
 
 
 class ModelGovernancePolicyError(RuntimeError):
@@ -118,7 +130,7 @@ def _python_code_tokens(source: str) -> list[tokenize.TokenInfo]:
 
 def _has_code_endpoint(tokens: list[tokenize.TokenInfo]) -> bool:
     return any(
-        token.type == tokenize.STRING and _ENDPOINT_RE.search(token.string)
+        token.type in _STRING_TOKEN_TYPES and _ENDPOINT_RE.search(token.string)
         for token in tokens
     )
 
@@ -142,7 +154,7 @@ def _finding_for_file(path: Path, repo_root: Path) -> SourceFinding | None:
             ("images", "images/generations"),
         ):
             if any(
-                token.type == tokenize.STRING and marker in token.string
+                token.type in _STRING_TOKEN_TYPES and marker in token.string
                 for token in tokens
             ):
                 sink_kinds.add(kind)
