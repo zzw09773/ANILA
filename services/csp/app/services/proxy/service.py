@@ -67,6 +67,28 @@ logger = logging.getLogger("app.services.proxy_service")
 _DEFAULT_GOVERNANCE_CALLSITE = "r7.csp.proxy-service"
 _AGENT_GOVERNANCE_CALLSITE = "r7.csp.proxy-service-agent"
 
+# Router/ANILA body extensions that carry the session identity to the internal
+# ``anila-router`` target. Per doc 04 §3 the regular model gateway must never
+# see these fields; a strict OpenAI-compatible upstream (vLLM/SGLang with
+# extra_forbidden) 400s on unknown body keys, so strip them before every
+# non-anila-router forward.
+_ROUTER_ONLY_BODY_FIELDS = ("anila_session_id", "session_id")
+
+
+def _gateway_forward_body(body: dict, model_name: object) -> dict:
+    """Return the JSON body to POST upstream.
+
+    The internal ``anila-router`` model keeps the session fields (its
+    body-bound router-context token is computed over them); every real model
+    gateway gets them stripped so strict ``extra_forbidden`` servers accept
+    the request.
+    """
+    if str(model_name or "").strip().lower() == "anila-router":
+        return body
+    if not any(field in body for field in _ROUTER_ONLY_BODY_FIELDS):
+        return body
+    return {k: v for k, v in body.items() if k not in _ROUTER_ONLY_BODY_FIELDS}
+
 
 @dataclass(frozen=True, slots=True)
 class _LockedModelSnapshot:
@@ -785,7 +807,7 @@ async def _proxy_request_impl(
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     target_url,
-                    json=request_body,
+                    json=_gateway_forward_body(request_body, getattr(model, "name", None)),
                     headers=req_headers,
                 )
 
@@ -1418,7 +1440,7 @@ async def _proxy_stream_impl(
     try:
         _remaining_request_seconds()
         async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
-            async with client.stream("POST", target_url, json=body, headers=headers) as resp:
+            async with client.stream("POST", target_url, json=_gateway_forward_body(body, model_name), headers=headers) as resp:
                 if resp.status_code >= 400:
                     raise HTTPException(status_code=resp.status_code,
                                         detail=f"下游回應錯誤: {resp.status_code}")
