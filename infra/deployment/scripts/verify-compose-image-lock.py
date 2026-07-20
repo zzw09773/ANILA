@@ -57,6 +57,7 @@ IMAGE_ENV_BY_SERVICE = {
     "pptx-renderer": "ANILA_IMAGE_PPTX_RENDERER",
     "anila-studio": "ANILA_IMAGE_ANILA_STUDIO",
     "anila-agent": "ANILA_IMAGE_ANILA_AGENT",
+    "asr-gateway": "ANILA_IMAGE_ASR_GATEWAY",
     "anilalm": "ANILA_IMAGE_ANILALM",
     "anila-ui": "ANILA_IMAGE_ANILA_UI",
     "codeserver": "ANILA_IMAGE_CODESERVER",
