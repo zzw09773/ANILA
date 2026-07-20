@@ -11,7 +11,7 @@
 # Group (up 專用捷徑):
 #   trial      試用機現役組: gpt-oss-20b gemma4 nv-embed (不含未核准 FLUX)
 #   flux-approved  明示 legal-approved profile: flux2-dev + model-side shim
-#   intranet   內網 H100 組:  gemma4(31B) 26b-a4b 12b 120b nv-embed
+#   intranet   內網 H100 組:  gemma4(31B) 26b-a4b 12b 120b nv-embed asr-decoder
 #
 # 行為:
 #   * 自動 set -a source repo root .env (INTERNAL_PLATFORM_API_KEY /
@@ -26,7 +26,7 @@ COMPOSE_FILE="$REPO_ROOT/infra/models/docker-compose.yml"
 
 GROUP_TRIAL=(gpt-oss-20b gemma4 nv-embed-triton nv-embed-proxy)
 GROUP_FLUX=(flux2-dev flux2-dev-agent)
-GROUP_INTRANET=(gemma4 nv-embed-triton nv-embed-proxy gemma-4-26b-a4b gemma-4-12b gpt-oss-120b)
+GROUP_INTRANET=(gemma4 nv-embed-triton nv-embed-proxy gemma-4-26b-a4b gemma-4-12b gpt-oss-120b asr-decoder)
 
 if [[ -f "$REPO_ROOT/.env" ]]; then
   set -a; # shellcheck disable=SC1091
