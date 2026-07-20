@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import Cookie, Header, HTTPException, status
 from jose import JWTError, jwt
@@ -37,6 +38,12 @@ logger = logging.getLogger(__name__)
 
 SECURE_ACCESS_COOKIE_NAME = "__Host-anila_access_token"
 DEV_ACCESS_COOKIE_NAME = "anila_dev_access_token"
+_ACR_BY_PRIMARY_AMR = {
+    "sc": "urn:anila:acr:smart-card",
+    "oidc": "urn:anila:acr:federated",
+    "pwd": "urn:anila:acr:password",
+}
+_KNOWN_AMR = frozenset(_ACR_BY_PRIMARY_AMR)
 
 
 def _access_cookie_name(secure: bool) -> str:
@@ -76,6 +83,53 @@ def _service_unavailable(detail: str) -> HTTPException:
     )
 
 
+def _has_valid_session_assurance(payload: dict) -> bool:
+    """Mirror CSP's signed session-envelope validation at this boundary."""
+    jti = payload.get("jti")
+    sid = payload.get("sid")
+    amr = payload.get("amr")
+    acr = payload.get("acr")
+    auth_time = payload.get("auth_time")
+    issued_at = payload.get("iat")
+    break_glass = payload.get("break_glass")
+    if not isinstance(jti, str) or not jti:
+        return False
+    if not isinstance(sid, str) or not sid:
+        return False
+    if (
+        not isinstance(amr, list)
+        or any(
+            not isinstance(method, str) or method not in _KNOWN_AMR
+            for method in amr
+        )
+        or len(amr) != len(set(amr))
+    ):
+        return False
+    if not isinstance(acr, str) or not acr:
+        return False
+    if (
+        isinstance(auth_time, bool)
+        or not isinstance(auth_time, (int, float))
+        or isinstance(issued_at, bool)
+        or not isinstance(issued_at, (int, float))
+        or auth_time < 0
+        or auth_time > issued_at
+        or issued_at
+        > datetime.now(timezone.utc).timestamp() + settings.JWT_LEEWAY_SECONDS
+    ):
+        return False
+    if not isinstance(break_glass, bool):
+        return False
+    if break_glass:
+        return amr == ["pwd"] and acr == "urn:anila:acr:break-glass"
+    expected_acr = "urn:anila:acr:unspecified"
+    for method in ("sc", "oidc", "pwd"):
+        if method in amr:
+            expected_acr = _ACR_BY_PRIMARY_AMR[method]
+            break
+    return acr == expected_acr
+
+
 async def _verify_jwt(token: str) -> dict:
     """RS256 + JWKS verify; raise 401 on any failure."""
     try:
@@ -105,7 +159,15 @@ async def _verify_jwt(token: str) -> dict:
             token,
             public_key,
             algorithms=list(settings.JWT_ALGORITHMS),
-            options={"verify_aud": False},
+            issuer=settings.JWT_ISSUER,
+            audience=settings.JWT_AUDIENCE,
+            options={
+                "require_exp": True,
+                "require_iat": True,
+                "require_iss": True,
+                "require_aud": True,
+                "require_jti": True,
+            },
         )
     except ExpiredSignatureError as exc:
         raise _unauthorized("權杖已過期，請重新登入") from exc
@@ -113,10 +175,18 @@ async def _verify_jwt(token: str) -> dict:
         logger.debug("JWT verify failed: %s", exc)
         raise _unauthorized("無效的存取權杖") from exc
 
+    if not _has_valid_session_assurance(payload):
+        raise _unauthorized("無效的存取權杖")
     return payload
 
 
-async def _check_revocation(user_id: int, token_version: int) -> None:
+async def _check_revocation(
+    user_id: int,
+    token_version: int,
+    *,
+    jti: str,
+    sid: str,
+) -> None:
     """Consult the cross-service revocation cache.
 
     Fail-closed: if the cache itself is not ready (Redis down / cold-start
@@ -132,7 +202,7 @@ async def _check_revocation(user_id: int, token_version: int) -> None:
             "revocation cache not ready; denying request for user_id=%s", user_id
         )
         raise _service_unavailable("auth deny-list unhealthy")
-    if await cache.is_revoked(user_id, token_version):
+    if await cache.is_revoked(user_id, token_version, jti=jti, sid=sid):
         logger.info(
             "rejecting revoked token: user_id=%s tv=%s", user_id, token_version
         )
@@ -196,7 +266,12 @@ async def get_current_user_identity(
 
     token_version = int(payload.get("tv", 0))
 
-    await _check_revocation(user_id, token_version)
+    await _check_revocation(
+        user_id,
+        token_version,
+        jti=payload["jti"],
+        sid=payload["sid"],
+    )
 
     return CurrentUserIdentity(
         id=user_id,

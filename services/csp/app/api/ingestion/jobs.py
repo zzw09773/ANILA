@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.api.ingestion.collections import _require_collection_access
 from app.database import SessionLocal, get_db
-from app.models.ingestion import IngestionCollection, IngestionJob
+from app.models.ingestion import IngestionJob
 from app.models.user import User
 from app.services.auth_service import get_current_user
 
@@ -51,7 +51,7 @@ router = APIRouter(tags=["Ingestion / Jobs"])
 # the connection during long embedding waits.
 _POLL_SECONDS = 1.0
 _HEARTBEAT_SECONDS = 15.0
-_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "dead_letter"}
 # Hard cap so a stuck job doesn't keep an open connection forever.
 _MAX_STREAM_SECONDS = 30 * 60  # 30 minutes
 

@@ -1,0 +1,36 @@
+{
+  "schema_version": "execution-grant/v1",
+  "grant_id": "grant-001",
+  "task_id": 2,
+  "run_id": 1,
+  "trace_id": "trace-004",
+  "invocation_id": "invocation-005",
+  "source_snapshot_id": 3,
+  "route_decision_id": "rd-001",
+  "policy_decision_id": "pd-001",
+  "registry_snapshot_id": "rs-010",
+  "classification": "機密",
+  "auth_assurance": {
+    "sid": "sid-008",
+    "amr": ["sc"],
+    "acr": "urn:anila:acr:smart-card",
+    "auth_time": "2026-07-15T00:00:00Z",
+    "break_glass": false
+  },
+  "target": {
+    "kind": "agent",
+    "id": "research-agent",
+    "model_binding": {
+      "model_id": 7,
+      "model_revision": "deployment-2026-07-01",
+      "gateway": "csp",
+      "classification_ceiling": "機密"
+    }
+  },
+  "manifest_revision": "manifest-revision-012",
+  "allowed_capabilities": ["retrieval"],
+  "allowed_scopes": ["agent:invoke"],
+  "issued_at": "2026-07-15T00:00:00Z",
+  "expires_at": "2026-07-15T00:04:00Z",
+  "session_id": "session-007"
+}

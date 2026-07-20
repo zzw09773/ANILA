@@ -207,7 +207,7 @@ class ReportJobStatus(BaseModel):
         ),
     )
     # Slice 8b: CSP artifact passthrough — set once the artifact registers.
-    artifact_id: str | None = None
+    artifact_id: int | None = None
     classification_level: str | None = None
     created_at: datetime
     updated_at: datetime

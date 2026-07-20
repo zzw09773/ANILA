@@ -33,6 +33,8 @@ def _disable_recompose(monkeypatch):
     its extra recompose LLM call."""
     import anila_core.api.router_server as _rs
 
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+
     async def _passthrough(agent_reply, caller_api_key, *, forwarded_headers=None):
         return agent_reply, "skipped"
 
@@ -42,6 +44,7 @@ def _disable_recompose(monkeypatch):
 CSP_BASE = settings.csp_base_url
 CSP_URL = f"{CSP_BASE}/v1/chat/completions"
 CSP_AGENTS_URL = f"{CSP_BASE}/v1/agents"
+LEGACY_DISPATCH_HEADERS = {"X-ANILA-Legacy-Dispatch": "1"}
 
 
 @pytest_asyncio.fixture
@@ -135,7 +138,7 @@ def test_default_behaviour_unchanged_without_flag(db_path: Path) -> None:
             "messages": [{"role": "user", "content": "go"}],
             "stream": False,
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
     body = response.json()
@@ -175,7 +178,7 @@ def test_router_synthesises_after_first_dispatch_when_multi_turn_enabled(
             "stream": False,
             "anila_multi_turn": 2,
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
     body = response.json()
@@ -225,7 +228,7 @@ def test_router_can_dispatch_a_second_agent_in_one_turn(
             "stream": False,
             "anila_multi_turn": 3,
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
     body = response.json()
@@ -277,7 +280,7 @@ def test_loop_caps_at_max_iterations(db_path: Path) -> None:
             "stream": False,
             "anila_multi_turn": 2,
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
     body = response.json()

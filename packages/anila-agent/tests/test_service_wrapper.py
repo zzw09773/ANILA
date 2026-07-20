@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import uuid
 
 import pytest
 
@@ -72,6 +73,26 @@ def _patch_guards(monkeypatch):
     monkeypatch.setattr(service_wrapper, "build_agent", lambda *a, **k: object())
 
 
+def _dispatch_headers(module=service_wrapper, **overrides: str) -> dict[str, str]:
+    """CSP-owned Silver correlation headers for a formal Agent invocation."""
+
+    manifest = module._ADMISSION.manifest if module._ADMISSION is not None else None
+    nonce = uuid.uuid4().hex
+    headers = {
+        "X-ANILA-Agent-Id": manifest.agent_id if manifest is not None else "anila-agent",
+        "X-ANILA-Task-Id": f"task-wrapper-{nonce}",
+        "X-ANILA-Run-Id": f"run-wrapper-{nonce}",
+        "X-ANILA-Session-Id": f"session-wrapper-{nonce}",
+        "X-ANILA-Invocation-Id": f"inv-wrapper-{nonce}",
+        "X-ANILA-Trace-Id": f"trace-wrapper-{nonce}",
+        # HTTP headers are ASCII; service code URL-decodes the contract value.
+        "X-ANILA-Classification-Level": "%E7%84%A1%E6%A9%9F%E5%AF%86",
+        "X-ANILA-Idempotency-Key": f"idem-wrapper-{nonce}",
+    }
+    headers.update(overrides)
+    return headers
+
+
 @pytest.fixture
 def client(monkeypatch):
     # 確保 import 時 token 為空、未 opt-out → 預期 401 fail-closed。
@@ -103,17 +124,35 @@ def test_chat_without_token_is_401(client):
     assert r.status_code == 401  # fail-closed：未設 token 且未 opt-out
 
 
-def test_chat_503_when_collection_id_unset(monkeypatch):
-    # 認證放行（local-dev opt-out）但缺 ANILA_COLLECTION_ID → 明確 503，而非裸 ValueError 變 500。
+def test_non_rag_chat_runs_without_collection(monkeypatch):
+    # 非 RAG 官方 Agent 不需要 collection；啟動與 invoke 都應可運作。
     monkeypatch.delenv("CSP_SERVICE_TOKEN", raising=False)
     monkeypatch.setenv("ANILA_ALLOW_NO_SERVICE_TOKEN", "1")
     monkeypatch.delenv("ANILA_COLLECTION_ID", raising=False)
     from anila_agent.serving import service_wrapper
 
     importlib.reload(service_wrapper)
+    monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 0)
+    monkeypatch.setattr(service_wrapper, "ALLOW_NO_SERVICE_TOKEN", True)
+    monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
+    monkeypatch.setattr(service_wrapper, "build_agent", lambda *a, **k: object())
+
+
+    class _Result:
+        final_output = "non-rag answer"
+
+    async def _fake_run_once(*args, **kwargs):
+        return _Result()
+
+    monkeypatch.setattr(service_wrapper, "run_once", _fake_run_once)
     with TestClient(service_wrapper.app) as c:
-        r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
-    assert r.status_code == 503
+        r = c.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=_dispatch_headers(service_wrapper),
+        )
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "non-rag answer"
 
 
 # ---- /v1/models：OpenAI 規格必含 created/owned_by（model_type=agent 平台契約不動）----
@@ -145,6 +184,7 @@ def test_http_stream_false_includes_real_usage_from_result(monkeypatch):
         resp = client.post(
             "/v1/chat/completions",
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_dispatch_headers(service_wrapper),
         )
     assert resp.status_code == 200
     body = resp.json()
@@ -166,6 +206,7 @@ def test_http_stream_false_omits_usage_without_context_wrapper(monkeypatch):
         resp = client.post(
             "/v1/chat/completions",
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_dispatch_headers(service_wrapper),
         )
     assert resp.status_code == 200
     assert "usage" not in resp.json()
@@ -192,6 +233,7 @@ def test_http_stream_include_usage_without_real_usage_omits_usage_chunk(monkeypa
                 "stream": True,
                 "stream_options": {"include_usage": True},
             },
+            headers=_dispatch_headers(service_wrapper),
         )
     assert resp.status_code == 200
     blocks = [b for b in resp.text.split("\n\n") if b.strip()]
@@ -207,7 +249,7 @@ def _parse_sse_blocks(sse_text: str) -> list[dict]:
     return [
         json.loads(b[len("data:"):].strip())
         for b in sse_text.split("\n\n")
-        if b.strip() and b.strip() != "data: [DONE]"
+        if b.strip().startswith("data:") and b.strip() != "data: [DONE]"
     ]
 
 
@@ -225,6 +267,7 @@ def test_http_stream_include_usage_emits_usage_only_chunk_before_done(monkeypatc
                 "stream": True,
                 "stream_options": {"include_usage": True},
             },
+            headers=_dispatch_headers(service_wrapper),
         )
     assert resp.status_code == 200
     blocks = [b for b in resp.text.split("\n\n") if b.strip()]
@@ -262,6 +305,7 @@ def test_http_stream_without_include_usage_omits_usage(monkeypatch):
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": True,
             },
+            headers=_dispatch_headers(service_wrapper),
         )
     assert resp.status_code == 200
     assert '"usage"' not in resp.text  # 沒帶 include_usage → 整段串流不出現 usage
@@ -298,9 +342,19 @@ def test_http_stream_false_accepts_array_content_text_parts(monkeypatch):
                     }
                 ],
             },
+            headers=_dispatch_headers(service_wrapper),
         )
     assert resp.status_code == 200
-    assert captured["prompt"] == "第一段\n第二段"  # 只抽 text parts，非文字 part 被忽略
+    assert captured["prompt"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "第一段"},
+                {"type": "image_url", "image_url": {"url": "http://x/y.png"}},
+                {"type": "text", "text": "第二段"},
+            ],
+        }
+    ]
 
 
 def test_http_image_only_content_returns_clear_error(monkeypatch):
@@ -317,6 +371,7 @@ def test_http_image_only_content_returns_clear_error(monkeypatch):
                     }
                 ],
             },
+            headers=_dispatch_headers(service_wrapper),
         )
     assert resp.status_code == 422
     assert "影像" in resp.json()["detail"]

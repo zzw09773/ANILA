@@ -1,0 +1,39 @@
+{
+  "schema_version": "anila.gate2.signed-pilot.v3",
+  "profile_id": "DISABLED-TEMPLATE-NOT-AN-APPROVAL",
+  "pilot_enabled": false,
+  "data_classification_ceiling": "無機密",
+  "inventory_sha256": "7340eec6ba336f68a137e1b00cde2bead67f052b299ef60eeffe46a12bec9d7c",
+  "deployment_artifacts": {
+    "csp_image_id": null
+  },
+  "enabled_callsites": [],
+  "disabled_callsites": [
+    "router.primary", "csp.chat_model", "csp.agent_dispatch",
+    "csp.agent_trace_test",
+    "csp.server_retrieval_embedding", "csp.standalone_search_embedding",
+    "csp.public_embedding_api", "csp.image_generation", "csp.agent_session_resume",
+    "csp.memory_extract",
+    "csp.memory_embedding", "ingestion.embedding", "ingestion.vision_caption",
+    "ingestion.ocr_vision", "agent.runtime_model", "agent.memory_extract",
+    "agent.memory_embedding", "agent.memory_select", "studio.llm",
+    "flux_agent.prompt_translation",
+    "csp.prompt_generator", "ingestion.relation_llm",
+    "ingestion.judge", "studio.flux", "flux_agent.backend",
+    "third_party.agent"
+  ],
+  "disabled_capabilities": [
+    "studio", "artifact", "export", "flux", "prompt_generator",
+    "relation_llm", "judge", "third_party_agents"
+  ],
+  "revocation_sla_seconds": null,
+  "lost_card_sla_seconds": null,
+  "pki_stale_policy": "fail_closed",
+  "retention_days": null,
+  "withdrawal_procedure": null,
+  "collection_ids": null,
+  "allowed_targets": [],
+  "valid_from": null,
+  "valid_until": null,
+  "signatures": []
+}

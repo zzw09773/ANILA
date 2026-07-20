@@ -6,8 +6,7 @@ Pins the contract:
 - ``/api/auth/me`` accepts the session cookie without any Authorization
   header (the SPA's default flow after login).
 - ``POST /api/auth/refresh`` rotates tokens using only the cookie.
-- ``POST /api/auth/logout`` clears cookies and bumps ``token_version``
-  so any outstanding JWT copies become invalid immediately.
+- ``POST /api/auth/logout`` clears cookies and revokes only the current sid.
 - CSRF middleware rejects mutating cookie-authenticated requests without
   a matching ``X-CSRF-Token`` header.
 """
@@ -140,9 +139,13 @@ def test_refresh_via_cookie_rotates_tokens(client: TestClient, db):
     assert client.cookies.get(ACCESS_COOKIE_NAME)
 
 
-def test_logout_clears_cookies_and_bumps_token_version(client: TestClient, db):
+def test_logout_clears_cookies_and_revokes_current_sid(client: TestClient, db):
+    from app.models.auth_session import AuthSession
+    from app.utils.security import decode_token
+
     user = make_user(db, username="dave")
-    _login(client, "dave")
+    login_response = _login(client, "dave")
+    claims = decode_token(login_response.json()["access_token"])
     prior_tv = user.token_version or 0
 
     resp = client.post(
@@ -158,7 +161,9 @@ def test_logout_clears_cookies_and_bumps_token_version(client: TestClient, db):
     assert probe.status_code == 401
 
     db.refresh(user)
-    assert user.token_version == prior_tv + 1
+    assert user.token_version == prior_tv
+    session = db.get(AuthSession, claims["sid"])
+    assert session.revoked_at is not None
 
 
 def test_csrf_required_on_mutating_cookie_request(client: TestClient, db):

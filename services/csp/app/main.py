@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import sys
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +19,9 @@ from app.api.handoffs import router as handoffs_router
 from app.api.public_share import router as public_share_router
 from app.middleware.csrf import CsrfMiddleware
 from app.models.user import User
+from app.schemas.model_governance import ModelGovernanceReadiness
 from app.services.auth_service import require_admin
+from app.services.model_governance_runtime import governance_required_for_settings
 
 
 def _run_alembic_upgrade() -> None:
@@ -38,6 +42,35 @@ def _set_migration_state(
 ) -> None:
     application.state.migration_status = status
     application.state.migration_error = error
+
+
+def _refresh_model_governance_readiness(application: FastAPI) -> None:
+    """Refresh mounted Gate 5 evidence before exposing health/readiness.
+
+    The runtime deliberately reloads its signed material and observed facts
+    atomically.  Rechecking here closes the window where a profile, trust
+    store, or deployment-health evidence is rotated/staled after lifespan
+    bootstrap but before the next health probe.  Applications/tests that do
+    not install the optional runtime keep their existing health behavior.
+    """
+
+    governance_required = governance_required_for_settings(settings) or settings.GATE5_MODEL_GOVERNANCE_ENABLED
+    if not governance_required:
+        return
+    runtime = getattr(application.state, "model_governance_runtime", None)
+    if runtime is None:
+        return
+    try:
+        application.state.model_governance_readiness = runtime.reload(
+            now=datetime.now(timezone.utc)
+        )
+    except Exception as exc:
+        application.state.model_governance_readiness = ModelGovernanceReadiness(
+            status="not_ready",
+            ready=False,
+            reason=f"runtime readiness refresh failed: {type(exc).__name__}",
+            checked_at=datetime.now(timezone.utc),
+        )
 
 
 def _apply_schema_migrations(application: FastAPI) -> None:
@@ -70,6 +103,7 @@ def _apply_schema_migrations(application: FastAPI) -> None:
 
 
 def _migration_health_payload(application: FastAPI) -> dict:
+    _refresh_model_governance_readiness(application)
     migration_status = getattr(application.state, "migration_status", "pending")
     if migration_status in {"succeeded", "skipped"}:
         overall = "healthy"
@@ -83,6 +117,12 @@ def _migration_health_payload(application: FastAPI) -> dict:
         "service": settings.APP_NAME,
         "migration_status": migration_status,
     }
+    governance = getattr(application.state, "model_governance_readiness", None)
+    governance_required = governance_required_for_settings(settings) or settings.GATE5_MODEL_GOVERNANCE_ENABLED
+    if governance_required and governance is not None:
+        payload["model_governance"] = governance.model_dump(mode="json")
+        if not governance.ready:
+            payload["status"] = "unhealthy"
     migration_error = getattr(application.state, "migration_error", None)
     if migration_error:
         payload["migration_error"] = migration_error
@@ -91,13 +131,31 @@ def _migration_health_payload(application: FastAPI) -> dict:
 
 def _readiness_response(application: FastAPI) -> JSONResponse:
     payload = _migration_health_payload(application)
-    ready = payload["migration_status"] in {"succeeded", "skipped"}
+    relay_task = getattr(application.state, "ingestion_relay_task", None)
+    relay_ready = relay_task is not None and not relay_task.done()
+    governance = getattr(application.state, "model_governance_readiness", None)
+    governance_required = governance_required_for_settings(settings) or settings.GATE5_MODEL_GOVERNANCE_ENABLED
+    governance_ready = not governance_required or (governance is not None and governance.ready)
+    ready = (
+        payload["migration_status"] in {"succeeded", "skipped"}
+        and relay_ready
+        and governance_ready
+    )
+    governance_payload = (
+        governance.model_dump(mode="json")
+        if governance is not None
+        else {"status": "not_configured", "ready": False}
+    )
+    content = {
+        "status": "ready" if ready else "not_ready",
+        "migration_status": payload["migration_status"],
+        "ingestion_outbox_relay": "running" if relay_ready else "stopped",
+    }
+    if governance_required:
+        content["model_governance"] = governance_payload
     return JSONResponse(
         status_code=200 if ready else 503,
-        content={
-            "status": "ready" if ready else "not_ready",
-            "migration_status": payload["migration_status"],
-        },
+        content=content,
     )
 
 
@@ -163,22 +221,58 @@ async def lifespan(app: FastAPI):
     # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
     from app.services.startup_security import (
         assert_card_only_data_feature_policy,
+        assert_artifact_blob_storage_policy,
         assert_card_nonce_binding_policy,
+        assert_card_crl_policy,
         assert_deployment_profile_posture,
+        assert_gate2_pilot_profile,
         assert_intranet_lockdown_consistency,
+        assert_ingestion_queue_integrity_policy,
         assert_no_dev_defaults,
+        assert_runtime_deadline_policy,
+        assert_retention_policy,
         assert_secure_cookie_policy,
+        assert_source_snapshot_storage_policy,
         assert_startup_migration_policy,
     )
     assert_deployment_profile_posture()
+    assert_gate2_pilot_profile()
     assert_no_dev_defaults()
     assert_card_nonce_binding_policy()
+    assert_card_crl_policy()
     assert_secure_cookie_policy()
+    assert_source_snapshot_storage_policy()
+    assert_artifact_blob_storage_policy()
+    assert_ingestion_queue_integrity_policy()
+    assert_retention_policy()
     assert_startup_migration_policy()
+    assert_runtime_deadline_policy()
     # Branch SSO: 確保 REQUIRE_CARD_LOGIN_ONLY 與 ENABLE_CARD_LOGIN 互相一致，
     # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。
     assert_intranet_lockdown_consistency()
     assert_card_only_data_feature_policy()
+
+    # Gate 5 model governance is a CSP-owned readiness boundary.  Bootstrap
+    # reads only explicit mounted paths and never treats the disabled template
+    # as approval.  Formal deployments may make this a startup hard-stop;
+    # otherwise /ready remains 503 until the signed material is provisioned.
+    from app.services.model_governance_runtime import ModelGovernanceRuntime
+    from app.services.model_governance_receipts import (
+        set_model_governance_runtime_provider,
+    )
+
+    model_governance_runtime = ModelGovernanceRuntime.from_settings(settings)
+    app.state.model_governance_runtime = model_governance_runtime
+    set_model_governance_runtime_provider(
+        lambda: getattr(app.state, "model_governance_runtime", None)
+    )
+    model_governance_readiness = model_governance_runtime.bootstrap()
+    app.state.model_governance_readiness = model_governance_readiness
+    if model_governance_runtime.startup_required and not model_governance_readiness.ready:
+        raise RuntimeError(
+            "Gate 5 model-governance bootstrap failed: "
+            + model_governance_readiness.reason
+        )
 
     # Run the complete schema chain before any seed/background work. Any
     # failure is fatal; SQLite unit fixtures explicitly opt out and create
@@ -197,6 +291,34 @@ async def lifespan(app: FastAPI):
     # Auto-seed: create admin, register models & links from env vars
     from app.services.auto_seed import auto_seed
     auto_seed()
+
+    if settings.STUDIO_ARTIFACT_SERVICE_TOKEN:
+        from app.database import SessionLocal as _ArtifactSessionLocal
+        from app.services.artifact_service_bootstrap import ensure_artifact_service
+
+        _artifact_db = _ArtifactSessionLocal()
+        try:
+            ensure_artifact_service(
+                _artifact_db, token=settings.STUDIO_ARTIFACT_SERVICE_TOKEN
+            )
+        finally:
+            _artifact_db.close()
+
+    if settings.STUDIO_RUNTIME_SERVICE_TOKEN:
+        from app.database import SessionLocal as _RuntimeSessionLocal
+        from app.services.studio_runtime_service_bootstrap import (
+            ensure_studio_runtime_service,
+        )
+
+        _runtime_db = _RuntimeSessionLocal()
+        try:
+            ensure_studio_runtime_service(
+                _runtime_db,
+                token=settings.STUDIO_RUNTIME_SERVICE_TOKEN,
+                artifact_token=settings.STUDIO_ARTIFACT_SERVICE_TOKEN,
+            )
+        finally:
+            _runtime_db.close()
 
     # Trusted-host allow-list: backfill ANILA_TRUSTED_HOSTS env into the
     # new DB table (idempotent on unique constraint), then register the
@@ -222,10 +344,15 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks
     from app.services.health_checker import start_health_checker
+    from app.services.ingestion_outbox import start_ingestion_outbox_relay
     from app.services.usage_writer import start_usage_writer
+    from app.services.retention_reaper import start_retention_reaper
 
     health_task = await start_health_checker()
     writer_task = await start_usage_writer()
+    ingestion_relay_task = await start_ingestion_outbox_relay()
+    app.state.ingestion_relay_task = ingestion_relay_task
+    retention_task = await start_retention_reaper()
 
     # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
     # used by the ingestion inspector endpoints (read-only chunk
@@ -242,14 +369,29 @@ async def lifespan(app: FastAPI):
             "will return 503 until the pool comes back.", exc,
         )
 
-    yield
-
-    # Cleanup
-    if health_task:
-        health_task.cancel()
-    if writer_task:
-        writer_task.cancel()
-    await close_pool()
+    try:
+        yield
+    finally:
+        try:
+            # Cleanup
+            if health_task:
+                health_task.cancel()
+            if writer_task:
+                writer_task.cancel()
+            if ingestion_relay_task:
+                ingestion_relay_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await ingestion_relay_task
+                app.state.ingestion_relay_task = None
+            if retention_task:
+                retention_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await retention_task
+            await close_pool()
+        finally:
+            # Do not leak a previous app/runtime into the next test or
+            # lifespan instance in this process.
+            set_model_governance_runtime_provider(None)
 
 
 app = FastAPI(
@@ -264,6 +406,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 _set_migration_state(app, "pending")
+app.state.model_governance_readiness = ModelGovernanceReadiness(
+    status="not_configured",
+    ready=True,
+    reason="Gate 5 model governance has not been enabled",
+    checked_at=datetime.now(timezone.utc),
+)
 
 
 @app.middleware("http")

@@ -57,6 +57,9 @@ services:
       # 的 RLS 失效 (superuser 自動 bypass)。
       DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (csp_app runtime role password)}@csp-db:5432/csp
       MIGRATION_DATABASE_URL: postgresql://csp:${CSP_DB_PASSWORD:?CSP_DB_PASSWORD must be set (same as csp-db POSTGRES_PASSWORD)}@csp-db:5432/csp
+      # r1_0021 migration/backfill requires a real deployed-weight identity.
+      # Never derive this value from LOCAL_EMBEDDING_MODEL.
+      EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT:?EMBEDDING_MODEL_FINGERPRINT must be sha256:<64 lowercase hex> for deployed embedding weights}
       # migration 0014 在 fresh DB 建 csp_app role 時讀這個值當 role 密碼;
       # 既有 DB 的 role 已存在,改值要自己 ALTER ROLE csp_app PASSWORD。
       # 密碼用 hex 生成 (openssl rand -hex),避免 URL 特殊字元要 escape。
@@ -69,6 +72,9 @@ services:
       # startup_security 對 dev 預設值的拒絕開關。Prod 必須是 0 / unset。
       # 預設改成 0 (不再 fallback 1) — 缺 .env 時直接 enforce prod 模式。
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
+      # Every named formal profile must declare a non-placeholder HTTPS host;
+      # deploy preflight validates HTTPS coherence before migrations/seeding.
+      ANILA_HOST: "${ANILA_HOST:?ANILA_HOST must be set to the formal HTTPS host}"
       # Gate 1 F6: deployment identity is declared, then CSP startup verifies
       # every security-sensitive flag against this exact profile contract.
       ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}"
@@ -94,7 +100,22 @@ services:
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,host.docker.internal}"
+      # Gate 5 R5/R7 formal model-governance boundary.  These values are
+      # intentionally explicit container paths; the host-side material
+      # directory is injected only through read-only mounts below.  A formal
+      # profile cannot fall back to the disabled repository template.
+      GATE5_MODEL_GOVERNANCE_ENABLED: "${GATE5_MODEL_GOVERNANCE_ENABLED:-true}"
+      GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED: "${GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED:-true}"
+      GATE5_MODEL_GOVERNANCE_INVENTORY_PATH: /etc/anila/governance/inventory.json
+      GATE5_MODEL_GOVERNANCE_PROFILE_PATH: /etc/anila/governance/profile.json
+      GATE5_MODEL_GOVERNANCE_TRUST_STORE_PATH: /etc/anila/governance/trust-store.json
+      GATE5_MODEL_GOVERNANCE_OBSERVED_FACTS_PATH: /etc/anila/governance/observed-facts.json
+      GATE5_MODEL_GATEWAY_ENDPOINT: "${GATE5_MODEL_GATEWAY_ENDPOINT:-http://csp:8000/v1}"
+      # FLUX.2-dev is non-commercial and has no production legal approval in
+      # this release.  Keep the capability absent until a named, signed
+      # legal-approved overlay supplies this marker and its callsite binding.
+      GATE5_FLUX_LEGAL_APPROVED: "${GATE5_FLUX_LEGAL_APPROVED:-false}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
@@ -105,26 +126,50 @@ services:
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
       # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}
-      # ── branch SSO:中科院憑證卡登入 (prod-intranet-card fork 區) ─────────
+      # Dedicated non-legacy Service Client secret. CSP bootstraps/verifies the
+      # exact artifact_tool + artifact-egress registry binding from this value.
+      STUDIO_ARTIFACT_SERVICE_TOKEN: ${STUDIO_ARTIFACT_SERVICE_TOKEN:?STUDIO_ARTIFACT_SERVICE_TOKEN must be set}
+      STUDIO_RUNTIME_SERVICE_TOKEN: ${STUDIO_RUNTIME_SERVICE_TOKEN:?STUDIO_RUNTIME_SERVICE_TOKEN must be set separately}
+      INGESTION_QUEUE_HMAC_KEY: ${INGESTION_QUEUE_HMAC_KEY:?INGESTION_QUEUE_HMAC_KEY must be set}
+      # ── formal authentication profile (card or password) ───────────────
       # ⚠ fork 區:main→prod sync 時不可拿 main 版 compose 整檔覆蓋 —
       # 6fcbdce (PR #16) 曾把這段蓋掉,內網就沒有刷卡登入了 (P0 迴歸)。
-      # 預設值 = 內網 prod (card-only)。dev 降級在 .env 設兩個 false。
+      # Password profiles pass explicit false values. Card/break-glass
+      # preflight supplies true values; CSP startup remains fail-closed when
+      # card posture/material is missing or inconsistent.
       # 私鑰/PIN 運算由使用者 PC 的 HiPKI 元件 (localhost:16888) 處理；backend
       # 仍會驗 CMS SignerInfo、challenge nonce 與釘選 CSPKI 憑證鏈後才抽 claims。
-      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-true}"
-      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
+      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-false}"
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-false}"
+      JWT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
+      JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
       # Formal posture: anonymous shares and long-term memory are disabled.
       # Dev uses its separate compose file and opts in explicitly.
       ENABLE_PUBLIC_SHARE: "${ENABLE_PUBLIC_SHARE:-false}"
       ENABLE_MEMORY: "${ENABLE_MEMORY:-false}"
+      DEBUG: "${DEBUG:-false}"
+      ENABLE_API_DOCS: "${ENABLE_API_DOCS:-false}"
+      SKIP_STARTUP_MIGRATIONS: "${SKIP_STARTUP_MIGRATIONS:-false}"
+      ALLOW_AUTO_KEYGEN: "${ALLOW_AUTO_KEYGEN:-false}"
+      CARD_DEV_SKIP_NONCE_BINDING: "${CARD_DEV_SKIP_NONCE_BINDING:-false}"
+      ALLOW_LEGACY_AGENT_DISPATCH: "${ALLOW_LEGACY_AGENT_DISPATCH:-false}"
+      ANILA_PILOT_MODE: "${ANILA_PILOT_MODE:-false}"
+      ENABLE_PILOT_PROMPT_GENERATOR: "${ENABLE_PILOT_PROMPT_GENERATOR:-false}"
+      ENABLE_PILOT_INGESTION_JUDGE: "${ENABLE_PILOT_INGESTION_JUDGE:-false}"
+      ENABLE_PILOT_STUDIO_ARTIFACTS: "${ENABLE_PILOT_STUDIO_ARTIFACTS:-false}"
+      PILOT_FIRST_PARTY_AGENT_ALLOWLIST: "${PILOT_FIRST_PARTY_AGENT_ALLOWLIST:-}"
+      # Runtime read-back of the exact content ID used by this service. Gate 2
+      # signed-pilot v3 profiles must bind this value or CSP refuses startup.
+      GATE2_CSP_IMAGE_ID: "${ANILA_IMAGE_CSP:?ANILA_IMAGE_CSP must be a locked image content ID}"
       PUBLIC_SHARE_MAX_TTL_HOURS: "${PUBLIC_SHARE_MAX_TTL_HOURS:-168}"
       # Used to normalize auto-seeded relative launch paths.  A formal host
       # must never seed localhost URLs into the governance registry.
       SITE_URL: ${SITE_URL:?SITE_URL must be set to the formal external origin}
-      # CSV 員工編號;列入者首刷直接建 owner + is_approved (bootstrap),其餘
-      # 走 pending → admin 核准。缺值 fail-fast;.env.example 的 placeholder
-      # 字面由 startup_security 在啟動時擋 (避免 bricked:沒人能 approve)。
-      CARD_INITIAL_OWNERS: ${CARD_INITIAL_OWNERS:?CARD_INITIAL_OWNERS must be set (CSV employee ids, include yourself)}
+      # Card-only bootstrap material is optional at Compose interpolation time
+      # so password profiles render without it. Card preflight and CSP startup
+      # still require every value when card-only is declared.
+      CARD_INITIAL_OWNERS: "${CARD_INITIAL_OWNERS:-}"
       # endpoint_url 是 base URL,proxy_service 自己加 ``/v1/chat/completions``
       # 或 ``/v1/embeddings``。**不要**在 URL 結尾加 ``/v1``,否則拼成
       # ``/v1/v1/...`` → 404 → router 端 RemoteProtocolError。
@@ -135,14 +180,16 @@ services:
       MEMORY_LLM_MODEL: ${MEMORY_LLM_MODEL:-${LOCAL_LLM_MODEL:-gemma4}}
       # auto_seed 會用這條覆寫 DB 既有 row,改完 /models UI 也要同步改。
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"${GEMMA4_BASE_URL-http://gemma4:8000}","api_version":"v1","description":"On-prem gemma4 vLLM — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"${GEMMA4_BASE_URL-http://gemma4:8000}","api_version":"v1","description":"On-prem gemma4 vLLM — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
       # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
       # agents 表才是 Router /v1/agents 與 DISPATCH 路徑會 join 的權限源)。
       # FLUX_AGENT_BASE_URL 用 `${VAR-default}` (無冒號):「沒設」→ 同主機
       # docker DNS 預設;「設成空字串」→ auto_seed 跳過該 entry (內網無 FLUX
       # 時用這招停用繪圖 agent,避免註冊一個打不通的 dead agent 給 Router)。
-      AUTO_REGISTER_AGENTS: >-
-        [{"name":"image-generator","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。","health_status":"healthy","approval_status":"approved"}]
+      # No third-party/official Agent is admitted in the formal default set.
+      # A legal-approved signed overlay may replace this with the image shim
+      # manifest; an empty list is intentional and fail-closed.
+      AUTO_REGISTER_AGENTS: "[]"
       # AUTO_SEED_API_KEYS: prod initial 模式只 seed ingestion-worker (系統內部
       # 必需,讓 worker 能呼叫 csp /v1/embeddings)。smoke-user 是 e2e 測試用的
       # 帳號,prod 不需要,已移除。要恢復就把舊 entry 加回來 (參考 .env.dev.local
@@ -164,9 +211,24 @@ services:
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      INGESTION_OUTBOX_STALE_SECONDS: "${INGESTION_OUTBOX_STALE_SECONDS:-120}"
       # Conversation attachments are durable application data.  The named
       # volume inherits UID 10001 ownership from the image directory.
       ATTACHMENT_STORAGE_PATH: /var/anila/attachments
+      # Gate 2 sealed retrieval evidence contains the exact bounded source
+      # slabs supplied to the model.  Keep it under the external formal state
+      # root, never in the repository/share bind mounts.
+      SOURCE_SNAPSHOT_STORAGE_PATH: /var/lib/anila/source-snapshots
+      ARTIFACT_BLOB_STORAGE_PATH: /var/lib/anila/artifact-blobs
+      RETENTION_ENABLED: "true"
+      RETENTION_ARTIFACT_ACTIVE_DAYS: "${RETENTION_ARTIFACT_ACTIVE_DAYS:-30}"
+      RETENTION_ARTIFACT_ARCHIVE_DAYS: "${RETENTION_ARTIFACT_ARCHIVE_DAYS:-365}"
+      RETENTION_INGESTION_ACTIVE_DAYS: "${RETENTION_INGESTION_ACTIVE_DAYS:-365}"
+      RETENTION_INGESTION_ARCHIVE_DAYS: "${RETENTION_INGESTION_ARCHIVE_DAYS:-365}"
+      RETENTION_REAPER_INTERVAL_SECONDS: "${RETENTION_REAPER_INTERVAL_SECONDS:-300}"
+      RETENTION_REAPER_LEASE_SECONDS: "${RETENTION_REAPER_LEASE_SECONDS:-900}"
+      RETENTION_REAPER_BATCH_SIZE: "${RETENTION_REAPER_BATCH_SIZE:-50}"
+      RETENTION_ALLOW_ARCHIVED_DOWNLOADS: "${RETENTION_ALLOW_ARCHIVED_DOWNLOADS:-false}"
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
       # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
       # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
@@ -178,6 +240,12 @@ services:
       # packaged CSPKI roots by default, but allow an operator-provisioned
       # intranet CA from the read-only /etc/anila/pki mount.
       CARD_CA_BUNDLE_PATH: ${CARD_CA_BUNDLE_PATH:-/app/app/services/cspki_ca_bundle.pem}
+      CARD_CRL_REQUIRED: "${CARD_CRL_REQUIRED:-false}"
+      CARD_CRL_BUNDLE_PATH: "${CARD_CRL_BUNDLE_PATH:-}"
+      CARD_CRL_MAX_AGE_HOURS: "${CARD_CRL_MAX_AGE_HOURS:-24}"
+      CARD_CRL_SOURCE: "${CARD_CRL_SOURCE:-}"
+      CARD_REQUIRED_EKU_OID: "${CARD_REQUIRED_EKU_OID:-1.3.6.1.5.5.7.3.2}"
+      CARD_REQUIRED_CERT_POLICY_OIDS: "${CARD_REQUIRED_CERT_POLICY_OIDS:-}"
       # 內網模型 gateway (10.53.100.12 My-OpenAI-Frontend) 的 /v1 要
       # Authorization: Bearer。proxy_service 只對 model 呼叫注入,agent
       # dispatch 不帶。空值 = 不注入 (同主機裸 vLLM 不需要)。
@@ -187,7 +255,9 @@ services:
       # would make get_flux_provider() return None (toggle OFF).
       # `${VAR-default}` 無冒號:設成空字串 → get_flux_provider() 回 None
       # (toggle OFF,內網無 FLUX 時整個圖像 pipeline 乾淨停用)。
-      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL-http://flux2-dev:8000}
+      # Formal CSP has no FLUX fallback endpoint.  A legal-approved overlay
+      # must bind image-primary through the signed CSP governance profile.
+      FLUX_BACKEND_URL: "${FLUX_BACKEND_URL-}"
       FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
       FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
       # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
@@ -198,12 +268,22 @@ services:
       # 跟 ingestion-worker 共用 inode,不走拷貝。
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
       - csp-attachments:/var/anila/attachments
+      - "${ANILA_STATE_DIR:?ANILA_STATE_DIR must be an absolute path outside the repo}/source-snapshots:/var/lib/anila/source-snapshots"
+      - "${ANILA_STATE_DIR:?ANILA_STATE_DIR must be an absolute path outside the repo}/artifact-blobs:/var/lib/anila/artifact-blobs"
       # 內網模型 https 的內部 CA PEM 放這裡 (見上 SSL_CERT_FILE)。
       - ../../share/pki:/etc/anila/pki:ro
       # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。正式私鑰
       # 必須位於 repo 外的受控 state 目錄；部署腳本會拒絕 repo 內路徑。
       # 缺值時 Compose 直接 fail-closed，不可回退到 ./secrets。
       - "${ANILA_SECRETS_DIR:?ANILA_SECRETS_DIR must be an absolute path outside the repo}:/app/secrets:ro"
+      # Signed profile, public trust store and observed deployment facts are
+      # supplied by the deployment bundle, never generated in this container.
+      # Every file is mounted read-only; missing files are a preflight/startup
+      # failure rather than a reason to use a repository template.
+      - "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/inventory.json:/etc/anila/governance/inventory.json:ro"
+      - "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/profile.json:/etc/anila/governance/profile.json:ro"
+      - "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/trust-store.json:/etc/anila/governance/trust-store.json:ro"
+      - "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/observed-facts.json:/etc/anila/governance/observed-facts.json:ro"
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
@@ -211,13 +291,13 @@ services:
       - default
       # 跨 project 的 external network — 解 ``gemma4`` / ``gpt-oss-20b`` /
       # ``nv-embed-proxy`` (在 infra/models/docker-compose.yml)。bootstrap 一次:
-      #   docker network create anila-models-net
+      #   bash infra/deployment/scripts/ensure-models-network.sh ensure
       - anila-models-net
     depends_on:
       csp-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=2).read()\""]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -227,11 +307,27 @@ services:
   # ── Redis (Arq queue for ingestion-worker) ──────────────────────────────
   redis:
     image: ${ANILA_IMAGE_REDIS:?ANILA_IMAGE_REDIS must be a locked image content ID}
-    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb"]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --aof-use-rdb-preamble
+      - "yes"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - >-
+          redis-cli ping | grep -qx PONG &&
+          redis-cli INFO persistence | tr -d '\r' | grep -q '^aof_enabled:1$' &&
+          redis-cli INFO persistence | tr -d '\r' | grep -q '^aof_last_write_status:ok$'
       interval: 5s
       timeout: 3s
       retries: 5
@@ -244,13 +340,22 @@ services:
       dockerfile: services/ingestion-worker/Dockerfile
     image: ${ANILA_IMAGE_INGESTION_WORKER:?ANILA_IMAGE_INGESTION_WORKER must be a locked image content ID}
     environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}
       DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (same value as csp)}@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
+      INGESTION_QUEUE_HMAC_KEY: ${INGESTION_QUEUE_HMAC_KEY:?INGESTION_QUEUE_HMAC_KEY must be set}
       # 經由 CSP /v1/embeddings 走 token_usage 計量,不直連模型。
       EMBEDDING_BASE_URL: http://csp:8000/v1
       EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
+      EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT:?EMBEDDING_MODEL_FINGERPRINT must be sha256:<64 lowercase hex> for deployed embedding weights}
       EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       EMBEDDING_DIM: "4000"
+      PARSE_TIMEOUT_SECONDS: "${INGESTION_PARSE_TIMEOUT_SECONDS:-120}"
+      INDEX_TIMEOUT_SECONDS: "${INGESTION_INDEX_TIMEOUT_SECONDS:-120}"
+      JOB_TIMEOUT_SECONDS: "${INGESTION_JOB_TIMEOUT_SECONDS:-900}"
+      JOB_LEASE_SECONDS: "${INGESTION_JOB_LEASE_SECONDS:-90}"
+      JOB_HEARTBEAT_SECONDS: "${INGESTION_JOB_HEARTBEAT_SECONDS:-20}"
+      JOB_LEASE_GRACE_SECONDS: "${INGESTION_JOB_LEASE_GRACE_SECONDS:-15}"
       UPLOAD_DIR: /var/anila/ingestion-uploads
       # judge 路徑要解 AES-encrypted credentials,cipher key 從 SECRET_KEY 派生,
       # **必須**跟 csp 同值,不然每次 judge decrypt 失敗會 silently skip。
@@ -273,6 +378,8 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
+    expose:
+      - "8081"
     depends_on:
       csp-db:
         condition: service_healthy
@@ -280,6 +387,16 @@ services:
         condition: service_healthy
       csp:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/ready', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   # ── Router (anila-core-router :9000) ────────────────────────────────────
@@ -293,14 +410,19 @@ services:
       - "9000"
     environment:
       CSP_BASE_URL: http://csp:8000
+      CSP_JWKS_URL: http://csp:8000/.well-known/jwks.json
+      ROUTER_CONTEXT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
       # 必須跟 csp 的 CSP_SERVICE_TOKEN 一致 — router 用它走 service-auth endpoint。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
+      ANILA_ROUTER_STATE_DIR: /var/lib/anila-router
       MODEL: ${LLM_MODEL:-gemma4}
       # Formal Router must export Full Trace spans back to CSP. /ready fails
       # closed in production when this callback is absent.
       ANILA_ENV: "${ANILA_ENV:-production}"
       COOKIE_SECURE: "true"
       ANILA_TRACE_ENDPOINT: "${ANILA_TRACE_ENDPOINT:-http://csp:8000}"
+    volumes:
+      - router-state:/var/lib/anila-router
     depends_on:
       csp:
         condition: service_healthy
@@ -310,6 +432,61 @@ services:
       timeout: 5s
       retries: 6
       start_period: 20s
+    restart: unless-stopped
+
+  # ── Official anila-agent Silver runtime (Gate 5 R5) ────────────────────
+  # This is an explicit profile because production must provision a signed
+  # Agent registry overlay and its CSP-issued csk- before admitting the
+  # endpoint.  It is nevertheless part of the formal platform Compose graph
+  # and is image-locked/inventory-tracked like every other built service.
+  anila-agent:
+    profiles: ["gate5-silver"]
+    build:
+      context: ../..
+      dockerfile: packages/anila-agent/Dockerfile
+      target: silver-runtime
+    image: ${ANILA_IMAGE_ANILA_AGENT:?ANILA_IMAGE_ANILA_AGENT must be a locked image content ID}
+    expose:
+      - "8200"
+    environment:
+      ANILA_BASE_URL: http://csp:8000/v1
+      CSP_BASE_URL: http://csp:8000
+      ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE:-production}"
+      # Profile services are still interpolated by Compose when the profile is
+      # inactive.  Keep the value optional at render time, while the wrapper's
+      # hard-coded ANILA_ALLOW_NO_SERVICE_TOKEN=0 rejects an unset/invalid csk-
+      # when the profile is actually started.
+      CSP_SERVICE_TOKEN: "${ANILA_AGENT_SERVICE_TOKEN:-}"
+      CSP_SEARCH_TOKEN: "${ANILA_AGENT_SERVICE_TOKEN:-}"
+      ANILA_AGENT_ID: anila-agent-silver
+      ANILA_AGENT_NAME: anila-agent-silver
+      ANILA_AGENT_MODEL_ID: "${ANILA_AGENT_MODEL_ID:-1}"
+      ANILA_MODEL: "${ANILA_AGENT_MODEL_ID:-1}"
+      ANILA_HOME: /var/lib/anila-agent
+      ANILA_TRACE_ENDPOINT: http://csp:8000
+      ANILA_TRACE_ENABLED: "true"
+      ANILA_CLASSIFICATION_DEFAULT: "無機密"
+      ANILA_CLASSIFICATION_CEILING: "無機密"
+      ANILA_ALLOW_NO_SERVICE_TOKEN: "0"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - anila-agent-state:/var/lib/anila-agent
+    networks:
+      - default
+    depends_on:
+      csp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8200/ready', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     restart: unless-stopped
 
   # ── nginx (HTTPS reverse proxy, 唯一外部入口) ────────────────────────────
@@ -324,6 +501,7 @@ services:
       - "${ANILA_UI_HTTPS_PORT:-4443}:4443"
     volumes:
       - ../../infra/nginx/anila.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../infra/nginx/snippets/router-enabled.conf:/etc/nginx/snippets/router-posture.conf:ro
       # TLS private key 與 JWT key 同樣不得落在 repo；正式路徑由 operator
       # 明確提供，避免 gitignore 被誤當成 secret boundary。
       - "${ANILA_TLS_CERTS_DIR:?ANILA_TLS_CERTS_DIR must be an absolute path outside the repo}:/etc/nginx/certs:ro"
@@ -386,18 +564,31 @@ services:
     expose:
       - "8100"
     environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}
+      # Formal image inference must revalidate CSP provider authority before
+      # every downstream call; the explicit flag is also consumed by the
+      # model-side FLUX shim in infra/models/docker-compose.yml.
+      GATE5_MODEL_GOVERNANCE_ENABLED: "${GATE5_MODEL_GOVERNANCE_ENABLED:-true}"
       CSP_BASE_URL: http://csp:8000
       # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
       # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
       # csp 的 verify_service_token。對齊 csp / router / ingestion-worker
       # 的 prod fail-loud convention(缺值直接停,不走 dev fallback)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
+      # Artifact writes never use the shared legacy CSP_SERVICE_TOKEN above.
+      STUDIO_ARTIFACT_SERVICE_TOKEN: ${STUDIO_ARTIFACT_SERVICE_TOKEN:?STUDIO_ARTIFACT_SERVICE_TOKEN must be set (dedicated named service client)}
+      STUDIO_RUNTIME_SERVICE_TOKEN: ${STUDIO_RUNTIME_SERVICE_TOKEN:?STUDIO_RUNTIME_SERVICE_TOKEN must be set (separate task-scoped runtime client)}
+      STUDIO_JOB_ENVELOPE_HMAC_KEY: ${STUDIO_JOB_ENVELOPE_HMAC_KEY:?STUDIO_JOB_ENVELOPE_HMAC_KEY must be set}
+      STUDIO_DURABLE_SUPERVISOR: "true"
+      STUDIO_ARTIFACT_REPORTING: "true"
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
-      # 跟 csp 同一個 toggle:空字串 → studio 圖像生成停用 (內網無 FLUX)。
+      # Gate 5 formal default keeps FLUX disabled until legal approval.
+      # Empty backend is deliberate: studio must not fall back to a raw model
+      # host when the signed image-primary binding is absent.
       # 2026-07 起走 OpenAI 相容 Images API(POST {base}/v1/images/generations);
       # base URL 指伺服器根或含 /v1 皆可(client 自動補版本段)。
-      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL-http://flux2-dev:8000}
+      FLUX_BACKEND_URL: "${FLUX_BACKEND_URL-}"
       # OpenAI Images API 的 model 欄位(依 FLUX 服務公布的模型名填)。
       FLUX_MODEL: ${FLUX_MODEL:-flux.2-dev}
       # 有值才帶 Authorization: Bearer;留空 = 不帶(本機 flux2-dev 免驗)。
@@ -411,7 +602,13 @@ services:
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
       JWT_KID: anila-v1
-      REQUIRE_CARD_LOGIN_ONLY: "true"
+      JWT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
+      JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
+      REVOCATION_RECONCILE_INTERVAL_SECONDS: "${REVOCATION_RECONCILE_INTERVAL_SECONDS:-5}"
+      # Keep Studio's browser assurance flag aligned with CSP's selected
+      # formal profile; card posture is supplied by preflight, never hard-coded.
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-false}"
       COOKIE_SECURE: "true"
       LOG_LEVEL: INFO
     depends_on:
@@ -426,62 +623,12 @@ services:
       - anila-studio-artifacts:/var/anila/anila-studio-artifacts
     networks:
       - default
-      - anila-models-net  # flux2-dev sits here
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 6
       start_period: 30s
-    restart: unless-stopped
-
-  # ── flux2-dev-agent (繪圖 agent — chat↔image 轉接層) ─────────────────────
-  # 聊天畫圖鏈路: SPA → Router → csp /v1/chat/completions(model=image-generator)
-  #   → 這個 agent。agent 內部: ① gemma4 中文→英文 prompt 翻譯(打 csp)
-  #   ② 打底層 T2I 模型 /v1/images/generations ③ 存圖 + 回 markdown 連結。
-  # 底層 T2I 模型 = 雲端算力中心 SGLang(172.16.120.35:30010, OpenAI 相容
-  #   Images API)。本機不跑 flux2-dev,故不 depends_on 它、FLUX_BACKEND_URL
-  #   直接指遠端。env 寫死(不走 .env FLUX_MODEL,避免污染 studio 的同名 env)。
-  flux2-dev-agent:
-    build:
-      context: ../../services/flux2-dev-agent
-    image: ${ANILA_IMAGE_FLUX2_DEV_AGENT:?ANILA_IMAGE_FLUX2_DEV_AGENT must be a locked image content ID}
-    expose:
-      - "8000"
-    environment:
-      TZ: Asia/Taipei
-      # 底層 T2I 模型 = 雲端 SGLang(OpenAI 相容 /v1/images/generations)。
-      FLUX_BACKEND_URL: http://172.16.120.35:30010
-      # SGLang /v1/models 公布的 model id 是字面 "/model"。
-      FLUX_MODEL: "/model"
-      FLUX_API_KEY: ${FLUX_API_KEY-}
-      CSP_BASE_URL: http://csp:8000
-      # agent 打 csp 拉 gemma4 翻譯 + JWKS,prod fail-loud(缺值直接停)。
-      CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
-      # image-primary fetcher 打 csp GET /api/models/image-primary 用。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
-      GEMMA_MODEL: gemma4
-      ENABLE_PROMPT_TRANSLATION: "1"
-      SHARE_DIR: /share/flux
-      PUBLIC_URL_PREFIX: /uploads/flux
-      DEFAULT_ASPECT_RATIO: "16:9"
-      FLUX_TIMEOUT_SECONDS: "240"
-    depends_on:
-      csp:
-        condition: service_healthy
-    volumes:
-      # nginx 以 /uploads/ alias share-files/uploads/ 對外 serve 這裡的圖。
-      - ../../share/uploads/flux:/share/flux
-    networks:
-      - default
-      - anila-models-net  # 與 csp 同網,csp 用 http://flux2-dev-agent:8000 打它
-    healthcheck:
-      # agent image(python:3.11-slim)無 curl,用 urllib。
-      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status == 200 else 1)\""]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
     restart: unless-stopped
 
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
@@ -491,6 +638,7 @@ services:
       args:
         BASE_PATH: ${ANILALM_BASE_PATH:-/anilalm/}
         VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}
+        VITE_ANILA_PILOT_MODE: "false"
     image: ${ANILA_IMAGE_ANILALM:?ANILA_IMAGE_ANILALM must be a locked image content ID}
     expose:
       - "80"
@@ -686,7 +834,8 @@ networks:
   default:
     name: anila-net
   # 跟 infra/models/docker-compose.yml 共用。external → 兩個 project 任一個 down
-  # 都不會刪掉它。bootstrap:  docker network create anila-models-net
+  # 都不會刪掉它。bootstrap 只能透過 shared helper:
+  #   bash infra/deployment/scripts/ensure-models-network.sh ensure
   anila-models-net:
     external: true
     name: anila-models-net
@@ -705,6 +854,10 @@ volumes:
   csp-attachments:
   anila-studio-flux-cache:
   anila-studio-artifacts:
+  # Official Agent durable FileTaskStore/SQLite session state.  Never bind
+  # mount a repository path: restart recovery depends on this named volume.
+  anila-agent-state:
+  router-state:
   # 工具資料 volume：n8n/GitLab 為保留的預設內網服務；code-server profile
   # 按需啟用。名稱固定以確保重建容器時沿用既有資料。
   codeserver_config:

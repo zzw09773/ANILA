@@ -14,13 +14,21 @@ def test_top_level_import_does_not_load_service_frameworks() -> None:
     program = """
 import json, sys
 import anila_contracts
-expected = {'Classification', 'StepEvent', 'AgentError'}
+expected = {
+    'Classification', 'StepEvent', 'AgentError', 'TaskContext',
+    'TraceContext', 'InvocationCommand', 'SourceSnapshot', 'SafeSummary',
+    'RouteDecision', 'PolicyGateResult', 'AgentManifest', 'ExecutionGrant',
+}
 assert set(anila_contracts.__all__) == expected, anila_contracts.__all__
 for name in expected:
     assert hasattr(anila_contracts, name), name
 for helper in (
     'ClassificationLevel', 'StepKind', 'StepStatus', 'AgentErrorCode',
     'STEP_EVENT_SCHEMA_VERSION', 'AGENT_ERROR_SCHEMA_VERSION',
+    'SourceScope', 'SnapshotOrigin', 'InvocationTargetKind', 'AuthAssurance',
+    'TASK_CONTEXT_SCHEMA_VERSION', 'TRACE_CONTEXT_SCHEMA_VERSION',
+    'INVOCATION_COMMAND_SCHEMA_VERSION', 'SOURCE_SNAPSHOT_SCHEMA_VERSION',
+    'SAFE_SUMMARY_SCHEMA_VERSION',
 ):
     assert not hasattr(anila_contracts, helper), helper
 blocked = ('fastapi', 'asyncpg', 'pgvector', 'sse_starlette', 'anila_core')

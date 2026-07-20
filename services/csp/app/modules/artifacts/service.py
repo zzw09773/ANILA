@@ -16,7 +16,7 @@
 
 錯誤語彙(供 router 對映 HTTP 碼):
 - ``LookupError``     → 404(job / artifact 不存在)
-- ``PermissionError`` → 403(非 owner 且非 admin tier)
+- ``PermissionError`` → 403(非 owner；admin tier 不構成資料繞過)
 - ``ValueError``      → 422 / 409(binding 缺失、非法 job 狀態轉移)
 """
 
@@ -39,6 +39,7 @@ from app.models.user import User
 from app.schemas.contracts.artifacts import (
     ArtifactExportIn,
     ArtifactIn,
+    ArtifactUploadMetadata,
     ArtifactJobIn,
     ArtifactJobPatch,
     ArtifactJobStatus,
@@ -58,14 +59,17 @@ _LEGAL_JOB_TRANSITIONS: dict[ArtifactJobStatus, frozenset[ArtifactJobStatus]] = 
         ArtifactJobStatus.RUNNING,
         ArtifactJobStatus.COMPLETED,
         ArtifactJobStatus.FAILED,
+        ArtifactJobStatus.CANCELLED,
     }),
     ArtifactJobStatus.RUNNING: frozenset({
         ArtifactJobStatus.RUNNING,
         ArtifactJobStatus.COMPLETED,
         ArtifactJobStatus.FAILED,
+        ArtifactJobStatus.CANCELLED,
     }),
     ArtifactJobStatus.COMPLETED: frozenset(),
     ArtifactJobStatus.FAILED: frozenset(),
+    ArtifactJobStatus.CANCELLED: frozenset(),
 }
 
 
@@ -120,7 +124,12 @@ def register_job(
     db: Session, *, payload: ArtifactJobIn, owner_user_id: int | None,
     employee_id: str | None,
 ) -> ArtifactJob:
-    """冪等 upsert(以 ``job_id``):存在則覆寫欄位、不存在則新增。"""
+    """Create once or return an exact idempotent replay.
+
+    ``job_id`` is an immutable authority binding.  A restart may repeat the
+    create request, but it must never rewrite owner/scope/type/provenance or
+    move an existing job (especially a terminal job) backwards.
+    """
     job = db.get(ArtifactJob, payload.job_id)
     fields = dict(
         owner_user_id=owner_user_id,
@@ -140,16 +149,34 @@ def register_job(
         job = ArtifactJob(job_id=payload.job_id, **fields)
         db.add(job)
     else:
-        for key, value in fields.items():
-            setattr(job, key, value)
-        job.updated_at = _utcnow()
+        immutable_fields = {
+            "owner_user_id": owner_user_id,
+            "requester_employee_id": employee_id,
+            "collection_id": payload.collection_id,
+            "task_id": payload.task_id,
+            "source_snapshot_id": payload.source_snapshot_id,
+            "artifact_type": payload.artifact_type.value,
+            "params_digest": payload.params_digest,
+            "trace_id": payload.trace_id,
+        }
+        mismatches = [
+            key for key, value in immutable_fields.items()
+            if getattr(job, key) != value
+        ]
+        if mismatches:
+            raise ValueError(
+                "job_id 已綁定不同不可變欄位:" + ",".join(sorted(mismatches))
+            )
+        # Exact replay: preserve authoritative status/progress/message/error,
+        # artifact_id and upload checkpoints byte-for-byte.
+        return job
     db.commit()
     db.refresh(job)
     return job
 
 
 def transition_job(
-    db: Session, *, job_id: str, patch: ArtifactJobPatch
+    db: Session, *, job_id: str, patch: ArtifactJobPatch, commit: bool = True
 ) -> ArtifactJob:
     """套用 job 狀態轉移 + 進度/回填;非法轉移 ``ValueError``、查無 ``LookupError``。
 
@@ -161,6 +188,14 @@ def transition_job(
         raise LookupError(f"找不到 artifact job {job_id}")
     current = ArtifactJobStatus(job.status)
     target = patch.status
+    if current == target and current in {
+        ArtifactJobStatus.COMPLETED,
+        ArtifactJobStatus.FAILED,
+        ArtifactJobStatus.CANCELLED,
+    }:
+        if patch.artifact_id is not None and patch.artifact_id != job.artifact_id:
+            raise ValueError("terminal job replay artifact_id 不一致")
+        return job
     if target not in _LEGAL_JOB_TRANSITIONS[current]:
         raise ValueError(
             f"非法 job 狀態轉移:{current.value} → {target.value}"
@@ -179,7 +214,10 @@ def transition_job(
     if patch.artifact_files is not None:
         job.artifact_files = list(patch.artifact_files)
     job.updated_at = _utcnow()
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(job)
     return job
 
@@ -187,9 +225,10 @@ def transition_job(
 # ── Artifact + Version ────────────────────────────────────────────────────────
 
 def create_artifact(
-    db: Session, *, payload: ArtifactIn, owner_user_id: int | None,
+    db: Session, *, payload: ArtifactIn | ArtifactUploadMetadata, owner_user_id: int | None,
     source_task_id: int | None, source_snapshot_id: int | None,
     trace_id: str | None, initial_level: ClassificationLevel,
+    commit: bool = True,
 ) -> Artifact:
     """建立 artifact 列(不含 version);binding 規則 fail-closed。
 
@@ -217,17 +256,22 @@ def create_artifact(
         classification_level=initial_level.to_storage(),
     )
     db.add(artifact)
-    db.commit()
-    db.refresh(artifact)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(artifact)
     return artifact
 
 
 def create_version(
-    db: Session, *, artifact: Artifact, storage_ref: str,
+    db: Session, *, artifact: Artifact, storage_ref: str | None,
     content_hash: str | None, file_refs: list[str],
     citation_map: dict | None, generated_by_model_id: int | None,
     generated_by_agent_id: int | None, generated_by_studio_job_id: str | None,
     level: ClassificationLevel,
+    blob_key: str | None = None, blob_size_bytes: int | None = None,
+    media_type: str | None = None, original_filename: str | None = None,
+    commit: bool = True,
 ) -> ArtifactVersion:
     """新增一個版本(version = 現有最大 + 1),並回填 ``current_version``。"""
     last = (
@@ -242,6 +286,10 @@ def create_version(
         version=last + 1,
         storage_ref=storage_ref,
         content_hash=content_hash,
+        blob_key=blob_key,
+        blob_size_bytes=blob_size_bytes,
+        media_type=media_type,
+        original_filename=original_filename,
         file_refs=list(file_refs or []),
         citation_map=dict(citation_map) if citation_map else None,
         generated_by_model_id=generated_by_model_id,
@@ -252,8 +300,10 @@ def create_version(
     db.add(version)
     artifact.current_version = last + 1
     artifact.updated_at = _utcnow()
-    db.commit()
-    db.refresh(version)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(version)
     return version
 
 
@@ -261,6 +311,7 @@ def record_export(
     db: Session, *, artifact: Artifact, payload: ArtifactExportIn,
     exporter_user_id: int | None, exporter_employee_id: str | None,
     policy_decision_id: int | None, level: ClassificationLevel,
+    commit: bool = True,
 ) -> ExportRecord:
     """落一筆(已核可的)匯出列;只在 policy allow 後由 orchestrator 呼叫。"""
     export = ExportRecord(
@@ -277,8 +328,10 @@ def record_export(
         classification_level=level.to_storage(),
     )
     db.add(export)
-    db.commit()
-    db.refresh(export)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(export)
     return export
 
 
@@ -312,10 +365,10 @@ def _is_owner_of(db: Session, artifact: Artifact, viewer_user_id: int) -> bool:
 
 
 def ensure_artifact_access(
-    db: Session, *, artifact: Artifact, viewer_user_id: int, is_admin: bool
+    db: Session, *, artifact: Artifact, viewer_user_id: int
 ) -> None:
-    """治理讀取權:owner(直接或經 task 申請人)或 admin tier;否則 403。"""
-    if is_admin or _is_owner_of(db, artifact, viewer_user_id):
+    """內容資料讀取權:僅 owner(直接或經 task 申請人);角色不構成繞過。"""
+    if _is_owner_of(db, artifact, viewer_user_id):
         return
     raise PermissionError(
         f"使用者 {viewer_user_id} 無權存取 artifact {artifact.id}"
@@ -323,30 +376,30 @@ def ensure_artifact_access(
 
 
 def list_artifacts(
-    db: Session, *, viewer_user_id: int, is_admin: bool,
+    db: Session, *, viewer_user_id: int,
     artifact_type: str | None = None, task_id: int | None = None,
     classification_level: str | None = None,
     limit: int = 50, offset: int = 0,
 ) -> list[Artifact]:
-    """列出 artifacts(admin: 全部;一般使用者: 自己 owner 或經 task 申請人)。
+    """列出 viewer 自己 owner 或經 task 申請人的 artifacts。
 
     filters:``artifact_type`` / ``task_id`` / ``classification_level``。
-    非 admin 的 owner-scope 用 (owner_user_id == viewer) OR (綁定 task 的
-    requester == viewer) 兩路 union。
+    owner-scope 用 (owner_user_id == viewer) OR (綁定 task 的 requester ==
+    viewer) 兩路 union。admin tier 亦不得繞過資料所有權；治理全域 metadata
+    若有需求，應另開不含內容資訊的專用契約。
     """
-    q = db.query(Artifact)
-    if not is_admin:
-        owned_task_ids = (
-            select(Task.id)
-            .where(Task.requester_user_id == viewer_user_id)
-            .scalar_subquery()
+    q = db.query(Artifact).filter(Artifact.status != "erased")
+    owned_task_ids = (
+        select(Task.id)
+        .where(Task.requester_user_id == viewer_user_id)
+        .scalar_subquery()
+    )
+    q = q.filter(
+        or_(
+            Artifact.owner_user_id == viewer_user_id,
+            Artifact.source_task_id.in_(owned_task_ids),
         )
-        q = q.filter(
-            or_(
-                Artifact.owner_user_id == viewer_user_id,
-                Artifact.source_task_id.in_(owned_task_ids),
-            )
-        )
+    )
     if artifact_type is not None:
         q = q.filter(Artifact.artifact_type == artifact_type)
     if task_id is not None:

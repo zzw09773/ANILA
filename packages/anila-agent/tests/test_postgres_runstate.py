@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 
 import pytest
+from agents import Agent, RunContextWrapper, RunState, ToolApprovalItem
 
 from anila_agent.memory.session import PostgresSession
 from anila_agent.runtime import runstate
+from anila_agent.tools.context import AnilaRunContext
 
 pytestmark = pytest.mark.unit
 
 
 # ---- PostgresSession via fake asyncpg pool ----
+
 
 class _Conn:
     def __init__(self, store):
@@ -27,7 +30,7 @@ class _Conn:
             self.store.append(js)
 
     async def fetch(self, sql, *args):
-        items = self.store[-args[1]:] if "ORDER BY idx DESC LIMIT" in sql else list(self.store)
+        items = self.store[-args[1] :] if "ORDER BY idx DESC LIMIT" in sql else list(self.store)
         return [{"item": js} for js in items]
 
     async def fetchrow(self, sql, *args):
@@ -94,6 +97,7 @@ def test_add_empty_is_noop():
 
 # ---- runstate ----
 
+
 def test_schema_version_recorded():
     assert isinstance(runstate.SCHEMA_VERSION, str) and runstate.SCHEMA_VERSION
 
@@ -112,7 +116,76 @@ def test_has_interruptions():
 
 def test_dump_state_delegates():
     class _State:
-        def to_string(self):
+        def to_string(self, **kwargs):
+            assert kwargs["strict_context"] is True
+            assert callable(kwargs["context_serializer"])
             return '{"ok": 1}'
 
     assert json.loads(runstate.dump_state(_State())) == {"ok": 1}
+
+
+def test_dump_state_omits_live_context_dependencies():
+    """Durable state must never contain a retriever or its credentials."""
+
+    secret = "csp-search-token-must-not-be-persisted"
+    live_retriever = type(
+        "NonSerializableRetriever",
+        (),
+        {"name": "csp", "metadata": {"api_key": secret}},
+    )()
+    context = AnilaRunContext(retriever=live_retriever)  # type: ignore[arg-type]
+    state = RunState(
+        context=RunContextWrapper(context=context),
+        original_input="pause",
+        starting_agent=Agent(name="silver-test", instructions="test"),
+    )
+
+    payload = json.loads(runstate.dump_state(state))
+    assert payload["context"]["context"] == {"schema": runstate.CONTEXT_SCHEMA}
+    assert "NonSerializableRetriever" not in json.dumps(payload)
+    assert secret not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_load_state_rebinds_fresh_context_after_restart():
+    old_context = AnilaRunContext(retriever=object())  # type: ignore[arg-type]
+    agent = Agent(name="silver-test", instructions="test")
+    context_wrapper = RunContextWrapper(context=old_context)
+    state = RunState(
+        context=context_wrapper,
+        original_input="pause",
+        starting_agent=agent,
+    )
+    context_wrapper.usage.requests = 3
+    context_wrapper.usage.input_tokens = 11
+    context_wrapper.usage.output_tokens = 7
+    approval = ToolApprovalItem(
+        agent,
+        {"type": "function_call", "name": "read_document", "call_id": "call-1"},
+        tool_name="read_document",
+    )
+    context_wrapper.approve_tool(approval)
+    serialized = runstate.dump_state(state)
+
+    fresh_context = AnilaRunContext(retriever=object())  # type: ignore[arg-type]
+    restored = await runstate.load_state(
+        agent,
+        serialized,
+        context_override=fresh_context,
+    )
+
+    assert restored._context is not None
+    assert restored._context.context is fresh_context
+    assert restored._context.context is not old_context
+    assert restored._context.usage.requests == 3
+    assert restored._context.usage.input_tokens == 11
+    assert restored._context.usage.output_tokens == 7
+    assert restored._context.is_tool_approved("read_document", "call-1") is True
+
+
+@pytest.mark.asyncio
+async def test_load_state_requires_context_override():
+    with pytest.raises(ValueError, match="fresh context_override"):
+        await runstate.load_state(
+            Agent(name="silver-test", instructions="test"), "{}", context_override=None
+        )

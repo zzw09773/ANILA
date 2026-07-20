@@ -16,12 +16,24 @@ from __future__ import annotations
 
 import asyncio
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jose import jwt
+import pytest
+
+from app.config import settings
+from app.services import router_context_token
 from app.services import proxy_service
 from app.services.proxy import service as proxy_impl
 from app.services.proxy_service import (
     build_agent_headers,
     build_model_gateway_headers,
+    build_router_model_gateway_headers,
     downstream_identity,
+)
+from app.services.router_context_token import (
+    ROUTER_CONTEXT_HEADER,
+    canonical_router_body_sha256,
 )
 
 
@@ -69,6 +81,99 @@ class TestModelGatewayHeaders:
         assert "X-ANILA-User-Id" not in h
         assert "X-CSP-Service-Token" not in h
 
+    def test_router_caller_pk_uses_dedicated_header(self):
+        h = build_model_gateway_headers(
+            "990000002", router_caller_user_id=42
+        )
+        assert h["X-ANILA-User-Id"] == "990000002"
+        assert h["X-ANILA-Caller-User-Id"] == "42"
+
+    def test_non_router_model_has_no_caller_pk_header(self):
+        h = build_model_gateway_headers("990000002")
+        assert "X-ANILA-Caller-User-Id" not in h
+
+
+@pytest.fixture
+def router_signing_key(monkeypatch):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    monkeypatch.setattr(router_context_token, "get_private_key", lambda: private)
+    monkeypatch.setattr(settings, "JWT_KID", "employee-router-test-kid")
+    monkeypatch.setattr(settings, "JWT_ISSUER", "https://csp.test/issuer")
+    return key
+
+
+class TestRouterFormalHeaders:
+    def _context(self):
+        return {
+            "task_id": 11,
+            "run_id": 12,
+            "source_snapshot_id": 13,
+            "trace_id": "trace-abc",
+            "task_type": "knowledge_search",
+            "classification_level": "機密",
+            "scopes": ("agent:invoke",),
+            "required_capabilities": ("retrieval",),
+            "session_id": "session-abc",
+            "auth_assurance": {
+                "sid": "sid-12345678901234567890123456789012",
+                "amr": ("pwd",),
+                "acr": "urn:anila:acr:password",
+                "auth_time": "2026-07-15T00:00:00+00:00",
+                "break_glass": False,
+            },
+            "owner_id": 42,
+            "invocation_id": "invocation-abc",
+        }
+
+    def test_router_builder_emits_signed_context_without_raw_authority(
+        self, router_signing_key
+    ):
+        body = {
+            "model": "anila-router",
+            "messages": [{"role": "user", "content": "hello"}],
+            "anila_session_id": "session-abc",
+        }
+        headers = build_router_model_gateway_headers(
+            "990000002",
+            router_caller_user_id=42,
+            router_context=self._context(),
+            request_body=body,
+        )
+        token = headers[ROUTER_CONTEXT_HEADER]
+        claims = jwt.get_unverified_claims(token)
+        assert claims["sub"] == claims["caller_user_id"] == claims["owner_id"] == "42"
+        assert claims["session_id"] == body["anila_session_id"]
+        assert claims["body_sha256"] == canonical_router_body_sha256(body)
+        assert headers["Content-Type"] == "application/json"
+        assert set(headers) == {"Content-Type", "X-ANILA-User-Id", ROUTER_CONTEXT_HEADER}
+        assert "X-CSP-Service-Token" not in headers
+        assert "X-ANILA-User-Email" not in headers
+        assert "X-ANILA-User-Groups" not in headers
+
+    def test_router_builder_rejects_partial_context(self):
+        context = self._context()
+        context.pop("source_snapshot_id")
+        try:
+            build_router_model_gateway_headers(
+                "990000002",
+                router_caller_user_id=42,
+                router_context=context,
+                request_body={
+                    "model": "anila-router",
+                    "messages": [],
+                    "anila_session_id": "session-abc",
+                },
+            )
+        except ValueError as exc:
+            assert "source_snapshot_id" in str(exc)
+        else:
+            raise AssertionError("partial Router context must be rejected")
+
 
 class TestAgentHeaders:
     def test_full_identity(self):
@@ -81,6 +186,7 @@ class TestAgentHeaders:
         # 非卡片帳號 (downstream_identity→None):省略身分主鍵(不偽造),請求照常。
         h = build_agent_headers(None, "synthetic.agent.user@example.invalid")
         assert "X-ANILA-User-Id" not in h
+        assert "X-ANILA-Caller-User-Id" not in h
 
 
 class TestServiceTokenScoping:
@@ -128,6 +234,11 @@ class _HeaderCapturingStream:
     async def aiter_lines(self):
         for line in self._lines:
             yield line
+
+    async def aiter_bytes(self, chunk_size: int | None = None):
+        del chunk_size
+        for line in self._lines:
+            yield (line + "\n").encode()
 
 
 class _HeaderCapturingClient:
@@ -300,3 +411,109 @@ class TestProxyRequestRoutingNeverLeaksToken:
         assert "X-CSP-Service-Token" not in h  # CRITICAL: no service token to model
         assert h.get("X-ANILA-User-Id") == "990000002"  # 員編 forwarded
         assert "X-ANILA-User-Email" not in h  # no end-user PII into model logs
+
+
+class _RouterModel(_FakeModel):
+    name = "anila-router"
+    endpoint_url = "http://mock-router"
+
+
+class TestCspRouterHeaderContract:
+    """Exercise the actual CSP proxy branch, not only the pure builder."""
+
+    def test_router_only_branch_forwards_signed_context(self, monkeypatch, router_signing_key):
+        monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+        monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-router")
+        monkeypatch.setattr(proxy_service.settings, "MODEL_GATEWAY_API_KEY", "", raising=False)
+        _PostCapturingClient.last_headers = {}
+        monkeypatch.setattr(
+            proxy_service.httpx,
+            "AsyncClient",
+            lambda *a, **k: _PostCapturingClient(*a, **k),
+        )
+
+        async def _fake_enqueue_usage(**kwargs):
+            return None
+
+        monkeypatch.setattr(proxy_impl, "enqueue_usage", _fake_enqueue_usage)
+
+        async def _run():
+            return await proxy_service.proxy_request(
+                model=_RouterModel(),
+                api_key_id=1,
+                user_id=42,
+                department_id=None,
+                request_body={
+                    "model": "anila-router",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "anila_session_id": "session-abc",
+                },
+                endpoint_path="/v1/chat/completions",
+                user_identity="990000002",
+                router_caller_user_id=42,
+                router_context=TestRouterFormalHeaders()._context(),
+            )
+
+        asyncio.run(_run())
+        headers = _PostCapturingClient.last_headers
+        claims = jwt.get_unverified_claims(headers[ROUTER_CONTEXT_HEADER])
+        assert claims["sub"] == claims["caller_user_id"] == claims["owner_id"] == "42"
+        assert claims["session_id"] == "session-abc"
+        assert claims["body_sha256"] == canonical_router_body_sha256(
+            {
+                "model": "anila-router",
+                "messages": [{"role": "user", "content": "hi"}],
+                "anila_session_id": "session-abc",
+            }
+        )
+        assert "X-ANILA-Caller-User-Id" not in headers
+        assert "X-ANILA-Task-Id" not in headers
+        assert "X-ANILA-Run-Id" not in headers
+        assert "X-ANILA-Source-Snapshot-Id" not in headers
+        assert "X-ANILA-Trace-Id" not in headers
+        assert "X-CSP-Service-Token" not in headers
+        assert "X-ANILA-User-Email" not in headers
+        assert "X-ANILA-User-Groups" not in headers
+
+    def test_ordinary_model_branch_does_not_receive_router_context(self, monkeypatch):
+        monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+        monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+        monkeypatch.setattr(proxy_service.settings, "MODEL_GATEWAY_API_KEY", "", raising=False)
+        _PostCapturingClient.last_headers = {}
+        monkeypatch.setattr(
+            proxy_service.httpx,
+            "AsyncClient",
+            lambda *a, **k: _PostCapturingClient(*a, **k),
+        )
+
+        async def _fake_enqueue_usage(**kwargs):
+            return None
+
+        monkeypatch.setattr(proxy_impl, "enqueue_usage", _fake_enqueue_usage)
+
+        async def _run():
+            return await proxy_service.proxy_request(
+                model=_FakeModel(),
+                api_key_id=1,
+                user_id=42,
+                department_id=None,
+                request_body={
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                endpoint_path="/v1/chat/completions",
+                user_identity="990000002",
+                router_caller_user_id=42,
+                # A caller cannot turn an ordinary model into Router by
+                # passing the optional projection; destination is the gate.
+                router_context=TestRouterFormalHeaders()._context(),
+            )
+
+        asyncio.run(_run())
+        headers = _PostCapturingClient.last_headers
+        assert "X-ANILA-Caller-User-Id" not in headers
+        assert "X-ANILA-Task-Id" not in headers
+        assert "X-ANILA-Run-Id" not in headers
+        assert "X-ANILA-Source-Snapshot-Id" not in headers
+        assert "X-ANILA-Trace-Id" not in headers
+        assert "X-CSP-Service-Token" not in headers

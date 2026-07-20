@@ -20,7 +20,12 @@ import math
 
 from anila_core.ingestion.chunking_plugins import ChunkResult
 
-from ingestion_worker.evaluator import _cosine, _score_strategy
+from ingestion_worker.evaluator import (
+    _cosine,
+    _require_eval_data_clearance,
+    _score_strategy,
+)
+from ingestion_worker.judge import JudgeCredential
 
 
 # ── Test doubles ────────────────────────────────────────────────────────
@@ -41,6 +46,35 @@ class _FakeEmbedder:
     async def embed(self, texts, *, user_id=None):
         self.calls.append(list(texts))
         return [self._table[t] for t in texts]
+
+
+class _Acquire:
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _ClearanceConnection:
+    def __init__(self, allowed):
+        self.allowed = allowed
+        self.calls = []
+
+    async def fetchval(self, query, *args):
+        self.calls.append((query, args))
+        return self.allowed
+
+
+class _ClearancePool:
+    def __init__(self, allowed):
+        self.connection = _ClearanceConnection(allowed)
+
+    def acquire(self):
+        return _Acquire(self.connection)
 
 
 def _chunk(content: str, token_count: int = 10) -> ChunkResult:
@@ -88,6 +122,39 @@ def test_cosine_zero_vector_right_returns_zero():
 def test_cosine_zip_truncates_to_shorter_length():
     # zip stops at the shorter operand; trailing component is ignored.
     assert _cosine([1.0, 0.0, 99.0], [1.0, 0.0]) == 1.0
+
+
+async def test_worker_clearance_recheck_fails_closed_after_expiry():
+    pool = _ClearancePool(False)
+
+    try:
+        await _require_eval_data_clearance(
+            pool,
+            user_id=7,
+            collection_id=8,
+            document_ids=[9],
+        )
+    except PermissionError as exc:
+        assert "no longer valid" in str(exc)
+    else:
+        raise AssertionError("expired clearance was accepted")
+
+    query, args = pool.connection.calls[0]
+    assert "clock_timestamp()" in query
+    assert args == (7, 8, [9])
+
+
+async def test_worker_clearance_recheck_accepts_exact_current_scope():
+    pool = _ClearancePool(True)
+
+    await _require_eval_data_clearance(
+        pool,
+        user_id=7,
+        collection_id=8,
+        document_ids=[9, 10],
+    )
+
+    assert pool.connection.calls[0][1] == (7, 8, [9, 10])
 
 
 # ── _score_strategy: retrieval metrics ──────────────────────────────────
@@ -203,6 +270,40 @@ async def test_score_strategy_no_judge_credential_means_no_judge_avg():
     assert out["judge_avg"] is None
     assert out["judge_n_scored"] == 0
     assert out["per_query"][0]["judge_score"] is None
+
+
+async def test_judge_call_rechecks_clearance_before_external_send(monkeypatch):
+    embedder = _FakeEmbedder({"q": [1.0, 0.0]})
+    called = False
+
+    async def deny():
+        raise PermissionError("expired")
+
+    async def should_not_send(*args, **kwargs):
+        nonlocal called
+        called = True
+        return 3
+
+    monkeypatch.setattr("ingestion_worker.evaluator.score_one", should_not_send)
+
+    try:
+        await _score_strategy(
+            embedder,
+            {1: [_chunk("c1")]},
+            {1: [[1.0, 0.0]]},
+            [{"query": "q", "expected_doc_id": 1}],
+            judge_credential=JudgeCredential(
+                endpoint_url="https://judge.invalid",
+                model_name="judge",
+                api_key="secret",
+            ),
+            authorize_judge=deny,
+        )
+    except PermissionError as exc:
+        assert str(exc) == "expired"
+    else:
+        raise AssertionError("judge send continued after clearance denial")
+    assert called is False
 
 
 async def test_score_strategy_per_query_payload_shape():

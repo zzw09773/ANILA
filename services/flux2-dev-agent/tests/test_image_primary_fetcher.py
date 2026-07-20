@@ -12,7 +12,7 @@ import httpx
 import pytest
 import respx
 
-from app.image_primary_fetcher import ImagePrimaryFetcher
+from app.image_primary_fetcher import ImagePrimaryFetcher, governance_required_from_env
 
 _URL = "http://csp:8000/api/models/image-primary"
 _OK_BODY = {
@@ -31,6 +31,18 @@ def _fetcher(**kw) -> ImagePrimaryFetcher:
     kw.setdefault("csp_base_url", "http://csp:8000")
     kw.setdefault("service_token", "svc-token")
     return ImagePrimaryFetcher(**kw)
+
+
+def test_trial_military_requires_gate5_governance(monkeypatch):
+    monkeypatch.setenv("ANILA_DEPLOYMENT_PROFILE", "trial-military")
+    monkeypatch.delenv("GATE5_MODEL_GOVERNANCE_ENABLED", raising=False)
+    assert governance_required_from_env() is True
+
+
+def test_trial_military_cannot_disable_gate5_governance(monkeypatch):
+    monkeypatch.setenv("ANILA_DEPLOYMENT_PROFILE", "trial-military")
+    monkeypatch.setenv("GATE5_MODEL_GOVERNANCE_ENABLED", "false")
+    assert governance_required_from_env() is True
 
 
 @pytest.mark.asyncio
@@ -119,6 +131,74 @@ async def test_connection_error_keeps_last_cached_value():
     await asyncio.sleep(0.1)
     second = await fetcher.get()
     assert first == second == ("https://flux-a.example.com", "flux-cloud-a")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_governance_rechecks_before_each_inference_and_clears_on_denial():
+    """A revoked provider cannot survive the normal TTL in formal posture."""
+    route = respx.get(_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=_OK_BODY),
+            httpx.Response(503, json={"detail": "provider authority revoked"}),
+        ]
+    )
+    fetcher = _fetcher(governance_required=True, ttl_seconds=60.0)
+
+    first = await fetcher.get()
+    second = await fetcher.get()
+
+    assert first == ("https://flux-a.example.com", "flux-cloud-a")
+    assert second == (None, None)
+    assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_connection_failure_clears_last_cached_value():
+    respx.get(_URL).mock(
+        side_effect=[httpx.Response(200, json=_OK_BODY), httpx.ConnectError("boom")]
+    )
+    fetcher = _fetcher(governance_required=True, ttl_seconds=60.0)
+
+    assert await fetcher.get() == ("https://flux-a.example.com", "flux-cloud-a")
+    assert await fetcher.get() == (None, None)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_auth_and_malformed_responses_clear_last_cached_value():
+    route = respx.get(_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=_OK_BODY),
+            httpx.Response(401, json={"detail": "revoked token"}),
+            httpx.Response(200, json={"id": 1}),
+        ]
+    )
+    fetcher = _fetcher(governance_required=True)
+
+    assert await fetcher.get() == ("https://flux-a.example.com", "flux-cloud-a")
+    assert await fetcher.get() == (None, None)
+    # A later malformed response remains fail-closed rather than resurrecting
+    # the value that was already cleared by the auth denial.
+    assert await fetcher.get() == (None, None)
+    assert route.call_count == 3
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_malformed_response_clears_existing_authority():
+    route = respx.get(_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=_OK_BODY),
+            httpx.Response(200, json={"id": 1}),
+        ]
+    )
+    fetcher = _fetcher(governance_required=True)
+
+    assert await fetcher.get() == ("https://flux-a.example.com", "flux-cloud-a")
+    assert await fetcher.get() == (None, None)
+    assert route.call_count == 2
 
 
 @pytest.mark.asyncio

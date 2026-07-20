@@ -1,8 +1,8 @@
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
 import { bindAuthAdapter, explainError } from '../api/client'
 import { getMe, login as loginApi, logoutApi, refreshToken as refreshApi } from '../api/auth'
 import type { UserMe } from '../types'
+import { useCspArtifactStore } from './cspArtifacts'
 
 interface AuthState {
   accessToken: string | null
@@ -24,9 +24,18 @@ interface AuthState {
   hydrate: () => Promise<void>
 }
 
-export const useAuthStore = create<AuthState>()(
-  persist(
-    (set, get) => ({
+// Purge bearer material written by releases that used Zustand persist.  The
+// current store is memory-only and rehydrates exclusively through CSP's
+// httpOnly cookie session.
+if (typeof window !== 'undefined') {
+  try {
+    window.localStorage.removeItem('anilalm:auth')
+  } catch {
+    // Storage may be disabled by browser policy; the store remains memory-only.
+  }
+}
+
+export const useAuthStore = create<AuthState>()((set, get) => ({
       accessToken: null,
       refreshToken: null,
       user: null,
@@ -34,6 +43,7 @@ export const useAuthStore = create<AuthState>()(
       error: null,
 
       login: async (username, password) => {
+        useCspArtifactStore.getState().clear()
         set({ status: 'loading', error: null })
         try {
           const { data } = await loginApi(username, password)
@@ -61,6 +71,7 @@ export const useAuthStore = create<AuthState>()(
           set({ accessToken: data.access_token, refreshToken: data.refresh_token })
           return data.access_token
         } catch {
+          useCspArtifactStore.getState().clear()
           set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
           return null
         }
@@ -71,6 +82,7 @@ export const useAuthStore = create<AuthState>()(
           const { data } = await getMe()
           set({ user: data, status: 'authed' })
         } catch {
+          useCspArtifactStore.getState().clear()
           set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
         }
       },
@@ -80,6 +92,7 @@ export const useAuthStore = create<AuthState>()(
         // state reset is the source of truth — even if the network call
         // fails the user is signed out from the client's POV.
         void logoutApi().catch(() => undefined)
+        useCspArtifactStore.getState().clear()
         set({
           accessToken: null,
           refreshToken: null,
@@ -99,17 +112,7 @@ export const useAuthStore = create<AuthState>()(
         set({ status: 'checking' })
         await get().fetchMe()
       },
-    }),
-    {
-      name: 'anilalm:auth',
-      storage: createJSONStorage(() => localStorage),
-      partialize: (s) => ({
-        accessToken: s.accessToken,
-        refreshToken: s.refreshToken,
-      }),
-    },
-  ),
-)
+    }))
 
 // Wire the axios interceptor to the store. Done at module load — the
 // store is created above synchronously, so by the time the first request

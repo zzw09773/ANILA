@@ -19,7 +19,6 @@ Strategy
 """
 from __future__ import annotations
 
-import asyncio
 import json
 
 import httpx
@@ -213,37 +212,11 @@ def test_post_creates_job_and_runs_full_pipeline(isolated_artifacts):
         assert final["column_count"] == 3
         assert final["title"] == "Q1 關鍵指標"
         assert final["preset"] == "key_figures"
-        # download_urls must surface 3 formats.
-        urls = final["download_urls"]
-        assert set(urls.keys()) == {"html", "csv", "xlsx"}
-        assert urls["html"].endswith(f"/jobs/{job_id}/download/html")
-        assert urls["csv"].endswith(f"/jobs/{job_id}/download/csv")
-        assert urls["xlsx"].endswith(f"/jobs/{job_id}/download/xlsx")
-
-        # All three downloads return 200 with correct mime.
-        rh = client.get(urls["html"])
-        assert rh.status_code == 200
-        assert rh.headers["content-type"].startswith("text/html")
-        assert "Q1 關鍵指標" in rh.text
-
-        rc = client.get(urls["csv"])
-        assert rc.status_code == 200
-        assert rc.headers["content-type"].startswith("text/csv")
-        # CSV body (decoded as text) must start with BOM and include
-        # the column labels.
-        text_body = rc.content.decode("utf-8-sig")
-        assert "指標" in text_body
-        assert "成長率" in text_body
-        # Raw bytes start with EF BB BF (UTF-8 BOM).
-        assert rc.content[:3] == b"\xef\xbb\xbf"
-
-        rx = client.get(urls["xlsx"])
-        assert rx.status_code == 200
-        assert rx.headers["content-type"].startswith(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        # xlsx files start with PK (zip signature).
-        assert rx.content[:2] == b"PK"
+        assert final["download_urls"] is None
+        for fmt in ("html", "csv", "xlsx"):
+            assert client.get(
+                f"/api/datatables/jobs/{job_id}/download/{fmt}"
+            ).status_code == 410
 
 
 def test_get_unknown_job_returns_404(isolated_artifacts):
@@ -262,8 +235,6 @@ def test_download_returns_409_while_running(isolated_artifacts):
     # Seed a record in pending/running state manually so we don't have to
     # race against the runner.
     from datetime import datetime, timezone
-    from pathlib import Path
-
     from app.services.datatable_job_service import DatatableJobRecord
 
     rec = DatatableJobRecord(
@@ -284,7 +255,7 @@ def test_download_returns_409_while_running(isolated_artifacts):
     jobs._jobs[rec.job_id] = rec
 
     r = client.get("/api/datatables/jobs/dt_inflight/download/html")
-    assert r.status_code == 409
+    assert r.status_code == 410
 
 
 def test_download_returns_410_for_failed_job(isolated_artifacts):
@@ -313,7 +284,7 @@ def test_download_returns_410_for_failed_job(isolated_artifacts):
 
     r = client.get("/api/datatables/jobs/dt_failed/download/csv")
     assert r.status_code == 410
-    assert "LLM 失敗" in r.json()["detail"]
+    assert r.json()["detail"] == "僅允許 CSP Artifact 下載"
 
 
 def test_download_unknown_fmt_returns_404(isolated_artifacts):
@@ -418,8 +389,7 @@ def test_cross_user_job_returns_404(isolated_artifacts):
     jobs._jobs[rec.job_id] = rec
 
     assert client.get(f"/api/datatables/jobs/{rec.job_id}").status_code == 404
-    assert (
-        client.get(f"/api/datatables/jobs/{rec.job_id}/download/html").status_code
-        == 404
-    )
+    assert client.get(
+        f"/api/datatables/jobs/{rec.job_id}/download/html"
+    ).status_code == 410
     assert client.delete(f"/api/datatables/jobs/{rec.job_id}").status_code == 404

@@ -1,0 +1,8 @@
+{
+  "schema_version": "safe-summary/v1",
+  "text": "已遮罩識別資訊的核准資料集查詢",
+  "classification": "機密",
+  "redacted": true,
+  "policy_ids": ["policy-017", "policy-021"],
+  "source_content_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

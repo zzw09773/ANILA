@@ -13,10 +13,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from anila_contracts import Classification as ClassificationLevel
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
 from app.services.audit_service import log_audit_event
+from app.services.agent_readiness import (
+    invalidate_trace_evidence,
+    manifest_revision,
+    manifest_sha256,
+)
 from app.services.auth_service import (
     get_current_user,
     is_admin_tier,
@@ -112,6 +118,7 @@ class AgentRegisterRequest(BaseModel):
     input_schema: dict | None = None
     # doc 05 §3 runtime_type(5 值;預設 openai_compatible_agent = 現況 endpoint proxy)。
     runtime_type: RuntimeType = RuntimeType.OPENAI_COMPATIBLE_AGENT
+    classification_ceiling: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
     # doc 05 §4 optional manifest —— 提供則 fail-closed 驗證(422)並留存 manifest_json。
     manifest: dict | None = None
     # doc 06 Phase 1 shadow registration:True → approval_status=draft(盤點暫存);
@@ -139,10 +146,14 @@ class AgentResponse(BaseModel):
     runtime_type: str | None = None
     agent_version: str | None = None
     audit_level: str | None = None
-    classification_ceiling: str | None = None
+    classification_ceiling: ClassificationLevel
     default_classification_level: str | None = None
     manifest_json: dict | None = None
     trace_test_passed_at: datetime | None = None
+    health_checked_at: datetime | None = None
+    manifest_sha256: str | None = None
+    manifest_revision: str | None = None
+    trace_test_governance_fingerprint: str | None = None
     # Sprint 13 PR A3 — admin-editable runtime knobs (tool permissions,
     # workspace caps, guardrails). NULL means "agent uses code defaults".
     runtime_config: dict | None = None
@@ -165,6 +176,15 @@ _AGENT_HEALTH_MAP = {
     "offline": "unhealthy",
     "unhealthy": "unhealthy",
 }
+
+
+def _required_classification_ceiling(agent: Agent) -> str:
+    raw = getattr(agent, "classification_ceiling", None)
+    if not isinstance(raw, str):
+        raise RuntimeError(
+            "agents.classification_ceiling must be a non-null canonical value"
+        )
+    return ClassificationLevel.from_storage(raw).to_storage()
 
 
 def _serialize_agent(agent: Agent) -> dict:
@@ -190,12 +210,18 @@ def _serialize_agent(agent: Agent) -> dict:
         "runtime_type": getattr(agent, "runtime_type", None),
         "agent_version": getattr(agent, "agent_version", None),
         "audit_level": getattr(agent, "audit_level", None),
-        "classification_ceiling": getattr(agent, "classification_ceiling", None),
+        "classification_ceiling": _required_classification_ceiling(agent),
         "default_classification_level": getattr(
             agent, "default_classification_level", None
         ),
         "manifest_json": getattr(agent, "manifest_json", None),
         "trace_test_passed_at": getattr(agent, "trace_test_passed_at", None),
+        "health_checked_at": getattr(agent, "health_checked_at", None),
+        "manifest_sha256": getattr(agent, "manifest_sha256", None),
+        "manifest_revision": getattr(agent, "manifest_revision", None),
+        "trace_test_governance_fingerprint": getattr(
+            agent, "trace_test_governance_fingerprint", None
+        ),
         "runtime_config": getattr(agent, "runtime_config", None),
         "created_at": agent.created_at,
     }
@@ -216,6 +242,10 @@ class AgentUpdateRequest(BaseModel):
     input_schema: dict | None = None
     # doc 05 §4 — replace the stored manifest snapshot (validated fail-closed).
     manifest: dict | None = None
+    classification_ceiling: ClassificationLevel | None = None
+    default_classification_level: ClassificationLevel | None = None
+    audit_level: str | None = None
+    trace_callback_mode: str | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -305,6 +335,16 @@ def register_agent(
         if request.manifest is not None
         else None
     )
+    canonical_manifest = None
+    if manifest_json is not None:
+        # ``validate_agent_manifest`` accepts a legacy adapter for old clients;
+        # only the shared anila-contracts v2 object receives authority hashes.
+        from anila_contracts import AgentManifest as CanonicalAgentManifest
+
+        try:
+            canonical_manifest = CanonicalAgentManifest.model_validate(manifest_json)
+        except Exception:
+            canonical_manifest = None
 
     # doc 06 Phase 1: shadow inventory rows land as ``draft``; the normal path
     # lands at the first gate (pending_connection_test = 現況 pending 等價)。
@@ -316,14 +356,47 @@ def register_agent(
         name=request.name,
         owner_user_id=current_user.id,
         endpoint_url=request.endpoint_url,
-        api_version=request.api_version,
         description_for_router=request.description_for_router,
         base_model_id=request.base_model_id,
         bound_collection_id=request.collection_id,
         capabilities=request.capabilities,
         input_schema=request.input_schema,
-        runtime_type=request.runtime_type.value,
+        # Once a canonical manifest is supplied, its protocol identity is the
+        # authority.  Keep the denormalised CSP row aligned so later readiness
+        # checks can detect direct DB/config drift instead of silently trusting
+        # two divergent declarations.
+        runtime_type=(
+            canonical_manifest.runtime_type.value
+            if canonical_manifest
+            else request.runtime_type.value
+        ),
+        agent_version=(canonical_manifest.version if canonical_manifest else None),
+        api_version=(canonical_manifest.api_version if canonical_manifest else request.api_version),
+        classification_ceiling=request.classification_ceiling.to_storage(),
         manifest_json=manifest_json,
+        manifest_sha256=(manifest_sha256(canonical_manifest) if canonical_manifest else None),
+        manifest_revision=(manifest_revision(canonical_manifest) if canonical_manifest else None),
+        default_classification_level=(
+            canonical_manifest.classification.default.to_storage()
+            if canonical_manifest
+            else (
+                str(manifest_json.get("classification", {}).get("default"))
+                if isinstance(manifest_json, dict)
+                and isinstance(manifest_json.get("classification"), dict)
+                and manifest_json["classification"].get("default") is not None
+                else request.classification_ceiling.to_storage()
+            )
+        ),
+        trace_callback_mode=(
+            "sse_and_post"
+            if canonical_manifest and "step-event/v1" in canonical_manifest.event_protocols
+            else (
+                manifest_json.get("trace", {}).get("callback_mode")
+                if isinstance(manifest_json, dict)
+                and isinstance(manifest_json.get("trace"), dict)
+                else None
+            )
+        ),
         approval_status=approval_status,
     )
     db.add(agent)
@@ -400,6 +473,51 @@ def update_agent(
         patch["manifest_json"] = (
             validate_agent_manifest(raw_manifest) if raw_manifest is not None else None
         )
+        if raw_manifest is None:
+            patch["manifest_sha256"] = None
+            patch["manifest_revision"] = None
+        else:
+            from anila_contracts import AgentManifest as CanonicalAgentManifest
+
+            try:
+                canonical = CanonicalAgentManifest.model_validate(patch["manifest_json"])
+            except Exception:
+                canonical = None
+            patch["manifest_sha256"] = manifest_sha256(canonical) if canonical else None
+            patch["manifest_revision"] = (
+                manifest_revision(canonical) if canonical else None
+            )
+            if canonical:
+                patch.setdefault(
+                    "default_classification_level",
+                    canonical.classification.default.to_storage(),
+                )
+                patch.setdefault("agent_version", canonical.version)
+                patch.setdefault("runtime_type", canonical.runtime_type.value)
+                patch.setdefault("api_version", canonical.api_version)
+                patch.setdefault(
+                    "trace_callback_mode",
+                    "sse_and_post"
+                    if "step-event/v1" in canonical.event_protocols
+                    else None,
+                )
+
+    for enum_field in ("classification_ceiling", "default_classification_level"):
+        if enum_field in patch:
+            if patch[enum_field] is None:
+                raise HTTPException(status_code=400, detail=f"{enum_field} 不可設為空值")
+            value = patch[enum_field]
+            patch[enum_field] = (
+                value.to_storage()
+                if hasattr(value, "to_storage")
+                else ClassificationLevel.from_storage(str(value)).to_storage()
+            )
+    if "audit_level" in patch and patch["audit_level"] not in {"full_trace"}:
+        raise HTTPException(status_code=400, detail="audit_level 必須是 full_trace")
+    if "trace_callback_mode" in patch and patch["trace_callback_mode"] not in {
+        "sse_and_post", "sse", "post"
+    }:
+        raise HTTPException(status_code=400, detail="trace_callback_mode 無效")
 
     # SSRF guard — endpoint_url 變更時重新驗證；同時把 approval_status 退回
     # pending，避免 owner 把已核可 agent 的 endpoint 改到內網（H4）。
@@ -437,19 +555,27 @@ def update_agent(
     if not changed:
         return _serialize_agent(agent)
 
-    # 任何端點變更都會強制重新核可，避免「核可一次後 owner 改成內網」的
+    # 任何治理欄位變更都會強制重新核可，避免「核可一次後 owner 改成內網」的
     # bypass。admin 變更自己的 agent 也一樣 — 規則一致才好稽核。doc 05 §6:
     # 端點換過後,舊的 Full Trace 落章作廢 —— 清 trace_test_passed_at/report,
     # 退回第一關 pending_connection_test,重新走 connection→trace→review。
-    reapproval_required = (
-        endpoint_changed and agent.approval_status == ApprovalStatus.APPROVED.value
+    governance_changed = bool(
+        set(changed)
+        & {
+            "endpoint_url",
+            "api_version",
+            "base_model_id",
+            "classification_ceiling",
+            "default_classification_level",
+            "audit_level",
+            "trace_callback_mode",
+            "manifest_json",
+            "manifest_sha256",
+            "manifest_revision",
+        }
     )
-    if reapproval_required:
-        agent.approval_status = REGISTER_DEFAULT_APPROVAL
-        agent.approved_by = None
-        agent.approved_at = None
-        agent.trace_test_passed_at = None
-        agent.trace_test_report = None
+    if governance_changed:
+        invalidate_trace_evidence(agent)
         changed.append("approval_status->pending_connection_test")
 
     db.commit()

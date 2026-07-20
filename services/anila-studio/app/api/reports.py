@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal
+from typing import AsyncIterator, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
@@ -109,6 +109,7 @@ async def create_report_job(
         task_id=payload.task_id,
         source_snapshot_id=payload.source_snapshot_id,
         trace_id=payload.trace_id,
+        request_spec=payload.model_dump(mode="json"),
     )
     record = await jobs.create_job(
         user_id=identity.id,
@@ -165,7 +166,8 @@ async def download_report(
     The actual bytes live on disk (reports are too big to keep in-RAM
     like the slide pptx_bytes — a typical PDF can hit several MB).
     """
-    rec = jobs.get_user_job(job_id, identity.id)
+    raise HTTPException(status_code=410, detail="僅允許 CSP Artifact 下載")
+    rec = jobs.get_user_job(job_id, identity.id)  # pragma: no cover
     if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Report job not found."

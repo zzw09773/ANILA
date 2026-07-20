@@ -97,6 +97,7 @@ def record_decision(
     matched_policy_ids: list[str] | None = None,
     policy_version: str = "r1",
     metadata: dict | None = None,
+    commit: bool = True,
 ) -> PolicyDecision:
     """追加一筆政策裁決(append-only;doc 03 §5)。
 
@@ -105,7 +106,9 @@ def record_decision(
     - ``decision == "deny"`` 必附非空 ``reason``(doc 03 Done Criteria 4:
       所有 deny 都有可解釋原因)。``matched_policy_ids`` 在 r1 紀錄階段
       允許空(規則引擎未建,hardcoded guard 沒有 policy id 可填)。
-    - 立即 commit:裁決紀錄是治理帳,寫入即須持久,不搭 caller 的交易。
+    - 預設立即 commit；治理編排器可傳 ``commit=False``，把裁決與
+      Task／Audit／Artifact 納入同一個資料庫交易。此時仍會 ``flush``，
+      因此任何裁決寫入錯誤都會 fail-closed，而不是延後到回應送出後。
     - 不改寫、不刪除既有列;本模組沒有任何 mutator。
     """
     action_value = _validate_enum("action", action, PolicyAction)
@@ -144,8 +147,10 @@ def record_decision(
         metadata_json=metadata_json,
     )
     db.add(row)
-    db.commit()
-    db.refresh(row)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(row)
     return row
 
 
@@ -154,13 +159,13 @@ def evaluate_classification_ceiling(
 ) -> bool:
     """doc 08 §10 判定式:``allow if task.level <= ceiling``。
 
-    純函式,無副作用。``ceiling is None`` = 該資源不設分類上限 → True。
-    等級字串一律經 :meth:`ClassificationLevel.from_storage` 解析,
-    未知值 fail-closed 拋 ``ValueError``(不得默默放行)。
+    純函式,無副作用。缺少 ceiling 代表治理資料不完整，必須 fail-closed；
+    等級字串一律經 :meth:`ClassificationLevel.from_storage` 解析，未知值
+    同樣拋 ``ValueError``（不得默默放行）。
     """
     level = ClassificationLevel.from_storage(task_level)
     if ceiling is None:
-        return True
+        return False
     return level <= ClassificationLevel.from_storage(ceiling)
 
 
@@ -191,6 +196,17 @@ def _utcnow() -> datetime:
 
 def _resolve_resource(db: Session, resource_type: str, resource_id: str):
     """派發 + 取列;未知型別 / 非整數 id / 查無列 一律 ValueError。"""
+    model, pk = _resolve_resource_identity(resource_type, resource_id)
+    row = db.get(model, pk)
+    if row is None:
+        raise ValueError(
+            f"找不到分類資源 {resource_type}#{resource_id}(fail-closed)"
+        )
+    return row
+
+
+def _resolve_resource_identity(resource_type: str, resource_id: str):
+    """驗證分類資源型別與主鍵，供 read / locked mutation 共用。"""
     model = _RESOURCE_MODELS.get(resource_type)
     if model is None:
         raise ValueError(
@@ -203,7 +219,28 @@ def _resolve_resource(db: Session, resource_type: str, resource_id: str):
         raise ValueError(
             f"分類資源 id 必須是整數字串,實得 {resource_id!r}"
         ) from None
-    row = db.get(model, pk)
+    return model, pk
+
+
+def _resolve_resource_for_update(
+    db: Session, resource_type: str, resource_id: str
+):
+    """鎖住並強制重讀分類資源，避免 identity-map stale lost update。
+
+    ``populate_existing`` 是安全不變量的一部分：呼叫者可能在同一
+    Session 先讀過資源；單純 ``db.get`` 會直接回 identity map 的舊值，
+    即使 PostgreSQL 已讓另一交易完成更高分類，也可能以舊 current 覆寫。
+    mutation path 一律在 ``SELECT ... FOR UPDATE`` 取得列鎖後覆寫現存 ORM
+    狀態，再計算 monotonic max。
+    """
+    model, pk = _resolve_resource_identity(resource_type, resource_id)
+    row = (
+        db.query(model)
+        .populate_existing()
+        .filter(model.id == pk)
+        .with_for_update()
+        .one_or_none()
+    )
     if row is None:
         raise ValueError(
             f"找不到分類資源 {resource_type}#{resource_id}(fail-closed)"
@@ -281,6 +318,7 @@ def apply_classification(
     reason: str,
     task_id: int | None = None,
     source: str = "propagation",
+    commit: bool = True,
 ) -> ClassificationEvent | None:
     """單向閂鎖(doc 08 §2):effective = max(current, new),絕不降級。
 
@@ -299,12 +337,17 @@ def apply_classification(
         "actor_type", actor_type, PolicyActorType
     )
     target = ClassificationLevel.from_storage(new_level)
-    row = _resolve_resource(db, resource_type, resource_id)
+    row = _resolve_resource_for_update(db, resource_type, resource_id)
 
     current = ClassificationLevel.from_storage(row.classification_level)
     effective = ClassificationLevel.max_of([current, target])
     if effective == current:
         # 維持或降級嘗試:單向閂鎖,不動資源、不寫 event。
+        # ``commit=True`` still owns the transaction contract: release the
+        # FOR UPDATE latch immediately instead of leaking a lock until the
+        # caller happens to close/rollback its Session.
+        if commit:
+            db.commit()
         return None
 
     event = _write_event(
@@ -328,8 +371,10 @@ def apply_classification(
         and hasattr(row, "classification_inherited")
     ):
         row.classification_inherited = True
-    db.commit()
-    db.refresh(event)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(event)
     return event
 
 
@@ -388,9 +433,10 @@ def create_declassification_request(
             f"user#{requested_by_admin_id} 不具 Admin 角色"
         )
     target = ClassificationLevel.from_storage(to_level)
-    current = effective_level(
+    row = _resolve_resource_for_update(
         db, resource_type=resource_type, resource_id=resource_id
     )
+    current = ClassificationLevel.from_storage(row.classification_level)
     if not target < current:
         raise ValueError(
             f"降級申請的目標等級必須低於現行等級:"
@@ -441,9 +487,23 @@ def _apply_approved_declassification(
     ``declassification_copy``;in-place 不產生新資源,
     ``resulting_resource_id`` 留 NULL。
     """
-    row = _resolve_resource(db, request.resource_type, request.resource_id)
+    row = _resolve_resource_for_update(
+        db, request.resource_type, request.resource_id
+    )
     previous = ClassificationLevel.from_storage(row.classification_level)
+    requested_from = ClassificationLevel.from_storage(request.from_level)
     target = ClassificationLevel.from_storage(request.to_level)
+    if previous != requested_from:
+        raise ValueError(
+            "資源分類已在降級申請後變更，原申請失效；"
+            f"request#{request.id} 預期 {requested_from.to_storage()}，"
+            f"現為 {previous.to_storage()}，必須依現況重新申請(fail-closed)"
+        )
+    if not target < previous:
+        raise ValueError(
+            "核准降級的目標必須嚴格低於鎖定後的現行分類；"
+            f"實得 {previous.to_storage()} → {target.to_storage()}"
+        )
     event = ClassificationEvent(
         resource_type=request.resource_type,
         resource_id=str(request.resource_id),
@@ -490,7 +550,13 @@ def decide_declassification(
     - 核准:status → approved → 生效(唯一內部降級路徑)→ applied;
       駁回:status → rejected,資源等級不動。
     """
-    request = db.get(DeclassificationRequest, request_id)
+    request = (
+        db.query(DeclassificationRequest)
+        .populate_existing()
+        .filter(DeclassificationRequest.id == request_id)
+        .with_for_update()
+        .one_or_none()
+    )
     if request is None:
         raise ValueError(f"找不到降級申請 #{request_id}(fail-closed)")
     if request.status != DeclassificationStatus.PENDING_SUPERVISOR.value:

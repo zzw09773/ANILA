@@ -155,7 +155,6 @@ def test_jwks_published_key_validates_csp_signed_token(jwks_client):
 
     If this passes, anila-studio (which does exactly this) will too.
     """
-    from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
     from jose import jwt
     from app.config import settings
     from app.utils.security import create_access_token
@@ -171,7 +170,13 @@ def test_jwks_published_key_validates_csp_signed_token(jwks_client):
     )
 
     token = create_access_token({"sub": "42"})
-    payload = jwt.decode(token, reconstructed_pem, algorithms=["RS256"])
+    payload = jwt.decode(
+        token,
+        reconstructed_pem,
+        algorithms=["RS256"],
+        issuer=settings.JWT_ISSUER,
+        audience=settings.JWT_AUDIENCE,
+    )
     assert payload["sub"] == "42"
 
 

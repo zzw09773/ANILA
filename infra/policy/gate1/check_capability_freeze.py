@@ -143,6 +143,28 @@ def _literal_string(node: ast.AST) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _is_repo_local_dependency(path: Path, root: Path) -> bool:
+    """Return whether ``path`` is below a proven repository-local venv.
+
+    Directory names such as ``venv`` are valid repository source names and
+    cannot establish a dependency boundary.  Python virtual environments do
+    carry ``pyvenv.cfg`` at their root on both POSIX and Windows, independently
+    of whether dependencies live below ``lib`` or ``Lib``.  Only that marker
+    is strong enough to exclude recursively discovered source.
+    """
+
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    ancestor = root
+    for part in relative.parts[:-1]:
+        ancestor /= part
+        if (ancestor / "pyvenv.cfg").is_file():
+            return True
+    return False
+
+
 def _enum_values(root: Path, spec: dict[str, Any]) -> set[str]:
     tree = _python_tree(root, spec["path"])
     class_name = spec["symbol"]
@@ -176,7 +198,9 @@ def _python_modules(root: Path, spec: dict[str, Any]) -> set[str]:
     return {
         path.relative_to(root).as_posix()
         for path in directory.rglob("*.py")
-        if path.is_file() and not (exclude_init and path.name == "__init__.py")
+        if path.is_file()
+        and not _is_repo_local_dependency(path, root)
+        and not (exclude_init and path.name == "__init__.py")
     }
 
 
@@ -192,7 +216,11 @@ def _iter_python_files(root: Path, spec: dict[str, Any]) -> Iterable[Path]:
     directory = root / relative_root
     if not directory.is_dir():
         raise PolicyError(f"controlled source directory is missing: {relative_root}")
-    yield from (path for path in directory.rglob("*.py") if path.is_file())
+    yield from (
+        path
+        for path in directory.rglob("*.py")
+        if path.is_file() and not _is_repo_local_dependency(path, root)
+    )
 
 
 def _python_public_symbols(root: Path, spec: dict[str, Any]) -> set[str]:
@@ -300,7 +328,7 @@ def _glob_paths(root: Path, spec: dict[str, Any]) -> set[str]:
         values.update(
             path.relative_to(root).as_posix()
             for path in root.glob(pattern)
-            if path.is_file()
+            if path.is_file() and not _is_repo_local_dependency(path, root)
         )
     return values
 
@@ -348,6 +376,8 @@ def _text_matched_files(root: Path, spec: dict[str, Any]) -> set[str]:
             raise PolicyError(f"controlled scan root is missing: {relative_root}")
         for path in directory.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
+                continue
+            if _is_repo_local_dependency(path, root):
                 continue
             relative = path.relative_to(root).as_posix()
             if any(part in {"tests", "test", "__pycache__", "node_modules", "dist"} for part in path.parts):

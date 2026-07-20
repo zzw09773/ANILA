@@ -24,7 +24,6 @@ from app.services.card_auth import (
 )
 from tests.synthetic_card_pki import (
     SYNTHETIC_CARD,
-    SYNTHETIC_CARD_SERIAL,
     SYNTHETIC_DISPLAY_NAME,
     SYNTHETIC_EMAIL,
     SYNTHETIC_EMPLOYEE_ID,
@@ -98,17 +97,22 @@ class TestVerifyValidSignature:
         claims = verify_pkcs7_signature(signature, "synthetic-string-nonce")
         assert claims.employee_id == SYNTHETIC_EMPLOYEE_ID
 
-    def test_card_serial_propagated_when_supplied(self) -> None:
+    def test_frontend_card_serial_is_ignored_in_favour_of_signer_x509(self) -> None:
         claims = verify_pkcs7_signature(
             MOCK_SIGNATURE_B64,
             MOCK_NONCE,
-            card_serial=SYNTHETIC_CARD_SERIAL,
+            card_serial="ATTACKER-CONTROLLED-SERIAL",
         )
-        assert claims.card_serial == SYNTHETIC_CARD_SERIAL
+        assert claims.card_serial == format(
+            SYNTHETIC_CARD.signer_certificate.serial_number, "X"
+        )
+        assert len(claims.certificate_fingerprint_sha256) == 64
 
-    def test_card_serial_none_when_omitted(self) -> None:
+    def test_card_serial_is_still_derived_when_frontend_omits_it(self) -> None:
         claims = verify_pkcs7_signature(MOCK_SIGNATURE_B64, MOCK_NONCE)
-        assert claims.card_serial is None
+        assert claims.card_serial == format(
+            SYNTHETIC_CARD.signer_certificate.serial_number, "X"
+        )
 
     def test_claims_are_immutable(self) -> None:
         claims = verify_pkcs7_signature(MOCK_SIGNATURE_B64, MOCK_NONCE)

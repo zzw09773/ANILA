@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import AsyncIterator
 
 import pytest
 from fastapi import FastAPI
@@ -28,7 +27,6 @@ from app.auth import (
     get_current_user_identity,
 )
 from app.clients.csp_client import ChunkHit, CollectionMeta
-from app.schemas.report import ReportPreset
 
 
 # ── Stubs ────────────────────────────────────────────────────────────────
@@ -245,42 +243,21 @@ def test_end_to_end_job_completes_and_downloads_all_three_formats(client, patche
     assert final["sections_count"] == 2
     assert final["references_count"] == 5
     assert final["title"]  # populated by pipeline
-    urls = final["download_urls"]
-    assert urls is not None
-    assert set(urls.keys()) == {"html", "pdf", "docx"}
-    # Relative URLs, not absolute
-    for url in urls.values():
-        assert url.startswith("/api/reports/jobs/")
-        assert "://" not in url
+    assert final["download_urls"] is None
 
     # Each file landed on disk
     for fmt in ("html", "pdf", "docx"):
         assert (artifacts_dir / f"{job_id}.{fmt}").exists()
 
-    # Download HTML
-    resp_html = client.get(f"/api/reports/jobs/{job_id}/download/html")
-    assert resp_html.status_code == 200
-    assert "text/html" in resp_html.headers["content-type"]
-    body = resp_html.content.decode("utf-8")
-    assert "<!doctype html>" in body
-    assert "RAG" in body or "測試" in body  # title made it through
-
-    # Download PDF
-    resp_pdf = client.get(f"/api/reports/jobs/{job_id}/download/pdf")
-    assert resp_pdf.status_code == 200
-    assert resp_pdf.headers["content-type"].startswith("application/pdf")
-    assert resp_pdf.content.startswith(b"%PDF")
-
-    # Download DOCX
-    resp_docx = client.get(f"/api/reports/jobs/{job_id}/download/docx")
-    assert resp_docx.status_code == 200
-    assert "wordprocessingml" in resp_docx.headers["content-type"]
-    assert resp_docx.content.startswith(b"PK")
+    for fmt in ("html", "pdf", "docx"):
+        assert client.get(
+            f"/api/reports/jobs/{job_id}/download/{fmt}"
+        ).status_code == 410
 
 
 def test_download_unknown_job_returns_404(client):
     resp = client.get("/api/reports/jobs/r_nonexistent/download/html")
-    assert resp.status_code == 404
+    assert resp.status_code == 410
 
 
 def test_get_unknown_job_returns_404(client):
@@ -305,7 +282,6 @@ def test_delete_running_job_returns_204(client, patched_runtime):
     Because the runner finishes in <100ms with our mocks, we wrap the
     runner to add a delay so we have a window to cancel.
     """
-    import time
     from app.services import report_runner as runner_mod
 
     original = runner_mod.run_report_pipeline

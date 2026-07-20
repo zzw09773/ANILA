@@ -10,8 +10,8 @@
 #     $HOME/project/My-OpenAI-Frontend/docker-compose.migration.yml
 #     so the cutover is a stop-and-swap, not a redesign
 #
-# Bootstrap (one-time, on the host):
-#     docker network create anila-models-net
+# Bootstrap (one-time, on the host; no Compose project owns this network):
+#     bash infra/deployment/scripts/ensure-models-network.sh ensure
 #     docker compose restart csp   # CSP joins the net (repo 根,經 root shim)
 #
 # 目錄佈局 (2026-07 §17.1 重組):
@@ -26,7 +26,8 @@
 #     docker compose -f infra/models/docker-compose.yml up -d ...
 #
 # Profiles:
-#     (無 profile)        試用機現役組:gpt-oss-20b / gemma4 / nv-embed / flux
+#     (無 profile)        試用機現役組:gpt-oss-20b / gemma4 / nv-embed
+#     --profile flux-approved  明示法務核准後才加入 flux2-dev + shim
 #     --profile intranet  內網 H100 新增組:gemma-4-26b-a4b / gemma-4-12b /
 #                         gpt-oss-120b (generic vLLM image,權重走 ANILA_HF_DIR)
 #
@@ -216,8 +217,12 @@ services:
     environment:
       TZ: Asia/Taipei
       TRITON_URL: http://nv-embed-triton:8000
+      # The base model stack is pinned to its local HTTP Triton service. Do not
+      # inherit an operator-shell gRPC target; external mode has its own file.
+      TRITON_GRPC_URL: ""
       MODEL_NAME: nv-embed-v2
       REQUEST_TIMEOUT: "60"
+      READINESS_TIMEOUT: "5"
     expose:
       - "8000"
     depends_on:
@@ -229,9 +234,9 @@ services:
       # embedding-proxy image 沒有 curl — 之前用 curl 導致 exit 127,
       # 「unhealthy 四週」其實是誤報(R2 演練 2026-06-11 查明,服務一直正常)。
       # 照 flux2-dev-agent 的 python urllib 寫法。
-      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/v1/models', timeout=5).status == 200 else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=15).status == 200 else 1)\""]
       interval: 30s
-      timeout: 10s
+      timeout: 20s
       retries: 5
       start_period: 30s
 
@@ -244,6 +249,14 @@ services:
   # License caveat: black-forest-labs/FLUX.2-dev is BFL Non-Commercial.
   # Confirm authorization before enabling in production.
   flux2-dev:
+    # FLUX.2-dev is non-commercial and remains disabled in every default
+    # model stack.  Only an explicitly named legal-approved profile may
+    # resolve this service.
+    profiles: ["flux-approved"]
+    labels:
+      com.anila.inference-role: model-runtime
+      com.anila.requires-legal-approval: "true"
+      com.anila.required-profile: flux-approved
     image: flux2-dev:bf16
     container_name: anila-model-flux2-dev
     build:
@@ -287,12 +300,25 @@ services:
   # here. Shim handles prompt translation (zh→en via gemma4 callback)
   # and image persistence; binds /share/flux from share/uploads/flux.
   flux2-dev-agent:
+    # This is a model-side shim, not a freely dispatchable Silver Agent.  It
+    # may only resolve together with flux2-dev under the legal-approved
+    # profile; the formal platform does not attach arbitrary Agents here.
+    profiles: ["flux-approved"]
+    labels:
+      com.anila.inference-role: model-side-shim
+      com.anila.requires-legal-approval: "true"
+      com.anila.required-profile: flux-approved
     image: anila-flux-agent:latest
     container_name: anila-model-flux2-dev-agent
     build:
       context: ../../services/flux2-dev-agent
     environment:
       TZ: Asia/Taipei
+      # Keep the model-side consumer's posture explicit.  Development
+      # .env.example sets this to false; formal deployments default true and
+      # therefore fail closed when CSP authority is unavailable or rotated.
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-production}
+      GATE5_MODEL_GOVERNANCE_ENABLED: ${GATE5_MODEL_GOVERNANCE_ENABLED:-true}
       # 2026-07 起 agent 底層打圖走 OpenAI 相容 Images API
       # (POST {base}/v1/images/generations);base 指伺服器根或含 /v1 皆可。
       # 本機 flux2-dev 已同步提供 /v1/images/generations 端點。
@@ -301,6 +327,10 @@ services:
       FLUX_MODEL: ${FLUX_MODEL:-flux.2-dev}
       FLUX_API_KEY: ${FLUX_API_KEY-}
       CSP_BASE_URL: http://csp:8000
+      # Compose resolves interpolation even when this service's profile is
+      # inactive.  Keep the default stack resolvable without a FLUX secret;
+      # model-serve.sh verifies the credential before --profile flux-approved.
+      FLUX_AGENT_SERVICE_TOKEN: ${FLUX_AGENT_SERVICE_TOKEN-}
       # Prod: 同 csp service,缺值 fail-loud(不要走 dev fallback)。
       CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       GEMMA_MODEL: gemma4

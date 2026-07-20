@@ -46,18 +46,153 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
-
-
-logger = logging.getLogger(__name__)
+from anila_security import verify_queue_proof
 
 from anila_core.ingestion.chunking_plugins import ChunkResult, get_chunker
 from anila_core.ingestion.chunking_plugins.builtins import SemanticChunker
 from anila_core.storage.adapters.pg_pool import PgPool
 
+from ingestion_worker.document_io import read_and_extract
 from ingestion_worker.embedder import Embedder
 from ingestion_worker.judge import JudgeCredential, load_judge_credential, score_one
-from ingestion_worker.parsers import extract_text
+from ingestion_worker.settings import settings
+
+
+logger = logging.getLogger(__name__)
+
+
+_EVAL_CLEARANCE_SQL = """
+WITH requested(document_id) AS (
+    SELECT unnest($3::int[])
+), scoped AS (
+    SELECT d.id AS document_id,
+           d.collection_id,
+           d.classification_level AS document_level,
+           c.classification_level AS collection_level,
+           c.created_by AS collection_owner_id
+      FROM requested r
+      JOIN ingestion_documents d ON d.id = r.document_id
+      JOIN ingestion_collections c ON c.id = d.collection_id
+     WHERE d.collection_id = $2
+), required AS (
+    SELECT s.document_id, crc.compartment_id
+      FROM scoped s
+      JOIN collection_required_compartments crc
+        ON crc.collection_id = s.collection_id
+    UNION
+    SELECT s.document_id, drc.compartment_id
+      FROM scoped s
+      JOIN document_required_compartments drc
+        ON drc.document_id = s.document_id
+), invalid_required AS (
+    SELECT 1
+      FROM required r
+      LEFT JOIN security_compartments sc ON sc.id = r.compartment_id
+     WHERE sc.id IS NULL
+        OR NOT sc.is_active
+        OR sc.code !~ '^[A-Z0-9][A-Z0-9_.-]{0,63}$'
+     LIMIT 1
+)
+SELECT EXISTS (
+           SELECT 1 FROM users u WHERE u.id = $1 AND u.is_active
+       )
+   AND (SELECT count(*) FROM scoped) = cardinality($3::int[])
+   AND NOT EXISTS (
+       SELECT 1
+         FROM scoped s
+        WHERE array_position(
+                  ARRAY['無機密','營業秘密','機密','極機密','絕對機密']::text[],
+                  s.collection_level
+              ) IS NULL
+           OR array_position(
+                  ARRAY['無機密','營業秘密','機密','極機密','絕對機密']::text[],
+                  s.document_level
+              ) IS NULL
+   )
+   AND NOT EXISTS (
+       SELECT 1
+         FROM clearance_grants cg
+        WHERE cg.subject_user_id = $1
+          AND array_position(
+                  ARRAY['無機密','營業秘密','機密','極機密','絕對機密']::text[],
+                  cg.max_classification_level
+              ) IS NULL
+   )
+   AND NOT EXISTS (SELECT 1 FROM invalid_required)
+   AND NOT EXISTS (
+       SELECT 1
+         FROM scoped s
+        WHERE NOT EXISTS (
+            SELECT 1
+              FROM clearance_grants cg
+              JOIN collection_access_grants cag
+                ON cag.clearance_grant_id = cg.id
+               AND cag.collection_id = s.collection_id
+               AND cag.revoked_at IS NULL
+               AND cag.need_to_know
+               AND (s.collection_owner_id = $1 OR cag.membership_granted)
+             WHERE cg.subject_user_id = $1
+               AND cg.revoked_at IS NULL
+               AND cg.valid_from <= clock_timestamp()
+               AND clock_timestamp() < cg.expires_at
+               AND array_position(
+                     ARRAY['無機密','營業秘密','機密','極機密','絕對機密']::text[],
+                     cg.max_classification_level
+                   ) >= GREATEST(
+                     array_position(
+                       ARRAY['無機密','營業秘密','機密','極機密','絕對機密']::text[],
+                       s.collection_level
+                     ),
+                     array_position(
+                       ARRAY['無機密','營業秘密','機密','極機密','絕對機密']::text[],
+                       s.document_level
+                     )
+                   )
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM required r
+                    WHERE r.document_id = s.document_id
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM clearance_grant_compartments cgc
+                           WHERE cgc.clearance_grant_id = cg.id
+                             AND cgc.compartment_id = r.compartment_id
+                      )
+               )
+        )
+   )
+"""
+
+
+async def _require_eval_data_clearance(
+    pool: PgPool,
+    *,
+    user_id: int | None,
+    collection_id: int,
+    document_ids: list[int],
+) -> None:
+    """Re-evaluate canonical clearance at each sensitive worker boundary.
+
+    The queued row is not an authority token.  This query deliberately
+    requires one currently-active grant to satisfy classification, all
+    compartments, collection membership and need-to-know for every document.
+    ``clock_timestamp()`` avoids PostgreSQL's transaction-start timestamp when
+    a long evaluator run crosses a grant expiry boundary.
+    """
+
+    if user_id is None or user_id <= 0 or not document_ids:
+        raise PermissionError("eval run lacks an attributable data principal")
+    async with pool.acquire() as conn:
+        allowed = await conn.fetchval(
+            _EVAL_CLEARANCE_SQL,
+            user_id,
+            collection_id,
+            document_ids,
+        )
+    if allowed is not True:
+        raise PermissionError("eval run data clearance is no longer valid")
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -138,6 +273,7 @@ async def _score_strategy(
     billing_user_id: int | None = None,
     judge_credential: JudgeCredential | None = None,
     judge_top_k: int = 5,
+    authorize_judge: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Run every query against this strategy's chunks and average.
 
@@ -182,8 +318,10 @@ async def _score_strategy(
         )
         rr = 1.0 / rank if rank else 0.0
 
-        if h1: hits_at_1 += 1
-        if h5: hits_at_5 += 1
+        if h1:
+            hits_at_1 += 1
+        if h5:
+            hits_at_5 += 1
         rr_total += rr
 
         # ── Judge phase (optional) ──────────────────────────────────
@@ -192,6 +330,9 @@ async def _score_strategy(
         # and we just skip this query's score.
         per_q_judge: int | None = None
         if judge_credential is not None:
+            if authorize_judge is None:
+                raise PermissionError("judge inference lacks runtime clearance check")
+            await authorize_judge()
             judge_chunks = [c.content for c in top_chunks[:judge_top_k]]
             per_q_judge = await score_one(
                 judge_credential, q["query"], judge_chunks
@@ -233,10 +374,19 @@ async def _score_strategy(
     }
 
 
-async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
+async def evaluate_strategies(
+    ctx: dict, eval_run_id: int, queue_proof: str | None = None
+) -> dict:
     """Arq handler. Runs every strategy in the run row, writes results."""
     pool: PgPool = ctx["pool"]
     embedder: Embedder = ctx["embedder"]
+    if settings.ingestion_queue_hmac_key:
+        verify_queue_proof(
+            settings.ingestion_queue_hmac_key,
+            task_name="evaluate_strategies",
+            payload={"eval_run_id": eval_run_id},
+            proof=queue_proof,
+        )
 
     started = time.time()
 
@@ -270,6 +420,19 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         strategies = row["strategies_tried"]
         queries = row["queries"]
         billing_user_id = row["created_by"]  # Sprint 4 V: usage attribution
+
+        async def require_current_clearance() -> None:
+            await _require_eval_data_clearance(
+                pool,
+                user_id=billing_user_id,
+                collection_id=run_collection_id,
+                document_ids=sample_doc_ids,
+            )
+
+        # Authority can expire between API enqueue and worker pickup.  Deny
+        # before the first raw-file read rather than treating the queued row as
+        # a durable capability.
+        await require_current_clearance()
         # Sprint 5 X: optional LLM-as-judge.
         # ``judge_llm_config = {"credential_id": <int>, "top_k": 5}``
         judge_cfg = row["judge_llm_config"] or {}
@@ -279,7 +442,14 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         # exception *type* only — never the exception value, which can
         # carry plaintext fragments or key bytes for some crypto errors.
         judge_load_error: str | None = None
-        if isinstance(judge_cfg, dict) and judge_cfg.get("credential_id"):
+        if (
+            (
+                not settings.anila_pilot_mode
+                or settings.gate2_allow_unconverged_inference
+            )
+            and isinstance(judge_cfg, dict)
+            and judge_cfg.get("credential_id")
+        ):
             cred_id = int(judge_cfg["credential_id"])
             try:
                 judge_credential = await load_judge_credential(pool, cred_id)
@@ -307,19 +477,25 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         # a doc was skipped — silently swallowing them previously hid
         # missing-parser-stack failures behind a generic "0 chunks" error.
         docs = await _load_sample_docs(pool, sample_doc_ids, run_collection_id)
+        if len(docs) != len(set(sample_doc_ids)):
+            raise PermissionError("eval run document scope changed before blob read")
         parsed_docs: dict[int, tuple[str, dict]] = {}
         parse_errors: dict[int, str] = {}
         for d in docs:
+            # File bytes are outside the database transaction, so evaluate
+            # again at the last practical instant before each raw blob read.
+            await require_current_clearance()
             doc_id = int(d["id"])
             sp = d["storage_path"]
             if not sp:
                 parse_errors[doc_id] = "missing storage_path"
                 continue
             try:
-                with open(sp, "rb") as f:
-                    blob = f.read()
-                text, parse_meta, _images = extract_text(
-                    d["filename"], blob, d["mime_type"]
+                text, parse_meta, _images = await read_and_extract(
+                    sp,
+                    d["filename"],
+                    d["mime_type"],
+                    timeout_seconds=settings.parse_timeout_seconds,
                 )
                 parsed_docs[doc_id] = (text, parse_meta)
             except Exception as exc:
@@ -332,6 +508,10 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         # 3. Per-strategy scoring.
         per_strategy: dict[str, Any] = {}
         for spec in strategies:
+            # Recheck before each round of embedding work; in particular this
+            # prevents already-parsed document bytes from continuing to flow
+            # after a grant expires during a long run.
+            await require_current_clearance()
             sname = spec.get("name")
             sparams = spec.get("params", {})
             chunks_by_doc: dict[int, list[ChunkResult]] = {}
@@ -373,6 +553,7 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
                 billing_user_id=billing_user_id,
                 judge_credential=judge_credential,
                 judge_top_k=int(judge_cfg.get("top_k", 5)) if isinstance(judge_cfg, dict) else 5,
+                authorize_judge=require_current_clearance,
             )
             per_strategy[sname] = metrics
 

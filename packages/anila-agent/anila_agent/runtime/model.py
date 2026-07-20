@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
+
 from agents import (
     ModelSettings,
     OpenAIChatCompletionsModel,
@@ -23,6 +26,7 @@ from agents import (
 from openai import AsyncOpenAI
 
 from anila_agent.config import ModelConfig
+from anila_agent.runtime.admission import assert_csp_model_endpoint
 from anila_agent.runtime.compat import build_http_client
 
 # reasoning 模型在吐出最終 content 前會先耗 token 推理；下限確保不被截斷成空。
@@ -41,15 +45,47 @@ def _lock_airgap_invariants() -> None:
     _AIRGAP_LOCKED = True
 
 
-def build_model(cfg: ModelConfig) -> OpenAIChatCompletionsModel:
-    """以 ``cfg`` 建構指向本地端點的 Chat Completions 模型。"""
+def build_model(
+    cfg: ModelConfig,
+    *,
+    csp_base_url: str | None = None,
+    require_csp_endpoint: bool = False,
+) -> OpenAIChatCompletionsModel:
+    """建構 Chat Completions 模型。
+
+    Standalone library callers may still construct a local model for an
+    explicitly offline smoke test.  The official service startup path passes
+    ``require_csp_endpoint=True``; that path is the Silver admission boundary
+    and rejects a raw model-service URL before an HTTP client is created.
+    """
+    if require_csp_endpoint:
+        if not csp_base_url:
+            raise ValueError("require_csp_endpoint=True 必須提供 csp_base_url")
+        assert_csp_model_endpoint(cfg.base_url, csp_base_url)
     _lock_airgap_invariants()
     # 自簽 TLS（ssl_verify）+ 剝除 strict 欄位（自架端點相容）都在此 http client。
     http_client = build_http_client(verify=cfg.ssl_verify, timeout=cfg.timeout)
+    # Official service mode reaches the model only through CSP.  The csk is
+    # provisioned per Agent and must be carried in the CSP service-token
+    # header; never synthesize an Agent identity from a client-supplied
+    # ``X-ANILA-Agent-Id`` header.  ``service_wrapper`` validates the env
+    # token's canonical shape at startup; this client simply reuses that
+    # already-admitted secret.  Keep the local no-token development path
+    # compatible by falling back to the configured SDK key.
+    csp_service_token = (os.getenv("CSP_SERVICE_TOKEN") or "").strip()
+    if not csp_service_token and isinstance(cfg.api_key, str) and cfg.api_key.startswith("csk-"):
+        csp_service_token = cfg.api_key
+    api_key = csp_service_token or cfg.api_key or "EMPTY"
+    default_headers = (
+        {"X-CSP-Service-Token": csp_service_token}
+        if require_csp_endpoint and csp_service_token
+        else None
+    )
     client = AsyncOpenAI(
         base_url=cfg.base_url,
-        api_key=cfg.api_key or "EMPTY",  # vLLM 不驗 key，但 SDK 要求非空
+        api_key=api_key,  # CSP authenticates the csk header; local vLLM accepts any non-empty key.
         http_client=http_client,
+        default_headers=default_headers,
     )
     # keyword-only：第三位置參數是 should_replay_reasoning_content，未來欄位插入不可位移。
     return OpenAIChatCompletionsModel(model=cfg.model, openai_client=client)
@@ -77,5 +113,8 @@ def json_object_settings(cfg: ModelConfig) -> ModelSettings:
     import dataclasses
 
     base = build_model_settings(cfg)
-    extra = {**(base.extra_body or {}), "response_format": {"type": "json_object"}}
+    extra: dict[str, object] = {}
+    if isinstance(base.extra_body, Mapping):
+        extra.update({str(key): value for key, value in base.extra_body.items()})
+    extra["response_format"] = {"type": "json_object"}
     return dataclasses.replace(base, extra_body=extra)

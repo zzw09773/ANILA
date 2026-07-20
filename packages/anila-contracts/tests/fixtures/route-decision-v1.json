@@ -1,0 +1,17 @@
+{
+  "schema_version": "route-decision/v1",
+  "decision_id": "rd-001",
+  "route_type": "single_agent",
+  "registry_snapshot_id": "rs-010",
+  "required_capabilities": ["retrieval"],
+  "candidate_agent_ids": ["research-agent"],
+  "selected_agent_id": "research-agent",
+  "reason_codes": ["CAPABILITY_MATCH"],
+  "confidence": 0.97,
+  "rewritten_query": "分析核准資料集的隔離設計",
+  "constraints": {
+    "max_steps": 8,
+    "timeout_ms": 120000
+  },
+  "fallback": "clarify"
+}

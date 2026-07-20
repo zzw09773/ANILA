@@ -78,6 +78,7 @@ export async function streamChatCompletion({
   onFollowUps,
   onToolCallStarted,
   onToolCallFinished,
+  onStep,
   onSpans,
   onSessionId,
   onUnknownEvent,
@@ -169,6 +170,7 @@ export async function streamChatCompletion({
         onFollowUps,
         onToolCallStarted,
         onToolCallFinished,
+        onStep,
         onSpans,
         onUnknownEvent,
         onFinishReason,
@@ -252,6 +254,10 @@ export function dispatchSseEvent(event, callbacks) {
   }
   if (event.event === "anila.spans") {
     safeJsonInvoke(event.data, callbacks.onSpans, "anila.spans");
+    return;
+  }
+  if (event.event === "anila.step") {
+    safeJsonInvoke(event.data, callbacks.onStep, "anila.step");
     return;
   }
 

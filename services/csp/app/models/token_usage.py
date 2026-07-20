@@ -12,7 +12,10 @@ class TokenUsage(Base):
     api_key_id = Column(Integer, ForeignKey("api_keys.id"), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
-    model_id = Column(Integer, ForeignKey("model_registry.id"), nullable=False)
+    # Agent runtimes may not declare an informational base model.  In that
+    # case the usage remains attributable through caller_agent_id; never put
+    # agents.id into this model_registry FK.
+    model_id = Column(Integer, ForeignKey("model_registry.id"), nullable=True)
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)

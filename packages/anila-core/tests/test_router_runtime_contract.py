@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from anila_core.api import router_server
-from anila_core.registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
+from anila_core.registry.remote_agent_manifest import (
+    RemoteAgentManifest,
+    RemoteAgentRegistry,
+)
+
+
+LEGACY_DISPATCH_HEADERS = {"X-ANILA-Legacy-Dispatch": "1"}
+
+
+@pytest.fixture(autouse=True)
+def _enable_legacy_dispatch_compat(monkeypatch):
+    """These contract tests intentionally cover the legacy adapter."""
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
 
 
 def test_router_non_stream_includes_anila_meta(monkeypatch):
@@ -72,7 +85,7 @@ def test_router_non_stream_includes_anila_meta(monkeypatch):
 
     response = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
         json={
             "model": "anila-router",
             "messages": [{"role": "user", "content": "幫我查特休規則"}],
@@ -113,7 +126,7 @@ def test_router_stream_emits_trace_and_meta_events(monkeypatch):
     with client.stream(
         "POST",
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
         json={
             "model": "anila-router",
             "messages": [{"role": "user", "content": "你好"}],
@@ -164,7 +177,7 @@ def test_caller_system_message_cannot_replace_router_control_prompt(monkeypatch)
     }
     response = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
         json={
             "model": "anila-router",
             "messages": [caller_system, {"role": "user", "content": "hello"}],
@@ -185,7 +198,7 @@ def test_multi_turn_above_server_limit_is_rejected() -> None:
 
     response = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
         json={
             "model": "anila-router",
             "messages": [{"role": "user", "content": "hello"}],

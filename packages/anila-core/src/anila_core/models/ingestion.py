@@ -23,6 +23,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
+from anila_contracts import Classification
 from pydantic import BaseModel, Field
 
 
@@ -42,6 +43,12 @@ class IngestionChunk(BaseModel):
     document_id: int
     chunk_key: str
     content: str
+    # Gate 2 G1: classification is required on every persisted/read chunk.
+    # There is intentionally no UNCLASSIFIED default: legacy or malformed
+    # rows must fail closed instead of being silently downgraded.
+    classification_level: Classification
+    classification_latched_at: Optional[datetime] = None
+    classification_source: Optional[str] = None
     embedding: Optional[list[float]] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     token_count: Optional[int] = None

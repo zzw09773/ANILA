@@ -21,12 +21,21 @@ from app.models.artifact import (
 )
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
+from app.models.auth_session import AuthRefreshToken, AuthSession
 from app.models.banner import Banner
 from app.models.card_login_challenge import CardLoginChallenge
 from app.models.classification import (
     ClassificationAuthorityAssignment,
     ClassificationEvent,
     DeclassificationRequest,
+)
+from app.models.clearance import (
+    ClearanceGrant,
+    ClearanceGrantCompartment,
+    CollectionAccessGrant,
+    CollectionRequiredCompartment,
+    DocumentRequiredCompartment,
+    SecurityCompartment,
 )
 from app.models.conversation import Conversation
 from app.models.department import Department
@@ -36,28 +45,42 @@ from app.models.ingestion import (
     DocumentRelation,
     IngestionCollection,
     IngestionDocument,
+    IngestionDocumentGeneration,
     IngestionEvalRun,
     IngestionJob,
+    IngestionOutbox,
+    SimilarityRecomputeRequest,
     UserLlmCredential,
 )
 from app.models.message import Message
 from app.models.model_registry import ModelRegistry
+from app.models.model_governance_receipt import ModelGovernanceReceipt
 from app.models.platform_link import PlatformLink
 from app.models.policy_decision import PolicyDecision
 from app.models.registered_service import (
     RegisteredService,
     ServiceProjectBinding,
 )
+from app.models.retention import RetentionReaperLease
+from app.models.resume_authority import ResumeAttempt, ResumeAuthority
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.service_client import ServiceClient
 from app.models.service_launch import ServiceAuditCallback, ServiceLaunch
+from app.models.session_event import SessionEvent, SessionEventRun
 from app.models.source_snapshot import Citation, SourceSnapshot
 from app.models.task import Task, TaskRun
 from app.models.token_revocation import TokenRevocation
 from app.models.token_usage import TokenUsage
 from app.models.trace_span import TraceSpan
 from app.models.user import User, UserModelPermission
-from app.models.user_memory import ConversationMemoryChunk, UserFact
+from app.models.user_memory import (
+    ConversationMemoryChunk,
+    MemoryChunkRequiredCompartment,
+    MemoryChunkSourceCollection,
+    UserFact,
+    UserFactRequiredCompartment,
+    UserFactSourceCollection,
+)
 
 __all__ = [
     "Agent",
@@ -74,33 +97,52 @@ __all__ = [
     "Attachment",
     "ExportRecord",
     "AuditLog",
+    "AuthRefreshToken",
+    "AuthSession",
     "Banner",
     "CardLoginChallenge",
     "Citation",
     "ClassificationAuthorityAssignment",
     "ClassificationEvent",
+    "ClearanceGrant",
+    "ClearanceGrantCompartment",
+    "CollectionAccessGrant",
+    "CollectionRequiredCompartment",
     "Conversation",
     "DeclassificationRequest",
     "Department",
     "AgentLlmCredential",
     "ConversationMemoryChunk",
+    "MemoryChunkRequiredCompartment",
+    "MemoryChunkSourceCollection",
     "DocumentRelation",
+    "DocumentRequiredCompartment",
     "Handoff",
     "IngestionCollection",
     "IngestionDocument",
+    "IngestionDocumentGeneration",
     "IngestionEvalRun",
     "IngestionJob",
+    "IngestionOutbox",
+    "SimilarityRecomputeRequest",
     "Message",
     "ModelRegistry",
+    "ModelGovernanceReceipt",
     "PlatformLink",
     "PolicyDecision",
     "RegisteredService",
+    "RetentionReaperLease",
+    "ResumeAuthority",
+    "ResumeAttempt",
     "ServiceAccessGrant",
     "ServiceAuditCallback",
     "ServiceClient",
     "ServiceLaunch",
     "ServiceProjectBinding",
+    "SessionEvent",
+    "SessionEventRun",
     "SourceSnapshot",
+    "SecurityCompartment",
     "Task",
     "TaskRun",
     "TokenRevocation",
@@ -109,6 +151,8 @@ __all__ = [
     "User",
     "UserAgentPermission",
     "UserFact",
+    "UserFactRequiredCompartment",
+    "UserFactSourceCollection",
     "UserLlmCredential",
     "UserModelPermission",
 ]

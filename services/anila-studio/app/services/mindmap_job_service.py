@@ -88,28 +88,12 @@ class MindmapJobRecord:
     created_at: datetime
     updated_at: datetime
     # Slice 8b: control-plane passthrough, back-filled after artifact register.
-    artifact_id: str | None = None
+    artifact_id: int | None = None
     classification_level: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, compare=False, repr=False)
 
     def to_status(self) -> MindmapJobStatus:
         """Project the record into the API-visible JSON status."""
-        download_urls: dict[str, str] | None = None
-        if self.state == "done" and self.svg_bytes is not None:
-            # Two downloadables: the SVG (primary) and the DOT source
-            # (debug). Both routed through the same path-template so the
-            # frontend just substitutes ``fmt``.
-            download_urls = {
-                "svg": f"/api/mindmaps/jobs/{self.job_id}/download/svg",
-            }
-            if self.dot_source is not None:
-                download_urls["dot"] = (
-                    f"/api/mindmaps/jobs/{self.job_id}/download/dot"
-                )
-            if self.spec_json is not None:
-                download_urls["json"] = (
-                    f"/api/mindmaps/jobs/{self.job_id}/download/json"
-                )
         return MindmapJobStatus(
             job_id=self.job_id,
             state=self.state,  # type: ignore[arg-type]
@@ -118,7 +102,7 @@ class MindmapJobRecord:
             preset=self.preset,
             node_count=self.node_count,
             error=self.error,
-            download_urls=download_urls,
+            download_urls=None,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
             created_at=self.created_at,
@@ -203,6 +187,9 @@ async def create_job(
 
     await job_lifecycle.on_create(record, report_ctx)
 
+    if settings.STUDIO_DURABLE_SUPERVISOR:
+        return record
+
     updater = MindmapJobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
@@ -274,6 +261,8 @@ def artifact_info(rec: MindmapJobRecord) -> ArtifactInfo:
             else None
         ),
         primary_bytes=rec.svg_bytes,
+        original_filename=f"{rec.job_id}.svg",
+        media_type="image/svg+xml",
         result_metadata={"node_count": rec.node_count},
     )
 
@@ -308,7 +297,7 @@ class MindmapJobUpdater:
         svg_bytes: bytes | None = None,
         dot_source: str | None = None,
         spec_json: str | None = None,
-        artifact_id: str | None = None,
+        artifact_id: int | None = None,
         classification_level: str | None = None,
     ) -> None:
         """Patch fields on the current record. Only specified fields

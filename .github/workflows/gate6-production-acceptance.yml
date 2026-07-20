@@ -1,0 +1,178 @@
+name: Gate 6 engineering contract CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - prod-intranet-card
+  push:
+    branches:
+      - main
+      - prod-intranet-card
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate6-engineering-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: utf-8
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONPATH: packages/anila-security/src
+
+jobs:
+  gate6-posture:
+    name: Gate 6 / repository posture contract (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up supported Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local anila-security contract dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-security[dev]"
+
+      - name: Check Gate 6 engineering posture (no approval)
+        run: python infra/ci/check_gate6_repository_posture.py --repo-root .
+
+  gate6-contract-tests:
+    name: Gate 6 / policy and backup contracts (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up supported Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install local contract, security, core, and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts" \
+            -e "./packages/anila-security[dev]" \
+            -e "./packages/anila-core[dev]"
+
+      - name: Run anila-security package contracts
+        run: python -m pytest packages/anila-security/tests -q
+
+      - name: Run Gate 6 P9 inventory and Gate 5 governance contracts
+        run: |
+          python -m pytest \
+            infra/policy/tests/test_gate6_p9_enabled_callsite_inventory.py \
+            infra/policy/tests/test_gate5_model_governance.py -q
+
+      - name: Run production backup automation contracts
+        run: python -m pytest infra/deployment/tests/test_production_backup_automation.py -q
+
+      - name: Run restore-drill evidence verifier contracts
+        run: python -m pytest infra/deployment/tests/test_restore_drill_verifier.py -q
+
+      - name: Run Gate 6 repository posture tests
+        run: python -m pytest infra/policy/tests/test_gate6_repository_posture.py -q
+
+  gate6-static-contract:
+    name: Gate 6 / workflow and changed-file checks (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up supported Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local lint and YAML parser dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-security[dev]"
+          python -m pip install pyyaml
+
+      - name: Lint Gate 6 contract code
+        run: |
+          python -m ruff check \
+            infra/ci/check_gate6_repository_posture.py \
+            infra/deployment/backup/restore_drill_verifier.py \
+            infra/policy/tests/test_gate6_repository_posture.py \
+            infra/policy/gate6/generate_p9_enabled_callsite_inventory.py \
+            infra/policy/tests/test_gate6_p9_enabled_callsite_inventory.py \
+            packages/anila-security/src/anila_security/production_acceptance_profile.py \
+            packages/anila-security/tests/test_production_acceptance_profile.py
+
+      - name: Compile Gate 6 contract scripts
+        run: |
+          python -m compileall -q \
+            infra/ci/check_gate6_repository_posture.py \
+            infra/deployment/backup/restore_drill_verifier.py \
+            infra/policy/gate6/generate_p9_enabled_callsite_inventory.py \
+            packages/anila-security/src/anila_security/production_acceptance_profile.py
+
+      - name: Parse and sanity-check this workflow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          import yaml
+
+          path = Path(".github/workflows/gate6-production-acceptance.yml")
+          document = yaml.safe_load(path.read_text(encoding="utf-8"))
+          assert document["name"] == "Gate 6 engineering contract CI"
+          jobs = document["jobs"]
+          for required in ("gate6-posture", "gate6-contract-tests", "gate6-static-contract"):
+              assert required in jobs
+          assert "production acceptance" not in document["name"].lower()
+
+          contract_steps = jobs["gate6-contract-tests"]["steps"]
+          restore_step = next(
+              step for step in contract_steps
+              if step.get("name") == "Run restore-drill evidence verifier contracts"
+          )
+          assert restore_step["run"] == (
+              "python -m pytest infra/deployment/tests/test_restore_drill_verifier.py -q"
+          )
+
+          static_steps = jobs["gate6-static-contract"]["steps"]
+          lint_step = next(
+              step for step in static_steps if step.get("name") == "Lint Gate 6 contract code"
+          )
+          compile_step = next(
+              step for step in static_steps if step.get("name") == "Compile Gate 6 contract scripts"
+          )
+          verifier = "infra/deployment/backup/restore_drill_verifier.py"
+          assert verifier in lint_step["run"]
+          assert verifier in compile_step["run"]
+          PY
+
+      - name: Check changed-file whitespace
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git diff --check "origin/${BASE_REF}...HEAD"
+          else
+            git diff --check HEAD^ HEAD
+          fi

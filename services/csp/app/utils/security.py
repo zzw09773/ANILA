@@ -27,6 +27,7 @@ Cutover notes:
 from __future__ import annotations
 
 import logging
+import secrets
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -206,10 +207,11 @@ def _jwt_headers() -> dict:
 
 
 def create_access_token(data: dict) -> str:
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(
         minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
+    to_encode = _complete_session_claims(data, now=now)
     to_encode.update({"exp": expire, "type": "access"})
     return jwt.encode(
         to_encode,
@@ -220,10 +222,11 @@ def create_access_token(data: dict) -> str:
 
 
 def create_refresh_token(data: dict) -> str:
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(
         days=settings.REFRESH_TOKEN_EXPIRE_DAYS
     )
+    to_encode = _complete_session_claims(data, now=now)
     to_encode.update({"exp": expire, "type": "refresh"})
     return jwt.encode(
         to_encode,
@@ -231,6 +234,84 @@ def create_refresh_token(data: dict) -> str:
         algorithm=ALGORITHM,
         headers=_jwt_headers(),
     )
+
+
+def _complete_session_claims(data: dict, *, now: datetime) -> dict:
+    """Fill the mandatory trust/session envelope for low-level callers.
+
+    ``auth_service.create_tokens`` supplies explicit shared ``sid`` and
+    assurance values for a pair.  This fallback keeps direct internal/test
+    callers standards-complete without allowing them to omit the trust domain.
+    """
+    claims = data.copy()
+    now_epoch = int(now.timestamp())
+    claims.setdefault("iat", now_epoch)
+    claims.setdefault("iss", settings.JWT_ISSUER)
+    claims.setdefault("aud", settings.JWT_AUDIENCE)
+    claims.setdefault("jti", secrets.token_urlsafe(32))
+    claims.setdefault("sid", secrets.token_urlsafe(32))
+    claims.setdefault("amr", [])
+    claims.setdefault("acr", "urn:anila:acr:unspecified")
+    claims.setdefault("auth_time", now_epoch)
+    claims.setdefault("break_glass", False)
+    return claims
+
+
+_ACR_BY_PRIMARY_AMR = {
+    "sc": "urn:anila:acr:smart-card",
+    "oidc": "urn:anila:acr:federated",
+    "pwd": "urn:anila:acr:password",
+}
+_KNOWN_AMR = frozenset(_ACR_BY_PRIMARY_AMR)
+
+
+def _has_valid_session_assurance(payload: dict) -> bool:
+    """Validate the signed session-assurance envelope fail closed."""
+    jti = payload.get("jti")
+    sid = payload.get("sid")
+    amr = payload.get("amr")
+    acr = payload.get("acr")
+    auth_time = payload.get("auth_time")
+    issued_at = payload.get("iat")
+    break_glass = payload.get("break_glass")
+
+    if not isinstance(jti, str) or not jti:
+        return False
+    if not isinstance(sid, str) or not sid:
+        return False
+    if (
+        not isinstance(amr, list)
+        or any(
+            not isinstance(method, str) or method not in _KNOWN_AMR
+            for method in amr
+        )
+        or len(amr) != len(set(amr))
+    ):
+        return False
+    if not isinstance(acr, str) or not acr:
+        return False
+    if (
+        isinstance(auth_time, bool)
+        or not isinstance(auth_time, (int, float))
+        or isinstance(issued_at, bool)
+        or not isinstance(issued_at, (int, float))
+        or auth_time < 0
+        or auth_time > issued_at
+        or issued_at
+        > datetime.now(timezone.utc).timestamp() + settings.JWT_LEEWAY_SECONDS
+    ):
+        return False
+    if not isinstance(break_glass, bool):
+        return False
+
+    if break_glass:
+        return amr == ["pwd"] and acr == "urn:anila:acr:break-glass"
+    expected_acr = "urn:anila:acr:unspecified"
+    for method in ("sc", "oidc", "pwd"):
+        if method in amr:
+            expected_acr = _ACR_BY_PRIMARY_AMR[method]
+            break
+    return acr == expected_acr
 
 
 # ── Token verification ────────────────────────────────────────────────────────
@@ -253,18 +334,32 @@ def decode_token(token: str) -> dict | None:
         header = jwt.get_unverified_header(token)
     except JWTError:
         return None
+    if header.get("alg") != ALGORITHM:
+        return None
     kid = header.get("kid")
     public_key = _public_key_for_kid(kid)
     if public_key is None:
         return None
     try:
-        return jwt.decode(
+        payload = jwt.decode(
             token,
             public_key,
             algorithms=[ALGORITHM],
+            issuer=settings.JWT_ISSUER,
+            audience=settings.JWT_AUDIENCE,
+            options={
+                "require_exp": True,
+                "require_iat": True,
+                "require_iss": True,
+                "require_aud": True,
+                "require_jti": True,
+            },
         )
     except JWTError:
         return None
+    if not _has_valid_session_assurance(payload):
+        return None
+    return payload
 
 
 def verify_token(token: str) -> dict | None:

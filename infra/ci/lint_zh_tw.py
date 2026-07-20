@@ -70,9 +70,16 @@ TARGETS = {
 }
 
 
+def is_exempt(rel: str) -> bool:
+    # EXEMPT_PATHS 以 POSIX 正斜線表達;Windows 的 rel 是反斜線分隔,須先
+    # 正規化。用字面 "\\" 而非 os.sep:Linux 上 os.sep 是 "/",會讓
+    # Windows 路徑的回歸測試無從在 CI 覆蓋。
+    posix_rel = rel.replace("\\", "/")
+    return any(seg in f"/{posix_rel}" for seg in EXEMPT_PATHS)
+
+
 def scan_file(path: Path, root: Path) -> list[tuple[int, str]]:
-    rel = str(path.relative_to(root))
-    if any(seg in f"/{rel}" for seg in EXEMPT_PATHS):
+    if is_exempt(str(path.relative_to(root))):
         return []
     py_gate = TARGETS.get(path.suffix)
     hits: list[tuple[int, str]] = []

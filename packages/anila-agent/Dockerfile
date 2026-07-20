@@ -23,15 +23,45 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /src
 # 只 COPY 安裝套件所需（pyproject + 套件原始碼）。這份原始碼只用來「裝進 venv」，
 # 不會出現在 runtime image 的檔案樹（runtime 只 COPY /opt/venv）。
-COPY pyproject.toml README.md ./
-COPY anila_agent ./anila_agent
+COPY packages/anila-contracts ./anila-contracts
+COPY packages/anila-agent/pyproject.toml packages/anila-agent/README.md ./anila-agent/
+COPY packages/anila-agent/anila_agent ./anila-agent/anila_agent
 
 # serving=FastAPI wrapper；pgvector=ANILA 原生檢索(asyncpg)；jupyter=MLSteam Lab 需要；
 # dev=pytest/ruff/mypy（完整開發環境）。CSP HTTP retriever 只需 httpx（base deps 已有）。
-RUN pip install ".[serving,pgvector,jupyter,dev]"
+RUN pip install ./anila-contracts \
+    && pip install "./anila-agent[serving,pgvector,jupyter,dev]"
 
 # build-time 煙霧測試：import 不過就讓 build 當場失敗（外網好除錯）。
 RUN python -c "from anila_agent.serving.service_wrapper import app; print('import OK')"
+
+# ============================================================
+# silver-runtime：正式單 Agent service（Gate 5 R5）
+# ============================================================
+# Keep the developer/Jupyter image below as the default target for MLSteam,
+# but provide a separate immutable target for Compose.  The formal target has
+# no notebook, shell tools, or source checkout; it only exposes the governed
+# FastAPI wrapper and a named writable state directory.  Compose adds the
+# read-only root filesystem, capability drop, and tmpfs policy at runtime.
+FROM python:3.12-slim AS silver-runtime
+
+RUN useradd --create-home --uid 10001 anila \
+    && mkdir -p /var/lib/anila-agent \
+    && chown -R anila:anila /var/lib/anila-agent
+
+COPY --from=builder /opt/venv /opt/venv
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    ANILA_LOG_LEVEL=INFO \
+    ANILA_HOME=/var/lib/anila-agent
+
+USER anila
+WORKDIR /var/lib/anila-agent
+EXPOSE 8200
+
+CMD ["uvicorn", "anila_agent.serving.service_wrapper:app", "--host", "0.0.0.0", "--port", "8200"]
 
 # ============================================================
 # runtime：精簡層、非 root；只有「環境」，沒有源碼

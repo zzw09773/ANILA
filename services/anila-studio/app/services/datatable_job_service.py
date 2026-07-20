@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from app.config import settings
 from app.schemas.datatable import (
     JOB_STEP_DONE,
     JOB_STEP_QUEUED,
@@ -68,7 +69,7 @@ class DatatableJobRecord:
     created_at: datetime
     updated_at: datetime
     # Slice 8b: control-plane passthrough, back-filled after artifact register.
-    artifact_id: str | None = None
+    artifact_id: int | None = None
     classification_level: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, compare=False, repr=False)
 
@@ -79,13 +80,6 @@ class DatatableJobRecord:
         the URL shape matches the endpoint's path layout. Frontend uses
         these directly so it doesn't have to mirror the URL pattern.
         """
-        download_urls: dict[str, str] | None = None
-        if self.artifact_paths:
-            download_urls = {
-                fmt: f"/api/datatables/jobs/{self.job_id}/download/{fmt}"
-                for fmt in self.artifact_paths
-            }
-
         return DatatableJobStatus(
             job_id=self.job_id,
             state=self.state,  # type: ignore[arg-type]
@@ -95,7 +89,7 @@ class DatatableJobRecord:
             row_count=self.row_count,
             column_count=self.column_count,
             error=self.error,
-            download_urls=download_urls,
+            download_urls=None,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
             created_at=self.created_at,
@@ -199,6 +193,9 @@ async def create_job(
 
     await job_lifecycle.on_create(record, report_ctx)
 
+    if settings.STUDIO_DURABLE_SUPERVISOR:
+        return record
+
     updater = DatatableJobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
@@ -267,12 +264,15 @@ def artifact_info(rec: DatatableJobRecord) -> ArtifactInfo:
     the primary downloadable (HTML fallback). Bytes are on disk so the
     content hash is skipped.
     """
-    primary = rec.artifact_paths.get("xlsx") or rec.artifact_paths.get("html")
+    primary = rec.artifact_paths.get("xlsx")
+    primary_bytes = primary.read_bytes() if primary is not None and primary.is_file() else None
     return ArtifactInfo(
         artifact_type="datatable",
         title=rec.title,
         storage_ref=(str(primary) if primary is not None else None),
-        primary_bytes=None,
+        primary_bytes=primary_bytes,
+        original_filename=f"{rec.job_id}.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         result_metadata={
             "row_count": rec.row_count,
             "column_count": rec.column_count,
@@ -309,7 +309,7 @@ class DatatableJobUpdater:
         column_count: int | None = None,
         error: str | None = None,
         artifact_paths: dict[str, Path] | None = None,
-        artifact_id: str | None = None,
+        artifact_id: int | None = None,
         classification_level: str | None = None,
     ) -> None:
         async with _lock:

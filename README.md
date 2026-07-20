@@ -125,7 +125,7 @@ flowchart TB
 | 目錄 | 說明 |
 |---|---|
 | [`anila-core`](./packages/anila-core/) | Runtime foundation SDK：`api` / `registry` / `engine` / `tools` / `providers` / `storage` / `memory` / `tracing` / `security` / `router` / `ingestion`。Router、CSP、ingestion-worker 皆安裝它 |
-| [`anila-contracts`](./packages/anila-contracts/) | Gate 1 F5 薄型 wire contracts：五級 `Classification`、`StepEvent`、`AgentError`；不繼承服務框架或資料庫依賴 |
+| [`anila-contracts`](./packages/anila-contracts/) | Gate 1 v0 基礎加 Gate 2 v1 治理契約：分類、事件、Task／Trace context、Invocation、SourceSnapshot、SafeSummary；不繼承服務框架或資料庫依賴 |
 | [`anila-agent`](./packages/anila-agent/) | 官方 sub-agent 模板（git subtree）；root compose 唯讀掛入 CSP 的 `/app/anila-template` |
 
 **`infra/`** — compose / 部署 / 閘道 / CI / 模型
@@ -221,7 +221,7 @@ Git CLI 可使用 GitLab 原生 HTTPS/PAT，或
 # 外網機：
 bash infra/deployment/intranet/build-and-export-for-intranet.sh
 # 內網（複製 export 目錄 + repo 進來）：
-docker network create anila-models-net                        # 第一次
+bash <bundle-dir>/ensure-models-network.sh ensure              # 建立/驗證 internal bridge
 docker compose -f infra/models/docker-compose.yml up -d        # 模型 stack（獨立 lifecycle）
 bash infra/deployment/intranet/intranet-deploy.sh              # card bootstrap
 bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifecycle

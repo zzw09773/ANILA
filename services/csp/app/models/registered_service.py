@@ -113,7 +113,9 @@ class RegisteredService(Base):
         index=True,
     )
 
-    classification_ceiling = Column(String(20), nullable=True)
+    classification_ceiling = Column(
+        String(20), nullable=False, default="無機密", server_default="無機密"
+    )
     required_roles = Column(_JSON_LIST, nullable=False, default=list)
     is_public = Column(
         Boolean, nullable=False, default=False, server_default="false"

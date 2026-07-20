@@ -18,8 +18,6 @@ typed events were invisible end-to-end. These tests pin the new parser.
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator
-
 import httpx
 import pytest
 import respx
@@ -159,6 +157,32 @@ async def test_anila_reasoning_event_passes_through() -> None:
             "payload": {"delta": "thinking..."},
         }
     ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_step_event_and_trusted_task_headers_pass_through_router() -> None:
+    step = {"schema_version": "step-event/v1", "status": "running"}
+    route = respx.post(CSP_URL).mock(
+        return_value=_sse_response(
+            f"event: anila.step\ndata: {json.dumps(step)}\n\ndata: [DONE]\n\n"
+        )
+    )
+    events = []
+    async for event in _stream_agent_sse(
+        "a",
+        "q",
+        "k",
+        forwarded_headers={"X-ANILA-Task-Id": "42", "Authorization": "forged"},
+    ):
+        events.append(event)
+    assert events[0] == {
+        "type": "anila_event",
+        "event": "anila.step",
+        "payload": step,
+    }
+    assert route.calls[0].request.headers["X-ANILA-Task-Id"] == "42"
+    assert route.calls[0].request.headers["Authorization"] == "Bearer k"
 
 
 # ---------------------------------------------------------------------------

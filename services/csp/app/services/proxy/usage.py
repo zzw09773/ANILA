@@ -14,7 +14,7 @@ async def enqueue_usage_task_linked(
     api_key_id: int | None,
     user_id: int,
     department_id: int | None,
-    model_id: int,
+    model_id: int | None,
     prompt_tokens: int,
     completion_tokens: int,
     total_tokens: int,

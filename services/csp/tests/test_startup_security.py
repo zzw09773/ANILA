@@ -348,9 +348,99 @@ def _set_formal_card_profile(monkeypatch) -> None:
         "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": "1",
         "ANILA_ALLOW_PRIVATE_ENDPOINT": "0",
         "CARD_DEV_SKIP_NONCE_BINDING": "false",
+        "CARD_CRL_REQUIRED": "true",
+        "ALLOW_LEGACY_AGENT_DISPATCH": "false",
+        "CARD_INITIAL_OWNERS": "990000001",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
+
+
+def _set_formal_password_profile(monkeypatch, profile: str) -> None:
+    values = {
+        "ANILA_DEPLOYMENT_PROFILE": profile,
+        "ANILA_ENV": "production",
+        "ANILA_ALLOW_DEV_SECRET": "0",
+        "DEBUG": "false",
+        "ENABLE_API_DOCS": "false",
+        "ENABLE_PUBLIC_SHARE": "false",
+        "ENABLE_MEMORY": "false",
+        "SKIP_STARTUP_MIGRATIONS": "false",
+        "ALLOW_AUTO_KEYGEN": "false",
+        "COOKIE_SECURE": "true",
+        "ENABLE_CARD_LOGIN": "false",
+        "REQUIRE_CARD_LOGIN_ONLY": "false",
+        "ANILA_ALLOW_HTTP_ENDPOINT": "0",
+        "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": "0",
+        "ANILA_ALLOW_PRIVATE_ENDPOINT": "0",
+        "CARD_DEV_SKIP_NONCE_BINDING": "false",
+        "CARD_CRL_REQUIRED": "false",
+        "ALLOW_LEGACY_AGENT_DISPATCH": "false",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+@pytest.mark.parametrize(
+    "profile", ["prod-public-passwd", "prod-military-passwd", "trial-military"]
+)
+def test_declared_formal_password_profiles_accept_exact_posture(
+    profile, monkeypatch, reload_startup_security
+):
+    _set_formal_password_profile(monkeypatch, profile)
+    reload_startup_security().assert_deployment_profile_posture()
+
+
+@pytest.mark.parametrize(
+    "name,bad_value",
+    [
+        ("ANILA_ENV", "development"),
+        ("ANILA_ALLOW_DEV_SECRET", "1"),
+        ("DEBUG", "true"),
+        ("ENABLE_API_DOCS", "true"),
+        ("ENABLE_PUBLIC_SHARE", "true"),
+        ("ENABLE_MEMORY", "true"),
+        ("SKIP_STARTUP_MIGRATIONS", "true"),
+        ("ALLOW_AUTO_KEYGEN", "true"),
+        ("COOKIE_SECURE", "false"),
+        ("ENABLE_CARD_LOGIN", "true"),
+        ("REQUIRE_CARD_LOGIN_ONLY", "true"),
+        ("ANILA_ALLOW_HTTP_ENDPOINT", "1"),
+        ("ANILA_ALLOW_HTTP_AGENT_ENDPOINT", "1"),
+        ("ANILA_ALLOW_PRIVATE_ENDPOINT", "1"),
+        ("CARD_DEV_SKIP_NONCE_BINDING", "true"),
+        ("CARD_CRL_REQUIRED", "true"),
+        ("ALLOW_LEGACY_AGENT_DISPATCH", "true"),
+    ],
+)
+@pytest.mark.parametrize(
+    "profile", ["prod-public-passwd", "prod-military-passwd", "trial-military"]
+)
+def test_declared_formal_password_profiles_reject_each_mismatch(
+    profile, name, bad_value, monkeypatch, reload_startup_security
+):
+    _set_formal_password_profile(monkeypatch, profile)
+    monkeypatch.setenv(name, bad_value)
+    with pytest.raises(RuntimeError, match=name):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_formal_password_profiles_do_not_require_card_owner(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_password_profile(monkeypatch, "prod-public-passwd")
+    monkeypatch.delenv("CARD_INITIAL_OWNERS", raising=False)
+    reload_startup_security().assert_deployment_profile_posture()
+
+
+@pytest.mark.parametrize("owner", ["", "<your-employee-id,or-csv-list>"])
+def test_formal_card_profiles_require_non_placeholder_owner(
+    owner, monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv("CARD_INITIAL_OWNERS", owner)
+    with pytest.raises(RuntimeError, match="CARD_OWNER_CONFIGURED"):
+        reload_startup_security().assert_deployment_profile_posture()
 
 
 def test_declared_formal_card_profile_accepts_exact_posture(
@@ -366,6 +456,15 @@ def test_normal_card_profile_rejects_stale_break_glass_metadata(
     _set_formal_card_profile(monkeypatch)
     monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-STALE-001")
     with pytest.raises(RuntimeError, match="must not retain break-glass metadata"):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_password_profile_rejects_stale_break_glass_metadata_generically(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_password_profile(monkeypatch, "prod-military-passwd")
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-STALE-002")
+    with pytest.raises(RuntimeError, match="non-break-glass formal profile"):
         reload_startup_security().assert_deployment_profile_posture()
 
 
@@ -387,6 +486,8 @@ def test_normal_card_profile_rejects_stale_break_glass_metadata(
         ("ANILA_ALLOW_HTTP_AGENT_ENDPOINT", "0"),
         ("ANILA_ALLOW_PRIVATE_ENDPOINT", "1"),
         ("CARD_DEV_SKIP_NONCE_BINDING", "true"),
+        ("CARD_CRL_REQUIRED", "false"),
+        ("ALLOW_LEGACY_AGENT_DISPATCH", "true"),
     ],
 )
 def test_declared_formal_card_profile_rejects_each_mismatch(
@@ -519,3 +620,114 @@ async def test_lifespan_rejects_profile_drift_before_migrations(
         async with main_module.lifespan(main_module.app):
             pass
     assert migration_called is False
+
+
+def test_gate2_pilot_mode_requires_external_signed_profile(
+    monkeypatch, reload_startup_security, tmp_path
+):
+    monkeypatch.setenv("ANILA_PILOT_MODE", "true")
+    monkeypatch.setenv("GATE2_PILOT_COMPOSE_POSTURE", "gate2-pilot-v1")
+    monkeypatch.setenv(
+        "GATE2_PILOT_PROFILE_PATH", str(tmp_path / "missing-profile.json")
+    )
+    monkeypatch.setenv(
+        "GATE2_PILOT_TRUST_STORE_PATH", str(tmp_path / "missing-trust.json")
+    )
+    monkeypatch.setenv(
+        "GATE2_INFERENCE_INVENTORY_PATH", str(tmp_path / "missing-inventory.json")
+    )
+    with pytest.raises(RuntimeError, match="unsigned/invalid Gate 2 pilot"):
+        reload_startup_security().assert_gate2_pilot_profile()
+
+
+def test_gate2_pilot_mode_rejects_base_compose_without_posture_marker(
+    monkeypatch, reload_startup_security
+):
+    monkeypatch.setenv("ANILA_PILOT_MODE", "true")
+    monkeypatch.delenv("GATE2_PILOT_COMPOSE_POSTURE", raising=False)
+
+    with pytest.raises(RuntimeError, match="Compose posture marker"):
+        reload_startup_security().assert_gate2_pilot_profile()
+
+
+def test_non_pilot_does_not_accept_disabled_template_as_approval(
+    reload_startup_security,
+):
+    # Normal development remains available, but verified-callsite cache is
+    # empty and cannot accidentally be reused from an earlier pilot process.
+    ss = reload_startup_security()
+    ss._verified_pilot_callsites = frozenset({"csp.chat_model"})
+    ss._verified_pilot_admission = object()
+    ss.assert_gate2_pilot_profile()
+    assert ss._verified_pilot_callsites == frozenset()
+    assert ss._verified_pilot_admission is None
+
+
+def test_runtime_deadline_policy_accepts_default_margin(
+    reload_startup_security,
+):
+    reload_startup_security().assert_runtime_deadline_policy()
+
+
+def test_runtime_deadline_policy_rejects_stream_reconciler_race(
+    monkeypatch, reload_startup_security,
+):
+    monkeypatch.setenv("PROXY_STREAM_MAX_SECONDS", "850")
+    monkeypatch.setenv("TASK_RUN_STALE_SECONDS", "900")
+
+    with pytest.raises(RuntimeError, match="at least 60 seconds"):
+        reload_startup_security().assert_runtime_deadline_policy()
+
+
+def test_runtime_deadline_policy_rejects_nonpositive_stream_limit(
+    monkeypatch, reload_startup_security,
+):
+    monkeypatch.setenv("PROXY_STREAM_MAX_SECONDS", "0")
+
+    with pytest.raises(RuntimeError, match="must be positive"):
+        reload_startup_security().assert_runtime_deadline_policy()
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_stream_deadline_setting_rejects_nonfinite_values(
+    monkeypatch, value,
+):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("PROXY_STREAM_MAX_SECONDS", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_stale_deadline_setting_rejects_nonfinite_values(
+    monkeypatch, value,
+):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("TASK_RUN_STALE_SECONDS", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("PROXY_STREAM_MAX_SECONDS", float("nan")),
+        ("PROXY_STREAM_MAX_SECONDS", float("inf")),
+        ("TASK_RUN_STALE_SECONDS", float("nan")),
+        ("TASK_RUN_STALE_SECONDS", float("inf")),
+    ],
+)
+def test_runtime_deadline_policy_defends_against_nonfinite_assignment(
+    monkeypatch, reload_startup_security, field, value,
+):
+    module = reload_startup_security()
+    monkeypatch.setattr(module.settings, field, value)
+
+    with pytest.raises(RuntimeError, match="finite"):
+        module.assert_runtime_deadline_policy()

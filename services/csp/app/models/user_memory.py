@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -36,6 +37,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+
+
+# SQLite autoincrements only for the literal INTEGER PRIMARY KEY spelling;
+# production PostgreSQL still receives BIGINT/BIGSERIAL through this variant.
+MemoryBigInt = BigInteger().with_variant(Integer, "sqlite")
 
 
 class UserFact(Base):
@@ -53,7 +59,7 @@ class UserFact(Base):
 
     __tablename__ = "user_facts"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(MemoryBigInt, primary_key=True, autoincrement=True)
     user_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -70,6 +76,23 @@ class UserFact(Base):
     # message_id is a pointer into the conversations.messages JSON blob;
     # not a FK because messages aren't a first-class table.
     source_message_id = Column(Integer, nullable=True)
+    # Gate 2 G3: memory is classification-bearing data.  These fields are
+    # required on every row; the migration backfills legacy rows from their
+    # source conversation and uses TOP SECRET for an unverifiable source.
+    classification_level = Column(String(20), nullable=False)
+    classification_source = Column(String(80), nullable=False)
+    source_task_id = Column(
+        Integer,
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_snapshot_id = Column(
+        Integer,
+        ForeignKey("source_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     confidence = Column(Float, nullable=False, default=1.0)
     created_at = Column(
         DateTime(timezone=True),
@@ -87,6 +110,14 @@ class UserFact(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "key", name="uq_user_facts_user_key"),
+        CheckConstraint(
+            "classification_level IN ('無機密', '營業秘密', '機密', '極機密', '絕對機密')",
+            name="ck_user_facts_classification_level",
+        ),
+        CheckConstraint(
+            "length(trim(classification_source)) > 0",
+            name="ck_user_facts_classification_source",
+        ),
     )
 
 
@@ -106,8 +137,18 @@ class ConversationMemoryChunk(Base):
     """
 
     __tablename__ = "conversation_memory_chunks"
+    __table_args__ = (
+        CheckConstraint(
+            "classification_level IN ('無機密', '營業秘密', '機密', '極機密', '絕對機密')",
+            name="ck_conversation_memory_chunks_classification_level",
+        ),
+        CheckConstraint(
+            "length(trim(classification_source)) > 0",
+            name="ck_conversation_memory_chunks_classification_source",
+        ),
+    )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(MemoryBigInt, primary_key=True, autoincrement=True)
     user_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -129,6 +170,20 @@ class ConversationMemoryChunk(Base):
     is_encrypted = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    classification_level = Column(String(20), nullable=False)
+    classification_source = Column(String(80), nullable=False)
+    source_task_id = Column(
+        Integer,
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_snapshot_id = Column(
+        Integer,
+        ForeignKey("source_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -137,3 +192,71 @@ class ConversationMemoryChunk(Base):
 
     user = relationship("User", foreign_keys=[user_id])
     conversation = relationship("Conversation", foreign_keys=[conversation_id])
+
+
+class UserFactRequiredCompartment(Base):
+    """Compartment requirements inherited by a structured fact."""
+
+    __tablename__ = "user_fact_required_compartments"
+
+    fact_id = Column(
+        MemoryBigInt,
+        ForeignKey("user_facts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    compartment_id = Column(
+        Integer,
+        ForeignKey("security_compartments.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+
+
+class MemoryChunkRequiredCompartment(Base):
+    """Compartment requirements inherited by a recalled message chunk."""
+
+    __tablename__ = "memory_chunk_required_compartments"
+
+    chunk_id = Column(
+        MemoryBigInt,
+        ForeignKey("conversation_memory_chunks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    compartment_id = Column(
+        Integer,
+        ForeignKey("security_compartments.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+
+
+class UserFactSourceCollection(Base):
+    """Collection provenance whose NTK must remain valid for a fact."""
+
+    __tablename__ = "user_fact_source_collections"
+
+    fact_id = Column(
+        MemoryBigInt,
+        ForeignKey("user_facts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    collection_id = Column(
+        Integer,
+        ForeignKey("ingestion_collections.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+
+
+class MemoryChunkSourceCollection(Base):
+    """Collection provenance whose NTK must remain valid for a chunk."""
+
+    __tablename__ = "memory_chunk_source_collections"
+
+    chunk_id = Column(
+        MemoryBigInt,
+        ForeignKey("conversation_memory_chunks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    collection_id = Column(
+        Integer,
+        ForeignKey("ingestion_collections.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )

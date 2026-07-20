@@ -211,8 +211,8 @@ class TestClassificationCeiling:
     @pytest.mark.parametrize("ceiling", [None] + LEVELS)
     def test_truth_table(self, task_level, ceiling):
         expected = (
-            ceiling is None
-            or ClassificationLevel(task_level).rank
+            ceiling is not None
+            and ClassificationLevel(task_level).rank
             <= ClassificationLevel(ceiling).rank
         )
         assert evaluate_classification_ceiling(

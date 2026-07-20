@@ -21,4 +21,4 @@ class Document(BaseModel):
     id: str
     text: str
     score: float | None = None
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict[str, object] = Field(default_factory=dict)

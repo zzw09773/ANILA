@@ -8,6 +8,8 @@ Task / Policy / Trace 契約。模組間交換資料一律透過契約型別,不
 - ``anila_contracts`` — 五級分類等級(ClassificationLevel) 的 SSOT
 - ``classification`` — CSP 舊公共 API 的相容 facade 與降級流程 schema
 - ``tasks`` — Task / TaskRun / SourceSnapshot / Citation 契約與 enum
+- ``source_snapshot_adapter`` — CSP ORM／舊 wire shape 到 Gate 2 v1 的
+  fail-closed adapter
 - ``policy`` — PolicyDecision 契約(九動作 + 三決策 enum)
 - ``traces`` — TraceSpan 契約(doc 09 span event schema)
 """

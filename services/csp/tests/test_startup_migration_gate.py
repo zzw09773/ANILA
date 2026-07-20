@@ -12,7 +12,11 @@ from app.services import startup_migrations
 
 
 def _fake_app():
-    return SimpleNamespace(state=SimpleNamespace())
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            ingestion_relay_task=SimpleNamespace(done=lambda: False)
+        )
+    )
 
 
 def test_alembic_failure_is_fail_stop_and_never_calls_create_all(monkeypatch):
@@ -140,6 +144,7 @@ def test_sqlite_testclient_reports_explicitly_skipped_migration_as_ready(client)
     assert readiness.json() == {
         "status": "ready",
         "migration_status": "skipped",
+        "ingestion_outbox_relay": "running",
     }
 
 
@@ -166,3 +171,15 @@ def test_health_and_readiness_expose_migration_state(
     assert health["status"] == overall_status
     assert health["migration_status"] == migration_status
     assert readiness.status_code == ready_status
+
+
+def test_readiness_fails_when_ingestion_outbox_relay_stops():
+    application = _fake_app()
+    application.state.migration_status = "succeeded"
+    application.state.migration_error = None
+    application.state.ingestion_relay_task = SimpleNamespace(done=lambda: True)
+
+    readiness = main_module._readiness_response(application)
+
+    assert readiness.status_code == 503
+    assert b'"ingestion_outbox_relay":"stopped"' in readiness.body

@@ -3,14 +3,14 @@
 Sprint 1 ships:
 
 - ``POST /api/ingestion/collections/{id}/documents`` — multipart upload,
-  writes blob to UPLOAD_DIR, INSERTs ingestion_documents row, enqueues
-  ingest_document Arq job, INSERTs ingestion_jobs row tied to the job id.
+  writes blob to UPLOAD_DIR, then atomically INSERTs the document, job, and
+  durable dispatch intent. A background relay publishes the Arq job.
 - ``GET  /api/ingestion/collections/{id}/documents`` — paginated list of
   documents in a collection.
 - ``GET  /api/ingestion/documents/{id}`` — detail row + last job row.
 
-Document upload is the API end of the pipeline; the worker takes over
-from the moment we enqueue. The dev sees the document in 'pending'
+Document upload is the API end of the pipeline; the worker takes over after
+the durable relay publishes the intent. The dev sees the document in 'pending'
 status immediately, then 'parsing' / 'chunking' / 'embedding' / 'indexed'
 as the worker advances.
 """
@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import os
-import uuid
-from datetime import datetime, timezone
+import zipfile
+from datetime import datetime, timedelta, timezone
 
 from fastapi import (
     APIRouter,
@@ -38,12 +38,17 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from anila_contracts import Classification
 from anila_core.ingestion.citation_extractor import normalize_title
-from anila_core.storage.adapters.pg_pool import PgPool
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
 from app.api.ingestion.collections import _require_collection_access
+from app.modules.clearance.service import (
+    ClearancePolicyDataError,
+    resolve_and_evaluate_data_access,
+)
 from app.database import get_db
+from app.config import settings
 from app.models.ingestion import (
     IngestionCollection,
     IngestionDocument,
@@ -52,7 +57,13 @@ from app.models.ingestion import (
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user
-from app.services.ingestion_queue import enqueue_ingest_document
+from app.services.ingestion_outbox import create_ingestion_dispatch
+from app.services.content_sniffing import (
+    ContentValidationError,
+    validate_content,
+    validate_zip_archive,
+)
+from app.services.retention_reaper import RetentionSafetyError, safe_ingestion_path
 
 router = APIRouter(tags=["Ingestion / Documents"])
 
@@ -173,6 +184,9 @@ class DocumentResponse(BaseModel):
     mime_type: str | None
     bytes: int | None
     status: str
+    availability_status: str
+    processing_stage: str
+    active_generation_id: int | None
     chunk_count: int
     error_message: str | None
     uploaded_by: int | None
@@ -204,6 +218,66 @@ def _resolve_collection(
     return _require_collection_access(db, user, collection_id)
 
 
+def _require_document_data_clearance(
+    db: Session, *, user: User, document: IngestionDocument
+) -> None:
+    """Require canonical data authority in addition to management ACL.
+
+    Inspector endpoints expose document bytes (or direct derivatives of those
+    bytes), so collection ownership/admin status is never sufficient.  The
+    shared evaluator checks classification, every required compartment,
+    need-to-know, and collection membership under one active grant.
+    """
+
+    try:
+        decision = resolve_and_evaluate_data_access(
+            db,
+            user_id=user.id,
+            collection_id=document.collection_id,
+            document_id=document.id,
+        )
+    except (LookupError, ClearancePolicyDataError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="clearance policy data invalid; document access denied",
+        ) from exc
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="clearance/compartment/need-to-know/collection grant insufficient",
+        )
+
+
+def _locked_collection_classification(db: Session, collection_id: int) -> str:
+    """Read the canonical collection floor under a writer-conflicting lock.
+
+    PostgreSQL emits ``FOR SHARE``; SQLite test fixtures safely ignore the lock
+    clause. Holding it until the document INSERT commits prevents a concurrent
+    collection upgrade from racing a lower child into existence.
+    """
+    row = (
+        db.query(IngestionCollection.classification_level)
+        .filter(IngestionCollection.id == collection_id)
+        .with_for_update(read=True)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    raw = row[0]
+    if not isinstance(raw, str):
+        raise HTTPException(
+            status_code=409,
+            detail="Collection classification state is invalid",
+        )
+    try:
+        return Classification.from_storage(raw).to_storage()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Collection classification state is invalid",
+        ) from exc
+
+
 def _persist_blob(content: bytes, sha256: str) -> str:
     """Write the upload to disk under a content-addressable path.
 
@@ -219,37 +293,6 @@ def _persist_blob(content: bytes, sha256: str) -> str:
         with open(path, "wb") as f:
             f.write(content)
     return path
-
-
-def _rollback_initial_upload(
-    db: Session,
-    *,
-    document_id: int,
-) -> None:
-    """Delete a newly-created upload after its first enqueue fails.
-
-    Redis cannot participate in the database transaction, so the initial
-    upload is committed before enqueueing.  Compensate that commit when the
-    enqueue fails, deleting any defensive job row first.
-
-    Deliberately keep the content-addressed blob.  An apparently unreferenced
-    path may already have been observed by another concurrent upload whose DB
-    row has not committed yet; unlinking here would let that transaction commit
-    a document pointing at a missing file.  A separate GC with a grace period
-    can safely remove old, repeatedly-unreferenced blobs later.
-    """
-    db.rollback()
-    try:
-        db.query(IngestionJob).filter(
-            IngestionJob.document_id == document_id
-        ).delete(synchronize_session=False)
-        db.query(IngestionDocument).filter(
-            IngestionDocument.id == document_id
-        ).delete(synchronize_session=False)
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -273,13 +316,13 @@ async def upload_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
-    """Accept one file, persist, enqueue ingestion job.
+    """Accept one file and persist its durable ingestion intent.
 
     Returns 202 (Accepted) — the document row is written but indexing
     happens async. Caller polls ``GET /api/ingestion/documents/{id}``
     to watch status transitions.
     """
-    coll = _resolve_collection(db, current_user, collection_id)
+    _resolve_collection(db, current_user, collection_id)
 
     # Read fully into memory — Sprint 1 caps uploads at 50 MB so this is
     # fine; Sprint 2 streaming upload will spool to disk in chunks.
@@ -292,11 +335,21 @@ async def upload_document(
             status_code=413,
             detail=f"File too large ({size:,} > {_MAX_BYTES:,} bytes)",
         )
+    try:
+        sniffed = validate_content(
+            content,
+            filename=file.filename or "",
+            declared_mime=file.content_type,
+        )
+    except ContentValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     sha256 = hashlib.sha256(content).hexdigest()
     storage_path = _persist_blob(content, sha256)
 
     doc_title, doc_norm_title = _derive_title(file.filename or "", title)
+    classification_level = _locked_collection_classification(db, collection_id)
+    classified_at = datetime.now(timezone.utc)
 
     # Insert the document row. Uniqueness on (collection_id, sha256) gives
     # us cheap content-level dedup — re-uploading the same file just
@@ -307,15 +360,26 @@ async def upload_document(
         title=doc_title,
         normalized_title=doc_norm_title,
         sha256=sha256,
-        mime_type=file.content_type,
+        mime_type=sniffed.media_type,
         bytes=size,
         storage_path=storage_path,
         status="pending",
         chunk_count=0,
         uploaded_by=current_user.id,
+        classification_level=classification_level,
+        classification_latched_at=classified_at,
+        classification_source="collection_inherited",
+        archive_due_at=datetime.now(timezone.utc) + timedelta(
+            days=settings.RETENTION_INGESTION_ACTIVE_DAYS
+        ),
     )
     db.add(doc)
     try:
+        job = create_ingestion_dispatch(
+            db,
+            document=doc,
+            enqueued_by=current_user.id,
+        )
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -335,38 +399,6 @@ async def upload_document(
         return DocumentResponse.model_validate(existing)
     db.refresh(doc)
 
-    # Enqueue + create the matching jobs row. We do this in two steps
-    # because Arq returns a job id only after enqueue, and we want the
-    # row to carry that id from the start (no UPDATE-after-INSERT race).
-    try:
-        arq_job_id = await enqueue_ingest_document(doc.id)
-    except Exception as exc:
-        try:
-            _rollback_initial_upload(
-                db,
-                document_id=doc.id,
-            )
-        except Exception as rollback_exc:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to enqueue ingest job and roll back upload",
-            ) from rollback_exc
-        raise HTTPException(
-            status_code=502,
-            detail="Failed to enqueue ingest job; upload rolled back",
-        ) from exc
-    job = IngestionJob(
-        arq_job_id=arq_job_id,
-        collection_id=collection_id,
-        document_id=doc.id,
-        job_type="ingest",
-        status="queued",
-        progress_pct=0,
-        enqueued_by=current_user.id,
-    )
-    db.add(job)
-    db.commit()
-
     log_audit_event(
         db,
         commit=True,
@@ -378,7 +410,7 @@ async def upload_document(
             "collection_id": collection_id,
             "filename": doc.filename,
             "size": size,
-            "arq_job_id": arq_job_id,
+            "arq_job_id": job.arq_job_id,
         },
     )
     return DocumentResponse.model_validate(doc)
@@ -424,34 +456,18 @@ async def reprocess_document(
             synchronize_session=False,
         )
     )
-    db.commit()
     if claimed != 1:
+        db.rollback()
         raise HTTPException(
             status_code=409, detail="Document is no longer in a failed state"
         )
-
-    # enqueue 失敗就把狀態退回 failed,避免文件卡在「pending 但沒有 job」的死角。
-    try:
-        arq_job_id = await enqueue_ingest_document(document_id)
-    except Exception:
-        db.query(IngestionDocument).filter(
-            IngestionDocument.id == document_id
-        ).update({"status": "failed"}, synchronize_session=False)
-        db.commit()
-        raise HTTPException(
-            status_code=502,
-            detail="Failed to enqueue ingest job; document left as failed",
-        )
-    job = IngestionJob(
-        arq_job_id=arq_job_id,
-        collection_id=doc.collection_id,
-        document_id=document_id,
-        job_type="ingest",
-        status="queued",
-        progress_pct=0,
+    doc.status = "pending"
+    doc.error_message = None
+    job = create_ingestion_dispatch(
+        db,
+        document=doc,
         enqueued_by=current_user.id,
     )
-    db.add(job)
     db.commit()
     db.refresh(doc)
 
@@ -465,7 +481,7 @@ async def reprocess_document(
         metadata={
             "collection_id": doc.collection_id,
             "filename": doc.filename,
-            "arq_job_id": arq_job_id,
+            "arq_job_id": job.arq_job_id,
         },
     )
     return DocumentResponse.model_validate(doc)
@@ -561,14 +577,21 @@ async def upload_zip(
     Hard limit: 200 files per zip. Bigger archives should be split or
     use the future Sprint 4 streaming API.
     """
-    import zipfile
     from io import BytesIO
 
-    coll = _resolve_collection(db, current_user, collection_id)
+    _resolve_collection(db, current_user, collection_id)
 
     archive_bytes = await file.read()
     if len(archive_bytes) > 500 * 1024 * 1024:  # 500 MB cap on archive
         raise HTTPException(status_code=413, detail="Zip archive > 500 MB")
+    try:
+        validate_zip_archive(
+            archive_bytes,
+            filename=file.filename or "",
+            declared_mime=file.content_type,
+        )
+    except ContentValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         zf = zipfile.ZipFile(BytesIO(archive_bytes))
     except zipfile.BadZipFile as e:
@@ -644,6 +667,17 @@ async def upload_zip(
             ))
             continue
 
+        try:
+            sniffed = validate_content(content, filename=out_name)
+        except ContentValidationError as exc:
+            errors += 1
+            results.append(ZipUploadResult(
+                filename=out_name,
+                status="error",
+                detail=f"content rejected: {exc}",
+            ))
+            continue
+
         sha256 = hashlib.sha256(content).hexdigest()
         storage_path = _persist_blob(content, sha256)
 
@@ -665,27 +699,34 @@ async def upload_zip(
             ))
             continue
 
-        # Sniff a MIME from the filename — UploadFile.content_type is the
-        # zip's content_type, not per-member.
-        import mimetypes
-        mime, _ = mimetypes.guess_type(out_name)
-
         member_title, member_norm_title = _derive_title(out_name)
+        classification_level = _locked_collection_classification(db, collection_id)
         doc = IngestionDocument(
             collection_id=collection_id,
             filename=out_name,
             title=member_title,
             normalized_title=member_norm_title,
             sha256=sha256,
-            mime_type=mime,
+            mime_type=sniffed.media_type,
             bytes=size,
             storage_path=storage_path,
             status="pending",
             chunk_count=0,
             uploaded_by=current_user.id,
+            classification_level=classification_level,
+            classification_latched_at=datetime.now(timezone.utc),
+            classification_source="collection_inherited",
+            archive_due_at=datetime.now(timezone.utc) + timedelta(
+                days=settings.RETENTION_INGESTION_ACTIVE_DAYS
+            ),
         )
         db.add(doc)
         try:
+            job = create_ingestion_dispatch(
+                db,
+                document=doc,
+                enqueued_by=current_user.id,
+            )
             db.commit()
         except IntegrityError:
             db.rollback()
@@ -697,42 +738,10 @@ async def upload_zip(
             continue
         db.refresh(doc)
 
-        try:
-            arq_job_id = await enqueue_ingest_document(doc.id)
-        except Exception as e:
-            try:
-                _rollback_initial_upload(
-                    db,
-                    document_id=doc.id,
-                )
-            except Exception as rollback_exc:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to enqueue zip member and roll back upload",
-                ) from rollback_exc
-            errors += 1
-            results.append(ZipUploadResult(
-                filename=out_name, status="error",
-                detail=f"enqueue failed: {type(e).__name__}",
-            ))
-            continue
-
-        job = IngestionJob(
-            arq_job_id=arq_job_id,
-            collection_id=collection_id,
-            document_id=doc.id,
-            job_type="ingest",
-            status="queued",
-            progress_pct=0,
-            enqueued_by=current_user.id,
-        )
-        db.add(job)
-        db.commit()
-
         enqueued += 1
         results.append(ZipUploadResult(
             filename=out_name, status="enqueued",
-            document_id=doc.id, arq_job_id=arq_job_id,
+            document_id=doc.id, arq_job_id=job.arq_job_id,
         ))
 
     log_audit_event(
@@ -833,26 +842,7 @@ def delete_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Response:
-    """Delete a document, its chunks (CASCADE), and its blob if unique.
-
-    Three layers to clean up:
-      1. ``ingestion_documents`` row — straight DELETE.
-      2. ``document_chunks`` rows — handled by ``ON DELETE CASCADE`` on
-         the FK (see migration 0014); pgvector + tsv index entries fall
-         out automatically.
-      3. The on-disk blob at ``UPLOAD_DIR/<sha256[:2]>/<sha256>`` — the
-         storage layer is content-addressable, so the SAME file may
-         back multiple ``ingestion_documents`` rows (uploading the same
-         PDF to two collections shares the bytes). We only ``unlink``
-         when no other row references that ``sha256``. This keeps the
-         FS lean for the common case while staying correct under
-         deduped re-uploads.
-
-    Job rows in ``ingestion_jobs`` keep their FK pointing at the doc id
-    via ``ON DELETE CASCADE`` too, so worker history disappears with the
-    document. If you want to retain audit trail beyond the row, the
-    ``audit_log`` entry below is the durable record.
-    """
+    """Archive a document; the leased retention reaper performs erasure."""
     doc = (
         db.query(IngestionDocument)
         .filter(IngestionDocument.id == document_id)
@@ -864,45 +854,33 @@ def delete_document(
     # Auth: must be admin or own the parent collection.
     _resolve_collection(db, current_user, doc.collection_id)
 
+    active_job = db.query(IngestionJob.id).filter(
+        IngestionJob.document_id == doc.id,
+        IngestionJob.status.notin_(("succeeded", "failed", "cancelled", "dead_letter")),
+    ).first()
+    if active_job is not None:
+        raise HTTPException(status_code=409, detail="Document has nonterminal ingestion work")
+
     snapshot = {
         "filename": doc.filename,
         "sha256": doc.sha256,
         "collection_id": doc.collection_id,
         "bytes": doc.bytes,
     }
-    blob_path = doc.storage_path
-    sha256 = doc.sha256
-
-    db.delete(doc)
+    if doc.lifecycle_state == "erased":
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    now = datetime.now(timezone.utc)
+    doc.lifecycle_state = "archived"
+    doc.archived_at = doc.archived_at or now
+    doc.erase_due_at = now + timedelta(days=settings.RETENTION_INGESTION_ARCHIVE_DAYS)
+    doc.availability_status = "unavailable"
     db.commit()
-
-    # Refcount the blob: only unlink if nothing else points at this sha.
-    # Done AFTER commit so a concurrent upload that lands the same sha
-    # on disk doesn't lose its file (the new row is visible to this
-    # query). The race window is tiny — ingestion_documents.sha256 has a
-    # uniqueness constraint per collection, so we'd have to commit a new
-    # doc in another collection between the commit above and the count
-    # below. In that race we'd unlink and the new doc's worker would
-    # repopulate via _persist_blob (idempotent: writes only if absent).
-    still_referenced = (
-        db.query(IngestionDocument)
-        .filter(IngestionDocument.sha256 == sha256)
-        .count()
-    )
-    if still_referenced == 0 and blob_path:
-        try:
-            if os.path.exists(blob_path):
-                os.unlink(blob_path)
-        except OSError:
-            # FS errors are not fatal — the row is gone, the orphan
-            # blob is at worst a cleanup chore handled by a sweeper job.
-            pass
 
     log_audit_event(
         db,
         commit=True,
         actor=current_user,
-        action="ingestion_document_delete",
+        action="ingestion_document_archive",
         resource_type="ingestion_document",
         resource_id=document_id,
         metadata=snapshot,
@@ -978,6 +956,7 @@ async def list_document_chunks(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     coll = _resolve_collection(db, current_user, doc.collection_id)
+    _require_document_data_clearance(db, user=current_user, document=doc)
 
     try:
         pool = get_pool()
@@ -1044,6 +1023,7 @@ async def get_chunk_embedding_debug(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     coll = _resolve_collection(db, current_user, doc.collection_id)
+    _require_document_data_clearance(db, user=current_user, document=doc)
 
     try:
         pool = get_pool()
@@ -1055,8 +1035,9 @@ async def get_chunk_embedding_debug(
         row = await conn.fetchrow(
             """
             SELECT id, embedding
-              FROM document_chunks
+             FROM document_chunks
              WHERE id = $1 AND document_id = $2
+               AND is_active_generation = true
             """,
             chunk_id,
             document_id,
@@ -1096,11 +1077,17 @@ def download_document_blob(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     _resolve_collection(db, current_user, doc.collection_id)  # auth check
-
-    if not doc.storage_path or not os.path.exists(doc.storage_path):
+    _require_document_data_clearance(db, user=current_user, document=doc)
+    if doc.lifecycle_state != "active":
+        raise HTTPException(status_code=410, detail="Document 已封存或清除")
+    try:
+        blob_path = safe_ingestion_path(_UPLOAD_DIR, doc.storage_path or "")
+    except RetentionSafetyError:
+        raise HTTPException(status_code=410, detail="Blob storage path 無效") from None
+    if not blob_path.is_file():
         raise HTTPException(status_code=410, detail="Blob no longer on disk")
     return FileResponse(
-        path=doc.storage_path,
+        path=blob_path,
         media_type=doc.mime_type or "application/octet-stream",
         filename=doc.filename,
     )

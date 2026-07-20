@@ -3,6 +3,7 @@ name: Gate 0 security
 on:
   pull_request:
     branches:
+      - main
       - prod-intranet-card
   workflow_dispatch:
 
@@ -28,7 +29,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install contract-test dependencies
-        run: python -m pip install cryptography pyyaml
+        run: python -m pip install cryptography pytest pyyaml
 
       - name: Validate deployment shell syntax
         run: |
@@ -38,7 +39,9 @@ jobs:
           done
 
       - name: Run deployment contract and behavior tests
-        run: python -m unittest discover -s infra/deployment/tests -q
+        run: |
+          python -m unittest discover -s infra/deployment/tests -q
+          python -m pytest infra/deployment/tests/test_card_material_scanner.py -q
 
       - name: Reject current-tree card or private-key material
         run: python infra/security/scan_card_material.py --scope current

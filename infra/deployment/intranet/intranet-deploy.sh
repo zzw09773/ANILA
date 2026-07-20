@@ -7,7 +7,7 @@
 #   [2] 模型 gateway 出向 CA (share/pki/model-ca.pem)
 #   [3] 產 / 更新 .env (自動生 secret + 互動填 gateway key / owner 員工編號)
 #   [4] load image (呼叫 image 包的 INTRANET-LOAD.sh,含 SHA256 驗檔 + re-tag)
-#   [5] 建 docker network
+#   [5] 透過 shared helper 建立/驗證 docker network
 #   [6] docker compose up -d --no-build --pull never
 #   [7] 等 healthy + 驗證
 #
@@ -34,6 +34,9 @@ asksecret() { local p="$1" a; read -rsp "$(c '1;35' '?') ${p}: " a; echo >&2; pr
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
+
+# shellcheck disable=SC1091
+source "$REPO_ROOT/infra/deployment/scripts/ensure-models-network.sh"
 
 # Must match infra/docker/csp.Dockerfile.  A fixed numeric identity makes bind
 # mount ownership deterministic even though the image is deployed offline.
@@ -320,6 +323,20 @@ else
   else warn "略過 — 部署前務必把 model CA 放到 $MCA,否則 csp 連 gateway 會 TLS 失敗"; fi
 fi
 
+# Card login is a production authentication boundary. The operator-updated
+# offline CRL is public material but mandatory; starting with only the CA bundle
+# would leave lost/revoked cards usable until account deactivation.
+CARD_CRL=share/pki/card-crl-bundle.pem
+if ! [ -s "$CARD_CRL" ] || ! grep -q 'BEGIN X509 CRL' "$CARD_CRL" 2>/dev/null; then
+  P="$(ask '離線 card CRL PEM bundle 路徑 (必填，應涵蓋 signer/intermediate issuer)')"
+  [ -n "$P" ] && [ -f "$P" ] || die "正式 card-only 部署必須提供離線 CRL bundle"
+  cp "$P" "$CARD_CRL"
+fi
+grep -q 'BEGIN X509 CRL' "$CARD_CRL" 2>/dev/null \
+  || die "$CARD_CRL 不含 PEM X509 CRL"
+chmod 644 "$CARD_CRL"
+ok "已備妥離線 card CRL bundle（CSP 啟動時會驗 issuer/signature/freshness）"
+
 # ── 3. .env ──────────────────────────────────────────────────────────────
 info "[3/7] 產生 / 更新 .env"
 REGEN=1
@@ -342,12 +359,20 @@ chmod 600 .env
 # 安全:不用 `source`(被竄改的 defaults 檔會執行任意指令),改嚴格解析 KEY=VALUE
 # + 白名單;非白名單 / 註解 / 空行一律略過。
 DEFAULTS="$BUNDLE/intranet-defaults.env"
+_defaults_card_crl_source=""
+_defaults_card_crl_max_age=""
+_defaults_card_policy_oids=""
 if [ -f "$DEFAULTS" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
-      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|GITLAB_ROOT_PASSWORD|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY|N8N_OWNER_EMAIL|N8N_OWNER_FIRST_NAME|N8N_OWNER_LAST_NAME|N8N_OWNER_PASSWORD_HASH|N8N_ENCRYPTION_KEY)
+      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|CARD_CRL_SOURCE|CARD_CRL_MAX_AGE_HOURS|CARD_REQUIRED_CERT_POLICY_OIDS|GITLAB_ROOT_PASSWORD|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|STUDIO_ARTIFACT_SERVICE_TOKEN|STUDIO_RUNTIME_SERVICE_TOKEN|STUDIO_JOB_ENVELOPE_HMAC_KEY|INGESTION_QUEUE_HMAC_KEY|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY|N8N_OWNER_EMAIL|N8N_OWNER_FIRST_NAME|N8N_OWNER_LAST_NAME|N8N_OWNER_PASSWORD_HASH|N8N_ENCRYPTION_KEY)
         _v="${_v%\"}"; _v="${_v#\"}"; _v="${_v%\'}"; _v="${_v#\'}"   # 去頭尾引號
-        printf -v "$_k" '%s' "$_v" ;;                                # 賦值,非 eval
+        printf -v "$_k" '%s' "$_v"                                  # 賦值,非 eval
+        case "$_k" in
+          CARD_CRL_SOURCE) _defaults_card_crl_source="$_v" ;;
+          CARD_CRL_MAX_AGE_HOURS) _defaults_card_crl_max_age="$_v" ;;
+          CARD_REQUIRED_CERT_POLICY_OIDS) _defaults_card_policy_oids="$_v" ;;
+        esac ;;
       *) : ;;
     esac
   done < "$DEFAULTS"
@@ -358,6 +383,10 @@ if [ "$REGEN" = 1 ]; then
   info "  secret:有預設用預設,否則 openssl 隨機生成"
   set_env_single_quoted CSP_SECRET_KEY            "${CSP_SECRET_KEY:-$(openssl rand -hex 32)}"
   set_env_single_quoted CSP_SERVICE_TOKEN         "${CSP_SERVICE_TOKEN:-$(openssl rand -hex 32)}"
+  set_env_single_quoted STUDIO_ARTIFACT_SERVICE_TOKEN "${STUDIO_ARTIFACT_SERVICE_TOKEN:-csk-$(openssl rand -hex 32)}"
+  set_env_single_quoted STUDIO_RUNTIME_SERVICE_TOKEN "${STUDIO_RUNTIME_SERVICE_TOKEN:-csk-$(openssl rand -hex 32)}"
+  set_env_single_quoted STUDIO_JOB_ENVELOPE_HMAC_KEY "${STUDIO_JOB_ENVELOPE_HMAC_KEY:-$(openssl rand -hex 32)}"
+  set_env_single_quoted INGESTION_QUEUE_HMAC_KEY "${INGESTION_QUEUE_HMAC_KEY:-$(openssl rand -hex 32)}"
   set_env_single_quoted INTERNAL_PLATFORM_API_KEY "${INTERNAL_PLATFORM_API_KEY:-sk-internal-$(openssl rand -hex 24)}"
   set_env_single_quoted ADMIN_PASSWORD            "${ADMIN_PASSWORD:-$(openssl rand -base64 24)}"
   set_env_single_quoted CSP_DB_PASSWORD           "${CSP_DB_PASSWORD:-$(openssl rand -hex 32)}"
@@ -368,7 +397,7 @@ fi
 # 舊版 .env 可能把 secret 以裸 KEY=VALUE 寫入；Compose dotenv 會對 `$` 做
 # interpolation，空白與 `#` 也可能改變實際值。每次部署都把既有值正規化成
 # literal 單引號，確保密碼管理器中的內容與 container 收到的內容一致。
-for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \
+for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY \
   ADMIN_PASSWORD CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD; do
   _secret_value="$(get_env_unquoted "$_secret_name")"
   [ -z "$_secret_value" ] || set_env_single_quoted "$_secret_name" "$_secret_value"
@@ -433,6 +462,10 @@ set_env ENABLE_PUBLIC_SHARE         false
 set_env ENABLE_MEMORY               false
 set_env PUBLIC_SHARE_MAX_TTL_HOURS  168
 set_env ANILA_TRACE_ENDPOINT        http://csp:8000
+# Fresh installs default to normal production.  A pre-provisioned signed Gate
+# 2 pilot may retain ANILA_PILOT_MODE=true; deploy-prod.sh then selects and
+# verifies the reviewed overlay instead of trusting this flag by itself.
+[ -n "$(get_env ANILA_PILOT_MODE)" ] || set_env ANILA_PILOT_MODE false
 _formal_host="$(get_env ANILA_HOST)"
 set_env SITE_URL                    "https://${_formal_host:-anila.ai.ncsist.org.tw}"
 set_env N8N_HOST                    n8n.ai.ncsist.org.tw
@@ -458,6 +491,35 @@ unset_env SKIP_STARTUP_MIGRATIONS
 unset_env ANILA_BREAK_GLASS_OWNER
 unset_env ANILA_BREAK_GLASS_TICKET
 unset_env ANILA_BREAK_GLASS_EXPIRES_AT
+
+_card_crl_source="${CARD_CRL_SOURCE:-$(get_env_unquoted CARD_CRL_SOURCE)}"
+case "$_card_crl_source" in ""|\<*\>)
+  _card_crl_source="$(ask 'CARD_CRL_SOURCE — 離線 CRL 同步來源/責任單位 (必填)')" ;;
+esac
+[ -n "$_card_crl_source" ] || die "CARD_CRL_SOURCE 不能空"
+_card_policy_oids="${CARD_REQUIRED_CERT_POLICY_OIDS:-$(get_env_unquoted CARD_REQUIRED_CERT_POLICY_OIDS)}"
+case "$_card_policy_oids" in ""|\<*\>)
+  _card_policy_oids="$(ask 'CARD_REQUIRED_CERT_POLICY_OIDS — 核准的卡片 certificate policy OID (CSV)')" ;;
+esac
+[[ "$_card_policy_oids" =~ ^[0-9]+(\.[0-9]+)+(,[[:space:]]*[0-9]+(\.[0-9]+)+)*$ ]] \
+  || die "CARD_REQUIRED_CERT_POLICY_OIDS 必須是數字 OID 或 CSV"
+_card_crl_max_age="${CARD_CRL_MAX_AGE_HOURS:-$(get_env_unquoted CARD_CRL_MAX_AGE_HOURS)}"
+_card_crl_max_age="${_card_crl_max_age:-24}"
+[[ "$_card_crl_max_age" =~ ^[0-9]+$ ]] \
+  && (( 10#$_card_crl_max_age >= 1 && 10#$_card_crl_max_age <= 168 )) \
+  || die "CARD_CRL_MAX_AGE_HOURS 必須介於 1..168"
+if [ -n "$_defaults_card_crl_source$_defaults_card_crl_max_age$_defaults_card_policy_oids" ]; then
+  warn "intranet-defaults.env 含 PKI 信任姿態；格式正確不代表已獲 PKI owner 核准"
+  _pki_posture_ack="$(ask '請向 PKI owner 核對 CRL 來源、freshness 與 certificate policy，輸入 APPROVE-PKI-PROFILE 確認')"
+  [ "$_pki_posture_ack" = APPROVE-PKI-PROFILE ] \
+    || die "未明確核准 bundle 提供的 PKI 信任姿態；拒絕部署"
+fi
+set_env CARD_CRL_REQUIRED true
+set_env CARD_CRL_BUNDLE_PATH /etc/anila/pki/card-crl-bundle.pem
+set_env_single_quoted CARD_CRL_SOURCE "$_card_crl_source"
+set_env CARD_CRL_MAX_AGE_HOURS "$_card_crl_max_age"
+set_env CARD_REQUIRED_EKU_OID 1.3.6.1.5.5.7.3.2
+set_env_single_quoted CARD_REQUIRED_CERT_POLICY_OIDS "$_card_policy_oids"
 # 只在 model-ca.pem 真的有憑證時才指過去。ANILA_MODEL_CA_FILE → csp 的 SSL_CERT_FILE,
 # 而 SSL_CERT_FILE 是「取代」整個系統信任庫(非疊加):指到空/壞檔 → csp 所有出向 https
 # 全 CERTIFICATE_VERIFY_FAILED(連 agent 都連不上)。空字串則 fallback 系統 CA,無副作用。
@@ -493,15 +555,16 @@ if [ -n "$MGK" ]; then set_env_single_quoted MODEL_GATEWAY_API_KEY "$MGK"; ok "�
 else warn "MODEL_GATEWAY_API_KEY 留空 — 模型 proxy 暫時打不通。拿到後用 anila-ops.sh gateway-key 安全套用"; fi
 
 # 必填齊全檢查
-for k in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
+for k in CSP_SECRET_KEY CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
   CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD CARD_INITIAL_OWNERS \
          SITE_URL N8N_HOST N8N_EDITOR_BASE_URL N8N_WEBHOOK_URL GITLAB_HOST \
          N8N_OWNER_EMAIL N8N_OWNER_PASSWORD_HASH N8N_ENCRYPTION_KEY \
          GITLAB_ROOT_PASSWORD CODESERVER_HOST GITLAB_SSH_BIND_IP GITLAB_SSH_PORT \
-         ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR; do
+         ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR CARD_CRL_SOURCE \
+         CARD_REQUIRED_CERT_POLICY_OIDS CARD_CRL_BUNDLE_PATH; do
   [ -n "$(get_env "$k")" ] || die ".env 缺必填值: $k"
 done
-for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \
+for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY \
   ADMIN_PASSWORD CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD \
   N8N_ENCRYPTION_KEY GITLAB_ROOT_PASSWORD; do
   _secret_value="$(get_env_unquoted "$_secret_name")"
@@ -509,6 +572,16 @@ for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \
     ""|\<*\>|*changeme*|*placeholder*|*example*) die "$_secret_name 仍是空值/dev/template 值" ;;
   esac
 done
+_studio_artifact_token="$(get_env_unquoted STUDIO_ARTIFACT_SERVICE_TOKEN)"
+[[ "$_studio_artifact_token" == csk-* ]] \
+  || die "STUDIO_ARTIFACT_SERVICE_TOKEN 必須是專用 csk- Service Client token"
+_studio_runtime_token="$(get_env_unquoted STUDIO_RUNTIME_SERVICE_TOKEN)"
+[[ "$_studio_runtime_token" == csk-* && "$_studio_runtime_token" != "$_studio_artifact_token" ]] \
+  || die "STUDIO_RUNTIME_SERVICE_TOKEN 必須是另一把專用 csk- Service Client token"
+_studio_envelope_key="$(get_env_unquoted STUDIO_JOB_ENVELOPE_HMAC_KEY)"
+(( ${#_studio_envelope_key} >= 32 )) || die "STUDIO_JOB_ENVELOPE_HMAC_KEY 長度必須 >= 32"
+_ingestion_queue_key="$(get_env_unquoted INGESTION_QUEUE_HMAC_KEY)"
+(( ${#_ingestion_queue_key} >= 32 )) || die "INGESTION_QUEUE_HMAC_KEY 長度必須 >= 32"
 [ "$(get_env N8N_TLS_REJECT_UNAUTHORIZED)" = 1 ] || die "n8n TLS 驗證必須開啟"
 (( ${#_n8n_key} >= 32 )) || die "N8N_ENCRYPTION_KEY 長度必須 >= 32"
 (( ${#_gitlab_root} >= 16 )) || die "GITLAB_ROOT_PASSWORD 長度必須 >= 16"
@@ -554,6 +627,7 @@ info "[4b/7] JWT 簽章金鑰 ($SECRETS_DIR/jwt-private.pem)"
 mkdir -p "$SECRETS_DIR"
 prepare_csp_runtime_mount "$SECRETS_DIR" 700
 prepare_csp_runtime_mount "$PWD/share/uploads/ingestion" 700
+prepare_csp_runtime_mount "$ANILA_STATE_DIR/source-snapshots" 700
 # Host operator 無法 traverse UID 10001 + mode 0700 的 secrets。由 CSP runtime
 # user 在無網路、唯讀 rootfs 的 one-shot container 內驗證/沿用/首次生成；
 # partial、symlink、malformed、mismatched pair 一律 fail-closed。
@@ -572,20 +646,31 @@ docker run --rm --pull never --user 0:0 --network none --read-only \
 
 # ── 5. network ───────────────────────────────────────────────────────────
 info "[5/7] docker network anila-models-net"
-docker network inspect anila-models-net >/dev/null 2>&1 \
-  && ok "已存在" \
-  || { docker network create anila-models-net >/dev/null && ok "已建立"; }
+ensure_models_network \
+  && ok "已建立/驗證 internal bridge" \
+  || die "anila-models-net topology 驗證失敗；拒絕使用或修改既有 network"
 
 # ── 6. up ────────────────────────────────────────────────────────────────
 info "[6/7] docker compose up -d --no-build --pull never"
-bash infra/deployment/scripts/deploy-prod.sh tool-preflight
-docker compose up -d --no-build --pull never
+# deploy-prod.sh is the single authoritative Compose lifecycle.  It selects
+# platform.yml alone for normal production or platform.yml + gate2-pilot.yml
+# for a signed pilot, then performs posture-aware wait/postconfigure/verify.
+# Export only the reviewed formal keys without `source .env`: dotenv content
+# is data, not shell code, and may contain literal `$`, spaces, or `#`.
+for _deploy_key in \
+  CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY CSP_SECRET_KEY SECRET_KEY \
+  SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE \
+  ANILA_EMBEDDING_TOPOLOGY TRITON_GRPC_URL GATE5_MATERIAL_DIR \
+  N8N_HOST N8N_EDITOR_BASE_URL N8N_WEBHOOK_URL N8N_TLS_REJECT_UNAUTHORIZED \
+  N8N_OWNER_EMAIL N8N_OWNER_PASSWORD_HASH N8N_ENCRYPTION_KEY \
+  GITLAB_HOST GITLAB_ROOT_PASSWORD CODESERVER_HOST CODESERVER_PASSWORD; do
+  _deploy_value="$(get_env_unquoted "$_deploy_key")"
+  [ -z "$_deploy_value" ] || export "$_deploy_key=$_deploy_value"
+done
+bash infra/deployment/scripts/deploy-prod.sh up
 
 # ── 7. 驗證 ──────────────────────────────────────────────────────────────
-info "[7/7] 等全 stack ready + fail-closed 驗證"
-bash infra/deployment/scripts/deploy-prod.sh wait
-bash infra/deployment/scripts/deploy-prod.sh postconfigure
-bash infra/deployment/scripts/deploy-prod.sh verify
+info "[7/7] 正式 posture-aware verify 已由 deploy-prod.sh 完成"
 
 echo
 echo "============================================================"

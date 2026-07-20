@@ -28,6 +28,7 @@ from app.models.service_client import ServiceClient
 from app.models.service_launch import ServiceLaunch
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task
+from app.modules import launch as launch_mod
 from app.services import access_control, agent_credential_service
 from app.services.agent_credential_service import CallerIdentity
 from app.services.auto_seed import sync_env_seeded_services
@@ -221,6 +222,17 @@ class TestAccessAlgorithm:
         assert (
             access_control.can_access_service(db, admin, svc, context_level="機密")
             is True
+        )
+
+    def test_null_classification_ceiling_fails_closed_at_launch(self, db):
+        admin = make_user(db, username="root-null-ceiling", role="admin")
+        svc = _make_service(db, name="null-ceiling", slug="null-ceiling")
+        svc.classification_ceiling = None
+        assert (
+            access_control.can_access_service(
+                db, admin, svc, context_level="無機密"
+            )
+            is False
         )
 
     def test_migrated_grant_matched_by_platform_link_id(self, db):
@@ -430,6 +442,18 @@ class TestAuditCallback:
         sc = self._setup(db, monkeypatch)
         # R-SEC (ADR-0008): the service must be bound to the presenting client.
         svc = _make_service(db, service_client_id=sc.id)
+        launch_mod.create_service_launch(
+            db,
+            launch_id="launch_abc",
+            service_id=svc.id,
+            user_id=None,
+            task_id=None,
+            trace_id="trace_abc",
+            classification_level="極機密",
+            source_snapshot_id=None,
+            mode="new_tab",
+        )
+        db.commit()
         resp = client.post(
             f"/api/services/{svc.slug}/audit-callbacks",
             json={
@@ -447,6 +471,102 @@ class TestAuditCallback:
         row = db.query(ServiceAuditCallback).filter_by(service_id=svc.id).one()
         assert row.event_type == "analysis.completed"
         assert row.integration_key_id is not None
+        # Caller floor 機密 cannot lower the linked launch's 極機密 context.
+        assert row.classification_level == "極機密"
+        assert row.payload["classification_level"] == "極機密"
+        assert resp.json()["classification_level"] == "極機密"
+
+    def test_payload_floor_can_raise_but_not_lower_launch(
+        self, client, db, monkeypatch
+    ):
+        sc = self._setup(db, monkeypatch)
+        svc = _make_service(
+            db,
+            name="callback-floor",
+            slug="callback-floor",
+            service_client_id=sc.id,
+        )
+        launch_mod.create_service_launch(
+            db,
+            launch_id="launch_floor",
+            service_id=svc.id,
+            user_id=None,
+            task_id=None,
+            trace_id=None,
+            classification_level="營業秘密",
+            source_snapshot_id=None,
+            mode="new_tab",
+        )
+        db.commit()
+        resp = client.post(
+            f"/api/services/{svc.slug}/audit-callbacks",
+            json={
+                "event_type": "analysis.completed",
+                "launch_id": "launch_floor",
+                "classification_level": "極機密",
+            },
+            headers={"Authorization": f"Bearer {self._GOOD}"},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["classification_level"] == "極機密"
+
+    def test_missing_launch_and_explicit_null_fail_closed(
+        self, client, db, monkeypatch
+    ):
+        sc = self._setup(db, monkeypatch)
+        svc = _make_service(
+            db,
+            name="callback-invalid",
+            slug="callback-invalid",
+            service_client_id=sc.id,
+        )
+        missing = client.post(
+            f"/api/services/{svc.slug}/audit-callbacks",
+            json={"event_type": "analysis.completed", "launch_id": "missing"},
+            headers={"Authorization": f"Bearer {self._GOOD}"},
+        )
+        assert missing.status_code == 422
+
+        explicit_null = client.post(
+            f"/api/services/{svc.slug}/audit-callbacks",
+            json={"event_type": "analysis.completed", "classification_level": None},
+            headers={"Authorization": f"Bearer {self._GOOD}"},
+        )
+        assert explicit_null.status_code == 422
+
+    def test_cross_service_launch_id_is_rejected(self, client, db, monkeypatch):
+        sc = self._setup(db, monkeypatch)
+        target = _make_service(
+            db,
+            name="callback-target",
+            slug="callback-target",
+            service_client_id=sc.id,
+        )
+        other = _make_service(
+            db,
+            name="callback-other",
+            slug="callback-other",
+            service_client_id=sc.id,
+        )
+        launch_mod.create_service_launch(
+            db,
+            launch_id="launch_other",
+            service_id=other.id,
+            user_id=None,
+            task_id=None,
+            trace_id=None,
+            classification_level="機密",
+            source_snapshot_id=None,
+            mode="new_tab",
+        )
+        db.commit()
+
+        response = client.post(
+            f"/api/services/{target.slug}/audit-callbacks",
+            json={"event_type": "analysis.completed", "launch_id": "launch_other"},
+            headers={"Authorization": f"Bearer {self._GOOD}"},
+        )
+        assert response.status_code == 422
 
     def test_bad_key_401(self, client, db, monkeypatch):
         self._setup(db, monkeypatch)

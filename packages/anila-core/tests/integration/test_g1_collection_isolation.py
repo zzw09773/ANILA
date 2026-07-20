@@ -16,6 +16,7 @@ from __future__ import annotations
 import random
 
 import pytest
+from anila_contracts import Classification
 
 from anila_core.ingestion.chunking_plugins import ChunkResult
 from anila_core.storage.adapters.pg_pool import PgPool
@@ -59,8 +60,17 @@ async def test_g1_random_workload_no_cross_collection_leak(
                 )
             )
             embeddings.append(_random_unit_vector(rng))
-        await store.index_chunks(
-            document_id=doc_id, chunks=chunks, embeddings=embeddings,
+        await store.stage_and_activate_generation(
+            document_id=doc_id,
+            source_ingestion_job_id=None,
+            source_ingestion_lease_token=None,
+            embedding_model="test-model",
+            embedding_fingerprint="sha256:" + ("0" * 64),
+            embedding_dim=_DIM,
+            parent_chunks=[],
+            leaf_chunks=chunks,
+            embeddings=embeddings,
+            classification_level=Classification.UNCLASSIFIED,
         )
 
     # ── Query phase ─────────────────────────────────────────────────────

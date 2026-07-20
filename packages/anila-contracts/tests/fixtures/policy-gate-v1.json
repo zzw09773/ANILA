@@ -1,0 +1,13 @@
+{
+  "schema_version": "policy-gate/v1",
+  "allowed": true,
+  "decision_id": "pd-001",
+  "route_decision_id": "rd-001",
+  "registry_snapshot_id": "rs-010",
+  "target_agent_id": "research-agent",
+  "effective_classification": "機密",
+  "required_scopes": ["agent:invoke"],
+  "obligations": ["FULL_TRACE", "REDACT_UI_SUMMARY"],
+  "approval_required": false,
+  "reason_codes": ["WITHIN_AGENT_CEILING"]
+}

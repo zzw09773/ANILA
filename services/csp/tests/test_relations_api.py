@@ -27,7 +27,9 @@ from tests.conftest import make_user
 def _coll(db, owner_id: int) -> IngestionCollection:
     c = IngestionCollection(
         name="regs", chunking_config={"strategy": "fixed"},
-        embedding_model="nvidia/NV-embed-V2", embedding_dim=4000, created_by=owner_id,
+        embedding_model="nvidia/NV-embed-V2",
+        embedding_fingerprint="sha256:" + "0" * 64,
+        embedding_dim=4000, created_by=owner_id,
     )
     db.add(c)
     db.commit()

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from app.database import SessionLocal
 from app.models.token_usage import TokenUsage
 from app.config import settings
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ async def enqueue_usage(
     api_key_id: int | None,
     user_id: int,
     department_id: int | None,
-    model_id: int,
+    model_id: int | None,
     prompt_tokens: int,
     completion_tokens: int,
     total_tokens: int,
@@ -69,20 +70,75 @@ async def enqueue_usage(
     })
 
 
-async def _flush_batch(batch: list[dict]):
-    """Write a batch of usage records to the database."""
+def _is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, OperationalError):
+        return True
+    if not isinstance(exc, DBAPIError):
+        return False
+    if exc.connection_invalidated:
+        return True
+    original = getattr(exc, "orig", None)
+    code = str(getattr(original, "pgcode", "") or getattr(original, "sqlstate", ""))
+    return code.startswith("08") or code in {"40001", "40P01", "55P03"}
+
+
+def _write_batch(batch: list[dict]) -> None:
     if not batch:
         return
     db = SessionLocal()
     try:
         db.bulk_insert_mappings(TokenUsage, batch)
         db.commit()
-        logger.info(f"已寫入 {len(batch)} 筆用量記錄")
-    except Exception as e:
+    except Exception:
         db.rollback()
-        logger.error(f"寫入用量記錄失敗: {e}")
+        raise
     finally:
         db.close()
+
+
+async def _flush_batch(batch: list[dict]):
+    """Write usage with transient retry and poison-row isolation.
+
+    The legacy taskless queue is intentionally retained, but one malformed FK
+    must not roll back every unrelated row in the batch.
+    """
+    if not batch:
+        return
+    for attempt in range(1, 4):
+        try:
+            # SQLAlchemy's synchronous session/commit can block on a row or
+            # transaction lock held by the request that just enqueued this
+            # usage record.  Running it on the event-loop thread creates a
+            # self-deadlock: the request cannot resume to release its
+            # transaction while the writer is waiting for that transaction.
+            # Keep the existing synchronous SessionLocal boundary, but move
+            # the blocking DB work to the default executor so the ASGI loop
+            # can continue and release request-scoped transactions.
+            await asyncio.to_thread(_write_batch, batch)
+            logger.info("已寫入 %s 筆用量記錄", len(batch))
+            return
+        except Exception as exc:
+            if _is_transient(exc) and attempt < 3:
+                logger.warning("用量 DB 暫時性錯誤，重試 %s/3: %s", attempt, exc)
+                await asyncio.sleep(0.01 * attempt)
+                continue
+            if _is_transient(exc):
+                # A connection/serialization/deadlock exhaustion says
+                # nothing about row validity.  Propagate so the owning loop
+                # retains and retries the whole legal batch; never bisect and
+                # discard it as poison data.
+                logger.error("用量 DB 暫時性錯誤重試耗盡，保留 batch: %s", exc)
+                raise
+            if len(batch) > 1:
+                midpoint = len(batch) // 2
+                logger.error(
+                    "用量 batch 含無效資料，二分隔離 %s 筆: %s", len(batch), exc
+                )
+                await _flush_batch(batch[:midpoint])
+                await _flush_batch(batch[midpoint:])
+                return
+            logger.error("捨棄單筆無效用量記錄: %s", exc)
+            return
 
 
 async def _usage_writer_loop():

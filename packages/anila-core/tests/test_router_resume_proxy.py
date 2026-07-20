@@ -35,6 +35,8 @@ def _disable_recompose(monkeypatch):
     its extra recompose LLM call."""
     import anila_core.api.router_server as _rs
 
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+
     async def _passthrough(agent_reply, caller_api_key, *, forwarded_headers=None):
         return agent_reply, "skipped"
 
@@ -45,6 +47,8 @@ CSP_BASE = settings.csp_base_url
 CSP_URL = f"{CSP_BASE}/v1/chat/completions"
 CSP_AGENTS_URL = f"{CSP_BASE}/v1/agents"
 CSP_ME_URL = f"{CSP_BASE}/api/auth/me"
+LEGACY_DISPATCH_HEADERS = {"X-ANILA-Legacy-Dispatch": "1"}
+LEGACY_RESUME_HEADERS = {"X-ANILA-Legacy-Resume": "1"}
 
 
 @pytest_asyncio.fixture
@@ -147,7 +151,7 @@ def test_dispatch_pins_owning_agent(db_path: Path) -> None:
             "stream": False,
             "session_id": "s-pin",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
 
     import asyncio
@@ -186,7 +190,7 @@ def test_state_endpoint_surfaces_owning_agent(db_path: Path) -> None:
             "stream": False,
             "session_id": "s-state-2",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
 
     state_response = client.get(
@@ -209,7 +213,7 @@ def test_answer_without_required_fields_400s(db_path: Path) -> None:
     resp = client.post(
         "/v1/sessions/s-x/answer",
         json={"answer": "yes"},  # missing interrupt_id
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_RESUME_HEADERS},
     )
     assert resp.status_code == 400
     assert "interrupt_id" in resp.text
@@ -221,7 +225,7 @@ def test_answer_unknown_session_404s(db_path: Path) -> None:
     resp = client.post(
         "/v1/sessions/s-unknown/answer",
         json={"interrupt_id": "i-1", "answer": "yes"},
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_RESUME_HEADERS},
     )
     assert resp.status_code == 404
     assert "owning agent" in resp.text
@@ -237,7 +241,7 @@ def test_answer_with_session_factory_returns_503(db_path: Path) -> None:
     resp = client.post(
         "/v1/sessions/s-x/answer",
         json={"interrupt_id": "i-1", "answer": "yes"},
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_RESUME_HEADERS},
     )
     assert resp.status_code == 503
     assert "session_factory" in resp.text
@@ -281,14 +285,14 @@ def test_answer_rejects_different_caller_before_proxy(db_path: Path) -> None:
             "stream": False,
             "session_id": "s-resume-owned",
         },
-        headers={"Authorization": "Bearer sk-owner"},
+        headers={"Authorization": "Bearer sk-owner", **LEGACY_DISPATCH_HEADERS},
     )
     assert pinned.status_code == 200
 
     resume_resp = client.post(
         "/v1/sessions/s-resume-owned/answer",
         json={"interrupt_id": "i-7", "answer": "go ahead"},
-        headers={"Authorization": "Bearer sk-other"},
+        headers={"Authorization": "Bearer sk-other", **LEGACY_RESUME_HEADERS},
     )
     assert resume_resp.status_code == 403
     assert resume_route.call_count == 0
@@ -351,14 +355,14 @@ def test_answer_proxies_to_csp_resume_endpoint(db_path: Path) -> None:
             "stream": False,
             "session_id": "s-resume",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
 
     # Resume.
     resume_resp = client.post(
         "/v1/sessions/s-resume/answer",
         json={"interrupt_id": "i-7", "answer": "go ahead"},
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_RESUME_HEADERS},
     )
     assert resume_resp.status_code == 200
     assert resume_resp.headers.get("X-Anila-Owner-Agent") == "agent-resume"
@@ -423,14 +427,20 @@ def test_answer_accepts_refreshed_jwt_for_same_user(db_path: Path) -> None:
             "stream": False,
             "session_id": "s-resume-jwt",
         },
-        headers={"Authorization": f"Bearer {_jwt('access-v1')}"},
+        headers={
+            "Authorization": f"Bearer {_jwt('access-v1')}",
+            **LEGACY_DISPATCH_HEADERS,
+        },
     )
     assert pinned.status_code == 200, pinned.text
 
     resume_resp = client.post(
         "/v1/sessions/s-resume-jwt/answer",
         json={"interrupt_id": "i-7", "answer": "go ahead"},
-        headers={"Authorization": f"Bearer {_jwt('access-v2')}"},
+        headers={
+            "Authorization": f"Bearer {_jwt('access-v2')}",
+            **LEGACY_RESUME_HEADERS,
+        },
     )
 
     assert resume_resp.status_code == 200, resume_resp.text

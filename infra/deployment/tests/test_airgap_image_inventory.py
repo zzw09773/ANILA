@@ -27,20 +27,20 @@ spec.loader.exec_module(checker)
 
 
 class AirgapImageInventoryTests(unittest.TestCase):
-    def test_flux_agent_is_a_required_built_platform_image(self) -> None:
+    def test_flux_agent_is_not_in_the_formal_platform_inventory(self) -> None:
         entries = {entry.service: entry for entry in checker.load_inventory(INVENTORY)}
-        entry = entries["flux2-dev-agent"]
-        self.assertEqual(entry.image, "anila-platform-flux2-dev-agent")
-        self.assertEqual(entry.bundle, "01-anila-built.tar.gz")
-        self.assertEqual(entry.activation, "default")
-        self.assertEqual(entry.source, "built")
+        self.assertNotIn("flux2-dev-agent", entries)
 
-    def test_codeserver_is_the_only_optional_profile_image(self) -> None:
+    def test_optional_profile_images_are_exactly_the_formal_profiles(self) -> None:
         entries = checker.load_inventory(INVENTORY)
         optional = [entry for entry in entries if entry.activation != "default"]
-        self.assertEqual(len(optional), 1)
-        self.assertEqual(optional[0].service, "codeserver")
-        self.assertEqual(optional[0].activation, "profile:developer-tools")
+        self.assertEqual(
+            {(entry.service, entry.activation, entry.source) for entry in optional},
+            {
+                ("anila-agent", "profile:gate5-silver", "built"),
+                ("codeserver", "profile:developer-tools", "upstream"),
+            },
+        )
 
     def test_retained_tools_use_supported_security_pins(self) -> None:
         entries = {entry.service: entry for entry in checker.load_inventory(INVENTORY)}
@@ -112,13 +112,13 @@ class AirgapImageInventoryTests(unittest.TestCase):
         if probe.returncode != 0:
             self.skipTest("docker compose is not usable in this environment")
         required, optional = checker.validate(ROOT, INVENTORY)
-        self.assertEqual(required, 13)
-        self.assertEqual(optional, 1)
+        self.assertEqual(required, 12)
+        self.assertEqual(optional, 2)
         model_default, model_optional, unique_images = checker.validate_models(
             ROOT, MODEL_INVENTORY
         )
-        self.assertEqual(model_default, 6)
-        self.assertEqual(model_optional, 3)
+        self.assertEqual(model_default, 4)
+        self.assertEqual(model_optional, 5)
         self.assertEqual(unique_images, 7)
 
 

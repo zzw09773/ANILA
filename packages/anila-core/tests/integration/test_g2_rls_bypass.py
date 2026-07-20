@@ -19,6 +19,7 @@ import os
 
 import asyncpg
 import pytest
+from anila_contracts import Classification
 
 from anila_core.ingestion.chunking_plugins import ChunkResult
 from anila_core.storage.adapters.pg_pool import PgPool
@@ -80,9 +81,15 @@ async def test_g2_detector_rejects_a_removed_collection_policy(
     coll_id = isolation_collections[0]
     doc_id = isolation_documents[0]
     store = CollectionScopedPgVectorStore(pool, collection_id=coll_id)
-    await store.index_chunks(
+    await store.stage_and_activate_generation(
         document_id=doc_id,
-        chunks=[
+        source_ingestion_job_id=None,
+        source_ingestion_lease_token=None,
+        embedding_model="test-model",
+        embedding_fingerprint="sha256:" + ("0" * 64),
+        embedding_dim=4000,
+        parent_chunks=[],
+        leaf_chunks=[
             ChunkResult(
                 content="rls mutation sentinel",
                 chunk_key=f"rls-mutation-{coll_id}",
@@ -90,6 +97,7 @@ async def test_g2_detector_rejects_a_removed_collection_policy(
             )
         ],
         embeddings=[[0.3] * 4000],
+        classification_level=Classification.UNCLASSIFIED,
     )
 
     admin = await asyncpg.connect(dsn=integration_admin_dsn)
@@ -141,9 +149,15 @@ async def test_g2_bypass_attempt_no_guc_yields_zero_rows(
     coll_id = isolation_collections[0]
     doc_id = isolation_documents[0]
     store = CollectionScopedPgVectorStore(pool, collection_id=coll_id)
-    await store.index_chunks(
+    await store.stage_and_activate_generation(
         document_id=doc_id,
-        chunks=[
+        source_ingestion_job_id=None,
+        source_ingestion_lease_token=None,
+        embedding_model="test-model",
+        embedding_fingerprint="sha256:" + ("0" * 64),
+        embedding_dim=4000,
+        parent_chunks=[],
+        leaf_chunks=[
             ChunkResult(
                 content="g2 secret",
                 chunk_key=f"g2-bypass-{coll_id}",
@@ -151,6 +165,7 @@ async def test_g2_bypass_attempt_no_guc_yields_zero_rows(
             )
         ],
         embeddings=[[0.1] * 4000],
+        classification_level=Classification.UNCLASSIFIED,
     )
 
     raw_conn = await asyncpg.connect(dsn=_resolve_dsn())
@@ -181,9 +196,15 @@ async def test_g2_bypass_attempt_wrong_collection_yields_only_their_rows(
         (CollectionScopedPgVectorStore(pool, collection_id=coll_a), coll_a, doc_a, "A"),
         (CollectionScopedPgVectorStore(pool, collection_id=coll_b), coll_b, doc_b, "B"),
     ):
-        await store.index_chunks(
+        await store.stage_and_activate_generation(
             document_id=doc_id,
-            chunks=[
+            source_ingestion_job_id=None,
+            source_ingestion_lease_token=None,
+            embedding_model="test-model",
+            embedding_fingerprint="sha256:" + ("0" * 64),
+            embedding_dim=4000,
+            parent_chunks=[],
+            leaf_chunks=[
                 ChunkResult(
                     content=f"g2 {label}",
                     chunk_key=f"g2-pin-{label}-{coll_id}",
@@ -191,6 +212,7 @@ async def test_g2_bypass_attempt_wrong_collection_yields_only_their_rows(
                 )
             ],
             embeddings=[[0.2] * 4000],
+            classification_level=Classification.UNCLASSIFIED,
         )
 
     raw_conn = await asyncpg.connect(dsn=_resolve_dsn())
@@ -210,3 +232,33 @@ async def test_g2_bypass_attempt_wrong_collection_yields_only_their_rows(
         )
     finally:
         await raw_conn.close()
+
+
+async def test_transaction_local_collection_scope_never_survives_pool_reuse(
+    isolation_collections: list[int],
+) -> None:
+    """A max-size-one pool guarantees the next request reuses the connection."""
+
+    coll_id = isolation_collections[0]
+    one_connection_pool = await asyncpg.create_pool(
+        dsn=_resolve_dsn(), min_size=1, max_size=1
+    )
+    try:
+        async with one_connection_pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    f"SET LOCAL anila.collection_id = {int(coll_id)}"
+                )
+                assert await connection.fetchval(
+                    "SELECT current_setting('anila.collection_id', true)"
+                ) == str(coll_id)
+
+        # This is the exact same physical connection after release/acquire.
+        async with one_connection_pool.acquire() as reused:
+            residual = await reused.fetchval(
+                "SELECT current_setting('anila.collection_id', true)"
+            )
+            assert residual in (None, "")
+            assert await reused.fetch("SELECT id FROM document_chunks") == []
+    finally:
+        await one_connection_pool.close()

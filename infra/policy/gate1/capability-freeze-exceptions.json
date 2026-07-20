@@ -1,4 +1,43 @@
 {
   "schema_version": 1,
-  "exceptions": []
+  "exceptions": [
+    {
+      "id": "GATE1-PR31-SESSION-COMPATIBILITY",
+      "architecture_owner": "zzw09773",
+      "rationale": "Gate 5 R5 Silver protocol conformance requires the Router/CSP session bridge to read the SDK session identifier and session settings; PR31 records the reviewed, time-bounded exception for these three metadata accessors, with re-review at expiry.",
+      "ticket": "https://github.com/zzw09773/ANILA/pull/31",
+      "approved_on": "2026-07-15",
+      "expires_on": "2026-08-15",
+      "changes": [
+        "memory.agent_public_methods::packages/anila-agent/anila_agent/memory/session.py::PostgresSession.session_id",
+        "memory.agent_public_methods::packages/anila-agent/anila_agent/memory/session.py::SummarizingSession.session_id",
+        "memory.agent_public_methods::packages/anila-agent/anila_agent/memory/session.py::SummarizingSession.session_settings"
+      ]
+    },
+    {
+      "id": "GATE2-PR27-MEMORY-GOVERNANCE",
+      "architecture_owner": "zzw09773",
+      "rationale": "Gate 2 classified-memory enforcement requires explicit policy error, write context, and authorized retrieval boundaries; these are governance interfaces rather than new end-user capabilities.",
+      "ticket": "https://github.com/zzw09773/ANILA/pull/27",
+      "approved_on": "2026-07-13",
+      "expires_on": "2026-07-31",
+      "changes": [
+        "memory.csp_service_symbols::services/csp/app/services/memory_service.py::MemoryPolicyDataError",
+        "memory.csp_service_symbols::services/csp/app/services/memory_service.py::MemoryWriteContext",
+        "memory.csp_service_symbols::services/csp/app/services/memory_service.py::get_authorized_chunk_rows"
+      ]
+    },
+    {
+      "id": "GATE1-PR32-LEGACY-DISPATCH-POSTURE",
+      "architecture_owner": "zzw09773",
+      "rationale": "Gate 5 R6 routing hardening adds two production-safety helpers that force-disable legacy agent dispatch (403) and fail readiness closed when misconfigured; these tighten, not expand, the router capability surface. PR32 records the reviewed, time-bounded exception for the two new router_entrypoints, with re-review at expiry.",
+      "ticket": "https://github.com/zzw09773/ANILA/pull/32",
+      "approved_on": "2026-07-19",
+      "expires_on": "2026-08-19",
+      "changes": [
+        "multiagent.router_entrypoints::packages/anila-core/src/anila_core/api/router_server.py::_legacy_dispatch_posture",
+        "multiagent.router_entrypoints::packages/anila-core/src/anila_core/api/router_server.py::_require_legacy_dispatch_posture"
+      ]
+    }
+  ]
 }

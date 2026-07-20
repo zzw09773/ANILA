@@ -11,8 +11,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from agents import TResponseInputItem
+from agents.result import RunResultStreaming
 from agents.stream_events import (
     AgentUpdatedStreamEvent,
     RawResponsesStreamEvent,
@@ -24,7 +26,8 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
 from anila_agent.cli.output_styles import list_output_styles
-from anila_agent.cli.slash_commands import load_commands, parse_slash
+from anila_agent.cli.slash_commands import SlashCommand, load_commands, parse_slash
+from anila_agent.config import AppConfig
 from anila_agent.memory.runtime import auto_memory_enabled
 from anila_agent.runtime.agent_factory import AssembledAgent
 from anila_agent.runtime.run import run_streamed
@@ -48,7 +51,12 @@ def _banner(assembled: AssembledAgent) -> None:
 
 
 async def _handle_slash(
-    name: str, args: str, assembled: AssembledAgent, commands: dict, chat_session, cfg=None
+    name: str,
+    args: str,
+    assembled: AssembledAgent,
+    commands: dict[str, SlashCommand],
+    chat_session: Session | None,
+    cfg: AppConfig | None = None,
 ) -> str | None:
     """處理 slash 指令。回傳要送給 agent 的字串，或 None（已就地處理）。"""
     if name == "help":
@@ -96,7 +104,7 @@ async def _handle_slash(
     return None
 
 
-async def _stream(result) -> str:
+async def _stream(result: RunResultStreaming) -> str:
     """渲染串流並回傳累積的助理答案（供 turn 結束後自動抽取記憶）。"""
     parts: list[str] = []
     async for event in result.stream_events():
@@ -116,13 +124,15 @@ async def _stream(result) -> str:
 
 
 async def repl(
-    assembled: AssembledAgent, chat_session: Session | None = None, cfg=None
+    assembled: AssembledAgent,
+    chat_session: Session | None = None,
+    cfg: AppConfig | None = None,
 ) -> None:
     """跑互動迴圈。``chat_session`` 提供時由 SDK 管理跨輪歷史；``cfg`` 供 /deep-research 用。"""
     _banner(assembled)
-    prompt = PromptSession()
+    prompt: PromptSession[str] = PromptSession()
     commands = load_commands()
-    fallback_items: list[dict] = []
+    fallback_items: list[TResponseInputItem] = []
 
     while True:
         try:
@@ -148,7 +158,9 @@ async def repl(
         if chat_session is not None:
             result = run_streamed(assembled, user_input, session=chat_session)
         else:
-            fallback_items.append({"role": "user", "content": user_input})
+            fallback_items.append(
+                cast(TResponseInputItem, {"role": "user", "content": user_input})
+            )
             result = run_streamed(assembled, fallback_items)
 
         answer = await _stream(result)
