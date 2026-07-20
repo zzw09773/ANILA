@@ -618,6 +618,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "emit-build-env":
             print("ANILA_DEPLOYMENT_PROFILE\tprod-intranet-card")
+            print("ANILA_HOST\tanila.inventory-check.invalid")
             for service, entry in inventory.items():
                 print(f"{IMAGE_ENV_BY_SERVICE[service]}\t{entry.image}")
             return 0

@@ -470,12 +470,14 @@ set -e
     def test_build_env_uses_inventory_tags_and_canonical_profile(self):
         rows = [
             ("ANILA_DEPLOYMENT_PROFILE", "prod-intranet-card"),
+            ("ANILA_HOST", "anila.inventory-check.invalid"),
             *[
                 (MODULE.IMAGE_ENV_BY_SERVICE[service], entry.image)
                 for service, entry in self.inventory.items()
             ],
         ]
-        self.assertEqual(len(rows), len(self.inventory) + 1)
+        self.assertEqual(len(rows), len(self.inventory) + 2)
+        self.assertEqual(dict(rows)["ANILA_HOST"], "anila.inventory-check.invalid")
         self.assertEqual(dict(rows)["ANILA_IMAGE_CSP_DB"], "pgvector/pgvector:pg16")
 
     def test_ambient_compose_control_variable_is_rejected_before_render(self):
