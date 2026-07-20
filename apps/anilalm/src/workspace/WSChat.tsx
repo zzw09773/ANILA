@@ -28,6 +28,7 @@ import { createQueryTask } from '../api/tasks'
 import { explainError } from '../api/client'
 import type { Message } from '../types'
 import { gate2PilotCapabilities } from '../config/pilotCapabilities'
+import { appendTranscript, useAsrInput } from '../asr/useAsrInput'
 
 const FOLLOWUP_SUGGESTIONS = [
   '幫我整理這份文件的核心論點',
@@ -88,6 +89,14 @@ export function WSChat({ flex }: WSChatProps) {
   const [err, setErr] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+
+  // 語音輸入。定稿 append 進草稿讓使用者改完再送 —— ASR 不會自己送出訊息。
+  // 用 setComposer 的 updater 形式而不是讀 composer 變數:定稿可能在使用者
+  // 邊打字時抵達,讀舊的 closure 會把他剛打的字蓋掉。
+  const asr = useAsrInput({
+    appendText: (text) => setComposer((draft) => appendTranscript(draft, text)),
+    busy,
+  })
 
   // Reload messages whenever the active conversation changes.
   useEffect(() => {
@@ -480,6 +489,10 @@ export function WSChat({ flex }: WSChatProps) {
               value={composer}
               onChange={(e) => setComposer(e.target.value)}
               onKeyDown={onComposerKey}
+              // 注音/拼音組字中不得 append 定稿 —— 會打斷 composition、游標
+              // 亂跳。hook 會緩衝到 compositionend 再吐。
+              onCompositionStart={asr.onCompositionStart}
+              onCompositionEnd={asr.onCompositionEnd}
               placeholder="問點什麼... (⌘ + Enter 送出)"
               rows={2}
               disabled={busy}
@@ -494,6 +507,53 @@ export function WSChat({ flex }: WSChatProps) {
                 lineHeight: 1.5,
               }}
             />
+
+            {/* 即時預覽。**刻意不放進 textarea** —— 原生 textarea 無法混排
+                兩種顏色的文字,overlay mirror div 要同步捲動/換行/字型是經典
+                坑。定稿才進 value。見規劃書 §2.5。 */}
+            {asr.partial && (
+              <div
+                aria-live="polite"
+                style={{
+                  fontSize: 13,
+                  color: t.textSubtle,
+                  fontStyle: 'italic',
+                  lineHeight: 1.4,
+                  paddingLeft: 2,
+                }}
+              >
+                {asr.partial}
+              </div>
+            )}
+
+            {asr.error && (
+              <div
+                role="alert"
+                style={{
+                  fontSize: 12,
+                  color: t.danger,
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 6,
+                }}
+              >
+                <span style={{ flex: 1 }}>{asr.error}</span>
+                <button
+                  onClick={asr.clearError}
+                  aria-label="關閉提示"
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: t.textSubtle,
+                    cursor: 'pointer',
+                    padding: 0,
+                    lineHeight: 1,
+                  }}
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              </div>
+            )}
             <div
               style={{
                 display: 'flex',
@@ -503,7 +563,48 @@ export function WSChat({ flex }: WSChatProps) {
             >
               <div style={{ fontSize: 11, color: t.textSubtle }}>
                 模型 · {DEFAULT_MODEL}
+                {asr.state === 'recording' && ' · 辨識中…'}
+                {asr.state === 'listening' && ' · 聆聽中…'}
               </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {/* ASR 沒部署就不渲染(probe /asr/health)。不用 build-time 旗標:
+                  那會讓「有/無語音」變成兩顆內容不同的 image,跟鎖 image
+                  content ID 的走向打架。gateway 是 profile-gated,沒開時 nginx
+                  打不到它 → probe 失敗 → 按鈕自然消失。 */}
+              {asr.available && (
+                <button
+                  onClick={asr.toggle}
+                  // 對著鎖住的輸入框講話 = 講完沒地方去。
+                  disabled={busy && asr.state === 'idle'}
+                  aria-label={asr.state === 'idle' ? '開始語音輸入' : '停止語音輸入'}
+                  aria-pressed={asr.state !== 'idle'}
+                  title={
+                    asr.state === 'idle' ? '語音輸入' : '停止語音輸入'
+                  }
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 9,
+                    border: `1px solid ${asr.state === 'idle' ? t.border : t.danger}`,
+                    background: asr.state === 'idle' ? t.surface : `${t.danger}18`,
+                    cursor: busy && asr.state === 'idle' ? 'not-allowed' : 'pointer',
+                    display: 'grid',
+                    placeItems: 'center',
+                    opacity: busy && asr.state === 'idle' ? 0.5 : 1,
+                    transition: 'background 120ms, border-color 120ms',
+                  }}
+                >
+                  {asr.state === 'requesting' ? (
+                    <Spinner size={11} />
+                  ) : (
+                    <Icon
+                      name="mic"
+                      size={14}
+                      stroke={asr.state === 'idle' ? t.textSubtle : t.danger}
+                    />
+                  )}
+                </button>
+              )}
               {busy ? (
                 <button
                   onClick={stop}
@@ -545,6 +646,7 @@ export function WSChat({ flex }: WSChatProps) {
                   <Icon name="send" size={14} stroke="#fff" />
                 </button>
               )}
+              </div>
             </div>
           </div>
           <div
