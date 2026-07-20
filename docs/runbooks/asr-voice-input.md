@@ -209,6 +209,84 @@ docker exec anila-nginx nginx -s reload   # /asr/ location 仍在但 upstream �
 
 ---
 
+## 1.6 帳密測試部署(dev 那套;無卡、無 CRL、最快)—— 172.16.120.35 用這個
+
+> 適用:要在一台機器上把整個平台 + ASR 跑起來、用**帳密登入**測試(不需自然人
+> 憑證卡、不需 CRL、不需 image-lock、不需 air-gap bundle)。用 `infra/compose/dev.yml`
+> (「外網測試那套」),它直接 build、帳密登入、dev csp 自動產 JWT 金鑰、放寬 dev
+> secret,把卡登 production 那一堆 guard 全部跳過。
+>
+> 前提:目標機**有 GPU、能 build**(連得到套件來源/mirror)。dev 直接在機器上
+> build,不用先在別台打 bundle。
+
+### 前置
+
+- 源碼(`anila-src.tar.gz`)已在目標機解開,`cd` 進 repo 根目錄。
+- large-v3 權重已在目標機(例 `/data/anila-hf/faster-whisper-large-v3/model.bin`)。
+- 一個 TLS 憑證(IT 的 `server.pfx`,或自簽 —— https 是麥克風的必要條件)。
+
+### 步驟
+
+```bash
+# ── 1. TLS 憑證 → 一個 repo 外的目錄(dev nginx 掛它)──
+mkdir -p /data/dev-certs
+# 從 server.pfx 抽 crt + key(pfx 空密碼就 -passin pass:;有密碼改成 pass:<密碼>)
+openssl pkcs12 -in ~/server.pfx -clcerts -nokeys  -out /data/dev-certs/server.crt -passin pass:
+openssl pkcs12 -in ~/server.pfx -nocerts  -nodes  -out /data/dev-certs/server.key -passin pass:
+#   沒有 pfx → 自簽:
+#   openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+#     -keyout /data/dev-certs/server.key -out /data/dev-certs/server.crt \
+#     -subj "/CN=172.16.120.35" -addext "subjectAltName=IP:172.16.120.35"
+
+# ── 2. .env(repo 根目錄)──
+cat > .env <<'ENV'
+# dev 平台必填(只有這兩個是 fail-loud)
+ANILA_DEV_TLS_CERTS_DIR=/data/dev-certs
+EMBEDDING_MODEL_FINGERPRINT_DEV=sha256:0000000000000000000000000000000000000000000000000000000000000000
+# 登入用(dev 會自動建 admin;不設預設是 changeme)
+ADMIN_PASSWORD=<你設一個登入密碼>
+# ── ASR ──
+ASR_DECODER_TOKEN=<隨意一串;gateway 與 decoder 必須同值>
+ANILA_HF_DIR=/data/anila-hf
+ASR_GPU=<沒有 LLM 在跑的卡號,nvidia-smi 看>
+ENV
+
+# ── 3. models 網路 + asr-decoder(GPU)──
+bash infra/deployment/scripts/ensure-models-network.sh ensure
+# decoder image 若不在就先 build(model-serve 是 --no-build)
+docker image inspect asr-decoder:0.1.0 >/dev/null 2>&1 || docker build -t asr-decoder:0.1.0 services/asr-decoder
+bash infra/deployment/intranet/model-serve.sh up asr-decoder
+# 等 ready(large-v3 冷啟動 1~2 分鐘)
+docker exec anila-model-asr-decoder curl -sf http://localhost:9000/health   # ready:true
+
+# ── 4. build + 起 dev 平台(含 asr-gateway,一次到位)──
+docker compose -f infra/compose/dev.yml up -d --build
+#   首次會 build csp/router/前端/asr-gateway 等,較久。
+
+# ── 5. 驗證 ──
+docker compose -f infra/compose/dev.yml ps          # csp/redis/nginx/asr-gateway 都要 healthy
+docker exec anila-nginx-dev sh -c 'curl -sf http://asr-gateway:8200/asr/health'
+#   200 = 可用;503 = 查 csp/redis
+```
+
+### 瀏覽器測 ASR
+
+- **https://172.16.120.35:8443**(自簽憑證會跳警告 → 點「繼續前往」,之後就是
+  secure context,麥克風能用)。
+- 登入:帳號 `admin`,密碼 = `.env` 的 `ADMIN_PASSWORD`。
+- 聊天輸入框旁出現**麥克風按鈕** → 按 → 講話 → 框下灰字預覽 → 定稿進輸入框 = **成功**。
+  (anila-ui 那份聊天在 **:9443**;兩個前端都有麥克風。)
+- ⚠ 沒按鈕 / 跳權限錯 → ① 網址是 https 嗎;② `docker exec anila-nginx-dev nginx -T | grep microphone` 要是 `(self)`。
+
+### 收掉
+
+```bash
+docker compose -f infra/compose/dev.yml down          # 停 dev 平台
+bash infra/deployment/intranet/model-serve.sh down asr-decoder
+```
+
+---
+
 ## 2. 內部版 — 分項說明(§1.5 checklist 的背景補充)
 
 > 全新 air-gapped 主機的**完整照做步驟看 §1.5**。本節是各步驟的背景/理由,
