@@ -712,11 +712,11 @@
     {
       "path": "infra/deployment/tests/test_deployment_containment.py",
       "kind": "self.skipTest",
-      "count": 2,
+      "count": 4,
       "required_execution": true,
       "ci_job": "deployment-posture",
       "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
-      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so both containment probes execute instead of skipping."
+      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so all four registered environment guards across both containment probes execute instead of skipping."
     },
     {
       "path": "infra/deployment/tests/test_model_image_lock.py",

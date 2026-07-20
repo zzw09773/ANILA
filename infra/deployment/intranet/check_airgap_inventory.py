@@ -34,6 +34,7 @@ REQUIRED_ENV = {
     "FLUX_AGENT_SERVICE_TOKEN": "csk-image-generator-inventory-check",
     "INTERNAL_PLATFORM_API_KEY": "sk-internal-0123456789abcdef0123456789",
     "SITE_URL": "https://anila.inventory-check.invalid",
+    "ANILA_HOST": "anila.inventory-check.invalid",
     "ANILA_STATE_DIR": "/tmp/anila-inventory-state",
     "ANILA_SECRETS_DIR": "/tmp/anila-inventory-state/secrets",
     "ANILA_TLS_CERTS_DIR": "/tmp/anila-inventory-state/tls",
