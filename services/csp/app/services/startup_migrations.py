@@ -324,7 +324,16 @@ def _resolve_legacy_sqlite_path() -> Path | None:
         if not candidate:
             continue
         path = Path(candidate)
-        if path.is_file():
+        try:
+            is_file = path.is_file()
+        except OSError as exc:
+            # 探測「有沒有舊 SQLite 要遷移」不該讓整個啟動炸掉。全新部署下,
+            # 預設候選路徑(如 /app/data/csp.db)可能存在一個 non-root 進程無法
+            # 穿透的目錄 → is_file() 丟 PermissionError。那就是「這裡沒有可用的
+            # 舊 DB」,當作 not-a-file 繼續即可,不要 propagate。
+            logger.debug("legacy sqlite 候選 %s 無法存取(%s),略過", path, exc)
+            continue
+        if is_file:
             return path
     return None
 
