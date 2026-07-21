@@ -583,6 +583,10 @@ services:
       - "${ANILA_UI_HTTPS_PORT_DEV:-9443}:4443"
     volumes:
       - ../../infra/nginx/anila.conf:/etc/nginx/conf.d/default.conf:ro
+      # anila.conf 的 /router/ location include 這個 snippet(router-posture.conf)。
+      # platform.yml 有掛,dev.yml 早先漏了 → nginx [emerg] open() failed 而 crash-loop。
+      # dev 有 router 服務,用 enabled 版(與 platform.yml 一致)。
+      - ../../infra/nginx/snippets/router-enabled.conf:/etc/nginx/snippets/router-posture.conf:ro
       - "${ANILA_DEV_TLS_CERTS_DIR:?ANILA_DEV_TLS_CERTS_DIR must be outside the repo}:/etc/nginx/certs:ro"
       - ../../share-dev/static:/usr/share/nginx/share-files/static:ro
       - ../../share-dev/uploads:/usr/share/nginx/share-files/uploads:rw
