@@ -558,6 +558,10 @@ services:
       context: ../..
       dockerfile: apps/anila-shell/Dockerfile
       args:
+        # anila-ui 由 nginx 服務在 /anila/(容器內 nginx 也 alias 到 /anila/),
+        # SPA 必須 build 成 base=/anila/,否則 asset 路徑對不上 → 空白頁。
+        # dev.yml 早先漏設,預設 base=/ → /anila/ 打開是白畫面。
+        BASE_PATH: ${ANILA_UI_BASE_PATH:-/anila/}
         VITE_CSP_BASE_URL: ${ANILA_PUBLIC_CSP_BASE_URL-}
         VITE_ROUTER_BASE_URL: ${ANILA_PUBLIC_ROUTER_BASE_URL:-/router}
     expose:
