@@ -223,6 +223,7 @@ class ModelImageLockTests(unittest.TestCase):
                 "gemma-4-26b-a4b",
                 "gemma-4-12b",
                 "gpt-oss-120b",
+                "asr-decoder",
             },
         )
 

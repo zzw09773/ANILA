@@ -508,8 +508,10 @@ services:
       ASR_MODEL_SIZE: ${ASR_MODEL_SIZE:-large-v3}
       ASR_DEVICE: cuda
       ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-float16}
-      # 與 gateway 共享的密鑰。fail-loud:沒填 decoder 直接拒絕啟動。
-      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:?ASR_DECODER_TOKEN must be set (openssl rand -hex 32)}
+      # 與 gateway 共享的密鑰。Compose 對非啟用 profile 的服務也會做插值
+      # (同 flux2-dev-agent 慣例)→ compose 層給空預設;真正的防線是
+      # decoder 啟動時 fail-loud(缺 token 直接拒絕啟動,openssl rand -hex 32)。
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN-}
     volumes:
       # HF 上的 Systran/faster-whisper-* 已經是 CTranslate2 格式,不用自己轉檔。
       # 由 download-intranet-models.sh 一起抓進 ANILA_HF_DIR。

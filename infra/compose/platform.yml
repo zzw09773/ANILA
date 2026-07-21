@@ -657,7 +657,11 @@ services:
       # http://<gpu-host>:9000 + ASR_ALLOW_HTTP_DECODER=1,那等於接受語音
       # 明文過內網,是書面風險接受項(規劃書 §6)。
       ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
-      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:?ASR_DECODER_TOKEN must be set (same value as asr-decoder)}
+      # Compose 對非啟用 profile 的服務也會做插值(同 flux2-dev-agent 的
+      # FLUX_AGENT_SERVICE_TOKEN 慣例)→ compose 層給空預設,讓預設 stack
+      # 不設此變數也能 resolve;真正的防線是 gateway 啟動時 fail-loud
+      # (_validate_settings 缺 token 直接拒絕啟動)。
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN-}
       ASR_ALLOW_HTTP_DECODER: ${ASR_ALLOW_HTTP_DECODER:-0}
       # ── 辨識 ──
       # 通用型 ASR:不加 glossary / hotwords / 數字正規化(2026-07-17 定案)。
