@@ -502,6 +502,7 @@ services:
     volumes:
       - ../../infra/nginx/anila.conf:/etc/nginx/conf.d/default.conf:ro
       - ../../infra/nginx/snippets/router-enabled.conf:/etc/nginx/snippets/router-posture.conf:ro
+      - ../../infra/nginx/snippets/extra-anila-hosts.empty.conf:/etc/nginx/snippets/extra-anila-hosts.conf:ro
       # TLS private key 與 JWT key 同樣不得落在 repo；正式路徑由 operator
       # 明確提供，避免 gitignore 被誤當成 secret boundary。
       - "${ANILA_TLS_CERTS_DIR:?ANILA_TLS_CERTS_DIR must be an absolute path outside the repo}:/etc/nginx/certs:ro"
