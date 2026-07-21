@@ -63,6 +63,9 @@ services:
       # Dev auto-keygen writes only to a dedicated named volume. Never bake or
       # generate reusable signing material under services/csp/secrets.
       ALLOW_AUTO_KEYGEN: "true"
+      # 讓 .env 的 ADMIN_PASSWORD 進得了 csp;沒設就沿用 config.py 預設 changeme。
+      # ⚠ 密碼是 admin-sticky:只在第一次 seed(全新 DB)生效,既有 admin 不會被改。
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-changeme}"
       # This stack is still served through nginx HTTPS (:8443/:9443), so it
       # exercises the same __Host- cookie contract as production.
       COOKIE_SECURE: "true"
