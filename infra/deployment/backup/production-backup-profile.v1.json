@@ -632,6 +632,27 @@
       "restore_order": 830
     },
     {
+      "id": "extra-anila-hosts-release-configuration",
+      "source": {
+        "kind": "bind",
+        "name": "../../infra/nginx/snippets/extra-anila-hosts.empty.conf",
+        "mounts": [
+          {
+            "service": "nginx",
+            "target": "/etc/nginx/snippets/extra-anila-hosts.conf",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "derivable",
+      "data_classification": "營業秘密",
+      "owner": "release-operations",
+      "reason": "The read-only Host allow-list snippet (intentionally empty for formal deployments) is reconstructed from the signed source release.",
+      "acceptance_gate": "Gate 3 I9",
+      "backup_method": "rebuild_from_required_sources",
+      "restore_order": 835
+    },
+    {
       "id": "developer-codeserver-config",
       "source": {
         "kind": "named_volume",
