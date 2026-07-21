@@ -478,6 +478,64 @@ services:
       retries: 10
       start_period: 180s
 
+  # ── 語音辨識解碼器 (faster-whisper) ───────────────────────────────────────
+  # 平台的 asr-gateway 走 anila-models-net 打這裡(內部版部署;語音不出主機)。
+  # decoder 無狀態、無 session 概念 —— 切句/認證/WS 全在 gateway。
+  # 契約: POST /transcribe (Int16 PCM @16k + X-Token) → {"text",...}
+  #
+  # ⚠ ASR_GPU 請指向一張**沒有 LLM 在跑**的卡:推論延遲互相干擾很難 debug。
+  #   large-v3 fp16 只吃 ~4.7 GiB,對 H100 是零頭,但共卡仍會搶 SM。
+  # ⚠ H100(Hopper)用 float16 即可。V100(Volta)也必須 float16 ——
+  #   Volta 沒有 int8 tensor core,int8 省 VRAM 但**更慢**(官方 V100S
+  #   benchmark: fp16 54s vs int8 59s)。int8 的價值要 Turing 以後才有。
+  asr-decoder:
+    image: asr-decoder:0.1.0
+    container_name: anila-model-asr-decoder
+    build:
+      context: ../../services/asr-decoder
+    profiles: ["intranet"]
+    environment:
+      TZ: Asia/Taipei
+      # air-gap 三件套(對齊本 stack 既有慣例)+ faster-whisper 自己的離線旗標。
+      # 兩層都要:前者管 huggingface_hub,後者管 WhisperModel 的解析路徑。
+      # 沒開的話權重缺失會變成 DNS timeout 假死,/asr 一直 503,查半天以為是 GPU 壞了。
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+      ASR_LOCAL_FILES_ONLY: "1"
+      # 目錄內直接是轉檔好的 CTranslate2 模型(含 model.bin)→ 當模型路徑用。
+      ASR_MODEL_DIR: /workspace/model/faster-whisper-large-v3
+      ASR_MODEL_SIZE: ${ASR_MODEL_SIZE:-large-v3}
+      ASR_DEVICE: cuda
+      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-float16}
+      # 與 gateway 共享的密鑰。Compose 對非啟用 profile 的服務也會做插值
+      # (同 flux2-dev-agent 慣例)→ compose 層給空預設;真正的防線是
+      # decoder 啟動時 fail-loud(缺 token 直接拒絕啟動,openssl rand -hex 32)。
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN-}
+    volumes:
+      # HF 上的 Systran/faster-whisper-* 已經是 CTranslate2 格式,不用自己轉檔。
+      # 由 download-intranet-models.sh 一起抓進 ANILA_HF_DIR。
+      - ${ANILA_HF_DIR:-../../models/model}/faster-whisper-large-v3:/workspace/model/faster-whisper-large-v3:ro
+    expose:
+      - "9000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${ASR_GPU:-0}"]
+              capabilities: [gpu]
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      # 模型是背景載入的,ready 之前 /health 回 503。large-v3 冷啟動可能分鐘級
+      # → retries 要蓋得住(20×30s = 10 分鐘)。
+      retries: 20
+      start_period: 30s
+
 networks:
   models:
     external: true

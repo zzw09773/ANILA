@@ -632,6 +632,98 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ── ASR gateway (串流語音輸入的 WS 端點) ─────────────────────────────────
+  # 瀏覽器麥克風 → WSS /asr/stream → 這裡切句 → asr-decoder (GPU) → 文字。
+  # 純 CPU、無 DB、無 GPU;規格見 docs/planning/asr-voice-input-plan.md §2.2。
+  #
+  # ⚠ profiles: 預設不啟動。七條分支共用本檔,ASR 未必每個部署都開。
+  #   要開:COMPOSE_PROFILES=asr(nginx 端已用變數式 proxy_pass,沒開也不會
+  #   讓 nginx 起不來 —— 見 infra/nginx/anila.conf 的 /asr/ location)。
+  # ⚠ 麥克風還需要 nginx 放寬 Permissions-Policy,否則 getUserMedia 一律
+  #   NotAllowedError,而且症狀跟「使用者拒絕權限」一模一樣。
+  asr-gateway:
+    profiles: ["asr"]
+    build:
+      context: ../../services/asr-gateway
+      dockerfile: Dockerfile
+    image: ${ANILA_IMAGE_ASR_GATEWAY:?ANILA_IMAGE_ASR_GATEWAY must be a locked image content ID}
+    expose:
+      - "8200"
+    environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}
+      # ── decoder ──
+      # 內部版(語音不出主機,內網優先):http://asr-decoder:9000 走
+      # anila-models-net。外部版(decoder 在別台 GPU 主機):
+      # http://<gpu-host>:9000 + ASR_ALLOW_HTTP_DECODER=1,那等於接受語音
+      # 明文過內網,是書面風險接受項(規劃書 §6)。
+      ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
+      # Compose 對非啟用 profile 的服務也會做插值(同 flux2-dev-agent 的
+      # FLUX_AGENT_SERVICE_TOKEN 慣例)→ compose 層給空預設,讓預設 stack
+      # 不設此變數也能 resolve;真正的防線是 gateway 啟動時 fail-loud
+      # (_validate_settings 缺 token 直接拒絕啟動)。
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN-}
+      ASR_ALLOW_HTTP_DECODER: ${ASR_ALLOW_HTTP_DECODER:-0}
+      # ── 辨識 ──
+      # 通用型 ASR:不加 glossary / hotwords / 數字正規化(2026-07-17 定案)。
+      # 這個 prompt 是通用的,不是領域詞典 —— 實測 CER 2.74%→1.71%。
+      ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
+      ASR_BEAM_SIZE: ${ASR_BEAM_SIZE:-5}
+      # 負載過高時的第一個旋鈕:關掉 partial(邊講邊出字),只留定稿。
+      # 「十人級」指同時在線 session,不是同時講話的人 —— 2~3 人同時講話
+      # 就會讓單張卡的 partial 解碼飽和。
+      ASR_PARTIALS_ENABLED: ${ASR_PARTIALS_ENABLED:-1}
+      # ⚠ 預設 off 且不要用 s2twp。實測:whisper 在真實繁中語料的簡體率 0%,
+      # 而 OpenCC 對正確繁體誤傷 6~10%(s2twp 會把「類型」轉成「型別」)。
+      # 見規劃書 §10。
+      ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
+      ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
+      # ── 認證(與 anila-studio 同名同義;app/services/ 下是 studio 的
+      #    vendored 副本,欄位名不可漂移。見規劃書 §12)──
+      CSP_BASE_URL: http://csp:8000
+      # revocation cache 冷啟動要拿它打 csp 的 /api/auth/revocations 做全量
+      # 同步。漏了它 cache 永遠不 ready,fail-closed 之下所有 WS 一律被拒,
+      # 症狀長得像 auth 壞掉。
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
+      JWT_KID: anila-v1
+      JWT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
+      JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
+      REVOCATION_RECONCILE_INTERVAL_SECONDS: "${REVOCATION_RECONCILE_INTERVAL_SECONDS:-5}"
+      # 跟 csp / anila-studio 同一個旗標、同樣預設。main 的 formal downstream
+      # profile(2026-07)把預設翻成 false(帳密優先):password profile 不設此
+      # 值就走帳密,card profile 由 preflight 顯式帶 true。gateway 必須跟著預設
+      # false,否則帳密 profile 部署時 csp 走帳密、gateway 卻擋帳密 session
+      # (amr=["pwd"] → 4401)。一個 env 同時控制三者(csp/studio/gateway)。
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-false}"
+      # 決定 access cookie 名走哪一軌。瀏覽器的 WS API 不能帶 Authorization
+      # header → cookie 是唯一路徑,名字錯就是全部 4401。
+      COOKIE_SECURE: "true"
+      LOG_LEVEL: INFO
+    depends_on:
+      csp:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      # 內部版 decoder 在 anila-models-net(infra/models/docker-compose.yml)。
+      # 只掛 default 的話 DNS 解不到 asr-decoder。外部版不需要這條,但留著
+      # 無害(network 存在即可)。
+      - anila-models-net
+    healthcheck:
+      # ⚠ 路徑自帶 /asr 前綴(nginx 的 location /asr/ 不 strip)。打 /health
+      # 會 404 —— 那是路徑錯,不是服務掛了。
+      # 撤銷是 fail-closed → cache 沒 ready 時 /asr/health 回 503,這是刻意的:
+      # 那時 ASR 本來就不能用,綠燈只會讓 operator 查錯方向。
+      test: ["CMD-SHELL", "curl -sf http://localhost:8200/asr/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
   anilalm:
     build:

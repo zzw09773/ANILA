@@ -13,3 +13,4 @@ flux2-dev-agent	anila-flux-agent:latest	profile:flux-approved
 gemma-4-26b-a4b	vllm/vllm-openai:v0.22.1-cu129-ubuntu2404	profile:intranet
 gemma-4-12b	vllm/vllm-openai:v0.22.1-cu129-ubuntu2404	profile:intranet
 gpt-oss-120b	vllm/vllm-openai:v0.22.1-cu129-ubuntu2404	profile:intranet
+asr-decoder	asr-decoder:0.1.0	profile:intranet

@@ -45,6 +45,9 @@ REQUIRED_ENV = {
     "N8N_ENCRYPTION_KEY": "0123456789abcdef0123456789abcdef",
     "GITLAB_ROOT_PASSWORD": "inventory-check-gitlab-root-0123456789",
     "GITLAB_SSH_BIND_IP": "10.53.100.15",
+    # asr-gateway(platform,profile:asr)與 asr-decoder(models,profile:intranet)
+    # 共享的密鑰。checker 只是要讓 `docker compose config` 過得去,值不重要。
+    "ASR_DECODER_TOKEN": "asr-inventory-check-0123456789abcdef",
 }
 ALLOWED_BUNDLES = {
     "01-anila-built.tar.gz",

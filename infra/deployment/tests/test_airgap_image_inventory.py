@@ -38,6 +38,7 @@ class AirgapImageInventoryTests(unittest.TestCase):
             {(entry.service, entry.activation, entry.source) for entry in optional},
             {
                 ("anila-agent", "profile:gate5-silver", "built"),
+                ("asr-gateway", "profile:asr", "built"),
                 ("codeserver", "profile:developer-tools", "upstream"),
             },
         )
@@ -57,11 +58,14 @@ class AirgapImageInventoryTests(unittest.TestCase):
         ]
         self.assertEqual(
             {entry.service for entry in profile_entries},
-            {"gemma-4-26b-a4b", "gemma-4-12b", "gpt-oss-120b"},
+            {"gemma-4-26b-a4b", "gemma-4-12b", "gpt-oss-120b", "asr-decoder"},
         )
         self.assertEqual(
             {entry.image for entry in profile_entries},
-            {"vllm/vllm-openai:v0.22.1-cu129-ubuntu2404"},
+            {
+                "vllm/vllm-openai:v0.22.1-cu129-ubuntu2404",
+                "asr-decoder:0.1.0",
+            },
         )
 
     def test_exporter_consumes_inventory_and_loader_checks_required_images(self) -> None:
@@ -113,13 +117,13 @@ class AirgapImageInventoryTests(unittest.TestCase):
             self.skipTest("docker compose is not usable in this environment")
         required, optional = checker.validate(ROOT, INVENTORY)
         self.assertEqual(required, 12)
-        self.assertEqual(optional, 2)
+        self.assertEqual(optional, 3)
         model_default, model_optional, unique_images = checker.validate_models(
             ROOT, MODEL_INVENTORY
         )
         self.assertEqual(model_default, 4)
-        self.assertEqual(model_optional, 5)
-        self.assertEqual(unique_images, 7)
+        self.assertEqual(model_optional, 6)
+        self.assertEqual(unique_images, 8)
 
 
 if __name__ == "__main__":

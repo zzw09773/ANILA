@@ -63,6 +63,9 @@ services:
       # Dev auto-keygen writes only to a dedicated named volume. Never bake or
       # generate reusable signing material under services/csp/secrets.
       ALLOW_AUTO_KEYGEN: "true"
+      # 讓 .env 的 ADMIN_PASSWORD 進得了 csp;沒設就沿用 config.py 預設 changeme。
+      # ⚠ 密碼是 admin-sticky:只在第一次 seed(全新 DB)生效,既有 admin 不會被改。
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-changeme}"
       # This stack is still served through nginx HTTPS (default :8443/:9443;
       # LAN overrides may use :443/:4443), so it exercises the same __Host-
       # cookie contract as production.
@@ -477,6 +480,61 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ── ASR gateway (串流語音輸入;dev / 帳密測試環境)──────────────────────
+  # 對應 platform.yml 的 asr-gateway,但走 dev 慣例:直接 build、dev 預設 env、
+  # REQUIRE_CARD_LOGIN_ONLY=false(帳密登入,不用卡)。
+  # decoder 在 anila-models-net 上(infra/models/docker-compose.yml 的 asr-decoder,
+  # 用 `model-serve.sh up asr-decoder` 起);gateway 掛 anila-models-net 才連得到。
+  # nginx(dev)用的是同一份 anila.conf,/asr/ 路由與麥克風放行已在其中。
+  asr-gateway:
+    build:
+      context: ../../services/asr-gateway
+      dockerfile: Dockerfile
+    expose:
+      - "8200"
+    environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
+      # decoder(dev 走內部 network,http 服務名免旗標)
+      ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
+      # ⚠ 必須與 asr-decoder 同值。decoder(models compose)是 fail-loud、沒有預設,
+      # 所以務必在 .env 設 ASR_DECODER_TOKEN,兩邊才對得上。
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-dev-asr-token}
+      ASR_ALLOW_HTTP_DECODER: ${ASR_ALLOW_HTTP_DECODER:-0}
+      ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
+      ASR_BEAM_SIZE: ${ASR_BEAM_SIZE:-5}
+      ASR_PARTIALS_ENABLED: ${ASR_PARTIALS_ENABLED:-1}
+      ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
+      ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
+      CSP_BASE_URL: http://csp:8000
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
+      JWT_KID: anila-v1
+      JWT_ISSUER: "https://anila.internal/csp"
+      JWT_AUDIENCE: "anila-platform"
+      JWT_LEEWAY_SECONDS: "60"
+      REVOCATION_RECONCILE_INTERVAL_SECONDS: "5"
+      # dev/帳密登入:關掉卡登限定,gateway 才接受 amr=["pwd"] 的 session。
+      REQUIRE_CARD_LOGIN_ONLY: "false"
+      # 跟 dev csp 一致(__Host- cookie);不一致就是全 4401。
+      COOKIE_SECURE: "true"
+      LOG_LEVEL: INFO
+    depends_on:
+      csp:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - anila-models-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8200/asr/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
   # ── ANILA LM (no-SSO 版本，從 feature/no-sso branch build) ───────────────
   anilalm:
     build:
@@ -504,6 +562,10 @@ services:
       context: ../..
       dockerfile: apps/anila-shell/Dockerfile
       args:
+        # anila-ui 由 nginx 服務在 /anila/(容器內 nginx 也 alias 到 /anila/),
+        # SPA 必須 build 成 base=/anila/,否則 asset 路徑對不上 → 空白頁。
+        # dev.yml 早先漏設,預設 base=/ → /anila/ 打開是白畫面。
+        BASE_PATH: ${ANILA_UI_BASE_PATH:-/anila/}
         VITE_CSP_BASE_URL: ${ANILA_PUBLIC_CSP_BASE_URL-}
         VITE_ROUTER_BASE_URL: ${ANILA_PUBLIC_ROUTER_BASE_URL:-/router}
     expose:
@@ -532,6 +594,9 @@ services:
       - "${ANILA_DEV_BIND_ADDRESS:-127.0.0.1}:${ANILA_UI_HTTPS_PORT_DEV:-9443}:4443"
     volumes:
       - ../../infra/nginx/anila.conf:/etc/nginx/conf.d/default.conf:ro
+      # anila.conf 的 /router/ location include 這個 snippet(router-posture.conf)。
+      # platform.yml 有掛,dev.yml 早先漏了 → nginx [emerg] open() failed 而 crash-loop。
+      # dev 有 router 服務,用 enabled 版(與 platform.yml 一致)。
       - ../../infra/nginx/snippets/router-enabled.conf:/etc/nginx/snippets/router-posture.conf:ro
       - ../../infra/nginx/snippets/extra-anila-hosts.dev.conf:/etc/nginx/snippets/extra-anila-hosts.conf:ro
       - "${ANILA_DEV_TLS_CERTS_DIR:?ANILA_DEV_TLS_CERTS_DIR must be outside the repo}:/etc/nginx/certs:ro"

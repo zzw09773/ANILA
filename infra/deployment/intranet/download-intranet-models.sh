@@ -38,6 +38,9 @@ MODELS=(
   "google/gemma-4-26B-A4B|gemma-4-26B-A4B"                                             #  48.1 GiB
   "openai/gpt-oss-120b|gpt-oss-120b"                                                   # 182.3 GiB
   # ── 工具/小模型 ──────────────────────────────────────────────────────────
+  # Systran 這份已經是 CTranslate2 格式(faster-whisper 直接吃,不用自己轉檔)。
+  # 語音輸入 (asr-decoder) 用;fp16 推論吃 ~4.7 GiB VRAM。
+  "Systran/faster-whisper-large-v3|faster-whisper-large-v3"                            #   3.1 GiB
   "google/gemma-4-E4B|gemma-4-E4B"                                                     #  14.9 GiB (NVFP4 rehearsal 用)
   "black-forest-labs/FLUX.2-klein-4B|FLUX.2-klein-4B"                                  #  22.1 GiB
   "black-forest-labs/FLUX.2-dev|FLUX.2-dev"                                            # 165.4 GiB (本機已有→自動跳過)
@@ -53,7 +56,7 @@ MODELS=(
   "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8|Llama-4-Maverick-17B-128E-Instruct-FP8"              # 388.2 GiB
   "meta-llama/Llama-4-Maverick-17B-128E-Instruct|Llama-4-Maverick-17B-128E-Instruct"   # 748.0 GiB (REMOVE_SOURCE=1 打包)
 )
-TOTAL_GIB=2469
+TOTAL_GIB=2473
 
 command -v hf >/dev/null || { echo "✗ 找不到 hf CLI (pip install -U huggingface_hub[cli])"; exit 1; }
 [ -n "${HF_TOKEN:-}" ] || [ -f "$HOME/.cache/huggingface/token" ] \
