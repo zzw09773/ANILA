@@ -65,10 +65,10 @@ class ProductionBackupProfileTests(unittest.TestCase):
         self.assertEqual(
             verify_profile(profile_path=PROFILE_PATH, compose_path=COMPOSE_PATH),
             {
-                "derivable": 4,
+                "derivable": 5,
                 "excluded": 2,
                 "required": 22,
-                "total": 28,
+                "total": 29,
             },
         )
 
@@ -171,7 +171,7 @@ class ProductionBackupProfileTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "total=28, required=22, derivable=4, excluded=2", result.stdout
+            "total=29, required=22, derivable=5, excluded=2", result.stdout
         )
 
     def _assert_profile_rejected(
