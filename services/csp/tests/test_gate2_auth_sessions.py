@@ -347,6 +347,27 @@ def test_refresh_reuse_cross_sid_always_strict_even_within_grace(
     # this test session's read transaction (mirrors the sibling grace tests) so
     # the next read sees the committed revocation instead of a stale snapshot.
     db.commit()
+
+    # Premise guard: this test only proves "cross-sid is strict EVEN within
+    # grace" if the consumed record was still inside the grace window when the
+    # replay was evaluated. Assert its age is below the window even now (after
+    # the replay), which bounds the age at evaluation time from above; without
+    # this, a slow run ages the record past grace and a mutation that graces
+    # within-window cross-sid reuse would still see this test pass.
+    consumed = (
+        db.query(AuthRefreshToken)
+        .filter(AuthRefreshToken.sid == first_claims["sid"])
+        .filter(AuthRefreshToken.consumed_at.isnot(None))
+        .one()
+    )
+    consumed_at = consumed.consumed_at
+    if consumed_at.tzinfo is None:
+        consumed_at = consumed_at.replace(tzinfo=timezone.utc)
+    consumed_age = datetime.now(timezone.utc) - consumed_at
+    assert timedelta(0) <= consumed_age < timedelta(
+        seconds=settings.ANILA_REFRESH_REUSE_GRACE_SECONDS
+    ), f"within-grace premise broken: consumed record aged {consumed_age}"
+
     second_session = db.get(AuthSession, second_claims["sid"])
     assert second_session is not None
     assert second_session.revoked_at is not None
