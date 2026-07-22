@@ -103,25 +103,76 @@ function buildHeaders(method, provided = {}, bearerToken) {
 
 export { joinUrl };
 
+/**
+ * Build a fetch signal that respects an optional timeoutMs and any
+ * caller-provided AbortSignal. Default callers omit timeoutMs → no timeout.
+ */
+function resolveFetchSignal(timeoutMs, outerSignal) {
+  if (timeoutMs == null) {
+    return { signal: outerSignal, cleanup() {} };
+  }
+
+  const hasTimeoutApi =
+    typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function";
+
+  if (hasTimeoutApi && !outerSignal) {
+    return { signal: AbortSignal.timeout(timeoutMs), cleanup() {} };
+  }
+
+  if (
+    hasTimeoutApi &&
+    outerSignal &&
+    typeof AbortSignal.any === "function"
+  ) {
+    return {
+      signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), outerSignal]),
+      cleanup() {},
+    };
+  }
+
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timeoutId = setTimeout(abort, timeoutMs);
+  if (outerSignal) {
+    if (outerSignal.aborted) abort();
+    else outerSignal.addEventListener("abort", abort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timeoutId);
+      if (outerSignal) outerSignal.removeEventListener("abort", abort);
+    },
+  };
+}
+
 export async function authRequest(path, options = {}, accessToken) {
   const method = options.method || "GET";
-  const response = await fetch(joinUrl(config.cspBaseUrl, path), {
-    ...options,
-    credentials: "include",
-    headers: buildHeaders(method, options.headers, accessToken),
-  });
+  const { timeoutMs, signal: outerSignal, ...fetchOptions } = options;
+  const { signal, cleanup } = resolveFetchSignal(timeoutMs, outerSignal);
 
-  if (!response.ok) {
-    const detail = await readError(response);
-    const error = new Error(detail);
-    error.status = response.status;
-    throw error;
-  }
+  try {
+    const response = await fetch(joinUrl(config.cspBaseUrl, path), {
+      ...fetchOptions,
+      signal,
+      credentials: "include",
+      headers: buildHeaders(method, fetchOptions.headers, accessToken),
+    });
 
-  if (response.status === 204) {
-    return null;
+    if (!response.ok) {
+      const detail = await readError(response);
+      const error = new Error(detail);
+      error.status = response.status;
+      throw error;
+    }
+
+    if (response.status === 204) {
+      return null;
+    }
+    return response.json();
+  } finally {
+    cleanup();
   }
-  return response.json();
 }
 
 async function readError(response) {
@@ -137,14 +188,24 @@ async function readError(response) {
   return response.text();
 }
 
-export async function refreshJwt() {
+// Single-flight: concurrent refreshJwt() callers share one in-flight POST.
+// Cleared in finally so a later expiry can refresh again. No cross-tab lock.
+let refreshInFlight = null;
+
+export function refreshJwt() {
   // Refresh token travels via the `__Host-anila_refresh_token` httpOnly cookie;
   // body is empty. Explicit JSON header still required so FastAPI routes
   // OK, even with no body.
-  return authRequest("/api/auth/refresh", {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
+  if (!refreshInFlight) {
+    refreshInFlight = authRequest("/api/auth/refresh", {
+      method: "POST",
+      body: JSON.stringify({}),
+      timeoutMs: 15000,
+    }).finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
 }
 
 export async function authRequestWithRefresh(
