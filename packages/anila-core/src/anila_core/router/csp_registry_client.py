@@ -10,8 +10,10 @@ boundary small and testable; all authority checks happen again in the local
 from __future__ import annotations
 
 import json
+import logging
 import re
-from collections.abc import AsyncIterator, Mapping
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -31,7 +33,10 @@ from anila_contracts.agents import ModelBinding
 from anila_contracts.classification import ClassificationLevel
 
 from .candidate_filter import RegistryEntry, RegistrySnapshot
-from .policy_gate import ExecutionGrantInput
+from .policy_gate import DirectModelGovernance, ExecutionGrantInput
+
+
+logger = logging.getLogger(__name__)
 
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -66,6 +71,14 @@ class AgentClientError(RuntimeError):
 
 class GrantMintUnavailable(RuntimeError):
     """Raised when CSP has not issued a grant for a formal Agent call."""
+
+
+class DirectModelGovernanceUnavailable(RuntimeError):
+    """Raised when the CSP direct-answer model ceiling cannot be obtained.
+
+    R7.1: the Router treats any such failure as governance-unavailable and the
+    PolicyGate then fails DIRECT_ANSWER closed rather than guessing a ceiling.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +468,173 @@ class CspRegistryClient:
         if snapshot.caller_user_id != caller_user_id:
             raise RegistryClientError("CSP registry caller_user_id mismatch")
         return snapshot
+
+
+def _parse_direct_model_governance(
+    payload: object, *, expected_model: str
+) -> DirectModelGovernance:
+    """Strictly parse the CSP direct-model governance projection.
+
+    只接受 CSP 端明確回傳、且 model_id 與所請求模型一致的治理事實;任何缺欄、
+    型別不符或分類字串無效都視為治理不可用 → fail-closed。
+    """
+
+    if not isinstance(payload, Mapping):
+        raise DirectModelGovernanceUnavailable(
+            "CSP direct model governance response 必須是 JSON object"
+        )
+    model_id = payload.get("model_id")
+    gateway = payload.get("gateway")
+    raw_ceiling = payload.get("classification_ceiling")
+    if not isinstance(model_id, str) or model_id != expected_model:
+        raise DirectModelGovernanceUnavailable("CSP direct model governance model_id 不一致")
+    if not isinstance(gateway, str) or not gateway.strip():
+        raise DirectModelGovernanceUnavailable("CSP direct model governance 缺少 gateway")
+    if not isinstance(raw_ceiling, str) or not raw_ceiling.strip():
+        raise DirectModelGovernanceUnavailable(
+            "CSP direct model governance 缺少 classification_ceiling"
+        )
+    try:
+        ceiling = ClassificationLevel.from_storage(raw_ceiling)
+    except (TypeError, ValueError) as exc:
+        raise DirectModelGovernanceUnavailable(
+            "CSP direct model governance classification_ceiling 無效"
+        ) from exc
+    try:
+        return DirectModelGovernance(
+            model_id=model_id,
+            gateway=gateway,
+            classification_ceiling=ceiling,
+        )
+    except (TypeError, ValueError) as exc:
+        raise DirectModelGovernanceUnavailable(
+            "CSP direct model governance 格式無效"
+        ) from exc
+
+
+class CspDirectModelGovernanceClient:
+    """Fetch the Router direct-answer model ceiling from CSP governance.
+
+    R7.1: the DIRECT_ANSWER classification ceiling is derived from the CSP
+    model registry, not a manual env knob.  This adapter authenticates with the
+    named Router service-client token (the same inference seam scope as the
+    primary-model call) and returns a trusted :class:`DirectModelGovernance`.
+    """
+
+    def __init__(
+        self,
+        csp_base_url: str,
+        *,
+        service_token: str | None,
+        governance_path: str = "/internal/v1/router/direct-model-governance",
+        timeout: float = 10.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self.base_url = csp_base_url.rstrip("/")
+        parsed = urlsplit(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("CSP base URL 必須是絕對 HTTP(S) origin")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+            raise ValueError("CSP base URL 不得包含 userinfo/path/query/fragment")
+        if not governance_path.startswith("/") or "?" in governance_path or "#" in governance_path:
+            raise ValueError("CSP governance path 必須是 origin-relative path")
+        self.service_token = (service_token or "").strip()
+        self.governance_path = governance_path
+        self.timeout = timeout
+        self.transport = transport
+
+    @property
+    def is_configured(self) -> bool:
+        """Whether this transport carries a deployable named service token."""
+
+        token = self.service_token.strip()
+        return bool(
+            token.startswith("csk-")
+            and token.lower()
+            not in _PLACEHOLDER_TOKENS
+        )
+
+    def _headers(self) -> dict[str, str]:
+        if self.service_token.lower() in _PLACEHOLDER_TOKENS or not self.service_token:
+            raise DirectModelGovernanceUnavailable("缺少具名 CSP service-client token")
+        return {
+            "X-CSP-Service-Token": self.service_token,
+            "Content-Type": "application/json",
+        }
+
+    async def fetch(self, model: str) -> DirectModelGovernance:
+        if not isinstance(model, str) or not model.strip():
+            raise DirectModelGovernanceUnavailable("direct model governance 缺少 model")
+        target = model.strip()
+        headers = self._headers()
+        url = f"{self.base_url}{self.governance_path}"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+                response = await client.get(url, params={"model": target}, headers=headers)
+                response.raise_for_status()
+                payload = response.json()
+        except DirectModelGovernanceUnavailable:
+            raise
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise DirectModelGovernanceUnavailable(
+                "CSP direct model governance 取得失敗"
+            ) from exc
+        return _parse_direct_model_governance(payload, expected_model=target)
+
+
+class DirectModelGovernanceProvider:
+    """TTL cache over the CSP direct-answer model governance fetch.
+
+    R7.1: 治理事實以 TTL 快取。快取過期後重新抓取,任何取得失敗/格式無效一律
+    視為治理不可用 → 回傳 ``None``,PolicyGate 對直答 fail-closed 拒絕(絕不供
+    過期舊值)。因此 model registry 調降上限最多在一個 TTL 內生效。取得失敗只
+    記一次 warning,成功後重置,避免逐請求洗 log。
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        fetch: Callable[[str], Awaitable[DirectModelGovernance]],
+        ttl_seconds: float = 300.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("direct model governance provider 缺少 model")
+        if ttl_seconds <= 0:
+            raise ValueError("direct model governance TTL 必須為正數")
+        self._model = model.strip()
+        self._fetch = fetch
+        self._ttl = float(ttl_seconds)
+        self._clock = clock
+        self._cached: DirectModelGovernance | None = None
+        self._expires_at: float | None = None
+        self._warned = False
+
+    async def get(self) -> DirectModelGovernance | None:
+        now = self._clock()
+        if (
+            self._cached is not None
+            and self._expires_at is not None
+            and now < self._expires_at
+        ):
+            return self._cached
+        try:
+            governance = await self._fetch(self._model)
+        except DirectModelGovernanceUnavailable as exc:
+            # 過期後取得失敗:不供舊值,直接 fail-closed。只記一次 warning。
+            self._cached = None
+            self._expires_at = None
+            if not self._warned:
+                logger.warning(
+                    "直答模型治理不可用,直答將 fail-closed 拒絕: %s", exc
+                )
+                self._warned = True
+            return None
+        self._cached = governance
+        self._expires_at = now + self._ttl
+        self._warned = False
+        return governance
 
 
 @dataclass(frozen=True)
@@ -1396,10 +1576,13 @@ __all__ = [
     "AgentClientError",
     "CspAgentClient",
     "CspAgentRequest",
+    "CspDirectModelGovernanceClient",
     "CspInferenceClient",
     "CspInferenceRequest",
     "CspRegistryClient",
     "CspExecutionGrantMinter",
+    "DirectModelGovernanceProvider",
+    "DirectModelGovernanceUnavailable",
     "ExecutionGrantEnvelope",
     "ExecutionGrantMinter",
     "GrantMintUnavailable",

@@ -110,16 +110,10 @@ try:
             default=False,
             description="Explicit compatibility-only DISPATCH adapter switch.",
         )
-        # ── Gate 5 R7:直答(DIRECT_ANSWER)模型治理 ──────────────────
-        router_direct_model_ceiling: Optional[str] = Field(
-            default=None,
-            description=(
-                "直答主模型的分類上限(canonical storage 值,例如「無機密」"
-                "「營業秘密」)。未設定 → 直答一律 fail-closed 拒絕。設定後 "
-                "Router PolicyGate 依此做等同 enforce_model_ceiling 的前置閘;"
-                "真正出向呼叫仍由 CSP model gateway 再強制。"
-            ),
-        )
+        # ── Gate 5 R7.1:直答(DIRECT_ANSWER)模型治理 ────────────────
+        # 直答主模型的分類上限不再由手動 env knob 提供,而是由 Router 於執行期
+        # 從 CSP model registry 治理自動推導(見 csp_registry_client 的
+        # DirectModelGovernanceProvider)。取得失敗一律 fail-closed 拒絕。
 
         # ── API / Auth ────────────────────────────────────────────────
         api_key: Optional[str] = Field(
@@ -199,7 +193,6 @@ except ImportError:
         csp_jwks_url: Optional[str] = None
         router_context_issuer: str = "https://anila.internal/csp"
         allow_legacy_agent_dispatch: bool = False
-        router_direct_model_ceiling: Optional[str] = None
         api_key: Optional[str] = None
         api_dev_mode: bool = False
         cookie_secure: bool = True

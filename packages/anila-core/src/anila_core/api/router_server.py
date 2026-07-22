@@ -29,7 +29,6 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from anila_contracts.classification import ClassificationLevel
 from anila_contracts.routing import RouteType
 
 from ..config import settings
@@ -44,10 +43,12 @@ from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentReg
 from ..router import (
     AgentClientError,
     CspAgentClient,
+    CspDirectModelGovernanceClient,
     CspExecutionGrantMinter,
     CspInferenceClient,
     CspRegistryClient,
     DirectModelGovernance,
+    DirectModelGovernanceProvider,
     ExecutionRuntime,
     GrantMintUnavailable,
     RegistryClientError,
@@ -1136,6 +1137,7 @@ def create_router_app(
     grant_minter: ExecutionGrantMinter | None = None,
     router_context_verifier: Any = None,
     direct_model_governance: DirectModelGovernance | None = None,
+    direct_model_governance_client: Any = None,
 ) -> FastAPI:
     """Build and return the ANILA Core Router FastAPI application.
 
@@ -1204,41 +1206,45 @@ def create_router_app(
                 "https://anila.internal/csp",
             ),
         )
-    # R7:直答(DIRECT_ANSWER)模型治理輸入。優先使用注入值(測試/自訂),
-    # 否則從 server-controlled 設定 ``router_direct_model_ceiling`` 建立。未設定
-    # 時保持 None → PolicyGate 對直答一律 fail-closed 拒絕。設定了但值無效時,
-    # 仍建立治理物件但 ceiling=None,讓 PolicyGate 回可解釋的 ceiling-missing。
+    # R7.1:直答(DIRECT_ANSWER)主模型的分類上限改由 CSP model registry 治理
+    # 自動推導(admin 在 model registry 調整即生效),不再讀取手動 env knob。
+    # 優先使用注入的治理值(測試/自訂)→ 靜態 runtime;否則以 Router 既有的
+    # inference service-client token 呼叫 CSP 內部 direct-model governance 端點
+    # (其 scope 正對應主模型推論),並以 TTL provider 快取。取得失敗/過期/格式
+    # 無效一律 fail-closed → PolicyGate 對直答回 DIRECT_MODEL_GOVERNANCE_UNAVAILABLE
+    # 拒絕。真正出向呼叫仍由 CSP model gateway 再受 enforce_model_ceiling 強制。
     formal_direct_model_governance = direct_model_governance
+    direct_model_governance_provider: DirectModelGovernanceProvider | None = None
     if formal_direct_model_governance is None:
-        raw_direct_ceiling = getattr(settings, "router_direct_model_ceiling", None)
-        if raw_direct_ceiling:
-            try:
-                direct_ceiling: ClassificationLevel | None = ClassificationLevel.from_storage(
-                    raw_direct_ceiling
+        # settings.model 缺失(空字串/純空白)時不建 provider:記 warning 並保持
+        # 治理為 None → PolicyGate 回可解釋的 fail-closed 拒絕,而非啟動即崩潰。
+        if isinstance(settings.model, str) and settings.model.strip():
+            governance_client = direct_model_governance_client or (
+                CspDirectModelGovernanceClient(
+                    settings.csp_base_url,
+                    service_token=inference_service_token,
                 )
-            except (TypeError, ValueError):
-                logger.warning(
-                    "router_direct_model_ceiling 值無效,直答將 fail-closed 拒絕: %r",
-                    raw_direct_ceiling,
-                )
-                direct_ceiling = None
-            # DirectModelGovernance 對空白 model_id 會 raise ValueError。settings.model
-            # 缺失(空字串/純空白)時不讓服務啟動就崩潰:記 warning 並保持 governance
-            # 為 None → PolicyGate 回可解釋的 DIRECT_MODEL_GOVERNANCE_UNAVAILABLE 拒絕。
-            if isinstance(settings.model, str) and settings.model.strip():
-                formal_direct_model_governance = DirectModelGovernance(
-                    model_id=settings.model,
-                    gateway="csp",
-                    classification_ceiling=direct_ceiling,
-                )
-            else:
-                logger.warning(
-                    "settings.model 缺失,無法建立直答模型治理,直答將 fail-closed 拒絕: %r",
-                    settings.model,
-                )
+            )
+            direct_model_governance_provider = DirectModelGovernanceProvider(
+                model=settings.model,
+                fetch=governance_client.fetch,
+            )
+        else:
+            logger.warning(
+                "settings.model 缺失,無法推導直答模型治理,直答將 fail-closed 拒絕: %r",
+                settings.model,
+            )
     formal_runtime = ExecutionRuntime(
         direct_model_governance=formal_direct_model_governance
     )
+
+    async def _resolve_runtime() -> ExecutionRuntime:
+        # 注入自訂治理(測試/自訂)時用靜態 runtime;否則以 TTL provider 解出
+        # 當前治理,再組一個等價 runtime(其餘元件皆為無狀態預設,建構成本低)。
+        if direct_model_governance_provider is None:
+            return formal_runtime
+        governance = await direct_model_governance_provider.get()
+        return ExecutionRuntime(direct_model_governance=governance)
     resolved_db_path = session_db_path or settings.session_db_path
 
     def _make_session(sid: str) -> Session:
@@ -2132,7 +2138,8 @@ def create_router_app(
             )
             if result.get("error"):
                 return result, None
-            runtime_result = formal_runtime.execute(
+            runtime = await _resolve_runtime()
+            runtime_result = runtime.execute(
                 route_context,
                 result.get("content", ""),
                 route_snapshot,
