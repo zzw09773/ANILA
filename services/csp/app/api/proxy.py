@@ -2273,6 +2273,11 @@ async def _chat_completions_impl(
             finalize_task_run_on_completion=(
                 task_ctx.owns_lifecycle if task_ctx else True
             ),
+            # The internal-router sentinel forward is an orchestration hop, not
+            # a terminal model call; its token_usage row would double-count the
+            # nested real-model inference, so suppress accounting here. The
+            # nested /internal/v1/router call (real model) is unaffected.
+            suppress_usage_accounting=_is_internal_router_model(model),
         )
         teed = _tee_stream_capture_assistant(
             upstream,
@@ -2348,6 +2353,10 @@ async def _chat_completions_impl(
         finalize_task_run_on_completion=(
             task_ctx.owns_lifecycle if task_ctx else True
         ),
+        # See stream branch: suppress the orchestration hop's token_usage row so
+        # the anila-router sentinel forward never double-counts the nested
+        # real-model inference.
+        suppress_usage_accounting=_is_internal_router_model(model),
     )
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(

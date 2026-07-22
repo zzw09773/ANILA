@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -509,3 +511,201 @@ def test_cancel_after_usage_preserves_usage_in_failed_closure(monkeypatch):
     assert captured
     assert captured[-1].status == "failed"
     assert captured[-1].usage.total_tokens == 8
+
+
+# --------------------------------------------------------------------------
+# Internal-router orchestration hop: the anila-router sentinel forward is an
+# orchestration hop, not a terminal model call.  ``suppress_usage_accounting``
+# (threaded from ``_is_internal_router_model(model)`` at the proxy call sites)
+# must stop the outer forward from enqueuing / capturing any token_usage row,
+# so the nested real-model inference is counted exactly once and never
+# double-counted.  Governance/PolicyDecision logging is unaffected — only the
+# token_usage accounting is suppressed.
+# --------------------------------------------------------------------------
+
+
+def _run_stream(recorded, monkeypatch, lines, **kwargs):
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *a, **kw: _FakeAsyncClient(lines, *a, **kw),
+    )
+
+    async def fake_enqueue_usage(**kw):
+        recorded.append(kw)
+
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", fake_enqueue_usage)
+
+    async def run():
+        async for _chunk in proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={
+                "model": "google/gemma4",
+                "messages": [{"role": "user", "content": "Say hello"}],
+                "stream": True,
+            },
+            model_name="google/gemma4",
+            **kwargs,
+        ):
+            pass
+
+    asyncio.run(run())
+
+
+_USAGE_LINES = [
+    'data: {"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}',
+    "",
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}',
+    "",
+    "data: [DONE]",
+    "",
+]
+
+
+def test_stream_suppresses_usage_for_internal_router_hop(monkeypatch):
+    recorded: list[dict] = []
+    _run_stream(
+        recorded, monkeypatch, _USAGE_LINES, suppress_usage_accounting=True
+    )
+    # Upstream reported usage, but the orchestration hop must not enqueue it.
+    assert recorded == []
+
+
+def test_stream_writes_single_row_when_not_suppressed(monkeypatch):
+    recorded: list[dict] = []
+    _run_stream(
+        recorded, monkeypatch, _USAGE_LINES, suppress_usage_accounting=False
+    )
+    assert len(recorded) == 1
+    assert recorded[0]["model_id"] == 3
+    assert recorded[0]["total_tokens"] == 18
+
+
+def test_stream_task_linked_router_hop_writes_no_usage_row(monkeypatch):
+    """Task-linked sentinel forward: the durable closure still finalizes the
+    TaskRun, but carries no usage so no TokenUsage row is written."""
+    monkeypatch.setattr(proxy_impl, "_lock_task_run_admission", lambda **_: "無機密")
+    monkeypatch.setattr(proxy_impl, "_lock_registry_admission", lambda **_: None)
+    monkeypatch.setattr(proxy_impl, "_commit_stream_admission", lambda _db: None)
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *a, **kw: _FakeAsyncClient(_USAGE_LINES, *a, **kw),
+    )
+    captured: list = []
+    monkeypatch.setattr(
+        proxy_impl,
+        "persist_task_call_closure",
+        lambda _db, closure: captured.append(closure),
+    )
+
+    class _DB:
+        def rollback(self):
+            pass
+
+    async def run():
+        async for _ in proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={"model": "m", "messages": []},
+            task_id=10,
+            task_trace_id="trace-10",
+            task_run_id=11,
+            governance_db=_DB(),
+            admitted_classification_level="無機密",
+            suppress_usage_accounting=True,
+        ):
+            pass
+
+    asyncio.run(run())
+    assert captured
+    assert captured[-1].status == "completed"
+    # No usage attached -> closure writes no TokenUsage row.
+    assert captured[-1].usage is None
+
+
+class _FakeJSONResponse:
+    def __init__(self, payload: dict):
+        self._payload = payload
+        self.status_code = 200
+        self.headers = {"content-type": "application/json"}
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+class _FakeJSONClient:
+    def __init__(self, payload: dict, *args, **kwargs):
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, json, headers):
+        del url, json, headers
+        return _FakeJSONResponse(self._payload)
+
+
+def _run_request(recorded, monkeypatch, *, suppress: bool):
+    payload = {
+        "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+    }
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *a, **kw: _FakeJSONClient(payload, *a, **kw),
+    )
+    monkeypatch.setattr(proxy_impl, "resolve_model_gateway_key", lambda _m: None)
+
+    async def fake_enqueue_usage(**kw):
+        recorded.append(kw)
+
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", fake_enqueue_usage)
+
+    model = SimpleNamespace(
+        endpoint_url="http://mock-llm",
+        model_type="chat",
+        api_version="v1",
+        name="google/gemma4",
+        id=3,
+    )
+
+    async def run():
+        return await proxy_service.proxy_request(
+            model=model,
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            request_body={"messages": [{"role": "user", "content": "hi"}]},
+            endpoint_path="/v1/chat/completions",
+            suppress_usage_accounting=suppress,
+        )
+
+    return asyncio.run(run())
+
+
+def test_nonstream_suppresses_usage_for_internal_router_hop(monkeypatch):
+    recorded: list[dict] = []
+    result = _run_request(recorded, monkeypatch, suppress=True)
+    assert result["usage"]["total_tokens"] == 18  # response passthrough intact
+    assert recorded == []
+
+
+def test_nonstream_writes_single_row_when_not_suppressed(monkeypatch):
+    recorded: list[dict] = []
+    _run_request(recorded, monkeypatch, suppress=False)
+    assert len(recorded) == 1
+    assert recorded[0]["model_id"] == 3
+    assert recorded[0]["total_tokens"] == 18
