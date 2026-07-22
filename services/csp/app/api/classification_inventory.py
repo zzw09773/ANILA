@@ -19,7 +19,8 @@ doc 08 §15 未規定明確的 wire 欄位/聚合格式,故採 Slice 3c 約定�
       "generated_at": ISO-8601,
       "resources": [
         {"resource_type", "levels": {級別: count...},
-         "latched", "inconsistent", "total"},
+         "latched", "inconsistent", "total",
+         "description", "manage_path"},
         ...
       ]
     }
@@ -63,13 +64,29 @@ _BELOW_CONFIDENTIAL: list[str] = [
     if level.rank < ClassificationLevel.CONFIDENTIAL.rank
 ]
 
+# 各資源類型的繁中說明與(若有)治理面路由。
+_AUTO_GOVERNED = "系統自動治理，無人工管理面"
+_RESOURCE_META: dict[str, tuple[str, str | None]] = {
+    "conversations": ("對話執行期分類等級與舊 latch 對照", None),
+    "messages": ("訊息執行期分類等級(系統自動繼承/閂鎖)", None),
+    "ingestion_collections": (
+        "知識庫集合分類等級(文件上傳時繼承)",
+        "/knowledge-collections",
+    ),
+    "ingestion_documents": ("已索引文件分類等級(繼承集合)", None),
+    "agents": ("Agent 預設分級與加密旗標對照", "/developer/agents"),
+    "model_registry": ("模型分類上限(classification_ceiling)", "/models"),
+    "tasks": ("任務執行期分類等級", None),
+    "source_snapshots": ("檢索來源快照分類等級", None),
+}
+
 
 class _ResourceSpec:
     """單一盤點資源的宣告式描述。
 
     ``level_attr`` / ``latched_attr`` / ``legacy_attr`` 為 None 時代表該模型
-    尚無對應欄位(例:``model_registry`` 現況無分類欄位;``agents`` 無
-    ``classification_latched_at``),以 fail-safe 方式視為 floor / 無資料。
+    尚無對應欄位。``legacy_attr`` 為 None 時 ``inconsistent`` 回傳 null
+    (不適用),而非硬編 0。
     """
 
     __slots__ = ("resource_type", "model", "level_attr", "latched_attr", "legacy_attr")
@@ -84,7 +101,7 @@ class _ResourceSpec:
 
 # doc 08 §5 掛載五級共通欄位的核心資源(順序照 Slice 3c 契約)。
 # agents 用 ``default_classification_level`` 且無 latched 欄位;
-# model_registry(=ModelEndpoint)現況無分類欄位 → 全數視為 floor 無機密。
+# model_registry 用 ``classification_ceiling``。
 _RESOURCES: list[_ResourceSpec] = [
     _ResourceSpec("conversations", Conversation,
                   "classification_level", "classification_latched_at", "classified"),
@@ -96,7 +113,8 @@ _RESOURCES: list[_ResourceSpec] = [
                   "classification_level", "classification_latched_at", None),
     _ResourceSpec("agents", Agent,
                   "default_classification_level", None, "requires_encryption"),
-    _ResourceSpec("model_registry", ModelRegistry, None, None, None),
+    _ResourceSpec("model_registry", ModelRegistry,
+                  "classification_ceiling", None, None),
     _ResourceSpec("tasks", Task,
                   "classification_level", "classification_latched_at", None),
     _ResourceSpec("source_snapshots", SourceSnapshot,
@@ -110,7 +128,7 @@ def _row_for(db: Session, spec: _ResourceSpec) -> dict:
     levels = {value: 0 for value in _LEVELS}
 
     if spec.level_attr is None:
-        # 無分類欄位(model_registry):read-model floor = 全部視為無機密。
+        # 無分類欄位:read-model floor = 全部視為無機密。
         levels[ClassificationLevel.UNCLASSIFIED.value] = total
     else:
         level_col = getattr(spec.model, spec.level_attr)
@@ -136,8 +154,11 @@ def _row_for(db: Session, spec: _ResourceSpec) -> dict:
             or 0
         )
 
-    inconsistent = 0
-    if spec.legacy_attr is not None and spec.level_attr is not None:
+    # 無 legacy boolean 可比對時 inconsistent 不適用 → null(前端顯示「不適用」)。
+    inconsistent: int | None
+    if spec.legacy_attr is None or spec.level_attr is None:
+        inconsistent = None
+    else:
         legacy_col = getattr(spec.model, spec.legacy_attr)
         level_col = getattr(spec.model, spec.level_attr)
         inconsistent = (
@@ -148,12 +169,27 @@ def _row_for(db: Session, spec: _ResourceSpec) -> dict:
             or 0
         )
 
+    description, manage_path = _RESOURCE_META.get(
+        spec.resource_type, ("", None)
+    )
+    if manage_path is None and spec.resource_type in _RESOURCE_META:
+        # conversations / messages / tasks / source_snapshots / documents
+        # 明確標示無人工管理面。
+        if not description.endswith(_AUTO_GOVERNED):
+            description = (
+                f"{description}。{_AUTO_GOVERNED}"
+                if description
+                else _AUTO_GOVERNED
+            )
+
     return {
         "resource_type": spec.resource_type,
         "levels": levels,
         "latched": latched,
         "inconsistent": inconsistent,
         "total": total,
+        "description": description,
+        "manage_path": manage_path,
     }
 
 
@@ -164,17 +200,25 @@ def _build_inventory(db: Session) -> dict:
     }
 
 
+def _format_inconsistent_csv(value: int | None) -> str:
+    return "不適用" if value is None else str(value)
+
+
 def _to_csv(inventory: dict) -> str:
     """展平成 CSV;首列 BOM 供 Excel 正確以 UTF-8 開啟。"""
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["資源類型", *_LEVELS, "已閂鎖", "不一致", "總計"])
+    writer.writerow([
+        "資源類型", "說明", "管理面", *_LEVELS, "已閂鎖", "不一致", "總計",
+    ])
     for row in inventory["resources"]:
         writer.writerow([
             row["resource_type"],
+            row.get("description") or "",
+            row.get("manage_path") or _AUTO_GOVERNED,
             *[row["levels"][value] for value in _LEVELS],
             row["latched"],
-            row["inconsistent"],
+            _format_inconsistent_csv(row["inconsistent"]),
             row["total"],
         ])
     return "﻿" + buffer.getvalue()

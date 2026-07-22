@@ -512,6 +512,24 @@ def update_agent(
                 if hasattr(value, "to_storage")
                 else ClassificationLevel.from_storage(str(value)).to_storage()
             )
+    # 不變式:預設分級 ≤ 分類上限(以 patch 後有效值對比較)。
+    if "classification_ceiling" in patch or "default_classification_level" in patch:
+        effective_ceiling = patch.get(
+            "classification_ceiling",
+            getattr(agent, "classification_ceiling", None),
+        )
+        effective_default = patch.get(
+            "default_classification_level",
+            getattr(agent, "default_classification_level", None),
+        )
+        if effective_ceiling is not None and effective_default is not None:
+            ceiling_lvl = ClassificationLevel.from_storage(str(effective_ceiling))
+            default_lvl = ClassificationLevel.from_storage(str(effective_default))
+            if default_lvl > ceiling_lvl:
+                raise HTTPException(
+                    status_code=422,
+                    detail="預設分級不可高於分類上限",
+                )
     if "audit_level" in patch and patch["audit_level"] not in {"full_trace"}:
         raise HTTPException(status_code=400, detail="audit_level 必須是 full_trace")
     if "trace_callback_mode" in patch and patch["trace_callback_mode"] not in {

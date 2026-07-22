@@ -5,7 +5,7 @@
         <h1 class="page-head__title">分類盤點</h1>
         <p class="page-head__sub">
           切換五級分類前的資源盤點快照。「不一致」= 舊 latch 為真但等級仍低於「機密」,
-          backfill 完成後應為 0。
+          backfill 完成後應為 0；無舊 boolean 可比對的資源顯示「不適用」。
         </p>
       </div>
       <span class="cell-meta" v-if="generatedAt">產生於 {{ formatDate(generatedAt) }}</span>
@@ -24,6 +24,7 @@
         <thead>
           <tr>
             <th>資源類型</th>
+            <th>說明 / 管理面</th>
             <th v-for="level in LEVELS" :key="level" class="num">{{ level }}</th>
             <th class="num">已閂鎖</th>
             <th class="num">不一致</th>
@@ -37,18 +38,28 @@
             :class="{ 'is-inconsistent': row.inconsistent > 0 }"
           >
             <td class="cell-strong">{{ row.resource_type }}</td>
+            <td class="cell-desc">
+              <div>{{ row.description || '—' }}</div>
+              <router-link
+                v-if="row.manage_path"
+                :to="row.manage_path"
+                class="term-action"
+              >→ 前往管理面</router-link>
+              <span v-else class="cell-meta">系統自動治理，無人工管理面</span>
+            </td>
             <td v-for="level in LEVELS" :key="level" class="num tnum">
               {{ row.levels?.[level] ?? 0 }}
             </td>
             <td class="num tnum">{{ row.latched }}</td>
             <td class="num tnum">
-              <TermBadge v-if="row.inconsistent > 0" variant="danger" dot>{{ row.inconsistent }}</TermBadge>
+              <span v-if="row.inconsistent == null" class="cell-meta">不適用</span>
+              <TermBadge v-else-if="row.inconsistent > 0" variant="danger" dot>{{ row.inconsistent }}</TermBadge>
               <span v-else>{{ row.inconsistent }}</span>
             </td>
             <td class="num tnum cell-strong">{{ row.total }}</td>
           </tr>
           <tr v-if="resources.length === 0">
-            <td :colspan="LEVELS.length + 4"><TermEmpty message="尚無盤點資料" /></td>
+            <td :colspan="LEVELS.length + 5"><TermEmpty message="尚無盤點資料" /></td>
           </tr>
         </tbody>
       </table>
@@ -125,6 +136,8 @@ onMounted(fetchInventory)
 .tnum { font-variant-numeric: tabular-nums; }
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cell-desc { max-width: 28ch; font-size: var(--t-xs); color: var(--c-fg-2); }
+.cell-desc .term-action { display: inline-block; margin-top: 4px; }
 
 /* 不一致列以警示色標示(inconsistent > 0)。 */
 .is-inconsistent { background: var(--c-danger-soft); }

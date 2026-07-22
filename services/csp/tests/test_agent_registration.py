@@ -162,6 +162,115 @@ class TestAgentRegistration:
         assert resp.status_code == 200
         assert len(resp.json()) >= 2
 
+    def test_default_classification_level_put_round_trip(self, client, db):
+        """預設分級可經 PUT 寫入並在 list/detail 序列化露出。"""
+        dev = make_user(db, username="dev-dcl", role="developer")
+        base_model = make_model(db, name="agent-base-dcl")
+        agent = make_agent(db, dev, name="dcl-agent")
+        agent.base_model_id = base_model.id
+        agent.default_classification_level = "無機密"
+        agent.classification_ceiling = "極機密"
+        db.commit()
+        token = login(client, "dev-dcl")
+
+        put = client.put(
+            f"/api/agents/{agent.id}",
+            json={"default_classification_level": "機密"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert put.status_code == 200, put.text
+        assert put.json()["default_classification_level"] == "機密"
+
+        listed = client.get(
+            "/api/agents",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert listed.status_code == 200
+        row = next(a for a in listed.json() if a["id"] == agent.id)
+        assert row["default_classification_level"] == "機密"
+
+        detail = client.get(
+            f"/api/agents/{agent.id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert detail.status_code == 200
+        assert detail.json()["default_classification_level"] == "機密"
+        db.refresh(agent)
+        assert agent.default_classification_level == "機密"
+
+    def test_default_above_ceiling_single_field_rejected(self, client, db):
+        """單欄更新若使預設分級 > 分類上限 → 422。"""
+        dev = make_user(db, username="dev-inv1", role="developer")
+        base_model = make_model(db, name="agent-base-inv1")
+        agent = make_agent(db, dev, name="inv1-agent")
+        agent.base_model_id = base_model.id
+        agent.default_classification_level = "無機密"
+        agent.classification_ceiling = "營業秘密"
+        db.commit()
+        token = login(client, "dev-inv1")
+
+        put = client.put(
+            f"/api/agents/{agent.id}",
+            json={"default_classification_level": "機密"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert put.status_code == 422, put.text
+        assert "預設分級不可高於分類上限" in put.json()["detail"]
+        db.refresh(agent)
+        assert agent.default_classification_level == "無機密"
+        assert agent.classification_ceiling == "營業秘密"
+
+    def test_default_above_ceiling_both_fields_rejected(self, client, db):
+        """雙欄更新若預設 > 上限 → 422。"""
+        dev = make_user(db, username="dev-inv2", role="developer")
+        base_model = make_model(db, name="agent-base-inv2")
+        agent = make_agent(db, dev, name="inv2-agent")
+        agent.base_model_id = base_model.id
+        agent.default_classification_level = "無機密"
+        agent.classification_ceiling = "極機密"
+        db.commit()
+        token = login(client, "dev-inv2")
+
+        put = client.put(
+            f"/api/agents/{agent.id}",
+            json={
+                "default_classification_level": "絕對機密",
+                "classification_ceiling": "機密",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert put.status_code == 422, put.text
+        assert "預設分級不可高於分類上限" in put.json()["detail"]
+        db.refresh(agent)
+        assert agent.default_classification_level == "無機密"
+        assert agent.classification_ceiling == "極機密"
+
+    def test_default_and_ceiling_both_fields_valid(self, client, db):
+        """雙欄更新且預設 ≤ 上限 → 200。"""
+        dev = make_user(db, username="dev-inv3", role="developer")
+        base_model = make_model(db, name="agent-base-inv3")
+        agent = make_agent(db, dev, name="inv3-agent")
+        agent.base_model_id = base_model.id
+        agent.default_classification_level = "無機密"
+        agent.classification_ceiling = "極機密"
+        db.commit()
+        token = login(client, "dev-inv3")
+
+        put = client.put(
+            f"/api/agents/{agent.id}",
+            json={
+                "default_classification_level": "機密",
+                "classification_ceiling": "絕對機密",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert put.status_code == 200, put.text
+        assert put.json()["default_classification_level"] == "機密"
+        assert put.json()["classification_ceiling"] == "絕對機密"
+        db.refresh(agent)
+        assert agent.default_classification_level == "機密"
+        assert agent.classification_ceiling == "絕對機密"
+
 
 class TestAllowedAgents:
     def test_admin_can_assign_allowed_agents(self, client, db):
