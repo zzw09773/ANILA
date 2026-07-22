@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"  # Legacy; access/refresh tokens use RS256 now.
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    # Default 0 = strict single-use rotation. >0 enables a short multi-tab race
+    # window (dev-only convenience; known unbounded replay tradeoff — formal
+    # postures reject non-zero via startup_security). Outside the window,
+    # reuse detection remains fail-closed and revokes the sid.
+    ANILA_REFRESH_REUSE_GRACE_SECONDS: int = Field(default=0, ge=0, le=30)
 
     # RS256 asymmetric signing material. Private key is PKCS#8 PEM,
     # public key is SPKI PEM. JWKS endpoint serves the public key under

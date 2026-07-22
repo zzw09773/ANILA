@@ -100,6 +100,9 @@ services:
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
+      # Dev-only: short multi-tab refresh race cushion. Formal/platform compose
+      # defaults to 0; do not copy this non-zero value into production profiles.
+      ANILA_REFRESH_REUSE_GRACE_SECONDS: "${ANILA_REFRESH_REUSE_GRACE_SECONDS:-10}"
       # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+
       # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
       # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。

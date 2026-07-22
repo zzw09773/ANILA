@@ -29,7 +29,7 @@ export function AuthProvider({ children }) {
 
     async function bootstrap() {
       try {
-        const me = await authRequest("/api/auth/me");
+        const me = await authRequest("/api/auth/me", { timeoutMs: 15000 });
         if (!active) return;
         setUser(me);
       } catch {
@@ -37,7 +37,7 @@ export function AuthProvider({ children }) {
         // (the refresh cookie may still be valid) and re-probe.
         try {
           await refreshJwt();
-          const me = await authRequest("/api/auth/me");
+          const me = await authRequest("/api/auth/me", { timeoutMs: 15000 });
           if (active) setUser(me);
         } catch {
           if (active) setUser(null);
