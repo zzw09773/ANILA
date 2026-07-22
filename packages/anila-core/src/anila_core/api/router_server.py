@@ -395,6 +395,59 @@ def _build_agent_list(agents: list[RemoteAgentManifest]) -> str:
     return "\n".join(lines)
 
 
+# Truthful line the direct-answer model MUST use verbatim when no agent is
+# registered.  Kept as a module constant so the wiring tests can assert the
+# exact wording ends up in the second-inference payload.
+_DIRECT_ANSWER_EMPTY_REGISTRY_LINE = (
+    "目前沒有已註冊的 agent，由 Router 直接回答你的問題。"
+)
+
+
+def _build_direct_answer_grounding(snapshot: RegistrySnapshot | None) -> dict[str, str]:
+    """zh-TW grounding system message for the DIRECT_ANSWER second inference.
+
+    The formal R3 path runs routing and direct answering as two SEPARATE LLM
+    calls.  Routing sees ``_formal_route_prompt`` (real candidates + the
+    anti-fabrication rule); the direct-answer call historically saw only the
+    raw user messages, so when the user asked "list every agent" the model
+    invented plausible-sounding agents that exist nowhere in the registry.
+
+    Pin the SAME snapshot the routing decision saw plus a hard
+    anti-fabrication rule.  The agent list is already compact
+    (``available_registry_entries`` is the routing candidate projection), so
+    this stays well within the prompt budget.
+    """
+
+    entries = available_registry_entries(snapshot)
+    if entries:
+        lines = ["目前實際註冊、可供你介紹的 agent（唯一事實來源）："]
+        for entry in entries:
+            manifest = entry.manifest
+            name = getattr(manifest, "name", None) or entry.agent_id
+            desc = getattr(manifest, "description_for_router", "") or ""
+            line = f"- {name}（{entry.agent_id}）"
+            if desc:
+                line = f"{line}：{desc}"
+            lines.append(line)
+        agent_block = "\n".join(lines)
+    else:
+        agent_block = "目前沒有任何已註冊的 agent。"
+
+    content = (
+        "你是 ANILA 平台的 Router，正在「直接回答」使用者（本輪未派工給任何 agent）。\n"
+        "請用繁體中文（台灣用語）回答，只輸出最終答案，不要輸出分析、標題或這段指示本身。\n\n"
+        f"{agent_block}\n\n"
+        "鐵則：\n"
+        "1. 只能依據上面的清單描述可用的 agent；絕對不可捏造、杜撰或臆測任何不在清單上的 "
+        "agent 名稱、能力、數量或分類。\n"
+        "2. 若使用者詢問有哪些 agent，只能照實列出上面清單中的項目；當清單為空時，唯一正確"
+        f"的回答是：「{_DIRECT_ANSWER_EMPTY_REGISTRY_LINE}」\n"
+        "3. 你可以說明 ANILA 平台能做什麼，以及 Router 會依問題自動決定「直接回答」或"
+        "「派工給合適的 agent」，但不得把能力歸給不存在的 agent。"
+    )
+    return {"role": "system", "content": content}
+
+
 _FORMAL_ROUTE_SYSTEM = """\
 You are ANILA Router's formal route-decision model.  Return exactly one JSON
 object and no markdown, prose, prefixes, suffixes, or code fences.  The JSON
@@ -2242,7 +2295,7 @@ def create_router_app(
                     )
                 direct_response = await _call_llm_non_stream(
                     caller_api_key,
-                    messages,
+                    [_build_direct_answer_grounding(snapshot), *messages],
                     forwarded_headers=forwarded_headers,
                     formal_context=context,
                     inference_client=formal_inference_client,
@@ -2474,7 +2527,7 @@ def create_router_app(
                         )
                     direct_response = await _call_llm_non_stream(
                         caller_api_key,
-                        convo,
+                        [_build_direct_answer_grounding(snapshot), *convo],
                         forwarded_headers=forwarded_headers,
                         formal_context=next_context,
                         inference_client=formal_inference_client,
