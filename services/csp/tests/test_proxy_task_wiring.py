@@ -500,7 +500,7 @@ class TestUserCallerWithTask:
         )
         assert response.status_code == 200, response.text
         db.expire_all()
-        assert db.get(Task, task.id).status == "completed"
+        assert db.get(Task, task.id).status == "waiting_for_user"
         assert db.query(PolicyDecision).filter_by(
             task_id=task.id, action="model.invoke", decision="allow"
         ).count() == 1
