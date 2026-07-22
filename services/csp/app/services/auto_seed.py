@@ -175,6 +175,60 @@ def sync_env_seeded_services(db, links_config: list[dict], *, now=None) -> None:
                 logger.info(f"同步 env_seeded 服務: {name}")
 
 
+ROUTER_SENTINEL_MODEL_NAME = "anila-router"
+
+
+def seed_router_sentinel_model(db, endpoint_url: str, *, formal: bool) -> bool:
+    """Create-if-missing the Router sentinel chat model (``anila-router``).
+
+    This is the NON-secret piece of the "ANILA Router auto" chain: a
+    ModelRegistry ``llm`` row whose endpoint is the in-cluster Router
+    (compose sets ``http://router:9000``). It is created only when
+    ``endpoint_url`` is a non-empty value and no row of that name exists yet.
+
+    Discipline (mirrors the admin-user block):
+      - NEVER overwrites an existing ``anila-router`` row — an operator may
+        have edited its endpoint/ceiling/api_key through the admin surface.
+      - Writes NO api_key here; the per-model gateway key is a secret and is
+        injected out-of-band by router-chain-bootstrap.sh.
+      - Leaves ``classification_ceiling`` at the column default (無機密).
+      - Formal governance keeps the row a non-routable quarantine
+        (``is_active=False``) until an operator supplies signed provider
+        authority and activates it through the normal API boundary.
+
+    Does NOT commit — the caller owns the transaction. Returns True when a new
+    row was added, False when skipped (empty url or row already present).
+    """
+    url = str(endpoint_url or "").strip()
+    if not url:
+        logger.info("ANILA_ROUTER_SENTINEL_URL 未設定，跳過 Router sentinel 模型 seed")
+        return False
+
+    existing = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.name == ROUTER_SENTINEL_MODEL_NAME)
+        .first()
+    )
+    if existing is not None:
+        logger.info(
+            "Router sentinel 模型 %s 已存在，seed 不覆蓋",
+            ROUTER_SENTINEL_MODEL_NAME,
+        )
+        return False
+
+    db.add(ModelRegistry(
+        name=ROUTER_SENTINEL_MODEL_NAME,
+        display_name="ANILA Router auto",
+        model_type="llm",
+        endpoint_url=url,
+        api_version="v1",
+        description="Router sentinel chat chain (auto-seeded, non-secret)",
+        is_active=not formal,
+    ))
+    logger.info("自動註冊 Router sentinel 模型: %s -> %s", ROUTER_SENTINEL_MODEL_NAME, url)
+    return True
+
+
 def _parse_model_env_vars() -> list[dict]:
     """Parse per-model env vars with pattern MODEL_<NAME>_<FIELD>.
 
@@ -397,6 +451,16 @@ def auto_seed():
                     if base_model_id and existing.base_model_id != base_model_id:
                         existing.base_model_id = base_model_id
                         logger.info(f"更新 Agent 底層模型: {m['name']} -> {base_model_name}")
+
+        # 2b. Auto-seed the Router sentinel chat model (NON-secret piece of the
+        # "ANILA Router auto" chain). Create-if-missing only; secrets (gateway
+        # api_key, router-primary service token) are handled by
+        # infra/deployment/scripts/router-chain-bootstrap.sh.
+        seed_router_sentinel_model(
+            db,
+            settings.ANILA_ROUTER_SENTINEL_URL,
+            formal=formal_model_governance,
+        )
 
         # 3. Auto-register agents from AUTO_REGISTER_AGENTS env
         if settings.AUTO_REGISTER_AGENTS:

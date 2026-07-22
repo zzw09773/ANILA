@@ -237,6 +237,14 @@ class Settings(BaseSettings):
     # Format: '[{"name":"n8n","url":"http://n8n:5678","icon":"workflow","description":"自動化工作流程"}]'
     AUTO_REGISTER_LINKS: str = ""
 
+    # Router sentinel chat model auto-seed (NON-secret piece of the Router
+    # "ANILA Router auto" chain). When set, startup create-if-missing seeds a
+    # ModelRegistry row named ``anila-router`` pointing at this endpoint; the
+    # per-model gateway api_key and the router-primary service token stay out
+    # of config (see infra/deployment/scripts/router-chain-bootstrap.sh).
+    # Empty (default) = skip seeding. Compose sets http://router:9000.
+    ANILA_ROUTER_SENTINEL_URL: str = ""
+
     # 中科院憑證卡登入 (branch: SSO)
     # 內網 production:唯一登入方式 = 憑證卡 (中華電信 HiPKI 本機元件 + 中科院
     # PKI 卡)。使用者 PC 負責 PIN/私鑰運算；backend 仍驗 CMS SignerInfo、

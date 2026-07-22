@@ -95,7 +95,10 @@ services:
       # flux2-dev-agent added: the image-generator agent + image model use this
       # docker service name (single-label), which the URL guard blocks unless
       # trusted (ALLOW_PRIVATE does NOT bypass the single-label check).
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,gate5-e2e-model,host.docker.internal}"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,gate5-e2e-model,router,host.docker.internal}"
+      # Router sentinel chat model (auto-seeded, non-secret) — single-label
+      # docker service name, so it must also be trusted above.
+      ANILA_ROUTER_SENTINEL_URL: "${ANILA_ROUTER_SENTINEL_URL:-http://router:9000}"
       ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE_DEV:-development}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
@@ -305,7 +308,6 @@ services:
       ANILA_CSP_INFERENCE_SERVICE_TOKEN: "${ANILA_CSP_INFERENCE_SERVICE_TOKEN:-}"
       ANILA_ROUTER_STATE_DIR: /var/lib/anila-router
       MODEL: ${LLM_MODEL:-gemma4}
-      ROUTER_DIRECT_MODEL_CEILING: "${ROUTER_DIRECT_MODEL_CEILING:-}"
       COOKIE_SECURE: "true"
     volumes:
       - router-state-dev:/var/lib/anila-router
