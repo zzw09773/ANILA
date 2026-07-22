@@ -1244,11 +1244,15 @@ async def list_models_openai(
         .order_by(ModelRegistry.id)
         .all()
     )
+    # anila-router 是後端路由哨兵,不是給終端使用者挑選的模型;
+    # 權限閘通過後仍排除,避免出現在 OpenAI 相容的 discovery 清單。
+    # 聊天 POST 路徑仍接受 model=anila-router(不經由此清單)。
     visible = [
         m for m in rows
         if check_model_permission(
             db, user=caller.user, api_key_id=caller.api_key_id, model_id=m.id
         )
+        and not _is_internal_router_model(m)
     ]
     return JSONResponse({
         "object": "list",
