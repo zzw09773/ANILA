@@ -51,7 +51,6 @@
           <router-link to="/api-keys" class="ops__link">→ 建立 API 金鑰</router-link>
           <router-link to="/models" class="ops__link">→ 檢視模型</router-link>
           <router-link to="/usage" class="ops__link">→ 用量分析</router-link>
-          <router-link v-if="authStore.isDeveloper" to="/developer/agents" class="ops__link">→ 註冊 Agent</router-link>
           <router-link v-if="authStore.isAdmin" to="/audit-logs" class="ops__link">→ 稽核紀錄</router-link>
         </div>
       </TermBox>

@@ -66,8 +66,6 @@ const menuGroups = computed(() => {
     groups.push({
       label: '開發者',
       items: [
-        { path: '/developer/guide', label: '開發指南' },
-        { path: '/developer/agents', label: 'Agent' },
         { path: '/knowledge-collections', label: '知識庫' },
       ],
     })

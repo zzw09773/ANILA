@@ -562,7 +562,8 @@ async function handleReload() {
 }
 
 function goBack() {
-  router.push({ name: 'DeveloperAgents' })
+  // 軍方試用刪減版移除了開發者 Agent 清單視圖 → 回儀表板。
+  router.push({ name: 'Dashboard' })
 }
 
 onMounted(async () => {
