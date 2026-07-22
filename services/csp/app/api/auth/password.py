@@ -5,6 +5,7 @@ verbatim; only this import header is new.
 """
 
 from fastapi import Depends, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -245,9 +246,10 @@ async def refresh(
             detail="缺少 refresh token",
         )
     payload = decode_token(token)
-    user = _load_user_from_payload(payload, db, "refresh")
+    user = await run_in_threadpool(_load_user_from_payload, payload, db, "refresh")
     try:
-        tokens = rotate_refresh_token(
+        tokens = await run_in_threadpool(
+            rotate_refresh_token,
             db,
             user,
             payload,
