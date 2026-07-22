@@ -29,6 +29,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from anila_contracts.classification import ClassificationLevel
 from anila_contracts.routing import RouteType
 
 from ..config import settings
@@ -46,6 +47,7 @@ from ..router import (
     CspExecutionGrantMinter,
     CspInferenceClient,
     CspRegistryClient,
+    DirectModelGovernance,
     ExecutionRuntime,
     GrantMintUnavailable,
     RegistryClientError,
@@ -1133,6 +1135,7 @@ def create_router_app(
     inference_client: Any = None,
     grant_minter: ExecutionGrantMinter | None = None,
     router_context_verifier: Any = None,
+    direct_model_governance: DirectModelGovernance | None = None,
 ) -> FastAPI:
     """Build and return the ANILA Core Router FastAPI application.
 
@@ -1201,7 +1204,41 @@ def create_router_app(
                 "https://anila.internal/csp",
             ),
         )
-    formal_runtime = ExecutionRuntime()
+    # R7:直答(DIRECT_ANSWER)模型治理輸入。優先使用注入值(測試/自訂),
+    # 否則從 server-controlled 設定 ``router_direct_model_ceiling`` 建立。未設定
+    # 時保持 None → PolicyGate 對直答一律 fail-closed 拒絕。設定了但值無效時,
+    # 仍建立治理物件但 ceiling=None,讓 PolicyGate 回可解釋的 ceiling-missing。
+    formal_direct_model_governance = direct_model_governance
+    if formal_direct_model_governance is None:
+        raw_direct_ceiling = getattr(settings, "router_direct_model_ceiling", None)
+        if raw_direct_ceiling:
+            try:
+                direct_ceiling: ClassificationLevel | None = ClassificationLevel.from_storage(
+                    raw_direct_ceiling
+                )
+            except (TypeError, ValueError):
+                logger.warning(
+                    "router_direct_model_ceiling 值無效,直答將 fail-closed 拒絕: %r",
+                    raw_direct_ceiling,
+                )
+                direct_ceiling = None
+            # DirectModelGovernance 對空白 model_id 會 raise ValueError。settings.model
+            # 缺失(空字串/純空白)時不讓服務啟動就崩潰:記 warning 並保持 governance
+            # 為 None → PolicyGate 回可解釋的 DIRECT_MODEL_GOVERNANCE_UNAVAILABLE 拒絕。
+            if isinstance(settings.model, str) and settings.model.strip():
+                formal_direct_model_governance = DirectModelGovernance(
+                    model_id=settings.model,
+                    gateway="csp",
+                    classification_ceiling=direct_ceiling,
+                )
+            else:
+                logger.warning(
+                    "settings.model 缺失,無法建立直答模型治理,直答將 fail-closed 拒絕: %r",
+                    settings.model,
+                )
+    formal_runtime = ExecutionRuntime(
+        direct_model_governance=formal_direct_model_governance
+    )
     resolved_db_path = session_db_path or settings.session_db_path
 
     def _make_session(sid: str) -> Session:
@@ -2185,10 +2222,12 @@ def create_router_app(
 
         if decision.route_type is not RouteType.SINGLE_AGENT:
             if decision.route_type is RouteType.DIRECT_ANSWER:
-                # Direct model execution is a governed sink too.  The current
-                # R3 PolicyGate intentionally denies it until the R7 model-
-                # governance authority is wired; never let a routing model
-                # response bypass that decision by calling the LLM here.
+                # Direct model execution is a governed sink too.  R7 lets the
+                # PolicyGate allow it only when the direct-model governance /
+                # classification-ceiling evaluation passes; otherwise it stays
+                # fail-closed.  Never let a routing model response bypass that
+                # decision by calling the LLM here.  The outbound call still
+                # re-enforces enforce_model_ceiling at the CSP model gateway.
                 if not runtime_result.allowed or runtime_result.policy_result is None:
                     return await _safe_result(
                         "目前無法安全執行直接模型回答，已安全停止下游推論。",

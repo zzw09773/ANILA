@@ -23,7 +23,7 @@ from .candidate_filter import (
     RegistrySnapshot,
 )
 from .decision_engine import DecisionEngine, DecisionResult
-from .policy_gate import ExecutionGrantInput, PolicyGate
+from .policy_gate import DirectModelGovernance, ExecutionGrantInput, PolicyGate
 from .request_context import RequestContext, RequestContextBuilder
 
 
@@ -90,11 +90,16 @@ class ExecutionRuntime:
         decision_engine: DecisionEngine | None = None,
         policy_gate: PolicyGate | None = None,
         dispatcher: Dispatcher | Callable[..., Any] | None = None,
+        direct_model_governance: DirectModelGovernance | None = None,
     ) -> None:
         self.context_builder = context_builder or RequestContextBuilder()
         self.capability_filter = capability_filter or CapabilityFilter()
         self.decision_engine = decision_engine or DecisionEngine()
-        self.policy_gate = policy_gate or PolicyGate()
+        # R7:直答模型治理只在使用預設 PolicyGate 時套用;若呼叫端已注入自訂
+        # policy_gate,則其治理姿態由該物件自身決定,避免雙重來源衝突。
+        self.policy_gate = policy_gate or PolicyGate(
+            direct_model_governance=direct_model_governance
+        )
         self.dispatcher = dispatcher
 
     def _build_context(

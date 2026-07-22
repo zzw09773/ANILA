@@ -305,6 +305,7 @@ services:
       ANILA_CSP_INFERENCE_SERVICE_TOKEN: "${ANILA_CSP_INFERENCE_SERVICE_TOKEN:-}"
       ANILA_ROUTER_STATE_DIR: /var/lib/anila-router
       MODEL: ${LLM_MODEL:-gemma4}
+      ROUTER_DIRECT_MODEL_CEILING: "${ROUTER_DIRECT_MODEL_CEILING:-}"
       COOKIE_SECURE: "true"
     volumes:
       - router-state-dev:/var/lib/anila-router

@@ -31,7 +31,7 @@ from .csp_registry_client import (
     RegistryClientError,
     parse_registry_snapshot,
 )
-from .policy_gate import ExecutionGrantInput, PolicyGate
+from .policy_gate import DirectModelGovernance, ExecutionGrantInput, PolicyGate
 from .request_context import (
     RequestContext,
     RequestContextBuilder,
@@ -65,6 +65,7 @@ __all__ = [
     "CspInferenceClient",
     "CspInferenceRequest",
     "CspExecutionGrantMinter",
+    "DirectModelGovernance",
     "ExecutionGrantEnvelope",
     "CspRegistryClient",
     "ExecutionGrantMinter",

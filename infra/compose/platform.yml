@@ -416,6 +416,7 @@ services:
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
       ANILA_ROUTER_STATE_DIR: /var/lib/anila-router
       MODEL: ${LLM_MODEL:-gemma4}
+      ROUTER_DIRECT_MODEL_CEILING: "${ROUTER_DIRECT_MODEL_CEILING:-}"
       # Formal Router must export Full Trace spans back to CSP. /ready fails
       # closed in production when this callback is absent.
       ANILA_ENV: "${ANILA_ENV:-production}"
