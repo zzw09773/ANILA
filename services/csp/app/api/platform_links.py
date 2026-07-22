@@ -20,11 +20,24 @@ from app.schemas.platform_link import (
     PlatformLinkUpdate,
 )
 from app.services.access_control import accessible_links_for
+from app.services.artifact_service_bootstrap import (
+    SERVICE_SLUG as _ARTIFACT_BOOTSTRAP_SLUG,
+)
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier, require_admin
+from app.services.studio_runtime_service_bootstrap import (
+    SERVICE_SLUG as _RUNTIME_BOOTSTRAP_SLUG,
+)
 from app.utils.slug import unique_slug
 
 router = APIRouter(prefix="/api/platform-links", tags=["平台連結"])
+
+# 「平台 · 外部工具」只隱藏 Studio bootstrap 的兩個 first-party 身分
+# (artifact_service_bootstrap.SERVICE_SLUG / studio_runtime_service_bootstrap.SERVICE_SLUG);
+# 合法的外部 artifact_tool 仍應出現在列表與 ServiceAccessView(管理端 /api/services 不受影響)。
+_PLATFORM_LINK_EXCLUDED_SLUGS = frozenset(
+    {_ARTIFACT_BOOTSTRAP_SLUG, _RUNTIME_BOOTSTRAP_SLUG}
+)
 
 
 def _taken_slugs(db: Session) -> set[str]:
@@ -45,8 +58,15 @@ def list_links(
         )
         if not include_inactive:
             query = query.filter(RegisteredService.is_active.is_(True))
+        query = query.filter(
+            RegisteredService.slug.notin_(_PLATFORM_LINK_EXCLUDED_SLUGS)
+        )
         return query.all()
-    return accessible_links_for(db, current_user)
+    return [
+        svc
+        for svc in accessible_links_for(db, current_user)
+        if svc.slug not in _PLATFORM_LINK_EXCLUDED_SLUGS
+    ]
 
 
 @router.post("", response_model=PlatformLinkResponse)
