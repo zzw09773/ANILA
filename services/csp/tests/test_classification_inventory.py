@@ -106,12 +106,18 @@ def test_admin_inventory_counts_match_fixtures(client, db):
     agents = rows["agents"]
     assert agents["inconsistent"] == 1  # requires_encryption=True 但等級無機密
 
-    # model_registry 依 classification_ceiling 分桶;無 legacy → inconsistent null。
+    # model_registry 依 classification_ceiling 分桶(許可上限,非資料實際等級);
+    # 無 legacy → inconsistent null; payload marks ceiling: true.
     reg = rows["model_registry"]
     assert reg["levels"]["無機密"] == 1
     assert reg["levels"]["機密"] == 1
     assert reg["latched"] == 0
     assert reg["inconsistent"] is None
+    assert reg["ceiling"] is True
+    for rtype, row in rows.items():
+        if rtype == "model_registry":
+            continue
+        assert "ceiling" not in row, rtype
 
     # 無 legacy_attr 的六型皆回 null inconsistent。
     for rtype in (

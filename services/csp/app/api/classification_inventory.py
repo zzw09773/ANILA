@@ -75,7 +75,10 @@ _RESOURCE_META: dict[str, tuple[str, str | None]] = {
     ),
     "ingestion_documents": ("已索引文件分類等級(繼承集合)", None),
     "agents": ("Agent 預設分級與加密旗標對照", "/developer/agents"),
-    "model_registry": ("模型分類上限(classification_ceiling)", "/models"),
+    "model_registry": (
+        "模型分類上限許可(classification_ceiling；非資料實際等級)",
+        "/models",
+    ),
     "tasks": ("任務執行期分類等級", None),
     "source_snapshots": ("檢索來源快照分類等級", None),
 }
@@ -101,7 +104,7 @@ class _ResourceSpec:
 
 # doc 08 §5 掛載五級共通欄位的核心資源(順序照 Slice 3c 契約)。
 # agents 用 ``default_classification_level`` 且無 latched 欄位;
-# model_registry 用 ``classification_ceiling``。
+# model_registry 用 ``classification_ceiling``(許可上限,非資料實際等級)。
 _RESOURCES: list[_ResourceSpec] = [
     _ResourceSpec("conversations", Conversation,
                   "classification_level", "classification_latched_at", "classified"),
@@ -120,6 +123,10 @@ _RESOURCES: list[_ResourceSpec] = [
     _ResourceSpec("source_snapshots", SourceSnapshot,
                   "classification_level", "classification_latched_at", None),
 ]
+
+# resource_type → levels 計數語意。model_registry 的桶是 ceiling 許可上限,
+# 其餘是實際資料分類等級。
+_CEILING_RESOURCE_TYPES = frozenset({"model_registry"})
 
 
 def _row_for(db: Session, spec: _ResourceSpec) -> dict:
@@ -182,7 +189,7 @@ def _row_for(db: Session, spec: _ResourceSpec) -> dict:
                 else _AUTO_GOVERNED
             )
 
-    return {
+    row = {
         "resource_type": spec.resource_type,
         "levels": levels,
         "latched": latched,
@@ -191,6 +198,10 @@ def _row_for(db: Session, spec: _ResourceSpec) -> dict:
         "description": description,
         "manage_path": manage_path,
     }
+    # Distinguish ceiling-permit buckets from actual data-classification counts.
+    if spec.resource_type in _CEILING_RESOURCE_TYPES:
+        row["ceiling"] = True
+    return row
 
 
 def _build_inventory(db: Session) -> dict:

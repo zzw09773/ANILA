@@ -97,10 +97,11 @@ class Agent(Base):
     audit_level = Column(
         String(20), nullable=False, default="full_trace", server_default="full_trace"
     )
-    # Gate 2: every executable target has an explicit least-privilege ceiling;
-    # NULL must never mean "unlimited" at either the DB or runtime boundary.
+    # Gate 2 registry default is explicit 無機密; NULL remains legal for the
+    # developer UI 「無上限」 (= unbounded ceiling). Runtime admission still
+    # fail-closes on a missing ceiling when invoking classified work.
     classification_ceiling = Column(
-        String(20), nullable=False, default="無機密", server_default="無機密"
+        String(20), nullable=True, default="無機密", server_default="無機密"
     )
     # doc 05 §6 Full Trace 是 approval blocker:trace-test 全過才落章。
     # trace_test_passed_at 非空 + approval_status=pending_security_review 才可 approve。

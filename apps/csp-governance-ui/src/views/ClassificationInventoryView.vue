@@ -37,7 +37,10 @@
             :key="row.resource_type"
             :class="{ 'is-inconsistent': row.inconsistent > 0 }"
           >
-            <td class="cell-strong">{{ row.resource_type }}</td>
+            <td class="cell-strong">
+              {{ row.resource_type }}
+              <span v-if="row.ceiling" class="cell-meta">（上限許可）</span>
+            </td>
             <td class="cell-desc">
               <div>{{ row.description || '—' }}</div>
               <router-link

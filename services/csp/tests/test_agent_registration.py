@@ -271,6 +271,36 @@ class TestAgentRegistration:
         assert agent.default_classification_level == "機密"
         assert agent.classification_ceiling == "絕對機密"
 
+    def test_null_ceiling_accepts_description_update(self, client, db):
+        """Explicit null ceiling (= 無上限) is legal; description-only save works."""
+        dev = make_user(db, username="dev-null-ceil", role="developer")
+        base_model = make_model(db, name="agent-base-null-ceil")
+        agent = make_agent(db, dev, name="null-ceil-agent")
+        agent.base_model_id = base_model.id
+        agent.classification_ceiling = None
+        agent.default_classification_level = "無機密"
+        agent.description_for_router = "before"
+        db.commit()
+        token = login(client, "dev-null-ceil")
+
+        put = client.put(
+            f"/api/agents/{agent.id}",
+            json={
+                "description_for_router": "after-null-ceiling",
+                "classification_ceiling": None,
+                "default_classification_level": "無機密",
+                "base_model_id": base_model.id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert put.status_code == 200, put.text
+        body = put.json()
+        assert body["description_for_router"] == "after-null-ceiling"
+        assert body["classification_ceiling"] is None
+        db.refresh(agent)
+        assert agent.description_for_router == "after-null-ceiling"
+        assert agent.classification_ceiling is None
+
 
 class TestAllowedAgents:
     def test_admin_can_assign_allowed_agents(self, client, db):

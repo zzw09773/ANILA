@@ -146,7 +146,8 @@ class AgentResponse(BaseModel):
     runtime_type: str | None = None
     agent_version: str | None = None
     audit_level: str | None = None
-    classification_ceiling: ClassificationLevel
+    # NULL = 無上限 (UI「無上限」); omitted on create defaults to 無機密.
+    classification_ceiling: ClassificationLevel | None = None
     default_classification_level: str | None = None
     manifest_json: dict | None = None
     trace_test_passed_at: datetime | None = None
@@ -178,11 +179,14 @@ _AGENT_HEALTH_MAP = {
 }
 
 
-def _required_classification_ceiling(agent: Agent) -> str:
+def _optional_classification_ceiling(agent: Agent) -> str | None:
+    """Serialize ceiling; ``None`` is the legal unbounded / 無上限 value."""
     raw = getattr(agent, "classification_ceiling", None)
+    if raw is None:
+        return None
     if not isinstance(raw, str):
         raise RuntimeError(
-            "agents.classification_ceiling must be a non-null canonical value"
+            "agents.classification_ceiling must be a canonical value or null"
         )
     return ClassificationLevel.from_storage(raw).to_storage()
 
@@ -210,7 +214,7 @@ def _serialize_agent(agent: Agent) -> dict:
         "runtime_type": getattr(agent, "runtime_type", None),
         "agent_version": getattr(agent, "agent_version", None),
         "audit_level": getattr(agent, "audit_level", None),
-        "classification_ceiling": _required_classification_ceiling(agent),
+        "classification_ceiling": _optional_classification_ceiling(agent),
         "default_classification_level": getattr(
             agent, "default_classification_level", None
         ),
@@ -502,17 +506,32 @@ def update_agent(
                     else None,
                 )
 
-    for enum_field in ("classification_ceiling", "default_classification_level"):
-        if enum_field in patch:
-            if patch[enum_field] is None:
-                raise HTTPException(status_code=400, detail=f"{enum_field} 不可設為空值")
-            value = patch[enum_field]
-            patch[enum_field] = (
+    # classification_ceiling: explicit null is the legal 「無上限」value
+    # (clears / keeps unbounded). default_classification_level remains required
+    # when present — null is rejected.
+    if "classification_ceiling" in patch:
+        value = patch["classification_ceiling"]
+        if value is None:
+            patch["classification_ceiling"] = None
+        else:
+            patch["classification_ceiling"] = (
                 value.to_storage()
                 if hasattr(value, "to_storage")
                 else ClassificationLevel.from_storage(str(value)).to_storage()
             )
+    if "default_classification_level" in patch:
+        if patch["default_classification_level"] is None:
+            raise HTTPException(
+                status_code=400, detail="default_classification_level 不可設為空值"
+            )
+        value = patch["default_classification_level"]
+        patch["default_classification_level"] = (
+            value.to_storage()
+            if hasattr(value, "to_storage")
+            else ClassificationLevel.from_storage(str(value)).to_storage()
+        )
     # 不變式:預設分級 ≤ 分類上限(以 patch 後有效值對比較)。
+    # null ceiling = unbounded → invariant holds for any default.
     if "classification_ceiling" in patch or "default_classification_level" in patch:
         effective_ceiling = patch.get(
             "classification_ceiling",
