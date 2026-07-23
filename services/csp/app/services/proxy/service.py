@@ -637,6 +637,22 @@ def _get_timeout(model_type: str) -> float:
     return settings.LLM_TIMEOUT
 
 
+def default_meta_identity(
+    caller_client_id: int | None, model_name: str
+) -> tuple[str, str]:
+    """Trace identity for the default anila_meta.
+
+    ANILA 編排(router/哨兵服務身分)代打的內部推論:對終端使用者隱藏底層
+    模型與內部端點(拓撲不外洩),只顯示「呼叫 ANILA」。使用者自選模型的
+    一般對話保留模型名(那是使用者自己的選擇),但內部端點 URL 一律不進
+    使用者可見 trace。
+    """
+
+    if caller_client_id is not None:
+        return "ANILA", "ANILA 產生回答中"
+    return model_name, "模型回應完成"
+
+
 def build_default_anila_meta(
     source_name: str,
     *,
@@ -892,9 +908,12 @@ async def _proxy_request_impl(
                 }
             existing_meta = result.get("anila_meta")
             if not existing_meta:
+                meta_source, meta_detail = default_meta_identity(
+                    caller_client_id, model.name
+                )
                 result["anila_meta"] = build_default_anila_meta(
-                    model.name,
-                    detail=f"Proxy -> {target_url}",
+                    meta_source,
+                    detail=meta_detail,
                     latency_ms=duration_ms,
                     classified=requires_encryption,
                 )
