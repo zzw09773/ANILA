@@ -18,6 +18,8 @@ Denied paths that reject *before* the acceptance call site still use
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import Any
 
@@ -25,8 +27,8 @@ from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.models.audit_log import AuditLog
 from app.models.user import User
-from app.services.audit_service import log_audit_event
 from app.services.client_ip import resolve_client_ip
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,46 @@ INFERENCE_ACTIONS = frozenset(
 def short_audit_reason(code: str) -> str:
     """Normalize a short metadata.reason code (no stack traces / newlines)."""
     return " ".join(str(code).split())[:80]
+
+
+def _detail_fingerprint(detail: str | None) -> tuple[int, str]:
+    """Return (utf-8 byte length, sha256-12) for safe failure logs."""
+    raw = detail if isinstance(detail, str) else ("" if detail is None else str(detail))
+    payload = raw.encode("utf-8")
+    return len(payload), hashlib.sha256(payload).hexdigest()[:12]
+
+
+def _persist_inference_audit_row(
+    db: Session,
+    *,
+    actor: User,
+    action: str,
+    resource_id: str | int | None,
+    status: str,
+    detail: str | None,
+    ip_address: str | None,
+    metadata: dict[str, Any] | None,
+    commit: bool,
+) -> AuditLog:
+    """Insert one inference AuditLog row (patch point for failure-injection tests)."""
+    event = AuditLog(
+        actor_user_id=actor.id,
+        actor_username=actor.username,
+        action=action,
+        resource_type="inference",
+        resource_id=str(resource_id) if resource_id is not None else None,
+        status=status,
+        detail=detail,
+        ip_address=ip_address,
+        metadata_json=(
+            json.dumps(metadata, ensure_ascii=False) if metadata else None
+        ),
+    )
+    db.add(event)
+    if commit:
+        db.commit()
+        db.refresh(event)
+    return event
 
 
 def should_record_end_user_inference(
@@ -82,6 +124,11 @@ def record_inference_audit(
 
     Fail-open by default (log + continue). When ``ANILA_AUDIT_STRICT=1``,
     raise HTTP 503 so the request fails closed.
+
+    Failure logs never include raw ``detail`` (often a full user prompt).
+    The shared ``log_audit_event`` helper logs detail on failure, so this
+    path writes ``AuditLog`` directly and only logs action / actor id / ip /
+    length / sha256-12.
     """
     if action not in INFERENCE_ACTIONS:
         raise ValueError(f"unsupported inference audit action: {action}")
@@ -92,32 +139,42 @@ def record_inference_audit(
     if actor is None:
         return
 
+    ip_address = None
+    actor_id = actor.id
+    detail_len, detail_sha = _detail_fingerprint(detail)
+
     try:
-        event = log_audit_event(
+        # Resolve IP inside the try so stub/malformed requests fail-open
+        # the same way a DB write failure does (do not leak via this path).
+        ip_address = resolve_client_ip(request)
+        _persist_inference_audit_row(
             db,
-            action=action,
-            resource_type="inference",
             actor=actor,
+            action=action,
             resource_id=resource_id,
             status=status,
             detail=detail,
-            ip_address=resolve_client_ip(request),
+            ip_address=ip_address,
             metadata=metadata,
             commit=commit,
         )
-        if event is None and settings.ANILA_AUDIT_STRICT:
-            raise HTTPException(
-                status_code=503,
-                detail="審計紀錄寫入失敗，請求已拒絕",
-            )
     except HTTPException:
         raise
     except Exception:
+        # Strict and fail-open share this safe log (no raw prompt).
         logger.exception(
-            "inference audit write failed: action=%s actor=%s",
+            "inference audit write failed: action=%s actor_id=%s ip=%s "
+            "detail_len=%s detail_sha256=%s",
             action,
-            getattr(actor, "username", None) if actor else None,
+            actor_id,
+            ip_address,
+            detail_len,
+            detail_sha,
         )
+        try:
+            db.rollback()
+        except Exception:
+            pass
         if settings.ANILA_AUDIT_STRICT:
             raise HTTPException(
                 status_code=503,

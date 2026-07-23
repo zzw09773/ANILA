@@ -981,14 +981,19 @@ async def search_collection(
             ],
         )
     except HTTPException as exc:
-        _rag_outcome(
-            "error",
-            reason=(
-                f"rag_http_{exc.status_code}"
-                if not isinstance(exc.detail, dict)
-                else str(exc.detail.get("code") or f"rag_http_{exc.status_code}")
-            ),
-        )
+        if exc.status_code == 403:
+            _rag_outcome("denied", reason="embedding_policy_denied")
+        else:
+            _rag_outcome(
+                "error",
+                reason=(
+                    f"rag_http_{exc.status_code}"
+                    if not isinstance(exc.detail, dict)
+                    else str(
+                        exc.detail.get("code") or f"rag_http_{exc.status_code}"
+                    )
+                ),
+            )
         raise
     except Exception:
         _rag_outcome("error", reason="rag_retrieval_failed")
@@ -1236,14 +1241,19 @@ async def search_collection_images(
                 payload.top_k,
             )
     except HTTPException as exc:
-        _rag_outcome(
-            "error",
-            reason=(
-                f"rag_http_{exc.status_code}"
-                if not isinstance(exc.detail, dict)
-                else str(exc.detail.get("code") or f"rag_http_{exc.status_code}")
-            ),
-        )
+        if exc.status_code == 403:
+            _rag_outcome("denied", reason="embedding_policy_denied")
+        else:
+            _rag_outcome(
+                "error",
+                reason=(
+                    f"rag_http_{exc.status_code}"
+                    if not isinstance(exc.detail, dict)
+                    else str(
+                        exc.detail.get("code") or f"rag_http_{exc.status_code}"
+                    )
+                ),
+            )
         raise
     except Exception:
         _rag_outcome("error", reason="rag_image_retrieval_failed")

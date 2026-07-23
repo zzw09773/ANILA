@@ -10,6 +10,7 @@ from typing import Iterator
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -257,10 +258,24 @@ def export_inference_audit(
 
         emitted = 0
         truncated = False
-        # Windowed offset batches: stream rows without materialising .all().
-        offset = 0
+        # Keyset cursor on (created_at DESC, id DESC): stable under concurrent
+        # inserts (OFFSET would duplicate/skip when new rows arrive mid-export).
+        # Explicit OR-expansion so PostgreSQL and SQLite both accept the predicate.
+        cursor_created_at: datetime | None = None
+        cursor_id: int | None = None
         while True:
-            batch = query.offset(offset).limit(batch_size).all()
+            batch_q = query
+            if cursor_created_at is not None and cursor_id is not None:
+                batch_q = query.filter(
+                    or_(
+                        AuditLog.created_at < cursor_created_at,
+                        and_(
+                            AuditLog.created_at == cursor_created_at,
+                            AuditLog.id < cursor_id,
+                        ),
+                    )
+                )
+            batch = batch_q.limit(batch_size).all()
             if not batch:
                 break
             for row in batch:
@@ -301,7 +316,9 @@ def export_inference_audit(
                 break
             if len(batch) < batch_size:
                 break
-            offset += batch_size
+            last = batch[-1]
+            cursor_created_at = last.created_at
+            cursor_id = last.id
 
         if truncated:
             yield f"# truncated at {row_cap} — 請縮小日期範圍\n"

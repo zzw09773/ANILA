@@ -723,7 +723,7 @@ def test_audit_strict_fails_closed(client: TestClient, db: Session, monkeypatch)
         raise RuntimeError("db down")
 
     monkeypatch.setattr(
-        "app.services.inference_audit.log_audit_event", _boom
+        "app.services.inference_audit._persist_inference_audit_row", _boom
     )
 
     resp = client.post(
@@ -1279,7 +1279,7 @@ def test_strict_nonstream_chat_write_fail_skips_upstream(
     def _boom(*args, **kwargs):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr("app.services.inference_audit.log_audit_event", _boom)
+    monkeypatch.setattr("app.services.inference_audit._persist_inference_audit_row", _boom)
 
     class _SpyClient:
         def __init__(self, *args, **kwargs):
@@ -1323,7 +1323,7 @@ def test_strict_studio_503_leaves_no_task(client: TestClient, db: Session, monke
     def _boom(*args, **kwargs):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr("app.services.inference_audit.log_audit_event", _boom)
+    monkeypatch.setattr("app.services.inference_audit._persist_inference_audit_row", _boom)
     user = make_user(db, username="strict_studio_user")
     before = db.query(Task).count()
     resp = client.post(
@@ -1520,7 +1520,7 @@ def test_strict_chat_audit_fail_skips_server_retrieval(
         raise RuntimeError("db down")
 
     monkeypatch.setattr(proxy_api, "_prepare_server_retrieval", _must_not_retrieve)
-    monkeypatch.setattr("app.services.inference_audit.log_audit_event", _boom)
+    monkeypatch.setattr("app.services.inference_audit._persist_inference_audit_row", _boom)
 
     class _SpyClient:
         def __init__(self, *args, **kwargs):
@@ -2048,8 +2048,8 @@ def test_csv_export_batches_and_caps_without_date(
         def __init__(self, q):
             self._q = q
 
-        def offset(self, n):
-            return _SpyQuery(self._q.offset(n))
+        def filter(self, *args, **kwargs):
+            return _SpyQuery(self._q.filter(*args, **kwargs))
 
         def limit(self, n):
             batch_limits.append(n)
@@ -2121,7 +2121,7 @@ def test_strict_chat_audit_fail_with_task_id_leaves_no_running_taskrun(
     def _boom(*args, **kwargs):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr("app.services.inference_audit.log_audit_event", _boom)
+    monkeypatch.setattr("app.services.inference_audit._persist_inference_audit_row", _boom)
 
     class _SpyClient:
         def __init__(self, *args, **kwargs):
@@ -2380,3 +2380,385 @@ def test_created_at_serialized_as_utc_aware(client: TestClient, db: Session):
     assert resp_csv.status_code == 200
     text = resp_csv.content.decode("utf-8-sig")
     assert "2026-07-23T04:00:00+00:00" in text or "2026-07-23T04:00:00Z" in text
+
+
+# ── Revision 9: failure-log redaction / model 404 / embed 403 / keyset export ─
+
+
+def test_audit_write_failure_logs_omit_raw_prompt(db: Session, monkeypatch, caplog):
+    """On audit-write failure, logs must not contain the raw prompt detail."""
+    import hashlib
+    import logging
+
+    from app.services import inference_audit as ia
+
+    secret = "SUPER_SECRET_PROMPT_TOKEN_do_not_log_me"
+    detail_len = len(secret.encode("utf-8"))
+    detail_sha = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
+    user = make_user(db, username="fail_log_user")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ia, "_persist_inference_audit_row", _boom)
+    monkeypatch.setattr(ia.settings, "ANILA_AUDIT_STRICT", False)
+
+    with caplog.at_level(logging.ERROR):
+        ia.record_inference_audit(
+            db,
+            request=_make_request(peer="198.51.100.77"),
+            actor=user,
+            action="inference.chat",
+            resource_id="gpt-x",
+            detail=secret,
+            status="success",
+            commit=True,
+        )
+
+    assert secret not in caplog.text
+    for record in caplog.records:
+        assert secret not in record.getMessage()
+        if record.args:
+            joined = " ".join(str(a) for a in record.args)
+            assert secret not in joined
+    assert any("detail_len" in r.getMessage() for r in caplog.records)
+    assert any(str(detail_len) in (r.getMessage() + str(r.args)) for r in caplog.records)
+    assert any(detail_sha in (r.getMessage() + str(r.args)) for r in caplog.records)
+    assert any(str(user.id) in str(r.args) for r in caplog.records if r.args)
+
+    # Strict path: still 503, still no raw prompt in logs.
+    monkeypatch.setattr(ia.settings, "ANILA_AUDIT_STRICT", True)
+    caplog.clear()
+    from fastapi import HTTPException
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(HTTPException) as exc_info:
+            ia.record_inference_audit(
+                db,
+                request=_make_request(peer="198.51.100.77"),
+                actor=user,
+                action="inference.chat",
+                resource_id="gpt-x",
+                detail=secret,
+                status="success",
+                commit=True,
+            )
+    assert exc_info.value.status_code == 503
+    assert secret not in caplog.text
+    for record in caplog.records:
+        assert secret not in record.getMessage()
+        if record.args:
+            assert secret not in " ".join(str(a) for a in record.args)
+    assert any(detail_sha in (r.getMessage() + str(r.args)) for r in caplog.records)
+
+
+def test_chat_unknown_model_writes_denied_row(
+    client: TestClient, db: Session, monkeypatch
+):
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    user = make_user(db, username="unknown_model_user", role="admin")
+    resp = client.post(
+        "/v1/chat/completions",
+        headers=_bearer(user),
+        json={
+            "model": "totally-unregistered-model",
+            "messages": [{"role": "user", "content": "where is my model"}],
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 404, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.chat").all()
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    assert rows[0].detail == "where is my model"
+    assert rows[0].resource_id == "totally-unregistered-model"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "model_not_found"
+
+
+def test_chat_disabled_model_writes_denied_row(
+    client: TestClient, db: Session, monkeypatch
+):
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    user = make_user(db, username="disabled_model_user", role="admin")
+    model = make_model(db, name="gpt-disabled-audit")
+    model.is_active = False
+    db.commit()
+    resp = client.post(
+        "/v1/chat/completions",
+        headers=_bearer(user),
+        json={
+            "model": "gpt-disabled-audit",
+            "messages": [{"role": "user", "content": "disabled please"}],
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.chat").all()
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    assert rows[0].detail == "disabled please"
+    assert rows[0].resource_id == "gpt-disabled-audit"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "model_disabled"
+
+
+def test_embeddings_unknown_model_writes_denied_row(
+    client: TestClient, db: Session, monkeypatch
+):
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    user = make_user(db, username="embed_unknown_user", role="admin")
+    resp = client.post(
+        "/v1/embeddings",
+        headers=_bearer(user),
+        json={"model": "no-such-embed-model", "input": "embed unknown"},
+    )
+    assert resp.status_code == 404, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.embed").all()
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    assert rows[0].detail == "embed unknown"
+    assert rows[0].resource_id == "no-such-embed-model"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "model_not_found"
+
+
+def _rag_coll_with_doc(db: Session, *, user, admin, name: str):
+    coll = _make_collection(db, name=name, owner_id=user.id)
+    db.add(
+        IngestionDocument(
+            collection_id=coll.id,
+            filename=f"{name}.pdf",
+            sha256=("a" * 64),
+            mime_type="application/pdf",
+            status="indexed",
+        )
+    )
+    now = datetime.now(timezone.utc)
+    grant = issue_clearance_grant(
+        db,
+        actor=admin,
+        subject_user_id=user.id,
+        max_classification_level="絕對機密",
+        valid_from=now - timedelta(minutes=5),
+        expires_at=now + timedelta(hours=1),
+        basis_ticket=f"AUDIT-{name}",
+    )
+    grant_collection_access(
+        db,
+        actor=admin,
+        clearance_grant_id=grant.id,
+        collection_id=coll.id,
+        membership_granted=True,
+        need_to_know=True,
+        basis_ticket=f"AUDIT-NTK-{name}",
+    )
+    db.commit()
+    return coll
+
+
+def test_rag_embed_403_writes_denied_not_error(
+    client: TestClient, db: Session, monkeypatch
+):
+    import app.api.ingestion.search as search_mod
+    from fastapi import HTTPException
+
+    user = make_user(db, username="rag_embed_403_user")
+    admin = make_user(db, username="rag_embed_403_admin", role="admin")
+    coll = _rag_coll_with_doc(db, user=user, admin=admin, name="rag-embed-403")
+
+    async def _deny_embed(*args, **kwargs):
+        raise HTTPException(status_code=403, detail="embedding_policy_denied: nope")
+
+    monkeypatch.setattr(search_mod, "_embed_query", _deny_embed)
+
+    resp = client.post(
+        f"/api/ingestion/collections/{coll.id}/search",
+        headers=_bearer(user),
+        json={"query": "policy blocked query", "top_k": 3},
+    )
+    assert resp.status_code == 403, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.rag_query").all()
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "embedding_policy_denied"
+
+
+def test_rag_embed_500_still_writes_error(
+    client: TestClient, db: Session, monkeypatch
+):
+    import app.api.ingestion.search as search_mod
+    from fastapi import HTTPException
+
+    user = make_user(db, username="rag_embed_500_user")
+    admin = make_user(db, username="rag_embed_500_admin", role="admin")
+    coll = _rag_coll_with_doc(db, user=user, admin=admin, name="rag-embed-500")
+
+    async def _boom_embed(*args, **kwargs):
+        raise HTTPException(status_code=500, detail="embed crashed")
+
+    monkeypatch.setattr(search_mod, "_embed_query", _boom_embed)
+
+    resp = client.post(
+        f"/api/ingestion/collections/{coll.id}/search",
+        headers=_bearer(user),
+        json={"query": "server error embed", "top_k": 3},
+    )
+    assert resp.status_code == 500, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.rag_query").all()
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+
+
+def test_rag_image_embed_403_writes_denied(
+    client: TestClient, db: Session, monkeypatch
+):
+    import app.api.ingestion.search as search_mod
+    from fastapi import HTTPException
+
+    user = make_user(db, username="rag_img_403_user")
+    admin = make_user(db, username="rag_img_403_admin", role="admin")
+    coll = _rag_coll_with_doc(db, user=user, admin=admin, name="rag-img-403")
+
+    async def _deny_embed(*args, **kwargs):
+        raise HTTPException(status_code=403, detail="embedding_policy_denied: img")
+
+    monkeypatch.setattr(search_mod, "_embed_query", _deny_embed)
+
+    resp = client.post(
+        f"/api/ingestion/collections/{coll.id}/images/search",
+        headers=_bearer(user),
+        json={"query": "image policy deny", "top_k": 3},
+    )
+    assert resp.status_code == 403, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.rag_query").all()
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "embedding_policy_denied"
+
+
+def test_rag_image_embed_500_writes_error(
+    client: TestClient, db: Session, monkeypatch
+):
+    import app.api.ingestion.search as search_mod
+    from fastapi import HTTPException
+
+    user = make_user(db, username="rag_img_500_user")
+    admin = make_user(db, username="rag_img_500_admin", role="admin")
+    coll = _rag_coll_with_doc(db, user=user, admin=admin, name="rag-img-500")
+
+    async def _boom_embed(*args, **kwargs):
+        raise HTTPException(status_code=500, detail="img embed crashed")
+
+    monkeypatch.setattr(search_mod, "_embed_query", _boom_embed)
+
+    resp = client.post(
+        f"/api/ingestion/collections/{coll.id}/images/search",
+        headers=_bearer(user),
+        json={"query": "image server error", "top_k": 3},
+    )
+    assert resp.status_code == 500, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.rag_query").all()
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+
+
+def test_csv_export_keyset_stable_under_concurrent_inserts(
+    client: TestClient, db: Session, monkeypatch
+):
+    """Rows inserted between keyset batches must not duplicate/skip pre-existing."""
+    import app.api.admin_inference_audit as audit_api
+
+    monkeypatch.setattr(audit_api, "EXPORT_BATCH_SIZE", 2)
+    monkeypatch.setattr(audit_api, "EXPORT_MAX_ROWS_WITHOUT_DATE", 50_000)
+
+    owner = make_user(db, username="keyset_owner", role="owner")
+    actor = make_user(db, username="keyset_actor")
+    now = datetime.now(timezone.utc)
+    preexisting_ids: list[int] = []
+    for i in range(6):
+        row = AuditLog(
+            actor_user_id=actor.id,
+            actor_username="keyset_actor",
+            action="inference.chat",
+            resource_type="inference",
+            resource_id=f"ks{i}",
+            status="success",
+            detail=f"keyset row {i}",
+            ip_address="198.51.100.20",
+            created_at=now - timedelta(seconds=i),
+        )
+        db.add(row)
+        db.flush()
+        preexisting_ids.append(row.id)
+    db.commit()
+
+    original_build = audit_api._build_inference_query
+    batches_seen = {"n": 0}
+
+    class _SpyQuery:
+        def __init__(self, q):
+            self._q = q
+
+        def filter(self, *args, **kwargs):
+            return _SpyQuery(self._q.filter(*args, **kwargs))
+
+        def limit(self, n):
+            return _SpyQuery(self._q.limit(n))
+
+        def all(self):
+            rows = self._q.all()
+            batches_seen["n"] += 1
+            if batches_seen["n"] == 1 and rows:
+                # Newer row arrives after first keyset page — must not shift pages.
+                db.add(
+                    AuditLog(
+                        actor_user_id=actor.id,
+                        actor_username="keyset_actor",
+                        action="inference.chat",
+                        resource_type="inference",
+                        resource_id="ks-concurrent",
+                        status="success",
+                        detail="inserted mid-export",
+                        ip_address="198.51.100.20",
+                        created_at=now + timedelta(seconds=5),
+                    )
+                )
+                db.commit()
+            return rows
+
+        def __getattr__(self, name):
+            return getattr(self._q, name)
+
+    monkeypatch.setattr(
+        audit_api,
+        "_build_inference_query",
+        lambda *a, **k: _SpyQuery(original_build(*a, **k)),
+    )
+
+    resp = client.get(
+        "/api/admin/audit/inference/export",
+        headers=_bearer(owner),
+        params={"username": "keyset_actor"},
+    )
+    assert resp.status_code == 200, resp.text
+    text = resp.content.decode("utf-8-sig")
+    reader = csv.reader(io.StringIO(text))
+    header = next(reader)
+    data_rows = [r for r in reader if r and not r[0].startswith("#")]
+    id_idx = header.index("id")
+    exported_ids = [int(r[id_idx]) for r in data_rows]
+
+    # Pre-existing rows: exactly once each, none skipped.
+    for pid in preexisting_ids:
+        assert exported_ids.count(pid) == 1, (pid, exported_ids)
+    assert sorted(exported_ids) == sorted(preexisting_ids) or set(
+        preexisting_ids
+    ).issubset(set(exported_ids))
+    # Stronger: no duplicates at all among exported ids.
+    assert len(exported_ids) == len(set(exported_ids))
+    # Pre-existing set fully present (concurrent insert may or may not appear).
+    assert set(preexisting_ids).issubset(set(exported_ids))
+    assert batches_seen["n"] >= 3

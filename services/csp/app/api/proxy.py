@@ -1757,7 +1757,13 @@ async def _chat_completions_impl(
             else _resolve_model(db, caller, model_name)
         )
     except HTTPException as exc:
-        if exc.status_code == 403:
+        # 403 permission, 404 unregistered, 400 disabled/invalid — all denied.
+        _model_deny_reason = {
+            403: "model_permission_denied",
+            404: "model_not_found",
+            400: "model_disabled",
+        }.get(exc.status_code)
+        if _model_deny_reason is not None:
             _write_chat_inference_audit(
                 db,
                 request=request,
@@ -1771,7 +1777,7 @@ async def _chat_completions_impl(
                 stream=stream,
                 router_orchestration=False,
                 internal_router=internal_router,
-                reason="model_permission_denied",
+                reason=_model_deny_reason,
             )
         raise
     if internal_router and (
@@ -3151,7 +3157,12 @@ async def _embeddings_impl(
     try:
         model = _resolve_model(db, caller, str(model_name))
     except HTTPException as exc:
-        if exc.status_code == 403:
+        _model_deny_reason = {
+            403: "model_permission_denied",
+            404: "model_not_found",
+            400: "model_disabled",
+        }.get(exc.status_code)
+        if _model_deny_reason is not None:
             record_inference_audit(
                 db,
                 request=request,
@@ -3162,7 +3173,7 @@ async def _embeddings_impl(
                 status="denied",
                 metadata={
                     "model": str(model_name),
-                    "reason": short_audit_reason("model_permission_denied"),
+                    "reason": short_audit_reason(_model_deny_reason),
                 },
                 commit=True,
             )
