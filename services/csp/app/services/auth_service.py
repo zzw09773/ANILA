@@ -827,6 +827,24 @@ def require_owner(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
+def require_inference_audit_viewer(
+    current_user: User = Depends(require_admin),
+) -> User:
+    """Inference audit list/export: owner always, else admin with grant.
+
+    Plain admins without ``can_view_inference_audit`` get 403. IP /
+    metadata redaction for non-owners remains separate (``is_owner``).
+    """
+    if is_owner(current_user) or bool(
+        getattr(current_user, "can_view_inference_audit", False)
+    ):
+        return current_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="需要推論稽核檢視授權",
+    )
+
+
 def verify_service_token(
     request: Request,
     db: Session = Depends(get_db),

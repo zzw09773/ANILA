@@ -18,6 +18,7 @@ from app.models.banner import Banner
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
+from app.services.client_ip import resolve_client_ip
 
 router = APIRouter(prefix="/api/banners", tags=["公告橫幅"])
 
@@ -60,10 +61,7 @@ def _validate_level(level: str) -> None:
 
 
 def _client_ip(request: Request | None) -> str | None:
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    return xff.split(",")[0].strip() if xff else (request.client.host if request.client else None)
+    return resolve_client_ip(request)
 
 
 @router.get("/active", response_model=list[BannerResponse])
