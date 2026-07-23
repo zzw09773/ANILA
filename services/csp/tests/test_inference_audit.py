@@ -16,7 +16,7 @@ from starlette.requests import Request as StarletteRequest
 
 from app.models.audit_log import AuditLog
 from app.models.agent import UserAgentPermission
-from app.models.ingestion import IngestionCollection
+from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.modules.clearance.service import (
     grant_collection_access,
     issue_clearance_grant,
@@ -29,6 +29,12 @@ from tests.conftest import make_agent, make_model, make_user
 
 def _bearer(user) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_tokens(user)['access_token']}"}
+
+
+def _grant_inference_audit_viewer(db: Session, user) -> None:
+    user.can_view_inference_audit = True
+    db.commit()
+    db.refresh(user)
 
 
 def _make_request(
@@ -442,6 +448,7 @@ def _seed_inference_rows(db: Session) -> None:
 def test_admin_inference_filters_and_pagination(client: TestClient, db: Session):
     _seed_inference_rows(db)
     admin = make_user(db, username="inf_admin", role="admin")
+    _grant_inference_audit_viewer(db, admin)
 
     resp = client.get(
         "/api/admin/audit/inference",
@@ -511,6 +518,7 @@ def test_admin_inference_non_admin_403(client: TestClient, db: Session):
 def test_admin_inference_csv_export_bom_and_header(client: TestClient, db: Session):
     _seed_inference_rows(db)
     admin = make_user(db, username="csv_admin", role="admin")
+    _grant_inference_audit_viewer(db, admin)
     resp = client.get(
         "/api/admin/audit/inference/export",
         headers=_bearer(admin),
@@ -1177,6 +1185,7 @@ def test_admin_q_literal_percent_matches_only_literal(
     client: TestClient, db: Session
 ):
     admin = make_user(db, username="pct_admin", role="admin")
+    _grant_inference_audit_viewer(db, admin)
     u = make_user(db, username="pct_actor")
     now = datetime.now(timezone.utc)
     db.add_all(
@@ -1216,3 +1225,494 @@ def test_admin_q_literal_percent_matches_only_literal(
     assert body["total"] == 1
     assert body["rows"][0]["detail"] == "progress 100% done"
 
+
+
+
+# ── Revision 4: pre-enrichment write-ahead / RAG outcome / CSV / RBAC ─────────
+
+
+def test_strict_chat_acceptance_before_server_retrieval(
+    client: TestClient, db: Session, monkeypatch
+):
+    """Strict mode: acceptance row exists before _prepare_server_retrieval runs."""
+    from app.api import proxy as proxy_api
+    from app.services import proxy_service
+
+    monkeypatch.setattr(
+        "app.services.inference_audit.settings.ANILA_AUDIT_STRICT", True
+    )
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    user = make_user(db, username="strict_retrieval_order", role="admin")
+    make_model(db, name="gpt-strict-retrieval-order")
+    retrieval_seen = {"called": False}
+
+    async def _spy_retrieval(*args, **kwargs):
+        retrieval_seen["called"] = True
+        rows = (
+            db.query(AuditLog)
+            .filter(AuditLog.action == "inference.chat")
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].status == "success"
+        assert rows[0].detail == "before retrieval please"
+        meta = json.loads(rows[0].metadata_json or "{}")
+        assert meta.get("phase") == "acceptance"
+        return None
+
+    monkeypatch.setattr(proxy_api, "_prepare_server_retrieval", _spy_retrieval)
+
+    class _PostResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = "{}"
+
+        def json(self):
+            return {
+                "id": "chatcmpl-r4",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            del url, json, headers
+            return _PostResponse()
+
+    monkeypatch.setattr(
+        proxy_service.httpx, "AsyncClient", lambda *a, **k: _Client(*a, **k)
+    )
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers=_bearer(user),
+        json={
+            "model": "gpt-strict-retrieval-order",
+            "messages": [{"role": "user", "content": "before retrieval please"}],
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert retrieval_seen["called"] is True
+
+
+def test_strict_chat_audit_fail_skips_server_retrieval(
+    client: TestClient, db: Session, monkeypatch
+):
+    """Strict mode: failed acceptance write must not call retrieval."""
+    from app.api import proxy as proxy_api
+    from app.services import proxy_service
+
+    monkeypatch.setattr(
+        "app.services.inference_audit.settings.ANILA_AUDIT_STRICT", True
+    )
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    user = make_user(db, username="strict_retrieval_boom", role="admin")
+    make_model(db, name="gpt-strict-retrieval-boom")
+    retrieval_calls = {"n": 0}
+
+    async def _must_not_retrieve(*args, **kwargs):
+        retrieval_calls["n"] += 1
+        raise AssertionError("retrieval must not run after audit write failure")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(proxy_api, "_prepare_server_retrieval", _must_not_retrieve)
+    monkeypatch.setattr("app.services.inference_audit.log_audit_event", _boom)
+
+    class _SpyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            raise AssertionError("upstream must not be called")
+
+    monkeypatch.setattr(
+        proxy_service.httpx, "AsyncClient", lambda *a, **k: _SpyClient(*a, **k)
+    )
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers=_bearer(user),
+        json={
+            "model": "gpt-strict-retrieval-boom",
+            "messages": [{"role": "user", "content": "no retrieval"}],
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 503, resp.text
+    assert retrieval_calls["n"] == 0
+
+
+def test_rag_embed_failure_writes_error_not_success(
+    client: TestClient, db: Session, monkeypatch
+):
+    """Non-strict RAG: embed failure → one error row, no success row."""
+    import app.api.ingestion.search as search_mod
+    from fastapi import HTTPException
+
+    user = make_user(db, username="rag_embed_fail_user")
+    admin = make_user(db, username="rag_embed_fail_admin", role="admin")
+    coll = _make_collection(db, name="rag-embed-fail-coll", owner_id=user.id)
+    # Need ≥1 authorized document so search reaches embed (empty collections
+    # short-circuit with success + results=[] before any embed call).
+    db.add(
+        IngestionDocument(
+            collection_id=coll.id,
+            filename="embed-fail.pdf",
+            sha256="e" * 64,
+            mime_type="application/pdf",
+            status="indexed",
+        )
+    )
+    now = datetime.now(timezone.utc)
+    grant = issue_clearance_grant(
+        db,
+        actor=admin,
+        subject_user_id=user.id,
+        max_classification_level="絕對機密",
+        valid_from=now - timedelta(minutes=5),
+        expires_at=now + timedelta(hours=1),
+        basis_ticket="AUDIT-RAG-EMBED-FAIL",
+    )
+    grant_collection_access(
+        db,
+        actor=admin,
+        clearance_grant_id=grant.id,
+        collection_id=coll.id,
+        membership_granted=True,
+        need_to_know=True,
+        basis_ticket="AUDIT-NTK-EMBED-FAIL",
+    )
+    db.commit()
+
+    async def _boom_embed(*args, **kwargs):
+        raise HTTPException(status_code=503, detail="embed unavailable")
+
+    monkeypatch.setattr(search_mod, "_embed_query", _boom_embed)
+
+    resp = client.post(
+        f"/api/ingestion/collections/{coll.id}/search",
+        headers=_bearer(user),
+        json={"query": "explode the embedder", "top_k": 5},
+    )
+    assert resp.status_code == 503, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.rag_query").all()
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason")
+    assert meta.get("phase") != "acceptance"
+
+
+def test_csv_formula_injection_neutralized(client: TestClient, db: Session):
+    admin = make_user(db, username="csv_formula_admin", role="admin")
+    _grant_inference_audit_viewer(db, admin)
+    actor = make_user(db, username="=CMD_actor")
+    now = datetime.now(timezone.utc)
+    db.add(
+        AuditLog(
+            actor_user_id=actor.id,
+            actor_username="=HYPERLINK",
+            action="inference.chat",
+            resource_type="inference",
+            resource_id="+SUM(1,1)",
+            status="success",
+            detail="=1+1",
+            ip_address="-1.2.3.4",
+            metadata_json='@{"x":1}',
+            created_at=now,
+        )
+    )
+    db.commit()
+    resp = client.get(
+        "/api/admin/audit/inference/export",
+        headers=_bearer(admin),
+        params={"username": "=HYPERLINK"},
+    )
+    assert resp.status_code == 200
+    text = resp.content.decode("utf-8-sig")
+    reader = csv.reader(io.StringIO(text))
+    header = next(reader)
+    rows = list(reader)
+    assert len(rows) == 1
+    row = dict(zip(header, rows[0]))
+    assert row["detail"].startswith("'")
+    assert row["detail"] == "'=1+1"
+    assert row["actor_username"] == "'=HYPERLINK"
+    assert row["resource_id"] == "'+SUM(1,1)"
+    # Non-owner admin: IP masked to sentinel (does not need formula prefix).
+    assert row["ip_address"] == "<owner-only>"
+    assert row["metadata_json"] == ""
+
+
+def test_inference_audit_owner_sees_raw_ip_metadata_admin_masked(
+    client: TestClient, db: Session
+):
+    owner = make_user(db, username="inf_owner_r4", role="owner")
+    admin = make_user(db, username="inf_admin_r4", role="admin")
+    _grant_inference_audit_viewer(db, admin)
+    actor = make_user(db, username="inf_actor_r4")
+    now = datetime.now(timezone.utc)
+    db.add(
+        AuditLog(
+            actor_user_id=actor.id,
+            actor_username="inf_actor_r4",
+            action="inference.chat",
+            resource_type="inference",
+            resource_id="m1",
+            status="success",
+            detail="full prompt remains visible",
+            ip_address="198.51.100.77",
+            metadata_json='{"model":"gpt","phase":"acceptance"}',
+            created_at=now,
+        )
+    )
+    db.commit()
+
+    admin_list = client.get(
+        "/api/admin/audit/inference",
+        headers=_bearer(admin),
+        params={"username": "inf_actor_r4"},
+    )
+    assert admin_list.status_code == 200
+    admin_row = admin_list.json()["rows"][0]
+    assert admin_row["detail"] == "full prompt remains visible"
+    assert admin_row["ip_address"] == "<owner-only>"
+    assert admin_row["metadata_json"] is None
+
+    owner_list = client.get(
+        "/api/admin/audit/inference",
+        headers=_bearer(owner),
+        params={"username": "inf_actor_r4"},
+    )
+    assert owner_list.status_code == 200
+    owner_row = owner_list.json()["rows"][0]
+    assert owner_row["ip_address"] == "198.51.100.77"
+    assert owner_row["metadata_json"] == '{"model":"gpt","phase":"acceptance"}'
+
+    admin_csv = client.get(
+        "/api/admin/audit/inference/export",
+        headers=_bearer(admin),
+        params={"username": "inf_actor_r4"},
+    )
+    assert admin_csv.status_code == 200
+    admin_csv_rows = list(csv.DictReader(io.StringIO(admin_csv.content.decode("utf-8-sig"))))
+    assert admin_csv_rows[0]["ip_address"] == "<owner-only>"
+    assert admin_csv_rows[0]["metadata_json"] == ""
+    assert admin_csv_rows[0]["detail"] == "full prompt remains visible"
+
+    owner_csv = client.get(
+        "/api/admin/audit/inference/export",
+        headers=_bearer(owner),
+        params={"username": "inf_actor_r4"},
+    )
+    assert owner_csv.status_code == 200
+    owner_csv_rows = list(csv.DictReader(io.StringIO(owner_csv.content.decode("utf-8-sig"))))
+    assert owner_csv_rows[0]["ip_address"] == "198.51.100.77"
+    assert owner_csv_rows[0]["metadata_json"] == '{"model":"gpt","phase":"acceptance"}'
+
+
+# ── Revision 5: per-admin inference-audit viewer grant ───────────────────────
+
+
+def test_r1_0033_migration_chains_after_r1_0032():
+    from pathlib import Path
+
+    mig = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "r1_0033_user_can_view_inference_audit.py"
+    )
+    text = mig.read_text(encoding="utf-8")
+    assert 'revision: str = "r1_0033"' in text
+    assert 'down_revision: Union[str, None] = "r1_0032"' in text
+    assert "can_view_inference_audit" in text
+
+
+def test_non_granted_admin_forbidden_on_list_and_export(
+    client: TestClient, db: Session
+):
+    admin = make_user(db, username="inf_admin_nogrant", role="admin")
+    assert admin.can_view_inference_audit is False
+    for path in (
+        "/api/admin/audit/inference",
+        "/api/admin/audit/inference/export",
+    ):
+        resp = client.get(path, headers=_bearer(admin))
+        assert resp.status_code == 403, path
+
+
+def test_granted_admin_list_export_masked_owner_raw(
+    client: TestClient, db: Session
+):
+    owner = make_user(db, username="inf_owner_r5", role="owner")
+    admin = make_user(db, username="inf_admin_r5", role="admin")
+    _grant_inference_audit_viewer(db, admin)
+    actor = make_user(db, username="inf_actor_r5")
+    now = datetime.now(timezone.utc)
+    db.add(
+        AuditLog(
+            actor_user_id=actor.id,
+            actor_username="inf_actor_r5",
+            action="inference.chat",
+            resource_type="inference",
+            resource_id="m1",
+            status="success",
+            detail="prompt text",
+            ip_address="203.0.113.50",
+            metadata_json='{"phase":"acceptance"}',
+            created_at=now,
+        )
+    )
+    db.commit()
+
+    admin_list = client.get(
+        "/api/admin/audit/inference",
+        headers=_bearer(admin),
+        params={"username": "inf_actor_r5"},
+    )
+    assert admin_list.status_code == 200
+    admin_row = admin_list.json()["rows"][0]
+    assert admin_row["ip_address"] == "<owner-only>"
+    assert admin_row["metadata_json"] is None
+    assert admin_row["detail"] == "prompt text"
+
+    owner_list = client.get(
+        "/api/admin/audit/inference",
+        headers=_bearer(owner),
+        params={"username": "inf_actor_r5"},
+    )
+    assert owner_list.status_code == 200
+    owner_row = owner_list.json()["rows"][0]
+    assert owner_row["ip_address"] == "203.0.113.50"
+    assert owner_row["metadata_json"] == '{"phase":"acceptance"}'
+
+    admin_csv = client.get(
+        "/api/admin/audit/inference/export",
+        headers=_bearer(admin),
+        params={"username": "inf_actor_r5"},
+    )
+    assert admin_csv.status_code == 200
+    admin_csv_row = list(
+        csv.DictReader(io.StringIO(admin_csv.content.decode("utf-8-sig")))
+    )[0]
+    assert admin_csv_row["ip_address"] == "<owner-only>"
+    assert admin_csv_row["metadata_json"] == ""
+
+
+def test_owner_only_toggle_writes_audit_viewer_grant(
+    client: TestClient, db: Session
+):
+    owner = make_user(db, username="grant_owner_r5", role="owner")
+    admin = make_user(db, username="grant_admin_r5", role="admin")
+    target = make_user(db, username="grant_target_r5", role="admin")
+
+    denied = client.put(
+        f"/api/users/{target.id}",
+        headers=_bearer(admin),
+        json={"can_view_inference_audit": True},
+    )
+    assert denied.status_code == 403
+    db.refresh(target)
+    assert target.can_view_inference_audit is False
+
+    missing = client.put(
+        "/api/users/999999",
+        headers=_bearer(owner),
+        json={"can_view_inference_audit": True},
+    )
+    assert missing.status_code == 404
+
+    enabled = client.put(
+        f"/api/users/{target.id}",
+        headers=_bearer(owner),
+        json={"can_view_inference_audit": True},
+    )
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["can_view_inference_audit"] is True
+    db.refresh(target)
+    assert target.can_view_inference_audit is True
+
+    grant_rows = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.action == "audit.viewer_grant",
+            AuditLog.resource_type == "user",
+            AuditLog.resource_id == str(target.id),
+        )
+        .order_by(AuditLog.id.asc())
+        .all()
+    )
+    assert len(grant_rows) == 1
+    assert grant_rows[0].detail == "enabled"
+    assert grant_rows[0].actor_user_id == owner.id
+    assert grant_rows[0].actor_username == owner.username
+
+    disabled = client.put(
+        f"/api/users/{target.id}",
+        headers=_bearer(owner),
+        json={"can_view_inference_audit": False},
+    )
+    assert disabled.status_code == 200
+    grant_rows = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.action == "audit.viewer_grant",
+            AuditLog.resource_id == str(target.id),
+        )
+        .order_by(AuditLog.id.asc())
+        .all()
+    )
+    assert len(grant_rows) == 2
+    assert grant_rows[1].detail == "disabled"
+
+    # Idempotent re-toggle of same value must not write another grant row.
+    again = client.put(
+        f"/api/users/{target.id}",
+        headers=_bearer(owner),
+        json={"can_view_inference_audit": False},
+    )
+    assert again.status_code == 200
+    assert (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.action == "audit.viewer_grant",
+            AuditLog.resource_id == str(target.id),
+        )
+        .count()
+        == 2
+    )

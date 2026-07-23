@@ -15,10 +15,15 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.audit_log import AuditLog
 from app.models.user import User
-from app.services.auth_service import require_admin
+from app.services.auth_service import is_owner, require_inference_audit_viewer
 from app.services.inference_audit import INFERENCE_ACTIONS
 
 router = APIRouter(prefix="/api/admin/audit", tags=["推論審計"])
+
+# Mirror ``app.api.audit_logs.SENSITIVE_REDACTED`` / ``_serialize``:
+# granted non-owner admins may list inference rows, but IP + request
+# metadata remain owner-only. ``detail`` stays visible (product choice).
+SENSITIVE_REDACTED = "<owner-only>"
 
 
 class InferenceAuditRow(BaseModel):
@@ -57,6 +62,35 @@ def _ilike_literal_pattern(q: str) -> str:
     """Escape ``%``, ``_``, and ``\\`` so ILIKE matches the literal substring."""
     escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+def _csv_neutralize_cell(value: object) -> str:
+    """Neutralize CSV formula injection for every cell.
+
+    Values starting with ``=``, ``+``, ``-``, ``@``, TAB, or CR get a leading
+    apostrophe so spreadsheet apps treat them as text.
+    """
+    text = "" if value is None else str(value)
+    if text[:1] in {"=", "+", "-", "@", "\t", "\r"}:
+        return "'" + text
+    return text
+
+
+def _serialize_inference_row(row: AuditLog, *, caller: User) -> InferenceAuditRow:
+    show_sensitive = is_owner(caller)
+    return InferenceAuditRow(
+        id=row.id,
+        actor_user_id=row.actor_user_id,
+        actor_username=row.actor_username,
+        action=row.action,
+        resource_type=row.resource_type,
+        resource_id=row.resource_id,
+        status=row.status,
+        detail=row.detail,
+        ip_address=row.ip_address if show_sensitive else SENSITIVE_REDACTED,
+        metadata_json=row.metadata_json if show_sensitive else None,
+        created_at=row.created_at,
+    )
 
 
 def _build_inference_query(
@@ -102,10 +136,9 @@ def list_inference_audit(
     to: datetime | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_inference_audit_viewer),
     db: Session = Depends(get_db),
 ):
-    del admin  # authorization side effect only
     from_dt = _require_tz_aware(from_, name="from")
     to_dt = _require_tz_aware(to, name="to")
     base = _build_inference_query(
@@ -120,7 +153,7 @@ def list_inference_audit(
     total = base.count()
     rows = base.offset(offset).limit(limit).all()
     return InferenceAuditListResponse(
-        rows=[InferenceAuditRow.model_validate(row) for row in rows],
+        rows=[_serialize_inference_row(row, caller=admin) for row in rows],
         total=total,
     )
 
@@ -148,10 +181,9 @@ def export_inference_audit(
     q: str | None = Query(None),
     from_: datetime | None = Query(None, alias="from"),
     to: datetime | None = Query(None),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_inference_audit_viewer),
     db: Session = Depends(get_db),
 ):
-    del admin
     from_dt = _require_tz_aware(from_, name="from")
     to_dt = _require_tz_aware(to, name="to")
     rows = _build_inference_query(
@@ -163,6 +195,7 @@ def export_inference_audit(
         from_dt=from_dt,
         to_dt=to_dt,
     ).all()
+    show_sensitive = is_owner(admin)
 
     def _iter() -> Iterator[str]:
         buffer = io.StringIO()
@@ -176,17 +209,28 @@ def export_inference_audit(
         for row in rows:
             writer.writerow(
                 [
-                    row.id,
-                    row.created_at.isoformat() if row.created_at else "",
-                    row.actor_user_id if row.actor_user_id is not None else "",
-                    row.actor_username or "",
-                    row.action,
-                    row.resource_type,
-                    row.resource_id or "",
-                    row.status,
-                    row.detail or "",
-                    row.ip_address or "",
-                    row.metadata_json or "",
+                    _csv_neutralize_cell(cell)
+                    for cell in (
+                        row.id,
+                        row.created_at.isoformat() if row.created_at else "",
+                        row.actor_user_id if row.actor_user_id is not None else "",
+                        row.actor_username or "",
+                        row.action,
+                        row.resource_type,
+                        row.resource_id or "",
+                        row.status,
+                        row.detail or "",
+                        (
+                            row.ip_address
+                            if show_sensitive
+                            else SENSITIVE_REDACTED
+                        ),
+                        (
+                            row.metadata_json
+                            if show_sensitive
+                            else ""
+                        ),
+                    )
                 ]
             )
             yield buffer.getvalue()

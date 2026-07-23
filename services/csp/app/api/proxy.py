@@ -661,7 +661,7 @@ def _accept_chat_inference_audit(
     internal_router: bool,
     extra_metadata: dict | None = None,
 ) -> bool:
-    """Acceptance-phase write before upstream / SSE when strict or stream."""
+    """Acceptance-phase write before retrieval/memory/upstream when strict or stream."""
     metadata: dict = {
         "model": model_name,
         "route_type": (
@@ -2023,6 +2023,30 @@ async def _chat_completions_impl(
             )
         raise
 
+    # Strict / stream write-ahead: durable acceptance BEFORE retrieval/memory
+    # embedding side effects. Non-strict non-stream still records at outcome.
+    acceptance_recorded = _accept_chat_inference_audit(
+        db,
+        request=request,
+        user=user,
+        action=(
+            "inference.agent"
+            if pre_resolved_agent is not None
+            else "inference.chat"
+        ),
+        resource_id=(
+            pre_resolved_agent.name
+            if pre_resolved_agent is not None
+            else str(model_name)
+        ),
+        detail=early_user_text,
+        model_name=str(model_name),
+        pre_resolved_agent=pre_resolved_agent,
+        stream=stream,
+        router_orchestration=router_orchestration,
+        internal_router=internal_router,
+    )
+
     stage = "retrieval"
     try:
         retrieval_outcome = await _prepare_server_retrieval(
@@ -2097,6 +2121,7 @@ async def _chat_completions_impl(
                 router_orchestration=router_orchestration,
                 internal_router=internal_router,
                 reason=code,
+                acceptance_recorded=acceptance_recorded,
             )
         elif exc.status_code >= 500:
             _write_chat_inference_audit(
@@ -2121,6 +2146,7 @@ async def _chat_completions_impl(
                 router_orchestration=router_orchestration,
                 internal_router=internal_router,
                 reason=code,
+                acceptance_recorded=acceptance_recorded,
             )
         raise
     except Exception as exc:
@@ -2153,6 +2179,7 @@ async def _chat_completions_impl(
             router_orchestration=router_orchestration,
             internal_router=internal_router,
             reason=f"{stage}_failed",
+            acceptance_recorded=acceptance_recorded,
         )
         raise HTTPException(
             status_code=503,
@@ -2210,6 +2237,7 @@ async def _chat_completions_impl(
                 router_orchestration=router_orchestration,
                 internal_router=internal_router,
                 reason="memory_classification_latch",
+                acceptance_recorded=acceptance_recorded,
             )
             raise HTTPException(
                 status_code=503,
@@ -2233,8 +2261,6 @@ async def _chat_completions_impl(
         # last user message which is unchanged across that path.
         body
     )
-
-    acceptance_recorded = False
 
     def _audit_outcome(status: str, *, reason: str | None = None) -> None:
         """Write-once outcome row (success / denied / error)."""
@@ -2261,31 +2287,6 @@ async def _chat_completions_impl(
             internal_router=internal_router,
             reason=reason,
             acceptance_recorded=acceptance_recorded,
-        )
-
-    def _record_acceptance() -> None:
-        """Strict / stream: durable acceptance write before side effects."""
-        nonlocal acceptance_recorded
-        acceptance_recorded = _accept_chat_inference_audit(
-            db,
-            request=request,
-            user=user,
-            action=(
-                "inference.agent"
-                if pre_resolved_agent is not None
-                else "inference.chat"
-            ),
-            resource_id=(
-                pre_resolved_agent.name
-                if pre_resolved_agent is not None
-                else str(model_name)
-            ),
-            detail=captured_user_text,
-            model_name=str(model_name),
-            pre_resolved_agent=pre_resolved_agent,
-            stream=stream,
-            router_orchestration=router_orchestration,
-            internal_router=internal_router,
         )
 
     # Try agent first, fallback to model_registry
@@ -2320,8 +2321,6 @@ async def _chat_completions_impl(
         trace_user_identity = (
             user.username if task_ctx is not None and usage_trace_id else user_identity
         )
-        # Acceptance before upstream / SSE (strict write-ahead or stream).
-        _record_acceptance()
         if stream:
             upstream = proxy_stream(
                 target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
@@ -2695,8 +2694,6 @@ async def _chat_completions_impl(
             detail="anila-router 需要 CSP signed router-context/v1 provenance",
         )
     usage_trace_id = task_ctx.trace_id if task_ctx else trace_id
-    # Acceptance before upstream / SSE (strict write-ahead or stream).
-    _record_acceptance()
     if stream:
         target_url = (
             f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"

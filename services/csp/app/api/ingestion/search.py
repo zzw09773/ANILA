@@ -53,7 +53,12 @@ from app.modules.clearance.service import (
 )
 from app.services.auth_service import get_current_user
 from app.services.ingestion_pool import get_pool
-from app.services.inference_audit import record_inference_audit, short_audit_reason
+from app.services.inference_audit import (
+    record_at_acceptance,
+    record_at_outcome,
+    record_inference_audit,
+    short_audit_reason,
+)
 from app.services.relation_resolver import scope_collection_rls
 from app.services.retrieval_service import RetrievalFailure, embed_query
 
@@ -722,7 +727,7 @@ async def search_collection(
     _enforce_agent_collection_scope(principal, collection_id)
     current_user = principal.user
     # End-user JWT/cookie path only — agent csk- and Studio runtime hops skip.
-    # Write-once at outcome: denied on clearance 403; success after clearance.
+    # Denied on clearance 403; strict acceptance before embed; else success after retrieval.
     try:
         coll = _require_collection_clearance(
             db, principal=principal, collection_id=collection_id
@@ -787,23 +792,49 @@ async def search_collection(
                 commit=True,
             )
         raise
-    if principal.agent is None and not principal.skip_inference_audit:
-        record_inference_audit(
+    rag_meta = {
+        "collection_id": collection_id,
+        "top_k": payload.top_k,
+        "min_score": payload.min_score,
+    }
+    # Strict: write-ahead acceptance before embed/search side effects.
+    # Non-strict: success only after retrieval completes (error on failure).
+    acceptance_recorded = False
+    end_user_audit = principal.agent is None and not principal.skip_inference_audit
+    if end_user_audit:
+        acceptance_recorded = record_at_acceptance(
             db,
             request=request,
             actor=current_user,
             action="inference.rag_query",
             resource_id=str(collection_id),
             detail=payload.query,
-            status="success",
-            metadata={
-                "collection_id": collection_id,
-                "top_k": payload.top_k,
-                "min_score": payload.min_score,
-            },
+            metadata=rag_meta,
             commit=True,
+            stream=False,
         )
+
+    def _rag_outcome(status: str, *, reason: str | None = None) -> None:
+        if not end_user_audit:
+            return
+        meta = dict(rag_meta)
+        if reason:
+            meta["reason"] = short_audit_reason(reason)
+        record_at_outcome(
+            db,
+            request=request,
+            actor=current_user,
+            action="inference.rag_query",
+            resource_id=str(collection_id),
+            detail=payload.query,
+            status=status,
+            metadata=meta,
+            commit=True,
+            acceptance_recorded=acceptance_recorded,
+        )
+
     if not authorized_document_access:
+        _rag_outcome("success")
         return SearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
@@ -816,62 +847,77 @@ async def search_collection(
         document_id: access.query_ceiling
         for document_id, access in authorized_document_access.items()
     }
-    query_vec = await _embed_query(
-        db,
-        current_user,
-        coll.embedding_model,
-        coll.embedding_dim,
-        payload.query,
-        trusted_classification_level=Classification.max_of(
-            access.required_classification
-            for access in authorized_document_access.values()
-        ),
-    )
-
     try:
-        pool = get_pool()
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
+        query_vec = await _embed_query(
+            db,
+            current_user,
+            coll.embedding_model,
+            coll.embedding_dim,
+            payload.query,
+            trusted_classification_level=Classification.max_of(
+                access.required_classification
+                for access in authorized_document_access.values()
+            ),
+        )
 
-    store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
-    candidates = []
-    if payload.document_ids is None:
-        for ceiling, document_ids in _documents_by_ceiling(
-            authorized_document_ceilings
-        ).items():
-            candidates.extend(
-                await store.similarity_search_scoped_documents(
-                    query_embedding=query_vec,
-                    document_ids=document_ids,
-                    top_k=payload.top_k,
-                    min_score=payload.min_score,
-                    classification_ceiling=ceiling,
+        try:
+            pool = get_pool()
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
+        store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
+        candidates = []
+        if payload.document_ids is None:
+            for ceiling, document_ids in _documents_by_ceiling(
+                authorized_document_ceilings
+            ).items():
+                candidates.extend(
+                    await store.similarity_search_scoped_documents(
+                        query_embedding=query_vec,
+                        document_ids=document_ids,
+                        top_k=payload.top_k,
+                        min_score=payload.min_score,
+                        classification_ceiling=ceiling,
+                    )
                 )
-            )
-    else:
-        # G13: filter in SQL before ranking.  Ask for up to top_k per
-        # document, then take the global top_k across that authorised set.
-        # This prevents unrelated rows from consuming the HNSW top-k window.
-        for ceiling, document_ids in _documents_by_ceiling(
-            authorized_document_ceilings
-        ).items():
-            candidates.extend(
-                await store.similarity_search_per_document_authorized(
-                    query_embedding=query_vec,
-                    document_ids=document_ids,
-                    classification_ceiling=ceiling,
-                    k=payload.top_k,
-                    min_score=payload.min_score,
+        else:
+            # G13: filter in SQL before ranking.  Ask for up to top_k per
+            # document, then take the global top_k across that authorised set.
+            # This prevents unrelated rows from consuming the HNSW top-k window.
+            for ceiling, document_ids in _documents_by_ceiling(
+                authorized_document_ceilings
+            ).items():
+                candidates.extend(
+                    await store.similarity_search_per_document_authorized(
+                        query_embedding=query_vec,
+                        document_ids=document_ids,
+                        classification_ceiling=ceiling,
+                        k=payload.top_k,
+                        min_score=payload.min_score,
+                    )
                 )
-            )
-    hits = sorted(candidates, key=lambda hit: hit.score, reverse=True)[
-        : payload.top_k
-    ]
+        hits = sorted(candidates, key=lambda hit: hit.score, reverse=True)[
+            : payload.top_k
+        ]
+    except HTTPException as exc:
+        _rag_outcome(
+            "error",
+            reason=(
+                f"rag_http_{exc.status_code}"
+                if not isinstance(exc.detail, dict)
+                else str(exc.detail.get("code") or f"rag_http_{exc.status_code}")
+            ),
+        )
+        raise
+    except Exception:
+        _rag_outcome("error", reason="rag_retrieval_failed")
+        raise
 
     if not hits:
+        _rag_outcome("success")
         return SearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
@@ -902,6 +948,7 @@ async def search_collection(
             payload=payload,
         )
 
+    _rag_outcome("success")
     return SearchResponse(
         query=payload.query,
         embedding_model=coll.embedding_model,
@@ -1028,44 +1075,48 @@ async def search_collection_images(
                 commit=True,
             )
         raise
-    if principal.agent is None and not principal.skip_inference_audit:
-        record_inference_audit(
+    rag_meta = {
+        "collection_id": collection_id,
+        "top_k": payload.top_k,
+        "min_score": payload.min_score,
+        "image_search": True,
+    }
+    acceptance_recorded = False
+    end_user_audit = principal.agent is None and not principal.skip_inference_audit
+    if end_user_audit:
+        acceptance_recorded = record_at_acceptance(
             db,
             request=request,
             actor=current_user,
             action="inference.rag_query",
             resource_id=str(collection_id),
             detail=payload.query,
-            status="success",
-            metadata={
-                "collection_id": collection_id,
-                "top_k": payload.top_k,
-                "min_score": payload.min_score,
-                "image_search": True,
-            },
+            metadata=rag_meta,
             commit=True,
-        )
-    if not authorized_document_access:
-        return ImageSearchResponse(
-            query=payload.query,
-            embedding_model=coll.embedding_model,
-            embedding_fingerprint=coll.embedding_fingerprint,
-            embedding_dim=coll.embedding_dim,
-            results=[],
+            stream=False,
         )
 
-    q_vec = await _embed_query(
-        db,
-        current_user,
-        coll.embedding_model,
-        coll.embedding_dim,
-        payload.query,
-        trusted_classification_level=Classification.max_of(
-            access.required_classification
-            for access in authorized_document_access.values()
-        ),
-    )
-    if not q_vec:
+    def _rag_outcome(status: str, *, reason: str | None = None) -> None:
+        if not end_user_audit:
+            return
+        meta = dict(rag_meta)
+        if reason:
+            meta["reason"] = short_audit_reason(reason)
+        record_at_outcome(
+            db,
+            request=request,
+            actor=current_user,
+            action="inference.rag_query",
+            resource_id=str(collection_id),
+            detail=payload.query,
+            status=status,
+            metadata=meta,
+            commit=True,
+            acceptance_recorded=acceptance_recorded,
+        )
+
+    if not authorized_document_access:
+        _rag_outcome("success")
         return ImageSearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
@@ -1075,59 +1126,95 @@ async def search_collection_images(
         )
 
     try:
-        pool = get_pool()
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
-
-    # Wrap with HalfVector — the same codec PgPool registers on every
-    # connection. Passing a Python string + ::halfvec cast fails because
-    # halfvec's text-input parser misreads the leading `[`. HalfVector
-    # ships the right binary wire format directly. Mirrors the path in
-    # ``studio._retrieve_images``.
-    from pgvector import HalfVector
-
-    q_value = HalfVector(q_vec)
-
-    # halfvec uses cosine distance; pgvector returns 0 = identical, so
-    # similarity = 1 - distance. Filter on distance < (1 - min_score).
-    max_dist = 1.0 - payload.min_score
-    async with pool.acquire() as conn, conn.transaction():
-        # RLS: ingestion_images is FORCE-RLS (migration 0037); scope this
-        # connection to the collection so the policy returns its rows. SET LOCAL
-        # is txn-scoped, so it never leaks to the next pooled user. The explicit
-        # WHERE i.collection_id = $1 below stays as belt-and-suspenders.
-        await conn.execute(f"SET LOCAL anila.collection_id = {int(collection_id)}")
-        rows = await conn.fetch(
-            """
-            SELECT
-                i.id AS pk_id,
-                i.image_id,
-                i.document_id,
-                i.page,
-                i.storage_path,
-                i.mime,
-                i.caption,
-                d.filename,
-                (i.embedding <=> $2) AS dist
-            FROM ingestion_images i
-            JOIN ingestion_documents d ON d.id = i.document_id
-            WHERE i.collection_id = $1
-              AND i.embedding IS NOT NULL
-              AND i.document_id = ANY($3::bigint[])
-              AND (i.embedding <=> $2) < $4
-            ORDER BY i.embedding <=> $2
-            LIMIT $5
-            """,
-            collection_id,
-            q_value,
-            list(authorized_document_access),
-            max_dist,
-            payload.top_k,
+        q_vec = await _embed_query(
+            db,
+            current_user,
+            coll.embedding_model,
+            coll.embedding_dim,
+            payload.query,
+            trusted_classification_level=Classification.max_of(
+                access.required_classification
+                for access in authorized_document_access.values()
+            ),
         )
+        if not q_vec:
+            _rag_outcome("success")
+            return ImageSearchResponse(
+                query=payload.query,
+                embedding_model=coll.embedding_model,
+                embedding_fingerprint=coll.embedding_fingerprint,
+                embedding_dim=coll.embedding_dim,
+                results=[],
+            )
 
+        try:
+            pool = get_pool()
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
+        # Wrap with HalfVector — the same codec PgPool registers on every
+        # connection. Passing a Python string + ::halfvec cast fails because
+        # halfvec's text-input parser misreads the leading `[`. HalfVector
+        # ships the right binary wire format directly. Mirrors the path in
+        # ``studio._retrieve_images``.
+        from pgvector import HalfVector
+
+        q_value = HalfVector(q_vec)
+
+        # halfvec uses cosine distance; pgvector returns 0 = identical, so
+        # similarity = 1 - distance. Filter on distance < (1 - min_score).
+        max_dist = 1.0 - payload.min_score
+        async with pool.acquire() as conn, conn.transaction():
+            # RLS: ingestion_images is FORCE-RLS (migration 0037); scope this
+            # connection to the collection so the policy returns its rows. SET LOCAL
+            # is txn-scoped, so it never leaks to the next pooled user. The explicit
+            # WHERE i.collection_id = $1 below stays as belt-and-suspenders.
+            await conn.execute(f"SET LOCAL anila.collection_id = {int(collection_id)}")
+            rows = await conn.fetch(
+                """
+                SELECT
+                    i.id AS pk_id,
+                    i.image_id,
+                    i.document_id,
+                    i.page,
+                    i.storage_path,
+                    i.mime,
+                    i.caption,
+                    d.filename,
+                    (i.embedding <=> $2) AS dist
+                FROM ingestion_images i
+                JOIN ingestion_documents d ON d.id = i.document_id
+                WHERE i.collection_id = $1
+                  AND i.embedding IS NOT NULL
+                  AND i.document_id = ANY($3::bigint[])
+                  AND (i.embedding <=> $2) < $4
+                ORDER BY i.embedding <=> $2
+                LIMIT $5
+                """,
+                collection_id,
+                q_value,
+                list(authorized_document_access),
+                max_dist,
+                payload.top_k,
+            )
+    except HTTPException as exc:
+        _rag_outcome(
+            "error",
+            reason=(
+                f"rag_http_{exc.status_code}"
+                if not isinstance(exc.detail, dict)
+                else str(exc.detail.get("code") or f"rag_http_{exc.status_code}")
+            ),
+        )
+        raise
+    except Exception:
+        _rag_outcome("error", reason="rag_image_retrieval_failed")
+        raise
+
+    _rag_outcome("success")
     return ImageSearchResponse(
         query=payload.query,
         embedding_model=coll.embedding_model,
