@@ -93,6 +93,7 @@ def _create_schema(*, auth: bool) -> tuple[str, object]:
                         is_approved boolean NOT NULL DEFAULT true,
                         token_version integer NOT NULL DEFAULT 0,
                         local_password_disabled boolean NOT NULL DEFAULT false,
+                        can_view_inference_audit boolean NOT NULL DEFAULT false,
                         last_login_at timestamp,
                         ui_settings jsonb NOT NULL DEFAULT '{}'::jsonb,
                         created_at timestamp,

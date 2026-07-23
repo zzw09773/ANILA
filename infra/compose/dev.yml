@@ -96,6 +96,10 @@ services:
       # docker service name (single-label), which the URL guard blocks unless
       # trusted (ALLOW_PRIVATE does NOT bypass the single-label check).
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,gate5-e2e-model,host.docker.internal}"
+      # 稽核 IP 溯源:信任 dev nginx 的 X-Forwarded-For(填 nginx 容器 IP/32,
+      # 容器重建後 IP 可能漂,漂了要更新;空值=記 proxy IP)。
+      ANILA_TRUSTED_PROXY_CIDRS: "${ANILA_TRUSTED_PROXY_CIDRS:-}"
+      ANILA_AUDIT_STRICT: "${ANILA_AUDIT_STRICT:-0}"
       ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE_DEV:-development}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"

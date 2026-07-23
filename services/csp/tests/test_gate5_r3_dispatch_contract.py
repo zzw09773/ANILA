@@ -903,7 +903,7 @@ def test_formal_public_agent_chat_fails_before_any_downstream_branch(
                 "messages": [{"role": "user", "content": "hi"}],
             }
 
-    fake_agent = SimpleNamespace(name="legacy-agent")
+    fake_agent = SimpleNamespace(name="legacy-agent", id=1)
     monkeypatch.setattr(proxy_api.settings, "GATE5_MODEL_GOVERNANCE_ENABLED", True)
     monkeypatch.setattr(proxy_api.settings, "ANILA_DEPLOYMENT_PROFILE", "development")
     monkeypatch.setattr(proxy_api, "_resolve_agent", lambda _db, _caller, _name: fake_agent)
@@ -912,6 +912,9 @@ def test_formal_public_agent_chat_fails_before_any_downstream_branch(
         "_resolve_model",
         lambda *_args, **_kwargs: pytest.fail("formal direct Agent must stop before model resolution"),
     )
+    # Stubbed request/db are not audit-capable; deny-row coverage lives in
+    # test_inference_audit.py. Keep this contract focused on early 409 stop.
+    monkeypatch.setattr(proxy_api, "_write_chat_inference_audit", lambda *a, **k: None)
     caller = SimpleNamespace(user=SimpleNamespace())
     with pytest.raises(HTTPException) as caught:
         asyncio.run(

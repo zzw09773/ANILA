@@ -26,6 +26,12 @@ export const useAuthStore = defineStore('auth', () => {
     || user.value?.role === 'admin'
     || user.value?.role === 'owner',
   )
+  // Inference 稽核查詢: owner always, else admin with explicit grant
+  // from /api/auth/me (``can_view_inference_audit``). Backend 403 is
+  // still the real boundary.
+  const canViewInferenceAudit = computed(() =>
+    isOwner.value || !!user.value?.can_view_inference_audit,
+  )
 
   async function login(username, password, extra = {}) {
     // 後端 set cookies；body 仍帶 token 是給 SDK 用的，SPA 不再儲存。
@@ -84,6 +90,7 @@ export const useAuthStore = defineStore('auth', () => {
     isOwner,
     isAdmin,
     isDeveloper,
+    canViewInferenceAudit,
     login,
     loginWithCard,
     refreshToken,
