@@ -101,10 +101,12 @@ services:
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,router,host.docker.internal}"
-      # Router sentinel chat model (auto-seeded, non-secret). Optional: empty
-      # default keeps the seed a no-op; formal deploys set the in-cluster
-      # Router endpoint. ``router`` is single-label so it is trusted above.
-      ANILA_ROUTER_SENTINEL_URL: "${ANILA_ROUTER_SENTINEL_URL:-http://router:9000}"
+      # Router sentinel chat model (auto-seeded, non-secret). Empty default =
+      # seed no-op:正式環境 URL guard 對 model endpoint 硬拒 http(不受旗標
+      # 放行),預設 http://router:9000 會產出一個出廠即被拒的 sentinel。
+      # formal 部署要啟用時自行設定可通過 guard 的 Router upstream。
+      # ``router`` is single-label so it is trusted above.
+      ANILA_ROUTER_SENTINEL_URL: "${ANILA_ROUTER_SENTINEL_URL:-}"
       # 稽核 IP 溯源:只信任 nginx 這一跳的 X-Forwarded-For。值由
       # intranet-deploy.sh 於 up 後自動解析 anila-nginx 容器位址寫入 .env
       # (/32);空值=只記直接對端(即 proxy IP)。禁填寬網段(見 .env.example)。
