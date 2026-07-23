@@ -8,6 +8,7 @@ from sqlalchemy.exc import OperationalError
 from app.models.task import Task, TaskRun
 from app.models.token_usage import TokenUsage
 from app.models.trace_span import TraceSpan
+from app.modules.tasks import start_task_run
 from app.services.proxy.closure import (
     TaskCallClosure,
     UsageRecordData,
@@ -150,3 +151,78 @@ def test_nested_retrieval_and_memory_usage_share_task_trace_without_finalizing(d
         "csp.server_retrieval_embedding",
         "csp.memory_embedding",
     }
+
+
+def test_query_task_successful_closure_allows_second_turn(db):
+    """Conversational query tasks must park at waiting_for_user so turn 2 can run."""
+    user = make_user(db, username="multiturn-query-user")
+    model = make_model(db, name="multiturn-query-model")
+    task = Task(
+        title="multiturn query",
+        task_type="query",
+        requester_user_id=user.id,
+        status="draft",
+        classification_level="無機密",
+    )
+    db.add(task)
+    db.commit()
+
+    run1 = start_task_run(db, task=task, dispatch_target="model")
+    assert run1.run_sequence == 1
+    assert task.status == "running"
+    persist_task_call_closure(
+        db, _closure(user, model, task, run1, closure_id="multiturn-turn-1")
+    )
+    db.expire_all()
+    task = db.get(Task, task.id)
+    assert task.status == "waiting_for_user"
+    assert db.get(TaskRun, run1.id).status == "completed"
+
+    run2 = start_task_run(db, task=task, dispatch_target="model")
+    assert run2.run_sequence == 2
+    assert task.status == "running"
+    persist_task_call_closure(
+        db, _closure(user, model, task, run2, closure_id="multiturn-turn-2")
+    )
+    db.expire_all()
+    task = db.get(Task, task.id)
+    assert task.status == "waiting_for_user"
+    runs = (
+        db.query(TaskRun)
+        .filter_by(task_id=task.id)
+        .order_by(TaskRun.run_sequence)
+        .all()
+    )
+    assert [r.run_sequence for r in runs] == [1, 2]
+    assert [r.status for r in runs] == ["completed", "completed"]
+
+
+def test_non_query_task_successful_closure_still_completes(db):
+    """Non-conversational task types keep the prior completed terminal behavior."""
+    user = make_user(db, username="oneshot-summarize-user")
+    model = make_model(db, name="oneshot-summarize-model")
+    task = Task(
+        title="oneshot summarize",
+        task_type="summarize",
+        requester_user_id=user.id,
+        status="running",
+        classification_level="無機密",
+    )
+    db.add(task)
+    db.flush()
+    run = TaskRun(
+        task_id=task.id,
+        run_sequence=1,
+        dispatch_target="model",
+        status="running",
+        classification_level="無機密",
+    )
+    db.add(run)
+    db.commit()
+
+    persist_task_call_closure(
+        db, _closure(user, model, task, run, closure_id="summarize-done")
+    )
+    db.expire_all()
+    assert db.get(Task, task.id).status == "completed"
+    assert db.get(TaskRun, run.id).status == "completed"

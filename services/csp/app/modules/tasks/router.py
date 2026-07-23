@@ -14,15 +14,16 @@ Slice 2b-A 附加讀面。差異註記:doc 09 create body 例含 ``input``(text)
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.user import User
-from app.schemas.contracts.tasks import TaskCreate, TaskOut, TaskRunOut
+from app.schemas.contracts.tasks import TaskCreate, TaskOut, TaskRunOut, TaskType
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
+from app.services.inference_audit import record_at_acceptance, record_at_outcome
 
 from . import service
 
@@ -48,10 +49,41 @@ def _load_task_or_http(db: Session, task_id: int, user: User):
 @router.post("", response_model=TaskOut, status_code=201)
 def create_task(
     payload: TaskCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """建立任務(requester = 當前使用者);必產生 trace_id 與 snapshot。"""
+    studio_resource_id = (
+        payload.requested_output_type.value
+        if payload.requested_output_type is not None
+        else "generate_artifact"
+    )
+    studio_meta = {
+        "task_type": payload.task_type.value,
+        "requested_output_type": (
+            payload.requested_output_type.value
+            if payload.requested_output_type is not None
+            else None
+        ),
+        "collection_ids": list(payload.selected_collection_ids or []),
+    }
+    # Strict mode: durable acceptance write BEFORE create_task so a 503
+    # leaves no unaudited persisted task. Non-strict keeps outcome-point
+    # ordering (after create, with task_id).
+    acceptance_recorded = False
+    if payload.task_type == TaskType.GENERATE_ARTIFACT:
+        acceptance_recorded = record_at_acceptance(
+            db,
+            request=request,
+            actor=current_user,
+            action="inference.studio",
+            resource_id=studio_resource_id,
+            detail=payload.title,
+            metadata=studio_meta,
+            commit=True,
+            stream=False,
+        )
     try:
         task = service.create_task(
             db, requester_user_id=current_user.id, payload=payload
@@ -68,6 +100,19 @@ def create_task(
         metadata={"trace_id": task.trace_id, "task_type": task.task_type},
         commit=True,
     )
+    if payload.task_type == TaskType.GENERATE_ARTIFACT:
+        record_at_outcome(
+            db,
+            request=request,
+            actor=current_user,
+            action="inference.studio",
+            resource_id=studio_resource_id,
+            detail=payload.title,
+            status="success",
+            metadata={**studio_meta, "task_id": task.id},
+            commit=True,
+            acceptance_recorded=acceptance_recorded,
+        )
     return task
 
 

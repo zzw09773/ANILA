@@ -669,6 +669,26 @@ for _deploy_key in \
 done
 bash infra/deployment/scripts/deploy-prod.sh up
 
+# ── 6b. 稽核信任代理:自動解析 nginx 位址寫入 .env ──────────────────────
+# csp 的稽核 IP 溯源只信任 nginx 這一跳的 X-Forwarded-For(填寬網段會讓
+# 任何內網用戶端偽造 XFF,見 .env.example)。容器 IP 會隨網路重建漂移,
+# 每次部署都重新解析;值有變才再過一次 deploy-prod 讓 csp recreate 套用。
+_nginx_ip="$(docker inspect anila-nginx \
+  --format '{{range $k, $v := .NetworkSettings.Networks}}{{if eq $k "anila-net"}}{{$v.IPAddress}}{{end}}{{end}}' \
+  2>/dev/null || true)"
+if [ -n "$_nginx_ip" ]; then
+  _trusted_now="$(get_env_unquoted ANILA_TRUSTED_PROXY_CIDRS)"
+  if [ "$_trusted_now" != "${_nginx_ip}/32" ]; then
+    set_env ANILA_TRUSTED_PROXY_CIDRS "${_nginx_ip}/32"
+    info "ANILA_TRUSTED_PROXY_CIDRS=${_nginx_ip}/32 (anila-nginx@anila-net) → 再跑一次 up 套用到 csp"
+    bash infra/deployment/scripts/deploy-prod.sh up
+  else
+    info "ANILA_TRUSTED_PROXY_CIDRS 已是 ${_nginx_ip}/32,免變更"
+  fi
+else
+  warn "解析不到 anila-nginx 容器 IP → 未設 ANILA_TRUSTED_PROXY_CIDRS;稽核將記錄 proxy IP(修好後重跑本腳本)"
+fi
+
 # ── 7. 驗證 ──────────────────────────────────────────────────────────────
 info "[7/7] 正式 posture-aware verify 已由 deploy-prod.sh 完成"
 

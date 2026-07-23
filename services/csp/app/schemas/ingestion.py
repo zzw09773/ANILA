@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
+from anila_contracts import Classification as ClassificationLevel
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -99,6 +100,14 @@ class CollectionUpdate(BaseModel):
         pattern="^(active|archived)$",
         description="'active' or 'archived'. Use DELETE to actually drop.",
     )
+    classification_level: ClassificationLevel | None = Field(
+        default=None,
+        description=(
+            "五級分類。僅 admin/owner 可變更;升級走 apply_classification "
+            "(ClassificationEvent + latch)。降級不可經本 PATCH——"
+            "請走 POST /api/classification/declassification-requests。"
+        ),
+    )
 
 
 # ── Collection: response shapes ─────────────────────────────────────────────
@@ -125,6 +134,7 @@ class CollectionResponse(BaseModel):
     chunk_count: int
     bytes_stored: int
     created_by: int
+    classification_level: ClassificationLevel
     created_at: datetime
     updated_at: datetime
 

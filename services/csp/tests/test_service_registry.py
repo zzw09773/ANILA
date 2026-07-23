@@ -783,6 +783,54 @@ class TestCompatFacade:
         listing = client.get("/api/platform-links", headers=headers).json()
         assert any(x["name"] == "GitLab" for x in listing)
 
+    def test_list_excludes_studio_bootstrap_identities_only(self, client, db):
+        # 只隱藏兩個 Studio bootstrap slug;合法外部 artifact_tool 與
+        # project_portal 仍應出現在 /api/platform-links。
+        headers = _auth_headers(client, db, username="root", role="admin")
+        _make_service(
+            db,
+            name="ANILA Studio Artifact Writer",
+            slug="anila-studio-artifact",
+            entry_url="http://anila-studio:8100",
+            service_type="artifact_tool",
+            is_active=True,
+            is_public=True,
+        )
+        _make_service(
+            db,
+            name="ANILA Studio Task Runtime",
+            slug="anila-studio-runtime",
+            entry_url="http://anila-studio:8100",
+            service_type="artifact_tool",
+            is_active=True,
+            is_public=True,
+        )
+        _make_service(
+            db,
+            name="外部 Artifact GUI",
+            slug="external-artifact-gui",
+            entry_url="https://artifact-gui.local/app",
+            service_type="artifact_tool",
+            is_active=True,
+            is_public=True,
+        )
+        _make_service(
+            db,
+            name="材料專案入口",
+            slug="material-portal",
+            entry_url="https://material.local/app",
+            service_type="project_portal",
+            is_active=True,
+            is_public=True,
+        )
+
+        listing = client.get("/api/platform-links", headers=headers).json()
+        names = {row["name"] for row in listing}
+        assert "材料專案入口" in names
+        assert "外部 Artifact GUI" in names
+        assert "ANILA Studio Artifact Writer" not in names
+        assert "ANILA Studio Task Runtime" not in names
+
     def test_update_and_grant_over_registry(self, client, db):
         headers = _auth_headers(client, db, username="root", role="admin")
         lid = client.post(

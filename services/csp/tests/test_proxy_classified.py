@@ -104,3 +104,24 @@ def test_latch_combinations(
     if model_requires:
         meta["classified"] = True
     assert meta["classified"] is expected
+
+
+# ---------------------------------------------------------------------------
+# default_meta_identity — 使用者可見 trace 的身分/拓撲遮蔽
+# ---------------------------------------------------------------------------
+
+def test_default_meta_identity_masks_model_for_anila_orchestration() -> None:
+    from app.services.proxy.service import default_meta_identity
+
+    source, detail = default_meta_identity(42, "gemma26")
+    assert source == "ANILA"
+    assert "gemma26" not in source + detail
+    assert "http" not in detail
+
+
+def test_default_meta_identity_keeps_user_selected_model_without_url() -> None:
+    from app.services.proxy.service import default_meta_identity
+
+    source, detail = default_meta_identity(None, "gemma26")
+    assert source == "gemma26"
+    assert "http" not in detail and "->" not in detail

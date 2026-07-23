@@ -43,9 +43,12 @@ from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentReg
 from ..router import (
     AgentClientError,
     CspAgentClient,
+    CspDirectModelGovernanceClient,
     CspExecutionGrantMinter,
     CspInferenceClient,
     CspRegistryClient,
+    DirectModelGovernance,
+    DirectModelGovernanceProvider,
     ExecutionRuntime,
     GrantMintUnavailable,
     RegistryClientError,
@@ -57,6 +60,10 @@ from ..router import (
     extract_untrusted_user_content,
 )
 from ..router.csp_registry_client import ExecutionGrantEnvelope, ExecutionGrantMinter
+from ..router.decision_engine import (
+    RETRYABLE_JUDGE_REASON_CODES,
+    judge_validation_attempt,
+)
 from ..security.router_context import (
     ROUTER_CONTEXT_HEADER,
     RouterContextClaims,
@@ -392,6 +399,59 @@ def _build_agent_list(agents: list[RemoteAgentManifest]) -> str:
     return "\n".join(lines)
 
 
+# Truthful line the direct-answer model MUST use verbatim when no agent is
+# registered.  Kept as a module constant so the wiring tests can assert the
+# exact wording ends up in the second-inference payload.
+_DIRECT_ANSWER_EMPTY_REGISTRY_LINE = (
+    "目前沒有已註冊的 agent，由 Router 直接回答你的問題。"
+)
+
+
+def _build_direct_answer_grounding(snapshot: RegistrySnapshot | None) -> dict[str, str]:
+    """zh-TW grounding system message for the DIRECT_ANSWER second inference.
+
+    The formal R3 path runs routing and direct answering as two SEPARATE LLM
+    calls.  Routing sees ``_formal_route_prompt`` (real candidates + the
+    anti-fabrication rule); the direct-answer call historically saw only the
+    raw user messages, so when the user asked "list every agent" the model
+    invented plausible-sounding agents that exist nowhere in the registry.
+
+    Pin the SAME snapshot the routing decision saw plus a hard
+    anti-fabrication rule.  The agent list is already compact
+    (``available_registry_entries`` is the routing candidate projection), so
+    this stays well within the prompt budget.
+    """
+
+    entries = available_registry_entries(snapshot)
+    if entries:
+        lines = ["目前實際註冊、可供你介紹的 agent（唯一事實來源）："]
+        for entry in entries:
+            manifest = entry.manifest
+            name = getattr(manifest, "name", None) or entry.agent_id
+            desc = getattr(manifest, "description_for_router", "") or ""
+            line = f"- {name}（{entry.agent_id}）"
+            if desc:
+                line = f"{line}：{desc}"
+            lines.append(line)
+        agent_block = "\n".join(lines)
+    else:
+        agent_block = "目前沒有任何已註冊的 agent。"
+
+    content = (
+        "你是 ANILA 平台的 Router，正在「直接回答」使用者（本輪未派工給任何 agent）。\n"
+        "請用繁體中文（台灣用語）回答，只輸出最終答案，不要輸出分析、標題或這段指示本身。\n\n"
+        f"{agent_block}\n\n"
+        "鐵則：\n"
+        "1. 只能依據上面的清單描述可用的 agent；絕對不可捏造、杜撰或臆測任何不在清單上的 "
+        "agent 名稱、能力、數量或分類。\n"
+        "2. 若使用者詢問有哪些 agent，只能照實列出上面清單中的項目；當清單為空時，唯一正確"
+        f"的回答是：「{_DIRECT_ANSWER_EMPTY_REGISTRY_LINE}」\n"
+        "3. 你可以說明 ANILA 平台能做什麼，以及 Router 會依問題自動決定「直接回答」或"
+        "「派工給合適的 agent」，但不得把能力歸給不存在的 agent。"
+    )
+    return {"role": "system", "content": content}
+
+
 _FORMAL_ROUTE_SYSTEM = """\
 You are ANILA Router's formal route-decision model.  Return exactly one JSON
 object and no markdown, prose, prefixes, suffixes, or code fences.  The JSON
@@ -516,6 +576,29 @@ def _formal_route_prompt(
         + json.dumps(authority, ensure_ascii=False, sort_keys=True)
     )
     return [{"role": "system", "content": system}, *_formal_untrusted_messages(messages)]
+
+
+def _judge_retry_corrective_message(reason: str) -> dict[str, str]:
+    """One-shot corrective user turn after a retryable judge validation failure."""
+
+    return {
+        "role": "user",
+        "content": (
+            f"your previous output failed validation: {reason}; "
+            "output ONLY a JSON object conforming to the RouteDecision schema, no markdown"
+        ),
+    }
+
+
+def _retryable_judge_reason(runtime_result: Any) -> str | None:
+    """Return the first retryable judge reason code, if any."""
+
+    if runtime_result is None or runtime_result.decision is not None:
+        return None
+    for code in runtime_result.decision_result.reason_codes:
+        if code in RETRYABLE_JUDGE_REASON_CODES:
+            return code
+    return None
 
 
 def _formal_request_content(messages: list[dict[str, Any]]) -> str:
@@ -1133,6 +1216,8 @@ def create_router_app(
     inference_client: Any = None,
     grant_minter: ExecutionGrantMinter | None = None,
     router_context_verifier: Any = None,
+    direct_model_governance: DirectModelGovernance | None = None,
+    direct_model_governance_client: Any = None,
 ) -> FastAPI:
     """Build and return the ANILA Core Router FastAPI application.
 
@@ -1201,7 +1286,47 @@ def create_router_app(
                 "https://anila.internal/csp",
             ),
         )
-    formal_runtime = ExecutionRuntime()
+    # R7.1:直答(DIRECT_ANSWER)主模型的分類上限改由 CSP model registry 治理
+    # 自動推導(admin 在 model registry 調整即生效),不再讀取手動 env knob。
+    # 優先使用注入的治理值(測試/自訂)→ 靜態 runtime;否則以 Router 既有的
+    # inference service-client token 呼叫 CSP 內部 direct-model governance 端點
+    # (其 scope 正對應主模型推論),並以 TTL provider 快取。取得失敗/過期/格式
+    # 無效一律 fail-closed → PolicyGate 對直答回 DIRECT_MODEL_GOVERNANCE_UNAVAILABLE
+    # 拒絕。真正出向呼叫仍由 CSP model gateway 再受 enforce_model_ceiling 強制。
+    formal_direct_model_governance = direct_model_governance
+    direct_model_governance_provider: DirectModelGovernanceProvider | None = None
+    if formal_direct_model_governance is None:
+        # settings.model 缺失(空字串/純空白)時不建 provider:記 warning 並保持
+        # 治理為 None → PolicyGate 回可解釋的 fail-closed 拒絕,而非啟動即崩潰。
+        if isinstance(settings.model, str) and settings.model.strip():
+            governance_client = direct_model_governance_client or (
+                CspDirectModelGovernanceClient(
+                    settings.csp_base_url,
+                    service_token=inference_service_token,
+                )
+            )
+            direct_model_governance_provider = DirectModelGovernanceProvider(
+                # Late-bind: _refresh_primary() patches settings.model when the
+                # CSP primary switches. Never freeze the construction-time name.
+                model=lambda: str(getattr(settings, "model", "") or ""),
+                fetch=governance_client.fetch,
+            )
+        else:
+            logger.warning(
+                "settings.model 缺失,無法推導直答模型治理,直答將 fail-closed 拒絕: %r",
+                settings.model,
+            )
+    formal_runtime = ExecutionRuntime(
+        direct_model_governance=formal_direct_model_governance
+    )
+
+    async def _resolve_runtime() -> ExecutionRuntime:
+        # 注入自訂治理(測試/自訂)時用靜態 runtime;否則以 TTL provider 解出
+        # 當前治理,再組一個等價 runtime(其餘元件皆為無狀態預設,建構成本低)。
+        if direct_model_governance_provider is None:
+            return formal_runtime
+        governance = await direct_model_governance_provider.get()
+        return ExecutionRuntime(direct_model_governance=governance)
     resolved_db_path = session_db_path or settings.session_db_path
 
     def _make_session(sid: str) -> Session:
@@ -2086,6 +2211,10 @@ def create_router_app(
                 context=route_context,
                 messages=route_messages,
             )
+            correlation_id = getattr(route_context, "trace_id", None) or getattr(
+                route_context, "invocation_id", None
+            )
+
             result = await _call_llm_non_stream(
                 caller_api_key,
                 routing_messages,
@@ -2095,12 +2224,65 @@ def create_router_app(
             )
             if result.get("error"):
                 return result, None
-            runtime_result = formal_runtime.execute(
-                route_context,
-                result.get("content", ""),
-                route_snapshot,
-                request_content=request_content,
-                now=datetime.now(timezone.utc),
+            runtime = await _resolve_runtime()
+            with judge_validation_attempt(1, correlation_id=correlation_id):
+                runtime_result = runtime.execute(
+                    route_context,
+                    result.get("content", ""),
+                    route_snapshot,
+                    request_content=request_content,
+                    now=datetime.now(timezone.utc),
+                )
+            base_trace.append(
+                _make_trace_step(
+                    "route",
+                    "驗證結構化 RouteDecision",
+                    runtime_result.decision_result.action,
+                    status="ok" if runtime_result.decision is not None else "error",
+                )
+            )
+
+            # Exactly one guarded retry for parse/schema failures — no loop.
+            retry_reason = _retryable_judge_reason(runtime_result)
+            if retry_reason is None:
+                return result, runtime_result
+
+            base_trace.append(
+                _make_trace_step(
+                    "route",
+                    "重試結構化 RouteDecision",
+                    f"previous_reason={retry_reason}",
+                    status="ok",
+                )
+            )
+            retry_messages = [
+                *routing_messages,
+                _judge_retry_corrective_message(retry_reason),
+            ]
+            result = await _call_llm_non_stream(
+                caller_api_key,
+                retry_messages,
+                forwarded_headers=forwarded_headers,
+                formal_context=route_context,
+                inference_client=formal_inference_client,
+            )
+            if result.get("error"):
+                return result, None
+            with judge_validation_attempt(2, correlation_id=correlation_id):
+                runtime_result = runtime.execute(
+                    route_context,
+                    result.get("content", ""),
+                    route_snapshot,
+                    request_content=request_content,
+                    now=datetime.now(timezone.utc),
+                )
+            base_trace.append(
+                _make_trace_step(
+                    "route",
+                    "驗證結構化 RouteDecision",
+                    runtime_result.decision_result.action,
+                    status="ok" if runtime_result.decision is not None else "error",
+                )
             )
             return result, runtime_result
 
@@ -2150,14 +2332,6 @@ def create_router_app(
 
         decision = runtime_result.decision
         reason_codes = list(runtime_result.reason_codes)
-        base_trace.append(
-            _make_trace_step(
-                "route",
-                "驗證結構化 RouteDecision",
-                runtime_result.decision_result.action,
-                status="ok" if decision is not None else "error",
-            )
-        )
 
         async def _safe_result(
             content: str,
@@ -2185,10 +2359,12 @@ def create_router_app(
 
         if decision.route_type is not RouteType.SINGLE_AGENT:
             if decision.route_type is RouteType.DIRECT_ANSWER:
-                # Direct model execution is a governed sink too.  The current
-                # R3 PolicyGate intentionally denies it until the R7 model-
-                # governance authority is wired; never let a routing model
-                # response bypass that decision by calling the LLM here.
+                # Direct model execution is a governed sink too.  R7 lets the
+                # PolicyGate allow it only when the direct-model governance /
+                # classification-ceiling evaluation passes; otherwise it stays
+                # fail-closed.  Never let a routing model response bypass that
+                # decision by calling the LLM here.  The outbound call still
+                # re-enforces enforce_model_ceiling at the CSP model gateway.
                 if not runtime_result.allowed or runtime_result.policy_result is None:
                     return await _safe_result(
                         "目前無法安全執行直接模型回答，已安全停止下游推論。",
@@ -2196,7 +2372,7 @@ def create_router_app(
                     )
                 direct_response = await _call_llm_non_stream(
                     caller_api_key,
-                    messages,
+                    [_build_direct_answer_grounding(snapshot), *messages],
                     forwarded_headers=forwarded_headers,
                     formal_context=context,
                     inference_client=formal_inference_client,
@@ -2428,7 +2604,7 @@ def create_router_app(
                         )
                     direct_response = await _call_llm_non_stream(
                         caller_api_key,
-                        convo,
+                        [_build_direct_answer_grounding(snapshot), *convo],
                         forwarded_headers=forwarded_headers,
                         formal_context=next_context,
                         inference_client=formal_inference_client,

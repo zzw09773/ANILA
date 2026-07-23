@@ -136,6 +136,7 @@ def employee_count(department: str) -&gt; int:
             <th>端點</th>
             <th style="width: 140px">型別 / 版本</th>
             <th style="width: 90px">分類上限</th>
+            <th style="width: 90px">預設分級</th>
             <th style="width: 100px">健康</th>
             <th style="width: 120px">審批狀態</th>
             <th style="width: 90px">加密</th>
@@ -157,7 +158,10 @@ def employee_count(department: str) -&gt; int:
               <div class="cell-meta">{{ agent.version || '—' }}</div>
             </td>
             <td>
-              <span class="cell-meta">{{ agent.classification_ceiling || '—' }}</span>
+              <span class="cell-meta">{{ classificationCeilingLabel(agent.classification_ceiling) }}</span>
+            </td>
+            <td>
+              <span class="cell-meta">{{ agent.default_classification_level || '—' }}</span>
             </td>
             <td><TermBadge :variant="healthVariant(agent.health_status)" dot>{{ agent.health_status }}</TermBadge></td>
             <td><TermBadge :variant="approvalVariant(agent.approval_status)" dot>{{ approvalLabel(agent.approval_status) }}</TermBadge></td>
@@ -248,9 +252,8 @@ def employee_count(department: str) -&gt; int:
               <option v-for="o in RUNTIME_TYPE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
           </TermField>
-          <TermField label="分類上限" hint="此 agent 可處理的最高分類等級；留白＝無上限">
+          <TermField label="分類上限" hint="此 agent 可處理的最高分類等級；註冊時必填（預設無機密）">
             <select v-model="form.classification_ceiling" class="term-select">
-              <option :value="null">— 無上限 —</option>
               <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
             </select>
           </TermField>
@@ -367,13 +370,36 @@ def employee_count(department: str) -&gt; int:
             </select>
           </TermField>
         </div>
+        <div class="form-row-2">
+          <TermField label="分類上限" hint="此 agent 可處理的最高分類等級；未設定＝不可派工（非無上限）">
+            <select v-model="editForm.classification_ceiling" class="term-select">
+              <option :value="null">— 未設定（不可派工） —</option>
+              <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
+            </select>
+          </TermField>
+          <TermField
+            label="預設分級"
+            hint="新建工作／對話時的起始分類等級；必須 ≤ 分類上限，與上限不同"
+            :error="editClassificationInvariantError"
+          >
+            <select v-model="editForm.default_classification_level" class="term-select">
+              <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
+            </select>
+          </TermField>
+        </div>
         <TermField label="capabilities · json" hint='e.g. {"streaming":true,"vision":false}' :error="editFormError">
           <textarea v-model="editForm.capabilitiesRaw" rows="3" class="term-textarea" style="font-family: var(--font-mono); font-size: var(--t-xs);" />
         </TermField>
       </div>
       <template #footer>
         <TermButton variant="ghost" @click="closeEditModal" label="取消" />
-        <TermButton variant="primary" :disabled="editing" :loading="editing" :label="editing ? '儲存中' : '儲存'" @click="handleUpdateAgent" />
+        <TermButton
+          variant="primary"
+          :disabled="editing || Boolean(editClassificationInvariantError)"
+          :loading="editing"
+          :label="editing ? '儲存中' : '儲存'"
+          @click="handleUpdateAgent"
+        />
       </template>
     </TermModal>
 
@@ -386,7 +412,11 @@ def employee_count(department: str) -&gt; int:
           <div><dt>API 版本</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
           <div><dt>runtime 型別</dt><dd><code>{{ detailAgent.runtime_type || '—' }}</code></dd></div>
           <div><dt>版本</dt><dd>{{ detailAgent.version || '—' }}</dd></div>
-          <div><dt>分類上限</dt><dd>{{ detailAgent.classification_ceiling || '—' }}</dd></div>
+          <div><dt>分類上限</dt><dd>{{ classificationCeilingLabel(detailAgent.classification_ceiling) }}</dd></div>
+          <div>
+            <dt title="新建工作／對話時的起始分類等級；必須 ≤ 分類上限">預設分級</dt>
+            <dd>{{ detailAgent.default_classification_level || '—' }}</dd>
+          </div>
           <div><dt>健康</dt><dd>{{ detailAgent.health_status }}</dd></div>
           <div>
             <dt>審批狀態</dt>
@@ -713,7 +743,10 @@ const showEditModal = ref(false)
 const editTarget = ref(null)
 const editing = ref(false)
 const editFormError = ref('')
-const editForm = ref({ endpoint_url: '', description_for_router: '', api_version: '', base_model_id: null, capabilitiesRaw: '' })
+const editForm = ref({
+  endpoint_url: '', description_for_router: '', api_version: '', base_model_id: null,
+  capabilitiesRaw: '', classification_ceiling: null, default_classification_level: '無機密',
+})
 const feedback = ref({ type: 'success', message: '' })
 
 // ── Sprint 8 X / Phase A — agent service-token management ────────────────────
@@ -731,7 +764,7 @@ const form = ref({
   name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
   base_model_id: null, collection_id: null,
   // Slice 5b — 新增治理欄位
-  runtime_type: 'openai_compatible_agent', classification_ceiling: null, version: '', draft: false,
+  runtime_type: 'openai_compatible_agent', classification_ceiling: '無機密', version: '', draft: false,
 })
 const formErrors = ref({})
 
@@ -747,8 +780,27 @@ const RUNTIME_TYPE_OPTIONS = [
   { value: 'custom_http', label: 'custom_http', hint: '自訂 HTTP 介面（需自行對齊契約）' },
 ]
 
-// 分類上限五級（doc 08）；null = 無上限。由低到高排序。
+// 分類上限五級（doc 08）；null = 未設定（不可派工），非無上限。由低到高排序。
 const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '機密', '極機密', '絕對機密']
+
+function classificationCeilingLabel(level) {
+  return level || '未設定（不可派工）'
+}
+
+function classificationRank(level) {
+  if (!level) return -1
+  return CLASSIFICATION_LEVELS.indexOf(level)
+}
+
+const editClassificationInvariantError = computed(() => {
+  const ceiling = editForm.value.classification_ceiling
+  const defaultLevel = editForm.value.default_classification_level
+  if (!ceiling || !defaultLevel) return ''
+  if (classificationRank(defaultLevel) > classificationRank(ceiling)) {
+    return '預設分級不可高於分類上限'
+  }
+  return ''
+})
 
 const runtimeTypeHint = computed(() =>
   RUNTIME_TYPE_OPTIONS.find(o => o.value === form.value.runtime_type)?.hint || '')
@@ -844,7 +896,7 @@ function resetForm() {
   form.value = {
     name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
     base_model_id: null, collection_id: null,
-    runtime_type: 'openai_compatible_agent', classification_ceiling: null, version: '', draft: false,
+    runtime_type: 'openai_compatible_agent', classification_ceiling: '無機密', version: '', draft: false,
   }
   formErrors.value = {}
   registerStep.value = 1
@@ -1085,9 +1137,9 @@ async function handleRegister() {
       endpoint_url: form.value.endpoint_url.trim(),
       description_for_router: form.value.description_for_router.trim(),
       collection_id: form.value.collection_id || null,
-      // Slice 5b — 治理欄位；空值送 null（無上限 / 未填版本），draft 對應 5a 影子註冊參數。
+      // Slice 5b — 治理欄位；註冊送明確 ceiling（不可 null）；draft 對應 5a 影子註冊。
       runtime_type: form.value.runtime_type || 'openai_compatible_agent',
-      classification_ceiling: form.value.classification_ceiling || null,
+      classification_ceiling: form.value.classification_ceiling || '無機密',
       version: form.value.version.trim() || null,
       draft: form.value.draft,
     })
@@ -1168,6 +1220,8 @@ function openEditModal(agent) {
     base_model_id: agent.base_model_id ?? null,
     capabilitiesRaw: agent.capabilities && Object.keys(agent.capabilities).length
       ? JSON.stringify(agent.capabilities, null, 2) : '',
+    classification_ceiling: agent.classification_ceiling || null,
+    default_classification_level: agent.default_classification_level || '無機密',
   }
   editFormError.value = ''
   showEditModal.value = true
@@ -1176,6 +1230,10 @@ function closeEditModal() { showEditModal.value = false; editTarget.value = null
 
 async function handleUpdateAgent() {
   if (!editTarget.value || editing.value) return
+  if (editClassificationInvariantError.value) {
+    editFormError.value = editClassificationInvariantError.value
+    return
+  }
   if (!editForm.value.base_model_id) { editFormError.value = 'base model required'; return }
   let capabilities = null
   const raw = (editForm.value.capabilitiesRaw || '').trim()
@@ -1191,6 +1249,8 @@ async function handleUpdateAgent() {
     api_version: (editForm.value.api_version || '').trim() || null,
     base_model_id: editForm.value.base_model_id,
     capabilities,
+    classification_ceiling: editForm.value.classification_ceiling || null,
+    default_classification_level: editForm.value.default_classification_level || '無機密',
   }
   editing.value = true
   try {

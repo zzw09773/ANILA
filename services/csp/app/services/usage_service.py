@@ -1,7 +1,7 @@
 import csv
 import io
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import func, literal_column, text
+from sqlalchemy import func, literal_column, or_, text
 from sqlalchemy.orm import Session
 from app.models.department import Department
 from app.models.token_usage import TokenUsage
@@ -41,6 +41,23 @@ def _get_model_ids_by_type(db: Session, model_type: str) -> list[int]:
     ]
 
 
+def _sentinel_model_ids(db: Session) -> list[int]:
+    """anila-router 哨兵的 model_registry id 集合。
+
+    哨兵的編排 hop 不屬於使用者用量(寫入端已用
+    ``suppress_usage_accounting`` 抑制;判定同 proxy 的
+    ``_is_internal_router_model``)。統計層再擋一層,讓部署空窗期或
+    歷史殘留的哨兵列也不會滲進圖表與報表。
+    """
+
+    return [
+        row.id
+        for row in db.query(ModelRegistry.id)
+        .filter(func.lower(func.trim(ModelRegistry.name)) == "anila-router")
+        .all()
+    ]
+
+
 def _apply_usage_filters(
     query,
     db: Session,
@@ -59,6 +76,16 @@ def _apply_usage_filters(
     if model_type:
         model_ids = _get_model_ids_by_type(db, model_type)
         query = query.filter(TokenUsage.model_id.in_(model_ids))
+    sentinel_ids = _sentinel_model_ids(db)
+    if sentinel_ids:
+        # NOT IN 撞到 NULL model_id 會把整列判成 NULL 而蒸發,agent 類
+        # 用量列(model_id 為空)必須明確放行。
+        query = query.filter(
+            or_(
+                TokenUsage.model_id.is_(None),
+                TokenUsage.model_id.notin_(sentinel_ids),
+            )
+        )
     return query
 
 

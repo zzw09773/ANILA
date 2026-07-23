@@ -409,14 +409,15 @@ jobs:
               ("tests.test_job_state_pg", "test_reaper_honours_grace_before_recovering_stale_owner"),
               ("tests.test_job_state_pg", "test_retryable_failure_schedules_durable_attempt_and_permanent_stops"),
               ("tests.test_job_state_pg", "test_retry_exhaustion_is_one_dead_letter_and_has_no_stuck_lease"),
+              ("tests.test_job_state_pg", "test_fail_or_retry_terminal_status_cast_avoids_ambiguous_parameter"),
               ("tests.test_job_state_pg", "test_terminal_write_db_outage_is_fail_loud_then_reaper_recovers"),
           }
           case_ids = [(case.get("classname"), case.get("name")) for case in cases]
           skipped = [case for case in cases if case.find("skipped") is not None]
           failures = [case for case in cases if case.find("failure") is not None]
           errors = [case for case in cases if case.find("error") is not None]
-          if len(cases) != 6:
-              print("Gate 3 PostgreSQL lease suite expected exactly 6 tests", file=sys.stderr)
+          if len(cases) != 7:
+              print("Gate 3 PostgreSQL lease suite expected exactly 7 tests", file=sys.stderr)
               raise SystemExit(1)
           if len(case_ids) != len(set(case_ids)):
               print("Gate 3 PostgreSQL lease suite contains duplicate testcase identities", file=sys.stderr)

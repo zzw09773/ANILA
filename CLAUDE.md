@@ -13,7 +13,7 @@
 
 ## 0. 一句話定位
 
-ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,**PKI 自然人憑證卡登入**。多服務 monorepo,`main` 是 SSOT,7 分支 = main + 登入/部署設定 delta(2026-07-10 實測:5 條 downstream 與 `main` **只差 `.env.example`**,程式碼位元組相同;唯一例外是刪減型的 `trial-military`)。**詳細服務地圖與分支模型見 `AGENTS.md` §2–3。** Repo 是 **PUBLIC** → 祕密零外洩。
+ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,**PKI 自然人憑證卡登入**。多服務 monorepo,`main` 是 SSOT,7 分支 = main + 登入/部署設定 delta(2026-07-22 重收斂:5 條 downstream 與 `main` **只差 `.env.example`**;`trial-military` 另含開發者視圖刪減 8 檔)。⚠ 07-22 曾查獲雙向漂移,「領先 11 commit」經 `git patch-id` 證實是 main 上同卵雙胞的假警報——**量測分支差異看 `git diff` 與 patch-id,別信 ahead/behind**。**詳細服務地圖與分支模型見 `AGENTS.md` §2–3。** Repo 是 **PUBLIC** → 祕密零外洩。
 
 > **後續開發路線圖:`docs/planning/anila-development-roadmap.md`**(Gate 制、不可倒置的排序規則、已推翻的假警報清單)。動手前先看你在哪個 Gate。
 
@@ -93,5 +93,5 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 - **別腦補成 bug**:功能按 spec ≠ bug;先客觀呈現,讓 user 判斷。
 - 前端驗證用 `npm run build`(非只 `tsc`);後端 `services/csp/.venv/bin/python -m pytest`。
 - SSRF guard、卡登驗章、JWT 信任錨不可弱化;改 schema 必加 alembic migration;runtime DB 用 `csp_app` role(非 superuser,否則繞過 RLS)。
-- commit/push 只在 user 要求時;跨分支同步遵 `AGENTS.md` §3(main 起、downstream 不互 merge、**各分支的 `.env.example` 旗標姿態不可被 main 覆蓋**)。
-  - ⚠ **舊敘述「card fork 區不可被 main 覆蓋」已作廢**:2026-07-10 實測,`prod-intranet-card` 與 `main` 程式碼位元組相同,card/SSO 碼已收進 `main`,不存在 fork 熱區。詳見 `AGENTS.md` §3.1。
+- commit/push 只在 user 要求時;跨分支同步遵 `AGENTS.md` §3(main 起、downstream 不互 merge、**各分支的 `.env.example` 旗標姿態不可被 main 覆蓋**)。姿態更新必**語意重推導**——以 main 現行範本為基底、只覆寫分支蓄意值,禁直接 apply 舊 diff(07-22 廢棄 sync 分支曾因此丟失 card 的 `ENABLE_PUBLIC_SHARE=false`/`ENABLE_MEMORY=false`)。
+  - ⚠ **舊敘述「card fork 區不可被 main 覆蓋」已作廢**:實測 `prod-intranet-card` 與 `main` 程式碼相同(07-10 首測、07-22 重收斂再確認),card/SSO 碼已收進 `main`,不存在 fork 熱區。詳見 `AGENTS.md` §3.1。
