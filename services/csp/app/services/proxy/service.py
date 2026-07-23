@@ -1643,11 +1643,16 @@ async def _proxy_stream_impl(
         )
     total_tokens = prompt_tokens + completion_tokens
     if not meta_seen:
+        # 與非串流路徑同規則(default_meta_identity):使用者可見 meta 不得
+        # 洩漏底層模型身分(ANILA 編排時)與內部端點 URL(一律)。
+        meta_source, meta_detail = default_meta_identity(
+            caller_client_id, model_name or "模型"
+        )
         yield "event: anila.meta\n"
         yield "data: " + json.dumps(
             build_default_anila_meta(
-                model_name or target_url,
-                detail=f"Proxy stream -> {target_url}",
+                meta_source,
+                detail=meta_detail,
                 latency_ms=duration_ms,
                 classified=requires_encryption,
                 usage={

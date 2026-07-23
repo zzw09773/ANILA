@@ -709,3 +709,52 @@ def test_nonstream_writes_single_row_when_not_suppressed(monkeypatch):
     assert len(recorded) == 1
     assert recorded[0]["model_id"] == 3
     assert recorded[0]["total_tokens"] == 18
+
+
+def test_stream_fallback_meta_masks_identity_and_never_leaks_url(monkeypatch):
+    """串流 fallback meta 與非串流同規則:ANILA 編排(service caller)遮模型名;
+    內部端點 URL 任何情況都不得進使用者可見 meta。"""
+    lines = [
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}',
+        "",
+        "data: [DONE]",
+        "",
+    ]
+
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(lines, *args, **kwargs),
+    )
+
+    async def fake_enqueue_usage(**kwargs):
+        pass
+
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", fake_enqueue_usage)
+
+    def run(caller_client_id):
+        async def _run():
+            chunks = []
+            async for chunk in proxy_service.proxy_stream(
+                target_url="http://mock-llm:9000/v1/chat/completions",
+                api_key_id=1,
+                user_id=2,
+                department_id=None,
+                usage_model_id=3,
+                request_body={"model": "gemma26", "stream": True},
+                model_name="gemma26",
+                caller_client_id=caller_client_id,
+            ):
+                chunks.append(chunk)
+            return "".join(chunks)
+
+        return asyncio.run(_run())
+
+    orchestrated = run(caller_client_id=42)
+    assert "mock-llm:9000" not in orchestrated
+    assert "gemma26" not in orchestrated.split("event: anila.meta", 1)[1]
+    assert "ANILA" in orchestrated
+
+    manual = run(caller_client_id=None)
+    assert "mock-llm:9000" not in manual
+    assert "呼叫 gemma26" in manual

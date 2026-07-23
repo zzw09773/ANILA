@@ -97,11 +97,33 @@ export BOOTSTRAP_ROUTER_TOKEN="$ROUTER_TOKEN"
 export BOOTSTRAP_GATEWAY_KEY="$GATEWAY_KEY"
 export BOOTSTRAP_GRACE_SECONDS="$GRACE_SECONDS"
 
+# 重跑安全:讀出「目前部署中(.env)」的 token 交給容器內判斷。若前次執行
+# DB 已 commit 但 .env 未落地,服役中的 token 會在 previous 槽 — 再次輪替
+# 不得將它驅逐,否則 running Router 立即斷線。值只進 env、不印出。
+BOOTSTRAP_DEPLOYED_TOKEN=""
+if [ -f "$ENV_FILE" ]; then
+  _first_key="${TOKEN_ENV_KEYS[0]}"
+  BOOTSTRAP_DEPLOYED_TOKEN="$(ENV_FILE="$ENV_FILE" KEY="$_first_key" "$PYTHON_BIN" - <<'PY'
+import os
+from pathlib import Path
+
+key = os.environ["KEY"]
+for line in Path(os.environ["ENV_FILE"]).read_text().splitlines():
+    s = line.strip()
+    if s.startswith(f"{key}="):
+        print(s.split("=", 1)[1], end="")
+        break
+PY
+)"
+fi
+export BOOTSTRAP_DEPLOYED_TOKEN
+
 # 於 csp 容器內操作 SQLAlchemy session。只印「非祕密」狀態行到 stdout。
 if ! docker compose -f "$COMPOSE_FILE" exec -T \
   -e BOOTSTRAP_ROUTER_TOKEN \
   -e BOOTSTRAP_GATEWAY_KEY \
   -e BOOTSTRAP_GRACE_SECONDS \
+  -e BOOTSTRAP_DEPLOYED_TOKEN \
   csp "$PYTHON_BIN" - <<'PY'
 import os
 import sys
@@ -143,15 +165,35 @@ try:
         if not client.is_active:
             print("ERROR: router-primary 已撤銷,拒絕輪替", file=sys.stderr)
             sys.exit(1)
-        # grace rotation:舊 token 於 grace 內仍可驗(避免 restart 空窗)。
-        client.service_token_previous_envelope = client.service_token_envelope
-        client.service_token_previous_lookup_hash = client.service_token_lookup_hash
-        client.service_token_previous_expires_at = now + timedelta(seconds=grace)
-        client.service_token_envelope = encode_service_token_envelope(token)
-        client.service_token_lookup_hash = compute_lookup_hash(token)
-        client.service_token_rotated_at = now
-        client.is_legacy = False
-        action = "rotated"
+        deployed = os.environ.get("BOOTSTRAP_DEPLOYED_TOKEN", "").strip()
+        deployed_hash = compute_lookup_hash(deployed) if deployed else None
+        if (
+            deployed_hash is not None
+            and deployed_hash == client.service_token_previous_lookup_hash
+            and deployed_hash != client.service_token_lookup_hash
+        ):
+            # 重跑情境:前次輪替 DB 已 commit 但 .env 未落地 — 服役中的
+            # token 在 previous 槽。不得驅逐它,否則 running Router 立即
+            # 斷線;保留 previous 槽並續 grace,只替換 current(中間那個
+            # 從未部署的 token 作廢無害)。
+            client.service_token_previous_expires_at = now + timedelta(
+                seconds=grace
+            )
+            client.service_token_envelope = encode_service_token_envelope(token)
+            client.service_token_lookup_hash = compute_lookup_hash(token)
+            client.service_token_rotated_at = now
+            client.is_legacy = False
+            action = "rotated (resume: preserved deployed token in grace slot)"
+        else:
+            # grace rotation:舊 token 於 grace 內仍可驗(避免 restart 空窗)。
+            client.service_token_previous_envelope = client.service_token_envelope
+            client.service_token_previous_lookup_hash = client.service_token_lookup_hash
+            client.service_token_previous_expires_at = now + timedelta(seconds=grace)
+            client.service_token_envelope = encode_service_token_envelope(token)
+            client.service_token_lookup_hash = compute_lookup_hash(token)
+            client.service_token_rotated_at = now
+            client.is_legacy = False
+            action = "rotated"
     db.flush()
 
     model_status = "skipped (no gateway key supplied)"
