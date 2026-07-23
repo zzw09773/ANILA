@@ -116,7 +116,7 @@ def record_inference_audit(
         logger.exception(
             "inference audit write failed: action=%s actor=%s",
             action,
-            actor.username if actor else None,
+            getattr(actor, "username", None) if actor else None,
         )
         if settings.ANILA_AUDIT_STRICT:
             raise HTTPException(

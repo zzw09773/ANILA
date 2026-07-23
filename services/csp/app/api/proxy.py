@@ -1731,6 +1731,24 @@ async def _chat_completions_impl(
         # formal Gate 5 posture it must not proceed to memory/task setup or
         # either the stream/non-stream HTTP branches below; only the signed
         # Router ExecutionGrant endpoint may reach the Agent.
+        if _formal_gate5_governance_enabled():
+            # End-user gate inside _write_chat_inference_audit / record_*;
+            # service hops (csp_caller / internal_router) still skip.
+            _write_chat_inference_audit(
+                db,
+                request=request,
+                user=caller.user,
+                action="inference.agent",
+                resource_id=str(model_name),
+                detail=early_user_text,
+                status="denied",
+                model_name=str(model_name),
+                pre_resolved_agent=pre_resolved_agent,
+                stream=stream,
+                router_orchestration=False,
+                internal_router=internal_router,
+                reason="formal_agent_dispatch_rejected",
+            )
         _reject_legacy_agent_dispatch_in_formal()
     try:
         pre_resolved_model = (
@@ -2884,6 +2902,24 @@ async def resume_agent_session(
 
     Response: SSE stream of the resumed turn, passed through verbatim.
     """
+    if _formal_gate5_governance_enabled():
+        # Formal rejection fires before body parse; capture path params only.
+        # End-user gate inside record_inference_audit — service hops skip.
+        record_inference_audit(
+            db,
+            request=request,
+            actor=caller.user if caller is not None else None,
+            action="inference.agent",
+            resource_id=agent_name,
+            detail=None,
+            status="denied",
+            metadata={
+                "session_id": session_id,
+                "reason": short_audit_reason("formal_agent_dispatch_rejected"),
+                "partial": True,
+            },
+            commit=True,
+        )
     _reject_legacy_agent_dispatch_in_formal(resume=True)
     if settings.ANILA_PILOT_MODE:
         raise HTTPException(

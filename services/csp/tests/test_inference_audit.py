@@ -260,6 +260,172 @@ def test_agent_entrance_via_public_chat_writes_inference_agent(
     assert agent_rows[0].actor_username == "audit_agent_user"
 
 
+def test_formal_agent_chat_writes_one_denied_row(
+    client: TestClient, db: Session, monkeypatch
+):
+    """Gate 5 formal: approved agent via /v1/chat → 409 + exactly one denied row."""
+    monkeypatch.setattr(
+        "app.api.proxy.settings.GATE5_MODEL_GOVERNANCE_ENABLED", True
+    )
+    monkeypatch.setattr(
+        "app.api.proxy.settings.ANILA_DEPLOYMENT_PROFILE", "development"
+    )
+    user = make_user(db, username="audit_formal_agent_user")
+    owner = make_user(db, username="audit_formal_agent_owner", role="developer")
+    agent = make_agent(
+        db, owner, name="audit-formal-agent", approval_status="approved"
+    )
+    db.add(UserAgentPermission(user_id=user.id, agent_id=agent.id))
+    db.commit()
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers=_bearer(user),
+        json={
+            "model": "audit-formal-agent",
+            "messages": [{"role": "user", "content": "formal should deny"}],
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    rows = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "inference.agent")
+        .order_by(AuditLog.id)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    assert rows[0].detail == "formal should deny"
+    assert rows[0].resource_id == "audit-formal-agent"
+    assert rows[0].actor_username == "audit_formal_agent_user"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "formal_agent_dispatch_rejected"
+    assert meta.get("route_type") == "agent"
+
+
+def test_formal_agent_chat_service_hop_writes_nothing(
+    db: Session, monkeypatch
+):
+    """Service-hop formal agent rejection must not write an inference.agent row."""
+    import asyncio
+    from fastapi import HTTPException
+    from app.api import proxy as proxy_api
+    from app.middleware.caller import Caller
+
+    monkeypatch.setattr(proxy_api.settings, "GATE5_MODEL_GOVERNANCE_ENABLED", True)
+    monkeypatch.setattr(proxy_api.settings, "ANILA_DEPLOYMENT_PROFILE", "development")
+
+    user = make_user(db, username="audit_formal_hop_user")
+    owner = make_user(db, username="audit_formal_hop_owner", role="developer")
+    agent = make_agent(
+        db, owner, name="audit-formal-hop-agent", approval_status="approved"
+    )
+    db.add(UserAgentPermission(user_id=user.id, agent_id=agent.id))
+    db.commit()
+
+    body = {
+        "model": "audit-formal-hop-agent",
+        "messages": [{"role": "user", "content": "hop must not audit"}],
+        "stream": False,
+    }
+    body_bytes = json.dumps(body).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/chat/completions",
+        "raw_path": b"/v1/chat/completions",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json")],
+        "client": ("203.0.113.10", 12345),
+        "server": ("testserver", 80),
+    }
+    req = StarletteRequest(scope, receive)
+    # Non-agent service identity: verified-agent helper no-ops; end-user audit gate skips.
+    req.state.csp_caller = SimpleNamespace(kind="service", agent_id=None)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            proxy_api._chat_completions_impl(
+                req,
+                caller=Caller(user=user, api_key_id=None),
+                db=db,
+                internal_router=False,
+            )
+        )
+    assert caught.value.status_code == 409
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.agent").all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_formal_session_resume_writes_denied_partial_row(
+    db: Session, monkeypatch
+):
+    """Formal resume rejects before body parse → denied row with metadata.partial."""
+    from fastapi import HTTPException
+    from app.api import proxy as proxy_api
+    from app.middleware.caller import Caller
+
+    monkeypatch.setattr(proxy_api.settings, "GATE5_MODEL_GOVERNANCE_ENABLED", True)
+    monkeypatch.setattr(proxy_api.settings, "ANILA_DEPLOYMENT_PROFILE", "development")
+    monkeypatch.setattr(proxy_api.settings, "ALLOW_LEGACY_AGENT_DISPATCH", True)
+    monkeypatch.setattr(proxy_api.settings, "ANILA_PILOT_MODE", False)
+
+    user = make_user(db, username="audit_formal_resume_user")
+    owner = make_user(db, username="audit_formal_resume_owner", role="developer")
+    agent = make_agent(
+        db, owner, name="audit-formal-resume-agent", approval_status="approved"
+    )
+    db.add(UserAgentPermission(user_id=user.id, agent_id=agent.id))
+    db.commit()
+
+    async def receive():
+        raise AssertionError("formal resume must not read body before reject")
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": f"/v1/agents/{agent.name}/sessions/sess-formal/answer",
+        "raw_path": b"/answer",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json")],
+        "client": ("203.0.113.10", 12345),
+        "server": ("testserver", 80),
+    }
+    req = StarletteRequest(scope, receive)
+
+    with pytest.raises(HTTPException) as caught:
+        await proxy_api.resume_agent_session(
+            agent.name,
+            "sess-formal",
+            request=req,
+            caller=Caller(user=user, api_key_id=None),
+            db=db,
+        )
+    assert caught.value.status_code == 409
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.agent").all()
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    assert rows[0].detail is None
+    assert rows[0].resource_id == "audit-formal-resume-agent"
+    assert rows[0].actor_username == "audit_formal_resume_user"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "formal_agent_dispatch_rejected"
+    assert meta.get("partial") is True
+    assert meta.get("session_id") == "sess-formal"
+
+
 def test_rag_entrance_writes_one_row(client: TestClient, db: Session, monkeypatch):
     import app.api.ingestion.search as search_mod
 
