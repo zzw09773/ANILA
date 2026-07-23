@@ -67,7 +67,7 @@ const routes = [
         path: 'inference-audit',
         name: 'InferenceAudit',
         component: () => import('../views/InferenceAuditView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiresInferenceAuditViewer: true },
       },
       // doc 08 §15 — 機敏分類盤點(Classification Inventory Before Cutover)。
       {
@@ -180,6 +180,8 @@ router.beforeEach(async (to, from, next) => {
   } else if (to.meta.requiresAdmin && !authStore.isAdmin) {
     // ``isAdmin`` is admin-OR-owner (tier check). Don't compare role
     // strings here — owner is admin's superset and must keep access.
+    next('/')
+  } else if (to.meta.requiresInferenceAuditViewer && !authStore.canViewInferenceAudit) {
     next('/')
   } else if (to.meta.requiresOwner && !authStore.isOwner) {
     next('/')
