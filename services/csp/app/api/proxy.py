@@ -34,6 +34,12 @@ from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
 from app.services import agent_credential_service
+from app.services.inference_audit import (
+    record_at_acceptance,
+    record_at_outcome,
+    record_inference_audit,
+    short_audit_reason,
+)
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.closure import (
     TaskCallClosure,
@@ -583,6 +589,105 @@ def _extract_latest_user_message(body: dict) -> str | None:
             joined = " ".join(p for p in parts if p)
             return joined or None
     return None
+
+
+def _write_chat_inference_audit(
+    db: Session,
+    *,
+    request: Request,
+    user,
+    action: str,
+    resource_id: str | None,
+    detail: str | None,
+    status: str,
+    model_name: str | None,
+    pre_resolved_agent: Agent | None,
+    stream: bool,
+    router_orchestration: bool,
+    internal_router: bool,
+    reason: str | None = None,
+    extra_metadata: dict | None = None,
+    acceptance_recorded: bool = False,
+) -> None:
+    """Write exactly one inference row for this chat/agent request outcome.
+
+    Prefer ``_accept_chat_inference_audit`` before side effects (strict /
+    stream). This helper is the outcome-point writer and no-ops when
+    acceptance was already recorded.
+    """
+    metadata: dict = {
+        "model": model_name,
+        "route_type": (
+            "agent"
+            if pre_resolved_agent is not None
+            else ("anila-router" if router_orchestration else "model")
+        ),
+        "agent_id": (
+            pre_resolved_agent.id if pre_resolved_agent is not None else None
+        ),
+        "stream": bool(stream),
+    }
+    if reason:
+        metadata["reason"] = short_audit_reason(reason)
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    record_at_outcome(
+        db,
+        request=request,
+        actor=user,
+        action=action,
+        resource_id=resource_id,
+        detail=detail,
+        status=status,
+        metadata=metadata,
+        commit=True,
+        internal_router=internal_router,
+        acceptance_recorded=acceptance_recorded,
+    )
+
+
+def _accept_chat_inference_audit(
+    db: Session,
+    *,
+    request: Request,
+    user,
+    action: str,
+    resource_id: str | None,
+    detail: str | None,
+    model_name: str | None,
+    pre_resolved_agent: Agent | None,
+    stream: bool,
+    router_orchestration: bool,
+    internal_router: bool,
+    extra_metadata: dict | None = None,
+) -> bool:
+    """Acceptance-phase write before upstream / SSE when strict or stream."""
+    metadata: dict = {
+        "model": model_name,
+        "route_type": (
+            "agent"
+            if pre_resolved_agent is not None
+            else ("anila-router" if router_orchestration else "model")
+        ),
+        "agent_id": (
+            pre_resolved_agent.id if pre_resolved_agent is not None else None
+        ),
+        "stream": bool(stream),
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    return record_at_acceptance(
+        db,
+        request=request,
+        actor=user,
+        action=action,
+        resource_id=resource_id,
+        detail=detail,
+        metadata=metadata,
+        commit=True,
+        internal_router=internal_router,
+        stream=stream,
+    )
 
 
 async def _inject_memory(
@@ -1298,9 +1403,25 @@ async def _image_generations_impl(
     )
     if model is None:
         raise HTTPException(status_code=404, detail="找不到啟用中的圖像模型")
+    prompt_text = body.get("prompt")
+    detail = prompt_text if isinstance(prompt_text, str) else None
     if not check_model_permission(
         db, user=caller.user, api_key_id=caller.api_key_id, model_id=model.id
     ):
+        record_inference_audit(
+            db,
+            request=request,
+            actor=caller.user,
+            action="inference.image",
+            resource_id=model.name,
+            detail=detail,
+            status="denied",
+            metadata={
+                "model": model.name,
+                "reason": short_audit_reason("model_permission_denied"),
+            },
+            commit=True,
+        )
         raise HTTPException(status_code=403, detail="無權使用此圖像模型")
     task_ctx = getattr(
         getattr(request, "state", None),
@@ -1332,33 +1453,142 @@ async def _image_generations_impl(
             metadata={"pilot_callsite": "csp.image_generation"},
             block=True,
         )
+        record_inference_audit(
+            db,
+            request=request,
+            actor=caller.user,
+            action="inference.image",
+            resource_id=model.name,
+            detail=detail,
+            status="denied",
+            metadata={
+                "model": model.name,
+                "reason": short_audit_reason("pilot_image_forbidden"),
+            },
+            commit=True,
+        )
         raise HTTPException(status_code=403, detail=reason)
-    admitted_level = enforce_model_ceiling(
-        db, model=model, caller=caller, task_ctx=task_ctx, conv_id_int=None
-    )
+    try:
+        admitted_level = enforce_model_ceiling(
+            db, model=model, caller=caller, task_ctx=task_ctx, conv_id_int=None
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            record_inference_audit(
+                db,
+                request=request,
+                actor=caller.user,
+                action="inference.image",
+                resource_id=model.name,
+                detail=detail,
+                status="denied",
+                metadata={
+                    "model": model.name,
+                    "reason": short_audit_reason("classification_ceiling"),
+                },
+                commit=True,
+            )
+        raise
     proxy_agent_context = _verified_proxy_agent_context(request, db)
-    return await proxy_request(
-        model=model,
-        api_key_id=caller.api_key_id,
-        user_id=caller.user.id,
-        department_id=caller.user.department_id,
-        request_body=body,
-        endpoint_path="/v1/images/generations",
-        user_identity=downstream_identity(caller.user),
-        trace_id=task_ctx.trace_id,
-        task_id=task_ctx.task_id,
-        task_trace_id=task_ctx.trace_id,
-        task_run_id=task_ctx.task_run_id,
-        inference_callsite_id="csp.image_generation",
-        governance_callsite_id=_proxy_governance_callsite(proxy_agent_context),
-        governance_agent_id=(proxy_agent_context[1] if proxy_agent_context else None),
-        caller_agent_id=(proxy_agent_context[0] if proxy_agent_context else None),
-        governance_db=db,
-        admitted_classification_level=admitted_level,
-        finalize_task_run_on_completion=(
-            task_ctx.owns_lifecycle if task_ctx else True
-        ),
+    image_meta = {"model": model.name, "task_id": task_ctx.task_id}
+    acceptance_recorded = record_at_acceptance(
+        db,
+        request=request,
+        actor=caller.user,
+        action="inference.image",
+        resource_id=model.name,
+        detail=detail,
+        metadata=image_meta,
+        commit=True,
+        stream=False,
     )
+    try:
+        result = await proxy_request(
+            model=model,
+            api_key_id=caller.api_key_id,
+            user_id=caller.user.id,
+            department_id=caller.user.department_id,
+            request_body=body,
+            endpoint_path="/v1/images/generations",
+            user_identity=downstream_identity(caller.user),
+            trace_id=task_ctx.trace_id,
+            task_id=task_ctx.task_id,
+            task_trace_id=task_ctx.trace_id,
+            task_run_id=task_ctx.task_run_id,
+            inference_callsite_id="csp.image_generation",
+            governance_callsite_id=_proxy_governance_callsite(proxy_agent_context),
+            governance_agent_id=(proxy_agent_context[1] if proxy_agent_context else None),
+            caller_agent_id=(proxy_agent_context[0] if proxy_agent_context else None),
+            governance_db=db,
+            admitted_classification_level=admitted_level,
+            finalize_task_run_on_completion=(
+                task_ctx.owns_lifecycle if task_ctx else True
+            ),
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            record_at_outcome(
+                db,
+                request=request,
+                actor=caller.user,
+                action="inference.image",
+                resource_id=model.name,
+                detail=detail,
+                status="denied",
+                metadata={
+                    "model": model.name,
+                    "reason": short_audit_reason(f"http_{exc.status_code}"),
+                },
+                commit=True,
+                acceptance_recorded=acceptance_recorded,
+            )
+        else:
+            record_at_outcome(
+                db,
+                request=request,
+                actor=caller.user,
+                action="inference.image",
+                resource_id=model.name,
+                detail=detail,
+                status="error",
+                metadata={
+                    "model": model.name,
+                    "reason": short_audit_reason(f"upstream_http_{exc.status_code}"),
+                },
+                commit=True,
+                acceptance_recorded=acceptance_recorded,
+            )
+        raise
+    except Exception:
+        record_at_outcome(
+            db,
+            request=request,
+            actor=caller.user,
+            action="inference.image",
+            resource_id=model.name,
+            detail=detail,
+            status="error",
+            metadata={
+                "model": model.name,
+                "reason": short_audit_reason("upstream_exception"),
+            },
+            commit=True,
+            acceptance_recorded=acceptance_recorded,
+        )
+        raise
+    record_at_outcome(
+        db,
+        request=request,
+        actor=caller.user,
+        action="inference.image",
+        resource_id=model.name,
+        detail=detail,
+        status="success",
+        metadata=image_meta,
+        commit=True,
+        acceptance_recorded=acceptance_recorded,
+    )
+    return result
 
 
 @router.post("/v1/images/generations")
@@ -1469,18 +1699,59 @@ async def _chat_completions_impl(
 
     # G19: in signed pilot mode, inventory admission happens before memory,
     # retrieval, prompt mutation, or any outbound side effect.
-    pre_resolved_agent = _resolve_agent(db, caller, model_name)
+    # Capture prompt text early so denied rows (permission etc.) still carry detail.
+    early_user_text = _extract_latest_user_message(body)
+    stream: bool = bool(body.get("stream", False))
+    try:
+        pre_resolved_agent = _resolve_agent(db, caller, model_name)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            _write_chat_inference_audit(
+                db,
+                request=request,
+                user=caller.user,
+                action="inference.agent",
+                resource_id=str(model_name),
+                detail=early_user_text,
+                status="denied",
+                model_name=str(model_name),
+                pre_resolved_agent=None,
+                stream=stream,
+                router_orchestration=False,
+                internal_router=internal_router,
+                reason="agent_permission_denied",
+            )
+        raise
     if pre_resolved_agent is not None and not internal_router:
         # Public ``model=<agent>`` is the legacy direct Agent sink.  In a
         # formal Gate 5 posture it must not proceed to memory/task setup or
         # either the stream/non-stream HTTP branches below; only the signed
         # Router ExecutionGrant endpoint may reach the Agent.
         _reject_legacy_agent_dispatch_in_formal()
-    pre_resolved_model = (
-        None
-        if pre_resolved_agent is not None
-        else _resolve_model(db, caller, model_name)
-    )
+    try:
+        pre_resolved_model = (
+            None
+            if pre_resolved_agent is not None
+            else _resolve_model(db, caller, model_name)
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            _write_chat_inference_audit(
+                db,
+                request=request,
+                user=caller.user,
+                action="inference.chat",
+                resource_id=str(model_name),
+                detail=early_user_text,
+                status="denied",
+                model_name=str(model_name),
+                pre_resolved_agent=None,
+                stream=stream,
+                router_orchestration=False,
+                internal_router=internal_router,
+                reason="model_permission_denied",
+            )
+        raise
     if internal_router and (
         pre_resolved_agent is not None or _is_internal_router_model(pre_resolved_model)
     ):
@@ -1513,7 +1784,6 @@ async def _chat_completions_impl(
     else:
         pilot_callsite = None
 
-    stream: bool = body.get("stream", False)
     user = caller.user
     department_id = user.department_id
     user_email = user.email
@@ -1706,25 +1976,52 @@ async def _chat_completions_impl(
     # Initial target ceiling preflight prevents a target already known to be
     # too weak from causing retrieval/memory egress. Sources may raise the
     # task later, so the same boundary is re-evaluated before foreground send.
-    if pre_resolved_agent is not None:
-        enforce_agent_ceiling(
-            db,
-            agent=pre_resolved_agent,
-            caller=caller,
-            task_ctx=task_ctx,
-            conv_id_int=conv_id_int,
-            trusted_classification_level=agent_level,
-            record_allow=False,
-        )
-    else:
-        enforce_model_ceiling(
-            db,
-            model=pre_resolved_model,
-            caller=caller,
-            task_ctx=task_ctx,
-            conv_id_int=conv_id_int,
-            record_allow=False,
-        )
+    try:
+        if pre_resolved_agent is not None:
+            enforce_agent_ceiling(
+                db,
+                agent=pre_resolved_agent,
+                caller=caller,
+                task_ctx=task_ctx,
+                conv_id_int=conv_id_int,
+                trusted_classification_level=agent_level,
+                record_allow=False,
+            )
+        else:
+            enforce_model_ceiling(
+                db,
+                model=pre_resolved_model,
+                caller=caller,
+                task_ctx=task_ctx,
+                conv_id_int=conv_id_int,
+                record_allow=False,
+            )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            _write_chat_inference_audit(
+                db,
+                request=request,
+                user=user,
+                action=(
+                    "inference.agent"
+                    if pre_resolved_agent is not None
+                    else "inference.chat"
+                ),
+                resource_id=(
+                    pre_resolved_agent.name
+                    if pre_resolved_agent is not None
+                    else str(model_name)
+                ),
+                detail=early_user_text,
+                status="denied",
+                model_name=str(model_name),
+                pre_resolved_agent=pre_resolved_agent,
+                stream=stream,
+                router_orchestration=router_orchestration,
+                internal_router=internal_router,
+                reason="classification_ceiling",
+            )
+        raise
 
     stage = "retrieval"
     try:
@@ -1777,6 +2074,54 @@ async def _chat_completions_impl(
             ),
             actor_id=str(user.id),
         )
+        if exc.status_code == 403:
+            _write_chat_inference_audit(
+                db,
+                request=request,
+                user=user,
+                action=(
+                    "inference.agent"
+                    if pre_resolved_agent is not None
+                    else "inference.chat"
+                ),
+                resource_id=(
+                    pre_resolved_agent.name
+                    if pre_resolved_agent is not None
+                    else str(model_name)
+                ),
+                detail=early_user_text,
+                status="denied",
+                model_name=str(model_name),
+                pre_resolved_agent=pre_resolved_agent,
+                stream=stream,
+                router_orchestration=router_orchestration,
+                internal_router=internal_router,
+                reason=code,
+            )
+        elif exc.status_code >= 500:
+            _write_chat_inference_audit(
+                db,
+                request=request,
+                user=user,
+                action=(
+                    "inference.agent"
+                    if pre_resolved_agent is not None
+                    else "inference.chat"
+                ),
+                resource_id=(
+                    pre_resolved_agent.name
+                    if pre_resolved_agent is not None
+                    else str(model_name)
+                ),
+                detail=early_user_text,
+                status="error",
+                model_name=str(model_name),
+                pre_resolved_agent=pre_resolved_agent,
+                stream=stream,
+                router_orchestration=router_orchestration,
+                internal_router=internal_router,
+                reason=code,
+            )
         raise
     except Exception as exc:
         _terminalize_stage_failure(
@@ -1785,6 +2130,29 @@ async def _chat_completions_impl(
             code=f"{stage}_failed",
             message=f"{stage} governance stage failed",
             actor_id=str(user.id),
+        )
+        _write_chat_inference_audit(
+            db,
+            request=request,
+            user=user,
+            action=(
+                "inference.agent"
+                if pre_resolved_agent is not None
+                else "inference.chat"
+            ),
+            resource_id=(
+                pre_resolved_agent.name
+                if pre_resolved_agent is not None
+                else str(model_name)
+            ),
+            detail=early_user_text,
+            status="error",
+            model_name=str(model_name),
+            pre_resolved_agent=pre_resolved_agent,
+            stream=stream,
+            router_orchestration=router_orchestration,
+            internal_router=internal_router,
+            reason=f"{stage}_failed",
         )
         raise HTTPException(
             status_code=503,
@@ -1820,6 +2188,29 @@ async def _chat_completions_impl(
                 message="Memory 分類閂鎖失敗，已依 fail-closed 拒絕模型呼叫",
                 actor_id=str(user.id),
             )
+            _write_chat_inference_audit(
+                db,
+                request=request,
+                user=user,
+                action=(
+                    "inference.agent"
+                    if pre_resolved_agent is not None
+                    else "inference.chat"
+                ),
+                resource_id=(
+                    pre_resolved_agent.name
+                    if pre_resolved_agent is not None
+                    else str(model_name)
+                ),
+                detail=early_user_text,
+                status="error",
+                model_name=str(model_name),
+                pre_resolved_agent=pre_resolved_agent,
+                stream=stream,
+                router_orchestration=router_orchestration,
+                internal_router=internal_router,
+                reason="memory_classification_latch",
+            )
             raise HTTPException(
                 status_code=503,
                 detail="Memory 分類閂鎖失敗，已依 fail-closed 拒絕模型呼叫",
@@ -1843,6 +2234,60 @@ async def _chat_completions_impl(
         body
     )
 
+    acceptance_recorded = False
+
+    def _audit_outcome(status: str, *, reason: str | None = None) -> None:
+        """Write-once outcome row (success / denied / error)."""
+        _write_chat_inference_audit(
+            db,
+            request=request,
+            user=user,
+            action=(
+                "inference.agent"
+                if pre_resolved_agent is not None
+                else "inference.chat"
+            ),
+            resource_id=(
+                pre_resolved_agent.name
+                if pre_resolved_agent is not None
+                else str(model_name)
+            ),
+            detail=captured_user_text,
+            status=status,
+            model_name=str(model_name),
+            pre_resolved_agent=pre_resolved_agent,
+            stream=stream,
+            router_orchestration=router_orchestration,
+            internal_router=internal_router,
+            reason=reason,
+            acceptance_recorded=acceptance_recorded,
+        )
+
+    def _record_acceptance() -> None:
+        """Strict / stream: durable acceptance write before side effects."""
+        nonlocal acceptance_recorded
+        acceptance_recorded = _accept_chat_inference_audit(
+            db,
+            request=request,
+            user=user,
+            action=(
+                "inference.agent"
+                if pre_resolved_agent is not None
+                else "inference.chat"
+            ),
+            resource_id=(
+                pre_resolved_agent.name
+                if pre_resolved_agent is not None
+                else str(model_name)
+            ),
+            detail=captured_user_text,
+            model_name=str(model_name),
+            pre_resolved_agent=pre_resolved_agent,
+            stream=stream,
+            router_orchestration=router_orchestration,
+            internal_router=internal_router,
+        )
+
     # Try agent first, fallback to model_registry
     agent = pre_resolved_agent
     if agent:
@@ -1853,14 +2298,19 @@ async def _chat_completions_impl(
         # down). For P1 we just OR them — UI / latch wiring lands in P3.
         if memory_read and memory_read.encryption_inherited:
             agent_requires_encryption = True
-        admitted_level = enforce_agent_ceiling(
-            db,
-            agent=agent,
-            caller=caller,
-            task_ctx=task_ctx,
-            conv_id_int=conv_id_int,
-            trusted_classification_level=agent_level,
-        )
+        try:
+            admitted_level = enforce_agent_ceiling(
+                db,
+                agent=agent,
+                caller=caller,
+                task_ctx=task_ctx,
+                conv_id_int=conv_id_int,
+                trusted_classification_level=agent_level,
+            )
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                _audit_outcome("denied", reason="classification_ceiling")
+            raise
         # A formal Task owns its canonical trace.  The optional inbound trace
         # header remains available only to legacy taskless traffic.
         usage_trace_id = task_ctx.trace_id if task_ctx else trace_id
@@ -1870,6 +2320,8 @@ async def _chat_completions_impl(
         trace_user_identity = (
             user.username if task_ctx is not None and usage_trace_id else user_identity
         )
+        # Acceptance before upstream / SSE (strict write-ahead or stream).
+        _record_acceptance()
         if stream:
             upstream = proxy_stream(
                 target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
@@ -2115,6 +2567,7 @@ async def _chat_completions_impl(
                         else frozenset()
                     ),
                 )
+                _audit_outcome("success")
                 return _attach_retrieval_meta(payload, retrieval_outcome)
         except _HTTPException as e:
             if task_ctx is not None:
@@ -2136,6 +2589,10 @@ async def _chat_completions_impl(
                         finalize_run=task_ctx.owns_lifecycle,
                     ),
                 )
+            if e.status_code == 403:
+                _audit_outcome("denied", reason=f"http_{e.status_code}")
+            else:
+                _audit_outcome("error", reason=f"upstream_http_{e.status_code}")
             raise
         except httpx.HTTPStatusError as e:
             if task_ctx is not None:
@@ -2160,6 +2617,9 @@ async def _chat_completions_impl(
                         finalize_run=task_ctx.owns_lifecycle,
                     ),
                 )
+            _audit_outcome(
+                "error", reason=f"upstream_http_{e.response.status_code}"
+            )
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
         except Exception as e:
             if task_ctx is not None:
@@ -2187,6 +2647,7 @@ async def _chat_completions_impl(
                     )
                 except RuntimeError:
                     pass
+            _audit_outcome("error", reason="upstream_exception")
             raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
 
     model = pre_resolved_model
@@ -2201,13 +2662,18 @@ async def _chat_completions_impl(
     # outbound model call. Covers task-linked AND legacy traffic. A violation
     # raises 403 + records a model.invoke deny row and never dispatches
     # upstream; a pass records an allow row only when task-linked.
-    admitted_level = enforce_model_ceiling(
-        db,
-        model=model,
-        caller=caller,
-        task_ctx=task_ctx,
-        conv_id_int=conv_id_int,
-    )
+    try:
+        admitted_level = enforce_model_ceiling(
+            db,
+            model=model,
+            caller=caller,
+            task_ctx=task_ctx,
+            conv_id_int=conv_id_int,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            _audit_outcome("denied", reason="classification_ceiling")
+        raise
     router_context = (
         _router_formal_context(
             request,
@@ -2223,11 +2689,14 @@ async def _chat_completions_impl(
         # The internal Router target has no legacy raw-authority fallback.
         # API-key-only callers (or requests without CSP-issued auth claims)
         # must stop before the first downstream HTTP attempt.
+        _audit_outcome("denied", reason="router_context_required")
         raise HTTPException(
             status_code=403,
             detail="anila-router 需要 CSP signed router-context/v1 provenance",
         )
     usage_trace_id = task_ctx.trace_id if task_ctx else trace_id
+    # Acceptance before upstream / SSE (strict write-ahead or stream).
+    _record_acceptance()
     if stream:
         target_url = (
             f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"
@@ -2305,50 +2774,61 @@ async def _chat_completions_impl(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    payload = await proxy_request(
-        model=model,
-        api_key_id=caller.api_key_id,
-        caller_client_id=(
-            getattr(request.state, "router_service_client_id", None)
-            if internal_router
-            else None
-        ),
-        user_id=user.id,
-        user_identity=user_identity,
-        router_caller_user_id=(
-            user.id if _is_internal_router_model(model) else None
-        ),
-        router_context=router_context,
-        department_id=department_id,
-        request_body=body,
-        endpoint_path=(
-            "/v2/chat/completions"
-            if model.api_version == "v2"
-            else "/v1/chat/completions"
-        ),
-        conversation_id=conversation_id,
-        trace_id=usage_trace_id,
-        requires_encryption=inherited_encryption,
-        task_id=task_ctx.task_id if task_ctx else None,
-        task_trace_id=task_ctx.trace_id if task_ctx else None,
-        task_run_id=task_ctx.task_run_id if task_ctx else None,
-        legacy_runtime_call=task_ctx is None,
-        inference_callsite_id="csp.chat_model",
-        governance_callsite_id=proxy_governance_callsite,
-        governance_agent_id=proxy_agent_name,
-        caller_agent_id=proxy_agent_id,
-        governance_db=db,
-        admitted_classification_level=admitted_level,
-        registry_user_id=user.id,
-        registry_snapshot_id=registry_snapshot_id,
-        registry_snapshot_revision=registry_snapshot_revision,
-        registry_snapshot_hash=registry_snapshot_hash,
-        registry_manifest_revision=registry_manifest_revision,
-        registry_manifest_sha256=registry_manifest_sha256,
-        finalize_task_run_on_completion=(
-            task_ctx.owns_lifecycle if task_ctx else True
-        ),
-    )
+    try:
+        payload = await proxy_request(
+            model=model,
+            api_key_id=caller.api_key_id,
+            caller_client_id=(
+                getattr(request.state, "router_service_client_id", None)
+                if internal_router
+                else None
+            ),
+            user_id=user.id,
+            user_identity=user_identity,
+            router_caller_user_id=(
+                user.id if _is_internal_router_model(model) else None
+            ),
+            router_context=router_context,
+            department_id=department_id,
+            request_body=body,
+            endpoint_path=(
+                "/v2/chat/completions"
+                if model.api_version == "v2"
+                else "/v1/chat/completions"
+            ),
+            conversation_id=conversation_id,
+            trace_id=usage_trace_id,
+            requires_encryption=inherited_encryption,
+            task_id=task_ctx.task_id if task_ctx else None,
+            task_trace_id=task_ctx.trace_id if task_ctx else None,
+            task_run_id=task_ctx.task_run_id if task_ctx else None,
+            legacy_runtime_call=task_ctx is None,
+            inference_callsite_id="csp.chat_model",
+            governance_callsite_id=proxy_governance_callsite,
+            governance_agent_id=proxy_agent_name,
+            caller_agent_id=proxy_agent_id,
+            governance_db=db,
+            admitted_classification_level=admitted_level,
+            registry_user_id=user.id,
+            registry_snapshot_id=registry_snapshot_id,
+            registry_snapshot_revision=registry_snapshot_revision,
+            registry_snapshot_hash=registry_snapshot_hash,
+            registry_manifest_revision=registry_manifest_revision,
+            registry_manifest_sha256=registry_manifest_sha256,
+            finalize_task_run_on_completion=(
+                task_ctx.owns_lifecycle if task_ctx else True
+            ),
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            _audit_outcome("denied", reason=f"http_{exc.status_code}")
+        else:
+            _audit_outcome("error", reason=f"upstream_http_{exc.status_code}")
+        raise
+    except Exception:
+        _audit_outcome("error", reason="upstream_exception")
+        raise
+    _audit_outcome("success")
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
         user_id=user.id,
@@ -2417,7 +2897,35 @@ async def resume_agent_session(
             detail="Agent session resume 尚未完成 durable admission，正式 profile 已拒絕",
         )
     body = await request.json()
-    agent = _resolve_agent(db, caller, agent_name)
+    answer = body.get("answer") if isinstance(body, dict) else None
+    if isinstance(answer, str):
+        answer_detail = answer
+    elif answer is None:
+        answer_detail = None
+    else:
+        try:
+            answer_detail = json.dumps(answer, ensure_ascii=False)
+        except (TypeError, ValueError):
+            answer_detail = str(answer)
+    try:
+        agent = _resolve_agent(db, caller, agent_name)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            record_inference_audit(
+                db,
+                request=request,
+                actor=caller.user,
+                action="inference.agent",
+                resource_id=agent_name,
+                detail=answer_detail,
+                status="denied",
+                metadata={
+                    "session_id": session_id,
+                    "reason": short_audit_reason("agent_permission_denied"),
+                },
+                commit=True,
+            )
+        raise
     if agent is None:
         raise HTTPException(
             status_code=404, detail=f"Agent '{agent_name}' 未註冊或未審核",
@@ -2437,32 +2945,63 @@ async def resume_agent_session(
     # caller-scoped registry evidence as chat; the lock/readiness predicate
     # runs before the URL guard and the DB snapshot is committed before SSE
     # network I/O begins.
-    lock_agent_registry_admission(
-        governance_db=db,
-        agent_id=agent.id,
-        endpoint_url=agent.endpoint_url,
-        admitted_classification_level=(
-            getattr(agent, "default_classification_level", None) or "無機密"
-        ),
-        registry_user_id=user.id,
-        registry_snapshot_id=request.headers.get("X-ANILA-Registry-Snapshot-Id"),
-        registry_snapshot_revision=request.headers.get(
-            "X-ANILA-Registry-Snapshot-Revision"
-        ),
-        registry_snapshot_hash=request.headers.get("X-ANILA-Registry-Snapshot-Hash"),
-        registry_manifest_revision=request.headers.get(
-            "X-ANILA-Agent-Manifest-Revision"
-        ),
-        registry_manifest_sha256=request.headers.get(
-            "X-ANILA-Agent-Manifest-SHA256"
-        ),
-    )
+    try:
+        lock_agent_registry_admission(
+            governance_db=db,
+            agent_id=agent.id,
+            endpoint_url=agent.endpoint_url,
+            admitted_classification_level=(
+                getattr(agent, "default_classification_level", None) or "無機密"
+            ),
+            registry_user_id=user.id,
+            registry_snapshot_id=request.headers.get("X-ANILA-Registry-Snapshot-Id"),
+            registry_snapshot_revision=request.headers.get(
+                "X-ANILA-Registry-Snapshot-Revision"
+            ),
+            registry_snapshot_hash=request.headers.get("X-ANILA-Registry-Snapshot-Hash"),
+            registry_manifest_revision=request.headers.get(
+                "X-ANILA-Agent-Manifest-Revision"
+            ),
+            registry_manifest_sha256=request.headers.get(
+                "X-ANILA-Agent-Manifest-SHA256"
+            ),
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            record_inference_audit(
+                db,
+                request=request,
+                actor=user,
+                action="inference.agent",
+                resource_id=agent.name,
+                detail=answer_detail,
+                status="denied",
+                metadata={
+                    "session_id": session_id,
+                    "reason": short_audit_reason("agent_registry_admission"),
+                },
+                commit=True,
+            )
+        raise
     _commit_stream_admission(db)
     _guard_outbound(
         target, endpoint_kind=ENDPOINT_KIND_AGENT
     )  # call-time SSRF re-validation (TOCTOU defense)
     headers = build_agent_headers(
         downstream_identity(user), user.email, target_agent_id=agent.id,
+    )
+
+    # Stream surface: acceptance-time success (commit before SSE starts).
+    record_at_acceptance(
+        db,
+        request=request,
+        actor=user,
+        action="inference.agent",
+        resource_id=agent.name,
+        detail=answer_detail,
+        metadata={"session_id": session_id, "stream": True},
+        commit=True,
+        stream=True,
     )
 
     import httpx

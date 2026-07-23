@@ -53,6 +53,7 @@ from app.modules.clearance.service import (
 )
 from app.services.auth_service import get_current_user
 from app.services.ingestion_pool import get_pool
+from app.services.inference_audit import record_inference_audit, short_audit_reason
 from app.services.relation_resolver import scope_collection_rls
 from app.services.retrieval_service import RetrievalFailure, embed_query
 
@@ -69,10 +70,14 @@ class SearchPrincipal:
     agent's OWNER). ``agent`` is set only when the caller authenticated with an
     agent service token; the endpoint then hard-scopes it to
     ``agent.bound_collection_id`` (S-Q1, least privilege).
+
+    ``skip_inference_audit`` suppresses the end-user inference audit row
+    (Studio runtime / other service hops that re-enter this function).
     """
 
     user: User
     agent: "object | None" = None
+    skip_inference_audit: bool = False
 
 
 def resolve_search_principal(
@@ -704,6 +709,7 @@ async def _expand_relations(
 async def search_collection(
     collection_id: int,
     payload: SearchRequest,
+    request: Request,
     db: Session = Depends(get_db),
     principal: SearchPrincipal = Depends(resolve_search_principal),
 ) -> SearchResponse:
@@ -715,23 +721,88 @@ async def search_collection(
     """
     _enforce_agent_collection_scope(principal, collection_id)
     current_user = principal.user
-    coll = _require_collection_clearance(
-        db, principal=principal, collection_id=collection_id
-    )
-
+    # End-user JWT/cookie path only — agent csk- and Studio runtime hops skip.
+    # Write-once at outcome: denied on clearance 403; success after clearance.
+    try:
+        coll = _require_collection_clearance(
+            db, principal=principal, collection_id=collection_id
+        )
+    except HTTPException as exc:
+        if (
+            exc.status_code == 403
+            and principal.agent is None
+            and not principal.skip_inference_audit
+        ):
+            record_inference_audit(
+                db,
+                request=request,
+                actor=current_user,
+                action="inference.rag_query",
+                resource_id=str(collection_id),
+                detail=payload.query,
+                status="denied",
+                metadata={
+                    "collection_id": collection_id,
+                    "top_k": payload.top_k,
+                    "min_score": payload.min_score,
+                    "reason": short_audit_reason("clearance_denied"),
+                },
+                commit=True,
+            )
+        raise
     if coll.status != "active":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
-    authorized_document_access = _authorized_document_access(
-        db,
-        principal=principal,
-        collection_id=coll.id,
-        requested_ids=payload.document_ids,
-        reject_denied=payload.document_ids is not None,
-    )
+    try:
+        authorized_document_access = _authorized_document_access(
+            db,
+            principal=principal,
+            collection_id=coll.id,
+            requested_ids=payload.document_ids,
+            reject_denied=payload.document_ids is not None,
+        )
+    except HTTPException as exc:
+        if (
+            exc.status_code == 403
+            and principal.agent is None
+            and not principal.skip_inference_audit
+        ):
+            record_inference_audit(
+                db,
+                request=request,
+                actor=current_user,
+                action="inference.rag_query",
+                resource_id=str(collection_id),
+                detail=payload.query,
+                status="denied",
+                metadata={
+                    "collection_id": collection_id,
+                    "top_k": payload.top_k,
+                    "min_score": payload.min_score,
+                    "reason": short_audit_reason("document_clearance_denied"),
+                },
+                commit=True,
+            )
+        raise
+    if principal.agent is None and not principal.skip_inference_audit:
+        record_inference_audit(
+            db,
+            request=request,
+            actor=current_user,
+            action="inference.rag_query",
+            resource_id=str(collection_id),
+            detail=payload.query,
+            status="success",
+            metadata={
+                "collection_id": collection_id,
+                "top_k": payload.top_k,
+                "min_score": payload.min_score,
+            },
+            commit=True,
+        )
     if not authorized_document_access:
         return SearchResponse(
             query=payload.query,
@@ -870,6 +941,7 @@ async def search_collection(
 async def search_collection_images(
     collection_id: int,
     payload: ImageSearchRequest,
+    request: Request,
     db: Session = Depends(get_db),
     principal: SearchPrincipal = Depends(resolve_search_principal),
 ) -> ImageSearchResponse:
@@ -890,23 +962,89 @@ async def search_collection_images(
     """
     _enforce_agent_collection_scope(principal, collection_id)
     current_user = principal.user
-    coll = _require_collection_clearance(
-        db, principal=principal, collection_id=collection_id
-    )
-
+    try:
+        coll = _require_collection_clearance(
+            db, principal=principal, collection_id=collection_id
+        )
+    except HTTPException as exc:
+        if (
+            exc.status_code == 403
+            and principal.agent is None
+            and not principal.skip_inference_audit
+        ):
+            record_inference_audit(
+                db,
+                request=request,
+                actor=current_user,
+                action="inference.rag_query",
+                resource_id=str(collection_id),
+                detail=payload.query,
+                status="denied",
+                metadata={
+                    "collection_id": collection_id,
+                    "top_k": payload.top_k,
+                    "min_score": payload.min_score,
+                    "image_search": True,
+                    "reason": short_audit_reason("clearance_denied"),
+                },
+                commit=True,
+            )
+        raise
     if coll.status != "active":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
-    authorized_document_access = _authorized_document_access(
-        db,
-        principal=principal,
-        collection_id=coll.id,
-        requested_ids=payload.document_ids,
-        reject_denied=payload.document_ids is not None,
-    )
+    try:
+        authorized_document_access = _authorized_document_access(
+            db,
+            principal=principal,
+            collection_id=coll.id,
+            requested_ids=payload.document_ids,
+            reject_denied=payload.document_ids is not None,
+        )
+    except HTTPException as exc:
+        if (
+            exc.status_code == 403
+            and principal.agent is None
+            and not principal.skip_inference_audit
+        ):
+            record_inference_audit(
+                db,
+                request=request,
+                actor=current_user,
+                action="inference.rag_query",
+                resource_id=str(collection_id),
+                detail=payload.query,
+                status="denied",
+                metadata={
+                    "collection_id": collection_id,
+                    "top_k": payload.top_k,
+                    "min_score": payload.min_score,
+                    "image_search": True,
+                    "reason": short_audit_reason("document_clearance_denied"),
+                },
+                commit=True,
+            )
+        raise
+    if principal.agent is None and not principal.skip_inference_audit:
+        record_inference_audit(
+            db,
+            request=request,
+            actor=current_user,
+            action="inference.rag_query",
+            resource_id=str(collection_id),
+            detail=payload.query,
+            status="success",
+            metadata={
+                "collection_id": collection_id,
+                "top_k": payload.top_k,
+                "min_score": payload.min_score,
+                "image_search": True,
+            },
+            commit=True,
+        )
     if not authorized_document_access:
         return ImageSearchResponse(
             query=payload.query,

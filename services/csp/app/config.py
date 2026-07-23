@@ -207,6 +207,16 @@ class Settings(BaseSettings):
     # from ANILA_TRUSTED_HOSTS, which is the *outgoing* SSRF allow-list.
     ALLOWED_HOSTS: str = "*"
 
+    # Comma-separated CIDRs of reverse proxies that may set X-Forwarded-For.
+    # Empty (default) = ignore XFF entirely and use request.client.host.
+    # When the immediate peer is inside a listed CIDR, walk XFF right→left
+    # and take the first address not in a trusted CIDR (real client).
+    ANILA_TRUSTED_PROXY_CIDRS: str = ""
+
+    # Inference audit write failure policy. 0/false (default) = fail-open
+    # (log the error, continue the request). 1/true = fail-closed with 503.
+    ANILA_AUDIT_STRICT: bool = False
+
     # Mark session cookies as Secure (HTTPS-only). Defaults to True; set
     # to False in local HTTP dev / test harnesses where cookies must
     # traverse http:// (the TestClient, a bare dev loop without nginx,
