@@ -1306,7 +1306,9 @@ def create_router_app(
                 )
             )
             direct_model_governance_provider = DirectModelGovernanceProvider(
-                model=settings.model,
+                # Late-bind: _refresh_primary() patches settings.model when the
+                # CSP primary switches. Never freeze the construction-time name.
+                model=lambda: str(getattr(settings, "model", "") or ""),
                 fetch=governance_client.fetch,
             )
         else:

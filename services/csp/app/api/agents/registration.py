@@ -146,7 +146,8 @@ class AgentResponse(BaseModel):
     runtime_type: str | None = None
     agent_version: str | None = None
     audit_level: str | None = None
-    # NULL = 無上限 (UI「無上限」); omitted on create defaults to 無機密.
+    # NULL = unset (UI「未設定（不可派工）」); omitted on create defaults to 無機密.
+    # Persistable, but runtime admission always fail-closed on null.
     classification_ceiling: ClassificationLevel | None = None
     default_classification_level: str | None = None
     manifest_json: dict | None = None
@@ -158,6 +159,9 @@ class AgentResponse(BaseModel):
     # Sprint 13 PR A3 — admin-editable runtime knobs (tool permissions,
     # workspace caps, guardrails). NULL means "agent uses code defaults".
     runtime_config: dict | None = None
+    # Ceiling gate only: null ceiling is never dispatchable. Full readiness
+    # (approval/health/trace) is evaluated separately by agent_readiness.
+    dispatchable: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -180,7 +184,7 @@ _AGENT_HEALTH_MAP = {
 
 
 def _optional_classification_ceiling(agent: Agent) -> str | None:
-    """Serialize ceiling; ``None`` is the legal unbounded / 無上限 value."""
+    """Serialize ceiling; ``None`` means unset / not dispatchable."""
     raw = getattr(agent, "classification_ceiling", None)
     if raw is None:
         return None
@@ -196,6 +200,7 @@ def _serialize_agent(agent: Agent) -> dict:
     normalized = _AGENT_HEALTH_MAP.get(raw, raw)
     owner = getattr(agent, "owner", None)
     base = getattr(agent, "base_model", None)
+    ceiling = _optional_classification_ceiling(agent)
     return {
         "id": agent.id,
         "name": agent.name,
@@ -214,7 +219,9 @@ def _serialize_agent(agent: Agent) -> dict:
         "runtime_type": getattr(agent, "runtime_type", None),
         "agent_version": getattr(agent, "agent_version", None),
         "audit_level": getattr(agent, "audit_level", None),
-        "classification_ceiling": _optional_classification_ceiling(agent),
+        "classification_ceiling": ceiling,
+        # Null ceiling is saveable but never dispatchable (fail-closed).
+        "dispatchable": ceiling is not None,
         "default_classification_level": getattr(
             agent, "default_classification_level", None
         ),
@@ -506,9 +513,9 @@ def update_agent(
                     else None,
                 )
 
-    # classification_ceiling: explicit null is the legal 「無上限」value
-    # (clears / keeps unbounded). default_classification_level remains required
-    # when present — null is rejected.
+    # classification_ceiling: explicit null is legal 「未設定」 (persistable,
+    # never dispatchable). default_classification_level remains required when
+    # present — null is rejected.
     if "classification_ceiling" in patch:
         value = patch["classification_ceiling"]
         if value is None:
@@ -531,7 +538,7 @@ def update_agent(
             else ClassificationLevel.from_storage(str(value)).to_storage()
         )
     # 不變式:預設分級 ≤ 分類上限(以 patch 後有效值對比較)。
-    # null ceiling = unbounded → invariant holds for any default.
+    # null ceiling = unset / not dispatchable → skip ceiling comparison.
     if "classification_ceiling" in patch or "default_classification_level" in patch:
         effective_ceiling = patch.get(
             "classification_ceiling",

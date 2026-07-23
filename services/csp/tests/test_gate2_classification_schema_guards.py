@@ -98,7 +98,7 @@ def test_explicit_null_is_rejected(factory) -> None:
 
 
 def test_orm_columns_are_non_null_with_unclassified_server_defaults() -> None:
-    # agents.classification_ceiling is nullable again (= UI 「無上限」);
+    # agents.classification_ceiling is nullable again (= UI 「未設定（不可派工）」);
     # other Gate 2 policy ceilings stay NOT NULL.
     assert Agent.__table__.c.classification_ceiling.nullable is True
     assert Agent.__table__.c.classification_ceiling.server_default is not None
@@ -136,5 +136,5 @@ def test_serializers_fail_closed_on_corrupt_null_ceiling() -> None:
         description_for_router="test",
         classification_ceiling=None,
     )
-    # Agent null ceiling is the legal 「無上限」wire value.
+    # Agent null ceiling is the legal unset / not-dispatchable wire value.
     assert _optional_classification_ceiling(agent) is None

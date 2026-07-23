@@ -158,7 +158,7 @@ def employee_count(department: str) -&gt; int:
               <div class="cell-meta">{{ agent.version || '—' }}</div>
             </td>
             <td>
-              <span class="cell-meta">{{ agent.classification_ceiling || '—' }}</span>
+              <span class="cell-meta">{{ classificationCeilingLabel(agent.classification_ceiling) }}</span>
             </td>
             <td>
               <span class="cell-meta">{{ agent.default_classification_level || '—' }}</span>
@@ -252,9 +252,8 @@ def employee_count(department: str) -&gt; int:
               <option v-for="o in RUNTIME_TYPE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
           </TermField>
-          <TermField label="分類上限" hint="此 agent 可處理的最高分類等級；留白＝無上限">
+          <TermField label="分類上限" hint="此 agent 可處理的最高分類等級；註冊時必填（預設無機密）">
             <select v-model="form.classification_ceiling" class="term-select">
-              <option :value="null">— 無上限 —</option>
               <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
             </select>
           </TermField>
@@ -372,9 +371,9 @@ def employee_count(department: str) -&gt; int:
           </TermField>
         </div>
         <div class="form-row-2">
-          <TermField label="分類上限" hint="此 agent 可處理的最高分類等級；留白＝無上限">
+          <TermField label="分類上限" hint="此 agent 可處理的最高分類等級；未設定＝不可派工（非無上限）">
             <select v-model="editForm.classification_ceiling" class="term-select">
-              <option :value="null">— 無上限 —</option>
+              <option :value="null">— 未設定（不可派工） —</option>
               <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
             </select>
           </TermField>
@@ -413,7 +412,7 @@ def employee_count(department: str) -&gt; int:
           <div><dt>API 版本</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
           <div><dt>runtime 型別</dt><dd><code>{{ detailAgent.runtime_type || '—' }}</code></dd></div>
           <div><dt>版本</dt><dd>{{ detailAgent.version || '—' }}</dd></div>
-          <div><dt>分類上限</dt><dd>{{ detailAgent.classification_ceiling || '—' }}</dd></div>
+          <div><dt>分類上限</dt><dd>{{ classificationCeilingLabel(detailAgent.classification_ceiling) }}</dd></div>
           <div>
             <dt title="新建工作／對話時的起始分類等級；必須 ≤ 分類上限">預設分級</dt>
             <dd>{{ detailAgent.default_classification_level || '—' }}</dd>
@@ -765,7 +764,7 @@ const form = ref({
   name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
   base_model_id: null, collection_id: null,
   // Slice 5b — 新增治理欄位
-  runtime_type: 'openai_compatible_agent', classification_ceiling: null, version: '', draft: false,
+  runtime_type: 'openai_compatible_agent', classification_ceiling: '無機密', version: '', draft: false,
 })
 const formErrors = ref({})
 
@@ -781,8 +780,12 @@ const RUNTIME_TYPE_OPTIONS = [
   { value: 'custom_http', label: 'custom_http', hint: '自訂 HTTP 介面（需自行對齊契約）' },
 ]
 
-// 分類上限五級（doc 08）；null = 無上限。由低到高排序。
+// 分類上限五級（doc 08）；null = 未設定（不可派工），非無上限。由低到高排序。
 const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '機密', '極機密', '絕對機密']
+
+function classificationCeilingLabel(level) {
+  return level || '未設定（不可派工）'
+}
 
 function classificationRank(level) {
   if (!level) return -1
@@ -893,7 +896,7 @@ function resetForm() {
   form.value = {
     name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
     base_model_id: null, collection_id: null,
-    runtime_type: 'openai_compatible_agent', classification_ceiling: null, version: '', draft: false,
+    runtime_type: 'openai_compatible_agent', classification_ceiling: '無機密', version: '', draft: false,
   }
   formErrors.value = {}
   registerStep.value = 1
@@ -1134,9 +1137,9 @@ async function handleRegister() {
       endpoint_url: form.value.endpoint_url.trim(),
       description_for_router: form.value.description_for_router.trim(),
       collection_id: form.value.collection_id || null,
-      // Slice 5b — 治理欄位；空值送 null（無上限 / 未填版本），draft 對應 5a 影子註冊參數。
+      // Slice 5b — 治理欄位；註冊送明確 ceiling（不可 null）；draft 對應 5a 影子註冊。
       runtime_type: form.value.runtime_type || 'openai_compatible_agent',
-      classification_ceiling: form.value.classification_ceiling || null,
+      classification_ceiling: form.value.classification_ceiling || '無機密',
       version: form.value.version.trim() || null,
       draft: form.value.draft,
     })

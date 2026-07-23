@@ -98,8 +98,8 @@ class Agent(Base):
         String(20), nullable=False, default="full_trace", server_default="full_trace"
     )
     # Gate 2 registry default is explicit 無機密; NULL remains legal for the
-    # developer UI 「無上限」 (= unbounded ceiling). Runtime admission still
-    # fail-closes on a missing ceiling when invoking classified work.
+    # developer UI 「未設定（不可派工）」. Runtime admission fail-closes on a
+    # missing ceiling — null is never an unbounded privilege grant.
     classification_ceiling = Column(
         String(20), nullable=True, default="無機密", server_default="無機密"
     )

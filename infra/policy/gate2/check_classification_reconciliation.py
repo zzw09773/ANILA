@@ -74,12 +74,25 @@ COLUMNS: tuple[ColumnSpec, ...] = tuple(
 REQUIRED_NOT_NULL_DEFAULTS: tuple[ColumnSpec, ...] = tuple(
     ColumnSpec(*item)
     for item in (
-        ("agents", "classification_ceiling"),
+        # agents.classification_ceiling was NOT NULL after r1_0011, then
+        # re-nullable in r1_0034 (persistable unset = not dispatchable).
         ("model_registry", "classification_ceiling"),
         ("registered_services", "classification_ceiling"),
         ("service_audit_callbacks", "classification_level"),
         ("export_records", "target_classification_floor"),
     )
+)
+
+# r1_0034: agents may store NULL ceiling. Default remains 無機密 for new
+# rows that omit the column; NULL itself is legal and fail-closed at
+# dispatch (never an unbounded privilege).
+NULLABLE_WITH_UNCLASSIFIED_DEFAULT: tuple[ColumnSpec, ...] = tuple(
+    ColumnSpec(*item)
+    for item in (("agents", "classification_ceiling"),)
+)
+
+NULLABLE_CLASSIFICATION_COLUMNS: frozenset[tuple[str, str]] = frozenset(
+    (spec.table, spec.column) for spec in NULLABLE_WITH_UNCLASSIFIED_DEFAULT
 )
 
 
@@ -201,8 +214,7 @@ def _collect_schema(conn: Connection) -> dict[str, Any]:
         )
         constraints.append(item)
 
-    required_columns: list[dict[str, Any]] = []
-    for spec in REQUIRED_NOT_NULL_DEFAULTS:
+    def _column_nullability(spec: ColumnSpec) -> dict[str, Any]:
         row = conn.execute(
             text(
                 """
@@ -225,12 +237,16 @@ def _collect_schema(conn: Connection) -> dict[str, Any]:
         default_expression = (
             str(row["default_expression"] or "") if row is not None else ""
         )
-        item = {
+        return {
             "key": spec.key,
             "exists": row is not None,
             "not_null": bool(row["attnotnull"]) if row is not None else False,
             "default_is_unclassified": "無機密" in default_expression,
         }
+
+    required_columns: list[dict[str, Any]] = []
+    for spec in REQUIRED_NOT_NULL_DEFAULTS:
+        item = _column_nullability(spec)
         item["passed"] = (
             item["exists"]
             and item["not_null"]
@@ -238,15 +254,28 @@ def _collect_schema(conn: Connection) -> dict[str, Any]:
         )
         required_columns.append(item)
 
+    nullable_columns: list[dict[str, Any]] = []
+    for spec in NULLABLE_WITH_UNCLASSIFIED_DEFAULT:
+        item = _column_nullability(spec)
+        # Must remain nullable (r1_0034) with least-privilege insert default.
+        item["passed"] = (
+            item["exists"]
+            and not item["not_null"]
+            and item["default_is_unclassified"]
+        )
+        nullable_columns.append(item)
+
     result = {
         "alembic": alembic,
         "constraints": constraints,
         "required_columns": required_columns,
+        "nullable_columns": nullable_columns,
     }
     result["passed"] = (
         alembic["passed"]
         and all(item["passed"] for item in constraints)
         and all(item["passed"] for item in required_columns)
+        and all(item["passed"] for item in nullable_columns)
     )
     return result
 
@@ -273,11 +302,21 @@ def _collect_columns(conn: Connection) -> list[dict[str, Any]]:
             )
         ).mappings().one()
         item = {"key": spec.key, **{key: int(value) for key, value in row.items()}}
-        item["passed"] = (
-            item["expected_rows"] == item["actual_rows"]
-            and item["null_count"] == 0
-            and item["invalid_count"] == 0
-        )
+        allows_null = (spec.table, spec.column) in NULLABLE_CLASSIFICATION_COLUMNS
+        if allows_null:
+            # NULL is a legal "unset / not dispatchable" wire value; every
+            # non-null value must still be one of the five canonical levels.
+            item["passed"] = (
+                item["expected_rows"]
+                == item["actual_rows"] + item["null_count"]
+                and item["invalid_count"] == 0
+            )
+        else:
+            item["passed"] = (
+                item["expected_rows"] == item["actual_rows"]
+                and item["null_count"] == 0
+                and item["invalid_count"] == 0
+            )
         results.append(item)
     return results
 

@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Allow agents.classification_ceiling NULL again (= UI 「無上限」).
+"""Allow agents.classification_ceiling NULL again (= UI 「未設定」).
 
 Gate 2 (r1_0011) made agent/model/service ceilings NOT NULL with a least-
-privilege default. The developer Agents UI still exposes 「無上限」 as JSON
-null; rejecting that on PUT made description-only saves impossible. Restore
-NULL as the legal unbounded ceiling for *agents only* — model_registry and
-registered_services stay NOT NULL. Runtime admission continues to fail-closed
-when a ceiling is missing at invoke time.
+privilege default. The developer Agents UI still exposes unset as JSON null
+so description-only saves remain possible. Restore NULL for *agents only*
+— model_registry and registered_services stay NOT NULL. NULL means
+「未設定（不可派工）」, never an unbounded privilege; runtime admission
+continues to fail-closed when a ceiling is missing at invoke time.
 
 Revision ID: r1_0034
 Revises: r1_0033

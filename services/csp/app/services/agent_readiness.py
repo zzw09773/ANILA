@@ -48,6 +48,7 @@ TRACE_TEST_STALE = "TRACE_TEST_STALE"
 TRACE_TEST_FINGERPRINT_MISSING = "TRACE_TEST_FINGERPRINT_MISSING"
 TRACE_TEST_FINGERPRINT_MISMATCH = "TRACE_TEST_FINGERPRINT_MISMATCH"
 CLASSIFICATION_CEILING_INVALID = "CLASSIFICATION_CEILING_INVALID"
+CLASSIFICATION_CEILING_MISSING = "CLASSIFICATION_CEILING_MISSING"
 CLASSIFICATION_DEFAULT_INVALID = "CLASSIFICATION_DEFAULT_INVALID"
 CLASSIFICATION_DEFAULT_MISMATCH = "CLASSIFICATION_DEFAULT_MISMATCH"
 CLASSIFICATION_DEFAULT_EXCEEDS_CEILING = "CLASSIFICATION_DEFAULT_EXCEEDS_CEILING"
@@ -400,11 +401,18 @@ def evaluate_agent_readiness(
         ):
             _append(reasons, BASE_MODEL_HEALTH_STALE)
 
-    try:
-        ceiling = Classification.from_storage(str(getattr(agent, "classification_ceiling", "")))
-    except (TypeError, ValueError):
+    raw_ceiling = getattr(agent, "classification_ceiling", None)
+    if raw_ceiling is None or (
+        isinstance(raw_ceiling, str) and not raw_ceiling.strip()
+    ):
         ceiling = None
-        _append(reasons, CLASSIFICATION_CEILING_INVALID)
+        _append(reasons, CLASSIFICATION_CEILING_MISSING)
+    else:
+        try:
+            ceiling = Classification.from_storage(str(raw_ceiling))
+        except (TypeError, ValueError):
+            ceiling = None
+            _append(reasons, CLASSIFICATION_CEILING_INVALID)
 
     manifest_default = manifest_ceiling = None
     if parsed is not None:

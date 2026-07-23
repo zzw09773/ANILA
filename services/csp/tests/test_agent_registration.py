@@ -272,7 +272,7 @@ class TestAgentRegistration:
         assert agent.classification_ceiling == "絕對機密"
 
     def test_null_ceiling_accepts_description_update(self, client, db):
-        """Explicit null ceiling (= 無上限) is legal; description-only save works."""
+        """Explicit null ceiling (= unset / not dispatchable) is legal; description-only save works."""
         dev = make_user(db, username="dev-null-ceil", role="developer")
         base_model = make_model(db, name="agent-base-null-ceil")
         agent = make_agent(db, dev, name="null-ceil-agent")
@@ -297,6 +297,7 @@ class TestAgentRegistration:
         body = put.json()
         assert body["description_for_router"] == "after-null-ceiling"
         assert body["classification_ceiling"] is None
+        assert body["dispatchable"] is False
         db.refresh(agent)
         assert agent.description_for_router == "after-null-ceiling"
         assert agent.classification_ceiling is None

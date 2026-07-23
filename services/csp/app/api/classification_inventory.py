@@ -74,7 +74,11 @@ _RESOURCE_META: dict[str, tuple[str, str | None]] = {
         "/knowledge-collections",
     ),
     "ingestion_documents": ("已索引文件分類等級(繼承集合)", None),
-    "agents": ("Agent 預設分級與加密旗標對照", "/developer/agents"),
+    "agents": (
+        "Agent 預設分級與加密旗標對照"
+        "（分類上限未設定＝不可派工，非無上限）",
+        "/developer/agents",
+    ),
     "model_registry": (
         "模型分類上限許可(classification_ceiling；非資料實際等級)",
         "/models",

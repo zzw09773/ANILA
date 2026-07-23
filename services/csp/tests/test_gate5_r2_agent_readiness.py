@@ -26,6 +26,7 @@ from app.services.agent_readiness import (
     CLASSIFICATION_DEFAULT_EXCEEDS_CEILING,
     CLASSIFICATION_DEFAULT_MISMATCH,
     CLASSIFICATION_CEILING_INVALID,
+    CLASSIFICATION_CEILING_MISSING,
     ENDPOINT_SSRF_DENIED,
     HEALTH_STALE,
     HEALTH_UNKNOWN,
@@ -379,6 +380,10 @@ def test_registry_projects_lowest_effective_classification_ceiling(
         (
             lambda agent, model, now: setattr(agent, "classification_ceiling", "bad"),
             CLASSIFICATION_CEILING_INVALID,
+        ),
+        (
+            lambda agent, model, now: setattr(agent, "classification_ceiling", None),
+            CLASSIFICATION_CEILING_MISSING,
         ),
         (
             lambda agent, model, now: setattr(agent, "default_classification_level", "機密"),

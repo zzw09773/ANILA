@@ -119,8 +119,17 @@ class Gate2ClassificationReconciliationTests(unittest.TestCase):
             (item.table, item.column)
             for item in checker.REQUIRED_NOT_NULL_DEFAULTS
         }
+        # r1_0011 made agents.classification_ceiling NOT NULL; r1_0034 made
+        # it nullable again (unset = not dispatchable). Checker at HEAD must
+        # track the live schema, not the historical r1_0011 snapshot.
+        migration_required = set(migration._REQUIRED_NOT_NULL_DEFAULTS)
+        nullable_after_r1_0034 = {
+            (item.table, item.column)
+            for item in checker.NULLABLE_WITH_UNCLASSIFIED_DEFAULT
+        }
+        self.assertEqual(nullable_after_r1_0034, {("agents", "classification_ceiling")})
         self.assertEqual(
-            checker_required, set(migration._REQUIRED_NOT_NULL_DEFAULTS)
+            checker_required, migration_required - nullable_after_r1_0034
         )
 
     def test_manifest_matches_orm_metadata_and_pg_only_source_inventory(self) -> None:

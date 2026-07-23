@@ -248,13 +248,17 @@ def test_backfill_reconciles_all_rows_and_is_rerunnable(
             item["key"]: item for item in report["schema"]["required_columns"]
         }
         for key in (
-            "agents.classification_ceiling",
             "model_registry.classification_ceiling",
             "registered_services.classification_ceiling",
             "service_audit_callbacks.classification_level",
             "export_records.target_classification_floor",
         ):
             assert required[key]["passed"] is True
+        nullable = {
+            item["key"]: item for item in report["schema"]["nullable_columns"]
+        }
+        assert nullable["agents.classification_ceiling"]["passed"] is True
+        assert nullable["agents.classification_ceiling"]["not_null"] is False
     engine.dispose()
 
     # A downgrade removes only guards and never lowers data; a second upgrade

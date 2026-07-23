@@ -23,9 +23,9 @@ from anila_core.router.csp_registry_client import (
 from anila_core.router.policy_gate import DirectModelGovernance
 
 
-def _governance(ceiling: str = "機密") -> DirectModelGovernance:
+def _governance(ceiling: str = "機密", *, model_id: str = "google/gemma4") -> DirectModelGovernance:
     return DirectModelGovernance(
-        model_id="google/gemma4",
+        model_id=model_id,
         gateway="csp",
         classification_ceiling=ClassificationLevel.from_storage(ceiling),
     )
@@ -221,3 +221,45 @@ def test_provider_denies_until_refresh_after_expiry_failure() -> None:
     state["fail"] = False
     clock.now = 600.0
     assert asyncio.run(provider.get()) is not None
+
+
+def test_provider_primary_switch_refetches_and_drops_old_cache() -> None:
+    """Late-bound primary must query the NEW model; old TTL cache is not served."""
+    primary = {"name": "model-a"}
+    calls: list[str] = []
+
+    async def _fetch(model: str) -> DirectModelGovernance:
+        calls.append(model)
+        return _governance("機密" if model == "model-a" else "營業秘密", model_id=model)
+
+    clock = _FakeClock()
+    provider = DirectModelGovernanceProvider(
+        model=lambda: primary["name"],
+        fetch=_fetch,
+        ttl_seconds=300.0,
+        clock=clock,
+    )
+
+    first = asyncio.run(provider.get())
+    assert first is not None
+    assert first.model_id == "model-a"
+    assert first.classification_ceiling == ClassificationLevel.from_storage("機密")
+    assert calls == ["model-a"]
+
+    # Primary switches inside the TTL window — must invalidate and refetch.
+    primary["name"] = "model-b"
+    clock.now = 10.0
+    second = asyncio.run(provider.get())
+    assert second is not None
+    assert second is not first
+    assert second.model_id == "model-b"
+    assert second.classification_ceiling == ClassificationLevel.from_storage(
+        "營業秘密"
+    )
+    assert calls == ["model-a", "model-b"]
+
+    # Same primary within TTL still hits cache (no third fetch).
+    clock.now = 20.0
+    third = asyncio.run(provider.get())
+    assert third is second
+    assert calls == ["model-a", "model-b"]

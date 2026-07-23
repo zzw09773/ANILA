@@ -589,42 +589,79 @@ class DirectModelGovernanceProvider:
     視為治理不可用 → 回傳 ``None``,PolicyGate 對直答 fail-closed 拒絕(絕不供
     過期舊值)。因此 model registry 調降上限最多在一個 TTL 內生效。取得失敗只
     記一次 warning,成功後重置,避免逐請求洗 log。
+
+    The primary model name is resolved on every ``get()`` (string or
+    zero-arg callable). When the resolved primary switches, the cache is
+    invalidated immediately so PolicyGate never approves against a stale
+    model's ceiling while inference targets the new primary.
     """
 
     def __init__(
         self,
         *,
-        model: str,
+        model: str | Callable[[], str],
         fetch: Callable[[str], Awaitable[DirectModelGovernance]],
         ttl_seconds: float = 300.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if not isinstance(model, str) or not model.strip():
+        if callable(model) and not isinstance(model, str):
+            self._model_resolver: Callable[[], str] = model
+        elif isinstance(model, str) and model.strip():
+            fixed = model.strip()
+            self._model_resolver = lambda: fixed
+        else:
             raise ValueError("direct model governance provider 缺少 model")
         if ttl_seconds <= 0:
             raise ValueError("direct model governance TTL 必須為正數")
-        self._model = model.strip()
         self._fetch = fetch
         self._ttl = float(ttl_seconds)
         self._clock = clock
         self._cached: DirectModelGovernance | None = None
+        self._cached_model: str | None = None
         self._expires_at: float | None = None
         self._warned = False
 
+    def _resolve_model(self) -> str | None:
+        try:
+            raw = self._model_resolver()
+        except Exception:
+            return None
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        return raw.strip()
+
+    def invalidate(self) -> None:
+        """Drop any cached governance (e.g. after a primary-model switch)."""
+        self._cached = None
+        self._cached_model = None
+        self._expires_at = None
+
     async def get(self) -> DirectModelGovernance | None:
         now = self._clock()
+        current_model = self._resolve_model()
+        if current_model is None:
+            self.invalidate()
+            if not self._warned:
+                logger.warning(
+                    "直答模型名稱不可用,直答將 fail-closed 拒絕"
+                )
+                self._warned = True
+            return None
+        if self._cached_model is not None and self._cached_model != current_model:
+            # Primary switched: never serve the previous model's ceiling.
+            self.invalidate()
         if (
             self._cached is not None
+            and self._cached_model == current_model
             and self._expires_at is not None
             and now < self._expires_at
         ):
             return self._cached
         try:
-            governance = await self._fetch(self._model)
+            governance = await self._fetch(current_model)
         except DirectModelGovernanceUnavailable as exc:
             # 過期後取得失敗:不供舊值,直接 fail-closed。只記一次 warning。
-            self._cached = None
-            self._expires_at = None
+            self.invalidate()
             if not self._warned:
                 logger.warning(
                     "直答模型治理不可用,直答將 fail-closed 拒絕: %s", exc
@@ -632,6 +669,7 @@ class DirectModelGovernanceProvider:
                 self._warned = True
             return None
         self._cached = governance
+        self._cached_model = current_model
         self._expires_at = now + self._ttl
         self._warned = False
         return governance
