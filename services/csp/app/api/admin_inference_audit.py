@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -52,6 +52,30 @@ class InferenceAuditListResponse(BaseModel):
     total: int
 
 
+def _serialize_created_at(value: datetime | None) -> str | None:
+    """Serialize AuditLog.created_at as tz-aware UTC ISO8601.
+
+    Stored values are naive-UTC; browsers treat naive ISO as *local* time,
+    so we always emit an explicit UTC offset (``+00:00``).
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        aware = value.replace(tzinfo=timezone.utc)
+    else:
+        aware = value.astimezone(timezone.utc)
+    return aware.isoformat()
+
+
+def _as_utc_aware(value: datetime | None) -> datetime | None:
+    """Attach UTC tzinfo to naive datetimes for JSON responses."""
+    if value is None:
+        return None
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _require_tz_aware(value: datetime | None, *, name: str) -> datetime | None:
     if value is None:
         return None
@@ -94,7 +118,7 @@ def _serialize_inference_row(row: AuditLog, *, caller: User) -> InferenceAuditRo
         detail=row.detail,
         ip_address=row.ip_address if show_sensitive else SENSITIVE_REDACTED,
         metadata_json=row.metadata_json if show_sensitive else None,
-        created_at=row.created_at,
+        created_at=_as_utc_aware(row.created_at),
     )
 
 
@@ -248,7 +272,7 @@ def export_inference_audit(
                         _csv_neutralize_cell(cell)
                         for cell in (
                             row.id,
-                            row.created_at.isoformat() if row.created_at else "",
+                            _serialize_created_at(row.created_at) or "",
                             row.actor_user_id if row.actor_user_id is not None else "",
                             row.actor_username or "",
                             row.action,

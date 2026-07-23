@@ -78,6 +78,7 @@ test('localInputToIso returns undefined for blank input', () => {
 
 test('action and status helpers use zh-TW labels', () => {
   assert.equal(actionLabel('inference.rag_query'), 'RAG 查詢')
+  assert.equal(actionLabel('inference.embed'), '向量嵌入')
   assert.equal(actionLabel('unknown.x'), 'unknown.x')
   assert.equal(statusLabel('success'), '成功')
   assert.equal(statusLabel('denied'), '拒絕')
@@ -85,6 +86,13 @@ test('action and status helpers use zh-TW labels', () => {
   assert.equal(statusVariant('success'), 'ok')
   assert.equal(statusVariant('denied'), 'warn')
   assert.equal(statusVariant('error'), 'danger')
+})
+
+test('ISO created_at with UTC offset localizes correctly in Asia/Taipei', () => {
+  // API now emits tz-aware UTC; browsers must not treat naive as local.
+  const iso = '2026-07-23T04:00:00+00:00'
+  const rendered = new Date(iso).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
+  assert.match(rendered, /12:00:00/)
 })
 
 test('truncateDetail and formatMetadata', () => {

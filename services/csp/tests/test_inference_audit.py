@@ -1931,3 +1931,286 @@ def test_csv_export_batches_and_caps_without_date(
     next(dated_reader)
     dated_rows = [r for r in dated_reader if r]
     assert len(dated_rows) == 8
+
+
+# ── Revision 7: task-run vs strict / inactive collection / embed / UTC ────────
+
+
+def test_strict_chat_audit_fail_with_task_id_leaves_no_running_taskrun(
+    client: TestClient, db: Session, monkeypatch
+):
+    """Strict + X-ANILA-Task-Id: audit write failure must 503 with no running TaskRun."""
+    from app.models.task import TaskRun
+    from app.services import proxy_service
+
+    monkeypatch.setattr(
+        "app.services.inference_audit.settings.ANILA_AUDIT_STRICT", True
+    )
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    user = make_user(db, username="strict_task_zombie", role="admin")
+    make_model(db, name="gpt-strict-task-zombie")
+    task = _make_task(db, user)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.services.inference_audit.log_audit_event", _boom)
+
+    class _SpyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            raise AssertionError("upstream must not be called")
+
+    monkeypatch.setattr(
+        proxy_service.httpx, "AsyncClient", lambda *a, **k: _SpyClient(*a, **k)
+    )
+
+    before_runs = db.query(TaskRun).filter(TaskRun.status == "running").count()
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={**_bearer(user), "X-ANILA-Task-Id": str(task.id)},
+        json={
+            "model": "gpt-strict-task-zombie",
+            "messages": [{"role": "user", "content": "no zombie please"}],
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 503, resp.text
+    db.expire_all()
+    running = (
+        db.query(TaskRun)
+        .filter(TaskRun.task_id == task.id, TaskRun.status == "running")
+        .count()
+    )
+    assert running == 0
+    assert db.query(TaskRun).filter(TaskRun.status == "running").count() == before_runs
+
+
+def _grant_rag_access(db: Session, *, user, admin, coll) -> None:
+    now = datetime.now(timezone.utc)
+    grant = issue_clearance_grant(
+        db,
+        actor=admin,
+        subject_user_id=user.id,
+        max_classification_level="絕對機密",
+        valid_from=now - timedelta(minutes=5),
+        expires_at=now + timedelta(hours=1),
+        basis_ticket="AUDIT-INACTIVE",
+    )
+    grant_collection_access(
+        db,
+        actor=admin,
+        clearance_grant_id=grant.id,
+        collection_id=coll.id,
+        membership_granted=True,
+        need_to_know=True,
+        basis_ticket="AUDIT-NTK-INACTIVE",
+    )
+    db.commit()
+
+
+def test_inactive_collection_text_search_writes_denied_row(
+    client: TestClient, db: Session
+):
+    user = make_user(db, username="inactive_text_user")
+    admin = make_user(db, username="inactive_text_admin", role="admin")
+    coll = _make_collection(db, name="inactive-text-coll", owner_id=user.id)
+    coll.status = "disabled"
+    db.commit()
+    _grant_rag_access(db, user=user, admin=admin, coll=coll)
+
+    resp = client.post(
+        f"/api/ingestion/collections/{coll.id}/search",
+        headers=_bearer(user),
+        json={"query": "should be denied for inactive", "top_k": 3},
+    )
+    assert resp.status_code == 409, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.rag_query").all()
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    assert rows[0].detail == "should be denied for inactive"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "collection_inactive"
+
+
+def test_inactive_collection_image_search_writes_denied_row(
+    client: TestClient, db: Session
+):
+    user = make_user(db, username="inactive_img_user")
+    admin = make_user(db, username="inactive_img_admin", role="admin")
+    coll = _make_collection(db, name="inactive-img-coll", owner_id=user.id)
+    coll.status = "archived"
+    db.commit()
+    _grant_rag_access(db, user=user, admin=admin, coll=coll)
+
+    resp = client.post(
+        f"/api/ingestion/collections/{coll.id}/images/search",
+        headers=_bearer(user),
+        json={"query": "inactive image search", "top_k": 3},
+    )
+    assert resp.status_code == 409, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.rag_query").all()
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    assert rows[0].detail == "inactive image search"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "collection_inactive"
+    assert meta.get("image_search") is True
+
+
+def test_embeddings_v1_end_user_writes_inference_embed(
+    client: TestClient, db: Session, monkeypatch, _mock_upstream
+):
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    user = make_user(db, username="audit_embed_v1", role="admin")
+    make_model(db, name="embed-audit-v1")
+    resp = client.post(
+        "/v1/embeddings",
+        headers=_bearer(user),
+        json={"model": "embed-audit-v1", "input": "vector me please"},
+    )
+    assert resp.status_code == 200, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.embed").all()
+    assert len(rows) == 1
+    assert rows[0].status == "success"
+    assert rows[0].detail == "vector me please"
+    assert rows[0].resource_id == "embed-audit-v1"
+    assert rows[0].actor_username == "audit_embed_v1"
+
+
+def test_embeddings_v2_end_user_writes_list_input_joined(
+    client: TestClient, db: Session, monkeypatch, _mock_upstream
+):
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    user = make_user(db, username="audit_embed_v2", role="admin")
+    make_model(db, name="embed-audit-v2")
+    resp = client.post(
+        "/v2/embeddings",
+        headers=_bearer(user),
+        json={"model": "embed-audit-v2", "input": ["line one", "line two"]},
+    )
+    assert resp.status_code == 200, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.embed").all()
+    assert len(rows) == 1
+    assert rows[0].detail == "line one\nline two"
+    assert rows[0].resource_id == "embed-audit-v2"
+
+
+@pytest.mark.asyncio
+async def test_embeddings_service_hop_skips_audit(db: Session, monkeypatch):
+    from app.api import proxy as proxy_api
+    from app.middleware.caller import Caller
+
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    user = make_user(db, username="audit_embed_hop", role="admin")
+    make_model(db, name="embed-hop")
+
+    body = {"model": "embed-hop", "input": "hop must not audit"}
+    body_bytes = json.dumps(body).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/embeddings",
+        "raw_path": b"/v1/embeddings",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json")],
+        "client": ("203.0.113.10", 12345),
+        "server": ("testserver", 80),
+    }
+    req = StarletteRequest(scope, receive)
+    req.state.csp_caller = object()
+
+    async def _fake_proxy_request(**kwargs):
+        return {"object": "list", "data": []}
+
+    monkeypatch.setattr(proxy_api, "proxy_request", _fake_proxy_request)
+    monkeypatch.setattr(
+        proxy_api, "_verified_proxy_agent_context", lambda *a, **k: None
+    )
+
+    await proxy_api.embeddings_v1(
+        req, caller=Caller(user=user, api_key_id=None), db=db
+    )
+    assert db.query(AuditLog).filter(AuditLog.action == "inference.embed").count() == 0
+
+
+def test_embeddings_denied_writes_denied_row(
+    client: TestClient, db: Session, monkeypatch
+):
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    denied = make_user(db, username="embed_denied_user", role="user")
+    make_model(db, name="embed-denied-model")
+
+    resp = client.post(
+        "/v1/embeddings",
+        headers=_bearer(denied),
+        json={"model": "embed-denied-model", "input": "no access"},
+    )
+    assert resp.status_code == 403, resp.text
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.embed").all()
+    assert len(rows) == 1
+    assert rows[0].status == "denied"
+    assert rows[0].detail == "no access"
+    meta = json.loads(rows[0].metadata_json or "{}")
+    assert meta.get("reason") == "model_permission_denied"
+
+
+def test_created_at_serialized_as_utc_aware(client: TestClient, db: Session):
+    from app.api.admin_inference_audit import _serialize_created_at
+
+    naive = datetime(2026, 7, 23, 4, 0, 0)
+    out = _serialize_created_at(naive)
+    assert out is not None
+    assert out.endswith("+00:00") or out.endswith("Z")
+    assert out.startswith("2026-07-23T04:00:00")
+
+    admin = make_user(db, username="tz_admin", role="admin")
+    _grant_inference_audit_viewer(db, admin)
+    u = make_user(db, username="tz_actor")
+    db.add(
+        AuditLog(
+            actor_user_id=u.id,
+            actor_username="tz_actor",
+            action="inference.chat",
+            resource_type="inference",
+            resource_id="m",
+            status="success",
+            detail="tz check",
+            ip_address="198.51.100.9",
+            created_at=naive,
+        )
+    )
+    db.commit()
+    resp = client.get(
+        "/api/admin/audit/inference",
+        headers=_bearer(admin),
+        params={"username": "tz_actor"},
+    )
+    assert resp.status_code == 200, resp.text
+    created = resp.json()["rows"][0]["created_at"]
+    assert created.endswith("+00:00") or created.endswith("Z")
+
+    resp_csv = client.get(
+        "/api/admin/audit/inference/export",
+        headers=_bearer(admin),
+        params={"username": "tz_actor"},
+    )
+    assert resp_csv.status_code == 200
+    text = resp_csv.content.decode("utf-8-sig")
+    assert "2026-07-23T04:00:00+00:00" in text or "2026-07-23T04:00:00Z" in text

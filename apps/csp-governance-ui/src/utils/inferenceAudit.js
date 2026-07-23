@@ -7,6 +7,7 @@ export const INFERENCE_ACTIONS = [
   { value: 'inference.rag_query', label: 'RAG 查詢' },
   { value: 'inference.studio', label: 'Studio' },
   { value: 'inference.image', label: '影像' },
+  { value: 'inference.embed', label: '向量嵌入' },
 ]
 
 export const INFERENCE_ACTION_FILTER_OPTIONS = [

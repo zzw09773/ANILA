@@ -5,7 +5,8 @@ Timing contract (encoded once here — entrances must not re-branch on the flag)
 * ``record_at_acceptance`` — durable write *before* inference side effects when
   ``ANILA_AUDIT_STRICT=1`` or the call is a stream (``stream=True``). Row is
   ``status=success`` with ``metadata.phase=acceptance``. For chat/agent this
-  must precede server-side retrieval and memory embedding, not only upstream.
+  must precede ``begin_task_run`` (and server-side retrieval/memory embedding),
+  not only upstream. For image it must likewise precede ``begin_task_run``.
 * ``record_at_outcome`` — write at the outcome point (success / denied / error)
   for non-strict non-stream paths. When acceptance already recorded, this is a
   no-op so exactly-one-row holds (outcome fidelity is the documented tradeoff
@@ -37,6 +38,7 @@ INFERENCE_ACTIONS = frozenset(
         "inference.studio",
         "inference.agent",
         "inference.image",
+        "inference.embed",
     }
 )
 

@@ -756,6 +756,23 @@ async def search_collection(
             )
         raise
     if coll.status != "active":
+        if principal.agent is None and not principal.skip_inference_audit:
+            record_inference_audit(
+                db,
+                request=request,
+                actor=current_user,
+                action="inference.rag_query",
+                resource_id=str(collection_id),
+                detail=payload.query,
+                status="denied",
+                metadata={
+                    "collection_id": collection_id,
+                    "top_k": payload.top_k,
+                    "min_score": payload.min_score,
+                    "reason": short_audit_reason("collection_inactive"),
+                },
+                commit=True,
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
@@ -1038,6 +1055,24 @@ async def search_collection_images(
             )
         raise
     if coll.status != "active":
+        if principal.agent is None and not principal.skip_inference_audit:
+            record_inference_audit(
+                db,
+                request=request,
+                actor=current_user,
+                action="inference.rag_query",
+                resource_id=str(collection_id),
+                detail=payload.query,
+                status="denied",
+                metadata={
+                    "collection_id": collection_id,
+                    "top_k": payload.top_k,
+                    "min_score": payload.min_score,
+                    "image_search": True,
+                    "reason": short_audit_reason("collection_inactive"),
+                },
+                commit=True,
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",

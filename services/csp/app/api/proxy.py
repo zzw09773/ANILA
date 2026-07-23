@@ -1423,6 +1423,19 @@ async def _image_generations_impl(
             commit=True,
         )
         raise HTTPException(status_code=403, detail="無權使用此圖像模型")
+    # Strict write-ahead before begin_task_run so audit failure cannot leave
+    # a zombie running TaskRun (image calls always carry X-ANILA-Task-Id).
+    acceptance_recorded = record_at_acceptance(
+        db,
+        request=request,
+        actor=caller.user,
+        action="inference.image",
+        resource_id=model.name,
+        detail=detail,
+        metadata={"model": model.name},
+        commit=True,
+        stream=False,
+    )
     task_ctx = getattr(
         getattr(request, "state", None),
         "prevalidated_task_ctx",
@@ -1453,7 +1466,7 @@ async def _image_generations_impl(
             metadata={"pilot_callsite": "csp.image_generation"},
             block=True,
         )
-        record_inference_audit(
+        record_at_outcome(
             db,
             request=request,
             actor=caller.user,
@@ -1466,6 +1479,7 @@ async def _image_generations_impl(
                 "reason": short_audit_reason("pilot_image_forbidden"),
             },
             commit=True,
+            acceptance_recorded=acceptance_recorded,
         )
         raise HTTPException(status_code=403, detail=reason)
     try:
@@ -1474,7 +1488,7 @@ async def _image_generations_impl(
         )
     except HTTPException as exc:
         if exc.status_code == 403:
-            record_inference_audit(
+            record_at_outcome(
                 db,
                 request=request,
                 actor=caller.user,
@@ -1487,21 +1501,11 @@ async def _image_generations_impl(
                     "reason": short_audit_reason("classification_ceiling"),
                 },
                 commit=True,
+                acceptance_recorded=acceptance_recorded,
             )
         raise
     proxy_agent_context = _verified_proxy_agent_context(request, db)
     image_meta = {"model": model.name, "task_id": task_ctx.task_id}
-    acceptance_recorded = record_at_acceptance(
-        db,
-        request=request,
-        actor=caller.user,
-        action="inference.image",
-        resource_id=model.name,
-        detail=detail,
-        metadata=image_meta,
-        commit=True,
-        stream=False,
-    )
     try:
         result = await proxy_request(
             model=model,
@@ -1838,6 +1842,30 @@ async def _chat_completions_impl(
         pre_resolved_agent is None and _is_internal_router_model(pre_resolved_model)
     )
     task_run_dispatch_target = "agent" if router_orchestration else target_kind
+    # Strict / stream write-ahead BEFORE begin_task_run (and any other
+    # persistence). Audit failure must 503 without leaving a zombie running
+    # TaskRun that would also block retries.
+    acceptance_recorded = _accept_chat_inference_audit(
+        db,
+        request=request,
+        user=user,
+        action=(
+            "inference.agent"
+            if pre_resolved_agent is not None
+            else "inference.chat"
+        ),
+        resource_id=(
+            pre_resolved_agent.name
+            if pre_resolved_agent is not None
+            else str(model_name)
+        ),
+        detail=early_user_text,
+        model_name=str(model_name),
+        pre_resolved_agent=pre_resolved_agent,
+        stream=stream,
+        router_orchestration=router_orchestration,
+        internal_router=internal_router,
+    )
     task_ctx = getattr(
         getattr(request, "state", None),
         "prevalidated_task_ctx",
@@ -2020,32 +2048,9 @@ async def _chat_completions_impl(
                 router_orchestration=router_orchestration,
                 internal_router=internal_router,
                 reason="classification_ceiling",
+                acceptance_recorded=acceptance_recorded,
             )
         raise
-
-    # Strict / stream write-ahead: durable acceptance BEFORE retrieval/memory
-    # embedding side effects. Non-strict non-stream still records at outcome.
-    acceptance_recorded = _accept_chat_inference_audit(
-        db,
-        request=request,
-        user=user,
-        action=(
-            "inference.agent"
-            if pre_resolved_agent is not None
-            else "inference.chat"
-        ),
-        resource_id=(
-            pre_resolved_agent.name
-            if pre_resolved_agent is not None
-            else str(model_name)
-        ),
-        detail=early_user_text,
-        model_name=str(model_name),
-        pre_resolved_agent=pre_resolved_agent,
-        stream=stream,
-        router_orchestration=router_orchestration,
-        internal_router=internal_router,
-    )
 
     stage = "retrieval"
     try:
@@ -3051,26 +3056,8 @@ async def embeddings_v1(
             status_code=403,
             detail="Gate 2 pilot 禁止公開 embeddings API",
         )
-    body = await request.json()
-    model_name = body.get("model")
-    if not model_name:
-        raise HTTPException(status_code=400, detail="缺少 model 參數")
-
-    model = _resolve_model(db, caller, model_name)
-    proxy_agent_context = _verified_proxy_agent_context(request, db)
-    return await proxy_request(
-        model=model,
-        api_key_id=caller.api_key_id,
-        user_id=caller.user.id,
-        user_identity=downstream_identity(caller.user),
-        department_id=caller.user.department_id,
-        request_body=body,
-        endpoint_path="/v1/embeddings",
-        inference_callsite_id="csp.public_embedding_api",
-        governance_callsite_id=_proxy_governance_callsite(proxy_agent_context),
-        governance_agent_id=(proxy_agent_context[1] if proxy_agent_context else None),
-        caller_agent_id=(proxy_agent_context[0] if proxy_agent_context else None),
-        governance_db=db,
+    return await _embeddings_impl(
+        request, caller=caller, db=db, endpoint_path="/v1/embeddings"
     )
 
 
@@ -3085,24 +3072,157 @@ async def embeddings_v2(
             status_code=403,
             detail="Gate 2 pilot 禁止公開 embeddings API",
         )
+    return await _embeddings_impl(
+        request, caller=caller, db=db, endpoint_path="/v2/embeddings"
+    )
+
+
+def _embeddings_audit_detail(body: dict) -> str | None:
+    """Full input text for inference.embed detail (no truncation)."""
+    inp = body.get("input")
+    if isinstance(inp, str):
+        return inp
+    if isinstance(inp, list):
+        parts: list[str] = []
+        for item in inp:
+            if isinstance(item, str):
+                parts.append(item)
+            elif item is None:
+                parts.append("")
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    if inp is None:
+        return None
+    return str(inp)
+
+
+async def _embeddings_impl(
+    request: Request,
+    *,
+    caller: Caller,
+    db: Session,
+    endpoint_path: str,
+):
+    """Governed public embeddings proxy with end-user inference.embed audit."""
     body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body 必須是 JSON object")
     model_name = body.get("model")
     if not model_name:
         raise HTTPException(status_code=400, detail="缺少 model 參數")
-
-    model = _resolve_model(db, caller, model_name)
-    proxy_agent_context = _verified_proxy_agent_context(request, db)
-    return await proxy_request(
-        model=model,
-        api_key_id=caller.api_key_id,
-        user_id=caller.user.id,
-        user_identity=downstream_identity(caller.user),
-        department_id=caller.user.department_id,
-        request_body=body,
-        endpoint_path="/v2/embeddings",
-        inference_callsite_id="csp.public_embedding_api",
-        governance_callsite_id=_proxy_governance_callsite(proxy_agent_context),
-        governance_agent_id=(proxy_agent_context[1] if proxy_agent_context else None),
-        caller_agent_id=(proxy_agent_context[0] if proxy_agent_context else None),
-        governance_db=db,
+    detail = _embeddings_audit_detail(body)
+    try:
+        model = _resolve_model(db, caller, str(model_name))
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            record_inference_audit(
+                db,
+                request=request,
+                actor=caller.user,
+                action="inference.embed",
+                resource_id=str(model_name),
+                detail=detail,
+                status="denied",
+                metadata={
+                    "model": str(model_name),
+                    "reason": short_audit_reason("model_permission_denied"),
+                },
+                commit=True,
+            )
+        raise
+    embed_meta = {"model": model.name, "endpoint": endpoint_path}
+    acceptance_recorded = record_at_acceptance(
+        db,
+        request=request,
+        actor=caller.user,
+        action="inference.embed",
+        resource_id=model.name,
+        detail=detail,
+        metadata=embed_meta,
+        commit=True,
+        stream=False,
     )
+    proxy_agent_context = _verified_proxy_agent_context(request, db)
+    try:
+        result = await proxy_request(
+            model=model,
+            api_key_id=caller.api_key_id,
+            user_id=caller.user.id,
+            user_identity=downstream_identity(caller.user),
+            department_id=caller.user.department_id,
+            request_body=body,
+            endpoint_path=endpoint_path,
+            inference_callsite_id="csp.public_embedding_api",
+            governance_callsite_id=_proxy_governance_callsite(proxy_agent_context),
+            governance_agent_id=(proxy_agent_context[1] if proxy_agent_context else None),
+            caller_agent_id=(proxy_agent_context[0] if proxy_agent_context else None),
+            governance_db=db,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            record_at_outcome(
+                db,
+                request=request,
+                actor=caller.user,
+                action="inference.embed",
+                resource_id=model.name,
+                detail=detail,
+                status="denied",
+                metadata={
+                    "model": model.name,
+                    "endpoint": endpoint_path,
+                    "reason": short_audit_reason(f"http_{exc.status_code}"),
+                },
+                commit=True,
+                acceptance_recorded=acceptance_recorded,
+            )
+        else:
+            record_at_outcome(
+                db,
+                request=request,
+                actor=caller.user,
+                action="inference.embed",
+                resource_id=model.name,
+                detail=detail,
+                status="error",
+                metadata={
+                    "model": model.name,
+                    "endpoint": endpoint_path,
+                    "reason": short_audit_reason(f"upstream_http_{exc.status_code}"),
+                },
+                commit=True,
+                acceptance_recorded=acceptance_recorded,
+            )
+        raise
+    except Exception:
+        record_at_outcome(
+            db,
+            request=request,
+            actor=caller.user,
+            action="inference.embed",
+            resource_id=model.name,
+            detail=detail,
+            status="error",
+            metadata={
+                "model": model.name,
+                "endpoint": endpoint_path,
+                "reason": short_audit_reason("upstream_exception"),
+            },
+            commit=True,
+            acceptance_recorded=acceptance_recorded,
+        )
+        raise
+    record_at_outcome(
+        db,
+        request=request,
+        actor=caller.user,
+        action="inference.embed",
+        resource_id=model.name,
+        detail=detail,
+        status="success",
+        metadata=embed_meta,
+        commit=True,
+        acceptance_recorded=acceptance_recorded,
+    )
+    return result
