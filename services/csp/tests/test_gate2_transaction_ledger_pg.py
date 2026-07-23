@@ -201,7 +201,9 @@ async def test_same_pg_session_holds_admission_locks_and_finalizes_without_deadl
         )
         assert result["usage"]["total_tokens"] == 2
         db.expire_all()
-        assert db.get(Task, task.id).status == "completed"
+        # Query tasks park at waiting_for_user after successful closure
+        # (703ae19); the run itself is still completed.
+        assert db.get(Task, task.id).status == "waiting_for_user"
         assert db.get(TaskRun, run.id).status == "completed"
         assert db.query(AuditLog).filter_by(
             resource_type="task",

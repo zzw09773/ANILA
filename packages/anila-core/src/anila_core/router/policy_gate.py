@@ -52,11 +52,52 @@ class ExecutionGrantInput:
         return self.target_agent_id
 
 
+@dataclass(frozen=True)
+class DirectModelGovernance:
+    """Trusted governance facts for the Router 直答(DIRECT_ANSWER)主模型。
+
+    DIRECT_ANSWER 使用 Router 自身設定的主模型直接產生文字回答。此為 CSP／
+    部署提供的受信任治理事實(不是路由模型的輸出),PolicyGate 依此做等同
+    ``enforce_model_ceiling`` 的分類上限評估:``allow if classification <=
+    classification_ceiling``。缺少或無效的治理輸入一律 fail-closed 拒絕;
+    真正的出向呼叫仍會在 CSP model gateway 再受 ``enforce_model_ceiling``
+    強制(defense in depth),此處為 Router 端等價前置閘。
+    """
+
+    model_id: str
+    gateway: str
+    classification_ceiling: ClassificationLevel | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model_id, str) or not self.model_id.strip():
+            raise ValueError("direct model governance 缺少 model_id")
+        if not isinstance(self.gateway, str) or not self.gateway.strip():
+            raise ValueError("direct model governance 缺少 gateway")
+        if self.classification_ceiling is not None and not isinstance(
+            self.classification_ceiling, ClassificationLevel
+        ):
+            raise TypeError("direct model classification_ceiling 必須是 ClassificationLevel")
+
+    @property
+    def has_csp_model_binding(self) -> bool:
+        """直答模型是否綁定唯一的 CSP model gateway。"""
+
+        return self.gateway.strip().casefold() == "csp"
+
+
 class PolicyGate:
     """Fail-closed policy checks over a validated route and CSP snapshot."""
 
-    def __init__(self, *, require_csp_model_binding: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        require_csp_model_binding: bool = True,
+        direct_model_governance: DirectModelGovernance | None = None,
+    ) -> None:
         self.require_csp_model_binding = require_csp_model_binding
+        # R7:直答的模型治理輸入。None 代表沒有受信任的治理輸入 → 直答
+        # 一律 fail-closed 拒絕(維持舊有的保守姿態,只是換成可解釋的原因)。
+        self.direct_model_governance = direct_model_governance
 
     @staticmethod
     def _result(
@@ -99,16 +140,7 @@ class PolicyGate:
         snapshot_id = decision.registry_snapshot_id
 
         if decision.route_type is RouteType.DIRECT_ANSWER:
-            # R3 has no model-governance input for direct inference yet.  Keep
-            # the route side-effect free but do not report policy allow.
-            return self._result(
-                allowed=False,
-                decision=decision,
-                context=context,
-                snapshot_id=snapshot_id,
-                target_agent_id=None,
-                reason_codes=("DIRECT_MODEL_POLICY_NOT_EVALUATED",),
-            )
+            return self._evaluate_direct_answer(decision, context, snapshot_id)
 
         if decision.route_type is not RouteType.SINGLE_AGENT:
             return self._result(
@@ -362,6 +394,65 @@ class PolicyGate:
             reason_codes=("WITHIN_AGENT_CEILING", "SNAPSHOT_MATCH", "READY_FOR_DISPATCH"),
         )
 
+    def _evaluate_direct_answer(
+        self,
+        decision: RouteDecision,
+        context: RequestContext,
+        snapshot_id: str,
+    ) -> PolicyGateResult:
+        """R7:直答的模型治理閘,語意等同 ``enforce_model_ceiling``。
+
+        沒有受信任的治理輸入、非 CSP gateway、缺少分類上限、或請求分類超過
+        上限時一律 fail-closed 拒絕;僅在分類 <= 直答模型分類上限時 allow。
+        DIRECT_ANSWER 不派工給下游 Agent,故不綁定 target/scope/grant。
+        """
+
+        governance = self.direct_model_governance
+        if governance is None:
+            return self._result(
+                allowed=False,
+                decision=decision,
+                context=context,
+                snapshot_id=snapshot_id,
+                target_agent_id=None,
+                reason_codes=("DIRECT_MODEL_GOVERNANCE_UNAVAILABLE",),
+            )
+        if self.require_csp_model_binding and not governance.has_csp_model_binding:
+            return self._result(
+                allowed=False,
+                decision=decision,
+                context=context,
+                snapshot_id=snapshot_id,
+                target_agent_id=None,
+                reason_codes=("DIRECT_MODEL_BINDING_MISSING",),
+            )
+        if governance.classification_ceiling is None:
+            return self._result(
+                allowed=False,
+                decision=decision,
+                context=context,
+                snapshot_id=snapshot_id,
+                target_agent_id=None,
+                reason_codes=("DIRECT_MODEL_CLASSIFICATION_CEILING_MISSING",),
+            )
+        if context.classification > governance.classification_ceiling:
+            return self._result(
+                allowed=False,
+                decision=decision,
+                context=context,
+                snapshot_id=snapshot_id,
+                target_agent_id=None,
+                reason_codes=("DIRECT_MODEL_CLASSIFICATION_EXCEEDS_CEILING",),
+            )
+        return self._result(
+            allowed=True,
+            decision=decision,
+            context=context,
+            snapshot_id=snapshot_id,
+            target_agent_id=None,
+            reason_codes=("DIRECT_MODEL_POLICY_EVALUATED", "DIRECT_MODEL_WITHIN_CEILING"),
+        )
+
     check = evaluate
     gate = evaluate
 
@@ -422,4 +513,4 @@ class PolicyGate:
         )
 
 
-__all__ = ["ExecutionGrantInput", "PolicyGate"]
+__all__ = ["DirectModelGovernance", "ExecutionGrantInput", "PolicyGate"]

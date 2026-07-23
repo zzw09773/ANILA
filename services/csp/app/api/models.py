@@ -25,6 +25,7 @@ from app.schemas.model_registry import (
 )
 from app.services.audit_service import log_audit_event
 from app.services.model_governance_receipts import admit_registry_provider
+from app.api.proxy import _is_internal_router_model
 from app.services.auth_service import (
     get_current_user,
     is_owner,
@@ -481,12 +482,18 @@ def list_models(
     # inherits admin's full registry view (auth_service.require_admin
     # covers both, but this list query uses a direct role check so we
     # need to keep the tier explicit here too).
-    if current_user.role not in ("admin", "owner"):
+    is_elevated = current_user.role in ("admin", "owner")
+    if not is_elevated:
         allowed_ids = [m.id for m in current_user.allowed_models]
         if not allowed_ids:
             return []
         query = query.filter(ModelRegistry.id.in_(allowed_ids))
-    return [_build_response(m, caller=current_user) for m in query.all()]
+    rows = query.all()
+    # anila-router is an orchestration sentinel: hide it from regular users'
+    # picker, but keep it visible to admin/owner for ModelsView governance.
+    if not is_elevated:
+        rows = [m for m in rows if not _is_internal_router_model(m)]
+    return [_build_response(m, caller=current_user) for m in rows]
 
 
 @router.post("", response_model=ModelResponse)

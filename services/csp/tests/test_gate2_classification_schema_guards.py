@@ -9,7 +9,7 @@ from anila_contracts import Classification
 from app.api import models as models_api
 from app.api.agents.registration import (
     AgentRegisterRequest,
-    _required_classification_ceiling,
+    _optional_classification_ceiling,
 )
 from app.models.agent import Agent
 from app.models.artifact import ExportRecord
@@ -98,8 +98,15 @@ def test_explicit_null_is_rejected(factory) -> None:
 
 
 def test_orm_columns_are_non_null_with_unclassified_server_defaults() -> None:
+    # agents.classification_ceiling is nullable again (= UI 「未設定（不可派工）」);
+    # other Gate 2 policy ceilings stay NOT NULL.
+    assert Agent.__table__.c.classification_ceiling.nullable is True
+    assert Agent.__table__.c.classification_ceiling.server_default is not None
+    assert "無機密" in str(
+        Agent.__table__.c.classification_ceiling.server_default.arg
+    )
+
     columns = (
-        Agent.__table__.c.classification_ceiling,
         ModelRegistry.__table__.c.classification_ceiling,
         RegisteredService.__table__.c.classification_ceiling,
         ServiceAuditCallback.__table__.c.classification_level,
@@ -129,5 +136,5 @@ def test_serializers_fail_closed_on_corrupt_null_ceiling() -> None:
         description_for_router="test",
         classification_ceiling=None,
     )
-    with pytest.raises(RuntimeError, match="non-null canonical"):
-        _required_classification_ceiling(agent)
+    # Agent null ceiling is the legal unset / not-dispatchable wire value.
+    assert _optional_classification_ceiling(agent) is None

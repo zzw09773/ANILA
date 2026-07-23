@@ -73,6 +73,7 @@
             <th>email</th>
             <th style="width: 14%">部門</th>
             <th style="width: 100px">角色</th>
+            <th v-if="authStore.isOwner" style="width: 88px">稽核檢視</th>
             <th style="width: 100px">狀態</th>
             <th style="width: 14%">上次登入</th>
             <th style="width: 12%">建立時間</th>
@@ -89,6 +90,16 @@
             <td class="cell-meta">{{ user.email || '—' }}</td>
             <td class="cell-meta">{{ user.department_name || '—' }}</td>
             <td><TermBadge :variant="roleVariant(user.role)">{{ user.role }}</TermBadge></td>
+            <td v-if="authStore.isOwner">
+              <label class="audit-viewer-toggle" :title="user.role === 'owner' ? '擁有者一律可檢視' : '授與推論稽核查詢權限'">
+                <input
+                  type="checkbox"
+                  :checked="!!user.can_view_inference_audit"
+                  :disabled="togglingAuditViewerId === user.id"
+                  @change="handleToggleAuditViewer(user, $event.target.checked)"
+                />
+              </label>
+            </td>
             <td>
               <TermBadge :variant="statusVariant(user)" dot>{{ statusLabel(user) }}</TermBadge>
             </td>
@@ -300,6 +311,7 @@ const showAllowedAgentsModal = ref(false)
 const allowedAgentsTarget = ref(null)
 const selectedAgentIds = ref([])
 const savingAgents = ref(false)
+const togglingAuditViewerId = ref(null)
 
 const activeDepartments = computed(() => departments.value.filter(d => d.is_active))
 const pendingCount = computed(() => users.value.filter(u => !u.is_approved).length)
@@ -506,6 +518,27 @@ async function handleToggleSsoOnly(user, disable) {
   } catch (e) { setFeedback('error', e.response?.data?.detail || `${action}失敗`) }
 }
 
+async function handleToggleAuditViewer(user, enabled) {
+  const previous = !!user.can_view_inference_audit
+  user.can_view_inference_audit = enabled
+  togglingAuditViewerId.value = user.id
+  try {
+    const { data } = await updateUser(user.id, { can_view_inference_audit: enabled })
+    user.can_view_inference_audit = !!data.can_view_inference_audit
+    setFeedback(
+      'success',
+      enabled
+        ? `已授與「${user.username}」稽核檢視`
+        : `已撤銷「${user.username}」稽核檢視`,
+    )
+  } catch (e) {
+    user.can_view_inference_audit = previous
+    setFeedback('error', e.response?.data?.detail || '更新稽核檢視失敗')
+  } finally {
+    togglingAuditViewerId.value = null
+  }
+}
+
 function toggleUserSelection(id, on) {
   if (on) selectedUserIds.value = Array.from(new Set([...selectedUserIds.value, id]))
   else selectedUserIds.value = selectedUserIds.value.filter(x => x !== id)
@@ -638,4 +671,11 @@ function formatDate(dateStr) {
   align-items: flex-start;
 }
 .check-list__row input { accent-color: var(--c-accent); }
+
+.audit-viewer-toggle {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+.audit-viewer-toggle input { accent-color: var(--c-accent); }
 </style>

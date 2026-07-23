@@ -47,11 +47,14 @@
 
 `main` 是 SSOT。通用 feature、bugfix、docs、測試先進 `main`，再同步 downstream。downstream 之間不要互相 merge；需要跨分支修補時，先進 `main`，再分別 port。
 
-### 3.1 現況實測（2026-07-10 量測，改動前請重新量測）
+### 3.1 現況實測（2026-07-22 重收斂，改動前請重新量測）
 
-> ⚠ 本節在 2026-07-10 之前的內容已過時，且過時方向會誤導決策。以下為實測結果。
+> ⚠ 本節更早的內容已過時，且過時方向會誤導決策。以下為 2026-07-22 收斂手術後的實測結果。
+> 歷史教訓：07-10 至 07-22 間分支曾雙向漂移（downstream 落後 main 170–199 commit、
+> 「領先 11 commit」經 `git patch-id --stable` 證實 10/11 是 main 上同卵雙胞的假警報）。
+> 07-22 以「main tip ＋ 語意重推導的姿態 commit ＋ `merge -s ours` 保 ancestry」重建六條分支。
 
-**程式碼已收斂成單一版本。** 六條 downstream 分支中，**五條與 `main` 的差異只有 `.env.example` 一個檔案**，所有程式碼位元組相同：
+**程式碼已收斂成單一版本。** 六條 downstream 分支中，**五條與 `main` 的差異只有 `.env.example` 一個檔案**：
 
 | Branch | 與 `main` 的非文件差異 |
 |---|---|
@@ -60,12 +63,12 @@
 | `dev-military` | 只有 `.env.example` |
 | `prod-military-passwd` | 只有 `.env.example` |
 | `prod-intranet-card` | 只有 `.env.example` |
-| `trial-military` | 30 個檔案（唯一真正的刪減型分支） |
+| `trial-military` | `.env.example` ＋ 8 個開發者視圖刪減檔（唯一刪減型分支） |
 
 推論三點：
 
 1. **`prod-intranet-card` 已不是 card/SSO code fork。** `services/csp/app/services/card_auth.py`、`card_auth_service.py`、`auth_service.py`、`api/auth/*` 在它與 `main` 上位元組相同——card/SSO 程式碼已收進 `main`，由 `ENABLE_CARD_LOGIN` / `REQUIRE_CARD_LOGIN_ONLY` 兩個旗標決定行為。舊版所稱的「永久 fork 熱區」不再存在。
-2. **不要用 commit count 判斷 porting 負擔。** `git rev-list --left-right --count` 會顯示 12/11 之類的 divergence，那是 **commit 圖差異**（同語意不同 SHA 的 cherry-pick），不是內容差異。一律用 `git diff --name-only` 看檔案。
+2. **不要用 commit count 判斷 porting 負擔。** `git rev-list --left-right --count` 會顯示 12/11 之類的 divergence，那是 **commit 圖差異**（同語意不同 SHA 的 cherry-pick），不是內容差異。一律用 `git diff --name-only` 看檔案，疑似「領先」的 commit 用 `git patch-id --stable` 與 main 對比（07-22 的「11 個領先功能 commit」即以此法證偽）。
 3. **真正的風險已經轉移。** 正式部署身分現在由**可變的環境設定**決定，而不是由不可變的簽章 release artifact 決定。長期解法是單一 code line ＋ 簽章 deployment profile。見 `docs/planning/anila-development-roadmap.md` §2.4 與 Gate 6。
 
 量測指令（不要 checkout）：
@@ -115,7 +118,7 @@ git diff --name-only origin/main origin/<branch> -- . ':(exclude)docs/**' ':(exc
   - `git log --oneline --no-merges origin/main..origin/<branch>`
   - `git cherry -v origin/main origin/<branch>`
 - commit 標籤維持既有規則：`[card-only]`, `[public-only]`, `[military-only]`, `[dev-only]`, `[security-all]`。
-- **2026-07-10 量測下，五條非 trial downstream 的唯一非文件 tip delta 是 `.env.example`**；這是現況快照，不是永久不變式。port 時不要用 `main` 的版本覆蓋掉分支的旗標姿態；§3.3 的服務移除落實後，compose/nginx 也會成為正式 delta。
+- **2026-07-22 重收斂後，五條非 trial downstream 的唯一非文件 tip delta 是 `.env.example`**；這是現況快照，不是永久不變式。port 時不要用 `main` 的版本覆蓋掉分支的旗標姿態；反向同樣成立——姿態更新必**語意重推導**（以 main 現行 `.env.example` 為基底、只覆寫分支蓄意值），禁直接 apply 舊 diff（07-22 廢棄的 sync 分支曾因此丟失 card 的 `ENABLE_PUBLIC_SHARE=false`/`ENABLE_MEMORY=false`）。§3.3 的服務移除落實後，compose/nginx 也會成為正式 delta。
 - `trial-military` 是刪減型分支，前端改動會撞 modify/delete，需挑選式 port。
 
 ### 3.5 建議同步順序

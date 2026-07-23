@@ -18,8 +18,9 @@ os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.agent import Agent
+from app.models.model_registry import ModelRegistry
 
-from tests.conftest import make_user, login
+from tests.conftest import make_user, login, make_model
 
 
 def _seed(db):
@@ -60,6 +61,12 @@ def _seed(db):
         endpoint_url="http://agent:9100", description_for_router="x",
         requires_encryption=True, default_classification_level="無機密",
     ))
+
+    # model_registry 必須依 classification_ceiling 分桶(不得全數落無機密)。
+    make_model(db, name="m-plain")
+    secret = make_model(db, name="m-secret")
+    secret.classification_ceiling = "機密"
+    db.add(secret)
     db.commit()
     return owner
 
@@ -93,15 +100,43 @@ def test_admin_inventory_counts_match_fixtures(client, db):
     assert msg["total"] == 1
     assert msg["levels"]["極機密"] == 1
     assert msg["latched"] == 1
-    assert msg["inconsistent"] == 0  # messages 無舊 boolean → 恆 0
+    # messages 無舊 boolean → inconsistent 不適用(null),不得硬編 0。
+    assert msg["inconsistent"] is None
 
     agents = rows["agents"]
     assert agents["inconsistent"] == 1  # requires_encryption=True 但等級無機密
 
-    # model_registry 現況無分類欄位 → 全數落在 floor 無機密,latched/inconsistent 0。
+    # model_registry 依 classification_ceiling 分桶(許可上限,非資料實際等級);
+    # 無 legacy → inconsistent null; payload marks ceiling: true.
     reg = rows["model_registry"]
+    assert reg["levels"]["無機密"] == 1
+    assert reg["levels"]["機密"] == 1
     assert reg["latched"] == 0
-    assert reg["inconsistent"] == 0
+    assert reg["inconsistent"] is None
+    assert reg["ceiling"] is True
+    for rtype, row in rows.items():
+        if rtype == "model_registry":
+            continue
+        assert "ceiling" not in row, rtype
+
+    # 無 legacy_attr 的六型皆回 null inconsistent。
+    for rtype in (
+        "messages",
+        "ingestion_collections",
+        "ingestion_documents",
+        "model_registry",
+        "tasks",
+        "source_snapshots",
+    ):
+        assert rows[rtype]["inconsistent"] is None, rtype
+
+    # 管理面說明 / 連結欄位。
+    assert rows["model_registry"]["description"]
+    assert rows["model_registry"]["manage_path"] == "/models"
+    assert rows["agents"]["manage_path"] == "/developer/agents"
+    assert rows["ingestion_collections"]["manage_path"] == "/knowledge-collections"
+    assert rows["conversations"]["manage_path"] is None
+    assert "系統自動治理" in rows["conversations"]["description"]
 
     # 八個核心資源都出現。
     assert set(rows) == {

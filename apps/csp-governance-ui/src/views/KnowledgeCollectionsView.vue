@@ -42,6 +42,7 @@
           <div class="cc__title">
             <span class="cc__name">{{ c.name }}</span>
             <TermBadge :variant="c.status === 'active' ? 'ok' : ''">{{ c.status }}</TermBadge>
+            <TermBadge v-if="c.classification_level" variant="accent">{{ c.classification_level }}</TermBadge>
           </div>
           <div class="cc__id tnum">id #{{ c.id }}</div>
         </header>

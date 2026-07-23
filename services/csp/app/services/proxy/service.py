@@ -637,6 +637,22 @@ def _get_timeout(model_type: str) -> float:
     return settings.LLM_TIMEOUT
 
 
+def default_meta_identity(
+    caller_client_id: int | None, model_name: str
+) -> tuple[str, str]:
+    """Trace identity for the default anila_meta.
+
+    ANILA 編排(router/哨兵服務身分)代打的內部推論:對終端使用者隱藏底層
+    模型與內部端點(拓撲不外洩),只顯示「呼叫 ANILA」。使用者自選模型的
+    一般對話保留模型名(那是使用者自己的選擇),但內部端點 URL 一律不進
+    使用者可見 trace。
+    """
+
+    if caller_client_id is not None:
+        return "ANILA", "ANILA 產生回答中"
+    return model_name, "模型回應完成"
+
+
 def build_default_anila_meta(
     source_name: str,
     *,
@@ -700,6 +716,7 @@ async def _proxy_request_impl(
     admitted_classification_level: str | None = None,
     task_run_id: int | None = None,
     usage_capture: dict | None = None,
+    suppress_usage_accounting: bool = False,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -891,9 +908,12 @@ async def _proxy_request_impl(
                 }
             existing_meta = result.get("anila_meta")
             if not existing_meta:
+                meta_source, meta_detail = default_meta_identity(
+                    caller_client_id, model.name
+                )
                 result["anila_meta"] = build_default_anila_meta(
-                    model.name,
-                    detail=f"Proxy -> {target_url}",
+                    meta_source,
+                    detail=meta_detail,
                     latency_ms=duration_ms,
                     classified=requires_encryption,
                 )
@@ -909,6 +929,14 @@ async def _proxy_request_impl(
             # Slice 2b-C: task-linked / legacy-marked /v1 chat rows go
             # through the task-aware variant; every other caller keeps the
             # byte-identical legacy enqueue path.
+            if suppress_usage_accounting:
+                # Internal-router orchestration hop: the terminal inference row
+                # is written by the nested real-model call, so this outer
+                # sentinel forward must not enqueue/capture a duplicate
+                # token_usage row.  Governance (``governance_usage``) and
+                # ``anila_meta`` above are already set and stay intact; only
+                # the token_usage accounting is suppressed.
+                return result
             usage_record = UsageRecordData(
                 api_key_id=api_key_id,
                 user_id=user_id,
@@ -1036,6 +1064,7 @@ async def proxy_request(
     registry_manifest_revision: str | None = None,
     registry_manifest_sha256: str | None = None,
     finalize_task_run_on_completion: bool = True,
+    suppress_usage_accounting: bool = False,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -1132,6 +1161,7 @@ async def proxy_request(
                 admitted_classification_level=effective_level,
                 task_run_id=task_run_id,
                 usage_capture=usage_capture,
+                suppress_usage_accounting=suppress_usage_accounting,
             )
             if governed is not None and authorization is not None:
                 try:
@@ -1267,6 +1297,7 @@ async def _proxy_stream_impl(
     task_run_started_at: datetime | None = None,
     usage_capture: dict | None = None,
     terminal_capture: dict | None = None,
+    suppress_usage_accounting: bool = False,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -1421,7 +1452,12 @@ async def _proxy_stream_impl(
         If the client disconnects after the usage frame but before ``[DONE]``,
         the wrapper can still persist metering in the failed durable closure.
         """
-        if task_id is None or usage_capture is None or not usage_seen:
+        if (
+            suppress_usage_accounting
+            or task_id is None
+            or usage_capture is None
+            or not usage_seen
+        ):
             return
         usage_capture["record"] = UsageRecordData(
             api_key_id=api_key_id,
@@ -1607,11 +1643,16 @@ async def _proxy_stream_impl(
         )
     total_tokens = prompt_tokens + completion_tokens
     if not meta_seen:
+        # 與非串流路徑同規則(default_meta_identity):使用者可見 meta 不得
+        # 洩漏底層模型身分(ANILA 編排時)與內部端點 URL(一律)。
+        meta_source, meta_detail = default_meta_identity(
+            caller_client_id, model_name or "模型"
+        )
         yield "event: anila.meta\n"
         yield "data: " + json.dumps(
             build_default_anila_meta(
-                model_name or target_url,
-                detail=f"Proxy stream -> {target_url}",
+                meta_source,
+                detail=meta_detail,
                 latency_ms=duration_ms,
                 classified=requires_encryption,
                 usage={
@@ -1638,10 +1679,14 @@ async def _proxy_stream_impl(
             # an incomplete stream, never a client-visible successful stream
             # with an incomplete ledger.
             terminal_capture["done_block"] = pending_done_block
-    if total_tokens > 0:
+    if total_tokens > 0 and not suppress_usage_accounting:
         # Slice 2b-C: task-linked / legacy-marked /v1 chat rows go through
         # the task-aware variant; every other caller keeps the
         # byte-identical legacy enqueue path.
+        # ``suppress_usage_accounting`` gates out the internal-router
+        # orchestration hop: the terminal inference row is written by the
+        # nested real-model call, so this outer sentinel forward writes no
+        # duplicate token_usage row (governance / anila.meta above stay).
         usage_record = UsageRecordData(
             api_key_id=api_key_id,
             user_id=user_id,
@@ -1730,6 +1775,7 @@ async def proxy_stream(
     registry_manifest_revision: str | None = None,
     registry_manifest_sha256: str | None = None,
     finalize_task_run_on_completion: bool = True,
+    suppress_usage_accounting: bool = False,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -1838,6 +1884,7 @@ async def proxy_stream(
                 task_run_started_at=task_run_started_at,
                 usage_capture=usage_capture,
                 terminal_capture=terminal_capture,
+                suppress_usage_accounting=suppress_usage_accounting,
             )
             try:
                 async for chunk in cancellable_iter(upstream, cancel_event):
