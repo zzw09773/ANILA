@@ -24,6 +24,7 @@ from app.models.audit_log import AuditLog
 from app.models.task import Task, TaskRun
 from app.models.token_usage import TokenUsage
 from app.models.trace_span import TraceSpan
+from app.modules.tasks import transition_task
 from app.schemas.contracts.traces import SpanProducer
 
 logger = logging.getLogger("app.services.proxy_service")
@@ -227,8 +228,18 @@ def _persist_once(db: Session, closure: TaskCallClosure) -> int | None:
         run.finished_at = now
         run.error = closure.error
         run.usage_record_id = usage_row.id if usage_row is not None else None
-        task.status = run.status
-        task.updated_at = now
+        # Conversational query tasks (shell contract task_type='query') are
+        # multi-turn: a successful run parks at waiting_for_user so the next
+        # turn can fast-forward back to running.  Do not copy the run's
+        # terminal ``completed`` onto the Task — that freezes the state
+        # machine and 409s the second turn.
+        if run.status == "completed" and task.task_type == "query":
+            transition_task(
+                db, task=task, new_status="waiting_for_user", commit=False
+            )
+        else:
+            task.status = run.status
+            task.updated_at = now
         db.add(AuditLog(
             actor_user_id=task.requester_user_id,
             action="task.run.finished",

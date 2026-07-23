@@ -17,6 +17,7 @@ from app.schemas.user import (
     UserAllowedModelsUpdate,
     UserAllowedAgentsUpdate,
 )
+from app.api.proxy import _is_internal_router_model
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import (
     get_current_user,
@@ -233,6 +234,8 @@ def get_my_allowed_models(
         models = db.query(ModelRegistry).filter(ModelRegistry.is_active == True).all()
     else:
         models = current_user.allowed_models
+    # End-user picker: always hide the anila-router orchestration sentinel.
+    models = [m for m in models if not _is_internal_router_model(m)]
     return [{"id": m.id, "display_name": m.display_name, "model_type": m.model_type} for m in models]
 
 

@@ -95,7 +95,10 @@ services:
       # flux2-dev-agent added: the image-generator agent + image model use this
       # docker service name (single-label), which the URL guard blocks unless
       # trusted (ALLOW_PRIVATE does NOT bypass the single-label check).
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,gate5-e2e-model,host.docker.internal}"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,gate5-e2e-model,router,host.docker.internal}"
+      # Router sentinel chat model (auto-seeded, non-secret) — single-label
+      # docker service name, so it must also be trusted above.
+      ANILA_ROUTER_SENTINEL_URL: "${ANILA_ROUTER_SENTINEL_URL:-http://router:9000}"
       # 稽核 IP 溯源:信任 dev nginx 的 X-Forwarded-For(填 nginx 容器 IP/32,
       # 容器重建後 IP 可能漂,漂了要更新;空值=記 proxy IP)。
       ANILA_TRUSTED_PROXY_CIDRS: "${ANILA_TRUSTED_PROXY_CIDRS:-}"

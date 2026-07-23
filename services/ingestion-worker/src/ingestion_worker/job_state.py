@@ -221,12 +221,16 @@ async def fail_or_retry(
                 return "retry_wait"
 
             terminal = "dead_letter" if retryable else "failed"
+            # Explicit ::text casts on $2 so asyncpg doesn't trip on the
+            # parameter being used in both ``SET status = $2`` (varchar column)
+            # and ``CASE WHEN $2 = 'dead_letter'`` (text literal compare). Without
+            # the cast it raises AmbiguousParameterError.
             await conn.execute(
                 """
-                UPDATE ingestion_jobs SET status=$2, progress_pct=100,
+                UPDATE ingestion_jobs SET status=$2::text, progress_pct=100,
                     error_code=$3, error_message=$4,
                     failure_kind=$5, retryable=$6, completed_at=now(),
-                    dead_lettered_at=CASE WHEN $2='dead_letter' THEN now() END,
+                    dead_lettered_at=CASE WHEN $2::text='dead_letter' THEN now() END,
                     lease_token=NULL, lease_expires_at=NULL,
                     next_attempt_at=NULL
                 WHERE id=$1

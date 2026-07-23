@@ -100,7 +100,13 @@ services:
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,host.docker.internal}"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,router,host.docker.internal}"
+      # Router sentinel chat model (auto-seeded, non-secret). Empty default =
+      # seed no-op:正式環境 URL guard 對 model endpoint 硬拒 http(不受旗標
+      # 放行),預設 http://router:9000 會產出一個出廠即被拒的 sentinel。
+      # formal 部署要啟用時自行設定可通過 guard 的 Router upstream。
+      # ``router`` is single-label so it is trusted above.
+      ANILA_ROUTER_SENTINEL_URL: "${ANILA_ROUTER_SENTINEL_URL:-}"
       # 稽核 IP 溯源:只信任 nginx 這一跳的 X-Forwarded-For。值由
       # intranet-deploy.sh 於 up 後自動解析 anila-nginx 容器位址寫入 .env
       # (/32);空值=只記直接對端(即 proxy IP)。禁填寬網段(見 .env.example)。
@@ -423,6 +429,11 @@ services:
       ROUTER_CONTEXT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
       # 必須跟 csp 的 CSP_SERVICE_TOKEN 一致 — router 用它走 service-auth endpoint。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
+      # 具名 service-client 權杖(router-chain-bootstrap.sh 產生,寫入 .env)。
+      # 留空 = registry snapshot / 直答治理 fail-closed 拒絕。
+      ANILA_CSP_REGISTRY_SERVICE_TOKEN: "${ANILA_CSP_REGISTRY_SERVICE_TOKEN:-}"
+      ANILA_CSP_AGENT_SERVICE_TOKEN: "${ANILA_CSP_AGENT_SERVICE_TOKEN:-}"
+      ANILA_CSP_INFERENCE_SERVICE_TOKEN: "${ANILA_CSP_INFERENCE_SERVICE_TOKEN:-}"
       ANILA_ROUTER_STATE_DIR: /var/lib/anila-router
       MODEL: ${LLM_MODEL:-gemma4}
       # Formal Router must export Full Trace spans back to CSP. /ready fails

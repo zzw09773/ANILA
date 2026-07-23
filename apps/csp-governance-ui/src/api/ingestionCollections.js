@@ -35,6 +35,7 @@ export const createCollection = (payload) =>
  *
  * @param {number} collectionId
  * @param {{ name?: string, description?: string, status?: 'active' | 'archived',
+ *          classification_level?: string,
  *          chunking_config?: { strategy: string, params?: Record<string, unknown> } }} patch
  */
 export const updateCollection = (collectionId, patch) =>

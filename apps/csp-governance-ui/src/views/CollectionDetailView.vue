@@ -55,6 +55,34 @@
       </template>
     </TermModal>
 
+    <TermBox
+      v-if="collection && isAdmin"
+      title="設定 · 分類等級"
+      pad="md"
+      hint="僅管理員可變更。升級在此直接套用；降級請走降密申請 POST /api/classification/declassification-requests。新上傳文件會繼承此等級；已索引文件不會回溯改寫。"
+    >
+      <div class="settings-row">
+        <TermField
+          label="分類等級"
+          hint="僅可升級（無機密 → 絕對機密）。降級須經降密申請與主管核准。"
+          :error="classificationLowerError"
+        >
+          <select v-model="classificationDraft" class="term-select" :disabled="savingClassification">
+            <option v-for="lvl in CLASSIFICATION_LEVELS" :key="lvl" :value="lvl">{{ lvl }}</option>
+          </select>
+        </TermField>
+        <TermButton
+          variant="primary"
+          :loading="savingClassification"
+          :disabled="savingClassification || !classificationCanSave"
+          :label="savingClassification ? '儲存中…' : '儲存分類'"
+          @click="saveClassification"
+        />
+      </div>
+      <div v-if="settingsError" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ settingsError }}</div>
+      <div v-if="settingsMsg" class="cell-meta" style="margin-top: var(--gap-2);">{{ settingsMsg }}</div>
+    </TermBox>
+
     <section v-if="collection" class="split">
       <TermBox :title="`文件 · ${documents.length}`" pad="none" flush>
         <div v-if="loadingDocs" class="loading">載入中…</div>
@@ -215,17 +243,47 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { getCollection } from '../api/ingestionCollections'
+import { useAuthStore } from '../stores/auth'
+import { getCollection, updateCollection } from '../api/ingestionCollections'
 import { listDocuments, uploadDocument, uploadZip, listDocumentChunks, documentBlobUrl, getChunkEmbeddingDebug, reprocessDocument } from '../api/ingestionDocuments'
 import { listRelations, createRelation, deleteRelation, reresolveRelations } from '../api/ingestionRelations'
 import { streamJob } from '../api/ingestionJobs'
-import { TermBox, TermButton, TermBadge, TermEmpty, TermModal } from '../components/cli'
+import { TermBox, TermButton, TermBadge, TermEmpty, TermModal, TermField } from '../components/cli'
 import RelationGraph from '../components/RelationGraph.vue'
 
 const route = useRoute()
+const authStore = useAuthStore()
+const isAdmin = computed(() => authStore.isAdmin)
 const collectionId = ref(Number(route.params.id))
+
+const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '機密', '極機密', '絕對機密']
+const classificationDraft = ref('無機密')
+const savingClassification = ref(false)
+const settingsError = ref('')
+const settingsMsg = ref('')
+
+function classificationRank(level) {
+  if (!level) return -1
+  return CLASSIFICATION_LEVELS.indexOf(level)
+}
+
+const classificationLowerError = computed(() => {
+  const current = collection.value?.classification_level
+  if (!current || !classificationDraft.value) return ''
+  if (classificationRank(classificationDraft.value) < classificationRank(current)) {
+    return '不可直接降級；請走 POST /api/classification/declassification-requests'
+  }
+  return ''
+})
+
+const classificationCanSave = computed(() => {
+  if (!collection.value) return false
+  if (classificationDraft.value === collection.value.classification_level) return false
+  if (classificationLowerError.value) return false
+  return true
+})
 
 const collection = ref(null)
 const loadError = ref('')
@@ -269,6 +327,7 @@ async function loadAll() {
   try {
     const { data } = await getCollection(collectionId.value)
     collection.value = data
+    classificationDraft.value = data.classification_level || '無機密'
   } catch (e) {
     loadError.value = `載入知識庫失敗：${e.response?.data?.detail || e.message}`
     return
@@ -276,6 +335,29 @@ async function loadAll() {
   await loadDocs()
   await loadRelations()
   startPolling()
+}
+
+async function saveClassification() {
+  if (!collection.value || !isAdmin.value) return
+  if (classificationLowerError.value) {
+    settingsError.value = classificationLowerError.value
+    return
+  }
+  settingsError.value = ''
+  settingsMsg.value = ''
+  savingClassification.value = true
+  try {
+    const { data } = await updateCollection(collection.value.id, {
+      classification_level: classificationDraft.value,
+    })
+    collection.value = data
+    classificationDraft.value = data.classification_level || classificationDraft.value
+    settingsMsg.value = `已更新分類為「${data.classification_level}」`
+  } catch (e) {
+    settingsError.value = e.response?.data?.detail || e.message
+  } finally {
+    savingClassification.value = false
+  }
 }
 async function loadDocs() {
   loadingDocs.value = true
@@ -515,6 +597,14 @@ function zipBadgeVariant(s) {
 /* Doc list + inspector split */
 .split { display: grid; grid-template-columns: 320px 1fr; gap: var(--gap-3); }
 @media (max-width: 1000px) { .split { grid-template-columns: 1fr; } }
+
+.settings-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--gap-3);
+  flex-wrap: wrap;
+}
+.settings-row .term-field { flex: 1; min-width: 220px; }
 
 .docs { list-style: none; padding: 0; margin: 0; max-height: 600px; overflow-y: auto; }
 .doc {

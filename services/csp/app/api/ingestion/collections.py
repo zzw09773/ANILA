@@ -38,6 +38,9 @@ from app.schemas.ingestion import (
 )
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
+from app.modules.policy import apply_classification
+from anila_contracts import Classification as ClassificationLevel
+from app.schemas.contracts.policy import PolicyActorType
 
 router = APIRouter(tags=["Ingestion / Collections"])
 logger = logging.getLogger(__name__)
@@ -241,6 +244,39 @@ def update_collection(
     if payload.status is not None:
         coll.status = payload.status
         changed["status"] = payload.status
+    if payload.classification_level is not None:
+        if not is_admin_tier(current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="僅 admin/owner 可變更知識庫分類等級",
+            )
+        previous = ClassificationLevel.from_storage(coll.classification_level)
+        target = payload.classification_level
+        if target != previous:
+            if target < previous:
+                # 降級唯一合法路徑:降密申請 → 主管核准(雙人原則)。
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "知識庫分類不可直接降級；請透過降密申請流程 "
+                        "POST /api/classification/declassification-requests "
+                        "經主管核准後生效（雙人原則）。"
+                    ),
+                )
+            # 升級走平台單向閂鎖核心(FOR UPDATE + ClassificationEvent +
+            # latch 欄位);不得另記 collection.read PolicyDecision。
+            apply_classification(
+                db,
+                resource_type="collection",
+                resource_id=str(coll.id),
+                new_level=target.to_storage(),
+                actor_type=PolicyActorType.USER.value,
+                actor_id=str(current_user.id),
+                reason="manual_admin",
+                source="manual_admin",
+                commit=False,
+            )
+            changed["classification_level"] = target.to_storage()
 
     if not changed:
         return CollectionResponse.model_validate(coll)

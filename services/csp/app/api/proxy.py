@@ -1349,11 +1349,15 @@ async def list_models_openai(
         .order_by(ModelRegistry.id)
         .all()
     )
+    # anila-router 是後端路由哨兵,不是給終端使用者挑選的模型;
+    # 權限閘通過後仍排除,避免出現在 OpenAI 相容的 discovery 清單。
+    # 聊天 POST 路徑仍接受 model=anila-router(不經由此清單)。
     visible = [
         m for m in rows
         if check_model_permission(
             db, user=caller.user, api_key_id=caller.api_key_id, model_id=m.id
         )
+        and not _is_internal_router_model(m)
     ]
     return JSONResponse({
         "object": "list",
@@ -2768,6 +2772,11 @@ async def _chat_completions_impl(
             finalize_task_run_on_completion=(
                 task_ctx.owns_lifecycle if task_ctx else True
             ),
+            # The internal-router sentinel forward is an orchestration hop, not
+            # a terminal model call; its token_usage row would double-count the
+            # nested real-model inference, so suppress accounting here. The
+            # nested /internal/v1/router call (real model) is unaffected.
+            suppress_usage_accounting=_is_internal_router_model(model),
         )
         teed = _tee_stream_capture_assistant(
             upstream,
@@ -2844,6 +2853,10 @@ async def _chat_completions_impl(
             finalize_task_run_on_completion=(
                 task_ctx.owns_lifecycle if task_ctx else True
             ),
+            # See stream branch: suppress the orchestration hop's token_usage row so
+            # the anila-router sentinel forward never double-counts the nested
+            # real-model inference.
+            suppress_usage_accounting=_is_internal_router_model(model),
         )
     except HTTPException as exc:
         if exc.status_code == 403:

@@ -19,9 +19,12 @@ from .csp_registry_client import (
     AgentClientError,
     CspAgentClient,
     CspAgentRequest,
+    CspDirectModelGovernanceClient,
     CspInferenceClient,
     CspInferenceRequest,
     CspExecutionGrantMinter,
+    DirectModelGovernanceProvider,
+    DirectModelGovernanceUnavailable,
     ExecutionGrantEnvelope,
     InferenceClient,
     CspRegistryClient,
@@ -31,7 +34,7 @@ from .csp_registry_client import (
     RegistryClientError,
     parse_registry_snapshot,
 )
-from .policy_gate import ExecutionGrantInput, PolicyGate
+from .policy_gate import DirectModelGovernance, ExecutionGrantInput, PolicyGate
 from .request_context import (
     RequestContext,
     RequestContextBuilder,
@@ -62,9 +65,13 @@ __all__ = [
     "available_registry_entries",
     "CspAgentClient",
     "CspAgentRequest",
+    "CspDirectModelGovernanceClient",
     "CspInferenceClient",
     "CspInferenceRequest",
     "CspExecutionGrantMinter",
+    "DirectModelGovernance",
+    "DirectModelGovernanceProvider",
+    "DirectModelGovernanceUnavailable",
     "ExecutionGrantEnvelope",
     "CspRegistryClient",
     "ExecutionGrantMinter",

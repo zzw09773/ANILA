@@ -110,6 +110,10 @@ try:
             default=False,
             description="Explicit compatibility-only DISPATCH adapter switch.",
         )
+        # ── Gate 5 R7.1:直答(DIRECT_ANSWER)模型治理 ────────────────
+        # 直答主模型的分類上限不再由手動 env knob 提供,而是由 Router 於執行期
+        # 從 CSP model registry 治理自動推導(見 csp_registry_client 的
+        # DirectModelGovernanceProvider)。取得失敗一律 fail-closed 拒絕。
 
         # ── API / Auth ────────────────────────────────────────────────
         api_key: Optional[str] = Field(
