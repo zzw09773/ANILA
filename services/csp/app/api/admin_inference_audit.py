@@ -25,6 +25,11 @@ router = APIRouter(prefix="/api/admin/audit", tags=["推論審計"])
 # metadata remain owner-only. ``detail`` stays visible (product choice).
 SENSITIVE_REDACTED = "<owner-only>"
 
+# Streaming CSV export: batch size (monkeypatchable in tests) and hard
+# cap when the caller omits both ``from`` and ``to`` date filters.
+EXPORT_BATCH_SIZE = 1000
+EXPORT_MAX_ROWS_WITHOUT_DATE = 50000
+
 
 class InferenceAuditRow(BaseModel):
     id: int
@@ -93,6 +98,15 @@ def _serialize_inference_row(row: AuditLog, *, caller: User) -> InferenceAuditRo
     )
 
 
+def _reject_non_owner_ip_filter(*, caller: User, ip: str | None) -> None:
+    """IP is owner-only; granted admins must not oracle via total/rows."""
+    if ip is not None and not is_owner(caller):
+        raise HTTPException(
+            status_code=422,
+            detail="僅擁有者可使用 IP 篩選",
+        )
+
+
 def _build_inference_query(
     db: Session,
     *,
@@ -141,6 +155,7 @@ def list_inference_audit(
 ):
     from_dt = _require_tz_aware(from_, name="from")
     to_dt = _require_tz_aware(to, name="to")
+    _reject_non_owner_ip_filter(caller=admin, ip=ip)
     base = _build_inference_query(
         db,
         username=username,
@@ -186,7 +201,8 @@ def export_inference_audit(
 ):
     from_dt = _require_tz_aware(from_, name="from")
     to_dt = _require_tz_aware(to, name="to")
-    rows = _build_inference_query(
+    _reject_non_owner_ip_filter(caller=admin, ip=ip)
+    query = _build_inference_query(
         db,
         username=username,
         ip=ip,
@@ -194,8 +210,16 @@ def export_inference_audit(
         q=q,
         from_dt=from_dt,
         to_dt=to_dt,
-    ).all()
+    )
     show_sensitive = is_owner(admin)
+    # Unscoped exports (no from/to) are hard-capped so a full-table pull
+    # cannot OOM the worker. Date-bounded exports stream without a row cap.
+    row_cap = (
+        None
+        if (from_dt is not None or to_dt is not None)
+        else EXPORT_MAX_ROWS_WITHOUT_DATE
+    )
+    batch_size = EXPORT_BATCH_SIZE
 
     def _iter() -> Iterator[str]:
         buffer = io.StringIO()
@@ -206,36 +230,57 @@ def export_inference_audit(
         yield buffer.getvalue()
         buffer.seek(0)
         buffer.truncate(0)
-        for row in rows:
-            writer.writerow(
-                [
-                    _csv_neutralize_cell(cell)
-                    for cell in (
-                        row.id,
-                        row.created_at.isoformat() if row.created_at else "",
-                        row.actor_user_id if row.actor_user_id is not None else "",
-                        row.actor_username or "",
-                        row.action,
-                        row.resource_type,
-                        row.resource_id or "",
-                        row.status,
-                        row.detail or "",
-                        (
-                            row.ip_address
-                            if show_sensitive
-                            else SENSITIVE_REDACTED
-                        ),
-                        (
-                            row.metadata_json
-                            if show_sensitive
-                            else ""
-                        ),
-                    )
-                ]
-            )
-            yield buffer.getvalue()
-            buffer.seek(0)
-            buffer.truncate(0)
+
+        emitted = 0
+        truncated = False
+        # Windowed offset batches: stream rows without materialising .all().
+        offset = 0
+        while True:
+            batch = query.offset(offset).limit(batch_size).all()
+            if not batch:
+                break
+            for row in batch:
+                if row_cap is not None and emitted >= row_cap:
+                    truncated = True
+                    break
+                writer.writerow(
+                    [
+                        _csv_neutralize_cell(cell)
+                        for cell in (
+                            row.id,
+                            row.created_at.isoformat() if row.created_at else "",
+                            row.actor_user_id if row.actor_user_id is not None else "",
+                            row.actor_username or "",
+                            row.action,
+                            row.resource_type,
+                            row.resource_id or "",
+                            row.status,
+                            row.detail or "",
+                            (
+                                row.ip_address
+                                if show_sensitive
+                                else SENSITIVE_REDACTED
+                            ),
+                            (
+                                row.metadata_json
+                                if show_sensitive
+                                else ""
+                            ),
+                        )
+                    ]
+                )
+                yield buffer.getvalue()
+                buffer.seek(0)
+                buffer.truncate(0)
+                emitted += 1
+            if truncated:
+                break
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+
+        if truncated:
+            yield f"# truncated at {row_cap} — 請縮小日期範圍\n"
 
     return StreamingResponse(
         _iter(),

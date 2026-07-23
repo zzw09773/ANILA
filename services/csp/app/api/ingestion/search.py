@@ -902,6 +902,67 @@ async def search_collection(
         hits = sorted(candidates, key=lambda hit: hit.score, reverse=True)[
             : payload.top_k
         ]
+
+        if not hits:
+            _rag_outcome("success")
+            return SearchResponse(
+                query=payload.query,
+                embedding_model=coll.embedding_model,
+                embedding_fingerprint=coll.embedding_fingerprint,
+                embedding_dim=coll.embedding_dim,
+                results=[],
+            )
+
+        # Bulk-fetch filenames for the hit document set. Single round-trip
+        # vs N+1 lookups — handful of doc IDs at most (top_k ≤ 50).
+        doc_ids = {h.chunk.document_id for h in hits}
+        rows = (
+            db.query(IngestionDocument.id, IngestionDocument.filename)
+            .filter(IngestionDocument.id.in_(doc_ids))
+            .all()
+        )
+        filenames = {r.id: r.filename for r in rows}
+
+        related: list[RelatedHit] = []
+        if payload.expand_relations:
+            related = await _expand_relations(
+                db,
+                store,
+                principal=principal,
+                collection_id=coll.id,
+                main_doc_ids=doc_ids,
+                query_vec=query_vec,
+                payload=payload,
+            )
+
+        _rag_outcome("success")
+        return SearchResponse(
+            query=payload.query,
+            embedding_model=coll.embedding_model,
+            embedding_fingerprint=coll.embedding_fingerprint,
+            embedding_dim=coll.embedding_dim,
+            related=related,
+            results=[
+                SearchHitOut(
+                    chunk_id=h.chunk.id,
+                    document_id=h.chunk.document_id,
+                    filename=filenames.get(h.chunk.document_id, "<unknown>"),
+                    chunk_key=h.chunk.chunk_key,
+                    content=h.chunk.content,
+                    score=h.score,
+                    metadata=h.chunk.metadata or {},
+                    # Sprint 9 X — surface parent context if the storage
+                    # layer attached it (CollectionScopedPgVectorStore
+                    # populates ``parent_content`` via _attach_parent_content
+                    # in the same round-trip after the vector match).
+                    parent_chunk_id=getattr(h.chunk, "parent_chunk_id", None),
+                    parent_content=getattr(h, "parent_content", None),
+                    chunk_type=getattr(h.chunk, "chunk_type", "leaf") or "leaf",
+                    chunk_level=getattr(h.chunk, "chunk_level", 0) or 0,
+                )
+                for h in hits
+            ],
+        )
     except HTTPException as exc:
         _rag_outcome(
             "error",
@@ -915,67 +976,6 @@ async def search_collection(
     except Exception:
         _rag_outcome("error", reason="rag_retrieval_failed")
         raise
-
-    if not hits:
-        _rag_outcome("success")
-        return SearchResponse(
-            query=payload.query,
-            embedding_model=coll.embedding_model,
-            embedding_fingerprint=coll.embedding_fingerprint,
-            embedding_dim=coll.embedding_dim,
-            results=[],
-        )
-
-    # Bulk-fetch filenames for the hit document set. Single round-trip
-    # vs N+1 lookups — handful of doc IDs at most (top_k ≤ 50).
-    doc_ids = {h.chunk.document_id for h in hits}
-    rows = (
-        db.query(IngestionDocument.id, IngestionDocument.filename)
-        .filter(IngestionDocument.id.in_(doc_ids))
-        .all()
-    )
-    filenames = {r.id: r.filename for r in rows}
-
-    related: list[RelatedHit] = []
-    if payload.expand_relations:
-        related = await _expand_relations(
-            db,
-            store,
-            principal=principal,
-            collection_id=coll.id,
-            main_doc_ids=doc_ids,
-            query_vec=query_vec,
-            payload=payload,
-        )
-
-    _rag_outcome("success")
-    return SearchResponse(
-        query=payload.query,
-        embedding_model=coll.embedding_model,
-        embedding_fingerprint=coll.embedding_fingerprint,
-        embedding_dim=coll.embedding_dim,
-        related=related,
-        results=[
-            SearchHitOut(
-                chunk_id=h.chunk.id,
-                document_id=h.chunk.document_id,
-                filename=filenames.get(h.chunk.document_id, "<unknown>"),
-                chunk_key=h.chunk.chunk_key,
-                content=h.chunk.content,
-                score=h.score,
-                metadata=h.chunk.metadata or {},
-                # Sprint 9 X — surface parent context if the storage
-                # layer attached it (CollectionScopedPgVectorStore
-                # populates ``parent_content`` via _attach_parent_content
-                # in the same round-trip after the vector match).
-                parent_chunk_id=getattr(h.chunk, "parent_chunk_id", None),
-                parent_content=getattr(h, "parent_content", None),
-                chunk_type=getattr(h.chunk, "chunk_type", "leaf") or "leaf",
-                chunk_level=getattr(h.chunk, "chunk_level", 0) or 0,
-            )
-            for h in hits
-        ],
-    )
 
 
 # ── Image search ────────────────────────────────────────────────────────────

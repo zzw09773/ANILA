@@ -467,8 +467,18 @@ def test_admin_inference_filters_and_pagination(client: TestClient, db: Session)
         headers=_bearer(admin),
         params={"ip": "198.51.100.2"},
     )
-    assert resp_ip.json()["total"] == 1
-    assert resp_ip.json()["rows"][0]["actor_username"] == "bob_audit"
+    assert resp_ip.status_code == 422, resp_ip.text
+    assert "IP" in resp_ip.json()["detail"]
+
+    owner = make_user(db, username="inf_owner_ip", role="owner")
+    resp_ip_owner = client.get(
+        "/api/admin/audit/inference",
+        headers=_bearer(owner),
+        params={"ip": "198.51.100.2"},
+    )
+    assert resp_ip_owner.status_code == 200, resp_ip_owner.text
+    assert resp_ip_owner.json()["total"] == 1
+    assert resp_ip_owner.json()["rows"][0]["actor_username"] == "bob_audit"
 
     resp_q = client.get(
         "/api/admin/audit/inference",
@@ -1716,3 +1726,208 @@ def test_owner_only_toggle_writes_audit_viewer_grant(
         .count()
         == 2
     )
+
+
+def test_non_owner_ip_filter_rejected_on_list_and_export(
+    client: TestClient, db: Session
+):
+    """Granted admin must not IP-oracle; owner keeps the filter."""
+    _seed_inference_rows(db)
+    admin = make_user(db, username="ip_oracle_admin", role="admin")
+    _grant_inference_audit_viewer(db, admin)
+    owner = make_user(db, username="ip_oracle_owner", role="owner")
+
+    for path in (
+        "/api/admin/audit/inference",
+        "/api/admin/audit/inference/export",
+    ):
+        denied = client.get(
+            path,
+            headers=_bearer(admin),
+            params={"ip": "198.51.100.1"},
+        )
+        assert denied.status_code == 422, path
+        assert "IP" in denied.json()["detail"]
+
+    allowed = client.get(
+        "/api/admin/audit/inference",
+        headers=_bearer(owner),
+        params={"ip": "198.51.100.1"},
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["total"] == 2
+    assert all(r["ip_address"] == "198.51.100.1" for r in allowed.json()["rows"])
+
+
+def test_rag_expand_relations_failure_writes_error_not_success(
+    client: TestClient, db: Session, monkeypatch
+):
+    """expand_relations failure is inside the retrieval error envelope."""
+    import app.api.ingestion.search as search_mod
+
+    user = make_user(db, username="rag_expand_fail_user")
+    admin = make_user(db, username="rag_expand_fail_admin", role="admin")
+    coll = _make_collection(db, name="rag-expand-fail-coll", owner_id=user.id)
+    doc = IngestionDocument(
+        collection_id=coll.id,
+        filename="expand-fail.pdf",
+        sha256="f" * 64,
+        mime_type="application/pdf",
+        status="indexed",
+    )
+    db.add(doc)
+    now = datetime.now(timezone.utc)
+    grant = issue_clearance_grant(
+        db,
+        actor=admin,
+        subject_user_id=user.id,
+        max_classification_level="絕對機密",
+        valid_from=now - timedelta(minutes=5),
+        expires_at=now + timedelta(hours=1),
+        basis_ticket="AUDIT-RAG-EXPAND-FAIL",
+    )
+    grant_collection_access(
+        db,
+        actor=admin,
+        clearance_grant_id=grant.id,
+        collection_id=coll.id,
+        membership_granted=True,
+        need_to_know=True,
+        basis_ticket="AUDIT-NTK-EXPAND-FAIL",
+    )
+    db.commit()
+    db.refresh(doc)
+
+    monkeypatch.setattr(
+        search_mod, "_embed_query", AsyncMock(return_value=[0.1] * 8)
+    )
+    monkeypatch.setattr(search_mod, "get_pool", lambda: SimpleNamespace())
+
+    fake_chunk = SimpleNamespace(
+        id=1,
+        document_id=doc.id,
+        chunk_key="c1",
+        content="hit content",
+        metadata={},
+        parent_chunk_id=None,
+        chunk_type="leaf",
+        chunk_level=0,
+    )
+    fake_hit = SimpleNamespace(chunk=fake_chunk, score=0.9, parent_content=None)
+
+    class _FakeStore:
+        def __init__(self, *a, **k):
+            pass
+
+        async def similarity_search_scoped_documents(self, **kwargs):
+            return [fake_hit]
+
+        async def similarity_search_per_document_authorized(self, **kwargs):
+            return [fake_hit]
+
+    async def _boom_expand(*args, **kwargs):
+        raise RuntimeError("relation expand blew up")
+
+    monkeypatch.setattr(search_mod, "CollectionScopedPgVectorStore", _FakeStore)
+    monkeypatch.setattr(search_mod, "_expand_relations", _boom_expand)
+
+    with pytest.raises(RuntimeError, match="relation expand blew up"):
+        client.post(
+            f"/api/ingestion/collections/{coll.id}/search",
+            headers=_bearer(user),
+            json={
+                "query": "expand me",
+                "top_k": 5,
+                "expand_relations": True,
+            },
+        )
+    rows = db.query(AuditLog).filter(AuditLog.action == "inference.rag_query").all()
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+    assert not any(r.status == "success" for r in rows)
+
+
+def test_csv_export_batches_and_caps_without_date(
+    client: TestClient, db: Session, monkeypatch
+):
+    """Unscoped export streams in batches and hard-caps with a truncation marker."""
+    import app.api.admin_inference_audit as audit_api
+
+    monkeypatch.setattr(audit_api, "EXPORT_BATCH_SIZE", 2)
+    monkeypatch.setattr(audit_api, "EXPORT_MAX_ROWS_WITHOUT_DATE", 5)
+
+    owner = make_user(db, username="csv_cap_owner", role="owner")
+    actor = make_user(db, username="csv_cap_actor")
+    now = datetime.now(timezone.utc)
+    for i in range(8):
+        db.add(
+            AuditLog(
+                actor_user_id=actor.id,
+                actor_username="csv_cap_actor",
+                action="inference.chat",
+                resource_type="inference",
+                resource_id=f"m{i}",
+                status="success",
+                detail=f"cap row {i}",
+                ip_address="198.51.100.10",
+                created_at=now - timedelta(seconds=i),
+            )
+        )
+    db.commit()
+
+    batch_limits: list[int] = []
+    original_build = audit_api._build_inference_query
+
+    class _SpyQuery:
+        def __init__(self, q):
+            self._q = q
+
+        def offset(self, n):
+            return _SpyQuery(self._q.offset(n))
+
+        def limit(self, n):
+            batch_limits.append(n)
+            return _SpyQuery(self._q.limit(n))
+
+        def all(self):
+            return self._q.all()
+
+        def __getattr__(self, name):
+            return getattr(self._q, name)
+
+    def _spy_build(*args, **kwargs):
+        return _SpyQuery(original_build(*args, **kwargs))
+
+    monkeypatch.setattr(audit_api, "_build_inference_query", _spy_build)
+
+    resp = client.get(
+        "/api/admin/audit/inference/export",
+        headers=_bearer(owner),
+    )
+    assert resp.status_code == 200, resp.text
+    text = resp.content.decode("utf-8-sig")
+    assert "# truncated at 5 — 請縮小日期範圍" in text
+    reader = csv.reader(io.StringIO(text.split("# truncated")[0]))
+    header = next(reader)
+    data_rows = [r for r in reader if r]
+    assert len(data_rows) == 5
+    assert header[0] == "id"
+    # Batch size 2 → multiple limit(2) fetches before hitting the cap.
+    assert batch_limits.count(2) >= 2
+
+    # Date-bounded export is not hard-capped at 5.
+    resp_dated = client.get(
+        "/api/admin/audit/inference/export",
+        headers=_bearer(owner),
+        params={
+            "from": (now - timedelta(hours=1)).isoformat(),
+            "to": (now + timedelta(minutes=1)).isoformat(),
+        },
+    )
+    assert resp_dated.status_code == 200
+    dated_text = resp_dated.content.decode("utf-8-sig")
+    assert "# truncated" not in dated_text
+    dated_reader = csv.reader(io.StringIO(dated_text))
+    next(dated_reader)
+    dated_rows = [r for r in dated_reader if r]
+    assert len(dated_rows) == 8
