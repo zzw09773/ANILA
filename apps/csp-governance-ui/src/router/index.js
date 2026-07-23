@@ -63,6 +63,12 @@ const routes = [
         component: () => import('../views/AuditLogsView.vue'),
         meta: { requiresAdmin: true },
       },
+      {
+        path: 'inference-audit',
+        name: 'InferenceAudit',
+        component: () => import('../views/InferenceAuditView.vue'),
+        meta: { requiresAdmin: true },
+      },
       // doc 08 §15 — 機敏分類盤點(Classification Inventory Before Cutover)。
       {
         path: 'classification-inventory',

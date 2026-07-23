@@ -82,6 +82,7 @@ const menuGroups = computed(() => {
         { path: '/alerts', label: '警報' },
         { path: '/banners', label: '公告橫幅' },
         { path: '/audit-logs', label: '稽核紀錄' },
+        { path: '/inference-audit', label: '稽核查詢' },
         { path: '/classification-inventory', label: '分類盤點' },
         { path: '/platform-links', label: '平台連結' },
         { path: '/service-access', label: '服務存取' },
