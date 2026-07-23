@@ -26,7 +26,7 @@ SUITES = (
     ("similarity", SIMILARITY_TEST_PATH, SIMILARITY_JUNIT_PATH),
 )
 EXPECTED_CASE_COUNTS = {
-    LEASE_TEST_PATH: 6,
+    LEASE_TEST_PATH: 7,
     SIMILARITY_TEST_PATH: 4,
 }
 
@@ -762,7 +762,7 @@ class FaultDrillCiContractTests(unittest.TestCase):
         _j, weak_count_step = _lease_job_and_step(weak_count)
         original = weak_count_step["run"]
         weak_count_step["run"] = original.replace(
-            "if len(cases) != 6:",
+            "if len(cases) != 7:",
             "if not cases:",
             1,
         )
@@ -773,7 +773,7 @@ class FaultDrillCiContractTests(unittest.TestCase):
                 weak_count,
                 LEASE_TEST_PATH,
                 LEASE_JUNIT_PATH,
-                "JUnit guard must require exactly 6 testcase nodes",
+                "JUnit guard must require exactly 7 testcase nodes",
             )
         )
 

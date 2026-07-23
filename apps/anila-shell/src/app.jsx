@@ -128,21 +128,30 @@ const ROUTER_AGENT = Object.freeze({
   requiresEncryption: false,
 });
 
-// Default starter — a single card that asks the Router itself to
-// introduce ANILA AND list every agent available to this user. The
-// Router already has the agent manifest in its system prompt so it can
-// produce an accurate, up-to-date answer on first ask, and the user
-// sees their real option set instead of hand-curated marketing cards.
+// Default starter — a single card that asks the Router to introduce ANILA
+// and explain how it decides between answering directly and dispatching to
+// an agent. The copy is grounded: it names the agents the shell already
+// knows are registered (when any) instead of baiting the model to
+// "list every agent", which previously invited fabricated agent names.
+// The Router's own direct-answer prompt is separately pinned to the real
+// registry, so the answer stays truthful even for an empty registry.
 function buildStarterPrompts(agents) {
   const real = (agents || []).filter((a) => a.id !== ROUTER_AGENT.id);
-  const countLine = real.length > 0
-    ? `你目前可以使用 ${real.length} 個 agent`
-    : "平台目前尚未註冊 agent";
+  const names = real
+    .map((a) => a.name || a.id)
+    .filter(Boolean);
+  const hasAgents = names.length > 0;
+  const sub = hasAgents
+    ? `目前已註冊 ${names.length} 個 agent，點一下讓 Router 介紹平台並說明它如何決定直接回答或派工`
+    : "目前尚未註冊 agent，點一下讓 Router 介紹平台並說明它的運作方式";
+  const registeredClause = hasAgents
+    ? `目前實際註冊的 agent 有：${names.join("、")}，請據實說明它們各自能解決的問題`
+    : "並據實說明目前是否已註冊任何 agent（若沒有，請直接說明由 Router 回答）";
   return [
     {
       title: "ANILA 可以做什麼？",
-      sub: `${countLine}，點一下讓 Router 介紹平台與各 agent 的能力`,
-      q: "請介紹 ANILA 這個平台能做什麼，並列出我目前可用的每一個 agent 與它們各自能解決的問題。",
+      sub,
+      q: `請介紹 ANILA 這個平台能做什麼，並說明 Router 會如何依我的問題決定「直接回答」或「派工給合適的 agent」。${registeredClause}。`,
       primary: true,
     },
   ];

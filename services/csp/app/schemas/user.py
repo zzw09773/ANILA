@@ -30,6 +30,8 @@ class UserUpdate(BaseModel):
     # Sprint 6 X / B2：admin 可切到 SSO-only。預設不變更（None）；
     # True = 拒絕此使用者用本機密碼登入；False = 允許。
     local_password_disabled: bool | None = None
+    # Owner-only: grant / revoke inference-audit viewer capability.
+    can_view_inference_audit: bool | None = None
 
 
 class UserResponse(UserBase):
@@ -39,6 +41,7 @@ class UserResponse(UserBase):
     is_active: bool
     is_approved: bool = True
     local_password_disabled: bool = False
+    can_view_inference_audit: bool = False
     last_login_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

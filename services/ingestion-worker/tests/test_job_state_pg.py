@@ -30,11 +30,11 @@ async def pool():
     await conn.execute(
         """
         CREATE TABLE ingestion_documents(
-          id integer PRIMARY KEY,status text,processing_stage text DEFAULT 'pending',
+          id integer PRIMARY KEY,status varchar(20),processing_stage text DEFAULT 'pending',
           active_generation_id bigint,error_message text);
         CREATE TABLE ingestion_jobs(
           id integer PRIMARY KEY, document_id integer NOT NULL, arq_job_id text,
-          status text NOT NULL, attempt_count integer NOT NULL DEFAULT 0,
+          status varchar(20) NOT NULL, attempt_count integer NOT NULL DEFAULT 0,
           max_attempts integer NOT NULL DEFAULT 3, lease_token text,
           lease_expires_at timestamptz, heartbeat_at timestamptz,
           next_attempt_at timestamptz, failure_kind text, retryable boolean,
@@ -70,9 +70,9 @@ async def _seed(pool, job_id: int, *, status="queued", expired=False):
             """INSERT INTO ingestion_jobs
             (id,document_id,arq_job_id,status,attempt_count,max_attempts,
              lease_token,lease_expires_at,heartbeat_at)
-            VALUES($1,$1,$2,$3,$4,3,$5,
+            VALUES($1,$1,$2,$3::text,$4,3,$5,
              CASE WHEN $6 THEN now()-interval '1 second' ELSE now()+interval '1 hour' END,
-             CASE WHEN $3='running' THEN now() END)""",
+             CASE WHEN $3::text='running' THEN now() END)""",
             job_id,
             f"ingest-job-{job_id}-attempt-1",
             status,
@@ -225,6 +225,40 @@ async def test_retry_exhaustion_is_one_dead_letter_and_has_no_stuck_lease(pool):
             "AND status NOT IN ('succeeded','failed','cancelled','dead_letter') "
             "AND lease_expires_at < now()"
         ) == 0
+
+
+@pytest.mark.asyncio
+async def test_fail_or_retry_terminal_status_cast_avoids_ambiguous_parameter(pool):
+    """Regression: varchar SET + CASE compare on $2 must not AmbiguousParameterError."""
+    await _seed(pool, 8)
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE ingestion_jobs SET max_attempts=1 WHERE id=8")
+    token = await job_state.claim_job(
+        pool, job_id=8, document_id=8, attempt_number=1, lease_seconds=60
+    )
+    assert (
+        await job_state.fail_or_retry(
+            pool,
+            job_id=8,
+            document_id=8,
+            lease_token=token,
+            error_code="E_TRANSIENT",
+            error_message="original ingest failure must remain visible",
+            retryable=True,
+            backoff_seconds=1,
+        )
+        == "dead_letter"
+    )
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT status, dead_lettered_at, error_message FROM ingestion_jobs WHERE id=8"
+        )
+        assert row["status"] == "dead_letter"
+        assert row["dead_lettered_at"] is not None
+        assert row["error_message"] == "original ingest failure must remain visible"
+        assert await conn.fetchval(
+            "SELECT status FROM ingestion_documents WHERE id=8"
+        ) == "failed"
 
 
 @pytest.mark.asyncio

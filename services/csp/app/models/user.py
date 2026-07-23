@@ -42,6 +42,15 @@ class User(Base):
         default=False,
         server_default="false",
     )
+    # Owner-granted capability: non-owner admins may query / export the
+    # inference audit trail only when this flag is true. Owner always
+    # bypasses the flag (see require_inference_audit_viewer).
+    can_view_inference_audit = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
     # Stamped on every successful authentication (local login, OIDC).
     # Powers the "上次登入" column in the admin user panel and lets audit
     # reports flag dormant accounts without scanning AuditLog.

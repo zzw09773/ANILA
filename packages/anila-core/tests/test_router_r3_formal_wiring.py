@@ -18,10 +18,12 @@ from fastapi.testclient import TestClient
 
 from anila_contracts import AgentManifest, ExecutionGrant
 from anila_core.api import router_server
+from anila_contracts.classification import ClassificationLevel
 from anila_core.router import (
     CspAgentClient,
     CspExecutionGrantMinter,
     CspInferenceClient,
+    DirectModelGovernance,
     ExecutionGrantEnvelope,
     ExecutionRuntime,
     MAX_REQUEST_CONTENT_SCAN_CHARS,
@@ -385,6 +387,318 @@ def test_formal_direct_answer_policy_deny_has_zero_second_inference(monkeypatch)
     assert calls == 1
     content = response.json()["choices"][0]["message"]["content"]
     assert "PolicyGate" in content or "安全" in content
+
+
+def test_formal_direct_answer_allowed_when_governance_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R7:注入通過分類上限的直答治理後,直答會實際呼叫模型並回傳內容。"""
+
+    calls = 0
+
+    async def _call(_api_key: str, messages: list[dict[str, Any]], **_kwargs: Any):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "content": _route(
+                    route_type="direct_answer",
+                    candidate_agent_ids=[],
+                    selected_agent_id=None,
+                    required_capabilities=[],
+                    rewritten_query=None,
+                    fallback=None,
+                ),
+                "reasoning": None,
+                "anila_meta": None,
+                "error": None,
+            }
+        return {
+            "content": "直接回答內容",
+            "reasoning": None,
+            "anila_meta": None,
+            "error": None,
+        }
+
+    monkeypatch.setattr(router_server, "_call_llm_non_stream", _call)
+    spy = _AgentSpy()
+    governance = DirectModelGovernance(
+        model_id="gemma4",
+        gateway="csp",
+        classification_ceiling=ClassificationLevel.from_storage("機密"),
+    )
+    app = _create_formal_app(
+        session_factory=lambda _sid: None,
+        registry_client=_Registry(_snapshot()),
+        agent_client=spy,
+        direct_model_governance=governance,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers=_headers(),
+        json={
+            "session_id": "session-1",
+            "messages": [{"role": "user", "content": "query"}],
+        },
+    )
+    assert response.status_code == 200
+    # 路由決策 1 次 + 直答模型呼叫 1 次,且完全不派工給 Agent。
+    assert calls == 2
+    assert spy.calls == []
+    content = response.json()["choices"][0]["message"]["content"]
+    assert "直接回答內容" in content
+
+
+def _parse_sse_stream(raw: str) -> tuple[str, list[str]]:
+    """解析 Router SSE 串流,回傳 (串接的 delta 內容, anila.meta 的 reason_codes)。
+
+    直答串流走 ``_respond`` 的軟切塊路徑:LLM 文字散在多個 ``chat.completion.chunk``
+    的 ``delta.content``,reason codes 落在 ``event: anila.meta`` 的 payload。
+    """
+
+    content_parts: list[str] = []
+    reason_codes: list[str] = []
+    current_event: str | None = None
+    for line in raw.splitlines():
+        if line.startswith("event: "):
+            current_event = line[len("event: ") :]
+            continue
+        if not line.startswith("data: "):
+            continue
+        data = line[len("data: ") :]
+        if data == "[DONE]":
+            continue
+        payload = json.loads(data)
+        if current_event == "anila.meta":
+            reason_codes = list(payload.get("reason_codes") or [])
+        elif current_event is None:
+            for choice in payload.get("choices", []):
+                delta = choice.get("delta") or {}
+                if isinstance(delta.get("content"), str):
+                    content_parts.append(delta["content"])
+        # anila.trace 等其它具名事件不含直答內容,略過。
+        current_event = None
+    return "".join(content_parts), reason_codes
+
+
+def test_formal_direct_answer_streamed_when_governance_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R7:stream=true 且治理通過時,直答內容確實以 SSE 串流,並帶 within-ceiling 原因碼。"""
+
+    calls = 0
+
+    async def _call(_api_key: str, messages: list[dict[str, Any]], **_kwargs: Any):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "content": _route(
+                    route_type="direct_answer",
+                    candidate_agent_ids=[],
+                    selected_agent_id=None,
+                    required_capabilities=[],
+                    rewritten_query=None,
+                    fallback=None,
+                ),
+                "reasoning": None,
+                "anila_meta": None,
+                "error": None,
+            }
+        return {
+            "content": "直接串流回答內容",
+            "reasoning": None,
+            "anila_meta": None,
+            "error": None,
+        }
+
+    monkeypatch.setattr(router_server, "_call_llm_non_stream", _call)
+    spy = _AgentSpy()
+    governance = DirectModelGovernance(
+        model_id="gemma4",
+        gateway="csp",
+        classification_ceiling=ClassificationLevel.from_storage("機密"),
+    )
+    app = _create_formal_app(
+        session_factory=lambda _sid: None,
+        registry_client=_Registry(_snapshot()),
+        agent_client=spy,
+        direct_model_governance=governance,
+    )
+    body = {
+        "session_id": "session-1",
+        "messages": [{"role": "user", "content": "query"}],
+        "stream": True,
+    }
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers=_headers(body=body),
+        json=body,
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    # 路由決策 1 次 + 直答模型呼叫 1 次,且完全不派工給 Agent。
+    assert calls == 2
+    assert spy.calls == []
+    streamed, reason_codes = _parse_sse_stream(response.text)
+    # 斷言在串流內容(非只 HTTP 200)與原因碼上:閘門真的評估過且直答真的串出。
+    assert "直接串流回答內容" in streamed
+    assert "DIRECT_MODEL_WITHIN_CEILING" in reason_codes
+
+
+def test_formal_direct_answer_streaming_denied_has_no_inference_or_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R7:stream=true 但無治理輸入時,直答 fail-closed:不做第二次推論、不串出 LLM 文字。"""
+
+    calls = 0
+
+    async def _call(_api_key: str, messages: list[dict[str, Any]], **_kwargs: Any):
+        nonlocal calls
+        calls += 1
+        return {
+            "content": _route(
+                route_type="direct_answer",
+                candidate_agent_ids=[],
+                selected_agent_id=None,
+                required_capabilities=[],
+                rewritten_query=None,
+                fallback=None,
+            ),
+            "reasoning": None,
+            "anila_meta": None,
+            "error": None,
+        }
+
+    monkeypatch.setattr(router_server, "_call_llm_non_stream", _call)
+    spy = _AgentSpy()
+    app = _create_formal_app(
+        session_factory=lambda _sid: None,
+        registry_client=_Registry(_snapshot()),
+        agent_client=spy,
+    )
+    body = {
+        "session_id": "session-1",
+        "messages": [{"role": "user", "content": "query"}],
+        "stream": True,
+    }
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers=_headers(body=body),
+        json=body,
+    )
+    assert response.status_code == 200
+    # 僅路由決策 1 次,絕無直答模型的第二次推論。
+    assert calls == 1
+    assert spy.calls == []
+    streamed, reason_codes = _parse_sse_stream(response.text)
+    assert "DIRECT_MODEL_GOVERNANCE_UNAVAILABLE" in reason_codes
+    assert "安全" in streamed
+
+
+def _empty_snapshot() -> RegistrySnapshot:
+    now = datetime.now(timezone.utc)
+    return RegistrySnapshot(
+        SNAPSHOT_ID,
+        [],
+        captured_at=now,
+        expires_at=now + timedelta(minutes=5),
+        snapshot_revision=SNAPSHOT_ID,
+        snapshot_hash=SNAPSHOT_ID,
+        caller_user_id=123,
+    )
+
+
+def _capture_direct_answer_payload(
+    monkeypatch: pytest.MonkeyPatch, snapshot: RegistrySnapshot
+) -> list[dict[str, Any]]:
+    """Drive a governance-passing DIRECT_ANSWER and return the 2nd-call payload."""
+
+    calls = 0
+    captured: list[dict[str, Any]] = []
+
+    async def _call(_api_key: str, messages: list[dict[str, Any]], **_kwargs: Any):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "content": _route(
+                    route_type="direct_answer",
+                    candidate_agent_ids=[],
+                    selected_agent_id=None,
+                    required_capabilities=[],
+                    rewritten_query=None,
+                    fallback=None,
+                ),
+                "reasoning": None,
+                "anila_meta": None,
+                "error": None,
+            }
+        captured.extend(messages)
+        return {"content": "直接回答內容", "reasoning": None, "anila_meta": None, "error": None}
+
+    monkeypatch.setattr(router_server, "_call_llm_non_stream", _call)
+    governance = DirectModelGovernance(
+        model_id="gemma4",
+        gateway="csp",
+        classification_ceiling=ClassificationLevel.from_storage("機密"),
+    )
+    app = _create_formal_app(
+        session_factory=lambda _sid: None,
+        registry_client=_Registry(snapshot),
+        agent_client=_AgentSpy(),
+        direct_model_governance=governance,
+    )
+    body = {
+        "session_id": "session-1",
+        "messages": [{"role": "user", "content": "列出我可用的每一個 agent"}],
+    }
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers=_headers(body=body),
+        json=body,
+    )
+    assert response.status_code == 200
+    assert calls == 2
+    return captured
+
+
+def test_formal_direct_answer_payload_grounds_real_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """直答第二次推論必帶 grounding system block + 真實已註冊 agent 名稱。"""
+
+    captured = _capture_direct_answer_payload(monkeypatch, _snapshot())
+
+    system_msgs = [m for m in captured if m.get("role") == "system"]
+    grounding = "\n".join(m.get("content", "") for m in system_msgs)
+    # 真實 registry 事實(名稱與 agent_id)必須進到直答 payload。
+    assert "Research Agent" in grounding
+    assert "research-agent" in grounding
+    # 反捏造鐵則必須在場。
+    assert "不可捏造" in grounding
+    # 使用者訊息仍完整保留在 grounding 之後。
+    assert captured[-1] == {"role": "user", "content": "列出我可用的每一個 agent"}
+
+
+def test_direct_answer_grounding_lists_real_agents_for_non_empty_registry() -> None:
+    """grounding helper 直接反映 registry 的真實名稱/agent_id + 反捏造鐵則。"""
+
+    grounding = router_server._build_direct_answer_grounding(_snapshot())["content"]
+    assert "Research Agent" in grounding
+    assert "research-agent" in grounding
+    assert "不可捏造" in grounding
+    # 非空時仍載明反捏造規則所引用的空清單真話(規則本身的一部分)。
+    assert router_server._DIRECT_ANSWER_EMPTY_REGISTRY_LINE in grounding
+
+
+def test_direct_answer_grounding_empty_registry_uses_truthful_line() -> None:
+    """空 registry:grounding 只給『沒有已註冊 agent』真話,絕不洩漏任何 agent_id。"""
+
+    grounding = router_server._build_direct_answer_grounding(_empty_snapshot())["content"]
+    assert "目前沒有任何已註冊的 agent" in grounding
+    assert router_server._DIRECT_ANSWER_EMPTY_REGISTRY_LINE in grounding
+    assert "research-agent" not in grounding
 
 
 def test_formal_inference_receives_only_scanned_role_and_content(

@@ -7,6 +7,7 @@ from app.api.auth_providers import router as auth_providers_router
 from app.api.api_keys import router as api_keys_router
 from app.api.alerts import router as alerts_router
 from app.api.audit_logs import router as audit_logs_router
+from app.api.admin_inference_audit import router as admin_inference_audit_router
 from app.api.models import router as models_router
 from app.api.usage import router as usage_router
 from app.api.users import router as users_router
@@ -14,6 +15,7 @@ from app.api.departments import router as departments_router
 from app.api.memory import router as memory_router
 from app.api.platform_links import router as platform_links_router
 from app.api.proxy import router as proxy_router
+from app.api.router_direct_governance import router as router_direct_governance_router
 from app.api.traces import router as traces_router
 from app.api.artifacts import router as artifacts_router
 from app.api.service_access_grants import router as service_access_grants_router
@@ -47,6 +49,7 @@ api_router.include_router(auth_providers_router)
 api_router.include_router(api_keys_router)
 api_router.include_router(alerts_router)
 api_router.include_router(audit_logs_router)
+api_router.include_router(admin_inference_audit_router)
 api_router.include_router(models_router)
 api_router.include_router(usage_router)
 api_router.include_router(users_router)
@@ -65,6 +68,12 @@ api_router.include_router(agents_router)
 # Versioned service-only registry projection.  It is intentionally outside
 # ``/api/agents`` (JWT control-plane CRUD) and never replaces legacy /v1/agents.
 api_router.include_router(agent_registry_router, prefix="/internal/v1/agents")
+# R7.1 service-only direct-answer model governance projection.  The Router
+# derives its DIRECT_ANSWER classification ceiling from the model registry
+# through this seam instead of a manual env knob.
+api_router.include_router(
+    router_direct_governance_router, prefix="/internal/v1/router"
+)
 api_router.include_router(banners_router)
 api_router.include_router(ingestion_collections_router)
 api_router.include_router(ingestion_credentials_router)
