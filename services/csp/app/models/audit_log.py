@@ -1,11 +1,14 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Index
 from sqlalchemy.orm import relationship
 from app.database import Base
 
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_action_created_at", "action", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)

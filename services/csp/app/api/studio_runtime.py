@@ -238,6 +238,25 @@ def _require_document_scope(
         raise HTTPException(status_code=403, detail="document 不在 canonical snapshot scope")
 
 
+def _detached_request() -> Request:
+    """Minimal ASGI request for in-process Studio→search re-entry."""
+    return Request(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "headers": [],
+            "client": None,
+            "server": ("studio-runtime", 80),
+        }
+    )
+
+
 @router.get("/collections/{collection_id}")
 def runtime_collection(
     collection_id: int,
@@ -284,8 +303,11 @@ async def runtime_search(
     return await search_collection(
         collection_id=collection_id,
         payload=effective_payload,
+        request=_detached_request(),
         db=db,
-        principal=SearchPrincipal(user=binding.user, agent=None),
+        principal=SearchPrincipal(
+            user=binding.user, agent=None, skip_inference_audit=True
+        ),
     )
 
 
@@ -316,8 +338,11 @@ async def runtime_image_search(
     return await search_collection_images(
         collection_id=collection_id,
         payload=effective_payload,
+        request=_detached_request(),
         db=db,
-        principal=SearchPrincipal(user=binding.user, agent=None),
+        principal=SearchPrincipal(
+            user=binding.user, agent=None, skip_inference_audit=True
+        ),
     )
 
 
@@ -381,6 +406,7 @@ async def runtime_chat_completions(
         task=binding.task,
         expected_dispatch_target="studio",
     )
+    request.state.suppress_inference_audit = True
     return await chat_completions(
         request=request,
         caller=Caller(user=binding.user, api_key_id=None),
@@ -402,6 +428,7 @@ async def runtime_image_generations(
         task=binding.task,
         expected_dispatch_target="studio",
     )
+    request.state.suppress_inference_audit = True
     return await _image_generations_impl(
         request,
         caller=Caller(user=binding.user, api_key_id=None),

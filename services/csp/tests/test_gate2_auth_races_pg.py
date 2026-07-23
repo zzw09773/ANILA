@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models.auth_session import AuthSession
 from app.models.user import User
+from app.config import settings
 from app.services.auth_service import (
     RefreshTokenReuseDetected,
     create_tokens,
@@ -92,6 +93,7 @@ def _create_schema(*, auth: bool) -> tuple[str, object]:
                         is_approved boolean NOT NULL DEFAULT true,
                         token_version integer NOT NULL DEFAULT 0,
                         local_password_disabled boolean NOT NULL DEFAULT false,
+                        can_view_inference_audit boolean NOT NULL DEFAULT false,
                         last_login_at timestamp,
                         ui_settings jsonb NOT NULL DEFAULT '{}'::jsonb,
                         created_at timestamp,
@@ -300,6 +302,10 @@ def test_refresh_rotation_restart_and_two_instance_race_max_one_success():
     engine_b = _schema_engine(schema)
     SessionA = sessionmaker(bind=engine_a)
     SessionB = sessionmaker(bind=engine_b)
+    # Disable the multi-tab grace window so this race still proves that, under
+    # the strict path, exactly one concurrent consumer may succeed.
+    previous_grace = settings.ANILA_REFRESH_REUSE_GRACE_SECONDS
+    settings.ANILA_REFRESH_REUSE_GRACE_SECONDS = 0
     try:
         with SessionA() as issuer:
             user = User(
@@ -369,6 +375,7 @@ def test_refresh_rotation_restart_and_two_instance_race_max_one_success():
             assert "token_jti_hash" in audit
             assert "session_id_hash" in audit
     finally:
+        settings.ANILA_REFRESH_REUSE_GRACE_SECONDS = previous_grace
         engine_a.dispose()
         engine_b.dispose()
         _drop_schema(schema, admin)

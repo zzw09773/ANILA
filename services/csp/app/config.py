@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"  # Legacy; access/refresh tokens use RS256 now.
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    # Default 0 = strict single-use rotation. >0 enables a short multi-tab race
+    # window (dev-only convenience; known unbounded replay tradeoff — formal
+    # postures reject non-zero via startup_security). Outside the window,
+    # reuse detection remains fail-closed and revokes the sid.
+    ANILA_REFRESH_REUSE_GRACE_SECONDS: int = Field(default=0, ge=0, le=30)
 
     # RS256 asymmetric signing material. Private key is PKCS#8 PEM,
     # public key is SPKI PEM. JWKS endpoint serves the public key under
@@ -201,6 +206,16 @@ class Settings(BaseSettings):
     # ingress host(s), e.g. "anila.ncsist.org.tw,172.16.120.35". Distinct
     # from ANILA_TRUSTED_HOSTS, which is the *outgoing* SSRF allow-list.
     ALLOWED_HOSTS: str = "*"
+
+    # Comma-separated CIDRs of reverse proxies that may set X-Forwarded-For.
+    # Empty (default) = ignore XFF entirely and use request.client.host.
+    # When the immediate peer is inside a listed CIDR, walk XFF right→left
+    # and take the first address not in a trusted CIDR (real client).
+    ANILA_TRUSTED_PROXY_CIDRS: str = ""
+
+    # Inference audit write failure policy. 0/false (default) = fail-open
+    # (log the error, continue the request). 1/true = fail-closed with 503.
+    ANILA_AUDIT_STRICT: bool = False
 
     # Mark session cookies as Secure (HTTPS-only). Defaults to True; set
     # to False in local HTTP dev / test harnesses where cookies must

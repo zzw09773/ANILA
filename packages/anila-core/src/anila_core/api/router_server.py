@@ -60,6 +60,10 @@ from ..router import (
     extract_untrusted_user_content,
 )
 from ..router.csp_registry_client import ExecutionGrantEnvelope, ExecutionGrantMinter
+from ..router.decision_engine import (
+    RETRYABLE_JUDGE_REASON_CODES,
+    judge_validation_attempt,
+)
 from ..security.router_context import (
     ROUTER_CONTEXT_HEADER,
     RouterContextClaims,
@@ -572,6 +576,29 @@ def _formal_route_prompt(
         + json.dumps(authority, ensure_ascii=False, sort_keys=True)
     )
     return [{"role": "system", "content": system}, *_formal_untrusted_messages(messages)]
+
+
+def _judge_retry_corrective_message(reason: str) -> dict[str, str]:
+    """One-shot corrective user turn after a retryable judge validation failure."""
+
+    return {
+        "role": "user",
+        "content": (
+            f"your previous output failed validation: {reason}; "
+            "output ONLY a JSON object conforming to the RouteDecision schema, no markdown"
+        ),
+    }
+
+
+def _retryable_judge_reason(runtime_result: Any) -> str | None:
+    """Return the first retryable judge reason code, if any."""
+
+    if runtime_result is None or runtime_result.decision is not None:
+        return None
+    for code in runtime_result.decision_result.reason_codes:
+        if code in RETRYABLE_JUDGE_REASON_CODES:
+            return code
+    return None
 
 
 def _formal_request_content(messages: list[dict[str, Any]]) -> str:
@@ -2182,6 +2209,10 @@ def create_router_app(
                 context=route_context,
                 messages=route_messages,
             )
+            correlation_id = getattr(route_context, "trace_id", None) or getattr(
+                route_context, "invocation_id", None
+            )
+
             result = await _call_llm_non_stream(
                 caller_api_key,
                 routing_messages,
@@ -2192,12 +2223,64 @@ def create_router_app(
             if result.get("error"):
                 return result, None
             runtime = await _resolve_runtime()
-            runtime_result = runtime.execute(
-                route_context,
-                result.get("content", ""),
-                route_snapshot,
-                request_content=request_content,
-                now=datetime.now(timezone.utc),
+            with judge_validation_attempt(1, correlation_id=correlation_id):
+                runtime_result = runtime.execute(
+                    route_context,
+                    result.get("content", ""),
+                    route_snapshot,
+                    request_content=request_content,
+                    now=datetime.now(timezone.utc),
+                )
+            base_trace.append(
+                _make_trace_step(
+                    "route",
+                    "驗證結構化 RouteDecision",
+                    runtime_result.decision_result.action,
+                    status="ok" if runtime_result.decision is not None else "error",
+                )
+            )
+
+            # Exactly one guarded retry for parse/schema failures — no loop.
+            retry_reason = _retryable_judge_reason(runtime_result)
+            if retry_reason is None:
+                return result, runtime_result
+
+            base_trace.append(
+                _make_trace_step(
+                    "route",
+                    "重試結構化 RouteDecision",
+                    f"previous_reason={retry_reason}",
+                    status="ok",
+                )
+            )
+            retry_messages = [
+                *routing_messages,
+                _judge_retry_corrective_message(retry_reason),
+            ]
+            result = await _call_llm_non_stream(
+                caller_api_key,
+                retry_messages,
+                forwarded_headers=forwarded_headers,
+                formal_context=route_context,
+                inference_client=formal_inference_client,
+            )
+            if result.get("error"):
+                return result, None
+            with judge_validation_attempt(2, correlation_id=correlation_id):
+                runtime_result = runtime.execute(
+                    route_context,
+                    result.get("content", ""),
+                    route_snapshot,
+                    request_content=request_content,
+                    now=datetime.now(timezone.utc),
+                )
+            base_trace.append(
+                _make_trace_step(
+                    "route",
+                    "驗證結構化 RouteDecision",
+                    runtime_result.decision_result.action,
+                    status="ok" if runtime_result.decision is not None else "error",
+                )
             )
             return result, runtime_result
 
@@ -2247,14 +2330,6 @@ def create_router_app(
 
         decision = runtime_result.decision
         reason_codes = list(runtime_result.reason_codes)
-        base_trace.append(
-            _make_trace_step(
-                "route",
-                "驗證結構化 RouteDecision",
-                runtime_result.decision_result.action,
-                status="ok" if decision is not None else "error",
-            )
-        )
 
         async def _safe_result(
             content: str,

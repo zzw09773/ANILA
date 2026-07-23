@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -445,8 +445,16 @@ def _write_signed_embedding_material(tmp_path: Path) -> Path:
     material = tmp_path / "governance-material"
     material.mkdir()
     profile = _base_profile("r7.csp.memory")
+    # verify_deployment_egress validates effectiveness against the REAL clock
+    # (it has no `now` override — by design for the production checker), while
+    # _base_profile anchors validity to the governance tests' pinned NOW. Re-
+    # anchor the window to wall time or this fixture expires NOW+7d and the
+    # test becomes a time bomb (it did: green until 2026-07-22T12:00Z).
+    anchor = datetime.now(timezone.utc).replace(microsecond=0)
+    profile["valid_from"] = (anchor - timedelta(minutes=5)).isoformat()
+    profile["valid_until"] = (anchor + timedelta(days=7)).isoformat()
     profile["deployments"][0]["health_readiness"]["last_check"] = (
-        datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        (anchor - timedelta(seconds=10)).isoformat()
     )
     provider = profile["provider_bindings"][0]
     provider["model_registry_name"] = "nv-embed-v2"

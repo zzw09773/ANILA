@@ -105,6 +105,13 @@ services:
       # default keeps the seed a no-op; formal deploys set the in-cluster
       # Router endpoint. ``router`` is single-label so it is trusted above.
       ANILA_ROUTER_SENTINEL_URL: "${ANILA_ROUTER_SENTINEL_URL:-http://router:9000}"
+      # 稽核 IP 溯源:只信任 nginx 這一跳的 X-Forwarded-For。值由
+      # intranet-deploy.sh 於 up 後自動解析 anila-nginx 容器位址寫入 .env
+      # (/32);空值=只記直接對端(即 proxy IP)。禁填寬網段(見 .env.example)。
+      ANILA_TRUSTED_PROXY_CIDRS: "${ANILA_TRUSTED_PROXY_CIDRS:-}"
+      # 1=稽核寫入失敗即拒絕請求(write-ahead,推論前擋下)。正式營運的
+      # 取捨:稽核 DB 故障會擋下所有推論;預設 0(fail-open,記 error log)。
+      ANILA_AUDIT_STRICT: "${ANILA_AUDIT_STRICT:-0}"
       # Gate 5 R5/R7 formal model-governance boundary.  These values are
       # intentionally explicit container paths; the host-side material
       # directory is injected only through read-only mounts below.  A formal
@@ -123,6 +130,8 @@ services:
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
+      # Formal posture: keep refresh reuse strict (startup rejects non-zero).
+      ANILA_REFRESH_REUSE_GRACE_SECONDS: "${ANILA_REFRESH_REUSE_GRACE_SECONDS:-0}"
       # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+
       # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
       # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。

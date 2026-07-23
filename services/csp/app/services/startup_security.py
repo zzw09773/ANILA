@@ -151,6 +151,11 @@ def _resolved_posture() -> dict[str, object]:
         # Formal profiles must use the CSP-owned readiness/snapshot gate;
         # legacy Agent dispatch is an explicit development-only bridge.
         "ALLOW_LEGACY_AGENT_DISPATCH": settings.ALLOW_LEGACY_AGENT_DISPATCH,
+        # Non-zero refresh reuse grace is a contested multi-tab convenience with
+        # an unbounded replay tradeoff; formal postures must stay strict (=0).
+        "ANILA_REFRESH_REUSE_GRACE_SECONDS": (
+            settings.ANILA_REFRESH_REUSE_GRACE_SECONDS
+        ),
     }
 
 
@@ -198,6 +203,7 @@ _PROD_INTRANET_CARD_POSTURE: dict[str, object] = {
     "CARD_CRL_REQUIRED": True,
     "CARD_OWNER_CONFIGURED": True,
     "ALLOW_LEGACY_AGENT_DISPATCH": False,
+    "ANILA_REFRESH_REUSE_GRACE_SECONDS": 0,
 }
 
 _PASSWORD_PRODUCTION_POSTURE: dict[str, object] = {
@@ -218,6 +224,7 @@ _PASSWORD_PRODUCTION_POSTURE: dict[str, object] = {
     "CARD_DEV_SKIP_NONCE_BINDING": False,
     "CARD_CRL_REQUIRED": False,
     "ALLOW_LEGACY_AGENT_DISPATCH": False,
+    "ANILA_REFRESH_REUSE_GRACE_SECONDS": 0,
 }
 
 _FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {

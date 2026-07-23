@@ -439,53 +439,102 @@ def rotate_refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="刷新工作階段已撤銷",
         )
-    if record.sid != sid or record.revoked_at is not None or record.consumed_at is not None:
-        sid_hash = _identifier_hash(sid)
-        persist_sid_revocation(
+
+    # Cross-sid mismatch always takes the strict reuse path, even inside the
+    # grace window. Same-sid consumed tokens may be graced briefly so concurrent
+    # multi-tab refreshes do not revoke the whole family.
+    if record.sid != sid or record.revoked_at is not None:
+        _reject_refresh_reuse(
             db,
-            user_id=user.id,
+            user=user,
             sid=sid,
-            reason="refresh_token_reuse",
-            commit=False,
+            jti_hash=jti_hash,
+            ip_address=ip_address,
         )
-        db.add(
-            AuditLog(
-                actor_user_id=user.id,
-                actor_username=user.username,
-                action="auth.refresh_reuse",
-                resource_type="auth_session",
-                resource_id=sid_hash,
-                status="failure",
-                detail=(
-                    "已使用的 refresh token 再次出現；撤銷目前工作階段"
-                ),
-                ip_address=ip_address,
-                metadata_json=json.dumps(
-                    {
-                        "reason": "refresh_token_reuse",
-                        "token_jti_hash": jti_hash,
-                        "session_id_hash": sid_hash,
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            )
+
+    if record.consumed_at is not None:
+        # 寬限路徑：正式姿態由 startup_security 強制 ANILA_REFRESH_REUSE_GRACE_SECONDS=0
+        # 關閉。啟用時並非 replay-bounded——consumed token 在窗內重播會重選 tip
+        # 再簽一對，且剛消耗的 tip 會串成新窗（daisy-chain）。追蹤中改為
+        # idempotent-recovery 再重設；此處僅維持現有演算法 + 時鐘偏移防呆。
+        now = datetime.now(timezone.utc)
+        consumed_at = record.consumed_at
+        if consumed_at.tzinfo is None:
+            consumed_at = consumed_at.replace(tzinfo=timezone.utc)
+        age_seconds = (now - consumed_at).total_seconds()
+        within_grace = (
+            session.revoked_at is None
+            and age_seconds >= 0
+            and age_seconds <= settings.ANILA_REFRESH_REUSE_GRACE_SECONDS
         )
-        try:
-            # Revocation and the theft-signal audit are one durable unit. A
-            # failure must not return a normal 401 while leaving the family
-            # active and the incident unrecorded.
-            db.commit()
-        except Exception:
-            db.rollback()
-            logger.exception("failed to persist refresh-token reuse incident")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="無法安全記錄刷新權杖重放事件",
+        if within_grace:
+            tip = (
+                db.query(AuthRefreshToken)
+                .filter(
+                    AuthRefreshToken.sid == sid,
+                    AuthRefreshToken.consumed_at.is_(None),
+                    AuthRefreshToken.revoked_at.is_(None),
+                )
+                .order_by(AuthRefreshToken.generation.desc())
+                .with_for_update()
+                .first()
             )
-        raise RefreshTokenReuseDetected(
-            token_jti_hash=jti_hash,
-            session_id_hash=sid_hash,
+            if tip is not None:
+                tip.consumed_at = now
+                (
+                    methods,
+                    assurance,
+                    authenticated_at,
+                    break_glass,
+                    break_glass_ticket,
+                    break_glass_expires_at,
+                ) = _assurance_from_session(session)
+                pair = create_tokens(
+                    user,
+                    db=db,
+                    amr=methods,
+                    sid=session.sid,
+                    auth_time=authenticated_at,
+                    acr=assurance,
+                    break_glass=break_glass,
+                    break_glass_ticket=break_glass_ticket,
+                    break_glass_expires_at=break_glass_expires_at,
+                    refresh_generation=tip.generation + 1,
+                    parent_refresh_jti_hash=tip.jti_hash,
+                )
+                sid_hash = _identifier_hash(sid)
+                db.add(
+                    AuditLog(
+                        actor_user_id=user.id,
+                        actor_username=user.username,
+                        action="auth.refresh_reuse_graced",
+                        resource_type="auth_session",
+                        resource_id=sid_hash,
+                        status="warning",
+                        detail=(
+                            "已使用的 refresh token 於寬限窗內再次出現；"
+                            "延續目前工作階段"
+                        ),
+                        ip_address=ip_address,
+                        metadata_json=json.dumps(
+                            {
+                                "reason": "refresh_token_reuse",
+                                "token_jti_hash": jti_hash,
+                                "session_id_hash": sid_hash,
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    )
+                )
+                db.commit()
+                return pair
+        _reject_refresh_reuse(
+            db,
+            user=user,
+            sid=sid,
+            jti_hash=jti_hash,
+            ip_address=ip_address,
         )
 
     record.consumed_at = datetime.now(timezone.utc)
@@ -512,6 +561,63 @@ def rotate_refresh_token(
     )
     db.commit()
     return pair
+
+
+def _reject_refresh_reuse(
+    db: Session,
+    *,
+    user: User,
+    sid: str,
+    jti_hash: str,
+    ip_address: str | None,
+) -> None:
+    sid_hash = _identifier_hash(sid)
+    persist_sid_revocation(
+        db,
+        user_id=user.id,
+        sid=sid,
+        reason="refresh_token_reuse",
+        commit=False,
+    )
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            actor_username=user.username,
+            action="auth.refresh_reuse",
+            resource_type="auth_session",
+            resource_id=sid_hash,
+            status="failure",
+            detail=(
+                "已使用的 refresh token 再次出現；撤銷目前工作階段"
+            ),
+            ip_address=ip_address,
+            metadata_json=json.dumps(
+                {
+                    "reason": "refresh_token_reuse",
+                    "token_jti_hash": jti_hash,
+                    "session_id_hash": sid_hash,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+    )
+    try:
+        # Revocation and the theft-signal audit are one durable unit. A
+        # failure must not return a normal 401 while leaving the family
+        # active and the incident unrecorded.
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("failed to persist refresh-token reuse incident")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="無法安全記錄刷新權杖重放事件",
+        )
+    raise RefreshTokenReuseDetected(
+        token_jti_hash=jti_hash,
+        session_id_hash=sid_hash,
+    )
 
 
 def _load_user_from_payload(payload: dict | None, db: Session, expected_type: str) -> User:
@@ -719,6 +825,24 @@ def require_owner(current_user: User = Depends(get_current_user)) -> User:
             detail="需要 owner 權限",
         )
     return current_user
+
+
+def require_inference_audit_viewer(
+    current_user: User = Depends(require_admin),
+) -> User:
+    """Inference audit list/export: owner always, else admin with grant.
+
+    Plain admins without ``can_view_inference_audit`` get 403. IP /
+    metadata redaction for non-owners remains separate (``is_owner``).
+    """
+    if is_owner(current_user) or bool(
+        getattr(current_user, "can_view_inference_audit", False)
+    ):
+        return current_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="需要推論稽核檢視授權",
+    )
 
 
 def verify_service_token(

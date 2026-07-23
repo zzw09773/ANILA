@@ -25,6 +25,7 @@ from app.services.auth_service import (
     is_owner,
     require_admin,
 )
+from app.services.client_ip import resolve_client_ip
 from app.utils.security import hash_password
 
 router = APIRouter(prefix="/api/users", tags=["使用者管理"])
@@ -127,6 +128,7 @@ def get_user(
 def update_user(
     user_id: int,
     request: UserUpdate,
+    http_request: Request,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -141,6 +143,18 @@ def update_user(
     new_role = update_data.get("role")
     _ensure_owner_for_elevated(user.role, admin)
     _ensure_owner_for_elevated(new_role, admin)
+
+    grant_changed: bool | None = None
+    if "can_view_inference_audit" in update_data:
+        if not is_owner(admin):
+            raise HTTPException(
+                status_code=403,
+                detail="需要 owner 權限以授與稽核檢視",
+            )
+        new_grant = bool(update_data["can_view_inference_audit"])
+        prev_grant = bool(getattr(user, "can_view_inference_audit", False))
+        if new_grant != prev_grant:
+            grant_changed = new_grant
 
     if "department_id" in update_data:
         update_data["department_id"] = _validate_department_id(
@@ -162,6 +176,17 @@ def update_user(
 
     db.commit()
     db.refresh(user)
+    if grant_changed is not None:
+        log_audit_event(
+            db,
+            actor=admin,
+            action="audit.viewer_grant",
+            resource_type="user",
+            resource_id=user.id,
+            detail="enabled" if grant_changed else "disabled",
+            ip_address=resolve_client_ip(http_request),
+            commit=True,
+        )
     log_audit_event(
         db,
         actor=admin,

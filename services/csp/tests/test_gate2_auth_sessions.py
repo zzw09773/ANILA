@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 
 import pytest
 from jose import jwt
 
 from app.config import settings
-from app.models.auth_session import AuthSession
+from app.models.auth_session import AuthRefreshToken, AuthSession
+from app.models.audit_log import AuditLog
 from app.services.auth_service import create_tokens
 from app.utils.security import decode_token, get_private_key
 from tests.conftest import make_user
@@ -43,6 +45,12 @@ def _login(client, username: str) -> dict:
 
 def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _sid_hash(sid: str) -> str:
+    """Mirror auth_service._identifier_hash so audit assertions can be scoped
+    to one specific session instead of a global row count."""
+    return sha256(sid.encode("utf-8")).hexdigest()
 
 
 def test_login_pair_has_distinct_jti_common_sid_and_complete_assurance(client, db):
@@ -166,11 +174,22 @@ def test_refresh_rotates_once_and_preserves_session_assurance(client, db):
     }
     assert access_claims["jti"] != refresh_claims["jti"]
 
+    # Age the consumed generation past the multi-tab grace window so this
+    # replay exercises the strict reuse path (not auth.refresh_reuse_graced).
+    consumed = (
+        db.query(AuthRefreshToken)
+        .filter(AuthRefreshToken.sid == old_claims["sid"])
+        .filter(AuthRefreshToken.consumed_at.isnot(None))
+        .one()
+    )
+    consumed.consumed_at = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.ANILA_REFRESH_REUSE_GRACE_SECONDS + 1
+    )
+    db.commit()
+
     client.cookies.clear()
     replay = client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
     assert replay.status_code == 401, replay.text
-
-    from app.models.audit_log import AuditLog
 
     event = db.query(AuditLog).filter_by(action="auth.refresh_reuse").one()
     metadata = json.loads(event.metadata_json)
@@ -181,6 +200,257 @@ def test_refresh_rotates_once_and_preserves_session_assurance(client, db):
     # Reuse is an incident signal: the whole refresh family/session is revoked.
     probe = client.get("/api/auth/me", headers=_bearer(rotated["access_token"]))
     assert probe.status_code == 401, probe.text
+
+
+def test_refresh_reuse_within_grace_returns_new_pair_without_revoking(
+    client, db, monkeypatch,
+):
+    monkeypatch.setattr(settings, "ANILA_REFRESH_REUSE_GRACE_SECONDS", 10)
+    make_user(db, username="gate2_grace_ok")
+    original = _login(client, "gate2_grace_ok")
+    old_refresh = original["refresh_token"]
+    old_claims = decode_token(old_refresh)
+    assert old_claims is not None
+
+    client.cookies.clear()
+    first = client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+    assert first.status_code == 200, first.text
+    first_pair = first.json()
+
+    client.cookies.clear()
+    graced = client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+    assert graced.status_code == 200, graced.text
+    graced_pair = graced.json()
+    assert graced_pair["access_token"]
+    assert graced_pair["refresh_token"]
+    assert graced_pair["refresh_token"] != first_pair["refresh_token"]
+    assert graced_pair["refresh_token"] != old_refresh
+
+    session = db.get(AuthSession, old_claims["sid"])
+    assert session is not None
+    assert session.revoked_at is None
+
+    event = db.query(AuditLog).filter_by(action="auth.refresh_reuse_graced").one()
+    assert event.status == "warning"
+    metadata = json.loads(event.metadata_json)
+    assert metadata["reason"] == "refresh_token_reuse"
+    assert len(metadata["token_jti_hash"]) == 64
+    assert len(metadata["session_id_hash"]) == 64
+    assert old_claims["jti"] not in event.metadata_json
+
+    probe = client.get(
+        "/api/auth/me", headers=_bearer(graced_pair["access_token"])
+    )
+    assert probe.status_code == 200, probe.text
+
+
+def test_refresh_reuse_beyond_grace_still_revokes_sid(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "ANILA_REFRESH_REUSE_GRACE_SECONDS", 10)
+    make_user(db, username="gate2_grace_expired")
+    original = _login(client, "gate2_grace_expired")
+    old_refresh = original["refresh_token"]
+    old_claims = decode_token(old_refresh)
+    assert old_claims is not None
+
+    client.cookies.clear()
+    first = client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+    assert first.status_code == 200, first.text
+    rotated = first.json()
+
+    consumed = (
+        db.query(AuthRefreshToken)
+        .filter(AuthRefreshToken.sid == old_claims["sid"])
+        .filter(AuthRefreshToken.consumed_at.isnot(None))
+        .one()
+    )
+    consumed.consumed_at = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.ANILA_REFRESH_REUSE_GRACE_SECONDS + 5
+    )
+    db.commit()
+
+    client.cookies.clear()
+    replay = client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+    assert replay.status_code == 401, replay.text
+
+    session = db.get(AuthSession, old_claims["sid"])
+    assert session is not None
+    assert session.revoked_at is not None
+    assert session.revoke_reason == "refresh_token_reuse"
+    # Scope audit assertions to THIS session's hash (audit resource_id) so no
+    # other test or fixture writing reuse events can perturb the count.
+    revoked_sid_hash = _sid_hash(old_claims["sid"])
+    assert (
+        db.query(AuditLog)
+        .filter_by(action="auth.refresh_reuse", resource_id=revoked_sid_hash)
+        .count()
+        == 1
+    )
+    assert (
+        db.query(AuditLog)
+        .filter_by(
+            action="auth.refresh_reuse_graced", resource_id=revoked_sid_hash
+        )
+        .count()
+        == 0
+    )
+
+    probe = client.get("/api/auth/me", headers=_bearer(rotated["access_token"]))
+    assert probe.status_code == 401, probe.text
+
+
+def test_refresh_reuse_cross_sid_always_strict_even_within_grace(
+    client, db, monkeypatch,
+):
+    monkeypatch.setattr(settings, "ANILA_REFRESH_REUSE_GRACE_SECONDS", 10)
+    user = make_user(db, username="gate2_grace_cross_sid")
+    first = _login(client, user.username)
+    client.cookies.clear()
+    second = _login(client, user.username)
+    first_claims = decode_token(first["refresh_token"])
+    second_claims = decode_token(second["refresh_token"])
+    assert first_claims is not None and second_claims is not None
+    assert first_claims["sid"] != second_claims["sid"]
+
+    # Consume first session's refresh once so the jti row is marked used,
+    # then present that same jti under the *other* sid claim.
+    client.cookies.clear()
+    rotated = client.post(
+        "/api/auth/refresh", json={"refresh_token": first["refresh_token"]}
+    )
+    assert rotated.status_code == 200, rotated.text
+
+    # Forge: present the FIRST session's consumed jti under the SECOND
+    # session's sid. Base the payload on the SECOND token's claims and swap
+    # only the jti — basing it on first_claims with a swapped sid is
+    # nondeterministic: the two logins may land in different epoch seconds, so
+    # the first token's auth_time then contradicts the second session's durable
+    # assurance state and _load_user_from_payload rejects the token with a
+    # plain 401 BEFORE the cross-sid reuse guard ever runs (no revocation, no
+    # audit row — the flake this test used to have). With second_claims as the
+    # base, the assurance-consistency gate always passes and the request
+    # deterministically reaches the `record.sid != sid` strict path.
+    forged_payload = dict(second_claims)
+    forged_payload["jti"] = first_claims["jti"]
+    forged = jwt.encode(
+        forged_payload,
+        get_private_key(),
+        algorithm="RS256",
+        headers={"kid": settings.JWT_KID, "typ": "JWT"},
+    )
+
+    client.cookies.clear()
+    replay = client.post("/api/auth/refresh", json={"refresh_token": forged})
+    assert replay.status_code == 401, replay.text
+
+    # Strict path revokes the sid presented in the payload (second session).
+    # The app committed that revocation on its own request-scoped session; end
+    # this test session's read transaction (mirrors the sibling grace tests) so
+    # the next read sees the committed revocation instead of a stale snapshot.
+    db.commit()
+
+    # Premise guard: this test only proves "cross-sid is strict EVEN within
+    # grace" if the consumed record was still inside the grace window when the
+    # replay was evaluated. Assert its age is below the window even now (after
+    # the replay), which bounds the age at evaluation time from above; without
+    # this, a slow run ages the record past grace and a mutation that graces
+    # within-window cross-sid reuse would still see this test pass.
+    consumed = (
+        db.query(AuthRefreshToken)
+        .filter(AuthRefreshToken.sid == first_claims["sid"])
+        .filter(AuthRefreshToken.consumed_at.isnot(None))
+        .one()
+    )
+    consumed_at = consumed.consumed_at
+    if consumed_at.tzinfo is None:
+        consumed_at = consumed_at.replace(tzinfo=timezone.utc)
+    consumed_age = datetime.now(timezone.utc) - consumed_at
+    assert timedelta(0) <= consumed_age < timedelta(
+        seconds=settings.ANILA_REFRESH_REUSE_GRACE_SECONDS
+    ), f"within-grace premise broken: consumed record aged {consumed_age}"
+
+    second_session = db.get(AuthSession, second_claims["sid"])
+    assert second_session is not None
+    assert second_session.revoked_at is not None
+    assert second_session.revoke_reason == "refresh_token_reuse"
+    # Audit assertions are scoped to the presented (second) sid's hash so no
+    # other test's reuse events can perturb the count; a graced outcome for
+    # either sid would be a security regression, so both are checked.
+    second_sid_hash = _sid_hash(second_claims["sid"])
+    reuse_events = (
+        db.query(AuditLog)
+        .filter_by(action="auth.refresh_reuse", resource_id=second_sid_hash)
+        .all()
+    )
+    assert len(reuse_events) == 1
+    reuse_meta = json.loads(reuse_events[0].metadata_json)
+    assert reuse_meta["session_id_hash"] == second_sid_hash
+    for sid in (first_claims["sid"], second_claims["sid"]):
+        assert (
+            db.query(AuditLog)
+            .filter_by(
+                action="auth.refresh_reuse_graced", resource_id=_sid_hash(sid)
+            )
+            .count()
+            == 0
+        )
+
+    # First session's family after its own legitimate rotate must stay intact.
+    first_session = db.get(AuthSession, first_claims["sid"])
+    assert first_session is not None
+    assert first_session.revoked_at is None
+
+
+def test_refresh_reuse_grace_defaults_to_strict_zero():
+    from app.config import Settings
+
+    assert Settings(_env_file=None).ANILA_REFRESH_REUSE_GRACE_SECONDS == 0
+
+
+@pytest.mark.parametrize("bad_value", [-1, 31])
+def test_refresh_reuse_grace_setting_rejects_out_of_range(monkeypatch, bad_value):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("ANILA_REFRESH_REUSE_GRACE_SECONDS", str(bad_value))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_formal_posture_rejects_nonzero_refresh_reuse_grace(monkeypatch):
+    import importlib
+
+    from app.config import Settings
+    import app.services.startup_security as ss_module
+
+    values = {
+        "ANILA_DEPLOYMENT_PROFILE": "prod-public-passwd",
+        "ANILA_ENV": "production",
+        "ANILA_ALLOW_DEV_SECRET": "0",
+        "DEBUG": "false",
+        "ENABLE_API_DOCS": "false",
+        "ENABLE_PUBLIC_SHARE": "false",
+        "ENABLE_MEMORY": "false",
+        "SKIP_STARTUP_MIGRATIONS": "false",
+        "ALLOW_AUTO_KEYGEN": "false",
+        "COOKIE_SECURE": "true",
+        "ENABLE_CARD_LOGIN": "false",
+        "REQUIRE_CARD_LOGIN_ONLY": "false",
+        "ANILA_ALLOW_HTTP_ENDPOINT": "0",
+        "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": "0",
+        "ANILA_ALLOW_PRIVATE_ENDPOINT": "0",
+        "CARD_DEV_SKIP_NONCE_BINDING": "false",
+        "CARD_CRL_REQUIRED": "false",
+        "ALLOW_LEGACY_AGENT_DISPATCH": "false",
+        "ANILA_REFRESH_REUSE_GRACE_SECONDS": "10",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+    importlib.reload(ss_module)
+    monkeypatch.setattr(ss_module, "settings", Settings(_env_file=None))
+    with pytest.raises(RuntimeError, match="ANILA_REFRESH_REUSE_GRACE_SECONDS"):
+        ss_module.assert_deployment_profile_posture()
 
 
 def test_logout_revokes_only_the_presented_session(client, db):
