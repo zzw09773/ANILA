@@ -20,7 +20,12 @@ from datetime import datetime
 from typing import Any
 
 from anila_contracts import RouteDecision
-from anila_contracts.routing import RouteConstraints, RouteFallback, RouteType
+from anila_contracts.routing import (
+    ROUTE_DECISION_SCHEMA_VERSION,
+    RouteConstraints,
+    RouteFallback,
+    RouteType,
+)
 from anila_security.model_governance import classification_rank
 
 from .candidate_filter import (
@@ -63,15 +68,12 @@ _SAFE_MESSAGE_JUDGE_INVALID = "路由判斷模型未能產生有效決策，已�
 _SAFE_MESSAGE_DENY = "目前無法安全決定派工，請補充資訊或稍後再試。"
 _SAFE_MESSAGE_CLARIFY_FAIL_CLOSED = "目前無法安全決定派工，請補充資訊或稍後再試。"
 _LOG_SAMPLE_MAX_CHARS = 500
-# Parsed payloads: string values longer than this are masked (short enums/ids
-# keep diagnostic value). Raw unparseable text: only this prefix is logged.
-_LOG_SAMPLE_FIELD_KEEP_CHARS = 64
-_LOG_SAMPLE_RAW_PREFIX_CHARS = 80
-# String values are masked by default; only these structural enum/id keys keep
-# short id/enum-shaped tokens in log samples (shape-checked, so a judge that
-# stuffs prose under a structural key — including list items — is still
-# masked). Anything else may carry echoed user content.
-_SAFE_TOKEN_RE = re.compile(r"[A-Za-z0-9._:\-]{1,64}")
+# Log samples run BEFORE schema validation, so nothing in the payload is
+# proven server-owned yet. Posture: keys outside the structural whitelist are
+# masked (a judge can stuff user content into key NAMES); values are kept only
+# when they belong to a closed enum set derived from the real contracts enums;
+# every other string (ids, reason codes, free text) is reduced to its length.
+# Unparseable raw text logs length + digest only — never a verbatim prefix.
 _SAFE_STRING_KEYS = frozenset(
     {
         "route_type",
@@ -79,12 +81,30 @@ _SAFE_STRING_KEYS = frozenset(
         "fallback",
         "status",
         "schema_version",
+        "confidence",
         "registry_snapshot_id",
         "selected_agent_id",
         "candidate_agent_ids",
         "reason_codes",
+        "rewritten_query",
+        "execution_plan",
+        "constraints",
+        "decision_id",
+        "required_capabilities",
     }
 )
+def _known_enum_values() -> dict[str, frozenset[str]]:
+    route_values = frozenset(member.value for member in RouteType)
+    fallback_values = frozenset(member.value for member in RouteFallback)
+    return {
+        "route_type": route_values,
+        "action": route_values,
+        "fallback": fallback_values,
+        # Closed literal from the contracts, not a pattern: an open-ended
+        # digit/token regex would retain digit-only or token-shaped secrets
+        # stuffed under this key.
+        "schema_version": frozenset({ROUTE_DECISION_SCHEMA_VERSION}),
+    }
 
 _judge_log_attempt: contextvars.ContextVar[int] = contextvars.ContextVar(
     "anila_judge_log_attempt", default=1
@@ -118,35 +138,49 @@ def _safe_message_for_invalid(reason: str, *, action: str) -> str:
 
 
 def _redact_strings(value: object, *, key: str | None = None) -> object:
-    """Mask string values unless their key is a known-safe enum/id field.
+    """Redact a pre-validation payload down to provably-safe structure.
 
-    The judge may echo user content into ANY free-text field (rewritten_query,
-    hallucinated siblings), and short content leaks the same as long content —
-    so the default for strings is mask; only whitelisted structural keys keep
-    short values. Numbers/booleans/None always keep their diagnostic value.
+    Nothing here has passed schema validation, so no value is proven
+    server-owned: string values survive ONLY when their key maps to a closed
+    set (contracts enums / the schema_version literal) and the value is a
+    member. Everything else — ids, reason codes, free text — becomes its
+    length. Keys outside the structural whitelist are masked too, because a
+    judge can put user content in key names. Numbers/booleans/None stay;
+    any other leaf type (bytes, sets, objects) is opaque — its repr/str may
+    embed user content, so only type and length survive.
     """
 
     if isinstance(value, str):
-        if (
-            key in _SAFE_STRING_KEYS
-            and len(value) <= _LOG_SAMPLE_FIELD_KEEP_CHARS
-            and _SAFE_TOKEN_RE.fullmatch(value)
-        ):
+        enum_values = _known_enum_values().get(key or "")
+        if enum_values is not None and value in enum_values:
             return value
         return f"<redacted len={len(value)}>"
     if isinstance(value, Mapping):
-        return {k: _redact_strings(v, key=k) for k, v in value.items()}
+        redacted: dict[str, object] = {}
+        for index, (k, v) in enumerate(value.items()):
+            key_name = k if isinstance(k, str) else repr(k)
+            if key_name in _SAFE_STRING_KEYS:
+                redacted[key_name] = _redact_strings(v, key=key_name)
+            else:
+                # Index keeps same-length masked keys from colliding and
+                # silently dropping entries from the sample.
+                masked = f"<redacted-key#{index} len={len(key_name)}>"
+                redacted[masked] = _redact_strings(v, key=None)
+        return redacted
     if isinstance(value, (list, tuple)):
         return [_redact_strings(v, key=key) for v in value]
-    return value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    size = len(value) if isinstance(value, (bytes, bytearray)) else len(repr(value))
+    return f"<redacted type={type(value).__name__} len={size}>"
 
 
 def redact_judge_output_sample(provider_output: object, *, max_chars: int = _LOG_SAMPLE_MAX_CHARS) -> str:
     """Return a redacted sample for warning logs.
 
-    Parsed payloads keep structure (keys, enums, short ids) but every long
-    string value is masked. Unparseable raw text may be user content echoed
-    by the judge, so only a short prefix plus a fingerprint is logged.
+    Parsed payloads keep whitelisted key names, closed-enum values and
+    scalars; every other key and string value is reduced to its length.
+    Unparseable raw text is reduced to length + digest — no verbatim bytes.
     """
 
     payload: object = provider_output
@@ -162,7 +196,10 @@ def redact_judge_output_sample(provider_output: object, *, max_chars: int = _LOG
         try:
             text = json.dumps(redacted, ensure_ascii=False, sort_keys=True)
         except (TypeError, ValueError):
-            text = str(redacted)
+            # Every leaf is JSON-safe after redaction, so this should be
+            # unreachable — but never fall back to str()/repr(), which could
+            # resurrect content the redaction just removed.
+            return _fingerprint_raw_sample(repr(redacted))
         if len(text) > max_chars:
             return text[:max_chars] + f"...<truncated total={len(text)}>"
         return text
@@ -177,14 +214,17 @@ def redact_judge_output_sample(provider_output: object, *, max_chars: int = _LOG
     return _fingerprint_raw_sample(repr(payload))
 
 
-def _fingerprint_raw_sample(text: str, *, prefix: int = _LOG_SAMPLE_RAW_PREFIX_CHARS) -> str:
-    """Unparseable output: short prefix + digest, never the full text."""
+def _fingerprint_raw_sample(text: str) -> str:
+    """Unparseable output: length + digest only.
+
+    No verbatim prefix — a malformed judge reply may open with (or consist
+    entirely of) echoed user content, and short replies would otherwise be
+    logged whole. Correlate via the digest when a raw sample must be pulled
+    from the upstream provider during an investigation.
+    """
 
     digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12]
-    head = text[:prefix]
-    return f"{head}...<raw len={len(text)} sha256={digest}>" if len(text) > prefix else (
-        f"{head}<raw len={len(text)} sha256={digest}>"
-    )
+    return f"<raw len={len(text)} sha256={digest}>"
 
 
 def log_invalid_judge_output(

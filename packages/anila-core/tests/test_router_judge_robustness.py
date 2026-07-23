@@ -244,15 +244,25 @@ def test_judge_invalid_message_differs_from_legacy_user_blaming_copy() -> None:
     assert "請補充資訊" not in result.safe_message
 
 
-def test_unparseable_raw_output_logs_fingerprint_not_full_text() -> None:
-    # Sensitive user content sits BEYOND the 80-char raw prefix: it must not
-    # appear in the sample; only a short head + length/sha256 fingerprint may.
+def test_unparseable_raw_output_logs_no_verbatim_bytes() -> None:
+    # A malformed judge reply may open with — or consist entirely of — echoed
+    # user content, so the raw branch must log NOTHING verbatim: only length
+    # and a sha256 fingerprint.
     filler = "```json 這不是合法的路由決策輸出，模型改用散文回答並附上原始提問內容如下——" + "x" * 40
     raw = filler + _SECRET_QUERY
     sample = redact_judge_output_sample(raw)
     assert _SECRET_QUERY not in sample
+    assert filler[:12] not in sample
     assert "<raw len=" in sample and "sha256=" in sample
-    assert len(sample) < 200
+    assert len(sample) < 60
+
+
+def test_short_raw_output_is_not_logged_verbatim() -> None:
+    # Bugbot finding on PR #44: raw replies at or under the old 80-char prefix
+    # were logged whole. Short echoed content must be fingerprint-only too.
+    sample = redact_judge_output_sample(_SECRET_QUERY)
+    assert _SECRET_QUERY not in sample
+    assert "<raw len=" in sample and "sha256=" in sample
 
 
 def test_parsed_output_masks_long_sibling_fields_and_keeps_short_enums() -> None:
@@ -267,13 +277,63 @@ def test_parsed_output_masks_long_sibling_fields_and_keeps_short_enums() -> None
     assert "<redacted len=" in sample
 
 
-def test_whitelisted_list_items_must_be_token_shaped() -> None:
-    # A judge stuffing prose (with spaces / CJK) under a structural list key
-    # must still be masked; id/enum-shaped tokens survive.
+def test_unvalidated_whitelist_values_are_masked_even_when_token_shaped() -> None:
+    # Codex finding on PR #44: samples are built BEFORE schema validation, so
+    # token-shaped strings under structural keys are not proven server-owned.
+    # Only closed-enum members survive; ids/reason codes reduce to lengths.
     payload = {
         "route_type": "direct_answer",
-        "reason_codes": ["OK_CODE-1", _SECRET_QUERY + " 混入空白與中文的散文"],
+        "reason_codes": ["USER_SECRET_TOKEN"],
+        "registry_snapshot_id": "SECRET-LOOKING-ID-123",
     }
     sample = redact_judge_output_sample(payload)
-    assert "OK_CODE-1" in sample
+    assert "direct_answer" in sample
+    assert "USER_SECRET_TOKEN" not in sample
+    assert "SECRET-LOOKING-ID-123" not in sample
+    assert "reason_codes" in sample and "registry_snapshot_id" in sample
+
+
+def test_non_whitelisted_key_names_are_masked() -> None:
+    # Codex finding on PR #44: user content can arrive as a key NAME in
+    # malformed JSON; non-whitelisted keys must not be dumped verbatim.
+    payload = {"機敏提問內容當成欄位名稱": 1, "route_type": "clarify"}
+    sample = redact_judge_output_sample(payload)
+    assert "機敏提問內容當成欄位名稱" not in sample
+    assert "<redacted-key#" in sample
+    assert "clarify" in sample
+
+
+def test_nested_execution_plan_keys_and_bytes_leak_nothing() -> None:
+    payload = {
+        "route_type": "direct_answer",
+        "execution_plan": {
+            "機敏巢狀欄位": _SECRET_QUERY,
+            "steps": [{"note": _SECRET_QUERY}],
+        },
+    }
+    sample = redact_judge_output_sample(payload)
     assert _SECRET_QUERY not in sample
+    assert "機敏巢狀欄位" not in sample
+    raw_bytes_sample = redact_judge_output_sample(_SECRET_QUERY.encode("utf-8"))
+    assert _SECRET_QUERY not in raw_bytes_sample
+
+
+def test_all_digit_secret_under_schema_version_is_masked() -> None:
+    payload = {"schema_version": "0912345678", "route_type": "clarify"}
+    sample = redact_judge_output_sample(payload)
+    assert "0912345678" not in sample
+    assert "clarify" in sample
+
+
+def test_nested_bytes_and_exotic_leaves_never_reach_sample_verbatim() -> None:
+    # json.dumps would raise on bytes/set leaves; the old str(redacted)
+    # fallback then resurrected their repr. Leaves must be opaque instead.
+    payload = {
+        "route_type": "clarify",
+        "blob": _SECRET_QUERY.encode("utf-8"),
+        "tags": {_SECRET_QUERY},
+    }
+    sample = redact_judge_output_sample(payload)
+    assert _SECRET_QUERY not in sample
+    assert "b'" not in sample
+    assert "<redacted type=bytes" in sample
