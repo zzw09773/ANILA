@@ -8,9 +8,13 @@ rejected; they are not an authority or a compatibility fallback here.
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import json
+import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -29,9 +33,179 @@ from .injection_detection import MAX_REQUEST_CONTENT_SCAN_CHARS, contains_inject
 from .request_context import RequestContext
 
 
+logger = logging.getLogger(__name__)
+
 _LEGACY_DISPATCH_RE = re.compile(r"\bdispatch\s*:", re.IGNORECASE)
 _MARKDOWN_RE = re.compile(r"```|^\s*#{1,6}\s", re.MULTILINE)
 _PLAIN_TEXT_CAPABILITIES = frozenset({"text"})
+
+# Judge parse/schema failures: honest fail-closed message + exactly one pipeline retry.
+RETRYABLE_JUDGE_REASON_CODES = frozenset(
+    {
+        "INVALID_JSON",
+        "MARKDOWN_OUTPUT",
+        "INVALID_ROUTE_DECISION",
+    }
+)
+_JUDGE_OUTPUT_INVALID_REASONS = RETRYABLE_JUDGE_REASON_CODES
+_SECURITY_DENY_REASONS = frozenset(
+    {
+        "PROMPT_INJECTION_OUTPUT",
+        "LEGACY_DISPATCH_UNSUPPORTED",
+        "INJECTION_INPUT_DENIED",
+        "CLASSIFICATION_CEILING_DENIED",
+        "SCOPE_CAPABILITY_DENIED",
+        "MULTI_AGENT_UNSUPPORTED",
+    }
+)
+
+_SAFE_MESSAGE_JUDGE_INVALID = "路由判斷模型未能產生有效決策，已安全停止。請稍後再試。"
+_SAFE_MESSAGE_DENY = "目前無法安全決定派工，請補充資訊或稍後再試。"
+_SAFE_MESSAGE_CLARIFY_FAIL_CLOSED = "目前無法安全決定派工，請補充資訊或稍後再試。"
+_LOG_SAMPLE_MAX_CHARS = 500
+# Parsed payloads: string values longer than this are masked (short enums/ids
+# keep diagnostic value). Raw unparseable text: only this prefix is logged.
+_LOG_SAMPLE_FIELD_KEEP_CHARS = 64
+_LOG_SAMPLE_RAW_PREFIX_CHARS = 80
+# String values are masked by default; only these structural enum/id keys keep
+# short id/enum-shaped tokens in log samples (shape-checked, so a judge that
+# stuffs prose under a structural key — including list items — is still
+# masked). Anything else may carry echoed user content.
+_SAFE_TOKEN_RE = re.compile(r"[A-Za-z0-9._:\-]{1,64}")
+_SAFE_STRING_KEYS = frozenset(
+    {
+        "route_type",
+        "action",
+        "fallback",
+        "status",
+        "schema_version",
+        "registry_snapshot_id",
+        "selected_agent_id",
+        "candidate_agent_ids",
+        "reason_codes",
+    }
+)
+
+_judge_log_attempt: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "anila_judge_log_attempt", default=1
+)
+_judge_log_correlation_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "anila_judge_log_correlation_id", default=None
+)
+
+
+@contextmanager
+def judge_validation_attempt(
+    attempt: int, *, correlation_id: str | None = None
+) -> Iterator[None]:
+    """Bind attempt / correlation id for invalid-judge warning logs."""
+
+    token_attempt = _judge_log_attempt.set(attempt)
+    token_corr = _judge_log_correlation_id.set(correlation_id)
+    try:
+        yield
+    finally:
+        _judge_log_attempt.reset(token_attempt)
+        _judge_log_correlation_id.reset(token_corr)
+
+
+def _safe_message_for_invalid(reason: str, *, action: str) -> str:
+    if reason in _JUDGE_OUTPUT_INVALID_REASONS:
+        return _SAFE_MESSAGE_JUDGE_INVALID
+    if action == "deny" or reason in _SECURITY_DENY_REASONS:
+        return _SAFE_MESSAGE_DENY
+    return _SAFE_MESSAGE_CLARIFY_FAIL_CLOSED
+
+
+def _redact_strings(value: object, *, key: str | None = None) -> object:
+    """Mask string values unless their key is a known-safe enum/id field.
+
+    The judge may echo user content into ANY free-text field (rewritten_query,
+    hallucinated siblings), and short content leaks the same as long content —
+    so the default for strings is mask; only whitelisted structural keys keep
+    short values. Numbers/booleans/None always keep their diagnostic value.
+    """
+
+    if isinstance(value, str):
+        if (
+            key in _SAFE_STRING_KEYS
+            and len(value) <= _LOG_SAMPLE_FIELD_KEEP_CHARS
+            and _SAFE_TOKEN_RE.fullmatch(value)
+        ):
+            return value
+        return f"<redacted len={len(value)}>"
+    if isinstance(value, Mapping):
+        return {k: _redact_strings(v, key=k) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_strings(v, key=key) for v in value]
+    return value
+
+
+def redact_judge_output_sample(provider_output: object, *, max_chars: int = _LOG_SAMPLE_MAX_CHARS) -> str:
+    """Return a redacted sample for warning logs.
+
+    Parsed payloads keep structure (keys, enums, short ids) but every long
+    string value is masked. Unparseable raw text may be user content echoed
+    by the judge, so only a short prefix plus a fingerprint is logged.
+    """
+
+    payload: object = provider_output
+    if isinstance(provider_output, bytes):
+        try:
+            payload = provider_output.decode("utf-8", errors="replace")
+        except Exception:
+            payload = repr(provider_output)
+    if isinstance(payload, RouteDecision):
+        payload = payload.model_dump(mode="json", exclude_none=False)
+    if isinstance(payload, Mapping):
+        redacted = _redact_strings(dict(payload))
+        try:
+            text = json.dumps(redacted, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            text = str(redacted)
+        if len(text) > max_chars:
+            return text[:max_chars] + f"...<truncated total={len(text)}>"
+        return text
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            return _fingerprint_raw_sample(payload)
+        if isinstance(parsed, Mapping):
+            return redact_judge_output_sample(parsed, max_chars=max_chars)
+        return _fingerprint_raw_sample(payload)
+    return _fingerprint_raw_sample(repr(payload))
+
+
+def _fingerprint_raw_sample(text: str, *, prefix: int = _LOG_SAMPLE_RAW_PREFIX_CHARS) -> str:
+    """Unparseable output: short prefix + digest, never the full text."""
+
+    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12]
+    head = text[:prefix]
+    return f"{head}...<raw len={len(text)} sha256={digest}>" if len(text) > prefix else (
+        f"{head}<raw len={len(text)} sha256={digest}>"
+    )
+
+
+def log_invalid_judge_output(
+    provider_output: object,
+    reason: str,
+    *,
+    attempt: int | None = None,
+    correlation_id: str | None = None,
+) -> None:
+    """Emit a redacted warning for a failed judge validation attempt."""
+
+    attempt_no = _judge_log_attempt.get() if attempt is None else attempt
+    corr = _judge_log_correlation_id.get() if correlation_id is None else correlation_id
+    sample = redact_judge_output_sample(provider_output)
+    logger.warning(
+        "judge output validation failed reason=%s attempt=%s correlation_id=%s sample=%s",
+        reason,
+        attempt_no,
+        corr or "-",
+        sample,
+    )
 
 
 def available_registry_entries(
@@ -154,7 +328,7 @@ class DecisionEngine:
             action=action,
             dispatch_allowed=False,
             reason_codes=(reason,),
-            safe_message="目前無法安全決定派工，請補充資訊或稍後再試。",
+            safe_message=_safe_message_for_invalid(reason, action=action),
         )
 
     @staticmethod
@@ -205,7 +379,7 @@ class DecisionEngine:
             action="deny",
             dispatch_allowed=False,
             reason_codes=(reason,),
-            safe_message="目前無法安全決定派工，請補充資訊或稍後再試。",
+            safe_message=_SAFE_MESSAGE_DENY,
         )
 
     @staticmethod
@@ -295,7 +469,7 @@ class DecisionEngine:
                 action="deny",
                 dispatch_allowed=False,
                 reason_codes=tuple(decision.reason_codes),
-                safe_message="目前無法安全決定派工，請補充資訊或稍後再試。",
+                safe_message=_SAFE_MESSAGE_DENY,
             )
         if _request_has_injection(context, request_content):
             return self._forced_deny(decision, "INJECTION_INPUT_DENIED")
@@ -325,19 +499,24 @@ class DecisionEngine:
         plain sequence of immutable entries for adapter/test convenience.
         """
 
+        def _reject(reason: str, *, action: str = "clarify") -> DecisionResult:
+            result = self._invalid(reason, action=action)
+            log_invalid_judge_output(provider_output, reason)
+            return result
+
         try:
             decoded = self._decode(provider_output)
         except ValueError as exc:
-            return self._invalid(str(exc))
+            return _reject(str(exc))
 
         if _contains_legacy_dispatch(decoded):
-            return self._invalid("LEGACY_DISPATCH_UNSUPPORTED")
+            return _reject("LEGACY_DISPATCH_UNSUPPORTED")
         if _contains_injection(decoded):
-            return self._invalid("PROMPT_INJECTION_OUTPUT", action="deny")
+            return _reject("PROMPT_INJECTION_OUTPUT", action="deny")
         try:
             decision = RouteDecision.model_validate(decoded)
         except Exception:
-            return self._invalid("INVALID_ROUTE_DECISION")
+            return _reject("INVALID_ROUTE_DECISION")
 
         enforced = self._enforce_fail_closed(
             decision,
@@ -349,19 +528,19 @@ class DecisionEngine:
             return enforced
 
         if decision.route_type is RouteType.SINGLE_AGENT and snapshot is None:
-            return self._invalid("SNAPSHOT_MISSING")
+            return _reject("SNAPSHOT_MISSING")
         if snapshot is not None:
             if not snapshot.is_fresh(now=now):
-                return self._invalid("SNAPSHOT_STALE")
+                return _reject("SNAPSHOT_STALE")
             if decision.registry_snapshot_id != snapshot.snapshot_id:
-                return self._invalid("SNAPSHOT_MISMATCH")
+                return _reject("SNAPSHOT_MISMATCH")
         elif isinstance(candidates, CandidateFilterResult) and candidates.snapshot_id is None:
-            return self._invalid("SNAPSHOT_MISSING")
+            return _reject("SNAPSHOT_MISSING")
 
         if decision.route_type is RouteType.MULTI_AGENT_PLAN:
             # R3 does not activate plans.  Leaving this as an opaque contract
             # field is useful for version negotiation, but execution is denied.
-            return self._invalid("MULTI_AGENT_UNSUPPORTED", action="deny")
+            return _reject("MULTI_AGENT_UNSUPPORTED", action="deny")
 
         filtered = _extract_candidates(candidates)
         candidate_map = {entry.agent_id: entry for entry in filtered}
@@ -369,20 +548,20 @@ class DecisionEngine:
             agent_id for agent_id in decision.candidate_agent_ids if agent_id not in candidate_map
         ]
         if unknown_candidates:
-            return self._invalid("UNKNOWN_AGENT")
+            return _reject("UNKNOWN_AGENT")
 
         if decision.route_type is RouteType.SINGLE_AGENT:
             if not filtered:
-                return self._invalid("NO_ELIGIBLE_CANDIDATES")
+                return _reject("NO_ELIGIBLE_CANDIDATES")
             selected = decision.selected_agent_id
             if selected is None or selected not in candidate_map:
-                return self._invalid("UNKNOWN_AGENT")
+                return _reject("UNKNOWN_AGENT")
             if context is not None and not set(context.required_capabilities).issubset(
                 set(decision.required_capabilities)
             ):
-                return self._invalid("CAPABILITY_MISMATCH")
+                return _reject("CAPABILITY_MISMATCH")
             if decision.confidence < self.min_confidence:
-                return self._invalid("LOW_CONFIDENCE")
+                return _reject("LOW_CONFIDENCE")
 
             if context is not None:
                 # Provider limits are untrusted.  Clamp them to server
@@ -390,7 +569,7 @@ class DecisionEngine:
                 max_steps = min(decision.constraints.max_steps, context.max_steps)
                 timeout_ms = min(decision.constraints.timeout_ms, context.timeout_ms)
                 if max_steps < 1 or timeout_ms < 1:
-                    return self._invalid("CONSTRAINT_EXCEEDS_SERVER_CEILING")
+                    return _reject("CONSTRAINT_EXCEEDS_SERVER_CEILING")
                 if (
                     max_steps != decision.constraints.max_steps
                     or timeout_ms != decision.constraints.timeout_ms
@@ -419,7 +598,7 @@ class DecisionEngine:
             decision.confidence < self.min_confidence
             and decision.route_type is RouteType.DIRECT_ANSWER
         ):
-            return self._invalid("LOW_CONFIDENCE")
+            return _reject("LOW_CONFIDENCE")
         action = decision.route_type.value
         return DecisionResult(
             decision=decision,
@@ -433,4 +612,12 @@ class DecisionEngine:
     evaluate = decide
 
 
-__all__ = ["DecisionEngine", "DecisionResult", "available_registry_entries"]
+__all__ = [
+    "DecisionEngine",
+    "DecisionResult",
+    "RETRYABLE_JUDGE_REASON_CODES",
+    "available_registry_entries",
+    "judge_validation_attempt",
+    "log_invalid_judge_output",
+    "redact_judge_output_sample",
+]
