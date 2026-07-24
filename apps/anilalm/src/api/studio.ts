@@ -117,6 +117,27 @@ export async function downloadCspArtifact(
   }
 }
 
+/** Download a specific ArtifactVersion blob from CSP (read-only history). */
+export async function downloadCspArtifactVersion(
+  artifactId: number,
+  versionId: number,
+  filename: string,
+): Promise<void> {
+  const response = await client.get(
+    `/api/artifacts/${encodeURIComponent(String(artifactId))}/versions/${encodeURIComponent(String(versionId))}/download`,
+    { responseType: 'blob' },
+  )
+  const url = URL.createObjectURL(response.data as Blob)
+  try {
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
 /**
  * fetch wrapper for studio calls. Injects the Bearer access token and —
  * mirroring the shared axios `client` interceptor — refreshes once on 401
