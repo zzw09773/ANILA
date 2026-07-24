@@ -270,9 +270,9 @@ bash infra/ci/check-airgap-image-inventory.sh
 
 ## 分支模型
 
-**你正在看 `anila-redesign`** — §17.1 目錄搬遷 ＋ Slice 0–9 重構的**收斂分支**，自 `origin/prod-intranet-card`（v1.2.0 系）分出，保留成熟骨架（card SSO / RS256 JWT / JWKS / revocation / CSRF / RLS / SSRF guard / proxy），採用新佈局與 Task／Trace／五級分類／Registry 新契約。
+**4 分支模型（2026-07-24 精簡）**：`main` 是 SSOT 且 **dev 直接在此**；3 條部署分支 ＝ `prod-military-passwd`／`prod-intranet-card`（與 `main` 只差 `.env.example` 姿態）＋ `trial-military`（另含 8 個開發者視圖刪減檔）。權威細節見 [`AGENTS.md`](./AGENTS.md) §2–3。
 
-依 [ADR-0006](./docs/anila-redesign-docs/adr/ADR-0006-layout-migration-deviations.md)，本分支與 `main`／7 分支模型的 cherry-pick 互通已**刻意中斷**。`main` 作為 SSOT 的 7 分支部署模型（登入／部署 delta：`main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military` / `trial-military`）**維持不變**，權威細節見 [`AGENTS.md`](./AGENTS.md) §2–3 與 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)。
+> 歷史：`anila-redesign`（§17.1 目錄搬遷＋Slice 0–9 重構的收斂分支，成熟骨架 card SSO / RS256 JWT / JWKS / revocation / CSRF / RLS / SSRF guard / proxy 皆源於此）已全數併入 `main`，分支與舊七分支模型（含 `dev-public`／`dev-military`／`prod-public-passwd`）於 2026-07-24 一併裁撤；[`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md) 已標示為歷史文件。
 
 ---
 
