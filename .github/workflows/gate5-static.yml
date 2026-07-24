@@ -46,7 +46,7 @@ jobs:
             pytest \
             pytest-asyncio \
             pyyaml \
-            ruff
+            "ruff<0.16"
           python -m pip install -e "./packages/anila-security"
 
       - name: Verify frozen R6 routing dataset
