@@ -1,7 +1,7 @@
 # ANILA 平台
 
 > **內網（air-gapped）NotebookLM 式知識／生產力平台 · 中科院自然人憑證卡登入 · CSP 治理底座。**
-> 分支 `anila-redesign` — §17.1 目錄搬遷 ＋ Slice 0–9 重構的收斂分支。設計權威：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/)（憲法＝[`00-product-constitution.md`](./docs/anila-redesign-docs/00-product-constitution.md)）。
+> `anila-redesign` 重構已全數收斂進 `main`（分支已於 2026-07-24 裁撤；現行分支模型見 `AGENTS.md` §3）。設計權威：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/)（憲法＝[`00-product-constitution.md`](./docs/anila-redesign-docs/00-product-constitution.md)）。
 
 ANILA 是一套部署於**中科院內網（air-gapped，機房無外網）** 的 NotebookLM 式知識／生產力平台。它的北極星是：**以任務為入口，以個人／專案／組織知識與專案入口為來源，以受控的模型／Agent／GUI Service 為能力，以 CSP 治理層（權限、五級分類、引用、full trace、審計）為底座。** 正式使用者透過統一的 **ANILA Shell** 與所有能力互動；登入採**中科院自然人憑證卡（PKI 卡）** 做真實 PKCS#7/CMS 簽章驗證。ANILA 不是聊天機器人、不是入口頁拼盤、也不是 Agent marketplace — 它把「受控 AI 能力」收斂到單一治理底座的內網工作台。air-gap／PKI／機敏分類是它的**安全脈絡**，不是產品目的。
 
@@ -52,7 +52,7 @@ ANILA
   </tr>
 </table>
 
-> 截圖取自 `anila-redesign` 分支的本機 fixture 環境（mock API + vite dev，未碰觸線上 stack）；登入頁的偵測憑證卡流程與內網卡登一致，帳密區為次要路徑。
+> 截圖取自重構期（時稱 `anila-redesign` 分支，現已併入 `main`）的本機 fixture 環境（mock API + vite dev，未碰觸線上 stack）；登入頁的偵測憑證卡流程與內網卡登一致，帳密區為次要路徑。
 
 ---
 

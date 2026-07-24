@@ -88,7 +88,7 @@ git diff --name-only origin/main origin/<branch> -- . ':(exclude)docs/**' ':(exc
 | `trial-military` | 國軍 trial / 展示精簡版 | **唯一真正的刪減型分支。** 刪減範圍＝8 個開發者視圖檔（`DeveloperAgentsView.vue`、`DeveloperGuideView.vue` 及其 router/sidebar/header/dashboard 接線）。⚠ 舊敘述「另刪 mindmap／OutputsPage／anila-ops.sh」已作廢——07-23 收斂確認那是功能時間差，該三者已回歸本分支。前端改動會撞 modify/delete，只挑選式 port。 |
 | `feature/backend-adapter` | 進行中 feature 分支（落後 main 242） | 繼續開發前先 merge `main`。 |
 
-（2026-07-24 裁撤：`dev-public`、`dev-military`、`prod-public-passwd`、`anila-redesign`、`docs/gate1-handoff`——皆已完整合併或零語意。外網帳密部署如需重啟，以 `main`＋部署 `.env` 姿態即可，毋須分支。）
+（2026-07-24 裁撤：`dev-public`、`dev-military`、`prod-public-passwd`、`anila-redesign`、`docs/gate1-handoff`——皆已完整合併或零語意。外網帳密部署如需重啟，概念上以 `main`＋部署 `.env` 姿態即可，毋須分支；⚠ 但 `deploy-prod.sh` 的 `check_branch()` 目前仍只接受 `prod-intranet-card`／`prod-military-passwd`／`trial-military`（及已裁撤的 `prod-public-passwd`）——實際重啟前必須先修訂該檢查以接受新模型，屬部署腳本的獨立決策，勿順手弱化 branch/profile 綁定。）
 
 ### 3.3 尚未落實的交付要求 ⚠
 

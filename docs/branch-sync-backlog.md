@@ -1,5 +1,7 @@
 # ANILA Branch Sync Backlog
 
+> ⚠ **本檔已成歷史文件（2026-07-24）**：分支模型已精簡為 4 分支——`main`（SSOT，dev 直接在此）＋`prod-military-passwd`＋`prod-intranet-card`＋`trial-military`。下述五線／七分支結構、`dev-public`／`dev-military`／`prod-public-passwd` 的同步 SOP 與標籤規則**已作廢**（該三分支已刪除）。現行分支模型與同步順序以 `AGENTS.md` §3 為準。以下內容僅保留為歷史紀錄。
+
 5 條長期維護的 branch 之間的同步狀態與 fork 區策略。**main 為 single source of truth (SSOT)**,其他 4 條 downstream 定期 sync from main。每次 main 有 commit 落地,**立刻評估是否要 sync 進 downstream**,並在這份檔記錄。
 
 > **2026-05-26 重構**:從原本「main + prod」雙線重整為 5 條 branch(3 種 prod × 2 種 dev)。原 `prod` branch 已 rename 為 `prod-intranet-card`(GitHub API rename,PR refs / branch protection 自動跟著走)。Backup tag:[`pre-branch-restructure-2026-05-26`](https://github.com/zzw09773/ANILA/releases/tag/pre-branch-restructure-2026-05-26) 紀錄 rename 前的 prod HEAD。

@@ -13,7 +13,7 @@
 
 ## 0. 一句話定位
 
-ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,**PKI 自然人憑證卡登入**。多服務 monorepo,**4 分支模型(2026-07-24 精簡)**:`main` 是 SSOT 且 **dev 直接在此**;3 條部署分支 = `prod-military-passwd`/`prod-intranet-card`(與 main **只差 `.env.example`**)+`trial-military`(另含開發者視圖刪減 8 檔)。dev-* 與 prod-public-passwd 已裁撤(零語意/無存活部署;外網帳密部署可用 main+`.env` 重啟)。⚠ 歷史教訓:07-22 曾查獲雙向漂移,「領先 11 commit」經 `git patch-id` 證實是 main 上同卵雙胞的假警報——**量測分支差異看 `git diff` 與 patch-id,別信 ahead/behind**。**詳細服務地圖與分支模型見 `AGENTS.md` §2–3。** Repo 是 **PUBLIC** → 祕密零外洩。
+ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,**PKI 自然人憑證卡登入**。多服務 monorepo,**4 分支模型(2026-07-24 精簡)**:`main` 是 SSOT 且 **dev 直接在此**;3 條部署分支 = `prod-military-passwd`/`prod-intranet-card`(與 main **只差 `.env.example`**)+`trial-military`(另含開發者視圖刪減 8 檔)。dev-* 與 prod-public-passwd 已裁撤(零語意/無存活部署;外網帳密部署概念上可用 main+`.env` 重啟,⚠ 但 `deploy-prod.sh` 的 `check_branch` 目前仍只接受 prod-*/trial 分支——真要重啟前需先調整該檢查,屬部署腳本決策)。⚠ 歷史教訓:07-22 曾查獲雙向漂移,「領先 11 commit」經 `git patch-id` 證實是 main 上同卵雙胞的假警報——**量測分支差異看 `git diff` 與 patch-id,別信 ahead/behind**。**詳細服務地圖與分支模型見 `AGENTS.md` §2–3。** Repo 是 **PUBLIC** → 祕密零外洩。
 
 > **後續開發路線圖:`docs/planning/anila-development-roadmap.md`**(Gate 制、不可倒置的排序規則、已推翻的假警報清單)。動手前先看你在哪個 Gate。
 
@@ -34,7 +34,7 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 | 平台主機 | `.15` = 10.53.100.15 / `anila.ai.ncsist.org.tw` | docker compose 全棧(project `anila-platform`) |
 | 模型 gateway | `.12` = 10.53.100.12 / `aiagent2.ai.ncsist.org.tw` | My-OpenAI-Frontend;`/v1` 出 gpt-oss-20b / gemma4 / nv-embed,需 Bearer `MODEL_GATEWAY_API_KEY` |
 | MLSteam | `aiops.ai.ncsist.org.tw` | anila-agent 跑在這的 Lab(純 http NodePort 對外) |
-| 本開發機 | `$HOME/ANILA` | 寫碼處;另跑本機 `anila-platform` stack(prod-public-passwd,放寬旗標)+ 本機 anila-models |
+| 本開發機 | `$HOME/ANILA` | 寫碼處;跑本機 dev stack **`anila-platform-dev`**(`compose.dev.yaml`,從 `main` 建)+ 本機 anila-models。(07-24:舊敘述的外網 `anila-platform` prod-public stack 已不存在) |
 
 - 本機 `anila-platform-*` 容器 = user dev 環境,**未授權不要 restart/動它**。
 - **csp 容器沒裝 `curl`** → 測內部端點用 `docker exec <csp> python3 -c "import httpx; ..."`(curl 回空 = 假陰性)。
@@ -55,7 +55,7 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 
 ## 4. 部署運維 footgun
 
-- **別用 `START-HERE.sh` / `intranet-deploy.sh` 做小修改** —— 每跑一次就無條件重設 `ANILA_ALLOW_HTTP_ENDPOINT=0` / `ANILA_ALLOW_PRIVATE_ENDPOINT=0` / `ANILA_MODEL_CA_FILE`,蓋掉手動修正。**改設定 = 編 `.env` + `docker compose -p anila-platform up -d csp`**。
+- **別用 `START-HERE.sh` / `intranet-deploy.sh` 做小修改** —— 每跑一次就無條件重設 `ANILA_ALLOW_HTTP_ENDPOINT=0` / `ANILA_ALLOW_PRIVATE_ENDPOINT=0` / `ANILA_MODEL_CA_FILE`,蓋掉手動修正。**改設定 = 編 `.env` + `up -d csp`**(內網 `.15` 用 `-p anila-platform` 正式 stack;本機開發一律用 `compose.dev.yaml` 的 `-p anila-platform-dev`,別碰正式專案名)。
 - **`docker restart` ≠ recreate**(不重載 `.env`/compose);套設定一律 `up -d`。(`AGENTS.md` §4 同調。)
 - prod 模式缺 JWT keypair → JWKS 500、登入炸、studio crash-loop;deploy 腳本會在 up 前產 RSA-2048 到 `./secrets`(compose 掛 `:ro`)。
 - bundle `intranet-prod-v1.0.0` 的 `00-anila-src.tar.gz` 是源碼快照;改了 git 腳本要重打包才帶進去。
