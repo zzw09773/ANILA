@@ -118,6 +118,16 @@ def _reject_legacy_agent_dispatch_in_formal(*, resume: bool = False) -> None:
     )
 
 
+def _model_unhealthy_audit_reason(exc: HTTPException) -> str | None:
+    """Map circuit-breaker 503 to a stable audit reason (not upstream_http_*)."""
+    if exc.status_code != 503:
+        return None
+    detail = exc.detail
+    if isinstance(detail, dict) and detail.get("code") == "model_unhealthy":
+        return "model_unhealthy"
+    return None
+
+
 class _RetrievalExtension(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1551,6 +1561,7 @@ async def _image_generations_impl(
                 acceptance_recorded=acceptance_recorded,
             )
         else:
+            breaker_reason = _model_unhealthy_audit_reason(exc)
             record_at_outcome(
                 db,
                 request=request,
@@ -1561,7 +1572,9 @@ async def _image_generations_impl(
                 status="error",
                 metadata={
                     "model": model.name,
-                    "reason": short_audit_reason(f"upstream_http_{exc.status_code}"),
+                    "reason": short_audit_reason(
+                        breaker_reason or f"upstream_http_{exc.status_code}"
+                    ),
                 },
                 commit=True,
                 acceptance_recorded=acceptance_recorded,
@@ -2752,6 +2765,7 @@ async def _chat_completions_impl(
             ),
             router_context=router_context,
             model_name=model.name,
+            model_health_status=getattr(model, "health_status", None),
             conversation_id=conversation_id,
             trace_id=usage_trace_id,
             requires_encryption=inherited_encryption,
@@ -2862,7 +2876,13 @@ async def _chat_completions_impl(
         if exc.status_code == 403:
             _audit_outcome("denied", reason=f"http_{exc.status_code}")
         else:
-            _audit_outcome("error", reason=f"upstream_http_{exc.status_code}")
+            _audit_outcome(
+                "error",
+                reason=(
+                    _model_unhealthy_audit_reason(exc)
+                    or f"upstream_http_{exc.status_code}"
+                ),
+            )
         raise
     except Exception:
         _audit_outcome("error", reason="upstream_exception")
@@ -3238,6 +3258,7 @@ async def _embeddings_impl(
                 acceptance_recorded=acceptance_recorded,
             )
         else:
+            breaker_reason = _model_unhealthy_audit_reason(exc)
             record_at_outcome(
                 db,
                 request=request,
@@ -3249,7 +3270,9 @@ async def _embeddings_impl(
                 metadata={
                     "model": model.name,
                     "endpoint": endpoint_path,
-                    "reason": short_audit_reason(f"upstream_http_{exc.status_code}"),
+                    "reason": short_audit_reason(
+                        breaker_reason or f"upstream_http_{exc.status_code}"
+                    ),
                 },
                 commit=True,
                 acceptance_recorded=acceptance_recorded,

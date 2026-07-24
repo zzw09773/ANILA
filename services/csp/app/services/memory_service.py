@@ -52,6 +52,7 @@ from typing import Any, Iterable, Optional
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
+from fastapi import HTTPException
 
 from anila_contracts import Classification
 
@@ -352,16 +353,26 @@ async def _gateway_request(
         finally:
             governance_db.close()
     except Exception as exc:
+        status = "denied" if getattr(exc, "status_code", None) == 403 else "failed"
+        fail_detail = f"memory {purpose} 模型呼叫失敗:{type(exc).__name__}"
+        if (
+            isinstance(exc, HTTPException)
+            and exc.status_code == 503
+            and isinstance(exc.detail, dict)
+            and exc.detail.get("code") == "model_unhealthy"
+        ):
+            status = "failed"
+            fail_detail = f"memory {purpose} circuit breaker: model_unhealthy"
         _audit_memory_inference(
             user_id=user.id,
             model_id=model.id,
             model_name=model.name,
             purpose=purpose,
             classification_level=classification_level,
-            status="denied" if getattr(exc, "status_code", None) == 403 else "failed",
+            status=status,
             task_id=task_id,
             conversation_id=conversation_id,
-            detail=f"memory {purpose} 模型呼叫失敗:{type(exc).__name__}",
+            detail=fail_detail,
         )
         raise
     _audit_memory_inference(

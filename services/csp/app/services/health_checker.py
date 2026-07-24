@@ -66,6 +66,16 @@ def normalize_health_status(raw: str | None, *, is_active: bool = True) -> str:
     return _LEGACY_HEALTH_MAP.get(raw or "", HEALTH_UNKNOWN)
 
 
+def is_explicitly_unhealthy(health_status: str | None) -> bool:
+    """True only when health_checker has explicitly marked probe-failure unhealthy.
+
+    Conservative circuit-breaker predicate: ``unknown``, never-probed, skipped
+    probes, ``degraded``, and ``healthy`` all return False so proxy keeps
+    forwarding. Legacy ``offline`` normalizes to unhealthy and returns True.
+    """
+    return normalize_health_status(health_status, is_active=True) == HEALTH_UNHEALTHY
+
+
 async def probe_model_health_detailed(
     endpoint_url: str, *, endpoint_kind: str = ENDPOINT_KIND_MODEL
 ) -> tuple[str, int]:

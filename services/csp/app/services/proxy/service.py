@@ -53,6 +53,7 @@ from app.services.proxy.usage import (
     _serialize_request_for_usage,
     enqueue_usage_task_linked,
 )
+from app.services.health_checker import is_explicitly_unhealthy
 from app.services.model_governance_receipts import (
     GovernedModelInvocation,
     ReceiptSubject,
@@ -110,6 +111,7 @@ class _LockedModelSnapshot:
     egress_policy_id: str | None
     upstream_egress_policy_id: str | None
     classification_ceiling: str | None
+    health_status: str | None
 
 
 def _freeze_locked_model(model: ModelRegistry) -> _LockedModelSnapshot:
@@ -139,6 +141,49 @@ def _freeze_locked_model(model: ModelRegistry) -> _LockedModelSnapshot:
         egress_policy_id=getattr(model, "egress_policy_id", None),
         upstream_egress_policy_id=getattr(model, "upstream_egress_policy_id", None),
         classification_ceiling=getattr(model, "classification_ceiling", None),
+        health_status=getattr(model, "health_status", None),
+    )
+
+
+def _reject_unhealthy_model(
+    *,
+    name: str | None,
+    health_status: str | None,
+    model_type: str | None = None,
+    target_agent_id: int | None = None,
+    health_status_source: str | None = None,
+) -> None:
+    """Fail closed on models explicitly marked unhealthy by health_checker.
+
+    Agent dispatches are out of scope (handled by agent readiness). Unknown /
+    skipped / never-probed statuses still forward. Detail must not include
+    upstream endpoint URLs. ``health_status_source`` is logged for audit
+    traceability (e.g. model.health_status / locked_registry / caller_supplied).
+    """
+    if target_agent_id is not None or model_type == "agent":
+        return
+    if not settings.ANILA_REJECT_UNHEALTHY_MODELS:
+        return
+    if not is_explicitly_unhealthy(health_status):
+        return
+    model_label = (name or "").strip() or "unknown"
+    source = (health_status_source or "").strip() or "unspecified"
+    logger.warning(
+        "circuit_breaker reject unhealthy model name=%s health_status=%s "
+        "source=%s",
+        model_label,
+        health_status,
+        source,
+    )
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "model_unhealthy",
+            "message": (
+                f"模型 {model_label} 已被 health probe 標記 unhealthy，"
+                "暫時拒絕轉發。可由 admin 檢視模型健康頁確認狀態。"
+            ),
+        },
     )
 
 
@@ -739,6 +784,14 @@ async def _proxy_request_impl(
         governance_db=governance_db,
         admitted_classification_level=admitted_classification_level,
     )
+    # Circuit breaker: refuse before SSRF guard / any upstream HTTP.
+    _reject_unhealthy_model(
+        name=getattr(model, "name", None),
+        health_status=getattr(model, "health_status", None),
+        model_type=getattr(model, "model_type", None),
+        target_agent_id=target_agent_id,
+        health_status_source="model.health_status",
+    )
     timeout = _get_timeout(model.model_type)
     base_url = model.endpoint_url.rstrip("/")
     request_type = (
@@ -1280,6 +1333,7 @@ async def _proxy_stream_impl(
     router_caller_user_id: int | None = None,
     router_context: Mapping[str, object] | None = None,
     model_name: str | None = None,
+    model_health_status: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
@@ -1316,6 +1370,16 @@ async def _proxy_stream_impl(
         task_run_id=task_run_id,
         governance_db=governance_db,
         admitted_classification_level=admitted_classification_level,
+    )
+    # Circuit breaker: refuse before SSRF guard / any upstream HTTP.
+    # ``model_health_status`` is stamped by ``proxy_stream`` from the locked
+    # registry snapshot, governance row, or caller-supplied legacy fallback
+    # (None → treated as unknown → forward).
+    _reject_unhealthy_model(
+        name=model_name,
+        health_status=model_health_status,
+        target_agent_id=target_agent_id,
+        health_status_source="proxy_stream",
     )
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
     _guard_outbound(
@@ -1756,6 +1820,7 @@ async def proxy_stream(
     router_caller_user_id: int | None = None,
     router_context: Mapping[str, object] | None = None,
     model_name: str | None = None,
+    model_health_status: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
@@ -1859,6 +1924,41 @@ async def proxy_stream(
         # admission is still locked.  The durable pre-receipt may commit the
         # session itself; after this point the outbound target is already
         # pinned to the exact signed provider snapshot.
+        stream_health_status: str | None = None
+        stream_model_name = model_name
+        stream_health_source = "none"
+        if target_agent_id is None and locked_registry_model is not None:
+            stream_health_status = getattr(
+                locked_registry_model, "health_status", None
+            )
+            stream_model_name = locked_registry_model.name
+            stream_health_source = "locked_registry"
+        elif (
+            target_agent_id is None
+            and governance_db is not None
+            and usage_model_id is not None
+        ):
+            row = governance_db.get(ModelRegistry, usage_model_id)
+            if row is not None:
+                stream_health_status = row.health_status
+                stream_model_name = row.name
+                stream_health_source = "governance_db"
+        # Legacy stream (governance_db=None): no locked row — fall back to
+        # caller-supplied health from the model object / explicit kwarg.
+        if (
+            target_agent_id is None
+            and stream_health_status is None
+            and model_health_status is not None
+        ):
+            stream_health_status = model_health_status
+            stream_health_source = "caller_supplied"
+        # Circuit breaker before admission commit / any upstream HTTP.
+        _reject_unhealthy_model(
+            name=stream_model_name,
+            health_status=stream_health_status,
+            target_agent_id=target_agent_id,
+            health_status_source=stream_health_source,
+        )
         _commit_stream_admission(governance_db)
         async with registry.register(task_id) as cancel_event:
             upstream = _proxy_stream_impl(
@@ -1872,7 +1972,8 @@ async def proxy_stream(
                 user_identity=user_identity,
                 router_caller_user_id=router_caller_user_id,
                 router_context=router_context,
-                model_name=model_name,
+                model_name=stream_model_name,
+                model_health_status=stream_health_status,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
                 requires_encryption=requires_encryption,

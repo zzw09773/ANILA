@@ -51,6 +51,7 @@ from app.modules.clearance.service import (
     ClearancePolicyDataError,
     resolve_and_evaluate_data_access,
 )
+from app.services.audit_service import log_audit_event
 from app.services.ingestion_pool import get_pool
 from app.services.proxy.ceiling import enforce_model_ceiling
 from app.services.proxy.task_link import TaskRunContext
@@ -270,6 +271,32 @@ async def embed_query(
     except RetrievalFailure:
         raise
     except HTTPException as exc:
+        detail = exc.detail
+        is_model_unhealthy = (
+            exc.status_code == 503
+            and isinstance(detail, dict)
+            and detail.get("code") == "model_unhealthy"
+        )
+        if is_model_unhealthy:
+            log_audit_event(
+                db,
+                action="retrieval.embedding",
+                resource_type="model",
+                resource_id=model.id,
+                actor=user,
+                status="failed",
+                detail="檢索 embedding 被 circuit breaker 拒絕 (model_unhealthy)",
+                metadata={
+                    "code": "model_unhealthy",
+                    "model_name": model_name,
+                    "health_status": getattr(model, "health_status", None),
+                },
+                commit=True,
+            )
+            raise RetrievalFailure(
+                "embedding_model_unhealthy",
+                "檢索 embedding 模型已被 health probe 標記 unhealthy",
+            ) from exc
         raise RetrievalFailure(
             "embedding_policy_denied"
             if exc.status_code == 403

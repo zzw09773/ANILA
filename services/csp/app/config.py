@@ -154,6 +154,10 @@ class Settings(BaseSettings):
 
     # Health Check
     HEALTH_CHECK_INTERVAL: int = 60
+    # Circuit breaker: proxy refuses models that health_checker has explicitly
+    # marked unhealthy (probe failure). Unknown / skipped / never-probed still
+    # forward. Set False to disable the rejection path globally.
+    ANILA_REJECT_UNHEALTHY_MODELS: bool = True
     # Readiness freshness is a governance TTL, not a UI polling interval.  A
     # target with no timestamp (or a timestamp older than these bounds) is
     # never dispatchable.  Keep the values explicit so production profiles
