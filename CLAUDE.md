@@ -13,7 +13,7 @@
 
 ## 0. 一句話定位
 
-ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,**PKI 自然人憑證卡登入**。多服務 monorepo,`main` 是 SSOT,7 分支 = main + 登入/部署設定 delta(2026-07-22 重收斂:5 條 downstream 與 `main` **只差 `.env.example`**;`trial-military` 另含開發者視圖刪減 8 檔)。⚠ 07-22 曾查獲雙向漂移,「領先 11 commit」經 `git patch-id` 證實是 main 上同卵雙胞的假警報——**量測分支差異看 `git diff` 與 patch-id,別信 ahead/behind**。**詳細服務地圖與分支模型見 `AGENTS.md` §2–3。** Repo 是 **PUBLIC** → 祕密零外洩。
+ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,**PKI 自然人憑證卡登入**。多服務 monorepo,**4 分支模型(2026-07-24 精簡)**:`main` 是 SSOT 且 **dev 直接在此**;3 條部署分支 = `prod-military-passwd`/`prod-intranet-card`(與 main **只差 `.env.example`**)+`trial-military`(另含開發者視圖刪減 8 檔)。dev-* 與 prod-public-passwd 已裁撤(零語意/無存活部署;外網帳密部署可用 main+`.env` 重啟)。⚠ 歷史教訓:07-22 曾查獲雙向漂移,「領先 11 commit」經 `git patch-id` 證實是 main 上同卵雙胞的假警報——**量測分支差異看 `git diff` 與 patch-id,別信 ahead/behind**。**詳細服務地圖與分支模型見 `AGENTS.md` §2–3。** Repo 是 **PUBLIC** → 祕密零外洩。
 
 > **後續開發路線圖:`docs/planning/anila-development-roadmap.md`**(Gate 制、不可倒置的排序規則、已推翻的假警報清單)。動手前先看你在哪個 Gate。
 
@@ -22,8 +22,8 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 ## 1. 工作流分工(2026-06 起)
 
 - **Codex 是開發主力、Claude(我)審查 Codex 的產出**。反向仍成立:我自己寫的碼交 Codex/user 審。看誰寫的決定誰審。
-- **審 Codex 產出時**:① **一定跑測試,別只看 diff**(實做過:抓到既有 stale 測試 FAIL,非 Codex regression);② 分清 **regression vs pre-existing**(看 Codex 有沒有動到該處 + base 是否已壞);③ **跨切面核心改動從 `main` 起、cherry-pick 散 7 分支**,別只落在當下那支;④ **混 concern 要拆 commit**(如 SSE 邏輯 vs CSS token)。
-- 我自己若要在 7 分支落地:`main` 先 commit → cherry-pick downstream → **`trial-military` 是刪減分支**(移除 developer/dev-tooling view,如 `DeveloperAgentsView.vue`),前端改動會撞 modify/delete,要挑選式 port。
+- **審 Codex 產出時**:① **一定跑測試,別只看 diff**(實做過:抓到既有 stale 測試 FAIL,非 Codex regression);② 分清 **regression vs pre-existing**(看 Codex 有沒有動到該處 + base 是否已壞);③ **跨切面核心改動從 `main` 起、再散 3 條部署分支**,別只落在當下那支;④ **混 concern 要拆 commit**(如 SSE 邏輯 vs CSS token)。
+- 我自己若要在部署分支落地:`main` 先 commit → merge/cherry-pick 到 prod-military-passwd、prod-intranet-card → **`trial-military` 是刪減分支**(移除 developer 視圖如 `DeveloperAgentsView.vue`),前端改動會撞 modify/delete,要挑選式 port。
 
 ---
 
