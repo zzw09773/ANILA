@@ -1808,6 +1808,52 @@ async def _proxy_stream_impl(
             )
 
 
+def _governance_db_get(governance_db, entity, ident):
+    """Session.get-compatible lookup that tolerates minimal test DB fakes.
+
+    Returns ``None`` when ``governance_db`` has no callable ``get`` (or the
+    lookup fails), so callers treat missing health as unknown and allow
+    through the circuit breaker.
+    """
+    getter = getattr(governance_db, "get", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter(entity, ident)
+    except Exception:
+        # Never silently collapse a real DB failure into "health unknown →
+        # forward": production shouldn't reach this branch (locked snapshot
+        # path), so a warning here means something unexpected happened.
+        logger.warning(
+            "governance_db lookup failed for %s id=%s; treating health as unknown",
+            getattr(entity, "__name__", entity),
+            ident,
+            exc_info=True,
+        )
+        return None
+
+
+async def _persist_task_call_closure_off_loop(db, closure: TaskCallClosure) -> int | None:
+    """Run durable closure persistence off the asyncio event-loop thread.
+
+    ``persist_task_call_closure`` issues synchronous SQLAlchemy work
+    (``SELECT … FOR UPDATE`` on Task/TaskRun).  Doing that on the MainThread
+    freezes every concurrent coroutine — including health_checker and the
+    Session that still holds an open admission transaction — and closes the
+    deadlock ring observed in production.  Session affinity stays exclusive
+    to this await (no concurrent use of ``db`` on the loop while the worker
+    runs).
+    """
+
+    def _run_persist():
+        # Resolve the (possibly monkeypatched) symbol on the worker thread so
+        # unit tests that patch ``persist_task_call_closure`` still observe
+        # the off-loop thread identity inside their capture callback.
+        return persist_task_call_closure(db, closure)
+
+    return await asyncio.to_thread(_run_persist)
+
+
 async def proxy_stream(
     target_url: str,
     api_key_id: int,
@@ -1938,10 +1984,13 @@ async def proxy_stream(
             and governance_db is not None
             and usage_model_id is not None
         ):
-            row = governance_db.get(ModelRegistry, usage_model_id)
+            # Real SQLAlchemy Session exposes ``.get``; unit-test ``_DB``
+            # fakes often only implement ``rollback``/``commit``.  Missing
+            # lookup → treat health as unknown (circuit breaker allows).
+            row = _governance_db_get(governance_db, ModelRegistry, usage_model_id)
             if row is not None:
-                stream_health_status = row.health_status
-                stream_model_name = row.name
+                stream_health_status = getattr(row, "health_status", None)
+                stream_model_name = getattr(row, "name", None) or stream_model_name
                 stream_health_source = "governance_db"
         # Legacy stream (governance_db=None): no locked row — fall back to
         # caller-supplied health from the model object / explicit kwarg.
@@ -2013,7 +2062,8 @@ async def proxy_stream(
                         raise StreamCancelled("live task cancellation requested")
         if governed is not None and authorization is not None:
             try:
-                _complete_governance(
+                await asyncio.to_thread(
+                    _complete_governance,
                     governed,
                     authorization,
                     terminal_capture.get("governance_usage", {}),
@@ -2023,29 +2073,43 @@ async def proxy_stream(
         if task_run_id is not None:
             if governance_db is None or task_id is None or not task_trace_id:
                 raise RuntimeError("Task stream closure 缺少治理上下文")
-            persist_task_call_closure(
-                governance_db,
-                TaskCallClosure(
-                    closure_id=closure_id,
-                    task_id=task_id,
-                    task_run_id=task_run_id,
-                    trace_id=task_trace_id,
-                    started_at=span_started_at,
-                    status="completed",
-                    is_agent=target_agent_id is not None,
-                    target_id=(
-                        target_agent_id
-                        if target_agent_id is not None
-                        else usage_model_id
-                    ),
-                    target_name=model_name,
-                    usage=usage_capture.get("record"),
-                    classification_level=effective_level,
+            try:
+                await _persist_task_call_closure_off_loop(
+                    governance_db,
+                    TaskCallClosure(
+                        closure_id=closure_id,
+                        task_id=task_id,
+                        task_run_id=task_run_id,
+                        trace_id=task_trace_id,
+                        started_at=span_started_at,
+                        status="completed",
+                        is_agent=target_agent_id is not None,
+                        target_id=(
+                            target_agent_id
+                            if target_agent_id is not None
+                            else usage_model_id
+                        ),
+                        target_name=model_name,
+                        usage=usage_capture.get("record"),
+                        classification_level=effective_level,
                         callsite=inference_callsite_id,
                         finalize_run=finalize_task_run_on_completion,
-                ),
-            )
-            closure_committed = True
+                    ),
+                )
+                closure_committed = True
+            except Exception:
+                # Bytes may already be on the wire; log loudly and let the
+                # finally path retry / leave the run for crash reconciliation.
+                logger.exception(
+                    "Task stream durable closure 失敗 run_id=%s", task_run_id
+                )
+                try:
+                    governance_db.rollback()
+                except Exception:
+                    logger.exception(
+                        "Task stream closure rollback 失敗 run_id=%s", task_run_id
+                    )
+                raise
         if task_id is not None:
             await registry.complete(task_id)
         done_block = terminal_capture.get("done_block")
@@ -2056,15 +2120,20 @@ async def proxy_stream(
         error = {"code": f"http_{exc.status_code}", "message": str(exc.detail)}
         if authorization is not None and not governance_closed:
             governance_closed = True
-            _record_governance_failure(governed, authorization, exc)
+            await asyncio.to_thread(
+                _record_governance_failure, governed, authorization, exc
+            )
         raise
     except StreamCancelled:
         status = "cancelled"
         error = {"code": "cancelled", "message": "使用者取消執行"}
         if authorization is not None and not governance_closed:
             governance_closed = True
-            _record_governance_failure(
-                governed, authorization, "使用者取消執行"
+            await asyncio.to_thread(
+                _record_governance_failure,
+                governed,
+                authorization,
+                "使用者取消執行",
             )
         # Cancellation is a normal terminal outcome.  Do not emit [DONE] and
         # do not translate it into a 5xx after response headers were sent.
@@ -2095,16 +2164,30 @@ async def proxy_stream(
         error = {"code": "stream_aborted", "message": type(exc).__name__}
         if authorization is not None and not governance_closed:
             governance_closed = True
-            _record_governance_failure(governed, authorization, exc)
+            # GeneratorExit/CancelledError must not schedule further awaits that
+            # can themselves be cancelled mid-teardown; keep this path sync.
+            if isinstance(exc, (GeneratorExit, asyncio.CancelledError)):
+                _record_governance_failure(governed, authorization, exc)
+            else:
+                await asyncio.to_thread(
+                    _record_governance_failure, governed, authorization, exc
+                )
         raise
     finally:
         if authorization is not None and not governance_closed:
             governance_closed = True
-            _record_governance_failure(
-                governed,
-                authorization,
-                error or "stream finalizer closed before completion",
-            )
+            try:
+                await asyncio.to_thread(
+                    _record_governance_failure,
+                    governed,
+                    authorization,
+                    error or "stream finalizer closed before completion",
+                )
+            except Exception:
+                logger.exception(
+                    "Task stream Gate 5 failure receipt 失敗 run_id=%s",
+                    task_run_id,
+                )
         if task_run_id is not None and not closure_committed:
             if governance_db is None or task_id is None or not task_trace_id:
                 logger.critical(
@@ -2112,7 +2195,7 @@ async def proxy_stream(
                 )
             else:
                 try:
-                    persist_task_call_closure(
+                    await _persist_task_call_closure_off_loop(
                         governance_db,
                         TaskCallClosure(
                             closure_id=closure_id,
@@ -2142,7 +2225,13 @@ async def proxy_stream(
                     # Streaming bytes may already be on the wire.  Never claim a
                     # successful durable closure; the still-running attempt is
                     # intentionally left for crash reconciliation.
-                    governance_db.rollback()
+                    try:
+                        governance_db.rollback()
+                    except Exception:
+                        logger.exception(
+                            "Task stream closure rollback 失敗 run_id=%s",
+                            task_run_id,
+                        )
                     logger.exception(
                         "Task stream durable closure 失敗 run_id=%s", task_run_id
                     )

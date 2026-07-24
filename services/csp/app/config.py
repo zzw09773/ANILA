@@ -74,6 +74,14 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql://csp:csp_password@localhost:5432/csp"
+    # Runtime-only Postgres session guards (app.database.engine).  Migration
+    # engines (Alembic ``MIGRATION_DATABASE_URL``) must never inherit these —
+    # schema changes legitimately hold long locks.
+    # lock_timeout: abort a single blocked statement (e.g. FOR UPDATE wait).
+    ANILA_DB_LOCK_TIMEOUT_MS: int = Field(default=5000, ge=0, le=600_000)
+    # idle_in_transaction_session_timeout: kill sessions that stay open after
+    # beginning a transaction without committing (SSE-held Session footgun).
+    ANILA_DB_IDLE_TX_TIMEOUT_MS: int = Field(default=60_000, ge=0, le=3_600_000)
 
     # JWT
     # SECRET_KEY 在 RS256 cutover 後不再用於 access/refresh JWT 簽發,
