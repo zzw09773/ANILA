@@ -333,6 +333,7 @@ services:
     depends_on:
       csp:
         condition: service_healthy
+        restart: true
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
       interval: 10s
@@ -484,6 +485,7 @@ services:
     depends_on:
       csp:
         condition: service_healthy
+        restart: true
       redis:
         condition: service_healthy
       pptx-renderer:
@@ -544,6 +546,7 @@ services:
     depends_on:
       csp:
         condition: service_healthy
+        restart: true
       redis:
         condition: service_healthy
     networks:
