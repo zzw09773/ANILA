@@ -145,6 +145,13 @@ class Settings(BaseSettings):
     PROXY_MAX_RETRIES: int = 3
     PROXY_RETRY_BASE_DELAY: float = 0.5
 
+    # 串流轉發是否注入 stream_options.include_usage(token 計量來源)。
+    # 部分外部 gateway 的個別模型收到 stream_options 會掛死不回
+    # (實測 2026-07:integrate.api.nvidia.com 的 z-ai/glm-5.2)。
+    # 設 False 時該串流的 usage 缺席,計量寫入退化為 usage_seen=False
+    # 路徑;僅供 dev/外部 API 測試,正式部署維持 True。
+    ANILA_STREAM_INCLUDE_USAGE: bool = True
+
     # Health Check
     HEALTH_CHECK_INTERVAL: int = 60
     # Readiness freshness is a governance TTL, not a UI polling interval.  A

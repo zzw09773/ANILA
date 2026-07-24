@@ -1335,7 +1335,13 @@ async def _proxy_stream_impl(
     body = {
         **request_body,
         "stream": True,
-        "stream_options": {"include_usage": True},
+        # 部分外部 gateway 模型收到 stream_options 會掛死(見 config
+        # ANILA_STREAM_INCLUDE_USAGE 註解);關閉時放棄 usage 回報。
+        **(
+            {"stream_options": {"include_usage": True}}
+            if settings.ANILA_STREAM_INCLUDE_USAGE
+            else {}
+        ),
     }
 
     if target_agent_id is not None:
