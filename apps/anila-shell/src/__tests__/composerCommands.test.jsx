@@ -212,3 +212,136 @@ describe("/ 斜線指令", () => {
     expect(onSend).toHaveBeenCalledWith("/不存在 參數", [], expect.anything());
   });
 });
+
+// ---------------------------------------------------------------------------
+// 必修 3:CJK IME 組字期間,選單不得攔截**任何**鍵。
+//
+// 注音候選列用 ↑↓ 翻頁、Tab/Enter 選字、Esc 取消組字 —— 這些鍵在組字期間全部
+// 屬於 IME。原本只擋了 Enter,方向鍵/Tab/Esc 仍被斜線/mention 選單吃掉,
+// 繁中使用者每天都會踩到(選不到候選字)。
+// ---------------------------------------------------------------------------
+describe("IME 組字期間放行所有按鍵", () => {
+  it("組字中的 ArrowDown 不會移動選單 highlight(留給注音候選列翻頁)", () => {
+    const { textarea } = setup();
+    type(textarea, "/");
+    const before = screen.getAllByRole("option").map((o) => o.getAttribute("aria-selected"));
+    expect(before[0]).toBe("true");
+
+    fireEvent.compositionStart(textarea);
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+
+    const after = screen.getAllByRole("option").map((o) => o.getAttribute("aria-selected"));
+    expect(after).toEqual(before);
+    expect(after[0]).toBe("true");
+  });
+
+  it("組字中的 ArrowUp 同樣不被攔截", () => {
+    const { textarea } = setup();
+    type(textarea, "/");
+    fireEvent.compositionStart(textarea);
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    const after = screen.getAllByRole("option").map((o) => o.getAttribute("aria-selected"));
+    expect(after[0]).toBe("true");
+  });
+
+  it("組字中的 Escape 不會關掉選單(那是 IME 的取消組字)", () => {
+    const { textarea } = setup();
+    type(textarea, "/");
+    fireEvent.compositionStart(textarea);
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(screen.getByRole("listbox", { name: "斜線指令建議" })).toBeInTheDocument();
+  });
+
+  it("組字中的 Tab 不會選字執行指令", () => {
+    const onOpenShortcuts = vi.fn();
+    const { textarea } = setup({ onOpenShortcuts });
+    type(textarea, "/快捷");
+    fireEvent.compositionStart(textarea);
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    expect(onOpenShortcuts).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("/快捷");
+  });
+
+  it("組字中的 Enter 不送出(既有保護,不可退步)", () => {
+    const { textarea, onSend } = setup();
+    type(textarea, "測試訊息");
+    fireEvent.compositionStart(textarea);
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("只帶 nativeEvent.isComposing 的事件也一律放行(無 compositionstart 的瀏覽器)", () => {
+    const { textarea } = setup();
+    type(textarea, "@");
+    const before = screen.getAllByRole("option").map((o) => o.getAttribute("aria-selected"));
+    fireEvent.keyDown(textarea, { key: "ArrowDown", isComposing: true });
+    const after = screen.getAllByRole("option").map((o) => o.getAttribute("aria-selected"));
+    expect(after).toEqual(before);
+  });
+
+  it("keyCode 229 fallback 同樣放行", () => {
+    const { textarea, onSend } = setup();
+    type(textarea, "測試訊息");
+    fireEvent.keyDown(textarea, { key: "Enter", keyCode: 229 });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("compositionend 之後鍵盤行為完全恢復", () => {
+    const { textarea, onSend } = setup();
+    type(textarea, "/");
+    fireEvent.compositionStart(textarea);
+    fireEvent.compositionEnd(textarea);
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith("/", [], expect.anything());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 必修 4:解析只看 caret 前文字 + 送出前先 trim,兩者都會誤執行指令。
+// ---------------------------------------------------------------------------
+describe("斜線指令的邊界條件", () => {
+  it("caret 移回指令尾端、後面已經有參數時不重開選單", () => {
+    const { textarea } = setup();
+    // 「/摘要 參數」把游標移回 "/摘要" 的尾端(位置 3)。
+    type(textarea, "/摘要 參數", 3);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("caret 在指令尾端、後面沒有內容時照常開選單(不誤傷正常輸入)", () => {
+    const { textarea } = setup();
+    type(textarea, "/摘要", 3);
+    expect(screen.getByRole("listbox", { name: "斜線指令建議" })).toBeInTheDocument();
+  });
+
+  it("caret 後面只有空白時仍視為還在打指令", () => {
+    const { textarea } = setup();
+    type(textarea, "/摘要  ", 3);
+    expect(screen.getByRole("listbox", { name: "斜線指令建議" })).toBeInTheDocument();
+  });
+
+  it("貼上帶前置空白的 /指令 → 當成一般訊息送出,不執行指令", () => {
+    const onRunPromptAction = vi.fn(() => true);
+    const { textarea, onSend } = setup({ onRunPromptAction });
+    type(textarea, "  /翻譯 這段話");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onRunPromptAction).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith("/翻譯 這段話", [], expect.anything());
+  });
+
+  it("貼上帶前置換行的 /清空 → 不會把草稿清掉", () => {
+    const { textarea, onSend } = setup();
+    type(textarea, "\n/清空");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith("/清空", [], expect.anything());
+  });
+
+  it("開頭就是 / 的指令仍照常執行(不因為 trim 修正而失效)", () => {
+    const { textarea, onSend } = setup();
+    type(textarea, "/清空 ");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("");
+  });
+});

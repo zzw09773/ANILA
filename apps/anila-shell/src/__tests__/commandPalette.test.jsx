@@ -6,6 +6,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { CommandPalette } from "../commands/CommandPalette.jsx";
 import { ShortcutsPanel } from "../commands/ShortcutsPanel.jsx";
 import { SHORTCUTS } from "../commands/shortcuts.js";
+import { ConfidentialWatermark } from "../trust.jsx";
 
 const CONVERSATIONS = [
   { id: 1, title: "特休怎麼算", folder: "usr-hr", tags: ["hr"], updatedAt: "2026-07-24T10:00:00Z" },
@@ -106,6 +107,61 @@ describe("CommandPalette", () => {
     fireEvent.change(input, { target: { value: "完全不存在的東西" } });
     expect(screen.getByText("沒有符合的結果")).toBeInTheDocument();
     expect(screen.getByText(/folder:/)).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 必修 2:面板 z-index 120 壓過原本 z-index 4 的鑑識浮水印,於是面板裡的
+// classified 標題落在「沒有使用者 / trace 歸屬」的圖層。涉密內容不得出現在
+// 無浮水印的圖層 → 面板列出 classified 對話時,面板內自己重繪浮水印。
+// ---------------------------------------------------------------------------
+describe("CommandPalette — 涉密內容的鑑識浮水印", () => {
+  const CLASSIFIED = [
+    { id: 5, title: "機密專案", classified: true, classificationLevel: "極機密", updatedAt: "2026-07-24T10:00:00Z" },
+  ];
+
+  it("列出 classified 對話時,面板內重繪帶歸屬資訊的浮水印", () => {
+    render(
+      <CommandPalette
+        open
+        onClose={() => {}}
+        conversations={CLASSIFIED}
+        folders={[]}
+        actions={[]}
+        onSelectConv={() => {}}
+        watermarkUser="tester@ncsist.org.tw"
+        watermarkTraceId="trace-abc"
+      />,
+    );
+    expect(screen.getByText("機密專案")).toBeInTheDocument();
+    expect(
+      screen.getByText("極機密 · tester@ncsist.org.tw · trace-abc", { exact: false }),
+    ).toBeInTheDocument();
+  });
+
+  it("沒有 classified 對話時不畫浮水印(不干擾一般使用)", () => {
+    render(
+      <CommandPalette
+        open
+        onClose={() => {}}
+        conversations={CONVERSATIONS}
+        folders={[]}
+        actions={[]}
+        onSelectConv={() => {}}
+        watermarkUser="tester@ncsist.org.tw"
+      />,
+    );
+    expect(screen.queryByText(/tester@ncsist\.org\.tw/)).not.toBeInTheDocument();
+  });
+
+  it("浮水印的 z-index 高於面板本身(全域那一層不會被面板蓋掉)", () => {
+    const { container } = render(
+      <ConfidentialWatermark userEmail="tester" traceId="t1" level="機密" />,
+    );
+    const el = container.firstChild;
+    // 120 = 命令面板;100 = --anila-z-modal;200 = 密等橫幅(必須仍在最上面)。
+    expect(Number(el.style.zIndex)).toBeGreaterThan(120);
+    expect(Number(el.style.zIndex)).toBeLessThan(200);
   });
 });
 

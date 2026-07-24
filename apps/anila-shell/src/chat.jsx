@@ -967,6 +967,18 @@ export const Composer = ({
   const taRef = useRef(null);
   const [mode, setMode] = useState(redactionMode);
 
+  // ---- CJK IME 組字狀態 ----------------------------------------------------
+  // 組字期間鍵盤整個歸 IME:注音候選列用 ↑↓ 翻頁、Tab/Enter 選字、Esc 取消。
+  // 我們的建議選單(@ / 斜線指令)若在這段期間攔鍵,注音使用者會選不到字。
+  // 三個訊號取聯集:composingRef 涵蓋 compositionstart~compositionend 整段
+  // 區間,e.nativeEvent.isComposing 是標準的單次事件訊號,keyCode 229 是部分
+  // 瀏覽器組字中的 fallback。
+  const composingRef = useRef(false);
+  const isComposing = (e) =>
+    composingRef.current ||
+    Boolean(e?.nativeEvent?.isComposing) ||
+    e?.keyCode === 229;
+
   const piiHits = useMemo(() => detectPII(text), [text]);
   const mentionParse = useMemo(() => parseMentions(text, agents || []), [text, agents]);
 
@@ -1126,7 +1138,9 @@ export const Composer = ({
     if (!v && atts.length === 0) return;
     // 指令 + 參數形式(`/摘要 這段話`)在打了空白後選單已關,因此在送出路徑
     // 再認一次;不是已知指令就照原樣當訊息送出。
-    const slash = atts.length === 0 ? matchSubmitCommand(v, slashCommands) : null;
+    // ⚠ 餵原文(非 trim 過的 v):貼上帶前置空白/換行的 `/指令` 不該被當指令
+    // 執行 —— 使用者的本意是把那段文字送出去。
+    const slash = atts.length === 0 ? matchSubmitCommand(text, slashCommands) : null;
     if (slash) {
       runSlashCommand(slash.command, slash.arg);
       return;
@@ -1146,10 +1160,13 @@ export const Composer = ({
   };
 
   const onKey = (e) => {
-    // CJK IME guard:注音/拼音組字中按 Enter 是「確認候選字」,不是送出/選 mention。
-    // 缺這個檢查,每個 zh-TW 使用者打字途中按 Enter 都會誤送半截訊息(回報的 bug)。
-    // isComposing 是標準訊號;keyCode 229 是部分瀏覽器組字中的 fallback。
-    const composing = e.nativeEvent?.isComposing || e.keyCode === 229;
+    // CJK IME guard:注音/拼音組字期間,鍵盤全部屬於 IME —— ↑↓ 是翻候選字、
+    // Tab/Enter 是選字、Esc 是取消組字。**任何一顆都不能被我們攔**,否則
+    // 注音使用者根本選不了字(原本只擋 Enter,方向鍵/Tab/Esc 仍被選單吃掉)。
+    // isComposing 是標準訊號;keyCode 229 是部分瀏覽器組字中的 fallback;
+    // composingRef 補上 compositionstart~end 這段期間(Safari 在確認候選字的
+    // 那一次 keydown 會回報 isComposing=false)。
+    if (isComposing(e)) return;
 
     // Suggestion menu captures arrows + Enter + Escape when it's active so
     // typing `@ra` → ↓ → Enter picks "rag-agent" instead of sending. Same
@@ -1165,7 +1182,7 @@ export const Composer = ({
         setMentionIdx((i) => (i - 1 + suggestions.length) % suggestions.length);
         return;
       }
-      if (e.key === "Enter" && !e.shiftKey && !composing) {
+      if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         applySuggestion(suggestions[mentionIdx]);
         return;
@@ -1181,7 +1198,7 @@ export const Composer = ({
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey && !composing) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
     }
@@ -1369,8 +1386,9 @@ export const Composer = ({
         onSelect={updateCaret}
         onKeyDown={onKey}
         // 注音組字中不得 append 定稿 —— hook 會緩衝到 compositionend 再吐。
-        onCompositionStart={asr.onCompositionStart}
-        onCompositionEnd={asr.onCompositionEnd}
+        // 同一組事件也驅動建議選單的 IME 放行(見上方 composingRef)。
+        onCompositionStart={(e) => { composingRef.current = true; asr.onCompositionStart?.(e); }}
+        onCompositionEnd={(e) => { composingRef.current = false; asr.onCompositionEnd?.(e); }}
         onPaste={(e) => {
           const items = e.clipboardData?.items || [];
           // Some browsers/platforms — notably when copying rendered web

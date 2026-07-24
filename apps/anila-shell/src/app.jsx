@@ -37,6 +37,15 @@ import {
 import { buildPersistMeta } from "./runtime/messageMeta.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { relativeLabel } from "./runtime/time.js";
+// 對話 origin scope + 「開啟前必須先 hydrate 完整 conversation」的判準。
+import {
+  OUT_OF_SCOPE_MESSAGE,
+  filterShellScopedRows,
+  isConversationHydrated,
+  renderableMessages,
+  resolveConversationOpen,
+} from "./runtime/convScope.js";
+import { sanitizeUserTags, tagRejectionMessage } from "./runtime/tagRules.js";
 import {
   clearChunks as apiClearMemoryChunks,
   clearFacts as apiClearMemoryFacts,
@@ -343,6 +352,43 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     return () => { alive = false; };
   }, [isAuthenticated, authRequest]);
 
+  // ui_settings 是「整包取代」語意的 opaque blob(後端沒有 PATCH / CAS)。
+  // 多分頁同時寫會互相覆蓋 —— 本輪不動後端,緩解方式是「寫入前重新 GET,把
+  // 別的分頁寫進去的其他鍵合併回來」;folders / convMeta 是本頁擁有的欄位,
+  // 仍以本地為準。殘留風險:GET 與 PUT 之間仍是 last-write-wins。
+  //
+  // 失敗一律外顯。過去 `.catch(() => {})` 把 413(blob 超過後端 256KB 上限)
+  // 吞掉,使用者以為存好了,實際上之後每一次變更都沒生效。
+  const persistUiSettings = useCallback(
+    async (patch) => {
+      let base = uiSettingsBlobRef.current;
+      try {
+        const res = await getUiSettings(authRequest);
+        const remote = res?.ui_settings;
+        if (remote && typeof remote === "object" && !Array.isArray(remote)) {
+          base = remote;
+        }
+      } catch {
+        /* 讀不到遠端就用手上這份 baseline,至少不會弄丟本地變更 */
+      }
+      const next = { ...base, ...patch };
+      try {
+        await putUiSettings(authRequest, next);
+        uiSettingsBlobRef.current = next;
+        return true;
+      } catch (error) {
+        const status = error?.status;
+        setRuntimeError(
+          status === 413
+            ? "個人設定（資料夾／標籤）已超過後端 256KB 上限，這次變更沒有存到雲端。請刪掉一些標籤或資料夾後再試。"
+            : `個人設定同步失敗：${error?.message || "未知錯誤"}（這次變更只存在本機）`,
+        );
+        return false;
+      }
+    },
+    [authRequest],
+  );
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -353,11 +399,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     // 載入後才回存後端(避免用初始 localStorage 值蓋掉後端真值)。debounce。
     if (!uiSettingsLoadedRef.current || !isAuthenticated) return;
     const t = setTimeout(() => {
-      putUiSettings(authRequest, { ...uiSettingsBlobRef.current, folders, convMeta })
-        .catch(() => { /* best-effort */ });
+      void persistUiSettings({ folders, convMeta });
     }, 600);
     return () => clearTimeout(t);
-  }, [folders, convMeta, isAuthenticated, authRequest]);
+  }, [folders, convMeta, isAuthenticated, persistUiSettings]);
 
   // ---- 封存 / 標籤 ---------------------------------------------------------
   const patchConvMeta = useCallback((convId, patch) => {
@@ -475,23 +520,46 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     if (Object.prototype.hasOwnProperty.call(patch, "tags")) {
       const { tags, ...rest } = patch;
       const autoTags = conversations.find((c) => c.id === convId)?.tags || [];
-      const userTags = [...new Set((tags || []).filter((t) => !autoTags.includes(t)))];
+      // 數量 / 長度上限在這裡收斂(TagEditor 也擋一次,這是後線)。超限一律
+      // 告訴使用者被略過了哪些 —— 靜默截斷會讓人以為標籤存進去了。
+      const { tags: userTags, rejected } = sanitizeUserTags(tags, autoTags);
+      const warning = tagRejectionMessage(rejected);
+      if (warning) toast(warning, { tone: "error" });
       patchConvMeta(convId, { tags: userTags });
       if (Object.keys(rest).length > 0) updateConv(convId, rest);
       return;
     }
     updateConv(convId, patch);
-  }, [conversations, patchConvMeta]);
+  }, [conversations, patchConvMeta, toast]);
 
   // 伺服器全文搜尋的結果也要帶上封存 / 標籤 meta,否則「已封存」的舊對話會
   // 從搜尋結果漏回主清單。
+  //
+  // ⚠ 安全:`/api/conversations/search` **不吃 origin 參數**,會把 ANILALM
+  // (知識庫 SPA)的對話一起回來,而側欄清單是 `exclude_origin=anilalm`。
+  // 不過濾的話,使用者能從搜尋結果打開一則本地清單根本沒有的對話 →
+  // selectedConv=null → isClassified=false → 機密內容以未分類姿態渲染。
+  // 這是第一道防線;第二道在 openConversation(hydrate 時再驗一次 origin)。
+  //
+  // 同時把後端 snake_case 正規化成面板讀的 camelCase —— 過去 `updated_at`
+  // 沒轉,面板讀 `updatedAt` 取到 undefined,伺服器結果一律排到最後並顯示
+  // 「剛剛」。
   const serverSearchWithMeta = useCallback(
     (q) =>
       searchConversations(authRequest, q).then((rows) =>
-        (Array.isArray(rows) ? rows : []).map((row) => {
+        filterShellScopedRows(rows).map((row) => {
           const meta = convMeta[String(row.id)] || {};
           return {
-            ...row,
+            id: row.id,
+            title: row.title,
+            snippet: row.snippet || "",
+            origin: row.origin ?? null,
+            agentId: row.agent_id ?? null,
+            classified: Boolean(row.classified),
+            classificationLevel: row.classification_level,
+            classificationInherited: Boolean(row.classification_inherited),
+            createdAt: row.created_at || null,
+            updatedAt: row.updated_at || row.created_at || null,
             archived: Boolean(meta.archived),
             tags: Array.isArray(meta.tags) ? meta.tags : [],
           };
@@ -596,7 +664,14 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     () => conversations.find((c) => c.id === selectedConvId) || null,
     [conversations, selectedConvId],
   );
-  const currentMsgs = selectedConvId ? messagesByConv[selectedConvId] || [] : [];
+  // ⚠ 涉密安全閘門(見 runtime/convScope.js 的說明)。
+  // classified / classification_level **只存在於 conversation 物件上**。
+  // 只握有一個 id 就渲染訊息 → isClassified=false → 浮水印消失、複製 /
+  // 編輯 / prompt-action 的機密限制全開。openConversation 已保證「先
+  // hydrate 再選取」,這裡是最後一道防線:conversation 還沒到手就
+  // **一則訊息都不渲染**。
+  const conversationHydrated = isConversationHydrated(selectedConvId, selectedConv);
+  const currentMsgs = renderableMessages(selectedConvId, selectedConv, messagesByConv);
   const isClassified = Boolean(selectedConv?.classified);
   const isClassificationInherited = Boolean(selectedConv?.classificationInherited);
   const activeAgent = useMemo(
@@ -925,8 +1000,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
   // Hydrate messages when the selected conversation changes and we haven't
   // loaded its messages yet.
+  //
+  // ⚠ 只有「本地清單已經有這則 conversation」才補訊息。只有 id 的情況必須走
+  // openConversation 的 hydrate 路徑(先拿完整 conversation 再選取);否則會
+  // 先把訊息灌進畫面、classification 卻還是空的 → 機密內容以未分類姿態渲染。
   useEffect(() => {
     if (!selectedConvId || typeof selectedConvId !== "number") return;
+    if (!conversations.some((c) => c.id === selectedConvId)) return;
     if (messagesByConv[selectedConvId]?.length) return;
     let active = true;
     (async () => {
@@ -949,6 +1029,61 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedConvId]);
+
+  // 「開啟一則對話」的**唯一**入口 —— 命令面板與側欄(含側欄搜尋結果)共用。
+  //
+  // 安全不變式:渲染任何訊息之前一定要先握有完整的 conversation 物件。
+  // 搜尋結果可能包含本地清單沒有的對話(見 runtime/convScope.js),此時
+  //   ① 先抓 /api/conversations/{id}(含 classified / classification_level);
+  //   ② 驗 origin 是否屬於本 app,不屬於就**拒絕開啟並說明原因**;
+  //   ③ 先把 conversation 寫進清單、再寫訊息、最後才 setSelectedConvId ——
+  //      順序反了就會出現一個「有 id、沒 classification」的 render frame。
+  const [openingConvId, setOpeningConvId] = useState(null);
+  async function openConversation(convId) {
+    if (convId === null || convId === undefined) return;
+    setCitationsOpen(false);
+    setCompareMode(false);
+    // 本地已有(側欄一般點選)→ classification 已知,直接選取。
+    if (conversations.some((c) => c.id === convId)) {
+      setSelectedConvId(convId);
+      return;
+    }
+    setOpeningConvId(convId);
+    const result = await resolveConversationOpen({
+      convId,
+      localConversations: conversations,
+      fetchDetail: (id) => apiGetConversation(authRequest, id),
+    });
+    setOpeningConvId((cur) => (cur === convId ? null : cur));
+    if (result.status === "denied") {
+      setRuntimeError(
+        result.reason === "origin"
+          ? OUT_OF_SCOPE_MESSAGE
+          : "無法開啟這則對話（找不到對應的對話資料）。",
+      );
+      return;
+    }
+    if (result.status === "error") {
+      setRuntimeError(result.error?.message || "無法載入對話內容");
+      return;
+    }
+    if (result.fromLocal) {
+      setSelectedConvId(convId);
+      return;
+    }
+    const detail = result.detail;
+    const lookupName = (id) => agents.find((a) => a.id === id)?.name || null;
+    const lookupRequiresEncryption = (id) =>
+      Boolean(agents.find((a) => a.id === id)?.requiresEncryption);
+    const conv = mapServerConversation(detail, lookupName, lookupRequiresEncryption);
+    const msgs = (detail.messages || []).map((m) => ({
+      ...mapServerMessage(m),
+      conversationId: convId,
+    }));
+    setConversations((prev) => (prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]));
+    setMessagesByConv((prev) => ({ ...prev, [convId]: msgs }));
+    setSelectedConvId(convId);
+  }
 
   // ---- conversation helpers (classification is one-way latch) ----
   // Returns the backend integer conversation id. Creates a new row on the
@@ -1049,11 +1184,18 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       confirmText: "刪除",
       tone: "danger",
     }))) return;
-    const prev = conversations;
+    // 樂觀刪除:後端失敗要能**完整**還原。過去只還原 conversations,
+    // convMeta(封存/標籤)、messages 與選取狀態都回不來 —— 對話「復活」後
+    // 標籤與封存狀態已遺失,而且 ui_settings 已經把清空後的值同步上去了。
+    const prevConversations = conversations;
+    const prevMeta = convMeta[String(convId)];
+    const prevMsgs = messagesByConv[convId];
+    const wasSelected = selectedConvId === convId;
+
     setConversations((cs) => cs.filter((c) => c.id !== convId));
     // 對話沒了就把它的封存/標籤 meta 一併清掉,避免 ui_settings blob 長草。
     patchConvMeta(convId, { archived: false, tags: [] });
-    if (selectedConvId === convId) {
+    if (wasSelected) {
       setSelectedConvId(null);
     }
     setMessagesByConv((prev2) => {
@@ -1064,7 +1206,14 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     try {
       await apiDeleteConversation(authRequest, convId);
     } catch (err) {
-      setConversations(prev);
+      setConversations(prevConversations);
+      if (prevMeta) {
+        setConvMeta((prev2) => ({ ...prev2, [String(convId)]: prevMeta }));
+      }
+      if (prevMsgs) {
+        setMessagesByConv((prev2) => ({ ...prev2, [convId]: prevMsgs }));
+      }
+      if (wasSelected) setSelectedConvId(convId);
       setRuntimeError(err.message || "刪除對話失敗");
     }
   }
@@ -2154,11 +2303,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onServerSearch={serverSearchWithMeta}
         onExportConv={exportConversation}
         selectedConvId={selectedConvId}
-        onSelectConv={(id) => {
-          setSelectedConvId(id);
-          setCitationsOpen(false);
-          setCompareMode(false);
-        }}
+        // 側欄搜尋同樣可能命中本地清單以外的對話 → 走同一條 hydrate 入口。
+        onSelectConv={(id) => { void openConversation(id); }}
         onNewChat={newChat}
         agents={agents}
         user={user}
@@ -2198,6 +2344,19 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                   : selectedConv?.title || "新對話"}
               </span>
             </div>
+          )}
+
+          {openingConvId != null && (
+            <span
+              role="status"
+              aria-live="polite"
+              style={{
+                fontSize: 11, color: "var(--fg-subtle)",
+                fontFamily: "var(--font-mono)", marginLeft: 8,
+              }}
+            >
+              開啟對話中…
+            </span>
           )}
 
           <div style={{ flex: 1 }} />
@@ -2368,7 +2527,23 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                     maxWidth: 760, margin: "0 auto",
                     padding: `calc(var(--density) * 1.2) var(--density)`,
                   }}>
-                    {currentMsgs.length === 0 ? (
+                    {!conversationHydrated ? (
+                      // 只有 id、conversation 還沒到手 → 一則訊息都不渲染。
+                      // (少了 conversation 就沒有 classified /
+                      //  classification_level,會以未分類姿態渲染機密內容。)
+                      <div
+                        role="status"
+                        aria-live="polite"
+                        style={{
+                          padding: "64px 12px",
+                          textAlign: "center",
+                          color: "var(--fg-subtle)",
+                          fontSize: 13,
+                        }}
+                      >
+                        對話載入中…
+                      </div>
+                    ) : currentMsgs.length === 0 ? (
                       <EmptyState
                         agent={activeAgent}
                         agents={agents}
@@ -2549,11 +2724,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         folders={folders}
         actions={paletteActions}
         onServerSearch={serverSearchWithMeta}
-        onSelectConv={(id) => {
-          setSelectedConvId(id);
-          setCitationsOpen(false);
-          setCompareMode(false);
-        }}
+        onSelectConv={(id) => { void openConversation(id); }}
+        // 面板會列出 classified 對話的標題 → 面板自己那一層也要有鑑識浮水印
+        // (面板 z-index 壓在全域浮水印之上時,涉密內容不能落在無浮水印圖層)。
+        watermarkUser={user?.email || user?.username}
+        watermarkTraceId={latestAssistantMessage?.traceId}
       />
 
       <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />

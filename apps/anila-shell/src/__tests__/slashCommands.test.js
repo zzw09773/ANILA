@@ -72,6 +72,20 @@ describe("parseComposerTrigger — /", () => {
     expect(parseComposerTrigger(undefined, 3)).toBeNull();
     expect(parseComposerTrigger("/x", undefined)).toBeNull();
   });
+
+  // 只看 caret 前面的文字不夠:游標移回指令尾端時 before 仍是 "/摘要",
+  // 選單會重開、Enter 直接執行指令並丟掉已經打好的參數。
+  it("caret 後面已經有參數時不觸發(游標移回指令尾端)", () => {
+    expect(parseComposerTrigger("/摘要 參數", 3)).toBeNull();
+    expect(parseComposerTrigger("/翻譯 這段話", 3)).toBeNull();
+    expect(parseComposerTrigger("/清空\n第二行", 3)).toBeNull();
+  });
+
+  it("caret 後面只有空白時仍算「還在打這個指令」", () => {
+    expect(parseComposerTrigger("/摘要", 3)).toEqual({ char: "/", query: "摘要" });
+    expect(parseComposerTrigger("/摘要  ", 3)).toEqual({ char: "/", query: "摘要" });
+    expect(parseComposerTrigger("/摘要\n", 3)).toEqual({ char: "/", query: "摘要" });
+  });
 });
 
 describe("agentCandidates", () => {
@@ -184,5 +198,14 @@ describe("matchSubmitCommand", () => {
   it("does not resolve quick-action commands when classified", () => {
     const locked = buildSlashCommands({ classified: true });
     expect(matchSubmitCommand("/翻譯 機密內容", locked)).toBeNull();
+  });
+
+  // 指令必須是輸入的**第一個字元**。呼叫端先 trim 再進來的話,從別處貼上的
+  // 「  /翻譯 機密內容」會被當指令執行 —— 使用者本意是送出那段文字。
+  it("前置空白 / 換行的 /指令 不算指令", () => {
+    expect(matchSubmitCommand(" /翻譯 這段話", commands)).toBeNull();
+    expect(matchSubmitCommand("\n/清空", commands)).toBeNull();
+    expect(matchSubmitCommand("\t/摘要 x", commands)).toBeNull();
+    expect(matchSubmitCommand("　/摘要 x", commands)).toBeNull(); // 全形空白
   });
 });

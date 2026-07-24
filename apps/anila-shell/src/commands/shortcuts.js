@@ -89,7 +89,10 @@ export const SHORTCUTS = Object.freeze([
     id: "shortcuts-panel",
     group: "global",
     // ⌘/ 與 ⌘?(Shift+/)都放行 —— 部分鍵盤佈局 ? 就在 / 上。
-    chords: [{ mod: true, key: "/", allowShift: true }],
+    // ⚠ 按 Shift+/ 時瀏覽器的 `event.key` 回報的是 **"?"**(key 是「產生的
+    // 字元」,不是實體鍵位),只比對 "/" 會讓宣稱支援的 ⌘? 完全不生效 ——
+    // 因此另列 aliasKeys。顯示字串仍用 chord.key(⌘/)。
+    chords: [{ mod: true, key: "/", allowShift: true, aliasKeys: ["?"] }],
     description: "顯示這份快捷鍵清單",
     global: true,
   },
@@ -192,7 +195,10 @@ export function matchesChord(event, chord, { mac = isMacPlatform() } = {}) {
   if (!chord.allowShift && Boolean(chord.shift) !== Boolean(event.shiftKey)) return false;
   const key = event.key;
   if (typeof key !== "string") return false;
-  return key.toLowerCase() === String(chord.key).toLowerCase();
+  // aliasKeys:同一個實體鍵位在不同 modifier / 佈局下 event.key 會不同
+  // (Shift+/ → "?")。全部視為命中同一個 chord。
+  const candidates = [chord.key, ...(chord.aliasKeys || [])];
+  return candidates.some((c) => key.toLowerCase() === String(c).toLowerCase());
 }
 
 /** 回傳命中的全域 shortcut(或 null)。 */

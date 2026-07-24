@@ -105,6 +105,16 @@ describe("matchesChord", () => {
   it("does not fire a plain key when a mod is required", () => {
     expect(matchesChord(evt({ key: "k" }), { mod: true, key: "k" }, { mac: false })).toBe(false);
   });
+
+  // 瀏覽器的 event.key 是「產生的字元」而不是實體鍵位:按 Shift+/ 回報的是
+  // "?" 而不是 "/"。原本只比對 chord.key,宣稱支援的 ⌘? 其實從來沒生效。
+  it("aliasKeys 讓同一個實體鍵位在不同 modifier 下也能命中", () => {
+    const chord = { mod: true, key: "/", allowShift: true, aliasKeys: ["?"] };
+    expect(matchesChord(evt({ key: "?", ctrlKey: true, shiftKey: true }), chord, { mac: false })).toBe(true);
+    expect(matchesChord(evt({ key: "/", ctrlKey: true }), chord, { mac: false })).toBe(true);
+    // 沒列進 aliasKeys 的鍵不會誤觸。
+    expect(matchesChord(evt({ key: "\\", ctrlKey: true }), chord, { mac: false })).toBe(false);
+  });
 });
 
 describe("resolveGlobalShortcut", () => {
@@ -116,6 +126,15 @@ describe("resolveGlobalShortcut", () => {
   it("resolves ⌘/ to the shortcuts panel", () => {
     expect(
       resolveGlobalShortcut(evt({ key: "/", ctrlKey: true }), { mac: false })?.id,
+    ).toBe("shortcuts-panel");
+  });
+
+  it("resolves ⌘? — 瀏覽器對 Shift+/ 回報的是 key=\"?\"(真實鍵盤行為)", () => {
+    expect(
+      resolveGlobalShortcut(evt({ key: "?", ctrlKey: true, shiftKey: true }), { mac: false })?.id,
+    ).toBe("shortcuts-panel");
+    expect(
+      resolveGlobalShortcut(evt({ key: "?", metaKey: true, shiftKey: true }), { mac: true })?.id,
     ).toBe("shortcuts-panel");
   });
 

@@ -30,17 +30,23 @@ export const COMMAND_KINDS = Object.freeze({
  * - `@`:沿用原規則 —— 行首或空白/左括號後面的 `@tok`(可跨行、可在句中)。
  * - `/`:只在**整個輸入的最前面**且尚未打空白時觸發,所以 `http://x`、
  *   `a/b`、`已送出的第二行 /x` 都不會誤開選單(對齊 ChatGPT / Open WebUI)。
+ *
+ * ⚠ 只看 caret 前面的文字不夠:`/摘要 參數` 把 caret 移回指令尾端時,
+ * before 仍然是 `/摘要`,選單會重新彈出、Enter 直接執行指令並丟掉已經打好的
+ * 參數。因此 `/` 觸發**同時要求 caret 之後沒有其他內容**(只允許空白),
+ * 也就是「還在打這個指令」而不是「回頭編輯已經寫完的一整句」。
  */
 export function parseComposerTrigger(text, caret) {
   const source = typeof text === "string" ? text : "";
   const pos = Number.isFinite(caret) ? Math.max(0, Math.min(caret, source.length)) : 0;
   const before = source.slice(0, pos);
+  const after = source.slice(pos);
 
   const mention = before.match(/(?:^|[\s(])@([\S]*)$/);
   if (mention) return { char: "@", query: mention[1] };
 
   const slash = before.match(/^\/(\S*)$/);
-  if (slash) return { char: "/", query: slash[1] };
+  if (slash && /^\s*$/.test(after)) return { char: "/", query: slash[1] };
 
   return null;
 }
@@ -161,6 +167,10 @@ export function filterSlashCommands(commands, query) {
 /**
  * 送出時再判一次:`/翻譯 這段話` 這種「指令 + 參數」形式在打了空白後選單已關,
  * 因此要在 submit 路徑上識別。找不到對應指令 → 回 null(照原樣當訊息送出)。
+ *
+ * ⚠ 一定要餵**未 trim 的原文**。呼叫端若先 trim 再進來,從別處貼上的
+ * `"  /翻譯 機密內容"`(前面有空白或換行)會被當成指令執行 —— 使用者的本意
+ * 明明是把這段文字當訊息送出。指令必須是**輸入的第一個字元**才算數。
  */
 export function matchSubmitCommand(text, commands) {
   const raw = typeof text === "string" ? text : "";

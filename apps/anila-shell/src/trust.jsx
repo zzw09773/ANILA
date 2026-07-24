@@ -626,10 +626,22 @@ export const ClassificationLevelBadge = ({ conversation }) => {
 // 機敏模式全螢幕鑑識浮水印:低透明度對角平鋪,萬一有人拍照/截圖洩漏機敏畫面,
 // 浮水印帶著洩漏者身分 + trace_id 以供溯源。文字顯示「真實分類級別」中文
 // (機密/極機密/絕對機密),非固定英文;缺 level 回退機密(與 r1_0003 backfill 一致)。
-export const ConfidentialWatermark = ({ userEmail, traceId, level }) => (
+//
+// ⚠ 層級(z-index)是這個元件的**安全屬性**,不是樣式偏好:任何顯示涉密內容
+// 的圖層都必須落在浮水印之下,否則截圖出去就沒有歸屬資訊。原本的 4 會被
+// Modal(--anila-z-modal = 100)與命令面板(120)整片蓋掉,因此提到 150 ——
+// 仍低於密等/繼承警示橫幅的 200(那條橫幅必須永遠可讀)。
+// `absolute` 給「在覆蓋層內部重繪」用(例如命令面板自己那一層)。
+export const ConfidentialWatermark = ({
+  userEmail,
+  traceId,
+  level,
+  zIndex = 150,
+  absolute = false,
+}) => (
   <div aria-hidden="true" style={{
-    position: "fixed", inset: 0, pointerEvents: "none",
-    zIndex: 4,
+    position: absolute ? "absolute" : "fixed", inset: 0, pointerEvents: "none",
+    zIndex,
     opacity: 0.055,
     background: `repeating-linear-gradient(-30deg,
       transparent 0,

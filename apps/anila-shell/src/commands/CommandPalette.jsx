@@ -8,6 +8,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import { IconSearch, IconArrowRight, IconArchive, IconStar, IconLock } from "../icons.jsx";
 import { relativeLabel } from "../runtime/time.js";
+import { ConfidentialWatermark } from "../trust.jsx";
 import {
   filterConversationsForPalette,
   filterPaletteActions,
@@ -29,6 +30,9 @@ export const CommandPalette = ({
   actions = [],
   onSelectConv,
   onServerSearch,
+  // 鑑識浮水印歸屬資訊 —— 面板列出 classified 標題時要在面板內重繪。
+  watermarkUser,
+  watermarkTraceId,
 }) => {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -98,6 +102,19 @@ export const CommandPalette = ({
     [visibleActions, visibleConversations],
   );
 
+  // 面板只要列出任何一則 classified 對話的標題,這一層就有涉密內容 →
+  // 面板內部必須自己重繪鑑識浮水印(面板 z-index 高於一般畫面,單靠全域
+  // 那層會被自己的 backdrop 蓋住歸屬資訊)。
+  const showsClassified = useMemo(
+    () => visibleConversations.some((c) => c.classified),
+    [visibleConversations],
+  );
+  const classifiedLevel = useMemo(
+    () =>
+      visibleConversations.find((c) => c.classified)?.classificationLevel || undefined,
+    [visibleConversations],
+  );
+
   useEffect(() => { setActive(0); }, [rows.length, query]);
 
   useEffect(() => {
@@ -146,7 +163,8 @@ export const CommandPalette = ({
       onClick={onClose}
       style={{
         // Modal 是 100(tokens 的 --anila-z-modal);面板要壓在 Modal 之上,
-        // 但**不可**蓋掉 z-200 的密等/繼承警示橫幅。
+        // 但**不可**蓋掉 z-200 的密等/繼承警示橫幅,也**不可**蓋掉 z-150 的
+        // 全域鑑識浮水印(涉密內容不得出現在無浮水印的圖層)。
         position: "fixed", inset: 0, zIndex: 120,
         background: "oklch(0.10 0 0 / 0.4)",
         display: "flex", alignItems: "flex-start", justifyContent: "center",
@@ -167,8 +185,18 @@ export const CommandPalette = ({
           overflow: "hidden",
           display: "flex", flexDirection: "column",
           maxHeight: "70vh",
+          position: "relative",
         }}
       >
+        {showsClassified && (
+          <ConfidentialWatermark
+            absolute
+            zIndex={1}
+            level={classifiedLevel}
+            userEmail={watermarkUser}
+            traceId={watermarkTraceId}
+          />
+        )}
         <div style={{
           display: "flex", alignItems: "center", gap: 8,
           padding: "12px 14px",
