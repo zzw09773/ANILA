@@ -650,6 +650,65 @@ def _commit_stream_admission(governance_db) -> None:
         ) from exc
 
 
+def _release_stream_admission_session(governance_db) -> None:
+    """Defence in depth: hand the Session's pooled connection back before SSE.
+
+    Read ``app/database.py`` first.  **``expire_on_commit=False`` is the fix**;
+    this function is the belt to its braces.  Measured (SQLAlchemy 2.0.43):
+    ``_commit_stream_admission``'s ``commit()`` *already* returns the pooled
+    connection (``conns held after commit: 0``).  What re-pinned it in the
+    2026-07-25 cold-burst outage was the first attribute touch *after* that
+    commit — under the SQLAlchemy default every instance is expired at commit,
+    so the touch fires ``_load_expired``, re-opens a transaction and holds a
+    connection for the whole SSE body (``pg_active=31, idle_tx=30`` against
+    ``pool_size=10 + max_overflow=20``; 36/36 control-plane probes failed).
+
+    Calling ``close()`` here is still worth doing:
+
+    * It bounds the window structurally rather than by invariant.  The Session
+      otherwise lives until FastAPI unwinds ``get_db``'s ``AsyncExitStack``,
+      which happens only **after** ``StreamingResponse`` has fully drained, so
+      any future code that does begin a transaction mid-stream would re-pin a
+      connection for the rest of the response.
+    * It empties the identity map, so the Gate 5 post-stream receipt and the
+      teardown closure re-read rows from the database instead of from an
+      admission-time snapshot.
+
+    ``close()`` resets the Session but leaves it fully reusable: the teardown
+    closure/receipt writes check out a fresh connection, commit, and release
+    again — a short-lived transaction instead of one spanning the whole body.
+    Nothing moves to a different Session, so closure idempotency
+    (``closure_id``), the Gate 5 receipt binding and governance DB identity are
+    unchanged.
+
+    Two constraints on everything that runs after this call (both measured;
+    see the invariant list in ``app/database.py``):
+
+    1. Only **already-loaded column** values may be read off the now-detached
+       admission objects.  Traversing a relationship raises
+       ``DetachedInstanceError`` — ``expire_on_commit=False`` protects loaded
+       scalars, never relationships.
+    2. **Never mutate a pre-close instance after this point.**  Assigning to a
+       detached instance and committing raises nothing, logs nothing, and the
+       write is silently dropped.  Durable post-stream writes must re-load the
+       row in the reopened Session, which is what ``persist_task_call_closure``
+       does via ``populate_existing().with_for_update()``.
+    """
+    if governance_db is None:
+        return
+    close = getattr(governance_db, "close", None)
+    if not callable(close):
+        # Unit-test doubles expose only ``rollback``/``commit``.  Nothing to
+        # release, and never a reason to fail an admitted stream.
+        return
+    try:
+        close()
+    except Exception:
+        # A failed release must not kill an already-admitted call; the worst
+        # case degrades to the previous behavior (connection held longer).
+        logger.exception("串流 admission session 釋放失敗，連線可能延後歸還")
+
+
 def lock_agent_registry_admission(
     *, governance_db, agent_id: int, endpoint_url: str,
     admitted_classification_level: str,
@@ -2009,6 +2068,9 @@ async def proxy_stream(
             health_status_source=stream_health_source,
         )
         _commit_stream_admission(governance_db)
+        # Admission is durable and every row lock is gone; the SSE body must
+        # not sit on a pooled connection while it drains.
+        _release_stream_admission_session(governance_db)
         async with registry.register(task_id) as cancel_event:
             upstream = _proxy_stream_impl(
                 target_url=target_url,

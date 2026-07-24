@@ -1836,6 +1836,14 @@ async def _chat_completions_impl(
     # accounts → identity header omitted, never forged; the request still
     # proceeds). user.id (PK) is still used for usage rows.
     user_identity = downstream_identity(user)
+    # Plain-int snapshot of the PK for anything evaluated AFTER this handler
+    # returns.  The streaming exits pass ``_schedule_memory_write`` as an
+    # ``on_complete`` closure, so its arguments are evaluated once the SSE has
+    # drained — long after ``_commit_stream_admission`` committed (and, since
+    # that commit now also releases the Session, detached) the ORM instance.
+    # Reading ``user.id`` there used to fire a synchronous ``_load_expired``
+    # re-SELECT on the event-loop thread and re-pin a pooled connection.
+    memory_writer_user_id = user.id
 
     # Audit fields from optional client headers
     conversation_id: str | None = request_headers.get("X-ANILA-Conversation-Id")
@@ -2417,7 +2425,7 @@ async def _chat_completions_impl(
             teed = _tee_stream_capture_assistant(
                 upstream,
                 on_complete=lambda assistant_text: _schedule_memory_write(
-                    user_id=user.id,
+                    user_id=memory_writer_user_id,
                     conversation_id=conv_id_int,
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
@@ -2590,7 +2598,7 @@ async def _chat_completions_impl(
                 # Memory write (non-streaming agent path)
                 assistant_text = _extract_assistant_text(payload)
                 _schedule_memory_write(
-                    user_id=user.id,
+                    user_id=memory_writer_user_id,
                     conversation_id=conv_id_int,
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
@@ -2795,7 +2803,7 @@ async def _chat_completions_impl(
         teed = _tee_stream_capture_assistant(
             upstream,
             on_complete=lambda assistant_text: _schedule_memory_write(
-                user_id=user.id,
+                user_id=memory_writer_user_id,
                 conversation_id=conv_id_int,
                 user_message=captured_user_text,
                 assistant_message=assistant_text,
@@ -2890,7 +2898,7 @@ async def _chat_completions_impl(
     _audit_outcome("success")
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
-        user_id=user.id,
+        user_id=memory_writer_user_id,
         conversation_id=conv_id_int,
         user_message=captured_user_text,
         assistant_message=assistant_text,
