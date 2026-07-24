@@ -6,7 +6,10 @@ import {
 } from "./icons.jsx";
 import { IconButton } from "./components.jsx";
 import { renderWithRedaction } from "./data.jsx";
-import { classificationLevelBadge } from "./runtime/classified.js";
+import {
+  CLASSIFICATION_LEVELS,
+  classificationLevelBadge,
+} from "./runtime/classified.js";
 import {
   SCORE_FOOTNOTE,
   SCORE_LABEL,
@@ -68,9 +71,13 @@ export const renderTextWithCitations = (text, citations, onOpen) => {
   return parts;
 };
 
-// Compact classification pill for a single citation / group (五級; 無機密 不顯示).
+// Compact classification pill for a single citation / group.
+// Shows all five ANILA levels including floor「無機密」— do NOT reuse
+// classificationLevelBadge(), which deliberately hides the floor for
+// conversation chrome.
 const CitationClassBadge = ({ level }) => {
-  const label = classificationLevelBadge({ classification_level: level });
+  const trimmed = typeof level === "string" ? level.trim() : "";
+  const label = CLASSIFICATION_LEVELS.includes(trimmed) ? trimmed : null;
   if (!label) return null;
   return (
     <span

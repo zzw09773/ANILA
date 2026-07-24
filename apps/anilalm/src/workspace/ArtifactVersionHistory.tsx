@@ -19,8 +19,39 @@ export function visibleArtifactVersions(
     .sort((a, b) => b.version - a.version)
 }
 
+/**
+ * Mirrors CSP ``download_artifact_version`` (artifacts.py):
+ * - active → allowed
+ * - archived → 410 when ``RETENTION_ALLOW_ARCHIVED_DOWNLOADS`` is false (default)
+ * - revoked / erase_due / erased → always 410
+ * Frontend has no runtime flag; match the platform default (archived blocked).
+ */
 export function isVersionDownloadable(version: CspArtifactVersion): boolean {
-  return version.lifecycleState === 'active' || version.lifecycleState === 'archived'
+  return version.lifecycleState === 'active'
+}
+
+/** Rows selectable for read-only history view (archived still viewable). */
+export function isVersionSelectable(version: CspArtifactVersion): boolean {
+  return (
+    version.lifecycleState === 'active' || version.lifecycleState === 'archived'
+  )
+}
+
+/** zh-TW reason when download is blocked; null when downloadable. */
+export function downloadUnavailableReason(
+  version: CspArtifactVersion,
+): string | null {
+  if (isVersionDownloadable(version)) return null
+  switch (version.lifecycleState) {
+    case 'archived':
+      return '已封存，平台預設禁止下載封存版本'
+    case 'revoked':
+      return '已撤銷，無法下載'
+    case 'erase_due':
+      return '待清除，無法下載'
+    default:
+      return '此版本無法下載'
+  }
 }
 
 function lifecycleLabel(state: string): string | null {
@@ -79,7 +110,9 @@ export function ArtifactVersionHistory({
       {rows.map((v) => {
         const isCurrent = v.version === currentVersion
         const isSelected = v.id === selectedVersionId
+        const selectable = isVersionSelectable(v)
         const downloadable = isVersionDownloadable(v)
+        const blockedReason = downloadUnavailableReason(v)
         const stateLabel = lifecycleLabel(v.lifecycleState)
         return (
           <button
@@ -87,7 +120,8 @@ export function ArtifactVersionHistory({
             type="button"
             role="option"
             aria-selected={isSelected}
-            disabled={!downloadable}
+            disabled={!selectable}
+            title={blockedReason ?? undefined}
             onClick={() => onSelect(v.id)}
             style={{
               display: 'flex',
@@ -99,8 +133,8 @@ export function ArtifactVersionHistory({
               borderRadius: 8,
               border: `1px solid ${isSelected ? t.accentBorder : 'transparent'}`,
               background: isSelected ? t.accentSoft : 'transparent',
-              cursor: downloadable ? 'pointer' : 'not-allowed',
-              opacity: downloadable ? 1 : 0.55,
+              cursor: selectable ? 'pointer' : 'not-allowed',
+              opacity: selectable ? 1 : 0.55,
               fontFamily: 'inherit',
               color: t.text,
             }}
@@ -152,12 +186,18 @@ export function ArtifactVersionHistory({
                 {stateLabel && (
                   <span style={{ fontSize: 10, color: t.textSubtle }}>{stateLabel}</span>
                 )}
+                {!downloadable && blockedReason && (
+                  <span style={{ fontSize: 10, color: t.textSubtle }}>
+                    不可下載
+                  </span>
+                )}
               </div>
               <div style={{ fontSize: 11, color: t.textSubtle, marginTop: 2 }}>
                 {timeAgo(v.createdAt)}
                 {v.blobSizeBytes != null && v.blobSizeBytes > 0
                   ? ` · ${formatBytes(v.blobSizeBytes)}`
                   : ''}
+                {blockedReason ? ` · ${blockedReason}` : ''}
               </div>
             </div>
           </button>

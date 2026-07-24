@@ -107,14 +107,15 @@ export async function downloadCspArtifact(
     { responseType: 'blob' },
   )
   const url = URL.createObjectURL(response.data as Blob)
-  try {
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = filename
-    anchor.click()
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  // Defer revocation: some Firefox versions cancel the download if the
+  // blob URL is revoked synchronously after click.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 /** Download a specific ArtifactVersion blob from CSP (read-only history). */
@@ -128,14 +129,15 @@ export async function downloadCspArtifactVersion(
     { responseType: 'blob' },
   )
   const url = URL.createObjectURL(response.data as Blob)
-  try {
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = filename
-    anchor.click()
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  // Defer revocation: some Firefox versions cancel the download if the
+  // blob URL is revoked synchronously after click.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 /**
