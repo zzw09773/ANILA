@@ -87,8 +87,11 @@ import { useConfirm, useToast } from "./confirm.jsx";
 import { AppShell, Topbar } from "@anila/ui";
 import {
   AnilaGlyph,
+  IconArchive,
   IconColumns,
   IconGrid,
+  IconKeyboard,
+  IconPlus,
   IconHistory,
   IconLock,
   IconMoon,
@@ -104,6 +107,12 @@ import {
   IconUser,
 } from "./icons.jsx";
 import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS } from "./data.jsx";
+// 全域導覽:命令面板(⌘K)、快捷鍵面板(⌘/)與集中式 shortcuts registry。
+import { CommandPalette } from "./commands/CommandPalette.jsx";
+import { ShortcutsPanel } from "./commands/ShortcutsPanel.jsx";
+import { useShortcuts } from "./commands/useShortcuts.js";
+import { DEFAULT_MESSAGE_ACTIONS, actionTemplate } from "./commands/promptActions.js";
+import { formatShortcut, getShortcut, isMacPlatform } from "./commands/shortcuts.js";
 import {
   CitationsDrawer,
   ConfidentialWatermark,
@@ -282,6 +291,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const [servicesOpen, setServicesOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [folder, setFolder] = useState("all");
+  // 全域導覽 overlay:命令面板(⌘K)與快捷鍵面板(⌘/)。
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   // folders: persisted locally. Users can add/delete; built-ins (all, starred)
   // are guarded because the sidebar filter logic treats them specially.
@@ -298,18 +310,32 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     }
   });
 
+  // convMeta:對話層級的 UI 組織資料 —— 封存(archived)與使用者標籤(tags)。
+  // 刻意**不動後端 schema**:跟 folders 走同一層 server-synced UI 設定
+  // (users.ui_settings 是 client 擁有形狀的 opaque JSON blob,見 CSP
+  // /api/users/me/ui-settings)。形狀 { "<convId>": { archived?, tags? } };
+  // 空值會被清掉,避免 blob 無限長大(後端上限 256KB)。
+  const [convMeta, setConvMeta] = useState({});
+
   // Server-synced settings:後端是 source of truth(共用工作站下使用者的資料夾
   // 不會殘留在瀏覽器給下一個人看到)。掛載時抓後端覆寫;之後變動 debounce 存回。
   // localStorage 仍寫(離線/載入前的暫存),但後端值優先。
   const uiSettingsLoadedRef = useRef(false);
+  // PUT 是「整包取代」語意 → 保留載入時看到的其他鍵,只覆寫我們自己管的欄位。
+  const uiSettingsBlobRef = useRef({});
   useEffect(() => {
     if (!isAuthenticated) return;
     let alive = true;
     getUiSettings(authRequest)
       .then((res) => {
         const s = res?.ui_settings || {};
-        if (alive && Array.isArray(s.folders) && s.folders.length > 0) {
+        if (!alive) return;
+        uiSettingsBlobRef.current = s && typeof s === "object" ? s : {};
+        if (Array.isArray(s.folders) && s.folders.length > 0) {
           setFolders(s.folders.filter((f) => f && typeof f.id === "string" && typeof f.name === "string"));
+        }
+        if (s.convMeta && typeof s.convMeta === "object" && !Array.isArray(s.convMeta)) {
+          setConvMeta(s.convMeta);
         }
       })
       .catch(() => { /* 後端無設定 → 維持 localStorage 值 */ })
@@ -327,10 +353,45 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     // 載入後才回存後端(避免用初始 localStorage 值蓋掉後端真值)。debounce。
     if (!uiSettingsLoadedRef.current || !isAuthenticated) return;
     const t = setTimeout(() => {
-      putUiSettings(authRequest, { folders }).catch(() => { /* best-effort */ });
+      putUiSettings(authRequest, { ...uiSettingsBlobRef.current, folders, convMeta })
+        .catch(() => { /* best-effort */ });
     }, 600);
     return () => clearTimeout(t);
-  }, [folders, isAuthenticated, authRequest]);
+  }, [folders, convMeta, isAuthenticated, authRequest]);
+
+  // ---- 封存 / 標籤 ---------------------------------------------------------
+  const patchConvMeta = useCallback((convId, patch) => {
+    setConvMeta((prev) => {
+      const key = String(convId);
+      const merged = { ...(prev[key] || {}), ...patch };
+      if (!merged.archived) delete merged.archived;
+      if (!Array.isArray(merged.tags) || merged.tags.length === 0) delete merged.tags;
+      const next = { ...prev };
+      if (Object.keys(merged).length === 0) delete next[key];
+      else next[key] = merged;
+      return next;
+    });
+  }, []);
+
+  // 對話列表視圖:把持久化的封存 / 標籤疊到 server 來的列上。自動標籤
+  // (classified / compared,由 conversation 列本身帶)保持原樣,使用者標籤
+  // 疊加在後 —— 因此使用者無法藉「刪標籤」把 classified 標記弄掉(更嚴,不弱化)。
+  const conversationsView = useMemo(
+    () =>
+      conversations.map((c) => {
+        const meta = convMeta[String(c.id)];
+        if (!meta) return c;
+        const userTags = Array.isArray(meta.tags) ? meta.tags : [];
+        return {
+          ...c,
+          archived: Boolean(meta.archived),
+          tags: userTags.length > 0
+            ? [...new Set([...(c.tags || []), ...userTags])]
+            : (c.tags || []),
+        };
+      }),
+    [conversations, convMeta],
+  );
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
   const exportConversation = useCallback(async (convId, format) => {
@@ -397,6 +458,56 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     });
     setFolder((current) => (current === id ? "all" : current));
   }, []);
+
+  // 封存 / 取消封存單一對話。封存當前開啟的對話 → 退回新對話畫面(對齊
+  // ChatGPT:封存後它就不該再佔著主視圖)。後端對話本身不受影響。
+  const archiveConversation = useCallback((convId, archived) => {
+    patchConvMeta(convId, { archived: Boolean(archived) });
+    if (archived) {
+      setSelectedConvId((current) => (current === convId ? null : current));
+    }
+  }, [patchConvMeta]);
+
+  // 側欄 TagEditor 的 patch 分流:tags → convMeta(持久化);folder / starred
+  // 維持既有的 in-memory updateConv 行為,不變。
+  const organizeConversation = useCallback((convId, patch) => {
+    if (!patch) return;
+    if (Object.prototype.hasOwnProperty.call(patch, "tags")) {
+      const { tags, ...rest } = patch;
+      const autoTags = conversations.find((c) => c.id === convId)?.tags || [];
+      const userTags = [...new Set((tags || []).filter((t) => !autoTags.includes(t)))];
+      patchConvMeta(convId, { tags: userTags });
+      if (Object.keys(rest).length > 0) updateConv(convId, rest);
+      return;
+    }
+    updateConv(convId, patch);
+  }, [conversations, patchConvMeta]);
+
+  // 伺服器全文搜尋的結果也要帶上封存 / 標籤 meta,否則「已封存」的舊對話會
+  // 從搜尋結果漏回主清單。
+  const serverSearchWithMeta = useCallback(
+    (q) =>
+      searchConversations(authRequest, q).then((rows) =>
+        (Array.isArray(rows) ? rows : []).map((row) => {
+          const meta = convMeta[String(row.id)] || {};
+          return {
+            ...row,
+            archived: Boolean(meta.archived),
+            tags: Array.isArray(meta.tags) ? meta.tags : [],
+          };
+        }),
+      ),
+    [authRequest, convMeta],
+  );
+
+  // ---- 全域快捷鍵(集中式 registry → 單一 window listener)-------------------
+  // 只有 registry 裡 global:true 的條目會被攔(全是 mod 系組合鍵),因此
+  // 焦點在輸入框內也能觸發,而純 Enter / Esc 等既有區域行為完全不受影響。
+  useShortcuts({
+    "command-palette": () => setPaletteOpen((open) => !open),
+    "shortcuts-panel": () => setShortcutsOpen((open) => !open),
+    "new-chat": () => { setPaletteOpen(false); newChat(); },
+  });
 
   const scrollRef = useRef(null);
 
@@ -531,6 +642,69 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         .find((m) => m.role === "assistant" && (m.text || m.streaming)) || null,
     [currentMsgs],
   );
+
+  // 命令面板的「跳轉動作」。鍵位提示由集中式 registry 產生(跨平台)。
+  const paletteActions = useMemo(() => {
+    const mac = isMacPlatform();
+    const base = [
+      {
+        id: "new-chat",
+        label: "新對話",
+        hint: formatShortcut(getShortcut("new-chat"), { mac }),
+        keywords: ["new chat", "新對話", "開新"],
+        icon: <IconPlus size={13} />,
+        run: () => newChat(),
+      },
+      {
+        id: "open-settings",
+        label: "開啟設定",
+        keywords: ["settings", "設定", "偏好"],
+        icon: <IconSettings size={13} />,
+        run: () => { setSettingsTab("general"); setSettingsOpen(true); },
+      },
+      {
+        id: "open-memory",
+        label: "開啟設定 → 記憶",
+        keywords: ["memory", "記憶", "facts"],
+        icon: <IconHistory size={13} />,
+        run: () => { setSettingsTab("memory"); setSettingsOpen(true); },
+      },
+      {
+        id: "open-archived",
+        label: "檢視已封存對話",
+        keywords: ["archive", "archived", "封存"],
+        icon: <IconArchive size={13} />,
+        run: () => setFolder("archived"),
+      },
+      {
+        id: "open-shortcuts",
+        label: "顯示快捷鍵清單",
+        hint: formatShortcut(getShortcut("shortcuts-panel"), { mac }),
+        keywords: ["shortcut", "快捷鍵", "keys"],
+        icon: <IconKeyboard size={13} />,
+        run: () => setShortcutsOpen(true),
+      },
+      {
+        id: "open-services",
+        label: "專案入口",
+        keywords: ["services", "專案", "平台"],
+        icon: <IconGrid size={13} />,
+        run: () => setServicesOpen(true),
+      },
+    ];
+    for (const agent of agents) {
+      base.push({
+        id: `agent:${agent.id}`,
+        label: `切換 agent → ${agent.name}`,
+        keywords: ["agent", "切換", "switch", agent.id, agent.short].filter(Boolean),
+        icon: <IconNodes size={13} />,
+        run: () => setSelectedAgentId(agent.id),
+      });
+    }
+    return base;
+    // newChat 是 hoisted function declaration,身分穩定;其餘 setter 亦然。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents]);
 
   // autoscroll
   useEffect(() => {
@@ -877,6 +1051,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     }))) return;
     const prev = conversations;
     setConversations((cs) => cs.filter((c) => c.id !== convId));
+    // 對話沒了就把它的封存/標籤 meta 一併清掉,避免 ui_settings blob 長草。
+    patchConvMeta(convId, { archived: false, tags: [] });
     if (selectedConvId === convId) {
       setSelectedConvId(null);
     }
@@ -1372,19 +1548,28 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // 動作宣告式 {label, config.template},template 內 {content} 換成該則回覆
   // 全文,組好後當新使用者訊息送出。**不執行任意腳本**(air-gap 軍方不開
   // client eval)。來源優先序:該 agent 的 prompt_action functions(開發者在
-  // CSP 設計) > 沒設時用下方通用預設,所以一定有翻譯/摘要/公文可用。
-  const DEFAULT_MESSAGE_ACTIONS = [
-    { id: "translate-en", label: "翻譯成英文", config: { template: "請把以下內容翻譯成英文，只輸出譯文：\n\n{content}" } },
-    { id: "summarize", label: "摘要重點", config: { template: "請把以下內容摘要成條列重點：\n\n{content}" } },
-    { id: "official", label: "改寫成公文", config: { template: "請把以下內容改寫成正式公文格式：\n\n{content}" } },
-  ];
+  // CSP 設計) > 沒設時用通用預設(DEFAULT_MESSAGE_ACTIONS,已搬到
+  // commands/promptActions.js 與斜線指令共用同一份),所以一定有翻譯/摘要/公文。
   const messageActions = promptActionFns.length > 0 ? promptActionFns : DEFAULT_MESSAGE_ACTIONS;
 
   function runMessageAction(msg, action) {
-    const template = action?.config?.template || action?.template;
+    const template = actionTemplate(action);
     if (!template || !msg?.text) return;
     const prompt = template.replace(/\{content\}/g, msg.text);
     sendMessage(prompt, [], {});
+  }
+
+  // 斜線指令 `/翻譯`(不帶參數)→ 套用在最新一則回覆上,等同按快捷動作鈕。
+  // 回傳 false = 沒有可套用的回覆(呼叫端會退回「把指示填進輸入框」)。
+  // classified 對話一律拒絕 —— 與 MessageBubble 的 `!classified` 閘門同姿態。
+  function runPromptActionOnLatest(action) {
+    if (isClassified) return false;
+    const target = latestAssistantMessage;
+    if (!target?.text || target.streaming) return false;
+    const template = actionTemplate(action);
+    if (!template) return false;
+    runMessageAction(target, action);
+    return true;
   }
 
   // Continue Response:回應被 max_tokens 截斷(finishReason==='length')時,
@@ -1965,8 +2150,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       }
       sidebar={
         <Sidebar
-        conversations={conversations}
-        onServerSearch={(q) => searchConversations(authRequest, q)}
+        conversations={conversationsView}
+        onServerSearch={serverSearchWithMeta}
         onExportConv={exportConversation}
         selectedConvId={selectedConvId}
         onSelectConv={(id) => {
@@ -1992,9 +2177,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         folders={folders}
         onCreateFolder={createFolder}
         onDeleteFolder={deleteFolder}
-        onOpenTagEditor={(id, patch) => updateConv(id, patch)}
+        onOpenTagEditor={organizeConversation}
         onRenameConv={handleRenameConv}
         onDeleteConv={handleDeleteConv}
+        onArchiveConv={archiveConversation}
+        onOpenCommandPalette={() => setPaletteOpen(true)}
         />
       }
     >
@@ -2253,7 +2440,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                       presetPrompts={presetPrompts}
                       streaming={currentMsgs.some((m) => m.streaming)}
                       onStop={() => stopStreaming(selectedConvId)}
-                      placeholder="問 ANILA 任何事情，或用 @agent 指定 agent · Shift+Enter 換行"
+                      // 斜線指令:重用同一份快捷動作;機密對話停用動作類指令。
+                      messageActions={messageActions}
+                      classified={isClassified}
+                      onOpenShortcuts={() => setShortcutsOpen(true)}
+                      onOpenPalette={() => setPaletteOpen(true)}
+                      onRunPromptAction={runPromptActionOnLatest}
+                      placeholder="問 ANILA 任何事情 — / 開指令、@agent 指定 agent · Shift+Enter 換行"
                       footer={
                         selectedAgentId === ROUTER_AGENT.id
                           ? "Auto route · 由 ANILA Router 判斷是否分派 agent"
@@ -2348,6 +2541,22 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         request={authRequest}
         toast={toast}
       />
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        conversations={conversationsView}
+        folders={folders}
+        actions={paletteActions}
+        onServerSearch={serverSearchWithMeta}
+        onSelectConv={(id) => {
+          setSelectedConvId(id);
+          setCitationsOpen(false);
+          setCompareMode(false);
+        }}
+      />
+
+      <ShortcutsPanel open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </AppShell>
   );
 }
