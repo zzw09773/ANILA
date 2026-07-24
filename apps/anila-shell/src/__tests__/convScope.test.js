@@ -12,6 +12,7 @@ import {
   isConversationHydrated,
   isShellScopedConversation,
   isShellScopedOrigin,
+  mergeServerConversations,
   renderableMessages,
   resolveConversationOpen,
 } from "../runtime/convScope.js";
@@ -152,5 +153,47 @@ describe("resolveConversationOpen", () => {
     await expect(
       resolveConversationOpen({ convId: null, localConversations: [] }),
     ).resolves.toEqual({ status: "denied", reason: "unresolvable" });
+  });
+});
+
+// 較晚抵達的初始清單不可以把「後端還不知道」的離線本地列一起抹掉 ——
+// 抹掉之後 selectedConvId 就成了孤兒,渲染閘門會停在「對話載入中…」。
+describe("mergeServerConversations", () => {
+  it("保留伺服器快照裡不可能存在的離線本地列(cv-local-*)", () => {
+    const prev = [
+      { id: "cv-local-1", title: "離線建立的" },
+      { id: 7, title: "本地舊值" },
+    ];
+    const incoming = [{ id: 7, title: "伺服器值" }];
+    const merged = mergeServerConversations(prev, incoming);
+    expect(merged.map((c) => c.id)).toEqual(["cv-local-1", 7]);
+    // 伺服器認得的 id 一律以伺服器為準(不讓本地舊值蓋掉 classification)。
+    expect(merged.find((c) => c.id === 7).title).toBe("伺服器值");
+  });
+
+  it("本地的數字 id 幽靈列不會被復活(別的分頁刪掉的對話)", () => {
+    const merged = mergeServerConversations(
+      [{ id: 7, title: "已被別的分頁刪掉" }],
+      [{ id: 8, title: "伺服器唯一的一則" }],
+    );
+    expect(merged.map((c) => c.id)).toEqual([8]);
+  });
+
+  it("沒有離線本地列時直接沿用伺服器清單", () => {
+    const incoming = [{ id: 1 }, { id: 2 }];
+    expect(mergeServerConversations([], incoming)).toBe(incoming);
+    expect(mergeServerConversations(null, incoming)).toBe(incoming);
+    expect(mergeServerConversations([{ id: "cv-local-1" }], null)).toEqual([
+      { id: "cv-local-1" },
+    ]);
+  });
+
+  it("離線本地列若已被伺服器認領(同 id)就不重複保留", () => {
+    const merged = mergeServerConversations(
+      [{ id: "cv-local-1", title: "離線" }],
+      [{ id: "cv-local-1", title: "伺服器也回了同一把 key" }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].title).toBe("伺服器也回了同一把 key");
   });
 });

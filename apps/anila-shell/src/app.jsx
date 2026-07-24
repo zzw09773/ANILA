@@ -42,6 +42,7 @@ import {
   OUT_OF_SCOPE_MESSAGE,
   filterShellScopedRows,
   isConversationHydrated,
+  mergeServerConversations,
   renderableMessages,
   resolveConversationOpen,
 } from "./runtime/convScope.js";
@@ -954,11 +955,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         const lookupName = (id) => agents.find((a) => a.id === id)?.name || null;
         const lookupRequiresEncryption = (id) =>
           Boolean(agents.find((a) => a.id === id)?.requiresEncryption);
-        setConversations(
-          rows.map((r) =>
-            mapServerConversation(r, lookupName, lookupRequiresEncryption),
-          ),
+        const mapped = rows.map((r) =>
+          mapServerConversation(r, lookupName, lookupRequiresEncryption),
         );
+        // ⚠ 不可整份取代 —— 判準與理由見 runtime/convScope.js。
+        setConversations((prev) => mergeServerConversations(prev, mapped));
       } catch (error) {
         if (active) {
           setRuntimeError(error.message || "無法載入對話清單");
@@ -1085,6 +1086,88 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     setSelectedConvId(convId);
   }
 
+  // ---- 孤兒 selectedConvId 的自癒(渲染閘門的唯一出路)--------------------
+  //
+  // 渲染閘門(見下方 `conversationHydrated`)的規則是「conversation 物件沒到
+  // 手就一則訊息都不渲染」。它的代價:只要 `selectedConvId` 指到一則**本地
+  // 清單裡不存在**的對話,上面的 lazy hydrate effect 會因為找不到而直接
+  // return,畫面就永遠停在「對話載入中…」—— 不重試、也沒有退出。
+  // 實際踩得到的路徑:登入時的初始清單較晚抵達,把使用者在等待期間透過搜尋
+  // hydrate(或剛建立)的那則對話從清單裡拿掉。
+  //
+  // 因此這裡保證**任何情況下都有一條出路**:
+  //   ① 後端還有這則對話 → 重新 hydrate。走 `resolveConversationOpen`,
+  //      origin scope 檢查一併沿用,不因為是自癒路徑就繞過安全判準;
+  //   ② 抓不到 / 不屬於本 app / 本來就是離線本地列 → 清除選取並說明原因。
+  //
+  // 刻意拆成兩個 effect:偵測 effect 依賴 `conversations`(每次 setState 都是
+  // 新陣列參考),若把非同步復原也掛在同一個 effect,任何一次清單變動都會觸發
+  // cleanup 把飛行中的復原取消掉 —— 那就又回到卡死。復原 effect 只依賴
+  // `orphanConvId`,同一個 id 期間不會被打斷,也不會重複發請求。
+  const [orphanConvId, setOrphanConvId] = useState(null);
+  useEffect(() => {
+    const orphaned =
+      isAuthenticated &&
+      selectedConvId !== null &&
+      selectedConvId !== undefined &&
+      !conversations.some((c) => c.id === selectedConvId) &&
+      openingConvId !== selectedConvId; // openConversation 正在處理,別搶
+    // 值沒變時 React 會 bail out,不會造成 render 迴圈。
+    setOrphanConvId(orphaned ? selectedConvId : null);
+  }, [isAuthenticated, selectedConvId, conversations, openingConvId]);
+
+  useEffect(() => {
+    if (orphanConvId === null || orphanConvId === undefined) return;
+    const targetId = orphanConvId;
+    let active = true;
+    (async () => {
+      if (typeof targetId !== "number") {
+        // 離線本地列(`cv-local-*`)後端不存在,抓不回來 → 只能放開選取,
+        // 但一定要講清楚,不可讓使用者對著「載入中」乾等。
+        setSelectedConvId((cur) => (cur === targetId ? null : cur));
+        setRuntimeError("這則對話尚未同步到後端且已不在清單中，已回到新對話。");
+        return;
+      }
+      const result = await resolveConversationOpen({
+        convId: targetId,
+        localConversations: [],
+        fetchDetail: (id) => apiGetConversation(authRequest, id),
+      });
+      if (!active) return;
+      if (result.status !== "ready" || !result.detail) {
+        setSelectedConvId((cur) => (cur === targetId ? null : cur));
+        setRuntimeError(
+          result.reason === "origin"
+            ? OUT_OF_SCOPE_MESSAGE
+            : result.error?.message || "無法載入這則對話，已回到新對話。",
+        );
+        return;
+      }
+      const detail = result.detail;
+      const conv = mapServerConversation(
+        detail,
+        (id) => agents.find((a) => a.id === id)?.name || null,
+        (id) => Boolean(agents.find((a) => a.id === id)?.requiresEncryption),
+      );
+      const msgs = (detail.messages || []).map((m) => ({
+        ...mapServerMessage(m),
+        conversationId: targetId,
+      }));
+      // conversation 先進清單、訊息後進 —— 與 openConversation 同序,
+      // 不製造「有 id、沒 classification」的 render frame。
+      setConversations((prev) =>
+        prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev],
+      );
+      setMessagesByConv((prev) =>
+        prev[targetId]?.length ? prev : { ...prev, [targetId]: msgs },
+      );
+    })();
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orphanConvId]);
+
   // ---- conversation helpers (classification is one-way latch) ----
   // Returns the backend integer conversation id. Creates a new row on the
   // server if none selected. Falls back to an optimistic local id if the
@@ -1187,7 +1270,12 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     // 樂觀刪除:後端失敗要能**完整**還原。過去只還原 conversations,
     // convMeta(封存/標籤)、messages 與選取狀態都回不來 —— 對話「復活」後
     // 標籤與封存狀態已遺失,而且 ui_settings 已經把清空後的值同步上去了。
-    const prevConversations = conversations;
+    //
+    // ⚠ 但還原**不可以整份快照蓋回去**:刪除請求在飛的期間使用者可能又建立
+    // 或開啟了別的對話,整份 restore 會把那些新列一起抹掉(離線本地列直接
+    // 遺失),還會把選取搶回被刪的那則。所以只做「把被刪的那一列插回原位」
+    // 的 functional rollback,選取則只在使用者沒動過時才還原。
+    const removedIndex = conversations.findIndex((c) => c.id === convId);
     const prevMeta = convMeta[String(convId)];
     const prevMsgs = messagesByConv[convId];
     const wasSelected = selectedConvId === convId;
@@ -1206,14 +1294,21 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     try {
       await apiDeleteConversation(authRequest, convId);
     } catch (err) {
-      setConversations(prevConversations);
+      // 只把被刪的那一列插回原本的位置,其餘列(含請求期間新建的)原封不動。
+      setConversations((cs) => {
+        if (cs.some((c) => c.id === convId)) return cs;
+        const at = removedIndex < 0 ? cs.length : Math.min(removedIndex, cs.length);
+        return [...cs.slice(0, at), target, ...cs.slice(at)];
+      });
       if (prevMeta) {
         setConvMeta((prev2) => ({ ...prev2, [String(convId)]: prevMeta }));
       }
       if (prevMsgs) {
         setMessagesByConv((prev2) => ({ ...prev2, [convId]: prevMsgs }));
       }
-      if (wasSelected) setSelectedConvId(convId);
+      // 選取只在「使用者沒有自己改過」時才還原 —— 樂觀刪除把它設成 null,
+      // 還是 null 才代表沒被動過;使用者已經開了別則對話就不能搶回來。
+      if (wasSelected) setSelectedConvId((cur) => (cur === null ? convId : cur));
       setRuntimeError(err.message || "刪除對話失敗");
     }
   }

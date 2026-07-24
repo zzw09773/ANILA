@@ -215,6 +215,67 @@ describe("從命令面板開啟本地清單沒有的對話", () => {
     expect(screen.getByText(/年前$/)).toBeInTheDocument();
   });
 
+  // ── 渲染閘門的逃生口 ────────────────────────────────────────────────
+  // 閘門規則是「conversation 物件沒到手就一則訊息都不渲染」。代價是只要
+  // selectedConvId 變成孤兒(清單裡找不到),lazy hydrate effect 會直接
+  // return,畫面就永遠停在「對話載入中…」—— 不重試、也沒有退出。
+  it("較晚抵達的初始清單移走了已 hydrate 的對話 → 自動重新 hydrate,不會永久卡在「對話載入中…」", async () => {
+    mocks.searchConversations.mockResolvedValue([searchHit()]);
+    // 初始清單刻意「掛住」,而且回來時**不含** 42(清單有分頁/筆數上限時
+    // 完全可能發生)。使用者在它回來之前就先用搜尋開了 42。
+    let releaseList;
+    mocks.listConversations.mockImplementation(
+      () => new Promise((resolve) => { releaseList = () => resolve([]); }),
+    );
+
+    renderApp();
+    const input = await openPaletteAndSearch("機密");
+    await screen.findByText("機密案", {}, { timeout: 2000 });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    // 先確認確實 hydrate 成功、內容看得到。
+    await screen.findByText(SECRET_BODY);
+
+    // 這時初始清單才回來,把 42 從清單裡刷掉,selectedConvId 卻還留著。
+    await act(async () => { releaseList(); });
+
+    // ⚠ 核心斷言:使用者必須有一條出路,不能永遠對著「對話載入中…」乾等。
+    await waitFor(
+      () => { expect(screen.queryByText("對話載入中…")).not.toBeInTheDocument(); },
+      { timeout: 3000 },
+    );
+    // 而且出路要「真的可用」——訊息與鑑識浮水印一起回來,不是降級成
+    // 未分類姿態,也不是留下一個空殼。
+    await screen.findByText(SECRET_BODY);
+    expect(screen.getByText(/極機密 · tester@ncsist\.org\.tw/)).toBeInTheDocument();
+  });
+
+  it("孤兒對話後端也抓不到 → 清除選取並說明原因,不留在載入中", async () => {
+    mocks.searchConversations.mockResolvedValue([searchHit()]);
+    let releaseList;
+    mocks.listConversations.mockImplementation(
+      () => new Promise((resolve) => { releaseList = () => resolve([]); }),
+    );
+
+    renderApp();
+    const input = await openPaletteAndSearch("機密");
+    await screen.findByText("機密案", {}, { timeout: 2000 });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByText(SECRET_BODY);
+
+    // 自癒時後端已經沒有這則對話(例如別的分頁把它刪了)。
+    mocks.getConversation.mockRejectedValue(new Error("對話不存在"));
+    await act(async () => { releaseList(); });
+
+    const alert = await screen.findByRole("alert", {}, { timeout: 3000 });
+    expect(alert.textContent).toContain("對話不存在");
+    await waitFor(() => {
+      expect(screen.queryByText("對話載入中…")).not.toBeInTheDocument();
+    });
+    // 選取被放開 → 回到「新對話」的空狀態,機密內容當然也不留。
+    expect(screen.queryByText(SECRET_BODY)).not.toBeInTheDocument();
+  });
+
   it("後端說這則對話屬於別的 app → 拒絕開啟並明說原因(不靜默失敗)", async () => {
     // 搜尋結果沒帶 origin(舊 payload),第二道防線在 hydrate 時才發現。
     mocks.searchConversations.mockResolvedValue([searchHit({ origin: undefined })]);

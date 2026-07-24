@@ -77,6 +77,34 @@ export function renderableMessages(selectedConvId, selectedConv, messagesByConv)
 }
 
 /**
+ * 把伺服器回來的對話清單併進本地清單。
+ *
+ * 為什麼不能直接整份取代:清單請求(登入時發)在飛的期間,使用者可能已經
+ * 建立了**後端還不知道**的離線本地列(`ensureConversation` 在建立失敗時會退
+ * 成 `cv-local-*` 的字串 id)。整份蓋掉會讓那則對話連同訊息一起消失,而
+ * `selectedConvId` 還留著 → `isConversationHydrated` 永遠是 false →
+ * 渲染閘門卡在「對話載入中…」,沒有重試也沒有退出。
+ *
+ * 判準刻意保守,只保留「伺服器快照裡不可能存在」的列(非數字 id):
+ *   ① 伺服器認得的 id 一律以伺服器為準 —— 不讓本地舊值蓋掉 classification;
+ *   ② 不保留本地的數字 id 幽靈列 —— 別的分頁/裝置刪掉的對話不會被復活。
+ * 數字 id 的孤兒(例如清單分頁沒帶到)由呼叫端的自癒路徑重新 hydrate。
+ *
+ * @param {Array} prevConversations 目前的本地清單。
+ * @param {Array} incomingConversations 伺服器清單(已映射成本地形狀)。
+ * @returns {Array} 合併後的清單;離線本地列排在前面(維持「最新在上」)。
+ */
+export function mergeServerConversations(prevConversations, incomingConversations) {
+  const incoming = Array.isArray(incomingConversations) ? incomingConversations : [];
+  const prev = Array.isArray(prevConversations) ? prevConversations : [];
+  const serverIds = new Set(incoming.map((c) => c && c.id));
+  const localOnly = prev.filter(
+    (c) => c && typeof c.id !== "number" && !serverIds.has(c.id),
+  );
+  return localOnly.length ? [...localOnly, ...incoming] : incoming;
+}
+
+/**
  * 把「開啟對話 id X」解析成可安全渲染的狀態。
  *
  * @param {object}   params
