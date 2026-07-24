@@ -47,20 +47,20 @@
 
 `main` 是 SSOT。通用 feature、bugfix、docs、測試先進 `main`，再同步 downstream。downstream 之間不要互相 merge；需要跨分支修補時，先進 `main`，再分別 port。
 
-### 3.1 現況實測（2026-07-22 重收斂，改動前請重新量測）
+### 3.1 現況實測（2026-07-24 分支精簡，改動前請重新量測）
 
-> ⚠ 本節更早的內容已過時，且過時方向會誤導決策。以下為 2026-07-22 收斂手術後的實測結果。
+> ⚠ 本節更早的內容已過時，且過時方向會誤導決策。以下為 2026-07-24 分支裁撤後的實測結果。
 > 歷史教訓：07-10 至 07-22 間分支曾雙向漂移（downstream 落後 main 170–199 commit、
 > 「領先 11 commit」經 `git patch-id --stable` 證實 10/11 是 main 上同卵雙胞的假警報）。
-> 07-22 以「main tip ＋ 語意重推導的姿態 commit ＋ `merge -s ours` 保 ancestry」重建六條分支。
+> 07-22 重建六條分支後，07-24 進一步裁撤零語意分支：`dev-public`／`dev-military`
+> （收斂後與 main 只差 `.env.example` 識別橫幅、零旗標差異——開發直接用 `main`）、
+> `prod-public-passwd`（無存活部署以其為重建源；姿態可由 main 範本＋部署 `.env` 重現）、
+> `anila-redesign` 與歷史 docs 殘枝（全數已完整合併，零內容損失）。
 
-**程式碼已收斂成單一版本。** 六條 downstream 分支中，**五條與 `main` 的差異只有 `.env.example` 一個檔案**：
+**程式碼已收斂成單一版本。** 三條 downstream 分支中，**兩條與 `main` 的差異只有 `.env.example` 一個檔案**：
 
 | Branch | 與 `main` 的非文件差異 |
 |---|---|
-| `dev-public` | 只有 `.env.example` |
-| `prod-public-passwd` | 只有 `.env.example` |
-| `dev-military` | 只有 `.env.example` |
 | `prod-military-passwd` | 只有 `.env.example` |
 | `prod-intranet-card` | 只有 `.env.example` |
 | `trial-military` | `.env.example` ＋ 8 個開發者視圖刪減檔（唯一刪減型分支） |
@@ -82,27 +82,22 @@ git diff --name-only origin/main origin/<branch> -- . ':(exclude)docs/**' ':(exc
 
 | Branch | 定位 | 維護重點 |
 |---|---|---|
-| `main` | 開發 SSOT | 所有通用變更來源。card/SSO 程式碼在此，由旗標切換。 |
-| `dev-public` | 對外網 dev | 程式碼＝`main`；`.env.example` 放寬 dev secret 與 http endpoint。 |
-| `prod-public-passwd` | 對外網 prod，純帳密 | 程式碼＝`main`。見 §3.3 未落實的交付要求。 |
-| `dev-military` | 國軍 dev，純帳密 | 程式碼＝`main`。見 §3.3。 |
+| `main` | 開發 SSOT（**dev 直接在此**） | 所有通用變更來源。card/SSO 程式碼在此，由旗標切換。本機 dev stack 直接從 `main` 建。 |
 | `prod-military-passwd` | 國軍 prod，純帳密 | 程式碼＝`main`。見 §3.3。 |
-| `prod-intranet-card` | 中科院內網 prod，SSO + 自然人憑證卡 | 程式碼＝`main`；只有 `.env.example` 四個旗標不同（`ANILA_ALLOW_DEV_SECRET=0`、`ANILA_ALLOW_HTTP_ENDPOINT=0`、`ENABLE_CARD_LOGIN=true`、`REQUIRE_CARD_LOGIN_ONLY=true`）。 |
-| `trial-military` | 國軍 trial / 展示精簡版 | **唯一真正的刪減型分支。** 刪除 `DeveloperAgentsView.vue`、`DeveloperGuideView.vue`、`OutputsPage.tsx`、`MindmapTree.tsx`、`infra/deployment/scripts/anila-ops.sh`。前端改動會撞 modify/delete，只挑選式 port。 |
-| `anila-redesign` | 舊重構分支（與 `main` 差 99 檔） | 權威文件在 `docs/anila-redesign-docs/`。`main` 早已採用 `services/`/`apps/`/`packages/`/`infra/` 配置，此分支不再是配置來源。 |
-| `feature/backend-adapter` | 舊 feature 分支 | 不當新工作來源。 |
+| `prod-intranet-card` | 中科院內網 prod，SSO + 自然人憑證卡 | 程式碼＝`main`；`.env.example` 姿態差異（`ANILA_ENV=production`、`ANILA_ALLOW_DEV_SECRET=0`、`ANILA_ALLOW_HTTP_ENDPOINT=0`、`ENABLE_CARD_LOGIN=true`、`REQUIRE_CARD_LOGIN_ONLY=true`、`CARD_CRL_REQUIRED=true`、`ENABLE_PUBLIC_SHARE=false`、`ENABLE_MEMORY=false`；`ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` 供 MLSteam）。 |
+| `trial-military` | 國軍 trial / 展示精簡版 | **唯一真正的刪減型分支。** 刪減範圍＝8 個開發者視圖檔（`DeveloperAgentsView.vue`、`DeveloperGuideView.vue` 及其 router/sidebar/header/dashboard 接線）。⚠ 舊敘述「另刪 mindmap／OutputsPage／anila-ops.sh」已作廢——07-23 收斂確認那是功能時間差，該三者已回歸本分支。前端改動會撞 modify/delete，只挑選式 port。 |
+| `feature/backend-adapter` | 進行中 feature 分支（落後 main 242） | 繼續開發前先 merge `main`。 |
 
-（`feature/document-relations` 已不存在於 remote，舊表列它是過時資訊。）
+（2026-07-24 裁撤：`dev-public`、`dev-military`、`prod-public-passwd`、`anila-redesign`、`docs/gate1-handoff`——皆已完整合併或零語意。外網帳密部署如需重啟，概念上以 `main`＋部署 `.env` 姿態即可，毋須分支；⚠ 但 `deploy-prod.sh` 的 `check_branch()` 目前仍只接受 `prod-intranet-card`／`prod-military-passwd`／`trial-military`（及已裁撤的 `prod-public-passwd`）——實際重啟前必須先修訂該檢查以接受新模型，屬部署腳本的獨立決策，勿順手弱化 branch/profile 綁定。）
 
 ### 3.3 尚未落實的交付要求 ⚠
 
 舊版本表格宣稱某些分支「已移除」code-server / n8n / GitLab。**實測：七條分支的 `infra/compose/platform.yml` 全部都含這三個服務，且 `codeserver` 沒有 `profiles:`（預設隨 stack 啟動）。**
 
-| 分支 | 交付要求 | 實測（2026-07-10） |
+| 分支 | 交付要求 | 實測（2026-07-10；07-24 註記） |
 |---|---|---|
-| `prod-public-passwd` | code-server 應移除 | **仍在**（n8n / GitLab 亦在） |
-| `dev-military` | code-server / n8n / GitLab 應移除 | **三者皆仍在** |
 | `prod-military-passwd` | n8n / GitLab 應移除；code-server 由交付規格決定 | **皆仍在** |
+| （已裁撤的 `prod-public-passwd`／`dev-military` 原有相同要求；若以 `main`＋`.env` 重啟該類部署，交付前同樣必須落實服務移除。） | | |
 
 **安全影響（CRITICAL）**：`codeserver` 以 read-write 掛載 repo root，遮蔽清單只有 `.env` 與 `infra/nginx/certs/server.key` 兩條，而 `anila-ops.sh` 的備份預設落在同一目錄（含 `pg_dump -U csp` 的 superuser 全庫 dump、`.env` 副本、`secrets/*.pem`），nginx `/codeserver` 無 SSO。詳見 `docs/planning/anila-development-roadmap.md` §3.1 C1 與 Gate 0 S1。
 
@@ -118,18 +113,15 @@ git diff --name-only origin/main origin/<branch> -- . ':(exclude)docs/**' ':(exc
   - `git log --oneline --no-merges origin/main..origin/<branch>`
   - `git cherry -v origin/main origin/<branch>`
 - commit 標籤維持既有規則：`[card-only]`, `[public-only]`, `[military-only]`, `[dev-only]`, `[security-all]`。
-- **2026-07-22 重收斂後，五條非 trial downstream 的唯一非文件 tip delta 是 `.env.example`**；這是現況快照，不是永久不變式。port 時不要用 `main` 的版本覆蓋掉分支的旗標姿態；反向同樣成立——姿態更新必**語意重推導**（以 main 現行 `.env.example` 為基底、只覆寫分支蓄意值），禁直接 apply 舊 diff（07-22 廢棄的 sync 分支曾因此丟失 card 的 `ENABLE_PUBLIC_SHARE=false`/`ENABLE_MEMORY=false`）。§3.3 的服務移除落實後，compose/nginx 也會成為正式 delta。
+- **2026-07-24 精簡後，兩條非 trial downstream 的唯一非文件 tip delta 是 `.env.example`**；這是現況快照，不是永久不變式。port 時不要用 `main` 的版本覆蓋掉分支的旗標姿態；反向同樣成立——姿態更新必**語意重推導**（以 main 現行 `.env.example` 為基底、只覆寫分支蓄意值），禁直接 apply 舊 diff（07-22 廢棄的 sync 分支曾因此丟失 card 的 `ENABLE_PUBLIC_SHARE=false`/`ENABLE_MEMORY=false`）。§3.3 的服務移除落實後，compose/nginx 也會成為正式 delta。
 - `trial-military` 是刪減型分支，前端改動會撞 modify/delete，需挑選式 port。
 
 ### 3.5 建議同步順序
 
 1. `main` 先完成通用修補與驗證。
-2. `dev-public`。
-3. `prod-public-passwd`。
-4. `dev-military`。
-5. `prod-military-passwd`。
-6. `prod-intranet-card`。
-7. `trial-military` 挑選式 port，只帶安全與核心 bugfix。
+2. `prod-military-passwd`。
+3. `prod-intranet-card`。
+4. `trial-military` 挑選式 port，只帶安全與核心 bugfix。
 
 （2–6 目前程式碼相同，實務上多為確認 `.env.example` 未被覆蓋。若 §3.3 的服務移除要求落實，這些分支才會重新出現真實的 compose delta。）
 
@@ -242,8 +234,8 @@ Image generation：
 
 ## 8. 已知雷區 / 待確認事項
 
-- `prod-public-passwd` 已移除 code-server，但 `n8n` / `gitlab` 仍在 compose 與 nginx 對外。外網部署若不需要，必須移除 service、nginx location 與 `AUTO_REGISTER_LINKS`。
-- `infra/deployment/scripts/phase1-e2e.sh` 仍測 `/codeserver/`，對目前 `prod-public-passwd` 是過時殘留，不可當 prod 驗證依據。
+- （`prod-public-passwd` 分支已於 2026-07-24 裁撤。）外網帳密部署若以 `main`＋`.env` 重啟：`n8n` / `gitlab` 仍在 compose 與 nginx 對外，不需要就必須移除 service、nginx location 與 `AUTO_REGISTER_LINKS`。
+- `infra/deployment/scripts/phase1-e2e.sh` 仍測 `/codeserver/`，屬過時殘留，不可當 prod 驗證依據。
 - `apps/anila-shell` 的 `BASE_PATH` / nginx `/anila/` routing 曾被 README 提到，但 root/dev compose 主要只傳 CSP/Router build args。重建 UI 前先確認資產路徑。
 - `services/flux2-dev-agent` volume 目前偏向 `share-dev/uploads/flux`，但 prod deploy 腳本檢查 `share/uploads/flux`。prod 啟用 image-generator 前確認落地路徑與 nginx `/uploads/flux` 一致。
 - Router state 預設 `/var/lib/anila-router`；若使用 state-file/bootstrap token，要確認容器 user、volume 與權限，避免寫檔失敗。
