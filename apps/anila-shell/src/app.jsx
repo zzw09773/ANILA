@@ -899,8 +899,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   async function generateConversationTitle(convId, userText, assistantText, effectiveTarget) {
     if (typeof convId !== "number") return;
     if (!isAuthenticated) return;
-    const baseUrl =
-      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    // R3 formal authority:Router 聊天一律經 CSP 代理(X-ANILA-Router-Context
+    // token 由 CSP 鑄造),瀏覽器直打 /router/ 會被 formal path 以 401 拒絕。
+    // /v1/sessions/* 的 resume 流維持直連 router(cookie 認證,非 formal chat)。
+    const baseUrl = config.cspBaseUrl;
     const systemPrompt =
       "你是對話標題產生器。閱讀以下 Q&A，回覆一個不超過 15 個繁體中文字的標題，" +
       "只能輸出標題本身，不要加引號、冒號、標點或其他說明。";
@@ -956,8 +958,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     if (idx < 0) return;
 
     const effectiveTarget = selectedAgentId;
-    const baseUrl =
-      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    // R3 formal authority:Router 聊天一律經 CSP 代理(X-ANILA-Router-Context
+    // token 由 CSP 鑄造),瀏覽器直打 /router/ 會被 formal path 以 401 拒絕。
+    // /v1/sessions/* 的 resume 流維持直連 router(cookie 認證,非 formal chat)。
+    const baseUrl = config.cspBaseUrl;
 
     // Local: truncate after the edited user message and rewrite its text;
     // create a fresh assistant placeholder so the stream fills in below.
@@ -1236,8 +1240,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       [convId]: [...(prev[convId] || []), userMsg, assistantMsg],
     }));
 
-    const baseUrl =
-      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    // R3 formal authority:Router 聊天一律經 CSP 代理(X-ANILA-Router-Context
+    // token 由 CSP 鑄造),瀏覽器直打 /router/ 會被 formal path 以 401 拒絕。
+    // /v1/sessions/* 的 resume 流維持直連 router(cookie 認證,非 formal chat)。
+    const baseUrl = config.cspBaseUrl;
     const payload = {
       model: effectiveTarget,
       messages: buildMessageHistory(priorForHistory, text, attachments),
@@ -1393,7 +1399,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     if (idx < 0) return;
     const existing = assistantMsg.text || "";
     const effectiveTarget = assistantMsg.routedAgentId || selectedAgentId;
-    const baseUrl = effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    // R3 formal authority:同上,Router 聊天經 CSP 代理。
+    const baseUrl = config.cspBaseUrl;
     // history 含截斷的這則 assistant + 一句續寫指示。buildMessageHistory 會把
     // 截斷訊息(已非 streaming)當 assistant role 帶上。
     const payload = {
@@ -1465,8 +1472,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const tailMsgs = msgs.slice(idx + 1);
 
     const effectiveTarget = assistantMsg.routedAgentId || selectedAgentId;
-    const baseUrl =
-      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    // R3 formal authority:Router 聊天一律經 CSP 代理(X-ANILA-Router-Context
+    // token 由 CSP 鑄造),瀏覽器直打 /router/ 會被 formal path 以 401 拒絕。
+    // /v1/sessions/* 的 resume 流維持直連 router(cookie 認證,非 formal chat)。
+    const baseUrl = config.cspBaseUrl;
     const steeredUserText = steer
       ? `${prevUser.text}\n\n（重新回答時請依此調整：${steer}）`
       : prevUser.text;
