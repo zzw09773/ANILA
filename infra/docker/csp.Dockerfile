@@ -63,6 +63,15 @@ assert actual == expected, f'internal package origin mismatch: {actual}'"
 COPY services/csp/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Optional debug tooling (2026-07-24 freeze: process alive but stopped accepting
+# connections; runtime pip could not install py-spy, so no stack dump).
+# Default 0/false keeps prod images free of debug tools; set to 1/true for
+# py-spy so a frozen event loop can be dumped immediately next time.
+ARG INSTALL_DEBUG_TOOLS=0
+RUN if [ "$INSTALL_DEBUG_TOOLS" = "1" ] || [ "$INSTALL_DEBUG_TOOLS" = "true" ]; then \
+      pip install --no-cache-dir py-spy; \
+    fi
+
 # Copy backend code (includes scripts/: generate-jwt-keypair.py + init_db.py
 # land in /app/scripts — no separate scripts COPY needed since §17.1 folded
 # myCSPPlatform/scripts/ into services/csp/scripts/)
