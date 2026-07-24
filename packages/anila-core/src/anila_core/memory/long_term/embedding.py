@@ -32,17 +32,28 @@ DEFAULT_EMBED_MODEL = "nvidia/NV-embed-V2"
 def truncate_embedding(vec: Sequence[float]) -> list[float]:
     """Normalise an embedding vector to the storage column width.
 
-    Accepts either the native 4096-d output (truncates) or an
-    already-4000-d vector (passthrough). Anything else raises so a
-    misconfigured embedder fails loudly at write time rather than
-    populating the column with garbage that can't be ANN-searched.
+    - ``EMBED_DIM`` (4000-d): passthrough.
+    - ``EMBED_NATIVE_DIM`` (4096-d): truncate the Matryoshka tail
+      (legacy NV-embed-V2 path).
+    - shorter than ``EMBED_DIM``: zero-pad up to the column width.
+      Padding zeros contribute nothing to dot products or norms, so
+      cosine similarity between same-model vectors is preserved
+      exactly; smaller-dim models (e.g. 2048-d nemotron-3-embed-1b)
+      adapt to the fixed ``halfvec(4000)`` column without migrations.
+      Cross-model mixing inside one collection remains forbidden and
+      is guarded by the collection embedding fingerprint, not here.
+    - any other overlong vector still raises: blind truncation of a
+      non-Matryoshka model would silently corrupt retrieval.
     """
     n = len(vec)
     if n == EMBED_DIM:
         return list(vec)
     if n == EMBED_NATIVE_DIM:
         return list(vec[:EMBED_DIM])
+    if 0 < n < EMBED_DIM:
+        return list(vec) + [0.0] * (EMBED_DIM - n)
     raise ValueError(
         f"anila_core.memory.user: embedding dim {n} not in "
-        f"{{{EMBED_DIM}, {EMBED_NATIVE_DIM}}}"
+        f"{{{EMBED_DIM}, {EMBED_NATIVE_DIM}}} and not paddable "
+        f"(1..{EMBED_DIM - 1})"
     )

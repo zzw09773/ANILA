@@ -135,12 +135,28 @@ def test_truncate_embedding_drops_tail_from_native():
     assert out[-1] == EMBED_DIM - 1  # tail dropped, head intact
 
 
-def test_truncate_embedding_raises_on_unexpected_dim():
-    """Loud failure beats silent corruption. A misconfigured
-    embedder would otherwise write garbage that can't be searched.
+def test_truncate_embedding_zero_pads_smaller_dims():
+    """Smaller-dim models adapt via zero-padding: cosine-lossless
+    because padded zeros add nothing to dot products or norms.
     """
-    with pytest.raises(ValueError, match="dim 768"):
-        truncate_embedding([0.1] * 768)
+    vec = [0.5] * 2048
+    out = truncate_embedding(vec)
+    assert len(out) == EMBED_DIM
+    assert out[:2048] == vec  # head intact
+    assert set(out[2048:]) == {0.0}  # tail is all zeros
+
+
+def test_truncate_embedding_raises_on_overlong_non_native_dim():
+    """Loud failure beats silent corruption: blind truncation of a
+    non-Matryoshka model would corrupt retrieval semantics.
+    """
+    with pytest.raises(ValueError, match="dim 5000"):
+        truncate_embedding([0.1] * 5000)
+
+
+def test_truncate_embedding_raises_on_empty_vector():
+    with pytest.raises(ValueError, match="dim 0"):
+        truncate_embedding([])
 
 
 # ── MemoryReadResult.encryption_inherited ────────────────────────────────────

@@ -293,8 +293,8 @@ async def embed_query(
     except ValueError as exc:
         raise RetrievalFailure(
             "embedding_dimension_mismatch",
-            f"檢索模型回傳 {len(raw_vector)} 維；僅接受 {EMBED_DIM} 或 "
-            f"{EMBED_NATIVE_DIM} 維",
+            f"檢索模型回傳 {len(raw_vector)} 維；僅接受 ≤{EMBED_DIM}"
+            f"（不足自動補零）或 {EMBED_NATIVE_DIM} 維",
         ) from exc
     return [float(value) for value in normalized]
 

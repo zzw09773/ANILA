@@ -197,8 +197,8 @@ class Embedder:
                     severity="error",
                     user_message=(
                         f"Embedding {i} is {len(v)}-d; the shared contract accepts "
-                        f"only {EMBED_DIM}-d storage vectors or {EMBED_NATIVE_DIM}-d "
-                        "native vectors."
+                        f"{EMBED_DIM}-d storage vectors, {EMBED_NATIVE_DIM}-d native "
+                        f"vectors, or shorter vectors (zero-padded to {EMBED_DIM})."
                     ),
                     details={
                         "got": len(v),
