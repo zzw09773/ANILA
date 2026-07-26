@@ -390,6 +390,30 @@ jobs:
       # 冪等」與「schema 落後的庫拒啟動」—— 兩件事都只有真 PG 測得出來,SQLite +
       # create_all 的迴路結構上看不見。這個 job 已經有 PG service 與 admin DSN,
       # 所以只是多一步,不需要另起服務。
+      # 本輪新增的三支真 PG 不變式測試。它們在 `gate1-test-baseline.json` 的
+      # `allowed_skips` 裡登記為「無 DSN 時 skip」,而那份 baseline 的 gate 會**要求
+      # 對應的指令真的被某個 job 執行** —— 「登記為 skip」不能變成「永遠不跑」的藉口。
+      # 所以這一步存在的理由不只是跑測試,也是讓那個登記成立。
+      - name: 本輪新增的真 PG 不變式
+        env:
+          PYTHONPATH: services/csp
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+        working-directory: services/csp
+        run: |
+          set -euo pipefail
+          for f in \
+            tests/test_for_update_staleness_pg.py \
+            tests/test_w210_governance_timestamptz_pg.py \
+            tests/test_audit_logs_detail_trgm_pg.py ; do
+            echo "── $f"
+            out=$(python -m pytest "$f" -q 2>&1) || { echo "$out"; exit 1; }
+            echo "$out" | tail -1
+            if echo "$out" | grep -qE "^[0-9]+ skipped"; then
+              echo "::error::$f 全被 skip —— DSN 沒生效,等於沒驗"
+              exit 1
+            fi
+          done
+
       # W3-12a:三張稽核帳的 append-only。改動前那是**註解** —— `0014:129` 是
       # `GRANT ALL ON ALL TABLES ... TO csp_app` 且三表零 trigger,所以 runtime
       # role 可以靜默改掉或刪掉任何一列稽核紀錄。而 W1-1 剛讓「讀取營業秘密對話」
