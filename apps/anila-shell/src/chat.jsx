@@ -73,8 +73,8 @@ import {
   FollowUpSuggestions,
   RedactionHint,
   RenderRedactedText,
-  renderTextWithCitations,
 } from "./trust.jsx";
+import { MessageErrorNotice } from "./messageError.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
 import { ShellNav } from "./shellNav.jsx";
@@ -242,7 +242,16 @@ export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, sta
 };
 
 // ---- Message Bubble ----
-export const MessageBubble = ({
+//
+// W2-9:`React.memo`(預設淺比較,不寫自訂比較函式 —— 自訂比較函式漏一個 prop
+// 就是靜默的 stale UI)。缺陷本體是串流每收到一個 token 就把整條訊息清單重繪
+// 一次:實測 40 則對話、30 個 token = **1200 次** MessageBubble render,每次都
+// 重跑完整 markdown pipeline。memo 化之後同樣情境是 30 次。
+//
+// 前提是呼叫端傳的 prop 引用要穩:`app.jsx` 的 9 個 handler 走
+// `runtime/useStableCallback.js`,`messageActions` 走 `useMemo`,串流累積用
+// `.map()` 只換命中那一則的 identity。少任何一項這個 memo 就完全白做。
+const MessageBubbleImpl = ({
   msg,
   agents,
   conversationId,
@@ -257,6 +266,8 @@ export const MessageBubble = ({
   messageActions = [],
   onAction,
   onContinue,
+  // W2-4 ④:串流中斷後重送同一則 user 訊息。未傳 = 唯讀情境(compare 視圖)。
+  onRetry,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -524,15 +535,14 @@ export const MessageBubble = ({
                 color: "var(--fg)",
               }}
             >
-              {msg.citations && msg.citations.length > 0 ? (
-                // Plain-text + citation links need pre-wrap so the author's
-                // newlines survive; markdown renders block elements itself.
-                <div style={{ whiteSpace: "pre-wrap" }}>
-                  {renderTextWithCitations(displayBody, msg.citations, onOpenCitation)}
-                </div>
-              ) : (
-                <MarkdownView text={displayBody} />
-              )}
+              {/* W2-5:不再二選一。引用標記由 `rehypeCitations` 在 markdown
+                  pipeline 的最後一道換成引用元件,所以 RAG 回答同時拿到表格 /
+                  代碼 / KaTeX / Mermaid **與**可點的來源徽記。 */}
+              <MarkdownView
+                text={displayBody}
+                citations={msg.citations}
+                onOpenCitation={onOpenCitation}
+              />
               {msg.streaming && msg.text && (
                 <span style={{
                   display: "inline-block", width: 7, height: 15,
@@ -541,6 +551,11 @@ export const MessageBubble = ({
                 }}/>
               )}
             </div>
+            {/* W2-4 ②:失敗不覆蓋上面那段累積文字,錯誤走獨立橫幅 + 重試。 */}
+            <MessageErrorNotice
+              error={msg.error}
+              onRetry={typeof onRetry === "function" ? () => onRetry(msg) : null}
+            />
             {!msg.streaming && msg.confidence != null && (
               <div style={{ marginTop: 6 }}>
                 <ConfidenceChip confidence={msg.confidence} />
@@ -836,6 +851,9 @@ export const MessageBubble = ({
     </div>
   );
 };
+
+MessageBubbleImpl.displayName = "MessageBubble";
+export const MessageBubble = React.memo(MessageBubbleImpl);
 
 // ---- Agent selector dropdown ----
 export const AgentSelector = ({ agents, value, onChange }) => {

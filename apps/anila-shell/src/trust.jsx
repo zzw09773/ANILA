@@ -27,6 +27,12 @@ export const CitationInline = ({ n, citation, onOpen }) => (
 );
 
 // Render assistant text, replacing [N] markers with CitationInline
+//
+// ⚠ **已停用於訊息渲染(W2-5)。** 這個純文字切割不認得語法邊界:它會把 code
+// block 裡的 `data[1]` 也換成一顆可點的按鈕(有測試釘住),而且用它就等於繞過
+// 整條 markdown pipeline —— RAG 回答因此拿不到表格 / 代碼 / KaTeX / Mermaid。
+// 訊息渲染現在一律走 `MarkdownView` + `runtime/rehypeCitations.js`。
+// 這裡保留匯出只為不打斷其他呼叫端;新程式碼不要用它。
 export const renderTextWithCitations = (text, citations, onOpen) => {
   if (!text) return null;
   if (!citations || citations.length === 0) return text;
