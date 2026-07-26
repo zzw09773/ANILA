@@ -297,7 +297,7 @@ import TermField from '../components/cli/TermField.vue'
 import TermKbd from '../components/cli/TermKbd.vue'
 import TermModal from '../components/cli/TermModal.vue'
 
-const router = useRouter()
+const _router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const { theme, toggleTheme } = useTheme()

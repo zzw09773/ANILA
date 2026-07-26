@@ -208,7 +208,7 @@ async function refresh() {
     summary.value = usageStore.summary
     chartData.value = usageStore.chartData
     refreshedAt.value = new Date()
-  } catch (e) {
+  } catch (_e) {
     // Errors surface via the alert center; keep dashboard quiet on failure.
   } finally {
     loading.value = false

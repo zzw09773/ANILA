@@ -418,7 +418,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const dismissBanner = useCallback((id) => {
     setDismissedBanners((prev) => {
       const next = new Set(prev); next.add(id);
-      try { localStorage.setItem("anila-dismissed-banners", JSON.stringify([...next])); } catch {}
+      try { localStorage.setItem("anila-dismissed-banners", JSON.stringify([...next])); } catch { /* localStorage 不可用(Safari 私密瀏覽 / 配額滿):資料夾分類降級為僅本次工作階段有效,不影響主流程 */ }
       return next;
     });
   }, []);
@@ -2127,7 +2127,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             <IconSpark />
           </IconButton>
           <span style={{ position: "relative", display: "inline-flex" }}>
-            <IconButton title="新功能" onClick={() => { setChangelogOpen(true); try { localStorage.setItem("anila-changelog-seen", CHANGELOG_VERSION); } catch {} setChangelogUnseen(false); }}>
+            <IconButton title="新功能" onClick={() => { setChangelogOpen(true); try { localStorage.setItem("anila-changelog-seen", CHANGELOG_VERSION); } catch { /* localStorage 不可用:changelog 會在下次載入時再顯示一次,可接受 */ } setChangelogUnseen(false); }}>
               <IconGift />
             </IconButton>
             {changelogUnseen && (

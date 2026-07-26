@@ -113,7 +113,7 @@ import {
 } from '../api/trustedHosts'
 import { useAuthStore } from '../stores/auth'
 import {
-  TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal,
+  TermBox, TermButton, TermField, TermEmpty, TermModal,
 } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 

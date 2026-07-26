@@ -42,7 +42,7 @@ export function streamJob(jobId, onUpdate, onError) {
       if (onError) onError(err instanceof Error ? err : new Error(String(err)))
     }
   }
-  es.onerror = (e) => {
+  es.onerror = (_e) => {
     // EventSource auto-reconnects on transient drops; we only
     // forward a hard failure (readyState === CLOSED) to the caller.
     if (es.readyState === EventSource.CLOSED && onError) {

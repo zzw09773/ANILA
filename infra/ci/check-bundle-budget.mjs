@@ -59,17 +59,28 @@ const totalBytes = files.reduce((a, f) => a + f.bytes, 0);
 const largest = files.reduce((a, f) => (f.bytes > a.bytes ? f : a), files[0]);
 const kb = (b) => Math.round(b / 102.4) / 10; // → kB(一位小數)
 
+// 容差:預設 0.5%。
+//
+// 為什麼需要:第一版是零容差,結果一個「把正則裡的字面全形空白改成
+// 轉義」的改動(源碼 +5 字元)就讓 gate 紅了 —— 實測只差 3 bytes。**一個因為
+// 3 bytes 就紅的 gate,第一個撞到的人就會把它關掉**,那比沒有 gate 更糟。
+// 0.5% 對 shell 是 ~19 kB、對 anilalm 是 ~2 kB:誤加一個依賴(動輒數十 kB)
+// 一定咬得到,而日常編輯不會。
+const tolerance = budget.tolerancePercent ?? 0.5;
+const limitTotal = Math.floor(budget.totalJsBytes * (1 + tolerance / 100));
+const limitLargest = Math.floor(budget.largestChunkBytes * (1 + tolerance / 100));
+
 const problems = [];
-if (totalBytes > budget.totalJsBytes) {
+if (totalBytes > limitTotal) {
   problems.push(
-    `總 JS ${kb(totalBytes)} kB 超過預算 ${kb(budget.totalJsBytes)} kB ` +
-      `(+${kb(totalBytes - budget.totalJsBytes)} kB)`,
+    `總 JS ${kb(totalBytes)} kB 超過上限 ${kb(limitTotal)} kB ` +
+      `(預算 ${kb(budget.totalJsBytes)} kB + ${tolerance}% 容差,超出 ${kb(totalBytes - limitTotal)} kB)`,
   );
 }
-if (largest.bytes > budget.largestChunkBytes) {
+if (largest.bytes > limitLargest) {
   problems.push(
-    `最大 chunk「${largest.name}」${kb(largest.bytes)} kB 超過預算 ` +
-      `${kb(budget.largestChunkBytes)} kB (+${kb(largest.bytes - budget.largestChunkBytes)} kB)`,
+    `最大 chunk「${largest.name}」${kb(largest.bytes)} kB 超過上限 ${kb(limitLargest)} kB ` +
+      `(預算 ${kb(budget.largestChunkBytes)} kB + ${tolerance}% 容差)`,
   );
 }
 

@@ -19,7 +19,7 @@ export const TweaksPanel = ({ open, onClose, tweaks, setTweaks }) => {
     setTweaks(next);
     try {
       window.parent?.postMessage({ type: "__edit_mode_set_keys", edits: patch }, "*");
-    } catch {}
+    } catch { /* localStorage 不可用:tweaks 不持久化(W3-10 會把它改走 ui_settings) */ }
   };
 
   const Row = ({ label, children }) => (

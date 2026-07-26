@@ -4,8 +4,6 @@ import { Modal } from '../components/Modal'
 import { Icon } from '../components/Icon'
 import { MarkdownPreview } from '../components/MarkdownPreview'
 import type {
-  DatatableArtifact,
-  InfographicArtifact,
   ReportArtifact,
   SlidesArtifact,
   StudioArtifact,

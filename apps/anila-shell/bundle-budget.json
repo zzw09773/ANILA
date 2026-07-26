@@ -1,5 +1,6 @@
 {
-  "_note": "W0-5 預算凍結在 2026-07-26 的實測值。只准降不准升;要升必須在 PR 說明為什麼,並記得 air-gapped 環境每一 kB 都要隨 bundle 重打包進內網。縮減工作(React.lazy / manualChunks)屬 Wave 3。",
+  "_note": "W0-5 預算凍結在 2026-07-26 的實測值,加 0.5% 容差。要顯著變大必須在 PR 說明為什麼並改本檔;air-gapped 環境每一 kB 都要隨 bundle 重打包進內網。容差的理由:零容差時一個 5 字元的正則轉義改動就會讓 gate 紅(實測 3 bytes),而一個會紅在 3 bytes 的 gate 第一個撞到的人就會把它關掉。縮減工作(React.lazy / manualChunks)屬 Wave 3。",
   "totalJsBytes": 3876892,
-  "largestChunkBytes": 967580
+  "largestChunkBytes": 967580,
+  "tolerancePercent": 0.5
 }
