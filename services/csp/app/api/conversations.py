@@ -269,21 +269,38 @@ def search_conversations(
     content doesn't leak into the sidebar.
     """
     like = f"%{q}%"
-    # Conversations of this user whose title matches, OR which contain a
-    # matching message. distinct on conversation id, newest first.
-    matched_ids = (
-        db.query(Conversation.id)
-        .outerjoin(Message, Message.conversation_id == Conversation.id)
-        .filter(Conversation.user_id == current_user.id)
-        .filter((Conversation.title.ilike(like)) | (Message.content.ilike(like)))
-        .distinct()
-        .limit(limit)
-        .subquery()
+    # 標題命中,或含有命中訊息的對話 —— 最近的優先。
+    #
+    # ⚠ 先前的寫法有一個確定的缺陷:subquery 是 `.distinct().limit(limit)` 而
+    # **沒有 order_by**,排序只發生在外層、對「已經被截斷的子集」做。SQL 語意上
+    # LIMIT 沒有 ORDER BY 時回哪幾列是未定義的(PostgreSQL 通常給 scan 順序,
+    # 約等於偏舊)。
+    #
+    # 使用者面的後果:用高頻詞(「報告」「特休」「簽核」)搜三個月前的對話,
+    # 結果宣稱只有 30 筆而且很可能不含目標 → 使用者的結論是「找不到」,但資料
+    # 就在庫裡。這是「三個月後想找回一則對話」最典型的失敗,而且是**靜默**的
+    # (沒有錯誤、沒有「還有更多」的提示)。
+    #
+    # 修法刻意不是「把 order_by 加進原本的 subquery」—— 那在 PostgreSQL 會直接
+    # 報錯:`SELECT DISTINCT` 的 ORDER BY 運算式必須出現在 select list 裡,而
+    # select list 只有 id。改用 EXISTS 之後 outerjoin 與 DISTINCT 都不需要了
+    # (join 產生重複 id 才是 DISTINCT 存在的唯一理由),LIMIT 直接作用在
+    # 已排序的結果上,語意一目瞭然,而且 EXISTS 可以在找到第一筆命中訊息時
+    # 就短路,不必展開整個 join。
+    message_hit = (
+        db.query(Message.id)
+        .filter(
+            Message.conversation_id == Conversation.id,
+            Message.content.ilike(like),
+        )
+        .exists()
     )
     convs = (
         db.query(Conversation)
-        .filter(Conversation.id.in_(matched_ids))
+        .filter(Conversation.user_id == current_user.id)
+        .filter(Conversation.title.ilike(like) | message_hit)
         .order_by(Conversation.updated_at.desc())
+        .limit(limit)
         .all()
     )
     hits: list[dict] = []
