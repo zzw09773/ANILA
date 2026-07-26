@@ -68,13 +68,24 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 
 目前**任何部署都不得放機密以上資料**。資料門檻以 roadmap §6.1 為準:Gate 0 只允許無機密受控 pilot;營業秘密的 RAG/chat-only pilot 至少需要 Gate 0+1+2 且由資料/資安權責人書面核准,若啟用 Studio/Artifact/FLUX/export 再加 Gate 3;機密以上 production 必須完成 Gate 0+1+2+3+5 並通過 Gate 6 的 signed acceptance。高危項的數量與完整證據一律以 `docs/planning/anila-development-roadmap.md` §3 為準,不要在本檔複製會漂移的計數。
 
-最嚴重一條(**照 runbook 部署即成立,不是誤配置**):
+> **2026-07-26 改寫(W0-8)**:本節先前列為「最嚴重一條」的 codeserver 阻斷項**已經修好了**,但本檔沒跟上,導致它在排序上壓在 No-Go 首位長達兩週,並成為另一條發現的威脅模型前提。過時的安全主張同時造成**重工**與**錯誤排序**,所以改寫並附驗證指令與快照日期。完整稽核見 `docs/planning/platform-audit-synthesis-2026-07-26.md`;執行計畫見 `platform-remediation-plan-2026-07-26.md`。
 
-- `codeserver` 以 **read-write** 掛 repo root(`platform.yml:506-508`),遮蔽清單只有 `.env` 與 `server.key` 兩條;而 `anila-ops.sh:42` 的 `BACKUP_DIR` 預設 `$REPO_ROOT/backups` 就落在裡面,內容含 `pg_dump -U csp` 的 **superuser 全庫 dump(繞過 RLS)**、`.env` 副本、`secrets/*.pem`。runbook 還要求設每日 02:30 cron 備份。
-- `codeserver` 無 `profiles:`(**預設隨 stack 啟動**),nginx `/codeserver` 兩個 server block 皆無 `auth_request`(唯一認證是共享的 `CODESERVER_PASSWORD`;SSO 是 `platform.yml:489` 未做的 TODO)。
-- **七條分支的 `platform.yml` 全部都含 codeserver / n8n / gitlab**,包括交付規格要求移除的軍用分支(見 `AGENTS.md` §3.3)。
+**已修,不要再排工**(逐條附複驗指令,2026-07-26 快照):
 
-次要但同樣要修:`ENABLE_PUBLIC_SHARE` 預設 `True` 且 compose 未關,而分享封鎖只擋 `classified`(= level ≥ 機密) → **營業秘密對話可建立未登入分享連結**。
+| 舊主張 | 現況 | 怎麼複驗 |
+|---|---|---|
+| `codeserver` 以 RW 掛 repo root、遮蔽清單只兩條 | **已修**:只掛隔離 workspace `../../share/codeserver-sandbox`,`working_dir` 在其內,networks 僅 `codeserver-tools` | `sed -n '807,822p' infra/compose/platform.yml` |
+| `codeserver` 無 `profiles:`,預設隨 stack 啟動 | **已修**:`profiles: ["developer-tools"]` | 同上 |
+| nginx `/codeserver` 無認證 | **已修**:兩個平台 server block 皆 `return 404` | `grep -n 'codeserver|n8n|gitlab' infra/nginx/anila.conf` |
+| `anila-ops.sh` 的 `BACKUP_DIR` 落在 repo 內 | **已修**:`${ANILA_BACKUP_DIR:-$ANILA_STATE_DIR/backups}`,且經 `assert_outside_repo` 強制在 repo 外 | `grep -n 'BACKUP_DIR|assert_outside_repo' infra/deployment/scripts/anila-ops.sh` |
+| 營業秘密對話可建立未登入分享連結 | **分類面已修**:`is_publicly_shareable` fail-closed 到只允許 `無機密` | `sed -n '376,389p' services/csp/app/services/conversation_service.py` |
+
+**仍成立的**:
+
+- **`n8n` 與 `gitlab` 無 `profiles:`** → 仍預設隨 stack 啟動(`platform.yml:842`、`:903`),`AGENTS.md` §3.3「交付規格要求移除」的關切未解。→ 補救計畫 **W1-8**。
+- ⚠ **分享連結的旗標面沒修**:`create_share` **從未讀 `settings.ENABLE_PUBLIC_SHARE`**(`conversation_service.py:427-454`);讀取端有擋(`public_share.py:50-53`)。card 部署姿態是 `ENABLE_PUBLIC_SHARE=false` → 使用者**建得出分享連結、同事一定看到 404**。這與上表「分類面已修」是**兩個不同缺陷**,別混為一談。→ 補救計畫 **W3-7c**。
+
+**No-Go 判定本身不變**(資料門檻仍依 roadmap §6.1)。目前排序最高的阻斷級發現已改為:分類分級的**外流面**(複製/匯出/分享/列印/稽核五個 gate 全掛在 legacy `classified` boolean 上 → 營業秘密等同無機密)與**輸入面**(文件密等純繼承 collection、零 reviewer、任何人都能建無機密知識庫)。前者 = W1-1,後者 = W2-11。
 
 ### 5.2 部署進度
 
