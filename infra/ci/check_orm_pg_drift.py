@@ -49,6 +49,20 @@ migration chain 的驗收。
 
     # 產生/更新 baseline(只准縮不准增,ratchet)
     python infra/ci/check_orm_pg_drift.py --mode policy --write-baseline
+
+Exit code(刻意讓「有發現」與「檢查本身壞了」不同碼)
+---------------------------------------------------
+    0  乾淨
+    3  有發現(drift 條目 / 新增 naive 欄)—— 呼叫端可自行決定 warn 或 fail
+    2  用法錯誤(缺 --dsn、baseline 不存在)
+    1  **檢查本身失敗**(連不上 DB、缺 driver、import 失敗…)
+
+⚠ 為什麼要把 3 和 1 分開:第一版 CI 步驟寫成
+`python check_orm_pg_drift.py … || echo "::warning::drift 存在"`,結果腳本因為
+`ModuleNotFoundError: No module named 'psycopg'` 直接 crash,而那個 `||` 把
+traceback 一起吞掉 —— job 顯示通過,看起來像「有 drift 但已知」,實際上**檢查
+從來沒跑成**。Python 對未捕捉例外也是 exit 1,所以光靠 exit code 0/1 分不出
+「找到問題」和「壞掉」。這就是稽核指的「吞掉錯誤讓紅燈變綠燈」,而我自己踩了。
 """
 
 from __future__ import annotations
@@ -61,6 +75,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CSP_ROOT = REPO_ROOT / "services" / "csp"
 BASELINE_PATH = Path(__file__).resolve().parent / "orm_drift_baseline.json"
+
+# 「找到問題」與「檢查本身壞了」必須是不同的 exit code —— 見模組 docstring。
+EXIT_OK = 0
+EXIT_BROKEN = 1   # 未捕捉例外也是 1,所以 1 一律代表「這支檢查不可信」
+EXIT_USAGE = 2
+EXIT_FINDINGS = 3
 
 
 def _load_metadata():
@@ -110,7 +130,7 @@ def run_policy(write_baseline: bool) -> int:
 
     if not BASELINE_PATH.exists():
         print(f"Missing baseline {BASELINE_PATH}; run with --write-baseline first", file=sys.stderr)
-        return 2
+        return EXIT_USAGE
 
     baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
     allowed = set(baseline.get("naive_datetime_columns", []))
@@ -134,7 +154,7 @@ def run_policy(write_baseline: bool) -> int:
             "新欄位請一律宣告 DateTime(timezone=True)。",
             file=sys.stderr,
         )
-        return 1
+        return EXIT_FINDINGS
     return 0
 
 
@@ -190,7 +210,7 @@ def run_drift(dsn: str) -> int:
         detail = f" ({f['detail']})" if "detail" in f else ""
         print(f"  {f['kind']:16s} {f['target']}{detail}")
 
-    return 1 if findings else 0
+    return EXIT_FINDINGS if findings else EXIT_OK
 
 
 def main() -> int:

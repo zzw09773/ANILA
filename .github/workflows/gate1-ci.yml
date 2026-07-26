@@ -313,15 +313,36 @@ jobs:
         env:
           PYTHONPATH: services/csp
         run: |
+          # ⚠ 不可寫成 `python … || echo "::warning::"`。第一版就是那樣,結果腳本以
+          # `ModuleNotFoundError: No module named 'psycopg'` crash(DSN 誤用了
+          # psycopg3 driver,而本 job 裝的是 psycopg2),而那個 `||` 把 traceback
+          # 一起吞掉 —— job 顯示通過、看起來像「有 drift 但已知」,實際上**檢查
+          # 從來沒跑成**。這正是「吞掉錯誤讓紅燈變綠燈」。
+          #
+          # 所以:腳本用 exit 3 表示「有發現」、exit 1 表示「檢查本身壞了」,
+          # 這裡只把 3 降級成 warning,其餘一律 fail。
+          set +e
           python infra/ci/check_orm_pg_drift.py --mode drift \
-            --dsn "postgresql+psycopg://csp:gate1-admin-db@127.0.0.1:5432/csp" \
-            || echo "::warning::ORM↔PG drift 存在(見上方清單);W2-6 把 startup DDL 折回 alembic 後此步應轉為硬性 fail"
+            --dsn "postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "ORM↔PG schema 無漂移" ;;
+            3) echo "::warning::ORM↔PG drift 存在(見上方清單);W2-6 把 startup DDL 折回 alembic 後此步應轉為硬性 fail" ;;
+            *) echo "::error::drift 檢查本身失敗(exit $rc)—— 這不是「有 drift」,是這支檢查不可信"; exit "$rc" ;;
+          esac
 
-      # 政策段不需要 DB:「所有 DateTime 欄必須宣告 timezone=True」。
-      # 這條不能靠 drift 抓 —— ORM 與 PG 兩邊都是 naive 時 diff 為零,
-      # 病根是「兩邊一起錯」。存量 118 欄進 baseline ratchet,只准降。
       - name: naive DateTime 政策斷言(ratchet)
-        run: python infra/ci/check_orm_pg_drift.py --mode policy
+        run: |
+          set +e
+          python infra/ci/check_orm_pg_drift.py --mode policy
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "naive DateTime 未新增" ;;
+            3) echo "::error::新增了 naive DateTime 欄(見上方清單)"; exit 1 ;;
+            *) echo "::error::政策斷言本身失敗(exit $rc)"; exit "$rc" ;;
+          esac
 
       - name: Prove RLS and mutation sensitivity with app and admin roles
         working-directory: packages/anila-core
