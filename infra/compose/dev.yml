@@ -61,6 +61,14 @@ services:
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       MIGRATION_DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
       EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT_DEV:?EMBEDDING_MODEL_FINGERPRINT_DEV must be sha256:<64 lowercase hex> for deployed dev embedding weights}
+      # 部署的 embedding 模型原生輸出維度。未設 = 嚴格模式,只接受 4000 或
+      # NV-Embed 原生的 4096。跑較小維度的模型(例如 nemotron-3-embed-1b 的
+      # 2048)必須顯式設定,其向量才會被補零到 halfvec(4000)。
+      #
+      # 為什麼不是無條件接受任何短向量:端點若悄悄換成別的模型(例如 1536 維),
+      # 無條件補零會讓語意無意義的向量進索引且無聲摧毀檢索品質,而 collection
+      # 的 embedding_fingerprint 守的是**宣告**的模型身分,抓不到端點漂移。
+      ANILA_EMBED_SOURCE_DIM: ${ANILA_EMBED_SOURCE_DIM_DEV:-}
       SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
       # Dev 寫死 "1"，不經 ${} 展開——避免被 .env 裡的 ANILA_ALLOW_DEV_SECRET=0
       # 鎖死。startup_security 在 dev 模式下只 log warning 不擋。
@@ -250,6 +258,10 @@ services:
       EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT_DEV:?EMBEDDING_MODEL_FINGERPRINT_DEV must be sha256:<64 lowercase hex> for deployed dev embedding weights}
       EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
       EMBEDDING_DIM: "4000"
+      # 與 csp 的 ANILA_EMBED_SOURCE_DIM 同義(worker 側的名字)。未設 = 嚴格。
+      # 注意 EMBEDDING_DIM 是**儲存契約寬度**(必須是 4000),
+      # EMBEDDING_SOURCE_DIM 是**模型原生輸出維度**,兩者不同。
+      EMBEDDING_SOURCE_DIM: ${ANILA_EMBED_SOURCE_DIM_DEV:-}
       PARSE_TIMEOUT_SECONDS: "${INGESTION_PARSE_TIMEOUT_SECONDS_DEV:-120}"
       INDEX_TIMEOUT_SECONDS: "${INGESTION_INDEX_TIMEOUT_SECONDS_DEV:-120}"
       JOB_TIMEOUT_SECONDS: "${INGESTION_JOB_TIMEOUT_SECONDS_DEV:-900}"
