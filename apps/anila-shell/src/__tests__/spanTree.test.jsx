@@ -12,12 +12,17 @@ import {
 
 
 // Force dev mode on so the component renders during tests.
+//
+// W0-6:原本這裡包 `try {} catch {}`。在 Node ≥22 上 `window.localStorage` 是
+// 方法全缺的空物件(Node 內建的實驗性 global 蓋掉 jsdom 那份),於是 setItem
+// 靜默失敗、dev mode 從來沒真的被打開 —— 同檔 13 個「通過」的測試全在空轉,
+// 而 CI 鎖 node 20 所以永遠看不到。現在 vitest.setup.js 提供了行為正確的
+// in-memory storage,**這裡刻意不再吞例外**:環境壞掉就要紅,不准再靜默。
 beforeEach(() => {
-  try {
-    window.localStorage.setItem("anila_dev", "1");
-  } catch {
-    /* ignore */
-  }
+  window.localStorage.setItem("anila_dev", "1");
+  // 斷言寫得進去也讀得回來 —— 若 polyfill 失效,這裡就是第一個爆點,
+  // 而不是讓 13 個測試假裝通過。
+  expect(window.localStorage.getItem("anila_dev")).toBe("1");
 });
 
 

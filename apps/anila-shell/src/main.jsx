@@ -21,6 +21,7 @@ import "@anila/tokens/tokens.css";
 import App from "./app.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";
 import { ConfirmProvider } from "./confirm.jsx";
+import { ErrorBoundary } from "./errorBoundary.jsx";
 
 function BootScreen({ label = "啟動中…" }) {
   return (
@@ -88,14 +89,18 @@ if (!container) {
 // 同 ANILALM App.tsx 的慣例。
 const ROUTER_BASENAME = import.meta.env.BASE_URL.replace(/\/$/, "") || undefined;
 
+// ErrorBoundary 包在最外層(BrowserRouter 之外)—— router 自身初始化失敗也要
+// 有 fallback,而不是白畫面。W0-7。
 ReactDOM.createRoot(container).render(
   <React.StrictMode>
-    <BrowserRouter basename={ROUTER_BASENAME}>
-      <AuthProvider>
-        <ConfirmProvider>
-          <RootRoutes />
-        </ConfirmProvider>
-      </AuthProvider>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter basename={ROUTER_BASENAME}>
+        <AuthProvider>
+          <ConfirmProvider>
+            <RootRoutes />
+          </ConfirmProvider>
+        </AuthProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   </React.StrictMode>,
 );
