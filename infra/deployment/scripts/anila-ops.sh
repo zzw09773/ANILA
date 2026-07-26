@@ -11,7 +11,7 @@
 #
 # SUBCOMMAND:
 #   status                     stack + 模型 stack 一覽 (等同 deploy-prod.sh status)
-#   health                     深度健檢:容器/端點/模型鏈路/TLS 效期/磁碟/備份新鮮度
+#   health                     深度健檢:容器/端點/告警中心/模型鏈路/TLS 效期/磁碟/備份新鮮度
 #   logs <svc> [n]             tail -f 單一 service logs (預設最後 100 行)
 #   backup                     加密、簽章並發佈 production backup bundle
 #                              (不吃任何參數；備份一律是全量,沒有 --full/增量模式)
@@ -308,6 +308,108 @@ health_endpoints() {
     && chk ok "redis PONG" || chk fail "redis ping 失敗"
 }
 
+# ── 告警中心 (W3-3④) ───────────────────────────────────────────────────────
+#
+# 為什麼 health 要讀 alerts API
+# ----------------------------
+# air-gapped 內網沒有 mail relay (有沒有是組織事實,屬決策件),所以 alert 目前
+# **零外送通道**:alert_service 寫進 DB、治理 UI 有一頁,然後就沒有了 —— 沒人開
+# 瀏覽器的時段等於沒人知道。health 是唯一已經有人排 cron 的東西 (backup
+# heartbeat 就是靠它出聲的),所以讓它把未解決的高嚴重度告警算成 FAIL 項。
+#
+# 為什麼走 HTTP API 而不是直接 query DB
+# ------------------------------------
+# 直連 DB 會繞過授權面,而且把這支腳本綁在 schema 上 (alerts 表改欄位就靜默壞
+# 掉)。走正式 API + 真 auth 才是端到端。
+#
+# 密碼怎麼傳
+# ----------
+# **經 stdin**,不經命令列參數、也不經 `docker compose exec -e`:兩者都會讓
+# ADMIN_PASSWORD 出現在 host 的 process list (`ps aux` 誰都看得到)。
+health_alerts() {
+  section "告警中心"
+  local user pass out
+  user="$(get_env_unquoted ADMIN_USERNAME)"; user="${user:-admin}"
+  pass="$(get_env_unquoted ADMIN_PASSWORD)"
+  if [ -z "$pass" ]; then
+    chk warn "ADMIN_PASSWORD 未設 — 跳過告警查詢 (改由治理 UI 首頁的告警卡查看)"
+    return
+  fi
+
+  if ! out="$(printf '%s' "$pass" | docker compose exec -T csp python -c '
+import json, sys, urllib.error, urllib.request
+
+BASE = "http://localhost:8000"
+password = sys.stdin.read()
+username = sys.argv[1]
+
+try:
+    req = urllib.request.Request(
+        BASE + "/api/auth/login",
+        data=json.dumps({"username": username, "password": password}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        token = json.loads(resp.read())["access_token"]
+except urllib.error.HTTPError as exc:
+    print("LOGIN_FAILED %s" % exc.code)
+    raise SystemExit(0)
+except Exception:
+    print("LOGIN_UNREACHABLE")
+    raise SystemExit(0)
+
+try:
+    req = urllib.request.Request(
+        BASE + "/api/alerts/summary",
+        headers={"Authorization": "Bearer " + token},
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        s = json.loads(resp.read())
+except Exception:
+    print("SUMMARY_FAILED")
+    raise SystemExit(0)
+
+print("OK %d %d %d" % (
+    int(s.get("high_count") or 0),
+    int(s.get("open_count") or 0),
+    int(s.get("acknowledged_count") or 0),
+))
+' "$user" 2>/dev/null)"; then
+    chk warn "無法在 csp 容器內查詢告警 API — 先確認 stack 正在跑"
+    return
+  fi
+
+  local kind high open ack
+  kind="$(printf '%s\n' "$out" | awk 'NR==1{print $1}')"
+  high="$(printf '%s\n' "$out" | awk 'NR==1{print $2+0}')"
+  open="$(printf '%s\n' "$out" | awk 'NR==1{print $3+0}')"
+  ack="$(printf '%s\n' "$out" | awk 'NR==1{print $4+0}')"
+  case "$kind" in
+    OK)
+      if [ "$high" -gt 0 ]; then
+        chk fail "$high 個高嚴重度告警未解決 — 到治理 UI /alerts 逐項處理"
+      elif [ "$open" -gt 0 ]; then
+        chk warn "$open 個告警待處理 (無高嚴重度)"
+      else
+        chk ok "無待處理告警 (已確認 $ack 個)"
+      fi
+      ;;
+    LOGIN_FAILED)
+      chk warn "告警 API 登入被拒 — 卡登部署的本機密碼可能已停用,改由治理 UI 首頁的告警卡查看"
+      ;;
+    LOGIN_UNREACHABLE)
+      chk fail "csp 登入端點無法連線 — 告警查不到 (先看上面 csp /ready 與 JWKS 兩項)"
+      ;;
+    SUMMARY_FAILED)
+      chk fail "/api/alerts/summary 查詢失敗 — 登入成功但告警 API 沒回應"
+      ;;
+    *)
+      chk warn "告警查詢回傳無法解析的結果 — 跳過"
+      ;;
+  esac
+}
+
 health_model_gateway() {
   section "模型鏈路 (出向 gateway)"
   local base key ca code auth=()
@@ -413,6 +515,7 @@ cmd_health() {
   log "ANILA 深度健檢"
   health_containers
   health_endpoints
+  health_alerts
   health_model_gateway
   health_certs
   health_disk_backup
