@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.attachment import Attachment
+from app.models.conversation import Conversation
+from app.models.message import Message
 from app.models.user import User
 from app.services.auth_service import is_admin_tier
 
@@ -54,6 +56,68 @@ def _storage_root() -> Path:
     return root
 
 
+def _assert_binding_ownership(
+    db: Session,
+    user: User,
+    conversation_id: Optional[int],
+    message_id: Optional[int],
+) -> None:
+    """確認要綁定的 conversation / message 都屬於 `user`,否則 403。
+
+    W3-12f。缺這一段的話,`conversation_id` / `message_id` 是**從 form 直接收下
+    的攻擊者可控值**,寫進 `Attachment` 列不經任何檢查 → A 可以把附件綁到 B 的
+    對話上。下載端有擋(`get_attachment` 比對 `uploaded_by`),所以 bytes 不洩漏
+    —— 這個缺口的方向是**寫入**:
+
+    - B 的對話從此多出一列 `attachments`,而 `filename` 是 A 控制的字串 → 前端
+      附件 chip(W3-12d)會把它渲染在 B 的對話裡,是跨使用者內容注入。
+    - 若 B 的對話是機密等級,這是一筆未經稽核、未經分級判定的寫入,直接落進
+      受管容器 —— 而附件本身還在分類/retention 體系外(W3-12e)。
+
+    三件事都要驗,少一件就能繞過:
+    1. `conversation_id` 屬於自己;
+    2. `message_id` 所屬的 conversation 屬於自己(**只給 message_id 是第二個
+       入口,而且更隱蔽**);
+    3. 兩者同時給時要**一致** —— 否則用自己的 `conversation_id` 配別人的
+       `message_id` 就繞過了前兩項。
+
+    找不到的 id 一律回 403 而非 404:回 404 會讓這支端點變成「某 id 是否存在」
+    的 oracle,而 conversation id 是連號整數。
+
+    **沒有 admin bypass**,這是刻意的:`api/conversations.py:277` 硬綁
+    `user_id == current_user.id`,admin 連讀別人的對話都不行,寫入自然更不該開。
+    """
+    if conversation_id is None and message_id is None:
+        return
+
+    if conversation_id is not None:
+        owns_conversation = (
+            db.query(Conversation.id)
+            .filter(
+                Conversation.id == conversation_id,
+                Conversation.user_id == user.id,
+            )
+            .first()
+        )
+        if owns_conversation is None:
+            raise HTTPException(status_code=403, detail="無權將附件綁定至此對話")
+
+    if message_id is not None:
+        row = (
+            db.query(Message.conversation_id)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .filter(Message.id == message_id, Conversation.user_id == user.id)
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=403, detail="無權將附件綁定至此訊息")
+        if conversation_id is not None and row[0] != conversation_id:
+            raise HTTPException(
+                status_code=400,
+                detail="附件的 conversation_id 與 message_id 不一致",
+            )
+
+
 async def upload_attachment(
     db: Session,
     file: UploadFile,
@@ -61,6 +125,9 @@ async def upload_attachment(
     conversation_id: Optional[int] = None,
     message_id: Optional[int] = None,
 ) -> Attachment:
+    # 擁有權先驗 —— 在讀檔與落地之前,不要為一個必然被拒的請求收 50MB 進記憶體。
+    _assert_binding_ownership(db, user, conversation_id, message_id)
+
     filename = file.filename or "upload"
     ext = Path(filename).suffix.lower()
     if ext and ext not in ALLOWED_EXTENSIONS:
