@@ -74,6 +74,9 @@ import {
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
 import { ShellNav } from "./shellNav.jsx";
+// W1-1 ②⑥ —— 外流面判定與禁令文案的單一來源(不在各元件裡各寫一份)。
+import { controlledActionNotice } from "./runtime/classified.js";
+import { BlockedMenuItem } from "./blockedAction.jsx";
 
 // ---- Trace Row + Routing Trace ----
 export const TraceRow = ({ event, active, done }) => (
@@ -472,7 +475,12 @@ export const MessageBubble = ({
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
-  const canCopy = !classified;
+  // W1-1② 複製 gate。原本直接把 legacy boolean 取反當「可否複製」,而那個
+  // boolean 的鏡射規則是 `classified = level >= 機密` —— 所以**營業秘密的
+  // boolean 是 False**,營業秘密在複製上等同無機密。改吃五級密等的
+  // `controlledActionNotice()`(門檻「> 無機密」,未知值 fail-closed)。
+  const copyNotice = controlledActionNotice({ classificationLevel, classified }, "複製");
+  const canCopy = !copyNotice.blocked;
   const isStreaming = !!msg.streaming;
   const rating = msg.rating || null;
 
@@ -600,7 +608,10 @@ export const MessageBubble = ({
               {copied ? <IconCheck /> : <IconCopy />}
             </IconButton>
           ) : (
-            <IconButton title="機密對話禁止複製" disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
+            // W1-1⑥(N-4):舊文案「機密對話禁止複製」對營業秘密是**錯的措辭**
+            // —— 它不是「機密」,而五級裡「機密」是另一個更高的等級。改成帶
+            // 真實密等 + 依據 + 替代路徑的 tooltip。
+            <IconButton title={copyNotice.tooltip} disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
               <IconLock />
             </IconButton>
           )}
@@ -1524,6 +1535,44 @@ export const Composer = ({
   );
 };
 
+// ---- 對話選單的匯出入口(W1-1 ②⑥)----
+//
+// 舊寫法是 `{onExportConv && !c.classified && (<>…兩個 MenuItem…</>)}`,兩個
+// 缺陷疊在一起:
+//   ① **吃 legacy boolean** → `classified = level >= 機密`,營業秘密是 False,
+//      所以營業秘密可以直接匯出。這是 W1-1 要修的缺陷本體。
+//   ② **整條消失** → 使用者看不到「有這個功能但你不能用」,只看到功能不見了。
+//      實際因應是截圖 / 手機拍屏(N-3),那樣淨資安效果為負。
+//
+// 改法:一律渲染兩個項目;受控時 disabled + tooltip(依據 + 替代路徑 + 為何
+// 昨天能匯出今天不行)。判定與文案都來自 `runtime/classified.js` 的單一來源。
+export const ConversationExportMenuItems = ({ conversation, onExportConv, close }) => {
+  if (typeof onExportConv !== "function") return null;
+  const notice = controlledActionNotice(conversation, "匯出");
+  if (notice.blocked) {
+    return (
+      <>
+        <BlockedMenuItem title={notice.tooltip} level={notice.level}>
+          匯出 Markdown
+        </BlockedMenuItem>
+        <BlockedMenuItem title={notice.tooltip} level={notice.level}>
+          匯出 JSON
+        </BlockedMenuItem>
+      </>
+    );
+  }
+  return (
+    <>
+      <MenuItem onClick={() => { close?.(); onExportConv(conversation.id, "markdown"); }}>
+        匯出 Markdown
+      </MenuItem>
+      <MenuItem onClick={() => { close?.(); onExportConv(conversation.id, "json"); }}>
+        匯出 JSON
+      </MenuItem>
+    </>
+  );
+};
+
 // ---- Sidebar ----
 export const Sidebar = ({
   conversations,
@@ -1836,6 +1885,11 @@ export const Sidebar = ({
                   id: h.id, title: h.title, agentId: h.agent_id,
                   updatedAt: h.updated_at, createdAt: h.created_at,
                   classified: h.classified, snippet: h.snippet,
+                  // W1-1②:這一行原本漏了。少了它,伺服器搜尋命中的列只帶
+                  // legacy boolean,而那個 boolean 對營業秘密是 False ——
+                  // 於是**營業秘密對話只要是從搜尋出現的,匯出鈕就是可按的**。
+                  // 密等判定只能靠 classification_level,不能靠 boolean。
+                  classificationLevel: h.classification_level,
                 }));
               // 時間分組:依 updatedAt 降冪排序,bucket 變動時插入標頭
               // (今天/昨天/前 7 天/更早)。star/folder 篩選後維持時間序。
@@ -1951,12 +2005,11 @@ export const Sidebar = ({
                               if (next !== null) onRenameConv?.(c.id, next);
                             }}
                           >重新命名</MenuItem>
-                          {onExportConv && !c.classified && (
-                            <>
-                              <MenuItem onClick={() => { close(); onExportConv(c.id, "markdown"); }}>匯出 Markdown</MenuItem>
-                              <MenuItem onClick={() => { close(); onExportConv(c.id, "json"); }}>匯出 JSON</MenuItem>
-                            </>
-                          )}
+                          <ConversationExportMenuItems
+                            conversation={c}
+                            onExportConv={onExportConv}
+                            close={close}
+                          />
                           <MenuItem
                             leftIcon={<IconTrash size={12} style={{ color: "var(--danger)" }} />}
                             onClick={() => {

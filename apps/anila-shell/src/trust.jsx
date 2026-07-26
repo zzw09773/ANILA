@@ -414,8 +414,10 @@ export const ClassificationLevelBadge = ({ conversation }) => {
 // 機敏模式全螢幕鑑識浮水印:低透明度對角平鋪,萬一有人拍照/截圖洩漏機敏畫面,
 // 浮水印帶著洩漏者身分 + trace_id 以供溯源。文字顯示「真實分類級別」中文
 // (機密/極機密/絕對機密),非固定英文;缺 level 回退機密(與 r1_0003 backfill 一致)。
+// className 是給 `@media print` 抓的(W1-1⑤):列印時浮水印必須保留,而瀏覽器
+// 預設不印背景 —— print stylesheet 用這個 class 開 print-color-adjust。
 export const ConfidentialWatermark = ({ userEmail, traceId, level }) => (
-  <div aria-hidden="true" style={{
+  <div aria-hidden="true" className="anila-print-watermark" style={{
     position: "fixed", inset: 0, pointerEvents: "none",
     zIndex: 4,
     opacity: 0.055,

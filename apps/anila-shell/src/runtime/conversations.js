@@ -55,6 +55,21 @@ export function classifyConversation(authRequest, convId) {
   return authRequest(`/api/conversations/${convId}/classify`, { method: "POST" });
 }
 
+/**
+ * 匯出收據(W1-1④)。**產檔前**呼叫:回應帶伺服器權威的密等頁首,`ANILA_
+ * EXPORT_RECORD_REQUIRED` 為真時同時在 `export_records` 落一列。
+ *
+ * 為什麼不是產檔後才記:記在後面的話,產檔成功而落列失敗就是一份沒有紀錄的
+ * 外流檔案 —— 而那正是本包要修的狀態。呼叫端(`runtime/exportGuard.js`)對
+ * 任何失敗一律 fail-closed。
+ */
+export function recordConversationExport(authRequest, convId, format) {
+  return authRequest(`/api/conversations/${convId}/export-record`, {
+    method: "POST",
+    body: JSON.stringify({ format }),
+  });
+}
+
 // ── Messages ────────────────────────────────────────────────────────────────
 
 export function appendMessage(authRequest, convId, payload) {

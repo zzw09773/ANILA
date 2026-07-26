@@ -286,10 +286,23 @@ class ArtifactJob(Base):
 
 
 class ExportRecord(Base):
-    """一次(已核可的)匯出(doc 01 ExportRecord + doc 08 §5 四共通分類欄位)。
+    """一次匯出(doc 01 ExportRecord + doc 08 §5 四共通分類欄位)。
 
-    只在 classification policy 核可後落列(doc 00 §6);deny 只寫
-    PolicyDecision、不落本表(不存在被標為 allow 的 deny 匯出)。
+    原本的落列規則是「只在 classification policy 核可後落列(doc 00 §6);deny 只寫
+    PolicyDecision、不落本表」。**W1-1④ 起,對話匯出路徑是這條規則的例外**,理由
+    寫在下面 —— 不是把規則放寬,是因為那條規則的前提在這條路徑上不成立:
+
+    * artifact 匯出走 policy engine,deny 會留下 `PolicyDecision` 一列,所以本表
+      不必記 deny 也查得到。
+    * **對話匯出沒有 PolicyDecision**(它不經 policy engine)。若 deny 也不落本表,
+      「有人試圖匯出營業秘密對話」這件事就一列紀錄都沒有 —— 而那正是稽核最想看到
+      的事件。所以對話匯出的 deny 以 `decision="deny"` 落在本表。
+
+    W1-1④ 的兩個欄位變更(migration r1_0038):
+      * ``artifact_id`` → nullable。對話匯出沒有 artifact。
+      * 新增 ``conversation_id``(nullable FK)。沒有它,一列紀錄答不出「匯出了
+        什麼」,稽核只剩「有人匯出過某個東西」—— 與 W1-1 想修的
+        「稽核只剩『有人看過某個受控東西』」是同一種無用紀錄。
     """
 
     __tablename__ = "export_records"
@@ -297,7 +310,14 @@ class ExportRecord(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     artifact_id = Column(
         Integer, ForeignKey("artifacts.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        nullable=True, index=True,
+    )
+    # 對話匯出來源(W1-1④)。artifact 匯出時為 NULL,對話匯出時為對話 id。
+    # ondelete=SET NULL 而不是 CASCADE:對話被刪掉時稽核列必須留著,否則
+    # 「刪掉對話」就等於「消滅匯出紀錄」。
+    conversation_id = Column(
+        Integer, ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True, index=True,
     )
     artifact_version_id = Column(
         Integer, ForeignKey("artifact_versions.id", ondelete="SET NULL"),

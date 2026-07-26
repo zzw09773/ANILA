@@ -1,7 +1,7 @@
 """Conversation management endpoints (JWT auth)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,11 +9,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
+from app.config import settings
 from app.database import get_db
+from app.models.artifact import ExportRecord
 from app.models.attachment import Attachment
 from app.models.conversation import Conversation, ConversationShare
 from app.models.message import Message
 from app.models.user import User
+from app.schemas.contracts.classification import ClassificationLevel
 from app.services import conversation_service as svc
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -497,3 +500,166 @@ def revoke_share(
     current_user: User = Depends(get_current_user),
 ):
     svc.revoke_share(db, share_id, current_user)
+
+
+# ── 匯出落列(W1-1④)──────────────────────────────────────────────────────────
+#
+# 缺口:前端的 `exportConversation` 原本**完全沒有分類 gate、沒有密等頁首、也不
+# 落任何稽核列**。一份離開平台的檔案於是三件事都不成立 —— 收檔者不知道密等、沒人
+# 知道是誰帶出去的、`export_records` 一列都沒有。
+#
+# 這個端點是「產檔前的收據」:前端**先落列成功才產檔**,失敗則擋(斷線 = 不放行)。
+# 回應同時帶回**伺服器權威的密等頁首**,前端拿它蓋在檔案第一頁 —— 頁首不由前端
+# 自己算,因為 client 手上的密等可能是舊的,而低報密等的檔案比不能匯出更糟。
+#
+# ⚠ 這是**紀錄面,不是授權面**。受控對話不回 403:它照樣落列(decision="deny")
+# 並在回應裡告訴前端 `allowed=false`。理由是「有人試圖匯出營業秘密對話」正是稽核
+# 最想看到的事件,而 403 會讓它連一列紀錄都沒有(對話匯出不經 policy engine,
+# 沒有 PolicyDecision 可以接手記)。授權面在前端三個 gate 與未來的 policy engine。
+
+# 台北 = UTC+8,無日光節約時間。與 `services/usage_service.py:_TPE_TZ` 同一個常數
+# (呈現層一律 UTC+8,見補救計畫 D4);刻意不用 zoneinfo —— air-gapped 映像的
+# tzdata 完整度不由本模組保證,而固定偏移對台灣是精確的。
+_TAIPEI_TZ = timezone(timedelta(hours=8))
+
+# 內網有多個平台,匯出檔不寫來源就查不到對應的稽核列。
+_EXPORT_SOURCE_SYSTEM = "ANILA 平台（CSP）"
+
+# 匯出目的地:對話匯出一律落到使用者的工作站(浮動檔案),不是某個受管空間。
+_EXPORT_TARGET_SPACE = "local_download"
+
+
+class ConversationExportRecordCreate(BaseModel):
+    """匯出格式。白名單以外由 FastAPI 422 擋下(邊界 fail-closed)。"""
+
+    format: str = Field(..., pattern="^(markdown|json)$")
+
+
+class ConversationExportReceipt(BaseModel):
+    """匯出收據。前端據此決定「產不產檔」與「頁首寫什麼」。"""
+
+    # flag 狀態與實際落列結果分開回:required 是部署姿態,recorded 是這一次的事實。
+    required: bool
+    recorded: bool
+    record_id: Optional[int] = None
+    # 密等允許產檔嗎(> 無機密 → False,未知值 fail-closed → False)。
+    allowed: bool
+    classification_level: str
+    exporter: str
+    exported_at: str
+    source_system: str
+    export_format: str
+    # 密等頁首,逐行 zh-TW。前端 markdown / json 兩種格式都蓋同一組字。
+    header_lines: list[str]
+    blocked_notice: Optional[str] = None
+
+
+def _taipei_iso(value: datetime) -> str:
+    """`YYYY-MM-DDTHH:MM:SS+08:00`。naive 值視同 UTC(csp 既有 convention)。"""
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(_TAIPEI_TZ).isoformat(timespec="seconds")
+
+
+# 密等不可讀時要寫進 `export_records.classification_level` 的值。
+#
+# 為什麼不能直接寫 `controlled_level_label()` 的「未知(視同受控)」:PostgreSQL 上
+# 那個欄有 CHECK 約束(`ck_export_records_classification_level_gate2_level`,由
+# r1_0011/r1_0017 建立)只允許五級字面值 —— 寫別的字會讓整個請求 500,於是**連
+# 一列紀錄都沒有**。而測試用的 SQLite schema 由 `Base.metadata.create_all` 建立、
+# 不含那個 CHECK,所以這種錯只會在生產爆掉(ledger 的 `sqlite-conftest-vs-pg`
+# 記的正是這一類「測試綠但生產紅」)。
+#
+# 受限欄位上的 fail-closed = 取**最嚴等級**;真相(密等讀不出來)另記在
+# `classification_source` 的 `:level_unreadable` 後綴,報表才分辨得出這一列是
+# 資料損壞而不是真的絕對機密。使用者面/回應面仍顯示誠實的「未知(視同受控)」——
+# 那是自由文字,沒有 CHECK。
+_UNREADABLE_STORED_LEVEL = "絕對機密"
+
+
+def _storable_classification_level(conv: Conversation) -> tuple[str, bool]:
+    """回 `(可落庫的五級字面值, 密等是否讀得出來)`。"""
+    try:
+        return (
+            ClassificationLevel.from_storage(conv.classification_level).to_storage(),
+            True,
+        )
+    except (TypeError, ValueError):
+        return _UNREADABLE_STORED_LEVEL, False
+
+
+@router.post(
+    "/{conv_id}/export-record",
+    response_model=ConversationExportReceipt,
+    status_code=200,
+)
+def record_conversation_export(
+    conv_id: int,
+    body: ConversationExportRecordCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conv = svc.get_conversation(db, conv_id, current_user)
+
+    # 判定一律走 `conversation_service.is_controlled()` —— 五個外流面的單一判定
+    # 來源(門檻「> 無機密」,未知值 fail-closed 視同受控)。**不要**在這裡自己
+    # 讀 `conv.classified`:那個 boolean 的鏡射規則是 `classified = level >= 機密`,
+    # 對營業秘密是 False,用它會讓紀錄自己說謊。
+    controlled = svc.is_controlled(conv)
+    level_label = svc.controlled_level_label(conv)
+    now = datetime.now(timezone.utc)
+    exported_at = _taipei_iso(now)
+    header_lines = [
+        f"密等：{level_label}",
+        f"匯出者：{current_user.username}",
+        f"匯出時間：{exported_at[:10]} {exported_at[11:19]}（UTC+8 / Asia/Taipei）",
+        f"來源系統：{_EXPORT_SOURCE_SYSTEM}",
+    ]
+
+    blocked_notice = None
+    if controlled:
+        blocked_notice = (
+            f"密等「{level_label}」的對話禁止匯出。依據：密等高於「無機密」時，"
+            "複製／匯出／分享／列印四個外流面一律收緊並留下稽核紀錄；密等鎖定是"
+            "單向的，使用者無法自行解除。替代路徑：在平台內繼續使用本對話，或走"
+            "降密申請（需主管核准與公文文號）後由管理端匯出。"
+        )
+
+    stored_level, level_readable = _storable_classification_level(conv)
+
+    record_id = None
+    if settings.ANILA_EXPORT_RECORD_REQUIRED:
+        record = ExportRecord(
+            # 對話匯出沒有 artifact —— 這正是 r1_0038 把 artifact_id 放寬的理由。
+            artifact_id=None,
+            conversation_id=conv.id,
+            exporter_user_id=current_user.id,
+            target_space=_EXPORT_TARGET_SPACE,
+            export_format=body.format,
+            # deny 也落列:對話匯出不經 policy engine,不落這裡就完全沒有紀錄。
+            decision="deny" if controlled else "allow",
+            classification_level=stored_level,
+            classification_source=(
+                "conversation_export" if level_readable
+                else "conversation_export:level_unreadable"
+            ),
+            # created_at 交給模型的 `_utcnow` 預設 —— 不在這裡另寫一份時間來源。
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        record_id = record.id
+
+    return ConversationExportReceipt(
+        required=settings.ANILA_EXPORT_RECORD_REQUIRED,
+        recorded=record_id is not None,
+        record_id=record_id,
+        allowed=not controlled,
+        classification_level=level_label,
+        exporter=current_user.username,
+        exported_at=exported_at,
+        source_system=_EXPORT_SOURCE_SYSTEM,
+        export_format=body.format,
+        header_lines=header_lines,
+        blocked_notice=blocked_notice,
+    )

@@ -228,6 +228,61 @@
 
   @keyframes anila-blink { 50% { opacity: 0; } }
 
+  /* ── 列印 / 轉 PDF(W1-1⑤)────────────────────────────────────────────────
+     為什麼一定要有這一段:紙本與 PDF 是**外流面裡唯一不經任何程式碼的一條**。
+     複製/匯出/分享都有 gate,而 Ctrl+P 之前完全沒有規則（全 repo
+     `@media print` = 0 處），所以按下列印就是一份沒有密等、沒有浮水印、
+     沒有紀錄的乾淨副本。
+
+     三條規則,各自的理由:
+       1. **密等頁首**在螢幕上隱藏、列印時出現。紙離開平台後,頁首上的密等是
+          唯一還在的管制。
+       2. **浮水印保留**。瀏覽器預設不印背景色/漸層,所以要顯式開
+          `print-color-adjust: exact`,否則鑑識浮水印在紙上會消失。
+       3. **`>= 機密` 遮蔽內文**（門檻刻意高於複製/匯出/分享的「> 無機密」,
+          見 runtime/classified.js 的 CLASSIFICATION_PRINT_MASK_FLOOR）。遮蔽時
+          仍然印出頁首與遮蔽說明 —— 印出一張空白紙的話,使用者會以為印壞了,
+          然後改用手機拍螢幕(N-3 的同一個道理)。 */
+  .anila-print-only { display: none; }
+
+  @media print {
+    /* UI chrome 不上紙:側欄、輸入區、工具列在紙上只是噪音。 */
+    .anila-msg-actions,
+    .anila-reasoning-toggle { display: none !important; }
+
+    .anila-print-only { display: block !important; }
+    .anila-print-header {
+      position: static;
+      margin: 0 0 12pt;
+      padding: 8pt 10pt;
+      border: 1.5pt solid #000;
+      color: #000;
+      font-family: var(--font-mono);
+      font-size: 10pt;
+      line-height: 1.5;
+      break-inside: avoid;
+    }
+    .anila-print-mask-notice {
+      margin-top: 6pt;
+      padding-top: 6pt;
+      border-top: 1pt dashed #000;
+      font-weight: 700;
+    }
+
+    /* 浮水印:保留,並強迫印出背景(預設會被瀏覽器省略)。 */
+    .anila-print-watermark,
+    .anila-classification-watermark {
+      display: block !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .anila-print-watermark { opacity: 0.12 !important; }
+
+    /* `>= 機密`:內文一律不上紙。旗標由 app.jsx 依 isPrintMasked() 掛在 <html>。 */
+    html[data-anila-print-mask="true"] .anila-msg,
+    html[data-anila-print-mask="true"] .anila-msg-body { display: none !important; }
+  }
+
   .boot-screen {
     display: flex; align-items: center; justify-content: center;
     height: 100dvh; color: var(--fg-muted);

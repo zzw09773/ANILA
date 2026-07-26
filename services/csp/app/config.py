@@ -36,6 +36,19 @@ class Settings(BaseSettings):
     # provenance are enforced end-to-end, both paths are secure-by-default OFF.
     # Development/test profiles may explicitly opt in with ENABLE_MEMORY=true.
     ENABLE_MEMORY: bool = False
+
+    # W1-1④ 匯出落列。ON 時 `POST /api/conversations/{id}/export-record` 會在
+    # `export_records` 寫一列(前端先落列成功才產檔);OFF 時只回密等頁首、不寫列。
+    #
+    # 為什麼預設 OFF(補救計畫明寫的節奏解耦):W1-1 六件裡④是 migration + 新
+    # 端點,與①②③⑤⑥的前端文案不同節奏。預設 ON 會讓④一卡就把五件已完成的
+    # 收緊工作(禁令姿態、密等頁首、print stylesheet)一起綁住不能上線。flag ON
+    # 是 Wave 1 的**離開條件**,不是上線的前置。
+    #
+    # ⚠ OFF 不代表匯出無管制:前端三個 gate(複製/匯出/分享)與密等頁首都與這
+    # 個 flag 無關,永遠生效。這個 flag 只決定「稽核列寫不寫」。
+    ANILA_EXPORT_RECORD_REQUIRED: bool = False
+
     # Gate 2 pilot posture. Turning pilot mode on is meaningful only after
     # the signed-profile verifier succeeds; unconverged inference surfaces
     # remain independently closed at their runtime boundaries.

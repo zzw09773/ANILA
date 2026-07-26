@@ -27,8 +27,17 @@ import {
 import {
   appendClassifiedTag,
   computeConversationClassified,
+  controlledActionNotice,
+  controlledLevelLabel,
+  isPrintMasked,
   latchConversationWithMeta,
+  CLASSIFICATION_FLOOR,
 } from "./runtime/classified.js";
+import {
+  buildExportFile,
+  prepareConversationExport,
+} from "./runtime/exportGuard.js";
+import { EXPORT_SOURCE_SYSTEM, taipeiStamp } from "./runtime/exportHeader.js";
 import {
   enqueueClassifyRetry,
   flushAll as flushClassifyRetries,
@@ -52,6 +61,7 @@ import {
   editUserMessage as apiEditUserMessage,
   updateMessage as apiUpdateMessage,
   classifyConversation as apiClassifyConversation,
+  recordConversationExport as apiRecordConversationExport,
   createShare as apiCreateShare,
   listShares as apiListShares,
   revokeShare as apiRevokeShare,
@@ -331,9 +341,27 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     return () => clearTimeout(t);
   }, [folders, isAuthenticated, authRequest]);
 
-  // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
+  // 匯出對話為 JSON / Markdown。W1-1 ②③④ 把三件缺的東西補上:
+  //   ② **分類 gate** —— 原本完全沒有,任何密等都能匯出。
+  //   ③ **密等頁首** —— 原本檔案裡只有標題與訊息,收檔者不知道密等。
+  //   ④ **先落列成功才產檔** —— 原本 `export_records` 一列都沒有。
+  //
+  // ⚠ 因此匯出**不再是純前端離線功能**(舊註解寫「純前端,離線可用」)。這是
+  // 刻意的取捨:沒有伺服器收據就沒有權威密等、也沒有稽核列,那種檔案不該產生。
+  // 判定與文案都來自 `runtime/classified.js` / `runtime/exportGuard.js` 的單一來源。
   const exportConversation = useCallback(async (convId, format) => {
     const conv = conversations.find((c) => c.id === convId);
+    const guard = await prepareConversationExport({
+      conversation: conv,
+      format,
+      exporter: user?.username,
+      requestReceipt: (id, fmt) => apiRecordConversationExport(authRequest, id, fmt),
+    });
+    if (!guard.ok) {
+      setRuntimeError(guard.notice);
+      return;
+    }
+
     let msgs = messagesByConv[convId];
     if (!msgs || msgs.length === 0) {
       try {
@@ -342,19 +370,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       } catch { msgs = []; }
     }
     const title = conv?.title || "對話";
-    let content; let mime; let ext;
-    if (format === "markdown") {
-      const lines = [`# ${title}`, ""];
-      for (const m of msgs) {
-        if (!m.text) continue;
-        lines.push(m.role === "user" ? "## 使用者" : "## ANILA");
-        lines.push("", m.text, "");
-      }
-      content = lines.join("\n"); mime = "text/markdown"; ext = "md";
-    } else {
-      content = JSON.stringify({ title, messages: msgs.map((m) => ({ role: m.role, content: m.text })) }, null, 2);
-      mime = "application/json"; ext = "json";
-    }
+    const { content, mime, ext } = buildExportFile({
+      title, messages: msgs, format, header: guard.header,
+    });
     const blob = new Blob([content], { type: `${mime};charset=utf-8` });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -362,7 +380,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     a.download = `${title.replace(/[^\w一-鿿 -]/g, "_").slice(0, 40)}.${ext}`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }, [conversations, messagesByConv, authRequest]);
+  }, [conversations, messagesByConv, authRequest, user]);
 
   const createFolder = useCallback((rawName) => {
     const name = (rawName || "").trim();
@@ -509,8 +527,35 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     [conversations, selectedConvId],
   );
   const currentMsgs = selectedConvId ? messagesByConv[selectedConvId] || [] : [];
+  // `isClassified` 只留給「密等鎖定」徽記與浮水印的既有 boolean 呈現(它們本來
+  // 就是 boolean 語意)。**外流面一律不吃它** —— W1-1 的缺陷本體就是把這個
+  // boolean 當授權輸入(`classified = level >= 機密`,營業秘密是 False)。
   const isClassified = Boolean(selectedConv?.classified);
   const isClassificationInherited = Boolean(selectedConv?.classificationInherited);
+  // W1-1② 分享 gate(五級密等,門檻「> 無機密」,未知值 fail-closed)。
+  const shareNotice = controlledActionNotice(selectedConv, "分享");
+  // W1-1⑤ 列印遮蔽門檻**刻意是另一個**:`>= 機密`。列印遮蔽是最強的禁令,
+  // 規格就是這樣寫的(見 runtime/classified.js 的 CLASSIFICATION_PRINT_MASK_FLOOR)。
+  const printMasked = isPrintMasked(selectedConv);
+  const printLevel = controlledLevelLabel(selectedConv) || CLASSIFICATION_FLOOR;
+  // 列印頁首的時間戳。初值 = 掛載時間,並在 `beforeprint` 重算 —— 一份開了三
+  // 小時的對話若印出三小時前的時間,那個頁首就是錯的證據。
+  const [printStamp, setPrintStamp] = useState(() => taipeiStamp(new Date()));
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.addEventListener) return;
+    const refresh = () => setPrintStamp(taipeiStamp(new Date()));
+    window.addEventListener("beforeprint", refresh);
+    return () => window.removeEventListener("beforeprint", refresh);
+  }, []);
+  // 遮蔽旗標掛在 <html> 上,讓 index.html 的 `@media print` 規則能一次蓋掉所有
+  // 訊息氣泡(它們散落在多個容器裡,逐一加 class 會漏)。
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const root = document.documentElement;
+    if (printMasked) root.setAttribute("data-anila-print-mask", "true");
+    else root.removeAttribute("data-anila-print-mask");
+    return () => root.removeAttribute("data-anila-print-mask");
+  }, [printMasked]);
   const activeAgent = useMemo(
     () => agents.find((a) => a.id === selectedAgentId) || ROUTER_AGENT,
     [agents, selectedAgentId],
@@ -1959,6 +2004,23 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     <AppShell
       overlay={
         <>
+          {/* W1-1⑤ 列印用密等頁首。螢幕上不顯示(index.html 的
+              `.anila-print-only { display: none }`),只在列印 / 轉 PDF 時出現在
+              第一頁最上方 —— 紙本一旦離開平台,頁首上的密等是唯一還在的管制。
+              `>= 機密` 時另附遮蔽說明,讓拿到紙的人知道內文是被刻意擋掉的,而
+              不是印壞了(否則他的因應是「再印一次」或「用手機拍螢幕」)。 */}
+          <div className="anila-print-only anila-print-header">
+            <div>密等：{printLevel}</div>
+            <div>使用者：{user?.username || "未知"}</div>
+            <div>列印時間：{printStamp}</div>
+            <div>來源系統：{EXPORT_SOURCE_SYSTEM}</div>
+            {printMasked && (
+              <div className="anila-print-mask-notice">
+                密等「機密」以上的對話禁止列印內文；本頁僅列出密等、使用者與時間以供備查。
+                需要紙本請走降密申請（需主管核准與公文文號）。
+              </div>
+            )}
+          </div>
           {isClassified && (
             <ConfidentialWatermark
               userEmail={user?.email || user?.username}
@@ -2100,11 +2162,15 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                   />
                 )}
               </Dropdown>
+              {/* W1-1② 分享 gate。原本三行都吃 `selectedConv.classified` ——
+                  legacy boolean 對營業秘密是 False,所以營業秘密建得出分享連結。
+                  改吃 `controlledActionNotice()`(門檻「> 無機密」,未知值
+                  fail-closed);文案照 N-4 收緊(依據 + 替代路徑)。 */}
               <IconButton
-                title={selectedConv.classified ? "已鎖定密等的對話不可分享" : "分享"}
-                onClick={() => !selectedConv.classified && setShareOpen(true)}
-                disabled={selectedConv.classified}
-                style={selectedConv.classified ? { opacity: 0.4, cursor: "not-allowed" } : {}}
+                title={shareNotice.tooltip}
+                onClick={() => !shareNotice.blocked && setShareOpen(true)}
+                disabled={shareNotice.blocked}
+                style={shareNotice.blocked ? { opacity: 0.4, cursor: "not-allowed" } : {}}
               >
                 <IconShare size={14} />
               </IconButton>
@@ -2173,6 +2239,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             color: "var(--danger)",
             fontSize: 12, fontFamily: "var(--font-mono)",
             display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+            // W1-1⑥:禁令文案是四段式(密等 / 依據 / 替代路徑 / 為何昨天可以),
+            // 用 \n 分段。沒有 pre-line 的話四段會擠成一行,而擠成一行的解釋
+            // 等於沒有解釋。
+            whiteSpace: "pre-line",
           }}>
             <span>{runtimeError}</span>
             <button

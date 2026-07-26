@@ -1,0 +1,43 @@
+/* 被密等擋下的動作項 —— 補救計畫 W1-1 ⑥(N-3 禁令姿態)。
+ *
+ * 為什麼不是共用 @anila/ui 的 MenuItem:那個元件沒有 disabled 語意(沒有
+ * `disabled` 屬性、沒有 title),而「render disabled + tooltip」正是本包要
+ * 建立的姿態。共用元件由三個 app 共用,擴充它屬另一個工作包;這裡先在 shell
+ * 內落地,樣式走 CSS Modules(D3 已定案,inline style 已凍結)。
+ *
+ * 視覺與 MenuItem 對齊(同 padding / radius / 字級),只是 muted + not-allowed,
+ * 讓使用者一眼看出「這個功能在,但你現在不能用」而不是「這個功能不見了」。 */
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: var(--anila-radius-md, 6px);
+  color: var(--anila-color-fg-muted, var(--fg-muted));
+  text-align: left;
+  cursor: not-allowed;
+  font-size: var(--anila-text-md, 14px);
+  font-family: var(--anila-font-sans, var(--font-sans));
+  opacity: 0.62;
+}
+
+.label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 密等徽記:讓「為什麼不能用」在不 hover 的情況下也看得到一半。 */
+.levelTag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: 1px solid var(--anila-color-danger, var(--danger));
+  border-radius: 999px;
+  color: var(--anila-color-danger, var(--danger));
+  font-family: var(--anila-font-mono, var(--font-mono));
+  font-size: 10px;
+  line-height: 1.4;
+}
