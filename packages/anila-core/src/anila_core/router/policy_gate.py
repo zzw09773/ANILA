@@ -62,11 +62,19 @@ class DirectModelGovernance:
     classification_ceiling``。缺少或無效的治理輸入一律 fail-closed 拒絕;
     真正的出向呼叫仍會在 CSP model gateway 再受 ``enforce_model_ceiling``
     強制(defense in depth),此處為 Router 端等價前置閘。
+
+    ``context_window`` 是同一份受信任投影帶來的**容量事實**(來自
+    ``model_registry.context_window``)。它不參與任何授權判斷,純粹讓 Router 能
+    依部署模型的真實容量算 token 預算(見 :mod:`anila_core.router.token_budget`)。
+    之所以掛在這裡而不另開一條通道:Router 對「當前主模型的可信事實」本來就只有
+    這一個 CSP 治理 seam,多開一條只會多一份會漂移的快取。未登記時是 ``None``,
+    容量相關的降級由 token_budget 決定,絕不影響分類上限的 fail-closed 行為。
     """
 
     model_id: str
     gateway: str
     classification_ceiling: ClassificationLevel | None
+    context_window: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.model_id, str) or not self.model_id.strip():
@@ -77,6 +85,12 @@ class DirectModelGovernance:
             self.classification_ceiling, ClassificationLevel
         ):
             raise TypeError("direct model classification_ceiling 必須是 ClassificationLevel")
+        if self.context_window is not None and (
+            isinstance(self.context_window, bool)
+            or not isinstance(self.context_window, int)
+            or self.context_window <= 0
+        ):
+            raise ValueError("direct model context_window 必須是正整數或 None")
 
     @property
     def has_csp_model_binding(self) -> bool:

@@ -1,7 +1,7 @@
 from datetime import datetime
 import ipaddress
 from collections.abc import Mapping
-from typing import Any
+from typing import Annotated, Any
 
 from anila_contracts import Classification as ClassificationLevel
 from anila_security import (
@@ -12,10 +12,17 @@ from anila_security import (
     require_identifier,
 )
 from anila_security.model_governance import require_string
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 LOCALITY_VALUES = tuple(item.value for item in ProviderLocality)
+
+# ``context_window`` 從「只給 UI 顯示的註記」升級成 Router token 預算的輸入
+# (見 anila_core.router.token_budget)。既然它現在會決定實際送出的 max_tokens,
+# 就不能再接受 0 / 負值 —— 一個 0 會讓預算算出「輸入上限為負」,把每一次呼叫都
+# 擋掉。在寫入邊界擋下來,比讓壞值流到推論路徑再去猜要清楚得多。``None``
+# (未登記)仍然合法:Router 對未登記的降級行為是刻意設計的 fail-safe。
+ContextWindowTokens = Annotated[int, Field(gt=0)]
 
 
 def _canonicalize_provider_target(
@@ -198,7 +205,7 @@ class ModelCreate(BaseModel):
     endpoint_url: str
     api_version: str = "v1"
     description: str | None = None
-    context_window: int | None = None
+    context_window: ContextWindowTokens | None = None
     base_model_id: int | None = None  # For agents: the underlying LLM model ID
     # Default True: new model registrations are expected to live on the
     # anila-models-net internal docker network (decoupled inference stack).
@@ -261,7 +268,7 @@ class ModelUpdate(BaseModel):
     api_version: str | None = None
     is_active: bool | None = None
     description: str | None = None
-    context_window: int | None = None
+    context_window: ContextWindowTokens | None = None
     base_model_id: int | None = None
     is_internal: bool | None = None
     provider_locality: str | None = None
