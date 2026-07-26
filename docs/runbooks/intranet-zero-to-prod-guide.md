@@ -21,7 +21,9 @@
 1. **改設定 = 編 `.env` + `docker compose up -d --no-build --pull never <svc>`**。不要重跑一鍵腳本做小修改
    (它每次都會把 strict 旗標重設回預設);也不要用 `docker restart`(不會重載 `.env`)。
 2. **祕密零外洩**:`.env`、`secrets/`、`*.pem`、`*.key`、`*.pfx`、`backups/` 都已被
-   `.gitignore` 擋住,不要加回追蹤。
+   `.gitignore` 擋住,不要加回追蹤。⚠ gitignore 不管容器掛載 —— 備份與 secrets
+   一律放 **repo 外**(`ANILA_STATE_DIR` / `ANILA_BACKUP_DIR`),`anila-ops.sh` 會
+   強制拒絕 repo 內的路徑。
 3. **驗證看真實路徑**:SPA catch-all 對不存在的路由也回 200,別只看 status code;
    用 `anila-ops.sh health` 或 runbook §3 的正式驗收清單。
 
@@ -174,13 +176,40 @@ curl --cacert share/pki/model-ca.pem \
    ```
    只有目前 DB owner 的帳密在有效窗內放行；到期後 login/access/refresh 即時關閉，
    不必等容器重啟，但仍要執行 `off` 完成事件收尾。
-4. **排每日備份 cron**(root 或部署帳號):
+4. **排每日備份 cron**(root 或部署帳號)。⚠ 排之前先手動跑一次確認 `exit 0`,
+   否則你排的是一個每天靜默失敗的排程:
    ```cron
    30 2 * * * cd /opt/anila && bash infra/deployment/scripts/anila-ops.sh backup >> /var/log/anila-backup.log 2>&1
-   0  3 * * 0 cd /opt/anila && bash infra/deployment/scripts/anila-ops.sh backup --full >> /var/log/anila-backup.log 2>&1
    ```
-   備份落在 `<repo>/backups/`(可用 `ANILA_BACKUP_DIR` 改到獨立磁碟,強烈建議),
-   預設保留 14 份(`ANILA_BACKUP_KEEP`)。**備份含 `.env` 與 JWT 私鑰,目錄權限 700,別放共用碟。**
+   - **只有這一條。`backup` 不吃任何參數** —— profile 驅動的備份一律全量,沒有
+     增量模式;舊版本文件教的 `--full` 旗標從來沒有實作過,傳它會直接 fatal。
+   - **必要環境變數不能靠 shell 帶**:cron 的環境是空的,而
+     `infra/deployment/backup/production_backup.py` 硬性要求 18 個 `ANILA_BACKUP_*`。
+     `anila-ops.sh` 會從 repo 根 `.env` 嚴格解析 `ANILA_BACKUP_*=值` 載入(不 source、
+     不 eval)。要把這些值移出 `.env`,在 cron 行前加
+     `ANILA_BACKUP_ENV_FILE=/etc/anila/backup.env`。
+     ⚠ **升級既有部署時 `.env` 不會自動長出新鍵**(`intranet-deploy.sh` 只在
+     `.env` 不存在時才由 `.env.example` 建立)—— 對照 `.env.example` 的「生產備份」
+     區塊手動補齊。
+   - **備份落在 repo 外**:預設 `$ANILA_STATE_DIR/backups`,可用 `ANILA_BACKUP_DIR`
+     指到獨立受控磁碟(強烈建議)。腳本會**強制拒絕** repo 內的路徑:`codeserver`
+     以 read-write 掛 repo root,備份落在 repo 內等於把全庫 dump 攤在 IDE 視野裡。
+     另外一定要設 off-host 第二份(`ANILA_BACKUP_OFFHOST_DIR`,Linux 必須是不同
+     device 的精確 mountpoint)。預設保留 14 份(`ANILA_BACKUP_KEEP`),目錄權限 700。
+   - **備份不含 `.env`,也不含 JWT / TLS 私鑰**:profile 對這兩者用的是
+     `key_management_reference`,只記錄外部保管指標與公鑰 fingerprint;`.env` 根本
+     不是備份 surface。所以「手上有加密 bundle」**不等於**能復原出可運作的平台 ——
+     金鑰必須走既有的保管/換發程序另外取得。
+   - **`age` 是硬相依**,沒有它備份 100% 失敗。內網不能 `apt install`:從離線工具包
+     的 `09-age-*-linux-amd64.tar.gz` 裝 `age` 與 `age-keygen` 進 PATH。
+     `anila-ops.sh health` 會檢查它在不在。
+   - **每天要能看見「備份沒跑」**:備份收尾(成功或失敗都會)寫 heartbeat 到
+     `$ANILA_STATE_DIR/backup-heartbeat.json`;`anila-ops.sh health` 讀它的年齡,
+     超過 25 小時未更新、或上次是失敗,就報 FAIL 並 `exit 1`(可接排班告警)。
+     只把輸出丟進 `/var/log/anila-backup.log` **不算監控** —— 沒人會去看。
+   - **restore 演練不排 cron**:`prepare`/`smoke` 會拒絕既存 target,而解密出來的
+     drill 目錄含機敏明文、必須走核准的銷毀流程,不該由排程自動產生。照
+     `docs/runbooks/production-backup-restore.md`「排程與演練」人工執行並存證。
 
 ---
 
@@ -191,8 +220,9 @@ curl --cacert share/pki/model-ca.pem \
 | 看整體狀態 | `anila-ops.sh status` |
 | 深度健檢(排班/巡檢用) | `anila-ops.sh health`(有 FAIL 會 exit 1,可接告警) |
 | 追某服務 log | `anila-ops.sh logs csp 200` |
-| 手動備份 / 含上傳檔 | `anila-ops.sh backup` / `anila-ops.sh backup --full` |
-| 還原資料庫 | `anila-ops.sh restore backups/<stamp>`(需輸入 `RESTORE`;`.env`/secrets 依提示手動還原) |
+| 手動備份 | `anila-ops.sh backup`(**不吃參數**;一律全量,含上傳檔/attachment/artifact) |
+| 驗證 bundle | `python3 infra/deployment/scripts/production-backup.py verify <bundle 目錄>`(不落地明文) |
+| 還原演練 | `anila-ops.sh restore <bundle 目錄> <全新可拋棄目標> prepare`,再 `... smoke`(**雙參數 + 模式**;只解到全新目標,不支援 live/in-place。正式破壞性復原是 Gate 6 blocker,本工具不提供) |
 | wildcard 憑證換發(2029 前) | `anila-ops.sh cert-renew /path/new-server.pfx` |
 | CSPKI CA 換代 | `anila-ops.sh model-ca /path/new-ca-chain.pem`(先驗鏈再上,壞檔不會被套用) |
 | gateway key 輪替 | `anila-ops.sh gateway-key` |
