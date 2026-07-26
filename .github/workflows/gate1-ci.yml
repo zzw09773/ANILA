@@ -340,18 +340,46 @@ jobs:
           # 一起吞掉 —— job 顯示通過、看起來像「有 drift 但已知」,實際上**檢查
           # 從來沒跑成**。這正是「吞掉錯誤讓紅燈變綠燈」。
           #
-          # 所以:腳本用 exit 3 表示「有發現」、exit 1 表示「檢查本身壞了」,
-          # 這裡只把 3 降級成 warning,其餘一律 fail。
+          # 所以:腳本用 exit 3 表示「有發現」、exit 1 表示「檢查本身壞了」。
+          #
+          # W2-6 之後這一步**已轉為硬性 fail**(原本是 warning)。能硬起來是因為
+          # 腳本現在把 findings 分兩級:
+          #   - STRUCTURAL(缺表/欄/索引/UNIQUE/FK)= 0 → 這一級任何新增都 fail;
+          #   - DEFERRED(TZ_MISMATCH 53 條 → W2-10;UNDECLARED_FK 3 條 → 孤兒欄)
+          #     有計數上限,登記在 infra/ci/orm_drift_deferred_baseline.json,
+          #     只准降不准升,**未登記的類別一律 fail**(否則白名單無限大)。
           set +e
           python infra/ci/check_orm_pg_drift.py --mode drift \
             --dsn "postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp"
           rc=$?
           set -e
           case "$rc" in
-            0) echo "ORM↔PG schema 無漂移" ;;
-            3) echo "::warning::ORM↔PG drift 存在(見上方清單);W2-6 把 startup DDL 折回 alembic 後此步應轉為硬性 fail" ;;
+            0) echo "ORM↔PG 無結構性漂移,DEFERRED 級亦未超過上限" ;;
+            3) echo "::error::ORM↔PG 漂移(結構性漂移,或 DEFERRED 級超過 baseline 上限)—— 見上方分級"; exit 1 ;;
             *) echo "::error::drift 檢查本身失敗(exit $rc)—— 這不是「有 drift」,是這支檢查不可信"; exit "$rc" ;;
           esac
+
+      # W2-6 新增的真 PG 測試。它們驗的是「r1_0036 對已被 startup DDL 補過的舊庫
+      # 冪等」與「schema 落後的庫拒啟動」—— 兩件事都只有真 PG 測得出來,SQLite +
+      # create_all 的迴路結構上看不見。這個 job 已經有 PG service 與 admin DSN,
+      # 所以只是多一步,不需要另起服務。
+      - name: W2-6 startup DDL 收編(真 PG)
+        env:
+          PYTHONPATH: services/csp
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+        working-directory: services/csp
+        run: |
+          set -euo pipefail
+          out=$(python -m pytest tests/test_w26_startup_ddl_absorption_pg.py -q 2>&1) || {
+            echo "$out"; exit 1;
+          }
+          echo "$out"
+          # 全 skip 等於沒跑。DSN 沒生效時 pytest 仍然 exit 0 —— 那正是「綠燈但
+          # 什麼都沒驗」,與被 `|| true` 吞掉的效果相同,所以顯式擋下。
+          if echo "$out" | grep -qE "^[0-9]+ skipped"; then
+            echo "::error::這批測試全被 skip —— ANILA_TEST_PG_DSN 沒生效,等於沒驗"
+            exit 1
+          fi
 
       - name: naive DateTime 政策斷言(ratchet)
         run: |

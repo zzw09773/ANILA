@@ -231,14 +231,67 @@ def run_drift(dsn: str) -> int:
             if col.unique and single not in db_unique_cols and single != pk_cols:
                 findings.append({"kind": "MISSING_UNIQUE", "target": f"{table.name}.{col.name}"})
 
-        declared_fks = sum(len(c.foreign_keys) for c in table.columns)
-        actual_fks = len(insp.get_foreign_keys(table.name))
-        if declared_fks > actual_fks:
+        # FK:比對**約束形狀**,不是數量。
+        #
+        # 這裡原本是 `sum(len(c.foreign_keys) for c in table.columns)` 對
+        # `len(insp.get_foreign_keys(...))`,兩個都是計數 —— 而且兩邊數的不是
+        # 同一種東西:前者數「參與 FK 的欄位」,後者數「FK 約束」。所以**任何
+        # 含複合 FK 的表都必然 declared > actual**,永遠誤報:
+        #
+        #   document_relations              declared 5 / db 3  (fk_docrel_src、dst 各 2 欄)
+        #   ingestion_documents             declared 6 / db 4  (active_generation 複合 3 欄)
+        #   ingestion_document_generations  declared 3 / db 2
+        #
+        # 這三條是 W2-6 收編完之後唯一剩下的非 TZ findings,而**沒有任何
+        # migration 能讓它們歸零**(除了加冗餘單欄 FK 去湊數字)—— 也就是說
+        # 這個誤報直接擋住 drift gate 轉為硬性 fail。
+        #
+        # 更糟的是計數比對的另一面:它抓不到「FK 存在但指錯目標」。DB 有 3 條
+        # FK、ORM 宣告 3 條,即使其中一條指到完全不同的表,計數也相等 → 綠燈。
+        # 改比形狀之後這種情況會被抓出來(見 tests 的 seed 反證)。
+        orm_fk_shapes = {}
+        for fkc in table.foreign_key_constraints:
+            elements = list(fkc.elements)
+            if not elements:
+                continue
+            shape = (
+                elements[0].column.table.name,
+                frozenset((fk.parent.name, fk.column.name) for fk in elements),
+            )
+            orm_fk_shapes[shape] = fkc.name or "(未命名)"
+
+        db_fk_shapes = set()
+        for fk in insp.get_foreign_keys(table.name):
+            constrained = fk.get("constrained_columns") or []
+            referred_cols = fk.get("referred_columns") or []
+            if not constrained or not referred_cols:
+                continue
+            db_fk_shapes.add(
+                (fk["referred_table"], frozenset(zip(constrained, referred_cols)))
+            )
+
+        for shape, name in sorted(orm_fk_shapes.items(), key=lambda kv: str(kv[0])):
+            if shape in db_fk_shapes:
+                continue
+            referred, pairs = shape
+            cols = ", ".join(f"{a}→{referred}.{b}" for a, b in sorted(pairs))
             findings.append(
                 {
                     "kind": "MISSING_FK",
+                    "target": f"{table.name} [{name}]",
+                    "detail": cols,
+                }
+            )
+
+        # DB 有、ORM 沒宣告 —— 同樣是漂移,方向相反。列出來(不列的話「ORM 與 DB
+        # 一致」這個宣稱只成立一半)。
+        for referred, pairs in sorted(db_fk_shapes - set(orm_fk_shapes), key=str):
+            cols = ", ".join(f"{a}→{referred}.{b}" for a, b in sorted(pairs))
+            findings.append(
+                {
+                    "kind": "UNDECLARED_FK",
                     "target": table.name,
-                    "detail": f"declared {declared_fks}, db has {actual_fks}",
+                    "detail": cols,
                 }
             )
 
@@ -247,7 +300,92 @@ def run_drift(dsn: str) -> int:
         detail = f" ({f['detail']})" if "detail" in f else ""
         print(f"  {f['kind']:16s} {f['target']}{detail}")
 
-    return EXIT_FINDINGS if findings else EXIT_OK
+    return _classify(findings)
+
+
+# ── findings 分級 ──────────────────────────────────────────────────────────────
+#
+# 為什麼需要分級:這支原本是「有任何 finding 就 exit 3」,而 TZ_MISMATCH 有 53 條
+# (那是 W2-10 的欄位型別工程,不是這裡能修的)→ CI 只能把整個 drift 步驟降級成
+# warning。結果是**結構性漂移(缺欄/缺索引/缺 FK)也沒有人擋**,而那才是會讓
+# `alembic upgrade head` 不自足、DR 還原壞掉的那類。
+#
+# 所以拆兩級:
+#   - STRUCTURAL:缺欄 / 缺索引 / 缺 UNIQUE / 缺 FK → **硬 fail**。W2-6 收編完之後
+#     這一級是 0,所以現在就能硬起來,而不是等 W2-10。
+#   - DEFERRED:已知、已歸戶、有退場條件的類別 → 只警告,**但有計數上限**,超過
+#     一樣 fail。上限只准降(與 C5 legacy ledger 同一套紀律)。
+#
+# 沒有第三種「就是不管」的類別 —— 那等於白名單無限大。
+STRUCTURAL_KINDS = (
+    "MISSING_TABLE",
+    "MISSING_COLUMN",
+    "MISSING_INDEX",
+    "MISSING_UNIQUE",
+    "MISSING_FK",
+)
+# ⚠ 不是 `orm_drift_baseline.json` —— 那個檔名已經是 --mode policy 的 naive
+# DateTime ratchet 清單(118 欄)。這裡是 drift 模式的 DEFERRED 級上限,另立一檔。
+DRIFT_BASELINE = Path(__file__).with_name("orm_drift_deferred_baseline.json")
+
+
+def _classify(findings: list[dict]) -> int:
+    structural = [f for f in findings if f["kind"] in STRUCTURAL_KINDS]
+    deferred = [f for f in findings if f["kind"] not in STRUCTURAL_KINDS]
+
+    counts: dict[str, int] = {}
+    for f in deferred:
+        counts[f["kind"]] = counts.get(f["kind"], 0) + 1
+
+    caps: dict[str, int] = {}
+    if DRIFT_BASELINE.is_file():
+        try:
+            caps = {
+                k: v["max_count"]
+                for k, v in json.loads(
+                    DRIFT_BASELINE.read_text(encoding="utf-8")
+                )["deferred"].items()
+            }
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            print(f"BROKEN: drift baseline 不可用 — {exc}", file=sys.stderr)
+            return EXIT_BROKEN
+
+    print("\n分級:")
+    print(f"  STRUCTURAL(硬 fail)  {len(structural)}")
+    for kind, n in sorted(counts.items()):
+        cap = caps.get(kind)
+        flag = "" if cap is None else (f" / 上限 {cap}" + (" ✗ 超過" if n > cap else ""))
+        print(f"  DEFERRED {kind:14s} {n}{flag}")
+
+    failed = False
+    if structural:
+        print(
+            "\n結構性漂移 —— ORM 宣告了 DB 沒有的東西。這類會讓 "
+            "`alembic upgrade head` 不自足(DR 還原時 schema 不完整):",
+            file=sys.stderr,
+        )
+        for f in structural:
+            detail = f" ({f['detail']})" if "detail" in f else ""
+            print(f"  - {f['kind']} {f['target']}{detail}", file=sys.stderr)
+        failed = True
+
+    for kind, n in sorted(counts.items()):
+        cap = caps.get(kind)
+        if cap is None:
+            print(
+                f"\n{kind} 有 {n} 條但 baseline 沒登記這一類 —— 未登記的類別不得存在"
+                f"(否則白名單無限大)。請在 {DRIFT_BASELINE.name} 加一筆,附退場條件。",
+                file=sys.stderr,
+            )
+            failed = True
+        elif n > cap:
+            print(
+                f"\n{kind} 從 {cap} 增加到 {n} —— 上限只准降不准升。",
+                file=sys.stderr,
+            )
+            failed = True
+
+    return EXIT_FINDINGS if failed else EXIT_OK
 
 
 def main() -> int:

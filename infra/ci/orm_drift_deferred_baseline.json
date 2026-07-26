@@ -1,0 +1,43 @@
+{
+  "_readme": [
+    "ORM↔PG 漂移的 DEFERRED 級上限。由 infra/ci/check_orm_pg_drift.py --mode drift 讀取。",
+    "⚠ 與 orm_drift_baseline.json 是兩回事:那一份是 --mode policy 的 naive DateTime",
+    "ratchet 清單(118 欄);這一份只管 drift 模式的 DEFERRED 級計數上限。",
+    "",
+    "分級的理由:這支原本是「有任何 finding 就 exit 3」,而 TZ_MISMATCH 有 53 條(那是",
+    "W2-10 的欄位型別工程)→ CI 只能把整個 drift 步驟降級成 warning,結果連結構性漂移",
+    "(缺欄 / 缺索引 / 缺 UNIQUE / 缺 FK)也沒人擋 —— 而那才是會讓 `alembic upgrade head`",
+    "不自足、DR 還原壞掉的那一類。",
+    "",
+    "W2-6 把 startup DDL 收編進 alembic 之後 STRUCTURAL 級是 0,所以它現在就能硬 fail。",
+    "本檔只管 DEFERRED 級:每一類都要有退場條件,上限只准降不准升。**未登記的類別一律",
+    "fail** —— 否則白名單等於無限大。",
+    "",
+    "基線量測日:2026-07-26。乾淨 pgvector/pgvector:pg16 跑 alembic upgrade head 到",
+    "r1_0036 之後量測。重新量測 = 起 throwaway PG、upgrade head、跑 --mode drift。"
+  ],
+  "baseline_date": "2026-07-26",
+  "head_revision": "r1_0036",
+  "deferred": {
+    "TZ_MISMATCH": {
+      "max_count": 53,
+      "owner": "平台後端負責人",
+      "exit_condition": "W2-10 把 DateTime 欄轉成 timestamptz(刻意排在 W2-6 之後,避免對同一批表做兩輪 schema 手術)",
+      "notes": "ORM 宣告 DateTime(timezone=True) 但 DB 是 timestamp without time zone,或反之。這是 W1-4 那個 API key 500 的病根:118 個欄沒宣告 timezone → 讀回來是 naive → 拿去跟 aware 比較就 TypeError。W1-4 已在邊界層用 app/time_utils.py 止血,欄位本身是 W2-10。"
+    },
+    "UNDECLARED_FK": {
+      "max_count": 3,
+      "owner": "平台後端負責人",
+      "exit_condition": "確認三個孤兒欄確實無人讀寫後以 migration 刪除;若其實還在用則補進 ORM 模型",
+      "notes": [
+        "DB 有 FK 但 ORM 完全沒宣告那個欄。三條都是**孤兒欄**,不是漏寫 ForeignKey:",
+        "  agents.last_reviewer_id → users.id         (ORM Agent 模型無此欄)",
+        "  audit_logs.actor_id → users.id             (ORM 只有 actor_user_id;actor_id 是更早那個)",
+        "  users.auth_provider_id → auth_providers.id (ORM User 模型無此欄)",
+        "這三條是 FK 檢查從『數量比對』改成『約束形狀比對』之後才看得到的 —— 舊寫法兩邊",
+        "數的還不是同一種東西(欄位數 vs 約束數),方向性漂移(DB 有、ORM 沒有)永遠不會",
+        "被計數抓到。刪除是破壞性操作,要先證明無人讀寫,所以不在 W2-6。"
+      ]
+    }
+  }
+}
