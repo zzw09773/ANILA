@@ -1,10 +1,10 @@
 {
   "_comment": "W2-12 response_model 覆蓋率 ratchet。endpoints_missing_response_model 是**上限**:只准降不准升。新 endpoint 沒寫 response_model 會讓 CI fail。要蓄意調整請跑 scripts/export-openapi.py --write-ratchet 並在 PR 說明理由。",
   "baseline_recorded_on": "2026-07-26",
-  "endpoints_total": 269,
-  "endpoints_with_response_model": 178,
-  "endpoints_missing_response_model": 91,
-  "coverage_pct": 66.17,
+  "endpoints_total": 273,
+  "endpoints_with_response_model": 184,
+  "endpoints_missing_response_model": 89,
+  "coverage_pct": 67.4,
   "missing": [
     "DELETE /api/agents/{agent_id}",
     "DELETE /api/agents/{agent_id}/credentials/{credential_id}",
@@ -57,7 +57,6 @@
     "GET /api/usage/export",
     "GET /api/usage/legacy-token-stats",
     "GET /api/usage/top-agents",
-    "GET /api/users/me/ui-settings",
     "GET /api/users/{user_id}/allowed-agents",
     "GET /health",
     "GET /ready",
@@ -94,7 +93,6 @@
     "POST /v2/embeddings",
     "PUT /api/auth/password",
     "PUT /api/notifications/read-all",
-    "PUT /api/users/me/ui-settings",
     "PUT /api/users/{user_id}/allowed-agents",
     "PUT /api/users/{user_id}/allowed-models"
   ]

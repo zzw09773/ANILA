@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agent, UserAgentPermission
@@ -519,14 +520,29 @@ def hard_delete_user(
 # ============================================================================
 
 
-@router.get("/me/ui-settings")
+class UiSettingsOut(BaseModel):
+    """`ui_settings` 三個端點的共用回應型別 —— W3-7f / W2-12 ratchet。
+
+    blob 的形狀由 client 擁有(server 只存與回),所以這裡用 `dict` 而不是逐鍵
+    宣告 —— 逐鍵宣告會讓後端變成前端偏好設定的守門人,那不是它的職責。
+
+    但**回應信封本身**要有型別:`scripts/export-openapi.py` 的 ratchet 盯著
+    「缺 `response_model` 的 endpoint 數」,只准降。這三個端點先前沒宣告,而
+    `PATCH` 是本輪新增的 —— 也就是說我加端點時讓那個數字從 91 升到 92,而我
+    沒跑那個 gate。是別的工作在檢查自己的分支時抓到並歸戶給我的。
+    """
+
+    ui_settings: dict
+
+
+@router.get("/me/ui-settings", response_model=UiSettingsOut)
 def get_my_ui_settings(
     current_user: User = Depends(get_current_user),
 ):
     return {"ui_settings": current_user.ui_settings or {}}
 
 
-@router.put("/me/ui-settings")
+@router.put("/me/ui-settings", response_model=UiSettingsOut)
 async def put_my_ui_settings(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -558,7 +574,7 @@ async def put_my_ui_settings(
     return {"ui_settings": current_user.ui_settings}
 
 
-@router.patch("/me/ui-settings")
+@router.patch("/me/ui-settings", response_model=UiSettingsOut)
 async def patch_my_ui_settings(
     request: Request,
     current_user: User = Depends(get_current_user),

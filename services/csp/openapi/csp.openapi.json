@@ -4154,6 +4154,26 @@
         "title": "BootstrapExchangeResponse",
         "type": "object"
       },
+      "CapabilitiesResponse": {
+        "additionalProperties": false,
+        "description": "只有布林旗標。extra=\"forbid\" 讓「順手多塞一個欄位」在測試前就爆。",
+        "properties": {
+          "enable_memory": {
+            "title": "Enable Memory",
+            "type": "boolean"
+          },
+          "enable_public_share": {
+            "title": "Enable Public Share",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enable_memory",
+          "enable_public_share"
+        ],
+        "title": "CapabilitiesResponse",
+        "type": "object"
+      },
       "CardChallengeResponse": {
         "description": "``GET /api/auth/card/challenge`` 的回應。\n\nAttributes:\n    challenge_token: SECRET_KEY 簽過的 JWT，``aud=\"card-challenge\"``、\n        ``exp=2min``，內含 ``nonce`` 與 ``jti``。client 應原樣回傳給\n        verify endpoint；同一 token 只能成功驗證一次。\n    nonce: 明文 nonce，client 簽章時用作 ``tbsPackage.tbs`` 的值。\n    expires_in: ``challenge_token`` 剩餘有效秒數，僅供 client 顯示倒數用。",
         "properties": {
@@ -5282,6 +5302,100 @@
           "updated_at"
         ],
         "title": "ConversationDetail",
+        "type": "object"
+      },
+      "ConversationExportReceipt": {
+        "description": "匯出收據。前端據此決定「產不產檔」與「頁首寫什麼」。",
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "blocked_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Notice"
+          },
+          "classification_level": {
+            "title": "Classification Level",
+            "type": "string"
+          },
+          "export_format": {
+            "title": "Export Format",
+            "type": "string"
+          },
+          "exported_at": {
+            "title": "Exported At",
+            "type": "string"
+          },
+          "exporter": {
+            "title": "Exporter",
+            "type": "string"
+          },
+          "header_lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Header Lines",
+            "type": "array"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "recorded": {
+            "title": "Recorded",
+            "type": "boolean"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "required",
+          "recorded",
+          "allowed",
+          "classification_level",
+          "exporter",
+          "exported_at",
+          "source_system",
+          "export_format",
+          "header_lines"
+        ],
+        "title": "ConversationExportReceipt",
+        "type": "object"
+      },
+      "ConversationExportRecordCreate": {
+        "description": "匯出格式。白名單以外由 FastAPI 422 擋下(邊界 fail-closed)。",
+        "properties": {
+          "format": {
+            "pattern": "^(markdown|json)$",
+            "title": "Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format"
+        ],
+        "title": "ConversationExportRecordCreate",
         "type": "object"
       },
       "ConversationOut": {
@@ -7774,6 +7888,52 @@
           "created_at"
         ],
         "title": "HandoffOut",
+        "type": "object"
+      },
+      "HealthOverviewResponse": {
+        "properties": {
+          "agents": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegistryHealthCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checked_at": {
+            "title": "Checked At",
+            "type": "string"
+          },
+          "models": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegistryHealthCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "overall": {
+            "title": "Overall",
+            "type": "string"
+          },
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceHealthEntry"
+            },
+            "title": "Services",
+            "type": "array"
+          }
+        },
+        "required": [
+          "overall",
+          "checked_at",
+          "services"
+        ],
+        "title": "HealthOverviewResponse",
         "type": "object"
       },
       "ImageHitOut": {
@@ -11096,6 +11256,45 @@
         "title": "RegisteredServiceUpdate",
         "type": "object"
       },
+      "RegistryHealthCounts": {
+        "description": "model / agent 註冊表的五態計數。只有數字,沒有名稱與端點。",
+        "properties": {
+          "degraded": {
+            "title": "Degraded",
+            "type": "integer"
+          },
+          "disabled": {
+            "title": "Disabled",
+            "type": "integer"
+          },
+          "healthy": {
+            "title": "Healthy",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "unhealthy": {
+            "title": "Unhealthy",
+            "type": "integer"
+          },
+          "unknown": {
+            "title": "Unknown",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "unknown",
+          "healthy",
+          "degraded",
+          "unhealthy",
+          "disabled"
+        ],
+        "title": "RegistryHealthCounts",
+        "type": "object"
+      },
       "RelatedHit": {
         "description": "A document reached by a 1-hop relation edge from a main top-k hit\n(design v2 §7). Additive context for the RAG agent — never replaces the\nprimary ``results``.",
         "properties": {
@@ -12253,6 +12452,55 @@
         "title": "ServiceClientResponse",
         "type": "object"
       },
+      "ServiceHealthEntry": {
+        "description": "單一基礎服務。**這個 model 就是白名單** —— 不要加欄位。\n\n尤其不要加 ``endpoint`` / ``host`` / ``port`` / ``error``:前三個是部署\n細節,最後一個會把 psycopg / httpx 的錯誤字串(裡面有連線字串)送到瀏覽器。",
+        "properties": {
+          "checked_at": {
+            "title": "Checked At",
+            "type": "string"
+          },
+          "kind": {
+            "description": "self / database / cache / http",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "description": "繁中顯示名",
+            "title": "Label",
+            "type": "string"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "name": {
+            "description": "compose 服務名",
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "description": "bounded 原因碼,非自由文字",
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "description": "五態:unknown/healthy/degraded/unhealthy/disabled",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "kind",
+          "status",
+          "reason",
+          "latency_ms",
+          "checked_at"
+        ],
+        "title": "ServiceHealthEntry",
+        "type": "object"
+      },
       "ServiceType": {
         "enum": [
           "project_portal",
@@ -13315,6 +13563,21 @@
         "title": "TrustedHostResponse",
         "type": "object"
       },
+      "UiSettingsOut": {
+        "description": "`ui_settings` 三個端點的共用回應型別 —— W3-7f / W2-12 ratchet。\n\nblob 的形狀由 client 擁有(server 只存與回),所以這裡用 `dict` 而不是逐鍵\n宣告 —— 逐鍵宣告會讓後端變成前端偏好設定的守門人,那不是它的職責。\n\n但**回應信封本身**要有型別:`scripts/export-openapi.py` 的 ratchet 盯著\n「缺 `response_model` 的 endpoint 數」,只准降。這三個端點先前沒宣告,而\n`PATCH` 是本輪新增的 —— 也就是說我加端點時讓那個數字從 91 升到 92,而我\n沒跑那個 gate。是別的工作在檢查自己的分支時抓到並歸戶給我的。",
+        "properties": {
+          "ui_settings": {
+            "additionalProperties": true,
+            "title": "Ui Settings",
+            "type": "object"
+          }
+        },
+        "required": [
+          "ui_settings"
+        ],
+        "title": "UiSettingsOut",
+        "type": "object"
+      },
       "UsageSummary": {
         "properties": {
           "active_api_keys": {
@@ -14331,6 +14594,33 @@
         "summary": "Export Inference Audit",
         "tags": [
           "推論審計"
+        ]
+      }
+    },
+    "/api/admin/health/overview": {
+      "get": {
+        "description": "彙總基礎服務 + model/agent 註冊表的健康狀態。\n\n**單一服務探測失敗不得讓總覽本身失敗** —— 那樣管理者在最需要這張卡的時候\n(東西正在壞)反而什麼都看不到。所以每個 probe 都自己吃掉例外回一個紅/黃\n狀態,``gather`` 也帶 ``return_exceptions=True`` 當最後一道網。",
+        "operationId": "health_overview_api_admin_health_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthOverviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Health Overview",
+        "tags": [
+          "服務健康"
         ]
       }
     },
@@ -17845,6 +18135,32 @@
         ]
       }
     },
+    "/api/capabilities": {
+      "get": {
+        "operationId": "get_capabilities_api_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "這個部署開啟了哪些使用者可見功能",
+        "tags": [
+          "部署能力旗標"
+        ]
+      }
+    },
     "/api/classification-authorities": {
       "get": {
         "description": "列出權責指派清單(admin tier;供保密單位定期覆核 attestation)。",
@@ -18915,6 +19231,45 @@
               "description": "Only return conversations scoped to this knowledge base. Required by ANILALM (cross-collection bleed otherwise); leave unset for ANILA UI (no collection concept). NULL-collection rows are NOT returned when this is set — see service docstring for rationale.",
               "title": "Collection Id"
             }
+          },
+          {
+            "description": "每頁列數。**不給就是舊行為**(回全部),舊 client 不受影響。有給時,若還有下一頁,回應頭 `X-Next-Cursor` 會帶下一頁的 cursor。",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "每頁列數。**不給就是舊行為**(回全部),舊 client 不受影響。有給時,若還有下一頁,回應頭 `X-Next-Cursor` 會帶下一頁的 cursor。",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "上一頁回應頭 `X-Next-Cursor` 的值(= 上一頁最後一列的 id)。",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "上一頁回應頭 `X-Next-Cursor` 的值(= 上一頁最後一列的 id)。",
+              "title": "Cursor"
+            }
           }
         ],
         "responses": {
@@ -19246,6 +19601,63 @@
           }
         ],
         "summary": "Classify Conversation",
+        "tags": [
+          "conversations"
+        ]
+      }
+    },
+    "/api/conversations/{conv_id}/export-record": {
+      "post": {
+        "operationId": "record_conversation_export_api_conversations__conv_id__export_record_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conv_id",
+            "required": true,
+            "schema": {
+              "title": "Conv Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationExportRecordCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationExportReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Record Conversation Export",
         "tags": [
           "conversations"
         ]
@@ -25807,7 +26219,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UiSettingsOut"
+                }
               }
             },
             "description": "Successful Response"
@@ -25823,13 +26237,40 @@
           "使用者管理"
         ]
       },
+      "patch": {
+        "description": "逐鍵合併,而不是整包取代 —— W3-7f。\n\n為什麼需要這支\n--------------\n`PUT` 是整包取代,而 client 送的是它自己那份可能已經過時的完整 blob。兩個\n分頁同時開著:\n\n    分頁 A 改 folders,送 {folders: 新, convMeta: A 手上的舊}\n    分頁 B 改 convMeta,送 {folders: B 手上的舊, convMeta: 新}\n\n誰後寫誰全贏 → **另一邊的改動整個消失**。使用者的體驗是「我剛建的資料夾不見\n了」,而且沒有任何錯誤訊息。\n\n注意 **per-key merge 只在 client 送部分 payload 時才救得到這件事** —— 如果\nclient 照舊送整包(含自己那份過時的其他鍵),合併也會把過時值寫回去。所以\n這支的存在是為了讓 client **只送改動的鍵**;前端切過來之前,資料遺失還在。\n這條限制刻意寫在這裡,免得有人以為後端加了就修好了。\n\n語意\n----\n- 頂層逐鍵覆寫(不做深層合併 —— 深層合併對陣列的語意沒有唯一正確答案,\n  而 `folders` 就是陣列)。\n- 值為 `null` 的鍵 = **刪除該鍵**。沒有這個約定的話,合併語意下永遠刪不掉東西。\n- `SELECT ... FOR UPDATE` + `populate_existing()` 讀當前值再合併。\n  `populate_existing()` 不是可選的:少了它,Query 命中 identity map 時會回傳\n  記憶體舊值,合併的基底就是舊的 —— 那正是這支要修的問題本身。",
+        "operationId": "patch_my_ui_settings_api_users_me_ui_settings_patch",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Patch My Ui Settings",
+        "tags": [
+          "使用者管理"
+        ]
+      },
       "put": {
         "operationId": "put_my_ui_settings_api_users_me_ui_settings_put",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UiSettingsOut"
+                }
               }
             },
             "description": "Successful Response"
