@@ -19,6 +19,7 @@ from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
 from app.api.public_share import router as public_share_router
 from app.middleware.csrf import CsrfMiddleware
+from app.middleware.request_id import RequestIdMiddleware
 from app.models.user import User
 from app.schemas.model_governance import ModelGovernanceReadiness
 from app.services.auth_service import require_admin
@@ -472,6 +473,12 @@ if _allowed_hosts != ["*"]:
 # CSRF protection for cookie-authenticated mutating requests. Runs after
 # CORS so preflight OPTIONS responses are generated without the check.
 app.add_middleware(CsrfMiddleware)
+
+# W3-3⑤:每個請求一個 id。**最後註冊 = 最外層執行**,所以連被 CSRF 或
+# TrustedHost 擋掉的請求也拿得到 id 並留下 access log —— 那些正是最需要被查的。
+# 這也讓 W2-12 錯誤信封的 `request_id` 從「永遠 null」變成真值:使用者念得出
+# 畫面上的 id,支援端 grep 得到同一個字串。
+app.add_middleware(RequestIdMiddleware)
 
 # W2-12:統一錯誤信封。在此之前全 repo 零 ``add_exception_handler``,於是
 # ``HTTPException`` 的 ``{"detail": str}``、3 處的 ``{"detail": {...}}`` 與 422 的

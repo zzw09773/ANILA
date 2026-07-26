@@ -150,15 +150,24 @@ def _status_phrase(status_code: int) -> str:
 
 
 def _request_id(request: Request | None) -> str | None:
-    """W3-3 之前唯一的來源是 inbound header;沒有就是 ``None``。
+    """優先讀 middleware 放進 ``request.state`` 的值(W3-3⑤ 已補上)。
 
-    不自己生 id:憑空造一個「只存在於這個回應裡」的 id 比沒有更糟
-    ——使用者拿它去問,log 裡查不到。
+    順序很重要:`request.state.request_id` 是 `RequestIdMiddleware` 清洗過(或
+    自己生成)的值,而**同一個值**會出現在回應頭與 access log。直接讀 raw header
+    會拿到未清洗的攻擊者可控字串,而且在 client 沒送時是 None —— 那正是 W2-12
+    當時 `request_id` 永遠為 null 的原因。
+
+    退回讀 header 只為了「middleware 尚未掛上」的情境(例如某些單元測試直接
+    呼叫 handler),此時仍做同一份清洗。
     """
     if request is None:
         return None
-    value = request.headers.get(REQUEST_ID_HEADER)
-    return value.strip() or None if value else None
+    from app.middleware.request_id import _sanitize  # 避免 import 迴圈
+
+    state_value = getattr(getattr(request, "state", None), "request_id", None)
+    if isinstance(state_value, str) and state_value:
+        return state_value
+    return _sanitize(request.headers.get(REQUEST_ID_HEADER))
 
 
 def build_envelope(

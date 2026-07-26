@@ -147,6 +147,10 @@ function stringifyLegacyDetail(detail) {
  * @returns {string} 永遠是非空字串
  */
 export function extractError(err, fallback) {
+  return withTrackingCode(baseErrorMessage(err, fallback), extractRequestId(err))
+}
+
+function baseErrorMessage(err, fallback) {
   const enveloped = err?.response?.data?.error?.message
   if (typeof enveloped === 'string' && enveloped) return enveloped
 
@@ -156,6 +160,23 @@ export function extractError(err, fallback) {
   if (fallback) return fallback
   if (typeof err?.message === 'string' && err.message) return err.message
   return '操作失敗，請稍後再試'
+}
+
+/**
+ * 追蹤碼附在句尾 —— W3-3⑤。
+ *
+ * `extractRequestId` 先前**定義了卻從沒被呼叫**,所以 governance 的錯誤訊息從來
+ * 不帶追蹤碼。而 admin 正是最需要它的人:他回報問題時念得出這個字串,支援端就
+ * grep 得到同一個請求的 access log。
+ *
+ * 措辭與 shell 的 `runtime/streamError.js` 對齊(全形括號 +「追蹤碼」),因為
+ * 使用者會在同一個平台的不同介面看到它 —— 兩種寫法會讓人以為是兩種東西。
+ *
+ * 加在句尾而不是取代人話:追蹤碼對使用者沒有意義,錯誤原因才有。
+ */
+function withTrackingCode(message, requestId) {
+  if (!requestId) return message
+  return `${message}（追蹤碼 ${requestId}）`
 }
 
 // ── 登入分流 ────────────────────────────────────────────────────────────────

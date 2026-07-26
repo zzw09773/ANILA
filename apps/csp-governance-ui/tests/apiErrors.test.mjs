@@ -362,3 +362,44 @@ function walkSources(dir) {
   }
   return out
 }
+
+// ── W3-3⑤:追蹤碼附在句尾 ─────────────────────────────────────────────────────
+//
+// `extractRequestId` 先前定義了卻從沒被呼叫,所以 governance 的錯誤訊息從來不帶
+// 追蹤碼。而 admin 正是最需要它的人 —— 他回報問題時念得出這個字串,支援端就
+// grep 得到同一個請求的 access log。
+
+test('extractError 在有 request_id 時把追蹤碼附在句尾', () => {
+  const err = {
+    response: {
+      data: {
+        error: { code: 'UPSTREAM_TIMEOUT', message: '上游逾時', request_id: 'abc123' },
+        detail: '上游逾時',
+      },
+    },
+  }
+  assert.equal(extractError(err, '失敗'), '上游逾時（追蹤碼 abc123）')
+})
+
+test('沒有 request_id 時訊息維持原樣(不留空括號)', () => {
+  const err = { response: { data: { error: { code: 'X', message: '上游逾時' } } } }
+  assert.equal(extractError(err, '失敗'), '上游逾時')
+})
+
+test('走 legacy detail 或 fallback 時同樣會附追蹤碼', () => {
+  const legacy = {
+    response: { data: { detail: '舊式訊息', error: { request_id: 'r1' } } },
+  }
+  assert.equal(extractError(legacy, '失敗'), '舊式訊息（追蹤碼 r1）')
+
+  const onlyId = { response: { data: { error: { request_id: 'r2' } } } }
+  assert.equal(extractError(onlyId, '載入失敗'), '載入失敗（追蹤碼 r2）')
+})
+
+test('措辭與 shell 對齊(全形括號 + 「追蹤碼」)', () => {
+  // 使用者會在同一個平台的不同介面看到它;兩種寫法會讓人以為是兩種東西。
+  const err = { response: { data: { error: { message: 'x', request_id: 'q' } } } }
+  const out = extractError(err, 'f')
+  assert.ok(out.includes('（追蹤碼 '), out)
+  assert.ok(out.endsWith('）'), out)
+})
