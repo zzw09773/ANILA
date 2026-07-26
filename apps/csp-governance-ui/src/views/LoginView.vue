@@ -290,6 +290,7 @@ import {
   CardNotInsertedError,
   detectCard,
 } from '../api/caAuth'
+import { classifyLoginError, extractError } from '../api/errors'
 import { useTheme } from '../composables/useTheme'
 import TermLogo from '../components/cli/TermLogo.vue'
 import TermButton from '../components/cli/TermButton.vue'
@@ -415,11 +416,12 @@ async function handleLogin() {
     // 一律走 browser reload 讓 nginx 重新決定 routing。
     window.location.assign(resolveNextDestination())
   } catch (e) {
-    const detail = e.response?.data?.detail || '登入失敗 — 請檢查帳號密碼'
-    if (detail.includes('等待核准') || detail.toLowerCase().includes('pending')) {
-      isPending.value = true
-    }
-    error.value = detail
+    // W2-12:分流靠後端的 error.code,不再比對中文子字串。
+    // 舊寫法 `detail.includes('等待核准')` 只要後端改一個字就靜默壞掉,
+    // 使用者會看到泛用錯誤而不是待核准說明,而且沒有任何測試會紅。
+    const { message, isPending: pending } = classifyLoginError(e)
+    isPending.value = pending
+    error.value = message
   } finally {
     loading.value = false
   }
@@ -488,7 +490,7 @@ async function handleCardLogin() {
       }
     }
   } catch (e) {
-    cardError.value = e.response?.data?.detail || e.message || '憑證卡登入失敗'
+    cardError.value = extractError(e, '憑證卡登入失敗')
   } finally {
     cardLoading.value = false
   }
@@ -514,7 +516,7 @@ async function handleSubmitRegistration() {
       message: data.message,
     }
   } catch (e) {
-    pendingError.value = e.response?.data?.detail || e.message || '註冊失敗'
+    pendingError.value = extractError(e, '註冊失敗')
   } finally {
     pendingSubmitting.value = false
   }
@@ -537,7 +539,7 @@ async function handleOidcLogin(provider) {
     const { data } = await getOidcStartUrl(provider.id, '/')
     window.location.href = data.authorization_url
   } catch (e) {
-    error.value = e.response?.data?.detail || '無法啟動 SSO 流程'
+    error.value = extractError(e, '無法啟動 SSO 流程')
     oidcLoadingId.value = null
   }
 }
@@ -559,8 +561,8 @@ async function handleRegister() {
     const { data } = await registerApi(reg.value.username, reg.value.email, reg.value.password)
     regSuccess.value = data.message || 'registered — pending approval'
   } catch (e) {
-    const detail = e.response?.data?.detail
-    regError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || '註冊失敗')
+    // extractError 已處理 422 array / dict / 字串三種形狀
+    regError.value = extractError(e, '註冊失敗')
   } finally {
     registering.value = false
   }

@@ -245,6 +245,13 @@ jobs:
         working-directory: services/csp
         run: python -m pytest -q
 
+      # W2-12:API 契約產出物必須與程式碼同步,且 response_model 覆蓋率只准升。
+      # CSP 的 /openapi.json 被 require_admin 鎖住(這是對的),副作用是 review
+      # 時看不到 API 形狀改了什麼 —— 這支把 schema diff 變成 PR 內可見的東西。
+      # 不同步、或缺 response_model 的 endpoint 數上升,都 exit 1。
+      - name: Check OpenAPI artifact and response_model ratchet
+        run: python scripts/export-openapi.py --check
+
   postgres-rls:
     name: Backend / PostgreSQL RLS
     needs: [contract-smoke, backend-core, backend-ingestion, backend-csp]

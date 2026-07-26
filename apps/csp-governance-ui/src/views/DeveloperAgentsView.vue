@@ -711,6 +711,7 @@ import {
   testAgentConnection,
 } from '../api/agentCredentials'
 import { listCollections } from '../api/ingestionCollections'
+import { extractError } from '../api/errors'
 import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -918,7 +919,7 @@ function validateForm() {
 async function fetchAgents() {
   loading.value = true
   try { const { data } = await listMyAgents(); agents.value = data }
-  catch (e) { setFeedback('error', e.response?.data?.detail || '載入 Agent 失敗') }
+  catch (e) { setFeedback('error', extractError(e, '載入 Agent 失敗')) }
   finally { loading.value = false }
 }
 async function fetchAvailableModels() {
@@ -988,7 +989,7 @@ async function handleTraceTest() {
     if (e.response?.data?.trace_test_report || e.response?.data?.report) {
       traceReport.value = normalizeTraceReport(e.response.data.trace_test_report || e.response.data.report)
     }
-    setFeedback('error', e.response?.data?.detail || '軌跡測試失敗，請稍後再試')
+    setFeedback('error', extractError(e, '軌跡測試失敗，請稍後再試'))
   } finally {
     traceTesting.value = false
   }
@@ -1000,7 +1001,7 @@ async function refreshDetailCredentials() {
   try {
     detailCredentials.value = await listAgentCredentials(detailAgent.value.id)
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '載入憑證失敗')
+    setFeedback('error', extractError(e, '載入憑證失敗'))
     detailCredentials.value = []
   } finally {
     credentialsLoading.value = false
@@ -1046,7 +1047,7 @@ async function handleIssueBootstrap() {
     }
     setFeedback('success', 'bootstrap token 已核發 — 立即複製，不會再顯示')
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '核發 bootstrap 失敗')
+    setFeedback('error', extractError(e, '核發 bootstrap 失敗'))
   } finally {
     credentialBusyId.value = null
   }
@@ -1078,7 +1079,7 @@ async function handleIssueStatic() {
     // got the one-time plaintext from the banner above, so skip the refresh.
     if (authStore.isAdmin) await refreshDetailCredentials()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '核發靜態 token 失敗')
+    setFeedback('error', extractError(e, '核發靜態 token 失敗'))
   } finally {
     credentialBusyId.value = null
   }
@@ -1103,7 +1104,7 @@ async function handleRotateCredential(credential) {
     setFeedback('success', '憑證已輪替 — 立即複製新 token')
     await refreshDetailCredentials()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '輪替失敗')
+    setFeedback('error', extractError(e, '輪替失敗'))
   } finally {
     credentialBusyId.value = null
   }
@@ -1118,7 +1119,7 @@ async function handleRevokeCredential(credential) {
     setFeedback('success', `憑證 id=${credential.id} 已吊銷`)
     await refreshDetailCredentials()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '吊銷失敗')
+    setFeedback('error', extractError(e, '吊銷失敗'))
   } finally {
     credentialBusyId.value = null
   }
@@ -1149,7 +1150,7 @@ async function handleRegister() {
     registerStep.value = 2
     setFeedback('success', 'agent 已註冊 · 待管理員審查 — 現在核發金鑰')
     await fetchAgents()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'register failed') }
+  } catch (e) { setFeedback('error', extractError(e, 'register failed')) }
   finally { registering.value = false }
 }
 
@@ -1160,7 +1161,7 @@ async function handleIssueForNew() {
     const data = await issueStaticCredential(registeredAgent.value.id, null)
     newAgentCsk.value = data.service_token
     setFeedback('success', 'service token 已核發 — 立即複製，不會再顯示')
-  } catch (e) { setFeedback('error', e.response?.data?.detail || '核發 token 失敗') }
+  } catch (e) { setFeedback('error', extractError(e, '核發 token 失敗')) }
   finally { issuingNew.value = false }
 }
 
@@ -1173,7 +1174,7 @@ async function handleTestConnection() {
   } catch (e) {
     testResult.value = {
       reachable: false, token_accepted: null,
-      detail: e.response?.data?.detail || 'test failed',
+      detail: extractError(e, 'test failed'),
     }
   } finally { testing.value = false }
 }
@@ -1260,7 +1261,7 @@ async function handleUpdateAgent() {
     if (detailAgent.value && detailAgent.value.id === data.id) detailAgent.value = data
     setFeedback('success', `已更新「${data.name}」`)
     closeEditModal()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'update failed') }
+  } catch (e) { setFeedback('error', extractError(e, 'update failed')) }
   finally { editing.value = false }
 }
 
@@ -1271,7 +1272,7 @@ async function handleApprove(agent) {
     await fetchAgents()
     syncDetailFromList(agent.id)
   }
-  catch (e) { setFeedback('error', e.response?.data?.detail || '核准失敗，請確認已通過軌跡測試') }
+  catch (e) { setFeedback('error', extractError(e, '核准失敗，請確認已通過軌跡測試')) }
 }
 
 // 核准／駁回後把最新狀態同步回開啟中的 detail modal（若操作對象就是它）。
@@ -1293,7 +1294,7 @@ async function handleToggleEncryption(agent) {
     if (idx !== -1) agents.value[idx] = { ...agents.value[idx], requires_encryption: applied }
     if (detailAgent.value && detailAgent.value.id === agent.id) detailAgent.value = { ...detailAgent.value, requires_encryption: applied }
     setFeedback('success', `已為「${agent.name}」${applied ? '啟用' : '停用'}加密`)
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'encryption update failed') }
+  } catch (e) { setFeedback('error', extractError(e, 'encryption update failed')) }
   finally { encryptionBusyId.value = null }
 }
 
@@ -1306,7 +1307,7 @@ async function handleHealthCheck(agent) {
     if (idx >= 0) agents.value[idx] = { ...agents.value[idx], health_status: data.status }
     setFeedback(data.status === 'healthy' ? 'success' : 'error',
       `「${agent.name}」健康：${data.status}${data.detail ? ` — ${data.detail}` : ''}`)
-  } catch (e) { setFeedback('error', e.response?.data?.detail || `「${agent.name}」健康探測失敗`) }
+  } catch (e) { setFeedback('error', extractError(e, `「${agent.name}」健康探測失敗`)) }
   finally { healthCheckingId.value = null }
 }
 
@@ -1319,7 +1320,7 @@ async function handleDeleteAgent(agent) {
     agents.value = agents.value.filter(a => a.id !== agent.id)
     if (detailAgent.value && detailAgent.value.id === agent.id) { showDetailModal.value = false; detailAgent.value = null }
     setFeedback('success', `已刪除「${agent.name}」`)
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'delete failed') }
+  } catch (e) { setFeedback('error', extractError(e, 'delete failed')) }
   finally { deletingId.value = null }
 }
 
@@ -1331,7 +1332,7 @@ async function handleReject() {
     closeRejectModal()
     await fetchAgents()
     syncDetailFromList(rejectedId)
-  } catch (e) { setFeedback('error', e.response?.data?.detail || '駁回失敗') }
+  } catch (e) { setFeedback('error', extractError(e, '駁回失敗')) }
 }
 
 async function handleDownloadTemplate() {
@@ -1344,7 +1345,7 @@ async function handleDownloadTemplate() {
     link.click()
     URL.revokeObjectURL(url)
     setFeedback('success', '樣板已下載')
-  } catch (e) { setFeedback('error', e.response?.data?.detail || '下載失敗') }
+  } catch (e) { setFeedback('error', extractError(e, '下載失敗')) }
 }
 
 function healthVariant(s) {
