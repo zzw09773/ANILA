@@ -519,7 +519,7 @@ const remarkPlugins = [remarkGfm, remarkMath];
  * @param {Array|undefined} [props.citations] 空/未給 = plugin 完全 no-op。
  * @param {(citation: object) => void} [props.onOpenCitation]
  */
-export function MarkdownView({ text, citations, onOpenCitation }) {
+function MarkdownViewImpl({ text, citations, onOpenCitation }) {
   const count = Array.isArray(citations) ? citations.length : 0;
 
   const activeRehypePlugins = useMemo(
@@ -553,3 +553,11 @@ export function MarkdownView({ text, citations, onOpenCitation }) {
     </div>
   );
 }
+
+// W2-9:markdown pipeline(remark-gfm + remark-math + rehype-katex +
+// rehype-highlight)是整個訊息渲染最貴的一段。memo 化讓它只在 `text` /
+// `citations` / `onOpenCitation` 真的變動時才重跑 —— 對非活躍訊息就是零。
+// 呼叫端必須傳引用穩定的 `onOpenCitation`(`app.jsx` 走 useStableCallback),
+// 否則這層 memo 會被 handler 的新身分擊穿。
+MarkdownViewImpl.displayName = "MarkdownView";
+export const MarkdownView = React.memo(MarkdownViewImpl);

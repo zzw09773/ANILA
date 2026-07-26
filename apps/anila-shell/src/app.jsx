@@ -45,6 +45,7 @@ import {
   installFocusFlush,
 } from "./runtime/classifyRetryQueue.js";
 import { buildPersistMeta } from "./runtime/messageMeta.js";
+import { useStableCallback } from "./runtime/useStableCallback.js";
 import { describeStreamFailure } from "./runtime/streamError.js";
 import {
   buildRetryRequest,
@@ -133,6 +134,17 @@ import { BannerBar } from "./banners.jsx";
 import { TraceExplorer } from "./spanTree.jsx";
 import { ServicesPanel } from "./services.jsx";
 import { originHref } from "./shellNav.jsx";
+
+// ---- Message Actions 的通用預設 --------------------------------------------
+// 動作是宣告式 {label, config.template},template 內 `{content}` 換成該則回覆
+// 全文,組好後當新使用者訊息送出。**不執行任意腳本**(air-gap 軍方不開 client
+// eval)。W2-9:放 module scope 而不是元件內 —— 元件內的陣列字面每次 render 都
+// 是新身分,會擊穿 `MessageBubble` 的 memo。
+const DEFAULT_MESSAGE_ACTIONS = Object.freeze([
+  { id: "translate-en", label: "翻譯成英文", config: { template: "請把以下內容翻譯成英文，只輸出譯文：\n\n{content}" } },
+  { id: "summarize", label: "摘要重點", config: { template: "請把以下內容摘要成條列重點：\n\n{content}" } },
+  { id: "official", label: "改寫成公文", config: { template: "請把以下內容改寫成正式公文格式：\n\n{content}" } },
+]);
 
 // ---- Router pseudo-agent ----------------------------------------------------
 const ROUTER_AGENT = Object.freeze({
@@ -1534,16 +1546,15 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // trace in place. Caller API key permissions and routing target are
   // inherited from the original turn.
   // Message Actions(回應動作鈕,kind='prompt_action'):正/倒讚旁的一鍵動作。
-  // 動作宣告式 {label, config.template},template 內 {content} 換成該則回覆
-  // 全文,組好後當新使用者訊息送出。**不執行任意腳本**(air-gap 軍方不開
-  // client eval)。來源優先序:該 agent 的 prompt_action functions(開發者在
-  // CSP 設計) > 沒設時用下方通用預設,所以一定有翻譯/摘要/公文可用。
-  const DEFAULT_MESSAGE_ACTIONS = [
-    { id: "translate-en", label: "翻譯成英文", config: { template: "請把以下內容翻譯成英文，只輸出譯文：\n\n{content}" } },
-    { id: "summarize", label: "摘要重點", config: { template: "請把以下內容摘要成條列重點：\n\n{content}" } },
-    { id: "official", label: "改寫成公文", config: { template: "請把以下內容改寫成正式公文格式：\n\n{content}" } },
-  ];
-  const messageActions = promptActionFns.length > 0 ? promptActionFns : DEFAULT_MESSAGE_ACTIONS;
+  // 來源優先序:該 agent 的 prompt_action functions(開發者在 CSP 設計) > 沒設
+  // 時用 module-level 的 `DEFAULT_MESSAGE_ACTIONS`(見檔頭),所以一定有
+  // 翻譯/摘要/公文可用。
+  // W2-9:`useMemo` 是必要的 —— 這個陣列會傳進 memo 化的 `MessageBubble`,
+  // 每次 render 都給一份新陣列的話那層 memo 就完全白做。
+  const messageActions = useMemo(
+    () => (promptActionFns.length > 0 ? promptActionFns : DEFAULT_MESSAGE_ACTIONS),
+    [promptActionFns],
+  );
 
   function runMessageAction(msg, action) {
     const template = action?.config?.template || action?.template;
@@ -2073,6 +2084,26 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     setSelectedAgentId(newAgentId);
   }
 
+  // ---- W2-9:傳給 memo 化 MessageBubble 的 handler 一律引用穩定 ----
+  //
+  // `MessageBubble` 用 `React.memo` 的預設淺比較,所以**任何**一個 prop 的
+  // identity 變了就整個白做。上面那些 handler 都是元件本體內的 function 宣告
+  // (每次 render 都是新物件),`onPickFollowUp` 原本更是 inline closure。
+  //
+  // 為什麼不是 `useCallback` + deps:它們讀 `messagesByConv`,而那個 state 在
+  // 串流期間**每個 token 都在變** —— 放進 deps 等於沒有 memo,不放就是 stale
+  // closure。所以走 latest-ref(見 `runtime/useStableCallback.js`)。
+  const stableRegenerate = useStableCallback(regenerateMessage);
+  const stableRate = useStableCallback(handleRate);
+  const stableEditUser = useStableCallback(handleEditUser);
+  const stableSwitchRevision = useStableCallback(switchRevision);
+  const stableOpenCitation = useStableCallback(onOpenCitation);
+  const stablePickFollowUp = useStableCallback((q) => sendMessage(q, [], {}));
+  const stableRunMessageAction = useStableCallback(runMessageAction);
+  const stableContinue = useStableCallback(continueMessage);
+  const stableRetry = useStableCallback(retryMessage);
+  const stableEmptyStatePick = useStableCallback((q) => sendMessage(q, [], {}));
+
   // ---- render: classified watermark + top bar + messages + composer ----
   // 殼層容器改用共用設計系統 AppShell（@anila/ui）；密等浮水印與繼承橫幅
   // 走 overlay slot——內容、props、層級與判斷條件逐字保留（安全元件不動）。
@@ -2362,7 +2393,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           agent={activeAgent}
                           agents={agents}
                           loading={loadingAgents}
-                          onPick={(q) => sendMessage(q, [], {})}
+                          onPick={stableEmptyStatePick}
                         />
                       </>
                     ) : (
@@ -2374,16 +2405,16 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           conversationId={selectedConvId}
                           classified={isClassified}
                           classificationLevel={selectedConv?.classificationLevel}
-                          onRegenerate={regenerateMessage}
-                          onRate={handleRate}
-                          onEditUser={handleEditUser}
-                          onSwitchRevision={switchRevision}
-                          onOpenCitation={onOpenCitation}
-                          onPickFollowUp={(q) => sendMessage(q, [], {})}
+                          onRegenerate={stableRegenerate}
+                          onRate={stableRate}
+                          onEditUser={stableEditUser}
+                          onSwitchRevision={stableSwitchRevision}
+                          onOpenCitation={stableOpenCitation}
+                          onPickFollowUp={stablePickFollowUp}
                           messageActions={messageActions}
-                          onAction={runMessageAction}
-                          onContinue={continueMessage}
-                          onRetry={retryMessage}
+                          onAction={stableRunMessageAction}
+                          onContinue={stableContinue}
+                          onRetry={stableRetry}
                         />
                       ))
                     )}

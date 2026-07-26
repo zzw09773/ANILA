@@ -242,7 +242,16 @@ export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, sta
 };
 
 // ---- Message Bubble ----
-export const MessageBubble = ({
+//
+// W2-9:`React.memo`(預設淺比較,不寫自訂比較函式 —— 自訂比較函式漏一個 prop
+// 就是靜默的 stale UI)。缺陷本體是串流每收到一個 token 就把整條訊息清單重繪
+// 一次:實測 40 則對話、30 個 token = **1200 次** MessageBubble render,每次都
+// 重跑完整 markdown pipeline。memo 化之後同樣情境是 30 次。
+//
+// 前提是呼叫端傳的 prop 引用要穩:`app.jsx` 的 9 個 handler 走
+// `runtime/useStableCallback.js`,`messageActions` 走 `useMemo`,串流累積用
+// `.map()` 只換命中那一則的 identity。少任何一項這個 memo 就完全白做。
+const MessageBubbleImpl = ({
   msg,
   agents,
   conversationId,
@@ -842,6 +851,9 @@ export const MessageBubble = ({
     </div>
   );
 };
+
+MessageBubbleImpl.displayName = "MessageBubble";
+export const MessageBubble = React.memo(MessageBubbleImpl);
 
 // ---- Agent selector dropdown ----
 export const AgentSelector = ({ agents, value, onChange }) => {
