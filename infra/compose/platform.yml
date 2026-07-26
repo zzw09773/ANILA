@@ -113,7 +113,11 @@ services:
       ANILA_TRUSTED_PROXY_CIDRS: "${ANILA_TRUSTED_PROXY_CIDRS:-}"
       # 1=稽核寫入失敗即拒絕請求(write-ahead,推論前擋下)。正式營運的
       # 取捨:稽核 DB 故障會擋下所有推論;預設 0(fail-open,記 error log)。
-      ANILA_AUDIT_STRICT: "${ANILA_AUDIT_STRICT:-0}"
+      # W1-5:formal posture 契約現在要求 strict=1(稽核寫不進去就拒絕請求),
+      # 所以**正式 compose 的預設必須是 1** —— 否則 startup_security 會擋下啟動,
+      # 而 operator 只會看到一個沒頭沒尾的 posture 錯誤。
+      # dev.yml 維持 0(開發時稽核 DB 抖一下不該讓請求全掛)。
+      ANILA_AUDIT_STRICT: "${ANILA_AUDIT_STRICT:-1}"
       # Gate 5 R5/R7 formal model-governance boundary.  These values are
       # intentionally explicit container paths; the host-side material
       # directory is injected only through read-only mounts below.  A formal
