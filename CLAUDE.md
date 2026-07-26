@@ -80,10 +80,14 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 | `anila-ops.sh` 的 `BACKUP_DIR` 落在 repo 內 | **已修**:`${ANILA_BACKUP_DIR:-$ANILA_STATE_DIR/backups}`,且經 `assert_outside_repo` 強制在 repo 外 | `grep -n 'BACKUP_DIR|assert_outside_repo' infra/deployment/scripts/anila-ops.sh` |
 | 營業秘密對話可建立未登入分享連結 | **分類面已修**:`is_publicly_shareable` fail-closed 到只允許 `無機密` | `sed -n '376,389p' services/csp/app/services/conversation_service.py` |
 
-**仍成立的**:
+**先前列為「仍成立」的兩條,2026-07-26 夜間都修好了**(這一節自己就記著「過時的安全主張同時造成重工與錯誤排序」,所以修好就要讓它跟上):
 
-- **`n8n` 與 `gitlab` 無 `profiles:`** → 仍預設隨 stack 啟動(`platform.yml:842`、`:903`),`AGENTS.md` §3.3「交付規格要求移除」的關切未解。→ 補救計畫 **W1-8**。
-- ⚠ **分享連結的旗標面沒修**:`create_share` **從未讀 `settings.ENABLE_PUBLIC_SHARE`**(`conversation_service.py:427-454`);讀取端有擋(`public_share.py:50-53`)。card 部署姿態是 `ENABLE_PUBLIC_SHARE=false` → 使用者**建得出分享連結、同事一定看到 404**。這與上表「分類面已修」是**兩個不同缺陷**,別混為一談。→ 補救計畫 **W3-7c**。
+| 舊主張 | 現況 | 怎麼複驗 |
+|---|---|---|
+| `n8n` 與 `gitlab` 無 `profiles:`,預設隨 stack 啟動 | **已修(W1-8)**:兩者皆 `profiles: ["developer-tools"]`,與 codeserver 同姿態。nginx 只 join 那幾個網路、沒有 `depends_on`,所以 profile 排除不會讓 compose 拒絕解析 | 不帶 profile 的 `docker compose -f infra/compose/platform.yml config --services` 只有 10 個平台服務,三個工具皆不在;帶 `--profile developer-tools` 三個都在 |
+| 分享連結的**旗標面**沒修:`create_share` 從未讀 `ENABLE_PUBLIC_SHARE` → 使用者建得出連結、同事一定看到 404 | **已修(W3-7c 後端半邊)**:旗標關閉時回 403 + 明確訊息。刻意不對稱:**建立**擋、**列出**不擋(否則無法撤銷已發出去的連結) | `grep -n "ENABLE_PUBLIC_SHARE" services/csp/app/services/conversation_service.py`;`services/csp/tests/test_share_flag_gate.py`(5 支) |
+
+> ⚠ **W3-7c 的前端半邊還沒做**:`GET /api/capabilities` 已經吐 `enable_public_share`(W1-3 刻意放進去的),但 shell 還沒用它把分享鈕隱藏／disabled。所以 card 部署下使用者**還是按得到那顆鈕**,只是現在會拿到一句看得懂的 403,而不是一個保證壞掉的 URL。前端半邊排在 W3-7。
 
 **No-Go 判定本身不變**(資料門檻仍依 roadmap §6.1)。目前排序最高的阻斷級發現已改為:分類分級的**外流面**(複製/匯出/分享/列印/稽核五個 gate 全掛在 legacy `classified` boolean 上 → 營業秘密等同無機密)與**輸入面**(文件密等純繼承 collection、零 reviewer、任何人都能建無機密知識庫)。前者 = W1-1,後者 = W2-11。
 

@@ -478,6 +478,28 @@ def create_share(
     expires_at: Optional[datetime] = None,
 ) -> ConversationShare:
     conv = get_conversation(db, conv_id, user)
+    # W3-7c:**旗標面**的 gate。這與下面的分類面 gate 是**兩個不同缺陷**
+    # (CLAUDE.md §5.1 明確分開記),別混為一談。
+    #
+    # 先前這裡完全沒讀 `ENABLE_PUBLIC_SHARE`,而讀取端有擋
+    # (`api/public_share.py:50-53` 回 404)。card 部署的姿態是 false,結果:
+    # 使用者按下「建立分享連結」→ 成功、拿到 URL、UI 顯示成功 → 傳給同事 →
+    # 同事**一定**看到 404。平台給了一個保證壞掉的東西,而且是使用者主動要
+    # 拿去給別人的東西。
+    #
+    # 回 403 而不是 404:讀取端用 404 是因為那條路徑未經認證,404 讓 token 的
+    # 存在無法被探測。這裡呼叫者已認證、操作的是自己的對話,沒有可探測的東西;
+    # 而 `GET /api/capabilities` 本來就會把 `enable_public_share` 告訴已認證的
+    # 使用者(W1-3 刻意放進去讓前端隱藏這顆鈕)。所以給明確訊息,讓使用者知道
+    # 「不是你做錯,是這個部署沒開」。
+    #
+    # 刻意的不對稱:**建立**擋、**列出**不擋 —— 旗標關掉之前建的連結還是要
+    # 看得到,否則使用者無法撤銷已經發出去的東西。
+    if not settings.ENABLE_PUBLIC_SHARE:
+        raise HTTPException(
+            status_code=403,
+            detail="本部署未啟用公開分享功能,無法建立分享連結",
+        )
     if not is_publicly_shareable(conv):
         raise HTTPException(
             status_code=403,
