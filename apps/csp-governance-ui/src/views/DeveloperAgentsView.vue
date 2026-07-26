@@ -1284,7 +1284,12 @@ function syncDetailFromList(id) {
 async function handleToggleEncryption(agent) {
   if (!agent || encryptionBusyId.value === agent.id) return
   const next = !agent.requires_encryption
-  if (next && !(await confirm({ message: `為「${agent.name}」啟用強制加密？經過它的所有對話都鎖為加密模式 — 每個對話不可逆。`, confirmText: '啟用', danger: true }))) return
+  // W1-3:原文說的是「啟用強制加密」、把對話「鎖為加密」,而全 repo 零 at-rest 加密
+  // (`pgcrypto|LUKS|dm-crypt|TDE` grep=0)。這個旗標做的是**單向鎖定密等**,
+  // 不是把內容加密 —— 對 admin 講反話跟對使用者講反話一樣糟,而 admin 是照這
+  // 句話決定要不要按下去的人。欄位名 `requires_encryption` 不動(改名是 schema
+  // 事務,掛 C5 ledger 退場條件)。
+  if (next && !(await confirm({ message: `為「${agent.name}」啟用密等鎖定(latch)?經過它的所有對話都會被單向鎖定密等,每個對話不可逆。這不是內容加密。`, confirmText: '啟用', danger: true }))) return
   encryptionBusyId.value = agent.id
   try {
     const { data } = await setAgentEncryption(agent.id, next)
