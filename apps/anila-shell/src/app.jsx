@@ -33,6 +33,7 @@ import {
   latchConversationWithMeta,
   CLASSIFICATION_FLOOR,
 } from "./runtime/classified.js";
+import { buildUserContent } from "./runtime/userContent.js";
 import {
   buildExportFile,
   prepareConversationExport,
@@ -188,25 +189,6 @@ function buildMessageHistory(priorMsgs, currentText, currentAttachments) {
   }
   out.push({ role: "user", content: buildUserContent(currentText, currentAttachments) });
   return out;
-}
-
-function buildUserContent(text, attachments) {
-  const list = Array.isArray(attachments) ? attachments : [];
-  const images = list.filter((a) => a.dataUrl && (a.kind === "image" || (a.contentType || "").startsWith("image/")));
-  const otherFiles = list.filter((a) => !images.includes(a) && a.name);
-  if (images.length === 0) {
-    if (otherFiles.length === 0) return text;
-    const tail = otherFiles.map((a) => `- ${a.name}`).join("\n");
-    return `${text}\n\n[附件]\n${tail}`;
-  }
-  const parts = [{ type: "text", text: text || "" }];
-  for (const img of images) {
-    parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
-  }
-  if (otherFiles.length > 0) {
-    parts[0].text = `${parts[0].text}\n\n[附件]\n${otherFiles.map((a) => `- ${a.name}`).join("\n")}`;
-  }
-  return parts;
 }
 
 function makeId(prefix) {

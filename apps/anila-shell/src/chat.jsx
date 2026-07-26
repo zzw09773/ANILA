@@ -5,6 +5,10 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
+import {
+  isModelReadableAttachment,
+  attachmentBlockedReason,
+} from "./runtime/userContent.js";
 import { MarkdownView, extractThinkTags } from "./markdown.jsx";
 
 import {
@@ -1099,8 +1103,25 @@ export const Composer = ({
     const picked = Array.from(files || []);
     if (!picked.length) return;
 
+    // W1-2:模型讀不到的附件**擋在上傳之前**。
+    //
+    // 先前的行為是照樣上傳、照樣建 chip、照樣顯示成功,而 prompt 裡只有檔名
+    // —— 模型於是對一份自己從沒看過的文件產生幻覺。使用者拿到一個看起來很像
+    // 的答案,卻沒有任何線索知道內容根本沒送出去。
+    //
+    // 擋在上傳之前而不是「上傳完再標記」是刻意的:一個成功的 chip 就是那個
+    // 錯覺的來源。同時也省掉一次無意義的 50MB 上傳。
+    //
+    // 真修 = 接 parser 把內容注入(W3-9);屆時這個擋要連同 W3-9 的驗收一起回收。
+    const readable = picked.filter(isModelReadableAttachment);
+    const blocked = picked.filter((f) => !isModelReadableAttachment(f));
+    if (blocked.length > 0) {
+      setUploadError(blocked.map(attachmentBlockedReason).join(" "));
+    }
+    if (!readable.length) return;
+
     // Optimistically add a placeholder so the chip appears while uploading.
-    const placeholders = picked.map((f) => ({
+    const placeholders = readable.map((f) => ({
       name: f.name,
       kind: (f.type || "").startsWith("image/") ? "image" : "file",
       size: f.size,
@@ -1109,7 +1130,7 @@ export const Composer = ({
     setAtts((a) => [...a, ...placeholders]);
     if (!onUpload) return;
 
-    for (const file of picked) {
+    for (const file of readable) {
       try {
         // Read image bytes as data URL so the LLM can be given the image
         // inline (OpenAI vision format). Skipped for non-images to keep
