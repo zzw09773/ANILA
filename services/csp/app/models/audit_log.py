@@ -20,6 +20,11 @@ class AuditLog(Base):
     detail = Column(Text, nullable=True)
     ip_address = Column(String(64), nullable=True)
     metadata_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    # timezone=True:W2-10 批次 1(migration r1_0040)。這個欄在乾淨 alembic 鏈上
+    # 從 `0001` 起就是 timestamptz,錯的只有 ORM 宣告 —— 讀回來被降級成 naive,
+    # 拿去跟 aware 比較就 TypeError(W1-4 那個 API key 500 的同一個病根)。
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
 
     actor = relationship("User", lazy="joined")

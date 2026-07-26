@@ -73,4 +73,8 @@ class PolicyDecision(Base):
     metadata_json = Column(JSONValue, nullable=True)
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    # timezone=True:W2-10 批次 1(migration r1_0040)。政策裁決 ledger 是法律
+    # 證據 —— 「這次 deny 發生在哪個絕對時點」必須寫在資料裡,不能靠外部知識推斷。
+    # 既有 naive 值的判讀(`AT TIME ZONE 'Asia/Taipei'`,2026-07-26 user 拍板)
+    # 與其 8 小時不連續的脈絡,逐字寫在 r1_0040 檔頭。
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)

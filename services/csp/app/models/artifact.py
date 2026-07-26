@@ -344,13 +344,18 @@ class ExportRecord(Base):
     # doc 08 §5 四共通分類欄位(匯出當下 artifact 的 effective 分類)。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    classification_latched_at = Column(DateTime, nullable=True)
+    # ── W2-10 批次 1(migration r1_0040):**只有 ExportRecord 這兩欄** ────────
+    # `export_records` 是外流證據(誰把哪一份什麼密等的東西帶去哪裡),屬治理帳,
+    # 所以排在批次 1。本檔其他類別(Artifact / ArtifactVersion / ArtifactJob)的
+    # 時間欄**刻意不動** —— 它們不是治理帳,且 `artifact_versions` 的列數隨產出
+    # 成長,ALTER 耗時未量測,依 C1 §a 留給批次 2。
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     artifact = relationship("Artifact", back_populates="exports")

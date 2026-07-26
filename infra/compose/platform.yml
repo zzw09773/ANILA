@@ -28,6 +28,18 @@ services:
       # 黑名單擋 'csp' / 'csp_password' 等 dev 值。
       POSTGRES_PASSWORD: ${CSP_DB_PASSWORD:?CSP_DB_PASSWORD must be set (postgres superuser password)}
       POSTGRES_DB: csp
+      # ⛔ 鐵則(補救計畫 W2-10 / 子計畫 C1 §c):**csp-db 的 TZ 必須維持 UTC**,
+      # 在 C1 全部批次(naive timestamp 欄 → timestamptz)做完之前不得改成
+      # Asia/Taipei。理由:治理帳的 created_at 帶 `server_default
+      # CURRENT_TIMESTAMP`,而 CURRENT_TIMESTAMP 是 timestamptz —— 寫進
+      # `timestamp without time zone` 欄時**按 session TZ 轉換**。session TZ 一改
+      # 成台北,這條路徑就開始存本地時間,而同一欄的舊值是 UTC → 同一個欄位混
+      # 兩種語意,且資料裡沒有任何標記能區分某一列屬於哪一種。
+      # 要台北時間的是**顯示層**,走前端共用 formatter(W1-4④),不是改 DB 的 TZ。
+      # ⚠ 刻意寫死、不吃 `.env` interpolation:讓「編 .env」不可能無聲破壞這條。
+      # 現況:批次 1(r1_0040)已轉治理帳 + api_keys 共 12 欄;批次 2(大表
+      # messages / document_chunks / ingestion_*)還沒轉 → 鐵則整體仍然有效。
+      TZ: Etc/UTC
     # 只開 loopback,host 上的 integration test 拿得到,LAN 摸不到。
     ports:
       - "127.0.0.1:5433:5432"
