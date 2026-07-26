@@ -51,19 +51,29 @@ done
 [ -d "$REPO_ROOT/services/ingestion-worker/src" ] && \
   PYPATH="$PYPATH:/work/services/ingestion-worker/src"
 
-# logs/ 的 tmpfs 只在該目錄**已存在於 repo** 時才掛 —— 唯讀掛載下 docker 無法
-# 建立不存在的掛載點(會以 "read-only file system" 失敗)。目前只有
-# services/csp 有 logs/,它也是唯一會在 import 時開 file handler 的服務。
-MOUNTS=(--tmpfs /tmp:mode=1777)
-if [ -d "$REPO_ROOT/${TARGET_DIR}/logs" ]; then
-  MOUNTS+=(--tmpfs "/work/${TARGET_DIR}/logs:mode=1777")
-fi
-
+# ── 為什麼不是「repo 唯讀掛載 + 對 logs/ 掛 tmpfs」 ─────────────────────────
+#
+# 第一版是那樣寫的,而且只在 `${TARGET_DIR}/logs` **已存在**時才掛 tmpfs
+# (唯讀掛載下 docker 無法建立不存在的掛載點)。問題是 `services/csp/logs/` 被
+# .gitignore 忽略 → **乾淨 checkout 上它不存在** → 條件式跳過 tmpfs → CSP import
+# 時的 `setup_logging()` 執行 `Path("logs").mkdir()` 撞唯讀檔案系統 → 一支測試
+# 都還沒跑就整批失敗。也就是說那個版本**只在「host 上剛好殘留過那個 gitignored
+# 目錄」時才會work**,對別人的機器或 CI runner 都是壞的。
+# 由 PR #52 的 Codex review 抓到。
+#
+# 改法:把 repo 掛成 `/src:ro`,在容器內的 tmpfs `/work` 做一份可寫副本再跑。
+# 代價是每次多一次 cp(repo 不大,實測 ~2 秒),換到的是「不依賴 host 上任何
+# 偶然狀態」——而測試環境的可重現性比那兩秒值錢。副本在 tmpfs 上,容器結束即消失,
+# 也不會有測試把暫存檔寫回你的工作樹的風險(`infra/deployment/tests` 就會那樣做)。
 exec docker run --rm \
-  -v "$REPO_ROOT:/work:ro" \
-  "${MOUNTS[@]}" \
-  -w "/work/${TARGET_DIR}" \
+  -v "$REPO_ROOT:/src:ro" \
+  --tmpfs /work:mode=1777,size=2g \
+  --tmpfs /tmp:mode=1777 \
+  --user root \
   -e "PYTHONPATH=$PYPATH" \
   -e SECRET_KEY=test-only-key-0123456789abcdef \
   "$IMAGE" \
-  python -m pytest -p no:cacheprovider --no-header "$@"
+  sh -c 'cp -a /src/. /work/ 2>/dev/null || cp -r /src/. /work/;
+         cd "/work/'"${TARGET_DIR}"'" &&
+         mkdir -p logs &&
+         exec python -m pytest -p no:cacheprovider --no-header '"$(printf '%q ' "$@")"

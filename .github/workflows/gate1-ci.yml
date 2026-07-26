@@ -558,15 +558,35 @@ jobs:
       # W0-2:這兩支是 12 個 `_pg` 測試檔裡 CI 唯一沒點名的兩支。
       # 其餘 10 支既有 job 已逐檔涵蓋(所以「CI 沒有真 PG 路徑」的說法是錯的,
       # 真缺口只有這兩支 + drift 檢查沒接上)。
+      #
+      # ⚠ 環境變數名稱必須與測試實際讀的一致 —— 第一版設了
+      # `MIGRATION_DATABASE_URL` 與 `ANILA_GATE2_TEST_PG_ADMIN_URL`,而這兩支讀的
+      # 是 `ANILA_GATE2_LEDGER_PG_URL`(receipts,整檔 skipif)與
+      # `TEST_DATABASE_URL`/`DATABASE_URL`(session event store,fixture 內
+      # pytest.skip)。結果兩支全 skip,**而 pytest 全 skip 時仍回 exit 0** ——
+      # 這個步驟因此宣稱跑了 Gate 5 race proofs 但實際一條都沒跑。
+      # 由 PR #52 的 Codex review 抓到。
+      #
+      # 所以除了修變數名,還必須**讓「全部 skip」算失敗** —— 否則變數名哪天再
+      # 漂掉,又會回到「沉默看起來像成功」。
       - name: Prove Gate 5 receipts and session event store on PostgreSQL
         working-directory: services/csp
         env:
+          ANILA_GATE2_LEDGER_PG_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          TEST_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
           MIGRATION_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
-          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
           PYTHONPATH: .
         run: |
+          set -o pipefail
           python -m pytest tests/test_gate5_model_governance_receipts_pg.py \
-                           tests/test_gate5_r4_session_event_store_pg.py -q
+                           tests/test_gate5_r4_session_event_store_pg.py \
+                           -q --no-header -rs | tee /tmp/gate5-pg.log
+          if ! grep -qE "[0-9]+ passed" /tmp/gate5-pg.log; then
+            echo "::error::Gate 5 PG 測試沒有任何一支真的執行(全部 skipped)。"
+            echo "::error::pytest 在全 skip 時回 exit 0,所以綠燈不代表跑過 ——"
+            echo "::error::請檢查上方 skip 理由與本步驟的 DSN 環境變數名稱是否仍相符。"
+            exit 1
+          fi
 
   frontend-governance:
     name: Frontend / CSP governance UI
@@ -652,6 +672,14 @@ jobs:
         env:
           VITE_ANILA_PILOT_MODE: "true"
         run: npm run build
+
+      # ⚠ 這一步不能省。第一版加了 anilalm 的 `verify:bundle` script 與預算檔,
+      # 卻只在 shell 的 job 裡呼叫 —— anilalm 的 bundle 即使超出預算,required CI
+      # 仍會通過,ratchet 實際上沒有護欄效果(由 PR #52 的 Codex review 抓到)。
+      # 放在 signed-pilot build 之後,量到的是最後一次 build 的產物。
+      - name: Enforce bundle budget
+        working-directory: apps/anilalm
+        run: npm run verify:bundle
 
   backend-pptx-renderer:
     name: Backend / PPTX renderer contracts

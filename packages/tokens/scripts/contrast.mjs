@@ -80,15 +80,25 @@ export function relativeLuminance(value) {
 }
 
 /**
- * WCAG 對比比值(1–21)。順序無關。
- * @returns {number} 四捨五入到小數兩位
+ * WCAG 對比比值(1–21),**完整精度**。順序無關。
+ *
+ * ⚠ 刻意不四捨五入。第一版在這裡先 round 到小數兩位才回傳,而 `verify.mjs`
+ * 直接拿該值比 4.5 / 3.0 門檻 —— 於是實際 4.496:1 會變成 4.50 而**誤判合格**,
+ * 恰好低於門檻的新顏色可以整批溜過這個 gate(由 PR #52 的 Codex review 抓到)。
+ * 判定一律用完整精度,只有「顯示」與「golden 比對」才 round(見 `ratio2()`)。
+ * @returns {number}
  */
 export function contrastRatio(a, b) {
   const la = relativeLuminance(a);
   const lb = relativeLuminance(b);
   const hi = Math.max(la, lb);
   const lo = Math.min(la, lb);
-  return Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100;
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** 給人看的兩位小數版本 —— 只用於訊息輸出與 golden 比對,不用於判定。 */
+export function ratio2(a, b) {
+  return Math.round(contrastRatio(a, b) * 100) / 100;
 }
 
 /** WCAG 門檻。非文字 UI 元件與狀態指示 = 3:1;正常文字 = 4.5:1。 */

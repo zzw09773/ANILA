@@ -19,7 +19,7 @@ duplication.
 
 from __future__ import annotations
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -94,6 +94,20 @@ class WorkerSettings(BaseSettings):
             "identity, not endpoint drift)."
         ),
     )
+    @field_validator("embedding_source_dim", mode="before")
+    @classmethod
+    def _blank_source_dim_means_unset(cls, value):
+        """把空字串正規化成 None(與 CSP 的 ANILA_EMBED_SOURCE_DIM 同理)。
+
+        ⚠ 必要而非防禦性:compose 的 `${ANILA_EMBED_SOURCE_DIM_DEV:-}` 在未設定時
+        展開成**空字串且仍傳入該 key**,Pydantic 對 `int | None` 收到 `""` 會丟
+        ValidationError → worker 起不來。而這是「沒有部署較小維度模型」的**預設**
+        情況。由 PR #52 的 Codex review 抓到。
+        """
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
     embedding_timeout_seconds: float = Field(
         default=30.0,
         description="Per-request embedding timeout.",

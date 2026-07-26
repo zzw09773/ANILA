@@ -98,7 +98,7 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 ## 6. 鐵則(快速;詳細安全/測試見 `AGENTS.md` §6–7、§9–10)
 
 - 繁中台灣用語、無簡體。
-- **祕密零外洩**(PUBLIC repo):`.env`/`*.pem`/`*.key`/`secrets/`/憑證私鑰 已 gitignore,別加回追蹤。⚠ **容器掛載不看 gitignore** —— `codeserver` 以 RW 掛 repo root,`backups/` 落在裡面(見 §5 安全阻斷)。
+- **祕密零外洩**(PUBLIC repo):`.env`/`*.pem`/`*.key`/`secrets/`/憑證私鑰 已 gitignore,別加回追蹤。⚠ **容器掛載不看 gitignore** —— 這條原則仍然成立(任何以 RW 掛 repo 的服務都會繞過 gitignore),但**原本舉的 codeserver 例子已經修好了**:現行 `platform.yml:807-822` 只掛隔離 workspace、有 `profiles:`,而 `anila-ops.sh` 的備份目錄經 `assert_outside_repo` 強制在 repo 外。詳見 §5.1 的逐條複驗表。新增掛載時仍要套用這條原則。
 - **不動 running `anila-platform-*` 容器**(user dev 環境),除非授權。
 - **端到端驗證、用對方法**:別只看 status code(SPA catch-all 對未匹配路由回 200 text/html → 驗 Content-Type);取資料走正式 HTTP API + auth,不直連 DB。
 - **別腦補成 bug**:功能按 spec ≠ bug;先客觀呈現,讓 user 判斷。

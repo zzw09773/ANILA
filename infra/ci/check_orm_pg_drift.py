@@ -21,8 +21,15 @@ api_keys / alerts / audit_logs / platform_links 八張表,coverage 21%),docstrin
 
 兩種檢查刻意分開
 ----------------
-**--mode drift**:ORM metadata vs 真 PG。抓缺欄 / 缺 index / 缺 UNIQUE / 缺 FK /
-型別不符。
+**--mode drift**:ORM metadata vs 真 PG。抓 缺表 / 缺欄 / 缺 index / 缺 UNIQUE /
+缺 FK / **timestamp 的時區屬性不一致**(`TZ_MISMATCH`)。
+
+⚠ **刻意不做通用型別比對**。第一版 docstring 宣稱抓「型別不符」而實作只比對欄位
+名稱存在(由 PR #52 的 Codex review 抓到)。通用比對在這個 codebase 會大量誤報
+—— `user_memory.embedding` 是 ORM `Text` 對應 SQL `halfvec`、
+`JSON().with_variant(JSONB)` 兩邊名稱也不同 —— 需要一長串 allow-list,而
+allow-list 一長就等於什麼都放行。所以只比對 tz 屬性:那是本次補救真正在追的
+一項(W2-10 的 93 欄轉換若只改一邊就會被這條抓到)。
 
 **--mode policy**:純靜態,不需要 DB。目前只有一條規則:**所有 `DateTime` 欄
 必須宣告 `timezone=True`**。
@@ -178,6 +185,36 @@ def run_drift(dsn: str) -> int:
         for col in table.columns:
             if col.name not in db_cols:
                 findings.append({"kind": "MISSING_COLUMN", "target": f"{table.name}.{col.name}"})
+                continue
+            # ── timestamp 的時區屬性比對 ────────────────────────────────────
+            #
+            # 刻意**只**比對這一項,不做通用型別比對。理由:
+            #   - 通用比對在這個 codebase 會大量誤報 —— `user_memory.embedding`
+            #     是 ORM `Text` 對應 SQL `halfvec`、`JSON().with_variant(JSONB)`
+            #     兩邊名稱也不同,要維護一長串 allow-list 才能用,而 allow-list
+            #     一長就會變成「什麼都放行」。
+            #   - 而 tz 屬性是**本次補救真正在追的那一項**:W2-10 要把 93 個
+            #     naive 欄轉 timestamptz,若只改 PG 沒改 ORM(或反之),就會出現
+            #     「一邊 aware 一邊 naive」的中間狀態 —— 那正是這條要抓的。
+            #
+            # 第一版的 docstring 宣稱會抓「型別不符」而實作只比對欄位名稱,
+            # 由 PR #52 的 Codex review 抓到。現在敘述與實作一致:只比 tz。
+            from sqlalchemy import DateTime as _DateTime
+
+            orm_type = col.type
+            if isinstance(orm_type, _DateTime):
+                orm_tz = bool(getattr(orm_type, "timezone", False))
+                db_type_name = str(db_cols[col.name]["type"]).upper()
+                db_tz = "WITH TIME ZONE" in db_type_name or "TIMESTAMPTZ" in db_type_name
+                if orm_tz != db_tz:
+                    findings.append({
+                        "kind": "TZ_MISMATCH",
+                        "target": f"{table.name}.{col.name}",
+                        "detail": (
+                            f"ORM timezone={orm_tz}, DB={db_type_name} "
+                            "→ 只改了一邊;W2-10 必須在同一個 PR 內同時改"
+                        ),
+                    })
 
         # index / unique:比對「宣告要有」與「DB 實際有」的欄位集合
         db_index_cols = {

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -106,6 +106,26 @@ class Settings(BaseSettings):
     # 端點漂移 —— 維度是唯一能抓到的訊號。詳見 anila_core 的
     # truncate_embedding docstring。
     ANILA_EMBED_SOURCE_DIM: int | None = Field(default=None, ge=1, le=4000)
+
+    @field_validator("ANILA_EMBED_SOURCE_DIM", mode="before")
+    @classmethod
+    def _blank_source_dim_means_unset(cls, value):
+        """把空字串正規化成 None。
+
+        ⚠ 這不是防禦性程式碼,是**必要的**:Docker Compose 的 `${VAR:-}` 在變數
+        未設定時會展開成**空字串並且仍然傳入該 key**(不是省略),實測
+        `docker compose config` 輸出 `ANILA_EMBED_SOURCE_DIM: ""`。而 Pydantic 對
+        `int | None` 收到 `""` 會丟 ValidationError:
+
+            Input should be a valid integer, unable to parse string as an integer
+
+        後果是 **CSP 直接起不來** —— 而這條路徑正是「操作者沒有部署較小維度模型」
+        的**預設**情況。第一版漏了這個(由 PR #52 的 Codex review 抓到),
+        compose 用 `:-` 給 Optional 數值欄位時一律要配這個正規化。
+        """
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
     # JWT
     # SECRET_KEY 在 RS256 cutover 後不再用於 access/refresh JWT 簽發,

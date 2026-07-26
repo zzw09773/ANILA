@@ -10,16 +10,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { contrastRatio, relativeLuminance, toLinearSrgb, THRESHOLD } from "../scripts/contrast.mjs";
+import { contrastRatio, ratio2, relativeLuminance, toLinearSrgb, THRESHOLD } from "../scripts/contrast.mjs";
 import { PAIRS, ACCENTS, DARK_BG, LIGHT_BG } from "../scripts/contrast-pairs.mjs";
 
 // ── 基本正確性:用 WCAG 定義的已知端點校準 ────────────────────────────────
 test("純黑與純白的對比是 21:1(WCAG 的理論最大值)", () => {
-  assert.equal(contrastRatio("#000000", "#ffffff"), 21);
+  assert.equal(ratio2("#000000", "#ffffff"), 21);
 });
 
 test("同色對比是 1:1", () => {
-  assert.equal(contrastRatio("#2b4c7e", "#2b4c7e"), 1);
+  assert.equal(ratio2("#2b4c7e", "#2b4c7e"), 1);
 });
 
 test("相對亮度:黑 0、白 1", () => {
@@ -28,7 +28,7 @@ test("相對亮度:黑 0、白 1", () => {
 });
 
 test("對比與順序無關", () => {
-  assert.equal(contrastRatio("#2b4c7e", LIGHT_BG), contrastRatio(LIGHT_BG, "#2b4c7e"));
+  assert.equal(ratio2("#2b4c7e", LIGHT_BG), ratio2(LIGHT_BG, "#2b4c7e"));
 });
 
 test("三碼 hex 等於展開後的六碼", () => {
@@ -67,7 +67,7 @@ const D1_GOLDEN = {
 
 test("D1 golden:七個 accent 對深色底的對比逐項相符(±0.01)", () => {
   for (const accent of ACCENTS) {
-    const actual = contrastRatio(accent.value, DARK_BG);
+    const actual = ratio2(accent.value, DARK_BG);
     const golden = D1_GOLDEN[accent.name];
     assert.ok(golden !== undefined, `accent ${accent.name} 缺 golden 值`);
     assert.ok(
@@ -102,9 +102,29 @@ test("D2 golden:fg-subtle / warn / success 三值與原稽核相符(該三值先
   for (const [id, golden] of Object.entries(expected)) {
     const pair = PAIRS.find((p) => p.id === id);
     assert.ok(pair, `找不到配對 ${id}`);
-    const actual = contrastRatio(pair.fg, pair.bg);
+    const actual = ratio2(pair.fg, pair.bg);
     assert.ok(Math.abs(actual - golden) <= 0.01, `${id}: ${actual} vs golden ${golden}`);
   }
+});
+
+// ── 門檻判定不得先四捨五入 ────────────────────────────────────────────────
+test("contrastRatio 回傳完整精度,ratio2 才是顯示用的兩位小數", () => {
+  // 找一個小數位夠多的實際配對來證明兩者確實不同
+  const exact = contrastRatio("oklch(0.62 0.014 260)", LIGHT_BG); // fg-subtle
+  const shown = ratio2("oklch(0.62 0.014 260)", LIGHT_BG);
+  assert.notEqual(exact, shown, "contrastRatio 不該回傳已 round 的值");
+  assert.equal(Math.round(exact * 100) / 100, shown);
+});
+
+test("恰好低於門檻的值必須被判為不合格(不可因 round 而放行)", () => {
+  // 這條釘住 Codex 在 PR #52 指出的漏洞:第一版 contrastRatio 先 round 到
+  // 兩位小數才回傳,而 verify.mjs 直接拿它比 4.5 —— 於是實際 4.496 變成 4.50
+  // 而誤判合格,恰好低於 WCAG 門檻的新顏色可以整批溜過 gate。
+  const justUnder = 4.4996;
+  const rounded = Math.round(justUnder * 100) / 100; // → 4.5
+  assert.equal(rounded, 4.5, "前提:這個值 round 後恰好等於門檻");
+  assert.ok(justUnder < THRESHOLD.text, "完整精度下必須是不合格");
+  assert.ok(!(rounded < THRESHOLD.text), "round 後會被誤判為合格 —— 這正是漏洞");
 });
 
 // ── 配對表自身的完整性 ────────────────────────────────────────────────────

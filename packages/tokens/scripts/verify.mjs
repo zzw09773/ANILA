@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
-import { contrastRatio, THRESHOLD } from "./contrast.mjs";
-import { PAIRS } from "./contrast-pairs.mjs";
+import { contrastRatio, ratio2, THRESHOLD } from "./contrast.mjs";
+import { PAIRS, checkSourcesMatch } from "./contrast-pairs.mjs";
 
 // ── 1. 必要 token 存在性 + air-gap 自足性(原有檢查,不動)────────────────
 const css = await readFile(new URL("../src/tokens.css", import.meta.url), "utf8");
@@ -21,6 +21,21 @@ if (/@import\s|url\s*\(/i.test(css)) {
   throw new Error("Framework-neutral tokens must remain self-contained and air-gap safe");
 }
 console.log(`Verified ${required.length} required design tokens`);
+
+// ── 1.5 配對表與產品來源一致性(先驗這個,再算對比)────────────────────────
+// 沒有這一步,gate 會拿「手抄且可能過時」的常數計算 —— 改了真正的 token 之後
+// 對比退化仍然綠燈。由 PR #52 的 Codex review 抓到。
+const { readFileSync } = await import("node:fs");
+const sourceProblems = checkSourcesMatch((url) => readFileSync(url, "utf8"));
+if (sourceProblems.length) {
+  for (const p of sourceProblems) console.error(`  ✖ ${p}`);
+  throw new Error(
+    `對比配對表與產品來源不一致(${sourceProblems.length} 處)。` +
+      "請同步 packages/tokens/scripts/contrast-pairs.mjs —— 不同步的話這個 gate " +
+      "會拿舊值計算,對比退化不會被抓到。",
+  );
+}
+console.log("Contrast sources: 配對表與 tokens.css / index.html / tweaks.jsx 相符");
 
 // ── 2. WCAG 對比門檻(W0-4 新增)──────────────────────────────────────────
 //
@@ -45,14 +60,17 @@ const regressions = [];
 const fixed = [];
 
 for (const pair of PAIRS) {
-  const ratio = contrastRatio(pair.fg, pair.bg);
+  // 判定用完整精度(exact),訊息與 baseline 比對用兩位小數(shown)。
+  // 兩者分開是因為第一版拿 round 後的值判定,4.496 會變 4.50 而誤判合格。
+  const exact = contrastRatio(pair.fg, pair.bg);
+  const ratio = ratio2(pair.fg, pair.bg);
   const requiredRatio = THRESHOLD[pair.level];
   if (requiredRatio === undefined) {
     throw new Error(`Unknown level "${pair.level}" on ${pair.id}`);
   }
 
   const prior = known.get(pair.id);
-  if (ratio >= requiredRatio) {
+  if (exact >= requiredRatio) {
     if (prior) fixed.push({ id: pair.id, ratio });
     continue;
   }
