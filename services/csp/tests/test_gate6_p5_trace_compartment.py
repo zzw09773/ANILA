@@ -20,6 +20,25 @@ from tests.conftest import make_user
 from tests.test_proxy_task_wiring import _bearer, _jwt, _make_task
 
 
+def _assert_denied_body(response, expected_detail: str) -> None:
+    """W2-12:錯誤回應現在是 ``{"error": {...}, "detail": <legacy>}``。
+
+    原本這裡寫 ``response.json() == {"detail": ...}``,逐字釘住整個 body。
+    信封是**加法**改動,所以改成分開釘兩件事,斷言強度不減反增:
+
+    - legacy ``detail`` 形狀與值逐字不變(過渡期雙寫的契約)。
+    - 信封存在且 code 是 ``FORBIDDEN``(這些是 clearance/compartment 拒絕,
+      走 status fallback —— W2-12 刻意沒有動 ``api/traces.py`` 的 raise site)。
+    - top-level 只有 ``error`` 與 ``detail``,不得再冒出第三個欄位。
+    """
+    payload = response.json()
+    assert payload["detail"] == expected_detail
+    assert payload["error"]["code"] == "FORBIDDEN"
+    assert payload["error"]["message"] == expected_detail
+    assert "request_id" in payload["error"]
+    assert set(payload) == {"error", "detail"}
+
+
 def _seed_sourced_trace(
     db,
     *,
@@ -169,7 +188,7 @@ def test_collection_owner_role_cannot_bypass_required_compartment(client, db):
 
     denied = client.get(url, headers=_bearer(_jwt(owner)))
     assert denied.status_code == 403
-    assert denied.json() == {"detail": "trace clearance/compartment 拒絕"}
+    _assert_denied_body(denied, "trace clearance/compartment 拒絕")
     _grant_compartment(db, grant, compartment)
     assert client.get(url, headers=_bearer(_jwt(owner))).status_code == 200
 
@@ -188,7 +207,7 @@ def test_document_compartment_is_rederived_from_snapshot(client, db):
 
     denied = client.get(url, headers=_bearer(_jwt(reader)))
     assert denied.status_code == 403
-    assert denied.json() == {"detail": "trace clearance/compartment 拒絕"}
+    _assert_denied_body(denied, "trace clearance/compartment 拒絕")
     _grant_compartment(db, grant, compartment)
     assert client.get(url, headers=_bearer(_jwt(reader))).status_code == 200
 
@@ -241,7 +260,7 @@ def test_source_scope_and_selected_collection_provenance_fail_closed(client, db)
     db.commit()
     response = client.get(url, headers=headers)
     assert response.status_code == 403
-    assert response.json() == {"detail": "trace Task/Snapshot source scope 不符"}
+    _assert_denied_body(response, "trace Task/Snapshot source scope 不符")
 
     snapshot.source_scope = task.source_scope
     db.commit()
@@ -251,7 +270,7 @@ def test_source_scope_and_selected_collection_provenance_fail_closed(client, db)
     db.commit()
     response = client.get(url, headers=headers)
     assert response.status_code == 403
-    assert response.json() == {"detail": "trace Snapshot collection scope 不符"}
+    _assert_denied_body(response, "trace Snapshot collection scope 不符")
 
 
 def test_trace_span_classification_requires_matching_clearance_ceiling(client, db):
@@ -343,7 +362,7 @@ def test_empty_snapshot_requires_canonical_none_scope_and_origin(client, db):
     db.commit()
     response = client.get(url, headers=headers)
     assert response.status_code == 403
-    assert response.json() == {"detail": "trace Task/Snapshot source scope 不符"}
+    _assert_denied_body(response, "trace Task/Snapshot source scope 不符")
 
     snapshot.source_scope = "none"
     db.commit()
@@ -353,7 +372,7 @@ def test_empty_snapshot_requires_canonical_none_scope_and_origin(client, db):
     db.commit()
     response = client.get(url, headers=headers)
     assert response.status_code == 403
-    assert response.json() == {"detail": "trace Snapshot source scope 不完整"}
+    _assert_denied_body(response, "trace Snapshot source scope 不完整")
 
 
 def test_admin_task_bypass_does_not_bypass_data_clearance(client, db):

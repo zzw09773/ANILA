@@ -36,6 +36,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from app.errors import ErrorCode, build_envelope
 from app.middleware.cookies import ACCESS_COOKIE_NAME, CSRF_COOKIE_NAME
 
 
@@ -74,9 +75,18 @@ class CsrfMiddleware(BaseHTTPMiddleware):
             or not header_token
             or not hmac.compare_digest(cookie_token, header_token)
         ):
+            # W2-12:middleware 直接回 JSONResponse,不經過 exception handler,
+            # 所以要自己套信封 —— 否則這條前端很常撞到的錯誤路徑會是唯一沒有
+            # ``error.code`` 的漏洞。legacy ``detail`` 逐字不變。
+            message = "CSRF 驗證失敗，請重新登入"
             return JSONResponse(
                 status_code=403,
-                content={"detail": "CSRF 驗證失敗，請重新登入"},
+                content=build_envelope(
+                    code=ErrorCode.AUTH_CSRF_INVALID,
+                    message=message,
+                    legacy_detail=message,
+                    request=request,
+                ),
             )
 
         return await call_next(request)
