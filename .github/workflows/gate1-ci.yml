@@ -390,6 +390,25 @@ jobs:
       # 冪等」與「schema 落後的庫拒啟動」—— 兩件事都只有真 PG 測得出來,SQLite +
       # create_all 的迴路結構上看不見。這個 job 已經有 PG service 與 admin DSN,
       # 所以只是多一步,不需要另起服務。
+      # W3-12a:三張稽核帳的 append-only。改動前那是**註解** —— `0014:129` 是
+      # `GRANT ALL ON ALL TABLES ... TO csp_app` 且三表零 trigger,所以 runtime
+      # role 可以靜默改掉或刪掉任何一列稽核紀錄。而 W1-1 剛讓「讀取營業秘密對話」
+      # 開始落列;那些列若改得動,那項工作的價值是零。
+      # trigger 與 role 權限只有真 PG 有,SQLite 測不到。
+      - name: W3-12a 稽核帳 append-only(真 PG)
+        env:
+          PYTHONPATH: services/csp
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+        working-directory: services/csp
+        run: |
+          set -euo pipefail
+          out=$(python -m pytest tests/test_audit_append_only_pg.py -q 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          if echo "$out" | grep -qE "^[0-9]+ skipped"; then
+            echo "::error::這批測試全被 skip —— DSN 沒生效,等於沒驗"
+            exit 1
+          fi
+
       - name: W2-6 startup DDL 收編(真 PG)
         env:
           PYTHONPATH: services/csp
