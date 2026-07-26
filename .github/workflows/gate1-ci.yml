@@ -299,6 +299,30 @@ jobs:
           PYTHONPATH: .
         run: python -m alembic upgrade head
 
+      # W0-1:這一步刻意緊接在 `alembic upgrade head` 之後 —— 這裡的 PG 是
+      # **乾淨庫 + 只跑過 migration chain**,所以此處的 drift 結果就是
+      # 「migration chain 到底產不產得出可用 schema」的權威答案。
+      #
+      # 為什麼需要:`startup_migrations.py` 是 alembic 之外的第二套 schema 機制
+      # (覆蓋 8 張表),於是 alembic 單獨跑不出正確 schema —— DR 還原路徑因此
+      # 是壞的。而測試用 SQLite + create_all,驗證迴路結構上看不見這件事。
+      # 對本機 dev 庫實測抓到 15 項,其中 4 項是人工稽核沒發現的
+      # (document_relations / ingestion_documents / ingestion_document_generations
+      # 的 FK 短缺、registered_services.slug 與 tasks.trace_id 缺 UNIQUE)。
+      - name: ORM ↔ PostgreSQL schema drift (migration chain 自足性)
+        env:
+          PYTHONPATH: services/csp
+        run: |
+          python infra/ci/check_orm_pg_drift.py --mode drift \
+            --dsn "postgresql+psycopg://csp:gate1-admin-db@127.0.0.1:5432/csp" \
+            || echo "::warning::ORM↔PG drift 存在(見上方清單);W2-6 把 startup DDL 折回 alembic 後此步應轉為硬性 fail"
+
+      # 政策段不需要 DB:「所有 DateTime 欄必須宣告 timezone=True」。
+      # 這條不能靠 drift 抓 —— ORM 與 PG 兩邊都是 naive 時 diff 為零,
+      # 病根是「兩邊一起錯」。存量 118 欄進 baseline ratchet,只准降。
+      - name: naive DateTime 政策斷言(ratchet)
+        run: python infra/ci/check_orm_pg_drift.py --mode policy
+
       - name: Prove RLS and mutation sensitivity with app and admin roles
         working-directory: packages/anila-core
         env:
@@ -510,6 +534,19 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest tests/test_gate5_r5_durable_resume_authority.py -q -m integration
 
+      # W0-2:這兩支是 12 個 `_pg` 測試檔裡 CI 唯一沒點名的兩支。
+      # 其餘 10 支既有 job 已逐檔涵蓋(所以「CI 沒有真 PG 路徑」的說法是錯的,
+      # 真缺口只有這兩支 + drift 檢查沒接上)。
+      - name: Prove Gate 5 receipts and session event store on PostgreSQL
+        working-directory: services/csp
+        env:
+          MIGRATION_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+          PYTHONPATH: .
+        run: |
+          python -m pytest tests/test_gate5_model_governance_receipts_pg.py \
+                           tests/test_gate5_r4_session_event_store_pg.py -q
+
   frontend-governance:
     name: Frontend / CSP governance UI
     runs-on: ubuntu-latest
@@ -523,32 +560,44 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: apps/csp-governance-ui/package-lock.json
-      - name: Install, test, and build
+      - name: Install, lint, test, and build
         working-directory: apps/csp-governance-ui
         run: |
           npm ci
+          npm run lint
           npm test
           npm run build
 
   frontend-shell:
-    name: Frontend / ANILA Shell
+    name: Frontend / ANILA Shell (node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # W0-6③:node matrix。原本只跑 node 20,而 Node ≥22 內建的實驗性
+    # `localStorage` global 會蓋掉 jsdom 那份且方法全缺 —— 於是 8 個用
+    # localStorage 的源碼檔在開發者本機(通常較新 node)的持久化路徑
+    # 從來沒被真的執行過,而 CI 鎖 20 所以**結構上永遠看不到**。
+    # 「開發者本機紅、CI 綠」是最消耗信任的狀態,加 22 這條腿把它關掉。
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: apps/anila-shell/package-lock.json
-      - name: Install, test, and build
+      - name: Install, lint, test, and build
         working-directory: apps/anila-shell
         run: |
           npm ci
+          npm run lint
           npm test
           npm run build
+          npm run verify:bundle
 
   frontend-anilalm:
     name: Frontend / ANILALM
@@ -563,11 +612,13 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: apps/anilalm/package-lock.json
-      - name: Install and typecheck
+      - name: Install, lint, typecheck, and test
         working-directory: apps/anilalm
         run: |
           npm ci
+          npm run lint
           npm run typecheck
+          npm test
 
       - name: Build normal product posture
         working-directory: apps/anilalm
