@@ -182,6 +182,36 @@ def run_drift(dsn: str) -> int:
             continue
 
         db_cols = {c["name"]: c for c in insp.get_columns(table.name)}
+
+        # DB 有、ORM 沒宣告的欄 —— 反方向的漂移。
+        #
+        # 這一類先前完全看不到。三個孤兒 FK 欄(`agents.last_reviewer_id`、
+        # `audit_logs.actor_id`、`users.auth_provider_id`)是**碰巧**透過 FK 檢查
+        # 發現的;沒有 FK 的死欄(例如 `0035:60-105` 建了 8 個 ISO 42001 追溯欄而
+        # ORM/API/UI 全無)則完全隱形。
+        #
+        # 為什麼它值得一個 finding kind:
+        #   - `audit_logs.actor_id` 與 ORM 的 `actor_user_id` 並存 → 稽核查詢挑錯欄
+        #     就會查到一個永遠 NULL 的欄,然後得出「沒有人做過這件事」。
+        #   - migration 建了欄但沒人接 = 那個 migration 的意圖從未實現,而沒有任何
+        #     東西會提醒你。
+        #
+        # 分級上屬 DEFERRED(有 baseline 上限、只准降)—— 不是每個未映射的欄都要
+        # 立刻處理,但**數量不准長**。
+        declared = {c.name for c in table.columns}
+        for name in sorted(set(db_cols) - declared):
+            findings.append(
+                {
+                    "kind": "UNDECLARED_COLUMN",
+                    "target": f"{table.name}.{name}",
+                    "detail": (
+                        "DB 有這個欄但 ORM 沒宣告 → 要嘛接進 ORM(migration 的意圖"
+                        "還沒實現),要嘛以 migration 刪掉(死欄)。並存的同義欄特別"
+                        "危險:查詢挑錯欄會得出「沒有人做過這件事」。"
+                    ),
+                }
+            )
+
         for col in table.columns:
             if col.name not in db_cols:
                 findings.append({"kind": "MISSING_COLUMN", "target": f"{table.name}.{col.name}"})

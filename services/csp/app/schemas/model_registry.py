@@ -392,5 +392,20 @@ class ModelResponse(BaseModel):
     # doc 04 §3: only the presence of a per-model key is exposed — never the
     # ciphertext / secret ref, and never the plaintext.
     has_api_key: bool = False
+    # ── ISO 42001 追溯(W3-12l,唯讀先行)────────────────────────────────────
+    #
+    # `0035_iso_42001_traceability` 建了這五個欄,但 ORM / API / UI 全無 —— 那支
+    # migration 的意圖從來沒被實現。本輪先把它們露出來:**沒有露出的欄等於不存在**,
+    # 治理稽核問「這個模型的 model card 在哪」時,平台連「欄位是空的」都答不出來,
+    # 只能答「我沒有這個概念」。
+    #
+    # 唯讀先行:寫入面(`ModelCreate` / `ModelUpdate`)與 UI 表單另排。全部
+    # `default=None`,所以舊 client 與既有測試的回應形狀不受影響(純加欄)。
+    model_card_url: str | None = None
+    training_dataset_ref: str | None = None
+    #: 已部署權重的 checksum —— 換了權重但沒換名稱時,這是唯一的證據
+    weights_sha256: str | None = None
+    intended_use: str | None = None
+    limitations: str | None = None
     created_at: datetime
     updated_at: datetime

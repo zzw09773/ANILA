@@ -52,7 +52,7 @@ from alembic import op
 
 
 revision: str = "r1_0038"
-down_revision: Union[str, None] = "r1_0037"
+down_revision: Union[str, None] = "r1_0036"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

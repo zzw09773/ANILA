@@ -46,20 +46,54 @@
       ]
     },
     "UNDECLARED_FK": {
-      "max_count": 0,
+      "max_count": 2,
       "owner": "平台後端負責人",
-      "exit_condition": "已完成 —— r1_0037 刪除三個孤兒欄,上限鎖 0。這一類不再有豁免,任何新的 UNDECLARED_FK 都會 fail。",
+      "exit_condition": "三條各自有不同的正解,不是一起刪:① agents.last_reviewer_id 屬 ISO 42001 追溯欄 → 接進 ORM(W3-12l);② users.auth_provider_id 是 User→AuthProvider 的連結,而那個功能區是活的(auth_providers 表 + AuthProvider model + auth_provider_secret.py 都在)→ 需先釐清卡登/SSO 是否該記錄 provider,再決定接進 ORM 或刪;③ audit_logs.actor_id 是被 actor_user_id 取代的舊欄(0001 建、r1_0001 引入新欄)→ 這一條刪掉是對的,但要與 ① ② 分開處理。",
       "notes": [
-        "**已清除(r1_0037,2026-07-26)**。保留這一筆是為了記住它怎麼被發現的。",
-        "原本 3 條:agents.last_reviewer_id / audit_logs.actor_id / users.auth_provider_id,",
-        "都是 DB 有 FK 而 ORM 完全沒宣告那個欄的**孤兒欄**。它們是 FK 檢查從「數量比對」",
-        "改成「約束形狀比對」之後才看得到的 —— 舊寫法兩邊數的還不是同一種東西(欄位數 vs",
-        "約束數),方向性漂移(DB 有、ORM 沒有)永遠不會被計數抓到。",
-        "audit_logs.actor_id 特別值得記:它與 ORM 的 actor_user_id 並存,是「同一件事兩個欄」",
-        "的典型 —— 稽核查詢挑錯欄就會查到一個永遠是 NULL 的欄,然後得出「沒有人做過這件事」。",
-        "刪除前的證據:程式碼引用 0(那 74 個 actor_id 屬於 policy_decisions,不同表)、",
-        "dev 實庫三欄非空列數皆 0(audit_logs 30,990 列全 NULL)、.15 亦為新建尚未開放使用。",
-        "r1_0037 內有安全閘:欄位若有任何非 NULL 列就 raise 並拒絕繼續(已用 seed 資料驗過)。"
+        "**2026-07-27 更正:我先前寫過一支 r1_0037 把這三個欄一起刪掉,那個判斷是錯的,",
+        "已撤回。**",
+        "",
+        "當時的依據是「程式碼零引用 + dev 庫零非空列」。那組證據**分不出兩件事**:",
+        "  (a) 死欄 —— 功能已廢,欄位是殘留",
+        "  (b) 有意圖但沒實作 —— migration 刻意建了欄,而接它的程式碼還沒寫",
+        "而 (b) 的欄位在這兩項證據上與 (a) **完全一樣**。",
+        "",
+        "查了建欄的 migration 才發現至少兩條屬 (b):",
+        "  agents.last_reviewer_id ← 0035_iso_42001_traceability,是計畫 W3-12l 點名的",
+        "                             「ISO 42001 追溯 8 死欄」之一(agents 3 + model_registry 5)",
+        "  users.auth_provider_id  ← 0001_initial_schema,而 auth_providers 表、AuthProvider",
+        "                             model、auth_provider_secret.py 服務**都存在且是活的**",
+        "",
+        "教訓:判斷一個欄能不能刪,「有沒有人在用」不夠 —— 還要問「**建它的 migration 想做",
+        "什麼、那件事做完了嗎**」。刪掉 (b) 等於把別人的意圖悄悄抹掉,而且下一個人會重新",
+        "發現同一個需求、重新建一次欄。",
+        "",
+        "保留它們的成本很低:UNDECLARED_COLUMN / UNDECLARED_FK 兩個 baseline 都盯著,",
+        "數量不准長,而且退場條件逐條寫明。這比刪掉更好。"
+      ]
+    },
+    "UNDECLARED_COLUMN": {
+      "max_count": 7,
+      "owner": "平台後端負責人",
+      "exit_condition": "8 個 ISO 42001 追溯欄已接進 ORM(W3-12l,2026-07-27)→ 12 降到 7。剩下 7 條:alerts.{alert_type, created_at, is_active} 是 W2-6 刻意留的 legacy 欄(有 server default;r1_0036 用 created_at 回填 first/last_seen_at)、users.auth_provider_id、audit_logs.actor_id、token_usage.created_at,以及 agents/model_registry 各自剩下的部分 —— 逐條處理,不要一起刪(見 UNDECLARED_FK 的教訓)。",
+      "notes": [
+        "**這一類是本輪新增的檢查。** 先前 drift gate 只看 ORM→DB(缺欄),反方向完全",
+        "沒有人看 —— 三個孤兒 FK 欄是**碰巧**透過 FK 檢查發現的,沒有 FK 的死欄則完全隱形。",
+        "",
+        "補上之後立刻驗證了計畫 W3-12l 的發現,而且給出精確清單:",
+        "  agents.{aiia_doc_path, source_commit_sha, vv_status}                    ← ISO 42001 (3)",
+        "  model_registry.{intended_use, limitations, model_card_url,",
+        "                  training_dataset_ref, weights_sha256}                      ← ISO 42001 (5)",
+        "  alerts.{alert_type, created_at, is_active}   ← W2-6 刻意留的 legacy 欄(有 server default;",
+        "                                                 r1_0036 用 created_at 回填 first/last_seen_at)",
+        "  token_usage.created_at                       ← 待查",
+        "",
+        "為什麼這一類值得一個 finding kind:migration 建了欄但沒人接 = 那個 migration 的",
+        "意圖從未實現,而沒有任何東西會提醒你。並存的同義欄更危險 —— `audit_logs.actor_id`",
+        "與 ORM 的 `actor_user_id` 並存,稽核查詢挑錯欄就會查到一個永遠 NULL 的欄,然後",
+        "得出「沒有人做過這件事」(那三個已由 r1_0037 刪除)。",
+        "",
+        "上限只准降。不是每個未映射的欄都要立刻處理,但**數量不准長**。"
       ]
     }
   }

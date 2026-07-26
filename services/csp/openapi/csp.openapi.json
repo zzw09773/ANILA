@@ -9163,6 +9163,17 @@
             "title": "Id",
             "type": "integer"
           },
+          "intended_use": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intended Use"
+          },
           "is_active": {
             "title": "Is Active",
             "type": "boolean"
@@ -9181,6 +9192,28 @@
             "default": false,
             "title": "Is Router Primary",
             "type": "boolean"
+          },
+          "limitations": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limitations"
+          },
+          "model_card_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Card Url"
           },
           "model_registry_revision": {
             "anyOf": [
@@ -9236,6 +9269,17 @@
             "default": false,
             "title": "Supports Tools",
             "type": "boolean"
+          },
+          "training_dataset_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Dataset Ref"
           },
           "transport_target": {
             "anyOf": [
@@ -9309,6 +9353,17 @@
               }
             ],
             "title": "Upstream Transport Target Sha256"
+          },
+          "weights_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weights Sha256"
           }
         },
         "required": [

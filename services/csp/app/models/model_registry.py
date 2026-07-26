@@ -163,6 +163,28 @@ class ModelRegistry(Base):
     base_model_id = Column(Integer, ForeignKey("model_registry.id"), nullable=True)
     base_model = relationship("ModelRegistry", remote_side=[id], backref="derived_agents")
 
+
+    # ── ISO 42001 追溯欄(A.5.2 / A.5.4 / A.6.2.7 / A.7.5 / A.10.3)────────
+    #
+    # `0035_iso_42001_traceability` 建了這些欄,但 **ORM / API / UI 全無** ——
+    # 也就是那支 migration 的意圖從來沒有被實現,而且沒有任何東西提醒過任何人。
+    # 本輪新增的 `UNDECLARED_COLUMN` drift 檢查把它們系統性地找了出來(先前只有
+    # 帶 FK 的那些會碰巧透過 FK 檢查現形)。
+    #
+    # 唯讀先行(W3-12l):先讓欄位映射存在、API 讀得到,寫入面與 UI 表單另排。
+    # 沒有映射的欄等於不存在 —— 治理稽核問「這個 agent 的 AIIA 在哪」時,平台
+    # 連「欄位是空的」都答不出來,只能答「我沒有這個概念」。
+    #: model card 連結(docs/governance/model-cards/<model>.md 或外部 URL)
+    model_card_url = Column(String(500), nullable=True)
+    #: 訓練資料集參照
+    training_dataset_ref = Column(String(200), nullable=True)
+    #: 已部署權重的 checksum —— 換了權重但沒換名稱時,這是唯一的證據
+    weights_sha256 = Column(String(64), nullable=True)
+    #: 一句話的預期用途
+    intended_use = Column(Text, nullable=True)
+    #: 已知限制
+    limitations = Column(Text, nullable=True)
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,
