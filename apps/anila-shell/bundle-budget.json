@@ -1,6 +1,7 @@
 {
   "_note": "W0-5 預算凍結在 2026-07-26 的實測值,加 0.5% 容差。要顯著變大必須在 PR 說明為什麼並改本檔;air-gapped 環境每一 kB 都要隨 bundle 重打包進內網。容差的理由:零容差時一個 5 字元的正則轉義改動就會讓 gate 紅(實測 3 bytes),而一個會紅在 3 bytes 的 gate 第一個撞到的人就會把它關掉。縮減工作(React.lazy / manualChunks)屬 Wave 3。",
-  "totalJsBytes": 3876892,
-  "largestChunkBytes": 967580,
+  "_note_2026_07_26_w1_shell_honesty": "重新凍結:3876892 → 3887311(+10419 bytes,+0.27%)。原因是 W1-3/W1-9/W1-10 加入的**使用者可見靜態文字**,逐項可對:changelog 補上被凍結一個半月的四批條目(19 條)、說明面板五章節 + 八個快捷鍵、首登三步導引卡、記憶功能未啟用的告知文案、以及把密等鎖定的錯誤措辭改成完整正確說法後變長的 tooltip。這些字必須進 bundle —— air-gapped 內網沒有 CDN 也沒有線上手冊,不進 bundle 就等於沒有。已確認不是誤加依賴:dist 的 JS 檔數不變(52 個),新元件的樣式走 .module.css(另計 34.6 kB 的 index CSS,不在本預算內)。要把 entry chunk 壓回去請走 Wave 3 的 React.lazy / manualChunks,不要靠刪使用者看得到的字。",
+  "totalJsBytes": 3887311,
+  "largestChunkBytes": 977999,
   "tolerancePercent": 0.5
 }

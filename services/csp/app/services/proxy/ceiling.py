@@ -8,6 +8,11 @@ call」硬要求 —— 在 CSP Model Gateway 把請求送往上游模型 **之�
 違反即 403 zh-TW、記一筆 ``PolicyDecision(action=model.invoke, decision=deny)``
 且 **不** 發出向呼叫。
 
+⚠ 命名警告(W1-3):上面那個 ``requires_encryption`` **不加密任何東西**,它的
+真實語意就是同一句裡的「單向 conversation latch」= 密等鎖定。平台無 at-rest
+加密(``pgcrypto|LUKS|dm-crypt|TDE`` 全 repo grep=0)。欄位名為相容性保留,
+但使用者面與稽核訊息一律用「密等鎖定(latch)」措辭。
+
 Effective level 決定順序(doc 04 §5 / doc 08 §4):
 - task-linked:讀 Task 的 effective level(呼叫端已把 conversation 等級
   propagate 到 task)。

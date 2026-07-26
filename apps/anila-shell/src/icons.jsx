@@ -82,3 +82,5 @@ export const IconGauge     = (p) => <Icon {...p}><path d="M3 14a9 9 0 1 1 18 0"/
 export const IconExternal  = (p) => <Icon {...p}><path d="M15 3h6v6"/><path d="M10 14L21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></Icon>;
 export const IconLink      = (p) => <Icon {...p}><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 1 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 1 0 7 7l1-1"/></Icon>;
 export const IconNodes     = (p) => <Icon {...p}><circle cx="4" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="20" cy="12" r="2"/><path d="M6 12h4M14 12h4"/></Icon>;
+// 說明入口（W1-10）：問號圓圈。
+export const IconHelp      = (p) => <Icon {...p}><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.4 2.4 0 1 1 3.4 2.2c-.6.3-1 .9-1 1.6v.4"/><path d="M12 17h.01"/></Icon>;

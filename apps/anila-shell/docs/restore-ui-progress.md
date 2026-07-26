@@ -4,7 +4,10 @@
 **目標**:
 1. 依 `ANILA_UI/ANILA_templete/anila-ui/` 的設計，把 `anila-ui/` 重建為「近乎一致」的前端
 2. 所有資料與呼叫都串到真正的後端（CSP + Router），不再使用 mock
-3. 加密模式改為**後端驅動**：一旦用到需加密的模型（agent `requires_encryption` 或 meta 回報 `classified`），對話自動上鎖，**USER 不得透過 UI 切換**
+3. 密等鎖定（latch）改為**後端驅動**：一旦用到會鎖密等的模型（agent `requires_encryption` 或 meta 回報 `classified`），對話自動上鎖，**USER 不得透過 UI 切換**
+
+> ⚠ 2026-07-26(W1-3)措辭更正:本檔原文把這個機制寫成「加密」,但平台**沒有** at-rest 加密,
+> 它做的是**單向密等鎖定(latch)**。全檔已改用正確措辭;後端欄位名 `requires_encryption` 未動。
 
 ---
 
@@ -56,7 +59,7 @@
    - `refreshAgents()` 從 `GET /v1/agents` 取資料 → `normalizeAgents` 把 `requires_encryption` → `requiresEncryption`；前置 `ROUTER_AGENT`
    - `sendMessage()` 依 target 決定 baseUrl：`VITE_ROUTER_BASE_URL` (target === `"anila-router"`) vs `VITE_CSP_BASE_URL`；透過 `streamChatCompletion` 串 `onText` / `onTrace` / `onMeta`
    - `ensureConversation()`、`updateConversationAgent()`、`applyMeta()` 三點 latch：`c.classified || agent.requiresEncryption || meta.classified`（**一旦鎖上永不降級**）
-   - 頂欄沒有任何 lock/unlock IconButton；「加密模式」chip 唯讀；`classified` 時 share/copy disabled
+   - 頂欄沒有任何 lock/unlock IconButton；「密等鎖定」chip 唯讀（2026-07-26 前寫成「加密」，措辭已更正）；`classified` 時 share/copy disabled
    - `ParallelCompareView` 把 `AgentSelector`, `Composer`, `MessageBubble` 以 props 注入（避免循環 import）
    - `SettingsModal`（general/apikey/privacy/account/about）、`TweaksPanel`、`ShareDialog`、`ApiKeyPopover` 都已接好
    - `App` 預設輸出掛載 `applyTweaks` + `window.ANILA_TWEAKS` + 父視窗 `postMessage` edit-mode

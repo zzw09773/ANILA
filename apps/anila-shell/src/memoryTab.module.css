@@ -1,0 +1,24 @@
+/* 記憶 tab 的「本部署未啟用」告知區(W1-3 ②)。
+ *
+ * 只有**新增**的區塊走 CSS Modules;檔內其餘 inline style 是從 app.jsx 原地
+ * 搬過來的存量(D3 漸進遷移,warn ratchet 計數不變),不在本包的遷移範圍。
+ */
+
+.notice {
+  font-size: 12px;
+  line-height: 1.7;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  padding: 10px 12px;
+  color: var(--fg);
+}
+
+.noticeTitle {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.noticeBody {
+  color: var(--fg-muted);
+}

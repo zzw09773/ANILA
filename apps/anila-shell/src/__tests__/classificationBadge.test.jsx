@@ -10,7 +10,7 @@ import {
 
 afterEach(cleanup);
 
-// The five-level badge is additive to the existing boolean 加密模式 indicator.
+// The five-level badge is additive to the boolean「密等鎖定」(latch) indicator.
 // It renders the zh-TW level text for any elevated level, nothing for the
 // floor 無機密, and nothing when the field is absent (boolean-only payload).
 

@@ -15,4 +15,6 @@
 - [ ] 不繞過 card SSO / JWT / CSRF / RLS / SSRF guard
 - [ ] 有 contract test 或 migration test
 - [ ] 前端新增字串為繁體中文（台灣用語），無簡體字 / 大陸用語（doc 11）
+- [ ] 使用者可見變更已進 changelog？（`apps/anila-shell/src/changelog.jsx`，並 bump `CHANGELOG_VERSION`；W1-9：這份清單曾凍結一個半月、三批功能無人被通知）
+- [ ] 使用者可見的字面與實作一致？（W1-3：不得再出現「UI 說有、實作沒有」——例如把單向密等鎖定講成加密、或在功能旗標關閉時承諾功能）
 - [ ] 若違反任一項，已附 ADR

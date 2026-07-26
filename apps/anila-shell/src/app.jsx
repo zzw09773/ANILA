@@ -38,12 +38,9 @@ import { buildPersistMeta } from "./runtime/messageMeta.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { relativeLabel } from "./runtime/time.js";
 import {
-  clearChunks as apiClearMemoryChunks,
-  clearFacts as apiClearMemoryFacts,
-  deleteFact as apiDeleteMemoryFact,
-  listChunks as apiListMemoryChunks,
-  listFacts as apiListMemoryFacts,
-} from "./runtime/memory.js";
+  DEFAULT_CAPABILITIES,
+  fetchCapabilities,
+} from "./runtime/capabilities.js";
 import {
   listConversations as apiListConversations,
   createConversation as apiCreateConversation,
@@ -100,7 +97,6 @@ import {
   IconSpark,
   IconGift,
   IconSun,
-  IconTrash,
   IconUser,
 } from "./icons.jsx";
 import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS } from "./data.jsx";
@@ -114,6 +110,9 @@ import { HandoffMenu, ShareDialog } from "./collab.jsx";
 import { TweaksPanel } from "./tweaks.jsx";
 import { applyTweaks } from "./tweakRuntime.js";
 import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
+import { MemoryTab } from "./memoryTab.jsx";
+import { FirstRunGuide } from "./firstRun.jsx";
+import { HelpButton, HelpPanel, matchesHelpHotkey } from "./help.jsx";
 import { BannerBar } from "./banners.jsx";
 import { TraceExplorer } from "./spanTree.jsx";
 import { ServicesPanel } from "./services.jsx";
@@ -429,6 +428,30 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     try { return localStorage.getItem("anila-changelog-seen") !== CHANGELOG_VERSION; }
     catch { return false; }
   });
+
+  // 說明面板(W1-10 ③):header 入口 + ⌘/ ‧ Ctrl+/ 全域鍵位。純靜態內容。
+  const [helpOpen, setHelpOpen] = useState(false);
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (!matchesHelpHotkey(e)) return;
+      e.preventDefault();
+      setHelpOpen((open) => !open);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // 部署能力旗標(W1-3 ②③):UI 得先知道這個部署開了什麼,才能決定怎麼說。
+  // fail-closed —— 抓不到就當作沒開,絕不承諾不存在的功能。
+  const [capabilities, setCapabilities] = useState(DEFAULT_CAPABILITIES);
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let alive = true;
+    void fetchCapabilities(authRequest).then((caps) => {
+      if (alive) setCapabilities(caps);
+    });
+    return () => { alive = false; };
+  }, [isAuthenticated, authRequest]);
 
   // Slice 2b-D 最小 Task 流:taskId 快取在 conversation state 上(與
   // conversationId / agent 選擇同一份資料),串流期間不會消失。查無 = null
@@ -1955,8 +1978,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             }}>
               <IconLock size={14} />
               <span>
-                此對話因引用過往加密記憶而升級為機密。
-                刪除對話的加密記憶引用可解除（設定 → 記憶）；
+                此對話因引用過往已鎖定密等的記憶而升級為機密。
+                刪除該筆記憶引用可解除（設定 → 記憶）；
                 一旦升級無法在此對話手動退回。
               </span>
             </div>
@@ -2019,7 +2042,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             <>
               {selectedConv.classified && (
                 <span
-                  title="此對話已鎖為加密模式（由後端 agent 設定強制啟用）。"
+                  title="此對話已進入密等鎖定（latch）模式：由後端 agent 設定強制啟用，單向不可解除。這是分級與外流控制，不是內容加密。"
                   style={{
                     display: "inline-flex", alignItems: "center", gap: 4,
                     padding: "3px 9px",
@@ -2030,7 +2053,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                     color: "var(--danger)",
                   }}
                 >
-                  <IconLock size={11} /> 加密模式
+                  <IconLock size={11} /> 密等鎖定
                 </span>
               )}
               <ClassificationLevelBadge conversation={selectedConv} />
@@ -2078,7 +2101,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                 )}
               </Dropdown>
               <IconButton
-                title={selectedConv.classified ? "加密對話不可分享" : "分享"}
+                title={selectedConv.classified ? "已鎖定密等的對話不可分享" : "分享"}
                 onClick={() => !selectedConv.classified && setShareOpen(true)}
                 disabled={selectedConv.classified}
                 style={selectedConv.classified ? { opacity: 0.4, cursor: "not-allowed" } : {}}
@@ -2113,6 +2136,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           <IconButton title="專案入口" onClick={() => setServicesOpen(true)} active={servicesOpen}>
             <IconGrid />
           </IconButton>
+
+          {/* W1-10 ③ — 說明入口。指向 docs/guides/user-guide.md 的摘要 + 快捷鍵表。 */}
+          <HelpButton onOpen={() => setHelpOpen(true)} />
 
           <IconButton title="設定" onClick={() => { setSettingsTab("general"); setSettingsOpen(true); }}>
             <IconSettings />
@@ -2182,12 +2208,17 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                     padding: `calc(var(--density) * 1.2) var(--density)`,
                   }}>
                     {currentMsgs.length === 0 ? (
-                      <EmptyState
-                        agent={activeAgent}
-                        agents={agents}
-                        loading={loadingAgents}
-                        onPick={(q) => sendMessage(q, [], {})}
-                      />
+                      <>
+                        {/* W1-10 ① — 首登靜態導引卡。純靜態、不打 LLM(air-gapped
+                            下即時生成又慢又不穩),看過一次就寫 anila-first-run。 */}
+                        <FirstRunGuide onOpenHelp={() => setHelpOpen(true)} />
+                        <EmptyState
+                          agent={activeAgent}
+                          agents={agents}
+                          loading={loadingAgents}
+                          onPick={(q) => sendMessage(q, [], {})}
+                        />
+                      </>
                     ) : (
                       currentMsgs.map((m) => (
                         <MessageBubble
@@ -2232,7 +2263,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                         </span>
                         <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
                         {activeEncryptionRequired && (
-                          <span title="此 agent 為加密模型" style={{
+                          <span title="此 agent 會把對話單向鎖定密等（latch），不是對內容加密" style={{
                             display: "inline-flex", alignItems: "center", gap: 3,
                             padding: "1px 7px",
                             background: "oklch(0.95 0.02 25 / 0.4)",
@@ -2241,7 +2272,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                             fontSize: 11, color: "var(--danger)",
                             fontFamily: "var(--font-mono)",
                           }}>
-                            <IconLock size={10} /> 加密模型
+                            <IconLock size={10} /> 密等鎖定 agent
                           </span>
                         )}
                       </div>
@@ -2253,7 +2284,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                       presetPrompts={presetPrompts}
                       streaming={currentMsgs.some((m) => m.streaming)}
                       onStop={() => stopStreaming(selectedConvId)}
-                      placeholder="問 ANILA 任何事情，或用 @agent 指定 agent · Shift+Enter 換行"
+                      placeholder="問 ANILA 任何事情，或用 @agent 指定 agent · Shift+Enter 換行 · 按 ⌘/ 或 Ctrl+/ 檢視快捷鍵與說明"
                       footer={
                         selectedAgentId === ROUTER_AGENT.id
                           ? "Auto route · 由 ANILA Router 判斷是否分派 agent"
@@ -2307,9 +2338,12 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         user={user}
         agents={agents}
         authRequest={authRequest}
+        capabilities={capabilities}
       />
 
       <ChangelogModal open={changelogOpen} onClose={() => setChangelogOpen(false)} />
+
+      <HelpPanel open={helpOpen} onClose={() => setHelpOpen(false)} />
 
       <TweaksPanel
         open={tweaksOpen}
@@ -2414,259 +2448,13 @@ function EmptyState({ agent, agents, onPick, loading }) {
 // Sprint 7 X follow-up：ApiKeyPopover 元件已移除（cookie 流程後完全 dead code）。
 
 // ---- Settings modal --------------------------------------------------------
-// Settings → 記憶 tab. Lives in SettingsModal but factored out
-// because it owns its own data-loading lifecycle (facts + chunks).
-//
-// MVP scope (P2):
-//   - List user_facts; per-row delete; clear-all-facts
-//   - List recent chunks (preview only); clear-all-chunks
-//   - Surface encrypted-source markers (P3 will inherit them)
-// Out of scope until we see real demand:
-//   - Inline edit of fact value (delete-and-let-LLM-re-extract is fine)
-//   - Per-chunk delete (cascade via conversation delete is fine)
-//   - Search / filter (volume is small)
-function MemoryTab({ authRequest }) {
-  const confirm = useConfirm();
-  const toast = useToast();
-  const [factsState, setFactsState] = useState({ loading: true, error: null, facts: [], total: 0 });
-  const [chunksState, setChunksState] = useState({
-    loading: true, error: null, items: [],
-    total: 0, encrypted_total: 0, distinct_conversations: 0,
-  });
-
-  const reload = useCallback(async () => {
-    setFactsState((s) => ({ ...s, loading: true, error: null }));
-    setChunksState((s) => ({ ...s, loading: true, error: null }));
-    try {
-      const [facts, chunks] = await Promise.all([
-        apiListMemoryFacts(authRequest),
-        apiListMemoryChunks(authRequest, { limit: 25 }),
-      ]);
-      setFactsState({
-        loading: false, error: null,
-        facts: facts.facts || [], total: facts.total || 0,
-      });
-      setChunksState({
-        loading: false, error: null,
-        items: chunks.items || [],
-        total: chunks.total || 0,
-        encrypted_total: chunks.encrypted_total || 0,
-        distinct_conversations: chunks.distinct_conversations || 0,
-      });
-    } catch (err) {
-      const msg = err?.message || "載入失敗";
-      setFactsState((s) => ({ ...s, loading: false, error: msg }));
-      setChunksState((s) => ({ ...s, loading: false, error: msg }));
-    }
-  }, [authRequest]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  const onDeleteFact = async (id, key) => {
-    if (!(await confirm({
-      title: "刪除事實",
-      message: `刪除事實「${key}」？此動作無法復原。`,
-      confirmText: "刪除",
-      tone: "danger",
-    }))) return;
-    try {
-      await apiDeleteMemoryFact(authRequest, id);
-      await reload();
-    } catch (err) {
-      toast(err?.message || "刪除失敗", { tone: "error" });
-    }
-  };
-
-  const onClearFacts = async () => {
-    if (factsState.total === 0) return;
-    if (!(await confirm({
-      title: "清空事實",
-      message: `清空全部 ${factsState.total} 筆事實？此動作無法復原。`,
-      confirmText: "清空",
-      tone: "danger",
-    }))) return;
-    try {
-      await apiClearMemoryFacts(authRequest);
-      await reload();
-    } catch (err) {
-      toast(err?.message || "清空失敗", { tone: "error" });
-    }
-  };
-
-  const onClearChunks = async () => {
-    if (chunksState.total === 0) return;
-    if (!(await confirm({
-      title: "清空對話片段",
-      message:
-        `清空全部 ${chunksState.total} 段對話片段？\n` +
-        `這會抹除跨對話語意檢索的記憶（已記住的事實不受影響）。\n` +
-        `此動作無法復原。`,
-      confirmText: "清空",
-      tone: "danger",
-    }))) return;
-    try {
-      await apiClearMemoryChunks(authRequest);
-      await reload();
-    } catch (err) {
-      toast(err?.message || "清空失敗", { tone: "error" });
-    }
-  };
-
-  return (
-    <div style={{ display: "grid", gap: 18, fontSize: 13 }}>
-      <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
-        平台會在每輪對話後，把可能對你長期有用的事實萃取為 key/value 存起來，
-        並把訊息向量化以便跨對話語意檢索。下次任何對話都會自動帶入相關記憶。
-        所有資料只屬於你個人，不與其他使用者共享。
-      </div>
-
-      {/* ── Facts ──────────────────────────────────────────────────────── */}
-      <div style={{
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius)",
-        padding: 12,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-          <div style={{ fontWeight: 500 }}>
-            已記住的事實 <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>· {factsState.total}</span>
-          </div>
-          <button
-            disabled={factsState.total === 0 || factsState.loading}
-            onClick={onClearFacts}
-            style={{
-              fontSize: 11, padding: "4px 10px", borderRadius: "var(--radius)",
-              background: "transparent", border: "1px solid var(--border)",
-              color: factsState.total === 0 ? "var(--fg-subtle)" : "var(--danger)",
-              cursor: factsState.total === 0 ? "default" : "pointer",
-            }}
-          >清空全部</button>
-        </div>
-        {factsState.loading && (
-          <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>載入中…</div>
-        )}
-        {factsState.error && (
-          <div style={{ fontSize: 11, color: "var(--danger)" }}>{factsState.error}</div>
-        )}
-        {!factsState.loading && !factsState.error && factsState.facts.length === 0 && (
-          <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>
-            目前還沒有萃取到任何事實。和 ANILA 多聊聊「我是誰、我喜歡什麼」之類的訊息，平台會自動學習。
-          </div>
-        )}
-        {!factsState.loading && factsState.facts.length > 0 && (
-          <div style={{ display: "grid", gap: 6 }}>
-            {factsState.facts.map((f) => (
-              <div key={f.id} style={{
-                display: "grid",
-                gridTemplateColumns: "minmax(110px, 1fr) 2fr auto auto",
-                gap: 10, alignItems: "center",
-                padding: "6px 8px",
-                background: "var(--bg-subtle)",
-                borderRadius: "var(--radius)",
-                fontSize: 12,
-              }}>
-                <div style={{ fontFamily: "var(--font-mono)", color: "var(--fg-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {f.key}
-                </div>
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {f.value}
-                </div>
-                <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-subtle)" }}>
-                  {(f.confidence * 100).toFixed(0)}%
-                </div>
-                <button
-                  onClick={() => onDeleteFact(f.id, f.key)}
-                  title="刪除這筆事實"
-                  style={{
-                    width: 22, height: 22, padding: 0,
-                    background: "transparent", border: "none",
-                    color: "var(--fg-subtle)", cursor: "pointer",
-                    display: "inline-flex", alignItems: "center", justifyContent: "center",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--danger)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; }}
-                >
-                  <IconTrash size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ── Chunks ─────────────────────────────────────────────────────── */}
-      <div style={{
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius)",
-        padding: 12,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-          <div style={{ fontWeight: 500 }}>
-            對話片段索引 <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>
-              · {chunksState.total} 段 / {chunksState.distinct_conversations} 個對話
-              {chunksState.encrypted_total > 0 && (
-                <span style={{ marginLeft: 8, color: "var(--warning, var(--accent))" }}>
-                  · {chunksState.encrypted_total} 段加密來源
-                </span>
-              )}
-            </span>
-          </div>
-          <button
-            disabled={chunksState.total === 0 || chunksState.loading}
-            onClick={onClearChunks}
-            style={{
-              fontSize: 11, padding: "4px 10px", borderRadius: "var(--radius)",
-              background: "transparent", border: "1px solid var(--border)",
-              color: chunksState.total === 0 ? "var(--fg-subtle)" : "var(--danger)",
-              cursor: chunksState.total === 0 ? "default" : "pointer",
-            }}
-          >清空全部</button>
-        </div>
-        {chunksState.loading && (
-          <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>載入中…</div>
-        )}
-        {chunksState.error && (
-          <div style={{ fontSize: 11, color: "var(--danger)" }}>{chunksState.error}</div>
-        )}
-        {!chunksState.loading && !chunksState.error && chunksState.items.length === 0 && (
-          <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>
-            目前還沒有對話片段索引。對話幾輪之後再回來看。
-          </div>
-        )}
-        {!chunksState.loading && chunksState.items.length > 0 && (
-          <div style={{ display: "grid", gap: 4, maxHeight: 240, overflowY: "auto" }}>
-            {chunksState.items.map((c) => (
-              <div key={c.id} style={{
-                fontSize: 11, padding: "4px 6px",
-                fontFamily: "var(--font-mono)",
-                color: c.is_encrypted ? "var(--fg)" : "var(--fg-muted)",
-              }}>
-                <span style={{
-                  display: "inline-block", minWidth: 70,
-                  color: "var(--fg-subtle)",
-                }}>
-                  {c.role === "user" ? "user" : "asst"} · #{c.conversation_id}
-                </span>
-                {c.is_encrypted && <span style={{ marginRight: 4 }}>🔒</span>}
-                <span style={{ color: "var(--fg)" }}>{c.content}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.6 }}>
-        清空後立即生效；下次對話起，平台會重新從新對話內容重新學習。
-        若需暫時停用記憶整合，請聯絡管理員（runtime feature flag 由運維端控制）。
-      </div>
-    </div>
-  );
-}
+// Settings → 記憶 tab 已抽到 `memoryTab.jsx`（W1-3）：它自己管資料生命週期，
+// 而且要依部署能力旗標分流（ENABLE_MEMORY 關閉時不得承諾「會自動學習」），
+// 需要能被單獨測到。
 
 function SettingsModal({
   open, tab, setTab, onClose,
-  user, agents, authRequest,
+  user, agents, authRequest, capabilities,
 }) {
   return (
     <Modal open={open} onClose={onClose} title="設定" subtitle="runtime 偏好與帳號" width={680}>
@@ -2702,7 +2490,9 @@ function SettingsModal({
                 </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-                加密模式由 agent 設定（requires_encryption）或後端 meta 決定，使用者無法手動切換。
+                密等鎖定（latch）模式由 agent 設定（欄位名沿用 requires_encryption）或後端 meta
+                決定，使用者無法手動切換。它鎖的是「能不能帶出去」與「留不留紀錄」——
+                平台不對訊息內容做靜態加密。
               </div>
             </div>
           )}
@@ -2718,17 +2508,18 @@ function SettingsModal({
                 </div>
               </div>
               <div>
-                <div style={{ fontWeight: 500, marginBottom: 4 }}>加密對話</div>
+                <div style={{ fontWeight: 500, marginBottom: 4 }}>密等鎖定的對話</div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
-                  若指定的 agent 為加密模型（requires_encryption=true），此對話會自動鎖為機密：
-                  禁止複製、禁止分享，且加上稽核浮水印。此狀態無法由使用者解除。
+                  若指定的 agent 被標記為 requires_encryption=true，此對話會單向鎖為機密：
+                  禁止複製、禁止匯出、禁止分享，且加上稽核浮水印。此狀態無法由使用者解除。
+                  ⚠ 這是分級與外流控制，不是內容加密 —— 平台沒有對訊息做靜態加密。
                 </div>
               </div>
             </div>
           )}
 
           {tab === "memory" && (
-            <MemoryTab authRequest={authRequest} />
+            <MemoryTab authRequest={authRequest} capabilities={capabilities} />
           )}
 
           {tab === "account" && (
