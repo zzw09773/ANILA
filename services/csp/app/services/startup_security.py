@@ -156,6 +156,11 @@ def _resolved_posture() -> dict[str, object]:
         "ANILA_REFRESH_REUSE_GRACE_SECONDS": (
             settings.ANILA_REFRESH_REUSE_GRACE_SECONDS
         ),
+        # Audit write failure policy. Fail-open means a DB hiccup silently
+        # drops governance events (user create/delete, permission change,
+        # card login rejection) and inference rows — an audit trail with
+        # invisible holes. A formal deployment must fail closed instead.
+        "ANILA_AUDIT_STRICT": settings.ANILA_AUDIT_STRICT,
     }
 
 
@@ -204,6 +209,8 @@ _PROD_INTRANET_CARD_POSTURE: dict[str, object] = {
     "CARD_OWNER_CONFIGURED": True,
     "ALLOW_LEGACY_AGENT_DISPATCH": False,
     "ANILA_REFRESH_REUSE_GRACE_SECONDS": 0,
+    # 稽核寫入失敗必須 fail-closed(503),不得靜默丟事件。
+    "ANILA_AUDIT_STRICT": True,
 }
 
 _PASSWORD_PRODUCTION_POSTURE: dict[str, object] = {
@@ -225,6 +232,8 @@ _PASSWORD_PRODUCTION_POSTURE: dict[str, object] = {
     "CARD_CRL_REQUIRED": False,
     "ALLOW_LEGACY_AGENT_DISPATCH": False,
     "ANILA_REFRESH_REUSE_GRACE_SECONDS": 0,
+    # 同上:formal 密碼型部署一樣不接受「稽核寫不進去也照跑」。
+    "ANILA_AUDIT_STRICT": True,
 }
 
 _FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {

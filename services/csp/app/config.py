@@ -276,8 +276,13 @@ class Settings(BaseSettings):
     # and take the first address not in a trusted CIDR (real client).
     ANILA_TRUSTED_PROXY_CIDRS: str = ""
 
-    # Inference audit write failure policy. 0/false (default) = fail-open
+    # Audit write failure policy — covers BOTH the inference audit
+    # (services/inference_audit.py) and the governance audit
+    # (services/audit_service.log_audit_event). 0/false (default) = fail-open
     # (log the error, continue the request). 1/true = fail-closed with 503.
+    # ⚠ Every formal deployment profile's posture contract requires 1
+    # (startup_security._FORMAL_PROFILE_POSTURES); leaving it 0 there makes
+    # the process refuse to start rather than run with a lossy audit trail.
     ANILA_AUDIT_STRICT: bool = False
 
     # Mark session cookies as Secure (HTTPS-only). Defaults to True; set

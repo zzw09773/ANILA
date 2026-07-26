@@ -350,6 +350,8 @@ def _set_formal_card_profile(monkeypatch) -> None:
         "CARD_DEV_SKIP_NONCE_BINDING": "false",
         "CARD_CRL_REQUIRED": "true",
         "ALLOW_LEGACY_AGENT_DISPATCH": "false",
+        # 稽核寫入 fail-closed 是 formal posture 契約值(W1-5)。
+        "ANILA_AUDIT_STRICT": "1",
         "CARD_INITIAL_OWNERS": "990000001",
     }
     for name, value in values.items():
@@ -376,6 +378,8 @@ def _set_formal_password_profile(monkeypatch, profile: str) -> None:
         "CARD_DEV_SKIP_NONCE_BINDING": "false",
         "CARD_CRL_REQUIRED": "false",
         "ALLOW_LEGACY_AGENT_DISPATCH": "false",
+        # 稽核寫入 fail-closed 是 formal posture 契約值(W1-5)。
+        "ANILA_AUDIT_STRICT": "1",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -411,6 +415,8 @@ def test_declared_formal_password_profiles_accept_exact_posture(
         ("CARD_DEV_SKIP_NONCE_BINDING", "true"),
         ("CARD_CRL_REQUIRED", "true"),
         ("ALLOW_LEGACY_AGENT_DISPATCH", "true"),
+        # fail-open 稽核 = 治理事件在 DB 異常時靜默消失,formal 部署不接受。
+        ("ANILA_AUDIT_STRICT", "0"),
     ],
 )
 @pytest.mark.parametrize(
@@ -448,6 +454,30 @@ def test_declared_formal_card_profile_accepts_exact_posture(
 ):
     _set_formal_card_profile(monkeypatch)
     reload_startup_security().assert_deployment_profile_posture()
+
+
+@pytest.mark.parametrize("value", ["0", "false", "off"])
+def test_formal_card_profile_rejects_fail_open_audit(
+    value, monkeypatch, reload_startup_security
+):
+    """W1-5:涉密部署不得預設「稽核寫不進去也照跑」。
+
+    ``ANILA_AUDIT_STRICT`` 預設 False,所以這條在旗標納入 posture 契約前是紅的
+    (啟動照過),納入後才變綠(啟動被拒)。
+    """
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv("ANILA_AUDIT_STRICT", value)
+    with pytest.raises(RuntimeError, match="ANILA_AUDIT_STRICT"):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_formal_card_profile_rejects_unset_audit_strict(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.delenv("ANILA_AUDIT_STRICT", raising=False)
+    with pytest.raises(RuntimeError, match="ANILA_AUDIT_STRICT"):
+        reload_startup_security().assert_deployment_profile_posture()
 
 
 def test_normal_card_profile_rejects_stale_break_glass_metadata(
