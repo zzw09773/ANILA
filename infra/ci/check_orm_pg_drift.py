@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""ORM ↔ 真 Postgres 漂移檢查 + naive DateTime 政策斷言 —— W0-1(補救計畫 Wave 0)。
+
+為什麼需要這支
+--------------
+`services/csp/app/services/startup_migrations.py` 是 alembic **之外的第二套
+schema 機制**(覆蓋 users / model_registry / token_usage / departments /
+api_keys / alerts / audit_logs / platform_links 八張表,coverage 21%),docstring
+自承「The 0001 alembic baseline does not match the current SQLAlchemy models」。
+四個後果:
+
+1. `alembic upgrade head` 到乾淨 DB **得不到可用 schema** → DR 還原是壞的
+2. `alerts.fingerprint` 宣告了 UNIQUE 但生產沒有 → 告警去重在併發下失效,
+   且 `health_checker` 每 60 秒對每個 model/agent 全表掃
+3. 93 個 naive timestamp 欄(含整套五級分類治理帳)
+4. `ingestion_collections.created_by` = NOT NULL + ON DELETE SET NULL →
+   硬刪使用者必定 IntegrityError
+
+而測試用 SQLite + `Base.metadata.create_all`(不跑 alembic)→ 驗證迴路**結構上
+看不見以上任何一條**。
+
+兩種檢查刻意分開
+----------------
+**--mode drift**:ORM metadata vs 真 PG。抓缺欄 / 缺 index / 缺 UNIQUE / 缺 FK /
+型別不符。
+
+**--mode policy**:純靜態,不需要 DB。目前只有一條規則:**所有 `DateTime` 欄
+必須宣告 `timezone=True`**。
+
+⚠ 為什麼政策斷言不能靠 drift 抓:`classification_events.created_at` 的 ORM 是
+`Column(DateTime, ...)`(naive)、PG 是 `timestamp without time zone`(naive)
+——**兩邊相符**,diff 永遠不報。全 models 是 naive 104 vs aware 53,病根是
+「ORM 與 DB 一起錯」,不是漂移。這個區別是 rev.2 缺漏審查抓到的:原本 W0-1 的
+驗收條件寫「baseline 含 93 筆 timestamp 型別不符」,那在結構上做不到。
+
+⚠ 使用注意:CI 版必須跑在**乾淨 DB 且已 `alembic upgrade head` + 跑過
+`run_startup_migrations()`** 之上,否則抓到的是「這個庫剛好缺什麼」而不是
+「migration chain 產不出什麼」。對既有庫唯讀跑也有價值(可看現況),但不能當
+migration chain 的驗收。
+
+用法
+----
+    # 政策斷言(不需要 DB)
+    python infra/ci/check_orm_pg_drift.py --mode policy
+
+    # 漂移檢查(需要 DSN)
+    python infra/ci/check_orm_pg_drift.py --mode drift \\
+        --dsn postgresql://user:pw@host:5432/csp
+
+    # 產生/更新 baseline(只准縮不准增,ratchet)
+    python infra/ci/check_orm_pg_drift.py --mode policy --write-baseline
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CSP_ROOT = REPO_ROOT / "services" / "csp"
+BASELINE_PATH = Path(__file__).resolve().parent / "orm_drift_baseline.json"
+
+
+def _load_metadata():
+    """Import CSP 的 SQLAlchemy metadata。"""
+    sys.path.insert(0, str(CSP_ROOT))
+    from app.database import Base  # noqa: E402  (path 必須先設好)
+    import app.models  # noqa: F401,E402  (讓所有 model 註冊進 metadata)
+
+    return Base.metadata
+
+
+# ── 政策斷言 ───────────────────────────────────────────────────────────────
+def collect_naive_datetime_columns(metadata) -> list[str]:
+    """列出所有未宣告 timezone=True 的 DateTime 欄(`table.column` 形式)。"""
+    from sqlalchemy import DateTime
+
+    out: list[str] = []
+    for table in sorted(metadata.tables.values(), key=lambda t: t.name):
+        for col in table.columns:
+            type_ = col.type
+            if isinstance(type_, DateTime) and not getattr(type_, "timezone", False):
+                out.append(f"{table.name}.{col.name}")
+    return out
+
+
+def run_policy(write_baseline: bool) -> int:
+    metadata = _load_metadata()
+    naive = collect_naive_datetime_columns(metadata)
+
+    payload = {
+        "_note": (
+            "W0-1 政策段:未宣告 timezone=True 的 DateTime 欄。只准縮不准增"
+            "(ratchet)。逐批清除見補救計畫 W2-10 / 子計畫 C1。"
+            "⚠ W2-10 必須在同一個 PR 內同時改 PG 型別與 ORM 宣告,否則只改一邊"
+            "會讓剛做完的正確工作反而觸發 drift 告警。"
+        ),
+        "work_package": "W2-10",
+        "naive_datetime_columns": naive,
+    }
+
+    if write_baseline:
+        BASELINE_PATH.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        print(f"Wrote baseline: {len(naive)} naive DateTime columns → {BASELINE_PATH.name}")
+        return 0
+
+    if not BASELINE_PATH.exists():
+        print(f"Missing baseline {BASELINE_PATH}; run with --write-baseline first", file=sys.stderr)
+        return 2
+
+    baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+    allowed = set(baseline.get("naive_datetime_columns", []))
+    current = set(naive)
+
+    added = sorted(current - allowed)
+    removed = sorted(allowed - current)
+
+    print(
+        f"Policy[naive DateTime]: {len(current)} current / {len(allowed)} baseline"
+        f" (+{len(added)} / -{len(removed)})"
+    )
+    for col in removed:
+        print(f"  ✔ {col} 已改為 timezone=True → 請從 baseline 移除")
+    for col in added:
+        print(f"  ✖ NEW naive DateTime: {col}", file=sys.stderr)
+
+    if added:
+        print(
+            "\n新增 naive DateTime 欄會延續「治理帳時間無時區標記」這個缺陷。"
+            "新欄位請一律宣告 DateTime(timezone=True)。",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+# ── 漂移檢查 ───────────────────────────────────────────────────────────────
+def run_drift(dsn: str) -> int:
+    from sqlalchemy import create_engine, inspect
+
+    metadata = _load_metadata()
+    engine = create_engine(dsn)
+    insp = inspect(engine)
+
+    db_tables = set(insp.get_table_names())
+    findings: list[dict] = []
+
+    for table in sorted(metadata.tables.values(), key=lambda t: t.name):
+        if table.name not in db_tables:
+            findings.append({"kind": "MISSING_TABLE", "target": table.name})
+            continue
+
+        db_cols = {c["name"]: c for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name not in db_cols:
+                findings.append({"kind": "MISSING_COLUMN", "target": f"{table.name}.{col.name}"})
+
+        # index / unique:比對「宣告要有」與「DB 實際有」的欄位集合
+        db_index_cols = {
+            tuple(ix["column_names"]) for ix in insp.get_indexes(table.name)
+        }
+        db_unique_cols = {
+            tuple(uc["column_names"]) for uc in insp.get_unique_constraints(table.name)
+        }
+        pk_cols = tuple(insp.get_pk_constraint(table.name).get("constrained_columns") or ())
+        for col in table.columns:
+            single = (col.name,)
+            if col.index and single not in db_index_cols and single != pk_cols:
+                findings.append({"kind": "MISSING_INDEX", "target": f"{table.name}.{col.name}"})
+            if col.unique and single not in db_unique_cols and single != pk_cols:
+                findings.append({"kind": "MISSING_UNIQUE", "target": f"{table.name}.{col.name}"})
+
+        declared_fks = sum(len(c.foreign_keys) for c in table.columns)
+        actual_fks = len(insp.get_foreign_keys(table.name))
+        if declared_fks > actual_fks:
+            findings.append(
+                {
+                    "kind": "MISSING_FK",
+                    "target": table.name,
+                    "detail": f"declared {declared_fks}, db has {actual_fks}",
+                }
+            )
+
+    print(f"Drift: inspected {len(metadata.tables)} ORM tables against DB — {len(findings)} findings")
+    for f in findings:
+        detail = f" ({f['detail']})" if "detail" in f else ""
+        print(f"  {f['kind']:16s} {f['target']}{detail}")
+
+    return 1 if findings else 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--mode", choices=("policy", "drift"), required=True)
+    ap.add_argument("--dsn", help="PostgreSQL DSN(--mode drift 必填)")
+    ap.add_argument("--write-baseline", action="store_true", help="重寫政策 baseline")
+    args = ap.parse_args()
+
+    if args.mode == "policy":
+        return run_policy(args.write_baseline)
+    if not args.dsn:
+        ap.error("--mode drift 需要 --dsn")
+    return run_drift(args.dsn)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
