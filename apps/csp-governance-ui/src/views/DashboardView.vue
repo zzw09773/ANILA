@@ -57,6 +57,22 @@
       </TermBox>
     </section>
 
+    <!-- W3-3 ⑦+④ — 服務健康總覽 + 告警摘要（admin only） -------------- -->
+    <!--
+      稽核 admin-journey D1:22 個治理視圖沒有一個顯示基礎服務狀態,管理者
+      唯一的真實工具是 SSH 跑 anila-ops.sh health。這兩張卡把「平台活著嗎」
+      與「現在有幾個高嚴重度告警」放到首頁 —— 那是 admin 進來的第一個畫面。
+    -->
+    <section v-if="authStore.isAdmin" class="dash-grid">
+      <ServiceHealthCard
+        :overview="healthOverview"
+        :loading="healthLoading"
+        :page-error="healthError"
+        @refresh="fetchHealthOverview"
+      />
+      <AlertSummaryCard :raw="alertSummary" :page-error="alertError" />
+    </section>
+
     <!-- Sprint 8 X / Phase H — admin observability strip ---------------- -->
     <section v-if="authStore.isAdmin" class="dash-grid">
       <!-- legacy-token cutover progress widget -->
@@ -128,9 +144,14 @@ import { ref, computed, onMounted } from 'vue'
 import { useUsageStore } from '../stores/usage'
 import { useAuthStore } from '../stores/auth'
 import { listPlatformLinks } from '../api/platformLinks'
+import { getHealthOverview } from '../api/health'
+import { getAlertSummary } from '../api/alerts'
+import { extractError } from '../api/errors'
 import client from '../api/client'
 import UsageLineChart from '../components/charts/UsageLineChart.vue'
 import PlatformCard from '../components/dashboard/PlatformCard.vue'
+import ServiceHealthCard from '../components/dashboard/ServiceHealthCard.vue'
+import AlertSummaryCard from '../components/dashboard/AlertSummaryCard.vue'
 import TermBox from '../components/cli/TermBox.vue'
 import TermStat from '../components/cli/TermStat.vue'
 import TermEmpty from '../components/cli/TermEmpty.vue'
@@ -152,6 +173,44 @@ const loading = ref(false)
 //   topAgents:        top-5 by 30-day caller-attributed token spend.
 const legacyTokenStats = ref(null)
 const topAgents = ref([])
+
+// W3-3 ⑦+④ — 服務健康總覽 + 告警摘要。
+//
+// 這兩張卡刻意**不吃 dashboard 的靜默失敗慣例**:其餘 widget 失敗時留白是
+// 可接受的(少看到一個數字),但「服務健康」與「告警」留白會被讀成「一切正常」
+// ——那正是這兩張卡要解決的問題。所以各自帶自己的錯誤字串到卡片上。
+const healthOverview = ref(null)
+const healthLoading = ref(false)
+const healthError = ref('')
+const alertSummary = ref(null)
+const alertError = ref('')
+
+async function fetchHealthOverview() {
+  if (!authStore.isAdmin) return
+  healthLoading.value = true
+  healthError.value = ''
+  try {
+    const { data } = await getHealthOverview()
+    healthOverview.value = data
+  } catch (e) {
+    healthOverview.value = null
+    healthError.value = extractError(e, '載入服務健康總覽失敗')
+  } finally {
+    healthLoading.value = false
+  }
+}
+
+async function fetchAlertSummary() {
+  if (!authStore.isAdmin) return
+  alertError.value = ''
+  try {
+    const { data } = await getAlertSummary()
+    alertSummary.value = data
+  } catch (e) {
+    alertSummary.value = null
+    alertError.value = extractError(e, '載入告警摘要失敗')
+  }
+}
 
 const legacyTokenHint = computed(() => {
   if (!legacyTokenStats.value) return ''
@@ -204,6 +263,8 @@ async function refresh() {
       usageStore.fetchChart({ range: '24h', group_by: 'model' }),
       listPlatformLinks().then(({ data }) => { platformLinks.value = data }),
       fetchAdminWidgets(),
+      fetchHealthOverview(),
+      fetchAlertSummary(),
     ])
     summary.value = usageStore.summary
     chartData.value = usageStore.chartData

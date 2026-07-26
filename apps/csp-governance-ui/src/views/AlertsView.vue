@@ -3,7 +3,7 @@
     <header class="page-head">
       <div>
         <h1 class="page-head__title">警報</h1>
-        <p class="page-head__sub">系統偵測的異常 · 確認以靜音 · 解決以關閉</p>
+        <p class="page-head__sub">系統偵測的異常 · 確認以靜音 · 解決以關閉 · 每 30 秒自動更新</p>
       </div>
       <div class="page-head__chips">
         <TermBadge variant="danger" dot>待處理 · {{ summary.open_count }}</TermBadge>
@@ -87,9 +87,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { extractError } from '../api/errors'
 import { acknowledgeAlert, getAlertSummary, listAlerts, resolveAlert } from '../api/alerts'
+import { ALERT_POLL_INTERVAL_MS, createPoller } from '../utils/polling'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermDot } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
@@ -116,7 +117,17 @@ async function fetchData() {
     pageError.value = extractError(e, '載入警報失敗')
   }
 }
-onMounted(fetchData)
+// W3-3④:air-gapped 內網沒有外送通道,所以「通知」= 這一頁自己會更新。
+// 30 秒輪詢,**元件銷毀時(onUnmounted)一定要 stop** —— 忘了清的話換頁之後那支
+// setInterval 仍在打 /api/alerts,而且畫面上完全看不出來(換頁十次疊十支)。
+const poller = createPoller(fetchData, { intervalMs: ALERT_POLL_INTERVAL_MS })
+onMounted(() => {
+  fetchData()
+  poller.start()
+})
+onUnmounted(() => {
+  poller.stop()
+})
 
 async function handleAck(alert) {
   try { await acknowledgeAlert(alert.id); await fetchData() }
