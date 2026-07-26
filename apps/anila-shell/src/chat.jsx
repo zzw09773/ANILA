@@ -73,7 +73,6 @@ import {
   FollowUpSuggestions,
   RedactionHint,
   RenderRedactedText,
-  renderTextWithCitations,
 } from "./trust.jsx";
 import { MessageErrorNotice } from "./messageError.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
@@ -527,15 +526,14 @@ export const MessageBubble = ({
                 color: "var(--fg)",
               }}
             >
-              {msg.citations && msg.citations.length > 0 ? (
-                // Plain-text + citation links need pre-wrap so the author's
-                // newlines survive; markdown renders block elements itself.
-                <div style={{ whiteSpace: "pre-wrap" }}>
-                  {renderTextWithCitations(displayBody, msg.citations, onOpenCitation)}
-                </div>
-              ) : (
-                <MarkdownView text={displayBody} />
-              )}
+              {/* W2-5:不再二選一。引用標記由 `rehypeCitations` 在 markdown
+                  pipeline 的最後一道換成引用元件,所以 RAG 回答同時拿到表格 /
+                  代碼 / KaTeX / Mermaid **與**可點的來源徽記。 */}
+              <MarkdownView
+                text={displayBody}
+                citations={msg.citations}
+                onOpenCitation={onOpenCitation}
+              />
               {msg.streaming && msg.text && (
                 <span style={{
                   display: "inline-block", width: 7, height: 15,

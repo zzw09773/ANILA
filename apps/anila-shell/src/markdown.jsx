@@ -3,7 +3,7 @@
 // LLMs commonly emit LaTeX in the `\[ ... \]` / `\( ... \)` escape form rather
 // than the `$$ ... $$` / `$ ... $` dollar form that `remark-math` expects.
 // We rewrite the escape form to dollars before the markdown parser runs.
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -12,6 +12,12 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
+import {
+  CITATION_INDEX_ATTR,
+  CITATION_TAG,
+  rehypeCitations,
+} from "./runtime/rehypeCitations.js";
+import { CitationInline } from "./trust.jsx";
 
 function preprocessLatex(text) {
   if (!text) return "";
@@ -499,13 +505,48 @@ const rehypePlugins = [
 ];
 const remarkPlugins = [remarkGfm, remarkMath];
 
-export function MarkdownView({ text }) {
+/**
+ * W2-5:引用標記是 markdown pipeline 的**後處理**,`MarkdownView` 恆走。
+ *
+ * 原本 `chat.jsx` 是三元式二選一(有 citations 就走純文字切割、繞過整條
+ * markdown pipeline),所以 RAG 回答 —— 平台的招牌情境 —— 拿不到表格 / 代碼 /
+ * KaTeX / Mermaid。現在 `[n]` 由 `rehypeCitations` 在 katex/highlight **之後**
+ * 換成 `<CitationInline>`,兩者共存;`code`/`pre` 子樹被排除,程式碼裡的
+ * `data[1]` 不會變成按鈕。
+ *
+ * @param {object} props
+ * @param {string} props.text
+ * @param {Array|undefined} [props.citations] 空/未給 = plugin 完全 no-op。
+ * @param {(citation: object) => void} [props.onOpenCitation]
+ */
+export function MarkdownView({ text, citations, onOpenCitation }) {
+  const count = Array.isArray(citations) ? citations.length : 0;
+
+  const activeRehypePlugins = useMemo(
+    () => (count > 0 ? [...rehypePlugins, [rehypeCitations, { count }]] : rehypePlugins),
+    [count],
+  );
+
+  const activeComponents = useMemo(() => {
+    if (count === 0) return components;
+    const list = citations;
+    return {
+      ...components,
+      [CITATION_TAG]: ({ node }) => {
+        const n = Number.parseInt(node?.properties?.[CITATION_INDEX_ATTR], 10);
+        return (
+          <CitationInline n={n} citation={list[n - 1]} onOpen={onOpenCitation} />
+        );
+      },
+    };
+  }, [count, citations, onOpenCitation]);
+
   return (
     <div className="anila-markdown">
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
-        components={components}
+        rehypePlugins={activeRehypePlugins}
+        components={activeComponents}
       >
         {preprocessLatex(text || "")}
       </ReactMarkdown>
