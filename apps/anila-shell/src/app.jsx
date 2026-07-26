@@ -1176,9 +1176,16 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         }
       }
     } catch (error) {
+      // W2-4 收尾:這裡原本用 `text:` **覆蓋**掉已經串流出來的內容,於是網路一斷
+      // 使用者眼前的半成品回答就變成一句錯誤訊息 —— 生成好的字直接消失。
+      // 改成保留累積文字 + 掛 `error` metadata(與 `sendMessage` 同一姿態),
+      // 錯誤由 `messageError.jsx` 的橫幅呈現。
+      //
+      // 這條路徑的 user 訊息由 `apiEditUserMessage` 在串流前落地,所以不需要像
+      // sendMessage 那樣反轉持久化順序;缺的只有「不要覆蓋文字」這一半。
       updateMsg(convId, assistantId, {
         streaming: false,
-        text: `請求失敗：${error.message || "unknown error"}`,
+        error: describeStreamFailure(error),
       });
     }
   }
@@ -1968,11 +1975,14 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             ),
           }));
         } catch (error) {
+          // W2-4 收尾:同樣不再覆蓋已生成的文字。compare 視圖是唯讀的(不傳
+          // `onRetry`),所以只掛 error metadata 讓橫幅顯示原因;半成品留著,
+          // 使用者至少能比較兩邊已經生成的部分。
           setCompareMsgs((prev) => ({
             ...prev,
             [col.id]: (prev[col.id] || []).map((m) =>
               m.id === aId
-                ? { ...m, streaming: false, text: `請求失敗：${error.message}` }
+                ? { ...m, streaming: false, error: describeStreamFailure(error) }
                 : m,
             ),
           }));
