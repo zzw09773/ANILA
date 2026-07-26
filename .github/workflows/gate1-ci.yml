@@ -123,6 +123,26 @@ jobs:
             *) echo "::error::legacy ledger 檢查本身失敗(exit $rc)—— 這不是「沒有 findings」"; exit "$rc" ;;
           esac
 
+      # `SELECT ... FOR UPDATE` 必須鏈上 `populate_existing()`。
+      #
+      # SQLAlchemy 的 Query 命中 identity map 時會**丟棄剛 SELECT 回來的列值**、
+      # 回傳記憶體舊值 → 「加鎖重讀再決定」這個動作的全部意義消失(鎖還在,讀到
+      # 的是舊值)。已實測會擊穿 `retention_reaper` 的 legal hold —— **不可逆刪檔
+      # 加法務合規**。這一輪補了 75 處,剩 1 處(當時有並行工作在改該檔)。
+      #
+      # 純 AST,不需要 DB,所以掛在這個輕量 job。
+      - name: with_for_update 必須有 populate_existing
+        run: |
+          set +e
+          python infra/ci/check_for_update_populate.py
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "未新增缺 populate_existing() 的加鎖重讀" ;;
+            3) echo "::error::新增了缺 populate_existing() 的 with_for_update(見上方)"; exit 1 ;;
+            *) echo "::error::這支檢查本身失敗(exit $rc)—— 不是「沒有 findings」"; exit "$rc" ;;
+          esac
+
   contract-smoke:
     name: Contract smoke
     runs-on: ubuntu-latest

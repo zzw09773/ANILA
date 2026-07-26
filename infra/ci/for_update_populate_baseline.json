@@ -1,0 +1,27 @@
+{
+  "_readme": [
+    "with_for_update() 缺 populate_existing() 的站點數上限。",
+    "由 infra/ci/check_for_update_populate.py 在 CI 執行(AST,不是 grep —— 要判斷的是",
+    "同一條 query chain 上有沒有 populate_existing,grep 會同時誤報與漏報)。",
+    "",
+    "背景:SQLAlchemy 的 Query 若命中 identity map 且物件未過期,會**丟棄剛 SELECT 回來",
+    "的列值**、回傳記憶體舊值。所以 `SELECT ... FOR UPDATE` 的全部意義(鎖住列、讀到最新",
+    "值再決定)會靜默消失 —— 鎖還在,讀到的是舊值。populate_existing() 是唯一的強制覆寫。",
+    "",
+    "⚠ 2026-07-26 實測修正:先前的判讀是「expire_on_commit=False(工單 G / PR #51)會擊穿",
+    "這條防線」,言下之意是未設該旗標的分支是安全的。**那個判讀太窄。** expire_on_commit=True",
+    "只在**自己 commit** 時讓物件過期;「A 先讀 → B 改並 commit → A 未 commit 就重讀」在",
+    "預設 True 之下同樣讀到舊值。retention_reaper 的形狀正是這樣(先掃候選、再逐筆加鎖重讀)",
+    "→ 這是**現行**的 legal hold 繞過(不可逆刪檔),不是等 PR #51 才上膛的潛伏問題。",
+    "實測腳本已固化成 services/csp/tests/test_for_update_staleness_pg.py(需真 PG)。",
+    "",
+    "上限只准降不准升。剩下的 1 處在 services/csp/app/api/ingestion/documents.py,當時有",
+    "並行工作正在改該檔,刻意跳過 —— 那支落地後補完並把上限降到 0。"
+  ],
+  "max_count": 1,
+  "per_file": {
+    "services/csp/app/api/ingestion/documents.py": 1
+  },
+  "measured_date": "2026-07-26",
+  "fixed_this_round": 75
+}

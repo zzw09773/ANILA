@@ -227,7 +227,7 @@ def begin_task_run(
         raise HTTPException(status_code=403, detail="無權使用該任務")
     # Serialize run_sequence allocation and state transitions per Task.
     task = (
-        db.query(Task).filter(Task.id == task.id).with_for_update().one()
+        db.query(Task).filter(Task.id == task.id).with_for_update().populate_existing().one()
     )
 
     # Defence-in-depth for the Router-callback path: the forwarded identity
@@ -323,12 +323,12 @@ def record_task_policy_decision(
     from app.modules.policy import record_decision
 
     task = (
-        db.query(Task).filter(Task.id == task_ctx.task_id).with_for_update().one()
+        db.query(Task).filter(Task.id == task_ctx.task_id).with_for_update().populate_existing().one()
     )
     run = (
         db.query(TaskRun)
         .filter(TaskRun.id == task_ctx.task_run_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one()
     )
     if run.status in _TERMINAL_RUN_STATUSES:
@@ -411,7 +411,7 @@ def finalize_task_preflight(
         raise ValueError("preflight terminal must be failed or blocked_by_policy")
     from app.modules.policy import record_decision
 
-    task = db.query(Task).filter(Task.id == task_id).with_for_update().one()
+    task = db.query(Task).filter(Task.id == task_id).with_for_update().populate_existing().one()
     if task.status in ("completed", "failed", "cancelled", "blocked_by_policy"):
         return
     decision = record_decision(
@@ -553,13 +553,13 @@ def finalize_task_run_in_session(
     task = (
         db.query(Task)
         .filter(Task.id == run_ref.task_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one()
     )
     run = (
         db.query(TaskRun)
         .filter(TaskRun.id == task_run_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one()
     )
     if run.status in _TERMINAL_RUN_STATUSES:

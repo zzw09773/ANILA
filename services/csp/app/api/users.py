@@ -556,3 +556,76 @@ async def put_my_ui_settings(
     current_user.ui_settings = settings
     db.commit()
     return {"ui_settings": current_user.ui_settings}
+
+
+@router.patch("/me/ui-settings")
+async def patch_my_ui_settings(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """逐鍵合併,而不是整包取代 —— W3-7f。
+
+    為什麼需要這支
+    --------------
+    `PUT` 是整包取代,而 client 送的是它自己那份可能已經過時的完整 blob。兩個
+    分頁同時開著:
+
+        分頁 A 改 folders,送 {folders: 新, convMeta: A 手上的舊}
+        分頁 B 改 convMeta,送 {folders: B 手上的舊, convMeta: 新}
+
+    誰後寫誰全贏 → **另一邊的改動整個消失**。使用者的體驗是「我剛建的資料夾不見
+    了」,而且沒有任何錯誤訊息。
+
+    注意 **per-key merge 只在 client 送部分 payload 時才救得到這件事** —— 如果
+    client 照舊送整包(含自己那份過時的其他鍵),合併也會把過時值寫回去。所以
+    這支的存在是為了讓 client **只送改動的鍵**;前端切過來之前,資料遺失還在。
+    這條限制刻意寫在這裡,免得有人以為後端加了就修好了。
+
+    語意
+    ----
+    - 頂層逐鍵覆寫(不做深層合併 —— 深層合併對陣列的語意沒有唯一正確答案,
+      而 `folders` 就是陣列)。
+    - 值為 `null` 的鍵 = **刪除該鍵**。沒有這個約定的話,合併語意下永遠刪不掉東西。
+    - `SELECT ... FOR UPDATE` + `populate_existing()` 讀當前值再合併。
+      `populate_existing()` 不是可選的:少了它,Query 命中 identity map 時會回傳
+      記憶體舊值,合併的基底就是舊的 —— 那正是這支要修的問題本身。
+    """
+    import json as _json
+
+    _MAX = 256 * 1024
+    cl = request.headers.get("content-length")
+    if cl is not None and cl.isdigit() and int(cl) > _MAX:
+        raise HTTPException(status_code=413, detail="ui_settings 過大")
+    raw = await request.body()
+    if len(raw) > _MAX:
+        raise HTTPException(status_code=413, detail="ui_settings 過大")
+    try:
+        payload = _json.loads(raw or b"{}")
+    except _json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="ui_settings 必須是合法 JSON")
+    patch = (
+        payload.get("ui_settings", payload) if isinstance(payload, dict) else payload
+    )
+    if not isinstance(patch, dict):
+        raise HTTPException(status_code=400, detail="ui_settings 必須是物件")
+
+    locked = (
+        db.query(User)
+        .filter(User.id == current_user.id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
+    merged = dict(locked.ui_settings or {})
+    for key, value in patch.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    # 合併後仍要守大小上限 —— 否則可以用一連串小 PATCH 疊出一個超大 blob。
+    if len(_json.dumps(merged, ensure_ascii=False).encode("utf-8")) > _MAX:
+        raise HTTPException(status_code=413, detail="ui_settings 合併後過大")
+    locked.ui_settings = merged
+    db.commit()
+    return {"ui_settings": merged}

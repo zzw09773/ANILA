@@ -179,7 +179,7 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
         row = (
             self.db.query(ModelGovernanceReceipt)
             .filter(ModelGovernanceReceipt.invocation_id == invocation_id)
-            .with_for_update()
+            .with_for_update().populate_existing()
             .one_or_none()
         )
         if row is not None:

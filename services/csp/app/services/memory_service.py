@@ -451,7 +451,7 @@ def _share_get(db: Session, model: type, primary_key: int):
     return (
         db.query(model)
         .filter(model.id == primary_key)
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .first()
     )
 
@@ -468,7 +468,7 @@ def _load_active_memory_grants(
         db.query(ClearanceGrant)
         .filter(ClearanceGrant.subject_user_id == user_id)
         .order_by(ClearanceGrant.id.asc())
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     )
     parsed: list[tuple[ClearanceGrant, Classification]] = []
@@ -505,7 +505,7 @@ def _load_active_memory_grants(
             int(value)
             for (value,) in db.query(ClearanceGrantCompartment.compartment_id)
             .filter(ClearanceGrantCompartment.clearance_grant_id == row.id)
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .all()
         )
         collection_access: dict[int, tuple[bool, bool]] = {}
@@ -515,7 +515,7 @@ def _load_active_memory_grants(
                 CollectionAccessGrant.clearance_grant_id == row.id,
                 CollectionAccessGrant.revoked_at.is_(None),
             )
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .all()
         )
         for access in access_rows:
@@ -549,7 +549,7 @@ def _association_ids(
         int(value)
         for (value,) in db.query(value_column)
         .filter(owner_column == owner_id)
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     )
 
@@ -631,7 +631,7 @@ def _effective_memory_requirement(
             documents = (
                 db.query(IngestionDocument)
                 .filter(IngestionDocument.id.in_(document_ids))
-                .with_for_update(read=True)
+                .with_for_update(read=True).populate_existing()
                 .all()
             )
             if {int(document.id) for document in documents} != set(document_ids):
@@ -652,7 +652,7 @@ def _effective_memory_requirement(
                     .filter(
                         DocumentRequiredCompartment.document_id == document.id
                     )
-                    .with_for_update(read=True)
+                    .with_for_update(read=True).populate_existing()
                     .all()
                 )
 
@@ -674,7 +674,7 @@ def _effective_memory_requirement(
                 CollectionRequiredCompartment.compartment_id
             )
             .filter(CollectionRequiredCompartment.collection_id == collection.id)
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .all()
         )
 
@@ -683,7 +683,7 @@ def _effective_memory_requirement(
             int(row.id): bool(row.is_active)
             for row in db.query(SecurityCompartment)
             .filter(SecurityCompartment.id.in_(compartments))
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .all()
         }
         if set(known) != compartments or not all(known.values()):
@@ -743,7 +743,7 @@ def _consumer_context(
     conversation = (
         db.query(Conversation)
         .filter(Conversation.id == conversation_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .first()
     )
     if user is None or not user.is_active:
@@ -803,7 +803,7 @@ async def retrieve_relevant_chunks(
             if exclude_conversation_id is not None
             else text("1=1"),
         )
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     )
     allowed: dict[
@@ -936,7 +936,7 @@ def get_user_facts(
         db.query(UserFact)
         .filter(UserFact.user_id == user_id)
         .order_by(UserFact.updated_at.desc())
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     )
     active_grants = (
@@ -1010,7 +1010,7 @@ def get_authorized_chunk_rows(
         db.query(ConversationMemoryChunk)
         .filter(ConversationMemoryChunk.user_id == user_id)
         .order_by(ConversationMemoryChunk.id.desc())
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     )
     authorized: list[
@@ -1270,7 +1270,7 @@ def _resolve_write_context(
     conversation = (
         db.query(Conversation)
         .filter(Conversation.id == conversation_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .first()
     )
     if user is None or not user.is_active:
@@ -1296,7 +1296,7 @@ def _resolve_write_context(
     trace_id: str | None = None
     if task_id is not None:
         source_task = (
-            db.query(Task).filter(Task.id == task_id).with_for_update().first()
+            db.query(Task).filter(Task.id == task_id).with_for_update().populate_existing().first()
         )
         if source_task is None or source_task.requester_user_id != user_id:
             raise MemoryPolicyDataError("memory writer task 不存在或不屬於使用者")
@@ -1447,7 +1447,7 @@ def _upsert_facts(
         row = (
             db.query(UserFact)
             .filter(UserFact.user_id == user_id, UserFact.key == fact["key"])
-            .with_for_update()
+            .with_for_update().populate_existing()
             .first()
         )
         if row is None:

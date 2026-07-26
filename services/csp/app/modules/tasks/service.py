@@ -168,7 +168,7 @@ def create_task(
             db.query(IngestionCollection)
             .filter(IngestionCollection.id.in_(payload.selected_collection_ids))
             .order_by(IngestionCollection.id)
-            .with_for_update()
+            .with_for_update().populate_existing()
             .all()
         )
         inactive_ids = [

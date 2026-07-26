@@ -191,18 +191,18 @@ def require_runtime_binding(
 def _admit_runtime_sink(db: Session, binding: RuntimeBinding) -> None:
     """Fresh locked admission immediately before a data/inference sink."""
     task = (
-        db.query(Task).filter(Task.id == binding.task.id).with_for_update().one()
+        db.query(Task).filter(Task.id == binding.task.id).with_for_update().populate_existing().one()
     )
     job = (
         db.query(ArtifactJob)
         .filter(ArtifactJob.job_id == binding.job.job_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one()
     )
     running = (
         db.query(TaskRun)
         .filter(TaskRun.task_id == task.id, TaskRun.status == "running")
-        .with_for_update()
+        .with_for_update().populate_existing()
         .all()
     )
     expires_at = job.expires_at
