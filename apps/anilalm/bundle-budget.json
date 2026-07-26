@@ -1,0 +1,5 @@
+{
+  "_note": "W0-5 預算凍結在 2026-07-26 的實測值。只准降不准升;要升必須在 PR 說明為什麼,並記得 air-gapped 環境每一 kB 都要隨 bundle 重打包進內網。縮減工作(React.lazy / manualChunks)屬 Wave 3。",
+  "totalJsBytes": 392497,
+  "largestChunkBytes": 392497
+}
