@@ -80,6 +80,47 @@ class LegacyLedgerGateTest(unittest.TestCase):
         # 還原後必須回到綠燈,否則這個測試會把 tree 弄髒而不自知
         self.assertEqual(_run().returncode, EXIT_OK, "還原後應回到 exit 0")
 
+    def test_comment_only_reference_does_not_trip_the_gate(self):
+        """純註解行不算引用 —— 否則紀律變成「不准解釋為什麼這裡以前寫錯」。
+
+        這條是實際踩到的:W1-1 把 `api/conversations.py` 的兩處 legacy boolean
+        gate 改掉,並在原地留下說明,結果計數完全不動 —— gate 看起來像「什麼都
+        沒清掉」。而那種註解正是防止下一個人把 bug 寫回去的東西。
+        """
+        target = REPO_ROOT / "services" / "csp" / "app" / "api" / "attachments.py"
+        original = target.read_text(encoding="utf-8")
+        try:
+            target.write_text(
+                original
+                + "\n\n# 說明:這裡以前寫 conv.classified,那是錯的(見 W1-1)。\n",
+                encoding="utf-8",
+            )
+            proc = _run()
+            self.assertEqual(
+                proc.returncode,
+                EXIT_OK,
+                f"純註解引用不該擋下 PR。stdout={proc.stdout}\nstderr={proc.stderr}",
+            )
+        finally:
+            target.write_text(original, encoding="utf-8")
+
+    def test_inline_trailing_comment_still_counts(self):
+        """行尾註解仍計入 —— 判斷 `#` 是否落在字串內會判錯,而判錯方向是少算。
+
+        少算會讓 ratchet 靜默鬆動,所以這裡刻意選「多算」:整行註解不可能含
+        可執行碼(零誤放),行尾註解一律當引用。
+        """
+        target = REPO_ROOT / "services" / "csp" / "app" / "api" / "attachments.py"
+        original = target.read_text(encoding="utf-8")
+        try:
+            target.write_text(
+                original + "\n\ndef _seed(conv):\n    return conv.classified  # 行尾註解\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(_run().returncode, EXIT_FINDINGS)
+        finally:
+            target.write_text(original, encoding="utf-8")
+
     def test_missing_ledger_is_broken_not_ok(self):
         proc = _run("--ledger", str(REPO_ROOT / "infra" / "ci" / "no-such-ledger.json"))
         self.assertEqual(proc.returncode, EXIT_BROKEN)

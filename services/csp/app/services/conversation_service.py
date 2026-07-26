@@ -351,14 +351,27 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
 # HTTP route in app/api/conversations.py is also gone.
 
 
-def log_classified_access(db: Session, conv_id: int, user: User) -> None:
-    # Field names match the AuditLog model exactly: actor_user_id /
-    # actor_username / detail (singular). The previous spelling
-    # ``user_id`` / ``details`` slipped through because no code path
-    # actually triggered classified-access logging until the
-    # conversations.classified column started being persisted by
-    # ``_latch_agent_classification`` — at which point GET /api/conversations/:id
-    # blew up with TypeError on construction.
+def log_controlled_access(
+    db: Session, conv_id: int, user: User, *, level_label: str
+) -> None:
+    """對受控對話(密等 > 無機密)的讀取落一列稽核。
+
+    W1-1:原名 `log_classified_access`,而且**只在 legacy `classified` 為 True
+    時被呼叫** —— 也就是只有 `>= 機密` 才記帳,營業秘密的讀取一列都沒有。
+
+    `action` 字串刻意**不改**(仍是 `access_classified_conversation`):改了會把
+    歷史稽核軌跡切成兩個 action 名,「誰讀過受控對話」這種查詢會漏掉舊列。實際
+    密等寫進 `detail`,讓事後能分辨營業秘密與絕對機密 —— 沒有這個,稽核只剩
+    「有人看過某個受控東西」。
+
+    Field names match the AuditLog model exactly: actor_user_id /
+    actor_username / detail (singular). The previous spelling
+    ``user_id`` / ``details`` slipped through because no code path
+    actually triggered classified-access logging until the
+    conversations.classified column started being persisted by
+    ``_latch_agent_classification`` — at which point GET /api/conversations/:id
+    blew up with TypeError on construction.
+    """
     db.add(AuditLog(
         actor_user_id=user.id,
         actor_username=user.username,
@@ -366,12 +379,46 @@ def log_classified_access(db: Session, conv_id: int, user: User) -> None:
         resource_type="conversation",
         resource_id=str(conv_id),
         status="success",
-        detail=f"User {user.username} accessed classified conversation {conv_id}",
+        detail=(
+            f"使用者 {user.username} 讀取密等「{level_label}」的對話 {conv_id}"
+        ),
     ))
     db.commit()
 
 
 # ── Share links ───────────────────────────────────────────────────────────────
+
+def controlled_level_label(conv: Conversation) -> str:
+    """人可讀的密等標籤;未知值回「未知(視同受控)」。
+
+    稽核與使用者面文案都要顯示實際密等,而不是「classified / not classified」。
+    """
+    try:
+        return ClassificationLevel.from_storage(conv.classification_level).to_storage()
+    except (TypeError, ValueError):
+        return "未知(視同受控)"
+
+
+def is_controlled(conv: Conversation) -> bool:
+    """密等是否高於「無機密」→ 一切外流面都要當受控處理。
+
+    **這是五個外流面(複製 / 匯出 / 分享 / 列印 / 稽核)的單一判定來源。** W1-1
+    之前每個面各自寫,而其中兩個寫的是 legacy `classified` boolean —— 那個
+    boolean 的鏡射規則是 `classified = level >= 機密`(`api/conversations.py:125`
+    自己寫明),所以**營業秘密的 `classified` 是 False**,於是營業秘密在那兩個
+    面上等同無機密。
+
+    未知或損壞的儲存值 **fail-closed 視同受控**。門檻是「> 無機密」而不是
+    「>= 機密」—— 後者正是第一輪犯的錯,計畫的風險欄把它記為「淨退化陷阱」。
+    """
+    try:
+        return (
+            ClassificationLevel.from_storage(conv.classification_level)
+            is not ClassificationLevel.UNCLASSIFIED
+        )
+    except (TypeError, ValueError):
+        return True
+
 
 def is_publicly_shareable(conv: Conversation) -> bool:
     """Return True only for a valid, explicitly UNCLASSIFIED conversation.
@@ -379,14 +426,11 @@ def is_publicly_shareable(conv: Conversation) -> bool:
     The legacy ``classified`` boolean is only a compatibility read model and
     remains False for 營業秘密, so it is not an authorization input. Unknown or
     malformed stored values fail closed.
+
+    W1-1:改為委派給 `is_controlled()`,讓分享面與其餘四個外流面共用同一個定義
+    (行為不變 —— 兩者本來就是同一判定的正反面,但先前是兩份會各自漂移的實作)。
     """
-    try:
-        return (
-            ClassificationLevel.from_storage(conv.classification_level)
-            is ClassificationLevel.UNCLASSIFIED
-        )
-    except (TypeError, ValueError):
-        return False
+    return not is_controlled(conv)
 
 
 def _stored_datetime_as_utc(value: datetime) -> datetime:

@@ -12,7 +12,8 @@
     "checklist)。owner 目前填職稱,W4-2 之後改具名。",
     "",
     "基線量測日:2026-07-26(commit 1a8a0a7 之後)。量測指令:",
-    "  python3 infra/ci/check_legacy_ledger.py --report"
+    "  python3 infra/ci/check_legacy_ledger.py --report",
+    "2026-07-26 二次校準:計數器原本把**純註解行**也算成引用,於是 W1-1 改掉兩處 legacy gate、同時在原地留下「為什麼不能用它」的說明後,計數完全不動。ledger 要擋的是引用,而那種註解正是防止下一個人把 bug 寫回去的東西 —— 計數註解等於紀律變成「不准解釋」。修正後全部上限重新鎖到真實值(見各 entry 的 max_count)。"
   ],
   "baseline_date": "2026-07-26",
   "entries": [
@@ -27,7 +28,7 @@
         "**/test_*.py",
         "**/tests/**"
       ],
-      "max_count": 9,
+      "max_count": 5,
       "owner": "平台後端負責人",
       "exit_condition": "全部判斷式改吃 classification_level(W1-1);欄位本身待 deprecation migration",
       "deadline": "Wave 1 結束",
@@ -44,7 +45,7 @@
         "**/*.test.js",
         "**/*.test.jsx"
       ],
-      "max_count": 30,
+      "max_count": 26,
       "owner": "前端負責人",
       "exit_condition": "同 classified-boolean-backend;前端一律改讀 classification_level",
       "deadline": "Wave 1 結束",
@@ -59,7 +60,7 @@
       "exclude": [
         "**/tests/**"
       ],
-      "max_count": 25,
+      "max_count": 14,
       "owner": "平台後端負責人",
       "exit_condition": "讀寫全走 registered_service;platform_links 表進 deprecation migration",
       "deadline": "Wave 3 結束",
@@ -76,7 +77,7 @@
         "**/tests/**",
         "**/test_*.py"
       ],
-      "max_count": 23,
+      "max_count": 21,
       "owner": "平台後端負責人",
       "exit_condition": "cutover 到 per-agent credential 完成,service_token_legacy_env_used 遙測歸零(W1-5⑥)",
       "deadline": "Wave 3 結束",
@@ -110,7 +111,7 @@
         "**/tests/**",
         "**/test_*.py"
       ],
-      "max_count": 32,
+      "max_count": 31,
       "owner": "平台後端負責人",
       "exit_condition": "清零",
       "deadline": "Wave 3 結束",
@@ -128,7 +129,7 @@
         "**/test_*.py",
         "services/csp/app/services/proxy_service.py"
       ],
-      "max_count": 27,
+      "max_count": 23,
       "owner": "平台後端負責人",
       "exit_condition": "所有 import 改指 app.services.proxy 套件,facade 檔 proxy_service.py 刪除",
       "deadline": "Wave 3 結束",

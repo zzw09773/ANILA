@@ -80,8 +80,41 @@ def _iter_files(scope: list[str], exclude: list[str]) -> list[Path]:
     return sorted(seen)
 
 
+# 純註解行的開頭樣式(依副檔名)。**只排除「整行都是註解」的行**,不嘗試剖析
+# 行尾註解 —— 那需要判斷 `#` 是否落在字串內,判錯的方向是「少算」,而少算會讓
+# ratchet 靜默鬆動。整行註解不可能含可執行碼,所以零誤放風險;行尾註解仍會被
+# 計入(多算,方向是安全的)。
+_COMMENT_ONLY = {
+    ".py": ("#",),
+    ".sh": ("#",),
+    ".yaml": ("#",),
+    ".yml": ("#",),
+    ".js": ("//", "*", "/*"),
+    ".jsx": ("//", "*", "/*"),
+    ".ts": ("//", "*", "/*"),
+    ".tsx": ("//", "*", "/*"),
+    ".vue": ("//", "*", "/*"),
+}
+
+
+def _is_comment_only(line: str, suffix: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    for marker in _COMMENT_ONLY.get(suffix, ()):
+        if stripped.startswith(marker):
+            return True
+    return False
+
+
 def _count(entry: dict) -> tuple[int, list[str]]:
-    """回傳(命中行數, 前幾筆命中位置)。逐行計數,一行多次命中只算一次。"""
+    """回傳(命中行數, 前幾筆命中位置)。逐行計數,一行多次命中只算一次。
+
+    純註解行不計入。理由:ledger 要擋的是**引用**,而「解釋為什麼這裡以前寫錯」
+    的註解正是防止下一個人把 bug 寫回去的東西 —— 如果註解也被計數,紀律就變成
+    「不准解釋」,那是壞的交換。實例:W1-1 把 `api/conversations.py` 的兩處
+    legacy boolean gate 改掉,同時在原地留下說明為何不能用它,結果計數不動。
+    """
     try:
         rx = re.compile(entry["pattern"])
     except re.error as exc:  # ledger 寫壞了是 BROKEN,不是 findings
@@ -94,12 +127,16 @@ def _count(entry: dict) -> tuple[int, list[str]]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        suffix = path.suffix
         for lineno, line in enumerate(text.splitlines(), 1):
-            if rx.search(line):
-                total += 1
-                if len(hits) < 5:
-                    rel = path.relative_to(REPO_ROOT)
-                    hits.append(f"{rel}:{lineno}")
+            if not rx.search(line):
+                continue
+            if _is_comment_only(line, suffix):
+                continue
+            total += 1
+            if len(hits) < 5:
+                rel = path.relative_to(REPO_ROOT)
+                hits.append(f"{rel}:{lineno}")
     return total, hits
 
 

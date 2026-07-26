@@ -306,7 +306,14 @@ def search_conversations(
     hits: list[dict] = []
     for c in convs:
         snippet = None
-        if not c.classified:
+        # W1-1:原本是 `if not c.classified`。legacy boolean 的鏡射規則是
+        # `classified = level >= 機密`(見 ConversationOut 的註解),所以**營業
+        # 秘密的 classified 是 False** → 它的訊息內文會被擷取 80 字回傳。
+        # 內容外洩,而且發生在「列表」這種最容易被截圖、最不會被注意的地方。
+        # 改吃 is_controlled()(> 無機密即受控,未知值 fail-closed)。
+        # 注意:對話本身仍然出現在結果裡,只是不附內文 —— 整條消失會讓使用者
+        # 以為東西不見了(N-3 的禁令姿態要求)。
+        if not svc.is_controlled(c):
             msg = (
                 db.query(Message)
                 .filter(Message.conversation_id == c.id, Message.content.ilike(like))
@@ -330,8 +337,13 @@ def get_conversation(
     current_user: User = Depends(get_current_user),
 ):
     conv = svc.get_conversation(db, conv_id, current_user)
-    if conv.classified:
-        svc.log_classified_access(db, conv_id, current_user)
+    # W1-1:原本是 `if conv.classified` → 只有 >= 機密 才落稽核列,**營業秘密的
+    # 讀取一列都沒有**。對營業秘密尤其致命:降密要兩個人加一份公文文號,而讀取
+    # 連一列 log 都沒有 —— 不對稱到了荒謬的程度。
+    if svc.is_controlled(conv):
+        svc.log_controlled_access(
+            db, conv_id, current_user, level_label=svc.controlled_level_label(conv)
+        )
     return conv
 
 
