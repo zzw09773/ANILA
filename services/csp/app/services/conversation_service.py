@@ -108,6 +108,52 @@ def list_conversations(
     belongs to whichever collection the user is currently viewing would
     re-introduce the cross-collection leak this filter exists to fix.
     """
+    rows, _ = list_conversations_page(
+        db,
+        user,
+        origin=origin,
+        exclude_origin=exclude_origin,
+        collection_id=collection_id,
+        limit=None,
+        cursor=None,
+    )
+    return rows
+
+
+def list_conversations_page(
+    db: Session,
+    user: User,
+    *,
+    origin: Optional[str] = None,
+    exclude_origin: Optional[str] = None,
+    collection_id: Optional[int] = None,
+    limit: Optional[int] = None,
+    cursor: Optional[int] = None,
+) -> tuple[list[Conversation], Optional[int]]:
+    """回傳 `(對話列, 下一頁 cursor)`。`limit=None` 就是舊行為(全撈)。
+
+    W3-7e。先前是 `.order_by(updated_at.desc()).all()` —— 沒有分頁,一個累積了
+    五千條對話的使用者每次側欄載入都把五千列連同 `updated_at`/`title` 全撈回來。
+
+    ## 為什麼 cursor 是「最後一列的 id」而不是把時間編進去
+
+    keyset 分頁需要一個**全序**;`updated_at` 單獨用會在同秒撞的列上重複或漏掉,
+    所以排序鍵是 `(updated_at DESC, id DESC)`。但如果把 `updated_at` 的字面值編進
+    cursor,就得在比較時把它 parse 回 datetime —— 而 `conversations.updated_at`
+    現在是 **naive**,W2-10 之後會變 timestamptz。那個轉換一發生,「parse 出來的
+    aware 值」對「naive 欄位」的比較就會 TypeError(W1-4 修的正是同一個坑)。
+
+    所以 cursor 只帶 id,錨點的 `updated_at` 用**子查詢**現查。比較因此是
+    欄位對欄位、同型別,不管那個欄位哪天變成 timestamptz 都成立。
+
+    cursor 用裸 id 而不是 base64 包裝:client 本來就有這些 id,包起來只是假裝不透明。
+
+    ## 為什麼回傳 tuple 而不是換 response 形狀
+
+    API 端把 cursor 放進 `X-Next-Cursor` 回應頭,`response_model` 與 JSON 形狀
+    **一個字都不變** —— 舊 client 完全不受影響,OpenAPI 產出物也不用改。
+    「有參數就換 shape」那種做法會讓契約有兩個版本。
+    """
     q = db.query(Conversation).filter(Conversation.user_id == user.id)
     if origin is not None:
         q = q.filter(Conversation.origin == origin)
@@ -117,7 +163,34 @@ def list_conversations(
         )
     if collection_id is not None:
         q = q.filter(Conversation.collection_id == collection_id)
-    return q.order_by(Conversation.updated_at.desc()).all()
+
+    if cursor is not None:
+        anchor = (
+            db.query(Conversation.updated_at)
+            .filter(
+                Conversation.id == cursor,
+                # cursor 也要綁使用者:否則傳別人的 conversation id 就能把它的
+                # updated_at 當錨點,間接問出「那條對話最後更新時間落在哪個區間」。
+                Conversation.user_id == user.id,
+            )
+            .scalar_subquery()
+        )
+        q = q.filter(
+            (Conversation.updated_at < anchor)
+            | ((Conversation.updated_at == anchor) & (Conversation.id < cursor))
+        )
+
+    q = q.order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+
+    if limit is None:
+        return q.all(), None
+
+    # 多取一列來判斷「還有下一頁嗎」,避免另外跑一次 count(對大表是白付的掃描)。
+    rows = q.limit(limit + 1).all()
+    if len(rows) > limit:
+        page = rows[:limit]
+        return page, page[-1].id
+    return rows, None
 
 
 def update_title(db: Session, conv_id: int, title: str, user: User) -> Conversation:

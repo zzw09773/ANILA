@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -193,6 +193,21 @@ def list_conversations(
         ),
     ),
     db: Session = Depends(get_db),
+    limit: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=200,
+        description=(
+            "每頁列數。**不給就是舊行為**(回全部),舊 client 不受影響。"
+            "有給時,若還有下一頁,回應頭 `X-Next-Cursor` 會帶下一頁的 cursor。"
+        ),
+    ),
+    cursor: Optional[int] = Query(
+        default=None,
+        ge=1,
+        description="上一頁回應頭 `X-Next-Cursor` 的值(= 上一頁最後一列的 id)。",
+    ),
+    response: Response = None,  # noqa: B008 — FastAPI 注入用
     current_user: User = Depends(get_current_user),
 ):
     if origin is not None and exclude_origin is not None:
@@ -200,12 +215,20 @@ def list_conversations(
             status_code=400,
             detail="origin and exclude_origin are mutually exclusive",
         )
-    return svc.list_conversations(
+    # W3-7e:cursor 分頁。**不帶 limit 就是舊行為**(全撈),所以舊 client 一個
+    # 字都不用改。下一頁的 cursor 走 `X-Next-Cursor` 回應頭而不是塞進 body ——
+    # JSON 形狀與 `response_model` 因此完全不變,不會讓契約長出第二個版本。
+    rows, next_cursor = svc.list_conversations_page(
         db, current_user,
         origin=origin,
         exclude_origin=exclude_origin,
         collection_id=collection_id,
+        limit=limit,
+        cursor=cursor,
     )
+    if next_cursor is not None:
+        response.headers["X-Next-Cursor"] = str(next_cursor)
+    return rows
 
 
 @router.post("", response_model=ConversationOut, status_code=201)
