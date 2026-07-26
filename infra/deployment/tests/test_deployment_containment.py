@@ -53,7 +53,7 @@ class DeploymentContainmentTests(unittest.TestCase):
         self.assertNotIn("CODESERVER_WORKSPACE", block)
         self.assertNotIn("../..:/home/coder/workspace", block)
 
-    def test_compose_default_excludes_codeserver_but_profile_includes_it(self) -> None:
+    def test_compose_default_excludes_all_three_developer_tools(self) -> None:
         if shutil.which("docker") is None:
             self.skipTest("docker compose is not installed")
 
@@ -158,9 +158,13 @@ class DeploymentContainmentTests(unittest.TestCase):
 
         default = compose_config()
         default_services = default["services"]
-        self.assertNotIn("codeserver", default_services)
-        self.assertIn("n8n", default_services)
-        self.assertIn("gitlab", default_services)
+        # W1-8:三個開發者工具都不在預設服務集裡。原本只有 codeserver 被排除,
+        # n8n / gitlab 是預設啟動 —— 那是 CLAUDE.md §5.1 記的阻斷項。
+        for tool in ("codeserver", "n8n", "gitlab"):
+            self.assertNotIn(tool, default_services)
+        # 但它們的設定內容仍然要被釘住(下面 developer_services 那段),否則
+        # 「移出預設」會變成「不再有人檢查」—— 那是把阻斷項換成盲區。
+        developer_services = compose_config("--profile", "developer-tools")["services"]
         dedicated = "csk-studio-artifact-containment-test"
         self.assertEqual(
             default_services["csp"]["environment"]["STUDIO_ARTIFACT_SERVICE_TOKEN"],
@@ -176,7 +180,7 @@ class DeploymentContainmentTests(unittest.TestCase):
             "STUDIO_ARTIFACT_SERVICE_TOKEN",
             default_services["router"]["environment"],
         )
-        n8n = default_services["n8n"]
+        n8n = developer_services["n8n"]
         self.assertEqual(n8n["environment"]["N8N_HOST"], "n8n.ai.ncsist.org.tw")
         self.assertEqual(n8n["environment"]["N8N_PATH"], "/")
         self.assertEqual(n8n["image"], "n8nio/n8n:2.29.10")
@@ -192,7 +196,7 @@ class DeploymentContainmentTests(unittest.TestCase):
             n8n["environment"]["N8N_EDITOR_BASE_URL"],
             "https://n8n.ai.ncsist.org.tw/",
         )
-        gitlab = default_services["gitlab"]
+        gitlab = developer_services["gitlab"]
         self.assertEqual(gitlab["image"], "gitlab/gitlab-ce:19.1.1-ce.0")
         self.assertIn(
             {
@@ -254,8 +258,7 @@ class DeploymentContainmentTests(unittest.TestCase):
             urls["Code Server (按需)"], "https://code.ai.ncsist.org.tw/"
         )
 
-        developer = compose_config("--profile", "developer-tools")
-        codeserver = developer["services"]["codeserver"]
+        codeserver = developer_services["codeserver"]
         self.assertEqual(codeserver["profiles"], ["developer-tools"])
         workspace = next(
             volume
@@ -408,11 +411,19 @@ class DeploymentContainmentTests(unittest.TestCase):
         self.assertEqual(studio["REQUIRE_CARD_LOGIN_ONLY"], "false")
         self.assertEqual(studio["COOKIE_SECURE"], "true")
 
-    def test_n8n_and_gitlab_remain_default_intranet_services(self) -> None:
-        for service in ("n8n", "gitlab"):
+    def test_n8n_and_gitlab_are_opt_in_developer_tools(self) -> None:
+        """W1-8:三個工具同屬 developer-tools profile,預設都不啟動。
+
+        原本這支測試斷言 n8n / gitlab **沒有** `profiles:`(當時的實作姿態)。
+        那個姿態本身就是 CLAUDE.md §5.1 記的部署阻斷項:兩者都有自己的認證邊界
+        (n8n 原生 user-management、gitlab 的 initial root password),都不吃 CSP
+        的 `auth_request`,預設隨 stack 啟動等於在平台旁邊多開兩個獨立認證面 ——
+        而交付規格要求移除開發者工具的軍用分支共用同一份 `platform.yml`。
+        """
+        for service in ("n8n", "gitlab", "codeserver"):
             with self.subTest(service=service):
                 block = compose_service_block(self.platform, service)
-                self.assertNotIn("profiles:", block)
+                self.assertIn('profiles: ["developer-tools"]', block)
 
     def test_active_tools_are_isolated_from_core_network(self) -> None:
         nginx = compose_service_block(self.platform, "nginx")

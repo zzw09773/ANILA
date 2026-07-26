@@ -102,6 +102,27 @@ jobs:
       - name: Run complete deployment contracts
         run: python -m unittest discover -s infra/deployment/tests -v
 
+      # W1-7 / C5:legacy 清單 ratchet。不需要 DB,掛在這個輕量 job。
+      #
+      # 這支擋的是稽核抓到的 S3 反模式:新 read model 落地後舊那層留著,沒有
+      # 退場條件也沒有清單,於是每個 boundary 都要重查一次舊層還在不在 ——
+      # 漏查的那個就是下一個缺口。ratchet 只准降不准升。
+      #
+      # exit code 分流照 drift 檢查的教訓來:exit 3 = 真的有 findings、
+      # exit 1 = 檢查本身壞了。**不准用 `|| true` 或 `|| echo warning`** ——
+      # 那正是讓 ModuleNotFoundError 偽裝成綠燈的寫法。
+      - name: legacy 清單 ratchet(C5)
+        run: |
+          set +e
+          python infra/ci/check_legacy_ledger.py
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "legacy 引用未增加" ;;
+            3) echo "::error::新增了 legacy 引用(見上方清單)"; exit 1 ;;
+            *) echo "::error::legacy ledger 檢查本身失敗(exit $rc)—— 這不是「沒有 findings」"; exit "$rc" ;;
+          esac
+
   contract-smoke:
     name: Contract smoke
     runs-on: ubuntu-latest

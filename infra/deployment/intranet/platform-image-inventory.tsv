@@ -18,6 +18,6 @@ asr-gateway	anila-platform-asr-gateway	01-anila-built.tar.gz	profile:asr	built
 csp-db	pgvector/pgvector:pg16	02-base.tar.gz	default	upstream
 redis	redis:7-alpine	02-base.tar.gz	default	upstream
 nginx	nginx:alpine	02-base.tar.gz	default	upstream
-n8n	n8nio/n8n:2.29.10	03-cold.tar.gz	default	upstream
-gitlab	gitlab/gitlab-ce:19.1.1-ce.0	03-cold.tar.gz	default	upstream
+n8n	n8nio/n8n:2.29.10	03-cold.tar.gz	profile:developer-tools	upstream
+gitlab	gitlab/gitlab-ce:19.1.1-ce.0	03-cold.tar.gz	profile:developer-tools	upstream
 codeserver	codercom/code-server:latest	03-cold.tar.gz	profile:developer-tools	upstream

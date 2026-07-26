@@ -39,7 +39,12 @@ class AirgapImageInventoryTests(unittest.TestCase):
             {
                 ("anila-agent", "profile:gate5-silver", "built"),
                 ("asr-gateway", "profile:asr", "built"),
+                # W1-8:n8n / gitlab 從 default 移到 developer-tools。
+                # 它們仍在清冊裡(離線 bundle 照樣要帶這兩個 image),只是
+                # 不再隨 stack 預設啟動 —— 清冊追蹤範圍沒縮小,只是分類改了。
                 ("codeserver", "profile:developer-tools", "upstream"),
+                ("n8n", "profile:developer-tools", "upstream"),
+                ("gitlab", "profile:developer-tools", "upstream"),
             },
         )
 
@@ -116,8 +121,10 @@ class AirgapImageInventoryTests(unittest.TestCase):
         if probe.returncode != 0:
             self.skipTest("docker compose is not usable in this environment")
         required, optional = checker.validate(ROOT, INVENTORY)
-        self.assertEqual(required, 12)
-        self.assertEqual(optional, 3)
+        # W1-8:12 → 10。n8n / gitlab 移進 developer-tools profile,
+        # 所以從 required 轉為 optional(下面 optional 的斷言相應 +2)。
+        self.assertEqual(required, 10)
+        self.assertEqual(optional, 5)
         model_default, model_optional, unique_images = checker.validate_models(
             ROOT, MODEL_INVENTORY
         )
