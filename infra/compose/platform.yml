@@ -844,6 +844,13 @@ services:
   #     webhook / form ingress 在 nginx 一律 fail-closed；若要接 machine
   #     callback，必須另建 mTLS / signed machine ingress。
   n8n:
+    # W1-8:與 codeserver 同姿態,**預設不啟動**。
+    # 先前 n8n 與 gitlab 都沒有 profiles: → 七條分支(含交付規格要求移除開發者
+    # 工具的軍用分支)照 runbook 部署就會把它們一起拉起來。n8n 有自己的
+    # user-management 邊界、gitlab 有自己的 root 初始密碼,兩者都不吃 CSP 的
+    # auth_request —— 預設隨 stack 啟動等於在平台旁邊多開兩個獨立認證面。
+    # 要用就顯式 `--profile developer-tools`。
+    profiles: ["developer-tools"]
     image: ${ANILA_IMAGE_N8N:?ANILA_IMAGE_N8N must be a locked image content ID}
     # 用 image 內建 'node' user (UID 1000),不要 override user — n8n 首次
     # 開機 HOME 對不上會 mkdir /.n8n EACCES。
@@ -905,6 +912,8 @@ services:
   # 首次開機 reconfigure ~5-10 分鐘,start_period 600s 是必要的。
   # Initial root password 在容器內 /etc/gitlab/initial_root_password,首次登入要輪換。
   gitlab:
+    # W1-8:同 n8n,預設不啟動(理由見 n8n 處註解)。
+    profiles: ["developer-tools"]
     image: ${ANILA_IMAGE_GITLAB:?ANILA_IMAGE_GITLAB must be a locked image content ID}
     hostname: ${GITLAB_HOST:-gitlab.ai.ncsist.org.tw}
     environment:
