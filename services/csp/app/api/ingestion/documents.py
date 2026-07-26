@@ -17,9 +17,11 @@ as the worker advances.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import (
@@ -293,6 +295,104 @@ def _persist_blob(content: bytes, sha256: str) -> str:
         with open(path, "wb") as f:
             f.write(content)
     return path
+
+
+@dataclass(frozen=True)
+class _ZipMemberStage:
+    """CPU/IO staging outcome for one zip member (no DB touches).
+
+    ``cumulative_delta`` mirrors the original loop: empty / too_large /
+    unzip failure contribute 0; once a non-empty payload under the per-file
+    cap is inflated, its ``size`` counts toward the archive total even if
+    the total cap then trips before persist or sniffing later rejects it.
+    """
+
+    outcome: str
+    result_filename: str
+    detail: str | None = None
+    size: int = 0
+    cumulative_delta: int = 0
+    sha256: str | None = None
+    storage_path: str | None = None
+    media_type: str | None = None
+
+
+def _stage_zip_member(
+    zf: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    *,
+    out_name: str,
+    in_zip_path: str,
+    remaining_budget: int,
+) -> _ZipMemberStage:
+    """Inflate / sniff / hash / optionally persist one member (sync, off-loop).
+
+    ``remaining_budget`` is ``_ZIP_MAX_TOTAL_BYTES - cumulative_bytes`` *before*
+    this member. Persist runs only when ``size <= remaining_budget``, so a
+    member that would push the archive over the 1 GB cap is never written —
+    matching the original check-before-``_persist_blob`` order.
+
+    Called via ``asyncio.to_thread`` so zlib / sniffing / sha256 / disk I/O
+    cannot freeze the single uvicorn event loop (see proxy service's
+    ``to_thread`` rationale: doing sync heavy work on the MainThread freezes
+    every concurrent coroutine).
+    """
+    try:
+        content = zf.read(member)
+    except Exception as e:
+        return _ZipMemberStage(
+            outcome="unzip_error",
+            result_filename=in_zip_path,
+            detail=f"unzip failed: {type(e).__name__}",
+        )
+
+    size = len(content)
+    if size == 0:
+        return _ZipMemberStage(
+            outcome="empty",
+            result_filename=out_name,
+            detail="empty file",
+        )
+    if size > _MAX_BYTES:
+        return _ZipMemberStage(
+            outcome="too_large",
+            result_filename=out_name,
+            detail=f"{size:,} bytes exceeds {_MAX_BYTES:,} limit",
+        )
+
+    # Count toward the archive total first (same order as the pre-to_thread
+    # loop), then refuse persist when this member alone pushes over the cap.
+    if size > remaining_budget:
+        return _ZipMemberStage(
+            outcome="over_total",
+            result_filename=out_name,
+            detail="archive total exceeds 1 GB cap (this file pushed over)",
+            size=size,
+            cumulative_delta=size,
+        )
+
+    try:
+        sniffed = validate_content(content, filename=out_name)
+    except ContentValidationError as exc:
+        return _ZipMemberStage(
+            outcome="content_error",
+            result_filename=out_name,
+            detail=f"content rejected: {exc}",
+            size=size,
+            cumulative_delta=size,
+        )
+
+    sha256 = hashlib.sha256(content).hexdigest()
+    storage_path = _persist_blob(content, sha256)
+    return _ZipMemberStage(
+        outcome="ready",
+        result_filename=out_name,
+        size=size,
+        cumulative_delta=size,
+        sha256=sha256,
+        storage_path=storage_path,
+        media_type=sniffed.media_type,
+    )
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -634,52 +734,59 @@ async def upload_zip(
             results.append(declared_error)
             continue
 
-        try:
-            content = zf.read(member)
-        except Exception as e:
+        # zlib / sniff / sha256 / disk write off the event loop. SQLAlchemy
+        # Session is not thread-safe — DB work stays below on the loop thread.
+        staged = await asyncio.to_thread(
+            _stage_zip_member,
+            zf,
+            member,
+            out_name=out_name,
+            in_zip_path=in_zip_path,
+            remaining_budget=_ZIP_MAX_TOTAL_BYTES - cumulative_bytes,
+        )
+        cumulative_bytes += staged.cumulative_delta
+
+        if staged.outcome == "unzip_error":
             errors += 1
             results.append(ZipUploadResult(
-                filename=in_zip_path, status="error",
-                detail=f"unzip failed: {type(e).__name__}",
+                filename=staged.result_filename, status="error",
+                detail=staged.detail,
             ))
             continue
-
-        size = len(content)
-        if size == 0:
+        if staged.outcome == "empty":
             skipped += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="skipped", detail="empty file",
+                filename=staged.result_filename, status="skipped",
+                detail=staged.detail,
             ))
             continue
-        if size > _MAX_BYTES:
+        if staged.outcome == "too_large":
             skipped += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="too_large",
-                detail=f"{size:,} bytes exceeds {_MAX_BYTES:,} limit",
+                filename=staged.result_filename, status="too_large",
+                detail=staged.detail,
             ))
             continue
-        cumulative_bytes += size
-        if cumulative_bytes > _ZIP_MAX_TOTAL_BYTES:
+        if staged.outcome == "over_total":
             skipped += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="skipped",
-                detail="archive total exceeds 1 GB cap (this file pushed over)",
+                filename=staged.result_filename, status="skipped",
+                detail=staged.detail,
             ))
             continue
-
-        try:
-            sniffed = validate_content(content, filename=out_name)
-        except ContentValidationError as exc:
+        if staged.outcome == "content_error":
             errors += 1
             results.append(ZipUploadResult(
-                filename=out_name,
-                status="error",
-                detail=f"content rejected: {exc}",
+                filename=staged.result_filename, status="error",
+                detail=staged.detail,
             ))
             continue
 
-        sha256 = hashlib.sha256(content).hexdigest()
-        storage_path = _persist_blob(content, sha256)
+        # staged.outcome == "ready"
+        sha256 = staged.sha256
+        storage_path = staged.storage_path
+        size = staged.size
+        assert sha256 is not None and storage_path is not None
 
         # Check for duplicate (same sha within collection).
         existing = (
@@ -693,21 +800,21 @@ async def upload_zip(
         if existing is not None:
             duplicates += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="duplicate",
+                filename=staged.result_filename, status="duplicate",
                 document_id=existing.id,
                 detail="same sha already in collection",
             ))
             continue
 
-        member_title, member_norm_title = _derive_title(out_name)
+        member_title, member_norm_title = _derive_title(staged.result_filename)
         classification_level = _locked_collection_classification(db, collection_id)
         doc = IngestionDocument(
             collection_id=collection_id,
-            filename=out_name,
+            filename=staged.result_filename,
             title=member_title,
             normalized_title=member_norm_title,
             sha256=sha256,
-            mime_type=sniffed.media_type,
+            mime_type=staged.media_type,
             bytes=size,
             storage_path=storage_path,
             status="pending",
@@ -732,7 +839,7 @@ async def upload_zip(
             db.rollback()
             duplicates += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="duplicate",
+                filename=staged.result_filename, status="duplicate",
                 detail="raced with concurrent upload",
             ))
             continue
@@ -740,7 +847,7 @@ async def upload_zip(
 
         enqueued += 1
         results.append(ZipUploadResult(
-            filename=out_name, status="enqueued",
+            filename=staged.result_filename, status="enqueued",
             document_id=doc.id, arq_job_id=job.arq_job_id,
         ))
 
