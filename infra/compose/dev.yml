@@ -33,6 +33,13 @@ services:
       POSTGRES_USER: csp
       POSTGRES_PASSWORD: csp
       POSTGRES_DB: csp
+      # ⛔ 鐵則(W2-10 / C1 §c):與正式 stack 同調 —— csp-db 的 TZ 必須維持 UTC,
+      # 直到 C1 全部批次做完。理由同 platform.yml:治理帳的 created_at 帶
+      # `server_default CURRENT_TIMESTAMP`(timestamptz),寫進 `timestamp without
+      # time zone` 欄時按 session TZ 轉換 → 改成台北會讓同一欄混兩種語意且無標記
+      # 可分。dev 也不例外:dev 庫是排批次 2 維護窗前量測 ALTER 耗時的地方,
+      # 它的既有值語意必須跟正式庫一致才有參考價值。
+      TZ: Etc/UTC
     ports:
       - "127.0.0.1:5533:5432"
     volumes:

@@ -300,4 +300,14 @@ def test_migration_r1_0038_exists_and_keeps_single_head():
         if down and down.group(1):
             downs.add(down.group(1))
     heads = revisions - downs
-    assert heads == {"r1_0038"}, f"alembic head 應唯一且為 r1_0038,實得 {heads}"
+    # ⚠ 這裡原本斷言 `heads == {"r1_0038"}`。那把「head 唯一」(要守的不變量)和
+    # 「head 剛好是 r1_0038」(當下的快照)綁在一起 → **任何**後續 migration 都會
+    # 讓它變紅,而紅的原因跟這支測試要守的東西無關。W2-10 批次 1(r1_0040)是第一
+    # 個撞到的。改成分開斷言:① head 唯一(真正的不變量,分叉會讓 `alembic upgrade
+    # head` 失敗);② r1_0038 仍然接在鏈上(不是孤兒)—— 這才是本檔關心的。
+    assert len(heads) == 1, f"alembic head 應唯一(分叉會讓 upgrade head 失敗),實得 {heads}"
+    assert "r1_0038" in revisions, "r1_0038 不在 revision 集合裡"
+    assert "r1_0038" in downs or heads == {"r1_0038"}, (
+        "r1_0038 既不是 head、也沒有任何 migration 以它為 down_revision —— 它被"
+        "從鏈上孤立了,`alembic upgrade head` 不會跑到它"
+    )

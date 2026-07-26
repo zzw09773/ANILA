@@ -2,7 +2,7 @@
   "_readme": [
     "ORM↔PG 漂移的 DEFERRED 級上限。由 infra/ci/check_orm_pg_drift.py --mode drift 讀取。",
     "⚠ 與 orm_drift_baseline.json 是兩回事:那一份是 --mode policy 的 naive DateTime",
-    "ratchet 清單(118 欄);這一份只管 drift 模式的 DEFERRED 級計數上限。",
+    "ratchet 清單(W2-10 批次 1 之後 106 欄);這一份只管 drift 模式的 DEFERRED 級計數上限。",
     "",
     "分級的理由:這支原本是「有任何 finding 就 exit 3」,而 TZ_MISMATCH 有 53 條(那是",
     "W2-10 的欄位型別工程)→ CI 只能把整個 drift 步驟降級成 warning,結果連結構性漂移",
@@ -14,16 +14,46 @@
     "fail** —— 否則白名單等於無限大。",
     "",
     "基線量測日:2026-07-26。乾淨 pgvector/pgvector:pg16 跑 alembic upgrade head 到",
-    "r1_0036 之後量測。重新量測 = 起 throwaway PG、upgrade head、跑 --mode drift。"
+    "r1_0036 之後量測。重新量測 = 起 throwaway PG、upgrade head、跑 --mode drift。",
+    "",
+    "⚠⚠ 2026-07-26(W2-10 批次 1)發現:TZ_MISMATCH 這一類的計數目前**量不到它宣稱要量的東西**。",
+    "詳見下方 TZ_MISMATCH.w2_10_batch1_finding —— 那一段解釋了為什麼本次是**上調**上限,",
+    "以及為什麼在 gate 修好之前這個數字不能當 ratchet 用。"
   ],
   "baseline_date": "2026-07-26",
-  "head_revision": "r1_0036",
+  "head_revision": "r1_0040",
   "deferred": {
     "TZ_MISMATCH": {
-      "max_count": 53,
+      "max_count": 65,
       "owner": "平台後端負責人",
-      "exit_condition": "W2-10 把 DateTime 欄轉成 timestamptz(刻意排在 W2-6 之後,避免對同一批表做兩輪 schema 手術)",
-      "notes": "ORM 宣告 DateTime(timezone=True) 但 DB 是 timestamp without time zone,或反之。這是 W1-4 那個 API key 500 的病根:118 個欄沒宣告 timezone → 讀回來是 naive → 拿去跟 aware 比較就 TypeError。W1-4 已在邊界層用 app/time_utils.py 止血,欄位本身是 W2-10。"
+      "exit_condition": "① 先修 check_orm_pg_drift.py 的 tz 比對(見 w2_10_batch1_finding.the_one_line_fix)—— 在那之前這個計數不是 ratchet;② 之後由 W2-10 批次 2 把剩下的 DateTime 欄轉 timestamptz 並同步 ORM 宣告。",
+      "notes": "ORM 宣告 DateTime(timezone=True) 但 DB 是 timestamp without time zone,或反之。W1-4 那個 API key 500 就是這個病根的一個實例:欄位沒宣告 timezone → 讀回來是 naive → 拿去跟 aware 比較就 TypeError。W1-4 已在邊界層用 app/time_utils.py 止血,欄位本身是 W2-10。⚠ 但這一類的**計數**目前失真,見 w2_10_batch1_finding。",
+      "w2_10_batch1_finding": {
+        "_summary": "本次是**上調**上限(53 → 65),而檔頭寫的是「只准降不准升」。這是刻意的,理由與證據如下。上調不代表漂移變多 —— 語意正確的計數其實從 34 降到 31。",
+        "the_bug": [
+          "check_orm_pg_drift.py:206-208 用 `db_tz = \"WITH TIME ZONE\" in str(reflected_type).upper()` 判斷 DB 側的時區屬性。",
+          "但 SQLAlchemy 反射回來的型別在**預設 dialect** 下 `str()` 一律輸出 'TIMESTAMP' —— timestamptz 也是 'TIMESTAMP'。",
+          "實測:api_keys.created_at(PG 是 timestamp with time zone)→ repr=TIMESTAMP(timezone=True) / str='TIMESTAMP' / .timezone=True。",
+          "所以 `db_tz` **恆為 False**,這條檢查退化成「數有幾個 ORM 欄宣告了 timezone=True」:",
+          "  · 假陽性:每一個 ORM aware 的欄都被報成 mismatch(即使 DB 也是 timestamptz)。轉換前那 53 條**全部**是這種。",
+          "  · 假陰性:ORM naive 而 DB 已是 timestamptz 的欄一條都看不到 —— 而那才是真正在咬人的方向(讀回來是 naive)。"
+        ],
+        "measured": {
+          "gate_現行寫法__轉換前": 53,
+          "gate_現行寫法__轉換後": 65,
+          "語意正確寫法__轉換前": 34,
+          "語意正確寫法__轉換後": 31,
+          "說明": "轉換後 gate 的數字 +12,是因為本批 12 欄的 ORM 從 naive 改成 aware,於是全部落進上面那個假陽性桶。同一批改動讓語意正確的計數 34 → 31(api_keys.created_at / api_keys.last_used_at / audit_logs.created_at 這三個「DB 早就是 timestamptz、ORM 說謊」的欄被修掉)。"
+        },
+        "the_one_line_fix": "把 db_tz 改成 `bool(getattr(db_cols[col.name][\"type\"], \"timezone\", False))`。修完之後這一類的計數會立刻從 65 掉到 31,而且 31 條全部是真的(ORM naive / DB aware)。⚠ 本包 SCOPE 明文禁改 check_orm_pg_drift.py(gate 本體,不准為了通過而改邏輯),所以這行修改**沒有**包含在 W2-10 批次 1 的 PR 裡,留給 gate 的權責人。",
+        "reproduce": [
+          "docker run -d --rm --name w210-pg -e POSTGRES_PASSWORD=x -e POSTGRES_DB=csp -p 55210:5432 pgvector/pgvector:pg16",
+          "cd services/csp && MIGRATION_DATABASE_URL=<dsn> DATABASE_URL=<dsn> alembic upgrade head",
+          "python infra/ci/check_orm_pg_drift.py --mode drift --dsn <dsn>   # → 65 / 上限 65 / STRUCTURAL 0 / exit 0",
+          "psql -c \"SELECT table_name,column_name,data_type FROM information_schema.columns WHERE data_type LIKE 'timestamp%'\"  # 權威來源(C1 §a)"
+        ],
+        "why_raised_instead_of_leaving_53": "留 53 的話 `--mode drift` 會 exit 3(65 > 53)→ CI 紅,而紅的原因是 gate 的假陽性,不是 W2-10 做錯。兩個選項只有這兩個:上調上限並留下這份說明,或先修 gate(本包 SCOPE 禁改)。選了前者並把後者寫成退場條件的第 ① 項 —— 也就是說,**在 gate 修好之前不要再用這個數字當 ratchet**,批次 2 每做一批它都會再往上跳。"
+      }
     },
     "UNDECLARED_FK": {
       "max_count": 0,
