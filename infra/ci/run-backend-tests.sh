@@ -17,6 +17,17 @@
 #      遮蔽,測到的是舊碼(症狀:`unexpected keyword argument` 之類)。
 #    - `-p no:cacheprovider`:唯讀掛載下 pytest 寫不了 .pytest_cache。
 #
+# 已知的環境差異(**不是** regression,別去「修」它):
+#   - `tests/test_agent_registry_upgrade.py::...test_trace_emitter_posts_to_csp_asgi...`
+#     會以 `ModuleNotFoundError: No module named 'agents'` 失敗 —— image 內沒裝
+#     OpenAI Agents SDK(CI 的 backend-agent job 才裝)。所以本腳本的預期結果是
+#     **1 failed / 1837 passed**,而那 1 個就是它。
+#   - `infra/deployment/tests` 有一批測試會往 repo root 寫暫存檔,唯讀掛載下會噴
+#     69 個 OSError。要跑那批請改用可寫副本:
+#       docker run --rm -v "$PWD:/src:ro" --tmpfs /work:mode=1777,size=1g --user root \
+#         -e PYTHONPATH=/work anila-platform-dev-csp \
+#         sh -c 'cp -r /src/. /work/ && cd /work && python -m unittest discover -s infra/deployment/tests'
+#
 # 用法:
 #   infra/ci/run-backend-tests.sh                          # CSP 全套
 #   infra/ci/run-backend-tests.sh tests/test_foo.py -x     # 指定目標

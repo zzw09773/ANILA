@@ -182,23 +182,36 @@ class Embedder:
                 },
             )
 
-        # Use the platform's single embedding contract: only an already-normalized
-        # 4000-d vector or NV-Embed's native 4096-d vector is accepted.  In
-        # particular, an arbitrary overlong vector must never be silently sliced
-        # into a syntactically valid but semantically corrupt database value.
+        # Use the platform's single embedding contract: an already-normalized
+        # 4000-d vector, NV-Embed's native 4096-d vector, or a vector at the
+        # explicitly declared ``embedding_source_dim`` (zero-padded).  In
+        # particular, an arbitrary vector must never be silently sliced or
+        # padded into a syntactically valid but semantically corrupt database
+        # value — which is exactly what happens if short vectors are accepted
+        # unconditionally and the endpoint later serves a different model.
+        source_dim = self._settings.embedding_source_dim
         normalized_vectors: list[list[float]] = []
         for i, v in enumerate(vectors):
             try:
-                normalized_vectors.append(truncate_embedding(v))
+                normalized_vectors.append(truncate_embedding(v, pad_from=source_dim))
             except ValueError as exc:
+                accepted = (
+                    f"{EMBED_DIM}-d storage vectors or {EMBED_NATIVE_DIM}-d native vectors"
+                )
+                if source_dim is not None:
+                    accepted += (
+                        f", or the declared {source_dim}-d model output "
+                        f"(zero-padded to {EMBED_DIM})"
+                    )
                 raise EmbedError(
                     code="E_EMBED_DIM_MISMATCH",
                     retryable=False,
                     severity="error",
                     user_message=(
                         f"Embedding {i} is {len(v)}-d; the shared contract accepts "
-                        f"{EMBED_DIM}-d storage vectors, {EMBED_NATIVE_DIM}-d native "
-                        f"vectors, or shorter vectors (zero-padded to {EMBED_DIM})."
+                        f"{accepted}. If a smaller-dimension model is deployed on "
+                        "purpose, declare it via embedding_source_dim so that an "
+                        "endpoint serving something else still fails loudly."
                     ),
                     details={
                         "got": len(v),

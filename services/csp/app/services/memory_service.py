@@ -424,9 +424,12 @@ async def _embed(
         task_ctx=task_ctx,
     )
     vec = data["data"][0]["embedding"]
-    # anila-core's truncate_embedding handles both 4096 (truncate) and
-    # 4000 (passthrough) cases and raises on unexpected dim.
-    return truncate_embedding(vec)
+    # anila-core's truncate_embedding handles 4096 (truncate) and 4000
+    # (passthrough), plus an explicitly declared smaller dimension
+    # (zero-pad).  It raises on anything else — in particular it will NOT
+    # pad an undeclared short vector, so an endpoint that quietly starts
+    # serving a different model fails loudly instead of poisoning the index.
+    return truncate_embedding(vec, pad_from=settings.ANILA_EMBED_SOURCE_DIM)
 
 
 def _vec_to_pg_literal(vec: Iterable[float]) -> str:

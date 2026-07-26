@@ -76,6 +76,24 @@ class WorkerSettings(BaseSettings):
             "truncated to 4000 because halfvec HNSW caps at 4000-d."
         ),
     )
+    embedding_source_dim: int | None = Field(
+        default=None,
+        ge=1,
+        le=4000,
+        description=(
+            "Native output dimension of the deployed embedding model, when it "
+            "is smaller than the storage contract. None (default) = strict: "
+            "only 4000-d or NV-Embed's native 4096-d are accepted. Set to e.g. "
+            "2048 to run nemotron-3-embed-1b, whose vectors are then zero-padded "
+            "to halfvec(4000) (padding zeros are cosine-neutral). "
+            "This must be declared explicitly rather than accepting any short "
+            "vector: if the endpoint silently starts serving a different model, "
+            "unconditional padding would push semantically meaningless vectors "
+            "into the index with no error, and the collection embedding "
+            "fingerprint cannot detect that (it guards the *declared* model "
+            "identity, not endpoint drift)."
+        ),
+    )
     embedding_timeout_seconds: float = Field(
         default=30.0,
         description="Per-request embedding timeout.",

@@ -82,6 +82,30 @@ class Settings(BaseSettings):
     # idle_in_transaction_session_timeout: kill sessions that stay open after
     # beginning a transaction without committing (SSE-held Session footgun).
     ANILA_DB_IDLE_TX_TIMEOUT_MS: int = Field(default=60_000, ge=0, le=3_600_000)
+    # W2-1:連線池參數。先前寫死在 app/database.py(pool_size=10 / max_overflow=20,
+    # 上限 30)且**生產無法調**,而 Starlette 對 sync endpoint 用 anyio 預設 40
+    # tokens —— 40 條執行緒各持 1 連線,池卻只有 30,兩個數字從一開始就對不上。
+    # 預設值刻意維持原行為(10/20),只是變成可調;調校要搭配負載測試
+    # (計畫 W2-8)而不是憑感覺加大 —— PG 端 max_connections=100 是真上限。
+    ANILA_DB_POOL_SIZE: int = Field(default=10, ge=1, le=200)
+    ANILA_DB_MAX_OVERFLOW: int = Field(default=20, ge=0, le=200)
+    # pool_timeout:池滿時等多久才放棄。SQLAlchemy 預設 30s —— 使用者早就
+    # 放棄了才拿到錯誤,而且沒有 exception handler 會變裸 500。壓到 10s 讓失敗
+    # 快一點、可觀測一點(真正的解是別讓池見底)。
+    ANILA_DB_POOL_TIMEOUT_S: int = Field(default=10, ge=1, le=300)
+    # pool_recycle:先前缺席 → 長命連線可能被 PG 或中間設備靜默斷掉。
+    ANILA_DB_POOL_RECYCLE_S: int = Field(default=1800, ge=60, le=86_400)
+
+    # 部署的 embedding 模型原生輸出維度。None = 只接受平台契約的 4000 或
+    # NV-Embed 原生的 4096(嚴格模式)。設成例如 2048 才會讓
+    # nemotron-3-embed-1b 這類較小模型的向量被補零到 halfvec(4000)。
+    #
+    # 為什麼必須明示而不是無條件接受任何短向量:若端點哪天悄悄換成別的模型
+    # (例如 1536 維),無條件補零會讓語意無意義的向量進索引、無聲摧毀檢索品質,
+    # 而 collection 的 embedding_fingerprint 守的是**宣告**的模型身分,抓不到
+    # 端點漂移 —— 維度是唯一能抓到的訊號。詳見 anila_core 的
+    # truncate_embedding docstring。
+    ANILA_EMBED_SOURCE_DIM: int | None = Field(default=None, ge=1, le=4000)
 
     # JWT
     # SECRET_KEY 在 RS256 cutover 後不再用於 access/refresh JWT 簽發,
