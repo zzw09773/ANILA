@@ -75,6 +75,7 @@ import {
   RenderRedactedText,
   renderTextWithCitations,
 } from "./trust.jsx";
+import { MessageErrorNotice } from "./messageError.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
 import { ShellNav } from "./shellNav.jsx";
@@ -257,6 +258,8 @@ export const MessageBubble = ({
   messageActions = [],
   onAction,
   onContinue,
+  // W2-4 ④:串流中斷後重送同一則 user 訊息。未傳 = 唯讀情境(compare 視圖)。
+  onRetry,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -541,6 +544,11 @@ export const MessageBubble = ({
                 }}/>
               )}
             </div>
+            {/* W2-4 ②:失敗不覆蓋上面那段累積文字,錯誤走獨立橫幅 + 重試。 */}
+            <MessageErrorNotice
+              error={msg.error}
+              onRetry={typeof onRetry === "function" ? () => onRetry(msg) : null}
+            />
             {!msg.streaming && msg.confidence != null && (
               <div style={{ marginTop: 6 }}>
                 <ConfidenceChip confidence={msg.confidence} />

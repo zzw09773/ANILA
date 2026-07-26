@@ -45,6 +45,11 @@ import {
   installFocusFlush,
 } from "./runtime/classifyRetryQueue.js";
 import { buildPersistMeta } from "./runtime/messageMeta.js";
+import { describeStreamFailure } from "./runtime/streamError.js";
+import {
+  buildRetryRequest,
+  createTurnPersistence,
+} from "./runtime/streamPersistence.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { relativeLabel } from "./runtime/time.js";
 import {
@@ -491,6 +496,33 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     // same path; Abort is only the legacy/failure fallback where no live Task
     // stream was registered.
     if (shouldAbortAfterCancellation(cancellation)) controller.abort();
+  }
+  // 串流期間累積到「某一則」訊息上的兩條 channel。抽出來的理由不只是省行數:
+  // 這兩段原本在 sendMessage / regenerateMessage 各有一份拷貝,而 W2-4 又要在
+  // retryMessage 再放一份 —— 三份會漂。`.map()` 只換命中那一則的 identity,
+  // 其餘元素引用不變(W2-9 的 memo 靠這個前提)。
+  function appendTraceStep(convId, messageId, step) {
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: (prev[convId] || []).map((m) =>
+        m.id === messageId
+          ? {
+              ...m,
+              trace: [...(m.trace || []), step],
+              stageLabel: step.label,
+              stage: (m.trace?.length ?? 0),
+            }
+          : m,
+      ),
+    }));
+  }
+  function appendReasoningDelta(convId, messageId, delta) {
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: (prev[convId] || []).map((m) =>
+        m.id === messageId ? { ...m, reasoning: (m.reasoning || "") + delta } : m,
+      ),
+    }));
   }
   function timelineCallbacks(convId, messageId, { compare = false } = {}) {
     return executionCallbacks((action) => {
@@ -1298,6 +1330,26 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       model: effectiveTarget,
       messages: buildMessageHistory(priorForHistory, text, attachments),
     };
+    const agentNameForPersist =
+      agents.find((a) => a.id === effectiveTarget)?.name || String(effectiveTarget);
+
+    // W2-4 ① —— 持久化順序改由 `runtime/streamPersistence.js` 獨佔。
+    //
+    // 原本 user 與 assistant 兩則 append 都排在串流**成功之後**,失敗路徑再用
+    // `text:` 覆蓋已生成的文字 —— 網路一斷,使用者眼前累積的回答連同那則 user
+    // 訊息一起消失,重整後什麼都不剩。現在:user 訊息在串流開始「前」落地,
+    // assistant 半成品週期性 checkpoint(節流 ≥2s 且僅 delta,不拿每個 token
+    // 去打資料庫),終局走 update 不長出孤兒列。
+    const persist = createTurnPersistence({
+      enabled: typeof convId === "number",
+      appendMessage: (body) => apiAppendMessage(authRequest, convId, body),
+      updateMessage: (dbId, patch) => apiUpdateMessage(authRequest, convId, dbId, patch),
+      assistantFields: { agentName: agentNameForPersist },
+      onUserSaved: (dbId) => updateMsg(convId, userMsg.id, { dbId }),
+      onAssistantSaved: (dbId) => updateMsg(convId, assistantId, { dbId }),
+      onError: (message) => setRuntimeError(message),
+    });
+    await persist.persistUser({ content: text });
 
     let finalText = "";
     let finalMeta = null;
@@ -1322,6 +1374,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
+          // W2-4 ②:節流 checkpoint(模組內判斷 ≥2s 且有 delta 才真的寫)。
+          void persist.checkpoint(acc);
         },
         onFinishReason: (reason) => {
           // Continue Response:截斷標記存到訊息,UI 才知道要不要顯示「繼續」鈕。
@@ -1329,19 +1383,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         },
         onTrace: (step) => {
           accumulatedTrace.push(step);
-          setMessagesByConv((prev) => ({
-            ...prev,
-            [convId]: (prev[convId] || []).map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    trace: [...(m.trace || []), step],
-                    stageLabel: step.label,
-                    stage: (m.trace?.length ?? 0),
-                  }
-                : m,
-            ),
-          }));
+          appendTraceStep(convId, assistantId, step);
         },
         onMeta: (meta) => {
           finalMeta = meta;
@@ -1349,48 +1391,22 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         },
         onReasoning: (delta) => {
           accumulatedReasoning += delta;
-          setMessagesByConv((prev) => ({
-            ...prev,
-            [convId]: (prev[convId] || []).map((m) =>
-              m.id === assistantId
-                ? { ...m, reasoning: (m.reasoning || "") + delta }
-                : m,
-            ),
-          }));
+          appendReasoningDelta(convId, assistantId, delta);
         },
       });
-      updateMsg(convId, assistantId, { streaming: false });
+      updateMsg(convId, assistantId, { streaming: false, error: null });
 
-      // Persist both turns to the backend so they survive reload. Server-side
-      // errors here surface as a toast but don't break the live UI.
+      // 終局寫入(user 訊息在串流前就落地了)。伺服器端錯誤只跳橫幅,不砸畫面。
       if (typeof convId === "number") {
-        const agentNameForPersist =
-          agents.find((a) => a.id === effectiveTarget)?.name ||
-          String(effectiveTarget);
-        const persistMeta = buildPersistMeta(finalMeta, {
-          trace: accumulatedTrace,
-          reasoning: accumulatedReasoning,
+        await persist.finalizeAssistant({
+          content: finalText,
+          traceId: finalMeta?.trace_id,
+          latencyMs: finalMeta?.latency_ms,
+          metadata: buildPersistMeta(finalMeta, {
+            trace: accumulatedTrace,
+            reasoning: accumulatedReasoning,
+          }),
         });
-        try {
-          await apiAppendMessage(authRequest, convId, {
-            role: "user",
-            content: text,
-          });
-          const savedAssistant = await apiAppendMessage(authRequest, convId, {
-            role: "assistant",
-            content: finalText,
-            traceId: finalMeta?.trace_id,
-            latencyMs: finalMeta?.latency_ms,
-            agentName: agentNameForPersist,
-            metadata: persistMeta,
-          });
-          // Capture DB id so thumbs-up/down can PUT to the backend.
-          if (savedAssistant && typeof savedAssistant.id === "number") {
-            updateMsg(convId, assistantId, { dbId: savedAssistant.id });
-          }
-        } catch (persistError) {
-          setRuntimeError(persistError.message || "對話訊息儲存失敗");
-        }
 
         // Bump updatedAt so the sidebar re-sorts / re-labels with live time.
         updateConv(convId, { updatedAt: nowIso() });
@@ -1406,10 +1422,109 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         }
       }
     } catch (error) {
+      // W2-4 ② —— **不再用 `text:` 覆蓋已生成的文字**。累積到一半的回答留在
+      // 畫面上,錯誤走獨立橫幅(`MessageErrorNotice`)+ 重試鈕;半成品連同
+      // error metadata 落地,重整後 user + partial 都還在。
+      const failure = describeStreamFailure(error);
       updateMsg(convId, assistantId, {
         streaming: false,
-        text: `請求失敗：${error.message || "unknown error"}`,
+        error: failure,
+        retryPayload: payload,
       });
+      await persist.failAssistant({ content: finalText, error: failure });
+    }
+  }
+
+  // ---- 重試中斷的回合(W2-4 ④)----
+  // 重送**送出當下那一份 payload**(快照在訊息上的 `retryPayload`),不重新用
+  // 當前 state 組一份 —— 重組會把失敗後的狀態變化(其他分支的訊息、換過的
+  // agent)一起帶進去,那就不是「重送同一則 user 訊息」了。串流結果寫回同一
+  // 則 assistant,不新增訊息、不動 revisions 分頁。
+  async function retryMessage(assistantMsg) {
+    if (!isAuthenticated) {
+      setRuntimeError("尚未登入，請重新登入後再試。");
+      return;
+    }
+    const request = buildRetryRequest(assistantMsg);
+    if (!request) {
+      setRuntimeError("這則回應沒有可重送的請求內容，請改用「重新產生」。");
+      return;
+    }
+    const { convId, assistantId, payload } = request;
+    const effectiveTarget =
+      assistantMsg.routedAgentId || payload.model || selectedAgentId;
+    const persist = createTurnPersistence({
+      enabled: typeof convId === "number",
+      assistantDbId: typeof assistantMsg.dbId === "number" ? assistantMsg.dbId : null,
+      appendMessage: (body) => apiAppendMessage(authRequest, convId, body),
+      updateMessage: (dbId, patch) => apiUpdateMessage(authRequest, convId, dbId, patch),
+      assistantFields: {
+        agentName:
+          agents.find((a) => a.id === effectiveTarget)?.name || String(effectiveTarget),
+      },
+      onAssistantSaved: (dbId) => updateMsg(convId, assistantId, { dbId }),
+      onError: (message) => setRuntimeError(message),
+    });
+
+    updateMsg(convId, assistantId, {
+      streaming: true,
+      error: null,
+      text: "",
+      trace: [],
+      reasoning: null,
+      finishReason: null,
+    });
+
+    let finalText = "";
+    let finalMeta = null;
+    const accumulatedTrace = [];
+    let accumulatedReasoning = "";
+    try {
+      await streamWithAbort(convId, {
+        url: `${config.cspBaseUrl}/v1/chat/completions`,
+        payload,
+        conversationId: typeof convId === "number" ? convId : undefined,
+        ...timelineCallbacks(convId, assistantId),
+        onText: (acc) => {
+          finalText = acc;
+          updateMsg(convId, assistantId, { text: acc });
+          void persist.checkpoint(acc);
+        },
+        onFinishReason: (reason) => updateMsg(convId, assistantId, { finishReason: reason }),
+        onTrace: (step) => {
+          accumulatedTrace.push(step);
+          appendTraceStep(convId, assistantId, step);
+        },
+        onMeta: (meta) => {
+          finalMeta = meta;
+          applyMeta(convId, assistantId, effectiveTarget, meta);
+        },
+        onReasoning: (delta) => {
+          accumulatedReasoning += delta;
+          appendReasoningDelta(convId, assistantId, delta);
+        },
+      });
+      updateMsg(convId, assistantId, { streaming: false, error: null });
+      if (typeof convId === "number") {
+        await persist.finalizeAssistant({
+          content: finalText,
+          traceId: finalMeta?.trace_id,
+          latencyMs: finalMeta?.latency_ms,
+          metadata: buildPersistMeta(finalMeta, {
+            trace: accumulatedTrace,
+            reasoning: accumulatedReasoning,
+          }),
+        });
+        updateConv(convId, { updatedAt: nowIso() });
+      }
+    } catch (error) {
+      const failure = describeStreamFailure(error);
+      updateMsg(convId, assistantId, {
+        streaming: false,
+        error: failure,
+        retryPayload: payload,
+      });
+      await persist.failAssistant({ content: finalText, error: failure });
     }
   }
 
@@ -1596,35 +1711,12 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           finalText = acc;
           updateMsg(convId, assistantMsg.id, { text: acc });
         },
-        onTrace: (step) => {
-          setMessagesByConv((prev) => ({
-            ...prev,
-            [convId]: (prev[convId] || []).map((m) =>
-              m.id === assistantMsg.id
-                ? {
-                    ...m,
-                    trace: [...(m.trace || []), step],
-                    stageLabel: step.label,
-                    stage: (m.trace?.length ?? 0),
-                  }
-                : m,
-            ),
-          }));
-        },
+        onTrace: (step) => appendTraceStep(convId, assistantMsg.id, step),
         onMeta: (meta) => {
           finalMeta = meta;
           applyMeta(convId, assistantMsg.id, effectiveTarget, meta);
         },
-        onReasoning: (delta) => {
-          setMessagesByConv((prev) => ({
-            ...prev,
-            [convId]: (prev[convId] || []).map((m) =>
-              m.id === assistantMsg.id
-                ? { ...m, reasoning: (m.reasoning || "") + delta }
-                : m,
-            ),
-          }));
-        },
+        onReasoning: (delta) => appendReasoningDelta(convId, assistantMsg.id, delta),
       });
       // Freeze the finished revision into revisions[nextActiveIdx] so that
       // switching back and forth after completion shows stable text/trace.
@@ -1680,9 +1772,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         }
       }
     } catch (error) {
+      // 同 W2-4 ②:regenerate 失敗也不覆蓋已串出的文字,錯誤走橫幅 + 重試。
       updateMsg(convId, assistantMsg.id, {
         streaming: false,
-        text: `重試失敗：${error.message || "unknown error"}`,
+        error: describeStreamFailure(error),
+        retryPayload: payload,
       });
     }
   }
@@ -2289,6 +2383,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           messageActions={messageActions}
                           onAction={runMessageAction}
                           onContinue={continueMessage}
+                          onRetry={retryMessage}
                         />
                       ))
                     )}
