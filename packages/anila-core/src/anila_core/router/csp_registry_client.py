@@ -34,6 +34,12 @@ from anila_contracts.classification import ClassificationLevel
 
 from .candidate_filter import RegistryEntry, RegistrySnapshot
 from .policy_gate import DirectModelGovernance, ExecutionGrantInput
+from .token_budget import (
+    REASON_CONTEXT_WINDOW_UNDECLARED,
+    RouterTokenBudgetPolicy,
+    normalize_context_window,
+    plan_router_token_budget,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -190,7 +196,12 @@ class AgentClient(Protocol):
 
 
 class InferenceClient(Protocol):
-    """CSP-owned primary-model inference transport for formal Router calls."""
+    """CSP-owned primary-model inference transport for formal Router calls.
+
+    ``context_window`` 是部署模型登記的真實容量(``model_registry.context_window``)。
+    刻意是有預設值的 optional kwarg:呼叫端在容量未知時整個省略不傳,既有的測試
+    替身也不必改簽章。
+    """
 
     async def complete(
         self,
@@ -198,6 +209,7 @@ class InferenceClient(Protocol):
         model: str,
         messages: list[dict[str, Any]],
         context: Any,
+        context_window: int | None = None,
     ) -> dict[str, Any]: ...
 
     def stream(
@@ -206,6 +218,7 @@ class InferenceClient(Protocol):
         model: str,
         messages: list[dict[str, Any]],
         context: Any,
+        context_window: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
 
@@ -477,6 +490,12 @@ def _parse_direct_model_governance(
 
     只接受 CSP 端明確回傳、且 model_id 與所請求模型一致的治理事實;任何缺欄、
     型別不符或分類字串無效都視為治理不可用 → fail-closed。
+
+    ``context_window`` 是**選填的容量事實**,不套用同一套 fail-closed:授權欄位
+    缺失必須拒絕,但容量缺失只該降級成「不宣告 max_tokens」(見
+    :mod:`anila_core.router.token_budget` 的取捨說明)。若讓它也 fail-closed,
+    任何尚未補登容量的 registry 都會讓直答整體不可用 —— 那是用一個更大的故障去
+    修一個較小的故障。
     """
 
     if not isinstance(payload, Mapping):
@@ -500,11 +519,23 @@ def _parse_direct_model_governance(
         raise DirectModelGovernanceUnavailable(
             "CSP direct model governance classification_ceiling 無效"
         ) from exc
+    context_window, capacity_reason = normalize_context_window(
+        payload.get("context_window")
+    )
+    if capacity_reason is not None and payload.get("context_window") is not None:
+        logger.warning(
+            "CSP direct model governance 的 context_window 值無效(%r),"
+            "Router 將不宣告 max_tokens: model=%s reason_code=%s",
+            payload.get("context_window"),
+            model_id,
+            capacity_reason,
+        )
     try:
         return DirectModelGovernance(
             model_id=model_id,
             gateway=gateway,
             classification_ceiling=ceiling,
+            context_window=context_window,
         )
     except (TypeError, ValueError) as exc:
         raise DirectModelGovernanceUnavailable(
@@ -696,6 +727,11 @@ class CspInferenceClient:
     credential.  CSP authenticates this request with a named ``router``
     service-client token and rebinds the positive caller id/task context to
     durable authority before selecting the ordinary model gateway.
+
+    每次呼叫都會依 ``context_window``(部署模型登記的真實容量)算出 ``max_tokens``
+    再送出。原本完全不宣告 ``max_tokens`` 的行為在「context 被 ``--parallel``
+    平分成每 slot 1024 tokens」的 llama-server 部署下會讓長輸入 100% 失敗,而且
+    錯誤無法診斷;詳見 :mod:`anila_core.router.token_budget`。
     """
 
     def __init__(
@@ -706,6 +742,7 @@ class CspInferenceClient:
         inference_path: str = "/internal/v1/router/chat/completions",
         timeout: float = 120.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        budget_policy: RouterTokenBudgetPolicy | None = None,
     ) -> None:
         self.base_url = csp_base_url.rstrip("/")
         parsed = urlsplit(self.base_url)
@@ -719,6 +756,11 @@ class CspInferenceClient:
         self.inference_path = inference_path
         self.timeout = timeout
         self.transport = transport
+        # 預算旗標可注入(測試/自訂),否則由環境變數解析 —— 部署端換模型或改
+        # llama-server 的 -c / --parallel 配置時不需要動碼。
+        self.budget_policy = budget_policy or RouterTokenBudgetPolicy.from_env()
+        # 「這個模型沒登記 context_window」只警告一次,避免逐請求洗 log。
+        self._capacity_warned: set[str] = set()
 
     @property
     def is_configured(self) -> bool:
@@ -729,6 +771,24 @@ class CspInferenceClient:
             token.startswith("csk-")
             and token.lower()
             not in _PLACEHOLDER_TOKENS
+        )
+
+    def _warn_capacity_once(self, model: str, reason_code: str) -> None:
+        key = f"{model}|{reason_code}"
+        if key in self._capacity_warned:
+            return
+        self._capacity_warned.add(key)
+        logger.warning(
+            "模型 %s 的 model_registry.context_window %s,Router 將不宣告 max_tokens"
+            "(維持改動前行為);請在 model registry 補上真實容量,否則長輸入仍會"
+            "撞上上游 slot 上限: reason_code=%s",
+            model,
+            (
+                "未登記"
+                if reason_code == REASON_CONTEXT_WINDOW_UNDECLARED
+                else "值無效"
+            ),
+            reason_code,
         )
 
     @staticmethod
@@ -752,6 +812,7 @@ class CspInferenceClient:
         messages: list[dict[str, Any]],
         context: Any,
         stream: bool,
+        context_window: int | None = None,
     ) -> CspInferenceRequest:
         if self.service_token.lower() in _PLACEHOLDER_TOKENS or not self.service_token:
             raise AgentClientError("缺少具名 Router inference service-client token")
@@ -819,6 +880,30 @@ class CspInferenceClient:
             "stream": bool(stream),
             "anila_session_id": session_id,
         }
+        # 依部署模型的真實容量宣告輸出上限。預算不足會拋
+        # RouterInputExceedsModelContext(帶 reason_code),讓上層把「token 預算
+        # 不足」跟「模型拒答」講清楚,而不是兩者都變成一句「無法判斷」。
+        budget = plan_router_token_budget(
+            messages=messages,
+            context_window=context_window,
+            policy=self.budget_policy,
+        )
+        if budget.max_tokens is not None:
+            payload["max_tokens"] = budget.max_tokens
+            if budget.compact_recommended and (budget.auto_compact_threshold or 0) > 0:
+                # auto_compact 的門檻已被跨過 —— 還沒到擋下來的程度,但已貼近懸崖。
+                # 記下來讓運維在「使用者開始抱怨截斷」之前就看得到趨勢。
+                logger.info(
+                    "Router 輸入已跨過 auto_compact 門檻: model=%s input≈%d "
+                    "threshold=%d context_window=%d",
+                    model,
+                    budget.input_tokens,
+                    budget.auto_compact_threshold,
+                    budget.context_window,
+                )
+        elif budget.reason_code is not None:
+            # 容量未登記/無效:刻意不塞猜測值(維持改動前行為),但要留下線索。
+            self._warn_capacity_once(model, budget.reason_code)
         return CspInferenceRequest(
             url=f"{self.base_url}{self.inference_path}",
             payload=payload,
@@ -831,9 +916,14 @@ class CspInferenceClient:
         model: str,
         messages: list[dict[str, Any]],
         context: Any,
+        context_window: int | None = None,
     ) -> dict[str, Any]:
         request = self.build_request(
-            model=model, messages=messages, context=context, stream=False
+            model=model,
+            messages=messages,
+            context=context,
+            stream=False,
+            context_window=context_window,
         )
         try:
             async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
@@ -871,9 +961,14 @@ class CspInferenceClient:
         model: str,
         messages: list[dict[str, Any]],
         context: Any,
+        context_window: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         request = self.build_request(
-            model=model, messages=messages, context=context, stream=True
+            model=model,
+            messages=messages,
+            context=context,
+            stream=True,
+            context_window=context_window,
         )
         try:
             async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
