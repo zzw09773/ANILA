@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from app.api.agents import router as agents_router
 from app.api.agents.registry import router as agent_registry_router
 from app.api.banners import router as banners_router
+from app.api.capabilities import router as capabilities_router
 from app.api.auth import router as auth_router
 from app.api.auth_providers import router as auth_providers_router
 from app.api.api_keys import router as api_keys_router
@@ -75,6 +76,8 @@ api_router.include_router(
     router_direct_governance_router, prefix="/internal/v1/router"
 )
 api_router.include_router(banners_router)
+# 部署能力旗標(W1-3):只回布林白名單,給前端決定「怎麼說」。
+api_router.include_router(capabilities_router)
 api_router.include_router(ingestion_collections_router)
 api_router.include_router(ingestion_credentials_router)
 api_router.include_router(ingestion_documents_router)

@@ -200,7 +200,8 @@ API 另接受 `capabilities`（JSON dict 自由 metadata）與 `input_schema`（
 
 - **Admin 核准**：admin 在同一頁按「核准」→ `approval_status = "approved"`。被拒絕時會附留言。
 - **Health polling**：CSP 會定期呼叫你的 `/health`。連不到 → `unhealthy`；對話時 Router 會跳過。
-- **加密模式**：admin 可切 `requires_encryption = true`。啟用後凡是經由此 agent 的對話會**單向**鎖為加密，使用者無法關閉 — 這不可逆，請評估再用。
+- **密等鎖定（latch）模式**：admin 可切 `requires_encryption = true`。啟用後凡是經由此 agent 的對話會**單向**鎖定密等，使用者無法關閉 — 這不可逆，請評估再用。
+  ⚠ 欄位名有誤導性：它**不加密任何東西**（平台無 at-rest 加密），鎖的是能不能帶出去與留不留紀錄。2026-07-26（W1-3）已把使用者面與稽核訊息的措辭全部改為「密等鎖定（latch）」，欄位名為相容性保留。
 
 核准後 Router 下一次 discovery tick 會把你加進候選池，前端就看得到。
 

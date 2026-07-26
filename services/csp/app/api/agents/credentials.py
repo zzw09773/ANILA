@@ -1,7 +1,12 @@
-"""Per-agent credential endpoints + encryption toggle.
+"""Per-agent credential endpoints + 密等鎖定(latch)開關。
 
 Split verbatim from the former single-module ``app/api/agents.py``
 (behavior-preserving refactor).
+
+⚠ 命名警告(W1-3):``requires_encryption`` 這個欄位**不會加密任何東西**。
+它的實際語意是「經過這個 agent 的對話一律單向鎖定密等」(one-way
+classification latch)。平台沒有 at-rest 加密。欄位名與 audit action 為
+相容性保留,但所有人看得到的字一律用「密等鎖定(latch)」。
 """
 from datetime import datetime
 
@@ -49,14 +54,23 @@ def set_agent_encryption(
     agent.requires_encryption = payload.requires_encryption
     db.commit()
     db.refresh(agent)
+    # W1-3:人看的字改成正確措辭 —— 這個開關從不加密任何東西,它只是把經過
+    # 這個 agent 的對話**單向鎖定密等**(全 repo 零 at-rest 加密:
+    # `pgcrypto|LUKS|dm-crypt|TDE` grep=0)。
+    # `action="set_encryption"` 與欄位名 `requires_encryption` **刻意不動**:
+    # 前者是既有稽核列的穩定識別字(改了歷史查詢就對不上),後者改名是 schema
+    # 事務(掛 C5 legacy ledger 的退場條件)。
     log_audit_event(
         db, actor=admin, action="set_encryption", resource_type="agent",
         resource_id=agent.id,
-        detail=f"{'啟用' if payload.requires_encryption else '停用'} agent「{agent.name}」加密模式",
+        detail=(
+            f"{'啟用' if payload.requires_encryption else '停用'} "
+            f"agent「{agent.name}」密等鎖定(latch)模式"
+        ),
         ip_address=_client_ip(http_request), commit=True,
     )
     return {
-        "message": f"已更新 agent「{agent.name}」的加密設定",
+        "message": f"已更新 agent「{agent.name}」的密等鎖定(latch)設定",
         "requires_encryption": agent.requires_encryption,
     }
 

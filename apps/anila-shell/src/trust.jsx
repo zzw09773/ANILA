@@ -383,11 +383,13 @@ export const ClassificationWatermark = ({ level }) => {
 };
 
 // Multi-level classification badge (Slice 3c). Renders the zh-TW level text in
-// the SAME pill style family as the existing "加密模式" indicator, next to it.
+// the SAME pill style family as the boolean「密等鎖定」indicator, next to it.
 // Returns null (renders nothing) when the conversation has no elevated level —
 // either the field is absent (boolean-only latch payload) or it is the floor
-// 無機密. The boolean 加密模式 indicator is rendered independently by app.jsx,
+// 無機密. The boolean「密等鎖定」indicator is rendered independently by app.jsx,
 // so this badge is purely additive.
+// (W1-3:該 indicator 舊稱有「加密」字樣,但平台無 at-rest 加密,已改為
+//  latch 措辭;後端欄位名 `requires_encryption` 未動,那是 schema 事務。)
 export const ClassificationLevelBadge = ({ conversation }) => {
   const label = classificationLevelBadge(conversation);
   if (!label) return null;
