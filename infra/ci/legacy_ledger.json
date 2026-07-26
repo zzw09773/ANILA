@@ -45,7 +45,7 @@
         "**/*.test.js",
         "**/*.test.jsx"
       ],
-      "max_count": 26,
+      "max_count": 24,
       "owner": "前端負責人",
       "exit_condition": "同 classified-boolean-backend;前端一律改讀 classification_level",
       "deadline": "Wave 1 結束",

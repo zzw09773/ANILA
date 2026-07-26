@@ -340,7 +340,8 @@ def get_conversation(
     current_user: User = Depends(get_current_user),
 ):
     conv = svc.get_conversation(db, conv_id, current_user)
-    # W1-1:原本是 `if conv.classified` → 只有 >= 機密 才落稽核列,**營業秘密的
+    # W1-1:原本這裡的條件是 legacy 的 classified boolean → 只有 >= 機密 才落
+    # 稽核列,**營業秘密的
     # 讀取一列都沒有**。對營業秘密尤其致命:降密要兩個人加一份公文文號,而讀取
     # 連一列 log 都沒有 —— 不對稱到了荒謬的程度。
     if svc.is_controlled(conv):
