@@ -232,6 +232,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { extractError } from '../api/errors'
 import { useRouter } from 'vue-router'
 import { listStrategies, previewChunking } from '../api/chunkingPreview'
 import { createCollection } from '../api/ingestionCollections'
@@ -386,7 +387,7 @@ onMounted(async () => {
     const { data } = await listStrategies()
     strategies.value = data
   } catch (e) {
-    error.value = `載入策略目錄失敗：${e.response?.data?.detail || e.message}`
+    error.value = `載入策略目錄失敗：${extractError(e, e.message)}`
   }
 })
 
@@ -417,7 +418,7 @@ async function runPreview(file) {
     const { data } = await previewChunking(file)
     result.value = data
   } catch (e) {
-    error.value = e.response?.data?.detail || e.message
+    error.value = extractError(e, e.message)
   } finally {
     clearInterval(tickerId)
     loading.value = false
@@ -486,7 +487,7 @@ async function commitCreate() {
     // can upload the real corpus there.
     router.push({ name: 'CollectionDetail', params: { id: data.id } })
   } catch (e) {
-    commitError.value = e.response?.data?.detail || e.message
+    commitError.value = extractError(e, e.message)
   } finally {
     committing.value = false
   }

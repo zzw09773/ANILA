@@ -257,6 +257,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getAgent,
@@ -300,7 +301,7 @@ async function loadFunctions() {
     const { data } = await listAgentFunctions(agentId.value)
     functions.value = Array.isArray(data) ? data : []
   } catch (e) {
-    fnError.value = e?.response?.data?.detail || '載入功能失敗'
+    fnError.value = extractError(e, '載入功能失敗')
   }
 }
 
@@ -327,7 +328,7 @@ async function handleAddFunction() {
     newFn.value = { kind: newFn.value.kind, label: '', body: '', autosend: false }
     await loadFunctions()
   } catch (e) {
-    fnError.value = e?.response?.data?.detail || '新增失敗'
+    fnError.value = extractError(e, '新增失敗')
   } finally {
     fnBusy.value = false
   }
@@ -342,7 +343,7 @@ async function handleDeleteFunction(f) {
     await deleteAgentFunction(agentId.value, f.id)
     await loadFunctions()
   } catch (e) {
-    fnError.value = e?.response?.data?.detail || '刪除失敗'
+    fnError.value = extractError(e, '刪除失敗')
   } finally {
     fnBusy.value = false
   }
@@ -517,7 +518,7 @@ async function load() {
     agent.value = agentRow.data
     loadFromConfig(cfgResp.data?.runtime_config ?? null)
   } catch (e) {
-    feedback.value = { type: 'error', message: `載入失敗：${e.response?.data?.detail || e.message}` }
+    feedback.value = { type: 'error', message: `載入失敗：${extractError(e, e.message)}` }
   } finally {
     loading.value = false
   }
@@ -534,7 +535,7 @@ async function handleSave() {
     lastSavedAt.value = new Date().toLocaleTimeString()
     feedback.value = { type: 'success', message: '已儲存 · agent 約 30 秒內生效' }
   } catch (e) {
-    feedback.value = { type: 'error', message: e.response?.data?.detail || e.message }
+    feedback.value = { type: 'error', message: extractError(e, e.message) }
   } finally {
     saving.value = false
   }
@@ -551,7 +552,7 @@ async function handleClear() {
     lastSavedAt.value = new Date().toLocaleTimeString()
     feedback.value = { type: 'success', message: '已清除 · agent 約 30 秒內回到預設' }
   } catch (e) {
-    feedback.value = { type: 'error', message: e.response?.data?.detail || e.message }
+    feedback.value = { type: 'error', message: extractError(e, e.message) }
   } finally {
     saving.value = false
   }

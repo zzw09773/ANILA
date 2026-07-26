@@ -88,6 +88,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import { acknowledgeAlert, getAlertSummary, listAlerts, resolveAlert } from '../api/alerts'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermDot } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -112,18 +113,18 @@ async function fetchData() {
     alerts.value = a
     summary.value = s
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '載入警報失敗'
+    pageError.value = extractError(e, '載入警報失敗')
   }
 }
 onMounted(fetchData)
 
 async function handleAck(alert) {
   try { await acknowledgeAlert(alert.id); await fetchData() }
-  catch (e) { toast(e.response?.data?.detail || '確認失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '確認失敗'), { tone: 'error' }) }
 }
 async function handleResolve(alert) {
   try { await resolveAlert(alert.id); await fetchData() }
-  catch (e) { toast(e.response?.data?.detail || '解決失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '解決失敗'), { tone: 'error' }) }
 }
 
 function severityStatus(s) {

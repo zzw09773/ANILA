@@ -322,14 +322,19 @@ test('已收斂的檔案不得殘留裸 data.detail 插值', () => {
 })
 
 test('未收斂的殘量只准降不准升(ratchet)', () => {
-  // W2-12 **沒有**把 governance UI 清完,這是刻意的範圍收窄。
-  // 基準:改動前 102 處 / 22 檔;本包收斂 7 檔共 60 處;殘量 42 處 / 15 檔。
-  // 這條 ratchet 的作用是:新程式碼不准再寫裸 `data.detail` 插值,
-  // 而既有債務可以慢慢還。降下來後把上限一起改小。
+  // 歷程:改動前 102 處 / 22 檔 → W2-12 本體收斂 7 檔 60 處(殘量 42)→
+  // W2-12 收尾把剩下 14 檔 40 處掃完,**殘量 2 處 / 1 檔**。
   //
-  // `src/api/errors.js` 自己要讀 legacy `detail` 當過渡期 fallback,
-  // 那是 helper 的職責,不算殘量。
-  const RESIDUAL_CEILING = 42
+  // 剩下那 2 處在 `views/ClassificationInventoryView.vue`,刻意沒動:W2-11
+  // (分類正確性的輸入端)正在改同一支檔案加抽查報表,同時改會撞 merge。
+  // W2-11 落地後把上限降到 0。
+  //
+  // 這條 ratchet 的作用是:新程式碼不准再寫裸 `data.detail` 插值。上限只准降 ——
+  // 而上限不會自己降,清完的人要順手鎖緊(這正是 C5 ledger 的同一條紀律)。
+  //
+  // `src/api/errors.js` 自己要讀 legacy `detail` 當過渡期 fallback,那是 helper
+  // 的職責,不算殘量。
+  const RESIDUAL_CEILING = 2
   const files = walkSources(SRC).filter((f) => !f.endsWith('/api/errors.js'))
   let residual = 0
   const perFile = []
