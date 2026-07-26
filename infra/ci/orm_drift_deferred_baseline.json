@@ -26,17 +26,20 @@
       "notes": "ORM 宣告 DateTime(timezone=True) 但 DB 是 timestamp without time zone,或反之。這是 W1-4 那個 API key 500 的病根:118 個欄沒宣告 timezone → 讀回來是 naive → 拿去跟 aware 比較就 TypeError。W1-4 已在邊界層用 app/time_utils.py 止血,欄位本身是 W2-10。"
     },
     "UNDECLARED_FK": {
-      "max_count": 3,
+      "max_count": 0,
       "owner": "平台後端負責人",
-      "exit_condition": "確認三個孤兒欄確實無人讀寫後以 migration 刪除;若其實還在用則補進 ORM 模型",
+      "exit_condition": "已完成 —— r1_0037 刪除三個孤兒欄,上限鎖 0。這一類不再有豁免,任何新的 UNDECLARED_FK 都會 fail。",
       "notes": [
-        "DB 有 FK 但 ORM 完全沒宣告那個欄。三條都是**孤兒欄**,不是漏寫 ForeignKey:",
-        "  agents.last_reviewer_id → users.id         (ORM Agent 模型無此欄)",
-        "  audit_logs.actor_id → users.id             (ORM 只有 actor_user_id;actor_id 是更早那個)",
-        "  users.auth_provider_id → auth_providers.id (ORM User 模型無此欄)",
-        "這三條是 FK 檢查從『數量比對』改成『約束形狀比對』之後才看得到的 —— 舊寫法兩邊",
-        "數的還不是同一種東西(欄位數 vs 約束數),方向性漂移(DB 有、ORM 沒有)永遠不會",
-        "被計數抓到。刪除是破壞性操作,要先證明無人讀寫,所以不在 W2-6。"
+        "**已清除(r1_0037,2026-07-26)**。保留這一筆是為了記住它怎麼被發現的。",
+        "原本 3 條:agents.last_reviewer_id / audit_logs.actor_id / users.auth_provider_id,",
+        "都是 DB 有 FK 而 ORM 完全沒宣告那個欄的**孤兒欄**。它們是 FK 檢查從「數量比對」",
+        "改成「約束形狀比對」之後才看得到的 —— 舊寫法兩邊數的還不是同一種東西(欄位數 vs",
+        "約束數),方向性漂移(DB 有、ORM 沒有)永遠不會被計數抓到。",
+        "audit_logs.actor_id 特別值得記:它與 ORM 的 actor_user_id 並存,是「同一件事兩個欄」",
+        "的典型 —— 稽核查詢挑錯欄就會查到一個永遠是 NULL 的欄,然後得出「沒有人做過這件事」。",
+        "刪除前的證據:程式碼引用 0(那 74 個 actor_id 屬於 policy_decisions,不同表)、",
+        "dev 實庫三欄非空列數皆 0(audit_logs 30,990 列全 NULL)、.15 亦為新建尚未開放使用。",
+        "r1_0037 內有安全閘:欄位若有任何非 NULL 列就 raise 並拒絕繼續(已用 seed 資料驗過)。"
       ]
     }
   }
