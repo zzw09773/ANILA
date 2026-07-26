@@ -1,432 +1,144 @@
-"""Startup-time migrations.
+"""Startup schema verification —— **檢查,不自癒**(W2-6)。
 
-Handles:
-1. Backfilling new columns on existing Postgres deployments (lightweight DDL).
-2. One-shot migration from a legacy SQLite database (``data/csp.db``) into
-   PostgreSQL, so upgrading from earlier SQLite-based deployments does not
-   silently drop user/key/usage data.
+這個模組以前是什麼
+------------------
+它以前是 alembic **之外的第二套 schema 機制**:每次啟動對 8 張表跑
+``ADD COLUMN IF NOT EXISTS`` / ``CREATE INDEX IF NOT EXISTS``,甚至在
+啟動路徑上跑 ``ALTER TABLE ... ALTER COLUMN ... TYPE``;另外還會無條件探測
+``/app/legacy-data/csp.db`` 與 ``data/csp.db``,存在就把整個 SQLite 庫倒進
+PostgreSQL(docstring 說是 opt-in,實作是無條件)。
 
-The SQLite migration is opt-in via the ``LEGACY_SQLITE_PATH`` env var (or the
-default ``data/csp.db`` location). If the legacy file exists but Postgres
-already has data the migration aborts to avoid clobbering a live deployment.
+兩個後果:
+
+1. ``alembic upgrade head`` 對乾淨 DB **得不到可用 schema** —— 那些欄位/索引
+   沒有任何 migration 版本紀錄,只有「啟動過一次 app」才會出現。**DR 還原路徑
+   因此是壞的**:還原完的庫在跑起 app 之前不符合 ORM,而還原驗證通常只看
+   ``alembic_version``。
+2. 啟動時自癒會遮蔽真正的問題:一個 schema 落後的庫會被靜默補到「差不多能
+   用」,然後以 healthy 的樣子上線。
+
+現在是什麼
+----------
+``r1_0036_absorb_startup_ddl`` 把那些 DDL 全量收編進 alembic,所以 alembic
+重新成為唯一的 schema 權威。本模組只剩一件事:**驗證跑起來的庫真的符合 ORM,
+不符合就拒絕啟動並指向 alembic**。不再有任何 DDL。
+
+legacy SQLite 匯入路徑已整段刪除(不是停用、不是留 flag):威脅前提已死
+(現行部署一律 PostgreSQL,沒有 SQLite 來源),而「無條件探測檔案路徑並在
+命中時整庫複製」本身就是個不該留在啟動路徑上的動作。
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import sqlite3
-from pathlib import Path
 
-from sqlalchemy import inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy import inspect
+from sqlalchemy.engine import Connection, Engine
 
-from app.database import SessionLocal, engine
-from app.models.api_key import ApiKey, ApiKeyModelPermission
-from app.models.alert import Alert
-from app.models.audit_log import AuditLog
-from app.models.department import Department
-from app.models.model_registry import ModelRegistry
-from app.models.platform_link import PlatformLink
-from app.models.token_usage import TokenUsage
-from app.models.user import User, UserModelPermission
+import app.models  # noqa: F401  —— 讓 Base.metadata 收齊所有表再做比對
+from app.database import Base, engine
 
 logger = logging.getLogger(__name__)
 
 
-LEGACY_SQLITE_ENV = "LEGACY_SQLITE_PATH"
-LEGACY_SQLITE_DEFAULTS = [
-    "/app/legacy-data/csp.db",
-    "data/csp.db",
-]
+_ALEMBIC_HINT = (
+    "schema 權威是 alembic:請對該資料庫執行 `alembic upgrade head`"
+    "(容器內:`cd /app && python -m alembic upgrade head`,需要 "
+    "MIGRATION_DATABASE_URL 指向具備 DDL 權限的角色)。"
+    "本服務**不再**於啟動時自行補 DDL —— 自癒會把落後的庫偽裝成健康的庫。"
+)
 
 
-# Tables migrated from SQLite, in FK-safe order.
-# Each entry: (sqlite_table, sqlalchemy_model)
-MIGRATION_ORDER = [
-    ("departments", Department),
-    ("users", User),
-    ("model_registry", ModelRegistry),
-    ("platform_links", PlatformLink),
-    ("alerts", Alert),
-    ("audit_logs", AuditLog),
-    ("user_model_permissions", UserModelPermission),
-    ("api_keys", ApiKey),
-    ("api_key_model_permissions", ApiKeyModelPermission),
-    ("token_usage", TokenUsage),
-]
+class SchemaOutOfDateError(RuntimeError):
+    """資料庫 schema 與 ORM 宣告不符 —— 拒絕啟動。
+
+    ``main._apply_schema_migrations`` 會把它記成 ``migration_status=failed``
+    並讓 ``/ready`` 維持 503,所以這個例外**必須**往外傳,不能只 log。
+    """
 
 
 def run_startup_migrations() -> None:
-    """Run every post-Alembic step or propagate the first failure.
+    """啟動前的 schema 驗證。名稱保留是因為 ``app.main`` 在呼叫它。
 
-    Startup readiness is a correctness boundary: logging and continuing would
-    let ``main._apply_schema_migrations`` mark a partially migrated database as
-    succeeded. The lifespan owner records the exception and keeps ``/ready``
-    at 503, so no exception is intentionally swallowed here.
+    ⚠ 這裡刻意不做任何 DDL。若拋出 ``SchemaOutOfDateError``,呼叫端
+    (``main._apply_schema_migrations``)會把它轉成 ``RuntimeError`` 並讓
+    程序拒絕啟動。
     """
-    _ensure_schema_backfills(engine)
-    _maybe_migrate_legacy_sqlite()
+    verify_schema(engine)
 
 
-class LegacyMigrationError(RuntimeError):
-    """Raised when the legacy SQLite migration cannot safely proceed."""
+def verify_schema(bind: Engine | Connection) -> None:
+    """庫不符合 ORM 宣告就丟 ``SchemaOutOfDateError``。"""
+    gaps = collect_schema_gaps(bind)
+    if not gaps:
+        logger.info("schema 驗證通過(%d 張 ORM 表)", len(Base.metadata.tables))
+        return
+
+    shown = gaps[:20]
+    more = f"(另有 {len(gaps) - len(shown)} 項未列出)" if len(gaps) > len(shown) else ""
+    raise SchemaOutOfDateError(
+        "資料庫 schema 落後於程式碼,拒絕啟動。缺少:"
+        + "、".join(shown)
+        + more
+        + " —— "
+        + _ALEMBIC_HINT
+    )
 
 
-def _ensure_schema_backfills(bind: Engine) -> None:
-    """Backfill newly added columns/indexes for pre-existing schemas.
+def collect_schema_gaps(bind: Engine | Connection) -> list[str]:
+    """列出「ORM 要求有、資料庫沒有」的項目。
 
-    The 0001 alembic baseline does not match the current SQLAlchemy models
-    for users/model_registry/token_usage. Rather than rewriting history we
-    run idempotent ``ADD COLUMN IF NOT EXISTS`` here so any fresh or
-    previously-initialised Postgres volume self-heals at startup.
+    刻意只查三類**名稱層面**的缺口,不做通用型別比對:
+
+    * ``MISSING_TABLE`` / ``MISSING_COLUMN`` —— 缺了就是 API 直接 500。
+    * ``MISSING_UNIQUE`` —— ORM 宣告 ``unique=True`` 的單欄。這一項不是潔癖:
+      ``alert_service.upsert_alert`` 的 ``INSERT ... ON CONFLICT (fingerprint)``
+      在缺少對應唯一索引的庫上會以 ``InvalidColumnReference`` 失敗,而那條路徑
+      是每 60 秒跑一次的健康檢查 —— 缺約束的庫必須在啟動時就被擋下,而不是等
+      第一輪健康檢查才炸。
+
+    通用型別比對留給 CI 的 ``infra/ci/check_orm_pg_drift.py``(它在乾淨庫上
+    跑,結果才有意義);啟動路徑要的是快、且零誤報。
     """
-
-    # --- users -----------------------------------------------------------
-    _ensure_column(
-        bind, "users", "token_version",
-        postgres_ddl="ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
-        generic_ddl="ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0",
-    )
-    _ensure_column(
-        bind, "users", "is_approved",
-        postgres_ddl="ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE",
-        generic_ddl="ALTER TABLE users ADD COLUMN is_approved BOOLEAN NOT NULL DEFAULT 1",
-    )
-    _ensure_column(
-        bind, "users", "department_id",
-        postgres_ddl=(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS department_id "
-            "INTEGER REFERENCES departments(id) ON DELETE SET NULL"
-        ),
-        generic_ddl="ALTER TABLE users ADD COLUMN department_id INTEGER",
-    )
-    _ensure_column(
-        bind, "users", "updated_at",
-        postgres_ddl="ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
-        generic_ddl="ALTER TABLE users ADD COLUMN updated_at TIMESTAMP",
-    )
-
-    # --- model_registry --------------------------------------------------
-    _ensure_column(
-        bind, "model_registry", "health_status",
-        postgres_ddl=(
-            "ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS "
-            "health_status VARCHAR(20) DEFAULT 'offline'"
-        ),
-        generic_ddl="ALTER TABLE model_registry ADD COLUMN health_status VARCHAR(20) DEFAULT 'offline'",
-    )
-    _ensure_column(
-        bind, "model_registry", "health_checked_at",
-        postgres_ddl="ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS health_checked_at TIMESTAMP NULL",
-        generic_ddl="ALTER TABLE model_registry ADD COLUMN health_checked_at TIMESTAMP",
-    )
-    _ensure_column(
-        bind, "model_registry", "context_window",
-        postgres_ddl="ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS context_window INTEGER NULL",
-        generic_ddl="ALTER TABLE model_registry ADD COLUMN context_window INTEGER",
-    )
-    _ensure_column(
-        bind, "model_registry", "base_model_id",
-        postgres_ddl=(
-            "ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS base_model_id "
-            "INTEGER REFERENCES model_registry(id)"
-        ),
-        generic_ddl="ALTER TABLE model_registry ADD COLUMN base_model_id INTEGER",
-    )
-    _ensure_column(
-        bind, "model_registry", "is_internal",
-        postgres_ddl=(
-            "ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS is_internal "
-            "BOOLEAN NOT NULL DEFAULT FALSE"
-        ),
-        generic_ddl=(
-            "ALTER TABLE model_registry ADD COLUMN is_internal "
-            "BOOLEAN NOT NULL DEFAULT 0"
-        ),
-    )
-    _ensure_column(
-        bind, "model_registry", "updated_at",
-        postgres_ddl="ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
-        generic_ddl="ALTER TABLE model_registry ADD COLUMN updated_at TIMESTAMP",
-    )
-
-    # --- token_usage -----------------------------------------------------
-    _ensure_column(
-        bind, "token_usage", "department_id",
-        postgres_ddl=(
-            "ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS department_id "
-            "INTEGER REFERENCES departments(id)"
-        ),
-        generic_ddl="ALTER TABLE token_usage ADD COLUMN department_id INTEGER",
-    )
-    _ensure_column(
-        bind, "token_usage", "request_timestamp",
-        postgres_ddl=(
-            "ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS request_timestamp "
-            "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
-        ),
-        generic_ddl=(
-            "ALTER TABLE token_usage ADD COLUMN request_timestamp "
-            "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
-        ),
-    )
-    _ensure_column(
-        bind, "token_usage", "request_duration_ms",
-        postgres_ddl="ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS request_duration_ms INTEGER NULL",
-        generic_ddl="ALTER TABLE token_usage ADD COLUMN request_duration_ms INTEGER",
-    )
-
-    # --- token_usage indexes (must come after request_timestamp exists) --
-    for index_ddl in (
-        "CREATE INDEX IF NOT EXISTS idx_usage_user_time ON token_usage (user_id, request_timestamp)",
-        "CREATE INDEX IF NOT EXISTS idx_usage_department_time ON token_usage (department_id, request_timestamp)",
-        "CREATE INDEX IF NOT EXISTS idx_usage_model_time ON token_usage (model_id, request_timestamp)",
-        "CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON token_usage (request_timestamp)",
-        "CREATE INDEX IF NOT EXISTS idx_usage_apikey_time ON token_usage (api_key_id, request_timestamp)",
-    ):
-        _ensure_postgres_index(bind, index_ddl)
-
-    # --- departments ----------------------------------------------------
-    _ensure_column(
-        bind, "departments", "updated_at",
-        postgres_ddl="ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
-        generic_ddl="ALTER TABLE departments ADD COLUMN updated_at TIMESTAMP",
-    )
-
-    # --- api_keys ------------------------------------------------------
-    for col_name, ddl_suffix in [
-        ("expires_at", "TIMESTAMP NULL"),
-        ("key_suffix", "VARCHAR(4) NOT NULL DEFAULT ''"),
-    ]:
-        _ensure_column(
-            bind, "api_keys", col_name,
-            postgres_ddl=f"ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
-            generic_ddl=f"ALTER TABLE api_keys ADD COLUMN {col_name} {ddl_suffix}",
-        )
-
-    # --- alerts --------------------------------------------------------
-    for col_name, ddl_suffix in [
-        ("category", "VARCHAR(50) NOT NULL DEFAULT 'general'"),
-        ("severity", "VARCHAR(20) NOT NULL DEFAULT 'info'"),
-        ("status", "VARCHAR(20) NOT NULL DEFAULT 'open'"),
-        ("fingerprint", "VARCHAR(200) NOT NULL DEFAULT ''"),
-        ("source_type", "VARCHAR(50) NULL"),
-        ("source_id", "VARCHAR(100) NULL"),
-        ("first_seen_at", "TIMESTAMP NULL"),
-        ("last_seen_at", "TIMESTAMP NULL"),
-        ("acknowledged_at", "TIMESTAMP NULL"),
-        ("acknowledged_by_user_id", "INTEGER NULL"),
-        ("resolved_at", "TIMESTAMP NULL"),
-        ("metadata_json", "TEXT NULL"),
-    ]:
-        _ensure_column(
-            bind, "alerts", col_name,
-            postgres_ddl=f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
-            generic_ddl=f"ALTER TABLE alerts ADD COLUMN {col_name} {ddl_suffix}",
-        )
-
-    # --- audit_logs ----------------------------------------------------
-    for col_name, ddl_suffix in [
-        ("status", "VARCHAR(20) NOT NULL DEFAULT 'ok'"),
-        ("actor_user_id", "INTEGER NULL"),
-        ("actor_username", "VARCHAR(100) NULL"),
-        ("ip_address", "VARCHAR(64) NULL"),
-        ("metadata_json", "TEXT NULL"),
-    ]:
-        _ensure_column(
-            bind, "audit_logs", col_name,
-            postgres_ddl=f"ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
-            generic_ddl=f"ALTER TABLE audit_logs ADD COLUMN {col_name} {ddl_suffix}",
-        )
-    # Align resource_id type with model (0001 baseline declared INTEGER;
-    # model declares VARCHAR(100)). Pydantic ResponseValidationError was
-    # firing on GET /api/audit-logs because PG returned ints.
-    _ensure_column_type_varchar(
-        bind, "audit_logs", "resource_id", length=100,
-    )
-
-    # --- platform_links ------------------------------------------------
-    for col_name, ddl_suffix in [
-        ("icon", "VARCHAR(50) NULL"),
-        ("sort_order", "INTEGER NULL DEFAULT 0"),
-    ]:
-        _ensure_column(
-            bind, "platform_links", col_name,
-            postgres_ddl=f"ALTER TABLE platform_links ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
-            generic_ddl=f"ALTER TABLE platform_links ADD COLUMN {col_name} {ddl_suffix}",
-        )
-
-
-def _ensure_column(
-    bind: Engine,
-    table: str,
-    column: str,
-    *,
-    postgres_ddl: str,
-    generic_ddl: str,
-) -> None:
-    """Idempotently add ``column`` to ``table`` when missing."""
     inspector = inspect(bind)
-    if not inspector.has_table(table):
-        return
-    existing_cols = {c["name"] for c in inspector.get_columns(table)}
-    if column in existing_cols:
-        return
+    existing_tables = set(inspector.get_table_names())
+    gaps: list[str] = []
 
-    ddl = postgres_ddl if bind.dialect.name == "postgresql" else generic_ddl
-    with bind.begin() as conn:
-        conn.execute(text(ddl))
-    logger.info(f"已補上 {table}.{column} 欄位")
-
-
-def _ensure_postgres_index(bind: Engine, ddl: str) -> None:
-    if bind.dialect.name != "postgresql":
-        return
-    with bind.begin() as conn:
-        conn.execute(text(ddl))
-
-
-def _ensure_column_type_varchar(
-    bind: Engine, table: str, column: str, *, length: int
-) -> None:
-    """Convert ``table.column`` to VARCHAR(length) if currently a non-text type.
-
-    Used to heal cases where an early baseline used INTEGER/BIGINT for a column
-    the SQLAlchemy model now declares as String. Idempotent — no-op if already
-    textual. Postgres-only.
-    """
-    if bind.dialect.name != "postgresql":
-        return
-    with bind.begin() as conn:
-        current = conn.execute(
-            text(
-                "SELECT data_type FROM information_schema.columns "
-                "WHERE table_name = :t AND column_name = :c"
-            ),
-            {"t": table, "c": column},
-        ).scalar()
-        if current is None or current in ("character varying", "text"):
-            return
-        conn.execute(
-            text(
-                f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({length}) "
-                f"USING {column}::varchar"
-            )
-        )
-    logger.info(f"已將 {table}.{column} 型別對齊為 VARCHAR({length})")
-
-
-def _resolve_legacy_sqlite_path() -> Path | None:
-    explicit = os.environ.get(LEGACY_SQLITE_ENV)
-    candidates = [explicit] if explicit else LEGACY_SQLITE_DEFAULTS
-    for candidate in candidates:
-        if not candidate:
+    for table in sorted(Base.metadata.tables.values(), key=lambda t: t.name):
+        if table.name not in existing_tables:
+            gaps.append(f"表 {table.name}")
             continue
-        path = Path(candidate)
-        try:
-            is_file = path.is_file()
-        except OSError as exc:
-            # 探測「有沒有舊 SQLite 要遷移」不該讓整個啟動炸掉。全新部署下,
-            # 預設候選路徑(如 /app/data/csp.db)可能存在一個 non-root 進程無法
-            # 穿透的目錄 → is_file() 丟 PermissionError。那就是「這裡沒有可用的
-            # 舊 DB」,當作 not-a-file 繼續即可,不要 propagate。
-            logger.debug("legacy sqlite 候選 %s 無法存取(%s),略過", path, exc)
+
+        db_columns = {c["name"] for c in inspector.get_columns(table.name)}
+        missing_columns = [c.name for c in table.columns if c.name not in db_columns]
+        gaps.extend(f"欄位 {table.name}.{name}" for name in sorted(missing_columns))
+
+        unique_declared = [
+            c.name for c in table.columns if c.unique and c.name not in missing_columns
+        ]
+        if not unique_declared:
             continue
-        if is_file:
-            return path
-    return None
 
+        # UNIQUE 可以由 unique 約束、unique 索引、或主鍵滿足 —— 三者都算,
+        # 否則會對 `create_index(..., unique=True)` 建出來的欄位誤報
+        # (`registered_services.slug`、`tasks.trace_id` 就是那樣建的)。
+        satisfied: set[tuple[str, ...]] = {
+            tuple(uc["column_names"])
+            for uc in inspector.get_unique_constraints(table.name)
+        }
+        satisfied |= {
+            tuple(ix["column_names"])
+            for ix in inspector.get_indexes(table.name)
+            if ix.get("unique")
+        }
+        pk = tuple(inspector.get_pk_constraint(table.name).get("constrained_columns") or ())
+        if pk:
+            satisfied.add(pk)
 
-def _maybe_migrate_legacy_sqlite() -> None:
-    legacy_path = _resolve_legacy_sqlite_path()
-    if legacy_path is None:
-        return
-
-    logger.info(f"偵測到舊版 SQLite 資料庫: {legacy_path}")
-
-    session = SessionLocal()
-    try:
-        has_users = session.query(User.id).limit(1).first() is not None
-        has_keys = session.query(ApiKey.id).limit(1).first() is not None
-        has_usage = session.query(TokenUsage.id).limit(1).first() is not None
-    finally:
-        session.close()
-
-    if has_users or has_keys or has_usage:
-        raise LegacyMigrationError(
-            f"偵測到舊版 SQLite ({legacy_path}) 但目標 PostgreSQL 已有資料；"
-            "請先備份並手動決定保留哪一份後再啟動（或移除 LEGACY_SQLITE_PATH）。"
+        gaps.extend(
+            f"唯一約束 {table.name}.{name}"
+            for name in sorted(unique_declared)
+            if (name,) not in satisfied
         )
 
-    _copy_sqlite_to_postgres(legacy_path)
-
-
-def _copy_sqlite_to_postgres(legacy_path: Path) -> None:
-    src = sqlite3.connect(f"file:{legacy_path}?mode=ro", uri=True)
-    src.row_factory = sqlite3.Row
-    migrated_counts: dict[str, int] = {}
-
-    session = SessionLocal()
-    try:
-        for sqlite_table, model in MIGRATION_ORDER:
-            try:
-                rows = src.execute(f"SELECT * FROM {sqlite_table}").fetchall()
-            except sqlite3.OperationalError:
-                logger.info(f"舊資料庫無 {sqlite_table} 資料表，略過")
-                continue
-
-            if not rows:
-                continue
-
-            model_cols = {c.name for c in model.__table__.columns}
-            objects = []
-            for row in rows:
-                payload = {k: row[k] for k in row.keys() if k in model_cols}
-                objects.append(model(**payload))
-
-            session.bulk_save_objects(objects, return_defaults=False)
-            migrated_counts[sqlite_table] = len(objects)
-
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-        src.close()
-
-    _resync_postgres_sequences()
-
-    if migrated_counts:
-        logger.warning(
-            "已從 SQLite 遷移資料到 PostgreSQL: "
-            + ", ".join(f"{k}={v}" for k, v in migrated_counts.items())
-        )
-    else:
-        logger.info("舊版 SQLite 檔案為空，未遷移任何資料")
-
-
-def _resync_postgres_sequences() -> None:
-    """Bump Postgres SERIAL sequences past the inserted IDs."""
-    if engine.dialect.name != "postgresql":
-        return
-    stmts = []
-    for _, model in MIGRATION_ORDER:
-        table = model.__table__.name
-        pk_cols = [c.name for c in model.__table__.primary_key.columns]
-        if len(pk_cols) != 1:
-            continue
-        pk = pk_cols[0]
-        stmts.append(
-            f"SELECT setval(pg_get_serial_sequence('{table}', '{pk}'), "
-            f"COALESCE((SELECT MAX({pk}) FROM {table}), 1))"
-        )
-    if not stmts:
-        return
-    with engine.begin() as conn:
-        for stmt in stmts:
-            # A copied row with a stale SERIAL sequence is not a successful
-            # migration: the next insert can collide. Propagate and keep the
-            # service unready rather than publish a false success.
-            conn.execute(text(stmt))
+    return gaps
