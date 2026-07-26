@@ -29,7 +29,7 @@ class Conversation(Base):
         nullable=True,
     )
     classified = Column(Boolean, nullable=False, default=False, server_default="false")
-    classified_at = Column(DateTime, nullable=True)
+    classified_at = Column(DateTime(timezone=True), nullable=True)
     classified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     # P3 / Sprint 14 — Bell-LaPadula style "no write down" inheritance.
     # When TRUE, the platform set classified=true automatically because
@@ -53,9 +53,9 @@ class Conversation(Base):
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
-        DateTime,
+        DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
@@ -74,10 +74,10 @@ class ConversationShare(Base):
     token = Column(String(64), nullable=False, unique=True, index=True, default=lambda: secrets.token_urlsafe(32))
     mode = Column(String(20), nullable=False, default="read_only")  # read_only / fork
     allow_fork = Column(Boolean, nullable=False, default=False)
-    expires_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     view_count = Column(Integer, nullable=False, default=0, server_default="0")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     conversation = relationship("Conversation", back_populates="shares")
     creator = relationship("User", foreign_keys=[created_by])

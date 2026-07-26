@@ -119,10 +119,10 @@ class IngestionCollection(Base):
     artifact_count = Column(Integer, nullable=False, default=0, server_default="0")
     lifecycle_state = Column(String(20), nullable=False, default="active",
                              server_default="active", index=True)
-    archive_due_at = Column(DateTime, nullable=True)
-    archived_at = Column(DateTime, nullable=True)
-    erase_due_at = Column(DateTime, nullable=True, index=True)
-    erased_at = Column(DateTime, nullable=True)
+    archive_due_at = Column(DateTime(timezone=True), nullable=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+    erase_due_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    erased_at = Column(DateTime(timezone=True), nullable=True)
     legal_hold = Column(Boolean, nullable=False, default=False,
                         server_default="false")
     legal_hold_reason = Column(String(500), nullable=True)
@@ -260,10 +260,10 @@ class IngestionDocument(Base):
     active_generation_id = Column(BigInteger, nullable=True)
     lifecycle_state = Column(String(20), nullable=False, default="active",
                              server_default="active", index=True)
-    archive_due_at = Column(DateTime, nullable=True)
-    archived_at = Column(DateTime, nullable=True)
-    erase_due_at = Column(DateTime, nullable=True, index=True)
-    erased_at = Column(DateTime, nullable=True)
+    archive_due_at = Column(DateTime(timezone=True), nullable=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+    erase_due_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    erased_at = Column(DateTime(timezone=True), nullable=True)
     legal_hold = Column(Boolean, nullable=False, default=False,
                         server_default="false")
     legal_hold_reason = Column(String(500), nullable=True)

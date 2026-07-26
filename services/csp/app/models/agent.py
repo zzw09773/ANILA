@@ -130,8 +130,8 @@ class Agent(Base):
     approved_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    approved_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Sprint 8 X / Phase A — bootstrap-then-provision flow.
     # Admin issues a single-use ``bsk-`` token via

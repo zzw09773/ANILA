@@ -204,15 +204,42 @@ def run_drift(dsn: str) -> int:
             orm_type = col.type
             if isinstance(orm_type, _DateTime):
                 orm_tz = bool(getattr(orm_type, "timezone", False))
-                db_type_name = str(db_cols[col.name]["type"]).upper()
-                db_tz = "WITH TIME ZONE" in db_type_name or "TIMESTAMPTZ" in db_type_name
+                # ⚠ 不能用 `str(reflected_type)` 判斷 DB 端有沒有時區。
+                #
+                # SQLAlchemy 反射回來的 `TIMESTAMP(timezone=True)` 在**預設
+                # dialect** 下 `str()` 就是 `'TIMESTAMP'`(實測:
+                # `repr = TIMESTAMP(timezone=True)` 但 `str = 'TIMESTAMP'`)。
+                # 所以原本的字串比對讓 `db_tz` **恆為 False**,這條檢查退化成
+                # 「數有幾個 ORM 欄宣告 timezone=True」—— 它從來沒有比較過兩邊。
+                #
+                # 後果比「少抓」更糟:**做對事會讓數字上升**。W2-10 批次 1 把 12 欄
+                # 轉成 timestamptz 並同步 ORM 宣告(完全正確的工作),這個計數就從
+                # 53 跳到 65,而 ratchet 只准降 → gate 會擋下正確的 PR。一個懲罰
+                # 正確工作的 gate 比沒有 gate 更糟,因為它會訓練人去繞過它。
+                #
+                # 改讀 `.timezone` 屬性;字串比對保留為 fallback,給那些反射出來
+                # 的型別不帶該屬性的 dialect。
+                db_col_type = db_cols[col.name]["type"]
+                db_type_name = str(db_col_type).upper()
+                db_tz = bool(getattr(db_col_type, "timezone", False)) or (
+                    "WITH TIME ZONE" in db_type_name or "TIMESTAMPTZ" in db_type_name
+                )
                 if orm_tz != db_tz:
                     findings.append({
                         "kind": "TZ_MISMATCH",
                         "target": f"{table.name}.{col.name}",
+                        # 訊息不能印 `db_type_name` —— 那個字串對 timestamptz 也是
+                        # 'TIMESTAMP',會讓讀 log 的人以為 DB 是 naive,然後往錯的
+                        # 方向修(去寫一支資料遷移,而其實只要改 ORM 宣告)。
                         "detail": (
-                            f"ORM timezone={orm_tz}, DB={db_type_name} "
-                            "→ 只改了一邊;W2-10 必須在同一個 PR 內同時改"
+                            f"ORM timezone={orm_tz} / DB "
+                            f"{'timestamptz(aware)' if db_tz else 'timestamp(naive)'}"
+                            + (
+                                " → DB 已是 aware,**只要改 ORM 宣告**,不需要資料遷移"
+                                if db_tz and not orm_tz
+                                else " → DB 仍是 naive,需要 ALTER TYPE(W2-10 批次),"
+                                "且必須與 ORM 宣告同一個 PR"
+                            )
                         ),
                     })
 

@@ -202,17 +202,17 @@ class ArtifactVersion(Base):
     media_type = Column(String(200), nullable=True)
     original_filename = Column(String(255), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
-    revoked_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
     revoked_by_user_id = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     revocation_reason = Column(String(500), nullable=True)
     lifecycle_state = Column(String(20), nullable=False, default="active",
                              server_default="active", index=True)
-    archive_due_at = Column(DateTime, nullable=True)
-    archived_at = Column(DateTime, nullable=True)
-    erase_due_at = Column(DateTime, nullable=True, index=True)
-    erased_at = Column(DateTime, nullable=True)
+    archive_due_at = Column(DateTime(timezone=True), nullable=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+    erase_due_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    erased_at = Column(DateTime(timezone=True), nullable=True)
     legal_hold = Column(Boolean, nullable=False, default=False,
                         server_default="false")
     legal_hold_reason = Column(String(500), nullable=True)

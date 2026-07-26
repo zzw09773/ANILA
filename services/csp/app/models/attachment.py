@@ -27,7 +27,7 @@ class Attachment(Base):
     size_bytes = Column(BigInteger, nullable=False, default=0)
     # Relative path under ATTACHMENT_STORAGE_PATH; never exposed directly to clients
     storage_path = Column(String(500), nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     message = relationship("Message", back_populates="attachments")
     uploader = relationship("User", foreign_keys=[uploaded_by])

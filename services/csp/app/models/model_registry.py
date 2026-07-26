@@ -109,7 +109,7 @@ class ModelRegistry(Base):
     # (online/connecting/offline) 由 r1_0005 就地遷移;'disabled' 由讀取端
     # 依 is_active 呈現(見 health_checker.normalize_health_status)。
     health_status = Column(String(20), default="unknown")
-    health_checked_at = Column(DateTime, nullable=True)
+    health_checked_at = Column(DateTime(timezone=True), nullable=True)
     # Slice 6a (doc 04 §3): per-model API key 的 enc::v1:: envelope(與 csk- /
     # ingestion 憑證同一套 credential_crypto)。NULL = 退回全域
     # MODEL_GATEWAY_API_KEY(MVP fallback)。永不隨 API 回傳明文,GET 只露
@@ -163,7 +163,7 @@ class ModelRegistry(Base):
     base_model_id = Column(Integer, ForeignKey("model_registry.id"), nullable=True)
     base_model = relationship("ModelRegistry", remote_side=[id], backref="derived_agents")
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,
         default=lambda: datetime.now(timezone.utc),
