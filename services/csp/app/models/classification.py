@@ -180,3 +180,39 @@ class ClassificationAuthorityAssignment(Base):
     )
     revoked_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class ClassificationSamplingReview(Base):
+    """W2-11 continuous sampling attestation for document classification.
+
+    One row per reviewer attestation. The companion audit event carries the
+    human-readable trail; this table is the durable, queryable ledger that
+    sampling reports can exclude already-reviewed documents from.
+    """
+
+    __tablename__ = "classification_sampling_reviews"
+    __table_args__ = (
+        Index("ix_classification_sampling_reviews_created_at", "created_at"),
+        Index("ix_classification_sampling_reviews_collection_id", "collection_id"),
+        Index("ix_classification_sampling_reviews_document_id", "document_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    document_id = Column(
+        Integer,
+        ForeignKey("ingestion_documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    collection_id = Column(
+        Integer,
+        ForeignKey("ingestion_collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    reviewer_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    document_level_at_review = Column(String(20), nullable=False)
+    attested_level = Column(String(20), nullable=False)
+    outcome = Column(String(32), nullable=False)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)

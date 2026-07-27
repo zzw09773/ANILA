@@ -3009,7 +3009,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         setTweaks={setTweaks}
       />
 
-      {/* W3-7c:與分享按鈕同一道部署旗標 gate —— 旗標關閉時對話框連掛都不掛。 */}
+      {/* W3-7c:與分享按鈕同一道部署旗標 gate —— 旗標關閉時對話方塊連掛都不掛。 */}
       <ShareDialog
         open={shareOpen && capabilities.enablePublicShare}
         onClose={() => setShareOpen(false)}

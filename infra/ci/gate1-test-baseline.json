@@ -823,6 +823,15 @@
       "reason": "W2-10:timestamptz 轉換與跨 session TZ 重讀只有真 PG 有意義。"
     },
     {
+      "path": "services/csp/tests/test_w211_classification_input_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_w211_classification_input_pg.py",
+      "reason": "W2-11:上傳上調 latch + ClassificationEvent + sampling CHECK 只有真 PG 有意義。"
+    },
+    {
       "path": "services/csp/tests/test_w26_startup_ddl_absorption_pg.py",
       "kind": "pytest.mark.skipif",
       "count": 1,

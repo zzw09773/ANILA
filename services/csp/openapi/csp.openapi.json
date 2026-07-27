@@ -4046,6 +4046,18 @@
       },
       "Body_upload_document_api_ingestion_collections__collection_id__documents_post": {
         "properties": {
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "W2-11:optional per-document classification. Defaults to the collection floor; upward-only. Declaring above the floor latches the whole collection via apply_classification.",
+            "title": "Classification Level"
+          },
           "file": {
             "contentMediaType": "application/octet-stream",
             "title": "File",
@@ -4072,6 +4084,18 @@
       },
       "Body_upload_zip_api_ingestion_collections__collection_id__documents_zip_post": {
         "properties": {
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "W2-11:optional per-archive classification applied to every member document. Defaults to the collection floor; upward-only. Declaring above the floor latches the whole collection via apply_classification.",
+            "title": "Classification Level"
+          },
           "file": {
             "contentMediaType": "application/octet-stream",
             "title": "File",
@@ -4944,6 +4968,17 @@
         "properties": {
           "chunking_config": {
             "$ref": "#/components/schemas/ChunkingConfig"
+          },
+          "classification_level": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClassificationLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "W2-11:知識庫建立時的密等宣告。預設無機密。若高於建立者 clearance → 403(輸入端密等上限)。"
           },
           "description": {
             "anyOf": [
@@ -11983,6 +12018,251 @@
         "title": "RuntimeType",
         "type": "string"
       },
+      "SamplingReportDocument": {
+        "description": "One row in GET /api/classification/sampling-report.",
+        "properties": {
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Level"
+          },
+          "classification_level_valid": {
+            "title": "Classification Level Valid",
+            "type": "boolean"
+          },
+          "collection_classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Classification Level"
+          },
+          "collection_id": {
+            "title": "Collection Id",
+            "type": "integer"
+          },
+          "collection_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Name"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "integer"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "uploader_user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploader User Id"
+          },
+          "uploader_username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploader Username"
+          }
+        },
+        "required": [
+          "document_id",
+          "classification_level_valid",
+          "collection_id"
+        ],
+        "title": "SamplingReportDocument",
+        "type": "object"
+      },
+      "SamplingReportResponse": {
+        "description": "GET /api/classification/sampling-report response.",
+        "properties": {
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/SamplingReportDocument"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "requested_n": {
+            "title": "Requested N",
+            "type": "integer"
+          },
+          "sample_size": {
+            "title": "Sample Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generated_at",
+          "sample_size",
+          "requested_n",
+          "documents"
+        ],
+        "title": "SamplingReportResponse",
+        "type": "object"
+      },
+      "SamplingReviewCreate": {
+        "description": "POST /api/classification/sampling-reviews 請求體。",
+        "properties": {
+          "attested_level": {
+            "$ref": "#/components/schemas/ClassificationLevel"
+          },
+          "document_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Document Id",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "outcome": {
+            "default": "confirmed",
+            "enum": [
+              "confirmed",
+              "mismatch",
+              "needs_followup"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "attested_level"
+        ],
+        "title": "SamplingReviewCreate",
+        "type": "object"
+      },
+      "SamplingReviewResponse": {
+        "description": "POST /api/classification/sampling-reviews response.",
+        "properties": {
+          "attested_level": {
+            "title": "Attested Level",
+            "type": "string"
+          },
+          "collection_id": {
+            "title": "Collection Id",
+            "type": "integer"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "integer"
+          },
+          "document_level_at_review": {
+            "title": "Document Level At Review",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "outcome": {
+            "enum": [
+              "confirmed",
+              "mismatch",
+              "needs_followup"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reviewer_user_id": {
+            "title": "Reviewer User Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "document_id",
+          "collection_id",
+          "document_level_at_review",
+          "attested_level",
+          "outcome",
+          "reviewer_user_id"
+        ],
+        "title": "SamplingReviewResponse",
+        "type": "object"
+      },
       "SearchHitOut": {
         "description": "Citation-ready hit. Strips the embedding (UI doesn't need 4000 floats).",
         "properties": {
@@ -18674,6 +18954,104 @@
           }
         ],
         "summary": "Get Classification Inventory",
+        "tags": [
+          "機敏分類盤點"
+        ]
+      }
+    },
+    "/api/classification/sampling-report": {
+      "get": {
+        "description": "W2-11 continuous sampling report for authorized reviewers.\n\nReturns a random sample of up to ``n`` documents the caller can see,\nwith title + current level + uploader + collection. Double-gated:\n``require_admin`` **and** collection visibility.",
+        "operationId": "get_classification_sampling_report_api_classification_sampling_report_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "n",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "N",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SamplingReportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Classification Sampling Report",
+        "tags": [
+          "機敏分類盤點"
+        ]
+      }
+    },
+    "/api/classification/sampling-reviews": {
+      "post": {
+        "description": "Attest one sampled document; writes ledger row + audit event.\n\nDouble gate: admin **and** collection visibility for the document.",
+        "operationId": "create_classification_sampling_review_api_classification_sampling_reviews_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SamplingReviewCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SamplingReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Classification Sampling Review",
         "tags": [
           "機敏分類盤點"
         ]

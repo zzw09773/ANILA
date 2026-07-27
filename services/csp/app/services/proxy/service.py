@@ -480,10 +480,10 @@ def _lock_registry_admission(
     except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail="模型治理登錄無法鎖定，已拒絕出向呼叫",
+            detail="模型治理紀錄無法鎖定，已拒絕出向呼叫",
         ) from exc
     if not active:
-        raise HTTPException(status_code=403, detail="推論目標已停用或治理登錄不存在")
+        raise HTTPException(status_code=403, detail="推論目標已停用或治理紀錄不存在")
     if locked.endpoint_url != registry_endpoint_url:
         raise HTTPException(
             status_code=409,

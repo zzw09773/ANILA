@@ -23,6 +23,7 @@ import os
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
@@ -49,6 +50,8 @@ from app.modules.clearance.service import (
     ClearancePolicyDataError,
     resolve_and_evaluate_data_access,
 )
+from app.modules.policy import apply_classification
+from app.schemas.contracts.policy import PolicyActorType
 from app.database import get_db
 from app.config import settings
 from app.models.ingestion import (
@@ -281,6 +284,72 @@ def _locked_collection_classification(db: Session, collection_id: int) -> str:
         ) from exc
 
 
+def _resolve_document_upload_classification(
+    db: Session,
+    *,
+    collection_id: int,
+    declared_raw: str | None,
+    actor: User,
+) -> tuple[str, str]:
+    """W2-11 per-document classification declaration (upward-only).
+
+    Returns ``(effective_level, classification_source)``.
+
+    - Omitted / blank → inherit the locked collection floor.
+    - Below the collection floor → 400 (must not lower via upload).
+    - Above the collection floor → latch the collection via the existing
+      ``apply_classification`` path (writes ClassificationEvent); upload
+      is accepted, never rejected for an upward declaration.
+    - Unknown literal → 422 fail-closed.
+    """
+    floor_storage = _locked_collection_classification(db, collection_id)
+    floor = Classification.from_storage(floor_storage)
+
+    if (
+        declared_raw is None
+        or not isinstance(declared_raw, str)
+        or not declared_raw.strip()
+    ):
+        return floor_storage, "collection_inherited"
+
+    try:
+        declared = Classification.from_storage(str(declared_raw).strip())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "classification_level 必須是五級之一："
+                "無機密 / 營業秘密 / 機密 / 極機密 / 絕對機密"
+            ),
+        ) from exc
+
+    if declared.rank < floor.rank:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"文件密等「{declared.to_storage()}」低於知識庫下限"
+                f"「{floor.to_storage()}」(僅允許上調，不可下調)"
+            ),
+        )
+
+    if declared.rank > floor.rank:
+        # Reuse the platform one-way latch — never invent a parallel path.
+        apply_classification(
+            db,
+            resource_type="collection",
+            resource_id=str(collection_id),
+            new_level=declared.to_storage(),
+            actor_type=PolicyActorType.USER.value,
+            actor_id=str(actor.id),
+            reason="manual_admin",
+            source="uploader_declared",
+            commit=False,
+        )
+        return declared.to_storage(), "uploader_declared"
+
+    return floor_storage, "collection_inherited"
+
+
 def _persist_blob(content: bytes, sha256: str) -> str:
     """Write the upload to disk under a content-addressable path.
 
@@ -407,13 +476,25 @@ def _stage_zip_member(
 async def upload_document(
     collection_id: int,
     file: UploadFile = File(...),
-    title: str | None = Form(
-        default=None,
-        description=(
-            "Optional canonical regulation/document name used to resolve "
-            "cross-document citation targets. Falls back to the filename stem."
+    title: Annotated[
+        str | None,
+        Form(
+            description=(
+                "Optional canonical regulation/document name used to resolve "
+                "cross-document citation targets. Falls back to the filename stem."
+            ),
         ),
-    ),
+    ] = None,
+    classification_level: Annotated[
+        str | None,
+        Form(
+            description=(
+                "W2-11:optional per-document classification. Defaults to the "
+                "collection floor; upward-only. Declaring above the floor latches "
+                "the whole collection via apply_classification."
+            ),
+        ),
+    ] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
@@ -449,7 +530,14 @@ async def upload_document(
     storage_path = _persist_blob(content, sha256)
 
     doc_title, doc_norm_title = _derive_title(file.filename or "", title)
-    classification_level = _locked_collection_classification(db, collection_id)
+    classification_level_value, classification_source = (
+        _resolve_document_upload_classification(
+            db,
+            collection_id=collection_id,
+            declared_raw=classification_level,
+            actor=current_user,
+        )
+    )
     classified_at = datetime.now(timezone.utc)
 
     # Insert the document row. Uniqueness on (collection_id, sha256) gives
@@ -467,9 +555,9 @@ async def upload_document(
         status="pending",
         chunk_count=0,
         uploaded_by=current_user.id,
-        classification_level=classification_level,
+        classification_level=classification_level_value,
         classification_latched_at=classified_at,
-        classification_source="collection_inherited",
+        classification_source=classification_source,
         archive_due_at=datetime.now(timezone.utc) + timedelta(
             days=settings.RETENTION_INGESTION_ACTIVE_DAYS
         ),
@@ -512,6 +600,8 @@ async def upload_document(
             "filename": doc.filename,
             "size": size,
             "arq_job_id": job.arq_job_id,
+            "classification_level": classification_level_value,
+            "classification_source": classification_source,
         },
     )
     return DocumentResponse.model_validate(doc)
@@ -658,6 +748,17 @@ async def upload_zip(
     collection_id: int,
     file: UploadFile = File(...),
     preserve_folder_structure: bool = False,
+    classification_level: Annotated[
+        str | None,
+        Form(
+            description=(
+                "W2-11:optional per-archive classification applied to every "
+                "member document. Defaults to the collection floor; upward-only. "
+                "Declaring above the floor latches the whole collection via "
+                "apply_classification."
+            ),
+        ),
+    ] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ZipUploadResponse:
@@ -710,6 +811,22 @@ async def upload_zip(
             status_code=413,
             detail=f"{len(members)} files in archive; limit is 200 per zip",
         )
+
+    # Resolve after archive validation so a bad zip cannot latch the floor,
+    # and a below-floor declaration 400s before any member documents exist.
+    classification_level_value, classification_source = (
+        _resolve_document_upload_classification(
+            db,
+            collection_id=collection_id,
+            declared_raw=classification_level,
+            actor=current_user,
+        )
+    )
+    classified_at = datetime.now(timezone.utc)
+    # Persist an upward latch before per-member commit/rollback cycles can
+    # undo ClassificationEvent rows written with commit=False.
+    if classification_source == "uploader_declared":
+        db.commit()
 
     results: list[ZipUploadResult] = []
     enqueued = duplicates = skipped = errors = 0
@@ -808,7 +925,6 @@ async def upload_zip(
             continue
 
         member_title, member_norm_title = _derive_title(staged.result_filename)
-        classification_level = _locked_collection_classification(db, collection_id)
         doc = IngestionDocument(
             collection_id=collection_id,
             filename=staged.result_filename,
@@ -821,9 +937,9 @@ async def upload_zip(
             status="pending",
             chunk_count=0,
             uploaded_by=current_user.id,
-            classification_level=classification_level,
-            classification_latched_at=datetime.now(timezone.utc),
-            classification_source="collection_inherited",
+            classification_level=classification_level_value,
+            classification_latched_at=classified_at,
+            classification_source=classification_source,
             archive_due_at=datetime.now(timezone.utc) + timedelta(
                 days=settings.RETENTION_INGESTION_ACTIVE_DAYS
             ),
@@ -863,6 +979,8 @@ async def upload_zip(
             "files_in_archive": len(members),
             "enqueued": enqueued, "duplicates": duplicates,
             "skipped": skipped, "errors": errors,
+            "classification_level": classification_level_value,
+            "classification_source": classification_source,
         },
     )
     return ZipUploadResponse(

@@ -27,6 +27,7 @@ from app.models.card_login_challenge import CardLoginChallenge
 from app.models.classification import (
     ClassificationAuthorityAssignment,
     ClassificationEvent,
+    ClassificationSamplingReview,
     DeclassificationRequest,
 )
 from app.models.clearance import (
@@ -104,6 +105,7 @@ __all__ = [
     "Citation",
     "ClassificationAuthorityAssignment",
     "ClassificationEvent",
+    "ClassificationSamplingReview",
     "ClearanceGrant",
     "ClearanceGrantCompartment",
     "CollectionAccessGrant",

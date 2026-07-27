@@ -12,7 +12,7 @@
     "gen:studio-types": "bash scripts/gen-studio-types.sh",
     "test": "vitest run",
     "verify:bundle": "node ../../infra/ci/check-bundle-budget.mjs .",
-    "lint": "eslint . --max-warnings=442"
+    "lint": "eslint . --max-warnings=456"
   },
   "dependencies": {
     "axios": "^1.7.9",

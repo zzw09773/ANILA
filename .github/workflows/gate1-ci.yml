@@ -411,7 +411,8 @@ jobs:
           for f in \
             tests/test_for_update_staleness_pg.py \
             tests/test_w210_governance_timestamptz_pg.py \
-            tests/test_audit_logs_detail_trgm_pg.py ; do
+            tests/test_audit_logs_detail_trgm_pg.py \
+            tests/test_w211_classification_input_pg.py ; do
             echo "── $f"
             out=$(python -m pytest "$f" -q 2>&1) || { echo "$out"; exit 1; }
             echo "$out" | tail -1

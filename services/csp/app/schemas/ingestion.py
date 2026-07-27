@@ -80,6 +80,13 @@ class CollectionCreate(BaseModel):
             "0015. NV-embed-V2 native is 4096-d; the worker truncates to 4000."
         ),
     )
+    classification_level: ClassificationLevel | None = Field(
+        default=None,
+        description=(
+            "W2-11:知識庫建立時的密等宣告。預設無機密。"
+            "若高於建立者 clearance → 403(輸入端密等上限)。"
+        ),
+    )
 
 
 class CollectionUpdate(BaseModel):

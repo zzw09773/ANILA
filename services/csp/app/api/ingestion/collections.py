@@ -38,6 +38,7 @@ from app.schemas.ingestion import (
 )
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
+from app.modules.clearance.service import resolve_effective_classification_clearance
 from app.modules.policy import apply_classification
 from anila_contracts import Classification as ClassificationLevel
 from app.schemas.contracts.policy import PolicyActorType
@@ -127,6 +128,21 @@ def create_collection(
             status_code=status.HTTP_409_CONFLICT,
             detail="Requested embedding fingerprint does not match deployment.",
         )
+    # W2-11:建立知識庫的密等不得超過建立者 clearance(輸入端上限)。
+    # 無有效 clearance grant 時只能建「無機密」(fail-closed)。
+    declared = payload.classification_level or ClassificationLevel.UNCLASSIFIED
+    ceiling = resolve_effective_classification_clearance(
+        db, user_id=current_user.id
+    )
+    max_allowed = ceiling or ClassificationLevel.UNCLASSIFIED
+    if declared.rank > max_allowed.rank:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"知識庫密等「{declared.to_storage()}」超過建立者 clearance"
+                f"（上限「{max_allowed.to_storage()}」）"
+            ),
+        )
     coll = IngestionCollection(
         name=payload.name,
         description=payload.description,
@@ -139,6 +155,7 @@ def create_collection(
         chunk_count=0,
         bytes_stored=0,
         created_by=current_user.id,
+        classification_level=declared.to_storage(),
     )
     db.add(coll)
     try:
@@ -161,7 +178,11 @@ def create_collection(
         action="ingestion_collection_create",
         resource_type="ingestion_collection",
         resource_id=coll.id,
-        metadata={"name": payload.name, "created_by": current_user.id},
+        metadata={
+            "name": payload.name,
+            "created_by": current_user.id,
+            "classification_level": declared.to_storage(),
+        },
     )
     return CollectionResponse.model_validate(coll)
 

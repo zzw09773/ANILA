@@ -45,11 +45,11 @@
         "**/*.test.js",
         "**/*.test.jsx"
       ],
-      "max_count": 24,
+      "max_count": 29,
       "owner": "前端負責人",
       "exit_condition": "同 classified-boolean-backend;前端一律改讀 classification_level",
       "deadline": "Wave 1 結束",
-      "notes": "與後端同一對,分開計數是因為 owner 與清理節奏不同。個別對之後可加 ESLint no-restricted-syntax。"
+      "notes": "與後端同一對,分開計數是因為 owner 與清理節奏不同。個別對之後可加 ESLint no-restricted-syntax。 ⚠ 2026-07-27 上限 24 → 29:PR #50(feat/ux-parity)合入時帶進 8 處新引用(命令面板/斜線指令/封存視圖各自判 c.classified),同一輪的比較模式修復又補 2 處(ParallelCompareView 原本完全沒傳密等姿態,補傳時 classified 與 classificationLevel 兩者都傳 —— 新增的是既有元件簽章要求的 prop,不是新的判定來源)。淨額 +5。退場條件不變:前端一律改讀 classification_level;runtime/classified.js 的 7 處是鏡射 legacy 欄的單一來源,會最後才清。"
     },
     {
       "id": "platform-links-vs-registered-service",

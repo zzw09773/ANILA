@@ -31,6 +31,72 @@
       <div v-if="uploadError" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ uploadError }}</div>
     </TermBox>
 
+    <!-- W2-11:上傳密等確認閘(顯式自我宣告 + 上調二次確認) -->
+    <TermModal
+      :visible="!!pendingUpload"
+      title="確認文件密等"
+      width="560px"
+      @close="cancelPendingUpload"
+    >
+      <div v-if="pendingUpload" class="classify-confirm">
+        <p class="classify-confirm__lead">
+          本文件密等 =
+          <strong>{{ uploadClassificationDraft }}</strong>
+          <span v-if="uploadClassificationDraft === collectionFloor">
+            （繼承自知識庫）
+          </span>
+          <span v-else>
+            （由知識庫「{{ collectionFloor }}」上調）
+          </span>
+        </p>
+        <p class="classify-confirm__warn">
+          誤標低密會讓不該看到的人讀到內容。若實際密等更高，請在此上調；
+          不可下調。
+        </p>
+        <TermField label="文件密等" hint="僅可上調；預設繼承知識庫現行密等。">
+          <select
+            id="upload-classification-level"
+            v-model="uploadClassificationDraft"
+            class="term-select"
+            aria-label="文件密等"
+          >
+            <option
+              v-for="lvl in uploadAllowedLevels"
+              :key="lvl"
+              :value="lvl"
+            >{{ lvl }}</option>
+          </select>
+        </TermField>
+        <div v-if="uploadWouldLatch" class="feedback is-err">
+          ⚠ 上調會把整個知識庫不可逆地閂鎖為「{{ uploadClassificationDraft }}」。
+          降回只能走雙人降密申請
+          （POST /api/classification/declassification-requests）。
+          請再次確認後才上傳。
+        </div>
+        <label
+          v-if="uploadWouldLatch"
+          class="upload__toggle"
+          for="upload-latch-ack"
+        >
+          <input
+            id="upload-latch-ack"
+            type="checkbox"
+            v-model="uploadLatchAck"
+          />
+          <span>我了解這會升級整個知識庫且無法自行降回</span>
+        </label>
+      </div>
+      <template #footer>
+        <TermButton variant="ghost" label="取消" @click="cancelPendingUpload" />
+        <TermButton
+          variant="primary"
+          :disabled="!canConfirmUpload"
+          :label="confirmUploadLabel"
+          @click="confirmPendingUpload"
+        />
+      </template>
+    </TermModal>
+
     <!-- Zip result modal --------------------------------------------- -->
     <TermModal :visible="!!zipResult" title="zip · 結果" width="640px" @close="zipResult = null">
       <dl v-if="zipResult" class="zip-grid">
@@ -253,6 +319,7 @@ import { listRelations, createRelation, deleteRelation, reresolveRelations } fro
 import { streamJob } from '../api/ingestionJobs'
 import { TermBox, TermButton, TermBadge, TermEmpty, TermModal, TermField } from '../components/cli'
 import RelationGraph from '../components/RelationGraph.vue'
+import { expandUploadJobs, partitionDroppedFiles } from '../utils/uploadDropQueue'
 
 const route = useRoute()
 const authStore = useAuthStore()
@@ -300,6 +367,51 @@ const uploadError = ref('')
 const reprocessingId = ref(null)
 const preserveFolderStructure = ref(false)
 const zipResult = ref(null)
+
+// W2-11 upload classification confirmation gate
+// pendingUpload = { plain: File[], zips: File[] }
+const pendingUpload = ref(null)
+const uploadClassificationDraft = ref('無機密')
+const uploadLatchAck = ref(false)
+
+const collectionFloor = computed(
+  () => collection.value?.classification_level || '無機密',
+)
+const uploadAllowedLevels = computed(() => {
+  const floorRank = classificationRank(collectionFloor.value)
+  return CLASSIFICATION_LEVELS.filter((_, i) => i >= floorRank)
+})
+const uploadWouldLatch = computed(
+  () =>
+    classificationRank(uploadClassificationDraft.value)
+    > classificationRank(collectionFloor.value),
+)
+const canConfirmUpload = computed(() => {
+  if (!pendingUpload.value) return false
+  if (uploadWouldLatch.value && !uploadLatchAck.value) return false
+  return true
+})
+const confirmUploadLabel = computed(() => {
+  const pending = pendingUpload.value
+  if (!pending) return '確認並上傳'
+  const nPlain = pending.plain?.length || 0
+  const nZip = pending.zips?.length || 0
+  if (nZip && !nPlain) return nZip > 1 ? `確認並上傳 ${nZip} 個 zip` : '確認並上傳 zip'
+  if (nPlain && nZip) return `確認並上傳（${nPlain} 檔 + ${nZip} zip）`
+  return '確認並上傳'
+})
+
+function openUploadConfirm({ plain = [], zips = [] } = {}) {
+  if (!plain.length && !zips.length) return
+  pendingUpload.value = { plain, zips }
+  uploadClassificationDraft.value = collectionFloor.value
+  uploadLatchAck.value = false
+  uploadError.value = ''
+}
+function cancelPendingUpload() {
+  pendingUpload.value = null
+  uploadLatchAck.value = false
+}
 
 const showVectorDebug = ref(false)
 const vecDebug = ref({})
@@ -428,33 +540,64 @@ async function loadChunks(docId) {
   } finally { loadingChunks.value = false }
 }
 
-async function onFilePicked(e) { const fs = [...(e.target.files || [])]; if (fs.length) await doUploadMany(fs); e.target.value = '' }
-async function onZipPicked(e) { const f = e.target.files?.[0]; if (f) await doZipUpload(f); e.target.value = '' }
+async function onFilePicked(e) {
+  const fs = [...(e.target.files || [])]
+  e.target.value = ''
+  if (fs.length) openUploadConfirm({ plain: fs, zips: [] })
+}
+async function onZipPicked(e) {
+  const f = e.target.files?.[0]
+  e.target.value = ''
+  if (f) openUploadConfirm({ plain: [], zips: [f] })
+}
 async function onDrop(e) {
-  const fs = [...(e.dataTransfer?.files || [])]; if (!fs.length) return
-  const zips = fs.filter(f => f.name.toLowerCase().endsWith('.zip'))
-  const plain = fs.filter(f => !f.name.toLowerCase().endsWith('.zip'))
-  if (plain.length) await doUploadMany(plain)
-  for (const z of zips) await doZipUpload(z)
+  const { plain, zips } = partitionDroppedFiles(e.dataTransfer?.files)
+  openUploadConfirm({ plain, zips })
+}
+async function confirmPendingUpload() {
+  if (!canConfirmUpload.value || !pendingUpload.value) return
+  const { plain, zips } = pendingUpload.value
+  const level = uploadClassificationDraft.value
+  pendingUpload.value = null
+  const jobs = expandUploadJobs({ plain, zips })
+  const fileJobs = jobs.filter((j) => j.type === 'file').map((j) => j.file)
+  const zipJobs = jobs.filter((j) => j.type === 'zip').map((j) => j.file)
+  if (fileJobs.length) await doUploadMany(fileJobs, level)
+  for (const zip of zipJobs) await doZipUpload(zip, level)
 }
 // 免壓縮多檔上傳:逐檔序列上傳(避免一次塞爆、進度可讀),收集各檔錯誤,最後整批刷新一次。
-async function doUploadMany(files) {
+async function doUploadMany(files, classificationLevel) {
   uploading.value = true; uploadError.value = ''
   const errs = []
   try {
     for (const file of files) {
       progress.value = 0
-      try { await uploadDocument(collectionId.value, file, p => { progress.value = p }) }
+      try {
+        await uploadDocument(
+          collectionId.value,
+          file,
+          p => { progress.value = p },
+          { classificationLevel },
+        )
+      }
       catch (e) { errs.push(`${file.name}: ${extractError(e)}`) }
     }
     if (errs.length) uploadError.value = errs.join('\n')
-    await loadDocs()
+    await loadAll()
   } finally { uploading.value = false; progress.value = 0 }
 }
-async function doZipUpload(file) {
+async function doZipUpload(file, classificationLevel) {
   uploading.value = true; progress.value = 0; uploadError.value = ''; zipResult.value = null
   try {
-    const { data } = await uploadZip(collectionId.value, file, { preserveFolderStructure: preserveFolderStructure.value }, p => { progress.value = p })
+    const { data } = await uploadZip(
+      collectionId.value,
+      file,
+      {
+        preserveFolderStructure: preserveFolderStructure.value,
+        classificationLevel,
+      },
+      p => { progress.value = p },
+    )
     zipResult.value = data
     await loadDocs()
   } catch (e) { uploadError.value = extractError(e) }
@@ -571,6 +714,10 @@ function zipBadgeVariant(s) {
 }
 .upload__toggle, .filters__toggle { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-sm); color: var(--c-fg-2); cursor: pointer; }
 .upload__toggle input, .filters__toggle input { accent-color: var(--c-accent); }
+
+.classify-confirm { display: flex; flex-direction: column; gap: var(--gap-3); }
+.classify-confirm__lead { font-size: var(--t-sm); color: var(--c-fg-1); margin: 0; }
+.classify-confirm__warn { font-size: var(--t-xs); color: var(--c-fg-2); margin: 0; }
 
 /* Zip result */
 .zip-grid {

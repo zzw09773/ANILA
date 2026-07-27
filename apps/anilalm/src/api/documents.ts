@@ -25,9 +25,16 @@ export const uploadDocument = (
   collectionId: number,
   file: File,
   onProgress?: (fraction: number) => void,
+  opts?: { classificationLevel?: string; title?: string },
 ) => {
   const form = new FormData()
   form.append('file', file)
+  if (opts?.classificationLevel) {
+    form.append('classification_level', opts.classificationLevel)
+  }
+  if (opts?.title) {
+    form.append('title', opts.title)
+  }
   return client.post<IngestionDocument>(
     `/api/ingestion/collections/${collectionId}/documents`,
     form,
