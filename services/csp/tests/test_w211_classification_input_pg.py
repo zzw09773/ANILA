@@ -419,17 +419,28 @@ def test_sampling_review_check_rejects_unknown_level(pg_url):
         engine.dispose()
 
 
-def test_alembic_head_is_r1_0042_single(pg_url):
+def test_alembic_chain_is_single_headed_and_includes_r1_0042(pg_url):
+    """單一 head,且 r1_0042 在鏈上。
+
+    先前這裡斷言 ``heads == ["r1_0042"]`` —— 那會讓**每一支新增的 migration**
+    都把這支測試打紅,而紅的原因跟它想守的東西(本包的表有沒有建起來)無關。
+    真正要守的兩件事是:鏈沒有分岔(雙 head 會讓 ``upgrade head`` 直接爆),
+    以及本包的 revision 確實在鏈上。head 是誰不是本包的事。
+    """
     from alembic.script import ScriptDirectory
 
     cfg = _alembic_config(pg_url)
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["r1_0042"]
+    assert len(heads) == 1, f"alembic 鏈分岔了:{heads}"
+
+    chain = {rev.revision for rev in script.walk_revisions("base", heads[0])}
+    assert "r1_0042" in chain, "r1_0042 不在鏈上"
+
     engine = create_engine(pg_url)
     with engine.connect() as conn:
         current = conn.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert current == "r1_0042"
     engine.dispose()
+    assert current == heads[0], "資料庫的版本指標不是 head"

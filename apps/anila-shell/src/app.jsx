@@ -51,6 +51,11 @@ import {
   buildRetryRequest,
   createTurnPersistence,
 } from "./runtime/streamPersistence.js";
+// W2-3:建立訊息的呼叫端必須宣告父節點 —— 規則與理由見 runtime/messageParent.js。
+import {
+  IMPLICIT_ACTIVE_LEAF,
+  ORPHAN_ASSISTANT_MESSAGE,
+} from "./runtime/messageParent.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { relativeLabel } from "./runtime/time.js";
 // 對話 origin scope + 「開啟前必須先 hydrate 完整 conversation」的判準。
@@ -77,6 +82,8 @@ import {
   rateMessage as apiRateMessage,
   editUserMessage as apiEditUserMessage,
   updateMessage as apiUpdateMessage,
+  forkAssistantMessage as apiForkAssistantMessage,
+  setActiveLeaf as apiSetActiveLeaf,
   classifyConversation as apiClassifyConversation,
   recordConversationExport as apiRecordConversationExport,
   createShare as apiCreateShare,
@@ -91,6 +98,14 @@ import {
   searchConversations,
   listActiveBanners as apiListActiveBanners,
 } from "./runtime/conversations.js";
+import {
+  buildMessageHistory as buildMessageHistoryCore,
+  buildEditRerunMessages,
+} from "./runtime/messageHistory.js";
+import {
+  applyRevisionSwitch,
+  hydrateMessagesFromTreeDetail,
+} from "./runtime/messageTree.js";
 
 import {
   AgentSelector,
@@ -206,17 +221,12 @@ function buildStarterPrompts(agents) {
 // into the OpenAI message history so the model remembers what was said —
 // and, critically, so images from earlier turns stay visible.
 function buildMessageHistory(priorMsgs, currentText, currentAttachments) {
-  const out = [];
-  for (const m of priorMsgs || []) {
-    if (!m || m.streaming) continue;
-    if (m.role === "user") {
-      out.push({ role: "user", content: buildUserContent(m.text || "", m.attachments || []) });
-    } else if (m.role === "assistant" && m.text) {
-      out.push({ role: "assistant", content: m.text });
-    }
-  }
-  out.push({ role: "user", content: buildUserContent(currentText, currentAttachments) });
-  return out;
+  return buildMessageHistoryCore(
+    priorMsgs,
+    currentText,
+    currentAttachments,
+    buildUserContent,
+  );
 }
 
 function makeId(prefix) {
@@ -998,6 +1008,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     return {
       id: `srv-${msg.id}`,
       dbId: msg.id,
+      parentId: msg.parent_id ?? null,
       role: msg.role,
       text: msg.content || "",
       trace: meta.trace || [],
@@ -1021,6 +1032,16 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       conversationId: null, // patched by caller
       createdAt: msg.created_at,
     };
+  }
+
+  function hydrateDetailMessages(detail, convId) {
+    if (detail && Array.isArray(detail.messages) && ("active_leaf_message_id" in detail || detail.messages.some((m) => "parent_id" in m))) {
+      return hydrateMessagesFromTreeDetail(detail, mapServerMessage, convId);
+    }
+    return (detail?.messages || []).map((m) => ({
+      ...mapServerMessage(m),
+      conversationId: convId,
+    }));
   }
 
   // Fetch the user's conversations on login and whenever JWT changes. Messages
@@ -1098,12 +1119,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     let active = true;
     (async () => {
       try {
-        const detail = await apiGetConversation(authRequest, selectedConvId);
+        const detail = await apiGetConversation(authRequest, selectedConvId, { tree: true });
         if (!active) return;
-        const msgs = (detail.messages || []).map((m) => ({
-          ...mapServerMessage(m),
-          conversationId: selectedConvId,
-        }));
+        const msgs = hydrateDetailMessages(detail, selectedConvId);
         setMessagesByConv((prev) => ({ ...prev, [selectedConvId]: msgs }));
       } catch (error) {
         if (active) {
@@ -1139,7 +1157,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const result = await resolveConversationOpen({
       convId,
       localConversations: conversations,
-      fetchDetail: (id) => apiGetConversation(authRequest, id),
+      fetchDetail: (id) => apiGetConversation(authRequest, id, { tree: true }),
     });
     setOpeningConvId((cur) => (cur === convId ? null : cur));
     if (result.status === "denied") {
@@ -1163,10 +1181,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const lookupRequiresEncryption = (id) =>
       Boolean(agents.find((a) => a.id === id)?.requiresEncryption);
     const conv = mapServerConversation(detail, lookupName, lookupRequiresEncryption);
-    const msgs = (detail.messages || []).map((m) => ({
-      ...mapServerMessage(m),
-      conversationId: convId,
-    }));
+    const msgs = hydrateDetailMessages(detail, convId);
     setConversations((prev) => (prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]));
     setMessagesByConv((prev) => ({ ...prev, [convId]: msgs }));
     setSelectedConvId(convId);
@@ -1217,7 +1232,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       const result = await resolveConversationOpen({
         convId: targetId,
         localConversations: [],
-        fetchDetail: (id) => apiGetConversation(authRequest, id),
+        fetchDetail: (id) => apiGetConversation(authRequest, id, { tree: true }),
       });
       if (!active) return;
       if (result.status !== "ready" || !result.detail) {
@@ -1235,10 +1250,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         (id) => agents.find((a) => a.id === id)?.name || null,
         (id) => Boolean(agents.find((a) => a.id === id)?.requiresEncryption),
       );
-      const msgs = (detail.messages || []).map((m) => ({
-        ...mapServerMessage(m),
-        conversationId: targetId,
-      }));
+      const msgs = hydrateDetailMessages(detail, targetId);
       // conversation 先進清單、訊息後進 —— 與 openConversation 同序,
       // 不製造「有 id、沒 classification」的 render frame。
       setConversations((prev) =>
@@ -1469,8 +1481,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     // /v1/sessions/* 的 resume 流維持直連 router(cookie 認證,非 formal chat)。
     const baseUrl = config.cspBaseUrl;
 
-    // Local: truncate after the edited user message and rewrite its text;
-    // create a fresh assistant placeholder so the stream fills in below.
+    // W2-3: edit grows a sibling user node; keep the old revision in the
+    // sibling set and jump the active path to the new leaf + streaming reply.
     const assistantId = makeId("a");
     const assistantMsg = {
       id: assistantId,
@@ -1485,29 +1497,72 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       createdAt: nowIso(),
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
     };
+    const editedLocal = {
+      ...existing[idx],
+      id: makeId("u"),
+      text: trimmed,
+      dbId: undefined,
+      parentId: userMsg.parentId ?? null,
+    };
+    // Seed user-side revisions from the sibling set (old + new).
+    const priorUserRevs = Array.isArray(userMsg.revisions) && userMsg.revisions.length > 0
+      ? userMsg.revisions
+      : [{
+          text: userMsg.text,
+          dbId: userMsg.dbId,
+          timestamp: userMsg.timestamp,
+          parentId: userMsg.parentId ?? null,
+          tail: existing.slice(idx + 1),
+        }];
+    const nextUserRevs = [
+      ...priorUserRevs.map((r, i) =>
+        i === (userMsg.activeRev ?? priorUserRevs.length - 1)
+          ? { ...r, tail: existing.slice(idx + 1) }
+          : r,
+      ),
+      { text: trimmed, dbId: null, timestamp: editedLocal.timestamp, parentId: editedLocal.parentId, tail: [] },
+    ];
+    editedLocal.revisions = nextUserRevs;
+    editedLocal.activeRev = nextUserRevs.length - 1;
+
     setMessagesByConv((prev) => ({
       ...prev,
       [convId]: [
         ...existing.slice(0, idx),
-        { ...existing[idx], text: trimmed },
+        editedLocal,
         assistantMsg,
       ],
     }));
 
-    // Backend: persist the edit + server-side truncate so a future reload
-    // matches the local state.
+    // Backend: grow sibling; returns the new user message id. That id is also
+    // the ONLY honest parent for the assistant this turn is about to stream —
+    // keep it in a local so the persist below can name it instead of letting
+    // the server fall back to whatever the active leaf currently is.
+    let editedUserDbId = null;
     if (typeof convId === "number" && typeof userMsg.dbId === "number") {
       try {
-        await apiEditUserMessage(authRequest, convId, userMsg.dbId, trimmed);
+        const saved = await apiEditUserMessage(authRequest, convId, userMsg.dbId, trimmed);
+        if (saved && typeof saved.id === "number") {
+          editedUserDbId = saved.id;
+          editedLocal.dbId = saved.id;
+          updateMsg(convId, editedLocal.id, { dbId: saved.id });
+          updateMsg(convId, assistantId, { parentId: saved.id });
+        }
       } catch (err) {
         setRuntimeError(err.message || "訊息編輯儲存失敗");
       }
     }
 
-    // Re-run the chat turn with the new user text.
+    // Re-run with the FULL active-path history (W2-3 A3), not a single sentence.
     const payload = {
       model: effectiveTarget,
-      messages: [{ role: "user", content: trimmed }],
+      messages: buildEditRerunMessages(
+        existing,
+        idx,
+        trimmed,
+        userMsg.attachments || [],
+        buildUserContent,
+      ),
     };
     let finalText = "";
     let finalMeta = null;
@@ -1571,20 +1626,30 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           trace: accumulatedTrace,
           reasoning: accumulatedReasoning,
         });
-        try {
-          const saved = await apiAppendMessage(authRequest, convId, {
-            role: "assistant",
-            content: finalText,
-            traceId: finalMeta?.trace_id,
-            latencyMs: finalMeta?.latency_ms,
-            agentName: agentNameForPersist,
-            metadata: persistMeta,
-          });
-          if (saved && typeof saved.id === "number") {
-            updateMsg(convId, assistantId, { dbId: saved.id });
+        if (typeof editedUserDbId !== "number") {
+          // 編輯出來的 user 兄弟節點沒有落地(呼叫失敗,或原訊息本來就沒存過)
+          // → 這則回應沒有誠實的父節點。**不寫**:掛到 active leaf 會讓它變成
+          // 上一則回覆的子節點,樹的層級從此是錯的,而且後續動作只會沿著錯的
+          // 位置繼續長。把失敗攤出來,讓使用者重跑這一輪。
+          setRuntimeError(ORPHAN_ASSISTANT_MESSAGE);
+        } else {
+          try {
+            const saved = await apiAppendMessage(authRequest, convId, {
+              role: "assistant",
+              content: finalText,
+              // 顯式父節點 = 剛長出來的 user 兄弟節點。
+              parentId: editedUserDbId,
+              traceId: finalMeta?.trace_id,
+              latencyMs: finalMeta?.latency_ms,
+              agentName: agentNameForPersist,
+              metadata: persistMeta,
+            });
+            if (saved && typeof saved.id === "number") {
+              updateMsg(convId, assistantId, { dbId: saved.id });
+            }
+          } catch (persistError) {
+            setRuntimeError(persistError.message || "對話訊息儲存失敗");
           }
-        } catch (persistError) {
-          setRuntimeError(persistError.message || "對話訊息儲存失敗");
         }
       }
     } catch (error) {
@@ -1775,8 +1840,19 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       enabled: typeof convId === "number",
       appendMessage: (body) => apiAppendMessage(authRequest, convId, body),
       updateMessage: (dbId, patch) => apiUpdateMessage(authRequest, convId, dbId, patch),
+      // message-parent: implicit-active-leaf — **這是唯一合法的隱式用法**。
+      // 這裡建立的是一則全新的使用者提問,它本來就要接在使用者眼前那條分支的
+      // 尾端,而 active leaf 的定義正是那個節點。其他每一條建立訊息的路徑(重
+      // 試/重生/編輯後重跑)講的都是「兄弟」,active leaf 可能早被搬走,一律
+      // 必須指名父節點 —— 見 runtime/messageParent.js。
+      userParentId: IMPLICIT_ACTIVE_LEAF,
       assistantFields: { agentName: agentNameForPersist },
-      onUserSaved: (dbId) => updateMsg(convId, userMsg.id, { dbId }),
+      onUserSaved: (dbId) => {
+        updateMsg(convId, userMsg.id, { dbId });
+        // 本輪的 assistant 掛在這則 user 訊息下。記到列上,之後的重試/重生才
+        // 有辦法指名同一個父節點,而不是回頭去問伺服器的 active leaf。
+        updateMsg(convId, assistantId, { parentId: dbId });
+      },
       onAssistantSaved: (dbId) => updateMsg(convId, assistantId, { dbId }),
       onError: (message) => setRuntimeError(message),
     });
@@ -1887,6 +1963,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const persist = createTurnPersistence({
       enabled: typeof convId === "number",
       assistantDbId: typeof assistantMsg.dbId === "number" ? assistantMsg.dbId : null,
+      // 這一輪不建 user 訊息(重送的是同一則),所以 assistant 的位置得自己
+      // 指名。**必須是失敗那個版本的父節點**:重試要長成它的兄弟,不是子節點。
+      // 隱式預設在這裡是錯的 —— regenerate 失敗後 active leaf 還停在**上一則**
+      // assistant,復原的版本會被掛到它底下,層級從此錯一格,而下一次
+      // regenerate 又會從那一列 fork,錯上加錯。
+      assistantParentId:
+        typeof assistantMsg.parentId === "number" ? assistantMsg.parentId : undefined,
       appendMessage: (body) => apiAppendMessage(authRequest, convId, body),
       updateMessage: (dbId, patch) => apiUpdateMessage(authRequest, convId, dbId, patch),
       assistantFields: {
@@ -2120,6 +2203,28 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const nextRevs = [...existingRevs, { text: "", trace: [], reasoning: null, tail: [] }];
     const nextActiveIdx = nextRevs.length - 1;
 
+    // Where to branch from (`forkAnchorId` semantics — see messageTree.js).
+    // Any persisted sibling works: a fork lands under the same parent. This is
+    // deliberately NOT the same thing as "which row am I showing", which from
+    // the next setState onwards is the unpersisted revision being streamed.
+    const forkSourceId =
+      typeof assistantMsg.dbId === "number"
+        ? assistantMsg.dbId
+        : typeof assistantMsg.forkAnchorId === "number"
+          ? assistantMsg.forkAnchorId
+          : null;
+
+    // Fallback when nothing in the set was ever persisted: there is no sibling
+    // to fork from, so the append below must name the parent itself. A fork
+    // derives the parent from the source row; an append has no such anchor and
+    // would otherwise inherit the server's active leaf.
+    const appendParentId =
+      typeof assistantMsg.parentId === "number"
+        ? assistantMsg.parentId
+        : typeof prevUser.dbId === "number"
+          ? prevUser.dbId
+          : null;
+
     // Drop the tail from the active thread; it stays preserved on the
     // previous revision so the user can flip back to it. Reset the
     // assistant row to streaming state at the same time.
@@ -2136,6 +2241,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
               streaming: true,
               rating: null,
               reasoning: null,
+              // The row now shows a revision that has no server row yet. It
+              // gets one only if the fork/append below lands; until then the
+              // row must claim no id at all rather than the old sibling's.
+              dbId: undefined,
+              forkAnchorId: forkSourceId ?? undefined,
               revisions: nextRevs,
               activeRev: nextActiveIdx,
               timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
@@ -2176,7 +2286,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             reasoning: m.reasoning || null,
             traceId: finalMeta?.trace_id,
             latencyMs: finalMeta?.latency_ms,
-            dbId: m.dbId,
+            // No `dbId`: the fork/append below has not run yet, so `m.dbId`
+            // here is at best null and — before this was split out — was the
+            // PREVIOUS sibling's id, which then travelled with this revision
+            // forever (rating it hit the other version's server row).
             timestamp: m.timestamp,
           };
           return { ...m, streaming: false, revisions: revs };
@@ -2187,30 +2300,65 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         const agentNameForPersist =
           agents.find((a) => a.id === effectiveTarget)?.name ||
           String(effectiveTarget);
+        // The regenerated revision just got a server row. Stamp it on BOTH
+        // the revision (so flipping back to it later still knows its id) and
+        // the top-level mirror (which is what rating / active-leaf read while
+        // it is the one on screen). The fork anchor moves onto it too — it is
+        // now the freshest persisted sibling of the set.
+        const adoptSavedId = (savedId) => {
+          setMessagesByConv((prev) => ({
+            ...prev,
+            [convId]: (prev[convId] || []).map((m) => {
+              if (m.id !== assistantMsg.id) return m;
+              const revs = Array.isArray(m.revisions) ? [...m.revisions] : [];
+              if (revs[nextActiveIdx]) {
+                revs[nextActiveIdx] = { ...revs[nextActiveIdx], dbId: savedId };
+              }
+              // Only claim the id while this revision is still the displayed
+              // one — the user may have paged away during the round trip.
+              const showsThisRevision = m.activeRev === nextActiveIdx;
+              return {
+                ...m,
+                dbId: showsThisRevision ? savedId : m.dbId,
+                forkAnchorId: savedId,
+                revisions: revs,
+              };
+            }),
+          }));
+        };
+        const persistBody = {
+          content: finalText,
+          traceId: finalMeta?.trace_id,
+          latencyMs: finalMeta?.latency_ms,
+          agentName: agentNameForPersist,
+          metadata: finalMeta || null,
+        };
         try {
-          if (typeof assistantMsg.dbId === "number") {
-            // Replace the existing row in place — avoids piling up orphan
-            // assistant rows that trip the "no preceding user message" guard
-            // on reload.
-            await apiUpdateMessage(authRequest, convId, assistantMsg.dbId, {
-              content: finalText,
-              traceId: finalMeta?.trace_id,
-              latencyMs: finalMeta?.latency_ms,
-              agentName: agentNameForPersist,
-              metadata: finalMeta || null,
-            });
-          } else {
+          if (forkSourceId !== null) {
+            // W2-3: fork a sibling assistant; keep the old revision in the tree.
+            const saved = await apiForkAssistantMessage(
+              authRequest,
+              convId,
+              forkSourceId,
+              persistBody,
+            );
+            if (saved && typeof saved.id === "number") adoptSavedId(saved.id);
+          } else if (typeof appendParentId === "number") {
+            // Nothing in this set was ever persisted (the original reply's
+            // append failed), so there is no sibling to fork from — append
+            // under the revision's OWN parent (this turn's user message),
+            // never under whatever the server's active leaf happens to be.
             const savedAssistant = await apiAppendMessage(authRequest, convId, {
               role: "assistant",
-              content: finalText,
-              traceId: finalMeta?.trace_id,
-              latencyMs: finalMeta?.latency_ms,
-              agentName: agentNameForPersist,
-              metadata: finalMeta || null,
+              parentId: appendParentId,
+              ...persistBody,
             });
             if (savedAssistant && typeof savedAssistant.id === "number") {
-              updateMsg(convId, assistantMsg.id, { dbId: savedAssistant.id });
+              adoptSavedId(savedAssistant.id);
             }
+          } else {
+            // 沒有兄弟可 fork,連這一輪的 user 訊息都沒落地 → 沒有誠實的位置。
+            setRuntimeError(ORPHAN_ASSISTANT_MESSAGE);
           }
         } catch (persistError) {
           setRuntimeError(persistError.message || "重試訊息儲存失敗");
@@ -2227,46 +2375,30 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   }
 
   // ---- switch between assistant-reply revisions (< 2/3 > pager) ----
-  // Revisions only live in client state (not persisted), so on reload the
-  // message collapses back to the latest active revision. Swapping pulls
+  // Revisions are driven by real sibling sets (W2-3 / C3 §d). Swapping pulls
   // the fields out of revisions[i] back into the top-level mirror so the
   // rest of the render path (MarkdownView, thinking fold, rating) doesn't
-  // need to know about revisions at all.
+  // need to know about revisions at all. Persistence points at the branch's
+  // deepest leaf so continuations survive reload.
   function switchRevision(assistantMsg, nextIdx) {
     const convId = assistantMsg.conversationId;
-    const revs = Array.isArray(assistantMsg.revisions) ? assistantMsg.revisions : [];
-    if (nextIdx < 0 || nextIdx >= revs.length) return;
-    if (nextIdx === assistantMsg.activeRev) return;
-    const target = revs[nextIdx] || {};
-    setMessagesByConv((prev) => {
-      const list = prev[convId] || [];
-      const idx = list.findIndex((m) => m.id === assistantMsg.id);
-      if (idx < 0) return prev;
-      // Before swapping, snapshot the tail currently attached to this
-      // assistant so the revision we're leaving keeps its own branch of
-      // follow-up turns — the user can continue on either revision.
-      const currentTail = list.slice(idx + 1);
-      const updatedRevs = revs.map((r, i) =>
-          i === assistantMsg.activeRev ? { ...r, tail: currentTail } : r,
-      );
-      const updatedAssistant = {
-        ...list[idx],
-        text: target.text || "",
-        trace: target.trace || [],
-        reasoning: target.reasoning || null,
-        traceId: target.traceId,
-        latencyMs: target.latencyMs,
-        timestamp: target.timestamp,
-        activeRev: nextIdx,
-        revisions: updatedRevs,
-      };
-      const nextList = [
-        ...list.slice(0, idx),
-        updatedAssistant,
-        ...(Array.isArray(target.tail) ? target.tail : []),
-      ];
-      return { ...prev, [convId]: nextList };
-    });
+    // `applyRevisionSwitch` owns BOTH halves — the next list and the leaf to
+    // persist. Recomputing the leaf here is how the two drifted apart: for an
+    // unpersisted revision the module returned the outgoing sibling's dbId
+    // while this function computed `null`, so the unit test pinned a value
+    // production never sent. Reading `messagesByConv` from the closure is safe
+    // for the same reason as `regenerateMessage` / `retryMessage`: this
+    // handler reaches the DOM through `useStableCallback`, so the closure is
+    // always the latest render's.
+    const list = messagesByConv[convId] || [];
+    const { nextList, activeLeafId } = applyRevisionSwitch(list, assistantMsg, nextIdx);
+    if (nextList === list) return;
+    setMessagesByConv((prev) => ({ ...prev, [convId]: nextList }));
+    if (typeof convId === "number" && typeof activeLeafId === "number") {
+      void apiSetActiveLeaf(authRequest, convId, activeLeafId).catch((err) => {
+        setRuntimeError(err?.message || "版本切換儲存失敗");
+      });
+    }
   }
 
   // ---- thumbs up / down ----

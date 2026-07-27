@@ -141,7 +141,7 @@ describe("從命令面板開啟本地清單沒有的對話", () => {
 
     // ── hydrate 尚未完成 ──────────────────────────────────────────────
     await waitFor(() => {
-      expect(mocks.getConversation).toHaveBeenCalledWith(expect.anything(), 42);
+      expect(mocks.getConversation).toHaveBeenCalledWith(expect.anything(), 42, { tree: true });
     });
     // 訊息內文一個字都不能出現。
     expect(screen.queryByText(SECRET_BODY)).not.toBeInTheDocument();

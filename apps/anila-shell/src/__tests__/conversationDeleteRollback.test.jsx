@@ -173,7 +173,7 @@ describe("刪除對話失敗時的還原", () => {
     // 先選取要刪的那則(這樣 wasSelected=true,才會走搶回選取的路徑)。
     fireEvent.click(await screen.findByText("要刪的對話"));
     await waitFor(() => {
-      expect(mocks.getConversation).toHaveBeenCalledWith(expect.anything(), ROW.id);
+      expect(mocks.getConversation).toHaveBeenCalledWith(expect.anything(), ROW.id, { tree: true });
     });
 
     await deleteFirstConversation();

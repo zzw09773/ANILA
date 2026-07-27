@@ -15,6 +15,17 @@ import {
   CHECKPOINT_MIN_INTERVAL_MS,
   createTurnPersistence,
 } from "../runtime/streamPersistence.js";
+import {
+  IMPLICIT_ACTIVE_LEAF,
+  MissingParentDeclarationError,
+  ORPHAN_ASSISTANT_MESSAGE,
+} from "../runtime/messageParent.js";
+
+// W2-3:建立訊息要宣告父節點。這一檔測的是**寫入順序**,所以下面的 helper 只是
+// 把宣告補齊(一個合法的位置),順序斷言完全不受影響。父節點語意本身由
+// `retryParentDeclaration` / `orphanAssistantRefused` / `messageParentEnumeration`
+// 三個檔案負責。
+const ASSISTANT_PARENT_ID = 55;
 
 // 極小的 fake 持久層:rows 就是「重整後讀回來的東西」。
 function fakeBackend() {
@@ -50,6 +61,8 @@ function persistence(backend, clock, overrides = {}) {
     appendMessage: backend.append,
     updateMessage: backend.update,
     now: clock.now,
+    userParentId: IMPLICIT_ACTIVE_LEAF,
+    assistantParentId: ASSISTANT_PARENT_ID,
     ...overrides,
   });
 }
@@ -248,5 +261,60 @@ describe("④ 終局不長出孤兒列", () => {
     await p.finalizeAssistant({ content: "新答" });
     expect(backend.append).not.toHaveBeenCalled();
     expect(backend.update).toHaveBeenCalledWith(7, expect.objectContaining({ content: "新答" }));
+  });
+});
+
+// W2-3 ——「這則訊息掛在哪裡」由呼叫端宣告,不是由伺服器當下的 active leaf 決定。
+describe("④ 父節點宣告(模組層契約)", () => {
+  it("沒宣告 userParentId 就叫 persistUser → 丟例外(這是寫碼錯誤,不吞成執行期失敗)", async () => {
+    const backend = fakeBackend();
+    const p = createTurnPersistence({
+      appendMessage: backend.append,
+      updateMessage: backend.update,
+    });
+    await expect(p.persistUser({ content: "x" })).rejects.toThrow(
+      MissingParentDeclarationError,
+    );
+    expect(backend.append).not.toHaveBeenCalled();
+  });
+
+  it("user 落地成功 → assistant 指名它當父節點(而不是讓伺服器猜)", async () => {
+    const backend = fakeBackend();
+    const p = persistence(backend, makeClock());
+    await p.persistUser({ content: "q" });
+    await p.finalizeAssistant({ content: "a" });
+    const userRow = backend.rows.find((r) => r.role === "user");
+    const assistantRow = backend.rows.find((r) => r.role === "assistant");
+    expect(assistantRow.parentId).toBe(userRow.id);
+    // 這一輪自己建了 user 訊息,所以 assistantParentId(別的回合的位置)不作數。
+    expect(assistantRow.parentId).not.toBe(ASSISTANT_PARENT_ID);
+  });
+
+  it("user 落地失敗 → 決策=不寫無主的 assistant,回報給使用者", async () => {
+    const backend = fakeBackend();
+    backend.append.mockRejectedValueOnce(new Error("boom"));
+    const onError = vi.fn();
+    const p = persistence(backend, makeClock(), { onError });
+    await p.persistUser({ content: "q" });
+    backend.append.mockClear();
+    await p.finalizeAssistant({ content: "生得出來但沒有位置可放" });
+    expect(backend.append).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(ORPHAN_ASSISTANT_MESSAGE);
+  });
+
+  it("本輪不建 user 訊息(重試)→ 用 assistantParentId 當父節點", async () => {
+    const backend = fakeBackend();
+    const p = persistence(backend, makeClock());
+    await p.finalizeAssistant({ content: "復原的答案" });
+    expect(backend.rows[0].parentId).toBe(ASSISTANT_PARENT_ID);
+  });
+
+  it("重試但連 assistantParentId 都給不出來 → 一樣不寫", async () => {
+    const backend = fakeBackend();
+    const onError = vi.fn();
+    const p = persistence(backend, makeClock(), { assistantParentId: undefined, onError });
+    await p.finalizeAssistant({ content: "無處可去" });
+    expect(backend.append).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(ORPHAN_ASSISTANT_MESSAGE);
   });
 });

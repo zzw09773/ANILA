@@ -14,6 +14,22 @@
 //
 // 順序契約放在這裡而不是散在 `app.jsx` 的理由:順序才是缺陷本體,而順序在
 // 元件裡沒辦法直接測。這裡可以用 fake 持久層把每一次寫入記下來驗。
+//
+// W2-3 補遺(訊息樹):這個模組會建立訊息,所以它也吃「呼叫端宣告父節點」的
+// 契約(`runtime/messageParent.js`)。兩個宣告欄位:
+//
+//   `userParentId`      —— `persistUser` 建立的那則 user 訊息掛在哪裡。
+//   `assistantParentId` —— **這一輪自己不建 user 訊息時**(重試既有回合),
+//                          assistant 掛在哪裡。
+//
+// assistant 的父節點永遠是「這一輪的 user 訊息」:跑過 `persistUser` 就用它拿
+// 回來的 id,沒跑過才用 `assistantParentId`。兩者都拿不到 = 沒有誠實的位置可
+// 寫 → **不寫**,回報 ORPHAN_ASSISTANT_MESSAGE。
+
+import {
+  MissingParentDeclarationError,
+  ORPHAN_ASSISTANT_MESSAGE,
+} from "./messageParent.js";
 
 /** checkpoint 最小間隔。太密會拿使用者的每個 token 去打資料庫。 */
 export const CHECKPOINT_MIN_INTERVAL_MS = 2000;
@@ -30,6 +46,10 @@ export const CHECKPOINT_MIN_INTERVAL_MS = 2000;
  * @param {(dbId: number) => void} [deps.onAssistantSaved]
  * @param {(message: string) => void} [deps.onError]
  * @param {object} [deps.assistantFields] 每次寫入都要帶的固定欄位(agentName…)。
+ * @param {number|symbol} [deps.userParentId] user 訊息的父節點宣告(必填才能
+ *   呼叫 `persistUser`);`IMPLICIT_ACTIVE_LEAF` = 顯式選用伺服器預設。
+ * @param {number} [deps.assistantParentId] 本輪不建 user 訊息時,assistant 的
+ *   父節點。給不出來就不寫 assistant(不猜位置)。
  */
 export function createTurnPersistence({
   appendMessage,
@@ -42,9 +62,15 @@ export function createTurnPersistence({
   onAssistantSaved,
   onError,
   assistantFields = {},
+  userParentId,
+  assistantParentId,
 }) {
   let userDbId = null;
   let assistantId = typeof assistantDbId === "number" ? assistantDbId : null;
+  // 本輪是否**嘗試過**建立 user 訊息。嘗試過就以它的結果為準(失敗 = 沒有父
+  // 節點),沒嘗試過才輪到 `assistantParentId`。
+  let userPersistAttempted = false;
+  let orphanReported = false;
   let lastPersistedText = null;
   // 從建立時刻起算:短回合(< minIntervalMs)完全不 checkpoint。
   let lastWriteAt = now();
@@ -67,13 +93,38 @@ export function createTurnPersistence({
     return run;
   }
 
+  /**
+   * 新 assistant 列該掛在哪。`undefined` = 沒有誠實的答案。
+   *
+   * 刻意**不**退回 `assistantParentId`:本輪跑過 `persistUser` 卻失敗時,
+   * `assistantParentId`(如果有)講的是別的回合的位置。
+   */
+  function newAssistantParentId() {
+    if (userPersistAttempted) {
+      return typeof userDbId === "number" ? userDbId : undefined;
+    }
+    return typeof assistantParentId === "number" ? assistantParentId : undefined;
+  }
+
+  function refuseOrphan() {
+    if (orphanReported) return;
+    orphanReported = true;
+    if (typeof onError === "function") onError(ORPHAN_ASSISTANT_MESSAGE);
+  }
+
   async function writeAssistant({ content, metadata, ...rest }) {
     const body = { role: "assistant", content, metadata: metadata ?? null, ...assistantFields, ...rest };
     if (assistantId !== null) {
+      // 既有列 → in-place patch,位置早就定了,不需要(也不該)再宣告父節點。
       await updateMessage(assistantId, body);
       return assistantId;
     }
-    const saved = await appendMessage(body);
+    const parentId = newAssistantParentId();
+    if (parentId === undefined) {
+      refuseOrphan();
+      return null;
+    }
+    const saved = await appendMessage({ ...body, parentId });
     if (saved && typeof saved.id === "number") {
       assistantId = saved.id;
       if (typeof onAssistantSaved === "function") onAssistantSaved(saved.id);
@@ -92,9 +143,14 @@ export function createTurnPersistence({
     /** ① user 訊息:串流開始**前**寫。失敗只回報,不阻斷這回合。 */
     async persistUser(payload) {
       if (!enabled) return null;
+      // 沒宣告父節點是寫碼錯誤,不是執行期失敗 —— 不吞掉。
+      if (userParentId === undefined) {
+        throw new MissingParentDeclarationError("createTurnPersistence.persistUser");
+      }
+      userPersistAttempted = true;
       return serialize(async () => {
         try {
-          const saved = await appendMessage({ role: "user", ...payload });
+          const saved = await appendMessage({ role: "user", parentId: userParentId, ...payload });
           if (saved && typeof saved.id === "number") {
             userDbId = saved.id;
             if (typeof onUserSaved === "function") onUserSaved(saved.id);
@@ -122,11 +178,11 @@ export function createTurnPersistence({
       lastPersistedText = content;
       return serialize(async () => {
         try {
-          await writeAssistant({
+          const id = await writeAssistant({
             content,
             metadata: { ...(extra.metadata || {}), partial: true },
           });
-          return true;
+          return id !== null;
         } catch (err) {
           // checkpoint 失敗不干擾使用者:畫面上的文字還在,終局會再寫一次。
           lastPersistedText = null;

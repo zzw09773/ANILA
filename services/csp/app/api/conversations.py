@@ -4,7 +4,7 @@ from __future__ import annotations
 from app.schemas.base import ApiResponseModel
 
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
@@ -75,6 +75,12 @@ class MessageOut(ApiResponseModel):
     model_config = {"from_attributes": True, "populate_by_name": True}
 
 
+class MessageTreeOut(MessageOut):
+    """Full-tree read (``?tree=1``): adds ``parent_id`` for client revision nav."""
+    parent_id: Optional[int] = None
+
+
+
 # Upper bound on a single message body. ~500KB ≈ 125k tokens — far above any
 # legit completion or paste, but stops an authenticated insider from amplifying
 # writes into multi-MB rows.
@@ -139,6 +145,16 @@ class ConversationDetail(ConversationOut):
     messages: list[MessageOut] = []
 
 
+class ConversationTreeDetail(ConversationOut):
+    """``?tree=1`` response: full message tree + active leaf pointer."""
+    messages: list[MessageTreeOut] = []
+    active_leaf_message_id: Optional[int] = None
+
+
+class ActiveLeafUpdate(BaseModel):
+    message_id: int = Field(..., ge=1)
+
+
 class MessageAppend(BaseModel):
     role: str = Field(..., pattern="^(user|assistant|system|tool)$")
     content: str = Field(..., max_length=_MAX_MSG_CHARS)
@@ -147,6 +163,20 @@ class MessageAppend(BaseModel):
     model_name: Optional[str] = None
     agent_name: Optional[str] = None
     metadata: Optional[dict] = None
+    # W2-3: where the new node hangs. Callers that mean "sibling" (retry /
+    # regenerate recovery / re-run after an edit) MUST name it — the server
+    # cannot tell those apart from "continue the current turn" and would
+    # attach the row under the active leaf, which by then may have moved.
+    #
+    # Deliberately still OPTIONAL: this is the only message-creation endpoint,
+    # so it also carries the ordinary next-user-turn case where the active-leaf
+    # default IS the intended parent, and older shipped SPA bundles never send
+    # the field. Requiring it would 422 every write from a client one deploy
+    # behind — an availability regression worse than the topology bug it
+    # prevents. The obligation is enforced client-side instead, where the
+    # intent actually lives (``runtime/messageParent.js`` + its enumeration
+    # test), because only the caller knows which of the two cases it means.
+    parent_id: Optional[int] = None
 
 
 class ShareCreate(BaseModel):
@@ -380,9 +410,20 @@ def search_conversations(
     return hits
 
 
-@router.get("/{conv_id}", response_model=ConversationDetail)
+@router.get(
+    "/{conv_id}",
+    response_model=Union[ConversationDetail, ConversationTreeDetail],
+)
 def get_conversation(
     conv_id: int,
+    tree: bool = Query(
+        False,
+        description=(
+            "If true, return the full message tree (with parent_id) and "
+            "active_leaf_message_id. Default returns the active path only, "
+            "byte-compatible with pre-W2-3 clients."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -395,7 +436,18 @@ def get_conversation(
         svc.log_controlled_access(
             db, conv_id, current_user, level_label=svc.controlled_level_label(conv)
         )
-    return conv
+    messages = svc.list_messages_for_read(db, conv, tree=tree)
+    base = ConversationOut.model_validate(conv).model_dump()
+    if tree:
+        return ConversationTreeDetail(
+            **base,
+            messages=[MessageTreeOut.model_validate(m) for m in messages],
+            active_leaf_message_id=svc.resolve_active_leaf_id(db, conv),
+        )
+    return ConversationDetail(
+        **base,
+        messages=[MessageOut.model_validate(m) for m in messages],
+    )
 
 
 @router.put("/{conv_id}", response_model=ConversationOut)
@@ -435,6 +487,7 @@ def append_message(
         model_name=body.model_name,
         agent_name=body.agent_name,
         metadata=body.metadata,
+        parent_id=body.parent_id,
     )
 
 
@@ -486,13 +539,52 @@ def edit_user_message(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Rewrite a user message and drop everything after it.
+    """Grow a sibling user message (W2-3); old subtree is preserved.
 
-    The caller is expected to immediately re-send the chat turn with the new
-    content; returning the updated message lets the UI reconcile dbId / rating
-    without a separate fetch.
+    Returns the new sibling. The caller re-sends the chat turn so a fresh
+    assistant child is appended under the new leaf.
     """
     return svc.edit_user_message(db, conv_id, message_id, current_user, body.content)
+
+
+@router.post(
+    "/{conv_id}/messages/{message_id}/fork",
+    response_model=MessageOut,
+    status_code=201,
+)
+def fork_assistant_message(
+    conv_id: int,
+    message_id: int,
+    body: MessageUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Regenerate: create a sibling assistant under the same parent (C3 §b)."""
+    if body.content is None:
+        raise HTTPException(status_code=400, detail="content 必填")
+    return svc.fork_assistant_message(
+        db,
+        conv_id,
+        message_id,
+        current_user,
+        content=body.content,
+        trace_id=body.trace_id,
+        latency_ms=body.latency_ms,
+        model_name=body.model_name,
+        agent_name=body.agent_name,
+        metadata=body.metadata,
+    )
+
+
+@router.put("/{conv_id}/active-leaf", response_model=ConversationOut)
+def set_active_leaf(
+    conv_id: int,
+    body: ActiveLeafUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Point the active path at a message (version-switch persistence)."""
+    return svc.set_active_leaf(db, conv_id, body.message_id, current_user)
 
 
 # ── Classified policy ─────────────────────────────────────────────────────────

@@ -1,6 +1,20 @@
 {
   "components": {
     "schemas": {
+      "ActiveLeafUpdate": {
+        "properties": {
+          "message_id": {
+            "minimum": 1.0,
+            "title": "Message Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "title": "ActiveLeafUpdate",
+        "type": "object"
+      },
       "AdminResetPassword": {
         "properties": {
           "new_password": {
@@ -5628,6 +5642,118 @@
         "title": "ConversationSearchHit",
         "type": "object"
       },
+      "ConversationTreeDetail": {
+        "description": "``?tree=1`` response: full message tree + active leaf pointer.",
+        "properties": {
+          "active_leaf_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Leaf Message Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "classification_inherited": {
+            "default": false,
+            "title": "Classification Inherited",
+            "type": "boolean"
+          },
+          "classification_level": {
+            "default": "無機密",
+            "title": "Classification Level",
+            "type": "string"
+          },
+          "classified": {
+            "title": "Classified",
+            "type": "boolean"
+          },
+          "classified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classified At"
+          },
+          "collection_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "messages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MessageTreeOut"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "agent_id",
+          "classified",
+          "classified_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ConversationTreeDetail",
+        "type": "object"
+      },
       "ConversationUpdate": {
         "properties": {
           "title": {
@@ -8597,6 +8723,17 @@
             ],
             "title": "Model Name"
           },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
           "role": {
             "pattern": "^(user|assistant|system|tool)$",
             "title": "Role",
@@ -8788,6 +8925,126 @@
           }
         },
         "title": "MessageRatingUpdate",
+        "type": "object"
+      },
+      "MessageTreeOut": {
+        "description": "Full-tree read (``?tree=1``): adds ``parent_id`` for client revision nav.",
+        "properties": {
+          "agent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Name"
+          },
+          "attachments": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/app__api__conversations__AttachmentOut"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "content",
+          "trace_id",
+          "latency_ms",
+          "model_name",
+          "agent_name",
+          "created_at"
+        ],
+        "title": "MessageTreeOut",
         "type": "object"
       },
       "MessageUpdate": {
@@ -19946,6 +20203,18 @@
               "title": "Conv Id",
               "type": "integer"
             }
+          },
+          {
+            "description": "If true, return the full message tree (with parent_id) and active_leaf_message_id. Default returns the active path only, byte-compatible with pre-W2-3 clients.",
+            "in": "query",
+            "name": "tree",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "If true, return the full message tree (with parent_id) and active_leaf_message_id. Default returns the active path only, byte-compatible with pre-W2-3 clients.",
+              "title": "Tree",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -19953,7 +20222,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConversationDetail"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ConversationDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ConversationTreeDetail"
+                    }
+                  ],
+                  "title": "Response Get Conversation Api Conversations  Conv Id  Get"
                 }
               }
             },
@@ -20031,6 +20308,64 @@
           }
         ],
         "summary": "Update Conversation",
+        "tags": [
+          "conversations"
+        ]
+      }
+    },
+    "/api/conversations/{conv_id}/active-leaf": {
+      "put": {
+        "description": "Point the active path at a message (version-switch persistence).",
+        "operationId": "set_active_leaf_api_conversations__conv_id__active_leaf_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conv_id",
+            "required": true,
+            "schema": {
+              "title": "Conv Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActiveLeafUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Active Leaf",
         "tags": [
           "conversations"
         ]
@@ -20266,7 +20601,7 @@
     },
     "/api/conversations/{conv_id}/messages/{message_id}/edit": {
       "put": {
-        "description": "Rewrite a user message and drop everything after it.\n\nThe caller is expected to immediately re-send the chat turn with the new\ncontent; returning the updated message lets the UI reconcile dbId / rating\nwithout a separate fetch.",
+        "description": "Grow a sibling user message (W2-3); old subtree is preserved.\n\nReturns the new sibling. The caller re-sends the chat turn so a fresh\nassistant child is appended under the new leaf.",
         "operationId": "edit_user_message_api_conversations__conv_id__messages__message_id__edit_put",
         "parameters": [
           {
@@ -20326,6 +20661,73 @@
           }
         ],
         "summary": "Edit User Message",
+        "tags": [
+          "conversations"
+        ]
+      }
+    },
+    "/api/conversations/{conv_id}/messages/{message_id}/fork": {
+      "post": {
+        "description": "Regenerate: create a sibling assistant under the same parent (C3 §b).",
+        "operationId": "fork_assistant_message_api_conversations__conv_id__messages__message_id__fork_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conv_id",
+            "required": true,
+            "schema": {
+              "title": "Conv Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "title": "Message Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Fork Assistant Message",
         "tags": [
           "conversations"
         ]

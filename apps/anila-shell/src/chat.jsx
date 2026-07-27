@@ -513,6 +513,12 @@ const MessageBubbleImpl = ({
   const canCopy = !copyNotice.blocked;
   const isStreaming = !!msg.streaming;
   const rating = msg.rating || null;
+  // W2-3:版本列的可見度**不能**跟著 `msg.text` 走。regenerate 的串流一個字都
+  // 沒吐就斷線時,那個版本的文字是空的 —— 舊寫法連坐把整條動作列(含版本列)
+  // 藏掉,使用者被鎖在空泡泡裡,只剩重整一途才能切回好的那一版。
+  const hasVersionPager = Array.isArray(msg.revisions) && msg.revisions.length > 1;
+  // 反過來,對著空回應「複製 / 按讚 / 跑自訂動作」都沒有東西可以作用。
+  const hasContentActions = !!msg.text;
 
   return (
     <div
@@ -625,7 +631,7 @@ const MessageBubbleImpl = ({
         </button>
       )}
 
-      {!msg.streaming && msg.text && (
+      {!msg.streaming && (hasContentActions || hasVersionPager) && (
         <div
           className="anila-msg-actions"
           style={{
@@ -633,7 +639,7 @@ const MessageBubbleImpl = ({
             color: "var(--fg-subtle)", alignItems: "center",
           }}
         >
-          {canCopy ? (
+          {hasContentActions && (canCopy ? (
             <IconButton
               title={copied ? "已複製" : "複製"}
               onClick={copyText}
@@ -648,7 +654,7 @@ const MessageBubbleImpl = ({
             <IconButton title={copyNotice.tooltip} disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
               <IconLock />
             </IconButton>
-          )}
+          ))}
           <span style={{ position: "relative", display: "inline-flex" }}>
             <IconButton
               title={isStreaming ? "回應產生中…" : "重新產生（可選調整方向）"}
@@ -709,27 +715,31 @@ const MessageBubbleImpl = ({
               </div>
             )}
           </span>
-          <IconButton
-            title={rating === "up" ? "取消標記" : "標記為有用"}
-            onClick={() => onRate?.(msg, rating === "up" ? null : "up")}
-            active={rating === "up"}
-            style={rating === "up" ? { color: "var(--accent)" } : undefined}
-          >
-            <IconThumbUp />
-          </IconButton>
-          <IconButton
-            title={rating === "down" ? "取消標記" : "標記為沒幫助"}
-            onClick={() => onRate?.(msg, rating === "down" ? null : "down")}
-            active={rating === "down"}
-            style={rating === "down" ? { color: "var(--danger)" } : undefined}
-          >
-            <IconThumbDn />
-          </IconButton>
+          {hasContentActions && (
+            <>
+              <IconButton
+                title={rating === "up" ? "取消標記" : "標記為有用"}
+                onClick={() => onRate?.(msg, rating === "up" ? null : "up")}
+                active={rating === "up"}
+                style={rating === "up" ? { color: "var(--accent)" } : undefined}
+              >
+                <IconThumbUp />
+              </IconButton>
+              <IconButton
+                title={rating === "down" ? "取消標記" : "標記為沒幫助"}
+                onClick={() => onRate?.(msg, rating === "down" ? null : "down")}
+                active={rating === "down"}
+                style={rating === "down" ? { color: "var(--danger)" } : undefined}
+              >
+                <IconThumbDn />
+              </IconButton>
+            </>
+          )}
 
           {/* Message Actions(自訂動作鈕):正/倒讚旁的一鍵動作。動作宣告式由
               host 在 tweaks.messageActions 設定(預設:翻譯/摘要/改寫公文)。
               機密對話禁止(動作會把內容當新訊息送出,等同外流路徑)。 */}
-          {!classified && Array.isArray(messageActions) && messageActions.length > 0 &&
+          {hasContentActions && !classified && Array.isArray(messageActions) && messageActions.length > 0 &&
             messageActions.map((action) => (
               <button
                 key={action.id}
@@ -747,7 +757,9 @@ const MessageBubbleImpl = ({
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--fg-muted)"; }}
               >{action.label}</button>
             ))}
-          {Array.isArray(msg.revisions) && msg.revisions.length > 1 && (() => {
+          {hasVersionPager && (() => {
+            // W2-3 / C3 §d: N/M is the real sibling-set size (server tree or
+            // local regenerate/edit), not an ad-hoc local counter.
             const total = msg.revisions.length;
             const current = typeof msg.activeRev === "number" ? msg.activeRev : total - 1;
             const canPrev = current > 0 && !isStreaming;

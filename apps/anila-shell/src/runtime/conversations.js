@@ -6,6 +6,8 @@
 // takes `multipartRequest(path, formData)` instead because the browser must
 // set the multipart boundary itself.
 
+import { parentIdField } from "./messageParent.js";
+
 // Origin tag for this frontend. Migration 0023 added the
 // `conversations.origin` column so multiple SPAs (ANILA UI + ANILALM
 // + future bots) can co-exist on the same backend without bleeding
@@ -36,8 +38,9 @@ export function createConversation(authRequest, { title, agentId } = {}) {
   });
 }
 
-export function getConversation(authRequest, convId) {
-  return authRequest(`/api/conversations/${convId}`, { method: "GET" });
+export function getConversation(authRequest, convId, { tree = false } = {}) {
+  const qs = tree ? "?tree=1" : "";
+  return authRequest(`/api/conversations/${convId}${qs}`, { method: "GET" });
 }
 
 export function updateConversationTitle(authRequest, convId, title) {
@@ -72,10 +75,23 @@ export function recordConversationExport(authRequest, convId, format) {
 
 // ── Messages ────────────────────────────────────────────────────────────────
 
+/**
+ * Create a message. ``payload.parentId`` is **mandatory** — either the server
+ * id of the node this message hangs under, or the explicit
+ * ``IMPLICIT_ACTIVE_LEAF`` sentinel meaning "extend the active branch".
+ *
+ * Omitting it throws rather than defaulting. The wire field stays optional for
+ * older clients, so on this side a forgotten parent would otherwise be
+ * indistinguishable from a deliberate one — and would silently attach the row
+ * under whatever the server's active leaf happens to be. See
+ * ``runtime/messageParent.js`` for why that default is only ever correct for a
+ * brand-new user turn.
+ */
 export function appendMessage(authRequest, convId, payload) {
   const body = {
     role: payload.role,
     content: payload.content,
+    parent_id: parentIdField(payload.parentId, "appendMessage"),
     trace_id: payload.traceId || null,
     latency_ms:
       typeof payload.latencyMs === "number" ? payload.latencyMs : null,
@@ -102,7 +118,7 @@ export function rateMessage(authRequest, convId, messageId, rating, feedback = n
   });
 }
 
-// Rewrite a user message's content and drop every message after it.
+// Grow a sibling user message (W2-3); old subtree is preserved server-side.
 // The caller must re-trigger a chat turn to produce a new assistant reply.
 export function editUserMessage(authRequest, convId, messageId, content) {
   return authRequest(`/api/conversations/${convId}/messages/${messageId}/edit`, {
@@ -111,8 +127,7 @@ export function editUserMessage(authRequest, convId, messageId, content) {
   });
 }
 
-// In-place patch of an existing message (non-truncating). Used by assistant
-// regenerate to replace the old reply without creating a new DB row.
+// In-place patch of an existing message (stream checkpoint / resume).
 export function updateMessage(authRequest, convId, messageId, patch) {
   const body = {
     content: patch.content ?? null,
@@ -126,6 +141,31 @@ export function updateMessage(authRequest, convId, messageId, patch) {
   return authRequest(`/api/conversations/${convId}/messages/${messageId}`, {
     method: "PUT",
     body: JSON.stringify(body),
+  });
+}
+
+// Regenerate: create a sibling assistant under the same parent (C3 §b).
+export function forkAssistantMessage(authRequest, convId, messageId, patch) {
+  const body = {
+    content: patch.content ?? null,
+    trace_id: patch.traceId ?? null,
+    latency_ms:
+      typeof patch.latencyMs === "number" ? patch.latencyMs : null,
+    model_name: patch.modelName ?? null,
+    agent_name: patch.agentName ?? null,
+    metadata: patch.metadata ?? null,
+  };
+  return authRequest(`/api/conversations/${convId}/messages/${messageId}/fork`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// Persist version-switch: point the active path at a message id.
+export function setActiveLeaf(authRequest, convId, messageId) {
+  return authRequest(`/api/conversations/${convId}/active-leaf`, {
+    method: "PUT",
+    body: JSON.stringify({ message_id: messageId }),
   });
 }
 
