@@ -421,7 +421,16 @@ jobs:
       - name: 本輪新增的真 PG 不變式
         env:
           PYTHONPATH: services/csp
+          # ⚠ This suite uses several different env var names for "a PostgreSQL to
+          # test against", and each test family reads a different one. Setting only
+          # ANILA_TEST_PG_DSN left test_audit_logs_detail_trgm_pg skipping silently
+          # from the day it joined this loop — invisible until the "all skipped =
+          # not verified" guard below landed in the same round and finally said so.
+          # A DSN no test reads costs nothing; a missing one costs the whole file.
           ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_AUDIT_TRGM_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_GATE3_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
         working-directory: services/csp
         run: |
           set -euo pipefail

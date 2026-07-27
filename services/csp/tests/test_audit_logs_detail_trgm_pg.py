@@ -47,7 +47,14 @@ def _alembic(database_url: str, *arguments: str) -> None:
             "MIGRATION_DATABASE_URL": database_url,
             "DATABASE_URL": database_url,
             "CSP_APP_DB_PASSWORD": "audit-trgm-app-db",
-            "PYTHONPATH": ".",
+            # Prepend rather than replace: overwriting PYTHONPATH with "." threw
+            # away whatever the caller had set, so the subprocess could only
+            # find anila_security when the packages happened to be installed
+            # editable into site-packages. CI installs them that way, so this
+            # never surfaced — and the file was skipping silently there anyway.
+            "PYTHONPATH": os.pathsep.join(
+                p for p in (".", os.environ.get("PYTHONPATH", "")) if p
+            ),
             "PYTHONIOENCODING": "utf-8",
         }
     )
