@@ -89,9 +89,16 @@ def db_engine():
     Base.metadata.drop_all(bind=engine)
 
 
+# Request-scoped test sessions must mirror ``app.database.SessionLocal``.
+# It sets ``expire_on_commit=False`` as an event-loop deadlock guard (see the
+# comment there); a fixture that kept the SQLAlchemy default would hide both
+# the bug and the fix, since ``get_db`` is overridden below.
+_TEST_SESSION_KWARGS = {"expire_on_commit": False}
+
+
 @pytest.fixture(scope="function")
 def db(db_engine):
-    Session = sessionmaker(bind=db_engine)
+    Session = sessionmaker(bind=db_engine, **_TEST_SESSION_KWARGS)
     session = Session()
     try:
         yield session
@@ -102,7 +109,7 @@ def db(db_engine):
 @pytest.fixture(scope="function")
 def client(db_engine):
     """TestClient with overridden DB dependency."""
-    Session = sessionmaker(bind=db_engine)
+    Session = sessionmaker(bind=db_engine, **_TEST_SESSION_KWARGS)
 
     def override_get_db():
         session = Session()

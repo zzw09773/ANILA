@@ -11,9 +11,13 @@ import threading
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.config import settings
-from app.database import build_runtime_connect_args
+from app.database import Base, SessionLocal, build_runtime_connect_args
+from app.models.department import Department
 from app.services.proxy import service as proxy_service
 
 
@@ -28,6 +32,62 @@ def test_runtime_connect_args_include_lock_and_idle_tx_timeouts(monkeypatch):
 
 def test_runtime_connect_args_skip_non_postgres():
     assert build_runtime_connect_args("sqlite:////tmp/csp.db") == {}
+
+
+def test_session_factory_does_not_expire_on_commit():
+    """``expire_on_commit`` must stay False — it is a deadlock guard.
+
+    With the SQLAlchemy default (True), every ``commit()`` arms all ORM
+    instances for a lazy re-SELECT.  On an ``async def`` handler or inside a
+    StreamingResponse body the next attribute touch then runs synchronous DB
+    I/O on the event-loop thread AND re-opens a transaction that keeps its
+    pooled connection until the response finishes — the ``_load_expired`` →
+    ``QueuePool limit of size 10 overflow 20 reached`` ring behind the
+    2026-07-25 platform-wide freeze (``pg_active=31, idle_tx=30``).
+
+    It is also what makes releasing the streaming admission Session safe:
+    ``_release_stream_admission_session`` detaches the admission objects, and
+    a detached instance whose attributes were expired at commit raises
+    ``DetachedInstanceError`` instead of returning its already-loaded value.
+    """
+    assert SessionLocal.kw["expire_on_commit"] is False
+
+
+def test_expired_orm_touch_after_commit_would_repin_a_connection():
+    """Pins *why* the flag matters, so a future flip is caught with a reason.
+
+    Same Session, same commit, only ``expire_on_commit`` differs: the default
+    checks a connection back out and leaves a transaction open, which is
+    exactly the per-stream leak that exhausted the pool.
+    """
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(bind=engine, tables=[Department.__table__])
+    outstanding = {"n": 0}
+
+    @event.listens_for(engine, "checkout")
+    def _checkout(*_args):  # pragma: no cover - event hook
+        outstanding["n"] += 1
+
+    @event.listens_for(engine, "checkin")
+    def _checkin(*_args):  # pragma: no cover - event hook
+        outstanding["n"] -= 1
+
+    def touch_after_commit(*, expire_on_commit: bool) -> tuple[int, bool]:
+        session = sessionmaker(bind=engine, expire_on_commit=expire_on_commit)()
+        try:
+            row = Department(name=f"dept-{expire_on_commit}")
+            session.add(row)
+            session.commit()
+            assert outstanding["n"] == 0
+            _ = row.name  # the deferred read a streaming exit performs
+            return outstanding["n"], session.in_transaction()
+        finally:
+            session.close()
+
+    assert touch_after_commit(expire_on_commit=True) == (1, True)
+    assert touch_after_commit(expire_on_commit=False) == (0, False)
 
 
 def test_runtime_engine_uses_builder_for_postgres_url(monkeypatch):

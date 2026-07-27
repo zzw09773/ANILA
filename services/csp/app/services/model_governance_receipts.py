@@ -176,10 +176,16 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
 
     def _ledger(self, event: Mapping[str, Any]) -> ModelGovernanceReceipt | None:
         invocation_id = self._invocation_id(event)
+        # The whole point of this locked read is to compare the event against
+        # the *durable* row: the sink writes and commits this receipt earlier
+        # in the same Session, so without ``populate_existing()`` the drift
+        # comparison below would be reconciling the event with the sink's own
+        # in-memory copy rather than the row it just locked.
         row = (
             self.db.query(ModelGovernanceReceipt)
             .filter(ModelGovernanceReceipt.invocation_id == invocation_id)
-            .with_for_update().populate_existing()
+            .populate_existing()
+            .with_for_update()
             .one_or_none()
         )
         if row is not None:

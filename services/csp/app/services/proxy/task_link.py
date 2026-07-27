@@ -550,16 +550,25 @@ def finalize_task_run_in_session(
         logger.warning("finalize_task_run: 找不到 run id=%s", task_run_id)
         db.commit()
         return False
+    # ``populate_existing()`` guards the idempotency contract in the docstring.
+    # ``run_ref`` above just put this TaskRun into the identity map, and the
+    # caller's session may hold the Task from admission; a plain locked re-read
+    # would hit those live entries and discard the row values it just SELECTed.
+    # The terminal-status check below would then run against a pre-lock
+    # snapshot, and a run another session already moved to ``cancelled`` could
+    # be transitioned a second time into ``failed``/``completed``.
     task = (
         db.query(Task)
         .filter(Task.id == run_ref.task_id)
-        .with_for_update().populate_existing()
+        .populate_existing()
+        .with_for_update()
         .one()
     )
     run = (
         db.query(TaskRun)
         .filter(TaskRun.id == task_run_id)
-        .with_for_update().populate_existing()
+        .populate_existing()
+        .with_for_update()
         .one()
     )
     if run.status in _TERMINAL_RUN_STATUSES:
