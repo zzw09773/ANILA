@@ -261,6 +261,7 @@ def _locked_collection_classification(db: Session, collection_id: int) -> str:
         db.query(IngestionCollection.classification_level)
         .filter(IngestionCollection.id == collection_id)
         .with_for_update(read=True)
+        .populate_existing()
         .first()
     )
     if row is None:

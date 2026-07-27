@@ -16,14 +16,18 @@ SELECT 回來的列值,回傳記憶體舊值。** `populate_existing()` 是唯�
 也就是說 `SELECT ... FOR UPDATE` 這個動作的**全部意義**——鎖住列、讀到最新
 值再決定——會在 `expire_on_commit=False` 之下靜默消失。鎖還在,讀到的是舊值。
 
-## 現在的處境:地雷還沒上膛,但引信已經接好
+## 現在的處境(2026-07-26 實測修正:地雷**已經上膛**,不是等 PR #51)
 
-- 本分支 `expire_on_commit` **零命中** → SQLAlchemy 預設 `True` → 目前安全。
-- 工單 G(PR #51,`fix/stream-session-pool`)為了根治串流佔滿連線池而把
-  `SessionLocal` 改成 `expire_on_commit=False`。**那個 PR 一 merge,全部缺
-  `populate_existing()` 的站點同時失效。**
-- 已確認會被擊穿的:`retention_reaper` 的 legal hold(**不可逆刪檔 + 法務合規**)、
-  `task_link` 終態冪等、Gate 5 receipt drift 偵測。
+- `expire_on_commit=True`(SQLAlchemy 預設)只在**自己 commit** 時讓物件過期,
+  所以「A 先讀 → B(另一 session)改並 commit → A 未 commit 就加鎖重讀」在預設
+  之下**同樣讀到舊值**(真 PG 雙 session 實測,
+  見 `services/csp/tests/test_for_update_staleness_pg.py`)。
+- `retention_reaper` 正是這個形狀(先掃候選、再逐筆加鎖重讀)→ 這是**現行**的
+  legal hold 繞過(**不可逆刪檔 + 法務合規**),`task_link` 終態冪等、Gate 5
+  receipt drift 偵測同族。
+- 工單 G(PR #51,`fix/stream-session-pool`)把 `SessionLocal` 改成
+  `expire_on_commit=False` —— 那是**放大器**(連自己 commit 後都不過期),
+  不是引信。baseline 降到 0 之前 #51 不得 merge。
 
 ## 為什麼是 AST 而不是 grep
 
@@ -198,10 +202,11 @@ def main(argv: list[str] | None = None) -> int:
                         "由 infra/ci/check_for_update_populate.py 在 CI 執行。",
                         "背景:SQLAlchemy 的 Query 命中 identity map 且物件未過期時會**丟棄**",
                         "剛 SELECT 回來的列值。所以 SELECT ... FOR UPDATE 的全部意義",
-                        "(鎖住列、讀到最新值再決定)會在 expire_on_commit=False 之下靜默消失。",
-                        "工單 G(PR #51)把 SessionLocal 改成 expire_on_commit=False —— 那個 PR",
-                        "一 merge,所有缺 populate_existing() 的站點同時失效。已確認會被擊穿的",
-                        "包含 retention_reaper 的 legal hold(不可逆刪檔 + 法務合規)。",
+                        "(鎖住列、讀到最新值再決定)會靜默消失 —— 鎖還在,讀到的是舊值。",
+                        "⚠ 這在預設 expire_on_commit=True 之下就成立(跨 session 未 commit",
+                        "重讀,真 PG 實測見 test_for_update_staleness_pg.py);PR #51 的",
+                        "expire_on_commit=False 只是放大器,不是引信。已確認被擊穿的包含",
+                        "retention_reaper 的 legal hold(不可逆刪檔 + 法務合規)。",
                         "上限只准降不准升。降到 0 之前 PR #51 不得 merge 進 main。",
                     ],
                     "max_count": len(findings),
