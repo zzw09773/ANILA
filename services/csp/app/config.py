@@ -94,7 +94,14 @@ class Settings(BaseSettings):
     ANILA_DB_LOCK_TIMEOUT_MS: int = Field(default=5000, ge=0, le=600_000)
     # idle_in_transaction_session_timeout: kill sessions that stay open after
     # beginning a transaction without committing (SSE-held Session footgun).
-    ANILA_DB_IDLE_TX_TIMEOUT_MS: int = Field(default=60_000, ge=0, le=3_600_000)
+    # Default must exceed LLM_TIMEOUT (120s): the sync proxy path takes the
+    # governance-receipt row lock and then awaits the upstream model inside
+    # the same transaction, which counts as idle-in-transaction to PG. At the
+    # old 60s default PG would kill that session for any upstream response
+    # slower than 60s — a legitimate wait under LLM_TIMEOUT. (Codex P1 on
+    # PR #51, triaged 2026-07-27; the deeper fix — commit before network
+    # I/O like the streaming path — stays on the backlog.)
+    ANILA_DB_IDLE_TX_TIMEOUT_MS: int = Field(default=150_000, ge=0, le=3_600_000)
     # W2-1:連線池參數。先前寫死在 app/database.py(pool_size=10 / max_overflow=20,
     # 上限 30)且**生產無法調**,而 Starlette 對 sync endpoint 用 anyio 預設 40
     # tokens —— 40 條執行緒各持 1 連線,池卻只有 30,兩個數字從一開始就對不上。
