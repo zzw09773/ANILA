@@ -4,15 +4,16 @@
 為什麼一定要真 PG
 -----------------
 本包要釘死的是 ``ALTER COLUMN ... TYPE timestamptz USING <col> AT TIME ZONE
-'Asia/Taipei'`` 的**資料語意**,而那在 SQLite 上結構上測不到:SQLite 沒有
+'UTC'`` 的**資料語意**,而那在 SQLite 上結構上測不到:SQLite 沒有
 ``timestamptz``、沒有 ``AT TIME ZONE``、也沒有 session ``TimeZone`` GUC
 (``DateTime(timezone=True)`` 在 SQLite dialect 上等同 naive)。
 
-這裡最重要的一條是 ``test_naive_values_are_reinterpreted_as_taipei_wall_clock``:
-它把「既有 naive 值被往前平移 8 小時」**釘成明示行為**。這個平移是 2026-07-26
-user 拍板的判讀後果(實作者曾以「兩條寫入路徑皆為 UTC」反對並被重申),完整脈絡
-在 ``migrations/versions/r1_0040_governance_ledger_timestamptz.py`` 檔頭。有這條
-測試,將來有人看到治理紀錄的時點對不上時,會找到「這是刻意的」而不是「這是 bug」。
+這裡最重要的一條是 ``test_naive_values_are_reinterpreted_as_utc_wall_clock``:
+它把「既有 naive 值按 UTC 判讀、絕對時點零平移」**釘成明示行為**,並同時斷言
+「不是台北判讀(那會早 8 小時)」—— 只斷言前者的話,測試無法證明自己真的在測
+判讀方向。判讀決策軌跡(07-26 拍板台北、07-27 改判 UTC)在
+``migrations/versions/r1_0040_governance_ledger_timestamptz.py`` 檔頭。有這條
+測試,將來有人改動判讀時區時,會先撞到「這是深思後的決定」而不是默默漂移。
 
 執行方式(需要一個**獨立、可丟棄**的 PostgreSQL,superuser DSN)::
 
@@ -51,7 +52,9 @@ _REVISION = "r1_0040"
 
 # 判讀時區 —— 與 migration 的 ``_INTERPRETATION_TZ`` 必須一致。刻意在測試裡再寫
 # 一次而不 import:如果哪天有人改了 migration 的常數,這裡要紅,而不是跟著改。
-_INTERPRETATION_TZ = "Asia/Taipei"
+# 2026-07-27 user 拍板改為 UTC(決策軌跡見 migration 檔頭 ①)。
+_INTERPRETATION_TZ = "UTC"
+# 台北判讀與 UTC 判讀的差 —— 留著給「不是台北判讀」的反向斷言用。
 _TAIPEI_OFFSET = timedelta(hours=8)
 
 # 本批 (A) 組:乾淨鏈上是 naive、由 r1_0040 轉型的 9 欄。
@@ -68,7 +71,7 @@ _CONVERTED = (
 )
 
 # 本批 (B) 組:乾淨鏈上**已經**是 timestamptz,只有 ORM 宣告要修。
-# r1_0040 不動它們的資料 → 不該有 8 小時平移。
+# r1_0040 不動它們的資料 → 值不該有任何改動。
 _ALREADY_TZ = (
     ("api_keys", "created_at"),
     ("api_keys", "last_used_at"),
@@ -78,8 +81,8 @@ _ALREADY_TZ = (
 # 種進去的已知 naive 值。刻意選 09:30(台北早上)—— 換成 UTC 判讀會落在同一天,
 # 換成台北判讀會落到**前一天** 01:30 UTC,兩種判讀的差別因此一眼可見。
 _SEED_NAIVE = datetime(2026, 3, 1, 9, 30, 0)
-# 「把 _SEED_NAIVE 當台北牆鐘」的絕對時點。
-_EXPECTED_AWARE = (_SEED_NAIVE - _TAIPEI_OFFSET).replace(tzinfo=timezone.utc)
+# 「把 _SEED_NAIVE 當 UTC 牆鐘」的絕對時點 —— 零平移。
+_EXPECTED_AWARE = _SEED_NAIVE.replace(tzinfo=timezone.utc)
 
 
 def _with_database(name: str) -> str:
@@ -256,11 +259,12 @@ def _read_converted_values(engine, *, session_tz: str) -> dict[str, datetime]:
     return out
 
 
-# ── ③ 8 小時平移是明示行為 ────────────────────────────────────────────────────
-def test_naive_values_are_reinterpreted_as_taipei_wall_clock(throwaway_db):
-    """轉型後讀回的 timestamptz = 「把既有 naive 值當台北牆鐘」的 UTC 時點。
+# ── ③ UTC 判讀:絕對時點零平移是明示行為 ─────────────────────────────────────
+def test_naive_values_are_reinterpreted_as_utc_wall_clock(throwaway_db):
+    """轉型後讀回的 timestamptz = 「把既有 naive 值當 UTC 牆鐘」—— 絕對時點不變。
 
-    這條就是把 8 小時平移**釘死成明示行為**,而不是意外。
+    這條把「零平移」**釘死成明示行為**,並反向斷言「不是台北判讀」——
+    否則測試無法證明自己真的在測判讀方向。
     """
     url = throwaway_db
     _run_alembic(url, "upgrade", _predecessor(url))
@@ -292,12 +296,13 @@ def test_naive_values_are_reinterpreted_as_taipei_wall_clock(throwaway_db):
             f"{key}:期望「{_SEED_NAIVE} 視同 {_INTERPRETATION_TZ}」= "
             f"{_EXPECTED_AWARE.isoformat()},實得 {actual.isoformat()}"
         )
-        # 把平移方向與大小寫成斷言,而不是只寫在註解裡:若判讀改成 'UTC',
-        # 這一行會紅並指出差了幾小時。
-        as_if_utc = _SEED_NAIVE.replace(tzinfo=timezone.utc)
-        assert as_if_utc - actual == _TAIPEI_OFFSET, (
-            f"{key}:絕對時點應比「當成 UTC 判讀」早 8 小時"
+        # 把判讀方向寫成雙向斷言,而不是只寫在註解裡:若判讀被改回
+        # 'Asia/Taipei',下面兩行會紅並指出差了幾小時。
+        as_if_taipei = (_SEED_NAIVE - _TAIPEI_OFFSET).replace(tzinfo=timezone.utc)
+        assert actual != as_if_taipei, (
+            f"{key}:讀到「當成台北牆鐘」的時點 —— 判讀時區被改動了"
         )
+        assert actual - as_if_taipei == _TAIPEI_OFFSET
 
     # (B) 組:既有值本來就是絕對時點,不該被平移。
     for table, column in _ALREADY_TZ:
@@ -315,10 +320,11 @@ def test_naive_values_are_reinterpreted_as_taipei_wall_clock(throwaway_db):
 
 
 def test_post_migration_writes_are_true_utc_not_shifted(throwaway_db):
-    """檔頭 ③ 的另一半:遷移**後**由 aware UTC 寫入的值不再平移。
+    """檔頭 ③ 的另一半:遷移**後**由 aware UTC 寫入的值與遷移前的紀錄**連續**。
 
-    兩者合起來就是那個「8 小時不連續」—— 同一欄裡遷移前後的紀錄差一個台北位移,
-    而資料本身沒有標記能區分。這條測試存在的意義是讓那個不連續**有人為它作證**。
+    UTC 判讀下,同一個「09:30」牆鐘在遷移前(naive 轉型)與遷移後(aware 寫入)
+    是同一個絕對時點 —— 零不連續。這條測試為「連續性」作證;若判讀被改成台北,
+    這裡會出現 8 小時階梯並讓斷言紅掉。
     """
     url = throwaway_db
     _run_alembic(url, "upgrade", _predecessor(url))
@@ -351,13 +357,13 @@ def test_post_migration_writes_are_true_utc_not_shifted(throwaway_db):
     post_migration = {r[0]: r[1] for r in rows}["2"]
 
     assert post_migration == written, "遷移後寫入的 aware UTC 值不該被改動"
-    # 同一個「09:30」的牆鐘,遷移前後差 8 小時 —— 這就是不連續本體。
-    assert post_migration - pre_migration == _TAIPEI_OFFSET
+    # 同一個「09:30」的牆鐘,遷移前後是同一個絕對時點 —— 連續、零階梯。
+    assert post_migration == pre_migration
 
 
 # ── ①② 對稱 downgrade 與冪等 ─────────────────────────────────────────────────
 def test_downgrade_restores_original_naive_bytes(throwaway_db):
-    """``downgrade`` 用對稱 ``AT TIME ZONE 'Asia/Taipei'`` 還原,資訊無損。"""
+    """``downgrade`` 用對稱 ``AT TIME ZONE 'UTC'`` 還原,資訊無損。"""
     url = throwaway_db
     predecessor = _predecessor(url)
     _run_alembic(url, "upgrade", predecessor)
@@ -405,8 +411,9 @@ def test_second_upgrade_on_already_converted_columns_is_a_noop(throwaway_db):
     """``upgrade`` 對已是 timestamptz 的欄跳過 —— 不會再平移一次 8 小時。
 
     這條防的是「重跑 migration 導致重複轉換」:如果 upgrade 沒有型別守衛,
-    第二次 ``AT TIME ZONE 'Asia/Taipei'`` 會把絕對時點再往前推 8 小時,
-    而治理紀錄不會有任何跡象顯示這件事發生過。
+    第二次 ``AT TIME ZONE`` 會先把 timestamptz 拆回 naive、再經 session TZ 的
+    隱式轉換寫回 —— session TZ 非 UTC 時絕對時點就被平移,而治理紀錄不會有
+    任何跡象顯示這件事發生過。
     """
     url = throwaway_db
     predecessor = _predecessor(url)

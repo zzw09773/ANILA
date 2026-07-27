@@ -10,6 +10,8 @@
 
 **rev.1(2026-07-26)** —— 攻堅鏈 ③(Fable 5)初版:41 個工作包 + 五份子計畫,並以一手證據推翻合成報告五處事實(§1 F1–F8),已回寫合成報告 rev.2。
 
+**rev.3(2026-07-27)** —— D4 改判:user 於實作者以具體例子重釋「顯示層 UTC+8」與「既有 naive 值判讀」是兩個獨立決定後,將儲存/遷移層判讀由「視同 UTC+8」改為「**視同 UTC**」(零平移;台北判讀會讓歷史紀錄顯示比實際早 8 小時)。同步改動:§0 D4 列、W2-10 改法②、C1 §b/§c/§f、`r1_0040` migration 與 `test_w210_governance_timestamptz_pg.py`。呈現層 UTC+8 不變。
+
 **rev.2(2026-07-26,Opus 5 缺漏審查後整合)** —— 對 rev.1 做獨立缺漏審查(逐條核對完整性審查 L1–L16、合成 T2-11 十八列、S1–S7、依賴圖環路、驗收條件是否機械可檢查、驗收是否偷偷全落在 admin 面)。**rev.1 通過絕大多數檢查**——依賴圖無環、驗收幾乎全為「指令 + 期望輸出」、Wave 3 離開條件要求複測 W1-0 前測且完成率不得低於 baseline(這條直接解掉第一輪「驗收全在 admin 面」之弊,做得比合成報告好)。以下 10 條為補入項:
 
 | # | 缺漏 | 類型 | 補在哪 |
@@ -70,7 +72,7 @@
 | ~~D1~~ | ~~PR #50 merge 或 close~~ → **已決:merge**(2026-07-26 user 拍板) | — | §2.1 四條機械收斂條件仍須先綠才可執行 merge;錨點沿用 `feat/ux-parity` 座標 |
 | ~~D2~~ | ~~PR #51 的 merge 條件核可~~ → **已決:merge 路線核可**(2026-07-26) | — | ⚠ **核可的是路線,不是「現在就 merge」**:M1–M5(§2.2)未達成前不得 merge,否則會把已知 CRITICAL(legal-hold TOCTOU)送上 main。M3 blocked-by W0-2 |
 | ~~D3~~ | ~~樣式策略三選一~~ → **已決:甲案 CSS Modules + design tokens**(2026-07-26) | — | 子計畫 C4;`packages/tokens` 沿用;需在 W0-3 的 ESLint 加「禁新增 inline style」規則,否則 966 處只會變 967 |
-| ~~D4~~ | ~~93 個 naive timestamp 的既有值判讀~~ → **已決:兩層皆 UTC+8**(2026-07-26,user 經一次反對意見後重申) | — | 呈現層 UTC+8 = W1-4④;儲存層用 `AT TIME ZONE 'Asia/Taipei'`。⚠ **W2-10 執行前須齊備三項前置**(生產受影響筆數報表、資料權責人書面簽核、獨立快照+對稱 downgrade),見 C1 §c。⛔ 連帶鐵則:**csp-db 容器 TZ 在該批欄轉完前必須維持 UTC** |
+| ~~D4~~ | ~~93 個 naive timestamp 的既有值判讀~~ → **已決:呈現層 UTC+8、儲存判讀 UTC**(2026-07-27 改判;決策軌跡:07-26 拍板台北判讀 → 07-27 以具體例子重釋兩層差異後,user 改拍板 UTC) | — | 呈現層 UTC+8 = W1-4④(不變);儲存層用 `AT TIME ZONE 'UTC'`(既有值即 UTC 牆鐘,絕對時點零平移,歷史紀錄顯示出的台灣時間才正確)。⚠ **W2-10 執行前須齊備三項前置**(生產受影響筆數報表、資料權責人書面簽核、獨立快照+對稱 downgrade),見 C1 §c。⛔ 連帶鐵則:**csp-db 容器 TZ 在該批欄轉完前必須維持 UTC** |
 | ~~D5~~ | ~~access_grant 收斂路線~~ → **已決:雙軌影子讀**(2026-07-26,user 授權照建議執行) | — | 子計畫 C2 §d:Phase 0 唯讀收斂 → Phase 1 雙寫+影子讀 → 連續 14 天零不一致才切讀;每張表獨立走,先 `collection_access_grants` |
 | ~~D6~~ | ~~軍方相關條目降級清單確認~~ → **已決(2026-07-26,user 拍板:軍方相關先不做)** | — | §6.1 六條降級清單生效;每 Wave 收尾記欠帳 |
 
@@ -467,7 +469,7 @@
 
 #### W2-10(=T0-4 欄位面,子計畫 C1 批次 1)治理帳 timestamp 欄轉 timestamptz
 - **錨點**:93 naive 欄(實庫 introspection,稽核源);病根範例 `r1_0017:85`;寫入端語意 ◎複驗(§1 F8)
-- **改法**:依子計畫 C1:① 批次 1 = 治理帳 + api_keys(小表、法律證據優先);② **`USING col AT TIME ZONE 'Asia/Taipei'`**(D4 已決,2026-07-26);③ **同一 PR 內把該批欄的 ORM 宣告一併改為 `DateTime(timezone=True)`,並從 W0-1 政策段 baseline 下修對應筆數**——只改 PG 不改 ORM 會讓剛做完的正確工作反而觸發 drift 告警;④ migration 檔頭寫入 C1 §c 要求的判讀脈絡段;⑤ 批次 2(大表 messages/document_chunks 等)另窗。
+- **改法**:依子計畫 C1:① 批次 1 = 治理帳 + api_keys(小表、法律證據優先);② **`USING col AT TIME ZONE 'UTC'`**(D4 於 2026-07-27 改判為 UTC,見 §0);③ **同一 PR 內把該批欄的 ORM 宣告一併改為 `DateTime(timezone=True)`,並從 W0-1 政策段 baseline 下修對應筆數**——只改 PG 不改 ORM 會讓剛做完的正確工作反而觸發 drift 告警;④ migration 檔頭寫入 C1 §c 要求的判讀脈絡段;⑤ 批次 2(大表 messages/document_chunks 等)另窗。
 - **工作量**:3.5(批次 1,含真 PG 測試、ORM 同步與演練)
 - **依賴**:blocked-by W1-4(邊界先行)、W2-6(單一 schema 機制)、**C1 §c 三項執行前置**(生產受影響筆數報表 / 資料權責人書面簽核 / 獨立快照)。
 - **驗收**:見 C1 §g;**追加**:① migration 檔頭含判讀脈絡段(grep 關鍵句);② 簽核文件與 migration 同 PR;③ `downgrade` 用對稱 `AT TIME ZONE 'Asia/Taipei'` 還原並經 upgrade→downgrade→upgrade 冪等測試。
@@ -674,14 +676,14 @@
 - **批次 1(W2-10,小表、法律證據優先)**:`classification_events`、`policy_decisions`、`declassification_requests`(`created_at`/`decided_at`)、`classification_authority_assignments`(`created_at`/`revoked_at`)、`export_records`、`api_keys.expires_at`、各表 `classification_latched_at` 中屬小表者(conversations/artifacts)。
 - **批次 2(獨立維護窗)**:大表 `messages`、`document_chunks`、`ingestion_*` 的 naive 欄——`ALTER TYPE ... USING` 觸發**全表重寫 + ACCESS EXCLUSIVE 鎖**,鎖時長 ∝ 表大小,必須量測後排窗。
 
-**b. `USING` 子句**:`ALTER COLUMN <col> TYPE timestamptz USING <col> AT TIME ZONE 'Asia/Taipei'`(D4 已決,2026-07-26;判讀依據與前置條件見 §c)。
+**b. `USING` 子句**:`ALTER COLUMN <col> TYPE timestamptz USING <col> AT TIME ZONE 'UTC'`(D4 於 2026-07-27 改判為 UTC;判讀依據與前置條件見 §c)。
 
 **c. 既有值判讀(D4)** —— ⚠ **2026-07-26 user 回覆「timezone 都採 UTC+8」,此處必須拆成兩層,因為它們是兩個不同的決定:**
 
 | 層 | 決定 | 狀態 |
 |---|---|---|
 | **呈現層**(前端顯示、報表、log 可讀時間) | **一律 UTC+8 / `Asia/Taipei`** | ✅ **已採納**,即 W1-4④ 的共用 formatter(`zh-TW` + `timeZone:'Asia/Taipei'`);另可把 csp/db 容器加 `TZ: Asia/Taipei` 讓 log 也是台灣時間(對資料零影響,因為裸 `datetime.now()` 是 0 處) |
-| **儲存/遷移層**(93 個 naive 欄的既有值怎麼解讀) | **user 拍板:視同 UTC+8**(2026-07-26,經一次反對意見後重申) | ⚠ **已記錄為 user 決定,但 W2-10 執行前須經資料權責人書面簽核**(見下方「執行前置」) |
+| **儲存/遷移層**(93 個 naive 欄的既有值怎麼解讀) | **user 拍板:視同 UTC**(2026-07-27 改判。軌跡:07-26 曾拍板「視同 UTC+8」並經一次反對意見後重申;07-27 實作者以具體例子重釋「顯示層 UTC+8」與「舊值判讀」是兩個獨立決定、台北判讀會讓歷史紀錄顯示比實際早 8 小時,user 改拍板 UTC) | ⚠ **已記錄為 user 決定,但 W2-10 執行前仍須經資料權責人書面簽核**(見下方「執行前置」) |
 
 **實作者反對意見與其證據**(◎Opus 5 2026-07-26 複驗;**已被 user 重申後覆蓋,此處保留供簽核人判斷**):
 
@@ -728,7 +730,7 @@ DB session TimeZone = Etc/UTC
 
 ### 執行前置(W2-10 動工前必須齊備)
 
-user 已拍板「視同 UTC+8」。因為此判讀會改動已寫入的治理紀錄,W2-10 執行前**必須**齊備下列三項,缺一不可:
+user 已拍板「視同 UTC」(2026-07-27 改判,零平移)。判讀雖不再改動既有紀錄的絕對時點,型別轉換仍動到治理帳,W2-10 執行前**必須**齊備下列三項,缺一不可:
 
 1. **受影響範圍報表**:對 **`.15` 生產庫**(不是 dev)逐表列出 naive 欄的實際筆數。dev stack 現況供參考,**不可當生產數字**:
    ```
@@ -741,7 +743,7 @@ user 已拍板「視同 UTC+8」。因為此判讀會改動已寫入的治理紀
 2. **資料權責人書面簽核**:文件須載明「本次遷移將使 N 筆治理紀錄的時點往前平移 8 小時」,並記錄簽核人、日期、依據。此文件與 migration 同 PR。
 3. **可逆性**:`downgrade()` 用 `AT TIME ZONE 'Asia/Taipei'` 對稱還原(資訊無損);並在 upgrade 前對受影響表做一次獨立快照(不依賴 W1-6 的備份鏈,因為那條還在修)。
 
-**遷移語句**:`ALTER COLUMN <col> TYPE timestamptz USING <col> AT TIME ZONE 'Asia/Taipei'`。
+**遷移語句**:`ALTER COLUMN <col> TYPE timestamptz USING <col> AT TIME ZONE 'UTC'`。
 
 **migration 檔頭必須寫明**:此判讀為 2026-07-26 user 拍板;實作者(Opus 5)曾以「兩條寫入路徑皆為 UTC」提出反對意見並被重申;採用本判讀後,遷移**前後**寫入的紀錄在絕對時點上會有 8 小時不連續(遷移後由 `datetime.now(timezone.utc)` 寫入的值是真 UTC)。**把這段寫進 migration 而不是只寫在計畫裡**,是為了讓未來的稽核複查能自行判斷,而不是只看到一個沒有脈絡的 `AT TIME ZONE 'Asia/Taipei'`。
 
@@ -749,7 +751,7 @@ user 已拍板「視同 UTC+8」。因為此判讀會改動已寫入的治理紀
 
 **d. 鎖與時限**:runtime 的 `lock_timeout=5000ms` 只掛 app engine;**alembic 的 MIGRATION_DATABASE_URL 明文不得繼承**(`config.py:77-81` ◎複驗)。批次 1 各表在 dev stack 快照庫實測 ALTER 耗時,寫入 migration 檔頭註解;批次 2 必先在還原副本上量測(這步驟同時是 W1-6 restore 演練的活用)。
 **e. 與 `startup_migrations` 折回(W2-6)的先後**:**W2-6 先、C1 後**。理由:startup DDL 覆蓋的 8 張表若先做型別轉換、後做收編,同一批表要兩輪手術且 baseline 會漂;單一 schema 機制成立後,timestamptz 轉換是一次乾淨的 alembic revision。
-**f. downgrade**:對稱 `USING <col> AT TIME ZONE 'Asia/Taipei'`(timestamptz→timestamp 取台北牆鐘),資訊無損、可完整還原 upgrade 前的位元組值。
+**f. downgrade**:對稱 `USING <col> AT TIME ZONE 'UTC'`(timestamptz→timestamp 取 UTC 牆鐘),資訊無損、可完整還原 upgrade 前的位元組值。
 **g. 驗收**:① CI 乾淨 PG:upgrade→drift 腳本 timestamp 類殘量 = 93 − 批次涵蓋數;② pytest(真 PG):`classification_events.created_at` 回傳帶 `+00:00` 且值與寫入時點一致(跨 TZ 環境變數重跑一次,值不變);③ downgrade 再 upgrade 冪等;④ 批次 1 各表 ALTER 實測耗時 < 5s(否則移入批次 2)。
 **h. 派工**:實作A;驗收甲 + 驗收乙(判讀語意第二眼)。
 

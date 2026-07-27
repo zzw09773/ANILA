@@ -13,18 +13,22 @@ Create Date: 2026-07-26
 ════════════════════════════════════════════════════════════════════════════
 
 **這一段刻意寫在 migration 檔頭而不是只寫在補救計畫裡。** 理由:未來做稽核複查
-的人打開這支 migration 時,如果只看到一個沒有脈絡的 ``AT TIME ZONE
-'Asia/Taipei'``,他既無法判斷那是深思後的決定還是手滑,也無法自行評估治理紀錄
-的時點可不可信。所以決定、反對意見、以及可量測的後果三件事全部留在這裡。
+的人打開這支 migration 時,如果只看到一個沒有脈絡的 ``AT TIME ZONE 'UTC'``,
+他既無法判斷那是深思後的決定還是手滑,也無法自行評估治理紀錄
+的時點可不可信。所以決定、決策軌跡、以及可量測的後果三件事全部留在這裡。
 
-① **此判讀為 2026-07-26 user 拍板。**
-   既有 naive 值一律**視同 UTC+8(台北牆鐘)**,轉換語句是
-   ``ALTER COLUMN <col> TYPE timestamptz USING <col> AT TIME ZONE 'Asia/Taipei'``。
+① **判讀決定:既有 naive 值一律視同 UTC 牆鐘**,轉換語句是
+   ``ALTER COLUMN <col> TYPE timestamptz USING <col> AT TIME ZONE 'UTC'``。
+   決策軌跡(兩次拍板、方向相反,皆留痕):
+     * 2026-07-26:user 拍板「視同 UTC+8(台北牆鐘)」(經一次反對意見後重申)。
+     * 2026-07-27:實作者以具體例子重新說明「顯示層一律 UTC+8」與「舊值原本
+       是哪個時區的牆鐘」是兩個獨立的決定,且台北判讀會讓歷史紀錄的顯示時間
+       比事件實際發生時刻早 8 小時;user 改拍板「**判讀為 UTC**」。本檔依此執行。
    決定紀錄在 ``docs/planning/platform-remediation-plan-2026-07-26.md`` 子計畫
-   C1 §c 的決策表(儲存/遷移層那一列)。
+   C1 §c 的決策表(儲存/遷移層那一列)與修訂紀錄。
 
-② **實作者(Opus 5)曾以「兩條寫入路徑皆為 UTC」提出反對意見,user 聽完後重申
-   原決定。** 反對意見的證據原文如下(2026-07-26 複驗):
+② **判讀依據:兩條寫入路徑皆為 UTC**(2026-07-26 複驗;此清單原是實作者的
+   反對意見證據,2026-07-27 改判後成為本判讀的依據):
 
        services/csp/app/  datetime.now(timezone.utc)  → 210 處
                           datetime.utcnow()           →   1 處(同為 UTC 牆鐘)
@@ -38,33 +42,31 @@ Create Date: 2026-07-26
               UTC 牆鐘。
 
    也就是說**兩條獨立寫入路徑(Python 211 處 + DB server_default)都是 UTC**,
-   沒有第三條路徑。依此推斷既有 naive 值應為 UTC 牆鐘,而非台北牆鐘。
-   ``app/time_utils.py:as_utc()`` 的 docstring 至今也仍寫著「naive → 視同
-   UTC」—— 那支是 W1-4 的邊界止血,本包不得修改(SCOPE),所以**兩種判讀在
-   repo 內並存**:轉換後本批 12 欄再也不會回傳 naive 值,``as_utc()`` 對它們
-   變成 no-op,兩者因此不會在執行期打架;但讀碼的人會看到兩段互相矛盾的敘述,
-   這是刻意留下的痕跡,不是漏改。
+   沒有第三條路徑。既有 naive 值即 UTC 牆鐘,``AT TIME ZONE 'UTC'`` 的轉換
+   保持每一列的絕對時點不變。
+   ``app/time_utils.py:as_utc()`` 的 docstring 寫「naive → 視同 UTC」(W1-4
+   的邊界止血),與本判讀**一致** —— 07-26 版本曾刻意記錄兩者矛盾,07-27 改判
+   後矛盾消失,repo 內只剩一種判讀。
 
-③ **遷移前後寫入的紀錄在絕對時點上有 8 小時不連續。**
-   本 migration 之**前**寫入、且欄位當時是 naive 的那些列,經
-   ``AT TIME ZONE 'Asia/Taipei'`` 之後其絕對時點會**往前平移 8 小時**
-   (例如 naive ``2026-07-26 03:00:00`` → ``2026-07-25T19:00:00+00:00``)。
+③ **本判讀下,遷移前後的紀錄在絕對時點上連續、無平移。**
+   naive 值是 UTC 牆鐘、按 UTC 判讀 → 每一列的絕對時點在轉換前後相同
+   (例如 naive ``2026-07-26 03:00:00`` → ``2026-07-26T03:00:00+00:00``);
    本 migration 之**後**由 ``datetime.now(timezone.utc)`` 寫入的是真 UTC,
-   不再平移。因此同一個欄位裡,**遷移前後的紀錄之間存在 8 小時的階梯**,而且
-   資料本身沒有任何標記能區分某一列屬於哪一側 —— 只能靠這支 migration 的執行
-   時點(``alembic_version`` 與部署紀錄)推斷。
+   同一語意。顯示層(W1-4④ 共用 formatter)再以 ``Asia/Taipei`` 呈現,
+   使用者看到的一律是正確的台灣時間。
 
-   受影響的治理帳(法律證據性質):
+   因此不產生時點失真的治理帳(法律證據性質):
      * ``classification_events``                  分類異動 ledger
      * ``declassification_requests``              雙人降密核准(申請/決議時點)
      * ``classification_authority_assignments``   公文文號權責指派
      * ``policy_decisions``                       政策裁決 ledger
      * ``export_records``                         匯出紀錄(外流證據)
 
-   若後續判定此後果不可接受,把本檔的 ``_INTERPRETATION_TZ`` 改成 ``'UTC'``
-   即可 —— 但**必須在本 migration 於該部署執行之前**;執行後要改回需另寫補償
-   migration(``... AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Taipei'`` 之類的
-   雙重轉換),而那會在同一欄裡再堆一層不連續。
+   若後續要改採台北判讀(不建議 —— 會讓上述治理帳的歷史時點往前平移 8 小時,
+   顯示時間比事件實際發生時刻早 8 小時),把本檔的 ``_INTERPRETATION_TZ`` 改成
+   ``'Asia/Taipei'`` 即可 —— 但**必須在本 migration 於該部署執行之前**;執行後
+   要改需另寫補償 migration(雙重 ``AT TIME ZONE`` 轉換),而那會在同一欄裡
+   堆出不連續。
 
 ════════════════════════════════════════════════════════════════════════════
 範圍:批次 1(治理帳 + api_keys)
@@ -157,10 +159,10 @@ time zone`` 欄時**按 session TZ 轉換**。所以只要 DB session TZ 從 ``E
   * 值 > ``now() + 1h``:治理帳的 ``created_at`` / ``decided_at`` /
     ``revoked_at`` / ``classification_latched_at`` 不該有未來時點。
   * ``api_keys.expires_at`` 逐筆列出:它是**唯一來自 client request body** 的
-    欄(``schemas/api_key.py:13``),若曾有 client 送裸本地時間,``Asia/Taipei``
-    判讀對那些列反而是對的、對其餘列是錯的。C1 §c 要求它在生產執行前**逐筆
-    列出人工審**,而那份清單只能對 ``.15`` 生產庫產出 —— 本 migration 只負責
-    把它印出來,不代替那份簽核(見 PR 說明的「未確認」欄)。
+    欄(``schemas/api_key.py:13``),若曾有 client 送裸台北本地時間,``UTC``
+    判讀對那些列會偏 8 小時(其餘伺服器寫入的列則正確)。C1 §c 要求它在生產
+    執行前**逐筆列出人工審**,而那份清單只能對 ``.15`` 生產庫產出 —— 本
+    migration 只負責把它印出來,不代替那份簽核(見 PR 說明的「未確認」欄)。
 """
 
 from __future__ import annotations
@@ -181,12 +183,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 logger = logging.getLogger("alembic.runtime.migration")
 
-# 既有 naive 值的判讀時區 —— 2026-07-26 user 拍板(見檔頭 ①②③)。
+# 既有 naive 值的判讀時區 —— 2026-07-27 user 拍板改為 UTC(決策軌跡見檔頭 ①)。
 # upgrade 與 downgrade **共用同一個常數**,所以兩向一定對稱:
-#   naive --AT TIME ZONE 'Asia/Taipei'--> timestamptz
-#   timestamptz --AT TIME ZONE 'Asia/Taipei'--> naive(取台北牆鐘)
+#   naive --AT TIME ZONE 'UTC'--> timestamptz
+#   timestamptz --AT TIME ZONE 'UTC'--> naive(取 UTC 牆鐘)
 # 這組互為反函式,資訊無損。
-_INTERPRETATION_TZ = "Asia/Taipei"
+_INTERPRETATION_TZ = "UTC"
 
 # 撞鎖就立刻失敗,不要排隊擋住治理帳整表(見檔頭「鎖與耗時」)。
 _LOCK_TIMEOUT = "15s"
@@ -286,8 +288,8 @@ def _exception_scan(bind) -> None:
         if rows:
             logger.warning(
                 "W2-10 例外掃描:api_keys.expires_at 有 %d 列非 NULL,逐筆列出"
-                "(C1 §c —— 這個欄的值來自 client,'Asia/Taipei' 判讀對它可能"
-                "反而是對的):",
+                "(C1 §c —— 這個欄的值來自 client,若曾有 client 送裸本地時間,"
+                "'UTC' 判讀對那些列會偏 8 小時):",
                 len(rows),
             )
             for row in rows:
@@ -305,10 +307,10 @@ def _exception_scan(bind) -> None:
 def _alter(table: str, column: str, *, to_aware: bool) -> None:
     """兩向都用同一個 ``AT TIME ZONE`` 常數 —— 對稱、資訊無損。"""
     if to_aware:
-        # naive 牆鐘 → 絕對時點(把牆鐘當台北時間解讀)
+        # naive 牆鐘 → 絕對時點(把牆鐘當 UTC 解讀)
         new_type = "timestamptz"
     else:
-        # 絕對時點 → naive 牆鐘(取台北牆鐘)
+        # 絕對時點 → naive 牆鐘(取 UTC 牆鐘)
         new_type = "timestamp"
     op.execute(
         f'ALTER TABLE "{table}" ALTER COLUMN "{column}"'  # noqa: S608 — 常數
@@ -344,7 +346,7 @@ def upgrade() -> None:
             # 乾淨鏈上的正常路徑。
             continue
         # 這個部署的欄被歷史 startup DDL 建成 TIMESTAMP。順手收斂,但要留痕:
-        # 它的既有值也會被 'Asia/Taipei' 重新判讀,而檔頭 (B) 那段說的
+        # 它的既有值也會按 _INTERPRETATION_TZ 重新判讀,而檔頭 (B) 那段說的
         # 「不需要轉換」對這個部署不成立。
         logger.warning(
             "W2-10:%s.%s 在本部署是 naive(乾淨 alembic 鏈上是 timestamptz)"
