@@ -259,3 +259,53 @@ def test_sampling_review_rejects_non_admin(client, db):
         },
     )
     assert resp.status_code == 403
+
+
+# ── 表單欄位宣告(HTTP 層)───────────────────────────────────────────────────
+#
+# 上面那些 zip 測試(以及真 PG 那支)都是**直接呼叫 Python 函式**,所以它們對
+# `classification_level` 究竟被宣告成 Form 還是 Query 完全無感 —— 兩種寫法在函式
+# 呼叫層一模一樣,但只有 Form 收得到瀏覽器送出的 multipart 欄位。獨立驗收時是靠人工
+# 打真 multipart 才確認的,repo 自己抓不到,所以補這一支。
+#
+# 判別方式刻意選「宣告低於下限 → 400」:若欄位被宣告成 query,multipart 裡的值會被
+# 忽略 → 上傳照常成功(202),這支就紅。
+
+
+def _zip_payload(members: list[tuple[str, bytes]]) -> bytes:
+    import zipfile
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, body in members:
+            zf.writestr(name, body)
+    return buf.getvalue()
+
+
+def test_zip_endpoint_reads_classification_level_from_multipart_form(
+    client, db, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "EMBEDDING_MODEL_FINGERPRINT", _FINGERPRINT)
+    monkeypatch.setattr(documents, "_UPLOAD_DIR", str(tmp_path))
+    owner = make_user(db, username="w211-zipform")
+    coll = _collection(db, owner, name="zip-form-kb", level="營業秘密")
+    token = login(client, "w211-zipform")
+
+    resp = client.post(
+        f"/api/ingestion/collections/{coll.id}/documents/zip",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("bundle.zip", _zip_payload([("m.txt", b"body")]), "application/zip")},
+        data={"classification_level": "無機密"},
+    )
+
+    assert resp.status_code == 400, (
+        f"宣告低於下限應回 400;實得 {resp.status_code} —— 若是 202,"
+        f"表示 multipart 的 classification_level 沒被讀到(欄位宣告成 Query?)"
+    )
+    assert resp.headers["content-type"].startswith("application/json")
+    assert (
+        db.query(IngestionDocument)
+        .filter(IngestionDocument.collection_id == coll.id)
+        .count()
+        == 0
+    ), "被拒絕的批次不該留下任何文件"

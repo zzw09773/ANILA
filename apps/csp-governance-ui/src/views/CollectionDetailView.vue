@@ -319,7 +319,7 @@ import { listRelations, createRelation, deleteRelation, reresolveRelations } fro
 import { streamJob } from '../api/ingestionJobs'
 import { TermBox, TermButton, TermBadge, TermEmpty, TermModal, TermField } from '../components/cli'
 import RelationGraph from '../components/RelationGraph.vue'
-import { expandUploadJobs, partitionDroppedFiles } from '../utils/uploadDropQueue'
+import { partitionDroppedFiles, runUploadJobs } from '../utils/uploadDropQueue'
 
 const route = useRoute()
 const authStore = useAuthStore()
@@ -559,11 +559,10 @@ async function confirmPendingUpload() {
   const { plain, zips } = pendingUpload.value
   const level = uploadClassificationDraft.value
   pendingUpload.value = null
-  const jobs = expandUploadJobs({ plain, zips })
-  const fileJobs = jobs.filter((j) => j.type === 'file').map((j) => j.file)
-  const zipJobs = jobs.filter((j) => j.type === 'zip').map((j) => j.file)
-  if (fileJobs.length) await doUploadMany(fileJobs, level)
-  for (const zip of zipJobs) await doZipUpload(zip, level)
+  await runUploadJobs({ plain, zips }, level, {
+    uploadFiles: doUploadMany,
+    uploadZip: doZipUpload,
+  })
 }
 // 免壓縮多檔上傳:逐檔序列上傳(避免一次塞爆、進度可讀),收集各檔錯誤,最後整批刷新一次。
 async function doUploadMany(files, classificationLevel) {
