@@ -47,66 +47,70 @@ def _existing_indexes(table: str) -> set[str]:
 
 
 def upgrade() -> None:
-    # Every DDL operation is guarded because this chain has to survive a
-    # replay: `test_w26_startup_ddl_absorption_pg` stamps the version pointer
-    # back and runs `upgrade head` again, which is how a real deployment
-    # recovers when the pointer and the schema disagree. r1_0036 / 0038 /
-    # 0040 / 0041 all tolerate that; this one did not, and the gap went
-    # unnoticed because the test skips itself when no PostgreSQL DSN is set,
-    # so the runs that gated the original merge never executed it.
-    if "classification_sampling_reviews" in _existing_tables():
-        return
-
-    op.create_table(
-        "classification_sampling_reviews",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column(
-            "document_id",
-            sa.Integer(),
-            sa.ForeignKey("ingestion_documents.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column(
-            "collection_id",
-            sa.Integer(),
-            sa.ForeignKey("ingestion_collections.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column(
-            "reviewer_user_id",
-            sa.Integer(),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column("document_level_at_review", sa.String(length=20), nullable=False),
-        sa.Column("attested_level", sa.String(length=20), nullable=False),
-        sa.Column("outcome", sa.String(length=32), nullable=False),
-        sa.Column("note", sa.Text(), nullable=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("CURRENT_TIMESTAMP"),
-        ),
-        sa.CheckConstraint(
-            "document_level_at_review IN ("
-            + ", ".join(f"'{level}'" for level in _LEVELS)
-            + ")",
-            name="ck_classification_sampling_reviews_document_level",
-        ),
-        sa.CheckConstraint(
-            "attested_level IN ("
-            + ", ".join(f"'{level}'" for level in _LEVELS)
-            + ")",
-            name="ck_classification_sampling_reviews_attested_level",
-        ),
-        sa.CheckConstraint(
-            "outcome IN ("
-            + ", ".join(f"'{value}'" for value in _OUTCOMES)
-            + ")",
-            name="ck_classification_sampling_reviews_outcome",
-        ),
-    )
+    # Every DDL operation is guarded INDEPENDENTLY because this chain has to
+    # survive a replay: `test_w26_startup_ddl_absorption_pg` stamps the version
+    # pointer back and runs `upgrade head` again, which is how a real
+    # deployment recovers when the pointer and the schema disagree. r1_0036 /
+    # 0038 / 0040 / 0041 all tolerate that; this one did not, and the gap went
+    # unnoticed because the test skips itself when no PostgreSQL DSN is set, so
+    # the runs that gated the original merge never executed it.
+    #
+    # Guarding per-object rather than returning early on "table exists" is the
+    # difference between a replay and a REPAIR. A database whose table survived
+    # but lost an index needs the missing index recreated; an early return
+    # leaves that gap permanently, and check_orm_pg_drift classifies it as
+    # STRUCTURAL — a hard CI failure with no migration able to fix it.
+    if "classification_sampling_reviews" not in _existing_tables():
+        op.create_table(
+            "classification_sampling_reviews",
+            sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column(
+                "document_id",
+                sa.Integer(),
+                sa.ForeignKey("ingestion_documents.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "collection_id",
+                sa.Integer(),
+                sa.ForeignKey("ingestion_collections.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "reviewer_user_id",
+                sa.Integer(),
+                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column("document_level_at_review", sa.String(length=20), nullable=False),
+            sa.Column("attested_level", sa.String(length=20), nullable=False),
+            sa.Column("outcome", sa.String(length=32), nullable=False),
+            sa.Column("note", sa.Text(), nullable=True),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                nullable=False,
+                server_default=sa.text("CURRENT_TIMESTAMP"),
+            ),
+            sa.CheckConstraint(
+                "document_level_at_review IN ("
+                + ", ".join(f"'{level}'" for level in _LEVELS)
+                + ")",
+                name="ck_classification_sampling_reviews_document_level",
+            ),
+            sa.CheckConstraint(
+                "attested_level IN ("
+                + ", ".join(f"'{level}'" for level in _LEVELS)
+                + ")",
+                name="ck_classification_sampling_reviews_attested_level",
+            ),
+            sa.CheckConstraint(
+                "outcome IN ("
+                + ", ".join(f"'{value}'" for value in _OUTCOMES)
+                + ")",
+                name="ck_classification_sampling_reviews_outcome",
+            ),
+        )
     existing = _existing_indexes("classification_sampling_reviews")
     for name, column in (
         ("ix_classification_sampling_reviews_created_at", "created_at"),
