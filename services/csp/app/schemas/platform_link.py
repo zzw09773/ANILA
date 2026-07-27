@@ -1,3 +1,4 @@
+from app.schemas.base import ApiResponseModel
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
@@ -55,7 +56,7 @@ class PlatformLinkUpdate(BaseModel):
         return _validate_required_roles(v)
 
 
-class PlatformLinkResponse(BaseModel):
+class PlatformLinkResponse(ApiResponseModel):
     id: int
     name: str
     url: str

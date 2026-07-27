@@ -300,6 +300,23 @@ jobs:
       - name: Check OpenAPI artifact and response_model ratchet
         run: python scripts/export-openapi.py --check
 
+      # Response JSON datetime 必須帶明確 UTC offset。naive ORM 欄位經
+      # ApiResponseModel 正規化;這支 gate 擋住「新 endpoint 悄悄停做」與
+      # untyped dict 回傳 datetime。exit 3 = findings、exit 1 = 檢查壞了。
+      # **不准用 `|| true`**。
+      - name: response datetime UTC offset gate
+        run: |
+          set +e
+          PYTHONPATH=services/csp:packages/anila-contracts/src:packages/anila-security/src:packages/anila-core/src \
+            python infra/ci/check_response_datetime_utc.py
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "response datetime UTC offset OK" ;;
+            3) echo "::error::response datetime 缺 UTC offset(見上方清單)"; exit 1 ;;
+            *) echo "::error::response datetime gate 本身失敗(exit $rc)"; exit "$rc" ;;
+          esac
+
   postgres-rls:
     name: Backend / PostgreSQL RLS
     needs: [contract-smoke, backend-core, backend-ingestion, backend-csp]

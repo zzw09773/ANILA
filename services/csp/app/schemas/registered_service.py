@@ -8,6 +8,8 @@ Enums mirror doc §3's closed value sets and are validated at the API boundary
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 import enum
 from datetime import datetime
 
@@ -136,7 +138,7 @@ class RegisteredServiceUpdate(BaseModel):
         return _validate_required_roles(v)
 
 
-class RegisteredServiceResponse(BaseModel):
+class RegisteredServiceResponse(ApiResponseModel):
     id: int
     name: str
     slug: str
@@ -190,7 +192,7 @@ class LaunchRequest(BaseModel):
     project_id: str | None = None
 
 
-class LaunchResponse(BaseModel):
+class LaunchResponse(ApiResponseModel):
     launch_id: str
     launch_token: str
     launch_url: str
@@ -232,7 +234,7 @@ class AuditCallbackPayload(BaseModel):
         return v
 
 
-class AuditCallbackResponse(BaseModel):
+class AuditCallbackResponse(ApiResponseModel):
     id: int
     service_id: int | None
     launch_id: str | None
@@ -251,7 +253,7 @@ class ProjectBindingCreate(BaseModel):
     is_primary_entry: bool = False
 
 
-class ProjectBindingResponse(BaseModel):
+class ProjectBindingResponse(ApiResponseModel):
     id: int
     service_id: int
     project_id: str

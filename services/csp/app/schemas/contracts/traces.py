@@ -15,6 +15,8 @@ span_type / name / status / started_at / ended_at / attributes。
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 import enum
 from datetime import datetime
 from typing import Any
@@ -79,7 +81,7 @@ class TraceSpanIn(BaseModel):
     classification_level: ClassificationLevel | None = None
 
 
-class TraceSpanOut(BaseModel):
+class TraceSpanOut(ApiResponseModel):
     """TraceSpan 讀出契約(from ORM)。"""
 
     id: int

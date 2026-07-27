@@ -17,6 +17,8 @@ DELETE              hard delete (rotation kill-switch).
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 from typing import Annotated
 
@@ -66,7 +68,7 @@ class CredentialUpdate(BaseModel):
     model_name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
-class CredentialResponse(BaseModel):
+class CredentialResponse(ApiResponseModel):
     """Public projection — never carries the key bytes."""
 
     model_config = ConfigDict(from_attributes=True)

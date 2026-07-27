@@ -1,3 +1,4 @@
+from app.schemas.base import ApiResponseModel
 from datetime import datetime
 import ipaddress
 from collections.abc import Mapping
@@ -354,7 +355,7 @@ class ModelUpdate(BaseModel):
         return self
 
 
-class ModelResponse(BaseModel):
+class ModelResponse(ApiResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int

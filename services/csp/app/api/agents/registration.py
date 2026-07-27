@@ -1,3 +1,4 @@
+from app.schemas.base import ApiResponseModel
 """Agent registration / CRUD / template download endpoints.
 
 Split verbatim from the former single-module ``app/api/agents.py``
@@ -126,7 +127,7 @@ class AgentRegisterRequest(BaseModel):
     shadow: bool = False
 
 
-class AgentResponse(BaseModel):
+class AgentResponse(ApiResponseModel):
     id: int
     name: str
     owner_user_id: int

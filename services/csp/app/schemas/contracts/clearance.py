@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 
 from anila_contracts import Classification
@@ -26,7 +28,7 @@ class SecurityCompartmentCreate(_StrictModel):
     description: str | None = None
 
 
-class SecurityCompartmentOut(_StrictModel):
+class SecurityCompartmentOut(ApiResponseModel):
     id: int
     code: str
     name: str
@@ -52,7 +54,7 @@ class ClearanceGrantCreate(_StrictModel):
         return self
 
 
-class ClearanceGrantOut(_StrictModel):
+class ClearanceGrantOut(ApiResponseModel):
     id: int
     subject_user_id: int
     max_classification_level: Classification
@@ -67,7 +69,7 @@ class ClearanceGrantOut(_StrictModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
-class GrantCompartmentOut(_StrictModel):
+class GrantCompartmentOut(ApiResponseModel):
     clearance_grant_id: int
     compartment_id: int
     created_at: datetime
@@ -87,7 +89,7 @@ class CollectionAccessGrantCreate(_StrictModel):
         return self
 
 
-class CollectionAccessGrantOut(_StrictModel):
+class CollectionAccessGrantOut(ApiResponseModel):
     id: int
     clearance_grant_id: int
     collection_id: int
@@ -106,7 +108,7 @@ class RequiredCompartmentAssign(_StrictModel):
     basis_ticket: str = Field(min_length=1, max_length=255)
 
 
-class RequiredCompartmentOut(_StrictModel):
+class RequiredCompartmentOut(ApiResponseModel):
     compartment_id: int
     basis_ticket: str
     assigned_by_user_id: int

@@ -1,3 +1,4 @@
+from app.schemas.base import ApiResponseModel
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
@@ -37,7 +38,7 @@ class ApiKeyUpdate(BaseModel):
         return trimmed
 
 
-class ApiKeyResponse(BaseModel):
+class ApiKeyResponse(ApiResponseModel):
     id: int
     user_id: int
     name: str

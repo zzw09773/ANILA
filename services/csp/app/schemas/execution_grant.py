@@ -10,6 +10,8 @@ and the dedicated caller-user header.
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from typing import Literal
 
 from pydantic import ConfigDict, Field, StrictInt, StrictStr, BaseModel
@@ -64,7 +66,7 @@ class ExecutionGrantMintRequest(BaseModel):
     ttl_seconds: StrictInt = Field(default=60, gt=0, le=60)
 
 
-class ExecutionGrantMintResponse(BaseModel):
+class ExecutionGrantMintResponse(ApiResponseModel):
     """CSP-issued signed transport envelope plus its parsed inner grant."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)

@@ -13,6 +13,8 @@ DB 層存開放 String,封閉 enum 在本契約層 fail-closed 把關(同
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 import enum
 from datetime import datetime
 
@@ -216,7 +218,7 @@ class ExportResult(BaseModel):
     decision: str
 
 
-class ArtifactJobOut(BaseModel):
+class ArtifactJobOut(ApiResponseModel):
     job_id: str
     owner_user_id: int | None = None
     requester_employee_id: str | None = None
@@ -241,7 +243,7 @@ class ArtifactJobOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ArtifactVersionOut(BaseModel):
+class ArtifactVersionOut(ApiResponseModel):
     id: int
     artifact_id: int
     version: int
@@ -272,7 +274,7 @@ class ArtifactVersionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ExportRecordOut(BaseModel):
+class ExportRecordOut(ApiResponseModel):
     id: int
     artifact_id: int
     artifact_version_id: int | None = None
@@ -290,7 +292,7 @@ class ExportRecordOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ArtifactOut(BaseModel):
+class ArtifactOut(ApiResponseModel):
     id: int
     artifact_type: ArtifactType
     title: str

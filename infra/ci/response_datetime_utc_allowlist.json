@@ -1,0 +1,4 @@
+{
+  "_comment": "Routes that return datetime values without a typed response_model (or with an untyped dict). Each entry needs a reason. Empty means every datetime-bearing response goes through ApiResponseModel. Add here only when typing is genuinely impossible (streaming, FileResponse, etc.) and document why the offset is still guaranteed.",
+  "exempt_routes": []
+}

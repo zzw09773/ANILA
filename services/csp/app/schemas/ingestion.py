@@ -11,6 +11,8 @@ to Sprint 2 alongside the worker.
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 from typing import Any, Literal
 
@@ -120,7 +122,7 @@ class CollectionUpdate(BaseModel):
 # ── Collection: response shapes ─────────────────────────────────────────────
 
 
-class CollectionResponse(BaseModel):
+class CollectionResponse(ApiResponseModel):
     """Full row projection used by both list and detail endpoints.
 
     Sprint 4: ``agent_id`` removed; ``created_by`` is the new ownership
@@ -192,7 +194,7 @@ class DocumentRelationCreate(BaseModel):
         return self
 
 
-class DocumentRelationResponse(BaseModel):
+class DocumentRelationResponse(ApiResponseModel):
     """Row projection for the relations tab / API list.
 
     Carries enough to render ``src → type → dst|target_ref`` with the

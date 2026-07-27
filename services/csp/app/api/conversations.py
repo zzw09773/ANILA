@@ -1,6 +1,8 @@
 """Conversation management endpoints (JWT auth)."""
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
@@ -50,7 +52,7 @@ class AttachmentOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class MessageOut(BaseModel):
+class MessageOut(ApiResponseModel):
     id: int
     role: str
     content: str
@@ -106,7 +108,7 @@ class MessageUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 
-class ConversationOut(BaseModel):
+class ConversationOut(ApiResponseModel):
     id: int
     title: str
     agent_id: Optional[int]
@@ -153,7 +155,7 @@ class ShareCreate(BaseModel):
     expires_at: Optional[datetime] = None
 
 
-class ShareOut(BaseModel):
+class ShareOut(ApiResponseModel):
     id: int
     token: str
     mode: str

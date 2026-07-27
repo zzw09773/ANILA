@@ -33,6 +33,8 @@ Endpoints:
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -118,7 +120,7 @@ class EvalRunCreate(BaseModel):
         return self
 
 
-class EvalRunResponse(BaseModel):
+class EvalRunResponse(ApiResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int

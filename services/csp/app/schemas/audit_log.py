@@ -1,8 +1,9 @@
+from app.schemas.base import ApiResponseModel
 from datetime import datetime
 from pydantic import BaseModel
 
 
-class AuditLogResponse(BaseModel):
+class AuditLogResponse(ApiResponseModel):
     id: int
     actor_user_id: int | None = None
     actor_username: str | None = None

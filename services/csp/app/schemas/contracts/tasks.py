@@ -10,6 +10,8 @@ DB 層(app/models/task.py、source_snapshot.py)存開放 String;封閉 enum
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 import enum
 from datetime import datetime
 from typing import Any
@@ -121,7 +123,7 @@ class TaskCreate(BaseModel):
     classification_level: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
 
 
-class TaskOut(BaseModel):
+class TaskOut(ApiResponseModel):
     """Task 讀出契約(from ORM)。"""
 
     id: int
@@ -146,7 +148,7 @@ class TaskOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TaskRunOut(BaseModel):
+class TaskRunOut(ApiResponseModel):
     """TaskRun 讀出契約(from ORM)。"""
 
     id: int
@@ -184,7 +186,7 @@ class SourceSnapshotIn(BaseModel):
     classification_level: ClassificationLevel | None = None
 
 
-class SourceSnapshotOut(BaseModel):
+class SourceSnapshotOut(ApiResponseModel):
     """SourceSnapshot 讀出契約(from ORM)。"""
 
     id: int
@@ -204,7 +206,7 @@ class SourceSnapshotOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class CitationOut(BaseModel):
+class CitationOut(ApiResponseModel):
     """Citation 讀出契約(from ORM);只指 snapshot 內 chunk(規則 2)。"""
 
     id: int

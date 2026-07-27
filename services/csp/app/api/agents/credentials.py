@@ -1,3 +1,4 @@
+from app.schemas.base import ApiResponseModel
 """Per-agent credential endpoints + 密等鎖定(latch)開關。
 
 Split verbatim from the former single-module ``app/api/agents.py``
@@ -103,7 +104,7 @@ class IssueBootstrapRequest(BaseModel):
     )
 
 
-class IssueBootstrapResponse(BaseModel):
+class IssueBootstrapResponse(ApiResponseModel):
     bootstrap_token: str = Field(
         ...,
         description="bsk- 開頭的單次使用 token；只在此回應出現一次",
@@ -129,7 +130,7 @@ class BootstrapExchangeRequest(BaseModel):
     )
 
 
-class BootstrapExchangeResponse(BaseModel):
+class BootstrapExchangeResponse(ApiResponseModel):
     service_token: str = Field(
         ..., description="csk- 開頭的長效 service token；agent 應寫進 state file"
     )
@@ -142,7 +143,7 @@ class IssueStaticRequest(BaseModel):
     label: str | None = Field(default=None, max_length=100)
 
 
-class CredentialResponse(BaseModel):
+class CredentialResponse(ApiResponseModel):
     id: int
     agent_id: int
     label: str | None

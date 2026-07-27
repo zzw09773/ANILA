@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 import re
 from typing import Literal
@@ -43,7 +45,7 @@ def _require_aware(value: datetime, *, field_name: str) -> datetime:
     return value
 
 
-class AgentRegistryBaseModel(BaseModel):
+class AgentRegistryBaseModel(ApiResponseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: StrictInt = Field(gt=0)
@@ -60,7 +62,7 @@ class AgentRegistryBaseModel(BaseModel):
         return None if value is None else _require_aware(value, field_name="health_checked_at")
 
 
-class AgentRegistryEntry(BaseModel):
+class AgentRegistryEntry(ApiResponseModel):
     """Safe governance projection; intentionally has no endpoint URL field."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -172,7 +174,7 @@ class AgentRegistryEntry(BaseModel):
         return self
 
 
-class AgentRegistrySnapshot(BaseModel):
+class AgentRegistrySnapshot(ApiResponseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal["agent-registry/v1"]

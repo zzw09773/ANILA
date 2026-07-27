@@ -7,6 +7,8 @@ useful error message instead of a 500 from the DB CHECK constraint.
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 
 from pydantic import BaseModel, model_validator
@@ -32,7 +34,7 @@ class ServiceAccessGrantCreate(BaseModel):
         return self
 
 
-class ServiceAccessGrantResponse(BaseModel):
+class ServiceAccessGrantResponse(ApiResponseModel):
     id: int
     user_id: int | None
     department_id: int | None

@@ -17,6 +17,8 @@ as the worker advances.
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 import asyncio
 import hashlib
 import os
@@ -177,7 +179,7 @@ def _derive_title(filename: str, explicit: str | None = None) -> tuple[str | Non
     return title, (normalize_title(title) or None)
 
 
-class DocumentResponse(BaseModel):
+class DocumentResponse(ApiResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -1124,7 +1126,7 @@ def delete_document(
 # ── Inspector endpoints (Sprint 2 Chunk H) ──────────────────────────────────
 
 
-class ChunkRow(BaseModel):
+class ChunkRow(ApiResponseModel):
     """Inspector-facing chunk row.
 
     Embedding is omitted by default because the inspector list view
