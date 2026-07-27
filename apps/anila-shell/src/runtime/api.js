@@ -51,7 +51,7 @@ export const configIssues = (() => {
 })();
 
 if (configIssues.length > 0) {
-   
+
   console.warn("[ANILA UI] Config issues:\n" + configIssues.map((i) => "  • " + i).join("\n"));
 }
 

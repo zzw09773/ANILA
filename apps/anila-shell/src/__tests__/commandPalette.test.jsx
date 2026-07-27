@@ -129,13 +129,13 @@ describe("CommandPalette — 涉密內容的鑑識浮水印", () => {
         folders={[]}
         actions={[]}
         onSelectConv={() => {}}
-        watermarkUser="tester@ncsist.org.tw"
+        watermarkUser="tester@example.test"
         watermarkTraceId="trace-abc"
       />,
     );
     expect(screen.getByText("機密專案")).toBeInTheDocument();
     expect(
-      screen.getByText("極機密 · tester@ncsist.org.tw · trace-abc", { exact: false }),
+      screen.getByText("極機密 · tester@example.test · trace-abc", { exact: false }),
     ).toBeInTheDocument();
   });
 
@@ -148,10 +148,10 @@ describe("CommandPalette — 涉密內容的鑑識浮水印", () => {
         folders={[]}
         actions={[]}
         onSelectConv={() => {}}
-        watermarkUser="tester@ncsist.org.tw"
+        watermarkUser="tester@example.test"
       />,
     );
-    expect(screen.queryByText(/tester@ncsist\.org\.tw/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/tester@example\.test/)).not.toBeInTheDocument();
   });
 
   it("浮水印的 z-index 高於面板本身(全域那一層不會被面板蓋掉)", () => {

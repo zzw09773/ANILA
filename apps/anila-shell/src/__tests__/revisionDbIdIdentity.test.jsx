@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../runtime/auth.jsx", () => ({
   AuthProvider: ({ children }) => children,
   useAuth: () => ({
-    user: { username: "tester", email: "tester@ncsist.org.tw", role: "user" },
+    user: { username: "tester", email: "tester@example.test", role: "user" },
     authReady: true,
     isAuthenticated: true,
     logout: vi.fn(),

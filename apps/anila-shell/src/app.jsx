@@ -875,7 +875,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     }
     return base;
     // newChat 是 hoisted function declaration,身分穩定;其餘 setter 亦然。
-     
+
   }, [agents]);
 
   // autoscroll
@@ -1743,7 +1743,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         if (prior && !prior.classified) {
           if (typeof convId === "number") {
             apiClassifyConversation(authRequest, convId).catch((err) => {
-               
+
               console.error("[classified-latch] persistence failed", err);
               enqueueClassifyRetry(convId, { numericId: convId });
             });

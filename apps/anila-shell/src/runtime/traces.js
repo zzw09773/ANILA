@@ -33,19 +33,19 @@ export async function fetchTrace(traceId) {
       { method: "GET", credentials: "include" },
     );
     if (!response.ok) {
-       
+
       console.warn(`[ANILA Trace] 取得軌跡失敗（HTTP ${response.status}），改顯示尚無軌跡資料。`);
       return null;
     }
     const data = await response.json();
     if (data == null || !Array.isArray(data.spans)) {
-       
+
       console.warn("[ANILA Trace] 軌跡回應缺少 spans 欄位，改顯示尚無軌跡資料。");
       return null;
     }
     return data;
   } catch (error) {
-     
+
     console.warn("[ANILA Trace] 取得軌跡失敗（網路錯誤），改顯示尚無軌跡資料。", error);
     return null;
   }

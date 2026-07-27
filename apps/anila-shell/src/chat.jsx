@@ -1057,7 +1057,7 @@ export const Composer = ({
     if (!draftKey || typeof sessionStorage === "undefined") return;
     setText(sessionStorage.getItem(draftKey) || "");
     // 切換對話只在 conversationId 變動時觸發,故僅依賴 draftKey。
-     
+
   }, [draftKey]);
 
   // 草稿存檔:text 變動時 debounce 寫回 sessionStorage(空字串則清掉)。

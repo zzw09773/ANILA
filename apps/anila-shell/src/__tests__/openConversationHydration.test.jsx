@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../runtime/auth.jsx", () => ({
   AuthProvider: ({ children }) => children,
   useAuth: () => ({
-    user: { username: "tester", email: "tester@ncsist.org.tw", role: "user" },
+    user: { username: "tester", email: "tester@example.test", role: "user" },
     authReady: true,
     isAuthenticated: true,
     logout: vi.fn(),
@@ -155,7 +155,7 @@ describe("從命令面板開啟本地清單沒有的對話", () => {
     // 這一條就是 REJECT 的原點:過去只存 id,渲染時 isClassified=false,
     // 訊息照樣畫出來但整個機密外觀與限制都消失了。
     await waitFor(() => {
-      expect(screen.getByText(/極機密 · tester@ncsist\.org\.tw/)).toBeInTheDocument();
+      expect(screen.getByText(/極機密 · tester@example\.test/)).toBeInTheDocument();
     });
     // 分類徽章同步出現 → conversation 物件確實已 hydrate。
     expect(screen.getAllByTitle(/此對話分類等級：極機密/).length).toBeGreaterThan(0);
@@ -247,7 +247,7 @@ describe("從命令面板開啟本地清單沒有的對話", () => {
     // 而且出路要「真的可用」——訊息與鑑識浮水印一起回來,不是降級成
     // 未分類姿態,也不是留下一個空殼。
     await screen.findByText(SECRET_BODY);
-    expect(screen.getByText(/極機密 · tester@ncsist\.org\.tw/)).toBeInTheDocument();
+    expect(screen.getByText(/極機密 · tester@example\.test/)).toBeInTheDocument();
   });
 
   it("孤兒對話後端也抓不到 → 清除選取並說明原因,不留在載入中", async () => {
