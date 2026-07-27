@@ -35,7 +35,28 @@ _LEVELS = ("無機密", "營業秘密", "機密", "極機密", "絕對機密")
 _OUTCOMES = ("confirmed", "mismatch", "needs_followup")
 
 
+def _existing_tables() -> set[str]:
+    return set(sa.inspect(op.get_bind()).get_table_names())
+
+
+def _existing_indexes(table: str) -> set[str]:
+    inspector = sa.inspect(op.get_bind())
+    if table not in inspector.get_table_names():
+        return set()
+    return {ix["name"] for ix in inspector.get_indexes(table)}
+
+
 def upgrade() -> None:
+    # Every DDL operation is guarded because this chain has to survive a
+    # replay: `test_w26_startup_ddl_absorption_pg` stamps the version pointer
+    # back and runs `upgrade head` again, which is how a real deployment
+    # recovers when the pointer and the schema disagree. r1_0036 / 0038 /
+    # 0040 / 0041 all tolerate that; this one did not, and the gap went
+    # unnoticed because the test skips itself when no PostgreSQL DSN is set,
+    # so the runs that gated the original merge never executed it.
+    if "classification_sampling_reviews" in _existing_tables():
+        return
+
     op.create_table(
         "classification_sampling_reviews",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -86,34 +107,25 @@ def upgrade() -> None:
             name="ck_classification_sampling_reviews_outcome",
         ),
     )
-    op.create_index(
-        "ix_classification_sampling_reviews_created_at",
-        "classification_sampling_reviews",
-        ["created_at"],
-    )
-    op.create_index(
-        "ix_classification_sampling_reviews_collection_id",
-        "classification_sampling_reviews",
-        ["collection_id"],
-    )
-    op.create_index(
-        "ix_classification_sampling_reviews_document_id",
-        "classification_sampling_reviews",
-        ["document_id"],
-    )
+    existing = _existing_indexes("classification_sampling_reviews")
+    for name, column in (
+        ("ix_classification_sampling_reviews_created_at", "created_at"),
+        ("ix_classification_sampling_reviews_collection_id", "collection_id"),
+        ("ix_classification_sampling_reviews_document_id", "document_id"),
+    ):
+        if name not in existing:
+            op.create_index(name, "classification_sampling_reviews", [column])
 
 
 def downgrade() -> None:
-    op.drop_index(
+    if "classification_sampling_reviews" not in _existing_tables():
+        return
+    existing = _existing_indexes("classification_sampling_reviews")
+    for name in (
         "ix_classification_sampling_reviews_document_id",
-        table_name="classification_sampling_reviews",
-    )
-    op.drop_index(
         "ix_classification_sampling_reviews_collection_id",
-        table_name="classification_sampling_reviews",
-    )
-    op.drop_index(
         "ix_classification_sampling_reviews_created_at",
-        table_name="classification_sampling_reviews",
-    )
+    ):
+        if name in existing:
+            op.drop_index(name, table_name="classification_sampling_reviews")
     op.drop_table("classification_sampling_reviews")
