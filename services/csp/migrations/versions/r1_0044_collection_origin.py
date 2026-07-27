@@ -126,13 +126,14 @@ def upgrade() -> None:
                 _COLUMN,
                 sa.String(length=20),
                 nullable=False,
-                # Transient default so ADD COLUMN NOT NULL succeeds on an
-                # empty table; dropped immediately below so inserts must
-                # set origin explicitly (API surfaces do this server-side).
+                # Kept, not dropped. The surfaces assign origin server-side,
+                # so the default is never what a real request relies on — but
+                # a raw INSERT (fixture, admin SQL, data load) should get the
+                # conservative shelf instead of a NOT NULL violation. Dropping
+                # it bought no safety and broke nine raw-SQL fixtures.
                 server_default="csp",
             ),
         )
-        op.alter_column(_TABLE, _COLUMN, server_default=None)
 
     if not _has_constraint(bind, _CHECK):
         op.create_check_constraint(

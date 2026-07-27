@@ -150,7 +150,18 @@ class IngestionCollection(Base):
     # Default 'csp' keeps SQLite create_all / legacy test inserts working;
     # the API always sets this explicitly from the ambient surface.
     # ⚠ NOT an authz field — see module docstring on surface.py.
-    origin = Column(String(20), nullable=False, default="csp")
+    # Product provenance — which frontend created this collection. NOT NULL so
+    # a row can never be un-attributed, with a server_default so a raw INSERT
+    # (fixtures, admin SQL, a future data load) gets the conservative value
+    # rather than failing. The enforcement that matters is at the API layer:
+    # each surface assigns its own origin server-side and a client cannot pick
+    # it. Requiring every INSERT to name the column bought no safety on top of
+    # that and broke nine raw-SQL fixtures across the repo. Note the far more
+    # sensitive classification_level right below carries a server_default for
+    # the same reason.
+    origin = Column(
+        String(20), nullable=False, default="csp", server_default="csp"
+    )
     # ── 五級分類共通欄位(doc 08 §5,Slice 3a;backfill floor=無機密,
     # 最終等級以人工分類盤點為準,doc 08 §15)────────────────────────────
     classification_level = Column(
