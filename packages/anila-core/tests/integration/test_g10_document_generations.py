@@ -42,8 +42,8 @@ async def test_old_active_survives_staging_failure_and_retry_is_idempotent(
                 """
                 INSERT INTO ingestion_collections
                   (name,chunking_config,embedding_model,embedding_fingerprint,
-                   embedding_dim,created_by,classification_level)
-                VALUES($1,'{"strategy":"fixed"}'::jsonb,'test-model',$2,$3,$4,'機密')
+                   embedding_dim,created_by,classification_level,origin)
+                VALUES($1,'{"strategy":"fixed"}'::jsonb,'test-model',$2,$3,$4,'機密','csp')
                 RETURNING id
                 """,
                 f"g10-generation-{suffix}",
