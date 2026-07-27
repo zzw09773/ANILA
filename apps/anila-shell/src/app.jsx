@@ -2831,6 +2831,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                 AgentSelector={AgentSelector}
                 Composer={Composer}
                 MessageBubble={MessageBubble}
+                classified={isClassified}
+                classificationLevel={selectedConv?.classificationLevel}
               />
             ) : (
               <>
