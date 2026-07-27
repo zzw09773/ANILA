@@ -25,8 +25,10 @@ import { Sidebar as UiSidebar, Tabs } from "@anila/ui";
 import { useConfirm, useToast } from "./confirm.jsx";
 import {
   AnilaGlyph,
+  IconArchive,
   IconAt,
   IconBook,
+  IconCommand,
   IconChevDown,
   IconChevLeft,
   IconChevRight,
@@ -81,6 +83,19 @@ import { ShellNav } from "./shellNav.jsx";
 // W1-1 ②⑥ —— 外流面判定與禁令文案的單一來源(不在各元件裡各寫一份)。
 import { controlledActionNotice } from "./runtime/classified.js";
 import { BlockedMenuItem } from "./blockedAction.jsx";
+// 輸入框指令(@ agent mention / 斜線指令)的統一架構:一個選單元件 +
+// 依觸發字元分派候選來源。見 commands/slashCommands.js 的設計註解。
+import { CommandSuggestionList } from "./commands/CommandSuggestionList.jsx";
+import {
+  COMMAND_KINDS,
+  agentCandidates,
+  buildSlashCommands,
+  filterSlashCommands,
+  matchSubmitCommand,
+  parseComposerTrigger,
+} from "./commands/slashCommands.js";
+import { applyActionTemplate } from "./commands/promptActions.js";
+import { formatShortcut, getShortcut, isMacPlatform } from "./commands/shortcuts.js";
 
 // ---- Trace Row + Routing Trace ----
 export const TraceRow = ({ event, active, done }) => (
@@ -940,6 +955,17 @@ export const Composer = ({
   conversationId,
   // Per-agent preset prompts(開發者在 CSP 設計):點清單把提示詞填入輸入框。
   presetPrompts = [],
+  // ---- 斜線指令(`/`)------------------------------------------------------
+  // messageActions:當前 agent 的快捷動作(= MessageBubble 用的同一份),斜線
+  // 指令直接重用其模板,不另造一套。classified 對話一律不提供快捷動作類指令
+  // (對齊 MessageBubble 既有的 `!classified` 閘門,不弱化)。
+  messageActions = [],
+  classified = false,
+  onOpenShortcuts,
+  onOpenPalette,
+  // (action) => boolean —— 由 app 端把動作套用在「最新一則回覆」上;
+  // 回 false(沒有可套用的回覆)時退回「把指示填進輸入框」。
+  onRunPromptAction,
 }) => {
   const toast = useToast();
   const [promptsOpen, setPromptsOpen] = useState(false);
@@ -968,49 +994,58 @@ export const Composer = ({
   const [uploadError, setUploadError] = useState("");
   const [caret, setCaret] = useState(0);
   const [mentionIdx, setMentionIdx] = useState(0);
+  // Esc 關閉建議選單:用「抑制旗標」而不是把 caret 推到文字尾端(後者對
+  // 行首的 `/` 觸發無效)。任何一次文字編輯都會解除抑制。
+  const [suggestSuppressed, setSuggestSuppressed] = useState(false);
   const taRef = useRef(null);
   const [mode, setMode] = useState(redactionMode);
+
+  // ---- CJK IME 組字狀態 ----------------------------------------------------
+  // 組字期間鍵盤整個歸 IME:注音候選列用 ↑↓ 翻頁、Tab/Enter 選字、Esc 取消。
+  // 我們的建議選單(@ / 斜線指令)若在這段期間攔鍵,注音使用者會選不到字。
+  // 三個訊號取聯集:composingRef 涵蓋 compositionstart~compositionend 整段
+  // 區間,e.nativeEvent.isComposing 是標準的單次事件訊號,keyCode 229 是部分
+  // 瀏覽器組字中的 fallback。
+  const composingRef = useRef(false);
+  const isComposing = (e) =>
+    composingRef.current ||
+    Boolean(e?.nativeEvent?.isComposing) ||
+    e?.keyCode === 229;
 
   const piiHits = useMemo(() => detectPII(text), [text]);
   const mentionParse = useMemo(() => parseMentions(text, agents || []), [text, agents]);
 
-  // Autocomplete — detect an unfinished `@tok` at the caret and show a
-  // filtered list of real agents. Router pseudo-agent is excluded because
-  // `@router` is the default behaviour when no mention is used.
-  const mentionQuery = useMemo(() => {
-    const before = text.slice(0, caret);
-    const m = before.match(/(?:^|[\s(])@([\S]*)$/);
-    return m ? m[1] : null;
-  }, [text, caret]);
+  // Autocomplete — 依觸發字元分派:`@` → 真 agent 清單(Router pseudo-agent
+  // 排除,因為沒有 mention 時預設就是走 Router);`/` → 斜線指令。
+  const trigger = useMemo(
+    () => (suggestSuppressed ? null : parseComposerTrigger(text, caret)),
+    [text, caret, suggestSuppressed],
+  );
+  const mentionQuery = trigger?.char === "@" ? trigger.query : null;
 
-  const mentionCandidates = useMemo(() => {
-    if (mentionQuery === null) return [];
-    const q = mentionQuery.toLowerCase();
-    return (agents || [])
-      .filter((a) => a.id !== "anila-router")
-      .filter((a) => {
-        if (!q) return true;
-        return (
-          a.id.toLowerCase().includes(q) ||
-          (a.name || "").toLowerCase().includes(q) ||
-          (a.short || "").toLowerCase().includes(q)
-        );
-      })
-      .slice(0, 6);
-  }, [agents, mentionQuery]);
+  const slashCommands = useMemo(
+    () => buildSlashCommands({ actions: messageActions, classified }),
+    [messageActions, classified],
+  );
+
+  const suggestions = useMemo(() => {
+    if (!trigger) return [];
+    if (trigger.char === "@") return agentCandidates(agents, trigger.query);
+    return filterSlashCommands(slashCommands, trigger.query);
+  }, [trigger, agents, slashCommands]);
 
   useEffect(() => {
     // Reset highlighted index when candidate list changes so arrow-up/down
     // always starts from the top of the current match set.
     setMentionIdx(0);
-  }, [mentionQuery, mentionCandidates.length]);
+  }, [trigger?.char, trigger?.query, suggestions.length]);
 
   // Per-chat draft:切換對話時載入該對話的草稿(打到一半的長報告不會遺失)。
   useEffect(() => {
     if (!draftKey || typeof sessionStorage === "undefined") return;
     setText(sessionStorage.getItem(draftKey) || "");
     // 切換對話只在 conversationId 變動時觸發,故僅依賴 draftKey。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [draftKey]);
 
   // 草稿存檔:text 變動時 debounce 寫回 sessionStorage(空字串則清掉)。
@@ -1052,9 +1087,97 @@ export const Composer = ({
     el.style.height = Math.min(el.scrollHeight, 200) + "px";
   };
 
+  // ---- 斜線指令執行 --------------------------------------------------------
+  const clearDraft = () => {
+    setText("");
+    if (draftKey && typeof sessionStorage !== "undefined") sessionStorage.removeItem(draftKey);
+    setCaret(0);
+    setTimeout(() => { taRef.current?.focus(); autosize(); }, 0);
+  };
+
+  // 把一段文字當使用者訊息送出。PII 阻擋姿態與 submit() 一致(不弱化)。
+  const sendBody = (body) => {
+    const hits = detectPII(body);
+    if (mode === "block" && hits.length > 0) {
+      toast("偵測到敏感資訊，管理員已設定為阻擋送出。請清除後再試。", { tone: "error" });
+      return false;
+    }
+    onSend(body, [], {
+      piiHits: mode === "mask" ? hits : [],
+      explicitAgents: mentionParse.explicitAgents,
+    });
+    return true;
+  };
+
+  const fillDraft = (body) => {
+    setText(body);
+    setCaret(body.length);
+    setTimeout(() => {
+      const el = taRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(body.length, body.length);
+      }
+      autosize();
+    }, 0);
+  };
+
+  const runSlashCommand = (command, arg = "") => {
+    if (!command) return;
+    setSuggestSuppressed(false);
+    if (command.kind === COMMAND_KINDS.CLEAR_DRAFT) {
+      clearDraft();
+      return;
+    }
+    if (command.kind === COMMAND_KINDS.OPEN_SHORTCUTS) {
+      clearDraft();
+      onOpenShortcuts?.();
+      return;
+    }
+    if (command.kind === COMMAND_KINDS.OPEN_PALETTE) {
+      clearDraft();
+      onOpenPalette?.();
+      return;
+    }
+    if (command.kind === COMMAND_KINDS.PROMPT_ACTION) {
+      const body = arg.trim();
+      // ① `/翻譯 這段話` → 直接把參數帶進模板送出
+      if (body) {
+        if (sendBody(applyActionTemplate(command.template, body))) clearDraft();
+        return;
+      }
+      // ② `/翻譯` 單獨送出 → 套用在最新一則回覆(= 既有快捷動作鈕的行為)
+      if (onRunPromptAction?.(command.action || { id: command.actionId, config: { template: command.template } })) {
+        clearDraft();
+        return;
+      }
+      // ③ 沒有可套用的回覆 → 把指示填進輸入框讓使用者自己接內容
+      fillDraft(applyActionTemplate(command.template, ""));
+    }
+  };
+
+  // 建議選單的確認動作:`@` 插入 mention、`/` 執行指令。
+  const applySuggestion = (item) => {
+    if (!item) return;
+    if (trigger?.char === "/") {
+      runSlashCommand(item, "");
+      return;
+    }
+    insertMention(item);
+  };
+
   const submit = () => {
     const v = text.trim();
     if (!v && atts.length === 0) return;
+    // 指令 + 參數形式(`/摘要 這段話`)在打了空白後選單已關,因此在送出路徑
+    // 再認一次;不是已知指令就照原樣當訊息送出。
+    // ⚠ 餵原文(非 trim 過的 v):貼上帶前置空白/換行的 `/指令` 不該被當指令
+    // 執行 —— 使用者的本意是把那段文字送出去。
+    const slash = atts.length === 0 ? matchSubmitCommand(text, slashCommands) : null;
+    if (slash) {
+      runSlashCommand(slash.command, slash.arg);
+      return;
+    }
     if (mode === "block" && piiHits.length > 0) {
       toast("偵測到敏感資訊，管理員已設定為阻擋送出。請清除後再試。", { tone: "error" });
       return;
@@ -1070,42 +1193,45 @@ export const Composer = ({
   };
 
   const onKey = (e) => {
-    // CJK IME guard:注音/拼音組字中按 Enter 是「確認候選字」,不是送出/選 mention。
-    // 缺這個檢查,每個 zh-TW 使用者打字途中按 Enter 都會誤送半截訊息(回報的 bug)。
-    // isComposing 是標準訊號;keyCode 229 是部分瀏覽器組字中的 fallback。
-    const composing = e.nativeEvent?.isComposing || e.keyCode === 229;
+    // CJK IME guard:注音/拼音組字期間,鍵盤全部屬於 IME —— ↑↓ 是翻候選字、
+    // Tab/Enter 是選字、Esc 是取消組字。**任何一顆都不能被我們攔**,否則
+    // 注音使用者根本選不了字(原本只擋 Enter,方向鍵/Tab/Esc 仍被選單吃掉)。
+    // isComposing 是標準訊號;keyCode 229 是部分瀏覽器組字中的 fallback;
+    // composingRef 補上 compositionstart~end 這段期間(Safari 在確認候選字的
+    // 那一次 keydown 會回報 isComposing=false)。
+    if (isComposing(e)) return;
 
-    // Mention menu captures arrows + Enter + Escape when it's active so
-    // typing `@ra` → ↓ → Enter picks "rag-agent" instead of sending.
-    if (mentionQuery !== null && mentionCandidates.length > 0) {
+    // Suggestion menu captures arrows + Enter + Escape when it's active so
+    // typing `@ra` → ↓ → Enter picks "rag-agent" instead of sending. Same
+    // keys drive the `/` command menu(統一 UX)。
+    if (trigger && suggestions.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setMentionIdx((i) => (i + 1) % mentionCandidates.length);
+        setMentionIdx((i) => (i + 1) % suggestions.length);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setMentionIdx((i) => (i - 1 + mentionCandidates.length) % mentionCandidates.length);
+        setMentionIdx((i) => (i - 1 + suggestions.length) % suggestions.length);
         return;
       }
-      if (e.key === "Enter" && !e.shiftKey && !composing) {
+      if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        insertMention(mentionCandidates[mentionIdx]);
+        applySuggestion(suggestions[mentionIdx]);
         return;
       }
       if (e.key === "Tab") {
         e.preventDefault();
-        insertMention(mentionCandidates[mentionIdx]);
+        applySuggestion(suggestions[mentionIdx]);
         return;
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        // Collapse the menu by moving the caret past the current token.
-        setCaret(text.length + 1);
+        setSuggestSuppressed(true);
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey && !composing) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
     }
@@ -1275,72 +1401,44 @@ export const Composer = ({
         </div>
       )}
 
-      {mentionQuery !== null && mentionCandidates.length > 0 && (
-        <div style={{
-          position: "absolute",
-          bottom: "100%",
-          left: 8,
-          marginBottom: 6,
-          background: "var(--bg-elev)",
-          border: "1px solid var(--border)",
-          borderRadius: "var(--radius)",
-          boxShadow: "0 12px 32px -8px oklch(0.10 0 0 / 0.18)",
-          padding: 4,
-          minWidth: 260,
-          zIndex: 80,
-        }}>
-          <div style={{
-            padding: "4px 8px", fontSize: 10, color: "var(--fg-subtle)",
-            fontFamily: "var(--font-mono)", letterSpacing: 0.4,
-          }}>
-            @ {mentionQuery ? `mention: ${mentionQuery}` : "選 agent"}
-          </div>
-          {mentionCandidates.map((a, i) => (
-            <button
-              key={a.id}
-              type="button"
-              onMouseDown={(e) => { e.preventDefault(); insertMention(a); }}
-              onMouseEnter={() => setMentionIdx(i)}
-              style={{
-                display: "flex", alignItems: "center", gap: 8, width: "100%",
-                padding: "6px 8px",
-                background: i === mentionIdx ? "var(--bg-subtle)" : "transparent",
-                border: "none", borderRadius: 4,
-                color: "var(--fg)", textAlign: "left", cursor: "pointer",
-                fontSize: 12,
-              }}
-            >
-              <span style={{
-                fontFamily: "var(--font-mono)",
-                color: "var(--accent)",
-                fontSize: 11,
-                minWidth: 48,
-              }}>@{a.short || a.id}</span>
-              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {a.name}
-              </span>
-            </button>
-          ))}
-          <div style={{
-            padding: "4px 8px", fontSize: 10, color: "var(--fg-subtle)",
-            borderTop: "1px solid var(--border)", marginTop: 2,
-          }}>
-            ↑↓ 選擇 · Enter/Tab 確認 · Esc 關閉
-          </div>
-        </div>
+      {trigger && suggestions.length > 0 && (
+        <CommandSuggestionList
+          ariaLabel={trigger.char === "/" ? "斜線指令建議" : "agent 建議"}
+          header={
+            trigger.char === "/"
+              ? `/ ${trigger.query ? `指令: ${trigger.query}` : "選指令"}`
+              : `@ ${trigger.query ? `mention: ${trigger.query}` : "選 agent"}`
+          }
+          footer="↑↓ 選擇 · Enter/Tab 確認 · Esc 關閉"
+          activeIndex={mentionIdx}
+          onHover={setMentionIdx}
+          onPick={(item) => applySuggestion(item.source)}
+          items={suggestions.map((s) =>
+            trigger.char === "/"
+              ? { key: s.id, lead: `/${s.name}`, primary: s.label, secondary: s.hint, source: s }
+              : { key: s.id, lead: `@${s.short || s.id}`, primary: s.name, source: s },
+          )}
+        />
       )}
 
       <textarea
         ref={taRef}
         value={text}
-        onChange={(e) => { setText(e.target.value); autosize(); setCaret(e.target.selectionStart || 0); }}
+        onChange={(e) => {
+          setText(e.target.value);
+          autosize();
+          setCaret(e.target.selectionStart || 0);
+          // 任何一次編輯都解除 Esc 造成的選單抑制(重新打字就該再看到建議)。
+          setSuggestSuppressed(false);
+        }}
         onKeyUp={updateCaret}
         onClick={updateCaret}
         onSelect={updateCaret}
         onKeyDown={onKey}
         // 注音組字中不得 append 定稿 —— hook 會緩衝到 compositionend 再吐。
-        onCompositionStart={asr.onCompositionStart}
-        onCompositionEnd={asr.onCompositionEnd}
+        // 同一組事件也驅動建議選單的 IME 放行(見上方 composingRef)。
+        onCompositionStart={(e) => { composingRef.current = true; asr.onCompositionStart?.(e); }}
+        onCompositionEnd={(e) => { composingRef.current = false; asr.onCompositionEnd?.(e); }}
         onPaste={(e) => {
           const items = e.clipboardData?.items || [];
           // Some browsers/platforms — notably when copying rendered web
@@ -1372,7 +1470,7 @@ export const Composer = ({
             onFiles(files);
           }
         }}
-        placeholder={placeholder || "問 ANILA 任何事情 — 用 @agent 指定 agent · Shift+Enter 換行 · 可直接貼上截圖"}
+        placeholder={placeholder || "問 ANILA 任何事情 — / 開指令、@agent 指定 agent · Shift+Enter 換行 · 可直接貼上截圖"}
         rows={1}
         style={{
           width: "100%",
@@ -1425,10 +1523,26 @@ export const Composer = ({
           title="提及 @agent"
           onClick={() => {
             setText((t) => t + (t.endsWith(" ") || t === "" ? "@" : " @"));
+            setSuggestSuppressed(false);
             setTimeout(() => taRef.current?.focus(), 0);
           }}
         >
           <IconAt />
+        </IconButton>
+        {/* 斜線指令:把輸入框設為單獨的 `/` 就會叫出指令選單(與直接打 / 同路徑)。 */}
+        <IconButton
+          title="斜線指令 /"
+          onClick={() => {
+            setText("/");
+            setCaret(1);
+            setSuggestSuppressed(false);
+            setTimeout(() => {
+              const el = taRef.current;
+              if (el) { el.focus(); el.setSelectionRange(1, 1); }
+            }, 0);
+          }}
+        >
+          <IconCommand />
         </IconButton>
 
         {/* Per-agent preset prompts(開發者在 CSP 設計):點開清單,選一個填入輸入框。
@@ -1637,12 +1751,17 @@ export const Sidebar = ({
   onDeleteConv,
   onServerSearch,
   onExportConv,
+  // 封存 / 標籤(持久化走 putUiSettings 的 server-synced UI 設定層,同 folders)。
+  onArchiveConv,
+  onOpenCommandPalette,
 }) => {
   const confirm = useConfirm();
   const [tab, setTab] = useState("chats");
   const [query, setQuery] = useState("");
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  // 標籤篩選:null = 不篩。與 `tag:` 搜尋語法互補(這裡是點選式)。
+  const [tagFilter, setTagFilter] = useState(null);
 
   // 伺服器端全文搜尋:client 端只比對 title/tag,搜不到訊息內文。query 非空且
   // 非 tag: 搜尋時,debounce 打後端 /search(比對內文),把命中但本地清單沒有的
@@ -1671,9 +1790,24 @@ export const Sidebar = ({
     return () => clearInterval(id);
   }, []);
 
+  // 封存清單入口與計數。封存的對話從主清單隱出,只在「已封存」視圖出現
+  // (伺服器全文搜尋仍找得到 → 見下方 extraFromServer 的處理)。
+  const archivedCount = conversations.filter((c) => c.archived).length;
+  const allTags = [...new Set(
+    conversations
+      .filter((c) => (folder === "archived" ? c.archived : !c.archived))
+      .flatMap((c) => c.tags || []),
+  )].sort();
+
   const filtered = conversations.filter((c) => {
+    if (folder === "archived") {
+      if (!c.archived) return false;
+    } else if (c.archived) {
+      return false;
+    }
     if (folder === "starred" && !c.starred) return false;
-    if (folder !== "all" && folder !== "starred" && c.folder !== folder) return false;
+    if (folder !== "all" && folder !== "starred" && folder !== "archived" && c.folder !== folder) return false;
+    if (tagFilter && !(c.tags || []).includes(tagFilter)) return false;
     const q = query.trim().toLowerCase();
     if (!q) return true;
     const tagMatch = q.match(/^tag:(\S+)(?:\s+(.*))?$/);
@@ -1694,6 +1828,12 @@ export const Sidebar = ({
         <Divider />
         <IconButton onClick={onToggleCollapsed} title="展開側邊"><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話"><IconPlus /></IconButton>
+        {typeof onOpenCommandPalette === "function" && (
+          <IconButton
+            onClick={onOpenCommandPalette}
+            title={`搜尋 / 跳轉 (${formatShortcut(getShortcut("command-palette"), { mac: isMacPlatform() })})`}
+          ><IconSearch /></IconButton>
+        )}
         <IconButton onClick={onOpenAgentBrowser} title="Agents"><IconGrid /></IconButton>
         <Divider />
         {/* ANILA Shell 四大入口 + admin-gated 治理中心（含 專案入口）。 */}
@@ -1713,7 +1853,7 @@ export const Sidebar = ({
         <IconButton onClick={onToggleCollapsed} title="收合側邊"><IconPanelR /></IconButton>
       </div>
 
-      <div style={{ padding: "0 10px 10px" }}>
+      <div style={{ padding: "0 10px 10px", display: "grid", gap: 4 }}>
         <button onClick={onNewChat} style={{
           display: "flex", alignItems: "center", gap: 8, width: "100%",
           padding: "8px 10px", fontSize: 13, fontWeight: 500,
@@ -1725,8 +1865,28 @@ export const Sidebar = ({
         }}>
           <IconPlus size={14} /> 新對話
           <div style={{ flex: 1 }} />
-          <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>⌘K</span>
+          {/* 鍵位字串由集中式 registry 產生(跨平台),不再寫死。 */}
+          <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
+            {formatShortcut(getShortcut("new-chat"), { mac: isMacPlatform() })}
+          </span>
         </button>
+        {typeof onOpenCommandPalette === "function" && (
+          <button onClick={onOpenCommandPalette} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%",
+            padding: "6px 10px", fontSize: 12,
+            background: "transparent",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            color: "var(--fg-muted)",
+            cursor: "pointer",
+          }}>
+            <IconSearch size={13} /> 搜尋 / 跳轉
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
+              {formatShortcut(getShortcut("command-palette"), { mac: isMacPlatform() })}
+            </span>
+          </button>
+        )}
       </div>
 
       {/* ANILA Shell 主導覽：任務中心 / 我的知識庫 / 產出中心 / 專案入口
@@ -1807,6 +1967,25 @@ export const Sidebar = ({
                 </span>
               );
             })}
+            {/* 「已封存」入口。刻意不放進 `folders`(那份會被 putUiSettings 的
+                使用者資料夾覆寫),而是常駐的內建視圖。 */}
+            <button
+              title="已封存的對話"
+              onClick={() => setFolder(folder === "archived" ? "all" : "archived")}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 4,
+                padding: "3px 8px",
+                fontSize: 11,
+                background: folder === "archived" ? "var(--accent-soft)" : "var(--bg-elev)",
+                color: folder === "archived" ? "var(--accent)" : "var(--fg-muted)",
+                border: "1px solid " + (folder === "archived" ? "var(--accent)" : "var(--border)"),
+                borderRadius: 999,
+                cursor: "pointer",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              <IconArchive size={11} />已封存{archivedCount > 0 ? ` ${archivedCount}` : ""}
+            </button>
             {typeof onCreateFolder === "function" && (
               newFolderOpen ? (
                 <span style={{
@@ -1876,6 +2055,37 @@ export const Sidebar = ({
             )}
           </div>
 
+          {/* 標籤篩選。只有真的有標籤時才佔版面(乾淨帳號不會多出一列)。 */}
+          {allTags.length > 0 && (
+            <div style={{ padding: "0 10px 8px", display: "flex", flexWrap: "wrap", gap: 4 }}>
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 3,
+                fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)",
+              }}>
+                <IconTag size={10} />標籤
+              </span>
+              {allTags.map((t) => {
+                const active = tagFilter === t;
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setTagFilter(active ? null : t)}
+                    title={active ? `取消 #${t} 篩選` : `只看 #${t}`}
+                    style={{
+                      padding: "2px 7px", fontSize: 10,
+                      fontFamily: "var(--font-mono)",
+                      background: active ? "var(--accent-soft)" : "var(--bg-subtle)",
+                      color: active ? "var(--accent)" : "var(--fg-subtle)",
+                      border: "1px solid " + (active ? "var(--accent)" : "var(--border)"),
+                      borderRadius: 999,
+                      cursor: "pointer",
+                    }}
+                  >#{t}</button>
+                );
+              })}
+            </div>
+          )}
+
           <div style={{ padding: "0 10px 6px" }}>
             <div style={{
               display: "flex", alignItems: "center", gap: 6,
@@ -1929,7 +2139,13 @@ export const Sidebar = ({
                   // 於是**營業秘密對話只要是從搜尋出現的,匯出鈕就是可按的**。
                   // 密等判定只能靠 classification_level,不能靠 boolean。
                   classificationLevel: h.classification_level,
-                }));
+                  // onServerSearch 由 app 端補上封存 / 標籤 meta(同 folders 的
+                  // server-synced UI 設定層)。
+                  archived: Boolean(h.archived), tags: h.tags || [],
+                }))
+                // 「已封存」視圖只收封存的;主清單則把封存的隱去。
+                .filter((h) => (folder === "archived" ? h.archived : !h.archived))
+                .filter((h) => !tagFilter || (h.tags || []).includes(tagFilter));
               // 時間分組:依 updatedAt 降冪排序,bucket 變動時插入標頭
               // (今天/昨天/前 7 天/更早)。star/folder 篩選後維持時間序。
               const sorted = [...filtered, ...extraFromServer].sort((a, b) => {
@@ -1980,6 +2196,14 @@ export const Sidebar = ({
                         />
                       )}
                       {c.starred && <IconStar size={11} style={{ color: "var(--warn)", flexShrink: 0, marginTop: 4 }} />}
+                      {c.archived && (
+                        <span title="已封存" style={{
+                          display: "inline-flex", color: "var(--fg-subtle)",
+                          flexShrink: 0, marginTop: 4,
+                        }}>
+                          <IconArchive size={11} />
+                        </span>
+                      )}
                       <div
                         title={c.title}
                         style={{
@@ -2044,6 +2268,15 @@ export const Sidebar = ({
                               if (next !== null) onRenameConv?.(c.id, next);
                             }}
                           >重新命名</MenuItem>
+                          {typeof onArchiveConv === "function" && (
+                            <MenuItem
+                              leftIcon={<IconArchive size={12} />}
+                              onClick={() => { close(); onArchiveConv(c.id, !c.archived); }}
+                            >{c.archived ? "取消封存" : "封存對話"}</MenuItem>
+                          )}
+                          {/* W1-1②:匯出走五級密等 gate(ConversationExportMenuItems),
+                              不用 ux-parity 版的 legacy `!c.classified` 判定 ——
+                              那個 boolean 對營業秘密是 False,會把匯出開給營業秘密。 */}
                           <ConversationExportMenuItems
                             conversation={c}
                             onExportConv={onExportConv}

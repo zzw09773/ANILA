@@ -1,30 +1,57 @@
 // Trust & transparency components (ESM)
-import React, { useState } from "react";
-import { IconBook, IconX, IconExternal, IconShield, IconGauge, IconLock } from "./icons.jsx";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  IconBook, IconX, IconExternal, IconShield, IconGauge, IconLock,
+  IconFile, IconLink, IconChevDown, IconChevRight,
+} from "./icons.jsx";
 import { IconButton } from "./components.jsx";
 import { renderWithRedaction } from "./data.jsx";
-import { classificationLevelBadge } from "./runtime/classified.js";
+import {
+  CLASSIFICATION_LEVELS,
+  classificationLevelBadge,
+} from "./runtime/classified.js";
+import {
+  SCORE_FOOTNOTE,
+  SCORE_LABEL,
+  citationIdentity,
+  groupCitations,
+  normalizeCitation,
+  scoreToPercent,
+} from "./citationUtils.js";
 
 // ---- Inline citation [N] ----
-export const CitationInline = ({ n, citation, onOpen }) => (
-  <button
-    onClick={() => onOpen?.(citation)}
-    title={citation ? `${citation.title} · ${citation.section}` : ""}
-    style={{
-      display: "inline-flex", alignItems: "center", justifyContent: "center",
-      minWidth: 18, height: 18, padding: "0 4px",
-      marginLeft: 2, verticalAlign: "2px",
-      fontSize: 10, fontWeight: 600,
-      fontFamily: "var(--font-mono)",
-      background: "var(--accent-soft)",
-      color: "var(--accent)",
-      border: "1px solid var(--accent)",
-      borderRadius: 4,
-      cursor: "pointer",
-      lineHeight: 1,
-    }}
-  >[{n}]</button>
-);
+// Click behaviour unchanged: still passes the original citation object to onOpen.
+export const CitationInline = ({ n, citation, onOpen }) => {
+  const tip = citation
+    ? (() => {
+        const nrm = normalizeCitation(citation, Math.max(0, n - 1));
+        const bits = [nrm.title];
+        if (nrm.section) bits.push(nrm.section);
+        const pct = scoreToPercent(nrm.score);
+        if (pct != null) bits.push(`${SCORE_LABEL} ${pct}%`);
+        return bits.join(" · ");
+      })()
+    : "";
+  return (
+    <button
+      onClick={() => onOpen?.(citation)}
+      title={tip}
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        minWidth: 18, height: 18, padding: "0 4px",
+        marginLeft: 2, verticalAlign: "2px",
+        fontSize: 10, fontWeight: 600,
+        fontFamily: "var(--font-mono)",
+        background: "var(--accent-soft)",
+        color: "var(--accent)",
+        border: "1px solid var(--accent)",
+        borderRadius: 4,
+        cursor: "pointer",
+        lineHeight: 1,
+      }}
+    >[{n}]</button>
+  );
+};
 
 // Render assistant text, replacing [N] markers with CitationInline
 //
@@ -50,9 +77,245 @@ export const renderTextWithCitations = (text, citations, onOpen) => {
   return parts;
 };
 
+// Compact classification pill for a single citation / group.
+// Shows all five ANILA levels including floor「無機密」— do NOT reuse
+// classificationLevelBadge(), which deliberately hides the floor for
+// conversation chrome.
+const CitationClassBadge = ({ level }) => {
+  const trimmed = typeof level === "string" ? level.trim() : "";
+  const label = CLASSIFICATION_LEVELS.includes(trimmed) ? trimmed : null;
+  if (!label) return null;
+  return (
+    <span
+      title={`分類等級：${label}`}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 3,
+        padding: "1px 6px",
+        background: "oklch(0.95 0.02 25 / 0.4)",
+        border: "1px solid var(--danger)",
+        borderRadius: 999,
+        fontSize: 10, fontFamily: "var(--font-mono)",
+        color: "var(--danger)",
+        flexShrink: 0,
+      }}
+    >
+      <IconLock size={9} />{label}
+    </span>
+  );
+};
+
+// Relevance percent + bar. Score is cosine similarity (higher = closer).
+const RelevanceMeter = ({ score }) => {
+  const pct = scoreToPercent(score);
+  if (pct == null) return null;
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        marginBottom: 3,
+      }}>
+        <span style={{
+          fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)",
+        }}
+          title={SCORE_FOOTNOTE}
+        >{SCORE_LABEL}</span>
+        <span style={{
+          fontSize: 10, fontWeight: 600, color: "var(--fg-muted)",
+          fontFamily: "var(--font-mono)",
+        }}>{pct}%</span>
+      </div>
+      <div style={{
+        height: 3, background: "var(--bg-subtle)",
+        borderRadius: 999, overflow: "hidden",
+      }}>
+        <div style={{
+          width: `${pct}%`, height: "100%",
+          background: "var(--accent)",
+        }} />
+      </div>
+    </div>
+  );
+};
+
+const CitationChunkCard = ({ item, activeId, onJumpTo }) => {
+  const active = activeId != null && String(activeId) === String(item.id);
+  const raw = item.raw;
+  return (
+    <div
+      data-cit-id={item.id}
+      style={{
+        padding: 10, marginBottom: 6,
+        background: "var(--bg-elev)",
+        border: "1px solid " + (active ? "var(--accent)" : "var(--border)"),
+        borderRadius: "var(--radius)",
+        boxShadow: active ? "0 0 0 3px oklch(0.58 0.08 200 / 0.2)" : "none",
+        transition: "all .15s",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+        <span style={{
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          width: 20, height: 20,
+          fontSize: 10, fontWeight: 600,
+          fontFamily: "var(--font-mono)",
+          background: "var(--accent-soft)",
+          color: "var(--accent)",
+          border: "1px solid var(--accent)",
+          borderRadius: 4,
+          flexShrink: 0,
+        }}>{item.n}</span>
+        <div style={{
+          fontSize: 12, fontWeight: 500, flex: 1,
+          color: "var(--fg-muted)",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          {item.section || `分片 ${item.n}`}
+        </div>
+        <CitationClassBadge level={item.classificationLevel} />
+      </div>
+      {item.snippet && (
+        <div style={{
+          padding: "7px 9px",
+          background: "var(--bg-subtle)",
+          borderLeft: "2px solid var(--border-strong)",
+          fontSize: 12, lineHeight: 1.6, color: "var(--fg)",
+          borderRadius: 3,
+          marginBottom: 8,
+          whiteSpace: "pre-wrap",
+          maxHeight: 160, overflow: "auto",
+        }}>{item.snippet}</div>
+      )}
+      <RelevanceMeter score={item.score} />
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {item.updatedAt && (
+          <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
+            updated {item.updatedAt}
+          </span>
+        )}
+        <div style={{ flex: 1 }} />
+        {item.sourceUri && (
+          <button
+            onClick={() => onJumpTo?.(raw)}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              padding: "3px 8px",
+              background: "transparent",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              fontSize: 11, color: "var(--fg-muted)",
+              cursor: "pointer",
+            }}>
+            <IconExternal size={11} />開啟原文
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const CitationGroup = ({ group, expanded, onToggle, activeId, onJumpTo }) => {
+  const count = group.items.length;
+  const Icon = group.kind === "url" ? IconLink : IconFile;
+  // Single-chunk groups stay flat (no collapse chrome); multi-chunk collapse.
+  const collapsible = count > 1;
+  const showBody = !collapsible || expanded;
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <button
+        type="button"
+        onClick={collapsible ? onToggle : undefined}
+        disabled={!collapsible}
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          width: "100%",
+          padding: "6px 4px",
+          background: "transparent",
+          border: "none",
+          cursor: collapsible ? "pointer" : "default",
+          textAlign: "left",
+          color: "var(--fg)",
+        }}
+      >
+        {collapsible
+          ? (expanded ? <IconChevDown size={12} /> : <IconChevRight size={12} />)
+          : <span style={{ width: 12 }} />}
+        <span style={{ color: "var(--fg-muted)", display: "inline-flex", flexShrink: 0 }}>
+          <Icon size={12} />
+        </span>
+        <span style={{
+          fontSize: 12.5, fontWeight: 600, flex: 1,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>{group.title}</span>
+        <span style={{
+          fontFamily: "var(--font-mono)", fontSize: 10,
+          color: "var(--fg-subtle)",
+          padding: "1px 6px",
+          background: "var(--bg)",
+          border: "1px solid var(--border)",
+          borderRadius: 999,
+          flexShrink: 0,
+        }}>{count} 分片</span>
+        <CitationClassBadge level={group.classificationLevel} />
+      </button>
+      {showBody && group.items.map((item) => (
+        <CitationChunkCard
+          key={item.id}
+          item={item}
+          activeId={activeId}
+          onJumpTo={onJumpTo}
+        />
+      ))}
+    </div>
+  );
+};
+
 // ---- Citations Drawer ----
 export const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }) => {
+  const grouped = useMemo(() => groupCitations(citations), [citations]);
+  const docCount = useMemo(
+    () => grouped.documents.filter((g) => g.kind === "document").length,
+    [grouped],
+  );
+  const hasScore = useMemo(
+    () => (Array.isArray(citations) ? citations : []).some((c) => typeof c?.score === "number"),
+    [citations],
+  );
+
+  // Expand groups that contain the active citation; otherwise expand all.
+  const [expandedKeys, setExpandedKeys] = useState(() => new Set());
+  useEffect(() => {
+    if (!open) return;
+    const next = new Set();
+    const activeStr = activeId != null ? String(activeId) : null;
+    let hit = false;
+    for (const g of grouped.documents) {
+      if (g.items.length <= 1) {
+        next.add(g.key);
+        continue;
+      }
+      if (activeStr && g.items.some((it) => String(it.id) === activeStr)) {
+        next.add(g.key);
+        hit = true;
+      }
+    }
+    if (!hit) {
+      for (const g of grouped.documents) next.add(g.key);
+    }
+    setExpandedKeys(next);
+  }, [open, activeId, grouped]);
+
   if (!open) return null;
+
+  const toggle = (key) => {
+    setExpandedKeys((prev) => {
+      const n = new Set(prev);
+      if (n.has(key)) n.delete(key);
+      else n.add(key);
+      return n;
+    });
+  };
+
   return (
     <div style={{
       width: 380, flexShrink: 0,
@@ -76,91 +339,42 @@ export const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }
           background: "var(--bg-subtle)",
           border: "1px solid var(--border)",
           borderRadius: 999,
-        }}>{citations.length} 筆</span>
+        }}>{grouped.total} 筆{docCount > 0 ? ` · ${docCount} 份文件` : ""}</span>
         <div style={{ flex: 1 }} />
         <IconButton onClick={onClose}><IconX /></IconButton>
       </div>
+      {hasScore && (
+        <div style={{
+          padding: "8px 14px",
+          borderBottom: "1px solid var(--border)",
+          fontSize: 10.5, lineHeight: 1.45,
+          color: "var(--fg-subtle)",
+          background: "var(--bg)",
+        }}
+          title={SCORE_FOOTNOTE}
+        >{SCORE_FOOTNOTE}</div>
+      )}
       <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px 14px" }}>
-        {citations.map((c, i) => (
-          <div key={c.id}
-            data-cit-id={c.id}
-            style={{
-              padding: 12, marginBottom: 8,
-              background: "var(--bg-elev)",
-              border: "1px solid " + (activeId === c.id ? "var(--accent)" : "var(--border)"),
-              borderRadius: "var(--radius)",
-              boxShadow: activeId === c.id ? "0 0 0 3px oklch(0.58 0.08 200 / 0.2)" : "none",
-              transition: "all .15s",
-            }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-              <span style={{
-                display: "inline-flex", alignItems: "center", justifyContent: "center",
-                width: 20, height: 20,
-                fontSize: 10, fontWeight: 600,
-                fontFamily: "var(--font-mono)",
-                background: "var(--accent-soft)",
-                color: "var(--accent)",
-                border: "1px solid var(--accent)",
-                borderRadius: 4,
-              }}>{i + 1}</span>
-              <div style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{c.title}</div>
-              {typeof c.score === "number" && (
-                <span style={{
-                  fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-subtle)",
-                }}>{Math.round(c.score * 100)}%</span>
-              )}
-            </div>
-            {c.section && <div style={{ fontSize: 11, color: "var(--fg-muted)", marginBottom: 6 }}>{c.section}</div>}
-            {c.snippet && (
-              <div style={{
-                padding: "7px 9px",
-                background: "var(--bg-subtle)",
-                borderLeft: "2px solid var(--border-strong)",
-                fontSize: 12, lineHeight: 1.6, color: "var(--fg)",
-                borderRadius: 3,
-                marginBottom: 8,
-              }}>{c.snippet}</div>
-            )}
-            {typeof c.score === "number" && (
-              <div style={{
-                height: 3, background: "var(--bg-subtle)",
-                borderRadius: 999, overflow: "hidden", marginBottom: 8,
-              }}>
-                <div style={{
-                  width: `${Math.round(c.score * 100)}%`, height: "100%",
-                  background: "var(--accent)",
-                }} />
-              </div>
-            )}
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {c.updated_at && (
-                <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
-                  updated {c.updated_at}
-                </span>
-              )}
-              <div style={{ flex: 1 }} />
-              {c.source_uri && (
-                <button
-                  onClick={() => onJumpTo?.(c)}
-                  style={{
-                    display: "inline-flex", alignItems: "center", gap: 4,
-                    padding: "3px 8px",
-                    background: "transparent",
-                    border: "1px solid var(--border)",
-                    borderRadius: "var(--radius)",
-                    fontSize: 11, color: "var(--fg-muted)",
-                    cursor: "pointer",
-                  }}>
-                  <IconExternal size={11} />開啟原文
-                </button>
-              )}
-            </div>
-          </div>
+        {grouped.documents.length === 0 && (
+          <div style={{ fontSize: 12, color: "var(--fg-muted)", padding: 8 }}>尚無引用來源</div>
+        )}
+        {grouped.documents.map((group) => (
+          <CitationGroup
+            key={group.key}
+            group={group}
+            expanded={expandedKeys.has(group.key)}
+            onToggle={() => toggle(group.key)}
+            activeId={activeId != null ? String(activeId) : null}
+            onJumpTo={onJumpTo}
+          />
         ))}
       </div>
     </div>
   );
 };
+
+// Re-export helpers so tests / callers can import from trust if needed.
+export { citationIdentity, groupCitations, normalizeCitation, scoreToPercent };
 
 // ---- Redaction composer hint ----
 export const RedactionHint = ({ hits, mode, onChangeMode }) => {
@@ -422,10 +636,22 @@ export const ClassificationLevelBadge = ({ conversation }) => {
 // (機密/極機密/絕對機密),非固定英文;缺 level 回退機密(與 r1_0003 backfill 一致)。
 // className 是給 `@media print` 抓的(W1-1⑤):列印時浮水印必須保留,而瀏覽器
 // 預設不印背景 —— print stylesheet 用這個 class 開 print-color-adjust。
-export const ConfidentialWatermark = ({ userEmail, traceId, level }) => (
+//
+// ⚠ 層級(z-index)是這個元件的**安全屬性**,不是樣式偏好:任何顯示涉密內容
+// 的圖層都必須落在浮水印之下,否則截圖出去就沒有歸屬資訊。原本的 4 會被
+// Modal(--anila-z-modal = 100)與命令面板(120)整片蓋掉,因此提到 150 ——
+// 仍低於密等/繼承警示橫幅的 200(那條橫幅必須永遠可讀)。
+// `absolute` 給「在覆蓋層內部重繪」用(例如命令面板自己那一層)。
+export const ConfidentialWatermark = ({
+  userEmail,
+  traceId,
+  level,
+  zIndex = 150,
+  absolute = false,
+}) => (
   <div aria-hidden="true" className="anila-print-watermark" style={{
-    position: "fixed", inset: 0, pointerEvents: "none",
-    zIndex: 4,
+    position: absolute ? "absolute" : "fixed", inset: 0, pointerEvents: "none",
+    zIndex,
     opacity: 0.055,
     background: `repeating-linear-gradient(-30deg,
       transparent 0,

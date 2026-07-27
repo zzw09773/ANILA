@@ -1,6 +1,7 @@
 {
   "_note": "W0-5 預算凍結在 2026-07-26 的實測值,加 0.5% 容差。要顯著變大必須在 PR 說明為什麼並改本檔;air-gapped 環境每一 kB 都要隨 bundle 重打包進內網。容差的理由:零容差時一個 5 字元的正則轉義改動就會讓 gate 紅(實測 3 bytes),而一個會紅在 3 bytes 的 gate 第一個撞到的人就會把它關掉。縮減工作(React.lazy / manualChunks)屬 Wave 3。",
-  "totalJsBytes": 392497,
-  "largestChunkBytes": 392497,
-  "tolerancePercent": 0.5
+  "totalJsBytes": 399080,
+  "largestChunkBytes": 399080,
+  "tolerancePercent": 0.5,
+  "_note_2026_07_27_pr50_artifact_versions": "重新凍結:392497 → 399080(+6583 bytes,+1.68%,單一 chunk)。原因是 PR #50 合入的artifact 版本歷史 UI(workspace/ArtifactVersionHistory.tsx:版本清單、還原/下載動作與封存狀態判定)與 ArtifactViewer 的對接。零新 npm 依賴。"
 }
