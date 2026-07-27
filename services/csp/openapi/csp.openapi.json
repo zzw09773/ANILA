@@ -6230,6 +6230,28 @@
             "title": "Chunk Count",
             "type": "integer"
           },
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Level"
+          },
+          "classification_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Source"
+          },
           "collection_id": {
             "title": "Collection Id",
             "type": "integer"
@@ -6640,6 +6662,28 @@
           "chunk_count": {
             "title": "Chunk Count",
             "type": "integer"
+          },
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Level"
+          },
+          "classification_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Source"
           },
           "collection_id": {
             "title": "Collection Id",

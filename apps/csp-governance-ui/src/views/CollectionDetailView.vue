@@ -163,6 +163,13 @@
           >
             <div class="doc__row">
               <span class="doc__name">{{ d.filename }}</span>
+              <TermBadge
+                v-if="d.classification_level"
+                :variant="d.classification_source === 'uploader_declared' ? 'warn' : 'info'"
+                :title="d.classification_source === 'uploader_declared'
+                  ? '上傳者宣告的密等（高於知識庫繼承值）'
+                  : '繼承自知識庫的密等'"
+              >{{ d.classification_level }}</TermBadge>
               <TermBadge :variant="docVariant(d.status)" dot>{{ d.status }}</TermBadge>
             </div>
             <div class="cell-meta tnum">{{ humanBytes(d.bytes) }} · {{ d.chunk_count }} 個區塊 · sha {{ d.sha256.slice(0, 8) }}…</div>

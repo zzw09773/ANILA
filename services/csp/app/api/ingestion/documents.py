@@ -197,6 +197,13 @@ class DocumentResponse(BaseModel):
     uploaded_by: int | None
     uploaded_at: datetime
     indexed_at: datetime | None
+    # W2-11 lets an uploader declare a level above the collection floor, but
+    # without these two fields nobody can see the result: the uploader gets no
+    # confirmation and a reviewer browsing the collection cannot spot a
+    # mislabel without going through the sampling report. Declaring something
+    # you can never read back is not a correctness control.
+    classification_level: str | None = None
+    classification_source: str | None = None
 
 
 class DocumentDetailResponse(DocumentResponse):
