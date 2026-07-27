@@ -196,13 +196,20 @@ def test_concurrent_high_low_updates_preserve_max_and_event_chain() -> None:
         if user_id is not None and conversation_id is not None:
             cleanup = factory()
             try:
-                cleanup.query(ClassificationEvent).filter(
-                    ClassificationEvent.resource_type == "conversation",
-                    ClassificationEvent.resource_id == str(conversation_id),
-                ).delete(synchronize_session=False)
+                # r1_0041 made the three audit ledgers append-only: csp_app has no DELETE
+                # on them, and a test that deletes from one is asserting the absence of the
+                # property the migration exists to create. Rows here are already scoped to
+                # this run's own ids, so leftovers cannot bleed into another test.
                 conversation = cleanup.get(Conversation, conversation_id)
                 if conversation is not None:
                     cleanup.delete(conversation)
+                # r1_0041 leaves audit_logs.actor_user_id without ON DELETE, so the
+                # actor reference is nulled in the application layer before the user
+                # row goes away — that is how the audit history survives a hard
+                # delete (canonical implementation: api/users.py 'manual cleanup #2').
+                cleanup.query(AuditLog).filter(AuditLog.actor_user_id == user_id).update(
+                    {"actor_user_id": None}, synchronize_session=False
+                )
                 user = cleanup.get(User, user_id)
                 if user is not None:
                     cleanup.delete(user)
@@ -365,9 +372,6 @@ def test_concurrent_raise_invalidates_stale_approved_declassification() -> None:
         if user_ids:
             cleanup = factory()
             try:
-                cleanup.query(AuditLog).filter(
-                    AuditLog.actor_user_id.in_(user_ids)
-                ).delete(synchronize_session=False)
                 if request_id is not None:
                     cleanup.query(DeclassificationRequest).filter(
                         DeclassificationRequest.id == request_id
@@ -376,14 +380,17 @@ def test_concurrent_raise_invalidates_stale_approved_declassification() -> None:
                     ClassificationAuthorityAssignment.user_id.in_(user_ids)
                 ).delete(synchronize_session=False)
                 if conversation_id is not None:
-                    cleanup.query(ClassificationEvent).filter(
-                        ClassificationEvent.resource_type == "conversation",
-                        ClassificationEvent.resource_id == str(conversation_id),
-                    ).delete(synchronize_session=False)
                     conversation = cleanup.get(Conversation, conversation_id)
                     if conversation is not None:
                         cleanup.delete(conversation)
                 for user_id in user_ids:
+                    # r1_0041 leaves audit_logs.actor_user_id without ON DELETE, so the
+                    # actor reference is nulled in the application layer before the user
+                    # row goes away — that is how the audit history survives a hard
+                    # delete (canonical implementation: api/users.py 'manual cleanup #2').
+                    cleanup.query(AuditLog).filter(AuditLog.actor_user_id == user_id).update(
+                        {"actor_user_id": None}, synchronize_session=False
+                    )
                     user = cleanup.get(User, user_id)
                     if user is not None:
                         cleanup.delete(user)

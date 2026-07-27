@@ -67,11 +67,21 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-# (表, 允許 actor 欄轉 NULL 的例外欄位或 None)
+# (表, 允許轉 NULL 的參照欄位或 None)
+#
+# ⚠ policy_decisions 的例外欄是 `task_id`,不是 actor —— 它根本沒有 actor FK
+# (見檔頭「一個必須精確處理的例外」)。原本這裡寫 None,於是它的 trigger 拒絕
+# **任何** UPDATE,包括 PostgreSQL 自己為了 r1_0001 建的
+# `FK: tasks SET NULL 保留裁決史` 而發出的那一次。後果是硬刪一個 task 會被自己
+# 的稽核不變式擋住:referential action 觸發 BEFORE UPDATE trigger,trigger 看到
+# 一個它沒預期的欄位變動就 RAISE。
+#
+# 這在 r1_0041 落地時沒被發現,因為驗證它的 CI 步驟從來沒執行到過(那個 job 在
+# 更前面的步驟就失敗退出,而 r1_0041 所屬的 PR 只推了前 13 個 commit)。
 _LEDGERS = (
     ("audit_logs", "actor_user_id"),
     ("classification_events", "actor_user_id"),
-    ("policy_decisions", None),
+    ("policy_decisions", "task_id"),
 )
 
 _APP_ROLE = "csp_app"
@@ -101,8 +111,13 @@ def _reject_update_fn(table: str, actor_col: str | None) -> str:
         USING ERRCODE = 'raise_exception';
 """
     else:
+        # 訊息要說出**這張表**的例外是哪一欄:audit_logs / classification_events
+        # 是硬刪使用者時的 actor 參照,policy_decisions 是硬刪 task 時的 task_id
+        # (r1_0001 建的「保留裁決史」FK)。寫死「使用者」會讓讀到 policy_decisions
+        # 那則錯誤的人往完全錯的方向查。
+        subject = "使用者" if actor_col.startswith("actor") else "來源紀錄"
         body = f"""
-    -- 唯一允許的變動:把指向已刪除使用者的外鍵設成 NULL 以保留歷史。
+    -- 唯一允許的變動:把指向已刪除{subject}的外鍵設成 NULL 以保留歷史。
     -- `to_jsonb(row) - 'col'` 移除該鍵後比較,所以「除了那一欄之外完全相同」
     -- 這個判斷與欄位清單無關 —— 以後加欄也不用改這支 trigger。
     IF NEW.{actor_col} IS NULL
@@ -112,7 +127,7 @@ def _reject_update_fn(table: str, actor_col: str | None) -> str:
     END IF;
     RAISE EXCEPTION
         '{table} 是 append-only 稽核帳:不得 UPDATE(id=%)。'
-        '唯一例外是硬刪使用者時把 {actor_col} 設為 NULL(保留歷史),'
+        '唯一例外是硬刪{subject}時把 {actor_col} 設為 NULL(保留歷史),'
         '而這次的變動不只有那一欄。需要更正就補一列新紀錄。',
         OLD.id
         USING ERRCODE = 'raise_exception';
@@ -159,8 +174,12 @@ def upgrade() -> None:
 
         # REVOKE 只在該 role 真的存在時做 —— 乾淨測試庫可能沒有 csp_app。
         revokes = ["DELETE", "TRUNCATE"] + ([] if actor_col else ["UPDATE"])
-        if actor_col == "actor_user_id" and table == "classification_events":
-            # 這張表的例外由 referential action 執行,不吃 role 權限 → UPDATE 可收。
+        if table in ("classification_events", "policy_decisions"):
+            # 這兩張表的例外都是 PostgreSQL 的 referential action 執行的
+            # (classification_events.actor_user_id 與 policy_decisions.task_id 都是
+            # ON DELETE SET NULL),而 referential action 不吃 role 權限 → UPDATE 可收,
+            # trigger 仍會放行那一次變動。audit_logs 的例外是應用層執行的
+            # (FK 沒有 ondelete),所以它的 UPDATE 不能收。
             revokes.append("UPDATE")
         op.execute(
             sa.text(
