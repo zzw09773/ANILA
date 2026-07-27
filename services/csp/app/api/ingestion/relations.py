@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.ingestion.collections import _require_collection_access
+from app.api.ingestion.surface import require_surface_origin
 from app.database import get_db
 from app.models.ingestion import DocumentRelation, IngestionDocument
 from app.models.user import User
@@ -75,7 +76,7 @@ def _to_response(
 
 
 @router.get(
-    "/api/ingestion/collections/{collection_id}/relations",
+    "/collections/{collection_id}/relations",
     response_model=list[DocumentRelationResponse],
 )
 def list_relations(
@@ -85,7 +86,7 @@ def list_relations(
 ) -> list[DocumentRelationResponse]:
     """List a collection's edges, newest first, with src/dst titles and the
     resolved / ambiguous flags the relations tab renders."""
-    _require_collection_access(db, current_user, collection_id)
+    _require_collection_access(db, current_user, collection_id, origin=require_surface_origin())
     rr.scope_collection_rls(db, collection_id)
 
     edges = (
@@ -100,7 +101,7 @@ def list_relations(
 
 
 @router.post(
-    "/api/ingestion/collections/{collection_id}/relations",
+    "/collections/{collection_id}/relations",
     response_model=DocumentRelationResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -113,7 +114,7 @@ def create_relation(
     """Add a manual edge (``source='manual'``). The source document must be in
     this collection; the target is a concrete ``dst_document_id`` or a free-text
     ``target_ref`` name (resolved now if it already matches, else back-filled)."""
-    _require_collection_access(db, current_user, collection_id)
+    _require_collection_access(db, current_user, collection_id, origin=require_surface_origin())
     rr.scope_collection_rls(db, collection_id)
 
     src = (
@@ -162,7 +163,7 @@ def create_relation(
 
 
 @router.delete(
-    "/api/ingestion/relations/{rel_id}",
+    "/relations/{rel_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_relation(
@@ -179,7 +180,7 @@ def delete_relation(
 ):
     """Delete a manual edge. Rule edges are managed by re-extract and cannot be
     deleted here (404). 404 too if the edge isn't in ``collection_id``."""
-    _require_collection_access(db, current_user, collection_id)
+    _require_collection_access(db, current_user, collection_id, origin=require_surface_origin())
     rr.scope_collection_rls(db, collection_id)
 
     edge = (
@@ -210,7 +211,7 @@ def delete_relation(
 
 
 @router.post(
-    "/api/ingestion/collections/{collection_id}/relations:reresolve",
+    "/collections/{collection_id}/relations:reresolve",
     response_model=ReresolveResponse,
 )
 async def reresolve_relations(
@@ -225,7 +226,7 @@ async def reresolve_relations(
     returns its counts immediately. It also best-effort enqueues a worker job
     that re-parses each blob and re-extracts rule edges (the '重抽' half), whose
     results show up on the next list / search once the worker finishes."""
-    _require_collection_access(db, current_user, collection_id)
+    _require_collection_access(db, current_user, collection_id, origin=require_surface_origin())
 
     counts = rr.resolve_pending(db, collection_id=collection_id)
 

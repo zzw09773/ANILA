@@ -935,6 +935,7 @@ def test_safe_path_rejects_symlink_and_expired_lease_blocks_second_runner(db, tm
 def test_task_admission_rejects_non_active_collection(db):
     owner = make_user(db, username="retention_task_admission")
     collection = _collection(db, owner, name="retention-task-admission")
+    collection.origin = "anilalm"
     collection.lifecycle_state = "erase_due"
     collection.archived_at = NOW - timedelta(days=2)
     collection.erase_due_at = NOW

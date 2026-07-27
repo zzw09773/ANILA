@@ -50,6 +50,7 @@ from sqlalchemy.orm import Session
 
 from anila_contracts import Classification as ClassificationLevel
 from app.api.ingestion.collections import _require_collection_access
+from app.api.ingestion.surface import ANY_SURFACE
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.classification import ClassificationSamplingReview
@@ -447,7 +448,9 @@ def create_classification_sampling_review(
             detail="Document not found",
         )
     # Visibility gate — raises 403/404 if the admin cannot see this collection.
-    _require_collection_access(db, admin, doc.collection_id)
+    _require_collection_access(
+        db, admin, doc.collection_id, origin=ANY_SURFACE
+    )
 
     try:
         document_level = ClassificationLevel.from_storage(

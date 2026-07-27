@@ -48,6 +48,7 @@ from anila_core.ingestion.citation_extractor import normalize_title
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
 from app.api.ingestion.collections import _require_collection_access
+from app.api.ingestion.surface import CollectionOrigin, surface_origin_dep
 from app.modules.clearance.service import (
     ClearancePolicyDataError,
     resolve_and_evaluate_data_access,
@@ -221,15 +222,25 @@ class DocumentDetailResponse(DocumentResponse):
 
 
 def _resolve_collection(
-    db: Session, user: User, collection_id: int
+    db: Session,
+    user: User,
+    collection_id: int,
+    *,
+    origin: "OriginArg | None" = None,
 ) -> IngestionCollection:
     """Sprint 4: collection access keyed on ownership, not agent_id.
 
-    ``_require_collection_access`` does its own row fetch + 404 + ACL —
-    we just delegate. Returning the row keeps the existing call sites
-    working unchanged.
+    ``origin`` is required at the resolver boundary. Callers under an
+    HTTP surface mount may omit it and we supply ``require_surface_origin()``;
+    direct unit-test invocations of endpoint functions must pass
+    ``origin=`` explicitly (no ambient ContextVar).
     """
-    return _require_collection_access(db, user, collection_id)
+    from app.api.ingestion.surface import OriginArg, require_surface_origin
+
+    effective = origin if origin is not None else require_surface_origin()
+    return _require_collection_access(
+        db, user, collection_id, origin=effective
+    )
 
 
 def _require_document_data_clearance(
@@ -478,7 +489,7 @@ def _stage_zip_member(
 
 
 @router.post(
-    "/api/ingestion/collections/{collection_id}/documents",
+    "/collections/{collection_id}/documents",
     response_model=DocumentResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -504,6 +515,7 @@ async def upload_document(
             ),
         ),
     ] = None,
+    origin: CollectionOrigin = Depends(surface_origin_dep),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
@@ -513,7 +525,7 @@ async def upload_document(
     happens async. Caller polls ``GET /api/ingestion/documents/{id}``
     to watch status transitions.
     """
-    _resolve_collection(db, current_user, collection_id)
+    _resolve_collection(db, current_user, collection_id, origin=origin)
 
     # Read fully into memory — Sprint 1 caps uploads at 50 MB so this is
     # fine; Sprint 2 streaming upload will spool to disk in chunks.
@@ -617,11 +629,12 @@ async def upload_document(
 
 
 @router.post(
-    "/api/ingestion/documents/{document_id}/reprocess",
+    "/documents/{document_id}/reprocess",
     response_model=DocumentResponse,
 )
 async def reprocess_document(
     document_id: int,
+    origin: CollectionOrigin = Depends(surface_origin_dep),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
@@ -636,7 +649,7 @@ async def reprocess_document(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     # 透過所屬 collection 做存取控管(與上傳走同一條授權路徑)。
-    _resolve_collection(db, current_user, doc.collection_id)
+    _resolve_collection(db, current_user, doc.collection_id, origin=origin)
     # 只允許重試「失敗」的檔 — 其餘狀態各有正常流程,避免重複塞 job。
     if doc.status != "failed":
         raise HTTPException(
@@ -749,7 +762,7 @@ def _declared_zip_member_error(
 
 
 @router.post(
-    "/api/ingestion/collections/{collection_id}/documents/zip",
+    "/collections/{collection_id}/documents/zip",
     response_model=ZipUploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -768,6 +781,7 @@ async def upload_zip(
             ),
         ),
     ] = None,
+    origin: CollectionOrigin = Depends(surface_origin_dep),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ZipUploadResponse:
@@ -790,7 +804,7 @@ async def upload_zip(
     """
     from io import BytesIO
 
-    _resolve_collection(db, current_user, collection_id)
+    _resolve_collection(db, current_user, collection_id, origin=origin)
 
     archive_bytes = await file.read()
     if len(archive_bytes) > 500 * 1024 * 1024:  # 500 MB cap on archive
@@ -1003,7 +1017,7 @@ async def upload_zip(
 
 
 @router.get(
-    "/api/ingestion/collections/{collection_id}/documents",
+    "/collections/{collection_id}/documents",
     response_model=list[DocumentResponse],
 )
 def list_documents(
@@ -1026,7 +1040,7 @@ def list_documents(
 
 
 @router.get(
-    "/api/ingestion/documents/{document_id}",
+    "/documents/{document_id}",
     response_model=DocumentDetailResponse,
 )
 def get_document(
@@ -1068,7 +1082,7 @@ def get_document(
 
 
 @router.delete(
-    "/api/ingestion/documents/{document_id}",
+    "/documents/{document_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )
@@ -1165,7 +1179,7 @@ class ChunkEmbeddingDebug(BaseModel):
 
 
 @router.get(
-    "/api/ingestion/documents/{document_id}/chunks",
+    "/documents/{document_id}/chunks",
     response_model=list[ChunkRow],
 )
 async def list_document_chunks(
@@ -1222,7 +1236,7 @@ async def list_document_chunks(
 
 
 @router.get(
-    "/api/ingestion/documents/{document_id}/chunks/{chunk_id}/embedding-debug",
+    "/documents/{document_id}/chunks/{chunk_id}/embedding-debug",
     response_model=ChunkEmbeddingDebug,
 )
 async def get_chunk_embedding_debug(
@@ -1292,7 +1306,16 @@ async def get_chunk_embedding_debug(
     )
 
 
-@router.get("/api/ingestion/documents/{document_id}/blob")
+@router.get(
+    "/documents/{document_id}/blob",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "description": "Raw uploaded file bytes",
+            "content": {"application/octet-stream": {}},
+        }
+    },
+)
 def download_document_blob(
     document_id: int,
     db: Session = Depends(get_db),

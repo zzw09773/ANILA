@@ -1,6 +1,7 @@
 """Conversation management endpoints (JWT auth)."""
 from __future__ import annotations
 
+from app.api.ingestion.surface import SURFACE_ANILALM
 from app.schemas.base import ApiResponseModel
 
 from datetime import datetime, timedelta, timezone
@@ -294,7 +295,9 @@ def create_conversation(
     # to avoid a circular dependency between conversations and ingestion.
     if body.collection_id is not None:
         from app.api.ingestion.collections import _require_collection_access
-        _require_collection_access(db, current_user, body.collection_id)
+        _require_collection_access(
+            db, current_user, body.collection_id, origin=SURFACE_ANILALM
+        )
     return svc.create_conversation(
         db,
         current_user.id,

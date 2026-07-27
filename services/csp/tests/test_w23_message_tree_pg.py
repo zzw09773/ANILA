@@ -90,9 +90,21 @@ def throwaway_db():
 
 
 def test_alembic_upgrade_downgrade_upgrade(throwaway_db):
-    """A1: clean PG upgrade → downgrade → upgrade; single head in worktree."""
-    heads = ScriptDirectory.from_config(_alembic_config(throwaway_db)).get_heads()
-    assert heads == [_REVISION], f"expected single head {_REVISION}, got {heads}"
+    """A1: clean PG upgrade → downgrade → upgrade; the chain stays single-headed.
+
+    ⚠ Do NOT assert ``heads == [_REVISION]`` here. This revision is only the
+    head until the next package adds one, and then this test reddens for a
+    reason that has nothing to do with what it guards. That exact mistake has
+    now been made three times in this repo (W2-11 pinned r1_0042, this file
+    pinned r1_0043 twice). What actually matters is that the chain has not
+    forked — two heads make ``upgrade head`` fail outright — and that this
+    revision is reachable from the head.
+    """
+    script = ScriptDirectory.from_config(_alembic_config(throwaway_db))
+    heads = script.get_heads()
+    assert len(heads) == 1, f"alembic chain forked: {heads}"
+    chain = {rev.revision for rev in script.walk_revisions("base", heads[0])}
+    assert _REVISION in chain, f"{_REVISION} is not on the chain to {heads[0]}"
 
     pred = _predecessor(throwaway_db)
     _run_alembic(throwaway_db, "upgrade", _REVISION)

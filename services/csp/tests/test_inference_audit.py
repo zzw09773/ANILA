@@ -549,6 +549,7 @@ async def test_agent_csk_search_hop_writes_no_rag_audit(db: Session, monkeypatch
         request=_make_request(),
         db=db,
         principal=search_mod.SearchPrincipal(user=owner, agent=agent),
+        origin="csp",
     )
     rows = db.query(AuditLog).filter(AuditLog.action == "inference.rag_query").all()
     assert rows == []

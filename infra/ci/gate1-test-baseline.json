@@ -841,6 +841,15 @@
       "reason": "W2-3:訊息樹的回填冪等、重放安全與跨 session 語意只有真 PG 測得到;SQLite 沒有這些行為。"
     },
     {
+      "path": "services/csp/tests/test_collection_origin_surface_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_collection_origin_surface_pg.py",
+      "reason": "知識庫產品面隔離:origin CHECK 與跨面 by-id 404 都要真 PG(SQLite 沒有 CHECK,測不出來)。"
+    },
+    {
       "path": "services/csp/tests/test_w26_startup_ddl_absorption_pg.py",
       "kind": "pytest.mark.skipif",
       "count": 1,

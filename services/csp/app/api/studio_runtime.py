@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.ingestion.image_blob import stream_scoped_image_blob
+from app.api.ingestion.surface import ANY_SURFACE
 from app.api.ingestion.search import (
     ImageSearchRequest,
     ImageSearchResponse,
@@ -174,6 +175,7 @@ def require_runtime_binding(
         db,
         principal=principal,
         collection_id=collection_pk,
+        origin=ANY_SURFACE,
     )
     if collection.status != "active" or collection.lifecycle_state != "active":
         raise HTTPException(status_code=403, detail="collection 非 active")

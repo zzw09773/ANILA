@@ -4096,6 +4096,44 @@
         "title": "Body_upload_document_api_ingestion_collections__collection_id__documents_post",
         "type": "object"
       },
+      "Body_upload_document_api_personal_collections__collection_id__documents_post": {
+        "properties": {
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "W2-11:optional per-document classification. Defaults to the collection floor; upward-only. Declaring above the floor latches the whole collection via apply_classification.",
+            "title": "Classification Level"
+          },
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional canonical regulation/document name used to resolve cross-document citation targets. Falls back to the filename stem.",
+            "title": "Title"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_document_api_personal_collections__collection_id__documents_post",
+        "type": "object"
+      },
       "Body_upload_zip_api_ingestion_collections__collection_id__documents_zip_post": {
         "properties": {
           "classification_level": {
@@ -4120,6 +4158,32 @@
           "file"
         ],
         "title": "Body_upload_zip_api_ingestion_collections__collection_id__documents_zip_post",
+        "type": "object"
+      },
+      "Body_upload_zip_api_personal_collections__collection_id__documents_zip_post": {
+        "properties": {
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "W2-11:optional per-archive classification applied to every member document. Defaults to the collection floor; upward-only. Declaring above the floor latches the whole collection via apply_classification.",
+            "title": "Classification Level"
+          },
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_zip_api_personal_collections__collection_id__documents_zip_post",
         "type": "object"
       },
       "BootstrapExchangeRequest": {
@@ -21424,7 +21488,7 @@
     },
     "/api/ingestion/collections": {
       "get": {
-        "description": "List collections accessible to the current user.\n\nSprint 4: no ``agent_id`` filter. Default behaviour:\n- non-admin: only own collections (admin-bypass when ``owned_only=False``\n  is rejected for non-admins).\n- admin: own collections by default; pass ``owned_only=false`` to\n  see every collection on the platform.",
+        "description": "List collections accessible to the current user on this surface.\n\nAlways filtered to this mount's ``origin``. Ownership filter\n(``created_by`` / admin ``owned_only=false``) is unchanged.",
         "operationId": "list_collections_api_ingestion_collections_get",
         "parameters": [
           {
@@ -21489,7 +21553,7 @@
         ]
       },
       "post": {
-        "description": "Create a new (empty) collection owned by the calling user.",
+        "description": "Create a new (empty) collection owned by the calling user.\n\n``origin`` is taken from the dual-mount surface — never from the\nrequest body.",
         "operationId": "create_collection_api_ingestion_collections_post",
         "requestBody": {
           "content": {
@@ -22250,11 +22314,9 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
-              }
+              "application/octet-stream": {}
             },
-            "description": "Successful Response"
+            "description": "Raw uploaded file bytes"
           },
           "422": {
             "content": {
@@ -22620,11 +22682,10 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
-              }
+              "application/octet-stream": {},
+              "image/*": {}
             },
-            "description": "Successful Response"
+            "description": "Raw image bytes"
           },
           "422": {
             "content": {
@@ -22666,11 +22727,9 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
-              }
+              "text/event-stream": {}
             },
-            "description": "Successful Response"
+            "description": "SSE job status stream"
           },
           "422": {
             "content": {
@@ -24258,6 +24317,1325 @@
         "summary": "Mark Read",
         "tags": [
           "handoffs"
+        ]
+      }
+    },
+    "/api/personal/collections": {
+      "get": {
+        "description": "List collections accessible to the current user on this surface.\n\nAlways filtered to this mount's ``origin``. Ownership filter\n(``created_by`` / admin ``owned_only=false``) is unchanged.",
+        "operationId": "list_collections_api_personal_collections_get",
+        "parameters": [
+          {
+            "description": "預設只列 active；True 連 archived 一起回",
+            "in": "query",
+            "name": "include_archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "預設只列 active；True 連 archived 一起回",
+              "title": "Include Archived",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "預設只列自己的 collections；admin 設 False 可看全部",
+            "in": "query",
+            "name": "owned_only",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "預設只列自己的 collections；admin 設 False 可看全部",
+              "title": "Owned Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionResponse"
+                  },
+                  "title": "Response List Collections Api Personal Collections Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Collections",
+        "tags": [
+          "Ingestion / Collections"
+        ]
+      },
+      "post": {
+        "description": "Create a new (empty) collection owned by the calling user.\n\n``origin`` is taken from the dual-mount surface — never from the\nrequest body.",
+        "operationId": "create_collection_api_personal_collections_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Collection",
+        "tags": [
+          "Ingestion / Collections"
+        ]
+      }
+    },
+    "/api/personal/collections/{collection_id}": {
+      "delete": {
+        "description": "Archive a collection; the leased retention reaper performs erasure.",
+        "operationId": "delete_collection_api_personal_collections__collection_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Collection",
+        "tags": [
+          "Ingestion / Collections"
+        ]
+      },
+      "get": {
+        "operationId": "get_collection_api_personal_collections__collection_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Collection",
+        "tags": [
+          "Ingestion / Collections"
+        ]
+      },
+      "patch": {
+        "operationId": "update_collection_api_personal_collections__collection_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Collection",
+        "tags": [
+          "Ingestion / Collections"
+        ]
+      }
+    },
+    "/api/personal/collections/{collection_id}/documents": {
+      "get": {
+        "operationId": "list_documents_api_personal_collections__collection_id__documents_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DocumentResponse"
+                  },
+                  "title": "Response List Documents Api Personal Collections  Collection Id  Documents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Documents",
+        "tags": [
+          "Ingestion / Documents"
+        ]
+      },
+      "post": {
+        "description": "Accept one file and persist its durable ingestion intent.\n\nReturns 202 (Accepted) — the document row is written but indexing\nhappens async. Caller polls ``GET /api/ingestion/documents/{id}``\nto watch status transitions.",
+        "operationId": "upload_document_api_personal_collections__collection_id__documents_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_document_api_personal_collections__collection_id__documents_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Upload Document",
+        "tags": [
+          "Ingestion / Documents"
+        ]
+      }
+    },
+    "/api/personal/collections/{collection_id}/documents/zip": {
+      "post": {
+        "description": "Bulk upload via zip archive.\n\nEach file in the zip becomes a document in the collection. Files\nthat hit the per-file 50 MB cap are reported as ``too_large`` but\ndon't fail the whole upload; same-sha256 duplicates report\n``duplicate`` and skip enqueue. Folders / dotfiles (``__MACOSX/``,\n``.DS_Store``) are filtered out.\n\n``preserve_folder_structure``: when True, prepends the in-zip path\nto ``filename`` so the inspector can group by folder. When False\n(default), only the basename is kept — useful when the zip was\ncreated with a \"compress everything in this folder\" UI that\nintroduces a useless top-level wrapper.\n\nHard limit: 200 files per zip. Bigger archives should be split or\nuse the future Sprint 4 streaming API.",
+        "operationId": "upload_zip_api_personal_collections__collection_id__documents_zip_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "preserve_folder_structure",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Preserve Folder Structure",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_zip_api_personal_collections__collection_id__documents_zip_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZipUploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Upload Zip",
+        "tags": [
+          "Ingestion / Documents"
+        ]
+      }
+    },
+    "/api/personal/collections/{collection_id}/images/search": {
+      "post": {
+        "description": "Semantic top-K retrieval over a collection's ``ingestion_images`` rows.\n\nPhase 1 of the anila-studio extraction: this endpoint replaces the\nin-process ``app.api.studio._retrieve_images`` helper so the studio\nsub-service can pull image hits over HTTP instead of binding to the\ncsp-db pgvector layer directly.\n\nAuth is identical to text search: clearance, compartments, collection\ngrant, need-to-know and optional agent ceiling all apply before embedding.\n\nReturns ``results=[]`` (not an error) when:\n  - the collection has zero indexed images (text-only KB),\n  - the embedder returned an empty vector,\n  - no rows beat the ``min_score`` threshold.",
+        "operationId": "search_collection_images_api_personal_collections__collection_id__images_search_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageSearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Search Collection Images",
+        "tags": [
+          "Ingestion / Search"
+        ]
+      }
+    },
+    "/api/personal/collections/{collection_id}/relations": {
+      "get": {
+        "description": "List a collection's edges, newest first, with src/dst titles and the\nresolved / ambiguous flags the relations tab renders.",
+        "operationId": "list_relations_api_personal_collections__collection_id__relations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DocumentRelationResponse"
+                  },
+                  "title": "Response List Relations Api Personal Collections  Collection Id  Relations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Relations",
+        "tags": [
+          "Ingestion / Relations"
+        ]
+      },
+      "post": {
+        "description": "Add a manual edge (``source='manual'``). The source document must be in\nthis collection; the target is a concrete ``dst_document_id`` or a free-text\n``target_ref`` name (resolved now if it already matches, else back-filled).",
+        "operationId": "create_relation_api_personal_collections__collection_id__relations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentRelationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentRelationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Relation",
+        "tags": [
+          "Ingestion / Relations"
+        ]
+      }
+    },
+    "/api/personal/collections/{collection_id}/relations:reresolve": {
+      "post": {
+        "description": "Reconcile now + queue a full re-extract.\n\nThe synchronous part re-matches every unresolved edge against current\ndocument titles (back-fills links that were waiting on a late upload) and\nreturns its counts immediately. It also best-effort enqueues a worker job\nthat re-parses each blob and re-extracts rule edges (the '重抽' half), whose\nresults show up on the next list / search once the worker finishes.",
+        "operationId": "reresolve_relations_api_personal_collections__collection_id__relations_reresolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReresolveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reresolve Relations",
+        "tags": [
+          "Ingestion / Relations"
+        ]
+      }
+    },
+    "/api/personal/collections/{collection_id}/search": {
+      "post": {
+        "description": "Semantic top-K retrieval over one collection's chunks.\n\nOne active clearance grant must cover level, compartments, collection\nmembership and need-to-know. Admin/owner roles never bypass this data\npolicy. Agent callers also need a sufficient ceiling and bound collection.",
+        "operationId": "search_collection_api_personal_collections__collection_id__search_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Search Collection",
+        "tags": [
+          "Ingestion / Search"
+        ]
+      }
+    },
+    "/api/personal/documents/{document_id}": {
+      "delete": {
+        "description": "Archive a document; the leased retention reaper performs erasure.",
+        "operationId": "delete_document_api_personal_documents__document_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Document",
+        "tags": [
+          "Ingestion / Documents"
+        ]
+      },
+      "get": {
+        "description": "Document row + most recent job row joined.\n\nThe inspector polls this endpoint to render the parse → chunk →\nembed → indexed timeline. We always fetch the *latest* job because\na re-ingest creates a new row; the older ones stay for audit but\naren't UI-relevant.",
+        "operationId": "get_document_api_personal_documents__document_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Document",
+        "tags": [
+          "Ingestion / Documents"
+        ]
+      }
+    },
+    "/api/personal/documents/{document_id}/blob": {
+      "get": {
+        "description": "Stream the raw uploaded file back to the inspector.\n\nAuth: standard collection-scope check. The blob lives at\n``UPLOAD_DIR/<sha[:2]>/<sha>`` — we don't do path traversal because\nwe read storage_path from the DB row, not from a query string.",
+        "operationId": "download_document_blob_api_personal_documents__document_id__blob_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {}
+            },
+            "description": "Raw uploaded file bytes"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Document Blob",
+        "tags": [
+          "Ingestion / Documents"
+        ]
+      }
+    },
+    "/api/personal/documents/{document_id}/chunks": {
+      "get": {
+        "description": "Inspector chunk-list — agent-scoped via AgentScopedPgVectorStore.\n\nGoes through the central SDK so RLS auto-filters even if the API\nlayer's own auth check (``_resolve_collection``) is buggy. Belt-\nand-suspenders security.",
+        "operationId": "list_document_chunks_api_personal_documents__document_id__chunks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ChunkRow"
+                  },
+                  "title": "Response List Document Chunks Api Personal Documents  Document Id  Chunks Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Document Chunks",
+        "tags": [
+          "Ingestion / Documents"
+        ]
+      }
+    },
+    "/api/personal/documents/{document_id}/chunks/{chunk_id}/embedding-debug": {
+      "get": {
+        "description": "Return ``(dim, L2 norm)`` for one chunk — the \"Show vector debug\"\npayload behind the Inspector toggle.\n\nThe route is keyed on ``(document_id, chunk_id)`` rather than\n``chunk_id`` alone because the Layer 2 RLS policy default-denies\nevery ``document_chunks`` row when no GUC is set, which means we\ncan't look up the owning agent_id directly from the chunks table.\nResolving via ``ingestion_documents`` → ``ingestion_collections``\n(regular non-RLS tables) is the clean way through. The frontend\nalways has both ids in hand from the chunks-list endpoint anyway.\n\nWire payload is 2 scalars (~30 bytes); the full halfvec stays\nserver-side. Used behind the inspector's \"Show vector debug\"\ntoggle so the page render isn't paying for it by default.",
+        "operationId": "get_chunk_embedding_debug_api_personal_documents__document_id__chunks__chunk_id__embedding_debug_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "chunk_id",
+            "required": true,
+            "schema": {
+              "title": "Chunk Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkEmbeddingDebug"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Chunk Embedding Debug",
+        "tags": [
+          "Ingestion / Documents"
+        ]
+      }
+    },
+    "/api/personal/documents/{document_id}/reprocess": {
+      "post": {
+        "description": "重新嵌入既有 document(通常是 parse/embedding 失敗、卡在 status='failed' 的)。\n\n失敗檔原本沒有重試入口,而 (collection_id, sha256) unique 也擋住重傳同一個檔\n→ 資料卡死。這個端點讓 owner/admin 對既有 row 直接 re-enqueue ingest job,不必\n重傳;重設 status='pending' 並清掉上次的 error_message。進行中的檔拒絕重塞,\n避免同一檔並行兩個 job。",
+        "operationId": "reprocess_document_api_personal_documents__document_id__reprocess_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reprocess Document",
+        "tags": [
+          "Ingestion / Documents"
+        ]
+      }
+    },
+    "/api/personal/eval-runs": {
+      "get": {
+        "operationId": "list_eval_runs_api_personal_eval_runs_get",
+        "parameters": [
+          {
+            "description": "必填：列出此 collection 的 eval runs",
+            "in": "query",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "description": "必填：列出此 collection 的 eval runs",
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EvalRunResponse"
+                  },
+                  "title": "Response List Eval Runs Api Personal Eval Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Eval Runs",
+        "tags": [
+          "Ingestion / Evaluator"
+        ]
+      },
+      "post": {
+        "operationId": "create_eval_run_api_personal_eval_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalRunCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Eval Run",
+        "tags": [
+          "Ingestion / Evaluator"
+        ]
+      }
+    },
+    "/api/personal/eval-runs/{run_id}": {
+      "get": {
+        "operationId": "get_eval_run_api_personal_eval_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Eval Run",
+        "tags": [
+          "Ingestion / Evaluator"
+        ]
+      }
+    },
+    "/api/personal/images/{image_id}/blob": {
+      "get": {
+        "description": "Return raw image bytes for an ``ingestion_images.id``.\n\nArgs:\n    image_id: ``ingestion_images.id`` (BIGSERIAL primary key). The\n        TEXT ``image_id`` column is per-document and not globally\n        unique, so the API addresses rows by PK.\n\nRaises:\n    404: row not found.\n    403: caller does not own the parent collection.\n    404 (again): the row exists but ``storage_path`` resolves to a\n        file that's missing from the upload root — treat as \"image\n        unavailable\" because exposing a 500 to anila-studio would\n        be alarming for a deterministic infra mismatch we can't\n        recover from at the HTTP layer.",
+        "operationId": "get_image_blob_api_personal_images__image_id__blob_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "title": "Image Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {},
+              "image/*": {}
+            },
+            "description": "Raw image bytes"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Image Blob",
+        "tags": [
+          "Ingestion / Images"
+        ]
+      }
+    },
+    "/api/personal/jobs/{job_id}/stream": {
+      "get": {
+        "description": "SSE stream of one job's status transitions.",
+        "operationId": "stream_job_api_personal_jobs__job_id__stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "SSE job status stream"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Stream Job",
+        "tags": [
+          "Ingestion / Jobs"
+        ]
+      }
+    },
+    "/api/personal/relations/{rel_id}": {
+      "delete": {
+        "description": "Delete a manual edge. Rule edges are managed by re-extract and cannot be\ndeleted here (404). 404 too if the edge isn't in ``collection_id``.",
+        "operationId": "delete_relation_api_personal_relations__rel_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rel_id",
+            "required": true,
+            "schema": {
+              "title": "Rel Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Collection the edge belongs to — required so we can scope RLS before the lookup. The edge is asserted to belong to it.",
+            "in": "query",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "description": "Collection the edge belongs to — required so we can scope RLS before the lookup. The edge is asserted to belong to it.",
+              "title": "Collection Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Relation",
+        "tags": [
+          "Ingestion / Relations"
         ]
       }
     },

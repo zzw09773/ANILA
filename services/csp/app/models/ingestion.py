@@ -53,18 +53,24 @@ IntListValue = JSON().with_variant(ARRAY(Integer), "postgresql")
 
 
 class IngestionCollection(Base):
-    """A user-owned corpus grouping (Sprint 4 first-class refactor).
+    """A user-owned corpus grouping with product-surface provenance.
 
     Sprint 1–3 scoped collections to ``agent_id`` (one collection per
-    agent). Sprint 4 (migration 0019) drops that coupling — collections
-    are platform-shared resources owned by the user who created them;
-    any agent backend can configure ``RAG_COLLECTION_ID`` to point at
-    one. The platform stops caring which agent uses which collection.
+    agent). Sprint 4 (migration 0019) drops that coupling — ownership
+    is ``created_by``, and any agent backend can configure
+    ``RAG_COLLECTION_ID`` to point at a collection by numeric id.
 
-    Engine-level isolation moved with it: the RLS policy on
-    ``document_chunks`` is now keyed on ``anila.collection_id`` GUC
-    instead of ``anila.agent_id``. Agent backends issue
-    ``SET LOCAL anila.collection_id = N`` before retrieval queries.
+    Two product surfaces share this table (migration r1_0044):
+    governance CSP (``origin='csp'``) and ANILALM personal KB
+    (``origin='anilalm'``). ``origin`` is inventory partitioning by
+    creation surface — NOT an authorization boundary, and NOT a
+    substitute for ownership / clearance / compartments. Retrieval and
+    RLS stay keyed solely on the numeric id via ``anila.collection_id``.
+
+    Engine-level isolation: the RLS policy on ``document_chunks`` is
+    keyed on ``anila.collection_id`` GUC. Agent backends issue
+    ``SET LOCAL anila.collection_id = N`` before retrieval queries;
+    origin must never enter that path.
 
     Counter columns (``document_count`` / ``chunk_count`` /
     ``bytes_stored``) are denormalized for fast list-page rendering.
@@ -102,6 +108,12 @@ class IngestionCollection(Base):
             "AND image_count >= 0 AND artifact_count >= 0",
             name="ck_ingestion_collections_counters_nonnegative",
         ),
+        # Product-surface provenance (r1_0044). Same shape as the five
+        # classification-level CHECKs elsewhere: closed literal set.
+        CheckConstraint(
+            "origin IN ('csp', 'anilalm')",
+            name="ck_ingestion_collections_origin",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -133,6 +145,12 @@ class IngestionCollection(Base):
     created_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False
     )
+    # Product-surface provenance (r1_0044). Set server-side from the
+    # route mount (``/api/ingestion`` → csp, ``/api/personal`` → anilalm).
+    # Default 'csp' keeps SQLite create_all / legacy test inserts working;
+    # the API always sets this explicitly from the ambient surface.
+    # ⚠ NOT an authz field — see module docstring on surface.py.
+    origin = Column(String(20), nullable=False, default="csp")
     # ── 五級分類共通欄位(doc 08 §5,Slice 3a;backfill floor=無機密,
     # 最終等級以人工分類盤點為準,doc 08 §15)────────────────────────────
     classification_level = Column(

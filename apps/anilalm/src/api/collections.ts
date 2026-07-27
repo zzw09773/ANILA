@@ -1,16 +1,19 @@
 import { client } from './client'
 import type { Collection, ChunkingConfig } from '../types'
 
+/** ANILALM personal knowledge-base surface (origin=anilalm). */
+const PERSONAL = '/api/personal'
+
 interface ListParams {
   include_archived?: boolean
   owned_only?: boolean
 }
 
 export const listCollections = (params?: ListParams) =>
-  client.get<Collection[]>('/api/ingestion/collections', { params })
+  client.get<Collection[]>(`${PERSONAL}/collections`, { params })
 
 export const getCollection = (id: number) =>
-  client.get<Collection>(`/api/ingestion/collections/${id}`)
+  client.get<Collection>(`${PERSONAL}/collections/${id}`)
 
 export interface CreateCollectionPayload {
   name: string
@@ -21,7 +24,7 @@ export interface CreateCollectionPayload {
 }
 
 export const createCollection = (payload: CreateCollectionPayload) =>
-  client.post<Collection>('/api/ingestion/collections', payload)
+  client.post<Collection>(`${PERSONAL}/collections`, payload)
 
 interface UpdateCollectionPayload {
   name?: string
@@ -31,7 +34,7 @@ interface UpdateCollectionPayload {
 }
 
 export const updateCollection = (id: number, payload: UpdateCollectionPayload) =>
-  client.patch<Collection>(`/api/ingestion/collections/${id}`, payload)
+  client.patch<Collection>(`${PERSONAL}/collections/${id}`, payload)
 
 export const deleteCollection = (id: number) =>
-  client.delete(`/api/ingestion/collections/${id}`)
+  client.delete(`${PERSONAL}/collections/${id}`)

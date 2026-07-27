@@ -105,14 +105,21 @@ def _derive_snapshot_classification(
     現況 ingestion collections / documents 尚無 classification 欄位,
     以 ``getattr`` 前瞻式取值:欄位補上後本函式自動生效,現在則
     fail-safe 落在 無機密(migration floor,同 doc 08 backfill 精神)。
+
+    Task API is ANILALM-facing: only ``origin='anilalm'`` collections
+    participate (wrong-origin ids are rejected earlier in ``create_task``).
     """
     derived: list[ClassificationLevel] = []
     if payload.selected_collection_ids:
         from app.models.ingestion import IngestionCollection
+        from app.api.ingestion.surface import SURFACE_ANILALM
 
         rows = (
             db.query(IngestionCollection)
-            .filter(IngestionCollection.id.in_(payload.selected_collection_ids))
+            .filter(
+                IngestionCollection.id.in_(payload.selected_collection_ids),
+                IngestionCollection.origin == SURFACE_ANILALM,
+            )
             .all()
         )
         for row in rows:
@@ -159,18 +166,33 @@ def create_task(
 
     if payload.selected_collection_ids:
         from app.models.ingestion import IngestionCollection
+        from app.api.ingestion.surface import SURFACE_ANILALM
 
         # Retention takes the same collection row lock while revalidating a
         # document erase.  Taking it here makes Task admission serialize with
         # that decision instead of allowing a new active Task to appear in the
         # erase check/unlink window.
+        #
+        # Product surface: /api/tasks is ANILALM-facing. A CSP-origin id is
+        # treated as missing (same as personal collection shelf).
         selected_collections = (
             db.query(IngestionCollection)
-            .filter(IngestionCollection.id.in_(payload.selected_collection_ids))
+            .filter(
+                IngestionCollection.id.in_(payload.selected_collection_ids),
+                IngestionCollection.origin == SURFACE_ANILALM,
+            )
             .order_by(IngestionCollection.id)
             .with_for_update().populate_existing()
             .all()
         )
+        found_ids = {row.id for row in selected_collections}
+        missing = [
+            cid
+            for cid in payload.selected_collection_ids
+            if cid not in found_ids
+        ]
+        if missing:
+            raise LookupError(f"Collection {missing[0]} not found")
         inactive_ids = [
             row.id
             for row in selected_collections

@@ -20,6 +20,7 @@ from app.api.handoffs import router as handoffs_router
 from app.api.public_share import router as public_share_router
 from app.middleware.csrf import CsrfMiddleware
 from app.middleware.request_id import RequestIdMiddleware
+from app.api.ingestion.surface import CollectionSurfaceMiddleware
 from app.models.user import User
 from app.schemas.model_governance import ModelGovernanceReadiness
 from app.services.auth_service import require_admin
@@ -473,6 +474,13 @@ if _allowed_hosts != ["*"]:
 # CSRF protection for cookie-authenticated mutating requests. Runs after
 # CORS so preflight OPTIONS responses are generated without the check.
 app.add_middleware(CsrfMiddleware)
+
+# Collection product-surface provenance: bind ambient origin from URL
+# prefix for dual-mounted handlers (/api/ingestion → csp, /api/personal
+# → anilalm). Supplies ``require_surface_origin()``; resolvers still
+# require an explicit ``origin=`` argument. ASGI middleware so the
+# ContextVar survives FastAPI sync-endpoint threadpool hops.
+app.add_middleware(CollectionSurfaceMiddleware)
 
 # W3-3⑤:每個請求一個 id。**最後註冊 = 最外層執行**,所以連被 CSRF 或
 # TrustedHost 擋掉的請求也拿得到 id 並留下 access log —— 那些正是最需要被查的。

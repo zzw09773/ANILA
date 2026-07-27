@@ -93,6 +93,8 @@ async def test_upload_declaration_below_collection_floor_rejected(
             UploadFile(filename="note.txt", file=BytesIO(b"hello")),
             title=None,
             classification_level="無機密",
+            origin="csp",
+
             db=db,
             current_user=user,
         )
@@ -113,6 +115,8 @@ async def test_upload_unknown_classification_rejected(tmp_path, db) -> None:
             UploadFile(filename="note.txt", file=BytesIO(b"hello")),
             title=None,
             classification_level="秘密",
+            origin="csp",
+
             db=db,
             current_user=user,
         )

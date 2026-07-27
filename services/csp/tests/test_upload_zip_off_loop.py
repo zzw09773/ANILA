@@ -94,6 +94,8 @@ async def test_upload_zip_keeps_event_loop_schedulable_during_member_io(
                 file=BytesIO(_zip_bytes([("note.txt", b"hello off-loop")])),
             ),
             preserve_folder_structure=False,
+            origin="csp",
+
             db=db,
             current_user=user,
         )
@@ -190,6 +192,8 @@ async def test_upload_zip_six_status_distribution_matches_pre_to_thread(
         collection.id,
         UploadFile(filename="mixed.zip", file=BytesIO(payload)),
         preserve_folder_structure=False,
+        origin="csp",
+
         db=db,
         current_user=user,
     )

@@ -88,6 +88,8 @@ def create_task(
         task = service.create_task(
             db, requester_user_id=current_user.id, payload=payload
         )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     log_audit_event(

@@ -139,6 +139,8 @@ async def test_upload_declaring_confidential_latches_unclassified_collection(
             UploadFile(filename="secret.txt", file=BytesIO(b"classified body")),
             title="涉密附件",
             classification_level="機密",
+            origin="csp",
+
             db=db,
             current_user=user,
         )
@@ -234,6 +236,8 @@ async def test_zip_declaring_above_floor_latches_collection(pg_url, tmp_path, mo
             UploadFile(filename="bundle.zip", file=BytesIO(payload)),
             preserve_folder_structure=False,
             classification_level="極機密",
+            origin="csp",
+
             db=db,
             current_user=user,
         )
@@ -324,6 +328,8 @@ async def test_zip_declaring_below_floor_rejected_creates_zero_docs(
                 UploadFile(filename="low.zip", file=BytesIO(payload)),
                 preserve_folder_structure=False,
                 classification_level="無機密",
+                origin="csp",
+
                 db=db,
                 current_user=user,
             )

@@ -257,6 +257,7 @@ def test_task_admission_waits_for_retention_and_rejects_erasing_collection():
         embedding_dim=3,
         created_by=owner.id,
         classification_level="機密",
+        origin="anilalm",
     )
     seed.add(collection)
     seed.commit()

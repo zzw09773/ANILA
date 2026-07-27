@@ -37,6 +37,7 @@ from app.api.ingestion import (
     relations_router as ingestion_relations_router,
     search_router as ingestion_search_router,
 )
+from app.api.ingestion.surface import GOVERNANCE_PREFIX, PERSONAL_PREFIX
 from app.api.jwks import router as jwks_router
 from app.api.classification_inventory import router as classification_inventory_router
 from app.api.studio_runtime import router as studio_runtime_router
@@ -81,15 +82,29 @@ api_router.include_router(
 api_router.include_router(banners_router)
 # 部署能力旗標(W1-3):只回布林白名單,給前端決定「怎麼說」。
 api_router.include_router(capabilities_router)
-api_router.include_router(ingestion_collections_router)
+
+# Collection-scoped ingestion routers are mounted twice:
+#   /api/ingestion/*  → governance product (origin='csp')
+#   /api/personal/*   → ANILALM personal KB (origin='anilalm')
+# Dual-mount is convenience for URL geometry; the load-bearing gate is
+# the required ``origin=`` argument on collection resolvers (see
+# ``app.api.ingestion.surface``). Credentials and chunking-preview stay
+# governance-only (absolute paths, single mount).
+_COLLECTION_SURFACE_ROUTERS = (
+    ingestion_collections_router,
+    ingestion_documents_router,
+    ingestion_eval_runs_router,
+    ingestion_jobs_router,
+    ingestion_relations_router,
+    ingestion_search_router,
+    ingestion_image_blob_router,
+)
+for _surface_router in _COLLECTION_SURFACE_ROUTERS:
+    api_router.include_router(_surface_router, prefix=GOVERNANCE_PREFIX)
+    api_router.include_router(_surface_router, prefix=PERSONAL_PREFIX)
 api_router.include_router(ingestion_credentials_router)
-api_router.include_router(ingestion_documents_router)
-api_router.include_router(ingestion_eval_runs_router)
-api_router.include_router(ingestion_jobs_router)
 api_router.include_router(ingestion_preview_router)
-api_router.include_router(ingestion_relations_router)
-api_router.include_router(ingestion_search_router)
-api_router.include_router(ingestion_image_blob_router)
+
 api_router.include_router(trusted_hosts_router)
 api_router.include_router(tasks_router)
 api_router.include_router(policy_decisions_router)

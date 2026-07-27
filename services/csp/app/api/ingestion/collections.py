@@ -1,13 +1,23 @@
-"""Ingestion collections CRUD (`/api/ingestion/collections`).
+"""Ingestion collections CRUD — dual-mounted under two product surfaces.
 
-Sprint 4 refactor: collections are first-class user-owned resources.
-Sprint 1–3 scoped them to ``agent_id``; that coupling was over-design
-for the platform's "infra not multi-tenant SaaS" posture. CSP UI no
-longer asks for an agent. Any agent backend points at a collection
-via its own deploy config (``RAG_COLLECTION_ID`` env).
+Relative paths (``/collections`` …) are mounted twice by ``app.api.router``:
 
-Authorisation:
-- ``admin`` users: list / manage every collection (cross-org admin).
+* ``/api/ingestion/...`` → governance product, ``origin='csp'``
+* ``/api/personal/...`` → ANILALM personal KB, ``origin='anilalm'``
+
+Each surface lists / creates / resolves only its own origin. Creation
+sets ``origin`` server-side from the mount; the client cannot choose it.
+
+⚠ ``origin`` is product inventory partitioning, NOT an authorization
+control. Ownership (``created_by`` / admin bypass) is unchanged. Same
+user, same rights, different shelf. Do not "fix" the origin filter
+out thinking it is over-isolation — the product rule is: a collection
+created in CSP must not appear in ANILALM even when an individual
+created it.
+
+Authorisation (unchanged):
+- ``admin`` users: list / manage every collection of this surface
+  (cross-org admin within the surface).
 - non-admin: list / manage only collections they own (``created_by``).
   Sharing-with-other-users is a Sprint-5 ``collection_access_grants``
   concern; not in scope here.
@@ -42,16 +52,50 @@ from app.modules.clearance.service import resolve_effective_classification_clear
 from app.modules.policy import apply_classification
 from anila_contracts import Classification as ClassificationLevel
 from app.schemas.contracts.policy import PolicyActorType
+from app.api.ingestion.surface import (
+    ANY_SURFACE,
+    OriginArg,
+    require_surface_origin,
+)
 
 router = APIRouter(tags=["Ingestion / Collections"])
 logger = logging.getLogger(__name__)
 
 
-# ── Authorisation helper ────────────────────────────────────────────────────
+# ── Surface-aware resolution ────────────────────────────────────────────────
+
+
+def lookup_collection_for_surface(
+    db: Session,
+    collection_id: int,
+    *,
+    origin: OriginArg,
+) -> IngestionCollection | None:
+    """Fetch a collection row with an explicit surface decision.
+
+    ``origin`` is required:
+
+    * ``SURFACE_CSP`` / ``SURFACE_ANILALM`` — row with another origin is
+      treated as missing (``None`` → callers raise 404).
+    * ``ANY_SURFACE`` — deliberate cross-product lookup (named constant;
+      greppable). Use only at sites that intentionally span products.
+
+    ⚠ This origin filter is inventory partitioning, not authz.
+    """
+    q = db.query(IngestionCollection).filter(
+        IngestionCollection.id == collection_id
+    )
+    if origin is not ANY_SURFACE:
+        q = q.filter(IngestionCollection.origin == origin)
+    return q.first()
 
 
 def _require_collection_access(
-    db: Session, user: User, collection_id: int
+    db: Session,
+    user: User,
+    collection_id: int,
+    *,
+    origin: OriginArg,
 ) -> IngestionCollection:
     """Resolve the collection + confirm caller can manage it.
 
@@ -60,11 +104,13 @@ def _require_collection_access(
     Sprint may add a ``collection_access_grants`` table for sharing
     across users; this helper is the single point that needs to grow
     when that lands.
+
+    ``origin`` is required (see ``lookup_collection_for_surface``). A
+    row belonging to another product shelf is 404 (not 403). This is
+    NOT a security boundary; see ``surface.py``.
     """
-    coll = (
-        db.query(IngestionCollection)
-        .filter(IngestionCollection.id == collection_id)
-        .first()
+    coll = lookup_collection_for_surface(
+        db, collection_id, origin=origin
     )
     if coll is None:
         raise HTTPException(
@@ -104,7 +150,7 @@ def _require_agent_access(db: Session, user: User, agent_id: int):  # noqa: ARG0
 
 
 @router.post(
-    "/api/ingestion/collections",
+    "/collections",
     response_model=CollectionResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -113,7 +159,12 @@ def create_collection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
-    """Create a new (empty) collection owned by the calling user."""
+    """Create a new (empty) collection owned by the calling user.
+
+    ``origin`` is taken from the dual-mount surface — never from the
+    request body.
+    """
+    surface_origin = require_surface_origin()
     fingerprint = settings.EMBEDDING_MODEL_FINGERPRINT.strip().lower()
     if re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint) is None:
         raise HTTPException(
@@ -155,6 +206,7 @@ def create_collection(
         chunk_count=0,
         bytes_stored=0,
         created_by=current_user.id,
+        origin=surface_origin,
         classification_level=declared.to_storage(),
     )
     db.add(coll)
@@ -181,6 +233,7 @@ def create_collection(
         metadata={
             "name": payload.name,
             "created_by": current_user.id,
+            "origin": surface_origin,
             "classification_level": declared.to_storage(),
         },
     )
@@ -188,7 +241,7 @@ def create_collection(
 
 
 @router.get(
-    "/api/ingestion/collections",
+    "/collections",
     response_model=list[CollectionResponse],
 )
 def list_collections(
@@ -204,21 +257,21 @@ def list_collections(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[CollectionResponse]:
-    """List collections accessible to the current user.
+    """List collections accessible to the current user on this surface.
 
-    Sprint 4: no ``agent_id`` filter. Default behaviour:
-    - non-admin: only own collections (admin-bypass when ``owned_only=False``
-      is rejected for non-admins).
-    - admin: own collections by default; pass ``owned_only=false`` to
-      see every collection on the platform.
+    Always filtered to this mount's ``origin``. Ownership filter
+    (``created_by`` / admin ``owned_only=false``) is unchanged.
     """
+    surface_origin = require_surface_origin()
     if not owned_only and not is_admin_tier(current_user):
         raise HTTPException(
             status_code=403,
             detail="owned_only=false requires admin role",
         )
 
-    q = db.query(IngestionCollection)
+    q = db.query(IngestionCollection).filter(
+        IngestionCollection.origin == surface_origin
+    )
     if owned_only:
         q = q.filter(IngestionCollection.created_by == current_user.id)
     if not include_archived:
@@ -228,7 +281,7 @@ def list_collections(
 
 
 @router.get(
-    "/api/ingestion/collections/{collection_id}",
+    "/collections/{collection_id}",
     response_model=CollectionResponse,
 )
 def get_collection(
@@ -236,12 +289,14 @@ def get_collection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
-    coll = _require_collection_access(db, current_user, collection_id)
+    coll = _require_collection_access(
+        db, current_user, collection_id, origin=require_surface_origin()
+    )
     return CollectionResponse.model_validate(coll)
 
 
 @router.patch(
-    "/api/ingestion/collections/{collection_id}",
+    "/collections/{collection_id}",
     response_model=CollectionResponse,
 )
 def update_collection(
@@ -250,7 +305,9 @@ def update_collection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
-    coll = _require_collection_access(db, current_user, collection_id)
+    coll = _require_collection_access(
+        db, current_user, collection_id, origin=require_surface_origin()
+    )
 
     changed: dict[str, object] = {}
     if payload.name is not None:
@@ -327,7 +384,7 @@ def update_collection(
 
 
 @router.delete(
-    "/api/ingestion/collections/{collection_id}",
+    "/collections/{collection_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )
@@ -337,7 +394,9 @@ def delete_collection(
     current_user: User = Depends(get_current_user),
 ) -> Response:
     """Archive a collection; the leased retention reaper performs erasure."""
-    coll = _require_collection_access(db, current_user, collection_id)
+    coll = _require_collection_access(
+        db, current_user, collection_id, origin=require_surface_origin()
+    )
     active_job = db.query(IngestionJob.id).filter(
         IngestionJob.collection_id == coll.id,
         IngestionJob.status.notin_(("succeeded", "failed", "cancelled", "dead_letter")),
@@ -349,7 +408,7 @@ def delete_collection(
         coll.id in (task.selected_collection_ids or []) for task in active_tasks
     ):
         raise HTTPException(status_code=409, detail="Collection has active work")
-    snapshot = {"name": coll.name, "created_by": coll.created_by}
+    snapshot = {"name": coll.name, "created_by": coll.created_by, "origin": coll.origin}
     if coll.lifecycle_state == "erased":
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     now = datetime.now(timezone.utc)

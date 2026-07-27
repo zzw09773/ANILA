@@ -430,7 +430,8 @@ jobs:
             tests/test_w210_governance_timestamptz_pg.py \
             tests/test_audit_logs_detail_trgm_pg.py \
             tests/test_w211_classification_input_pg.py \
-            tests/test_w23_message_tree_pg.py ; do
+            tests/test_w23_message_tree_pg.py \
+            tests/test_collection_origin_surface_pg.py ; do
             echo "── $f"
             out=$(python -m pytest "$f" -q 2>&1) || { echo "$out"; exit 1; }
             echo "$out" | tail -1
