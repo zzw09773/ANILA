@@ -2721,15 +2721,21 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
               {/* W1-1② 分享 gate。原本三行都吃 `selectedConv.classified` ——
                   legacy boolean 對營業秘密是 False,所以營業秘密建得出分享連結。
                   改吃 `controlledActionNotice()`(門檻「> 無機密」,未知值
-                  fail-closed);文案照 N-4 收緊(依據 + 替代路徑)。 */}
-              <IconButton
-                title={shareNotice.tooltip}
-                onClick={() => !shareNotice.blocked && setShareOpen(true)}
-                disabled={shareNotice.blocked}
-                style={shareNotice.blocked ? { opacity: 0.4, cursor: "not-allowed" } : {}}
-              >
-                <IconShare size={14} />
-              </IconButton>
+                  fail-closed);文案照 N-4 收緊(依據 + 替代路徑)。
+                  W3-7c:部署旗標 `ENABLE_PUBLIC_SHARE` 關閉時**整顆隱藏**(不是
+                  disabled)—— N-3 的 disabled+tooltip 姿態是給「這個對話因密等
+                  不能分享」用的;部署根本沒開分享時按鈕不該存在,按下去只會
+                  拿到後端 403(capabilities fail-closed,預設隱藏)。 */}
+              {capabilities.enablePublicShare && (
+                <IconButton
+                  title={shareNotice.tooltip}
+                  onClick={() => !shareNotice.blocked && setShareOpen(true)}
+                  disabled={shareNotice.blocked}
+                  style={shareNotice.blocked ? { opacity: 0.4, cursor: "not-allowed" } : {}}
+                >
+                  <IconShare size={14} />
+                </IconButton>
+              )}
             </>
           )}
 
@@ -3001,8 +3007,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         setTweaks={setTweaks}
       />
 
+      {/* W3-7c:與分享按鈕同一道部署旗標 gate —— 旗標關閉時對話框連掛都不掛。 */}
       <ShareDialog
-        open={shareOpen}
+        open={shareOpen && capabilities.enablePublicShare}
         onClose={() => setShareOpen(false)}
         conversation={selectedConv}
         user={user}
