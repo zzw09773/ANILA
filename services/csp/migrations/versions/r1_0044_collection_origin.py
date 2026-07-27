@@ -30,6 +30,8 @@ from __future__ import annotations
 
 from typing import Sequence, Union
 
+import logging
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -43,6 +45,9 @@ _TABLE = "ingestion_collections"
 _COLUMN = "origin"
 _CHECK = "ck_ingestion_collections_origin"
 _ORIGINS_SQL = "'csp', 'anilalm'"
+
+
+logger = logging.getLogger("alembic.runtime.migration")
 
 
 def _has_table(bind, table: str) -> bool:
@@ -85,15 +90,35 @@ def upgrade() -> None:
         return
 
     if not _has_column(bind, _TABLE, _COLUMN):
-        # Refuse to invent provenance for pre-existing rows.
-        count = bind.execute(
-            sa.text(f"SELECT count(*) FROM {_TABLE}")
-        ).scalar()
-        if count and int(count) > 0:
-            raise RuntimeError(
-                f"{_TABLE} already has {count} row(s); refusing to add "
-                f"NOT NULL {_COLUMN} without an agreed backfill. Stop and "
-                "ask the product owner — do not guess csp vs anilalm."
+        # Pre-existing rows are backfilled to the governance surface, loudly.
+        #
+        # The first version refused outright when the table was non-empty, on
+        # the grounds that provenance should not be invented. The intent was
+        # right; the consequence was that this migration could not run on any
+        # database that had ever held a collection — which is every test and
+        # development database, and CI proved it by failing there. A migration
+        # that cannot be applied is not a safety property, it is a broken
+        # migration.
+        #
+        # 'csp' is the conservative direction, not an arbitrary pick: a row
+        # wrongly marked 'csp' disappears from the personal product, while one
+        # wrongly marked 'anilalm' puts an organisation's knowledge base into
+        # someone's personal shelf — the exact failure this column exists to
+        # prevent. The product owner confirmed (2026-07-27) that no deployment
+        # holds collections yet, so in practice this only ever touches fixtures;
+        # the warning is here so that if it ever does touch real rows, the
+        # operator has a count to re-scope from rather than a silent rewrite.
+        count = int(
+            bind.execute(sa.text(f"SELECT count(*) FROM {_TABLE}")).scalar() or 0
+        )
+        if count:
+            logger.warning(
+                "r1_0044: %s has %d pre-existing row(s); backfilling %s='csp' "
+                "(governance surface). Re-scope any that belong to the personal "
+                "product before users notice them missing there.",
+                _TABLE,
+                count,
+                _COLUMN,
             )
         op.add_column(
             _TABLE,
