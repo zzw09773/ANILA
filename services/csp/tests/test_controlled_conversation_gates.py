@@ -184,6 +184,49 @@ def test_search_snippet_suppressed_for_every_controlled_level(client, db):
         assert hits[0]["snippet"] is None, f"{level} 的內文被洩漏"
 
 
+def test_search_content_hit_on_controlled_conversation_is_audited(client, db):
+    """內文比對命中受控對話 → 落稽核列。
+
+    沒有這一列,搜尋就是一個零紀錄的「字串存在性 oracle」:開對話讀內容會被
+    記帳(W1-1①),但用搜尋逐字探測內容不會 —— 等於繞過讀取稽核。
+    (PR #50 作者自陳缺陷 A2,2026-07-27 分診確認後補。)
+    """
+    user = make_user(db, username="alice")
+    conv = _mk_conv(db, user, "營業秘密", title="毫無關聯的標題")
+    _mk_msg(db, conv, "內含 qwertyoracle 字樣的營業秘密內文")
+
+    token = login(client, username="alice")
+    resp = client.get(
+        "/api/conversations/search",
+        params={"q": "qwertyoracle"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert [h for h in resp.json() if h["id"] == conv.id], "命中本身不該消失(N-3)"
+
+    rows = _audit_rows(db, conv.id)
+    assert len(rows) == 1, "受控對話的內文命中沒有落稽核"
+    assert "搜尋內文比對" in rows[0].detail and "營業秘密" in rows[0].detail
+    # 查詢字串不得寫進稽核 —— 否則稽核日誌自己變成洩漏面。
+    assert "qwertyoracle" not in rows[0].detail
+
+
+def test_search_title_only_hit_on_controlled_conversation_not_audited(client, db):
+    """純標題命中不記帳 —— 標題是 metadata,不是內容探測。"""
+    user = make_user(db, username="alice")
+    conv = _mk_conv(db, user, "機密", title="含 zxcvtitle 的標題")
+    _mk_msg(db, conv, "內文完全不含標題那個字")
+
+    token = login(client, username="alice")
+    resp = client.get(
+        "/api/conversations/search",
+        params={"q": "zxcvtitle"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert [h for h in resp.json() if h["id"] == conv.id]
+    assert _audit_rows(db, conv.id) == []
+
+
 # ── 共用判定的直接單元測試 ───────────────────────────────────────────────────
 
 def test_is_controlled_predicate():

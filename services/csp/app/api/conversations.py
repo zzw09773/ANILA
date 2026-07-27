@@ -350,6 +350,28 @@ def search_conversations(
                 idx = msg.content.lower().find(q.lower())
                 start = max(0, idx - 20)
                 snippet = ("…" if start > 0 else "") + msg.content[start:start + 80].strip()
+        else:
+            # 內文比對是一個「字串存在性 oracle」:開對話讀內容會落稽核
+            # (W1-1①),但用搜尋逐字探測不會 —— 等於繞過讀取稽核做零紀錄
+            # 的內容探測(PR #50 作者自陳 A2,2026-07-27 分診確認)。對話
+            # 照樣出現在結果(N-3:整條消失會讓使用者以為東西不見了),但
+            # **內文命中就落稽核**,與開對話讀取同一種帳。標題命中不記 ——
+            # 標題是 metadata。查詢字串刻意不寫進稽核,免得稽核日誌自己
+            # 變成洩漏面。
+            content_matched = (
+                db.query(Message.id)
+                .filter(Message.conversation_id == c.id, Message.content.ilike(like))
+                .first()
+                is not None
+            )
+            if content_matched:
+                svc.log_controlled_access(
+                    db,
+                    c.id,
+                    current_user,
+                    level_label=svc.controlled_level_label(c),
+                    event="以搜尋內文比對命中",
+                )
         data = ConversationOut.model_validate(c).model_dump()
         data["snippet"] = snippet
         hits.append(data)

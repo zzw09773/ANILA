@@ -425,7 +425,7 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
 
 
 def log_controlled_access(
-    db: Session, conv_id: int, user: User, *, level_label: str
+    db: Session, conv_id: int, user: User, *, level_label: str, event: str = "讀取"
 ) -> None:
     """對受控對話(密等 > 無機密)的讀取落一列稽核。
 
@@ -453,7 +453,7 @@ def log_controlled_access(
         resource_id=str(conv_id),
         status="success",
         detail=(
-            f"使用者 {user.username} 讀取密等「{level_label}」的對話 {conv_id}"
+            f"使用者 {user.username} {event}密等「{level_label}」的對話 {conv_id}"
         ),
     ))
     db.commit()
