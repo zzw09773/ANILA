@@ -58,6 +58,71 @@
 如果 `.15` 上**已經有**一個在跑的 card 部署,那這些東西就已經在那台機器的 `.env`
 與 `share/pki/` 裡了 —— **先去那台機器上抄,不要重新申請**。這是最快的路。
 
+#### 具體怎麼取(2026-07-28 從 CA bundle 與驗證程式碼實查)
+
+⚠ **`intranet-prod-v1.0.0.tar.gz` 裡沒有 CRL。** 我拆開看過:源碼包只含
+`cspki_ca_bundle.pem`(信任錨,repo 本來就有),沒有任何 `.crl`。那個 bundle 是
+6/14 打的,早於 CRL 這道要求,而且 CRL 本來就是會過期的產物,不會被打進映像包。
+
+**發布點**(從中繼 CA 憑證的 CRL Distribution Points 讀出來):
+
+```
+http://repository.ncsist.org.tw/repository/CARL.crl
+```
+
+從本開發機解不到這個主機名(內網 DNS),**在 `.15` 上應該可以**:
+
+```bash
+curl -sS -o /tmp/CARL.crl http://repository.ncsist.org.tw/repository/CARL.crl
+openssl crl -inform DER -in /tmp/CARL.crl -noout -issuer -lastupdate -nextupdate
+```
+
+⚠ **但 `CARL.crl` 很可能不是你要的那一份。** CARL = Certificate **Authority**
+Revocation List —— 由 Root 簽發、列的是被撤銷的**CA**。而驗證程式碼要的是
+**簽發卡片憑證的那個 CA 所簽的 CRL**:
+
+```python
+# card_auth.py:394-397
+candidates = crls.get(issuer.subject.public_bytes(), [])
+if not candidates:
+    raise CardConfigError("CRL bundle 缺少憑證 issuer 的撤銷清單")
+```
+
+憑證鏈是 `CSPKI Root CA G1` → `中科院憑證管理中心 - G1` → 卡片,所以要的是
+**中繼那張(`中科院憑證管理中心 - G1`)簽發的使用者 CRL**。它的發布點寫在
+**卡片憑證自己**的 CDP 欄位裡,不在 CA bundle 裡 —— 拿一張實體卡的憑證出來看:
+
+```bash
+openssl x509 -in <某張卡的憑證>.pem -noout -text | grep -A 4 "CRL Distribution"
+# 順便把政策 OID 也讀出來,那就是 CARD_REQUIRED_CERT_POLICY_OIDS 要填的值
+openssl x509 -in <某張卡的憑證>.pem -noout -text | grep -A 3 "Certificate Policies"
+```
+
+參考:中繼 CA 自己宣告的政策 OID 是 `2.16.886.105.100003.0.3.1` / `.2` / `.3`。
+卡片憑證通常會宣告其中之一。
+
+**格式要求(會踩)**:
+
+| 要求 | 出處 | 不符合的後果 |
+|---|---|---|
+| 必須是 **PEM**(`-----BEGIN X509 CRL-----`) | `card_auth.py:552` | DER 直接被當成「不含任何 PEM CRL」 |
+| 可以把多份 CRL **串接**在同一個檔 | `card_auth.py:546-549`(依 issuer 建索引) | 可同時放 CARL 與使用者 CRL |
+| 必須有 `nextUpdate` 且**尚未到期** | `card_auth.py:405-412` | 過期 → 卡片登入**全部失敗** |
+
+DER 轉 PEM:
+
+```bash
+openssl crl -inform DER -in /tmp/CARL.crl -outform PEM -out share/pki/card-crl-bundle.pem
+# 多份就 cat 起來
+cat crl-user.pem crl-ca.pem > share/pki/card-crl-bundle.pem
+```
+
+⛔ **這是持續性的維運工作,不是一次性的。** `.env.example` 的
+`CARD_CRL_MAX_AGE_HOURS=24` 加上程式對 `nextUpdate` 的檢查,代表 **CRL 一旦過期,
+全院就登不進來**。開放前要先排好定期同步(氣隙環境就是排定期人工搬運),
+否則平台會在某個沒人預期的早上整個登不進去 —— 而那個失效看起來會像平台壞了,
+不像 CRL 過期。
+
 ### 完整 `.env` 配方(演練驗證過的最小集)
 
 ```bash
