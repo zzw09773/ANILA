@@ -447,6 +447,53 @@
 - **派工**:範例實作A → 批次實作B;驗收甲(抽 20% 逐處比對語意不變)。
 - **風險**:盲目包 to_thread 讓 Session 跨執行緒 → 模板明定「session 取得與使用不得跨 thread 邊界」;這正是無範例批次必失敗的型。
 
+> ### ⚠ W2-7 重新界定(2026-07-27,經 AST 掃描與 sol×max 獨立複核)
+>
+> **本包不能照上面的方法執行。** 「同 pattern 33 處」的錨點檔 `services/proxy/service.py`
+> 不存在(實檔是 `services/csp/app/services/proxy/service.py`),而重掃後的結論是:
+>
+> - 掃描報的「202 處直接阻塞」**是膨脹的** —— 同一條查詢的 `db.query()` /
+>   `with_for_update()` / `.all()` 被算成三個 AST call,而前兩者不送 SQL。202 不是
+>   I/O 次數,不能當工時或 `to_thread` 下限。
+> - 「164 處間接、且是 floor」**也不成立** —— 其中 23 筆 `create_task` 是
+>   `asyncio.create_task` 而非 DB helper,另有 `registry.list_agents()` 被誤配到別的
+>   模組。**至少 24 筆確定誤報。**
+> - 方向(2 units 遠遠不夠)仍成立,但**現有數字不足以支撐任何精確倍數**。
+>
+> **驗收條件要換掉。** `asyncio.to_thread 計數 >= 清單數` 是錯的指標:一個完整的
+> sync unit 可以涵蓋數十次 round-trip,而把 endpoint 改成同步 `def` 時一個 `to_thread`
+> 都不需要。改成:靜態(以交易階段為單位,辨識 direct 與正確解析過符號的 transitive
+> blocking)+ 動態(在 mock network barrier 停住時 `Session.in_transaction()==False`、
+> SQLAlchemy pool checkout 回基線)+ 負載(`/health` p95、負載停止後恢復時間、
+> `idle in transaction` 年齡、pool checkout 數)。**`pg_blocking_pids` 全空單獨不能
+> 證明沒有 pool exhaustion。**
+>
+> **正確的分解**(依交易生命週期,不是依「包 to_thread」):
+> 1. non-stream `proxy_request` 的 admission release —— stream 路徑
+>    `proxy/service.py:633` 已有可抄的 commit/release 模板;admission 完成在 `:1204`、
+>    外部 await 在 `:1251`。
+> 2. `retrieval_service.py:626 retrieve_and_seal` —— **這才是被 W2-8 實測到的那條**
+>    (`:626` 取 clearance 鎖、`:641` 跨 embedding 與 pgvector await)。
+> 3. `resume_by_session` 獨立處理 —— 但真正的缺口不是那兩把鎖(正常路徑不走第二把,
+>    且 `dispatch_resume` 在 `:951` commit durable lease 後才呼叫 agent),而是
+>    `build_agent_outbound_headers`(`agent_dispatch_service.py:1851`)在 claim commit
+>    **之後**重開交易並握著它跨 HTTP await。
+>
+> ⛔ **不要改 `get_db` 當全域解法** —— 它不知道 coroutine 何時 await,改成 async
+> dependency 反而把 teardown 搬上 loop。
+>
+> ⚠ **W2-8 的數據不能用來排 memory recall 的優先級**:那個負載 overlay 明確關閉了
+> Gate 5 與 `ENABLE_MEMORY`。
+>
+> ❗ **兩題須由產品負責人 + 資安權責人裁定,不是實作者可選**:
+> (a) 撤銷／分類升級／取消發生在 durable admission **之後**時,已在途的出向呼叫可否
+> 完成?還是只需事後重驗?——這決定縮短鎖窗會不會造成「撤銷後仍以過低分類送出內容」。
+> (b) 目標內網 profile 是否真的要啟用 memory recall?
+>
+> 可批次化的只有三類:純 filesystem/CPU、函式自行建立並關閉 Session 且回傳 DTO、
+> 完全沒有 await 的 endpoint 改為同步 `def`。交錯 DB／network／鎖／durable ledger 的
+> 流程需要個別狀態機設計。
+
 #### W2-8(=N-9)負載測試三 profile(Wave 2 離開條件)
 - **錨點**:全 repo 零 k6/locust/vegeta/wrk(稽核源);T1-4⑥「修完你也不知道修夠了沒」
 - **根因**:零量測 → 「數百人」是零證據宣稱。
