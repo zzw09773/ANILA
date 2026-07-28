@@ -154,6 +154,30 @@ services:
       # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
       # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
       LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
+      # ── 連線池與 PG session guard(2026-07-28 接線)────────────────────
+      # 這五個先前只存在於 `app/config.py`,**沒有任何 compose 引用它們**——
+      # 而根 compose 只做 `${...}` 代換,不會把沒被引用的變數注入容器,所以
+      # 運維在 `.env` 寫了也不會生效,池永遠是寫死的 10+20=30。
+      #
+      # ⚠ 兩個要一起看的數字:Starlette 對 sync endpoint 用 anyio 預設 **40**
+      # 條執行緒,每條持 1 連線,池卻只有 30 —— 這兩個數字從一開始就對不上。
+      # PG 端 `max_connections` 未覆寫 = PostgreSQL 預設 **100**,是真上限,
+      # 而 alembic / 維運 / ingestion-worker 也要從那 100 裡分。往上調時
+      # `POOL_SIZE + MAX_OVERFLOW` 請留足餘裕,並搭配負載量測而不是憑感覺。
+      ANILA_DB_POOL_SIZE: "${ANILA_DB_POOL_SIZE:-10}"
+      ANILA_DB_MAX_OVERFLOW: "${ANILA_DB_MAX_OVERFLOW:-20}"
+      ANILA_DB_POOL_TIMEOUT_S: "${ANILA_DB_POOL_TIMEOUT_S:-10}"
+      ANILA_DB_POOL_RECYCLE_S: "${ANILA_DB_POOL_RECYCLE_S:-1800}"
+      ANILA_DB_LOCK_TIMEOUT_MS: "${ANILA_DB_LOCK_TIMEOUT_MS:-5000}"
+      # ⚠ 必須大於 LLM_TIMEOUT×1000。同步 proxy 會握著治理交易等上游模型,
+      # 對 PG 而言那整段是 idle-in-transaction;設得比推論逾時短,慢一點的
+      # 推論就會被 PG 砍掉 session,使用者看到 5xx 而不是「慢」。CSP 啟動時
+      # 會檢查這個不變式並在違反時記 error log。
+      ANILA_DB_IDLE_TX_TIMEOUT_MS: "${ANILA_DB_IDLE_TX_TIMEOUT_MS:-330000}"
+      # 匯出稽核:預設 false 時 `POST /api/conversations/{id}/export-record`
+      # 不寫 `export_records`,Wave 1 要求的匯出稽核等於沒開。接進來讓部署
+      # 範本能宣告正式姿態。
+      ANILA_EXPORT_RECORD_REQUIRED: "${ANILA_EXPORT_RECORD_REQUIRED:-false}"
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
       # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}

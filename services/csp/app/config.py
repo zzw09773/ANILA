@@ -1,6 +1,7 @@
+import logging
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -94,14 +95,23 @@ class Settings(BaseSettings):
     ANILA_DB_LOCK_TIMEOUT_MS: int = Field(default=5000, ge=0, le=600_000)
     # idle_in_transaction_session_timeout: kill sessions that stay open after
     # beginning a transaction without committing (SSE-held Session footgun).
-    # Default must exceed LLM_TIMEOUT (120s): the sync proxy path takes the
+    # Default must exceed LLM_TIMEOUT: the sync proxy path takes the
     # governance-receipt row lock and then awaits the upstream model inside
     # the same transaction, which counts as idle-in-transaction to PG. At the
     # old 60s default PG would kill that session for any upstream response
     # slower than 60s — a legitimate wait under LLM_TIMEOUT. (Codex P1 on
     # PR #51, triaged 2026-07-27; the deeper fix — commit before network
     # I/O like the streaming path — stays on the backlog.)
-    ANILA_DB_IDLE_TX_TIMEOUT_MS: int = Field(default=150_000, ge=0, le=3_600_000)
+    #
+    # ⚠ 2026-07-28:此處先前是 150_000,而 `infra/compose/platform.yml:156`
+    # 把 `LLM_TIMEOUT` 設成 **300**s —— 也就是正式部署的預設姿態下這個不變式
+    # 是**破的**:150–300s 之間本來合法的推論會先被 PG 砍掉 session。而且這個
+    # 變數當時**沒有出現在任何 compose 的 environment**,運維改 `.env` 也蓋不掉
+    # (根 compose 只做 `${...}` 代換,不會把沒被引用的變數注入容器)。負載基線
+    # 量到 32 VU 時 TTFT p95 已達 147s —— 排隊一長就會跨過 150s。
+    # 現在:預設抬到 330s(300 + 30s 餘裕),並由下方 validator 在啟動時檢查
+    # 這個不變式,而不是只寫在註解裡。
+    ANILA_DB_IDLE_TX_TIMEOUT_MS: int = Field(default=330_000, ge=0, le=3_600_000)
     # W2-1:連線池參數。先前寫死在 app/database.py(pool_size=10 / max_overflow=20,
     # 上限 30)且**生產無法調**,而 Starlette 對 sync endpoint 用 anyio 預設 40
     # tokens —— 40 條執行緒各持 1 連線,池卻只有 30,兩個數字從一開始就對不上。
@@ -205,6 +215,37 @@ class Settings(BaseSettings):
     )
     PROXY_STREAM_MAX_EVENTS: int = 10000
     PROXY_STREAM_MAX_BYTES: int = 16 * 1024 * 1024
+
+    @model_validator(mode="after")
+    def _idle_tx_timeout_must_outlast_inference(self):
+        """`idle_in_transaction_session_timeout` 必須大於 `LLM_TIMEOUT`。
+
+        同步 proxy 路徑先取治理收據的列鎖,再在**同一個交易裡**等上游模型回應
+        —— 對 PG 而言那整段都是 idle-in-transaction。所以只要
+        `ANILA_DB_IDLE_TX_TIMEOUT_MS <= LLM_TIMEOUT * 1000`,任何逼近逾時上限的
+        推論都會先被 PG 砍掉 session,使用者看到的是 5xx 而不是慢。
+
+        這條不變式先前只寫在註解裡,而正式 compose 把 `LLM_TIMEOUT` 設成 300s、
+        預設 idle 逾時是 150s —— **註解說的不變式在預設姿態下是破的,沒有任何
+        東西會講**。改成啟動時檢查:不擋啟動(上線當天讓平台起不來是更糟的失效
+        模式),但把兩個數字與後果都印出來。
+        """
+        if self.ANILA_DB_IDLE_TX_TIMEOUT_MS <= 0:
+            return self  # 0 = 停用該 guard,是明示的選擇
+        inference_ms = self.LLM_TIMEOUT * 1000
+        if self.ANILA_DB_IDLE_TX_TIMEOUT_MS <= inference_ms:
+            logging.getLogger(__name__).error(
+                "[config] ANILA_DB_IDLE_TX_TIMEOUT_MS=%d 未大於 LLM_TIMEOUT=%ds "
+                "(%dms):同步 proxy 會在同一個交易裡等上游模型,耗時介於 %ds 與 "
+                "%ds 之間的推論會被 PostgreSQL 中止 session,使用者看到 5xx。"
+                "請把前者設到後者以上(建議留 30s 餘裕)。",
+                self.ANILA_DB_IDLE_TX_TIMEOUT_MS,
+                self.LLM_TIMEOUT,
+                inference_ms,
+                self.ANILA_DB_IDLE_TX_TIMEOUT_MS // 1000,
+                self.LLM_TIMEOUT,
+            )
+        return self
 
     # 出向模型 gateway 的 API key (選配,預設空 = 不注入,行為不變)。
     # 內網拓撲下模型不直連 — 走 10.53.100.12 My-OpenAI-Frontend 的
