@@ -32,6 +32,8 @@ DB 層一律存開放 String / JSON(SQLite create_all 相容,不用 PG 原生 en
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 import enum
 from datetime import datetime
 from typing import Any, Literal
@@ -188,7 +190,7 @@ class TraceTestItem(BaseModel):
     detail: str = ""
 
 
-class TraceTestReport(BaseModel):
+class TraceTestReport(ApiResponseModel):
     """``POST /api/agents/{id}/trace-test`` 回應 = 逐項報告 + 綜合判定。
 
     ``passed`` = 所有 ``required`` 項皆 PASSED(doc 06 §6:8 類 span 齊備才可

@@ -95,6 +95,7 @@ def governed_source(db, tmp_path, monkeypatch):
     user = make_user(db, username="gate2-retrieval-user", role="user")
     manager = make_user(db, username="gate2-clearance-manager", role="admin")
     collection = IngestionCollection(
+        origin="anilalm",
         name="Gate 2 KB",
         chunking_config={"strategy": "semantic"},
         embedding_model="nv-embed",

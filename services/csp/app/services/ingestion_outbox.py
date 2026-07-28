@@ -129,7 +129,7 @@ def _claim_next(
                     )
                 )
                 .order_by(IngestionOutbox.id)
-                .with_for_update(skip_locked=True)
+                .with_for_update(skip_locked=True).populate_existing()
                 .first()
             )
             if row is None:
@@ -139,7 +139,7 @@ def _claim_next(
             job = (
                 db.query(IngestionJob)
                 .filter(IngestionJob.id == row.ingestion_job_id)
-                .with_for_update()
+                .with_for_update().populate_existing()
                 .one_or_none()
             )
             expected_previous = row.attempt_number - 1
@@ -322,7 +322,7 @@ def _release_failed(
                 IngestionOutbox.status == "dispatching",
                 IngestionOutbox.lease_token == claim.lease_token,
             )
-            .with_for_update()
+            .with_for_update().populate_existing()
             .first()
         )
         if row is None:

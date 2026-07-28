@@ -33,6 +33,8 @@ Endpoints:
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -42,6 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.api.ingestion.collections import _require_collection_access
+from app.api.ingestion.surface import require_surface_origin
 from app.database import get_db
 from app.models.ingestion import (
     IngestionDocument,
@@ -118,7 +121,7 @@ class EvalRunCreate(BaseModel):
         return self
 
 
-class EvalRunResponse(BaseModel):
+class EvalRunResponse(ApiResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -146,7 +149,7 @@ class EvalRunResponse(BaseModel):
 
 
 @router.post(
-    "/api/ingestion/eval-runs",
+    "/eval-runs",
     response_model=EvalRunResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -156,7 +159,7 @@ async def create_eval_run(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> EvalRunResponse:
     # Sprint 4: collection-scoped access (admin OR owner).
-    _require_collection_access(db, current_user, payload.collection_id)
+    _require_collection_access(db, current_user, payload.collection_id, origin=require_surface_origin())
 
     # Validate every sample document belongs to this collection — guards
     # against a buggy frontend or a malicious caller mixing in another
@@ -285,7 +288,7 @@ async def create_eval_run(
 
 
 @router.get(
-    "/api/ingestion/eval-runs/{run_id}",
+    "/eval-runs/{run_id}",
     response_model=EvalRunResponse,
 )
 def get_eval_run(
@@ -296,12 +299,12 @@ def get_eval_run(
     run = db.query(IngestionEvalRun).filter(IngestionEvalRun.id == run_id).first()
     if run is None:
         raise HTTPException(status_code=404, detail="Eval run not found")
-    _require_collection_access(db, current_user, run.collection_id)
+    _require_collection_access(db, current_user, run.collection_id, origin=require_surface_origin())
     return EvalRunResponse.model_validate(run)
 
 
 @router.get(
-    "/api/ingestion/eval-runs",
+    "/eval-runs",
     response_model=list[EvalRunResponse],
 )
 def list_eval_runs(
@@ -309,7 +312,7 @@ def list_eval_runs(
     db: Annotated[Session, Depends(get_db)] = None,
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ) -> list[EvalRunResponse]:
-    _require_collection_access(db, current_user, collection_id)
+    _require_collection_access(db, current_user, collection_id, origin=require_surface_origin())
     rows = (
         db.query(IngestionEvalRun)
         .filter(IngestionEvalRun.collection_id == collection_id)

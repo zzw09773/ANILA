@@ -1,16 +1,24 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTheme } from '../theme/ThemeContext'
 import { Modal } from '../components/Modal'
 import { Icon } from '../components/Icon'
 import { MarkdownPreview } from '../components/MarkdownPreview'
 import type {
-  DatatableArtifact,
-  InfographicArtifact,
   ReportArtifact,
   SlidesArtifact,
   StudioArtifact,
 } from '../types'
-import { downloadCspArtifact } from '../api/studio'
+import {
+  getCspArtifact,
+  type CspArtifactDetail,
+  type CspArtifactVersion,
+} from '../api/artifacts'
+import { downloadCspArtifact, downloadCspArtifactVersion } from '../api/studio'
+import {
+  ArtifactVersionHistory,
+  isVersionDownloadable,
+  visibleArtifactVersions,
+} from './ArtifactVersionHistory'
 
 interface ArtifactViewerProps {
   open: boolean
@@ -29,14 +37,75 @@ const KIND_META: Record<
   datatable: { label: '資料表', icon: 'table' },
 }
 
+function kindExtension(kind: StudioArtifact['kind']): string {
+  return {
+    slides: 'pptx',
+    report: 'pdf',
+    mindmap: 'svg',
+    infographic: 'pdf',
+    datatable: 'xlsx',
+  }[kind]
+}
+
 export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps) {
   const { t } = useTheme()
+  const [detail, setDetail] = useState<CspArtifactDetail | null>(null)
+  const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+
+  const cspArtifactId = artifact?.artifactId
+
+  useEffect(() => {
+    if (!open || !cspArtifactId) {
+      setDetail(null)
+      setSelectedVersionId(null)
+      setHistoryOpen(false)
+      return
+    }
+    let cancelled = false
+    setDetail(null)
+    setSelectedVersionId(null)
+    setHistoryOpen(false)
+    void getCspArtifact(cspArtifactId)
+      .then((row) => {
+        if (cancelled) return
+        setDetail(row)
+        const visible = visibleArtifactVersions(row.versions)
+        const current =
+          visible.find((v) => v.version === row.currentVersion) ?? visible[0] ?? null
+        setSelectedVersionId(current?.id ?? null)
+      })
+      .catch(() => {
+        // Version history is an enhancement; keep the viewer usable on failure.
+        if (!cancelled) {
+          setDetail(null)
+          setSelectedVersionId(null)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, cspArtifactId])
+
+  const visibleVersions = useMemo(
+    () => (detail ? visibleArtifactVersions(detail.versions) : []),
+    [detail],
+  )
+  const showHistory = visibleVersions.length > 1
+  const selectedVersion: CspArtifactVersion | null = useMemo(() => {
+    if (!selectedVersionId || !detail) return null
+    return detail.versions.find((v) => v.id === selectedVersionId) ?? null
+  }, [detail, selectedVersionId])
+  const viewingHistorical =
+    !!selectedVersion &&
+    !!detail &&
+    selectedVersion.version !== detail.currentVersion
+
   if (!artifact) return null
 
   const meta = KIND_META[artifact.kind]
 
   return (
-    // 心智圖是橫向樹,給寬一點的畫布
     <Modal open={open} onClose={onClose} width={artifact.kind === 'mindmap' ? 1100 : 900}>
       <div
         style={{
@@ -74,16 +143,60 @@ export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps)
           </div>
           <div style={{ fontSize: 11, color: t.textSubtle }}>
             {meta.label} · {artifact.preset} · {artifact.sourceCount} 份來源
+            {selectedVersion ? ` · v${selectedVersion.version}` : ''}
+            {viewingHistorical ? '（歷史版本）' : ''}
           </div>
         </div>
-        <ArtifactHeaderActions artifact={artifact} />
+        {showHistory && (
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((v) => !v)}
+            title="版本歷史"
+            aria-expanded={historyOpen}
+            aria-label="版本歷史"
+            style={{
+              ...fmtBtnStyle(t),
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              background: historyOpen ? t.accentSoft : t.surface,
+              borderColor: historyOpen ? t.accentBorder : t.border,
+              color: historyOpen ? t.accent : t.textMuted,
+            }}
+          >
+            <Icon name="layers" size={12} stroke={historyOpen ? t.accent : t.textMuted} />
+            版本
+          </button>
+        )}
+        <ArtifactHeaderActions
+          artifact={artifact}
+          selectedVersion={selectedVersion}
+          detail={detail}
+        />
         <button onClick={onClose} style={iconBtnStyle(t)} title="關閉">
           <Icon name="x" size={13} stroke={t.textMuted} />
         </button>
       </div>
 
+      {showHistory && historyOpen && detail && selectedVersionId != null && (
+        <ArtifactVersionHistory
+          versions={detail.versions}
+          currentVersion={detail.currentVersion}
+          selectedVersionId={selectedVersionId}
+          onSelect={setSelectedVersionId}
+        />
+      )}
+
       <div style={{ flex: 1, overflow: 'auto', padding: 22 }}>
-        <ArtifactBody artifact={artifact} />
+        {viewingHistorical && selectedVersion ? (
+          <HistoricalVersionBody
+            version={selectedVersion}
+            currentVersion={detail!.currentVersion}
+            artifact={artifact}
+          />
+        ) : (
+          <ArtifactBody artifact={artifact} />
+        )}
       </div>
     </Modal>
   )
@@ -91,23 +204,54 @@ export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps)
 
 // ── Header buttons (per-kind 下載) ────────────────────────────────
 
-function ArtifactHeaderActions({ artifact }: { artifact: StudioArtifact }) {
+function ArtifactHeaderActions({
+  artifact,
+  selectedVersion,
+  detail,
+}: {
+  artifact: StudioArtifact
+  selectedVersion: CspArtifactVersion | null
+  detail: CspArtifactDetail | null
+}) {
   const { t } = useTheme()
   if (artifact.artifactId) {
-    const extension = {
-      slides: 'pptx',
-      report: 'pdf',
-      mindmap: 'svg',
-      infographic: 'pdf',
-      datatable: 'xlsx',
-    }[artifact.kind]
+    const extension = kindExtension(artifact.kind)
+    const canDownloadVersion =
+      selectedVersion != null && isVersionDownloadable(selectedVersion)
+    const filename =
+      selectedVersion?.originalFilename ||
+      `${artifact.title}${
+        selectedVersion && detail && selectedVersion.version !== detail.currentVersion
+          ? `-v${selectedVersion.version}`
+          : ''
+      }.${extension}`
+
     return (
       <button
-        onClick={() =>
-          downloadCspArtifact(artifact.artifactId!, `${artifact.title}.${extension}`)
+        type="button"
+        disabled={selectedVersion != null && !canDownloadVersion}
+        onClick={() => {
+          if (selectedVersion && canDownloadVersion) {
+            void downloadCspArtifactVersion(
+              artifact.artifactId!,
+              selectedVersion.id,
+              filename,
+            )
+            return
+          }
+          void downloadCspArtifact(artifact.artifactId!, `${artifact.title}.${extension}`)
+        }}
+        title={
+          selectedVersion
+            ? `下載 v${selectedVersion.version}（${extension.toUpperCase()}）`
+            : `從 CSP 下載 ${extension.toUpperCase()}`
         }
-        title={`從 CSP 下載 ${extension.toUpperCase()}`}
-        style={fmtBtnStyle(t)}
+        style={{
+          ...fmtBtnStyle(t),
+          opacity: selectedVersion != null && !canDownloadVersion ? 0.5 : 1,
+          cursor:
+            selectedVersion != null && !canDownloadVersion ? 'not-allowed' : 'pointer',
+        }}
       >
         {extension.toUpperCase()}
       </button>
@@ -128,6 +272,38 @@ function ArtifactHeaderActions({ artifact }: { artifact: StudioArtifact }) {
     )
   }
   return null
+}
+
+function HistoricalVersionBody({
+  version,
+  currentVersion,
+  artifact,
+}: {
+  version: CspArtifactVersion
+  currentVersion: number
+  artifact: StudioArtifact
+}) {
+  const { t } = useTheme()
+  const extension = kindExtension(artifact.kind)
+  const downloadable = isVersionDownloadable(version)
+  return (
+    <div style={{ padding: '40px 0', textAlign: 'center' }}>
+      <Icon name="layers" size={32} stroke={t.accent} />
+      <div style={{ fontSize: 14, marginTop: 12, color: t.text }}>
+        檢視版本 v{version.version}
+      </div>
+      <div style={{ fontSize: 12, marginTop: 6, color: t.textMuted, lineHeight: 1.6 }}>
+        目前版本為 v{currentVersion}。歷史版本以唯讀方式檢視；
+        {downloadable
+          ? `可從右上角下載此版本的 ${extension.toUpperCase()}。`
+          : '此版本已不可下載。'}
+      </div>
+      <div style={{ fontSize: 11, marginTop: 10, color: t.textSubtle }}>
+        {new Date(version.createdAt).toLocaleString('zh-TW')}
+        {version.lifecycleState !== 'active' ? ` · ${version.lifecycleState}` : ''}
+      </div>
+    </div>
+  )
 }
 
 // ── Body (per-kind viewer) ─────────────────────────────────────────

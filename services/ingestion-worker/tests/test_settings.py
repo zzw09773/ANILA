@@ -102,6 +102,25 @@ def test_embedding_dim_default(clean_env):
     assert isinstance(s.embedding_dim, int)
 
 
+def test_embedding_source_dim_defaults_to_strict(clean_env):
+    """預設 None = 嚴格模式:只接受 4000 或 NV-Embed 原生的 4096。
+
+    這個預設值本身就是安全屬性:補零必須是**明示的配置動作**。若預設成
+    「接受任何短向量」,embedding 端點悄悄換模型時(例如 1536 維)向量會被
+    補零進索引,語意無意義且無聲摧毀檢索品質,而 collection 的
+    embedding_fingerprint 抓不到(它守宣告的模型身分,不守端點實際行為)。
+    """
+    assert _fresh().embedding_source_dim is None
+
+
+def test_embedding_source_dim_env_override(clean_env, monkeypatch):
+    """跑 nemotron-3-embed-1b(2048 維)時就是靠這個環境變數。"""
+    monkeypatch.setenv("EMBEDDING_SOURCE_DIM", "2048")
+    s = _fresh()
+    assert s.embedding_source_dim == 2048
+    assert isinstance(s.embedding_source_dim, int)
+
+
 def test_embedding_timeout_seconds_default(clean_env):
     s = _fresh()
     assert s.embedding_timeout_seconds == 30.0
@@ -170,6 +189,9 @@ def test_all_defaults_at_once(clean_env):
         "embedding_model_fingerprint": "",
         "embedding_api_key": "not-set",
         "embedding_dim": 4000,
+        # 部署模型的原生輸出維度。None = 嚴格模式(只接受 4000 / 4096)。
+        # 與 embedding_dim 不同:那個是儲存契約寬度,這個是模型輸出寬度。
+        "embedding_source_dim": None,
         "embedding_timeout_seconds": 30.0,
         "parse_timeout_seconds": 120.0,
         "index_timeout_seconds": 120.0,

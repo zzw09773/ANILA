@@ -14,10 +14,26 @@
 
 name: anila-platform
 
+x-anila-logging: &anila-logging
+  # ⚠ 2026-07-28:先前**完全沒有 logging 設定** → Docker 預設 json-file 驅動
+  # 不做輪替,檔案無上限成長。三千人一整天的存取日誌,加上失敗時的堆疊,
+  # 有可能把磁碟塞滿 —— 而磁碟一滿 PostgreSQL 立刻停止寫入,整個平台會以
+  # 「看起來像軟體壞掉」的方式死去,而不是以「算力不足」的方式。那正好毀掉
+  # 事後判讀所需要的證據。
+  #
+  # 100MB × 5 = 每服務最多 500MB,足以涵蓋一整個開放窗口的存取日誌,又不會
+  # 吃掉磁碟。access log 是本平台唯一能重建「速率/錯誤率/延遲」的來源
+  # (沒有 /metrics 端點),所以保留量要夠大,不能只留一份。
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "5"
+
 services:
 
   # ── PostgreSQL ──────────────────────────────────────────────────────────
   csp-db:
+    logging: *anila-logging
     # pgvector 是 postgres:16 的 superset,migration 0014 (ingestion) 需要
     # vector extension。換回 upstream postgres 會破 ingestion stack。
     image: ${ANILA_IMAGE_CSP_DB:?ANILA_IMAGE_CSP_DB must be a locked image content ID}
@@ -28,6 +44,18 @@ services:
       # 黑名單擋 'csp' / 'csp_password' 等 dev 值。
       POSTGRES_PASSWORD: ${CSP_DB_PASSWORD:?CSP_DB_PASSWORD must be set (postgres superuser password)}
       POSTGRES_DB: csp
+      # ⛔ 鐵則(補救計畫 W2-10 / 子計畫 C1 §c):**csp-db 的 TZ 必須維持 UTC**,
+      # 在 C1 全部批次(naive timestamp 欄 → timestamptz)做完之前不得改成
+      # Asia/Taipei。理由:治理帳的 created_at 帶 `server_default
+      # CURRENT_TIMESTAMP`,而 CURRENT_TIMESTAMP 是 timestamptz —— 寫進
+      # `timestamp without time zone` 欄時**按 session TZ 轉換**。session TZ 一改
+      # 成台北,這條路徑就開始存本地時間,而同一欄的舊值是 UTC → 同一個欄位混
+      # 兩種語意,且資料裡沒有任何標記能區分某一列屬於哪一種。
+      # 要台北時間的是**顯示層**,走前端共用 formatter(W1-4④),不是改 DB 的 TZ。
+      # ⚠ 刻意寫死、不吃 `.env` interpolation:讓「編 .env」不可能無聲破壞這條。
+      # 現況:批次 1(r1_0040)已轉治理帳 + api_keys 共 12 欄;批次 2(大表
+      # messages / document_chunks / ingestion_*)還沒轉 → 鐵則整體仍然有效。
+      TZ: Etc/UTC
     # 只開 loopback,host 上的 integration test 拿得到,LAN 摸不到。
     ports:
       - "127.0.0.1:5433:5432"
@@ -42,6 +70,7 @@ services:
 
   # ── CSP (Control + Data Plane :8000) ────────────────────────────────────
   csp:
+    logging: *anila-logging
     build:
       context: ../..
       dockerfile: infra/docker/csp.Dockerfile
@@ -113,7 +142,11 @@ services:
       ANILA_TRUSTED_PROXY_CIDRS: "${ANILA_TRUSTED_PROXY_CIDRS:-}"
       # 1=稽核寫入失敗即拒絕請求(write-ahead,推論前擋下)。正式營運的
       # 取捨:稽核 DB 故障會擋下所有推論;預設 0(fail-open,記 error log)。
-      ANILA_AUDIT_STRICT: "${ANILA_AUDIT_STRICT:-0}"
+      # W1-5:formal posture 契約現在要求 strict=1(稽核寫不進去就拒絕請求),
+      # 所以**正式 compose 的預設必須是 1** —— 否則 startup_security 會擋下啟動,
+      # 而 operator 只會看到一個沒頭沒尾的 posture 錯誤。
+      # dev.yml 維持 0(開發時稽核 DB 抖一下不該讓請求全掛)。
+      ANILA_AUDIT_STRICT: "${ANILA_AUDIT_STRICT:-1}"
       # Gate 5 R5/R7 formal model-governance boundary.  These values are
       # intentionally explicit container paths; the host-side material
       # directory is injected only through read-only mounts below.  A formal
@@ -138,6 +171,30 @@ services:
       # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
       # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
       LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
+      # ── 連線池與 PG session guard(2026-07-28 接線)────────────────────
+      # 這五個先前只存在於 `app/config.py`,**沒有任何 compose 引用它們**——
+      # 而根 compose 只做 `${...}` 代換,不會把沒被引用的變數注入容器,所以
+      # 運維在 `.env` 寫了也不會生效,池永遠是寫死的 10+20=30。
+      #
+      # ⚠ 兩個要一起看的數字:Starlette 對 sync endpoint 用 anyio 預設 **40**
+      # 條執行緒,每條持 1 連線,池卻只有 30 —— 這兩個數字從一開始就對不上。
+      # PG 端 `max_connections` 未覆寫 = PostgreSQL 預設 **100**,是真上限,
+      # 而 alembic / 維運 / ingestion-worker 也要從那 100 裡分。往上調時
+      # `POOL_SIZE + MAX_OVERFLOW` 請留足餘裕,並搭配負載量測而不是憑感覺。
+      ANILA_DB_POOL_SIZE: "${ANILA_DB_POOL_SIZE:-10}"
+      ANILA_DB_MAX_OVERFLOW: "${ANILA_DB_MAX_OVERFLOW:-20}"
+      ANILA_DB_POOL_TIMEOUT_S: "${ANILA_DB_POOL_TIMEOUT_S:-10}"
+      ANILA_DB_POOL_RECYCLE_S: "${ANILA_DB_POOL_RECYCLE_S:-1800}"
+      ANILA_DB_LOCK_TIMEOUT_MS: "${ANILA_DB_LOCK_TIMEOUT_MS:-5000}"
+      # ⚠ 必須大於 LLM_TIMEOUT×1000。同步 proxy 會握著治理交易等上游模型,
+      # 對 PG 而言那整段是 idle-in-transaction;設得比推論逾時短,慢一點的
+      # 推論就會被 PG 砍掉 session,使用者看到 5xx 而不是「慢」。CSP 啟動時
+      # 會檢查這個不變式並在違反時記 error log。
+      ANILA_DB_IDLE_TX_TIMEOUT_MS: "${ANILA_DB_IDLE_TX_TIMEOUT_MS:-330000}"
+      # 匯出稽核:預設 false 時 `POST /api/conversations/{id}/export-record`
+      # 不寫 `export_records`,Wave 1 要求的匯出稽核等於沒開。接進來讓部署
+      # 範本能宣告正式姿態。
+      ANILA_EXPORT_RECORD_REQUIRED: "${ANILA_EXPORT_RECORD_REQUIRED:-false}"
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
       # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}
@@ -204,7 +261,19 @@ services:
       # No third-party/official Agent is admitted in the formal default set.
       # A legal-approved signed overlay may replace this with the image shim
       # manifest; an empty list is intentional and fail-closed.
-      AUTO_REGISTER_AGENTS: "[]"
+      AUTO_REGISTER_AGENTS: "${AUTO_REGISTER_AGENTS:-[]}"
+      # ── agent readiness 的時效旋鈕(2026-07-28 接線)────────────────────
+      # 這四個先前只在 `config.py`,compose 完全沒有引用 → 運維改 .env 無效。
+      #
+      # ⚠ 其中 `AGENT_TRACE_TEST_FRESHNESS_SECONDS` 是開放日的地雷:預設 86400
+      # 表示每個 agent 的 trace-test 證據 **24 小時就過期**,過期後 readiness
+      # 回 `TRACE_TEST_STALE`,agent 會**靜默**變成不可派工 —— 沒有錯誤、沒有
+      # 通知,只是從 `GET /v1/agents` 消失。若今天做完 trace-test、明天才開放,
+      # 就正好會踩到。現在可由 .env 拉長(上限 604800 = 7 天),或排每日重跑。
+      AGENT_TRACE_TEST_FRESHNESS_SECONDS: "${AGENT_TRACE_TEST_FRESHNESS_SECONDS:-86400}"
+      AGENT_HEALTH_FRESHNESS_SECONDS: "${AGENT_HEALTH_FRESHNESS_SECONDS:-300}"
+      AGENT_REGISTRY_SNAPSHOT_TTL_SECONDS: "${AGENT_REGISTRY_SNAPSHOT_TTL_SECONDS:-60}"
+      HEALTH_CHECK_INTERVAL: "${HEALTH_CHECK_INTERVAL:-60}"
       # AUTO_SEED_API_KEYS: prod initial 模式只 seed ingestion-worker (系統內部
       # 必需,讓 worker 能呼叫 csp /v1/embeddings)。smoke-user 是 e2e 測試用的
       # 帳號,prod 不需要,已移除。要恢復就把舊 entry 加回來 (參考 .env.dev.local
@@ -321,6 +390,7 @@ services:
 
   # ── Redis (Arq queue for ingestion-worker) ──────────────────────────────
   redis:
+    logging: *anila-logging
     image: ${ANILA_IMAGE_REDIS:?ANILA_IMAGE_REDIS must be a locked image content ID}
     command:
       - redis-server
@@ -350,6 +420,7 @@ services:
 
   # ── ingestion-worker (parse → chunk → embed → pgvector) ─────────────────
   ingestion-worker:
+    logging: *anila-logging
     build:
       context: ../..
       dockerfile: services/ingestion-worker/Dockerfile
@@ -416,6 +487,7 @@ services:
 
   # ── Router (anila-core-router :9000) ────────────────────────────────────
   router:
+    logging: *anila-logging
     build:
       context: ../..
       dockerfile: services/anila-core-router/Dockerfile
@@ -460,6 +532,7 @@ services:
   # endpoint.  It is nevertheless part of the formal platform Compose graph
   # and is image-locked/inventory-tracked like every other built service.
   anila-agent:
+    logging: *anila-logging
     profiles: ["gate5-silver"]
     build:
       context: ../..
@@ -513,6 +586,7 @@ services:
   # TLS termination (self-signed dev cert),HTTP→HTTPS 301,proxy /, /api/,
   # /v1/, /v2/, /router/* 到對應內部 service。
   nginx:
+    logging: *anila-logging
     image: ${ANILA_IMAGE_NGINX:?ANILA_IMAGE_NGINX must be a locked image content ID}
     container_name: anila-nginx
     ports:
@@ -534,9 +608,14 @@ services:
       csp:
         condition: service_healthy
         restart: true
-      anilalm:
-        condition: service_healthy
-        restart: true
+      # ⚠ anilalm 刻意**不列在這裡**。它已 profile 化(`personal-kb`),而
+      # compose 對「depends_on 指向被 profile 排除的服務」是**硬錯誤**:
+      #   service "nginx" depends on undefined service "anilalm"
+      # —— 整個專案無效,連 csp-db 都起不來。這是 2026-07-28 的部署演練
+      # 實際撞到的,不是理論風險。
+      # 拿掉是安全的:nginx 對 anilalm 用的是變數 proxy_pass + resolver,
+      # 不在載入設定時解析;而 `/anilalm` 與 `/api/personal` 現在都 return 404,
+      # 根本不會轉發過去。日後若要恢復個人知識庫,連同這段一起還原。
       router:
         condition: service_healthy
         restart: true
@@ -558,6 +637,7 @@ services:
 
   # ── pptx-renderer (Node + LibreOffice for slide / vision-QA screenshots) ─
   pptx-renderer:
+    logging: *anila-logging
     build:
       context: ../../services/pptx-renderer
       dockerfile: Dockerfile
@@ -578,6 +658,7 @@ services:
   # token revocation events from csp via HTTP/Redis so cross-service auth
   # works without sharing the private signing key.
   anila-studio:
+    logging: *anila-logging
     build:
       context: ../../services/anila-studio
       dockerfile: Dockerfile
@@ -662,6 +743,7 @@ services:
   # ⚠ 麥克風還需要 nginx 放寬 Permissions-Policy,否則 getUserMedia 一律
   #   NotAllowedError,而且症狀跟「使用者拒絕權限」一模一樣。
   asr-gateway:
+    logging: *anila-logging
     profiles: ["asr"]
     build:
       context: ../../services/asr-gateway
@@ -746,6 +828,12 @@ services:
 
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
   anilalm:
+    logging: *anila-logging
+    # 2026-07-29 全院開放不含個人知識庫 → 與開發者工具同姿態,預設不啟動。
+    # 注意:光是不啟動這個容器**擋不住**個人知識庫的 API —— 那是 csp 的雙掛載
+    # (`/api/personal/*`),必須同時靠 nginx 的 `return 404` 才真的關得掉。
+    # 兩者要一起改,只做一邊會留下開著的後門。見 infra/nginx/anila.conf。
+    profiles: ["personal-kb"]
     build:
       context: ../../apps/anilalm
       args:
@@ -768,6 +856,7 @@ services:
 
   # ── ANILA UI (admin SPA, same-origin via nginx) ─────────────────────────
   anila-ui:
+    logging: *anila-logging
     build:
       # repo-root context（同 csp 慣例）：shell 以 Vite alias 引用共用設計
       # 系統 packages/ui 原始碼，build context 必須涵蓋兩個目錄。
@@ -805,6 +894,7 @@ services:
   # 會破 subpath 部署 (workspace fs provider 註冊失敗)。
   # 獨立來源避免 CSP host-only session cookie 進入 IDE；原生強密碼是登入邊界。
   codeserver:
+    logging: *anila-logging
     profiles: ["developer-tools"]
     image: ${ANILA_IMAGE_CODESERVER:?ANILA_IMAGE_CODESERVER must be a locked image content ID}
     # 1001:1001 對齊 host 'aia' UID,避免容器內存檔 EACCES。
@@ -840,6 +930,14 @@ services:
   #     webhook / form ingress 在 nginx 一律 fail-closed；若要接 machine
   #     callback，必須另建 mTLS / signed machine ingress。
   n8n:
+    logging: *anila-logging
+    # W1-8:與 codeserver 同姿態,**預設不啟動**。
+    # 先前 n8n 與 gitlab 都沒有 profiles: → 七條分支(含交付規格要求移除開發者
+    # 工具的軍用分支)照 runbook 部署就會把它們一起拉起來。n8n 有自己的
+    # user-management 邊界、gitlab 有自己的 root 初始密碼,兩者都不吃 CSP 的
+    # auth_request —— 預設隨 stack 啟動等於在平台旁邊多開兩個獨立認證面。
+    # 要用就顯式 `--profile developer-tools`。
+    profiles: ["developer-tools"]
     image: ${ANILA_IMAGE_N8N:?ANILA_IMAGE_N8N must be a locked image content ID}
     # 用 image 內建 'node' user (UID 1000),不要 override user — n8n 首次
     # 開機 HOME 對不上會 mkdir /.n8n EACCES。
@@ -901,6 +999,9 @@ services:
   # 首次開機 reconfigure ~5-10 分鐘,start_period 600s 是必要的。
   # Initial root password 在容器內 /etc/gitlab/initial_root_password,首次登入要輪換。
   gitlab:
+    logging: *anila-logging
+    # W1-8:同 n8n,預設不啟動(理由見 n8n 處註解)。
+    profiles: ["developer-tools"]
     image: ${ANILA_IMAGE_GITLAB:?ANILA_IMAGE_GITLAB must be a locked image content ID}
     hostname: ${GITLAB_HOST:-gitlab.ai.ncsist.org.tw}
     environment:

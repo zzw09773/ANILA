@@ -1,0 +1,83 @@
+# ANILA — UI verification overlay.
+#
+# Raises the backend from the CURRENT branch under project `anila-uicheck`, so
+# a browser can drive the real product instead of trusting unit tests. Applied
+# on top of compose.dev.yaml:
+#
+#   docker compose -f compose.dev.yaml -f infra/uicheck/compose.uicheck.yml \
+#                  -p anila-uicheck up -d csp ingestion-worker embed-proxy
+#
+# The csp image already bundles apps/csp-governance-ui as its SPA, so csp on
+# :8000 serves the governance UI directly. The chat shell runs from its Vite
+# dev server, whose proxy already points /api, /v1 and /v2 at localhost:8000 —
+# same-origin, so cookies and CSRF behave exactly as in production.
+#
+# ⚠️ SAFETY: infra/compose/dev.yml pins networks.default.name to anila-dev-net,
+# which is owned by the running anila-platform-dev project, and several
+# services carry a hardcoded container_name (compose does NOT project-prefix
+# those). Both are overridden below. Ports use `!override` because compose
+# APPENDS to a ports list rather than replacing it.
+#
+# No secrets here — the gateway bearer comes from the untracked env file.
+
+services:
+
+  csp-db:
+    ports: !override
+      - "127.0.0.1:15544:5432"
+
+  embed-proxy:
+    image: embedding-proxy:migration
+    environment:
+      TRITON_GRPC_URL: ${UICHECK_EMBED_GRPC:?UICHECK_EMBED_GRPC must be host:port of the embedding gRPC endpoint}
+      MODEL_NAME: ${UICHECK_EMBED_MODEL:-nv-embed-v2}
+      REQUEST_TIMEOUT: "60"
+      READINESS_TIMEOUT: "5"
+    expose:
+      - "8000"
+    networks:
+      - default
+    restart: unless-stopped
+
+  csp:
+    # :8000 on the host is what apps/anila-shell's Vite proxy already targets.
+    ports: !override
+      - "127.0.0.1:8000:8000"
+    networks: !override
+      - default
+    environment:
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:?MODEL_GATEWAY_API_KEY must be set in the untracked env file}
+      AUTO_REGISTER_MODELS: >-
+        [{"name":"${UICHECK_CHAT_MODEL:-gemma26-nothink}","display_name":"${UICHECK_CHAT_MODEL:-gemma26-nothink}","model_type":"llm","endpoint_url":"${UICHECK_GATEWAY_BASE:?UICHECK_GATEWAY_BASE must be set}","api_version":"v1","description":"UI-check chat model (external gateway)"},
+         {"name":"${UICHECK_EMBED_MODEL:-nv-embed-v2}","display_name":"${UICHECK_EMBED_MODEL:-nv-embed-v2}","model_type":"embedding","endpoint_url":"http://embed-proxy:8000","api_version":"v1","description":"UI-check embedding shim"}]
+      AUTO_REGISTER_AGENTS: "[]"
+      AUTO_REGISTER_LINKS: "[]"
+      ANILA_ROUTER_SENTINEL_URL: ""
+      # Plain HTTP on a published port: the __Host- cookie prefix requires
+      # Secure, so the browser would silently drop the session cookie.
+      COOKIE_SECURE: "false"
+      SITE_URL: "http://127.0.0.1:5173"
+      # The shell runs on the Vite dev server; its requests are same-origin
+      # through the proxy, but direct browser calls to :8000 are not.
+      ANILA_CORS_ORIGINS: "http://127.0.0.1:5173,http://localhost:5173"
+      ENABLE_MEMORY: "false"
+      # Flipped between runs to check both postures of the share control.
+      ENABLE_PUBLIC_SHARE: "${UICHECK_ENABLE_PUBLIC_SHARE:-true}"
+
+  ingestion-worker:
+    environment:
+      EMBEDDING_MODEL: ${UICHECK_EMBED_MODEL:-nv-embed-v2}
+      ENABLE_IMAGE_CAPTIONS: "false"
+      ENABLE_RELATION_LLM: "false"
+      ENABLE_SIMILARITY_EDGES: "false"
+
+  # Never started here, but neutralised so an accidental bare `up` cannot claim
+  # the dev stack's container name or ports.
+  nginx:
+    container_name: anila-uicheck-nginx
+    ports: !override
+      - "127.0.0.1:19080:80"
+
+networks:
+  default:
+    name: anila-uicheck-net

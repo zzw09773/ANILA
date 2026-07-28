@@ -12,12 +12,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse
 from app.config import settings
+from app.errors import install_error_envelope_schema, register_exception_handlers
 from app.api.router import api_router
 from app.api.conversations import router as conversations_router
 from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
 from app.api.public_share import router as public_share_router
 from app.middleware.csrf import CsrfMiddleware
+from app.middleware.request_id import RequestIdMiddleware
+from app.api.ingestion.surface import CollectionSurfaceMiddleware
 from app.models.user import User
 from app.schemas.model_governance import ModelGovernanceReadiness
 from app.services.auth_service import require_admin
@@ -471,6 +474,26 @@ if _allowed_hosts != ["*"]:
 # CSRF protection for cookie-authenticated mutating requests. Runs after
 # CORS so preflight OPTIONS responses are generated without the check.
 app.add_middleware(CsrfMiddleware)
+
+# Collection product-surface provenance: bind ambient origin from URL
+# prefix for dual-mounted handlers (/api/ingestion → csp, /api/personal
+# → anilalm). Supplies ``require_surface_origin()``; resolvers still
+# require an explicit ``origin=`` argument. ASGI middleware so the
+# ContextVar survives FastAPI sync-endpoint threadpool hops.
+app.add_middleware(CollectionSurfaceMiddleware)
+
+# W3-3⑤:每個請求一個 id。**最後註冊 = 最外層執行**,所以連被 CSRF 或
+# TrustedHost 擋掉的請求也拿得到 id 並留下 access log —— 那些正是最需要被查的。
+# 這也讓 W2-12 錯誤信封的 `request_id` 從「永遠 null」變成真值:使用者念得出
+# 畫面上的 id,支援端 grep 得到同一個字串。
+app.add_middleware(RequestIdMiddleware)
+
+# W2-12:統一錯誤信封。在此之前全 repo 零 ``add_exception_handler``,於是
+# ``HTTPException`` 的 ``{"detail": str}``、3 處的 ``{"detail": {...}}`` 與 422 的
+# ``{"detail": [...]}`` 是三種形狀,前端把後兩者渲染成 ``[object Object]``。
+# 註冊處刻意放在 include_router 之前並集中在一行,方便確認「總共只掛兩個」。
+register_exception_handlers(app)
+install_error_envelope_schema(app)
 
 app.include_router(api_router)
 app.include_router(conversations_router)

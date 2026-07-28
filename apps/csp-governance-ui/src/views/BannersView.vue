@@ -58,6 +58,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import { listBanners, createBanner, updateBanner, deleteBanner } from '../api/banners'
 import { TermBox, TermButton, TermBadge, TermField } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -73,7 +74,7 @@ async function load() {
     const { data } = await listBanners()
     banners.value = Array.isArray(data) ? data : []
   } catch (e) {
-    error.value = e?.response?.data?.detail || '載入公告失敗'
+    error.value = extractError(e, '載入公告失敗')
   }
 }
 
@@ -87,7 +88,7 @@ async function handleCreate() {
     form.value = { level: 'info', content: '', is_active: true }
     await load()
   } catch (e) {
-    error.value = e?.response?.data?.detail || '張貼失敗'
+    error.value = extractError(e, '張貼失敗')
   } finally {
     busy.value = false
   }
@@ -99,7 +100,7 @@ async function toggleActive(b) {
     await updateBanner(b.id, { is_active: !b.is_active })
     await load()
   } catch (e) {
-    error.value = e?.response?.data?.detail || '更新失敗'
+    error.value = extractError(e, '更新失敗')
   } finally {
     busy.value = false
   }
@@ -113,7 +114,7 @@ async function handleDelete(b) {
     await deleteBanner(b.id)
     await load()
   } catch (e) {
-    error.value = e?.response?.data?.detail || '刪除失敗'
+    error.value = extractError(e, '刪除失敗')
   } finally {
     busy.value = false
   }

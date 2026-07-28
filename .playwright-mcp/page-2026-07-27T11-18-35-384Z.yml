@@ -1,0 +1,222 @@
+- generic [ref=f11e1]:
+  - generic [ref=f11e3]:
+    - banner [ref=f11e4]:
+      - generic [ref=f11e5]:
+        - generic [ref=f11e6]:
+          - img "ANILA" [ref=f11e7]
+          - generic [ref=f11e11]:
+            - generic [ref=f11e12]: ANILA
+            - generic [ref=f11e13]: ·
+            - generic [ref=f11e14]: CSP
+        - generic [ref=f11e15]: │
+        - generic [ref=f11e16]: /dev/collections
+      - generic [ref=f11e18]:
+        - generic [ref=f11e20]:
+          - generic [ref=f11e21]: "?"
+          - text: 快速鍵
+        - button "切換至深色主題" [ref=f11e22] [cursor=pointer]:
+          - generic [ref=f11e23]: ◑
+          - generic [ref=f11e24]: light
+        - generic [ref=f11e25]: │
+        - generic [ref=f11e26]:
+          - generic [ref=f11e27]: uicheck
+          - generic [ref=f11e28]: "@admin"
+        - button "變更密碼" [ref=f11e29] [cursor=pointer]
+        - button "登出" [ref=f11e30] [cursor=pointer]
+    - generic [ref=f11e31]:
+      - complementary [ref=f11e32]:
+        - navigation "primary" [ref=f11e33]:
+          - generic [ref=f11e34]:
+            - generic [ref=f11e35]:
+              - generic [ref=f11e36]: "01"
+              - generic [ref=f11e37]: 主要
+              - generic [ref=f11e38]: "4"
+            - list [ref=f11e39]:
+              - listitem [ref=f11e40]:
+                - link "01 儀表板" [ref=f11e41] [cursor=pointer]:
+                  - /url: /
+                  - generic [ref=f11e43]: "01"
+                  - generic [ref=f11e44]: 儀表板
+              - listitem [ref=f11e45]:
+                - link "02 API 金鑰" [ref=f11e46] [cursor=pointer]:
+                  - /url: /api-keys
+                  - generic [ref=f11e48]: "02"
+                  - generic [ref=f11e49]: API 金鑰
+              - listitem [ref=f11e50]:
+                - link "03 模型" [ref=f11e51] [cursor=pointer]:
+                  - /url: /models
+                  - generic [ref=f11e53]: "03"
+                  - generic [ref=f11e54]: 模型
+              - listitem [ref=f11e55]:
+                - link "04 用量" [ref=f11e56] [cursor=pointer]:
+                  - /url: /usage
+                  - generic [ref=f11e58]: "04"
+                  - generic [ref=f11e59]: 用量
+          - generic [ref=f11e60]:
+            - generic [ref=f11e61]:
+              - generic [ref=f11e62]: "02"
+              - generic [ref=f11e63]: 開發者
+              - generic [ref=f11e64]: "3"
+            - list [ref=f11e65]:
+              - listitem [ref=f11e66]:
+                - link "01 開發指南" [ref=f11e67] [cursor=pointer]:
+                  - /url: /developer/guide
+                  - generic [ref=f11e69]: "01"
+                  - generic [ref=f11e70]: 開發指南
+              - listitem [ref=f11e71]:
+                - link "02 Agent" [ref=f11e72] [cursor=pointer]:
+                  - /url: /developer/agents
+                  - generic [ref=f11e74]: "02"
+                  - generic [ref=f11e75]: Agent
+              - listitem [ref=f11e76]:
+                - link "03 知識庫" [ref=f11e77] [cursor=pointer]:
+                  - /url: /knowledge-collections
+                  - generic [ref=f11e79]: "03"
+                  - generic [ref=f11e80]: 知識庫
+          - generic [ref=f11e81]:
+            - generic [ref=f11e82]:
+              - generic [ref=f11e83]: "03"
+              - generic [ref=f11e84]: 管理
+              - generic [ref=f11e85]: "10"
+            - list [ref=f11e86]:
+              - listitem [ref=f11e87]:
+                - link "01 使用者" [ref=f11e88] [cursor=pointer]:
+                  - /url: /users
+                  - generic [ref=f11e90]: "01"
+                  - generic [ref=f11e91]: 使用者
+              - listitem [ref=f11e92]:
+                - link "02 部門" [ref=f11e93] [cursor=pointer]:
+                  - /url: /departments
+                  - generic [ref=f11e95]: "02"
+                  - generic [ref=f11e96]: 部門
+              - listitem [ref=f11e97]:
+                - link "03 警報" [ref=f11e98] [cursor=pointer]:
+                  - /url: /alerts
+                  - generic [ref=f11e100]: "03"
+                  - generic [ref=f11e101]: 警報
+              - listitem [ref=f11e102]:
+                - link "04 公告橫幅" [ref=f11e103] [cursor=pointer]:
+                  - /url: /banners
+                  - generic [ref=f11e105]: "04"
+                  - generic [ref=f11e106]: 公告橫幅
+              - listitem [ref=f11e107]:
+                - link "05 稽核紀錄" [ref=f11e108] [cursor=pointer]:
+                  - /url: /audit-logs
+                  - generic [ref=f11e110]: "05"
+                  - generic [ref=f11e111]: 稽核紀錄
+              - listitem [ref=f11e112]:
+                - link "06 分類盤點" [ref=f11e113] [cursor=pointer]:
+                  - /url: /classification-inventory
+                  - generic [ref=f11e115]: "06"
+                  - generic [ref=f11e116]: 分類盤點
+              - listitem [ref=f11e117]:
+                - link "07 平台連結" [ref=f11e118] [cursor=pointer]:
+                  - /url: /platform-links
+                  - generic [ref=f11e120]: "07"
+                  - generic [ref=f11e121]: 平台連結
+              - listitem [ref=f11e122]:
+                - link "08 服務存取" [ref=f11e123] [cursor=pointer]:
+                  - /url: /service-access
+                  - generic [ref=f11e125]: "08"
+                  - generic [ref=f11e126]: 服務存取
+              - listitem [ref=f11e127]:
+                - link "09 服務客戶端" [ref=f11e128] [cursor=pointer]:
+                  - /url: /service-clients
+                  - generic [ref=f11e130]: "09"
+                  - generic [ref=f11e131]: 服務客戶端
+              - listitem [ref=f11e132]:
+                - link "10 信任主機" [ref=f11e133] [cursor=pointer]:
+                  - /url: /trusted-hosts
+                  - generic [ref=f11e135]: "10"
+                  - generic [ref=f11e136]: 信任主機
+        - generic [ref=f11e137]:
+          - generic [ref=f11e138]:
+            - generic [ref=f11e139]: session
+            - generic [ref=f11e140]: uicheck
+          - generic [ref=f11e141]:
+            - generic [ref=f11e142]: scope
+            - generic [ref=f11e143]: full · governance
+      - main [ref=f11e144]:
+        - generic [ref=f11e188]:
+          - generic [ref=f11e189]:
+            - generic [ref=f11e190]:
+              - heading "知識庫" [level=1] [ref=f11e191]
+              - paragraph [ref=f11e192]:
+                - text: 第一級 RAG 儲存 · agent 後端以
+                - code [ref=f11e193]: RAG_COLLECTION_ID=<id>
+                - text: 掛載
+            - button "+ 新增知識庫" [ref=f11e194] [cursor=pointer]:
+              - generic [ref=f11e195]: "["
+              - generic [ref=f11e197]: "]"
+          - generic [ref=f11e198]:
+            - generic [ref=f11e199]: 篩選
+            - generic [ref=f11e204]:
+              - generic [ref=f11e205] [cursor=pointer]:
+                - checkbox "顯示已封存" [ref=f11e206]
+                - text: 顯示已封存
+              - generic [ref=f11e207] [cursor=pointer]:
+                - checkbox "顯示他人的知識庫（管理員）" [ref=f11e208]
+                - text: 顯示他人的知識庫（管理員）
+          - generic [ref=f11e209]: 尚無知識庫 · 點選「新增知識庫」建立
+    - contentinfo [ref=f11e167]:
+      - generic [ref=f11e168]:
+        - generic [ref=f11e170]: api
+        - generic [ref=f11e171]: online · 4ms
+      - generic [ref=f11e172]: │
+      - generic [ref=f11e173]:
+        - generic [ref=f11e174]: role
+        - generic [ref=f11e175]: admin
+      - generic [ref=f11e176]: │
+      - generic [ref=f11e177]:
+        - generic [ref=f11e178]: path
+        - generic [ref=f11e179]: /knowledge-collections
+      - generic [ref=f11e180]:
+        - generic [ref=f11e181]: "theme:"
+        - generic [ref=f11e182]: light
+      - generic [ref=f11e183]: │
+      - generic [ref=f11e184]: build snapshot
+      - generic [ref=f11e186]: │
+      - generic [ref=f11e187]: 19:18:34
+  - dialog "新增 · 知識庫" [ref=f11e213]:
+    - banner [ref=f11e214]:
+      - generic [ref=f11e215]: ┌
+      - generic [ref=f11e216]: 新增 · 知識庫
+      - button "close" [active] [ref=f11e218] [cursor=pointer]: ×
+    - generic [ref=f11e220]:
+      - generic [ref=f11e221]:
+        - generic [ref=f11e222]: 名稱
+        - textbox "legal-regs" [ref=f11e225]
+      - generic [ref=f11e226]:
+        - generic [ref=f11e227]:
+          - generic [ref=f11e228]: 描述
+          - generic [ref=f11e229]: optional
+        - textbox [ref=f11e231]
+      - generic [ref=f11e232]:
+        - generic [ref=f11e233]: 切塊策略
+        - combobox [ref=f11e236]:
+          - option "hierarchical · 標題樹 + 上階脈絡" [selected]
+          - option "markdown-aware · 標題 + code-fence 安全"
+          - option "fixed · token 預算切窗"
+          - option "pdf-page · 僅 PDF · 依頁邊界"
+          - option "cjk-sentence · CJK 語法 + token 合併"
+          - option "semantic · 嵌入距離 · 慢但精準"
+      - generic [ref=f11e237]:
+        - generic [ref=f11e238]: 分類等級
+        - combobox "分類等級" [ref=f11e241]:
+          - option "無機密" [selected]
+          - option "營業秘密"
+          - option "機密"
+          - option "極機密"
+          - option "絕對機密"
+        - paragraph [ref=f11e242]: 不得超過您的 clearance。誤標低密會讓不該看到的人讀到內容。
+      - generic [ref=f11e243]:
+        - generic [ref=f11e244]: 葉節點最大 tokens
+        - spinbutton [ref=f11e247]: "256"
+        - paragraph [ref=f11e248]: 每個標題樹葉節點的 token 上限
+    - contentinfo [ref=f11e249]:
+      - button "取消" [ref=f11e250] [cursor=pointer]:
+        - generic [ref=f11e251]: "["
+        - generic [ref=f11e253]: "]"
+      - button "建立" [ref=f11e254] [cursor=pointer]:
+        - generic [ref=f11e255]: "["
+        - generic [ref=f11e257]: "]"

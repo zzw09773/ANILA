@@ -83,7 +83,8 @@ export function DashboardPage() {
   const togglePin = (id: number) => {
     setPinned((prev) => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       savePinned(next)
       return next
     })

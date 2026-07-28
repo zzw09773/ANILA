@@ -350,9 +350,18 @@ def safe_ingestion_path(root: str | Path, stored_path: str) -> Path:
 
 
 def _acquire_lease(db: Session, *, token: str, now: datetime, seconds: int) -> bool:
+    # Both lease reads chain ``populate_existing()``: this row decides whether
+    # two reapers may erase concurrently, and it is the one row guaranteed to
+    # be revisited by the same Session.  SQLAlchemy's identity map is weak, so
+    # an unreferenced lease instance is often collected between batches and the
+    # re-read *looks* fresh — that is refcounting luck, not a guarantee.  As
+    # soon as anything holds the row, a plain re-read returns this process's
+    # own stale token and the mutual-exclusion test compares us against
+    # ourselves.
     row = (
         db.query(RetentionReaperLease)
         .filter(RetentionReaperLease.lease_name == _LEASE_NAME)
+        .populate_existing()
         .with_for_update()
         .one_or_none()
     )
@@ -376,9 +385,13 @@ def _acquire_lease(db: Session, *, token: str, now: datetime, seconds: int) -> b
 
 
 def _release_lease(db: Session, *, token: str, now: datetime) -> None:
+    # See ``_acquire_lease``.  Releasing on a stale token is the worse half:
+    # if the lease expired mid-batch and another reaper took it, clearing it
+    # here hands a third reaper concurrent access to the erasure pipeline.
     row = (
         db.query(RetentionReaperLease)
         .filter(RetentionReaperLease.lease_name == _LEASE_NAME)
+        .populate_existing()
         .with_for_update()
         .one_or_none()
     )
@@ -394,14 +407,25 @@ def _release_lease(db: Session, *, token: str, now: datetime) -> None:
 def _artifact_has_active_work(
     db: Session, artifact: Artifact, *, lock: bool = False
 ) -> bool:
+    # ``lock=True`` is the pre-unlink TOCTOU re-check.  The terminal-status
+    # test happens in Python, so it reads whatever the instance holds — and
+    # these rows are already in the identity map from the pre-marker pass.
+    # ``populate_existing()`` is what makes the locked read actually reflect
+    # the locked row instead of the caller's pre-commit snapshot.
     if artifact.source_task_id is not None:
         query = db.query(Task).filter(Task.id == artifact.source_task_id)
-        task = query.with_for_update().one_or_none() if lock else query.one_or_none()
+        task = (
+            query.populate_existing().with_for_update().one_or_none()
+            if lock else query.one_or_none()
+        )
         if task is not None and task.status not in _TASK_TERMINAL:
             return True
     if artifact.job_id:
         query = db.query(ArtifactJob).filter(ArtifactJob.job_id == artifact.job_id)
-        job = query.with_for_update().one_or_none() if lock else query.one_or_none()
+        job = (
+            query.populate_existing().with_for_update().one_or_none()
+            if lock else query.one_or_none()
+        )
         if job is not None and job.status not in _ARTIFACT_JOB_TERMINAL:
             return True
     return False
@@ -412,7 +436,9 @@ def _collection_has_active_task(
 ) -> bool:
     query = db.query(Task).filter(Task.status.notin_(_TASK_TERMINAL))
     if lock:
-        query = query.with_for_update()
+        # ``selected_collection_ids`` is matched in Python below, so the locked
+        # pass must overwrite any stale identity-map copy of these Task rows.
+        query = query.populate_existing().with_for_update()
     tasks = query.all()
     return any(collection_id in (task.selected_collection_ids or []) for task in tasks)
 
@@ -430,7 +456,7 @@ def _document_has_active_work(
         )
     )
     if lock:
-        query = query.with_for_update()
+        query = query.with_for_update().populate_existing()
     return query.first() is not None
 
 
@@ -443,7 +469,7 @@ def _schedule_artifact_archives(
         .filter(ArtifactVersion.lifecycle_state == "active")
         .order_by(ArtifactVersion.id)
         .limit(batch)
-        .with_for_update(skip_locked=True)
+        .with_for_update(skip_locked=True).populate_existing()
         .all()
     )
     for version in rows:
@@ -473,7 +499,7 @@ def _schedule_document_archives(
         .filter(IngestionDocument.lifecycle_state == "active")
         .order_by(IngestionDocument.id)
         .limit(batch)
-        .with_for_update(skip_locked=True)
+        .with_for_update(skip_locked=True).populate_existing()
         .all()
     )
     for document in rows:
@@ -559,7 +585,7 @@ def _erase_artifact_version(
     version = (
         db.query(ArtifactVersion)
         .filter(ArtifactVersion.id == version_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one_or_none()
     )
     if version is None or version.lifecycle_state == "erased":
@@ -587,9 +613,17 @@ def _erase_artifact_version(
     # Crash marker is durable. Reacquire and re-evaluate every guard before
     # unlink, then hold this row lock across filesystem erasure and metadata
     # commit so a concurrent legal-hold mutation cannot win the TOCTOU window.
+    #
+    # ``populate_existing()`` is load-bearing, not decoration.  Both rows are
+    # already in this Session's identity map from the pre-marker phase, and a
+    # plain Query that hits a live identity-map entry throws the freshly
+    # SELECTed values away and hands back the in-memory copy.  Without it this
+    # re-read returns the pre-commit snapshot, the hold filed during the window
+    # is invisible, and the unlink below destroys bytes under legal hold.
     version = (
         db.query(ArtifactVersion)
         .filter(ArtifactVersion.id == version_id)
+        .populate_existing()
         .with_for_update()
         .one_or_none()
     )
@@ -598,7 +632,7 @@ def _erase_artifact_version(
         return False
     artifact = db.query(Artifact).filter(
         Artifact.id == version.artifact_id
-    ).with_for_update().one_or_none()
+    ).populate_existing().with_for_update().one_or_none()
     if (
         artifact is None
         or version.legal_hold
@@ -823,7 +857,7 @@ def _erase_document(
     document = (
         db.query(IngestionDocument)
         .filter(IngestionDocument.id == document_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one_or_none()
     )
     if document is None or document.lifecycle_state == "erased":
@@ -850,9 +884,14 @@ def _erase_document(
 
     # Same two-phase pattern as artifacts: marker first, then reacquire all
     # policy rows and hold their locks until bytes and DB refs converge.
+    # ``populate_existing()`` for the same reason as the artifact path: both
+    # rows were loaded before the marker commit, so a plain re-read would
+    # return the stale identity-map copy and step over a legal hold filed
+    # inside the window.
     document = (
         db.query(IngestionDocument)
         .filter(IngestionDocument.id == document_id)
+        .populate_existing()
         .with_for_update()
         .one_or_none()
     )
@@ -861,7 +900,7 @@ def _erase_document(
         return False
     collection = db.query(IngestionCollection).filter(
         IngestionCollection.id == document.collection_id
-    ).with_for_update().one_or_none()
+    ).populate_existing().with_for_update().one_or_none()
     if (
         document.legal_hold
         or (collection is not None and collection.legal_hold)
@@ -1023,7 +1062,7 @@ def _erase_empty_collections(db: Session, *, now: datetime, batch: int) -> int:
         IngestionCollection.erase_due_at.is_not(None),
         IngestionCollection.erase_due_at <= now,
         IngestionCollection.legal_hold.is_(False),
-    ).order_by(IngestionCollection.id).limit(batch).with_for_update(skip_locked=True).all()
+    ).order_by(IngestionCollection.id).limit(batch).with_for_update(skip_locked=True).populate_existing().all()
     erased = 0
     for collection in rows:
         if _collection_has_active_task(db, collection.id):

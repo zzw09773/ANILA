@@ -205,7 +205,21 @@ class Gate2ClassificationReconciliationTests(unittest.TestCase):
         for token in (
             "_locked_collection_classification",
             ".with_for_update(read=True)",
-            "classification_source=\"collection_inherited\"",
+        ):
+            self.assertIn(token, documents_source)
+        # The uploader may declare a level above the collection floor (W2-11),
+        # so the source is no longer a literal at the assignment — it comes back
+        # from the resolver alongside the effective level. Pin both possible
+        # values and the fact that the resolver decides, rather than pinning the
+        # shape of one assignment: the previous form asserted
+        # `classification_source="collection_inherited"` appeared verbatim, which
+        # reddened the moment the code stopped hardcoding it while still being
+        # correct. What must stay true is that every write names its provenance.
+        for token in (
+            '"collection_inherited"',
+            '"uploader_declared"',
+            "_resolve_document_upload_classification",
+            "classification_source=classification_source",
         ):
             self.assertIn(token, documents_source)
 

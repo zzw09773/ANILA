@@ -118,6 +118,16 @@ def _reject_legacy_agent_dispatch_in_formal(*, resume: bool = False) -> None:
     )
 
 
+def _model_unhealthy_audit_reason(exc: HTTPException) -> str | None:
+    """Map circuit-breaker 503 to a stable audit reason (not upstream_http_*)."""
+    if exc.status_code != 503:
+        return None
+    detail = exc.detail
+    if isinstance(detail, dict) and detail.get("code") == "model_unhealthy":
+        return "model_unhealthy"
+    return None
+
+
 class _RetrievalExtension(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1551,6 +1561,7 @@ async def _image_generations_impl(
                 acceptance_recorded=acceptance_recorded,
             )
         else:
+            breaker_reason = _model_unhealthy_audit_reason(exc)
             record_at_outcome(
                 db,
                 request=request,
@@ -1561,7 +1572,9 @@ async def _image_generations_impl(
                 status="error",
                 metadata={
                     "model": model.name,
-                    "reason": short_audit_reason(f"upstream_http_{exc.status_code}"),
+                    "reason": short_audit_reason(
+                        breaker_reason or f"upstream_http_{exc.status_code}"
+                    ),
                 },
                 commit=True,
                 acceptance_recorded=acceptance_recorded,
@@ -1823,6 +1836,14 @@ async def _chat_completions_impl(
     # accounts → identity header omitted, never forged; the request still
     # proceeds). user.id (PK) is still used for usage rows.
     user_identity = downstream_identity(user)
+    # Plain-int snapshot of the PK for anything evaluated AFTER this handler
+    # returns.  The streaming exits pass ``_schedule_memory_write`` as an
+    # ``on_complete`` closure, so its arguments are evaluated once the SSE has
+    # drained — long after ``_commit_stream_admission`` committed (and, since
+    # that commit now also releases the Session, detached) the ORM instance.
+    # Reading ``user.id`` there used to fire a synchronous ``_load_expired``
+    # re-SELECT on the event-loop thread and re-pin a pooled connection.
+    memory_writer_user_id = user.id
 
     # Audit fields from optional client headers
     conversation_id: str | None = request_headers.get("X-ANILA-Conversation-Id")
@@ -2404,7 +2425,7 @@ async def _chat_completions_impl(
             teed = _tee_stream_capture_assistant(
                 upstream,
                 on_complete=lambda assistant_text: _schedule_memory_write(
-                    user_id=user.id,
+                    user_id=memory_writer_user_id,
                     conversation_id=conv_id_int,
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
@@ -2577,7 +2598,7 @@ async def _chat_completions_impl(
                 # Memory write (non-streaming agent path)
                 assistant_text = _extract_assistant_text(payload)
                 _schedule_memory_write(
-                    user_id=user.id,
+                    user_id=memory_writer_user_id,
                     conversation_id=conv_id_int,
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
@@ -2752,6 +2773,7 @@ async def _chat_completions_impl(
             ),
             router_context=router_context,
             model_name=model.name,
+            model_health_status=getattr(model, "health_status", None),
             conversation_id=conversation_id,
             trace_id=usage_trace_id,
             requires_encryption=inherited_encryption,
@@ -2781,7 +2803,7 @@ async def _chat_completions_impl(
         teed = _tee_stream_capture_assistant(
             upstream,
             on_complete=lambda assistant_text: _schedule_memory_write(
-                user_id=user.id,
+                user_id=memory_writer_user_id,
                 conversation_id=conv_id_int,
                 user_message=captured_user_text,
                 assistant_message=assistant_text,
@@ -2862,7 +2884,13 @@ async def _chat_completions_impl(
         if exc.status_code == 403:
             _audit_outcome("denied", reason=f"http_{exc.status_code}")
         else:
-            _audit_outcome("error", reason=f"upstream_http_{exc.status_code}")
+            _audit_outcome(
+                "error",
+                reason=(
+                    _model_unhealthy_audit_reason(exc)
+                    or f"upstream_http_{exc.status_code}"
+                ),
+            )
         raise
     except Exception:
         _audit_outcome("error", reason="upstream_exception")
@@ -2870,7 +2898,7 @@ async def _chat_completions_impl(
     _audit_outcome("success")
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
-        user_id=user.id,
+        user_id=memory_writer_user_id,
         conversation_id=conv_id_int,
         user_message=captured_user_text,
         assistant_message=assistant_text,
@@ -3238,6 +3266,7 @@ async def _embeddings_impl(
                 acceptance_recorded=acceptance_recorded,
             )
         else:
+            breaker_reason = _model_unhealthy_audit_reason(exc)
             record_at_outcome(
                 db,
                 request=request,
@@ -3249,7 +3278,9 @@ async def _embeddings_impl(
                 metadata={
                     "model": model.name,
                     "endpoint": endpoint_path,
-                    "reason": short_audit_reason(f"upstream_http_{exc.status_code}"),
+                    "reason": short_audit_reason(
+                        breaker_reason or f"upstream_http_{exc.status_code}"
+                    ),
                 },
                 commit=True,
                 acceptance_recorded=acceptance_recorded,

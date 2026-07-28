@@ -33,6 +33,7 @@ def query_task(db):
         embedding_dim=4,
         status="active",
         created_by=user.id,
+        origin="anilalm",
     )
     db.add(collection)
     db.commit()

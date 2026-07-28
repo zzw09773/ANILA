@@ -188,6 +188,7 @@ ANILA_MEMORY=0  ·  ANILA_CITED=0  ·  ANILA_MAX_TURNS=10  ·  ANILA_TIMEOUT=60<
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import { TermBox, TermField, TermButton } from '../components/cli'
 import client from '../api/client'
 
@@ -212,7 +213,7 @@ async function generate() {
     })
     gen.result = data.system_prompt
   } catch (e) {
-    gen.error = e?.response?.data?.detail || '產生失敗，請稍後再試'
+    gen.error = extractError(e, '產生失敗，請稍後再試')
   } finally {
     gen.loading = false
   }
@@ -237,7 +238,7 @@ async function saveAsPreset() {
     })
     gen.saveMsg = '✓ 已存成該 agent 的 preset'
   } catch (e) {
-    gen.saveMsg = e?.response?.data?.detail || '存檔失敗'
+    gen.saveMsg = extractError(e, '存檔失敗')
   } finally {
     gen.saving = false
   }

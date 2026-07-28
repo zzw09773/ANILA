@@ -23,6 +23,8 @@ one row and one token.
 """
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -51,7 +53,7 @@ router = APIRouter(prefix="/api/service-clients", tags=["Service Clients"])
 _CLIENT_TYPES = {"router", "worker", "admin_tool"}
 
 
-class ServiceClientResponse(BaseModel):
+class ServiceClientResponse(ApiResponseModel):
     id: int
     client_name: str
     client_type: str
@@ -72,7 +74,7 @@ class CreateServiceClientRequest(BaseModel):
     description: str | None = Field(default=None, max_length=500)
 
 
-class CreateServiceClientResponse(BaseModel):
+class CreateServiceClientResponse(ApiResponseModel):
     service_token: str
     client: ServiceClientResponse
 

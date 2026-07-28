@@ -28,6 +28,13 @@ from typing import Any
 
 from dataclasses import dataclass
 
+from app.api.ingestion.surface import (
+    CollectionOrigin,
+    OriginArg,
+    require_surface_origin,
+    surface_origin_dep,
+)
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
@@ -236,8 +243,19 @@ def _require_collection_clearance(
     *,
     principal: SearchPrincipal,
     collection_id: int,
+    origin: OriginArg,
 ) -> IngestionCollection:
-    collection = db.get(IngestionCollection, collection_id)
+    """Resolve collection for search with an explicit surface decision.
+
+    Dual-mounted search routes pass ``origin=require_surface_origin()``.
+    Studio runtime (cross-product, already bound via Task/Snapshot) passes
+    ``origin=ANY_SURFACE``.
+    """
+    from app.api.ingestion.collections import lookup_collection_for_surface
+
+    collection = lookup_collection_for_surface(
+        db, collection_id, origin=origin
+    )
     if collection is None:
         raise HTTPException(status_code=404, detail="Collection not found")
     if not _is_data_access_allowed(
@@ -708,7 +726,7 @@ async def _expand_relations(
 
 
 @router.post(
-    "/api/ingestion/collections/{collection_id}/search",
+    "/collections/{collection_id}/search",
     response_model=SearchResponse,
 )
 async def search_collection(
@@ -717,6 +735,7 @@ async def search_collection(
     request: Request,
     db: Session = Depends(get_db),
     principal: SearchPrincipal = Depends(resolve_search_principal),
+    origin: CollectionOrigin = Depends(surface_origin_dep),
 ) -> SearchResponse:
     """Semantic top-K retrieval over one collection's chunks.
 
@@ -730,7 +749,10 @@ async def search_collection(
     # Denied on clearance 403; strict acceptance before embed; else success after retrieval.
     try:
         coll = _require_collection_clearance(
-            db, principal=principal, collection_id=collection_id
+            db,
+            principal=principal,
+            collection_id=collection_id,
+            origin=origin,
         )
     except HTTPException as exc:
         if (
@@ -1004,7 +1026,7 @@ async def search_collection(
 
 
 @router.post(
-    "/api/ingestion/collections/{collection_id}/images/search",
+    "/collections/{collection_id}/images/search",
     response_model=ImageSearchResponse,
 )
 async def search_collection_images(
@@ -1013,6 +1035,7 @@ async def search_collection_images(
     request: Request,
     db: Session = Depends(get_db),
     principal: SearchPrincipal = Depends(resolve_search_principal),
+    origin: CollectionOrigin = Depends(surface_origin_dep),
 ) -> ImageSearchResponse:
     """Semantic top-K retrieval over a collection's ``ingestion_images`` rows.
 
@@ -1033,7 +1056,10 @@ async def search_collection_images(
     current_user = principal.user
     try:
         coll = _require_collection_clearance(
-            db, principal=principal, collection_id=collection_id
+            db,
+            principal=principal,
+            collection_id=collection_id,
+            origin=origin,
         )
     except HTTPException as exc:
         if (

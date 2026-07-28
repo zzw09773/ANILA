@@ -1,6 +1,8 @@
 """Attachment upload/download endpoints."""
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 from typing import Optional
 
@@ -21,7 +23,7 @@ from app.services.attachment_service import (
 router = APIRouter(prefix="/api/attachments", tags=["attachments"])
 
 
-class AttachmentOut(BaseModel):
+class AttachmentOut(ApiResponseModel):
     reference_id: str
     filename: str
     content_type: str

@@ -41,7 +41,12 @@ def _alembic(database_url: str, *arguments: str) -> None:
             "DATABASE_URL": database_url,
             "CSP_APP_DB_PASSWORD": "gate3-app-db",
             "EMBEDDING_MODEL_FINGERPRINT": FINGERPRINT,
-            "PYTHONPATH": ".",
+            # Prepend rather than replace — see the note in
+            # test_audit_logs_detail_trgm_pg.py: overwriting PYTHONPATH with "."
+            # makes this only work where the packages are installed editable.
+            "PYTHONPATH": os.pathsep.join(
+                p for p in (".", os.environ.get("PYTHONPATH", "")) if p
+            ),
             "PYTHONIOENCODING": "utf-8",
         }
     )

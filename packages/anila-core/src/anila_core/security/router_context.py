@@ -3,8 +3,9 @@
 The Router is a consumer of CSP authority.  This verifier intentionally has
 no local signing material and never falls back to raw ``X-ANILA-*`` headers.
 It fetches CSP's JWKS, caches every published ``kid`` (so overlap during key
-rotation works), and performs one forced refresh when a request presents an
-unknown key id.
+rotation works), and performs one throttled forced refresh when a request
+presents an unknown key id or a signature/claims failure (kid-refresh after
+CSP key rotation / recreate).
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ ROUTER_CONTEXT_HEADER_TYP = "anila-router-context"
 ROUTER_CONTEXT_TOKEN_TYPE = "router-context/v1"
 ROUTER_CONTEXT_AUDIENCE = "anila-router"
 ROUTER_CONTEXT_MAX_TTL_SECONDS = 60
+# Bound forced JWKS re-fetches so a flood of bad tokens cannot hammer CSP.
+ROUTER_CONTEXT_FORCE_REFRESH_MIN_INTERVAL_SECONDS = 30.0
 ROUTER_CONTEXT_CLAIMS = frozenset(
     {
         "iss",
@@ -267,7 +270,24 @@ def _claims_from_payload(payload: Mapping[str, Any]) -> RouterContextClaims:
 
 
 class RouterContextTokenVerifier:
-    """JWKS-backed verifier with bounded cache and one unknown-kid refresh."""
+    """JWKS-backed verifier with bounded cache and throttled kid-refresh.
+
+    Forced JWKS refresh trade-offs (deliberate, do not "fix" without review):
+
+    (a) The global ``force_refresh_min_interval_seconds`` (default 30s) throttle is
+        intentional anti-amplification: a flood of bad tokens must not pin CSP's
+        JWKS endpoint with unbounded re-fetches.
+    (b) Residual availability window: if CSP rotates keys while a throttle window
+        is already open (e.g. after a bad-token forced refresh), legitimate tokens
+        signed with the new material may be rejected for up to
+        ``force_refresh_min_interval_seconds``.
+    (c) Per-kid throttling was rejected: forged random ``kid`` values could bypass
+        the throttle and grow an unbounded per-kid dict.
+
+    Empty-cache exemption: ``_refresh(force=True)`` skips the throttle when the
+    local JWKS cache has no usable keys (cold start / just cleared). Attackers
+    cannot clear a populated cache, so this does not re-open request amplification.
+    """
 
     def __init__(
         self,
@@ -278,6 +298,9 @@ class RouterContextTokenVerifier:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 10.0,
         cache_ttl_seconds: float = 300.0,
+        force_refresh_min_interval_seconds: float = (
+            ROUTER_CONTEXT_FORCE_REFRESH_MIN_INTERVAL_SECONDS
+        ),
         now: Callable[[], float] | None = None,
     ) -> None:
         parsed = urlsplit(jwks_url)
@@ -289,52 +312,103 @@ class RouterContextTokenVerifier:
         self.transport = transport
         self.timeout = timeout
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.force_refresh_min_interval_seconds = force_refresh_min_interval_seconds
         self._now = now or time.time
         self._keys: dict[str, dict[str, Any]] = {}
         self._loaded_at = 0.0
+        self._last_forced_refresh_at = 0.0
         self._refresh_lock = asyncio.Lock()
 
     @property
     def cached_kids(self) -> tuple[str, ...]:
         return tuple(sorted(self._keys))
 
-    async def _refresh(self, *, force: bool = False) -> None:
+    async def _fetch_jwks(self) -> None:
+        """Replace the local key set from CSP JWKS. Caller holds the lock."""
+        current = self._now()
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, transport=self.transport
+            ) as client:
+                response = await client.get(self.jwks_url)
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise RouterContextVerificationError("CSP JWKS 無法取得") from exc
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("keys"), list):
+            raise RouterContextVerificationError("CSP JWKS 格式無效")
+        refreshed: dict[str, dict[str, Any]] = {}
+        for key in payload["keys"]:
+            if not isinstance(key, Mapping):
+                continue
+            kid = key.get("kid")
+            if not isinstance(kid, str) or not kid.strip():
+                continue
+            if key.get("kty") != "RSA" or key.get("alg") not in (None, "RS256"):
+                continue
+            refreshed[kid] = dict(key)
+        if not refreshed:
+            raise RouterContextVerificationError("CSP JWKS 缺少可用 RS256 key")
+        # The JWKS publication is the source of truth.  A rotation can
+        # overlap old/new keys simply by publishing both in this response;
+        # retaining keys that CSP has removed would keep revoked kids
+        # trusted indefinitely.
+        self._keys = refreshed
+        self._loaded_at = current
+
+    def _forced_refresh_throttled(self, current: float) -> bool:
+        """Whether a forced refresh should be skipped by the global throttle.
+
+        Empty cache (no usable keys) is exempt — see class docstring.
+        """
+        if not self._keys:
+            return False
+        if self._last_forced_refresh_at <= 0.0:
+            return False
+        return (
+            current - self._last_forced_refresh_at
+            < self.force_refresh_min_interval_seconds
+        )
+
+    async def _refresh(self, *, force: bool = False) -> bool:
+        """Refresh JWKS when TTL expired, or when ``force`` is allowed.
+
+        Returns True iff a network fetch ran. Forced refreshes are throttled
+        by ``force_refresh_min_interval_seconds`` so bad-token storms cannot
+        pin CSP's JWKS endpoint, except when the local key cache is empty
+        (cold start / just cleared — see class docstring).
+        """
         current = self._now()
         if not force and self._keys and current - self._loaded_at < self.cache_ttl_seconds:
-            return
+            return False
+        if force and self._forced_refresh_throttled(current):
+            return False
         async with self._refresh_lock:
             current = self._now()
             if not force and self._keys and current - self._loaded_at < self.cache_ttl_seconds:
-                return
-            try:
-                async with httpx.AsyncClient(
-                    timeout=self.timeout, transport=self.transport
-                ) as client:
-                    response = await client.get(self.jwks_url)
-                    response.raise_for_status()
-                    payload = response.json()
-            except (httpx.HTTPError, ValueError, TypeError) as exc:
-                raise RouterContextVerificationError("CSP JWKS 無法取得") from exc
-            if not isinstance(payload, Mapping) or not isinstance(payload.get("keys"), list):
-                raise RouterContextVerificationError("CSP JWKS 格式無效")
-            refreshed: dict[str, dict[str, Any]] = {}
-            for key in payload["keys"]:
-                if not isinstance(key, Mapping):
-                    continue
-                kid = key.get("kid")
-                if not isinstance(kid, str) or not kid.strip():
-                    continue
-                if key.get("kty") != "RSA" or key.get("alg") not in (None, "RS256"):
-                    continue
-                refreshed[kid] = dict(key)
-            if not refreshed:
-                raise RouterContextVerificationError("CSP JWKS 缺少可用 RS256 key")
-            # The JWKS publication is the source of truth.  A rotation can
-            # overlap old/new keys simply by publishing both in this response;
-            # retaining keys that CSP has removed would keep revoked kids
-            # trusted indefinitely.
-            self._keys = refreshed
-            self._loaded_at = current
+                return False
+            if force and self._forced_refresh_throttled(current):
+                return False
+            await self._fetch_jwks()
+            if force:
+                self._last_forced_refresh_at = self._now()
+            return True
+
+    def _decode_payload(self, token: str, key: dict[str, Any]) -> dict[str, Any]:
+        return jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            issuer=self.issuer,
+            audience=self.audience,
+            options={
+                "require_exp": True,
+                "require_iat": True,
+                "require_iss": True,
+                "require_aud": True,
+                "require_jti": True,
+            },
+        )
 
     async def verify(
         self,
@@ -357,29 +431,36 @@ class RouterContextTokenVerifier:
         kid = header["kid"]
         await self._refresh()
         key = self._keys.get(kid)
+        forced = False
         if key is None:
-            # One and only one forced refresh for this verification attempt.
-            await self._refresh(force=True)
+            # Unknown kid → one throttled forced refresh for this attempt.
+            forced = await self._refresh(force=True)
             key = self._keys.get(kid)
         if key is None:
             raise RouterContextVerificationError("Router context kid 未發佈")
         try:
-            payload = jwt.decode(
-                token,
-                key,
-                algorithms=["RS256"],
-                issuer=self.issuer,
-                audience=self.audience,
-                options={
-                    "require_exp": True,
-                    "require_iat": True,
-                    "require_iss": True,
-                    "require_aud": True,
-                    "require_jti": True,
-                },
-            )
+            payload = self._decode_payload(token, key)
         except JWTError as exc:
-            raise RouterContextVerificationError("Router context JWT signature/claims 無效") from exc
+            # Same kid with rotated material (CSP recreate keeps JWT_KID) →
+            # refresh once if throttle allows, then retry decode.
+            if forced:
+                raise RouterContextVerificationError(
+                    "Router context JWT signature/claims 無效"
+                ) from exc
+            forced = await self._refresh(force=True)
+            if not forced:
+                raise RouterContextVerificationError(
+                    "Router context JWT signature/claims 無效"
+                ) from exc
+            key = self._keys.get(kid)
+            if key is None:
+                raise RouterContextVerificationError("Router context kid 未發佈") from exc
+            try:
+                payload = self._decode_payload(token, key)
+            except JWTError as retry_exc:
+                raise RouterContextVerificationError(
+                    "Router context JWT signature/claims 無效"
+                ) from retry_exc
         claims = _claims_from_payload(payload)
         now = int(self._now())
         if claims.issued_at > now or claims.expires_at <= now:
@@ -396,6 +477,7 @@ class RouterContextTokenVerifier:
 __all__ = [
     "ROUTER_CONTEXT_AUDIENCE",
     "ROUTER_CONTEXT_CLAIMS",
+    "ROUTER_CONTEXT_FORCE_REFRESH_MIN_INTERVAL_SECONDS",
     "ROUTER_CONTEXT_HEADER",
     "ROUTER_CONTEXT_HEADER_TYP",
     "ROUTER_CONTEXT_MAX_TTL_SECONDS",

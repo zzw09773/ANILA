@@ -1,0 +1,265 @@
+- generic [ref=f3e1]:
+  - generic [ref=f3e3]:
+    - banner [ref=f3e4]:
+      - generic [ref=f3e5]:
+        - generic [ref=f3e6]:
+          - img "ANILA" [ref=f3e7]
+          - generic [ref=f3e11]:
+            - generic [ref=f3e12]: ANILA
+            - generic [ref=f3e13]: ·
+            - generic [ref=f3e14]: CSP
+        - generic [ref=f3e15]: │
+        - generic [ref=f3e16]: /dev/collections/detail
+      - generic [ref=f3e18]:
+        - generic [ref=f3e20]:
+          - generic [ref=f3e21]: "?"
+          - text: 快速鍵
+        - button "切換至深色主題" [ref=f3e22] [cursor=pointer]:
+          - generic [ref=f3e23]: ◑
+          - generic [ref=f3e24]: light
+        - generic [ref=f3e25]: │
+        - generic [ref=f3e26]:
+          - generic [ref=f3e27]: uicheck
+          - generic [ref=f3e28]: "@admin"
+        - button "變更密碼" [ref=f3e29] [cursor=pointer]
+        - button "登出" [ref=f3e30] [cursor=pointer]
+    - generic [ref=f3e31]:
+      - complementary [ref=f3e32]:
+        - navigation "primary" [ref=f3e33]:
+          - generic [ref=f3e34]:
+            - generic [ref=f3e35]:
+              - generic [ref=f3e36]: "01"
+              - generic [ref=f3e37]: 主要
+              - generic [ref=f3e38]: "4"
+            - list [ref=f3e39]:
+              - listitem [ref=f3e40]:
+                - link "01 儀表板" [ref=f3e41] [cursor=pointer]:
+                  - /url: /
+                  - generic [ref=f3e43]: "01"
+                  - generic [ref=f3e44]: 儀表板
+              - listitem [ref=f3e45]:
+                - link "02 API 金鑰" [ref=f3e46] [cursor=pointer]:
+                  - /url: /api-keys
+                  - generic [ref=f3e48]: "02"
+                  - generic [ref=f3e49]: API 金鑰
+              - listitem [ref=f3e50]:
+                - link "03 模型" [ref=f3e51] [cursor=pointer]:
+                  - /url: /models
+                  - generic [ref=f3e53]: "03"
+                  - generic [ref=f3e54]: 模型
+              - listitem [ref=f3e55]:
+                - link "04 用量" [ref=f3e56] [cursor=pointer]:
+                  - /url: /usage
+                  - generic [ref=f3e58]: "04"
+                  - generic [ref=f3e59]: 用量
+          - generic [ref=f3e60]:
+            - generic [ref=f3e61]:
+              - generic [ref=f3e62]: "02"
+              - generic [ref=f3e63]: 開發者
+              - generic [ref=f3e64]: "3"
+            - list [ref=f3e65]:
+              - listitem [ref=f3e66]:
+                - link "01 開發指南" [ref=f3e67] [cursor=pointer]:
+                  - /url: /developer/guide
+                  - generic [ref=f3e69]: "01"
+                  - generic [ref=f3e70]: 開發指南
+              - listitem [ref=f3e71]:
+                - link "02 Agent" [ref=f3e72] [cursor=pointer]:
+                  - /url: /developer/agents
+                  - generic [ref=f3e74]: "02"
+                  - generic [ref=f3e75]: Agent
+              - listitem [ref=f3e76]:
+                - link "03 知識庫" [ref=f3e77] [cursor=pointer]:
+                  - /url: /knowledge-collections
+                  - generic [ref=f3e79]: "03"
+                  - generic [ref=f3e80]: 知識庫
+          - generic [ref=f3e81]:
+            - generic [ref=f3e82]:
+              - generic [ref=f3e83]: "03"
+              - generic [ref=f3e84]: 管理
+              - generic [ref=f3e85]: "10"
+            - list [ref=f3e86]:
+              - listitem [ref=f3e87]:
+                - link "01 使用者" [ref=f3e88] [cursor=pointer]:
+                  - /url: /users
+                  - generic [ref=f3e90]: "01"
+                  - generic [ref=f3e91]: 使用者
+              - listitem [ref=f3e92]:
+                - link "02 部門" [ref=f3e93] [cursor=pointer]:
+                  - /url: /departments
+                  - generic [ref=f3e95]: "02"
+                  - generic [ref=f3e96]: 部門
+              - listitem [ref=f3e97]:
+                - link "03 警報" [ref=f3e98] [cursor=pointer]:
+                  - /url: /alerts
+                  - generic [ref=f3e100]: "03"
+                  - generic [ref=f3e101]: 警報
+              - listitem [ref=f3e102]:
+                - link "04 公告橫幅" [ref=f3e103] [cursor=pointer]:
+                  - /url: /banners
+                  - generic [ref=f3e105]: "04"
+                  - generic [ref=f3e106]: 公告橫幅
+              - listitem [ref=f3e107]:
+                - link "05 稽核紀錄" [ref=f3e108] [cursor=pointer]:
+                  - /url: /audit-logs
+                  - generic [ref=f3e110]: "05"
+                  - generic [ref=f3e111]: 稽核紀錄
+              - listitem [ref=f3e112]:
+                - link "06 分類盤點" [ref=f3e113] [cursor=pointer]:
+                  - /url: /classification-inventory
+                  - generic [ref=f3e115]: "06"
+                  - generic [ref=f3e116]: 分類盤點
+              - listitem [ref=f3e117]:
+                - link "07 平台連結" [ref=f3e118] [cursor=pointer]:
+                  - /url: /platform-links
+                  - generic [ref=f3e120]: "07"
+                  - generic [ref=f3e121]: 平台連結
+              - listitem [ref=f3e122]:
+                - link "08 服務存取" [ref=f3e123] [cursor=pointer]:
+                  - /url: /service-access
+                  - generic [ref=f3e125]: "08"
+                  - generic [ref=f3e126]: 服務存取
+              - listitem [ref=f3e127]:
+                - link "09 服務客戶端" [ref=f3e128] [cursor=pointer]:
+                  - /url: /service-clients
+                  - generic [ref=f3e130]: "09"
+                  - generic [ref=f3e131]: 服務客戶端
+              - listitem [ref=f3e132]:
+                - link "10 信任主機" [ref=f3e133] [cursor=pointer]:
+                  - /url: /trusted-hosts
+                  - generic [ref=f3e135]: "10"
+                  - generic [ref=f3e136]: 信任主機
+        - generic [ref=f3e137]:
+          - generic [ref=f3e138]:
+            - generic [ref=f3e139]: session
+            - generic [ref=f3e140]: uicheck
+          - generic [ref=f3e141]:
+            - generic [ref=f3e142]: scope
+            - generic [ref=f3e143]: full · governance
+      - main [ref=f3e144]:
+        - generic [ref=f3e264]:
+          - generic [ref=f3e266]:
+            - link "← 知識庫" [ref=f3e267] [cursor=pointer]:
+              - /url: /knowledge-collections
+            - heading "公開資料庫" [level=1] [ref=f3e268]
+            - paragraph [ref=f3e269]:
+              - text: "agent # · nvidia/NV-embed-V2 · 4000-d · 策略"
+              - code [ref=f3e270]: fixed
+          - generic [ref=f3e271]:
+            - generic [ref=f3e273]:
+              - generic [ref=f3e274]: 上傳 · 匯入
+              - generic [ref=f3e275]: text / md / pdf / docx · ≤ 50 MB single · ≤ 500 MB / 200 files zip
+            - generic [ref=f3e278]:
+              - button "+ 檔案(可多選)" [ref=f3e279] [cursor=pointer]:
+                - generic [ref=f3e280]: "["
+                - generic [ref=f3e282]: "]"
+              - button "+ zip · 多檔" [ref=f3e283] [cursor=pointer]:
+                - generic [ref=f3e284]: "["
+                - generic [ref=f3e286]: "]"
+              - generic [ref=f3e287] [cursor=pointer]:
+                - checkbox "保留資料夾路徑（zip）" [ref=f3e288]
+                - generic [ref=f3e289]: 保留資料夾路徑（zip）
+              - generic [ref=f3e290]: 也可拖放上傳
+          - generic [ref=f3e291]:
+            - generic [ref=f3e293]:
+              - generic [ref=f3e294]: 設定 · 分類等級
+              - generic [ref=f3e295]: 僅管理員可變更。升級在此直接套用；降級請走降密申請 POST /api/classification/declassification-requests。新上傳文件會繼承此等級；已索引文件不會回溯改寫。
+            - generic [ref=f3e298]:
+              - generic [ref=f3e299]:
+                - generic [ref=f3e300]: 分類等級
+                - combobox [ref=f3e303]:
+                  - option "無機密" [selected]
+                  - option "營業秘密"
+                  - option "機密"
+                  - option "極機密"
+                  - option "絕對機密"
+                - paragraph [ref=f3e304]: 僅可升級（無機密 → 絕對機密）。降級須經降密申請與主管核准。
+              - button "儲存分類" [disabled] [ref=f3e305]:
+                - generic [ref=f3e306]: "["
+                - generic [ref=f3e308]: "]"
+          - generic [ref=f3e309]:
+            - generic [ref=f3e310]:
+              - generic [ref=f3e311]: 文件 · 0
+              - generic [ref=f3e315]: 尚無文件 · 請於上方上傳
+            - generic [ref=f3e317]:
+              - generic [ref=f3e318]: 檢視器
+              - generic [ref=f3e322]: 選一份文件以檢視區塊
+          - generic [ref=f3e325]:
+            - generic [ref=f3e327]:
+              - generic [ref=f3e328]: relations · 0
+              - generic [ref=f3e329]: cross-document links · 母法 / 補充 / 修正 / 引用 · rule=auto, manual=human
+            - generic [ref=f3e331]:
+              - generic [ref=f3e332]:
+                - generic [ref=f3e333]:
+                  - button "表格" [ref=f3e334] [cursor=pointer]
+                  - button "圖" [ref=f3e335] [cursor=pointer]
+                - button "↻ 重新解析 · 重新掃描 + 重新抽取" [ref=f3e336] [cursor=pointer]:
+                  - generic [ref=f3e337]: "["
+                  - generic [ref=f3e339]: "]"
+              - generic [ref=f3e340]:
+                - combobox [ref=f3e341]:
+                  - option "來源文件…" [disabled] [selected]
+                - combobox [ref=f3e342]:
+                  - option "based_on"
+                  - option "amends"
+                  - option "supersedes"
+                  - option "cites" [selected]
+                  - option "supplements"
+                  - option "relates"
+                - combobox [ref=f3e343]:
+                  - option "目標文件…（或輸入名稱 →）" [selected]
+                - textbox "…或輸入目標名稱" [ref=f3e344]
+                - button "+ 新增" [disabled] [ref=f3e345]:
+                  - generic [ref=f3e346]: "["
+                  - generic [ref=f3e348]: "]"
+              - generic [ref=f3e349]: 尚無關聯 · 上傳有連結的文件或於上方新增
+    - contentinfo [ref=f3e168]:
+      - generic [ref=f3e169]:
+        - generic [ref=f3e171]: api
+        - generic [ref=f3e172]: online · 3ms
+      - generic [ref=f3e173]: │
+      - generic [ref=f3e174]:
+        - generic [ref=f3e175]: role
+        - generic [ref=f3e176]: admin
+      - generic [ref=f3e177]: │
+      - generic [ref=f3e178]:
+        - generic [ref=f3e179]: path
+        - generic [ref=f3e180]: /knowledge-collections/1
+      - generic [ref=f3e181]:
+        - generic [ref=f3e182]: "theme:"
+        - generic [ref=f3e183]: light
+      - generic [ref=f3e184]: │
+      - generic [ref=f3e185]: build snapshot
+      - generic [ref=f3e187]: │
+      - generic [ref=f3e188]: 18:36:34
+  - dialog "確認文件密等" [ref=f3e352]:
+    - banner [ref=f3e353]:
+      - generic [ref=f3e354]: ┌
+      - generic [ref=f3e355]: 確認文件密等
+      - button "close" [ref=f3e357] [cursor=pointer]: ×
+    - generic [ref=f3e359]:
+      - paragraph [ref=f3e360]:
+        - text: 本文件密等 =
+        - strong [ref=f3e361]: 機密
+        - text: （由知識庫「無機密」上調）
+      - paragraph [ref=f3e362]: 誤標低密會讓不該看到的人讀到內容。若實際密等更高，請在此上調； 不可下調。
+      - generic [ref=f3e363]:
+        - generic [ref=f3e364]: 文件密等
+        - combobox "文件密等" [ref=f3e367]:
+          - option "無機密"
+          - option "營業秘密"
+          - option "機密" [selected]
+          - option "極機密"
+          - option "絕對機密"
+        - paragraph [ref=f3e368]: 僅可上調；預設繼承知識庫現行密等。
+      - generic [ref=f3e378]: ⚠ 上調會把整個知識庫不可逆地閂鎖為「機密」。 降回只能走雙人降密申請 （POST /api/classification/declassification-requests）。 請再次確認後才上傳。
+      - generic [ref=f3e379] [cursor=pointer]:
+        - checkbox "我了解這會升級整個知識庫且無法自行降回" [checked] [active] [ref=f3e380]
+        - generic [ref=f3e381]: 我了解這會升級整個知識庫且無法自行降回
+    - contentinfo [ref=f3e369]:
+      - button "取消" [ref=f3e370] [cursor=pointer]:
+        - generic [ref=f3e371]: "["
+        - generic [ref=f3e373]: "]"
+      - button "確認並上傳" [ref=f3e374] [cursor=pointer]:
+        - generic [ref=f3e375]: "["
+        - generic [ref=f3e377]: "]"

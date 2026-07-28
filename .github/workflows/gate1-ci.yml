@@ -102,6 +102,54 @@ jobs:
       - name: Run complete deployment contracts
         run: python -m unittest discover -s infra/deployment/tests -v
 
+      # W1-7 / C5:legacy 清單 ratchet。不需要 DB,掛在這個輕量 job。
+      #
+      # 這支擋的是稽核抓到的 S3 反模式:新 read model 落地後舊那層留著,沒有
+      # 退場條件也沒有清單,於是每個 boundary 都要重查一次舊層還在不在 ——
+      # 漏查的那個就是下一個缺口。ratchet 只准降不准升。
+      #
+      # exit code 分流照 drift 檢查的教訓來:exit 3 = 真的有 findings、
+      # exit 1 = 檢查本身壞了。**不准用 `|| true` 或 `|| echo warning`** ——
+      # 那正是讓 ModuleNotFoundError 偽裝成綠燈的寫法。
+      # W3-12i:刻意重複的檔案必須保持一致。
+      # `asrStream.js` 是 427 行 byte-identical 的兩份(三個前端各自 npm install,
+      # 沒有 workspace 可以放共用套件)。問題不是有重複,是**沒有東西防它們悄悄
+      # 分岔** —— 而 ASR 是即時串流,不一致的行為會被當成「今天網路比較差」。
+      - name: 刻意重複的檔案要一致(W3-12i)
+        run: bash infra/ci/check-duplicated-sources.sh
+
+      - name: legacy 清單 ratchet(C5)
+        run: |
+          set +e
+          python infra/ci/check_legacy_ledger.py
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "legacy 引用未增加" ;;
+            3) echo "::error::新增了 legacy 引用(見上方清單)"; exit 1 ;;
+            *) echo "::error::legacy ledger 檢查本身失敗(exit $rc)—— 這不是「沒有 findings」"; exit "$rc" ;;
+          esac
+
+      # `SELECT ... FOR UPDATE` 必須鏈上 `populate_existing()`。
+      #
+      # SQLAlchemy 的 Query 命中 identity map 時會**丟棄剛 SELECT 回來的列值**、
+      # 回傳記憶體舊值 → 「加鎖重讀再決定」這個動作的全部意義消失(鎖還在,讀到
+      # 的是舊值)。已實測會擊穿 `retention_reaper` 的 legal hold —— **不可逆刪檔
+      # 加法務合規**。這一輪補了 75 處,剩 1 處(當時有並行工作在改該檔)。
+      #
+      # 純 AST,不需要 DB,所以掛在這個輕量 job。
+      - name: with_for_update 必須有 populate_existing
+        run: |
+          set +e
+          python infra/ci/check_for_update_populate.py
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "未新增缺 populate_existing() 的加鎖重讀" ;;
+            3) echo "::error::新增了缺 populate_existing() 的 with_for_update(見上方)"; exit 1 ;;
+            *) echo "::error::這支檢查本身失敗(exit $rc)—— 不是「沒有 findings」"; exit "$rc" ;;
+          esac
+
   contract-smoke:
     name: Contract smoke
     runs-on: ubuntu-latest
@@ -245,6 +293,30 @@ jobs:
         working-directory: services/csp
         run: python -m pytest -q
 
+      # W2-12:API 契約產出物必須與程式碼同步,且 response_model 覆蓋率只准升。
+      # CSP 的 /openapi.json 被 require_admin 鎖住(這是對的),副作用是 review
+      # 時看不到 API 形狀改了什麼 —— 這支把 schema diff 變成 PR 內可見的東西。
+      # 不同步、或缺 response_model 的 endpoint 數上升,都 exit 1。
+      - name: Check OpenAPI artifact and response_model ratchet
+        run: python scripts/export-openapi.py --check
+
+      # Response JSON datetime 必須帶明確 UTC offset。naive ORM 欄位經
+      # ApiResponseModel 正規化;這支 gate 擋住「新 endpoint 悄悄停做」與
+      # untyped dict 回傳 datetime。exit 3 = findings、exit 1 = 檢查壞了。
+      # **不准用 `|| true`**。
+      - name: response datetime UTC offset gate
+        run: |
+          set +e
+          PYTHONPATH=services/csp:packages/anila-contracts/src:packages/anila-security/src:packages/anila-core/src \
+            python infra/ci/check_response_datetime_utc.py
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "response datetime UTC offset OK" ;;
+            3) echo "::error::response datetime 缺 UTC offset(見上方清單)"; exit 1 ;;
+            *) echo "::error::response datetime gate 本身失敗(exit $rc)"; exit "$rc" ;;
+          esac
+
   postgres-rls:
     name: Backend / PostgreSQL RLS
     needs: [contract-smoke, backend-core, backend-ingestion, backend-csp]
@@ -298,6 +370,134 @@ jobs:
           CSP_APP_DB_PASSWORD: gate1-app-db
           PYTHONPATH: .
         run: python -m alembic upgrade head
+
+      # W0-1:這一步刻意緊接在 `alembic upgrade head` 之後 —— 這裡的 PG 是
+      # **乾淨庫 + 只跑過 migration chain**,所以此處的 drift 結果就是
+      # 「migration chain 到底產不產得出可用 schema」的權威答案。
+      #
+      # 為什麼需要:`startup_migrations.py` 是 alembic 之外的第二套 schema 機制
+      # (覆蓋 8 張表),於是 alembic 單獨跑不出正確 schema —— DR 還原路徑因此
+      # 是壞的。而測試用 SQLite + create_all,驗證迴路結構上看不見這件事。
+      # 對本機 dev 庫實測抓到 15 項,其中 4 項是人工稽核沒發現的
+      # (document_relations / ingestion_documents / ingestion_document_generations
+      # 的 FK 短缺、registered_services.slug 與 tasks.trace_id 缺 UNIQUE)。
+      - name: ORM ↔ PostgreSQL schema drift (migration chain 自足性)
+        env:
+          PYTHONPATH: services/csp
+        run: |
+          # ⚠ 不可寫成 `python … || echo "::warning::"`。第一版就是那樣,結果腳本以
+          # `ModuleNotFoundError: No module named 'psycopg'` crash(DSN 誤用了
+          # psycopg3 driver,而本 job 裝的是 psycopg2),而那個 `||` 把 traceback
+          # 一起吞掉 —— job 顯示通過、看起來像「有 drift 但已知」,實際上**檢查
+          # 從來沒跑成**。這正是「吞掉錯誤讓紅燈變綠燈」。
+          #
+          # 所以:腳本用 exit 3 表示「有發現」、exit 1 表示「檢查本身壞了」。
+          #
+          # W2-6 之後這一步**已轉為硬性 fail**(原本是 warning)。能硬起來是因為
+          # 腳本現在把 findings 分兩級:
+          #   - STRUCTURAL(缺表/欄/索引/UNIQUE/FK)= 0 → 這一級任何新增都 fail;
+          #   - DEFERRED(TZ_MISMATCH 53 條 → W2-10;UNDECLARED_FK 3 條 → 孤兒欄)
+          #     有計數上限,登記在 infra/ci/orm_drift_deferred_baseline.json,
+          #     只准降不准升,**未登記的類別一律 fail**(否則白名單無限大)。
+          set +e
+          python infra/ci/check_orm_pg_drift.py --mode drift \
+            --dsn "postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "ORM↔PG 無結構性漂移,DEFERRED 級亦未超過上限" ;;
+            3) echo "::error::ORM↔PG 漂移(結構性漂移,或 DEFERRED 級超過 baseline 上限)—— 見上方分級"; exit 1 ;;
+            *) echo "::error::drift 檢查本身失敗(exit $rc)—— 這不是「有 drift」,是這支檢查不可信"; exit "$rc" ;;
+          esac
+
+      # W2-6 新增的真 PG 測試。它們驗的是「r1_0036 對已被 startup DDL 補過的舊庫
+      # 冪等」與「schema 落後的庫拒啟動」—— 兩件事都只有真 PG 測得出來,SQLite +
+      # create_all 的迴路結構上看不見。這個 job 已經有 PG service 與 admin DSN,
+      # 所以只是多一步,不需要另起服務。
+      # 本輪新增的三支真 PG 不變式測試。它們在 `gate1-test-baseline.json` 的
+      # `allowed_skips` 裡登記為「無 DSN 時 skip」,而那份 baseline 的 gate 會**要求
+      # 對應的指令真的被某個 job 執行** —— 「登記為 skip」不能變成「永遠不跑」的藉口。
+      # 所以這一步存在的理由不只是跑測試,也是讓那個登記成立。
+      - name: 本輪新增的真 PG 不變式
+        env:
+          PYTHONPATH: services/csp
+          # ⚠ This suite uses several different env var names for "a PostgreSQL to
+          # test against", and each test family reads a different one. Setting only
+          # ANILA_TEST_PG_DSN left test_audit_logs_detail_trgm_pg skipping silently
+          # from the day it joined this loop — invisible until the "all skipped =
+          # not verified" guard below landed in the same round and finally said so.
+          # A DSN no test reads costs nothing; a missing one costs the whole file.
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_AUDIT_TRGM_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_GATE3_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+        working-directory: services/csp
+        run: |
+          set -euo pipefail
+          for f in \
+            tests/test_for_update_staleness_pg.py \
+            tests/test_w210_governance_timestamptz_pg.py \
+            tests/test_audit_logs_detail_trgm_pg.py \
+            tests/test_w211_classification_input_pg.py \
+            tests/test_w23_message_tree_pg.py \
+            tests/test_collection_origin_surface_pg.py ; do
+            echo "── $f"
+            out=$(python -m pytest "$f" -q 2>&1) || { echo "$out"; exit 1; }
+            echo "$out" | tail -1
+            if echo "$out" | grep -qE "^[0-9]+ skipped"; then
+              echo "::error::$f 全被 skip —— DSN 沒生效,等於沒驗"
+              exit 1
+            fi
+          done
+
+      # W3-12a:三張稽核帳的 append-only。改動前那是**註解** —— `0014:129` 是
+      # `GRANT ALL ON ALL TABLES ... TO csp_app` 且三表零 trigger,所以 runtime
+      # role 可以靜默改掉或刪掉任何一列稽核紀錄。而 W1-1 剛讓「讀取營業秘密對話」
+      # 開始落列;那些列若改得動,那項工作的價值是零。
+      # trigger 與 role 權限只有真 PG 有,SQLite 測不到。
+      - name: W3-12a 稽核帳 append-only(真 PG)
+        env:
+          PYTHONPATH: services/csp
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+        working-directory: services/csp
+        run: |
+          set -euo pipefail
+          out=$(python -m pytest tests/test_audit_append_only_pg.py -q 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          if echo "$out" | grep -qE "^[0-9]+ skipped"; then
+            echo "::error::這批測試全被 skip —— DSN 沒生效,等於沒驗"
+            exit 1
+          fi
+
+      - name: W2-6 startup DDL 收編(真 PG)
+        env:
+          PYTHONPATH: services/csp
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+        working-directory: services/csp
+        run: |
+          set -euo pipefail
+          out=$(python -m pytest tests/test_w26_startup_ddl_absorption_pg.py -q 2>&1) || {
+            echo "$out"; exit 1;
+          }
+          echo "$out"
+          # 全 skip 等於沒跑。DSN 沒生效時 pytest 仍然 exit 0 —— 那正是「綠燈但
+          # 什麼都沒驗」,與被 `|| true` 吞掉的效果相同,所以顯式擋下。
+          if echo "$out" | grep -qE "^[0-9]+ skipped"; then
+            echo "::error::這批測試全被 skip —— ANILA_TEST_PG_DSN 沒生效,等於沒驗"
+            exit 1
+          fi
+
+      - name: naive DateTime 政策斷言(ratchet)
+        run: |
+          set +e
+          python infra/ci/check_orm_pg_drift.py --mode policy
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "naive DateTime 未新增" ;;
+            3) echo "::error::新增了 naive DateTime 欄(見上方清單)"; exit 1 ;;
+            *) echo "::error::政策斷言本身失敗(exit $rc)"; exit "$rc" ;;
+          esac
 
       - name: Prove RLS and mutation sensitivity with app and admin roles
         working-directory: packages/anila-core
@@ -510,6 +710,39 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest tests/test_gate5_r5_durable_resume_authority.py -q -m integration
 
+      # W0-2:這兩支是 12 個 `_pg` 測試檔裡 CI 唯一沒點名的兩支。
+      # 其餘 10 支既有 job 已逐檔涵蓋(所以「CI 沒有真 PG 路徑」的說法是錯的,
+      # 真缺口只有這兩支 + drift 檢查沒接上)。
+      #
+      # ⚠ 環境變數名稱必須與測試實際讀的一致 —— 第一版設了
+      # `MIGRATION_DATABASE_URL` 與 `ANILA_GATE2_TEST_PG_ADMIN_URL`,而這兩支讀的
+      # 是 `ANILA_GATE2_LEDGER_PG_URL`(receipts,整檔 skipif)與
+      # `TEST_DATABASE_URL`/`DATABASE_URL`(session event store,fixture 內
+      # pytest.skip)。結果兩支全 skip,**而 pytest 全 skip 時仍回 exit 0** ——
+      # 這個步驟因此宣稱跑了 Gate 5 race proofs 但實際一條都沒跑。
+      # 由 PR #52 的 Codex review 抓到。
+      #
+      # 所以除了修變數名,還必須**讓「全部 skip」算失敗** —— 否則變數名哪天再
+      # 漂掉,又會回到「沉默看起來像成功」。
+      - name: Prove Gate 5 receipts and session event store on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE2_LEDGER_PG_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          TEST_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          MIGRATION_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: |
+          set -o pipefail
+          python -m pytest tests/test_gate5_model_governance_receipts_pg.py \
+                           tests/test_gate5_r4_session_event_store_pg.py \
+                           -q --no-header -rs | tee /tmp/gate5-pg.log
+          if ! grep -qE "[0-9]+ passed" /tmp/gate5-pg.log; then
+            echo "::error::Gate 5 PG 測試沒有任何一支真的執行(全部 skipped)。"
+            echo "::error::pytest 在全 skip 時回 exit 0,所以綠燈不代表跑過 ——"
+            echo "::error::請檢查上方 skip 理由與本步驟的 DSN 環境變數名稱是否仍相符。"
+            exit 1
+          fi
+
   frontend-governance:
     name: Frontend / CSP governance UI
     runs-on: ubuntu-latest
@@ -523,32 +756,44 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: apps/csp-governance-ui/package-lock.json
-      - name: Install, test, and build
+      - name: Install, lint, test, and build
         working-directory: apps/csp-governance-ui
         run: |
           npm ci
+          npm run lint
           npm test
           npm run build
 
   frontend-shell:
-    name: Frontend / ANILA Shell
+    name: Frontend / ANILA Shell (node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # W0-6③:node matrix。原本只跑 node 20,而 Node ≥22 內建的實驗性
+    # `localStorage` global 會蓋掉 jsdom 那份且方法全缺 —— 於是 8 個用
+    # localStorage 的源碼檔在開發者本機(通常較新 node)的持久化路徑
+    # 從來沒被真的執行過,而 CI 鎖 20 所以**結構上永遠看不到**。
+    # 「開發者本機紅、CI 綠」是最消耗信任的狀態,加 22 這條腿把它關掉。
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: apps/anila-shell/package-lock.json
-      - name: Install, test, and build
+      - name: Install, lint, test, and build
         working-directory: apps/anila-shell
         run: |
           npm ci
+          npm run lint
           npm test
           npm run build
+          npm run verify:bundle
 
   frontend-anilalm:
     name: Frontend / ANILALM
@@ -563,11 +808,13 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: apps/anilalm/package-lock.json
-      - name: Install and typecheck
+      - name: Install, lint, typecheck, and test
         working-directory: apps/anilalm
         run: |
           npm ci
+          npm run lint
           npm run typecheck
+          npm test
 
       - name: Build normal product posture
         working-directory: apps/anilalm
@@ -580,6 +827,14 @@ jobs:
         env:
           VITE_ANILA_PILOT_MODE: "true"
         run: npm run build
+
+      # ⚠ 這一步不能省。第一版加了 anilalm 的 `verify:bundle` script 與預算檔,
+      # 卻只在 shell 的 job 裡呼叫 —— anilalm 的 bundle 即使超出預算,required CI
+      # 仍會通過,ratchet 實際上沒有護欄效果(由 PR #52 的 Codex review 抓到)。
+      # 放在 signed-pilot build 之後,量到的是最後一次 build 的產物。
+      - name: Enforce bundle budget
+        working-directory: apps/anilalm
+        run: npm run verify:bundle
 
   backend-pptx-renderer:
     name: Backend / PPTX renderer contracts

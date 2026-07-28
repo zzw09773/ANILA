@@ -123,14 +123,14 @@ async function flushOne(entry, sender) {
         (e) => String(e.tempId) !== String(entry.tempId)
       );
       _write(after);
-      // eslint-disable-next-line no-console
+
       console.warn(
         `[classified-latch] dropping entry conv=${entry.numericId} (status ${status})`,
       );
       return;
     }
     enqueueClassifyRetry(entry.tempId, { numericId: entry.numericId });
-    // eslint-disable-next-line no-console
+
     console.error("[classified-latch] retry failed", err);
   }
 }
@@ -145,7 +145,7 @@ export async function flushAll(sender) {
   const entries = _read();
   const ready = entries.filter((e) => typeof e.numericId === "number");
   for (const entry of ready) {
-    // eslint-disable-next-line no-await-in-loop
+
     await flushOne(entry, sender);
   }
 }

@@ -967,7 +967,13 @@ class TestUploadIdempotency:
         )
         db.add(job)
         db.commit()
+        # expire_on_commit=False keeps the aware datetimes this test just
+        # assigned; the crashed-commit comparison below reads the rolled-back
+        # rows from the DB, which round-trips them naive. Refresh everything so
+        # both sides of the comparison are DB round-tripped values.
         db.refresh(job)
+        db.refresh(task)
+        db.refresh(run)
         baseline_job = (
             job.status,
             job.progress,
@@ -1298,7 +1304,11 @@ class TestExportGate:
         art_id = _register_artifact(client, db, task_id=task.id).json()["artifact_id"]
         # Artifact registration legitimately completes the Task. Put it back
         # into a mutable state so the denial branch would expose a foreign
-        # status mutation if authorization were checked too late.
+        # status mutation if authorization were checked too late. The session
+        # runs expire_on_commit=False (mirroring production), so refresh first:
+        # assigning "running" onto the stale in-memory copy that still reads
+        # "running" would be a no-change no-op and the UPDATE would never fire.
+        db.refresh(task)
         task.status = "running"
         task.policy_decision_id = None
         db.commit()

@@ -15,6 +15,14 @@ class Message(Base):
         Integer, ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False, index=True,
     )
+    # W2-3 / C3: tree edge. NULL = root (first turn). Edit / regenerate grow
+    # a *sibling* under the same parent; old subtree is retained.
+    # Index is the composite (conversation_id, parent_id) from r1_0043 —
+    # do not also set index=True here (would drift against that migration).
+    parent_id = Column(
+        Integer, ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     role = Column(String(20), nullable=False)  # user / assistant / system / tool
     content = Column(Text, nullable=False, default="")
     # Audit fields populated from proxy/router metadata
@@ -37,7 +45,12 @@ class Message(Base):
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
-    conversation = relationship("Conversation", back_populates="messages")
+    conversation = relationship(
+        "Conversation",
+        back_populates="messages",
+        foreign_keys=[conversation_id],
+    )
+    parent = relationship("Message", remote_side=[id], foreign_keys=[parent_id])
     attachments = relationship("Attachment", back_populates="message", cascade="all, delete-orphan")

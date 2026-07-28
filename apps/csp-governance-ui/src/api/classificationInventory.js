@@ -10,3 +10,10 @@ export const downloadClassificationInventoryCsv = () =>
     params: { format: 'csv' },
     responseType: 'blob',
   })
+
+// W2-11 持續性抽查報表(隨機樣本,含文件標題 → 雙重 gate)。
+export const getClassificationSamplingReport = (n = 20) =>
+  client.get('/api/classification/sampling-report', { params: { n } })
+
+export const createClassificationSamplingReview = (payload) =>
+  client.post('/api/classification/sampling-reviews', payload)

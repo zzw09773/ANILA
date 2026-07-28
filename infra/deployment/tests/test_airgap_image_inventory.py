@@ -39,7 +39,18 @@ class AirgapImageInventoryTests(unittest.TestCase):
             {
                 ("anila-agent", "profile:gate5-silver", "built"),
                 ("asr-gateway", "profile:asr", "built"),
+                # 2026-07-28:個人知識庫(ANILALM)移出預設啟動。全院開放的
+                # 範圍不含它,而**只停容器擋不住它的 API** —— `/api/personal/*`
+                # 是 csp 的雙掛載,得靠 nginx 的 return 404 一起封。兩者缺一
+                # 就會留下開著的後門,詳見 infra/nginx/anila.conf 的註解。
+                # 映像仍留在離線 bundle 裡(要恢復時不必重打包)。
+                ("anilalm", "profile:personal-kb", "built"),
+                # W1-8:n8n / gitlab 從 default 移到 developer-tools。
+                # 它們仍在清冊裡(離線 bundle 照樣要帶這兩個 image),只是
+                # 不再隨 stack 預設啟動 —— 清冊追蹤範圍沒縮小,只是分類改了。
                 ("codeserver", "profile:developer-tools", "upstream"),
+                ("n8n", "profile:developer-tools", "upstream"),
+                ("gitlab", "profile:developer-tools", "upstream"),
             },
         )
 
@@ -116,8 +127,12 @@ class AirgapImageInventoryTests(unittest.TestCase):
         if probe.returncode != 0:
             self.skipTest("docker compose is not usable in this environment")
         required, optional = checker.validate(ROOT, INVENTORY)
-        self.assertEqual(required, 12)
-        self.assertEqual(optional, 3)
+        # W1-8:12 → 10。n8n / gitlab 移進 developer-tools profile,
+        # 所以從 required 轉為 optional(下面 optional 的斷言相應 +2)。
+        # 2026-07-28:10 → 9。anilalm 移進 personal-kb profile(全院開放不含
+        # 個人知識庫),同樣是 required 轉 optional,optional 相應 +1。
+        self.assertEqual(required, 9)
+        self.assertEqual(optional, 6)
         model_default, model_optional, unique_images = checker.validate_models(
             ROOT, MODEL_INVENTORY
         )

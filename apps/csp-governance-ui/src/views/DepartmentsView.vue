@@ -65,6 +65,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import { listDepartments, createDepartment, updateDepartment, deactivateDepartment } from '../api/departments'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -97,7 +98,7 @@ async function handleSubmit() {
     showModal.value = false
     await fetchDepartments()
   } catch (e) {
-    toast(e.response?.data?.detail || '操作失敗', { tone: 'error' })
+    toast(extractError(e, '操作失敗'), { tone: 'error' })
   } finally { saving.value = false }
 }
 async function handleDeactivate(d) {

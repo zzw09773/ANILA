@@ -563,6 +563,29 @@ async def test_start_stop_cycle(fake_redis_factory, empty_revocations_endpoint):
     assert cache._subscriber_task is None or cache._subscriber_task.done()
 
 
+async def test_reset_http_client_closes_and_rebuilds(fake_redis_factory, empty_revocations_endpoint):
+    """Reconnect heal path must replace the pooled httpx client.
+
+    After csp recreate, the old connection pool can pin a stale Docker
+    DNS IP; closing + rebuilding forces re-resolution.
+    """
+    cache = RevocationCache()
+    await cache.start(app=None)
+    try:
+        first = cache._http
+        assert first is not None
+        assert first.is_closed is False
+
+        second = await cache._reset_http_client()
+        assert second is cache._http
+        assert second is not first
+        assert first.is_closed is True
+        assert second.is_closed is False
+    finally:
+        await cache.stop(app=None)
+        assert cache._http is None
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton + factory
 # ---------------------------------------------------------------------------

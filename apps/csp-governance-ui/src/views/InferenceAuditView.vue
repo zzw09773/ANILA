@@ -157,6 +157,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { extractError } from '../api/errors'
 import {
   exportInferenceAuditCsv,
   listInferenceAudit,
@@ -204,14 +205,12 @@ function toggleExpand(id) {
   expandedId.value = expandedId.value === id ? null : id
 }
 
+// W2-12:這支原本自己攤平後端 detail 的三種形狀(string / 422 array / dict),
+// 那是 `[object Object]` 那類 bug 的來源。`extractError` 已經把攤平集中掉並
+// **保證回傳字串**(422 array 會被攤成 `欄位: 訊息`),所以這裡只剩轉呼叫。
+// 保留這個函式名是為了不動 20 幾個呼叫端。
 function apiErrorMessage(e, fallback) {
-  const detail = e.response?.data?.detail
-  if (typeof detail === 'string') return detail
-  if (Array.isArray(detail)) {
-    return detail.map((d) => d.msg || JSON.stringify(d)).join('; ') || fallback
-  }
-  if (detail && typeof detail === 'object') return JSON.stringify(detail)
-  return fallback
+  return extractError(e, fallback)
 }
 
 async function fetchRows() {

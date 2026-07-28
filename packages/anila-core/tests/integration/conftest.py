@@ -194,9 +194,10 @@ async def isolation_collections(
                 """
                 INSERT INTO ingestion_collections
                     (name, chunking_config, embedding_model,
-                     embedding_fingerprint, embedding_dim, created_by)
+                     embedding_fingerprint, embedding_dim, created_by,
+                     origin)
                 VALUES ($1, '{"strategy":"fixed"}'::jsonb,
-                        'test-model', $2, 4000, $3)
+                        'test-model', $2, 4000, $3, 'csp')
                 RETURNING id
                 """,
                 f"g1-coll-{i}-{suffix}",

@@ -22,10 +22,10 @@ class Handoff(Base):
     # status: pending / accepted / rejected / cancelled
     status = Column(String(20), nullable=False, default="pending", index=True)
     note = Column(Text, nullable=True)
-    resolved_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
-        DateTime,
+        DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
@@ -46,6 +46,6 @@ class Notification(Base):
     body = Column(Text, nullable=False, default="")
     payload = Column(JSONValue, nullable=True)
     is_read = Column(Boolean, nullable=False, default=False, server_default="false")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
     recipient = relationship("User", foreign_keys=[user_id])

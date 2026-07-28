@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 import csv
 import io
 from datetime import datetime, timezone
@@ -32,7 +34,7 @@ EXPORT_BATCH_SIZE = 1000
 EXPORT_MAX_ROWS_WITHOUT_DATE = 50000
 
 
-class InferenceAuditRow(BaseModel):
+class InferenceAuditRow(ApiResponseModel):
     id: int
     actor_user_id: int | None
     actor_username: str | None
@@ -48,7 +50,7 @@ class InferenceAuditRow(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class InferenceAuditListResponse(BaseModel):
+class InferenceAuditListResponse(ApiResponseModel):
     rows: list[InferenceAuditRow]
     total: int
 

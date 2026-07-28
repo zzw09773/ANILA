@@ -574,7 +574,9 @@ Runtime UI 目前相關檔案：
   streaming request 會在 numeric conversation id 存在時送
   `X-ANILA-Conversation-Id`，並把 `anila.meta` 交給 UI callback。
 - `ANILA_UI/anila-ui/src/app.jsx`：
-  顯示 `ConfidentialWatermark`、`加密模式` badge、inherited banner；
+  顯示 `ConfidentialWatermark`、`密等鎖定` badge（2026-07-26 / W1-3 前標示為
+  「加密」，措辭已更正：`requires_encryption` 不做內容加密，它是單向密等
+  latch）、inherited banner；
   classified conversation 禁用分享，並在 meta classified 時呼叫 classify API。
 - `ANILA_UI/anila-ui/src/chat.jsx` / `trust.jsx`：
   顯示 classified 角標，並在 classified 時停用 copy/share/edit/feedback 等動作。

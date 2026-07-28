@@ -85,10 +85,20 @@ def test_concurrent_policy_block_creates_exactly_one_atomic_ledger() -> None:
                 resource_type="task", resource_id=str(task.id),
                 action="task.policy.blocked",
             ).count() == 1
-            verify.query(AuditLog).filter_by(
-                resource_type="task", resource_id=str(task.id)
-            ).delete(synchronize_session=False)
+            # The audit ledger is append-only by design (r1_0041): csp_app has
+            # no DELETE on it, and deleting here would be asserting the exact
+            # property the migration exists to prevent. Rows are already
+            # scoped by this run's task id, so leftovers cannot cross-talk.
             verify.delete(verify.get(Task, task.id))
+            # r1_0041 leaves audit_logs.actor_user_id without ON DELETE, so the
+            # actor reference must be nulled in the application layer before a user
+            # row goes away — that is how history survives a hard delete (the
+            # canonical implementation is api/users.py "manual cleanup #2"). Doing
+            # it here keeps the fixture on the same path production uses instead of
+            # deleting the ledger rows, which csp_app is not allowed to do anyway.
+            verify.query(AuditLog).filter(AuditLog.actor_user_id == user.id).update(
+                {"actor_user_id": None}, synchronize_session=False
+            )
             verify.delete(verify.get(User, user.id))
             verify.commit()
         finally:
@@ -211,11 +221,21 @@ async def test_same_pg_session_holds_admission_locks_and_finalizes_without_deadl
             action="task.run.finished",
         ).count() == 1
 
-        db.query(AuditLog).filter_by(
-            resource_type="task", resource_id=str(task.id)
-        ).delete(synchronize_session=False)
+        # The audit ledger is append-only by design (r1_0041): csp_app has
+        # no DELETE on it, and deleting here would be asserting the exact
+        # property the migration exists to prevent. Rows are already
+        # scoped by this run's task id, so leftovers cannot cross-talk.
         db.delete(db.get(Task, task.id))
         db.delete(db.get(ModelRegistry, model.id))
+        # r1_0041 leaves audit_logs.actor_user_id without ON DELETE, so the
+        # actor reference must be nulled in the application layer before a user
+        # row goes away — that is how history survives a hard delete (the
+        # canonical implementation is api/users.py "manual cleanup #2"). Doing
+        # it here keeps the fixture on the same path production uses instead of
+        # deleting the ledger rows, which csp_app is not allowed to do anyway.
+        db.query(AuditLog).filter(AuditLog.actor_user_id == user.id).update(
+            {"actor_user_id": None}, synchronize_session=False
+        )
         db.delete(db.get(User, user.id))
         db.commit()
     finally:
@@ -330,11 +350,21 @@ async def test_nested_pg_proxy_releases_admission_locks_without_finalizing_outer
         assert db.get(Task, task.id).status == "completed"
         assert db.get(TaskRun, run.id).status == "completed"
 
-        db.query(AuditLog).filter_by(
-            resource_type="task", resource_id=str(task.id)
-        ).delete(synchronize_session=False)
+        # The audit ledger is append-only by design (r1_0041): csp_app has
+        # no DELETE on it, and deleting here would be asserting the exact
+        # property the migration exists to prevent. Rows are already
+        # scoped by this run's task id, so leftovers cannot cross-talk.
         db.delete(db.get(Task, task.id))
         db.delete(db.get(ModelRegistry, model.id))
+        # r1_0041 leaves audit_logs.actor_user_id without ON DELETE, so the
+        # actor reference must be nulled in the application layer before a user
+        # row goes away — that is how history survives a hard delete (the
+        # canonical implementation is api/users.py "manual cleanup #2"). Doing
+        # it here keeps the fixture on the same path production uses instead of
+        # deleting the ledger rows, which csp_app is not allowed to do anyway.
+        db.query(AuditLog).filter(AuditLog.actor_user_id == user.id).update(
+            {"actor_user_id": None}, synchronize_session=False
+        )
         db.delete(db.get(User, user.id))
         db.commit()
     finally:

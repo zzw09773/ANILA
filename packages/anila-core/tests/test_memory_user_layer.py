@@ -135,12 +135,55 @@ def test_truncate_embedding_drops_tail_from_native():
     assert out[-1] == EMBED_DIM - 1  # tail dropped, head intact
 
 
-def test_truncate_embedding_raises_on_unexpected_dim():
-    """Loud failure beats silent corruption. A misconfigured
-    embedder would otherwise write garbage that can't be searched.
+def test_truncate_embedding_zero_pads_declared_smaller_dim():
+    """A **declared** smaller-dim model adapts via zero-padding:
+    cosine-lossless because padded zeros add nothing to dot products or norms.
     """
-    with pytest.raises(ValueError, match="dim 768"):
-        truncate_embedding([0.1] * 768)
+    vec = [0.5] * 2048
+    out = truncate_embedding(vec, pad_from=2048)
+    assert len(out) == EMBED_DIM
+    assert out[:2048] == vec  # head intact
+    assert set(out[2048:]) == {0.0}  # tail is all zeros
+
+
+def test_truncate_embedding_refuses_undeclared_short_vector():
+    """Padding must be opt-in — this is the guard that catches endpoint drift.
+
+    An earlier revision padded any ``0 < n < EMBED_DIM`` unconditionally, which
+    meant a misconfigured or silently-swapped endpoint (e.g. a 1536-d model)
+    would have its vectors zero-padded into the index: syntactically valid,
+    semantically meaningless, and with no error anywhere. The collection
+    ``embedding_fingerprint`` cannot catch that — it guards the *declared*
+    model identity, not what the endpoint actually serves.
+    """
+    with pytest.raises(ValueError, match="dim 1536"):
+        truncate_embedding([0.5] * 1536)
+
+
+def test_truncate_embedding_refuses_short_vector_that_is_not_the_declared_dim():
+    """Declaring 2048 must not turn into "accept anything short"."""
+    with pytest.raises(ValueError, match="dim 1536"):
+        truncate_embedding([0.5] * 1536, pad_from=2048)
+
+
+def test_truncate_embedding_declared_dim_does_not_break_exact_and_native():
+    """Declaring a pad dimension must not disturb the two contract dims."""
+    assert truncate_embedding([0.1] * EMBED_DIM, pad_from=2048) == [0.1] * EMBED_DIM
+    native = truncate_embedding([0.2] * EMBED_NATIVE_DIM, pad_from=2048)
+    assert len(native) == EMBED_DIM
+
+
+def test_truncate_embedding_raises_on_overlong_non_native_dim():
+    """Loud failure beats silent corruption: blind truncation of a
+    non-Matryoshka model would corrupt retrieval semantics.
+    """
+    with pytest.raises(ValueError, match="dim 5000"):
+        truncate_embedding([0.1] * 5000)
+
+
+def test_truncate_embedding_raises_on_empty_vector():
+    with pytest.raises(ValueError, match="dim 0"):
+        truncate_embedding([])
 
 
 # ── MemoryReadResult.encryption_inherited ────────────────────────────────────

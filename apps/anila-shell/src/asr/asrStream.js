@@ -401,7 +401,7 @@ export function appendTranscript(draft, addition) {
   if (!draft) return add;
   const prev = draft[draft.length - 1];
   const next = add[0];
-  const isCJK = (ch) => /[　-〿㐀-鿿＀-￯]/.test(ch);
+  const isCJK = (ch) => /[\u3000-〿㐀-鿿＀-￯]/.test(ch);
   if (/\s/.test(prev)) return draft + add;
   if (isCJK(prev) || isCJK(next)) return draft + add;
   return `${draft} ${add}`;

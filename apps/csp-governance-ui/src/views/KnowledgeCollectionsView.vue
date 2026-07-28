@@ -93,6 +93,19 @@
             <option value="semantic">semantic · 嵌入距離 · 慢但精準</option>
           </select>
         </TermField>
+        <TermField
+          label="分類等級"
+          hint="不得超過您的 clearance。誤標低密會讓不該看到的人讀到內容。"
+        >
+          <select
+            id="create-collection-classification"
+            v-model="form.classification_level"
+            class="term-select"
+            aria-label="分類等級"
+          >
+            <option v-for="lvl in CLASSIFICATION_LEVELS" :key="lvl" :value="lvl">{{ lvl }}</option>
+          </select>
+        </TermField>
         <TermField :label="tokenLabel" :hint="tokenHint">
           <input v-model.number="form.maxTokens" type="number" class="term-input" min="64" max="8192" />
         </TermField>
@@ -110,6 +123,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { extractError } from '../api/errors'
 import { listCollections, createCollection, updateCollection, deleteCollection } from '../api/ingestionCollections'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -128,11 +142,18 @@ const error = ref('')
 const creating = ref(false)
 const submitting = ref(false)
 const formError = ref('')
+const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '機密', '極機密', '絕對機密']
 // maxTokens default 256 matches the post-Sprint-9-X HierarchicalChunker
 // leaf budget. Power users can crank it for legacy section-sized
 // chunking, but small leaves give vector recall the headroom the
 // parent-child design assumes.
-const form = ref({ name: '', description: '', strategy: 'hierarchical', maxTokens: 256 })
+const form = ref({
+  name: '',
+  description: '',
+  strategy: 'hierarchical',
+  maxTokens: 256,
+  classification_level: '無機密',
+})
 
 const tokenLabel = computed(() => ({
   fixed: '大小（tokens）',
@@ -170,14 +191,20 @@ async function loadCollections() {
     const { data } = await listCollections(params)
     collections.value = data
   } catch (e) {
-    error.value = `載入知識庫失敗：${e.response?.data?.detail || e.message}`
+    error.value = `載入知識庫失敗：${extractError(e)}`
   } finally { loadingCollections.value = false }
 }
 
 function openCreateModal() {
   formError.value = ''
   // 256 matches HierarchicalChunker's post-Sprint-9-X default leaf budget.
-  form.value = { name: '', description: '', strategy: 'hierarchical', maxTokens: 256 }
+  form.value = {
+    name: '',
+    description: '',
+    strategy: 'hierarchical',
+    maxTokens: 256,
+    classification_level: '無機密',
+  }
   creating.value = true
 }
 
@@ -204,26 +231,27 @@ async function submitCreate() {
       name: form.value.name,
       description: form.value.description || null,
       chunking_config: { strategy: s, params },
+      classification_level: form.value.classification_level,
     })
     creating.value = false
     await loadCollections()
   } catch (e) {
-    formError.value = e.response?.data?.detail || e.message
+    formError.value = extractError(e)
   } finally { submitting.value = false }
 }
 
 async function archiveCollection(c) {
   try { await updateCollection(c.id, { status: 'archived' }); await loadCollections() }
-  catch (e) { error.value = `封存失敗：${e.response?.data?.detail || e.message}` }
+  catch (e) { error.value = `封存失敗：${extractError(e)}` }
 }
 async function restoreCollection(c) {
   try { await updateCollection(c.id, { status: 'active' }); await loadCollections() }
-  catch (e) { error.value = `還原失敗：${e.response?.data?.detail || e.message}` }
+  catch (e) { error.value = `還原失敗：${extractError(e)}` }
 }
 async function confirmDelete(c) {
   if (!(await confirm({ message: `刪除「${c.name}」？CASCADE 會移除 ${c.document_count} 份文件與 ${c.chunk_count} 個區塊。`, danger: true }))) return
   try { await deleteCollection(c.id); await loadCollections() }
-  catch (e) { error.value = `刪除失敗：${e.response?.data?.detail || e.message}` }
+  catch (e) { error.value = `刪除失敗：${extractError(e)}` }
 }
 
 function humanBytes(n) {

@@ -1,0 +1,93 @@
+/* 首登導引卡(W1-10 ①)。
+ *
+ * 為什麼是 CSS Modules 而不是 inline style:樣式策略已拍板 CSS Modules +
+ * design tokens(計畫 C4 / D3),`eslint.config.js` 的 no-restricted-syntax
+ * 對新增 inline style 走計數 ratchet。新元件一律從 .module.css 起手,順便
+ * 拿到 inline style 語法上做不到的 :hover / :focus-visible。
+ */
+
+.card {
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: var(--radius-lg, var(--radius));
+  background: var(--bg-elev);
+  padding: 16px;
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.steps {
+  display: grid;
+  gap: 10px;
+}
+
+.step {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.stepIcon {
+  color: var(--fg-subtle);
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.stepTitle {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.stepBody {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.6;
+  margin-top: 2px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.dismiss,
+.secondary {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.dismiss {
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--fg);
+}
+
+.secondary {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--accent, var(--fg));
+}
+
+.dismiss:hover,
+.secondary:hover {
+  border-color: var(--border-strong, var(--border));
+}
+
+.dismiss:focus-visible,
+.secondary:focus-visible {
+  outline: 2px solid var(--accent, var(--fg));
+  outline-offset: 1px;
+}

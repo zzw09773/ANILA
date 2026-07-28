@@ -1,0 +1,100 @@
+{
+  "_readme": [
+    "ORM↔PG 漂移的 DEFERRED 級上限。由 infra/ci/check_orm_pg_drift.py --mode drift 讀取。",
+    "⚠ 與 orm_drift_baseline.json 是兩回事:那一份是 --mode policy 的 naive DateTime",
+    "ratchet 清單(W2-10 批次 1 之後 106 欄);這一份只管 drift 模式的 DEFERRED 級計數上限。",
+    "",
+    "分級的理由:這支原本是「有任何 finding 就 exit 3」,而 TZ_MISMATCH 有 53 條(那是",
+    "W2-10 的欄位型別工程)→ CI 只能把整個 drift 步驟降級成 warning,結果連結構性漂移",
+    "(缺欄 / 缺索引 / 缺 UNIQUE / 缺 FK)也沒人擋 —— 而那才是會讓 `alembic upgrade head`",
+    "不自足、DR 還原壞掉的那一類。",
+    "",
+    "W2-6 把 startup DDL 收編進 alembic 之後 STRUCTURAL 級是 0,所以它現在就能硬 fail。",
+    "本檔只管 DEFERRED 級:每一類都要有退場條件,上限只准降不准升。**未登記的類別一律",
+    "fail** —— 否則白名單等於無限大。",
+    "",
+    "基線量測日:2026-07-26。乾淨 pgvector/pgvector:pg16 跑 alembic upgrade head 到",
+    "r1_0036 之後量測。重新量測 = 起 throwaway PG、upgrade head、跑 --mode drift。",
+    "",
+    "⚠⚠ 2026-07-26(W2-10 批次 1)發現:TZ_MISMATCH 這一類的計數目前**量不到它宣稱要量的東西**。",
+    "詳見下方 TZ_MISMATCH.w2_10_batch1_finding —— 那一段解釋了為什麼本次是**上調**上限,",
+    "以及為什麼在 gate 修好之前這個數字不能當 ratchet 用。"
+  ],
+  "baseline_date": "2026-07-26",
+  "head_revision": "r1_0040",
+  "deferred": {
+    "TZ_MISMATCH": {
+      "max_count": 0,
+      "owner": "平台後端負責人",
+      "exit_condition": "已完成 —— 2026-07-27 修好 gate 的 tz 比對後歸零。上限鎖 0,任何新的 TZ 不一致都會 fail。",
+      "notes": [
+        "**已清除(2026-07-27)。保留這一筆是為了記住它怎麼被發現的。**",
+        "這條檢查原本是壞的:`db_tz = 'WITH TIME ZONE' in str(reflected_type)`,而 SQLAlchemy",
+        "反射回來的 TIMESTAMP(timezone=True) 在預設 dialect 下 `str()` 就是 'TIMESTAMP'",
+        "(實測:repr = TIMESTAMP(timezone=True) 但 str = 'TIMESTAMP')→ DB 端判定恆為 False,",
+        "整條檢查退化成「數有幾個 ORM 欄宣告 timezone=True」,從來沒有比較過兩邊。",
+        "",
+        "後果比「少抓」更糟:**做對事會讓數字上升**。W2-10 批次 1 把 12 欄轉成 timestamptz",
+        "並同步 ORM 宣告(完全正確的工作),這個計數從 53 跳到 65,而 ratchet 只准降 →",
+        "gate 會擋下正確的 PR。一個懲罰正確工作的 gate 比沒有 gate 更糟,它會訓練人繞過它。",
+        "",
+        "修好之後在乾淨鏈上實測:真實 mismatch 是 31 條,而且**全部是「DB 已經是",
+        "timestamptz、ORM 說謊」**,零條需要 ALTER TYPE → 直接改 ORM 宣告即歸零。",
+        "這也修正了計畫對 W2-10 剩餘工作的假設:那 31 條不需要資料遷移,也沒有 8 小時",
+        "判讀問題。真正需要 ALTER TYPE 的是 orm_drift_baseline.json 裡剩下那 75 欄",
+        "(ORM 與 DB 兩邊都 naive)。"
+      ]
+    },
+    "UNDECLARED_FK": {
+      "max_count": 2,
+      "owner": "平台後端負責人",
+      "exit_condition": "三條各自有不同的正解,不是一起刪:① agents.last_reviewer_id 屬 ISO 42001 追溯欄 → 接進 ORM(W3-12l);② users.auth_provider_id 是 User→AuthProvider 的連結,而那個功能區是活的(auth_providers 表 + AuthProvider model + auth_provider_secret.py 都在)→ 需先釐清卡登/SSO 是否該記錄 provider,再決定接進 ORM 或刪;③ audit_logs.actor_id 是被 actor_user_id 取代的舊欄(0001 建、r1_0001 引入新欄)→ 這一條刪掉是對的,但要與 ① ② 分開處理。",
+      "notes": [
+        "**2026-07-27 更正:我先前寫過一支 r1_0037 把這三個欄一起刪掉,那個判斷是錯的,",
+        "已撤回。**",
+        "",
+        "當時的依據是「程式碼零引用 + dev 庫零非空列」。那組證據**分不出兩件事**:",
+        "  (a) 死欄 —— 功能已廢,欄位是殘留",
+        "  (b) 有意圖但沒實作 —— migration 刻意建了欄,而接它的程式碼還沒寫",
+        "而 (b) 的欄位在這兩項證據上與 (a) **完全一樣**。",
+        "",
+        "查了建欄的 migration 才發現至少兩條屬 (b):",
+        "  agents.last_reviewer_id ← 0035_iso_42001_traceability,是計畫 W3-12l 點名的",
+        "                             「ISO 42001 追溯 8 死欄」之一(agents 3 + model_registry 5)",
+        "  users.auth_provider_id  ← 0001_initial_schema,而 auth_providers 表、AuthProvider",
+        "                             model、auth_provider_secret.py 服務**都存在且是活的**",
+        "",
+        "教訓:判斷一個欄能不能刪,「有沒有人在用」不夠 —— 還要問「**建它的 migration 想做",
+        "什麼、那件事做完了嗎**」。刪掉 (b) 等於把別人的意圖悄悄抹掉,而且下一個人會重新",
+        "發現同一個需求、重新建一次欄。",
+        "",
+        "保留它們的成本很低:UNDECLARED_COLUMN / UNDECLARED_FK 兩個 baseline 都盯著,",
+        "數量不准長,而且退場條件逐條寫明。這比刪掉更好。"
+      ]
+    },
+    "UNDECLARED_COLUMN": {
+      "max_count": 7,
+      "owner": "平台後端負責人",
+      "exit_condition": "8 個 ISO 42001 追溯欄已接進 ORM(W3-12l,2026-07-27)→ 12 降到 7。剩下 7 條:alerts.{alert_type, created_at, is_active} 是 W2-6 刻意留的 legacy 欄(有 server default;r1_0036 用 created_at 回填 first/last_seen_at)、users.auth_provider_id、audit_logs.actor_id、token_usage.created_at,以及 agents/model_registry 各自剩下的部分 —— 逐條處理,不要一起刪(見 UNDECLARED_FK 的教訓)。",
+      "notes": [
+        "**這一類是本輪新增的檢查。** 先前 drift gate 只看 ORM→DB(缺欄),反方向完全",
+        "沒有人看 —— 三個孤兒 FK 欄是**碰巧**透過 FK 檢查發現的,沒有 FK 的死欄則完全隱形。",
+        "",
+        "補上之後立刻驗證了計畫 W3-12l 的發現,而且給出精確清單:",
+        "  agents.{aiia_doc_path, source_commit_sha, vv_status}                    ← ISO 42001 (3)",
+        "  model_registry.{intended_use, limitations, model_card_url,",
+        "                  training_dataset_ref, weights_sha256}                      ← ISO 42001 (5)",
+        "  alerts.{alert_type, created_at, is_active}   ← W2-6 刻意留的 legacy 欄(有 server default;",
+        "                                                 r1_0036 用 created_at 回填 first/last_seen_at)",
+        "  token_usage.created_at                       ← 待查",
+        "",
+        "為什麼這一類值得一個 finding kind:migration 建了欄但沒人接 = 那個 migration 的",
+        "意圖從未實現,而沒有任何東西會提醒你。並存的同義欄更危險 —— `audit_logs.actor_id`",
+        "與 ORM 的 `actor_user_id` 並存,稽核查詢挑錯欄就會查到一個永遠 NULL 的欄,然後",
+        "得出「沒有人做過這件事」(那三個已由 r1_0037 刪除)。",
+        "",
+        "上限只准降。不是每個未映射的欄都要立刻處理,但**數量不准長**。"
+      ]
+    }
+  }
+}

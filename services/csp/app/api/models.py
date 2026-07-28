@@ -463,6 +463,16 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
         "supports_json_schema": bool(getattr(model, "supports_json_schema", False)),
         "supports_tools": bool(getattr(model, "supports_tools", False)),
         "has_api_key": bool(getattr(model, "api_key_secret_ref", None)),
+        # ── ISO 42001 追溯(W3-12l,唯讀先行)────────────────────────────────
+        #
+        # ⚠ 這個端點是**手工組 dict**,不是回 ORM 物件 —— 所以光在
+        # `ModelResponse` 加欄位是不夠的,那樣只會讓每一欄都回 `null`
+        # (測試就是這樣抓到的)。加回應欄位時**兩處都要改**。
+        "model_card_url": getattr(model, "model_card_url", None),
+        "training_dataset_ref": getattr(model, "training_dataset_ref", None),
+        "weights_sha256": getattr(model, "weights_sha256", None),
+        "intended_use": getattr(model, "intended_use", None),
+        "limitations": getattr(model, "limitations", None),
         "created_at": model.created_at,
         "updated_at": model.updated_at,
     }

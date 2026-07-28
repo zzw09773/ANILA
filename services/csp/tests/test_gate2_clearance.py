@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import event as sqlalchemy_event
+from sqlalchemy import text as sa_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Query
 
@@ -608,20 +609,56 @@ def test_batch_inactive_and_corrupt_grants_fail_closed_like_single(db) -> None:
 
     subject.is_active = True
     db.commit()
-    grant.max_classification_level = "公開"
-    with db.no_autoflush:
-        with pytest.raises(ClearancePolicyDataError, match="未知 classification"):
-            resolve_and_evaluate_data_access(
-                db, user_id=subject.id, collection_id=collection.id, now=NOW
-            )
-        with pytest.raises(ClearancePolicyDataError, match="未知 classification"):
-            resolve_and_evaluate_data_access_batch(
-                db,
-                user_id=subject.id,
-                collection_ids=[collection.id],
-                document_ids=[],
-                now=NOW,
-            )
+
+    # 損壞值必須**真的寫進庫**,不能只改記憶體。
+    #
+    # 原本這裡是 `grant.max_classification_level = "公開"` 配 `db.no_autoflush`
+    # —— 改的只有 identity map 裡的物件,DB 那一列還是好的。這在
+    # `with_for_update()` 沒有 `populate_existing()` 的時候「剛好能用」,因為那時
+    # Query 會丟棄剛 SELECT 回來的列值、回傳記憶體舊值(那正是它擊穿 legal hold
+    # 的同一個機制)。
+    #
+    # clearance 解析加上 `populate_existing()` 之後,它會拿 DB 真值覆寫記憶體 ——
+    # **這是安全重讀該有的行為**,但它讓「改記憶體」這個模擬手法失效。
+    #
+    # 所以改成用直接 UPDATE 把壞值寫進庫。這同時讓測試名符其實:它宣稱測的是
+    # 「corrupt grants」,而「corrupt」指的是**儲存的**值壞掉,不是某個 session
+    # 手上那份物件被改過。
+    # 而且要繞過 DB 的 CHECK 才寫得進去 —— `ck_clearance_grants_classification_level`
+    # 只允許五級字面值。**那個 CHECK 擋住這種損壞是好事**,所以這一段測的其實是
+    # 縱深防禦:萬一某個部署的 CHECK 不在(schema 漂移、或未來新增了一個等級字串),
+    # 應用層自己也要 fail-closed,而不是把未知值當成某個預設等級放行。
+    dialect = db.get_bind().dialect.name
+    if dialect != "sqlite":
+        pytest.skip(
+            "需要暫時停用 CHECK 約束才寫得進不合法值;目前只實作了 SQLite 的 "
+            "PRAGMA 路徑。若測試主迴路改跑 PG(見 W3-7 的 sqlite-conftest 條目),"
+            "這裡要換成 ALTER TABLE ... DROP CONSTRAINT + 事後還原。"
+        )
+    db.execute(sa_text("PRAGMA ignore_check_constraints = ON"))
+    try:
+        db.execute(
+            sa_text(
+                "UPDATE clearance_grants SET max_classification_level = :bad "
+                "WHERE id = :gid"
+            ),
+            {"bad": "公開", "gid": grant.id},
+        )
+        db.commit()
+    finally:
+        db.execute(sa_text("PRAGMA ignore_check_constraints = OFF"))
+    with pytest.raises(ClearancePolicyDataError, match="未知 classification"):
+        resolve_and_evaluate_data_access(
+            db, user_id=subject.id, collection_id=collection.id, now=NOW
+        )
+    with pytest.raises(ClearancePolicyDataError, match="未知 classification"):
+        resolve_and_evaluate_data_access_batch(
+            db,
+            user_id=subject.id,
+            collection_ids=[collection.id],
+            document_ids=[],
+            now=NOW,
+        )
 
 
 def test_batch_query_count_is_constant_and_every_authority_read_is_locked(

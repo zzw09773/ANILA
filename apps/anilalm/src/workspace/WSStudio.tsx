@@ -6,7 +6,7 @@ import { Icon } from '../components/Icon'
 import { Spinner } from '../components/Spinner'
 import { CommandModal, type FormatSpec } from './CommandModal'
 import { ArtifactViewer } from './ArtifactViewer'
-import type { SlidesArtifact, StudioArtifact } from '../types'
+import type { StudioArtifact } from '../types'
 import { findTheme, type ThemeId } from '../studio/themes'
 import { timeAgo } from '../utils/format'
 import {

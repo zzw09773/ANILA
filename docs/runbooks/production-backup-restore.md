@@ -26,14 +26,38 @@ smoke。它不提供 live/in-place restore。正式破壞性復原仍是 Gate 6 
 
 ## 前置需求
 
-執行主機需要 Python 3.11+、PyYAML、Docker Compose、`age` 與 OpenSSL。備份根目錄、
-off-host 目錄、age/signing key 檔案必須位於 repo 之外。Linux 的 off-host 目錄必須是
+執行主機需要 Python 3.11+、PyYAML、Docker Compose、`age` 與 OpenSSL。
+**air-gapped 主機不能 `apt install age`** —— `age` 由離線工具包
+（`infra/deployment/intranet/download-intranet-toolkit.sh` 產出的
+`09-age-<ver>-linux-amd64.tar.gz`，已列入 `TOOLKIT-CHECKSUMS.sha256`）帶進內網：
+
+```bash
+tar -xzf 09-age-v1.3.1-linux-amd64.tar.gz
+sudo install -m 0755 age/age age/age-keygen /usr/local/bin/
+```
+
+`anila-ops.sh` 兩條路徑都先做 preflight，缺項時**一次列完全部**再退出（exit 90），
+不會拖到串流一半才死，也不會像 `production_backup.py` 一次只報第一個缺項：
+
+- `backup`：`python3`/`age`/`openssl`/`docker` + 從 profile 推導出的 18 個必要環境變數。
+- `restore`：同一組工具 + `ANILA_BACKUP_SIGNING_PUBLIC_KEY_FILE` 與
+  `ANILA_BACKUP_AGE_IDENTITY_FILE`。刻意**不**要求 off-host／alert／6 組外部
+  reference —— 演練常在另一台可拋棄主機上做，那裡沒掛 off-host 也該能驗 bundle。
+
+`anila-ops.sh health` 也會檢查 `age` 在不在。
+
+備份根目錄、off-host 目錄、age/signing key 檔案必須位於 repo 之外。Linux 的 off-host 目錄必須是
 精確 mountpoint，且必須使用不同 filesystem/device，或使用工具內建 allow-list 的
 remote filesystem（NFS/NFS4/CIFS/Ceph/GlusterFS/SSHFS）；只建立同一磁碟上的另一個
 目錄會被拒絕。Windows 僅可在非正式 profile 的本機測試以
 `ANILA_BACKUP_TEST_ALLOW_WINDOWS_OFFHOST=1` 明確略過；任何 `prod-*` profile 都拒絕。
 
-必要環境變數：
+必要環境變數（18 個，缺一即失敗）。**這些值不靠 shell 環境傳遞**：cron 的環境是空的，
+所以 `anila-ops.sh` 會從 repo 根 `.env`、以及 `ANILA_BACKUP_ENV_FILE` 指定的檔案，
+用嚴格 `ANILA_BACKUP_*=值` 解析載入（不 `source`、不 `eval`；空值視為未設）。
+優先序：既有 ambient 值 > `ANILA_BACKUP_ENV_FILE` > `.env`。範本與逐項說明在
+`.env.example` 的「生產備份」區塊；`intranet-deploy.sh` 只在 `.env` 不存在時
+才由 `.env.example` 建立，**升級既有部署要手動補齊這些鍵**。
 
 ```text
 ANILA_BACKUP_AGE_RECIPIENTS_FILE
@@ -43,6 +67,7 @@ ANILA_BACKUP_SIGNING_PUBLIC_KEY_FILE
 ANILA_BACKUP_OFFHOST_DIR
 ANILA_BACKUP_ALERT_HOOK
 ANILA_BACKUP_KEEP                         # optional, default from profile
+ANILA_BACKUP_RESTART_TIMEOUT_SECONDS      # optional, 1..1800, default 300
 
 ANILA_BACKUP_JWT_KEY_REFERENCE
 ANILA_BACKUP_JWT_PUBLIC_FINGERPRINT
@@ -138,9 +163,30 @@ bash infra/deployment/scripts/anila-ops.sh restore \
 `RESTORE_SMOKE.json`。保留這三份檔案、bundle ID、source commit、執行時間與 alert
 事件作為 Gate evidence；不要把解密後的 drill 目錄當成正式服務資料目錄。
 
+## 失敗可見性（heartbeat）
+
+`anila-ops.sh backup` 收尾一定寫 heartbeat，**成功與失敗都寫**：
+
+```text
+$ANILA_STATE_DIR/backup-heartbeat.json   # 可用 ANILA_BACKUP_HEARTBEAT_FILE 改
+{"schema_version":"anila.backup-heartbeat.v1","status":"success|failure",
+ "exit_code":<int>,"epoch":<unix>,"finished":"<ISO8601 UTC>"}
+```
+
+`anila-ops.sh health` 讀它，並在下列任一情況報 FAIL（health 以 `exit 1` 收尾，可接
+排班告警）：檔案不存在、無法解析、`epoch` 超過 25 小時未更新、或 `status` 不是
+`success`。heartbeat 寫入失敗只會 warn，不會蓋掉備份本身的 exit code —— 但下一次
+health 就會因為「找不到／過期」而 FAIL，仍然看得見。
+
+這是 air-gapped 環境唯一會被人看到的失敗通道：cron 的 `>> /var/log/anila-backup.log`
+不算監控。alert hook 是第二條通道，兩條都要接。
+
 ## 排程與演練
 
 - scheduler 必須以非重疊模式執行，並監控 exit code 與 alert hook。
+- `backup` **不吃任何參數**：profile 驅動的備份一律全量，沒有增量或 `--full` 模式。
+- restore 演練**不要排 cron**：`prepare`/`smoke` 拒絕既存 target，且解密後的 drill
+  目錄含機敏明文、必須走核准的銷毀流程，不該由排程自動產生。
 - 每次備份都要求 off-host readback；不可把「copy 命令成功」當成證據。
 - 至少依 Gate/營運頻率挑一份最新 bundle 跑 smoke；每次都用全新 target。
 - `prepare`/`smoke` 拒絕既存 target，因此重跑前要換新名稱。舊 drill 目錄應按核准的

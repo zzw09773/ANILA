@@ -1,6 +1,8 @@
 """Pydantic schemas for /api/trusted-hosts."""
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
@@ -35,7 +37,7 @@ class TrustedHostCreate(BaseModel):
         return value
 
 
-class TrustedHostResponse(BaseModel):
+class TrustedHostResponse(ApiResponseModel):
     id: int
     host: str
     note: str | None

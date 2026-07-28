@@ -120,8 +120,8 @@ export function parseJsonLenient<T = unknown>(text: string): T {
     return JSON.parse(text) as T
   } catch {
     const repaired = text
-      .replace(/(?<=[\[\{,:\s])'/g, '"')
-      .replace(/'(?=[\]\},:\s]|$)/g, '"')
+      .replace(/(?<=[[{,:\s])'/g, '"')
+      .replace(/'(?=[\]},:\s]|$)/g, '"')
     return JSON.parse(repaired) as T
   }
 }
@@ -210,7 +210,10 @@ export interface GenerateReportInput {
   extraInstructions?: string
 }
 
-const REPORT_PRESET_HINTS: Record<string, string> = {
+// ⚠ 尚未接線:這份 preset hints 定義好了但沒有任何呼叫端使用(W0-3 lint 發現)。
+// 保留是因為它看起來是有意的功能(報告風格提示),但在接上之前它是死碼。
+// 要接線的話呼叫點應該在 buildReportPrompt 一帶。
+const _REPORT_PRESET_HINTS: Record<string, string> = {
   '深度技術綜述': '以嚴謹學術語氣撰寫，章節包含「研究背景 → 主要結論 → 方法 → 限制 → 後續方向」。',
   '重點摘要': '輸出 1-2 頁等量的精華筆記，採用列點為主、不超過 800 繁體中文字。',
   '教學講義': '結構：概念定義 → 範例 → 練習題（含解答）→ 延伸閱讀。',

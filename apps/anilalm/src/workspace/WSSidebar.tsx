@@ -14,6 +14,7 @@ import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
 import { Spinner } from '../components/Spinner'
 import { formatBytes, shortName, timeAgo } from '../utils/format'
+import uploadConfirmStyles from './uploadClassificationConfirm.module.css'
 
 const STATUS_LABELS: Record<string, string> = {
   pending: '排隊中',
@@ -23,6 +24,19 @@ const STATUS_LABELS: Record<string, string> = {
   embedding: '嵌入中',
   indexed: '已索引',
   failed: '失敗',
+}
+
+const CLASSIFICATION_LEVELS = [
+  '無機密',
+  '營業秘密',
+  '機密',
+  '極機密',
+  '絕對機密',
+] as const
+
+function classificationRank(level: string | undefined | null): number {
+  if (!level) return -1
+  return CLASSIFICATION_LEVELS.indexOf(level as (typeof CLASSIFICATION_LEVELS)[number])
 }
 
 export function WSSidebar() {
@@ -51,24 +65,50 @@ export function WSSidebar() {
     { id: number; filename: string } | null
   >(null)
   const [pendingDeleteConv, setPendingDeleteConv] = useState<number | null>(null)
+  // W2-11:上傳前密等確認閘
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[] | null>(null)
+  const [uploadLevel, setUploadLevel] = useState('無機密')
+  const [uploadLatchAck, setUploadLatchAck] = useState(false)
+
+  const collectionFloor = collection?.classification_level || '無機密'
+  const uploadAllowedLevels = CLASSIFICATION_LEVELS.filter(
+    (_, i) => i >= Math.max(0, classificationRank(collectionFloor)),
+  )
+  const uploadWouldLatch =
+    classificationRank(uploadLevel) > classificationRank(collectionFloor)
 
   const onPickFiles = () => fileRef.current?.click()
 
-  const onFiles = async (e: ChangeEvent<HTMLInputElement>) => {
+  const onFiles = (e: ChangeEvent<HTMLInputElement>) => {
     if (!collection) return
     const files = Array.from(e.target.files ?? [])
     e.target.value = '' // allow re-uploading the same file
     if (files.length === 0) return
+    setUploadLevel(collectionFloor)
+    setUploadLatchAck(false)
+    setPendingUploadFiles(files)
+  }
+
+  const cancelPendingUpload = () => {
+    setPendingUploadFiles(null)
+    setUploadLatchAck(false)
+  }
+
+  const confirmPendingUpload = async () => {
+    if (!collection || !pendingUploadFiles) return
+    if (uploadWouldLatch && !uploadLatchAck) return
+    const files = pendingUploadFiles
+    const level = uploadLevel
+    setPendingUploadFiles(null)
     setUploading(true)
     for (const file of files) {
       try {
         setUploadPct(0)
-        // Backend returns just DocumentResponse; the numeric job id used
-        // by /api/ingestion/jobs/:id/stream lives on the detail row, so
-        // we follow up with getDocument(). If the detail call fails we
-        // still keep the doc visible — SSE subscription just won't bind.
-        const { data: doc } = await uploadDocument(collection.id, file, (frac) =>
-          setUploadPct(Math.round(frac * 100)),
+        const { data: doc } = await uploadDocument(
+          collection.id,
+          file,
+          (frac) => setUploadPct(Math.round(frac * 100)),
+          { classificationLevel: level },
         )
         upsertDoc(doc)
         setUploadFraction(doc.id, undefined)
@@ -653,6 +693,78 @@ export function WSSidebar() {
           <Icon name="logout" size={13} stroke={t.textMuted} />
         </button>
       </div>
+
+      {/* W2-11: upload classification confirmation gate */}
+      <Modal
+        open={pendingUploadFiles !== null}
+        onClose={cancelPendingUpload}
+        ariaLabel="確認文件密等"
+        width={440}
+      >
+        <div className={uploadConfirmStyles.panel}>
+          <div className={uploadConfirmStyles.title}>確認文件密等</div>
+          <div className={uploadConfirmStyles.lead}>
+            本文件密等 ={' '}
+            <strong className={uploadConfirmStyles.leadStrong}>{uploadLevel}</strong>
+            {uploadLevel === collectionFloor
+              ? '（繼承自知識庫）'
+              : `（由知識庫「${collectionFloor}」上調）`}
+            。誤標低密會讓不該看到的人讀到內容；若實際更高請在此上調。
+          </div>
+          <label className={uploadConfirmStyles.fieldLabel} htmlFor="anilalm-upload-classification">
+            文件密等
+            <select
+              id="anilalm-upload-classification"
+              value={uploadLevel}
+              onChange={(e) => setUploadLevel(e.target.value)}
+              className={uploadConfirmStyles.select}
+              aria-label="文件密等"
+            >
+              {uploadAllowedLevels.map((lvl) => (
+                <option key={lvl} value={lvl}>
+                  {lvl}
+                </option>
+              ))}
+            </select>
+          </label>
+          {uploadWouldLatch && (
+            <div className={uploadConfirmStyles.latchWarn}>
+              上調會把整個知識庫不可逆地閂鎖為「{uploadLevel}」。
+              降回只能走雙人降密申請。請勾選確認後再上傳。
+              <label
+                className={uploadConfirmStyles.latchAck}
+                htmlFor="anilalm-upload-latch-ack"
+              >
+                <input
+                  id="anilalm-upload-latch-ack"
+                  type="checkbox"
+                  checked={uploadLatchAck}
+                  onChange={(e) => setUploadLatchAck(e.target.checked)}
+                  aria-label="我了解這會升級整個知識庫且無法自行降回"
+                />
+                我了解這會升級整個知識庫且無法自行降回
+              </label>
+            </div>
+          )}
+          <div className={uploadConfirmStyles.actions}>
+            <button
+              type="button"
+              onClick={cancelPendingUpload}
+              className={uploadConfirmStyles.btnGhost}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={confirmPendingUpload}
+              disabled={uploadWouldLatch && !uploadLatchAck}
+              className={uploadConfirmStyles.btnPrimary}
+            >
+              確認並上傳
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       {/* #7: delete-document confirm (replaces native confirm) */}
       <Modal

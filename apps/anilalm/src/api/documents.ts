@@ -1,9 +1,12 @@
 import { client } from './client'
 import type { IngestionDocument, IngestionDocumentDetail } from '../types'
 
+/** ANILALM personal knowledge-base surface (origin=anilalm). */
+const PERSONAL = '/api/personal'
+
 export const listDocuments = (collectionId: number, params?: { limit?: number; offset?: number }) =>
   client.get<IngestionDocument[]>(
-    `/api/ingestion/collections/${collectionId}/documents`,
+    `${PERSONAL}/collections/${collectionId}/documents`,
     { params },
   )
 
@@ -13,7 +16,7 @@ export const listDocuments = (collectionId: number, params?: { limit?: number; o
  * not — it's a thin projection.
  */
 export const getDocument = (documentId: number) =>
-  client.get<IngestionDocumentDetail>(`/api/ingestion/documents/${documentId}`)
+  client.get<IngestionDocumentDetail>(`${PERSONAL}/documents/${documentId}`)
 
 /**
  * Upload one file. Backend returns 202 Accepted with the pending
@@ -25,11 +28,18 @@ export const uploadDocument = (
   collectionId: number,
   file: File,
   onProgress?: (fraction: number) => void,
+  opts?: { classificationLevel?: string; title?: string },
 ) => {
   const form = new FormData()
   form.append('file', file)
+  if (opts?.classificationLevel) {
+    form.append('classification_level', opts.classificationLevel)
+  }
+  if (opts?.title) {
+    form.append('title', opts.title)
+  }
   return client.post<IngestionDocument>(
-    `/api/ingestion/collections/${collectionId}/documents`,
+    `${PERSONAL}/collections/${collectionId}/documents`,
     form,
     {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -43,7 +53,7 @@ export const uploadDocument = (
 }
 
 export const documentBlobUrl = (documentId: number) =>
-  `/api/ingestion/documents/${documentId}/blob`
+  `${PERSONAL}/documents/${documentId}/blob`
 
 /**
  * Delete a document. Backend ON DELETE CASCADE drops the doc's chunks
@@ -51,7 +61,7 @@ export const documentBlobUrl = (documentId: number) =>
  * sha256, the on-disk file is unlinked too. Audit log retained.
  */
 export const deleteDocument = (documentId: number) =>
-  client.delete(`/api/ingestion/documents/${documentId}`)
+  client.delete(`${PERSONAL}/documents/${documentId}`)
 
 export interface DocumentChunk {
   id: number
@@ -64,4 +74,4 @@ export interface DocumentChunk {
 export const listDocumentChunks = (
   documentId: number,
   params?: { limit?: number; offset?: number },
-) => client.get<DocumentChunk[]>(`/api/ingestion/documents/${documentId}/chunks`, { params })
+) => client.get<DocumentChunk[]>(`${PERSONAL}/documents/${documentId}/chunks`, { params })

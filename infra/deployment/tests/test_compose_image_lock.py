@@ -245,23 +245,45 @@ set -e
                 )
 
     def test_optional_profile_requires_its_own_pin_when_enabled(self):
-        with tempfile.TemporaryDirectory() as directory:
-            env_path = Path(directory) / ".env"
-            env_path.write_text(self._env_text(), encoding="utf-8")
-            first_optional = next(
-                entry
-                for entry in self.inventory.values()
-                if entry.activation != "default"
-            )
-            expected_variable = MODULE.IMAGE_ENV_BY_SERVICE[first_optional.service]
-            with self.assertRaisesRegex(MODULE.ImageLockError, expected_variable):
-                MODULE.verify_env(
-                    env_path,
-                    self.inventory,
-                    None,
-                    include_optional=True,
-                    inspect_docker=False,
-                )
+        """每一個 optional profile 的映像被啟用時都必須有自己的 pin。
+
+        ⚠ 這支先前挑「清單裡第一個 optional 項」,然後斷言錯誤訊息會提到**那個**
+        服務 —— 也就是暗自假設「清冊順序的第一個」等於「verify_env 第一個抱怨
+        的那個」。那是兩件不同的事,只是先前剛好一致。2026-07-28 把 anilalm
+        移進 personal-kb profile 之後,它在 TSV 裡排在 anila-agent 前面,巧合
+        消失,測試就紅了 —— 而**受測行為完全沒變**。
+        改成逐一驗證:對每個 optional 服務,產一份「其他都釘好、只缺它」的 .env,
+        斷言錯誤指名的正是它。這既不依賴順序,涵蓋面也比原本廣。
+        """
+        optional = [
+            entry
+            for entry in self.inventory.values()
+            if entry.activation != "default"
+        ]
+        self.assertTrue(optional, "清冊裡應該至少有一個 optional profile 服務")
+
+        for target in optional:
+            target_variable = MODULE.IMAGE_ENV_BY_SERVICE[target.service]
+            with self.subTest(service=target.service):
+                rows = [f"ANILA_DEPLOYMENT_PROFILE=prod-intranet-card"]
+                for index, entry in enumerate(self.inventory.values(), 1):
+                    if entry.service == target.service:
+                        continue          # 刻意漏掉這一個
+                    variable = MODULE.IMAGE_ENV_BY_SERVICE[entry.service]
+                    rows.append(f"{variable}=sha256:{index:064x}")
+                with tempfile.TemporaryDirectory() as directory:
+                    env_path = Path(directory) / ".env"
+                    env_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        MODULE.ImageLockError, target_variable
+                    ):
+                        MODULE.verify_env(
+                            env_path,
+                            self.inventory,
+                            None,
+                            include_optional=True,
+                            inspect_docker=False,
+                        )
 
     def test_resolved_compose_shell_override_is_rejected(self):
         values = {

@@ -131,6 +131,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import { extractError } from '../api/errors'
 import {
   createServiceClient,
   listServiceClients,
@@ -161,7 +162,7 @@ function formatDate(iso) {
 
 async function fetchClients() {
   try { clients.value = await listServiceClients() }
-  catch (e) { setFeedback('error', e.response?.data?.detail || '載入失敗') }
+  catch (e) { setFeedback('error', extractError(e, '載入失敗')) }
 }
 
 onMounted(fetchClients)
@@ -204,7 +205,7 @@ async function handleCreate() {
     showCreateModal.value = false
     await fetchClients()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '建立失敗')
+    setFeedback('error', extractError(e, '建立失敗'))
   } finally {
     createBusy.value = false
   }
@@ -225,7 +226,7 @@ async function handleRotate(c) {
     }
     await fetchClients()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '輪替失敗')
+    setFeedback('error', extractError(e, '輪替失敗'))
   } finally {
     busyId.value = null
   }
@@ -239,7 +240,7 @@ async function handleRevoke(c) {
     setFeedback('success', `已吊銷 ${c.client_name}`)
     await fetchClients()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '吊銷失敗')
+    setFeedback('error', extractError(e, '吊銷失敗'))
   } finally {
     busyId.value = null
   }

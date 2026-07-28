@@ -124,21 +124,14 @@ client.interceptors.response.use(
   },
 )
 
-// Pretty-format an axios error for toast messages. CSP backend returns
-// `{detail: "..."}` on errors; fall back to status + message.
-export function explainError(err: unknown): string {
-  if (axios.isAxiosError(err)) {
-    const detail = (err.response?.data as { detail?: unknown } | undefined)?.detail
-    if (typeof detail === 'string') return detail
-    if (Array.isArray(detail)) {
-      // pydantic validation errors come back as a list
-      return detail
-        .map((d) => (typeof d === 'string' ? d : (d as { msg?: string }).msg ?? JSON.stringify(d)))
-        .join('; ')
-    }
-    if (err.response?.status) return `${err.response.status} ${err.message}`
-    return err.message
-  }
-  if (err instanceof Error) return err.message
-  return String(err)
-}
+// W2-12:錯誤解讀搬到 `./errors`(純函式、可單元測試)。這裡 re-export 讓 24 個
+// 既有 import site 不用改。舊版住在這裡的實作只處理 string 與 array,dict detail
+// (CSP 有 4 處)會 fallthrough 成 `"503 Request failed"` —— 訊息整條丟失。
+export {
+  explainError,
+  extractErrorCode,
+  extractErrorDetails,
+  extractRequestId,
+  type ApiErrorBody,
+  type ApiErrorEnvelope,
+} from './errors'

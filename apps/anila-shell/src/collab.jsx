@@ -2,6 +2,11 @@
 import React, { useState, useEffect } from "react";
 import { IconShield, IconLink, IconX, IconCheck, IconStar, IconFolder } from "./icons.jsx";
 import { Button, Modal, MenuItem, Divider, Input } from "./components.jsx";
+import {
+  MAX_TAGS_PER_CONVERSATION,
+  MAX_TAG_LENGTH,
+  isAutoTag,
+} from "./runtime/tagRules.js";
 
 // TTL choice → ISO timestamp the backend understands.
 function ttlToExpiresAt(ttlKey) {
@@ -241,8 +246,42 @@ export const HandoffMenu = ({ agents, currentAgentId, onHandoffAgent, onHandoffU
 };
 
 // ---- Tag / Folder editor ----
+// 標籤有兩種:
+//   ① 自動標籤(classified / compared)——由 conversation 列本身帶,存在後端
+//      /前端狀態,**刪不掉**(安全判定不可被使用者移除)。因此不畫 × 鈕,
+//      否則使用者按了沒反應會以為功能故障。
+//   ② 使用者標籤 —— 存在 users.ui_settings 的 convMeta 裡,有數量/長度上限
+//      (整包 blob 後端 256KB 硬上限,超過回 413)。上限在 UI 明示並擋下。
 export const TagEditor = ({ folders, conversation, onUpdate, close }) => {
   const [tagInput, setTagInput] = useState("");
+  const [tagError, setTagError] = useState("");
+  const allTags = conversation.tags || [];
+  const userTagCount = allTags.filter((t) => !isAutoTag(t)).length;
+
+  const addTag = () => {
+    const next = tagInput.trim();
+    if (!next) return;
+    if (isAutoTag(next)) {
+      setTagError("這是系統自動標籤，不能手動新增。");
+      return;
+    }
+    if (allTags.includes(next)) {
+      setTagInput("");
+      return;
+    }
+    if (next.length > MAX_TAG_LENGTH) {
+      setTagError(`標籤最多 ${MAX_TAG_LENGTH} 字。`);
+      return;
+    }
+    if (userTagCount >= MAX_TAGS_PER_CONVERSATION) {
+      setTagError(`每則對話最多 ${MAX_TAGS_PER_CONVERSATION} 個標籤。`);
+      return;
+    }
+    setTagError("");
+    onUpdate({ tags: [...new Set([...allTags, next])] });
+    setTagInput("");
+  };
+
   return (
     <div style={{ minWidth: 240, padding: 6 }}>
       <div style={{ padding: "6px 6px 8px", fontSize: 11, color: "var(--fg-subtle)",
@@ -258,41 +297,60 @@ export const TagEditor = ({ folders, conversation, onUpdate, close }) => {
       ))}
       <Divider style={{ margin: "6px 0" }}/>
       <div style={{ padding: "4px 6px 4px", fontSize: 11, color: "var(--fg-subtle)",
-        fontFamily: "var(--font-mono)", letterSpacing: 0.4 }}>標籤</div>
+        fontFamily: "var(--font-mono)", letterSpacing: 0.4 }}>
+        標籤 {userTagCount}/{MAX_TAGS_PER_CONVERSATION}
+      </div>
       <div style={{ padding: "4px 6px 6px", display: "flex", flexWrap: "wrap", gap: 4 }}>
-        {(conversation.tags || []).map(t => (
-          <span key={t} style={{
-            display: "inline-flex", alignItems: "center", gap: 3,
-            padding: "2px 6px",
-            fontSize: 11, fontFamily: "var(--font-mono)",
-            background: "var(--bg-subtle)",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-          }}>
-            #{t}
-            <button onClick={() => onUpdate({ tags: (conversation.tags || []).filter(x => x !== t) })}
-              style={{ background: "transparent", border: "none", cursor: "pointer",
-                color: "var(--fg-subtle)", padding: 0, display: "flex" }}>
-              <IconX size={10}/>
-            </button>
-          </span>
-        ))}
+        {allTags.map(t => {
+          const auto = isAutoTag(t);
+          return (
+            <span key={t}
+              title={auto ? "系統自動標籤，無法移除" : undefined}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 3,
+                padding: "2px 6px",
+                fontSize: 11, fontFamily: "var(--font-mono)",
+                background: "var(--bg-subtle)",
+                border: "1px solid var(--border)",
+                borderRadius: 999,
+                opacity: auto ? 0.7 : 1,
+              }}>
+              #{t}
+              {/* 自動標籤沒有 × —— 按了也刪不掉,畫出來只會讓人以為壞了。 */}
+              {!auto && (
+                <button aria-label={`移除標籤 ${t}`}
+                  onClick={() => onUpdate({ tags: allTags.filter(x => x !== t) })}
+                  style={{ background: "transparent", border: "none", cursor: "pointer",
+                    color: "var(--fg-subtle)", padding: 0, display: "flex" }}>
+                  <IconX size={10}/>
+                </button>
+              )}
+            </span>
+          );
+        })}
       </div>
       <div style={{ padding: "0 6px 4px", display: "flex", gap: 4 }}>
-        <input value={tagInput} onChange={e => setTagInput(e.target.value)}
+        <input value={tagInput}
+          onChange={e => { setTagInput(e.target.value); setTagError(""); }}
           placeholder="新增標籤"
-          onKeyDown={e => {
-            if (e.key === "Enter" && tagInput.trim()) {
-              onUpdate({ tags: [...new Set([...(conversation.tags || []), tagInput.trim()])] });
-              setTagInput("");
-            }
-          }}
+          aria-label="新增標籤"
+          maxLength={MAX_TAG_LENGTH}
+          disabled={userTagCount >= MAX_TAGS_PER_CONVERSATION}
+          onKeyDown={e => { if (e.key === "Enter") addTag(); }}
           style={{
             flex: 1, padding: "4px 8px", fontSize: 12,
             background: "var(--bg-elev)", border: "1px solid var(--border)",
             borderRadius: "var(--radius)", outline: "none", color: "var(--fg)",
+            opacity: userTagCount >= MAX_TAGS_PER_CONVERSATION ? 0.5 : 1,
           }}/>
       </div>
+      {(tagError || userTagCount >= MAX_TAGS_PER_CONVERSATION) && (
+        <div role="alert" style={{
+          padding: "0 6px 6px", fontSize: 11, color: "var(--danger)",
+        }}>
+          {tagError || `已達上限 ${MAX_TAGS_PER_CONVERSATION} 個標籤，請先移除再新增。`}
+        </div>
+      )}
       <Divider style={{ margin: "6px 0" }}/>
       <MenuItem
         leftIcon={<IconStar size={13}/>}

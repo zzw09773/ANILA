@@ -50,9 +50,9 @@ async def test_reindex_is_idempotent_and_failed_generation_rolls_back(
                 INSERT INTO ingestion_collections
                     (name, chunking_config, embedding_model,
                      embedding_fingerprint, embedding_dim, created_by,
-                     classification_level)
+                     classification_level, origin)
                 VALUES ($1, '{"strategy":"fixed"}'::jsonb, 'test-model',
-                        $2, $3, $4, '機密')
+                        $2, $3, $4, '機密', 'csp')
                 RETURNING id
                 """,
                 f"g9-reindex-{suffix}",

@@ -133,7 +133,14 @@ class ConversationMemoryChunk(Base):
     ``is_encrypted`` is set TRUE when the originating conversation's
     target agent had ``requires_encryption=true``. Retrieval surfaces
     this flag; the caller is responsible for latching the consuming
-    conversation into encrypted state when it's True (P3 wiring).
+    conversation when it's True (P3 wiring).
+
+    ⚠ 命名警告(W1-3):``is_encrypted`` 與 ``requires_encryption`` 都**不代表
+    任何加密**。這一列的內容以明文存在 Postgres 裡(平台無 at-rest 加密:
+    ``pgcrypto|LUKS|dm-crypt|TDE`` 全 repo grep=0)。旗標的真實語意是「來源
+    對話已被單向鎖定密等」,消費端因此必須跟著鎖定。欄位名為相容性保留
+    (改名是 schema 事務,掛 C5 legacy ledger),但**人看得到的字一律用
+    「密等鎖定(latch)」**,不得寫成加密。
     """
 
     __tablename__ = "conversation_memory_chunks"

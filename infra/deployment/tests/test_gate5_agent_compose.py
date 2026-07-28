@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -103,10 +104,39 @@ class Gate5AgentComposeTests(unittest.TestCase):
         self.assertEqual(model["volumes"], ["../../infra/deployment/scripts/gate5-e2e-model.py:/opt/gate5/gate5-e2e-model.py:ro"])
 
     def test_csp_healthchecks_bound_readiness_probe_time(self) -> None:
+        """readiness 探測必須有**有界**的 urlopen timeout。
+
+        契約的用意是「不可無界」——沒有 timeout 的 urlopen 會讓已經凍結的 CSP
+        在 healthcheck 眼中永遠看起來活著,於是 orchestrator 不會重啟它。
+
+        先前這裡硬寫 `assertIn("timeout=2", ...)`,結果 2026-07-24 有人**帶著理由**
+        把 dev 的探測從 2s 調到 5s(compose 註解:「urlopen timeout=2s was too
+        sensitive — a briefly busy event loop accumulated FailingStreak false
+        positives」)卻沒動這支測試 → CI 的 "Deployment contracts" 就此變紅。
+        那個調整是對的(平台確實有 event-loop 阻塞問題:1GB 同步 zip 匯入、
+        33 處未修的 sync-on-loop),硬寫的數字才是錯的。
+
+        改成斷言「存在且落在合理上界內」:保住原本的防線(不可無界、不可長到
+        探測失去意義),同時允許 dev 與 production 有經過論證的差異。
+        """
+        max_probe_seconds = 10
         for path in (DEV, PLATFORM):
             csp = self._service(path, "csp")
-            test = csp["healthcheck"]["test"]
-            self.assertIn("timeout=2", " ".join(test))
+            probe = " ".join(csp["healthcheck"]["test"])
+            match = re.search(r"timeout=(\d+(?:\.\d+)?)", probe)
+            self.assertIsNotNone(
+                match,
+                f"{path} 的 csp healthcheck 缺少 urlopen timeout;無界探測會讓"
+                f"凍結的服務看起來永遠健康:{probe}",
+            )
+            seconds = float(match.group(1))
+            self.assertGreater(seconds, 0, f"{path}: timeout 必須為正數")
+            self.assertLessEqual(
+                seconds,
+                max_probe_seconds,
+                f"{path}: readiness 探測 timeout {seconds}s 超過 {max_probe_seconds}s,"
+                "探測時間過長會讓真正的凍結太晚被標記",
+            )
 
     def test_dev_profile_secret_is_optional_at_interpolation_but_startup_is_fail_closed(self) -> None:
         service = self._service(DEV)

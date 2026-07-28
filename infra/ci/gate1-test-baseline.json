@@ -412,11 +412,115 @@
   ],
   "allowed_skips": [
     {
+      "path": "infra/ci/tests/test_gate5_recorded_provider_adapter.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": false,
+      "reason": "PENDING_CAPTURE skipif guards on the v4 capture fixture's existence; the fixture is committed and always present, so this never skips in required CI."
+    },
+    {
+      "path": "infra/deployment/tests/test_airgap_image_inventory.py",
+      "kind": "self.skipTest",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so both environment guards execute their contract assertions instead of skipping."
+    },
+    {
+      "path": "infra/deployment/tests/test_backup_env_contract.py",
+      "kind": "unittest.skipUnless",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "W1-6:備份 CLI 契約在缺少所需工具時 skip;deployment-posture job 有裝。"
+    },
+    {
+      "path": "infra/deployment/tests/test_csp_non_root.py",
+      "kind": "unittest.skipUnless",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner is POSIX and executes the non-root backup helper behavior contract."
+    },
+    {
+      "path": "infra/deployment/tests/test_deployment_containment.py",
+      "kind": "self.skipTest",
+      "count": 4,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so all four registered environment guards across both containment probes execute instead of skipping."
+    },
+    {
+      "path": "infra/deployment/tests/test_model_image_lock.py",
+      "kind": "self.skipTest",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides a usable Docker daemon and executes the image-lock tamper smoke test."
+    },
+    {
+      "path": "infra/deployment/tests/test_model_image_lock.py",
+      "kind": "unittest.skipUnless",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides Docker CLI and executes the image-lock tamper smoke test."
+    },
+    {
+      "path": "infra/deployment/tests/test_production_backup_automation.py",
+      "kind": "unittest.skipUnless",
+      "count": 1,
+      "required_execution": false,
+      "reason": "The disposable Docker restore smoke remains an explicit opt-in controlled by ANILA_RUN_DOCKER_RESTORE_SMOKE; its skip is registered rather than hidden from governance."
+    },
+    {
+      "path": "infra/deployment/tests/test_slo_window_verifier.py",
+      "kind": "self.skipTest",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "FIFO-creation platform guard; executes on Linux CI where os.mkfifo is present."
+    },
+    {
+      "path": "infra/policy/tests/test_gate2_classification_reconciliation_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest infra/policy/tests/test_gate2_classification_reconciliation_pg.py -q",
+      "reason": "Local policy runs skip without an admin DSN; postgres-rls supplies ANILA_GATE2_TEST_PG_ADMIN_URL and executes migration, downgrade, and mutation-sensitive reconciliation proofs."
+    },
+    {
+      "path": "infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py -q",
+      "reason": "Local policy runs skip without an admin DSN; postgres-rls executes the true-PostgreSQL hierarchy-floor, app-role, and race invariants."
+    },
+    {
       "path": "packages/anila-agent/tests/test_live_smoke.py",
       "kind": "pytest.mark.skipif",
       "count": 1,
       "required_execution": false,
       "reason": "Explicit live endpoint smoke requires ANILA_BASE_URL and is outside deterministic required CI."
+    },
+    {
+      "path": "packages/anila-agent/tests/test_r5_service_silver.py",
+      "kind": "pytest.importorskip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-agent",
+      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
+      "reason": "The Silver service tests require the serving extra; the required backend-agent job installs it and must not silently skip the suite."
     },
     {
       "path": "packages/anila-agent/tests/test_service_wrapper.py",
@@ -482,124 +586,32 @@
       "reason": "Only Windows without symlink privilege skips; the required Linux runner executes the case."
     },
     {
-      "path": "services/csp/tests/test_ingestion_images_rls_pg.py",
+      "path": "packages/anila-security/tests/test_model_governance.py",
       "kind": "pytest.importorskip",
       "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest tests/test_ingestion_images_rls_pg.py -q",
-      "reason": "asyncpg is installed and the case runs in the required postgres-rls job."
+      "required_execution": false,
+      "reason": "The classification-order compatibility assertion is optional when the separate anila-contracts package is not installed; the governance test remains fail-closed for all available contract fields."
     },
     {
-      "path": "services/csp/tests/test_ingestion_images_rls_pg.py",
+      "path": "services/anila-studio/tests/test_auth.py",
+      "kind": "pytest.importorskip",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "backend-studio-full",
+      "ci_command_fragment": "python -m pytest tests -q",
+      "reason": "The required full Studio job installs the dev extra and FastAPI runtime, so both dependency guards execute instead of skipping."
+    },
+    {
+      "path": "services/anila-studio/tests/test_job_store_redis_integration.py",
       "kind": "pytest.mark.skipif",
-      "count": 1,
+      "count": 2,
       "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest tests/test_ingestion_images_rls_pg.py -q",
-      "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes it."
+      "ci_job": "backend-studio-full",
+      "ci_command_fragment": "python -m pytest tests -q",
+      "reason": "The required full Studio job supplies both the isolated Redis URL and its unique disposable container name, so the four real-Redis cases and five-pipeline AOF restart proof execute without skips."
     },
     {
-      "path": "services/csp/tests/test_gate2_auth_races_pg.py",
-      "kind": "pytest.mark.skipif",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest tests/test_gate2_auth_races_pg.py -q",
-      "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes challenge/refresh races plus migration upgrade/downgrade."
-    },
-    {
-      "path": "infra/policy/tests/test_gate2_classification_reconciliation_pg.py",
-      "kind": "pytest.skip",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest infra/policy/tests/test_gate2_classification_reconciliation_pg.py -q",
-      "reason": "Local policy runs skip without an admin DSN; postgres-rls supplies ANILA_GATE2_TEST_PG_ADMIN_URL and executes migration, downgrade, and mutation-sensitive reconciliation proofs."
-    },
-    {
-      "path": "infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py",
-      "kind": "pytest.skip",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py -q",
-      "reason": "Local policy runs skip without an admin DSN; postgres-rls executes the true-PostgreSQL hierarchy-floor, app-role, and race invariants."
-    },
-    {
-      "path": "services/csp/tests/test_gate2_source_snapshot_sealing_pg.py",
-      "kind": "pytest.skip",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest services/csp/tests/test_gate2_source_snapshot_sealing_pg.py -q",
-      "reason": "The complete SQLite CSP suite skips without an admin DSN; postgres-rls executes SourceSnapshot/Citation immutability, membership, finite-score, and downgrade proofs."
-    },
-    {
-      "path": "services/csp/tests/test_gate2_memory_governance_pg.py",
-      "kind": "pytest.mark.skipif",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest tests/test_gate2_memory_governance_pg.py -q",
-      "reason": "The complete SQLite CSP suite skips without GATE2_MEMORY_PG_DSN; postgres-rls executes memory classification migration, trigger, and authorization-lock proofs."
-    },
-    {
-      "path": "services/csp/tests/test_gate2_transaction_ledger_pg.py",
-      "kind": "pytest.mark.skipif",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "tests/test_gate2_transaction_ledger_pg.py",
-      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls executes concurrent block finalization and same-session admission-lock proofs."
-    },
-    {
-      "path": "services/csp/tests/test_gate2_classification_latch_pg.py",
-      "kind": "pytest.mark.skipif",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest tests/test_gate2_classification_latch_pg.py -q",
-      "reason": "The complete SQLite CSP suite skips without a disposable PostgreSQL DSN; postgres-rls supplies ANILA_GATE2_CLASSIFICATION_PG_URL and executes stale-session classification and declassification race proofs."
-    },
-    {
-      "path": "services/csp/tests/test_gate2_pg_atomicity.py",
-      "kind": "pytest.mark.skipif",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "tests/test_gate2_pg_atomicity.py",
-      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls executes the active-run uniqueness, lock-order, clearance barrier, and retrieval-seal race proofs as csp_app."
-    },
-    {
-      "path": "services/csp/tests/test_gate2_durable_usage_closure_pg.py",
-      "kind": "pytest.mark.skipif",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest tests/test_gate2_durable_usage_closure_pg.py -q",
-      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls proves atomic usage, TaskRun, TraceSpan closure and poison-record isolation on PostgreSQL."
-    },
-    {
-      "path": "services/csp/tests/test_gate3_retention_upload_pg.py",
-      "kind": "pytest.mark.skipif",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest tests/test_gate3_retention_upload_pg.py -q",
-      "reason": "The complete SQLite CSP suite skips without ANILA_GATE3_RETENTION_PG_URL; postgres-rls runs retention and artifact upload race proofs as csp_app."
-    },
-    {
-      "path": "services/csp/tests/test_retention_lifecycle.py",
-      "kind": "pytest.skip",
-      "count": 4,
-      "required_execution": true,
-      "ci_job": "backend-csp",
-      "ci_command_fragment": "python -m pytest -q",
-      "reason": "Only Windows without symlink privilege skips; the required Ubuntu CSP job executes the case."
-    },
-    {
-      "path": "services/csp/tests/test_retention_lifecycle.py",
+      "path": "services/csp/tests/test_artifact_blob_store.py",
       "kind": "pytest.mark.skipif",
       "count": 1,
       "required_execution": true,
@@ -617,56 +629,121 @@
       "reason": "Only platforms without symlink privilege skip; the required Ubuntu CSP job executes the artifact safety case."
     },
     {
-      "path": "services/csp/tests/test_artifact_blob_store.py",
+      "path": "services/csp/tests/test_audit_append_only_pg.py",
       "kind": "pytest.mark.skipif",
       "count": 1,
       "required_execution": true,
-      "ci_job": "backend-csp",
-      "ci_command_fragment": "python -m pytest -q",
-      "reason": "The O_PATH/FIFO probe is available on the required Ubuntu CSP job; other platforms register the guard explicitly."
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_audit_append_only_pg.py -q",
+      "reason": "W3-12a:append-only 靠 trigger 與 role 權限,SQLite 兩者都沒有,物理上測不到。postgres-rls job 有真 PG 且該 step 顯式擋「全 skip」。"
     },
     {
-      "path": "services/csp/tests/test_ingestion_generations_pg.py",
+      "path": "services/csp/tests/test_audit_append_only_pg.py",
       "kind": "pytest.skip",
       "count": 1,
       "required_execution": true,
       "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest services/csp/tests/test_ingestion_generations_pg.py -q",
-      "reason": "Local CSP runs skip without an admin DSN; postgres-rls creates a disposable database and proves the Gate 3 generation migration, backfill, and downgrade contract."
+      "ci_command_fragment": "python -m pytest tests/test_audit_append_only_pg.py -q",
+      "reason": "TRUNCATE 那條在測試庫沒有 csp_app role 時 skip(REVOKE 無標的);CI 的 postgres-rls 有該 role,所以在 CI 會真的執行。"
     },
     {
-      "path": "services/ingestion-worker/tests/test_job_state_pg.py",
+      "path": "services/csp/tests/test_audit_logs_detail_trgm_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_audit_logs_detail_trgm_pg.py",
+      "reason": "W1-5:gin_trgm_ops 索引是 PG 專屬。"
+    },
+    {
+      "path": "services/csp/tests/test_for_update_staleness_pg.py",
       "kind": "pytest.mark.skipif",
       "count": 1,
       "required_execution": true,
       "ci_job": "postgres-rls",
-      "ci_command_fragment": "services/ingestion-worker/tests/test_job_state_pg.py",
-      "reason": "The worker unit suite skips without a disposable PostgreSQL DSN; postgres-rls runs lease fencing, reaper grace, retry taxonomy, DLQ, and terminal-write recovery proofs in an isolated database."
+      "ci_command_fragment": "tests/test_for_update_staleness_pg.py",
+      "reason": "跨 session 列鎖 TOCTOU 需要兩個獨立交易;SQLite + StaticPool 共用同一條連線,物理上測不到。這條守的是 legal hold 被繞過(不可逆刪檔)。"
     },
     {
-      "path": "services/ingestion-worker/tests/test_similarity_relations_pg.py",
+      "path": "services/csp/tests/test_gate2_auth_races_pg.py",
       "kind": "pytest.mark.skipif",
       "count": 1,
       "required_execution": true,
       "ci_job": "postgres-rls",
-      "ci_command_fragment": "services/ingestion-worker/tests/test_similarity_relations_pg.py",
-      "reason": "The worker unit suite skips without a disposable PostgreSQL DSN; postgres-rls runs concurrent request dedupe, single-owner claim, expired-lease recovery, and stale-owner fencing proofs."
+      "ci_command_fragment": "python -m pytest tests/test_gate2_auth_races_pg.py -q",
+      "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes challenge/refresh races plus migration upgrade/downgrade."
     },
     {
-      "path": "packages/anila-agent/tests/test_r5_service_silver.py",
-      "kind": "pytest.importorskip",
+      "path": "services/csp/tests/test_gate2_classification_latch_pg.py",
+      "kind": "pytest.mark.skipif",
       "count": 1,
       "required_execution": true,
-      "ci_job": "backend-agent",
-      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
-      "reason": "The Silver service tests require the serving extra; the required backend-agent job installs it and must not silently skip the suite."
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_classification_latch_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without a disposable PostgreSQL DSN; postgres-rls supplies ANILA_GATE2_CLASSIFICATION_PG_URL and executes stale-session classification and declassification race proofs."
     },
     {
-      "path": "packages/anila-security/tests/test_model_governance.py",
-      "kind": "pytest.importorskip",
+      "path": "services/csp/tests/test_gate2_clearance.py",
+      "kind": "pytest.skip",
       "count": 1,
-      "required_execution": false,
-      "reason": "The classification-order compatibility assertion is optional when the separate anila-contracts package is not installed; the governance test remains fail-closed for all available contract fields."
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "W3-12a 連帶:corrupt-grant 那條要暫停 CHECK 約束才寫得進不合法值,目前只實作 SQLite 的 PRAGMA 路徑,非 sqlite 時 skip。測試主迴路是 SQLite,所以這條在 CI 會真的執行。"
+    },
+    {
+      "path": "services/csp/tests/test_gate2_durable_usage_closure_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_durable_usage_closure_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls proves atomic usage, TaskRun, TraceSpan closure and poison-record isolation on PostgreSQL."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_memory_governance_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_memory_governance_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without GATE2_MEMORY_PG_DSN; postgres-rls executes memory classification migration, trigger, and authorization-lock proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_pg_atomicity.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_gate2_pg_atomicity.py",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls executes the active-run uniqueness, lock-order, clearance barrier, and retrieval-seal race proofs as csp_app."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_source_snapshot_sealing_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest services/csp/tests/test_gate2_source_snapshot_sealing_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without an admin DSN; postgres-rls executes SourceSnapshot/Citation immutability, membership, finite-score, and downgrade proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_transaction_ledger_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_gate2_transaction_ledger_pg.py",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls executes concurrent block finalization and same-session admission-lock proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate3_retention_upload_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate3_retention_upload_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE3_RETENTION_PG_URL; postgres-rls runs retention and artifact upload race proofs as csp_app."
     },
     {
       "path": "services/csp/tests/test_gate5_model_governance_receipts_pg.py",
@@ -692,90 +769,112 @@
       "reason": "Only the local SQLite/no-DSN path may skip; postgres-rls sets TEST_POSTGRES_URL to the migrated csp_app database and must execute the two-contender durable resume claim proof."
     },
     {
-      "path": "infra/deployment/tests/test_airgap_image_inventory.py",
-      "kind": "self.skipTest",
-      "count": 2,
-      "required_execution": true,
-      "ci_job": "deployment-posture",
-      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
-      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so both environment guards execute their contract assertions instead of skipping."
-    },
-    {
-      "path": "infra/deployment/tests/test_csp_non_root.py",
-      "kind": "unittest.skipUnless",
+      "path": "services/csp/tests/test_ingestion_generations_pg.py",
+      "kind": "pytest.skip",
       "count": 1,
       "required_execution": true,
-      "ci_job": "deployment-posture",
-      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
-      "reason": "The required Ubuntu deployment runner is POSIX and executes the non-root backup helper behavior contract."
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest services/csp/tests/test_ingestion_generations_pg.py -q",
+      "reason": "Local CSP runs skip without an admin DSN; postgres-rls creates a disposable database and proves the Gate 3 generation migration, backfill, and downgrade contract."
     },
     {
-      "path": "infra/deployment/tests/test_deployment_containment.py",
-      "kind": "self.skipTest",
+      "path": "services/csp/tests/test_ingestion_images_rls_pg.py",
+      "kind": "pytest.importorskip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_ingestion_images_rls_pg.py -q",
+      "reason": "asyncpg is installed and the case runs in the required postgres-rls job."
+    },
+    {
+      "path": "services/csp/tests/test_ingestion_images_rls_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_ingestion_images_rls_pg.py -q",
+      "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes it."
+    },
+    {
+      "path": "services/csp/tests/test_retention_lifecycle.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "The O_PATH/FIFO probe is available on the required Ubuntu CSP job; other platforms register the guard explicitly."
+    },
+    {
+      "path": "services/csp/tests/test_retention_lifecycle.py",
+      "kind": "pytest.skip",
       "count": 4,
       "required_execution": true,
-      "ci_job": "deployment-posture",
-      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
-      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so all four registered environment guards across both containment probes execute instead of skipping."
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "Only Windows without symlink privilege skips; the required Ubuntu CSP job executes the case."
     },
     {
-      "path": "infra/deployment/tests/test_model_image_lock.py",
-      "kind": "self.skipTest",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "deployment-posture",
-      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
-      "reason": "The required Ubuntu deployment runner provides a usable Docker daemon and executes the image-lock tamper smoke test."
-    },
-    {
-      "path": "infra/deployment/tests/test_model_image_lock.py",
-      "kind": "unittest.skipUnless",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "deployment-posture",
-      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
-      "reason": "The required Ubuntu deployment runner provides Docker CLI and executes the image-lock tamper smoke test."
-    },
-    {
-      "path": "infra/deployment/tests/test_production_backup_automation.py",
-      "kind": "unittest.skipUnless",
-      "count": 1,
-      "required_execution": false,
-      "reason": "The disposable Docker restore smoke remains an explicit opt-in controlled by ANILA_RUN_DOCKER_RESTORE_SMOKE; its skip is registered rather than hidden from governance."
-    },
-    {
-      "path": "services/anila-studio/tests/test_auth.py",
-      "kind": "pytest.importorskip",
-      "count": 2,
-      "required_execution": true,
-      "ci_job": "backend-studio-full",
-      "ci_command_fragment": "python -m pytest tests -q",
-      "reason": "The required full Studio job installs the dev extra and FastAPI runtime, so both dependency guards execute instead of skipping."
-    },
-    {
-      "path": "services/anila-studio/tests/test_job_store_redis_integration.py",
-      "kind": "pytest.mark.skipif",
-      "count": 2,
-      "required_execution": true,
-      "ci_job": "backend-studio-full",
-      "ci_command_fragment": "python -m pytest tests -q",
-      "reason": "The required full Studio job supplies both the isolated Redis URL and its unique disposable container name, so the four real-Redis cases and five-pipeline AOF restart proof execute without skips."
-    },
-    {
-      "path": "infra/deployment/tests/test_slo_window_verifier.py",
-      "kind": "self.skipTest",
-      "count": 1,
-      "required_execution": true,
-      "ci_job": "deployment-posture",
-      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
-      "reason": "FIFO-creation platform guard; executes on Linux CI where os.mkfifo is present."
-    },
-    {
-      "path": "infra/ci/tests/test_gate5_recorded_provider_adapter.py",
+      "path": "services/csp/tests/test_w210_governance_timestamptz_pg.py",
       "kind": "pytest.mark.skipif",
       "count": 1,
-      "required_execution": false,
-      "reason": "PENDING_CAPTURE skipif guards on the v4 capture fixture's existence; the fixture is committed and always present, so this never skips in required CI."
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_w210_governance_timestamptz_pg.py",
+      "reason": "W2-10:timestamptz 轉換與跨 session TZ 重讀只有真 PG 有意義。"
+    },
+    {
+      "path": "services/csp/tests/test_w211_classification_input_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_w211_classification_input_pg.py",
+      "reason": "W2-11:上傳上調 latch + ClassificationEvent + sampling CHECK 只有真 PG 有意義。"
+    },
+    {
+      "path": "services/csp/tests/test_w23_message_tree_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_w23_message_tree_pg.py",
+      "reason": "W2-3:訊息樹的回填冪等、重放安全與跨 session 語意只有真 PG 測得到;SQLite 沒有這些行為。"
+    },
+    {
+      "path": "services/csp/tests/test_collection_origin_surface_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_collection_origin_surface_pg.py",
+      "reason": "知識庫產品面隔離:origin CHECK 與跨面 by-id 404 都要真 PG(SQLite 沒有 CHECK,測不出來)。"
+    },
+    {
+      "path": "services/csp/tests/test_w26_startup_ddl_absorption_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_w26_startup_ddl_absorption_pg.py -q",
+      "reason": "W2-6:r1_0036 對已被 startup DDL 補過的舊庫是否冪等,只有真 PG 測得出來。該 CI step 顯式擋「全 skip」。"
+    },
+    {
+      "path": "services/ingestion-worker/tests/test_job_state_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "services/ingestion-worker/tests/test_job_state_pg.py",
+      "reason": "The worker unit suite skips without a disposable PostgreSQL DSN; postgres-rls runs lease fencing, reaper grace, retry taxonomy, DLQ, and terminal-write recovery proofs in an isolated database."
+    },
+    {
+      "path": "services/ingestion-worker/tests/test_similarity_relations_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "services/ingestion-worker/tests/test_similarity_relations_pg.py",
+      "reason": "The worker unit suite skips without a disposable PostgreSQL DSN; postgres-rls runs concurrent request dedupe, single-owner claim, expired-lease recovery, and stale-owner fencing proofs."
     }
   ],
   "quarantine": [],

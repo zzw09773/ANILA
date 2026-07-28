@@ -27,6 +27,12 @@ doc 08 §15 未規定明確的 wire 欄位/聚合格式,故採 Slice 3c 約定�
 
 ``?format=csv`` 產出 UTF-8(含 BOM,供 Excel 正確辨識)的 text/csv 變體。
 僅限 admin/owner(``require_admin`` 兼含 owner)。
+
+W2-11 另增持續性抽查報表(``/sampling-report``)與複核動作
+(``/sampling-reviews``):隨機取樣文件供權責人複核,複核寫入
+``classification_sampling_reviews`` + audit。雙重 gate = admin **且**
+該 collection 對呼叫者可見(``_require_collection_access``),避免報表
+含文件標題卻變成新的洩漏面。
 """
 
 from __future__ import annotations
@@ -34,14 +40,20 @@ from __future__ import annotations
 import csv
 import io
 from datetime import datetime, timezone
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from anila_contracts import Classification as ClassificationLevel
+from app.api.ingestion.collections import _require_collection_access
+from app.api.ingestion.surface import ANY_SURFACE
 from app.database import get_db
 from app.models.agent import Agent
+from app.models.classification import ClassificationSamplingReview
 from app.models.conversation import Conversation
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.message import Message
@@ -49,8 +61,8 @@ from app.models.model_registry import ModelRegistry
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task
 from app.models.user import User
-from anila_contracts import Classification as ClassificationLevel
-from app.services.auth_service import require_admin
+from app.services.audit_service import log_audit_event
+from app.services.auth_service import is_admin_tier, require_admin
 
 router = APIRouter(prefix="/api/classification", tags=["機敏分類盤點"])
 
@@ -86,6 +98,8 @@ _RESOURCE_META: dict[str, tuple[str, str | None]] = {
     "tasks": ("任務執行期分類等級", None),
     "source_snapshots": ("檢索來源快照分類等級", None),
 }
+
+_SamplingOutcome = Literal["confirmed", "mismatch", "needs_followup"]
 
 
 class _ResourceSpec:
@@ -239,6 +253,65 @@ def _to_csv(inventory: dict) -> str:
     return "﻿" + buffer.getvalue()
 
 
+def _visible_collection_ids(db: Session, admin: User) -> list[int]:
+    """Collections the caller may see under the ownership/admin ACL.
+
+    Sampling rows carry document titles — never return a collection the
+    caller could not open via the normal ingestion ACL.
+    """
+    q = db.query(IngestionCollection.id)
+    if not is_admin_tier(admin):
+        q = q.filter(IngestionCollection.created_by == admin.id)
+    return [row[0] for row in q.all()]
+
+
+class SamplingReviewCreate(BaseModel):
+    """POST /api/classification/sampling-reviews 請求體。"""
+
+    document_id: int = Field(..., gt=0)
+    attested_level: ClassificationLevel
+    outcome: _SamplingOutcome = "confirmed"
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class SamplingReportDocument(BaseModel):
+    """One row in GET /api/classification/sampling-report."""
+
+    document_id: int
+    title: str | None = None
+    filename: str | None = None
+    classification_level: str | None = None
+    classification_level_valid: bool
+    uploader_user_id: int | None = None
+    uploader_username: str | None = None
+    collection_id: int
+    collection_name: str | None = None
+    collection_classification_level: str | None = None
+
+
+class SamplingReportResponse(BaseModel):
+    """GET /api/classification/sampling-report response."""
+
+    generated_at: str
+    sample_size: int
+    requested_n: int
+    documents: list[SamplingReportDocument]
+
+
+class SamplingReviewResponse(BaseModel):
+    """POST /api/classification/sampling-reviews response."""
+
+    id: int
+    document_id: int
+    collection_id: int
+    document_level_at_review: str
+    attested_level: str
+    outcome: _SamplingOutcome
+    note: str | None = None
+    reviewer_user_id: int
+    created_at: str | None = None
+
+
 @router.get("/inventory")
 def get_classification_inventory(
     format: str = Query("json", pattern="^(json|csv)$"),
@@ -259,3 +332,182 @@ def get_classification_inventory(
             },
         )
     return inventory
+
+
+@router.get("/sampling-report", response_model=SamplingReportResponse)
+def get_classification_sampling_report(
+    sample_size: int = Query(20, ge=1, le=200, alias="n"),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> SamplingReportResponse:
+    """W2-11 continuous sampling report for authorized reviewers.
+
+    Returns a random sample of up to ``n`` documents the caller can see,
+    with title + current level + uploader + collection. Double-gated:
+    ``require_admin`` **and** collection visibility.
+    """
+    visible = _visible_collection_ids(db, admin)
+    if not visible:
+        return SamplingReportResponse(
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            sample_size=0,
+            requested_n=sample_size,
+            documents=[],
+        )
+
+    # Prefer documents not yet attested; fall back to any visible doc so the
+    # report stays useful after the first full pass.
+    reviewed_ids = {
+        row[0]
+        for row in db.query(ClassificationSamplingReview.document_id).distinct().all()
+    }
+    base = (
+        db.query(IngestionDocument, IngestionCollection, User)
+        .join(
+            IngestionCollection,
+            IngestionCollection.id == IngestionDocument.collection_id,
+        )
+        .outerjoin(User, User.id == IngestionDocument.uploaded_by)
+        .filter(IngestionDocument.collection_id.in_(visible))
+    )
+    unreviewed = (
+        base.filter(~IngestionDocument.id.in_(reviewed_ids))
+        if reviewed_ids
+        else base
+    )
+    rows = (
+        unreviewed.order_by(func.random())
+        .limit(sample_size)
+        .all()
+    )
+    if len(rows) < sample_size:
+        already = {doc.id for doc, _coll, _user in rows}
+        filler_q = base
+        if already:
+            filler_q = filler_q.filter(~IngestionDocument.id.in_(already))
+        filler = (
+            filler_q.order_by(func.random())
+            .limit(sample_size - len(rows))
+            .all()
+        )
+        rows = list(rows) + list(filler)
+
+    documents: list[SamplingReportDocument] = []
+    for doc, coll, uploader in rows:
+        # Fail-closed on unknown stored levels — surface as null + flag rather
+        # than inventing a bucket.
+        level_ok = True
+        try:
+            level = ClassificationLevel.from_storage(
+                doc.classification_level
+            ).to_storage()
+        except ValueError:
+            level = None
+            level_ok = False
+        documents.append(
+            SamplingReportDocument(
+                document_id=doc.id,
+                title=doc.title or doc.filename,
+                filename=doc.filename,
+                classification_level=level,
+                classification_level_valid=level_ok,
+                uploader_user_id=doc.uploaded_by,
+                uploader_username=uploader.username if uploader else None,
+                collection_id=coll.id,
+                collection_name=coll.name,
+                collection_classification_level=coll.classification_level,
+            )
+        )
+
+    return SamplingReportResponse(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        sample_size=len(documents),
+        requested_n=sample_size,
+        documents=documents,
+    )
+
+
+@router.post(
+    "/sampling-reviews",
+    response_model=SamplingReviewResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_classification_sampling_review(
+    payload: SamplingReviewCreate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> SamplingReviewResponse:
+    """Attest one sampled document; writes ledger row + audit event.
+
+    Double gate: admin **and** collection visibility for the document.
+    """
+    doc = db.get(IngestionDocument, payload.document_id)
+    if doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+    # Visibility gate — raises 403/404 if the admin cannot see this collection.
+    _require_collection_access(
+        db, admin, doc.collection_id, origin=ANY_SURFACE
+    )
+
+    try:
+        document_level = ClassificationLevel.from_storage(
+            doc.classification_level
+        ).to_storage()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document classification state is invalid",
+        ) from exc
+
+    attested = payload.attested_level.to_storage()
+    review = ClassificationSamplingReview(
+        document_id=doc.id,
+        collection_id=doc.collection_id,
+        reviewer_user_id=admin.id,
+        document_level_at_review=document_level,
+        attested_level=attested,
+        outcome=payload.outcome,
+        note=payload.note,
+    )
+    db.add(review)
+    db.flush()
+
+    log_audit_event(
+        db,
+        commit=False,
+        actor=admin,
+        action="classification.sampling_review",
+        resource_type="ingestion_document",
+        resource_id=doc.id,
+        detail=(
+            f"抽查複核文件 #{doc.id}:outcome={payload.outcome},"
+            f"stored={document_level},attested={attested}"
+        ),
+        metadata={
+            "review_id": review.id,
+            "collection_id": doc.collection_id,
+            "document_id": doc.id,
+            "document_level_at_review": document_level,
+            "attested_level": attested,
+            "outcome": payload.outcome,
+        },
+    )
+    db.commit()
+    db.refresh(review)
+
+    return SamplingReviewResponse(
+        id=review.id,
+        document_id=review.document_id,
+        collection_id=review.collection_id,
+        document_level_at_review=review.document_level_at_review,
+        attested_level=review.attested_level,
+        outcome=review.outcome,  # type: ignore[arg-type]
+        note=review.note,
+        reviewer_user_id=review.reviewer_user_id,
+        created_at=(
+            review.created_at.isoformat() if review.created_at else None
+        ),
+    )

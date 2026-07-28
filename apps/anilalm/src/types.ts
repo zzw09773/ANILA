@@ -34,6 +34,7 @@ export interface Collection {
   chunk_count: number
   bytes_stored: number
   created_by: number
+  classification_level?: string
   created_at: string
   updated_at: string
 }
@@ -63,7 +64,7 @@ export interface IngestionDocument {
   indexed_at: string | null
 }
 
-/** Returned from `GET /api/ingestion/documents/:id` — adds last-job detail. */
+/** Returned from `GET /api/personal/documents/:id` — adds last-job detail. */
 export interface IngestionDocumentDetail extends IngestionDocument {
   latest_job_id: number | null
   latest_job_status: string | null
