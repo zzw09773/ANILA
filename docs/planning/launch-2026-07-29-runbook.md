@@ -24,6 +24,105 @@
 
 ---
 
+## 0.5 ⛔ 從 0 部署的實測阻礙(2026-07-28 隔離 project 實地演練所得)
+
+我在本機用隔離的 compose project 從零跑了一次正式 `platform.yml`,以下每一條
+都是**實際撞到的**,不是推測。依撞到的順序:
+
+| # | 阻礙 | 現象 | 解法 |
+|---|---|---|---|
+| 1 | **`deploy-prod.sh` 拒絕在 feature 分支執行** | `deployment identity mismatch` | 變更必須先進 `prod-intranet-card`(見 §9) |
+| 2 | **39 個必填環境變數**,其中 14 個是鎖定映像的 `sha256:` content ID | compose 直接不解析 | 見下方完整配方;映像 ID 來自氣隙匯出 |
+| 3 | `nginx` 的 `depends_on` 指向被 profile 排除的服務 | `service "nginx" depends on undefined service "anilalm"` —— **整個專案無效,連 DB 都起不來** | **已修**(`20ed02f`) |
+| 4 | 部署姿態斷言 fail-closed | `Refusing to start: ... posture mismatch` 並逐項列出 | 補齊卡片五項,見配方 |
+| 5 | **必須掛一份 CRL** | `CARD_CRL_BUNDLE_PATH must be a mounted CRL file` | 見下方 ⛔ |
+| 6 | 必須宣告 CRL 來源 | `CARD_CRL_SOURCE must name the offline sync source/owner` | 填離線同步來源/負責人 |
+| 7 | 必須宣告憑證政策 OID | `CARD_REQUIRED_CERT_POLICY_OIDS is required` | 向 CSPKI 取得實際 OID |
+| 8 | **CRL 必須由釘選的 CSPKI CA 簽發** | `card CRL bundle validation failed: CRL issuer 不在釘選 CA bundle` | **⛔ 無法繞過,見下** |
+
+### ⛔ 今天唯一無法用設定解決的阻礙:CSPKI 的 CRL
+
+第 8 條是硬的。我用自製 CA 產的測試 CRL **被正確拒絕** —— 平台要求 CRL 的簽發者
+必須落在釘選的 `cspki_ca_bundle.pem` 裡。這代表:
+
+**沒有一份有效的、由中科院 CSPKI 簽發的憑證撤銷清單,`prod-intranet-card` 的 csp
+就不會啟動。** 這不是可以用旗標放寬的東西(放寬它等於讓被撤銷的卡還能登入),
+也不是我能在程式碼裡替你解決的。
+
+**這是今天要立刻去要的東西**,而且要同時拿到:
+1. 有效的 CRL 檔(放進 `<repo>/share/pki/`,容器內是 `/etc/anila/pki/`)
+2. 該 CRL 的**離線同步來源與負責人**(填 `CARD_CRL_SOURCE`)
+3. 卡片憑證的**政策 OID** 與 **EKU OID**(填 `CARD_REQUIRED_CERT_POLICY_OIDS`
+   / `CARD_REQUIRED_EKU_OID`)
+
+如果 `.15` 上**已經有**一個在跑的 card 部署,那這些東西就已經在那台機器的 `.env`
+與 `share/pki/` 裡了 —— **先去那台機器上抄,不要重新申請**。這是最快的路。
+
+### 完整 `.env` 配方(演練驗證過的最小集)
+
+```bash
+# 身分與路徑
+ANILA_DEPLOYMENT_PROFILE=prod-intranet-card
+ANILA_HOST=anila.ai.ncsist.org.tw
+SITE_URL=https://anila.ai.ncsist.org.tw
+ANILA_SECRETS_DIR=/opt/anila/secrets
+ANILA_STATE_DIR=/opt/anila/state
+ANILA_TLS_CERTS_DIR=/opt/anila/tls
+
+# 14 個鎖定映像(sha256:...,由氣隙匯出產生)
+ANILA_IMAGE_CSP=sha256:...
+ANILA_IMAGE_INGESTION_WORKER=sha256:...
+ANILA_IMAGE_ROUTER=sha256:...
+ANILA_IMAGE_ANILA_UI=sha256:...
+ANILA_IMAGE_ANILALM=sha256:...          # 即使不上線仍要填(compose 要解析)
+ANILA_IMAGE_PPTX_RENDERER=sha256:...
+ANILA_IMAGE_ANILA_STUDIO=sha256:...
+ANILA_IMAGE_ANILA_AGENT=sha256:...
+ANILA_IMAGE_ASR_GATEWAY=sha256:...
+ANILA_IMAGE_CSP_DB=sha256:...
+ANILA_IMAGE_REDIS=sha256:...
+ANILA_IMAGE_NGINX=sha256:...
+ANILA_IMAGE_CODESERVER=sha256:...       # 不啟動仍要填
+ANILA_IMAGE_N8N=sha256:...              # 同上
+ANILA_IMAGE_GITLAB=sha256:...           # 同上
+
+# 密鑰(每個都要真值,dev 預設值會讓平台拒絕啟動)
+ADMIN_PASSWORD=...            CSP_DB_PASSWORD=...        CSP_APP_DB_PASSWORD=...
+CSP_SECRET_KEY=...            CSP_SERVICE_TOKEN=...      INTERNAL_PLATFORM_API_KEY=...
+STUDIO_ARTIFACT_SERVICE_TOKEN=...       STUDIO_RUNTIME_SERVICE_TOKEN=...
+STUDIO_JOB_ENVELOPE_HMAC_KEY=...        INGESTION_QUEUE_HMAC_KEY=...
+EMBEDDING_MODEL_FINGERPRINT=...
+CODESERVER_PASSWORD=...       N8N_ENCRYPTION_KEY=...     N8N_OWNER_EMAIL=...
+N8N_OWNER_PASSWORD_HASH=...   GITLAB_ROOT_PASSWORD=...   GITLAB_SSH_BIND_IP=127.0.0.1
+
+# 卡片姿態(prod-intranet-card 的斷言會逐項檢查,缺一不啟動)
+ENABLE_CARD_LOGIN=true
+REQUIRE_CARD_LOGIN_ONLY=true
+ANILA_ALLOW_HTTP_AGENT_ENDPOINT=true     # MLSteam agent 走純 http NodePort
+ANILA_ALLOW_HTTP_ENDPOINT=0              # ⚠ 這個必須維持 0
+CARD_CRL_REQUIRED=true
+CARD_INITIAL_OWNERS=<初始 owner 的卡號>
+CARD_CRL_BUNDLE_PATH=/etc/anila/pki/<真的 CSPKI CRL>.pem
+CARD_CRL_SOURCE=<離線同步來源/負責人>
+CARD_REQUIRED_CERT_POLICY_OIDS=<CSPKI 政策 OID>
+CARD_REQUIRED_EKU_OID=<CSPKI EKU OID>
+
+# 連線池與逾時(2026-07-28 新接線,先前設了也不會生效)
+ANILA_DB_POOL_SIZE=10
+ANILA_DB_MAX_OVERFLOW=20
+ANILA_DB_IDLE_TX_TIMEOUT_MS=330000       # 必須 > LLM_TIMEOUT×1000
+LLM_TIMEOUT=300
+
+# agent 時效(2026-07-28 新接線)
+AGENT_TRACE_TEST_FRESHNESS_SECONDS=604800   # ⚠ 見 §10,預設 86400 = 24 小時就過期
+ANILA_PILOT_MODE=false                       # ⚠ true 會讓 agent 清單直接回空
+```
+
+**啟動 stack 時不要帶任何 profile** —— `codeserver` / `n8n` / `gitlab` / `anilalm`
+都在 profile 後面,不帶就不會起來,這是正確姿態。
+
+---
+
 ## 1. 今晚:部署與驗證
 
 ```bash
@@ -193,3 +292,60 @@ ANILA_CHAT_MODEL=<model> \
   開放範圍變大不改變這條。
 - `ENABLE_PUBLIC_SHARE` 與 `ENABLE_MEMORY` 在 `platform.yml` 預設皆為 `false`,
   維持原樣。
+
+
+---
+
+## 9. 變更怎麼上到部署分支
+
+`deploy-prod.sh` 的 `check_branch` 只接受 `prod-intranet-card` /
+`prod-public-passwd` / `prod-military-passwd` / `trial-military`,在 feature
+分支上直接 `deployment identity mismatch` 中止。所以今天的路徑是:
+
+1. **PR #53 合入 `main`**(113 個 commit,CI 全綠)
+2. **`main` → `prod-intranet-card`**。兩條分支目前**只差 `.env.example` 一個檔案**
+   (24 行),所以這一步很乾淨。
+   ⚠ **`.env.example` 的姿態值必須語意重推導,不可直接套舊 diff** ——
+   以 main 現行範本為基底、只覆寫 card 分支蓄意的值(`ENABLE_PUBLIC_SHARE=false`、
+   `ENABLE_MEMORY=false`、`REQUIRE_CARD_LOGIN_ONLY=true` 等)。07-22 曾因為
+   直接 apply 舊 diff 而弄丟 card 的旗標。
+3. 在 `prod-intranet-card` 上跑 `deploy-prod.sh`。
+
+---
+
+## 10. 既有 agent 要怎麼上線 —— 短答:**不改 agent 就上不了**
+
+這是查證過的結論,不是推測:
+
+- **註冊本身不需要 agent 做任何事** —— 是人(admin/developer)拿 JWT 打
+  `POST /api/agents/register`,manifest 也可以由平台端代填,agent 不必架
+  `.well-known` 端點。
+- **但註冊 ≠ 可派工。** `approve` 對 `trace_test_passed_at` 是**硬閘、無 grandfather
+  條款**,沒過就回 409。而 trace-test 的必過項包含「agent 主動把 6 種 span POST
+  回 CSP」,**沒有任何旗標可以關掉**。
+- 唯一能跳過 readiness 的 `ALLOW_LEGACY_AGENT_DISPATCH`,在任何 `prod-*` 姿態下
+  設 true 會讓 **CSP 拒絕啟動**。
+- **關鍵不對稱**:CSP 對 agent **只送 `X-CSP-Service-Token`,永遠不送
+  `Authorization`**(刻意的:不把 gateway key 外流給第三方 agent)。所以只認
+  `Authorization: Bearer` 的既有 agent 會回 401,在連線測試第一關就死。
+
+### agent 端最小改動(兩件)
+
+1. **收 `X-CSP-Service-Token`** —— 最低限度是「收到沒有 `Authorization` 的請求
+   時不要回 401」。治理主控台發 `csk-` 的畫面旁邊就附了可直接貼的
+   Starlette middleware(`apps/csp-governance-ui/src/components/agents/inboundGuardSnippets.js`)。
+2. **回吐 6 種 span** 到 `POST {CSP}/v1/traces/{trace_id}/spans`,帶
+   `Authorization: Bearer <該 agent 的 csk->` 並**原樣 echo** `X-ANILA-Task-Id`
+   與 `X-ANILA-User-Id`(不符會 403)。必備:`agent.run.started/finished`、
+   `agent.model_call.started/finished`、`agent.output.started/finished`,
+   且父子關係要收斂到單一根。參考實作在
+   `packages/anila-agent/anila_agent/tracing.py`。
+
+### ⚠ 開放日的兩個地雷
+
+- **trace-test 證據 24 小時就過期**(`AGENT_TRACE_TEST_FRESHNESS_SECONDS` 預設
+  86400)。過期後 agent **靜默**變成不可派工 —— 沒有錯誤、沒有通知,只是從
+  `GET /v1/agents` 消失。**今天做 trace-test、明天才開放,正好會踩到。**
+  已接進 compose,`.env` 設 `604800`(7 天,上限)可避開。
+- **`ANILA_PILOT_MODE` 必須是 `false`** —— true 時 `GET /v1/agents` 直接回空陣列,
+  Router 一個 agent 都看不到。
