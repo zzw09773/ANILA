@@ -9,7 +9,7 @@
 csp	anila-platform-csp	01-anila-built.tar.gz	default	built
 ingestion-worker	anila-platform-ingestion-worker	01-anila-built.tar.gz	default	built
 router	anila-platform-router	01-anila-built.tar.gz	default	built
-anilalm	anila-platform-anilalm	01-anila-built.tar.gz	default	built
+anilalm	anila-platform-anilalm	01-anila-built.tar.gz	profile:personal-kb	built
 anila-ui	anila-platform-anila-ui	01-anila-built.tar.gz	default	built
 pptx-renderer	anila-platform-pptx-renderer	01-anila-built.tar.gz	default	built
 anila-studio	anila-platform-anila-studio	01-anila-built.tar.gz	default	built
