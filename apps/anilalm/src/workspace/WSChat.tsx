@@ -164,7 +164,7 @@ export function WSChat({ flex }: WSChatProps) {
     setComposer('')
 
     let convId = activeConversationId
-    let isFirstTurn = !convId
+    const isFirstTurn = !convId
     try {
       // Lazy-create the conversation on the first turn so empty rooms
       // don't pollute the sidebar. The new row gets pinned to the

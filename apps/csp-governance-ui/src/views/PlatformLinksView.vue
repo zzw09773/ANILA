@@ -200,6 +200,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import {
   listPlatformLinks, createPlatformLink, updatePlatformLink,
   deactivatePlatformLink, purgePlatformLink,
@@ -315,7 +316,7 @@ async function fetchLinks() {
     }
     links.value = (Array.isArray(data) ? data : (data?.services || data?.data || [])).map(normalizeService)
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '載入服務清單失敗'
+    pageError.value = extractError(e, '載入服務清單失敗')
   }
 }
 
@@ -394,7 +395,7 @@ async function handleSubmit() {
     showModal.value = false
     await fetchLinks()
   } catch (e) {
-    toast(e.response?.data?.detail || '儲存失敗', { tone: 'error' })
+    toast(extractError(e, '儲存失敗'), { tone: 'error' })
   }
 }
 
@@ -404,7 +405,7 @@ async function handleDeactivate(link) {
     await (registryMode.value ? deactivateService(link.id) : deactivatePlatformLink(link.id))
     await fetchLinks()
   } catch (e) {
-    toast(e.response?.data?.detail || '停用失敗', { tone: 'error' })
+    toast(extractError(e, '停用失敗'), { tone: 'error' })
   }
 }
 
@@ -415,7 +416,7 @@ async function handleReactivate(link) {
       : updatePlatformLink(link.id, { is_active: true }))
     await fetchLinks()
   } catch (e) {
-    toast(e.response?.data?.detail || '啟用失敗', { tone: 'error' })
+    toast(extractError(e, '啟用失敗'), { tone: 'error' })
   }
 }
 
@@ -432,7 +433,7 @@ async function handlePurge(link) {
     await (registryMode.value ? purgeService(link.id) : purgePlatformLink(link.id))
     await fetchLinks()
   } catch (e) {
-    toast(e.response?.data?.detail || '刪除失敗', { tone: 'error' })
+    toast(extractError(e, '刪除失敗'), { tone: 'error' })
   }
 }
 </script>

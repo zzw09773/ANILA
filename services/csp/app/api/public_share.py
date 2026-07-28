@@ -1,6 +1,8 @@
 """Public read-only share page — no authentication required."""
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 from typing import Optional
 
@@ -18,7 +20,7 @@ from app.services.conversation_service import (
 router = APIRouter(prefix="/api/public/share", tags=["public-share"])
 
 
-class PublicMessageOut(BaseModel):
+class PublicMessageOut(ApiResponseModel):
     id: int
     role: str
     content: str
@@ -30,7 +32,7 @@ class PublicMessageOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class PublicShareOut(BaseModel):
+class PublicShareOut(ApiResponseModel):
     share_token: str
     conversation_id: int
     conversation_title: str

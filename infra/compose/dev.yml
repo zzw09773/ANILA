@@ -33,6 +33,13 @@ services:
       POSTGRES_USER: csp
       POSTGRES_PASSWORD: csp
       POSTGRES_DB: csp
+      # ⛔ 鐵則(W2-10 / C1 §c):與正式 stack 同調 —— csp-db 的 TZ 必須維持 UTC,
+      # 直到 C1 全部批次做完。理由同 platform.yml:治理帳的 created_at 帶
+      # `server_default CURRENT_TIMESTAMP`(timestamptz),寫進 `timestamp without
+      # time zone` 欄時按 session TZ 轉換 → 改成台北會讓同一欄混兩種語意且無標記
+      # 可分。dev 也不例外:dev 庫是排批次 2 維護窗前量測 ALTER 耗時的地方,
+      # 它的既有值語意必須跟正式庫一致才有參考價值。
+      TZ: Etc/UTC
     ports:
       - "127.0.0.1:5533:5432"
     volumes:
@@ -49,6 +56,11 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/csp.Dockerfile
+      # 2026-07-24 freeze: event loop stuck with process still alive; bake
+      # py-spy into the dev image so the next freeze can dump stacks immediately.
+      # Prod builds leave INSTALL_DEBUG_TOOLS at default 0 (no debug tools).
+      args:
+        INSTALL_DEBUG_TOOLS: "1"
     expose:
       - "8000"
     environment:
@@ -56,6 +68,14 @@ services:
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       MIGRATION_DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
       EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT_DEV:?EMBEDDING_MODEL_FINGERPRINT_DEV must be sha256:<64 lowercase hex> for deployed dev embedding weights}
+      # 部署的 embedding 模型原生輸出維度。未設 = 嚴格模式,只接受 4000 或
+      # NV-Embed 原生的 4096。跑較小維度的模型(例如 nemotron-3-embed-1b 的
+      # 2048)必須顯式設定,其向量才會被補零到 halfvec(4000)。
+      #
+      # 為什麼不是無條件接受任何短向量:端點若悄悄換成別的模型(例如 1536 維),
+      # 無條件補零會讓語意無意義的向量進索引且無聲摧毀檢索品質,而 collection
+      # 的 embedding_fingerprint 守的是**宣告**的模型身分,抓不到端點漂移。
+      ANILA_EMBED_SOURCE_DIM: ${ANILA_EMBED_SOURCE_DIM_DEV:-}
       SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
       # Dev 寫死 "1"，不經 ${} 展開——避免被 .env 裡的 ANILA_ALLOW_DEV_SECRET=0
       # 鎖死。startup_security 在 dev 模式下只 log warning 不擋。
@@ -103,6 +123,9 @@ services:
       # 容器重建後 IP 可能漂,漂了要更新;空值=記 proxy IP)。
       ANILA_TRUSTED_PROXY_CIDRS: "${ANILA_TRUSTED_PROXY_CIDRS:-}"
       ANILA_AUDIT_STRICT: "${ANILA_AUDIT_STRICT:-0}"
+      # 外部 gateway 個別模型收到 stream_options 會掛死(如 NVIDIA 的
+      # z-ai/glm-5.2);dev 測外部 API 時可設 0 關閉 usage 注入。
+      ANILA_STREAM_INCLUDE_USAGE: "${ANILA_STREAM_INCLUDE_USAGE:-1}"
       ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE_DEV:-development}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
@@ -179,11 +202,15 @@ services:
     depends_on:
       csp-db:
         condition: service_healthy
+    # 2026-07-24 freeze: urlopen timeout=2s was too sensitive — a briefly busy
+    # event loop accumulated FailingStreak false positives. Bump probe timeout
+    # 2s→5s (urlopen synced) and retries 6→8: fewer busy-loop false alarms,
+    # at the cost of ~20s extra delay before a true freeze is marked unhealthy.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=2).read()\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=5).read()\""]
       interval: 10s
       timeout: 5s
-      retries: 6
+      retries: 8
       start_period: 20s
     restart: unless-stopped
 
@@ -238,6 +265,10 @@ services:
       EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT_DEV:?EMBEDDING_MODEL_FINGERPRINT_DEV must be sha256:<64 lowercase hex> for deployed dev embedding weights}
       EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
       EMBEDDING_DIM: "4000"
+      # 與 csp 的 ANILA_EMBED_SOURCE_DIM 同義(worker 側的名字)。未設 = 嚴格。
+      # 注意 EMBEDDING_DIM 是**儲存契約寬度**(必須是 4000),
+      # EMBEDDING_SOURCE_DIM 是**模型原生輸出維度**,兩者不同。
+      EMBEDDING_SOURCE_DIM: ${ANILA_EMBED_SOURCE_DIM_DEV:-}
       PARSE_TIMEOUT_SECONDS: "${INGESTION_PARSE_TIMEOUT_SECONDS_DEV:-120}"
       INDEX_TIMEOUT_SECONDS: "${INGESTION_INDEX_TIMEOUT_SECONDS_DEV:-120}"
       JOB_TIMEOUT_SECONDS: "${INGESTION_JOB_TIMEOUT_SECONDS_DEV:-900}"
@@ -321,6 +352,7 @@ services:
     depends_on:
       csp:
         condition: service_healthy
+        restart: true
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
       interval: 10s
@@ -472,6 +504,7 @@ services:
     depends_on:
       csp:
         condition: service_healthy
+        restart: true
       redis:
         condition: service_healthy
       pptx-renderer:
@@ -532,6 +565,7 @@ services:
     depends_on:
       csp:
         condition: service_healthy
+        restart: true
       redis:
         condition: service_healthy
     networks:

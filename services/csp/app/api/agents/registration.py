@@ -1,3 +1,4 @@
+from app.schemas.base import ApiResponseModel
 """Agent registration / CRUD / template download endpoints.
 
 Split verbatim from the former single-module ``app/api/agents.py``
@@ -13,6 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+
+from app.api.ingestion.surface import ANY_SURFACE
 from anila_contracts import Classification as ClassificationLevel
 from app.database import get_db
 from app.models.agent import Agent
@@ -126,7 +129,7 @@ class AgentRegisterRequest(BaseModel):
     shadow: bool = False
 
 
-class AgentResponse(BaseModel):
+class AgentResponse(ApiResponseModel):
     id: int
     name: str
     owner_user_id: int
@@ -336,7 +339,9 @@ def register_agent(
     # owner) so an agent can't be bound to a collection its owner can't see.
     if request.collection_id is not None:
         from app.api.ingestion.collections import _require_collection_access
-        _require_collection_access(db, current_user, request.collection_id)
+        _require_collection_access(
+            db, current_user, request.collection_id, origin=ANY_SURFACE
+        )
 
     # doc 05 §4 — optional manifest is validated fail-closed (422) and the
     # normalized snapshot is stored so the registry has the formal schema

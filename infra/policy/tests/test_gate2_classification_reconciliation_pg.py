@@ -74,7 +74,12 @@ def _run_alembic(database_url: str, target: str, *, check: bool = True):
             # Gate 3.  Supply the same explicit weight-identity contract that a
             # real migration operator must provide.
             "EMBEDDING_MODEL_FINGERPRINT": TEST_EMBEDDING_FINGERPRINT,
-            "PYTHONPATH": ".",
+            # Prepend rather than replace — see test_audit_logs_detail_trgm_pg.
+            # Overwriting PYTHONPATH with "." only works where the packages are
+            # installed editable into site-packages.
+            "PYTHONPATH": os.pathsep.join(
+                p for p in (".", os.environ.get("PYTHONPATH", "")) if p
+            ),
             "PYTHONIOENCODING": "utf-8",
         }
     )
@@ -269,7 +274,12 @@ def test_backfill_reconciles_all_rows_and_is_rerunnable(
             "MIGRATION_DATABASE_URL": database_url,
             "DATABASE_URL": database_url,
             "CSP_APP_DB_PASSWORD": "gate2-app-db",
-            "PYTHONPATH": ".",
+            # Prepend rather than replace — see test_audit_logs_detail_trgm_pg.
+            # Overwriting PYTHONPATH with "." only works where the packages are
+            # installed editable into site-packages.
+            "PYTHONPATH": os.pathsep.join(
+                p for p in (".", os.environ.get("PYTHONPATH", "")) if p
+            ),
         }
     )
     down = subprocess.run(

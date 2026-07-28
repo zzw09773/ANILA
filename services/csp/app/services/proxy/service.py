@@ -53,6 +53,7 @@ from app.services.proxy.usage import (
     _serialize_request_for_usage,
     enqueue_usage_task_linked,
 )
+from app.services.health_checker import is_explicitly_unhealthy
 from app.services.model_governance_receipts import (
     GovernedModelInvocation,
     ReceiptSubject,
@@ -110,6 +111,7 @@ class _LockedModelSnapshot:
     egress_policy_id: str | None
     upstream_egress_policy_id: str | None
     classification_ceiling: str | None
+    health_status: str | None
 
 
 def _freeze_locked_model(model: ModelRegistry) -> _LockedModelSnapshot:
@@ -139,6 +141,49 @@ def _freeze_locked_model(model: ModelRegistry) -> _LockedModelSnapshot:
         egress_policy_id=getattr(model, "egress_policy_id", None),
         upstream_egress_policy_id=getattr(model, "upstream_egress_policy_id", None),
         classification_ceiling=getattr(model, "classification_ceiling", None),
+        health_status=getattr(model, "health_status", None),
+    )
+
+
+def _reject_unhealthy_model(
+    *,
+    name: str | None,
+    health_status: str | None,
+    model_type: str | None = None,
+    target_agent_id: int | None = None,
+    health_status_source: str | None = None,
+) -> None:
+    """Fail closed on models explicitly marked unhealthy by health_checker.
+
+    Agent dispatches are out of scope (handled by agent readiness). Unknown /
+    skipped / never-probed statuses still forward. Detail must not include
+    upstream endpoint URLs. ``health_status_source`` is logged for audit
+    traceability (e.g. model.health_status / locked_registry / caller_supplied).
+    """
+    if target_agent_id is not None or model_type == "agent":
+        return
+    if not settings.ANILA_REJECT_UNHEALTHY_MODELS:
+        return
+    if not is_explicitly_unhealthy(health_status):
+        return
+    model_label = (name or "").strip() or "unknown"
+    source = (health_status_source or "").strip() or "unspecified"
+    logger.warning(
+        "circuit_breaker reject unhealthy model name=%s health_status=%s "
+        "source=%s",
+        model_label,
+        health_status,
+        source,
+    )
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "model_unhealthy",
+            "message": (
+                f"模型 {model_label} 已被 health probe 標記 unhealthy，"
+                "暫時拒絕轉發。可由 admin 檢視模型健康頁確認狀態。"
+            ),
+        },
     )
 
 
@@ -435,10 +480,10 @@ def _lock_registry_admission(
     except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail="模型治理登錄無法鎖定，已拒絕出向呼叫",
+            detail="模型治理紀錄無法鎖定，已拒絕出向呼叫",
         ) from exc
     if not active:
-        raise HTTPException(status_code=403, detail="推論目標已停用或治理登錄不存在")
+        raise HTTPException(status_code=403, detail="推論目標已停用或治理紀錄不存在")
     if locked.endpoint_url != registry_endpoint_url:
         raise HTTPException(
             status_code=409,
@@ -605,6 +650,65 @@ def _commit_stream_admission(governance_db) -> None:
         ) from exc
 
 
+def _release_stream_admission_session(governance_db) -> None:
+    """Defence in depth: hand the Session's pooled connection back before SSE.
+
+    Read ``app/database.py`` first.  **``expire_on_commit=False`` is the fix**;
+    this function is the belt to its braces.  Measured (SQLAlchemy 2.0.43):
+    ``_commit_stream_admission``'s ``commit()`` *already* returns the pooled
+    connection (``conns held after commit: 0``).  What re-pinned it in the
+    2026-07-25 cold-burst outage was the first attribute touch *after* that
+    commit — under the SQLAlchemy default every instance is expired at commit,
+    so the touch fires ``_load_expired``, re-opens a transaction and holds a
+    connection for the whole SSE body (``pg_active=31, idle_tx=30`` against
+    ``pool_size=10 + max_overflow=20``; 36/36 control-plane probes failed).
+
+    Calling ``close()`` here is still worth doing:
+
+    * It bounds the window structurally rather than by invariant.  The Session
+      otherwise lives until FastAPI unwinds ``get_db``'s ``AsyncExitStack``,
+      which happens only **after** ``StreamingResponse`` has fully drained, so
+      any future code that does begin a transaction mid-stream would re-pin a
+      connection for the rest of the response.
+    * It empties the identity map, so the Gate 5 post-stream receipt and the
+      teardown closure re-read rows from the database instead of from an
+      admission-time snapshot.
+
+    ``close()`` resets the Session but leaves it fully reusable: the teardown
+    closure/receipt writes check out a fresh connection, commit, and release
+    again — a short-lived transaction instead of one spanning the whole body.
+    Nothing moves to a different Session, so closure idempotency
+    (``closure_id``), the Gate 5 receipt binding and governance DB identity are
+    unchanged.
+
+    Two constraints on everything that runs after this call (both measured;
+    see the invariant list in ``app/database.py``):
+
+    1. Only **already-loaded column** values may be read off the now-detached
+       admission objects.  Traversing a relationship raises
+       ``DetachedInstanceError`` — ``expire_on_commit=False`` protects loaded
+       scalars, never relationships.
+    2. **Never mutate a pre-close instance after this point.**  Assigning to a
+       detached instance and committing raises nothing, logs nothing, and the
+       write is silently dropped.  Durable post-stream writes must re-load the
+       row in the reopened Session, which is what ``persist_task_call_closure``
+       does via ``populate_existing().with_for_update()``.
+    """
+    if governance_db is None:
+        return
+    close = getattr(governance_db, "close", None)
+    if not callable(close):
+        # Unit-test doubles expose only ``rollback``/``commit``.  Nothing to
+        # release, and never a reason to fail an admitted stream.
+        return
+    try:
+        close()
+    except Exception:
+        # A failed release must not kill an already-admitted call; the worst
+        # case degrades to the previous behavior (connection held longer).
+        logger.exception("串流 admission session 釋放失敗，連線可能延後歸還")
+
+
 def lock_agent_registry_admission(
     *, governance_db, agent_id: int, endpoint_url: str,
     admitted_classification_level: str,
@@ -738,6 +842,14 @@ async def _proxy_request_impl(
         task_run_id=task_run_id,
         governance_db=governance_db,
         admitted_classification_level=admitted_classification_level,
+    )
+    # Circuit breaker: refuse before SSRF guard / any upstream HTTP.
+    _reject_unhealthy_model(
+        name=getattr(model, "name", None),
+        health_status=getattr(model, "health_status", None),
+        model_type=getattr(model, "model_type", None),
+        target_agent_id=target_agent_id,
+        health_status_source="model.health_status",
     )
     timeout = _get_timeout(model.model_type)
     base_url = model.endpoint_url.rstrip("/")
@@ -1280,6 +1392,7 @@ async def _proxy_stream_impl(
     router_caller_user_id: int | None = None,
     router_context: Mapping[str, object] | None = None,
     model_name: str | None = None,
+    model_health_status: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
@@ -1317,6 +1430,16 @@ async def _proxy_stream_impl(
         governance_db=governance_db,
         admitted_classification_level=admitted_classification_level,
     )
+    # Circuit breaker: refuse before SSRF guard / any upstream HTTP.
+    # ``model_health_status`` is stamped by ``proxy_stream`` from the locked
+    # registry snapshot, governance row, or caller-supplied legacy fallback
+    # (None → treated as unknown → forward).
+    _reject_unhealthy_model(
+        name=model_name,
+        health_status=model_health_status,
+        target_agent_id=target_agent_id,
+        health_status_source="proxy_stream",
+    )
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
     _guard_outbound(
         target_url,
@@ -1335,7 +1458,13 @@ async def _proxy_stream_impl(
     body = {
         **request_body,
         "stream": True,
-        "stream_options": {"include_usage": True},
+        # 部分外部 gateway 模型收到 stream_options 會掛死(見 config
+        # ANILA_STREAM_INCLUDE_USAGE 註解);關閉時放棄 usage 回報。
+        **(
+            {"stream_options": {"include_usage": True}}
+            if settings.ANILA_STREAM_INCLUDE_USAGE
+            else {}
+        ),
     }
 
     if target_agent_id is not None:
@@ -1738,6 +1867,52 @@ async def _proxy_stream_impl(
             )
 
 
+def _governance_db_get(governance_db, entity, ident):
+    """Session.get-compatible lookup that tolerates minimal test DB fakes.
+
+    Returns ``None`` when ``governance_db`` has no callable ``get`` (or the
+    lookup fails), so callers treat missing health as unknown and allow
+    through the circuit breaker.
+    """
+    getter = getattr(governance_db, "get", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter(entity, ident)
+    except Exception:
+        # Never silently collapse a real DB failure into "health unknown →
+        # forward": production shouldn't reach this branch (locked snapshot
+        # path), so a warning here means something unexpected happened.
+        logger.warning(
+            "governance_db lookup failed for %s id=%s; treating health as unknown",
+            getattr(entity, "__name__", entity),
+            ident,
+            exc_info=True,
+        )
+        return None
+
+
+async def _persist_task_call_closure_off_loop(db, closure: TaskCallClosure) -> int | None:
+    """Run durable closure persistence off the asyncio event-loop thread.
+
+    ``persist_task_call_closure`` issues synchronous SQLAlchemy work
+    (``SELECT … FOR UPDATE`` on Task/TaskRun).  Doing that on the MainThread
+    freezes every concurrent coroutine — including health_checker and the
+    Session that still holds an open admission transaction — and closes the
+    deadlock ring observed in production.  Session affinity stays exclusive
+    to this await (no concurrent use of ``db`` on the loop while the worker
+    runs).
+    """
+
+    def _run_persist():
+        # Resolve the (possibly monkeypatched) symbol on the worker thread so
+        # unit tests that patch ``persist_task_call_closure`` still observe
+        # the off-loop thread identity inside their capture callback.
+        return persist_task_call_closure(db, closure)
+
+    return await asyncio.to_thread(_run_persist)
+
+
 async def proxy_stream(
     target_url: str,
     api_key_id: int,
@@ -1750,6 +1925,7 @@ async def proxy_stream(
     router_caller_user_id: int | None = None,
     router_context: Mapping[str, object] | None = None,
     model_name: str | None = None,
+    model_health_status: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
@@ -1853,7 +2029,48 @@ async def proxy_stream(
         # admission is still locked.  The durable pre-receipt may commit the
         # session itself; after this point the outbound target is already
         # pinned to the exact signed provider snapshot.
+        stream_health_status: str | None = None
+        stream_model_name = model_name
+        stream_health_source = "none"
+        if target_agent_id is None and locked_registry_model is not None:
+            stream_health_status = getattr(
+                locked_registry_model, "health_status", None
+            )
+            stream_model_name = locked_registry_model.name
+            stream_health_source = "locked_registry"
+        elif (
+            target_agent_id is None
+            and governance_db is not None
+            and usage_model_id is not None
+        ):
+            # Real SQLAlchemy Session exposes ``.get``; unit-test ``_DB``
+            # fakes often only implement ``rollback``/``commit``.  Missing
+            # lookup → treat health as unknown (circuit breaker allows).
+            row = _governance_db_get(governance_db, ModelRegistry, usage_model_id)
+            if row is not None:
+                stream_health_status = getattr(row, "health_status", None)
+                stream_model_name = getattr(row, "name", None) or stream_model_name
+                stream_health_source = "governance_db"
+        # Legacy stream (governance_db=None): no locked row — fall back to
+        # caller-supplied health from the model object / explicit kwarg.
+        if (
+            target_agent_id is None
+            and stream_health_status is None
+            and model_health_status is not None
+        ):
+            stream_health_status = model_health_status
+            stream_health_source = "caller_supplied"
+        # Circuit breaker before admission commit / any upstream HTTP.
+        _reject_unhealthy_model(
+            name=stream_model_name,
+            health_status=stream_health_status,
+            target_agent_id=target_agent_id,
+            health_status_source=stream_health_source,
+        )
         _commit_stream_admission(governance_db)
+        # Admission is durable and every row lock is gone; the SSE body must
+        # not sit on a pooled connection while it drains.
+        _release_stream_admission_session(governance_db)
         async with registry.register(task_id) as cancel_event:
             upstream = _proxy_stream_impl(
                 target_url=target_url,
@@ -1866,7 +2083,8 @@ async def proxy_stream(
                 user_identity=user_identity,
                 router_caller_user_id=router_caller_user_id,
                 router_context=router_context,
-                model_name=model_name,
+                model_name=stream_model_name,
+                model_health_status=stream_health_status,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
                 requires_encryption=requires_encryption,
@@ -1906,7 +2124,8 @@ async def proxy_stream(
                         raise StreamCancelled("live task cancellation requested")
         if governed is not None and authorization is not None:
             try:
-                _complete_governance(
+                await asyncio.to_thread(
+                    _complete_governance,
                     governed,
                     authorization,
                     terminal_capture.get("governance_usage", {}),
@@ -1916,29 +2135,43 @@ async def proxy_stream(
         if task_run_id is not None:
             if governance_db is None or task_id is None or not task_trace_id:
                 raise RuntimeError("Task stream closure 缺少治理上下文")
-            persist_task_call_closure(
-                governance_db,
-                TaskCallClosure(
-                    closure_id=closure_id,
-                    task_id=task_id,
-                    task_run_id=task_run_id,
-                    trace_id=task_trace_id,
-                    started_at=span_started_at,
-                    status="completed",
-                    is_agent=target_agent_id is not None,
-                    target_id=(
-                        target_agent_id
-                        if target_agent_id is not None
-                        else usage_model_id
-                    ),
-                    target_name=model_name,
-                    usage=usage_capture.get("record"),
-                    classification_level=effective_level,
+            try:
+                await _persist_task_call_closure_off_loop(
+                    governance_db,
+                    TaskCallClosure(
+                        closure_id=closure_id,
+                        task_id=task_id,
+                        task_run_id=task_run_id,
+                        trace_id=task_trace_id,
+                        started_at=span_started_at,
+                        status="completed",
+                        is_agent=target_agent_id is not None,
+                        target_id=(
+                            target_agent_id
+                            if target_agent_id is not None
+                            else usage_model_id
+                        ),
+                        target_name=model_name,
+                        usage=usage_capture.get("record"),
+                        classification_level=effective_level,
                         callsite=inference_callsite_id,
                         finalize_run=finalize_task_run_on_completion,
-                ),
-            )
-            closure_committed = True
+                    ),
+                )
+                closure_committed = True
+            except Exception:
+                # Bytes may already be on the wire; log loudly and let the
+                # finally path retry / leave the run for crash reconciliation.
+                logger.exception(
+                    "Task stream durable closure 失敗 run_id=%s", task_run_id
+                )
+                try:
+                    governance_db.rollback()
+                except Exception:
+                    logger.exception(
+                        "Task stream closure rollback 失敗 run_id=%s", task_run_id
+                    )
+                raise
         if task_id is not None:
             await registry.complete(task_id)
         done_block = terminal_capture.get("done_block")
@@ -1949,15 +2182,20 @@ async def proxy_stream(
         error = {"code": f"http_{exc.status_code}", "message": str(exc.detail)}
         if authorization is not None and not governance_closed:
             governance_closed = True
-            _record_governance_failure(governed, authorization, exc)
+            await asyncio.to_thread(
+                _record_governance_failure, governed, authorization, exc
+            )
         raise
     except StreamCancelled:
         status = "cancelled"
         error = {"code": "cancelled", "message": "使用者取消執行"}
         if authorization is not None and not governance_closed:
             governance_closed = True
-            _record_governance_failure(
-                governed, authorization, "使用者取消執行"
+            await asyncio.to_thread(
+                _record_governance_failure,
+                governed,
+                authorization,
+                "使用者取消執行",
             )
         # Cancellation is a normal terminal outcome.  Do not emit [DONE] and
         # do not translate it into a 5xx after response headers were sent.
@@ -1988,16 +2226,30 @@ async def proxy_stream(
         error = {"code": "stream_aborted", "message": type(exc).__name__}
         if authorization is not None and not governance_closed:
             governance_closed = True
-            _record_governance_failure(governed, authorization, exc)
+            # GeneratorExit/CancelledError must not schedule further awaits that
+            # can themselves be cancelled mid-teardown; keep this path sync.
+            if isinstance(exc, (GeneratorExit, asyncio.CancelledError)):
+                _record_governance_failure(governed, authorization, exc)
+            else:
+                await asyncio.to_thread(
+                    _record_governance_failure, governed, authorization, exc
+                )
         raise
     finally:
         if authorization is not None and not governance_closed:
             governance_closed = True
-            _record_governance_failure(
-                governed,
-                authorization,
-                error or "stream finalizer closed before completion",
-            )
+            try:
+                await asyncio.to_thread(
+                    _record_governance_failure,
+                    governed,
+                    authorization,
+                    error or "stream finalizer closed before completion",
+                )
+            except Exception:
+                logger.exception(
+                    "Task stream Gate 5 failure receipt 失敗 run_id=%s",
+                    task_run_id,
+                )
         if task_run_id is not None and not closure_committed:
             if governance_db is None or task_id is None or not task_trace_id:
                 logger.critical(
@@ -2005,7 +2257,7 @@ async def proxy_stream(
                 )
             else:
                 try:
-                    persist_task_call_closure(
+                    await _persist_task_call_closure_off_loop(
                         governance_db,
                         TaskCallClosure(
                             closure_id=closure_id,
@@ -2035,7 +2287,13 @@ async def proxy_stream(
                     # Streaming bytes may already be on the wire.  Never claim a
                     # successful durable closure; the still-running attempt is
                     # intentionally left for crash reconciliation.
-                    governance_db.rollback()
+                    try:
+                        governance_db.rollback()
+                    except Exception:
+                        logger.exception(
+                            "Task stream closure rollback 失敗 run_id=%s",
+                            task_run_id,
+                        )
                     logger.exception(
                         "Task stream durable closure 失敗 run_id=%s", task_run_id
                     )

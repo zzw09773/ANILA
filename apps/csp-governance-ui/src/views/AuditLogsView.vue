@@ -96,6 +96,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import { listAuditLogs } from '../api/auditLogs'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
 
@@ -115,7 +116,7 @@ async function fetchLogs() {
     })
     logs.value = data
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '載入稽核紀錄失敗'
+    pageError.value = extractError(e, '載入稽核紀錄失敗')
   }
 }
 onMounted(fetchLogs)

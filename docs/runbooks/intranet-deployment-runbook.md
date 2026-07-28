@@ -570,16 +570,32 @@ cd /opt/anila && docker compose up -d --no-build --pull never csp
 
 ### 5.1 n8n / GitLab / code-server 開發環境
 
-n8n 與 GitLab 是預設內網服務，分別使用
-`https://n8n.ai.ncsist.org.tw/`、`https://gitlab.ai.ncsist.org.tw/`；
-code-server 是 opt-in profile，先準備隔離 clone 後執行：
+**⚠ 2026-07-26（W1-8）起，三個工具都是 opt-in**：n8n 與 GitLab 先前沒有
+`profiles:`，所以照本 runbook 部署會**預設把它們一起拉起來** —— 兩者都有自己的
+認證邊界（n8n 原生 user-management、GitLab 的 initial root password），
+都不吃 CSP 的 `auth_request`，等於在平台旁邊多開兩個獨立認證面；而交付規格
+要求移除開發者工具的軍用分支也共用同一份 `platform.yml`。現在三者同屬
+`developer-tools` profile，不帶 profile 的 `up` 只會起 10 個平台服務。
+
+要用工具就顯式帶 profile：
 
 ```bash
+# n8n / GitLab（https://n8n.ai.ncsist.org.tw/、https://gitlab.ai.ncsist.org.tw/）
+docker compose -p anila-platform -f infra/compose/platform.yml \
+  --profile developer-tools up -d n8n gitlab
+
+# code-server：先準備「獨立 clone」，不要把正式 repo root / .env / secrets 放進去
 git clone <internal-gitlab-url> share/codeserver-sandbox/anila-dev
 bash infra/deployment/scripts/deploy-prod.sh codeserver-up
 # 使用完畢
 bash infra/deployment/scripts/deploy-prod.sh codeserver-down
 ```
+
+> `deploy-prod.sh` 沒有用 `--remove-orphans`，所以這個改動**不會**把 `.15` 上
+> 已經在跑的 n8n / GitLab 停掉；它只改變「下一次全新 `up`」的預設。要停的話
+> 顯式 `--profile developer-tools stop n8n gitlab`。
+> 附帶效果：`cmd_codeserver_up` 的 Gate 2 pilot 禁令是綁 `developer-tools`
+> 這個 profile 的語意，n8n / GitLab 收進同一 profile 後姿態才一致。
 
 code-server URL 為 `https://code.ai.ncsist.org.tw/`。三個工具使用各自原生認證；
 主平台 `/codeserver*`、`/n8n*`、`/gitlab*` 的 404 是安全邊界，**不可刪除**。

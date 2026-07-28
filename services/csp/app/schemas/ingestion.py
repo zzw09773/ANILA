@@ -11,6 +11,8 @@ to Sprint 2 alongside the worker.
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 from typing import Any, Literal
 
@@ -80,6 +82,13 @@ class CollectionCreate(BaseModel):
             "0015. NV-embed-V2 native is 4096-d; the worker truncates to 4000."
         ),
     )
+    classification_level: ClassificationLevel | None = Field(
+        default=None,
+        description=(
+            "W2-11:知識庫建立時的密等宣告。預設無機密。"
+            "若高於建立者 clearance → 403(輸入端密等上限)。"
+        ),
+    )
 
 
 class CollectionUpdate(BaseModel):
@@ -113,7 +122,7 @@ class CollectionUpdate(BaseModel):
 # ── Collection: response shapes ─────────────────────────────────────────────
 
 
-class CollectionResponse(BaseModel):
+class CollectionResponse(ApiResponseModel):
     """Full row projection used by both list and detail endpoints.
 
     Sprint 4: ``agent_id`` removed; ``created_by`` is the new ownership
@@ -185,7 +194,7 @@ class DocumentRelationCreate(BaseModel):
         return self
 
 
-class DocumentRelationResponse(BaseModel):
+class DocumentRelationResponse(ApiResponseModel):
     """Row projection for the relations tab / API list.
 
     Carries enough to render ``src → type → dst|target_ref`` with the

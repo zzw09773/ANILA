@@ -1,4 +1,26 @@
 import { readCsrfCookie } from "./api.js";
+import { buildStreamError } from "./streamError.js";
+
+/**
+ * W2-4 ③ —— 錯誤 body → 使用者語彙。
+ *
+ * 原本這裡是 `new Error(await response.text())`,也就是把後端的原始 JSON
+ * (或 nginx 的 HTML)直接貼到使用者眼前。現在先 `JSON.parse` 取 W2-12 的
+ * 結構化信封 `{"error":{code,message,details,request_id},"detail":<legacy>}`,
+ * 再由 `streamError.js` 依 **`error.code`**(不是中文子字串)映射;原文只進
+ * console。非 JSON 的 body(反向代理自產的錯誤頁)走 status fallback。
+ */
+async function readStreamError(response) {
+  const detail = await response.text();
+  let envelope = null;
+  try {
+    envelope = JSON.parse(detail);
+  } catch {
+    // 非 JSON(nginx 502 HTML、空 body…)→ 只剩 status 可判斷。
+    envelope = null;
+  }
+  return buildStreamError({ status: response.status, envelope, raw: detail });
+}
 
 export function parseSseBlocks(buffer) {
   const normalized = buffer.replace(/\r\n/g, "\n");
@@ -117,10 +139,7 @@ export async function streamChatCompletion({
   });
 
   if (!response.ok) {
-    const detail = await response.text();
-    const error = new Error(detail || "Streaming failed");
-    error.status = response.status;
-    throw error;
+    throw await readStreamError(response);
   }
 
   // Surface the session id the Router echoes in X-Anila-Session-Id so
@@ -380,10 +399,7 @@ export async function streamSessionAnswer({
     body: JSON.stringify({ interrupt_id: interruptId, answer }),
   });
   if (!response.ok) {
-    const detail = await response.text();
-    const error = new Error(detail || "Resume failed");
-    error.status = response.status;
-    throw error;
+    throw await readStreamError(response);
   }
 
   const reader = response.body?.getReader();

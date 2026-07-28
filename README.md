@@ -165,12 +165,18 @@ flowchart TB
 
 ### 本地 dev（compose shim）
 
-repo 根保有 `docker compose up -d` 錨點：root `compose.yaml` 以 `include:` 指向 `infra/compose/platform.yml`（需 Compose ≥ 2.20）。
+本機 **dev stack**（`anila-platform-dev`，獨立 ports/volumes）請走冪等入口，勿整份複製 `.env.example`（那是各分支姿態／內網完整範本，會蓋掉 compose.dev 的信任清單等預設）：
 
 ```bash
-cp .env.example .env       # dev 才設 ANILA_ALLOW_DEV_SECRET=1
-docker compose up -d       # = compose.yaml → infra/compose/platform.yml (不含 code-server)
-docker compose -f compose.dev.yaml up -d   # dev stack（anila-platform-dev，獨立 ports/volumes）
+bash infra/deployment/scripts/dev-up.sh            # 建 net、健檢 .env、up --build、router bootstrap、健康摘要
+bash infra/deployment/scripts/dev-up.sh --dry-run  # 只印計畫
+# 無 .env 時會 cp .env.dev.example → .env 並提示必填後退出；填完再重跑
+```
+
+正式／內網 stack 仍用 root `compose.yaml`（→ `infra/compose/platform.yml`；需 Compose ≥ 2.20），與 dev 分離：
+
+```bash
+docker compose up -d       # = compose.yaml → platform.yml（不含 code-server）
 ```
 
 card 登入需本機 HiPKI 讀卡元件；本地 dev 若無實體卡，可暫不設 `REQUIRE_CARD_LOGIN_ONLY`（保留帳密測試其餘功能），但**勿將該設定推上 prod 環境檔**。

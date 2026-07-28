@@ -5,6 +5,9 @@ import type { JobSnapshot } from '../types'
 // ``/api/auth/login`` response. The axios client also sends withCredentials,
 // so the cookie is already in scope when this opens.
 
+/** ANILALM personal knowledge-base surface (origin=anilalm). */
+const PERSONAL = '/api/personal'
+
 interface StreamHandle {
   close: () => void
 }
@@ -14,7 +17,7 @@ export function streamJob(
   onUpdate: (snap: JobSnapshot) => void,
   onError?: (err: Error) => void,
 ): StreamHandle {
-  const url = `/api/ingestion/jobs/${jobId}/stream`
+  const url = `${PERSONAL}/jobs/${jobId}/stream`
   const es = new EventSource(url, { withCredentials: true })
 
   es.onmessage = (e) => {

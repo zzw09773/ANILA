@@ -27,6 +27,8 @@ import path，並繼續承載 CSP 專屬的分類事件／降級申請 schema。
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 import enum
 from datetime import datetime
 
@@ -121,7 +123,7 @@ class DeclassificationRejectBody(BaseModel):
     reason: str = Field(..., min_length=1)
 
 
-class DeclassificationRequestOut(BaseModel):
+class DeclassificationRequestOut(ApiResponseModel):
     """DeclassificationRequest 讀出契約(from ORM;doc 08 §8 欄位)。"""
 
     id: int
@@ -159,7 +161,7 @@ class ClassificationAuthorityCreate(BaseModel):
     authority_reference: str = Field(..., min_length=1, max_length=255)
 
 
-class ClassificationAuthorityOut(BaseModel):
+class ClassificationAuthorityOut(ApiResponseModel):
     """ClassificationAuthorityAssignment 讀出契約(from ORM)。
 
     ``is_effective`` = 生效與否 = ``is_active and revoked_at is None``

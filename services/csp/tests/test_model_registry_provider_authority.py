@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import JSON as SAJSON
 from sqlalchemy import CheckConstraint
 from sqlalchemy.exc import IntegrityError
@@ -704,3 +705,31 @@ def test_schema_and_migration_expose_authority_columns_and_head() -> None:
     assert "ck_model_registry_shim_snapshot" in text
     assert "unclassified" in text
     assert re.search(r"UPDATE model_registry SET provider_locality", text)
+
+
+def test_context_window_must_be_positive_at_the_write_boundary() -> None:
+    """``context_window`` 現在會決定 Router 實際送出的 ``max_tokens``。
+
+    它從「只給 UI 顯示的註記」升級成 Router token 預算的輸入
+    (``anila_core.router.token_budget``),所以 0 / 負值不能再存進去 —— 一個 0 會
+    讓預算算出「輸入上限為負」,把每一次呼叫都擋掉。在寫入邊界擋比讓壞值流到推論
+    路徑再去猜要清楚得多。``None``(未登記)仍然合法:Router 對未登記的降級行為
+    是刻意設計的 fail-safe。
+    """
+
+    base = {
+        "name": "ctx",
+        "display_name": "Ctx",
+        "model_type": "llm",
+        "endpoint_url": "https://api.example.com/v1",
+    }
+    assert ModelCreate(**base, context_window=8192).context_window == 8192
+    assert ModelCreate(**base, context_window=None).context_window is None
+    assert ModelUpdate(context_window=32768).context_window == 32768
+    assert ModelUpdate().context_window is None
+
+    for bad in (0, -1):
+        with pytest.raises(ValidationError):
+            ModelCreate(**base, context_window=bad)
+        with pytest.raises(ValidationError):
+            ModelUpdate(context_window=bad)

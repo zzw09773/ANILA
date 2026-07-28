@@ -64,6 +64,7 @@ from ..router.decision_engine import (
     RETRYABLE_JUDGE_REASON_CODES,
     judge_validation_attempt,
 )
+from ..router.token_budget import RouterTokenBudgetError
 from ..security.router_context import (
     ROUTER_CONTEXT_HEADER,
     RouterContextClaims,
@@ -86,6 +87,11 @@ SECURE_ACCESS_COOKIE_NAME = "__Host-anila_access_token"
 DEV_ACCESS_COOKIE_NAME = "anila_dev_access_token"
 LEGACY_RESUME_OPT_IN_HEADER = "X-ANILA-Legacy-Resume"
 LEGACY_DISPATCH_OPT_IN_HEADER = "X-ANILA-Legacy-Dispatch"
+
+#: ``_call_llm_non_stream`` 用來標記「呼叫在送出前就被 token 預算擋下」的 error
+#: 值。與其他 ``LLM ...`` 錯誤刻意分開:使用者要能分辨「縮短輸入 / 換模型」跟
+#: 「模型或上游服務出問題」。
+ROUTER_TOKEN_BUDGET_ERROR = "ROUTER_TOKEN_BUDGET_EXCEEDED"
 
 
 def _access_cookie_name(secure: bool) -> str:
@@ -1327,6 +1333,23 @@ def create_router_app(
             return formal_runtime
         governance = await direct_model_governance_provider.get()
         return ExecutionRuntime(direct_model_governance=governance)
+
+    async def _resolve_model_context_window() -> int | None:
+        """主模型登記的真實容量(``model_registry.context_window``)。
+
+        走的是既有那條受信任的 CSP 治理投影(與直答分類上限同源、同一份 TTL
+        快取),所以不會多打一次 CSP,也不會多一份會漂移的容量快取。取不到就回
+        ``None`` —— token_budget 對未知容量的降級是刻意的 fail-safe(不猜值、
+        不誤殺),絕不因為容量未登記而讓路由整體不可用。
+        """
+
+        if formal_direct_model_governance is not None:
+            return formal_direct_model_governance.context_window
+        if direct_model_governance_provider is None:
+            return None
+        governance = await direct_model_governance_provider.get()
+        return None if governance is None else governance.context_window
+
     resolved_db_path = session_db_path or settings.session_db_path
 
     def _make_session(sid: str) -> Session:
@@ -2214,6 +2237,9 @@ def create_router_app(
             correlation_id = getattr(route_context, "trace_id", None) or getattr(
                 route_context, "invocation_id", None
             )
+            # 路由呼叫的輸出上限依部署模型真實容量計算。以前完全不宣告 max_tokens,
+            # 於是「每 slot 只有 1024 tokens」的部署碰到長輸入就 100% 失敗。
+            route_context_window = await _resolve_model_context_window()
 
             result = await _call_llm_non_stream(
                 caller_api_key,
@@ -2221,6 +2247,7 @@ def create_router_app(
                 forwarded_headers=forwarded_headers,
                 formal_context=route_context,
                 inference_client=formal_inference_client,
+                context_window=route_context_window,
             )
             if result.get("error"):
                 return result, None
@@ -2265,6 +2292,7 @@ def create_router_app(
                 forwarded_headers=forwarded_headers,
                 formal_context=route_context,
                 inference_client=formal_inference_client,
+                context_window=route_context_window,
             )
             if result.get("error"):
                 return result, None
@@ -2308,6 +2336,40 @@ def create_router_app(
                 meta["reason_codes"] = [route_error]
                 return _respond(
                     "目前無法安全處理過大的請求內容，已安全停止下游推論。",
+                    meta,
+                    stream,
+                    session_id=session_id,
+                )
+            if route_error == ROUTER_TOKEN_BUDGET_ERROR:
+                # 「模型拒答」與「token 預算不足」以前都被壓成同一句「目前無法安全
+                # 判斷是否需要 Agent」，使用者因此不知道該縮短輸入還是換模型。這條
+                # 分支就是把兩者分開的地方：明確 reason_code + 帶數字的訊息。
+                budget_reason = (
+                    route_response.get("error_reason_code")
+                    if isinstance(route_response, Mapping)
+                    else None
+                ) or RouterTokenBudgetError.reason_code
+                budget_detail = (
+                    route_response.get("error_message")
+                    if isinstance(route_response, Mapping)
+                    else None
+                ) or "輸入超出模型 token 預算。"
+                base_trace.append(
+                    _make_trace_step(
+                        "route",
+                        "token 預算不足",
+                        str(budget_reason),
+                        status="error",
+                    )
+                )
+                meta = _merge_anila_meta(
+                    base_trace,
+                    None,
+                    latency_ms=int((time.time() - started_at) * 1000),
+                )
+                meta["reason_codes"] = [str(budget_reason)]
+                return _respond(
+                    str(budget_detail),
                     meta,
                     stream,
                     session_id=session_id,
@@ -2376,11 +2438,29 @@ def create_router_app(
                     forwarded_headers=forwarded_headers,
                     formal_context=context,
                     inference_client=formal_inference_client,
+                    context_window=await _resolve_model_context_window(),
                 )
                 if not direct_response.get("error") and direct_response.get("content"):
                     return await _safe_result(
                         str(direct_response["content"]),
                         downstream_meta=direct_response.get("anila_meta"),
+                    )
+                if direct_response.get("error") == ROUTER_TOKEN_BUDGET_ERROR:
+                    # 直答也要說清楚是 token 預算問題，否則使用者只會拿到
+                    # decision_result.safe_message 那句通用文案。用 append 而非
+                    # 覆寫：PolicyGate 的 reason_codes 是稽核證據，不能被蓋掉。
+                    reason_codes.append(
+                        str(
+                            direct_response.get("error_reason_code")
+                            or RouterTokenBudgetError.reason_code
+                        )
+                    )
+                    return await _safe_result(
+                        str(
+                            direct_response.get("error_message")
+                            or "輸入超出模型 token 預算。"
+                        ),
+                        status="error",
                     )
             return await _safe_result(runtime_result.decision_result.safe_message)
 
@@ -2608,6 +2688,7 @@ def create_router_app(
                         forwarded_headers=forwarded_headers,
                         formal_context=next_context,
                         inference_client=formal_inference_client,
+                        context_window=await _resolve_model_context_window(),
                     )
                     if not direct_response.get("error"):
                         final_text = str(direct_response.get("content") or "")
@@ -3468,6 +3549,7 @@ async def _call_llm_non_stream(
     forwarded_headers: dict[str, str] | None = None,
     formal_context: RequestContext | None = None,
     inference_client: Any = None,
+    context_window: int | None = None,
 ) -> dict[str, Any]:
     """Call main LLM through CSP without SSE and return content + metadata.
 
@@ -3480,6 +3562,11 @@ async def _call_llm_non_stream(
     user-scoped memory writer, classification latch — see the same
     conversation_id the original SPA call carried. Without this, the
     request looks orphaned at CSP and FK-bound features silently no-op.
+
+    ``context_window`` 是部署模型登記的真實容量。有值時 inference client 會依它
+    宣告 ``max_tokens``;輸入吃不下時**不會**降級成通用的 LLM 錯誤,而是回傳
+    ``error=ROUTER_TOKEN_BUDGET_EXCEEDED`` 加上可辨識的 ``error_reason_code`` /
+    ``error_message``,讓上層告訴使用者「該縮短輸入或換模型」而不是「無法判斷」。
     """
     if formal_context is not None:
         # Formal R3 calls use the dedicated CSP internal inference seam.  The
@@ -3494,15 +3581,36 @@ async def _call_llm_non_stream(
                 or os.environ.get("ANILA_CSP_INFERENCE_SERVICE_TOKEN")
             ),
         )
+        # 容量未知時整個省略這個 kwarg:注入的測試替身/自訂 transport 不必改簽章,
+        # 行為與改動前完全相同(零 regression)。
+        capacity_kwargs: dict[str, Any] = (
+            {} if context_window is None else {"context_window": context_window}
+        )
         try:
             result = await client.complete(
                 model=settings.model,
                 messages=messages,
                 context=formal_context,
+                **capacity_kwargs,
             )
             if not isinstance(result, Mapping):
                 raise TypeError("CSP inference result 必須是 mapping")
             return dict(result)
+        except RouterTokenBudgetError as exc:
+            # 這是「輸入吃不進去」,不是「模型拒答」。刻意用專屬 error code 帶出去,
+            # 否則使用者只會看到一句無法診斷的「目前無法安全判斷是否需要 Agent」。
+            logger.info("Router token 預算不足,已在送出前停止: %s", exc)
+            return {
+                "content": "",
+                "reasoning": None,
+                "anila_meta": None,
+                "raw": None,
+                "error": ROUTER_TOKEN_BUDGET_ERROR,
+                "error_reason_code": getattr(
+                    exc, "reason_code", RouterTokenBudgetError.reason_code
+                ),
+                "error_message": str(exc),
+            }
         except httpx.HTTPStatusError as exc:
             return {
                 "content": "",

@@ -8,7 +8,7 @@ from hashlib import sha256
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from app.config import settings
 from app.database import get_db
 from app.middleware.cookies import ACCESS_COOKIE_NAME
@@ -383,13 +383,13 @@ def rotate_refresh_token(
     session = (
         db.query(AuthSession)
         .filter(AuthSession.sid == sid, AuthSession.user_id == user.id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .first()
     )
     record = (
         db.query(AuthRefreshToken)
         .filter(AuthRefreshToken.jti_hash == jti_hash)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .first()
     )
 
@@ -476,7 +476,7 @@ def rotate_refresh_token(
                     AuthRefreshToken.revoked_at.is_(None),
                 )
                 .order_by(AuthRefreshToken.generation.desc())
-                .with_for_update()
+                .with_for_update().populate_existing()
                 .first()
             )
             if tip is not None:
@@ -646,7 +646,23 @@ def _load_user_from_payload(payload: dict | None, db: Session, expected_type: st
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="無效的存取權杖",
         ) from exc
-    user = db.query(User).filter(User.id == parsed_user_id).first()
+    # W3-7f:`ui_settings` 是**每個認證請求**都會被拉出來的大 JSON 欄
+    # (folders / convMeta / stars,上限 256KB),而 auth 熱路徑一個欄位都用不到它。
+    # 這支是全平台每一個帶 token 的請求都會走的地方(`get_current_user` 與
+    # `middleware/caller.py` 都呼叫它),所以那是白付的 wire + 反序列化成本。
+    #
+    # 用 `defer()` 而不是計畫建議的 `load_only()`:`load_only` 要把「需要的欄」
+    # 逐一列出,而這個 User 物件下游用得很廣(username / role / clearance /
+    # token_version / allowed_models…),漏一個就變成 N 次額外 SELECT,而且會在
+    # 很遠的地方以難查的形式出現。`defer` 只針對那一個大欄,語意上是「先不要載」
+    # —— 真的有人讀 `user.ui_settings`(例如 `GET /me/ui-settings`)時
+    # SQLAlchemy 會自己補一次 SELECT,那條路徑本來就要讀它。
+    user = (
+        db.query(User)
+        .options(defer(User.ui_settings))
+        .filter(User.id == parsed_user_id)
+        .first()
+    )
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

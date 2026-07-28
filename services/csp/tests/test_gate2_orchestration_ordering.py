@@ -464,7 +464,19 @@ async def test_retrieval_embedding_carries_context_without_finalizing_outer_run(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("response_dim", [EMBED_DIM - 1, EMBED_NATIVE_DIM + 512])
+# `EMBED_DIM - 1`(3999)先前在這裡,但**維度自適應之後它不再是錯誤**:
+# `truncate_embedding` 已改成對 1..EMBED_DIM-1 的短向量補零(為了讓
+# nemotron-3-embed 的 2048 維能用),所以 3999 會被補到 4000 而不 raise。
+# 那個參數是唯一讓 CI 的「Backend / CSP full suite」變紅的原因
+# (1 failed / 1833 passed),而它是 stale test 不是實作缺陷。
+#
+# 現行的「非預期維度」集合:
+#   0                     → raise（空向量)
+#   1 .. EMBED_DIM-1      → **補零接受**（見下方 …pads_short_dimension 測試)
+#   EMBED_DIM             → 原樣接受
+#   EMBED_NATIVE_DIM      → 截斷到 EMBED_DIM
+#   其餘 > EMBED_DIM      → raise（盲目截斷非 Matryoshka 模型會靜默破壞檢索)
+@pytest.mark.parametrize("response_dim", [0, EMBED_NATIVE_DIM + 512])
 async def test_retrieval_embedding_rejects_unexpected_dimension_before_use(
     db: Session, db_engine, monkeypatch, response_dim: int,
 ) -> None:
@@ -493,6 +505,97 @@ async def test_retrieval_embedding_rejects_unexpected_dimension_before_use(
         )
     assert excinfo.value.code == "embedding_dimension_mismatch"
     assert str(response_dim) in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response_dim", [1, 2048, EMBED_DIM - 1])
+async def test_retrieval_embedding_pads_declared_short_dimension(
+    db: Session, db_engine, monkeypatch, response_dim: int,
+) -> None:
+    """**已宣告**維度的短向量補零到 EMBED_DIM,而不是被拒。
+
+    為什麼要有這支:維度自適應(讓 nemotron-3-embed 的 2048 維可用)讓
+    `truncate_embedding` 接受較小維度。上面那支測試因此有一個參數過時 ——
+    但**光把過時參數拿掉,新行為就沒有任何測試守著**,那才是真正的風險。
+
+    ⚠ 關鍵:補零**必須先宣告** `ANILA_EMBED_SOURCE_DIM`。無條件接受任何短向量
+    會讓端點悄悄換模型時(例如 1536 維)語意無意義的向量進索引 —— 那是
+    ingestion-worker 與 Python security contracts 兩個 CI job 抓到的真退化,
+    見 `test_retrieval_embedding_rejects_undeclared_short_dimension`。
+
+    這支把補零路徑釘住:長度正好 EMBED_DIM、前 response_dim 維原值不動、
+    其餘全 0.0。補零對 cosine 相似度無損(索引用 halfvec_cosine_ops)。
+    """
+    monkeypatch.setattr(
+        retrieval_service.settings, "ANILA_EMBED_SOURCE_DIM", response_dim, raising=False
+    )
+    user = make_user(
+        db, username=f"retrieval-pad-owner-{response_dim}", role="admin"
+    )
+    model = make_model(db, name=f"retrieval-pad-model-{response_dim}")
+    model.model_type = "embedding"
+    model.classification_ceiling = Classification.TOP_SECRET.to_storage()
+    db.commit()
+    factory = sessionmaker(bind=db_engine, expire_on_commit=False)
+    monkeypatch.setattr(retrieval_service, "SessionLocal", factory)
+
+    async def short_dimension_proxy(**kwargs):
+        return {"data": [{"embedding": [0.25] * response_dim}]}
+
+    monkeypatch.setattr(retrieval_service, "proxy_request", short_dimension_proxy)
+    vector = await retrieval_service.embed_query(
+        db,
+        user,
+        model.name,
+        EMBED_DIM,
+        "retrieval query",
+        trusted_classification_level=Classification.UNCLASSIFIED,
+    )
+
+    assert len(vector) == EMBED_DIM
+    assert vector[:response_dim] == [0.25] * response_dim
+    assert set(vector[response_dim:]) <= {0.0}
+
+
+@pytest.mark.asyncio
+async def test_retrieval_embedding_rejects_undeclared_short_dimension(
+    db: Session, db_engine, monkeypatch,
+) -> None:
+    """未宣告的短向量必須被拒 —— 這條是端點漂移的唯一防線。
+
+    情境:`ANILA_EMBED_SOURCE_DIM` 未設(預設嚴格),而端點回 1536 維
+    (例如有人把 embedding endpoint 指到了別的模型)。若這裡放行補零,
+    語意無意義的向量會進索引、無聲摧毀檢索品質,而 collection 的
+    `embedding_fingerprint` 抓不到(它守宣告的模型身分,不守端點實際行為)。
+    """
+    monkeypatch.setattr(
+        retrieval_service.settings, "ANILA_EMBED_SOURCE_DIM", None, raising=False
+    )
+    user = make_user(db, username="retrieval-undeclared-owner", role="admin")
+    model = make_model(db, name="retrieval-undeclared-model")
+    model.model_type = "embedding"
+    model.classification_ceiling = Classification.TOP_SECRET.to_storage()
+    db.commit()
+    factory = sessionmaker(bind=db_engine, expire_on_commit=False)
+    monkeypatch.setattr(retrieval_service, "SessionLocal", factory)
+
+    async def wrong_model_proxy(**kwargs):
+        return {"data": [{"embedding": [0.3] * 1536}]}
+
+    monkeypatch.setattr(retrieval_service, "proxy_request", wrong_model_proxy)
+    with pytest.raises(retrieval_service.RetrievalFailure) as excinfo:
+        await retrieval_service.embed_query(
+            db,
+            user,
+            model.name,
+            EMBED_DIM,
+            "retrieval query",
+            trusted_classification_level=Classification.UNCLASSIFIED,
+        )
+    assert excinfo.value.code == "embedding_dimension_mismatch"
+    assert "1536" in str(excinfo.value)
+    # 錯誤訊息要指出出路,否則 operator 只知道壞了不知道怎麼辦
+    assert "ANILA_EMBED_SOURCE_DIM" in str(excinfo.value)
 
 
 @pytest.mark.asyncio

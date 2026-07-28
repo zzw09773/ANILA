@@ -11,9 +11,10 @@
 #
 # SUBCOMMAND:
 #   status                     stack + 模型 stack 一覽 (等同 deploy-prod.sh status)
-#   health                     深度健檢:容器/端點/模型鏈路/TLS 效期/磁碟/備份新鮮度
+#   health                     深度健檢:容器/端點/告警中心/模型鏈路/TLS 效期/磁碟/備份新鮮度
 #   logs <svc> [n]             tail -f 單一 service logs (預設最後 100 行)
 #   backup                     加密、簽章並發佈 production backup bundle
+#                              (不吃任何參數；備份一律是全量,沒有 --full/增量模式)
 #   restore <bundle> <new-target> [prepare|smoke]
 #                              只還原到全新可拋棄目標；不支援 live/in-place restore
 #   cert-renew <pfx>           平台 TLS 換發:安全提示密碼後重抽 fullchain+key → nginx reload
@@ -30,12 +31,22 @@
 #      只切換已審查的 deployment profile；REQUIRE_CARD_LOGIN_ONLY 始終為 true。
 #   3. DB/state 只會直接串流進 age；JWT/TLS private key 只備份外部 reference
 #      與 public fingerprint。backup/off-host 目錄必須位於 repo 外。
+#   4. backup 收尾一定寫 heartbeat (成功與失敗都寫),health 會檢查它的年齡。
+#      cron 的 stdout 沒人看,heartbeat 是「靜默失敗」變成「會被看到的失敗」的唯一機制。
 #
 # 環境變數 (可選):
 #   ANILA_STATE_DIR    ANILA 外部 state 根目錄
 #                      (預設 $XDG_STATE_HOME/anila 或 $HOME/.local/state/anila)
 #   ANILA_BACKUP_DIR   備份根目錄 (預設 $ANILA_STATE_DIR/backups;必須在 repo 外)
 #   ANILA_BACKUP_KEEP  保留最近幾份備份 (預設 14)
+#   ANILA_BACKUP_ENV_FILE
+#                      額外的 ANILA_BACKUP_* 值來源檔 (預設不讀)。backup 需要的
+#                      ANILA_BACKUP_* 一律由本腳本從 repo 根 .env 與這個檔以
+#                      「嚴格 KEY=VALUE 解析」載入 (不 source、不 eval),因為 cron
+#                      的環境是空的,靠 shell 環境傳值等於排一個必定失敗的排程。
+#                      優先序:已存在的 ambient 值 > ANILA_BACKUP_ENV_FILE > .env。
+#   ANILA_BACKUP_HEARTBEAT_FILE
+#                      heartbeat 落點 (預設 $ANILA_STATE_DIR/backup-heartbeat.json)
 # ============================================================================
 set -euo pipefail
 umask 077
@@ -73,7 +84,8 @@ if [ -n "${ANILA_TLS_CERTS_DIR:-}" ] && [ -n "$_saved_tls" ] && [ "$ANILA_TLS_CE
   printf 'ANILA_TLS_CERTS_DIR 與既有 .env 不一致\n' >&2; exit 1
 fi
 ANILA_STATE_DIR="${ANILA_STATE_DIR:-${_saved_state:-$DEFAULT_STATE_DIR}}"
-BACKUP_DIR="${ANILA_BACKUP_DIR:-$ANILA_STATE_DIR/backups}"
+_saved_backup_dir="$(get_env_unquoted ANILA_BACKUP_DIR)"
+BACKUP_DIR="${ANILA_BACKUP_DIR:-${_saved_backup_dir:-$ANILA_STATE_DIR/backups}}"
 SECRETS_DIR="${ANILA_SECRETS_DIR:-$_saved_secrets}"
 TLS_CERTS_DIR="${ANILA_TLS_CERTS_DIR:-$_saved_tls}"
 SECRETS_DIR="${SECRETS_DIR:-$ANILA_STATE_DIR/secrets}"
@@ -133,6 +145,14 @@ export ANILA_SECRETS_DIR="$SECRETS_DIR"
 export ANILA_TLS_CERTS_DIR="$TLS_CERTS_DIR"
 assert_outside_repo "$BACKUP_DIR" ANILA_BACKUP_DIR
 BACKUP_DIR="$OUTSIDE_PATH"
+
+# heartbeat 不放 BACKUP_DIR:備份可能在建立 backup root 之前就失敗,而「失敗也要
+# 留下痕跡」正是 heartbeat 存在的理由。放 state root 才與備份成敗解耦。
+_saved_heartbeat="$(get_env_unquoted ANILA_BACKUP_HEARTBEAT_FILE)"
+BACKUP_HEARTBEAT="${ANILA_BACKUP_HEARTBEAT_FILE:-${_saved_heartbeat:-$ANILA_STATE_DIR/backup-heartbeat.json}}"
+assert_outside_repo "$BACKUP_HEARTBEAT" ANILA_BACKUP_HEARTBEAT_FILE
+BACKUP_HEARTBEAT="$OUTSIDE_PATH"
+BACKUP_HEARTBEAT_MAX_AGE_SECONDS=90000   # 25h:容得下一次 cron 抖動,擋不住一次漏跑
 
 # ── .env helper (同 intranet-deploy.sh:literal 去重 append,不用 sed 跳脫) ──
 set_env() {
@@ -288,6 +308,108 @@ health_endpoints() {
     && chk ok "redis PONG" || chk fail "redis ping 失敗"
 }
 
+# ── 告警中心 (W3-3④) ───────────────────────────────────────────────────────
+#
+# 為什麼 health 要讀 alerts API
+# ----------------------------
+# air-gapped 內網沒有 mail relay (有沒有是組織事實,屬決策件),所以 alert 目前
+# **零外送通道**:alert_service 寫進 DB、治理 UI 有一頁,然後就沒有了 —— 沒人開
+# 瀏覽器的時段等於沒人知道。health 是唯一已經有人排 cron 的東西 (backup
+# heartbeat 就是靠它出聲的),所以讓它把未解決的高嚴重度告警算成 FAIL 項。
+#
+# 為什麼走 HTTP API 而不是直接 query DB
+# ------------------------------------
+# 直連 DB 會繞過授權面,而且把這支腳本綁在 schema 上 (alerts 表改欄位就靜默壞
+# 掉)。走正式 API + 真 auth 才是端到端。
+#
+# 密碼怎麼傳
+# ----------
+# **經 stdin**,不經命令列參數、也不經 `docker compose exec -e`:兩者都會讓
+# ADMIN_PASSWORD 出現在 host 的 process list (`ps aux` 誰都看得到)。
+health_alerts() {
+  section "告警中心"
+  local user pass out
+  user="$(get_env_unquoted ADMIN_USERNAME)"; user="${user:-admin}"
+  pass="$(get_env_unquoted ADMIN_PASSWORD)"
+  if [ -z "$pass" ]; then
+    chk warn "ADMIN_PASSWORD 未設 — 跳過告警查詢 (改由治理 UI 首頁的告警卡查看)"
+    return
+  fi
+
+  if ! out="$(printf '%s' "$pass" | docker compose exec -T csp python -c '
+import json, sys, urllib.error, urllib.request
+
+BASE = "http://localhost:8000"
+password = sys.stdin.read()
+username = sys.argv[1]
+
+try:
+    req = urllib.request.Request(
+        BASE + "/api/auth/login",
+        data=json.dumps({"username": username, "password": password}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        token = json.loads(resp.read())["access_token"]
+except urllib.error.HTTPError as exc:
+    print("LOGIN_FAILED %s" % exc.code)
+    raise SystemExit(0)
+except Exception:
+    print("LOGIN_UNREACHABLE")
+    raise SystemExit(0)
+
+try:
+    req = urllib.request.Request(
+        BASE + "/api/alerts/summary",
+        headers={"Authorization": "Bearer " + token},
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        s = json.loads(resp.read())
+except Exception:
+    print("SUMMARY_FAILED")
+    raise SystemExit(0)
+
+print("OK %d %d %d" % (
+    int(s.get("high_count") or 0),
+    int(s.get("open_count") or 0),
+    int(s.get("acknowledged_count") or 0),
+))
+' "$user" 2>/dev/null)"; then
+    chk warn "無法在 csp 容器內查詢告警 API — 先確認 stack 正在跑"
+    return
+  fi
+
+  local kind high open ack
+  kind="$(printf '%s\n' "$out" | awk 'NR==1{print $1}')"
+  high="$(printf '%s\n' "$out" | awk 'NR==1{print $2+0}')"
+  open="$(printf '%s\n' "$out" | awk 'NR==1{print $3+0}')"
+  ack="$(printf '%s\n' "$out" | awk 'NR==1{print $4+0}')"
+  case "$kind" in
+    OK)
+      if [ "$high" -gt 0 ]; then
+        chk fail "$high 個高嚴重度告警未解決 — 到治理 UI /alerts 逐項處理"
+      elif [ "$open" -gt 0 ]; then
+        chk warn "$open 個告警待處理 (無高嚴重度)"
+      else
+        chk ok "無待處理告警 (已確認 $ack 個)"
+      fi
+      ;;
+    LOGIN_FAILED)
+      chk warn "告警 API 登入被拒 — 卡登部署的本機密碼可能已停用,改由治理 UI 首頁的告警卡查看"
+      ;;
+    LOGIN_UNREACHABLE)
+      chk fail "csp 登入端點無法連線 — 告警查不到 (先看上面 csp /ready 與 JWKS 兩項)"
+      ;;
+    SUMMARY_FAILED)
+      chk fail "/api/alerts/summary 查詢失敗 — 登入成功但告警 API 沒回應"
+      ;;
+    *)
+      chk warn "告警查詢回傳無法解析的結果 — 跳過"
+      ;;
+  esac
+}
+
 health_model_gateway() {
   section "模型鏈路 (出向 gateway)"
   local base key ca code auth=()
@@ -352,6 +474,40 @@ health_disk_backup() {
   else
     chk warn "最新備份超過 7 天: $latest"
   fi
+  health_backup_heartbeat
+}
+
+# 備份的 cron 輸出只進 log 檔,沒人會去看。heartbeat 讓「每天靜默失敗」變成
+# health 的一個 FAIL 項 (exit 1 → 可接排班告警)。
+health_backup_heartbeat() {
+  if command -v age >/dev/null 2>&1; then
+    chk ok "age 可用 (備份加密工具)"
+  else
+    chk fail "找不到 age — backup 會在 preflight 直接失敗;air-gapped 主機不能 apt install,請從離線工具包 09-age-*-linux-amd64.tar.gz 取 age/age 與 age/age-keygen 放進 PATH"
+  fi
+  if [ ! -f "$BACKUP_HEARTBEAT" ]; then
+    chk fail "找不到 backup heartbeat ($BACKUP_HEARTBEAT) — 每日備份從未跑完一次 (cron 沒排到,或每次都在 preflight 就死)"
+    return
+  fi
+  local raw epoch status now age_seconds age_hours
+  raw="$(tr -d '\n' < "$BACKUP_HEARTBEAT" 2>/dev/null || true)"
+  epoch="$(printf '%s' "$raw" | grep -o '"epoch"[[:space:]]*:[[:space:]]*[0-9]\{1,\}' | grep -o '[0-9]\{1,\}$' | tail -1 || true)"
+  status="$(printf '%s' "$raw" | grep -o '"status"[[:space:]]*:[[:space:]]*"[a-z]\{1,\}"' | grep -o '[a-z]\{1,\}"$' | tr -d '"' | tail -1 || true)"
+  if [ -z "$epoch" ]; then
+    chk fail "backup heartbeat 格式無法解析 ($BACKUP_HEARTBEAT) — 當成沒有備份處理"
+    return
+  fi
+  now="$(date -u +%s)"
+  age_seconds=$(( now - epoch ))
+  [ "$age_seconds" -ge 0 ] || age_seconds=0
+  age_hours=$(( age_seconds / 3600 ))
+  if [ "$age_seconds" -gt "$BACKUP_HEARTBEAT_MAX_AGE_SECONDS" ]; then
+    chk fail "backup heartbeat 已 ${age_hours} 小時未更新 (>25h) — 每日備份沒在跑,先看 /var/log/anila-backup.log"
+  elif [ "$status" != "success" ]; then
+    chk fail "最近一次備份失敗 (status=${status:-unknown},${age_hours} 小時前) — 看 /var/log/anila-backup.log 與 alert hook 事件"
+  else
+    chk ok "最近一次備份成功 (${age_hours} 小時前)"
+  fi
 }
 
 cmd_health() {
@@ -359,6 +515,7 @@ cmd_health() {
   log "ANILA 深度健檢"
   health_containers
   health_endpoints
+  health_alerts
   health_model_gateway
   health_certs
   health_disk_backup
@@ -576,12 +733,159 @@ cmd_prune() {
 # live restore into this daily operator command.
 PRODUCTION_BACKUP_TOOL="$REPO_ROOT/infra/deployment/scripts/production-backup.py"
 
+# cron 的環境是空的。備份工具的 ANILA_BACKUP_* 一律從檔案「解析」進來,而不是
+# 期待 shell 環境已經帶好值 —— 期待後者等於排一個必定在第一行就死的排程。
+# 刻意不用 `source`:這些值只是路徑/指標/fingerprint,沒有任何理由讓一個
+# 由排程以 root 執行的流程去 eval 檔案內容。
+load_backup_env_file() {
+  local file="$1" line key value
+  [ -n "$file" ] || return 0
+  [ -e "$file" ] || return 0
+  [ -f "$file" ] && [ ! -L "$file" ] \
+    || fatal "ANILA_BACKUP_* 來源檔必須是 regular file 且不得是 symlink: $file"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ANILA_BACKUP_*=*) ;; *) continue ;; esac
+    key="${line%%=*}"
+    [[ "$key" =~ ^ANILA_BACKUP_[A-Z0-9_]+$ ]] || continue
+    case "$key" in
+      ANILA_BACKUP_TEST_*)
+        fatal "拒絕從檔案載入 test-only 覆寫: $key ($file)" ;;
+      ANILA_BACKUP_ENV_FILE)
+        # 先有 .env 才讀得到這個鍵 = 雞生蛋。放在檔案裡會靜默無效,所以擋掉。
+        fatal "ANILA_BACKUP_ENV_FILE 只能由 cron/shell 環境給,不能寫在 $file" ;;
+    esac
+    value="${line#*=}"
+    case "$value" in
+      \'*\'|\"*\") value="${value:1:${#value}-2}" ;;
+    esac
+    [ -n "$value" ] || continue      # 空值視為未設,別把 "" 餵給下游做 int()
+    [ -z "${!key:-}" ] || continue   # 已有 ambient 值 → 尊重操作員的顯式覆寫
+    export "$key=$value"
+  done < "$file"
+}
+
+load_backup_env() {
+  load_backup_env_file "${ANILA_BACKUP_ENV_FILE:-}"
+  load_backup_env_file "$REPO_ROOT/.env"
+}
+
+BACKUP_PROFILE="$REPO_ROOT/infra/deployment/backup/production-backup-profile.v1.json"
+
+# 必要環境變數清單直接從 profile 推導,本腳本不複製一份會漂移的名單。
+# 一次列出「全部」缺項:production_backup.py 一次只報第一個,而且缺 ALERT_HOOK 時
+# 連 failure alert 都送不出去 —— 操作員會被迫來回十幾次才知道到底要填什麼。
+backup_missing_required_env() {
+  python3 -c '
+import json, os, sys
+profile = json.load(open(sys.argv[1], encoding="utf-8"))
+names = []
+def walk(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            # keep_env 是唯一可選項 (留空 → profile 的 default_keep)
+            if isinstance(value, str) and key.endswith("_env") and key != "keep_env":
+                names.append(value)
+            walk(value)
+    elif isinstance(node, list):
+        for item in node:
+            walk(item)
+walk(profile["automation"])
+print(" ".join(n for n in sorted(set(names)) if not os.environ.get(n, "").strip()))
+' "$BACKUP_PROFILE"
+}
+
+backup_tool_preflight() {
+  local tool missing=""
+  for tool in python3 age openssl docker; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+  done
+  if [ -n "$missing" ]; then
+    err "preflight 失敗:缺少可執行檔 —$missing"
+    err "  air-gapped 主機不能 apt install。age 從離線工具包"
+    err "  09-age-*-linux-amd64.tar.gz 取 age/age、age/age-keygen 放進 PATH"
+    return 1
+  fi
+  return 0
+}
+
+_backup_env_hint() {
+  err "  照 .env.example 的「生產備份」區塊填進 .env,或用 ANILA_BACKUP_ENV_FILE 指定來源檔"
+  err "  逐項語意見 docs/runbooks/production-backup-restore.md「前置需求」"
+}
+
+backup_preflight() {
+  local name missing_env
+  backup_tool_preflight || return 1
+  [ -f "$BACKUP_PROFILE" ] || { err "缺少 backup profile: $BACKUP_PROFILE"; return 1; }
+  missing_env="$(backup_missing_required_env)" \
+    || { err "無法從 profile 推導必要環境變數清單: $BACKUP_PROFILE"; return 1; }
+  if [ -n "$missing_env" ]; then
+    err "備份 preflight 失敗:以下必要環境變數沒有值(cron 的環境是空的,這是最常見的原因)"
+    for name in $missing_env; do err "    $name"; done
+    _backup_env_hint
+    return 1
+  fi
+  return 0
+}
+
+# restore 只需要驗簽公鑰與 age identity。刻意不要求 off-host / alert / 6 組外部
+# reference —— 演練常在另一台可拋棄主機上做,那裡沒有掛 off-host 也該能驗 bundle。
+restore_preflight() {
+  local name missing=""
+  backup_tool_preflight || return 1
+  for name in ANILA_BACKUP_SIGNING_PUBLIC_KEY_FILE ANILA_BACKUP_AGE_IDENTITY_FILE; do
+    [ -n "${!name:-}" ] || missing="$missing $name"
+  done
+  if [ -n "$missing" ]; then
+    err "restore preflight 失敗:以下環境變數沒有值(驗簽與解密必需) —$missing"
+    _backup_env_hint
+    return 1
+  fi
+  return 0
+}
+
+# 成功與失敗都要留痕:cron 的 stdout 沒人看,heartbeat 是 health 唯一能看見
+# 「昨天的備份其實沒跑」的依據。寫 heartbeat 失敗不得蓋掉備份本身的 exit code。
+write_backup_heartbeat() {
+  local status_value="$1" exit_code="$2" dir tmp
+  dir="$(dirname -- "$BACKUP_HEARTBEAT")"
+  mkdir -p -m 700 -- "$dir" 2>/dev/null || true
+  if ! tmp="$(mktemp "$BACKUP_HEARTBEAT.XXXXXX" 2>/dev/null)"; then
+    warn "無法寫 backup heartbeat ($BACKUP_HEARTBEAT) — health 會把它當成沒有備份"
+    return 0
+  fi
+  printf '{"schema_version":"anila.backup-heartbeat.v1","status":"%s","exit_code":%s,"epoch":%s,"finished":"%s"}\n' \
+    "$status_value" "$exit_code" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" 2>/dev/null || true
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f -- "$tmp" "$BACKUP_HEARTBEAT" 2>/dev/null \
+    || { rm -f -- "$tmp"; warn "無法更新 backup heartbeat ($BACKUP_HEARTBEAT)"; }
+  return 0
+}
+
 cmd_backup() {
   [ -f "$PRODUCTION_BACKUP_TOOL" ] \
     || fatal "缺少 production backup tool: $PRODUCTION_BACKUP_TOOL"
-  [ "$#" -eq 0 ] || fatal "usage: anila-ops.sh backup"
-  exec python3 "$PRODUCTION_BACKUP_TOOL" \
-    --repo-root "$REPO_ROOT" backup --backup-root "$BACKUP_DIR"
+  if [ "$#" -ne 0 ]; then
+    case "$1" in
+      --full|-full|full)
+        fatal "backup 不吃參數:profile 驅動的備份一律全量,沒有 --full/增量模式;舊 runbook 的 'backup --full' 已作廢" ;;
+    esac
+    fatal "usage: anila-ops.sh backup"
+  fi
+  load_backup_env
+  local status=0
+  if backup_preflight; then
+    python3 "$PRODUCTION_BACKUP_TOOL" \
+      --repo-root "$REPO_ROOT" backup --backup-root "$BACKUP_DIR" || status=$?
+  else
+    status=90
+  fi
+  if [ "$status" -eq 0 ]; then
+    write_backup_heartbeat success 0
+  else
+    write_backup_heartbeat failure "$status"
+  fi
+  exit "$status"
 }
 
 cmd_restore() {
@@ -591,6 +895,10 @@ cmd_restore() {
   [ -n "$bundle" ] && [ -n "$target" ] \
     || fatal "usage: anila-ops.sh restore <signed-bundle-dir> <new-disposable-target> [prepare|smoke]"
   [ "$#" -le 3 ] || fatal "restore 參數過多"
+  # 驗簽要 ANILA_BACKUP_SIGNING_PUBLIC_KEY_FILE、解密要 ANILA_BACKUP_AGE_IDENTITY_FILE,
+  # 與 backup 同一組來源,別讓演練也踩「環境沒帶值」的同一顆雷。
+  load_backup_env
+  restore_preflight || exit 90
   case "$mode" in
     prepare)
       exec python3 "$PRODUCTION_BACKUP_TOOL" --repo-root "$REPO_ROOT" \
@@ -604,7 +912,7 @@ cmd_restore() {
   esac
 }
 
-cmd_help() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
+cmd_help() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # ── entrypoint ─────────────────────────────────────────────────────────────
 SUBCMD="${1:-help}"; shift || true

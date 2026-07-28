@@ -1,3 +1,4 @@
+from app.schemas.base import ApiResponseModel
 """Admin announcement banners API.
 
 - ``GET /api/banners/active``  any authenticated user — banners the chat UI shows.
@@ -39,7 +40,7 @@ class BannerUpdate(BaseModel):
     sort_order: Optional[int] = None
 
 
-class BannerResponse(BaseModel):
+class BannerResponse(ApiResponseModel):
     id: int
     level: str
     content: str

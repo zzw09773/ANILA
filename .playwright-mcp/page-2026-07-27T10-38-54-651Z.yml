@@ -1,0 +1,273 @@
+- generic [ref=f4e1]:
+  - generic [ref=f4e3]:
+    - banner [ref=f4e4]:
+      - generic [ref=f4e5]:
+        - generic [ref=f4e6]:
+          - img "ANILA" [ref=f4e7]
+          - generic [ref=f4e11]:
+            - generic [ref=f4e12]: ANILA
+            - generic [ref=f4e13]: ·
+            - generic [ref=f4e14]: CSP
+        - generic [ref=f4e15]: │
+        - generic [ref=f4e16]: /dev/collections/detail
+      - generic [ref=f4e18]:
+        - generic [ref=f4e20]:
+          - generic [ref=f4e21]: "?"
+          - text: 快速鍵
+        - button "切換至深色主題" [ref=f4e22] [cursor=pointer]:
+          - generic [ref=f4e23]: ◑
+          - generic [ref=f4e24]: light
+        - generic [ref=f4e25]: │
+        - generic [ref=f4e26]:
+          - generic [ref=f4e27]: uicheck
+          - generic [ref=f4e28]: "@admin"
+        - button "變更密碼" [ref=f4e29] [cursor=pointer]
+        - button "登出" [ref=f4e30] [cursor=pointer]
+    - generic [ref=f4e31]:
+      - complementary [ref=f4e32]:
+        - navigation "primary" [ref=f4e33]:
+          - generic [ref=f4e34]:
+            - generic [ref=f4e35]:
+              - generic [ref=f4e36]: "01"
+              - generic [ref=f4e37]: 主要
+              - generic [ref=f4e38]: "4"
+            - list [ref=f4e39]:
+              - listitem [ref=f4e40]:
+                - link "01 儀表板" [ref=f4e41] [cursor=pointer]:
+                  - /url: /
+                  - generic [ref=f4e43]: "01"
+                  - generic [ref=f4e44]: 儀表板
+              - listitem [ref=f4e45]:
+                - link "02 API 金鑰" [ref=f4e46] [cursor=pointer]:
+                  - /url: /api-keys
+                  - generic [ref=f4e48]: "02"
+                  - generic [ref=f4e49]: API 金鑰
+              - listitem [ref=f4e50]:
+                - link "03 模型" [ref=f4e51] [cursor=pointer]:
+                  - /url: /models
+                  - generic [ref=f4e53]: "03"
+                  - generic [ref=f4e54]: 模型
+              - listitem [ref=f4e55]:
+                - link "04 用量" [ref=f4e56] [cursor=pointer]:
+                  - /url: /usage
+                  - generic [ref=f4e58]: "04"
+                  - generic [ref=f4e59]: 用量
+          - generic [ref=f4e60]:
+            - generic [ref=f4e61]:
+              - generic [ref=f4e62]: "02"
+              - generic [ref=f4e63]: 開發者
+              - generic [ref=f4e64]: "3"
+            - list [ref=f4e65]:
+              - listitem [ref=f4e66]:
+                - link "01 開發指南" [ref=f4e67] [cursor=pointer]:
+                  - /url: /developer/guide
+                  - generic [ref=f4e69]: "01"
+                  - generic [ref=f4e70]: 開發指南
+              - listitem [ref=f4e71]:
+                - link "02 Agent" [ref=f4e72] [cursor=pointer]:
+                  - /url: /developer/agents
+                  - generic [ref=f4e74]: "02"
+                  - generic [ref=f4e75]: Agent
+              - listitem [ref=f4e76]:
+                - link "03 知識庫" [ref=f4e77] [cursor=pointer]:
+                  - /url: /knowledge-collections
+                  - generic [ref=f4e79]: "03"
+                  - generic [ref=f4e80]: 知識庫
+          - generic [ref=f4e81]:
+            - generic [ref=f4e82]:
+              - generic [ref=f4e83]: "03"
+              - generic [ref=f4e84]: 管理
+              - generic [ref=f4e85]: "10"
+            - list [ref=f4e86]:
+              - listitem [ref=f4e87]:
+                - link "01 使用者" [ref=f4e88] [cursor=pointer]:
+                  - /url: /users
+                  - generic [ref=f4e90]: "01"
+                  - generic [ref=f4e91]: 使用者
+              - listitem [ref=f4e92]:
+                - link "02 部門" [ref=f4e93] [cursor=pointer]:
+                  - /url: /departments
+                  - generic [ref=f4e95]: "02"
+                  - generic [ref=f4e96]: 部門
+              - listitem [ref=f4e97]:
+                - link "03 警報" [ref=f4e98] [cursor=pointer]:
+                  - /url: /alerts
+                  - generic [ref=f4e100]: "03"
+                  - generic [ref=f4e101]: 警報
+              - listitem [ref=f4e102]:
+                - link "04 公告橫幅" [ref=f4e103] [cursor=pointer]:
+                  - /url: /banners
+                  - generic [ref=f4e105]: "04"
+                  - generic [ref=f4e106]: 公告橫幅
+              - listitem [ref=f4e107]:
+                - link "05 稽核紀錄" [ref=f4e108] [cursor=pointer]:
+                  - /url: /audit-logs
+                  - generic [ref=f4e110]: "05"
+                  - generic [ref=f4e111]: 稽核紀錄
+              - listitem [ref=f4e112]:
+                - link "06 分類盤點" [ref=f4e113] [cursor=pointer]:
+                  - /url: /classification-inventory
+                  - generic [ref=f4e115]: "06"
+                  - generic [ref=f4e116]: 分類盤點
+              - listitem [ref=f4e117]:
+                - link "07 平台連結" [ref=f4e118] [cursor=pointer]:
+                  - /url: /platform-links
+                  - generic [ref=f4e120]: "07"
+                  - generic [ref=f4e121]: 平台連結
+              - listitem [ref=f4e122]:
+                - link "08 服務存取" [ref=f4e123] [cursor=pointer]:
+                  - /url: /service-access
+                  - generic [ref=f4e125]: "08"
+                  - generic [ref=f4e126]: 服務存取
+              - listitem [ref=f4e127]:
+                - link "09 服務客戶端" [ref=f4e128] [cursor=pointer]:
+                  - /url: /service-clients
+                  - generic [ref=f4e130]: "09"
+                  - generic [ref=f4e131]: 服務客戶端
+              - listitem [ref=f4e132]:
+                - link "10 信任主機" [ref=f4e133] [cursor=pointer]:
+                  - /url: /trusted-hosts
+                  - generic [ref=f4e135]: "10"
+                  - generic [ref=f4e136]: 信任主機
+        - generic [ref=f4e137]:
+          - generic [ref=f4e138]:
+            - generic [ref=f4e139]: session
+            - generic [ref=f4e140]: uicheck
+          - generic [ref=f4e141]:
+            - generic [ref=f4e142]: scope
+            - generic [ref=f4e143]: full · governance
+      - main [ref=f4e144]:
+        - generic [ref=f4e145]:
+          - generic [ref=f4e147]:
+            - link "← 知識庫" [ref=f4e148] [cursor=pointer]:
+              - /url: /knowledge-collections
+            - heading "客戶合約庫" [level=1] [ref=f4e149]
+            - paragraph [ref=f4e150]:
+              - text: "agent # · nvidia/NV-embed-V2 · 4000-d · 策略"
+              - code [ref=f4e151]: fixed
+          - generic [ref=f4e152]:
+            - generic [ref=f4e154]:
+              - generic [ref=f4e155]: 上傳 · 匯入
+              - generic [ref=f4e156]: text / md / pdf / docx · ≤ 50 MB single · ≤ 500 MB / 200 files zip
+            - generic [ref=f4e159]:
+              - button "+ 檔案(可多選)" [ref=f4e160] [cursor=pointer]:
+                - generic [ref=f4e161]: "["
+                - generic [ref=f4e163]: "]"
+              - button "+ zip · 多檔" [ref=f4e164] [cursor=pointer]:
+                - generic [ref=f4e165]: "["
+                - generic [ref=f4e167]: "]"
+              - generic [ref=f4e168] [cursor=pointer]:
+                - checkbox "保留資料夾路徑（zip）" [ref=f4e169]
+                - generic [ref=f4e170]: 保留資料夾路徑（zip）
+              - generic [ref=f4e171]: 也可拖放上傳
+          - generic [ref=f4e172]:
+            - generic [ref=f4e174]:
+              - generic [ref=f4e175]: 設定 · 分類等級
+              - generic [ref=f4e176]: 僅管理員可變更。升級在此直接套用；降級請走降密申請 POST /api/classification/declassification-requests。新上傳文件會繼承此等級；已索引文件不會回溯改寫。
+            - generic [ref=f4e179]:
+              - generic [ref=f4e180]:
+                - generic [ref=f4e181]: 分類等級
+                - combobox [ref=f4e184]:
+                  - option "無機密"
+                  - option "營業秘密" [selected]
+                  - option "機密"
+                  - option "極機密"
+                  - option "絕對機密"
+                - paragraph [ref=f4e185]: 僅可升級（無機密 → 絕對機密）。降級須經降密申請與主管核准。
+              - button "儲存分類" [disabled] [ref=f4e186]:
+                - generic [ref=f4e187]: "["
+                - generic [ref=f4e189]: "]"
+          - generic [ref=f4e190]:
+            - generic [ref=f4e191]:
+              - generic [ref=f4e192]: 文件 · 2
+              - list [ref=f4e284]:
+                - listitem [ref=f4e285] [cursor=pointer]:
+                  - generic [ref=f4e286]:
+                    - generic [ref=f4e287]: 合約B.txt
+                    - generic [ref=f4e288]: pending
+                  - generic [ref=f4e290]: 18 B · 0 個區塊 · sha 406c09ea…
+                - listitem [ref=f4e291] [cursor=pointer]:
+                  - generic [ref=f4e292]:
+                    - generic [ref=f4e293]: 合約A.txt
+                    - generic [ref=f4e294]: pending
+                  - generic [ref=f4e296]: 18 B · 0 個區塊 · sha 6792a1bc…
+            - generic [ref=f4e198]:
+              - generic [ref=f4e199]: 檢視器
+              - generic [ref=f4e203]: 選一份文件以檢視區塊
+          - generic [ref=f4e206]:
+            - generic [ref=f4e208]:
+              - generic [ref=f4e209]: relations · 0
+              - generic [ref=f4e210]: cross-document links · 母法 / 補充 / 修正 / 引用 · rule=auto, manual=human
+            - generic [ref=f4e212]:
+              - generic [ref=f4e213]:
+                - generic [ref=f4e214]:
+                  - button "表格" [ref=f4e215] [cursor=pointer]
+                  - button "圖" [ref=f4e216] [cursor=pointer]
+                - button "↻ 重新解析 · 重新掃描 + 重新抽取" [ref=f4e217] [cursor=pointer]:
+                  - generic [ref=f4e218]: "["
+                  - generic [ref=f4e220]: "]"
+              - generic [ref=f4e221]:
+                - combobox [ref=f4e222]:
+                  - option "來源文件…" [disabled] [selected]
+                  - option "合約B"
+                  - option "合約A"
+                - combobox [ref=f4e223]:
+                  - option "based_on"
+                  - option "amends"
+                  - option "supersedes"
+                  - option "cites" [selected]
+                  - option "supplements"
+                  - option "relates"
+                - combobox [ref=f4e224]:
+                  - option "目標文件…（或輸入名稱 →）" [selected]
+                  - option "合約B"
+                  - option "合約A"
+                - textbox "…或輸入目標名稱" [ref=f4e225]
+                - button "+ 新增" [disabled] [ref=f4e226]:
+                  - generic [ref=f4e227]: "["
+                  - generic [ref=f4e229]: "]"
+              - generic [ref=f4e230]: 尚無關聯 · 上傳有連結的文件或於上方新增
+    - contentinfo [ref=f4e231]:
+      - generic [ref=f4e232]:
+        - generic [ref=f4e234]: api
+        - generic [ref=f4e235]: online · 3ms
+      - generic [ref=f4e236]: │
+      - generic [ref=f4e237]:
+        - generic [ref=f4e238]: role
+        - generic [ref=f4e239]: admin
+      - generic [ref=f4e240]: │
+      - generic [ref=f4e241]:
+        - generic [ref=f4e242]: path
+        - generic [ref=f4e243]: /knowledge-collections/2
+      - generic [ref=f4e244]:
+        - generic [ref=f4e245]: "theme:"
+        - generic [ref=f4e246]: light
+      - generic [ref=f4e247]: │
+      - generic [ref=f4e248]: build snapshot
+      - generic [ref=f4e250]: │
+      - generic [ref=f4e251]: 18:38:54
+  - dialog "zip · 結果" [ref=f4e299]:
+    - banner [ref=f4e300]:
+      - generic [ref=f4e301]: ┌
+      - generic [ref=f4e302]: zip · 結果
+      - button "close" [active] [ref=f4e304] [cursor=pointer]: ×
+    - generic [ref=f4e305]:
+      - generic [ref=f4e306]:
+        - generic [ref=f4e307]:
+          - term [ref=f4e308]: 壓縮檔內檔案
+          - definition [ref=f4e309]: "2"
+        - generic [ref=f4e310]:
+          - term [ref=f4e311]: 已排入佇列
+          - definition [ref=f4e312]: "2"
+        - generic [ref=f4e313]:
+          - term [ref=f4e314]: 重複
+          - definition [ref=f4e315]: "0"
+        - generic [ref=f4e316]:
+          - term [ref=f4e317]: 已略過
+          - definition [ref=f4e318]: "0"
+      - group [ref=f4e319]:
+        - generic "各檔結果 · 2" [ref=f4e320] [cursor=pointer]
+    - contentinfo [ref=f4e321]:
+      - button "關閉" [ref=f4e322] [cursor=pointer]:
+        - generic [ref=f4e323]: "["
+        - generic [ref=f4e325]: "]"

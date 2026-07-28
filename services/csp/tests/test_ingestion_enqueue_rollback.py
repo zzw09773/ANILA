@@ -53,6 +53,8 @@ async def _upload(db, user, collection, tmp_path, *, content=b"hello ingestion")
         collection.id,
         UploadFile(filename="sample.txt", file=BytesIO(content)),
         title=None,
+        origin="csp",
+
         db=db,
         current_user=user,
     )
@@ -149,6 +151,8 @@ async def test_upload_rejects_extension_and_mime_spoof_before_persistence(
             collection.id,
             UploadFile(filename="fake.txt", file=BytesIO(b"%PDF-1.7\n%%EOF")),
             title=None,
+            origin="csp",
+
             db=db,
             current_user=user,
         )
@@ -163,6 +167,8 @@ async def test_upload_rejects_extension_and_mime_spoof_before_persistence(
                 headers=Headers({"content-type": "image/png"}),
             ),
             title=None,
+            origin="csp",
+
             db=db,
             current_user=user,
         )
@@ -187,6 +193,8 @@ async def test_zip_upload_rejects_traversal_before_member_persistence(tmp_path, 
             collection.id,
             UploadFile(filename="batch.zip", file=BytesIO(archive.getvalue())),
             preserve_folder_structure=False,
+            origin="csp",
+
             db=db,
             current_user=user,
         )
@@ -212,6 +220,8 @@ async def test_zip_upload_rejects_wrong_member_container_without_persisting(
         collection.id,
         UploadFile(filename="batch.zip", file=BytesIO(archive.getvalue())),
         preserve_folder_structure=False,
+        origin="csp",
+
         db=db,
         current_user=user,
     )
@@ -693,6 +703,8 @@ async def test_zip_members_each_persist_durable_intent(tmp_path, db) -> None:
         collection.id,
         UploadFile(filename="classified.zip", file=BytesIO(archive.getvalue())),
         preserve_folder_structure=False,
+        origin="csp",
+
         db=db,
         current_user=user,
     )
@@ -720,6 +732,7 @@ async def test_reprocess_uses_same_durable_dispatch_helper(tmp_path, db) -> None
 
     await documents.reprocess_document(
         document.id,
+        origin="csp",
         db=db,
         current_user=user,
     )

@@ -37,6 +37,28 @@ from app.schemas.contracts.tasks import (
     TaskStatus,
 )
 from tests.conftest import login, make_user
+from app.models.ingestion import IngestionCollection
+
+
+def _anilalm_collections(db, user, n: int = 1) -> list[IngestionCollection]:
+    """Seed ANILALM-origin collections for Task API surface tests."""
+    rows: list[IngestionCollection] = []
+    for i in range(n):
+        row = IngestionCollection(
+            name=f"task-coll-{i}",
+            chunking_config={"strategy": "hierarchical", "params": {}},
+            embedding_model="nv-embed",
+            embedding_fingerprint="sha256:" + "0" * 64,
+            embedding_dim=4000,
+            created_by=user.id,
+            origin="anilalm",
+        )
+        db.add(row)
+        rows.append(row)
+    db.commit()
+    for row in rows:
+        db.refresh(row)
+    return rows
 
 
 @pytest.fixture(autouse=True)
@@ -61,11 +83,13 @@ def _payload(**overrides) -> TaskCreate:
 class TestCreateTask:
     def test_happy_path_trace_id_and_snapshot(self, db):
         user = make_user(db)
+        colls = _anilalm_collections(db, user, n=2)
         task = tasks_module.create_task(
             db,
             requester_user_id=user.id,
             payload=_payload(
-                source_scope="project", selected_collection_ids=[1, 2]
+                source_scope="project",
+                selected_collection_ids=[colls[0].id, colls[1].id],
             ),
         )
         assert task.id is not None
@@ -77,7 +101,7 @@ class TestCreateTask:
         assert task.source_snapshot_id == snap.id
         assert snap.origin == SnapshotOrigin.COLLECTION.value
         assert snap.source_scope == SourceScope.PROJECT.value
-        assert snap.collection_ids == [1, 2]
+        assert snap.collection_ids == [colls[0].id, colls[1].id]
         # 規則 3:來源無可導分類 → 無機密
         assert snap.classification_level == "無機密"
 
@@ -133,12 +157,13 @@ class TestCreateTask:
         """任務分類 = max(payload 宣告, snapshot 導出);snapshot 分類
         僅由來源導出(規則 3),payload 宣告不灌入 snapshot。"""
         user = make_user(db)
+        coll = _anilalm_collections(db, user, n=1)[0]
         task = tasks_module.create_task(
             db,
             requester_user_id=user.id,
             payload=_payload(
                 source_scope="personal",
-                selected_collection_ids=[7],
+                selected_collection_ids=[coll.id],
                 classification_level="機密",
             ),
         )

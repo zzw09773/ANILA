@@ -19,7 +19,7 @@ duplication.
 
 from __future__ import annotations
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -76,6 +76,38 @@ class WorkerSettings(BaseSettings):
             "truncated to 4000 because halfvec HNSW caps at 4000-d."
         ),
     )
+    embedding_source_dim: int | None = Field(
+        default=None,
+        ge=1,
+        le=4000,
+        description=(
+            "Native output dimension of the deployed embedding model, when it "
+            "is smaller than the storage contract. None (default) = strict: "
+            "only 4000-d or NV-Embed's native 4096-d are accepted. Set to e.g. "
+            "2048 to run nemotron-3-embed-1b, whose vectors are then zero-padded "
+            "to halfvec(4000) (padding zeros are cosine-neutral). "
+            "This must be declared explicitly rather than accepting any short "
+            "vector: if the endpoint silently starts serving a different model, "
+            "unconditional padding would push semantically meaningless vectors "
+            "into the index with no error, and the collection embedding "
+            "fingerprint cannot detect that (it guards the *declared* model "
+            "identity, not endpoint drift)."
+        ),
+    )
+    @field_validator("embedding_source_dim", mode="before")
+    @classmethod
+    def _blank_source_dim_means_unset(cls, value):
+        """把空字串正規化成 None(與 CSP 的 ANILA_EMBED_SOURCE_DIM 同理)。
+
+        ⚠ 必要而非防禦性:compose 的 `${ANILA_EMBED_SOURCE_DIM_DEV:-}` 在未設定時
+        展開成**空字串且仍傳入該 key**,Pydantic 對 `int | None` 收到 `""` 會丟
+        ValidationError → worker 起不來。而這是「沒有部署較小維度模型」的**預設**
+        情況。由 PR #52 的 Codex review 抓到。
+        """
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
     embedding_timeout_seconds: float = Field(
         default=30.0,
         description="Per-request embedding timeout.",

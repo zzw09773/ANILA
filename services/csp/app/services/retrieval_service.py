@@ -50,7 +50,9 @@ from app.models.user import User
 from app.modules.clearance.service import (
     ClearancePolicyDataError,
     resolve_and_evaluate_data_access,
+    resolve_and_evaluate_data_access_batch,
 )
+from app.services.audit_service import log_audit_event
 from app.services.ingestion_pool import get_pool
 from app.services.proxy.ceiling import enforce_model_ceiling
 from app.services.proxy.task_link import TaskRunContext
@@ -249,6 +251,15 @@ async def embed_query(
                 task_ctx is not None or trusted_classification_level is not None
             ),
         )
+        # W2-1:policy_db 只被上面的 enforce_model_ceiling 用到,在 await 之前就
+        # 用完了 —— 提早關掉,別讓它橫跨整個 embedding round-trip。
+        #
+        # 為什麼重要:`EMBEDDING_TIMEOUT` 是 30s,原本 policy_db 與 governance_db
+        # 兩條連線都被 pin 過整段 await,加上請求自己那條 = 每個進行中的 RAG 檢索
+        # 佔 3 條連線。池上限 30 → 天花板約 10。關掉這條變成佔 2 條。
+        # (governance_db 不能關 —— 它被傳進 proxy_request 供治理帳寫入使用。)
+        # Session.close() 是 idempotent,下面 finally 再關一次無害。
+        policy_db.close()
         response = await proxy_request(
             model=model,
             api_key_id=None,
@@ -270,6 +281,32 @@ async def embed_query(
     except RetrievalFailure:
         raise
     except HTTPException as exc:
+        detail = exc.detail
+        is_model_unhealthy = (
+            exc.status_code == 503
+            and isinstance(detail, dict)
+            and detail.get("code") == "model_unhealthy"
+        )
+        if is_model_unhealthy:
+            log_audit_event(
+                db,
+                action="retrieval.embedding",
+                resource_type="model",
+                resource_id=model.id,
+                actor=user,
+                status="failed",
+                detail="檢索 embedding 被 circuit breaker 拒絕 (model_unhealthy)",
+                metadata={
+                    "code": "model_unhealthy",
+                    "model_name": model_name,
+                    "health_status": getattr(model, "health_status", None),
+                },
+                commit=True,
+            )
+            raise RetrievalFailure(
+                "embedding_model_unhealthy",
+                "檢索 embedding 模型已被 health probe 標記 unhealthy",
+            ) from exc
         raise RetrievalFailure(
             "embedding_policy_denied"
             if exc.status_code == 403
@@ -289,12 +326,20 @@ async def embed_query(
     ):
         raise RetrievalFailure("embedding_invalid", "檢索模型回傳非數值向量")
     try:
-        normalized = truncate_embedding(raw_vector)
+        # pad_from 必須明示:未宣告時只接受 4000 / 4096,避免端點悄悄換模型後
+        # 短向量被無聲補零進索引(見 anila_core truncate_embedding docstring)。
+        normalized = truncate_embedding(
+            raw_vector, pad_from=settings.ANILA_EMBED_SOURCE_DIM
+        )
     except ValueError as exc:
+        declared = settings.ANILA_EMBED_SOURCE_DIM
+        accepted = f"{EMBED_DIM} 或 {EMBED_NATIVE_DIM}"
+        if declared is not None:
+            accepted += f" 或已宣告的 {declared}(補零)"
         raise RetrievalFailure(
             "embedding_dimension_mismatch",
-            f"檢索模型回傳 {len(raw_vector)} 維；僅接受 {EMBED_DIM} 或 "
-            f"{EMBED_NATIVE_DIM} 維",
+            f"檢索模型回傳 {len(raw_vector)} 維；僅接受 {accepted} 維。"
+            "若確實部署了較小維度的模型,請設定 ANILA_EMBED_SOURCE_DIM。",
         ) from exc
     return [float(value) for value in normalized]
 
@@ -380,23 +425,57 @@ def _authorized_retrieval_documents(
     else:
         candidate_ids = requested_document_ids
 
+    # W2-1:改用批次 clearance 解析。
+    #
+    # 原本這裡是 per-document 迴圈,每一輪都呼 `resolve_and_evaluate_data_access`,
+    # 而該函式內部含 5 個 `db.query` + clearance 解析。200 份文件的知識庫,**單一個
+    # 聊天 turn 就是 1000+ 次同步 DB round-trip**,而且跑在 asyncio event loop 上
+    # (CSP 是單一 uvicorn worker、無 --workers)→ 任一慢查詢凍結全平台。
+    #
+    # 批次版 `resolve_and_evaluate_data_access_batch` **早就寫好躺在同一支檔案裡**
+    # (`modules/clearance/service.py`),但生產唯一呼叫者是 `api/traces.py` ——
+    # 熱路徑從來沒用它。這是全案「修法幾乎免費」的代表。
+    #
+    # 語意必須逐條等價(見 tests/test_retrieval_clearance_batch_equivalence.py:
+    # 該測試用單筆版逐一算出期望值,再與本函式輸出比對):
+    #   - LookupError → clearance_denied;ClearancePolicyDataError → clearance_policy_invalid
+    #   - allowed 但 authorized_classification 為 None → clearance_policy_invalid
+    #   - 未 allowed 且呼叫端指定了 document_ids → clearance_denied(整批拒絕)
+    #   - 未 allowed 且未指定(= 預設全 collection)→ 靜默略過該文件
+    if not candidate_ids:
+        return {}
+
+    # 批次 API 對重複 id 會丟 ValueError;candidate_ids 來自 DB 時天然不重複,
+    # 但呼叫端傳入的 requested_document_ids 不保證,所以保序去重。
+    # (去重不改變語意:同一份文件評估兩次結果相同。)
+    unique_ids = list(dict.fromkeys(candidate_ids))
+
+    try:
+        decisions = resolve_and_evaluate_data_access_batch(
+            db,
+            user_id=user_id,
+            collection_ids=[collection_id],
+            document_ids=unique_ids,
+            now=evaluated_at,
+        )
+    except (LookupError, ClearancePolicyDataError) as exc:
+        code = (
+            "clearance_policy_invalid"
+            if isinstance(exc, ClearancePolicyDataError)
+            else "clearance_denied"
+        )
+        raise RetrievalFailure(code, "document clearance 驗證失敗") from exc
+
     allowed: dict[int, Classification] = {}
     for document_id in candidate_ids:
-        try:
-            decision = resolve_and_evaluate_data_access(
-                db,
-                user_id=user_id,
-                collection_id=collection_id,
-                document_id=document_id,
-                now=evaluated_at,
+        decision = decisions.get((collection_id, document_id))
+        if decision is None:
+            # 批次版沒回傳該 (collection, document) 的決策 = 契約被違反。
+            # fail-closed:寧可拒絕檢索,不可當成「允許」。
+            raise RetrievalFailure(
+                "clearance_policy_invalid",
+                "批次 clearance 未回傳該 document 的決策",
             )
-        except (LookupError, ClearancePolicyDataError) as exc:
-            code = (
-                "clearance_policy_invalid"
-                if isinstance(exc, ClearancePolicyDataError)
-                else "clearance_denied"
-            )
-            raise RetrievalFailure(code, "document clearance 驗證失敗") from exc
         if decision.allowed:
             if decision.authorized_classification is None:
                 raise RetrievalFailure(

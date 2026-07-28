@@ -43,7 +43,7 @@ export async function createTaskForConversation({ title, conversationId } = {}) 
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      // eslint-disable-next-line no-console
+
       console.warn(
         `[ANILA Task] 建立任務失敗（HTTP ${response.status}），此對話將以無任務模式繼續。`,
       );
@@ -51,13 +51,13 @@ export async function createTaskForConversation({ title, conversationId } = {}) 
     }
     const data = await response.json();
     if (data == null || data.id == null) {
-      // eslint-disable-next-line no-console
+
       console.warn("[ANILA Task] 任務回應缺少 id 欄位，此對話將以無任務模式繼續。");
       return null;
     }
     return { taskId: data.id, traceId: data.trace_id ?? null };
   } catch (error) {
-    // eslint-disable-next-line no-console
+
     console.warn("[ANILA Task] 建立任務失敗（網路錯誤），此對話將以無任務模式繼續。", error);
     return null;
   }

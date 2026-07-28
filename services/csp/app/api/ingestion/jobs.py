@@ -35,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.ingestion.collections import _require_collection_access
+from app.api.ingestion.surface import require_surface_origin
 from app.database import SessionLocal, get_db
 from app.models.ingestion import IngestionJob
 from app.models.user import User
@@ -141,7 +142,16 @@ async def _stream(job_id: int, collection_id: int) -> AsyncIterator[bytes]:
         await asyncio.sleep(_POLL_SECONDS)
 
 
-@router.get("/api/ingestion/jobs/{job_id}/stream")
+@router.get(
+    "/jobs/{job_id}/stream",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "SSE job status stream",
+            "content": {"text/event-stream": {}},
+        }
+    },
+)
 async def stream_job(
     job_id: int,
     db: Session = Depends(get_db),
@@ -160,7 +170,7 @@ async def stream_job(
     # Owns + 404 in one call. ``_require_collection_access`` raises
     # 404 when the collection is gone (orphan job after parent delete);
     # 403 when the caller doesn't own it.
-    coll = _require_collection_access(db, current_user, job.collection_id)
+    coll = _require_collection_access(db, current_user, job.collection_id, origin=require_surface_origin())
 
     return StreamingResponse(
         _stream(job_id, coll.id),

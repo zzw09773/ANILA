@@ -130,8 +130,27 @@ class Agent(Base):
     approved_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    approved_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+
+    # ── ISO 42001 追溯欄(A.5.2 / A.5.4 / A.6.2.7 / A.7.5 / A.10.3)────────
+    #
+    # `0035_iso_42001_traceability` 建了這些欄,但 **ORM / API / UI 全無** ——
+    # 也就是那支 migration 的意圖從來沒有被實現,而且沒有任何東西提醒過任何人。
+    # 本輪新增的 `UNDECLARED_COLUMN` drift 檢查把它們系統性地找了出來(先前只有
+    # 帶 FK 的那些會碰巧透過 FK 檢查現形)。
+    #
+    # 唯讀先行(W3-12l):先讓欄位映射存在、API 讀得到,寫入面與 UI 表單另排。
+    # 沒有映射的欄等於不存在 —— 治理稽核問「這個 agent 的 AIIA 在哪」時,平台
+    # 連「欄位是空的」都答不出來,只能答「我沒有這個概念」。
+    #: 上一位審核者(0035 建;審核流程的 UI 尚未接)
+    last_reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    #: 驗證與確效結果:pending / passed / failed / waived。
+    #: router 可以據此拒絕派送,但那個 gate 還沒接 —— 目前純記錄。
+    vv_status = Column(String(20), nullable=False, server_default="pending")
+    #: AI 影響評估文件的相對路徑(docs/governance/aiia/<agent>.md)
+    aiia_doc_path = Column(String(500), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Sprint 8 X / Phase A — bootstrap-then-provision flow.
     # Admin issues a single-use ``bsk-`` token via

@@ -1,0 +1,168 @@
+{
+  "_readme": [
+    "C5 legacy 清單 —— 補救計畫 W1-7 首發。由 infra/ci/check_legacy_ledger.py 在 CI 執行。",
+    "存在理由:稽核抓到的 S3 反模式 —— 新 read model 落地後舊那層留著,沒有退場條件、",
+    "沒有清單,於是每個 boundary 都要重查一次舊層還在不在,而漏查的那個就是下一個缺口。",
+    "",
+    "規則:max_count 一律 = 當下實測值,**只准降不准升**。實測 > 上限 → CI fail。",
+    "實測 < 上限 → 預設只提示(清引用的 PR 不該被自己的成果擋住),但 Wave 收尾要跑",
+    "`--strict-ratchet` 強迫下修 —— 上限不會自己降,靜默鬆動正是這個機制要防的事。",
+    "",
+    "制度接口:任何 PR 引入「新 read model + 保留舊層」→ 必須同 PR 在此登記(PR 模板",
+    "checklist)。owner 目前填職稱,W4-2 之後改具名。",
+    "",
+    "基線量測日:2026-07-26(commit 1a8a0a7 之後)。量測指令:",
+    "  python3 infra/ci/check_legacy_ledger.py --report",
+    "2026-07-26 二次校準:計數器原本把**純註解行**也算成引用,於是 W1-1 改掉兩處 legacy gate、同時在原地留下「為什麼不能用它」的說明後,計數完全不動。ledger 要擋的是引用,而那種註解正是防止下一個人把 bug 寫回去的東西 —— 計數註解等於紀律變成「不准解釋」。修正後全部上限重新鎖到真實值(見各 entry 的 max_count)。"
+  ],
+  "baseline_date": "2026-07-26",
+  "entries": [
+    {
+      "id": "classified-boolean-backend",
+      "pattern": "\\.classified\\b",
+      "scope": [
+        "services/csp/app/**/*.py",
+        "packages/*/src/**/*.py"
+      ],
+      "exclude": [
+        "**/test_*.py",
+        "**/tests/**"
+      ],
+      "max_count": 5,
+      "owner": "平台後端負責人",
+      "exit_condition": "全部判斷式改吃 classification_level(W1-1);欄位本身待 deprecation migration",
+      "deadline": "Wave 1 結束",
+      "notes": "五級 read model 已上線,這個 boolean 是舊層。W1-1 清完五處外流 gate 後這裡會下修;之後可再加 ruff 自訂規則強化。"
+    },
+    {
+      "id": "classified-boolean-shell",
+      "pattern": "\\.classified\\b",
+      "scope": [
+        "apps/anila-shell/src/**/*.js",
+        "apps/anila-shell/src/**/*.jsx"
+      ],
+      "exclude": [
+        "**/*.test.js",
+        "**/*.test.jsx"
+      ],
+      "max_count": 29,
+      "owner": "前端負責人",
+      "exit_condition": "同 classified-boolean-backend;前端一律改讀 classification_level",
+      "deadline": "Wave 1 結束",
+      "notes": "與後端同一對,分開計數是因為 owner 與清理節奏不同。個別對之後可加 ESLint no-restricted-syntax。 ⚠ 2026-07-27 上限 24 → 29:PR #50(feat/ux-parity)合入時帶進 8 處新引用(命令面板/斜線指令/封存視圖各自判 c.classified),同一輪的比較模式修復又補 2 處(ParallelCompareView 原本完全沒傳密等姿態,補傳時 classified 與 classificationLevel 兩者都傳 —— 新增的是既有元件簽章要求的 prop,不是新的判定來源)。淨額 +5。退場條件不變:前端一律改讀 classification_level;runtime/classified.js 的 7 處是鏡射 legacy 欄的單一來源,會最後才清。"
+    },
+    {
+      "id": "platform-links-vs-registered-service",
+      "pattern": "platform_links",
+      "scope": [
+        "services/csp/app/**/*.py"
+      ],
+      "exclude": [
+        "**/tests/**"
+      ],
+      "max_count": 14,
+      "owner": "平台後端負責人",
+      "exit_condition": "讀寫全走 registered_service;platform_links 表進 deprecation migration",
+      "deadline": "Wave 3 結束",
+      "notes": "migration 檔與 README 不計入(歷史紀錄不該被 ratchet 逼著改)。"
+    },
+    {
+      "id": "csp-service-token",
+      "pattern": "CSP_SERVICE_TOKEN",
+      "scope": [
+        "services/csp/app/**/*.py",
+        "packages/*/src/**/*.py"
+      ],
+      "exclude": [
+        "**/tests/**",
+        "**/test_*.py"
+      ],
+      "max_count": 21,
+      "owner": "平台後端負責人",
+      "exit_condition": "cutover 到 per-agent credential 完成,service_token_legacy_env_used 遙測歸零(W1-5⑥)",
+      "deadline": "Wave 3 結束",
+      "notes": "稽核測到 66% 呼叫還在走共享 token,遙測本身就是證據。cutover 本體不在 W1-7,這裡只釘住不再長。"
+    },
+    {
+      "id": "is-legacy-service-client",
+      "pattern": "is_legacy",
+      "scope": [
+        "services/csp/app/**/*.py",
+        "packages/*/src/**/*.py"
+      ],
+      "exclude": [
+        "**/tests/**",
+        "**/test_*.py"
+      ],
+      "max_count": 33,
+      "owner": "平台後端負責人",
+      "exit_condition": "清零(legacy service client 全數換為具名 credential)",
+      "deadline": "Wave 3 結束",
+      "notes": "與 csp-service-token 是同一次 cutover 的兩個面。"
+    },
+    {
+      "id": "legacy-runtime-call",
+      "pattern": "legacy_runtime_call",
+      "scope": [
+        "services/csp/app/**/*.py",
+        "packages/*/src/**/*.py"
+      ],
+      "exclude": [
+        "**/tests/**",
+        "**/test_*.py"
+      ],
+      "max_count": 31,
+      "owner": "平台後端負責人",
+      "exit_condition": "清零",
+      "deadline": "Wave 3 結束",
+      "notes": "旗標式 legacy 路徑;清零前每個新呼叫點都要問「為什麼還走舊路」。"
+    },
+    {
+      "id": "proxy-service-facade",
+      "pattern": "proxy_service",
+      "scope": [
+        "services/csp/app/**/*.py",
+        "packages/*/src/**/*.py"
+      ],
+      "exclude": [
+        "**/tests/**",
+        "**/test_*.py",
+        "services/csp/app/services/proxy_service.py"
+      ],
+      "max_count": 23,
+      "owner": "平台後端負責人",
+      "exit_condition": "所有 import 改指 app.services.proxy 套件,facade 檔 proxy_service.py 刪除",
+      "deadline": "Wave 3 結束",
+      "notes": "facade 檔自己不計入(它就是要被刪的那個)。計的是還在 import facade 的呼叫端。"
+    },
+    {
+      "id": "pbkdf2-100k-legacy-fallback",
+      "pattern": "_DERIVATION_ITERS_LEGACY|legacy_fallback",
+      "scope": [
+        "packages/anila-security/src/**/*.py",
+        "services/csp/app/**/*.py"
+      ],
+      "exclude": [
+        "**/tests/**",
+        "**/test_*.py"
+      ],
+      "max_count": 18,
+      "owner": "資安權責人",
+      "exit_condition": "全量 rehash 完成(scripts/reencrypt-credentials.py 跑過且遙測 _legacy_fallback_count 歸零)後移除 fallback 路徑",
+      "deadline": "Wave 3 結束",
+      "notes": "600k 是 OWASP 2024 指引;100k fallback 是為了讓舊列還解得開。fallback 存在期間,舊列的實際強度就是 100k。"
+    },
+    {
+      "id": "sqlite-conftest-vs-pg",
+      "pattern": "sqlite",
+      "scope": [
+        "services/csp/tests/conftest.py"
+      ],
+      "max_count": 2,
+      "owner": "平台後端負責人",
+      "exit_condition": "測試主迴路可跑真 PG(W2-6 之後評估);屆時 conftest 預設改 PG,SQLite 只留在明確標記的快速迴路",
+      "deadline": "Wave 2 結束後評估",
+      "notes": "SQLite 與 PG 的行為差異已經害過一次:SELECT DISTINCT + ORDER BY 非選取欄在 SQLite 通過、在 PG 直接錯(T2-7a 修正時抓到)。這條的風險是「測試綠但生產紅」。"
+    }
+  ]
+}

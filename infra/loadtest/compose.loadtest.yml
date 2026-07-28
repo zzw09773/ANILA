@@ -1,0 +1,111 @@
+# ANILA — load-test overlay for W2-8.
+#
+# Applied ON TOP of compose.dev.yaml so the load stack is raised from the same
+# service definitions the dev stack uses, but under project `anila-loadtest`
+# with a private network and non-conflicting host ports.
+#
+#   docker compose -f compose.dev.yaml -f infra/loadtest/compose.loadtest.yml \
+#                  -p anila-loadtest up -d csp ingestion-worker embed-proxy
+#
+# ⚠️ SAFETY — why this file exists at all:
+#   infra/compose/dev.yml pins `networks.default.name: anila-dev-net`, and that
+#   network is *owned* by the running `anila-platform-dev` project (its labels
+#   carry com.docker.compose.project=anila-platform-dev).  A plain `-p
+#   anila-loadtest up` would therefore have a second project reach into another
+#   project's network.  Renaming the default network below is what keeps the
+#   two stacks genuinely disjoint — do not drop it.
+#   The same applies to `container_name: anila-nginx-dev` on the nginx service:
+#   container names are NOT project-prefixed, so nginx is simply never started
+#   by the commands above (it is not needed — k6 talks to csp directly).
+#
+# No secrets live here.  The gateway bearer token is read from the untracked
+# repo-root .env as MODEL_GATEWAY_API_KEY.
+
+services:
+
+  # ── PostgreSQL — dev port 5533 is taken by anila-platform-dev ────────────
+  # `!override` is required: compose *appends* to a ports list by default, so a
+  # plain mapping here would publish 5533 as well and collide with the running
+  # dev database. Verified via `docker compose config`.
+  csp-db:
+    ports: !override
+      - "127.0.0.1:15533:5432"
+
+  # ── OpenAI-compatible embedding shim over the Triton gRPC endpoint ──────
+  # Same image the dev stack's external embed proxy runs; pointed at the
+  # gRPC host:port supplied through the untracked .env.
+  embed-proxy:
+    image: embedding-proxy:migration
+    environment:
+      TRITON_GRPC_URL: ${LOADTEST_EMBED_GRPC:?LOADTEST_EMBED_GRPC must be host:port of the embedding gRPC endpoint}
+      MODEL_NAME: ${LOADTEST_EMBED_MODEL:-nv-embed-v2}
+      REQUEST_TIMEOUT: "60"
+      READINESS_TIMEOUT: "5"
+    expose:
+      - "8000"
+    networks:
+      - default
+    restart: unless-stopped
+
+  csp:
+    # Published so k6 on the host can drive the API directly; going through
+    # nginx would only add a TLS terminator we do not want to measure.
+    ports: !override
+      - "127.0.0.1:18000:8000"
+    # Detach from the shared external `anila-models-net`: this stack reaches its
+    # models over the host network via the external gateway, so there is no
+    # reason to join a network the dev/live stacks also sit on.
+    networks: !override
+      - default
+    environment:
+      # Upstream bearer for the external OpenAI-compatible gateway.
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:?MODEL_GATEWAY_API_KEY must be set in the untracked .env}
+      # Replaces the dev catalogue (gpt-oss-20b / gemma4 / nv-embed-proxy on
+      # anila-models-net) with the two models this load test actually drives.
+      # endpoint_url is the BASE, without /v1 — proxy.py appends
+      # "/v1/chat/completions" itself.
+      AUTO_REGISTER_MODELS: >-
+        [{"name":"${LOADTEST_CHAT_MODEL:-gemma26-nothink}","display_name":"${LOADTEST_CHAT_MODEL:-gemma26-nothink}","model_type":"llm","endpoint_url":"${LOADTEST_GATEWAY_BASE:?LOADTEST_GATEWAY_BASE must be set in the untracked .env}","api_version":"v1","description":"Load-test chat model (external gateway)"},
+         {"name":"${LOADTEST_EMBED_MODEL:-nv-embed-v2}","display_name":"${LOADTEST_EMBED_MODEL:-nv-embed-v2}","model_type":"embedding","endpoint_url":"http://embed-proxy:8000","api_version":"v1","description":"Load-test embedding shim over Triton gRPC"}]
+      # No agents in the load stack.
+      AUTO_REGISTER_AGENTS: "[]"
+      AUTO_REGISTER_LINKS: "[]"
+      AUTO_SEED_API_KEYS: >-
+        [{"username":"loadtest-user","email":"loadtest-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-loadtest-smoke-user-key}","key_name":"loadtest-user-key","models":["${LOADTEST_CHAT_MODEL:-gemma26-nothink}","${LOADTEST_EMBED_MODEL:-nv-embed-v2}"]},
+         {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY_DEV:-sk-loadtest-internal-worker-key}","key_name":"ingestion-worker-system-key","models":["${LOADTEST_EMBED_MODEL:-nv-embed-v2}"]}]
+      # Router sentinel would auto-seed a model we do not run.
+      ANILA_ROUTER_SENTINEL_URL: ""
+      # infra/compose/dev.yml defaults ENABLE_MEMORY to "true", and on this tree
+      # memory recall fails closed unless the call is bound to a consuming
+      # conversation (memory_service.py:1136). k6 drives /v1/chat/completions
+      # directly — an API client with no conversation — so every RAG request
+      # would 503 "memory governance stage failed" before retrieval ever ran.
+      # Memory recall is orthogonal to W2-1/W2-2, and off is also the
+      # prod-intranet-card posture, so it is disabled here to keep the profile
+      # measuring the retrieval path. Recorded in the baseline's stack spec.
+      ENABLE_MEMORY: "false"
+      SITE_URL: "http://127.0.0.1:18000"
+      # k6 drives plain HTTP against the published port, so the __Host- cookie
+      # contract cannot apply; bearer tokens are used instead.
+      COOKIE_SECURE: "false"
+
+  ingestion-worker:
+    environment:
+      EMBEDDING_MODEL: ${LOADTEST_EMBED_MODEL:-nv-embed-v2}
+      # Vision / relation-extraction would fan out to models this stack does
+      # not run and would dominate the indexing profile's timings.
+      ENABLE_IMAGE_CAPTIONS: "false"
+      ENABLE_RELATION_LLM: "false"
+      ENABLE_SIMILARITY_EDGES: "false"
+
+  # nginx is never started by this overlay, but it is neutralised anyway so an
+  # accidental bare `up` cannot claim the dev stack's container name or ports.
+  nginx:
+    container_name: anila-loadtest-nginx
+    ports: !override
+      - "127.0.0.1:18080:80"
+
+networks:
+  # ⚠️ THE load-bearing line — see the safety note at the top of this file.
+  default:
+    name: anila-loadtest-net

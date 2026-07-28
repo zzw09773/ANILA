@@ -244,7 +244,7 @@ def _resolve_binding(
         task = (
             db.query(Task)
             .filter(Task.id == task_id)
-            .with_for_update()
+            .with_for_update().populate_existing()
             .first()
         )
         if task is None:
@@ -262,7 +262,7 @@ def _resolve_binding(
             task = (
                 db.query(Task)
                 .filter(Task.id == snapshot.task_id)
-                .with_for_update()
+                .with_for_update().populate_existing()
                 .first()
             )
             if task is None:
@@ -299,7 +299,7 @@ def _require_task_service_and_run(
             TaskRun.dispatch_target == "studio",
             TaskRun.status == "running",
         )
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one_or_none()
     )
     if run is None:
@@ -613,7 +613,7 @@ def bind_artifact_job_lease(
     db: Session = Depends(get_db),
 ):
     """Bind/refresh the current durable Redis attempt for sink admission."""
-    job = db.query(ArtifactJob).filter(ArtifactJob.job_id == job_id).with_for_update().one_or_none()
+    job = db.query(ArtifactJob).filter(ArtifactJob.job_id == job_id).with_for_update().populate_existing().one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="找不到此 job")
     _require_job_selected_service(
@@ -652,7 +652,7 @@ def patch_artifact_job(
         current = (
             db.query(ArtifactJob)
             .filter(ArtifactJob.job_id == job_id)
-            .with_for_update()
+            .with_for_update().populate_existing()
             .one_or_none()
         )
         if current is None:
@@ -669,7 +669,7 @@ def patch_artifact_job(
                     TaskRun.task_id == current.task_id,
                     TaskRun.status.in_(("queued", "running")),
                 )
-                .with_for_update()
+                .with_for_update().populate_existing()
                 .all()
             )
             if len(active_runs) > 1:
@@ -716,7 +716,7 @@ def upload_artifact(
     job = (
         db.query(ArtifactJob)
         .filter(ArtifactJob.job_id == payload.job_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one_or_none()
         if payload.job_id else None
     )
@@ -1205,7 +1205,7 @@ def _require_job_selected_service(
         return None
     query = db.query(Task).filter(Task.id == task_id)
     if lock:
-        query = query.with_for_update()
+        query = query.with_for_update().populate_existing()
     task = query.one_or_none()
     if task is None or (task.selected_service_id or "").strip() not in {
         str(caller.service.id),
@@ -1229,7 +1229,7 @@ def download_artifact_version(
     artifact = _load_artifact_or_404(db, artifact_id)
     version = db.query(ArtifactVersion).filter(
         ArtifactVersion.id == version_id
-    ).with_for_update().one_or_none()
+    ).with_for_update().populate_existing().one_or_none()
     if version is None or version.artifact_id != artifact.id:
         raise HTTPException(status_code=404, detail="找不到此 artifact version")
     if version.lifecycle_state in {"revoked", "erase_due", "erased"}:
@@ -1309,7 +1309,7 @@ def revoke_artifact_version(
             ArtifactVersion.id == version_id,
             ArtifactVersion.artifact_id == artifact.id,
         )
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one_or_none()
     )
     if version is None:
@@ -1350,7 +1350,7 @@ def archive_artifact_version(
     artifact = _load_artifact_or_404(db, artifact_id)
     version = db.query(ArtifactVersion).filter(
         ArtifactVersion.id == version_id
-    ).with_for_update().one_or_none()
+    ).with_for_update().populate_existing().one_or_none()
     if version is None or version.artifact_id != artifact.id:
         raise HTTPException(status_code=404, detail="找不到此 artifact version")
     _artifact_download_authorized(db, artifact=artifact, version=version, user=current_user)
@@ -1389,7 +1389,7 @@ def set_artifact_version_legal_hold(
     artifact = _load_artifact_or_404(db, artifact_id)
     version = db.query(ArtifactVersion).filter(
         ArtifactVersion.id == version_id
-    ).with_for_update().one_or_none()
+    ).with_for_update().populate_existing().one_or_none()
     if version is None or version.artifact_id != artifact.id:
         raise HTTPException(status_code=404, detail="找不到此 artifact version")
     if version.lifecycle_state == "erased":

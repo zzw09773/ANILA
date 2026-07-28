@@ -1,0 +1,97 @@
+- generic [ref=f9e6]:
+  - complementary "任務側欄" [ref=f9e7]:
+    - generic [ref=f9e8]:
+      - generic [ref=f9e13]: ANILA
+      - button "收合側邊" [ref=f9e14] [cursor=pointer]
+    - generic [ref=f9e17]:
+      - button "新對話 Ctrl+Shift+O" [ref=f9e18] [cursor=pointer]:
+        - text: 新對話
+        - generic [ref=f9e21]: Ctrl+Shift+O
+      - button "搜尋 / 跳轉 Ctrl+K" [ref=f9e22] [cursor=pointer]:
+        - text: 搜尋 / 跳轉
+        - generic [ref=f9e26]: Ctrl+K
+    - navigation "ANILA 主導覽" [ref=f9e27]:
+      - button "任務中心" [ref=f9e28] [cursor=pointer]
+      - link "我的知識庫" [ref=f9e32] [cursor=pointer]:
+        - /url: http://127.0.0.1:5173/anilalm
+      - link "產出中心" [ref=f9e37] [cursor=pointer]:
+        - /url: http://127.0.0.1:5173/anilalm/outputs
+      - button "專案入口" [ref=f9e41] [cursor=pointer]
+      - link "治理中心" [ref=f9e48] [cursor=pointer]:
+        - /url: http://127.0.0.1:5173/
+    - tablist "側欄清單切換" [ref=f9e54]:
+      - tab "對話" [selected] [ref=f9e55] [cursor=pointer]
+      - tab "Agents" [ref=f9e58] [cursor=pointer]
+    - generic [ref=f9e64]:
+      - button "全部" [ref=f9e66] [cursor=pointer]
+      - button "已加星" [ref=f9e71] [cursor=pointer]
+      - button "已封存" [ref=f9e74] [cursor=pointer]
+      - button "新增" [ref=f9e78] [cursor=pointer]
+    - textbox "搜尋… (tag:hr 特休 / 支援同義詞)" [ref=f9e86]
+    - generic [ref=f9e87]:
+      - generic [ref=f9e88]: 今天
+      - generic [ref=f9e89]:
+        - button "測試對話-營業秘密 2 分鐘前" [ref=f9e90] [cursor=pointer]:
+          - generic "測試對話-營業秘密" [ref=f9e92]
+          - generic [ref=f9e93]: 2 分鐘前
+        - generic [ref=f9e95]:
+          - button "標籤 / 資料夾" [ref=f9e98] [cursor=pointer]
+          - button "更多" [ref=f9e104] [cursor=pointer]
+      - generic [ref=f9e109]:
+        - button "測試對話-無機密 2 分鐘前" [active] [ref=f9e110] [cursor=pointer]:
+          - generic "測試對話-無機密" [ref=f9e112]
+          - generic [ref=f9e113]: 2 分鐘前
+        - generic [ref=f9e115]:
+          - button "標籤 / 資料夾" [ref=f9e118] [cursor=pointer]
+          - button "更多" [ref=f9e124] [cursor=pointer]
+    - button "UI uicheck runtime · admin" [ref=f9e132] [cursor=pointer]:
+      - generic [ref=f9e133]: UI
+      - generic [ref=f9e134]:
+        - generic [ref=f9e135]: uicheck
+        - generic [ref=f9e136]: runtime · admin
+  - main [ref=f9e139]:
+    - generic [ref=f9e140]:
+      - generic [ref=f9e141]: 測試對話-無機密
+      - button "交接 handoff" [ref=f9e145] [cursor=pointer]
+      - button "比較模式 (需至少 2 個 agent)" [ref=f9e150] [cursor=pointer]
+      - button "重新載入 agent" [ref=f9e153] [cursor=pointer]
+      - button "專案入口" [ref=f9e159] [cursor=pointer]
+      - button "說明（⌘/）" [ref=f9e165] [cursor=pointer]
+      - button "設定" [ref=f9e169] [cursor=pointer]
+      - button "切換深色" [ref=f9e173] [cursor=pointer]
+      - button "Tweaks" [ref=f9e176] [cursor=pointer]
+      - button "新功能" [ref=f9e180] [cursor=pointer]
+    - generic [ref=f9e185]:
+      - generic [ref=f9e187]:
+        - generic [ref=f9e189]:
+          - button "編輯" [ref=f9e190] [cursor=pointer]
+          - text: 這是測試訊息一
+        - generic [ref=f9e193]:
+          - paragraph [ref=f9e196]: 這是回覆一
+          - generic [ref=f9e197]:
+            - button "複製" [ref=f9e198] [cursor=pointer]
+            - button "重新產生（可選調整方向）" [ref=f9e203] [cursor=pointer]
+            - button "標記為有用" [ref=f9e209] [cursor=pointer]
+            - button "標記為沒幫助" [ref=f9e212] [cursor=pointer]
+            - button "翻譯成英文" [ref=f9e215] [cursor=pointer]
+            - button "摘要重點" [ref=f9e216] [cursor=pointer]
+            - button "改寫成公文" [ref=f9e217] [cursor=pointer]
+      - generic [ref=f9e219]:
+        - generic [ref=f9e220]:
+          - generic [ref=f9e221]: "target:"
+          - button "ANILA Router auto" [ref=f9e224] [cursor=pointer]:
+            - generic [ref=f9e229]: ANILA Router
+            - generic [ref=f9e230]: auto
+        - generic [ref=f9e233]:
+          - textbox "問 ANILA 任何事情 — / 開指令、@agent 指定 agent · Shift+Enter 換行 · 按 ⌘/ 或 Ctrl+/ 檢視快捷鍵與說明" [ref=f9e234]
+          - generic [ref=f9e235]:
+            - button "附加檔案 (圖片 / pdf / 文字)" [ref=f9e238] [cursor=pointer]
+            - button "提及 @agent" [ref=f9e241] [cursor=pointer]
+            - button "斜線指令 /" [ref=f9e245] [cursor=pointer]
+            - generic [ref=f9e248]: · Auto route · 由 ANILA Router 判斷是否分派 agent
+            - generic [ref=f9e250]:
+              - generic [ref=f9e251]: Enter
+              - generic [ref=f9e252]: 送出
+            - button "開始語音輸入" [ref=f9e253] [cursor=pointer]
+            - button "送出" [disabled] [ref=f9e257]
+        - generic [ref=f9e260]: ANILA 會自動分派給合適的 agent · 所有呼叫經 CSP · AI 系統 · 內容僅供參考

@@ -1,0 +1,52 @@
+{
+  "generated_from": "W0-4",
+  "note": "baseline of KNOWN failures; may only shrink (ratchet). Each entry must map to a work package.",
+  "work_package": "W3-10",
+  "failures": [
+    {
+      "id": "fg-subtle/light",
+      "ratio": 3.41,
+      "required": 4.5
+    },
+    {
+      "id": "warn/light",
+      "ratio": 2.55,
+      "required": 3
+    },
+    {
+      "id": "success/light",
+      "ratio": 4.16,
+      "required": 4.5
+    },
+    {
+      "id": "fg-subtle/dark",
+      "ratio": 4,
+      "required": 4.5
+    },
+    {
+      "id": "accent:official/dark",
+      "ratio": 2.25,
+      "required": 3
+    },
+    {
+      "id": "accent:slate/dark",
+      "ratio": 1.87,
+      "required": 3
+    },
+    {
+      "id": "accent:moss/dark",
+      "ratio": 2.96,
+      "required": 3
+    },
+    {
+      "id": "accent:indigo/dark",
+      "ratio": 2.44,
+      "required": 3
+    },
+    {
+      "id": "accent:crimson/dark",
+      "ratio": 2.6,
+      "required": 3
+    }
+  ]
+}

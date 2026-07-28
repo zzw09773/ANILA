@@ -6,6 +6,7 @@ from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.agent import ApiKeyAgentPermission, UserAgentPermission
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
+from app.time_utils import is_expired
 from app.services.auth_service import is_admin_tier
 
 
@@ -67,7 +68,18 @@ def validate_api_key(db: Session, raw_key: str) -> ApiKey | None:
         return None
     if not api_key.is_active:
         return None
-    if api_key.expires_at and api_key.expires_at < datetime.now(timezone.utc):
+    # ⚠ 這裡**不能**直接寫 `api_key.expires_at < datetime.now(timezone.utc)`。
+    #
+    # `expires_at` 是 naive(`models/api_key.py:28`,由 migration r1_0017 建成
+    # `sa.DateTime()`,而同表的 `created_at`/`last_used_at` 在 0001 就是
+    # `DateTime(timezone=True)`),拿 naive 跟 aware 比較會直接
+    # `TypeError: can't compare offset-naive and offset-aware datetimes`
+    # —— 也就是**任何設了到期日的 API key,每一次驗證都是 500**,既不是正常
+    # 運作也不是正常過期。而這條路徑先前有 0 個測試。
+    #
+    # `is_expired()` 內部負責正規化,呼叫端不需要記得補 tzinfo —— 那正是這個
+    # bug 的成因(codebase 有 30 個各自手刻的 _as_utc,補丁漏掉的地方就是 bug)。
+    if is_expired(api_key.expires_at):
         return None
     if api_key.user is None or not api_key.user.is_active:
         return None

@@ -106,6 +106,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import {
   listTrustedHosts,
   createTrustedHost,
@@ -113,7 +114,7 @@ import {
 } from '../api/trustedHosts'
 import { useAuthStore } from '../stores/auth'
 import {
-  TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal,
+  TermBox, TermButton, TermField, TermEmpty, TermModal,
 } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
@@ -146,7 +147,7 @@ async function fetchHosts() {
     const { data } = await listTrustedHosts()
     hosts.value = data
   } catch (e) {
-    setFeedback('danger', e.response?.data?.detail || '載入信任主機失敗')
+    setFeedback('danger', extractError(e, '載入信任主機失敗'))
   }
 }
 
@@ -168,9 +169,11 @@ async function handleSubmit() {
     setFeedback('ok', `已新增「${form.host.trim()}」`)
     await fetchHosts()
   } catch (e) {
-    const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string' ? detail : (detail?.message || '新增失敗')
-    setFeedback('danger', msg)
+    // W2-12:原本這裡自己對裸 `data.detail` 做型別分派(string / object),
+    // 因為後端的 detail 可能是三種形狀。`extractError` 已經把那件事收斂掉並
+    // **保證回傳字串**,所以型別分派是死碼 —— 留著會讓讀者以為還要防那件事。
+    // fallback 要給有意義的字串:給 '' 的話錯誤橫幅會是空白的。
+    setFeedback('danger', extractError(e, '新增失敗'))
   } finally {
     submitting.value = false
   }
@@ -184,7 +187,7 @@ async function handleDelete(host) {
     setFeedback('ok', `已移除「${host.host}」`)
     await fetchHosts()
   } catch (e) {
-    setFeedback('danger', e.response?.data?.detail || '移除失敗')
+    setFeedback('danger', extractError(e, '移除失敗'))
   } finally {
     busyId.value = null
   }

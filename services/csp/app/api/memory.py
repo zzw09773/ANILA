@@ -20,6 +20,8 @@ the DB directly.
 """
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 from typing import Optional
 
@@ -58,7 +60,7 @@ _PREVIEW_CHARS = 240
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 
-class FactResponse(BaseModel):
+class FactResponse(ApiResponseModel):
     id: int
     key: str
     value: str
@@ -78,12 +80,12 @@ class FactResponse(BaseModel):
         from_attributes = True
 
 
-class FactListResponse(BaseModel):
+class FactListResponse(ApiResponseModel):
     total: int
     facts: list[FactResponse]
 
 
-class ChunkPreviewResponse(BaseModel):
+class ChunkPreviewResponse(ApiResponseModel):
     id: int
     conversation_id: int
     role: str
@@ -98,7 +100,7 @@ class ChunkPreviewResponse(BaseModel):
     created_at: datetime
 
 
-class ChunkListResponse(BaseModel):
+class ChunkListResponse(ApiResponseModel):
     total: int
     encrypted_total: int
     distinct_conversations: int

@@ -1,6 +1,7 @@
+import logging
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -36,6 +37,19 @@ class Settings(BaseSettings):
     # provenance are enforced end-to-end, both paths are secure-by-default OFF.
     # Development/test profiles may explicitly opt in with ENABLE_MEMORY=true.
     ENABLE_MEMORY: bool = False
+
+    # W1-1④ 匯出落列。ON 時 `POST /api/conversations/{id}/export-record` 會在
+    # `export_records` 寫一列(前端先落列成功才產檔);OFF 時只回密等頁首、不寫列。
+    #
+    # 為什麼預設 OFF(補救計畫明寫的節奏解耦):W1-1 六件裡④是 migration + 新
+    # 端點,與①②③⑤⑥的前端文案不同節奏。預設 ON 會讓④一卡就把五件已完成的
+    # 收緊工作(禁令姿態、密等頁首、print stylesheet)一起綁住不能上線。flag ON
+    # 是 Wave 1 的**離開條件**,不是上線的前置。
+    #
+    # ⚠ OFF 不代表匯出無管制:前端三個 gate(複製/匯出/分享)與密等頁首都與這
+    # 個 flag 無關,永遠生效。這個 flag 只決定「稽核列寫不寫」。
+    ANILA_EXPORT_RECORD_REQUIRED: bool = False
+
     # Gate 2 pilot posture. Turning pilot mode on is meaningful only after
     # the signed-profile verifier succeeds; unconverged inference surfaces
     # remain independently closed at their runtime boundaries.
@@ -74,6 +88,74 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql://csp:csp_password@localhost:5432/csp"
+    # Runtime-only Postgres session guards (app.database.engine).  Migration
+    # engines (Alembic ``MIGRATION_DATABASE_URL``) must never inherit these —
+    # schema changes legitimately hold long locks.
+    # lock_timeout: abort a single blocked statement (e.g. FOR UPDATE wait).
+    ANILA_DB_LOCK_TIMEOUT_MS: int = Field(default=5000, ge=0, le=600_000)
+    # idle_in_transaction_session_timeout: kill sessions that stay open after
+    # beginning a transaction without committing (SSE-held Session footgun).
+    # Default must exceed LLM_TIMEOUT: the sync proxy path takes the
+    # governance-receipt row lock and then awaits the upstream model inside
+    # the same transaction, which counts as idle-in-transaction to PG. At the
+    # old 60s default PG would kill that session for any upstream response
+    # slower than 60s — a legitimate wait under LLM_TIMEOUT. (Codex P1 on
+    # PR #51, triaged 2026-07-27; the deeper fix — commit before network
+    # I/O like the streaming path — stays on the backlog.)
+    #
+    # ⚠ 2026-07-28:此處先前是 150_000,而 `infra/compose/platform.yml:156`
+    # 把 `LLM_TIMEOUT` 設成 **300**s —— 也就是正式部署的預設姿態下這個不變式
+    # 是**破的**:150–300s 之間本來合法的推論會先被 PG 砍掉 session。而且這個
+    # 變數當時**沒有出現在任何 compose 的 environment**,運維改 `.env` 也蓋不掉
+    # (根 compose 只做 `${...}` 代換,不會把沒被引用的變數注入容器)。負載基線
+    # 量到 32 VU 時 TTFT p95 已達 147s —— 排隊一長就會跨過 150s。
+    # 現在:預設抬到 330s(300 + 30s 餘裕),並由下方 validator 在啟動時檢查
+    # 這個不變式,而不是只寫在註解裡。
+    ANILA_DB_IDLE_TX_TIMEOUT_MS: int = Field(default=330_000, ge=0, le=3_600_000)
+    # W2-1:連線池參數。先前寫死在 app/database.py(pool_size=10 / max_overflow=20,
+    # 上限 30)且**生產無法調**,而 Starlette 對 sync endpoint 用 anyio 預設 40
+    # tokens —— 40 條執行緒各持 1 連線,池卻只有 30,兩個數字從一開始就對不上。
+    # 預設值刻意維持原行為(10/20),只是變成可調;調校要搭配負載測試
+    # (計畫 W2-8)而不是憑感覺加大 —— PG 端 max_connections=100 是真上限。
+    ANILA_DB_POOL_SIZE: int = Field(default=10, ge=1, le=200)
+    ANILA_DB_MAX_OVERFLOW: int = Field(default=20, ge=0, le=200)
+    # pool_timeout:池滿時等多久才放棄。SQLAlchemy 預設 30s —— 使用者早就
+    # 放棄了才拿到錯誤,而且沒有 exception handler 會變裸 500。壓到 10s 讓失敗
+    # 快一點、可觀測一點(真正的解是別讓池見底)。
+    ANILA_DB_POOL_TIMEOUT_S: int = Field(default=10, ge=1, le=300)
+    # pool_recycle:先前缺席 → 長命連線可能被 PG 或中間設備靜默斷掉。
+    ANILA_DB_POOL_RECYCLE_S: int = Field(default=1800, ge=60, le=86_400)
+
+    # 部署的 embedding 模型原生輸出維度。None = 只接受平台契約的 4000 或
+    # NV-Embed 原生的 4096(嚴格模式)。設成例如 2048 才會讓
+    # nemotron-3-embed-1b 這類較小模型的向量被補零到 halfvec(4000)。
+    #
+    # 為什麼必須明示而不是無條件接受任何短向量:若端點哪天悄悄換成別的模型
+    # (例如 1536 維),無條件補零會讓語意無意義的向量進索引、無聲摧毀檢索品質,
+    # 而 collection 的 embedding_fingerprint 守的是**宣告**的模型身分,抓不到
+    # 端點漂移 —— 維度是唯一能抓到的訊號。詳見 anila_core 的
+    # truncate_embedding docstring。
+    ANILA_EMBED_SOURCE_DIM: int | None = Field(default=None, ge=1, le=4000)
+
+    @field_validator("ANILA_EMBED_SOURCE_DIM", mode="before")
+    @classmethod
+    def _blank_source_dim_means_unset(cls, value):
+        """把空字串正規化成 None。
+
+        ⚠ 這不是防禦性程式碼,是**必要的**:Docker Compose 的 `${VAR:-}` 在變數
+        未設定時會展開成**空字串並且仍然傳入該 key**(不是省略),實測
+        `docker compose config` 輸出 `ANILA_EMBED_SOURCE_DIM: ""`。而 Pydantic 對
+        `int | None` 收到 `""` 會丟 ValidationError:
+
+            Input should be a valid integer, unable to parse string as an integer
+
+        後果是 **CSP 直接起不來** —— 而這條路徑正是「操作者沒有部署較小維度模型」
+        的**預設**情況。第一版漏了這個(由 PR #52 的 Codex review 抓到),
+        compose 用 `:-` 給 Optional 數值欄位時一律要配這個正規化。
+        """
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
     # JWT
     # SECRET_KEY 在 RS256 cutover 後不再用於 access/refresh JWT 簽發,
@@ -134,6 +216,37 @@ class Settings(BaseSettings):
     PROXY_STREAM_MAX_EVENTS: int = 10000
     PROXY_STREAM_MAX_BYTES: int = 16 * 1024 * 1024
 
+    @model_validator(mode="after")
+    def _idle_tx_timeout_must_outlast_inference(self):
+        """`idle_in_transaction_session_timeout` 必須大於 `LLM_TIMEOUT`。
+
+        同步 proxy 路徑先取治理收據的列鎖,再在**同一個交易裡**等上游模型回應
+        —— 對 PG 而言那整段都是 idle-in-transaction。所以只要
+        `ANILA_DB_IDLE_TX_TIMEOUT_MS <= LLM_TIMEOUT * 1000`,任何逼近逾時上限的
+        推論都會先被 PG 砍掉 session,使用者看到的是 5xx 而不是慢。
+
+        這條不變式先前只寫在註解裡,而正式 compose 把 `LLM_TIMEOUT` 設成 300s、
+        預設 idle 逾時是 150s —— **註解說的不變式在預設姿態下是破的,沒有任何
+        東西會講**。改成啟動時檢查:不擋啟動(上線當天讓平台起不來是更糟的失效
+        模式),但把兩個數字與後果都印出來。
+        """
+        if self.ANILA_DB_IDLE_TX_TIMEOUT_MS <= 0:
+            return self  # 0 = 停用該 guard,是明示的選擇
+        inference_ms = self.LLM_TIMEOUT * 1000
+        if self.ANILA_DB_IDLE_TX_TIMEOUT_MS <= inference_ms:
+            logging.getLogger(__name__).error(
+                "[config] ANILA_DB_IDLE_TX_TIMEOUT_MS=%d 未大於 LLM_TIMEOUT=%ds "
+                "(%dms):同步 proxy 會在同一個交易裡等上游模型,耗時介於 %ds 與 "
+                "%ds 之間的推論會被 PostgreSQL 中止 session,使用者看到 5xx。"
+                "請把前者設到後者以上(建議留 30s 餘裕)。",
+                self.ANILA_DB_IDLE_TX_TIMEOUT_MS,
+                self.LLM_TIMEOUT,
+                inference_ms,
+                self.ANILA_DB_IDLE_TX_TIMEOUT_MS // 1000,
+                self.LLM_TIMEOUT,
+            )
+        return self
+
     # 出向模型 gateway 的 API key (選配,預設空 = 不注入,行為不變)。
     # 內網拓撲下模型不直連 — 走 10.53.100.12 My-OpenAI-Frontend 的
     # https /v1 gateway,該 gateway 的 /v1 全路由要 Authorization: Bearer。
@@ -145,8 +258,19 @@ class Settings(BaseSettings):
     PROXY_MAX_RETRIES: int = 3
     PROXY_RETRY_BASE_DELAY: float = 0.5
 
+    # 串流轉發是否注入 stream_options.include_usage(token 計量來源)。
+    # 部分外部 gateway 的個別模型收到 stream_options 會掛死不回
+    # (實測 2026-07:integrate.api.nvidia.com 的 z-ai/glm-5.2)。
+    # 設 False 時該串流的 usage 缺席,計量寫入退化為 usage_seen=False
+    # 路徑;僅供 dev/外部 API 測試,正式部署維持 True。
+    ANILA_STREAM_INCLUDE_USAGE: bool = True
+
     # Health Check
     HEALTH_CHECK_INTERVAL: int = 60
+    # Circuit breaker: proxy refuses models that health_checker has explicitly
+    # marked unhealthy (probe failure). Unknown / skipped / never-probed still
+    # forward. Set False to disable the rejection path globally.
+    ANILA_REJECT_UNHEALTHY_MODELS: bool = True
     # Readiness freshness is a governance TTL, not a UI polling interval.  A
     # target with no timestamp (or a timestamp older than these bounds) is
     # never dispatchable.  Keep the values explicit so production profiles
@@ -213,8 +337,13 @@ class Settings(BaseSettings):
     # and take the first address not in a trusted CIDR (real client).
     ANILA_TRUSTED_PROXY_CIDRS: str = ""
 
-    # Inference audit write failure policy. 0/false (default) = fail-open
+    # Audit write failure policy — covers BOTH the inference audit
+    # (services/inference_audit.py) and the governance audit
+    # (services/audit_service.log_audit_event). 0/false (default) = fail-open
     # (log the error, continue the request). 1/true = fail-closed with 503.
+    # ⚠ Every formal deployment profile's posture contract requires 1
+    # (startup_security._FORMAL_PROFILE_POSTURES); leaving it 0 there makes
+    # the process refuse to start rather than run with a lossy audit trail.
     ANILA_AUDIT_STRICT: bool = False
 
     # Mark session cookies as Secure (HTTPS-only). Defaults to True; set

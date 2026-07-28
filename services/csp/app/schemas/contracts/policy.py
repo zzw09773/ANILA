@@ -8,6 +8,8 @@ API 邊界 fail-closed 把關。
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 import enum
 from datetime import datetime
 from typing import Any
@@ -46,7 +48,7 @@ class PolicyActorType(str, enum.Enum):
     SERVICE = "service"
 
 
-class PolicyDecisionOut(BaseModel):
+class PolicyDecisionOut(ApiResponseModel):
     """PolicyDecision 讀出契約(from ORM;append-only,無更新契約)。
 
     doc 03 Done Criteria 4:所有 deny 必有可解釋原因(``reason`` +

@@ -1,0 +1,50 @@
+/* 串流中斷的錯誤橫幅 —— 補救計畫 W2-4 ②④。
+ *
+ * 為什麼不寫 inline style:D3 已定案 CSS Modules + tokens,inline style 已凍結
+ * (eslint `no-restricted-syntax` ratchet)。這個橫幅本身也需要 `:hover` 與
+ * `:focus-visible` —— 那是 inline style 語法上寫不出來的東西。 */
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: oklch(0.97 0.03 25);
+  border: 1px solid oklch(0.88 0.08 25);
+  border-radius: var(--anila-radius-md, var(--radius));
+  color: var(--anila-color-danger, var(--danger));
+  font-size: 12.5px;
+  line-height: 1.6;
+  /* 錯誤文案可能是多段(密等禁令那類四段式),\n 必須保留。 */
+  white-space: pre-line;
+}
+
+.message {
+  flex: 1;
+  min-width: 0;
+}
+
+.retry {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: var(--anila-color-bg-elev, var(--bg-elev));
+  border: 1px solid var(--anila-color-danger, var(--danger));
+  border-radius: var(--anila-radius-md, var(--radius));
+  color: var(--anila-color-danger, var(--danger));
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.retry:hover {
+  background: oklch(0.94 0.05 25);
+}
+
+.retry:focus-visible {
+  outline: 2px solid var(--anila-color-danger, var(--danger));
+  outline-offset: 2px;
+}

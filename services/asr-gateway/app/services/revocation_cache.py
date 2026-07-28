@@ -80,11 +80,12 @@ When the subscriber catches a connection error it:
 1. Sets ``_ready = False`` immediately (callers fail-closed).
 2. Waits ``_reconnect_delay`` seconds (exponential: 1, 2, 4, …, 60).
 3. Re-opens the Redis connection.
-4. Re-runs the cold-start sync to fill any gap that occurred during
-   the outage.
+4. Rebuilds the CSP HTTP client (close pooled connections so Docker DNS
+   re-resolves after ``csp`` recreate) and re-runs cold-start sync.
 5. Re-subscribes and flips ``_ready`` back to True.
 
-Cold-start failure during reconnect is treated like the original
+A failed reconnect also rebuilds the HTTP client before the next backoff
+retry. Cold-start failure during reconnect is treated like the original
 disconnect — keep ``_ready = False`` and keep retrying. Never
 silently "downgrade to TTL-only", which was the v1-plan R14 hole.
 """
@@ -190,6 +191,7 @@ class RevocationCache:
         # Underlying handles, populated by ``start()``.
         self._redis: AsyncRedis | None = None
         self._pubsub: Any | None = None
+        self._http: httpx.AsyncClient | None = None
         self._subscriber_task: asyncio.Task[None] | None = None
         self._last_sync_at: datetime | None = None
 
@@ -204,6 +206,34 @@ class RevocationCache:
         # need to wait through it).
         self._reconnect_initial_delay: float = 1.0
         self._reconnect_max_delay: float = 60.0
+
+    def _build_http_client(self) -> httpx.AsyncClient:
+        """Fresh httpx client — new pool forces Docker DNS re-resolution."""
+        timeout = httpx.Timeout(
+            settings.INTERNAL_TIMEOUT_SECONDS,
+            connect=settings.INTERNAL_TIMEOUT_CONNECT,
+        )
+        return httpx.AsyncClient(timeout=timeout)
+
+    async def _close_http_client(self) -> None:
+        if self._http is None:
+            return
+        try:
+            await self._http.aclose()
+        except Exception:  # noqa: BLE001
+            logger.debug("httpx aclose failed", exc_info=True)
+        self._http = None
+
+    async def _reset_http_client(self) -> httpx.AsyncClient:
+        """Close any pooled client and open a new one (stale-IP heal)."""
+        await self._close_http_client()
+        self._http = self._build_http_client()
+        return self._http
+
+    async def _ensure_http_client(self) -> httpx.AsyncClient:
+        if self._http is None or self._http.is_closed:
+            self._http = self._build_http_client()
+        return self._http
 
     # ------------------------------------------------------------------
     # Public API
@@ -290,6 +320,10 @@ class RevocationCache:
         self._pubsub = self._redis.pubsub()
         await self._pubsub.subscribe(settings.REDIS_REVOCATION_CHANNEL)
 
+        # Long-lived HTTP client for CSP revocation replay. Rebuilt on
+        # reconnect failure so Docker DNS re-resolves after csp recreate.
+        await self._reset_http_client()
+
         # Step 3: cold-start sync. Any HTTP error escapes — main.py / the
         # lifespan owner decides whether the service comes up. Live events that
         # arrive during this request remain queued on ``self._pubsub``.
@@ -347,6 +381,8 @@ class RevocationCache:
                 logger.debug("redis aclose failed during stop", exc_info=True)
             self._redis = None
 
+        await self._close_http_client()
+
         self._subscriber_task = None
 
     # ------------------------------------------------------------------
@@ -372,14 +408,10 @@ class RevocationCache:
             # legacy env-var fallback path), no DB row needed.
             headers["X-CSP-Service-Token"] = settings.CSP_SERVICE_TOKEN
 
-        timeout = httpx.Timeout(
-            settings.INTERNAL_TIMEOUT_SECONDS,
-            connect=settings.INTERNAL_TIMEOUT_CONNECT,
-        )
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            body = response.json()
+        client = await self._ensure_http_client()
+        response = await client.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        body = response.json()
 
         if not isinstance(body, dict):
             raise RevocationPayloadError("cold-start response is not an object")
@@ -457,13 +489,15 @@ class RevocationCache:
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
-                # Reconnect failed → bump backoff and loop.
+                # Reconnect failed → drop pooled HTTP client (stale CSP IP)
+                # then bump backoff and loop.
                 logger.warning(
                     "revocation subscriber reconnect failed; "
                     "will retry in %.1fs",
                     delay,
                     exc_info=True,
                 )
+                await self._reset_http_client()
                 delay = min(delay * 2, self._reconnect_max_delay)
 
     async def _consume_until_error(self) -> None:
@@ -608,6 +642,8 @@ class RevocationCache:
         )
         self._pubsub = self._redis.pubsub()
         await self._pubsub.subscribe(settings.REDIS_REVOCATION_CHANNEL)
+        # Fresh HTTP client before replay so CSP's new container IP resolves.
+        await self._reset_http_client()
         # Subscribe first so publishes during replay queue on this connection;
         # replay then closes the preceding disconnected interval.
         await self._cold_start_sync()

@@ -17,10 +17,15 @@ as the worker advances.
 
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
+import asyncio
 import hashlib
 import os
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
@@ -43,10 +48,13 @@ from anila_core.ingestion.citation_extractor import normalize_title
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
 from app.api.ingestion.collections import _require_collection_access
+from app.api.ingestion.surface import CollectionOrigin, surface_origin_dep
 from app.modules.clearance.service import (
     ClearancePolicyDataError,
     resolve_and_evaluate_data_access,
 )
+from app.modules.policy import apply_classification
+from app.schemas.contracts.policy import PolicyActorType
 from app.database import get_db
 from app.config import settings
 from app.models.ingestion import (
@@ -172,7 +180,7 @@ def _derive_title(filename: str, explicit: str | None = None) -> tuple[str | Non
     return title, (normalize_title(title) or None)
 
 
-class DocumentResponse(BaseModel):
+class DocumentResponse(ApiResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -192,6 +200,13 @@ class DocumentResponse(BaseModel):
     uploaded_by: int | None
     uploaded_at: datetime
     indexed_at: datetime | None
+    # W2-11 lets an uploader declare a level above the collection floor, but
+    # without these two fields nobody can see the result: the uploader gets no
+    # confirmation and a reviewer browsing the collection cannot spot a
+    # mislabel without going through the sampling report. Declaring something
+    # you can never read back is not a correctness control.
+    classification_level: str | None = None
+    classification_source: str | None = None
 
 
 class DocumentDetailResponse(DocumentResponse):
@@ -207,15 +222,25 @@ class DocumentDetailResponse(DocumentResponse):
 
 
 def _resolve_collection(
-    db: Session, user: User, collection_id: int
+    db: Session,
+    user: User,
+    collection_id: int,
+    *,
+    origin: "OriginArg | None" = None,
 ) -> IngestionCollection:
     """Sprint 4: collection access keyed on ownership, not agent_id.
 
-    ``_require_collection_access`` does its own row fetch + 404 + ACL —
-    we just delegate. Returning the row keeps the existing call sites
-    working unchanged.
+    ``origin`` is required at the resolver boundary. Callers under an
+    HTTP surface mount may omit it and we supply ``require_surface_origin()``;
+    direct unit-test invocations of endpoint functions must pass
+    ``origin=`` explicitly (no ambient ContextVar).
     """
-    return _require_collection_access(db, user, collection_id)
+    from app.api.ingestion.surface import OriginArg, require_surface_origin
+
+    effective = origin if origin is not None else require_surface_origin()
+    return _require_collection_access(
+        db, user, collection_id, origin=effective
+    )
 
 
 def _require_document_data_clearance(
@@ -259,6 +284,7 @@ def _locked_collection_classification(db: Session, collection_id: int) -> str:
         db.query(IngestionCollection.classification_level)
         .filter(IngestionCollection.id == collection_id)
         .with_for_update(read=True)
+        .populate_existing()
         .first()
     )
     if row is None:
@@ -278,6 +304,72 @@ def _locked_collection_classification(db: Session, collection_id: int) -> str:
         ) from exc
 
 
+def _resolve_document_upload_classification(
+    db: Session,
+    *,
+    collection_id: int,
+    declared_raw: str | None,
+    actor: User,
+) -> tuple[str, str]:
+    """W2-11 per-document classification declaration (upward-only).
+
+    Returns ``(effective_level, classification_source)``.
+
+    - Omitted / blank → inherit the locked collection floor.
+    - Below the collection floor → 400 (must not lower via upload).
+    - Above the collection floor → latch the collection via the existing
+      ``apply_classification`` path (writes ClassificationEvent); upload
+      is accepted, never rejected for an upward declaration.
+    - Unknown literal → 422 fail-closed.
+    """
+    floor_storage = _locked_collection_classification(db, collection_id)
+    floor = Classification.from_storage(floor_storage)
+
+    if (
+        declared_raw is None
+        or not isinstance(declared_raw, str)
+        or not declared_raw.strip()
+    ):
+        return floor_storage, "collection_inherited"
+
+    try:
+        declared = Classification.from_storage(str(declared_raw).strip())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "classification_level 必須是五級之一："
+                "無機密 / 營業秘密 / 機密 / 極機密 / 絕對機密"
+            ),
+        ) from exc
+
+    if declared.rank < floor.rank:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"文件密等「{declared.to_storage()}」低於知識庫下限"
+                f"「{floor.to_storage()}」(僅允許上調，不可下調)"
+            ),
+        )
+
+    if declared.rank > floor.rank:
+        # Reuse the platform one-way latch — never invent a parallel path.
+        apply_classification(
+            db,
+            resource_type="collection",
+            resource_id=str(collection_id),
+            new_level=declared.to_storage(),
+            actor_type=PolicyActorType.USER.value,
+            actor_id=str(actor.id),
+            reason="manual_admin",
+            source="uploader_declared",
+            commit=False,
+        )
+        return declared.to_storage(), "uploader_declared"
+
+    return floor_storage, "collection_inherited"
+
+
 def _persist_blob(content: bytes, sha256: str) -> str:
     """Write the upload to disk under a content-addressable path.
 
@@ -295,24 +387,135 @@ def _persist_blob(content: bytes, sha256: str) -> str:
     return path
 
 
+@dataclass(frozen=True)
+class _ZipMemberStage:
+    """CPU/IO staging outcome for one zip member (no DB touches).
+
+    ``cumulative_delta`` mirrors the original loop: empty / too_large /
+    unzip failure contribute 0; once a non-empty payload under the per-file
+    cap is inflated, its ``size`` counts toward the archive total even if
+    the total cap then trips before persist or sniffing later rejects it.
+    """
+
+    outcome: str
+    result_filename: str
+    detail: str | None = None
+    size: int = 0
+    cumulative_delta: int = 0
+    sha256: str | None = None
+    storage_path: str | None = None
+    media_type: str | None = None
+
+
+def _stage_zip_member(
+    zf: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    *,
+    out_name: str,
+    in_zip_path: str,
+    remaining_budget: int,
+) -> _ZipMemberStage:
+    """Inflate / sniff / hash / optionally persist one member (sync, off-loop).
+
+    ``remaining_budget`` is ``_ZIP_MAX_TOTAL_BYTES - cumulative_bytes`` *before*
+    this member. Persist runs only when ``size <= remaining_budget``, so a
+    member that would push the archive over the 1 GB cap is never written —
+    matching the original check-before-``_persist_blob`` order.
+
+    Called via ``asyncio.to_thread`` so zlib / sniffing / sha256 / disk I/O
+    cannot freeze the single uvicorn event loop (see proxy service's
+    ``to_thread`` rationale: doing sync heavy work on the MainThread freezes
+    every concurrent coroutine).
+    """
+    try:
+        content = zf.read(member)
+    except Exception as e:
+        return _ZipMemberStage(
+            outcome="unzip_error",
+            result_filename=in_zip_path,
+            detail=f"unzip failed: {type(e).__name__}",
+        )
+
+    size = len(content)
+    if size == 0:
+        return _ZipMemberStage(
+            outcome="empty",
+            result_filename=out_name,
+            detail="empty file",
+        )
+    if size > _MAX_BYTES:
+        return _ZipMemberStage(
+            outcome="too_large",
+            result_filename=out_name,
+            detail=f"{size:,} bytes exceeds {_MAX_BYTES:,} limit",
+        )
+
+    # Count toward the archive total first (same order as the pre-to_thread
+    # loop), then refuse persist when this member alone pushes over the cap.
+    if size > remaining_budget:
+        return _ZipMemberStage(
+            outcome="over_total",
+            result_filename=out_name,
+            detail="archive total exceeds 1 GB cap (this file pushed over)",
+            size=size,
+            cumulative_delta=size,
+        )
+
+    try:
+        sniffed = validate_content(content, filename=out_name)
+    except ContentValidationError as exc:
+        return _ZipMemberStage(
+            outcome="content_error",
+            result_filename=out_name,
+            detail=f"content rejected: {exc}",
+            size=size,
+            cumulative_delta=size,
+        )
+
+    sha256 = hashlib.sha256(content).hexdigest()
+    storage_path = _persist_blob(content, sha256)
+    return _ZipMemberStage(
+        outcome="ready",
+        result_filename=out_name,
+        size=size,
+        cumulative_delta=size,
+        sha256=sha256,
+        storage_path=storage_path,
+        media_type=sniffed.media_type,
+    )
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 
 @router.post(
-    "/api/ingestion/collections/{collection_id}/documents",
+    "/collections/{collection_id}/documents",
     response_model=DocumentResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def upload_document(
     collection_id: int,
     file: UploadFile = File(...),
-    title: str | None = Form(
-        default=None,
-        description=(
-            "Optional canonical regulation/document name used to resolve "
-            "cross-document citation targets. Falls back to the filename stem."
+    title: Annotated[
+        str | None,
+        Form(
+            description=(
+                "Optional canonical regulation/document name used to resolve "
+                "cross-document citation targets. Falls back to the filename stem."
+            ),
         ),
-    ),
+    ] = None,
+    classification_level: Annotated[
+        str | None,
+        Form(
+            description=(
+                "W2-11:optional per-document classification. Defaults to the "
+                "collection floor; upward-only. Declaring above the floor latches "
+                "the whole collection via apply_classification."
+            ),
+        ),
+    ] = None,
+    origin: CollectionOrigin = Depends(surface_origin_dep),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
@@ -322,7 +525,7 @@ async def upload_document(
     happens async. Caller polls ``GET /api/ingestion/documents/{id}``
     to watch status transitions.
     """
-    _resolve_collection(db, current_user, collection_id)
+    _resolve_collection(db, current_user, collection_id, origin=origin)
 
     # Read fully into memory — Sprint 1 caps uploads at 50 MB so this is
     # fine; Sprint 2 streaming upload will spool to disk in chunks.
@@ -348,7 +551,14 @@ async def upload_document(
     storage_path = _persist_blob(content, sha256)
 
     doc_title, doc_norm_title = _derive_title(file.filename or "", title)
-    classification_level = _locked_collection_classification(db, collection_id)
+    classification_level_value, classification_source = (
+        _resolve_document_upload_classification(
+            db,
+            collection_id=collection_id,
+            declared_raw=classification_level,
+            actor=current_user,
+        )
+    )
     classified_at = datetime.now(timezone.utc)
 
     # Insert the document row. Uniqueness on (collection_id, sha256) gives
@@ -366,9 +576,9 @@ async def upload_document(
         status="pending",
         chunk_count=0,
         uploaded_by=current_user.id,
-        classification_level=classification_level,
+        classification_level=classification_level_value,
         classification_latched_at=classified_at,
-        classification_source="collection_inherited",
+        classification_source=classification_source,
         archive_due_at=datetime.now(timezone.utc) + timedelta(
             days=settings.RETENTION_INGESTION_ACTIVE_DAYS
         ),
@@ -411,17 +621,20 @@ async def upload_document(
             "filename": doc.filename,
             "size": size,
             "arq_job_id": job.arq_job_id,
+            "classification_level": classification_level_value,
+            "classification_source": classification_source,
         },
     )
     return DocumentResponse.model_validate(doc)
 
 
 @router.post(
-    "/api/ingestion/documents/{document_id}/reprocess",
+    "/documents/{document_id}/reprocess",
     response_model=DocumentResponse,
 )
 async def reprocess_document(
     document_id: int,
+    origin: CollectionOrigin = Depends(surface_origin_dep),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
@@ -436,7 +649,7 @@ async def reprocess_document(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     # 透過所屬 collection 做存取控管(與上傳走同一條授權路徑)。
-    _resolve_collection(db, current_user, doc.collection_id)
+    _resolve_collection(db, current_user, doc.collection_id, origin=origin)
     # 只允許重試「失敗」的檔 — 其餘狀態各有正常流程,避免重複塞 job。
     if doc.status != "failed":
         raise HTTPException(
@@ -549,7 +762,7 @@ def _declared_zip_member_error(
 
 
 @router.post(
-    "/api/ingestion/collections/{collection_id}/documents/zip",
+    "/collections/{collection_id}/documents/zip",
     response_model=ZipUploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -557,6 +770,18 @@ async def upload_zip(
     collection_id: int,
     file: UploadFile = File(...),
     preserve_folder_structure: bool = False,
+    classification_level: Annotated[
+        str | None,
+        Form(
+            description=(
+                "W2-11:optional per-archive classification applied to every "
+                "member document. Defaults to the collection floor; upward-only. "
+                "Declaring above the floor latches the whole collection via "
+                "apply_classification."
+            ),
+        ),
+    ] = None,
+    origin: CollectionOrigin = Depends(surface_origin_dep),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ZipUploadResponse:
@@ -579,7 +804,7 @@ async def upload_zip(
     """
     from io import BytesIO
 
-    _resolve_collection(db, current_user, collection_id)
+    _resolve_collection(db, current_user, collection_id, origin=origin)
 
     archive_bytes = await file.read()
     if len(archive_bytes) > 500 * 1024 * 1024:  # 500 MB cap on archive
@@ -610,6 +835,22 @@ async def upload_zip(
             detail=f"{len(members)} files in archive; limit is 200 per zip",
         )
 
+    # Resolve after archive validation so a bad zip cannot latch the floor,
+    # and a below-floor declaration 400s before any member documents exist.
+    classification_level_value, classification_source = (
+        _resolve_document_upload_classification(
+            db,
+            collection_id=collection_id,
+            declared_raw=classification_level,
+            actor=current_user,
+        )
+    )
+    classified_at = datetime.now(timezone.utc)
+    # Persist an upward latch before per-member commit/rollback cycles can
+    # undo ClassificationEvent rows written with commit=False.
+    if classification_source == "uploader_declared":
+        db.commit()
+
     results: list[ZipUploadResult] = []
     enqueued = duplicates = skipped = errors = 0
     # 累積解壓資料量；超過 _ZIP_MAX_TOTAL_BYTES 後續成員一律 skipped。
@@ -634,52 +875,59 @@ async def upload_zip(
             results.append(declared_error)
             continue
 
-        try:
-            content = zf.read(member)
-        except Exception as e:
+        # zlib / sniff / sha256 / disk write off the event loop. SQLAlchemy
+        # Session is not thread-safe — DB work stays below on the loop thread.
+        staged = await asyncio.to_thread(
+            _stage_zip_member,
+            zf,
+            member,
+            out_name=out_name,
+            in_zip_path=in_zip_path,
+            remaining_budget=_ZIP_MAX_TOTAL_BYTES - cumulative_bytes,
+        )
+        cumulative_bytes += staged.cumulative_delta
+
+        if staged.outcome == "unzip_error":
             errors += 1
             results.append(ZipUploadResult(
-                filename=in_zip_path, status="error",
-                detail=f"unzip failed: {type(e).__name__}",
+                filename=staged.result_filename, status="error",
+                detail=staged.detail,
             ))
             continue
-
-        size = len(content)
-        if size == 0:
+        if staged.outcome == "empty":
             skipped += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="skipped", detail="empty file",
+                filename=staged.result_filename, status="skipped",
+                detail=staged.detail,
             ))
             continue
-        if size > _MAX_BYTES:
+        if staged.outcome == "too_large":
             skipped += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="too_large",
-                detail=f"{size:,} bytes exceeds {_MAX_BYTES:,} limit",
+                filename=staged.result_filename, status="too_large",
+                detail=staged.detail,
             ))
             continue
-        cumulative_bytes += size
-        if cumulative_bytes > _ZIP_MAX_TOTAL_BYTES:
+        if staged.outcome == "over_total":
             skipped += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="skipped",
-                detail="archive total exceeds 1 GB cap (this file pushed over)",
+                filename=staged.result_filename, status="skipped",
+                detail=staged.detail,
             ))
             continue
-
-        try:
-            sniffed = validate_content(content, filename=out_name)
-        except ContentValidationError as exc:
+        if staged.outcome == "content_error":
             errors += 1
             results.append(ZipUploadResult(
-                filename=out_name,
-                status="error",
-                detail=f"content rejected: {exc}",
+                filename=staged.result_filename, status="error",
+                detail=staged.detail,
             ))
             continue
 
-        sha256 = hashlib.sha256(content).hexdigest()
-        storage_path = _persist_blob(content, sha256)
+        # staged.outcome == "ready"
+        sha256 = staged.sha256
+        storage_path = staged.storage_path
+        size = staged.size
+        assert sha256 is not None and storage_path is not None
 
         # Check for duplicate (same sha within collection).
         existing = (
@@ -693,29 +941,28 @@ async def upload_zip(
         if existing is not None:
             duplicates += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="duplicate",
+                filename=staged.result_filename, status="duplicate",
                 document_id=existing.id,
                 detail="same sha already in collection",
             ))
             continue
 
-        member_title, member_norm_title = _derive_title(out_name)
-        classification_level = _locked_collection_classification(db, collection_id)
+        member_title, member_norm_title = _derive_title(staged.result_filename)
         doc = IngestionDocument(
             collection_id=collection_id,
-            filename=out_name,
+            filename=staged.result_filename,
             title=member_title,
             normalized_title=member_norm_title,
             sha256=sha256,
-            mime_type=sniffed.media_type,
+            mime_type=staged.media_type,
             bytes=size,
             storage_path=storage_path,
             status="pending",
             chunk_count=0,
             uploaded_by=current_user.id,
-            classification_level=classification_level,
-            classification_latched_at=datetime.now(timezone.utc),
-            classification_source="collection_inherited",
+            classification_level=classification_level_value,
+            classification_latched_at=classified_at,
+            classification_source=classification_source,
             archive_due_at=datetime.now(timezone.utc) + timedelta(
                 days=settings.RETENTION_INGESTION_ACTIVE_DAYS
             ),
@@ -732,7 +979,7 @@ async def upload_zip(
             db.rollback()
             duplicates += 1
             results.append(ZipUploadResult(
-                filename=out_name, status="duplicate",
+                filename=staged.result_filename, status="duplicate",
                 detail="raced with concurrent upload",
             ))
             continue
@@ -740,7 +987,7 @@ async def upload_zip(
 
         enqueued += 1
         results.append(ZipUploadResult(
-            filename=out_name, status="enqueued",
+            filename=staged.result_filename, status="enqueued",
             document_id=doc.id, arq_job_id=job.arq_job_id,
         ))
 
@@ -755,6 +1002,8 @@ async def upload_zip(
             "files_in_archive": len(members),
             "enqueued": enqueued, "duplicates": duplicates,
             "skipped": skipped, "errors": errors,
+            "classification_level": classification_level_value,
+            "classification_source": classification_source,
         },
     )
     return ZipUploadResponse(
@@ -768,7 +1017,7 @@ async def upload_zip(
 
 
 @router.get(
-    "/api/ingestion/collections/{collection_id}/documents",
+    "/collections/{collection_id}/documents",
     response_model=list[DocumentResponse],
 )
 def list_documents(
@@ -791,7 +1040,7 @@ def list_documents(
 
 
 @router.get(
-    "/api/ingestion/documents/{document_id}",
+    "/documents/{document_id}",
     response_model=DocumentDetailResponse,
 )
 def get_document(
@@ -833,7 +1082,7 @@ def get_document(
 
 
 @router.delete(
-    "/api/ingestion/documents/{document_id}",
+    "/documents/{document_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )
@@ -891,7 +1140,7 @@ def delete_document(
 # ── Inspector endpoints (Sprint 2 Chunk H) ──────────────────────────────────
 
 
-class ChunkRow(BaseModel):
+class ChunkRow(ApiResponseModel):
     """Inspector-facing chunk row.
 
     Embedding is omitted by default because the inspector list view
@@ -930,7 +1179,7 @@ class ChunkEmbeddingDebug(BaseModel):
 
 
 @router.get(
-    "/api/ingestion/documents/{document_id}/chunks",
+    "/documents/{document_id}/chunks",
     response_model=list[ChunkRow],
 )
 async def list_document_chunks(
@@ -987,7 +1236,7 @@ async def list_document_chunks(
 
 
 @router.get(
-    "/api/ingestion/documents/{document_id}/chunks/{chunk_id}/embedding-debug",
+    "/documents/{document_id}/chunks/{chunk_id}/embedding-debug",
     response_model=ChunkEmbeddingDebug,
 )
 async def get_chunk_embedding_debug(
@@ -1057,7 +1306,16 @@ async def get_chunk_embedding_debug(
     )
 
 
-@router.get("/api/ingestion/documents/{document_id}/blob")
+@router.get(
+    "/documents/{document_id}/blob",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "description": "Raw uploaded file bytes",
+            "content": {"application/octet-stream": {}},
+        }
+    },
+)
 def download_document_blob(
     document_id: int,
     db: Session = Depends(get_db),

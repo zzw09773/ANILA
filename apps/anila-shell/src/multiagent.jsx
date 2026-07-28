@@ -75,6 +75,9 @@ export const ParallelCompareView = ({
   agents, columns, setColumns, messagesByColumn,
   onSend, onExit, onAdoptColumn,
   AgentSelector, Composer, MessageBubble,
+  // 涉密姿態必須跟著訊息走到每一顆 MessageBubble —— 少傳 = undefined =
+  // fail-open(浮水印消失、禁複製失效)。比較模式不豁免。
+  classified = false, classificationLevel = null,
 }) => {
   const setColAgent = (idx, id) => {
     setColumns(cs => cs.map((c, i) => i === idx ? { ...c, agentId: id } : c));
@@ -143,7 +146,14 @@ export const ParallelCompareView = ({
                   </div>
                 )}
                 {msgs.map(m => (
-                  <MessageBubble key={m.id} msg={m} agents={agents} onRegenerate={() => {}}/>
+                  <MessageBubble
+                    key={m.id}
+                    msg={m}
+                    agents={agents}
+                    classified={classified}
+                    classificationLevel={classificationLevel}
+                    onRegenerate={() => {}}
+                  />
                 ))}
               </div>
             </div>

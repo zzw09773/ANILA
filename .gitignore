@@ -106,6 +106,8 @@ $RECYCLE.BIN/
 
 # ── Claude Code 本地設定（user-local，不該共享）───────────────────────────────
 .claude/settings.local.json
+# Agent-tool isolated worktrees live inside the repo; never commit a nested copy.
+.claude/worktrees/
 
 # ── Logs / 暫存 ──────────────────────────────────────────────────────────────
 *.log

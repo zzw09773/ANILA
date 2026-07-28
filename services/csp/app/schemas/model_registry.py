@@ -1,7 +1,8 @@
+from app.schemas.base import ApiResponseModel
 from datetime import datetime
 import ipaddress
 from collections.abc import Mapping
-from typing import Any
+from typing import Annotated, Any
 
 from anila_contracts import Classification as ClassificationLevel
 from anila_security import (
@@ -12,10 +13,17 @@ from anila_security import (
     require_identifier,
 )
 from anila_security.model_governance import require_string
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 LOCALITY_VALUES = tuple(item.value for item in ProviderLocality)
+
+# ``context_window`` 從「只給 UI 顯示的註記」升級成 Router token 預算的輸入
+# (見 anila_core.router.token_budget)。既然它現在會決定實際送出的 max_tokens,
+# 就不能再接受 0 / 負值 —— 一個 0 會讓預算算出「輸入上限為負」,把每一次呼叫都
+# 擋掉。在寫入邊界擋下來,比讓壞值流到推論路徑再去猜要清楚得多。``None``
+# (未登記)仍然合法:Router 對未登記的降級行為是刻意設計的 fail-safe。
+ContextWindowTokens = Annotated[int, Field(gt=0)]
 
 
 def _canonicalize_provider_target(
@@ -198,7 +206,7 @@ class ModelCreate(BaseModel):
     endpoint_url: str
     api_version: str = "v1"
     description: str | None = None
-    context_window: int | None = None
+    context_window: ContextWindowTokens | None = None
     base_model_id: int | None = None  # For agents: the underlying LLM model ID
     # Default True: new model registrations are expected to live on the
     # anila-models-net internal docker network (decoupled inference stack).
@@ -261,7 +269,7 @@ class ModelUpdate(BaseModel):
     api_version: str | None = None
     is_active: bool | None = None
     description: str | None = None
-    context_window: int | None = None
+    context_window: ContextWindowTokens | None = None
     base_model_id: int | None = None
     is_internal: bool | None = None
     provider_locality: str | None = None
@@ -347,7 +355,7 @@ class ModelUpdate(BaseModel):
         return self
 
 
-class ModelResponse(BaseModel):
+class ModelResponse(ApiResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -385,5 +393,20 @@ class ModelResponse(BaseModel):
     # doc 04 §3: only the presence of a per-model key is exposed — never the
     # ciphertext / secret ref, and never the plaintext.
     has_api_key: bool = False
+    # ── ISO 42001 追溯(W3-12l,唯讀先行)────────────────────────────────────
+    #
+    # `0035_iso_42001_traceability` 建了這五個欄,但 ORM / API / UI 全無 —— 那支
+    # migration 的意圖從來沒被實現。本輪先把它們露出來:**沒有露出的欄等於不存在**,
+    # 治理稽核問「這個模型的 model card 在哪」時,平台連「欄位是空的」都答不出來,
+    # 只能答「我沒有這個概念」。
+    #
+    # 唯讀先行:寫入面(`ModelCreate` / `ModelUpdate`)與 UI 表單另排。全部
+    # `default=None`,所以舊 client 與既有測試的回應形狀不受影響(純加欄)。
+    model_card_url: str | None = None
+    training_dataset_ref: str | None = None
+    #: 已部署權重的 checksum —— 換了權重但沒換名稱時,這是唯一的證據
+    weights_sha256: str | None = None
+    intended_use: str | None = None
+    limitations: str | None = None
     created_at: datetime
     updated_at: datetime

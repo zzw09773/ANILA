@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.ingestion.image_blob import stream_scoped_image_blob
+from app.api.ingestion.surface import ANY_SURFACE
 from app.api.ingestion.search import (
     ImageSearchRequest,
     ImageSearchResponse,
@@ -174,6 +175,7 @@ def require_runtime_binding(
         db,
         principal=principal,
         collection_id=collection_pk,
+        origin=ANY_SURFACE,
     )
     if collection.status != "active" or collection.lifecycle_state != "active":
         raise HTTPException(status_code=403, detail="collection 非 active")
@@ -191,18 +193,18 @@ def require_runtime_binding(
 def _admit_runtime_sink(db: Session, binding: RuntimeBinding) -> None:
     """Fresh locked admission immediately before a data/inference sink."""
     task = (
-        db.query(Task).filter(Task.id == binding.task.id).with_for_update().one()
+        db.query(Task).filter(Task.id == binding.task.id).with_for_update().populate_existing().one()
     )
     job = (
         db.query(ArtifactJob)
         .filter(ArtifactJob.job_id == binding.job.job_id)
-        .with_for_update()
+        .with_for_update().populate_existing()
         .one()
     )
     running = (
         db.query(TaskRun)
         .filter(TaskRun.task_id == task.id, TaskRun.status == "running")
-        .with_for_update()
+        .with_for_update().populate_existing()
         .all()
     )
     expires_at = job.expires_at

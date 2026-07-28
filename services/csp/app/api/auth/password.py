@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
+from app.errors import ApiError, ErrorCode
 from app.middleware.cookies import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
@@ -126,9 +127,10 @@ def login(
             )
             raise HTTPException(status_code=404)
         # LDAP 已自系統移除（將以 SSO 取代），僅保留本地登入 + OIDC callback。
-        raise HTTPException(
+        raise ApiError(
             status_code=400,
-            detail="僅支援本地登入；OIDC 請走 /api/auth/oidc 流程",
+            code=ErrorCode.AUTH_SOURCE_NOT_SUPPORTED,
+            message="僅支援本地登入；OIDC 請走 /api/auth/oidc 流程",
         )
 
     result = authenticate_user(db, request.username, request.password)
@@ -145,9 +147,10 @@ def login(
         )
         if card_only:
             raise HTTPException(status_code=404)
-        raise HTTPException(
+        raise ApiError(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="帳號或密碼錯誤",
+            code=ErrorCode.AUTH_INVALID_CREDENTIALS,
+            message="帳號或密碼錯誤",
         )
     if result is PENDING_APPROVAL_SENTINEL:
         if break_glass_metadata is not None:
@@ -163,9 +166,12 @@ def login(
             )
         if card_only:
             raise HTTPException(status_code=404)
-        raise HTTPException(
+        # W2-12:``LoginView.vue`` 原本比對這串中文的子字串來決定是否顯示
+        # 待核准頁。code 才是契約;訊息文字現在可以自由改寫。
+        raise ApiError(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="等待核准中，請通知 admin",
+            code=ErrorCode.AUTH_PENDING_APPROVAL,
+            message="等待核准中，請通知 admin",
         )
     if result is LOCAL_PASSWORD_DISABLED_SENTINEL:
         # Sprint 6 X / B2：使用者已切換到 SSO-only，引導改走 OIDC。
@@ -181,9 +187,10 @@ def login(
         )
         if card_only:
             raise HTTPException(status_code=404)
-        raise HTTPException(
+        raise ApiError(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="此帳號已切換為 SSO 登入；請改用單一登入按鈕。",
+            code=ErrorCode.AUTH_LOCAL_PASSWORD_DISABLED,
+            message="此帳號已切換為 SSO 登入；請改用單一登入按鈕。",
         )
     if card_only and result.role != "owner":
         # 帳密「正確」但非 owner — 這代表持有效憑證者試圖繞過卡片通道,

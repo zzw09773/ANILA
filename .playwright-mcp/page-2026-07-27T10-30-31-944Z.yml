@@ -1,0 +1,50 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - img "ANILA" [ref=e6]
+      - generic [ref=e10]:
+        - generic [ref=e11]: ANILA
+        - generic [ref=e12]: ·
+        - generic [ref=e13]: CSP
+    - button "◑ light" [ref=e14] [cursor=pointer]
+  - main [ref=e15]:
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - heading "ANILA 治理中心" [level=1] [ref=e18]
+        - paragraph [ref=e19]: 知識治理控制台 · 請使用自然人憑證卡登入
+      - generic [ref=e20]:
+        - heading "自然人憑證卡登入" [level=2] [ref=e21]
+        - generic [ref=e22]:
+          - paragraph [ref=e23]: 請插入自然人憑證卡
+          - paragraph [ref=e24]: 並確認本機元件運作中（http://localhost:16888）。
+          - button "偵測憑證卡" [ref=e26] [cursor=pointer]:
+            - generic [ref=e27]: "["
+            - generic [ref=e29]: "]"
+      - group [ref=e30]:
+        - generic "其他登入方式" [active] [ref=e31] [cursor=pointer]
+        - generic [ref=e34]:
+          - heading "帳號密碼登入" [level=3] [ref=e35]
+          - generic [ref=e36]:
+            - generic [ref=e37]:
+              - generic [ref=e38]: 帳號
+              - textbox "輸入帳號" [ref=e41]
+            - generic [ref=e42]:
+              - generic [ref=e43]: 密碼
+              - textbox "••••••••" [ref=e46]
+            - generic [ref=e47]:
+              - button "登入" [ref=e48] [cursor=pointer]:
+                - generic [ref=e49]: "["
+                - generic [ref=e51]: "]"
+              - button "註冊" [ref=e52] [cursor=pointer]:
+                - generic [ref=e53]: "["
+                - generic [ref=e55]: "]"
+            - paragraph [ref=e56]:
+              - generic [ref=e57]: ↵
+              - text: 送出 ·
+              - generic [ref=e58]: Tab
+              - text: 切換欄位 ·
+              - generic [ref=e59]: "1"
+              - text: –
+              - generic [ref=e60]: "9"
+              - text: 單一登入提供者
+      - paragraph [ref=e32]: ANILA · CSP 控制平面 · 地端部署 · 存取需管理員核准

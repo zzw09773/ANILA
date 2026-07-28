@@ -45,7 +45,7 @@ _COMPARTMENT_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9_.-]{0,63}$")
 def _for_update_get(db: Session, model: type, primary_key: int):
     """Serialize governance mutations against runtime FOR SHARE decisions."""
 
-    return db.query(model).filter(model.id == primary_key).with_for_update().first()
+    return db.query(model).filter(model.id == primary_key).with_for_update().populate_existing().first()
 
 
 @dataclass(frozen=True, slots=True)
@@ -525,7 +525,7 @@ def resolve_data_access_context(
     collection = (
         db.query(IngestionCollection)
         .filter(IngestionCollection.id == collection_id)
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .first()
     )
     if collection is None:
@@ -541,7 +541,7 @@ def resolve_data_access_context(
         document = (
             db.query(IngestionDocument)
             .filter_by(id=document_id, collection_id=collection.id)
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .first()
         )
         if document is None:
@@ -561,7 +561,7 @@ def resolve_data_access_context(
             CollectionRequiredCompartment.collection_id.asc(),
             CollectionRequiredCompartment.compartment_id.asc(),
         )
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     }
     if document is not None:
@@ -573,7 +573,7 @@ def resolve_data_access_context(
                 DocumentRequiredCompartment.document_id.asc(),
                 DocumentRequiredCompartment.compartment_id.asc(),
             )
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .all()
         )
     if required_compartments:
@@ -581,7 +581,7 @@ def resolve_data_access_context(
             db.query(SecurityCompartment)
             .filter(SecurityCompartment.id.in_(required_compartments))
             .order_by(SecurityCompartment.id.asc())
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .all()
         )
         if len(compartments) != len(required_compartments):
@@ -660,7 +660,7 @@ def _resolve_active_clearance_grants(
         # User.department is eager-loaded through a nullable LEFT JOIN.
         # PostgreSQL cannot apply FOR SHARE to the nullable join side, so lock
         # only the authoritative User row.
-        .with_for_update(read=True, of=User)
+        .with_for_update(read=True, of=User).populate_existing()
         .first()
     )
     if subject is None or not subject.is_active:
@@ -670,7 +670,7 @@ def _resolve_active_clearance_grants(
         db.query(ClearanceGrant)
         .filter(ClearanceGrant.subject_user_id == user_id)
         .order_by(ClearanceGrant.id.asc())
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     )
     parsed_grants: list[tuple[ClearanceGrant, Classification]] = []
@@ -721,7 +721,7 @@ def _load_active_grant_compartments(
             ClearanceGrantCompartment.clearance_grant_id.asc(),
             ClearanceGrantCompartment.compartment_id.asc(),
         )
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     )
     covered: dict[int, set[int]] = {grant_id: set() for grant_id in grant_ids}
@@ -752,7 +752,7 @@ def _load_active_collection_access(
             CollectionAccessGrant.revoked_at.is_(None),
         )
         .order_by(CollectionAccessGrant.id.asc())
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     )
     access_by_key: dict[tuple[int, int], CollectionAccessGrant] = {}
@@ -835,7 +835,7 @@ def resolve_and_evaluate_data_access_batch(
         db.query(IngestionCollection)
         .filter(IngestionCollection.id.in_(requested_collections))
         .order_by(IngestionCollection.id.asc())
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     )
     if len(collections) != len(requested_collections):
@@ -848,7 +848,7 @@ def resolve_and_evaluate_data_access_batch(
             db.query(IngestionDocument)
             .filter(IngestionDocument.id.in_(requested_documents))
             .order_by(IngestionDocument.id.asc())
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .all()
         )
         if len(documents) != len(requested_documents):
@@ -872,7 +872,7 @@ def resolve_and_evaluate_data_access_batch(
             CollectionRequiredCompartment.collection_id.asc(),
             CollectionRequiredCompartment.compartment_id.asc(),
         )
-        .with_for_update(read=True)
+        .with_for_update(read=True).populate_existing()
         .all()
     ):
         if compartment_id in collection_requirements[collection_id]:
@@ -893,7 +893,7 @@ def resolve_and_evaluate_data_access_batch(
                 DocumentRequiredCompartment.document_id.asc(),
                 DocumentRequiredCompartment.compartment_id.asc(),
             )
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .all()
         ):
             if compartment_id in document_requirements[document_id]:
@@ -909,7 +909,7 @@ def resolve_and_evaluate_data_access_batch(
             db.query(SecurityCompartment)
             .filter(SecurityCompartment.id.in_(required_compartment_ids))
             .order_by(SecurityCompartment.id.asc())
-            .with_for_update(read=True)
+            .with_for_update(read=True).populate_existing()
             .all()
         )
         if len(compartments) != len(required_compartment_ids):

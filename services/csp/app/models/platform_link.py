@@ -45,4 +45,4 @@ class PlatformLink(Base):
     required_roles = Column(
         _REQUIRED_ROLES_TYPE, nullable=False, default=list, server_default="[]"
     )
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

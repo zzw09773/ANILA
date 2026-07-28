@@ -1,3 +1,4 @@
+from app.schemas.base import ApiResponseModel
 from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, field_validator
@@ -34,7 +35,7 @@ class UserUpdate(BaseModel):
     can_view_inference_audit: bool | None = None
 
 
-class UserResponse(UserBase):
+class UserResponse(ApiResponseModel, UserBase):
     id: int
     department_id: int | None = None
     department_name: str | None = None

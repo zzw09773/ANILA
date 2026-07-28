@@ -28,6 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.ingestion.collections import _require_collection_access
+from app.api.ingestion.surface import require_surface_origin
 from app.api.ingestion.documents import _require_document_data_clearance
 from app.database import get_db
 from app.models.ingestion import IngestionDocument
@@ -94,7 +95,16 @@ def stream_scoped_image_blob(
     )
 
 
-@router.get("/api/ingestion/images/{image_id}/blob")
+@router.get(
+    "/images/{image_id}/blob",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Raw image bytes",
+            "content": {"application/octet-stream": {}, "image/*": {}},
+        }
+    },
+)
 def get_image_blob(
     image_id: int,
     db: Session = Depends(get_db),
@@ -137,7 +147,7 @@ def get_image_blob(
         collection_id = int(collection_id)
 
         # Real access gate (RLS below is defence-in-depth). Raises 403/404.
-        _require_collection_access(db, current_user, collection_id)
+        _require_collection_access(db, current_user, collection_id, origin=require_surface_origin())
 
         # Scope the connection, then read the row under RLS. set_config(...,
         # is_local => true) is txn-scoped → never leaks to the next pooled user.
@@ -179,7 +189,7 @@ def get_image_blob(
                 detail=f"Image {image_id} not found",
             )
         collection_id = int(row.collection_id)
-        _require_collection_access(db, current_user, collection_id)
+        _require_collection_access(db, current_user, collection_id, origin=require_surface_origin())
         storage_path = str(row.storage_path)
         mime = str(row.mime) if row.mime else "image/png"
 

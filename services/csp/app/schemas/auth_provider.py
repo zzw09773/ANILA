@@ -1,3 +1,4 @@
+from app.schemas.base import ApiResponseModel
 from datetime import datetime
 from pydantic import BaseModel, field_validator
 
@@ -72,7 +73,7 @@ class AuthProviderUpdate(BaseModel):
     oidc_subject_claim: str | None = None
 
 
-class AuthProviderResponse(AuthProviderBase):
+class AuthProviderResponse(ApiResponseModel, AuthProviderBase):
     id: int
     created_at: datetime
     updated_at: datetime

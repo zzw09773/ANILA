@@ -241,6 +241,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { extractError } from '../api/errors'
 import { useRoute } from 'vue-router'
 import { getCollection } from '../api/ingestionCollections'
 import { listDocuments } from '../api/ingestionDocuments'
@@ -308,7 +309,7 @@ async function onCreateCredential() {
     form.value.judge_credential_id = data.id
     cancelCredentialForm()
   } catch (e) {
-    credentialError.value = e.response?.data?.detail || e.message
+    credentialError.value = extractError(e, e.message)
   } finally { creatingCredential.value = false }
 }
 async function onDeleteCredential(id) {
@@ -318,7 +319,7 @@ async function onDeleteCredential(id) {
     await deleteLlmCredential(id)
     credentials.value = credentials.value.filter(c => c.id !== id)
     if (form.value.judge_credential_id === id) form.value.judge_credential_id = null
-  } catch (e) { credentialError.value = e.response?.data?.detail || e.message }
+  } catch (e) { credentialError.value = extractError(e, e.message) }
   finally { deletingCredentialId.value = null }
 }
 
@@ -397,7 +398,7 @@ async function submit() {
       strategies_tried: [], judge_credential_id: null, judge_top_k: 5,
     }
     pickedStrategies.value = []
-  } catch (e) { submitError.value = e.response?.data?.detail || e.message }
+  } catch (e) { submitError.value = extractError(e, e.message) }
   finally { submitting.value = false }
 }
 

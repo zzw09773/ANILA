@@ -1,13 +1,16 @@
 import { client } from './client'
 
 // Semantic top-K retrieval over a collection's chunks. Wraps
-// `POST /api/ingestion/collections/:id/search` (added Sprint 5 follow-up).
+// `POST /api/personal/collections/:id/search` (ANILALM personal surface).
 //
 // Two callsites:
 //   - WSChat.send() — fetches top-K chunks before each LLM call so the
 //     model can ground its answer in real document text.
 //   - studio/generators.ts — Report / Slides generators stuff retrieved
 //     chunks into their system prompt instead of just filenames.
+
+/** ANILALM personal knowledge-base surface (origin=anilalm). */
+const PERSONAL = '/api/personal'
 
 export interface SearchHit {
   chunk_id: number
@@ -39,7 +42,7 @@ export const searchCollection = (
   opts: SearchOptions = {},
 ) =>
   client.post<SearchResponse>(
-    `/api/ingestion/collections/${collectionId}/search`,
+    `${PERSONAL}/collections/${collectionId}/search`,
     {
       query,
       top_k: opts.topK ?? 5,

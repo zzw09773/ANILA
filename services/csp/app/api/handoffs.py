@@ -1,6 +1,8 @@
 """Handoff and notification endpoints."""
 from __future__ import annotations
 
+from app.schemas.base import ApiResponseModel
+
 from datetime import datetime
 from typing import Any, Optional
 
@@ -25,7 +27,7 @@ class HandoffCreate(BaseModel):
     note: Optional[str] = None
 
 
-class HandoffOut(BaseModel):
+class HandoffOut(ApiResponseModel):
     id: int
     conversation_id: int
     from_user_id: Optional[int]
@@ -38,7 +40,7 @@ class HandoffOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class NotificationOut(BaseModel):
+class NotificationOut(ApiResponseModel):
     id: int
     type: str
     title: str

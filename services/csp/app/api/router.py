@@ -2,12 +2,14 @@ from fastapi import APIRouter
 from app.api.agents import router as agents_router
 from app.api.agents.registry import router as agent_registry_router
 from app.api.banners import router as banners_router
+from app.api.capabilities import router as capabilities_router
 from app.api.auth import router as auth_router
 from app.api.auth_providers import router as auth_providers_router
 from app.api.api_keys import router as api_keys_router
 from app.api.alerts import router as alerts_router
 from app.api.audit_logs import router as audit_logs_router
 from app.api.admin_inference_audit import router as admin_inference_audit_router
+from app.api.admin import health_overview_router
 from app.api.models import router as models_router
 from app.api.usage import router as usage_router
 from app.api.users import router as users_router
@@ -35,6 +37,7 @@ from app.api.ingestion import (
     relations_router as ingestion_relations_router,
     search_router as ingestion_search_router,
 )
+from app.api.ingestion.surface import GOVERNANCE_PREFIX, PERSONAL_PREFIX
 from app.api.jwks import router as jwks_router
 from app.api.classification_inventory import router as classification_inventory_router
 from app.api.studio_runtime import router as studio_runtime_router
@@ -50,6 +53,8 @@ api_router.include_router(api_keys_router)
 api_router.include_router(alerts_router)
 api_router.include_router(audit_logs_router)
 api_router.include_router(admin_inference_audit_router)
+# 服務健康總覽(W3-3⑦):admin 不用 SSH 也看得到基礎服務狀態。
+api_router.include_router(health_overview_router)
 api_router.include_router(models_router)
 api_router.include_router(usage_router)
 api_router.include_router(users_router)
@@ -75,15 +80,31 @@ api_router.include_router(
     router_direct_governance_router, prefix="/internal/v1/router"
 )
 api_router.include_router(banners_router)
-api_router.include_router(ingestion_collections_router)
+# 部署能力旗標(W1-3):只回布林白名單,給前端決定「怎麼說」。
+api_router.include_router(capabilities_router)
+
+# Collection-scoped ingestion routers are mounted twice:
+#   /api/ingestion/*  → governance product (origin='csp')
+#   /api/personal/*   → ANILALM personal KB (origin='anilalm')
+# Dual-mount is convenience for URL geometry; the load-bearing gate is
+# the required ``origin=`` argument on collection resolvers (see
+# ``app.api.ingestion.surface``). Credentials and chunking-preview stay
+# governance-only (absolute paths, single mount).
+_COLLECTION_SURFACE_ROUTERS = (
+    ingestion_collections_router,
+    ingestion_documents_router,
+    ingestion_eval_runs_router,
+    ingestion_jobs_router,
+    ingestion_relations_router,
+    ingestion_search_router,
+    ingestion_image_blob_router,
+)
+for _surface_router in _COLLECTION_SURFACE_ROUTERS:
+    api_router.include_router(_surface_router, prefix=GOVERNANCE_PREFIX)
+    api_router.include_router(_surface_router, prefix=PERSONAL_PREFIX)
 api_router.include_router(ingestion_credentials_router)
-api_router.include_router(ingestion_documents_router)
-api_router.include_router(ingestion_eval_runs_router)
-api_router.include_router(ingestion_jobs_router)
 api_router.include_router(ingestion_preview_router)
-api_router.include_router(ingestion_relations_router)
-api_router.include_router(ingestion_search_router)
-api_router.include_router(ingestion_image_blob_router)
+
 api_router.include_router(trusted_hosts_router)
 api_router.include_router(tasks_router)
 api_router.include_router(policy_decisions_router)

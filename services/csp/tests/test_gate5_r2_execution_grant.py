@@ -552,9 +552,16 @@ def test_internal_mint_endpoint_returns_only_signed_envelope_or_generic_403(
                 json=_request(now).model_dump(mode="json"),
             )
             assert rejected_client.status_code == 403
-            assert rejected_client.json() == {
-                "detail": "ExecutionGrant mint denied"
-            }
+            # W2-12:body 現在是 ``{"error": {...}, "detail": <legacy>}``。
+            # 這條測試的重點是「泛用 403 且不洩漏簽章」,所以逐字釘住 legacy
+            # detail(過渡期雙寫契約)+ top-level 白名單,確保信封沒有多帶欄位
+            # 把拒絕原因或 token 漏出去。
+            rejected_body = rejected_client.json()
+            assert set(rejected_body) == {"error", "detail"}
+            assert rejected_body["detail"] == "ExecutionGrant mint denied"
+            assert rejected_body["error"]["code"] == "FORBIDDEN"
+            assert rejected_body["error"]["message"] == "ExecutionGrant mint denied"
+            assert rejected_body["error"]["details"] is None
             assert "eyJ" not in rejected_client.text
 
             malformed = _request(now).model_dump(mode="json")

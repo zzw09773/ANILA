@@ -23,9 +23,15 @@ export const reprocessDocument = (documentId) =>
  * @param {File} file
  * @param {(progress: number) => void} [onProgress]  0..1
  */
-export const uploadDocument = (collectionId, file, onProgress) => {
+export const uploadDocument = (collectionId, file, onProgress, opts = {}) => {
   const form = new FormData()
   form.append('file', file)
+  if (opts.classificationLevel) {
+    form.append('classification_level', opts.classificationLevel)
+  }
+  if (opts.title) {
+    form.append('title', opts.title)
+  }
   return client.post(
     `/api/ingestion/collections/${collectionId}/documents`,
     form,
@@ -46,12 +52,15 @@ export const uploadDocument = (collectionId, file, onProgress) => {
  *
  * @param {number} collectionId
  * @param {File} file  must be a .zip
- * @param {{ preserveFolderStructure?: boolean }} [opts]
+ * @param {{ preserveFolderStructure?: boolean, classificationLevel?: string }} [opts]
  * @param {(progress: number) => void} [onProgress]
  */
 export const uploadZip = (collectionId, file, opts = {}, onProgress) => {
   const form = new FormData()
   form.append('file', file)
+  if (opts.classificationLevel) {
+    form.append('classification_level', opts.classificationLevel)
+  }
   return client.post(
     `/api/ingestion/collections/${collectionId}/documents/zip`,
     form,

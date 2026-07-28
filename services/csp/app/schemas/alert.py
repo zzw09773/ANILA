@@ -1,8 +1,9 @@
+from app.schemas.base import ApiResponseModel
 from datetime import datetime
 from pydantic import BaseModel
 
 
-class AlertResponse(BaseModel):
+class AlertResponse(ApiResponseModel):
     id: int
     category: str
     severity: str

@@ -84,6 +84,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { extractError } from '../../api/errors'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { changePassword } from '../../api/auth'
@@ -166,8 +167,9 @@ async function handleChangePassword() {
       router.push('/login')
     }, 1500)
   } catch (e) {
-    const detail = e.response?.data?.detail
-    pwError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || '更新失敗')
+    // W2-12:`extractError` 保證回字串(422 array 會被攤成 `欄位: 訊息`),
+    // 所以原本的 Array.isArray 分派是死碼。
+    pwError.value = extractError(e, '更新失敗')
   } finally {
     saving.value = false
   }

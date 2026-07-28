@@ -295,6 +295,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { extractError, extractErrorCode, extractErrorField } from '../api/errors'
 import { useModelsStore } from '../stores/models'
 import { useAuthStore } from '../stores/auth'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
@@ -444,34 +445,28 @@ async function handleSubmit() {
     }
     showModal.value = false
   } catch (e) {
-    const detail = e.response?.data?.detail
     // Typed 400 with code "untrusted_host" → show confirm modal so the
     // owner can promote the host to trusted_hosts and retry without
     // leaving this page. Plain-string detail (loopback / metadata /
     // scheme failures) falls through to the existing alert path —
     // those aren't fixable by adding to trust list.
-    if (
-      detail &&
-      typeof detail === 'object' &&
-      detail.code === 'untrusted_host' &&
-      detail.host &&
-      authStore.isOwner
-    ) {
+    //
+    // W2-12:code 與補充欄位改從統一信封讀(extractErrorCode /
+    // extractErrorField 兩邊都認 legacy dict,過渡期不會斷)。
+    const host = extractErrorField(e, 'host')
+    if (extractErrorCode(e) === 'untrusted_host' && host && authStore.isOwner) {
       const payload = buildModelPayload()
       untrustedHostPrompt.value = {
-        host: detail.host,
-        message: detail.message || '',
-        hint: detail.hint || '',
+        host,
+        message: extractError(e, ''),
+        hint: extractErrorField(e, 'hint') || '',
         retryPayload: payload,
         retryMode: editingId.value ? 'update' : 'create',
         retryId: editingId.value,
       }
       return
     }
-    const msg = typeof detail === 'string'
-      ? detail
-      : (detail?.message || '操作失敗')
-    toast(msg, { tone: 'error' })
+    toast(extractError(e, '操作失敗'), { tone: 'error' })
   }
 }
 
@@ -501,9 +496,8 @@ async function confirmTrustAndRetry() {
     untrustedHostPrompt.value = null
     showModal.value = false
   } catch (e) {
-    const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string' ? detail : (detail?.message || '重試失敗')
-    toast(msg, { tone: 'error' })
+    // W2-12:extractError 已處理字串 / dict / 422 array 三種形狀
+    toast(extractError(e, '重試失敗'), { tone: 'error' })
   }
 }
 
@@ -533,9 +527,8 @@ async function handleTest(model) {
     const latencyTxt = latency != null ? `（${latency} ms）` : ''
     toast(`測試連線 → ${healthLabel(status)}${latencyTxt}`, { tone: ok ? 'success' : 'error' })
   } catch (e) {
-    const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string' ? detail : (detail?.message || '測試連線失敗')
-    toast(msg, { tone: 'error' })
+    // W2-12:extractError 已處理字串 / dict / 422 array 三種形狀
+    toast(extractError(e, '測試連線失敗'), { tone: 'error' })
   } finally {
     testingId.value = null
   }
@@ -544,27 +537,27 @@ async function handleTest(model) {
 async function handleSetPrimary(id) {
   settingPrimaryId.value = id
   try { await modelsStore.setPrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || '設定主要失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '設定主要失敗'), { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
 async function handleUnsetPrimary(id) {
   if (!(await confirm({ message: '取消主要？在你指定新的主要模型前，ANILA Router 將沒有主要 LLM。', confirmText: '取消主要', danger: true }))) return
   settingPrimaryId.value = id
   try { await modelsStore.unsetPrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || '取消主要失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '取消主要失敗'), { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
 async function handleSetImagePrimary(id) {
   settingImagePrimaryId.value = id
   try { await modelsStore.setImagePrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || '設定主圖像模型失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '設定主圖像模型失敗'), { tone: 'error' }) }
   finally { settingImagePrimaryId.value = null }
 }
 async function handleUnsetImagePrimary(id) {
   if (!(await confirm({ message: '取消主圖像模型？在你指定新的主圖像模型前，flux2-dev-agent / anila-studio 將 fallback 使用環境變數設定的端點。', confirmText: '取消主圖像', danger: true }))) return
   settingImagePrimaryId.value = id
   try { await modelsStore.unsetImagePrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || '取消主圖像模型失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '取消主圖像模型失敗'), { tone: 'error' }) }
   finally { settingImagePrimaryId.value = null }
 }
 async function handleDeactivate(id) {
@@ -574,14 +567,14 @@ async function handleDeactivate(id) {
 }
 async function handleActivate(id) {
   try { await modelsStore.activate(id) }
-  catch (e) { toast(e.response?.data?.detail || '啟用失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '啟用失敗'), { tone: 'error' }) }
 }
 async function handlePurge(model) {
   if (!model || purgingId.value === model.id) return
   if (!(await confirm({ message: `永久刪除「${model.display_name}」？不可復原。若有用量紀錄或其他模型引用則會被拒絕。`, confirmText: '永久刪除', danger: true }))) return
   purgingId.value = model.id
   try { await modelsStore.purge(model.id) }
-  catch (e) { toast(e.response?.data?.detail || '清除失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '清除失敗'), { tone: 'error' }) }
   finally { purgingId.value = null }
 }
 </script>

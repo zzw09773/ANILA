@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker
 
 from app.models.artifact import Artifact, ArtifactJob, ArtifactVersion
 from app.models.ingestion import IngestionCollection, IngestionDocument, IngestionJob
@@ -25,6 +26,20 @@ from tests.conftest import make_user
 
 
 NOW = datetime(2035, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+
+def _rival_session(db):
+    """A second Session on the reaper's engine, with its own identity map.
+
+    The reaper's post-marker re-read exists to lose to a *concurrent* writer,
+    so the race has to be staged from a session the reaper does not own.
+    Writing the legal hold through the reaper's own session would mutate the
+    very instance already sitting in its identity map, and the guard would
+    then appear to hold even if the reaper never re-read the row at all —
+    the false-negative that let an ``expire_on_commit=False`` regression
+    through review.  ``expire_on_commit=False`` mirrors ``SessionLocal``.
+    """
+    return sessionmaker(bind=db.get_bind(), expire_on_commit=False)()
 
 
 def _collection(db, owner, *, name="retention") -> IngestionCollection:
@@ -232,11 +247,18 @@ def test_legal_hold_and_active_task_prevent_artifact_erase(db, tmp_path):
 def test_hold_created_after_erase_due_marker_wins_before_unlink(db, tmp_path):
     _owner, _collection, _task, _artifact, version, path = _artifact_due(db, tmp_path)
 
-    def establish_hold(session):
-        row = session.get(ArtifactVersion, version.id)
-        row.legal_hold = True
-        row.legal_hold_reason = "RACE-HOLD"
-        session.commit()
+    def establish_hold(_reaper_session):
+        # Deliberately ignores the session handed in: the admin who files the
+        # hold is a different request on a different Session.  The reaper must
+        # observe it by re-reading the locked row, not by sharing memory.
+        rival = _rival_session(db)
+        try:
+            row = rival.get(ArtifactVersion, version.id)
+            row.legal_hold = True
+            row.legal_hold_reason = "RACE-HOLD"
+            rival.commit()
+        finally:
+            rival.close()
 
     erased = retention_reaper._erase_artifact_version(
         db,
@@ -247,8 +269,96 @@ def test_hold_created_after_erase_due_marker_wins_before_unlink(db, tmp_path):
     )
     assert not erased
     assert path.exists()
+    db.expire_all()
     db.refresh(version)
     assert version.lifecycle_state == "erase_due" and version.legal_hold
+
+
+def test_task_reactivated_after_erase_due_marker_wins_before_unlink(db, tmp_path):
+    """The locked active-work re-check must also see a rival session's write.
+
+    ``_artifact_has_active_work`` compares ``status`` in Python, so the
+    ``lock=True`` pass is only a guard if the locked SELECT overwrites the
+    Task already sitting in the reaper's identity map.
+    """
+    _owner, _collection, task, _artifact, version, path = _artifact_due(db, tmp_path)
+
+    def reactivate_task(_reaper_session):
+        rival = _rival_session(db)
+        try:
+            row = rival.get(Task, task.id)
+            row.status = "running"
+            rival.commit()
+        finally:
+            rival.close()
+
+    erased = retention_reaper._erase_artifact_version(
+        db,
+        version_id=version.id,
+        now=NOW,
+        artifact_root=str(tmp_path),
+        after_marker=reactivate_task,
+    )
+    assert not erased
+    assert path.exists()
+    db.expire_all()
+    db.refresh(version)
+    assert version.lifecycle_state == "erase_due"
+    assert version.blob_key is not None
+
+
+def test_document_hold_created_after_marker_wins_before_unlink(db, tmp_path):
+    _owner, _collection, document, blob, image = _document_due(db, tmp_path)
+
+    def establish_hold(_reaper_session):
+        rival = _rival_session(db)
+        try:
+            row = rival.get(IngestionDocument, document.id)
+            row.legal_hold = True
+            row.legal_hold_reason = "RACE-HOLD-DOC"
+            rival.commit()
+        finally:
+            rival.close()
+
+    erased = retention_reaper._erase_document(
+        db,
+        document_id=document.id,
+        now=NOW,
+        ingestion_root=str(tmp_path),
+        after_marker=establish_hold,
+    )
+    assert not erased
+    assert blob.exists() and image.exists()
+    db.expire_all()
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due" and document.legal_hold
+
+
+def test_collection_hold_created_after_document_marker_wins_before_unlink(db, tmp_path):
+    _owner, collection, document, blob, image = _document_due(db, tmp_path)
+
+    def establish_hold(_reaper_session):
+        rival = _rival_session(db)
+        try:
+            row = rival.get(IngestionCollection, collection.id)
+            row.legal_hold = True
+            row.legal_hold_reason = "RACE-HOLD-COLLECTION"
+            rival.commit()
+        finally:
+            rival.close()
+
+    erased = retention_reaper._erase_document(
+        db,
+        document_id=document.id,
+        now=NOW,
+        ingestion_root=str(tmp_path),
+        after_marker=establish_hold,
+    )
+    assert not erased
+    assert blob.exists() and image.exists()
+    db.expire_all()
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
 
 
 def test_missing_blob_and_post_unlink_db_failure_converge(db, tmp_path, monkeypatch):
@@ -646,6 +756,138 @@ def test_nonterminal_job_created_after_document_marker_prevents_unlink(db, tmp_p
     assert blob.exists() and image.exists()
 
 
+def test_job_revived_after_document_marker_prevents_unlink(db, tmp_path):
+    """A *pre-existing* job flipping back to non-terminal must also block.
+
+    Companion to the "job created after the marker" case: there the row is new,
+    so nothing stale can exist for it.  Here the job is already in the reaper's
+    identity map in a terminal state before the marker, which is the shape that
+    an ``expire_on_commit=False`` stale read would hide.
+    """
+    owner, _collection, document, blob, image = _document_due(db, tmp_path)
+    job = IngestionJob(
+        arq_job_id="retention-revive-job",
+        collection_id=document.collection_id,
+        document_id=document.id,
+        job_type="ingest",
+        status="succeeded",
+        enqueued_by=owner.id,
+    )
+    db.add(job)
+    db.commit()
+    # Load it into the reaper session's identity map, terminal, before the run.
+    assert db.get(IngestionJob, job.id).status == "succeeded"
+
+    def revive_job(_reaper_session):
+        rival = _rival_session(db)
+        try:
+            row = rival.get(IngestionJob, job.id)
+            row.status = "running"
+            # ck_ingestion_jobs_lease_state: a running job must carry a lease.
+            row.lease_token = "revive-lease"
+            row.lease_expires_at = NOW + timedelta(seconds=300)
+            row.heartbeat_at = NOW
+            rival.commit()
+        finally:
+            rival.close()
+
+    erased = retention_reaper._erase_document(
+        db,
+        document_id=document.id,
+        now=NOW,
+        ingestion_root=str(tmp_path),
+        after_marker=revive_job,
+    )
+    assert not erased
+    assert blob.exists() and image.exists()
+
+
+def test_release_lease_never_clears_a_lease_another_reaper_stole(db):
+    """Mutual exclusion: releasing must not drop a rival's live lease.
+
+    ``_acquire_lease`` leaves the lease row in this session's identity map with
+    *our* token.  If the lease then expires mid-batch and another reaper claims
+    it, the release-time re-read has to see the rival's token or this process
+    will hand a third reaper concurrent access to the erasure pipeline.
+    """
+    token = "reaper-token-A"
+    assert retention_reaper._acquire_lease(
+        db, token=token, now=NOW, seconds=60
+    )
+    # Pin the row in the reaper session.  SQLAlchemy's identity map is weak, so
+    # without a live reference the lease instance is simply garbage-collected
+    # between acquire and release and the re-read happens to be fresh.  That is
+    # an accident of refcounting, not a guarantee: any caller that still holds
+    # the row — or a batch that touched it again — gets the stale copy.  The
+    # guard has to hold in that case too.
+    pinned = (
+        db.query(RetentionReaperLease)
+        .filter(RetentionReaperLease.lease_name == "classified-data-retention")
+        .one()
+    )
+    assert pinned.lease_token == token
+
+    rival = _rival_session(db)
+    try:
+        stolen = (
+            rival.query(RetentionReaperLease)
+            .filter(RetentionReaperLease.lease_name == "classified-data-retention")
+            .one()
+        )
+        stolen.lease_token = "reaper-token-B"
+        stolen.lease_expires_at = NOW + timedelta(seconds=600)
+        rival.commit()
+    finally:
+        rival.close()
+
+    retention_reaper._release_lease(db, token=token, now=NOW)
+
+    verify = _rival_session(db)
+    try:
+        row = (
+            verify.query(RetentionReaperLease)
+            .filter(RetentionReaperLease.lease_name == "classified-data-retention")
+            .one()
+        )
+        assert row.lease_token == "reaper-token-B", (
+            "reaper A cleared reaper B's live lease; two reapers can now erase "
+            "concurrently"
+        )
+        assert row.lease_expires_at is not None
+    finally:
+        verify.close()
+
+
+def test_acquire_lease_refuses_a_lease_another_reaper_currently_holds(db):
+    """The acquire side of the same mutual exclusion."""
+    token = "reaper-token-A"
+    assert retention_reaper._acquire_lease(db, token=token, now=NOW, seconds=60)
+    pinned = (
+        db.query(RetentionReaperLease)
+        .filter(RetentionReaperLease.lease_name == "classified-data-retention")
+        .one()
+    )
+    assert pinned.lease_token == token
+
+    rival = _rival_session(db)
+    try:
+        stolen = (
+            rival.query(RetentionReaperLease)
+            .filter(RetentionReaperLease.lease_name == "classified-data-retention")
+            .one()
+        )
+        stolen.lease_token = "reaper-token-B"
+        stolen.lease_expires_at = NOW + timedelta(seconds=600)
+        rival.commit()
+    finally:
+        rival.close()
+
+    # Reaper A's lease is gone; re-acquiring must fail while B's is live.
+    assert not retention_reaper._acquire_lease(
+        db, token=token, now=NOW, seconds=60
+    ), "reaper A re-acquired a lease reaper B currently holds"
+
+
 def test_traversal_is_fail_closed_and_never_unlinks_outside_root(db, tmp_path):
     outside = tmp_path.parent / "retention-outside.txt"
     outside.write_bytes(b"do not delete")
@@ -693,6 +935,7 @@ def test_safe_path_rejects_symlink_and_expired_lease_blocks_second_runner(db, tm
 def test_task_admission_rejects_non_active_collection(db):
     owner = make_user(db, username="retention_task_admission")
     collection = _collection(db, owner, name="retention-task-admission")
+    collection.origin = "anilalm"
     collection.lifecycle_state = "erase_due"
     collection.archived_at = NOW - timedelta(days=2)
     collection.erase_due_at = NOW

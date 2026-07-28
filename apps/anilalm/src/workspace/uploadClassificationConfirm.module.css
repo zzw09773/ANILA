@@ -1,0 +1,110 @@
+/* W2-11 upload classification confirm modal (D3: CSS Modules + tokens).
+ * Theme follows ThemeContext's body.light toggle; hex values match
+ * apps/anilalm/src/theme/tokens.ts.
+ */
+
+.panel {
+  --uc-text: #e8eaed;
+  --uc-text-muted: #9aa3ae;
+  --uc-border: #262b34;
+  --uc-surface: #13161b;
+  --uc-accent: #6361e0;
+  --uc-danger: #ff6b6b;
+  padding: 22px;
+}
+
+:global(body.light) .panel {
+  --uc-text: #1a1a1a;
+  --uc-text-muted: #5c6470;
+  --uc-border: #e8e6df;
+  --uc-surface: #ffffff;
+  --uc-accent: #5957e8;
+  --uc-danger: #e5484d;
+}
+
+.title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--uc-text);
+  margin-bottom: 8px;
+}
+
+.lead {
+  font-size: 13px;
+  color: var(--uc-text-muted);
+  line-height: 1.55;
+  margin-bottom: 12px;
+}
+
+.leadStrong {
+  color: var(--uc-text);
+}
+
+.fieldLabel {
+  display: block;
+  font-size: 12px;
+  color: var(--uc-text-muted);
+  margin-bottom: 6px;
+}
+
+.select {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--uc-border);
+  background: var(--uc-surface);
+  color: var(--uc-text);
+  font-family: inherit;
+}
+
+.latchWarn {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--uc-danger) 9%, transparent);
+  color: var(--uc-danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.latchAck {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--uc-text);
+  align-items: flex-start;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.btnGhost {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--uc-border);
+  background: var(--uc-surface);
+  color: var(--uc-text);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.btnPrimary {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: none;
+  background: var(--uc-accent);
+  color: #fff;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.btnPrimary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

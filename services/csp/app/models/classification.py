@@ -49,6 +49,17 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ── W2-10 批次 1(migration r1_0040):本檔三張表的時間欄一律 timezone=True ────
+#
+# 這三張表是**法律證據性質**的治理帳(分類異動 ledger、雙人降密核准、公文文號
+# 權責指派)。原本 `Column(DateTime)` + PG `timestamp without time zone` →
+# 「一次分類異動發生在哪個絕對時點」在資料裡沒有答案,只能靠「寫入端都是
+# `datetime.now(timezone.utc)`」這個外部知識推斷。r1_0040 把 DB 側轉成
+# timestamptz,這裡同步宣告 —— 只改一邊會讓 drift gate 告警(見 r1_0040 檔頭)。
+#
+# ⚠ 既有 naive 值的判讀是 `AT TIME ZONE 'Asia/Taipei'`(2026-07-26 user 拍板),
+# 所以遷移前後的紀錄在絕對時點上有 8 小時不連續。完整脈絡(含實作者的反對意見)
+# 逐字寫在 `migrations/versions/r1_0040_governance_ledger_timestamptz.py` 檔頭。
 class ClassificationEvent(Base):
     """一次分類異動(latch / 升級 / 降級生效);append-only。"""
 
@@ -77,7 +88,7 @@ class ClassificationEvent(Base):
     inherited_from_resource_type = Column(String(50), nullable=True)
     inherited_from_resource_id = Column(String(100), nullable=True)
     trace_id = Column(String(64), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class DeclassificationRequest(Base):
@@ -116,7 +127,7 @@ class DeclassificationRequest(Base):
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     supervisor_comment = Column(Text, nullable=True)
-    decided_at = Column(DateTime, nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
     # 變體 A:in_system / recorded_paper_decision(契約層封閉)。
     approved_via = Column(String(32), nullable=True)
     # recorded_paper_decision 必填三欄(service 層強制):
@@ -128,7 +139,7 @@ class DeclassificationRequest(Base):
     # 降密副本模式的新資源參照(doc 08 §9;in-place 生效時留 NULL)。
     resulting_resource_id = Column(String(100), nullable=True)
     audit_event_ids = Column(JSONValue, nullable=False, default=list)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class ClassificationAuthorityAssignment(Base):
@@ -167,5 +178,41 @@ class ClassificationAuthorityAssignment(Base):
     is_active = Column(
         Boolean, nullable=False, default=True, server_default="true"
     )
-    revoked_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class ClassificationSamplingReview(Base):
+    """W2-11 continuous sampling attestation for document classification.
+
+    One row per reviewer attestation. The companion audit event carries the
+    human-readable trail; this table is the durable, queryable ledger that
+    sampling reports can exclude already-reviewed documents from.
+    """
+
+    __tablename__ = "classification_sampling_reviews"
+    __table_args__ = (
+        Index("ix_classification_sampling_reviews_created_at", "created_at"),
+        Index("ix_classification_sampling_reviews_collection_id", "collection_id"),
+        Index("ix_classification_sampling_reviews_document_id", "document_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    document_id = Column(
+        Integer,
+        ForeignKey("ingestion_documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    collection_id = Column(
+        Integer,
+        ForeignKey("ingestion_collections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    reviewer_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    document_level_at_review = Column(String(20), nullable=False)
+    attested_level = Column(String(20), nullable=False)
+    outcome = Column(String(32), nullable=False)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
