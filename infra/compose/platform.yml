@@ -14,10 +14,26 @@
 
 name: anila-platform
 
+x-anila-logging: &anila-logging
+  # ⚠ 2026-07-28:先前**完全沒有 logging 設定** → Docker 預設 json-file 驅動
+  # 不做輪替,檔案無上限成長。三千人一整天的存取日誌,加上失敗時的堆疊,
+  # 有可能把磁碟塞滿 —— 而磁碟一滿 PostgreSQL 立刻停止寫入,整個平台會以
+  # 「看起來像軟體壞掉」的方式死去,而不是以「算力不足」的方式。那正好毀掉
+  # 事後判讀所需要的證據。
+  #
+  # 100MB × 5 = 每服務最多 500MB,足以涵蓋一整個開放窗口的存取日誌,又不會
+  # 吃掉磁碟。access log 是本平台唯一能重建「速率/錯誤率/延遲」的來源
+  # (沒有 /metrics 端點),所以保留量要夠大,不能只留一份。
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "5"
+
 services:
 
   # ── PostgreSQL ──────────────────────────────────────────────────────────
   csp-db:
+    logging: *anila-logging
     # pgvector 是 postgres:16 的 superset,migration 0014 (ingestion) 需要
     # vector extension。換回 upstream postgres 會破 ingestion stack。
     image: ${ANILA_IMAGE_CSP_DB:?ANILA_IMAGE_CSP_DB must be a locked image content ID}
@@ -54,6 +70,7 @@ services:
 
   # ── CSP (Control + Data Plane :8000) ────────────────────────────────────
   csp:
+    logging: *anila-logging
     build:
       context: ../..
       dockerfile: infra/docker/csp.Dockerfile
@@ -361,6 +378,7 @@ services:
 
   # ── Redis (Arq queue for ingestion-worker) ──────────────────────────────
   redis:
+    logging: *anila-logging
     image: ${ANILA_IMAGE_REDIS:?ANILA_IMAGE_REDIS must be a locked image content ID}
     command:
       - redis-server
@@ -390,6 +408,7 @@ services:
 
   # ── ingestion-worker (parse → chunk → embed → pgvector) ─────────────────
   ingestion-worker:
+    logging: *anila-logging
     build:
       context: ../..
       dockerfile: services/ingestion-worker/Dockerfile
@@ -456,6 +475,7 @@ services:
 
   # ── Router (anila-core-router :9000) ────────────────────────────────────
   router:
+    logging: *anila-logging
     build:
       context: ../..
       dockerfile: services/anila-core-router/Dockerfile
@@ -500,6 +520,7 @@ services:
   # endpoint.  It is nevertheless part of the formal platform Compose graph
   # and is image-locked/inventory-tracked like every other built service.
   anila-agent:
+    logging: *anila-logging
     profiles: ["gate5-silver"]
     build:
       context: ../..
@@ -553,6 +574,7 @@ services:
   # TLS termination (self-signed dev cert),HTTP→HTTPS 301,proxy /, /api/,
   # /v1/, /v2/, /router/* 到對應內部 service。
   nginx:
+    logging: *anila-logging
     image: ${ANILA_IMAGE_NGINX:?ANILA_IMAGE_NGINX must be a locked image content ID}
     container_name: anila-nginx
     ports:
@@ -598,6 +620,7 @@ services:
 
   # ── pptx-renderer (Node + LibreOffice for slide / vision-QA screenshots) ─
   pptx-renderer:
+    logging: *anila-logging
     build:
       context: ../../services/pptx-renderer
       dockerfile: Dockerfile
@@ -618,6 +641,7 @@ services:
   # token revocation events from csp via HTTP/Redis so cross-service auth
   # works without sharing the private signing key.
   anila-studio:
+    logging: *anila-logging
     build:
       context: ../../services/anila-studio
       dockerfile: Dockerfile
@@ -702,6 +726,7 @@ services:
   # ⚠ 麥克風還需要 nginx 放寬 Permissions-Policy,否則 getUserMedia 一律
   #   NotAllowedError,而且症狀跟「使用者拒絕權限」一模一樣。
   asr-gateway:
+    logging: *anila-logging
     profiles: ["asr"]
     build:
       context: ../../services/asr-gateway
@@ -786,6 +811,7 @@ services:
 
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
   anilalm:
+    logging: *anila-logging
     build:
       context: ../../apps/anilalm
       args:
@@ -808,6 +834,7 @@ services:
 
   # ── ANILA UI (admin SPA, same-origin via nginx) ─────────────────────────
   anila-ui:
+    logging: *anila-logging
     build:
       # repo-root context（同 csp 慣例）：shell 以 Vite alias 引用共用設計
       # 系統 packages/ui 原始碼，build context 必須涵蓋兩個目錄。
@@ -845,6 +872,7 @@ services:
   # 會破 subpath 部署 (workspace fs provider 註冊失敗)。
   # 獨立來源避免 CSP host-only session cookie 進入 IDE；原生強密碼是登入邊界。
   codeserver:
+    logging: *anila-logging
     profiles: ["developer-tools"]
     image: ${ANILA_IMAGE_CODESERVER:?ANILA_IMAGE_CODESERVER must be a locked image content ID}
     # 1001:1001 對齊 host 'aia' UID,避免容器內存檔 EACCES。
@@ -880,6 +908,7 @@ services:
   #     webhook / form ingress 在 nginx 一律 fail-closed；若要接 machine
   #     callback，必須另建 mTLS / signed machine ingress。
   n8n:
+    logging: *anila-logging
     # W1-8:與 codeserver 同姿態,**預設不啟動**。
     # 先前 n8n 與 gitlab 都沒有 profiles: → 七條分支(含交付規格要求移除開發者
     # 工具的軍用分支)照 runbook 部署就會把它們一起拉起來。n8n 有自己的
@@ -948,6 +977,7 @@ services:
   # 首次開機 reconfigure ~5-10 分鐘,start_period 600s 是必要的。
   # Initial root password 在容器內 /etc/gitlab/initial_root_password,首次登入要輪換。
   gitlab:
+    logging: *anila-logging
     # W1-8:同 n8n,預設不啟動(理由見 n8n 處註解)。
     profiles: ["developer-tools"]
     image: ${ANILA_IMAGE_GITLAB:?ANILA_IMAGE_GITLAB must be a locked image content ID}
