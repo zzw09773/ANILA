@@ -261,7 +261,19 @@ services:
       # No third-party/official Agent is admitted in the formal default set.
       # A legal-approved signed overlay may replace this with the image shim
       # manifest; an empty list is intentional and fail-closed.
-      AUTO_REGISTER_AGENTS: "[]"
+      AUTO_REGISTER_AGENTS: "${AUTO_REGISTER_AGENTS:-[]}"
+      # ── agent readiness 的時效旋鈕(2026-07-28 接線)────────────────────
+      # 這四個先前只在 `config.py`,compose 完全沒有引用 → 運維改 .env 無效。
+      #
+      # ⚠ 其中 `AGENT_TRACE_TEST_FRESHNESS_SECONDS` 是開放日的地雷:預設 86400
+      # 表示每個 agent 的 trace-test 證據 **24 小時就過期**,過期後 readiness
+      # 回 `TRACE_TEST_STALE`,agent 會**靜默**變成不可派工 —— 沒有錯誤、沒有
+      # 通知,只是從 `GET /v1/agents` 消失。若今天做完 trace-test、明天才開放,
+      # 就正好會踩到。現在可由 .env 拉長(上限 604800 = 7 天),或排每日重跑。
+      AGENT_TRACE_TEST_FRESHNESS_SECONDS: "${AGENT_TRACE_TEST_FRESHNESS_SECONDS:-86400}"
+      AGENT_HEALTH_FRESHNESS_SECONDS: "${AGENT_HEALTH_FRESHNESS_SECONDS:-300}"
+      AGENT_REGISTRY_SNAPSHOT_TTL_SECONDS: "${AGENT_REGISTRY_SNAPSHOT_TTL_SECONDS:-60}"
+      HEALTH_CHECK_INTERVAL: "${HEALTH_CHECK_INTERVAL:-60}"
       # AUTO_SEED_API_KEYS: prod initial 模式只 seed ingestion-worker (系統內部
       # 必需,讓 worker 能呼叫 csp /v1/embeddings)。smoke-user 是 e2e 測試用的
       # 帳號,prod 不需要,已移除。要恢復就把舊 entry 加回來 (參考 .env.dev.local
@@ -596,9 +608,14 @@ services:
       csp:
         condition: service_healthy
         restart: true
-      anilalm:
-        condition: service_healthy
-        restart: true
+      # ⚠ anilalm 刻意**不列在這裡**。它已 profile 化(`personal-kb`),而
+      # compose 對「depends_on 指向被 profile 排除的服務」是**硬錯誤**:
+      #   service "nginx" depends on undefined service "anilalm"
+      # —— 整個專案無效,連 csp-db 都起不來。這是 2026-07-28 的部署演練
+      # 實際撞到的,不是理論風險。
+      # 拿掉是安全的:nginx 對 anilalm 用的是變數 proxy_pass + resolver,
+      # 不在載入設定時解析;而 `/anilalm` 與 `/api/personal` 現在都 return 404,
+      # 根本不會轉發過去。日後若要恢復個人知識庫,連同這段一起還原。
       router:
         condition: service_healthy
         restart: true
@@ -812,6 +829,11 @@ services:
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
   anilalm:
     logging: *anila-logging
+    # 2026-07-29 全院開放不含個人知識庫 → 與開發者工具同姿態,預設不啟動。
+    # 注意:光是不啟動這個容器**擋不住**個人知識庫的 API —— 那是 csp 的雙掛載
+    # (`/api/personal/*`),必須同時靠 nginx 的 `return 404` 才真的關得掉。
+    # 兩者要一起改,只做一邊會留下開著的後門。見 infra/nginx/anila.conf。
+    profiles: ["personal-kb"]
     build:
       context: ../../apps/anilalm
       args:
