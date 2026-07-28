@@ -70,6 +70,35 @@ def _wait_until_backend_is_lock_blocked(engine, pid: int) -> None:
     raise AssertionError(f"PostgreSQL backend {pid} never entered a lock wait")
 
 
+def _assert_ledger_is_unused(factory, conversation_id: int) -> None:
+    """這兩支測試的斷言是「這個資源恰好有 N 筆分類事件」,而
+    ``classification_events`` 自 r1_0041 起 append-only —— 任何測試在共用資料庫
+    裡對一個**寫死的** resource_id 插事件,那筆列就永遠留著,並且會在未來某個真
+    的拿到同一個 id 的對話身上冒出來,把它偽裝成單向閂鎖漏了一筆 ledger。
+
+    所以在跑競態之前先確認這個對話 id 的帳是空的。這樣「有人污染了這個 id」會
+    在這裡當場說清楚,而不是等到最後的事件鏈斷言,讓人去追一個不存在的鎖 bug。
+    """
+    session = factory()
+    try:
+        existing = (
+            session.query(ClassificationEvent)
+            .filter(
+                ClassificationEvent.resource_type == "conversation",
+                ClassificationEvent.resource_id == str(conversation_id),
+            )
+            .order_by(ClassificationEvent.id)
+            .all()
+        )
+        assert existing == [], (
+            f"conversation#{conversation_id} 在競態開始前就已經有分類事件 "
+            f"{[(e.id, e.previous_level, e.new_level, e.reason) for e in existing]} —— "
+            "有測試對寫死的 resource_id 插了 append-only 事件,污染了這個 id"
+        )
+    finally:
+        session.close()
+
+
 def _user(*, username: str, role: str = "user") -> User:
     return User(
         username=username,
@@ -96,6 +125,7 @@ def test_concurrent_high_low_updates_preserve_max_and_event_chain() -> None:
         seed.commit()
         user_id = int(user.id)
         conversation_id = int(conversation.id)
+        _assert_ledger_is_unused(factory, conversation_id)
 
         start = threading.Barrier(2)
         high_locked = threading.Event()
@@ -247,6 +277,7 @@ def test_concurrent_raise_invalidates_stale_approved_declassification() -> None:
         seed.add(authority)
         seed.commit()
         conversation_id = int(conversation.id)
+        _assert_ledger_is_unused(factory, conversation_id)
 
         initial = apply_classification(
             seed,

@@ -11,8 +11,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models.audit_log import AuditLog
 from app.models.model_registry import ModelRegistry
+from app.models.audit_log import AuditLog
 from app.models.task import Task, TaskRun
 from app.models.token_usage import TokenUsage
 from app.models.trace_span import TraceSpan
@@ -73,9 +73,12 @@ def _seed(factory):
 
 def _cleanup(db, *, task_id, user_id, model_id):
     db.rollback()
-    db.query(AuditLog).filter_by(resource_type="task", resource_id=str(task_id)).delete(
-        synchronize_session=False
-    )
+    # audit_logs is append-only since r1_0041: csp_app has no DELETE on it and a
+    # trigger rejects the statement even for the admin role, so this cleanup
+    # failed two different ways depending on which DSN the job used. Rows here
+    # are already scoped to this run's own task id, so leaving them cannot
+    # affect another test — and deleting them would be asserting the absence of
+    # the property the migration exists to create.
     db.query(TraceSpan).filter_by(task_id=task_id).delete(synchronize_session=False)
     run = db.query(TaskRun).filter_by(task_id=task_id).one_or_none()
     if run is not None:
@@ -90,6 +93,13 @@ def _cleanup(db, *, task_id, user_id, model_id):
     model = db.get(ModelRegistry, model_id)
     if model is not None:
         db.delete(model)
+    # r1_0041 leaves audit_logs.actor_user_id without ON DELETE, so the actor
+    # reference is nulled in the application layer before the user row goes
+    # away — that is how the audit history survives a hard delete (canonical
+    # implementation: api/users.py "manual cleanup #2").
+    db.query(AuditLog).filter(AuditLog.actor_user_id == user_id).update(
+        {"actor_user_id": None}, synchronize_session=False
+    )
     user = db.get(User, user_id)
     if user is not None:
         db.delete(user)

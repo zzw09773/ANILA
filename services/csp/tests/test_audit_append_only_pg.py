@@ -222,6 +222,16 @@ def test_classification_events_ondelete_set_null_still_works(engine):
 
     BEFORE UPDATE trigger 對 **referential action** 也會觸發,所以如果 trigger 沒
     放行那條路徑,刪使用者就會失敗 —— 而那是一個很難查的 500。
+
+    ⚠ ``resource_id`` **必須是本測試自己配到的對話 id**,不可以寫死 ``'1'``。
+    r1_0041 之後 ``classification_events`` 是 append-only:這裡插的列**永遠**刪不掉。
+    寫死 ``'1'`` 等於在共用的 CI ``csp`` 資料庫裡,替「未來某個真的拿到 id 1 的
+    對話」預先偽造一筆「無機密 → 機密」的分類異動。真的發生過:
+    ``test_gate2_classification_latch_pg.py`` 的閂鎖競態測試在新資料庫上建立的
+    第一個對話正好拿到 id 1,於是它 resource-scoped 的查詢撈到這筆外來列,
+    斷言變成 ``[('無機密','機密'), ('無機密','絕對機密')]``,看起來像單向閂鎖漏了
+    一筆 ledger —— 其實閂鎖沒事,是這裡污染了那個 id。
+    自己建一列對話再刪掉:序列不回頭,那個 id 從此退役,不會有第二個持有者。
     """
     with engine.begin() as conn:
         uid = conn.execute(
@@ -234,17 +244,27 @@ def test_classification_events_ondelete_set_null_still_works(engine):
             # 撞 unique 而看起來像功能壞掉。
             {"uniq": uuid.uuid4().hex[:8]},
         ).scalar_one()
+        cid = conn.execute(
+            text(
+                "INSERT INTO conversations (user_id, title) "
+                "VALUES (:u, 'append-only trigger probe') RETURNING id"
+            ),
+            {"u": uid},
+        ).scalar_one()
         eid = conn.execute(
             text(
                 "INSERT INTO classification_events (resource_type, resource_id, "
                 "previous_level, new_level, reason, actor_user_id) "
-                "VALUES ('conversation', '1', '無機密', '機密', 'manual', :u) "
+                "VALUES ('conversation', :c, '無機密', '機密', 'manual', :u) "
                 "RETURNING id"
             ),
-            {"u": uid},
+            {"c": str(cid), "u": uid},
         ).scalar_one()
 
     with engine.begin() as conn:
+        # 對話先走(它的 user_id FK 沒有 ON DELETE),使用者才刪得掉;而刪掉之後
+        # 這個 id 就永久退役,上面那筆 append-only 事件不會再對到任何真資源。
+        conn.execute(text("DELETE FROM conversations WHERE id = :c"), {"c": cid})
         conn.execute(text("DELETE FROM users WHERE id = :u"), {"u": uid})
 
     with engine.begin() as conn:
