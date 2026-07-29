@@ -9,12 +9,15 @@ from typing import Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare
 from app.models.message import Message
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier
+from app.services import message_tree as mtree
 
 
 # Client-supplied message metadata is an opaque dict persisted verbatim
@@ -35,6 +38,144 @@ def _check_metadata_size(metadata: Optional[dict]) -> None:
         ) from exc
     if size > _MAX_METADATA_BYTES:
         raise HTTPException(status_code=413, detail="metadata 過大")
+
+
+def _max_siblings() -> int:
+    return int(settings.ANILA_MESSAGE_MAX_SIBLINGS)
+
+
+def _require_branchable(conv: Conversation) -> None:
+    """ANILALM conversations do not support message branching (SYSTEM-MAP:47).
+
+    NULL origin = legacy ANILA (same semantics as list_conversations exclude).
+    """
+    if conv.origin == "anilalm":
+        raise HTTPException(
+            status_code=409,
+            detail="ANILALM 對話不支援訊息分支",
+        )
+
+
+def _sibling_count(db: Session, conversation_id: int, parent_id: int | None) -> int:
+    q = db.query(Message).filter(Message.conversation_id == conversation_id)
+    if parent_id is None:
+        q = q.filter(Message.parent_id.is_(None))
+    else:
+        q = q.filter(Message.parent_id == parent_id)
+    return q.count()
+
+
+def _enforce_sibling_cap(
+    db: Session, conversation_id: int, parent_id: int | None,
+) -> None:
+    cap = _max_siblings()
+    if _sibling_count(db, conversation_id, parent_id) >= cap:
+        raise HTTPException(
+            status_code=409,
+            detail=f"同一則訊息的變體已達上限（{cap}）",
+        )
+
+
+def _enforce_explicit_parent_role(
+    db: Session,
+    conversation_id: int,
+    parent_id: int | None,
+    role: str,
+) -> None:
+    """When forking under an explicit parent that already has children, roles must match."""
+    q = db.query(Message).filter(Message.conversation_id == conversation_id)
+    if parent_id is None:
+        q = q.filter(Message.parent_id.is_(None))
+    else:
+        q = q.filter(Message.parent_id == parent_id)
+    existing = q.first()
+    if existing is not None and existing.role != role:
+        raise HTTPException(
+            status_code=400,
+            detail="分支訊息的角色必須與既有子訊息相同",
+        )
+
+
+def _resolve_parent_id(
+    db: Session,
+    conv: Conversation,
+    parent_id: int | None,
+    *,
+    explicit: bool,
+) -> int | None:
+    """Resolve parent for append.
+
+    ``explicit=False`` (omitted/null): default to active leaf.
+    ``explicit=True``: validate the supplied id belongs to this conversation.
+    """
+    if not explicit:
+        return conv.active_leaf_message_id
+    parent = db.query(Message).filter(Message.id == parent_id).first()
+    if parent is None:
+        raise HTTPException(status_code=400, detail="父訊息不存在")
+    if parent.conversation_id != conv.id:
+        raise HTTPException(status_code=400, detail="父訊息不屬於此對話")
+    return parent.id
+
+
+def _lock_conversation(db: Session, conv_id: int) -> Conversation:
+    """Row-lock the conversation (FOR UPDATE; no-op on SQLite).
+
+    ``populate_existing`` forces a reload so the identity-map object
+    reflects the committed row (plain ``with_for_update`` alone does not).
+    """
+    return (
+        db.query(Conversation)
+        .filter(Conversation.id == conv_id)
+        .populate_existing()
+        .with_for_update()
+        .one()
+    )
+
+
+def load_active_path(db: Session, conv: Conversation) -> list[Message]:
+    """Hydrate the active root→leaf path.
+
+    If the pointer is NULL or dangling but message rows exist, degrade to
+    the full flat list ordered ``(created_at, id)`` (never empty). Persist
+    a healed pointer to the newest row only when walking that leaf recovers
+    every message id (chain intact). Un-backfilled flat rows keep the NULL
+    pointer so the diagnostic signal remains visible.
+    """
+    edges = mtree.load_edges(db, conv.id)
+    path_ids = mtree.active_path_ids(edges, conv.active_leaf_message_id)
+    if path_ids:
+        by_id = {
+            m.id: m
+            for m in db.query(Message)
+            .filter(Message.id.in_(path_ids))
+            .all()
+        }
+        return [by_id[i] for i in path_ids if i in by_id]
+
+    all_rows = _all_messages_ordered(db, conv.id)
+    if not all_rows:
+        return []
+    # Pointer NULL/dangling — flat fallback; heal only if chain is intact.
+    newest_id = all_rows[-1].id
+    recovered = mtree.active_path_ids(edges, newest_id)
+    if len(recovered) == len(all_rows) and set(recovered) == {m.id for m in all_rows}:
+        conv.active_leaf_message_id = newest_id
+        db.commit()
+    return all_rows
+
+
+# Thin alias for internal callers still using the underscore name.
+_load_active_path = load_active_path
+
+
+def _all_messages_ordered(db: Session, conversation_id: int) -> list[Message]:
+    return (
+        db.query(Message)
+        .filter(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at, Message.id)
+        .all()
+    )
 
 
 # ── Conversation CRUD ─────────────────────────────────────────────────────────
@@ -128,7 +269,32 @@ def update_title(db: Session, conv_id: int, title: str, user: User) -> Conversat
 
 
 def delete_conversation(db: Session, conv_id: int, user: User) -> None:
+    """Delete a conversation and all of its messages.
+
+    OW-1: self-FK on messages.parent_id and conversations.active_leaf_message_id
+    break per-row ORM delete. Null the pointer → flush → null attachment
+    message_ids → bulk delete messages → bulk delete attachments → delete conv.
+    (SQLite tests do not fire DB CASCADE; Python must own the cleanup.)
+    docs/plans/ow1-message-tree-blueprint.md Q4.
+    """
     conv = get_conversation(db, conv_id, user)
+    conv.active_leaf_message_id = None
+    db.flush()
+    (
+        db.query(Attachment)
+        .filter(Attachment.conversation_id == conv.id)
+        .update({Attachment.message_id: None}, synchronize_session=False)
+    )
+    (
+        db.query(Message)
+        .filter(Message.conversation_id == conv.id)
+        .delete(synchronize_session=False)
+    )
+    (
+        db.query(Attachment)
+        .filter(Attachment.conversation_id == conv.id)
+        .delete(synchronize_session=False)
+    )
     db.delete(conv)
     db.commit()
 
@@ -147,11 +313,31 @@ def append_message(
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None,
     metadata: Optional[dict] = None,
+    parent_id: Optional[int] = None,
+    parent_id_explicit: bool = False,
+    set_active: bool = True,
 ) -> Message:
+    """Append a message, threading onto the active leaf by default (OW-1).
+
+    When ``parent_id_explicit`` is True the caller supplied a parent id
+    (ANILALM branching is rejected). Omitted/null parent defaults to the
+    current ``active_leaf_message_id``.
+    """
     _check_metadata_size(metadata)
     conv = get_conversation(db, conv_id, user)
+    # Serialize concurrent appends so sibling cap / parent resolve cannot race.
+    conv = _lock_conversation(db, conv.id)
+    if parent_id_explicit:
+        _require_branchable(conv)
+    resolved_parent = _resolve_parent_id(
+        db, conv, parent_id, explicit=parent_id_explicit,
+    )
+    if parent_id_explicit:
+        _enforce_explicit_parent_role(db, conv.id, resolved_parent, role)
+    _enforce_sibling_cap(db, conv.id, resolved_parent)
     msg = Message(
         conversation_id=conv.id,
+        parent_id=resolved_parent,
         role=role,
         content=content,
         trace_id=trace_id,
@@ -161,50 +347,187 @@ def append_message(
         metadata_=metadata,
     )
     db.add(msg)
+    db.flush()
+    # set_active=false only declines to MOVE an existing pointer; never leave NULL.
+    if set_active or conv.active_leaf_message_id is None:
+        conv.active_leaf_message_id = msg.id
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(msg)
     return msg
 
 
-def edit_user_message(
+def branch_message(
     db: Session,
     conv_id: int,
     message_id: int,
     user: User,
+    *,
+    role: str,
     content: str,
+    trace_id: Optional[str] = None,
+    latency_ms: Optional[int] = None,
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    set_active: bool = True,
 ) -> Message:
-    """Rewrite a user message's content and drop every message after it.
+    """Create a sibling of ``message_id`` (edit-re-ask and regenerate).
 
-    Used by the ANILA UI "edit" action: user revises a prompt, the UI then
-    re-sends it. Trailing messages (original assistant reply plus any further
-    turns) become stale the moment the edit lands, so we delete them in the
-    same transaction — otherwise a reload would show the new user message
-    followed by an orphaned, out-of-date assistant reply.
+    Server sets ``parent_id = target.parent_id``. Role must match the target.
+    docs/plans/ow1-message-tree-blueprint.md Q2/Q3/Q5.
     """
+    _check_metadata_size(metadata)
     conv = get_conversation(db, conv_id, user)
-    msg = (
+    # Serialize concurrent branches so sibling cap / pointer cannot race.
+    conv = _lock_conversation(db, conv.id)
+    _require_branchable(conv)
+    target = (
         db.query(Message)
         .filter(Message.id == message_id, Message.conversation_id == conv.id)
         .first()
     )
-    if msg is None:
+    if target is None:
         raise HTTPException(status_code=404, detail="訊息不存在")
-    if msg.role != "user":
-        raise HTTPException(status_code=400, detail="僅使用者訊息可編輯")
-    msg.content = content
-    (
-        db.query(Message)
-        .filter(
-            Message.conversation_id == conv.id,
-            Message.created_at > msg.created_at,
+    if target.role not in ("user", "assistant"):
+        raise HTTPException(
+            status_code=400,
+            detail="不可從 system/tool 訊息建立分支",
         )
-        .delete(synchronize_session=False)
+    if role != target.role:
+        raise HTTPException(
+            status_code=400,
+            detail="分支訊息的角色必須與原訊息相同",
+        )
+    parent = target.parent_id
+    _enforce_sibling_cap(db, conv.id, parent)
+    msg = Message(
+        conversation_id=conv.id,
+        parent_id=parent,
+        role=role,
+        content=content,
+        trace_id=trace_id,
+        latency_ms=latency_ms,
+        model_name=model_name,
+        agent_name=agent_name,
+        metadata_=metadata,
     )
+    db.add(msg)
+    db.flush()
+    # set_active=false only declines to MOVE an existing pointer; never leave NULL.
+    if set_active or conv.active_leaf_message_id is None:
+        conv.active_leaf_message_id = msg.id
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(msg)
     return msg
+
+
+def set_active_leaf(
+    db: Session,
+    conv_id: int,
+    user: User,
+    message_id: int,
+) -> tuple[Conversation, list[Message]]:
+    """Point active leaf at ``message_id``, canonicalizing to newest descendant."""
+    conv = get_conversation(db, conv_id, user)
+    conv = _lock_conversation(db, conv.id)
+    _require_branchable(conv)
+    target = (
+        db.query(Message)
+        .filter(Message.id == message_id, Message.conversation_id == conv.id)
+        .first()
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="訊息不存在")
+    edges = mtree.load_edges(db, conv.id)
+    children = mtree.children_map(edges)
+    leaf_id = mtree.newest_leaf_under(children, target.id)
+    conv.active_leaf_message_id = leaf_id
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(conv)
+    return conv, load_active_path(db, conv)
+
+
+def delete_message_branch(
+    db: Session,
+    conv_id: int,
+    message_id: int,
+    user: User,
+) -> tuple[Conversation, list[Message]]:
+    """Subtree-delete ``message_id`` and descendants (Python-side; SQLite-safe).
+
+    docs/plans/ow1-message-tree-blueprint.md Q4.
+    """
+    conv = get_conversation(db, conv_id, user)
+    conv = _lock_conversation(db, conv.id)
+    _require_branchable(conv)
+    target = (
+        db.query(Message)
+        .filter(Message.id == message_id, Message.conversation_id == conv.id)
+        .first()
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="訊息不存在")
+
+    edges = mtree.load_edges(db, conv.id)
+    children = mtree.children_map(edges)
+    subtree = mtree.descendants(children, target.id, include_self=True)
+    surviving = {eid for eid, _ in edges} - subtree
+    if not surviving:
+        raise HTTPException(
+            status_code=409,
+            detail="對話至少需保留一則訊息;請改為刪除整個對話",
+        )
+
+    # Repoint active leaf before delete if it sits inside the subtree.
+    if conv.active_leaf_message_id in subtree:
+        parent_id = target.parent_id
+        if parent_id is not None and parent_id in surviving:
+            start = parent_id
+        else:
+            # Newest surviving root (roots are ordered in children[None]).
+            roots = [r for r in children.get(None, []) if r in surviving]
+            if not roots:
+                # Defensive: surviving non-roots only (shouldn't happen).
+                start = max(surviving)
+            else:
+                start = roots[-1]
+        # Rebuild children map excluding subtree so descend stays on survivors.
+        surviving_edges = [(i, p) for i, p in edges if i in surviving]
+        surviving_children = mtree.children_map(surviving_edges)
+        conv.active_leaf_message_id = mtree.newest_leaf_under(
+            surviving_children, start,
+        )
+
+    deleted_ids = sorted(subtree)
+    (
+        db.query(Attachment)
+        .filter(Attachment.message_id.in_(deleted_ids))
+        .update({Attachment.message_id: None}, synchronize_session=False)
+    )
+    (
+        db.query(Message)
+        .filter(Message.id.in_(deleted_ids))
+        .delete(synchronize_session=False)
+    )
+    log_audit_event(
+        db,
+        action="delete_message_branch",
+        resource_type="conversation",
+        actor=user,
+        resource_id=conv.id,
+        detail=(
+            f"User {user.username} deleted message branch "
+            f"({len(deleted_ids)} messages) in conversation {conv.id}"
+        ),
+        metadata={"deleted_ids": deleted_ids, "count": len(deleted_ids)},
+    )
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(conv)
+    return conv, load_active_path(db, conv)
 
 
 def update_message_content(
@@ -220,13 +543,11 @@ def update_message_content(
     agent_name: Optional[str] = None,
     metadata: Optional[dict] = None,
 ) -> Message:
-    """In-place update of an existing message (used by Regenerate).
+    """In-place patch of an existing message (metadata / ANILALM finalize).
 
-    Unlike ``edit_user_message`` (which rewrites a user message and drops
-    every later turn), this path is non-truncating — it's meant for the
-    "regenerate assistant reply" flow where we want to *replace* the body
-    of the same row, keeping created_at / rating / id stable so reload
-    order and sidebar labels don't drift.
+    OW-1: ANILA regenerate no longer uses this path — it creates an assistant
+    sibling via ``branch_message``. This endpoint remains for non-forking
+    patches (ANILALM finalize, metadata updates).
     """
     conv = get_conversation(db, conv_id, user)
     msg = (

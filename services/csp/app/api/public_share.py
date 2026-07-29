@@ -58,11 +58,15 @@ def get_shared_conversation(
         ClassificationLevel,
         outbound_action_allowed,
     )
+    from app.services.conversation_service import load_active_path
+
     level = ClassificationLevel.from_storage(conv.classification_level)
     outbound_ok = outbound_action_allowed(level)
     messages: list[PublicMessageOut] = []
     if outbound_ok:
-        for msg in conv.messages:
+        # OW-1: share the active path only (not abandoned branches).
+        # docs/plans/ow1-message-tree-blueprint.md Q6.
+        for msg in load_active_path(db, conv):
             messages.append(PublicMessageOut.model_validate(msg))
 
     # Title redaction for outbound-blocked conversations. Use 列管 rather
