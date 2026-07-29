@@ -138,6 +138,8 @@ packages/anila-agent/templete/antigravity-sdk-python/
 # stays self-documenting for fresh checkouts.
 share/static/
 share/uploads/
+share/attachments/
+share-dev/attachments/
 share-dev/static/
 share-dev/uploads/
 # code-server 的工作目錄（C3 收斂後，預設不再掛 repo root）。

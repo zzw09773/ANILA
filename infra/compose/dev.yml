@@ -97,6 +97,7 @@ services:
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      ATTACHMENT_STORAGE_PATH: /var/anila/attachments
       # FLUX image-gen for ANILALM studio pptx pipeline — wires
       # studio.image_provider.FluxImageProvider; empty BACKEND_URL
       # would make get_flux_provider() return None (toggle OFF).
@@ -108,6 +109,7 @@ services:
       - ../../packages/anila-agent:/app/anila-template:ro
       # ⚠️ dev 用獨立 share 目錄，不撞 live stack 的 ./share/
       - ../../share-dev/uploads/ingestion:/var/anila/ingestion-uploads
+      - ../../share-dev/attachments:/var/anila/attachments
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

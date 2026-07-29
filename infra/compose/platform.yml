@@ -141,6 +141,12 @@ services:
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      # 對話附件。⚠ 必須是**掛載進來**的路徑:預設值 data/attachments 是容器
+      # 相對路徑,寫在可寫層,每次 up -d --build 重建 csp 就整批消失。
+      # ⚠ 且**不可**放在 share/uploads/ 底下 —— nginx 的 location /uploads/
+      # 無認證直接服務靜態檔 (只有 /uploads/ingestion/ 被 404),附件路徑是
+      # <user_id>/<uuid><ext>,放進去等於全院可直接下載別人的檔案。
+      ATTACHMENT_STORAGE_PATH: /var/anila/attachments
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
       # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
       # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
@@ -167,6 +173,9 @@ services:
       - ../../packages/anila-agent:/app/anila-template:ro
       # 跟 ingestion-worker 共用 inode,不走拷貝。
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
+      # 對話附件 (見上 ATTACHMENT_STORAGE_PATH)。刻意放在 share/uploads/ 之外,
+      # 那個目錄整個被 nginx 無認證服務;附件只能走 /api/attachments 授權下載。
+      - ../../share/attachments:/var/anila/attachments
       # 內網模型 https 的內部 CA PEM 放這裡 (見上 SSL_CERT_FILE)。
       - ../../share/pki:/etc/anila/pki:ro
       # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。prod 模式
