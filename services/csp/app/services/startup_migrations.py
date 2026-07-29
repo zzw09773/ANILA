@@ -196,6 +196,34 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         postgres_ddl="ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
         generic_ddl="ALTER TABLE departments ADD COLUMN updated_at TIMESTAMP",
     )
+    # P1.1 三層樹：parent_id 自參照 FK（RESTRICT）＋偏索引
+    # Named constraint matches model + r1_0009 (fk_departments_parent_id).
+    _ensure_column(
+        bind, "departments", "parent_id",
+        postgres_ddl=(
+            "ALTER TABLE departments ADD COLUMN IF NOT EXISTS parent_id "
+            "INTEGER CONSTRAINT fk_departments_parent_id "
+            "REFERENCES departments(id) ON DELETE RESTRICT"
+        ),
+        generic_ddl=(
+            "ALTER TABLE departments ADD COLUMN parent_id INTEGER "
+            "CONSTRAINT fk_departments_parent_id "
+            "REFERENCES departments(id) ON DELETE RESTRICT"
+        ),
+    )
+    _dept_parent_index_ddl = (
+        "CREATE INDEX IF NOT EXISTS ix_departments_parent_id "
+        "ON departments (parent_id) WHERE parent_id IS NOT NULL"
+    )
+    if bind.dialect.name == "postgresql":
+        _ensure_postgres_index(bind, _dept_parent_index_ddl)
+    else:
+        # Generic path (e.g. SQLite): _ensure_postgres_index early-returns;
+        # SQLite supports this partial-index form, so create it here.
+        inspector = inspect(bind)
+        if inspector.has_table("departments"):
+            with bind.begin() as conn:
+                conn.execute(text(_dept_parent_index_ddl))
 
     # --- api_keys ------------------------------------------------------
     for col_name, ddl_suffix in [

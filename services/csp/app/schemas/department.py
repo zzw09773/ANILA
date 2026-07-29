@@ -1,10 +1,11 @@
 from datetime import datetime
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class DepartmentCreate(BaseModel):
     name: str
     description: str | None = None
+    parent_id: int | None = None
 
     @field_validator("name")
     @classmethod
@@ -19,6 +20,7 @@ class DepartmentUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     is_active: bool | None = None
+    parent_id: int | None = None
 
     @field_validator("name")
     @classmethod
@@ -35,6 +37,7 @@ class DepartmentResponse(BaseModel):
     id: int
     name: str
     description: str | None = None
+    parent_id: int | None = None
     is_active: bool
     user_count: int = 0
     active_user_count: int = 0
@@ -42,3 +45,17 @@ class DepartmentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class DepartmentTreeNode(BaseModel):
+    """嵌套樹節點（院 → 所 → 組）。"""
+
+    id: int
+    name: str
+    is_active: bool
+    parent_id: int | None = None
+    user_count: int = 0
+    children: list["DepartmentTreeNode"] = Field(default_factory=list)
+
+
+DepartmentTreeNode.model_rebuild()
