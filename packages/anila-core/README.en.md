@@ -210,7 +210,7 @@ anila-core register \
 
 `security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` is the central allow-list for user-supplied endpoint URLs (validated once by CSP at credential create and again by the worker at call time — defense in depth). **Slice 6a** domain-splits the http-relaxation flag by `endpoint_kind` (scheme only; host / IP / DNS / trusted-host checks are identical across kinds):
 
-- **`model`** — production (`ANILA_ENV` ∈ {`production`,`prod`}) fail-closed rejects http; `ANILA_ALLOW_HTTP_ENDPOINT` cannot rescue it (doc `04` §8 hard rule). Non-production still honours that flag.
+- **`model`** — rejects http by default; admitted only via an explicit `ANILA_ALLOW_HTTP_ENDPOINT=1` (PLAN.md P0.2, decided 2026-07-29: uniform across production and dev, superseding the original doc `04` §8 hard rule).
 - **`agent`** — http is allowed via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` (for on-prem MLSteam plain-http NodePort agents); legacy `ANILA_ALLOW_HTTP_ENDPOINT` remains a deprecated fallback.
 - **`generic`** (default) — original global semantics; `ANILA_ALLOW_HTTP_ENDPOINT` relaxes it; existing callers are unaffected.
 

@@ -121,7 +121,7 @@ packages/anila-core/
 | **Task spine**(`X-ANILA-Task-Id`) | runtime 由 `CallerContext` 讀入並沿 turn 傳遞 task-id | `api/caller_context.py` |
 | **五級分類 + 單向 latch** | agent runtime 守 per-turn classified 單向 latch(`ctx.classified_latch` → `anila_meta.classified`);`register` CLI 帶 `classification_ceiling`。**latch 執法 / 解密權威在 CSP** | `context/agent_context.py`;doc `08` |
 | **Agent Registry**(7 態核准 + trace-test gate) | `register` / `status` CLI 送件進 CSP registry;`--draft` shadow 註冊。**核准態機與 trace-test gate 在 CSP** | `cli/register_cmd.py`;doc `05` |
-| **Model Gateway**(`ANILA_ENV` http fail-closed) | `url_guard` 對 `endpoint_kind='model'` 在 production 硬拒 http(旗標救不了)。**per-model key / 5 態健康在 CSP** | `security/url_guard.py`;doc `04` §8 |
+| **Model Gateway**(http 旗標分域) | `url_guard` 對 `endpoint_kind='model'` 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(PLAN.md P0.2,2026-07-29 拍板:production 與 dev 同準)。**per-model key / 5 態健康在 CSP** | `security/url_guard.py`;doc `04` §8 |
 
 ---
 
@@ -210,7 +210,7 @@ anila-core register \
 
 `security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` 是使用者提供之 endpoint URL 的中央 allow-list(CSP 建憑證時 + worker 呼叫時各驗一次,defense in depth)。**Slice 6a** 依 `endpoint_kind` 把 http 放寬旗標分域(僅影響 scheme;host / IP / DNS / trusted-host 檢查跨 kind 一致):
 
-- **`model`** — production(`ANILA_ENV` ∈ {`production`,`prod`})一律 fail-closed 拒 http,`ANILA_ALLOW_HTTP_ENDPOINT` 救不了(doc `04` §8 硬規則);非 production 才吃該旗標。
+- **`model`** — 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(PLAN.md P0.2,2026-07-29 拍板:production 與 dev 同準,取代 doc `04` §8 原硬規則)。
 - **`agent`** — http 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` 放行(內網 MLSteam 純 http NodePort agent);legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 deprecated fallback。
 - **`generic`**(預設)— 既有全域語意,`ANILA_ALLOW_HTTP_ENDPOINT` 放行;既有呼叫端零行為變更。
 

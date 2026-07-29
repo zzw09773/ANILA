@@ -1,11 +1,11 @@
 """Slice 6a — ``validate_outbound_url`` endpoint_kind domain split.
 
-doc 04 §8「Production ModelEndpoint invariant (✅ 已拍板)」落實:http-scheme
-放寬旗標按端點類型分域。
+http-scheme 放寬旗標按端點類型分域(Slice 6a;model 域原「production 無條件
+拒收」不變量已由 PLAN.md P0.2「2026-07-29 拍板」改為旗標統一判定)。
 
-- ``model``   — production(``ANILA_ENV=production``)一律拒 http,旗標救不了
-                (fail-closed);非 production + ``ANILA_ALLOW_HTTP_ENDPOINT=1``
-                才放行(dev 例外)。
+- ``model``   — http 由 ``ANILA_ALLOW_HTTP_ENDPOINT`` 明確放行,預設拒收;
+                production 與 dev 同樣依此旗標判定(PLAN.md P0.2,
+                2026-07-29 拍板:內網模型 gateway 走 http)。
 - ``agent``   — http 由 ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT`` 放行;legacy
                 ``ANILA_ALLOW_HTTP_ENDPOINT`` 仍 fallback(帶 deprecation 警告,
                 內網 MLSteam 純 http NodePort agent 靠它)。
@@ -62,19 +62,25 @@ def test_model_http_dev_without_flag_rejected(monkeypatch):
 
 
 @pytest.mark.parametrize("env_val", ["production", "prod"])
-def test_model_http_production_rejected_even_with_flag(monkeypatch, env_val):
-    """絕對不變量:production model endpoint http 一律拒,旗標無效。"""
+def test_model_http_production_with_flag_ok(monkeypatch, env_val):
+    """PLAN.md P0.2(2026-07-29 拍板):production 與 dev 同樣依
+    ANILA_ALLOW_HTTP_ENDPOINT 判定 —— 內網模型 gateway 走 http。"""
     monkeypatch.setenv(_HTTP_MODEL, "1")
     monkeypatch.setenv(_ENV, env_val)
-    with pytest.raises(UnsafeEndpointError) as exc:
+    validate_outbound_url(_PUBLIC, endpoint_kind=ENDPOINT_KIND_MODEL)
+
+
+@pytest.mark.parametrize("env_val", ["production", "prod"])
+def test_model_http_production_without_flag_rejected(monkeypatch, env_val):
+    """旗標未設時 production 仍拒收 http(預設姿態不變)。"""
+    monkeypatch.setenv(_ENV, env_val)
+    with pytest.raises(UnsafeEndpointError):
         validate_outbound_url(_PUBLIC, endpoint_kind=ENDPOINT_KIND_MODEL)
-    assert "production" in str(exc.value)
 
 
-def test_model_http_production_trusted_host_still_rejected(monkeypatch):
-    """trusted host 只繞 host 檢查,scheme 先行 —— production model http
-    即使 host 在 trusted list 也擋(trusted 救不了 scheme)。"""
-    monkeypatch.setenv(_HTTP_MODEL, "1")
+def test_model_http_production_trusted_host_without_flag_rejected(monkeypatch):
+    """trusted host 只繞 host 檢查,scheme 先行 —— 旗標未設時 production
+    model http 即使 host 在 trusted list 也擋(trusted 救不了 scheme)。"""
     monkeypatch.setenv(_ENV, "production")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "gemma4")
     with pytest.raises(UnsafeEndpointError):

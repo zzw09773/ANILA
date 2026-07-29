@@ -54,10 +54,10 @@ def _enforce_endpoint_url(url: str) -> None:
     failure reasons (loopback / metadata / private IP) keep the plain
     string detail — those aren't safe to bypass via the UI.
 
-    Slice 6a (doc 04 §8): validated with ``endpoint_kind="model"`` so the
-    production HTTPS invariant applies — a production deployment
-    (``ANILA_ENV=production``) rejects http:// model endpoints even with
-    ``ANILA_ALLOW_HTTP_ENDPOINT=1`` (fail-closed, no flag bypass).
+    Slice 6a: validated with ``endpoint_kind="model"`` — http:// model
+    endpoints are rejected unless ``ANILA_ALLOW_HTTP_ENDPOINT=1`` is set
+    (PLAN.md P0.2, 2026-07-29: flag-gated uniformly, production included;
+    default posture still rejects http).
     """
     try:
         validate_outbound_url(url, endpoint_kind="model")
