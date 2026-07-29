@@ -57,7 +57,8 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,P
 - 本機 `.env` 已是正式姿態(`ANILA_ENV=production`＋`ANILA_ALLOW_DEV_SECRET=0`,csp healthy)。⚠ 這兩者**無交叉檢查**——內網部署照抄 dev 值不會被擋,上線前自查。
 - **P1.1 已關板**(`93ba157`):departments 三層樹(`parent_id`+`r1_0009`+守衛+advisory lock);grok 作者、opus+sol 三輪跨家審查收斂、本機活體 migration+e2e 全過。深度上限 3、停用 fail-closed、name 全域唯一是指揮官保守預設,擁有者可翻案。遺留 LOW(不擋路):/tree 對環成員靜默省略(診斷性)、advisory lock 無 timeout(單管理員可接受)。
 - **P1.2 已關板**(`a2d1f42`):usage 查詢的 department 過濾統一經 `_department_scope_ids` 展開為子樹(讀取時聚合,寫入歸屬/特權閘門/top-departments 直接歸屬不變);雙審收斂,本機 e2e 巢狀 400⊂600⊂700+chart+直接歸屬全過。遺留給 P1.3:summary 每請求 4 次重複 scope 載入要做 per-request 記憶化。
-- 下一步:**P1.3 單位管理員**(規格=SYSTEM-MAP 單位管理員節+07-24 組內決議;quota 是否入包待擁有者拍板)。
+- **P1.3 已關板**(`526783c`):unit_admin 綁定表(`r1_0010`,每節點上限 3、可跨節點、soft-revoke)＋`/api/unit-admins`(僅 admin 可指派)＋usage/users 三層閘門＋`get_top_agents` 部門維度＋P1.2 記憶化。**`users.role` 與 `auth_service.py` 一字未動**(審查以 sha256 驗);unit_admin 永不通過 `is_admin_tier`,對話/memory/audit 面零新增存取;範圍外請求 403、不可見帳號回 404(與 list 不可見性一致)。額度分配依擁有者拍板遞延至計價 epic(docstring 已註記)。雙審 APPROVE＋本機 e2e 全過。
+- 下一步:**P1.4 批次核准**(疊在 P1.3 的 scoped approve 上;驗收=一次核准 50 個帳號)。
 
 ## 5. 鐵則
 
