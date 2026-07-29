@@ -61,7 +61,9 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,P
 - **P1.3 已關板**(`526783c`):unit_admin 綁定表(`r1_0010`,每節點上限 3、可跨節點、soft-revoke)＋`/api/unit-admins`(僅 admin 可指派)＋usage/users 三層閘門＋`get_top_agents` 部門維度＋P1.2 記憶化。**`users.role` 與 `auth_service.py` 一字未動**(審查以 sha256 驗);unit_admin 永不通過 `is_admin_tier`,對話/memory/audit 面零新增存取;範圍外請求 403、不可見帳號回 404(與 list 不可見性一致)。額度分配依擁有者拍板遞延至計價 epic(docstring 已註記)。雙審 APPROVE＋本機 e2e 全過。
 - **P1.4 已關板**(`5062c96`):`POST /api/users/batch-approve`,選擇器二擇一(user_ids／department_id 預設含子樹)＋`dry_run` 預覽;授權沿用 P1.3 分層並把部門集合與 `unit_scope` 取交集(擋兩次樹讀取之間的 re-parent);不可見目標不進任何分桶(與單筆端點的 404 同語意);整批單次 commit,稽核寫入失敗即 500 中止(不留半套);兩道界線=原始輸入 1000／實際核准 500(算待核准數,大節點才批得動)。雙審 APPROVE＋活體 50 帳號 e2e 全過(dry-run 零寫入、冪等、稽核 50+2 筆)。
 - ⚠ 觀察(非 P1.4 缺陷,待日後處理):`UserResponse.updated_at` 非選擇性,若有資料列該欄為 NULL(外部工具/migration 灌入),`GET /api/users` 會 500 而非降級。
-- 下一步:**P1.5 附件處理**(算 token → 塞得下整份進 context,塞不下才切塊並告知使用者);P1.6(`.12` 前綴快取查證)需進內網現場做。
+- **OE-2 已關板**(`647c3fc`,2026-07-29 晚):六域對照 SYSTEM-MAP 稽核 338 構造(CAT-A 101/B 80/C 157),sol 跨家覆核 10C/9P/0R;收斂包 D1–D6、反向缺口 G1–G8、缺陷 B1–B4 已排入 PLAN(擁有者裁決 R1 降級雙人流程退場、R2 服務表叢收斂為入口連結目錄、R3 D4 併 OE-1)。產出=`docs/audits/oe2-2026-07-29/`。
+- **OE-3 已關板**(merge `c4bee70`):分類四級 無機密<營業秘密<密<機密;r1_0003 **原地改寫**(擁有者裁決,全庫可拋、本機已砍庫從零驗到 r1_0011);舊識別字 CONFIDENTIAL/TOP_SECRET/ABSOLUTE_SECRET 已刪無 alias;手動分類寫「密」(rank-2 行為保持);前端(governance-ui+anila-shell 含浮水印)四級化,anila-ui 容器已重建。⚠ 門檻仍是統一判準,兩條線=OE-4。⚠ sol 通道額度罄至 2026-08-05,二票=kimi-k3、驗收=fresh opus(已揭露)。
+- 下一步:**OE-4 門檻兩條線**(併 C5 boolean 鏡射退場+G4+artifact export 判定軸)→ OW-1 訊息樹完整分支 → OW-3;P1.6(`.12` 前綴快取查證)需進內網現場做。
 
 ## 5. 鐵則
 
