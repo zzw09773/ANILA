@@ -40,6 +40,7 @@ from app.models.ingestion import (
     UserLlmCredential,
 )
 from app.models.message import Message
+from app.models.message_action import MessageAction, MessageActionBinding
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
 from app.models.policy_decision import PolicyDecision
@@ -90,6 +91,8 @@ __all__ = [
     "IngestionEvalRun",
     "IngestionJob",
     "Message",
+    "MessageAction",
+    "MessageActionBinding",
     "ModelRegistry",
     "PlatformLink",
     "PolicyDecision",
