@@ -58,7 +58,9 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,P
 - **P1.1 已關板**(`93ba157`):departments 三層樹(`parent_id`+`r1_0009`+守衛+advisory lock);grok 作者、opus+sol 三輪跨家審查收斂、本機活體 migration+e2e 全過。深度上限 3、停用 fail-closed、name 全域唯一是指揮官保守預設,擁有者可翻案。遺留 LOW(不擋路):/tree 對環成員靜默省略(診斷性)、advisory lock 無 timeout(單管理員可接受)。
 - **P1.2 已關板**(`a2d1f42`):usage 查詢的 department 過濾統一經 `_department_scope_ids` 展開為子樹(讀取時聚合,寫入歸屬/特權閘門/top-departments 直接歸屬不變);雙審收斂,本機 e2e 巢狀 400⊂600⊂700+chart+直接歸屬全過。遺留給 P1.3:summary 每請求 4 次重複 scope 載入要做 per-request 記憶化。
 - **P1.3 已關板**(`526783c`):unit_admin 綁定表(`r1_0010`,每節點上限 3、可跨節點、soft-revoke)＋`/api/unit-admins`(僅 admin 可指派)＋usage/users 三層閘門＋`get_top_agents` 部門維度＋P1.2 記憶化。**`users.role` 與 `auth_service.py` 一字未動**(審查以 sha256 驗);unit_admin 永不通過 `is_admin_tier`,對話/memory/audit 面零新增存取;範圍外請求 403、不可見帳號回 404(與 list 不可見性一致)。額度分配依擁有者拍板遞延至計價 epic(docstring 已註記)。雙審 APPROVE＋本機 e2e 全過。
-- 下一步:**P1.4 批次核准**(疊在 P1.3 的 scoped approve 上;驗收=一次核准 50 個帳號)。
+- **P1.4 已關板**(`5062c96`):`POST /api/users/batch-approve`,選擇器二擇一(user_ids／department_id 預設含子樹)＋`dry_run` 預覽;授權沿用 P1.3 分層並把部門集合與 `unit_scope` 取交集(擋兩次樹讀取之間的 re-parent);不可見目標不進任何分桶(與單筆端點的 404 同語意);整批單次 commit,稽核寫入失敗即 500 中止(不留半套);兩道界線=原始輸入 1000／實際核准 500(算待核准數,大節點才批得動)。雙審 APPROVE＋活體 50 帳號 e2e 全過(dry-run 零寫入、冪等、稽核 50+2 筆)。
+- ⚠ 觀察(非 P1.4 缺陷,待日後處理):`UserResponse.updated_at` 非選擇性,若有資料列該欄為 NULL(外部工具/migration 灌入),`GET /api/users` 會 500 而非降級。
+- 下一步:**P1.5 附件處理**(算 token → 塞得下整份進 context,塞不下才切塊並告知使用者);P1.6(`.12` 前綴快取查證)需進內網現場做。
 
 ## 5. 鐵則
 
