@@ -36,8 +36,10 @@ export function createConversation(authRequest, { title, agentId } = {}) {
   });
 }
 
-export function getConversation(authRequest, convId) {
-  return authRequest(`/api/conversations/${convId}`, { method: "GET" });
+/** @param {{ view?: "active" | "all" }} [opts] */
+export function getConversation(authRequest, convId, { view } = {}) {
+  const qs = view ? `?view=${encodeURIComponent(view)}` : "";
+  return authRequest(`/api/conversations/${convId}${qs}`, { method: "GET" });
 }
 
 export function updateConversationTitle(authRequest, convId, title) {
@@ -68,6 +70,9 @@ export function appendMessage(authRequest, convId, payload) {
     agent_name: payload.agentName || null,
     metadata: payload.metadata || null,
   };
+  // OW-1: optional parent_id / set_active (blueprint §4).
+  if (payload.parentId !== undefined) body.parent_id = payload.parentId;
+  if (payload.setActive !== undefined) body.set_active = payload.setActive;
   return authRequest(`/api/conversations/${convId}/messages`, {
     method: "POST",
     body: JSON.stringify(body),
@@ -87,17 +92,48 @@ export function rateMessage(authRequest, convId, messageId, rating, feedback = n
   });
 }
 
-// Rewrite a user message's content and drop every message after it.
-// The caller must re-trigger a chat turn to produce a new assistant reply.
-export function editUserMessage(authRequest, convId, messageId, content) {
-  return authRequest(`/api/conversations/${convId}/messages/${messageId}/edit`, {
+/**
+ * Create a sibling of ``messageId`` (edit-re-ask OR regenerate).
+ * Server sets parent_id = target.parent_id and advances active leaf.
+ */
+export function branchMessage(authRequest, convId, messageId, payload) {
+  const body = {
+    role: payload.role,
+    content: payload.content,
+    trace_id: payload.traceId || null,
+    latency_ms:
+      typeof payload.latencyMs === "number" ? payload.latencyMs : null,
+    model_name: payload.modelName || null,
+    agent_name: payload.agentName || null,
+    metadata: payload.metadata || null,
+  };
+  if (payload.setActive !== undefined) body.set_active = payload.setActive;
+  return authRequest(
+    `/api/conversations/${convId}/messages/${messageId}/branch`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** Switch the active path; response is ConversationPathOut. */
+export function setActiveLeaf(authRequest, convId, messageId) {
+  return authRequest(`/api/conversations/${convId}/active-leaf`, {
     method: "PUT",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ message_id: messageId }),
   });
 }
 
-// In-place patch of an existing message (non-truncating). Used by assistant
-// regenerate to replace the old reply without creating a new DB row.
+/** Subtree delete; response is ConversationPathOut (repointed active path). */
+export function deleteMessageBranch(authRequest, convId, messageId) {
+  return authRequest(`/api/conversations/${convId}/messages/${messageId}`, {
+    method: "DELETE",
+  });
+}
+
+// In-place patch of an existing message (non-truncating). Kept for metadata
+// patches; ANILA regenerate now uses branchMessage (OW-1) instead.
 export function updateMessage(authRequest, convId, messageId, patch) {
   const body = {
     content: patch.content ?? null,
