@@ -55,6 +55,7 @@ from app.models.task import Task, TaskRun
 from app.models.token_revocation import TokenRevocation
 from app.models.token_usage import TokenUsage
 from app.models.trace_span import TraceSpan
+from app.models.unit_admin_assignment import UnitAdminAssignment
 from app.models.user import User, UserModelPermission
 from app.models.user_memory import ConversationMemoryChunk, UserFact
 
@@ -104,6 +105,7 @@ __all__ = [
     "TokenRevocation",
     "TokenUsage",
     "TraceSpan",
+    "UnitAdminAssignment",
     "User",
     "UserAgentPermission",
     "UserFact",

@@ -47,13 +47,12 @@ def _children_map(
     return children
 
 
-def get_descendant_ids(
-    db: Session,
+def _descendants_from_children(
+    children: dict[int, list[int]],
     dept_id: int,
     include_self: bool = False,
 ) -> set[int]:
-    """回傳 ``dept_id`` 的所有子孫 id（可選含自身）。"""
-    children = _children_map(_load_edges(db))
+    """Walk ``children`` map for one root; cycle-safe via visited set."""
     result: set[int] = set()
     stack = list(children.get(dept_id, []))
     while stack:
@@ -65,6 +64,31 @@ def get_descendant_ids(
     if include_self:
         result.add(dept_id)
     return result
+
+
+def get_descendant_ids(
+    db: Session,
+    dept_id: int,
+    include_self: bool = False,
+) -> set[int]:
+    """回傳 ``dept_id`` 的所有子孫 id（可選含自身）。"""
+    children = _children_map(_load_edges(db))
+    return _descendants_from_children(children, dept_id, include_self)
+
+
+def get_descendant_ids_many(
+    db: Session,
+    dept_ids: set[int] | list[int],
+    include_self: bool = False,
+) -> set[int]:
+    """Union of descendants for many roots; ONE ``_load_edges`` call."""
+    if not dept_ids:
+        return set()
+    children = _children_map(_load_edges(db))
+    out: set[int] = set()
+    for dept_id in dept_ids:
+        out |= _descendants_from_children(children, dept_id, include_self)
+    return out
 
 
 def get_depth(db: Session, dept_id: int) -> int:
