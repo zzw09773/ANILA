@@ -16,6 +16,9 @@ from app.schemas.user import (
     AllowedModelItem,
     UserAllowedModelsUpdate,
     UserAllowedAgentsUpdate,
+    BatchApproveRequest,
+    BatchApproveResponse,
+    BatchApproveRejectedItem,
 )
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import (
@@ -31,6 +34,8 @@ from app.utils.security import hash_password
 router = APIRouter(prefix="/api/users", tags=["使用者管理"])
 
 _ELEVATED_ROLES = {"admin", "owner"}
+_BATCH_APPROVE_CAP = 500
+_BATCH_APPROVE_INPUT_LIMIT = 1000
 
 
 def _ensure_owner_for_elevated(target_role: str | None, current_user: User) -> None:
@@ -354,6 +359,162 @@ def update_user_allowed_agents(
         resource_id=user.id, detail=f"更新使用者「{user.username}」可用 agents", commit=True,
     )
     return {"message": f"已更新使用者「{user.username}」的可用 agents"}
+
+
+@router.post("/batch-approve", response_model=BatchApproveResponse)
+def batch_approve_users(
+    body: BatchApproveRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """P1.4 批次核准：一次核准整個單位（或明確選取的帳號清單）。"""
+    has_ids = body.user_ids is not None
+    has_dept = body.department_id is not None
+    if has_ids == has_dept:
+        raise HTTPException(
+            status_code=400,
+            detail="必須恰好提供 user_ids 或 department_id 其中之一",
+        )
+    if has_ids and len(body.user_ids) == 0:
+        raise HTTPException(status_code=400, detail="user_ids 不可為空")
+
+    actor_is_admin = is_admin_tier(current_user)
+    unit_scope: set[int] | None = None
+    if not actor_is_admin:
+        unit_scope = get_unit_admin_scope_ids(db, current_user)
+        if unit_scope is None:
+            raise HTTPException(status_code=403, detail="需要管理員權限")
+
+    if has_dept:
+        dept_id = body.department_id
+        if not actor_is_admin and dept_id not in unit_scope:
+            raise HTTPException(
+                status_code=403,
+                detail="僅能查詢自己管理單位的資料",
+            )
+        if body.include_descendants:
+            dept_ids = get_descendant_ids(db, dept_id, include_self=True)
+        else:
+            dept_ids = {dept_id}
+        # Authorised set may only shrink between the two scope reads (unit_scope
+        # vs this traversal). A re-parent under the caller's node between them
+        # must not expand effective reach.
+        if not actor_is_admin:
+            dept_ids = dept_ids & unit_scope
+        candidates = (
+            db.query(User)
+            .filter(User.department_id.in_(sorted(dept_ids)))
+            .all()
+        )
+        selector_label = (
+            f"department_id={dept_id}"
+            f" include_descendants={body.include_descendants}"
+        )
+    else:
+        if len(body.user_ids) > _BATCH_APPROVE_INPUT_LIMIT:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"單次最多提交 {_BATCH_APPROVE_INPUT_LIMIT} 個 user_ids"
+                ),
+            )
+        raw_ids = list(dict.fromkeys(body.user_ids))  # preserve order, dedupe
+        if not raw_ids:
+            raise HTTPException(status_code=400, detail="user_ids 不可為空")
+        fetched = (
+            db.query(User).filter(User.id.in_(raw_ids)).all()
+        )
+        by_id = {u.id: u for u in fetched}
+        # Preserve request order; drop missing / invisible (same as list opacity).
+        candidates = []
+        for uid in raw_ids:
+            user = by_id.get(uid)
+            if user is None:
+                continue
+            if actor_is_admin:
+                candidates.append(user)
+            elif user.department_id is not None and user.department_id in unit_scope:
+                candidates.append(user)
+            # else: invisible — omit entirely
+        selector_label = f"user_ids={len(raw_ids)}"
+
+    approved: list[int] = []
+    skipped: list[int] = []
+    rejected: list[BatchApproveRejectedItem] = []
+    to_approve: list[User] = []
+
+    for user in candidates:
+        if not actor_is_admin:
+            # In-scope elevated: visible in list but not manageable → rejected
+            # (same reason as single-user approve 403). Scope already filtered
+            # above; do NOT re-call get_unit_admin_scope_ids per row.
+            if user.role in _ELEVATED_ROLES:
+                rejected.append(
+                    BatchApproveRejectedItem(
+                        user_id=user.id, reason="需要管理員權限"
+                    )
+                )
+                continue
+        if user.is_approved:
+            skipped.append(user.id)
+            continue
+        to_approve.append(user)
+        approved.append(user.id)
+
+    # 上限算在「真的要核准的帳號」而非解析出的候選,否則超過 500 人的院級
+    # 節點只要成員數超標就永遠批不動(即使只剩一個待核准)。
+    if len(to_approve) > _BATCH_APPROVE_CAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"單次最多核准 {_BATCH_APPROVE_CAP} 個帳號",
+        )
+
+    if not body.dry_run:
+        for user in to_approve:
+            user.is_approved = True
+            detail = f"核准使用者「{user.username}」（批次核准）"
+            audit_row = log_audit_event(
+                db,
+                actor=current_user,
+                action="approve",
+                resource_type="user",
+                resource_id=user.id,
+                detail=detail,
+                commit=False,
+            )
+            if audit_row is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="稽核紀錄寫入失敗，批次核准已中止且未生效",
+                )
+        summary_row = log_audit_event(
+            db,
+            actor=current_user,
+            action="batch_approve",
+            resource_type="user",
+            resource_id=None,
+            detail=(
+                f"批次核准 {selector_label}："
+                f"approved={len(approved)} "
+                f"skipped={len(skipped)} "
+                f"rejected={len(rejected)}"
+            ),
+            commit=False,
+        )
+        if summary_row is None:
+            raise HTTPException(
+                status_code=500,
+                detail="稽核紀錄寫入失敗，批次核准已中止且未生效",
+            )
+        db.commit()
+
+    return BatchApproveResponse(
+        approved=approved,
+        skipped_already_approved=skipped,
+        rejected=rejected,
+        total_requested=len(approved) + len(skipped) + len(rejected),
+        dry_run=body.dry_run,
+    )
 
 
 @router.post("/{user_id}/approve")

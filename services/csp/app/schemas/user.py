@@ -109,3 +109,32 @@ class UserAllowedModelsUpdate(BaseModel):
 
 class UserAllowedAgentsUpdate(BaseModel):
     agent_ids: list[int]
+
+
+class BatchApproveRequest(BaseModel):
+    """P1.4 批次核准 — 恰好一個 selector（user_ids 或 department_id）。"""
+
+    user_ids: list[int] | None = None
+    department_id: int | None = None
+    include_descendants: bool = True
+    dry_run: bool = False
+
+
+class BatchApproveRejectedItem(BaseModel):
+    user_id: int
+    reason: str
+
+
+class BatchApproveResponse(BaseModel):
+    """批次核准結果。
+
+    ``total_requested`` 是解析後、呼叫者可見的目標帳號數（兩種 selector
+    定義相同）：已核准、略過（已是核准）、拒絕三桶長度之和。不可見／不存在
+    的 id 不會進入任何桶，也不計入此數。
+    """
+
+    approved: list[int]
+    skipped_already_approved: list[int]
+    rejected: list[BatchApproveRejectedItem]
+    total_requested: int
+    dry_run: bool
