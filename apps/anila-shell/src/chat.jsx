@@ -5,6 +5,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
+import { neighbourId, pagerState } from "./runtime/messageTree.js";
 import { MarkdownView, extractThinkTags } from "./markdown.jsx";
 
 import {
@@ -229,6 +230,65 @@ export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, sta
   );
 };
 
+/** Shared < N/M > sibling pager (server-truth sibling_* fields). */
+function SiblingPager({ msg, onSwitchBranch, streaming = false, style }) {
+  const nav = pagerState(msg, { streaming });
+  if (!nav.visible) return null;
+  return (
+    <span
+      title={`此訊息有 ${nav.siblingCount} 個變體，可左右切換檢視`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 2,
+        marginLeft: 4,
+        padding: "0 4px",
+        background: "var(--bg-subtle)",
+        border: "1px solid var(--border)",
+        borderRadius: 999,
+        fontSize: 11,
+        fontFamily: "var(--font-mono)",
+        color: "var(--fg-muted)",
+        ...style,
+      }}
+    >
+      <IconButton
+        title="上一個變體"
+        disabled={!nav.canPrev}
+        onClick={() => {
+          const id = neighbourId(msg, -1);
+          if (id != null) onSwitchBranch?.(msg, id);
+        }}
+        style={{
+          width: 20, height: 20,
+          opacity: nav.canPrev ? 1 : 0.35,
+          cursor: nav.canPrev ? "pointer" : "not-allowed",
+        }}
+      >
+        <IconChevLeft size={11} />
+      </IconButton>
+      <span style={{ padding: "0 4px", minWidth: 32, textAlign: "center" }}>
+        {nav.label}
+      </span>
+      <IconButton
+        title="下一個變體"
+        disabled={!nav.canNext}
+        onClick={() => {
+          const id = neighbourId(msg, 1);
+          if (id != null) onSwitchBranch?.(msg, id);
+        }}
+        style={{
+          width: 20, height: 20,
+          opacity: nav.canNext ? 1 : 0.35,
+          cursor: nav.canNext ? "pointer" : "not-allowed",
+        }}
+      >
+        <IconChevRight size={11} />
+      </IconButton>
+    </span>
+  );
+}
+
 // ---- Message Bubble ----
 export const MessageBubble = ({
   msg,
@@ -239,12 +299,15 @@ export const MessageBubble = ({
   onRegenerate,
   onRate,
   onEditUser,
-  onSwitchRevision,
+  onSwitchBranch,
+  onDeleteBranch,
   onOpenCitation,
   onPickFollowUp,
   messageActions = [],
   onAction,
   onContinue,
+  /** True when any message in this conversation is streaming — locks all pagers/deletes. */
+  conversationStreaming = false,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -445,6 +508,49 @@ export const MessageBubble = ({
           ) : (
             <RenderRedactedText text={msg.text} hits={msg.piiHits} />
           )}
+          {/* OW-1: user-bubble pager + delete — edit-re-ask siblings switchable/removable. */}
+          {!editing && (msg.siblingCount > 1 || msg.parentId != null) && (
+            <div
+              data-testid="user-branch-controls"
+              style={{
+                marginTop: 8,
+                display: "flex",
+                justifyContent: "flex-end",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              {msg.siblingCount > 1 && (
+                <div data-testid="user-sibling-pager">
+                  <SiblingPager
+                    msg={msg}
+                    onSwitchBranch={onSwitchBranch}
+                    streaming={conversationStreaming || !!msg.streaming}
+                    style={{ marginLeft: 0 }}
+                  />
+                </div>
+              )}
+              {(msg.siblingCount > 1 || msg.parentId != null) &&
+                typeof onDeleteBranch === "function" && (
+                <IconButton
+                  data-testid="user-delete-branch"
+                  title="刪除此訊息分支"
+                  disabled={conversationStreaming || !!msg.streaming}
+                  onClick={() => onDeleteBranch(msg)}
+                  style={{
+                    opacity: conversationStreaming || msg.streaming ? 0.35 : 1,
+                    cursor:
+                      conversationStreaming || msg.streaming
+                        ? "not-allowed"
+                        : "pointer",
+                    color: "var(--danger)",
+                  }}
+                >
+                  <IconTrash size={12} />
+                </IconButton>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -469,6 +575,7 @@ export const MessageBubble = ({
   };
   const canCopy = !classified;
   const isStreaming = !!msg.streaming;
+  const branchOpsLocked = conversationStreaming || isStreaming;
   const rating = msg.rating || null;
 
   return (
@@ -697,58 +804,28 @@ export const MessageBubble = ({
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--fg-muted)"; }}
               >{action.label}</button>
             ))}
-          {Array.isArray(msg.revisions) && msg.revisions.length > 1 && (() => {
-            const total = msg.revisions.length;
-            const current = typeof msg.activeRev === "number" ? msg.activeRev : total - 1;
-            const canPrev = current > 0 && !isStreaming;
-            const canNext = current < total - 1 && !isStreaming;
-            return (
-              <span
-                title={`此回覆有 ${total} 個版本，可左右切換檢視`}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 2,
-                  marginLeft: 4,
-                  padding: "0 4px",
-                  background: "var(--bg-subtle)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 999,
-                  fontSize: 11,
-                  fontFamily: "var(--font-mono)",
-                  color: "var(--fg-muted)",
-                }}
-              >
-                <IconButton
-                  title="上一個版本"
-                  disabled={!canPrev}
-                  onClick={() => canPrev && onSwitchRevision?.(msg, current - 1)}
-                  style={{
-                    width: 20, height: 20,
-                    opacity: canPrev ? 1 : 0.35,
-                    cursor: canPrev ? "pointer" : "not-allowed",
-                  }}
-                >
-                  <IconChevLeft size={11} />
-                </IconButton>
-                <span style={{ padding: "0 4px", minWidth: 32, textAlign: "center" }}>
-                  {current + 1} / {total}
-                </span>
-                <IconButton
-                  title="下一個版本"
-                  disabled={!canNext}
-                  onClick={() => canNext && onSwitchRevision?.(msg, current + 1)}
-                  style={{
-                    width: 20, height: 20,
-                    opacity: canNext ? 1 : 0.35,
-                    cursor: canNext ? "pointer" : "not-allowed",
-                  }}
-                >
-                  <IconChevRight size={11} />
-                </IconButton>
-              </span>
-            );
-          })()}
+          <SiblingPager
+            msg={msg}
+            onSwitchBranch={onSwitchBranch}
+            streaming={branchOpsLocked}
+          />
+          {/* OW-1: delete branch — gated when message has siblings or a parent. */}
+          {(msg.siblingCount > 1 || msg.parentId != null) &&
+            typeof onDeleteBranch === "function" && (
+            <IconButton
+              data-testid="assistant-delete-branch"
+              title="刪除此訊息分支"
+              disabled={branchOpsLocked}
+              onClick={() => onDeleteBranch(msg)}
+              style={{
+                opacity: branchOpsLocked ? 0.35 : 1,
+                cursor: branchOpsLocked ? "not-allowed" : "pointer",
+                color: "var(--danger)",
+              }}
+            >
+              <IconTrash size={12} />
+            </IconButton>
+          )}
           <div style={{ flex: 1 }} />
           <AuditWatermark
             traceId={msg.traceId}

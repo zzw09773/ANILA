@@ -47,8 +47,9 @@ import {
   deleteConversation as apiDeleteConversation,
   appendMessage as apiAppendMessage,
   rateMessage as apiRateMessage,
-  editUserMessage as apiEditUserMessage,
-  updateMessage as apiUpdateMessage,
+  branchMessage as apiBranchMessage,
+  setActiveLeaf as apiSetActiveLeaf,
+  deleteMessageBranch as apiDeleteMessageBranch,
   classifyConversation as apiClassifyConversation,
   createShare as apiCreateShare,
   listShares as apiListShares,
@@ -62,6 +63,14 @@ import {
   searchConversations,
   listActiveBanners as apiListActiveBanners,
 } from "./runtime/conversations.js";
+import {
+  applyServerPath,
+  persistRegeneratedAssistant,
+  runPersistedUserTurn,
+  runRegenerateStreamPhase,
+  sanitizeRestoredMessages,
+  switchBranch as switchBranchPath,
+} from "./runtime/messageTree.js";
 
 import {
   AgentSelector,
@@ -334,6 +343,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   }, [folders, isAuthenticated, authRequest]);
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
+  // OW-1: hydration/list already hold the server active path, so export
+  // naturally exports the active path (abandoned branches omitted).
   const exportConversation = useCallback(async (convId, format) => {
     const conv = conversations.find((c) => c.id === convId);
     let msgs = messagesByConv[convId];
@@ -633,6 +644,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       // classification backend). Absent on boolean-only payloads → the level
       // badge simply renders nothing; the boolean latch above is unaffected.
       classificationLevel: serverRow.classification_level,
+      // OW-1: server-truth active leaf pointer for the message tree.
+      activeLeafMessageId: serverRow.active_leaf_message_id ?? null,
       updatedAt: serverRow.updated_at || serverRow.created_at || nowIso(),
     };
   }
@@ -644,6 +657,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       dbId: msg.id,
       role: msg.role,
       text: msg.content || "",
+      // OW-1 tree nav fields (MessageOut).
+      parentId: msg.parent_id ?? null,
+      siblingIndex: typeof msg.sibling_index === "number" ? msg.sibling_index : 0,
+      siblingCount: typeof msg.sibling_count === "number" ? msg.sibling_count : 1,
+      siblingIds: Array.isArray(msg.sibling_ids) ? msg.sibling_ids : [msg.id],
       trace: meta.trace || [],
       citations: meta.citations || [],
       followUps: meta.follow_ups || [],
@@ -665,6 +683,23 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       conversationId: null, // patched by caller
       createdAt: msg.created_at,
     };
+  }
+
+  /** Reload the server active path into local state (preserves client-only fields). */
+  async function refreshActivePath(convId) {
+    if (typeof convId !== "number") return;
+    const detail = await apiGetConversation(authRequest, convId, { view: "active" });
+    const mapped = (detail.messages || []).map((m) => ({
+      ...mapServerMessage(m),
+      conversationId: convId,
+    }));
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: applyServerPath(prev[convId] || [], mapped, convId),
+    }));
+    if (detail.active_leaf_message_id !== undefined) {
+      updateConv(convId, { activeLeafMessageId: detail.active_leaf_message_id });
+    }
   }
 
   // Fetch the user's conversations on login and whenever JWT changes. Messages
@@ -737,13 +772,28 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     let active = true;
     (async () => {
       try {
-        const detail = await apiGetConversation(authRequest, selectedConvId);
+        // OW-1: default view=active — hydrate the server active path only.
+        const detail = await apiGetConversation(authRequest, selectedConvId, {
+          view: "active",
+        });
         if (!active) return;
         const msgs = (detail.messages || []).map((m) => ({
           ...mapServerMessage(m),
           conversationId: selectedConvId,
         }));
-        setMessagesByConv((prev) => ({ ...prev, [selectedConvId]: msgs }));
+        setMessagesByConv((prev) => ({
+          ...prev,
+          [selectedConvId]: applyServerPath(
+            prev[selectedConvId] || [],
+            msgs,
+            selectedConvId,
+          ),
+        }));
+        if (detail.active_leaf_message_id !== undefined) {
+          updateConv(selectedConvId, {
+            activeLeafMessageId: detail.active_leaf_message_id,
+          });
+        }
       } catch (error) {
         if (active) {
           setRuntimeError(error.message || "無法載入對話內容");
@@ -922,7 +972,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     }
   }
 
-  // ---- edit a user message + re-run the chat turn ----
+  // ---- edit a user message + re-run the chat turn (OW-1 branch) ----
+  // New user message is a sibling of the edited one; old subtree retained.
   async function handleEditUser(userMsg, nextText) {
     const trimmed = (nextText || "").trim();
     if (!trimmed || trimmed === userMsg.text) return;
@@ -934,13 +985,30 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const existing = messagesByConv[convId] || [];
     const idx = existing.findIndex((m) => m.id === userMsg.id);
     if (idx < 0) return;
+    if (typeof convId !== "number" || typeof userMsg.dbId !== "number") {
+      setRuntimeError("此訊息尚未儲存至後端，無法編輯重問。");
+      return;
+    }
+
+    // Branch-creating actions must stop any in-flight stream first.
+    stopStreaming(convId);
+
+    let branched;
+    try {
+      branched = await apiBranchMessage(authRequest, convId, userMsg.dbId, {
+        role: "user",
+        content: trimmed,
+      });
+    } catch (err) {
+      setRuntimeError(err.message || "訊息分支建立失敗");
+      return;
+    }
+    const newUserDbId = branched.id;
 
     const effectiveTarget = selectedAgentId;
     const baseUrl =
       effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
 
-    // Local: truncate after the edited user message and rewrite its text;
-    // create a fresh assistant placeholder so the stream fills in below.
     const assistantId = makeId("a");
     const assistantMsg = {
       id: assistantId,
@@ -955,47 +1023,43 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       createdAt: nowIso(),
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
     };
-    setMessagesByConv((prev) => ({
-      ...prev,
-      [convId]: [
-        ...existing.slice(0, idx),
-        { ...existing[idx], text: trimmed },
-        assistantMsg,
-      ],
-    }));
+    const newUserMsg = {
+      ...mapServerMessage(branched),
+      text: trimmed,
+      conversationId: convId,
+    };
+    // Keep ancestors; drop the abandoned sibling subtree from the visible path.
+    // Re-find index inside the updater — list may have changed during await.
+    setMessagesByConv((prev) => {
+      const list = prev[convId] || [];
+      const liveIdx = list.findIndex((m) => m.id === userMsg.id);
+      const cut = liveIdx >= 0 ? liveIdx : idx;
+      return {
+        ...prev,
+        [convId]: [...list.slice(0, cut), newUserMsg, assistantMsg],
+      };
+    });
+    updateConv(convId, { activeLeafMessageId: newUserDbId });
 
-    // Backend: persist the edit + server-side truncate so a future reload
-    // matches the local state.
-    if (typeof convId === "number" && typeof userMsg.dbId === "number") {
-      try {
-        await apiEditUserMessage(authRequest, convId, userMsg.dbId, trimmed);
-      } catch (err) {
-        setRuntimeError(err.message || "訊息編輯儲存失敗");
-      }
-    }
-
-    // Re-run the chat turn with the new user text.
+    const historyPrior = existing.slice(0, idx);
     const payload = {
       model: effectiveTarget,
-      messages: [{ role: "user", content: trimmed }],
+      messages: buildMessageHistory(historyPrior, trimmed, userMsg.attachments || []),
     };
     let finalText = "";
     let finalMeta = null;
-    // See comment on sendMessage — stale closure on messagesByConv forces
-    // us to accumulate trace / reasoning locally for the persist call.
     const accumulatedTrace = [];
     let accumulatedReasoning = "";
     try {
       await streamWithAbort(convId, {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
-        conversationId: typeof convId === "number" ? convId : undefined,
+        conversationId: convId,
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
         },
         onFinishReason: (reason) => {
-          // Continue Response:截斷標記存到訊息,UI 才知道要不要顯示「繼續」鈕。
           updateMsg(convId, assistantId, { finishReason: reason });
         },
         onTrace: (step) => {
@@ -1032,29 +1096,27 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       });
       updateMsg(convId, assistantId, { streaming: false });
 
-      if (typeof convId === "number") {
-        const agentNameForPersist =
-          agents.find((a) => a.id === effectiveTarget)?.name ||
-          String(effectiveTarget);
-        const persistMeta = buildPersistMeta(finalMeta, {
-          trace: accumulatedTrace,
-          reasoning: accumulatedReasoning,
+      const agentNameForPersist =
+        agents.find((a) => a.id === effectiveTarget)?.name ||
+        String(effectiveTarget);
+      const persistMeta = buildPersistMeta(finalMeta, {
+        trace: accumulatedTrace,
+        reasoning: accumulatedReasoning,
+      });
+      try {
+        // Assistant threads under the newly branched user message.
+        await apiAppendMessage(authRequest, convId, {
+          role: "assistant",
+          content: finalText,
+          parentId: newUserDbId,
+          traceId: finalMeta?.trace_id,
+          latencyMs: finalMeta?.latency_ms,
+          agentName: agentNameForPersist,
+          metadata: persistMeta,
         });
-        try {
-          const saved = await apiAppendMessage(authRequest, convId, {
-            role: "assistant",
-            content: finalText,
-            traceId: finalMeta?.trace_id,
-            latencyMs: finalMeta?.latency_ms,
-            agentName: agentNameForPersist,
-            metadata: persistMeta,
-          });
-          if (saved && typeof saved.id === "number") {
-            updateMsg(convId, assistantId, { dbId: saved.id });
-          }
-        } catch (persistError) {
-          setRuntimeError(persistError.message || "對話訊息儲存失敗");
-        }
+        await refreshActivePath(convId);
+      } catch (persistError) {
+        setRuntimeError(persistError.message || "對話訊息儲存失敗");
       }
     } catch (error) {
       updateMsg(convId, assistantId, {
@@ -1215,6 +1277,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       [convId]: [...(prev[convId] || []), userMsg, assistantMsg],
     }));
 
+    // OW-1 mandated ordering: persist the USER message BEFORE streaming so
+    // the assistant append can carry a real parent_id. Also fixes silent
+    // loss of the user turn when persist-after-stream used to fail.
+    // Numeric convId + failed user persist → abort (no stream / no assistant
+    // persist); local user bubble text stays for manual copy/retry.
+    // Non-numeric convId keeps the degraded offline path (stream without
+    // parent_id).
     const baseUrl =
       effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
     const payload = {
@@ -1222,8 +1291,6 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       messages: buildMessageHistory(priorForHistory, text, attachments),
     };
 
-    let finalText = "";
-    let finalMeta = null;
     // Keep trace / reasoning accumulators as plain locals so we are NOT at
     // the mercy of React's stale-closure semantics when persisting below.
     // `messagesByConv` captured by this function is frozen at the render
@@ -1231,101 +1298,156 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     // yields empty trace / reasoning even though setState visibly updated
     // the UI. The locals here collect the same deltas in lockstep and
     // feed buildPersistMeta with the live values.
-    const accumulatedTrace = [];
-    let accumulatedReasoning = "";
     try {
-      await streamWithAbort(convId, {
-        url: `${baseUrl}/v1/chat/completions`,
-        payload,
-        conversationId: typeof convId === "number" ? convId : undefined,
-        // 首回合 taskId 剛建立、state 還沒落地,顯式覆寫 streamWithAbort
-        // 的 state 查找;null(建立失敗)= 不送標頭。
-        taskId,
-        onText: (acc) => {
-          finalText = acc;
-          updateMsg(convId, assistantId, { text: acc });
+      const turn = await runPersistedUserTurn({
+        appendMessage: apiAppendMessage,
+        authRequest,
+        convId,
+        content: text,
+        stream: async (gate) => {
+          if (gate.saved) {
+            const savedUser = gate.saved;
+            updateMsg(convId, userMsg.id, {
+              dbId: savedUser.id,
+              parentId: savedUser.parent_id ?? null,
+              siblingIndex: savedUser.sibling_index ?? 0,
+              siblingCount: savedUser.sibling_count ?? 1,
+              siblingIds: Array.isArray(savedUser.sibling_ids)
+                ? savedUser.sibling_ids
+                : [savedUser.id],
+            });
+            updateConv(convId, { activeLeafMessageId: savedUser.id });
+          }
+
+          let finalText = "";
+          let finalMeta = null;
+          const accumulatedTrace = [];
+          let accumulatedReasoning = "";
+          await streamWithAbort(convId, {
+            url: `${baseUrl}/v1/chat/completions`,
+            payload,
+            conversationId: typeof convId === "number" ? convId : undefined,
+            // 首回合 taskId 剛建立、state 還沒落地,顯式覆寫 streamWithAbort
+            // 的 state 查找;null(建立失敗)= 不送標頭。
+            taskId,
+            onText: (acc) => {
+              finalText = acc;
+              updateMsg(convId, assistantId, { text: acc });
+            },
+            onFinishReason: (reason) => {
+              // Continue Response:截斷標記存到訊息,UI 才知道要不要顯示「繼續」鈕。
+              updateMsg(convId, assistantId, { finishReason: reason });
+            },
+            onTrace: (step) => {
+              accumulatedTrace.push(step);
+              setMessagesByConv((prev) => ({
+                ...prev,
+                [convId]: (prev[convId] || []).map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        trace: [...(m.trace || []), step],
+                        stageLabel: step.label,
+                        stage: (m.trace?.length ?? 0),
+                      }
+                    : m,
+                ),
+              }));
+            },
+            onMeta: (meta) => {
+              finalMeta = meta;
+              applyMeta(convId, assistantId, effectiveTarget, meta);
+            },
+            onReasoning: (delta) => {
+              accumulatedReasoning += delta;
+              setMessagesByConv((prev) => ({
+                ...prev,
+                [convId]: (prev[convId] || []).map((m) =>
+                  m.id === assistantId
+                    ? { ...m, reasoning: (m.reasoning || "") + delta }
+                    : m,
+                ),
+              }));
+            },
+          });
+          updateMsg(convId, assistantId, { streaming: false });
+          return {
+            finalText,
+            finalMeta,
+            accumulatedTrace,
+            accumulatedReasoning,
+          };
         },
-        onFinishReason: (reason) => {
-          // Continue Response:截斷標記存到訊息,UI 才知道要不要顯示「繼續」鈕。
-          updateMsg(convId, assistantId, { finishReason: reason });
-        },
-        onTrace: (step) => {
-          accumulatedTrace.push(step);
-          setMessagesByConv((prev) => ({
-            ...prev,
-            [convId]: (prev[convId] || []).map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    trace: [...(m.trace || []), step],
-                    stageLabel: step.label,
-                    stage: (m.trace?.length ?? 0),
-                  }
-                : m,
-            ),
-          }));
-        },
-        onMeta: (meta) => {
-          finalMeta = meta;
-          applyMeta(convId, assistantId, effectiveTarget, meta);
-        },
-        onReasoning: (delta) => {
-          accumulatedReasoning += delta;
-          setMessagesByConv((prev) => ({
-            ...prev,
-            [convId]: (prev[convId] || []).map((m) =>
-              m.id === assistantId
-                ? { ...m, reasoning: (m.reasoning || "") + delta }
-                : m,
-            ),
-          }));
+        appendAssistant: async ({ userDbId, streamResult }) => {
+          // Persist the assistant turn under the user message's db id.
+          if (typeof convId !== "number") return;
+          const finalText = streamResult?.finalText ?? "";
+          const finalMeta = streamResult?.finalMeta ?? null;
+          const accumulatedTrace = streamResult?.accumulatedTrace || [];
+          const accumulatedReasoning = streamResult?.accumulatedReasoning || "";
+          const agentNameForPersist =
+            agents.find((a) => a.id === effectiveTarget)?.name ||
+            String(effectiveTarget);
+          const persistMeta = buildPersistMeta(finalMeta, {
+            trace: accumulatedTrace,
+            reasoning: accumulatedReasoning,
+          });
+          try {
+            const assistantPayload = {
+              role: "assistant",
+              content: finalText,
+              traceId: finalMeta?.trace_id,
+              latencyMs: finalMeta?.latency_ms,
+              agentName: agentNameForPersist,
+              metadata: persistMeta,
+            };
+            if (typeof userDbId === "number") {
+              assistantPayload.parentId = userDbId;
+            }
+            const savedAssistant = await apiAppendMessage(
+              authRequest,
+              convId,
+              assistantPayload,
+            );
+            if (savedAssistant && typeof savedAssistant.id === "number") {
+              updateMsg(convId, assistantId, {
+                dbId: savedAssistant.id,
+                parentId: savedAssistant.parent_id ?? userDbId,
+                siblingIndex: savedAssistant.sibling_index ?? 0,
+                siblingCount: savedAssistant.sibling_count ?? 1,
+                siblingIds: Array.isArray(savedAssistant.sibling_ids)
+                  ? savedAssistant.sibling_ids
+                  : [savedAssistant.id],
+              });
+              updateConv(convId, { activeLeafMessageId: savedAssistant.id });
+            }
+          } catch (persistError) {
+            setRuntimeError(persistError.message || "對話訊息儲存失敗");
+          }
+
+          // Bump updatedAt so the sidebar re-sorts / re-labels with live time.
+          updateConv(convId, { updatedAt: nowIso() });
+
+          // First-turn auto title: fires once (only when the existing title was
+          // produced by the first-message truncator). Background task; silent
+          // failure is acceptable.
+          const convRow = conversations.find((c) => c.id === convId);
+          const looksLikeAutoTitle =
+            !convRow?.title || convRow.title === makeConversationTitle(text);
+          if (looksLikeAutoTitle && finalText) {
+            generateConversationTitle(convId, text, finalText, effectiveTarget);
+          }
         },
       });
-      updateMsg(convId, assistantId, { streaming: false });
-
-      // Persist both turns to the backend so they survive reload. Server-side
-      // errors here surface as a toast but don't break the live UI.
-      if (typeof convId === "number") {
-        const agentNameForPersist =
-          agents.find((a) => a.id === effectiveTarget)?.name ||
-          String(effectiveTarget);
-        const persistMeta = buildPersistMeta(finalMeta, {
-          trace: accumulatedTrace,
-          reasoning: accumulatedReasoning,
-        });
-        try {
-          await apiAppendMessage(authRequest, convId, {
-            role: "user",
-            content: text,
-          });
-          const savedAssistant = await apiAppendMessage(authRequest, convId, {
-            role: "assistant",
-            content: finalText,
-            traceId: finalMeta?.trace_id,
-            latencyMs: finalMeta?.latency_ms,
-            agentName: agentNameForPersist,
-            metadata: persistMeta,
-          });
-          // Capture DB id so thumbs-up/down can PUT to the backend.
-          if (savedAssistant && typeof savedAssistant.id === "number") {
-            updateMsg(convId, assistantId, { dbId: savedAssistant.id });
-          }
-        } catch (persistError) {
-          setRuntimeError(persistError.message || "對話訊息儲存失敗");
-        }
-
-        // Bump updatedAt so the sidebar re-sorts / re-labels with live time.
-        updateConv(convId, { updatedAt: nowIso() });
-
-        // First-turn auto title: fires once (only when the existing title was
-        // produced by the first-message truncator). Background task; silent
-        // failure is acceptable.
-        const convRow = conversations.find((c) => c.id === convId);
-        const looksLikeAutoTitle =
-          !convRow?.title || convRow.title === makeConversationTitle(text);
-        if (looksLikeAutoTitle && finalText) {
-          generateConversationTitle(convId, text, finalText, effectiveTarget);
-        }
+      if (turn.aborted) {
+        setRuntimeError(
+          turn.error?.message || "使用者訊息儲存失敗",
+        );
+        setMessagesByConv((prev) => ({
+          ...prev,
+          [convId]: (prev[convId] || []).filter((m) => m.id !== assistantId),
+        }));
+        return;
       }
     } catch (error) {
       updateMsg(convId, assistantId, {
@@ -1412,6 +1534,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
   // steer:guided regenerate 的調整指令(更詳細/更簡潔/換個說法/自由文字);
   // 空 = 盲目重試(原行為)。non-empty 時附加到使用者原文後重新生成。
+  // ---- regenerate: stream a new assistant sibling, then POST /branch ----
   async function regenerateMessage(assistantMsg, steer = "") {
     if (!isAuthenticated) {
       setRuntimeError("尚未登入，請重新登入後再試。");
@@ -1435,11 +1558,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     }
     const prevUser = msgs[userIdx];
 
-    // Messages that came *after* this assistant reply. ChatGPT-style
-    // regenerate forks a new branch: the tail belongs to the old revision
-    // and must be hidden from the active thread while kept retrievable via
-    // the < N/M > pager.
-    const tailMsgs = msgs.slice(idx + 1);
+    // Branch-creating actions must stop any in-flight stream first.
+    stopStreaming(convId);
 
     const effectiveTarget = assistantMsg.routedAgentId || selectedAgentId;
     const baseUrl =
@@ -1452,199 +1572,217 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || []),
     };
 
-    // Snapshot the current top-level fields into revisions[] so the user can
-    // flip back to the previous answer with the < / > pager. If this is the
-    // first regenerate we seed revisions with the original reply too, and
-    // attach the abandoned tail to it so flipping back restores the old
-    // branch of follow-up turns.
-    const currentSnapshot = {
-      text: assistantMsg.text,
-      trace: assistantMsg.trace || [],
-      reasoning: assistantMsg.reasoning || null,
-      traceId: assistantMsg.traceId,
-      latencyMs: assistantMsg.latencyMs,
-      dbId: assistantMsg.dbId,
-      timestamp: assistantMsg.timestamp,
-      tail: tailMsgs,
-    };
-    const existingRevs = Array.isArray(assistantMsg.revisions) && assistantMsg.revisions.length > 0
-      ? assistantMsg.revisions.map((r, i) =>
-          i === assistantMsg.activeRev ? { ...r, tail: tailMsgs } : r,
-        )
-      : [currentSnapshot];
-    // Placeholder for the revision currently being streamed; new branch
-    // starts with empty tail — follow-up turns will accumulate into it as
-    // the user continues the conversation.
-    const nextRevs = [...existingRevs, { text: "", trace: [], reasoning: null, tail: [] }];
-    const nextActiveIdx = nextRevs.length - 1;
-
-    // Drop the tail from the active thread; it stays preserved on the
-    // previous revision so the user can flip back to it. Reset the
-    // assistant row to streaming state at the same time.
+    // Capture pre-regenerate list so a stream failure can restore the
+    // previous answer (placeholder splice must not leave it permanently gone).
+    const preRegenList = msgs;
+    const placeholderId = makeId("a");
     setMessagesByConv((prev) => ({
       ...prev,
-      [convId]: (prev[convId] || []).slice(0, idx + 1).map((m) =>
-        m.id === assistantMsg.id
-          ? {
-              ...m,
-              text: "",
-              trace: [],
-              citations: [],
-              followUps: [],
-              streaming: true,
-              rating: null,
-              reasoning: null,
-              revisions: nextRevs,
-              activeRev: nextActiveIdx,
-              timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
-            }
-          : m,
-      ),
+      [convId]: [
+        ...(prev[convId] || []).slice(0, userIdx + 1),
+        {
+          id: placeholderId,
+          role: "assistant",
+          text: "",
+          trace: [],
+          citations: [],
+          followUps: [],
+          streaming: true,
+          rating: null,
+          reasoning: null,
+          routedAgentId: effectiveTarget,
+          conversationId: convId,
+          createdAt: nowIso(),
+          timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+        },
+      ],
     }));
 
     let finalText = "";
     let finalMeta = null;
-    try {
-      await streamWithAbort(convId, {
-        url: `${baseUrl}/v1/chat/completions`,
-        payload,
-        conversationId: typeof convId === "number" ? convId : undefined,
-        onText: (acc) => {
-          finalText = acc;
-          updateMsg(convId, assistantMsg.id, { text: acc });
-        },
-        onTrace: (step) => {
-          setMessagesByConv((prev) => ({
-            ...prev,
-            [convId]: (prev[convId] || []).map((m) =>
-              m.id === assistantMsg.id
-                ? {
-                    ...m,
-                    trace: [...(m.trace || []), step],
-                    stageLabel: step.label,
-                    stage: (m.trace?.length ?? 0),
-                  }
-                : m,
-            ),
-          }));
-        },
-        onMeta: (meta) => {
-          finalMeta = meta;
-          applyMeta(convId, assistantMsg.id, effectiveTarget, meta);
-        },
-        onReasoning: (delta) => {
-          setMessagesByConv((prev) => ({
-            ...prev,
-            [convId]: (prev[convId] || []).map((m) =>
-              m.id === assistantMsg.id
-                ? { ...m, reasoning: (m.reasoning || "") + delta }
-                : m,
-            ),
-          }));
-        },
-      });
-      // Freeze the finished revision into revisions[nextActiveIdx] so that
-      // switching back and forth after completion shows stable text/trace.
+    const accumulatedTrace = [];
+    let accumulatedReasoning = "";
+    let branchPersisted = false;
+    const streamPhase = await runRegenerateStreamPhase({
+      preList: preRegenList,
+      stream: async () => {
+        await streamWithAbort(convId, {
+          url: `${baseUrl}/v1/chat/completions`,
+          payload,
+          conversationId: typeof convId === "number" ? convId : undefined,
+          onText: (acc) => {
+            finalText = acc;
+            updateMsg(convId, placeholderId, { text: acc });
+          },
+          onTrace: (step) => {
+            accumulatedTrace.push(step);
+            setMessagesByConv((prev) => ({
+              ...prev,
+              [convId]: (prev[convId] || []).map((m) =>
+                m.id === placeholderId
+                  ? {
+                      ...m,
+                      trace: [...(m.trace || []), step],
+                      stageLabel: step.label,
+                      stage: (m.trace?.length ?? 0),
+                    }
+                  : m,
+              ),
+            }));
+          },
+          onMeta: (meta) => {
+            finalMeta = meta;
+            applyMeta(convId, placeholderId, effectiveTarget, meta);
+          },
+          onReasoning: (delta) => {
+            accumulatedReasoning += delta;
+            setMessagesByConv((prev) => ({
+              ...prev,
+              [convId]: (prev[convId] || []).map((m) =>
+                m.id === placeholderId
+                  ? { ...m, reasoning: (m.reasoning || "") + delta }
+                  : m,
+              ),
+            }));
+          },
+        });
+        updateMsg(convId, placeholderId, { streaming: false });
+      },
+    });
+    if (!streamPhase.ok) {
       setMessagesByConv((prev) => ({
         ...prev,
-        [convId]: (prev[convId] || []).map((m) => {
-          if (m.id !== assistantMsg.id) return m;
-          const revs = Array.isArray(m.revisions) ? [...m.revisions] : [];
-          revs[nextActiveIdx] = {
-            text: finalText,
-            trace: [...(m.trace || [])],
-            reasoning: m.reasoning || null,
-            traceId: finalMeta?.trace_id,
-            latencyMs: finalMeta?.latency_ms,
-            dbId: m.dbId,
-            timestamp: m.timestamp,
-          };
-          return { ...m, streaming: false, revisions: revs };
-        }),
+        [convId]: sanitizeRestoredMessages(streamPhase.messages),
       }));
+      setRuntimeError(
+        streamPhase.error?.message
+          ? `重試失敗：${streamPhase.error.message}`
+          : "重試失敗",
+      );
+      return;
+    }
 
+    try {
       if (typeof convId === "number") {
         const agentNameForPersist =
           agents.find((a) => a.id === effectiveTarget)?.name ||
           String(effectiveTarget);
+        const persistMeta = buildPersistMeta(finalMeta, {
+          trace: accumulatedTrace,
+          reasoning: accumulatedReasoning,
+        });
         try {
           if (typeof assistantMsg.dbId === "number") {
-            // Replace the existing row in place — avoids piling up orphan
-            // assistant rows that trip the "no preceding user message" guard
-            // on reload.
-            await apiUpdateMessage(authRequest, convId, assistantMsg.dbId, {
+            // OW-1: never in-place updateMessage — POST /branch sibling.
+            await persistRegeneratedAssistant({
+              branchMessage: apiBranchMessage,
+              authRequest,
+              convId,
+              targetMessageId: assistantMsg.dbId,
               content: finalText,
               traceId: finalMeta?.trace_id,
               latencyMs: finalMeta?.latency_ms,
               agentName: agentNameForPersist,
-              metadata: finalMeta || null,
+              metadata: persistMeta,
             });
           } else {
-            const savedAssistant = await apiAppendMessage(authRequest, convId, {
+            // Unpersisted assistant (degraded mode): fall back to append.
+            const parentId =
+              typeof prevUser.dbId === "number" ? prevUser.dbId : undefined;
+            await apiAppendMessage(authRequest, convId, {
               role: "assistant",
               content: finalText,
+              parentId,
               traceId: finalMeta?.trace_id,
               latencyMs: finalMeta?.latency_ms,
               agentName: agentNameForPersist,
-              metadata: finalMeta || null,
+              metadata: persistMeta,
             });
-            if (savedAssistant && typeof savedAssistant.id === "number") {
-              updateMsg(convId, assistantMsg.id, { dbId: savedAssistant.id });
-            }
           }
+          branchPersisted = true;
         } catch (persistError) {
+          // Designed 409 (sibling cap) after a successful stream must not leave
+          // the previous answer gone behind a phantom unpersisted placeholder.
+          setMessagesByConv((prev) => ({
+            ...prev,
+            [convId]: sanitizeRestoredMessages(preRegenList),
+          }));
           setRuntimeError(persistError.message || "重試訊息儲存失敗");
         }
       }
-    } catch (error) {
-      updateMsg(convId, assistantMsg.id, {
-        streaming: false,
-        text: `重試失敗：${error.message || "unknown error"}`,
-      });
+    } finally {
+      // Successful branch persist always refreshes, even if a later step throws.
+      if (branchPersisted) {
+        try {
+          await refreshActivePath(convId);
+        } catch (refreshError) {
+          setRuntimeError(
+            refreshError.message || "對話路徑重新載入失敗",
+          );
+        }
+      }
     }
   }
 
-  // ---- switch between assistant-reply revisions (< 2/3 > pager) ----
-  // Revisions only live in client state (not persisted), so on reload the
-  // message collapses back to the latest active revision. Swapping pulls
-  // the fields out of revisions[i] back into the top-level mirror so the
-  // rest of the render path (MarkdownView, thinking fold, rating) doesn't
-  // need to know about revisions at all.
-  function switchRevision(assistantMsg, nextIdx) {
-    const convId = assistantMsg.conversationId;
-    const revs = Array.isArray(assistantMsg.revisions) ? assistantMsg.revisions : [];
-    if (nextIdx < 0 || nextIdx >= revs.length) return;
-    if (nextIdx === assistantMsg.activeRev) return;
-    const target = revs[nextIdx] || {};
-    setMessagesByConv((prev) => {
-      const list = prev[convId] || [];
-      const idx = list.findIndex((m) => m.id === assistantMsg.id);
-      if (idx < 0) return prev;
-      // Before swapping, snapshot the tail currently attached to this
-      // assistant so the revision we're leaving keeps its own branch of
-      // follow-up turns — the user can continue on either revision.
-      const currentTail = list.slice(idx + 1);
-      const updatedRevs = revs.map((r, i) =>
-          i === assistantMsg.activeRev ? { ...r, tail: currentTail } : r,
-      );
-      const updatedAssistant = {
-        ...list[idx],
-        text: target.text || "",
-        trace: target.trace || [],
-        reasoning: target.reasoning || null,
-        traceId: target.traceId,
-        latencyMs: target.latencyMs,
-        timestamp: target.timestamp,
-        activeRev: nextIdx,
-        revisions: updatedRevs,
-      };
-      const nextList = [
-        ...list.slice(0, idx),
-        updatedAssistant,
-        ...(Array.isArray(target.tail) ? target.tail : []),
-      ];
-      return { ...prev, [convId]: nextList };
-    });
+  // ---- switch active branch via PUT /active-leaf (no optimistic mutation) ----
+  async function switchBranch(msg, targetMessageId) {
+    if (typeof targetMessageId !== "number") return;
+    const convId = msg.conversationId;
+    if (typeof convId !== "number") return;
+    // Best-effort abort of an in-flight stream. An aborted sendMessage still
+    // resolves and may persist; pagers/delete stay disabled via
+    // conversationStreaming until streaming flags clear.
+    stopStreaming(convId);
+    try {
+      const result = await switchBranchPath({
+        setActiveLeaf: apiSetActiveLeaf,
+        authRequest,
+        convId,
+        messageId: targetMessageId,
+        prevList: messagesByConv[convId] || [],
+        mapServerMessage,
+      });
+      // Wholesale replace from the server path response.
+      setMessagesByConv((prev) => ({
+        ...prev,
+        [convId]: result.messages,
+      }));
+      updateConv(convId, { activeLeafMessageId: result.activeLeafMessageId });
+    } catch (err) {
+      setRuntimeError(err.message || "切換分支失敗");
+    }
+  }
+
+  // ---- delete a message subtree (confirm → DELETE → rebuild path) ----
+  async function deleteBranch(msg) {
+    const convId = msg.conversationId;
+    if (typeof convId !== "number" || typeof msg.dbId !== "number") {
+      setRuntimeError("此訊息尚未儲存至後端，無法刪除分支。");
+      return;
+    }
+    if (!(await confirm({
+      title: "刪除訊息分支",
+      message: "確定要刪除此訊息及其後續內容？此動作無法復原。",
+      confirmText: "刪除",
+      tone: "danger",
+    }))) return;
+    stopStreaming(convId);
+    try {
+      const path = await apiDeleteMessageBranch(authRequest, convId, msg.dbId);
+      const mapped = (path.messages || []).map((m) => ({
+        ...mapServerMessage(m),
+        conversationId: convId,
+      }));
+      setMessagesByConv((prev) => ({
+        ...prev,
+        [convId]: applyServerPath(prev[convId] || [], mapped, convId),
+      }));
+      updateConv(convId, {
+        activeLeafMessageId: path.active_leaf_message_id ?? null,
+      });
+    } catch (err) {
+      setRuntimeError(err.message || "刪除訊息分支失敗");
+    }
   }
 
   // ---- thumbs up / down ----
@@ -1811,6 +1949,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     setCompareMsgs({});
   }
 
+  // OW-1: compare-mode adopt stays client-only (no server branch persist).
   function adoptColumn(col) {
     const msgs = compareMsgs[col.id] || [];
     if (!msgs.length) return;
@@ -2164,12 +2303,14 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           onRegenerate={regenerateMessage}
                           onRate={handleRate}
                           onEditUser={handleEditUser}
-                          onSwitchRevision={switchRevision}
+                          onSwitchBranch={switchBranch}
+                          onDeleteBranch={deleteBranch}
                           onOpenCitation={onOpenCitation}
                           onPickFollowUp={(q) => sendMessage(q, [], {})}
                           messageActions={messageActions}
                           onAction={runMessageAction}
                           onContinue={continueMessage}
+                          conversationStreaming={currentMsgs.some((x) => x.streaming)}
                         />
                       ))
                     )}
