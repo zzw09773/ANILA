@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     # Attachment storage (local filesystem)
     ATTACHMENT_STORAGE_PATH: str = "data/attachments"
 
+    # P1.1 — 部門樹最大層數。SYSTEM-MAP 定「院 → 所 → 組」三層,但院內實際
+    # 編制若有第四層(例如處下設科),改這個值即可,不必動程式碼。
+    # ⚠ 只影響新建與 re-parent 的檢查;調低不會回溯處理既有超深節點。
+    ANILA_DEPARTMENT_MAX_DEPTH: int = 3
+
     # P1.5 — attachment context budget
     # model_registry.context_window 目前種子皆 NULL，以此為後備。
     ANILA_DEFAULT_CONTEXT_WINDOW: int = 128000

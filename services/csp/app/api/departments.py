@@ -13,7 +13,7 @@ from app.schemas.department import (
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import require_admin
 from app.services.department_tree import (
-    MAX_DEPTH,
+    max_depth,
     acquire_dept_tree_lock,
     build_tree,
     depth_under_parent,
@@ -99,10 +99,11 @@ def _validate_parent_assignment(
 
     new_depth = depth_under_parent(db, parent_id)
     subtree_height = get_subtree_height(db, node_id) if node_id is not None else 1
-    if new_depth + subtree_height - 1 > MAX_DEPTH:
+    cap = max_depth()
+    if new_depth + subtree_height - 1 > cap:
         raise HTTPException(
             status_code=400,
-            detail=f"部門層級不可超過 {MAX_DEPTH} 層（院→所→組）",
+            detail=f"部門層級不可超過 {cap} 層（院→所→組）",
         )
 
 

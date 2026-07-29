@@ -35,6 +35,8 @@ class AttachmentOut(BaseModel):
     conversation_id: Optional[int] = None
     message_id: Optional[int] = None
     created_at: datetime
+    # 抽取時取得,供 UI 顯示「500 頁」之類的規模提示。
+    page_count: Optional[int] = None
     # Extraction outcome only: pending | ok | failed | unsupported | too_large
     extract_status: str = "pending"
     # Derived for this request's model budget; independent of extract_status.

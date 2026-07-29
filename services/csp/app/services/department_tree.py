@@ -9,10 +9,19 @@ from __future__ import annotations
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.department import Department
 from app.models.user import User
 
-MAX_DEPTH = 3
+
+def max_depth() -> int:
+    """部門樹允許的最大層數(院=1、所=2、組=3)。
+
+    可設定而非寫死:SYSTEM-MAP 定的是三層,但院內實際編制(例如處下設科)
+    若需要第四層,改 .env 即可,不必動程式碼與重跑審查。放寬只影響新建
+    與 re-parent 的檢查,既有資料不受影響。
+    """
+    return int(settings.ANILA_DEPARTMENT_MAX_DEPTH)
 
 # Transaction-scoped advisory lock for hierarchy mutations (create-with-parent,
 # re-parent, activate/deactivate). Fixed key so concurrent writers serialize
