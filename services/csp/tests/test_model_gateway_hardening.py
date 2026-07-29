@@ -6,7 +6,7 @@
 2. per-model secret ref write-only round trip:encrypt→resolve→GET 永不外露;
    無 ref 退回全域 env。
 3. health 五態映射 + POST /test + legacy /health-check alias + GET /health。
-4. url_guard kind split 在 model 註冊層的 production 拒 http。
+4. url_guard kind split 在 model 註冊層:http 由旗標明確放行(PLAN.md P0.2)。
 5. 出向前 ceiling 檢查:deny(不發出向,respx 零呼叫)、allow 落 decision 列
    (僅 task-linked)、legacy latched conversation deny。
 
@@ -218,15 +218,22 @@ def test_legacy_health_check_alias_is_deprecated(db, monkeypatch):
     assert m.health_status == HEALTH_UNHEALTHY
 
 
-# ── 4. url_guard kind split @ model registration (production fail-closed) ────
+# ── 4. url_guard kind split @ model registration (flag-gated http) ───────────
+# PLAN.md P0.2 (2026-07-29): model http is gated by ANILA_ALLOW_HTTP_ENDPOINT
+# uniformly — production no longer rejects unconditionally.
 
-def test_model_registration_rejects_http_in_production(monkeypatch):
+def test_model_registration_allows_http_in_production_with_flag(monkeypatch):
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_ENV", "production")
+    models_api._enforce_endpoint_url("http://api.example.com/v1")  # no raise
+
+
+def test_model_registration_rejects_http_in_production_without_flag(monkeypatch):
+    monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
     monkeypatch.setenv("ANILA_ENV", "production")
     with pytest.raises(HTTPException) as exc:
         models_api._enforce_endpoint_url("http://api.example.com/v1")
     assert exc.value.status_code == 400
-    assert "production" in str(exc.value.detail)
 
 
 def test_model_registration_allows_http_in_dev(monkeypatch):

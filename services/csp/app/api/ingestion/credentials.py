@@ -40,7 +40,7 @@ def _check_endpoint_url(url: str) -> None:
 
     Slice 6a (doc 04 §8): explicit ``endpoint_kind="generic"`` — BYO judge /
     external LLM credentials keep the original global http-flag semantics
-    (not model-gateway endpoints, so the production HTTPS invariant does not
+    (these are not model-gateway endpoints, so model-kind gating does not
     apply to them).
     """
     try:

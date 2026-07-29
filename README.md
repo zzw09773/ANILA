@@ -153,7 +153,7 @@ flowchart TB
 | 3 | 五級分類（無機密 < 營業秘密 < 機密 < 極機密 < 絕對機密）＋ 單向閂鎖 ＋ 降級審批（雙人原則） | `services/csp/app/models/classification.py` | doc 08 |
 | 4 | Full Trace：`POST /v1/traces/{trace_id}/spans` 收攏 ＋ `anila_core.tracing` 匯出 SDK | `services/csp/app/api/traces.py`、`packages/anila-core/src/anila_core/tracing/` | doc 05 / 09 |
 | 5 | Agent Registry：七態審批（`draft` → … → `approved`）＋ trace-test 閘門（`trace_test_passed_at` 非空才可核章） | `services/csp/app/models/agent.py` | doc 05 |
-| 6 | Model Gateway：per-model 金鑰（僅露 boolean presence）＋ 五態健康 ＋ `ANILA_ENV=production` 拒 http endpoint（fail-closed，旗標不可繞） | `services/csp/app/api/models.py` | doc 04 |
+| 6 | Model Gateway：per-model 金鑰（僅露 boolean presence）＋ 五態健康 ＋ http endpoint 預設拒收、由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，production 與 dev 同準） | `services/csp/app/api/models.py` | doc 04 |
 | 7 | Service Registry ＋ launch token（Project Entry；`platform_links` 擴充為 `registered_services`） | `services/csp/app/models/service_launch.py` | doc 07 |
 | 8 | Studio artifact 契約 ＋ Redis durable job store（Redis 中斷則降級為 in-process） | `services/anila-studio/app/services/job_store.py` | doc 09 |
 | 9 | ANILA Shell 四入口 IA ＋ 繁中語言政策（唯一介面語言）＋ 官方藍視覺重設計 | `apps/anila-shell/src/shellNav.jsx`、`infra/ci/lint-zh-tw.sh` | doc 11 / 12 |
@@ -246,7 +246,7 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 - **自然人憑證卡真實驗章**：`/api/auth/card/*` 做真實 PKCS#7/CMS 簽章驗證 ＋ CA bundle 鏈驗證 ＋ 撤銷檢查，非比對卡號的假驗證。
 - **登入面收斂**：`REQUIRE_CARD_LOGIN_ONLY=true` 時帳密／OIDC／自助註冊 endpoints 回 404，唯一登入路徑是 PKI 卡；`startup_security` 在 prod 拒絕矛盾／dev 預設設定，container 直接開不起來（fail-fast）。
 - **五級分類單向閂鎖**：CSP ＋ Router ＋ UI 三層鎖 classified，無自動降級路徑，降級採雙人原則（申請人 ≠ 核准人），持久化到 DB。
-- **模型出向 fail-closed**：`ANILA_ENV=production` 拒 http model endpoint（旗標不可繞）；per-model 金鑰僅以 boolean presence 對外，不外洩。
+- **模型出向預設拒 http**：model endpoint 由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，production 與 dev 同準）；per-model 金鑰僅以 boolean presence 對外，不外洩。
 - **Credential 加密 ＋ SSRF guard**：AES-256-GCM ＋ PBKDF2；SSRF guard 對所有 user-supplied endpoint 把關，loopback / metadata 永不可繞過。
 - **唯一外部入口**：nginx `:443`（`infra/nginx/anila.conf`）Host allowlist ＋ 安全 header；runtime DB 以 `csp_app` role（非 superuser）連線以維持 RLS。
 - **審計**：所有 admin 操作 ＋ card 登入 / OIDC 失敗自動寫 `audit_logs`；正式 task 產生 `trace_id` 並進 Full Trace tree。

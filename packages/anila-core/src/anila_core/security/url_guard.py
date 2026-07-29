@@ -13,9 +13,11 @@ create / update) and the worker (defense in depth at call time)
 should call ``validate_outbound_url(url)`` and reject on raise.
 
 Policy (current):
-- Scheme must be ``https`` in production. ``http`` accepted only when
-  ``ANILA_ALLOW_HTTP_ENDPOINT=1`` (dev / on-prem with TLS-terminating
-  proxy in front).
+- Scheme must be ``https`` unless explicitly relaxed per endpoint kind:
+  ``ANILA_ALLOW_HTTP_ENDPOINT=1`` admits http for model / generic
+  endpoints (PLAN.md P0.2, 2026-07-29: the intranet model gateway speaks
+  plain http, production included); ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1``
+  for agent endpoints. Default posture rejects http for every kind.
 - Hostname must resolve to a globally-routable address. Loopback,
   link-local, multicast, reserved, and unspecified blocks are blocked
   unconditionally.
@@ -57,14 +59,11 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip() == "1"
 
 
-# ── endpoint_kind (Slice 6a, doc 04 §8 flag domain split) ───────────────────
-# doc 04 §8「Production ModelEndpoint invariant (✅ 已拍板)」：production model
-# endpoint 必須 HTTPS,不允許透過 ``ANILA_ALLOW_HTTP_ENDPOINT`` 放寬;該旗標
-# 僅適用於 dev 或 agent endpoint transition。落實需把「全域不分域」的 http
-# 旗標按端點類型分域。三種 kind:
-#   'model'   — production 一律拒 http(fail-closed);僅在「非 production
-#               (ANILA_ENV 非 production/prod)且 ANILA_ALLOW_HTTP_ENDPOINT=1」
-#               的 dev 情境放行,符合 doc §8 例外(dev/local)。
+# ── endpoint_kind (Slice 6a, http 旗標分域) ─────────────────────────────────
+# http 放寬旗標按端點類型分域。三種 kind:
+#   'model'   — http 由 ``ANILA_ALLOW_HTTP_ENDPOINT`` 明確放行,預設拒收。
+#               決策紀錄:PLAN.md P0.2(2026-07-29)——內網部署的模型 gateway
+#               走 http,production 與 dev 同樣依此旗標判定。
 #   'agent'   — http 由新旗標 ANILA_ALLOW_HTTP_AGENT_ENDPOINT 放行;為不打斷
 #               既有內網 MLSteam 純 http NodePort agent,legacy
 #               ANILA_ALLOW_HTTP_ENDPOINT 仍作 fallback(帶 deprecation 警告)。
@@ -79,16 +78,10 @@ _HTTP_AGENT_FLAG = "ANILA_ALLOW_HTTP_AGENT_ENDPOINT"
 
 
 def _is_production() -> bool:
-    """Deployment posture for the model-endpoint HTTPS invariant (doc 04 §8).
+    """Deployment posture via ``ANILA_ENV`` in {production, prod}.
 
-    Production is signalled explicitly via ``ANILA_ENV`` in {production, prod}.
-    Read fresh on every call (like the other flags). NOTE: this defaults to
-    *non*-production when unset so existing dev / test call-sites (which
-    register model endpoints over http under ``ANILA_ALLOW_HTTP_ENDPOINT``)
-    keep working unchanged — the absolute HTTPS invariant only bites once a
-    deployment declares ``ANILA_ENV=production``. This is intentional and
-    additive: it never *weakens* an existing check, it only *adds* a
-    fail-closed rejection under production.
+    Not referenced by the scheme check since PLAN.md P0.2 (2026-07-29);
+    retained for future posture-dependent rules.
     """
     return os.environ.get("ANILA_ENV", "").strip().lower() in {"production", "prod"}
 
@@ -102,20 +95,12 @@ def _reject_http_scheme(endpoint_kind: str) -> None:
     allow_http = _env_flag(_HTTP_MODEL_FLAG)
 
     if endpoint_kind == ENDPOINT_KIND_MODEL:
-        # doc 04 §8 絕對不變量：production model endpoint 必須 HTTPS,
-        # 旗標救不了(fail-closed)。
-        if _is_production():
-            raise UnsafeEndpointError(
-                "production model endpoint 必須使用 https "
-                "(doc 04 §8 硬規則;ANILA_ALLOW_HTTP_ENDPOINT 不適用於 "
-                "production model endpoint)",
-                reason=REASON_SCHEME,
-            )
+        # 2026-07-29 拍板(PLAN.md P0.2):model http 一律由旗標明確放行,
+        # production 不再無條件拒絕(氣隙內網模型 gateway 走純 http)。
         if not allow_http:
             raise UnsafeEndpointError(
                 "model endpoint scheme must be 'https' "
-                "(dev 可設 ANILA_ALLOW_HTTP_ENDPOINT=1 放寬;"
-                "production 一律拒收 http)",
+                "(設 ANILA_ALLOW_HTTP_ENDPOINT=1 放寬;預設拒收 http)",
                 reason=REASON_SCHEME,
             )
         return
@@ -328,9 +313,10 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
     Caller is expected to translate the exception into the appropriate
     framework error (HTTPException 400 in CSP, log + skip in worker).
 
-    ``endpoint_kind`` (Slice 6a, doc 04 §8) domain-splits the http-scheme
-    relaxation flag by endpoint class — ``'model'`` (fail-closed https in
-    production), ``'agent'`` (own ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT`` flag,
+    ``endpoint_kind`` (Slice 6a) domain-splits the http-scheme
+    relaxation flag by endpoint class — ``'model'`` (http gated by
+    ``ANILA_ALLOW_HTTP_ENDPOINT``, env-independent since PLAN.md P0.2),
+    ``'agent'`` (own ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT`` flag,
     legacy fallback), or ``'generic'`` (default; original global semantics,
     existing callers unaffected). ALL host / IP / DNS / trusted-host checks
     below are identical across kinds — the split touches scheme only.
@@ -352,7 +338,7 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
     elif parsed.scheme == "http":
         # Per-kind http acceptance (raises on rejection). Scheme is validated
         # BEFORE the trusted-host bypass below, so a trusted host can never
-        # rescue an http:// model endpoint in production.
+        # rescue an http:// endpoint whose kind-flag is unset.
         _reject_http_scheme(endpoint_kind)
     else:
         raise UnsafeEndpointError(
