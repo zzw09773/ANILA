@@ -172,6 +172,10 @@
 | # | 事情 | 型態 | 驗證 |
 |---|---|---|---|
 | OE-1 | agent 核准流程收斂為 SYSTEM-MAP 的形狀:註冊 → admin 指派 → 可用。七態收成 registered／approved／disabled 三態,拿掉 trace-test 硬閘與 full_trace approval blocker;**保留 `classification_ceiling`** | 修改 | 註冊一個 agent 後,admin 指派使用者即可使用,中間無其他關卡;既有 agent 資料經 migration 對應到新狀態不遺失 |
+| OE-2 | ⚠ **系統性稽核:全樹對照 SYSTEM-MAP 找過度工程**。擁有者提醒本樹是從「被做壞的」狀態複製而來,agent 只是第一個。入口:原始碼註解留著 `doc 0N §M` 出處,**實測 83 個檔案**帶此引用(`policy/service.py` 30 處最多,其次 `models/artifact.py` 22、`schemas/contracts/agents.py` 21)。`r1_0001`–`r1_0008` 全部是照那批舊文件建的 schema | 查證＋修改 | 產出分類清單:`規格有要`／`規格沒要但無害`／`規格沒要且有持續成本`;第三類才排工 |
+
+⚠ **OE-2 的判準(不要簡化成「有引用就砍」)**:SYSTEM-MAP 真正要的東西也帶 doc 引用——**五級分類單向閂鎖是硬需求**,照樣寫著 `doc 08 §N`,砍錯會拆掉真需求。三問全中才是候選:①SYSTEM-MAP 有沒有要 ②有沒有持續成本(每次要走的流程/要維護的欄位/限制設計的約束) ③唯一理由是不是只剩舊文件。
+最可疑的一塊:`trace_span` / `api/traces.py` / `proxy/spans.py`(doc 05 §6)——SYSTEM-MAP §7 幾乎是直接否定:「一張表加幾個索引。**不需要 span 樹、parent 關係、trace id**」。
 
 ### 兩條確認(不是工作項,但影響既有規劃)
 
