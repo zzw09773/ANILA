@@ -92,6 +92,9 @@ def _make_conv(db: Session, user, level: str) -> Conversation:
 def _add_message(db: Session, conv: Conversation, content: str) -> Message:
     msg = Message(conversation_id=conv.id, role="user", content=content)
     db.add(msg)
+    db.flush()
+    # OW-1: public-share / active-path reads walk active_leaf_message_id.
+    conv.active_leaf_message_id = msg.id
     db.commit()
     db.refresh(msg)
     return msg

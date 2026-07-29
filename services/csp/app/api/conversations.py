@@ -16,6 +16,7 @@ from app.models.conversation import Conversation, ConversationShare
 from app.models.message import Message
 from app.models.user import User
 from app.services import conversation_service as svc
+from app.services import message_tree as mtree
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -52,6 +53,11 @@ class MessageOut(BaseModel):
     id: int
     role: str
     content: str
+    # OW-1 tree fields (docs/plans/ow1-message-tree-blueprint.md).
+    parent_id: Optional[int] = None
+    sibling_index: int = 0
+    sibling_count: int = 1
+    sibling_ids: list[int] = []
     trace_id: Optional[str]
     latency_ms: Optional[int]
     model_name: Optional[str]
@@ -85,10 +91,6 @@ class MessageRatingUpdate(BaseModel):
     reasons: Optional[list[Annotated[str, Field(max_length=200)]]] = Field(
         None, max_length=20
     )
-
-
-class MessageEdit(BaseModel):
-    content: str = Field(..., min_length=1, max_length=_MAX_MSG_CHARS)
 
 
 class MessageUpdate(BaseModel):
@@ -133,6 +135,13 @@ class ConversationOut(BaseModel):
 
 
 class ConversationDetail(ConversationOut):
+    active_leaf_message_id: Optional[int] = None
+    messages: list[MessageOut] = []
+
+
+class ConversationPathOut(BaseModel):
+    """Active path after leaf switch or subtree delete (OW-1)."""
+    active_leaf_message_id: Optional[int] = None
     messages: list[MessageOut] = []
 
 
@@ -144,6 +153,24 @@ class MessageAppend(BaseModel):
     model_name: Optional[str] = None
     agent_name: Optional[str] = None
     metadata: Optional[dict] = None
+    # OW-1: omitted/null → thread onto active leaf; explicit int → branchable gate.
+    parent_id: Optional[int] = None
+    set_active: bool = True
+
+
+class MessageBranchCreate(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant|system|tool)$")
+    content: str = Field(..., max_length=_MAX_MSG_CHARS)
+    trace_id: Optional[str] = None
+    latency_ms: Optional[int] = None
+    model_name: Optional[str] = None
+    agent_name: Optional[str] = None
+    metadata: Optional[dict] = None
+    set_active: bool = True
+
+
+class ActiveLeafUpdate(BaseModel):
+    message_id: int
 
 
 class ShareCreate(BaseModel):
@@ -161,6 +188,62 @@ class ShareOut(BaseModel):
     view_count: int
     created_at: datetime
     model_config = {"from_attributes": True}
+
+
+def _message_out(msg: Message, sibling_ids: list[int] | None = None) -> MessageOut:
+    """Build MessageOut with derived sibling nav fields."""
+    ids = sibling_ids if sibling_ids is not None else [msg.id]
+    try:
+        index = ids.index(msg.id)
+    except ValueError:
+        index = 0
+        ids = [msg.id]
+    base = MessageOut.model_validate(msg)
+    return base.model_copy(
+        update={
+            "parent_id": msg.parent_id,
+            "sibling_index": index,
+            "sibling_count": len(ids),
+            "sibling_ids": ids,
+        }
+    )
+
+
+def _enrich_message_list(
+    messages: list[Message], edges: list[tuple[int, int | None]],
+) -> list[MessageOut]:
+    groups = mtree.sibling_groups(edges)
+    return [
+        _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+        for msg in messages
+    ]
+
+
+def _conversation_detail(
+    db: Session,
+    conv: Conversation,
+    *,
+    view: str,
+) -> ConversationDetail:
+    edges = mtree.load_edges(db, conv.id)
+    if view == "all":
+        messages = svc._all_messages_ordered(db, conv.id)
+    else:
+        messages = svc.load_active_path(db, conv)
+    data = ConversationOut.model_validate(conv).model_dump()
+    data["active_leaf_message_id"] = conv.active_leaf_message_id
+    data["messages"] = _enrich_message_list(messages, edges)
+    return ConversationDetail(**data)
+
+
+def _path_out(
+    db: Session, conv: Conversation, messages: list[Message],
+) -> ConversationPathOut:
+    edges = mtree.load_edges(db, conv.id)
+    return ConversationPathOut(
+        active_leaf_message_id=conv.active_leaf_message_id,
+        messages=_enrich_message_list(messages, edges),
+    )
 
 
 # ── Conversation CRUD ─────────────────────────────────────────────────────────
@@ -340,6 +423,7 @@ def search_conversations(
 @router.get("/{conv_id}", response_model=ConversationDetail)
 def get_conversation(
     conv_id: int,
+    view: str = Query("active", pattern="^(active|all)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -353,7 +437,7 @@ def get_conversation(
     level = ClassificationLevel.from_storage(conv.classification_level)
     if classification_audit_required(level):
         svc.log_classified_access(db, conv_id, current_user)
-    return conv
+    return _conversation_detail(db, conv, view=view)
 
 
 @router.put("/{conv_id}", response_model=ConversationOut)
@@ -384,7 +468,9 @@ def append_message(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.append_message(
+    # parent_id explicitly supplied (including intentional fork) → branchable gate.
+    explicit = "parent_id" in body.model_fields_set and body.parent_id is not None
+    msg = svc.append_message(
         db, conv_id, current_user,
         role=body.role,
         content=body.content,
@@ -393,7 +479,66 @@ def append_message(
         model_name=body.model_name,
         agent_name=body.agent_name,
         metadata=body.metadata,
+        parent_id=body.parent_id,
+        parent_id_explicit=explicit,
+        set_active=body.set_active,
     )
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+
+
+@router.post(
+    "/{conv_id}/messages/{message_id}/branch",
+    response_model=MessageOut,
+    status_code=201,
+)
+def branch_message(
+    conv_id: int,
+    message_id: int,
+    body: MessageBranchCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    msg = svc.branch_message(
+        db, conv_id, message_id, current_user,
+        role=body.role,
+        content=body.content,
+        trace_id=body.trace_id,
+        latency_ms=body.latency_ms,
+        model_name=body.model_name,
+        agent_name=body.agent_name,
+        metadata=body.metadata,
+        set_active=body.set_active,
+    )
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+
+
+@router.put("/{conv_id}/active-leaf", response_model=ConversationPathOut)
+def set_active_leaf(
+    conv_id: int,
+    body: ActiveLeafUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conv, path = svc.set_active_leaf(db, conv_id, current_user, body.message_id)
+    return _path_out(db, conv, path)
+
+
+@router.delete(
+    "/{conv_id}/messages/{message_id}",
+    response_model=ConversationPathOut,
+)
+def delete_message_branch(
+    conv_id: int,
+    message_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conv, path = svc.delete_message_branch(db, conv_id, message_id, current_user)
+    return _path_out(db, conv, path)
 
 
 @router.put("/{conv_id}/messages/{message_id}/rating", response_model=MessageOut)
@@ -406,10 +551,13 @@ def set_message_rating(
 ):
     """Record thumbs-up/down on an assistant message, or clear with rating=null.
     Optionally attaches structured feedback (comment + reason chips)."""
-    return svc.set_message_rating(
+    msg = svc.set_message_rating(
         db, conv_id, message_id, current_user, body.rating,
         comment=body.comment, reasons=body.reasons,
     )
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
 
 
 @router.put("/{conv_id}/messages/{message_id}", response_model=MessageOut)
@@ -422,10 +570,10 @@ def update_message(
 ):
     """Patch an existing message (in-place, non-truncating).
 
-    Primarily used by the assistant regenerate flow to replace the old reply
-    without piling up orphan assistant rows in the DB.
+    Used for ANILALM finalize and metadata patches. ANILA regenerate forks
+    via POST .../branch (OW-1); this path is no longer the regenerate write.
     """
-    return svc.update_message_content(
+    msg = svc.update_message_content(
         db, conv_id, message_id, current_user,
         content=body.content,
         trace_id=body.trace_id,
@@ -434,23 +582,9 @@ def update_message(
         agent_name=body.agent_name,
         metadata=body.metadata,
     )
-
-
-@router.put("/{conv_id}/messages/{message_id}/edit", response_model=MessageOut)
-def edit_user_message(
-    conv_id: int,
-    message_id: int,
-    body: MessageEdit,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Rewrite a user message and drop everything after it.
-
-    The caller is expected to immediately re-send the chat turn with the new
-    content; returning the updated message lets the UI reconcile dbId / rating
-    without a separate fetch.
-    """
-    return svc.edit_user_message(db, conv_id, message_id, current_user, body.content)
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
 
 
 # ── Classified policy ─────────────────────────────────────────────────────────

@@ -28,6 +28,18 @@ class Conversation(Base):
         ForeignKey("ingestion_collections.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # OW-1 / docs/plans/ow1-message-tree-blueprint.md — single active-path pointer.
+    # use_alter: conversations ↔ messages would otherwise cycle create_all (SQLite).
+    active_leaf_message_id = Column(
+        Integer,
+        ForeignKey(
+            "messages.id",
+            ondelete="SET NULL",
+            name="fk_conversations_active_leaf_message_id",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
     classified = Column(Boolean, nullable=False, default=False, server_default="false")
     classified_at = Column(DateTime, nullable=True)
     classified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -62,7 +74,16 @@ class Conversation(Base):
 
     owner = relationship("User", foreign_keys=[user_id])
     classifier = relationship("User", foreign_keys=[classified_by])
-    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan", order_by="Message.created_at")
+    # Flat accessor for all rows in the conversation; user-facing rendering
+    # walks active_leaf_message_id (OW-1). order_by includes id for sibling ties.
+    messages = relationship(
+        "Message",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Message.created_at, Message.id",
+        foreign_keys="Message.conversation_id",
+    )
     shares = relationship("ConversationShare", back_populates="conversation", cascade="all, delete-orphan")
 
 

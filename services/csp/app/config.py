@@ -120,6 +120,10 @@ class Settings(BaseSettings):
     # ⚠ 只影響新建與 re-parent 的檢查;調低不會回溯處理既有超深節點。
     ANILA_DEPARTMENT_MAX_DEPTH: int = 3
 
+    # OW-1 — max sibling variants under the same parent_id (edit-re-ask /
+    # regenerate forks). Exceed → 409. docs/plans/ow1-message-tree-blueprint.md
+    ANILA_MESSAGE_MAX_SIBLINGS: int = 20
+
     # P1.5 — attachment context budget
     # model_registry.context_window 目前種子皆 NULL，以此為後備。
     ANILA_DEFAULT_CONTEXT_WINDOW: int = 128000
