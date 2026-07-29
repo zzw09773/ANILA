@@ -115,6 +115,33 @@ class Settings(BaseSettings):
     # Attachment storage (local filesystem)
     ATTACHMENT_STORAGE_PATH: str = "data/attachments"
 
+    # P1.5 — attachment context budget
+    # model_registry.context_window 目前種子皆 NULL，以此為後備。
+    ANILA_DEFAULT_CONTEXT_WINDOW: int = 128000
+    # 對話內附件可佔用的 context window 比例。
+    # DELIBERATE: conversation history is NOT subtracted dynamically from
+    # the attachment budget. The 0.7 ratio exists precisely so attachments
+    # can never occupy more than 70% of the window, leaving the remaining
+    # 30% as the allowance for history, the current question and the
+    # answer. A budget that shrank as the conversation grew would make
+    # the capacity meter a moving target and could retroactively evict an
+    # already-admitted document. Conversations that outgrow the remaining
+    # 30% are the separate 'conversation too long' problem (out of scope).
+    ANILA_ATTACHMENT_BUDGET_RATIO: float = 0.7
+    # token 估算為啟發式，乘上安全係數避免低估。
+    ANILA_ATTACHMENT_TOKEN_SAFETY: float = 1.15
+    # Absolute ceiling (raw token estimate) on the extracted_text we will
+    # persist; beyond it status=too_large and no text is stored, so a 50 MB
+    # upload cannot write an unbounded row.
+    # ⚠ Deliberately absolute, NOT a multiple of the attachment budget.
+    # Admission is derived per request against whichever model applies, so a
+    # budget-derived ceiling would be decided at extraction time (no model
+    # known → default window) and could discard text that a larger-context
+    # model would have admitted — unrecoverable except by re-upload. Storage
+    # limits are a resource concern and must not depend on model choice.
+    # Sized above what any plausible window could admit (0.7 × 1M ≈ 700K).
+    ANILA_ATTACHMENT_MAX_STORED_TOKENS: int = 800_000
+
     # Auto-register platform links on startup (JSON string)
     # Format: '[{"name":"n8n","url":"http://n8n:5678","icon":"workflow","description":"自動化工作流程"}]'
     AUTO_REGISTER_LINKS: str = ""

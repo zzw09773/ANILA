@@ -288,6 +288,31 @@ def _ensure_schema_backfills(bind: Engine) -> None:
             generic_ddl=f"ALTER TABLE platform_links ADD COLUMN {col_name} {ddl_suffix}",
         )
 
+    # --- attachments (P1.5 extraction + budget) -------------------------
+    # Matches r1_0011; page_count is for prompt labels only (not budget).
+    for col_name, pg_suffix, generic_suffix in [
+        ("extracted_text", "TEXT NULL", "TEXT"),
+        ("token_count", "INTEGER NULL", "INTEGER"),
+        (
+            "extract_status",
+            "VARCHAR(20) NOT NULL DEFAULT 'pending'",
+            "VARCHAR(20) NOT NULL DEFAULT 'pending'",
+        ),
+        ("extract_error", "VARCHAR(500) NULL", "VARCHAR(500)"),
+        ("extracted_at", "TIMESTAMP NULL", "TIMESTAMP"),
+        ("page_count", "INTEGER NULL", "INTEGER"),
+    ]:
+        _ensure_column(
+            bind, "attachments", col_name,
+            postgres_ddl=(
+                f"ALTER TABLE attachments ADD COLUMN IF NOT EXISTS "
+                f"{col_name} {pg_suffix}"
+            ),
+            generic_ddl=(
+                f"ALTER TABLE attachments ADD COLUMN {col_name} {generic_suffix}"
+            ),
+        )
+
 
 def _ensure_column(
     bind: Engine,

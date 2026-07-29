@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Text
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -28,6 +28,20 @@ class Attachment(Base):
     # Relative path under ATTACHMENT_STORAGE_PATH; never exposed directly to clients
     storage_path = Column(String(500), nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # P1.5 — async text extraction (r1_0011).
+    # extract_status: pending | ok | failed | unsupported | too_large
+    # (admission vs a model budget is derived at use time, not stored).
+    extracted_text = Column(Text, nullable=True)
+    token_count = Column(Integer, nullable=True)
+    extract_status = Column(
+        String(20), nullable=False, default="pending", server_default="pending",
+    )
+    extract_error = Column(String(500), nullable=True)
+    extracted_at = Column(DateTime, nullable=True)
+    # Parser page_count when reported; not a budget column — only for prompt labels.
+    # Persisted so chat-time injection can show「N 頁」without re-parsing.
+    page_count = Column(Integer, nullable=True)
 
     message = relationship("Message", back_populates="attachments")
     uploader = relationship("User", foreign_keys=[uploaded_by])

@@ -11,6 +11,7 @@ from app.config import settings
 from app.database import get_db
 from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
+from app.models.attachment import Attachment
 from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
 from app.schemas.contracts.classification import ClassificationLevel
@@ -246,6 +247,221 @@ async def _inject_memory(
         messages.insert(0, {"role": "system", "content": result.block})
     body["messages"] = messages
     return result
+
+
+def _inject_attachments(
+    db: Session,
+    conversation_id: int | None,
+    body: dict,
+    model_name: str | None,
+) -> "attachment_context.AttachmentInjectResult | None":
+    """Mutate ``body`` to append conversation attachments to the system msg.
+
+    Unlike memory injection, failures are recorded (not swallowed) so the
+    chat handler can put a trace entry on ``anila_meta``. Chat still proceeds.
+    Returns None when there is no conversation id (nothing to do).
+
+    Admission is derived via ``admit()`` against this turn's model window —
+    nothing is written back to extract_status. Loads metadata first, then
+    ``extracted_text`` only for admitted ids.
+    """
+    from app.services import attachment_context
+
+    if conversation_id is None:
+        return None
+
+    try:
+        # Metadata only — do not pull unbounded extracted_text for every row.
+        meta_rows = (
+            db.query(
+                Attachment.id,
+                Attachment.filename,
+                Attachment.page_count,
+                Attachment.token_count,
+                Attachment.extract_status,
+                Attachment.extract_error,
+                Attachment.created_at,
+            )
+            .filter(Attachment.conversation_id == conversation_id)
+            .order_by(Attachment.created_at.asc(), Attachment.id.asc())
+            .all()
+        )
+        if not meta_rows:
+            return None
+
+        # model_name None → explicit default-window fallback.
+        context_window = attachment_context.get_context_window(db, model_name)
+        budget = attachment_context.attachment_budget_tokens(context_window)
+        admitted_list, excluded_list = attachment_context.admit(meta_rows, budget)
+        admitted_set = set(admitted_list)
+
+        text_by_id: dict[int, str | None] = {}
+        if admitted_list:
+            text_by_id = dict(
+                db.query(Attachment.id, Attachment.extracted_text)
+                .filter(Attachment.id.in_(admitted_list))
+                .all()
+            )
+
+        class _PromptRow:
+            __slots__ = (
+                "id", "filename", "page_count", "token_count",
+                "extract_status", "extract_error", "extracted_text",
+            )
+
+            def __init__(self, row, text: str | None):
+                self.id = row.id
+                self.filename = row.filename
+                self.page_count = row.page_count
+                self.token_count = row.token_count
+                self.extract_status = row.extract_status
+                self.extract_error = row.extract_error
+                self.extracted_text = text
+
+        views = [
+            _PromptRow(
+                r,
+                text_by_id.get(r.id) if r.id in admitted_set else None,
+            )
+            for r in meta_rows
+        ]
+        block = attachment_context.build_attachment_prompt_block(
+            views, admitted_ids=admitted_set,
+        )
+        if block is None:
+            return None
+
+        messages = list(body.get("messages") or [])
+        if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
+            existing = messages[0].get("content") or ""
+            if isinstance(existing, str):
+                messages[0] = {
+                    **messages[0],
+                    "content": f"{existing}\n\n{block}" if existing else block,
+                }
+            else:
+                messages[0] = {
+                    **messages[0],
+                    "content": [
+                        *list(existing),
+                        {"type": "text", "text": block},
+                    ],
+                }
+        else:
+            messages.insert(0, {"role": "system", "content": block})
+        body["messages"] = messages
+
+        ok_n = len(admitted_list)
+        pending_n = sum(
+            1 for a in views if (a.extract_status or "") == "pending"
+        )
+        omitted_n = (
+            len(excluded_list)
+            + sum(
+                1
+                for a in views
+                if (a.extract_status or "") in (
+                    "failed", "unsupported", "too_large",
+                )
+            )
+        )
+        detail_parts = [f"納入 {ok_n} 份"]
+        if pending_n:
+            detail_parts.append(f"處理中 {pending_n} 份")
+        if omitted_n:
+            detail_parts.append(f"未納入 {omitted_n} 份")
+        return attachment_context.AttachmentInjectResult(
+            status="ok" if omitted_n == 0 and pending_n == 0 else "partial",
+            label="附件注入",
+            detail="；".join(detail_parts),
+            injected_count=ok_n,
+        )
+    except Exception as exc:
+        logger.exception(
+            "attachment inject failed conv_id=%s", conversation_id,
+        )
+        return attachment_context.AttachmentInjectResult(
+            status="error",
+            label="附件注入",
+            detail=f"注入失敗：{type(exc).__name__}",
+            skipped=True,
+        )
+
+
+def _merge_attachment_trace(payload: dict, inject_result) -> dict:
+    """Append an attachment trace entry onto ``payload['anila_meta']``."""
+    if inject_result is None or not isinstance(payload, dict):
+        return payload
+    meta = payload.get("anila_meta")
+    if not isinstance(meta, dict):
+        meta = build_default_anila_meta(
+            "attachments",
+            detail="attachment inject",
+        )
+        payload["anila_meta"] = meta
+    trace = meta.get("trace")
+    if not isinstance(trace, list):
+        trace = []
+        meta["trace"] = trace
+    trace.append(inject_result.to_trace_entry())
+    return payload
+
+
+async def _sse_with_attachment_trace(
+    upstream: AsyncIterator[str],
+    inject_result,
+) -> AsyncIterator[str]:
+    """Inject the attachment trace entry into streaming ``anila.meta`` frames.
+
+    Mirrors ``_merge_attachment_trace`` for the SSE path: the terminal
+    metadata frame (synthesised by proxy_stream when the downstream omits
+    one, or forwarded when present) carries the same attachment entry as
+    the non-streaming ``anila_meta.trace``. Stays in proxy.py so the
+    P1.5 change set does not touch ``proxy/service.py``.
+    """
+    import json
+
+    if inject_result is None:
+        async for chunk in upstream:
+            yield chunk
+        return
+
+    entry = inject_result.to_trace_entry()
+    buf = ""
+    async for chunk in upstream:
+        buf += chunk
+        while "\n\n" in buf:
+            block, buf = buf.split("\n\n", 1)
+            block_out = block + "\n\n"
+            event_name = None
+            data_line = None
+            for line in block.split("\n"):
+                if line.startswith("event:"):
+                    event_name = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_line = line[5:].strip()
+            if event_name == "anila.meta" and data_line and data_line != "[DONE]":
+                try:
+                    meta = json.loads(data_line)
+                except (json.JSONDecodeError, TypeError):
+                    yield block_out
+                    continue
+                if isinstance(meta, dict):
+                    trace = meta.get("trace")
+                    if not isinstance(trace, list):
+                        trace = []
+                        meta["trace"] = trace
+                    trace.append(entry)
+                    yield (
+                        "event: anila.meta\n"
+                        + "data: "
+                        + json.dumps(meta, ensure_ascii=False)
+                        + "\n\n"
+                    )
+                    continue
+            yield block_out
+    if buf:
+        yield buf
 
 
 def _schedule_memory_write(
@@ -522,6 +738,11 @@ async def chat_completions(
         body,
         exclude_conversation_id=conv_id_int,
     )
+    # P1.5: whole-document attachment injection (after memory). Failures are
+    # recorded on attach_inject for anila_meta.trace; chat still proceeds.
+    attach_inject = _inject_attachments(
+        db, conv_id_int, body, model_name,
+    )
     # P3: latch the consuming conversation into classified state when
     # memory recall pulled at least one encrypted chunk. One-shot — once
     # set, never cleared by a later non-encrypted turn (would otherwise
@@ -659,8 +880,10 @@ async def chat_completions(
                     is_encrypted=agent_requires_encryption,
                 ),
             )
+            # Same attachment trace entry as non-streaming anila_meta.
+            traced = _sse_with_attachment_trace(teed, attach_inject)
             return StreamingResponse(
-                teed,
+                traced,
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -728,7 +951,7 @@ async def chat_completions(
                 # usage row — orthogonal pre-existing gap, see above.)
                 if task_ctx is not None:
                     finalize_task_run(task_ctx.task_run_id, "completed")
-                return payload
+                return _merge_attachment_trace(payload, attach_inject)
         except httpx.HTTPStatusError as e:
             if task_ctx is not None:
                 finalize_task_run(
@@ -830,8 +1053,10 @@ async def chat_completions(
                 is_encrypted=inherited_encryption,
             ),
         )
+        # Same attachment trace entry as non-streaming anila_meta.
+        traced = _sse_with_attachment_trace(teed, attach_inject)
         return StreamingResponse(
-            teed,
+            traced,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -859,7 +1084,7 @@ async def chat_completions(
         assistant_message=assistant_text,
         is_encrypted=inherited_encryption,
     )
-    return payload
+    return _merge_attachment_trace(payload, attach_inject)
 
 
 @router.post("/v1/agents/{agent_name}/sessions/{session_id}/answer")
