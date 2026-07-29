@@ -52,22 +52,25 @@ def get_shared_conversation(
     share = get_share_by_token(db, token)
     conv = share.conversation
 
-    # Never expose classified conversation content OR its title publicly
-    # (belt + suspenders): a 256-bit token is still an unauthenticated surface,
-    # so a classified conversation leaks nothing — not even the title.
-    classified = bool(conv.classified)
+    # OE-4 two-line gate (SYSTEM-MAP §8 L241): redact content/title when
+    # level >= RESTRICTED (密). Boolean is display-only — do not decide here.
+    from app.schemas.contracts.classification import (
+        ClassificationLevel,
+        outbound_action_allowed,
+    )
+    level = ClassificationLevel.from_storage(conv.classification_level)
+    outbound_ok = outbound_action_allowed(level)
     messages: list[PublicMessageOut] = []
-    if not classified:
+    if outbound_ok:
         for msg in conv.messages:
             messages.append(PublicMessageOut.model_validate(msg))
 
-    # Title redaction for controlled conversations (classified boolean =
-    # rank >= RESTRICTED / 密; SYSTEM-MAP §8). Use 列管 rather than naming the
-    # top level 機密, which would overclaim when the row is only 密.
+    # Title redaction for outbound-blocked conversations. Use 列管 rather
+    # than naming a specific level (SYSTEM-MAP §8 L268 honest labeling).
     return PublicShareOut(
         share_token=token,
         conversation_id=conv.id,
-        conversation_title="（列管對話）" if classified else conv.title,
+        conversation_title="（列管對話）" if not outbound_ok else conv.title,
         mode=share.mode,
         allow_fork=share.allow_fork,
         expires_at=share.expires_at,

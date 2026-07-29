@@ -269,7 +269,11 @@ def record_export(
         exporter_user_id=exporter_user_id,
         exporter_employee_id=exporter_employee_id,
         target_space=payload.target_space,
-        target_classification_floor=payload.target_classification_floor.value,
+        target_classification_floor=(
+            payload.target_classification_floor.value
+            if payload.target_classification_floor is not None
+            else None
+        ),
         export_format=payload.export_format,
         policy_decision_id=policy_decision_id,
         decision="allow",

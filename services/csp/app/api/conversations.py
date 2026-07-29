@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.auth import get_current_user
 from app.database import get_db
 from app.models.attachment import Attachment
+from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare
 from app.models.message import Message
 from app.models.user import User
@@ -116,8 +117,8 @@ class ConversationOut(BaseModel):
     # P3: TRUE when ``classified`` was set by the platform's memory
     # inheritance latch rather than by an agent's requires_encryption
     # flag or an admin's manual classify action. The UI uses this to
-    # render a different banner ("此對話因引用過往加密記憶而升級為機密"
-    # vs the existing "此對話為機密"). Always FALSE on rows pre-dating
+    # render a different banner ("此對話因引用過往加密記憶而升級為列管"
+    # vs the existing "此對話為列管"). Always FALSE on rows pre-dating
     # migration 0031, so old data renders as before.
     classification_inherited: bool = False
     # Slice 3b: four-level classification (SYSTEM-MAP §8). Additive — the legacy
@@ -265,9 +266,10 @@ def search_conversations(
     CJK tokenizer; pg_trgm GIN index makes it fast). Defined BEFORE /{conv_id}
     so 'search' isn't shadowed by the int path param.
 
-    Classified conversations are matched by title only — their message bodies
-    are not exposed through search results (snippet stays None) so encrypted
-    content doesn't leak into the sidebar.
+    OE-4: message snippets follow the outbound block line (level ≥ 密 →
+    snippet stays None). When a snippet is produced for a conversation at
+    level ≥ 營業秘密, one read-audit row is written (same semantics as GET
+    /{conv_id}; at most one per conversation per request).
     """
     like = f"%{q}%"
     # Conversations of this user whose title matches, OR which contain a
@@ -287,10 +289,19 @@ def search_conversations(
         .order_by(Conversation.updated_at.desc())
         .all()
     )
+    from app.schemas.contracts.classification import (
+        ClassificationLevel,
+        classification_audit_required,
+        outbound_action_allowed,
+    )
     hits: list[dict] = []
+    audits_pending = False
     for c in convs:
         snippet = None
-        if not c.classified:
+        # OE-4: snippet redaction follows outbound block line (level >=
+        # RESTRICTED / 密); SYSTEM-MAP §8 L241. Boolean is display-only.
+        level = ClassificationLevel.from_storage(c.classification_level)
+        if outbound_action_allowed(level):
             msg = (
                 db.query(Message)
                 .filter(Message.conversation_id == c.id, Message.content.ilike(like))
@@ -301,9 +312,28 @@ def search_conversations(
                 idx = msg.content.lower().find(q.lower())
                 start = max(0, idx - 20)
                 snippet = ("…" if start > 0 else "") + msg.content[start:start + 80].strip()
+        # L242 read-audit when snippet content is actually exposed.
+        # Same AuditLog shape as log_classified_access; defer commit to
+        # one WAL fsync after the loop (interactive sidebar, limit≤100).
+        if snippet is not None and classification_audit_required(level):
+            db.add(AuditLog(
+                actor_user_id=current_user.id,
+                actor_username=current_user.username,
+                action="access_classified_conversation",
+                resource_type="conversation",
+                resource_id=str(c.id),
+                status="success",
+                detail=(
+                    f"User {current_user.username} accessed classified "
+                    f"conversation {c.id}"
+                ),
+            ))
+            audits_pending = True
         data = ConversationOut.model_validate(c).model_dump()
         data["snippet"] = snippet
         hits.append(data)
+    if audits_pending:
+        db.commit()
     return hits
 
 
@@ -313,8 +343,15 @@ def get_conversation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from app.schemas.contracts.classification import (
+        ClassificationLevel,
+        classification_audit_required,
+    )
+
     conv = svc.get_conversation(db, conv_id, current_user)
-    if conv.classified:
+    # SYSTEM-MAP §8 L242:要落稽核 = 密等 ≥ 營業秘密 (read-audit).
+    level = ClassificationLevel.from_storage(conv.classification_level)
+    if classification_audit_required(level):
         svc.log_classified_access(db, conv_id, current_user)
     return conv
 

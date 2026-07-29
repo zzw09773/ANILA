@@ -148,6 +148,8 @@ def _propagate_conversation_level_to_task(
     conv_level = effective_level(
         db, resource_type="conversation", resource_id=str(conversation_id)
     )
+    # Not an OE-4 outbound gate: one-way latch/propagation skip when there
+    # is nothing above 無機密 to raise the task to (SYSTEM-MAP §8 latch).
     if conv_level <= ClassificationLevel.UNCLASSIFIED:
         return
     apply_classification(
@@ -795,6 +797,8 @@ async def chat_completions(
         # below; the memory-inheritance contribution is latched separately.
         if conv_id_int is not None:
             agent_level = _agent_policy_level(agent)
+            # Not an OE-4 outbound gate: classification latch onto the
+            # conversation row when the agent policy level is above floor.
             if agent_level > ClassificationLevel.UNCLASSIFIED:
                 try:
                     _latch_agent_classification(
@@ -1007,10 +1011,11 @@ async def chat_completions(
                 "task classification propagation failed task_id=%s",
                 task_ctx.task_id,
             )
-    # Slice 6a (doc 04 §5/§8): classification ceiling check BEFORE the
-    # outbound model call. Covers task-linked AND legacy traffic. A violation
-    # raises 403 + records a model.invoke deny row and never dispatches
-    # upstream; a pass records an allow row only when task-linked.
+    # Slice 6a (doc 04 §5/§8) + OE-4/G4: classification ceiling check BEFORE
+    # the outbound model call. Covers task-linked AND legacy traffic. A
+    # violation raises 403 + records a model.invoke deny row and never
+    # dispatches upstream; a pass records an allow row when task-linked OR
+    # level ≥ 營業秘密.
     enforce_model_ceiling(
         db,
         model=model,

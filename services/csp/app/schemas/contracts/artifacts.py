@@ -133,11 +133,12 @@ class ArtifactVersionIn(BaseModel):
 class ArtifactExportIn(BaseModel):
     """``POST /v1/artifacts/{artifact_id}/exports`` body(匯出 policy gate)。
 
-    doc 08 §10 匯出判定式:``allow if target_space.classification_floor >=
-    artifact.level``。``target_classification_floor`` = 目的地空間的分類下限。
+    OE-4 / SYSTEM-MAP §8 L241-242:allow iff artifact.level ≤ 營業秘密;
+    audit iff level ≥ 營業秘密。``target_classification_floor`` 保留為
+    目的地空間 metadata,不再作判定軸。
     """
 
-    target_classification_floor: ClassificationLevel
+    target_classification_floor: ClassificationLevel | None = None
     target_space: str | None = Field(default=None, max_length=100)
     export_format: str | None = Field(default=None, max_length=32)
     artifact_version_id: int | None = None

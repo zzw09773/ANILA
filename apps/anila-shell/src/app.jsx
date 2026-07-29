@@ -1917,8 +1917,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         }}>
           <IconLock size={14} />
           <span>
-            此對話因引用過往加密記憶而升級為機密。
-            刪除對話的加密記憶引用可解除（設定 → 記憶）；
+            此對話因引用過往機敏記憶而升級為列管。
+            刪除對話的機敏記憶引用可解除（設定 → 記憶）；
             一旦升級無法在此對話手動退回。
           </span>
         </div>
@@ -2042,7 +2042,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                 )}
               </Dropdown>
               <IconButton
-                title={selectedConv.classified ? "加密對話不可分享" : "分享"}
+                title={selectedConv.classified ? "列管對話不可分享" : "分享"}
                 onClick={() => !selectedConv.classified && setShareOpen(true)}
                 disabled={selectedConv.classified}
                 style={selectedConv.classified ? { opacity: 0.4, cursor: "not-allowed" } : {}}
@@ -2683,10 +2683,10 @@ function SettingsModal({
                 </div>
               </div>
               <div>
-                <div style={{ fontWeight: 500, marginBottom: 4 }}>加密對話</div>
+                <div style={{ fontWeight: 500, marginBottom: 4 }}>列管對話</div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
-                  若指定的 agent 為加密模型（requires_encryption=true），此對話會自動鎖為機密：
-                  禁止複製、禁止分享，且加上稽核浮水印。此狀態無法由使用者解除。
+                  若指定的 agent 為列管模型（requires_encryption=true），此對話會自動標示為機敏：
+                  密／機密禁止分享與匯出，營業秘密可分享但會落稽核，並加上浮水印。此狀態無法由使用者解除。
                 </div>
               </div>
             </div>

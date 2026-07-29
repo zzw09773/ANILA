@@ -86,6 +86,23 @@ class ClassificationLevel(enum.Enum):
             ) from None
 
 
+def outbound_action_allowed(level: ClassificationLevel) -> bool:
+    """外流動作(複製/匯出/分享/列印)是否允許。
+
+    SYSTEM-MAP §8 L241:可以做 = 密等 ≤ 營業秘密。
+    等價阻擋謂詞:``level >= ClassificationLevel.RESTRICTED``。
+    """
+    return level <= ClassificationLevel.TRADE_SECRET
+
+
+def classification_audit_required(level: ClassificationLevel) -> bool:
+    """該等級的外流/讀取是否必須落稽核。
+
+    SYSTEM-MAP §8 L242:要落稽核 = 密等 ≥ 營業秘密。
+    """
+    return level >= ClassificationLevel.TRADE_SECRET
+
+
 # 定義順序即排序:rank 由成員宣告順序推導,單一事實來源。
 _RANKS: dict[ClassificationLevel, int] = {
     level: index for index, level in enumerate(ClassificationLevel)

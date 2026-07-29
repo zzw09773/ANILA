@@ -595,7 +595,7 @@ export const MessageBubble = ({
               {copied ? <IconCheck /> : <IconCopy />}
             </IconButton>
           ) : (
-            <IconButton title="機密對話禁止複製" disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
+            <IconButton title="列管對話禁止複製" disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
               <IconLock />
             </IconButton>
           )}
@@ -678,7 +678,7 @@ export const MessageBubble = ({
 
           {/* Message Actions(自訂動作鈕):正/倒讚旁的一鍵動作。動作宣告式由
               host 在 tweaks.messageActions 設定(預設:翻譯/摘要/改寫公文)。
-              機密對話禁止(動作會把內容當新訊息送出,等同外流路徑)。 */}
+              列管對話禁止(動作會把內容當新訊息送出,等同外流路徑)。 */}
           {!classified && Array.isArray(messageActions) && messageActions.length > 0 &&
             messageActions.map((action) => (
               <button
@@ -761,7 +761,7 @@ export const MessageBubble = ({
       )}
 
       {/* 結構化回饋:倒讚後出現原因 chips + 評語。air-gap 下這是模型品質的主要
-          訊號。機密對話不收集(內容不外傳)。送出後收合顯示已送出。 */}
+          訊號。列管對話不收集(內容不外傳)。送出後收合顯示已送出。 */}
       {!msg.streaming && msg.rating === "down" && !classified && typeof onRate === "function" && (
         fbSent ? (
           <div style={{ marginTop: 6, fontSize: 12, color: "var(--success)" }}>✓ 感謝回饋</div>
@@ -1833,7 +1833,7 @@ export const Sidebar = ({
                             flexShrink: 0,
                             marginTop: 4,
                           }}
-                          title={c.classificationInherited ? "因引用過往加密記憶而升級" : "機密對話"}
+                          title={c.classificationInherited ? "因引用過往機敏記憶而升級" : "列管對話"}
                         />
                       )}
                       {c.starred && <IconStar size={11} style={{ color: "var(--warn)", flexShrink: 0, marginTop: 4 }} />}
