@@ -65,7 +65,8 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,P
 - **OE-3 已關板**(merge `c4bee70`):分類四級 無機密<營業秘密<密<機密;r1_0003 **原地改寫**(擁有者裁決,全庫可拋、本機已砍庫從零驗到 r1_0011);舊識別字 CONFIDENTIAL/TOP_SECRET/ABSOLUTE_SECRET 已刪無 alias;手動分類寫「密」(rank-2 行為保持);前端(governance-ui+anila-shell 含浮水印)四級化,anila-ui 容器已重建。⚠ 門檻仍是統一判準,兩條線=OE-4。⚠ sol 通道額度罄至 2026-08-05,二票=kimi-k3、驗收=fresh opus(已揭露)。
 - **OE-4 已關板**(merge `ef5ef7c`,=P4.1):外流兩條線(可做≤營業秘密、落稽核≥營業秘密)全面改讀等級,boolean 只剩顯示旗標;G4 task-less 落列;artifact export 判定軸退役;28 條真值表測試。⚠ 活體驗收發現 **G9 缺口**:無任何 API 能把對話設到營業秘密/機密(classify 硬寫「密」),營業秘密層在生產中惰性——誰能設級待擁有者定義,落地後回補活體格。
 - 執行順序(擁有者 2026-07-30 拍板):**OW 區塊(OW-1 訊息樹、OW-3 自訂按鈕)→ P4 → P3 → P2**;P2 仍是上線硬閘。
-- 下一步:**OW-1 WP-A**(後端訊息樹核心,藍圖已定:parent_id+active_leaf 指標、/branch 端點、r1_0012)→ WP-B 前端改線(兩包間不部署,edit 端點移除會短暫斷前端編輯)→ OW-3;P1.6(`.12` 前綴快取查證)需進內網現場做。
+- **OW-1 已關板**(WP-A `dbcdd3d`+WP-B `0bf0c49`,2026-07-30 凌晨):訊息樹全鏈(parent_id+active_leaf、branch/active-leaf/subtree-delete、/edit 移除、前端伺服器真相化、r1_0012);活體 e2e 10/10 PASS 含硬重載分支保持。alembic head=**r1_0012**。留檔:切回舊分支 canonicalize 到最新變體(規格行為)、migration 降升循環壓平樹形、~1 RTT 切換窗口後續票。
+- 下一步:**OW-3**(訊息級自訂按鈕,擁有者拍板用 exec;三件連帶:P2 掃描風險接受書面、audit log 全量快照+匯出、owner-only 建立權)→ P4 剩餘 → P3 → P2;P1.6(`.12` 前綴快取查證)需進內網現場做。
 
 ## 5. 鐵則
 
