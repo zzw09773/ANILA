@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Slice 3b — 降級申請 / 權責指派 API + 五級 runtime latch 測試。
+"""Slice 3b — 降級申請 / 權責指派 API + 四級 runtime latch 測試。
 
 依 docs/anila-redesign-docs/08(§7 變體 A 雙人原則/權責脫鉤/信任錨/
 fail-closed、§8 DeclassificationRequest、§12 supervisor_missing)與 doc 09
@@ -11,7 +11,7 @@ fail-closed、§8 DeclassificationRequest、§12 supervisor_missing)與 doc 09
   無權責 fail-closed 維持 pending + 403、駁回不動等級 + PolicyDecision 記帳
 - 權責指派:owner-only 授予、必附核定依據、雙人控制(登錄 → 另一人確認才
   生效)、登錄人不得自我確認、撤銷 soft 後失效、未確認的授予不生效
-- runtime 五級 latch:agent latch 寫等級 + event + boolean 鏡射、
+- runtime 四級 latch:agent latch 寫等級 + event + boolean 鏡射、
   _agent_policy_level backfill、manual classify 走單向核心、conversation
   payload 帶 classification_level、conversation→task 傳遞
 """
@@ -149,14 +149,14 @@ class TestDeclassificationRequestApi:
 
     def test_not_a_downgrade_422(self, client, db):
         admin = make_user(db, "boss", role="admin")
-        conv = _make_conversation(db, admin, level="機密")
+        conv = _make_conversation(db, admin, level="密")
         resp = client.post(
             "/api/classification/declassification-requests",
             headers=_headers(client, "boss"),
             json={
                 "resource_type": "conversation",
                 "resource_id": str(conv.id),
-                "requested_level": "極機密",  # 高於現行 → 非降級
+                "requested_level": "機密",  # 嚴格更高 → 非降級
                 "reason": "wrong direction",
             },
         )
@@ -431,10 +431,10 @@ class TestClassificationAuthorityApi:
         )
 
 
-# ── runtime 五級 latch(proxy helpers + manual classify + payload + task)──────────
+# ── runtime 四級 latch(proxy helpers + manual classify + payload + task)──────────
 
 
-class TestRuntimeFiveLevelLatch:
+class TestRuntimeFourLevelLatch:
     def test_agent_latch_writes_level_event_and_boolean_mirror(self, db):
         user = make_user(db)
         conv = _make_conversation(db, user)
@@ -452,14 +452,14 @@ class TestRuntimeFiveLevelLatch:
         assert event.new_level == "機密"
 
     def test_agent_policy_level_backfill_and_default(self):
-        # requires_encryption 但未設等級 → floor 機密(byte-compat)
+        # requires_encryption 但未設等級 → floor RESTRICTED(密);舊 rank-2
         enc = SimpleNamespace(
             default_classification_level="無機密", requires_encryption=True
         )
-        assert _agent_policy_level(enc) is ClassificationLevel.CONFIDENTIAL
+        assert _agent_policy_level(enc) is ClassificationLevel.RESTRICTED
         # 已設更高等級 → 取更高(max)
         top = SimpleNamespace(
-            default_classification_level="極機密", requires_encryption=True
+            default_classification_level="機密", requires_encryption=True
         )
         assert _agent_policy_level(top) is ClassificationLevel.SECRET
         # 無加密、無等級 → 無機密(不 latch)
@@ -472,7 +472,7 @@ class TestRuntimeFiveLevelLatch:
         user = make_user(db, "owner-u", role="user")
         conv = _make_conversation(db, user)
         result = conversation_service.classify_conversation(db, conv.id, user)
-        assert result.classification_level == "機密"
+        assert result.classification_level == "密"
         assert result.classified is True
         assert result.classified_by == user.id
         event = (
@@ -480,7 +480,7 @@ class TestRuntimeFiveLevelLatch:
             .filter(ClassificationEvent.reason == "manual_admin")
             .one()
         )
-        assert event.new_level == "機密"
+        assert event.new_level == "密"
         # 既有 AuditLog 相容軌跡保留
         assert (
             db.query(AuditLog)
@@ -492,7 +492,7 @@ class TestRuntimeFiveLevelLatch:
     def test_conversation_payload_has_classification_level(self, client, db):
         user = make_user(db, "alice")
         plain = _make_conversation(db, user)
-        classified = _make_conversation(db, user, level="極機密")
+        classified = _make_conversation(db, user, level="機密")
         headers = _headers(client, "alice")
         r_plain = client.get(
             f"/api/conversations/{plain.id}", headers=headers
@@ -502,11 +502,11 @@ class TestRuntimeFiveLevelLatch:
         r_hi = client.get(
             f"/api/conversations/{classified.id}", headers=headers
         )
-        assert r_hi.json()["classification_level"] == "極機密"
+        assert r_hi.json()["classification_level"] == "機密"
 
     def test_task_propagation_carries_conversation_level(self, db):
         user = make_user(db)
-        conv = _make_conversation(db, user, level="極機密")
+        conv = _make_conversation(db, user, level="機密")
         task = Task(title="t", task_type="query", requester_user_id=user.id)
         db.add(task)
         db.commit()
@@ -515,14 +515,14 @@ class TestRuntimeFiveLevelLatch:
 
         _propagate_conversation_level_to_task(db, task.id, conv.id)
         db.refresh(task)
-        assert task.classification_level == "極機密"
+        assert task.classification_level == "機密"
         event = (
             db.query(ClassificationEvent)
             .filter(ClassificationEvent.resource_type == "task")
             .one()
         )
         assert event.reason == "source_selected"
-        assert event.new_level == "極機密"
+        assert event.new_level == "機密"
 
     def test_task_propagation_noop_when_unclassified(self, db):
         user = make_user(db)

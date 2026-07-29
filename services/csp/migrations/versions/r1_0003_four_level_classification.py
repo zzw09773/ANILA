@@ -1,22 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Slice 3a — 五級分類 schema 升級 + 治理三表(doc 08、doc 10 Slice 3)。
+"""Slice 3a — 四級分類 schema 升級 + 治理三表(SYSTEM-MAP §8)。
 
 新表:
-- ``classification_events``(doc 08 §6 欄位逐字;reason 7 值封閉 enum 在
+- ``classification_events``(欄位逐字;reason 7 值封閉 enum 在
   契約層,DB 存開放 String —— 同 policy_decisions 模式)
-- ``declassification_requests``(doc 08 §8 欄位逐字;status 5 值,
+- ``declassification_requests``(status 5 值,
   fail-closed 預設 pending_supervisor;變體 A approved_via 二選一 +
   紙本代錄三欄)
-- ``classification_authority_assignments``(doc 08 §7 第 2–3 點、§12
-  「機密審批權責」指派;必附核定依據公文文號/簽呈;doc 10 Slice 3 的
-  supervisor_approval 構件 = 本表 + declassification_requests 上的
-  supervisor 欄位)
+- ``classification_authority_assignments``(「機密審批權責」指派;
+  必附核定依據公文文號/簽呈;supervisor_approval 構件 = 本表 +
+  declassification_requests 上的 supervisor 欄位)
 
-共通四欄位(doc 08 §5:classification_level / classification_latched_at /
-classification_source / classification_event_id)掛載對象 —— 文件列 11 種
-資源,本 slice 落在**現存**的表:
+共通四欄位(classification_level / classification_latched_at /
+classification_source / classification_event_id)掛載對象 —— 本 slice
+落在**現存**的表:
 
-| doc 08 資源       | 現制表                  | 本檔動作                     |
+| 資源              | 現制表                  | 本檔動作                     |
 |-------------------|-------------------------|------------------------------|
 | Task              | tasks                   | 補 3 欄(level 已在 r1_0001)|
 | Conversation      | conversations           | 加 4 欄 + backfill           |
@@ -33,15 +32,15 @@ classification_source / classification_event_id)掛載對象 —— 文件列 11
 | ServiceLaunch     | ——(Slice 7 才建表)   | 深後補(deferred)           |
 | ExportRecord      | export_records          | 4 欄已於 r1_0007 建(Slice 8a)|
 
-Backfill(doc 08 §3 migration bridge;floor=最低安全起點,最終等級以
-人工分類盤點為準,§15):
+四級字彙(SYSTEM-MAP §8):無機密 / 營業秘密 / 密 / 機密。
+
+Backfill(floor=最低安全起點;legacy classified → 最高級 機密):
 - ``conversations.classified=false/null → 無機密``(server_default 即是)
 - ``conversations.classified=true → 機密``;``classification_inherited=true``
-  另補一筆 ``memory_inherited`` ClassificationEvent(bridge 第 4 列)
-- ``agents.requires_encryption=true → default_classification_level=機密``
+  另補一筆 ``memory_inherited`` ClassificationEvent
+- ``agents.requires_encryption=true → default_classification_level=密``
 - collections / documents 全部 floor=無機密(server_default)
-- **舊 boolean 欄位原封不動**(doc 10 Slice 3 Done:舊 boolean latch 不破;
-  downgrade 只卸新欄新表,boolean 側零資料損失)
+- **舊 boolean 欄位原封不動**(downgrade 只卸新欄新表,boolean 側零資料損失)
 
 Revision ID: r1_0003
 Revises: r1_0002
@@ -60,8 +59,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 json_type = sa.JSON().with_variant(JSONB, "postgresql")
 
+# SYSTEM-MAP §8 四級字彙;backfill 只用這兩個端點值。
 _UNCLASSIFIED = "無機密"
-_CONFIDENTIAL = "機密"
+_RESTRICTED = "密"
+_SECRET = "機密"  # legacy classified=true → 最高級(保守)
 
 # 加「4 欄全套」的現存表(Chunk 的 document_chunks 是 PG-only、0014 以
 # raw SQL 建立,一樣用 add_column —— migration 實務上只跑 PG)。
@@ -258,24 +259,24 @@ def upgrade() -> None:
     )
 
     # ── 5. Backfill(floor;舊 boolean 欄位原封不動)──────────────────────
-    # classified=true → 機密(false/null → 無機密由 server_default 落定)。
+    # classified=true → 機密(SECRET;false/null → 無機密由 server_default 落定)。
     op.execute(
         sa.text(
             "UPDATE conversations SET "
-            f"classification_level = '{_CONFIDENTIAL}', "
+            f"classification_level = '{_SECRET}', "
             "classification_source = 'legacy_backfill', "
             "classification_latched_at = COALESCE(classified_at, CURRENT_TIMESTAMP) "
             "WHERE classified"
         )
     )
-    # classification_inherited=true → inherited_from event(bridge 第 4 列;
-    # 來源 chunk 已不可考,inherited_from_* 留 NULL,provenance 由 reason 承載)。
+    # classification_inherited=true → inherited_from event
+    # (來源 chunk 已不可考,inherited_from_* 留 NULL,provenance 由 reason 承載)。
     op.execute(
         sa.text(
             "INSERT INTO classification_events "
             "(resource_type, resource_id, previous_level, new_level, reason, created_at) "
             f"SELECT 'conversation', CAST(id AS VARCHAR), '{_UNCLASSIFIED}', "
-            f"'{_CONFIDENTIAL}', 'memory_inherited', "
+            f"'{_SECRET}', 'memory_inherited', "
             "COALESCE(classified_at, CURRENT_TIMESTAMP) "
             "FROM conversations WHERE classified AND classification_inherited"
         )
@@ -290,11 +291,12 @@ def upgrade() -> None:
             ") WHERE classified AND classification_inherited"
         )
     )
-    # requires_encryption=true → default_classification_level=機密(floor)。
+    # requires_encryption=true → default_classification_level=密(floor;
+    # 對齊 runtime `_agent_policy_level` 的 RESTRICTED)。
     op.execute(
         sa.text(
-            "UPDATE agents SET "
-            f"default_classification_level = '{_CONFIDENTIAL}' "
+            f"UPDATE agents SET "
+            f"default_classification_level = '{_RESTRICTED}' "
             "WHERE requires_encryption"
         )
     )

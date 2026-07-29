@@ -39,9 +39,9 @@ class Conversation(Base):
     classification_inherited = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
-    # ── 五級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
+    # ── 四級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
     # 舊 boolean classified 保留為 compatibility read model(doc 08 §15
-    # Step 3;鏡射規則 classified = level >= 機密,由
+    # Step 3;鏡射規則 classified = level >= 密,由
     # app.modules.policy.service 維護,舊 latch 不破)。
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"

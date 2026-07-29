@@ -66,33 +66,35 @@ def _require_conversation_access(
 
 
 def _agent_policy_level(agent) -> ClassificationLevel:
-    """The agent's own five-level classification floor (doc 08 §4).
+    """The agent's own four-level classification floor (SYSTEM-MAP §8).
 
     ``default_classification_level`` (set by the 3a migration bridge / manual
     inventory) is the source of truth; a ``requires_encryption=true`` agent
-    without a manual level still floors at 機密 so the legacy boolean stays
-    byte-compatible (the old raw-SQL latch always meant classified=true).
+    without a manual level still floors at RESTRICTED(密) — preserves the old
+    rank-2 floor that previously was 機密 in the five-level set
+    (SYSTEM-MAP §8), so the legacy boolean stays byte-compatible.
     """
     level = ClassificationLevel.from_storage(
         getattr(agent, "default_classification_level", None) or "無機密"
     )
     if bool(getattr(agent, "requires_encryption", False)):
         level = ClassificationLevel.max_of(
-            [level, ClassificationLevel.CONFIDENTIAL]
+            [level, ClassificationLevel.RESTRICTED]
         )
     return level
 
 
 def _latch_agent_classification(
-    db: Session, conversation_id: int, level: str = "機密"
+    db: Session, conversation_id: int, level: str = ClassificationLevel.RESTRICTED.to_storage()
 ) -> None:
     """Latch the routed agent's classification onto the conversation row.
 
-    Slice 3b: routes through the five-level one-way core
+    Slice 3b: routes through the four-level one-way core
     (``apply_classification`` reason=``agent_policy``) instead of the old raw
     ``UPDATE ... SET classified=TRUE``. The core mirrors the legacy boolean
-    (``classified = level >= 機密``) so a hard refresh still latches the UI
-    back into encrypted mode; it never lowers (single-direction), and leaves
+    (``classified = level >= 密`` / RESTRICTED; old rank-2 floor,
+    SYSTEM-MAP §8) so a hard refresh still latches the UI back into encrypted
+    mode; it never lowers (single-direction), and leaves
     ``classification_inherited`` untouched (the source is agent policy, not
     memory inheritance — that path is handled separately below).
     """
@@ -112,18 +114,18 @@ def _latch_agent_classification(
 def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
     """Mark the conversation as classified-via-inheritance (memory recall).
 
-    Slice 3b: routes through the five-level one-way core
+    Slice 3b: routes through the four-level one-way core
     (``apply_classification`` reason=``memory_inherited``), which floors the
-    row at 機密, mirrors the legacy boolean AND flips
-    ``classification_inherited=TRUE`` on the raising event (doc 08 §3 bridge).
-    One-way — never lowers a row already at 機密 or higher.
+    row at RESTRICTED(密) — preserves the old rank-2 floor (SYSTEM-MAP §8),
+    mirrors the legacy boolean AND flips ``classification_inherited=TRUE``
+    on the raising event. One-way — never lowers a row already at 密 or higher.
     """
     from app.modules.policy import apply_classification
     apply_classification(
         db,
         resource_type="conversation",
         resource_id=str(conversation_id),
-        new_level=ClassificationLevel.CONFIDENTIAL.to_storage(),
+        new_level=ClassificationLevel.RESTRICTED.to_storage(),
         actor_type="service",
         actor_id="memory",
         reason="memory_inherited",
@@ -785,12 +787,12 @@ async def chat_completions(
         # but the row's classified flag must record the encrypted turn so
         # the next GET /api/conversations latches the UI back into
         # encrypted mode.
-        # Slice 3b: latch the agent's OWN five-level classification onto the
+        # Slice 3b: latch the agent's OWN four-level classification onto the
         # conversation (reason=agent_policy) through the one-way core. Uses
-        # the agent's default level, floored at 機密 when requires_encryption
-        # (byte-compatible with the old boolean latch). The OR'd
-        # ``agent_requires_encryption`` still drives the wire meta below; the
-        # memory-inheritance contribution is latched separately (above).
+        # the agent's default level, floored at RESTRICTED(密) when
+        # requires_encryption — old rank-2 floor preserved (SYSTEM-MAP §8).
+        # The OR'd ``agent_requires_encryption`` still drives the wire meta
+        # below; the memory-inheritance contribution is latched separately.
         if conv_id_int is not None:
             agent_level = _agent_policy_level(agent)
             if agent_level > ClassificationLevel.UNCLASSIFIED:

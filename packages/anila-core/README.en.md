@@ -200,7 +200,7 @@ anila-core register \
 | Flag | Notes |
 |---|---|
 | `--runtime-type` | 5 values (doc `05` §3): `anila_agent` / `langchain` / `openwebui_pipe_compatible` / `openai_compatible_agent` / `custom_http` |
-| `--classification-ceiling` | five levels (doc `08`): `無機密` / `營業秘密` / `機密` / `極機密` / `絕對機密` |
+| `--classification-ceiling` | four levels (doc `08`): `無機密` / `營業秘密` / `密` / `機密` |
 | `--version` | agent version string (e.g. `1.0.0`) |
 | `--draft` | shadow registration: visible only in the governance center, not yet usable for real tasks |
 

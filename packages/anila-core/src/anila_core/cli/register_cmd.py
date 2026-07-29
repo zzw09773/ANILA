@@ -26,13 +26,12 @@ _RUNTIME_TYPES: tuple[str, ...] = (
     "custom_http",
 )
 
-# doc-08 五級分類（繁中值，classification_ceiling 用）。
+# SYSTEM-MAP §8 四級分類（繁中值，classification_ceiling 用）。
 _CLASSIFICATION_CEILINGS: tuple[str, ...] = (
     "無機密",
     "營業秘密",
+    "密",
     "機密",
-    "極機密",
-    "絕對機密",
 )
 
 

@@ -139,7 +139,7 @@ The redesign series follows the legacy numeric chain (`r1_0001` revises `0046`),
 
 ## 6. Security invariants
 
-- **Five-level one-way classification latch**: order `無機密 < 營業秘密 < 機密 < 極機密 < 絕對機密`; effective level = `max` of observed classifications and **never downgrades** (`policy.apply_classification` writes a `ClassificationEvent`). **Declassification is not a removed route but a governed request workflow**: `declassification_requests` + supervisor approval (`classification_authority_assignments`), fail-closed default `pending_supervisor`.
+- **Four-level one-way classification latch**: order `無機密 < 營業秘密 < 密 < 機密`; effective level = `max` of observed classifications and **never downgrades** (`policy.apply_classification` writes a `ClassificationEvent`). **Declassification is not a removed route but a governed request workflow**: `declassification_requests` + supervisor approval (`classification_authority_assignments`), fail-closed default `pending_supervisor`.
 - **Card SSO**: the CSPKI natural-person smart card uses real PKCS#7 / CMS verification (SignerInfo signature + cert chain + nonce anti-replay), not mere parsing.
 - **JWT / JWKS**: RS256 (access + refresh, `tv` token-version revocation claim); `GET /.well-known/jwks.json` publishes the verification keys. The launch token reuses the same RS256 keypair / `kid`, so registered services verify it **locally** via JWKS (`aud` / `iss` / `exp` / signature); TTL 10 min, and it **never** embeds a model key or a long-lived user JWT.
 - **CSRF**: cookie-authenticated mutating requests use double-submit (`X-CSRF-Token`, constant-time compare, `CsrfMiddleware`).

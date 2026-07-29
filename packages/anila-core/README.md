@@ -119,7 +119,7 @@ packages/anila-core/
 |---|---|---|
 | **Full Trace**(spans + `/v1/traces` ingest) | `anila_trace_sdk` 生產者:批次 export span 到 CSP 端點,並 mirror 進 `anila.spans` SSE | `tracing/sdk.py`;doc `05` §6 / `09` §10 |
 | **Task spine**(`X-ANILA-Task-Id`) | runtime 由 `CallerContext` 讀入並沿 turn 傳遞 task-id | `api/caller_context.py` |
-| **五級分類 + 單向 latch** | agent runtime 守 per-turn classified 單向 latch(`ctx.classified_latch` → `anila_meta.classified`);`register` CLI 帶 `classification_ceiling`。**latch 執法 / 解密權威在 CSP** | `context/agent_context.py`;doc `08` |
+| **四級分類 + 單向 latch** | agent runtime 守 per-turn classified 單向 latch(`ctx.classified_latch` → `anila_meta.classified`);`register` CLI 帶 `classification_ceiling`（無機密／營業秘密／密／機密）。**latch 執法 / 解密權威在 CSP** | `context/agent_context.py`;doc `08` |
 | **Agent Registry**(7 態核准 + trace-test gate) | `register` / `status` CLI 送件進 CSP registry;`--draft` shadow 註冊。**核准態機與 trace-test gate 在 CSP** | `cli/register_cmd.py`;doc `05` |
 | **Model Gateway**(http 旗標分域) | `url_guard` 對 `endpoint_kind='model'` 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(PLAN.md P0.2,2026-07-29 拍板:production 與 dev 同準)。**per-model key / 5 態健康在 CSP** | `security/url_guard.py`;doc `04` §8 |
 
@@ -200,7 +200,7 @@ anila-core register \
 | 旗標 | 說明 |
 |---|---|
 | `--runtime-type` | 5 值(doc `05` §3):`anila_agent` / `langchain` / `openwebui_pipe_compatible` / `openai_compatible_agent` / `custom_http` |
-| `--classification-ceiling` | 五級(doc `08`):`無機密` / `營業秘密` / `機密` / `極機密` / `絕對機密` |
+| `--classification-ceiling` | 四級(SYSTEM-MAP §8):`無機密` / `營業秘密` / `密` / `機密` |
 | `--version` | agent 版本字串(如 `1.0.0`) |
 | `--draft` | shadow 註冊:僅治理中心可見,尚不可承接實際任務 |
 

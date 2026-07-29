@@ -32,7 +32,7 @@ class ModelRegistry(Base):
     # MODEL_GATEWAY_API_KEY(MVP fallback)。永不隨 API 回傳明文,GET 只露
     # ``has_api_key: bool``。
     api_key_secret_ref = Column(Text, nullable=True)
-    # Slice 6a (doc 04 §5): 分類上限(五級字串);NULL = 不設限。出向呼叫前的
+    # Slice 6a (doc 04 §5): 分類上限(四級字串);NULL = 不設限。出向呼叫前的
     # ceiling 檢查依此判 allow/deny(app/services/proxy/ceiling.py)。
     classification_ceiling = Column(String(20), nullable=True)
     # Slice 6a (doc 04 §2): supports_* 能力宣告。

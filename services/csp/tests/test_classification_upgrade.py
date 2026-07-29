@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Slice 3a — 五級分類 schema 升級 + latch core 測試。
+"""Slice 3a — 四級分類 schema 升級 + latch core 測試。
 
-依 doc 08(§1 五級排序、§2 單向閂鎖、§3 backfill bridge、§6
-ClassificationEvent 7 值 reason enum、§7 變體 A 雙人原則/權責脫鉤/
-fail-closed、§8 DeclassificationRequest 5 值 status + approved_via 二選一、
-§12 supervisor_missing fail-closed)與 doc 10 Slice 3(舊 boolean latch 不破)。
+依 SYSTEM-MAP §8(四級排序、單向閂鎖)與既有降級/權責流程:
+ClassificationEvent reason enum、DeclassificationRequest status +
+approved_via、舊 boolean latch 不破。
 
 涵蓋:
 - doc 08 enum 逐字驗證(reason 7 值、status 5 值、approved_via 2 值)
 - apply_classification 單向閂鎖:升級寫 event、降級嘗試 no-op 不寫 event
   (doc 08 未規定降級嘗試要記 event → 依指示採「無 event、回 None」)
-- max 傳遞、legacy boolean 鏡射(classified = level >= 機密)雙向一致
+- max 傳遞、legacy boolean 鏡射(classified = level >= 密 / RESTRICTED)雙向一致
 - 降級申請:僅 Admin 可申請、申請人 ≠ 核准人、無權責 fail-closed 停留
   pending + audit supervisor_missing、紙本代錄必附文號/官職姓名、
   核准恰好降一次 + event
@@ -75,7 +74,7 @@ def grant_authority(db, user, reference="總字第0001號簽呈"):
     return row
 
 
-def latch_confidential(db, conv, actor) -> ClassificationEvent:
+def latch_secret(db, conv, actor) -> ClassificationEvent:
     return apply_classification(
         db,
         resource_type="conversation",
@@ -118,14 +117,15 @@ class TestDoc08EnumsVerbatim:
         ]
 
     def test_backfill_mapping_from_legacy_boolean(self):
-        # doc 08 §3 migration bridge:false → 無機密、true → 機密(floor)
+        # doc 08 §3 migration bridge → SYSTEM-MAP §8:false → 無機密、
+        # true → 機密(SECRET,最高級,保守 floor)
         assert (
             ClassificationLevel.from_legacy_classified(False)
             is ClassificationLevel.UNCLASSIFIED
         )
         assert (
             ClassificationLevel.from_legacy_classified(True)
-            is ClassificationLevel.CONFIDENTIAL
+            is ClassificationLevel.SECRET
         )
 
 
@@ -138,7 +138,7 @@ class TestApplyClassification:
         conv = make_conversation(db, user)
         assert conv.classified is False
 
-        event = latch_confidential(db, conv, user)
+        event = latch_secret(db, conv, user)
 
         assert isinstance(event, ClassificationEvent)
         assert event.resource_type == "conversation"
@@ -152,14 +152,14 @@ class TestApplyClassification:
         assert conv.classification_latched_at is not None
         assert conv.classification_source == "propagation"
         assert conv.classification_event_id == event.id
-        # 鏡射:classified = level >= 機密(舊 latch 不破)
+        # 鏡射:classified = level >= 密(RESTRICTED;舊 rank-2 受控集合)
         assert conv.classified is True
         assert conv.classified_at is not None
 
     def test_lowering_attempt_is_noop_without_event(self, db):
         user = make_user(db)
         conv = make_conversation(db, user)
-        latch_confidential(db, conv, user)
+        latch_secret(db, conv, user)
 
         result = apply_classification(
             db,
@@ -180,35 +180,44 @@ class TestApplyClassification:
     def test_equal_level_is_noop(self, db):
         user = make_user(db)
         conv = make_conversation(db, user)
-        latch_confidential(db, conv, user)
-        assert latch_confidential(db, conv, user) is None
+        latch_secret(db, conv, user)
+        assert latch_secret(db, conv, user) is None
         assert db.query(ClassificationEvent).count() == 1
 
     def test_max_propagation_keeps_raising(self, db):
         user = make_user(db)
         conv = make_conversation(db, user)
-        latch_confidential(db, conv, user)
+        # First latch at RESTRICTED(密); then raise to SECRET(機密).
+        apply_classification(
+            db,
+            resource_type="conversation",
+            resource_id=str(conv.id),
+            new_level="密",
+            actor_type="user",
+            actor_id=str(user.id),
+            reason="manual_admin",
+        )
 
         event = apply_classification(
             db,
             resource_type="conversation",
             resource_id=str(conv.id),
-            new_level="極機密",
+            new_level="機密",
             actor_type="service",
             actor_id="router",
             reason="content_detection",
             source="content_detection",
         )
 
-        assert event.previous_level == "機密"
-        assert event.new_level == "極機密"
+        assert event.previous_level == "密"
+        assert event.new_level == "機密"
         assert event.actor_user_id is None  # service actor 非 users FK
         db.refresh(conv)
-        assert conv.classification_level == "極機密"
+        assert conv.classification_level == "機密"
         assert conv.classification_source == "content_detection"
         assert conv.classified is True
 
-    def test_below_confidential_does_not_flip_legacy_boolean(self, db):
+    def test_below_restricted_does_not_flip_legacy_boolean(self, db):
         user = make_user(db)
         conv = make_conversation(db, user)
         event = apply_classification(
@@ -223,7 +232,7 @@ class TestApplyClassification:
         assert event.new_level == "營業秘密"
         db.refresh(conv)
         assert conv.classification_level == "營業秘密"
-        # 鏡射一致:營業秘密 < 機密 → 舊 boolean 維持 false
+        # 鏡射一致:營業秘密 < 密(RESTRICTED) → 舊 boolean 維持 false
         assert conv.classified is False
 
     def test_memory_inherited_reason_mirrors_inherited_flag(self, db):
@@ -322,10 +331,10 @@ class TestApplyClassification:
         assert effective_level(
             db, resource_type="conversation", resource_id=str(conv.id)
         ) is ClassificationLevel.UNCLASSIFIED
-        latch_confidential(db, conv, user)
+        latch_secret(db, conv, user)
         assert effective_level(
             db, resource_type="conversation", resource_id=str(conv.id)
-        ) is ClassificationLevel.CONFIDENTIAL
+        ) is ClassificationLevel.SECRET
 
     def test_effective_level_unknown_type_fail_closed(self, db):
         with pytest.raises(ValueError):
@@ -339,7 +348,7 @@ class TestDeclassification:
     def _latched_conversation(self, db):
         admin = make_user(db, "boss", role="admin")
         conv = make_conversation(db, admin)
-        latch_confidential(db, conv, admin)
+        latch_secret(db, conv, admin)
         return admin, conv
 
     def _request(self, db, admin, conv) -> DeclassificationRequest:
@@ -380,7 +389,7 @@ class TestDeclassification:
 
     def test_to_level_must_be_strictly_lower(self, db):
         admin, conv = self._latched_conversation(db)
-        for same_or_higher in ("機密", "絕對機密"):
+        for same_or_higher in ("機密",):
             with pytest.raises(ValueError):
                 create_declassification_request(
                     db,

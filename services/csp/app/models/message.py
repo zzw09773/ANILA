@@ -26,7 +26,7 @@ class Message(Base):
     metadata_ = Column("metadata", JSONValue, nullable=True)
     # User feedback on assistant messages ('up' / 'down' / None)
     rating = Column(String(8), nullable=True)
-    # ── 五級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
+    # ── 四級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )

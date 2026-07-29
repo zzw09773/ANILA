@@ -299,8 +299,8 @@ const PROTOCOL_OPTIONS = [
 ]
 const PROTOCOL_LABELS = Object.fromEntries(PROTOCOL_OPTIONS.map(p => [p.value, p.label]))
 
-// doc 08 五級分類（無機密 < 營業秘密 < 機密 < 極機密 < 絕對機密）。
-const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '機密', '極機密', '絕對機密']
+// SYSTEM-MAP §8 四級分類（無機密 < 營業秘密 < 密 < 機密）。
+const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
 
 // supports_* → 能力晶片繁中標籤。缺欄位（6a 未落地）時該晶片不顯示。
 const CAPABILITY_LABELS = {

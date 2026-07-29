@@ -112,7 +112,7 @@ CSP dispatch 帶 `X-ANILA-Trace-Id` 時自動啟用：把 `agent.run/step/model_
   span 下（併發下以 `contextvars` 分艙）。
 
 env：`ANILA_TRACE_ENDPOINT`（預設 = `CSP_BASE_URL`）、`ANILA_TRACE_ENABLED`（預設 1）、
-`ANILA_CLASSIFICATION_LEVEL`（五級分類等級，隨 run／output span 帶出，滿足 doc-06 §8 trace-test 的
+`ANILA_CLASSIFICATION_LEVEL`（四級分類等級：無機密／營業秘密／密／機密，隨 run／output span 帶出，滿足 doc-06 §8 trace-test 的
 分類等級必備項）；`X-ANILA-Task-Id` 亦隨 run span 帶出以歸因到任務中心的 Task。
 
 > **非 anila-agent runtime**（LangChain／custom HTTP）要接上同一條管線，見

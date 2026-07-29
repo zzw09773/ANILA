@@ -141,7 +141,7 @@ class ManifestTrace(BaseModel):
 
 
 class ManifestClassification(BaseModel):
-    """doc 05 §4 classification:ceiling / default(五級,fail-closed)。"""
+    """doc 05 §4 classification:ceiling / default(四級,fail-closed)。"""
 
     ceiling: ClassificationLevel
     default: ClassificationLevel

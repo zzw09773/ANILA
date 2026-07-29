@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
-"""五級分類契約(ClassificationLevel + 分類事件/降級申請 enum)。
+"""四級分類契約(ClassificationLevel + 分類事件/降級申請 enum)。
 
-依 docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md:
+依 SYSTEM-MAP.md §8:
 
-- 五級:無機密(0) < 營業秘密(1) < 機密(2) < 極機密(3) < 絕對機密(4),
-  排序不可變(doc 08 §1)。
-- 單向閂鎖(doc 08 §2):effective level = 所有觀測到的分類取 max,
-  只能維持或升級,不得自動降級 → 見 :meth:`ClassificationLevel.max_of`。
-- 舊 boolean `classified` 的 backfill(doc 08 §3,v0.2 拍板):
-  false → 無機密、true → 機密;此為 migration floor(最低安全起點),
-  不是最終分類,最終等級以人工分類盤點為準 →
+- 四級:無機密(0) < 營業秘密(1) < 密(2) < 機密(3),
+  排序不可變(SYSTEM-MAP §8)。
+- 單向閂鎖(SYSTEM-MAP §8;對話中途升密):effective level = 所有觀測到的
+  分類取 max,只能維持或升級,不得自動降級 →
+  見 :meth:`ClassificationLevel.max_of`。
+- 舊 boolean ``classified`` 的 backfill:false → 無機密、true → 機密
+  (保守:legacy classified 鎖到最高級) →
   見 :meth:`ClassificationLevel.from_legacy_classified`。
 - Slice 3a 補三個封閉 enum(DB 層存開放 String,契約層 fail-closed 把關,
   同 ``contracts.policy`` 模式):
-  :class:`ClassificationEventReason`(doc 08 §6 reason 7 值,逐字)、
-  :class:`DeclassificationStatus`(doc 08 §8 status 5 值,逐字)、
-  :class:`DeclassificationApprovedVia`(doc 08 §8 變體 A 核准路徑二選一)。
+  :class:`ClassificationEventReason`(reason 7 值,逐字)、
+  :class:`DeclassificationStatus`(status 5 值,逐字)、
+  :class:`DeclassificationApprovedVia`(核准路徑二選一)。
 
 儲存格式:一律以繁中字串(enum value)落地,經
 :meth:`ClassificationLevel.to_storage` / :meth:`ClassificationLevel.from_storage`
@@ -34,17 +34,16 @@ from pydantic import BaseModel, Field
 
 @total_ordering
 class ClassificationLevel(enum.Enum):
-    """五級分類等級;成員定義順序即由低到高的排序契約。"""
+    """四級分類等級;成員定義順序即由低到高的排序契約(SYSTEM-MAP §8)。"""
 
     UNCLASSIFIED = "無機密"
     TRADE_SECRET = "營業秘密"
-    CONFIDENTIAL = "機密"
-    SECRET = "極機密"
-    TOP_SECRET = "絕對機密"
+    RESTRICTED = "密"
+    SECRET = "機密"
 
     @property
     def rank(self) -> int:
-        """數值序(doc 08 §1 的 0–4);僅供排序/比較,不作儲存格式。"""
+        """數值序(SYSTEM-MAP §8 的 0–3);僅供排序/比較,不作儲存格式。"""
         return _RANKS[self]
 
     def __lt__(self, other: object) -> bool:
@@ -65,11 +64,11 @@ class ClassificationLevel(enum.Enum):
 
     @classmethod
     def from_legacy_classified(cls, classified: bool) -> "ClassificationLevel":
-        """舊 boolean classified → 五級的 floor backfill 映射(doc 08 §3)。
+        """舊 boolean classified → 四級的 floor backfill 映射(SYSTEM-MAP §8)。
 
-        true → 機密 只是 migration floor(最低安全起點),不是最終分類。
+        true → 機密(SECRET,最高級)為保守 floor,不是最終分類。
         """
-        return cls.CONFIDENTIAL if classified else cls.UNCLASSIFIED
+        return cls.SECRET if classified else cls.UNCLASSIFIED
 
     def to_storage(self) -> str:
         """回傳落地儲存用的繁中字串(enum value)。"""

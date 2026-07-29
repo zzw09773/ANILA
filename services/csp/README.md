@@ -1,10 +1,10 @@
 # services/csp（CSP — Control & Data Plane）
 
-> ANILA 平台的權威核心服務（前身 `myCSPPlatform`）：掌管使用者、API Key、模型 / Agent 註冊、任務主脊椎、全鏈追蹤、五級分類治理、對話、知識庫與審計，並對外提供 OpenAI 相容代理。
+> ANILA 平台的權威核心服務（前身 `myCSPPlatform`）：掌管使用者、API Key、模型 / Agent 註冊、任務主脊椎、全鏈追蹤、四級分類治理、對話、知識庫與審計，並對外提供 OpenAI 相容代理。
 
 > English version：[`README.en.md`](./README.en.md)
 
-> 🧭 **本檔對齊 redesign 後現況**（`anila-redesign` 分支）：`services/ apps/ packages/ infra/` 四分頂層結構、根目錄 compose shim（`compose.yaml` → `infra/compose/platform.yml`）、部署腳本落在 `infra/deployment/{scripts,intranet}/`，以及與 CSP 相關的 Slice 2–9 能力（Task 主脊椎、Full Trace、五級分類、Agent Registry、Model Gateway、Service Registry、Artifact 契約）。設計權威在 [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)：憲章 [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) 與本服務主文件 [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)。
+> 🧭 **本檔對齊 redesign 後現況**（`anila-redesign` 分支）：`services/ apps/ packages/ infra/` 四分頂層結構、根目錄 compose shim（`compose.yaml` → `infra/compose/platform.yml`）、部署腳本落在 `infra/deployment/{scripts,intranet}/`，以及與 CSP 相關的 Slice 2–9 能力（Task 主脊椎、Full Trace、四級分類、Agent Registry、Model Gateway、Service Registry、Artifact 契約）。設計權威在 [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)：憲章 [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) 與本服務主文件 [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)。
 
 ---
 
@@ -12,7 +12,7 @@
 
 CSP 是 ANILA 的「真相來源」（authoritative store）與**雙平面閘道**：Router、ingestion-worker、anila-studio、各前端都向它要身分、API Key、模型 / Agent manifest 與用量。它同時服務產品面的**治理中心**（`apps/csp-governance-ui`）、**任務中心**（Task 主脊椎）、**產出中心**（Artifact 契約）與**專案入口**（Service Registry / 啟動閘道）。
 
-- **Control Plane — `/api/*`**（RS256 JWT / cookie 認證）：治理與平台內部溝通。使用者、API Key、模型 / Agent 註冊與核准、任務、政策裁決、五級分類治理、對話 / 附件 / 分享 / 交接、審計、告警、banners、部門、Service Registry、trusted-hosts、使用者記憶、service token / service clients 等。
+- **Control Plane — `/api/*`**（RS256 JWT / cookie 認證）：治理與平台內部溝通。使用者、API Key、模型 / Agent 註冊與核准、任務、政策裁決、四級分類治理、對話 / 附件 / 分享 / 交接、審計、告警、banners、部門、Service Registry、trusted-hosts、使用者記憶、service token / service clients 等。
 - **Data Plane — `/v1/*`、`/v2/*`**（`sk-` API Key 或 cookie / service token）：OpenAI 相容代理，依 `model_type` 路由到後端 LLM / Embedding / VLM / Agent，統一寫 `token_usage` 計費；並收攏 Full Trace span（`POST /v1/traces/{trace_id}/spans`）。
 
 CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgvector RAG + 跨文件關係，經 `arq` 推 Redis 佇列給獨立的 [`ingestion-worker`](../ingestion-worker/)），並對接已抽離的 [`anila-studio`](../anila-studio/)（簡報 / 報告 / 生圖），CSP 端只保留 contract endpoint 與**持久化的 Artifact job store**。
@@ -65,7 +65,7 @@ redesign 把四個 MVP 核心切成**互不相依**的 module，並以 import-li
 | Module | 檔案 | 職責 |
 |--------|------|------|
 | `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun 生命週期（十值狀態機）、SourceSnapshot 三規則、`trace_id` 必產生（doc 01 / doc 03）。 |
-| `app.modules.policy` | `router.py` · `service.py` | PolicyDecision **append-only** 裁決紀錄（fail-closed，deny 必附 reason）、ceiling 純函式、五級分類 latch core（`apply_classification` 單向閂鎖）。 |
+| `app.modules.policy` | `router.py` · `service.py` | PolicyDecision **append-only** 裁決紀錄（fail-closed，deny 必附 reason）、ceiling 純函式、四級分類 latch core（`apply_classification` 單向閂鎖；無機密＜營業秘密＜密＜機密）。 |
 | `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway 原語：`service_launches` 落列、啟動 URL、RS256 launch token（doc 07 §6）。**零** policy/task/api 耦合，存取控制由 orchestrator（`app.api.services`）圍事。 |
 | `app.modules.artifacts` | `service.py` | Artifact 四表持久化、binding fail-closed、owner-scope 讀面。分類閂鎖與 PolicyDecision 由 orchestrator（`app.api.artifacts`）呼叫 policy 完成。 |
 
@@ -128,7 +128,7 @@ redesign 系列接在 legacy 數字鏈之後（`r1_0001` revises `0046`），保
 |----------|-------|------|
 | `r1_0001` | 2a | Task / Trace / Policy 六表基礎：`tasks` · `task_runs` · `source_snapshots` · `citations` · `policy_decisions` · `trace_spans`；`classification_level` 預設 `無機密`。 |
 | `r1_0002` | 2b-C | `token_usage` ↔ task 連結：`task_id`（FK `ON DELETE SET NULL` + partial index）與 `legacy_runtime_call` 布林旗標（標記無 task 的 `/v1` chat 舊流量）。 |
-| `r1_0003` | 3a | 五級分類 schema 升級 + 治理三表：`classification_events` · `declassification_requests` · `classification_authority_assignments`；於現存資源（conversations / messages / collections / documents …）補四共通分類欄位並 backfill（`classified=true → 機密` floor）。 |
+| `r1_0003` | 3a | 四級分類 schema 升級（無機密／營業秘密／密／機密）+ 治理三表：`classification_events` · `declassification_requests` · `classification_authority_assignments`；於現存資源（conversations / messages / collections / documents …）補四共通分類欄位並 backfill（`classified=true → 機密`；`requires_encryption=true → 密`）。 |
 | `r1_0004` | 5a | Agent Registry 升級：`agents.approval_status` 由三值擴為**七值狀態機**（`draft` / `pending_connection_test` / `pending_trace_test` / `pending_security_review` / `approved` / `rejected` / `disabled`），並補 manifest / trace-test / runtime 欄位。 |
 | `r1_0005` | 6a | Model Gateway Hardening：`model_registry` formalize 成 `ModelEndpoint`（`protocol` / per-model `api_key_secret_ref` AES-GCM envelope / `classification_ceiling` / `supports_*`）；`health_status` 收斂為**五態**（`healthy` / `degraded` / `unhealthy` / `unknown` / `disabled`）。 |
 | `r1_0006` | 7a | Service Registry：`platform_links` additive 升級為 `registered_services`（33 欄，保留原 id）+ `service_launches` · `service_audit_callbacks` · `service_project_bindings`；`service_access_grants` 加 `service_id` FK。 |
@@ -139,7 +139,7 @@ redesign 系列接在 legacy 數字鏈之後（`r1_0001` revises `0046`），保
 
 ## 6. 安全不變量
 
-- **五級分類單向閂鎖**：等級序 `無機密 < 營業秘密 < 機密 < 極機密 < 絕對機密`；effective level = 觀測到分類取 `max`，**絕不降級**（`policy.apply_classification` 寫 `ClassificationEvent`）。**解密（declassification）不是移除的路由，而是受治理的申請工作流**：`declassification_requests` + 主管核准（`classification_authority_assignments`），fail-closed 預設 `pending_supervisor`。
+- **四級分類單向閂鎖**：等級序 `無機密 < 營業秘密 < 密 < 機密`；effective level = 觀測到分類取 `max`，**絕不降級**（`policy.apply_classification` 寫 `ClassificationEvent`）。**解密（declassification）不是移除的路由，而是受治理的申請工作流**：`declassification_requests` + 主管核准（`classification_authority_assignments`），fail-closed 預設 `pending_supervisor`。
 - **卡登 SSO**：CSPKI 自然人憑證卡走真 PKCS#7 / CMS 驗簽（SignerInfo 簽章 + 憑證鏈 + nonce 反 replay），非只解析。
 - **JWT / JWKS**：RS256（access + refresh，`tv` token-version 撤銷 claim），`GET /.well-known/jwks.json` 公開驗章。Launch token 共用同一 RS256 keypair / `kid`，registered service 以 JWKS **本地**驗（`aud` / `iss` / `exp` / 簽章）；TTL 10 分、**絕不**內嵌模型金鑰或長效 user JWT。
 - **CSRF**：cookie 認證的變更請求走 double-submit（`X-CSRF-Token`，constant-time 比對，`CsrfMiddleware`）。

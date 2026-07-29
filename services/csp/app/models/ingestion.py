@@ -88,7 +88,7 @@ class IngestionCollection(Base):
     created_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False
     )
-    # ── 五級分類共通欄位(doc 08 §5,Slice 3a;backfill floor=無機密,
+    # ── 四級分類共通欄位(doc 08 §5,Slice 3a;backfill floor=無機密,
     # 最終等級以人工分類盤點為準,doc 08 §15)────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
@@ -165,7 +165,7 @@ class IngestionDocument(Base):
     uploaded_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    # ── 五級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
+    # ── 四級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )
