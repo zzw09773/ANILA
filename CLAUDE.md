@@ -51,7 +51,7 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,P
 ## 4. 當前快照(2026-07-29 晚,會變,動前核對)
 
 - **P0 四項全關**:P0.1 消解(四閘不存在於本基底);P0.2 已合併(`657ba43`,sol＋kimi 雙跨家審查通過,e2e PASS:production＋旗標下註冊 `http://` 端點 200、旗標未設仍拒);P0.3 本機 `-p anila-restart` 全量起 12/13 healthy;P0.4 alembic 從零→`r1_0008` 已驗(權威文件已入庫 `faa2ac3`)。
-- **codeserver**:擁有者裁定必要(掛 repo＋docker extension 內網維運)。新 image `anila-codeserver:local`(docker CLI＋extension 離線烘焙)＋init chown 機制已就緒(`infra/codeserver/Dockerfile`＋platform.yml),**最後一步 `docker compose -p anila-restart up -d --build codeserver` 因 docker.sock 掛載被權限 classifier 擋,待擁有者親跑**。docker.sock=主機 root 等價,密碼即失守——取捨已記錄在 platform.yml 註解。
+- **codeserver 已修復上線(13/13 healthy)**:擁有者裁定必要(掛 repo＋docker extension 內網維運)。自建 image `anila-codeserver:local`(docker CLI 28.5.2＋containers/docker 兩個 extension 離線烘焙,內網零下載)＋`codeserver-init` chown 機制(`infra/codeserver/Dockerfile`＋platform.yml);runtime UID/GID 跟 `.env`(本機 1026:516,`DOCKER_GID` 對 socket 群組)。⚠ docker.sock=主機 root 等價,密碼即失守——取捨已記錄在 platform.yml 註解;recreate codeserver 會被權限 classifier 擋,由擁有者親跑。
 - **n8n/gitlab 裁定保留**。gitlab 的 `.env` 必帶 `GITLAB_ROOT_PASSWORD`(omnibus 直讀 env,空字串在 Ruby 是 truthy,長度檢查會炸)。
 - **本分支獨立演進,不進 main**;commit/push 時機授權 Claude 判斷(push 前必掃祕密＋全 RFC1918)。
 - 本機 `.env` 已是正式姿態(`ANILA_ENV=production`＋`ANILA_ALLOW_DEV_SECRET=0`,csp healthy)。⚠ 這兩者**無交叉檢查**——內網部署照抄 dev 值不會被擋,上線前自查。

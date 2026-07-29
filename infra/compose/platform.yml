@@ -428,21 +428,73 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # ── code-server (cold-stored) ───────────────────────────────────────────
-  # Browser-based VS Code,reachable via /codeserver subpath through nginx.
+  # ── code-server (必要服務,2026-07-29 擁有者確認) ────────────────────────
+  # Browser-based VS Code,reachable via /codeserver subpath through nginx。
+  # 用途:擁有者在內網主機上做快速維運 — 掛整個 repo + VS Code Docker 擴充。
   # 用 codercom 上游而非 lscr.io/linuxserver fork — 後者多一層 s6-overlay
   # 會破 subpath 部署 (workspace fs provider 註冊失敗)。
-  # 解凍前的 TODO:把 PASSWORD 換掉,SSO 接好後改 nginx auth_request 驗 CSP JWT。
+  # image 改成自 build (infra/codeserver/Dockerfile):docker CLI 與 Docker
+  # 擴充都要在 build 期烤進去,內網 air-gap runtime 抓不到東西。
+  # TODO(未做):PASSWORD 之外再接 SSO — nginx auth_request 驗 CSP JWT。
+  #
+  # codeserver-init:one-shot,只做一件事 — 把 codeserver_config volume
+  # chown 成 runtime UID/GID,然後退出 (0)。
+  # 為什麼需要它:Docker 建 named volume 的 mountpoint 時是 root:root,而
+  # 上游 entrypoint 的 fixuid 只 remap「原本屬於 coder(1000)」的檔案,
+  # root 擁有的一律不碰 → codeserver 以非 root 跑就 EACCES 無限重啟
+  # (2026-07-29 P0.3 實測)。這一步讓**任何全新安裝**(開發機、內網主機)
+  # 都不需要人工上 host 下 chown。
+  # 用 0:0 跑是必要的(要 chown 別人的檔案),但它只活幾毫秒且不開 port。
+  codeserver-init:
+    build: &codeserver-build
+      context: ../codeserver
+      dockerfile: Dockerfile
+    # 跟 codeserver 共用同一個 image tag → 只 build 一次,內網也只需搬一份。
+    image: &codeserver-image anila-codeserver:local
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    # $$ 是逃逸給 shell 的,不是 compose 插值。
+    command:
+      - |
+        set -eu
+        chown -R "$${CODESERVER_UID}:$${CODESERVER_GID}" /home/coder/.config
+        chmod 0755 /home/coder/.config
+        echo "codeserver-init: chowned /home/coder/.config -> $${CODESERVER_UID}:$${CODESERVER_GID}"
+        ls -ldn /home/coder/.config
+    environment:
+      # 必須跟 codeserver 的 user: 同值,否則 chown 到錯的 UID 等於沒修。
+      CODESERVER_UID: "${UID:-1001}"
+      CODESERVER_GID: "${GID:-1001}"
+    volumes:
+      - codeserver_config:/home/coder/.config
+    restart: "no"
+
   codeserver:
-    image: codercom/code-server:latest
-    # 1001:1001 對齊 host 'aia' UID,避免容器內存檔 EACCES。
+    build: *codeserver-build
+    image: *codeserver-image
+    # UID/GID 要對齊 **host** 上跑 repo 的那個帳號,bind mount 進來的 repo
+    # 才寫得動 (本開發機 = 1026:516;內網主機自己在 .env 設)。
+    # 1001 只是沒設 .env 時的保底值,不代表任何一台實機。
     user: "${UID:-1001}:${GID:-1001}"
+    # /var/run/docker.sock 是 root:docker 0660 → 非 root 要靠補充群組才讀得到。
+    # 這個 GID 是 **host** 的 docker 群組 GID,每台機器不同,所以走 .env。
+    group_add:
+      - "${DOCKER_GID:-999}"
+    depends_on:
+      # volume 權限修好之前不要起來,否則又是 EACCES 重啟迴圈。
+      codeserver-init:
+        condition: service_completed_successfully
     environment:
       TZ: Asia/Taipei
       # startup_security 拒絕 dev 預設 `changeme-codeserver`,prod 必設真值。
       PASSWORD: ${CODESERVER_PASSWORD:?CODESERVER_PASSWORD must be set}
     volumes:
       - codeserver_config:/home/coder/.config
+      # ⚠ docker.sock = host root 等級權限(能起特權容器、掛 host /)。
+      # 拿到 codeserver 密碼的人 == host root。這是擁有者為了讓 VS Code
+      # Docker 擴充可用而明示接受的取捨(2026-07-29 mandate),不是預設。
+      # 下面兩條 /dev/null 遮蔽因此**更加**不能拿掉。
+      - /var/run/docker.sock:/var/run/docker.sock
       # codeserver = 內網維護 ANILA 平台用 → 掛整個 repo 源碼
       # (CODESERVER_WORKSPACE 預設 '../..' = repo root,見 .env.example)。
       # repo 根有機密(.env 的 JWT/DB 密碼、server.key 的 TLS 私鑰),用 /dev/null
