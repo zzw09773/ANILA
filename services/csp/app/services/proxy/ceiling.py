@@ -14,13 +14,12 @@ Effective level 決定順序(doc 04 §5 / doc 08 §4):
 - 無 task 但有 latched conversation:讀 conversation 的 effective level。
 - 皆無:``無機密``(fail-safe 起點,唯一不設限的情況)。
 
-PolicyDecision 落列規則(本 slice 拍板,見任務 Deliverable 5):
+PolicyDecision 落列規則(OE-4 / SYSTEM-MAP §8 L241-242;G4):
 - **deny**:一律記(task-linked 與 legacy 皆記);doc 03 Done Criteria 4
   要求 deny 必附可解釋 reason。
-- **allow**:**僅 task-linked 記**。legacy(task-less)/v1 chat 量大,每次 allow
-  都落列會灌爆 ``policy_decisions``;legacy allow 不落列(與 usage 的
-  ``legacy_runtime_call`` 標記精神一致 —— 治理帳只對進 Task 主脊椎的流量
-  完整記錄)。
+- **allow**:task-linked 一律記;**task-less 僅當** effective level ≥ 營業秘密
+  時記(規格稽核線)。無機密的 legacy allow 不落列,避免灌爆
+  ``policy_decisions``。
 
 模組邊界:``app.modules.policy`` 為 module-boundary package,call-time import
 其 package 根公開面(``effective_level`` / ``evaluate_classification_ceiling`` /
@@ -121,8 +120,11 @@ def _enforce_ceiling(
             )
         raise HTTPException(status_code=403, detail=reason)
 
-    # pass:僅 task-linked 記 allow(避免 legacy 灌爆 policy_decisions)。
-    if task_ctx is not None:
+    # pass:task-linked 一律記 allow;task-less 僅當 level ≥ 營業秘密
+    # (SYSTEM-MAP §8 L242 / OE-4 G4)—— 無機密 legacy 量大,不落列。
+    from app.schemas.contracts.classification import classification_audit_required
+
+    if task_ctx is not None or classification_audit_required(level):
         record_decision(
             db,
             action=action,
@@ -147,8 +149,8 @@ def enforce_model_ceiling(
 
     僅在「target 是設了 ``classification_ceiling`` 的 model」時判定(任務
     Deliverable 5)。無 ceiling = 該模型不設上限 → 完全 no-op,不產生任何
-    PolicyDecision(沒有 ceiling 就沒有要裁決的事)。有 ceiling 時:pass 僅
-    task-linked 記 allow(避免 legacy 灌爆);deny 一律記 + 403 + 不發出向。
+    PolicyDecision(沒有 ceiling 就沒有要裁決的事)。有 ceiling 時:pass 依
+    OE-4 G4 落列(task-linked 或 level ≥ 營業秘密);deny 一律記 + 403。
     """
     _enforce_ceiling(
         db,

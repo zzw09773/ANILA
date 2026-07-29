@@ -8,7 +8,8 @@
 3. health 五態映射 + POST /test + legacy /health-check alias + GET /health。
 4. url_guard kind split 在 model 註冊層:http 由旗標明確放行(PLAN.md P0.2)。
 5. 出向前 ceiling 檢查:deny(不發出向,respx 零呼叫)、allow 落 decision 列
-   (僅 task-linked)、legacy latched conversation deny。
+   (task-linked,或 OE-4 G4:task-less 且 level ≥ 營業秘密)、legacy 無機密
+   allow 不落列、legacy latched conversation deny。
 
 SECRET_KEY 只在本模組的測試期間以 monkeypatch 注入(function-scoped 自動還原),
 不寫進 module 級 os.environ —— 避免洩漏到別的測試模組(如 test_agent_credentials
@@ -328,6 +329,25 @@ def test_ceiling_allow_legacy_records_no_decision_row(db):
         db, model=m, caller=_caller(user), task_ctx=None, conv_id_int=None,
     )
     assert _model_decisions(db, m.id) == []
+
+
+def test_ceiling_allow_legacy_trade_secret_records_decision(db):
+    """OE-4 G4:task-less allow at ≥ 營業秘密 still writes PolicyDecision."""
+    user = make_user(db, "u_legacy_ts")
+    m = make_model(db, name="ceil_legacy_ts")
+    m.classification_ceiling = "機密"
+    db.commit()
+    conv = Conversation(user_id=user.id, title="ts")
+    db.add(conv)
+    db.commit()
+    conv.classification_level = "營業秘密"
+    db.commit()
+    enforce_model_ceiling(
+        db, model=m, caller=_caller(user), task_ctx=None, conv_id_int=conv.id,
+    )
+    allows = [d for d in _model_decisions(db, m.id) if d.decision == "allow"]
+    assert len(allows) == 1
+    assert allows[0].task_id is None
 
 
 def test_ceiling_none_is_noop(db):

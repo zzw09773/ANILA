@@ -356,21 +356,30 @@ def export_artifact(
     caller: _ExportCaller = Depends(require_export_caller),
     db: Session = Depends(get_db),
 ):
-    """匯出 policy gate(doc 08 §10:allow if target_floor >= artifact.level)。
+    """匯出 policy gate(SYSTEM-MAP §8 L241-242 兩條線)。
 
-    deny → 403 + 一筆 deny PolicyDecision,**不落** allow 匯出列
-    (doc 00 §6:未通過 classification policy 的資料匯出 frozen)。
+    allow iff artifact.level ≤ 營業秘密;deny → 403。
+    PolicyDecision 在 allow/deny 皆落列;≥ 營業秘密 的 allow 即為稽核列
+    (L242)。target_classification_floor 僅記 metadata,不作判定軸。
     """
+    from app.schemas.contracts.classification import (
+        classification_audit_required,
+        outbound_action_allowed,
+    )
+
     artifact = _load_artifact_or_404(db, artifact_id)
     artifact_level = ClassificationLevel.from_storage(artifact.classification_level)
     target_floor = payload.target_classification_floor
-    allowed = target_floor >= artifact_level
+    # SYSTEM-MAP §8 L241:可以做 = 密等 ≤ 營業秘密。
+    allowed = outbound_action_allowed(artifact_level)
     decision = "allow" if allowed else "deny"
     reason = (
-        f"匯出判定 target_floor={target_floor.to_storage()} vs "
-        f"artifact={artifact_level.to_storage()}:"
-        f"{'通過' if allowed else '目的地分類下限不足,拒絕匯出'}"
+        f"匯出判定 artifact={artifact_level.to_storage()}:"
+        f"{'通過(≤營業秘密)' if allowed else '密等超過營業秘密,拒絕匯出'}"
+        f" (SYSTEM-MAP §8 L241)"
     )
+    # SYSTEM-MAP §8 L242:≥ 營業秘密 必落稽核;deny 亦一律記。
+    # 無機密 allow 仍記 PolicyDecision(既有契約),但規格「落稽核」閾在營業秘密。
     pd = policy.record_decision(
         db,
         action="artifact.export",
@@ -383,14 +392,17 @@ def export_artifact(
         reason=reason,
         metadata={
             "target_space": payload.target_space,
-            "target_classification_floor": target_floor.to_storage(),
+            "target_classification_floor": (
+                target_floor.to_storage() if target_floor is not None else None
+            ),
             "artifact_classification_level": artifact_level.to_storage(),
+            "audit_required": classification_audit_required(artifact_level),
         },
     )
     if not allowed:
         raise HTTPException(
             status_code=403,
-            detail="匯出遭 classification policy 拒絕:目的地分類下限不足",
+            detail="匯出遭 classification policy 拒絕:密等超過營業秘密",
         )
     exporter_user_id = caller.exporter_user_id
     exporter_employee_id = caller.exporter_employee_id

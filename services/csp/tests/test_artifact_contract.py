@@ -11,8 +11,8 @@ Version/Export、doc 08 §5/§10、doc 10 §12 邊界)。
   §6)、分類繼承 effective = max(explicit, task, snapshot)(單向,不降級)。
 - ``POST /v1/artifacts/{id}/versions``(service token)—— 版本遞增 + 繼承重驗。
 - ``POST /v1/artifacts/{id}/exports``(user JWT / service token)—— 匯出
-  policy gate:allow if target_floor >= artifact.level;deny → 403 + deny
-  PolicyDecision、不落 allow 匯出列(doc 00 §6)。
+  policy gate(SYSTEM-MAP §8 L241-242):allow iff artifact.level ≤ 營業秘密;
+  deny → 403 + deny PolicyDecision、不落 allow 匯出列。
 - ``GET /api/artifacts`` + ``/{id}``(user JWT)—— owner-scope 治理讀面。
 
 /v1 寫入面僅接受 service token:使用者 JWT → 403(不開放使用者直建
@@ -311,12 +311,12 @@ class TestVersioning:
 class TestExportGate:
     def test_export_allow_records_decision_and_row(self, client: TestClient, db: Session):
         user = make_user(db, username="exp_ok")
-        task = _make_task(db, user, level="機密")
+        # OE-4:營業秘密 ≤ 營業秘密 → allow + audit PolicyDecision.
+        task = _make_task(db, user, level="營業秘密")
         art_id = _register_artifact(client, task_id=task.id).json()["artifact_id"]
-        # target_floor 機密 >= artifact 機密 → allow。
         resp = client.post(
             f"/v1/artifacts/{art_id}/exports", headers=_SVC,
-            json={"target_classification_floor": "機密",
+            json={"target_classification_floor": "無機密",
                   "target_space": "project-x", "export_format": "pdf"},
         )
         assert resp.status_code == 201, resp.text
@@ -330,12 +330,12 @@ class TestExportGate:
 
     def test_export_deny_403_no_row(self, client: TestClient, db: Session):
         user = make_user(db, username="exp_deny")
+        # OE-4:機密 > 營業秘密 → deny regardless of target_floor.
         task = _make_task(db, user, level="機密")
         art_id = _register_artifact(client, task_id=task.id).json()["artifact_id"]
-        # target_floor 營業秘密 < artifact 機密 → deny(403)。
         resp = client.post(
             f"/v1/artifacts/{art_id}/exports", headers=_SVC,
-            json={"target_classification_floor": "營業秘密"},
+            json={"target_classification_floor": "機密"},
         )
         assert resp.status_code == 403
         # deny 只寫 PolicyDecision,不落 allow 匯出列。
@@ -346,6 +346,22 @@ class TestExportGate:
                       PolicyDecision.resource_id == str(art_id)).one())
         assert pd.decision == "deny"
         assert pd.reason  # deny 必附可解釋原因
+
+    def test_export_restricted_denied(self, client: TestClient, db: Session):
+        user = make_user(db, username="exp_restr")
+        task = _make_task(db, user, level="密")
+        art_id = _register_artifact(client, task_id=task.id).json()["artifact_id"]
+        resp = client.post(
+            f"/v1/artifacts/{art_id}/exports", headers=_SVC,
+            json={"target_classification_floor": "機密"},
+        )
+        assert resp.status_code == 403
+        assert db.query(ExportRecord).filter(
+            ExportRecord.artifact_id == art_id).count() == 0
+        pd = (db.query(PolicyDecision)
+              .filter(PolicyDecision.action == "artifact.export",
+                      PolicyDecision.resource_id == str(art_id)).one())
+        assert pd.decision == "deny"
 
     def test_export_via_user_jwt_allow(self, client: TestClient, db: Session):
         user = make_user(db, username="exp_jwt")

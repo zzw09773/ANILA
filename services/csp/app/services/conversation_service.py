@@ -311,11 +311,15 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
     is an admin-attribution field the event model doesn't carry, so it's
     stamped here alongside the existing AuditLog trail.
     """
+    from app.schemas.contracts.classification import ClassificationLevel
+
     conv = get_conversation(db, conv_id, user)
-    if conv.classified:
+    # Idempotency on the level (OE-4): boolean is display-only; already at
+    # RESTRICTED+ means the manual classify floor is already applied.
+    level = ClassificationLevel.from_storage(conv.classification_level)
+    if level >= ClassificationLevel.RESTRICTED:
         raise HTTPException(status_code=409, detail="此對話已標示為機敏")
     from app.modules.policy import apply_classification
-    from app.schemas.contracts.classification import ClassificationLevel
     apply_classification(
         db,
         resource_type="conversation",
@@ -353,12 +357,9 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
 
 def log_classified_access(db: Session, conv_id: int, user: User) -> None:
     # Field names match the AuditLog model exactly: actor_user_id /
-    # actor_username / detail (singular). The previous spelling
-    # ``user_id`` / ``details`` slipped through because no code path
-    # actually triggered classified-access logging until the
-    # conversations.classified column started being persisted by
-    # ``_latch_agent_classification`` — at which point GET /api/conversations/:id
-    # blew up with TypeError on construction.
+    # actor_username / detail (singular). Trigger predicate lives at the
+    # call site (level >= TRADE_SECRET; SYSTEM-MAP §8 L242) — OE-4 does
+    # not read conversations.classified for audit decisions.
     db.add(AuditLog(
         actor_user_id=user.id,
         actor_username=user.username,
@@ -382,11 +383,20 @@ def create_share(
     allow_fork: bool = False,
     expires_at: Optional[datetime] = None,
 ) -> ConversationShare:
+    from app.schemas.contracts.classification import (
+        ClassificationLevel,
+        classification_audit_required,
+        outbound_action_allowed,
+    )
+
     conv = get_conversation(db, conv_id, user)
-    if conv.classified:
+    level = ClassificationLevel.from_storage(conv.classification_level)
+    # SYSTEM-MAP §8 L241-242: allow iff level <= TRADE_SECRET; audit iff
+    # level >= TRADE_SECRET (including the allow path for 營業秘密).
+    if not outbound_action_allowed(level):
         raise HTTPException(
             status_code=403,
-            detail="機密對話不允許建立分享連結",
+            detail="列管對話不允許建立分享連結",
         )
     share = ConversationShare(
         conversation_id=conv.id,
@@ -397,6 +407,19 @@ def create_share(
         created_by=user.id,
     )
     db.add(share)
+    if classification_audit_required(level):
+        log_audit_event(
+            db,
+            action="share_conversation",
+            resource_type="conversation",
+            actor=user,
+            resource_id=conv_id,
+            detail=(
+                f"User {user.username} shared conversation {conv_id} "
+                f"at level {level.to_storage()}"
+            ),
+            metadata={"classification_level": level.to_storage()},
+        )
     db.commit()
     db.refresh(share)
     return share
