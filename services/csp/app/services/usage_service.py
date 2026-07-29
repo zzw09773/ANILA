@@ -7,6 +7,7 @@ from app.models.department import Department
 from app.models.token_usage import TokenUsage
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
+from app.services.department_tree import get_descendant_ids
 from app.utils.time_helpers import get_time_range
 
 
@@ -41,6 +42,22 @@ def _get_model_ids_by_type(db: Session, model_type: str) -> list[int]:
     ]
 
 
+def _department_scope_ids(
+    db: Session, department_id: int | None
+) -> list[int] | None:
+    """Read-time department filter scope: self + all descendants.
+
+    Returns ``None`` when ``department_id`` is ``None`` (no filter).
+    A nonexistent id yields ``[department_id]`` only, so queries match
+    nothing — same empty-result behaviour as the former exact match.
+    """
+    if department_id is None:
+        return None
+    return sorted(
+        get_descendant_ids(db, department_id, include_self=True)
+    )
+
+
 def _apply_usage_filters(
     query,
     db: Session,
@@ -54,8 +71,9 @@ def _apply_usage_filters(
         query = query.filter(TokenUsage.model_id == model_id)
     if user_id:
         query = query.filter(TokenUsage.user_id == user_id)
-    if department_id is not None:
-        query = query.filter(TokenUsage.department_id == department_id)
+    scope_ids = _department_scope_ids(db, department_id)
+    if scope_ids is not None:
+        query = query.filter(TokenUsage.department_id.in_(scope_ids))
     if model_type:
         model_ids = _get_model_ids_by_type(db, model_type)
         query = query.filter(TokenUsage.model_id.in_(model_ids))
@@ -334,6 +352,11 @@ def get_top_departments(
     model_type: str | None = None,
     department_id: int | None = None,
 ) -> list[dict]:
+    """Direct-attribution ranking per department (not subtree rollup).
+
+    Subtree rollup is obtained via the ``department_id`` filter path
+    (``_department_scope_ids`` / ``_apply_usage_filters``).
+    """
     start_time, _ = get_time_range("30d")
     query = db.query(
         TokenUsage.department_id,
