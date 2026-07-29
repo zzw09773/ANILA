@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -11,6 +11,10 @@ from app.schemas.token_usage import (
     TopDepartmentUsage,
 )
 from app.services.auth_service import get_current_user, is_admin_tier, require_admin
+from app.services.unit_admin_service import (
+    get_unit_admin_scope_ids,
+    is_unit_admin,
+)
 from app.services.usage_service import (
     _to_tpe_iso,
     export_usage_csv,
@@ -28,6 +32,48 @@ from app.services.usage_service import (
 router = APIRouter(prefix="/api/usage", tags=["用量統計"])
 
 
+def _resolve_usage_caller_filters(
+    db: Session,
+    current_user: User,
+    department_id: int | None,
+) -> tuple[int | None, int | None, list[int] | None]:
+    """Three-tier usage gate → (user_id, department_id, scope_ids).
+
+    - admin: unchanged (optional department_id expanded in service).
+    - unit admin: unit-wide (user_id=None); validate/default scope.
+    - plain user: forced self; department_id cleared.
+    """
+    if is_admin_tier(current_user):
+        return None, department_id, None
+
+    scope = get_unit_admin_scope_ids(db, current_user)
+    if scope is not None:
+        if department_id is None:
+            return None, None, sorted(scope)
+        if department_id not in scope:
+            raise HTTPException(
+                status_code=403,
+                detail="僅能查詢自己管理單位的資料",
+            )
+        return None, department_id, None
+
+    return current_user.id, None, None
+
+
+def _require_admin_or_unit_admin(
+    db: Session, current_user: User
+) -> list[int] | None:
+    """Admin → None scope (no force). Unit admin → full union scope.
+    Plain user → 403 with the same message as ``require_admin``.
+    """
+    if is_admin_tier(current_user):
+        return None
+    scope = get_unit_admin_scope_ids(db, current_user)
+    if scope is not None:
+        return sorted(scope)
+    raise HTTPException(status_code=403, detail="需要管理員權限")
+
+
 @router.get("/summary", response_model=UsageSummary)
 def usage_summary(
     range: str = Query("24h", regex="^(4h|12h|24h|7d|30d)$"),
@@ -37,11 +83,11 @@ def usage_summary(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # admin / owner 看到整 tenant aggregate;一般 user 只看自己。
-    caller_is_admin_tier = is_admin_tier(current_user)
-    user_id = None if caller_is_admin_tier else current_user.id
-    if not caller_is_admin_tier:
-        department_id = None
+    # admin / owner 看到整 tenant aggregate;單位管理員看管理單位;
+    # 一般 user 只看自己。
+    user_id, department_id, scope_ids = _resolve_usage_caller_filters(
+        db, current_user, department_id
+    )
     return get_usage_summary(
         db,
         range_key=range,
@@ -49,6 +95,7 @@ def usage_summary(
         user_id=user_id,
         model_type=model_type,
         department_id=department_id,
+        scope_ids=scope_ids,
     )
 
 
@@ -64,8 +111,25 @@ def usage_chart(
     db: Session = Depends(get_db),
 ):
     # 一般 user 只看得到自己的資料,group_by 也回退成 total。
-    # admin / owner 都享 tenant-wide 視野。
-    if not is_admin_tier(current_user):
+    # admin / owner 都享 tenant-wide 視野。單位管理員可 group_by
+    # department/model/user。
+    if is_admin_tier(current_user):
+        pass
+    elif is_unit_admin(db, current_user):
+        user_id, department_id, scope_ids = _resolve_usage_caller_filters(
+            db, current_user, department_id
+        )
+        return get_chart_data(
+            db,
+            range,
+            model_id=model_id,
+            user_id=user_id,
+            model_type=model_type,
+            department_id=department_id,
+            scope_ids=scope_ids,
+            group_by=group_by,
+        )
+    else:
         user_id = current_user.id
         department_id = None
         if group_by in {"department", "user"}:
@@ -90,16 +154,16 @@ def top_models(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    caller_is_admin_tier = is_admin_tier(current_user)
-    user_id = None if caller_is_admin_tier else current_user.id
-    if not caller_is_admin_tier:
-        department_id = None
+    user_id, department_id, scope_ids = _resolve_usage_caller_filters(
+        db, current_user, department_id
+    )
     return get_top_models(
         db,
         limit=limit,
         model_type=model_type,
         user_id=user_id,
         department_id=department_id,
+        scope_ids=scope_ids,
     )
 
 
@@ -108,9 +172,29 @@ def top_users(
     limit: int = Query(10, ge=1, le=50),
     model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
     department_id: int | None = None,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    default_scope = _require_admin_or_unit_admin(db, current_user)
+    if default_scope is not None:
+        # unit admin: force/validate scope
+        if department_id is None:
+            scope_ids = default_scope
+            department_id = None
+        elif department_id not in set(default_scope):
+            raise HTTPException(
+                status_code=403,
+                detail="僅能查詢自己管理單位的資料",
+            )
+        else:
+            scope_ids = None
+        return get_top_users(
+            db,
+            limit=limit,
+            model_type=model_type,
+            department_id=department_id,
+            scope_ids=scope_ids,
+        )
     return get_top_users(
         db,
         limit=limit,
@@ -124,9 +208,28 @@ def top_departments(
     limit: int = Query(10, ge=1, le=50),
     model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
     department_id: int | None = None,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    default_scope = _require_admin_or_unit_admin(db, current_user)
+    if default_scope is not None:
+        if department_id is None:
+            scope_ids = default_scope
+            department_id = None
+        elif department_id not in set(default_scope):
+            raise HTTPException(
+                status_code=403,
+                detail="僅能查詢自己管理單位的資料",
+            )
+        else:
+            scope_ids = None
+        return get_top_departments(
+            db,
+            limit=limit,
+            model_type=model_type,
+            department_id=department_id,
+            scope_ids=scope_ids,
+        )
     return get_top_departments(
         db,
         limit=limit,
@@ -142,11 +245,28 @@ def top_departments(
 def top_agents(
     days: int = Query(30, ge=1, le=180),
     limit: int = Query(10, ge=1, le=50),
-    admin: User = Depends(require_admin),
+    department_id: int | None = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Top-N agents by token consumption over the last ``days`` days."""
-    return get_top_agents(db, days=days, limit=limit)
+    default_scope = _require_admin_or_unit_admin(db, current_user)
+    if default_scope is not None:
+        if department_id is None:
+            return get_top_agents(
+                db, days=days, limit=limit, scope_ids=default_scope
+            )
+        if department_id not in set(default_scope):
+            raise HTTPException(
+                status_code=403,
+                detail="僅能查詢自己管理單位的資料",
+            )
+        return get_top_agents(
+            db, days=days, limit=limit, department_id=department_id
+        )
+    return get_top_agents(
+        db, days=days, limit=limit, department_id=department_id
+    )
 
 
 @router.get("/by-base-model")
@@ -237,9 +357,16 @@ def export_csv(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if not is_admin_tier(current_user):
+    if is_admin_tier(current_user):
+        scope_ids = None
+    elif is_unit_admin(db, current_user):
+        user_id, department_id, scope_ids = _resolve_usage_caller_filters(
+            db, current_user, department_id
+        )
+    else:
         user_id = current_user.id
         department_id = None
+        scope_ids = None
 
     csv_content = export_usage_csv(
         db,
@@ -248,6 +375,7 @@ def export_csv(
         user_id=user_id,
         model_type=model_type,
         department_id=department_id,
+        scope_ids=scope_ids,
     )
 
     return StreamingResponse(

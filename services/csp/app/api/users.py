@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agent, UserAgentPermission
@@ -24,6 +24,8 @@ from app.services.auth_service import (
     is_owner,
     require_admin,
 )
+from app.services.department_tree import get_descendant_ids
+from app.services.unit_admin_service import get_unit_admin_scope_ids
 from app.utils.security import hash_password
 
 router = APIRouter(prefix="/api/users", tags=["使用者管理"])
@@ -44,6 +46,19 @@ def _ensure_owner_for_elevated(target_role: str | None, current_user: User) -> N
             status_code=403,
             detail="需要 owner 權限以管理 admin/owner 帳號",
         )
+
+
+def _unit_admin_may_manage(db: Session, actor: User, target: User) -> bool:
+    """Unit admin may act when target is in-scope and non-elevated."""
+    scope = get_unit_admin_scope_ids(db, actor)
+    if scope is None:
+        return False
+    if target.department_id is None or target.department_id not in scope:
+        return False
+    if target.role in _ELEVATED_ROLES:
+        return False
+    return True
+
 
 
 def _cascade_user_key_permissions(db: Session, user: User, allowed_ids: set) -> int:
@@ -71,10 +86,39 @@ def _validate_department_id(db: Session, department_id: int | None) -> int | Non
 
 @router.get("", response_model=list[UserResponse])
 def list_users(
-    admin: User = Depends(require_admin),
+    department_id: int | None = Query(None),
+    is_approved: bool | None = Query(None),
+    is_active: bool | None = Query(None),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return db.query(User).order_by(User.created_at.desc()).all()
+    query = db.query(User)
+
+    if is_admin_tier(current_user):
+        if department_id is not None:
+            scope = get_descendant_ids(db, department_id, include_self=True)
+            query = query.filter(User.department_id.in_(sorted(scope)))
+    else:
+        scope = get_unit_admin_scope_ids(db, current_user)
+        if scope is None:
+            raise HTTPException(status_code=403, detail="需要管理員權限")
+        # Unit admin: forced to in-scope users; NULL department_id invisible.
+        if department_id is not None:
+            if department_id not in scope:
+                raise HTTPException(
+                    status_code=403,
+                    detail="僅能查詢自己管理單位的資料",
+                )
+            sub = get_descendant_ids(db, department_id, include_self=True)
+            query = query.filter(User.department_id.in_(sorted(sub)))
+        else:
+            query = query.filter(User.department_id.in_(sorted(scope)))
+
+    if is_approved is not None:
+        query = query.filter(User.is_approved == is_approved)
+    if is_active is not None:
+        query = query.filter(User.is_active == is_active)
+    return query.order_by(User.created_at.desc()).all()
 
 
 @router.post("", response_model=UserResponse)
@@ -315,23 +359,43 @@ def update_user_allowed_agents(
 @router.post("/{user_id}/approve")
 def approve_user(
     user_id: int,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="使用者不存在")
+    actor_is_unit_admin = False
+    if is_admin_tier(current_user):
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="使用者不存在")
+    else:
+        # Non-admin: missing and out-of-scope must be indistinguishable (404).
+        scope = get_unit_admin_scope_ids(db, current_user)
+        user = db.query(User).filter(User.id == user_id).first()
+        if (
+            not user
+            or scope is None
+            or user.department_id is None
+            or user.department_id not in scope
+        ):
+            raise HTTPException(status_code=404, detail="使用者不存在")
+        if user.role in _ELEVATED_ROLES:
+            raise HTTPException(status_code=403, detail="需要管理員權限")
+        actor_is_unit_admin = True
+
     if user.is_approved:
         return {"message": f"使用者「{user.username}」已是核准狀態"}
     user.is_approved = True
     db.commit()
+    detail = f"核准使用者「{user.username}」"
+    if actor_is_unit_admin:
+        detail += "（單位管理員核准）"
     log_audit_event(
         db,
-        actor=admin,
+        actor=current_user,
         action="approve",
         resource_type="user",
         resource_id=user.id,
-        detail=f"核准使用者「{user.username}」",
+        detail=detail,
         commit=True,
     )
     return {"message": f"已核准使用者「{user.username}」"}
@@ -340,26 +404,98 @@ def approve_user(
 @router.delete("/{user_id}")
 def deactivate_user(
     user_id: int,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="使用者不存在")
-    _ensure_owner_for_elevated(user.role, admin)
+    actor_is_unit_admin = False
+    if is_admin_tier(current_user):
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="使用者不存在")
+        _ensure_owner_for_elevated(user.role, current_user)
+    else:
+        # Non-admin: missing and out-of-scope must be indistinguishable (404).
+        scope = get_unit_admin_scope_ids(db, current_user)
+        user = db.query(User).filter(User.id == user_id).first()
+        if (
+            not user
+            or scope is None
+            or user.department_id is None
+            or user.department_id not in scope
+        ):
+            raise HTTPException(status_code=404, detail="使用者不存在")
+        if user.role in _ELEVATED_ROLES:
+            raise HTTPException(status_code=403, detail="需要管理員權限")
+        actor_is_unit_admin = True
+
     user.is_active = False
     user.token_version = (user.token_version or 0) + 1
     db.commit()
+    detail = f"停用使用者「{user.username}」"
+    if actor_is_unit_admin:
+        detail += "（單位管理員停用）"
     log_audit_event(
         db,
-        actor=admin,
+        actor=current_user,
         action="deactivate",
         resource_type="user",
         resource_id=user.id,
-        detail=f"停用使用者「{user.username}」",
+        detail=detail,
         commit=True,
     )
     return {"message": "使用者已停用"}
+
+
+@router.post("/{user_id}/reactivate")
+def reactivate_user(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Flip ``is_active=True`` only — no token_version / role changes.
+
+    SYSTEM-MAP grants 停用/恢復 to unit admins; reactivation previously
+    lived only inside the admin-only PUT.
+    """
+    actor_is_unit_admin = False
+    if is_admin_tier(current_user):
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="使用者不存在")
+        _ensure_owner_for_elevated(user.role, current_user)
+    else:
+        # Non-admin: missing and out-of-scope must be indistinguishable (404).
+        scope = get_unit_admin_scope_ids(db, current_user)
+        user = db.query(User).filter(User.id == user_id).first()
+        if (
+            not user
+            or scope is None
+            or user.department_id is None
+            or user.department_id not in scope
+        ):
+            raise HTTPException(status_code=404, detail="使用者不存在")
+        if user.role in _ELEVATED_ROLES:
+            raise HTTPException(status_code=403, detail="需要管理員權限")
+        actor_is_unit_admin = True
+
+    if user.is_active:
+        raise HTTPException(status_code=400, detail="使用者已是啟用狀態")
+
+    user.is_active = True
+    db.commit()
+    detail = f"恢復使用者「{user.username}」"
+    if actor_is_unit_admin:
+        detail += "（單位管理員恢復）"
+    log_audit_event(
+        db,
+        actor=current_user,
+        action="reactivate",
+        resource_type="user",
+        resource_id=user.id,
+        detail=detail,
+        commit=True,
+    )
+    return {"message": f"已恢復使用者「{user.username}」"}
 
 
 @router.delete("/{user_id}/permanent")

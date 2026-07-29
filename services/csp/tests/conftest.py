@@ -80,13 +80,14 @@ def client(db_engine):
 
 # ── Fixture helpers ────────────────────────────────────────────────────────────
 
-def make_user(db, username="alice", role="user", is_approved=True) -> User:
+def make_user(db, username="alice", role="user", is_approved=True, department_id=None) -> User:
     u = User(
         username=username,
         hashed_password=hash_password("password"),
         role=role,
         is_active=True,
         is_approved=is_approved,
+        department_id=department_id,
     )
     db.add(u)
     db.commit()

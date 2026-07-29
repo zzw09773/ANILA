@@ -58,6 +58,28 @@ def _department_scope_ids(
     )
 
 
+def _resolve_scope_ids(
+    db: Session,
+    *,
+    department_id: int | None = None,
+    scope_ids: list[int] | None = None,
+) -> list[int] | None:
+    """Combine caller-allowed ``scope_ids`` with an optional ``department_id``.
+
+    When both are present, take the intersection: ``scope_ids`` is the
+    caller's read ceiling, and ``department_id`` further narrows within
+    that ceiling. Preferring either side alone would let a narrower
+    filter be discarded (or a broader set leak past a constraint).
+    An empty intersection stays empty — do not fall back.
+    """
+    expanded = _department_scope_ids(db, department_id)
+    if scope_ids is not None and expanded is not None:
+        return sorted(set(scope_ids) & set(expanded))
+    if scope_ids is not None:
+        return scope_ids
+    return expanded
+
+
 def _apply_usage_filters(
     query,
     db: Session,
@@ -66,14 +88,17 @@ def _apply_usage_filters(
     user_id: int | None = None,
     model_type: str | None = None,
     department_id: int | None = None,
+    scope_ids: list[int] | None = None,
 ):
     if model_id:
         query = query.filter(TokenUsage.model_id == model_id)
     if user_id:
         query = query.filter(TokenUsage.user_id == user_id)
-    scope_ids = _department_scope_ids(db, department_id)
-    if scope_ids is not None:
-        query = query.filter(TokenUsage.department_id.in_(scope_ids))
+    resolved = _resolve_scope_ids(
+        db, department_id=department_id, scope_ids=scope_ids
+    )
+    if resolved is not None:
+        query = query.filter(TokenUsage.department_id.in_(resolved))
     if model_type:
         model_ids = _get_model_ids_by_type(db, model_type)
         query = query.filter(TokenUsage.model_id.in_(model_ids))
@@ -87,9 +112,14 @@ def get_usage_summary(
     user_id: int | None = None,
     model_type: str | None = None,
     department_id: int | None = None,
+    scope_ids: list[int] | None = None,
 ) -> dict:
     """Get aggregate usage summary for the selected time range."""
     start_time, _ = get_time_range(range_key)
+    # P1.2 fold-in: resolve department edges at most once per request.
+    resolved_scope = _resolve_scope_ids(
+        db, department_id=department_id, scope_ids=scope_ids
+    )
 
     query = db.query(
         func.count(TokenUsage.id).label("total_requests"),
@@ -107,7 +137,7 @@ def get_usage_summary(
         model_id=model_id,
         user_id=user_id,
         model_type=model_type,
-        department_id=department_id,
+        scope_ids=resolved_scope,
     )
     result = query.first()
 
@@ -120,7 +150,7 @@ def get_usage_summary(
         model_id=model_id,
         user_id=user_id,
         model_type=model_type,
-        department_id=department_id,
+        scope_ids=resolved_scope,
     )
     active_models = active_models_q.scalar() or 0
 
@@ -137,7 +167,7 @@ def get_usage_summary(
         model_id=model_id,
         user_id=user_id,
         model_type=model_type,
-        department_id=department_id,
+        scope_ids=resolved_scope,
     )
     active_keys = active_keys_q.scalar() or 0
 
@@ -151,7 +181,7 @@ def get_usage_summary(
         model_id=model_id,
         user_id=user_id,
         model_type=model_type,
-        department_id=department_id,
+        scope_ids=resolved_scope,
     )
     web_ui_requests = web_ui_req_q.scalar() or 0
 
@@ -174,6 +204,7 @@ def get_chart_data(
     model_type: str | None = None,
     department_id: int | None = None,
     group_by: str = "total",
+    scope_ids: list[int] | None = None,
 ) -> dict:
     """Get time-series data for line charts."""
     start_time, bucket_seconds = get_time_range(range_key)
@@ -215,6 +246,7 @@ def get_chart_data(
         user_id=user_id,
         model_type=model_type,
         department_id=department_id,
+        scope_ids=scope_ids,
     )
 
     query = query.group_by("bucket_ts")
@@ -272,6 +304,7 @@ def get_top_models(
     model_type: str | None = None,
     user_id: int | None = None,
     department_id: int | None = None,
+    scope_ids: list[int] | None = None,
 ) -> list[dict]:
     start_time, _ = get_time_range("30d")
     query = db.query(
@@ -285,6 +318,7 @@ def get_top_models(
         user_id=user_id,
         model_type=model_type,
         department_id=department_id,
+        scope_ids=scope_ids,
     )
 
     results = (
@@ -313,6 +347,7 @@ def get_top_users(
     limit: int = 10,
     model_type: str | None = None,
     department_id: int | None = None,
+    scope_ids: list[int] | None = None,
 ) -> list[dict]:
     start_time, _ = get_time_range("30d")
     query = db.query(
@@ -325,6 +360,7 @@ def get_top_users(
         db,
         model_type=model_type,
         department_id=department_id,
+        scope_ids=scope_ids,
     )
 
     results = (
@@ -351,6 +387,7 @@ def get_top_departments(
     limit: int = 10,
     model_type: str | None = None,
     department_id: int | None = None,
+    scope_ids: list[int] | None = None,
 ) -> list[dict]:
     """Direct-attribution ranking per department (not subtree rollup).
 
@@ -368,6 +405,7 @@ def get_top_departments(
         db,
         model_type=model_type,
         department_id=department_id,
+        scope_ids=scope_ids,
     )
 
     results = (
@@ -396,6 +434,7 @@ def export_usage_csv(
     user_id: int | None = None,
     model_type: str | None = None,
     department_id: int | None = None,
+    scope_ids: list[int] | None = None,
 ) -> str:
     """Export usage data as CSV string."""
     start_time, _ = get_time_range(range_key)
@@ -424,6 +463,7 @@ def export_usage_csv(
         user_id=user_id,
         model_type=model_type,
         department_id=department_id,
+        scope_ids=scope_ids,
     )
 
     rows = query.order_by(TokenUsage.request_timestamp.desc()).all()
@@ -478,6 +518,8 @@ def get_top_agents(
     *,
     days: int = 30,
     limit: int = 10,
+    department_id: int | None = None,
+    scope_ids: list[int] | None = None,
 ) -> list[dict]:
     """Top-N agents by token consumption (CSP-forwarded + agent-callback)."""
     from datetime import timedelta as _td
@@ -485,19 +527,24 @@ def get_top_agents(
     from app.models.agent import Agent
 
     start_time = datetime.now(timezone.utc) - _td(days=days)
+    query = db.query(
+        TokenUsage.caller_agent_id.label("agent_id"),
+        func.sum(TokenUsage.total_tokens).label("total_tokens"),
+        func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
+        func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
+        func.count(TokenUsage.id).label("total_requests"),
+    ).filter(
+        TokenUsage.request_timestamp >= start_time,
+        TokenUsage.caller_agent_id.isnot(None),
+    )
+    query = _apply_usage_filters(
+        query,
+        db,
+        department_id=department_id,
+        scope_ids=scope_ids,
+    )
     rows = (
-        db.query(
-            TokenUsage.caller_agent_id.label("agent_id"),
-            func.sum(TokenUsage.total_tokens).label("total_tokens"),
-            func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
-            func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
-            func.count(TokenUsage.id).label("total_requests"),
-        )
-        .filter(
-            TokenUsage.request_timestamp >= start_time,
-            TokenUsage.caller_agent_id.isnot(None),
-        )
-        .group_by(TokenUsage.caller_agent_id)
+        query.group_by(TokenUsage.caller_agent_id)
         .order_by(func.sum(TokenUsage.total_tokens).desc())
         .limit(limit)
         .all()
