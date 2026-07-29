@@ -327,22 +327,22 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, 
   );
 };
 
-// ---- Classification corner watermark (真五級,取代裝飾性英文 CONFIDENTIAL) ----
-// 依實際 classification_level 渲染右上角標:僅「機密」(含)以上顯示,角標文字
-// 恆為真級別中文(機密／極機密／絕對機密),絕不再顯示固定英文 CONFIDENTIAL。
+// ---- Classification corner watermark (真四級,取代裝飾性英文 CONFIDENTIAL) ----
+// 依實際 classification_level 渲染右上角標:僅「密」(含)以上顯示,角標文字
+// 恆為真級別中文(密／機密),絕不再顯示固定英文 CONFIDENTIAL。
 // 營業秘密／無機密／未知等級不上全浮水印(營業秘密僅保留 ClassificationLevelBadge)。
-// 視覺分級遞進:機密(warn 琥珀)→ 極機密(danger 紅)→ 絕對機密(danger 紅 + 加重)。
+// 視覺分級遞進:密(warn 琥珀,舊 rank-2 機密角色)→ 機密(danger-strong 頂級)。
 const WATERMARK_LEVEL_STYLES = {
-  機密: { severity: "warn", bg: "var(--warn)" },
-  極機密: { severity: "danger", bg: "var(--danger)" },
-  絕對機密: { severity: "danger-strong", bg: "var(--danger)" },
+  密: { severity: "warn", bg: "var(--warn)" },
+  機密: { severity: "danger-strong", bg: "var(--danger)" },
 };
 
 /**
  * 由對話狀態推導要顯示的浮水印級別字串(zh-TW),無則回傳 null。
- * 優先讀 classificationLevel / classification_level;僅「機密／極機密／絕對機密」
+ * 優先讀 classificationLevel / classification_level;僅「密／機密」
  * 觸發全浮水印。欄位缺漏(僅有 boolean latch payload)但 classified 為真時,
- * 回退 floor「機密」(與 r1_0003 backfill 一致),絕不回退英文 CONFIDENTIAL。
+ * 回退 floor「密」(鏡射門檻 >= 密;classified=true 只保證 >= 密),
+ * 絕不回退英文 CONFIDENTIAL,也絕不回退更高的「機密」。
  *
  * @param {{classificationLevel?: string, classification_level?: string, classified?: boolean}} source
  * @returns {string|null}
@@ -352,8 +352,8 @@ export function watermarkLevel(source) {
   if (typeof raw === "string" && raw.trim() && WATERMARK_LEVEL_STYLES[raw.trim()]) {
     return raw.trim();
   }
-  // 欄位缺漏或非機敏等級時,以 boolean latch 為準:classified=true → floor「機密」。
-  return source?.classified ? "機密" : null;
+  // 欄位缺漏或非機敏等級時,以 boolean latch 為準:classified=true → floor「密」。
+  return source?.classified ? "密" : null;
 }
 
 export const ClassificationWatermark = ({ level }) => {
@@ -411,7 +411,7 @@ export const ClassificationLevelBadge = ({ conversation }) => {
 
 // 機敏模式全螢幕鑑識浮水印:低透明度對角平鋪,萬一有人拍照/截圖洩漏機敏畫面,
 // 浮水印帶著洩漏者身分 + trace_id 以供溯源。文字顯示「真實分類級別」中文
-// (機密/極機密/絕對機密),非固定英文;缺 level 回退機密(與 r1_0003 backfill 一致)。
+// (密/機密),非固定英文;缺 level 回退密(鏡射門檻 >= 密)。
 export const ConfidentialWatermark = ({ userEmail, traceId, level }) => (
   <div aria-hidden="true" style={{
     position: "fixed", inset: 0, pointerEvents: "none",
@@ -433,7 +433,7 @@ export const ConfidentialWatermark = ({ userEmail, traceId, level }) => (
       color: "var(--fg)",
       textAlign: "center",
     }}>
-      {level || "機密"} · {userEmail || "user"} · {traceId || "—"}
+      {level || "密"} · {userEmail || "user"} · {traceId || "—"}
     </div>
   </div>
 );

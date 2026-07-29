@@ -8,7 +8,7 @@
   trace_spans 六表;enum 欄位一律開放 String(封閉 enum 在 Pydantic 契約
   層把關),JSON 走 with_variant(JSONB on PG、JSON on SQLite)——
   可攜 DDL,不用 PG 原生 enum / extension。
-- 每表 classification_level 預設 '無機密'(五級繁中字串)。
+- 每表 classification_level 預設 '無機密'(四級繁中字串)。
 - tasks.source_snapshot_id / policy_decision_id 不掛 FK:對向表都有
   task_id FK 指回 tasks,雙向掛會循環相依;service 層維護(Slice 2b)。
 - downgrade 依 FK 反序卸表(先子後母)。

@@ -303,22 +303,24 @@ def set_message_rating(
 def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation:
     """Mark conversation as classified (irreversible by non-admin).
 
-    Slice 3b: routes through the five-level one-way core
+    Slice 3b: routes through the four-level one-way core (SYSTEM-MAP §8)
     (``apply_classification`` reason=``manual_admin``) which writes the
-    ClassificationEvent, sets ``classification_level=機密`` and mirrors the
-    legacy boolean (``classified=True``). ``classified_by`` is an
-    admin-attribution field the event model doesn't carry, so it's stamped
-    here alongside the existing AuditLog trail.
+    ClassificationEvent, sets ``classification_level`` to
+    :attr:`ClassificationLevel.RESTRICTED` (``密``; the mirror floor for
+    ``classified=True``) and mirrors the legacy boolean. ``classified_by``
+    is an admin-attribution field the event model doesn't carry, so it's
+    stamped here alongside the existing AuditLog trail.
     """
     conv = get_conversation(db, conv_id, user)
     if conv.classified:
-        raise HTTPException(status_code=409, detail="此對話已標示為機密")
+        raise HTTPException(status_code=409, detail="此對話已標示為機敏")
     from app.modules.policy import apply_classification
+    from app.schemas.contracts.classification import ClassificationLevel
     apply_classification(
         db,
         resource_type="conversation",
         resource_id=str(conv_id),
-        new_level="機密",
+        new_level=ClassificationLevel.RESTRICTED.to_storage(),
         actor_type="user",
         actor_id=str(user.id),
         reason="manual_admin",

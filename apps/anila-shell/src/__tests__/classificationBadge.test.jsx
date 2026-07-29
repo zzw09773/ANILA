@@ -10,7 +10,7 @@ import {
 
 afterEach(cleanup);
 
-// The five-level badge is additive to the existing boolean 加密模式 indicator.
+// The four-level badge is additive to the existing boolean 加密模式 indicator.
 // It renders the zh-TW level text for any elevated level, nothing for the
 // floor 無機密, and nothing when the field is absent (boolean-only payload).
 
@@ -36,13 +36,13 @@ describe("classificationLevelBadge (pure)", () => {
   });
 
   it("honours the camelCase mapped field too", () => {
-    expect(classificationLevelBadge({ classificationLevel: "極機密" })).toBe("極機密");
+    expect(classificationLevelBadge({ classificationLevel: "密" })).toBe("密");
   });
 });
 
 describe("<ClassificationLevelBadge>", () => {
   it("renders the level text as a badge per elevated level", () => {
-    for (const level of ["營業秘密", "機密", "極機密", "絕對機密"]) {
+    for (const level of ["營業秘密", "密", "機密"]) {
       const { container } = render(
         <ClassificationLevelBadge conversation={{ classification_level: level }} />,
       );

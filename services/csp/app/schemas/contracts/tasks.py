@@ -4,7 +4,7 @@
 DB 層(app/models/task.py、source_snapshot.py)存開放 String;封閉 enum
 在這裡把關 —— API 進出一律走本模組型別,未知值 fail-closed 拋驗證錯誤。
 分類等級沿用 ``app.schemas.contracts.classification.ClassificationLevel``
-(五級繁中字串),不另定義。
+(四級繁中字串),不另定義。
 """
 
 from __future__ import annotations

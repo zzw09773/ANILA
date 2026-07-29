@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""機敏分類盤點端點測試(doc 08 §15 Classification Inventory Before Cutover)。
+"""機敏分類盤點端點測試(SYSTEM-MAP §8 四級字彙)。
 
 覆蓋:
 - admin 取得的計數與 seeded fixtures 相符(含一列刻意 backfill 不一致);
@@ -41,16 +41,17 @@ def _seed(db):
     ))
     inconsistent = Conversation(
         user_id=owner.id, title="c-inconsistent",
-        classified=True, classification_level="無機密",  # ← 舊 latch 真,新等級卻 < 機密
+        # 舊 latch 真,新等級卻 < 密(RESTRICTED) → inconsistent
+        classified=True, classification_level="無機密",
     )
     db.add(inconsistent)
     db.commit()
     db.refresh(inconsistent)
 
-    # 一則極機密訊息(已閂鎖)掛在不一致對話下。
+    # 一則「密」訊息(已閂鎖)掛在不一致對話下。
     db.add(Message(
         conversation_id=inconsistent.id, role="user", content="x",
-        classification_level="極機密", classification_latched_at=now,
+        classification_level="密", classification_latched_at=now,
     ))
 
     # 一個 agent:requires_encryption=True 但 default_classification_level 仍
@@ -86,12 +87,12 @@ def test_admin_inventory_counts_match_fixtures(client, db):
     assert conv["levels"]["機密"] == 1
     assert conv["levels"]["無機密"] == 2
     assert conv["latched"] == 1
-    # classified=True 且等級 < 機密 的那一列 → inconsistent 應為 1。
+    # classified=True 且等級 < 密 的那一列 → inconsistent 應為 1。
     assert conv["inconsistent"] == 1
 
     msg = rows["messages"]
     assert msg["total"] == 1
-    assert msg["levels"]["極機密"] == 1
+    assert msg["levels"]["密"] == 1
     assert msg["latched"] == 1
     assert msg["inconsistent"] == 0  # messages 無舊 boolean → 恆 0
 

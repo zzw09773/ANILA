@@ -61,10 +61,13 @@ def get_shared_conversation(
         for msg in conv.messages:
             messages.append(PublicMessageOut.model_validate(msg))
 
+    # Title redaction for controlled conversations (classified boolean =
+    # rank >= RESTRICTED / 密; SYSTEM-MAP §8). Use 列管 rather than naming the
+    # top level 機密, which would overclaim when the row is only 密.
     return PublicShareOut(
         share_token=token,
         conversation_id=conv.id,
-        conversation_title="（機密對話）" if classified else conv.title,
+        conversation_title="（列管對話）" if classified else conv.title,
         mode=share.mode,
         allow_fork=share.allow_fork,
         expires_at=share.expires_at,

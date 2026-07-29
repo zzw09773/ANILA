@@ -108,13 +108,12 @@ class TestRegisterFlags:
             "custom_http",
         )
 
-    def test_classification_ceilings_are_the_five_zh_tw_levels(self):
+    def test_classification_ceilings_are_the_four_zh_tw_levels(self):
         assert register_cmd._CLASSIFICATION_CEILINGS == (
             "無機密",
             "營業秘密",
+            "密",
             "機密",
-            "極機密",
-            "絕對機密",
         )
 
     def test_validate_choice_accepts_valid(self):
@@ -122,8 +121,8 @@ class TestRegisterFlags:
             "custom_http", register_cmd._RUNTIME_TYPES, "--runtime-type"
         ) == "custom_http"
         assert register_cmd._validate_choice(
-            "機密", register_cmd._CLASSIFICATION_CEILINGS, "--classification-ceiling"
-        ) == "機密"
+            "密", register_cmd._CLASSIFICATION_CEILINGS, "--classification-ceiling"
+        ) == "密"
 
     def test_validate_choice_rejects_invalid_runtime_type(self, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -138,11 +137,11 @@ class TestRegisterFlags:
     def test_validate_choice_rejects_invalid_ceiling(self, capsys):
         with pytest.raises(SystemExit) as exc:
             register_cmd._validate_choice(
-                "top-secret", register_cmd._CLASSIFICATION_CEILINGS,
+                "極機密", register_cmd._CLASSIFICATION_CEILINGS,
                 "--classification-ceiling",
             )
         assert exc.value.code == 1
-        assert "絕對機密" in capsys.readouterr().err
+        assert "極機密" in capsys.readouterr().err
 
     def test_register_payload_passthrough(self, monkeypatch: pytest.MonkeyPatch):
         captured: dict = {}

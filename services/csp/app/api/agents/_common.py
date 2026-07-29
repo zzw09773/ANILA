@@ -18,7 +18,7 @@ def validate_agent_manifest(payload: dict) -> dict:
     """Validate a submitted Agent manifest against the doc 05 §4 contract.
 
     Fail-closed: unknown fields / wrong types / invalid enum values (e.g. a
-    non-五級 classification) raise ``422`` with a zh-TW detail. Returns the
+    non-四級 classification) raise ``422`` with a zh-TW detail. Returns the
     normalized manifest dict (JSON-mode) suitable for ``Agent.manifest_json``.
     """
     try:

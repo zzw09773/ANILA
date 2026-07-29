@@ -1,5 +1,17 @@
 from datetime import datetime
-from pydantic import BaseModel
+
+from pydantic import BaseModel, field_validator
+
+from app.schemas.contracts.classification import ClassificationLevel
+
+
+def _validate_classification_ceiling(value: str | None) -> str | None:
+    """None = 不設限;otherwise must be a ClassificationLevel storage value."""
+    if value is None:
+        return None
+    # from_storage raises ValueError on unknown → Pydantic 422 at write time
+    ClassificationLevel.from_storage(value)
+    return value
 
 
 class ModelCreate(BaseModel):
@@ -18,7 +30,7 @@ class ModelCreate(BaseModel):
     is_internal: bool = True
     # Slice 6a (doc 04 §2): ModelEndpoint formalized fields.
     protocol: str = "openai_compatible"  # 'openai_compatible' / 'custom_adapter'
-    classification_ceiling: str | None = None  # 五級字串;None = 不設限
+    classification_ceiling: str | None = None  # 四級字串;None = 不設限
     owner_department_id: int | None = None
     supports_streaming: bool = True
     supports_json_schema: bool = False
@@ -27,6 +39,11 @@ class ModelCreate(BaseModel):
     # ``api_key_secret_ref`` on create; NEVER returned. Omit to use the
     # global MODEL_GATEWAY_API_KEY fallback.
     api_key: str | None = None
+
+    @field_validator("classification_ceiling")
+    @classmethod
+    def _ceiling(cls, v: str | None) -> str | None:
+        return _validate_classification_ceiling(v)
 
 
 class ModelUpdate(BaseModel):
@@ -48,6 +65,11 @@ class ModelUpdate(BaseModel):
     supports_tools: bool | None = None
     # Write-only: re-encrypt the per-model gateway key. Never returned.
     api_key: str | None = None
+
+    @field_validator("classification_ceiling")
+    @classmethod
+    def _ceiling(cls, v: str | None) -> str | None:
+        return _validate_classification_ceiling(v)
 
 
 class ModelResponse(BaseModel):

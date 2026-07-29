@@ -3,7 +3,7 @@
 > **內網（air-gapped）NotebookLM 式知識／生產力平台 · 中科院自然人憑證卡登入 · CSP 治理底座。**
 > 分支 `anila-redesign` — §17.1 目錄搬遷 ＋ Slice 0–9 重構的收斂分支。設計權威：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/)（憲法＝[`00-product-constitution.md`](./docs/anila-redesign-docs/00-product-constitution.md)）。
 
-ANILA 是一套部署於**中科院內網（air-gapped，機房無外網）** 的 NotebookLM 式知識／生產力平台。它的北極星是：**以任務為入口，以個人／專案／組織知識與專案入口為來源，以受控的模型／Agent／GUI Service 為能力，以 CSP 治理層（權限、五級分類、引用、full trace、審計）為底座。** 正式使用者透過統一的 **ANILA Shell** 與所有能力互動；登入採**中科院自然人憑證卡（PKI 卡）** 做真實 PKCS#7/CMS 簽章驗證。ANILA 不是聊天機器人、不是入口頁拼盤、也不是 Agent marketplace — 它把「受控 AI 能力」收斂到單一治理底座的內網工作台。air-gap／PKI／機敏分類是它的**安全脈絡**，不是產品目的。
+ANILA 是一套部署於**中科院內網（air-gapped，機房無外網）** 的 NotebookLM 式知識／生產力平台。它的北極星是：**以任務為入口，以個人／專案／組織知識與專案入口為來源，以受控的模型／Agent／GUI Service 為能力，以 CSP 治理層（權限、四級分類、引用、full trace、審計）為底座。** 正式使用者透過統一的 **ANILA Shell** 與所有能力互動；登入採**中科院自然人憑證卡（PKI 卡）** 做真實 PKCS#7/CMS 簽章驗證。ANILA 不是聊天機器人、不是入口頁拼盤、也不是 Agent marketplace — 它把「受控 AI 能力」收斂到單一治理底座的內網工作台。air-gap／PKI／機敏分類是它的**安全脈絡**，不是產品目的。
 
 ---
 
@@ -25,7 +25,7 @@ ANILA
 
 ## 介面重設計（`anila-redesign` · 官方藍 institutional）
 
-> 治理中心（CSP）視覺全面去終端／駭客風，改為**淺色優先・官方藍**的中性專業語彙：系統 sans 字型（等寬只保留給 ID／數字／代碼）、溫圓角、去霓虹綠與開機 log cosplay；登入頁改**自然人憑證卡優先**（帳密／SSO 收進「其他登入方式」）；機敏對話浮水印改為反映**真實五級分類**（機密／極機密／絕對機密）而非固定英文，全螢幕水印帶洩漏溯源（使用者＋trace_id）。設計語彙見 [`docs/anila-redesign-docs/12-frontend-visual-redesign.md`](docs/anila-redesign-docs/12-frontend-visual-redesign.md)。
+> 治理中心（CSP）視覺全面去終端／駭客風，改為**淺色優先・官方藍**的中性專業語彙：系統 sans 字型（等寬只保留給 ID／數字／代碼）、溫圓角、去霓虹綠與開機 log cosplay；登入頁改**自然人憑證卡優先**（帳密／SSO 收進「其他登入方式」）；機敏對話浮水印改為反映**真實四級分類**（密／機密）而非固定英文，全螢幕水印帶洩漏溯源（使用者＋trace_id）。設計語彙見 [`docs/anila-redesign-docs/12-frontend-visual-redesign.md`](docs/anila-redesign-docs/12-frontend-visual-redesign.md)。
 
 <table>
   <tr>
@@ -38,14 +38,14 @@ ANILA
   </tr>
   <tr>
     <td><img src="docs/assets/screenshots/redesign/agents.png" alt="Agent Registry"><br><sub><b>Agent Registry</b>｜七態審批 + trace-test 審批閘門（Slice 5）</sub></td>
-    <td><img src="docs/assets/screenshots/redesign/classification-inventory.png" alt="分類盤點"><br><sub><b>分類盤點</b>｜八資源 × 五級 cutover 前盤點（Slice 3）</sub></td>
+    <td><img src="docs/assets/screenshots/redesign/classification-inventory.png" alt="分類盤點"><br><sub><b>分類盤點</b>｜八資源 × 四級 cutover 前盤點（Slice 3）</sub></td>
   </tr>
   <tr>
     <td><img src="docs/assets/screenshots/redesign/services.png" alt="服務登記 / 專案入口"><br><sub><b>服務登記</b>｜Launch Gateway 服務管理（Slice 7）</sub></td>
     <td><img src="docs/assets/screenshots/redesign/shell-chat.png" alt="ANILA 任務中心"><br><sub><b>ANILA 任務中心</b>｜四入口導覽：任務中心／我的知識庫／產出中心／專案入口（Slice 9）</sub></td>
   </tr>
   <tr>
-    <td colspan="2"><img src="docs/assets/screenshots/redesign/shell-classified.png" alt="機敏模式真分類浮水印"><br><sub><b>機敏模式真分類浮水印</b>｜真級別「極機密」角標 + 全螢幕對角洩漏溯源水印（使用者＋trace_id），取代固定英文 CONFIDENTIAL</sub></td>
+    <td colspan="2"><img src="docs/assets/screenshots/redesign/shell-classified.png" alt="機敏模式真分類浮水印"><br><sub><b>機敏模式真分類浮水印</b>｜真級別「密」角標 + 全螢幕對角洩漏溯源水印（使用者＋trace_id），取代固定英文 CONFIDENTIAL</sub></td>
   </tr>
   <tr>
     <td colspan="2"><img src="docs/assets/screenshots/redesign/shell-services.png" alt="專案入口"><br><sub><b>專案入口</b>｜從 Service Registry 讀取的服務卡片，iframe / 新分頁啟動（Slice 7 / 9）</sub></td>
@@ -150,7 +150,7 @@ flowchart TB
 | 1A | §17.1 目錄搬遷（`services/ apps/ packages/ infra/`）＋ root compose shim | repo 樹狀 ＋ [`compose.yaml`](./compose.yaml) | doc 10 §17.1 / ADR-0006 |
 | 1B | CSP 骨架：`tasks` / `policy` / `launch` module 互不 import ＋ 契約 schema | `services/csp/app/modules/*` ＋ `.importlinter` | doc 02 / doc 10 §14 |
 | 2 | Task 中樞 ＋ Source Snapshot；`X-ANILA-Task-Id` 貫穿 proxy／usage | `services/csp/app/services/proxy/task_link.py` | doc 09 |
-| 3 | 五級分類（無機密 < 營業秘密 < 機密 < 極機密 < 絕對機密）＋ 單向閂鎖 ＋ 降級審批（雙人原則） | `services/csp/app/models/classification.py` | doc 08 |
+| 3 | 四級分類（無機密 < 營業秘密 < 密 < 機密）＋ 單向閂鎖 ＋ 降級審批（雙人原則） | `services/csp/app/models/classification.py` | doc 08 |
 | 4 | Full Trace：`POST /v1/traces/{trace_id}/spans` 收攏 ＋ `anila_core.tracing` 匯出 SDK | `services/csp/app/api/traces.py`、`packages/anila-core/src/anila_core/tracing/` | doc 05 / 09 |
 | 5 | Agent Registry：七態審批（`draft` → … → `approved`）＋ trace-test 閘門（`trace_test_passed_at` 非空才可核章） | `services/csp/app/models/agent.py` | doc 05 |
 | 6 | Model Gateway：per-model 金鑰（僅露 boolean presence）＋ 五態健康 ＋ http endpoint 預設拒收、由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，production 與 dev 同準） | `services/csp/app/api/models.py` | doc 04 |
@@ -227,7 +227,7 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 
 ## 分支模型
 
-**你正在看 `anila-redesign`** — §17.1 目錄搬遷 ＋ Slice 0–9 重構的**收斂分支**，自 `origin/prod-intranet-card`（v1.2.0 系）分出，保留成熟骨架（card SSO / RS256 JWT / JWKS / revocation / CSRF / RLS / SSRF guard / proxy），採用新佈局與 Task／Trace／五級分類／Registry 新契約。
+**你正在看 `anila-redesign`** — §17.1 目錄搬遷 ＋ Slice 0–9 重構的**收斂分支**，自 `origin/prod-intranet-card`（v1.2.0 系）分出，保留成熟骨架（card SSO / RS256 JWT / JWKS / revocation / CSRF / RLS / SSRF guard / proxy），採用新佈局與 Task／Trace／四級分類／Registry 新契約。
 
 依 [ADR-0006](./docs/anila-redesign-docs/adr/ADR-0006-layout-migration-deviations.md)，本分支與 `main`／7 分支模型的 cherry-pick 互通已**刻意中斷**。`main` 作為 SSOT 的 7 分支部署模型（登入／部署 delta：`main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military` / `trial-military`）**維持不變**，權威細節見 [`AGENTS.md`](./AGENTS.md) §2–3 與 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)。
 
@@ -245,7 +245,7 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 
 - **自然人憑證卡真實驗章**：`/api/auth/card/*` 做真實 PKCS#7/CMS 簽章驗證 ＋ CA bundle 鏈驗證 ＋ 撤銷檢查，非比對卡號的假驗證。
 - **登入面收斂**：`REQUIRE_CARD_LOGIN_ONLY=true` 時帳密／OIDC／自助註冊 endpoints 回 404，唯一登入路徑是 PKI 卡；`startup_security` 在 prod 拒絕矛盾／dev 預設設定，container 直接開不起來（fail-fast）。
-- **五級分類單向閂鎖**：CSP ＋ Router ＋ UI 三層鎖 classified，無自動降級路徑，降級採雙人原則（申請人 ≠ 核准人），持久化到 DB。
+- **四級分類單向閂鎖**：等級序 `無機密 < 營業秘密 < 密 < 機密`；CSP ＋ Router ＋ UI 三層鎖 classified，無自動降級路徑，降級採雙人原則（申請人 ≠ 核准人），持久化到 DB。
 - **模型出向預設拒 http**：model endpoint 由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，production 與 dev 同準）；per-model 金鑰僅以 boolean presence 對外，不外洩。
 - **Credential 加密 ＋ SSRF guard**：AES-256-GCM ＋ PBKDF2；SSRF guard 對所有 user-supplied endpoint 把關，loopback / metadata 永不可繞過。
 - **唯一外部入口**：nginx `:443`（`infra/nginx/anila.conf`）Host allowlist ＋ 安全 header；runtime DB 以 `csp_app` role（非 superuser）連線以維持 RLS。

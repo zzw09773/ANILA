@@ -36,7 +36,7 @@ infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 s
 | **Artifact 合約 + Redis job store** | `job_store.py`：`PersistedJob` 投影寫 Redis（key 前綴 `anila-studio:jobs:`、TTL 7 天），studio **重啟後**仍能回答重啟前 job 的狀態查詢；best-effort，Redis 斷線只退化為 in-memory、不阻擋啟動。`job_reporting.py`：向 CSP 回報 `POST /v1/artifact-jobs`（建立）、`PATCH /v1/artifact-jobs/{id}`（終態 / 進度）、`POST /v1/artifacts`（產出落地）。 |
 | **Full Trace spans + `/v1/traces` ingest** | `studio_trace.py`：`producer:"studio"`，一個 root `studio.job` span + 每個管線步驟一個 `studio.stage` span，批次 `POST {csp}/v1/traces/{trace_id}/spans`（≤256 spans/批）。無 `trace_id` → emitter 全程 no-op；ship 失敗 drop-and-log，永不中斷生成。 |
 | **Task spine（`task_id`）** | 建立 job 的 request payload 帶 `task_id` / `source_snapshot_id` / `trace_id`，由 `job_lifecycle.py` 的 `JobReportContext` 貫串五條管線的 `*JobUpdater`，並隨 artifact-job / artifact / trace span 一起傳給 CSP。 |
-| **五級分類（passthrough）** | `classification_level` 由 `PersistedJob` 攜帶、`POST /v1/artifacts` 回傳、並寫入 trace span attributes；studio 不自行升降級，只做繼承傳遞。 |
+| **四級分類（passthrough）** | `classification_level`（無機密／營業秘密／密／機密）由 `PersistedJob` 攜帶、`POST /v1/artifacts` 回傳、並寫入 trace span attributes；studio 不自行升降級，只做繼承傳遞。 |
 | **Model Gateway** | LLM 一律走 CSP `POST /v1/chat/completions` proxy（維持 token 計費），不直連模型。 |
 | **JWKS / 撤銷認證** | `jwks_client`（拉 csp JWKS + cache）＋ `revocation_cache`（Redis pub/sub + cold-start，**fail-closed**）。 |
 

@@ -32,7 +32,7 @@ ANILA 是 air-gapped 內網平台，repo 內**沒有** ML Team OpenWebUI 的 age
 | `model_usage` | 使用的底層模型（如 `gpt-oss-20b`） |
 | `tools` | 使用的工具（多個以 `;` 分隔） |
 | `data_sources` | 資料來源 / 綁定的 collection |
-| `sensitivity` | 機敏程度（五級分類：`無機密` / `營業秘密` / `機密` / `極機密` / `絕對機密`） |
+| `sensitivity` | 機敏程度（四級分類：`無機密` / `營業秘密` / `密` / `機密`） |
 | `migration_level` | 目標註冊等級：`L1`（Proxy-compatible）/ `L2`（Run Protocol）/ `L3`（Full Trace） |
 
 > v1 正式 policy：只有 **L3 Full Trace** 可進正式任務（低機敏 L2 例外）。

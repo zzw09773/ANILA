@@ -244,16 +244,16 @@ class TestClassificationInheritance:
 
     def test_explicit_higher_is_one_way(self, client: TestClient, db: Session):
         user = make_user(db, username="inh_oneway")
-        task = _make_task(db, user, level="機密")
-        # explicit 極機密 > task 機密 → effective 極機密(不因 task 降級)。
-        resp = _register_artifact(client, task_id=task.id, level="極機密")
+        task = _make_task(db, user, level="密")
+        # explicit 機密 > task 密 → effective 機密(不因 task 降級)。
+        resp = _register_artifact(client, task_id=task.id, level="機密")
         assert resp.status_code == 201, resp.text
-        assert resp.json()["classification_level"] == "極機密"
+        assert resp.json()["classification_level"] == "機密"
         # 首版分類同步為 effective。
         art_id = resp.json()["artifact_id"]
         ver = (db.query(ArtifactVersion)
                .filter(ArtifactVersion.artifact_id == art_id).one())
-        assert ver.classification_level == "極機密"
+        assert ver.classification_level == "機密"
 
     def test_snapshot_only_binding_inherits(self, client: TestClient, db: Session):
         user = make_user(db, username="inh_snap")
@@ -290,19 +290,19 @@ class TestVersioning:
 
     def test_version_reinherits_higher_explicit(self, client: TestClient, db: Session):
         user = make_user(db, username="ver_reinh")
-        task = _make_task(db, user, level="機密")
+        task = _make_task(db, user, level="密")
         art_id = _register_artifact(client, task_id=task.id).json()["artifact_id"]
-        # 新版帶更高 explicit → artifact 單向升到 極機密。
+        # 新版帶更高 explicit → artifact 單向升到 機密。
         resp = client.post(
             f"/v1/artifacts/{art_id}/versions", headers=_SVC,
             json={"storage_ref": "store://x/v2.pdf",
-                  "classification_level": "極機密"},
+                  "classification_level": "機密"},
         )
         assert resp.status_code == 201, resp.text
-        assert resp.json()["classification_level"] == "極機密"
+        assert resp.json()["classification_level"] == "機密"
         art = db.get(Artifact, art_id)
         db.refresh(art)
-        assert art.classification_level == "極機密"
+        assert art.classification_level == "機密"
 
 
 # ── 匯出 policy gate ──────────────────────────────────────────────────────────

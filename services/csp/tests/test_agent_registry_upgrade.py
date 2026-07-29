@@ -2,7 +2,7 @@
 """Slice 5a — Agent Registry 升級測試(doc 05 §3/§4/§6、doc 06 §8)。
 
 涵蓋:
-- Manifest 契約(AgentManifest)fail-closed 驗證(pass / 未知欄位 / 非五級分類 /
+- Manifest 契約(AgentManifest)fail-closed 驗證(pass / 未知欄位 / 非四級分類 /
   錯誤 trace protocol)+ 註冊端點整合(422 / 存 manifest_json)。
 - Shadow 註冊(shadow=True → draft;預設 → pending_connection_test)。
 - 七值狀態機 approve blocker(無 trace-test → 409;狀態不符 → 409;
@@ -172,7 +172,7 @@ class TestManifestValidation:
 
     def test_non_five_level_classification_rejected(self):
         bad = _valid_manifest()
-        bad["classification"]["ceiling"] = "絕密"  # not a 五級 value
+        bad["classification"]["ceiling"] = "絕密"  # not a 四級 value
         with pytest.raises(Exception):
             AgentManifest.model_validate(bad)
 

@@ -89,7 +89,7 @@ class Task(Base):
     policy_decision_id = Column(Integer, nullable=True)
     legacy_runtime_call = Column(Boolean, nullable=False, default=False,
                                  server_default="false")
-    # 五級分類(ClassificationLevel)繁中字串落地;預設 無機密。
+    # 四級分類(ClassificationLevel)繁中字串落地;預設 無機密。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
     # doc 08 §5 其餘三共通欄位(Slice 3a 補齊)。

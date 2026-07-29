@@ -36,16 +36,15 @@ export function appendClassifiedTag(tags) {
   return list.includes("classified") ? list : [...list, "classified"];
 }
 
-// Five-level classification labels (zh-TW), low → high. Single source of truth
+// Four-level classification labels (zh-TW), low → high. Single source of truth
 // for the level badge; mirrors the backend ClassificationLevel contract
 // (services/csp/app/schemas/contracts/classification.py). The floor level
 // 無機密 never gets a badge — it is the un-classified default.
 export const CLASSIFICATION_LEVELS = [
   "無機密",
   "營業秘密",
+  "密",
   "機密",
-  "極機密",
-  "絕對機密",
 ];
 
 const CLASSIFICATION_FLOOR = "無機密";

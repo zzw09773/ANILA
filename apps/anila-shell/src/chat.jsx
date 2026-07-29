@@ -258,7 +258,7 @@ export const MessageBubble = ({
   const [fbSent, setFbSent] = useState(false);
   const routedAgent = agents.find((a) => a.id === msg.routedAgentId);
   // 真分類浮水印:優先讀對話 classificationLevel,缺欄位時以 boolean classified
-  // 回退 floor「機密」。仍維持「classified 或級別≥機密」才顯示的既有 gating。
+  // 回退 floor「密」。仍維持「classified 或級別≥密」才顯示的既有 gating。
   const watermark = watermarkLevel({ classificationLevel, classified });
 
   // 點選單外部即關閉 guided regenerate(自管選單沒有 Dropdown 的內建處理)。

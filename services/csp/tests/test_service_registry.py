@@ -209,17 +209,17 @@ class TestAccessAlgorithm:
 
     def test_classification_clearance_denies_even_admin(self, db):
         admin = make_user(db, username="root", role="admin")
-        svc = _make_service(db, is_public=True, classification_ceiling="機密")
+        svc = _make_service(db, is_public=True, classification_ceiling="密")
         # launch context above ceiling → hard deny for ALL tiers.
         assert (
             access_control.can_access_service(
-                db, admin, svc, context_level="極機密"
+                db, admin, svc, context_level="機密"
             )
             is False
         )
         # at/under ceiling → allowed.
         assert (
-            access_control.can_access_service(db, admin, svc, context_level="機密")
+            access_control.can_access_service(db, admin, svc, context_level="密")
             is True
         )
 

@@ -747,8 +747,8 @@ const RUNTIME_TYPE_OPTIONS = [
   { value: 'custom_http', label: 'custom_http', hint: '自訂 HTTP 介面（需自行對齊契約）' },
 ]
 
-// 分類上限五級（doc 08）；null = 無上限。由低到高排序。
-const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '機密', '極機密', '絕對機密']
+// 分類上限四級（SYSTEM-MAP §8）；null = 無上限。由低到高排序。
+const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
 
 const runtimeTypeHint = computed(() =>
   RUNTIME_TYPE_OPTIONS.find(o => o.value === form.value.runtime_type)?.hint || '')

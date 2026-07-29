@@ -55,7 +55,7 @@
 | 儀表板 | `DashboardView`（`/`） | 平台總覽（`dashboard/PlatformCard.vue`） |
 | 模型治理 | `ModelsView`（`models`） | **五態健康**（`utils/healthStatus.js`：未知 / 健康 / 降級 / 異常 / 已停用，含舊 online/connecting/offline 正規化）＋**每模型金鑰**（`has_api_key`：已設定模型金鑰 / 使用全域金鑰；`api_key` write-only）。doc 04 |
 | Agent Registry | `DeveloperAgentsView`（`developer/agents`, developer）＋ `DeveloperGuideView`、`AgentRuntimeConfigView` | **七態審批**（`utils/approvalStatus.js`：草稿 / 待連線測試 / 待軌跡測試 / 待安全審查 / 已核准 / 已駁回 / 已停用）＋**軌跡測試關卡**（`isApprovable` 要求 `trace_test_passed_at`，未過不可核准、後端回 409）＋測試連線探針。doc 05 |
-| Service Registry | `PlatformLinksView`（`platform-links`）、`ServiceAccessView`、`ServiceClientsView` | 已註冊 GUI 服務（`utils/serviceRegistry.js`：`launch_mode` 新分頁／iframe、`config_source` env_seeded／db 欄位鎖定、`classification_ceiling` 五級）；service-token 管理。doc 07 |
+| Service Registry | `PlatformLinksView`（`platform-links`）、`ServiceAccessView`、`ServiceClientsView` | 已註冊 GUI 服務（`utils/serviceRegistry.js`：`launch_mode` 新分頁／iframe、`config_source` env_seeded／db 欄位鎖定、`classification_ceiling` 四級：無機密／營業秘密／密／機密）；service-token 管理。doc 07 |
 | 機敏分類 | `ClassificationInventoryView`（`classification-inventory`, admin） | 切換前分類盤點（doc 08 §15） |
 | 知識治理 | `KnowledgeCollectionsView`、`ChunkingPreviewView`、`CollectionDetailView`、`EvaluatorView`（developer） | collection 檢視、chunking 策略比較精靈、評測器；關聯圖走 `components/RelationGraph.vue`（cytoscape） |
 | 身份 / 部門 | `UsersView`、`DepartmentsView`（admin） | 使用者、部門、角色 |

@@ -6,20 +6,19 @@
 //   - config_source = 'env_seeded'（部署 env 播種）| 'db'（UI 為唯一事實來源）。
 //   - env_seeded 服務多數欄位唯讀鎖定，僅 db_editable_fields 白名單可由 admin 覆寫。
 //   - launch_mode = 'new_tab'（新分頁）| 'iframe'（內嵌）。
-//   - classification_ceiling 對齊後端五級 ClassificationLevel。
+//   - classification_ceiling 對齊後端四級 ClassificationLevel。
 
 export const LAUNCH_MODES = [
   { value: 'new_tab', label: '新分頁' },
   { value: 'iframe', label: '內嵌 iframe' },
 ]
 
-// 五級分類（對齊後端 ClassificationLevel 契約宣告順序）。
+// 四級分類（對齊後端 ClassificationLevel 契約宣告順序）。
 export const CLASSIFICATION_LEVELS = [
   '無機密',
   '營業秘密',
+  '密',
   '機密',
-  '極機密',
-  '絕對機密',
 ]
 
 // env_seeded 服務未宣告 db_editable_fields 時的安全預設：只有停用可覆寫。

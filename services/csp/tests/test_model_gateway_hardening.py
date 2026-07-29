@@ -349,7 +349,7 @@ def test_ceiling_legacy_latched_conversation_deny(db):
     conv = Conversation(user_id=user.id, title="c")
     db.add(conv)
     db.commit()
-    conv.classification_level = "極機密"
+    conv.classification_level = "機密"
     db.commit()
     with pytest.raises(HTTPException) as exc:
         enforce_model_ceiling(

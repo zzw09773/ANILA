@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.schemas.model_registry import ModelCreate, ModelUpdate, ModelResponse
 from app.api.models import ENDPOINT_INTERNAL, ENDPOINT_REDACTED, _build_response
 
@@ -43,6 +45,35 @@ def test_model_create_admin_can_untick():
         is_internal=False,
     )
     assert payload.is_internal is False
+
+
+@pytest.mark.parametrize("schema_cls", [ModelCreate, ModelUpdate])
+def test_model_classification_ceiling_validates_storage_values(schema_cls):
+    """Stale/garbage ceiling must 422 at schema layer; None and 四級 values pass.
+
+    Wired on both ModelCreate (POST) and ModelUpdate (PATCH ceiling).
+    """
+    from pydantic import ValidationError
+
+    def make(**kwargs):
+        if schema_cls is ModelCreate:
+            return schema_cls(
+                name="m1",
+                display_name="M1",
+                model_type="llm",
+                endpoint_url="https://api.example.com/v1",
+                **kwargs,
+            )
+        return schema_cls(**kwargs)
+
+    ok = make(classification_ceiling="密")
+    assert ok.classification_ceiling == "密"
+
+    none_ok = make(classification_ceiling=None)
+    assert none_ok.classification_ceiling is None
+
+    with pytest.raises(ValidationError):
+        make(classification_ceiling="極機密")
 
 
 def test_model_update_is_internal_optional():

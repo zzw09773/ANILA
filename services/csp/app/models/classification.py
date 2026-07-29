@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""五級分類治理三表(doc 08 §6/§7/§8/§12,Slice 3a)。
+"""四級分類治理三表(doc 08 §6/§7/§8/§12,Slice 3a)。
 
 - :class:`ClassificationEvent` — 分類異動事件(doc 08 §6 欄位逐字)。
   append-only:只 INSERT,不 UPDATE / DELETE;``reason`` 7 值封閉 enum

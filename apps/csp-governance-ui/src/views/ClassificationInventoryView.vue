@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-head__title">分類盤點</h1>
         <p class="page-head__sub">
-          切換五級分類前的資源盤點快照。「不一致」= 舊 latch 為真但等級仍低於「機密」,
+          切換四級分類前的資源盤點快照。「不一致」= 舊 latch 為真但等級仍低於「密」,
           backfill 完成後應為 0。
         </p>
       </div>
@@ -64,8 +64,8 @@ import {
 } from '../api/classificationInventory'
 import { TermBox, TermButton, TermBadge, TermEmpty } from '../components/cli'
 
-// 五級順序(對齊後端 ClassificationLevel 契約宣告順序)。
-const LEVELS = ['無機密', '營業秘密', '機密', '極機密', '絕對機密']
+// 四級順序(對齊後端 ClassificationLevel 契約宣告順序)。
+const LEVELS = ['無機密', '營業秘密', '密', '機密']
 
 const resources = ref([])
 const generatedAt = ref('')

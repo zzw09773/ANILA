@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Policy Engine — 裁決紀錄、ceiling 純函式與五級分類 latch core。
+"""Policy Engine — 裁決紀錄、ceiling 純函式與四級分類 latch core。
 
 Slice 2b-B(裁決紀錄):
 
@@ -12,12 +12,12 @@ Slice 2b-B(裁決紀錄):
 2. :func:`evaluate_classification_ceiling` —— doc 08 §10 的判定式
    ``allow if task.level <= ceiling`` 純函式(無 ceiling = 不設限)。
 
-Slice 3a(五級分類 latch core,doc 08 §2/§5–§9/§12):
+Slice 3a(四級分類 latch core,doc 08 §2/§5–§9/§12):
 
 3. :func:`apply_classification` —— 單向閂鎖:effective = max(current,
    new),**絕不降級**;升級時寫 ClassificationEvent 並泛型更新資源的
    共通四欄位;資源帶舊 boolean latch 時同步鏡射
-   (``classified = level >= 機密``,doc 08 §15 Step 3 舊欄位保留為
+   (``classified = level >= 密``,doc 08 §15 Step 3 舊欄位保留為
    compatibility read model)。降級嘗試 = no-op、不寫 event、回 None
    (doc 08 未規定降級嘗試要記 event)。
 4. :func:`effective_level` —— 讀資源當前等級(未知資源 fail-closed)。
@@ -164,7 +164,7 @@ def evaluate_classification_ceiling(
     return level <= ClassificationLevel.from_storage(ceiling)
 
 
-# ── Slice 3a:五級分類 latch core(doc 08 §2/§5–§9/§12)───────────────────────
+# ── Slice 3a:四級分類 latch core(doc 08 §2/§5–§9/§12)───────────────────────
 
 # resource_type → ORM model 的封閉派發表(doc 08 §5 的 11 種資源中,
 # 現存表的對應;整數 PK)。未列型別一律 ValueError fail-closed:
@@ -212,17 +212,19 @@ def _resolve_resource(db: Session, resource_type: str, resource_id: str):
 
 
 def _mirror_legacy_boolean(row, level: ClassificationLevel) -> None:
-    """同步舊 boolean latch(doc 08 §15 Step 3 compatibility read model)。
+    """同步舊 boolean latch(compatibility read model;閾值架構屬 OE-4)。
 
-    鏡射規則:``classified = level >= 機密``。升級方向由
+    鏡射規則:``classified = level >= 密``(RESTRICTED)。意圖保留舊行為
+    「controlled set = rank >= 2」(舊等級表機密曾為 rank 2);OE-3 對齊
+    SYSTEM-MAP §8 四級後 rank-2 為 RESTRICTED。升級方向由
     :func:`apply_classification` 走到這裡;降級方向只有核准生效的
-    :func:`_apply_approved_declassification` 會走到(降到機密以下時
+    :func:`_apply_approved_declassification` 會走到(降到密以下時
     boolean 一併回 false,並清 inherited 旗標,避免舊 read model 殘留
     「已上鎖」假象)。
     """
     if not hasattr(row, "classified"):
         return
-    now_classified = level >= ClassificationLevel.CONFIDENTIAL
+    now_classified = level >= ClassificationLevel.RESTRICTED
     row.classified = now_classified
     if now_classified:
         if getattr(row, "classified_at", None) is None:

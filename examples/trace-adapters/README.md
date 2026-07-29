@@ -56,7 +56,7 @@ CSP dispatch 會帶下列 header，adapter 由此啟動（**缺 `X-ANILA-Trace-I
 | `X-CSP-Service-Token` | 入向驗證 + 出向 trace ship 的雙角色 `csk-`（doc-08） |
 | `X-ANILA-Trace-Id` | 有它才發 trace |
 | `X-ANILA-Task-Id` | 歸因到任務中心的 Task |
-| `X-ANILA-Classification-Level` | 五級分類等級（隨 run／output span 帶出） |
+| `X-ANILA-Classification-Level` | 四級分類等級（無機密／營業秘密／密／機密；隨 run／output span 帶出） |
 
 ---
 
@@ -176,7 +176,7 @@ adapter 只解決 trace；agent 仍須先在 CSP 完成註冊、簽發 `csk-`、
 
   `--runtime-type` 合法值：`anila_agent`／`langchain`／`openwebui_pipe_compatible`／
   `openai_compatible_agent`／`custom_http`。
-  `--classification-ceiling` 合法值：`無機密`／`營業秘密`／`機密`／`極機密`／`絕對機密`。
+  `--classification-ceiling` 合法值：`無機密`／`營業秘密`／`密`／`機密`。
 
 ---
 
