@@ -31,6 +31,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.user_memory import ConversationMemoryChunk, UserFact
 from app.services.auth_service import get_current_user
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
@@ -52,7 +53,7 @@ _PREVIEW_CHARS = 240
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 
-class FactResponse(BaseModel):
+class FactResponse(ApiResponseModel):
     id: int
     key: str
     value: str
@@ -71,7 +72,7 @@ class FactListResponse(BaseModel):
     facts: list[FactResponse]
 
 
-class ChunkPreviewResponse(BaseModel):
+class ChunkPreviewResponse(ApiResponseModel):
     id: int
     conversation_id: int
     role: str

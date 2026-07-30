@@ -17,6 +17,6 @@ class AuditLog(Base):
     detail = Column(Text, nullable=True)
     ip_address = Column(String(64), nullable=True)
     metadata_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
     actor = relationship("User", lazy="joined")

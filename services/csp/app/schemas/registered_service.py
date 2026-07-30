@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.contracts.classification import ClassificationLevel
 from app.schemas.platform_link import _validate_required_roles
+from app.schemas.base import ApiResponseModel
 
 
 class ServiceType(str, enum.Enum):
@@ -147,7 +148,7 @@ class RegisteredServiceUpdate(BaseModel):
         return _validate_required_roles(v)
 
 
-class RegisteredServiceResponse(BaseModel):
+class RegisteredServiceResponse(ApiResponseModel):
     id: int
     name: str
     slug: str
@@ -201,7 +202,7 @@ class LaunchRequest(BaseModel):
     project_id: str | None = None
 
 
-class LaunchResponse(BaseModel):
+class LaunchResponse(ApiResponseModel):
     launch_id: str
     launch_token: str
     launch_url: str
@@ -243,7 +244,7 @@ class AuditCallbackPayload(BaseModel):
         return v
 
 
-class AuditCallbackResponse(BaseModel):
+class AuditCallbackResponse(ApiResponseModel):
     id: int
     service_id: int | None
     launch_id: str | None
@@ -261,7 +262,7 @@ class ProjectBindingCreate(BaseModel):
     is_primary_entry: bool = False
 
 
-class ProjectBindingResponse(BaseModel):
+class ProjectBindingResponse(ApiResponseModel):
     id: int
     service_id: int
     project_id: str

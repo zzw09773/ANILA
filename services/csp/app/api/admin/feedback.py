@@ -39,6 +39,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.user import User
 from app.services.auth_service import require_admin
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(prefix="/api/admin/feedback", tags=["使用者回饋"])
 
@@ -59,7 +60,7 @@ FEEDBACK_ITEM_KEYS = frozenset(
 )
 
 
-class FeedbackItem(BaseModel):
+class FeedbackItem(ApiResponseModel):
     """單一評分列。**這個 model 就是白名單** —— 不要加 ``content``。"""
 
     message_id: int

@@ -18,6 +18,7 @@ from app.models.banner import Banner
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(prefix="/api/banners", tags=["公告橫幅"])
 
@@ -38,7 +39,7 @@ class BannerUpdate(BaseModel):
     sort_order: Optional[int] = None
 
 
-class BannerResponse(BaseModel):
+class BannerResponse(ApiResponseModel):
     id: int
     level: str
     content: str

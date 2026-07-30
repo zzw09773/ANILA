@@ -33,8 +33,7 @@ class TrustedHost(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(
-        DateTime,
+    created_at = Column(DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )

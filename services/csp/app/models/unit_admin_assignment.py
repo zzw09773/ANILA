@@ -65,10 +65,9 @@ class UnitAdminAssignment(Base):
         ),
         nullable=True,
     )
-    granted_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    granted_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    revoked_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", foreign_keys=[user_id])
     department = relationship("Department", foreign_keys=[department_id])

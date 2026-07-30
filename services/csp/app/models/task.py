@@ -93,7 +93,7 @@ class Task(Base):
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
     # doc 08 §5 其餘三共通欄位(Slice 3a 補齊)。
-    classification_latched_at = Column(DateTime, nullable=True)
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
         Integer,
@@ -103,8 +103,8 @@ class Task(Base):
     # 建立即產生;每 task 一條 trace(doc 02 observability ID)。
     trace_id = Column(String(64), nullable=False, unique=True, index=True,
                       default=_new_trace_id)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
-    updated_at = Column(DateTime, nullable=False, default=_utcnow,
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow,
                         onupdate=_utcnow)
 
     requester = relationship("User", foreign_keys=[requester_user_id])
@@ -143,8 +143,8 @@ class TaskRun(Base):
     # doc 01 TaskRun 五值:queued/running/completed/failed/cancelled。
     status = Column(String(32), nullable=False, default="queued",
                     server_default="queued")
-    started_at = Column(DateTime, nullable=True)
-    finished_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
     # 對應 token_usage 一列(doc 02 usage_record_id);usage 晚於 run 落地,
     # 可空、SET NULL。
     usage_record_id = Column(
@@ -156,13 +156,13 @@ class TaskRun(Base):
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
     # doc 08 §5 其餘三共通欄位(Slice 3a;AgentRun 的現制對應表)。
-    classification_latched_at = Column(DateTime, nullable=True)
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     task = relationship("Task", back_populates="runs")

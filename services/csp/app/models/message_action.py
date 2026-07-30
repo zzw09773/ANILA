@@ -60,11 +60,9 @@ class MessageAction(Base):
         ),
         nullable=True,
     )
-    created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    updated_at = Column(
-        DateTime,
+    updated_at = Column(DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
@@ -161,8 +159,7 @@ class MessageActionBinding(Base):
         ),
         nullable=True,
     )
-    created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
     action = relationship("MessageAction", back_populates="bindings")

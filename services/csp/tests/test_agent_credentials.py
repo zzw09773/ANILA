@@ -88,7 +88,9 @@ def test_issue_bootstrap_writes_hash_and_expiry(db):
     assert plaintext.startswith(BOOTSTRAP_TOKEN_PREFIX)
     assert agent.bootstrap_token_hash is not None
     assert agent.bootstrap_token_hash == compute_lookup_hash(plaintext)
-    assert agent.bootstrap_token_expires_at > datetime.now(timezone.utc)
+    from app.time_utils import as_utc
+
+    assert as_utc(agent.bootstrap_token_expires_at) > datetime.now(timezone.utc)
     assert agent.bootstrap_token_consumed_at is None
     assert agent.bootstrap_token_issued_by == admin.id
 

@@ -12,6 +12,7 @@ from app.api.auth import get_current_user
 from app.database import get_db
 from app.models.user import User
 from app.services import handoff_service as svc
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(tags=["handoffs"])
 
@@ -25,7 +26,7 @@ class HandoffCreate(BaseModel):
     note: Optional[str] = None
 
 
-class HandoffOut(BaseModel):
+class HandoffOut(ApiResponseModel):
     id: int
     conversation_id: int
     from_user_id: Optional[int]
@@ -38,7 +39,7 @@ class HandoffOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class NotificationOut(BaseModel):
+class NotificationOut(ApiResponseModel):
     id: int
     type: str
     title: str

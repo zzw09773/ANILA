@@ -1,5 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
+from app.schemas.base import ApiResponseModel
 
 # Roles defined on User.role today: 'owner' / 'admin' / 'user' / 'developer'.
 # Tier order (high → low): owner > admin > developer ≈ user. ``owner`` is
@@ -55,7 +56,7 @@ class PlatformLinkUpdate(BaseModel):
         return _validate_required_roles(v)
 
 
-class PlatformLinkResponse(BaseModel):
+class PlatformLinkResponse(ApiResponseModel):
     id: int
     name: str
     url: str

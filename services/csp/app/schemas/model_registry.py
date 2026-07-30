@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.contracts.classification import ClassificationLevel
+from app.schemas.base import ApiResponseModel
 
 
 def _validate_classification_ceiling(value: str | None) -> str | None:
@@ -72,7 +73,7 @@ class ModelUpdate(BaseModel):
         return _validate_classification_ceiling(v)
 
 
-class ModelResponse(BaseModel):
+class ModelResponse(ApiResponseModel):
     id: int
     name: str
     display_name: str
