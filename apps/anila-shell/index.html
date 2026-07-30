@@ -33,15 +33,16 @@
     --bg-subtle:     oklch(0.965 0.003 90);
     --fg:            oklch(0.18 0.005 270);
     --fg-muted:      oklch(0.48 0.005 270);
-    --fg-subtle:     oklch(0.62 0.005 270);
+    /* WCAG AA: darkened so subtle/status text clears 4.5:1 on --bg*. */
+    --fg-subtle:     oklch(0.54 0.005 270);
     --border:        oklch(0.91 0.004 270);
     --border-strong: oklch(0.85 0.005 270);
     --accent:        #0b7285;
     --accent-fg:     #ffffff;
     --accent-soft:   oklch(0.95 0.02 200);
     --danger:        oklch(0.55 0.18 25);
-    --warn:          oklch(0.72 0.14 75);
-    --success:       oklch(0.58 0.10 150);
+    --warn:          oklch(0.55 0.14 75);
+    --success:       oklch(0.54 0.10 150);
 
     --radius-sm: 4px;
     --radius:    6px;
@@ -63,10 +64,18 @@
     --bg-subtle:     oklch(0.22 0.004 270);
     --fg:            oklch(0.96 0.003 90);
     --fg-muted:      oklch(0.72 0.005 270);
-    --fg-subtle:     oklch(0.55 0.005 270);
+    /* WCAG AA: lighten subtle; dark accent/danger from light fail on dark bg,
+       so override status colours here. Accent fill uses dark --accent-fg
+       (white-on-light-teal cannot clear AA on this near-black bg). */
+    --fg-subtle:     oklch(0.62 0.005 270);
     --border:        oklch(0.28 0.005 270);
     --border-strong: oklch(0.36 0.005 270);
+    --accent:        oklch(0.62 0.09 200);
+    --accent-fg:     #0a1214;
     --accent-soft:   oklch(0.30 0.04 200);
+    --danger:        oklch(0.65 0.16 25);
+    --warn:          oklch(0.78 0.12 75);
+    --success:       oklch(0.72 0.10 150);
   }
 
   * { box-sizing: border-box; }

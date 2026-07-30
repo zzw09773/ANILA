@@ -38,8 +38,12 @@ export const TOKENS: Record<ThemeName, ThemeTokens> = {
     textSubtle: '#828A96',
     // WCAG AA: darkened from #7C7BFF so white button text on accent reaches
     // ≥4.5:1 for normal-size text in dark theme.
-    accent: '#6361E0',
-    accentHover: '#7674F0',
+    // WCAG AA on near-black bg: lighten accent for text. White-on-accent
+    // drops to ~4.25 (large/bold button text still clears 3:1 UI threshold;
+    // dual 4.5:1 with white fill text is impossible on this bg without a
+    // separate fill token).
+    accent: '#6E6CE5',
+    accentHover: '#7F7DF0',
     accentSoft: 'rgba(124,123,255,0.14)',
     accentBorder: 'rgba(124,123,255,0.32)',
     success: '#3DD68C',
@@ -62,9 +66,12 @@ export const TOKENS: Record<ThemeName, ThemeTokens> = {
     accentHover: '#4A48D6',
     accentSoft: 'rgba(89,87,232,0.10)',
     accentBorder: 'rgba(89,87,232,0.28)',
-    success: '#2BB673',
-    warning: '#D89B1F',
-    danger: '#E5484D',
+    // WCAG AA: status colours as text on bg (was pastel / mid-bright).
+    // warning kept a step past the 4.5 floor — bare-minimum amber still
+    // reads faint by eye on #FAFAF7.
+    success: '#1E7A4E',
+    warning: '#7A5610',
+    danger: '#C93B40',
     chipBg: '#F2F1EB',
   },
 }

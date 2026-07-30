@@ -97,11 +97,11 @@
   --c-border-accent: #b9c8dd;
   --c-divider:       #e9ecf1;
 
-  /* Foreground — 冷調 slate 灰,近墨主色 */
+  /* Foreground — 冷調 slate 灰,近墨主色（WCAG AA：fg-3／mute 略加深） */
   --c-fg-1: #1b2230;
   --c-fg-2: #48505f;
-  --c-fg-3: #6b7484;
-  --c-fg-mute: #9aa2b1;
+  --c-fg-3: #686f7e;
+  --c-fg-mute: #6a7280;
 
   /* Accent — 官方 slate-blue */
   --c-accent:        #2b4c7e;
@@ -109,15 +109,15 @@
   --c-accent-soft:   rgba(43, 76, 126, 0.08);
   --c-accent-fg:     #ffffff;
 
-  /* Status — 去飽和、institutional */
+  /* Status — 去飽和、institutional（WCAG AA：warn／ok 略加深） */
   --c-info:    #2b6cb0;
   --c-info-soft: rgba(43, 108, 176, 0.08);
-  --c-warn:    #b7791f;
-  --c-warn-soft: rgba(183, 121, 31, 0.10);
+  --c-warn:    #9a6619;
+  --c-warn-soft: rgba(154, 102, 25, 0.10);
   --c-danger:  #b03636;
   --c-danger-soft: rgba(176, 54, 54, 0.09);
-  --c-ok:      #2f855a;
-  --c-ok-soft: rgba(47, 133, 90, 0.09);
+  --c-ok:      #2c7a54;
+  --c-ok-soft: rgba(44, 122, 84, 0.09);
 
   /* Type semantics — 各能力別可辨但不刺眼 */
   --c-llm:       #2b6cb0;
@@ -162,11 +162,11 @@
   --c-border-accent: #3a4c6b;
   --c-divider:       #242a35;
 
-  /* Foreground */
+  /* Foreground（WCAG AA：fg-3／mute 略提亮；mute 與 fg-3 層級會收斂） */
   --c-fg-1: #dbe1ec;
   --c-fg-2: #9aa3b4;
-  --c-fg-3: #6b7484;
-  --c-fg-mute: #4d5567;
+  --c-fg-3: #828a98;
+  --c-fg-mute: #808896;
 
   /* Accent — 去飽和 slate-blue(深色可讀,非霓虹) */
   --c-accent:        #6f8fc2;
@@ -224,8 +224,8 @@
     --c-divider:       #242a35;
     --c-fg-1: #dbe1ec;
     --c-fg-2: #9aa3b4;
-    --c-fg-3: #6b7484;
-    --c-fg-mute: #4d5567;
+    --c-fg-3: #828a98;
+    --c-fg-mute: #808896;
     --c-accent:        #6f8fc2;
     --c-accent-strong: #8aa5d1;
     --c-accent-soft:   rgba(111, 143, 194, 0.12);
