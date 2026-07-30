@@ -72,6 +72,14 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,P
   前端要合併前用 `docker compose build <service>` 驗;平行建置的錯誤訊息不會說是哪個服務。
 - **平行派多包前先分配 migration 編號**,並把檔案集真的列出來對。一晚撞三次(兩次編號、一次同檔)。
 - **驗 API 要看 Content-Type**。SPA catch-all 會回 `200 text/html`,看起來像端點沒有保護。
+- **改 bind-mount 的單一檔案,內容不會進到容器裡**。Docker 用 inode 綁定,而 git 改檔是「建新檔取代」
+  (新 inode),容器還抓著舊的那個——**沒有任何錯誤訊息**,只是你的修改沒生效。
+  nginx 設定就是這樣掛的(`infra/nginx/anila.conf` → 容器的 `default.conf`),
+  改完要 `up -d --force-recreate nginx`,不是 reload。⚠ 也不要把檔案 `docker cp` 進 `conf.d/`,
+  那會變成第二份設定檔然後 `resolver` 重複宣告 → 語法檢查失敗(2026-07-31 踩過)。
+- ⚠ **nginx 容器的健康檢查原本是 `nginx -t`**——那只驗設定檔語法,所以 nginx 在狂噴 502 時
+  照樣顯示 healthy。已於 2026-07-31 改成真的發 HTTP 請求。**這是今晚三次「容器全綠但使用者
+  進不來」裡最根本的那一個。**
 
 ### 這個專案最貴的四條教訓
 
