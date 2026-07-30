@@ -792,7 +792,11 @@ export const MessageBubble = ({
               <IconLock />
             </IconButton>
           )}
-          <span style={{ position: "relative", display: "inline-flex" }}>
+          {/* 沒有 handler 就不要畫這顆按鈕。比較模式曾經傳 `() => {}` 進來,
+              於是選單開得起來、四個選項點下去全部沒事——使用者會反覆點。
+              把判斷放在這裡而不是叫每個呼叫端加旗標,是為了讓這一類問題
+              不可能再出現:忘了接的人自然就沒有按鈕。 */}
+          {onRegenerate && <span style={{ position: "relative", display: "inline-flex" }}>
             <IconButton
               title={isStreaming ? "回應產生中…" : "重新產生（可選調整方向）"}
               onClick={(e) => { e?.stopPropagation?.(); if (!isStreaming) setRegenOpen((o) => !o); }}
@@ -851,7 +855,7 @@ export const MessageBubble = ({
                 </div>
               </div>
             )}
-          </span>
+          </span>}
           <IconButton
             title={rating === "up" ? "取消標記" : "標記為有用"}
             onClick={() => onRate?.(msg, rating === "up" ? null : "up")}

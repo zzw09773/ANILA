@@ -143,7 +143,7 @@ export const ParallelCompareView = ({
                   </div>
                 )}
                 {msgs.map(m => (
-                  <MessageBubble key={m.id} msg={m} agents={agents} onRegenerate={() => {}}/>
+                  <MessageBubble key={m.id} msg={m} agents={agents} />
                 ))}
               </div>
             </div>
