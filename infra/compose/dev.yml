@@ -24,6 +24,17 @@
 
 name: anila-platform-dev
 
+# ── 容器日誌上限（P3.5）────────────────────────────────────────────────
+# 單一宣告點：各 service 用 logging: *anila-logging，不要在個別服務改數字。
+# 50m × 7 檔 = 每服務 ≤350MB；約 14 服務全棧天花板 ≈4.9GB。
+# 給一人維運留約一週診斷窗；json-file 讓 docker logs 事故後仍可撈。
+# 既有容器要 recreate 後才生效（docker compose up -d）；單純 restart 不夠。
+x-logging: &anila-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "7"
+
 services:
 
   # ── PostgreSQL (dev volume, dev port) ───────────────────────────────────
@@ -43,6 +54,7 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── CSP (Control + Data Plane :8000) ────────────────────────────────────
   csp:
@@ -125,6 +137,7 @@ services:
       retries: 6
       start_period: 20s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── Redis ───────────────────────────────────────────────────────────────
   redis:
@@ -138,6 +151,7 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── ingestion-worker ────────────────────────────────────────────────────
   ingestion-worker:
@@ -192,6 +206,7 @@ services:
       csp:
         condition: service_healthy
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── Router ──────────────────────────────────────────────────────────────
   router:
@@ -214,6 +229,7 @@ services:
       retries: 6
       start_period: 20s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── pptx-renderer ───────────────────────────────────────────────────────
   pptx-renderer:
@@ -229,6 +245,7 @@ services:
       retries: 6
       start_period: 30s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── anila-studio (Studio extraction Phase 2 skeleton) ───────────────────
   # The deck generation service (FLUX images + RAG + PPTX) extracted out of
@@ -279,6 +296,7 @@ services:
       retries: 6
       start_period: 30s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── ANILA LM (no-SSO 版本，從 feature/no-sso branch build) ───────────────
   anilalm:
@@ -299,6 +317,7 @@ services:
       retries: 6
       start_period: 10s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── ANILA UI (admin SPA) ────────────────────────────────────────────────
   anila-ui:
@@ -321,6 +340,7 @@ services:
       retries: 6
       start_period: 10s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── nginx (dev 入口，獨立 port + 獨立 container_name) ───────────────────
   nginx:
@@ -356,6 +376,7 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    logging: *anila-logging
 
 networks:
   # ⚠️ 不同名才不會跟 live stack 的 anila-net 衝突。

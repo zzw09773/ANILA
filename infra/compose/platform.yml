@@ -13,6 +13,17 @@
 
 name: anila-platform
 
+# ── 容器日誌上限（P3.5）────────────────────────────────────────────────
+# 單一宣告點：各 service 用 logging: *anila-logging，不要在個別服務改數字。
+# 50m × 7 檔 = 每服務 ≤350MB；約 14 服務全棧天花板 ≈4.9GB。
+# 給一人維運留約一週診斷窗；json-file 讓 docker logs 事故後仍可撈。
+# 既有容器要 recreate 後才生效（docker compose up -d）；單純 restart 不夠。
+x-logging: &anila-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "7"
+
 services:
 
   # ── PostgreSQL ──────────────────────────────────────────────────────────
@@ -38,6 +49,7 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── CSP (Control + Data Plane :8000) ────────────────────────────────────
   csp:
@@ -203,6 +215,7 @@ services:
       retries: 6
       start_period: 20s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── Redis (Arq queue for ingestion-worker) ──────────────────────────────
   redis:
@@ -216,6 +229,7 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── ingestion-worker (parse → chunk → embed → pgvector) ─────────────────
   ingestion-worker:
@@ -260,6 +274,7 @@ services:
       csp:
         condition: service_healthy
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── Router (anila-core-router :9000) ────────────────────────────────────
   router:
@@ -284,6 +299,7 @@ services:
       retries: 6
       start_period: 20s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── nginx (HTTPS reverse proxy, 唯一外部入口) ────────────────────────────
   # TLS termination (self-signed dev cert),HTTP→HTTPS 301,proxy /, /api/,
@@ -322,6 +338,7 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── pptx-renderer (Node + LibreOffice for slide / vision-QA screenshots) ─
   pptx-renderer:
@@ -338,6 +355,7 @@ services:
       retries: 6
       start_period: 30s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── anila-studio (Studio extraction Phase 2 skeleton) ───────────────────
   # Deck generation service extracted out of csp/backend. Reads JWKS +
@@ -390,6 +408,7 @@ services:
       retries: 6
       start_period: 30s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
   anilalm:
@@ -410,6 +429,7 @@ services:
       retries: 6
       start_period: 10s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── ANILA UI (admin SPA, same-origin via nginx) ─────────────────────────
   anila-ui:
@@ -436,6 +456,7 @@ services:
       retries: 6
       start_period: 10s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── code-server (必要服務,2026-07-29 擁有者確認) ────────────────────────
   # Browser-based VS Code,reachable via /codeserver subpath through nginx。
@@ -477,6 +498,7 @@ services:
     volumes:
       - codeserver_config:/home/coder/.config
     restart: "no"
+    logging: *anila-logging
 
   codeserver:
     build: *codeserver-build
@@ -523,6 +545,7 @@ services:
       retries: 6
       start_period: 30s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── n8n workflow automation (cold-stored) ───────────────────────────────
   # Subpath /n8n。重要 hardening (不要回退):
@@ -557,6 +580,7 @@ services:
       retries: 6
       start_period: 60s
     restart: unless-stopped
+    logging: *anila-logging
 
   # ── GitLab CE (cold-stored) ─────────────────────────────────────────────
   # Subpath /gitlab via Workhorse:external_url 讓 GitLab 把所有 absolute link
@@ -600,6 +624,7 @@ services:
       retries: 5
       start_period: 600s
     restart: unless-stopped
+    logging: *anila-logging
 
 networks:
   default:
