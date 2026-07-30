@@ -1,23 +1,25 @@
-"""Conversation persistence and share-link service."""
+"""Conversation persistence and named-share service."""
 from __future__ import annotations
 
 import json
-import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare
+from app.models.department import Department
 from app.models.message import Message
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier
 from app.services import message_tree as mtree
+from app.services.usage_service import _department_scope_ids
 
 
 # Client-supplied message metadata is an opaque dict persisted verbatim
@@ -209,11 +211,26 @@ def create_conversation(
     return conv
 
 
-def get_conversation(db: Session, conv_id: int, user: User) -> Conversation:
+def get_conversation(
+    db: Session,
+    conv_id: int,
+    user: User,
+    *,
+    for_write: bool = True,
+) -> Conversation:
+    """Load a conversation with access control.
+
+    ``for_write=True`` (default): owner or admin — mutations, share
+    management. ``for_write=False``: also allows an active named share
+    targeting the caller (P4.3 read path).
+    """
     conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
     if not conv:
         raise HTTPException(status_code=404, detail="找不到此對話")
-    _check_access(conv, user)
+    if for_write:
+        _check_access(conv, user)
+    else:
+        _check_read_access(db, conv, user)
     return conv
 
 
@@ -225,6 +242,10 @@ def list_conversations(
     collection_id: Optional[int] = None,
 ) -> list[Conversation]:
     """List the caller's conversations, optionally filtered.
+
+    Includes conversations the caller owns **and** those shared with them
+    via an active named share (P4.3). Origin/collection filters apply to
+    both sets.
 
     Origin filtering modes (mutually exclusive — endpoint validates this):
       - ``origin='anilalm'``           → only LM-side conversations.
@@ -247,7 +268,14 @@ def list_conversations(
     belongs to whichever collection the user is currently viewing would
     re-introduce the cross-collection leak this filter exists to fix.
     """
-    q = db.query(Conversation).filter(Conversation.user_id == user.id)
+    shared_ids = _shared_conversation_ids_for_user(db, user)
+    ownership = Conversation.user_id == user.id
+    if shared_ids:
+        q = db.query(Conversation).filter(
+            or_(ownership, Conversation.id.in_(shared_ids))
+        )
+    else:
+        q = db.query(Conversation).filter(ownership)
     if origin is not None:
         q = q.filter(Conversation.origin == origin)
     elif exclude_origin is not None:
@@ -693,13 +721,17 @@ def log_classified_access(db: Session, conv_id: int, user: User) -> None:
     db.commit()
 
 
-# ── Share links ───────────────────────────────────────────────────────────────
+# ── Named shares (P4.3) ───────────────────────────────────────────────────────
 
 def create_share(
     db: Session,
     conv_id: int,
     user: User,
     *,
+    target_user_id: Optional[int] = None,
+    target_username: Optional[str] = None,
+    target_department_id: Optional[int] = None,
+    target_department_name: Optional[str] = None,
     mode: str = "read_only",
     allow_fork: bool = False,
     expires_at: Optional[datetime] = None,
@@ -710,24 +742,65 @@ def create_share(
         outbound_action_allowed,
     )
 
-    conv = get_conversation(db, conv_id, user)
+    conv = get_conversation(db, conv_id, user, for_write=True)
     level = ClassificationLevel.from_storage(conv.classification_level)
     # SYSTEM-MAP §8 L241-242: allow iff level <= TRADE_SECRET; audit iff
     # level >= TRADE_SECRET (including the allow path for 營業秘密).
     if not outbound_action_allowed(level):
         raise HTTPException(
             status_code=403,
-            detail="列管對話不允許建立分享連結",
+            detail=(
+                f"此對話密等為「{level.to_storage()}」，超過營業秘密，不可分享。"
+                "請改用密等較低的對話，或向管理員申請降密後再分享。"
+            ),
         )
+
+    resolved_user_id, resolved_dept_id = _resolve_share_target(
+        db,
+        target_user_id=target_user_id,
+        target_username=target_username,
+        target_department_id=target_department_id,
+        target_department_name=target_department_name,
+    )
+
+    # Reject sharing to self as a person (unit share covering own dept is OK).
+    if resolved_user_id is not None and resolved_user_id == user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="不能分享給自己。請指定其他帳號或單位。",
+        )
+
+    existing = _find_active_share(
+        db,
+        conversation_id=conv.id,
+        target_user_id=resolved_user_id,
+        target_department_id=resolved_dept_id,
+    )
+    if existing is not None:
+        if existing.expires_at and _as_utc(existing.expires_at) < datetime.now(
+            timezone.utc
+        ):
+            db.delete(existing)
+            db.flush()
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "已分享給此對象。若要調整權限，請先撤銷既有分享後再建一次。"
+                ),
+            )
+
     share = ConversationShare(
         conversation_id=conv.id,
-        token=secrets.token_urlsafe(32),
+        target_user_id=resolved_user_id,
+        target_department_id=resolved_dept_id,
         mode=mode,
         allow_fork=allow_fork,
         expires_at=expires_at,
         created_by=user.id,
     )
     db.add(share)
+    target_label = _share_target_label(db, share)
     if classification_audit_required(level):
         log_audit_event(
             db,
@@ -737,48 +810,345 @@ def create_share(
             resource_id=conv_id,
             detail=(
                 f"User {user.username} shared conversation {conv_id} "
-                f"at level {level.to_storage()}"
+                f"with {target_label} at level {level.to_storage()}"
             ),
-            metadata={"classification_level": level.to_storage()},
+            metadata={
+                "classification_level": level.to_storage(),
+                "target_user_id": resolved_user_id,
+                "target_department_id": resolved_dept_id,
+            },
         )
     db.commit()
     db.refresh(share)
-    return share
+    # Re-load with target relationships for ShareOut enrichment.
+    from sqlalchemy.orm import joinedload
 
-
-def get_share_by_token(db: Session, token: str) -> ConversationShare:
-    share = (
+    return (
         db.query(ConversationShare)
-        .filter(ConversationShare.token == token)
-        .first()
+        .options(
+            joinedload(ConversationShare.target_user),
+            joinedload(ConversationShare.target_department),
+        )
+        .filter(ConversationShare.id == share.id)
+        .one()
     )
-    if not share:
-        raise HTTPException(status_code=404, detail="找不到此分享連結")
-    if share.expires_at and share.expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="此分享連結已過期")
-    share.view_count += 1
-    db.commit()
-    return share
 
 
 def list_shares(db: Session, conv_id: int, user: User) -> list[ConversationShare]:
-    conv = get_conversation(db, conv_id, user)
-    return conv.shares
+    get_conversation(db, conv_id, user, for_write=True)
+    from sqlalchemy.orm import joinedload
+
+    return (
+        db.query(ConversationShare)
+        .options(
+            joinedload(ConversationShare.target_user),
+            joinedload(ConversationShare.target_department),
+        )
+        .filter(ConversationShare.conversation_id == conv_id)
+        .order_by(ConversationShare.id)
+        .all()
+    )
 
 
-def revoke_share(db: Session, share_id: int, user: User) -> None:
+def revoke_share(db: Session, conv_id: int, share_id: int, user: User) -> None:
     share = db.query(ConversationShare).filter(ConversationShare.id == share_id).first()
-    if not share:
-        raise HTTPException(status_code=404, detail="找不到此分享連結")
-    conv = get_conversation(db, share.conversation_id, user)  # ownership check
+    if not share or share.conversation_id != conv_id:
+        raise HTTPException(status_code=404, detail="找不到此分享。請重新整理分享清單。")
+    get_conversation(db, share.conversation_id, user, for_write=True)
     db.delete(share)
     db.commit()
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize stored expiry to aware UTC for comparison.
+
+    ``conversation_shares.expires_at`` is TIMESTAMP WITHOUT TIME ZONE (same
+    as ``api_keys.expires_at``). Clients send aware ISO; PG returns naive.
+    Comparing naive to ``datetime.now(timezone.utc)`` raises TypeError → 500
+    on the default 24h TTL path. Mirror ``api_key_service._as_utc``.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _share_expired(share: ConversationShare, *, now: datetime | None = None) -> bool:
+    if share.expires_at is None:
+        return False
+    ref = now if now is not None else datetime.now(timezone.utc)
+    return _as_utc(share.expires_at) < ref
+
+
+def user_has_active_share(db: Session, conv: Conversation, user: User) -> bool:
+    """True when an unexpired named share grants ``user`` read access now.
+
+    Department shares expand via ``_department_scope_ids`` at read time so
+    re-parenting after the share was created is honoured.
+    """
+    if not user.is_active:
+        return False
+    now = datetime.now(timezone.utc)
+    shares = (
+        db.query(ConversationShare)
+        .filter(ConversationShare.conversation_id == conv.id)
+        .all()
+    )
+    for share in shares:
+        if _share_expired(share, now=now):
+            continue
+        if share.target_user_id is not None:
+            if share.target_user_id == user.id:
+                return True
+            continue
+        if share.target_department_id is None:
+            continue
+        if user.department_id is None:
+            continue
+        scope = _department_scope_ids(db, share.target_department_id)
+        if scope is not None and user.department_id in scope:
+            return True
+    return False
+
+
+def _shared_conversation_ids_for_user(db: Session, user: User) -> list[int]:
+    from app.schemas.contracts.classification import (
+        ClassificationLevel,
+        outbound_action_allowed,
+    )
+
+    if not user.is_active:
+        return []
+    now = datetime.now(timezone.utc)
+    ids: set[int] = set()
+    # Person-targeted shares.
+    person_rows = (
+        db.query(ConversationShare.conversation_id)
+        .filter(ConversationShare.target_user_id == user.id)
+        .all()
+    )
+    person_conv_ids = {row[0] for row in person_rows}
+    # Department-targeted: filter in Python so scope expands at read time.
+    dept_shares = (
+        db.query(ConversationShare)
+        .filter(ConversationShare.target_department_id.isnot(None))
+        .all()
+    )
+    for share in dept_shares:
+        if _share_expired(share, now=now):
+            continue
+        if user.department_id is None:
+            continue
+        scope = _department_scope_ids(db, share.target_department_id)
+        if scope is not None and user.department_id in scope:
+            ids.add(share.conversation_id)
+    # Apply expiry to person shares too.
+    if person_conv_ids:
+        person_shares = (
+            db.query(ConversationShare)
+            .filter(
+                ConversationShare.target_user_id == user.id,
+                ConversationShare.conversation_id.in_(person_conv_ids),
+            )
+            .all()
+        )
+        for share in person_shares:
+            if _share_expired(share, now=now):
+                continue
+            ids.add(share.conversation_id)
+    if not ids:
+        return []
+    # Drop shares whose conversation has latched above the outbound ceiling
+    # (create-time gate alone is not enough after later classify/latch).
+    allowed: list[int] = []
+    for conv in (
+        db.query(Conversation).filter(Conversation.id.in_(ids)).all()
+    ):
+        level = ClassificationLevel.from_storage(conv.classification_level)
+        if outbound_action_allowed(level):
+            allowed.append(conv.id)
+    return sorted(allowed)
+
+
+def _resolve_share_target(
+    db: Session,
+    *,
+    target_user_id: Optional[int],
+    target_username: Optional[str],
+    target_department_id: Optional[int],
+    target_department_name: Optional[str],
+) -> tuple[Optional[int], Optional[int]]:
+    """Resolve exactly one named target; fail closed with actionable detail."""
+    user_keys = sum(
+        1 for v in (target_user_id, (target_username or "").strip() or None) if v
+    )
+    dept_keys = sum(
+        1
+        for v in (
+            target_department_id,
+            (target_department_name or "").strip() or None,
+        )
+        if v
+    )
+    if user_keys + dept_keys == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "請指定分享對象：輸入對方帳號，或指定一個單位。"
+                "匿名連結已停用。"
+            ),
+        )
+    if user_keys > 0 and dept_keys > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="一次只能分享給「一個人」或「一個單位」，請只填其中一種。",
+        )
+    if user_keys > 1 or dept_keys > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="請只提供一種識別方式（帳號或 id；單位名稱或 id）。",
+        )
+
+    if target_user_id is not None or (target_username or "").strip():
+        target = _resolve_target_user(
+            db, user_id=target_user_id, username=target_username
+        )
+        return target.id, None
+
+    target_dept = _resolve_target_department(
+        db, department_id=target_department_id, name=target_department_name
+    )
+    return None, target_dept.id
+
+
+def _resolve_target_user(
+    db: Session, *, user_id: Optional[int], username: Optional[str]
+) -> User:
+    if user_id is not None:
+        target = db.query(User).filter(User.id == user_id).first()
+        label = f"id={user_id}"
+    else:
+        label = (username or "").strip()
+        target = db.query(User).filter(User.username == label).first()
+
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"找不到帳號「{label}」。請確認對方帳號拼寫，"
+                "或改分享給單位。"
+            ),
+        )
+    if not target.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"帳號「{target.username}」已停用，無法分享。"
+                "請改選其他人或單位。"
+            ),
+        )
+    return target
+
+
+def _resolve_target_department(
+    db: Session, *, department_id: Optional[int], name: Optional[str]
+) -> Department:
+    if department_id is not None:
+        dept = db.query(Department).filter(Department.id == department_id).first()
+        label = f"id={department_id}"
+    else:
+        label = (name or "").strip()
+        dept = db.query(Department).filter(Department.name == label).first()
+
+    if dept is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"找不到單位「{label}」。請確認單位名稱，"
+                "或改分享給指定人。"
+            ),
+        )
+    if not dept.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"單位「{dept.name}」已停用，無法分享。"
+                "請改選其他單位或指定人。"
+            ),
+        )
+    return dept
+
+
+def _find_active_share(
+    db: Session,
+    *,
+    conversation_id: int,
+    target_user_id: Optional[int],
+    target_department_id: Optional[int],
+) -> Optional[ConversationShare]:
+    q = db.query(ConversationShare).filter(
+        ConversationShare.conversation_id == conversation_id
+    )
+    if target_user_id is not None:
+        q = q.filter(ConversationShare.target_user_id == target_user_id)
+    else:
+        q = q.filter(
+            ConversationShare.target_department_id == target_department_id
+        )
+    return q.first()
+
+
+def _share_target_label(db: Session, share: ConversationShare) -> str:
+    if share.target_user_id is not None:
+        u = db.query(User).filter(User.id == share.target_user_id).first()
+        return f"user:{u.username}" if u else f"user_id:{share.target_user_id}"
+    d = (
+        db.query(Department)
+        .filter(Department.id == share.target_department_id)
+        .first()
+    )
+    return f"department:{d.name}" if d else f"department_id:{share.target_department_id}"
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _check_access(conv: Conversation, user: User) -> None:
+    """Owner-or-admin write gate (mutations, share management)."""
     if is_admin_tier(user):
         return
     if conv.user_id != user.id:
         raise HTTPException(status_code=403, detail="無權存取此對話")
+
+
+def _check_read_access(db: Session, conv: Conversation, user: User) -> None:
+    """Owner, admin, or active named-share recipient (P4.3).
+
+    Share recipients additionally need the conversation still within the
+    outbound ceiling (≤營業秘密). Create-time gating alone would leave a
+    hole after a later classify / agent latch to 密／機密.
+    """
+    from app.schemas.contracts.classification import (
+        ClassificationLevel,
+        outbound_action_allowed,
+    )
+
+    if is_admin_tier(user):
+        return
+    if conv.user_id == user.id:
+        return
+    if not user_has_active_share(db, conv, user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "無權讀取此對話。若認為應可讀取，請向對話擁有者確認"
+                "是否已分享給你或你所屬單位，且分享尚未撤銷。"
+            ),
+        )
+    level = ClassificationLevel.from_storage(conv.classification_level)
+    if not outbound_action_allowed(level):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"此對話密等為「{level.to_storage()}」，超過營業秘密，"
+                "分享對象不可再讀取。請向擁有者確認是否另開較低密等的對話，"
+                "或請擁有者撤銷此分享。"
+            ),
+        )
+

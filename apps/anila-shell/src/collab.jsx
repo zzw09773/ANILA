@@ -1,7 +1,8 @@
-// Collaboration: share dialog, handoff-to menu, tag/folder editor (ESM)
+// Collaboration: named share dialog, handoff-to menu, tag/folder editor (ESM)
 import React, { useState, useEffect } from "react";
-import { IconShield, IconLink, IconX, IconCheck, IconStar, IconFolder } from "./icons.jsx";
+import { IconShield, IconX, IconCheck, IconStar, IconFolder } from "./icons.jsx";
 import { Button, Modal, MenuItem, Divider, Input } from "./components.jsx";
+import { formatShareTarget } from "./runtime/conversations.js";
 
 // TTL choice → ISO timestamp the backend understands.
 function ttlToExpiresAt(ttlKey) {
@@ -12,20 +13,18 @@ function ttlToExpiresAt(ttlKey) {
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
-// ---- Share Dialog ----
-// `onCreateShare({ mode, allowFork, expiresAt })` is expected to return a
-// promise resolving to `{ url, token, ... }`. The dialog stays UI-only and
-// delegates persistence to the caller.
+// ---- Share Dialog (P4.3) ----
+// Named person XOR unit. Anonymous link retired (SYSTEM-MAP §分享).
+// `onCreateShare({ targetUsername | targetDepartmentName, mode, allowFork, expiresAt })`
 export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, onListShares, onRevokeShare }) => {
   const [ttl, setTtl] = useState("24h");
-  const [scope, setScope] = useState("org");
-  const [allowFork, setAllowFork] = useState(true);
-  const [linkCreated, setLinkCreated] = useState(null);
-  const [copied, setCopied] = useState(false);
+  const [kind, setKind] = useState("person"); // person | unit
+  const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // 既有分享管理:開啟時列出此對話已建立的分享連結,可逐一撤銷。
+  const [notice, setNotice] = useState("");
   const [existingShares, setExistingShares] = useState([]);
+  const [listTick, setListTick] = useState(0);
 
   useEffect(() => {
     if (!open || typeof onListShares !== "function") { setExistingShares([]); return; }
@@ -34,13 +33,23 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, 
       .then((rows) => { if (alive) setExistingShares(Array.isArray(rows) ? rows : []); })
       .catch(() => { if (alive) setExistingShares([]); });
     return () => { alive = false; };
-  }, [open, onListShares, linkCreated]);
+  }, [open, onListShares, listTick]);
+
+  useEffect(() => {
+    if (!open) {
+      setError("");
+      setNotice("");
+      setTarget("");
+      setBusy(false);
+    }
+  }, [open]);
 
   const revoke = async (shareId) => {
     if (typeof onRevokeShare !== "function") return;
     try {
       await onRevokeShare(shareId);
       setExistingShares((prev) => prev.filter((s) => s.id !== shareId));
+      setNotice("已撤銷分享。對方之後無法再開啟此對話；已開啟的內容不會被收回。");
     } catch (err) {
       setError(err?.message || "撤銷失敗");
     }
@@ -48,30 +57,43 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, 
 
   if (!open) return null;
 
-  const createLink = async () => {
+  const share = async () => {
     if (!onCreateShare) {
-      setError("尚未提供 onCreateShare handler，無法建立分享連結");
+      setError("尚未提供分享 handler，無法建立分享");
+      return;
+    }
+    const trimmed = target.trim();
+    if (!trimmed) {
+      setError(
+        kind === "person"
+          ? "請輸入對方帳號（例如 bob.lin）。"
+          : "請輸入單位名稱（與平台部門名稱一致）。",
+      );
       return;
     }
     setBusy(true);
     setError("");
+    setNotice("");
     try {
-      const result = await onCreateShare({
+      const payload = {
         mode: "read_only",
-        allowFork,
         expiresAt: ttlToExpiresAt(ttl),
-      });
-      setLinkCreated(result?.url || result);
+      };
+      if (kind === "person") payload.targetUsername = trimmed;
+      else payload.targetDepartmentName = trimmed;
+      await onCreateShare(payload);
+      setTarget("");
+      setNotice(
+        kind === "person"
+          ? `已分享給帳號「${trimmed}」。對方登入後即可在對話列表看到。`
+          : `已分享給單位「${trimmed}」及其下屬單位。該範圍內的同仁登入後即可看到。`,
+      );
+      setListTick((n) => n + 1);
     } catch (err) {
-      setError(err?.message || "建立分享連結失敗");
+      setError(err?.message || "建立分享失敗");
     } finally {
       setBusy(false);
     }
-  };
-  const copyLink = () => {
-    navigator.clipboard?.writeText(linkCreated);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
   };
 
   return (
@@ -83,9 +105,33 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, 
           fontSize: 12, color: "var(--fg-muted)", lineHeight: 1.6,
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--fg)", marginBottom: 3 }}>
-            <IconShield size={13} /> <b>唯讀分享</b>
+            <IconShield size={13} /> <b>指定對象分享</b>
           </div>
-          被分享者只能讀取這份對話。分享紀錄會寫入 CSP audit log。
+          分享給具名帳號或單位（含下屬單位）。對方需登入後讀取；匿名連結已停用。
+          撤銷後對方無法再開啟，但已開啟的內容不會被收回。營業秘密以上會落稽核；密／機密不可分享。
+        </div>
+
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>分享給</div>
+          <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+            {[
+              { k: "person", label: "指定人" },
+              { k: "unit", label: "指定單位" },
+            ].map(o => (
+              <button key={o.k} type="button" onClick={() => { setKind(o.k); setError(""); }} style={{
+                flex: 1, padding: "6px 8px", fontSize: 12,
+                background: kind === o.k ? "var(--accent-soft)" : "var(--bg-elev)",
+                border: "1px solid " + (kind === o.k ? "var(--accent)" : "var(--border)"),
+                borderRadius: "var(--radius)", cursor: "pointer", color: "var(--fg)",
+              }}>{o.label}</button>
+            ))}
+          </div>
+          <Input
+            placeholder={kind === "person" ? "對方帳號（例如 bob.lin）" : "單位名稱（例如 資訊所）"}
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !busy) share(); }}
+          />
         </div>
 
         <div>
@@ -97,7 +143,7 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, 
               { k: "7d", label: "7 天" },
               { k: "never", label: "不過期" },
             ].map(o => (
-              <button key={o.k} onClick={() => setTtl(o.k)} style={{
+              <button key={o.k} type="button" onClick={() => setTtl(o.k)} style={{
                 flex: 1, padding: "6px 8px", fontSize: 12,
                 background: ttl === o.k ? "var(--accent-soft)" : "var(--bg-elev)",
                 border: "1px solid " + (ttl === o.k ? "var(--accent)" : "var(--border)"),
@@ -106,29 +152,6 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, 
             ))}
           </div>
         </div>
-
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>可存取對象</div>
-          <div style={{ display: "flex", gap: 4 }}>
-            {[
-              { k: "org", label: "組織內" },
-              { k: "team", label: "同部門" },
-              { k: "specific", label: "指定人" },
-            ].map(o => (
-              <button key={o.k} onClick={() => setScope(o.k)} style={{
-                flex: 1, padding: "6px 8px", fontSize: 12,
-                background: scope === o.k ? "var(--accent-soft)" : "var(--bg-elev)",
-                border: "1px solid " + (scope === o.k ? "var(--accent)" : "var(--border)"),
-                borderRadius: "var(--radius)", cursor: "pointer", color: "var(--fg)",
-              }}>{o.label}</button>
-            ))}
-          </div>
-        </div>
-
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
-          <input type="checkbox" checked={allowFork} onChange={e => setAllowFork(e.target.checked)} />
-          允許 fork 到對方的空間繼續對話
-        </label>
 
         {error && (
           <div style={{
@@ -140,36 +163,27 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, 
             fontSize: 12,
           }}>{error}</div>
         )}
-
-        {!linkCreated ? (
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <Button onClick={onClose} disabled={busy}>取消</Button>
-            <Button variant="primary" leftIcon={<IconLink size={13}/>} onClick={createLink} disabled={busy}>
-              {busy ? "建立中…" : "產生連結"}
-            </Button>
-          </div>
-        ) : (
+        {notice && !error && (
           <div style={{
-            padding: 10,
-            background: "var(--bg-elev)",
+            padding: "6px 10px",
+            background: "var(--accent-soft)",
             border: "1px solid var(--accent)",
             borderRadius: "var(--radius)",
-            display: "flex", alignItems: "center", gap: 8,
-          }}>
-            <IconLink size={14} style={{ color: "var(--accent)" }}/>
-            <div style={{
-              flex: 1, fontFamily: "var(--font-mono)", fontSize: 12,
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            }}>{linkCreated}</div>
-            <Button size="sm" variant="primary" onClick={copyLink}>
-              {copied ? "✓ 已複製" : "複製"}
-            </Button>
-          </div>
+            color: "var(--fg)",
+            fontSize: 12,
+          }}>{notice}</div>
         )}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <Button onClick={onClose} disabled={busy}>關閉</Button>
+          <Button variant="primary" onClick={share} disabled={busy}>
+            {busy ? "分享中…" : "分享"}
+          </Button>
+        </div>
 
         {existingShares.length > 0 && (
           <div>
-            <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>已建立的分享連結</div>
+            <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>已建立的分享</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {existingShares.map((s) => (
                 <div key={s.id} style={{
@@ -178,8 +192,8 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, 
                   border: "1px solid var(--border)", borderRadius: "var(--radius)",
                   fontSize: 12,
                 }}>
-                  <span style={{ flex: 1, fontFamily: "var(--font-mono)", color: "var(--fg-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {(s.token || "").slice(0, 16)}… · {s.mode === "fork" ? "可複製" : "唯讀"} · {s.view_count || 0} 次瀏覽
+                  <span style={{ flex: 1, color: "var(--fg-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {formatShareTarget(s)} · 唯讀
                   </span>
                   <Button size="sm" onClick={() => revoke(s.id)}>撤銷</Button>
                 </div>
