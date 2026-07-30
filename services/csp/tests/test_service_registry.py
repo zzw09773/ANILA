@@ -704,3 +704,59 @@ class TestSeedRework:
         svc = db.query(RegisteredService).filter_by(name="GitLab").one()
         assert svc.config_source == "db"
         assert svc.entry_url == "https://gitlab.db-owned"  # untouched
+
+
+# ── registry write contract (entry_url; url is not an alias) ───────────────
+
+
+class TestRegistryWriteContract:
+    """Governance UI must send entry_url. extra=forbid makes a leftover ``url``
+    key loud (422) instead of silently dropping the address on update."""
+
+    def test_create_with_entry_url_persists(self, client, db):
+        headers = _auth_headers(client, db, username="root", role="admin")
+        resp = client.post(
+            "/api/services",
+            json={"name": "Studio", "entry_url": "https://studio.local/app"},
+            headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["entry_url"] == "https://studio.local/app"
+        svc = db.get(RegisteredService, body["id"])
+        assert svc is not None and svc.entry_url == "https://studio.local/app"
+
+    def test_create_with_legacy_url_key_is_422(self, client, db):
+        headers = _auth_headers(client, db, username="root", role="admin")
+        resp = client.post(
+            "/api/services",
+            json={"name": "Studio", "url": "https://studio.local/app"},
+            headers=headers,
+        )
+        assert resp.status_code == 422, resp.text
+
+    def test_update_entry_url_persists(self, client, db):
+        headers = _auth_headers(client, db, username="root", role="admin")
+        svc = _make_service(db, entry_url="https://old.local")
+        resp = client.put(
+            f"/api/services/{svc.slug}",
+            json={"entry_url": "https://new.local/path"},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["entry_url"] == "https://new.local/path"
+        db.refresh(svc)
+        assert svc.entry_url == "https://new.local/path"
+
+    def test_update_with_legacy_url_key_is_422_and_leaves_entry_url(self, client, db):
+        headers = _auth_headers(client, db, username="root", role="admin")
+        svc = _make_service(db, entry_url="https://keep.local")
+        resp = client.put(
+            f"/api/services/{svc.slug}",
+            json={"url": "https://dropped.local", "name": "renamed"},
+            headers=headers,
+        )
+        assert resp.status_code == 422, resp.text
+        db.refresh(svc)
+        assert svc.entry_url == "https://keep.local"
+        assert svc.name != "renamed"  # whole body rejected; no partial apply

@@ -72,7 +72,7 @@
           <input v-model="form.name" class="term-input" :disabled="locked('name')" />
         </TermField>
         <TermField label="網址">
-          <input v-model="form.url" class="term-input" placeholder="https://…" :disabled="locked('url')" />
+          <input v-model="form.url" class="term-input" placeholder="https://…" :disabled="locked('entry_url')" />
         </TermField>
         <div class="form-row-2">
           <TermField label="圖示" hint="workflow · git · notebook · chat · monitor · database · api · docs · cpu">
@@ -378,18 +378,21 @@ async function loadAuditCallbacks(id) {
 }
 
 function buildPayload() {
+  // registry 契約用 entry_url；legacy platform_links 相容面用 url。
+  // 混用會讓 Pydantic 默默丟掉網址（更新）或 422（建立）。
+  const address = form.value.url.trim()
   const base = {
     name: form.value.name.trim(),
-    url: form.value.url.trim(),
     icon: form.value.icon.trim() || null,
     description: form.value.description.trim() || null,
     sort_order: form.value.sort_order || 0,
     is_public: !!form.value.is_public,
     required_roles: form.value.required_roles,
   }
-  if (!registryMode.value) return base
+  if (!registryMode.value) return { ...base, url: address }
   return {
     ...base,
+    entry_url: address,
     launch_mode: form.value.launch_mode,
     classification_ceiling: form.value.classification_ceiling || null,
     healthcheck_url: form.value.healthcheck_url.trim() || null,

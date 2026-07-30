@@ -13,12 +13,17 @@
       </div>
     </header>
 
+    <div v-if="loadError" class="feedback is-err">
+      ! {{ loadError }}
+      <button type="button" class="err-retry" @click="refresh">重試</button>
+    </div>
+
     <!-- KPI strip ------------------------------------------------------- -->
     <section class="kpi-grid">
-      <TermStat label="24h · 請求數" :value="summary?.total_requests || 0" tone="accent" />
-      <TermStat label="24h · Token"   :value="summary?.total_tokens || 0" />
-      <TermStat label="使用中 · 模型" :value="summary?.active_models || 0" hint="已健康檢查" />
-      <TermStat label="使用中 · 金鑰"  :value="summary?.active_api_keys || 0" />
+      <TermStat label="24h · 請求數" :value="kpiValue(summary?.total_requests)" :format="kpiFormat" tone="accent" />
+      <TermStat label="24h · Token"   :value="kpiValue(summary?.total_tokens)" :format="kpiFormat" />
+      <TermStat label="使用中 · 模型" :value="kpiValue(summary?.active_models)" :format="kpiFormat" hint="已健康檢查" />
+      <TermStat label="使用中 · 金鑰"  :value="kpiValue(summary?.active_api_keys)" :format="kpiFormat" />
     </section>
 
     <!-- Chart + side meta ---------------------------------------------- -->
@@ -83,7 +88,13 @@
             仍有 agent / Router 走 legacy env-var fallback — 請至 audit log 查 ip_address 找出未 cutover 主機。
           </p>
         </div>
-        <TermEmpty v-else message="載入中…" />
+        <div v-else-if="legacyTokenLoading || !legacyTokenTried" class="cutover-state">
+          <TermEmpty message="載入中…" />
+        </div>
+        <div v-else class="cutover-state">
+          <p class="feedback is-err">! {{ legacyTokenError || '無法載入舊版 token 統計' }}</p>
+          <TermButton size="xs" variant="ghost" :loading="legacyTokenLoading" label="重試" @click="fetchAdminWidgets" />
+        </div>
       </TermBox>
 
       <!-- top-5 agents over the last 30 days -->
@@ -105,8 +116,11 @@
               <td class="num tnum">{{ formatNum(a.total_tokens) }}</td>
               <td class="num tnum">{{ formatNum(a.total_requests) }}</td>
             </tr>
-            <tr v-if="topAgents.length === 0">
+            <tr v-if="topAgents.length === 0 && legacyTokenTried && !legacyTokenLoading && !legacyTokenError">
               <td colspan="3"><TermEmpty message="過去 30 天無歸屬呼叫端的 Agent 用量" /></td>
+            </tr>
+            <tr v-if="topAgents.length === 0 && legacyTokenTried && !legacyTokenLoading && legacyTokenError">
+              <td colspan="3"><TermEmpty message="熱門 Agent 一併載入失敗 · 請重試上方卡片" /></td>
             </tr>
           </tbody>
         </table>
@@ -143,6 +157,8 @@ const chartData = ref(null)
 const platformLinks = ref([])
 const refreshedAt = ref(null)
 const loading = ref(false)
+const loadError = ref('')
+const summaryLoaded = ref(false)
 
 // Sprint 8 X / Phase H — admin-only observability widgets.
 //   legacyTokenStats: cutover progress for the legacy CSP_SERVICE_TOKEN
@@ -151,13 +167,21 @@ const loading = ref(false)
 //                     branch in auth_service.verify_service_token.
 //   topAgents:        top-5 by 30-day caller-attributed token spend.
 const legacyTokenStats = ref(null)
+const legacyTokenLoading = ref(false)
+const legacyTokenTried = ref(false) // avoids a flash of "failed" before first fetch
+const legacyTokenError = ref('')
 const topAgents = ref([])
 
 const legacyTokenHint = computed(() => {
+  if (legacyTokenLoading.value || !legacyTokenTried.value) return '載入中'
+  if (legacyTokenError.value) return '載入失敗'
   if (!legacyTokenStats.value) return ''
   const c = legacyTokenStats.value.count_24h
   return c === 0 ? '24 小時內無舊 token 回退' : `24 小時內 ${c} 次舊 token 回退`
 })
+
+/** Avoid TermStat's Number(x)||0 turning "—" into a fake zero. */
+const kpiFormat = computed(() => (summaryLoaded.value ? 'compact' : 'raw'))
 
 function formatNum(n) {
   if (n === null || n === undefined) return '0'
@@ -167,6 +191,20 @@ function formatTs(iso) {
   if (!iso) return '—'
   try { return new Date(iso).toISOString().replace('T', ' ').slice(0, 19) }
   catch { return iso }
+}
+
+/** Failed / not-yet-loaded must not look like a quiet day of zeros. */
+function kpiValue(n) {
+  if (!summaryLoaded.value) return '—'
+  if (n === null || n === undefined) return 0
+  return n
+}
+
+function errDetail(e) {
+  const d = e?.response?.data?.detail
+  if (typeof d === 'string' && d.trim()) return d
+  if (e?.message) return e.message
+  return '未知錯誤'
 }
 
 const scopeLabel = computed(() => {
@@ -184,6 +222,8 @@ const refreshedLabel = computed(() => {
 
 async function fetchAdminWidgets() {
   if (!authStore.isAdmin) return
+  legacyTokenLoading.value = true
+  legacyTokenError.value = ''
   try {
     const [{ data: stats }, { data: agents }] = await Promise.all([
       client.get('/api/usage/legacy-token-stats'),
@@ -191,25 +231,54 @@ async function fetchAdminWidgets() {
     ])
     legacyTokenStats.value = stats
     topAgents.value = Array.isArray(agents) ? agents : []
-  } catch {
-    // Quiet failure — same posture as the rest of the dashboard.
+  } catch (e) {
+    legacyTokenStats.value = null
+    topAgents.value = []
+    legacyTokenError.value = `舊版 token 統計載入失敗：${errDetail(e)}`
+  } finally {
+    legacyTokenLoading.value = false
+    legacyTokenTried.value = true
   }
 }
 
 async function refresh() {
   loading.value = true
+  loadError.value = ''
   try {
-    await Promise.all([
-      usageStore.fetchSummary(),
-      usageStore.fetchChart({ range: '24h', group_by: 'model' }),
-      listPlatformLinks().then(({ data }) => { platformLinks.value = data }),
-      fetchAdminWidgets(),
-    ])
-    summary.value = usageStore.summary
-    chartData.value = usageStore.chartData
-    refreshedAt.value = new Date()
-  } catch (e) {
-    // Errors surface via the alert center; keep dashboard quiet on failure.
+    // Admin widgets settle on their own (terminal error on the cutover card).
+    // Usage KPIs and platform links also settle independently so a links
+    // outage cannot masquerade as "用量載入失敗 → 全 0/—".
+    const admin = fetchAdminWidgets()
+
+    let usageOk = false
+    try {
+      await Promise.all([
+        usageStore.fetchSummary(),
+        usageStore.fetchChart({ range: '24h', group_by: 'model' }),
+      ])
+      summary.value = usageStore.summary
+      chartData.value = usageStore.chartData
+      summaryLoaded.value = true
+      usageOk = true
+    } catch (e) {
+      summaryLoaded.value = false
+      chartData.value = null
+      loadError.value = `儀表板用量載入失敗：${errDetail(e)}`
+    }
+
+    try {
+      const { data } = await listPlatformLinks()
+      platformLinks.value = Array.isArray(data) ? data : []
+    } catch (e) {
+      platformLinks.value = []
+      // Prefer the usage error if both failed; otherwise say links failed.
+      if (!loadError.value) {
+        loadError.value = `平台連結載入失敗：${errDetail(e)}`
+      }
+    }
+
+    await admin
+    if (usageOk) refreshedAt.value = new Date()
   } finally {
     loading.value = false
   }
@@ -248,6 +317,34 @@ onMounted(refresh)
   color: var(--c-fg-3);
 }
 .page__head-val { color: var(--c-fg-1); }
+
+.feedback {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  flex-wrap: wrap;
+  padding: var(--gap-2) var(--gap-3);
+  border: var(--border-w) solid var(--c-border);
+  border-radius: var(--radius-sm, 4px);
+  font-size: var(--t-sm);
+}
+.feedback.is-err {
+  color: var(--c-danger);
+  border-color: var(--c-danger);
+  background: var(--c-danger-soft);
+}
+.err-retry {
+  margin-left: auto;
+  background: transparent;
+  border: var(--border-w) solid currentColor;
+  color: inherit;
+  font: inherit;
+  font-size: var(--t-xs);
+  padding: 2px 8px;
+  cursor: pointer;
+  border-radius: var(--radius-sm, 4px);
+}
+.err-retry:hover { opacity: 0.85; }
 
 /* KPI grid -------------------------------------------------------------- */
 .kpi-grid {
@@ -322,6 +419,13 @@ onMounted(refresh)
 .cutover__hint { margin: 4px 0 0; font-size: var(--t-2xs); }
 .cutover__hint--ok { color: var(--c-success, #5ca663); }
 .cutover__hint--warn { color: var(--c-warn, #c08a2c); }
+.cutover-state {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.cutover-state .feedback { width: 100%; margin: 0; }
 
 .term-table { width: 100%; border-collapse: collapse; font-size: var(--t-2xs); }
 .term-table th {

@@ -47,6 +47,15 @@ _DATA_EGRESS = {"artifact", "report", "table", "none"}
 
 
 class RegisteredServiceCreate(BaseModel):
+    """Create contract for ``POST /api/services``.
+
+    ``extra="forbid"`` is scoped to this write schema (and Update below) so a
+    client typo like ``url`` instead of ``entry_url`` returns 422 instead of
+    silently dropping the address. Not applied platform-wide.
+    """
+
+    model_config = {"extra": "forbid"}
+
     name: str = Field(..., min_length=1, max_length=100)
     slug: str | None = Field(None, max_length=120)
     description: str | None = None
@@ -98,6 +107,10 @@ class RegisteredServiceCreate(BaseModel):
 
 
 class RegisteredServiceUpdate(BaseModel):
+    """Partial update for ``PUT /api/services/{id}``. Same forbid scope as Create."""
+
+    model_config = {"extra": "forbid"}
+
     name: str | None = None
     description: str | None = None
     icon: str | None = None
