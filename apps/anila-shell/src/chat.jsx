@@ -6,6 +6,11 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { neighbourId, pagerState } from "./runtime/messageTree.js";
+import {
+  isDirectActionOutcome,
+  needsPicker,
+  resolveActionIcon,
+} from "./runtime/messageActions.js";
 import { MarkdownView, extractThinkTags } from "./markdown.jsx";
 
 import {
@@ -315,6 +320,10 @@ export const MessageBubble = ({
   // Guided regenerate 的自管小選單狀態。
   const [regenOpen, setRegenOpen] = useState(false);
   const [steerText, setSteerText] = useState("");
+  // OW-3 action picker (clone of regenerate popover idiom).
+  const [openActionId, setOpenActionId] = useState(null);
+  const [actionInput, setActionInput] = useState("");
+  const [pendingChoice, setPendingChoice] = useState(null);
   // 結構化回饋(倒讚後出現的原因 chips + 評語)。
   const [fbReasons, setFbReasons] = useState([]);
   const [fbComment, setFbComment] = useState("");
@@ -332,6 +341,31 @@ export const MessageBubble = ({
     const t = setTimeout(() => document.addEventListener("click", close), 0);
     return () => { clearTimeout(t); document.removeEventListener("click", close); };
   }, [regenOpen]);
+
+  // OW-3: outside-click closes the action choice picker.
+  useEffect(() => {
+    if (openActionId == null) return;
+    const close = () => {
+      setOpenActionId(null);
+      setPendingChoice(null);
+      setActionInput("");
+    };
+    const t = setTimeout(() => document.addEventListener("click", close), 0);
+    return () => { clearTimeout(t); document.removeEventListener("click", close); };
+  }, [openActionId]);
+
+  // OW-3: clear open picker when controls lock (stream start), so it cannot
+  // reappear after an unrelated stream finishes.
+  const assistantActionsLocked =
+    !!msg.streaming ||
+    conversationStreaming ||
+    typeof msg.dbId !== "number";
+  useEffect(() => {
+    if (!assistantActionsLocked) return;
+    setOpenActionId(null);
+    setPendingChoice(null);
+    setActionInput("");
+  }, [assistantActionsLocked]);
 
   if (msg.role === "user") {
     const canEdit = !classified && typeof onEditUser === "function";
@@ -575,8 +609,20 @@ export const MessageBubble = ({
   };
   const canCopy = !classified;
   const isStreaming = !!msg.streaming;
+  // OW-3: disable while streaming, or when the message has no server id yet
+  // (same gate as branch ops that need a persisted message id).
+  const actionsLocked = assistantActionsLocked;
   const branchOpsLocked = conversationStreaming || isStreaming;
   const rating = msg.rating || null;
+  const actionProvenance = msg.metadata?.action;
+  const showDirectBadge = isDirectActionOutcome(actionProvenance);
+  const showTruncatedNotice = Boolean(actionProvenance?.truncated);
+  // Second attribution channel: persisted agent_name (action:NAME), quiet label only.
+  const showActionAgentName = Boolean(actionProvenance && msg.agentName);
+  const truncatedNoticeText =
+    actionProvenance?.outcome === "prompt"
+      ? "動作輸出過長，送入模型前已截斷"
+      : "輸出過長，已截斷";
 
   return (
     <div
@@ -587,6 +633,47 @@ export const MessageBubble = ({
 
       {msg.handoffChain && msg.handoffChain.length > 1 && (
         <HandoffTimeline chain={msg.handoffChain} agents={agents} />
+      )}
+
+      {/* OW-3 provenance — always visible (NOT inside hover-hidden .anila-msg-actions).
+          Badge only for exec-direct (outcome=text); declarative is a real model answer. */}
+      {!msg.streaming && (showDirectBadge || showTruncatedNotice || showActionAgentName) && (
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 8, marginBottom: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          {showDirectBadge && (
+            <span
+              data-testid="action-provenance-badge"
+              title="此則為自訂動作直接產出，非模型回答"
+              style={{
+                fontSize: 11, color: "var(--fg-muted)",
+                padding: "1px 6px", border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)", whiteSpace: "nowrap",
+              }}
+            >
+              自訂動作產出
+            </span>
+          )}
+          {showActionAgentName && (
+            <span
+              data-testid="action-agent-name"
+              style={{ fontSize: 11, color: "var(--fg-muted)" }}
+            >
+              {msg.agentName}
+            </span>
+          )}
+          {showTruncatedNotice && (
+            <span
+              data-testid="action-truncated-notice"
+              style={{ fontSize: 11, color: "var(--fg-muted)" }}
+            >
+              {truncatedNoticeText}
+            </span>
+          )}
+        </div>
       )}
 
       {(() => {
@@ -783,27 +870,125 @@ export const MessageBubble = ({
             <IconThumbDn />
           </IconButton>
 
-          {/* Message Actions(自訂動作鈕):正/倒讚旁的一鍵動作。動作宣告式由
-              host 在 tweaks.messageActions 設定(預設:翻譯/摘要/改寫公文)。
-              列管對話禁止(動作會把內容當新訊息送出,等同外流路徑)。 */}
+          {/* OW-3 governed message actions: icon buttons + choice picker.
+              Hidden when classified (outbound_action_allowed UI half); disabled
+              while conversationStreaming. */}
           {!classified && Array.isArray(messageActions) && messageActions.length > 0 &&
-            messageActions.map((action) => (
-              <button
-                key={action.id}
-                title={action.title || action.label}
-                onClick={() => onAction?.(msg, action)}
-                disabled={isStreaming}
-                style={{
-                  fontSize: 12, padding: "2px 8px", height: 24,
-                  color: "var(--fg-muted)", background: "transparent",
-                  border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-                  cursor: isStreaming ? "not-allowed" : "pointer",
-                  opacity: isStreaming ? 0.4 : 1, whiteSpace: "nowrap",
-                }}
-                onMouseEnter={(e) => { if (!isStreaming) { e.currentTarget.style.background = "var(--bg-subtle)"; e.currentTarget.style.color = "var(--fg)"; } }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--fg-muted)"; }}
-              >{action.label}</button>
-            ))}
+            messageActions.map((action) => {
+              const ActionIcon = resolveActionIcon(action.icon);
+              const pickerOpen = openActionId === action.id && !actionsLocked;
+              const fire = (choice) => {
+                setOpenActionId(null);
+                setPendingChoice(null);
+                setActionInput("");
+                onAction?.(msg, action, choice);
+              };
+              const onActionClick = (e) => {
+                e?.stopPropagation?.();
+                if (actionsLocked) return;
+                if (!needsPicker(action)) {
+                  const choices = Array.isArray(action.choices) ? action.choices : [];
+                  fire(choices.length === 1 ? choices[0] : null);
+                  return;
+                }
+                setOpenActionId((cur) => (cur === action.id ? null : action.id));
+                setPendingChoice(null);
+                setActionInput("");
+              };
+              return (
+                <span
+                  key={action.id}
+                  style={{ position: "relative", display: "inline-flex" }}
+                  data-testid={`message-action-${action.id}`}
+                >
+                  <IconButton
+                    title={action.label}
+                    onClick={onActionClick}
+                    disabled={actionsLocked}
+                    active={pickerOpen}
+                    style={actionsLocked ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
+                  >
+                    <ActionIcon size={14} />
+                  </IconButton>
+                  {pickerOpen && (
+                    <div
+                      role="menu"
+                      data-testid={`message-action-picker-${action.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 50,
+                        width: 220, background: "var(--bg-elev)", border: "1px solid var(--border)",
+                        borderRadius: "var(--radius)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                        padding: 4, display: "flex", flexDirection: "column", gap: 2,
+                      }}
+                    >
+                      {(action.choices || []).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            if (opt.input) {
+                              // Re-selecting the already-pending choice must not wipe typed input.
+                              if (pendingChoice?.id === opt.id) return;
+                              setPendingChoice(opt);
+                              setActionInput("");
+                              return;
+                            }
+                            fire(opt);
+                          }}
+                          style={{
+                            textAlign: "left", padding: "6px 8px", fontSize: 13, color: "var(--fg)",
+                            background: pendingChoice?.id === opt.id ? "var(--bg-subtle)" : "transparent",
+                            border: "none", borderRadius: 4, cursor: "pointer",
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background =
+                              pendingChoice?.id === opt.id ? "var(--bg-subtle)" : "transparent";
+                          }}
+                        >{opt.label}</button>
+                      ))}
+                      {pendingChoice?.input && (
+                        <div style={{ display: "flex", gap: 4, padding: "4px 4px 2px", borderTop: "1px solid var(--border)", alignItems: "center" }}>
+                          <input
+                            value={actionInput}
+                            onChange={(e) => setActionInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.nativeEvent?.isComposing && actionInput.trim()) {
+                                fire({ ...pendingChoice, inputValue: actionInput.trim() });
+                              }
+                            }}
+                            placeholder={pendingChoice.input_label || "輸入內容…"}
+                            style={{
+                              flex: 1, fontSize: 12, padding: "4px 6px", color: "var(--fg)",
+                              background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4,
+                            }}
+                          />
+                          <button
+                            type="button"
+                            data-testid={`message-action-input-submit-${action.id}`}
+                            disabled={!actionInput.trim()}
+                            onClick={() => {
+                              if (!actionInput.trim()) return;
+                              fire({ ...pendingChoice, inputValue: actionInput.trim() });
+                            }}
+                            style={{
+                              fontSize: 12, padding: "4px 8px", color: "var(--fg)",
+                              background: "var(--bg-subtle)", border: "1px solid var(--border)",
+                              borderRadius: 4,
+                              cursor: actionInput.trim() ? "pointer" : "not-allowed",
+                              opacity: actionInput.trim() ? 1 : 0.5,
+                            }}
+                          >
+                            送出
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </span>
+              );
+            })}
           <SiblingPager
             msg={msg}
             onSwitchBranch={onSwitchBranch}
