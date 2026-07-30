@@ -2644,7 +2644,7 @@ function EmptyState({ agent, agents, onPick, loading }) {
         {loading
           ? "agent 清單載入中…"
           : agent?.id === ROUTER_AGENT.id
-            ? "輸入問題，Router 會自動分派；也可用 @agent 直接指定"
+            ? "輸入問題，ANILA 會幫你找合適的助手；也可以用 @名稱 直接指定"
             : `當前 agent: ${agent?.name}`}
       </div>
       <div style={{

@@ -201,7 +201,7 @@ export const HandoffMenu = ({ agents, currentAgentId, onHandoffAgent, onHandoffU
     <div style={{ minWidth: 260 }}>
       <div style={{ padding: "6px 10px 8px", fontSize: 11, color: "var(--fg-subtle)",
         fontFamily: "var(--font-mono)", letterSpacing: 0.4 }}>
-        HANDOFF 交接
+        交給其他助手
       </div>
       <div style={{ display: "flex", gap: 2, padding: "0 6px 6px" }}>
         {[{k: "agent", label: "給 agent"}, {k: "user", label: "給同事"}].map(t => (

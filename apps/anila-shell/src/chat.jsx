@@ -1528,7 +1528,7 @@ export const Composer = ({
           fontFamily: "var(--font-mono)",
         }}>
           <IconAt size={12} />
-          <span>直接指定 (bypass router)：</span>
+          <span>已指定助手：</span>
           {mentionParse.explicitAgents.map((id) => {
             const a = agents.find((x) => x.id === id);
             return a ? <AgentPill key={id} agent={a} size="sm" /> : null;

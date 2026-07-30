@@ -14,8 +14,8 @@
       <section class="login__panel">
         <!-- Page hero title ---------------------------------------------- -->
         <header class="login__hero">
-          <h1 class="login__title">ANILA 治理中心</h1>
-          <p class="login__subtitle">知識治理控制台 · 請使用自然人憑證卡登入</p>
+          <h1 class="login__title">ANILA</h1>
+          <p class="login__subtitle">請插入自然人憑證卡登入</p>
         </header>
 
         <!-- Card login = primary hero card ------------------------------- -->
@@ -167,7 +167,7 @@
         </details>
 
         <p class="login__legal">
-          ANILA · CSP 控制平面 &nbsp;·&nbsp; 地端部署 &nbsp;·&nbsp; 存取需管理員核准
+          ANILA &nbsp;·&nbsp; 院內部署 &nbsp;·&nbsp; 首次登入需管理員核准
         </p>
       </section>
     </main>
