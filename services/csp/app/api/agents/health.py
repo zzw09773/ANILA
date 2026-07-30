@@ -28,6 +28,7 @@ from app.schemas.contracts.agents import (
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier, require_admin
+from app.services.proxy.urls import join_upstream_path
 
 from app.api.agents._common import (
     _client_ip,
@@ -78,6 +79,8 @@ async def trigger_agent_health_check(
     ip = _client_ip(request)
     # Call-time SSRF guard — refuse to probe an endpoint that fails outbound
     # validation (TOCTOU / DNS-rebinding defense), even for an admin ping.
+    # Guard once per host (scheme/hostname only; getaddrinfo is blocking),
+    # then build the three probe URLs.
     try:
         validate_outbound_url(agent.endpoint_url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
@@ -93,13 +96,12 @@ async def trigger_agent_health_check(
         )
         return {"status": "unhealthy", "detail": f"端點未通過出向安全驗證: {exc}"}
     probe_paths = ["/health", "/v1/models", "/"]
+    probe_urls = [join_upstream_path(agent.endpoint_url, path) for path in probe_paths]
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            for path in probe_paths:
+            for path, url in zip(probe_paths, probe_urls):
                 try:
-                    resp = await client.get(
-                        f"{agent.endpoint_url.rstrip('/')}{path}"
-                    )
+                    resp = await client.get(url)
                     if resp.status_code < 500:
                         agent.health_status = "healthy"
                         db.commit()
@@ -168,8 +170,10 @@ async def test_agent_connection(
         raise HTTPException(status_code=403, detail="無權限測試此 Agent")
 
     # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as health-check.
+    # Guard the FINAL url that will actually be requested.
+    url = join_upstream_path(agent.endpoint_url, "/v1/chat/completions")
     try:
-        validate_outbound_url(agent.endpoint_url, endpoint_kind="agent")
+        validate_outbound_url(url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
 
@@ -187,7 +191,6 @@ async def test_agent_connection(
         )
 
     ip = _client_ip(request)
-    url = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
     body = {"model": agent.name, "messages": [], "stream": False}
     headers = {"X-CSP-Service-Token": token}
     try:
@@ -398,8 +401,10 @@ async def run_agent_trace_test(
         )
 
     # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as test-connection.
+    # Guard the FINAL url that will actually be requested.
+    url = join_upstream_path(agent.endpoint_url, "/v1/chat/completions")
     try:
-        validate_outbound_url(agent.endpoint_url, endpoint_kind="agent")
+        validate_outbound_url(url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
 
@@ -417,7 +422,6 @@ async def run_agent_trace_test(
     synthetic_task_id = f"tracetest-task-{uuid.uuid4().hex}"
     classification = agent.default_classification_level or "無機密"
 
-    url = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
     body = {
         "model": agent.name,
         "messages": [{"role": "user", "content": "ANILA trace-test ping"}],

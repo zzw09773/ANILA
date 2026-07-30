@@ -21,6 +21,7 @@ from app.services.auth_service import is_admin_tier
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.task_link import begin_task_run, finalize_task_run
+from app.services.proxy.urls import join_upstream_path
 from app.services.proxy_service import (
     build_default_anila_meta,
     downstream_identity,
@@ -845,7 +846,9 @@ async def chat_completions(
         usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
         if stream:
             upstream = proxy_stream(
-                target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
+                target_url=join_upstream_path(
+                    agent.endpoint_url, "/v1/chat/completions"
+                ),
                 api_key_id=caller.api_key_id,
                 user_id=user.id,
                 department_id=department_id,
@@ -897,7 +900,7 @@ async def chat_completions(
         # by forwarding to the agent endpoint directly
         import httpx
         from fastapi import HTTPException as _HTTPException
-        target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
+        target = join_upstream_path(agent.endpoint_url, "/v1/chat/completions")
         from anila_core.security import ENDPOINT_KIND_AGENT
         from app.services.proxy_service import (
             _aggregate_sse_to_chat_completion,
@@ -906,7 +909,7 @@ async def chat_completions(
         )
         _guard_outbound(
             target, endpoint_kind=ENDPOINT_KIND_AGENT
-        )  # call-time SSRF re-validation (TOCTOU defense)
+        )  # call-time SSRF re-validation (TOCTOU defense) — FINAL url
         # Phase G: also pass target_agent_id so the per-agent token + cache
         # path applies to non-streaming calls. usage_writer attribution for
         # this branch is still TODO — non-streaming agent forwards don't
@@ -1053,11 +1056,12 @@ async def chat_completions(
     )
     usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
     if stream:
-        target_url = (
-            f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"
+        chat_path = (
+            "/v2/chat/completions"
             if model.api_version == "v2"
-            else f"{model.endpoint_url.rstrip('/')}/v1/chat/completions"
+            else "/v1/chat/completions"
         )
+        target_url = join_upstream_path(model.endpoint_url, chat_path)
         upstream = proxy_stream(
             target_url=target_url,
             api_key_id=caller.api_key_id,

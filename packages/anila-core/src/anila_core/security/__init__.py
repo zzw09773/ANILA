@@ -13,6 +13,10 @@ from anila_core.security.credential_crypto import (
     decrypt_credential,
     encrypt_credential,
 )
+from anila_core.security.upstream_urls import (
+    join_upstream_path,
+    strip_trailing_api_version,
+)
 from anila_core.security.url_guard import (
     ENDPOINT_KIND_AGENT,
     ENDPOINT_KIND_GENERIC,
@@ -33,4 +37,6 @@ __all__ = [
     "ENDPOINT_KIND_MODEL",
     "ENDPOINT_KIND_AGENT",
     "ENDPOINT_KIND_GENERIC",
+    "join_upstream_path",
+    "strip_trailing_api_version",
 ]

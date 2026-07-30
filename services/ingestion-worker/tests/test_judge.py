@@ -31,9 +31,9 @@ from ingestion_worker.judge import JudgeCredential, _SCORE_RE, score_one
 
 
 # A public-looking https endpoint that passes validate_outbound_url.
-# httpx joins base_url + "/chat/completions" -> ".../chat/completions".
+# join_upstream_path appends /v1/chat/completions (path version wins).
 _GOOD_ENDPOINT = "https://api.example.com"
-_COMPLETIONS_URL = "https://api.example.com/chat/completions"
+_COMPLETIONS_URL = "https://api.example.com/v1/chat/completions"
 
 # Rejected by the SSRF deny-list (host == "localhost") even with https
 # scheme, independent of any opt-in env flag.
@@ -165,6 +165,27 @@ async def test_score_one_sends_bearer_and_body():
     assert "only chunk" in captured["body"]["messages"][0]["content"]
 
 
+@respx.mock
+@pytest.mark.parametrize(
+    "endpoint_url",
+    [
+        "https://api.example.com",
+        "https://api.example.com/v1",
+        "https://api.example.com/v2",
+        "https://api.example.com/",
+    ],
+)
+async def test_score_one_joins_version_path_for_any_stored_base(endpoint_url):
+    """Bare host and trailing /vN all POST to …/v1/chat/completions (no stack)."""
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=httpx.Response(200, json=_completion("1"))
+    )
+    result = await score_one(_cred(endpoint_url), "q", ["chunk"])
+    assert result == 1
+    assert route.called
+    assert str(route.calls.last.request.url) == _COMPLETIONS_URL
+
+
 # --------------------------------------------------------------------------
 # empty chunk_contents -> None (no HTTP issued)
 # --------------------------------------------------------------------------
@@ -188,7 +209,7 @@ async def test_ssrf_guard_blocks_localhost_no_request():
     # respx with assert_all_mocked default would raise on an unexpected
     # request; we additionally route the (would-be) URL to a sentinel so a
     # leak is unambiguous, then assert it was never touched.
-    leak_route = respx.post("https://localhost/chat/completions").mock(
+    leak_route = respx.post("https://localhost/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=_completion("3"))
     )
     result = await score_one(_cred(_BAD_ENDPOINT), "q", ["chunk"])
@@ -198,7 +219,7 @@ async def test_ssrf_guard_blocks_localhost_no_request():
 
 @respx.mock
 async def test_ssrf_guard_blocks_metadata_ip():
-    leak_route = respx.post("https://169.254.169.254/chat/completions").mock(
+    leak_route = respx.post("https://169.254.169.254/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=_completion("3"))
     )
     result = await score_one(

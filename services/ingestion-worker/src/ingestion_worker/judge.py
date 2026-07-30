@@ -166,9 +166,18 @@ async def score_one(
     # validator (or someone bypassed it via direct DB INSERT), refuse
     # to issue the outbound POST. Returning None matches the rest of
     # the soft-failure contract (judge_n_scored stays 0 + warning logged).
-    from anila_core.security import UnsafeEndpointError, validate_outbound_url
+    # Join first so the guard sees the FINAL URL we will request, and so a
+    # bare-host credential still hits ``/v1/chat/completions`` (same helper
+    # as CSP — path version wins; trailing /vN on the stored address is noise).
+    from anila_core.security import (
+        UnsafeEndpointError,
+        join_upstream_path,
+        validate_outbound_url,
+    )
+
+    url = join_upstream_path(cred.endpoint_url, "/v1/chat/completions")
     try:
-        validate_outbound_url(cred.endpoint_url)
+        validate_outbound_url(url)
     except UnsafeEndpointError as exc:
         logger.warning(
             "judge endpoint rejected by SSRF guard (%s) — score skipped", exc
@@ -187,12 +196,11 @@ async def score_one(
         "max_tokens": 4,  # we only want one digit
     }
     async with httpx.AsyncClient(
-        base_url=cred.endpoint_url.rstrip("/"),
         timeout=timeout_s,
         headers={"Authorization": f"Bearer {cred.api_key}"},
     ) as client:
         try:
-            r = await client.post("/chat/completions", json=body)
+            r = await client.post(url, json=body)
             r.raise_for_status()
         except (httpx.HTTPError, httpx.HTTPStatusError) as exc:
             logger.warning(

@@ -17,6 +17,7 @@ from app.models.model_registry import ModelRegistry
 from app.models.agent import Agent
 from app.config import settings
 from app.services.alert_service import resolve_alert_by_fingerprint, upsert_alert
+from app.services.proxy.urls import join_upstream_path
 
 logger = logging.getLogger(__name__)
 
@@ -61,26 +62,32 @@ async def probe_model_health_detailed(endpoint_url: str) -> tuple[str, int]:
     reachable(<500 on any of /health, /v1/models, /)→ healthy;timeout →
     degraded;unreachable / unsafe endpoint → unhealthy. Carries NO real user
     data (doc 04 §9). Call-time SSRF re-validation (TOCTOU/rebinding) runs
-    first — an unsafe endpoint is reported unhealthy, never probed.
+    once against the registered host — an unsafe endpoint is reported
+    unhealthy, never probed.
     """
-    base_url = endpoint_url.rstrip("/")
     started = time.monotonic()
 
     def _elapsed_ms() -> int:
         return int((time.monotonic() - started) * 1000)
 
+    # Guard once per host: validate_outbound_url only inspects scheme +
+    # hostname (identical across the three probe paths) and each call does
+    # a blocking getaddrinfo — do not multiply that inside the model/agent loop.
     try:
-        validate_outbound_url(base_url)
+        validate_outbound_url(endpoint_url)
     except UnsafeEndpointError as exc:
         logger.warning("health probe skipped — unsafe endpoint (%s)", exc)
         return HEALTH_UNHEALTHY, _elapsed_ms()
 
+    probe_paths = ["/health", "/v1/models", "/"]
+    probe_urls = [join_upstream_path(endpoint_url, path) for path in probe_paths]
+
     saw_timeout = False
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            for path in ["/health", "/v1/models", "/"]:
+            for url in probe_urls:
                 try:
-                    resp = await client.get(f"{base_url}{path}")
+                    resp = await client.get(url)
                     if resp.status_code < 500:
                         return HEALTH_HEALTHY, _elapsed_ms()
                 except httpx.ConnectError:
@@ -89,7 +96,7 @@ async def probe_model_health_detailed(endpoint_url: str) -> tuple[str, int]:
                     saw_timeout = True
                     break
     except Exception as e:
-        logger.debug("健康檢查異常 (%s): %s", base_url, e)
+        logger.debug("健康檢查異常: %s", e)
 
     return (HEALTH_DEGRADED if saw_timeout else HEALTH_UNHEALTHY), _elapsed_ms()
 
