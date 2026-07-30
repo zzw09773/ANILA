@@ -262,9 +262,19 @@ def auto_seed():
                         db.add(model)
                         logger.info(f"自動註冊模型: {m['name']} -> {m['endpoint_url']}")
                     else:
+                        # OE-2 B3:**不覆寫管理員的編輯**。這裡原本每次開機都把
+                        # endpoint_url 蓋回環境變數的值,於是管理員在治理中心改了端點、
+                        # 看到成功、下次部署就悄悄變回去——靜默還原,而且比報錯難查。
+                        # (2026-07-31 壓力測試實地踩到:改過的 embedding 端點被開機蓋回
+                        # gateway URL,整輪 sweep 全 502。)
+                        # env 負責「建立」,建立之後這一列歸管理員。真要換 seed 位址,
+                        # 就在治理中心改——那才是設定端點的地方,而且有稽核。
                         if existing.endpoint_url != m["endpoint_url"]:
-                            existing.endpoint_url = m["endpoint_url"]
-                            logger.info(f"更新模型端點: {m['name']} -> {m['endpoint_url']}")
+                            logger.info(
+                                "模型 %s 的端點與 seed 不同,保留現值(env 只負責建立): %s",
+                                m["name"],
+                                "db≠env",
+                            )
 
                 db.flush()  # Ensure base models have IDs
 
@@ -307,8 +317,7 @@ def auto_seed():
                             f" (底層: {base_model_name or '無'})"
                         )
                     else:
-                        if existing.endpoint_url != m["endpoint_url"]:
-                            existing.endpoint_url = m["endpoint_url"]
+                        # OE-2 B3(同上):env 只負責建立,既有列的端點歸管理員。
                         if base_model_id and existing.base_model_id != base_model_id:
                             existing.base_model_id = base_model_id
                             logger.info(f"更新 Agent 底層模型: {m['name']} -> {base_model_name}")
@@ -372,7 +381,8 @@ def auto_seed():
                         logger.info(f"自動註冊 agent: {item['name']} -> {item['endpoint_url']}")
                     else:
                         existing.owner_user_id = owner.id
-                        existing.endpoint_url = item["endpoint_url"]
+                        # OE-2 B3(同上):不覆寫既有 agent 的端點。管理員在治理中心
+                        # 改過的位址,不該因為一次重啟就悄悄變回 env 的值。
                         existing.api_version = item.get("api_version", existing.api_version)
                         existing.description_for_router = item.get(
                             "description_for_router",
