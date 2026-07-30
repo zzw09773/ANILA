@@ -327,7 +327,8 @@ async def _bootstrap() -> None:
 
 @app.middleware("http")
 async def _gate_on_primary(request: Request, call_next):
-    # Only gate the chat completions path; leave /health, /v1/models, /docs alone.
+    # Only gate the chat completions path; leave /health and /v1/models alone.
+    # Docs/openapi are disabled at create_router_app (P2.3) — not exempted here.
     if request.url.path == "/v1/chat/completions" and request.method == "POST":
         name, err = await _ensure_primary()
         if not name:

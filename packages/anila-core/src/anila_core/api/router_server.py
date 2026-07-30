@@ -626,9 +626,18 @@ def create_router_app(
         logger.info("Router started")
         yield
 
+    # P2.3: disable FastAPI's default public docs/schema dump.
+    # nginx strips ``/router/`` so bare defaults would be reachable as
+    # ``/router/docs`` and ``/router/openapi.json`` with no auth.
+    # Same mechanism as CSP (``docs_url=None`` / ``openapi_url=None``);
+    # we do NOT re-add admin-gated routes here — the Router has no
+    # User/require_admin surface, and inventing one would expand auth.
     app = FastAPI(
         title="ANILA Core Router",
         version="0.1.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
         lifespan=lifespan,
     )
 
