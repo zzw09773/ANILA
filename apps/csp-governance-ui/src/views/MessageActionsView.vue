@@ -65,8 +65,8 @@
               </TermBadge>
             </td>
             <td>
-              <TermBadge :variant="a.is_enabled ? 'ok' : ''" dot>
-                {{ a.is_enabled ? '啟用' : '停用' }}
+              <TermBadge :variant="statusBadgeVariant(a)" dot>
+                {{ statusLabel(a) }}
               </TermBadge>
             </td>
             <td class="tnum">
@@ -457,6 +457,8 @@ const authStore = useAuthStore()
 
 const actions = ref([])
 const icons = ref([])
+/** Tri-valued: null = unknown (fetch failed / not yet loaded), boolean = known. */
+const actionExecEnabled = ref(null)
 const maxBodyChars = ref(FALLBACK_MAX_BODY_CHARS)
 const departments = ref([])
 const users = ref([])
@@ -660,6 +662,21 @@ function applyBodyLimitFromPayload(data) {
   }
 }
 
+function statusLabel(action) {
+  const enabledLabel = action.is_enabled ? '啟用' : '停用'
+  // Unknown flag ⇒ plain enabled/disabled only (no claim about the flag).
+  // Flag off ⇒ show both facts so a disabled+blocked row does not hide「停用」.
+  if (action.kind === 'exec' && actionExecEnabled.value === false) {
+    return `${enabledLabel} · 目前使用者無法使用（exec 旗標關閉）`
+  }
+  return enabledLabel
+}
+
+function statusBadgeVariant(action) {
+  if (action.kind === 'exec' && actionExecEnabled.value === false) return 'warn'
+  return action.is_enabled ? 'ok' : ''
+}
+
 async function fetchIcons() {
   try {
     const { data } = await listActionIcons()
@@ -667,12 +684,18 @@ async function fetchIcons() {
     applyBodyLimitFromPayload(data)
     if (Array.isArray(data)) {
       icons.value = data
+      // Legacy bare-array shape has no flag — leave unknown.
     } else if (data && typeof data === 'object' && Array.isArray(data.icons)) {
       icons.value = data.icons
+      if (typeof data.action_exec_enabled === 'boolean') {
+        actionExecEnabled.value = data.action_exec_enabled
+      }
+      // Absent / non-boolean flag ⇒ remain unknown (no false claim).
     } else {
       icons.value = []
     }
   } catch (e) {
+    // Keep actionExecEnabled as null so the list falls back to 啟用/停用 only.
     setFeedback('danger', apiDetail(e) || '載入圖示清單失敗')
   }
 }

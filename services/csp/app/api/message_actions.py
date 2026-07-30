@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.api.agents._common import _client_ip
+from app.config import settings
 from app.database import get_db
 from app.models.user import User
 from app.schemas.message_action import (
@@ -38,8 +39,19 @@ router = APIRouter(prefix="/api/message-actions", tags=["訊息動作"])
 
 
 @router.get("/icons")
-def list_icons(_: User = Depends(require_admin)):
-    return sorted(ALLOWED_ACTION_ICONS)
+def list_icons(_: User = Depends(require_owner)):
+    """Icon allow-list plus platform exec flag for the owner console.
+
+    Owner-only: the console that consumes both fields is already
+    ``requiresOwner``, and the exec on/off bit belongs with the same
+    boundary that owns exec authoring risk. Object shape (not a bare
+    array) so the console can learn ``ANILA_ENABLE_ACTION_EXEC`` without
+    a new route; clients that only need icons read ``.icons``.
+    """
+    return {
+        "icons": sorted(ALLOWED_ACTION_ICONS),
+        "action_exec_enabled": bool(settings.ANILA_ENABLE_ACTION_EXEC),
+    }
 
 
 @router.get("/visible", response_model=list[MessageActionOut])
