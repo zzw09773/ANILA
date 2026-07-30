@@ -250,6 +250,10 @@ async def upload_document(
     """
     coll = _resolve_collection(db, current_user, collection_id)
 
+    # Auth / collection resolve done; release before reading the upload body
+    # (up to 50 MB) so the pooled connection is not pinned across I/O.
+    db.commit()
+
     # Read fully into memory — Sprint 1 caps uploads at 50 MB so this is
     # fine; Sprint 2 streaming upload will spool to disk in chunks.
     content = await file.read()
@@ -922,13 +926,16 @@ async def list_document_chunks(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     coll = _resolve_collection(db, current_user, doc.collection_id)
+    collection_id = coll.id
+    # Auth done; release before asyncpg store await (no SQLAlchemy work during it).
+    db.commit()
 
     try:
         pool = get_pool()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
+    store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
     chunks = await store.list_by_document(
         document_id=document_id,
         limit=limit,
@@ -988,13 +995,16 @@ async def get_chunk_embedding_debug(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     coll = _resolve_collection(db, current_user, doc.collection_id)
+    collection_id = coll.id
+    # Auth done; release before asyncpg fetch.
+    db.commit()
 
     try:
         pool = get_pool()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
+    store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
     async with store._acquire() as conn:  # noqa: SLF001
         row = await conn.fetchrow(
             """

@@ -115,7 +115,7 @@ class TestDataMigration:
 
     def test_platform_link_migrates_with_grant_intact(self, db_engine, monkeypatch):
         monkeypatch.setenv("AUTO_REGISTER_LINKS", "[]")  # ANILA LM not in env → db
-        Session = sessionmaker(bind=db_engine)
+        Session = sessionmaker(bind=db_engine, expire_on_commit=False)
         s = Session()
         link_id, grant_id = self._seed_link_and_grant(s)
         s.close()
@@ -146,7 +146,7 @@ class TestDataMigration:
             "AUTO_REGISTER_LINKS",
             json.dumps([{"name": "ANILA LM", "url": "x"}]),
         )
-        Session = sessionmaker(bind=db_engine)
+        Session = sessionmaker(bind=db_engine, expire_on_commit=False)
         s = Session()
         self._seed_link_and_grant(s)
         s.close()

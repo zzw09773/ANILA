@@ -117,7 +117,7 @@ def _emitter(db_engine, span_types):
     tree (span 0 = root, the rest parented to it)."""
 
     def _emit(trace_id: str) -> None:
-        factory = sessionmaker(bind=db_engine)
+        factory = sessionmaker(bind=db_engine, expire_on_commit=False)
         s = factory()
         try:
             for i, st in enumerate(span_types):

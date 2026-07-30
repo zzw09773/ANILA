@@ -35,7 +35,7 @@ def _patch_session_local(db_engine, monkeypatch):
     """
     from sqlalchemy.orm import sessionmaker
 
-    SessionFactory = sessionmaker(bind=db_engine)
+    SessionFactory = sessionmaker(bind=db_engine, expire_on_commit=False)
     monkeypatch.setattr(trusted_host_service, "SessionLocal", SessionFactory)
     yield
 

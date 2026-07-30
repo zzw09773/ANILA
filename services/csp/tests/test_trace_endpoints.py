@@ -319,7 +319,7 @@ def _dev_ssrf_allowances(monkeypatch):
 def out_of_request_sessions(monkeypatch, db_engine):
     """Point the out-of-request session factories (finalize + span emit) at
     the test engine — both run after the request-scoped dependency session."""
-    factory = sessionmaker(bind=db_engine)
+    factory = sessionmaker(bind=db_engine, expire_on_commit=False)
     monkeypatch.setattr(task_link, "SessionLocal", factory)
     monkeypatch.setattr(proxy_spans, "SessionLocal", factory)
     return factory

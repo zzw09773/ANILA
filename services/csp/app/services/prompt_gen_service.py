@@ -121,6 +121,10 @@ async def generate_system_prompt(
         "max_tokens": _MAX_TOKENS,
     }
 
+    # Release the pooled connection before the outbound LLM call (timeout 120s).
+    # All DB reads above are done; nothing after this await needs this Session.
+    db.commit()
+
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             resp = await client.post(endpoint, json=payload, headers=headers)

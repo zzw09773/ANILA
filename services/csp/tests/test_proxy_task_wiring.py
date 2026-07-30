@@ -63,7 +63,7 @@ def _dev_ssrf_allowances(monkeypatch):
 def task_sessions(monkeypatch, db_engine):
     """Route task_link's out-of-request session factory at the test engine
     (finalize_task_run runs outside the request-scoped dependency session)."""
-    factory = sessionmaker(bind=db_engine)
+    factory = sessionmaker(bind=db_engine, expire_on_commit=False)
     monkeypatch.setattr(task_link, "SessionLocal", factory)
     return factory
 
@@ -649,7 +649,7 @@ class TestUsageTaskLinkColumns:
         task = _make_task(db, user)
 
         monkeypatch.setattr(
-            usage_writer, "SessionLocal", sessionmaker(bind=db_engine)
+            usage_writer, "SessionLocal", sessionmaker(bind=db_engine, expire_on_commit=False)
         )
         # Fresh queue so we only see this test's payload.
         monkeypatch.setattr(usage_writer, "_usage_queue", None)

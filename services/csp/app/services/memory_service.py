@@ -195,6 +195,8 @@ async def _embed(db: Session, text_input: str) -> list[float]:
     # 內網 gateway 拓撲下 /v1 全路由要 Bearer(MODEL_GATEWAY_API_KEY);
     # 本機 proxy 模式 key 為空 = no-op。直呼叫繞過 CSP proxy 層,要自帶。
     headers = _apply_gateway_auth({})
+    # Release the pooled connection before the outbound embed HTTP call.
+    db.commit()
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         r = await client.post(
             url,
@@ -416,6 +418,8 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
         "temperature": 0.0,
         "max_tokens": 512,
     }
+    # Release the pooled connection before the outbound LLM HTTP call.
+    db.commit()
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             r = await client.post(url, json=payload)
@@ -431,7 +435,7 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
 # ── Writing ───────────────────────────────────────────────────────────────────
 
 
-async def _write_chunk(
+def _insert_chunk(
     db: Session,
     *,
     user_id: int,
@@ -440,11 +444,9 @@ async def _write_chunk(
     role: str,
     content: str,
     is_encrypted: bool,
+    embedding: list[float],
 ) -> None:
-    """Embed and INSERT one ConversationMemoryChunk."""
-    if not content.strip():
-        return
-    embedding = await _embed(db, content)
+    """Stage one ConversationMemoryChunk INSERT (caller owns the transaction)."""
     vec_literal = _vec_to_pg_literal(embedding)
     db.execute(
         text(
@@ -465,6 +467,36 @@ async def _write_chunk(
             "vec": vec_literal,
             "is_encrypted": is_encrypted,
         },
+    )
+
+
+async def _write_chunk(
+    db: Session,
+    *,
+    user_id: int,
+    conversation_id: int,
+    message_id: int | None,
+    role: str,
+    content: str,
+    is_encrypted: bool,
+) -> None:
+    """Embed then stage one ConversationMemoryChunk INSERT.
+
+    Embed runs before any INSERT is staged so ``_embed``'s connection-release
+    ``commit()`` cannot make a sibling chunk durable mid-pair.
+    """
+    if not content.strip():
+        return
+    embedding = await _embed(db, content)
+    _insert_chunk(
+        db,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        role=role,
+        content=content,
+        is_encrypted=is_encrypted,
+        embedding=embedding,
     )
 
 
@@ -526,24 +558,41 @@ async def persist_turn(
     db = SessionLocal()
     try:
         try:
-            await _write_chunk(
-                db,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                message_id=user_message_id,
-                role="user",
-                content=user_message,
-                is_encrypted=is_encrypted,
+            # Embed BOTH sides before staging either INSERT. ``_embed`` releases
+            # the pooled connection via commit(); if a user INSERT were already
+            # pending, that commit would make a lone user chunk durable and a
+            # later assistant-embed failure could no longer roll it back.
+            # Pair atomicity = both vectors ready → both INSERTs → one commit.
+            user_emb = (
+                await _embed(db, user_message) if user_message.strip() else None
             )
-            await _write_chunk(
-                db,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                message_id=assistant_message_id,
-                role="assistant",
-                content=assistant_message,
-                is_encrypted=is_encrypted,
+            asst_emb = (
+                await _embed(db, assistant_message)
+                if assistant_message.strip()
+                else None
             )
+            if user_emb is not None:
+                _insert_chunk(
+                    db,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    message_id=user_message_id,
+                    role="user",
+                    content=user_message,
+                    is_encrypted=is_encrypted,
+                    embedding=user_emb,
+                )
+            if asst_emb is not None:
+                _insert_chunk(
+                    db,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    message_id=assistant_message_id,
+                    role="assistant",
+                    content=assistant_message,
+                    is_encrypted=is_encrypted,
+                    embedding=asst_emb,
+                )
             db.commit()
         except Exception:
             db.rollback()

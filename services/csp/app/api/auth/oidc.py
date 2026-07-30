@@ -143,6 +143,8 @@ async def start_oidc_login(
     )
     if not provider:
         raise HTTPException(status_code=404, detail="OIDC Provider 不存在")
+    # Release pooled connection before IdP discovery / authorize URL build (15s).
+    db.commit()
     authorization_url = await build_oidc_authorization_url(
         provider, next_path=sanitize_next_path(next_path),
     )

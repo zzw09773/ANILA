@@ -229,18 +229,24 @@ async def _poll_trace_spans(
 ) -> list[TraceSpan]:
     """Bounded poll for agent-emitted spans landing under ``trace_id``.
 
-    Re-reads with a fresh transaction each round (``db.rollback()``) so spans
-    the agent ships back over the Full Trace callback become visible. Returns
-    as soon as any span is seen, or an empty list once the deadline lapses.
+    Each round runs a SELECT, then ``db.rollback()`` before either returning
+    or ``await``-ing sleep so the SELECT's transaction is never held across
+    the wait. Returns as soon as any span is seen, or an empty list once the
+    deadline lapses. Under READ COMMITTED each statement sees newly committed
+    rows, so releasing between rounds does not hide late-arriving spans.
     """
     deadline = time.monotonic() + max(timeout_s, 0.0)
     while True:
-        db.rollback()
         rows = (
             db.query(TraceSpan).filter(TraceSpan.trace_id == trace_id).all()
         )
         if rows or time.monotonic() >= deadline:
+            # End the SELECT's transaction before returning to the caller.
+            db.rollback()
             return rows
+        # Release before sleep — holding the SELECT txn across await leaves
+        # idle-in-transaction for up to _TRACE_TEST_POLL_TIMEOUT_S.
+        db.rollback()
         await asyncio.sleep(interval_s)
 
 

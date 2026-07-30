@@ -909,7 +909,10 @@ async def import_models_from_endpoint(
     _validate_source_ceiling_or_raise(source)
 
     api_key = resolve_model_gateway_key(source)
-    entries = await _fetch_upstream_model_listing(source.endpoint_url, api_key)
+    listing_endpoint = source.endpoint_url
+    # Release pooled connection before the outbound listing fetch (30s).
+    db.commit()
+    entries = await _fetch_upstream_model_listing(listing_endpoint, api_key)
 
     # Database loop off the event loop (batch-approve-style bound sync work).
     created_entries, unchanged, skipped, missing, truncated = await asyncio.to_thread(
@@ -1383,7 +1386,12 @@ async def _probe_and_persist(model: ModelRegistry, admin: User, db: Session, ip:
     result. Returns ``{status, last_checked, latency_ms}``. The probe carries
     NO real user data (doc 04 §9).
     """
-    status, latency_ms = await probe_model_health_detailed(model.endpoint_url)
+    endpoint_url = model.endpoint_url
+    model_id = model.id
+    display_name = model.display_name
+    # Release pooled connection before the outbound probe (≤10s).
+    db.commit()
+    status, latency_ms = await probe_model_health_detailed(endpoint_url)
     checked_at = datetime.now(timezone.utc)
     model.health_status = status
     model.health_checked_at = checked_at
@@ -1393,9 +1401,9 @@ async def _probe_and_persist(model: ModelRegistry, admin: User, db: Session, ip:
         actor=admin,
         action="health_check",
         resource_type="model",
-        resource_id=model.id,
+        resource_id=model_id,
         status=("failure" if status == HEALTH_UNHEALTHY else "success"),
-        detail=f"主動健康檢查: {model.display_name} → {status} ({latency_ms}ms)",
+        detail=f"主動健康檢查: {display_name} → {status} ({latency_ms}ms)",
         ip_address=ip,
         commit=True,
     )

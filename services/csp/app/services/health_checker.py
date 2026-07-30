@@ -114,17 +114,48 @@ async def _health_check_loop():
         try:
             db = SessionLocal()
             try:
-                models = (
-                    db.query(ModelRegistry)
-                    .filter(ModelRegistry.is_active.is_(True))
-                    .all()
+                targets = [
+                    (
+                        m.id,
+                        m.endpoint_url,
+                        m.name,
+                        m.display_name,
+                        m.health_status,
+                    )
+                    for m in (
+                        db.query(ModelRegistry)
+                        .filter(ModelRegistry.is_active.is_(True))
+                        .all()
+                    )
+                ]
+                # Release the pooled connection before outbound probes (10s each).
+                db.commit()
+            finally:
+                db.close()
+
+            results = []
+            for model_id, endpoint_url, name, display_name, prev_status in targets:
+                status = await check_model_health(model_id, endpoint_url)
+                results.append(
+                    (model_id, endpoint_url, name, display_name, prev_status, status)
                 )
 
-                for model in models:
-                    status = await check_model_health(model.id, model.endpoint_url)
-                    if model.health_status != status:
+            db = SessionLocal()
+            try:
+                for (
+                    model_id,
+                    endpoint_url,
+                    name,
+                    display_name,
+                    prev_status,
+                    status,
+                ) in results:
+                    model = db.get(ModelRegistry, model_id)
+                    if model is None:
+                        continue
+                    if prev_status != status:
                         logger.info(
-                            f"模型 {model.name} 狀態變更: {model.health_status} -> {status}"
+                            f"模型 {name} 狀態變更: {prev_status} -> {status}"
                         )
                     if status == HEALTH_UNHEALTHY:
                         # Message names the model, never the address;
@@ -132,24 +163,24 @@ async def _health_check_loop():
                         # owner-only disclosure on the alert listing.
                         upsert_alert(
                             db,
-                            fingerprint=f"health:model:{model.id}",
+                            fingerprint=f"health:model:{model_id}",
                             category="health",
                             severity="high",
-                            title=f"模型 {model.display_name} 離線",
+                            title=f"模型 {display_name} 離線",
                             message=(
-                                f"無法連線至模型「{model.display_name}」"
-                                f"（{model.name}）"
+                                f"無法連線至模型「{display_name}」"
+                                f"（{name}）"
                             ),
                             source_type="model",
-                            source_id=model.id,
+                            source_id=model_id,
                             metadata={
-                                "model_name": model.name,
-                                "display_name": model.display_name,
-                                "endpoint_url": model.endpoint_url,
+                                "model_name": name,
+                                "display_name": display_name,
+                                "endpoint_url": endpoint_url,
                             },
                         )
                     elif status == HEALTH_HEALTHY:
-                        resolve_alert_by_fingerprint(db, f"health:model:{model.id}")
+                        resolve_alert_by_fingerprint(db, f"health:model:{model_id}")
                     model.health_status = status
                     model.health_checked_at = datetime.now(timezone.utc)
 
@@ -171,31 +202,52 @@ async def _agent_health_check_loop():
         try:
             db = SessionLocal()
             try:
-                agents = (
-                    db.query(Agent)
-                    .filter(Agent.approval_status == "approved")
-                    .all()
-                )
-                for agent in agents:
-                    status = await check_model_health(agent.id, agent.endpoint_url)
-                    if agent.health_status != status:
+                targets = [
+                    (a.id, a.endpoint_url, a.name, a.health_status)
+                    for a in (
+                        db.query(Agent)
+                        .filter(Agent.approval_status == "approved")
+                        .all()
+                    )
+                ]
+                # Release before outbound probes (10s each).
+                db.commit()
+            finally:
+                db.close()
+
+            results = []
+            for agent_id, endpoint_url, name, prev_status in targets:
+                status = await check_model_health(agent_id, endpoint_url)
+                results.append((agent_id, endpoint_url, name, prev_status, status))
+
+            db = SessionLocal()
+            try:
+                for agent_id, endpoint_url, name, prev_status, status in results:
+                    agent = db.get(Agent, agent_id)
+                    if agent is None:
+                        continue
+                    if prev_status != status:
                         logger.info(
-                            "Agent %s 狀態變更: %s -> %s", agent.name,
-                            agent.health_status, status,
+                            "Agent %s 狀態變更: %s -> %s",
+                            name,
+                            prev_status,
+                            status,
                         )
-                    fingerprint = f"health:agent:{agent.id}"
+                    fingerprint = f"health:agent:{agent_id}"
                     if status == HEALTH_UNHEALTHY:
                         upsert_alert(
                             db,
                             fingerprint=fingerprint,
                             category="health",
                             severity="high",
-                            title=f"Agent {agent.name} 離線",
-                            message=f"無法連線至 {agent.endpoint_url}",
+                            title=f"Agent {name} 離線",
+                            message=f"無法連線至 {endpoint_url}",
                             source_type="agent",
-                            source_id=agent.id,
-                            metadata={"agent_name": agent.name,
-                                      "endpoint_url": agent.endpoint_url},
+                            source_id=agent_id,
+                            metadata={
+                                "agent_name": name,
+                                "endpoint_url": endpoint_url,
+                            },
                         )
                     elif status == HEALTH_HEALTHY:
                         resolve_alert_by_fingerprint(db, fingerprint)
