@@ -5,7 +5,6 @@ import {
   buildActionMetadata,
   buildDeclarativeActionMessages,
   invokeAction,
-  isDirectActionOutcome,
   needsPicker,
   resolveActionIcon,
   runActionInvokeFillback,
@@ -26,8 +25,6 @@ function sampleAction(overrides = {}) {
     name: "translate_en",
     label: "翻譯成英文",
     icon: "translate",
-    kind: "declarative",
-    result_mode: "to_model",
     choices: [],
     ...overrides,
   };
@@ -74,43 +71,31 @@ describe("needsPicker truth table", () => {
 });
 
 describe("buildActionMetadata", () => {
-  it("returns provenance shape with outcome and truncated", () => {
+  it("returns quiet provenance shape", () => {
     const meta = buildActionMetadata(
-      { id: 3, name: "summarize", version: 2, kind: "exec" },
+      { id: 3, name: "summarize", version: 2 },
       { id: "brief" },
-      { outcome: "text", truncated: true },
     );
     expect(meta).toEqual({
       action: {
         id: 3,
         name: "summarize",
         version: 2,
-        kind: "exec",
         choice_id: "brief",
-        outcome: "text",
-        truncated: true,
       },
     });
   });
 
-  it("uses null choice_id and defaults when no extras", () => {
+  it("uses null choice_id when no choice", () => {
     const meta = buildActionMetadata(
-      { id: 1, name: "x", version: 1, kind: "declarative" },
+      { id: 1, name: "x", version: 1 },
       null,
     );
     expect(meta.action.choice_id).toBeNull();
-    expect(meta.action.outcome).toBeNull();
-    expect(meta.action.truncated).toBe(false);
   });
 });
 
-describe("isDirectActionOutcome / declarative dispatch messages", () => {
-  it("badge helper is true only for outcome=text", () => {
-    expect(isDirectActionOutcome({ outcome: "text" })).toBe(true);
-    expect(isDirectActionOutcome({ outcome: "prompt" })).toBe(false);
-    expect(isDirectActionOutcome(null)).toBe(false);
-  });
-
+describe("declarative dispatch messages", () => {
   it("declarative dispatch is exactly one user message = rendered prompt", () => {
     const messages = buildDeclarativeActionMessages("請翻譯：hello");
     expect(messages).toEqual([{ role: "user", content: "請翻譯：hello" }]);
@@ -274,98 +259,37 @@ describe("MessageBubble action buttons", () => {
     expect(onAction.mock.calls[0][2].inputValue).toBe("法文");
   });
 
-  it("shows provenance badge only for direct text outcome, outside action row", () => {
+  it("does not show exec provenance badge or truncation notice", () => {
     renderAssistant({
       metadata: {
         action: {
           id: 1,
           name: "x",
           version: 1,
-          kind: "exec",
-          outcome: "text",
-          truncated: false,
+          choice_id: null,
         },
       },
-      actions: [],
-    });
-    const badge = screen.getByTestId("action-provenance-badge");
-    expect(badge.textContent).toBe("自訂動作產出");
-    expect(badge.closest(".anila-msg-actions")).toBeNull();
-  });
-
-  it("hides provenance badge for declarative (prompt) outcome", () => {
-    renderAssistant({
-      metadata: {
-        action: {
-          id: 1,
-          name: "x",
-          version: 1,
-          kind: "declarative",
-          outcome: "prompt",
-          truncated: false,
-        },
-      },
+      agentName: "action:x",
       actions: [],
     });
     expect(screen.queryByTestId("action-provenance-badge")).toBeNull();
+    expect(screen.queryByTestId("action-truncated-notice")).toBeNull();
+    expect(screen.getByTestId("action-agent-name").textContent).toBe("action:x");
   });
 
-  it("surfaces distinct truncated notices for text vs prompt outcomes", () => {
-    const { unmount } = renderAssistant({
-      metadata: {
-        action: {
-          id: 1,
-          name: "x",
-          version: 1,
-          kind: "exec",
-          outcome: "text",
-          truncated: true,
-        },
-      },
-      actions: [],
-    });
-    expect(screen.getByTestId("action-truncated-notice").textContent).toBe(
-      "輸出過長，已截斷",
-    );
-    expect(screen.getByTestId("action-truncated-notice").textContent).not.toMatch(
-      /沙箱|已隔離|已終止/,
-    );
-    unmount();
-
-    renderAssistant({
-      metadata: {
-        action: {
-          id: 1,
-          name: "x",
-          version: 1,
-          kind: "exec",
-          outcome: "prompt",
-          truncated: true,
-        },
-      },
-      actions: [],
-    });
-    expect(screen.getByTestId("action-truncated-notice").textContent).toBe(
-      "動作輸出過長，送入模型前已截斷",
-    );
-  });
-
-  it("renders agentName beside provenance when action metadata is present", () => {
+  it("renders quiet agentName attribution when action metadata is present", () => {
     renderAssistant({
       metadata: {
         action: {
           id: 1,
           name: "translate_en",
           version: 1,
-          kind: "exec",
-          outcome: "text",
-          truncated: false,
+          choice_id: null,
         },
       },
       agentName: "action:translate_en",
       actions: [],
     });
-    expect(screen.getByTestId("action-provenance-badge")).toBeTruthy();
     expect(screen.getByTestId("action-agent-name").textContent).toBe(
       "action:translate_en",
     );
@@ -373,18 +297,14 @@ describe("MessageBubble action buttons", () => {
 });
 
 describe("runActionInvokeFillback (shipped orchestrator)", () => {
-  it("declarative: invoke then branch with single-message prompt body, never updateMessage", async () => {
+  it("invoke then branch with single-message prompt body, never updateMessage", async () => {
     const authRequest = vi
       .fn()
       .mockResolvedValueOnce({
         invocation_id: "inv-1",
         action_id: 7,
         version: 1,
-        kind: "declarative",
-        outcome: "prompt",
         prompt: "請翻譯：hello",
-        output: null,
-        truncated: false,
       })
       .mockResolvedValueOnce({
         id: 99,
@@ -431,72 +351,20 @@ describe("runActionInvokeFillback (shipped orchestrator)", () => {
       expect.objectContaining({ method: "POST" }),
     );
     const branchBody = JSON.parse(authRequest.mock.calls[1][1].body);
-    expect(branchBody.metadata.action.outcome).toBe("prompt");
-    expect(branchBody.metadata.action.truncated).toBe(false);
+    expect(branchBody.metadata.action).toEqual({
+      id: 7,
+      name: "translate_en",
+      version: 1,
+      choice_id: null,
+    });
+    expect(branchBody.metadata.action.outcome).toBeUndefined();
+    expect(branchBody.metadata.action.truncated).toBeUndefined();
     expect(refreshActivePath).toHaveBeenCalledWith(5);
     const putCalls = authRequest.mock.calls.filter(
       ([, opts]) => opts?.method === "PUT",
     );
     expect(putCalls).toEqual([]);
     expect(updateSpy).not.toHaveBeenCalled();
-  });
-
-  it("text outcome: branches without chat stream; carries truncated into metadata", async () => {
-    const authRequest = vi
-      .fn()
-      .mockResolvedValueOnce({
-        invocation_id: "inv-2",
-        action_id: 7,
-        version: 3,
-        kind: "exec",
-        outcome: "text",
-        prompt: null,
-        output: "direct result",
-        truncated: true,
-      })
-      .mockResolvedValueOnce({ id: 100, role: "assistant", content: "direct result" });
-    const runStream = vi.fn();
-    const onDirectText = vi.fn();
-    const refreshActivePath = vi.fn().mockResolvedValue(undefined);
-
-    const result = await runActionInvokeFillback({
-      authRequest,
-      action: sampleAction({ kind: "exec", result_mode: "direct" }),
-      choice: { id: "go" },
-      conversationId: 5,
-      messageId: 10,
-      model: "anila-router",
-      runStream,
-      onDirectText,
-      branchMessage,
-      refreshActivePath,
-    });
-
-    expect(result.ok).toBe(true);
-    expect(runStream).not.toHaveBeenCalled();
-    expect(result.content).toBe("direct result");
-    expect(onDirectText).toHaveBeenCalledWith(
-      "direct result",
-      expect.objectContaining({
-        action: expect.objectContaining({
-          outcome: "text",
-          truncated: true,
-        }),
-      }),
-    );
-    const branchBody = JSON.parse(authRequest.mock.calls[1][1].body);
-    expect(branchBody.content).toBe("direct result");
-    expect(branchBody.agent_name).toBe("action:translate_en");
-    expect(branchBody.metadata.action).toEqual({
-      id: 7,
-      name: "translate_en",
-      version: 3,
-      kind: "exec",
-      choice_id: "go",
-      outcome: "text",
-      truncated: true,
-    });
-    expect(refreshActivePath).toHaveBeenCalledWith(5);
   });
 
   it("truncates composed agent_name to messages.agent_name VARCHAR(100)", async () => {
@@ -507,21 +375,23 @@ describe("runActionInvokeFillback (shipped orchestrator)", () => {
         invocation_id: "inv-long",
         action_id: 7,
         version: 1,
-        kind: "exec",
-        outcome: "text",
-        prompt: null,
-        output: "ok",
-        truncated: false,
+        prompt: "p",
       })
       .mockResolvedValueOnce({ id: 101, role: "assistant", content: "ok" });
 
     await runActionInvokeFillback({
       authRequest,
-      action: sampleAction({ name: longName, kind: "exec", result_mode: "direct" }),
+      action: sampleAction({ name: longName }),
       conversationId: 5,
       messageId: 10,
       model: "anila-router",
-      runStream: vi.fn(),
+      runStream: vi.fn().mockResolvedValue({
+        ok: true,
+        content: "ok",
+        finalMeta: null,
+        accumulatedTrace: [],
+        accumulatedReasoning: "",
+      }),
       branchMessage,
       refreshActivePath: vi.fn().mockResolvedValue(undefined),
     });
@@ -534,7 +404,7 @@ describe("runActionInvokeFillback (shipped orchestrator)", () => {
   it("failed invoke calls onRestore and onError (shipped failure path)", async () => {
     const authRequest = vi
       .fn()
-      .mockRejectedValue(new Error("動作執行逾時（30 秒），已停止等待；背景可能仍在執行"));
+      .mockRejectedValue(new Error("此對話密等為「密」，不可執行自訂動作"));
     const runStream = vi.fn();
     const onRestore = vi.fn();
     const onError = vi.fn();
@@ -560,15 +430,14 @@ describe("runActionInvokeFillback (shipped orchestrator)", () => {
     );
     expect(onRestore).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
-    expect(onError.mock.calls[0][0]).toContain("已停止等待");
-    expect(onError.mock.calls[0][0]).not.toMatch(/沙箱|已隔離|已終止/);
+    expect(onError.mock.calls[0][0]).toContain("不可執行自訂動作");
     expect(refreshActivePath).not.toHaveBeenCalled();
   });
 });
 
 describe("invokeAction helper", () => {
   it("POSTs the invoke payload", async () => {
-    const authRequest = vi.fn().mockResolvedValue({ outcome: "prompt" });
+    const authRequest = vi.fn().mockResolvedValue({ prompt: "x" });
     await invokeAction(authRequest, 9, {
       conversation_id: 1,
       message_id: 2,

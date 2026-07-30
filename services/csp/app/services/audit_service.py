@@ -7,6 +7,40 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
+# Owner-only fields. Admins see the audit trail for moderation but the
+# IP address and request metadata can leak deployment topology / token
+# remnants and are reserved for the platform owner. Non-owner viewers
+# get a literal sentinel so the column doesn't silently look "always
+# blank" — they can still see who/what/when, just not where/how.
+SENSITIVE_REDACTED = "<owner-only>"
+
+
+def serialize_audit_log(log: AuditLog, *, caller: User) -> dict:
+    """Serialize an audit row with owner/non-owner IP/metadata redaction.
+
+    Shared by ``GET /api/audit-logs`` and message-action audit export so
+    the security-relevant rule has a single source (service layer).
+
+    ``is_owner`` is imported lazily to avoid a cycle with
+    ``auth_service`` (which calls ``log_audit_event``).
+    """
+    from app.services.auth_service import is_owner
+
+    show_sensitive = is_owner(caller)
+    return {
+        "id": log.id,
+        "actor_user_id": log.actor_user_id,
+        "actor_username": log.actor_username,
+        "action": log.action,
+        "resource_type": log.resource_type,
+        "resource_id": log.resource_id,
+        "status": log.status,
+        "detail": log.detail,
+        "ip_address": log.ip_address if show_sensitive else SENSITIVE_REDACTED,
+        "metadata": parse_metadata(log.metadata_json) if show_sensitive else None,
+        "created_at": log.created_at,
+    }
+
 
 def log_audit_event(
     db: Session,

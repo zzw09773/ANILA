@@ -1,4 +1,4 @@
-"""OW-3 WP-A — message actions backend tests (blueprint §5 cases 1–20).
+"""OW-3 — message actions backend tests (declarative-only surface).
 
 docs/plans/ow3-message-actions-blueprint.md
 """
@@ -30,7 +30,6 @@ def _bypass_dev_secret_gate(monkeypatch):
 
     monkeypatch.setattr(ss_module, "assert_no_dev_defaults", lambda: None)
     reset_rate_limit_for_tests()
-    monkeypatch.setattr(settings, "ANILA_ENABLE_ACTION_EXEC", False)
     monkeypatch.setattr(settings, "ANILA_ACTION_INVOKE_PER_MIN", 20)
 
 
@@ -45,8 +44,6 @@ def _decl_body(**over) -> dict:
         "name": "translate-en",
         "label": "翻譯成英文",
         "icon": "translate",
-        "kind": "declarative",
-        "result_mode": "to_model",
         "body": "請翻譯：\n\n{content}\n選項:{choice}\n輸入:{input}",
         "choices": [],
     }
@@ -95,18 +92,116 @@ def _conv_with_assistant(client, headers, content="Hello {world}", **extra):
     return cid, a.json()["id"]
 
 
-# ── 1. POST auth ─────────────────────────────────────────────────────────────
+# ── 1. Authoring auth boundaries ──────────────────────────────────────────────
 
 
-def test_01_post_auth_owner_only(client: TestClient, db: Session):
+def test_01_create_developer_and_above(client: TestClient, db: Session):
     _, uh = _auth(client, db, "ma01u", role="user")
+    _, dh = _auth(client, db, "ma01d", role="developer")
     _, ah = _auth(client, db, "ma01a", role="admin")
     _, oh = _auth(client, db, "ma01o", role="owner")
     assert _create(client, uh, expect=403).status_code == 403
-    assert client.post(
-        "/api/message-actions", json=_decl_body(name="x"), headers=ah,
+    assert _create(client, dh, _decl_body(name="ok01d")).status_code == 201
+    assert _create(client, ah, _decl_body(name="ok01a")).status_code == 201
+    assert _create(client, oh, _decl_body(name="ok01o")).status_code == 201
+
+
+def test_auth_developer_owns_own_action_mutations(
+    client: TestClient, db: Session,
+):
+    """Developer may update / delete / replace bindings on actions they authored."""
+    _, dh = _auth(client, db, "ma_auth_d", role="developer")
+    a1 = _create(client, dh, _decl_body(name="authbound-a")).json()
+    a2 = _create(client, dh, _decl_body(name="authbound-b")).json()
+
+    r = client.put(
+        f"/api/message-actions/{a1['id']}",
+        json={"label": "更新後"},
+        headers=dh,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["label"] == "更新後"
+    assert r.json()["version"] == 2
+
+    assert _bind(
+        client, dh, a1["id"],
+        [{"scope_type": "role", "role": "user"}],
+    ).status_code == 200
+    assert client.delete(
+        f"/api/message-actions/{a2['id']}", headers=dh,
+    ).status_code == 204
+
+
+def test_auth_developer_refused_on_foreign_action(
+    client: TestClient, db: Session,
+):
+    """Foreign-action refusals match require_admin shape (no distinct probe)."""
+    _, author_h = _auth(client, db, "ma_auth_author", role="developer")
+    _, other_h = _auth(client, db, "ma_auth_other", role="developer")
+    aid = _create(
+        client, author_h, _decl_body(name="foreign-owned"),
+    ).json()["id"]
+
+    for method, path, kwargs in (
+        ("put", f"/api/message-actions/{aid}", {"json": {"label": "nope"}}),
+        ("delete", f"/api/message-actions/{aid}", {}),
+        (
+            "put",
+            f"/api/message-actions/{aid}/bindings",
+            {"json": {"bindings": []}},
+        ),
+    ):
+        r = getattr(client, method)(path, headers=other_h, **kwargs)
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == "需要管理員權限"
+
+
+def test_auth_admin_mutates_foreign_action(client: TestClient, db: Session):
+    """Administrator may update / delete / bind actions they did not create."""
+    _, dh = _auth(client, db, "ma_auth_d2", role="developer")
+    _, ah = _auth(client, db, "ma_auth_a", role="admin")
+    aid = _create(client, dh, _decl_body(name="admin-foreign")).json()["id"]
+
+    r = client.put(
+        f"/api/message-actions/{aid}",
+        json={"label": "管理員改"},
+        headers=ah,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["label"] == "管理員改"
+    assert _bind(client, ah, aid, []).status_code == 200
+    assert client.delete(
+        f"/api/message-actions/{aid}", headers=ah,
+    ).status_code == 204
+
+
+def test_auth_regular_user_refused_on_all_authoring(
+    client: TestClient, db: Session,
+):
+    _, uh = _auth(client, db, "ma_auth_u", role="user")
+    _, oh = _auth(client, db, "ma_auth_o", role="owner")
+    aid = _create(client, oh, _decl_body(name="user-denied")).json()["id"]
+
+    assert _create(client, uh, expect=403).status_code == 403
+    assert client.put(
+        f"/api/message-actions/{aid}",
+        json={"label": "nope"},
+        headers=uh,
     ).status_code == 403
-    assert _create(client, oh, _decl_body(name="ok01")).status_code == 201
+    assert client.delete(
+        f"/api/message-actions/{aid}", headers=uh,
+    ).status_code == 403
+    assert client.put(
+        f"/api/message-actions/{aid}/bindings",
+        json={"bindings": []},
+        headers=uh,
+    ).status_code == 403
+    assert client.get(
+        f"/api/message-actions/{aid}/bindings", headers=uh,
+    ).status_code == 403
+    assert client.get(
+        "/api/message-actions/audit/export", headers=uh,
+    ).status_code == 403
 
 
 # ── 2. Create declarative + audit snapshot ───────────────────────────────────
@@ -120,6 +215,8 @@ def test_02_create_declarative_version_sha_audit(client: TestClient, db: Session
     expect_sha = hashlib.sha256(body["body"].encode()).hexdigest()
     assert data["body_sha256"] == expect_sha
     assert data["body"] == body["body"]
+    assert "kind" not in data
+    assert "result_mode" not in data
 
     row = (
         db.query(AuditLog)
@@ -131,6 +228,8 @@ def test_02_create_declarative_version_sha_audit(client: TestClient, db: Session
     meta = json.loads(row.metadata_json)
     assert meta["body"] == body["body"]
     assert meta["body_sha256"] == expect_sha
+    assert "kind" not in meta
+    assert "result_mode" not in meta
 
 
 # ── 3. PUT body bumps version ────────────────────────────────────────────────
@@ -163,7 +262,7 @@ def test_03_put_body_version_and_prev_sha(client: TestClient, db: Session):
 # ── 4. Validation errors ─────────────────────────────────────────────────────
 
 
-def test_04_unknown_icon_kind_choices(client: TestClient, db: Session):
+def test_04_unknown_icon_and_choices(client: TestClient, db: Session):
     _, oh = _auth(client, db, "ma04o", role="owner")
     r = client.post(
         "/api/message-actions",
@@ -172,14 +271,6 @@ def test_04_unknown_icon_kind_choices(client: TestClient, db: Session):
     )
     assert r.status_code == 400
     assert "未知的圖示" in r.json()["detail"]
-
-    r = client.post(
-        "/api/message-actions",
-        json=_decl_body(name="badkind", kind="magic"),
-        headers=oh,
-    )
-    assert r.status_code == 400
-    assert "未知的動作類型" in r.json()["detail"]
 
     choices = [
         {"id": f"c{i}", "label": f"L{i}", "prompt": "p"} for i in range(21)
@@ -205,72 +296,6 @@ def test_04_unknown_icon_kind_choices(client: TestClient, db: Session):
     )
     assert r.status_code == 400
     assert "重複" in r.json()["detail"]
-
-
-# ── 5. exec validate_source never executes ───────────────────────────────────
-
-
-def test_05_exec_validate_no_execution(client: TestClient, db: Session, monkeypatch):
-    monkeypatch.setattr(settings, "ANILA_ENABLE_ACTION_EXEC", True)
-    _, oh = _auth(client, db, "ma05o", role="owner")
-
-    import tempfile
-
-    # Module-level canary: would create a file if validate_source executed.
-    marker = tempfile.mktemp(prefix="ma05_")
-    src_canary = (
-        f"open({marker!r}, 'w').write('fired')\n"
-        "def run(ctx):\n    return 'ok'\n"
-    )
-    r = client.post(
-        "/api/message-actions",
-        json={
-            "name": "exec05",
-            "label": "E",
-            "icon": "code",
-            "kind": "exec",
-            "result_mode": "direct",
-            "body": src_canary,
-            "choices": [],
-        },
-        headers=oh,
-    )
-    # validate_source compiles but does not exec → create succeeds, marker absent
-    assert r.status_code == 201, r.text
-    assert not os.path.exists(marker)
-
-    r = client.post(
-        "/api/message-actions",
-        json={
-            "name": "norun05",
-            "label": "E",
-            "icon": "code",
-            "kind": "exec",
-            "result_mode": "direct",
-            "body": "x = 1\n",
-            "choices": [],
-        },
-        headers=oh,
-    )
-    assert r.status_code == 400
-    assert "必須定義 run(ctx)" in r.json()["detail"]
-
-    r = client.post(
-        "/api/message-actions",
-        json={
-            "name": "syn05",
-            "label": "E",
-            "icon": "code",
-            "kind": "exec",
-            "result_mode": "direct",
-            "body": "def run(ctx)\n    return 'x'\n",
-            "choices": [],
-        },
-        headers=oh,
-    )
-    assert r.status_code == 400
-    assert "語法錯誤" in r.json()["detail"]
-    assert "第" in r.json()["detail"]
 
 
 # ── 6. Fail-closed authoring ─────────────────────────────────────────────────
@@ -302,6 +327,7 @@ def test_06_fail_closed_authoring(client: TestClient, db: Session, monkeypatch):
 
 
 def test_07_visible_no_bindings(client: TestClient, db: Session):
+    """Unbound action: author sees it (authorship); strangers get empty."""
     _, oh = _auth(client, db, "ma07o", role="owner")
     _, uh = _auth(client, db, "ma07u", role="user")
     created = _create(client, oh, _decl_body(name="nobind07")).json()
@@ -310,6 +336,26 @@ def test_07_visible_no_bindings(client: TestClient, db: Session):
     assert vis_u.json() == []
     vis_o = client.get("/api/message-actions/visible", headers=oh)
     assert any(a["id"] == created["id"] for a in vis_o.json())
+
+
+def test_07b_owner_no_uninvited_foreign_unbound(client: TestClient, db: Session):
+    """No role bypass: owner does not see another author's unbound action."""
+    _, oh = _auth(client, db, "ma07bo", role="owner")
+    _, dh = _auth(client, db, "ma07bd", role="developer")
+    created = _create(client, dh, _decl_body(name="foreign07b")).json()
+    vis_o = client.get("/api/message-actions/visible", headers=oh)
+    assert vis_o.status_code == 200
+    assert created["id"] not in {a["id"] for a in vis_o.json()}
+    vis_d = client.get("/api/message-actions/visible", headers=dh)
+    assert created["id"] in {a["id"] for a in vis_d.json()}
+    cid, mid = _conv_with_assistant(client, oh)
+    r = client.post(
+        f"/api/message-actions/{created['id']}/invoke",
+        json={"conversation_id": cid, "message_id": mid},
+        headers=oh,
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "動作不存在"
 
 
 # ── 8. Bind by user ──────────────────────────────────────────────────────────
@@ -457,8 +503,10 @@ def test_13_invoke_declarative_substitution(client: TestClient, db: Session):
     )
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["outcome"] == "prompt"
     assert data["prompt"] == "T:Hello {world}|C:to-english|I:note1|brace-in-msg-ok"
+    assert "outcome" not in data
+    assert "truncated" not in data
+    assert "kind" not in data
 
 
 # ── 14. invoke audit row shape ───────────────────────────────────────────────
@@ -492,6 +540,7 @@ def test_14_invoke_audit_no_body(client: TestClient, db: Session):
     assert meta["version"] == created["version"]
     assert meta["body_sha256"] == created["body_sha256"]
     assert "body" not in meta
+    assert "truncated" not in meta
 
 
 # ── 15. foreign / missing conv / wrong message ───────────────────────────────
@@ -502,8 +551,6 @@ def test_15_conversation_gates(client: TestClient, db: Session):
     ua, uh = _auth(client, db, "ma15a", role="user")
     ub, bh = _auth(client, db, "ma15b", role="user")
     aid = _create(client, oh, _decl_body(name="cg15")).json()["id"]
-    _bind(client, oh, aid, [{"scope_type": "user", "user_id": ua.id}])
-    # Also bind B so visibility passes and we hit conversation gate.
     _bind(
         client,
         oh,
@@ -541,7 +588,7 @@ def test_15_conversation_gates(client: TestClient, db: Session):
     assert r.json()["detail"] == "訊息不屬於此對話"
 
 
-# ── 16. ANILALM 409 before execution ─────────────────────────────────────────
+# ── 16. ANILALM 409 before render ────────────────────────────────────────────
 
 
 def test_16_anilalm_409(client: TestClient, db: Session):
@@ -549,8 +596,6 @@ def test_16_anilalm_409(client: TestClient, db: Session):
     u, uh = _auth(client, db, "ma16u", role="user")
     aid = _create(client, oh, _decl_body(name="ani16")).json()["id"]
     _bind(client, oh, aid, [{"scope_type": "user", "user_id": u.id}])
-    # ANILALM conversations require collection_id — create via API may 400;
-    # set origin on a normal conv.
     cid, mid = _conv_with_assistant(client, uh)
     from app.models.conversation import Conversation
 
@@ -718,7 +763,6 @@ def test_18_user_role_target_400(client: TestClient, db: Session):
     aid = _create(client, oh, _decl_body(name="role18")).json()["id"]
     _bind(client, oh, aid, [{"scope_type": "user", "user_id": u.id}])
     cid, _mid = _conv_with_assistant(client, uh)
-    # Use the user message id
     msgs = client.get(f"/api/conversations/{cid}?view=all", headers=uh).json()["messages"]
     user_msg = next(m for m in msgs if m["role"] == "user")
     r = client.post(
@@ -760,30 +804,59 @@ def test_19_rate_limit(client: TestClient, db: Session, monkeypatch):
 # ── 20. Export ───────────────────────────────────────────────────────────────
 
 
-def test_20_export_owner_only(client: TestClient, db: Session):
+def test_20_export_admin_redacted_owner_full(client: TestClient, db: Session):
+    """Admin+ may export; non-owner rows reuse audit-listing redaction."""
+    from app.services.audit_service import SENSITIVE_REDACTED
+
     _, oh = _auth(client, db, "ma20o", role="owner")
     _, ah = _auth(client, db, "ma20a", role="admin")
+    _, dh = _auth(client, db, "ma20d", role="developer")
+    _, uh = _auth(client, db, "ma20u", role="user")
     body = _decl_body(name="exp20", body="EXPORT_BODY_MARKER {content}")
     _create(client, oh, body)
 
-    r = client.get("/api/message-actions/audit/export", headers=ah)
-    assert r.status_code == 403
+    assert client.get(
+        "/api/message-actions/audit/export", headers=dh,
+    ).status_code == 403
+    assert client.get(
+        "/api/message-actions/audit/export", headers=uh,
+    ).status_code == 403
 
     before_export = (
         db.query(AuditLog)
         .filter(AuditLog.action == "message_action_audit_export")
         .count()
     )
-    r = client.get("/api/message-actions/audit/export", headers=oh)
-    assert r.status_code == 200
-    assert "application/x-ndjson" in r.headers.get("content-type", "")
-    lines = [ln for ln in r.text.splitlines() if ln.strip()]
-    assert any("EXPORT_BODY_MARKER" in ln for ln in lines)
+    r_admin = client.get("/api/message-actions/audit/export", headers=ah)
+    assert r_admin.status_code == 200
+    assert "application/x-ndjson" in r_admin.headers.get("content-type", "")
+    admin_lines = [
+        json.loads(ln) for ln in r_admin.text.splitlines() if ln.strip()
+    ]
+    assert admin_lines
+    assert any(
+        row.get("ip_address") == SENSITIVE_REDACTED for row in admin_lines
+    )
+    assert all(row.get("metadata") is None for row in admin_lines)
+    # Create snapshot body lives in metadata — redacted for non-owner.
+    assert not any("EXPORT_BODY_MARKER" in ln for ln in r_admin.text.splitlines())
+
+    r_owner = client.get("/api/message-actions/audit/export", headers=oh)
+    assert r_owner.status_code == 200
+    owner_lines = [
+        json.loads(ln) for ln in r_owner.text.splitlines() if ln.strip()
+    ]
+    assert any(
+        row.get("ip_address") not in (None, SENSITIVE_REDACTED)
+        or (isinstance(row.get("metadata"), dict) and row["metadata"])
+        for row in owner_lines
+    )
+    assert any("EXPORT_BODY_MARKER" in ln for ln in r_owner.text.splitlines())
     assert (
         db.query(AuditLog)
         .filter(AuditLog.action == "message_action_audit_export")
         .count()
-        == before_export + 1
+        == before_export + 2
     )
 
 
@@ -902,18 +975,24 @@ def test_admin_no_binding_no_bypass(client: TestClient, db: Session):
     assert r.json()["detail"] == "動作不存在"
 
 
-def test_admin_body_redacted(client: TestClient, db: Session):
-    """Blueprint §4: non-owner admin reads body as '<owner-only>'."""
+def test_admin_body_not_redacted(client: TestClient, db: Session):
+    """Body follows mutate right: author + admin-tier see it; other developers do not."""
     _, oh = _auth(client, db, "ma_red_o", role="owner")
     _, ah = _auth(client, db, "ma_red_a", role="admin")
+    _, dh_author = _auth(client, db, "ma_red_d", role="developer")
+    _, dh_other = _auth(client, db, "ma_red_d2", role="developer")
     secret = "SECRET_BODY_CONTENT {content}"
-    _create(client, oh, _decl_body(name="redact", body=secret))
-    rows = client.get("/api/message-actions", headers=ah).json()
-    hit = next(r for r in rows if r["name"] == "redact")
-    assert hit["body"] == "<owner-only>"
-    rows_o = client.get("/api/message-actions", headers=oh).json()
-    hit_o = next(r for r in rows_o if r["name"] == "redact")
-    assert hit_o["body"] == secret
+    _create(client, dh_author, _decl_body(name="redact", body=secret))
+
+    for headers, expect_body in (
+        (dh_author, secret),
+        (ah, secret),
+        (oh, secret),
+        (dh_other, None),
+    ):
+        rows = client.get("/api/message-actions", headers=headers).json()
+        hit = next(r for r in rows if r["name"] == "redact")
+        assert hit["body"] == expect_body
 
 
 def test_access_denied_refusal_writes_refused_audit(
@@ -1095,7 +1174,6 @@ def test_rate_limit_stops_refusal_audit_rows(
             {"scope_type": "user", "user_id": ub.id},
         ],
     )
-    # Distinct foreign conversations — same access-denied gate each time.
     foreign = [_conv_with_assistant(client, bh) for _ in range(5)]
 
     before_ref = (
@@ -1134,22 +1212,19 @@ def test_rate_limit_stops_refusal_audit_rows(
     )
 
 
-def test_icons_endpoint_shape_and_exec_flag(client: TestClient, db: Session):
-    """GET /icons returns object with icons list and boolean exec flag."""
+def test_icons_endpoint_returns_list(client: TestClient, db: Session):
+    """GET /icons returns icons + max_body_chars from server settings."""
     from app.schemas.message_action import ALLOWED_ACTION_ICONS
 
-    _, oh = _auth(client, db, "ma_ico_o", role="owner")
-    _, ah = _auth(client, db, "ma_ico_a", role="admin")
+    _, uh = _auth(client, db, "ma_ico_u", role="user")
+    _, dh = _auth(client, db, "ma_ico_d", role="developer")
 
-    denied = client.get("/api/message-actions/icons", headers=ah)
+    denied = client.get("/api/message-actions/icons", headers=uh)
     assert denied.status_code == 403
 
-    r = client.get("/api/message-actions/icons", headers=oh)
+    r = client.get("/api/message-actions/icons", headers=dh)
     assert r.status_code == 200, r.text
     data = r.json()
     assert isinstance(data, dict)
-    assert set(data.keys()) >= {"icons", "action_exec_enabled"}
-    assert isinstance(data["icons"], list)
     assert sorted(data["icons"]) == sorted(ALLOWED_ACTION_ICONS)
-    assert isinstance(data["action_exec_enabled"], bool)
-    assert data["action_exec_enabled"] is False  # autouse fixture default
+    assert data["max_body_chars"] == int(settings.ANILA_ACTION_MAX_BODY_CHARS)

@@ -691,7 +691,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       reasoning: meta.reasoning || null,
       // OW-3: action:NAME attribution (second channel alongside metadata.action).
       agentName: msg.agent_name || null,
-      // OW-3 provenance (metadata.action) — drives 「自訂動作產出」 badge.
+      // OW-3 provenance (metadata.action) — quiet action-name attribution.
       metadata: meta,
       streaming: false,
       attachments: (msg.attachments || []).map((a) => ({
@@ -1482,8 +1482,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // and re-runs the chat call, replacing the assistant message's text /
   // trace in place. Caller API key permissions and routing target are
   // inherited from the original turn.
-  // OW-3 governed message actions: server-rendered prompt (declarative) or
-  // exec direct text → assistant sibling via POST /branch (never in-place update).
+  // OW-3 governed message actions: server-rendered prompt → client chat stream
+  // → assistant sibling via POST /branch (never in-place update).
   // Orchestration lives in runtime/messageActions.js (runActionInvokeFillback).
   async function runMessageAction(msg, action, choice = null) {
     if (!isAuthenticated) {
@@ -1561,13 +1561,6 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       refreshActivePath,
       onRestore: restorePreAction,
       onError: (message) => setRuntimeError(message),
-      onDirectText: (content, actionMeta) => {
-        updateMsg(convId, placeholderId, {
-          text: content,
-          streaming: false,
-          metadata: actionMeta,
-        });
-      },
       runStream: async (payload) => {
         let finalText = "";
         let finalMeta = null;

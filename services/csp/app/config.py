@@ -124,18 +124,7 @@ class Settings(BaseSettings):
     # regenerate forks). Exceed → 409. docs/plans/ow1-message-tree-blueprint.md
     ANILA_MESSAGE_MAX_SIBLINGS: int = 20
 
-    # OW-3 — 訊息級自訂動作（docs/plans/ow3-message-actions-blueprint.md）。
-    # ANILA_ENABLE_ACTION_EXEC 預設關：off ⇒ exec 從 /visible 消失、invoke
-    # 回 404（與不存在不可區分）。開啟前必須簽署
-    # docs/security/ow3-exec-risk-acceptance.md；旗標分域先例＝P0.2。
-    ANILA_ENABLE_ACTION_EXEC: bool = False
-    # exec 牆鐘逾時（秒）。逾時只停止等待，無法終止執行緒（CPython）。
-    ANILA_ACTION_EXEC_TIMEOUT_SECONDS: int = 30
-    # exec 併發上限（asyncio.Semaphore）。卡住的 worker 會永久佔用槽位直到
-    # 回傳；槽位耗盡後新 invoke → 503（fail-closed，重啟才清）。
-    ANILA_ACTION_EXEC_MAX_CONCURRENCY: int = 2
-    # exec 回傳字串截斷上限（字元）。
-    ANILA_ACTION_OUTPUT_MAX_CHARS: int = 20000
+    # OW-3 — 訊息級自訂動作（宣告式 prompt 模板；無執行面）。
     # 每使用者每分鐘 invoke 上限（進程內固定視窗，非叢集）。
     ANILA_ACTION_INVOKE_PER_MIN: int = 20
     # action body 最大字元數；超過 → 413。
