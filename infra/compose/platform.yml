@@ -331,10 +331,12 @@ services:
       anila-ui:
         condition: service_healthy
         restart: true
+    # Probe CSP via loopback :8080 /health (see anila.conf). `nginx -t`
+    # only checks syntax and stayed healthy during tonight's 502/503 floods.
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD-SHELL", "wget -qO- --timeout=3 http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
       retries: 3
       start_period: 10s
     restart: unless-stopped

@@ -415,10 +415,12 @@ services:
       anila-ui:
         condition: service_healthy
         restart: true
+    # Same posture as platform.yml: probe CSP via loopback :8080 /health
+    # (anila.conf), not `nginx -t` syntax-only.
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD-SHELL", "wget -qO- --timeout=3 http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
       retries: 3
       start_period: 10s
     restart: unless-stopped
