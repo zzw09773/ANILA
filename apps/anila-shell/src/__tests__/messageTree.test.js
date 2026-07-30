@@ -454,3 +454,60 @@ describe("regenerate stream failure restores previous answer", () => {
     expect(sanitized.find((m) => m.id === "a1").text).toBe("previous answer");
   });
 });
+
+
+describe("MessageBubble mid-stream failure visibility", () => {
+  it("renders a readable error and keeps prior text + regenerate affordance", () => {
+    const onRegenerate = vi.fn();
+    render(
+      React.createElement(MessageBubble, {
+        msg: {
+          id: 42,
+          role: "assistant",
+          text: "Hel",
+          error: "「demo」暫時無法使用，請稍後再試。",
+          streaming: false,
+          siblingIndex: 0,
+          siblingCount: 1,
+          siblingIds: [42],
+        },
+        agents: [],
+        conversationId: 1,
+        onRegenerate,
+      }),
+    );
+    const alert = screen.getByTestId("message-stream-error");
+    expect(alert.textContent).toContain("請稍後再試");
+    expect(alert.textContent).not.toMatch(/https?:\/\//);
+    // Already-streamed text survives.
+    expect(screen.getByText("Hel")).toBeTruthy();
+    // Regenerate still available without retyping (failed node stays in tree).
+    const regen = screen.getByTitle("重新產生（可選調整方向）");
+    expect(regen).toBeTruthy();
+    expect(regen.disabled).toBe(false);
+  });
+
+  it("keeps the failed assistant node addressable in the sibling tree", () => {
+    render(
+      React.createElement(MessageBubble, {
+        msg: {
+          id: 20,
+          role: "assistant",
+          text: "",
+          error: "產生回應時發生錯誤，請稍後再試。",
+          streaming: false,
+          siblingIndex: 1,
+          siblingCount: 2,
+          siblingIds: [10, 20],
+        },
+        agents: [],
+        conversationId: 1,
+        onRegenerate: vi.fn(),
+        onSwitchBranch: vi.fn(),
+      }),
+    );
+    expect(screen.getByTestId("message-stream-error")).toBeTruthy();
+    // Tree pager still rendered — failed message is a normal node.
+    expect(screen.getByText("2 / 2")).toBeTruthy();
+  });
+});

@@ -51,6 +51,9 @@ export function parseSseEvent(block) {
  *     tree (PR B4) for <SpanTreeViewer>.
  *   onSessionId(sessionId)                        — raw header from
  *     the response so the caller can pin further turns.
+ *   onError({ message })                          — terminal mid-stream
+ *     failure (anila.error). Already-streamed text stays in the
+ *     accumulator; the stream then rejects with that message.
  *
  * All new callbacks are optional; unknown event names fall through
  * to a debug log so future server-side additions surface visibly
@@ -79,6 +82,7 @@ export async function streamChatCompletion({
   onSpans,
   onSessionId,
   onUnknownEvent,
+  onError,
   // Continue Response:回應被 max_tokens 截斷(finish_reason==='length')時回報。
   onFinishReason,
   // Stop generation:呼叫端傳入 AbortController.signal;abort() 即中止串流。
@@ -138,6 +142,7 @@ export async function streamChatCompletion({
   const decoder = new TextDecoder();
   let buffer = "";
   let accumulatedText = "";
+  let terminalError = null;
 
   while (true) {
     let chunk;
@@ -172,6 +177,10 @@ export async function streamChatCompletion({
         onSpans,
         onUnknownEvent,
         onFinishReason,
+        onError: (payload) => {
+          terminalError = payload;
+          onError?.(payload);
+        },
         accumulator: {
           get: () => accumulatedText,
           add: (delta) => {
@@ -179,7 +188,20 @@ export async function streamChatCompletion({
           },
         },
       });
+      if (terminalError) break;
     }
+    if (terminalError) break;
+  }
+
+  if (terminalError) {
+    const raw =
+      typeof terminalError.message === "string"
+        ? terminalError.message.trim()
+        : "";
+    const err = new Error(raw || "產生回應時發生錯誤，請稍後再試。");
+    err.isStreamError = true;
+    err.partialText = accumulatedText;
+    throw err;
   }
 
   return accumulatedText;
@@ -252,6 +274,13 @@ export function dispatchSseEvent(event, callbacks) {
   }
   if (event.event === "anila.spans") {
     safeJsonInvoke(event.data, callbacks.onSpans, "anila.spans");
+    return;
+  }
+  if (event.event === "anila.error") {
+    // Terminal mid-stream failure. Do not treat the payload as an
+    // OpenAI chunk; the caller keeps already-streamed text and paints
+    // this message on the bubble.
+    safeJsonInvoke(event.data, callbacks.onError, "anila.error");
     return;
   }
 

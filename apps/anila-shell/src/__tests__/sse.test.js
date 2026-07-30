@@ -321,4 +321,69 @@ describe("dispatchSseEvent", () => {
     ).not.toThrow();
     expect(onTodos).not.toHaveBeenCalled();
   });
+
+  it("routes anila.error to onError and does not append text", () => {
+    const onError = vi.fn();
+    const onText = vi.fn();
+    const acc = makeAccumulator();
+    dispatchSseEvent(
+      {
+        event: "anila.error",
+        data: JSON.stringify({
+          message: "「demo」暫時無法使用，請稍後再試。",
+        }),
+        raw: "",
+      },
+      { onError, onText, accumulator: acc },
+    );
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0].message).toContain("請稍後再試");
+    expect(onText).not.toHaveBeenCalled();
+    expect(acc.snapshot()).toBe("");
+  });
+});
+
+
+describe("streamChatCompletion mid-stream anila.error", () => {
+  it("preserves streamed text and rejects with the plain-language message", async () => {
+    const { streamChatCompletion } = await import("../runtime/sse.js");
+    const body =
+      'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n' +
+      'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n' +
+      'event: anila.error\ndata: {"message":"「demo」暫時無法使用，請稍後再試。"}\n\n';
+    const encoder = new TextEncoder();
+    let pulled = false;
+    const reader = {
+      read: async () => {
+        if (pulled) return { done: true, value: undefined };
+        pulled = true;
+        return { done: false, value: encoder.encode(body) };
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        headers: { get: () => null },
+        body: { getReader: () => reader },
+      })),
+    );
+    const texts = [];
+    const onError = vi.fn();
+    await expect(
+      streamChatCompletion({
+        url: "/v1/chat/completions",
+        payload: { model: "demo", messages: [] },
+        onText: (t) => texts.push(t),
+        onError,
+      }),
+    ).rejects.toMatchObject({
+      message: "「demo」暫時無法使用，請稍後再試。",
+      isStreamError: true,
+      partialText: "Hello",
+    });
+    expect(texts.at(-1)).toBe("Hello");
+    expect(onError).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
 });

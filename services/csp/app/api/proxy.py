@@ -558,11 +558,16 @@ async def _tee_stream_capture_assistant(
         return "".join(out)
 
     parts: list[str] = []
+    saw_terminal_error = False
     try:
         async for block in upstream:
             # SSE block format: "event: foo\ndata: {...}\n\n" — extract
             # the data payload and pull assistant-visible text if present.
             for line in block.split("\n"):
+                if line.startswith("event:") and line[6:].strip() == "anila.error":
+                    # Failed turns must not land in memory; keep streamed
+                    # text on the wire for the UI but skip persist.
+                    saw_terminal_error = True
                 if not line.startswith("data:"):
                     continue
                 payload = line[5:].strip()
@@ -588,10 +593,11 @@ async def _tee_stream_capture_assistant(
                         parts.append(txt)
             yield block
     finally:
-        try:
-            on_complete("".join(parts))
-        except Exception:
-            logger.exception("memory_service: on_complete callback failed")
+        if not saw_terminal_error:
+            try:
+                on_complete("".join(parts))
+            except Exception:
+                logger.exception("memory_service: on_complete callback failed")
 
 router = APIRouter(tags=["API 代理"])
 
