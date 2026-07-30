@@ -976,7 +976,7 @@ def test_admin_no_binding_no_bypass(client: TestClient, db: Session):
 
 
 def test_admin_body_not_redacted(client: TestClient, db: Session):
-    """Body follows mutate right: author + admin-tier see it; other developers do not."""
+    """Body follows read rule: author/admin-tier see it; unbound other developers do not."""
     _, oh = _auth(client, db, "ma_red_o", role="owner")
     _, ah = _auth(client, db, "ma_red_a", role="admin")
     _, dh_author = _auth(client, db, "ma_red_d", role="developer")
@@ -993,6 +993,126 @@ def test_admin_body_not_redacted(client: TestClient, db: Session):
         rows = client.get("/api/message-actions", headers=headers).json()
         hit = next(r for r in rows if r["name"] == "redact")
         assert hit["body"] == expect_body
+
+
+def test_visible_includes_template_for_bound_user(client: TestClient, db: Session):
+    """Bound user receives the template on /visible; unbound user gets neither."""
+    _, oh = _auth(client, db, "ma_vis_body_o", role="owner")
+    ua, uh = _auth(client, db, "ma_vis_body_a", role="user")
+    _, bh = _auth(client, db, "ma_vis_body_b", role="user")
+    secret = "BOUND_TEMPLATE {content} {choice}"
+    created = _create(
+        client, oh, _decl_body(name="visbody", body=secret)
+    ).json()
+    aid = created["id"]
+    _bind(client, oh, aid, [{"scope_type": "user", "user_id": ua.id}])
+
+    vis_a = client.get("/api/message-actions/visible", headers=uh)
+    assert vis_a.status_code == 200
+    hit = next(a for a in vis_a.json() if a["id"] == aid)
+    assert hit["body"] == secret
+    assert "choices" in hit
+
+    vis_b = client.get("/api/message-actions/visible", headers=bh)
+    assert vis_b.status_code == 200
+    assert aid not in {a["id"] for a in vis_b.json()}
+    assert all("body" not in a or a.get("id") != aid for a in vis_b.json())
+
+
+def test_author_and_admin_unaffected_by_template_read(client: TestClient, db: Session):
+    """Author still sees own action on /visible with body; admin mutate path intact."""
+    _, oh = _auth(client, db, "ma_auth_body_o", role="owner")
+    _, dh = _auth(client, db, "ma_auth_body_d", role="developer")
+    secret = "AUTHOR_TEMPLATE {content}"
+    created = _create(
+        client, dh, _decl_body(name="authbody", body=secret)
+    ).json()
+    assert created["body"] == secret
+
+    vis_d = client.get("/api/message-actions/visible", headers=dh).json()
+    hit = next(a for a in vis_d if a["id"] == created["id"])
+    assert hit["body"] == secret
+
+    # Owner (admin-tier) may modify → management list still shows body.
+    rows = client.get("/api/message-actions", headers=oh).json()
+    admin_hit = next(r for r in rows if r["id"] == created["id"])
+    assert admin_hit["body"] == secret
+
+
+def test_mgmt_list_bound_developer_sees_template(client: TestClient, db: Session):
+    """Management list widens body to a bound developer who cannot modify."""
+    _, oh = _auth(client, db, "ma_mgmt_body_o", role="owner")
+    _, dh_author = _auth(client, db, "ma_mgmt_body_a", role="developer")
+    db_bound, dh_bound = _auth(client, db, "ma_mgmt_body_b", role="developer")
+    _, dh_stranger = _auth(client, db, "ma_mgmt_body_c", role="developer")
+    secret = "ASSIGNED_TEMPLATE {content}"
+    created = _create(
+        client, dh_author, _decl_body(name="mgmtbody", body=secret)
+    ).json()
+    aid = created["id"]
+    _bind(
+        client,
+        dh_author,
+        aid,
+        [{"scope_type": "user", "user_id": db_bound.id}],
+    )
+
+    bound_rows = client.get("/api/message-actions", headers=dh_bound).json()
+    bound_hit = next(r for r in bound_rows if r["id"] == aid)
+    assert bound_hit["body"] == secret
+
+    stranger_rows = client.get("/api/message-actions", headers=dh_stranger).json()
+    stranger_hit = next(r for r in stranger_rows if r["id"] == aid)
+    assert stranger_hit["body"] is None
+
+
+def test_mgmt_bound_disabled_hides_template(client: TestClient, db: Session):
+    """Bound-but-disabled: pressable set excludes it → body redacted for assignee.
+
+    May-modify callers (author / admin-tier) still see the template.
+    """
+    _, oh = _auth(client, db, "ma_dis_body_o", role="owner")
+    _, dh_author = _auth(client, db, "ma_dis_body_a", role="developer")
+    db_bound, dh_bound = _auth(client, db, "ma_dis_body_b", role="developer")
+    secret = "DISABLED_TEMPLATE {content}"
+    created = _create(
+        client, dh_author, _decl_body(name="disbody", body=secret)
+    ).json()
+    aid = created["id"]
+    _bind(
+        client,
+        dh_author,
+        aid,
+        [{"scope_type": "user", "user_id": db_bound.id}],
+    )
+    assert (
+        client.put(
+            f"/api/message-actions/{aid}",
+            json={"is_enabled": False},
+            headers=dh_author,
+        ).status_code
+        == 200
+    )
+
+    # Bound assignee can no longer press → management body redacted.
+    bound_rows = client.get("/api/message-actions", headers=dh_bound).json()
+    bound_hit = next(r for r in bound_rows if r["id"] == aid)
+    assert bound_hit["is_enabled"] is False
+    assert bound_hit["body"] is None
+
+    # Author and admin-tier still may-modify → body remains.
+    author_rows = client.get("/api/message-actions", headers=dh_author).json()
+    assert next(r for r in author_rows if r["id"] == aid)["body"] == secret
+    owner_rows = client.get("/api/message-actions", headers=oh).json()
+    assert next(r for r in owner_rows if r["id"] == aid)["body"] == secret
+
+    # /visible also drops the disabled action for the bound user.
+    assert aid not in {
+        a["id"]
+        for a in client.get(
+            "/api/message-actions/visible", headers=dh_bound
+        ).json()
+    }
 
 
 def test_access_denied_refusal_writes_refused_audit(

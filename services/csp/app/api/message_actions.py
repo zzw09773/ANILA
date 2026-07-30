@@ -8,7 +8,7 @@ docs/plans/ow3-message-actions-blueprint.md §4.
 * Audit export: administrator and above (``require_admin``), with the same
   IP/metadata redaction as ``GET /api/audit-logs``.
 * Management list / icons: developer and above.
-* User surface: binding-scoped ``/visible`` + ``/invoke``.
+* User surface: binding-scoped ``/visible`` (includes template) + ``/invoke``.
 """
 
 from __future__ import annotations
@@ -55,6 +55,12 @@ def list_visible_actions(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """Pressable actions for the caller, including each action's template.
+
+    Visibility remains bound-or-authored. Template disclosure follows the
+    read rule (pressable ⇒ readable); the client shows the raw body so the
+    person pressing can inspect what will be sent as them.
+    """
     rows = svc.list_visible(db, user)
     return [
         MessageActionOut(
@@ -62,6 +68,7 @@ def list_visible_actions(
             name=r.name,
             label=r.label,
             icon=r.icon,
+            body=r.body,
             choices=r.choices or [],
         )
         for r in rows
@@ -105,8 +112,7 @@ def list_actions(
     actor: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
-    rows = svc.list_actions_admin(db)
-    return [svc.serialize_admin(r, actor=actor) for r in rows]
+    return svc.list_actions_admin_serialized(db, actor=actor)
 
 
 @router.post(
@@ -123,7 +129,7 @@ def create_action(
     row = svc.create_action(
         db, payload=payload, actor=actor, ip_address=_client_ip(request)
     )
-    return svc.serialize_admin(row, actor=actor)
+    return svc.serialize_admin(row, actor=actor, db=db)
 
 
 @router.put("/{action_id}", response_model=MessageActionAdminOut)
@@ -141,7 +147,7 @@ def update_action(
         actor=actor,
         ip_address=_client_ip(request),
     )
-    return svc.serialize_admin(row, actor=actor)
+    return svc.serialize_admin(row, actor=actor, db=db)
 
 
 @router.delete("/{action_id}", status_code=status.HTTP_204_NO_CONTENT)

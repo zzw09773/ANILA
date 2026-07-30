@@ -5,9 +5,9 @@ import {
   buildActionMetadata,
   buildDeclarativeActionMessages,
   invokeAction,
-  needsPicker,
   resolveActionIcon,
   runActionInvokeFillback,
+  splitTemplatePlaceholders,
 } from "../runtime/messageActions.js";
 import { IconSpark } from "../icons.jsx";
 import { branchMessage, updateMessage } from "../runtime/conversations.js";
@@ -30,43 +30,25 @@ function sampleAction(overrides = {}) {
   };
 }
 
-describe("needsPicker truth table", () => {
-  it("false for zero choices", () => {
-    expect(needsPicker(sampleAction({ choices: [] }))).toBe(false);
-    expect(needsPicker(sampleAction({ choices: undefined }))).toBe(false);
-  });
-
-  it("false for a single choice without input", () => {
-    expect(
-      needsPicker(
-        sampleAction({
-          choices: [{ id: "a", label: "A", prompt: "p", input: false }],
-        }),
-      ),
-    ).toBe(false);
-  });
-
-  it("true for a single choice that requires input", () => {
-    expect(
-      needsPicker(
-        sampleAction({
-          choices: [{ id: "a", label: "A", prompt: "p", input: true }],
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  it("true for two or more choices", () => {
-    expect(
-      needsPicker(
-        sampleAction({
-          choices: [
-            { id: "a", label: "A", prompt: "p", input: false },
-            { id: "b", label: "B", prompt: "q", input: false },
-          ],
-        }),
-      ),
-    ).toBe(true);
+describe("splitTemplatePlaceholders", () => {
+  it("marks content/choice/input tokens and leaves other braces alone", () => {
+    expect(splitTemplatePlaceholders("a{content}b{choice}c{input}d")).toEqual([
+      { kind: "text", value: "a" },
+      { kind: "placeholder", value: "{content}" },
+      { kind: "text", value: "b" },
+      { kind: "placeholder", value: "{choice}" },
+      { kind: "text", value: "c" },
+      { kind: "placeholder", value: "{input}" },
+      { kind: "text", value: "d" },
+    ]);
+    expect(splitTemplatePlaceholders("{{content}}")).toEqual([
+      { kind: "text", value: "{" },
+      { kind: "placeholder", value: "{content}" },
+      { kind: "text", value: "}" },
+    ]);
+    expect(splitTemplatePlaceholders("plain")).toEqual([
+      { kind: "text", value: "plain" },
+    ]);
   });
 });
 
@@ -200,6 +182,108 @@ describe("MessageBubble action buttons", () => {
     expect(screen.queryByTestId("message-action-picker-7")).toBeNull();
     expect(onAction).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
+  });
+
+  it("template disclosure is closed by default, opens on demand, shows raw body", () => {
+    const template = "請摘要：\n{content}\n選項:{choice}";
+    const action = sampleAction({
+      body: template,
+      choices: [
+        { id: "brief", label: "簡短", prompt: "用三句話", input: false },
+        {
+          id: "custom",
+          label: "自訂",
+          prompt: "依指示：",
+          input: true,
+          input_label: "補充",
+        },
+      ],
+    });
+    renderAssistant({ actions: [action] });
+    fireEvent.click(screen.getByTestId("message-action-7").querySelector("button"));
+
+    expect(screen.getByTestId("message-action-picker-7")).toBeTruthy();
+    expect(screen.queryByTestId("message-action-template-7")).toBeNull();
+    expect(screen.getByTestId("message-action-template-toggle-7").getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+
+    fireEvent.click(screen.getByTestId("message-action-template-toggle-7"));
+    expect(screen.getByTestId("message-action-template-7")).toBeTruthy();
+    expect(screen.getByTestId("message-action-template-toggle-7").getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+    expect(screen.getByTestId("message-action-template-body-7").textContent).toBe(template);
+    expect(screen.getByTestId("message-action-template-body-7").querySelectorAll("mark")).toHaveLength(2);
+    const caption = screen.getByTestId("message-action-template-caption-7").textContent;
+    expect(caption).toMatch(/按下後會以你的身分送出/);
+    expect(caption).toMatch(/佔位符於按下時由伺服器替換/);
+    expect(caption).toMatch(/\{content\}/);
+    expect(caption).toMatch(/\{choice\}/);
+    expect(caption).toMatch(/\{input\}/);
+    expect(caption).toMatch(/平台未審核/);
+    // All choices' author-written prompts are visible when disclosure is open.
+    expect(screen.getByTestId("message-action-choice-contrib-7").textContent).toContain("用三句話");
+    expect(screen.getByTestId("message-action-choice-contrib-7").textContent).toContain("依指示：");
+    expect(screen.getByTestId("message-action-choice-prompt-7-brief")).toBeTruthy();
+    expect(screen.getByTestId("message-action-choice-prompt-7-custom")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("message-action-template-toggle-7"));
+    expect(screen.queryByTestId("message-action-template-7")).toBeNull();
+  });
+
+  it("zero-choice action opens picker so plain user can read template before send", () => {
+    const template = "摘要：{content}";
+    const onAction = vi.fn();
+    const action = sampleAction({
+      label: "摘要",
+      body: template,
+      choices: [],
+    });
+    renderAssistant({ actions: [action], onAction });
+
+    // Click does not fire immediately — opens picker with send control.
+    fireEvent.click(screen.getByTestId("message-action-7").querySelector("button"));
+    expect(onAction).not.toHaveBeenCalled();
+    expect(screen.getByTestId("message-action-picker-7")).toBeTruthy();
+    expect(screen.getByTestId("message-action-send-7")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("message-action-template-toggle-7"));
+    expect(screen.getByTestId("message-action-template-body-7").textContent).toBe(template);
+    expect(screen.getByTestId("message-action-template-caption-7").textContent).toMatch(
+      /佔位符於按下時由伺服器替換/,
+    );
+
+    fireEvent.click(screen.getByTestId("message-action-send-7"));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction.mock.calls[0][2]).toBeNull();
+  });
+
+  it("single input-less choice opens picker with template disclosure before fire", () => {
+    const template = "翻成英文：{content}\n{choice}";
+    const onAction = vi.fn();
+    const action = sampleAction({
+      body: template,
+      choices: [{ id: "en", label: "英文", prompt: "to English", input: false }],
+    });
+    renderAssistant({ actions: [action], onAction });
+
+    fireEvent.click(screen.getByTestId("message-action-7").querySelector("button"));
+    expect(onAction).not.toHaveBeenCalled();
+    expect(screen.getByTestId("message-action-picker-7")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("message-action-template-toggle-7"));
+    expect(screen.getByTestId("message-action-template-body-7").textContent).toBe(template);
+    expect(screen.getByTestId("message-action-choice-contrib-7").textContent).toContain("to English");
+
+    // Click the choice row (not the label repeated inside the disclosure).
+    const choiceBtn = Array.from(
+      screen.getByTestId("message-action-picker-7").querySelectorAll("button"),
+    ).find((b) => b.textContent === "英文");
+    expect(choiceBtn).toBeTruthy();
+    fireEvent.click(choiceBtn);
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction.mock.calls[0][2].id).toBe("en");
   });
 
   it("clears open picker when conversationStreaming locks controls", () => {
