@@ -550,10 +550,9 @@ const revokingId = ref(null)
 const testingId = ref(null)
 const testResults = ref({})
 
-// doc 04 §2 protocol 列舉。label 為繁中；未知值以原字串回退顯示（防禦 6a）。
+// doc 04 §2 protocol 列舉。proxy 只實作 openai_compatible；custom_adapter 已退場。
 const PROTOCOL_OPTIONS = [
   { value: 'openai_compatible', label: 'OpenAI 相容' },
-  { value: 'custom_adapter', label: '自訂轉接' },
 ]
 const PROTOCOL_LABELS = Object.fromEntries(PROTOCOL_OPTIONS.map(p => [p.value, p.label]))
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,17 @@ from app.services import handoff_service as svc
 from app.schemas.base import ApiResponseModel
 
 router = APIRouter(tags=["handoffs"])
+
+# Colleague-handoff UI was removed pending OWNER Q9. Accept/reject only flipped
+# status + notification and never transferred conversation ownership — keeping
+# that silent success is worse than refusing. Agent handoff in the shell is a
+# client-side agent switch and does not use these endpoints.
+_HANDOFF_RESOLVE_NOT_IMPLEMENTED = (
+    "對話交接的接受/拒絕尚未實作所有權移交;"
+    "目前只會改狀態卻不把對話交給對方。"
+    "同事交接待擁有者決定查詢範圍(OWNER Q9);"
+    "交給其他助手請用聊天介面的助手選單。"
+)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -84,7 +95,7 @@ def accept_handoff(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.resolve_handoff(db, handoff_id, current_user, accept=True)
+    raise HTTPException(status_code=501, detail=_HANDOFF_RESOLVE_NOT_IMPLEMENTED)
 
 
 @router.post("/api/handoffs/{handoff_id}/reject", response_model=HandoffOut)
@@ -93,7 +104,7 @@ def reject_handoff(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.resolve_handoff(db, handoff_id, current_user, accept=False)
+    raise HTTPException(status_code=501, detail=_HANDOFF_RESOLVE_NOT_IMPLEMENTED)
 
 
 @router.post("/api/handoffs/{handoff_id}/cancel", response_model=HandoffOut)

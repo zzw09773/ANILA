@@ -108,7 +108,7 @@ Full Trace ingest (`app/api/traces.py`, also full-path):
 
 - **New in the redesign**: `/api/tasks` (`tasks` module: create / list / get / `/{id}/runs`), `/api/policy-decisions`, `/api/classification/inventory` (classification stock-take), `/api/classification/declassification-requests` (declassification request + supervisor approval), `/api/classification-authorities` (classification approval authority), `/api/services` (Service Registry: CRUD + `/{id}/launch` + `/{id}/audit-callbacks` + `/{id}/manifest` + `/{id}/project-bindings`), `/api/artifacts` (+ data-plane `POST /v1/artifact-jobs` etc. as the Studio report surface).
 - **Existing governance**: `/api/auth`, `/api/auth-providers`, `/api/keys`, `/api/models` (incl. `set-router-primary` / `activate` / `purge`), `/api/agents` (register / approve / reject / health-check / credentials / template), `/api/users`, `/api/departments`, `/api/usage`, `/api/alerts`, `/api/audit-logs`, `/api/banners`, `/api/memory`, `/api/platform-links`, `/api/service-clients`, `/api/service-access-grants`, `/api/trusted-hosts`, `/api/conversations` (incl. `/search`, shares, ratings), `/api/attachments`, `/api/handoffs` + `/api/notifications`, `/api/public/share/{token}` (unauthenticated, gated by `ENABLE_PUBLIC_SHARE`), `/api/ingestion/*`.
-- **Other**: `GET /.well-known/jwks.json` (RFC 7517, unauthenticated, `max-age=3600`), `GET /health`, `GET /docs` + `/openapi.json` (only when `ENABLE_API_DOCS=true`), SPA catch-all (with path-traversal guard).
+- **Other**: `GET /.well-known/jwks.json` (RFC 7517, unauthenticated, `max-age=3600`), `GET /health`, `GET /docs` + `/openapi.json` (admin tier only), SPA catch-all (with path-traversal guard).
 
 Proxy example:
 
@@ -187,7 +187,7 @@ docker compose up -d csp                                 # prod (platform.yml)
 
 CSP joins two networks: `default` (in-stack) and `anila-models-net` (external, reaching `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`). On first boot if it doesn't exist: `docker network create anila-models-net`.
 
-Local backend (no container, bring your own PostgreSQL): `cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`. Key env vars (`app/config.py` / compose): `DATABASE_URL` (runtime `csp_app`), `MIGRATION_DATABASE_URL` (escalated), `SECRET_KEY`, `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID`, `ADMIN_USERNAME` / `ADMIN_PASSWORD`, `CSP_SERVICE_TOKEN`, `MODEL_GATEWAY_API_KEY`, `ANILA_ENV` (deployment posture; since PLAN.md P0.2 it no longer affects the model-http gate), `ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`, `ANILA_TRUSTED_HOSTS`, `REDIS_URL`, `ENABLE_API_DOCS` / `ENABLE_PUBLIC_SHARE`. See [`.env.example`](./.env.example).
+Local backend (no container, bring your own PostgreSQL): `cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`. Key env vars (`app/config.py` / compose): `DATABASE_URL` (runtime `csp_app`), `MIGRATION_DATABASE_URL` (escalated), `SECRET_KEY`, `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID`, `ADMIN_USERNAME` / `ADMIN_PASSWORD`, `CSP_SERVICE_TOKEN`, `MODEL_GATEWAY_API_KEY`, `ANILA_ENV` (deployment posture; since PLAN.md P0.2 it no longer affects the model-http gate), `ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`, `ANILA_TRUSTED_HOSTS`, `REDIS_URL`, `ENABLE_PUBLIC_SHARE`. See [`.env.example`](./.env.example).
 
 ---
 

@@ -7,10 +7,9 @@ class Settings(BaseSettings):
     APP_NAME: str = "CSP Platform"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
-    # Swagger UI (/docs) + OpenAPI schema (/openapi.json) exposure. These have
-    # no auth and leak the full API surface, so they are OFF by default
-    # (secure-by-default); dev environments opt in via ENABLE_API_DOCS=true.
-    ENABLE_API_DOCS: bool = False
+    # /docs + /openapi.json are always registered and admin-gated in
+    # app.main (require_admin). A former ENABLE_API_DOCS flag was never
+    # read — removed so operators cannot believe they toggled docs off.
 
     # Database
     DATABASE_URL: str = "postgresql://csp:csp_password@localhost:5432/csp"

@@ -108,7 +108,7 @@ Full Trace ingest（`app/api/traces.py`，同樣走完整路徑）：
 
 - **redesign 新增**：`/api/tasks`（`tasks` module：建立 / 列出 / 取單 / `/{id}/runs`）、`/api/policy-decisions`、`/api/classification/inventory`（機敏盤點）、`/api/classification/declassification-requests`（解密申請 + 主管核准）、`/api/classification-authorities`（機密審批權責）、`/api/services`（Service Registry：CRUD + `/{id}/launch` + `/{id}/audit-callbacks` + `/{id}/manifest` + `/{id}/project-bindings`）、`/api/artifacts`（+ data-plane `POST /v1/artifact-jobs` 等 Studio 回報面）。
 - **既有治理面**：`/api/auth`、`/api/auth-providers`、`/api/keys`、`/api/models`（含 `set-router-primary` / `activate` / `purge`）、`/api/agents`（register / approve / reject / health-check / credentials / template）、`/api/users`、`/api/departments`、`/api/usage`、`/api/alerts`、`/api/audit-logs`、`/api/banners`、`/api/memory`、`/api/platform-links`、`/api/service-clients`、`/api/service-access-grants`、`/api/trusted-hosts`、`/api/conversations`（含 `/search`、shares、ratings）、`/api/attachments`、`/api/handoffs` + `/api/notifications`、`/api/public/share/{token}`（未認證，受 `ENABLE_PUBLIC_SHARE` 控）、`/api/ingestion/*`。
-- **其他**：`GET /.well-known/jwks.json`（RFC 7517，未認證，`max-age=3600`）、`GET /health`、`GET /docs` + `/openapi.json`（僅 `ENABLE_API_DOCS=true`）、SPA catch-all（含路徑遍歷防護）。
+- **其他**：`GET /.well-known/jwks.json`（RFC 7517，未認證，`max-age=3600`）、`GET /health`、`GET /docs` + `/openapi.json`（admin tier 才可）、SPA catch-all（含路徑遍歷防護）。
 
 代理使用範例：
 
@@ -187,7 +187,7 @@ docker compose up -d csp                                 # prod（platform.yml�
 
 CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`）。第一次啟動若不存在：`docker network create anila-models-net`。
 
-後端本地（不經容器、需自備 PostgreSQL）：`cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`。關鍵環境變數（`app/config.py` / compose）：`DATABASE_URL`（runtime `csp_app`）、`MIGRATION_DATABASE_URL`（升權）、`SECRET_KEY`、`JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID`、`ADMIN_USERNAME` / `ADMIN_PASSWORD`、`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`、`ANILA_ENV`（部署姿態；自 PLAN.md P0.2 起不再影響 model http 判定）、`ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`、`ENABLE_API_DOCS` / `ENABLE_PUBLIC_SHARE`。詳見 [`.env.example`](./.env.example)。
+後端本地（不經容器、需自備 PostgreSQL）：`cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`。關鍵環境變數（`app/config.py` / compose）：`DATABASE_URL`（runtime `csp_app`）、`MIGRATION_DATABASE_URL`（升權）、`SECRET_KEY`、`JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID`、`ADMIN_USERNAME` / `ADMIN_PASSWORD`、`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`、`ANILA_ENV`（部署姿態；自 PLAN.md P0.2 起不再影響 model http 判定）、`ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`、`ENABLE_PUBLIC_SHARE`。詳見 [`.env.example`](./.env.example)。
 
 ---
 

@@ -100,9 +100,6 @@
             </select>
           </TermField>
         </div>
-        <TermField v-if="registryMode" label="健康檢查 url" hint="用於探測服務可用性" optional>
-          <input v-model="form.healthcheck_url" class="term-input" placeholder="https://…/healthz" :disabled="locked('healthcheck_url')" />
-        </TermField>
 
         <TermSection title="存取控制" />
 
@@ -235,7 +232,7 @@ function emptyForm() {
   return {
     name: '', url: '', icon: '', description: '', sort_order: 0,
     is_public: false, required_roles: [],
-    launch_mode: 'new_tab', classification_ceiling: '', healthcheck_url: '',
+    launch_mode: 'new_tab', classification_ceiling: '',
     service_admin_user_ids: [],
   }
 }
@@ -357,7 +354,6 @@ function openEditModal(link) {
     required_roles: Array.isArray(link.required_roles) ? [...link.required_roles] : [],
     launch_mode: link.launch_mode === 'iframe' ? 'iframe' : 'new_tab',
     classification_ceiling: link.classification_ceiling || '',
-    healthcheck_url: link.healthcheck_url || '',
     service_admin_user_ids: Array.isArray(link.service_admin_user_ids) ? [...link.service_admin_user_ids] : [],
   }
   showModal.value = true
@@ -395,7 +391,6 @@ function buildPayload() {
     entry_url: address,
     launch_mode: form.value.launch_mode,
     classification_ceiling: form.value.classification_ceiling || null,
-    healthcheck_url: form.value.healthcheck_url.trim() || null,
     service_admin_user_ids: form.value.service_admin_user_ids,
   }
 }
