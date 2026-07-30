@@ -823,7 +823,7 @@
           "Studio / Mindmaps"
         ],
         "summary": "Download Mindmap",
-        "description": "Stream the rendered SVG or DOT source for a completed job.\n\nReturns 404 for unknown/cross-user jobs, 409 if still running, and\n410 if the job is failed/cancelled.",
+        "description": "Stream the SVG, DOT source, or spec JSON for a completed job.\n\n``json`` is the validated MindmapSpec — the SPA's interactive tree\nview (expand/collapse + click-to-ask) consumes it instead of the\nrendered SVG. Returns 404 for unknown/cross-user jobs, 409 if still\nrunning, and 410 if the job is failed/cancelled.",
         "operationId": "download_mindmap_api_mindmaps_jobs__job_id__download__fmt__get",
         "parameters": [
           {
@@ -842,7 +842,8 @@
             "schema": {
               "enum": [
                 "svg",
-                "dot"
+                "dot",
+                "json"
               ],
               "type": "string",
               "title": "Fmt"
@@ -883,7 +884,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Generated mindmap (SVG primary, DOT for debug)",
+            "description": "Generated mindmap (SVG primary, DOT for debug, JSON spec for the interactive tree view)",
             "content": {
               "application/json": {
                 "schema": {}

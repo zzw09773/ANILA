@@ -529,17 +529,23 @@ async def _run_pipeline(
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     svg_path = artifacts_dir / f"{updater.job_id}.svg"
     dot_path = artifacts_dir / f"{updater.job_id}.dot"
+    json_path = artifacts_dir / f"{updater.job_id}.json"
+    # spec JSON 是前端互動式樹狀檢視(展開/收合/點節點提問)的資料來源;
+    # SVG/DOT 保留作下載與除錯用途。
+    spec_json = spec.model_dump_json()
     # Write off-loop so we don't block the asyncio scheduler on disk I/O.
     # Tiny files (<100 KB typically) so a sync write inside to_thread is
     # fine and simpler than aiofiles.
     await asyncio.to_thread(svg_path.write_bytes, svg_bytes)
     await asyncio.to_thread(dot_path.write_text, dot_source, encoding="utf-8")
+    await asyncio.to_thread(json_path.write_text, spec_json, encoding="utf-8")
 
     await updater.mark_done(
         title=spec.title,
         node_count=count_nodes(spec),
         svg_bytes=svg_bytes,
         dot_source=dot_source,
+        spec_json=spec_json,
     )
 
 
@@ -634,20 +640,26 @@ async def get_mindmap_job(
             "content": {
                 "image/svg+xml": {},
                 "text/vnd.graphviz": {},
+                "application/json": {},
             },
-            "description": "Generated mindmap (SVG primary, DOT for debug)",
+            "description": (
+                "Generated mindmap (SVG primary, DOT for debug, "
+                "JSON spec for the interactive tree view)"
+            ),
         }
     },
 )
 async def download_mindmap(
     job_id: str,
-    fmt: Literal["svg", "dot"],
+    fmt: Literal["svg", "dot", "json"],
     identity: CurrentUserIdentity = Depends(get_current_user_identity),
 ) -> StreamingResponse:
-    """Stream the rendered SVG or DOT source for a completed job.
+    """Stream the SVG, DOT source, or spec JSON for a completed job.
 
-    Returns 404 for unknown/cross-user jobs, 409 if still running, and
-    410 if the job is failed/cancelled.
+    ``json`` is the validated MindmapSpec — the SPA's interactive tree
+    view (expand/collapse + click-to-ask) consumes it instead of the
+    rendered SVG. Returns 404 for unknown/cross-user jobs, 409 if still
+    running, and 410 if the job is failed/cancelled.
     """
     rec = jobs.get_user_job(job_id, identity.id)
     if rec is None:
@@ -674,6 +686,17 @@ async def download_mindmap(
         body = rec.svg_bytes
         media_type = "image/svg+xml"
         filename = "mindmap.svg"
+    elif fmt == "json":
+        if rec.spec_json is None:
+            # 升級前完成的舊 job 沒有 spec_json — 前端據此 fallback 到
+            # 「僅提供下載」的舊檢視,不視為伺服器錯誤。
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="This job predates the JSON spec format.",
+            )
+        body = rec.spec_json.encode("utf-8")
+        media_type = "application/json"
+        filename = "mindmap.json"
     else:
         if rec.dot_source is None:
             raise HTTPException(
