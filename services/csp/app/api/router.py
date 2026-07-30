@@ -10,6 +10,7 @@ from app.api.models import router as models_router
 from app.api.usage import router as usage_router
 from app.api.users import router as users_router
 from app.api.unit_admins import router as unit_admins_router
+from app.api.endpoint_authors import router as endpoint_authors_router
 from app.api.message_actions import router as message_actions_router
 from app.api.departments import router as departments_router
 from app.api.memory import router as memory_router
@@ -48,6 +49,7 @@ api_router.include_router(models_router)
 api_router.include_router(usage_router)
 api_router.include_router(users_router)
 api_router.include_router(unit_admins_router)
+api_router.include_router(endpoint_authors_router)
 api_router.include_router(message_actions_router)
 api_router.include_router(departments_router)
 api_router.include_router(memory_router)
