@@ -289,6 +289,8 @@ export function stepLabel(step: string | null): string {
       return '視覺檢查'
     case 'fixing':
       return '修正瑕疵'
+    case 'rebalancing':
+      return '調整版型'
     case 'done':
       return '完成'
     // ── 4 種新 artifact 的 step ──

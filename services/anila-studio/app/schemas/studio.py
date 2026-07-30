@@ -562,6 +562,11 @@ class JobStatus(BaseModel):
     # Failure mode — only populated on state="failed". Plain string,
     # already user-safe (no traceback bytes).
     error: str | None = None
+    # Soft warning that coexists with state="done". Used when the
+    # pipeline had to ship a degraded / fallback deck (LLM schema
+    # exhaustion) so the SPA can tell the user "this succeeded, but
+    # it is not the real deck" instead of looking like a clean win.
+    warning: str | None = None
     # Slice 8b: control-plane passthrough — populated once the produced
     # artifact is registered on CSP (POST /v1/artifacts). Absent until then.
     artifact_id: str | None = None

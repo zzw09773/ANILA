@@ -198,7 +198,17 @@ export function WorkspacePage() {
     >
       <WSSidebar />
       <WSChat flex={studioOpen ? 1.4 : 1} />
-      {studioOpen && <WSStudio />}
+      {/* Keep WSStudio mounted while closed so in-flight job pollers
+          keep running. Unmounting used to freeze pending artifacts at
+          "鑄造中" until the user reopened the panel. */}
+      <div
+        style={{
+          display: studioOpen ? 'contents' : 'none',
+        }}
+        aria-hidden={!studioOpen}
+      >
+        <WSStudio />
+      </div>
     </div>
   )
 }

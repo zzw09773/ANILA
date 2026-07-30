@@ -86,6 +86,8 @@ class JobRecord:
     pptx_bytes: bytes | None
     created_at: datetime
     updated_at: datetime
+    # Soft warning that coexists with done (e.g. LLM fallback deck).
+    warning: str | None = None
     # Slice 8b: control-plane passthrough, back-filled after the produced
     # artifact is registered on CSP. None until then.
     artifact_id: str | None = None
@@ -106,6 +108,7 @@ class JobRecord:
             defects=list(self.defects),
             qa_passes=self.qa_passes,
             error=self.error,
+            warning=self.warning,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
             created_at=self.created_at.isoformat(),
@@ -188,6 +191,7 @@ async def create_job(
             qa_passes=0,
             error=None,
             pptx_bytes=None,
+            warning=None,
             created_at=now,
             updated_at=now,
         )
@@ -300,6 +304,7 @@ class JobUpdater:
         qa_passes: int | None = None,
         error: str | None = None,
         pptx_bytes: bytes | None = None,
+        warning: str | None = None,
         artifact_id: str | None = None,
         classification_level: str | None = None,
     ) -> None:
@@ -335,6 +340,8 @@ class JobUpdater:
                 patch["error"] = error
             if pptx_bytes is not None:
                 patch["pptx_bytes"] = pptx_bytes
+            if warning is not None:
+                patch["warning"] = warning
             if artifact_id is not None:
                 patch["artifact_id"] = artifact_id
             if classification_level is not None:
@@ -352,6 +359,7 @@ class JobUpdater:
         pptx_bytes: bytes,
         defects: list[VisualDefect],
         qa_passes: int,
+        warning: str | None = None,
     ) -> None:
         """Convenience: write the terminal "done" state in one call."""
         await self.set(
@@ -362,4 +370,10 @@ class JobUpdater:
             defects=defects,
             qa_passes=qa_passes,
             pptx_bytes=pptx_bytes,
+            warning=warning,
         )
+
+
+def _reset_for_tests() -> None:
+    """Clear the job registry. INTENDED FOR TEST FIXTURES ONLY."""
+    _jobs.clear()
