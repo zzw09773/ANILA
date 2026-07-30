@@ -34,3 +34,14 @@ export const setRouterPrimary = (id) =>
 
 export const unsetRouterPrimary = (id) =>
   client.post(`/api/models/${id}/unset-router-primary`)
+
+// P4.6 — 整批帶入上游 /v1/models listing（選已註冊端點的代表列）。
+export const importModelsFromEndpoint = (sourceModelId) =>
+  client.post('/api/models/import', { source_model_id: sourceModelId })
+
+// P4.6 — 一次啟用「本次帶入」產生的停用列（仍維持預設停用柵欄）。
+export const activateCreatedFromImport = (sourceModelId, names) =>
+  client.post('/api/models/import/activate-created', {
+    source_model_id: sourceModelId,
+    names,
+  })

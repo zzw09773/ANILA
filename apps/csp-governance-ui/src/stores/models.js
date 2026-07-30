@@ -2,7 +2,8 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
   listModels, createModel, updateModel, deleteModel, activateModel, purgeModel, triggerHealthCheck,
-  setRouterPrimary, unsetRouterPrimary, testModelConnection,
+  setRouterPrimary, unsetRouterPrimary, testModelConnection, importModelsFromEndpoint,
+  activateCreatedFromImport,
 } from '../api/models'
 
 export const useModelsStore = defineStore('models', () => {
@@ -68,8 +69,22 @@ export const useModelsStore = defineStore('models', () => {
     await fetchModels()
   }
 
+  // P4.6 — 自已註冊端點整批帶入。回傳後端計數結果並刷新列表。
+  async function importFromEndpoint(sourceModelId) {
+    const { data } = await importModelsFromEndpoint(sourceModelId)
+    await fetchModels()
+    return data
+  }
+
+  // P4.6 — 一次啟用本次帶入新增的停用列。
+  async function activateCreated(sourceModelId, names) {
+    const { data } = await activateCreatedFromImport(sourceModelId, names)
+    await fetchModels()
+    return data
+  }
+
   return {
     models, loading, fetchModels, create, update, remove, activate, purge, checkHealth, test,
-    setPrimary, unsetPrimary,
+    setPrimary, unsetPrimary, importFromEndpoint, activateCreated,
   }
 })

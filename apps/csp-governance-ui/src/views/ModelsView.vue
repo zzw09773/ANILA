@@ -7,7 +7,10 @@
           llm · vlm · embedding · agent — 經 /v1/* 代理的已註冊端點
         </p>
       </div>
-      <TermButton v-if="authStore.isAdmin" variant="primary" @click="openCreateModal" label="註冊模型" />
+      <div class="page-head__actions" v-if="authStore.isAdmin">
+        <TermButton variant="ghost" @click="openImportModal" label="整批帶入" />
+        <TermButton variant="primary" @click="openCreateModal" label="註冊模型" />
+      </div>
     </header>
 
     <div class="kpi-row">
@@ -241,6 +244,98 @@
       </template>
     </TermModal>
 
+    <!-- P4.6 — 整批帶入：選已註冊端點 → 拉上游 /v1/models → 回報計數 -->
+    <TermModal
+      :visible="showImportModal"
+      title="整批帶入 · 模型"
+      width="560px"
+      @close="closeImportModal"
+    >
+      <div class="form-grid">
+        <p class="import-hint">
+          從已註冊端點拉取上游 <code>/models</code> 清單並寫入登錄表。
+          已存在的名稱不會覆寫管理員設定；格式錯誤的項目會略過並附原因。
+          新帶入列只繼承端點層級欄位（含分類上限），context window 與能力旗標維持保守預設，並維持停用待檢視後啟用。
+          <template v-if="!authStore.isOwner">
+            非擁有者看不到端點位址，清單會依每一筆已註冊模型列出（同一閘道可能出現多次），屬正常現象，請選代表列即可。
+          </template>
+        </p>
+        <TermField
+          label="來源端點"
+          :hint="authStore.isOwner
+            ? '相同端點位址會合併為一個選項'
+            : '每位註冊模型各一筆選項；同一閘道可能重複出現，請選任一代表列'"
+        >
+          <select v-model="importSourceId" class="term-select">
+            <option :value="null">— 請選擇 —</option>
+            <option
+              v-for="opt in importEndpointOptions"
+              :key="opt.sourceModelId"
+              :value="opt.sourceModelId"
+            >
+              {{ opt.label }}
+            </option>
+          </select>
+        </TermField>
+        <div v-if="importResult" class="import-result">
+          <p class="import-result__summary">
+            新增 {{ importResult.created }} ·
+            已存在 {{ importResult.already_existed }} ·
+            略過 {{ importResult.skipped }}
+            <template v-if="importResult.truncated"> · 尚有 {{ importResult.truncated }} 筆未帶入（可再次執行以繼續）</template>
+            <template v-if="importResult.missing_from_listing?.length">
+              · 上游未列出 {{ importResult.missing_from_listing.length }}
+            </template>
+          </p>
+          <ul v-if="importResult.created_entries?.length" class="import-result__list">
+            <li v-for="e in importResult.created_entries" :key="'c-' + e.name">
+              新增 · {{ e.name }}
+              <span v-if="e.guessed_fields?.length" class="cell-meta">
+                — 待確認: {{ e.guessed_fields.join(', ') }}
+              </span>
+            </li>
+          </ul>
+          <ul v-else-if="importResult.created_names?.length" class="import-result__list">
+            <li v-for="n in importResult.created_names" :key="'c-' + n">新增 · {{ n }}</li>
+          </ul>
+          <ul v-if="importResult.unchanged?.length" class="import-result__list">
+            <li v-for="u in importResult.unchanged" :key="'u-' + u.name">
+              未變更 · {{ u.name }}
+              <span class="cell-meta"> — {{ u.reason }}</span>
+            </li>
+          </ul>
+          <ul v-if="importResult.skipped_entries?.length" class="import-result__list import-result__list--skip">
+            <li v-for="(s, i) in importResult.skipped_entries" :key="'s-' + i">
+              略過 · {{ s.name || '（無名稱）' }}
+              <span class="cell-meta"> — {{ s.reason }}</span>
+            </li>
+          </ul>
+          <ul v-if="importResult.missing_from_listing?.length" class="import-result__list import-result__list--skip">
+            <li v-for="m in importResult.missing_from_listing" :key="'m-' + m.name">
+              上游未列出 · {{ m.name }}
+              <span class="cell-meta"> — {{ m.reason }}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+      <template #footer>
+        <TermButton variant="ghost" @click="closeImportModal" label="關閉" />
+        <TermButton
+          v-if="importResult?.created_names?.length"
+          variant="ghost"
+          :disabled="activatingCreated"
+          :label="activatingCreated ? '啟用中…' : `啟用本次新增（${importResult.created_names.length}）`"
+          @click="handleActivateCreated"
+        />
+        <TermButton
+          variant="primary"
+          :disabled="!importSourceId || importing"
+          :label="importing ? '帶入中…' : '開始帶入'"
+          @click="handleImport"
+        />
+      </template>
+    </TermModal>
+
     <!-- Phase 2 — typed 400 confirm modal. Shows when backend rejects a
          register/update because the hostname isn't in trusted_hosts AND
          the failure is fixable (single-label / internal-zone, NOT
@@ -286,6 +381,12 @@ const showModal = ref(false)
 const editingId = ref(null)
 const purgingId = ref(null)
 const settingPrimaryId = ref(null)
+// P4.6 — 整批帶入 modal 狀態
+const showImportModal = ref(false)
+const importSourceId = ref(null)
+const importing = ref(false)
+const importResult = ref(null)
+const activatingCreated = ref(false)
 // Slice 6b — 每列一個「測試連線」狀態：testingId 顯示 spinner；
 // testResults[id] 快取最近一次探測的延遲標籤（五態 badge 由 refetch 後的
 // health_status 反映）。
@@ -341,13 +442,6 @@ const baseModelOptions = computed(() =>
   )
 )
 
-// KPI 以正規化五態計數，兼容舊值（online/connecting/offline）與新值。
-const healthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'healthy').length)
-const degradedCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'degraded').length)
-const unhealthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'unhealthy').length)
-
-onMounted(() => modelsStore.fetchModels())
-
 // Sentinels returned by backend when endpoint_url is redacted from non-owner
 // viewers. Keep in sync with services/csp/app/api/models.py.
 //   <owner-only>  — generic redaction (external endpoint, owner-only)
@@ -356,7 +450,114 @@ onMounted(() => modelsStore.fetchModels())
 const ENDPOINT_REDACTED = '<owner-only>'
 const ENDPOINT_INTERNAL = '<internal>'
 
+// P4.6 — owner 才有 endpoint_group_key（與位址同閘）；非擁有者 key 為空，
+// 退回 id: 分組 → 每列一個選項（刻意：避免分組鍵成為位址確認神諭）。
+// 後端一律用 source_model_id 查真 URL；位址本身維持 owner-only。
+const importEndpointOptions = computed(() => {
+  const seen = new Set()
+  const opts = []
+  for (const m of modelsStore.models) {
+    const isRedacted =
+      m.endpoint_url === ENDPOINT_REDACTED || m.endpoint_url === ENDPOINT_INTERNAL
+    const key = m.endpoint_group_key || (isRedacted ? `id:${m.id}` : (m.endpoint_url || `id:${m.id}`))
+    if (seen.has(key)) continue
+    seen.add(key)
+    const urlLabel = isRedacted
+      ? `${m.display_name}（${m.endpoint_url}）`
+      : m.endpoint_url
+    opts.push({
+      sourceModelId: m.id,
+      label: isRedacted
+        ? `${urlLabel} · 代表列 ${m.name}`
+        : `${urlLabel} · 代表列 ${m.name}`,
+    })
+  }
+  return opts
+})
+
+// KPI 以正規化五態計數，兼容舊值（online/connecting/offline）與新值。
+const healthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'healthy').length)
+const degradedCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'degraded').length)
+const unhealthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'unhealthy').length)
+
+onMounted(() => modelsStore.fetchModels())
+
 function openCreateModal() { editingId.value = null; form.value = defaultForm(); showModal.value = true }
+function openImportModal() {
+  importSourceId.value = null
+  importResult.value = null
+  showImportModal.value = true
+}
+function closeImportModal() {
+  showImportModal.value = false
+  importing.value = false
+}
+async function handleImport() {
+  if (!importSourceId.value || importing.value) return
+  const source = modelsStore.models.find(m => m.id === importSourceId.value)
+  const label = source
+    ? (source.endpoint_url === ENDPOINT_REDACTED || source.endpoint_url === ENDPOINT_INTERNAL
+      ? source.display_name
+      : source.endpoint_url)
+    : String(importSourceId.value)
+  if (!(await confirm({
+    message: `自「${label}」整批帶入上游模型清單？已存在的名稱會保留本機設定，不會覆寫。`,
+    confirmText: '開始帶入',
+  }))) return
+  importing.value = true
+  importResult.value = null
+  try {
+    const data = await modelsStore.importFromEndpoint(importSourceId.value)
+    importResult.value = data
+    const trunc = data.truncated
+      ? ` · 尚有 ${data.truncated} 筆未帶入，可再次執行以繼續`
+      : ''
+    toast(
+      `整批帶入完成 · 新增 ${data.created} · 已存在 ${data.already_existed} · 略過 ${data.skipped}${trunc}`,
+      { tone: (data.skipped || data.truncated) ? 'warn' : 'success' },
+    )
+  } catch (e) {
+    const detail = e.response?.data?.detail
+    const msg = typeof detail === 'string'
+      ? detail
+      : (detail?.message || '整批帶入失敗')
+    toast(msg, { tone: 'error' })
+  } finally {
+    importing.value = false
+  }
+}
+
+async function handleActivateCreated() {
+  if (!importSourceId.value || !importResult.value?.created_names?.length || activatingCreated.value) return
+  const n = importResult.value.created_names.length
+  if (!(await confirm({
+    message: `啟用本次新增的 ${n} 個模型？啟用後即可被路由選用；請確認分類上限與能力欄位。`,
+    confirmText: '啟用',
+  }))) return
+  activatingCreated.value = true
+  try {
+    const data = await modelsStore.activateCreated(
+      importSourceId.value,
+      importResult.value.created_names,
+    )
+    toast(
+      `已啟用 ${data.activated} 個模型` +
+        (data.already_active ? ` · 原本已啟用 ${data.already_active}` : '') +
+        (data.wrong_endpoint || data.not_found
+          ? ` · 未處理 ${(data.wrong_endpoint || 0) + (data.not_found || 0)}`
+          : ''),
+      { tone: 'success' },
+    )
+  } catch (e) {
+    const detail = e.response?.data?.detail
+    const msg = typeof detail === 'string'
+      ? detail
+      : (detail?.message || '整批啟用失敗')
+    toast(msg, { tone: 'error' })
+  } finally {
+    activatingCreated.value = false
+  }
+}
 function openEditModal(model) {
   editingId.value = model.id
   // Drop the sentinel before populating the form — otherwise saving
@@ -556,9 +757,23 @@ async function handlePurge(model) {
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
+.page-head__actions { display: inline-flex; align-items: center; gap: var(--gap-2); flex-wrap: wrap; }
 
 .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap-3); }
 @media (max-width: 800px) { .kpi-row { grid-template-columns: repeat(2, 1fr); } }
+
+.import-hint { margin: 0; font-size: var(--t-sm); color: var(--c-fg-2); line-height: 1.5; }
+.import-hint code {
+  font-family: var(--font-mono); font-size: var(--t-2xs);
+  background: var(--c-bg); border: var(--border-w) solid var(--c-border); padding: 1px 6px;
+}
+.import-result { display: flex; flex-direction: column; gap: var(--gap-2); }
+.import-result__summary { margin: 0; font-size: var(--t-sm); color: var(--c-fg-1); font-weight: 500; }
+.import-result__list {
+  margin: 0; padding-left: 1.2em; font-size: var(--t-xs); color: var(--c-fg-2);
+  max-height: 180px; overflow: auto;
+}
+.import-result__list--skip { color: var(--c-warn, #9a6700); }
 
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
