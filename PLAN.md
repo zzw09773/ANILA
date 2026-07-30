@@ -180,6 +180,27 @@ P4.7 雙票審查查出:**綁定知識庫時完全不比對分類等級**——�
 | X.3 | **時區**:158 個 datetime 欄位只有 7 個帶時區,回應零個 `field_serializer` → 瀏覽器當本地時間解,**每個時間戳差 8 小時**(含稽核帳) | 待做 |
 | X.4 | **API key 到期比對 naive vs aware** → 任何設了到期日的 key **第一次請求就 500**(不是 401) | 待做,一行 |
 | X.5 | **D1 span/trace 後端退場**:畫面已於 2026-07-30 移除;後端每則訊息 2 列 span＋2 commit 仍在熱路徑 | 待做 |
+| X.6 | ⚠ **非 admin 可以把 agent 的密等降低**(紅線) | 待做 |
+
+### X.6 agent 密等可被降級(2026-07-30 對抗式驗收查出,實測)
+
+`api/agents/registration.py:449` 用不上鎖的 SELECT 讀出 agent,`:505` 拿**那個可能已過期的物件**去問
+`refuse_classification_downgrade`,`_common.py:166` 寫回。兩個並行請求交錯時,舊值算出來的結果會蓋掉新值。
+
+**實測**(真 PostgreSQL、兩個作業系統執行緒、強制在 SELECT 與 UPDATE 之間卡住):
+**10 次有 4 次**非 admin 成功把「機密」寫成「密」。對照組(舊的 `expire_on_commit=True`)是 5/10
+→ **既有缺陷,不是連線池那包造成的**。`credentials.py:71` 同形狀。
+
+這違反 G9 的鐵則:「**任何寫入不得降低 agent 的有效等級,除非 admin**」。
+而 agent 的等級決定了它應答的對話會被 latch 到哪一級——降級成功等於後續對話全部被標低。
+
+⚠ **修法不要只加鎖就算了**:`apply_classification` 剛示範過「加了 `FOR UPDATE` 卻忘了在
+no-op 分支釋放交易」會把鎖握到請求結束。要嘛用只能往上升的條件式 UPDATE(`WHERE level < :new`,
+不需要鎖),要嘛鎖了就確保每條分支都釋放。
+
+⚠ **測試要在 PostgreSQL 上跑並強制交錯**:`with_for_update()` 在 SQLite 上是**靜默無效**的,
+而 conftest 用的正是 SQLite 且所有 session 共用一條連線。驗收實測發現,不強制卡住交錯點的話,
+**壞掉的程式碼也會回報 0 次失敗**。
 
 ⚠ X.1～X.4 都是實地查證的(有 file:line),不是推測。X.2 與 X.4 各自都會讓使用者看到
 「系統壞了但不知道為什麼」,在三千人上線時是客服災難。
