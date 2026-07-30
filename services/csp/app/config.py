@@ -61,6 +61,23 @@ class Settings(BaseSettings):
     # Health Check
     HEALTH_CHECK_INTERVAL: int = 60
 
+    # P3.2 — alert detectors (platform ingress / DB / disk). Gateway + agent
+    # streaks are event-driven from the proxy path, not this interval.
+    ALERT_CHECK_INTERVAL: int = 60
+
+    # P3.2 — SMTP delivery (OWNER Q3: relay not available yet).
+    # Leave ENABLED=false until IT provides the Outlook/relay details.
+    # ANILA_ALERT_SMTP_TO should be a **group mailbox**, not a personal one
+    # (same reason as PLAN 5.4 support address).
+    ANILA_ALERT_SMTP_ENABLED: bool = False
+    ANILA_ALERT_SMTP_HOST: str = ""
+    ANILA_ALERT_SMTP_PORT: int = 587
+    ANILA_ALERT_SMTP_USER: str = ""
+    ANILA_ALERT_SMTP_PASSWORD: str = ""
+    ANILA_ALERT_SMTP_FROM: str = ""
+    ANILA_ALERT_SMTP_TO: str = ""
+    ANILA_ALERT_SMTP_USE_TLS: bool = True
+
     # Usage Writer
     USAGE_BATCH_SIZE: int = 100
     USAGE_FLUSH_INTERVAL: int = 5

@@ -153,11 +153,13 @@ async def lifespan(app: FastAPI):
     trusted_host_service.register_with_url_guard()
 
     # Start background tasks
+    from app.services.alert_detectors import start_alert_detectors
     from app.services.health_checker import start_health_checker
     from app.services.usage_writer import start_usage_writer
 
     health_task = await start_health_checker()
     writer_task = await start_usage_writer()
+    alert_task = await start_alert_detectors()
 
     # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
     # used by the ingestion inspector endpoints (read-only chunk
@@ -181,6 +183,8 @@ async def lifespan(app: FastAPI):
         health_task.cancel()
     if writer_task:
         writer_task.cancel()
+    if alert_task:
+        alert_task.cancel()
     await close_pool()
 
 
