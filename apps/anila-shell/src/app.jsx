@@ -71,6 +71,10 @@ import {
   sanitizeRestoredMessages,
   switchBranch as switchBranchPath,
 } from "./runtime/messageTree.js";
+import {
+  listVisibleActions,
+  runActionInvokeFillback,
+} from "./runtime/messageActions.js";
 
 import {
   AgentSelector,
@@ -501,15 +505,27 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       .catch(() => { if (alive) setAgentFunctions([]); });
     return () => { alive = false; };
   }, [selectedAgentId, authRequest]);
-  // Renderer registry split:preset_prompt → composer picker、prompt_action → 訊息鈕。
+  // Renderer registry split:preset_prompt → composer picker.
+  // prompt_action agent functions remain server-side (convergence follow-up);
+  // message-row buttons are OW-3 governed actions from /api/message-actions/visible.
   const presetPrompts = useMemo(
     () => agentFunctions.filter((f) => f.kind === "preset_prompt"),
     [agentFunctions],
   );
-  const promptActionFns = useMemo(
-    () => agentFunctions.filter((f) => f.kind === "prompt_action"),
-    [agentFunctions],
-  );
+
+  // OW-3: fetch visible governed actions once per authenticated session.
+  const [customActions, setCustomActions] = useState([]);
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setCustomActions([]);
+      return;
+    }
+    let alive = true;
+    listVisibleActions(authRequest)
+      .then((rows) => { if (alive) setCustomActions(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setCustomActions([]); });
+    return () => { alive = false; };
+  }, [isAuthenticated, authRequest]);
   const activeEncryptionRequired = Boolean(activeAgent?.requiresEncryption);
   const directAgents = useMemo(
     () => agents.filter((a) => a.id !== ROUTER_AGENT.id),
@@ -673,6 +689,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       routedAgentId: meta.routed_agent_id || null,
       rating: msg.rating || null,
       reasoning: meta.reasoning || null,
+      // OW-3: action:NAME attribution (second channel alongside metadata.action).
+      agentName: msg.agent_name || null,
+      // OW-3 provenance (metadata.action) — drives 「自訂動作產出」 badge.
+      metadata: meta,
       streaming: false,
       attachments: (msg.attachments || []).map((a) => ({
         id: a.reference_id,
@@ -1462,23 +1482,163 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // and re-runs the chat call, replacing the assistant message's text /
   // trace in place. Caller API key permissions and routing target are
   // inherited from the original turn.
-  // Message Actions(回應動作鈕,kind='prompt_action'):正/倒讚旁的一鍵動作。
-  // 動作宣告式 {label, config.template},template 內 {content} 換成該則回覆
-  // 全文,組好後當新使用者訊息送出。**不執行任意腳本**(air-gap 軍方不開
-  // client eval)。來源優先序:該 agent 的 prompt_action functions(開發者在
-  // CSP 設計) > 沒設時用下方通用預設,所以一定有翻譯/摘要/公文可用。
-  const DEFAULT_MESSAGE_ACTIONS = [
-    { id: "translate-en", label: "翻譯成英文", config: { template: "請把以下內容翻譯成英文，只輸出譯文：\n\n{content}" } },
-    { id: "summarize", label: "摘要重點", config: { template: "請把以下內容摘要成條列重點：\n\n{content}" } },
-    { id: "official", label: "改寫成公文", config: { template: "請把以下內容改寫成正式公文格式：\n\n{content}" } },
-  ];
-  const messageActions = promptActionFns.length > 0 ? promptActionFns : DEFAULT_MESSAGE_ACTIONS;
+  // OW-3 governed message actions: server-rendered prompt (declarative) or
+  // exec direct text → assistant sibling via POST /branch (never in-place update).
+  // Orchestration lives in runtime/messageActions.js (runActionInvokeFillback).
+  async function runMessageAction(msg, action, choice = null) {
+    if (!isAuthenticated) {
+      setRuntimeError("尚未登入，請重新登入後再試。");
+      return;
+    }
+    if (typeof msg?.dbId !== "number") {
+      setRuntimeError("此訊息尚未儲存，無法執行自訂動作。");
+      return;
+    }
+    const convId = msg.conversationId;
+    if (typeof convId !== "number") return;
+    const msgs = messagesByConv[convId] || [];
+    if (msgs.some((m) => m.streaming)) {
+      setRuntimeError("回應產生中，請稍候再試。");
+      return;
+    }
+    const idx = msgs.findIndex((m) => m.id === msg.id);
+    if (idx < 0) return;
+    let userIdx = idx - 1;
+    while (userIdx >= 0 && msgs[userIdx].role !== "user") {
+      userIdx -= 1;
+    }
+    if (userIdx < 0) {
+      setRuntimeError("找不到對應的使用者訊息，無法執行自訂動作。");
+      return;
+    }
 
-  function runMessageAction(msg, action) {
-    const template = action?.config?.template || action?.template;
-    if (!template || !msg?.text) return;
-    const prompt = template.replace(/\{content\}/g, msg.text);
-    sendMessage(prompt, [], {});
+    // Branch-creating actions must stop any in-flight stream first (same as edit/regenerate).
+    stopStreaming(convId);
+
+    const preActionList = msgs;
+    const placeholderId = makeId("a");
+    const effectiveTarget = msg.routedAgentId || selectedAgentId;
+    const baseUrl =
+      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: [
+        ...(prev[convId] || []).slice(0, userIdx + 1),
+        {
+          id: placeholderId,
+          role: "assistant",
+          text: "",
+          trace: [],
+          citations: [],
+          followUps: [],
+          streaming: true,
+          rating: null,
+          reasoning: null,
+          routedAgentId: effectiveTarget,
+          conversationId: convId,
+          createdAt: nowIso(),
+          timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+        },
+      ],
+    }));
+
+    const restorePreAction = () => {
+      setMessagesByConv((prev) => ({
+        ...prev,
+        [convId]: sanitizeRestoredMessages(preActionList),
+      }));
+    };
+
+    await runActionInvokeFillback({
+      authRequest,
+      action,
+      choice,
+      conversationId: convId,
+      messageId: msg.dbId,
+      model: effectiveTarget,
+      branchMessage: apiBranchMessage,
+      refreshActivePath,
+      onRestore: restorePreAction,
+      onError: (message) => setRuntimeError(message),
+      onDirectText: (content, actionMeta) => {
+        updateMsg(convId, placeholderId, {
+          text: content,
+          streaming: false,
+          metadata: actionMeta,
+        });
+      },
+      runStream: async (payload) => {
+        let finalText = "";
+        let finalMeta = null;
+        const accumulatedTrace = [];
+        let accumulatedReasoning = "";
+        const streamPhase = await runRegenerateStreamPhase({
+          preList: preActionList,
+          stream: async () => {
+            await streamWithAbort(convId, {
+              url: `${baseUrl}/v1/chat/completions`,
+              payload,
+              conversationId: convId,
+              onText: (acc) => {
+                finalText = acc;
+                updateMsg(convId, placeholderId, { text: acc });
+              },
+              onTrace: (step) => {
+                accumulatedTrace.push(step);
+                setMessagesByConv((prev) => ({
+                  ...prev,
+                  [convId]: (prev[convId] || []).map((m) =>
+                    m.id === placeholderId
+                      ? {
+                          ...m,
+                          trace: [...(m.trace || []), step],
+                          stageLabel: step.label,
+                          stage: (m.trace?.length ?? 0),
+                        }
+                      : m,
+                  ),
+                }));
+              },
+              onMeta: (meta) => {
+                finalMeta = meta;
+                applyMeta(convId, placeholderId, effectiveTarget, meta);
+              },
+              onReasoning: (delta) => {
+                accumulatedReasoning += delta;
+                setMessagesByConv((prev) => ({
+                  ...prev,
+                  [convId]: (prev[convId] || []).map((m) =>
+                    m.id === placeholderId
+                      ? { ...m, reasoning: (m.reasoning || "") + delta }
+                      : m,
+                  ),
+                }));
+              },
+            });
+            updateMsg(convId, placeholderId, { streaming: false });
+          },
+        });
+        if (!streamPhase.ok) {
+          setMessagesByConv((prev) => ({
+            ...prev,
+            [convId]: sanitizeRestoredMessages(streamPhase.messages),
+          }));
+          return {
+            ok: false,
+            error: streamPhase.error,
+            content: "",
+          };
+        }
+        return {
+          ok: true,
+          content: finalText,
+          finalMeta,
+          accumulatedTrace,
+          accumulatedReasoning,
+        };
+      },
+    });
   }
 
   // Continue Response:回應被 max_tokens 截斷(finishReason==='length')時,
@@ -2307,7 +2467,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           onDeleteBranch={deleteBranch}
                           onOpenCitation={onOpenCitation}
                           onPickFollowUp={(q) => sendMessage(q, [], {})}
-                          messageActions={messageActions}
+                          messageActions={customActions}
                           onAction={runMessageAction}
                           onContinue={continueMessage}
                           conversationStreaming={currentMsgs.some((x) => x.streaming)}
