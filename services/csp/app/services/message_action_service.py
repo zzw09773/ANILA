@@ -3,7 +3,12 @@
 
 Authoring audit = fail-closed (commit=False + return-check → None ⇒ 500 +
 rollback, same transaction; P1.4 idiom). Invoke audit = write-ahead
-(committed BEFORE execution). exec_result = fail-soft after.
+(committed BEFORE execution). Per-user rate limit runs immediately after
+action resolution and before any refusal audit so throttle loops cannot
+flood ``message_action_invoke_refused`` (429 itself is unrecorded).
+Classification / access / not-branchable refusals write
+``message_action_invoke_refused`` (commit=True, fail-closed) before the
+gate HTTPException. exec_result = fail-soft after.
 """
 
 from __future__ import annotations
@@ -182,6 +187,60 @@ def _audit_fail_closed(
         metadata=metadata,
         ip_address=ip_address,
         commit=False,
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=500,
+            detail="稽核紀錄寫入失敗，動作未執行",
+        )
+
+
+def _conversation_level_value(conv: Conversation) -> str:
+    """Best-effort level string for refusal metadata.
+
+    Prefer the contract parse; fall back to raw storage so an access
+    refusal still records when the column is corrupt (classification
+    gate itself continues to fail-closed via from_storage).
+    """
+    try:
+        return ClassificationLevel.from_storage(conv.classification_level).value
+    except ValueError:
+        return conv.classification_level
+
+
+def _audit_invoke_refused(
+    db: Session,
+    *,
+    actor: User,
+    action: MessageAction,
+    conversation_id: int,
+    conversation_level: str,
+    reason: str,
+    ip_address: str | None,
+) -> None:
+    """Durable refusal row (commit=True) before raising the gate HTTPException.
+
+    Distinct action name from write-ahead ``message_action_invoke`` so
+    export can separate attempts from successes. Fail-closed: if the
+    row cannot be written, surface 500 rather than a silent refusal.
+    """
+    row = log_audit_event(
+        db,
+        actor=actor,
+        action="message_action_invoke_refused",
+        resource_type=RESOURCE_TYPE,
+        resource_id=action.id,
+        status="refused",
+        detail=f"拒絕呼叫訊息動作「{action.name}」",
+        metadata={
+            "version": action.version,
+            "conversation_id": conversation_id,
+            "conversation_level": conversation_level,
+            "outcome": "refused",
+            "reason": reason,
+        },
+        ip_address=ip_address,
+        commit=True,
     )
     if row is None:
         raise HTTPException(
@@ -665,11 +724,18 @@ async def invoke_action(
     actor: User,
     ip_address: str | None = None,
 ) -> dict:
-    """Gate order per blueprint §4 / NON-NEGOTIABLES."""
+    """Gate order per blueprint §4 / NON-NEGOTIABLES.
+
+    Rate limit sits immediately after action resolution so refusal-audit
+    paths cannot be flooded; 429 itself leaves no audit row.
+    """
     # 1. resolve action visibility
     action = resolve_for_invoke(db, action_id, actor)
 
-    # 2. conversation access
+    # 2. rate limit (before any refusal audit / substantive gate)
+    _check_rate_limit(actor.id)
+
+    # 3. conversation access
     conv = (
         db.query(Conversation)
         .filter(Conversation.id == conversation_id)
@@ -677,9 +743,23 @@ async def invoke_action(
     )
     if not conv:
         raise HTTPException(status_code=404, detail="找不到此對話")
-    _check_access(conv, actor)
+    try:
+        _check_access(conv, actor)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            # Real conversation the caller cannot access — insider signal.
+            _audit_invoke_refused(
+                db,
+                actor=actor,
+                action=action,
+                conversation_id=conversation_id,
+                conversation_level=_conversation_level_value(conv),
+                reason="access_denied",
+                ip_address=ip_address,
+            )
+        raise
 
-    # 3. message validation
+    # 4. message validation
     msg = (
         db.query(Message)
         .filter(Message.id == message_id)
@@ -694,10 +774,19 @@ async def invoke_action(
             status_code=400, detail="只能對助理訊息執行動作"
         )
 
-    # 4. classification gate — unknown storage values propagate (500),
+    # 5. classification gate — unknown storage values propagate (500),
     # matching ClassificationLevel.from_storage contract / sibling consumers.
     level = ClassificationLevel.from_storage(conv.classification_level)
     if not outbound_action_allowed(level):
+        _audit_invoke_refused(
+            db,
+            actor=actor,
+            action=action,
+            conversation_id=conversation_id,
+            conversation_level=level.value,
+            reason="classification",
+            ip_address=ip_address,
+        )
         raise HTTPException(
             status_code=403,
             detail=(
@@ -705,18 +794,29 @@ async def invoke_action(
             ),
         )
 
-    # 5. ANILALM branch exclusion (before any execution/render)
-    _require_branchable(conv)
+    # 6. ANILALM branch exclusion (before any execution/render)
+    try:
+        _require_branchable(conv)
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            # Accessible real conversation that cannot host a branch.
+            _audit_invoke_refused(
+                db,
+                actor=actor,
+                action=action,
+                conversation_id=conversation_id,
+                conversation_level=level.value,
+                reason="not_branchable",
+                ip_address=ip_address,
+            )
+        raise
 
-    # 6. choice validation (400s before input-length 413; blueprint §4 table)
+    # 7. choice validation (400s before input-length 413; blueprint §4 table)
     choice_prompt, resolved_choice_id, _choice = _resolve_choice(
         action, choice_id, user_input
     )
     if user_input is not None and len(user_input) > _MAX_INPUT_CHARS:
         raise HTTPException(status_code=413, detail="輸入內容過長")
-
-    # 7. rate limit
-    _check_rate_limit(actor.id)
 
     # 8. write-ahead audit (committed BEFORE execution)
     invocation_id = uuid.uuid4().hex
@@ -757,7 +857,7 @@ async def invoke_action(
             detail="稽核紀錄寫入失敗，動作未執行",
         )
 
-    # 9. execute / render
+    # 9. execute / render (after write-ahead)
     if action.kind == ActionKind.DECLARATIVE.value:
         return {
             "invocation_id": invocation_id,
@@ -976,6 +1076,7 @@ def export_audit(
         "message_action_delete",
         "message_action_bindings_replace",
         "message_action_invoke",
+        "message_action_invoke_refused",
         "message_action_exec_result",
         "message_action_audit_export",
     )

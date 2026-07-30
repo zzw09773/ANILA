@@ -611,6 +611,104 @@ def test_17_classification_gate(client: TestClient, db: Session):
     )
 
 
+def test_classification_refusal_writes_refused_audit(
+    client: TestClient, db: Session,
+):
+    """Controlled-conv refusal → exactly one refuse row, no success row."""
+    _, oh = _auth(client, db, "ma_ref_o", role="owner")
+    u, uh = _auth(client, db, "ma_ref_u", role="user")
+    created = _create(client, oh, _decl_body(name="refcls")).json()
+    aid = created["id"]
+    _bind(client, oh, aid, [{"scope_type": "user", "user_id": u.id}])
+    from app.models.conversation import Conversation
+
+    cid, mid = _conv_with_assistant(client, uh)
+    conv = db.query(Conversation).filter(Conversation.id == cid).first()
+    conv.classification_level = "密"
+    db.commit()
+
+    before_ok = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke")
+        .count()
+    )
+    before_ref = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .count()
+    )
+    r = client.post(
+        f"/api/message-actions/{aid}/invoke",
+        json={"conversation_id": cid, "message_id": mid},
+        headers=uh,
+    )
+    assert r.status_code == 403
+    assert (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke")
+        .count()
+        == before_ok
+    )
+    refused = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .order_by(AuditLog.id.asc())
+        .all()
+    )
+    assert len(refused) == before_ref + 1
+    row = refused[-1]
+    assert row.actor_user_id == u.id
+    assert row.resource_id == str(aid)
+    assert row.status == "refused"
+    meta = json.loads(row.metadata_json)
+    assert meta["version"] == created["version"]
+    assert meta["conversation_id"] == cid
+    assert meta["conversation_level"] == "密"
+    assert meta["outcome"] == "refused"
+    assert meta["reason"] == "classification"
+
+
+def test_successful_invoke_no_refusal_audit(
+    client: TestClient, db: Session,
+):
+    """Success path still writes exactly one invoke row and no refusal."""
+    _, oh = _auth(client, db, "ma_sok_o", role="owner")
+    u, uh = _auth(client, db, "ma_sok_u", role="user")
+    created = _create(client, oh, _decl_body(name="sokok")).json()
+    aid = created["id"]
+    _bind(client, oh, aid, [{"scope_type": "user", "user_id": u.id}])
+    cid, mid = _conv_with_assistant(client, uh)
+
+    before_ok = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke")
+        .count()
+    )
+    before_ref = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .count()
+    )
+    r = client.post(
+        f"/api/message-actions/{aid}/invoke",
+        json={"conversation_id": cid, "message_id": mid},
+        headers=uh,
+    )
+    assert r.status_code == 200, r.text
+    assert (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke")
+        .count()
+        == before_ok + 1
+    )
+    assert (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .count()
+        == before_ref
+    )
+
+
 # ── 18. user-role target → 400 ───────────────────────────────────────────────
 
 
@@ -816,3 +914,242 @@ def test_admin_body_redacted(client: TestClient, db: Session):
     rows_o = client.get("/api/message-actions", headers=oh).json()
     hit_o = next(r for r in rows_o if r["name"] == "redact")
     assert hit_o["body"] == secret
+
+
+def test_access_denied_refusal_writes_refused_audit(
+    client: TestClient, db: Session,
+):
+    """Foreign conversation → access_denied refuse row with expected shape."""
+    _, oh = _auth(client, db, "ma_ad_o", role="owner")
+    ua, uh = _auth(client, db, "ma_ad_a", role="user")
+    ub, bh = _auth(client, db, "ma_ad_b", role="user")
+    created = _create(client, oh, _decl_body(name="accden")).json()
+    aid = created["id"]
+    _bind(
+        client,
+        oh,
+        aid,
+        [
+            {"scope_type": "user", "user_id": ua.id},
+            {"scope_type": "user", "user_id": ub.id},
+        ],
+    )
+    _cid_a, _mid_a = _conv_with_assistant(client, uh)
+    cid_b, mid_b = _conv_with_assistant(client, bh)
+
+    before_ok = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke")
+        .count()
+    )
+    before_ref = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .count()
+    )
+    r = client.post(
+        f"/api/message-actions/{aid}/invoke",
+        json={"conversation_id": cid_b, "message_id": mid_b},
+        headers=uh,
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"] == "無權存取此對話"
+    assert (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke")
+        .count()
+        == before_ok
+    )
+    refused = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .order_by(AuditLog.id.asc())
+        .all()
+    )
+    assert len(refused) == before_ref + 1
+    row = refused[-1]
+    assert row.actor_user_id == ua.id
+    assert row.resource_id == str(aid)
+    assert row.status == "refused"
+    meta = json.loads(row.metadata_json)
+    assert meta["version"] == created["version"]
+    assert meta["conversation_id"] == cid_b
+    assert meta["outcome"] == "refused"
+    assert meta["reason"] == "access_denied"
+    assert "conversation_level" in meta
+
+
+def test_not_branchable_refusal_writes_refused_audit(
+    client: TestClient, db: Session,
+):
+    """Non-branchable conversation → not_branchable refuse row."""
+    _, oh = _auth(client, db, "ma_nb_o", role="owner")
+    u, uh = _auth(client, db, "ma_nb_u", role="user")
+    created = _create(client, oh, _decl_body(name="notbr")).json()
+    aid = created["id"]
+    _bind(client, oh, aid, [{"scope_type": "user", "user_id": u.id}])
+    from app.models.conversation import Conversation
+
+    cid, mid = _conv_with_assistant(client, uh)
+    conv = db.query(Conversation).filter(Conversation.id == cid).first()
+    conv.origin = "anilalm"
+    db.commit()
+
+    before_ok = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke")
+        .count()
+    )
+    before_ref = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .count()
+    )
+    r = client.post(
+        f"/api/message-actions/{aid}/invoke",
+        json={"conversation_id": cid, "message_id": mid},
+        headers=uh,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "ANILALM 對話不支援訊息分支"
+    assert (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke")
+        .count()
+        == before_ok
+    )
+    refused = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .order_by(AuditLog.id.asc())
+        .all()
+    )
+    assert len(refused) == before_ref + 1
+    row = refused[-1]
+    assert row.actor_user_id == u.id
+    assert row.resource_id == str(aid)
+    assert row.status == "refused"
+    meta = json.loads(row.metadata_json)
+    assert meta["version"] == created["version"]
+    assert meta["conversation_id"] == cid
+    assert meta["outcome"] == "refused"
+    assert meta["reason"] == "not_branchable"
+
+
+def test_export_includes_refused_row(client: TestClient, db: Session):
+    """NDJSON export contains the refused row (name, status, reason)."""
+    _, oh = _auth(client, db, "ma_exr_o", role="owner")
+    u, uh = _auth(client, db, "ma_exr_u", role="user")
+    created = _create(client, oh, _decl_body(name="expref")).json()
+    aid = created["id"]
+    _bind(client, oh, aid, [{"scope_type": "user", "user_id": u.id}])
+    from app.models.conversation import Conversation
+
+    cid, mid = _conv_with_assistant(client, uh)
+    conv = db.query(Conversation).filter(Conversation.id == cid).first()
+    conv.classification_level = "密"
+    db.commit()
+    r = client.post(
+        f"/api/message-actions/{aid}/invoke",
+        json={"conversation_id": cid, "message_id": mid},
+        headers=uh,
+    )
+    assert r.status_code == 403
+
+    exp = client.get("/api/message-actions/audit/export", headers=oh)
+    assert exp.status_code == 200
+    assert "application/x-ndjson" in exp.headers.get("content-type", "")
+    lines = [ln for ln in exp.text.splitlines() if ln.strip()]
+    refused_lines = []
+    for ln in lines:
+        obj = json.loads(ln)
+        if obj.get("action") == "message_action_invoke_refused":
+            refused_lines.append(obj)
+    assert refused_lines, "export must include refused row"
+    hit = next(
+        o for o in refused_lines
+        if o.get("resource_id") == str(aid)
+        and (o.get("metadata") or {}).get("reason") == "classification"
+    )
+    assert hit["status"] == "refused"
+    assert hit["action"] == "message_action_invoke_refused"
+    assert (hit.get("metadata") or {}).get("outcome") == "refused"
+
+
+def test_rate_limit_stops_refusal_audit_rows(
+    client: TestClient, db: Session, monkeypatch,
+):
+    """Repeated refused attempts stop writing rows once the limit is hit."""
+    monkeypatch.setattr(settings, "ANILA_ACTION_INVOKE_PER_MIN", 3)
+    reset_rate_limit_for_tests()
+    _, oh = _auth(client, db, "ma_rlr_o", role="owner")
+    ua, uh = _auth(client, db, "ma_rlr_a", role="user")
+    ub, bh = _auth(client, db, "ma_rlr_b", role="user")
+    aid = _create(client, oh, _decl_body(name="rlref")).json()["id"]
+    _bind(
+        client,
+        oh,
+        aid,
+        [
+            {"scope_type": "user", "user_id": ua.id},
+            {"scope_type": "user", "user_id": ub.id},
+        ],
+    )
+    # Distinct foreign conversations — same access-denied gate each time.
+    foreign = [_conv_with_assistant(client, bh) for _ in range(5)]
+
+    before_ref = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .count()
+    )
+    for i in range(3):
+        cid, mid = foreign[i]
+        r = client.post(
+            f"/api/message-actions/{aid}/invoke",
+            json={"conversation_id": cid, "message_id": mid},
+            headers=uh,
+        )
+        assert r.status_code == 403, f"call {i+1}: {r.text}"
+    assert (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .count()
+        == before_ref + 3
+    )
+
+    cid, mid = foreign[3]
+    r = client.post(
+        f"/api/message-actions/{aid}/invoke",
+        json={"conversation_id": cid, "message_id": mid},
+        headers=uh,
+    )
+    assert r.status_code == 429
+    assert r.json()["detail"] == "動作呼叫過於頻繁，請稍候再試"
+    assert (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "message_action_invoke_refused")
+        .count()
+        == before_ref + 3
+    )
+
+
+def test_icons_endpoint_shape_and_exec_flag(client: TestClient, db: Session):
+    """GET /icons returns object with icons list and boolean exec flag."""
+    from app.schemas.message_action import ALLOWED_ACTION_ICONS
+
+    _, oh = _auth(client, db, "ma_ico_o", role="owner")
+    _, ah = _auth(client, db, "ma_ico_a", role="admin")
+
+    denied = client.get("/api/message-actions/icons", headers=ah)
+    assert denied.status_code == 403
+
+    r = client.get("/api/message-actions/icons", headers=oh)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert isinstance(data, dict)
+    assert set(data.keys()) >= {"icons", "action_exec_enabled"}
+    assert isinstance(data["icons"], list)
+    assert sorted(data["icons"]) == sorted(ALLOWED_ACTION_ICONS)
+    assert isinstance(data["action_exec_enabled"], bool)
+    assert data["action_exec_enabled"] is False  # autouse fixture default

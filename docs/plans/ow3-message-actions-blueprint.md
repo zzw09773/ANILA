@@ -100,7 +100,8 @@ One book, fail-closed authoring, write-ahead invoke, owner-only ndjson export.
 |---|---|---|
 | create/update/delete action | `message_action_create/_update/_delete` | `commit=False` + return-check → None ⇒ 500 + rollback, same transaction (P1.4). Metadata: full body snapshot, choices, `body_sha256`, previous sha, version, bindings |
 | replace bindings | `message_action_bindings_replace` | same; before/after sets |
-| any invoke | `message_action_invoke` | committed **before** dispatch (durable intent); None ⇒ 500, nothing runs. Metadata: version + body_sha256 + choice + conv/message ids + conversation level + rendered-prompt sha256/length (not the body) |
+| successful invoke | `message_action_invoke` | committed **before** dispatch (durable intent); None ⇒ 500, nothing runs. Metadata: version + body_sha256 + choice + conv/message ids + conversation level + rendered-prompt sha256/length (not the body) |
+| refused invoke | `message_action_invoke_refused` | committed before the gate HTTPException when a meaningful attempt hits a real conversation (classification / access_denied / not_branchable). Distinct action name from success; status+outcome=`refused`. Input-validation 4xx and indistinguishable 404s leave no row. |
 | exec outcome | `message_action_exec_result` | committed after; **fail-soft** (side effect already happened) with logger.exception. Metadata: duration_ms, output_chars, truncated, error_type, traceback |
 | export | `message_action_audit_export` | export itself is a 管理動作 (L275) |
 
@@ -111,7 +112,7 @@ Three packages (§7). Deferred: project bindings (no project entity; ANILA-UI co
 
 ### Classification interaction
 - Invoke refuses when `not outbound_action_allowed(level)` (≥密) → 403 — server-side half of the existing UI gate (PLAN 2.4 shape); for exec it's substantive (exec can egress = 外流 face).
-- Invoke audit row unconditional → L242 satisfied for ≥營業秘密.
+- Invoke success writes write-ahead `message_action_invoke`; classification (and access / not-branchable) refusals write separable `message_action_invoke_refused` — L242 satisfied for ≥營業秘密 on the success path; ≥密 attempts leave a refusal row for the privileged-insider threat model. Not unconditional: gates before the write-ahead still refuse without a success row.
 - OW-3 writes **no** classification. Result inherits the conversation latch by construction; declarative rides normal proxy latch. Message-level classification columns stay unwritten.
 
 ## 2. File-by-file change list
@@ -160,7 +161,7 @@ Owner/admin surface:
 | Verb | Path | Auth | Notes |
 |---|---|---|---|
 | GET | `/api/message-actions` | require_admin | owner sees body; non-owner `body: "<owner-only>"` (SENSITIVE_REDACTED idiom) |
-| GET | `/api/message-actions/icons` | require_admin | server-owned icon allow-list |
+| GET | `/api/message-actions/icons` | require_owner | `{icons, action_exec_enabled}` — icon allow-list plus platform exec flag for the owner console |
 | POST | `/api/message-actions` | require_owner | 201; validates kind/result_mode/icon/choices; exec → validate_source(); create-snapshot audit fail-closed |
 | PUT | `/api/message-actions/{id}` | require_owner | version+=1, sha recomputed; update-snapshot audit |
 | DELETE | `/api/message-actions/{id}` | require_owner | 204; final-state snapshot; bindings cascade |
@@ -177,6 +178,7 @@ User surface:
 | Status | detail | Trigger |
 |---|---|---|
 | 404 | 動作不存在 | unknown/disabled/not-visible/exec-flag-off — one indistinguishable code (P1.3 invisibility rule) |
+| 429 | 動作呼叫過於頻繁，請稍候再試 | per-user fixed window immediately after action resolution (before any refusal audit; 429 unrecorded; per-process; documented) |
 | 404 | 找不到此對話 | get_conversation |
 | 403 | 無權存取此對話 | _check_access |
 | 400 | 訊息不屬於此對話 / 只能對助理訊息執行動作 | target validation |
@@ -184,7 +186,6 @@ User surface:
 | 409 | ANILALM 對話不支援訊息分支 | _require_branchable pre-check (before any execution) |
 | 400 | 此動作需要選擇一個項目 / 未知的選項 / 此選項需要輸入內容 | choice validation |
 | 413 | 輸入內容過長 | input > 2000 chars |
-| 429 | 動作呼叫過於頻繁，請稍候再試 | per-user fixed window (per-process; documented) |
 | 503 | 平台忙碌中，請稍後再試 | semaphore exhausted (short acquire timeout) |
 | 504 | 動作執行逾時（30 秒），已停止等待；背景可能仍在執行 | TimeoutError — honest wording |
 | 502 | 動作執行失敗（代號 {invocation_id}），請聯繫平台管理員 | exec exception; traceback → owner-only audit |
