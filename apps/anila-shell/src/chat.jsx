@@ -7,8 +7,8 @@ import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { neighbourId, pagerState } from "./runtime/messageTree.js";
 import {
-  needsPicker,
   resolveActionIcon,
+  splitTemplatePlaceholders,
 } from "./runtime/messageActions.js";
 import { MarkdownView, extractThinkTags } from "./markdown.jsx";
 
@@ -323,6 +323,8 @@ export const MessageBubble = ({
   const [openActionId, setOpenActionId] = useState(null);
   const [actionInput, setActionInput] = useState("");
   const [pendingChoice, setPendingChoice] = useState(null);
+  // Template disclosure: closed by default so the choice row stays quiet.
+  const [templateOpen, setTemplateOpen] = useState(false);
   // 結構化回饋(倒讚後出現的原因 chips + 評語)。
   const [fbReasons, setFbReasons] = useState([]);
   const [fbComment, setFbComment] = useState("");
@@ -343,11 +345,17 @@ export const MessageBubble = ({
 
   // OW-3: outside-click closes the action choice picker.
   useEffect(() => {
-    if (openActionId == null) return;
+    if (openActionId == null) {
+      setTemplateOpen(false);
+      return;
+    }
+    // Re-open always starts with the template region collapsed.
+    setTemplateOpen(false);
     const close = () => {
       setOpenActionId(null);
       setPendingChoice(null);
       setActionInput("");
+      setTemplateOpen(false);
     };
     const t = setTimeout(() => document.addEventListener("click", close), 0);
     return () => { clearTimeout(t); document.removeEventListener("click", close); };
@@ -841,28 +849,30 @@ export const MessageBubble = ({
 
           {/* OW-3 governed message actions: icon buttons + choice picker.
               Hidden when classified (outbound_action_allowed UI half); disabled
-              while conversationStreaming. */}
+              while conversationStreaming. Every shape opens the picker so the
+              presser can read the raw template before sending (OW-3f). */}
           {!classified && Array.isArray(messageActions) && messageActions.length > 0 &&
             messageActions.map((action) => {
               const ActionIcon = resolveActionIcon(action.icon);
               const pickerOpen = openActionId === action.id && !actionsLocked;
+              const choices = Array.isArray(action.choices) ? action.choices : [];
               const fire = (choice) => {
                 setOpenActionId(null);
                 setPendingChoice(null);
                 setActionInput("");
+                setTemplateOpen(false);
                 onAction?.(msg, action, choice);
               };
               const onActionClick = (e) => {
                 e?.stopPropagation?.();
                 if (actionsLocked) return;
-                if (!needsPicker(action)) {
-                  const choices = Array.isArray(action.choices) ? action.choices : [];
-                  fire(choices.length === 1 ? choices[0] : null);
-                  return;
-                }
+                // Every shape opens the panel. The template disclosure lives
+                // inside it, so any fast path would silently remove the only
+                // place a plain user can read what the button sends.
                 setOpenActionId((cur) => (cur === action.id ? null : action.id));
                 setPendingChoice(null);
                 setActionInput("");
+                setTemplateOpen(false);
               };
               return (
                 <span
@@ -886,12 +896,111 @@ export const MessageBubble = ({
                       onClick={(e) => e.stopPropagation()}
                       style={{
                         position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 50,
-                        width: 220, background: "var(--bg-elev)", border: "1px solid var(--border)",
+                        width: 280, background: "var(--bg-elev)", border: "1px solid var(--border)",
                         borderRadius: "var(--radius)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
                         padding: 4, display: "flex", flexDirection: "column", gap: 2,
                       }}
                     >
-                      {(action.choices || []).map((opt) => (
+                      <button
+                        type="button"
+                        data-testid={`message-action-template-toggle-${action.id}`}
+                        aria-expanded={templateOpen}
+                        onClick={() => setTemplateOpen((v) => !v)}
+                        style={{
+                          textAlign: "left", padding: "6px 8px", fontSize: 12,
+                          color: "var(--muted, var(--fg-muted, #888))",
+                          background: "transparent", border: "none", borderRadius: 4,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {templateOpen ? "收合將送出的內容" : "查看將送出的內容"}
+                      </button>
+                      {templateOpen && (
+                        <div
+                          data-testid={`message-action-template-${action.id}`}
+                          style={{
+                            padding: "4px 8px 8px",
+                            borderBottom: "1px solid var(--border)",
+                            display: "flex", flexDirection: "column", gap: 6,
+                          }}
+                        >
+                          <div
+                            data-testid={`message-action-template-caption-${action.id}`}
+                            style={{ fontSize: 11, color: "var(--muted, var(--fg-muted, #888))", lineHeight: 1.45 }}
+                          >
+                            按下後會以你的身分送出下列範本。佔位符於按下時由伺服器替換：
+                            {"{content}"} 為這則助理訊息全文、{"{choice}"} 為所選選項的提示文、
+                            {"{input}"} 為你輸入的文字。內容由建立者設定，平台未審核。
+                          </div>
+                          <pre
+                            data-testid={`message-action-template-body-${action.id}`}
+                            style={{
+                              margin: 0, padding: "6px 8px", fontSize: 11, lineHeight: 1.4,
+                              whiteSpace: "pre-wrap", wordBreak: "break-word",
+                              color: "var(--fg)", background: "var(--bg)",
+                              border: "1px solid var(--border)", borderRadius: 4,
+                              maxHeight: 160, overflow: "auto", fontFamily: "inherit",
+                            }}
+                          >
+                            {splitTemplatePlaceholders(action.body).map((seg, i) => (
+                              seg.kind === "placeholder" ? (
+                                <mark
+                                  key={`ph-${i}`}
+                                  data-placeholder={seg.value.slice(1, -1)}
+                                  style={{
+                                    background: "var(--bg-subtle, #eee)",
+                                    color: "var(--fg)",
+                                    borderRadius: 2,
+                                    padding: "0 2px",
+                                    fontWeight: 600,
+                                  }}
+                                >{seg.value}</mark>
+                              ) : (
+                                <React.Fragment key={`tx-${i}`}>{seg.value}</React.Fragment>
+                              )
+                            ))}
+                          </pre>
+                          {choices.length > 0 && (
+                            <div data-testid={`message-action-choice-contrib-${action.id}`}>
+                              <div style={{ fontSize: 11, color: "var(--muted, var(--fg-muted, #888))", marginBottom: 4 }}>
+                                各選項會帶入：
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                {choices.map((opt) => (
+                                  <div key={opt.id} data-testid={`message-action-choice-prompt-${action.id}-${opt.id}`}>
+                                    <div style={{ fontSize: 11, fontWeight: 600, color: "var(--fg)", marginBottom: 2 }}>
+                                      {opt.label}
+                                    </div>
+                                    <pre
+                                      style={{
+                                        margin: 0, padding: "6px 8px", fontSize: 11, lineHeight: 1.4,
+                                        whiteSpace: "pre-wrap", wordBreak: "break-word",
+                                        color: "var(--fg)", background: "var(--bg)",
+                                        border: "1px solid var(--border)", borderRadius: 4,
+                                        maxHeight: 72, overflow: "auto", fontFamily: "inherit",
+                                      }}
+                                    >{typeof opt.prompt === "string" ? opt.prompt : ""}</pre>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {choices.length === 0 && (
+                        <button
+                          type="button"
+                          data-testid={`message-action-send-${action.id}`}
+                          onClick={() => fire(null)}
+                          style={{
+                            textAlign: "left", padding: "6px 8px", fontSize: 13, color: "var(--fg)",
+                            background: "transparent", border: "none", borderRadius: 4, cursor: "pointer",
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                        >送出</button>
+                      )}
+                      {choices.map((opt) => (
                         <button
                           key={opt.id}
                           type="button"
@@ -957,7 +1066,8 @@ export const MessageBubble = ({
                   )}
                 </span>
               );
-            })}
+            })
+          }
           <SiblingPager
             msg={msg}
             onSwitchBranch={onSwitchBranch}

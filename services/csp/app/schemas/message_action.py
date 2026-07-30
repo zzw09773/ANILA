@@ -100,19 +100,24 @@ class MessageActionUpdate(BaseModel):
 
 
 class MessageActionOut(BaseModel):
-    """User-facing visible action — body never appears."""
+    """User-facing visible (pressable) action — includes template body.
+
+    Callers of ``/visible`` are already bound-or-authored and enabled, so
+    the template is disclosed under the pressable-or-may-modify read rule.
+    """
 
     id: int
     name: str
     label: str
     icon: str
+    body: str
     choices: list[Any] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
 
 class MessageActionAdminOut(BaseModel):
-    """Management read — body only when caller may modify (author or admin)."""
+    """Management read — body when caller may press (enabled) or may modify."""
 
     id: int
     name: str

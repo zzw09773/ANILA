@@ -52,14 +52,14 @@ Owner withdrew pasted-Python execution. There is no execution module, no platfor
 **Assistant sibling branch of the target message via existing `POST .../branch`.** Provenance: `metadata.action = {id,name,version,choice_id}`, `agent_name = "action:<name>"`. Quiet action-name attribution in the shell; no 「自訂動作產出」 badge (that existed only to stop exec-direct results from passing as model answers).
 
 ### Q5 — Picker UX
-One icon button per visible action; floating panel listing `choices[]`. Fast paths: 0 choices → fire immediately; 1 choice input:false → fire immediately.
+One icon button per visible action; floating panel always opens on click (including zero-choice and single input-less shapes) so the presser can expand「查看將送出的內容」before sending. Zero-choice panels expose a「送出」control; choice rows keep their prior select/input behaviour. The disclosure region shows the raw template (placeholders marked, no client substitution preview), a caption stating server-side replacement of `{content}` / `{choice}` / `{input}`, and every choice's author-written prompt when present.
 
 ### Q6 — API surface & authorization
 Prefix `/api/message-actions`. CSRF on mutations. Plain zh-TW `detail`.
 
 | Verb | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/api/message-actions` | `_require_developer_or_admin` | body only when caller may modify (author or admin-tier) |
+| GET | `/api/message-actions` | `_require_developer_or_admin` | `body` when caller may press (bound/authored **and** enabled) **or** may modify (author/admin-tier); strangers `null`. Admin-tier skips visibility-set load (modify short-circuits). Choice `prompt` text has always been present on this list for every developer viewer. |
 | GET | `/api/message-actions/icons` | `_require_developer_or_admin` | `{icons, max_body_chars}` |
 | POST | `/api/message-actions` | `_require_developer_or_admin` | 201; create-snapshot audit fail-closed |
 | PUT | `/api/message-actions/{id}` | `_require_developer_or_admin` + author-or-admin | version+=1; update-snapshot audit |
@@ -67,13 +67,19 @@ Prefix `/api/message-actions`. CSRF on mutations. Plain zh-TW `detail`.
 | GET | `/api/message-actions/{id}/bindings` | `_require_developer_or_admin` + author-or-admin | |
 | PUT | `/api/message-actions/{id}/bindings` | `_require_developer_or_admin` + author-or-admin | whole-set replace |
 | GET | `/api/message-actions/audit/export` | `require_admin` | x-ndjson; reuses audit-listing redaction (`is_owner` / `<owner-only>`) |
-| GET | `/api/message-actions/visible` | authenticated | bound-or-authored; **body never appears** |
+| GET | `/api/message-actions/visible` | authenticated | bound-or-authored and enabled; **includes raw `body`** (pressable ⇒ readable) |
 | POST | `/api/message-actions/{id}/invoke` | authenticated | write-ahead invoke audit; returns `{prompt}` |
 
 Ownership = `created_by_user_id`. Author-or-admin refusals reuse the `require_admin` 403 shape. Export: admin+; non-owner viewers get redacted `ip_address` / `metadata` exactly as `GET /api/audit-logs`.
 
+**Template read rule (OW-3f):** may-modify **or** pressable. Pressable = the same set `/visible` and invoke use (bound/authored **and** `is_enabled`). Bound-but-disabled therefore stops disclosing `body` on the management list to assignees who cannot modify. No identifier-oracle path: strangers still receive `body=null` / invisible rows; invoke keeps the indistinguishable 404.
+
+**Accuracy note (do not overstate prior secrecy):** before OW-3f, management responses already returned each choice's full `prompt` to every developer viewer of the list — only the action `body` was redacted for non-authors. Describing the old behaviour as "strangers received nothing" is too generous; choice text was already visible to any developer who could open the management console. Plain users (non-developer) still had no management surface and no chat disclosure until OW-3f.
+
+**Debt:** `/visible` now carries every pressable action's full template to every user at session start (when the shell loads custom actions). Acceptable under the transparency ruling; revisit if payload size or accidental logging becomes an issue.
+
 ### Q7 — Frontend
-- **anila-shell**: fetch `/visible`; picker + fast paths; invoke → stream prompt → `persistRegeneratedAssistant` + `refreshActivePath`; restore on failure; classified gate; honest server-message passthrough; quiet `action:NAME` attribution.
+- **anila-shell**: fetch `/visible` (incl. `body`); always open picker; closed-by-default template disclosure + send for zero-choice; invoke → stream prompt → `persistRegeneratedAssistant` + `refreshActivePath`; restore on failure; classified gate; honest server-message passthrough; quiet `action:NAME` attribution.
 - **csp-governance-ui**: route + sidebar `requiresDeveloper` (same pattern as knowledge collections / agents). No kind toggle, no exec warning, no flag badge, no result-mode field. Mutate UI (edit/bindings/delete) for author or admin-tier; export for admin+.
 
 ### Q8 — Risk acceptance

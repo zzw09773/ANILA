@@ -1,9 +1,10 @@
 // OW-3 — governed message-level custom actions (user press path).
 // Contract: docs/plans/ow3-message-actions-blueprint.md §Q5 / §Q7 / §4.
 //
-// Visibility and invoke are server-authoritative. This module never evaluates
-// action bodies; the server renders a prompt template and the client dispatches
-// through the existing chat path into an OW-1 sibling branch.
+// Visibility and invoke are server-authoritative. /visible includes the raw
+// template so the presser can inspect it; substitution still happens only on
+// the server at invoke time. The client dispatches the rendered prompt through
+// the existing chat path into an OW-1 sibling branch.
 
 import {
   IconCopy,
@@ -62,17 +63,24 @@ export async function invokeAction(authRequest, actionId, payload) {
   });
 }
 
-/**
- * Fast-path when the picker can be skipped:
- * - zero choices → fire immediately
- * - exactly one choice with input:false → fire immediately
- * Otherwise the floating choice panel is required.
- */
-export function needsPicker(action) {
-  const choices = Array.isArray(action?.choices) ? action.choices : [];
-  if (choices.length === 0) return false;
-  if (choices.length === 1 && !choices[0]?.input) return false;
-  return true;
+/** Split a raw template into text / `{content|choice|input}` segments. */
+export function splitTemplatePlaceholders(body) {
+  const text = typeof body === "string" ? body : "";
+  const re = /(\{(?:content|choice|input)\})/g;
+  const out = [];
+  let last = 0;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) {
+      out.push({ kind: "text", value: text.slice(last, match.index) });
+    }
+    out.push({ kind: "placeholder", value: match[1] });
+    last = match.index + match[1].length;
+  }
+  if (last < text.length || out.length === 0) {
+    out.push({ kind: "text", value: text.slice(last) });
+  }
+  return out;
 }
 
 /**

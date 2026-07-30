@@ -145,6 +145,34 @@ def _may_modify_action(action: MessageAction, actor: User) -> bool:
     return action.created_by_user_id == actor.id
 
 
+def _may_read_template(
+    db: Session,
+    action: MessageAction,
+    actor: User,
+    *,
+    visible_ids: set[int] | None = None,
+) -> bool:
+    """True when the actor may press the action or may modify it.
+
+    Owner transparency ruling (OW-3f): whoever can press can read the
+    template that a press will send as them. Pressable matches
+    ``list_visible`` / ``resolve_for_invoke``: bound-or-authored **and**
+    enabled. A bound-but-disabled action therefore stops disclosing its
+    template to anyone who cannot modify it. Modification rights stay
+    author-or-admin.
+    """
+    if _may_modify_action(action, actor):
+        return True
+    if not action.is_enabled:
+        return False
+    ids = (
+        visible_ids
+        if visible_ids is not None
+        else _user_visible_action_ids(db, actor)
+    )
+    return action.id in ids
+
+
 def _require_action_author_or_admin(action: MessageAction, actor: User) -> None:
     """Developers may mutate only actions they created; admin-tier may any.
 
@@ -429,13 +457,50 @@ def list_actions_admin(db: Session) -> list[MessageAction]:
     )
 
 
-def serialize_admin(action: MessageAction, *, actor: User) -> dict:
+def list_actions_admin_serialized(
+    db: Session, *, actor: User
+) -> list[dict]:
+    """Management list with per-caller template disclosure.
+
+    Admin-tier always passes the modify short-circuit, so the visibility
+    set (every department row + every binding) is never needed and is
+    not loaded for those callers.
+    """
+    rows = list_actions_admin(db)
+    if is_admin_tier(actor):
+        return [
+            serialize_admin(r, actor=actor, db=db, visible_ids=set())
+            for r in rows
+        ]
+    visible_ids = _user_visible_action_ids(db, actor)
+    return [
+        serialize_admin(
+            r, actor=actor, db=db, visible_ids=visible_ids
+        )
+        for r in rows
+    ]
+
+
+def serialize_admin(
+    action: MessageAction,
+    *,
+    actor: User,
+    db: Session,
+    visible_ids: set[int] | None = None,
+) -> dict:
     """Management list/detail shape.
 
-    Body is omitted when the caller may not modify the action — same
-    authorship-or-administrator gate as bindings / update / delete.
+    Body follows the read rule: pressable (bound/authored and enabled)
+    or may modify (author or admin-tier). Callers who can neither press
+    nor modify still get ``body=None``. Mutation gates are unchanged.
     """
-    body = action.body if _may_modify_action(action, actor) else None
+    body = (
+        action.body
+        if _may_read_template(
+            db, action, actor, visible_ids=visible_ids
+        )
+        else None
+    )
     return {
         "id": action.id,
         "name": action.name,
