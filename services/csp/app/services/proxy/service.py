@@ -41,6 +41,33 @@ from app.services.usage_writer import enqueue_usage
 logger = logging.getLogger("app.services.proxy_service")
 
 
+def _note_proxy_outcome(
+    *,
+    model_id: int,
+    model_name: str,
+    model_type: str,
+    display_name: str | None = None,
+    success: bool,
+) -> None:
+    """P3.2 consecutive-failure hook. Best-effort; never raises into proxy."""
+    try:
+        from app.services.alert_detectors import record_proxy_outcome
+
+        record_proxy_outcome(
+            model_id=model_id,
+            model_name=model_name,
+            model_type=model_type,
+            display_name=display_name,
+            success=success,
+        )
+    except Exception:  # pragma: no cover - detection must not break serving
+        logger.exception(
+            "proxy alert streak update failed model_id=%s success=%s",
+            model_id,
+            success,
+        )
+
+
 def _proxy_detail(label: str, endpoint_display: str | None, *, stream: bool = False) -> str:
     """Caller-facing proxy trace / failure text.
 
@@ -253,6 +280,13 @@ async def _proxy_request_impl(
                     await asyncio.sleep(delay)
                     continue
                 logger.error("模型 %s 上游 5xx: %s", model.name, last_error)
+                _note_proxy_outcome(
+                    model_id=model.id,
+                    model_name=model.name,
+                    model_type=model.model_type,
+                    display_name=getattr(model, "display_name", None),
+                    success=False,
+                )
                 raise HTTPException(status_code=502, detail="模型服務暫時不可用")
 
             if response.status_code >= 400:
@@ -366,6 +400,13 @@ async def _proxy_request_impl(
                     caller_client_id=caller_client_id,
                 )
 
+            _note_proxy_outcome(
+                model_id=model.id,
+                model_name=model.name,
+                model_type=model.model_type,
+                display_name=getattr(model, "display_name", None),
+                success=True,
+            )
             return result
 
         except httpx.TimeoutException:
@@ -409,6 +450,13 @@ async def _proxy_request_impl(
                 await asyncio.sleep(delay)
                 continue
 
+    _note_proxy_outcome(
+        model_id=model.id,
+        model_name=model.name,
+        model_type=model.model_type,
+        display_name=getattr(model, "display_name", None),
+        success=False,
+    )
     raise HTTPException(
         status_code=502,
         detail=f"模型服務不可用，已重試 {settings.PROXY_MAX_RETRIES} 次: {last_error}",
@@ -745,6 +793,7 @@ async def proxy_stream(
     """
     status = "completed"
     error: dict | None = None
+    model_type = "agent" if target_agent_id is not None else "llm"
     try:
         async for chunk in _proxy_stream_impl(
             target_url=target_url,
@@ -769,8 +818,15 @@ async def proxy_stream(
             endpoint_display=endpoint_display,
         ):
             yield chunk
+        _note_proxy_outcome(
+            model_id=usage_model_id,
+            model_name=model_name or f"id:{usage_model_id}",
+            model_type=model_type,
+            success=True,
+        )
     except (GeneratorExit, asyncio.CancelledError) as exc:
         # Client disconnect / cancellation — no body left to write into.
+        # Do NOT count as gateway/agent consecutive failure (user hung up).
         status = "failed"
         error = {"code": "stream_aborted", "message": type(exc).__name__}
         raise
@@ -785,6 +841,13 @@ async def proxy_stream(
             model_name or "未知模型",
             exc.status_code,
         )
+        if int(exc.status_code) >= 500:
+            _note_proxy_outcome(
+                model_id=usage_model_id,
+                model_name=model_name or f"id:{usage_model_id}",
+                model_type=model_type,
+                success=False,
+            )
         yield format_anila_stream_error(
             stream_failure_user_message(exc, model_name=model_name)
         )
@@ -793,6 +856,12 @@ async def proxy_stream(
         error = {"code": "stream_error", "message": type(exc).__name__}
         logger.exception(
             "stream failure model=%s", model_name or "未知模型"
+        )
+        _note_proxy_outcome(
+            model_id=usage_model_id,
+            model_name=model_name or f"id:{usage_model_id}",
+            model_type=model_type,
+            success=False,
         )
         yield format_anila_stream_error(
             stream_failure_user_message(exc, model_name=model_name)
