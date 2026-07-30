@@ -8,7 +8,7 @@ is_image_primary=true at a time — enforced by a partial unique index.
 Mirrors is_router_primary / is_platform_embedding.
 
 Revision ID: r1_0022
-Revises: r1_0020
+Revises: r1_0021
 Create Date: 2026-07-30
 """
 
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "r1_0022"
-down_revision: Union[str, None] = "r1_0020"
+down_revision: Union[str, None] = "r1_0021"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
