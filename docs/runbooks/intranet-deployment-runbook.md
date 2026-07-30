@@ -534,9 +534,8 @@ NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose res
 
 ### 5.3 Postgres backup
 
-```bash
-docker exec anila-platform-csp-db-1 pg_dump -U csp csp | gzip > /backup/anila-$(date +%Y%m%d).sql.gz
-```
+權威手順（排程、保留、還原演練）見 [`csp-db-backup-restore.md`](./csp-db-backup-restore.md)。  
+一行備忘：`ANILA_DB_CONTAINER=… ANILA_BACKUP_DIR=/var/backups/anila bash infra/deployment/scripts/backup-csp-db.sh`
 
 ### 5.4 加 owner / 模型 gateway key 輪替
 
