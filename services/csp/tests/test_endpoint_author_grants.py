@@ -522,6 +522,127 @@ def test_designated_developer_lists_and_edits_registered_row(
     assert row.created_by_user_id == dev.id
 
 
+def test_designated_developer_cannot_address_foreign_row(
+    client: TestClient, db: Session
+):
+    """Write basis == read authorship: foreign id refused like missing.
+
+    Live gap: designation alone let a developer retarget any registry
+    row (including router primary) while GET returned 404 — write
+    success was an existence oracle. Both paths now ask
+    ``_caller_is_designated_author_of``.
+    """
+    _, oh = _auth(client, db, "ea_owner_foreign", role="owner")
+    other_dev, other_h = _auth(client, db, "ea_other_dev", role="developer")
+    assert _grant(client, oh, other_dev.id).status_code == 201
+
+    foreign = client.post(
+        "/api/models",
+        headers=other_h,
+        json={
+            "name": "ea-foreign-model",
+            "display_name": "Foreign",
+            "model_type": "llm",
+            "endpoint_url": "https://foreign.example.com/v1",
+        },
+    )
+    assert foreign.status_code == 200, foreign.text
+    foreign_id = foreign.json()["id"]
+    original = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.id == foreign_id)
+        .one()
+        .endpoint_url
+    )
+
+    attacker, ah = _auth(client, db, "ea_attacker_dev", role="developer")
+    assert _grant(client, oh, attacker.id).status_code == 201
+
+    # Own row: address update still succeeds.
+    own = client.post(
+        "/api/models",
+        headers=ah,
+        json={
+            "name": "ea-attacker-own",
+            "display_name": "Own",
+            "model_type": "llm",
+            "endpoint_url": "https://own.example.com/v1",
+        },
+    )
+    assert own.status_code == 200, own.text
+    own_ok = client.put(
+        f"/api/models/{own.json()['id']}",
+        headers=ah,
+        json={"endpoint_url": "https://own-fixed.example.com/v1"},
+    )
+    assert own_ok.status_code == 200, own_ok.text
+
+    missing_id = foreign_id + 10_000_000
+    get_missing = client.get(f"/api/models/{missing_id}", headers=ah)
+    put_missing = client.put(
+        f"/api/models/{missing_id}",
+        headers=ah,
+        json={"endpoint_url": "https://evil.example.com/v1"},
+    )
+    get_foreign = client.get(f"/api/models/{foreign_id}", headers=ah)
+    put_foreign = client.put(
+        f"/api/models/{foreign_id}",
+        headers=ah,
+        json={"endpoint_url": "https://evil.example.com/v1"},
+    )
+
+    # Refusal indistinguishable from a non-existent row (status + body).
+    assert get_missing.status_code == 404
+    assert put_missing.status_code == 404
+    assert get_foreign.status_code == 404
+    assert put_foreign.status_code == 404
+    assert (
+        get_missing.json()
+        == put_missing.json()
+        == get_foreign.json()
+        == put_foreign.json()
+    )
+    assert put_foreign.json()["detail"] == "模型不存在"
+
+    row = db.query(ModelRegistry).filter(ModelRegistry.id == foreign_id).one()
+    db.refresh(row)
+    assert row.endpoint_url == original
+
+
+def test_admin_updates_row_they_did_not_create(
+    client: TestClient, db: Session
+):
+    """Administrator tier still acts on any row (non-address fields)."""
+    _, oh = _auth(client, db, "ea_owner_admin_any", role="owner")
+    author, auth_h = _auth(client, db, "ea_author_admin_any", role="developer")
+    assert _grant(client, oh, author.id).status_code == 201
+
+    created = client.post(
+        "/api/models",
+        headers=auth_h,
+        json={
+            "name": "ea-admin-any-model",
+            "display_name": "Before",
+            "model_type": "llm",
+            "endpoint_url": "https://gateway.example.com/v1",
+        },
+    )
+    assert created.status_code == 200, created.text
+    model_id = created.json()["id"]
+
+    admin, ah = _auth(client, db, "ea_admin_any", role="admin")
+    r = client.put(
+        f"/api/models/{model_id}",
+        headers=ah,
+        json={"display_name": "Admin Renamed"},
+    )
+    assert r.status_code == 200, r.text
+    row = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).one()
+    assert row.display_name == "Admin Renamed"
+    assert row.created_by_user_id == author.id
+    assert row.endpoint_url == "https://gateway.example.com/v1"
+
+
 def test_designated_developer_create_does_not_grant_inference(
     client: TestClient, db: Session
 ):
