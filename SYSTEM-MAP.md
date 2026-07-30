@@ -198,7 +198,9 @@ endpoint 的人(純 http NodePort),就能冒充任何使用者。
 - ⚠ **端點可能是 `https://<domain>/v1` 也可能是 `http://<host>:<port>`。內網用 http 是常態,不是安全違規。** 現行程式碼把 http endpoint 當違規要改
 - 通通走 OpenAI compatible;embedding 可能有 v2 變體(如 nv-embed-v2)
 - **embedding 也算模型**,要能被指派與記帳(dev 在 MLSteam 開發 agent 時會想用不同的)
-- 誰能註冊:admin + 被 admin 授權的 dev
+- 誰能註冊:**owner + owner 逐人指定的 dev**(2026-07-30 擁有者修訂,原為「admin + 被 admin 授權的 dev」)
+  - 收緊的理由:admin 只要能填任意端點位址,就能用一列自建資料去比對、反推被遮蔽的位址;分組與隱藏在那個前提下互斥。收權後 admin 仍可檢視、啟停用、指派、刪除、整批帶入
+  - 既有列(無建立者紀錄)的位址只有 owner 改得動
 - **每個人看到的模型清單不同**(依指派)
 
 ---
