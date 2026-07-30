@@ -3,9 +3,15 @@
 Split verbatim from the former single-module ``app/api/agents.py``
 (behavior-preserving refactor). D1 removed the on-demand Full Trace
 diagnostic (``POST …/trace-test``); connection probe remains.
+
+2026-07-30 false-green fix: connection test reports host / credentials /
+path as distinct facts; health probe no longer treats a `/`-only hit as
+``healthy``.
 """
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 import httpx
@@ -17,6 +23,13 @@ from app.models.user import User
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier, require_admin
+from app.services.endpoint_author_service import can_see_endpoint_address
+from app.services.health_checker import (
+    HEALTH_DEGRADED,
+    HEALTH_HEALTHY,
+    HEALTH_UNHEALTHY,
+    probe_model_health_detailed,
+)
 from app.services.proxy.urls import join_upstream_path
 
 from app.api.agents._common import (
@@ -26,6 +39,103 @@ from app.api.agents._common import (
 )
 
 router = APIRouter()
+
+# Chat-path responses that prove the versioned route exists *and* the
+# presented csk- got past inbound auth. Agent empty-messages → 400 is the
+# canonical success; 422 is the structured-validation cousin. 401/403 are
+# NOT success: gateways often authenticate before routing, so a wrong path
+# returns 401 too. Other 4xx (405/429/…) only prove the path answered —
+# credentials stay unknown so we do not over-claim.
+_AUTH_CHALLENGE = frozenset({401, 403})
+_PATH_MISSING = frozenset({404})
+_CREDS_AND_PATH_OK = frozenset({400, 422}) | frozenset(range(200, 300))
+
+
+def _classify_connection_status(status_code: int) -> tuple[bool, bool | None, bool | None, str]:
+    """Map an HTTP status from ``POST …/v1/chat/completions`` to facts.
+
+    Returns ``(host_reachable, credentials_accepted, path_verified, detail)``.
+    """
+    if status_code in _AUTH_CHALLENGE:
+        return (
+            True,
+            None,
+            None,
+            (
+                f"主機有回應（HTTP {status_code}）。"
+                f"未驗證路徑：閘道常在路由前認証，錯誤路徑也可能回 {status_code}。"
+                "未驗證憑證。"
+            ),
+        )
+    if status_code in _PATH_MISSING:
+        return (
+            True,
+            None,
+            False,
+            (
+                f"主機有回應，但呼叫路徑不存在（HTTP {status_code}）。"
+                "路徑未通過驗證；憑證是否被接受無法由此判斷。"
+            ),
+        )
+    if status_code >= 500:
+        return (
+            True,
+            None,
+            True,
+            (
+                f"路徑有回應但上游錯誤（HTTP {status_code}）。"
+                "已確認主機與路徑；憑證是否接受無法單憑此判斷。"
+                "不視為連線驗證成功。"
+            ),
+        )
+    if status_code in _CREDS_AND_PATH_OK:
+        return (
+            True,
+            True,
+            True,
+            (
+                f"路徑與憑證皆通過：端點接受了該 csk- 並處理請求"
+                f"（HTTP {status_code}）。"
+            ),
+        )
+    # Other 4xx (405, 415, 429, …): path answered, credentials unclear.
+    return (
+        True,
+        None,
+        True,
+        (
+            f"路徑有回應（HTTP {status_code}）。"
+            "已確認路徑；憑證是否接受無法單憑此判斷。"
+            "不視為連線驗證成功。"
+        ),
+    )
+
+
+def _safe_unreachable_detail(
+    exc: BaseException,
+    *,
+    db: Session,
+    caller: User,
+) -> str:
+    """Connection-error detail: never leak an address-shaped string unless
+    ``can_see_endpoint_address`` says the caller may see one. httpx errors
+    commonly embed the request URL.
+    """
+    if can_see_endpoint_address(db, caller):
+        return f"無法連線到 agent 端點: {exc}"
+    return "無法連線到 agent 端點（主機未回應或逾時）"
+
+
+def _safe_ssrf_detail(
+    exc: BaseException,
+    *,
+    db: Session,
+    caller: User,
+) -> str:
+    """SSRF-reject detail: ``UnsafeEndpointError`` often embeds hostname."""
+    if can_see_endpoint_address(db, caller):
+        return f"端點未通過出向安全驗證: {exc}"
+    return "端點未通過出向安全驗證"
 
 
 @router.post("/{agent_id}/health-check")
@@ -38,9 +148,9 @@ async def trigger_agent_health_check(
     """Probe an agent's endpoint and update ``health_status``.
 
     Mirrors ``POST /api/models/{id}/health-check`` for parity on the
-    management UI: the admin clicks "檢查", the backend tries a few
-    common liveness paths, and the DB stamp is updated so the colored
-    dot in the agents list reflects reality.
+    management UI: the admin clicks "檢查", the backend tries platform-used
+    liveness paths (and optionally `/` as a weak host signal), and the DB
+    stamp is updated so the colored dot in the agents list reflects reality.
     """
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -49,75 +159,88 @@ async def trigger_agent_health_check(
     ip = _client_ip(request)
     # Call-time SSRF guard — refuse to probe an endpoint that fails outbound
     # validation (TOCTOU / DNS-rebinding defense), even for an admin ping.
-    # Guard once per host (scheme/hostname only; getaddrinfo is blocking),
-    # then build the three probe URLs.
+    # Guard once per host (scheme/hostname only; getaddrinfo is blocking).
     try:
         validate_outbound_url(agent.endpoint_url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
-        agent.health_status = "unhealthy"
+        agent.health_status = HEALTH_UNHEALTHY
         db.commit()
+        # Audit detail must not embed hostname — serialize_audit_log does
+        # not scrub ``detail`` for non-authors.
         log_audit_event(
             db, actor=admin, action="health_check",
             resource_type="agent", resource_id=agent.id,
             status="failure",
-            detail=f"健康檢查拒絕: 端點未通過出向安全驗證 ({exc})",
+            detail="健康檢查拒絕: 端點未通過出向安全驗證",
             ip_address=ip,
             commit=True,
         )
-        return {"status": "unhealthy", "detail": f"端點未通過出向安全驗證: {exc}"}
-    probe_paths = ["/health", "/v1/models", "/"]
-    probe_urls = [join_upstream_path(agent.endpoint_url, path) for path in probe_paths]
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            for path, url in zip(probe_paths, probe_urls):
-                try:
-                    resp = await client.get(url)
-                    if resp.status_code < 500:
-                        agent.health_status = "healthy"
-                        db.commit()
-                        log_audit_event(
-                            db, actor=admin, action="health_check",
-                            resource_type="agent", resource_id=agent.id,
-                            detail=f"手動健康檢查成功: {agent.name}",
-                            ip_address=ip,
-                            commit=True,
-                        )
-                        return {
-                            "status": "healthy",
-                            "detail": f"端點 {path} 回應 {resp.status_code}",
-                        }
-                except httpx.ConnectError:
-                    continue
-            agent.health_status = "unhealthy"
-            db.commit()
-            log_audit_event(
-                db, actor=admin, action="health_check",
-                resource_type="agent", resource_id=agent.id,
-                detail=f"手動健康檢查離線: {agent.name}",
-                ip_address=ip,
-                commit=True,
-            )
-            return {"status": "unhealthy", "detail": "無法連線到 agent 端點"}
-    except Exception as e:
-        agent.health_status = "unhealthy"
-        db.commit()
-        log_audit_event(
-            db, actor=admin, action="health_check",
-            resource_type="agent", resource_id=agent.id,
-            status="failure",
-            detail=f"手動健康檢查失敗: {agent.name} ({e})",
-            ip_address=ip,
-            commit=True,
+        return {
+            "status": HEALTH_UNHEALTHY,
+            "detail": _safe_ssrf_detail(exc, db=db, caller=admin),
+        }
+
+    # Release pooled connection before the outbound probe (≤10s).
+    # skip_validate: already guarded above — keep once-per-host.
+    db.commit()
+    status, latency_ms = await probe_model_health_detailed(
+        agent.endpoint_url, endpoint_kind="agent", skip_validate=True
+    )
+    agent.health_status = status
+    db.commit()
+
+    if status == HEALTH_HEALTHY:
+        detail = "真實探測路徑（/health 或 /v1/models）有回應"
+        audit_status = "success"
+    elif status == HEALTH_DEGRADED:
+        detail = (
+            "僅根路徑有回應，或探測逾時——"
+            "主機可能存活，但未驗證平台實際使用的路徑"
         )
-        return {"status": "unhealthy", "detail": str(e)}
+        audit_status = "success"
+    else:
+        detail = "無法連線到 agent 端點"
+        audit_status = "failure"
+
+    log_audit_event(
+        db, actor=admin, action="health_check",
+        resource_type="agent", resource_id=agent.id,
+        status=audit_status,
+        detail=f"手動健康檢查: {agent.name} → {status}",
+        ip_address=ip,
+        commit=True,
+    )
+    return {
+        "status": status,
+        "detail": detail,
+        "latency_ms": latency_ms,
+    }
 
 
 class TestConnectionResponse(BaseModel):
-    reachable: bool
-    # None = could not determine (endpoint unreachable).
-    token_accepted: bool | None = None
+    """Honest connection-test outcome — three facts, not one pass/fail.
+
+    ``reachable`` / ``token_accepted`` remain as aliases so older clients
+    keep working; ``token_accepted`` is no longer ``status != 401``.
+    """
+
+    host_reachable: bool
+    credentials_accepted: bool | None = None
+    path_verified: bool | None = None
     status_code: int | None = None
     detail: str
+
+    # Aliases (populated from the three facts when omitted).
+    reachable: bool | None = Field(default=None)
+    token_accepted: bool | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _fill_aliases(self) -> TestConnectionResponse:
+        if self.reachable is None:
+            self.reachable = self.host_reachable
+        if self.token_accepted is None:
+            self.token_accepted = self.credentials_accepted
+        return self
 
 
 @router.post("/{agent_id}/test-connection", response_model=TestConnectionResponse)
@@ -127,13 +250,11 @@ async def test_agent_connection(
     current_user: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
-    """Probe the agent endpoint with its OWN csk- to confirm the operator wired
-    ``CSP_SERVICE_TOKEN`` into the agent's .env (S-Q3). Owner-or-admin.
+    """Probe the agent endpoint with its OWN csk- (diagnostic only — not a gate).
 
-    Sends an empty ``messages`` body so the agent's inbound token check fires
-    *before* any LLM work: 401 → the agent rejected our csk- (missing/wrong in
-    .env); anything else (e.g. 400 "no user message") → token accepted, .env
-    correctly wired. Connection error / timeout → unreachable.
+    Distinguishes host reachability, credential acceptance, and path
+    verification. A 401 on the versioned chat path is NOT a pass: gateways
+    often authenticate before routing, so a wrong path returns 401 too.
     """
     agent = _resolve_agent(db, agent_id)
     if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
@@ -145,7 +266,10 @@ async def test_agent_connection(
     try:
         validate_outbound_url(url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
-        raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
+        raise HTTPException(
+            status_code=400,
+            detail=_safe_ssrf_detail(exc, db=db, caller=current_user),
+        )
 
     # The token the Router would present == whatever
     # get_active_plaintext_for_agent selects for outbound dispatch. Reuse it
@@ -166,29 +290,30 @@ async def test_agent_connection(
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             resp = await client.post(url, json=body, headers=headers)
-        accepted = resp.status_code != 401
-        detail = (
-            "端點接受了該 csk-(agent .env 的 CSP_SERVICE_TOKEN 配對正確)"
-            if accepted
-            else "端點以 401 拒絕該 csk-(agent .env 未設或不符)"
-        )
+        host_ok, creds, path_ok, detail = _classify_connection_status(resp.status_code)
+        verified = bool(creds and path_ok)
         log_audit_event(
             db, actor=current_user, action="test_connection",
             resource_type="agent", resource_id=agent.id,
-            status="success" if accepted else "failure",
+            status="success" if verified else "failure",
             detail=f"測試連線 → HTTP {resp.status_code}", ip_address=ip, commit=True,
         )
         return TestConnectionResponse(
-            reachable=True, token_accepted=accepted,
-            status_code=resp.status_code, detail=detail,
+            host_reachable=host_ok,
+            credentials_accepted=creds,
+            path_verified=path_ok,
+            status_code=resp.status_code,
+            detail=detail,
         )
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as exc:
         log_audit_event(
             db, actor=current_user, action="test_connection",
             resource_type="agent", resource_id=agent.id, status="failure",
-            detail=f"測試連線無法連線: {exc}", ip_address=ip, commit=True,
+            detail="測試連線無法連線", ip_address=ip, commit=True,
         )
         return TestConnectionResponse(
-            reachable=False, token_accepted=None,
-            detail=f"無法連線到 agent 端點: {exc}",
+            host_reachable=False,
+            credentials_accepted=None,
+            path_verified=None,
+            detail=_safe_unreachable_detail(exc, db=db, caller=current_user),
         )
