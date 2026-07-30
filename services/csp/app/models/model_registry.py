@@ -21,6 +21,11 @@ class ModelRegistry(Base):
     )
     is_active = Column(Boolean, default=True)
     is_router_primary = Column(Boolean, nullable=False, default=False)
+    # P4.8: at most one designated platform embedding model (partial unique
+    # index). embedding_native_dim is measured by calling the model at
+    # designation time — never a configured guess.
+    is_platform_embedding = Column(Boolean, nullable=False, default=False)
+    embedding_native_dim = Column(Integer, nullable=True)
     # Slice 6a (doc 04 §9 / doc 01 §32 拍板五態):
     # unknown / healthy / degraded / unhealthy / disabled。舊三值
     # (online/connecting/offline) 由 r1_0005 就地遷移;'disabled' 由讀取端

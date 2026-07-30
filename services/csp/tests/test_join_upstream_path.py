@@ -392,10 +392,23 @@ def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "nv-embed")
     captured: dict[str, Any] = {}
 
+    from types import SimpleNamespace
+
+    from app.services.platform_embedding import PlatformEmbedding
+
+    fake_model = SimpleNamespace(
+        name="nv-embed",
+        endpoint_url=endpoint_url.rstrip("/"),
+        is_platform_embedding=True,
+        embedding_native_dim=3,
+        is_active=True,
+    )
     monkeypatch.setattr(
         memory_service,
-        "_resolve_endpoint",
-        lambda db, name, typ: endpoint_url.rstrip("/"),
+        "resolve_platform_embedding",
+        lambda db: PlatformEmbedding(
+            model=fake_model, native_dim=3, truncates=False
+        ),
     )
     monkeypatch.setattr(
         memory_service,
@@ -406,7 +419,7 @@ def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
     monkeypatch.setattr(
         memory_service,
         "truncate_embedding",
-        lambda v: v[:2] if len(v) > 2 else v,
+        lambda v, pad_from=None: v[:2] if len(v) > 2 else list(v),
     )
 
     class _Resp:
@@ -431,8 +444,10 @@ def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
             return _Resp()
 
     monkeypatch.setattr(memory_service.httpx, "AsyncClient", _Client)
-    vec = asyncio.run(memory_service._embed(MagicMock(), "hello"))
+    vec, source, native = asyncio.run(memory_service._embed(MagicMock(), "hello"))
     assert vec == [0.1, 0.2]
+    assert source == "nv-embed"
+    assert native == 3
     assert captured["url"] == "http://nv-embed:8000/v1/embeddings"
     assert captured["guarded"] == captured["url"]
     assert "/v2/v1/" not in captured["url"]

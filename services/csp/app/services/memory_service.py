@@ -20,15 +20,15 @@ implements :class:`MemoryAdapter` against the same DTOs.
 Endpoint discovery
 ==================
 
-LLM and embedding endpoints come from the platform's existing
-``model_registry`` table (auto-seeded via ``AUTO_REGISTER_MODELS``).
-Operator overrides via env:
+LLM endpoint comes from ``model_registry`` (``MEMORY_LLM_MODEL`` /
+fallback). Embedding resolves through the platform's
+``is_platform_embedding`` designation (P4.8) — never by matching a
+hardcoded name string. That exact-name path was the silent production
+defect (``nvidia/NV-embed-V2`` vs registered ``nvidia/nv-embed-v2``).
+
+Operator override via env:
 
 * ``MEMORY_LLM_MODEL`` (default ``gemma4``) — fact extraction.
-* ``MEMORY_EMBEDDING_MODEL`` (default ``nvidia/NV-embed-V2``).
-
-Pointing the platform at a different local LLM (gpt-oss-20b,
-qwen3-32b, …) automatically routes the extractor there too.
 
 Why not anila-core's filesystem memdir?
 =======================================
@@ -52,9 +52,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from anila_core.memory.long_term import (
-    DEFAULT_EMBED_MODEL,
-    EMBED_DIM,
-    EMBED_NATIVE_DIM,
     EXTRACTION_SYSTEM_PROMPT,
     MemoryAdapter,
     MemoryReadResult,
@@ -74,6 +71,7 @@ from anila_core.security import (
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.user_memory import ConversationMemoryChunk, UserFact
+from app.services.platform_embedding import resolve_platform_embedding
 from app.services.proxy.urls import join_upstream_path
 from app.services.proxy_service import _apply_gateway_auth
 
@@ -106,7 +104,6 @@ _RETRIEVE_TOP_K = int(os.environ.get("MEMORY_RETRIEVE_TOP_K", "3"))
 _RETRIEVE_MIN_COSINE = float(os.environ.get("MEMORY_RETRIEVE_MIN_COSINE", "0.4"))
 _MAX_CHUNK_CHARS = int(os.environ.get("MEMORY_MAX_CHUNK_CHARS", "1200"))
 _LLM_MODEL_NAME = os.environ.get("MEMORY_LLM_MODEL", "gemma4")
-_EMBED_MODEL_NAME = os.environ.get("MEMORY_EMBEDDING_MODEL", DEFAULT_EMBED_MODEL)
 _HTTP_TIMEOUT = float(os.environ.get("MEMORY_HTTP_TIMEOUT", "30"))
 
 # Don't waste an LLM call on a no-op turn. The extractor is robust to
@@ -176,16 +173,28 @@ def _resolve_extraction_target(db: Session) -> tuple[str, str] | None:
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
 
-async def _embed(db: Session, text_input: str) -> list[float]:
-    """Return one truncated NV-embed-V2 vector for ``text_input``.
+async def _embed(db: Session, text_input: str) -> tuple[list[float], str, int]:
+    """Return ``(vector, source_model_name, native_dim)`` for ``text_input``.
+
+    Resolves the embedder through the platform's ``is_platform_embedding``
+    designation (P4.8) — never by matching a hardcoded name string. That
+    exact-name path was the silent production defect
+    (``nvidia/NV-embed-V2`` vs registered ``nvidia/nv-embed-v2``).
 
     Calls the embedding endpoint directly (not via CSP /v1/embeddings
     proxy) — we're already running inside CSP and the proxy adds an
     auth + token-usage layer we don't need for an internal background
-    job. token_usage attribution for memory-extraction calls is a
-    deliberate non-goal in P1 (revisit if it shows up as cost noise).
+    job.
     """
-    base_url = _resolve_endpoint(db, _EMBED_MODEL_NAME, "embedding")
+    resolved = resolve_platform_embedding(db)
+    if resolved is None:
+        raise RuntimeError(
+            "memory_service: no platform embedding model available "
+            "(designate one via POST /api/models/{id}/set-platform-embedding)"
+        )
+    model_name = resolved.name
+    native_dim = resolved.native_dim
+    base_url = resolved.model.endpoint_url.rstrip("/")
     # Registry rows store bare host or ``…/v1``; join once to the FINAL URL.
     url = join_upstream_path(base_url, "/v1/embeddings")
     # SSRF re-validation BEFORE attaching the gateway key — never send the
@@ -200,15 +209,17 @@ async def _embed(db: Session, text_input: str) -> list[float]:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         r = await client.post(
             url,
-            json={"model": _EMBED_MODEL_NAME, "input": [text_input]},
+            json={"model": model_name, "input": [text_input]},
             headers=headers,
         )
         r.raise_for_status()
     data = r.json()
     vec = data["data"][0]["embedding"]
-    # anila-core's truncate_embedding handles both 4096 (truncate) and
-    # 4000 (passthrough) cases and raises on unexpected dim.
-    return truncate_embedding(vec)
+    return (
+        truncate_embedding(vec, pad_from=resolved.pad_from),
+        model_name,
+        native_dim,
+    )
 
 
 def _vec_to_pg_literal(vec: Iterable[float]) -> str:
@@ -242,7 +253,7 @@ async def retrieve_relevant_chunks(
     threshold = min_cosine if min_cosine is not None else _RETRIEVE_MIN_COSINE
 
     try:
-        embedding = await _embed(db, query_text)
+        embedding, source_model, _native = await _embed(db, query_text)
     except Exception:
         logger.exception("memory_service: embed failed during retrieve")
         return []
@@ -252,12 +263,15 @@ async def retrieve_relevant_chunks(
     # halfvec_cosine_ops uses the ``<=>`` distance operator; cosine
     # similarity = 1 - distance. Filter on similarity >= threshold so
     # the threshold semantics match the caller's intuition.
+    # P4.8: only vectors produced by the current designated model —
+    # equal width does not make two models' spaces comparable.
     sql = text(
         """
         SELECT id, conversation_id, role, content, is_encrypted,
                1 - (embedding <=> CAST(:vec AS halfvec)) AS cosine
         FROM conversation_memory_chunks
         WHERE user_id = :user_id
+          AND embedding_source_model = :source_model
           AND (:exclude_conv IS NULL OR conversation_id <> :exclude_conv)
         ORDER BY embedding <=> CAST(:vec AS halfvec) ASC
         LIMIT :k
@@ -268,6 +282,7 @@ async def retrieve_relevant_chunks(
         {
             "vec": vec_literal,
             "user_id": user_id,
+            "source_model": source_model,
             "exclude_conv": exclude_conversation_id,
             "k": k,
         },
@@ -445,6 +460,8 @@ def _insert_chunk(
     content: str,
     is_encrypted: bool,
     embedding: list[float],
+    source_model: str,
+    native_dim: int,
 ) -> None:
     """Stage one ConversationMemoryChunk INSERT (caller owns the transaction)."""
     vec_literal = _vec_to_pg_literal(embedding)
@@ -453,9 +470,11 @@ def _insert_chunk(
             """
             INSERT INTO conversation_memory_chunks
                 (user_id, conversation_id, message_id, role, content,
-                 embedding, is_encrypted)
+                 embedding, is_encrypted,
+                 embedding_source_model, embedding_native_dim)
             VALUES (:user_id, :conversation_id, :message_id, :role, :content,
-                    CAST(:vec AS halfvec), :is_encrypted)
+                    CAST(:vec AS halfvec), :is_encrypted,
+                    :source_model, :native_dim)
             """
         ),
         {
@@ -466,6 +485,8 @@ def _insert_chunk(
             "content": content,
             "vec": vec_literal,
             "is_encrypted": is_encrypted,
+            "source_model": source_model,
+            "native_dim": native_dim,
         },
     )
 
@@ -487,7 +508,7 @@ async def _write_chunk(
     """
     if not content.strip():
         return
-    embedding = await _embed(db, content)
+    embedding, source_model, native_dim = await _embed(db, content)
     _insert_chunk(
         db,
         user_id=user_id,
@@ -497,6 +518,8 @@ async def _write_chunk(
         content=content,
         is_encrypted=is_encrypted,
         embedding=embedding,
+        source_model=source_model,
+        native_dim=native_dim,
     )
 
 
@@ -572,6 +595,7 @@ async def persist_turn(
                 else None
             )
             if user_emb is not None:
+                embedding, source_model, native_dim = user_emb
                 _insert_chunk(
                     db,
                     user_id=user_id,
@@ -580,9 +604,12 @@ async def persist_turn(
                     role="user",
                     content=user_message,
                     is_encrypted=is_encrypted,
-                    embedding=user_emb,
+                    embedding=embedding,
+                    source_model=source_model,
+                    native_dim=native_dim,
                 )
             if asst_emb is not None:
+                embedding, source_model, native_dim = asst_emb
                 _insert_chunk(
                     db,
                     user_id=user_id,
@@ -591,7 +618,9 @@ async def persist_turn(
                     role="assistant",
                     content=assistant_message,
                     is_encrypted=is_encrypted,
-                    embedding=asst_emb,
+                    embedding=embedding,
+                    source_model=source_model,
+                    native_dim=native_dim,
                 )
             db.commit()
         except Exception:

@@ -107,11 +107,23 @@ def create_collection(
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
     """Create a new (empty) collection owned by the calling user."""
+    from app.services.platform_embedding import resolve_platform_embedding
+
+    embedding_model = payload.embedding_model
+    if not embedding_model:
+        resolved = resolve_platform_embedding(db)
+        if resolved is not None:
+            embedding_model = resolved.name
+        else:
+            # Last-resort default so collection create never becomes a new
+            # gate before an admin designates a platform embedding.
+            embedding_model = "nvidia/NV-embed-V2"
+
     coll = IngestionCollection(
         name=payload.name,
         description=payload.description,
         chunking_config=payload.chunking_config.model_dump(),
-        embedding_model=payload.embedding_model,
+        embedding_model=embedding_model,
         embedding_dim=payload.embedding_dim,
         status="active",
         document_count=0,

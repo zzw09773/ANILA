@@ -11,17 +11,12 @@ consolidated under one code path (proxy_service.proxy_request). The
 worker's own ad-hoc usage-record path was removed — there's only one
 metering point now.
 
-Sprint 1 dim contract: schema is ``halfvec(4000)`` (migration 0015).
-The deployed embedder returns native NV-embed-V2 4096-d and ignores
-the OpenAI ``dimensions`` truncation param, so we truncate client-side
-(drop the trailing 96 dims; well below the Matryoshka noise floor).
-
-We assert the dim on every response — a wrong-dim INSERT into
-``halfvec(4000)`` would only fail at the asyncpg layer with a less
-helpful error.
-
-Retry policy is intentionally NOT here. The worker's job-level retry
-(via Arq) handles transient failures uniformly.
+P4.8 dim contract: schema is ``halfvec(4000)`` (HNSW ceiling). The
+designated platform model's native width is measured at designation
+time; ``truncate_embedding(..., pad_from=)`` pads or truncates to the
+column width. Vectors shorter than the column are rejected unless
+``pad_from`` equals their length — unconditional padding was tried and
+reverted (silent corruption when the endpoint drifts).
 """
 
 from __future__ import annotations
@@ -31,6 +26,7 @@ import logging
 import httpx
 
 from anila_core.ingestion.errors import EmbedError
+from anila_core.memory.long_term import EMBED_DIM, truncate_embedding
 
 from ingestion_worker.settings import WorkerSettings
 
@@ -49,8 +45,16 @@ class Embedder:
     CSP side.
     """
 
-    def __init__(self, settings: WorkerSettings) -> None:
+    def __init__(
+        self,
+        settings: WorkerSettings,
+        *,
+        model_name: str | None = None,
+        native_dim: int | None = None,
+    ) -> None:
         self._settings = settings
+        self._model_name = model_name or settings.embedding_model
+        self._native_dim = native_dim
         # Build the client once per Embedder so connection pooling is
         # reused across the .embed() calls of a single job.
         self._client = httpx.AsyncClient(
@@ -58,6 +62,23 @@ class Embedder:
             timeout=settings.embedding_timeout_seconds,
             headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
         )
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
+    def native_dim(self) -> int:
+        if isinstance(self._native_dim, int) and self._native_dim > 0:
+            return self._native_dim
+        return self._settings.embedding_dim
+
+    @property
+    def pad_from(self) -> int | None:
+        n = self.native_dim
+        if n == EMBED_DIM:
+            return None
+        return n
 
     async def embed(
         self,
@@ -78,7 +99,7 @@ class Embedder:
             r = await self._client.post(
                 "/embeddings",
                 json={
-                    "model": self._settings.embedding_model,
+                    "model": self._model_name,
                     "input": texts,
                 },
             )
@@ -122,21 +143,49 @@ class Embedder:
                 },
             ) from e
 
-        # Server-side truncation isn't supported (proxy ignores OpenAI's
-        # ``dimensions`` parameter as of 2026-04-25), so we drop the
-        # tail dims here. NV-embed-V2 native 4096 → schema 4000 = drop 96.
-        # Truncation must happen *before* dim assert so the assertion
-        # checks the post-truncation shape.
+        # Normalise to the configured schema width. Production pins
+        # embedding_dim=EMBED_DIM (4000) and goes through the shared
+        # truncate_embedding contract (pad_from = measured native).
+        # Tests occasionally use a smaller embedding_dim; keep the
+        # historical slice/assert path for those so unit fixtures stay
+        # cheap without forking the production contract.
         target_dim = self._settings.embedding_dim
-        truncated_vectors: list[list[float]] = []
-        for v in vectors:
-            if len(v) >= target_dim:
-                truncated_vectors.append(v[:target_dim])
+        pad_from = self.pad_from
+        normalized: list[list[float]] = []
+        for i, v in enumerate(vectors):
+            if target_dim == EMBED_DIM:
+                try:
+                    normalized.append(truncate_embedding(v, pad_from=pad_from))
+                except ValueError as e:
+                    raise EmbedError(
+                        code="E_EMBED_DIM_MISMATCH",
+                        retryable=False,
+                        severity="error",
+                        user_message=(
+                            f"Embedding {i} is {len(v)}-d but the schema requires "
+                            f"{target_dim}-d"
+                            + (
+                                f" (declared native pad_from={pad_from})"
+                                if pad_from is not None
+                                else ""
+                            )
+                            + ". The collection was created against a "
+                            "different model — recreate the collection or change "
+                            "the embedding model env."
+                        ),
+                        details={
+                            "got": len(v),
+                            "expected": target_dim,
+                            "pad_from": pad_from,
+                            "index": i,
+                        },
+                    ) from e
             else:
-                # Endpoint returned fewer dims than the schema — that's
-                # the model-mismatch error code, not a truncation case.
-                truncated_vectors.append(v)
-        vectors = truncated_vectors
+                if len(v) >= target_dim:
+                    normalized.append(v[:target_dim])
+                else:
+                    normalized.append(v)
+        vectors = normalized
 
         if len(vectors) != len(texts):
             raise EmbedError(

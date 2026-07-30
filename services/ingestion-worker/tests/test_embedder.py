@@ -242,3 +242,40 @@ async def test_short_vector_raises_dim_mismatch():
         assert err.details["index"] == 0
     finally:
         await embedder.close()
+
+
+async def test_short_vector_pads_when_native_dim_declared():
+    """Declared native_dim == vector length -> zero-pad to schema dim."""
+    settings = _make_settings(embedding_dim=4000)
+    embedder = Embedder(settings, model_name="small-embed", native_dim=2048)
+    vec = [0.25] * 2048
+    try:
+        with respx.mock:
+            respx.post(EMBED_URL).mock(
+                return_value=httpx.Response(200, json=_payload([vec]))
+            )
+            result = await embedder.embed(["x"])
+        assert len(result) == 1
+        assert len(result[0]) == 4000
+        assert result[0][:2048] == vec
+        assert result[0][2048:] == [0.0] * (4000 - 2048)
+    finally:
+        await embedder.close()
+
+
+async def test_declared_native_still_rejects_wrong_short_width():
+    """pad_from=2048 must still reject a 1536-d response."""
+    settings = _make_settings(embedding_dim=4000)
+    embedder = Embedder(settings, native_dim=2048)
+    short = [0.0] * 1536
+    try:
+        with respx.mock:
+            respx.post(EMBED_URL).mock(
+                return_value=httpx.Response(200, json=_payload([short]))
+            )
+            with pytest.raises(EmbedError) as excinfo:
+                await embedder.embed(["x"])
+        assert excinfo.value.code == "E_EMBED_DIM_MISMATCH"
+        assert excinfo.value.details["got"] == 1536
+    finally:
+        await embedder.close()
