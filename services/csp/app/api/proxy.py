@@ -74,12 +74,15 @@ def _require_conversation_access(
     latching, so accepting an arbitrary numeric id would let one user mutate
     another user's conversation metadata. Admin-tier callers retain the
     existing operational bypass.
+
+    Unauthorised and missing collapse to the same 404 (models pattern) so
+    existence is not an oracle.
     """
     conv = db.get(Conversation, conversation_id)
-    if conv is None:
+    if conv is None or (
+        conv.user_id != caller.user.id and not is_admin_tier(caller.user)
+    ):
         raise HTTPException(status_code=404, detail="Conversation not found")
-    if conv.user_id != caller.user.id and not is_admin_tier(caller.user):
-        raise HTTPException(status_code=403, detail="無權使用此 conversation")
 
 
 def _agent_policy_level(agent) -> ClassificationLevel:
@@ -865,6 +868,16 @@ async def chat_completions(
             task_ctx=task_ctx,
             conv_id_int=conv_id_int,
         )
+        # Bind session ownership only after permission + ceiling gates so a
+        # refused caller cannot claim anila_session_id (P2.4 H3).
+        raw_sid = body.get("anila_session_id") or body.get("session_id")
+        if isinstance(raw_sid, str) and raw_sid.strip():
+            from app.services.agent_session_owner_service import (
+                ensure_agent_session_owner,
+            )
+            ensure_agent_session_owner(
+                db, session_id=raw_sid, owner_user_id=user.id,
+            )
         # Usage attribution: inbound X-ANILA-Trace-Id wins (legacy
         # contract); a task-linked call without one falls back to the
         # task row's trace id (doc 04 AC10 歸戶).
@@ -1202,6 +1215,16 @@ async def resume_agent_session(
         raise HTTPException(
             status_code=404, detail=f"Agent '{agent_name}' 未註冊或未審核",
         )
+
+    # Same ownership predicate as agent chat with anila_session_id —
+    # resume without a prior bind (or under another caller) → 404.
+    from app.services.agent_session_owner_service import ensure_agent_session_owner
+    ensure_agent_session_owner(
+        db,
+        session_id=session_id,
+        owner_user_id=caller.user.id,
+        missing_is_error=True,
+    )
 
     user = caller.user
     target = (

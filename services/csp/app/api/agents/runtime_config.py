@@ -12,9 +12,13 @@ from app.models.agent import Agent
 from app.models.user import User
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import is_admin_tier, verify_service_token
+from app.services.auth_service import verify_service_token
 
-from app.api.agents._common import _client_ip, _require_developer_or_admin
+from app.api.agents._common import (
+    _client_ip,
+    _require_developer_or_admin,
+    ensure_agent_view_access,
+)
 
 router = APIRouter()
 
@@ -52,10 +56,7 @@ def get_agent_runtime_config(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
-    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
-        raise HTTPException(
-            status_code=403, detail="只有 agent 擁有者或管理員可讀取此設定",
-        )
+    ensure_agent_view_access(agent, current_user)
     return {
         "agent_id": agent.id,
         "agent_name": agent.name,

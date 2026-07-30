@@ -389,7 +389,8 @@ class TestRegisterAndUpdateBindings:
             json={"collection_ids": [c.id]},
             headers=_auth(other_token),
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Agent 不存在"
 
         owner_token = login(client, "auth-owner")
         resp = client.put(

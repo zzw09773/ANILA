@@ -89,9 +89,12 @@ def _agent_or_404(agent_ref: str, db: Session) -> Agent:
 
 
 def _require_function_editor(agent: Agent, user: User) -> None:
-    """Owner of the agent (developer) or admin tier may edit its functions."""
+    """Owner of the agent (developer) or admin tier may edit its functions.
+
+    Non-editors collapse to the same 404 as a missing agent (models pattern).
+    """
     if not is_admin_tier(user) and agent.owner_user_id != user.id:
-        raise HTTPException(status_code=403, detail="無權限編輯此 Agent 的功能")
+        raise HTTPException(status_code=404, detail="Agent 不存在")
 
 
 def _require_function_reader(agent: Agent, user: User, db: Session) -> None:

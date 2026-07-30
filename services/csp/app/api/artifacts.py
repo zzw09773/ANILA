@@ -125,30 +125,55 @@ def require_service_caller(
 
 @dataclass(frozen=True)
 class _ExportCaller:
-    """匯出面呼叫者:user JWT 或 service token。"""
+    """匯出面呼叫者:user JWT 或 service_client／legacy service token。"""
 
     actor_type: str
     actor_id: str
     exporter_user_id: int | None
     exporter_employee_id: str | None
+    is_admin: bool = False
+    # True when actor is a registered service_client (not agent csk-).
+    may_attribute_employee: bool = False
 
 
 def require_export_caller(
     request: Request, db: Session = Depends(get_db)
 ) -> _ExportCaller:
-    """匯出 gate 接受 user JWT 或 service token(doc 09 Artifact export)。"""
+    """匯出 gate 接受 user JWT 或 service_client／legacy service token。
+
+    Agent ``csk-`` credentials are accepted by the shared verify helper for
+    other s2s paths, but must not open artifact export — that would let any
+    developer-issued agent token bypass ``ensure_artifact_access``.
+    """
     matched, identity = _resolve_service_token(request, db)
     if matched:
-        actor_id = str(getattr(identity, "id", 0) or 0)
+        if identity is not None and getattr(identity, "kind", None) == "agent":
+            raise HTTPException(
+                status_code=403,
+                detail="artifact 匯出僅接受 service_client 或使用者憑證",
+            )
+        if identity is None:
+            actor_id = "legacy"
+            may_attr = True  # legacy fleet token (Studio / tests)
+        else:
+            actor_id = str(
+                getattr(identity, "service_client_id", None)
+                or getattr(identity, "credential_id", 0)
+                or 0
+            )
+            may_attr = getattr(identity, "kind", None) == "service_client"
         return _ExportCaller(
             actor_type="service", actor_id=actor_id,
             exporter_user_id=None, exporter_employee_id=None,
+            is_admin=False, may_attribute_employee=may_attr,
         )
     # 落到使用者 JWT / sk- API key / cookie(匿名由 get_caller fail-closed 401)。
     user = get_caller(request, db).user
     return _ExportCaller(
         actor_type="user", actor_id=str(user.id),
         exporter_user_id=user.id, exporter_employee_id=user.username,
+        is_admin=is_admin_tier(user),
+        may_attribute_employee=False,
     )
 
 
@@ -368,6 +393,34 @@ def export_artifact(
     )
 
     artifact = _load_artifact_or_404(db, artifact_id)
+    # User JWT 面與 GET /api/artifacts/{id} 共用同一物件授權謂詞
+    # (ensure_artifact_access);service_client／legacy 面維持 Studio 匯出。
+    if caller.actor_type == "user" and caller.exporter_user_id is not None:
+        try:
+            artifacts.ensure_artifact_access(
+                db,
+                artifact=artifact,
+                viewer_user_id=caller.exporter_user_id,
+                is_admin=caller.is_admin,
+            )
+        except PermissionError:
+            # Record the refused attempt before surfacing 403 (same posture
+            # as message_action access_denied audit).
+            policy.record_decision(
+                db,
+                action="artifact.export",
+                resource_type="artifact",
+                resource_id=str(artifact.id),
+                decision="deny",
+                actor_type=caller.actor_type,
+                actor_id=caller.actor_id,
+                task_id=artifact.source_task_id,
+                reason="無權存取此 artifact",
+                metadata={"deny_reason": "access_denied"},
+            )
+            raise HTTPException(
+                status_code=403, detail="無權存取此 artifact"
+            ) from None
     artifact_level = ClassificationLevel.from_storage(artifact.classification_level)
     target_floor = payload.target_classification_floor
     # SYSTEM-MAP §8 L241:可以做 = 密等 ≤ 營業秘密。
@@ -406,7 +459,11 @@ def export_artifact(
         )
     exporter_user_id = caller.exporter_user_id
     exporter_employee_id = caller.exporter_employee_id
-    if caller.actor_type == "service" and payload.employee_id:
+    if (
+        caller.actor_type == "service"
+        and caller.may_attribute_employee
+        and payload.employee_id
+    ):
         exporter_user_id, exporter_employee_id = artifacts.resolve_owner(
             db, requester_user_id=None, employee_id=payload.employee_id,
         )

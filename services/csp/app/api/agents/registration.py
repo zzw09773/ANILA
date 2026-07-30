@@ -28,6 +28,7 @@ from app.api.agents._common import (
     _require_agent_editor,
     _require_developer_or_admin,
     apply_default_classification_level,
+    ensure_agent_view_access,
     parse_stored_classification_level,
     refuse_bind_above_agent_level,
     refuse_classification_downgrade,
@@ -455,8 +456,7 @@ def get_agent(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
-    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="無權限查看此 Agent")
+    ensure_agent_view_access(agent, current_user)
     return _serialize_agent(agent)
 
 

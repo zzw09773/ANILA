@@ -1414,11 +1414,14 @@ def _share_target_label(db: Session, share: ConversationShare) -> str:
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _check_access(conv: Conversation, user: User) -> None:
-    """Owner-or-admin write gate (mutations, share management)."""
+    """Owner-or-admin write gate (mutations, share management).
+
+    Unauthorised collapses to the same 404 as missing (models pattern).
+    """
     if is_admin_tier(user):
         return
     if conv.user_id != user.id:
-        raise HTTPException(status_code=403, detail="無權存取此對話")
+        raise HTTPException(status_code=404, detail="找不到此對話")
 
 
 def _check_read_access(db: Session, conv: Conversation, user: User) -> None:
@@ -1427,6 +1430,10 @@ def _check_read_access(db: Session, conv: Conversation, user: User) -> None:
     Share recipients additionally need the conversation still within the
     outbound ceiling (≤營業秘密). Create-time gating alone would leave a
     hole after a later classify / agent latch to 密／機密.
+
+    No relationship to the conversation → 404 (existence not an oracle).
+    Active share but over ceiling → 403 with a self-help message: the
+    recipient already knows the share exists, so distinguishing is useful.
     """
     from app.schemas.contracts.classification import (
         ClassificationLevel,
@@ -1438,13 +1445,7 @@ def _check_read_access(db: Session, conv: Conversation, user: User) -> None:
     if conv.user_id == user.id:
         return
     if not user_has_active_share(db, conv, user):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "無權讀取此對話。若認為應可讀取，請向對話擁有者確認"
-                "是否已分享給你或你所屬單位，且分享尚未撤銷。"
-            ),
-        )
+        raise HTTPException(status_code=404, detail="找不到此對話")
     level = ClassificationLevel.from_storage(conv.classification_level)
     if not outbound_action_allowed(level):
         raise HTTPException(
