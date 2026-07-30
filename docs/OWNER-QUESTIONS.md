@@ -266,3 +266,21 @@ csp 掛載 `/assets` 並送出 index.html,nginx 的 `location /` 又 proxy 到 c
 **真正的狀況**:治理中心的改動要**重建 csp** 才會生效(不是 anila-ui)。今天那個
 「權限讀取失敗不開視窗」的修正之所以沒出現,只是因為我在那個 commit 之後只重建了 anila-ui。
 
+
+---
+
+## Q11 — 備份的預設路徑要 root(2026-07-31 實測發現)
+
+`infra/deployment/scripts/backup-csp-db.sh:33` 預設 `ANILA_BACKUP_DIR=/var/backups/anila`,
+**一般使用者跑會在第一步就 `mkdir: 拒絕不符權限的操作`**。指定路徑就能跑
+(實測:784K、不到一秒、788 個項目,`BACKUP_OK`)。
+
+**為什麼要問你**:這是「要不要 sudo」的決定。三個選項:
+- ①預設改成使用者家目錄底下(例如 `~/anila-backups`)——**跑得動最重要**,一人維運不該每次都要 sudo
+- ②維持 `/var/backups/anila`,但在 runbook 明寫要先 `sudo mkdir` 並 `chown` 一次
+- ③排程時本來就用 root cron,那預設值是對的,只是手動跑要記得帶環境變數
+
+**我的建議**:①。備份最怕的是「因為麻煩所以沒跑」,而不是放錯目錄。
+真的要放系統目錄,排程那一份可以另外指定。
+
+**目前假設**:腳本不動,今晚要備份時都帶 `ANILA_BACKUP_DIR=` 指定路徑。
