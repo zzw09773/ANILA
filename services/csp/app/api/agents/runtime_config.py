@@ -71,46 +71,20 @@ def patch_agent_runtime_config(
     current_user: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
-    """Sprint 13 PR A3 — write per-agent runtime config.
+    """Runtime-config writes are retired.
 
-    PATCH semantics: the body's ``runtime_config`` value REPLACES the
-    stored value (no deep-merge). Pass ``None`` to clear the override
-    so the agent reverts to code defaults; pass ``{}`` to enforce
-    "explicit empty" semantics (cleared permission lists, no
-    guardrails). Audit logged.
-
-    Validation here is intentionally loose — the column accepts any
-    JSON shape because admins may set keys the deployed agent code
-    doesn't recognise yet (forward-compat). The agent-side parser
-    (PR A4) is responsible for tolerating unknown keys.
+    CSP still stores a ``runtime_config`` column and exposes a poller in
+    anila-core, but the official agent template never starts that poller.
+    Accepting admin edits while nothing applies them was a silent no-op
+    (FAKE-CONTROLS §8). Refuse writes; GET remains for read-only inspection.
     """
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent 不存在")
-    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
-        raise HTTPException(
-            status_code=403, detail="只有 agent 擁有者或管理員可變更此設定",
-        )
-
-    agent.runtime_config = payload.runtime_config
-    db.commit()
-    db.refresh(agent)
-
-    log_audit_event(
-        db, actor=current_user, action="set_runtime_config",
-        resource_type="agent", resource_id=agent.id,
+    raise HTTPException(
+        status_code=410,
         detail=(
-            f"更新 agent「{agent.name}」runtime_config "
-            f"({'cleared' if payload.runtime_config is None else 'set'})"
+            "runtime_config 熱更新未出貨:官方 agent 不會輪詢此設定。"
+            "請在 agent 程式碼調整工具權限/護欄,勿再經此 API 寫入。"
         ),
-        ip_address=_client_ip(request), commit=True,
     )
-
-    return {
-        "agent_id": agent.id,
-        "agent_name": agent.name,
-        "runtime_config": agent.runtime_config,
-    }
 
 
 @router.get("/me/runtime-config")

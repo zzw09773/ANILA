@@ -11,7 +11,7 @@ from pathlib import Path
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agent
@@ -90,6 +90,29 @@ _IGNORED_TEMPLATE_SUFFIXES = {".pyc", ".pyo"}
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+_DEAD_CAPABILITIES_MSG = (
+    "capabilities 已退場:執行路徑不閘控此欄位,請勿再傳送"
+)
+_DEAD_AGENT_CEILING_MSG = (
+    "classification_ceiling 已退場:agent 請用 default_classification_level;"
+    "模型端 ceiling 才有寫入與 enforcement"
+)
+
+
+def _reject_dead_agent_controls(data: object) -> object:
+    """Refuse vestigial fields that were accepted then discarded."""
+    if not isinstance(data, dict):
+        return data
+    if data.get("classification_ceiling") is not None:
+        raise ValueError(_DEAD_AGENT_CEILING_MSG)
+    if data.get("capabilities") is not None:
+        raise ValueError(_DEAD_CAPABILITIES_MSG)
+    # Drop explicit nulls so they cannot look like a successful clear.
+    data.pop("classification_ceiling", None)
+    data.pop("capabilities", None)
+    return data
+
+
 class AgentRegisterRequest(BaseModel):
     name: str
     endpoint_url: str
@@ -113,7 +136,6 @@ class AgentRegisterRequest(BaseModel):
         default=None,
         description="（相容）單一知識庫 id；未送 collection_ids 時展開為單元素集合",
     )
-    capabilities: dict | None = None
     input_schema: dict | None = None
     # doc 05 §3 runtime_type(5 值;預設 openai_compatible_agent = 現況 endpoint proxy)。
     runtime_type: RuntimeType = RuntimeType.OPENAI_COMPATIBLE_AGENT
@@ -125,6 +147,11 @@ class AgentRegisterRequest(BaseModel):
     # Stored in ``default_classification_level``; ``requires_encryption`` is
     # derived (level >= 密). Unknown values → 422 via ClassificationLevel.
     default_classification_level: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_dead_controls(cls, data: object) -> object:
+        return _reject_dead_agent_controls(data)
 
 
 class AgentResponse(BaseModel):
@@ -141,7 +168,6 @@ class AgentResponse(BaseModel):
     # legacy callers; prefer bound_collection_ids for multi-bind.
     bound_collection_id: int | None = None
     bound_collection_ids: list[int] = Field(default_factory=list)
-    capabilities: dict | None = None
     health_status: str
     approval_status: str
     requires_encryption: bool = False
@@ -150,11 +176,11 @@ class AgentResponse(BaseModel):
     runtime_type: str | None = None
     agent_version: str | None = None
     audit_level: str | None = None
-    classification_ceiling: str | None = None
     default_classification_level: str | None = None
     manifest_json: dict | None = None
     # Sprint 13 PR A3 — admin-editable runtime knobs (tool permissions,
     # workspace caps, guardrails). NULL means "agent uses code defaults".
+    # Writes retired (official agent never polls); field kept for read-only.
     runtime_config: dict | None = None
     created_at: datetime
 
@@ -197,14 +223,12 @@ def _serialize_agent(agent: Agent) -> dict:
         "base_model_name": base.display_name if base else None,
         "bound_collection_ids": bound_ids,
         "bound_collection_id": bound_ids[0] if bound_ids else None,
-        "capabilities": agent.capabilities,
         "health_status": normalized,
         "approval_status": agent.approval_status,
         "requires_encryption": bool(getattr(agent, "requires_encryption", False)),
         "runtime_type": getattr(agent, "runtime_type", None),
         "agent_version": getattr(agent, "agent_version", None),
         "audit_level": getattr(agent, "audit_level", None),
-        "classification_ceiling": getattr(agent, "classification_ceiling", None),
         "default_classification_level": getattr(
             agent, "default_classification_level", None
         ),
@@ -219,6 +243,8 @@ class AgentUpdateRequest(BaseModel):
     - ``name`` (agent_id referenced by every registered client — immutable)
     - ``approval_status`` (dedicated /approve + /reject admin endpoints)
     - ``owner_user_id`` (transfer of ownership isn't exposed yet)
+    - ``capabilities`` / ``classification_ceiling`` (accepted-then-discarded;
+      refuse rather than store a setting that looks enforced)
 
     ``default_classification_level`` may also be set via the dedicated
     ``POST /api/agents/{id}/classification`` endpoint; both paths derive
@@ -228,7 +254,6 @@ class AgentUpdateRequest(BaseModel):
     api_version: str | None = None
     description_for_router: str | None = None
     base_model_id: int | None = None
-    capabilities: dict | None = None
     input_schema: dict | None = None
     # doc 05 §4 — replace the stored manifest snapshot (validated fail-closed).
     manifest: dict | None = None
@@ -238,6 +263,11 @@ class AgentUpdateRequest(BaseModel):
     # Omit both to leave bindings unchanged. Empty list clears all bindings.
     collection_ids: list[int] | None = None
     collection_id: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_dead_controls(cls, data: object) -> object:
+        return _reject_dead_agent_controls(data)
 
 
 def _validate_collection_access_for_ids(
@@ -364,7 +394,7 @@ def register_agent(
         description_for_router=request.description_for_router,
         base_model_id=request.base_model_id,
         bound_collection_id=None,  # set via bindings helper after flush
-        capabilities=request.capabilities,
+        capabilities=None,
         input_schema=request.input_schema,
         runtime_type=request.runtime_type.value,
         manifest_json=manifest_json,

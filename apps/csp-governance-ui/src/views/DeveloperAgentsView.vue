@@ -135,7 +135,6 @@ def employee_count(department: str) -&gt; int:
             <th>名稱</th>
             <th>端點</th>
             <th style="width: 140px">型別 / 版本</th>
-            <th style="width: 90px">分類上限</th>
             <th style="width: 100px">健康</th>
             <th style="width: 120px">審批狀態</th>
             <th style="width: 100px">分類等級</th>
@@ -155,9 +154,6 @@ def employee_count(department: str) -&gt; int:
             <td>
               <div class="cell-strong" style="font-family: var(--font-mono); font-size: var(--t-2xs);">{{ agent.runtime_type || '—' }}</div>
               <div class="cell-meta">{{ agent.version || '—' }}</div>
-            </td>
-            <td>
-              <span class="cell-meta">{{ agent.classification_ceiling || '—' }}</span>
             </td>
             <td><TermBadge :variant="healthVariant(agent.health_status)" dot>{{ agent.health_status }}</TermBadge></td>
             <td><TermBadge :variant="approvalVariant(agent.approval_status)" dot>{{ approvalLabel(agent.approval_status) }}</TermBadge></td>
@@ -364,9 +360,6 @@ def employee_count(department: str) -&gt; int:
             </select>
           </TermField>
         </div>
-        <TermField label="capabilities · json" hint='e.g. {"streaming":true,"vision":false}' :error="editFormError">
-          <textarea v-model="editForm.capabilitiesRaw" rows="3" class="term-textarea" style="font-family: var(--font-mono); font-size: var(--t-xs);" />
-        </TermField>
         <TermField
           label="預設分類等級"
           hint="此 agent 回覆的對話會以所選等級列管記錄；營業秘密起的讀取與外流會落稽核，密與機密另會阻擋複製、匯出與分享。對已列管的對話，效果不可自行逆轉。"
@@ -400,7 +393,6 @@ def employee_count(department: str) -&gt; int:
           <div><dt>API 版本</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
           <div><dt>runtime 型別</dt><dd><code>{{ detailAgent.runtime_type || '—' }}</code></dd></div>
           <div><dt>版本</dt><dd>{{ detailAgent.version || '—' }}</dd></div>
-          <div><dt>分類上限</dt><dd>{{ detailAgent.classification_ceiling || '—' }}</dd></div>
           <div><dt>健康</dt><dd>{{ detailAgent.health_status }}</dd></div>
           <div>
             <dt>審批狀態</dt>
@@ -463,25 +455,6 @@ def employee_count(department: str) -&gt; int:
             <TermButton size="xs" variant="ghost" label="停用" @click="openRejectModal(detailAgent)" />
           </div>
         </template>
-
-        <TermSection title="capabilities" />
-        <pre v-if="hasCapabilities(detailAgent)" class="detail__pre">{{ prettyJson(detailAgent.capabilities) }}</pre>
-        <TermEmpty v-else message="manifest 中未宣告 capabilities" />
-
-        <!-- Sprint 13 PR C1 — quick link to the per-agent runtime
-             config editor (tool permissions / workspace caps / guardrails). -->
-        <TermSection title="執行設定" />
-        <p class="cell-meta">
-          工具權限 · 工作區上限 · 護欄 — 透過 agent 上的 30 秒輪詢即時套用。
-          {{ detailAgent.runtime_config ? '目前已覆寫。' : '使用編譯內建預設。' }}
-        </p>
-        <router-link
-          :to="{ name: 'AgentRuntimeConfig', params: { id: detailAgent.id } }"
-          class="term-action"
-          style="display: inline-block; margin-top: 4px;"
-        >
-          編輯執行設定 →
-        </router-link>
 
         <TermSection title="狀態時間軸" />
         <ol class="timeline">
@@ -727,7 +700,7 @@ const editing = ref(false)
 const editFormError = ref('')
 const editForm = ref({
   endpoint_url: '', description_for_router: '', api_version: '',
-  base_model_id: null, capabilitiesRaw: '', default_classification_level: '無機密',
+  base_model_id: null, default_classification_level: '無機密',
   collection_ids: [],
 })
 const feedback = ref({ type: 'success', message: '' })
@@ -837,12 +810,6 @@ function ownerDisplay(agent) {
   if (!agent) return '—'
   if (agent.owner_username) return `${agent.owner_username}${agent.owner_user_id ? ` (#${agent.owner_user_id})` : ''}`
   return agent.owner_user_id ? `#${agent.owner_user_id}` : '—'
-}
-function hasCapabilities(agent) {
-  const c = agent?.capabilities
-  if (!c) return false
-  if (typeof c !== 'object') return true
-  return Object.keys(c).length > 0
 }
 
 const filteredAgents = computed(() => {
@@ -1172,8 +1139,6 @@ function openEditModal(agent) {
     description_for_router: agent.description_for_router || '',
     api_version: agent.api_version || 'v1',
     base_model_id: agent.base_model_id ?? null,
-    capabilitiesRaw: agent.capabilities && Object.keys(agent.capabilities).length
-      ? JSON.stringify(agent.capabilities, null, 2) : '',
     default_classification_level: agent.default_classification_level || '無機密',
     collection_ids: bound,
   }
@@ -1185,20 +1150,11 @@ function closeEditModal() { showEditModal.value = false; editTarget.value = null
 async function handleUpdateAgent() {
   if (!editTarget.value || editing.value) return
   if (!editForm.value.base_model_id) { editFormError.value = 'base model required'; return }
-  let capabilities = null
-  const raw = (editForm.value.capabilitiesRaw || '').trim()
-  if (raw) {
-    try {
-      capabilities = JSON.parse(raw)
-      if (typeof capabilities !== 'object' || Array.isArray(capabilities)) throw new Error('capabilities must be an object')
-    } catch (err) { editFormError.value = `capabilities json error: ${err.message}`; return }
-  }
   const patch = {
     endpoint_url: editForm.value.endpoint_url.trim() || null,
     description_for_router: (editForm.value.description_for_router || '').trim() || null,
     api_version: (editForm.value.api_version || '').trim() || null,
     base_model_id: editForm.value.base_model_id,
-    capabilities,
     default_classification_level: editForm.value.default_classification_level || '無機密',
     collection_ids: Array.isArray(editForm.value.collection_ids)
       ? [...editForm.value.collection_ids]

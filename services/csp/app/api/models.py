@@ -287,6 +287,15 @@ def create_model(
 
     _enforce_endpoint_url(request.endpoint_url)
 
+    if (request.protocol or "openai_compatible") != "openai_compatible":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "protocol 僅支援 openai_compatible;"
+                "custom_adapter 未被 proxy 實作,請勿選用"
+            ),
+        )
+
     # Validate base_model_id if provided
     if request.base_model_id:
         base = db.query(ModelRegistry).filter(ModelRegistry.id == request.base_model_id).first()
@@ -1497,6 +1506,17 @@ def update_model(
             raise HTTPException(status_code=404, detail="模型不存在")
 
     update_data = request.model_dump(exclude_unset=True)
+
+    if "protocol" in update_data and (
+        update_data["protocol"] or "openai_compatible"
+    ) != "openai_compatible":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "protocol 僅支援 openai_compatible;"
+                "custom_adapter 未被 proxy 實作,請勿選用"
+            ),
+        )
 
     # Designated non-admin authors: address only. Any other field in the
     # same request is refused — activation, ceiling, department, credentials

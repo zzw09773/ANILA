@@ -71,8 +71,6 @@ services:
       # Dev 寫死 "1"，不經 ${} 展開——避免被 .env 裡的 ANILA_ALLOW_DEV_SECRET=0
       # 鎖死。startup_security 在 dev 模式下只 log warning 不擋。
       ANILA_ALLOW_DEV_SECRET: "1"
-      # Dev keeps Swagger /docs + /openapi.json on (prod default off, S-117).
-      ENABLE_API_DOCS: "true"
       # Dev-only relax (S-117 URL guard): dev runs every model/agent on
       # docker-internal http endpoints (e.g. http://flux2-dev-agent:8000), so
       # register + health-check would otherwise fail "scheme must be https".

@@ -195,7 +195,7 @@ app = FastAPI(
     redoc_url=None,
     # 預設 ``/openapi.json`` 是 unauth public,任何訪客都能拿到完整 API schema
     # (含 admin endpoints 的 request body shape) 做 recon。設 None 關掉內建路由,
-    # 改用下方 admin-gated 版本(中科院內網比 ENABLE_API_DOCS gating 更嚴)。
+    # 改用下方 admin-gated 版本。
     openapi_url=None,
     lifespan=lifespan,
 )

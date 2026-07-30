@@ -197,6 +197,13 @@ def create_service(
         raise HTTPException(status_code=409, detail=f"slug「{slug}」已存在")
     if not slug:
         slug = unique_slug(data["name"], taken, fallback="service")
+    # healthcheck_url was never probed (FAKE-CONTROLS §7). Refuse rather than
+    # store a setting that looks like it protects availability.
+    if data.get("healthcheck_url"):
+        raise HTTPException(
+            status_code=422,
+            detail="healthcheck_url 已退場:平台不會探測此欄位,請勿再傳送",
+        )
     ceiling = data.get("classification_ceiling")
     service = RegisteredService(
         name=data["name"],
@@ -217,7 +224,7 @@ def create_service(
         supports_launch_token=data.get("supports_launch_token", False),
         data_ingress=data.get("data_ingress") or [],
         data_egress=data.get("data_egress") or [],
-        healthcheck_url=data.get("healthcheck_url"),
+        healthcheck_url=None,
         audit_callback_url=data.get("audit_callback_url"),
         trace_callback_url=data.get("trace_callback_url"),
         # R-SEC (ADR-0008): admin-tier only — create_service is require_admin.
@@ -272,6 +279,11 @@ def update_service(
         raise HTTPException(status_code=403, detail="需要管理員或該服務管理員權限")
 
     update_data = request.model_dump(exclude_unset=True)
+    if "healthcheck_url" in update_data:
+        raise HTTPException(
+            status_code=422,
+            detail="healthcheck_url 已退場:平台不會探測此欄位,請勿再傳送",
+        )
     if not admin_tier:
         # R-SEC (ADR-0008): admin-only fields are off-limits to a per-service
         # admin BEFORE the db_editable_fields whitelist is even consulted — so

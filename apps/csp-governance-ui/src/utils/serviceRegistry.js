@@ -76,7 +76,6 @@ export function normalizeService(row) {
       ? source.service_admin_user_ids
       : [],
     classification_ceiling: source.classification_ceiling || '',
-    healthcheck_url: source.healthcheck_url || '',
     required_roles: Array.isArray(source.required_roles) ? source.required_roles : [],
   }
 }
