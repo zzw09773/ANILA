@@ -298,6 +298,54 @@ services:
     restart: unless-stopped
     logging: *anila-logging
 
+  # ── ASR gateway (串流語音輸入;dev / 帳密測試環境)──────────────────────
+  # 對應 platform.yml 的 asr-gateway,但走 dev 慣例:直接 build、dev 預設 env、
+  # REQUIRE_CARD_LOGIN_ONLY=false(帳密登入,不用卡)。
+  asr-gateway:
+    build:
+      context: ../../services/asr-gateway
+      dockerfile: Dockerfile
+    expose:
+      - "8200"
+    environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
+      ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-dev-asr-token}
+      ASR_ALLOW_HTTP_DECODER: ${ASR_ALLOW_HTTP_DECODER:-0}
+      ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
+      ASR_BEAM_SIZE: ${ASR_BEAM_SIZE:-5}
+      ASR_PARTIALS_ENABLED: ${ASR_PARTIALS_ENABLED:-1}
+      ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
+      ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
+      CSP_BASE_URL: http://csp:8000
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
+      JWT_KID: anila-v1
+      JWT_ISSUER: "https://anila.internal/csp"
+      JWT_AUDIENCE: "anila-platform"
+      JWT_LEEWAY_SECONDS: "60"
+      REVOCATION_RECONCILE_INTERVAL_SECONDS: "5"
+      REQUIRE_CARD_LOGIN_ONLY: "false"
+      COOKIE_SECURE: "true"
+      LOG_LEVEL: INFO
+    depends_on:
+      csp:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - anila-models-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8200/asr/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+    logging: *anila-logging
+
   # ── ANILA LM (no-SSO 版本，從 feature/no-sso branch build) ───────────────
   anilalm:
     build:

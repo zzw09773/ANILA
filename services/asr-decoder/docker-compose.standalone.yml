@@ -1,0 +1,66 @@
+# ── asr-decoder:外部版(獨立 GPU 主機)────────────────────────────────
+#
+# 用途:decoder 跑在「不是平台主機」的 GPU 機器上(例:MLSteam / aiops,
+# 同 anila-agent 的部署模式),平台的 asr-gateway 以 http 打進來。
+#
+# 內部版(decoder 與平台同機、走 anila-models-net、不開 host port)請改用
+# infra/models/docker-compose.yml 內的 asr-decoder 定義,不要用這個檔。
+#
+# ⚠ 安全:這個檔會把 decoder 綁上 host port,X-Token 是唯一的防線。
+#   - ASR_DECODER_TOKEN 必須是長亂數(建議 `openssl rand -hex 32`),絕不進 repo。
+#   - ports 預設綁 0.0.0.0(gateway 在別台,必須能連進來)。務必用防火牆
+#     把來源限縮到平台主機 IP,不要讓整個內網都打得到。
+#   - 純 http 是 MLSteam NodePort 的現實(同 anila-agent);gateway 端必須
+#     顯式開 ASR_ALLOW_HTTP_DECODER=1 才會接受,預設是關的。
+#
+# 部署:
+#   cp .env.example .env   # 填 ASR_DECODER_TOKEN / ASR_MODEL_SIZE / 卡號
+#   docker compose -f docker-compose.standalone.yml -p asr-decoder up -d
+#   docker compose -f docker-compose.standalone.yml -p asr-decoder logs -f
+#
+# 驗證(容器內沒有裝 python 以外的工具,curl 有):
+#   curl -sf http://localhost:${ASR_DECODER_PORT:-9000}/health
+
+services:
+  asr-decoder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${ANILA_IMAGE_ASR_DECODER:-anila/asr-decoder:0.1.0}
+    ports:
+      # 外部版必須開 host port —— gateway 在另一台機器。
+      - "${ASR_DECODER_BIND:-0.0.0.0}:${ASR_DECODER_PORT:-9000}:9000"
+    environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}
+      # 與 gateway 共享的密鑰。fail-loud:沒填 decoder 直接拒絕啟動。
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:?ASR_DECODER_TOKEN must be set (openssl rand -hex 32)}
+      # medium | large-v3。部署期依 GPU 餘裕決定,換尺寸不用重 build。
+      ASR_MODEL_SIZE: ${ASR_MODEL_SIZE:-medium}
+      ASR_MODEL_DIR: /var/anila/asr-models
+      # air-gap 一定要 1:禁止對 HuggingFace 的出向請求,權重缺了就 fail loud。
+      ASR_LOCAL_FILES_ONLY: ${ASR_LOCAL_FILES_ONLY:-1}
+      ASR_DEVICE: ${ASR_DEVICE:-cuda}
+      # ⚠ V100(Volta)用 float16。Volta 沒有 int8 tensor core,int8 省 VRAM
+      # 但更慢(官方 V100S benchmark:fp16 54s vs int8 59s)。int8 要 Turing 以後。
+      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-float16}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # 權重目錄:air-gap bundle 解到 host 的 ./models,內容是轉檔好的
+      # CTranslate2 模型(含 model.bin)或 HuggingFace 快取結構。
+      # :ro —— decoder 只讀權重,沒有任何理由寫進去。
+      - ${ASR_MODEL_HOST_DIR:-./models}:/var/anila/asr-models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # 釘卡:不要跟 LLM 搶同一張,推論延遲互相干擾很難 debug。
+              device_ids: ["${ASR_GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
