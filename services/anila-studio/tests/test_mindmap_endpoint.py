@@ -296,6 +296,7 @@ def test_full_pipeline_round_trip(test_app, tmp_path):
                 assert final["node_count"] == 7  # 1 + 3 + 3 leaves
                 assert "svg" in final["download_urls"]
                 assert "dot" in final["download_urls"]
+                assert "json" in final["download_urls"]
 
                 # SVG download
                 svg_resp = client.get(
@@ -314,6 +315,73 @@ def test_full_pipeline_round_trip(test_app, tmp_path):
                 assert dot_resp.status_code == 200
                 assert "digraph mindmap" in dot_resp.text
                 assert "rankdir=LR" in dot_resp.text
+
+                # JSON spec download — 前端互動式樹狀檢視的資料來源
+                json_resp = client.get(
+                    f"/api/mindmaps/jobs/{job_id}/download/json",
+                )
+                assert json_resp.status_code == 200
+                assert json_resp.headers["content-type"].startswith(
+                    "application/json",
+                )
+                spec = json_resp.json()
+                assert spec["title"] == "RAG 系統概念樹"
+                assert spec["root"]["label"]
+                # 樹狀結構完整:root 有 children,節點帶 id/label/children
+                assert isinstance(spec["root"]["children"], list)
+                assert len(spec["root"]["children"]) == 3
+                for child in spec["root"]["children"]:
+                    assert child["id"] and child["label"]
+                    assert isinstance(child["children"], list)
+
+
+def test_download_json_404_for_legacy_job_without_spec(test_app):
+    """升級前完成的 job 沒有 spec_json — fmt=json 回 404,SVG 仍可下載。
+
+    前端 ArtifactViewer 據此 fallback 到舊的「僅提供下載」面板。
+    """
+    from datetime import datetime, timezone
+
+    from app.services.mindmap_job_service import MindmapJobRecord
+
+    now = datetime.now(timezone.utc)
+    rec = MindmapJobRecord(
+        job_id="m_legacy_no_json",
+        user_id=42,
+        collection_id=7,
+        preset="concept_tree",
+        state="done",
+        step=None,
+        title="舊版心智圖",
+        node_count=3,
+        error=None,
+        svg_bytes=_FAKE_SVG,
+        dot_source="digraph mindmap { a -> b }",
+        spec_json=None,
+        created_at=now,
+        updated_at=now,
+    )
+    jobs._jobs[rec.job_id] = rec
+
+    with TestClient(test_app) as client:
+        json_resp = client.get(
+            f"/api/mindmaps/jobs/{rec.job_id}/download/json",
+        )
+        assert json_resp.status_code == 404
+        assert "predates" in json_resp.json()["detail"].lower()
+
+        # SVG 路徑不受影響 — UI fallback 仍能提供下載
+        svg_resp = client.get(
+            f"/api/mindmaps/jobs/{rec.job_id}/download/svg",
+        )
+        assert svg_resp.status_code == 200
+        assert svg_resp.content == _FAKE_SVG
+
+        status = client.get(f"/api/mindmaps/jobs/{rec.job_id}")
+        assert status.status_code == 200
+        urls = status.json()["download_urls"]
+        assert "svg" in urls
+        assert "json" not in urls
 
 
 def test_get_nonexistent_job_returns_404(test_app):

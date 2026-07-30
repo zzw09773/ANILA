@@ -89,6 +89,8 @@ export function WSChat({ flex }: WSChatProps) {
   const upsertConversation = useWorkspaceStore((s) => s.upsertConversation)
   const studioOpen = useWorkspaceStore((s) => s.studioOpen)
   const toggleStudio = useWorkspaceStore((s) => s.toggleStudio)
+  const pendingAsk = useWorkspaceStore((s) => s.pendingAsk)
+  const setPendingAsk = useWorkspaceStore((s) => s.setPendingAsk)
 
   const [messages, setMessages] = useState<ChatRow[]>([])
   const [composer, setComposer] = useState('')
@@ -223,8 +225,10 @@ export function WSChat({ flex }: WSChatProps) {
     [collection?.name, docs],
   )
 
-  const send = useCallback(async () => {
-    const text = composer.trim()
+  // textOverride:代發來源(如心智圖節點點擊)直接帶問題文字進來,
+  // 不經 composer state — 避免 setState 後同 tick 讀不到的競態。
+  const send = useCallback(async (textOverride?: string) => {
+    const text = (textOverride ?? composer).trim()
     if (!text || busy || !collection) return
 
     setErr(null)
@@ -395,6 +399,15 @@ export function WSChat({ flex }: WSChatProps) {
     setActiveConversationId,
     navigate,
   ])
+
+  // 代發橋接:其他面板(心智圖節點點擊)把問題放進 store 的 pendingAsk,
+  // 這裡撿走直接送出。busy 時先不清 — busy 結束 effect 重跑再送,
+  // 確保串流中點的節點不會被吞掉。
+  useEffect(() => {
+    if (!pendingAsk || busy || !collection) return
+    setPendingAsk(null)
+    void send(pendingAsk)
+  }, [pendingAsk, busy, collection, send, setPendingAsk])
 
   const onComposerKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Chat convention: Enter sends, Shift+Enter inserts a newline.

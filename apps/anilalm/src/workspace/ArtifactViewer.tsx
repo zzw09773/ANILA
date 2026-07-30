@@ -1,8 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTheme } from '../theme/ThemeContext'
+import { useWorkspaceStore } from '../store/workspace'
 import { Modal } from '../components/Modal'
 import { Icon } from '../components/Icon'
+import { Spinner } from '../components/Spinner'
 import { MarkdownPreview } from '../components/MarkdownPreview'
+import { MindmapTree } from './MindmapTree'
 import type {
   DatatableArtifact,
   InfographicArtifact,
@@ -16,6 +19,8 @@ import {
   downloadMindmapArtifact,
   downloadInfographicArtifact,
   downloadDatatableArtifact,
+  fetchMindmapTree,
+  type MindmapTreeSpec,
 } from '../api/studio'
 
 interface ArtifactViewerProps {
@@ -42,7 +47,8 @@ export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps)
   const meta = KIND_META[artifact.kind]
 
   return (
-    <Modal open={open} onClose={onClose} width={900}>
+    // 心智圖是橫向樹,給寬一點的畫布
+    <Modal open={open} onClose={onClose} width={artifact.kind === 'mindmap' ? 1100 : 900}>
       <div
         style={{
           padding: '14px 18px',
@@ -88,7 +94,7 @@ export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps)
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: 22 }}>
-        <ArtifactBody artifact={artifact} />
+        <ArtifactBody artifact={artifact} onClose={onClose} />
       </div>
     </Modal>
   )
@@ -232,19 +238,90 @@ function DatatableHeaderActions({ artifact }: { artifact: DatatableArtifact }) {
 
 // ── Body (per-kind viewer) ─────────────────────────────────────────
 
-function ArtifactBody({ artifact }: { artifact: StudioArtifact }) {
+function ArtifactBody({
+  artifact,
+  onClose,
+}: {
+  artifact: StudioArtifact
+  onClose: () => void
+}) {
   switch (artifact.kind) {
     case 'report':
       return <ReportBody artifact={artifact} />
     case 'slides':
       return <SlidesViewer slides={(artifact as SlidesArtifact).slides} />
     case 'mindmap':
-      return <ArtifactPendingOrDone artifact={artifact} formatHint="SVG / DOT" />
+      return <MindmapBody artifact={artifact} onClose={onClose} />
     case 'infographic':
       return <ArtifactPendingOrDone artifact={artifact} formatHint="HTML / PDF" />
     case 'datatable':
       return <ArtifactPendingOrDone artifact={artifact} formatHint="HTML / CSV / XLSX" />
   }
+}
+
+// ── Mindmap:互動式橫向樹(NotebookLM 式) ─────────────────────────
+//
+// 完成的 job 取 spec JSON 渲染 MindmapTree;點節點 → 問題經 workspace
+// store 的 pendingAsk 交給 WSChat 送出,並關閉 viewer 讓使用者看到對話。
+// 升級前的舊 job 沒有 JSON(後端回 404)→ fallback 到舊的「下載 SVG/DOT」
+// 完成面板。
+
+function MindmapBody({
+  artifact,
+  onClose,
+}: {
+  artifact: MindmapArtifact
+  onClose: () => void
+}) {
+  const { t } = useTheme()
+  const setPendingAsk = useWorkspaceStore((s) => s.setPendingAsk)
+  const state = artifact.state ?? 'done'
+  const jobId = artifact.jobId
+  const [tree, setTree] = useState<MindmapTreeSpec | null>(null)
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'unavailable'>(
+    'loading',
+  )
+
+  useEffect(() => {
+    if (state !== 'done' || !jobId) return
+    let alive = true
+    setLoadState('loading')
+    fetchMindmapTree(jobId)
+      .then((spec) => {
+        if (!alive) return
+        setTree(spec)
+        setLoadState('ready')
+      })
+      .catch(() => {
+        if (alive) setLoadState('unavailable')
+      })
+    return () => {
+      alive = false
+    }
+  }, [jobId, state])
+
+  if (state !== 'done' || !jobId || loadState === 'unavailable') {
+    return <ArtifactPendingOrDone artifact={artifact} formatHint="SVG / DOT" />
+  }
+  if (loadState === 'loading' || !tree) {
+    return (
+      <div style={{ padding: '40px 0', display: 'grid', placeItems: 'center' }}>
+        <Spinner size={20} />
+        <div style={{ fontSize: 12, marginTop: 10, color: t.textMuted }}>
+          載入心智圖…
+        </div>
+      </div>
+    )
+  }
+  return (
+    <MindmapTree
+      tree={tree}
+      onAsk={(question) => {
+        setPendingAsk(question)
+        onClose()
+      }}
+    />
+  )
 }
 
 function ReportBody({ artifact }: { artifact: ReportArtifact }) {
