@@ -109,6 +109,7 @@ const segmentMap = {
   '/users': '/admin/users',
   '/departments': '/admin/departments',
   '/alerts': '/admin/alerts',
+  '/feedback': '/admin/feedback',
   '/audit-logs': '/admin/audit',
   '/platform-links': '/admin/platform-links',
   '/service-access': '/admin/service-access',
