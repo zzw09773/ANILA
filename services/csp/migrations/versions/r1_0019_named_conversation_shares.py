@@ -10,16 +10,16 @@ SYSTEM-MAP §分享 / PLAN 4.3:分享給指定的人/單位,不是匿名連結�
 - 既有匿名列無法對應具名對象 → upgrade 時清空後改 schema
   (重啟樹可拋庫;本機 create_all 路徑不依賴本檔)
 
-Revision ID: r1_0018
-Revises: r1_0017
+Revision ID: r1_0019
+Revises: r1_0018
 """
 
 from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "r1_0018"
-down_revision: Union[str, None] = "r1_0017"
+revision: str = "r1_0019"
+down_revision: Union[str, None] = "r1_0018"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
