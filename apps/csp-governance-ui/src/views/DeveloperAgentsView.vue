@@ -314,13 +314,18 @@ def employee_count(department: str) -&gt; int:
           <p class="cell-meta">
             把上面的 <code>.env</code> 貼進你的 agent 並啟動，然後測試它是否
             接受該 token（證明 <code>CSP_SERVICE_TOKEN</code> 已正確接上）。
+            回報會分開說明主機／憑證／路徑，不會把「主機有回應」當成全部通過。
           </p>
           <TermButton
             variant="default" :loading="testing" :disabled="testing"
             label="測試連線" @click="handleTestConnection"
           />
-          <div v-if="testResult" class="test-result" :class="testResult.token_accepted ? 'test-result--ok' : 'test-result--bad'">
-            {{ testResult.token_accepted ? '✅' : '✗' }} {{ testResult.detail }}
+          <div
+            v-if="testResult"
+            class="test-result"
+            :class="connectionTestOk(testResult) ? 'test-result--ok' : 'test-result--bad'"
+          >
+            {{ connectionTestOk(testResult) ? '✅' : '○' }} {{ testResult.detail }}
           </div>
         </div>
       </div>
@@ -817,7 +822,7 @@ const dispatchedCredentialId = computed(() => {
   return best
 })
 const collections = ref([])       // owner's collections, for the optional RAG bind
-const testResult = ref(null)      // { reachable, token_accepted, detail }
+const testResult = ref(null)      // { host_reachable, credentials_accepted, path_verified, detail }
 const testing = ref(false)
 const availableModels = ref([])
 const baseModelOptions = computed(() =>
@@ -1092,6 +1097,12 @@ async function handleIssueForNew() {
   finally { issuingNew.value = false }
 }
 
+function connectionTestOk(result) {
+  // Green only when both path and credentials are positively verified.
+  // host_reachable alone (e.g. 401 on every path) must not look like success.
+  return !!(result && result.path_verified && result.credentials_accepted)
+}
+
 async function handleTestConnection() {
   if (!registeredAgent.value) return
   testing.value = true
@@ -1100,7 +1111,11 @@ async function handleTestConnection() {
     testResult.value = await testAgentConnection(registeredAgent.value.id)
   } catch (e) {
     testResult.value = {
-      reachable: false, token_accepted: null,
+      host_reachable: false,
+      credentials_accepted: null,
+      path_verified: null,
+      reachable: false,
+      token_accepted: null,
       detail: e.response?.data?.detail || 'test failed',
     }
   } finally { testing.value = false }

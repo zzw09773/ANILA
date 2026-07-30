@@ -17,7 +17,7 @@ from app.models.model_registry import ModelRegistry
 from app.models.agent import Agent
 from app.config import settings
 from app.services.alert_service import resolve_alert_by_fingerprint, upsert_alert
-from app.services.proxy.urls import join_upstream_path
+from app.services.proxy.urls import join_upstream_path, strip_trailing_api_version
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +56,55 @@ def normalize_health_status(raw: str | None, *, is_active: bool = True) -> str:
     return _LEGACY_HEALTH_MAP.get(raw or "", HEALTH_UNKNOWN)
 
 
-async def probe_model_health_detailed(endpoint_url: str) -> tuple[str, int]:
+# Paths the platform actually uses for model/agent HTTP surfaces.
+# A response that is not 404 and <500 counts as ``healthy`` (API surface
+# liveness — credentials are out of scope for the health probe). 404 is
+# excluded: SPA/nginx catch-alls and wrong joins often answer 404.
+REAL_PROBE_PATHS: tuple[str, ...] = ("/health", "/v1/models")
+
+# Host-liveness only. Kept so ops can tell "host answers something" from
+# "completely dead", but a `/`-only hit must NOT be reported the same way
+# as a real probe hit (2026-07-30 false green: `/` almost always answers).
+WEAK_PROBE_PATHS: tuple[str, ...] = ("/",)
+
+
+def _probe_url(endpoint_url: str, path: str) -> str:
+    """Build a probe URL without stacking non-version paths under ``/v1``.
+
+    ``join_upstream_path`` leaves a trailing ``/v1`` on the base when the
+    path itself is not version-qualified, so ``…/v1`` + ``/health`` becomes
+    ``…/v1/health``. Real agent/model health lives at ``/health``. Strip the
+    trailing API version for non-version probe paths; versioned paths
+    (``/v1/models``) keep the existing join semantics.
+    """
+    if path.startswith("/v1/") or path.startswith("/v2/") or path in ("/v1", "/v2"):
+        return join_upstream_path(endpoint_url, path)
+    return join_upstream_path(strip_trailing_api_version(endpoint_url), path)
+
+
+def _real_probe_hit(status_code: int) -> bool:
+    """True when a REAL probe path answered as a live API surface."""
+    return status_code != 404 and status_code < 500
+
+
+async def probe_model_health_detailed(
+    endpoint_url: str,
+    *,
+    endpoint_kind: str | None = None,
+    skip_validate: bool = False,
+) -> tuple[str, int]:
     """Active probe → ``(five_state_status, latency_ms)`` (health probe only).
 
-    reachable(<500 on any of /health, /v1/models, /)→ healthy;timeout →
-    degraded;unreachable / unsafe endpoint → unhealthy. Carries NO real user
-    data (doc 04 §9). Call-time SSRF re-validation (TOCTOU/rebinding) runs
-    once against the registered host — an unsafe endpoint is reported
-    unhealthy, never probed.
+    - ``/health`` or ``/v1/models`` responding non-404 ``<500`` → ``healthy``
+    - only ``/`` responding ``<500`` → ``degraded`` (host up, API path unproven)
+    - timeout → ``degraded``
+    - unreachable / unsafe endpoint → ``unhealthy``
+
+    Carries NO real user data (doc 04 §9). Call-time SSRF re-validation
+    (TOCTOU/rebinding) runs once against the registered host — an unsafe
+    endpoint is reported unhealthy, never probed. Callers that already
+    validated may pass ``skip_validate=True`` to keep the once-per-host
+    invariant.
     """
     started = time.monotonic()
 
@@ -71,40 +112,71 @@ async def probe_model_health_detailed(endpoint_url: str) -> tuple[str, int]:
         return int((time.monotonic() - started) * 1000)
 
     # Guard once per host: validate_outbound_url only inspects scheme +
-    # hostname (identical across the three probe paths) and each call does
+    # hostname (identical across the probe paths) and each call does
     # a blocking getaddrinfo — do not multiply that inside the model/agent loop.
-    try:
-        validate_outbound_url(endpoint_url)
-    except UnsafeEndpointError as exc:
-        logger.warning("health probe skipped — unsafe endpoint (%s)", exc)
-        return HEALTH_UNHEALTHY, _elapsed_ms()
+    if not skip_validate:
+        try:
+            if endpoint_kind is None:
+                validate_outbound_url(endpoint_url)
+            else:
+                validate_outbound_url(endpoint_url, endpoint_kind=endpoint_kind)
+        except UnsafeEndpointError as exc:
+            # Log reason code only — hostname lives on the exception and must
+            # not become an unauthenticated disclosure face via log shipping.
+            logger.warning(
+                "health probe skipped — unsafe endpoint (reason=%s)",
+                getattr(exc, "reason", type(exc).__name__),
+            )
+            return HEALTH_UNHEALTHY, _elapsed_ms()
 
-    probe_paths = ["/health", "/v1/models", "/"]
-    probe_urls = [join_upstream_path(endpoint_url, path) for path in probe_paths]
+    real_urls = [_probe_url(endpoint_url, path) for path in REAL_PROBE_PATHS]
+    weak_urls = [_probe_url(endpoint_url, path) for path in WEAK_PROBE_PATHS]
 
     saw_timeout = False
+    saw_weak = False
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            for url in probe_urls:
+            for url in real_urls:
                 try:
                     resp = await client.get(url)
-                    if resp.status_code < 500:
+                    if _real_probe_hit(resp.status_code):
                         return HEALTH_HEALTHY, _elapsed_ms()
                 except httpx.ConnectError:
                     continue
                 except httpx.TimeoutException:
                     saw_timeout = True
                     break
+            if not saw_timeout:
+                for url in weak_urls:
+                    try:
+                        resp = await client.get(url)
+                        if resp.status_code < 500:
+                            saw_weak = True
+                            break
+                    except httpx.ConnectError:
+                        continue
+                    except httpx.TimeoutException:
+                        saw_timeout = True
+                        break
     except Exception as e:
         logger.debug("健康檢查異常: %s", e)
 
+    if saw_weak:
+        return HEALTH_DEGRADED, _elapsed_ms()
     return (HEALTH_DEGRADED if saw_timeout else HEALTH_UNHEALTHY), _elapsed_ms()
 
 
-async def check_model_health(model_id: int, endpoint_url: str) -> str:
-    """Check a single model endpoint. Returns a five-state status
+async def check_model_health(
+    model_id: int,
+    endpoint_url: str,
+    *,
+    endpoint_kind: str | None = None,
+) -> str:
+    """Check a single model/agent endpoint. Returns a five-state status
     ('healthy' / 'degraded' / 'unhealthy')."""
-    status, _ = await probe_model_health_detailed(endpoint_url)
+    status, _ = await probe_model_health_detailed(
+        endpoint_url, endpoint_kind=endpoint_kind
+    )
     return status
 
 
@@ -217,7 +289,9 @@ async def _agent_health_check_loop():
 
             results = []
             for agent_id, endpoint_url, name, prev_status in targets:
-                status = await check_model_health(agent_id, endpoint_url)
+                status = await check_model_health(
+                    agent_id, endpoint_url, endpoint_kind="agent"
+                )
                 results.append((agent_id, endpoint_url, name, prev_status, status))
 
             db = SessionLocal()

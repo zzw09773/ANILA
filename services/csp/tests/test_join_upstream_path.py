@@ -288,12 +288,14 @@ def test_agent_health_chat_url_both_conventions(endpoint_url: str):
     ["http://agent-box:9100/v1", "http://agent-box:9100", "http://agent-box:9100/v2"],
 )
 def test_agent_health_probe_models_path_both_conventions(endpoint_url: str):
-    urls = [
-        join_upstream_path(endpoint_url, p) for p in ("/health", "/v1/models", "/")
-    ]
+    from app.services.health_checker import REAL_PROBE_PATHS, WEAK_PROBE_PATHS, _probe_url
+
+    urls = [_probe_url(endpoint_url, p) for p in (*REAL_PROBE_PATHS, *WEAK_PROBE_PATHS)]
     assert urls[1] == "http://agent-box:9100/v1/models"
+    assert urls[0] == "http://agent-box:9100/health"
     assert "/v1/v1/" not in urls[1]
     assert "/v2/v1/" not in urls[1]
+    assert "/v1/health" not in urls[0]
 
 
 def test_agent_health_module_imports_join_helper():
@@ -326,7 +328,10 @@ def test_agent_health_guards_once_per_host(monkeypatch):
         async def get(self, url):
             return _Resp()
 
-    monkeypatch.setattr(agent_health.httpx, "AsyncClient", _Client)
+    # Manual health-check now delegates probing to health_checker (shared
+    # REAL/WEAK path logic); patch the client there. Outer guard stays on
+    # the agents.health module; probe is called with skip_validate=True.
+    monkeypatch.setattr(health_checker.httpx, "AsyncClient", _Client)
 
     agent = SimpleNamespace(
         id=1, name="a", endpoint_url="http://agent-box:9100/v1", health_status="unknown"
