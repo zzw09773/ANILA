@@ -346,7 +346,9 @@ onMounted(async () => {
   try { const { data } = await listModels(); allModels.value = data } catch {}
   try {
     const { data } = await client.get('/api/agents')
-    allAgents.value = data.filter(a => a.approval_status === 'approved')
+    allAgents.value = data.filter(a =>
+      a.approval_status === 'approved' || a.approval_status === 'registered'
+    )
   } catch {}
 })
 

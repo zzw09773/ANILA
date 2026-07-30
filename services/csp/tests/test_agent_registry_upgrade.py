@@ -1,18 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Slice 5a — Agent Registry 升級測試(doc 05 §3/§4/§6、doc 06 §8)。
+"""OE-1 — Agent Registry three-state approval + optional diagnostics.
 
 涵蓋:
-- Manifest 契約(AgentManifest)fail-closed 驗證(pass / 未知欄位 / 非四級分類 /
-  錯誤 trace protocol)+ 註冊端點整合(422 / 存 manifest_json)。
-- Shadow 註冊(shadow=True → draft;預設 → pending_connection_test)。
-- 七值狀態機 approve blocker(無 trace-test → 409;狀態不符 → 409;
-  pending_security_review + 落章 → 200;already approved 冪等)。
-- trace-test 端點:mock agent 以「直接寫 trace_spans」模擬 agent 回報 —— 全過
-  轉態 pending_security_review + 落章 + 存報告;缺 span type → 逐項 fail;
-  逾時 → fail;無憑證 → 409;非 owner → 403。
-
-DB 用 SQLite(StaticPool 單連線);mock agent 的 span 由 db_engine 綁定的獨立
-session commit,端點以有界輪詢讀回(同 test_trace_endpoints 的跨 session 姿態)。
+- Manifest 契約(AgentManifest)fail-closed 驗證 + 註冊端點整合。
+- 註冊預設落地 ``registered``(shadow 旗標忽略)。
+- 三態核准:registered → approved(無 trace 閘);disabled 可重啟;冪等。
+- trace-test 端點仍為 on-demand 診斷:通過不推進 approval_status;
+  缺 span / 逾時 / 無憑證 / 非 owner 行為保留。
 """
 
 from __future__ import annotations
@@ -20,8 +14,6 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
-
-from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -224,11 +216,12 @@ class TestManifestValidation:
         assert data["manifest_json"]["agent_id"] == "risk-agent"
 
 
-# ── Shadow registration + defaults ──────────────────────────────────────────
+# ── Registration defaults (OE-1 three-state) ────────────────────────────────
 
 
-class TestShadowRegistration:
-    def test_shadow_register_creates_draft(self, client, db):
+class TestRegistrationDefaults:
+    def test_shadow_flag_ignored_lands_registered(self, client, db):
+        """shadow/draft construct retired: flag is accepted but ignored."""
         make_user(db, username="sh_dev", role="developer")
         model = make_model(db, name="sh-model")
         token = login(client, "sh_dev")
@@ -244,9 +237,9 @@ class TestShadowRegistration:
             },
         )
         assert resp.status_code == 200, resp.text
-        assert resp.json()["approval_status"] == "draft"
+        assert resp.json()["approval_status"] == "registered"
 
-    def test_default_register_is_pending_connection_test(self, client, db):
+    def test_default_register_is_registered(self, client, db):
         make_user(db, username="df_dev", role="developer")
         model = make_model(db, name="df-model")
         token = login(client, "df_dev")
@@ -262,51 +255,38 @@ class TestShadowRegistration:
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["approval_status"] == "pending_connection_test"
+        assert data["approval_status"] == "registered"
         assert data["runtime_type"] == "openai_compatible_agent"
 
 
-# ── Approval state machine (7-value blocker) ────────────────────────────────
+# ── Approval state machine (OE-1: no gate ceremony) ─────────────────────────
 
 
 class TestApprovalStateMachine:
-    def test_approve_blocked_without_trace_test(self, client, db):
+    def test_approve_registered_without_trace_test(self, client, db):
+        """OE-1: registered → approved with no trace stamp."""
         dev = make_user(db, username="ap_dev", role="developer")
-        make_user(db, username="ap_admin", role="admin")
+        admin = make_user(db, username="ap_admin", role="admin")
         agent = make_agent(
-            db, dev, name="ap-no-trace", approval_status="pending_security_review"
+            db, dev, name="ap-no-trace", approval_status="registered"
         )
+        assert agent.trace_test_passed_at is None
         token = login(client, "ap_admin")
         resp = client.post(
             f"/api/agents/{agent.id}/approve", headers=_bearer(token)
         )
-        assert resp.status_code == 409
-        assert "Full Trace" in resp.json()["detail"]
+        assert resp.status_code == 200, resp.text
+        db.refresh(agent)
+        assert agent.approval_status == "approved"
+        assert agent.approved_by == admin.id
 
-    def test_approve_blocked_wrong_state_even_with_stamp(self, client, db):
+    def test_approve_reenables_disabled(self, client, db):
         dev = make_user(db, username="ap_dev2", role="developer")
-        make_user(db, username="ap_admin2", role="admin")
+        admin = make_user(db, username="ap_admin2", role="admin")
         agent = make_agent(
-            db, dev, name="ap-wrong-state", approval_status="pending_connection_test"
+            db, dev, name="ap-disabled", approval_status="disabled"
         )
-        agent.trace_test_passed_at = datetime.now(timezone.utc)
-        db.commit()
         token = login(client, "ap_admin2")
-        resp = client.post(
-            f"/api/agents/{agent.id}/approve", headers=_bearer(token)
-        )
-        assert resp.status_code == 409
-        assert "安全審查" in resp.json()["detail"]
-
-    def test_approve_allowed_at_review_gate_with_stamp(self, client, db):
-        dev = make_user(db, username="ap_dev3", role="developer")
-        admin = make_user(db, username="ap_admin3", role="admin")
-        agent = make_agent(
-            db, dev, name="ap-ok", approval_status="pending_security_review"
-        )
-        agent.trace_test_passed_at = datetime.now(timezone.utc)
-        db.commit()
-        token = login(client, "ap_admin3")
         resp = client.post(
             f"/api/agents/{agent.id}/approve", headers=_bearer(token)
         )
@@ -327,17 +307,17 @@ class TestApprovalStateMachine:
         assert "已是核准狀態" in resp.json()["message"]
 
 
-# ── Trace-test endpoint ─────────────────────────────────────────────────────
+# ── Trace-test endpoint (on-demand diagnostic; does not gate approve) ───────
 
 
 class TestTraceTest:
-    def test_pass_transitions_state_and_stamps(
+    def test_pass_stamps_report_without_changing_approval(
         self, client, db, db_engine, monkeypatch
     ):
         dev = make_user(db, username="tt_dev", role="developer")
         admin = make_user(db, username="tt_admin", role="admin")
         agent = make_agent(
-            db, dev, name="tt-pass", approval_status="pending_trace_test"
+            db, dev, name="tt-pass", approval_status="registered"
         )
         _issue_cred(db, agent, admin)
         _patch_agent_client(
@@ -355,11 +335,12 @@ class TestTraceTest:
 
         db.expire_all()
         refreshed = db.query(Agent).filter(Agent.id == agent.id).first()
-        assert refreshed.approval_status == "pending_security_review"
+        # OE-1: diagnostic only — approval_status unchanged.
+        assert refreshed.approval_status == "registered"
         assert refreshed.trace_test_passed_at is not None
         assert refreshed.trace_test_report is not None
 
-        # ...and approve now succeeds (blocker cleared, at the review gate).
+        # Approve works regardless of whether trace-test ran.
         admin_token = login(client, "tt_admin")
         approve = client.post(
             f"/api/agents/{agent.id}/approve", headers=_bearer(admin_token)
@@ -372,10 +353,9 @@ class TestTraceTest:
         dev = make_user(db, username="tt_dev2", role="developer")
         admin = make_user(db, username="tt_admin2", role="admin")
         agent = make_agent(
-            db, dev, name="tt-partial", approval_status="pending_trace_test"
+            db, dev, name="tt-partial", approval_status="registered"
         )
         _issue_cred(db, agent, admin)
-        # Only one span type — required set incomplete.
         _patch_agent_client(
             monkeypatch, emit=_emitter(db_engine, ["agent.run.started"])
         )
@@ -395,7 +375,7 @@ class TestTraceTest:
         db.expire_all()
         refreshed = db.query(Agent).filter(Agent.id == agent.id).first()
         assert refreshed.trace_test_passed_at is None
-        assert refreshed.approval_status == "pending_trace_test"
+        assert refreshed.approval_status == "registered"
 
     def test_timeout_no_spans_fails(
         self, client, db, db_engine, monkeypatch
@@ -403,10 +383,10 @@ class TestTraceTest:
         dev = make_user(db, username="tt_dev3", role="developer")
         admin = make_user(db, username="tt_admin3", role="admin")
         agent = make_agent(
-            db, dev, name="tt-timeout", approval_status="pending_trace_test"
+            db, dev, name="tt-timeout", approval_status="registered"
         )
         _issue_cred(db, agent, admin)
-        _patch_agent_client(monkeypatch, emit=None)  # agent emits nothing
+        _patch_agent_client(monkeypatch, emit=None)
         monkeypatch.setattr(health, "_TRACE_TEST_POLL_TIMEOUT_S", 0.3)
         monkeypatch.setattr(health, "_TRACE_TEST_POLL_INTERVAL_S", 0.05)
         token = login(client, "tt_dev3")
@@ -427,7 +407,7 @@ class TestTraceTest:
     def test_requires_credential_returns_409(self, client, db, monkeypatch):
         dev = make_user(db, username="tt_dev4", role="developer")
         agent = make_agent(
-            db, dev, name="tt-nocred", approval_status="pending_trace_test"
+            db, dev, name="tt-nocred", approval_status="registered"
         )
         _patch_agent_client(monkeypatch, emit=None)
         token = login(client, "tt_dev4")
@@ -441,7 +421,7 @@ class TestTraceTest:
         dev = make_user(db, username="tt_owner", role="developer")
         make_user(db, username="tt_other", role="user")
         agent = make_agent(
-            db, dev, name="tt-forbidden", approval_status="pending_trace_test"
+            db, dev, name="tt-forbidden", approval_status="registered"
         )
         _patch_agent_client(monkeypatch, emit=None)
         token = login(client, "tt_other")

@@ -119,8 +119,7 @@ class AgentRegisterRequest(BaseModel):
     runtime_type: RuntimeType = RuntimeType.OPENAI_COMPATIBLE_AGENT
     # doc 05 §4 optional manifest —— 提供則 fail-closed 驗證(422)並留存 manifest_json。
     manifest: dict | None = None
-    # doc 06 Phase 1 shadow registration:True → approval_status=draft(盤點暫存);
-    # 預設 False = 現況行為(落地 pending_connection_test,第一關 = 連線測試)。
+    # OE-1: shadow/draft 已退場。欄位保留為相容(忽略),一律落地 registered。
     shadow: bool = False
     # G9: developer chooses the project's classification level at register time.
     # Stored in ``default_classification_level``; ``requires_encryption`` is
@@ -357,12 +356,7 @@ def register_agent(
         else None
     )
 
-    # doc 06 Phase 1: shadow inventory rows land as ``draft``; the normal path
-    # lands at the first gate (pending_connection_test = 現況 pending 等價)。
-    approval_status = (
-        ApprovalStatus.DRAFT.value if request.shadow else REGISTER_DEFAULT_APPROVAL
-    )
-
+    # OE-1: every register lands as registered (shadow flag ignored).
     level = request.default_classification_level
     agent = Agent(
         name=request.name,
@@ -376,7 +370,7 @@ def register_agent(
         input_schema=request.input_schema,
         runtime_type=request.runtime_type.value,
         manifest_json=manifest_json,
-        approval_status=approval_status,
+        approval_status=REGISTER_DEFAULT_APPROVAL,
         default_classification_level=level.to_storage(),
         requires_encryption=requires_controlled_access(level),
     )
@@ -596,9 +590,8 @@ def update_agent(
         return _serialize_agent(agent)
 
     # 任何端點變更都會強制重新核可，避免「核可一次後 owner 改成內網」的
-    # bypass。admin 變更自己的 agent 也一樣 — 規則一致才好稽核。doc 05 §6:
-    # 端點換過後,舊的 Full Trace 落章作廢 —— 清 trace_test_passed_at/report,
-    # 退回第一關 pending_connection_test,重新走 connection→trace→review。
+    # bypass。admin 變更自己的 agent 也一樣 — 規則一致才好稽核。
+    # OE-1: 退回 registered(不再清 trace 診斷欄;診斷與核准已脫鉤)。
     reapproval_required = (
         endpoint_changed and agent.approval_status == ApprovalStatus.APPROVED.value
     )
@@ -606,9 +599,7 @@ def update_agent(
         agent.approval_status = REGISTER_DEFAULT_APPROVAL
         agent.approved_by = None
         agent.approved_at = None
-        agent.trace_test_passed_at = None
-        agent.trace_test_report = None
-        changed.append("approval_status->pending_connection_test")
+        changed.append("approval_status->registered")
 
     # Governance convention: audit in the same transaction, check result,
     # abort with 500 before commit if the audit row could not be written.

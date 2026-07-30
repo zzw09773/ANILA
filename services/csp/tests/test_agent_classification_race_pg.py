@@ -123,7 +123,7 @@ def _seed_agent(Session, *, level: str = "無機密") -> int:
             owner_user_id=user.id,
             endpoint_url="http://agent:9100",
             description_for_router="X.6 race harness",
-            approval_status="pending",
+            approval_status="registered",
             default_classification_level=level,
             requires_encryption=level in ("密", "機密"),
         )

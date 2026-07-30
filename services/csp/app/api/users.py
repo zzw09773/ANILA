@@ -339,24 +339,54 @@ def update_user_allowed_agents(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    from datetime import datetime, timezone
+
+    from app.schemas.contracts.agents import ApprovalStatus
+
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="使用者不存在")
 
     new_ids = set(request.agent_ids)
+    agents_by_id: dict[int, Agent] = {}
     if new_ids:
-        valid_count = db.query(Agent).filter(Agent.id.in_(new_ids)).count()
-        if valid_count != len(new_ids):
+        agents = db.query(Agent).filter(Agent.id.in_(new_ids)).all()
+        agents_by_id = {a.id: a for a in agents}
+        if len(agents_by_id) != len(new_ids):
             raise HTTPException(status_code=400, detail="包含不存在的 Agent ID")
+        disabled = [
+            a.name
+            for a in agents
+            if a.approval_status == ApprovalStatus.DISABLED.value
+        ]
+        if disabled:
+            raise HTTPException(
+                status_code=400,
+                detail=f"無法指派已停用的 agent:{', '.join(disabled)}",
+            )
 
     db.query(UserAgentPermission).filter(UserAgentPermission.user_id == user_id).delete()
+    now = datetime.now(timezone.utc)
+    promoted: list[str] = []
     for aid in new_ids:
+        agent = agents_by_id[aid]
+        # OE-1 / SYSTEM-MAP: register → admin assigns → usable. Assigning a
+        # registered agent is the admin enablement step (auto-approve); no
+        # connection/trace/review ceremony.
+        if agent.approval_status == ApprovalStatus.REGISTERED.value:
+            agent.approval_status = ApprovalStatus.APPROVED.value
+            agent.approved_by = admin.id
+            agent.approved_at = now
+            promoted.append(agent.name)
         db.add(UserAgentPermission(user_id=user_id, agent_id=aid))
 
     db.commit()
+    detail = f"更新使用者「{user.username}」可用 agents"
+    if promoted:
+        detail += f";指派時一併核准:{', '.join(promoted)}"
     log_audit_event(
         db, actor=admin, action="update_allowed_agents", resource_type="user",
-        resource_id=user.id, detail=f"更新使用者「{user.username}」可用 agents", commit=True,
+        resource_id=user.id, detail=detail, commit=True,
     )
     return {"message": f"已更新使用者「{user.username}」的可用 agents"}
 
