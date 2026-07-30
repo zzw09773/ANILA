@@ -121,6 +121,15 @@ const routes = [
         component: () => import('../views/TrustedHostsView.vue'),
         meta: { requiresAdmin: true },
       },
+      // OW-3 WP-C — message-level custom actions authoring console.
+      // Mutations are require_owner on the server; UI route is owner-only
+      // convenience only (not the security boundary).
+      {
+        path: 'message-actions',
+        name: 'MessageActions',
+        component: () => import('../views/MessageActionsView.vue'),
+        meta: { requiresOwner: true },
+      },
       // Phase 2 Sprint 2 / Chunk H — Knowledge Collections inspector.
       // Developer-tier (any user with UserAgentPermission, plus admins).
       {
