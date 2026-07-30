@@ -19,7 +19,6 @@ from app.models.agent import Agent
 from app.models.trace_span import TraceSpan
 from app.models.user import User
 from app.schemas.contracts.agents import (
-    STATE_AFTER_TRACE_PASS,
     TRACE_TEST_ELIGIBLE_STATES,
     TraceTestItem,
     TraceTestItemStatus,
@@ -384,14 +383,13 @@ async def run_agent_trace_test(
     current_user: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ) -> TraceTestReport:
-    """Full Trace 準入測試(doc 05 §6 / doc 06 §8)—— owner-or-admin。
+    """On-demand Full Trace 診斷(不再是核准硬閘)。
 
     以合成 trace_id 對 ``{endpoint}/v1/chat/completions`` 發一次最小 chat run,
     帶 ``X-ANILA-Trace-Id`` / ``X-ANILA-Task-Id`` / ``X-ANILA-Classification-Level``
     (與 test-connection 同一套 csk- + SSRF guard),再有界輪詢 ``trace_spans``,
-    逐項評估 doc 06 §8 檢核表。所有 required 項通過才落 ``trace_test_passed_at``
-    並把狀態機推進 ``…→pending_security_review``(approve 的前置關卡);未過只留
-    診斷報告,不落章、不轉態。
+    逐項評估檢核表並寫入 ``trace_test_report``。OE-1:**不**推進
+    ``approval_status``、通過與否都不阻擋 admin 核准。
     """
     agent = _resolve_agent(db, agent_id)
     if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
@@ -402,7 +400,7 @@ async def run_agent_trace_test(
             status_code=409,
             detail=(
                 f"Agent 目前狀態「{agent.approval_status}」不可執行 trace-test"
-                "(僅 draft / 審核中的 Agent 適用)"
+                "(僅 registered / approved 適用)"
             ),
         )
 
@@ -480,12 +478,12 @@ async def run_agent_trace_test(
         checked_at=datetime.now(timezone.utc),
     )
 
-    # Persist the report either way; only stamp trace_test_passed_at + advance
-    # the state machine on a full pass (doc 05 §6 approval blocker).
+    # Persist the diagnostic report either way. OE-1: do NOT advance
+    # approval_status — trace-test is on-demand only. Stamp
+    # trace_test_passed_at on pass so operators can still see history.
     agent.trace_test_report = report.model_dump(mode="json")
     if passed:
         agent.trace_test_passed_at = datetime.now(timezone.utc)
-        agent.approval_status = STATE_AFTER_TRACE_PASS
     db.commit()
 
     log_audit_event(

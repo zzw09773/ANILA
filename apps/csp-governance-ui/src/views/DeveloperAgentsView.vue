@@ -178,15 +178,13 @@ def employee_count(department: str) -&gt; int:
                 </button>
                 <template v-if="authStore.isAdmin && isPendingReview(agent.approval_status)">
                   <span class="row-actions__sep">·</span>
-                  <span :title="!agent.trace_test_passed_at ? '須先通過軌跡測試' : ''">
-                    <button
-                      class="term-action"
-                      :disabled="!isApprovable(agent.approval_status, agent.trace_test_passed_at)"
-                      @click="handleApprove(agent)"
-                    >核准</button>
-                  </span>
+                  <button
+                    class="term-action"
+                    :disabled="!isApprovable(agent.approval_status)"
+                    @click="handleApprove(agent)"
+                  >核准</button>
                   <span class="row-actions__sep">·</span>
-                  <button class="term-action term-action--danger" @click="openRejectModal(agent)">駁回</button>
+                  <button class="term-action term-action--danger" @click="openRejectModal(agent)">停用</button>
                 </template>
                 <template v-if="authStore.isAdmin">
                   <span class="row-actions__sep">·</span>
@@ -259,13 +257,6 @@ def employee_count(department: str) -&gt; int:
         <TermField label="版本" hint="agent 版本字串，例如 1.0.0（選填）">
           <input v-model="form.version" class="term-input" placeholder="1.0.0" />
         </TermField>
-        <label class="draft-check">
-          <input type="checkbox" v-model="form.draft" />
-          <span>
-            <span class="draft-check__title">以草稿建立（shadow registration）</span>
-            <span class="draft-check__hint">先以「草稿」狀態影子註冊，暫不進入審批佇列；適合遷移既有 agent 時先建檔、稍後再補測試與審查。</span>
-          </span>
-        </label>
 
         <TermSection title="起飛前檢查" />
         <ul class="check">
@@ -282,7 +273,7 @@ def employee_count(department: str) -&gt; int:
         <p class="cell-meta">
           agent <strong>{{ registeredAgent?.name }}</strong>（#{{ registeredAgent?.id }}）已註冊 ·
           <TermBadge :variant="approvalVariant(registeredAgent?.approval_status)" dot>{{ approvalLabel(registeredAgent?.approval_status) }}</TermBadge>
-          {{ registeredAgent?.approval_status === 'draft' ? '（草稿，未進入審批佇列）' : '待管理員審查。' }}
+          待管理員指派使用者後即可使用。
         </p>
 
         <div v-if="!newAgentCsk">
@@ -453,31 +444,28 @@ def employee_count(department: str) -&gt; int:
         <TermSection title="router 說明" />
         <p class="detail__desc">{{ detailAgent.description_for_router || '—' }}</p>
 
-        <!-- Slice 5b — 軌跡測試（Full Trace 審批關卡）。admin 執行測試 → 逐項
-             pass/fail 報告 → 通過後才可核准。 -->
-        <template v-if="authStore.isAdmin">
-          <TermSection title="軌跡測試 · full trace" />
+        <!-- OE-1 — 軌跡測試改為可選診斷，不再阻擋核准。 -->
+        <template v-if="authStore.isAdmin || canEditAgent(detailAgent)">
+          <TermSection title="診斷 · 連線／軌跡（可選）" />
           <p class="cell-meta">
-            正式核准前必須通過軌跡測試。測試會對 agent 發出一次帶追蹤的請求，逐項檢查 span 回報。
+            連線測試與軌跡測試僅供開發者自行排查，不影響核准。管理員指派使用者後即可使用。
           </p>
           <p class="trace-status" :class="detailAgent.trace_test_passed_at ? 'is-ok' : 'is-pending'">
             {{ detailAgent.trace_test_passed_at
-                ? `✓ 已於 ${formatDate(detailAgent.trace_test_passed_at)} 通過軌跡測試`
-                : '○ 尚未通過軌跡測試' }}
+                ? `✓ 最近於 ${formatDate(detailAgent.trace_test_passed_at)} 通過軌跡診斷`
+                : '○ 尚未執行軌跡診斷（非必要）' }}
           </p>
           <div class="row-actions" style="margin: 8px 0;">
             <TermButton
               size="xs" variant="default" :loading="traceTesting" :disabled="traceTesting"
-              :label="traceTesting ? '測試中' : '執行軌跡測試'" @click="handleTraceTest"
+              :label="traceTesting ? '測試中' : '執行軌跡診斷'" @click="handleTraceTest"
             />
-            <template v-if="isPendingReview(detailAgent.approval_status)">
-              <span :title="!detailAgent.trace_test_passed_at ? '須先通過軌跡測試' : ''">
-                <TermButton
-                  size="xs" variant="primary" :disabled="!detailIsApprovable"
-                  label="核准" @click="handleApprove(detailAgent)"
-                />
-              </span>
-              <TermButton size="xs" variant="ghost" label="駁回" @click="openRejectModal(detailAgent)" />
+            <template v-if="authStore.isAdmin && isPendingReview(detailAgent.approval_status)">
+              <TermButton
+                size="xs" variant="primary" :disabled="!detailIsApprovable"
+                label="核准" @click="handleApprove(detailAgent)"
+              />
+              <TermButton size="xs" variant="ghost" label="停用" @click="openRejectModal(detailAgent)" />
             </template>
           </div>
           <ul v-if="traceReport.length" class="trace-report">
@@ -772,7 +760,7 @@ const form = ref({
   name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
   base_model_id: null, collection_ids: [],
   // Slice 5b — 新增治理欄位；G9 — 預設分類等級（取代舊鎖開關）
-  runtime_type: 'openai_compatible_agent', version: '', draft: false,
+  runtime_type: 'openai_compatible_agent', version: '',
   default_classification_level: '無機密',
 })
 const formErrors = ref({})
@@ -899,7 +887,7 @@ function resetForm() {
   form.value = {
     name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
     base_model_id: null, collection_ids: [],
-    runtime_type: 'openai_compatible_agent', version: '', draft: false,
+    runtime_type: 'openai_compatible_agent', version: '',
     default_classification_level: '無機密',
   }
   formErrors.value = {}
@@ -953,9 +941,9 @@ async function openDetailModal(agent) {
   if (authStore.isAdmin) await refreshDetailCredentials()
 }
 
-// 是否可核准（狀態待審查 + 已通過軌跡測試）。row action 與 detail 共用。
+// 是否可核准（OE-1：registered／disabled 即可，不要求軌跡測試）。
 const detailIsApprovable = computed(() =>
-  isApprovable(detailAgent.value?.approval_status, detailAgent.value?.trace_test_passed_at))
+  isApprovable(detailAgent.value?.approval_status))
 
 // 後端 trace_test_report 形狀未定，防禦性正規化為 [{ name, passed, detail }]。
 // 兼容陣列或 { items|checks|results: [...] }；每項的 pass 旗標容忍多種鍵名。
@@ -1143,19 +1131,16 @@ async function handleRegister() {
       collection_ids: Array.isArray(form.value.collection_ids)
         ? [...form.value.collection_ids]
         : [],
-      // Slice 5b — 治理欄位；空值送 null（未填版本），draft 對應 5a 影子註冊參數。
       // G9 — 預設分類等級（四級字彙；後端據此衍生受控存取旗標）。
-      // classification_ceiling 不在註冊／更新契約內（dispatch 上限另管），故不送出。
       runtime_type: form.value.runtime_type || 'openai_compatible_agent',
       version: form.value.version.trim() || null,
-      draft: form.value.draft,
       default_classification_level: form.value.default_classification_level || '無機密',
     })
     // Advance to step 2 (provision key) instead of closing — one onboarding
     // flow: register → issue csk- → paste into .env → verify (S-Q2/Q3).
     registeredAgent.value = resp.data
     registerStep.value = 2
-    setFeedback('success', 'agent 已註冊 · 待管理員審查 — 現在核發金鑰')
+    setFeedback('success', 'agent 已註冊 · 待管理員指派使用者 — 現在核發金鑰')
     await fetchAgents()
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'register failed') }
   finally { registering.value = false }
@@ -1288,7 +1273,7 @@ async function handleApprove(agent) {
     await fetchAgents()
     syncDetailFromList(agent.id)
   }
-  catch (e) { setFeedback('error', e.response?.data?.detail || '核准失敗，請確認已通過軌跡測試') }
+  catch (e) { setFeedback('error', e.response?.data?.detail || '核准失敗') }
 }
 
 // 核准／駁回後把最新狀態同步回開啟中的 detail modal（若操作對象就是它）。

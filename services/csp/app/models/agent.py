@@ -103,22 +103,20 @@ class Agent(Base):
     trace_callback_mode = Column(String(20), nullable=True)
     # health_status: unknown / healthy / unhealthy
     health_status = Column(String(20), nullable=False, default="unknown")
-    # approval_status(doc 05 §3,7 值):draft / pending_connection_test /
-    # pending_trace_test / pending_security_review / approved / rejected / disabled。
-    # 現況三值由 r1_0004 backfill(pending → pending_connection_test)。註冊落地
-    # 預設 = pending_connection_test(現況 pending 的七值等價,第一關 = 連線測試)。
+    # approval_status(OE-1,3 值):registered / approved / disabled。
+    # SYSTEM-MAP:註冊 → admin 指派 → 可用;無連線／trace／安全審查三關。
+    # r1_0019 將七值殘餘映射至此三態(usable 的 approved 不變)。
     approval_status = Column(
-        String(30), nullable=False, default="pending_connection_test"
+        String(30), nullable=False, default="registered", server_default="registered"
     )
-    # doc 05 §2 v1 policy:approved Agent 必為 full_trace(approval blocker)。
+    # 殘餘 audit_level 欄(不再是核准硬閘;預設仍 full_trace 以相容既有列)。
     audit_level = Column(
         String(20), nullable=False, default="full_trace", server_default="full_trace"
     )
-    # doc 05 §3/§11 classification_ceiling:分類上限(NULL = 無上限);
-    # 執行時 effective_task_level <= ceiling 才允許 dispatch。
+    # SYSTEM-MAP §「稽核」:agent 上的列管標記上限(NULL = 無上限);
+    # 執行時 effective_task_level <= ceiling 才允許 dispatch。OE-1 KEEP。
     classification_ceiling = Column(String(20), nullable=True)
-    # doc 05 §6 Full Trace 是 approval blocker:trace-test 全過才落章。
-    # trace_test_passed_at 非空 + approval_status=pending_security_review 才可 approve。
+    # On-demand trace-test 診斷落章(不再阻擋核准;D1 退場前仍可寫入)。
     trace_test_passed_at = Column(DateTime, nullable=True)
     trace_test_report = Column(JSONValue, nullable=True)
     # Compatibility read model: derived from default_classification_level

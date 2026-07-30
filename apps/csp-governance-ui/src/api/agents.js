@@ -12,9 +12,7 @@ export const registerAgent = (data) =>
 export const approveAgent = (id) =>
   client.post(`/api/agents/${id}/approve`)
 
-// Slice 5b — Full Trace 審批關卡。對 agent 跑一次軌跡測試，回傳逐項
-// pass/fail 報告（trace_test_report）。通過後 approve 才會放行；未過時
-// 後端 approve 回 409。200 -> { report... }；4xx -> error detail。
+// On-demand trace diagnostic (OE-1: no longer an approval gate).
 export const traceTestAgent = (id) =>
   client.post(`/api/agents/${id}/trace-test`)
 

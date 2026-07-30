@@ -110,7 +110,7 @@ def make_model(db, name="gpt-4o-mini") -> ModelRegistry:
 
 
 def make_agent(db, owner: User, name="test-agent",
-               approval_status="pending") -> Agent:
+               approval_status="registered") -> Agent:
     a = Agent(
         name=name,
         owner_user_id=owner.id,
