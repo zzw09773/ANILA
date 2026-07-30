@@ -5,7 +5,8 @@ import logging
 
 import httpx
 from anila_core.security import UnsafeEndpointError, validate_outbound_url, ENDPOINT_KIND_MODEL
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import ValidationError
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
@@ -34,6 +35,7 @@ from app.services.auth_service import (
     is_admin_tier,
     require_admin,
     require_owner,
+    security,
     verify_service_token,
 )
 from app.services.endpoint_author_service import (
@@ -203,6 +205,7 @@ def _build_response(
         "api_version": model.api_version,
         "is_active": model.is_active,
         "is_router_primary": bool(model.is_router_primary),
+        "is_image_primary": bool(getattr(model, "is_image_primary", False)),
         "is_platform_embedding": bool(
             getattr(model, "is_platform_embedding", False)
         ),
@@ -1109,7 +1112,124 @@ def unset_router_primary(
     return _build_response(model, caller=admin, db=db)
 
 
-# ── P4.8 platform embedding designation ──────────────────────────────────────
+# ── Slice 8b image-primary designation ───────────────────────────────────────
+
+
+@router.get("/image-primary")
+def get_image_primary(
+    request: Request,
+    db: Session = Depends(get_db),
+    x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+):
+    """Return the model designated as the primary image (FLUX) model.
+
+    Service-to-service consumers (flux2-dev-agent / anila-studio) send
+    ``X-CSP-Service-Token``. Authenticated users may also read it; the
+    address is shaped by the single visibility predicate
+    ``can_see_endpoint_address`` / ``visible_endpoint_url`` — service
+    tokens and designated callers see the real URL, everyone else gets
+    the redaction sentinel. Never returns the model's API key.
+    """
+    is_svc = False
+    caller: User | None = None
+    if x_csp_service_token:
+        verify_service_token(request, db, x_csp_service_token)
+        is_svc = True
+    else:
+        caller = get_current_user(request, credentials, db)
+
+    model = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_image_primary.is_(True))
+        .first()
+    )
+    if not model:
+        raise HTTPException(status_code=404, detail="尚未指定主圖像模型")
+    if not model.is_active:
+        raise HTTPException(status_code=409, detail="已指定的主圖像模型已被停用")
+    return {
+        "id": model.id,
+        "name": model.name,
+        "display_name": model.display_name,
+        "model_type": model.model_type,
+        "endpoint_url": visible_endpoint_url(
+            model.endpoint_url,
+            is_internal=bool(getattr(model, "is_internal", False)),
+            db=db,
+            caller=caller,
+            is_service_token=is_svc,
+        ),
+        "api_version": model.api_version,
+        "health_status": model.health_status,
+    }
+
+
+@router.post("/{model_id}/set-image-primary", response_model=ModelResponse)
+def set_image_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Mark a model as the primary image (FLUX) model (clearing any previous one)."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if model.model_type != "image":
+        raise HTTPException(status_code=400, detail="僅 image 類型可設為主圖像模型")
+    if not model.is_active:
+        raise HTTPException(status_code=400, detail="已停用的模型不能設為主圖像模型")
+
+    # Clear previous primary first to avoid violating the partial unique index.
+    (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_image_primary.is_(True), ModelRegistry.id != model_id)
+        .update({"is_image_primary": False}, synchronize_session=False)
+    )
+    model.is_image_primary = True
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="set_image_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"設為主圖像模型: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model, caller=admin, db=db)
+
+
+@router.post("/{model_id}/unset-image-primary", response_model=ModelResponse)
+def unset_image_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Remove the primary image-model designation from a model."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if not model.is_image_primary:
+        return _build_response(model, caller=admin, db=db)
+
+    model.is_image_primary = False
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="unset_image_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"取消主圖像模型: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model, caller=admin, db=db)
+
+
+# ── P4.8 platform embedding designation ────────────────────────────────────── ──────────────────────────────────────
 
 
 async def _probe_embedding_native_dim(model: ModelRegistry) -> int:
@@ -1455,6 +1575,11 @@ def deactivate_model(
     # holds; admin must explicitly re-pin a primary after re-activation.
     if model.is_router_primary:
         model.is_router_primary = False
+    # Same invariant for the image-primary flag (doc
+    # 2026-07-06-flux-image-primary-design.md §1): a disabled row must not
+    # stay pinned as primary.
+    if getattr(model, "is_image_primary", False):
+        model.is_image_primary = False
     if getattr(model, "is_platform_embedding", False):
         model.is_platform_embedding = False
     db.commit()

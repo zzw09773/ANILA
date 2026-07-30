@@ -347,6 +347,7 @@
   .term-badge--embedding,
   .term-badge--embed   { color: var(--c-embedding); border-color: var(--c-embedding); }
   .term-badge--agent   { color: var(--c-agent);  border-color: var(--c-agent); }
+  .term-badge--image   { color: var(--c-image);  border-color: var(--c-image); }
 
   /* Status dot -------------------------------------------------------- */
   .term-dot {

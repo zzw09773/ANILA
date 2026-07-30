@@ -1,6 +1,6 @@
 # flux2-dev
 
-> **FLUX.2-dev text-to-image inference service** — a minimal HTTP wrapper (`server.py`) around `diffusers`' `Flux2Pipeline`, exposing only `POST /generate` and `GET /health`. Air-gapped, intranet-only (no host port, no inbound auth); appears in the stack as the service `flux2-dev` on the external network `anila-models-net`.
+> **FLUX.2-dev text-to-image inference service** — a minimal HTTP wrapper (`server.py`) around `diffusers`' `Flux2Pipeline`, exposing only `POST /generate`, `POST /v1/images/generations` (OpenAI-compatible) and `GET /health`. Air-gapped, intranet-only (no host port, no inbound auth); appears in the stack as the service `flux2-dev` on the external network `anila-models-net`.
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
@@ -15,14 +15,36 @@
 End users never see this service directly; it has two internal clients:
 
 - **`flux2-dev-agent`** ([`../flux2-dev-agent`](../flux2-dev-agent/README.en.md)) — the wrapper for the chat "image drawing" flow (Router dispatches the `image-generator` agent); it takes back a single candidate image.
-- **`anila-studio`**'s `FluxImageProvider` (`services/anila-studio/app/services/flux_image_provider.py`) — the Studio (產出中心) slide / infographic illustration pipeline, which calls the `/generate` JSON contract directly.
+- **`anila-studio`**'s `FluxImageProvider` (`services/anila-studio/app/services/flux_image_provider.py`) — the Studio (產出中心) slide / infographic illustration pipeline, which calls the OpenAI-compatible `/v1/images/generations` endpoint.
 
 ```
 user chat → Router → DISPATCH:image-generator
                    → CSP proxy → flux2-dev-agent  (OpenAI chat compatible)
                                   → (prompt translation via gemma4)
-                                  → flux2-dev  POST /generate   ← this service
+                                  → flux2-dev  POST /v1/images/generations   ← this service
 Studio    → anila-studio FluxImageProvider ──────┘
+```
+
+---
+
+## `/v1/images/generations` (OpenAI-compatible, added 2026-07)
+
+With the on-prem models consolidated onto the cloud compute centre, both platform clients (`anila-studio`'s `FluxImageProvider` and `flux2-dev-agent`'s `FluxClient`) now speak the standard **OpenAI Images API**. This dev backend exposes the same endpoint so local development matches the new contract; **the legacy `/generate` is kept unchanged** (backward compatibility).
+
+Request (standard OpenAI fields):
+
+```json
+{"model": "flux.2-dev", "prompt": "...", "n": 1, "size": "1024x1024", "response_format": "b64_json"}
+```
+
+- `size`: a `"WxH"` string (64–2048); malformed → `422`. Parsed into width/height and fed to the same generation core as `/generate`.
+- `response_format` supports only `"b64_json"` (this service hosts no static files, so it cannot issue urls) → anything else returns `400`.
+- steps / guidance come from env defaults (`FLUX_NUM_STEPS` / `FLUX_GUIDANCE_SCALE`); the seed is random per request (the OpenAI contract has no seed field).
+
+Response:
+
+```json
+{"created": 1720000000, "data": [{"b64_json": "<base64 PNG>"}]}
 ```
 
 ---
@@ -34,7 +56,8 @@ Per ANILA Studio FLUX Stage 1 ([spec §3.2](../../docs/superpowers/studio-flux/A
 | Endpoint | Method | Notes |
 |----------|--------|-------|
 | `/health` | GET | `{"status": "ok"}` |
-| `/generate` | POST | request / response below |
+| `/generate` | POST | custom JSON contract (request / response below) — kept for backward compatibility |
+| `/v1/images/generations` | POST | OpenAI Images API compatible (next section) |
 
 **`GenerateRequest`**:
 
@@ -100,7 +123,7 @@ Inference failure returns `500` (`detail: "inference failed: ..."`).
 
 ```
 services/flux2-dev/
-├── server.py           # build_app + /generate + /health + pipeline load (_load_pipeline_from_env)
+├── server.py           # build_app + /generate + /v1/images/generations + /health + pipeline load
 ├── Dockerfile          # CUDA 12.4 base → torch 2.6 (cu124) → requirements.txt
 ├── requirements.txt    # runtime deps (incl. GPU stack)
 ├── pyproject.toml      # minimal runtime + [test] extra (no torch/diffusers)

@@ -31,10 +31,14 @@ def client(tmp_path: Path) -> TestClient:
         async def __aexit__(self, *exc):
             return None
 
+    backend_resolver = AsyncMock()
+    backend_resolver.resolve.return_value = ("http://flux2-dev:8000", "flux.2-dev")
+
     app = build_app(
         translator=translator,
-        flux_client_factory=lambda: _Ctx(),
+        flux_client_factory=lambda endpoint, model: _Ctx(),
         image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
+        backend_resolver=backend_resolver,
         default_aspect_ratio="16:9",
     )
     return TestClient(app)
@@ -77,6 +81,22 @@ def test_models_endpoint_lists_image_generator(client: TestClient):
     assert "image-generator" in ids
 
 
+def test_models_manifest_fields_complete(client: TestClient):
+    """Manifest 欄位對齊:OpenAI /v1/models 形狀(id / object / created /
+    owned_by,見 csp app/api/proxy.py list_models_openai)外,補
+    ``model_type:"agent"`` 標記,與 compose AUTO_REGISTER_MODELS 內
+    image-generator 的 ``model_type:"agent"`` 註冊資訊一致。"""
+    resp = client.get("/v1/models")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["object"] == "list"
+    entry = next(m for m in body["data"] if m["id"] == "image-generator")
+    assert entry["object"] == "model"
+    assert isinstance(entry["created"], int) and entry["created"] > 0
+    assert entry["owned_by"] == "anila"
+    assert entry["model_type"] == "agent"
+
+
 def test_chat_completions_returns_502_when_flux_fails(tmp_path: Path):
     """Regression test: when the underlying flux/translator/store chain
     raises, the endpoint must convert it to HTTP 502 (not 500 / not leak
@@ -95,10 +115,14 @@ def test_chat_completions_returns_502_when_flux_fails(tmp_path: Path):
         async def __aexit__(self, *exc):
             return None
 
+    backend_resolver = AsyncMock()
+    backend_resolver.resolve.return_value = ("http://flux2-dev:8000", "flux.2-dev")
+
     app = build_app(
         translator=translator,
-        flux_client_factory=lambda: _Ctx(),
+        flux_client_factory=lambda endpoint, model: _Ctx(),
         image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
+        backend_resolver=backend_resolver,
         default_aspect_ratio="16:9",
     )
     client = TestClient(app)
