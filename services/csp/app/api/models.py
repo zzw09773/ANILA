@@ -97,6 +97,23 @@ ENDPOINT_REDACTED = "<owner-only>"
 ENDPOINT_INTERNAL = "<internal>"
 
 
+def _caller_is_designated_author_of(
+    db: Session, caller: User, model: ModelRegistry
+) -> bool:
+    """Same authorship question for read visibility and address write.
+
+    A designated endpoint author may list/fetch/set-address only on
+    rows they created. Designation alone never reaches another author's
+    row — that would let a developer retarget models they cannot see
+    (including the router primary) and would make write success differ
+    from read not-found as an id-enumeration signal.
+    """
+    return (
+        model.created_by_user_id == caller.id
+        and can_set_endpoint_address(db, caller)
+    )
+
+
 def _caller_may_view_model(
     db: Session, caller: User, model: ModelRegistry
 ) -> bool:
@@ -112,10 +129,7 @@ def _caller_may_view_model(
         return True
     if any(m.id == model.id for m in caller.allowed_models):
         return True
-    if (
-        model.created_by_user_id == caller.id
-        and can_set_endpoint_address(db, caller)
-    ):
+    if _caller_is_designated_author_of(db, caller, model):
         return True
     return False
 
@@ -1157,7 +1171,8 @@ def update_model(
     db: Session = Depends(get_db),
 ):
     # Admin-tier keeps full updates. Designated developers may update
-    # address only (the right that was granted). Plain users stay out.
+    # address only on rows they authored (same basis as read). Plain
+    # users stay out.
     if not (
         is_admin_tier(current_user)
         or can_set_endpoint_address(db, current_user)
@@ -1167,6 +1182,19 @@ def update_model(
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
+
+    # Below admin-tier: write basis == read authorship basis. When the row is
+    # invisible to the caller the refusal must match get_model, so a successful
+    # address write cannot confirm that a foreign id exists. When the caller can
+    # already see the row (assigned to them, but not theirs to author), 404 would
+    # deny a fact the console just showed them — say why instead.
+    if not is_admin_tier(current_user):
+        if not _caller_is_designated_author_of(db, current_user, model):
+            if _caller_may_view_model(db, current_user, model):
+                raise HTTPException(
+                    status_code=403, detail="僅可變更自己註冊的模型端點位址"
+                )
+            raise HTTPException(status_code=404, detail="模型不存在")
 
     update_data = request.model_dump(exclude_unset=True)
 
