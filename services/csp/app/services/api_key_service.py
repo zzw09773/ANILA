@@ -49,6 +49,21 @@ def create_api_key(
     return api_key, full_key
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Read a stored expiry as an aware UTC datetime.
+
+    ``api_keys.expires_at`` is ``TIMESTAMP WITHOUT TIME ZONE`` (models/api_key.py:28)
+    but is written with an aware UTC value, so PostgreSQL hands back a naive
+    datetime. Comparing that against ``datetime.now(timezone.utc)`` raises
+    ``TypeError`` — an unhandled 500 on the FIRST request made by any key that
+    has an expiry, rather than a clean 401. Keys with ``expires_at IS NULL``
+    short-circuit on the ``and``, which is why this sat latent. Making the
+    column ``timestamptz`` is tracked separately as X.3; this keeps the
+    comparison correct before and after that.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def validate_api_key(db: Session, raw_key: str) -> ApiKey | None:
     """Validate an API key and return the ApiKey object if valid.
 
@@ -67,7 +82,7 @@ def validate_api_key(db: Session, raw_key: str) -> ApiKey | None:
         return None
     if not api_key.is_active:
         return None
-    if api_key.expires_at and api_key.expires_at < datetime.now(timezone.utc):
+    if api_key.expires_at and _as_utc(api_key.expires_at) < datetime.now(timezone.utc):
         return None
     if api_key.user is None or not api_key.user.is_active:
         return None
