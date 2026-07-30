@@ -1,0 +1,4 @@
+results/
+fixtures/
+*.log
+.env.loadtest
