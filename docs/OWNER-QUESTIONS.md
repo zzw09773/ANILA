@@ -247,23 +247,22 @@ kimi 另建議砍掉 OPT-2(在 SSRF guard 裡加狀態只換 0.02ms,不值得)�
 
 ---
 
-## Q10 — 治理中心不在本機這套裡,所以它的改動從來沒被驗證過(2026-07-31 凌晨查出)
+## Q10 — ~~治理中心不在本機這套裡~~ **這條是我查錯,已作廢**(2026-07-31)
 
-**事實**:`anila-ui` 容器只 build `apps/anila-shell`(`platform.yml:435-437`),
-**沒有任何容器服務 `apps/csp-governance-ui`**,csp 容器裡也沒有它的靜態檔。
+**原本寫的結論是錯的。** 治理中心**有**在部署,而且一直都在:
+`infra/docker/csp.Dockerfile` 是多階段 build——第一階段用 node 建 `apps/csp-governance-ui`,
+第二階段 `COPY --from=frontend-build /build/dist /app/frontend-dist`;
+csp 掛載 `/assets` 並送出 index.html,nginx 的 `location /` 又 proxy 到 csp。
+所以打 `https://<主機>/` 進去的就是它。
 
-**後果**:治理中心的任何前端改動**在本機完全無法驗證**——build 不了(沒有 node_modules)、
-跑不起來(沒有容器)、點不到(nginx 沒有路由)。今天以下改動都屬於這個盲區:
-- 權限編輯的「讀取失敗不開視窗」防呆(`93465c5`,今晚最嚴重那條的修正)
-- 端點位址可見性那包的治理 UI(分組金鑰移除、位址顯示)
-- P4.6 整批匯入的介面
+**我怎麼會查錯**:去看了 `services/csp/Dockerfile`(那支存在,但**不是** compose 實際用的),
+又在 compose 裡 grep 不到「governance」就下了結論——compose 指的是
+`infra/docker/csp.Dockerfile`,而那支裡面根本沒有 "governance" 這個字串以外的線索。
+擁有者一句「但我有進入 csp 啊」才逼出正確答案。
 
-它們都通過了後端測試,但**前端一行都沒有真的在瀏覽器裡跑過**。
+**教訓**(值得留著):**查部署路徑要從實際跑的容器往回追,不要從 repo 裡「看起來對」的檔案往前推。**
+`docker inspect` 看映像、`docker exec` 看檔案實際在不在,比 grep 原始碼可靠。
 
-**問題**:①`.15` 上的治理中心是怎麼部署的?手動 build 後丟靜態檔?
-②要不要把它加進 compose,讓本機也能驗?
+**真正的狀況**:治理中心的改動要**重建 csp** 才會生效(不是 anila-ui)。今天那個
+「權限讀取失敗不開視窗」的修正之所以沒出現,只是因為我在那個 commit 之後只重建了 anila-ui。
 
-**我的建議**:加進去。一個一人維運的平台,如果有一整個管理介面在部署流程之外,
-那它每一次改動都是盲改。成本是一個 Dockerfile 加一個 compose 區塊。
-
-**目前假設**:改動照做、照 commit,但在報告裡明確標示「治理中心部分未經瀏覽器驗證」。
