@@ -150,20 +150,37 @@ export function updateMessage(authRequest, convId, messageId, patch) {
   });
 }
 
-// ── Shares ──────────────────────────────────────────────────────────────────
+// ── Shares (P4.3 named person / unit; anonymous link retired) ────────────────
 
 export function listShares(authRequest, convId) {
   return authRequest(`/api/conversations/${convId}/shares`, { method: "GET" });
 }
 
-export function createShare(authRequest, convId, { mode = "read_only", allowFork = false, expiresAt = null } = {}) {
+export function createShare(
+  authRequest,
+  convId,
+  {
+    targetUsername = null,
+    targetUserId = null,
+    targetDepartmentId = null,
+    targetDepartmentName = null,
+    mode = "read_only",
+    allowFork = false,
+    expiresAt = null,
+  } = {},
+) {
+  const body = {
+    mode,
+    allow_fork: allowFork,
+    expires_at: expiresAt,
+  };
+  if (targetUserId != null) body.target_user_id = targetUserId;
+  if (targetUsername) body.target_username = targetUsername;
+  if (targetDepartmentId != null) body.target_department_id = targetDepartmentId;
+  if (targetDepartmentName) body.target_department_name = targetDepartmentName;
   return authRequest(`/api/conversations/${convId}/shares`, {
     method: "POST",
-    body: JSON.stringify({
-      mode,
-      allow_fork: allowFork,
-      expires_at: expiresAt,
-    }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -173,12 +190,20 @@ export function revokeShare(authRequest, convId, shareId) {
   });
 }
 
-// Server returns a token; callers build the public URL themselves. Keeping it
-// a pure helper so the base can be swapped for dev/prod without touching the
-// call sites.
-export function buildShareUrl(token, { baseUrl } = {}) {
-  const base = baseUrl || (typeof window !== "undefined" ? window.location.origin : "");
-  return `${base}/s/c/${token}`;
+/** Human-readable label for a named share row (owner UI). */
+export function formatShareTarget(share) {
+  if (!share) return "—";
+  if (share.target_username || share.target_user_id) {
+    return share.target_username
+      ? `帳號 ${share.target_username}`
+      : `使用者 #${share.target_user_id}`;
+  }
+  if (share.target_department_name || share.target_department_id) {
+    return share.target_department_name
+      ? `單位 ${share.target_department_name}`
+      : `單位 #${share.target_department_id}`;
+  }
+  return "（未指定對象）";
 }
 
 // ── Attachments ─────────────────────────────────────────────────────────────

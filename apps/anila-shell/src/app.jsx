@@ -54,7 +54,6 @@ import {
   createShare as apiCreateShare,
   listShares as apiListShares,
   revokeShare as apiRevokeShare,
-  buildShareUrl,
   uploadAttachment as apiUploadAttachment,
   createHandoff as apiCreateHandoff,
   listAgentFunctions as apiListAgentFunctions,
@@ -2602,16 +2601,23 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onClose={() => setShareOpen(false)}
         conversation={selectedConv}
         user={user}
-        onCreateShare={async ({ mode, allowFork, expiresAt }) => {
+        onCreateShare={async ({
+          targetUsername,
+          targetDepartmentName,
+          mode,
+          allowFork,
+          expiresAt,
+        }) => {
           if (!selectedConvId || typeof selectedConvId !== "number") {
             throw new Error("尚未建立後端對話 — 請先送出第一則訊息");
           }
-          const share = await apiCreateShare(authRequest, selectedConvId, {
+          return apiCreateShare(authRequest, selectedConvId, {
+            targetUsername,
+            targetDepartmentName,
             mode,
             allowFork,
             expiresAt,
           });
-          return { ...share, url: buildShareUrl(share.token) };
         }}
         onListShares={() =>
           (typeof selectedConvId === "number")

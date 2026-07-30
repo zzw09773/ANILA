@@ -15,7 +15,6 @@ from app.api.router import api_router
 from app.api.conversations import router as conversations_router
 from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
-from app.api.public_share import router as public_share_router
 from app.middleware.csrf import CsrfMiddleware
 from app.models.user import User
 from app.services.auth_service import require_admin
@@ -260,7 +259,6 @@ app.include_router(api_router)
 app.include_router(conversations_router)
 app.include_router(attachments_router)
 app.include_router(handoffs_router)
-app.include_router(public_share_router)
 
 # Mount static files for Swagger UI
 static_dir = Path(settings.STATIC_DIR)

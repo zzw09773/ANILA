@@ -12,11 +12,6 @@ class Settings(BaseSettings):
     # (secure-by-default); dev environments opt in via ENABLE_API_DOCS=true.
     ENABLE_API_DOCS: bool = False
 
-    # Public read-only share endpoint (/api/public/share/{token}) is
-    # unauthenticated by design. Air-gapped / card-only deployments that want
-    # zero unauthenticated surface set this False to disable it entirely.
-    ENABLE_PUBLIC_SHARE: bool = True
-
     # Database
     DATABASE_URL: str = "postgresql://csp:csp_password@localhost:5432/csp"
 

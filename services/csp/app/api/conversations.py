@@ -17,6 +17,7 @@ from app.models.message import Message
 from app.models.user import User
 from app.services import conversation_service as svc
 from app.services import message_tree as mtree
+from app.services.auth_service import is_admin_tier
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -174,6 +175,12 @@ class ActiveLeafUpdate(BaseModel):
 
 
 class ShareCreate(BaseModel):
+    """P4.3 — share to exactly one named person XOR one department unit."""
+
+    target_username: Optional[str] = Field(None, max_length=100)
+    target_user_id: Optional[int] = Field(None, ge=1)
+    target_department_id: Optional[int] = Field(None, ge=1)
+    target_department_name: Optional[str] = Field(None, max_length=100)
     mode: str = Field("read_only", pattern="^(read_only|fork)$")
     allow_fork: bool = False
     expires_at: Optional[datetime] = None
@@ -181,13 +188,38 @@ class ShareCreate(BaseModel):
 
 class ShareOut(BaseModel):
     id: int
-    token: str
+    target_user_id: Optional[int] = None
+    target_username: Optional[str] = None
+    target_department_id: Optional[int] = None
+    target_department_name: Optional[str] = None
     mode: str
     allow_fork: bool
     expires_at: Optional[datetime]
-    view_count: int
     created_at: datetime
     model_config = {"from_attributes": True}
+
+
+def _share_out(share: ConversationShare) -> ShareOut:
+    """Enrich share row with target display names for the owner UI."""
+    username = None
+    if share.target_user is not None:
+        username = share.target_user.username
+    elif share.target_user_id is not None:
+        username = None
+    dept_name = None
+    if share.target_department is not None:
+        dept_name = share.target_department.name
+    return ShareOut(
+        id=share.id,
+        target_user_id=share.target_user_id,
+        target_username=username,
+        target_department_id=share.target_department_id,
+        target_department_name=dept_name,
+        mode=share.mode,
+        allow_fork=share.allow_fork,
+        expires_at=share.expires_at,
+        created_at=share.created_at,
+    )
 
 
 def _message_out(msg: Message, sibling_ids: list[int] | None = None) -> MessageOut:
@@ -432,12 +464,21 @@ def get_conversation(
         classification_audit_required,
     )
 
-    conv = svc.get_conversation(db, conv_id, current_user)
+    conv = svc.get_conversation(db, conv_id, current_user, for_write=False)
     # SYSTEM-MAP §8 L242:要落稽核 = 密等 ≥ 營業秘密 (read-audit).
     level = ClassificationLevel.from_storage(conv.classification_level)
     if classification_audit_required(level):
         svc.log_classified_access(db, conv_id, current_user)
-    return _conversation_detail(db, conv, view=view)
+    # OW-1 / P4.3: named-share recipients only see the active path (same
+    # ceiling the retired public-share used). Owners/admins keep view=all.
+    effective_view = view
+    if (
+        view == "all"
+        and not is_admin_tier(current_user)
+        and conv.user_id != current_user.id
+    ):
+        effective_view = "active"
+    return _conversation_detail(db, conv, view=effective_view)
 
 
 @router.put("/{conv_id}", response_model=ConversationOut)
@@ -606,7 +647,7 @@ def classify_conversation(
     return svc.classify_conversation(db, conv_id, current_user)
 
 
-# ── Share links ───────────────────────────────────────────────────────────────
+# ── Named shares (P4.3) ───────────────────────────────────────────────────────
 
 @router.get("/{conv_id}/shares", response_model=list[ShareOut])
 def list_shares(
@@ -614,7 +655,7 @@ def list_shares(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.list_shares(db, conv_id, current_user)
+    return [_share_out(s) for s in svc.list_shares(db, conv_id, current_user)]
 
 
 @router.post("/{conv_id}/shares", response_model=ShareOut, status_code=201)
@@ -624,12 +665,17 @@ def create_share(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.create_share(
+    share = svc.create_share(
         db, conv_id, current_user,
+        target_user_id=body.target_user_id,
+        target_username=body.target_username,
+        target_department_id=body.target_department_id,
+        target_department_name=body.target_department_name,
         mode=body.mode,
         allow_fork=body.allow_fork,
         expires_at=body.expires_at,
     )
+    return _share_out(share)
 
 
 @router.delete("/{conv_id}/shares/{share_id}", status_code=204)
@@ -639,4 +685,4 @@ def revoke_share(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    svc.revoke_share(db, share_id, current_user)
+    svc.revoke_share(db, conv_id, share_id, current_user)
