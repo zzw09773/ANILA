@@ -47,6 +47,9 @@ ENV/
 
 # ── Node / 前端 ──────────────────────────────────────────────────────────────
 node_modules/
+# 帶斜線只比對目錄。開發時常把 node_modules 接成 symlink(借用其他 worktree
+# 的安裝),那是檔案不是目錄,會漏網——2026-07-30 真的被 commit 進來過一次。
+node_modules
 dist/
 build/
 .next/
