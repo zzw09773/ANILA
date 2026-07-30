@@ -68,7 +68,12 @@ def set_agent_classification(
     new_level = payload.default_classification_level
     refuse_classification_downgrade(agent, new_level, current_user)
     effective_transition, changed, stored_transition = (
-        apply_default_classification_level(agent, new_level)
+        apply_default_classification_level(
+            agent,
+            new_level,
+            db=db,
+            allow_downgrade=is_admin_tier(current_user),
+        )
     )
     if not changed:
         return {
