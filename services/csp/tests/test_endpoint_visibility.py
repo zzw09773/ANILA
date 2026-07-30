@@ -481,16 +481,39 @@ def test_grouping_key_absent_from_all_responses(client: TestClient, db: Session)
 
 
 def test_agent_and_model_alert_messages_agree_no_raw_url():
-    """Invariant 5: both health loops put the URL only in gated metadata."""
+    """Invariant 5: both health loops put the URL only in gated metadata.
+
+    Asserts on WHAT the loops pass, not on how they spell it. An earlier
+    version pinned the literal expression ``agent.endpoint_url``; when the
+    connection-pool work snapshotted the row into locals before releasing
+    the session, the behaviour was unchanged but the test went red. The
+    invariant is that the address reaches ``metadata`` and never ``message``
+    — so check the call, not the source text.
+    """
+    import ast
     import inspect
 
     from app.services import health_checker as hc
 
-    agent_src = inspect.getsource(hc._agent_health_check_loop)
-    model_src = inspect.getsource(hc._health_check_loop)
-    # Message must not interpolate the raw endpoint attribute.
-    assert "message=f\"無法連線至 {agent.endpoint_url}\"" not in agent_src
-    assert '"endpoint_url":agent.endpoint_url' in agent_src.replace(" ", "")
-    assert '"endpoint_url":model.endpoint_url' in model_src.replace(" ", "")
-    assert "無法連線至 Agent" in agent_src
-    assert "無法連線至模型" in model_src
+    def alert_calls(fn):
+        """Every ``upsert_alert(...)`` call in ``fn``, as AST keyword maps."""
+        tree = ast.parse(inspect.getsource(fn).lstrip())
+        return [
+            {kw.arg: kw.value for kw in node.keywords}
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "upsert_alert"
+        ]
+
+    for fn, label in ((hc._agent_health_check_loop, "Agent"), (hc._health_check_loop, "模型")):
+        calls = alert_calls(fn)
+        assert calls, f"{label} 健康迴圈找不到 upsert_alert 呼叫"
+        for call in calls:
+            message = ast.unparse(call["message"])
+            # The address must not reach the human-readable message, whether
+            # it is spelled as an attribute or as a snapshotted local.
+            assert "endpoint_url" not in message, message
+            assert f"無法連線至 {label}" in message or label in message
+            # …and it must still be in the gated metadata.
+            metadata = ast.unparse(call["metadata"])
+            assert "endpoint_url" in metadata, metadata
