@@ -42,6 +42,7 @@ import {
 import {
   listConversations as apiListConversations,
   createConversation as apiCreateConversation,
+  adoptConversation as apiAdoptConversation,
   getConversation as apiGetConversation,
   updateConversationTitle as apiUpdateConversationTitle,
   deleteConversation as apiDeleteConversation,
@@ -62,6 +63,7 @@ import {
   searchConversations,
   listActiveBanners as apiListActiveBanners,
 } from "./runtime/conversations.js";
+import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
 import {
   applyServerPath,
   persistRegeneratedAssistant,
@@ -457,6 +459,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // Stop generation:每個進行中的串流對應一個 AbortController,以 convId 為鍵。
   // streamWithAbort 包住串流呼叫管理生命週期;stopStreaming 中止指定對話。
   const streamAbortRef = useRef(new Map());
+  const adoptInFlightRef = useRef(false);
   async function streamWithAbort(convId, opts) {
     const controller = new AbortController();
     streamAbortRef.current.set(convId, controller);
@@ -2109,39 +2112,64 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     setCompareMsgs({});
   }
 
-  // OW-1: compare-mode adopt stays client-only (no server branch persist).
-  function adoptColumn(col) {
+  // Promote the chosen compare column into a real server conversation.
+  // Failures stay in compare mode and surface an error — never invent a
+  // local-only row (that bypassed classification latch + audit).
+  async function adoptColumn(col) {
+    if (adoptInFlightRef.current) return;
+    if (!isAuthenticated) {
+      setRuntimeError("尚未登入，請重新登入後再試。");
+      return;
+    }
     const msgs = compareMsgs[col.id] || [];
-    if (!msgs.length) return;
-    const firstUser = msgs.find((m) => m.role === "user");
     const agentName =
       agents.find((a) => a.id === col.agentId)?.name || col.agentId;
-    const encryption = agentRequiresEncryption(col.agentId);
-    const convId = makeId("cv");
-    setConversations((prev) => [
-      {
-        id: convId,
-        title: makeConversationTitle(firstUser?.text || "採用比較結果"),
-        ts: relativeLabel(),
-        updatedLabel: relativeLabel(),
-        agent: col.agentId,
+    adoptInFlightRef.current = true;
+    try {
+      const detail = await promoteAdoptedAnswer({
+        authRequest,
+        adoptConversation: apiAdoptConversation,
         agentId: col.agentId,
-        agentName,
-        folder: "all",
-        tags: encryption ? ["compared", "classified"] : ["compared"],
-        starred: false,
-        classified: encryption,
-        updatedAt: nowIso(),
-      },
-      ...prev,
-    ]);
-    setMessagesByConv((prev) => ({
-      ...prev,
-      [convId]: msgs.map((m) => ({ ...m, conversationId: convId })),
-    }));
-    setSelectedConvId(convId);
-    setSelectedAgentId(col.agentId);
-    exitCompare();
+        agentDisplayName: agentName,
+        msgs,
+        makeTitle: makeConversationTitle,
+      });
+      if (!detail || typeof detail.id !== "number") {
+        throw new Error("採用回答失敗：伺服器未回傳對話");
+      }
+      const lookupName = (id) =>
+        agents.find((a) => a.id === id)?.name || agentName || null;
+      const lookupRequiresEncryption = (id) =>
+        Boolean(agents.find((a) => a.id === id)?.requiresEncryption);
+      // Reflect server latch — do not invent classified client-side.
+      const mapped = mapServerConversation(
+        detail,
+        lookupName,
+        lookupRequiresEncryption,
+      );
+      const tags = Array.isArray(mapped.tags) ? [...mapped.tags] : [];
+      if (!tags.includes("compared")) tags.push("compared");
+      const convRow = { ...mapped, tags, folder: "all", starred: false };
+      setConversations((prev) => [
+        convRow,
+        ...prev.filter((c) => c.id !== detail.id),
+      ]);
+      const msgsMapped = (detail.messages || []).map((m) => ({
+        ...mapServerMessage(m),
+        conversationId: detail.id,
+      }));
+      setMessagesByConv((prev) => ({
+        ...prev,
+        [detail.id]: msgsMapped,
+      }));
+      setSelectedConvId(detail.id);
+      setSelectedAgentId(col.agentId);
+      exitCompare();
+    } catch (error) {
+      setRuntimeError(error.message || "採用回答失敗");
+    } finally {
+      adoptInFlightRef.current = false;
+    }
   }
 
   // ---- misc handlers ----

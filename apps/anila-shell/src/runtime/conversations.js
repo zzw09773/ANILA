@@ -36,6 +36,46 @@ export function createConversation(authRequest, { title, agentId } = {}) {
   });
 }
 
+/**
+ * Promote a compare-mode answer into a persisted conversation + message tree.
+ * Server latches classification from the resolved agent; client must not invent it.
+ */
+export function adoptConversation(
+  authRequest,
+  {
+    title,
+    agentName,
+    agentId,
+    userContent,
+    assistantContent,
+    assistantMetadata,
+    assistantTraceId,
+    assistantLatencyMs,
+    assistantAgentName,
+  } = {},
+) {
+  const body = {
+    title: title || "採用比較結果",
+    origin: ANILA_UI_ORIGIN,
+    user_content: userContent,
+    assistant_content: assistantContent,
+  };
+  if (typeof agentName === "string" && agentName) body.agent_name = agentName;
+  if (typeof agentId === "number") body.agent_id = agentId;
+  if (assistantMetadata && typeof assistantMetadata === "object") {
+    body.assistant_metadata = assistantMetadata;
+  }
+  if (assistantTraceId) body.assistant_trace_id = assistantTraceId;
+  if (typeof assistantLatencyMs === "number") {
+    body.assistant_latency_ms = assistantLatencyMs;
+  }
+  if (assistantAgentName) body.assistant_agent_name = assistantAgentName;
+  return authRequest("/api/conversations/adopt", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 /** @param {{ view?: "active" | "all" }} [opts] */
 export function getConversation(authRequest, convId, { view } = {}) {
   const qs = view ? `?view=${encodeURIComponent(view)}` : "";

@@ -364,6 +364,70 @@ def create_conversation(
     )
 
 
+class AdoptCompareRequest(BaseModel):
+    """Promote one compare-mode answer into a persisted conversation.
+
+    Defined here (API layer) rather than ``app/schemas`` so this ticket can
+    land without touching the timezone package's schema rewrite.
+    """
+
+    title: str = Field("採用比較結果", max_length=255)
+    # Prefer agent_name (data-plane id / unique Agent.name). Numeric agent_id
+    # is accepted when the caller already knows the inventory PK.
+    agent_name: Optional[str] = Field(default=None, max_length=100)
+    agent_id: Optional[int] = Field(default=None, ge=1)
+    origin: Optional[str] = Field(default="anila-ui", max_length=32)
+    user_content: str = Field(..., max_length=_MAX_MSG_CHARS)
+    assistant_content: str = Field(..., max_length=_MAX_MSG_CHARS)
+    assistant_metadata: Optional[dict] = None
+    assistant_trace_id: Optional[str] = None
+    assistant_latency_ms: Optional[int] = None
+    assistant_agent_name: Optional[str] = Field(default=None, max_length=255)
+
+
+@router.post("/adopt", response_model=ConversationDetail, status_code=201)
+def adopt_compare_answer(
+    body: AdoptCompareRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Promote a compare answer into a real conversation (message tree + latch).
+
+    Compare mode itself stays ephemeral; only the adopted column is written.
+    Classification comes from the resolved agent's policy on the server —
+    the client must not invent ``classified``.
+    """
+    origin = body.origin or "anila-ui"
+    if origin == "anilalm":
+        raise HTTPException(
+            status_code=400,
+            detail="比較採用僅支援 ANILA UI 對話（origin 不可為 anilalm）",
+        )
+    if not (body.user_content or "").strip():
+        raise HTTPException(status_code=400, detail="採用內容缺少使用者訊息")
+    if not (body.assistant_content or "").strip():
+        raise HTTPException(status_code=400, detail="採用內容缺少助理訊息")
+
+    conv = svc.adopt_compare_answer(
+        db,
+        current_user,
+        title=body.title,
+        user_content=body.user_content,
+        assistant_content=body.assistant_content,
+        agent_id=body.agent_id,
+        agent_name=body.agent_name,
+        origin=origin,
+        assistant_metadata=body.assistant_metadata,
+        assistant_trace_id=body.assistant_trace_id,
+        assistant_latency_ms=body.assistant_latency_ms,
+        assistant_agent_name=body.assistant_agent_name,
+    )
+    # Re-load so classification latch + active_leaf are visible in the
+    # response the client treats as source of truth.
+    conv = svc.get_conversation(db, conv.id, current_user)
+    return _conversation_detail(db, conv, view="active")
+
+
 class ConversationSearchHit(ConversationOut):
     # First matching message excerpt, for the search results list.
     snippet: Optional[str] = None
