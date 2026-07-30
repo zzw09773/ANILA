@@ -7,11 +7,71 @@
           llm · vlm · embedding · agent — 經 /v1/* 代理的已註冊端點
         </p>
       </div>
-      <div class="page-head__actions" v-if="authStore.isAdmin">
-        <TermButton variant="ghost" @click="openImportModal" label="整批帶入" />
-        <TermButton variant="primary" @click="openCreateModal" label="註冊模型" />
+      <div class="page-head__actions" v-if="authStore.isAdmin || canSetEndpointAddress">
+        <TermButton v-if="authStore.isAdmin" variant="ghost" @click="openImportModal" label="整批帶入" />
+        <TermButton
+          v-if="canSetEndpointAddress"
+          variant="primary"
+          @click="openCreateModal"
+          label="註冊模型"
+        />
       </div>
     </header>
+
+    <!-- P4.6b — 擁有者指派可設定端點位址的開發者（嵌在模型頁，非獨立路由） -->
+    <TermBox
+      v-if="authStore.isOwner"
+      title="端點位址設定授權"
+      hint="僅擁有者與下列開發者可登錄／變更模型端點位址"
+    >
+      <div class="author-grant">
+        <div class="author-grant__form">
+          <TermField label="指派開發者" hint="從開發者帳號中選擇；撤銷立即生效">
+            <select v-model="grantUserId" class="term-select">
+              <option :value="null">— 請選擇開發者 —</option>
+              <option
+                v-for="u in grantableDevelopers"
+                :key="u.id"
+                :value="u.id"
+              >
+                {{ u.username }}
+              </option>
+            </select>
+          </TermField>
+          <TermButton
+            variant="primary"
+            :disabled="!grantUserId || granting"
+            :label="granting ? '指派中…' : '授予'"
+            @click="handleGrantAuthor"
+          />
+        </div>
+        <table v-if="endpointAuthors.length" class="term-table author-grant__table">
+          <thead>
+            <tr>
+              <th>開發者</th>
+              <th style="width: 40%">授予時間</th>
+              <th style="width: 100px">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="g in endpointAuthors" :key="g.id">
+              <td class="cell-strong">{{ g.username || `user#${g.user_id}` }}</td>
+              <td class="cell-meta">{{ formatGrantedAt(g.granted_at) }}</td>
+              <td>
+                <button
+                  class="term-action term-action--danger"
+                  :disabled="revokingId === g.id"
+                  @click="handleRevokeAuthor(g)"
+                >
+                  {{ revokingId === g.id ? '撤銷中…' : '撤銷' }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <TermEmpty v-else message="尚未指派任何開發者 · 目前僅擁有者可設定端點位址" />
+      </div>
+    </TermBox>
 
     <div class="kpi-row">
       <TermStat label="模型 · 總數" :value="modelsStore.models.length" />
@@ -32,7 +92,7 @@
             <th style="width: 80px">API</th>
             <th style="width: 80px">啟用</th>
             <th style="width: 110px">Router</th>
-            <th v-if="authStore.isAdmin" style="width: 26%">操作</th>
+            <th v-if="authStore.isAdmin || canSetEndpointAddress" style="width: 26%">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -90,62 +150,64 @@
               </span>
               <span v-else class="cell-meta">—</span>
             </td>
-            <td v-if="authStore.isAdmin">
+            <td v-if="authStore.isAdmin || canSetEndpointAddress">
               <div class="row-actions">
                 <button class="term-action" @click="openEditModal(model)">編輯</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action" @click="handleHealthCheck(model.id)">探測</button>
-                <span class="row-actions__sep">·</span>
-                <button
-                  class="term-action"
-                  :disabled="testingId === model.id"
-                  title="主動探測此端點連線並回報五態健康與延遲"
-                  @click="handleTest(model)"
-                >{{ testingId === model.id ? '測試中…' : '測試連線' }}</button>
-                <span v-if="model.model_type === 'llm' && !model.is_router_primary" class="row-actions__sep">·</span>
-                <button
-                  v-if="model.model_type === 'llm' && !model.is_router_primary"
-                  class="term-action"
-                  :disabled="!model.is_active || settingPrimaryId === model.id"
-                  @click="handleSetPrimary(model.id)"
-                >
-                  {{ settingPrimaryId === model.id ? '設定中…' : '設為主要' }}
-                </button>
-                <span v-else-if="model.is_router_primary" class="row-actions__sep">·</span>
-                <button
-                  v-if="model.is_router_primary"
-                  class="term-action"
-                  :disabled="settingPrimaryId === model.id"
-                  @click="handleUnsetPrimary(model.id)"
-                >
-                  取消主要
-                </button>
-                <span class="row-actions__sep">·</span>
-                <button
-                  v-if="model.is_active"
-                  class="term-action"
-                  @click="handleDeactivate(model.id)"
-                >停用</button>
-                <button
-                  v-else
-                  class="term-action"
-                  @click="handleActivate(model.id)"
-                >啟用</button>
-                <span v-if="authStore.isOwner" class="row-actions__sep">·</span>
-                <button
-                  v-if="authStore.isOwner"
-                  class="term-action term-action--danger"
-                  :disabled="purgingId === model.id"
-                  :title="'hard-delete this row · irreversible · owner-only'"
-                  @click="handlePurge(model)"
-                >
-                  {{ purgingId === model.id ? '清除中…' : '清除' }}
-                </button>
+                <template v-if="authStore.isAdmin">
+                  <span class="row-actions__sep">·</span>
+                  <button class="term-action" @click="handleHealthCheck(model.id)">探測</button>
+                  <span class="row-actions__sep">·</span>
+                  <button
+                    class="term-action"
+                    :disabled="testingId === model.id"
+                    title="主動探測此端點連線並回報五態健康與延遲"
+                    @click="handleTest(model)"
+                  >{{ testingId === model.id ? '測試中…' : '測試連線' }}</button>
+                  <span v-if="model.model_type === 'llm' && !model.is_router_primary" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.model_type === 'llm' && !model.is_router_primary"
+                    class="term-action"
+                    :disabled="!model.is_active || settingPrimaryId === model.id"
+                    @click="handleSetPrimary(model.id)"
+                  >
+                    {{ settingPrimaryId === model.id ? '設定中…' : '設為主要' }}
+                  </button>
+                  <span v-else-if="model.is_router_primary" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.is_router_primary"
+                    class="term-action"
+                    :disabled="settingPrimaryId === model.id"
+                    @click="handleUnsetPrimary(model.id)"
+                  >
+                    取消主要
+                  </button>
+                  <span class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.is_active"
+                    class="term-action"
+                    @click="handleDeactivate(model.id)"
+                  >停用</button>
+                  <button
+                    v-else
+                    class="term-action"
+                    @click="handleActivate(model.id)"
+                  >啟用</button>
+                  <span v-if="authStore.isOwner" class="row-actions__sep">·</span>
+                  <button
+                    v-if="authStore.isOwner"
+                    class="term-action term-action--danger"
+                    :disabled="purgingId === model.id"
+                    :title="'hard-delete this row · irreversible · owner-only'"
+                    @click="handlePurge(model)"
+                  >
+                    {{ purgingId === model.id ? '清除中…' : '清除' }}
+                  </button>
+                </template>
               </div>
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
-            <td :colspan="authStore.isAdmin ? 9 : 8"><TermEmpty message="尚未註冊模型 · 註冊後即可啟用 /v1/* 代理" /></td>
+            <td :colspan="(authStore.isAdmin || canSetEndpointAddress) ? 9 : 8"><TermEmpty message="尚未註冊模型 · 註冊後即可啟用 /v1/* 代理" /></td>
           </tr>
         </tbody>
       </table>
@@ -157,11 +219,16 @@
           <input v-model="form.name" :disabled="!!editingId" class="term-input" placeholder="llama3-70b" />
         </TermField>
         <TermField label="顯示名稱">
-          <input v-model="form.display_name" class="term-input" placeholder="Llama 3 70B Instruct" />
+          <input
+            v-model="form.display_name"
+            class="term-input"
+            placeholder="Llama 3 70B Instruct"
+            :disabled="addressOnlyEditor"
+          />
         </TermField>
         <div class="form-row-2">
           <TermField label="類型">
-            <select v-model="form.model_type" class="term-select">
+            <select v-model="form.model_type" class="term-select" :disabled="addressOnlyEditor">
               <option value="llm">llm</option>
               <option value="vlm">vlm</option>
               <option value="embedding">embedding</option>
@@ -169,18 +236,25 @@
             </select>
           </TermField>
           <TermField label="API 版本">
-            <select v-model="form.api_version" class="term-select">
+            <select v-model="form.api_version" class="term-select" :disabled="addressOnlyEditor">
               <option value="v1">v1</option>
               <option value="v2">v2</option>
             </select>
           </TermField>
         </div>
-        <TermField label="端點 URL" :hint="endpointFieldLocked ? '🔒 owner-only — 管理員更新時不會動到已註冊的 URL' : ''">
+        <TermField
+          label="端點 URL"
+          :hint="endpointFieldLocked
+            ? '🔒 僅擁有者與獲授權開發者可變更端點位址'
+            : addressOnlyEditor
+              ? '獲授權開發者僅可變更端點位址'
+              : '登錄／變更端點位址需擁有者或獲授權開發者身分'"
+        >
           <input
             v-model="form.endpoint_url"
             class="term-input"
             :disabled="endpointFieldLocked"
-            :placeholder="endpointFieldLocked ? '— owner-only —' : 'http://gemma4:8000/v1'"
+            :placeholder="endpointFieldLocked ? '— 無權設定位址 —' : 'http://gemma4:8000/v1'"
           />
         </TermField>
         <TermField
@@ -188,18 +262,26 @@
           hint="位於 anila-models-net（跨 stack docker DNS）— 不對外開 host port，URL 僅 owner 可見"
         >
           <label class="internal-checkbox">
-            <input v-model="form.is_internal" type="checkbox" :disabled="endpointFieldLocked" />
+            <input
+              v-model="form.is_internal"
+              type="checkbox"
+              :disabled="endpointFieldLocked || addressOnlyEditor"
+            />
             <span>{{ form.is_internal ? '內部 · 僅平台 stack 內可連' : '外部 · 內網 LAN 或公開端點' }}</span>
           </label>
         </TermField>
         <div class="form-row-2">
           <TermField label="協定 · protocol" hint="端點所講的 wire protocol">
-            <select v-model="form.protocol" class="term-select">
+            <select v-model="form.protocol" class="term-select" :disabled="addressOnlyEditor">
               <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
             </select>
           </TermField>
           <TermField label="分類上限" hint="可承接的最高分類；留空＝無上限">
-            <select v-model="form.classification_ceiling" class="term-select">
+            <select
+              v-model="form.classification_ceiling"
+              class="term-select"
+              :disabled="addressOnlyEditor"
+            >
               <option :value="null">— 無上限 —</option>
               <option v-for="lvl in CLASSIFICATION_LEVELS" :key="lvl" :value="lvl">{{ lvl }}</option>
             </select>
@@ -216,16 +298,28 @@
             autocomplete="new-password"
             class="term-input"
             placeholder="Bearer 金鑰(留空＝沿用現值/全域)"
+            :disabled="addressOnlyEditor"
           />
         </TermField>
         <TermField label="描述" optional>
-          <textarea v-model="form.description" rows="2" class="term-textarea" />
+          <textarea
+            v-model="form.description"
+            rows="2"
+            class="term-textarea"
+            :disabled="addressOnlyEditor"
+          />
         </TermField>
         <TermField label="context window" optional hint="tokens">
-          <input v-model.number="form.context_window" type="number" class="term-input" placeholder="128000" />
+          <input
+            v-model.number="form.context_window"
+            type="number"
+            class="term-input"
+            placeholder="128000"
+            :disabled="addressOnlyEditor"
+          />
         </TermField>
         <TermField v-if="form.model_type === 'agent'" label="基礎模型" hint="用於用量歸屬">
-          <select v-model="form.base_model_id" class="term-select">
+          <select v-model="form.base_model_id" class="term-select" :disabled="addressOnlyEditor">
             <option :value="null">— 獨立 —</option>
             <option v-for="m in baseModelOptions" :key="m.id" :value="m.id">
               {{ m.display_name }} ({{ m.model_type }})
@@ -237,7 +331,7 @@
         <TermButton variant="ghost" @click="showModal = false" label="取消" />
         <TermButton
           variant="primary"
-          :disabled="!form.name || !form.display_name || !form.endpoint_url"
+          :disabled="!form.name || !form.display_name || (!endpointFieldLocked && !form.endpoint_url)"
           :label="editingId ? '更新' : '註冊'"
           @click="handleSubmit"
         />
@@ -256,15 +350,11 @@
           從已註冊端點拉取上游 <code>/models</code> 清單並寫入登錄表。
           已存在的名稱不會覆寫管理員設定；格式錯誤的項目會略過並附原因。
           新帶入列只繼承端點層級欄位（含分類上限），context window 與能力旗標維持保守預設，並維持停用待檢視後啟用。
-          <template v-if="!authStore.isOwner">
-            非擁有者看不到端點位址，清單會依每一筆已註冊模型列出（同一閘道可能出現多次），屬正常現象，請選代表列即可。
-          </template>
+          相同端點會合併為一個選項（位址本身仍僅擁有者可見）。
         </p>
         <TermField
           label="來源端點"
-          :hint="authStore.isOwner
-            ? '相同端點位址會合併為一個選項'
-            : '每位註冊模型各一筆選項；同一閘道可能重複出現，請選任一代表列'"
+          hint="相同端點位址會合併為一個選項"
         >
           <select v-model="importSourceId" class="term-select">
             <option :value="null">— 請選擇 —</option>
@@ -370,6 +460,13 @@
 import { ref, computed, onMounted } from 'vue'
 import { useModelsStore } from '../stores/models'
 import { useAuthStore } from '../stores/auth'
+import {
+  getMyEndpointAuthorStatus,
+  listEndpointAuthors,
+  grantEndpointAuthor,
+  revokeEndpointAuthor,
+} from '../api/models'
+import { listUsers } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
@@ -387,6 +484,13 @@ const importSourceId = ref(null)
 const importing = ref(false)
 const importResult = ref(null)
 const activatingCreated = ref(false)
+// P4.6b — 端點位址設定授權
+const canSetEndpointAddress = ref(false)
+const endpointAuthors = ref([])
+const developerUsers = ref([])
+const grantUserId = ref(null)
+const granting = ref(false)
+const revokingId = ref(null)
 // Slice 6b — 每列一個「測試連線」狀態：testingId 顯示 spinner；
 // testResults[id] 快取最近一次探測的延遲標籤（五態 badge 由 refetch 後的
 // health_status 反映）。
@@ -450,9 +554,8 @@ const baseModelOptions = computed(() =>
 const ENDPOINT_REDACTED = '<owner-only>'
 const ENDPOINT_INTERNAL = '<internal>'
 
-// P4.6 — owner 才有 endpoint_group_key（與位址同閘）；非擁有者 key 為空，
-// 退回 id: 分組 → 每列一個選項（刻意：避免分組鍵成為位址確認神諭）。
-// 後端一律用 source_model_id 查真 URL；位址本身維持 owner-only。
+// P4.6b — 管理員以上有 endpoint_group_key（位址仍 owner-only）。
+// 分組恢復後相同閘道合併為一個選項；key 為空時才退回 id:（非管理員）。
 const importEndpointOptions = computed(() => {
   const seen = new Set()
   const opts = []
@@ -467,20 +570,94 @@ const importEndpointOptions = computed(() => {
       : m.endpoint_url
     opts.push({
       sourceModelId: m.id,
-      label: isRedacted
-        ? `${urlLabel} · 代表列 ${m.name}`
-        : `${urlLabel} · 代表列 ${m.name}`,
+      label: `${urlLabel} · 代表列 ${m.name}`,
     })
   }
   return opts
 })
+
+const grantableDevelopers = computed(() => {
+  const activeIds = new Set(endpointAuthors.value.map(g => g.user_id))
+  return developerUsers.value.filter(u => !activeIds.has(u.id))
+})
+
+function formatGrantedAt(value) {
+  if (!value) return '—'
+  try {
+    return new Date(value).toLocaleString('zh-TW')
+  } catch {
+    return String(value)
+  }
+}
+
+async function loadEndpointAuthorState() {
+  try {
+    const { data } = await getMyEndpointAuthorStatus()
+    canSetEndpointAddress.value = !!data?.can_set_endpoint_address
+  } catch {
+    canSetEndpointAddress.value = !!authStore.isOwner
+  }
+  if (!authStore.isOwner) return
+  try {
+    const [{ data: grants }, { data: users }] = await Promise.all([
+      listEndpointAuthors(),
+      listUsers(),
+    ])
+    endpointAuthors.value = Array.isArray(grants) ? grants : []
+    developerUsers.value = (Array.isArray(users) ? users : []).filter(
+      u => u.role === 'developer' && u.is_active !== false,
+    )
+  } catch (e) {
+    const detail = e.response?.data?.detail
+    toast(typeof detail === 'string' ? detail : '無法載入端點位址授權清單', { tone: 'error' })
+  }
+}
+
+async function handleGrantAuthor() {
+  if (!grantUserId.value || granting.value) return
+  granting.value = true
+  try {
+    await grantEndpointAuthor(grantUserId.value)
+    grantUserId.value = null
+    toast('已授予端點位址設定權限', { tone: 'success' })
+    await loadEndpointAuthorState()
+  } catch (e) {
+    const detail = e.response?.data?.detail
+    toast(typeof detail === 'string' ? detail : '授予失敗', { tone: 'error' })
+  } finally {
+    granting.value = false
+  }
+}
+
+async function handleRevokeAuthor(grant) {
+  if (!grant || revokingId.value === grant.id) return
+  if (!(await confirm({
+    message: `撤銷「${grant.username || grant.user_id}」的端點位址設定權限？立即生效。`,
+    confirmText: '撤銷',
+    danger: true,
+  }))) return
+  revokingId.value = grant.id
+  try {
+    await revokeEndpointAuthor(grant.id)
+    toast('已撤銷端點位址設定權限', { tone: 'success' })
+    await loadEndpointAuthorState()
+  } catch (e) {
+    const detail = e.response?.data?.detail
+    toast(typeof detail === 'string' ? detail : '撤銷失敗', { tone: 'error' })
+  } finally {
+    revokingId.value = null
+  }
+}
 
 // KPI 以正規化五態計數，兼容舊值（online/connecting/offline）與新值。
 const healthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'healthy').length)
 const degradedCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'degraded').length)
 const unhealthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'unhealthy').length)
 
-onMounted(() => modelsStore.fetchModels())
+onMounted(() => {
+  modelsStore.fetchModels()
+  loadEndpointAuthorState()
+})
 
 function openCreateModal() { editingId.value = null; form.value = defaultForm(); showModal.value = true }
 function openImportModal() {
@@ -586,8 +763,11 @@ function openEditModal(model) {
   showModal.value = true
 }
 
-const endpointFieldLocked = computed(() =>
-  !!editingId.value && !authStore.isOwner,
+// P4.6b: 新建一律需可設定位址；編輯時無權者不得送出／改寫 endpoint_url。
+const endpointFieldLocked = computed(() => !canSetEndpointAddress.value)
+// 獲授權開發者僅能改位址；管理員／擁有者維持完整更新表單。
+const addressOnlyEditor = computed(
+  () => !!editingId.value && canSetEndpointAddress.value && !authStore.isAdmin,
 )
 
 // Phase 2 模型 stack 解耦 — SSRF guard 對 single-label / internal-zone
@@ -600,6 +780,10 @@ const untrustedHostPrompt = ref(null)   // { host, message, hint, retryPayload, 
 // 由 form 組出送出 payload — register / update / trust-retry 三處共用，
 // 避免治理欄位（api_key write-only、base_model_id、locked endpoint）漏處理。
 function buildModelPayload() {
+  // Designated non-admin authors: address only (matches backend gate).
+  if (addressOnlyEditor.value) {
+    return { endpoint_url: form.value.endpoint_url }
+  }
   const payload = { ...form.value }
   if (payload.model_type !== 'agent') payload.base_model_id = null
   // Don't ship endpoint_url back when the field was locked (admin editing a
@@ -758,6 +942,13 @@ async function handlePurge(model) {
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 .page-head__actions { display: inline-flex; align-items: center; gap: var(--gap-2); flex-wrap: wrap; }
+
+.author-grant { display: flex; flex-direction: column; gap: var(--gap-3); padding: var(--gap-3); }
+.author-grant__form {
+  display: flex; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap;
+}
+.author-grant__form .term-field { flex: 1; min-width: 220px; }
+.author-grant__table { margin-top: var(--gap-2); }
 
 .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap-3); }
 @media (max-width: 800px) { .kpi-row { grid-template-columns: repeat(2, 1fr); } }

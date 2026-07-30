@@ -45,3 +45,16 @@ export const activateCreatedFromImport = (sourceModelId, names) =>
     source_model_id: sourceModelId,
     names,
   })
+
+// P4.6b — 端點位址設定授權（擁有者逐一指派開發者）。
+export const getMyEndpointAuthorStatus = () =>
+  client.get('/api/endpoint-authors/me')
+
+export const listEndpointAuthors = () =>
+  client.get('/api/endpoint-authors')
+
+export const grantEndpointAuthor = (userId) =>
+  client.post('/api/endpoint-authors', { user_id: userId })
+
+export const revokeEndpointAuthor = (grantId) =>
+  client.delete(`/api/endpoint-authors/${grantId}`)

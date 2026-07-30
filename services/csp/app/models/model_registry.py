@@ -58,6 +58,19 @@ class ModelRegistry(Base):
     base_model_id = Column(Integer, ForeignKey("model_registry.id"), nullable=True)
     base_model = relationship("ModelRegistry", remote_side=[id], backref="derived_agents")
 
+    # P4.6b follow-up: who registered this row. Designated endpoint authors
+    # list/fetch their own creations via authorship — not via the
+    # inference-permission table (which an admin rewrite would wipe).
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_model_registry_created_by_user",
+        ),
+        nullable=True,
+    )
+
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,

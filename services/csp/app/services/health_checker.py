@@ -120,13 +120,19 @@ async def _health_check_loop():
                             f"模型 {model.name} 狀態變更: {model.health_status} -> {status}"
                         )
                     if status == HEALTH_UNHEALTHY:
+                        # Message names the model, never the address;
+                        # structured metadata still stores the URL for
+                        # owner-only disclosure on the alert listing.
                         upsert_alert(
                             db,
                             fingerprint=f"health:model:{model.id}",
                             category="health",
                             severity="high",
                             title=f"模型 {model.display_name} 離線",
-                            message=f"無法連線至 {model.endpoint_url}",
+                            message=(
+                                f"無法連線至模型「{model.display_name}」"
+                                f"（{model.name}）"
+                            ),
                             source_type="model",
                             source_id=model.id,
                             metadata={

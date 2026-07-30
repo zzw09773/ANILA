@@ -936,9 +936,11 @@ async def chat_completions(
                     payload = resp.json()
                 existing_meta = payload.get("anila_meta")
                 if not existing_meta:
+                    # Caller-facing detail names the agent, never the
+                    # upstream address (twin of the model-proxy fix).
                     payload["anila_meta"] = build_default_anila_meta(
                         agent.name,
-                        detail=f"CSP proxy -> {target}",
+                        detail=f"CSP proxy -> {agent.name}",
                         latency_ms=int((time.time() - started_at) * 1000),
                         classified=agent_requires_encryption,
                     )
@@ -959,24 +961,50 @@ async def chat_completions(
                     finalize_task_run(task_ctx.task_run_id, "completed")
                 return _merge_attachment_trace(payload, attach_inject)
         except httpx.HTTPStatusError as e:
+            logger.error(
+                "Agent %s 上游 HTTP 錯誤 url=%s: %s",
+                agent.name,
+                target,
+                e,
+            )
             if task_ctx is not None:
                 finalize_task_run(
                     task_ctx.task_run_id,
                     "failed",
                     error={
                         "code": f"http_{e.response.status_code}",
-                        "message": str(e),
+                        "message": f"Agent「{agent.name}」上游回應錯誤",
                     },
                 )
-            raise _HTTPException(status_code=e.response.status_code, detail=str(e))
+            raise _HTTPException(
+                status_code=e.response.status_code,
+                detail=(
+                    f"Agent「{agent.name}」上游回應錯誤"
+                    f"（HTTP {e.response.status_code}）"
+                ),
+            )
         except Exception as e:
+            # Fixed caller-facing text; exception may embed the URL.
+            logger.error(
+                "Agent %s 呼叫失敗 url=%s: %s",
+                agent.name,
+                target,
+                e,
+                exc_info=True,
+            )
             if task_ctx is not None:
                 finalize_task_run(
                     task_ctx.task_run_id,
                     "failed",
-                    error={"code": "agent_call_failed", "message": str(e)},
+                    error={
+                        "code": "agent_call_failed",
+                        "message": f"Agent「{agent.name}」呼叫失敗",
+                    },
                 )
-            raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
+            raise _HTTPException(
+                status_code=502,
+                detail=f"Agent「{agent.name}」呼叫失敗",
+            )
 
     model = _resolve_model(db, caller, model_name)
     # Direct LLM calls (not through an agent) do NOT trigger CSP-side classified

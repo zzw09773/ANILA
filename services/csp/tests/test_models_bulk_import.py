@@ -3,10 +3,10 @@
 
 Network is never required: ``_fetch_upstream_model_listing`` is stubbed.
 Covers happy path, endpoint-scoped inheritance, caps, audit sentinel,
-upstream error hygiene, owner-only grouping key (no confirmation oracle),
-streamed body cap, missing-from-listing, activate-created, review round-2
-address leaks, and round-3 residues (import guard echo, create-cap progress,
-listing-name length parity).
+upstream error hygiene, admin-tier grouping key (P4.6b; probe blocked at
+registration), streamed body cap, missing-from-listing, activate-created,
+review round-2 address leaks, and round-3 residues (import guard echo,
+create-cap progress, listing-name length parity).
 """
 from __future__ import annotations
 
@@ -24,8 +24,9 @@ from app.models.model_registry import ModelRegistry
 from app.schemas.model_registry import (
     ModelBulkActivateCreatedRequest,
     ModelBulkImportRequest,
+    ModelCreate,
 )
-from app.services.auth_service import require_admin
+from app.services.auth_service import get_current_user, require_admin
 from tests.conftest import make_model, make_user
 
 
@@ -846,7 +847,7 @@ def test_bulk_activate_created_scopes_to_source_endpoint(db, monkeypatch):
     assert not db.query(ModelRegistry).filter(ModelRegistry.name == "foreign-name").one().is_active
 
 
-# ── endpoint group key (owner-only emission; helper still opaque) ─────────────
+# ── endpoint group key (admin-tier emission; helper still opaque) ─────────────
 
 
 def _response_row(*, endpoint_url="http://mock-llm:8080/v1", is_internal=True):
@@ -905,8 +906,11 @@ def test_endpoint_group_key_default_salt_varies_across_calls():
     assert len(keys) == 5
 
 
-def test_build_response_endpoint_group_key_owner_only():
-    """Owner receives an opaque key; non-owner administrator receives none."""
+def test_build_response_endpoint_group_key_admin_tier():
+    """Admin-tier receives an opaque key; callers below admin receive none.
+
+    Address remains owner-only even when the grouping key is present.
+    """
     row = _response_row()
     salt = b"\xab" * 16
     owner_data = models_api._build_response(
@@ -915,57 +919,80 @@ def test_build_response_endpoint_group_key_owner_only():
     admin_data = models_api._build_response(
         row, caller=SimpleNamespace(role="admin"), endpoint_group_salt=salt
     )
-    assert owner_data["endpoint_group_key"] == models_api._endpoint_group_key(
+    user_data = models_api._build_response(
+        row, caller=SimpleNamespace(role="user"), endpoint_group_salt=salt
+    )
+    expected = models_api._endpoint_group_key(
         row.endpoint_url, request_salt=salt
     )
-    assert owner_data["endpoint_group_key"]
-    assert "mock-llm" not in owner_data["endpoint_group_key"]
-    assert "8080" not in owner_data["endpoint_group_key"]
-    assert admin_data["endpoint_group_key"] == ""
+    assert owner_data["endpoint_group_key"] == expected
+    assert admin_data["endpoint_group_key"] == expected
+    assert "mock-llm" not in admin_data["endpoint_group_key"]
+    assert "8080" not in admin_data["endpoint_group_key"]
     assert admin_data["endpoint_url"] == models_api.ENDPOINT_INTERNAL
+    assert user_data["endpoint_group_key"] == ""
+    assert user_data["endpoint_url"] == models_api.ENDPOINT_INTERNAL
 
 
-def test_list_models_group_key_oracle_fails_for_non_owner(db):
-    """Probe-row confirmation oracle: non-owner list answer has no key to compare.
+def test_list_models_group_key_oracle_fails_at_probe_registration(db, monkeypatch):
+    """P4.6b: the former probe oracle dies at registration, not comparison.
 
-    Register a throwaway row carrying a candidate address alongside a redacted
-    target on the same address; one list call as admin must not expose a shared
-    grouping key that would confirm the guess.
+    An undesignated administrator cannot create a throwaway row carrying a
+    candidate address. Grouping keys are therefore safe to emit to admins
+    for already-registered rows (same-endpoint merge in the import chooser).
     """
-    secret = "http://secret-gpu-box.internal:8080/v1"
+    # Public https — avoid ANILA_TRUSTED_HOSTS (TestClient lifespan would
+    # backfill it into the process-local DB cache and pollute SSRF tests).
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    secret = "https://secret-gpu-box.example.com/v1"
     target = make_model(db, name="oracle-target")
     target.endpoint_url = secret
     target.is_internal = False
-    probe = make_model(db, name="oracle-probe")
-    probe.endpoint_url = secret  # attacker guesses correctly
-    probe.is_internal = False
     db.commit()
 
     admin = make_user(db, "admin_oracle", role="admin")
+    with pytest.raises(HTTPException) as exc:
+        models_api.create_model(
+            ModelCreate(
+                name="oracle-probe",
+                display_name="Oracle Probe",
+                model_type="llm",
+                endpoint_url=secret,
+            ),
+            admin,
+            db,
+        )
+    assert exc.value.status_code == 403
+    assert "端點位址設定權限" in str(exc.value.detail)
+    assert (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.name == "oracle-probe")
+        .first()
+        is None
+    )
+
+    # Grouping restored for administrators on existing rows.
     rows = models_api.list_models(
         model_type=None, current_user=admin, db=db
     )
     by_name = {r["name"]: r for r in rows}
-    assert "oracle-target" in by_name
-    assert "oracle-probe" in by_name
-    target_resp = by_name["oracle-target"]
-    probe_resp = by_name["oracle-probe"]
-    assert target_resp["endpoint_group_key"] == ""
-    assert probe_resp["endpoint_group_key"] == ""
-    assert target_resp["endpoint_url"] == models_api.ENDPOINT_REDACTED
-    assert probe_resp["endpoint_url"] == models_api.ENDPOINT_REDACTED
-    # No non-empty key exists to equality-test against the probe.
-    assert not any(r.get("endpoint_group_key") for r in rows)
+    assert by_name["oracle-target"]["endpoint_group_key"]
+    assert by_name["oracle-target"]["endpoint_url"] == models_api.ENDPOINT_REDACTED
 
-    owner = make_user(db, "owner_oracle", role="owner")
-    owner_rows = models_api.list_models(
-        model_type=None, current_user=owner, db=db
+    # Same endpoint still groups for admins when both rows already exist
+    # (planted without going through the gated create path).
+    sibling = make_model(db, name="oracle-sibling")
+    sibling.endpoint_url = secret
+    sibling.is_internal = False
+    db.commit()
+    rows2 = models_api.list_models(
+        model_type=None, current_user=admin, db=db
     )
-    owner_by = {r["name"]: r for r in owner_rows}
-    assert owner_by["oracle-target"]["endpoint_group_key"]
+    by2 = {r["name"]: r for r in rows2}
     assert (
-        owner_by["oracle-target"]["endpoint_group_key"]
-        == owner_by["oracle-probe"]["endpoint_group_key"]
+        by2["oracle-target"]["endpoint_group_key"]
+        == by2["oracle-sibling"]["endpoint_group_key"]
     )
 
 
@@ -1121,15 +1148,22 @@ def test_bulk_import_guard_fixed_message_hides_private_resolved_address(
 # ── authorization parity ──────────────────────────────────────────────────────
 
 
-def test_bulk_import_auth_dependency_matches_create():
-    """Both create and import gate on the same ``require_admin`` Depends."""
-    create_param = inspect.signature(models_api.create_model).parameters["admin"]
+def test_bulk_import_auth_dependency_stays_require_admin():
+    """Import / activate-created stay admin-tier; create uses address-author gate.
+
+    P4.6b narrowed create (address entry) to owner / designated developer.
+    Batch import takes a registered row id — no address — so administrators
+    keep ``require_admin``.
+    """
+    create_param = inspect.signature(models_api.create_model).parameters[
+        "current_user"
+    ]
     import_param = inspect.signature(
         models_api.import_models_from_endpoint
     ).parameters["admin"]
     assert isinstance(create_param.default, Depends)
     assert isinstance(import_param.default, Depends)
-    assert create_param.default.dependency is require_admin
+    assert create_param.default.dependency is get_current_user
     assert import_param.default.dependency is require_admin
     activate_param = inspect.signature(
         models_api.activate_created_from_import
@@ -1138,7 +1172,7 @@ def test_bulk_import_auth_dependency_matches_create():
 
 
 def test_bulk_import_require_admin_rejects_regular_user():
-    """Same boundary as single-record create: non-admin tier → 403."""
+    """Import boundary: non-admin tier → 403 (unchanged from P4.6)."""
     user = SimpleNamespace(role="user", id=1, username="bob")
     with pytest.raises(HTTPException) as exc:
         require_admin(user)

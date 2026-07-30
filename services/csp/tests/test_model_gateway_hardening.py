@@ -137,13 +137,14 @@ def test_build_response_never_leaks_secret():
 
 
 def test_create_model_encrypts_write_only_api_key(db):
-    admin = make_user(db, "admin6a", role="admin")
+    # P4.6b: create (sets an address) is owner / designated developer only.
+    owner = make_user(db, "owner6a", role="owner")
     req = ModelCreate(
         name="gw-model", display_name="GW", model_type="llm",
         endpoint_url="https://api.example.com/v1", api_key="sk-write-only",
         classification_ceiling="機密",
     )
-    resp = models_api.create_model(req, admin, db)
+    resp = models_api.create_model(req, owner, db)
     assert resp["has_api_key"] is True
     assert resp["classification_ceiling"] == "機密"
     assert resp["protocol"] == "openai_compatible"

@@ -12,12 +12,20 @@ from app.services.alert_service import (
     summarize_alerts,
 )
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import require_admin
+from app.services.auth_service import is_owner, require_admin
 
 router = APIRouter(prefix="/api/alerts", tags=["告警中心"])
 
 
-def _serialize(alert: Alert) -> dict:
+def _serialize(alert: Alert, *, caller: User) -> dict:
+    """Serialize an alert with owner/non-owner metadata redaction.
+
+    Same rule as the audit listing: structured metadata can carry
+    endpoint addresses and other deployment topology, so non-owners
+    receive ``None``. Title/message stay visible so an administrator
+    can still tell which model is unhealthy.
+    """
+    show_metadata = is_owner(caller)
     return {
         "id": alert.id,
         "category": alert.category,
@@ -27,7 +35,9 @@ def _serialize(alert: Alert) -> dict:
         "title": alert.title,
         "message": alert.message,
         "status": alert.status,
-        "metadata": parse_alert_metadata(alert.metadata_json),
+        "metadata": (
+            parse_alert_metadata(alert.metadata_json) if show_metadata else None
+        ),
         "first_seen_at": alert.first_seen_at,
         "last_seen_at": alert.last_seen_at,
         "acknowledged_at": alert.acknowledged_at,
@@ -52,7 +62,7 @@ def list_alerts(
         query = query.filter(Alert.severity == severity)
     if category:
         query = query.filter(Alert.category == category)
-    return [_serialize(alert) for alert in query.all()]
+    return [_serialize(alert, caller=admin) for alert in query.all()]
 
 
 @router.get("/summary", response_model=AlertSummary)
@@ -84,7 +94,7 @@ def ack_alert(
     )
     db.commit()
     db.refresh(alert)
-    return _serialize(alert)
+    return _serialize(alert, caller=admin)
 
 
 @router.post("/{alert_id}/resolve", response_model=AlertResponse)
@@ -108,4 +118,4 @@ def resolve_alert_manually(
     )
     db.commit()
     db.refresh(alert)
-    return _serialize(alert)
+    return _serialize(alert, caller=admin)

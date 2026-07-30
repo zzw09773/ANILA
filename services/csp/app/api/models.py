@@ -10,6 +10,7 @@ import httpx
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.config import settings
@@ -34,10 +35,15 @@ from app.schemas.model_registry import (
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import (
     get_current_user,
+    is_admin_tier,
     is_owner,
     require_admin,
     require_owner,
     verify_service_token,
+)
+from app.services.endpoint_author_service import (
+    can_set_endpoint_address,
+    require_endpoint_address_author,
 )
 from app.services.health_checker import (
     HEALTH_UNHEALTHY,
@@ -89,6 +95,29 @@ router = APIRouter(prefix="/api/models", tags=["模型管理"])
 # the row's ``is_internal`` flag so logs/UI carry intent.
 ENDPOINT_REDACTED = "<owner-only>"
 ENDPOINT_INTERNAL = "<internal>"
+
+
+def _caller_may_view_model(
+    db: Session, caller: User, model: ModelRegistry
+) -> bool:
+    """Admin-tier sees the registry; others see assigned or authored rows.
+
+    Designated endpoint authors list/fetch rows they created via
+    authorship — never via ``user_model_permissions``. Creating a
+    registry row must not grant inference access as a side effect, and
+    an administrator rewriting allowed models must not strip the
+    author's view of gateways they registered.
+    """
+    if caller.role in ("admin", "owner"):
+        return True
+    if any(m.id == model.id for m in caller.allowed_models):
+        return True
+    if (
+        model.created_by_user_id == caller.id
+        and can_set_endpoint_address(db, caller)
+    ):
+        return True
+    return False
 
 
 def _enforce_endpoint_url(url: str) -> None:
@@ -151,13 +180,14 @@ def _build_response(
     we redact too — opt-in to surface by passing the caller explicitly.
 
     ``endpoint_group_salt`` must be shared across every row in the same
-    list response so same-endpoint rows still group for owners; omit (or
-    pass a fresh value) for single-row responses. The key is emitted only
-    when the caller may already see ``endpoint_url`` — any shared signal
-    that two rows share an endpoint is a confirmation oracle once a
-    non-owner can insert a probe row into the same answer.
+    list response so same-endpoint rows still group for admin-tier callers;
+    omit (or pass a fresh value) for single-row responses. The key is
+    emitted to administrators and above once they can no longer register
+    an arbitrary probe address (P4.6b); callers below admin-tier still
+    receive an empty string. The address itself remains owner-only.
     """
     show_endpoint = caller is not None and is_owner(caller)
+    show_group_key = caller is not None and is_admin_tier(caller)
     is_internal = bool(getattr(model, "is_internal", False))
     # Redaction sentinel picks the variant that conveys the most intent:
     # internal models → <internal> (lives on anila-models-net, unreachable
@@ -199,13 +229,13 @@ def _build_response(
         "supports_json_schema": bool(getattr(model, "supports_json_schema", False)),
         "supports_tools": bool(getattr(model, "supports_tools", False)),
         "has_api_key": bool(getattr(model, "api_key_secret_ref", None)),
-        # Owner-only: same emission gate as endpoint_url. Empty for everyone
-        # else so the console falls back to per-row keys (no equality oracle).
+        # Admin-tier grouping (P4.6b). Empty below admin so non-admins cannot
+        # cluster by shared-endpoint membership. Address stays owner-only.
         "endpoint_group_key": (
             _endpoint_group_key(
                 model.endpoint_url, request_salt=endpoint_group_salt
             )
-            if show_endpoint
+            if show_group_key
             else ""
         ),
         "created_at": model.created_at,
@@ -223,18 +253,29 @@ def list_models(
     query = db.query(ModelRegistry).order_by(ModelRegistry.model_type, ModelRegistry.name)
     if model_type:
         query = query.filter(ModelRegistry.model_type == model_type)
-    # Non-admin/owner users only see models they are authorized for. Owner
-    # inherits admin's full registry view (auth_service.require_admin
+    # Non-admin/owner: inference assignments OR (designated author +
+    # rows they created). Authorship is independent of allowed_models so
+    # an admin rewrite cannot erase the register → list → fix loop.
+    # Owner inherits admin's full registry view (auth_service.require_admin
     # covers both, but this list query uses a direct role check so we
     # need to keep the tier explicit here too).
     if current_user.role not in ("admin", "owner"):
+        clauses = []
         allowed_ids = [m.id for m in current_user.allowed_models]
-        if not allowed_ids:
+        if allowed_ids:
+            clauses.append(ModelRegistry.id.in_(allowed_ids))
+        if can_set_endpoint_address(db, current_user):
+            clauses.append(
+                ModelRegistry.created_by_user_id == current_user.id
+            )
+        if not clauses:
             return []
-        query = query.filter(ModelRegistry.id.in_(allowed_ids))
-    # One salt per list response for owners (key is owner-gated in
-    # ``_build_response``). Non-owners receive an empty key.
-    group_salt = secrets.token_bytes(16) if is_owner(current_user) else None
+        query = query.filter(or_(*clauses))
+    # One salt per list response for admin-tier callers (key gated in
+    # ``_build_response``). Callers below admin receive an empty key.
+    group_salt = (
+        secrets.token_bytes(16) if is_admin_tier(current_user) else None
+    )
     return [
         _build_response(m, caller=current_user, endpoint_group_salt=group_salt)
         for m in query.all()
@@ -244,9 +285,14 @@ def list_models(
 @router.post("", response_model=ModelResponse)
 def create_model(
     request: ModelCreate,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # P4.6b: creating a row always sets an address — owner or designated
+    # developer only. Undesignated administrators must use bulk import
+    # from an already-registered row (no address entry).
+    require_endpoint_address_author(db, current_user)
+
     existing = db.query(ModelRegistry).filter(ModelRegistry.name == request.name).first()
     if existing:
         raise HTTPException(status_code=400, detail="模型名稱已存在")
@@ -265,6 +311,8 @@ def create_model(
     data = request.model_dump()
     api_key = (data.pop("api_key", None) or "").strip()
     model = ModelRegistry(**data)
+    # Authorship for designated-author list/fetch; never grants inference.
+    model.created_by_user_id = current_user.id
     if api_key:
         model.api_key_secret_ref = encode_service_token_envelope(api_key)
     db.add(model)
@@ -272,14 +320,14 @@ def create_model(
     db.refresh(model)
     log_audit_event(
         db,
-        actor=admin,
+        actor=current_user,
         action="create",
         resource_type="model",
         resource_id=model.id,
         detail=f"建立模型「{model.display_name}」",
         commit=True,
     )
-    return _build_response(model, caller=admin)
+    return _build_response(model, caller=current_user)
 
 
 def _upstream_models_url(endpoint_url: str) -> str:
@@ -300,9 +348,9 @@ def _endpoint_group_key(
     """Opaque grouping key for an endpoint address within one response.
 
     HMAC-SHA256 of ``request_salt || address``, keyed with ``SECRET_KEY``.
-    Emitted only to callers already permitted to see the address (owner);
-    non-owners get an empty string from ``_build_response`` so a probe row
-    cannot confirm a candidate by key equality. Never the address itself.
+    Emitted to admin-tier callers (P4.6b restored grouping once they can
+    no longer register an arbitrary probe address). Callers below admin
+    get an empty string from ``_build_response``. Never the address itself.
     """
     salt = request_salt if request_salt is not None else secrets.token_bytes(16)
     material = salt + (endpoint_url or "").encode("utf-8")
@@ -1096,10 +1144,8 @@ def get_model(
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
-    if current_user.role not in ("admin", "owner"):
-        allowed_ids = {m.id for m in current_user.allowed_models}
-        if model.id not in allowed_ids:
-            raise HTTPException(status_code=404, detail="模型不存在")
+    if not _caller_may_view_model(db, current_user, model):
+        raise HTTPException(status_code=404, detail="模型不存在")
     return _build_response(model, caller=current_user)
 
 
@@ -1107,16 +1153,40 @@ def get_model(
 def update_model(
     model_id: int,
     request: ModelUpdate,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Admin-tier keeps full updates. Designated developers may update
+    # address only (the right that was granted). Plain users stay out.
+    if not (
+        is_admin_tier(current_user)
+        or can_set_endpoint_address(db, current_user)
+    ):
+        raise HTTPException(status_code=403, detail="需要管理員權限")
+
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
 
     update_data = request.model_dump(exclude_unset=True)
 
-    if "endpoint_url" in update_data and update_data["endpoint_url"] is not None:
+    # Designated non-admin authors: address only. Any other field in the
+    # same request is refused — activation, ceiling, department, credentials
+    # remain administrator-tier.
+    if not is_admin_tier(current_user):
+        forbidden = sorted(k for k in update_data if k != "endpoint_url")
+        if forbidden or "endpoint_url" not in update_data:
+            raise HTTPException(
+                status_code=403,
+                detail="端點位址設定者僅可變更端點位址",
+            )
+
+    # P4.6b: changing the registered address is owner / designated
+    # developer only. Omitting the field leaves the row's URL untouched.
+    if "endpoint_url" in update_data:
+        require_endpoint_address_author(db, current_user)
+        if update_data["endpoint_url"] is None:
+            raise HTTPException(status_code=400, detail="端點位址不可為空")
         _enforce_endpoint_url(update_data["endpoint_url"])
 
     # Validate base_model_id if provided
@@ -1140,14 +1210,14 @@ def update_model(
     db.refresh(model)
     log_audit_event(
         db,
-        actor=admin,
+        actor=current_user,
         action="update",
         resource_type="model",
         resource_id=model.id,
         detail=f"更新模型「{model.display_name}」",
         commit=True,
     )
-    return _build_response(model, caller=admin)
+    return _build_response(model, caller=current_user)
 
 
 def _client_ip(request: Request | None) -> str | None:
@@ -1321,10 +1391,8 @@ def get_model_health(
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
-    if current_user.role not in ("admin", "owner"):
-        allowed_ids = {m.id for m in current_user.allowed_models}
-        if model.id not in allowed_ids:
-            raise HTTPException(status_code=404, detail="模型不存在")
+    if not _caller_may_view_model(db, current_user, model):
+        raise HTTPException(status_code=404, detail="模型不存在")
     return {
         "id": model.id,
         "status": normalize_health_status(

@@ -290,9 +290,12 @@ async def _proxy_request_impl(
                 )
             existing_meta = result.get("anila_meta")
             if not existing_meta:
+                # Caller-facing detail names the registered model only —
+                # never the upstream address (admin-readable completion
+                # responses must not recover deployment topology).
                 result["anila_meta"] = build_default_anila_meta(
                     model.name,
-                    detail=f"Proxy -> {target_url}",
+                    detail=f"Proxy -> {model.name}",
                     latency_ms=duration_ms,
                     classified=requires_encryption,
                 )
@@ -357,12 +360,18 @@ async def _proxy_request_impl(
                 continue
 
         except httpx.ConnectError:
-            last_error = f"無法連線到模型端點 {target_url}"
+            # Caller-facing text identifies the model by registry name;
+            # the real address stays in server-side logs only.
+            last_error = f"無法連線到模型「{model.name}」"
             if attempt < settings.PROXY_MAX_RETRIES - 1:
                 delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
                 logger.warning(
-                    f"模型 {model.name} 連線失敗，"
-                    f"{delay}s 後重試 ({attempt + 1}/{settings.PROXY_MAX_RETRIES})"
+                    "模型 %s 連線失敗（%s），%ss 後重試 (%s/%s)",
+                    model.name,
+                    target_url,
+                    delay,
+                    attempt + 1,
+                    settings.PROXY_MAX_RETRIES,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -371,8 +380,10 @@ async def _proxy_request_impl(
             raise
 
         except Exception as e:
-            last_error = str(e)
-            logger.error(f"代理請求錯誤: {e}")
+            # Never forward exception text to callers — open-ended
+            # exception classes can embed hostnames / URLs.
+            last_error = "未預期的代理錯誤"
+            logger.error("代理請求錯誤: %s", e, exc_info=True)
             if attempt < settings.PROXY_MAX_RETRIES - 1:
                 delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
                 await asyncio.sleep(delay)
@@ -623,7 +634,13 @@ async def _proxy_stream_impl(
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="下游請求逾時")
     except httpx.ConnectError:
-        raise HTTPException(status_code=502, detail=f"無法連線到下游端點 {target_url}")
+        # Identify by registered model name; address stays in server logs.
+        label = model_name or "未知模型"
+        logger.warning("串流連線失敗 model=%s url=%s", label, target_url)
+        raise HTTPException(
+            status_code=502,
+            detail=f"無法連線到模型「{label}」",
+        )
 
     duration_ms = int((time.time() - start_time) * 1000)
     if not usage_seen:
@@ -631,17 +648,19 @@ async def _proxy_stream_impl(
         completion_tokens = _estimate_token_count(model_name, "".join(completion_parts))
         logger.warning(
             "串流回應未提供 usage，改用伺服端估算 %s: prompt=%s completion=%s",
-            model_name or target_url,
+            model_name or "未知模型",
             prompt_tokens,
             completion_tokens,
         )
     total_tokens = prompt_tokens + completion_tokens
     if not meta_seen:
+        # Caller-facing stream meta names the model, never the address.
+        stream_label = model_name or "未知模型"
         yield "event: anila.meta\n"
         yield "data: " + json.dumps(
             build_default_anila_meta(
-                model_name or target_url,
-                detail=f"Proxy stream -> {target_url}",
+                stream_label,
+                detail=f"Proxy stream -> {stream_label}",
                 latency_ms=duration_ms,
                 classified=requires_encryption,
                 usage={
