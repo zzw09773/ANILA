@@ -28,6 +28,7 @@ from app.services.proxy.headers import (
 )
 from app.services.proxy.sse import _aggregate_sse_to_chat_completion, _parse_sse_block
 from app.services.proxy.task_link import finalize_task_run
+from app.services.proxy.urls import join_upstream_path, strip_trailing_api_version
 from app.services.proxy.usage import (
     _estimate_token_count,
     _extract_response_text,
@@ -152,31 +153,26 @@ async def _proxy_request_impl(
     wrapper.
     """
     timeout = _get_timeout(model.model_type)
-    base_url = model.endpoint_url.rstrip("/")
     request_type = (
         "embedding"
         if "embedding" in endpoint_path or model.model_type == "embedding"
         else "chat"
     )
 
-    # Sprint 5 / Chunk W: AUTO_REGISTER_MODELS has historically set
-    # endpoint_url with a trailing ``/v1`` (e.g. ``http://...:11434/v1``);
-    # endpoint_path also starts with ``/v1`` (``/v1/embeddings``).
-    # Naive concat → ``//v1/v1/embeddings`` → upstream 404. Strip the
-    # trailing version segment from base_url when endpoint_path already
-    # carries one. Idempotent for already-stripped urls.
-    if base_url.endswith("/v1") and endpoint_path.startswith("/v1/"):
-        base_url = base_url[:-3]
-    elif base_url.endswith("/v2") and endpoint_path.startswith("/v2/"):
-        base_url = base_url[:-3]
-
-    # Determine the correct path based on api_version
+    # Registry rows store bare host or ``.../v1``; join_upstream_path is
+    # correct for both. Preserve the api_version=="v2" embedding special case
+    # (strip any trailing version segment first so …/v1 + v2 does not become
+    # …/v1/v2/embeddings).
     if model.api_version == "v2" and "embedding" in endpoint_path:
-        target_url = f"{base_url}/v2/embeddings"
+        target_url = join_upstream_path(
+            strip_trailing_api_version(model.endpoint_url),
+            "/v2/embeddings",
+        )
     else:
-        target_url = f"{base_url}{endpoint_path}"
+        target_url = join_upstream_path(model.endpoint_url, endpoint_path)
 
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
+    # Guard the FINAL url that will actually be requested.
     _guard_outbound(
         target_url,
         endpoint_kind=(

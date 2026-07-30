@@ -51,6 +51,7 @@ from app.services.health_checker import (
     probe_model_health_detailed,
 )
 from app.services.proxy.headers import resolve_model_gateway_key
+from app.services.proxy.urls import join_upstream_path
 from app.services.service_token_envelope import encode_service_token_envelope
 
 logger = logging.getLogger(__name__)
@@ -345,15 +346,16 @@ def create_model(
 
 
 def _upstream_models_url(endpoint_url: str) -> str:
-    """Build OpenAI-compatible ``GET …/models`` URL from a registered endpoint.
+    """Build OpenAI-compatible ``GET …/v1/models`` URL from a registered endpoint.
 
-    Registry rows store the OpenAI base (typically ending in ``/v1``). Append
-    ``/models`` unless the stored URL already ends with that path segment.
+    Registry rows may store a bare host or a versioned base (``…/v1``). Both
+    conventions join to the same final listing URL. If the stored value already
+    ends with ``/models``, return it unchanged.
     """
     base = (endpoint_url or "").rstrip("/")
     if base.endswith("/models"):
         return base
-    return f"{base}/models"
+    return join_upstream_path(endpoint_url or "", "/v1/models")
 
 
 def _endpoint_group_key(
@@ -884,11 +886,13 @@ async def import_models_from_endpoint(
         raise HTTPException(status_code=404, detail="來源模型不存在")
 
     # Same outbound guard as create/update — disallowed endpoints stay
-    # disallowed. Import path must not echo hostname / resolved address to
-    # the client (non-owner never typed or saw the redacted URL); create and
+    # disallowed. Guard the FINAL listing URL (never guard one string and
+    # request another). Import path must not echo hostname / resolved address
+    # to the client (non-owner never typed or saw the redacted URL); create and
     # update keep the structured/plain guard detail unchanged.
+    listing_url = _upstream_models_url(source.endpoint_url)
     try:
-        _enforce_endpoint_url(source.endpoint_url)
+        _enforce_endpoint_url(listing_url)
     except HTTPException as exc:
         if exc.status_code == 400:
             logger.warning(

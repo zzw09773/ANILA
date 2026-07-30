@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
+from app.services.proxy.urls import join_upstream_path
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ async def generate_system_prompt(
     ]
 
     model_name, base_url = _resolve_primary_llm(db)
-    endpoint = f"{base_url}/v1/chat/completions"
+    endpoint = join_upstream_path(base_url, "/v1/chat/completions")
     try:
         validate_outbound_url(endpoint)
     except UnsafeEndpointError as exc:
