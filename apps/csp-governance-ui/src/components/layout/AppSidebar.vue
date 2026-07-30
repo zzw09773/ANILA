@@ -74,20 +74,25 @@ const menuGroups = computed(() => {
   }
 
   if (authStore.isAdmin) {
+    const adminItems = [
+      { path: '/users', label: '使用者' },
+      { path: '/departments', label: '部門' },
+      { path: '/alerts', label: '警報' },
+      { path: '/banners', label: '公告橫幅' },
+      { path: '/audit-logs', label: '稽核紀錄' },
+      { path: '/classification-inventory', label: '分類盤點' },
+      { path: '/platform-links', label: '平台連結' },
+      { path: '/service-access', label: '服務存取' },
+      { path: '/service-clients', label: '服務客戶端' },
+      { path: '/trusted-hosts', label: '信任主機' },
+    ]
+    // OW-3 WP-C — authoring console; owner-only nav (server still enforces).
+    if (authStore.isOwner) {
+      adminItems.push({ path: '/message-actions', label: '自訂動作' })
+    }
     groups.push({
       label: '管理',
-      items: [
-        { path: '/users', label: '使用者' },
-        { path: '/departments', label: '部門' },
-        { path: '/alerts', label: '警報' },
-        { path: '/banners', label: '公告橫幅' },
-        { path: '/audit-logs', label: '稽核紀錄' },
-        { path: '/classification-inventory', label: '分類盤點' },
-        { path: '/platform-links', label: '平台連結' },
-        { path: '/service-access', label: '服務存取' },
-        { path: '/service-clients', label: '服務客戶端' },
-        { path: '/trusted-hosts', label: '信任主機' },
-      ],
+      items: adminItems,
     })
   }
 
