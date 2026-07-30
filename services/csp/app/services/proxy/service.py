@@ -62,6 +62,45 @@ def _proxy_connect_failure(label: str, endpoint_display: str | None) -> str:
     return f"無法連線到模型「{label}」"
 
 
+def stream_failure_user_message(
+    exc: BaseException,
+    *,
+    model_name: str | None = None,
+) -> str:
+    """Plain-language terminal error for chat users.
+
+    Never interpolates exception text or endpoint addresses — open-ended
+    exception classes and httpx errors routinely embed hostnames / URLs.
+    """
+    label = (model_name or "").strip() or "模型"
+    if isinstance(exc, HTTPException):
+        code = int(exc.status_code)
+        if code == 504:
+            return f"「{label}」回應逾時，請稍後再試。"
+        if code in (401, 403):
+            return f"「{label}」拒絕了這次請求，請聯絡管理員。"
+        if code == 404:
+            return f"找不到「{label}」的服務，請聯絡管理員。"
+        if code == 502 or code >= 500:
+            return f"「{label}」暫時無法使用，請稍後再試。"
+        return f"「{label}」目前無法完成這次回應，請稍後再試。"
+    if isinstance(exc, httpx.TimeoutException):
+        return f"「{label}」回應逾時，請稍後再試。"
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return f"無法連線到「{label}」，請稍後再試或聯絡管理員。"
+    return "產生回應時發生錯誤，請稍後再試。"
+
+
+def format_anila_stream_error(message: str) -> str:
+    """Terminal SSE frame carrying a user-visible stream failure."""
+    return (
+        "event: anila.error\n"
+        + "data: "
+        + json.dumps({"message": message}, ensure_ascii=False)
+        + "\n\n"
+    )
+
+
 def _get_timeout(model_type: str) -> float:
     if model_type == "embedding":
         return settings.EMBEDDING_TIMEOUT
@@ -790,14 +829,34 @@ async def proxy_stream(
             endpoint_display=endpoint_display,
         ):
             yield chunk
-    except HTTPException as exc:
-        status = "failed"
-        error = {"code": f"http_{exc.status_code}", "message": str(exc.detail)}
-        raise
-    except BaseException as exc:  # GeneratorExit / CancelledError included
+    except (GeneratorExit, asyncio.CancelledError) as exc:
+        # Client disconnect / cancellation — no body left to write into.
         status = "failed"
         error = {"code": "stream_aborted", "message": type(exc).__name__}
         raise
+    except HTTPException as exc:
+        # StreamingResponse already committed HTTP 200 before the first
+        # chunk; re-raising here becomes "response already started" and the
+        # user sees silence. Emit a terminal SSE error instead.
+        status = "failed"
+        error = {"code": f"http_{exc.status_code}", "message": str(exc.detail)}
+        logger.warning(
+            "stream failure model=%s status=%s",
+            model_name or "未知模型",
+            exc.status_code,
+        )
+        yield format_anila_stream_error(
+            stream_failure_user_message(exc, model_name=model_name)
+        )
+    except Exception as exc:
+        status = "failed"
+        error = {"code": "stream_error", "message": type(exc).__name__}
+        logger.exception(
+            "stream failure model=%s", model_name or "未知模型"
+        )
+        yield format_anila_stream_error(
+            stream_failure_user_message(exc, model_name=model_name)
+        )
     finally:
         if task_run_id is not None:
             finalize_task_run(task_run_id, status, error=error)

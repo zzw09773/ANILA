@@ -1141,9 +1141,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         setRuntimeError(persistError.message || "對話訊息儲存失敗");
       }
     } catch (error) {
+      // Keep any already-streamed assistant text; attach a readable error.
       updateMsg(convId, assistantId, {
         streaming: false,
-        text: `請求失敗：${error.message || "unknown error"}`,
+        error: error.message || "產生回應時發生錯誤，請稍後再試。",
       });
     }
   }
@@ -1472,9 +1473,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         return;
       }
     } catch (error) {
+      // Keep any already-streamed assistant text; attach a readable error.
       updateMsg(convId, assistantId, {
         streaming: false,
-        text: `請求失敗：${error.message || "unknown error"}`,
+        error: error.message || "產生回應時發生錯誤，請稍後再試。",
       });
     }
   }
@@ -2076,7 +2078,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             ...prev,
             [col.id]: (prev[col.id] || []).map((m) =>
               m.id === aId
-                ? { ...m, streaming: false, text: `請求失敗：${error.message}` }
+                ? {
+                    ...m,
+                    streaming: false,
+                    error: error.message || "產生回應時發生錯誤，請稍後再試。",
+                  }
                 : m,
             ),
           }));

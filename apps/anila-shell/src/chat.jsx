@@ -684,9 +684,9 @@ export const MessageBubble = ({
                 <div style={{ whiteSpace: "pre-wrap" }}>
                   {renderTextWithCitations(displayBody, msg.citations, onOpenCitation)}
                 </div>
-              ) : (
+              ) : displayBody ? (
                 <MarkdownView text={displayBody} />
-              )}
+              ) : null}
               {msg.streaming && msg.text && (
                 <span style={{
                   display: "inline-block", width: 7, height: 15,
@@ -695,6 +695,24 @@ export const MessageBubble = ({
                 }}/>
               )}
             </div>
+            {!msg.streaming && msg.error && (
+              <div
+                role="alert"
+                data-testid="message-stream-error"
+                style={{
+                  marginTop: displayBody ? 10 : 0,
+                  padding: "10px 12px",
+                  borderRadius: "var(--radius)",
+                  border: "1px solid var(--danger)",
+                  background: "color-mix(in oklch, var(--danger) 12%, var(--bg))",
+                  color: "var(--danger)",
+                  fontSize: 14,
+                  lineHeight: 1.55,
+                }}
+              >
+                {msg.error}
+              </div>
+            )}
             {!msg.streaming && msg.confidence != null && (
               <div style={{ marginTop: 6 }}>
                 <ConfidenceChip confidence={msg.confidence} />
@@ -749,7 +767,9 @@ export const MessageBubble = ({
         </button>
       )}
 
-      {!msg.streaming && msg.text && (
+      {/* Actions stay available after a mid-stream failure (text and/or
+          error) so the user can regenerate without retyping. */}
+      {!msg.streaming && (msg.text || msg.error) && (
         <div
           className="anila-msg-actions"
           style={{
