@@ -1,12 +1,36 @@
 from datetime import datetime, timezone
+import asyncio
+import hashlib
+import hmac
+import json
+import logging
+import secrets
+
+import httpx
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from app.config import settings
 from app.database import get_db
 from app.models.model_registry import ModelRegistry
 from app.models.token_usage import TokenUsage
 from app.models.user import User
-from app.schemas.model_registry import ModelCreate, ModelUpdate, ModelResponse
+from app.schemas.contracts.classification import ClassificationLevel
+from app.schemas.model_registry import (
+    ModelBulkActivateCreatedRequest,
+    ModelBulkActivateCreatedResponse,
+    ModelBulkImportCreated,
+    ModelBulkImportMissing,
+    ModelBulkImportRequest,
+    ModelBulkImportResponse,
+    ModelBulkImportSkipped,
+    ModelBulkImportUnchanged,
+    ModelCreate,
+    ModelUpdate,
+    ModelResponse,
+)
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import (
     get_current_user,
@@ -20,7 +44,39 @@ from app.services.health_checker import (
     normalize_health_status,
     probe_model_health_detailed,
 )
+from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.service_token_envelope import encode_service_token_envelope
+
+logger = logging.getLogger(__name__)
+
+# Columns that bulk-import may fill on an *existing* row when (and only when)
+# the stored value is genuinely absent (NULL / empty) AND the existing row
+# shares the source endpoint. Admin-edited values are never overwritten.
+_IMPORT_FILLABLE_ABSENT = ("description",)
+
+# Endpoint-scoped facts copied from the source registry row onto every newly
+# imported model. Driven as the single source of inheritance — do not also
+# hand-write the same field list beside this tuple. Per-model facts
+# (context_window, supports_*) are NOT here: they stay at ModelCreate defaults
+# unless the upstream listing supplies them.
+_IMPORT_INHERITED_FROM_SOURCE = (
+    "endpoint_url",
+    "api_version",
+    "protocol",
+    "is_internal",
+    "classification_ceiling",
+    "owner_department_id",
+)
+
+# Same-gateway credential envelope (not a ModelCreate field) — copied after
+# construct; never plaintext.
+_IMPORT_COPY_SECRET_REF = "api_key_secret_ref"
+
+# Explicit caps (batch-approve precedent: input limit + effective bound).
+_BULK_IMPORT_ENTRY_CAP = 500
+_BULK_IMPORT_BODY_MAX_BYTES = 1_048_576  # 1 MiB upstream body
+_BULK_IMPORT_AUDIT_NAME_SAMPLE = 40
+_BULK_ACTIVATE_INPUT_LIMIT = 500
 
 router = APIRouter(prefix="/api/models", tags=["模型管理"])
 
@@ -79,7 +135,12 @@ def _enforce_endpoint_url(url: str) -> None:
         raise HTTPException(status_code=400, detail=detail) from exc
 
 
-def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict:
+def _build_response(
+    model: ModelRegistry,
+    *,
+    caller: User | None = None,
+    endpoint_group_salt: bytes | None = None,
+) -> dict:
     """Serialize a model row.
 
     ``endpoint_url`` is owner-only — admins and below see
@@ -88,6 +149,13 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
     standing between a curious admin and direct unmediated access). When
     ``caller`` is None (e.g. internal callers passing through verify_service_token)
     we redact too — opt-in to surface by passing the caller explicitly.
+
+    ``endpoint_group_salt`` must be shared across every row in the same
+    list response so same-endpoint rows still group for owners; omit (or
+    pass a fresh value) for single-row responses. The key is emitted only
+    when the caller may already see ``endpoint_url`` — any shared signal
+    that two rows share an endpoint is a confirmation oracle once a
+    non-owner can insert a probe row into the same answer.
     """
     show_endpoint = caller is not None and is_owner(caller)
     is_internal = bool(getattr(model, "is_internal", False))
@@ -131,6 +199,15 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
         "supports_json_schema": bool(getattr(model, "supports_json_schema", False)),
         "supports_tools": bool(getattr(model, "supports_tools", False)),
         "has_api_key": bool(getattr(model, "api_key_secret_ref", None)),
+        # Owner-only: same emission gate as endpoint_url. Empty for everyone
+        # else so the console falls back to per-row keys (no equality oracle).
+        "endpoint_group_key": (
+            _endpoint_group_key(
+                model.endpoint_url, request_salt=endpoint_group_salt
+            )
+            if show_endpoint
+            else ""
+        ),
         "created_at": model.created_at,
         "updated_at": model.updated_at,
     }
@@ -155,7 +232,13 @@ def list_models(
         if not allowed_ids:
             return []
         query = query.filter(ModelRegistry.id.in_(allowed_ids))
-    return [_build_response(m, caller=current_user) for m in query.all()]
+    # One salt per list response for owners (key is owner-gated in
+    # ``_build_response``). Non-owners receive an empty key.
+    group_salt = secrets.token_bytes(16) if is_owner(current_user) else None
+    return [
+        _build_response(m, caller=current_user, endpoint_group_salt=group_salt)
+        for m in query.all()
+    ]
 
 
 @router.post("", response_model=ModelResponse)
@@ -197,6 +280,715 @@ def create_model(
         commit=True,
     )
     return _build_response(model, caller=admin)
+
+
+def _upstream_models_url(endpoint_url: str) -> str:
+    """Build OpenAI-compatible ``GET …/models`` URL from a registered endpoint.
+
+    Registry rows store the OpenAI base (typically ending in ``/v1``). Append
+    ``/models`` unless the stored URL already ends with that path segment.
+    """
+    base = (endpoint_url or "").rstrip("/")
+    if base.endswith("/models"):
+        return base
+    return f"{base}/models"
+
+
+def _endpoint_group_key(
+    endpoint_url: str, *, request_salt: bytes | None = None
+) -> str:
+    """Opaque grouping key for an endpoint address within one response.
+
+    HMAC-SHA256 of ``request_salt || address``, keyed with ``SECRET_KEY``.
+    Emitted only to callers already permitted to see the address (owner);
+    non-owners get an empty string from ``_build_response`` so a probe row
+    cannot confirm a candidate by key equality. Never the address itself.
+    """
+    salt = request_salt if request_salt is not None else secrets.token_bytes(16)
+    material = salt + (endpoint_url or "").encode("utf-8")
+    digest = hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        material,
+        hashlib.sha256,
+    ).hexdigest()
+    return digest
+
+
+def _bulk_import_listing_name(raw_id: object) -> str | None:
+    """Normalise an upstream listing id with the same length rule as the apply loop.
+
+    Returns ``None`` when the id is blank or longer than 200 characters — those
+    entries must not enter ``listed_names``, or a registry row could be wrongly
+    reported as missing / retired.
+    """
+    if raw_id is None:
+        return None
+    name = str(raw_id).strip()
+    if not name or len(name) > 200:
+        return None
+    return name
+
+
+# Fixed client-facing text when import rejects a source endpoint via the
+# outbound guard. Create/update keep the structured/plain echo (admin typed
+# the address); import must not hand the hostname or resolved private address
+# to a non-owner who never saw the redacted row's URL.
+_BULK_IMPORT_OUTBOUND_REJECTED = (
+    "來源端點未通過外連檢查；請由擁有者檢視該列位址後再試"
+)
+
+
+def _audit_detail_endpoint_sentinel(source: ModelRegistry) -> str:
+    """Always a sentinel — never the real address — for audit ``detail`` text.
+
+    Audit listing returns ``detail`` to every administrator unredacted; only
+    ``metadata`` / ``ip_address`` are owner-gated. Putting the real URL in
+    ``detail`` permanently publishes topology to all admins.
+    """
+    return ENDPOINT_INTERNAL if source.is_internal else ENDPOINT_REDACTED
+
+
+def _redacted_endpoint_for_viewer(source: ModelRegistry, viewer: User) -> str:
+    """Same owner-only redaction used by ``_build_response`` / list APIs."""
+    if is_owner(viewer):
+        return source.endpoint_url
+    return ENDPOINT_INTERNAL if source.is_internal else ENDPOINT_REDACTED
+
+
+def _parse_upstream_models_payload(payload: object) -> list:
+    """Accept only recognised OpenAI-style shapes; anything else is a hard failure.
+
+    Recognised:
+      - ``{"data": [ ... ]}`` (OpenAI ``/v1/models``)
+      - a bare JSON array
+
+    A dict without ``data`` (including error bodies under HTTP 200) or a
+    non-list ``data`` value raises 502 with the same failure class the
+    single-record path uses for a bad upstream — never a silent empty success.
+    """
+    if isinstance(payload, dict):
+        if "data" not in payload:
+            raise HTTPException(
+                status_code=502,
+                detail="上游模型清單格式無法辨識",
+            )
+        data = payload["data"]
+    elif isinstance(payload, list):
+        data = payload
+    else:
+        raise HTTPException(
+            status_code=502,
+            detail="上游模型清單格式無法辨識",
+        )
+    if not isinstance(data, list):
+        raise HTTPException(
+            status_code=502,
+            detail="上游模型清單 data 不是陣列",
+        )
+    return data
+
+
+def _client_safe_upstream_error(
+    exc: BaseException, *, http_status: int | None = None
+) -> str:
+    """Fixed client-facing message — never interpolate exception text (URLs)."""
+    if http_status is not None:
+        return f"無法從上游取得模型清單（HTTP {http_status}）"
+    return f"無法從上游取得模型清單（{type(exc).__name__}）"
+
+
+async def _fetch_upstream_model_listing(
+    endpoint_url: str, api_key: str | None
+) -> list:
+    """GET upstream ``/models`` listing. Stub this in unit tests — no network.
+
+    Returns the raw ``data`` array (may contain non-object entries). Callers
+    must route non-objects into the skipped list rather than dropping them.
+    Response body size is bounded by streaming (abort past the cap); failures
+    return a fixed message (no URL).
+    """
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    url = _upstream_models_url(endpoint_url)
+    too_large_detail = (
+        f"上游模型清單回應過大"
+        f"（上限 {_BULK_IMPORT_BODY_MAX_BYTES} 位元組）"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async with client.stream("GET", url, headers=headers) as resp:
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    logger.exception(
+                        "bulk import upstream HTTP error status=%s url=%s",
+                        exc.response.status_code,
+                        url,
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail=_client_safe_upstream_error(
+                            exc, http_status=exc.response.status_code
+                        ),
+                    ) from exc
+
+                # Cheap pre-filter when the gateway declares Content-Length.
+                declared = resp.headers.get("content-length")
+                if declared is not None:
+                    try:
+                        declared_n = int(declared)
+                    except ValueError:
+                        declared_n = None
+                    else:
+                        if declared_n > _BULK_IMPORT_BODY_MAX_BYTES:
+                            logger.error(
+                                "bulk import upstream body too large "
+                                "content-length=%s cap=%s",
+                                declared_n,
+                                _BULK_IMPORT_BODY_MAX_BYTES,
+                            )
+                            raise HTTPException(
+                                status_code=502,
+                                detail=too_large_detail,
+                            )
+
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > _BULK_IMPORT_BODY_MAX_BYTES:
+                        logger.error(
+                            "bulk import upstream body too large "
+                            "bytes=%s cap=%s",
+                            total,
+                            _BULK_IMPORT_BODY_MAX_BYTES,
+                        )
+                        raise HTTPException(
+                            status_code=502,
+                            detail=too_large_detail,
+                        )
+                    chunks.append(chunk)
+                raw = b"".join(chunks)
+                try:
+                    payload = json.loads(raw)
+                except ValueError as exc:
+                    logger.exception(
+                        "bulk import upstream JSON parse failed url=%s", url
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail=_client_safe_upstream_error(exc),
+                    ) from exc
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        logger.exception("bulk import upstream transport error url=%s", url)
+        raise HTTPException(
+            status_code=502,
+            detail=_client_safe_upstream_error(exc),
+        ) from exc
+
+    return _parse_upstream_models_payload(payload)
+
+
+def _infer_model_type(model_id: str) -> str:
+    lowered = model_id.lower()
+    if "embed" in lowered:
+        return "embedding"
+    return "llm"
+
+
+def _entry_description(entry: dict) -> str | None:
+    """Best-effort description from an OpenAI-style listing entry (often absent).
+
+    ``owned_by`` is upstream provenance, not administrator-authored text — mark
+    it so later readers do not treat it as a human-written description.
+    """
+    desc = entry.get("description")
+    if isinstance(desc, str) and desc.strip():
+        return desc.strip()[:2000]
+    owned = entry.get("owned_by")
+    if isinstance(owned, str) and owned.strip():
+        marked = f"[上游來源 owned_by] {owned.strip()}"
+        return marked[:2000]
+    return None
+
+
+def _entry_optional_context_window(entry: dict) -> int | None:
+    for key in ("context_window", "max_model_len", "max_tokens"):
+        val = entry.get(key)
+        if isinstance(val, int) and val > 0:
+            return val
+        if isinstance(val, str) and val.isdigit() and int(val) > 0:
+            return int(val)
+    return None
+
+
+def _entry_optional_bool(entry: dict, key: str) -> bool | None:
+    val = entry.get(key)
+    return val if isinstance(val, bool) else None
+
+
+def _inherited_create_kwargs(source: ModelRegistry) -> dict:
+    """Build ModelCreate kwargs from ``_IMPORT_INHERITED_FROM_SOURCE`` only."""
+    out: dict = {}
+    for field in _IMPORT_INHERITED_FROM_SOURCE:
+        val = getattr(source, field, None)
+        if field == "api_version":
+            out[field] = val or "v1"
+        elif field == "protocol":
+            out[field] = val or "openai_compatible"
+        elif field == "is_internal":
+            out[field] = bool(val) if val is not None else True
+        elif field == "endpoint_url":
+            out[field] = val
+        else:
+            out[field] = val
+    return out
+
+
+def _validate_source_ceiling_or_raise(source: ModelRegistry) -> None:
+    """Fail once with an actionable message before the per-entry loop."""
+    ceiling = getattr(source, "classification_ceiling", None)
+    if ceiling is None:
+        return
+    try:
+        ClassificationLevel.from_storage(ceiling)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"來源模型的分類上限「{ceiling}」已不在現行字彙，"
+                f"請先修正來源列後再整批帶入"
+            ),
+        ) from None
+
+
+def _registry_by_name(db: Session) -> dict[str, ModelRegistry]:
+    """Name → row snapshot. Extracted so tests can blind it (race simulation)."""
+    return {row.name: row for row in db.query(ModelRegistry).all()}
+
+
+def _unchanged_reason_for_existing(
+    existing: ModelRegistry, source: ModelRegistry, *, filled: list[str] | None = None
+) -> str:
+    """Explain an already-present name; call out a different endpoint plainly."""
+    other_endpoint = existing.endpoint_url != source.endpoint_url
+    if filled:
+        base = (
+            "已登錄"
+            + ("於其他端點" if other_endpoint else "")
+            + "；已補齊空白欄位: "
+            + ", ".join(filled)
+            + "；其餘本機設定已保留"
+        )
+        return base
+    if other_endpoint:
+        return "已登錄於其他端點；本機設定已保留"
+    return "已登錄；本機設定已保留"
+
+
+def _apply_bulk_import_entries(
+    *,
+    db: Session,
+    source: ModelRegistry,
+    entries: list,
+) -> tuple[
+    list[ModelBulkImportCreated],
+    list[ModelBulkImportUnchanged],
+    list[ModelBulkImportSkipped],
+    list[ModelBulkImportMissing],
+    int,
+]:
+    """Idempotent apply of an upstream listing against the registry.
+
+    Match key = ``ModelRegistry.name`` (same unique identity as single-record
+    create). Existing rows keep local settings; only NULL/empty fillable
+    fields may be populated from upstream metadata when the endpoint matches.
+    Malformed entries are skipped with a reason — the batch continues.
+
+    New rows inherit only endpoint-scoped facts from
+    ``_IMPORT_INHERITED_FROM_SOURCE``. Per-model window/capability fields use
+    schema defaults (or upstream values when present) and are listed in
+    ``guessed_fields``. ``is_active=False`` pending administrator review.
+
+    ``_BULK_IMPORT_ENTRY_CAP`` bounds *newly created* rows (not entries
+    scanned). Already-present / skipped entries still get full accounting;
+    a second run therefore progresses through the remainder of a long listing.
+    """
+    truncated = 0
+    # Collect listing names with the same length rule as the create loop so
+    # missing-from-listing does not false-report over-long ids.
+    listed_names: set[str] = set()
+    for entry in entries:
+        if isinstance(entry, dict):
+            normalised = _bulk_import_listing_name(entry.get("id"))
+            if normalised is not None:
+                listed_names.add(normalised)
+
+    created_entries: list[ModelBulkImportCreated] = []
+    unchanged: list[ModelBulkImportUnchanged] = []
+    skipped: list[ModelBulkImportSkipped] = []
+
+    existing_by_name = _registry_by_name(db)
+    seen_in_batch: set[str] = set()
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            skipped.append(
+                ModelBulkImportSkipped(
+                    name=None, reason="清單項目不是物件"
+                )
+            )
+            continue
+
+        raw_id = entry.get("id")
+        if raw_id is None or not str(raw_id).strip():
+            skipped.append(
+                ModelBulkImportSkipped(name=None, reason="缺少或空白的模型 id")
+            )
+            continue
+        name = str(raw_id).strip()
+        if len(name) > 200:
+            skipped.append(
+                ModelBulkImportSkipped(
+                    name=name[:200], reason="模型 id 超過 200 字元"
+                )
+            )
+            continue
+        if name in seen_in_batch:
+            skipped.append(
+                ModelBulkImportSkipped(
+                    name=name, reason="上游清單重複的 id"
+                )
+            )
+            continue
+        seen_in_batch.add(name)
+
+        existing = existing_by_name.get(name)
+        if existing is not None:
+            filled: list[str] = []
+            # Only fill absent fields when the row belongs to this gateway.
+            same_endpoint = existing.endpoint_url == source.endpoint_url
+            if same_endpoint:
+                upstream_desc = _entry_description(entry)
+                if (
+                    upstream_desc
+                    and "description" in _IMPORT_FILLABLE_ABSENT
+                    and not (existing.description or "").strip()
+                ):
+                    existing.description = upstream_desc
+                    filled.append("description")
+            unchanged.append(
+                ModelBulkImportUnchanged(
+                    name=name,
+                    reason=_unchanged_reason_for_existing(
+                        existing, source, filled=filled or None
+                    ),
+                )
+            )
+            continue
+
+        # Cap newly created rows — keep scanning so already-present / skipped
+        # still account, and a later run can create the remaining names.
+        if len(created_entries) >= _BULK_IMPORT_ENTRY_CAP:
+            truncated += 1
+            continue
+
+        inherited = _inherited_create_kwargs(source)
+        guessed: list[str] = ["model_type", "display_name"]
+
+        upstream_cw = _entry_optional_context_window(entry)
+        if upstream_cw is not None:
+            inherited["context_window"] = upstream_cw
+        else:
+            # Leave empty (ModelCreate default None) — not sibling-model sized.
+            guessed.append("context_window")
+
+        for flag, default in (
+            ("supports_streaming", True),
+            ("supports_json_schema", False),
+            ("supports_tools", False),
+        ):
+            upstream_flag = _entry_optional_bool(entry, flag)
+            if upstream_flag is not None:
+                inherited[flag] = upstream_flag
+            else:
+                inherited[flag] = default
+                guessed.append(flag)
+
+        try:
+            create_payload = ModelCreate(
+                name=name,
+                display_name=name,
+                model_type=_infer_model_type(name),
+                description=_entry_description(entry),
+                **inherited,
+            )
+        except ValidationError as exc:
+            skipped.append(
+                ModelBulkImportSkipped(
+                    name=name,
+                    reason=f"驗證失敗: {exc.errors()[0]['msg']}",
+                )
+            )
+            continue
+
+        data = create_payload.model_dump()
+        data.pop("api_key", None)
+        model = ModelRegistry(**data)
+        # Inferred model_type / display_name are not faithful gateway facts —
+        # leave inactive until an administrator reviews and activates.
+        model.is_active = False
+        # Reuse the source endpoint's stored credential envelope (same gateway);
+        # never invent a new key. Plaintext is never written here.
+        if getattr(source, _IMPORT_COPY_SECRET_REF, None):
+            setattr(
+                model,
+                _IMPORT_COPY_SECRET_REF,
+                getattr(source, _IMPORT_COPY_SECRET_REF),
+            )
+
+        try:
+            with db.begin_nested():
+                db.add(model)
+                db.flush()
+        except IntegrityError:
+            # Concurrent registration of the same name after our snapshot —
+            # report that name rather than aborting the whole batch.
+            raced = (
+                db.query(ModelRegistry)
+                .filter(ModelRegistry.name == name)
+                .first()
+            )
+            if raced is None:
+                skipped.append(
+                    ModelBulkImportSkipped(
+                        name=name, reason="寫入衝突，請重試"
+                    )
+                )
+                continue
+            existing_by_name[name] = raced
+            unchanged.append(
+                ModelBulkImportUnchanged(
+                    name=name,
+                    reason=_unchanged_reason_for_existing(raced, source),
+                )
+            )
+            continue
+
+        existing_by_name[name] = model
+        created_entries.append(
+            ModelBulkImportCreated(name=name, guessed_fields=guessed)
+        )
+
+    # Report-only: registry rows on this endpoint absent from the listing.
+    missing: list[ModelBulkImportMissing] = []
+    for row in existing_by_name.values():
+        if row.endpoint_url != source.endpoint_url:
+            continue
+        if row.name in listed_names:
+            continue
+        missing.append(ModelBulkImportMissing(name=row.name))
+
+    return created_entries, unchanged, skipped, missing, truncated
+
+
+def _audit_name_sample(names: list[str]) -> list[str]:
+    return names[:_BULK_IMPORT_AUDIT_NAME_SAMPLE]
+
+
+@router.post("/import", response_model=ModelBulkImportResponse)
+async def import_models_from_endpoint(
+    body: ModelBulkImportRequest,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """P4.6 / SYSTEM-MAP §6: pull upstream ``/v1/models`` into the registry.
+
+    Auth = same ``require_admin`` gate as ``POST /api/models``. SSRF / scheme
+    rules reuse ``_enforce_endpoint_url`` (identical to single-record create).
+    Credential resolution reuses ``resolve_model_gateway_key`` (per-model ref,
+    then global ``MODEL_GATEWAY_API_KEY``).
+    """
+    source = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.id == body.source_model_id)
+        .first()
+    )
+    if not source:
+        raise HTTPException(status_code=404, detail="來源模型不存在")
+
+    # Same outbound guard as create/update — disallowed endpoints stay
+    # disallowed. Import path must not echo hostname / resolved address to
+    # the client (non-owner never typed or saw the redacted URL); create and
+    # update keep the structured/plain guard detail unchanged.
+    try:
+        _enforce_endpoint_url(source.endpoint_url)
+    except HTTPException as exc:
+        if exc.status_code == 400:
+            logger.warning(
+                "bulk import outbound guard rejected source_model_id=%s detail=%s",
+                source.id,
+                exc.detail,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=_BULK_IMPORT_OUTBOUND_REJECTED,
+            ) from exc
+        raise
+    # Fail closed once if the source ceiling is outside the current vocabulary.
+    _validate_source_ceiling_or_raise(source)
+
+    api_key = resolve_model_gateway_key(source)
+    entries = await _fetch_upstream_model_listing(source.endpoint_url, api_key)
+
+    # Database loop off the event loop (batch-approve-style bound sync work).
+    created_entries, unchanged, skipped, missing, truncated = await asyncio.to_thread(
+        _apply_bulk_import_entries,
+        db=db,
+        source=source,
+        entries=entries,
+    )
+    db.commit()
+
+    created_names = [e.name for e in created_entries]
+    # Response redacts for this viewer; audit detail ALWAYS uses a sentinel
+    # (listing returns detail to every admin). Real address lives only in
+    # owner-gated metadata.
+    response_endpoint = _redacted_endpoint_for_viewer(source, admin)
+    detail_sentinel = _audit_detail_endpoint_sentinel(source)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="bulk_import",
+        resource_type="model",
+        resource_id=source.id,
+        detail=(
+            f"整批帶入模型自 endpoint「{detail_sentinel}」"
+            f"（source_model_id={source.id}）:"
+            f" created={len(created_names)}"
+            f" already_existed={len(unchanged)}"
+            f" skipped={len(skipped)}"
+            f" truncated={truncated}"
+            f" missing_from_listing={len(missing)}"
+        ),
+        ip_address=_client_ip(request),
+        metadata={
+            "source_model_id": source.id,
+            "endpoint_url": source.endpoint_url,
+            "created": len(created_names),
+            "already_existed": len(unchanged),
+            "skipped": len(skipped),
+            "truncated": truncated,
+            "missing_from_listing": len(missing),
+            "created_names_sample": _audit_name_sample(created_names),
+            "created_names_total": len(created_names),
+        },
+        commit=True,
+    )
+    return ModelBulkImportResponse(
+        source_model_id=source.id,
+        endpoint_url=response_endpoint,
+        created=len(created_names),
+        already_existed=len(unchanged),
+        skipped=len(skipped),
+        truncated=truncated,
+        created_names=created_names,
+        created_entries=created_entries,
+        unchanged=unchanged,
+        skipped_entries=skipped,
+        missing_from_listing=missing,
+    )
+
+
+@router.post(
+    "/import/activate-created",
+    response_model=ModelBulkActivateCreatedResponse,
+)
+def activate_created_from_import(
+    body: ModelBulkActivateCreatedRequest,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Activate inactive rows produced by a prior bulk import (one review step).
+
+    Keeps the inactive-by-default fence: nothing becomes routable until this
+    (or per-row activate) runs. Scoped to ``names`` that still share the
+    source endpoint.
+    """
+    if len(body.names) > _BULK_ACTIVATE_INPUT_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"單次最多啟用 {_BULK_ACTIVATE_INPUT_LIMIT} 個模型",
+        )
+
+    source = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.id == body.source_model_id)
+        .first()
+    )
+    if not source:
+        raise HTTPException(status_code=404, detail="來源模型不存在")
+
+    activated_names: list[str] = []
+    already_active = 0
+    not_found = 0
+    wrong_endpoint = 0
+    # Preserve caller order; de-dupe while counting.
+    seen: set[str] = set()
+    for raw in body.names:
+        name = (raw or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        row = db.query(ModelRegistry).filter(ModelRegistry.name == name).first()
+        if row is None:
+            not_found += 1
+            continue
+        if row.endpoint_url != source.endpoint_url:
+            wrong_endpoint += 1
+            continue
+        if row.is_active:
+            already_active += 1
+            continue
+        row.is_active = True
+        activated_names.append(name)
+
+    db.commit()
+    log_audit_event(
+        db,
+        actor=admin,
+        action="bulk_activate_created",
+        resource_type="model",
+        resource_id=source.id,
+        detail=(
+            f"整批啟用帶入模型（source_model_id={source.id}）:"
+            f" activated={len(activated_names)}"
+            f" already_active={already_active}"
+            f" not_found={not_found}"
+            f" wrong_endpoint={wrong_endpoint}"
+        ),
+        ip_address=_client_ip(request),
+        metadata={
+            "source_model_id": source.id,
+            "activated": len(activated_names),
+            "activated_names_sample": _audit_name_sample(activated_names),
+            "activated_names_total": len(activated_names),
+        },
+        commit=True,
+    )
+    return ModelBulkActivateCreatedResponse(
+        source_model_id=source.id,
+        activated=len(activated_names),
+        already_active=already_active,
+        not_found=not_found,
+        wrong_endpoint=wrong_endpoint,
+        activated_names=activated_names,
+    )
 
 
 @router.get("/router-primary")

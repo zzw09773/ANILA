@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.contracts.classification import ClassificationLevel
 
@@ -98,7 +98,95 @@ class ModelResponse(BaseModel):
     # doc 04 §3: only the presence of a per-model key is exposed — never the
     # ciphertext / secret ref, and never the plaintext.
     has_api_key: bool = False
+    # P4.6: opaque same-endpoint grouping key for owners only (same gate as
+    # endpoint_url). Empty for non-owners — any shared key would be a
+    # confirmation oracle once a probe row can join the same list answer.
+    endpoint_group_key: str = ""
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ── P4.6 bulk import (SYSTEM-MAP §6 / PLAN 4.6 / OE-2 G5) ───────────────────
+
+
+class ModelBulkImportRequest(BaseModel):
+    """Import every model listed by an already-registered endpoint.
+
+    ``source_model_id`` picks a registry row whose ``endpoint_url`` (and stored
+    credential) are used to call upstream ``GET {endpoint}/models``. The
+    natural identity key remains ``name`` — same unique column as single-record
+    create.
+    """
+
+    source_model_id: int
+
+
+class ModelBulkImportSkipped(BaseModel):
+    name: str | None = None
+    reason: str
+
+
+class ModelBulkImportUnchanged(BaseModel):
+    """An existing row matched by ``name``; local admin settings were kept."""
+
+    name: str
+    reason: str = "已登錄；本機設定已保留"
+
+
+class ModelBulkImportCreated(BaseModel):
+    """A newly inserted row; ``guessed_fields`` lists values not from upstream
+    or endpoint-scoped inheritance (administrator should review before activate).
+    """
+
+    name: str
+    guessed_fields: list[str] = Field(default_factory=list)
+
+
+class ModelBulkImportMissing(BaseModel):
+    """Registry row on the source endpoint that the upstream listing omitted.
+
+    Report-only — nothing is deleted or deactivated.
+    """
+
+    name: str
+    reason: str = "上游清單未再列出此模型"
+
+
+class ModelBulkImportResponse(BaseModel):
+    source_model_id: int
+    endpoint_url: str
+    created: int
+    already_existed: int
+    skipped: int
+    # Count of create-eligible listing entries not written because the
+    # per-run create cap was reached. Re-running the import progresses
+    # through the remainder (already-created names become unchanged).
+    truncated: int = 0
+    created_names: list[str]
+    created_entries: list[ModelBulkImportCreated] = Field(default_factory=list)
+    unchanged: list[ModelBulkImportUnchanged]
+    skipped_entries: list[ModelBulkImportSkipped]
+    missing_from_listing: list[ModelBulkImportMissing] = Field(default_factory=list)
+
+
+class ModelBulkActivateCreatedRequest(BaseModel):
+    """Activate inactive rows created by a prior bulk import (single review step).
+
+    Scoped to ``names`` that still point at the same endpoint as
+    ``source_model_id``. Does not weaken the inactive-by-default fence —
+    activation remains an explicit administrator action.
+    """
+
+    source_model_id: int
+    names: list[str] = Field(..., min_length=1)
+
+
+class ModelBulkActivateCreatedResponse(BaseModel):
+    source_model_id: int
+    activated: int
+    already_active: int
+    not_found: int
+    wrong_endpoint: int
+    activated_names: list[str]
