@@ -23,5 +23,11 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: "./vitest.setup.js",
+    // node:test files (*.node.test.mjs) are run with `node --test`, not vitest.
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/*.node.test.mjs",
+    ],
   },
 });

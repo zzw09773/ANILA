@@ -45,6 +45,7 @@ import {
   adoptConversation as apiAdoptConversation,
   getConversation as apiGetConversation,
   updateConversationTitle as apiUpdateConversationTitle,
+  updateConversation as apiUpdateConversation,
   deleteConversation as apiDeleteConversation,
   appendMessage as apiAppendMessage,
   rateMessage as apiRateMessage,
@@ -652,9 +653,15 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       agent: agentName || null,
       agentId: serverRow.agent_id || null,
       agentName: agentName || null,
-      folder: "all",
-      tags: classified ? appendClassifiedTag([]) : [],
-      starred: false,
+      folder: typeof serverRow.folder === "string" && serverRow.folder
+        ? serverRow.folder
+        : "all",
+      tags: (() => {
+        const raw = Array.isArray(serverRow.tags) ? serverRow.tags.filter(Boolean) : [];
+        const userTags = raw.filter((t) => t !== "classified");
+        return classified ? appendClassifiedTag(userTags) : userTags;
+      })(),
+      starred: Boolean(serverRow.starred),
       classified,
       // P3: distinguishes inheritance-driven latch from agent-required
       // or admin-set classification. Drives the warning banner copy
@@ -902,6 +909,36 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     setConversations((cs) =>
       cs.map((c) => (c.id === id ? { ...c, ...patch } : c)),
     );
+  }
+
+  // Persist star / folder / user-tags (same optimistic+rollback pattern as rename).
+  // The derived ``classified`` tag is never sent — server strips it and re-derives.
+  async function handleUpdateConvMeta(convId, patch) {
+    const prev = conversations.find((c) => c.id === convId);
+    if (!prev) return;
+    const next = { ...patch };
+    if (Array.isArray(next.tags)) {
+      const userTags = next.tags.filter((t) => t && t !== "classified");
+      next.tags = prev.classified ? appendClassifiedTag(userTags) : userTags;
+    }
+    updateConv(convId, next);
+    if (typeof convId !== "number") return;
+    const body = {};
+    if (typeof next.starred === "boolean") body.starred = next.starred;
+    if (typeof next.folder === "string") body.folder = next.folder;
+    if (Array.isArray(next.tags)) {
+      body.tags = next.tags.filter((t) => t !== "classified");
+    }
+    try {
+      await apiUpdateConversation(authRequest, convId, body);
+    } catch (err) {
+      updateConv(convId, {
+        starred: prev.starred,
+        folder: prev.folder,
+        tags: prev.tags,
+      });
+      setRuntimeError(err.message || "儲存對話分類失敗");
+    }
   }
 
   // ---- rename / delete a conversation from the sidebar ----
@@ -2149,7 +2186,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       );
       const tags = Array.isArray(mapped.tags) ? [...mapped.tags] : [];
       if (!tags.includes("compared")) tags.push("compared");
-      const convRow = { ...mapped, tags, folder: "all", starred: false };
+      const convRow = { ...mapped, tags };
       setConversations((prev) => [
         convRow,
         ...prev.filter((c) => c.id !== detail.id),
@@ -2288,7 +2325,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         folders={folders}
         onCreateFolder={createFolder}
         onDeleteFolder={deleteFolder}
-        onOpenTagEditor={(id, patch) => updateConv(id, patch)}
+        onOpenTagEditor={(id, patch) => handleUpdateConvMeta(id, patch)}
         onRenameConv={handleRenameConv}
         onDeleteConv={handleDeleteConv}
       />

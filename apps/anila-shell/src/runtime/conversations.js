@@ -83,9 +83,24 @@ export function getConversation(authRequest, convId, { view } = {}) {
 }
 
 export function updateConversationTitle(authRequest, convId, title) {
+  return updateConversation(authRequest, convId, { title });
+}
+
+/**
+ * Partial update: title and/or the caller's personal meta (starred / folder / tags).
+ * User tags must not include the derived ``classified`` tag — the server strips it.
+ */
+export function updateConversation(authRequest, convId, patch = {}) {
+  const body = {};
+  if (typeof patch.title === "string") body.title = patch.title;
+  if (typeof patch.starred === "boolean") body.starred = patch.starred;
+  if (typeof patch.folder === "string") body.folder = patch.folder;
+  if (Array.isArray(patch.tags)) {
+    body.tags = patch.tags.filter((t) => typeof t === "string" && t !== "classified");
+  }
   return authRequest(`/api/conversations/${convId}`, {
     method: "PUT",
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(body),
   });
 }
 

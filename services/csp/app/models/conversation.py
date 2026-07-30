@@ -1,10 +1,15 @@
 from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String,
-    text,
+    UniqueConstraint, text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.types import JSON
 from app.database import Base
+
+# Postgres → JSONB; SQLite create_all (pytest) → plain JSON.
+_JSON_LIST = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Conversation(Base):
@@ -84,6 +89,57 @@ class Conversation(Base):
         foreign_keys="Message.conversation_id",
     )
     shares = relationship("ConversationShare", back_populates="conversation", cascade="all, delete-orphan")
+    user_metas = relationship(
+        "ConversationUserMeta",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ConversationUserMeta(Base):
+    """Per-user view of a conversation: star, folder, user tags.
+
+    Not properties of the thread — if A stars a conversation shared with B,
+    B must not see A's star. The system ``classified`` tag is never stored
+    here; it is derived from ``conversations.classified`` on read.
+    """
+
+    __tablename__ = "conversation_user_meta"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "conversation_id",
+            name="uq_conversation_user_meta_user_conv",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    starred = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Folder id from the user's ui_settings.folders list; "all" = unfiled.
+    folder = Column(String(64), nullable=False, default="all", server_default="all")
+    # User-authored tags only. Never contains the derived "classified" tag.
+    user_tags = Column(_JSON_LIST, nullable=False, default=list)
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    conversation = relationship("Conversation", back_populates="user_metas")
+    user = relationship("User", foreign_keys=[user_id])
 
 
 class ConversationShare(Base):

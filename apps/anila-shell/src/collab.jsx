@@ -264,11 +264,13 @@ export const TagEditor = ({ folders, conversation, onUpdate, close }) => {
             borderRadius: 999,
           }}>
             #{t}
-            <button onClick={() => onUpdate({ tags: (conversation.tags || []).filter(x => x !== t) })}
-              style={{ background: "transparent", border: "none", cursor: "pointer",
-                color: "var(--fg-subtle)", padding: 0, display: "flex" }}>
-              <IconX size={10}/>
-            </button>
+            {t !== "classified" && (
+              <button onClick={() => onUpdate({ tags: (conversation.tags || []).filter(x => x !== t) })}
+                style={{ background: "transparent", border: "none", cursor: "pointer",
+                  color: "var(--fg-subtle)", padding: 0, display: "flex" }}>
+                <IconX size={10}/>
+              </button>
+            )}
           </span>
         ))}
       </div>
@@ -277,7 +279,9 @@ export const TagEditor = ({ folders, conversation, onUpdate, close }) => {
           placeholder="新增標籤"
           onKeyDown={e => {
             if (e.key === "Enter" && tagInput.trim()) {
-              onUpdate({ tags: [...new Set([...(conversation.tags || []), tagInput.trim()])] });
+              const next = tagInput.trim();
+              if (next === "classified") { setTagInput(""); return; }
+              onUpdate({ tags: [...new Set([...(conversation.tags || []).filter(t => t !== "classified"), next])] });
               setTagInput("");
             }
           }}

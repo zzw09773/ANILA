@@ -32,7 +32,7 @@ from app.models.classification import (
     ClassificationEvent,
     DeclassificationRequest,
 )
-from app.models.conversation import Conversation
+from app.models.conversation import Conversation, ConversationUserMeta
 from app.models.department import Department
 from app.models.handoff import Handoff
 from app.models.ingestion import (
@@ -86,6 +86,7 @@ __all__ = [
     "ClassificationAuthorityAssignment",
     "ClassificationEvent",
     "Conversation",
+    "ConversationUserMeta",
     "DeclassificationRequest",
     "Department",
     "AgentLlmCredential",
