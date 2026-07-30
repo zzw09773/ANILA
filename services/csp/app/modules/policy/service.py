@@ -189,8 +189,22 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _resolve_resource(db: Session, resource_type: str, resource_id: str):
-    """派發 + 取列;未知型別 / 非整數 id / 查無列 一律 ValueError。"""
+def _resolve_resource(
+    db: Session,
+    resource_type: str,
+    resource_id: str,
+    *,
+    for_update: bool = False,
+):
+    """派發 + 取列;未知型別 / 非整數 id / 查無列 一律 ValueError。
+
+    ``for_update=True`` (latch / 降級寫入路徑):``SELECT … FOR UPDATE`` +
+    ``populate_existing()`` 強制從已提交列重載。``expire_on_commit=False``
+    下 ``db.get`` 會回傳 session 內更早載入的舊實例,單向閂鎖若對
+    stale ``classification_level`` 做 max 再寫回,可能把已提交的較高等級
+    覆蓋成較低等級 —— 這是紅線。FOR UPDATE 在 SQLite 為 no-op,但
+    ``populate_existing`` 仍會重跑 SELECT,關閉 identity-map 陳舊視窗。
+    """
     model = _RESOURCE_MODELS.get(resource_type)
     if model is None:
         raise ValueError(
@@ -203,7 +217,16 @@ def _resolve_resource(db: Session, resource_type: str, resource_id: str):
         raise ValueError(
             f"分類資源 id 必須是整數字串,實得 {resource_id!r}"
         ) from None
-    row = db.get(model, pk)
+    if for_update:
+        row = (
+            db.query(model)
+            .filter(model.id == pk)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+    else:
+        row = db.get(model, pk)
     if row is None:
         raise ValueError(
             f"找不到分類資源 {resource_type}#{resource_id}(fail-closed)"
@@ -296,43 +319,58 @@ def apply_classification(
     - ``reason == "memory_inherited"`` 時同步鏡射舊
       ``classification_inherited`` 旗標(doc 08 §3 bridge)。
     """
-    reason_value = _validate_enum("reason", reason, ClassificationEventReason)
-    actor_type_value = _validate_enum(
-        "actor_type", actor_type, PolicyActorType
-    )
-    target = ClassificationLevel.from_storage(new_level)
-    row = _resolve_resource(db, resource_type, resource_id)
+    # FOR UPDATE must not outlive this call: the hot path (proxy latch)
+    # may invoke us up to 3× per request and then stream SSE for minutes.
+    # Every exit — no-op, upgrade, or exception — ends the transaction.
+    try:
+        reason_value = _validate_enum("reason", reason, ClassificationEventReason)
+        actor_type_value = _validate_enum(
+            "actor_type", actor_type, PolicyActorType
+        )
+        target = ClassificationLevel.from_storage(new_level)
+        row = _resolve_resource(
+            db, resource_type, resource_id, for_update=True
+        )
 
-    current = ClassificationLevel.from_storage(row.classification_level)
-    effective = ClassificationLevel.max_of([current, target])
-    if effective == current:
-        # 維持或降級嘗試:單向閂鎖,不動資源、不寫 event。
-        return None
+        current = ClassificationLevel.from_storage(row.classification_level)
+        effective = ClassificationLevel.max_of([current, target])
+        if effective == current:
+            # 維持或降級嘗試:單向閂鎖,不動資源、不寫 event。
+            # Still commit: release the RowShareLock immediately. Returning
+            # with an open transaction leaves idle-in-transaction + blocks
+            # concurrent FOR UPDATE for the rest of the request.
+            db.commit()
+            return None
 
-    event = _write_event(
-        db,
-        resource_type=resource_type,
-        resource_id=resource_id,
-        previous=current,
-        new=effective,
-        reason=reason_value,
-        actor_type=actor_type_value,
-        actor_id=actor_id,
-        task_id=task_id,
-    )
-    row.classification_level = effective.to_storage()
-    row.classification_latched_at = _utcnow()
-    row.classification_source = source
-    row.classification_event_id = event.id
-    _mirror_legacy_boolean(row, effective)
-    if (
-        reason_value == ClassificationEventReason.MEMORY_INHERITED.value
-        and hasattr(row, "classification_inherited")
-    ):
-        row.classification_inherited = True
-    db.commit()
-    db.refresh(event)
-    return event
+        event = _write_event(
+            db,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            previous=current,
+            new=effective,
+            reason=reason_value,
+            actor_type=actor_type_value,
+            actor_id=actor_id,
+            task_id=task_id,
+        )
+        row.classification_level = effective.to_storage()
+        row.classification_latched_at = _utcnow()
+        row.classification_source = source
+        row.classification_event_id = event.id
+        _mirror_legacy_boolean(row, effective)
+        if (
+            reason_value == ClassificationEventReason.MEMORY_INHERITED.value
+            and hasattr(row, "classification_inherited")
+        ):
+            row.classification_inherited = True
+        db.commit()
+        db.refresh(event)
+        return event
+    except Exception:
+        # After FOR UPDATE a failure aborts the PG txn (25P02). Clear it so
+        # the caller's later DB ops in the same request still work.
+        db.rollback()
+        raise
 
 
 def effective_level(
@@ -443,7 +481,9 @@ def _apply_approved_declassification(
     ``declassification_copy``;in-place 不產生新資源,
     ``resulting_resource_id`` 留 NULL。
     """
-    row = _resolve_resource(db, request.resource_type, request.resource_id)
+    row = _resolve_resource(
+        db, request.resource_type, request.resource_id, for_update=True
+    )
     previous = ClassificationLevel.from_storage(row.classification_level)
     target = ClassificationLevel.from_storage(request.to_level)
     event = ClassificationEvent(

@@ -226,3 +226,45 @@ def test_no_relations_returns_empty(db, coll):
     lone = _doc(db, coll.id, "孤兒文件")
     store = _FakeStore({})
     assert _expand(db, store, coll.id, [lone.id], max_related=5) == []
+
+
+def test_expand_relations_snapshot_survives_orm_expire(db, coll, monkeypatch):
+    """Edge attrs used after commit must come from a plain snapshot.
+
+    Revert to bare attribute-touch + reading ORM ``picked[rel_doc]`` after
+    commit, and expunging those instances makes RelatedHit construction raise
+    DetachedInstanceError. Matches ``_embed_query``'s SimpleNamespace conclusion.
+    """
+    from anila_core.ingestion.citation_extractor import Citation
+    from app.models.ingestion import DocumentRelation
+
+    parent = _doc(db, coll.id, "母法-snap")
+    child = _doc(db, coll.id, "補充-snap")
+    rr.apply_document_extraction(
+        db, collection_id=coll.id, src_document_id=child.id,
+        citations=[Citation("supplements", "母法-snap", None, "母法-snap", "補")],
+        run_id="r-snap",
+    )
+    db.commit()
+
+    real_commit = db.commit
+
+    def commit_and_expunge_relations():
+        edges = [
+            obj
+            for obj in db.identity_map.values()
+            if isinstance(obj, DocumentRelation)
+        ]
+        real_commit()
+        for e in edges:
+            # Expire first: loaded attrs on a merely-expunged instance remain
+            # readable; expire+expunge makes post-commit ORM reads fail.
+            db.expire(e)
+            db.expunge(e)
+
+    monkeypatch.setattr(db, "commit", commit_and_expunge_relations)
+    store = _FakeStore({parent.id: _hit(parent.id, 99, "snap…", 0.7)})
+    related = _expand(db, store, coll.id, [child.id], max_related=5)
+    assert len(related) == 1
+    assert related[0].relation_type == "supplements"
+    assert related[0].confidence is not None

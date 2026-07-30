@@ -10,7 +10,17 @@ engine = create_engine(
     echo=settings.DEBUG,
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# expire_on_commit=False: the default True expires every loaded instance on
+# commit, so the next attribute access silently checks a connection back out
+# and leaves an open transaction for the rest of the request (including across
+# outbound HTTP / SSE). Callers that need DB-computed values after commit must
+# db.refresh() explicitly.
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    expire_on_commit=False,
+)
 
 
 class Base(DeclarativeBase):

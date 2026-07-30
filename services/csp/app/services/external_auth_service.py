@@ -197,7 +197,6 @@ async def authenticate_oidc_code(
     match before passing it in. We pull ``pkce`` (verifier) and ``nonce``
     out of it for token exchange and id_token verification.
     """
-    metadata = await _resolve_oidc_metadata(provider)
     redirect_uri = f"{settings.SITE_URL.rstrip('/')}/api/auth/oidc/{provider.id}/callback"
     client_secret = _resolve_oidc_secret(provider)
     code_verifier = state_payload.get("pkce")
@@ -207,6 +206,12 @@ async def authenticate_oidc_code(
         raise ValueError("state 缺少 PKCE verifier — 拒絕兌換 token")
     if not expected_nonce:
         raise ValueError("state 缺少 nonce — 拒絕兌換 token")
+
+    # Release pooled connection before IdP discovery / token / userinfo (15s).
+    # Provisioning below re-checkouts; nothing pending must survive this commit.
+    db.commit()
+
+    metadata = await _resolve_oidc_metadata(provider)
 
     token_data = {
         "grant_type": "authorization_code",

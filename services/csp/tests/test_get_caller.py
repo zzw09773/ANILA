@@ -47,7 +47,7 @@ def client_with_caller(db_engine):
             "api_key_id": caller.api_key_id,
         }
 
-    Session = sessionmaker(bind=db_engine)
+    Session = sessionmaker(bind=db_engine, expire_on_commit=False)
 
     def override_get_db():
         s = Session()

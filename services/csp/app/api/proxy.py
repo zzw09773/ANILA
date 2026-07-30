@@ -777,6 +777,7 @@ async def chat_completions(
         try:
             _latch_inherited_classification(db, conv_id_int)
         except Exception:
+            db.rollback()
             logger.exception(
                 "memory_service: classification latch failed conv_id=%s",
                 conv_id_int,
@@ -822,6 +823,7 @@ async def chat_completions(
                         db, conv_id_int, agent_level.to_storage()
                     )
                 except Exception:
+                    db.rollback()
                     logger.exception(
                         "agent classification latch failed conv_id=%s",
                         conv_id_int,
@@ -845,6 +847,7 @@ async def chat_completions(
                     db, task_ctx.task_id, conv_id_int
                 )
             except Exception:
+                db.rollback()
                 logger.exception(
                     "task classification propagation failed task_id=%s",
                     task_ctx.task_id,
@@ -1060,6 +1063,7 @@ async def chat_completions(
                 db, task_ctx.task_id, conv_id_int
             )
         except Exception:
+            db.rollback()
             logger.exception(
                 "task classification propagation failed task_id=%s",
                 task_ctx.task_id,

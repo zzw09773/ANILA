@@ -91,13 +91,28 @@ class _StubPool:
         rows = self._rows
         outer = self
 
+        class _Txn:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _Conn:
+            async def execute(self, _sql):
+                return None
+
+            def transaction(self):
+                return _Txn()
+
+            async def fetch(self, sql, *args):
+                outer.last_sql = sql
+                outer.last_args = args
+                return rows
+
         class _Acq:
             async def __aenter__(self):
-                async def fetch(sql, *args):
-                    outer.last_sql = sql
-                    outer.last_args = args
-                    return rows
-                return type("C", (), {"fetch": staticmethod(fetch)})()
+                return _Conn()
 
             async def __aexit__(self, *exc):
                 return False

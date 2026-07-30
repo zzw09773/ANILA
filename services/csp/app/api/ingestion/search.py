@@ -24,6 +24,7 @@ Why a separate file from documents.py / collections.py:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from dataclasses import dataclass
@@ -319,13 +320,34 @@ async def _embed_query(
             detail=f"Embedding model '{model_name}' is registered but inactive.",
         )
 
+    # Snapshot every attribute proxy_request (and ceiling helpers) may read into
+    # a plain namespace. ORM instances are subject to expire_on_commit; a bare
+    # attribute touch before commit is NOT a load guarantee under either
+    # posture. The snapshot is the guarantee: after db.commit() releases the
+    # pooled connection, proxy_request must not re-checkout via lazy reload.
+    model_snapshot = SimpleNamespace(
+        id=model.id,
+        name=model.name,
+        model_type=model.model_type,
+        endpoint_url=model.endpoint_url,
+        api_version=model.api_version,
+        api_key_secret_ref=model.api_key_secret_ref,
+        classification_ceiling=model.classification_ceiling,
+        is_active=model.is_active,
+        display_name=getattr(model, "display_name", model.name),
+    )
+    user_id = user.id
+    department_id = user.department_id
+    identity = downstream_identity(user)
+    db.commit()
+
     body = {"model": model_name, "input": query}
     response = await proxy_request(
-        model=model,
+        model=model_snapshot,
         api_key_id=None,  # SPA caller; usage attributes to user, no key
-        user_id=user.id,
-        user_identity=downstream_identity(user),
-        department_id=user.department_id,
+        user_id=user_id,
+        user_identity=identity,
+        department_id=department_id,
         request_body=body,
         endpoint_path="/v1/embeddings",
         endpoint_display=visible_endpoint_url(
@@ -429,6 +451,20 @@ async def _expand_relations(
     if not related_doc_ids:
         return []
 
+    # Snapshot edge attrs into plain namespaces before releasing the pool —
+    # bare attribute-touch is NOT a load guarantee (same conclusion as
+    # _embed_query). After commit, use the snapshot only.
+    edge_snapshots = {
+        rel_doc: SimpleNamespace(
+            relation_type=e.relation_type,
+            target_ref=e.target_ref,
+            source=e.source,
+            confidence=e.confidence,
+        )
+        for rel_doc, e in picked.items()
+    }
+    db.commit()
+
     # One representative chunk per related document (batched, RANK-partitioned).
     rep: dict[int, Any] = {}
     for h in await store.similarity_search_per_document(
@@ -436,6 +472,8 @@ async def _expand_relations(
     ):
         rep.setdefault(h.chunk.document_id, h)
 
+    # Fresh checkout: re-apply SET LOCAL RLS scope (bound to the new txn).
+    scope_collection_rls(db, collection_id)
     meta_rows = (
         db.query(
             IngestionDocument.id, IngestionDocument.filename, IngestionDocument.title
@@ -447,7 +485,7 @@ async def _expand_relations(
 
     out: list[RelatedHit] = []
     for rel_doc in related_doc_ids:
-        e = picked[rel_doc]
+        e = edge_snapshots[rel_doc]
         fn, title = meta.get(rel_doc, ("<unknown>", None))
         h = rep.get(rel_doc)
         out.append(
