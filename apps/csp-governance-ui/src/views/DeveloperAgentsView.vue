@@ -444,37 +444,19 @@ def employee_count(department: str) -&gt; int:
         <TermSection title="router 說明" />
         <p class="detail__desc">{{ detailAgent.description_for_router || '—' }}</p>
 
-        <!-- OE-1 — 軌跡測試改為可選診斷，不再阻擋核准。 -->
-        <template v-if="authStore.isAdmin || canEditAgent(detailAgent)">
-          <TermSection title="診斷 · 連線／軌跡（可選）" />
+        <!-- OE-1 — 核准不需診斷。連線測試在註冊流程；此處僅核准／停用。 -->
+        <template v-if="authStore.isAdmin && isPendingReview(detailAgent.approval_status)">
+          <TermSection title="核准" />
           <p class="cell-meta">
-            連線測試與軌跡測試僅供開發者自行排查，不影響核准。管理員指派使用者後即可使用。
-          </p>
-          <p class="trace-status" :class="detailAgent.trace_test_passed_at ? 'is-ok' : 'is-pending'">
-            {{ detailAgent.trace_test_passed_at
-                ? `✓ 最近於 ${formatDate(detailAgent.trace_test_passed_at)} 通過軌跡診斷`
-                : '○ 尚未執行軌跡診斷（非必要）' }}
+            管理員指派使用者後即可使用。連線測試僅供開發者自行排查，不影響核准。
           </p>
           <div class="row-actions" style="margin: 8px 0;">
             <TermButton
-              size="xs" variant="default" :loading="traceTesting" :disabled="traceTesting"
-              :label="traceTesting ? '測試中' : '執行軌跡診斷'" @click="handleTraceTest"
+              size="xs" variant="primary" :disabled="!detailIsApprovable"
+              label="核准" @click="handleApprove(detailAgent)"
             />
-            <template v-if="authStore.isAdmin && isPendingReview(detailAgent.approval_status)">
-              <TermButton
-                size="xs" variant="primary" :disabled="!detailIsApprovable"
-                label="核准" @click="handleApprove(detailAgent)"
-              />
-              <TermButton size="xs" variant="ghost" label="停用" @click="openRejectModal(detailAgent)" />
-            </template>
+            <TermButton size="xs" variant="ghost" label="停用" @click="openRejectModal(detailAgent)" />
           </div>
-          <ul v-if="traceReport.length" class="trace-report">
-            <li v-for="(item, i) in traceReport" :key="i" :class="item.passed ? 'is-ok' : 'is-bad'">
-              <span class="trace-report__mark">{{ item.passed ? '✓' : '✗' }}</span>
-              <span class="trace-report__name">{{ item.name }}</span>
-              <span v-if="item.detail" class="trace-report__detail">{{ item.detail }}</span>
-            </li>
-          </ul>
         </template>
 
         <TermSection title="capabilities" />
@@ -690,7 +672,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import {
   approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents,
-  registerAgent, rejectAgent, setAgentClassification, traceTestAgent,
+  registerAgent, rejectAgent, setAgentClassification,
   triggerAgentHealthCheck, updateAgent,
 } from '../api/agents'
 import {
@@ -789,9 +771,6 @@ function levelBadgeVariant(level) {
 const runtimeTypeHint = computed(() =>
   RUNTIME_TYPE_OPTIONS.find(o => o.value === form.value.runtime_type)?.hint || '')
 
-// ── Slice 5b — 軌跡測試（Full Trace 審批關卡）────────────────────────────────
-const traceTesting = ref(false)
-const traceReport = ref([]) // 正規化後的逐項 [{ name, passed, detail }]
 // Register wizard: step 1 = details form, step 2 = provision the csk- + verify.
 const registerStep = ref(1)
 const registeredAgent = ref(null) // { id, name, bound_collection_ids }
@@ -933,58 +912,15 @@ async function openRegisterModal() {
 async function openDetailModal(agent) {
   try { const { data } = await getAgent(agent.id); detailAgent.value = data }
   catch { detailAgent.value = agent }
-  // 帶出上次的軌跡測試報告（若後端已存 trace_test_report）。
-  traceReport.value = normalizeTraceReport(detailAgent.value?.trace_test_report)
   showDetailModal.value = true
   // Lazy-load credentials only when admin opens the modal — avoids
   // hitting the endpoint for non-admin viewers.
   if (authStore.isAdmin) await refreshDetailCredentials()
 }
 
-// 是否可核准（OE-1：registered／disabled 即可，不要求軌跡測試）。
+// 是否可核准（OE-1：registered／disabled 即可）。
 const detailIsApprovable = computed(() =>
   isApprovable(detailAgent.value?.approval_status))
-
-// 後端 trace_test_report 形狀未定，防禦性正規化為 [{ name, passed, detail }]。
-// 兼容陣列或 { items|checks|results: [...] }；每項的 pass 旗標容忍多種鍵名。
-function normalizeTraceReport(report) {
-  if (!report) return []
-  const items = Array.isArray(report)
-    ? report
-    : (report.items || report.checks || report.results || [])
-  if (!Array.isArray(items)) return []
-  return items.map((it, i) => ({
-    name: it.name || it.check || it.label || `檢查項目 ${i + 1}`,
-    passed: it.passed ?? it.pass ?? (it.status === 'pass' || it.status === 'ok'),
-    detail: it.detail || it.message || it.reason || '',
-  }))
-}
-
-async function handleTraceTest() {
-  if (!detailAgent.value || traceTesting.value) return
-  traceTesting.value = true
-  try {
-    const { data } = await traceTestAgent(detailAgent.value.id)
-    const report = data?.trace_test_report || data?.report || data
-    traceReport.value = normalizeTraceReport(report)
-    const passedAt = data?.trace_test_passed_at || report?.passed_at || null
-    // 同步 detail 與列表列，讓 approve 閘門即時解鎖。
-    detailAgent.value = { ...detailAgent.value, trace_test_report: report, trace_test_passed_at: passedAt }
-    const idx = agents.value.findIndex(a => a.id === detailAgent.value.id)
-    if (idx >= 0) agents.value[idx] = { ...agents.value[idx], trace_test_passed_at: passedAt }
-    const allPass = traceReport.value.length > 0 && traceReport.value.every(r => r.passed)
-    setFeedback(allPass ? 'success' : 'error',
-      allPass ? '軌跡測試通過' : '軌跡測試完成，但有項目未通過，請檢視報告')
-  } catch (e) {
-    // 4xx（含 409）→ 繁中錯誤 toast；若後端仍附帶報告則一併呈現。
-    if (e.response?.data?.trace_test_report || e.response?.data?.report) {
-      traceReport.value = normalizeTraceReport(e.response.data.trace_test_report || e.response.data.report)
-    }
-    setFeedback('error', e.response?.data?.detail || '軌跡測試失敗，請稍後再試')
-  } finally {
-    traceTesting.value = false
-  }
-}
 
 async function refreshDetailCredentials() {
   if (!detailAgent.value) return
@@ -1007,7 +943,6 @@ function closeDetailModal() {
   showDetailModal.value = false
   detailAgent.value = null
   detailCredentials.value = []
-  traceReport.value = []
   clearIssuedSecret()
 }
 
@@ -1644,18 +1579,4 @@ function buildStatusHistory(agent) {
 .draft-check input { margin-top: 2px; flex-shrink: 0; }
 .draft-check__title { display: block; color: var(--c-fg-1); font-weight: 500; }
 .draft-check__hint { display: block; color: var(--c-fg-3); margin-top: 2px; line-height: 1.5; }
-
-/* Slice 5b — trace-test status line + per-item pass/fail report */
-.trace-status { font-size: var(--t-xs); margin: 4px 0 0; }
-.trace-status.is-ok { color: var(--c-ok); }
-.trace-status.is-pending { color: var(--c-fg-3); }
-.trace-report { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 4px; }
-.trace-report li {
-  display: grid; grid-template-columns: 16px auto 1fr; gap: 6px; align-items: baseline;
-  font-size: var(--t-2xs); padding: 4px 6px; border: var(--border-w) solid var(--c-border);
-}
-.trace-report li.is-ok { color: var(--c-fg-1); }
-.trace-report li.is-bad { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
-.trace-report__mark { font-weight: 700; }
-.trace-report__detail { color: var(--c-fg-3); }
 </style>

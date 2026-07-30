@@ -116,9 +116,6 @@ class Agent(Base):
     # SYSTEM-MAP §「稽核」:agent 上的列管標記上限(NULL = 無上限);
     # 執行時 effective_task_level <= ceiling 才允許 dispatch。OE-1 KEEP。
     classification_ceiling = Column(String(20), nullable=True)
-    # On-demand trace-test 診斷落章(不再阻擋核准;D1 退場前仍可寫入)。
-    trace_test_passed_at = Column(DateTime, nullable=True)
-    trace_test_report = Column(JSONValue, nullable=True)
     # Compatibility read model: derived from default_classification_level
     # (true iff level >= 密 / RESTRICTED — conversation mirror threshold).
     # Writers must set the level and derive this; do not flip the boolean alone.
