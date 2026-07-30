@@ -9,7 +9,7 @@ Package split (behavior-preserving refactor of the former 1384-line
 - ``registration``   register / list / get / update / delete + template download
 - ``approval``       approve / reject
 - ``runtime_config`` runtime-config get/patch + ``/me/runtime-config``
-- ``credentials``    bootstrap / issue / rotate / revoke + encryption toggle
+- ``credentials``    bootstrap / issue / rotate / revoke + classification level
 - ``functions``      agent functions (prompts) CRUD + system-prompt suggest
 - ``health``         health-check + test-connection
 - ``_common``        helpers shared by 2+ submodules
@@ -62,7 +62,7 @@ from app.api.agents._common import (
 )
 from app.api.agents.approval import approve_agent, reject_agent
 from app.api.agents.credentials import (
-    AgentEncryptionUpdate,
+    AgentClassificationUpdate,
     BootstrapExchangeRequest,
     BootstrapExchangeResponse,
     CredentialResponse,
@@ -79,7 +79,7 @@ from app.api.agents.credentials import (
     list_credentials,
     revoke_credential,
     rotate_credential,
-    set_agent_encryption,
+    set_agent_classification,
 )
 from app.api.agents.functions import (
     _FUNCTION_KINDS,
@@ -212,8 +212,8 @@ __all__ = [
     "get_agent_runtime_config",
     "patch_agent_runtime_config",
     "get_my_runtime_config",
-    # credentials + encryption
-    "AgentEncryptionUpdate",
+    # credentials + classification
+    "AgentClassificationUpdate",
     "IssueBootstrapRequest",
     "IssueBootstrapResponse",
     "BootstrapExchangeRequest",
@@ -223,7 +223,7 @@ __all__ = [
     "RotateCredentialRequest",
     "_serialize_credential",
     "_resolve_credential",
-    "set_agent_encryption",
+    "set_agent_classification",
     "issue_bootstrap",
     "bootstrap_exchange",
     "issue_static_credential",

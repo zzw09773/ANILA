@@ -1179,7 +1179,7 @@ export const AgentSelector = ({ agents, value, onChange }) => {
           {selected.id === "anila-router" ? "auto" : selected.short || selected.id}
         </span>
         {selected.requiresEncryption && (
-          <span title="此 agent 為加密模型" style={{ display: "inline-flex", color: "var(--danger)" }}>
+          <span title="此 agent 為列管模型（受控存取）" style={{ display: "inline-flex", color: "var(--danger)" }}>
             <IconLock size={11} />
           </span>
         )}
@@ -1205,7 +1205,7 @@ export const AgentSelector = ({ agents, value, onChange }) => {
                 <div style={{ fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>
                   {a.name}
                   {a.requiresEncryption && (
-                    <span title="加密模型" style={{ color: "var(--danger)", display: "inline-flex" }}>
+                    <span title="列管模型" style={{ color: "var(--danger)", display: "inline-flex" }}>
                       <IconLock size={11} />
                     </span>
                   )}
@@ -2285,7 +2285,7 @@ export const Sidebar = ({
                   : <div style={{ width: 12, height: 12, border: "1px solid var(--border-strong)", borderRadius: 2 }} />}
                 <div style={{ fontSize: 13, fontWeight: 500 }}>{a.name}</div>
                 {a.requiresEncryption && (
-                  <span title="加密模型" style={{ color: "var(--danger)", display: "inline-flex" }}>
+                  <span title="列管模型" style={{ color: "var(--danger)", display: "inline-flex" }}>
                     <IconLock size={11} />
                   </span>
                 )}

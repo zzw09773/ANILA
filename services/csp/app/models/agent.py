@@ -98,13 +98,13 @@ class Agent(Base):
     # trace_test_passed_at 非空 + approval_status=pending_security_review 才可 approve。
     trace_test_passed_at = Column(DateTime, nullable=True)
     trace_test_report = Column(JSONValue, nullable=True)
-    # When true, runtime must treat every conversation routed to this agent as
-    # classified / encrypted. Set by admin in the control panel.
+    # Compatibility read model: derived from default_classification_level
+    # (true iff level >= 密 / RESTRICTED — conversation mirror threshold).
+    # Writers must set the level and derive this; do not flip the boolean alone.
     requires_encryption = Column(Boolean, nullable=False, default=False, server_default="false")
-    # doc 08 §3 migration bridge(Slice 3a):requires_encryption=true 的
-    # agent backfill 為 機密(migration floor,最終等級以人工盤點為準,
-    # doc 08 §15)。task.level 傳遞公式的 selected_agent.default_level
-    # 來源(doc 08 §4);boolean 欄位保留為 compatibility read model。
+    # G9 / SYSTEM-MAP §8: developer-chosen default level at register/update.
+    # Source of truth for agent_policy latch (proxy._agent_policy_level).
+    # Boolean above is the derived compatibility flag (level >= 密).
     default_classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )

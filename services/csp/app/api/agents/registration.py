@@ -25,7 +25,12 @@ from app.services.auth_service import (
 
 from app.api.agents._common import (
     _client_ip,
+    _require_agent_editor,
     _require_developer_or_admin,
+    apply_default_classification_level,
+    parse_stored_classification_level,
+    refuse_classification_downgrade,
+    requires_controlled_access,
     validate_agent_manifest,
 )
 from app.schemas.contracts.agents import (
@@ -33,6 +38,7 @@ from app.schemas.contracts.agents import (
     ApprovalStatus,
     RuntimeType,
 )
+from app.schemas.contracts.classification import ClassificationLevel
 
 
 def _enforce_endpoint_url(url: str) -> None:
@@ -102,6 +108,10 @@ class AgentRegisterRequest(BaseModel):
     # doc 06 Phase 1 shadow registration:True → approval_status=draft(盤點暫存);
     # 預設 False = 現況行為(落地 pending_connection_test,第一關 = 連線測試)。
     shadow: bool = False
+    # G9: developer chooses the project's classification level at register time.
+    # Stored in ``default_classification_level``; ``requires_encryption`` is
+    # derived (level >= 密). Unknown values → 422 via ClassificationLevel.
+    default_classification_level: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
 
 
 class AgentResponse(BaseModel):
@@ -190,8 +200,11 @@ class AgentUpdateRequest(BaseModel):
     """Owner / admin-editable fields. Intentionally omits:
     - ``name`` (agent_id referenced by every registered client — immutable)
     - ``approval_status`` (dedicated /approve + /reject admin endpoints)
-    - ``requires_encryption`` (dedicated /encryption admin endpoint)
     - ``owner_user_id`` (transfer of ownership isn't exposed yet)
+
+    ``default_classification_level`` may also be set via the dedicated
+    ``POST /api/agents/{id}/classification`` endpoint; both paths derive
+    ``requires_encryption`` from the level (mirror threshold ≥ 密).
     """
     endpoint_url: str | None = None
     api_version: str | None = None
@@ -201,6 +214,7 @@ class AgentUpdateRequest(BaseModel):
     input_schema: dict | None = None
     # doc 05 §4 — replace the stored manifest snapshot (validated fail-closed).
     manifest: dict | None = None
+    default_classification_level: ClassificationLevel | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -297,6 +311,7 @@ def register_agent(
         ApprovalStatus.DRAFT.value if request.shadow else REGISTER_DEFAULT_APPROVAL
     )
 
+    level = request.default_classification_level
     agent = Agent(
         name=request.name,
         owner_user_id=current_user.id,
@@ -310,14 +325,24 @@ def register_agent(
         runtime_type=request.runtime_type.value,
         manifest_json=manifest_json,
         approval_status=approval_status,
+        default_classification_level=level.to_storage(),
+        requires_encryption=requires_controlled_access(level),
     )
     db.add(agent)
     db.commit()
     db.refresh(agent)
     log_audit_event(
         db, actor=current_user, action="register", resource_type="agent",
-        resource_id=agent.id, detail=f"註冊 agent「{agent.name}」",
-        ip_address=_client_ip(http_request), commit=True,
+        resource_id=agent.id,
+        detail=(
+            f"註冊 agent「{agent.name}」,預設分類等級={level.to_storage()}"
+        ),
+        ip_address=_client_ip(http_request),
+        metadata={
+            "default_classification_level": level.to_storage(),
+            "requires_controlled_access": agent.requires_encryption,
+        },
+        commit=True,
     )
     return _serialize_agent(agent)
 
@@ -370,8 +395,7 @@ def update_agent(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
-    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="無權限編輯此 Agent")
+    _require_agent_editor(agent, current_user)
 
     patch = payload.model_dump(exclude_unset=True)
     if not patch:
@@ -385,6 +409,42 @@ def update_agent(
         patch["manifest_json"] = (
             validate_agent_manifest(raw_manifest) if raw_manifest is not None else None
         )
+
+    # Classification level is applied via the shared helper so the legacy
+    # boolean stays derived from the same mirror threshold as conversations.
+    # Developers may not lower the effective policy level (incl. legacy floor).
+    # Audit is driven by the *effective* transition (not stored-column alone).
+    level_change: (
+        tuple[
+            ClassificationLevel,
+            ClassificationLevel,
+            ClassificationLevel,
+            ClassificationLevel,
+        ]
+        | None
+    ) = None
+    level_fields_touched = False
+    if "default_classification_level" in patch:
+        raw_level = patch.pop("default_classification_level")
+        if raw_level is None:
+            raise HTTPException(
+                status_code=400, detail="預設分類等級不可設為空值"
+            )
+        new_level = (
+            raw_level
+            if isinstance(raw_level, ClassificationLevel)
+            else parse_stored_classification_level(raw_level)
+        )
+        refuse_classification_downgrade(agent, new_level, current_user)
+        effective_transition, changed, stored_transition = (
+            apply_default_classification_level(agent, new_level)
+        )
+        if changed:
+            level_fields_touched = True
+            if effective_transition is not None:
+                from_eff, to_eff = effective_transition
+                from_stored, to_stored = stored_transition
+                level_change = (from_eff, to_eff, from_stored, to_stored)
 
     # SSRF guard — endpoint_url 變更時重新驗證；同時把 approval_status 退回
     # pending，避免 owner 把已核可 agent 的 endpoint 改到內網（H4）。
@@ -414,7 +474,12 @@ def update_agent(
                 detail=f"底層模型「{base.display_name}」已停用",
             )
 
-    changed: list[str] = []
+    changed_level_fields = (
+        ["default_classification_level", "requires_encryption"]
+        if level_fields_touched
+        else []
+    )
+    changed: list[str] = list(changed_level_fields)
     for field, value in patch.items():
         if getattr(agent, field) != value:
             setattr(agent, field, value)
@@ -437,18 +502,58 @@ def update_agent(
         agent.trace_test_report = None
         changed.append("approval_status->pending_connection_test")
 
+    # Governance convention: audit in the same transaction, check result,
+    # abort with 500 before commit if the audit row could not be written.
+    # Classification audit when the *effective* policy level changed
+    # (legacy-floor drop included); boolean-only same-effective repair
+    # commits without a set_classification row.
+    if level_change is not None:
+        from_eff, to_eff, from_stored, to_stored = level_change
+        level_audit = log_audit_event(
+            db,
+            actor=current_user,
+            action="set_classification",
+            resource_type="agent",
+            resource_id=agent.id,
+            detail=(
+                f"變更 agent「{agent.name}」有效分類等級："
+                f"{from_eff.to_storage()} → {to_eff.to_storage()}"
+            ),
+            ip_address=_client_ip(http_request),
+            metadata={
+                "from_level": from_eff.to_storage(),
+                "to_level": to_eff.to_storage(),
+                "from_stored_level": from_stored.to_storage(),
+                "to_stored_level": to_stored.to_storage(),
+                "requires_controlled_access": agent.requires_encryption,
+            },
+            commit=False,
+        )
+        if level_audit is None:
+            raise HTTPException(
+                status_code=500,
+                detail="稽核紀錄寫入失敗，分類等級變更未生效",
+            )
+    other_changed = [f for f in changed if f not in changed_level_fields]
+    if other_changed:
+        update_audit = log_audit_event(
+            db,
+            actor=current_user,
+            action="update",
+            resource_type="agent",
+            resource_id=agent.id,
+            detail=f"更新 agent「{agent.name}」：" + ", ".join(changed),
+            ip_address=_client_ip(http_request),
+            commit=False,
+        )
+        if update_audit is None:
+            raise HTTPException(
+                status_code=500,
+                detail="稽核紀錄寫入失敗，agent 更新未生效",
+            )
+
     db.commit()
     db.refresh(agent)
-    log_audit_event(
-        db,
-        actor=current_user,
-        action="update",
-        resource_type="agent",
-        resource_id=agent.id,
-        detail=f"更新 agent「{agent.name}」：" + ", ".join(changed),
-        ip_address=_client_ip(http_request),
-        commit=True,
-    )
     return _serialize_agent(agent)
 
 

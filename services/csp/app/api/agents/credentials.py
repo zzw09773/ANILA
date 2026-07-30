@@ -1,4 +1,4 @@
-"""Per-agent credential endpoints + encryption toggle.
+"""Per-agent credential endpoints + classification level setter.
 
 Split verbatim from the former single-module ``app/api/agents.py``
 (behavior-preserving refactor).
@@ -13,9 +13,11 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.agent_credential import AgentCredential
 from app.models.user import User
+from app.schemas.contracts.classification import ClassificationLevel
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import (
+    get_current_user,
     is_admin_tier,
     require_admin,
     verify_service_token,
@@ -24,39 +26,93 @@ from app.services.proxy_service import invalidate_agent_token_cache
 
 from app.api.agents._common import (
     _client_ip,
+    _require_agent_editor,
     _require_developer_or_admin,
     _resolve_agent,
+    apply_default_classification_level,
+    refuse_classification_downgrade,
 )
 
 router = APIRouter()
 
 
-class AgentEncryptionUpdate(BaseModel):
-    requires_encryption: bool
+class AgentClassificationUpdate(BaseModel):
+    """Set the agent's default classification level (four-level vocabulary).
+
+    Replaces the former boolean ``/encryption`` toggle. The legacy
+    ``requires_encryption`` column is derived from the level using the
+    conversation mirror threshold (``level >= 密``).
+    """
+
+    default_classification_level: ClassificationLevel
 
 
-@router.post("/{agent_id}/encryption")
-def set_agent_encryption(
+@router.post("/{agent_id}/classification")
+def set_agent_classification(
     agent_id: int,
-    payload: AgentEncryptionUpdate,
+    payload: AgentClassificationUpdate,
     http_request: Request,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent 不存在")
-    agent.requires_encryption = payload.requires_encryption
+    """Owner / admin: set the agent's default classification level.
+
+    Authorization matches ``PUT /api/agents/{id}`` (admin-tier or owner).
+    Developers may raise the effective policy level but not lower it;
+    administrator-tier callers may lower (legacy boolean floor clears with
+    the derived write). Conversations answered by this agent latch via the
+    existing proxy policy path.
+    """
+    agent = _resolve_agent(db, agent_id)
+    _require_agent_editor(agent, current_user)
+    new_level = payload.default_classification_level
+    refuse_classification_downgrade(agent, new_level, current_user)
+    effective_transition, changed, stored_transition = (
+        apply_default_classification_level(agent, new_level)
+    )
+    if not changed:
+        return {
+            "message": f"agent「{agent.name}」預設分類等級未變更",
+            "default_classification_level": agent.default_classification_level,
+            "requires_encryption": agent.requires_encryption,
+        }
+    # Audit whenever the *effective* policy level changed — including the
+    # legacy-floor drop when stored value is unchanged but the derived
+    # boolean clears. Describe the transition in effective terms.
+    if effective_transition is not None:
+        from_eff, to_eff = effective_transition
+        from_stored, to_stored = stored_transition
+        audit_row = log_audit_event(
+            db,
+            actor=current_user,
+            action="set_classification",
+            resource_type="agent",
+            resource_id=agent.id,
+            detail=(
+                f"變更 agent「{agent.name}」有效分類等級："
+                f"{from_eff.to_storage()} → {to_eff.to_storage()}"
+            ),
+            ip_address=_client_ip(http_request),
+            metadata={
+                "from_level": from_eff.to_storage(),
+                "to_level": to_eff.to_storage(),
+                "from_stored_level": from_stored.to_storage(),
+                "to_stored_level": to_stored.to_storage(),
+                "requires_controlled_access": agent.requires_encryption,
+            },
+            commit=False,
+        )
+        if audit_row is None:
+            raise HTTPException(
+                status_code=500,
+                detail="稽核紀錄寫入失敗，分類等級變更未生效",
+            )
     db.commit()
     db.refresh(agent)
-    log_audit_event(
-        db, actor=admin, action="set_encryption", resource_type="agent",
-        resource_id=agent.id,
-        detail=f"{'啟用' if payload.requires_encryption else '停用'} agent「{agent.name}」加密模式",
-        ip_address=_client_ip(http_request), commit=True,
-    )
+    level_label = agent.default_classification_level
     return {
-        "message": f"已更新 agent「{agent.name}」的加密設定",
+        "message": f"已更新 agent「{agent.name}」的預設分類等級為「{level_label}」",
+        "default_classification_level": agent.default_classification_level,
         "requires_encryption": agent.requires_encryption,
     }
 

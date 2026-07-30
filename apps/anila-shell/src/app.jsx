@@ -2275,7 +2275,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             <>
               {selectedConv.classified && (
                 <span
-                  title="此對話已鎖為加密模式（由後端 agent 設定強制啟用）。"
+                  title="此對話已鎖為列管（由後端依 agent 預設分類等級強制啟用）。"
                   style={{
                     display: "inline-flex", alignItems: "center", gap: 4,
                     padding: "3px 9px",
@@ -2286,7 +2286,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                     color: "var(--danger)",
                   }}
                 >
-                  <IconLock size={11} /> 加密模式
+                  <IconLock size={11} /> 列管模式
                 </span>
               )}
               <ClassificationLevelBadge conversation={selectedConv} />
@@ -2490,7 +2490,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                         </span>
                         <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
                         {activeEncryptionRequired && (
-                          <span title="此 agent 為加密模型" style={{
+                          <span title="此 agent 為列管模型（受控存取）" style={{
                             display: "inline-flex", alignItems: "center", gap: 3,
                             padding: "1px 7px",
                             background: "oklch(0.95 0.02 25 / 0.4)",
@@ -2499,7 +2499,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                             fontSize: 11, color: "var(--danger)",
                             fontFamily: "var(--font-mono)",
                           }}>
-                            <IconLock size={10} /> 加密模型
+                            <IconLock size={10} /> 列管模型
                           </span>
                         )}
                       </div>
@@ -2961,7 +2961,7 @@ function SettingsModal({
                 </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-                加密模式由 agent 設定（requires_encryption）或後端 meta 決定，使用者無法手動切換。
+                列管等級由 agent 的預設分類等級（無機密／營業秘密／密／機密）決定；對話一旦升至較高等級即單向鎖定，使用者無法手動切換或降級。
               </div>
             </div>
           )}
@@ -2979,7 +2979,7 @@ function SettingsModal({
               <div>
                 <div style={{ fontWeight: 500, marginBottom: 4 }}>列管對話</div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
-                  若指定的 agent 為列管模型（requires_encryption=true），此對話會自動標示為機敏：
+                  若指定的 agent 預設分類等級高於無機密，此對話會依該等級列管（受控存取）：
                   密／機密禁止分享與匯出，營業秘密可分享但會落稽核，並加上浮水印。此狀態無法由使用者解除。
                 </div>
               </div>

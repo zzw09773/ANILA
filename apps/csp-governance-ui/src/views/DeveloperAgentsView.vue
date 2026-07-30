@@ -138,7 +138,7 @@ def employee_count(department: str) -&gt; int:
             <th style="width: 90px">分類上限</th>
             <th style="width: 100px">健康</th>
             <th style="width: 120px">審批狀態</th>
-            <th style="width: 90px">加密</th>
+            <th style="width: 100px">分類等級</th>
             <th style="width: 13%">建立時間</th>
             <th>操作</th>
           </tr>
@@ -162,8 +162,8 @@ def employee_count(department: str) -&gt; int:
             <td><TermBadge :variant="healthVariant(agent.health_status)" dot>{{ agent.health_status }}</TermBadge></td>
             <td><TermBadge :variant="approvalVariant(agent.approval_status)" dot>{{ approvalLabel(agent.approval_status) }}</TermBadge></td>
             <td>
-              <TermBadge :variant="agent.requires_encryption ? 'danger' : ''">
-                {{ agent.requires_encryption ? '強制' : '一般' }}
+              <TermBadge :variant="levelBadgeVariant(agent.default_classification_level)">
+                {{ agent.default_classification_level || '無機密' }}
               </TermBadge>
             </td>
             <td class="cell-meta tnum">{{ formatDate(agent.created_at) }}</td>
@@ -242,19 +242,19 @@ def employee_count(department: str) -&gt; int:
         </TermField>
 
         <TermSection title="治理設定 · governance" />
-        <div class="form-row-2">
-          <TermField label="runtime 型別" :hint="runtimeTypeHint">
-            <select v-model="form.runtime_type" class="term-select">
-              <option v-for="o in RUNTIME_TYPE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-          </TermField>
-          <TermField label="分類上限" hint="此 agent 可處理的最高分類等級；留白＝無上限">
-            <select v-model="form.classification_ceiling" class="term-select">
-              <option :value="null">— 無上限 —</option>
-              <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
-            </select>
-          </TermField>
-        </div>
+        <TermField
+          label="預設分類等級"
+          hint="此 agent 回覆的對話會以所選等級列管記錄；營業秘密起的讀取與外流會落稽核，密與機密另會阻擋複製、匯出與分享。對已列管的對話，效果不可自行逆轉。"
+        >
+          <select v-model="form.default_classification_level" class="term-select">
+            <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
+          </select>
+        </TermField>
+        <TermField label="runtime 型別" :hint="runtimeTypeHint">
+          <select v-model="form.runtime_type" class="term-select">
+            <option v-for="o in RUNTIME_TYPE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
+        </TermField>
         <TermField label="版本" hint="agent 版本字串，例如 1.0.0（選填）">
           <input v-model="form.version" class="term-input" placeholder="1.0.0" />
         </TermField>
@@ -370,6 +370,14 @@ def employee_count(department: str) -&gt; int:
         <TermField label="capabilities · json" hint='e.g. {"streaming":true,"vision":false}' :error="editFormError">
           <textarea v-model="editForm.capabilitiesRaw" rows="3" class="term-textarea" style="font-family: var(--font-mono); font-size: var(--t-xs);" />
         </TermField>
+        <TermField
+          label="預設分類等級"
+          hint="此 agent 回覆的對話會以所選等級列管記錄；營業秘密起的讀取與外流會落稽核，密與機密另會阻擋複製、匯出與分享。對已列管的對話，效果不可自行逆轉。"
+        >
+          <select v-model="editForm.default_classification_level" class="term-select">
+            <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
+          </select>
+        </TermField>
       </div>
       <template #footer>
         <TermButton variant="ghost" @click="closeEditModal" label="取消" />
@@ -396,20 +404,29 @@ def employee_count(department: str) -&gt; int:
           <div><dt>擁有者</dt><dd>{{ ownerDisplay(detailAgent) }}</dd></div>
           <div><dt>基礎模型</dt><dd>{{ detailAgent.base_model_id || '—' }}</dd></div>
           <div>
-            <dt>加密</dt>
+            <dt>預設分類等級</dt>
             <dd>
-              <TermBadge :variant="detailAgent.requires_encryption ? 'danger' : ''" dot>
-                {{ detailAgent.requires_encryption ? '強制' : '一般' }}
-              </TermBadge>
-              <button
-                v-if="authStore.isAdmin"
-                class="term-action"
-                style="margin-left: 8px;"
-                :disabled="encryptionBusyId === detailAgent.id"
-                @click="handleToggleEncryption(detailAgent)"
-              >
-                {{ encryptionBusyId === detailAgent.id ? '更新中…' : (detailAgent.requires_encryption ? '停用' : '啟用') }}
-              </button>
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                <TermBadge :variant="levelBadgeVariant(detailAgent.default_classification_level)" dot>
+                  {{ detailAgent.default_classification_level || '無機密' }}
+                </TermBadge>
+                <template v-if="canEditAgent(detailAgent)">
+                  <select
+                    :key="`cls-${detailAgent.id}-${detailAgent.default_classification_level}-${classificationSelectEpoch}`"
+                    class="term-select"
+                    style="width: auto; min-width: 8rem;"
+                    :value="detailAgent.default_classification_level || '無機密'"
+                    :disabled="classificationBusyId === detailAgent.id"
+                    @change="handleSetClassification(detailAgent, $event.target.value)"
+                  >
+                    <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
+                  </select>
+                  <span v-if="classificationBusyId === detailAgent.id" class="cell-meta">更新中…</span>
+                </template>
+              </div>
+              <p class="cell-meta" style="margin: 6px 0 0;">
+                此 agent 回覆的對話會以所選等級列管記錄；營業秘密起的讀取與外流會落稽核，密與機密另會阻擋複製、匯出與分享。對已列管的對話，效果不可自行逆轉。
+              </p>
             </dd>
           </div>
         </dl>
@@ -666,7 +683,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import {
   approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents,
-  registerAgent, rejectAgent, setAgentEncryption, traceTestAgent,
+  registerAgent, rejectAgent, setAgentClassification, traceTestAgent,
   triggerAgentHealthCheck, updateAgent,
 } from '../api/agents'
 import {
@@ -706,14 +723,18 @@ const detailAgent = ref(null)
 const registering = ref(false)
 const rejectTarget = ref(null)
 const rejectReason = ref('')
-const encryptionBusyId = ref(null)
+const classificationBusyId = ref(null)
+const classificationSelectEpoch = ref(0)
 const deletingId = ref(null)
 const healthCheckingId = ref(null)
 const showEditModal = ref(false)
 const editTarget = ref(null)
 const editing = ref(false)
 const editFormError = ref('')
-const editForm = ref({ endpoint_url: '', description_for_router: '', api_version: '', base_model_id: null, capabilitiesRaw: '' })
+const editForm = ref({
+  endpoint_url: '', description_for_router: '', api_version: '',
+  base_model_id: null, capabilitiesRaw: '', default_classification_level: '無機密',
+})
 const feedback = ref({ type: 'success', message: '' })
 
 // ── Sprint 8 X / Phase A — agent service-token management ────────────────────
@@ -730,8 +751,9 @@ const filters = ref({ query: '', approval: 'all', health: 'all', sort: 'newest' 
 const form = ref({
   name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
   base_model_id: null, collection_id: null,
-  // Slice 5b — 新增治理欄位
-  runtime_type: 'openai_compatible_agent', classification_ceiling: null, version: '', draft: false,
+  // Slice 5b — 新增治理欄位；G9 — 預設分類等級（取代舊鎖開關）
+  runtime_type: 'openai_compatible_agent', version: '', draft: false,
+  default_classification_level: '無機密',
 })
 const formErrors = ref({})
 
@@ -747,8 +769,14 @@ const RUNTIME_TYPE_OPTIONS = [
   { value: 'custom_http', label: 'custom_http', hint: '自訂 HTTP 介面（需自行對齊契約）' },
 ]
 
-// 分類上限四級（SYSTEM-MAP §8）；null = 無上限。由低到高排序。
+// 分類等級四級（SYSTEM-MAP §8）；預設等級與上限共用同一字彙。由低到高排序。
 const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
+
+function levelBadgeVariant(level) {
+  if (level === '機密' || level === '密') return 'danger'
+  if (level === '營業秘密') return 'accent'
+  return ''
+}
 
 const runtimeTypeHint = computed(() =>
   RUNTIME_TYPE_OPTIONS.find(o => o.value === form.value.runtime_type)?.hint || '')
@@ -844,7 +872,8 @@ function resetForm() {
   form.value = {
     name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
     base_model_id: null, collection_id: null,
-    runtime_type: 'openai_compatible_agent', classification_ceiling: null, version: '', draft: false,
+    runtime_type: 'openai_compatible_agent', version: '', draft: false,
+    default_classification_level: '無機密',
   }
   formErrors.value = {}
   registerStep.value = 1
@@ -1085,11 +1114,13 @@ async function handleRegister() {
       endpoint_url: form.value.endpoint_url.trim(),
       description_for_router: form.value.description_for_router.trim(),
       collection_id: form.value.collection_id || null,
-      // Slice 5b — 治理欄位；空值送 null（無上限 / 未填版本），draft 對應 5a 影子註冊參數。
+      // Slice 5b — 治理欄位；空值送 null（未填版本），draft 對應 5a 影子註冊參數。
+      // G9 — 預設分類等級（四級字彙；後端據此衍生受控存取旗標）。
+      // classification_ceiling 不在註冊／更新契約內（dispatch 上限另管），故不送出。
       runtime_type: form.value.runtime_type || 'openai_compatible_agent',
-      classification_ceiling: form.value.classification_ceiling || null,
       version: form.value.version.trim() || null,
       draft: form.value.draft,
+      default_classification_level: form.value.default_classification_level || '無機密',
     })
     // Advance to step 2 (provision key) instead of closing — one onboarding
     // flow: register → issue csk- → paste into .env → verify (S-Q2/Q3).
@@ -1168,6 +1199,7 @@ function openEditModal(agent) {
     base_model_id: agent.base_model_id ?? null,
     capabilitiesRaw: agent.capabilities && Object.keys(agent.capabilities).length
       ? JSON.stringify(agent.capabilities, null, 2) : '',
+    default_classification_level: agent.default_classification_level || '無機密',
   }
   editFormError.value = ''
   showEditModal.value = true
@@ -1191,6 +1223,7 @@ async function handleUpdateAgent() {
     api_version: (editForm.value.api_version || '').trim() || null,
     base_model_id: editForm.value.base_model_id,
     capabilities,
+    default_classification_level: editForm.value.default_classification_level || '無機密',
   }
   editing.value = true
   try {
@@ -1221,20 +1254,53 @@ function syncDetailFromList(id) {
   if (fresh) detailAgent.value = { ...detailAgent.value, ...fresh }
 }
 
-async function handleToggleEncryption(agent) {
-  if (!agent || encryptionBusyId.value === agent.id) return
-  const next = !agent.requires_encryption
-  if (next && !(await confirm({ message: `為「${agent.name}」啟用強制加密？經過它的所有對話都鎖為加密模式 — 每個對話不可逆。`, confirmText: '啟用', danger: true }))) return
-  encryptionBusyId.value = agent.id
+async function handleSetClassification(agent, level) {
+  if (!agent || classificationBusyId.value === agent.id) return
+  const next = level || '無機密'
+  if (next === (agent.default_classification_level || '無機密')) return
+  // Confirm for every level above 無機密: 營業秘密 already one-way-locks
+  // conversations and forces audited reads/outbound; 密/機密 also block copy/export/share.
+  if (next !== '無機密' && !(await confirm({
+    message: (
+      `將「${agent.name}」設為「${next}」？此 agent 之後回覆的對話會以該等級列管，`
+      + `且對已列管的對話效果不可逆（無法自行降級）。`
+      + (next === '營業秘密'
+        ? '營業秘密起的讀取與外流動作都會落稽核。'
+        : '密與機密會阻擋複製、匯出與分享，讀取與外流亦會落稽核。')
+    ),
+    confirmText: '確認',
+    danger: true,
+  }))) {
+    // Remount the select so :value snaps back to the stored level.
+    classificationSelectEpoch.value += 1
+    return
+  }
+  classificationBusyId.value = agent.id
   try {
-    const { data } = await setAgentEncryption(agent.id, next)
-    const applied = Boolean(data?.requires_encryption ?? next)
+    const { data } = await setAgentClassification(agent.id, next)
+    const applied = data?.default_classification_level || next
+    const controlled = Boolean(data?.requires_encryption)
     const idx = agents.value.findIndex(a => a.id === agent.id)
-    if (idx !== -1) agents.value[idx] = { ...agents.value[idx], requires_encryption: applied }
-    if (detailAgent.value && detailAgent.value.id === agent.id) detailAgent.value = { ...detailAgent.value, requires_encryption: applied }
-    setFeedback('success', `已為「${agent.name}」${applied ? '啟用' : '停用'}加密`)
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'encryption update failed') }
-  finally { encryptionBusyId.value = null }
+    if (idx !== -1) {
+      agents.value[idx] = {
+        ...agents.value[idx],
+        default_classification_level: applied,
+        requires_encryption: controlled,
+      }
+    }
+    if (detailAgent.value && detailAgent.value.id === agent.id) {
+      detailAgent.value = {
+        ...detailAgent.value,
+        default_classification_level: applied,
+        requires_encryption: controlled,
+      }
+    }
+    setFeedback('success', `已將「${agent.name}」預設分類等級設為「${applied}」`)
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || '分類等級更新失敗')
+  } finally {
+    classificationBusyId.value = null
+  }
 }
 
 async function handleHealthCheck(agent) {
