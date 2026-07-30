@@ -107,7 +107,26 @@ def test_r1_0018_columns_and_partial_unique(migrated_pg):
     cur = conn.cursor()
     try:
         cur.execute("SELECT version_num FROM alembic_version")
-        assert cur.fetchone()[0] == "r1_0018"
+        assert cur.fetchone()[0] == "r1_0021"
+
+        # D1: span table must be gone at head.
+        cur.execute(
+            """
+            SELECT 1 FROM information_schema.tables
+             WHERE table_schema = 'public' AND table_name = 'trace_spans'
+            """
+        )
+        assert cur.fetchone() is None, "trace_spans should be dropped by r1_0021"
+
+        for col in ("trace_test_passed_at", "trace_test_report"):
+            cur.execute(
+                """
+                SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'agents' AND column_name = %s
+                """,
+                (col,),
+            )
+            assert cur.fetchone() is None, f"agents.{col} should be dropped by r1_0021"
 
         for table, col in (
             ("model_registry", "is_platform_embedding"),

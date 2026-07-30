@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Slice 2a — Task / Trace / Policy 六表 schema 基礎測試。
+"""Slice 2a — Task / Policy schema 基礎測試(D1 已卸 TraceSpan)。
 
 依 docs/anila-redesign-docs/01-domain-model.md(Task 是主脊椎、SourceSnapshot
-三規則)、03(PolicyDecision 九動作 enum、append-only)、05 §6(13 個必備
-agent span type,Slice 4 才收斂為封閉 enum)、09(span event schema)。
+三規則)、03(PolicyDecision 九動作 enum、append-only)。
 
 涵蓋:
-- create_all 下六表 CRUD smoke(最小列插入 + 預設值)
+- create_all 下 Task / TaskRun / SourceSnapshot / Citation / PolicyDecision CRUD
 - FK 完整性:task → task_runs / source_snapshots、citation → snapshot
   (ORM cascade;SQLite 不開 FK pragma,以 relationship cascade 驗證)
-- 唯一性:tasks.trace_id、trace_spans (trace_id, span_id)
+- 唯一性:tasks.trace_id
 - 契約 enum:Task 狀態機 round-trip、PolicyDecision 九動作、決策三值
 - classification_level 新列預設 = 無機密
 - migration chain:恰好一個 alembic head,且屬 r1_ 命名空間(純文字解析,免 DB)
@@ -26,7 +25,6 @@ from sqlalchemy.exc import IntegrityError
 from app.models.source_snapshot import Citation, SourceSnapshot
 from app.models.policy_decision import PolicyDecision
 from app.models.task import Task, TaskRun
-from app.models.trace_span import TraceSpan
 from app.schemas.contracts import ClassificationLevel
 from app.schemas.contracts.policy import (
     PolicyAction,
@@ -49,13 +47,6 @@ from app.schemas.contracts.tasks import (
     TaskRunStatus,
     TaskStatus,
     TaskType,
-)
-from app.schemas.contracts.traces import (
-    REQUIRED_AGENT_SPAN_TYPES,
-    SpanProducer,
-    SpanStatus,
-    TraceSpanIn,
-    TraceSpanOut,
 )
 from tests.conftest import make_user
 
@@ -195,40 +186,6 @@ class TestPolicyDecisionCrud:
         assert row.created_at is not None
 
 
-class TestTraceSpanCrud:
-    def test_trace_span_row(self, db):
-        span = TraceSpan(
-            trace_id="tr-1",
-            span_id="sp-1",
-            span_type="agent.run.started",
-            name="agent run",
-            producer=SpanProducer.AGENT.value,
-        )
-        db.add(span)
-        db.commit()
-        db.refresh(span)
-        assert span.status == SpanStatus.OK.value
-        assert span.classification_level == UNCLASSIFIED
-        assert span.parent_span_id is None
-
-    def test_trace_span_unique_per_trace(self, db):
-        db.add(TraceSpan(trace_id="tr-1", span_id="sp-1",
-                         span_type="agent.run.started", name="a",
-                         producer=SpanProducer.ROUTER.value))
-        db.commit()
-        db.add(TraceSpan(trace_id="tr-1", span_id="sp-1",
-                         span_type="agent.run.finished", name="b",
-                         producer=SpanProducer.ROUTER.value))
-        with pytest.raises(IntegrityError):
-            db.commit()
-        db.rollback()
-        # 不同 trace 同 span_id 合法
-        db.add(TraceSpan(trace_id="tr-2", span_id="sp-1",
-                         span_type="agent.run.started", name="c",
-                         producer=SpanProducer.PROXY.value))
-        db.commit()
-
-
 # ── 契約 enum ─────────────────────────────────────────────────────────────────
 
 
@@ -306,39 +263,6 @@ class TestContracts:
         assert out.action is PolicyAction.AGENT_INVOKE
         assert out.decision is PolicyDecisionVerdict.DENY
         assert out.task_id is None
-
-    def test_required_agent_span_types_thirteen(self):
-        assert len(REQUIRED_AGENT_SPAN_TYPES) == 13
-        assert REQUIRED_AGENT_SPAN_TYPES[0] == "agent.run.started"
-        assert REQUIRED_AGENT_SPAN_TYPES[-1] == "agent.run.finished"
-        assert "agent.error" in REQUIRED_AGENT_SPAN_TYPES
-
-    def test_trace_span_in_accepts_doc09_shape(self):
-        span = TraceSpanIn(
-            span_id="sp-9",
-            parent_span_id=None,
-            trace_id="tr-9",
-            span_type="agent.tool_call.started",
-            name="tool call",
-            status=SpanStatus.OK,
-            attributes={"tool_name": "search"},
-        )
-        assert span.span_type == "agent.tool_call.started"
-        # span_type 是開放字串(封閉 enum 保留給 Slice 4)
-        open_span = TraceSpanIn(span_id="sp-10", span_type="custom.span",
-                                name="x")
-        assert open_span.status is SpanStatus.OK
-
-    def test_trace_span_out_round_trip(self, db):
-        span = TraceSpan(trace_id="tr-3", span_id="sp-3",
-                         span_type="agent.retrieval.finished", name="ret",
-                         producer=SpanProducer.MODEL.value)
-        db.add(span)
-        db.commit()
-        db.refresh(span)
-        out = TraceSpanOut.model_validate(span)
-        assert out.producer is SpanProducer.MODEL
-        assert out.status is SpanStatus.OK
 
     def test_source_snapshot_contracts(self, db):
         payload = SourceSnapshotIn(

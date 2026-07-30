@@ -60,7 +60,6 @@ from app.models.source_snapshot import Citation, SourceSnapshot
 from app.models.task import Task, TaskRun
 from app.models.token_revocation import TokenRevocation
 from app.models.token_usage import TokenUsage
-from app.models.trace_span import TraceSpan
 from app.models.endpoint_author_grant import EndpointAuthorGrant
 from app.models.unit_admin_assignment import UnitAdminAssignment
 from app.models.user import User, UserModelPermission
@@ -115,7 +114,6 @@ __all__ = [
     "TaskRun",
     "TokenRevocation",
     "TokenUsage",
-    "TraceSpan",
     "UnitAdminAssignment",
     "User",
     "UserAgentPermission",

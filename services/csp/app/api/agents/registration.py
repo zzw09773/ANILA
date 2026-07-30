@@ -153,7 +153,6 @@ class AgentResponse(BaseModel):
     classification_ceiling: str | None = None
     default_classification_level: str | None = None
     manifest_json: dict | None = None
-    trace_test_passed_at: datetime | None = None
     # Sprint 13 PR A3 — admin-editable runtime knobs (tool permissions,
     # workspace caps, guardrails). NULL means "agent uses code defaults".
     runtime_config: dict | None = None
@@ -210,7 +209,6 @@ def _serialize_agent(agent: Agent) -> dict:
             agent, "default_classification_level", None
         ),
         "manifest_json": getattr(agent, "manifest_json", None),
-        "trace_test_passed_at": getattr(agent, "trace_test_passed_at", None),
         "runtime_config": getattr(agent, "runtime_config", None),
         "created_at": agent.created_at,
     }

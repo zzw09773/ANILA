@@ -12,10 +12,6 @@ export const registerAgent = (data) =>
 export const approveAgent = (id) =>
   client.post(`/api/agents/${id}/approve`)
 
-// On-demand trace diagnostic (OE-1: no longer an approval gate).
-export const traceTestAgent = (id) =>
-  client.post(`/api/agents/${id}/trace-test`)
-
 export const rejectAgent = (id, reason = '') =>
   client.post(`/api/agents/${id}/reject`, { reason })
 

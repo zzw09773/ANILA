@@ -20,7 +20,6 @@ DB 層一律存開放 String / JSON(SQLite create_all 相容,不用 PG 原生 en
 from __future__ import annotations
 
 import enum
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -73,14 +72,6 @@ OE1_APPROVAL_DOWNGRADE_MAP: dict[str, str] = {
 
 # 註冊落地的預設審批狀態。
 REGISTER_DEFAULT_APPROVAL = ApprovalStatus.REGISTERED.value
-
-# 可執行 on-demand trace-test 診斷的狀態(非 disabled)。通過後**不**推進核准狀態。
-TRACE_TEST_ELIGIBLE_STATES: frozenset[str] = frozenset(
-    {
-        ApprovalStatus.REGISTERED.value,
-        ApprovalStatus.APPROVED.value,
-    }
-)
 
 
 class AuditLevel(str, enum.Enum):
@@ -146,32 +137,3 @@ class AgentManifest(BaseModel):
     capabilities: ManifestCapabilities = Field(default_factory=ManifestCapabilities)
     trace: ManifestTrace = Field(default_factory=ManifestTrace)
     classification: ManifestClassification
-
-
-class TraceTestItemStatus(str, enum.Enum):
-    """trace-test 單項檢查結果(on-demand 診斷)。"""
-
-    PASSED = "passed"
-    FAILED = "failed"
-    SKIPPED = "skipped"
-
-
-class TraceTestItem(BaseModel):
-    """trace-test 報告的單項(name / status / required / detail)。"""
-
-    name: str
-    status: TraceTestItemStatus
-    required: bool
-    detail: str = ""
-
-
-class TraceTestReport(BaseModel):
-    """``POST /api/agents/{id}/trace-test`` 回應 = 逐項報告 + 綜合判定。
-
-    診斷工具:``passed`` 不影響 ``approval_status``(OE-1 已拿掉核准硬閘)。
-    """
-
-    passed: bool
-    trace_id: str
-    items: list[TraceTestItem]
-    checked_at: datetime
