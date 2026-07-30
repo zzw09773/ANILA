@@ -72,6 +72,10 @@ lerna-debug.log*
 .env
 .env.local
 .env.*.local
+# 改 .env 前手動備份的檔案(.env.bak-153645 之類)也是實檔,一併擋掉
+.env.bak*
+.env.*.bak
+.env.save*
 *.pem
 *.key
 # 例外:卡片登入的 CSPKI CA bundle 是「公開憑證」(root + 中繼,非私鑰),
