@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
-from app.models.conversation import Conversation, ConversationShare
+from app.models.conversation import Conversation, ConversationShare, ConversationUserMeta
 from app.models.department import Department
 from app.models.message import Message
 from app.models.user import User
@@ -415,10 +415,179 @@ def list_conversations(
     return q.order_by(Conversation.updated_at.desc()).all()
 
 
+# System-derived tag — never persisted in conversation_user_meta.user_tags.
+CLASSIFIED_TAG = "classified"
+_MAX_USER_TAGS = 32
+_MAX_TAG_LEN = 40
+_MAX_FOLDER_LEN = 64
+
+
+def _sanitize_user_tags(raw: list | None) -> list[str]:
+    """Drop the derived classified tag and empty/oversized entries."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="tags 必須是字串陣列")
+    if len(raw) > _MAX_USER_TAGS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"標籤最多 {_MAX_USER_TAGS} 個",
+        )
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail="tags 必須是字串陣列")
+        tag = item.strip()
+        if not tag or tag == CLASSIFIED_TAG:
+            continue
+        if len(tag) > _MAX_TAG_LEN:
+            raise HTTPException(
+                status_code=400,
+                detail=f"單一標籤最長 {_MAX_TAG_LEN} 字元",
+            )
+        if tag in seen:
+            continue
+        seen.add(tag)
+        out.append(tag)
+    return out
+
+
+def _sanitize_folder(folder: str | None) -> str:
+    if folder is None:
+        return "all"
+    if not isinstance(folder, str):
+        raise HTTPException(status_code=400, detail="folder 必須是字串")
+    cleaned = folder.strip() or "all"
+    if len(cleaned) > _MAX_FOLDER_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"folder 最長 {_MAX_FOLDER_LEN} 字元",
+        )
+    # Built-in filter ids are not storage folders.
+    if cleaned in ("starred",):
+        raise HTTPException(status_code=400, detail="不可將對話歸入內建篩選匣")
+    return cleaned
+
+
+def get_user_meta(
+    db: Session, user_id: int, conversation_id: int,
+) -> ConversationUserMeta | None:
+    return (
+        db.query(ConversationUserMeta)
+        .filter(
+            ConversationUserMeta.user_id == user_id,
+            ConversationUserMeta.conversation_id == conversation_id,
+        )
+        .first()
+    )
+
+
+def load_user_metas(
+    db: Session, user_id: int, conversation_ids: list[int],
+) -> dict[int, ConversationUserMeta]:
+    """Batch-load meta for the list endpoint — one query, not N."""
+    if not conversation_ids:
+        return {}
+    rows = (
+        db.query(ConversationUserMeta)
+        .filter(
+            ConversationUserMeta.user_id == user_id,
+            ConversationUserMeta.conversation_id.in_(conversation_ids),
+        )
+        .all()
+    )
+    return {r.conversation_id: r for r in rows}
+
+
+def meta_view(
+    conv: Conversation, meta: ConversationUserMeta | None,
+) -> dict:
+    """Public view fields for the current user (classified tag derived)."""
+    user_tags = [
+        t for t in list((meta.user_tags if meta else None) or [])
+        if isinstance(t, str) and t and t != CLASSIFIED_TAG
+    ]
+    tags = list(user_tags)
+    if conv.classified and CLASSIFIED_TAG not in tags:
+        tags.append(CLASSIFIED_TAG)
+    return {
+        "starred": bool(meta.starred) if meta else False,
+        "folder": (meta.folder if meta and meta.folder else "all"),
+        "tags": tags,
+    }
+
+
+def upsert_user_meta(
+    db: Session,
+    user: User,
+    conv: Conversation,
+    *,
+    starred: bool | None = None,
+    folder: str | None = None,
+    tags: list | None = None,
+) -> ConversationUserMeta:
+    """Create or patch the caller's meta row. Does not touch title."""
+    row = get_user_meta(db, user.id, conv.id)
+    if row is None:
+        row = ConversationUserMeta(
+            user_id=user.id,
+            conversation_id=conv.id,
+            starred=False,
+            folder="all",
+            user_tags=[],
+        )
+        db.add(row)
+    if starred is not None:
+        row.starred = bool(starred)
+    if folder is not None:
+        row.folder = _sanitize_folder(folder)
+    if tags is not None:
+        row.user_tags = _sanitize_user_tags(tags)
+    row.updated_at = datetime.now(timezone.utc)
+    return row
+
+
 def update_title(db: Session, conv_id: int, title: str, user: User) -> Conversation:
     conv = get_conversation(db, conv_id, user)
     conv.title = title
     conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(conv)
+    return conv
+
+
+def update_conversation(
+    db: Session,
+    conv_id: int,
+    user: User,
+    *,
+    title: str | None = None,
+    starred: bool | None = None,
+    folder: str | None = None,
+    tags: list | None = None,
+) -> Conversation:
+    """Patch title (owner/admin) and/or the caller's personal meta.
+
+    Meta updates only need read access so a named-share recipient can
+    star / file / tag their own view without write rights on the thread.
+    """
+    meta_touch = starred is not None or folder is not None or tags is not None
+    if title is None and not meta_touch:
+        raise HTTPException(status_code=400, detail="沒有可更新的欄位")
+    if title is not None:
+        conv = get_conversation(db, conv_id, user, for_write=True)
+        cleaned = title.strip()
+        if not cleaned:
+            raise HTTPException(status_code=400, detail="標題不可為空")
+        conv.title = cleaned
+        conv.updated_at = datetime.now(timezone.utc)
+    else:
+        conv = get_conversation(db, conv_id, user, for_write=False)
+    if meta_touch:
+        upsert_user_meta(
+            db, user, conv, starred=starred, folder=folder, tags=tags,
+        )
     db.commit()
     db.refresh(conv)
     return conv
@@ -449,6 +618,11 @@ def delete_conversation(db: Session, conv_id: int, user: User) -> None:
     (
         db.query(Attachment)
         .filter(Attachment.conversation_id == conv.id)
+        .delete(synchronize_session=False)
+    )
+    (
+        db.query(ConversationUserMeta)
+        .filter(ConversationUserMeta.conversation_id == conv.id)
         .delete(synchronize_session=False)
     )
     db.delete(conv)

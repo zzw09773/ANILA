@@ -27,6 +27,7 @@ export default defineConfig({
     // jsdom 下沒有意義)。vitest 的預設樣式會撿到它們然後回報
     // 「No test suite found」——於是 `npm test` 永遠掛著一個紅的,
     // 而一個永遠紅的測試會訓練所有人忽略整組測試。
+    // (兩個獨立的工作包在同一晚各自撞到並做了同樣的修正。)
     exclude: ["**/node_modules/**", "**/dist/**", "**/*.node.test.mjs"],
   },
 });

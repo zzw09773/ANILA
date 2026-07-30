@@ -12,7 +12,7 @@ from app.api.auth import get_current_user
 from app.database import get_db
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
-from app.models.conversation import Conversation, ConversationShare
+from app.models.conversation import Conversation, ConversationShare, ConversationUserMeta
 from app.models.message import Message
 from app.models.user import User
 from app.services import conversation_service as svc
@@ -40,7 +40,18 @@ class ConversationCreate(BaseModel):
 
 
 class ConversationUpdate(BaseModel):
-    title: str = Field(..., max_length=255)
+    """Partial update: title (owner) and/or the caller's personal meta.
+
+    ``tags`` are user-authored only — the derived ``classified`` tag is
+    stripped server-side and reattached from ``conversation.classified``.
+    """
+
+    title: Optional[str] = Field(None, max_length=255)
+    starred: Optional[bool] = None
+    folder: Optional[str] = Field(None, max_length=64)
+    tags: Optional[list[Annotated[str, Field(max_length=40)]]] = Field(
+        None, max_length=32,
+    )
 
 
 class AttachmentOut(BaseModel):
@@ -131,6 +142,11 @@ class ConversationOut(ApiResponseModel):
     # preserves old rank-2 controlled-set semantics). Defaults to
     # 無機密 so rows pre-dating the four-level column render unclassified.
     classification_level: str = "無機密"
+    # Per-caller view (conversation_user_meta). Defaults keep list/get
+    # working when the caller has never organised this thread.
+    starred: bool = False
+    folder: str = "all"
+    tags: list[str] = []
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}
@@ -252,18 +268,36 @@ def _enrich_message_list(
     ]
 
 
+def _enrich_out(
+    conv: Conversation,
+    meta: ConversationUserMeta | None = None,
+) -> dict:
+    data = ConversationOut.model_validate(conv).model_dump()
+    data.update(svc.meta_view(conv, meta))
+    return data
+
+
+def _conversation_out(
+    db: Session, user: User, conv: Conversation,
+) -> ConversationOut:
+    meta = svc.get_user_meta(db, user.id, conv.id)
+    return ConversationOut(**_enrich_out(conv, meta))
+
+
 def _conversation_detail(
     db: Session,
     conv: Conversation,
     *,
     view: str,
+    user: User,
 ) -> ConversationDetail:
     edges = mtree.load_edges(db, conv.id)
     if view == "all":
         messages = svc._all_messages_ordered(db, conv.id)
     else:
         messages = svc.load_active_path(db, conv)
-    data = ConversationOut.model_validate(conv).model_dump()
+    meta = svc.get_user_meta(db, user.id, conv.id)
+    data = _enrich_out(conv, meta)
     data["active_leaf_message_id"] = conv.active_leaf_message_id
     data["messages"] = _enrich_message_list(messages, edges)
     return ConversationDetail(**data)
@@ -315,12 +349,18 @@ def list_conversations(
             status_code=400,
             detail="origin and exclude_origin are mutually exclusive",
         )
-    return svc.list_conversations(
+    rows = svc.list_conversations(
         db, current_user,
         origin=origin,
         exclude_origin=exclude_origin,
         collection_id=collection_id,
     )
+    # One batch query for the caller's meta — keeps the sidebar O(1) extra.
+    metas = svc.load_user_metas(db, current_user.id, [c.id for c in rows])
+    return [
+        ConversationOut(**_enrich_out(c, metas.get(c.id)))
+        for c in rows
+    ]
 
 
 @router.post("", response_model=ConversationOut, status_code=201)
@@ -355,7 +395,7 @@ def create_conversation(
     if body.collection_id is not None:
         from app.api.ingestion.collections import _require_collection_access
         _require_collection_access(db, current_user, body.collection_id)
-    return svc.create_conversation(
+    conv = svc.create_conversation(
         db,
         current_user.id,
         title=body.title,
@@ -363,6 +403,7 @@ def create_conversation(
         origin=origin,
         collection_id=body.collection_id,
     )
+    return _conversation_out(db, current_user, conv)
 
 
 class AdoptCompareRequest(BaseModel):
@@ -426,7 +467,7 @@ def adopt_compare_answer(
     # Re-load so classification latch + active_leaf are visible in the
     # response the client treats as source of truth.
     conv = svc.get_conversation(db, conv.id, current_user)
-    return _conversation_detail(db, conv, view="active")
+    return _conversation_detail(db, conv, view="active", user=current_user)
 
 
 class ConversationSearchHit(ConversationOut):
@@ -476,6 +517,7 @@ def search_conversations(
     )
     hits: list[dict] = []
     audits_pending = False
+    metas = svc.load_user_metas(db, current_user.id, [c.id for c in convs])
     for c in convs:
         snippet = None
         # OE-4: snippet redaction follows outbound block line (level >=
@@ -509,7 +551,8 @@ def search_conversations(
                 ),
             ))
             audits_pending = True
-        data = ConversationOut.model_validate(c).model_dump()
+        meta = metas.get(c.id)
+        data = _enrich_out(c, meta)
         data["snippet"] = snippet
         hits.append(data)
     if audits_pending:
@@ -543,7 +586,9 @@ def get_conversation(
         and conv.user_id != current_user.id
     ):
         effective_view = "active"
-    return _conversation_detail(db, conv, view=effective_view)
+    return _conversation_detail(
+        db, conv, view=effective_view, user=current_user,
+    )
 
 
 @router.put("/{conv_id}", response_model=ConversationOut)
@@ -553,7 +598,16 @@ def update_conversation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.update_title(db, conv_id, body.title, current_user)
+    conv = svc.update_conversation(
+        db,
+        conv_id,
+        current_user,
+        title=body.title,
+        starred=body.starred,
+        folder=body.folder,
+        tags=body.tags,
+    )
+    return _conversation_out(db, current_user, conv)
 
 
 @router.delete("/{conv_id}", status_code=204)
@@ -709,7 +763,8 @@ def classify_conversation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.classify_conversation(db, conv_id, current_user)
+    conv = svc.classify_conversation(db, conv_id, current_user)
+    return _conversation_out(db, current_user, conv)
 
 
 # ── Named shares (P4.3) ───────────────────────────────────────────────────────
