@@ -21,8 +21,10 @@ export const traceTestAgent = (id) =>
 export const rejectAgent = (id, reason = '') =>
   client.post(`/api/agents/${id}/reject`, { reason })
 
-export const setAgentEncryption = (id, requires_encryption) =>
-  client.post(`/api/agents/${id}/encryption`, { requires_encryption })
+// G9: set the agent's default classification level (four-level vocabulary).
+// Legacy requires_encryption is derived server-side (level ≥ 密).
+export const setAgentClassification = (id, default_classification_level) =>
+  client.post(`/api/agents/${id}/classification`, { default_classification_level })
 
 export const downloadTemplate = () =>
   client.get('/api/agents/template/download', { responseType: 'blob' })

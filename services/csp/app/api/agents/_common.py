@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.contracts.agents import AgentManifest
-from app.services.auth_service import get_current_user
+from app.schemas.contracts.classification import ClassificationLevel
+from app.services.auth_service import get_current_user, is_admin_tier
 
 
 def validate_agent_manifest(payload: dict) -> dict:
@@ -61,3 +62,110 @@ def _resolve_agent(db: Session, agent_id: int) -> Agent:
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
     return agent
+
+
+def _require_agent_editor(agent: Agent, current_user: User) -> None:
+    """Same gate as ``PUT /api/agents/{id}``: admin-tier or owner."""
+    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="無權限編輯此 Agent")
+
+
+def parse_stored_classification_level(raw: str | None) -> ClassificationLevel:
+    """Parse a stored level; illegal DB values refuse with 422 (not 500)."""
+    try:
+        return ClassificationLevel.from_storage(raw or "無機密")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "預設分類等級無效，請改設為合法四級之一："
+                "無機密、營業秘密、密、機密"
+            ),
+        ) from exc
+
+
+def requires_controlled_access(level: ClassificationLevel) -> bool:
+    """Derive the legacy ``requires_encryption`` boolean from a level.
+
+    Uses the conversation mirror threshold (``level >= 密`` / RESTRICTED;
+    SYSTEM-MAP §8 / ``_mirror_legacy_boolean``) so boolean readers stay
+    aligned with a single source of truth — the default classification level.
+    """
+    return level >= ClassificationLevel.RESTRICTED
+
+
+def effective_agent_policy_level(agent: Agent) -> ClassificationLevel:
+    """Effective policy level — same rule as ``proxy._agent_policy_level``.
+
+    Stored ``default_classification_level``, floored at RESTRICTED(密) when
+    the legacy ``requires_encryption`` flag is set. Writers that compare
+    "current vs requested" must use this, not the raw stored column alone.
+    """
+    level = parse_stored_classification_level(
+        getattr(agent, "default_classification_level", None)
+    )
+    if bool(getattr(agent, "requires_encryption", False)):
+        level = ClassificationLevel.max_of(
+            [level, ClassificationLevel.RESTRICTED]
+        )
+    return level
+
+
+def refuse_classification_downgrade(
+    agent: Agent, new_level: ClassificationLevel, current_user: User
+) -> None:
+    """Block non-admin writes that would lower the effective policy level.
+
+    Developers may raise (or re-save at the same effective level); only
+    administrator-tier callers may lower. Matches the one-way classification
+    convention elsewhere — sanctioned lowering is supervisor-approved.
+    """
+    current = effective_agent_policy_level(agent)
+    if new_level < current and not is_admin_tier(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"開發者不得降低 agent 的有效分類等級"
+                f"（目前有效等級為「{current.to_storage()}」）；"
+                f"降級需管理員處理"
+            ),
+        )
+
+
+def apply_default_classification_level(
+    agent: Agent, level: ClassificationLevel
+) -> tuple[
+    tuple[ClassificationLevel, ClassificationLevel] | None,
+    bool,
+    tuple[ClassificationLevel, ClassificationLevel],
+]:
+    """Write ``default_classification_level`` and derive ``requires_encryption``.
+
+    Returns ``(effective_transition, changed, stored_transition)``:
+    - ``effective_transition`` is ``(from_effective, to_effective)`` when the
+      effective policy level changed (caller must audit); ``None`` when
+      effective is unchanged — including a boolean-only repair that keeps
+      the same floor, or a pure no-op.
+    - ``changed`` is True when either the stored level or the derived
+      boolean was written — callers must commit in that case even if audit
+      is skipped.
+    - ``stored_transition`` is always ``(from_stored, to_stored)`` for the
+      requested write (useful as audit metadata alongside the effective
+      transition).
+    """
+    previous_stored = parse_stored_classification_level(
+        getattr(agent, "default_classification_level", None)
+    )
+    previous_effective = effective_agent_policy_level(agent)
+    stored_transition = (previous_stored, level)
+    new_bool = requires_controlled_access(level)
+    level_changed = previous_stored != level
+    bool_changed = bool(getattr(agent, "requires_encryption", False)) != new_bool
+    if not level_changed and not bool_changed:
+        return None, False, stored_transition
+    agent.default_classification_level = level.to_storage()
+    agent.requires_encryption = new_bool
+    new_effective = effective_agent_policy_level(agent)
+    if previous_effective != new_effective:
+        return (previous_effective, new_effective), True, stored_transition
+    return None, True, stored_transition
