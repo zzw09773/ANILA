@@ -45,6 +45,7 @@ from app.services.agent_collection_bindings import (
     resolve_requested_collection_ids,
     set_bound_collection_ids,
 )
+from app.schemas.base import ApiResponseModel
 
 
 def _enforce_endpoint_url(url: str) -> None:
@@ -127,7 +128,7 @@ class AgentRegisterRequest(BaseModel):
     default_classification_level: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
 
 
-class AgentResponse(BaseModel):
+class AgentResponse(ApiResponseModel):
     id: int
     name: str
     owner_user_id: int

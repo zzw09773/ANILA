@@ -129,8 +129,8 @@ class Agent(Base):
     approved_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    approved_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Sprint 8 X / Phase A — bootstrap-then-provision flow.
     # Admin issues a single-use ``bsk-`` token via
@@ -140,8 +140,8 @@ class Agent(Base):
     # ``bootstrap_token_consumed_at`` is what stops a leaked bsk- token
     # from being replayed.
     bootstrap_token_hash = Column(String(64), nullable=True)
-    bootstrap_token_expires_at = Column(DateTime, nullable=True)
-    bootstrap_token_consumed_at = Column(DateTime, nullable=True)
+    bootstrap_token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    bootstrap_token_consumed_at = Column(DateTime(timezone=True), nullable=True)
     bootstrap_token_issued_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

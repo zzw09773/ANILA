@@ -34,18 +34,22 @@ class DevDbCredential(Base):
     )
     # Globally unique because Postgres role names live in a flat namespace.
     pg_role_name = Column(String(100), nullable=False, unique=True)
-    issued_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    issued_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    expires_at = Column(DateTime, nullable=False)
-    revoked_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
     # Stamped the moment the 7-day-before-expiry reminder is dispatched, so a
     # cron rerun doesn't double-send.
-    reminder_sent_at = Column(DateTime, nullable=True)
+    reminder_sent_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", foreign_keys=[user_id])
     agent = relationship("Agent", foreign_keys=[agent_id])
 
     @property
     def is_active(self) -> bool:
-        return self.revoked_at is None and self.expires_at > datetime.now(timezone.utc)
+        from app.time_utils import as_utc, utcnow
+
+        if self.revoked_at is not None:
+            return False
+        expires = as_utc(self.expires_at)
+        return expires is not None and expires > utcnow()

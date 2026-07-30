@@ -41,6 +41,7 @@ from app.services.service_token_envelope import (
     encode_service_token_envelope,
     generate_service_token,
 )
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(prefix="/api/service-clients", tags=["Service Clients"])
 
@@ -51,7 +52,7 @@ router = APIRouter(prefix="/api/service-clients", tags=["Service Clients"])
 _CLIENT_TYPES = {"router", "worker", "admin_tool"}
 
 
-class ServiceClientResponse(BaseModel):
+class ServiceClientResponse(ApiResponseModel):
     id: int
     client_name: str
     client_type: str

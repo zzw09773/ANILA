@@ -63,24 +63,22 @@ class ServiceClient(Base):
 
     service_token_previous_envelope = Column(Text, nullable=True)
     service_token_previous_lookup_hash = Column(String(64), nullable=True)
-    service_token_previous_expires_at = Column(DateTime, nullable=True)
+    service_token_previous_expires_at = Column(DateTime(timezone=True), nullable=True)
 
-    service_token_issued_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    service_token_issued_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    service_token_rotated_at = Column(DateTime, nullable=True)
+    service_token_rotated_at = Column(DateTime(timezone=True), nullable=True)
 
     client_cert_fingerprint = Column(String(128), nullable=True)
 
     is_legacy = Column(Boolean, nullable=False, default=False, server_default="false")
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
-    revoked_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
     revoked_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
-    created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
     revoker = relationship("User", foreign_keys=[revoked_by])

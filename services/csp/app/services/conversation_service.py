@@ -862,12 +862,14 @@ def revoke_share(db: Session, conv_id: int, share_id: int, user: User) -> None:
 def _as_utc(dt: datetime) -> datetime:
     """Normalize stored expiry to aware UTC for comparison.
 
-    ``conversation_shares.expires_at`` is TIMESTAMP WITHOUT TIME ZONE (same
-    as ``api_keys.expires_at``). Clients send aware ISO; PG returns naive.
-    Comparing naive to ``datetime.now(timezone.utc)`` raises TypeError → 500
-    on the default 24h TTL path. Mirror ``api_key_service._as_utc``.
+    Thin wrapper over ``app.time_utils.as_utc`` — same naive-UTC convention
+    as ``api_key_service._as_utc``. Safe after the column is ``timestamptz``.
     """
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    from app.time_utils import as_utc
+
+    out = as_utc(dt)
+    assert out is not None
+    return out
 
 
 def _share_expired(share: ConversationShare, *, now: datetime | None = None) -> bool:

@@ -18,6 +18,7 @@ from app.models.user import User
 from app.services import conversation_service as svc
 from app.services import message_tree as mtree
 from app.services.auth_service import is_admin_tier
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -50,7 +51,7 @@ class AttachmentOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class MessageOut(BaseModel):
+class MessageOut(ApiResponseModel):
     id: int
     role: str
     content: str
@@ -107,7 +108,7 @@ class MessageUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 
-class ConversationOut(BaseModel):
+class ConversationOut(ApiResponseModel):
     id: int
     title: str
     agent_id: Optional[int]
@@ -186,7 +187,7 @@ class ShareCreate(BaseModel):
     expires_at: Optional[datetime] = None
 
 
-class ShareOut(BaseModel):
+class ShareOut(ApiResponseModel):
     id: int
     target_user_id: Optional[int] = None
     target_username: Optional[str] = None

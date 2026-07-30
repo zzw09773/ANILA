@@ -19,6 +19,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.contracts.classification import ClassificationLevel
+from app.schemas.base import ApiResponseModel
 
 
 class ArtifactType(str, enum.Enum):
@@ -173,7 +174,7 @@ class ExportResult(BaseModel):
     decision: str
 
 
-class ArtifactJobOut(BaseModel):
+class ArtifactJobOut(ApiResponseModel):
     job_id: str
     owner_user_id: int | None = None
     requester_employee_id: str | None = None
@@ -197,7 +198,7 @@ class ArtifactJobOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ArtifactVersionOut(BaseModel):
+class ArtifactVersionOut(ApiResponseModel):
     id: int
     artifact_id: int
     version: int
@@ -214,7 +215,7 @@ class ArtifactVersionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ExportRecordOut(BaseModel):
+class ExportRecordOut(ApiResponseModel):
     id: int
     artifact_id: int
     artifact_version_id: int | None = None
@@ -232,7 +233,7 @@ class ExportRecordOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ArtifactOut(BaseModel):
+class ArtifactOut(ApiResponseModel):
     id: int
     artifact_type: ArtifactType
     title: str

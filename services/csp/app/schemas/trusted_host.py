@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
+from app.schemas.base import ApiResponseModel
 
 
 class TrustedHostCreate(BaseModel):
@@ -35,7 +36,7 @@ class TrustedHostCreate(BaseModel):
         return value
 
 
-class TrustedHostResponse(BaseModel):
+class TrustedHostResponse(ApiResponseModel):
     id: int
     host: str
     note: str | None

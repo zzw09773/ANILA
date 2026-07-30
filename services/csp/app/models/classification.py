@@ -77,7 +77,7 @@ class ClassificationEvent(Base):
     inherited_from_resource_type = Column(String(50), nullable=True)
     inherited_from_resource_id = Column(String(100), nullable=True)
     trace_id = Column(String(64), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class DeclassificationRequest(Base):
@@ -116,7 +116,7 @@ class DeclassificationRequest(Base):
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     supervisor_comment = Column(Text, nullable=True)
-    decided_at = Column(DateTime, nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
     # 變體 A:in_system / recorded_paper_decision(契約層封閉)。
     approved_via = Column(String(32), nullable=True)
     # recorded_paper_decision 必填三欄(service 層強制):
@@ -128,7 +128,7 @@ class DeclassificationRequest(Base):
     # 降密副本模式的新資源參照(doc 08 §9;in-place 生效時留 NULL)。
     resulting_resource_id = Column(String(100), nullable=True)
     audit_event_ids = Column(JSONValue, nullable=False, default=list)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class ClassificationAuthorityAssignment(Base):
@@ -167,5 +167,5 @@ class ClassificationAuthorityAssignment(Base):
     is_active = Column(
         Boolean, nullable=False, default=True, server_default="true"
     )
-    revoked_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)

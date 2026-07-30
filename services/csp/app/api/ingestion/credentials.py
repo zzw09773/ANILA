@@ -33,6 +33,7 @@ from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
 from app.services.credential_crypto import encrypt_credential
+from app.schemas.base import ApiResponseModel
 
 
 def _check_endpoint_url(url: str) -> None:
@@ -66,7 +67,7 @@ class CredentialUpdate(BaseModel):
     model_name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
-class CredentialResponse(BaseModel):
+class CredentialResponse(ApiResponseModel):
     """Public projection — never carries the key bytes."""
 
     model_config = ConfigDict(from_attributes=True)

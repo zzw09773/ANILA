@@ -59,9 +59,9 @@ class ServiceLaunch(Base):
     )
     mode = Column(String(20), nullable=False)
     status = Column(String(20), nullable=False, server_default="issued")
-    issued_at = Column(DateTime, nullable=False, default=_utcnow)
-    expires_at = Column(DateTime, nullable=False)
-    consumed_at = Column(DateTime, nullable=True)
+    issued_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
 
     service = relationship("RegisteredService", foreign_keys=[service_id])
 
@@ -90,4 +90,4 @@ class ServiceAuditCallback(Base):
         ForeignKey("service_clients.id", ondelete="SET NULL"),
         nullable=True,
     )
-    received_at = Column(DateTime, nullable=False, default=_utcnow)
+    received_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)

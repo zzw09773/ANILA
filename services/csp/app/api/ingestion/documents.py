@@ -53,6 +53,7 @@ from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user
 from app.services.ingestion_queue import enqueue_ingest_document
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(tags=["Ingestion / Documents"])
 
@@ -161,7 +162,7 @@ def _derive_title(filename: str, explicit: str | None = None) -> tuple[str | Non
     return title, (normalize_title(title) or None)
 
 
-class DocumentResponse(BaseModel):
+class DocumentResponse(ApiResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -861,7 +862,7 @@ def delete_document(
 # ── Inspector endpoints (Sprint 2 Chunk H) ──────────────────────────────────
 
 
-class ChunkRow(BaseModel):
+class ChunkRow(ApiResponseModel):
     """Inspector-facing chunk row.
 
     Embedding is omitted by default because the inspector list view

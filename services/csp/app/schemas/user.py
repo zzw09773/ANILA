@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, field_validator
+from app.schemas.base import ApiResponseModel
 
 
 # L3: role 改 Literal 而非任意字串，避免 admin 不慎把 role 設為「typo」字串。
@@ -32,7 +33,7 @@ class UserUpdate(BaseModel):
     local_password_disabled: bool | None = None
 
 
-class UserResponse(UserBase):
+class UserResponse(ApiResponseModel, UserBase):
     id: int
     department_id: int | None = None
     department_name: str | None = None

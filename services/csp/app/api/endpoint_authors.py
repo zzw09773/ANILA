@@ -21,6 +21,7 @@ from app.services.endpoint_author_service import (
     can_set_endpoint_address,
     revoke,
 )
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(prefix="/api/endpoint-authors", tags=["端點位址設定授權"])
 
@@ -29,7 +30,7 @@ class EndpointAuthorGrantRequest(BaseModel):
     user_id: int
 
 
-class EndpointAuthorGrantResponse(BaseModel):
+class EndpointAuthorGrantResponse(ApiResponseModel):
     id: int
     user_id: int
     username: str | None = None

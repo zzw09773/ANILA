@@ -16,8 +16,7 @@ class TokenUsage(Base):
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
-    request_timestamp = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    request_timestamp = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
     request_duration_ms = Column(Integer, nullable=True)
     # Authoritative audit fields — populated when client passes headers

@@ -38,6 +38,8 @@ import hmac
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+
+from app.time_utils import as_utc
 from typing import Optional
 
 from sqlalchemy import and_, func, or_
@@ -179,7 +181,8 @@ def _match_service_client(
             if (
                 previous_pt
                 and client.service_token_previous_expires_at
-                and client.service_token_previous_expires_at > now
+                and as_utc(client.service_token_previous_expires_at) is not None
+                and as_utc(client.service_token_previous_expires_at) > now
                 and hmac.compare_digest(previous_pt, token)
             ):
                 used_previous = True
@@ -235,7 +238,8 @@ def _match_agent_credential(
             if (
                 previous_pt
                 and cred.service_token_previous_expires_at
-                and cred.service_token_previous_expires_at > now
+                and as_utc(cred.service_token_previous_expires_at) is not None
+                and as_utc(cred.service_token_previous_expires_at) > now
                 and hmac.compare_digest(previous_pt, token)
             ):
                 return CallerIdentity(
@@ -328,7 +332,8 @@ def consume_bootstrap_token(
         raise ValueError("bootstrap token 無效")
 
     now = datetime.now(timezone.utc)
-    if not agent.bootstrap_token_expires_at or agent.bootstrap_token_expires_at <= now:
+    expires = as_utc(agent.bootstrap_token_expires_at)
+    if not expires or expires <= now:
         raise ValueError("bootstrap token 已過期，請請 admin 重新核發")
 
     if agent.bootstrap_token_consumed_at is not None:

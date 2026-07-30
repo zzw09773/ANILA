@@ -1,5 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, field_validator
+from app.schemas.base import ApiResponseModel
 
 
 # OIDC client_secret 不再以明文回應；list/get 回傳 mask 而非密文。
@@ -72,7 +73,7 @@ class AuthProviderUpdate(BaseModel):
     oidc_subject_claim: str | None = None
 
 
-class AuthProviderResponse(AuthProviderBase):
+class AuthProviderResponse(ApiResponseModel, AuthProviderBase):
     id: int
     created_at: datetime
     updated_at: datetime

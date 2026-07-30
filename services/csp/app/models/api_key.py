@@ -25,9 +25,9 @@ class ApiKey(Base):
     key_suffix = Column(String(4), nullable=False)
     key_hash = Column(String(255), nullable=False, unique=True, index=True)
     is_active = Column(Boolean, default=True)
-    expires_at = Column(DateTime, nullable=True)  # None = no expiration
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    last_used_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)  # None = no expiration
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     user = relationship("User", backref="api_keys")
