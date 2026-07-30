@@ -143,12 +143,18 @@ def test_build_response_owner_sees_real_url_either_way():
         assert data["is_internal"] is flag
 
 
-def test_build_response_no_caller_redacts():
-    """caller=None (service-token path) 走預設 redact;若 internal 仍標明。"""
+def test_build_response_no_caller_redacts_without_service_flag():
+    """caller=None without is_service_token stays redacted (safe default)."""
     row = _row(is_internal=True)
     data = _build_response(row, caller=None)
     assert data["endpoint_url"] == ENDPOINT_INTERNAL
 
+
+def test_build_response_service_token_sees_real_url():
+    """Invariant 3: service-token serialization receives the real address."""
+    row = _row(is_internal=True)
+    data = _build_response(row, caller=None, is_service_token=True)
+    assert data["endpoint_url"] == "http://gemma4:8000/v1"
 
 def test_build_response_includes_is_internal_field():
     """ModelResponse contract: is_internal 出現在 payload,且型別 bool。"""

@@ -18,23 +18,23 @@
       </div>
     </header>
 
-    <!-- P4.6b — 擁有者指派可設定端點位址的開發者（嵌在模型頁，非獨立路由） -->
+    <!-- P4.6b — 擁有者指派可設定／看見端點位址的開發者或管理員 -->
     <TermBox
       v-if="authStore.isOwner"
       title="端點位址設定授權"
-      hint="僅擁有者與下列開發者可登錄／變更模型端點位址"
+      hint="僅擁有者與下列獲授權者可登錄／變更／看見模型端點位址"
     >
       <div class="author-grant">
         <div class="author-grant__form">
-          <TermField label="指派開發者" hint="從開發者帳號中選擇；撤銷立即生效">
+          <TermField label="指派對象" hint="從開發者或管理員帳號中選擇；撤銷立即生效">
             <select v-model="grantUserId" class="term-select">
-              <option :value="null">— 請選擇開發者 —</option>
+              <option :value="null">— 請選擇 —</option>
               <option
-                v-for="u in grantableDevelopers"
+                v-for="u in grantableAuthors"
                 :key="u.id"
                 :value="u.id"
               >
-                {{ u.username }}
+                {{ u.username }}（{{ u.role }}）
               </option>
             </select>
           </TermField>
@@ -487,7 +487,7 @@ const activatingCreated = ref(false)
 // P4.6b — 端點位址設定授權
 const canSetEndpointAddress = ref(false)
 const endpointAuthors = ref([])
-const developerUsers = ref([])
+const authorCandidateUsers = ref([])
 const grantUserId = ref(null)
 const granting = ref(false)
 const revokingId = ref(null)
@@ -546,23 +546,24 @@ const baseModelOptions = computed(() =>
   )
 )
 
-// Sentinels returned by backend when endpoint_url is redacted from non-owner
-// viewers. Keep in sync with services/csp/app/api/models.py.
-//   <owner-only>  — generic redaction (external endpoint, owner-only)
-//   <internal>    — additional hint: row lives on anila-models-net,
-//                    unreachable from outside the platform stack
+// Sentinels returned by backend when endpoint_url is redacted from viewers
+// who may not see addresses. Keep in sync with endpoint_author_service.
+//   <owner-only>  — generic redaction (external endpoint)
+//   <internal>    — additional hint: row lives on anila-models-net
 const ENDPOINT_REDACTED = '<owner-only>'
 const ENDPOINT_INTERNAL = '<internal>'
 
-// P4.6b — 管理員以上有 endpoint_group_key（位址仍 owner-only）。
-// 分組恢復後相同閘道合併為一個選項；key 為空時才退回 id:（非管理員）。
+// Group import sources by visible endpoint_url. Designated viewers / owner
+// see the real address so same-host rows collapse to one option. Undesignated
+// viewers see a sentinel and fall back to per-row id: keys (they have no
+// business grouping by a property they may not see — SYSTEM-MAP §6).
 const importEndpointOptions = computed(() => {
   const seen = new Set()
   const opts = []
   for (const m of modelsStore.models) {
     const isRedacted =
       m.endpoint_url === ENDPOINT_REDACTED || m.endpoint_url === ENDPOINT_INTERNAL
-    const key = m.endpoint_group_key || (isRedacted ? `id:${m.id}` : (m.endpoint_url || `id:${m.id}`))
+    const key = isRedacted ? `id:${m.id}` : (m.endpoint_url || `id:${m.id}`)
     if (seen.has(key)) continue
     seen.add(key)
     const urlLabel = isRedacted
@@ -576,9 +577,9 @@ const importEndpointOptions = computed(() => {
   return opts
 })
 
-const grantableDevelopers = computed(() => {
+const grantableAuthors = computed(() => {
   const activeIds = new Set(endpointAuthors.value.map(g => g.user_id))
-  return developerUsers.value.filter(u => !activeIds.has(u.id))
+  return authorCandidateUsers.value.filter(u => !activeIds.has(u.id))
 })
 
 function formatGrantedAt(value) {
@@ -604,8 +605,8 @@ async function loadEndpointAuthorState() {
       listUsers(),
     ])
     endpointAuthors.value = Array.isArray(grants) ? grants : []
-    developerUsers.value = (Array.isArray(users) ? users : []).filter(
-      u => u.role === 'developer' && u.is_active !== false,
+    authorCandidateUsers.value = (Array.isArray(users) ? users : []).filter(
+      u => (u.role === 'developer' || u.role === 'admin') && u.is_active !== false,
     )
   } catch (e) {
     const detail = e.response?.data?.detail

@@ -1,8 +1,13 @@
-"""模型端點位址設定授權服務（P4.6b）。
+"""模型端點位址設定／可見授權服務（P4.6b → epvis 放寬）。
 
 綁定表 ``endpoint_author_grants``；``users.role`` 不動。指派／撤銷僅
-owner；可被指派者限 ``role=developer``。稽核寫入授與／撤銷雙方身分。
+owner；可被指派者為 ``developer`` 或 ``admin``（擁有者裁定：小組長或
+管模型的人）。稽核寫入授與／撤銷雙方身分。
 變更與稽核同一交易提交（batch-approve 先例：稽核失敗則整筆中止）。
+
+可見性與設定權共用同一判定（``can_see_endpoint_address`` ＝
+``can_set_endpoint_address``，外加服務 token 例外）——每個外洩面必須
+呼叫此謂詞，不得另開第二套機制。
 """
 
 from __future__ import annotations
@@ -18,6 +23,15 @@ from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_owner
 
+# Roles the owner may designate on ``endpoint_author_grants``.
+# ``users.role`` itself is never rewritten by this module.
+DESIGNATABLE_ROLES = frozenset({"developer", "admin"})
+
+# Sentinels returned when the viewer may not see a registered address.
+# Keep in sync with governance-ui ModelsView.
+ENDPOINT_REDACTED = "<owner-only>"
+ENDPOINT_INTERNAL = "<internal>"
+
 
 def get_active_grant(db: Session, user: User) -> EndpointAuthorGrant | None:
     return (
@@ -31,12 +45,55 @@ def get_active_grant(db: Session, user: User) -> EndpointAuthorGrant | None:
 
 
 def can_set_endpoint_address(db: Session, user: User) -> bool:
-    """True for the platform owner, or a currently designated developer."""
+    """True for the platform owner, or a currently designated developer/admin."""
     if is_owner(user):
         return True
-    if user.role != "developer":
+    if user.role not in DESIGNATABLE_ROLES:
         return False
     return get_active_grant(db, user) is not None
+
+
+def can_see_endpoint_address(
+    db: Session | None,
+    caller: User | None,
+    *,
+    is_service_token: bool = False,
+) -> bool:
+    """Single visibility predicate for every disclosure face.
+
+    True when:
+      * the caller authenticated with a service token, or
+      * the caller is the platform owner, or
+      * the caller holds an active endpoint-author grant (developer or admin).
+
+    Every face that could surface a registered model/agent endpoint address
+    must call this (directly or via ``visible_endpoint_url``). Do not add a
+    second mechanism.
+    """
+    if is_service_token:
+        return True
+    if caller is None:
+        return False
+    if db is None:
+        # Without a session we can only honour the owner half of the rule.
+        return is_owner(caller)
+    return can_set_endpoint_address(db, caller)
+
+
+def visible_endpoint_url(
+    endpoint_url: str,
+    *,
+    is_internal: bool = False,
+    db: Session | None = None,
+    caller: User | None = None,
+    is_service_token: bool = False,
+) -> str:
+    """Return the real address or the matching redaction sentinel."""
+    if can_see_endpoint_address(
+        db, caller, is_service_token=is_service_token
+    ):
+        return endpoint_url
+    return ENDPOINT_INTERNAL if is_internal else ENDPOINT_REDACTED
 
 
 def require_endpoint_address_author(db: Session, user: User) -> User:
@@ -57,10 +114,10 @@ def assign(
 ) -> EndpointAuthorGrant:
     if not is_owner(granted_by):
         raise HTTPException(status_code=403, detail="需要 owner 權限")
-    if user.role != "developer":
+    if user.role not in DESIGNATABLE_ROLES:
         raise HTTPException(
             status_code=400,
-            detail="僅可指派開發者為端點位址設定者",
+            detail="僅可指派開發者或管理員為端點位址設定者",
         )
     if not user.is_active:
         raise HTTPException(status_code=400, detail="使用者不存在或已停用")

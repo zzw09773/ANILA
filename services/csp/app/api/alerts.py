@@ -12,20 +12,21 @@ from app.services.alert_service import (
     summarize_alerts,
 )
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import is_owner, require_admin
+from app.services.auth_service import require_admin
+from app.services.endpoint_author_service import can_see_endpoint_address
 
 router = APIRouter(prefix="/api/alerts", tags=["告警中心"])
 
 
-def _serialize(alert: Alert, *, caller: User) -> dict:
-    """Serialize an alert with owner/non-owner metadata redaction.
+def _serialize(alert: Alert, *, caller: User, db: Session | None = None) -> dict:
+    """Serialize an alert with gated endpoint-bearing metadata.
 
-    Same rule as the audit listing: structured metadata can carry
-    endpoint addresses and other deployment topology, so non-owners
-    receive ``None``. Title/message stay visible so an administrator
-    can still tell which model is unhealthy.
+    Same predicate as every other endpoint-address face
+    (``can_see_endpoint_address``): structured metadata can carry endpoint
+    addresses, so undesignated viewers receive ``None``. Title/message stay
+    visible so an administrator can still tell which model is unhealthy.
     """
-    show_metadata = is_owner(caller)
+    show_metadata = can_see_endpoint_address(db, caller)
     return {
         "id": alert.id,
         "category": alert.category,
@@ -62,7 +63,7 @@ def list_alerts(
         query = query.filter(Alert.severity == severity)
     if category:
         query = query.filter(Alert.category == category)
-    return [_serialize(alert, caller=admin) for alert in query.all()]
+    return [_serialize(alert, caller=admin, db=db) for alert in query.all()]
 
 
 @router.get("/summary", response_model=AlertSummary)
@@ -94,7 +95,7 @@ def ack_alert(
     )
     db.commit()
     db.refresh(alert)
-    return _serialize(alert, caller=admin)
+    return _serialize(alert, caller=admin, db=db)
 
 
 @router.post("/{alert_id}/resolve", response_model=AlertResponse)
@@ -118,4 +119,4 @@ def resolve_alert_manually(
     )
     db.commit()
     db.refresh(alert)
-    return _serialize(alert, caller=admin)
+    return _serialize(alert, caller=admin, db=db)

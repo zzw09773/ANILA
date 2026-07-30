@@ -1,10 +1,7 @@
 from datetime import datetime, timezone
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
-import secrets
 
 import httpx
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
@@ -13,7 +10,6 @@ from pydantic import ValidationError
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from app.config import settings
 from app.database import get_db
 from app.models.model_registry import ModelRegistry
 from app.models.token_usage import TokenUsage
@@ -36,14 +32,17 @@ from app.services.audit_service import log_audit_event
 from app.services.auth_service import (
     get_current_user,
     is_admin_tier,
-    is_owner,
     require_admin,
     require_owner,
     verify_service_token,
 )
 from app.services.endpoint_author_service import (
+    ENDPOINT_INTERNAL,
+    ENDPOINT_REDACTED,
+    can_see_endpoint_address,
     can_set_endpoint_address,
     require_endpoint_address_author,
+    visible_endpoint_url,
 )
 from app.services.health_checker import (
     HEALTH_UNHEALTHY,
@@ -87,15 +86,8 @@ _BULK_ACTIVATE_INPUT_LIMIT = 500
 
 router = APIRouter(prefix="/api/models", tags=["模型管理"])
 
-# Sentinel returned to non-owner callers in place of the actual endpoint
-# URL. Two variants:
-#   <owner-only>  — generic redaction; URL is sensitive deployment topology
-#   <internal>    — additional hint that the model lives on internal docker
-#                   network and is unreachable from outside the platform stack
-# Owner viewers always see the real URL. Non-owners pick variant based on
-# the row's ``is_internal`` flag so logs/UI carry intent.
-ENDPOINT_REDACTED = "<owner-only>"
-ENDPOINT_INTERNAL = "<internal>"
+# ENDPOINT_REDACTED / ENDPOINT_INTERNAL are imported from
+# endpoint_author_service (single source) and re-exported for tests.
 
 
 def _caller_is_designated_author_of(
@@ -183,37 +175,25 @@ def _build_response(
     model: ModelRegistry,
     *,
     caller: User | None = None,
-    endpoint_group_salt: bytes | None = None,
+    db: Session | None = None,
+    is_service_token: bool = False,
 ) -> dict:
     """Serialize a model row.
 
-    ``endpoint_url`` is owner-only — admins and below see
-    ``ENDPOINT_REDACTED`` because the URL+port carries deployment-topology
-    detail (which GPU box / which container LAN, often the only thing
-    standing between a curious admin and direct unmediated access). When
-    ``caller`` is None (e.g. internal callers passing through verify_service_token)
-    we redact too — opt-in to surface by passing the caller explicitly.
-
-    ``endpoint_group_salt`` must be shared across every row in the same
-    list response so same-endpoint rows still group for admin-tier callers;
-    omit (or pass a fresh value) for single-row responses. The key is
-    emitted to administrators and above once they can no longer register
-    an arbitrary probe address (P4.6b); callers below admin-tier still
-    receive an empty string. The address itself remains owner-only.
+    ``endpoint_url`` visibility uses the single predicate
+    ``can_see_endpoint_address`` (owner, designated author, or service
+    token). Everyone else receives ``ENDPOINT_INTERNAL`` /
+    ``ENDPOINT_REDACTED`` based on ``is_internal``. The grouping-key
+    field is retired (SYSTEM-MAP §6).
     """
-    show_endpoint = caller is not None and is_owner(caller)
-    show_group_key = caller is not None and is_admin_tier(caller)
     is_internal = bool(getattr(model, "is_internal", False))
-    # Redaction sentinel picks the variant that conveys the most intent:
-    # internal models → <internal> (lives on anila-models-net, unreachable
-    # from outside the platform stack); external → <owner-only> (admin can
-    # see the row exists but not the deployment topology).
-    if show_endpoint:
-        endpoint = model.endpoint_url
-    elif is_internal:
-        endpoint = ENDPOINT_INTERNAL
-    else:
-        endpoint = ENDPOINT_REDACTED
+    endpoint = visible_endpoint_url(
+        model.endpoint_url,
+        is_internal=is_internal,
+        db=db,
+        caller=caller,
+        is_service_token=is_service_token,
+    )
     data = {
         "id": model.id,
         "name": model.name,
@@ -244,15 +224,6 @@ def _build_response(
         "supports_json_schema": bool(getattr(model, "supports_json_schema", False)),
         "supports_tools": bool(getattr(model, "supports_tools", False)),
         "has_api_key": bool(getattr(model, "api_key_secret_ref", None)),
-        # Admin-tier grouping (P4.6b). Empty below admin so non-admins cannot
-        # cluster by shared-endpoint membership. Address stays owner-only.
-        "endpoint_group_key": (
-            _endpoint_group_key(
-                model.endpoint_url, request_salt=endpoint_group_salt
-            )
-            if show_group_key
-            else ""
-        ),
         "created_at": model.created_at,
         "updated_at": model.updated_at,
     }
@@ -286,13 +257,8 @@ def list_models(
         if not clauses:
             return []
         query = query.filter(or_(*clauses))
-    # One salt per list response for admin-tier callers (key gated in
-    # ``_build_response``). Callers below admin receive an empty key.
-    group_salt = (
-        secrets.token_bytes(16) if is_admin_tier(current_user) else None
-    )
     return [
-        _build_response(m, caller=current_user, endpoint_group_salt=group_salt)
+        _build_response(m, caller=current_user, db=db)
         for m in query.all()
     ]
 
@@ -342,7 +308,7 @@ def create_model(
         detail=f"建立模型「{model.display_name}」",
         commit=True,
     )
-    return _build_response(model, caller=current_user)
+    return _build_response(model, caller=current_user, db=db)
 
 
 def _upstream_models_url(endpoint_url: str) -> str:
@@ -356,26 +322,6 @@ def _upstream_models_url(endpoint_url: str) -> str:
     if base.endswith("/models"):
         return base
     return join_upstream_path(endpoint_url or "", "/v1/models")
-
-
-def _endpoint_group_key(
-    endpoint_url: str, *, request_salt: bytes | None = None
-) -> str:
-    """Opaque grouping key for an endpoint address within one response.
-
-    HMAC-SHA256 of ``request_salt || address``, keyed with ``SECRET_KEY``.
-    Emitted to admin-tier callers (P4.6b restored grouping once they can
-    no longer register an arbitrary probe address). Callers below admin
-    get an empty string from ``_build_response``. Never the address itself.
-    """
-    salt = request_salt if request_salt is not None else secrets.token_bytes(16)
-    material = salt + (endpoint_url or "").encode("utf-8")
-    digest = hmac.new(
-        settings.SECRET_KEY.encode("utf-8"),
-        material,
-        hashlib.sha256,
-    ).hexdigest()
-    return digest
 
 
 def _bulk_import_listing_name(raw_id: object) -> str | None:
@@ -394,30 +340,26 @@ def _bulk_import_listing_name(raw_id: object) -> str | None:
 
 
 # Fixed client-facing text when import rejects a source endpoint via the
-# outbound guard. Create/update keep the structured/plain echo (admin typed
-# the address); import must not hand the hostname or resolved private address
-# to a non-owner who never saw the redacted row's URL.
+# outbound guard and the viewer may not see addresses. Viewers who can see
+# receive the structured/plain guard detail (same as create/update).
 _BULK_IMPORT_OUTBOUND_REJECTED = (
-    "來源端點未通過外連檢查；請由擁有者檢視該列位址後再試"
+    "來源端點未通過外連檢查；請由擁有者或獲授權者檢視該列位址後再試"
 )
 
 
-def _audit_detail_endpoint_sentinel(source: ModelRegistry) -> str:
-    """Always a sentinel — never the real address — for audit ``detail`` text.
-
-    Audit listing returns ``detail`` to every administrator unredacted; only
-    ``metadata`` / ``ip_address`` are owner-gated. Putting the real URL in
-    ``detail`` permanently publishes topology to all admins.
-    """
-    return ENDPOINT_INTERNAL if source.is_internal else ENDPOINT_REDACTED
-
-
-def _redacted_endpoint_for_viewer(source: ModelRegistry, viewer: User) -> str:
-    """Same owner-only redaction used by ``_build_response`` / list APIs."""
-    if is_owner(viewer):
-        return source.endpoint_url
-    return ENDPOINT_INTERNAL if source.is_internal else ENDPOINT_REDACTED
-
+def _endpoint_for_viewer(
+    source: ModelRegistry,
+    viewer: User,
+    *,
+    db: Session,
+) -> str:
+    """Response / audit-detail form of a source endpoint for ``viewer``."""
+    return visible_endpoint_url(
+        source.endpoint_url,
+        is_internal=bool(getattr(source, "is_internal", False)),
+        db=db,
+        caller=viewer,
+    )
 
 def _parse_upstream_models_payload(payload: object) -> list:
     """Accept only recognised OpenAI-style shapes; anything else is a hard failure.
@@ -888,8 +830,8 @@ async def import_models_from_endpoint(
     # Same outbound guard as create/update — disallowed endpoints stay
     # disallowed. Guard the FINAL listing URL (never guard one string and
     # request another). Import path must not echo hostname / resolved address
-    # to the client (non-owner never typed or saw the redacted URL); create and
-    # update keep the structured/plain guard detail unchanged.
+    # to a viewer who may not see the redacted row's URL; designated viewers
+    # and the owner receive the same structured/plain guard detail as create.
     listing_url = _upstream_models_url(source.endpoint_url)
     try:
         _enforce_endpoint_url(listing_url)
@@ -900,6 +842,8 @@ async def import_models_from_endpoint(
                 source.id,
                 exc.detail,
             )
+            if can_see_endpoint_address(db, admin):
+                raise
             raise HTTPException(
                 status_code=400,
                 detail=_BULK_IMPORT_OUTBOUND_REJECTED,
@@ -921,11 +865,16 @@ async def import_models_from_endpoint(
     db.commit()
 
     created_names = [e.name for e in created_entries]
-    # Response redacts for this viewer; audit detail ALWAYS uses a sentinel
-    # (listing returns detail to every admin). Real address lives only in
-    # owner-gated metadata.
-    response_endpoint = _redacted_endpoint_for_viewer(source, admin)
-    detail_sentinel = _audit_detail_endpoint_sentinel(source)
+    # Response redacts via the single visibility predicate. Audit ``detail``
+    # ALWAYS stores a sentinel — listing returns detail to every admin —
+    # while the real address lives in metadata; ``serialize_audit_log``
+    # substitutes it back for viewers who may see addresses.
+    response_endpoint = _endpoint_for_viewer(source, admin, db=db)
+    detail_sentinel = (
+        ENDPOINT_INTERNAL
+        if getattr(source, "is_internal", False)
+        else ENDPOINT_REDACTED
+    )
     log_audit_event(
         db,
         actor=admin,
@@ -1122,7 +1071,7 @@ def set_router_primary(
         detail=f"設為 ANILA 主路由模型: {model.display_name}",
         commit=True,
     )
-    return _build_response(model, caller=admin)
+    return _build_response(model, caller=admin, db=db)
 
 
 @router.post("/{model_id}/unset-router-primary", response_model=ModelResponse)
@@ -1136,7 +1085,7 @@ def unset_router_primary(
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
     if not model.is_router_primary:
-        return _build_response(model, caller=admin)
+        return _build_response(model, caller=admin, db=db)
 
     model.is_router_primary = False
     db.commit()
@@ -1150,7 +1099,7 @@ def unset_router_primary(
         detail=f"取消 ANILA 主路由模型: {model.display_name}",
         commit=True,
     )
-    return _build_response(model, caller=admin)
+    return _build_response(model, caller=admin, db=db)
 
 
 @router.get("/{model_id}", response_model=ModelResponse)
@@ -1164,7 +1113,7 @@ def get_model(
         raise HTTPException(status_code=404, detail="模型不存在")
     if not _caller_may_view_model(db, current_user, model):
         raise HTTPException(status_code=404, detail="模型不存在")
-    return _build_response(model, caller=current_user)
+    return _build_response(model, caller=current_user, db=db)
 
 
 @router.put("/{model_id}", response_model=ModelResponse)
@@ -1249,7 +1198,7 @@ def update_model(
         detail=f"更新模型「{model.display_name}」",
         commit=True,
     )
-    return _build_response(model, caller=current_user)
+    return _build_response(model, caller=current_user, db=db)
 
 
 def _client_ip(request: Request | None) -> str | None:
@@ -1311,7 +1260,7 @@ def activate_model(
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
     if model.is_active:
-        return _build_response(model, caller=admin)
+        return _build_response(model, caller=admin, db=db)
     model.is_active = True
     db.commit()
     db.refresh(model)
@@ -1325,7 +1274,7 @@ def activate_model(
         ip_address=_client_ip(request),
         commit=True,
     )
-    return _build_response(model, caller=admin)
+    return _build_response(model, caller=admin, db=db)
 
 
 @router.delete("/{model_id}/purge")

@@ -879,70 +879,23 @@ def _response_row(*, endpoint_url="http://mock-llm:8080/v1", is_internal=True):
     )
 
 
-def test_endpoint_group_key_per_request_salt_and_opaque():
-    """Helper: keys group within one salt; digest never carries the address."""
-    salt_a = b"\x01" * 16
-    salt_b = b"\x02" * 16
-    url = "http://mock-llm:8080/v1"
-    other = "http://other-gateway:9090/v1"
-
-    a1 = models_api._endpoint_group_key(url, request_salt=salt_a)
-    a2 = models_api._endpoint_group_key(url, request_salt=salt_a)
-    a_other = models_api._endpoint_group_key(other, request_salt=salt_a)
-    b1 = models_api._endpoint_group_key(url, request_salt=salt_b)
-
-    assert a1 == a2  # same request salt → same key
-    assert a1 != a_other  # different address → different key
-    assert a1 != b1  # different request → different key
-    assert "mock-llm" not in a1
-    assert "8080" not in a1
-    assert len(a1) == 64  # sha256 hex
-
-
-def test_endpoint_group_key_default_salt_varies_across_calls():
-    """Omitting request_salt draws a fresh random — not stable across calls."""
-    url = "http://mock-llm:8080/v1"
-    keys = {models_api._endpoint_group_key(url) for _ in range(5)}
-    assert len(keys) == 5
-
-
-def test_build_response_endpoint_group_key_admin_tier():
-    """Admin-tier receives an opaque key; callers below admin receive none.
-
-    Address remains owner-only even when the grouping key is present.
-    """
+def test_endpoint_group_key_retired_from_build_response():
+    """Invariant 4: grouping key plumbing is deleted."""
+    assert not hasattr(models_api, "_endpoint_group_key")
     row = _response_row()
-    salt = b"\xab" * 16
     owner_data = models_api._build_response(
-        row, caller=SimpleNamespace(role="owner"), endpoint_group_salt=salt
+        row, caller=SimpleNamespace(role="owner")
     )
     admin_data = models_api._build_response(
-        row, caller=SimpleNamespace(role="admin"), endpoint_group_salt=salt
+        row, caller=SimpleNamespace(role="admin")
     )
-    user_data = models_api._build_response(
-        row, caller=SimpleNamespace(role="user"), endpoint_group_salt=salt
-    )
-    expected = models_api._endpoint_group_key(
-        row.endpoint_url, request_salt=salt
-    )
-    assert owner_data["endpoint_group_key"] == expected
-    assert admin_data["endpoint_group_key"] == expected
-    assert "mock-llm" not in admin_data["endpoint_group_key"]
-    assert "8080" not in admin_data["endpoint_group_key"]
+    assert "endpoint_group_key" not in owner_data
+    assert "endpoint_group_key" not in admin_data
     assert admin_data["endpoint_url"] == models_api.ENDPOINT_INTERNAL
-    assert user_data["endpoint_group_key"] == ""
-    assert user_data["endpoint_url"] == models_api.ENDPOINT_INTERNAL
 
 
-def test_list_models_group_key_oracle_fails_at_probe_registration(db, monkeypatch):
-    """P4.6b: the former probe oracle dies at registration, not comparison.
-
-    An undesignated administrator cannot create a throwaway row carrying a
-    candidate address. Grouping keys are therefore safe to emit to admins
-    for already-registered rows (same-endpoint merge in the import chooser).
-    """
-    # Public https — avoid ANILA_TRUSTED_HOSTS (TestClient lifespan would
-    # backfill it into the process-local DB cache and pollute SSRF tests).
+def test_list_models_no_group_key_undesignated_still_redacted(db, monkeypatch):
+    """Undesignated admin cannot register a probe; list has no group key."""
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
     secret = "https://secret-gpu-box.example.com/v1"
@@ -965,36 +918,13 @@ def test_list_models_group_key_oracle_fails_at_probe_registration(db, monkeypatc
         )
     assert exc.value.status_code == 403
     assert "端點位址設定權限" in str(exc.value.detail)
-    assert (
-        db.query(ModelRegistry)
-        .filter(ModelRegistry.name == "oracle-probe")
-        .first()
-        is None
-    )
 
-    # Grouping restored for administrators on existing rows.
     rows = models_api.list_models(
         model_type=None, current_user=admin, db=db
     )
     by_name = {r["name"]: r for r in rows}
-    assert by_name["oracle-target"]["endpoint_group_key"]
+    assert "endpoint_group_key" not in by_name["oracle-target"]
     assert by_name["oracle-target"]["endpoint_url"] == models_api.ENDPOINT_REDACTED
-
-    # Same endpoint still groups for admins when both rows already exist
-    # (planted without going through the gated create path).
-    sibling = make_model(db, name="oracle-sibling")
-    sibling.endpoint_url = secret
-    sibling.is_internal = False
-    db.commit()
-    rows2 = models_api.list_models(
-        model_type=None, current_user=admin, db=db
-    )
-    by2 = {r["name"]: r for r in rows2}
-    assert (
-        by2["oracle-target"]["endpoint_group_key"]
-        == by2["oracle-sibling"]["endpoint_group_key"]
-    )
-
 
 # ── streamed upstream body cap ────────────────────────────────────────────────
 

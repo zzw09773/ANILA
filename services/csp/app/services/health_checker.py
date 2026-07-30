@@ -185,17 +185,26 @@ async def _agent_health_check_loop():
                         )
                     fingerprint = f"health:agent:{agent.id}"
                     if status == HEALTH_UNHEALTHY:
+                        # Message names the agent, never the address —
+                        # same posture as the model path. Structured
+                        # metadata still stores the URL for gated
+                        # disclosure on the alert listing
+                        # (``can_see_endpoint_address``).
                         upsert_alert(
                             db,
                             fingerprint=fingerprint,
                             category="health",
                             severity="high",
                             title=f"Agent {agent.name} 離線",
-                            message=f"無法連線至 {agent.endpoint_url}",
+                            message=(
+                                f"無法連線至 Agent「{agent.name}」"
+                            ),
                             source_type="agent",
                             source_id=agent.id,
-                            metadata={"agent_name": agent.name,
-                                      "endpoint_url": agent.endpoint_url},
+                            metadata={
+                                "agent_name": agent.name,
+                                "endpoint_url": agent.endpoint_url,
+                            },
                         )
                     elif status == HEALTH_HEALTHY:
                         resolve_alert_by_fingerprint(db, fingerprint)

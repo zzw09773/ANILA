@@ -94,15 +94,26 @@ def test_admin_cannot_manage_grants(client: TestClient, db: Session):
     assert "owner" in r.json()["detail"]
 
 
-def test_cannot_grant_non_developer(client: TestClient, db: Session):
+def test_cannot_grant_plain_user(client: TestClient, db: Session):
     _, oh = _auth(client, db, "ea_owner_nd", role="owner")
     plain = make_user(db, username="ea_plain", role="user")
-    admin = make_user(db, username="ea_admin_nd", role="admin")
-    for uid in (plain.id, admin.id):
-        r = _grant(client, oh, uid)
-        assert r.status_code == 400
-        assert "開發者" in r.json()["detail"]
+    r = _grant(client, oh, plain.id)
+    assert r.status_code == 400
+    assert "開發者或管理員" in r.json()["detail"]
 
+
+def test_owner_can_grant_admin(client: TestClient, db: Session):
+    """Invariant 2: designation may name an admin, not only a developer."""
+    _, oh = _auth(client, db, "ea_owner_ga", role="owner")
+    admin = make_user(db, username="ea_admin_ga", role="admin")
+    r = _grant(client, oh, admin.id)
+    assert r.status_code == 201, r.text
+    assert r.json()["user_id"] == admin.id
+    assert ea_svc.can_set_endpoint_address(db, admin) is True
+    assert ea_svc.can_see_endpoint_address(db, admin) is True
+    # users.role itself is untouched.
+    db.refresh(admin)
+    assert admin.role == "admin"
 
 def test_grant_and_revoke_write_audit(client: TestClient, db: Session):
     owner, oh = _auth(client, db, "ea_owner_aud", role="owner")
@@ -384,7 +395,8 @@ def test_service_helpers_gate_create_and_update(db: Session):
     assert row.endpoint_url == "https://other.example.com/v1"
 
 
-def test_grouping_key_present_for_admin_absent_below(db: Session):
+def test_grouping_key_retired_from_list_response(db: Session):
+    """Invariant 4: endpoint_group_key is gone; undesignated admin still redacted."""
     target = make_model(db, name="ea-group-a")
     target.endpoint_url = "http://mock-llm:8080/v1"
     sibling = make_model(db, name="ea-group-b")
@@ -393,7 +405,6 @@ def test_grouping_key_present_for_admin_absent_below(db: Session):
 
     admin = make_user(db, "ea_group_admin", role="admin")
     user = make_user(db, "ea_group_user", role="user")
-    # Grant the plain user visibility so list returns rows.
     user.allowed_models.append(target)
     user.allowed_models.append(sibling)
     db.commit()
@@ -402,11 +413,8 @@ def test_grouping_key_present_for_admin_absent_below(db: Session):
         model_type=None, current_user=admin, db=db
     )
     admin_by = {r["name"]: r for r in admin_rows}
-    assert admin_by["ea-group-a"]["endpoint_group_key"]
-    assert (
-        admin_by["ea-group-a"]["endpoint_group_key"]
-        == admin_by["ea-group-b"]["endpoint_group_key"]
-    )
+    assert "endpoint_group_key" not in admin_by["ea-group-a"]
+    assert "endpoint_group_key" not in admin_by["ea-group-b"]
     assert admin_by["ea-group-a"]["endpoint_url"] in (
         models_api.ENDPOINT_INTERNAL,
         models_api.ENDPOINT_REDACTED,
@@ -415,7 +423,7 @@ def test_grouping_key_present_for_admin_absent_below(db: Session):
     user_rows = models_api.list_models(
         model_type=None, current_user=user, db=db
     )
-    assert all(not r.get("endpoint_group_key") for r in user_rows)
+    assert all("endpoint_group_key" not in r for r in user_rows)
 
 
 # ── review findings: narrowed write + author visibility loop ──────────────────
@@ -480,12 +488,9 @@ def test_designated_developer_lists_and_edits_registered_row(
     assert created.status_code == 200, created.text
     body = created.json()
     model_id = body["id"]
-    # Non-owner: address redacted, no grouping value.
-    assert body["endpoint_url"] in (
-        models_api.ENDPOINT_INTERNAL,
-        models_api.ENDPOINT_REDACTED,
-    )
-    assert not body.get("endpoint_group_key")
+    # Designated author sees the real address (visibility = designation).
+    assert body["endpoint_url"] == "https://typo.example.com/v1"
+    assert "endpoint_group_key" not in body
 
     # Admin rewrites allowed models wholesale — must not strip authorship view.
     other = make_model(db, name="ea-loop-other")
@@ -501,12 +506,8 @@ def test_designated_developer_lists_and_edits_registered_row(
     listed_ids = {r["id"] for r in listed.json()}
     assert model_id in listed_ids
     authored = next(r for r in listed.json() if r["id"] == model_id)
-    assert authored["endpoint_url"] in (
-        models_api.ENDPOINT_INTERNAL,
-        models_api.ENDPOINT_REDACTED,
-    )
-    assert not authored.get("endpoint_group_key")
-
+    assert authored["endpoint_url"] == "https://typo.example.com/v1"
+    assert "endpoint_group_key" not in authored
     fetched = client.get(f"/api/models/{model_id}", headers=dh)
     assert fetched.status_code == 200
     assert fetched.json()["name"] == "ea-loop-model"
@@ -747,8 +748,8 @@ def test_grant_and_revoke_abort_when_audit_fails(db: Session, monkeypatch):
 # ── review findings: proxy + alert disclosure ─────────────────────────────────
 
 
-def test_proxy_response_does_not_disclose_model_endpoint(monkeypatch):
-    """Finding 1: admin completion response must not recover the address."""
+def test_proxy_response_gates_endpoint_by_visibility(monkeypatch, db: Session):
+    """Proxy trace / failure include real URL only for designated viewers."""
     import asyncio
     import json
 
@@ -757,9 +758,23 @@ def test_proxy_response_does_not_disclose_model_endpoint(monkeypatch):
 
     from app.services import proxy_service
     from app.services.proxy import service as proxy_impl
+    from app.services.endpoint_author_service import (
+        ENDPOINT_REDACTED,
+        visible_endpoint_url,
+    )
 
     secret = "https://secret-gpu-box.example.com/v1"
     model_name = "ea-secret-model"
+    undesignated = make_user(db, "ea_proxy_admin", role="admin")
+    owner = make_user(db, "ea_proxy_owner", role="owner")
+    hidden = visible_endpoint_url(
+        secret, is_internal=False, db=db, caller=undesignated
+    )
+    shown = visible_endpoint_url(
+        secret, is_internal=False, db=db, caller=owner
+    )
+    assert hidden == ENDPOINT_REDACTED
+    assert shown == secret
 
     class _Resp:
         status_code = 200
@@ -812,10 +827,9 @@ def test_proxy_response_does_not_disclose_model_endpoint(monkeypatch):
         proxy_service.httpx, "AsyncClient", lambda *a, **k: _Client()
     )
     monkeypatch.setattr(proxy_impl, "enqueue_usage", _noop_enqueue)
-    # Bypass call-time SSRF so the disclosure assertion is the subject.
     monkeypatch.setattr(proxy_impl, "_guard_outbound", lambda *a, **k: None)
 
-    async def _run():
+    async def _run(endpoint_display):
         return await proxy_service.proxy_request(
             model=_Model(),
             api_key_id=1,
@@ -826,17 +840,20 @@ def test_proxy_response_does_not_disclose_model_endpoint(monkeypatch):
                 "messages": [{"role": "user", "content": "hi"}],
             },
             endpoint_path="/v1/chat/completions",
+            endpoint_display=endpoint_display,
         )
 
-    payload = asyncio.run(_run())
+    payload = asyncio.run(_run(hidden))
     blob = json.dumps(payload, ensure_ascii=False)
     assert secret not in blob
     assert "secret-gpu-box" not in blob
     detail = payload["anila_meta"]["trace"][0]["detail"]
     assert model_name in detail
-    assert "http" not in detail
+    assert ENDPOINT_REDACTED in detail
 
-    # Connection-failure path also names the model, not the address.
+    payload_owner = asyncio.run(_run(shown))
+    assert secret in payload_owner["anila_meta"]["trace"][0]["detail"]
+
     class _FailClient(_Client):
         async def post(self, url, json=None, headers=None):
             raise httpx.ConnectError("boom")
@@ -847,15 +864,19 @@ def test_proxy_response_does_not_disclose_model_endpoint(monkeypatch):
     monkeypatch.setattr(proxy_impl.settings, "PROXY_MAX_RETRIES", 1)
 
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(_run())
+        asyncio.run(_run(hidden))
     err = str(exc.value.detail)
     assert secret not in err
     assert "secret-gpu-box" not in err
     assert model_name in err
+    assert ENDPOINT_REDACTED in err
 
+    with pytest.raises(HTTPException) as exc2:
+        asyncio.run(_run(shown))
+    assert secret in str(exc2.value.detail)
 
-def test_alert_listing_withholds_endpoint_from_non_owner(db: Session):
-    """Finding 2: alerts match audit — metadata owner-only; message uses name."""
+def test_alert_listing_gates_endpoint_by_visibility(db: Session):
+    """Invariant 5 + face: alerts metadata follow can_see_endpoint_address."""
     import json
 
     from app.api import alerts as alerts_api
@@ -865,6 +886,8 @@ def test_alert_listing_withholds_endpoint_from_non_owner(db: Session):
     secret = "https://secret-gpu-box.example.com/v1"
     admin = make_user(db, "ea_alert_admin", role="admin")
     owner = make_user(db, "ea_alert_owner", role="owner")
+    designated = make_user(db, "ea_alert_desig", role="admin")
+    ea_svc.assign(db, user=designated, granted_by=owner)
 
     upsert_alert(
         db,
@@ -898,10 +921,13 @@ def test_alert_listing_withholds_endpoint_from_non_owner(db: Session):
     assert owner_rows[0]["metadata"] is not None
     assert owner_rows[0]["metadata"]["endpoint_url"] == secret
 
-    # Stored row still has the address for owner / server-side use.
+    desig_rows = alerts_api.list_alerts(
+        status=None, severity=None, category=None, admin=designated, db=db
+    )
+    assert desig_rows[0]["metadata"]["endpoint_url"] == secret
+
     stored = db.query(Alert).one()
     assert secret in (stored.metadata_json or "")
-
 
 def test_agent_proxy_response_names_agent_not_address(
     client: TestClient, db: Session, monkeypatch
