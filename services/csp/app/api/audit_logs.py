@@ -31,5 +31,6 @@ def list_audit_logs(
     if status:
         query = query.filter(AuditLog.status == status)
     return [
-        serialize_audit_log(log, caller=admin) for log in query.limit(limit).all()
+        serialize_audit_log(log, caller=admin, db=db)
+        for log in query.limit(limit).all()
     ]

@@ -46,6 +46,7 @@ from app.models.user import User
 from app.services.auth_service import get_current_user
 from app.services.ingestion_pool import get_pool
 from app.services.proxy_service import downstream_identity, proxy_request
+from app.services.endpoint_author_service import visible_endpoint_url
 from app.services.relation_resolver import scope_collection_rls
 
 router = APIRouter(tags=["Ingestion / Search"])
@@ -327,6 +328,12 @@ async def _embed_query(
         department_id=user.department_id,
         request_body=body,
         endpoint_path="/v1/embeddings",
+        endpoint_display=visible_endpoint_url(
+            model.endpoint_url,
+            is_internal=bool(getattr(model, "is_internal", False)),
+            db=db,
+            caller=user,
+        ),
     )
 
     try:

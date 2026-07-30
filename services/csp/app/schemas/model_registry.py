@@ -98,10 +98,6 @@ class ModelResponse(BaseModel):
     # doc 04 §3: only the presence of a per-model key is exposed — never the
     # ciphertext / secret ref, and never the plaintext.
     has_api_key: bool = False
-    # P4.6b: opaque same-endpoint grouping key for admin-tier callers.
-    # Restored once undesignated administrators can no longer register an
-    # arbitrary probe address. Empty below admin. Address stays owner-only.
-    endpoint_group_key: str = ""
     created_at: datetime
     updated_at: datetime
 

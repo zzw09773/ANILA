@@ -28,9 +28,25 @@ from app.services.proxy_service import (
     proxy_request,
     proxy_stream,
 )
+from app.services.endpoint_author_service import visible_endpoint_url
 
 logger = logging.getLogger(__name__)
 
+
+def _endpoint_display_for(
+    db: Session,
+    caller_user,
+    endpoint_url: str,
+    *,
+    is_internal: bool = False,
+) -> str:
+    """Visibility-gated address for proxy trace / failure faces."""
+    return visible_endpoint_url(
+        endpoint_url,
+        is_internal=is_internal,
+        db=db,
+        caller=caller_user,
+    )
 
 def _coerce_conversation_id(raw: str | None) -> int | None:
     """Convert the X-ANILA-Conversation-Id header to int for FK use.
@@ -876,6 +892,9 @@ async def chat_completions(
                 task_trace_id=task_ctx.trace_id if task_ctx else None,
                 task_run_id=task_ctx.task_run_id if task_ctx else None,
                 legacy_runtime_call=task_ctx is None,
+                endpoint_display=_endpoint_display_for(
+                    db, user, agent.endpoint_url
+                ),
             )
             # Tee the SSE so we can capture the final assistant text and
             # schedule the memory writer once the stream drains.
@@ -941,9 +960,12 @@ async def chat_completions(
                 if not existing_meta:
                     # Caller-facing detail names the agent, never the
                     # upstream address (twin of the model-proxy fix).
+                    _ep = _endpoint_display_for(
+                        db, user, agent.endpoint_url
+                    )
                     payload["anila_meta"] = build_default_anila_meta(
                         agent.name,
-                        detail=f"CSP proxy -> {agent.name}",
+                        detail=f"CSP proxy -> {agent.name}（{_ep}）",
                         latency_ms=int((time.time() - started_at) * 1000),
                         classified=agent_requires_encryption,
                     )
@@ -1081,6 +1103,12 @@ async def chat_completions(
             legacy_runtime_call=task_ctx is None,
             # Slice 6a: per-model gateway key (secret ref first, env fallback).
             gateway_api_key=resolve_model_gateway_key(model),
+            endpoint_display=_endpoint_display_for(
+                db,
+                user,
+                model.endpoint_url,
+                is_internal=bool(getattr(model, "is_internal", False)),
+            ),
         )
         teed = _tee_stream_capture_assistant(
             upstream,
@@ -1114,6 +1142,12 @@ async def chat_completions(
         task_trace_id=task_ctx.trace_id if task_ctx else None,
         task_run_id=task_ctx.task_run_id if task_ctx else None,
         legacy_runtime_call=task_ctx is None,
+        endpoint_display=_endpoint_display_for(
+            db,
+            user,
+            model.endpoint_url,
+            is_internal=bool(getattr(model, "is_internal", False)),
+        ),
     )
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
@@ -1231,6 +1265,12 @@ async def embeddings_v1(
         department_id=caller.user.department_id,
         request_body=body,
         endpoint_path="/v1/embeddings",
+        endpoint_display=_endpoint_display_for(
+            db,
+            caller.user,
+            model.endpoint_url,
+            is_internal=bool(getattr(model, "is_internal", False)),
+        ),
     )
 
 
@@ -1254,4 +1294,10 @@ async def embeddings_v2(
         department_id=caller.user.department_id,
         request_body=body,
         endpoint_path="/v2/embeddings",
+        endpoint_display=_endpoint_display_for(
+            db,
+            caller.user,
+            model.endpoint_url,
+            is_internal=bool(getattr(model, "is_internal", False)),
+        ),
     )

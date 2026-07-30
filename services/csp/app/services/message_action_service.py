@@ -968,7 +968,7 @@ def export_audit(
     out: list[dict] = []
     for log in rows:
         # Same owner/non-owner treatment as the audit listing endpoint.
-        item = serialize_audit_log(log, caller=actor)
+        item = serialize_audit_log(log, caller=actor, db=db)
         created = item.get("created_at")
         item["created_at"] = created.isoformat() if created else None
         out.append(item)

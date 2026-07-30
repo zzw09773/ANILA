@@ -42,6 +42,26 @@ from app.services.usage_writer import enqueue_usage
 # routing / filtering / capture behavior is identical after the package split.
 logger = logging.getLogger("app.services.proxy_service")
 
+
+def _proxy_detail(label: str, endpoint_display: str | None, *, stream: bool = False) -> str:
+    """Caller-facing proxy trace / failure text.
+
+    ``endpoint_display`` is the output of ``visible_endpoint_url`` (real
+    address or sentinel). When omitted, keep the legacy name-only form so
+    internal callers that have not been wired yet do not change.
+    """
+    prefix = "Proxy stream -> " if stream else "Proxy -> "
+    if endpoint_display:
+        return f"{prefix}{label}（{endpoint_display}）"
+    return f"{prefix}{label}"
+
+
+def _proxy_connect_failure(label: str, endpoint_display: str | None) -> str:
+    if endpoint_display:
+        return f"無法連線到模型「{label}」（{endpoint_display}）"
+    return f"無法連線到模型「{label}」"
+
+
 def _get_timeout(model_type: str) -> float:
     if model_type == "embedding":
         return settings.EMBEDDING_TIMEOUT
@@ -137,6 +157,7 @@ async def _proxy_request_impl(
     task_id: Optional[int] = None,
     task_trace_id: Optional[str] = None,
     legacy_runtime_call: bool = False,
+    endpoint_display: Optional[str] = None,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -286,12 +307,11 @@ async def _proxy_request_impl(
                 )
             existing_meta = result.get("anila_meta")
             if not existing_meta:
-                # Caller-facing detail names the registered model only —
-                # never the upstream address (admin-readable completion
-                # responses must not recover deployment topology).
+                # Caller-facing detail uses the visibility-gated display
+                # form (real address or sentinel) supplied by the API layer.
                 result["anila_meta"] = build_default_anila_meta(
                     model.name,
-                    detail=f"Proxy -> {model.name}",
+                    detail=_proxy_detail(model.name, endpoint_display),
                     latency_ms=duration_ms,
                     classified=requires_encryption,
                 )
@@ -356,9 +376,9 @@ async def _proxy_request_impl(
                 continue
 
         except httpx.ConnectError:
-            # Caller-facing text identifies the model by registry name;
-            # the real address stays in server-side logs only.
-            last_error = f"無法連線到模型「{model.name}」"
+            # Caller-facing text identifies the model; endpoint_display is
+            # the visibility-gated form (real or sentinel) from the API.
+            last_error = _proxy_connect_failure(model.name, endpoint_display)
             if attempt < settings.PROXY_MAX_RETRIES - 1:
                 delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
                 logger.warning(
@@ -410,6 +430,7 @@ async def proxy_request(
     task_trace_id: Optional[str] = None,
     task_run_id: Optional[int] = None,
     legacy_runtime_call: bool = False,
+    endpoint_display: Optional[str] = None,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -438,6 +459,7 @@ async def proxy_request(
             task_id=task_id,
             task_trace_id=task_trace_id,
             legacy_runtime_call=legacy_runtime_call,
+            endpoint_display=endpoint_display,
         )
     except HTTPException as exc:
         if task_run_id is not None:
@@ -497,6 +519,7 @@ async def _proxy_stream_impl(
     task_trace_id: Optional[str] = None,
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
+    endpoint_display: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -630,12 +653,12 @@ async def _proxy_stream_impl(
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="下游請求逾時")
     except httpx.ConnectError:
-        # Identify by registered model name; address stays in server logs.
+        # Identify by registered model name; endpoint_display is gated.
         label = model_name or "未知模型"
         logger.warning("串流連線失敗 model=%s url=%s", label, target_url)
         raise HTTPException(
             status_code=502,
-            detail=f"無法連線到模型「{label}」",
+            detail=_proxy_connect_failure(label, endpoint_display),
         )
 
     duration_ms = int((time.time() - start_time) * 1000)
@@ -650,13 +673,15 @@ async def _proxy_stream_impl(
         )
     total_tokens = prompt_tokens + completion_tokens
     if not meta_seen:
-        # Caller-facing stream meta names the model, never the address.
+        # Caller-facing stream meta uses the visibility-gated display form.
         stream_label = model_name or "未知模型"
         yield "event: anila.meta\n"
         yield "data: " + json.dumps(
             build_default_anila_meta(
                 stream_label,
-                detail=f"Proxy stream -> {stream_label}",
+                detail=_proxy_detail(
+                    stream_label, endpoint_display, stream=True
+                ),
                 latency_ms=duration_ms,
                 classified=requires_encryption,
                 usage={
@@ -728,6 +753,7 @@ async def proxy_stream(
     task_run_id: Optional[int] = None,
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
+    endpoint_display: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -761,6 +787,7 @@ async def proxy_stream(
             task_trace_id=task_trace_id,
             legacy_runtime_call=legacy_runtime_call,
             gateway_api_key=gateway_api_key,
+            endpoint_display=endpoint_display,
         ):
             yield chunk
     except HTTPException as exc:

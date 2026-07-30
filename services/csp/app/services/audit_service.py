@@ -15,18 +15,45 @@ logger = logging.getLogger(__name__)
 SENSITIVE_REDACTED = "<owner-only>"
 
 
-def serialize_audit_log(log: AuditLog, *, caller: User) -> dict:
-    """Serialize an audit row with owner/non-owner IP/metadata redaction.
+def serialize_audit_log(
+    log: AuditLog, *, caller: User, db: Session | None = None
+) -> dict:
+    """Serialize an audit row with gated IP / endpoint-bearing metadata.
 
     Shared by ``GET /api/audit-logs`` and message-action audit export so
     the security-relevant rule has a single source (service layer).
 
-    ``is_owner`` is imported lazily to avoid a cycle with
-    ``auth_service`` (which calls ``log_audit_event``).
+    * ``ip_address`` remains owner-only.
+    * ``metadata`` (and any endpoint sentinel embedded in ``detail``) follow
+      ``can_see_endpoint_address`` — the same predicate as every other
+      endpoint-address face.
+
+    ``is_owner`` / ``can_see_endpoint_address`` are imported lazily to avoid
+    a cycle with ``auth_service`` / ``endpoint_author_service`` (which call
+    ``log_audit_event``).
     """
     from app.services.auth_service import is_owner
+    from app.services.endpoint_author_service import (
+        ENDPOINT_INTERNAL,
+        ENDPOINT_REDACTED,
+        can_see_endpoint_address,
+    )
 
-    show_sensitive = is_owner(caller)
+    show_ip = is_owner(caller)
+    show_endpoint = can_see_endpoint_address(db, caller)
+    meta = parse_metadata(log.metadata_json) if show_endpoint else None
+    detail = log.detail
+    if (
+        show_endpoint
+        and detail
+        and meta
+        and isinstance(meta.get("endpoint_url"), str)
+        and meta["endpoint_url"]
+    ):
+        real = meta["endpoint_url"]
+        for sentinel in (ENDPOINT_INTERNAL, ENDPOINT_REDACTED):
+            if sentinel in detail:
+                detail = detail.replace(sentinel, real)
     return {
         "id": log.id,
         "actor_user_id": log.actor_user_id,
@@ -35,9 +62,9 @@ def serialize_audit_log(log: AuditLog, *, caller: User) -> dict:
         "resource_type": log.resource_type,
         "resource_id": log.resource_id,
         "status": log.status,
-        "detail": log.detail,
-        "ip_address": log.ip_address if show_sensitive else SENSITIVE_REDACTED,
-        "metadata": parse_metadata(log.metadata_json) if show_sensitive else None,
+        "detail": detail,
+        "ip_address": log.ip_address if show_ip else SENSITIVE_REDACTED,
+        "metadata": meta,
         "created_at": log.created_at,
     }
 
