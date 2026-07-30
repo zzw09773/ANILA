@@ -29,6 +29,27 @@ class ApiKeyAgentPermission(Base):
     )
 
 
+class AgentCollectionBinding(Base):
+    """P4.7 — many-to-many agent ↔ knowledge-base bindings.
+
+    Same composite-PK association shape as ``UserAgentPermission`` /
+    ``ApiKeyAgentPermission``. Source of truth for RAG search scope;
+    ``Agent.bound_collection_id`` is a derived compatibility mirror
+    (min id of the set, or NULL when unbound).
+    """
+
+    __tablename__ = "agent_collection_bindings"
+
+    agent_id = Column(
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
+    )
+    collection_id = Column(
+        Integer,
+        ForeignKey("ingestion_collections.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+
 class Agent(Base):
     __tablename__ = "agents"
 
@@ -43,9 +64,11 @@ class Agent(Base):
     base_model_id = Column(
         Integer, ForeignKey("model_registry.id", ondelete="SET NULL"), nullable=True
     )
-    # RAG agents: the single collection this agent's csk- is allowed to search
-    # (S-Q1, least-privilege). NULL = non-RAG agent (no collection search at
-    # all). The agent acts as its owner but is hard-scoped to this one id.
+    # Derived compatibility mirror of ``agent_collection_bindings`` (P4.7).
+    # Source of truth is the junction table; this column holds min(ids) or
+    # NULL when unbound so legacy single-value readers keep a stable view.
+    # Writers must set bindings via ``set_bound_collection_ids`` — never
+    # write this column independently of the set.
     bound_collection_id = Column(
         Integer, ForeignKey("ingestion_collections.id", ondelete="SET NULL"), nullable=True
     )
@@ -162,4 +185,9 @@ class Agent(Base):
         secondary="user_agent_permissions",
         backref="allowed_agents",
         lazy="select",
+    )
+    collection_bindings = relationship(
+        "AgentCollectionBinding",
+        cascade="all, delete-orphan",
+        lazy="selectin",
     )
