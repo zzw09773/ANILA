@@ -2345,20 +2345,6 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                     agents={agents}
                     currentAgentId={selectedAgentId}
                     onHandoffAgent={handoffToAgent}
-                    onHandoffUser={async (target) => {
-                      if (!selectedConvId || typeof selectedConvId !== "number") {
-                        setRuntimeError("尚未建立後端對話，無法交接");
-                        return;
-                      }
-                      try {
-                        await apiCreateHandoff(authRequest, {
-                          conversationId: selectedConvId,
-                          note: `交接給 ${target}`,
-                        });
-                      } catch (error) {
-                        setRuntimeError(error.message || "交接請求失敗");
-                      }
-                    }}
                     close={close}
                   />
                 )}

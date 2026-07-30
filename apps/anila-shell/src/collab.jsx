@@ -206,29 +206,20 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, 
   );
 };
 
-// ---- Handoff to Agent / User menu ----
-export const HandoffMenu = ({ agents, currentAgentId, onHandoffAgent, onHandoffUser, close }) => {
-  const [mode, setMode] = useState("agent");
-  const [user, setUser] = useState("");
-
-  return (
+// ---- Handoff to Agent menu ----
+// 2026-07-30:拿掉「給同事」。它以前長得能用——輸入帳號、按送出、沒有錯誤——
+// 但送出的酬載根本沒有 to_user_id(只把名字塞進 note 的自由文字),所以建立的是
+// 一筆交給「沒有人」的交接,那位同事永遠收不到。**靜默成功比報錯危險**:
+// 使用者會以為交出去了。要真的接上,得先決定「一般使用者可不可以查到同事名單」
+// ——`GET /api/users` 目前要 admin 或單位管理員權限,那是隱私層級的決定,
+// 記在 docs/OWNER-QUESTIONS.md。在那之前寧可沒有這顆按鈕。
+export const HandoffMenu = ({ agents, currentAgentId, onHandoffAgent, close }) => (
     <div style={{ minWidth: 260 }}>
       <div style={{ padding: "6px 10px 8px", fontSize: 11, color: "var(--fg-subtle)",
         fontFamily: "var(--font-mono)", letterSpacing: 0.4 }}>
         交給其他助手
       </div>
-      <div style={{ display: "flex", gap: 2, padding: "0 6px 6px" }}>
-        {[{k: "agent", label: "給 agent"}, {k: "user", label: "給同事"}].map(t => (
-          <button key={t.k} onClick={() => setMode(t.k)} style={{
-            flex: 1, padding: "5px 8px", fontSize: 12,
-            background: mode === t.k ? "var(--bg-subtle)" : "transparent",
-            border: "1px solid " + (mode === t.k ? "var(--border)" : "transparent"),
-            borderRadius: "var(--radius)", cursor: "pointer", color: "var(--fg)",
-          }}>{t.label}</button>
-        ))}
-      </div>
-      {mode === "agent" ? (
-        <div>
+      <div>
           {agents.filter(a => a.id !== "anila-router" && a.id !== currentAgentId).map(a => (
             <MenuItem key={a.id}
               onClick={() => { onHandoffAgent(a.id); close(); }}
@@ -239,20 +230,9 @@ export const HandoffMenu = ({ agents, currentAgentId, onHandoffAgent, onHandoffU
               </div>
             </MenuItem>
           ))}
-        </div>
-      ) : (
-        <div style={{ padding: "0 8px 8px" }}>
-          <Input placeholder="輸入同事帳號 (e.g. bob.lin)" value={user}
-            onChange={e => setUser(e.target.value)} />
-          <Button size="sm" variant="primary" style={{ marginTop: 6, width: "100%" }}
-            onClick={() => { if (user) { onHandoffUser(user); close(); } }}>
-            送出交接請求
-          </Button>
-        </div>
-      )}
+      </div>
     </div>
   );
-};
 
 // ---- Tag / Folder editor ----
 export const TagEditor = ({ folders, conversation, onUpdate, close }) => {
