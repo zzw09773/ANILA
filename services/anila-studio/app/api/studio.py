@@ -118,6 +118,7 @@ from app.services.studio_render import (
     _hydrate_images,
     _infer_image_use_case,
     _render_pptx,
+    get_active_flux_provider,
     get_flux_provider,
 )
 from app.services.studio_retrieval import (
@@ -499,10 +500,11 @@ def _build_fallback_spec(
 
 
 # ── Step 7: render → moved to app/services/studio_render.py (god-module split)
-# get_flux_provider / _hydrate_images / _render_pptx / _generate_slide_illustration
-# / _infer_image_use_case / _apply_illustration_fallback live there now and are
-# imported above (same names). _gated_generate stays private to studio_render.
-# Tests monkeypatch the render chain on app.services.studio_render now.
+# get_flux_provider / get_active_flux_provider / _hydrate_images / _render_pptx /
+# _generate_slide_illustration / _infer_image_use_case / _apply_illustration_fallback
+# live there now and are imported above (same names). _gated_generate stays
+# private to studio_render. Tests monkeypatch the render chain on
+# app.services.studio_render now.
 
 
 # ── Step 8: vision QA → moved to app/services/studio_vision_qa.py (split) ──
@@ -682,7 +684,10 @@ async def _run_pipeline(
     # the FLUX cover-hero path will actually run; failure degrades to the
     # default style inside infer_deck_style.
     deck_style = None
-    if get_flux_provider() is not None and deck_base_seed is not None:
+    # deck_base_seed check first so a fallback-deck/skip-retrieval run
+    # (deck_base_seed None) never pays for the async csp image-primary
+    # round-trip inside get_active_flux_provider() (`and` short-circuits).
+    if deck_base_seed is not None and await get_active_flux_provider() is not None:
         from app.services.flux_style import infer_deck_style
 
         style_sample = spec.title or ""

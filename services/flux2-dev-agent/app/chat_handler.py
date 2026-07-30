@@ -34,25 +34,38 @@ class _FluxClientCtxProto(Protocol):
     async def __aexit__(self, *exc) -> None: ...
 
 
+class _BackendResolverProto(Protocol):
+    async def resolve(self) -> tuple[str, str]: ...
+
+
 class ChatHandler:
     def __init__(
         self,
         *,
         translator: _TranslatorProto,
-        flux_client_factory: Callable[[], _FluxClientCtxProto],
+        flux_client_factory: Callable[[str, str], _FluxClientCtxProto],
         image_store: ImageStore,
+        backend_resolver: _BackendResolverProto,
         default_aspect_ratio: str = "16:9",
     ) -> None:
         self._translator = translator
         self._flux_client_factory = flux_client_factory
         self._image_store = image_store
+        self._backend_resolver = backend_resolver
         self._default_aspect_ratio = default_aspect_ratio
 
     async def handle(self, req: ChatCompletionRequest) -> ChatCompletionResponse:
         user_text = req.last_user_text()
         english_prompt = await self._translator.translate(user_text)
 
-        async with self._flux_client_factory() as flux:
+        # 每次生圖前重新解析 (endpoint, model):CSP image-primary 優先,
+        # 60s TTL 快取;無值時 fallback env(見 backend_resolver.py)。
+        # FluxClient 本來就每次生圖新建一個(見下方 flux_client_factory
+        # 呼叫處),所以「endpoint/model 變更時重建」不需要額外快取邏輯,
+        # 只要把解析出來的值傳進工廠即可。
+        endpoint, model = await self._backend_resolver.resolve()
+
+        async with self._flux_client_factory(endpoint, model) as flux:
             png_bytes = await flux.generate(
                 english_prompt,
                 aspect_ratio=self._default_aspect_ratio,
