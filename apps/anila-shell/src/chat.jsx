@@ -7,7 +7,6 @@ import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { neighbourId, pagerState } from "./runtime/messageTree.js";
 import {
-  isDirectActionOutcome,
   needsPicker,
   resolveActionIcon,
 } from "./runtime/messageActions.js";
@@ -615,14 +614,8 @@ export const MessageBubble = ({
   const branchOpsLocked = conversationStreaming || isStreaming;
   const rating = msg.rating || null;
   const actionProvenance = msg.metadata?.action;
-  const showDirectBadge = isDirectActionOutcome(actionProvenance);
-  const showTruncatedNotice = Boolean(actionProvenance?.truncated);
-  // Second attribution channel: persisted agent_name (action:NAME), quiet label only.
+  // Quiet attribution: persisted agent_name (action:NAME) for action-produced siblings.
   const showActionAgentName = Boolean(actionProvenance && msg.agentName);
-  const truncatedNoticeText =
-    actionProvenance?.outcome === "prompt"
-      ? "動作輸出過長，送入模型前已截斷"
-      : "輸出過長，已截斷";
 
   return (
     <div
@@ -635,44 +628,20 @@ export const MessageBubble = ({
         <HandoffTimeline chain={msg.handoffChain} agents={agents} />
       )}
 
-      {/* OW-3 provenance — always visible (NOT inside hover-hidden .anila-msg-actions).
-          Badge only for exec-direct (outcome=text); declarative is a real model answer. */}
-      {!msg.streaming && (showDirectBadge || showTruncatedNotice || showActionAgentName) && (
+      {/* OW-3 quiet provenance — action name attribution (not a non-model badge). */}
+      {!msg.streaming && showActionAgentName && (
         <div
           style={{
             display: "flex", alignItems: "center", gap: 8, marginBottom: 8,
             flexWrap: "wrap",
           }}
         >
-          {showDirectBadge && (
-            <span
-              data-testid="action-provenance-badge"
-              title="此則為自訂動作直接產出，非模型回答"
-              style={{
-                fontSize: 11, color: "var(--fg-muted)",
-                padding: "1px 6px", border: "1px solid var(--border)",
-                borderRadius: "var(--radius-sm)", whiteSpace: "nowrap",
-              }}
-            >
-              自訂動作產出
-            </span>
-          )}
-          {showActionAgentName && (
-            <span
-              data-testid="action-agent-name"
-              style={{ fontSize: 11, color: "var(--fg-muted)" }}
-            >
-              {msg.agentName}
-            </span>
-          )}
-          {showTruncatedNotice && (
-            <span
-              data-testid="action-truncated-notice"
-              style={{ fontSize: 11, color: "var(--fg-muted)" }}
-            >
-              {truncatedNoticeText}
-            </span>
-          )}
+          <span
+            data-testid="action-agent-name"
+            style={{ fontSize: 11, color: "var(--fg-muted)" }}
+          >
+            {msg.agentName}
+          </span>
         </div>
       )}
 

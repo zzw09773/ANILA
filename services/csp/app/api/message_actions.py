@@ -2,9 +2,12 @@
 
 docs/plans/ow3-message-actions-blueprint.md §4.
 
-* Mutations: owner-only (``require_owner``).
-* Management reads: admin-tier; non-owner ``body`` redacted as
-  ``<owner-only>``.
+* Create: developer and above (``_require_developer_or_admin``).
+* Update / delete / bindings: developer for own actions; admin-tier for any
+  (ownership enforced in the service layer).
+* Audit export: administrator and above (``require_admin``), with the same
+  IP/metadata redaction as ``GET /api/audit-logs``.
+* Management list / icons: developer and above.
 * User surface: binding-scoped ``/visible`` + ``/invoke``.
 """
 
@@ -17,7 +20,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.agents._common import _client_ip
+from app.api.agents._common import _client_ip, _require_developer_or_admin
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
@@ -33,24 +36,17 @@ from app.schemas.message_action import (
     MessageActionUpdate,
 )
 from app.services import message_action_service as svc
-from app.services.auth_service import get_current_user, require_admin, require_owner
+from app.services.auth_service import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/message-actions", tags=["訊息動作"])
 
 
 @router.get("/icons")
-def list_icons(_: User = Depends(require_owner)):
-    """Icon allow-list plus platform exec flag for the owner console.
-
-    Owner-only: the console that consumes both fields is already
-    ``requiresOwner``, and the exec on/off bit belongs with the same
-    boundary that owns exec authoring risk. Object shape (not a bare
-    array) so the console can learn ``ANILA_ENABLE_ACTION_EXEC`` without
-    a new route; clients that only need icons read ``.icons``.
-    """
+def list_icons(_: User = Depends(_require_developer_or_admin)):
+    """Icon allow-list plus body-char limit for the authoring console."""
     return {
         "icons": sorted(ALLOWED_ACTION_ICONS),
-        "action_exec_enabled": bool(settings.ANILA_ENABLE_ACTION_EXEC),
+        "max_body_chars": int(settings.ANILA_ACTION_MAX_BODY_CHARS),
     }
 
 
@@ -66,8 +62,6 @@ def list_visible_actions(
             name=r.name,
             label=r.label,
             icon=r.icon,
-            kind=r.kind,
-            result_mode=r.result_mode,
             choices=r.choices or [],
         )
         for r in rows
@@ -80,12 +74,12 @@ def export_audit(
     since: Optional[datetime] = Query(None),
     until: Optional[datetime] = Query(None),
     limit: int = Query(5000, ge=1, le=50000),
-    owner: User = Depends(require_owner),
+    admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     rows = svc.export_audit(
         db,
-        actor=owner,
+        actor=admin,
         since=since,
         until=until,
         limit=limit,
@@ -108,11 +102,11 @@ def export_audit(
 
 @router.get("", response_model=list[MessageActionAdminOut])
 def list_actions(
-    admin: User = Depends(require_admin),
+    actor: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
     rows = svc.list_actions_admin(db)
-    return [svc.serialize_admin(r, caller=admin) for r in rows]
+    return [svc.serialize_admin(r, actor=actor) for r in rows]
 
 
 @router.post(
@@ -123,13 +117,13 @@ def list_actions(
 def create_action(
     payload: MessageActionCreate,
     request: Request,
-    owner: User = Depends(require_owner),
+    actor: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
     row = svc.create_action(
-        db, payload=payload, actor=owner, ip_address=_client_ip(request)
+        db, payload=payload, actor=actor, ip_address=_client_ip(request)
     )
-    return svc.serialize_admin(row, caller=owner)
+    return svc.serialize_admin(row, actor=actor)
 
 
 @router.put("/{action_id}", response_model=MessageActionAdminOut)
@@ -137,30 +131,30 @@ def update_action(
     action_id: int,
     payload: MessageActionUpdate,
     request: Request,
-    owner: User = Depends(require_owner),
+    actor: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
     row = svc.update_action(
         db,
         action_id=action_id,
         payload=payload,
-        actor=owner,
+        actor=actor,
         ip_address=_client_ip(request),
     )
-    return svc.serialize_admin(row, caller=owner)
+    return svc.serialize_admin(row, actor=actor)
 
 
 @router.delete("/{action_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_action(
     action_id: int,
     request: Request,
-    owner: User = Depends(require_owner),
+    actor: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
     svc.delete_action(
         db,
         action_id=action_id,
-        actor=owner,
+        actor=actor,
         ip_address=_client_ip(request),
     )
     return None
@@ -169,10 +163,10 @@ def delete_action(
 @router.get("/{action_id}/bindings", response_model=list[BindingOut])
 def get_bindings(
     action_id: int,
-    _: User = Depends(require_admin),
+    actor: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
-    return svc.list_bindings(db, action_id)
+    return svc.list_bindings(db, action_id, actor=actor)
 
 
 @router.put("/{action_id}/bindings", response_model=list[BindingOut])
@@ -180,14 +174,14 @@ def put_bindings(
     action_id: int,
     payload: BindingsReplaceRequest,
     request: Request,
-    owner: User = Depends(require_owner),
+    actor: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
     return svc.replace_bindings(
         db,
         action_id=action_id,
         specs=payload.bindings,
-        actor=owner,
+        actor=actor,
         ip_address=_client_ip(request),
     )
 

@@ -2,7 +2,8 @@
 
 兩表：``message_actions``（可變列 + version/body_sha256）與
 ``message_action_bindings``（role／department 子樹／user 聯集可見性）。
-零綁定 fail-closed；owner 全見、admin 不繞過。``users.role`` 不動。
+零綁定 fail-closed；可見＝綁定到本人或本人撰寫,所有角色同規則,owner／admin 皆不繞過。``users.role`` 不動。
+宣告式 prompt 模板 only——無 kind／result_mode 鑑別欄。
 """
 
 from datetime import datetime, timezone
@@ -30,23 +31,11 @@ JSONValue = JSON().with_variant(JSONB, "postgresql")
 
 class MessageAction(Base):
     __tablename__ = "message_actions"
-    __table_args__ = (
-        CheckConstraint(
-            "kind IN ('declarative', 'exec')",
-            name="ck_message_actions_kind",
-        ),
-        CheckConstraint(
-            "result_mode IN ('to_model', 'direct')",
-            name="ck_message_actions_result_mode",
-        ),
-    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), unique=True, nullable=False, index=True)
     label = Column(String(120), nullable=False)
     icon = Column(String(40), nullable=False)
-    kind = Column(String(20), nullable=False)  # declarative | exec
-    result_mode = Column(String(20), nullable=False)  # to_model | direct
     body = Column(Text, nullable=False)
     body_sha256 = Column(String(64), nullable=False)
     choices = Column(JSONValue, nullable=True)

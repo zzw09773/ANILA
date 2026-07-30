@@ -24,3 +24,14 @@ source_modules =
     app.modules
 forbidden_modules =
     app.api
+
+# 分層:api 可以 import services,services 不得反向 import app.api。
+# Prevents security-relevant serializers / helpers from living in the
+# router layer and being pulled back into services (OW-3 lesson).
+[importlinter:contract:services-forbid-api]
+name = app.services 不得 import app.api(api → services 單向分層)
+type = forbidden
+source_modules =
+    app.services
+forbidden_modules =
+    app.api

@@ -4,9 +4,8 @@
       <div>
         <h1 class="page-title">自訂動作</h1>
         <p class="page-subtitle">
-          訊息列自訂按鈕的撰寫主控台（OW-3）。建立／更新／刪除與綁定替換僅
-          owner 可操作——畫面閘門只是便利，真正邊界在伺服器
-          <code>require_owner</code>。零綁定＝無人可見（fail-closed）。
+          訊息列自訂按鈕的撰寫主控台（OW-3）。建立＝開發者以上；更新／刪除／綁定替換＝作者本人或管理員以上；稽核匯出＝管理員以上（非擁有者匯出會遮罩位址與 metadata）。
+          畫面閘門只是便利，真正邊界在伺服器。零綁定＝無人可見（fail-closed）。動作本體為提示詞模板。
         </p>
       </div>
     </header>
@@ -23,13 +22,15 @@
     <div class="row-actions" style="margin: 12px 0;">
       <TermButton variant="primary" @click="openCreateModal" label="+ 新增動作" />
       <span class="row-actions__sep">·</span>
-      <TermButton
-        variant="ghost"
-        :disabled="exporting"
-        :label="exporting ? '匯出中…' : '匯出稽核 NDJSON'"
-        @click="openExportModal"
-      />
-      <span class="row-actions__sep">·</span>
+      <template v-if="authStore.isAdmin">
+        <TermButton
+          variant="ghost"
+          :disabled="exporting"
+          :label="exporting ? '匯出中…' : '匯出稽核 NDJSON'"
+          @click="openExportModal"
+        />
+        <span class="row-actions__sep">·</span>
+      </template>
       <button class="term-action" @click="fetchActions">重新整理</button>
     </div>
 
@@ -40,7 +41,6 @@
             <th>名稱</th>
             <th>標籤</th>
             <th>圖示</th>
-            <th>類型</th>
             <th>狀態</th>
             <th>版本 · checksum</th>
             <th>操作</th>
@@ -48,8 +48,8 @@
         </thead>
         <tbody>
           <tr v-if="!actions.length">
-            <td colspan="7">
-              <TermEmpty message="尚無自訂動作 — owner 可在此建立宣告式或 exec 動作" />
+            <td colspan="6">
+              <TermEmpty message="尚無自訂動作 — 開發者以上可在此建立提示詞模板動作" />
             </td>
           </tr>
           <tr v-for="a in actions" :key="a.id">
@@ -60,13 +60,8 @@
             <td>{{ a.label }}</td>
             <td><code class="icon-cell">{{ a.icon }}</code></td>
             <td>
-              <TermBadge :variant="a.kind === 'exec' ? 'danger' : 'accent'">
-                {{ a.kind === 'exec' ? 'exec' : '宣告式' }}
-              </TermBadge>
-            </td>
-            <td>
-              <TermBadge :variant="statusBadgeVariant(a)" dot>
-                {{ statusLabel(a) }}
+              <TermBadge :variant="a.is_enabled ? 'ok' : ''" dot>
+                {{ a.is_enabled ? '啟用' : '停用' }}
               </TermBadge>
             </td>
             <td class="tnum">
@@ -80,17 +75,20 @@
             </td>
             <td>
               <div class="row-actions">
-                <button class="term-action" @click="openEditModal(a)">編輯</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action" @click="openBindingsModal(a)">綁定</button>
-                <span class="row-actions__sep">·</span>
-                <button
-                  class="term-action term-action--danger"
-                  :disabled="busyId === a.id"
-                  @click="handleDelete(a)"
-                >
-                  {{ busyId === a.id ? '…' : '刪除' }}
-                </button>
+                <template v-if="canMutateAction(a)">
+                  <button class="term-action" @click="openEditModal(a)">編輯</button>
+                  <span class="row-actions__sep">·</span>
+                  <button class="term-action" @click="openBindingsModal(a)">綁定</button>
+                  <span class="row-actions__sep">·</span>
+                  <button
+                    class="term-action term-action--danger"
+                    :disabled="busyId === a.id"
+                    @click="handleDelete(a)"
+                  >
+                    {{ busyId === a.id ? '…' : '刪除' }}
+                  </button>
+                </template>
+                <span v-else class="cell-meta">僅檢視</span>
               </div>
             </td>
           </tr>
@@ -115,83 +113,24 @@
           </TermField>
         </div>
 
-        <div class="form-row-2">
-          <TermField label="圖示" hint="清單來自伺服器 GET /api/message-actions/icons">
-            <select v-model="form.icon" class="term-select">
-              <option disabled value="">— 選擇圖示 —</option>
-              <option v-for="ic in icons" :key="ic" :value="ic">{{ ic }}</option>
-            </select>
-          </TermField>
-          <TermField label="結果模式" hint="to_model＝回填為提示詞送模型；direct＝直接顯示文字（多用於 exec）">
-            <select v-model="form.result_mode" class="term-select">
-              <option value="to_model">to_model · 送模型</option>
-              <option value="direct">direct · 直接顯示</option>
-            </select>
-          </TermField>
-        </div>
-
-        <TermField label="類型">
-          <div class="seg">
-            <button
-              type="button"
-              class="seg__opt"
-              :class="{ 'is-on': form.kind === 'declarative' }"
-              @click="form.kind = 'declarative'"
-            >
-              宣告式（prompt 模板）
-            </button>
-            <button
-              type="button"
-              class="seg__opt"
-              :class="{ 'is-on': form.kind === 'exec' }"
-              @click="form.kind = 'exec'"
-            >
-              可執行（exec）
-            </button>
-          </div>
+        <TermField label="圖示" hint="清單來自伺服器 GET /api/message-actions/icons">
+          <select v-model="form.icon" class="term-select">
+            <option disabled value="">— 選擇圖示 —</option>
+            <option v-for="ic in icons" :key="ic" :value="ic">{{ ic }}</option>
+          </select>
         </TermField>
 
-        <div v-if="form.kind === 'exec'" class="exec-warn" role="alert">
-          <div class="exec-warn__title">⚠ 能力聲明（不得美化）</div>
-          <p class="exec-warn__body">
-            Exec 動作在 csp FastAPI 行程內、以容器使用者身分執行，擁有完整標準庫與所有已安裝套件；可讀取
-            <code>os.environ</code>（含 DB URL、<code>MODEL_GATEWAY_API_KEY</code>、<code>CSP_SERVICE_TOKEN</code>、JWT 金鑰路徑）、讀取檔案含
-            <code>secrets/*.pem</code>（<code>:ro</code> 掛載仍可讀）、自行以 app 角色開啟 DB 連線（繞過 API 層範圍控制）、import／變更
-            <code>app.*</code>、發出任意對外網路請求並繞過
-            <code>url_guard.validate_outbound_url</code>（SSRF allow-list）、啟動子行程、對行程做 monkey-patch。沒有沙箱、沒有
-            seccomp、沒有獨立直譯器、沒有超出牆鐘逾時與輸出上限以外的資源限制。能撰寫 exec 動作的人，等同於能把程式部署到主機的人。
-          </p>
-          <p class="exec-warn__anti">
-            逾時不能終止執行緒（CPython）；逾時僅停止等待，背景可能仍在執行。本介面不宣稱沙箱、已隔離或已終止。
-          </p>
-          <p class="exec-warn__anti">
-            semaphore 限制被放棄的 worker 數量：卡住的 worker 會永久佔用槽位直到回傳；槽位耗盡後 exec 停用（503）直到 worker 結束或服務重啟——這是刻意的 fail-closed 取捨。
-          </p>
-          <p class="exec-warn__anti">
-            預設旗標 <code>ANILA_ENABLE_ACTION_EXEC=False</code>（fail-closed）。關閉時 exec 動作自 <code>/visible</code> 過濾，invoke 回 404（與不存在不可區分）。
-          </p>
-        </div>
-
-        <TermField
-          :label="form.kind === 'exec' ? '程式碼（body）' : '提示詞模板（body）'"
-          :hint="bodyHint"
-        >
-          <div v-if="bodyRedacted" class="body-redacted">
-            內容為 owner 專屬資料，此帳號僅見遮罩佔位字串，儲存時不會回寫遮罩字串。
-            請以 owner 身分重新開啟以編輯 body。
+        <TermField label="提示詞模板（body）" :hint="bodyHint">
+          <textarea
+            v-model="form.body"
+            class="term-textarea term-textarea--code"
+            rows="8"
+            :placeholder="bodyPlaceholder"
+            :maxlength="maxBodyChars"
+          />
+          <div class="body-count" :class="{ 'is-over': form.body.length > maxBodyChars }">
+            {{ form.body.length }} / {{ maxBodyChars }}
           </div>
-          <template v-else>
-            <textarea
-              v-model="form.body"
-              class="term-textarea term-textarea--code"
-              :rows="form.kind === 'exec' ? 12 : 8"
-              :placeholder="bodyPlaceholder"
-              :maxlength="maxBodyChars"
-            />
-            <div class="body-count" :class="{ 'is-over': form.body.length > maxBodyChars }">
-              {{ form.body.length }} / {{ maxBodyChars }}
-            </div>
-          </template>
         </TermField>
 
         <TermField label="選項（choices）" :hint="`最多 ${MAX_CHOICES} 項；id 須符合 ^[a-z0-9_-]{1,40}$`">
@@ -442,7 +381,7 @@ import { useDialog } from '../composables/useDialog'
 import { useAuthStore } from '../stores/auth'
 
 const MAX_CHOICES = 20
-/** Fallback when no already-existing endpoint returns a body-char limit. */
+/** Client fallback until GET /icons returns max_body_chars. */
 const FALLBACK_MAX_BODY_CHARS = 20000
 const CHOICE_ID_RE = /^[a-z0-9_-]{1,40}$/
 const ROLE_LABELS = {
@@ -455,10 +394,14 @@ const ROLE_LABELS = {
 const { confirm, toast } = useDialog()
 const authStore = useAuthStore()
 
+/** Matches server ownership rule: author or admin-tier. */
+function canMutateAction(action) {
+  if (authStore.isAdmin) return true
+  return action?.created_by_user_id === authStore.user?.id
+}
+
 const actions = ref([])
 const icons = ref([])
-/** Tri-valued: null = unknown (fetch failed / not yet loaded), boolean = known. */
-const actionExecEnabled = ref(null)
 const maxBodyChars = ref(FALLBACK_MAX_BODY_CHARS)
 const departments = ref([])
 const users = ref([])
@@ -497,8 +440,6 @@ function emptyForm() {
     name: '',
     label: '',
     icon: '',
-    kind: 'declarative',
-    result_mode: 'to_model',
     body: '',
     choices: [],
     notes: '',
@@ -576,29 +517,17 @@ async function revealChecksum(sha) {
   }
 }
 
-const bodyRedacted = computed(
-  () => !!editingId.value && !authStore.isOwner,
-)
-
 const bodyHint = computed(() => {
   const limitNote = `上限 ${maxBodyChars.value} 字元（以伺服器設定為準）`
-  if (form.kind === 'exec') {
-    return `頂層必須定義 def run(ctx) -> str；存檔只做靜態驗證，不會執行；${limitNote}`
-  }
   return `可用佔位符 {content}、{choice}、{input}（純字串替換，非 format）；${limitNote}`
 })
 
-const bodyPlaceholder = computed(() => {
-  if (form.kind === 'exec') {
-    return 'def run(ctx) -> str:\n    return ctx["message"]'
-  }
-  return '請將以下內容翻譯成英文：\n\n{content}'
-})
+const bodyPlaceholder = '請將以下內容翻譯成英文：\n\n{content}'
 
 const canSubmitEditor = computed(() => {
   if (!form.name.trim() || !form.label.trim() || !form.icon) return false
-  if (!bodyRedacted.value && !form.body.trim()) return false
-  if (!bodyRedacted.value && form.body.length > maxBodyChars.value) return false
+  if (!form.body.trim()) return false
+  if (form.body.length > maxBodyChars.value) return false
   return true
 })
 
@@ -656,46 +585,24 @@ async function fetchActions() {
 
 function applyBodyLimitFromPayload(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return
-  const limit = data.max_body_chars ?? data.max_body_length ?? data.ANILA_ACTION_MAX_BODY_CHARS
+  const limit = data.max_body_chars
   if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
     maxBodyChars.value = Math.floor(limit)
   }
 }
 
-function statusLabel(action) {
-  const enabledLabel = action.is_enabled ? '啟用' : '停用'
-  // Unknown flag ⇒ plain enabled/disabled only (no claim about the flag).
-  // Flag off ⇒ show both facts so a disabled+blocked row does not hide「停用」.
-  if (action.kind === 'exec' && actionExecEnabled.value === false) {
-    return `${enabledLabel} · 目前使用者無法使用（exec 旗標關閉）`
-  }
-  return enabledLabel
-}
-
-function statusBadgeVariant(action) {
-  if (action.kind === 'exec' && actionExecEnabled.value === false) return 'warn'
-  return action.is_enabled ? 'ok' : ''
-}
-
 async function fetchIcons() {
   try {
     const { data } = await listActionIcons()
-    // Prefer a limit from an already-existing endpoint when present; else fallback.
     applyBodyLimitFromPayload(data)
     if (Array.isArray(data)) {
       icons.value = data
-      // Legacy bare-array shape has no flag — leave unknown.
     } else if (data && typeof data === 'object' && Array.isArray(data.icons)) {
       icons.value = data.icons
-      if (typeof data.action_exec_enabled === 'boolean') {
-        actionExecEnabled.value = data.action_exec_enabled
-      }
-      // Absent / non-boolean flag ⇒ remain unknown (no false claim).
     } else {
       icons.value = []
     }
   } catch (e) {
-    // Keep actionExecEnabled as null so the list falls back to 啟用/停用 only.
     setFeedback('danger', apiDetail(e) || '載入圖示清單失敗')
   }
 }
@@ -720,14 +627,11 @@ function openCreateModal() {
 
 function openEditModal(action) {
   editingId.value = action.id
-  const redacted = !authStore.isOwner
   Object.assign(form, {
     name: action.name || '',
     label: action.label || '',
     icon: action.icon || '',
-    kind: action.kind || 'declarative',
-    result_mode: action.result_mode || 'to_model',
-    body: redacted ? '' : (action.body || ''),
+    body: action.body || '',
     choices: Array.isArray(action.choices)
       ? action.choices.map((c) => ({
           id: c.id || '',
@@ -794,37 +698,22 @@ async function handleSubmitEditor() {
     return
   }
 
-  if (!bodyRedacted.value && form.body.length > maxBodyChars.value) {
+  if (form.body.length > maxBodyChars.value) {
     editorError.value = `body 超過上限（${maxBodyChars.value}）`
     return
-  }
-
-  if (form.kind === 'exec') {
-    const ok = await confirm({
-      title: '確認建立／儲存 exec 動作',
-      message:
-        '此動作會在平台行程內以容器權限執行，沒有沙箱。能撰寫 exec 動作的人，等同於能把程式部署到主機的人。確定繼續？',
-      danger: true,
-      confirmText: '仍要儲存',
-    })
-    if (!ok) return
   }
 
   const payload = {
     name: form.name.trim(),
     label: form.label.trim(),
     icon: form.icon,
-    kind: form.kind,
-    result_mode: form.result_mode,
+    body: form.body,
     choices: buildChoicesPayload(),
     notes: (form.notes || '').trim() || null,
     is_enabled: !!form.is_enabled,
   }
 
-  // Never write the redaction placeholder back.
-  if (!bodyRedacted.value) {
-    payload.body = form.body
-  } else if (!editingId.value) {
+  if (!payload.body?.trim()) {
     editorError.value = '缺少動作內容（body）'
     return
   }
@@ -835,10 +724,6 @@ async function handleSubmitEditor() {
       await updateMessageAction(editingId.value, payload)
       setFeedback('ok', `已更新「${payload.name}」（版本遞增）`)
     } else {
-      if (!payload.body?.trim()) {
-        editorError.value = '缺少動作內容（body）'
-        return
-      }
       await createMessageAction(payload)
       setFeedback('ok', `已建立「${payload.name}」`)
     }
@@ -1090,38 +975,6 @@ onMounted(async () => {
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
 .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-3); }
 
-.seg {
-  display: inline-flex; border: var(--border-w) solid var(--c-border); overflow: hidden;
-}
-.seg__opt {
-  background: transparent; border: 0; padding: 6px 12px; cursor: pointer;
-  color: var(--c-fg-2); font-size: var(--t-xs);
-}
-.seg__opt.is-on { background: var(--c-accent-soft); color: var(--c-accent-strong); font-weight: 500; }
-
-.exec-warn {
-  border: var(--border-w) solid var(--c-danger);
-  background: var(--c-danger-soft, rgba(180, 40, 40, 0.08));
-  padding: 12px 14px;
-}
-.exec-warn__title {
-  color: var(--c-danger); font-weight: 600; font-size: var(--t-sm); margin-bottom: 8px;
-}
-.exec-warn__body {
-  margin: 0 0 8px; font-size: var(--t-xs); color: var(--c-fg-1); line-height: 1.55;
-}
-.exec-warn__body code { font-family: var(--font-mono); font-size: var(--t-2xs); }
-.exec-warn__anti {
-  margin: 0; font-size: var(--t-2xs); color: var(--c-fg-2); line-height: 1.5;
-  border-top: var(--border-w) solid var(--c-border); padding-top: 8px;
-}
-.exec-warn__anti + .exec-warn__anti { margin-top: 8px; }
-.exec-warn__anti code { font-family: var(--font-mono); font-size: var(--t-2xs); }
-
-.body-redacted {
-  padding: 10px 12px; border: var(--border-w) dashed var(--c-border);
-  color: var(--c-fg-2); font-size: var(--t-xs); margin-bottom: 6px;
-}
 .term-textarea--code { font-family: var(--font-mono); font-size: var(--t-xs); }
 .body-count {
   margin-top: 4px; text-align: right; font-size: var(--t-2xs); color: var(--c-fg-3);

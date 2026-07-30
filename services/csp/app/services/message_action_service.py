@@ -1,14 +1,17 @@
 """OW-3 message-action CRUD, visibility, invoke
-(docs/plans/ow3-message-actions-blueprint.md §Q1–Q3 / §Q9).
+(docs/plans/ow3-message-actions-blueprint.md §Q1–Q2 / §Q9).
 
 Authoring audit = fail-closed (commit=False + return-check → None ⇒ 500 +
 rollback, same transaction; P1.4 idiom). Invoke audit = write-ahead
-(committed BEFORE execution). Per-user rate limit runs immediately after
+(committed BEFORE render return). Per-user rate limit runs immediately after
 action resolution and before any refusal audit so throttle loops cannot
 flood ``message_action_invoke_refused`` (429 itself is unrecorded).
 Classification / access / not-branchable refusals write
 ``message_action_invoke_refused`` (commit=True, fail-closed) before the
-gate HTTPException. exec_result = fail-soft after.
+gate HTTPException.
+
+Declarative only: server renders the prompt; the client dispatches through
+the existing chat path. No in-process execution surface.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -37,16 +40,13 @@ from app.schemas.contracts.classification import (
 )
 from app.schemas.message_action import (
     ALLOWED_ACTION_ICONS,
-    ActionKind,
     BindingSpec,
     ChoiceSpec,
     MessageActionCreate,
     MessageActionUpdate,
-    ResultMode,
 )
-from app.services import message_action_exec as exec_mod
-from app.services.audit_service import log_audit_event, parse_metadata
-from app.services.auth_service import is_owner
+from app.services.audit_service import log_audit_event, serialize_audit_log
+from app.services.auth_service import is_admin_tier
 from app.services.conversation_service import (
     _check_access,
     _require_branchable,
@@ -55,7 +55,6 @@ from app.services.conversation_service import (
 logger = logging.getLogger(__name__)
 
 RESOURCE_TYPE = "message_action"
-BODY_REDACTED = "<owner-only>"
 _MAX_CHOICES = 20
 _MAX_INPUT_CHARS = 2000
 
@@ -89,32 +88,6 @@ def render_template(
     """
     values = {"content": content, "choice": choice, "input": input}
     return _TEMPLATE_TOKEN_RE.sub(lambda m: values[m.group(1)], body)
-
-
-def _validate_kind(kind: str) -> str:
-    allowed = {k.value for k in ActionKind}
-    if kind not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"未知的動作類型 '{kind}'"
-                f"（可用：{', '.join(sorted(allowed))}）"
-            ),
-        )
-    return kind
-
-
-def _validate_result_mode(mode: str) -> str:
-    allowed = {m.value for m in ResultMode}
-    if mode not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"未知的結果模式 '{mode}'"
-                f"（可用：{', '.join(sorted(allowed))}）"
-            ),
-        )
-    return mode
 
 
 def _validate_icon(icon: str) -> str:
@@ -152,12 +125,10 @@ def _validate_choices(choices: list[ChoiceSpec] | list[dict] | None) -> list[dic
     return out
 
 
-def _validate_body(body: str, kind: str) -> None:
+def _validate_body(body: str) -> None:
     max_chars = int(settings.ANILA_ACTION_MAX_BODY_CHARS)
     if len(body) > max_chars:
         raise HTTPException(status_code=413, detail="動作內容過大")
-    if kind == ActionKind.EXEC.value:
-        exec_mod.validate_source(body)
 
 
 def _get_or_404(db: Session, action_id: int) -> MessageAction:
@@ -165,6 +136,27 @@ def _get_or_404(db: Session, action_id: int) -> MessageAction:
     if not row:
         raise HTTPException(status_code=404, detail="動作不存在")
     return row
+
+
+def _may_modify_action(action: MessageAction, actor: User) -> bool:
+    """True when actor is admin-tier or the action's author."""
+    if is_admin_tier(actor):
+        return True
+    return action.created_by_user_id == actor.id
+
+
+def _require_action_author_or_admin(action: MessageAction, actor: User) -> None:
+    """Developers may mutate only actions they created; admin-tier may any.
+
+    Refusal uses the same 403 shape as ``require_admin`` so ownership is
+    not a distinct probe signal against the authoring surface.
+    """
+    if _may_modify_action(action, actor):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="需要管理員權限",
+    )
 
 
 def _audit_fail_closed(
@@ -259,8 +251,6 @@ def _snapshot_meta(
         "name": action.name,
         "label": action.label,
         "icon": action.icon,
-        "kind": action.kind,
-        "result_mode": action.result_mode,
         "body": action.body,
         "body_sha256": action.body_sha256,
         "choices": action.choices or [],
@@ -297,11 +287,9 @@ def create_action(
     actor: User,
     ip_address: str | None = None,
 ) -> MessageAction:
-    kind = _validate_kind(payload.kind)
-    result_mode = _validate_result_mode(payload.result_mode)
     icon = _validate_icon(payload.icon)
     choices = _validate_choices(payload.choices)
-    _validate_body(payload.body, kind)
+    _validate_body(payload.body)
 
     exists = (
         db.query(MessageAction)
@@ -316,8 +304,6 @@ def create_action(
         name=payload.name,
         label=payload.label,
         icon=icon,
-        kind=kind,
-        result_mode=result_mode,
         body=payload.body,
         body_sha256=body_sha256(payload.body),
         choices=choices,
@@ -355,13 +341,10 @@ def update_action(
     ip_address: str | None = None,
 ) -> MessageAction:
     row = _get_or_404(db, action_id)
+    _require_action_author_or_admin(row, actor)
     previous_sha = row.body_sha256
 
     data = payload.model_dump(exclude_unset=True)
-    if "kind" in data:
-        data["kind"] = _validate_kind(data["kind"])
-    if "result_mode" in data:
-        data["result_mode"] = _validate_result_mode(data["result_mode"])
     if "icon" in data:
         data["icon"] = _validate_icon(data["icon"])
     if "choices" in data:
@@ -381,17 +364,13 @@ def update_action(
         if clash:
             raise HTTPException(status_code=400, detail="名稱已存在")
 
-    new_kind = data.get("kind", row.kind)
     new_body = data.get("body", row.body)
-    _validate_body(new_body, new_kind)
+    _validate_body(new_body)
 
     for key, value in data.items():
         setattr(row, key, value)
     if "body" in data:
         row.body_sha256 = body_sha256(row.body)
-    # Version bumps on every update — always drop compiled entries so the
-    # cache cannot accumulate stale (action_id, version) keys.
-    exec_mod.invalidate_cache(row.id)
     row.version = int(row.version) + 1
     row.updated_by_user_id = actor.id
     row.updated_at = datetime.now(timezone.utc)
@@ -419,6 +398,7 @@ def delete_action(
     ip_address: str | None = None,
 ) -> None:
     row = _get_or_404(db, action_id)
+    _require_action_author_or_admin(row, actor)
     bindings = (
         db.query(MessageActionBinding)
         .filter(MessageActionBinding.action_id == row.id)
@@ -427,7 +407,6 @@ def delete_action(
     meta = _snapshot_meta(row, bindings=_binding_dicts(bindings))
     name = row.name
     rid = row.id
-    exec_mod.invalidate_cache(rid)
     db.delete(row)
     db.flush()
     _audit_fail_closed(
@@ -450,15 +429,18 @@ def list_actions_admin(db: Session) -> list[MessageAction]:
     )
 
 
-def serialize_admin(action: MessageAction, *, caller: User) -> dict:
-    body = action.body if is_owner(caller) else BODY_REDACTED
+def serialize_admin(action: MessageAction, *, actor: User) -> dict:
+    """Management list/detail shape.
+
+    Body is omitted when the caller may not modify the action — same
+    authorship-or-administrator gate as bindings / update / delete.
+    """
+    body = action.body if _may_modify_action(action, actor) else None
     return {
         "id": action.id,
         "name": action.name,
         "label": action.label,
         "icon": action.icon,
-        "kind": action.kind,
-        "result_mode": action.result_mode,
         "body": body,
         "body_sha256": action.body_sha256,
         "choices": action.choices or [],
@@ -475,8 +457,14 @@ def serialize_admin(action: MessageAction, *, caller: User) -> dict:
 # ── Bindings ─────────────────────────────────────────────────────────────────
 
 
-def list_bindings(db: Session, action_id: int) -> list[MessageActionBinding]:
-    _get_or_404(db, action_id)
+def list_bindings(
+    db: Session,
+    action_id: int,
+    *,
+    actor: User,
+) -> list[MessageActionBinding]:
+    action = _get_or_404(db, action_id)
+    _require_action_author_or_admin(action, actor)
     return (
         db.query(MessageActionBinding)
         .filter(MessageActionBinding.action_id == action_id)
@@ -494,6 +482,7 @@ def replace_bindings(
     ip_address: str | None = None,
 ) -> list[MessageActionBinding]:
     action = _get_or_404(db, action_id)
+    _require_action_author_or_admin(action, actor)
     before = _binding_dicts(
         db.query(MessageActionBinding)
         .filter(MessageActionBinding.action_id == action_id)
@@ -567,12 +556,19 @@ def replace_bindings(
 
 
 def _user_visible_action_ids(db: Session, user: User) -> set[int]:
-    """Union of role / department-subtree / user bindings. Fail-closed empty."""
-    if is_owner(user):
-        rows = db.query(MessageAction.id).all()
-        return {r[0] for r in rows}
+    """A person sees an action when it is bound to them or when they authored it.
 
+    Same rule for every role — no owner/admin bypass. Fail-closed empty
+    when neither authorship nor any binding matches.
+    """
     visible: set[int] = set()
+
+    authored = (
+        db.query(MessageAction.id)
+        .filter(MessageAction.created_by_user_id == user.id)
+        .all()
+    )
+    visible |= {r[0] for r in authored}
 
     role_ids = (
         db.query(MessageActionBinding.action_id)
@@ -626,29 +622,21 @@ def list_visible(db: Session, user: User) -> list[MessageAction]:
     ids = _user_visible_action_ids(db, user)
     if not ids:
         return []
-    q = (
+    return (
         db.query(MessageAction)
         .filter(
             MessageAction.id.in_(ids),
             MessageAction.is_enabled.is_(True),
         )
         .order_by(MessageAction.id.asc())
+        .all()
     )
-    rows = q.all()
-    if not settings.ANILA_ENABLE_ACTION_EXEC:
-        rows = [r for r in rows if r.kind != ActionKind.EXEC.value]
-    return rows
 
 
 def resolve_for_invoke(db: Session, action_id: int, user: User) -> MessageAction:
-    """404 for unknown / disabled / not-visible / exec-flag-off (no oracle)."""
+    """404 for unknown / disabled / not-visible (no oracle)."""
     row = db.query(MessageAction).filter(MessageAction.id == action_id).first()
     if row is None or not row.is_enabled:
-        raise HTTPException(status_code=404, detail="動作不存在")
-    if (
-        row.kind == ActionKind.EXEC.value
-        and not settings.ANILA_ENABLE_ACTION_EXEC
-    ):
         raise HTTPException(status_code=404, detail="動作不存在")
     visible = _user_visible_action_ids(db, user)
     if row.id not in visible:
@@ -794,7 +782,7 @@ async def invoke_action(
             ),
         )
 
-    # 6. ANILALM branch exclusion (before any execution/render)
+    # 6. ANILALM branch exclusion (before any render)
     try:
         _require_branchable(conv)
     except HTTPException as exc:
@@ -818,9 +806,15 @@ async def invoke_action(
     if user_input is not None and len(user_input) > _MAX_INPUT_CHARS:
         raise HTTPException(status_code=413, detail="輸入內容過長")
 
-    # 8. write-ahead audit (committed BEFORE execution)
+    # 8. write-ahead audit (committed BEFORE returning the rendered prompt)
     invocation_id = uuid.uuid4().hex
     content_text = msg.content or ""
+    rendered = render_template(
+        action.body,
+        content=content_text,
+        choice=choice_prompt,
+        input=user_input or "",
+    )
     invoke_meta: dict[str, Any] = {
         "invocation_id": invocation_id,
         "version": action.version,
@@ -829,17 +823,9 @@ async def invoke_action(
         "conversation_id": conversation_id,
         "message_id": message_id,
         "conversation_level": level.value,
+        "rendered_prompt_sha256": body_sha256(rendered),
+        "rendered_prompt_length": len(rendered),
     }
-    rendered_for_audit: str | None = None
-    if action.kind == ActionKind.DECLARATIVE.value:
-        rendered_for_audit = render_template(
-            action.body,
-            content=content_text,
-            choice=choice_prompt,
-            input=user_input or "",
-        )
-        invoke_meta["rendered_prompt_sha256"] = body_sha256(rendered_for_audit)
-        invoke_meta["rendered_prompt_length"] = len(rendered_for_audit)
     audit_row = log_audit_event(
         db,
         actor=actor,
@@ -857,204 +843,12 @@ async def invoke_action(
             detail="稽核紀錄寫入失敗，動作未執行",
         )
 
-    # 9. execute / render (after write-ahead)
-    if action.kind == ActionKind.DECLARATIVE.value:
-        return {
-            "invocation_id": invocation_id,
-            "action_id": action.id,
-            "version": action.version,
-            "kind": action.kind,
-            "outcome": "prompt",
-            "prompt": rendered_for_audit,
-            "output": None,
-            "truncated": False,
-            "duration_ms": None,
-        }
-
-    # exec path
-    ctx = {
-        "message": content_text,
-        "message_id": message_id,
-        "conversation_id": conversation_id,
-        "choice": choice_prompt,
-        "input": user_input or "",
-        "user": {
-            "id": actor.id,
-            "username": actor.username,
-            "department_id": actor.department_id,
-        },
-    }
-    started = time.monotonic()
-    truncated = False
-    output = ""
-    duration_ms = 0
-    error_type: str | None = None
-    tb: str | None = None
-    try:
-        output, truncated, duration_ms = await exec_mod.run_action(
-            action_id=action.id,
-            version=action.version,
-            source=action.body,
-            ctx=ctx,
-        )
-    except exec_mod.NonStrReturnError:
-        error_type = "non_str_return"
-        _log_exec_result_failsoft(
-            db,
-            actor=actor,
-            action=action,
-            invocation_id=invocation_id,
-            duration_ms=int((time.monotonic() - started) * 1000),
-            output_chars=0,
-            truncated=False,
-            error_type=error_type,
-            traceback_text=None,
-            status="failure",
-            ip_address=ip_address,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail="動作回傳值必須是字串",
-        )
-    except HTTPException as exc:
-        if exc.status_code == 504:
-            error_type = "timeout"
-            tb = None
-            _log_exec_result_failsoft(
-                db,
-                actor=actor,
-                action=action,
-                invocation_id=invocation_id,
-                duration_ms=int((time.monotonic() - started) * 1000),
-                output_chars=0,
-                truncated=False,
-                error_type=error_type,
-                traceback_text=None,
-                status="failure",
-                ip_address=ip_address,
-            )
-            raise
-        if exc.status_code == 503:
-            raise
-        # Unexpected HTTPException from runner — re-raise
-        raise
-    except BaseException as exc:
-        # Catch SystemExit / KeyboardInterrupt etc. after write-ahead.
-        # For normal Exception → 502; BaseException subclasses re-raise
-        # after recording so test 27 (SystemExit) still has invoke row.
-        error_type = type(exc).__name__
-        tb = exec_mod.format_traceback()
-        _log_exec_result_failsoft(
-            db,
-            actor=actor,
-            action=action,
-            invocation_id=invocation_id,
-            duration_ms=int((time.monotonic() - started) * 1000),
-            output_chars=0,
-            truncated=False,
-            error_type=error_type,
-            traceback_text=tb,
-            status="failure",
-            ip_address=ip_address,
-        )
-        if isinstance(exc, Exception):
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"動作執行失敗（代號 {invocation_id}），"
-                    "請聯繫平台管理員"
-                ),
-            ) from exc
-        raise
-
-    _log_exec_result_failsoft(
-        db,
-        actor=actor,
-        action=action,
-        invocation_id=invocation_id,
-        duration_ms=duration_ms,
-        output_chars=len(output),
-        truncated=truncated,
-        error_type=None,
-        traceback_text=None,
-        status="success",
-        ip_address=ip_address,
-    )
-
-    if action.result_mode == ResultMode.DIRECT.value:
-        return {
-            "invocation_id": invocation_id,
-            "action_id": action.id,
-            "version": action.version,
-            "kind": action.kind,
-            "outcome": "text",
-            "prompt": None,
-            "output": output,
-            "truncated": truncated,
-            "duration_ms": duration_ms,
-        }
     return {
         "invocation_id": invocation_id,
         "action_id": action.id,
         "version": action.version,
-        "kind": action.kind,
-        "outcome": "prompt",
-        "prompt": output,
-        "output": None,
-        "truncated": truncated,
-        "duration_ms": duration_ms,
+        "prompt": rendered,
     }
-
-
-def _log_exec_result_failsoft(
-    db: Session,
-    *,
-    actor: User,
-    action: MessageAction,
-    invocation_id: str,
-    duration_ms: int,
-    output_chars: int,
-    truncated: bool,
-    error_type: str | None,
-    traceback_text: str | None,
-    status: str,
-    ip_address: str | None,
-) -> None:
-    meta = {
-        "invocation_id": invocation_id,
-        "duration_ms": duration_ms,
-        "output_chars": output_chars,
-        "truncated": truncated,
-        "error_type": error_type,
-        "traceback": traceback_text,
-        "version": action.version,
-        "body_sha256": action.body_sha256,
-    }
-    try:
-        row = log_audit_event(
-            db,
-            actor=actor,
-            action="message_action_exec_result",
-            resource_type=RESOURCE_TYPE,
-            resource_id=action.id,
-            status=status,
-            detail=f"訊息動作「{action.name}」執行結果",
-            metadata=meta,
-            ip_address=ip_address,
-            commit=True,
-        )
-        if row is None:
-            logger.exception(
-                "message_action_exec_result audit returned None "
-                "invocation_id=%s",
-                invocation_id,
-            )
-    except Exception:
-        logger.exception(
-            "message_action_exec_result audit failed "
-            "invocation_id=%s",
-            invocation_id,
-        )
 
 
 # ── Export ───────────────────────────────────────────────────────────────────
@@ -1069,7 +863,7 @@ def export_audit(
     limit: int,
     ip_address: str | None = None,
 ) -> list[dict]:
-    """Owner-only NDJSON export of message-action audit rows + export audit."""
+    """Admin+ NDJSON export; redaction matches ``GET /api/audit-logs``."""
     actions = (
         "message_action_create",
         "message_action_update",
@@ -1077,7 +871,6 @@ def export_audit(
         "message_action_bindings_replace",
         "message_action_invoke",
         "message_action_invoke_refused",
-        "message_action_exec_result",
         "message_action_audit_export",
     )
     q = (
@@ -1109,21 +902,9 @@ def export_audit(
 
     out: list[dict] = []
     for log in rows:
-        out.append(
-            {
-                "id": log.id,
-                "actor_user_id": log.actor_user_id,
-                "actor_username": log.actor_username,
-                "action": log.action,
-                "resource_type": log.resource_type,
-                "resource_id": log.resource_id,
-                "status": log.status,
-                "detail": log.detail,
-                "ip_address": log.ip_address,
-                "metadata": parse_metadata(log.metadata_json),
-                "created_at": (
-                    log.created_at.isoformat() if log.created_at else None
-                ),
-            }
-        )
+        # Same owner/non-owner treatment as the audit listing endpoint.
+        item = serialize_audit_log(log, caller=actor)
+        created = item.get("created_at")
+        item["created_at"] = created.isoformat() if created else None
+        out.append(item)
     return out

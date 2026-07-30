@@ -2,8 +2,8 @@
 // Contract: docs/plans/ow3-message-actions-blueprint.md §Q5 / §Q7 / §4.
 //
 // Visibility and invoke are server-authoritative. This module never evaluates
-// action bodies; declarative prompts stream through the existing chat path,
-// and exec direct results fill a sibling branch without claiming isolation.
+// action bodies; the server renders a prompt template and the client dispatches
+// through the existing chat path into an OW-1 sibling branch.
 
 import {
   IconCopy,
@@ -76,28 +76,19 @@ export function needsPicker(action) {
 }
 
 /**
- * Provenance blob stored on the branched assistant message.
- * Shape: metadata.action = { id, name, version, kind, choice_id, outcome, truncated }.
+ * Quiet provenance blob stored on the branched assistant message.
+ * Shape: metadata.action = { id, name, version, choice_id }.
  * Pass `action.version` from the invoke response (visible list omits version).
- * `outcome` is the invoke result ('text' | 'prompt') — badge only for 'text'.
  */
-export function buildActionMetadata(action, choice, extras = {}) {
+export function buildActionMetadata(action, choice) {
   return {
     action: {
       id: action?.id,
       name: action?.name,
       version: action?.version,
-      kind: action?.kind,
       choice_id: choice?.id ?? null,
-      outcome: extras.outcome ?? null,
-      truncated: Boolean(extras.truncated),
     },
   };
-}
-
-/** Exec-direct (outcome === 'text') results get the non-model provenance badge. */
-export function isDirectActionOutcome(actionMeta) {
-  return actionMeta?.outcome === "text";
 }
 
 /**
@@ -126,7 +117,7 @@ function buildInvokePayload({ conversationId, messageId, choice }) {
  * Shipped invoke + fillback orchestration (no React).
  *
  * Caller owns stopStreaming + placeholder splice. This owns:
- * invoke → outcome branch → persist (branch only) → refreshActivePath;
+ * invoke → stream rendered prompt → persist (branch only) → refreshActivePath;
  * restore-on-every-failure via onRestore / onError.
  *
  * @param {object} deps
@@ -139,7 +130,6 @@ function buildInvokePayload({ conversationId, messageId, choice }) {
  * @param {Function} deps.runStream - async (payload) =>
  *   { ok, content, finalMeta?, accumulatedTrace?, accumulatedReasoning?, error? }
  *   Caller wires UI updates inside; on !ok caller may already have restored.
- * @param {Function} [deps.onDirectText] - (content, actionMetadata) => void
  * @param {Function} deps.branchMessage - conversations.branchMessage
  * @param {Function} [deps.refreshActivePath] - async (convId) => void
  * @param {Function} [deps.onRestore] - () => void — clear streaming flags / splice back
@@ -154,7 +144,6 @@ export async function runActionInvokeFillback({
   messageId,
   model,
   runStream,
-  onDirectText,
   branchMessage,
   refreshActivePath,
   onRestore,
@@ -176,10 +165,6 @@ export async function runActionInvokeFillback({
   const actionMeta = buildActionMetadata(
     { ...action, version: invokeResult.version },
     choice,
-    {
-      outcome: invokeResult.outcome,
-      truncated: invokeResult.truncated,
-    },
   );
 
   let finalText = "";
@@ -189,32 +174,26 @@ export async function runActionInvokeFillback({
   let branchPersisted = false;
 
   try {
-    if (invokeResult.outcome === "prompt") {
-      const payload = {
-        model,
-        messages: buildDeclarativeActionMessages(invokeResult.prompt || ""),
-      };
-      const streamPhase = await runStream(payload);
-      if (!streamPhase?.ok) {
-        // runStream is responsible for restoring UI (sanitizeRestoredMessages).
-        onError?.(
-          streamPhase?.error?.message
-            ? `自訂動作失敗：${streamPhase.error.message}`
-            : "自訂動作失敗",
-        );
-        return { ok: false, error: streamPhase?.error || new Error("自訂動作失敗") };
-      }
-      finalText = streamPhase.content || "";
-      finalMeta = streamPhase.finalMeta ?? null;
-      accumulatedTrace = Array.isArray(streamPhase.accumulatedTrace)
-        ? streamPhase.accumulatedTrace
-        : [];
-      accumulatedReasoning = streamPhase.accumulatedReasoning || "";
-    } else {
-      // outcome === 'text' (exec direct) — no model call.
-      finalText = typeof invokeResult.output === "string" ? invokeResult.output : "";
-      onDirectText?.(finalText, actionMeta);
+    const payload = {
+      model,
+      messages: buildDeclarativeActionMessages(invokeResult.prompt || ""),
+    };
+    const streamPhase = await runStream(payload);
+    if (!streamPhase?.ok) {
+      // runStream is responsible for restoring UI (sanitizeRestoredMessages).
+      onError?.(
+        streamPhase?.error?.message
+          ? `自訂動作失敗：${streamPhase.error.message}`
+          : "自訂動作失敗",
+      );
+      return { ok: false, error: streamPhase?.error || new Error("自訂動作失敗") };
     }
+    finalText = streamPhase.content || "";
+    finalMeta = streamPhase.finalMeta ?? null;
+    accumulatedTrace = Array.isArray(streamPhase.accumulatedTrace)
+      ? streamPhase.accumulatedTrace
+      : [];
+    accumulatedReasoning = streamPhase.accumulatedReasoning || "";
 
     const persistMeta = {
       ...(buildPersistMeta(finalMeta, {

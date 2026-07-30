@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import enum
 import re
 from datetime import datetime
 from typing import Any, Literal, Optional
@@ -32,16 +31,6 @@ ALLOWED_ACTION_ICONS: frozenset[str] = frozenset(
 )
 
 _CHOICE_ID_RE = re.compile(r"^[a-z0-9_-]{1,40}$")
-
-
-class ActionKind(str, enum.Enum):
-    DECLARATIVE = "declarative"
-    EXEC = "exec"
-
-
-class ResultMode(str, enum.Enum):
-    TO_MODEL = "to_model"
-    DIRECT = "direct"
 
 
 class ChoiceSpec(BaseModel):
@@ -94,8 +83,6 @@ class MessageActionCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     label: str = Field(..., min_length=1, max_length=120)
     icon: str = Field(..., min_length=1, max_length=40)
-    kind: str = Field(..., min_length=1, max_length=20)
-    result_mode: str = Field(default="to_model", min_length=1, max_length=20)
     body: str = Field(..., min_length=1)
     choices: list[ChoiceSpec] = Field(default_factory=list)
     notes: Optional[str] = None
@@ -106,8 +93,6 @@ class MessageActionUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     label: Optional[str] = Field(default=None, min_length=1, max_length=120)
     icon: Optional[str] = Field(default=None, min_length=1, max_length=40)
-    kind: Optional[str] = Field(default=None, min_length=1, max_length=20)
-    result_mode: Optional[str] = Field(default=None, min_length=1, max_length=20)
     body: Optional[str] = Field(default=None, min_length=1)
     choices: Optional[list[ChoiceSpec]] = None
     notes: Optional[str] = None
@@ -121,23 +106,19 @@ class MessageActionOut(BaseModel):
     name: str
     label: str
     icon: str
-    kind: str
-    result_mode: str
     choices: list[Any] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
 
 class MessageActionAdminOut(BaseModel):
-    """Admin/owner management read. Non-owner body redacted as '<owner-only>'."""
+    """Management read — body only when caller may modify (author or admin)."""
 
     id: int
     name: str
     label: str
     icon: str
-    kind: str
-    result_mode: str
-    body: str
+    body: Optional[str] = None
     body_sha256: str
     choices: list[Any] = Field(default_factory=list)
     notes: Optional[str] = None
@@ -180,9 +161,4 @@ class InvokeResponse(BaseModel):
     invocation_id: str
     action_id: int
     version: int
-    kind: str
-    outcome: Literal["prompt", "text"]
-    prompt: Optional[str] = None
-    output: Optional[str] = None
-    truncated: bool = False
-    duration_ms: Optional[int] = None
+    prompt: str

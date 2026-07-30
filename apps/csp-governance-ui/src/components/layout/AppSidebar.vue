@@ -69,6 +69,7 @@ const menuGroups = computed(() => {
         { path: '/developer/guide', label: '開發指南' },
         { path: '/developer/agents', label: 'Agent' },
         { path: '/knowledge-collections', label: '知識庫' },
+        { path: '/message-actions', label: '自訂動作' },
       ],
     })
   }
@@ -86,10 +87,6 @@ const menuGroups = computed(() => {
       { path: '/service-clients', label: '服務客戶端' },
       { path: '/trusted-hosts', label: '信任主機' },
     ]
-    // OW-3 WP-C — authoring console; owner-only nav (server still enforces).
-    if (authStore.isOwner) {
-      adminItems.push({ path: '/message-actions', label: '自訂動作' })
-    }
     groups.push({
       label: '管理',
       items: adminItems,
