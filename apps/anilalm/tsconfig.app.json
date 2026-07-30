@@ -20,5 +20,10 @@
     "paths": { "@/*": ["src/*"] },
     "outDir": "dist"
   },
-  "include": ["src"]
+  "include": ["src"],
+  // 測試檔不進生產建置:Docker build 只安裝 production deps,`tsc -b` 卻會去
+  // 型別檢查它們,於是 `import ... from "vitest"` 讓整個映像建不起來
+  // (2026-07-31 實例:時區那包加了一個 .test.ts,anilalm 映像當場失敗,
+  // 而本機因為借用 node_modules 有 vitest 所以測不出來)。
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/__tests__/**"]
 }
