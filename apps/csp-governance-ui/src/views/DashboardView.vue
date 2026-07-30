@@ -58,8 +58,20 @@
           <router-link to="/usage" class="ops__link">→ 用量分析</router-link>
           <router-link v-if="authStore.isDeveloper" to="/developer/agents" class="ops__link">→ 註冊 Agent</router-link>
           <router-link v-if="authStore.isAdmin" to="/audit-logs" class="ops__link">→ 稽核紀錄</router-link>
+          <router-link v-if="authStore.isAdmin" to="/feedback" class="ops__link">→ 使用者回饋</router-link>
         </div>
       </TermBox>
+    </section>
+
+    <!-- P3.3 / P3.4 companion — 服務健康總覽 + 告警摘要（admin only） ---- -->
+    <section v-if="authStore.isAdmin" class="dash-grid">
+      <ServiceHealthCard
+        :overview="healthOverview"
+        :loading="healthLoading"
+        :page-error="healthError"
+        @refresh="fetchHealthOverview"
+      />
+      <AlertSummaryCard :raw="alertSummary" :page-error="alertError" />
     </section>
 
     <!-- Sprint 8 X / Phase H — admin observability strip ---------------- -->
@@ -142,9 +154,14 @@ import { ref, computed, onMounted } from 'vue'
 import { useUsageStore } from '../stores/usage'
 import { useAuthStore } from '../stores/auth'
 import { listPlatformLinks } from '../api/platformLinks'
+import { getHealthOverview } from '../api/health'
+import { getAlertSummary } from '../api/alerts'
+import { extractError } from '../api/errors'
 import client from '../api/client'
 import UsageLineChart from '../components/charts/UsageLineChart.vue'
 import PlatformCard from '../components/dashboard/PlatformCard.vue'
+import ServiceHealthCard from '../components/dashboard/ServiceHealthCard.vue'
+import AlertSummaryCard from '../components/dashboard/AlertSummaryCard.vue'
 import TermBox from '../components/cli/TermBox.vue'
 import TermStat from '../components/cli/TermStat.vue'
 import TermEmpty from '../components/cli/TermEmpty.vue'
@@ -171,6 +188,41 @@ const legacyTokenLoading = ref(false)
 const legacyTokenTried = ref(false) // avoids a flash of "failed" before first fetch
 const legacyTokenError = ref('')
 const topAgents = ref([])
+
+// P3.3 / attic W3-3⑦④ — 服務健康 + 告警摘要。
+// 刻意不吃 dashboard 靜默失敗慣例:留白會被讀成「一切正常」。
+const healthOverview = ref(null)
+const healthLoading = ref(false)
+const healthError = ref('')
+const alertSummary = ref(null)
+const alertError = ref('')
+
+async function fetchHealthOverview() {
+  if (!authStore.isAdmin) return
+  healthLoading.value = true
+  healthError.value = ''
+  try {
+    const { data } = await getHealthOverview()
+    healthOverview.value = data
+  } catch (e) {
+    healthOverview.value = null
+    healthError.value = extractError(e, '載入服務健康總覽失敗')
+  } finally {
+    healthLoading.value = false
+  }
+}
+
+async function fetchAlertSummary() {
+  if (!authStore.isAdmin) return
+  alertError.value = ''
+  try {
+    const { data } = await getAlertSummary()
+    alertSummary.value = data
+  } catch (e) {
+    alertSummary.value = null
+    alertError.value = extractError(e, '載入告警摘要失敗')
+  }
+}
 
 const legacyTokenHint = computed(() => {
   if (legacyTokenLoading.value || !legacyTokenTried.value) return '載入中'
@@ -245,10 +297,14 @@ async function refresh() {
   loading.value = true
   loadError.value = ''
   try {
-    // Admin widgets settle on their own (terminal error on the cutover card).
-    // Usage KPIs and platform links also settle independently so a links
-    // outage cannot masquerade as "用量載入失敗 → 全 0/—".
+    // 每個資料來源各自沉澱,一個壞掉不能讓其他的看起來像「真的是 0」。
+    // 這是 2026-07-31 修掉的缺陷:抓取失敗時 KPI 落到 `|| 0`,長得跟安靜的一天
+    // 一模一樣;而當時的註解宣稱「錯誤會由 alert center 呈現」——那句話是錯的,
+    // 攔截器只處理 401 refresh。
     const admin = fetchAdminWidgets()
+    // 健康總覽與告警摘要(P3.3)也獨立沉澱:健康探測掛掉不該讓用量看起來是 0。
+    const health = fetchHealthOverview().catch(() => {})
+    const alerts = fetchAlertSummary().catch(() => {})
 
     let usageOk = false
     try {
@@ -263,7 +319,7 @@ async function refresh() {
     } catch (e) {
       summaryLoaded.value = false
       chartData.value = null
-      loadError.value = `儀表板用量載入失敗：${errDetail(e)}`
+      loadError.value = `儀表板用量載入失敗:${errDetail(e)}`
     }
 
     try {
@@ -271,13 +327,12 @@ async function refresh() {
       platformLinks.value = Array.isArray(data) ? data : []
     } catch (e) {
       platformLinks.value = []
-      // Prefer the usage error if both failed; otherwise say links failed.
       if (!loadError.value) {
-        loadError.value = `平台連結載入失敗：${errDetail(e)}`
+        loadError.value = `平台連結載入失敗:${errDetail(e)}`
       }
     }
 
-    await admin
+    await Promise.all([admin, health, alerts])
     if (usageOk) refreshedAt.value = new Date()
   } finally {
     loading.value = false

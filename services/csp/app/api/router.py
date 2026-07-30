@@ -34,6 +34,7 @@ from app.api.ingestion import (
 )
 from app.api.jwks import router as jwks_router
 from app.api.classification_inventory import router as classification_inventory_router
+from app.api.admin import feedback_router, health_overview_router
 from app.modules.policy import router as policy_decisions_router
 from app.modules.tasks import router as tasks_router
 
@@ -80,3 +81,6 @@ api_router.include_router(artifacts_router)
 api_router.include_router(jwks_router)
 # 機敏分類盤點(doc 08 §15 Classification Inventory Before Cutover;admin/owner)。
 api_router.include_router(classification_inventory_router)
+# P3.3 服務健康總覽 + P3.4 使用者回饋(admin-tier)。
+api_router.include_router(health_overview_router)
+api_router.include_router(feedback_router)
