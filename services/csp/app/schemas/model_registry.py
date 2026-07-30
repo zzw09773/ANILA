@@ -81,6 +81,8 @@ class ModelResponse(BaseModel):
     api_version: str
     is_active: bool
     is_router_primary: bool = False
+    is_platform_embedding: bool = False
+    embedding_native_dim: int | None = None
     health_status: str
     health_checked_at: datetime | None
     description: str | None

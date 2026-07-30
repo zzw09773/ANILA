@@ -57,9 +57,13 @@ class CollectionCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     chunking_config: ChunkingConfig
-    embedding_model: str = Field(
-        default="nvidia/NV-embed-V2",
-        description="Embedding endpoint identifier; worker resolves to a credential.",
+    embedding_model: str | None = Field(
+        default=None,
+        description=(
+            "Embedding model name. When omitted, defaults to the platform's "
+            "designated embedding model (is_platform_embedding). Existing "
+            "collections keep their stored value and cannot change it."
+        ),
     )
     embedding_dim: int = Field(
         default=4000,
@@ -68,7 +72,7 @@ class CollectionCreate(BaseModel):
         description=(
             "Vector dimension used by ``document_chunks.embedding``. Must match "
             "the live schema column — currently halfvec(4000) per migration "
-            "0015. NV-embed-V2 native is 4096-d; the worker truncates to 4000."
+            "0015. Native widths above 4000 are truncated by the worker."
         ),
     )
 

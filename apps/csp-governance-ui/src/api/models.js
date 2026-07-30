@@ -35,6 +35,16 @@ export const setRouterPrimary = (id) =>
 export const unsetRouterPrimary = (id) =>
   client.post(`/api/models/${id}/unset-router-primary`)
 
+// P4.8 — 平台主 embedding（記憶／新建知識庫預設／ingestion-worker）。
+export const setPlatformEmbedding = (id) =>
+  client.post(`/api/models/${id}/set-platform-embedding`)
+
+export const unsetPlatformEmbedding = (id) =>
+  client.post(`/api/models/${id}/unset-platform-embedding`)
+
+export const getPlatformEmbedding = () =>
+  client.get('/api/models/platform-embedding')
+
 // P4.6 — 整批帶入上游 /v1/models listing（選已註冊端點的代表列）。
 export const importModelsFromEndpoint = (sourceModelId) =>
   client.post('/api/models/import', { source_model_id: sourceModelId })

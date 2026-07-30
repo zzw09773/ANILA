@@ -2,7 +2,8 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
   listModels, createModel, updateModel, deleteModel, activateModel, purgeModel, triggerHealthCheck,
-  setRouterPrimary, unsetRouterPrimary, testModelConnection, importModelsFromEndpoint,
+  setRouterPrimary, unsetRouterPrimary, setPlatformEmbedding, unsetPlatformEmbedding,
+  testModelConnection, importModelsFromEndpoint,
   activateCreatedFromImport,
 } from '../api/models'
 
@@ -69,6 +70,17 @@ export const useModelsStore = defineStore('models', () => {
     await fetchModels()
   }
 
+  async function setPlatformEmbed(id) {
+    const { data } = await setPlatformEmbedding(id)
+    await fetchModels()
+    return data
+  }
+
+  async function unsetPlatformEmbed(id) {
+    await unsetPlatformEmbedding(id)
+    await fetchModels()
+  }
+
   // P4.6 — 自已註冊端點整批帶入。回傳後端計數結果並刷新列表。
   async function importFromEndpoint(sourceModelId) {
     const { data } = await importModelsFromEndpoint(sourceModelId)
@@ -85,6 +97,7 @@ export const useModelsStore = defineStore('models', () => {
 
   return {
     models, loading, fetchModels, create, update, remove, activate, purge, checkHealth, test,
-    setPrimary, unsetPrimary, importFromEndpoint, activateCreated,
+    setPrimary, unsetPrimary, setPlatformEmbed, unsetPlatformEmbed,
+    importFromEndpoint, activateCreated,
   }
 })

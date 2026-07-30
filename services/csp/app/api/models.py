@@ -4,7 +4,7 @@ import json
 import logging
 
 import httpx
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_core.security import UnsafeEndpointError, validate_outbound_url, ENDPOINT_KIND_MODEL
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
 from sqlalchemy import or_
@@ -203,6 +203,10 @@ def _build_response(
         "api_version": model.api_version,
         "is_active": model.is_active,
         "is_router_primary": bool(model.is_router_primary),
+        "is_platform_embedding": bool(
+            getattr(model, "is_platform_embedding", False)
+        ),
+        "embedding_native_dim": getattr(model, "embedding_native_dim", None),
         # Slice 6a: always surface the five-state vocabulary; 'disabled' when
         # inactive, legacy online/connecting/offline normalized on read.
         "health_status": normalize_health_status(
@@ -1105,6 +1109,226 @@ def unset_router_primary(
     return _build_response(model, caller=admin, db=db)
 
 
+# ── P4.8 platform embedding designation ──────────────────────────────────────
+
+
+async def _probe_embedding_native_dim(model: ModelRegistry) -> int:
+    """Call the model's /v1/embeddings once and return len(vector).
+
+    Measured fact — never trust a configured value. Releases no DB
+    connection (caller owns the session lifecycle around this).
+    """
+    from anila_core.memory.long_term import EMBED_DIM
+    from app.services.proxy.headers import resolve_model_gateway_key
+
+    base = (model.endpoint_url or "").rstrip("/")
+    url = join_upstream_path(base, "/v1/embeddings")
+    try:
+        validate_outbound_url(url, endpoint_kind=ENDPOINT_KIND_MODEL)
+    except UnsafeEndpointError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"embedding 探測端點未通過 SSRF 守衛: {exc}",
+        ) from exc
+    headers: dict[str, str] = {}
+    key = resolve_model_gateway_key(model)
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                url,
+                json={"model": model.name, "input": ["anila-dim-probe"]},
+                headers=headers,
+            )
+            r.raise_for_status()
+            vec = r.json()["data"][0]["embedding"]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"探測 embedding 維度失敗: {type(exc).__name__}",
+        ) from exc
+    if not isinstance(vec, list) or not vec:
+        raise HTTPException(
+            status_code=502,
+            detail="embedding 探測回傳空向量",
+        )
+    n = len(vec)
+    if n < 1:
+        raise HTTPException(status_code=502, detail="embedding 探測維度無效")
+    # Soft ceiling: refuse absurd widths that can't fit the column even
+    # with truncation (keeps a malicious/broken endpoint from writing
+    # nonsense into embedding_native_dim). EMBED_DIM*4 is generous.
+    if n > EMBED_DIM * 4:
+        raise HTTPException(
+            status_code=502,
+            detail=f"embedding 探測維度 {n} 超出合理範圍",
+        )
+    return n
+
+
+@router.get("/platform-embedding")
+def get_platform_embedding(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the designated platform embedding model + pending-recompute counts.
+
+    Auth: any authenticated user may read (collections need the default;
+    memory needs the name). Setting remains admin+.
+    """
+    from anila_core.memory.long_term import EMBED_DIM
+    from app.services.platform_embedding import (
+        count_pending_recompute,
+        resolve_platform_embedding,
+    )
+
+    resolved = resolve_platform_embedding(db)
+    pending = count_pending_recompute(
+        db, resolved.name if resolved else None
+    )
+    if resolved is None:
+        return {
+            "designated": None,
+            "storage_dim": EMBED_DIM,
+            "pending_recompute": pending,
+        }
+    return {
+        "designated": {
+            "id": resolved.model.id,
+            "name": resolved.name,
+            "display_name": resolved.model.display_name,
+            "native_dim": resolved.native_dim,
+            "truncates": resolved.truncates,
+            "is_designated": bool(resolved.model.is_platform_embedding),
+        },
+        "storage_dim": EMBED_DIM,
+        "pending_recompute": pending,
+    }
+
+
+@router.post("/{model_id}/set-platform-embedding")
+async def set_platform_embedding(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Designate an embedding model as the platform default.
+
+    Probes the live endpoint once to measure native dimension. When
+    native > 4000 (pgvector halfvec HNSW ceiling) the response carries
+    ``truncation_warning`` so the UI can say so plainly.
+    """
+    from anila_core.memory.long_term import EMBED_DIM
+
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if model.model_type != "embedding":
+        raise HTTPException(
+            status_code=400, detail="僅 embedding 類型可設為平台主 embedding"
+        )
+    if not model.is_active:
+        raise HTTPException(
+            status_code=400, detail="已停用的模型不能設為平台主 embedding"
+        )
+
+    # Snapshot fields the probe needs, then release the pooled connection
+    # before the outbound HTTP call (same posture as _embed_query).
+    from types import SimpleNamespace
+
+    probe_snap = SimpleNamespace(
+        id=model.id,
+        name=model.name,
+        display_name=model.display_name,
+        model_type=model.model_type,
+        endpoint_url=model.endpoint_url,
+        api_version=model.api_version,
+        api_key_secret_ref=model.api_key_secret_ref,
+        is_active=model.is_active,
+    )
+    db.commit()
+    native_dim = await _probe_embedding_native_dim(probe_snap)
+
+    (
+        db.query(ModelRegistry)
+        .filter(
+            ModelRegistry.is_platform_embedding.is_(True),
+            ModelRegistry.id != model_id,
+        )
+        .update({"is_platform_embedding": False}, synchronize_session=False)
+    )
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if model is None:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    model.is_platform_embedding = True
+    model.embedding_native_dim = native_dim
+    db.commit()
+    db.refresh(model)
+
+    truncates = native_dim > EMBED_DIM
+    truncation_warning = None
+    if truncates:
+        truncation_warning = (
+            f"此模型原生維度為 {native_dim}，超過 pgvector halfvec HNSW 上限 "
+            f"{EMBED_DIM}，寫入時會截斷尾端 {native_dim - EMBED_DIM} 維。"
+            "這是資料庫限制，不是設定錯誤。"
+        )
+
+    log_audit_event(
+        db,
+        actor=admin,
+        action="set_platform_embedding",
+        resource_type="model",
+        resource_id=model.id,
+        detail=(
+            f"設為平台主 embedding: {model.display_name} "
+            f"(native_dim={native_dim}"
+            f"{', truncates' if truncates else ''})"
+        ),
+        metadata={
+            "native_dim": native_dim,
+            "storage_dim": EMBED_DIM,
+            "truncates": truncates,
+        },
+        commit=True,
+    )
+    body = _build_response(model, caller=admin, db=db)
+    body["truncation_warning"] = truncation_warning
+    body["measured_native_dim"] = native_dim
+    return body
+
+
+@router.post("/{model_id}/unset-platform-embedding", response_model=ModelResponse)
+def unset_platform_embedding(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Remove the platform embedding designation from a model."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if not getattr(model, "is_platform_embedding", False):
+        return _build_response(model, caller=admin, db=db)
+
+    model.is_platform_embedding = False
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="unset_platform_embedding",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"取消平台主 embedding: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model, caller=admin, db=db)
+
+
 @router.get("/{model_id}", response_model=ModelResponse)
 def get_model(
     model_id: int,
@@ -1231,6 +1455,8 @@ def deactivate_model(
     # holds; admin must explicitly re-pin a primary after re-activation.
     if model.is_router_primary:
         model.is_router_primary = False
+    if getattr(model, "is_platform_embedding", False):
+        model.is_platform_embedding = False
     db.commit()
     log_audit_event(
         db,
