@@ -113,6 +113,9 @@ import {
   CitationsDrawer,
   ConfidentialWatermark,
   ClassificationLevelBadge,
+  watermarkLevel,
+  watermarkReaderLabel,
+  WATERMARK_DISCLAIMER,
 } from "./trust.jsx";
 import { ParallelCompareView } from "./multiagent.jsx";
 import { HandoffMenu, ShareDialog } from "./collab.jsx";
@@ -2187,14 +2190,24 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     setSelectedAgentId(newAgentId);
   }
 
+  // Full-page forensic watermark: same 密／機密 threshold as ClassificationWatermark
+  // (watermarkLevel). Reader comes from the signed-in user already held in auth —
+  // no extra request. Time freezes per displayed conversation inside ConfidentialWatermark.
+  const pageWatermarkLevel = watermarkLevel({
+    classificationLevel: selectedConv?.classificationLevel,
+    classified: isClassified,
+  });
+  const pageWatermarkReader = watermarkReaderLabel(user);
+  const showForensicWatermark = Boolean(pageWatermarkLevel && pageWatermarkReader);
+
   // ---- render: classified watermark + top bar + messages + composer ----
   return (
     <div style={{ display: "flex", height: "100dvh", background: "var(--bg)", position: "relative" }}>
-      {isClassified && (
+      {showForensicWatermark && (
         <ConfidentialWatermark
-          userEmail={user?.email || user?.username}
-          traceId={latestAssistantMessage?.traceId}
-          level={selectedConv?.classificationLevel}
+          level={pageWatermarkLevel}
+          reader={pageWatermarkReader}
+          conversationId={selectedConvId}
         />
       )}
       {isClassificationInherited && (
@@ -2290,6 +2303,19 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                 </span>
               )}
               <ClassificationLevelBadge conversation={selectedConv} />
+              {showForensicWatermark && (
+                <span
+                  data-watermark-disclaimer=""
+                  style={{
+                    fontSize: 11,
+                    color: "var(--fg-muted)",
+                    lineHeight: 1.35,
+                    maxWidth: 260,
+                  }}
+                >
+                  {WATERMARK_DISCLAIMER}
+                </span>
+              )}
               {/* Slice 9a — Task result 可轉 artifact（doc 10 §11）：對話已建立
                   Task 時，提供薄連結深連到知識 SPA 的 Studio 面，帶 taskId
                   query 讓 ALM 承接；不在 shell 內另建 Studio 啟動器。 */}

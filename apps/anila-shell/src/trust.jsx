@@ -1,5 +1,5 @@
 // Trust & transparency components (ESM)
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { IconBook, IconX, IconExternal, IconShield, IconGauge, IconLock } from "./icons.jsx";
 import { IconButton } from "./components.jsx";
 import { renderWithRedaction } from "./data.jsx";
@@ -409,31 +409,162 @@ export const ClassificationLevelBadge = ({ conversation }) => {
   );
 };
 
-// 機敏模式全螢幕鑑識浮水印:低透明度對角平鋪,萬一有人拍照/截圖洩漏機敏畫面,
-// 浮水印帶著洩漏者身分 + trace_id 以供溯源。文字顯示「真實分類級別」中文
-// (密/機密),非固定英文;缺 level 回退密(鏡射門檻 >= 密)。
-export const ConfidentialWatermark = ({ userEmail, traceId, level }) => (
-  <div aria-hidden="true" style={{
-    position: "fixed", inset: 0, pointerEvents: "none",
-    zIndex: 4,
-    opacity: 0.055,
-    background: `repeating-linear-gradient(-30deg,
-      transparent 0,
-      transparent 140px,
-      var(--fg) 140px,
-      var(--fg) 141px,
-      transparent 141px,
-      transparent 280px)`,
-    display: "flex", alignItems: "center", justifyContent: "center",
-    overflow: "hidden",
-  }}>
-    <div style={{
-      fontFamily: "var(--font-mono)", fontSize: 14,
-      transform: "rotate(-20deg)",
-      color: "var(--fg)",
-      textAlign: "center",
-    }}>
-      {level || "密"} · {userEmail || "user"} · {traceId || "—"}
+/**
+ * Format a reading timestamp to minute precision (local clock).
+ * Intent: useful on a screenshot taken minutes later, not a live-updating clock.
+ * @param {Date} [date]
+ * @returns {string} e.g. "2026-07-30 15:30"
+ */
+export function formatWatermarkMinute(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d} ${hh}:${mm}`;
+}
+
+/**
+ * Resolve the reader label from the signed-in user object the shell already holds.
+ * Prefers email, then username. Returns null when identity is not yet known —
+ * never invents a placeholder (empty string / "user") that would mis-attribute a leak.
+ *
+ * @param {{email?: string, username?: string} | null | undefined} user
+ * @returns {string|null}
+ */
+export function watermarkReaderLabel(user) {
+  if (!user || typeof user !== "object") return null;
+  for (const key of ["email", "username"]) {
+    const raw = user[key];
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  }
+  return null;
+}
+
+/**
+ * Build the forensic watermark line: level · reader · time.
+ * Spec (SYSTEM-MAP §8 / PLAN P4.2):「本文件屬{密等} · 讀取者 · 時間」.
+ *
+ * @param {{level: string, reader: string, readAt: string}} parts
+ * @returns {string}
+ */
+export function buildWatermarkText({ level, reader, readAt }) {
+  return `本文件屬${level} · ${reader} · ${readAt}`;
+}
+
+/**
+ * Short honest caption shown next to the controlled-conversation indicator
+ * (列管模式 / ClassificationLevelBadge) whenever the full-page mark is on.
+ * Tracing purpose only — never claims to prevent copy / screenshot / print.
+ */
+export const WATERMARK_DISCLAIMER =
+  "浮水印供外洩溯源，不阻止複製、截圖或列印。";
+
+// 機敏模式全螢幕鑑識浮水印:低透明度對角平鋪。萬一有人拍照/截圖洩漏機敏畫面,
+// 浮水印帶著密等 + 讀取者 + 讀取時間(分鐘精度)以供溯源。
+// 門檻與 ClassificationWatermark / watermarkLevel 相同:僅「密／機密」。
+// 讀取者身分尚未就緒時不渲染 —— 絕不回退空白或 "user" 等誤導字樣。
+// pointer-events:none,不阻擋底下選取。
+// 讀取時間對「目前顯示的對話」凍結:換對話才重凍,同對話保持穩定。
+const WATERMARK_TILE_COUNT = 36;
+
+/**
+ * @param {{
+ *   level: string,
+ *   reader?: string,
+ *   userEmail?: string,
+ *   conversationId?: string|number|null,
+ *   readAtForTests?: string,
+ * }} props
+ *
+ * `readAtForTests` is a **TEST SEAM ONLY**. Production call sites must omit it
+ * so the stamp comes from the local clock at conversation open. Do not wire
+ * this prop to API fields, message metadata, or any other runtime source.
+ */
+export const ConfidentialWatermark = ({
+  level,
+  reader,
+  userEmail,
+  conversationId,
+  // TEST SEAM ONLY — see JSDoc above. Never pass from production.
+  readAtForTests,
+}) => {
+  const testStamp =
+    typeof readAtForTests === "string" && readAtForTests.trim()
+      ? readAtForTests.trim()
+      : null;
+
+  const [frozenAt, setFrozenAt] = useState(
+    () => testStamp ?? formatWatermarkMinute()
+  );
+
+  // Re-freeze when the displayed conversation changes; keep stable while it stays open.
+  useEffect(() => {
+    if (testStamp) {
+      setFrozenAt(testStamp);
+      return;
+    }
+    setFrozenAt(formatWatermarkMinute());
+  }, [conversationId, testStamp]);
+
+  const key = typeof level === "string" ? level.trim() : "";
+  if (!WATERMARK_LEVEL_STYLES[key]) return null;
+
+  // Prefer explicit `reader`; accept legacy `userEmail` prop name from older call sites.
+  // Both are plain strings from the signed-in user — never invent a placeholder.
+  const rawReader = typeof reader === "string" ? reader : userEmail;
+  const readerLabel =
+    typeof rawReader === "string" && rawReader.trim() ? rawReader.trim() : null;
+  if (!readerLabel) return null;
+
+  const stamp = testStamp ?? frozenAt;
+  const text = buildWatermarkText({ level: key, reader: readerLabel, readAt: stamp });
+
+  return (
+    <div
+      aria-hidden="true"
+      data-classification={key}
+      data-watermark="forensic"
+      data-watermark-conversation={conversationId == null ? undefined : String(conversationId)}
+      style={{
+        position: "fixed", inset: 0, pointerEvents: "none",
+        zIndex: 4,
+        overflow: "hidden",
+        // Cover the viewport while scrolling; tiles keep identity on any crop.
+        display: "grid",
+        gridTemplateColumns: "repeat(3, 1fr)",
+        gridTemplateRows: "repeat(12, 1fr)",
+        alignItems: "center",
+        justifyItems: "center",
+        gap: 0,
+        userSelect: "none",
+      }}
+    >
+      {Array.from({ length: WATERMARK_TILE_COUNT }, (_, i) => (
+        <div
+          key={i}
+          data-watermark-tile=""
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: 0.3,
+            transform: "rotate(-28deg)",
+            whiteSpace: "nowrap",
+            // 顏色必須跟著主題走。曾經寫死深灰字 + 白色外光暈,淺色主題正常,
+            // 深色主題下白光暈變成畫面最亮的東西,整片浮水印蓋過對話內容
+            // (2026-07-30 目視實測)。字用前景色、光暈用背景色,兩個主題都是
+            // 「比內容淡一階」而不是「反白」。
+            color: "color-mix(in oklab, var(--fg) 16%, transparent)",
+            textShadow:
+              "0 0 1px color-mix(in oklab, var(--bg) 70%, transparent), 0 1px 0 color-mix(in oklab, var(--bg) 45%, transparent)",
+            textAlign: "center",
+            lineHeight: 1.2,
+          }}
+        >
+          {text}
+        </div>
+      ))}
     </div>
-  </div>
-);
+  );
+};
