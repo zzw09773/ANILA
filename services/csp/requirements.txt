@@ -16,8 +16,10 @@ asn1crypto==1.5.1
 passlib[bcrypt]==1.7.4
 # passlib 1.7.4 still probes bcrypt.__about__.__version__, which was removed in bcrypt 4.1+
 bcrypt==4.0.1
-# python-multipart 0.0.22~0.0.27 修復 CVE-2026-24486/40347/42561 (form parsing)。
-python-multipart==0.0.28
+# python-multipart：0.0.22~0.0.27 修舊 form CVE；0.0.30+ 修
+# CVE-2026-53538/53539（urlencoded `;`／掃描）；0.0.31+ 修 CVE-2026-53540
+#（負 Content-Length）。鎖最新 patch，仍在 0.0.x。
+python-multipart==0.0.32
 httpx==0.28.1
 psycopg2-binary==2.9.10
 # ldap3 已移除：LDAP 認證自系統下線，後續以 OIDC SSO 取代
@@ -39,4 +41,8 @@ opencc-python-reimplemented==0.1.7
 
 # Phase 6 — FLUX image generation tests
 respx==0.22.0
+# pytest 經 pytest-asyncio 帶進映像。CVE-2025-71176 修在 pytest 9.0.3,
+# 但 pytest-asyncio 需 ≥1.3.0 才接受 pytest 9（0.24 鎖 pytest<9）。
+# 升 asyncio 外掛是 major，且此 CVE 只在「跑 pytest」時觸發 /tmp 競態；
+# 正式 runtime 不跑測試 → 本輪刻意不升，見報告「刻意留下」。
 pytest-asyncio==0.24.0

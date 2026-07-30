@@ -1,5 +1,10 @@
-fastapi==0.115.5
-uvicorn[standard]==0.32.1
+fastapi==0.136.1
+# 與 CSP 同鎖：避開 starlette 1.x 主版本，並清 0.41 線上可修的 advisory
+#（PYSEC-2026-1941/1942 → ≥0.47.2/0.49.1）。剩餘需 1.x 的項見報告。
+starlette==0.49.3
+uvicorn[standard]==0.34.0
+# 刻意留 httpx 0.27.2：升到 0.28 需連帶升 respx≥0.22，且本服務無 httpx advisory。
 httpx==0.27.2
 pydantic==2.9.2
-python-multipart==0.0.12
+# 0.0.12 有多條 form-parsing CVE；與 CSP 同鎖 0.0.32。
+python-multipart==0.0.32

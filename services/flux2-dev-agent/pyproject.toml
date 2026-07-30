@@ -3,9 +3,11 @@ name = "flux2-dev-agent"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi==0.115.5",
+    "fastapi==0.136.1",
+    "starlette==0.49.3",
     "httpx==0.27.2",
     "pydantic==2.9.2",
+    "python-multipart==0.0.32",
 ]
 
 [project.optional-dependencies]
