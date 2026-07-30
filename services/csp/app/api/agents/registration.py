@@ -29,6 +29,7 @@ from app.api.agents._common import (
     _require_developer_or_admin,
     apply_default_classification_level,
     parse_stored_classification_level,
+    refuse_bind_above_agent_level,
     refuse_classification_downgrade,
     requires_controlled_access,
     validate_agent_manifest,
@@ -379,6 +380,11 @@ def register_agent(
         default_classification_level=level.to_storage(),
         requires_encryption=requires_controlled_access(level),
     )
+    # P4.9 — agent level must cover every collection being bound. Check
+    # against the in-memory agent (not yet flushed) so register refuses
+    # before inserting junction rows.
+    if bind_ids:
+        refuse_bind_above_agent_level(db, agent, bind_ids)
     db.add(agent)
     db.flush()  # need agent.id for junction rows
     set_bound_collection_ids(db, agent, bind_ids)
@@ -503,7 +509,12 @@ def update_agent(
         )
         refuse_classification_downgrade(agent, new_level, current_user)
         effective_transition, changed, stored_transition = (
-            apply_default_classification_level(agent, new_level)
+            apply_default_classification_level(
+                agent,
+                new_level,
+                db=db,
+                allow_downgrade=is_admin_tier(current_user),
+            )
         )
         if changed:
             level_fields_touched = True
@@ -563,6 +574,9 @@ def update_agent(
                     status_code=500, detail="agent owner 不存在"
                 )
             _validate_collection_access_for_ids(db, owner, added_ids)
+            # P4.9 — only the DELTA is gated (same shape as access check).
+            # Grandfathered over-level bindings must not brick unrelated edits.
+            refuse_bind_above_agent_level(db, agent, added_ids)
         if requested_ids != from_collection_ids:
             to_collection_ids = set_bound_collection_ids(db, agent, requested_ids)
 
