@@ -296,7 +296,8 @@ class TestLaunch:
         headers = _auth_headers(client, db, username="bob")
         svc = _make_service(db, slug="private-svc", name="私有", is_public=False)
         resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "服務不存在"
         assert "launch_token" not in resp.json()
         # deny path issues no launch row and records a deny PolicyDecision.
         assert db.query(ServiceLaunch).count() == 0

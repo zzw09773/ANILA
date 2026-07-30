@@ -22,7 +22,7 @@ from app.models.agent import Agent
 from app.models.user import User
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import is_admin_tier, require_admin
+from app.services.auth_service import require_admin
 from app.services.endpoint_author_service import can_see_endpoint_address
 from app.services.health_checker import (
     HEALTH_DEGRADED,
@@ -36,6 +36,7 @@ from app.api.agents._common import (
     _client_ip,
     _require_developer_or_admin,
     _resolve_agent,
+    ensure_agent_view_access,
 )
 
 router = APIRouter()
@@ -257,8 +258,7 @@ async def test_agent_connection(
     often authenticate before routing, so a wrong path returns 401 too.
     """
     agent = _resolve_agent(db, agent_id)
-    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="無權限測試此 Agent")
+    ensure_agent_view_access(agent, current_user)
 
     # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as health-check.
     # Guard the FINAL url that will actually be requested.

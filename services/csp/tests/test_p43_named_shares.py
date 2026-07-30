@@ -93,7 +93,7 @@ class TestInvariant1NamedTargetsAndSubtree:
             f"/api/conversations/{conv.id}",
             headers=_bearer(outsider),
         )
-        assert denied.status_code == 403
+        assert denied.status_code == 404
 
     def test_reparent_between_share_and_read_honoured(
         self, client: TestClient, db: Session
@@ -117,7 +117,7 @@ class TestInvariant1NamedTargetsAndSubtree:
             f"/api/conversations/{conv.id}",
             headers=_bearer(reader),
         )
-        assert before.status_code == 403
+        assert before.status_code == 404
 
         # Re-parent child under A; read-time expansion must grant access.
         child.parent_id = a.id
@@ -179,7 +179,7 @@ class TestInvariant2RevokeBlocksUnread:
             f"/api/conversations/{conv.id}",
             headers=_bearer(peer),
         )
-        assert blocked.status_code == 403
+        assert blocked.status_code == 404
         assert db.query(ConversationShare).filter(
             ConversationShare.id == share_id
         ).count() == 0
@@ -378,7 +378,7 @@ class TestReviewFollowups:
             f"/api/conversations/{conv.id}",
             headers=_bearer(peer),
         )
-        assert blocked.status_code == 403
+        assert blocked.status_code == 404
 
     def test_classify_after_share_blocks_recipient(
         self, client: TestClient, db: Session

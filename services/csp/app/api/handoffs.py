@@ -81,6 +81,12 @@ def create_handoff(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Same write gate as every other conversation mutation
+    # (get_conversation for_write=True): owner or admin. Share recipients
+    # must not hand off someone else's thread.
+    from app.services.conversation_service import get_conversation
+
+    get_conversation(db, body.conversation_id, current_user, for_write=True)
     return svc.create_handoff(
         db, body.conversation_id, current_user,
         to_user_id=body.to_user_id,

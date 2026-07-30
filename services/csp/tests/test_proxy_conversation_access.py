@@ -27,7 +27,8 @@ def test_proxy_rejects_foreign_conversation_id(db) -> None:
         _require_conversation_access(
             db, Caller(user=attacker, api_key_id=None), conv.id
         )
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Conversation not found"
 
 
 def test_proxy_allows_admin_conversation_id(db) -> None:

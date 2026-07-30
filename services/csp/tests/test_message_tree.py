@@ -490,8 +490,8 @@ def test_16_foreign_403_admin_allowed(client: TestClient, db: Session):
             r = client.put(path, json=body, headers=h_other)
         else:
             r = client.delete(path, headers=h_other)
-        assert r.status_code == 403, (method, path, r.text)
-        assert r.json()["detail"] == "無權存取此對話"
+        assert r.status_code == 404, (method, path, r.text)
+        assert r.json()["detail"] == "找不到此對話"
 
     # admin can switch
     r_ok = client.put(

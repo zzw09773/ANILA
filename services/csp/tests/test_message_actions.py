@@ -568,8 +568,8 @@ def test_15_conversation_gates(client: TestClient, db: Session):
         json={"conversation_id": cid_b, "message_id": mid_b},
         headers=uh,
     )
-    assert r.status_code == 403
-    assert r.json()["detail"] == "無權存取此對話"
+    assert r.status_code == 404
+    assert r.json()["detail"] == "找不到此對話"
 
     r = client.post(
         f"/api/message-actions/{aid}/invoke",
@@ -1151,8 +1151,8 @@ def test_access_denied_refusal_writes_refused_audit(
         json={"conversation_id": cid_b, "message_id": mid_b},
         headers=uh,
     )
-    assert r.status_code == 403
-    assert r.json()["detail"] == "無權存取此對話"
+    assert r.status_code == 404
+    assert r.json()["detail"] == "找不到此對話"
     assert (
         db.query(AuditLog)
         .filter(AuditLog.action == "message_action_invoke")
@@ -1308,7 +1308,7 @@ def test_rate_limit_stops_refusal_audit_rows(
             json={"conversation_id": cid, "message_id": mid},
             headers=uh,
         )
-        assert r.status_code == 403, f"call {i+1}: {r.text}"
+        assert r.status_code == 404, f"call {i+1}: {r.text}"
     assert (
         db.query(AuditLog)
         .filter(AuditLog.action == "message_action_invoke_refused")
