@@ -8,7 +8,12 @@ locate a name``. Import order here is alphabetical — SQLAlchemy handles the
 actual dependency resolution once every class is registered.
 """
 
-from app.models.agent import Agent, ApiKeyAgentPermission, UserAgentPermission
+from app.models.agent import (
+    Agent,
+    AgentCollectionBinding,
+    ApiKeyAgentPermission,
+    UserAgentPermission,
+)
 from app.models.agent_credential import AgentCredential
 from app.models.agent_prompt import AgentFunction, AgentPrompt
 from app.models.alert import Alert
@@ -63,6 +68,7 @@ from app.models.user_memory import ConversationMemoryChunk, UserFact
 
 __all__ = [
     "Agent",
+    "AgentCollectionBinding",
     "AgentCredential",
     "AgentFunction",
     "AgentPrompt",

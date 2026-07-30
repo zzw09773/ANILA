@@ -59,8 +59,8 @@ class SearchPrincipal:
 
     ``user`` is the identity we authorise against (for an agent csk- it is the
     agent's OWNER). ``agent`` is set only when the caller authenticated with an
-    agent service token; the endpoint then hard-scopes it to
-    ``agent.bound_collection_id`` (S-Q1, least privilege).
+    agent service token; the endpoint then hard-scopes it to the agent's
+    bound collection set (P4.7 / S-Q1, least privilege).
     """
 
     user: User
@@ -76,7 +76,7 @@ def resolve_search_principal(
 
     csk- path (S-Q1): one credential now serves both inbound Router→agent auth
     and outbound RAG search. The token resolves to its agent; the effective
-    user becomes the agent's owner; the endpoint enforces the bound collection.
+    user becomes the agent's owner; the endpoint enforces the bound set.
     """
     token = credentials.credentials if (credentials and credentials.credentials) else None
     if token and token.startswith("csk-"):
@@ -101,13 +101,19 @@ def resolve_search_principal(
 
 
 def _enforce_agent_collection_scope(principal: SearchPrincipal, collection_id: int) -> None:
-    """For the agent csk- path, reject any collection that isn't the agent's
-    single bound collection. No-op for user principals."""
+    """For the agent csk- path, reject any collection outside the agent's
+    bound set (P4.7). Empty set = non-RAG agent → every collection is
+    off-limits. No-op for user principals."""
     agent = principal.agent
-    if agent is not None and getattr(agent, "bound_collection_id", None) != collection_id:
+    if agent is None:
+        return
+    from app.services.agent_collection_bindings import get_bound_collection_ids
+
+    allowed = get_bound_collection_ids(agent)
+    if collection_id not in allowed:
         raise HTTPException(
             status_code=403,
-            detail="此 agent 的憑證無權搜尋該 collection（僅限其綁定的 collection）",
+            detail="此 agent 的憑證無權搜尋該 collection（僅限其綁定的知識庫）",
         )
 
 
@@ -473,8 +479,8 @@ async def search_collection(
     """Semantic top-K retrieval over one collection's chunks.
 
     Auth: ``_require_collection_access`` — admin or owner. An agent csk-
-    authenticates as its owner but is additionally hard-scoped to its single
-    ``bound_collection_id`` (S-Q1). Cross-user sharing is a future
+    authenticates as its owner but is additionally hard-scoped to its
+    bound collection set (P4.7 / S-Q1). Cross-user sharing is a future
     ``collection_access_grants`` feature.
     """
     _enforce_agent_collection_scope(principal, collection_id)

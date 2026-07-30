@@ -39,6 +39,11 @@ from app.schemas.contracts.agents import (
     RuntimeType,
 )
 from app.schemas.contracts.classification import ClassificationLevel
+from app.services.agent_collection_bindings import (
+    get_bound_collection_ids,
+    resolve_requested_collection_ids,
+    set_bound_collection_ids,
+)
 
 
 def _enforce_endpoint_url(url: str) -> None:
@@ -94,10 +99,18 @@ class AgentRegisterRequest(BaseModel):
     # Without this the dashboard's per-model breakdown has phantom
     # "agent X" traffic with no underlying model behind it.
     base_model_id: int = Field(..., description="必須指定底層模型 ID")
-    # RAG agents: the single collection this agent's csk- may search (S-Q1).
-    # Optional — omit for non-RAG agents. Validated against owner access.
+    # RAG agents: collections this agent's csk- may search (P4.7 / S-Q1).
+    # Prefer ``collection_ids`` (zero / one / several). Legacy ``collection_id``
+    # is still accepted and expanded to a one-element set when the list is
+    # omitted — one representation is derived from the other, never both
+    # written independently.
+    collection_ids: list[int] | None = Field(
+        default=None,
+        description="RAG agent 綁定的知識庫 id 清單（可多個；空清單＝未綁定）",
+    )
     collection_id: int | None = Field(
-        default=None, description="RAG agent 綁定的 collection（其 csk- 僅能搜這一個）"
+        default=None,
+        description="（相容）單一知識庫 id；未送 collection_ids 時展開為單元素集合",
     )
     capabilities: dict | None = None
     input_schema: dict | None = None
@@ -124,7 +137,10 @@ class AgentResponse(BaseModel):
     description_for_router: str
     base_model_id: int | None = None
     base_model_name: str | None = None
+    # Derived mirror (min of bound_collection_ids, or null). Kept for
+    # legacy callers; prefer bound_collection_ids for multi-bind.
     bound_collection_id: int | None = None
+    bound_collection_ids: list[int] = Field(default_factory=list)
     capabilities: dict | None = None
     health_status: str
     approval_status: str
@@ -167,6 +183,9 @@ def _serialize_agent(agent: Agent) -> dict:
     normalized = _AGENT_HEALTH_MAP.get(raw, raw)
     owner = getattr(agent, "owner", None)
     base = getattr(agent, "base_model", None)
+    # Mirror is derived from the set so a drifted column cannot
+    # contradict bound_collection_ids in the response.
+    bound_ids = get_bound_collection_ids(agent)
     return {
         "id": agent.id,
         "name": agent.name,
@@ -177,7 +196,8 @@ def _serialize_agent(agent: Agent) -> dict:
         "description_for_router": agent.description_for_router,
         "base_model_id": agent.base_model_id,
         "base_model_name": base.display_name if base else None,
-        "bound_collection_id": getattr(agent, "bound_collection_id", None),
+        "bound_collection_ids": bound_ids,
+        "bound_collection_id": bound_ids[0] if bound_ids else None,
         "capabilities": agent.capabilities,
         "health_status": normalized,
         "approval_status": agent.approval_status,
@@ -215,6 +235,29 @@ class AgentUpdateRequest(BaseModel):
     # doc 05 §4 — replace the stored manifest snapshot (validated fail-closed).
     manifest: dict | None = None
     default_classification_level: ClassificationLevel | None = None
+    # P4.7 — replace the bound collection set. Same derivation rule as
+    # register: ``collection_ids`` wins; else expand legacy ``collection_id``.
+    # Omit both to leave bindings unchanged. Empty list clears all bindings.
+    collection_ids: list[int] | None = None
+    collection_id: int | None = None
+
+
+def _validate_collection_access_for_ids(
+    db: Session, user: User, collection_ids: list[int]
+) -> None:
+    """Every id must be usable by ``user`` under ``_require_collection_access``.
+
+    Bind and search ask about the same subject: the agent runs as its
+    owner (csk- search principal = owner), so entitlement is the
+    owner's — not the editor's. An admin may edit an agent but may only
+    bind collections that owner could themselves search; otherwise the
+    binding is inert at search time and bricks the owner's console save
+    (which always resends the full set).
+    """
+    from app.api.ingestion.collections import _require_collection_access
+
+    for cid in collection_ids:
+        _require_collection_access(db, user, cid)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -289,12 +332,20 @@ def register_agent(
             detail=f"底層模型「{base.display_name}」已停用，請挑選已啟用的模型",
         )
 
-    # RAG agents: bind a single collection the agent's csk- may search.
-    # Validate the registering owner actually has access to it (admin or
-    # owner) so an agent can't be bound to a collection its owner can't see.
-    if request.collection_id is not None:
-        from app.api.ingestion.collections import _require_collection_access
-        _require_collection_access(db, current_user, request.collection_id)
+    # RAG agents: bind zero / one / several collections the csk- may search.
+    # ``collection_ids`` wins; legacy ``collection_id`` expands to a singleton.
+    # Validate the registering owner actually has access to each id.
+    fields_set = request.model_fields_set
+    requested_ids = resolve_requested_collection_ids(
+        collection_ids=request.collection_ids,
+        collection_id=request.collection_id,
+        collection_ids_provided="collection_ids" in fields_set,
+        collection_id_provided="collection_id" in fields_set,
+    )
+    # Register defaults to unbound when neither field is sent.
+    bind_ids = requested_ids if requested_ids is not None else []
+    if bind_ids:
+        _validate_collection_access_for_ids(db, current_user, bind_ids)
 
     # doc 05 §4 — optional manifest is validated fail-closed (422) and the
     # normalized snapshot is stored so the registry has the formal schema
@@ -319,7 +370,7 @@ def register_agent(
         api_version=request.api_version,
         description_for_router=request.description_for_router,
         base_model_id=request.base_model_id,
-        bound_collection_id=request.collection_id,
+        bound_collection_id=None,  # set via bindings helper after flush
         capabilities=request.capabilities,
         input_schema=request.input_schema,
         runtime_type=request.runtime_type.value,
@@ -329,6 +380,8 @@ def register_agent(
         requires_encryption=requires_controlled_access(level),
     )
     db.add(agent)
+    db.flush()  # need agent.id for junction rows
+    set_bound_collection_ids(db, agent, bind_ids)
     db.commit()
     db.refresh(agent)
     log_audit_event(
@@ -341,6 +394,7 @@ def register_agent(
         metadata={
             "default_classification_level": level.to_storage(),
             "requires_controlled_access": agent.requires_encryption,
+            "bound_collection_ids": get_bound_collection_ids(agent),
         },
         commit=True,
     )
@@ -400,6 +454,18 @@ def update_agent(
     patch = payload.model_dump(exclude_unset=True)
     if not patch:
         raise HTTPException(status_code=400, detail="沒有提供要更新的欄位")
+
+    # P4.7 — collection binding fields are not Agent columns; resolve the
+    # set and drop them from the attribute patch before setattr.
+    fields_set = payload.model_fields_set
+    requested_ids = resolve_requested_collection_ids(
+        collection_ids=payload.collection_ids,
+        collection_id=payload.collection_id,
+        collection_ids_provided="collection_ids" in fields_set,
+        collection_id_provided="collection_id" in fields_set,
+    )
+    patch.pop("collection_ids", None)
+    patch.pop("collection_id", None)
 
     # doc 05 §4 — a submitted manifest is validated fail-closed (422) and
     # mapped onto ``manifest_json`` (the ``manifest`` request field is not a
@@ -474,6 +540,32 @@ def update_agent(
                 detail=f"底層模型「{base.display_name}」已停用",
             )
 
+    from_collection_ids: list[int] | None = None
+    to_collection_ids: list[int] | None = None
+    if requested_ids is not None:
+        from_collection_ids = get_bound_collection_ids(agent)
+        # Validate the DELTA (newly added ids only), not the whole submitted
+        # set. Console always resends every bound id; re-gating pre-existing
+        # rows 403s the owner as soon as one binding goes stale (e.g.
+        # collection transferred away) — including when they only add a
+        # different collection or edit an unrelated field.
+        # Removals need only the agent-editor right (already checked above).
+        # Safe: search independently filters via ``_require_collection_access``
+        # on the owner principal, so a grandfathered stale binding grants
+        # nothing at read time.
+        added_ids = sorted(set(requested_ids) - set(from_collection_ids))
+        if added_ids:
+            owner = (
+                db.query(User).filter(User.id == agent.owner_user_id).first()
+            )
+            if owner is None:
+                raise HTTPException(
+                    status_code=500, detail="agent owner 不存在"
+                )
+            _validate_collection_access_for_ids(db, owner, added_ids)
+        if requested_ids != from_collection_ids:
+            to_collection_ids = set_bound_collection_ids(db, agent, requested_ids)
+
     changed_level_fields = (
         ["default_classification_level", "requires_encryption"]
         if level_fields_touched
@@ -484,6 +576,8 @@ def update_agent(
         if getattr(agent, field) != value:
             setattr(agent, field, value)
             changed.append(field)
+    if to_collection_ids is not None:
+        changed.append("bound_collection_ids")
     if not changed:
         return _serialize_agent(agent)
 
@@ -534,7 +628,34 @@ def update_agent(
                 status_code=500,
                 detail="稽核紀錄寫入失敗，分類等級變更未生效",
             )
-    other_changed = [f for f in changed if f not in changed_level_fields]
+    if to_collection_ids is not None and from_collection_ids is not None:
+        bind_audit = log_audit_event(
+            db,
+            actor=current_user,
+            action="update_bound_collections",
+            resource_type="agent",
+            resource_id=agent.id,
+            detail=(
+                f"變更 agent「{agent.name}」綁定知識庫："
+                f"{from_collection_ids} → {to_collection_ids}"
+            ),
+            ip_address=_client_ip(http_request),
+            metadata={
+                "from_collection_ids": from_collection_ids,
+                "to_collection_ids": to_collection_ids,
+            },
+            commit=False,
+        )
+        if bind_audit is None:
+            raise HTTPException(
+                status_code=500,
+                detail="稽核紀錄寫入失敗，知識庫綁定變更未生效",
+            )
+    other_changed = [
+        f
+        for f in changed
+        if f not in changed_level_fields and f != "bound_collection_ids"
+    ]
     if other_changed:
         update_audit = log_audit_event(
             db,

@@ -232,13 +232,14 @@ def employee_count(department: str) -&gt; int:
             </select>
           </TermField>
         </div>
-        <TermField label="RAG 知識庫（選填）" hint="綁定此 agent 的 csk- 可搜尋的「單一」知識庫 · 非 RAG agent 留空">
-          <select v-model.number="form.collection_id" class="term-select">
-            <option :value="null">— 無（非 RAG）—</option>
-            <option v-for="c in collections" :key="c.id" :value="c.id">
-              {{ c.name }} (#{{ c.id }})
-            </option>
-          </select>
+        <TermField label="RAG 知識庫（選填）" hint="可綁定多個；此 agent 的 csk- 僅能搜尋所選知識庫 · 非 RAG agent 不勾選">
+          <div v-if="collections.length" class="collection-checks">
+            <label v-for="c in collections" :key="c.id" class="collection-check">
+              <input type="checkbox" :value="c.id" v-model="form.collection_ids" />
+              <span>{{ c.name }} (#{{ c.id }})</span>
+            </label>
+          </div>
+          <p v-else class="collection-checks__empty">尚無可選知識庫</p>
         </TermField>
 
         <TermSection title="治理設定 · governance" />
@@ -378,6 +379,15 @@ def employee_count(department: str) -&gt; int:
             <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
           </select>
         </TermField>
+        <TermField label="RAG 知識庫（選填）" hint="可綁定多個；目前已綁定的會預先勾選 · 全部取消＝解除綁定">
+          <div v-if="collections.length" class="collection-checks">
+            <label v-for="c in collections" :key="c.id" class="collection-check">
+              <input type="checkbox" :value="c.id" v-model="editForm.collection_ids" />
+              <span>{{ c.name }} (#{{ c.id }})</span>
+            </label>
+          </div>
+          <p v-else class="collection-checks__empty">尚無可選知識庫</p>
+        </TermField>
       </div>
       <template #footer>
         <TermButton variant="ghost" @click="closeEditModal" label="取消" />
@@ -403,6 +413,15 @@ def employee_count(department: str) -&gt; int:
           <div><dt>建立時間</dt><dd class="tnum">{{ formatDate(detailAgent.created_at) }}</dd></div>
           <div><dt>擁有者</dt><dd>{{ ownerDisplay(detailAgent) }}</dd></div>
           <div><dt>基礎模型</dt><dd>{{ detailAgent.base_model_id || '—' }}</dd></div>
+          <div>
+            <dt>綁定知識庫</dt>
+            <dd>
+              <template v-if="(detailAgent.bound_collection_ids || []).length">
+                <code v-for="cid in detailAgent.bound_collection_ids" :key="cid" style="margin-right: 0.4rem;">#{{ cid }}</code>
+              </template>
+              <template v-else>—</template>
+            </dd>
+          </div>
           <div>
             <dt>預設分類等級</dt>
             <dd>
@@ -734,6 +753,7 @@ const editFormError = ref('')
 const editForm = ref({
   endpoint_url: '', description_for_router: '', api_version: '',
   base_model_id: null, capabilitiesRaw: '', default_classification_level: '無機密',
+  collection_ids: [],
 })
 const feedback = ref({ type: 'success', message: '' })
 
@@ -750,7 +770,7 @@ const staticLabel = ref('')
 const filters = ref({ query: '', approval: 'all', health: 'all', sort: 'newest' })
 const form = ref({
   name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
-  base_model_id: null, collection_id: null,
+  base_model_id: null, collection_ids: [],
   // Slice 5b — 新增治理欄位；G9 — 預設分類等級（取代舊鎖開關）
   runtime_type: 'openai_compatible_agent', version: '', draft: false,
   default_classification_level: '無機密',
@@ -786,22 +806,29 @@ const traceTesting = ref(false)
 const traceReport = ref([]) // 正規化後的逐項 [{ name, passed, detail }]
 // Register wizard: step 1 = details form, step 2 = provision the csk- + verify.
 const registerStep = ref(1)
-const registeredAgent = ref(null) // { id, name, bound_collection_id }
+const registeredAgent = ref(null) // { id, name, bound_collection_ids }
 const newAgentCsk = ref('')       // one-time plaintext csk- for the new agent
 const issuingNew = ref(false)
-// Bound collection id for the csk- guard panel's outbound-RAG snippet.
+// Bound collection ids for the csk- guard panel's outbound-RAG snippet.
 // undefined (→ panel hides the RAG block) when the agent has no bound
-// collection or the payload doesn't carry it.
-const detailAgentCollectionId = computed(() =>
-  typeof detailAgent.value?.bound_collection_id === 'number'
-    ? detailAgent.value.bound_collection_id
-    : undefined
-)
-const registeredAgentCollectionId = computed(() =>
-  typeof registeredAgent.value?.bound_collection_id === 'number'
-    ? registeredAgent.value.bound_collection_id
-    : undefined
-)
+// collections or the payload doesn't carry them. Passes the first id for
+// the legacy single-COLLECTION snippet; env lists all ids.
+const detailAgentCollectionId = computed(() => {
+  const ids = detailAgent.value?.bound_collection_ids
+  if (Array.isArray(ids) && ids.length) return ids[0]
+  if (typeof detailAgent.value?.bound_collection_id === 'number') {
+    return detailAgent.value.bound_collection_id
+  }
+  return undefined
+})
+const registeredAgentCollectionId = computed(() => {
+  const ids = registeredAgent.value?.bound_collection_ids
+  if (Array.isArray(ids) && ids.length) return ids[0]
+  if (typeof registeredAgent.value?.bound_collection_id === 'number') {
+    return registeredAgent.value.bound_collection_id
+  }
+  return undefined
+})
 // Which active credential CSP actually dispatches as X-CSP-Service-Token:
 // the most recently issued-OR-rotated active one — mirrors the backend's
 // get_active_plaintext_for_agent ordering (coalesce(rotated_at, issued_at),
@@ -871,7 +898,7 @@ function setFeedback(type, message) {
 function resetForm() {
   form.value = {
     name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
-    base_model_id: null, collection_id: null,
+    base_model_id: null, collection_ids: [],
     runtime_type: 'openai_compatible_agent', version: '', draft: false,
     default_classification_level: '無機密',
   }
@@ -1113,7 +1140,9 @@ async function handleRegister() {
       name: form.value.name.trim(),
       endpoint_url: form.value.endpoint_url.trim(),
       description_for_router: form.value.description_for_router.trim(),
-      collection_id: form.value.collection_id || null,
+      collection_ids: Array.isArray(form.value.collection_ids)
+        ? [...form.value.collection_ids]
+        : [],
       // Slice 5b — 治理欄位；空值送 null（未填版本），draft 對應 5a 影子註冊參數。
       // G9 — 預設分類等級（四級字彙；後端據此衍生受控存取旗標）。
       // classification_ceiling 不在註冊／更新契約內（dispatch 上限另管），故不送出。
@@ -1181,7 +1210,15 @@ const newAgentEnvSnippet = computed(() => {
   }
   lines.push(`ANILA_AGENT_NAME=${a.name}`)
   lines.push(`CSP_SERVICE_TOKEN=${newAgentCsk.value || '<paste the csk- shown above>'}`)
-  if (a.bound_collection_id) lines.push(`ANILA_COLLECTION_ID=${a.bound_collection_id}`)
+  const ids = Array.isArray(a.bound_collection_ids) && a.bound_collection_ids.length
+    ? a.bound_collection_ids
+    : (a.bound_collection_id ? [a.bound_collection_id] : [])
+  if (ids.length === 1) {
+    lines.push(`ANILA_COLLECTION_ID=${ids[0]}`)
+  } else if (ids.length > 1) {
+    lines.push(`ANILA_COLLECTION_IDS=${ids.join(',')}`)
+    lines.push(`# 亦可逐一查詢：${ids.map(id => `/api/ingestion/collections/${id}/search`).join(' · ')}`)
+  }
   return lines.join('\n')
 })
 
@@ -1192,6 +1229,9 @@ function canEditAgent(agent) {
 }
 function openEditModal(agent) {
   editTarget.value = agent
+  const bound = Array.isArray(agent.bound_collection_ids)
+    ? [...agent.bound_collection_ids]
+    : (agent.bound_collection_id ? [agent.bound_collection_id] : [])
   editForm.value = {
     endpoint_url: agent.endpoint_url || '',
     description_for_router: agent.description_for_router || '',
@@ -1200,6 +1240,7 @@ function openEditModal(agent) {
     capabilitiesRaw: agent.capabilities && Object.keys(agent.capabilities).length
       ? JSON.stringify(agent.capabilities, null, 2) : '',
     default_classification_level: agent.default_classification_level || '無機密',
+    collection_ids: bound,
   }
   editFormError.value = ''
   showEditModal.value = true
@@ -1224,6 +1265,9 @@ async function handleUpdateAgent() {
     base_model_id: editForm.value.base_model_id,
     capabilities,
     default_classification_level: editForm.value.default_classification_level || '無機密',
+    collection_ids: Array.isArray(editForm.value.collection_ids)
+      ? [...editForm.value.collection_ids]
+      : [],
   }
   editing.value = true
   try {
@@ -1468,6 +1512,30 @@ function buildStatusHistory(agent) {
 
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
 .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-3); }
+
+.collection-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 12rem;
+  overflow-y: auto;
+  padding: var(--gap-2);
+  border: var(--border-w) solid var(--c-border);
+  background: var(--c-bg);
+}
+.collection-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--t-xs);
+  color: var(--c-fg-1);
+  cursor: pointer;
+}
+.collection-checks__empty {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--c-fg-3);
+}
 
 .check { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: var(--t-2xs); }
 .check li.is-ok { color: var(--c-ok); }
