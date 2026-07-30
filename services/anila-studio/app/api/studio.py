@@ -134,6 +134,13 @@ from app.services.studio_vision_qa import (
 router = APIRouter(prefix="/api/studio", tags=["Studio / Slides"])
 logger = logging.getLogger(__name__)
 
+# Soft warning shown on JobStatus when the pipeline ships the
+# synthetic fallback deck (LLM schema exhaustion). Kept as a module
+# constant so the API path and the regression test cannot drift.
+FALLBACK_DECK_WARNING = (
+    "模型無法產出合法簡報結構，已改為說明卡。請重試或精簡補充指示。"
+)
+
 
 # ── Tunables → moved to app/services/studio_config.py (god-module split) ─────
 # Only the constants still referenced by the orchestration/QA code that
@@ -752,11 +759,15 @@ async def _run_pipeline(
             )
 
     # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
+    # Fallback deck is still a downloadable .pptx (so the user isn't
+    # left with a toast and nothing), but we surface a soft warning so
+    # the SPA doesn't present it as a clean win.
     await updater.mark_done(
         spec=spec,
         pptx_bytes=pptx_bytes,
         defects=final_defects,
         qa_passes=qa_passes,
+        warning=(FALLBACK_DECK_WARNING if used_fallback else None),
     )
 
 

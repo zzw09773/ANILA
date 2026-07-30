@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
+import { useArtifactStore } from '../store/artifacts'
 import { Modal } from '../components/Modal'
 import { Icon } from '../components/Icon'
 import { Spinner } from '../components/Spinner'
@@ -19,6 +20,7 @@ import {
   downloadMindmapArtifact,
   downloadInfographicArtifact,
   downloadDatatableArtifact,
+  downloadSlidesJobPptx,
   fetchMindmapTree,
   type MindmapTreeSpec,
 } from '../api/studio'
@@ -108,21 +110,7 @@ function ArtifactHeaderActions({ artifact }: { artifact: StudioArtifact }) {
     case 'report':
       return <ReportHeaderActions artifact={artifact} />
     case 'slides':
-      return (
-        <button
-          onClick={() =>
-            downloadAs(
-              `${artifact.title}.json`,
-              JSON.stringify(artifact, null, 2),
-              'application/json',
-            )
-          }
-          title="下載 .json"
-          style={iconBtnStyle(t)}
-        >
-          <Icon name="upload" size={13} stroke={t.textMuted} />
-        </button>
-      )
+      return <SlidesHeaderActions artifact={artifact} />
     case 'mindmap':
       return <MindmapHeaderActions artifact={artifact} />
     case 'infographic':
@@ -130,6 +118,54 @@ function ArtifactHeaderActions({ artifact }: { artifact: StudioArtifact }) {
     case 'datatable':
       return <DatatableHeaderActions artifact={artifact} />
   }
+}
+
+function SlidesHeaderActions({ artifact }: { artifact: SlidesArtifact }) {
+  const { t } = useTheme()
+  const updateArtifact = useArtifactStore((s) => s.update)
+  if (!artifact.jobId) {
+    return (
+      <button
+        onClick={() =>
+          downloadAs(
+            `${artifact.title}.json`,
+            JSON.stringify(artifact, null, 2),
+            'application/json',
+          )
+        }
+        title="下載 .json"
+        style={iconBtnStyle(t)}
+      >
+        <Icon name="upload" size={13} stroke={t.textMuted} />
+      </button>
+    )
+  }
+  const jobId = artifact.jobId
+  return (
+    <button
+      onClick={() => {
+        void downloadSlidesJobPptx(jobId, artifact.title || '簡報')
+          .then(() => {
+            if (artifact.warning?.startsWith('檔案下載失敗')) {
+              updateArtifact(artifact.collectionId, artifact.id, {
+                warning: null,
+              })
+            }
+          })
+          .catch((err: unknown) => {
+            const msg =
+              err instanceof Error ? err.message : '下載失敗，請稍後再試'
+            updateArtifact(artifact.collectionId, artifact.id, {
+              warning: `檔案下載失敗：${msg}`,
+            })
+          })
+      }}
+      title="下載 .pptx"
+      style={iconBtnStyle(t)}
+    >
+      <Icon name="upload" size={13} stroke={t.textMuted} />
+    </button>
+  )
 }
 
 function ReportHeaderActions({ artifact }: { artifact: ReportArtifact }) {

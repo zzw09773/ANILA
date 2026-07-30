@@ -31,6 +31,8 @@ type GenericJobStatus = {
   step?: string | null
   title?: string | null
   error?: string | null
+  /** Soft warning that coexists with done (e.g. LLM fallback deck). */
+  warning?: string | null
   download_urls?: Record<string, string> | null
   // 各 kind 特有的 metadata
   defects?: unknown
@@ -149,6 +151,14 @@ const EMPTY_ARTIFACTS: StudioArtifact[] = []
 //   - it tolerates one missed tick (network blip) without stretching
 //     the perceived "stuck" window past ~6 s.
 const JOB_POLL_INTERVAL_MS = 3000
+/** After this many consecutive poll failures, surface a soft warning
+ *  on the artifact so "鑄造中" doesn't look healthy when the network
+ *  is actually dead. ~15 s at the default interval. */
+const POLL_WARN_AFTER = 5
+/** After this many consecutive failures, mark the artifact failed.
+ *  ~90 s — long enough to ride out a brief studio restart, short
+ *  enough that the user isn't staring at a spinner forever. */
+const POLL_FAIL_AFTER = 30
 
 export function WSStudio() {
   const { t } = useTheme()
@@ -189,6 +199,37 @@ export function WSStudio() {
   // and both decide to download. Lives outside React state because we
   // don't need a re-render when it changes.
   const downloadedRef = useRef<Set<string>>(new Set())
+  // Consecutive poll-failure counters keyed by jobId. Reset on any
+  // successful status read. Used to escalate from soft warning → failed
+  // instead of spinning "鑄造中" forever against a dead endpoint.
+  const pollFailRef = useRef<Map<string, number>>(new Map())
+
+  /** Trigger a slides .pptx download and surface failures on the row.
+   *  Only clears *download* warnings on success — backend pipeline
+   *  warnings (e.g. LLM fallback deck) must survive a happy download
+   *  so the amber "說明卡" copy stays visible. */
+  const downloadSlidesVisible = async (
+    collectionId: number,
+    artifactId: string,
+    jobId: string,
+    filenameStem: string,
+  ): Promise<void> => {
+    try {
+      await downloadSlidesJobPptx(jobId, filenameStem)
+      const current = useArtifactStore.getState().get(collectionId, artifactId)
+      if (current?.warning?.startsWith('檔案下載失敗')) {
+        updateArtifact(collectionId, artifactId, { warning: null })
+      }
+    } catch (downloadErr) {
+      const msg =
+        downloadErr instanceof Error
+          ? downloadErr.message
+          : '下載失敗，請稍後再試'
+      updateArtifact(collectionId, artifactId, {
+        warning: `檔案下載失敗：${msg}`,
+      })
+    }
+  }
 
   useEffect(() => {
     if (!collection) return
@@ -210,6 +251,7 @@ export function WSStudio() {
       if (!stillPending) {
         clearInterval(timerId)
         pollersRef.current.delete(jobId)
+        pollFailRef.current.delete(jobId)
       }
     }
 
@@ -222,10 +264,12 @@ export function WSStudio() {
       const tick = async (): Promise<void> => {
         try {
           const status = await fetchJobStatus(kind, jobId)
+          pollFailRef.current.set(jobId, 0)
 
           if (status.state === 'running' || status.state === 'pending') {
             updateArtifact(collectionId, artifact.id, {
               step: status.step ?? null,
+              warning: null,
               ...(status.title ? { title: status.title } : {}),
             })
             return
@@ -237,6 +281,8 @@ export function WSStudio() {
               state: 'done',
               step: status.step ?? null,
               title: status.title ?? artifact.title,
+              // Backend soft warning (e.g. LLM fallback deck) or clear.
+              warning: status.warning ?? null,
             }
             if (status.download_urls) {
               patch.downloadUrls = status.download_urls
@@ -263,21 +309,18 @@ export function WSStudio() {
               clearInterval(timerId)
               pollersRef.current.delete(jobId)
             }
+            pollFailRef.current.delete(jobId)
             // Slides 是「單一 .pptx 檔」── 自動觸發 download(維持原行為);
             // 其他 4 種有多格式可下載,使用者在 ArtifactViewer 內選擇,
-            // 不自動下載。
+            // 不自動下載。失敗不再吞進 console — 寫進 artifact.warning。
             if (kind === 'slides' && !downloadedRef.current.has(jobId)) {
               downloadedRef.current.add(jobId)
-              try {
-                await downloadSlidesJobPptx(
-                  jobId,
-                  status.title ?? '簡報',
-                )
-              } catch (downloadErr) {
-                // Non-fatal — artifact 仍 done,使用者可從 viewer 重觸發
-                // eslint-disable-next-line no-console
-                console.warn('[studio] auto-download failed:', downloadErr)
-              }
+              await downloadSlidesVisible(
+                collectionId,
+                artifact.id,
+                jobId,
+                status.title ?? '簡報',
+              )
             }
             return
           }
@@ -286,6 +329,7 @@ export function WSStudio() {
             updateArtifact(collectionId, artifact.id, {
               state: 'failed',
               step: null,
+              warning: null,
               error:
                 status.error ??
                 (status.state === 'cancelled'
@@ -297,12 +341,34 @@ export function WSStudio() {
               clearInterval(timerId)
               pollersRef.current.delete(jobId)
             }
+            pollFailRef.current.delete(jobId)
             return
           }
         } catch (err) {
-          // Network blip: keep polling
+          const fails = (pollFailRef.current.get(jobId) ?? 0) + 1
+          pollFailRef.current.set(jobId, fails)
           // eslint-disable-next-line no-console
-          console.warn('[studio] poll tick failed:', err)
+          console.warn('[studio] poll tick failed:', err, `(${fails}x)`)
+          if (fails >= POLL_FAIL_AFTER) {
+            updateArtifact(collectionId, artifact.id, {
+              state: 'failed',
+              step: null,
+              error: '連線中斷過久，無法確認鑄造狀態。請重新鑄造。',
+              warning: null,
+            })
+            const timerId = pollersRef.current.get(jobId)
+            if (timerId !== undefined) {
+              clearInterval(timerId)
+              pollersRef.current.delete(jobId)
+            }
+            pollFailRef.current.delete(jobId)
+            return
+          }
+          if (fails >= POLL_WARN_AFTER) {
+            updateArtifact(collectionId, artifact.id, {
+              warning: '連線不穩，仍在重試查詢進度…',
+            })
+          }
         }
       }
 
@@ -324,17 +390,21 @@ export function WSStudio() {
   }, [byCollection, collection?.id])
 
   // Unmount cleanup: empty deps, so this only fires when WSStudio
-  // unmounts (e.g. user closes the manuscript). Tears down every
-  // active poller and clears the download-once guard.
+  // unmounts (e.g. user leaves the workspace). Tears down every
+  // active poller and clears the download-once guard. Closing the
+  // studio panel no longer unmounts us (WorkspacePage keeps the
+  // component mounted but hidden), so in-flight jobs keep polling.
   useEffect(() => {
     const pollers = pollersRef.current
     const downloaded = downloadedRef.current
+    const pollFails = pollFailRef.current
     return () => {
       for (const timerId of pollers.values()) {
         clearInterval(timerId)
       }
       pollers.clear()
       downloaded.clear()
+      pollFails.clear()
     }
   }, [])
 
@@ -610,20 +680,30 @@ export function WSStudio() {
                   const state = a.state ?? 'done'
                   const isPending = state === 'pending'
                   const isFailed = state === 'failed'
+                  // Slides: the binary is the artifact — click downloads
+                  // .pptx. Other kinds open ArtifactViewer for multi-format
+                  // download / interactive preview. Failed rows stay inert.
                   const isClickable = !isPending && !isFailed
                   // While pending, the slide_count is 0 and markdown
                   // length is 0 (slides array is empty) — show the
                   // step-label instead so the meta line stays useful.
+                  // Soft warnings (download fail / poll blip / fallback
+                  // deck) outrank the generic "已完成" copy so the user
+                  // actually sees them.
                   let meta: string
                   if (isPending) {
-                    meta = stepLabel(a.step ?? null)
+                    meta = a.warning
+                      ? a.warning
+                      : stepLabel(a.step ?? null)
                   } else if (isFailed) {
                     meta = a.error || '鑄造失敗'
+                  } else if (a.warning) {
+                    meta = a.warning
                   } else if (a.kind === 'slides') {
                     // Slides binary is the canonical artifact; we don't
                     // store per-slide JSON in the timeline, so even
                     // though `slides.length` is 0 the file is real.
-                    meta = '已完成 · 點擊下載'
+                    meta = '已完成 · 點擊下載 .pptx'
                   } else if (a.kind === 'report') {
                     // Legacy v1 stored full markdown; v2 (backend job)
                     // lands `downloadUrls` instead. Show length when
@@ -636,7 +716,13 @@ export function WSStudio() {
                   }
                   // Border colour shifts on terminal failure to make
                   // the row visually distinct from successful rows.
-                  const dotColour = isFailed ? '#FF6B6B' : colour
+                  // Soft warnings (download fail / fallback) get amber.
+                  const hasWarning = Boolean(a.warning) && !isFailed
+                  const dotColour = isFailed
+                    ? '#FF6B6B'
+                    : hasWarning
+                      ? '#F4B740'
+                      : colour
                   return (
                     <div key={a.id} style={{ position: 'relative' }}>
                       <div
@@ -653,7 +739,19 @@ export function WSStudio() {
                       />
                       <div
                         onClick={() => {
-                          if (!isClickable) return
+                          if (!isClickable || !collection) return
+                          if (a.kind === 'slides' && a.jobId) {
+                            // Don't open the empty slides viewer —
+                            // re-trigger the .pptx download and surface
+                            // any failure on the row itself.
+                            void downloadSlidesVisible(
+                              collection.id,
+                              a.id,
+                              a.jobId,
+                              a.title || '簡報',
+                            )
+                            return
+                          }
                           setViewing(a)
                         }}
                         style={{
@@ -662,7 +760,11 @@ export function WSStudio() {
                           cursor: isClickable ? 'pointer' : 'default',
                           background: t.surface2,
                           border: `1px solid ${
-                            isFailed ? '#FF6B6B55' : t.border
+                            isFailed
+                              ? '#FF6B6B55'
+                              : hasWarning
+                                ? '#F4B74055'
+                                : t.border
                           }`,
                           display: 'flex',
                           flexDirection: 'column',
@@ -783,27 +885,39 @@ export function WSStudio() {
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                             <Icon name="file" size={10} stroke={t.textMuted} /> {a.sourceCount} 來源
                           </span>
-                          <span>· {meta}</span>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              color: isFailed
+                                ? '#FF6B6B'
+                                : hasWarning
+                                  ? '#F4B740'
+                                  : undefined,
+                            }}
+                          >
+                            · {meta}
+                          </span>
                           {a.kind === 'slides' &&
                             state === 'done' &&
                             a.jobId && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
+                                  if (!collection) return
                                   // Re-download by hitting the same
                                   // /pptx endpoint. Job stays in
                                   // memory until evicted (max 8 per
-                                  // user / 1 h).
-                                  void downloadSlidesJobPptx(
+                                  // user / 1 h). Failures land on
+                                  // artifact.warning — no more silent
+                                  // console.warn.
+                                  void downloadSlidesVisible(
+                                    collection.id,
+                                    a.id,
                                     a.jobId!,
                                     a.title || '簡報',
-                                  ).catch((err) => {
-                                    // eslint-disable-next-line no-console
-                                    console.warn(
-                                      '[studio] re-download failed:',
-                                      err,
-                                    )
-                                  })
+                                  )
                                 }}
                                 title="重新下載"
                                 style={{
@@ -859,7 +973,14 @@ export function WSStudio() {
         open={modalFormat !== null}
         format={modalFormat}
         onClose={() => setModalFormat(null)}
-        onGenerated={(a) => setViewing(a)}
+        onGenerated={(a) => {
+          // Slides have no in-browser preview (binary .pptx only) —
+          // opening ArtifactViewer would show an empty deck. The
+          // poller already triggers the download; just leave the row
+          // visible in the timeline.
+          if (a.kind === 'slides') return
+          setViewing(a)
+        }}
       />
       <ArtifactViewer
         open={viewing !== null}
