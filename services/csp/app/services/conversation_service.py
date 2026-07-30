@@ -211,6 +211,134 @@ def create_conversation(
     return conv
 
 
+def _resolve_agent_for_adopt(
+    db: Session,
+    user: User,
+    *,
+    agent_id: Optional[int] = None,
+    agent_name: Optional[str] = None,
+):
+    """Resolve an approved Agent the caller may use. None when absent/denied.
+
+    Mirrors chat-proxy discovery (approved + permission) so adopt cannot latch
+    classification via an agent the user could not have compared against.
+    """
+    from app.models.agent import Agent
+    from app.services.api_key_service import check_agent_permission
+
+    agent = None
+    if agent_id is not None:
+        agent = (
+            db.query(Agent)
+            .filter(Agent.id == agent_id, Agent.approval_status == "approved")
+            .first()
+        )
+    else:
+        name = (agent_name or "").strip()
+        if name:
+            agent = (
+                db.query(Agent)
+                .filter(Agent.name == name, Agent.approval_status == "approved")
+                .first()
+            )
+    if agent is None:
+        return None
+    if not is_admin_tier(user) and not check_agent_permission(
+        db, user=user, api_key_id=None, agent_id=agent.id,
+    ):
+        return None
+    return agent
+
+
+def _latch_agent_policy_on_conversation(db: Session, conv_id: int, agent) -> None:
+    """Mirror chat-proxy agent-policy latch (reason=agent_policy).
+
+    Uses ``effective_agent_policy_level`` (same rule as proxy). No-op when
+    the effective level is 無機密.
+    """
+    from app.api.agents._common import effective_agent_policy_level
+    from app.modules.policy import apply_classification
+    from app.schemas.contracts.classification import ClassificationLevel
+
+    level = effective_agent_policy_level(agent)
+    if level <= ClassificationLevel.UNCLASSIFIED:
+        return
+    apply_classification(
+        db,
+        resource_type="conversation",
+        resource_id=str(conv_id),
+        new_level=level.to_storage(),
+        actor_type="service",
+        actor_id="agent-policy",
+        reason="agent_policy",
+        source="agent_policy",
+    )
+
+
+def adopt_compare_answer(
+    db: Session,
+    user: User,
+    *,
+    title: str,
+    user_content: str,
+    assistant_content: str,
+    agent_id: Optional[int] = None,
+    agent_name: Optional[str] = None,
+    origin: Optional[str] = "anila-ui",
+    assistant_metadata: Optional[dict] = None,
+    assistant_trace_id: Optional[str] = None,
+    assistant_latency_ms: Optional[int] = None,
+    assistant_agent_name: Optional[str] = None,
+) -> Conversation:
+    """Promote a compare-mode answer into a real conversation + message tree.
+
+    Creates the conversation, appends user then assistant (parent_id=user via
+    active leaf), then latches classification from the resolved agent's policy
+    — the same path ordinary chat takes via the proxy. Does not re-call the
+    model.
+    """
+    _check_metadata_size(assistant_metadata)
+    agent = _resolve_agent_for_adopt(
+        db, user, agent_id=agent_id, agent_name=agent_name,
+    )
+    # Only persist a real FK — never write an unresolved agent_id (would 500).
+    resolved_agent_id = agent.id if agent is not None else None
+    conv = create_conversation(
+        db,
+        user.id,
+        title=title or "採用比較結果",
+        agent_id=resolved_agent_id,
+        origin=origin,
+        collection_id=None,
+    )
+    # Same chaining ordinary chat uses: user lands as active leaf, then
+    # assistant threads onto it (no explicit parent_id needed).
+    append_message(
+        db,
+        conv.id,
+        user,
+        role="user",
+        content=user_content,
+        set_active=True,
+    )
+    append_message(
+        db,
+        conv.id,
+        user,
+        role="assistant",
+        content=assistant_content,
+        trace_id=assistant_trace_id,
+        latency_ms=assistant_latency_ms,
+        agent_name=assistant_agent_name,
+        metadata=assistant_metadata,
+        set_active=True,
+    )
+    if agent is not None:
+        _latch_agent_policy_on_conversation(db, conv.id, agent)
+    db.refresh(conv)
+    return conv
+
+
 def get_conversation(
     db: Session,
     conv_id: int,
