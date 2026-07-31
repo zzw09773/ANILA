@@ -114,6 +114,16 @@ services:
       # 走 pending → admin 核准。缺值 fail-fast;.env.example 的 placeholder
       # 字面由 startup_security 在啟動時擋 (避免 bricked:沒人能 approve)。
       CARD_INITIAL_OWNERS: ${CARD_INITIAL_OWNERS:?CARD_INITIAL_OWNERS must be set (CSV employee ids, include yourself)}
+      # 卡片驗章的信任錨。**不設 = 用釘死的 cspki_ca_bundle.pem**,內網 prod
+      # 就是這樣跑。只有本機開發需要指到 cht/ mock 生的測試 bundle
+      # (secrets/dev-card-ca/ — secrets/ 下面那條 :ro 掛載已經把它帶進容器):
+      #   CARD_CA_BUNDLE_PATH=/app/secrets/dev-card-ca/dev_ca_bundle.pem
+      #   CARD_DEV_TRUST_TEST_CA=1
+      # 兩個都要,而且 REQUIRE_CARD_LOGIN_ONLY 必須是 false。誤帶到 production
+      # 不會靜默降級:card_auth 認得測試 CA 的標記,少任一條件就拒絕載入整包
+      # bundle(fail-closed),不是只濾掉那幾張。
+      CARD_CA_BUNDLE_PATH: "${CARD_CA_BUNDLE_PATH:-}"
+      CARD_DEV_TRUST_TEST_CA: "${CARD_DEV_TRUST_TEST_CA:-0}"
       # endpoint_url 是 base URL,proxy_service 自己加 ``/v1/chat/completions``
       # 或 ``/v1/embeddings``。**不要**在 URL 結尾加 ``/v1``,否則拼成
       # ``/v1/v1/...`` → 404 → router 端 RemoteProtocolError。

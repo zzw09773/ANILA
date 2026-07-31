@@ -1,5 +1,44 @@
+"""中華電信 HiPKI 本機元件（``localhost:16888``）的 dev mock。
+
+真元件跑在**使用者自己的 PC** 上，接讀卡機、要 PIN、在卡片晶片內做簽章。
+本機開發沒有讀卡機，所以用這支 Flask app 假裝它，協定與埠號一致
+（``/popupForm`` / ``/cht_api/sign`` / ``/cht_api/pkcs11info``）。
+
+2026-07-31 之前這支 mock 是假的：``/cht_api/sign`` 只拿 ``tbsPackage`` 檢查
+PIN 是不是 ``123456``，然後回一份**寫死的** PKCS#7，eContent 永遠是 ``b"TBS"``。
+2026-06-12 卡登加上 nonce 綁定（eContent 必須等於本次 challenge 的 nonce）之後，
+這份寫死的簽章**在結構上不可能**通過驗證，於是本機只好把 ``ENABLE_CARD_LOGIN``
+關掉，整條登入路徑在開發機上走不完。
+
+現在 mock 誠實了：它有自己的測試 PKI（執行時生成，見 ``cms_sign.py``），
+拿到什麼 tbs 就簽什麼 tbs。因此本機流程會**真的**行使 nonce 綁定、CMS 簽章
+驗證與憑證鏈驗證，唯一跟內網不同的是信任錨換成測試 root（由 csp 端的
+``CARD_CA_BUNDLE_PATH`` 指定，且 csp 有 fence 擋住 production 誤用）。
+
+身分也換了（2026-07-31 擁有者裁決）：原本 mock 內嵌的是一位同仁的真憑證
+（姓名 / 工號 / 院內信箱），現在一律是 ``cms_sign.py`` 現生的合成假身分。
+真元件輸出的保真樣本仍留在 ``services/csp/tests/test_card_auth.py``
+（``MOCK_SIGNATURE_B64``），本檔不再含任何真人資料。
+"""
+import base64
+import datetime
 import json
-from flask import Flask, request, jsonify, render_template
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.x509.oid import NameOID
+from flask import Flask, jsonify, render_template, request
+
+from cms_sign import (
+    DEV_CARD_DISPLAY_NAME,
+    DEV_CARD_EMAIL,
+    DEV_CARD_EMPLOYEE_ID,
+    DEV_CARD_SERIAL,
+    build_pkcs7,
+    dev_ca_dir,
+    ensure_dev_pki,
+    load_dev_card,
+)
 
 app = Flask(__name__)
 
@@ -9,23 +48,180 @@ def popup_form():
     return render_template("popupForm.html")
 
 
+def _b64_der(cert: x509.Certificate) -> str:
+    return base64.b64encode(cert.public_bytes(serialization.Encoding.DER)).decode()
+
+
 @app.route("/cht_api/sign", methods=["POST"])
 def sign():
+    """對 ``tbsPackage.tbs`` 真的做一次卡片簽章。
+
+    ``tbsEncoding`` 目前只支援 ``NONE``（前端 ``caAuth.js`` 與 ``login.html``
+    都固定送 ``NONE``），tbs 原文即為 eContent —— 這正是真元件的行為，
+    佐證在 ``real_component_capture.json``。
+    """
     tbs_package = json.loads(request.form.get("tbsPackage"))
-    signature_result = {"cardSN": "CS00000000025247",
-                        "certb64": "MIIE5jCCBGygAwIBAgIRAI9+7MjdL7UP84Pv1PaAqjkwCgYIKoZIzj0EAwIwXjELMAkGA1UEBhMCVFcxJDAiBgNVBAoMG+Wci+WutuS4reWxseenkeWtuOeglOeptumZojEpMCcGA1UEAwwg5Lit56eR6Zmi5oaR6K2J566h55CG5Lit5b+DIC0gRzEwHhcNMjUwMjIxMDc0OTI3WhcNMzAwMjIxMDc0OTI3WjBZMQswCQYDVQQGEwJUVzEkMCIGA1UECgwb5ZyL5a625Lit5bGx56eR5a2456CU56m26ZmiMRIwEAYDVQQDDAnphJLmg6Dnv5QxEDAOBgNVBAUTBzEwOTA4NjgwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC44QX1Uqy00E2gV9Bq10xgxypNRurjdBPFA3KB6ium7Jcoszow9wuYm00T0Tlre0WNlbPlU4WjL6mNPM4X0CnN0+ZTAYOHU+k3+ZS8NYLiWcwYFQLl1GfqE5/1XZGNTq4gyqPnPjUwjOqhLe03XhpXDSBQ+8aObuf9/KWduZRgC857UfJU8c10qvZxgtHmG9V5YqRDuQNZGts0MxHYyX2hBpYrRxxuZgNIpFZ0hC/z4N2FfYH3/wL7tDUUT56QsfKOmkLpXAxFI/jiI+zPLRMErzfdm02fXJsOxMkaNUT+h00O/ZBu2LCt82nxJKpVB3FUvnUwhcIMzbXkQS8HPOkzAgMBAAGjggJDMIICPzAfBgNVHSMEGDAWgBQdnInC/u41VdVGj1W4/ANxWUwr4DAdBgNVHQ4EFgQUVmvPZsXDgs7XoyoyCMuLK5i1sTkwgZwGA1UdHwSBlDCBkTBOoEygSoZIaHR0cDovL3JlcG9zaXRvcnkubmNzaXN0Lm9yZy50dy9jcmwvTkNTSVNUQ0EtTkNTSVNULzE5ODUtMS9wYXJ0aXRpb24uY3JsMD+gPaA7hjlodHRwOi8vcmVwb3NpdG9yeS5uY3Npc3Qub3JnLnR3L2NybC9OQ1NJU1RDQS9jb21wbGV0ZS5jcmwwegYIKwYBBQUHAQEEbjBsMD4GCCsGAQUFBzAChjJodHRwOi8vcmVwb3NpdG9yeS5uY3Npc3Qub3JnLnR3L2NlcnRzL05DU0lTVENBLmNlcjAqBggrBgEFBQcwAYYeaHR0cDovL29jc3AubmNzaXN0Lm9yZy50dy9PQ1NQMBcGA1UdIAQQMA4wDAYKYIZ2aYaNIwADAzBFBgNVHREEPjA8gRRDOTVUSFNAbmNzaXN0Lm9yZy50d6AkBgorBgEEAYI3FAIDoBYMFEM5NVRIU0BuY3Npc3Qub3JnLnR3MDMGA1UdCQQsMCowFQYHYIZ2AWQCATEKBghghnYBZAMBBjARBgdghnYBZAIzMQYMBDAxOTQwDgYDVR0PAQH/BAQDAgeAMC8GA1UdJQQoMCYGBFUdJQAGCCsGAQUFBwMEBggrBgEFBQcDAgYKKwYBBAGCNxQCAjAMBgNVHRMBAf8EAjAAMAoGCCqGSM49BAMCA2gAMGUCMEkP/4r9X7R2u0mtZnpPpPbxuDg91U+RgLkrQmZmad0xcMJXGnyR9adFP6E7app9bwIxAONs89qEuHsSTp+EAYHjsvztT81k+L/HVtLSTCeyU0PeZPOyJMe01OUICrF3X6luvw==",
-                        "func": "sign", "last_error": 0, "ret_code": 0 if tbs_package["pin"] == "123456" else 1,
-                        "signature": "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",
-                        "version": "2.3.2"}
-    return jsonify(signature_result)
+
+    # PIN 檢查維持原行為：錯 PIN → ret_code=1、不簽章（前端據此丟
+    # CardSignFailedError）。真元件是卡片自己鎖，mock 只能比字串。
+    if tbs_package.get("pin") != "123456":
+        return jsonify({"func": "sign", "last_error": 0, "ret_code": 1, "version": "2.3.2"})
+
+    key, cert = load_dev_card()
+    tbs = (tbs_package.get("tbs") or "").encode("utf-8")
+    der = build_pkcs7(tbs, key, cert)
+
+    return jsonify(
+        {
+            "cardSN": DEV_CARD_SERIAL,
+            "certb64": _b64_der(cert),
+            "func": "sign",
+            "last_error": 0,
+            "ret_code": 0,
+            "signature": base64.b64encode(der).decode(),
+            "version": "2.3.2",
+        }
+    )
+
+
+def _subject_dn(cert: x509.Certificate) -> str:
+    """組真元件那種 ``C=TW,O=...,CN=...,serialNumber=...`` 寫法。
+
+    ``caAuth.js`` 的 ``parseSubjectDN()`` 是照這個格式切的，順序與 key 名稱
+    不能改成 rfc4514 的樣子。
+    """
+    order = (
+        ("C", NameOID.COUNTRY_NAME),
+        ("O", NameOID.ORGANIZATION_NAME),
+        ("CN", NameOID.COMMON_NAME),
+        ("serialNumber", NameOID.SERIAL_NUMBER),
+    )
+    parts = []
+    for label, oid in order:
+        attrs = cert.subject.get_attributes_for_oid(oid)
+        if attrs:
+            parts.append(f"{label}={attrs[0].value}")
+    return ",".join(parts)
+
+
+def _cert_entry(
+    cert: x509.Certificate,
+    label: str,
+    usage: str,
+    email: str | None = None,
+) -> dict:
+    """組一筆 pkcs11info 的 cert 記錄。
+
+    ``caAuth.js.extractCardClaims()`` 挑 signer 的條件是「有 email + usage 含
+    digitalSignature + subjectDN 帶 serialNumber=」，這三個欄位的格式要對。
+    """
+    not_before = getattr(cert, "not_valid_before_utc", None) or cert.not_valid_before
+    not_after = getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after
+    cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    entry = {
+        "certb64": _b64_der(cert),
+        "id": base64.b64encode(label.encode()).decode(),
+        "issuerDN": _subject_dn_of_name(cert.issuer),
+        "label": label,
+        "notAfter": not_after.strftime("%y%m%d%H%M%SZ"),
+        "notAfterT": int(not_after.replace(tzinfo=datetime.timezone.utc).timestamp()),
+        "notBefore": not_before.strftime("%y%m%d%H%M%SZ"),
+        "notBeforeT": int(not_before.replace(tzinfo=datetime.timezone.utc).timestamp()),
+        "sn": format(cert.serial_number, "X"),
+        "subjectCN": cn[0].value if cn else "",
+        "subjectDN": _subject_dn(cert),
+        "thumbprint": cert.fingerprint(hashes.SHA1()).hex().upper(),
+        "usage": usage,
+    }
+    if email:
+        entry["email"] = email
+    return entry
+
+
+def _subject_dn_of_name(name: x509.Name) -> str:
+    order = (
+        ("C", NameOID.COUNTRY_NAME),
+        ("O", NameOID.ORGANIZATION_NAME),
+        ("CN", NameOID.COMMON_NAME),
+    )
+    parts = []
+    for label, oid in order:
+        attrs = name.get_attributes_for_oid(oid)
+        if attrs:
+            parts.append(f"{label}={attrs[0].value}")
+    return ",".join(parts)
 
 
 @app.route("/cht_api/pkcs11info", methods=["POST"])
 def pkcs11info():
-    # tbs_package = json.loads(request.form.get("tbsPackage"))
-    signature_result = {"cryptokiVersion":2.04,"flags":0,"func":"pkcs11info","last_error":0,"libraryDescription":"CHT MCAv2 PKCS#11 1.0.5.32036","libraryVersion":1.001,"manufacturerID":"Chunghwa TeleComm TL","ret_code":0,"slots":[{"firmwareVersion":0,"flags":7,"hardwareVersion":0,"manufacturerID":"unKnow","slotDescription":"CASTLES EZ100PU 0","slotID":0,"token":{"certs":[{"certb64":"MIIC0DCCAjKgAwIBAgIRAJ27l/amC0BYIKvgh67WQbEwCgYIKoZIzj0EAwIwgYMxCzAJBgNVBAYTAlRXMUIwQAYDVQQKDDlOYXRpb25hbCBDaHVuZy1TaGFuIEluc3RpdHV0aW9uIG9mIFNjaWVuY2UgYW5kIFRlY2hub2xvZ3kxMDAuBgNVBAMMJ0NTUEtJIFJvb3QgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkgLSBHMTAeFw0xOTExMjgwODA3MjVaFw00OTExMjgwODA3MjVaMIGDMQswCQYDVQQGEwJUVzFCMEAGA1UECgw5TmF0aW9uYWwgQ2h1bmctU2hhbiBJbnN0aXR1dGlvbiBvZiBTY2llbmNlIGFuZCBUZWNobm9sb2d5MTAwLgYDVQQDDCdDU1BLSSBSb290IENlcnRpZmljYXRpb24gQXV0aG9yaXR5IC0gRzEwgZswEAYHKoZIzj0CAQYFK4EEACMDgYYABAG5Sm4veEmURBEMChGphXg74wzwV4VpIrDOr+lId2hHhxpIW6jHm7KJdBLgKDDmNhY9owHs+vJsYqh16rZakepaIQC/GEP5rc5OOTMzSZpS4rsMctx9YD1XuKaN4saLZtxZYU4BYaA5in+FaHTTZsyrJqxj6Lo+pey3BiIPpeNTBawRf6NCMEAwHQYDVR0OBBYEFBRMMX58xj9MMEveJ9sIAs6M/y2HMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMCA4GLADCBhwJBa+PLmn85qBlHfMLHgWj9VVxbkYslmPaxUjNnr0lvbgQriyLcK9ztlScAVdOwV8qNPV3TIEHG3lFDWb+9HbwhV+0CQgDJCEnZrPRU1IhXEX1SyqJHoZl9XGcDWvCjn4KLDRG4NhJ0PDqm9m3jDNnQwxo+W+AI1RON/vgecW3kt6Z7iJByCA==","id":"Uk9PVENBQ2VydA==","issuerDN":"C=TW,O=National Chung-Shan Institution of Science and Technology,CN=CSPKI Root Certification Authority - G1","label":"ROOT CA Cert","notAfter":"491128080725Z","notAfterT":0,"notBefore":"191128080725Z","notBeforeT":1574928445,"signatureAlgorithm":"1.2.840.10045.4.3.2","sn":"9DBB97F6A60B405820ABE087AED641B1","subjectCN":"CSPKI Root Certification Authority - G1","subjectDN":"C=TW,O=National Chung-Shan Institution of Science and Technology,CN=CSPKI Root Certification Authority - G1","thumbprint":"78C82E46595E1FDF3782D6280BED4F4AF4241A2C","usage":"digitalSignature|keyCertSign|cRLSign"},{"certb64":"MIIDpzCCAwmgAwIBAgIQPHfuE3kA8LHIz9fVUdAeEzAKBggqhkjOPQQDAjCBgzELMAkGA1UEBhMCVFcxQjBABgNVBAoMOU5hdGlvbmFsIENodW5nLVNoYW4gSW5zdGl0dXRpb24gb2YgU2NpZW5jZSBhbmQgVGVjaG5vbG9neTEwMC4GA1UEAwwnQ1NQS0kgUm9vdCBDZXJ0aWZpY2F0aW9uIEF1dGhvcml0eSAtIEcxMB4XDTE5MTEyODA4MDkyOFoXDTM5MTEyODA4MDkyOFowXjELMAkGA1UEBhMCVFcxJDAiBgNVBAoMG+Wci+WutuS4reWxseenkeWtuOeglOeptumZojEpMCcGA1UEAwwg5Lit56eR6Zmi5oaR6K2J566h55CG5Lit5b+DIC0gRzEwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAT3jvbNVpBvNe7dfErcPF8vA0b5MMJSwlieEpVr+iV0KByOoMeiNz64AbPJ6zow8IA4Zy9WOZavxiBrKLABPM8YgDrvg8o4wi1M8NUi80d/DHSO7LEi1IOcI+tUoFy5hLijggFkMIIBYDAfBgNVHSMEGDAWgBQUTDF+fMY/TDBL3ifbCALOjP8thzAdBgNVHQ4EFgQUHZyJwv7uNVXVRo9VuPwDcVlMK+AwRAYDVR0fBD0wOzA5oDegNYYzaHR0cDovL3JlcG9zaXRvcnkubmNzaXN0Lm9yZy50dy9yZXBvc2l0b3J5L0NBUkwuY3JsMH8GCCsGAQUFBwEBBHMwcTBABggrBgEFBQcwAoY0aHR0cDovL3JlcG9zaXRvcnkubmNzaXN0Lm9yZy50dy9jZXJ0cy9OQ1NJU1RSb290LmNlcjAtBggrBgEFBQcwAYYhaHR0cDovL29jc3AubmNzaXN0Lm9yZy50dy9SQ0FPQ1NQMDMGA1UdIAQsMCowDAYKYIZ2aYaNIwADATAMBgpghnZpho0jAAMCMAwGCmCGdmmGjSMAAwMwEgYDVR0TAQH/BAgwBgEB/wIBADAOBgNVHQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwIDgYsAMIGHAkF8wIm7VTQVstOVJUlo1HjvMyeXRmBe3kaZMiuxE8DLMpTdg8ncHo2tdgskezwPD+Ug9uLu/zpssSpNYvVgxsajmAJCAe0+IgkiqIBWyK7EXjeaVzqg5D19C4ShKNP/wBnUmuduck2ohm/wbd2UuJ4nzMtSmlNC9Ng3tjONTUsWQwloCp/l","id":"Q0FDZXJ0","issuerDN":"C=TW,O=National Chung-Shan Institution of Science and Technology,CN=CSPKI Root Certification Authority - G1","label":"CA Cert","notAfter":"391128080928Z","notAfterT":0,"notBefore":"191128080928Z","notBeforeT":1574928568,"signatureAlgorithm":"1.2.840.10045.4.3.2","sn":"3C77EE137900F0B1C8CFD7D551D01E13","subjectCN":"中科院憑證管理中心 - G1","subjectDN":"C=TW,O=國家中山科學研究院,CN=中科院憑證管理中心 - G1","thumbprint":"4BA1FB668BB6EFBAD16296ACD2AFCB616A03C1F0","usage":"keyCertSign|cRLSign"},{"certb64":"MIIE5jCCBGygAwIBAgIRAI9+7MjdL7UP84Pv1PaAqjkwCgYIKoZIzj0EAwIwXjELMAkGA1UEBhMCVFcxJDAiBgNVBAoMG+Wci+WutuS4reWxseenkeWtuOeglOeptumZojEpMCcGA1UEAwwg5Lit56eR6Zmi5oaR6K2J566h55CG5Lit5b+DIC0gRzEwHhcNMjUwMjIxMDc0OTI3WhcNMzAwMjIxMDc0OTI3WjBZMQswCQYDVQQGEwJUVzEkMCIGA1UECgwb5ZyL5a625Lit5bGx56eR5a2456CU56m26ZmiMRIwEAYDVQQDDAnphJLmg6Dnv5QxEDAOBgNVBAUTBzEwOTA4NjgwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC44QX1Uqy00E2gV9Bq10xgxypNRurjdBPFA3KB6ium7Jcoszow9wuYm00T0Tlre0WNlbPlU4WjL6mNPM4X0CnN0+ZTAYOHU+k3+ZS8NYLiWcwYFQLl1GfqE5/1XZGNTq4gyqPnPjUwjOqhLe03XhpXDSBQ+8aObuf9/KWduZRgC857UfJU8c10qvZxgtHmG9V5YqRDuQNZGts0MxHYyX2hBpYrRxxuZgNIpFZ0hC/z4N2FfYH3/wL7tDUUT56QsfKOmkLpXAxFI/jiI+zPLRMErzfdm02fXJsOxMkaNUT+h00O/ZBu2LCt82nxJKpVB3FUvnUwhcIMzbXkQS8HPOkzAgMBAAGjggJDMIICPzAfBgNVHSMEGDAWgBQdnInC/u41VdVGj1W4/ANxWUwr4DAdBgNVHQ4EFgQUVmvPZsXDgs7XoyoyCMuLK5i1sTkwgZwGA1UdHwSBlDCBkTBOoEygSoZIaHR0cDovL3JlcG9zaXRvcnkubmNzaXN0Lm9yZy50dy9jcmwvTkNTSVNUQ0EtTkNTSVNULzE5ODUtMS9wYXJ0aXRpb24uY3JsMD+gPaA7hjlodHRwOi8vcmVwb3NpdG9yeS5uY3Npc3Qub3JnLnR3L2NybC9OQ1NJU1RDQS9jb21wbGV0ZS5jcmwwegYIKwYBBQUHAQEEbjBsMD4GCCsGAQUFBzAChjJodHRwOi8vcmVwb3NpdG9yeS5uY3Npc3Qub3JnLnR3L2NlcnRzL05DU0lTVENBLmNlcjAqBggrBgEFBQcwAYYeaHR0cDovL29jc3AubmNzaXN0Lm9yZy50dy9PQ1NQMBcGA1UdIAQQMA4wDAYKYIZ2aYaNIwADAzBFBgNVHREEPjA8gRRDOTVUSFNAbmNzaXN0Lm9yZy50d6AkBgorBgEEAYI3FAIDoBYMFEM5NVRIU0BuY3Npc3Qub3JnLnR3MDMGA1UdCQQsMCowFQYHYIZ2AWQCATEKBghghnYBZAMBBjARBgdghnYBZAIzMQYMBDAxOTQwDgYDVR0PAQH/BAQDAgeAMC8GA1UdJQQoMCYGBFUdJQAGCCsGAQUFBwMEBggrBgEFBQcDAgYKKwYBBAGCNxQCAjAMBgNVHRMBAf8EAjAAMAoGCCqGSM49BAMCA2gAMGUCMEkP/4r9X7R2u0mtZnpPpPbxuDg91U+RgLkrQmZmad0xcMJXGnyR9adFP6E7app9bwIxAONs89qEuHsSTp+EAYHjsvztT81k+L/HVtLSTCeyU0PeZPOyJMe01OUICrF3X6luvw==","email":"C95THS@ncsist.org.tw","id":"U0lHTg==","issuerDN":"C=TW,O=國家中山科學研究院,CN=中科院憑證管理中心 - G1","label":"RSACert1","notAfter":"300221074927Z","notAfterT":1897890567,"notBefore":"250221074927Z","notBeforeT":1740124167,"signatureAlgorithm":"1.2.840.10045.4.3.2","sn":"8F7EECC8DD2FB50FF383EFD4F680AA39","subjectCN":"鄒惠翔","subjectDN":"C=TW,O=國家中山科學研究院,CN=鄒惠翔,serialNumber=1090868","subjectID":"0194","thumbprint":"850F8B4C608A89D00AC179C4029DBC5F899BF656","usage":"digitalSignature"},{"certb64":"MIIEqDCCBC+gAwIBAgIQJ7miJzWdjjSWB2o0qwdMAjAKBggqhkjOPQQDAjBeMQswCQYDVQQGEwJUVzEkMCIGA1UECgwb5ZyL5a625Lit5bGx56eR5a2456CU56m26ZmiMSkwJwYDVQQDDCDkuK3np5HpmaLmhpHorYnnrqHnkIbkuK3lv4MgLSBHMTAeFw0yNTAyMjEwNzQ5MjdaFw0zMDAyMjEwNzQ5MjdaMFkxCzAJBgNVBAYTAlRXMSQwIgYDVQQKDBvlnIvlrrbkuK3lsbHnp5HlrbjnoJTnqbbpmaIxEjAQBgNVBAMMCemEkuaDoOe/lDEQMA4GA1UEBRMHMTA5MDg2ODCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBANA5J45iFatJp9VI+PpQWiOypJq4r1+luklg6wDVpqb9rDCuIdEMAlwkj3EESed4PwvFC/RtrZKrTGgMXrkl7cEDY4XTnTopCrU8hK83ffyNMSZNGSePLX6n/k8cM1HnN+ts2WhYVVLUnmONidwqcx1RUF8c677UJWkYsy2b710w5tyFbd70EjHtnFrr5WkX1l3HaOI4bIzvIPT8QXyEPY2wDeDwSCK9bJm5CJxOMbRl+snlcZn6K43WwJsja9NYqNgnEIeP2zYOzHqqQ47tTHQlc58SJmagRxkWh0xr+Ffs3QvgseHbD05UtDr3TLDZXW+xGxFLjZb9cEN0OMItFU0CAwEAAaOCAgcwggIDMB8GA1UdIwQYMBaAFB2cicL+7jVV1UaPVbj8A3FZTCvgMB0GA1UdDgQWBBRYVZhJs5TfZCQYT0kF9gJymdu/3DCBnAYDVR0fBIGUMIGRME6gTKBKhkhodHRwOi8vcmVwb3NpdG9yeS5uY3Npc3Qub3JnLnR3L2NybC9OQ1NJU1RDQS1OQ1NJU1QvMTk4NS0xL3BhcnRpdGlvbi5jcmwwP6A9oDuGOWh0dHA6Ly9yZXBvc2l0b3J5Lm5jc2lzdC5vcmcudHcvY3JsL05DU0lTVENBL2NvbXBsZXRlLmNybDB6BggrBgEFBQcBAQRuMGwwPgYIKwYBBQUHMAKGMmh0dHA6Ly9yZXBvc2l0b3J5Lm5jc2lzdC5vcmcudHcvY2VydHMvTkNTSVNUQ0EuY2VyMCoGCCsGAQUFBzABhh5odHRwOi8vb2NzcC5uY3Npc3Qub3JnLnR3L09DU1AwFwYDVR0gBBAwDjAMBgpghnZpho0jAAMDMB8GA1UdEQQYMBaBFEM5NVRIU0BuY3Npc3Qub3JnLnR3MDMGA1UdCQQsMCowFQYHYIZ2AWQCATEKBghghnYBZAMBBjARBgdghnYBZAIzMQYMBDAxOTQwDgYDVR0PAQH/BAQDAgQwMBkGA1UdJQQSMBAGBFUdJQAGCCsGAQUFBwMEMAwGA1UdEwEB/wQCMAAwCgYIKoZIzj0EAwIDZwAwZAIwDwaFG2R/3QEvNBQ2D0DdanVDtTHVF5BP1sKAVzVnFtwiRBRh8tSayu+pdIx0XE0HAjAnEck/nMKOmbisXu9KCjGbouKDkv3EwN+r7cBXkkmIUkyzykpkyGXbURwi4XQOuYY=","email":"C95THS@ncsist.org.tw","id":"S0VZWA==","issuerDN":"C=TW,O=國家中山科學研究院,CN=中科院憑證管理中心 - G1","label":"RSACert2","notAfter":"300221074927Z","notAfterT":1897890567,"notBefore":"250221074927Z","notBeforeT":1740124167,"signatureAlgorithm":"1.2.840.10045.4.3.2","sn":"27B9A227359D8E3496076A34AB074C02","subjectCN":"鄒惠翔","subjectDN":"C=TW,O=國家中山科學研究院,CN=鄒惠翔,serialNumber=1090868","subjectID":"0194","thumbprint":"B300CC3A7068034614976CC528179677D51B50CE","usage":"keyEncipherment|dataEncipherment"},{"certb64":"MIIENzCCA76gAwIBAgIRALhwut0GNdw0moT7uYjz6eYwCgYIKoZIzj0EAwIwXjELMAkGA1UEBhMCVFcxJDAiBgNVBAoMG+Wci+WutuS4reWxseenkeWtuOeglOeptumZojEpMCcGA1UEAwwg5Lit56eR6Zmi5oaR6K2J566h55CG5Lit5b+DIC0gRzEwHhcNMjUwMjIxMDc0OTI3WhcNMzAwMjIxMDc0OTI3WjBZMQswCQYDVQQGEwJUVzEkMCIGA1UECgwb5ZyL5a625Lit5bGx56eR5a2456CU56m26ZmiMRIwEAYDVQQDDAnphJLmg6Dnv5QxEDAOBgNVBAUTBzEwOTA4NjgwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAATryJ3tEhJbvEukJcQslwOoBYizLTXQsVhn3o1keyKE8HeMLXXbQDlYoORZvdPSfFJnXwHLPWESKl5mOcltRfi7Kl+attgU5dR0hwz8JcizyOx7QiY/DbaAdj0RgbS7pLWjggJDMIICPzAfBgNVHSMEGDAWgBQdnInC/u41VdVGj1W4/ANxWUwr4DAdBgNVHQ4EFgQUMCuFGoy/yJOUXEyyKhr6wAjkOKEwgZwGA1UdHwSBlDCBkTBOoEygSoZIaHR0cDovL3JlcG9zaXRvcnkubmNzaXN0Lm9yZy50dy9jcmwvTkNTSVNUQ0EtTkNTSVNULzE5ODUtMS9wYXJ0aXRpb24uY3JsMD+gPaA7hjlodHRwOi8vcmVwb3NpdG9yeS5uY3Npc3Qub3JnLnR3L2NybC9OQ1NJU1RDQS9jb21wbGV0ZS5jcmwwegYIKwYBBQUHAQEEbjBsMD4GCCsGAQUFBzAChjJodHRwOi8vcmVwb3NpdG9yeS5uY3Npc3Qub3JnLnR3L2NlcnRzL05DU0lTVENBLmNlcjAqBggrBgEFBQcwAYYeaHR0cDovL29jc3AubmNzaXN0Lm9yZy50dy9PQ1NQMBcGA1UdIAQQMA4wDAYKYIZ2aYaNIwADAzBFBgNVHREEPjA8gRRDOTVUSFNAbmNzaXN0Lm9yZy50d6AkBgorBgEEAYI3FAIDoBYMFEM5NVRIU0BuY3Npc3Qub3JnLnR3MDMGA1UdCQQsMCowFQYHYIZ2AWQCATEKBghghnYBZAMBBjARBgdghnYBZAIzMQYMBDAxOTQwDgYDVR0PAQH/BAQDAgeAMC8GA1UdJQQoMCYGBFUdJQAGCCsGAQUFBwMEBggrBgEFBQcDAgYKKwYBBAGCNxQCAjAMBgNVHRMBAf8EAjAAMAoGCCqGSM49BAMCA2cAMGQCMBFykDVE7x/cO80L1gd94ezXqz3ixhK4GO5VfSlVqnoJ9lCojgrXzfcZMKWs0W0pWAIwMGAuVGJSaZqRrRH72EHjRoLWbVJFhlIV3FxezTTDeksUj7D3Hw8egpSgK3jDGFka","email":"C95THS@ncsist.org.tw","id":"U0lHTkVD","issuerDN":"C=TW,O=國家中山科學研究院,CN=中科院憑證管理中心 - G1","label":"ECCert1","notAfter":"300221074927Z","notAfterT":1897890567,"notBefore":"250221074927Z","notBeforeT":1740124167,"signatureAlgorithm":"1.2.840.10045.4.3.2","sn":"B870BADD0635DC349A84FBB988F3E9E6","subjectCN":"鄒惠翔","subjectDN":"C=TW,O=國家中山科學研究院,CN=鄒惠翔,serialNumber=1090868","subjectID":"0194","thumbprint":"009B7FBCF9E40A44628A99DEA782D7C324095458","usage":"digitalSignature"},{"certb64":"MIID/DCCA4KgAwIBAgIRAOGvpFQxvRPHrWwP+Gi7KC4wCgYIKoZIzj0EAwIwXjELMAkGA1UEBhMCVFcxJDAiBgNVBAoMG+Wci+WutuS4reWxseenkeWtuOeglOeptumZojEpMCcGA1UEAwwg5Lit56eR6Zmi5oaR6K2J566h55CG5Lit5b+DIC0gRzEwHhcNMjUwMjIxMDc0OTI3WhcNMzAwMjIxMDc0OTI3WjBZMQswCQYDVQQGEwJUVzEkMCIGA1UECgwb5ZyL5a625Lit5bGx56eR5a2456CU56m26ZmiMRIwEAYDVQQDDAnphJLmg6Dnv5QxEDAOBgNVBAUTBzEwOTA4NjgwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQuZa5vn4q/nhGT43kwiPFzRu8kuGqmUf9UNaAlOVaKv9OKf1Nnqn2r6fcRHgGr+WEYeWKO4AyNmk+KjPwP70jKVeFw5vbqpYdkd/fQDxyUQo9ka5rfU5CnDjUvbk6s24ajggIHMIICAzAfBgNVHSMEGDAWgBQdnInC/u41VdVGj1W4/ANxWUwr4DAdBgNVHQ4EFgQUwBoK+CUJlHUthnzOzE0me/HY+/0wgZwGA1UdHwSBlDCBkTBOoEygSoZIaHR0cDovL3JlcG9zaXRvcnkubmNzaXN0Lm9yZy50dy9jcmwvTkNTSVNUQ0EtTkNTSVNULzE5ODUtMS9wYXJ0aXRpb24uY3JsMD+gPaA7hjlodHRwOi8vcmVwb3NpdG9yeS5uY3Npc3Qub3JnLnR3L2NybC9OQ1NJU1RDQS9jb21wbGV0ZS5jcmwwegYIKwYBBQUHAQEEbjBsMD4GCCsGAQUFBzAChjJodHRwOi8vcmVwb3NpdG9yeS5uY3Npc3Qub3JnLnR3L2NlcnRzL05DU0lTVENBLmNlcjAqBggrBgEFBQcwAYYeaHR0cDovL29jc3AubmNzaXN0Lm9yZy50dy9PQ1NQMBcGA1UdIAQQMA4wDAYKYIZ2aYaNIwADAzAfBgNVHREEGDAWgRRDOTVUSFNAbmNzaXN0Lm9yZy50dzAzBgNVHQkELDAqMBUGB2CGdgFkAgExCgYIYIZ2AWQDAQYwEQYHYIZ2AWQCMzEGDAQwMTk0MA4GA1UdDwEB/wQEAwIDCDAZBgNVHSUEEjAQBgRVHSUABggrBgEFBQcDBDAMBgNVHRMBAf8EAjAAMAoGCCqGSM49BAMCA2gAMGUCMQC8BE60ZBSsrj6MDgrOhfXri9k4c3zFA+Yi2UidVcs0E712R3g0U6dX7CCpTbwxzowCMGQhw4FhHtEqAxuw08l7X0TvUGEsBvWffJmv6A8qa+/HK1NAYIH/1z+orzSE8PebjQ==","email":"C95THS@ncsist.org.tw","id":"S0VZWEVD","issuerDN":"C=TW,O=國家中山科學研究院,CN=中科院憑證管理中心 - G1","label":"ECCert2","notAfter":"300221074927Z","notAfterT":1897890567,"notBefore":"250221074927Z","notBeforeT":1740124167,"signatureAlgorithm":"1.2.840.10045.4.3.2","sn":"E1AFA45431BD13C7AD6C0FF868BB282E","subjectCN":"鄒惠翔","subjectDN":"C=TW,O=國家中山科學研究院,CN=鄒惠翔,serialNumber=1090868","subjectID":"0194","thumbprint":"01105B67109D6577601EB8ADF97D7E44D7B84DC0","usage":"keyAgreement"}],"firmwareVersion":1,"flags":1037,"hardwareVersion":1,"keys":[{"id":"S0VZWA==","keyb64":"MIIBCgKCAQEA0DknjmIVq0mn1Uj4+lBaI7KkmrivX6W6SWDrANWmpv2sMK4h0QwCXCSPcQRJ53g/C8UL9G2tkqtMaAxeuSXtwQNjhdOdOikKtTyErzd9/I0xJk0ZJ48tfqf+TxwzUec362zZaFhVUtSeY42J3CpzHVFQXxzrvtQlaRizLZvvXTDm3IVt3vQSMe2cWuvlaRfWXcdo4jhsjO8g9PxBfIQ9jbAN4PBIIr1smbkInE4xtGX6yeVxmforjdbAmyNr01io2CcQh4/bNg7MeqpDju1MdCVznxImZqBHGRaHTGv4V+zdC+Cx4dsPTlS0OvdMsNldb7EbEUuNlv1wQ3Q4wi0VTQIDAQAB","label":"K2","type":0},{"id":"S0VZWEVD","keyb64":"BC5lrm+fir+eEZPjeTCI8XNG7yS4aqZR/1Q1oCU5Voq/04p/U2eqfavp9xEeAav5YRh5Yo7gDI2aT4qM/A/vSMpV4XDm9uqlh2R399APHJRCj2Rrmt9TkKcONS9uTqzbhg==","label":"K4","type":3},{"id":"U0lHTg==","keyb64":"MIIBCgKCAQEAuOEF9VKstNBNoFfQatdMYMcqTUbq43QTxQNygeorpuyXKLM6MPcLmJtNE9E5a3tFjZWz5VOFoy+pjTzOF9ApzdPmUwGDh1PpN/mUvDWC4lnMGBUC5dRn6hOf9V2RjU6uIMqj5z41MIzqoS3tN14aVw0gUPvGjm7n/fylnbmUYAvOe1HyVPHNdKr2cYLR5hvVeWKkQ7kDWRrbNDMR2Ml9oQaWK0ccbmYDSKRWdIQv8+DdhX2B9/8C+7Q1FE+ekLHyjppC6VwMRSP44iPszy0TBK833ZtNn1ybDsTJGjVE/odNDv2QbtiwrfNp8SSqVQdxVL51MIXCDM215EEvBzzpMwIDAQAB","label":"K1","type":0},{"id":"U0lHTkVD","keyb64":"BOvIne0SElu8S6QlxCyXA6gFiLMtNdCxWGfejWR7IoTwd4wtddtAOVig5Fm909J8UmdfAcs9YRIqXmY5yW1F+LsqX5q22BTl1HSHDPwlyLPI7HtCJj8NtoB2PRGBtLuktQ==","label":"K3","type":3}],"label":"MPKICARDv2","manufacturerID":"Chunghwa Telecom Co., Ltd","model":"mPKI SEv2       <","serialNumber":"CS00000000025247","ulFreePrivateMemory":4294967295,"ulFreePublicMemory":4294967295,"ulMaxPinLen":6,"ulMaxRwSessionCount":0,"ulMaxSessionCount":0,"ulMinPinLen":6,"ulSessionCount":0,"ulTotalPrivateMemory":4294967295,"ulTotalPublicMemory":4294967295,"utcTime":""}}],"version":"2.2.6","serverVersion":"1.3.8","installedModule":[{"version":"1.1.6","description":"CardManagement"},{"version":"1.3.8","description":"HiPKILocalSignServer"},{"version":"1.1.1","description":"PrintCard"}]}
-    return jsonify(signature_result)
+    """回卡片/讀卡機資訊。結構照真元件，內容換成合成測試身分。"""
+    target = ensure_dev_pki()
+    root = x509.load_pem_x509_certificate((target / "dev_root_ca.pem").read_bytes())
+    issuing = x509.load_pem_x509_certificate((target / "dev_issuing_ca.pem").read_bytes())
+    _, card = load_dev_card()
+
+    return jsonify(
+        {
+            "cryptokiVersion": 2.04,
+            "flags": 0,
+            "func": "pkcs11info",
+            "last_error": 0,
+            "libraryDescription": "ANILA DEV MOCK (not a real HiPKI component)",
+            "libraryVersion": 1.001,
+            "manufacturerID": "ANILA dev mock",
+            "ret_code": 0,
+            "slots": [
+                {
+                    "firmwareVersion": 0,
+                    "flags": 7,
+                    "hardwareVersion": 0,
+                    "manufacturerID": "unKnow",
+                    "slotDescription": "ANILA DEV MOCK READER 0",
+                    "slotID": 0,
+                    "token": {
+                        "certs": [
+                            _cert_entry(root, "ROOT CA Cert", "keyCertSign|cRLSign"),
+                            _cert_entry(issuing, "CA Cert", "keyCertSign|cRLSign"),
+                            _cert_entry(
+                                card,
+                                "RSACert1",
+                                "digitalSignature",
+                                email=DEV_CARD_EMAIL,
+                            ),
+                        ],
+                        "label": "ANILA-DEV-MOCK-CARD",
+                        "manufacturerID": "ANILA dev mock",
+                        "model": "dev mock        <",
+                        "serialNumber": DEV_CARD_SERIAL,
+                        "ulMaxPinLen": 6,
+                        "ulMinPinLen": 6,
+                    },
+                }
+            ],
+            "version": "2.2.6",
+            "serverVersion": "1.3.8",
+        }
+    )
+
+
+@app.route("/dev/ca-bundle.pem")
+def ca_bundle():
+    """把測試信任 bundle 露出來，方便確認 csp 端掛到的是同一份。
+
+    只有公開憑證，沒有任何私鑰。
+    """
+    return (
+        (ensure_dev_pki() / "dev_ca_bundle.pem").read_bytes(),
+        200,
+        {"Content-Type": "application/x-pem-file"},
+    )
 
 
 if __name__ == "__main__":
+    ensure_dev_pki()
+    print(
+        f"[cht mock] 測試 PKI 就緒於 {dev_ca_dir()}；"
+        f"卡片身分 {DEV_CARD_EMPLOYEE_ID} / {DEV_CARD_DISPLAY_NAME} / {DEV_CARD_EMAIL}",
+        flush=True,
+    )
     app.run(host="0.0.0.0", port=16888)

@@ -1,10 +1,26 @@
+# 中華電信 HiPKI 本機元件的 dev mock。
+#
+# 真元件跑在使用者自己的 PC 上,不是平台的一部分,所以刻意**不**併進
+# infra/compose/platform.yml —— 那是內網正式棧的檔案,不該長出一個假讀卡機。
+#
+# 起法(在 cht/ 底下):
+#   CHT_DEV_CA_HOST_DIR=../secrets/dev-card-ca docker compose -p cht-mock up -d --build
+#
+# 測試 PKI(root/中繼/卡片私鑰 + 信任 bundle)由容器在啟動時生成到 /dev-ca,
+# 也就是 host 上的 ${CHT_DEV_CA_HOST_DIR}。那個目錄要在 repo 的 secrets/ 底下,
+# 因為 csp 已經把 ../../secrets 掛成 /app/secrets:ro —— csp 於是讀得到同一份
+# bundle,而私鑰在 .gitignore 內、不會進版控。
 services:
     api:
         build: .
         volumes:
             - .:/workspace
+            # 測試 PKI 的落點。RW:容器要在這裡生金鑰。
+            - ${CHT_DEV_CA_HOST_DIR:-../secrets/dev-card-ca}:/dev-ca
         working_dir: /workspace
+        environment:
+            CHT_DEV_CA_DIR: /dev-ca
         command: python app.py
         ports:
-            - "16888:16888"
-
+            # 只綁 loopback:真元件本來就只服務本機瀏覽器,沒有理由對外開。
+            - "127.0.0.1:16888:16888"

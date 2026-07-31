@@ -8,8 +8,10 @@
 - Production 內網：**唯一**登入方式 = 憑證卡。使用者 PC 安裝中華電信 HiPKI
   本機元件 (``localhost:16888``),硬體讀卡機讀中科院 PKI 卡,PIN 驗證 +
   簽章運算都在卡片內完成。Backend 拿到的是 base64 PKCS#7 (CMS SignedData)。
-- Dev：用 ``cht/`` mock 容器假裝 localhost:16888,回鄒惠翔測試卡的「固定」簽章
-  (eContent 永遠是 ``b"TBS"``,mock 無私鑰故無法簽新 nonce)。
+- Dev：用 ``cht/`` mock 容器假裝 localhost:16888。**2026-07-31 起 mock 會真的簽章**
+  (自帶執行時生成的測試 PKI,拿到什麼 tbs 就簽什麼),所以本機流程跟內網一樣
+  行使 nonce 綁定;差別只在信任錨由 ``CARD_CA_BUNDLE_PATH`` 換成測試 root,
+  而那條路被 ``_reject_dev_test_ca_in_production`` 擋在 production 之外。
 
 信任邊界（2026-06-12 重做）
 ===========================
@@ -25,7 +27,8 @@
    自簽的憑證鏈不到我們的 root → 拒絕。
 3. **綁 nonce(反 replay)**:eContent 必須 == 本次 challenge 發出的 nonce
    (見 ``card_auth_service``),除非 ``CARD_DEV_SKIP_NONCE_BINDING`` 開啟
-   (僅供 dev 用固定 mock 測試;**prod 一律不可開**)。
+   (**prod 一律不可開**)。這個旗標自 2026-07-31 起在本機也不需要了 ——
+   誠實的 mock 會簽當次 nonce,留著只為了萬一要接舊的固定簽章素材。
 
 撤銷檢查(CRL/OCSP)**刻意不做**:院內離職流程實體回收銷毀卡片,加上系統端
 ``User.is_active``/核准狀態把關,air-gap 下接受「不查線上撤銷」為已知設計。
@@ -68,8 +71,53 @@ _EMPLOYEE_ID_RE = re.compile(r"\A\d{6,9}\Z")
 # 可用 CARD_CA_BUNDLE_PATH 覆寫(內網若換 CA 換檔即可,不必改碼)。
 _DEFAULT_CA_BUNDLE = Path(__file__).resolve().parent / "cspki_ca_bundle.pem"
 
-# Dev-only:用固定 mock(eContent 永遠 b"TBS",無法簽新 nonce)測試時跳過
-# nonce 綁定。**prod 一律不可開**;簽章 + 憑證鏈驗證照常執行。
+# ─── Dev 測試 CA 的 production fence ───────────────────────────────────────────
+#
+# 本機開發沒有讀卡機,``cht/`` mock 用一組**執行時生成**的測試 PKI 簽章
+# (見 ``cht/cms_sign.py``),再用 CARD_CA_BUNDLE_PATH 把信任錨指過去。
+# 這比 CARD_DEV_SKIP_NONCE_BINDING 好:nonce 綁定、CMS 驗章、鏈驗證全部照跑,
+# 只有信任錨被換掉,本機因此走得完整條路。
+#
+# 但「信任錨可換」在 production 是致命的:誰把測試 root 弄上內網,誰就能自簽
+# 一張工號 = 任意值的卡登入。所以測試 CA 的 Organization 一律釘成下面這個字串,
+# 讓 ``_load_ca_anchors()`` 認得出來。
+#
+# 要讓 dev 測試 CA 生效,三件事必須同時成立,少一件就 fail-closed:
+#
+#   1. ``CARD_CA_BUNDLE_PATH`` 明確指到那份 bundle(預設不設 = 釘死的真 bundle);
+#   2. ``CARD_DEV_TRUST_TEST_CA`` 明確開啟 —— 旗標名字就寫著它在做什麼,
+#      沒有人會「不小心」打出這個變數;
+#   3. ``REQUIRE_CARD_LOGIN_ONLY`` 是 False —— 內網 production 的定義就是
+#      「卡登是唯一入口」(compose 預設 true),所以卡登唯一的機器一律拒收。
+#
+# 再加上第 0 道(不靠設定):那份 bundle 與它的私鑰**在 production 上根本不存在**
+# —— 執行時才生成、落在 gitignore 的 ``secrets/`` 下,不進版控、不進任何映像,
+# 而且效期只有 30 天。CARD_CA_BUNDLE_PATH 指到不存在的檔 → CardConfigError →
+# 卡登全部 fail-closed 並在 log 大聲抱怨,不會靜默降級。
+#
+# 刻意**不**用 ``ANILA_ENV=production`` 當判準:本機開發樹自己就設了
+# ``ANILA_ENV=production``(為了讓模型端點的 http fail-closed 政策跟內網一致),
+# 綁它會讓開發機永遠走不完卡登流程,然後有人就會去把 ANILA_ENV 拔掉 ——
+# 那等於為了卡登去鬆綁 SSRF 政策,得不償失。
+_DEV_TEST_CA_MARKER_ORG = "ANILA DEV TEST CA - DO NOT TRUST"
+
+_TRUTHY = ("1", "true", "yes")
+
+
+def _dev_test_ca_explicitly_allowed() -> tuple[bool, str]:
+    """回 (是否放行, 不放行的理由)。"""
+    if os.environ.get("CARD_DEV_TRUST_TEST_CA", "").strip().lower() not in _TRUTHY:
+        return False, "CARD_DEV_TRUST_TEST_CA 未開啟"
+    # 延遲 import:card_auth 其餘部分是純函式,不依賴 settings。
+    from app.config import settings
+
+    if settings.REQUIRE_CARD_LOGIN_ONLY:
+        return False, "REQUIRE_CARD_LOGIN_ONLY=True(卡登唯一入口 = 內網正式部署)"
+    return True, ""
+
+
+# Dev-only:跳過 nonce 綁定。**prod 一律不可開**;簽章 + 憑證鏈驗證照常執行。
+# 誠實的 mock 上線後本機也不需要它了(見上),留著只為了萬一要接舊的固定簽章素材。
 _SKIP_NONCE_BINDING = os.environ.get("CARD_DEV_SKIP_NONCE_BINDING", "").lower() in (
     "1",
     "true",
@@ -361,7 +409,9 @@ def _load_ca_anchors() -> tuple[dict[bytes, x509.Certificate], list[x509.Certifi
     if _ca_anchor_cache is not None:
         return _ca_anchor_cache
 
-    path = Path(os.environ.get("CARD_CA_BUNDLE_PATH", str(_DEFAULT_CA_BUNDLE)))
+    # 用 ``or`` 不用 get 的 default:compose 的 ``${CARD_CA_BUNDLE_PATH:-}``
+    # 沒設時會把**空字串**傳進來,那時要落回釘死的 bundle,不是去讀 Path("")。
+    path = Path(os.environ.get("CARD_CA_BUNDLE_PATH", "").strip() or str(_DEFAULT_CA_BUNDLE))
     try:
         pem_bytes = path.read_bytes()
     except OSError as exc:
@@ -373,6 +423,8 @@ def _load_ca_anchors() -> tuple[dict[bytes, x509.Certificate], list[x509.Certifi
         certs = _load_pem_certs_fallback(pem_bytes)
     if not certs:
         raise CardConfigError(f"CA bundle 不含任何憑證: {path}")
+
+    _reject_dev_test_ca_in_production(certs, path)
 
     anchors: dict[bytes, x509.Certificate] = {}
     roots: list[x509.Certificate] = []
@@ -389,6 +441,39 @@ def _load_ca_anchors() -> tuple[dict[bytes, x509.Certificate], list[x509.Certifi
 
     _ca_anchor_cache = (anchors, roots)
     return _ca_anchor_cache
+
+
+def _reject_dev_test_ca_in_production(
+    certs: list[x509.Certificate], path: Path
+) -> None:
+    """Production 上遇到 dev 測試 CA → fail-closed,不是降級。
+
+    整包拒收(不是「濾掉那幾張」):bundle 混進測試 CA 這件事本身就代表設定
+    被弄錯了,靜默沿用剩下幾張才是最危險的結果。
+    """
+    marked = [
+        cert
+        for cert in certs
+        if any(
+            attr.value == _DEV_TEST_CA_MARKER_ORG
+            for attr in cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
+        )
+    ]
+    if not marked:
+        return
+    allowed, reason = _dev_test_ca_explicitly_allowed()
+    if allowed:
+        logger.warning(
+            "card_auth 正在使用 dev 測試 CA bundle (%s) — 僅限開發機。"
+            "Production 不會有這份檔案,也不會有 CARD_DEV_TRUST_TEST_CA。",
+            path,
+        )
+        return
+    raise CardConfigError(
+        f"拒絕載入:CA bundle {path} 內含 dev 測試 CA "
+        f"(O={_DEV_TEST_CA_MARKER_ORG}),但 {reason}。"
+        "請把 CARD_CA_BUNDLE_PATH 移除或指回真正的 CSPKI bundle。"
+    )
 
 
 def _load_pem_certs_fallback(pem_bytes: bytes) -> list[x509.Certificate]:
