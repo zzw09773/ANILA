@@ -672,6 +672,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # ⚠ 這條 depends_on 是「使用者看得到麥克風 ⟺ 語音真的能用」的來源。
+      # gateway 的 /asr/health 只看 revocation cache,**不看 decoder** —— 少了
+      # 這條,decoder 還在載權重(或根本沒權重)時 gateway 就 200,前端
+      # probeAsrAvailable 看到 200 就把麥克風畫出來,使用者按下去才發現沒反應。
+      # 那正是本專案「靜默成功比報錯危險」那條教訓的形狀。
+      # ⚠ 外部版(decoder 跑在別台 GPU 主機、ASR_DECODE_URL 指到遠端)要用
+      #   docker compose --profile asr up -d --no-deps asr-gateway
+      #   跳過本機 decoder,否則會被這條拖著一起起。
+      asr-decoder:
+        condition: service_healthy
     networks:
       - default
       - anila-models-net
@@ -680,6 +690,78 @@ services:
       interval: 15s
       timeout: 5s
       retries: 6
+      start_period: 30s
+    restart: unless-stopped
+    logging: *anila-logging
+
+  # ── ASR decoder (faster-whisper,GPU) ────────────────────────────────────
+  # 內部版:decoder 與平台同機,只掛在 anila-net,不開 host port —— 唯一的
+  # 呼叫方是 asr-gateway(ASR_DECODE_URL 預設 http://asr-decoder:9000)。
+  # 無狀態:切句/認證/WS 全在 gateway,這裡只是「收 PCM、回文字」。
+  # 音訊只在記憶體流轉,不寫檔、不進 log(services/asr-decoder/app/main.py)。
+  #
+  # ⚠ 跟 infra/models/docker-compose.yml 的 asr-decoder(profiles: ["intranet"],
+  #   掛在 anila-models-net)是**同一個東西的兩種擺法**,不要同時開:gateway
+  #   同時連著兩張網,兩邊都有 `asr-decoder` 這個 DNS 名字時解析結果不確定。
+  #   decoder 要跑在別台 GPU 主機時,用 services/asr-decoder/docker-compose.standalone.yml
+  #   並把 ASR_DECODE_URL 指過去。
+  #
+  # ⚠ GPU 是硬需求。沒有 nvidia container runtime 的機器 up 會直接以
+  #   "could not select device driver nvidia with capabilities [[gpu]]" 失敗 ——
+  #   刻意讓它明著炸,而不是悄悄退回 CPU(large-v3 在 CPU 上 RTF≈1,互動場景
+  #   等於壞的)。CPU-only 主機請不要開 asr profile。
+  asr-decoder:
+    profiles: ["asr"]
+    build:
+      context: ../../services/asr-decoder
+      dockerfile: Dockerfile
+    image: ${ANILA_IMAGE_ASR_DECODER:-anila/asr-decoder:0.1.0}
+    expose:
+      - "9000"
+    environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-}
+      TZ: ${TZ:-Asia/Taipei}
+      # 同 asr-gateway:不用 :?。compose 的變數插值在解析階段就跑,即使本服務
+      # 在 profiles: ["asr"] 之後根本不會啟動 —— 用 :? 會讓「不想開語音的人連
+      # 平台都起不來」。缺 token 由服務自己 fail-loud(app/main.py:_require_token)。
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-}
+      # ASR_MODEL_DIR 內若直接有 model.bin 就當模型路徑用(air-gap bundle 的
+      # 轉檔目錄);否則當 HuggingFace 快取根目錄,仍以 ASR_MODEL_SIZE 解析。
+      # 兩種都吃同一個掛載點,見 app/model.py:_resolve_model_ref。
+      ASR_MODEL_DIR: /var/anila/asr-models
+      ASR_MODEL_SIZE: ${ASR_MODEL_SIZE:-large-v3}
+      # 1 = 禁止任何對 HuggingFace 的出向請求。權重缺了就 fail loud,而不是
+      # 卡在 DNS timeout 讓 health 永遠 not ready。內網一定要 1;要在有網路的
+      # 機器上暖權重快取,見 docs/runbooks/asr-voice-input.md。
+      ASR_LOCAL_FILES_ONLY: ${ASR_LOCAL_FILES_ONLY:-1}
+      HF_HUB_OFFLINE: ${ASR_LOCAL_FILES_ONLY:-1}
+      TRANSFORMERS_OFFLINE: ${ASR_LOCAL_FILES_ONLY:-1}
+      ASR_DEVICE: ${ASR_DEVICE:-cuda}
+      # ⚠ V100(Volta)用 float16:Volta 沒有 int8 tensor core,int8 省 VRAM
+      # 但更慢。int8 的價值要 Turing 之後。
+      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-float16}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # :ro —— decoder 只讀權重,沒有任何理由寫進去。
+      # 預設值落在 models/model/ 底下,那整個目錄已被 .gitignore(權重不入 git)。
+      - ${ASR_MODEL_HOST_DIR:-../../models/model/asr-models}:/var/anila/asr-models:ro
+    networks:
+      - default
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # 釘卡:不要跟 LLM 搶同一張,推論延遲互相干擾很難 debug。
+              device_ids: ["${ASR_GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      # 模型是背景載入的,ready 之前回 503。large-v3 冷啟動是分鐘級,
+      # retries × interval 要蓋得住(20 × 30s = 10 分鐘)。
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
       start_period: 30s
     restart: unless-stopped
     logging: *anila-logging
