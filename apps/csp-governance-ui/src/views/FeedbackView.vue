@@ -59,6 +59,18 @@
           <TermButton @click="fetchData" label="查詢" />
         </div>
       </div>
+      <div class="filters__export">
+        <TermButton
+          @click="downloadCsv"
+          label="匯出 CSV(目前篩選)"
+          :disabled="exporting"
+          title="依畫面上目前的篩選條件匯出整個結果(不只這一頁),不含對話正文"
+        />
+        <span class="filters__note">
+          匯出的是「目前這組篩選」的完整結果,不是畫面上這一頁;筆數超過後端上限時會直接說出來,不會給一份被砍短的檔案。
+        </span>
+      </div>
+      <p v-if="exportNote" class="filters__note filters__note--ok">{{ exportNote }}</p>
     </TermBox>
 
     <TermBox :title="`回饋 · ${items.length}`" pad="none" flush hint="正文請走對話讀取路徑(會落稽核)">
@@ -112,13 +124,15 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { listFeedback } from '../api/feedback'
+import { listFeedback, exportFeedbackCsv } from '../api/feedback'
 import { extractError } from '../api/errors'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
 
 const items = ref([])
 const summary = ref({ total: 0, up: 0, down: 0, with_comment: 0 })
 const pageError = ref('')
+const exporting = ref(false)
+const exportNote = ref('')
 const filters = ref({
   rating: 'down',
   days: 7,
@@ -127,21 +141,67 @@ const filters = ref({
   only_with_comment: '0',
 })
 
+// 查詢與匯出共用同一組參數 —— 匯出「畫面上的東西」不能靠兩份各自維護的
+// 組裝邏輯,那遲早會漂移成「匯出的跟看到的不同」。
+function buildParams() {
+  const params = {
+    days: filters.value.days,
+    only_with_comment: filters.value.only_with_comment === '1',
+  }
+  if (filters.value.rating) params.rating = filters.value.rating
+  if (filters.value.agent_name.trim()) params.agent_name = filters.value.agent_name.trim()
+  if (filters.value.model_name.trim()) params.model_name = filters.value.model_name.trim()
+  return params
+}
+
 async function fetchData() {
   pageError.value = ''
   try {
-    const params = {
-      days: filters.value.days,
-      only_with_comment: filters.value.only_with_comment === '1',
-    }
-    if (filters.value.rating) params.rating = filters.value.rating
-    if (filters.value.agent_name.trim()) params.agent_name = filters.value.agent_name.trim()
-    if (filters.value.model_name.trim()) params.model_name = filters.value.model_name.trim()
+    const params = buildParams()
     const { data } = await listFeedback(params)
     items.value = Array.isArray(data.items) ? data.items : []
     summary.value = data.summary || { total: 0, up: 0, down: 0, with_comment: 0 }
   } catch (e) {
     pageError.value = extractError(e, '載入回饋失敗')
+  }
+}
+
+// 匯出走 responseType: 'blob',錯誤 body 也會是 Blob。不解開的話,後端那句
+// 「超過上限、沒有匯出」會被顯示成通用失敗,維運者根本不知道要縮篩選。
+async function blobError(err, fallback) {
+  const data = err?.response?.data
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text())
+      return extractError({ ...err, response: { ...err.response, data: parsed } }, fallback)
+    } catch {
+      return fallback
+    }
+  }
+  return extractError(err, fallback)
+}
+
+async function downloadCsv() {
+  pageError.value = ''
+  exportNote.value = ''
+  exporting.value = true
+  try {
+    const { data, headers } = await exportFeedbackCsv(buildParams())
+    const blob = data instanceof Blob ? data : new Blob([data], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `feedback-${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    const rows = headers?.['x-feedback-export-rows']
+    exportNote.value = rows ? `已匯出 ${rows} 列(目前篩選的完整結果)` : '已匯出目前篩選的完整結果'
+  } catch (e) {
+    pageError.value = await blobError(e, '匯出 CSV 失敗')
+  } finally {
+    exporting.value = false
   }
 }
 
@@ -181,6 +241,13 @@ onMounted(fetchData)
 @media (max-width: 1100px) { .filters { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .filters { grid-template-columns: 1fr; } }
 .filters__cta { display: flex; align-items: end; }
+.filters__export {
+  display: flex; align-items: center; gap: var(--gap-2);
+  flex-wrap: wrap; margin-top: var(--gap-3);
+}
+.filters__note { margin: var(--gap-2) 0 0; font-size: var(--t-3xs); color: var(--c-fg-3); }
+.filters__export .filters__note { margin: 0; }
+.filters__note--ok { color: var(--c-fg-2); }
 .feedback.is-err {
   font-size: var(--t-xs); color: var(--c-danger);
   border: var(--border-w) solid var(--c-danger); background: var(--c-danger-soft);
