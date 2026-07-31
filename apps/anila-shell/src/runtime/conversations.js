@@ -305,6 +305,15 @@ export function cancelHandoff(authRequest, handoffId) {
   return authRequest(`/api/handoffs/${handoffId}/cancel`, { method: "POST" });
 }
 
+// `GET /api/handoffs` 同時回「我送出的」與「別人交給我的」。收件匣只該顯示
+// 後者、而且還沒處理的 —— 混進自己送出的那些，使用者會對自己的請求按「接受」。
+export function incomingPendingHandoffs(rows, currentUserId) {
+  if (!Array.isArray(rows) || typeof currentUserId !== "number") return [];
+  return rows.filter(
+    (h) => h && h.status === "pending" && h.to_user_id === currentUserId,
+  );
+}
+
 // Per-agent functions (2026-06-11, extensible). Developer-designed in the
 // CSP console; the chat UI renders them for the active agent by kind. agentRef
 // is the agent NAME on the data plane (e.g. "image-generator"). Read-only.

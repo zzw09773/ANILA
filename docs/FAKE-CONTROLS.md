@@ -165,9 +165,26 @@
 | Agent `classification_ceiling` | **只拿掉收了就丟的表面**(回應/序列化/UI,帶入 422);**DB 欄位、`enforce_agent_ceiling`、G9 全部不動** |
 | Agent `capabilities` | 移除可編輯面,不加執行閘 |
 | 模型 `custom_adapter` | 移除,下拉只留 `openai_compatible` |
-| Handoff `accept` | **501 誠實拒絕**——它從來沒有真的移交對話 |
+| Handoff `accept` | ~~501 誠實拒絕~~ → **2026-07-31 真的做出來了**(見下) |
 
 **另外三項今晚稍早已修**:PII 遮罩文案、治理中心權限靜默全撤、「交給同事」按鈕。
+
+### 「交給同事」整條補回來(2026-07-31,擁有者答了 Q9)
+
+原本是**兩段都假**:送出端沒有 `to_user_id`(交給「沒有人」),接受端只翻狀態不移交對話。
+兩段一起補才有意義——只補送出端等於把同一個缺陷換個形狀。
+
+- 新增 `GET /api/directory/users`(`services/csp/app/api/directory.py`):全院可查,
+  回應模型只宣告 `id / username / department` 三個欄位。**不是**放寬 `GET /api/users`。
+- `accept` 真的把 `conversations.user_id` 換成接收者,並自動幫原擁有者補一筆
+  不過期的具名分享(`services/csp/app/services/handoff_transfer.py`)。
+- 密／機密(> 營業秘密)的對話**建立與接受兩端都擋**,判準沿用具名分享的
+  `outbound_action_allowed`。
+- 收件人端有 UI 可以按(`collab.jsx` 的 `HandoffInbox`,掛在 `banners.jsx`)——
+  沒有這塊,送出的請求一樣沒有人按得到「接受」。
+- 行為測試在 `services/csp/tests/test_handoff_transfer.py` 與
+  `apps/anila-shell/src/__tests__/handoffColleague.test.jsx`,每個 class 標了
+  「改哪一行會轉紅」。
 
 ### 新增一項(壓力測試踩到,已修)
 

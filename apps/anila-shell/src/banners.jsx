@@ -1,8 +1,15 @@
-// Admin announcement banner bar. Shows active banners at the top of the chat
-// area; each is dismissable and the dismissal is remembered per-user in
+// Top-of-chat strips: admin announcements + the conversation-handoff inbox.
+//
+// Announcements are dismissable and the dismissal is remembered per-user in
 // localStorage (anila-dismissed-banners). Plain text content (no HTML exec).
+//
+// 2026-07-31:交接收件匣也掛在這裡。它需要一個「一定在畫面上、而且跟目前
+// 選到哪串對話無關」的位置——這條 strip 是唯一符合的。收件匣自己去打
+// `GET /api/handoffs`,不吃 app.jsx 的狀態(見 collab.jsx HandoffInbox)。
 import React from "react";
 import { IconX } from "./icons.jsx";
+import { useAuth } from "./runtime/auth.jsx";
+import { HandoffInbox } from "./collab.jsx";
 
 const LEVEL_STYLE = {
   info:    { bg: "var(--accent-soft)", fg: "var(--fg)", border: "var(--accent)" },
@@ -12,10 +19,12 @@ const LEVEL_STYLE = {
 };
 
 export function BannerBar({ banners, onDismiss }) {
-  if (!banners || banners.length === 0) return null;
+  const { authRequest, user } = useAuth();
+  const rows = banners || [];
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
-      {banners.map((b) => {
+      <HandoffInbox authRequest={authRequest} currentUserId={user?.id} />
+      {rows.map((b) => {
         const s = LEVEL_STYLE[b.level] || LEVEL_STYLE.info;
         return (
           <div key={b.id} style={{
