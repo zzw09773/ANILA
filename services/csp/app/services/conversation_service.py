@@ -906,6 +906,30 @@ def update_message_content(
     return msg
 
 
+def _validate_rating_score(rating: Optional[str], score: Optional[int]) -> None:
+    """Enforce thumb↔score pairing: up→6–10, down→1–5; None score always ok."""
+    if score is None:
+        return
+    if rating == "up":
+        if not (6 <= score <= 10):
+            raise HTTPException(
+                status_code=400,
+                detail="讚的分數須為 6–10",
+            )
+        return
+    if rating == "down":
+        if not (1 <= score <= 5):
+            raise HTTPException(
+                status_code=400,
+                detail="爛的分數須為 1–5",
+            )
+        return
+    raise HTTPException(
+        status_code=400,
+        detail="沒有拇指評分時不能給分數",
+    )
+
+
 def set_message_rating(
     db: Session,
     conv_id: int,
@@ -914,13 +938,21 @@ def set_message_rating(
     rating: Optional[str],
     comment: Optional[str] = None,
     reasons: Optional[list] = None,
+    rating_score: Optional[int] = None,
+    *,
+    score_provided: bool = False,
 ) -> Message:
     """Record thumbs-up/down feedback on an assistant message.
 
     Access is gated by conversation ownership (reusing get_conversation's
     _check_access). Only assistant messages are ratable — rating a user/system
     message is a client bug and 400s out. ``rating=None`` clears an existing
-    rating, letting the UI toggle off.
+    rating (and its fine score), letting the UI toggle off.
+
+    ``rating_score`` is optional. Omit it (``score_provided=False``) to leave
+    an existing score alone when only attaching a comment; flip the thumb
+    without a score and the old number is cleared so a stale half-scale
+    value cannot sit under the wrong thumb.
     """
     conv = get_conversation(db, conv_id, user)
     msg = (
@@ -932,6 +964,15 @@ def set_message_rating(
         raise HTTPException(status_code=404, detail="訊息不存在")
     if msg.role != "assistant":
         raise HTTPException(status_code=400, detail="僅助理訊息可評分")
+
+    prev_rating = msg.rating
+    if score_provided:
+        _validate_rating_score(rating, rating_score)
+        msg.rating_score = rating_score
+    elif rating is None or prev_rating != rating:
+        # Cleared, or thumb flipped / first set without a number.
+        msg.rating_score = None
+
     msg.rating = rating
     # Structured feedback rides in metadata_['feedback']. air-gap 環境下這是
     # 平台團隊評估模型品質的主要訊號。清除評分時一併清掉回饋。

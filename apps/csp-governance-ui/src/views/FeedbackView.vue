@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-head__title">使用者回饋</h1>
         <p class="page-head__sub">
-          早上掃差評與留言 · 依 agent / 模型 / 時間篩 · 不含對話正文
+          早上掃差評與留言 · 讚 6–10／爛 1–5 兩把尺 · 依 agent / 模型 / 時間篩 · 不含對話正文
         </p>
       </div>
       <div class="page-head__chips">
@@ -78,6 +78,7 @@
         <thead>
           <tr>
             <th style="width: 72px">評分</th>
+            <th style="width: 110px">分數(讚6-10／爛1-5)</th>
             <th>留言 / 原因</th>
             <th style="width: 18%">Agent · 模型</th>
             <th style="width: 100px">密等</th>
@@ -91,6 +92,9 @@
               <TermBadge :variant="row.rating === 'down' ? 'danger' : 'ok'" dot>
                 {{ row.rating === 'down' ? '爛' : '讚' }}
               </TermBadge>
+            </td>
+            <td class="cell-meta tnum">
+              {{ row.rating_score == null ? '—' : row.rating_score }}
             </td>
             <td>
               <div class="cell-strong">{{ row.comment || '（無文字留言）' }}</div>
@@ -112,7 +116,7 @@
             <td class="cell-meta tnum">#{{ row.conversation_id }} / msg {{ row.message_id }}</td>
           </tr>
           <tr v-if="items.length === 0">
-            <td colspan="6">
+            <td colspan="7">
               <TermEmpty message="這個篩選區間沒有回饋 — 若剛上線屬正常" />
             </td>
           </tr>

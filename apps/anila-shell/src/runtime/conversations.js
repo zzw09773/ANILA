@@ -135,11 +135,15 @@ export function appendMessage(authRequest, convId, payload) {
 }
 
 // Record thumbs-up/down feedback. rating = "up" | "down" | null (null clears).
+// Optional fine score (up→6–10, down→1–5) via feedback.rating_score.
 export function rateMessage(authRequest, convId, messageId, rating, feedback = null) {
   const payload = { rating };
   if (feedback) {
     if (feedback.comment) payload.comment = feedback.comment;
     if (feedback.reasons) payload.reasons = feedback.reasons;
+    if (Object.prototype.hasOwnProperty.call(feedback, "rating_score")) {
+      payload.rating_score = feedback.rating_score;
+    }
   }
   return authRequest(`/api/conversations/${convId}/messages/${messageId}/rating`, {
     method: "PUT",

@@ -34,6 +34,7 @@ def _seed_rated_message(
     *,
     owner,
     rating: str = "down",
+    rating_score: int | None = None,
     content: str = "assistant reply",
     classification_level: str = "無機密",
     model_name: str = "gpt-oss",
@@ -61,6 +62,7 @@ def _seed_rated_message(
         role="assistant",
         content=content,
         rating=rating,
+        rating_score=rating_score,
         model_name=model_name,
         agent_name=agent_name,
         classification_level=classification_level,
@@ -215,9 +217,10 @@ def test_feedback_csv_export_is_really_csv(client, db: Session):
     assert disposition.endswith(".csv")
 
     rows = _csv_rows(resp)
-    assert rows[0][:3] == ["評分", "留言", "原因"]
+    assert rows[0][:4] == ["評分", "分數(讚6-10／爛1-5)", "留言", "原因"]
     assert rows[1][0] == "爛"
-    assert rows[1][1] == "太慢了"
+    assert rows[1][1] == ""  # 舊列沒有細分分數
+    assert rows[1][2] == "太慢了"
 
 
 def test_feedback_csv_never_contains_message_content(client, db: Session):
@@ -247,8 +250,8 @@ def test_feedback_csv_never_contains_message_content(client, db: Session):
     rows = _csv_rows(resp)
     assert "content" not in rows[0], "白名單被放寬,CSV 長出了正文欄"
     assert len(rows[0]) == len(FEEDBACK_ITEM_KEYS)
-    assert rows[1][5] == "機密"
-    assert rows[1][1] == "留言看得到,正文看不到"
+    assert rows[1][6] == "機密"
+    assert rows[1][2] == "留言看得到,正文看不到"
 
 
 def test_feedback_csv_honours_the_filters(client, db: Session):
@@ -270,7 +273,7 @@ def test_feedback_csv_honours_the_filters(client, db: Session):
     data_rows = _csv_rows(csv_resp)[1:]
     assert len(json_items) == 2
     assert len(data_rows) == len(json_items)
-    assert all(row[3] == "agent-a" and row[0] == "爛" for row in data_rows)
+    assert all(row[4] == "agent-a" and row[0] == "爛" for row in data_rows)
     # 被篩掉的那列真的不在檔案裡
     assert "agent-b" not in csv_resp.text
 
