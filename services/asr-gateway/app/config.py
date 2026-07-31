@@ -66,21 +66,27 @@ class Settings(BaseSettings):
     REDIS_REVOCATION_CHANNEL: str = "anila:auth:token-revoke"
     JWT_KID: str = "anila-v1"
     JWT_ALGORITHMS: tuple[str, ...] = ("RS256",)
-    JWT_ISSUER: str = "https://anila.internal/csp"
-    JWT_AUDIENCE: str = "anila-platform"
+    # ⚠ 這裡刻意**沒有** JWT_ISSUER / JWT_AUDIENCE。csp 的 create_access_token
+    # 不簽 `iss` 也不簽 `aud`(services/csp/app/utils/security.py:208),studio
+    # 的 Settings 同樣沒這兩個欄位。留著它們(哪怕只是「有設才驗」)會直接復活
+    # 2026-07-31 的故障:platform.yml 有給 JWT_ISSUER/JWT_AUDIENCE 值,「有設才
+    # 驗」在部署環境等於「一律驗」→ 一律 4401。要驗 iss/aud 的前提是 csp 先開始
+    # 簽,那時再一起加回來。多出來的 env var 不會讓 Settings 爆掉(pydantic-
+    # settings 只對顯式 kwargs forbid extra),所以 compose 不需要同步改。
     JWT_LEEWAY_SECONDS: int = 60
     JWKS_REFRESH_SECONDS: int = 3600
     REVOCATION_CACHE_TTL_SECONDS: int = 30 * 24 * 3600
     REVOCATION_RECONCILE_INTERVAL_SECONDS: int = 5
     INTERNAL_TIMEOUT_CONNECT: float = 3.0
     INTERNAL_TIMEOUT_SECONDS: float = 10.0
-    # 決定 access cookie 名走哪一軌(照抄 studio 的 _access_cookie_name):
-    # true → __Host-anila_access_token、false(本機 dev)→ anila_dev_access_token。
-    # 瀏覽器的 WebSocket API 不能帶 Authorization header → cookie 是唯一路徑,
-    # 只做 __Host- 的話本機 dev 必 401。
-    COOKIE_SECURE: bool = True
-    # 這個服務只接受卡登工作階段嗎(對齊 studio 的同名旗標)。
-    REQUIRE_CARD_LOGIN_ONLY: bool = False
+    # ⚠ 這裡刻意**沒有** COOKIE_SECURE / REQUIRE_CARD_LOGIN_ONLY(理由見
+    # app/auth.py 檔頭與 authenticate() 內的註解):
+    # - COOKIE_SECURE 以前用來在 `__Host-anila_access_token` 與
+    #   `anila_dev_access_token` 之間選 cookie 名,但兩個名字平台上都沒人發。
+    #   cookie 名現在是常數 `anila_access_token`(csp 唯一會發的那個)。
+    # - REQUIRE_CARD_LOGIN_ONLY 以前用來要求權杖的 `amr` 含 "sc",而 csp 從不簽
+    #   `amr` → flag 一開連卡登入的人都被拒。「只准卡登入」的執法點在 csp 的
+    #   登入端點,不在這裡。
 
     # ── 長連線特有(studio 沒有,因為它是 per-request)──────────────────
     # 握手驗過之後,session loop 每 N 秒對 in-memory revocation cache 重查一次
