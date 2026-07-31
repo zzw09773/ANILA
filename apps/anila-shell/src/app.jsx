@@ -132,6 +132,8 @@ import { BannerBar } from "./banners.jsx";
 import { ServicesPanel } from "./services.jsx";
 import { originHref } from "./shellNav.jsx";
 import { classifiedShareDenial, handoffNotice } from "./uxCopy.js";
+import { ArtifactPanel } from "./artifact.jsx";
+import { ArtifactPreviewProvider } from "./artifactContext.jsx";
 
 // ---- Router pseudo-agent ----------------------------------------------------
 const ROUTER_AGENT = Object.freeze({
@@ -303,6 +305,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const [citationsOpen, setCitationsOpen] = useState(false);
   const [activeCitations, setActiveCitations] = useState([]);
   const [activeCitationId, setActiveCitationId] = useState(null);
+  // 右側靜態產物預覽（md／html／svg）；僅使用者按「預覽」才開，不自動彈出。
+  const [artifact, setArtifact] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState("general");
   const [shareOpen, setShareOpen] = useState(false);
@@ -2058,6 +2062,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
     setCompareMode(true);
     setCitationsOpen(false);
+    setArtifact(null);
 
     await Promise.all(
       cols.map(async (col) => {
@@ -2250,6 +2255,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   function newChat() {
     setSelectedConvId(null);
     setCitationsOpen(false);
+    setArtifact(null);
     setCompareMode(false);
     setShareOpen(false);
   }
@@ -2266,7 +2272,14 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     if (!target) return;
     setActiveCitations(target.citations || []);
     setActiveCitationId(c?.id || null);
+    setArtifact(null);
     setCitationsOpen(true);
+  }
+
+  function onOpenArtifact(next) {
+    if (!next?.kind || typeof next.source !== "string") return;
+    setCitationsOpen(false);
+    setArtifact(next);
   }
 
   function handoffToAgent(newAgentId) {
@@ -2312,6 +2325,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
   // ---- render: classified watermark + top bar + messages + composer ----
   return (
+    <ArtifactPreviewProvider onOpen={onOpenArtifact}>
     <div style={{ display: "flex", height: "100dvh", background: "var(--bg)", position: "relative" }}>
       {showForensicWatermark && (
         <ConfidentialWatermark
@@ -2346,6 +2360,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onSelectConv={(id) => {
           setSelectedConvId(id);
           setCitationsOpen(false);
+          setArtifact(null);
           setCompareMode(false);
         }}
         onNewChat={newChat}
@@ -2670,6 +2685,14 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
               onJumpTo={(c) => c?.source_uri && window.open(c.source_uri, "_blank", "noopener")}
             />
           )}
+          {artifact && !compareMode && (
+            <ArtifactPanel
+              artifact={artifact}
+              classified={isClassified}
+              classificationLevel={selectedConv?.classificationLevel}
+              onClose={() => setArtifact(null)}
+            />
+          )}
         </div>
       </div>
 
@@ -2730,6 +2753,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         toast={toast}
       />
     </div>
+    </ArtifactPreviewProvider>
   );
 }
 

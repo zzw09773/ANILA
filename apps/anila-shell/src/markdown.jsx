@@ -12,6 +12,8 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
+import { useArtifactPreview } from "./artifactContext.jsx";
+import { detectArtifactKind } from "./runtime/artifactDetect.js";
 
 function preprocessLatex(text) {
   if (!text) return "";
@@ -145,6 +147,15 @@ function codeNodeText(codeNode) {
     .join("");
 }
 
+// rehype-highlight 會把 token 包進 <span>，只讀直接 text children 會漏字。
+// 預覽／偵測必須走遞迴，才拿得到完整原始碼（含被標成 xml 的 SVG）。
+function hastText(node) {
+  if (!node) return "";
+  if (node.type === "text") return node.value || "";
+  if (!Array.isArray(node.children)) return "";
+  return node.children.map(hastText).join("");
+}
+
 // Small stable hash → deterministic mermaid render id per source.
 function hashString(s) {
   let h = 0;
@@ -213,6 +224,7 @@ function MermaidDiagram({ source }) {
 //    children on the <code>, so the CSS theme takes over visually.
 function CodeBlock({ node, children, ...props }) {
   const ref = useRef(null);
+  const preview = useArtifactPreview();
   const codeNode = node?.children?.find((c) => c.tagName === "code");
   const classes = codeNode?.properties?.className || [];
   const langClass = Array.isArray(classes)
@@ -223,6 +235,9 @@ function CodeBlock({ node, children, ...props }) {
   if (lang === "mermaid") {
     return <MermaidDiagram source={codeNodeText(codeNode)} />;
   }
+  const source = hastText(codeNode) || "";
+  const artifactKind = detectArtifactKind(lang, source);
+  const canPreview = Boolean(artifactKind && preview?.openArtifact);
   return (
     <div style={{ position: "relative", margin: "8px 0" }}>
       {lang && (
@@ -241,6 +256,37 @@ function CodeBlock({ node, children, ...props }) {
           letterSpacing: 0.4,
         }}>{lang}</span>
       )}
+      {canPreview && (
+        <button
+          type="button"
+          data-testid="artifact-preview-btn"
+          onClick={() => preview.openArtifact({
+            kind: artifactKind,
+            source: source || ref.current?.innerText || "",
+            language: lang,
+          })}
+          style={{
+            position: "absolute",
+            top: 6,
+            right: 64,
+            zIndex: 2,
+            padding: "2px 9px",
+            fontSize: 11,
+            fontFamily: "var(--font-mono)",
+            background: "var(--bg-elev)",
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            color: "var(--fg-muted)",
+            cursor: "pointer",
+            opacity: 0.75,
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.75"; }}
+          title="在右側預覽"
+        >
+          預覽
+        </button>
+      )}
       <CopyButton getText={() => ref.current?.innerText || ""} />
       <pre
         ref={ref}
@@ -251,7 +297,7 @@ function CodeBlock({ node, children, ...props }) {
           borderRadius: "var(--radius)",
           padding: "10px 12px",
           paddingTop: lang ? 28 : 10,
-          paddingRight: 56,
+          paddingRight: canPreview ? 118 : 56,
           overflowX: "auto",
           fontSize: 12.5,
           lineHeight: 1.55,
