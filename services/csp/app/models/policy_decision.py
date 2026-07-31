@@ -24,7 +24,6 @@ from sqlalchemy import (
     JSON,
     Column,
     DateTime,
-    ForeignKey,
     Index,
     Integer,
     String,
@@ -51,9 +50,10 @@ class PolicyDecision(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    task_id = Column(
-        Integer, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True,
-    )
+    # P2.7:刻意沒有 FK(原本是 tasks.id ON DELETE SET NULL)。DB 自動發出的
+    # SET NULL 是對 append-only 表的 UPDATE,會被觸發器擋下,而且會讓「刪掉
+    # task 就抹掉裁決對象」變成一條合法通道。值原地保留。
+    task_id = Column(Integer, nullable=True)
     # user / service(Pydantic 層封閉)。
     actor_type = Column(String(16), nullable=False)
     actor_id = Column(Integer, nullable=True)

@@ -163,14 +163,21 @@ def test_hard_delete_cascades_api_keys(client: TestClient, db):
 
 
 @pytest.mark.integration
-def test_hard_delete_preserves_audit_history_via_set_null(client: TestClient, db):
-    """audit_logs.actor_user_id 應該被 SET NULL 而非整列刪 — 歷史保留。"""
+def test_hard_delete_keeps_audit_attribution(client: TestClient, db):
+    """P2.7：硬刪帳號**不得**洗掉稽核歸屬。
+
+    先前的行為是把 ``audit_logs.actor_user_id`` 清成 NULL（FK 沒設 ondelete，
+    users.py 手動 UPDATE）。那等於「刪掉自己的帳號」就是一條合法的、把自己
+    從稽核帳上抹掉的通道 —— 正是 SYSTEM-MAP §8 威脅模型裡那個人想要的。
+    r1_0027 拿掉 FK，值原地保留。
+    """
     _make_owner(db)
     target = make_user(db, username="historical")
     target_id = target.id
     # 寫一條 audit log 把 actor 設為 target
     log = AuditLog(
         actor_user_id=target.id,
+        actor_username="historical",
         action="some-action",
         resource_type="test",
         resource_id=42,
@@ -187,10 +194,14 @@ def test_hard_delete_preserves_audit_history_via_set_null(client: TestClient, db
     )
     assert resp.status_code == 200, resp.text
 
-    # Audit row 還在，但 actor_user_id = NULL
+    # Audit row 還在，而且 actor 的數字身分沒有被洗掉。
+    db.expire_all()
     refreshed = db.query(AuditLog).filter(AuditLog.id == audit_id).first()
     assert refreshed is not None
-    assert refreshed.actor_user_id is None
+    assert refreshed.actor_user_id == target_id, (
+        "硬刪帳號把稽核歸屬洗掉了 —— 這是 P2.7 修掉的缺陷，不可以回歸"
+    )
+    assert refreshed.actor_username == "historical"
 
 
 @pytest.mark.integration

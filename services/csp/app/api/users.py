@@ -4,7 +4,6 @@ from app.database import get_db
 from app.models.agent import Agent, UserAgentPermission
 from app.models.alert import Alert
 from app.models.api_key import ApiKey, ApiKeyModelPermission
-from app.models.audit_log import AuditLog
 from app.models.department import Department
 from app.models.model_registry import ModelRegistry
 from app.models.user import User, UserModelPermission
@@ -713,10 +712,13 @@ def hard_delete_user(
       ``nullable=False`` 又沒設 ondelete，硬刪會 IntegrityError；改要 admin
       先轉移 agent 擁有權或刪該 agent）
 
-    Manual cleanup（FK 未設 ondelete 的 4 個 table）：
+    Manual cleanup（FK 未設 ondelete 的 table）：
     - ``api_keys`` + ``api_key_model_permissions``：一起刪（user 沒了 key 無意義）
-    - ``audit_logs.actor_user_id``：SET NULL（保留歷史紀錄）
     - ``alerts.acknowledged_by_user_id``：SET NULL（保留歷史紀錄）
+
+    ⚠ P2.7：``audit_logs.actor_user_id`` **不再**被清成 NULL。稽核歸屬原地
+    保留（``r1_0027`` 已拿掉那條 FK），否則「刪掉帳號」就成了洗掉自己稽核
+    足跡的合法通道 —— 那正是 SYSTEM-MAP §8 的威脅模型要防的事。
 
     其餘 FK 在 model schema 已設 CASCADE 或 SET NULL，由 DB 自動處理。
     """
@@ -772,10 +774,9 @@ def hard_delete_user(
             synchronize_session=False
         )
 
-    # Manual cleanup #2：audit_logs.actor_user_id → NULL（保留歷史）
-    db.query(AuditLog).filter(AuditLog.actor_user_id == user.id).update(
-        {"actor_user_id": None}, synchronize_session=False
-    )
+    # Manual cleanup #2 已移除（P2.7）：稽核列的 actor_user_id **保留**。
+    # 見上面 docstring；r1_0027 拿掉了 FK，硬刪不再需要碰稽核表，而稽核表
+    # 在 Postgres 上已是 append-only（這行 UPDATE 現在會被觸發器拒絕）。
 
     # Manual cleanup #3：alerts.acknowledged_by_user_id → NULL
     db.query(Alert).filter(Alert.acknowledged_by_user_id == user.id).update(

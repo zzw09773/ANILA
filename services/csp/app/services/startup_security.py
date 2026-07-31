@@ -150,6 +150,104 @@ def assert_no_dev_defaults() -> None:
     )
 
 
+def assert_audit_ledger_locked_down() -> None:
+    """P2.7:稽核表必須不歸 runtime role 所有,且 runtime role 不能改/刪它。
+
+    為什麼要在開機檢查:``0014`` 留下的
+    ``ALTER DEFAULT PRIVILEGES ... GRANT ALL ON TABLES TO csp_app``
+    還在對**未來新建的表**自動發全權限。哪天有人不小心把稽核表重建、
+    或把 ownership 又轉回去,不會有任何錯誤訊息 —— 稽核帳只是安靜地退回
+    裸奔,而且要等到六個月後在稽核現場才會發現。這裡跟「secrets 還是 dev
+    預設值就不給起」用同一個 fail-closed 模式:當天就炸,操作者成本為零。
+
+    只在 PostgreSQL 上檢查(SQLite 單元測試沒有 role 語意);
+    表還不存在時跳過(migration 尚未跑到)。dev 模式只警告。
+
+    **查不出來也算不合格。** 這支檢查本來包在 try/except 裡「查詢失敗就 warning
+    然後照樣開機」—— 那是一個看不見就放行的門衛。它守的東西是「稽核帳有沒有
+    在保護中」,而「我不知道有沒有在保護」正是最不該放行的狀況。所以 production
+    改成連查不出來都拒絕啟動;dev(``ANILA_ALLOW_DEV_SECRET=1``)維持只警告,
+    本機沒有 Postgres/權限的情境不會被卡住。
+    """
+    from sqlalchemy import text
+
+    from app.database import engine
+    from app.services.audit_ledger import AUDIT_EVENT_TABLES, AUDIT_LEDGER_TABLES
+
+    if engine.dialect.name != "postgresql":
+        return
+
+    offenders: list[str] = []
+    try:
+        with engine.connect() as conn:
+            runtime_role = conn.execute(text("SELECT current_user")).scalar()
+            for table in AUDIT_LEDGER_TABLES:
+                row = conn.execute(
+                    text(
+                        "SELECT c.relname, pg_get_userbyid(c.relowner) AS owner "
+                        "  FROM pg_class c "
+                        "  JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        " WHERE n.nspname = 'public' AND c.relname = :t"
+                    ),
+                    {"t": table},
+                ).first()
+                if row is None:
+                    continue  # migration 還沒跑到這張表
+                if row.owner == runtime_role:
+                    offenders.append(
+                        f"{table} 的 owner 還是 runtime role {runtime_role}"
+                        "(owner 隱含全部權限,而且拆得掉 append-only 觸發器)"
+                    )
+                # audit_checkpoints 連 INSERT 都不該有:有 INSERT 就能塞一列
+                # 未來日期的檢查點,把每日封存永久卡死(見 audit_ledger)。
+                forbidden = ("UPDATE", "DELETE", "TRUNCATE")
+                if table not in AUDIT_EVENT_TABLES:
+                    forbidden = forbidden + ("INSERT",)
+                for priv in forbidden:
+                    has = conn.execute(
+                        text(
+                            "SELECT has_table_privilege(:role, :t, :priv)"
+                        ),
+                        {"role": runtime_role, "t": table, "priv": priv},
+                    ).scalar()
+                    if has:
+                        offenders.append(
+                            f"{table}:runtime role {runtime_role} 仍有 {priv} 權限"
+                        )
+    except Exception as exc:
+        if _is_dev_mode():
+            logger.warning(
+                "[startup_security] 稽核帳權限檢查無法執行: %s — "
+                "ANILA_ALLOW_DEV_SECRET=1 已開啟,僅警告。", exc,
+            )
+            return
+        raise RuntimeError(
+            "Refusing to start: 無法確認稽核帳(P2.7)是否受保護 —— "
+            f"權限檢查本身失敗: {exc}. "
+            "「查不出來」不等於「沒問題」;請修好資料庫連線或權限後再啟動,"
+            "本機開發可暫時設 ANILA_ALLOW_DEV_SECRET=1。"
+        ) from exc
+
+    if not offenders:
+        return
+
+    summary = "; ".join(offenders)
+    if _is_dev_mode():
+        logger.warning(
+            "[startup_security] ⚠ 稽核帳目前**未受保護**(防竄改姿態不完整): %s — "
+            "ANILA_ALLOW_DEV_SECRET=1 已開啟,僅警告。這台機器上的稽核紀錄"
+            "現在可以被任意改寫,不要拿它的內容當證據。", summary,
+        )
+        return
+
+    raise RuntimeError(
+        "Refusing to start: 稽核帳(P2.7)防竄改姿態不完整,"
+        f"執行帳號對稽核表的權限過大: {summary}. "
+        "請確認 alembic 已升到含 r1_0027 的 head,且 DATABASE_URL 用的是 "
+        "非 superuser 的 runtime role。"
+    )
+
+
 def assert_intranet_lockdown_consistency() -> None:
     """Branch ``SSO``:``REQUIRE_CARD_LOGIN_ONLY`` 與其他 auth flag 的相容性。
 

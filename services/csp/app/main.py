@@ -127,6 +127,12 @@ async def lifespan(app: FastAPI):
     from app.services.startup_migrations import run_startup_migrations
     run_startup_migrations()
 
+    # P2.7: the audit tables must not be owned by (or writable by) the runtime
+    # role. Checked after migrations so a fresh DB has already been locked
+    # down by r1_0027; fail-closed in production, warn in dev.
+    from app.services.startup_security import assert_audit_ledger_locked_down
+    assert_audit_ledger_locked_down()
+
     # Auto-seed: create admin, register models & links from env vars
     from app.services.auto_seed import auto_seed
     auto_seed()
@@ -155,12 +161,15 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks
     from app.services.alert_detectors import start_alert_detectors
+    from app.services.audit_ledger import start_audit_checkpointer
     from app.services.health_checker import start_health_checker
     from app.services.usage_writer import start_usage_writer
 
     health_task = await start_health_checker()
     writer_task = await start_usage_writer()
     alert_task = await start_alert_detectors()
+    # P2.7 稽核帳日級雜湊鏈。熱路徑不受影響 — 封存是每天一次的背景工作。
+    ledger_task = await start_audit_checkpointer()
 
     # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
     # used by the ingestion inspector endpoints (read-only chunk
@@ -186,6 +195,8 @@ async def lifespan(app: FastAPI):
         writer_task.cancel()
     if alert_task:
         alert_task.cancel()
+    if ledger_task:
+        ledger_task.cancel()
     await close_pool()
 
 

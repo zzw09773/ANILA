@@ -24,6 +24,7 @@ from app.database import Base
 import app.models.alert           # noqa: F401
 import app.models.api_key         # noqa: F401
 import app.models.agent           # noqa: F401
+import app.models.audit_checkpoint  # noqa: F401
 import app.models.audit_log       # noqa: F401
 import app.models.department      # noqa: F401
 import app.models.dev_db_credential  # noqa: F401

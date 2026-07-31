@@ -110,6 +110,14 @@ bash infra/deployment/scripts/restore-csp-db.sh
 
 腳本會先 `CREATE ROLE csp_app`（dump 裡有 ACL，缺這個 role 會噴一堆 error）。
 
+腳本還會自動做兩件你**不需要記得**的事：
+
+1. **保留 dump 內的擁有權**（不再用 `--no-owner`）。理由見〈已知坑〉：
+   壓平擁有權會讓平台開機時 `must be owner of table users`，而那個例外被吞掉 →
+   `/health` 回 200、容器顯示 healthy、但沒有人登得進來。
+2. 跑 `assert-db-ownership.sql` 把兩條不變式扳正（開機會發 DDL 的表歸 `csp_app`；
+   稽核四表**不**歸 `csp_app`），然後**驗收**。姿態不合格就不印 `RESTORE_OK`。
+
 ### 2.4 核對列數（必做）
 
 還原前若還碰得到舊庫，先記來源列數；沒有就至少確認還原庫非空且合理：
@@ -121,6 +129,36 @@ docker exec anila-ops-restore-db psql -U csp -d csp -c "SELECT count(*) AS token
 
 兩張表對得上（或與事故前筆記一致）→ 這份備份可用。  
 用量表名是 **`token_usage`**，不是 `usage_records`。
+
+### 2.4b ⚠ 稽核帳：dump 裡有什麼、沒有什麼（P2.7）
+
+**dump 裡有的**：`audit_logs`、`policy_decisions`、`classification_events`，
+以及每日檢查點表 `audit_checkpoints`（`pg_dump` 是整庫備份，四張都在）。
+append-only 觸發器與權限也在 dump 的 schema 裡，還原後照樣生效——
+`restore-csp-db.sh` 會替你驗過才印 `RESTORE_OK`。
+
+**dump 裡沒有、也不可能有的：錨點。**
+鏈頭之所以能證明「這批紀錄沒被改過」，正是因為它**離開過這台機器**——
+它印在交給稽核單位／長官的稽核匯出檔上。那份副本在維運者手外，所以 dump 裡
+當然不會有；如果有，它就一文不值了（能改資料的人連錨點一起改就好）。
+
+> **請至少留一份已經發出去的稽核匯出檔，或只抄下它檔頭那一行鏈頭，
+> 存在跟 dump 不同的地方**（紙本、另一台機器、信件附件都行）。
+> 沒有它，還原後只驗得出「鏈自己是不是自洽的」，
+> **驗不出這份 dump 是不是被換過、或被回捲到更早的版本**。
+
+還原後這樣驗：
+
+```bash
+# 有留鏈頭（正解）：抓得出被調換／回捲的備份
+docker exec <csp 容器> python scripts/verify_audit_chain.py --head <匯出檔上的鏈頭>
+
+# 沒留（次佳）：只驗得出鏈自身自洽
+docker exec <csp 容器> python scripts/verify_audit_chain.py
+```
+
+期望 `結果:未偵測到竄改。`、`與報告鏈頭比對:相符`，exit code 0。
+匯出檔本身從治理中心 `GET /api/audit-logs/export` 下載，檔頭就有鏈頭那一行。
 
 ### 2.5 若要讓平台 csp 連這個庫
 
@@ -147,6 +185,8 @@ docker volume rm anila-ops-restore-data
 | 現象 | 原因 | 怎麼辦 |
 |---|---|---|
 | `role "csp_app" does not exist` | 直接 `pg_restore` 沒先建 role | 用 `restore-csp-db.sh`，或手動 `CREATE ROLE csp_app LOGIN;` |
+| 還原後 csp 開機噴 `must be owner of table users`，但 `/health` 還是 200、容器 healthy、使用者登不進來 | 用了 `pg_restore --no-owner`，把擁有權壓平成單一 role。平台開機時要對 `users`／`token_usage` 等表發 `ALTER TABLE`／`CREATE INDEX`，那需要**擁有權**；例外被 `run_startup_migrations` 吞成一行 log，後面的 `auto_seed` 才真正炸（`column users.token_version does not exist`） | **不要**加 `--no-owner`。用現在的 `restore-csp-db.sh`（2026-07-31 起已移除該旗標並自動跑 `assert-db-ownership.sql`）。已經還原壞的庫：重跑該腳本即可扳正 |
+| 還原後稽核表歸 `csp_app` | 同上（擁有權被壓平），P2.7 的防竄改會失效 | `restore-csp-db.sh` 的驗收會擋住並拒印 `RESTORE_OK`；重跑腳本扳正 |
 | `extension "vector" does not exist` | 映像不是 pgvector | 換 `pgvector/pgvector:pg16` |
 | 備份檔很小／TOC 檢查失敗 | dump 中斷 | 別用那份；重跑 backup |
 | `docker restart` 後日誌上限沒套到 | logging 選項只在 **create** 時生效 | 要用 `compose up -d` recreate（見 P3.5）；與本備份無關 |
