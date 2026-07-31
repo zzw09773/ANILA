@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { buildPersistMeta } from "../runtime/messageMeta.js";
+import {
+  buildPersistMeta,
+  resolveAgentNameForPersist,
+  resolveAnsweringAgentId,
+} from "../runtime/messageMeta.js";
 
 // The key invariant: streaming-accumulated trace must not be lost at the
 // persistence boundary. Final anila.meta ships trace: [] by design; the
@@ -171,5 +175,91 @@ describe("buildPersistMeta - edge cases", () => {
     expect(result.trace_id).toBe("abc");
     expect(result.latency_ms).toBe(250);
     expect(result.confidence).toBe(0.9);
+  });
+});
+
+// Defect D — answer attribution.
+//
+// The router prepends its own hop to handoff_chain and a plain downstream
+// agent contributes none of its own, so BOTH ends of the chain read
+// "anila-router" (anila_core/api/router_server.py `_merge_anila_meta`). The
+// dispatched id survives only inside output_summary. Persisting the aimed-at
+// target instead recorded "ANILA Router" as the author of every dispatched
+// answer — message id=80 in the local DB is exactly that — which misattributes
+// every per-agent feedback row and any routing-quality measurement built on it.
+
+const ROUTER_HOP = {
+  agent_id: "anila-router",
+  label: "Router dispatch",
+  status: "ok",
+  latency_ms: 42,
+  input_summary: "router decision",
+  output_summary: "dispatch to mil-law-agent",
+};
+
+const AGENTS = [
+  { id: "anila-router", name: "ANILA Router" },
+  { id: "mil-law-agent", name: "軍人法規智慧助手" },
+];
+
+describe("resolveAnsweringAgentId", () => {
+  it("reads the dispatched agent out of the router hop's summary", () => {
+    expect(resolveAnsweringAgentId({ handoff_chain: [ROUTER_HOP] })).toBe(
+      "mil-law-agent",
+    );
+  });
+
+  it("prefers a downstream hop that names itself, and takes the last one", () => {
+    const meta = {
+      handoff_chain: [
+        ROUTER_HOP,
+        { agent_id: "mil-law-agent", label: "agent" },
+        { agent_id: "cite-check-agent", label: "sub-agent" },
+      ],
+    };
+    expect(resolveAnsweringAgentId(meta)).toBe("cite-check-agent");
+  });
+
+  it("returns null when nothing was dispatched", () => {
+    // Direct router answer: `_merge_anila_meta` prepends no hop at all.
+    expect(resolveAnsweringAgentId({ handoff_chain: [] })).toBeNull();
+    expect(resolveAnsweringAgentId({})).toBeNull();
+    expect(resolveAnsweringAgentId(null)).toBeNull();
+    // A hop that is only the router, with no dispatch record, is not a dispatch.
+    expect(
+      resolveAnsweringAgentId({
+        handoff_chain: [{ agent_id: "anila-router", output_summary: "answered directly" }],
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("resolveAgentNameForPersist", () => {
+  it("records the dispatched agent, not the router the client aimed at", () => {
+    const name = resolveAgentNameForPersist(
+      { handoff_chain: [ROUTER_HOP] },
+      "anila-router",
+      AGENTS,
+    );
+    expect(name).toBe("軍人法規智慧助手");
+    expect(name).not.toBe("ANILA Router");
+  });
+
+  it("falls back to the dispatched id when that agent is not in the list", () => {
+    const name = resolveAgentNameForPersist(
+      { handoff_chain: [{ ...ROUTER_HOP, output_summary: "dispatch to ghost-agent" }] },
+      "anila-router",
+      AGENTS,
+    );
+    expect(name).toBe("ghost-agent");
+  });
+
+  it("keeps the aimed-at target when no dispatch happened", () => {
+    // Direct router answer really was answered by the router.
+    expect(resolveAgentNameForPersist({ handoff_chain: [] }, "anila-router", AGENTS))
+      .toBe("ANILA Router");
+    // Directly-selected agent, no router involved.
+    expect(resolveAgentNameForPersist(null, "mil-law-agent", AGENTS))
+      .toBe("軍人法規智慧助手");
   });
 });

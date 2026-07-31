@@ -109,3 +109,66 @@ export function buildPersistMeta(finalMeta, messageState) {
 // Re-export for tests that want to audit the list of fields we consider
 // "cumulative" — kept as a single source of truth for the helper's contract.
 export const CUMULATIVE_META_FIELDS = ACCUMULATED_FALLBACKS;
+
+// The hop the router writes for itself.
+const ROUTER_HOP_AGENT_ID = "anila-router";
+// ...whose output_summary is the ONLY place the dispatched agent id appears.
+// See anila_core/api/router_server.py `_merge_anila_meta`: it prepends
+// {agent_id: "anila-router", output_summary: "dispatch to <agent_id>"} and a
+// plain downstream agent contributes no hop of its own — so both the first
+// and the last element of handoff_chain read "anila-router".
+const DISPATCH_SUMMARY = /^\s*dispatch to\s+(\S.*?)\s*$/;
+
+/**
+ * Which agent actually produced this answer, per the response metadata.
+ *
+ * Callers pass the target they were AIMING at as the fallback. On the router
+ * path that target is the router itself, so persisting it attributed every
+ * answer — and therefore every per-agent feedback row — to "ANILA Router"
+ * instead of the agent that did the work.
+ *
+ * Returns null when the metadata shows no dispatch at all: the router
+ * answering directly really was answered by the router, and the caller's
+ * existing value is correct.
+ *
+ * @param {object | null | undefined} meta - an `anila.meta` payload
+ * @returns {string | null} the dispatched agent id, or null
+ */
+export function resolveAnsweringAgentId(meta) {
+  const chain = Array.isArray(meta?.handoff_chain) ? meta.handoff_chain : [];
+  // A downstream hop that names itself is the most precise answer, and the
+  // LAST such hop is the one that produced the text (chains can nest).
+  for (let i = chain.length - 1; i >= 0; i -= 1) {
+    const id = chain[i]?.agent_id;
+    if (typeof id === "string" && id.trim() && id !== ROUTER_HOP_AGENT_ID) {
+      return id.trim();
+    }
+  }
+  // Otherwise fall back to the router's own dispatch record.
+  for (let i = chain.length - 1; i >= 0; i -= 1) {
+    const match = DISPATCH_SUMMARY.exec(String(chain[i]?.output_summary ?? ""));
+    if (match) return match[1];
+  }
+  return null;
+}
+
+/**
+ * The `agent_name` to persist on an assistant message: the agent that
+ * actually answered, resolved to its display name via the loaded agent list.
+ * Falls back to the aimed-at target when the metadata records no dispatch.
+ *
+ * @param {object | null | undefined} finalMeta - the closing `anila.meta`
+ * @param {string | number} effectiveTarget - the agent id the client aimed at
+ * @param {Array<{ id?: string | number, name?: string }>} agents
+ * @returns {string}
+ */
+export function resolveAgentNameForPersist(finalMeta, effectiveTarget, agents = []) {
+  const list = Array.isArray(agents) ? agents : [];
+  const answeringId = resolveAnsweringAgentId(finalMeta);
+  if (answeringId) {
+    return list.find((a) => a?.id === answeringId)?.name || answeringId;
+  }
+  return (
+    list.find((a) => a?.id === effectiveTarget)?.name || String(effectiveTarget)
+  );
+}

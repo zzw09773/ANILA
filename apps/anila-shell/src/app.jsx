@@ -29,7 +29,10 @@ import {
   flushAll as flushClassifyRetries,
   installFocusFlush,
 } from "./runtime/classifyRetryQueue.js";
-import { buildPersistMeta } from "./runtime/messageMeta.js";
+import {
+  buildPersistMeta,
+  resolveAgentNameForPersist,
+} from "./runtime/messageMeta.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { relativeLabel } from "./runtime/time.js";
 import {
@@ -67,6 +70,7 @@ import {
 import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
 import {
   applyServerPath,
+  persistAssistantTurn,
   persistRegeneratedAssistant,
   runPersistedUserTurn,
   runRegenerateStreamPhase,
@@ -282,6 +286,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const [conversations, setConversations] = useState([]);
   const [messagesByConv, setMessagesByConv] = useState({});
   const [selectedConvId, setSelectedConvId] = useState(null);
+  // Conversations this tab created itself. They start empty on the server and
+  // this client is their only author, so hydrating them can only lose the
+  // turn currently being sent — see the hydrate effect below.
+  const locallyCreatedConvIdsRef = useRef(new Set());
 
 
   // --- compare mode ---
@@ -800,6 +808,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   useEffect(() => {
     if (!selectedConvId || typeof selectedConvId !== "number") return;
     if (messagesByConv[selectedConvId]?.length) return;
+    // A conversation this tab just created has nothing on the server we don't
+    // already hold. Firing the GET anyway raced the send: the empty active
+    // path came back after the optimistic bubbles were appended and erased
+    // them, so the first click on a suggestion chip looked like a no-op.
+    if (locallyCreatedConvIdsRef.current.has(selectedConvId)) return;
     let active = true;
     (async () => {
       try {
@@ -857,6 +870,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           agentId: typeof effectiveAgentId === "number" ? effectiveAgentId : null,
         });
         convId = serverRow.id;
+        locallyCreatedConvIdsRef.current.add(convId);
       } catch (error) {
         convId = makeId("cv-local");
         setRuntimeError(error.message || "對話儲存失敗（離線模式）");
@@ -1157,9 +1171,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       });
       updateMsg(convId, assistantId, { streaming: false });
 
-      const agentNameForPersist =
-        agents.find((a) => a.id === effectiveTarget)?.name ||
-        String(effectiveTarget);
+      const agentNameForPersist = resolveAgentNameForPersist(
+        finalMeta,
+        effectiveTarget,
+        agents,
+      );
       const persistMeta = buildPersistMeta(finalMeta, {
         trace: accumulatedTrace,
         reasoning: accumulatedReasoning,
@@ -1447,44 +1463,50 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           const finalMeta = streamResult?.finalMeta ?? null;
           const accumulatedTrace = streamResult?.accumulatedTrace || [];
           const accumulatedReasoning = streamResult?.accumulatedReasoning || "";
-          const agentNameForPersist =
-            agents.find((a) => a.id === effectiveTarget)?.name ||
-            String(effectiveTarget);
+          const agentNameForPersist = resolveAgentNameForPersist(
+            finalMeta,
+            effectiveTarget,
+            agents,
+          );
           const persistMeta = buildPersistMeta(finalMeta, {
             trace: accumulatedTrace,
             reasoning: accumulatedReasoning,
           });
-          try {
-            const assistantPayload = {
-              role: "assistant",
-              content: finalText,
-              traceId: finalMeta?.trace_id,
-              latencyMs: finalMeta?.latency_ms,
-              agentName: agentNameForPersist,
-              metadata: persistMeta,
-            };
-            if (typeof userDbId === "number") {
-              assistantPayload.parentId = userDbId;
-            }
-            const savedAssistant = await apiAppendMessage(
-              authRequest,
-              convId,
-              assistantPayload,
-            );
-            if (savedAssistant && typeof savedAssistant.id === "number") {
-              updateMsg(convId, assistantId, {
-                dbId: savedAssistant.id,
-                parentId: savedAssistant.parent_id ?? userDbId,
-                siblingIndex: savedAssistant.sibling_index ?? 0,
-                siblingCount: savedAssistant.sibling_count ?? 1,
-                siblingIds: Array.isArray(savedAssistant.sibling_ids)
-                  ? savedAssistant.sibling_ids
-                  : [savedAssistant.id],
-              });
-              updateConv(convId, { activeLeafMessageId: savedAssistant.id });
-            }
-          } catch (persistError) {
-            setRuntimeError(persistError.message || "對話訊息儲存失敗");
+          const assistantPayload = {
+            role: "assistant",
+            content: finalText,
+            traceId: finalMeta?.trace_id,
+            latencyMs: finalMeta?.latency_ms,
+            agentName: agentNameForPersist,
+            metadata: persistMeta,
+          };
+          if (typeof userDbId === "number") {
+            assistantPayload.parentId = userDbId;
+          }
+          const persisted = await persistAssistantTurn({
+            appendMessage: apiAppendMessage,
+            authRequest,
+            convId,
+            payload: assistantPayload,
+          });
+          if (persisted.ok) {
+            const savedAssistant = persisted.saved;
+            updateMsg(convId, assistantId, {
+              dbId: savedAssistant.id,
+              parentId: savedAssistant.parent_id ?? userDbId,
+              siblingIndex: savedAssistant.sibling_index ?? 0,
+              siblingCount: savedAssistant.sibling_count ?? 1,
+              siblingIds: Array.isArray(savedAssistant.sibling_ids)
+                ? savedAssistant.sibling_ids
+                : [savedAssistant.id],
+              persistError: null,
+            });
+            updateConv(convId, { activeLeafMessageId: savedAssistant.id });
+          } else {
+            // Banner AND a marker on the bubble itself: the banner is easy to
+            // miss / dismiss, and the answer looks saved until it disappears.
+            setRuntimeError(persisted.error?.message || "對話訊息儲存失敗");
+            updateMsg(convId, assistantId, { persistError: persisted.notice });
           }
 
           // Bump updatedAt so the sidebar re-sorts / re-labels with live time.
@@ -1860,9 +1882,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
     try {
       if (typeof convId === "number") {
-        const agentNameForPersist =
-          agents.find((a) => a.id === effectiveTarget)?.name ||
-          String(effectiveTarget);
+        const agentNameForPersist = resolveAgentNameForPersist(
+          finalMeta,
+          effectiveTarget,
+          agents,
+        );
         const persistMeta = buildPersistMeta(finalMeta, {
           trace: accumulatedTrace,
           reasoning: accumulatedReasoning,
