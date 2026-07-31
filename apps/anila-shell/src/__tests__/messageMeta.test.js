@@ -234,6 +234,51 @@ describe("resolveAnsweringAgentId", () => {
   });
 });
 
+// FIX 6: the router now emits `answering_agent_id` as a first-class field on
+// both the streaming and non-streaming dispatch paths. Parsing the English
+// sentence in output_summary stays only as the fallback for messages
+// persisted before the field existed.
+describe("resolveAnsweringAgentId - first-class field", () => {
+  it("prefers answering_agent_id over the prose summary", () => {
+    const meta = {
+      answering_agent_id: "mil-law-agent",
+      handoff_chain: [{ ...ROUTER_HOP, output_summary: "dispatch to stale-agent" }],
+    };
+    expect(resolveAnsweringAgentId(meta)).toBe("mil-law-agent");
+  });
+
+  it("prefers it over a downstream hop too", () => {
+    const meta = {
+      answering_agent_id: "mil-law-agent",
+      handoff_chain: [ROUTER_HOP, { agent_id: "other-agent", label: "agent" }],
+    };
+    expect(resolveAnsweringAgentId(meta)).toBe("mil-law-agent");
+  });
+
+  it("ignores an absent / blank field and falls back to the prose parse", () => {
+    expect(
+      resolveAnsweringAgentId({ answering_agent_id: null, handoff_chain: [ROUTER_HOP] }),
+    ).toBe("mil-law-agent");
+    expect(
+      resolveAnsweringAgentId({ answering_agent_id: "  ", handoff_chain: [ROUTER_HOP] }),
+    ).toBe("mil-law-agent");
+    // Router answered directly: field present and null, no dispatch hop.
+    expect(
+      resolveAnsweringAgentId({ answering_agent_id: null, handoff_chain: [] }),
+    ).toBeNull();
+  });
+
+  it("flows through to the persisted agent name", () => {
+    expect(
+      resolveAgentNameForPersist(
+        { answering_agent_id: "mil-law-agent", handoff_chain: [] },
+        "anila-router",
+        AGENTS,
+      ),
+    ).toBe("軍人法規智慧助手");
+  });
+});
+
 describe("resolveAgentNameForPersist", () => {
   it("records the dispatched agent, not the router the client aimed at", () => {
     const name = resolveAgentNameForPersist(
