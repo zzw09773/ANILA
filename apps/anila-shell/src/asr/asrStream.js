@@ -30,6 +30,38 @@ export const CLOSE_SESSION_TIMEOUT = 4408;
 export const CLOSE_CONCURRENCY = 4409;
 export const CLOSE_AUTH_UNAVAILABLE = 4503;
 
+/**
+ * getUserMedia 失敗 → 給使用者看的訊息。
+ *
+ * ⚠ 這裡分不同 name 給不同訊息,不是為了漂亮。2026-07-31 擁有者按了麥克風,
+ * 拿到 NotFoundError,而當時的訊息叫他去檢查「權限、https、伺服器放行」——
+ * 三條全部都是對的,問題卻是這台機器的音訊系統根本沒有掛出輸入裝置。
+ * **對著錯的方向排錯,比沒有訊息更浪費時間。**
+ */
+export function micErrorMessage(e) {
+  const name = e && e.name ? e.name : "UnknownError";
+  switch (name) {
+    case "NotFoundError":
+    case "OverconstrainedError":
+      return (
+        "找不到可用的麥克風。這不是權限問題——請確認麥克風已接上，" +
+        "並在系統的「聲音 → 輸入」裡看得到它、而且不是靜音。"
+      );
+    case "NotAllowedError":
+    case "SecurityError":
+      // 這三種在錯誤物件上分不出來,所以三條都要講。
+      return (
+        "瀏覽器不讓本站使用麥克風。請確認：① 網址列旁的權限有允許麥克風；" +
+        "② 網址是 https；③ 若用 IP 或主機名開啟，自簽憑證可能讓瀏覽器擋下麥克風，改用 localhost 試試。"
+      );
+    case "NotReadableError":
+    case "AbortError":
+      return "麥克風被其他程式佔用或讀取失敗。請關掉正在使用麥克風的軟體（會議、錄音）後再試。";
+    default:
+      return `無法取得麥克風(${name})。`;
+  }
+}
+
 /** close code → 給使用者看的訊息。不認得的 code 回 null(= 靜默,通常是正常關閉)。 */
 export function describeClose(code) {
   switch (code) {
@@ -258,15 +290,7 @@ export function createAsrSession({
       });
     } catch (e) {
       setState('idle');
-      // ⚠ 這裡的 NotAllowedError 有三種可能,錯誤物件分不出來:
-      //   1. 使用者真的按了拒絕
-      //   2. 頁面不是 secure context(http 直連,非 localhost)
-      //   3. nginx 的 Permissions-Policy 沒放行 microphone=(self)
-      // 所以訊息必須把三種都講出來,否則使用者(和維護的人)會鬼打牆。
-      fail(
-        `無法取得麥克風(${e.name})。請確認:① 已允許本站使用麥克風;` +
-          `② 網址是 https(http 直連拿不到麥克風);③ 伺服器已放行麥克風權限。`
-      );
+      fail(micErrorMessage(e));
       return;
     }
 
