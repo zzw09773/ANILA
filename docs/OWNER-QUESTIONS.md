@@ -327,6 +327,23 @@ csp 掛載 `/assets` 並送出 index.html,nginx 的 `location /` 又 proxy 到 c
 
 ---
 
+## Q16 — 開發者下載的範本,名字跟內容對不起來(2026-07-31)
+
+治理中心的「下載範本」給的檔案叫 `anila-core-template.zip`、解開來的資料夾叫
+`anila-core-template/`,**但裡面裝的是 `anila-agent`**(compose 掛的就是它,兩份稽核文件與
+SYSTEM-MAP L134 也都說是 anila-agent)。四個地方寫 anila-core、五個地方說 anila-agent。
+
+**為什麼不是我自己改**:改名會讓任何寫了 `unzip && cd anila-core-template` 的腳本壞掉。
+不過**目前零個 agent 註冊過**,所以大概率沒有人有那種腳本。
+
+**選項**:①把名字改成 `anila-agent`(便宜,只動標籤;每個獨立來源都說內容是 anila-agent)
+②把裝進去的東西換成 anila-core(**不建議**——那是平台 SDK 與 Router,不是 agent 起手範本,
+裡面連 `app.py` 和給你的 Dockerfile 都沒有)③維持現狀、寫進文件。
+
+**我的建議**:①。**目前假設**:③,沒有動任何名字。
+
+---
+
 ## Q15 — 本機這台的卡登入是**關著的**(2026-07-31 發現)
 
 ```
