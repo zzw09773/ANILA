@@ -1289,7 +1289,7 @@ async function handleDownloadTemplate() {
     const url = URL.createObjectURL(new Blob([data]))
     const link = document.createElement('a')
     link.href = url
-    link.download = 'anila-core-template.zip'
+    link.download = 'anila-agent.zip'
     link.click()
     URL.revokeObjectURL(url)
     setFeedback('success', '樣板已下載')

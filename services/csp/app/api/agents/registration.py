@@ -484,7 +484,7 @@ def _should_include_template_path(path: Path, root: Path) -> bool:
 def download_template(
     current_user: User = Depends(_require_developer_or_admin),
 ) -> StreamingResponse:
-    """Serve the official anila-core template mirroring the AgenticRAG project."""
+    """Serve the official anila-agent template mirroring the AgenticRAG project."""
     buf = io.BytesIO()
     template_dir = _TEMPLATE_DIR
     if not template_dir.exists():
@@ -493,14 +493,14 @@ def download_template(
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(template_dir.rglob("*")):
             if _should_include_template_path(path, template_dir):
-                arcname = "anila-core-template/" + path.relative_to(template_dir).as_posix()
+                arcname = "anila-agent/" + path.relative_to(template_dir).as_posix()
                 zf.write(path, arcname)
 
     buf.seek(0)
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=anila-core-template.zip"},
+        headers={"Content-Disposition": "attachment; filename=anila-agent.zip"},
     )
 
 
