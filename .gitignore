@@ -182,3 +182,6 @@ models/model/*
 /image*.png
 /screenshot*.png
 /Screenshot*.png
+
+# 未修補弱點的盤點報告不進 PUBLIC repo。修完之後再決定要不要收錄（並移除位置細節）。
+docs/audits/*airgap*
