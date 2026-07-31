@@ -38,6 +38,7 @@ from app.services.auth_service import (
     security,
     verify_service_token,
 )
+from app.utils.client_ip import client_ip as _client_ip
 from app.services.endpoint_author_service import (
     ENDPOINT_INTERNAL,
     ENDPOINT_REDACTED,
@@ -1682,15 +1683,6 @@ def update_model(
         commit=True,
     )
     return _build_response(model, caller=current_user, db=db)
-
-
-def _client_ip(request: Request | None) -> str | None:
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else None
 
 
 @router.delete("/{model_id}")

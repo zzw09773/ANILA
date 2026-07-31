@@ -27,6 +27,7 @@ from app.services.auth_service import (
     require_admin,
 )
 from app.services.department_tree import get_descendant_ids
+from app.services.token_revocation import commit_token_revocation
 from app.services.unit_admin_service import get_unit_admin_scope_ids
 from app.utils.security import hash_password
 
@@ -202,12 +203,19 @@ def update_user(
     for field, value in update_data.items():
         setattr(user, field, value)
 
+    revoked_after_demotion = False
     if was_admin_tier and not is_admin_tier(user):
         allowed_ids = {m.id for m in user.allowed_models}
         _cascade_user_key_permissions(db, user, allowed_ids)
         user.token_version = (user.token_version or 0) + 1
+        revoked_after_demotion = True
 
-    db.commit()
+    if revoked_after_demotion:
+        # Same path as logout / deactivate: durable row + pub/sub so
+        # anila-studio / asr-gateway drop the old admin-tier JWT.
+        commit_token_revocation(db, user)
+    else:
+        db.commit()
     db.refresh(user)
     log_audit_event(
         db,
@@ -234,7 +242,7 @@ def admin_reset_password(
     _ensure_owner_for_elevated(user.role, admin)
     user.hashed_password = hash_password(request.new_password)
     user.token_version = (user.token_version or 0) + 1
-    db.commit()
+    commit_token_revocation(db, user)
     log_audit_event(
         db,
         actor=admin,
@@ -620,7 +628,10 @@ def deactivate_user(
 
     user.is_active = False
     user.token_version = (user.token_version or 0) + 1
-    db.commit()
+    # Owner ruling: deactivating an account must immediately revoke the
+    # credential — durable deny-list row + Redis publish, not just the
+    # local token_version bump that only csp itself notices.
+    commit_token_revocation(db, user)
     detail = f"停用使用者「{user.username}」"
     if actor_is_unit_admin:
         detail += "（單位管理員停用）"
