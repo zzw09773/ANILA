@@ -37,6 +37,7 @@ Append-only:本模組 **不提供** 任何 update / delete 介面;
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -66,6 +67,8 @@ from app.schemas.contracts.policy import (
     PolicyDecisionVerdict,
 )
 from app.services.audit_service import log_audit_event
+
+logger = logging.getLogger(__name__)
 
 # actor_id 欄位是 Integer(users.id / service client / agent id 都是整數);
 # 非數值的 actor 識別字(理論上不該出現)不丟資料 —— 原文塞進 metadata。
@@ -358,6 +361,27 @@ def apply_classification(
         row.classification_source = source
         row.classification_event_id = event.id
         _mirror_legacy_boolean(row, effective)
+        # P4.4:對話升密 → 先前萃取的記憶直接刪除(PLAN §4.4)。掛在這裡而不是
+        # 掛在 classify_conversation,因為這裡是四級單向閂鎖的**唯一**入口——
+        # 手動標記、memory_inherited、propagation 全走這條,少掛一條路徑就等於
+        # 留一個升密後記憶還活著的洞。只在真的升級時執行(上面的 no-op 分支已
+        # 提前 return),所以 proxy 熱路徑的重複呼叫不會反覆刪。
+        # 不包 try/except:刪不掉就讓整筆 rollback,寧可升密失敗並回報,也不要
+        # 留下「已升密但記憶還在」這種看起來成功的狀態。
+        if resource_type == "conversation":
+            from app.services.memory_service import purge_conversation_memory
+
+            purged = purge_conversation_memory(db, int(resource_id))
+            if purged["chunks"] or purged["facts"]:
+                logger.info(
+                    "P4.4: purged memory on classification upgrade "
+                    "conversation_id=%s chunks=%d facts=%d %s→%s",
+                    resource_id,
+                    purged["chunks"],
+                    purged["facts"],
+                    current.to_storage(),
+                    effective.to_storage(),
+                )
         if (
             reason_value == ClassificationEventReason.MEMORY_INHERITED.value
             and hasattr(row, "classification_inherited")

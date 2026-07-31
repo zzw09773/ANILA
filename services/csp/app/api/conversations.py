@@ -198,8 +198,10 @@ class ShareCreate(BaseModel):
     target_user_id: Optional[int] = Field(None, ge=1)
     target_department_id: Optional[int] = Field(None, ge=1)
     target_department_name: Optional[str] = Field(None, max_length=100)
-    mode: str = Field("read_only", pattern="^(read_only|fork)$")
-    allow_fork: bool = False
+    # ``mode`` / ``allow_fork`` 已移除:兩者從來沒有被任何授權判定讀過,
+    # 分享一律唯讀。收下再丟掉的欄位比沒有這個欄位更危險 —— 它讓呼叫端
+    # 以為自己設定了權限。舊前端仍會送這兩個鍵,Pydantic 預設
+    # ``extra='ignore'`` 會直接忽略,不會 422。
     expires_at: Optional[datetime] = None
 
 
@@ -209,8 +211,6 @@ class ShareOut(ApiResponseModel):
     target_username: Optional[str] = None
     target_department_id: Optional[int] = None
     target_department_name: Optional[str] = None
-    mode: str
-    allow_fork: bool
     expires_at: Optional[datetime]
     created_at: datetime
     model_config = {"from_attributes": True}
@@ -232,8 +232,6 @@ def _share_out(share: ConversationShare) -> ShareOut:
         target_username=username,
         target_department_id=share.target_department_id,
         target_department_name=dept_name,
-        mode=share.mode,
-        allow_fork=share.allow_fork,
         expires_at=share.expires_at,
         created_at=share.created_at,
     )
@@ -791,8 +789,6 @@ def create_share(
         target_username=body.target_username,
         target_department_id=body.target_department_id,
         target_department_name=body.target_department_name,
-        mode=body.mode,
-        allow_fork=body.allow_fork,
         expires_at=body.expires_at,
     )
     return _share_out(share)

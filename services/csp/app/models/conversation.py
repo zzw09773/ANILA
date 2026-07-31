@@ -196,7 +196,12 @@ class ConversationShare(Base):
         nullable=True,
         index=True,
     )
-    mode = Column(String(20), nullable=False, default="read_only")  # read_only / fork
+    # ⚠ 死欄位,待 migration 一併 DROP。API 層(ShareCreate / ShareOut /
+    # create_share)已不再收、不再寫、不再回傳這兩個值 —— 從來沒有任何
+    # 授權判定讀過它們,分享一律唯讀。這裡暫留欄位只是因為 DROP COLUMN
+    # 需要 migration,而本包無法在自己的樹上驗證(見報告)。兩者都有
+    # Python 端 default,所以不帶值的 INSERT 照常成立。
+    mode = Column(String(20), nullable=False, default="read_only")
     allow_fork = Column(Boolean, nullable=False, default=False)
     expires_at = Column(DateTime(timezone=True), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
