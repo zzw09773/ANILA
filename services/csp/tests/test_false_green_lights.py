@@ -33,6 +33,7 @@ from app.services.endpoint_author_service import ENDPOINT_REDACTED
 from app.services.health_checker import (
     HEALTH_DEGRADED,
     HEALTH_HEALTHY,
+    HEALTH_UNKNOWN,
     probe_model_health_detailed,
 )
 from tests.conftest import login, make_agent, make_model, make_user
@@ -212,18 +213,63 @@ def test_health_root_only_is_degraded_not_healthy(monkeypatch):
 
 
 def test_health_real_path_still_healthy(monkeypatch):
+    """Genuine 2xx on a real probe path still reports healthy."""
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
     monkeypatch.setattr(
         health_checker.httpx,
         "AsyncClient",
-        _client_returning({"/v1/models": 401, "/health": 500}),
+        _client_returning({"/health": 200, "/v1/models": 401}),
     )
-    # 401 on /v1/models is still a real probe hit (API surface alive).
     status, _ = asyncio.run(
         probe_model_health_detailed("http://mock-llm:8080/v1")
     )
     assert status == HEALTH_HEALTHY
+
+
+def test_health_401_on_every_real_path_is_not_healthy(monkeypatch):
+    """Acceptance: unauthenticated 401 on every real probe ≠ healthy.
+
+    A 401 only proves something is listening. It does not prove the
+    platform key still works — that was the false-green shape.
+    """
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    monkeypatch.setattr(
+        health_checker.httpx,
+        "AsyncClient",
+        _client_returning(401),
+    )
+    status, _ = asyncio.run(
+        probe_model_health_detailed("http://mock-llm:8080/v1")
+    )
+    assert status != HEALTH_HEALTHY
+    assert status == HEALTH_UNKNOWN
+
+
+def test_health_200_on_real_path_is_healthy(monkeypatch):
+    """Acceptance: a genuine 200 on /health still reports healthy."""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    monkeypatch.setattr(
+        health_checker.httpx,
+        "AsyncClient",
+        _client_returning({"/health": 200}),
+    )
+    status, _ = asyncio.run(
+        probe_model_health_detailed("http://mock-llm:8080")
+    )
+    assert status == HEALTH_HEALTHY
+
+
+def test_mutant_health_401_old_lt500_rule_goes_red():
+    """Mutant: restoring ``!=404 and <500`` would mis-label 401 as a hit."""
+    assert health_checker._real_probe_hit(401) is False
+    assert health_checker._real_probe_hit(403) is False
+    assert health_checker._real_probe_hit(200) is True
+    old_rule = lambda code: code != 404 and code < 500
+    assert old_rule(401) is True
+    assert old_rule(401) != health_checker._real_probe_hit(401)
 
 
 def test_mutant_health_root_as_healthy_goes_red(monkeypatch):
