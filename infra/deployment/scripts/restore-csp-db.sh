@@ -42,13 +42,25 @@ cleanup() { rm -rf "$WORKDIR"; }
 trap cleanup EXIT
 cp "$DUMP" "$WORKDIR/restore.dump"
 
-log "開始 pg_restore"
+log "開始 pg_restore（保留 dump 內的擁有權，見下方說明）"
+# ⚠ 刻意**不用** `--no-owner --role=csp`。
+#
+# `--no-owner` 會讓所有物件都變成連線者（csp）所有。那會一次砸壞兩件事：
+#   1. 平台開機時 `startup_migrations` 會對 users / model_registry /
+#      token_usage / departments / api_keys / alerts / platform_links /
+#      attachments 發 ALTER TABLE 與 CREATE INDEX。那些 DDL 需要**擁有權**，
+#      而 0014 是刻意把它們給 csp_app 的。還原成 csp 所有之後，開機會噴
+#      `must be owner of table users`，而且那個例外被 run_startup_migrations
+#      吞掉 → **/health 回 200、容器顯示 healthy、但使用者登不進來**。
+#      （2026-07-31 實測重現：auto_seed 也跟著炸 `users.token_version does not exist`。）
+#   2. 稽核家族（P2.7）需要的正好相反：**不可以**是 csp_app 所有。
+# 一句話：正確狀態不是「全歸某一個 role」，而是 dump 當下那張擁有權地圖。
+# 保留它最簡單也最忠實；之後再用 assert-db-ownership.sql 補強不變式。
 set +e
 docker run --rm --network "container:${CONTAINER}" \
   -v "$WORKDIR:/backup:ro" \
   pgvector/pgvector:pg16 \
   pg_restore -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
-    --no-owner --role="$DB_USER" \
     /backup/restore.dump \
   >/tmp/anila-restore-pg.out 2>/tmp/anila-restore-pg.err
 RC=$?
@@ -60,7 +72,53 @@ if grep -qE '^pg_restore: error:' /tmp/anila-restore-pg.err; then
   fail "還原未乾淨結束，詳見 /tmp/anila-restore-pg.err"
 fi
 
+# ── 擁有權/權限不變式（自動，操作者不需要記得任何事） ──────────────────
+SQL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OWNERSHIP_SQL="$SQL_DIR/assert-db-ownership.sql"
+[[ -f "$OWNERSHIP_SQL" ]] || fail "找不到 assert-db-ownership.sql（同目錄）"
+log "校正擁有權與稽核表權限（assert-db-ownership.sql；正常情況下不會有任何變動）"
+docker exec -i "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+  < "$OWNERSHIP_SQL" || fail "擁有權校正失敗，請勿把平台指向這個庫"
+
+# 硬閘：上面跑完還不對就不要說 RESTORE_OK。凌晨兩點最不需要的就是一個
+# 「還原成功」但開機起來是壞的資料庫。
+log "驗收還原後的姿態"
+BAD="$(docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -At -c "
+  SELECT string_agg(msg, '; ') FROM (
+    SELECT c.relname || ' 應歸 csp_app 但歸 ' || pg_get_userbyid(c.relowner) AS msg
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname='public' AND c.relkind='r'
+       AND c.relname IN ('users','model_registry','token_usage','departments',
+                         'api_keys','alerts','platform_links','attachments')
+       AND pg_get_userbyid(c.relowner) <> 'csp_app'
+    UNION ALL
+    SELECT c.relname || ' 是稽核表但歸 csp_app（P2.7 失效）'
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname='public' AND c.relkind='r'
+       AND c.relname IN ('audit_logs','policy_decisions',
+                         'classification_events','audit_checkpoints')
+       AND pg_get_userbyid(c.relowner) = 'csp_app'
+    UNION ALL
+    SELECT c.relname || ': csp_app 仍能 ' || p
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace,
+           unnest(ARRAY['UPDATE','DELETE','TRUNCATE']) p
+     WHERE n.nspname='public' AND c.relkind='r'
+       AND c.relname IN ('audit_logs','policy_decisions',
+                         'classification_events','audit_checkpoints')
+       AND has_table_privilege('csp_app', c.oid, p)
+  ) t;")"
+if [[ -n "${BAD// /}" ]]; then
+  log "還原後姿態不合格：$BAD"
+  fail "不要把平台指向這個庫。若這是 r1_0027 之前的舊 dump，先讓 csp 開機跑完 alembic 再重驗。"
+fi
+log "姿態 OK：開機 DDL 用的表歸 csp_app；稽核四表不歸 csp_app 且不可改/刪"
+
 log "還原完成（pg_restore exit=$RC）。核對列數："
 log "  docker exec ${CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} -c \"SELECT count(*) FROM audit_logs;\""
 log "  docker exec ${CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} -c \"SELECT count(*) FROM token_usage;\""
+log "⚠ P2.7：還原之後**必跑**稽核鏈驗證，並拿一份已經交出去的稽核匯出檔上印的"
+log "  鏈頭來比對 —— 被調換或被回捲的備份，鏈頭會對不上："
+log "  docker exec <csp 容器> python scripts/verify_audit_chain.py --head <報告上的鏈頭>"
+log "  （沒有 --head 只能驗自洽；鏈頭不在 dump 裡，那正是它有用的原因。"
+log "   請確認你手上留著至少一份已發出的稽核匯出檔，見 runbook §2.7。）"
 printf 'RESTORE_OK\n'

@@ -16,10 +16,13 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
-from sqlalchemy import inspect, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool
 
 from app.database import SessionLocal, engine
 from app.models.api_key import ApiKey, ApiKeyModelPermission
@@ -74,6 +77,34 @@ def run_startup_migrations() -> None:
 
 class LegacyMigrationError(RuntimeError):
     """Raised when the legacy SQLite migration cannot safely proceed."""
+
+
+@contextmanager
+def _migration_bind(runtime_bind: Engine) -> Iterator[Engine]:
+    """Yield an engine holding the *migration* identity, if one is configured.
+
+    P2.7: the audit tables are no longer owned by the runtime role, so the
+    boot-time ``ALTER TABLE`` on ``audit_logs`` has to come from the same
+    identity alembic uses (``MIGRATION_DATABASE_URL``, see
+    ``migrations/env.py``). When that env var is absent — SQLite unit tests,
+    single-role local setups — we fall back to the runtime engine so behaviour
+    is unchanged from before. We deliberately do NOT try to detect "same DSN"
+    and skip: comparing URLs is fiddly (SQLAlchemy masks the password in
+    ``str(url)``) and opening one short-lived connection costs nothing.
+
+    The engine is short-lived and disposed on exit: this runs once per boot,
+    a persistent privileged pool would be a standing liability.
+    """
+    migration_url = os.environ.get("MIGRATION_DATABASE_URL", "").strip()
+    if not migration_url:
+        yield runtime_bind
+        return
+
+    privileged = create_engine(migration_url, pool_pre_ping=True, poolclass=NullPool)
+    try:
+        yield privileged
+    finally:
+        privileged.dispose()
 
 
 def _ensure_schema_backfills(bind: Engine) -> None:
@@ -257,26 +288,6 @@ def _ensure_schema_backfills(bind: Engine) -> None:
             generic_ddl=f"ALTER TABLE alerts ADD COLUMN {col_name} {ddl_suffix}",
         )
 
-    # --- audit_logs ----------------------------------------------------
-    for col_name, ddl_suffix in [
-        ("status", "VARCHAR(20) NOT NULL DEFAULT 'ok'"),
-        ("actor_user_id", "INTEGER NULL"),
-        ("actor_username", "VARCHAR(100) NULL"),
-        ("ip_address", "VARCHAR(64) NULL"),
-        ("metadata_json", "TEXT NULL"),
-    ]:
-        _ensure_column(
-            bind, "audit_logs", col_name,
-            postgres_ddl=f"ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
-            generic_ddl=f"ALTER TABLE audit_logs ADD COLUMN {col_name} {ddl_suffix}",
-        )
-    # Align resource_id type with model (0001 baseline declared INTEGER;
-    # model declares VARCHAR(100)). Pydantic ResponseValidationError was
-    # firing on GET /api/audit-logs because PG returned ints.
-    _ensure_column_type_varchar(
-        bind, "audit_logs", "resource_id", length=100,
-    )
-
     # --- platform_links ------------------------------------------------
     for col_name, ddl_suffix in [
         ("icon", "VARCHAR(50) NULL"),
@@ -311,6 +322,41 @@ def _ensure_schema_backfills(bind: Engine) -> None:
             generic_ddl=(
                 f"ALTER TABLE attachments ADD COLUMN {col_name} {generic_suffix}"
             ),
+        )
+
+    # --- audit_logs (deliberately LAST) ---------------------------------
+    # Kept at the end of this function on purpose: it is the only block that
+    # can fail for a *permissions* reason, and ``run_startup_migrations``
+    # swallows the exception into one generic error line. If it sat in the
+    # middle, a failure here would silently skip every later backfill and the
+    # platform would boot with columns quietly missing — "boots fine, breaks
+    # later", exactly the shape this package exists to remove.
+    # P2.7: r1_0027 took ownership of the audit tables away from ``csp_app``
+    # so a leaked runtime credential can no longer rewrite audit history.
+    # ALTER TABLE requires ownership, so this one block runs on a SECOND
+    # engine holding the *migration* identity — everything above stays on
+    # the runtime engine (smallest possible blast radius; no non-audit table
+    # loses anything). r1_0027 also performs these same DDL steps, so on a
+    # fresh database this block is a no-op; it exists only so a pre-r1_0027
+    # Postgres volume still self-heals at boot.
+    with _migration_bind(bind) as audit_bind:
+        for col_name, ddl_suffix in [
+            ("status", "VARCHAR(20) NOT NULL DEFAULT 'ok'"),
+            ("actor_user_id", "INTEGER NULL"),
+            ("actor_username", "VARCHAR(100) NULL"),
+            ("ip_address", "VARCHAR(64) NULL"),
+            ("metadata_json", "TEXT NULL"),
+        ]:
+            _ensure_column(
+                audit_bind, "audit_logs", col_name,
+                postgres_ddl=f"ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
+                generic_ddl=f"ALTER TABLE audit_logs ADD COLUMN {col_name} {ddl_suffix}",
+            )
+        # Align resource_id type with model (0001 baseline declared INTEGER;
+        # model declares VARCHAR(100)). Pydantic ResponseValidationError was
+        # firing on GET /api/audit-logs because PG returned ints.
+        _ensure_column_type_varchar(
+            audit_bind, "audit_logs", "resource_id", length=100,
         )
 
 

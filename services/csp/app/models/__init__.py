@@ -26,6 +26,7 @@ from app.models.artifact import (
     ExportRecord,
 )
 from app.models.attachment import Attachment
+from app.models.audit_checkpoint import AuditCheckpoint
 from app.models.audit_log import AuditLog
 from app.models.banner import Banner
 from app.models.classification import (
@@ -82,6 +83,7 @@ __all__ = [
     "ArtifactVersion",
     "Attachment",
     "ExportRecord",
+    "AuditCheckpoint",
     "AuditLog",
     "Banner",
     "Citation",

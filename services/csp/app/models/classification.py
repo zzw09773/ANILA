@@ -70,10 +70,10 @@ class ClassificationEvent(Base):
     # manual_admin / service_policy / content_detection /
     # declassification_copy(契約層封閉)。
     reason = Column(String(32), nullable=False)
-    # service actor(router / worker)非 users FK → NULL,細節入 audit。
-    actor_user_id = Column(
-        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    # service actor(router / worker)沒有對應的 users 列 → NULL,細節入 audit。
+    # P2.7:刻意沒有 FK。``ON DELETE SET NULL`` 會讓 DB 自己對這張 append-only
+    # 表發 UPDATE(被觸發器擋下,而且等於刪帳號就洗掉稽核歸屬)。值原地保留。
+    actor_user_id = Column(Integer, nullable=True)
     inherited_from_resource_type = Column(String(50), nullable=True)
     inherited_from_resource_id = Column(String(100), nullable=True)
     trace_id = Column(String(64), nullable=True)
