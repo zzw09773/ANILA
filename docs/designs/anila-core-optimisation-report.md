@@ -41,6 +41,23 @@
 - **風險**：低。成功路徑回應不變。測試重建 app 時會 `reset_http_client()`，避免 respx MockTransport 殘留。  
 - **單獨還原**：刪 `http_pool.py`；各呼叫點搜 `OPT-1`，改回 `async with httpx.AsyncClient(...)`。
 
+**2026-07-31 修正（合併前必要條件）**：第一版寫死 `max_connections=100` ＋ `pool=5.0`。
+分支前每個 hop 各開一個 client，**沒有任何全域上限、也永遠不會排隊**；
+共用池加上這組數字，等於在尖峰時親手製造一個舊碼做不出來的失敗
+（實測：101 個並行請求 → 100 個成功、第 101 個等滿 5 秒後 `httpx.PoolTimeout`）。
+三千人、一個維運，這是淨損失。
+
+- 現在的預設是**不設上限**（`ANILA_HTTP_MAX_CONNECTIONS=0`）。理由不是「數字調大一點」：
+  httpx **只有在 `max_connections` 是有限值時才會讓呼叫端排隊**，設 `None`
+  等於從結構上讓 `PoolTimeout` 不可能發生。上限處的行為＝每個在途請求最多一個 socket，
+  和分支前一模一樣；而且因為有 keep-alive 重用，**同樣負載下開的 socket 只會比舊碼少**。
+  真正的天花板還是舊碼本來就有的那個：OS fd 上限與對端的 accept queue，
+  兩者都以 `ANILA_HTTP_CONNECT_TIMEOUT`（3s）收尾，是既有的失敗模式。
+- `ANILA_HTTP_POOL_TIMEOUT` 只有在維運自己設了有限上限時才有意義（預設不可達）。
+- `max_keepalive_connections` 維持 20（可用 `ANILA_HTTP_MAX_KEEPALIVE` 調）：它是**保留**上限
+  不是併發上限，超過只會讓那一 hop 退回分支前的成本，不會擋住任何人。
+- 守衛測試：`packages/anila-core/tests/test_http_pool_limits.py`。
+
 ### OPT-3 — JWT → user fingerprint 短 TTL 快取（**最值得擁有者感覺的一項**）
 
 - **做什麼**：`_resolve_session_owner_hash` 對同一 access JWT 在 30s 內不重打 `/api/auth/me`（key = sha256 of token；raw JWT 不進 map）。`create_router_app()` 時清快取，避免測試交叉污染。  
@@ -52,8 +69,24 @@
 
 - **做什麼**：`asyncio.gather(_resolve_session_owner_hash, registry.ensure_fresh)`；session 擁有權檢查仍在 identity 之後（安全順序不變）。  
 - **Before / after**：冷啟動（registry stale + JWT miss）少一個序列 RTT。mock 下併入 sk 3.70→1.21。  
-- **風險**：低。registry 失敗語意不變（仍用舊 cache / last_refresh_error）。  
+- **風險**：低。registry 失敗語意不變（仍用舊 cache）。  
 - **單獨還原**：搜 `OPT-4`，改回先 `await _resolve…` 再 `await registry.ensure_fresh`。
+
+**2026-07-31 修正（合併前必要條件）**：平行化把一個原本不會發生的事變成會發生——
+壞掉／已撤銷的 JWT 在 identity 被拒之前，**已經**打過 `GET /v1/agents` 並失敗了
+（序列版會先 401 短路，registry 根本不會被呼叫）。那個失敗寫進 registry 的
+**單一全域** `last_refresh_error`，於是**下一位使用者**的 trace 會顯示
+「registry refresh 失敗：…」，連 CSP 拒絕別人 token 的原文一起帶出去。
+trace 是給維運看的，在列管平台上這是隱私缺陷，不只是難看。
+
+- 修法：錯誤狀態改成**每個 caller 一份**（`RemoteAgentRegistry.refresh_error_for(api_key)`，
+  與 agent 快取共用同一組 LRU 上限，失敗的 refresh 不會進 `_store`，所以錯誤表自己也要 LRU，
+  否則就把剛修好的記憶體洩漏原樣開回來）。`last_refresh_error` 保留給 `/health`
+  ——那本來就是全站維運視角，不是任何一個人的回應。
+- 一併修：`gather(..., return_exceptions=True)` 並在之後才 raise。裸 gather 在
+  identity 先失敗時會**留下還在跑的 registry refresh**，它的副作用會落在
+  之後某個不確定的時間點（可能是下一位使用者的那一輪）。
+- 守衛測試：`packages/anila-core/tests/test_router_registry_error_isolation.py`。
 
 ### OPT-5 — `anila_meta.route`（路由可見性，非加速）
 
@@ -63,12 +96,15 @@
 - **風險**：極低（只加欄位）。  
 - **單獨還原**：刪 `_merge_anila_meta(..., route=)` 與各呼叫點的 `route={...}`。
 
-### OPT-2 — `url_guard` DNS TTL 快取
+### OPT-2 — `url_guard` DNS TTL 快取 —— **已於 2026-07-31 移除**
 
-- **做什麼**：`socket.getaddrinfo` 結果快取 30s（`ANILA_URL_GUARD_DNS_TTL`）。  
-- **Before / after**：本機 OS 已 warm 時 cold 0.13 → warm 0.11 ms（小）。對 CSP／worker 同一 host 連打多次時避免重複解析；**async 路徑仍是同步 getaddrinfo**（見「未改」）。  
-- **風險**：低。TOCTOU 窗口與文件原本承認的一致，只是略延長。  
-- **單獨還原**：刪 `_cached_getaddrinfo` / `clear_dns_cache`，改回 inline `getaddrinfo`。
+- **原本做什麼**：`socket.getaddrinfo` 結果快取 30s（`ANILA_URL_GUARD_DNS_TTL`）。  
+- **為什麼拿掉**：買到 0.02 ms（0.13 → 0.11），代價是在 SSRF 防線裡多一份可變狀態：
+  一個**沒有上限**、以 hostname 為 key 的 process 級 dict（正好是本分支剛修掉的那類洩漏），
+  外加把 DNS rebinding 的 TOCTOU 窗口拉長到 30 秒。這條不划算——
+  「不要把系統越搞越複雜」是擁有者的長期指令，而這是全包裡投報率最差的一項。
+- **現狀**：`url_guard.py` 與 `security/__init__.py` 已與分支前逐字元相同
+  （`git diff 47ddedb -- …` 為空）；`clear_dns_cache` 匯出一併撤掉，全樹無殘留引用。
 
 ### OPT-6 — 拆開 connect timeout（掛在 http_pool）
 

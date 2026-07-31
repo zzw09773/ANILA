@@ -12,6 +12,8 @@ from typing import Any, Optional
 
 import httpx
 
+from anila_core.http_pool import get_http_client  # OPT-1
+
 logger = logging.getLogger(__name__)
 
 # Hard ceiling on distinct caller credentials retained in memory. Chosen to
@@ -61,14 +63,33 @@ class RemoteAgentRegistry:
         # OrderedDict: most-recently-used at the end; popitem(last=False) = LRU.
         self._agents_by_key: OrderedDict[str, dict[str, RemoteAgentManifest]] = OrderedDict()
         self._last_refresh_by_key: dict[str, float] = {}
+        # Per-caller refresh error. A refresh failure belongs to the caller
+        # whose credential was rejected — it must never surface in another
+        # caller's trace/diagnostics. Kept in its own LRU because a failed
+        # refresh never reaches ``_store``, so a flood of distinct bad
+        # tokens would otherwise grow this map without bound.
+        self._refresh_error_by_key: OrderedDict[str, str] = OrderedDict()
         self._last_refresh_error: Optional[str] = None
         self._last_refresh_at: Optional[float] = None
         self._lock = asyncio.Lock()
 
     @property
     def last_refresh_error(self) -> Optional[str]:
-        """Most recent refresh error across any caller, or None if the last refresh succeeded."""
+        """Most recent refresh error across any caller, or None if the last refresh succeeded.
+
+        Process-wide / operator view (``GET /health``). Never render this
+        into a per-user response: use :meth:`refresh_error_for` there.
+        """
         return self._last_refresh_error
+
+    def refresh_error_for(self, api_key: str) -> Optional[str]:
+        """Most recent refresh error *for this caller*, or None.
+
+        Per-request answer to "did my agent list fail to load?". One
+        caller presenting a malformed or revoked token must not make
+        another caller's trace claim their registry refresh failed.
+        """
+        return self._refresh_error_by_key.get(self._cache_key(api_key))
 
     @property
     def last_refresh_at(self) -> Optional[float]:
@@ -93,6 +114,17 @@ class RemoteAgentRegistry:
         while len(self._agents_by_key) > self._max_entries:
             evicted, _ = self._agents_by_key.popitem(last=False)
             self._last_refresh_by_key.pop(evicted, None)
+            self._refresh_error_by_key.pop(evicted, None)
+
+    def _record_error(self, cache_key: str, err_msg: Optional[str]) -> None:
+        """Set or clear this caller's refresh error, LRU-bounded."""
+        if err_msg is None:
+            self._refresh_error_by_key.pop(cache_key, None)
+            return
+        self._refresh_error_by_key[cache_key] = err_msg
+        self._refresh_error_by_key.move_to_end(cache_key)
+        while len(self._refresh_error_by_key) > self._max_entries:
+            self._refresh_error_by_key.popitem(last=False)
 
     def _store(self, cache_key: str, agents: dict[str, RemoteAgentManifest]) -> None:
         self._agents_by_key[cache_key] = agents
@@ -114,15 +146,18 @@ class RemoteAgentRegistry:
         url = f"{self._csp_base_url}/v1/agents"
         self._last_refresh_at = time.time()
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.get(
-                    url,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            # OPT-1: shared client
+            client = get_http_client()
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
         except Exception as exc:
             err_msg = f"{type(exc).__name__}: {exc}"
+            self._record_error(self._cache_key(api_key), err_msg)
             self._last_refresh_error = err_msg
             logger.warning("RemoteAgentRegistry: failed to fetch %s — %s", url, err_msg)
             return
@@ -142,6 +177,7 @@ class RemoteAgentRegistry:
 
         cache_key = self._cache_key(api_key)
         self._store(cache_key, agents)
+        self._record_error(cache_key, None)
         self._last_refresh_error = None
         logger.info("RemoteAgentRegistry: loaded %d agents", len(agents))
 

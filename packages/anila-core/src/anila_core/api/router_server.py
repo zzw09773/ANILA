@@ -27,6 +27,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import settings
+from ..http_pool import (  # OPT-1
+    aclose_http_client,
+    get_http_client,
+    reset_http_client,
+)
 from ..memory.contract import (
     AGENT_REPLY_BEGIN,
     AGENT_REPLY_END,
@@ -396,6 +401,10 @@ def _merge_anila_meta(
     agent_id: str | None = None,
     latency_ms: int | None = None,
     classified_override: bool = False,
+    # OPT-5: additive routing decision surface. Unknown to older frontends;
+    # shell/governance that already render ``trace`` keep working. Revert by
+    # dropping the ``route`` kwarg and the assignment below.
+    route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     merged = _normalize_anila_meta(downstream_meta)
     merged["trace"] = [*base_trace, *merged["trace"]]
@@ -419,6 +428,8 @@ def _merge_anila_meta(
     # downstream response or the resolved agent demands encryption.
     if classified_override or merged.get("classified"):
         merged["classified"] = True
+    if route is not None:
+        merged["route"] = route
     return merged
 
 
@@ -518,6 +529,49 @@ def _looks_like_jwt(token: str) -> bool:
     return token.count(".") == 2
 
 
+# OPT-3: JWT → stable user fingerprint cache.
+# Browser chat sends a rotating access JWT on every turn; without a cache the
+# Router pays a full ``GET /api/auth/me`` RTT before the sentinel LLM call.
+# Keyed by sha256(token) so the raw JWT never sits in the map. TTL defaults
+# to 30 s (shorter than typical access-token lifetime) — a revoked token can
+# linger at most that long inside the Router. Revert: delete the cache dict
+# helpers and the hit/miss branches in ``_resolve_session_owner_hash``.
+_JWT_OWNER_TTL_S = float(os.environ.get("ANILA_JWT_OWNER_CACHE_TTL", "30"))
+_jwt_owner_cache: dict[str, tuple[float, str]] = {}
+_jwt_owner_lock = threading.Lock()
+
+
+def _jwt_cache_get(token: str) -> str | None:
+    key = fingerprint_session_owner(f"jwt-raw:{token}")
+    now = time.monotonic()
+    with _jwt_owner_lock:
+        hit = _jwt_owner_cache.get(key)
+        if hit is None:
+            return None
+        expires_at, value = hit
+        if now >= expires_at:
+            _jwt_owner_cache.pop(key, None)
+            return None
+        return value
+
+
+def _jwt_cache_put(token: str, owner_hash: str) -> None:
+    key = fingerprint_session_owner(f"jwt-raw:{token}")
+    with _jwt_owner_lock:
+        _jwt_owner_cache[key] = (time.monotonic() + _JWT_OWNER_TTL_S, owner_hash)
+        # Bound memory if a flood of distinct tokens arrives.
+        if len(_jwt_owner_cache) > 4096:
+            oldest = sorted(_jwt_owner_cache.items(), key=lambda kv: kv[1][0])[:1024]
+            for k, _ in oldest:
+                _jwt_owner_cache.pop(k, None)
+
+
+def clear_jwt_owner_cache() -> None:
+    """Drop cached JWT fingerprints. Test-only / ops escape hatch."""
+    with _jwt_owner_lock:
+        _jwt_owner_cache.clear()
+
+
 async def _resolve_session_owner_hash(caller_api_key: str) -> str:
     """Return a stable caller fingerprint for Router session ownership.
 
@@ -528,13 +582,19 @@ async def _resolve_session_owner_hash(caller_api_key: str) -> str:
     if not _looks_like_jwt(caller_api_key):
         return fingerprint_session_owner(f"credential:{caller_api_key}")
 
+    cached = _jwt_cache_get(caller_api_key)
+    if cached is not None:
+        return cached
+
     url = f"{settings.csp_base_url.rstrip('/')}/api/auth/me"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                url,
-                headers={"Authorization": f"Bearer {caller_api_key}"},
-            )
+        # OPT-1: shared client (was ``async with httpx.AsyncClient(timeout=10)``).
+        client = get_http_client()
+        response = await client.get(
+            url,
+            headers={"Authorization": f"Bearer {caller_api_key}"},
+            timeout=10.0,
+        )
     except httpx.RequestError as exc:
         raise HTTPException(
             status_code=502,
@@ -568,7 +628,9 @@ async def _resolve_session_owner_hash(caller_api_key: str) -> str:
             status_code=502,
             detail="CSP caller identity response is missing a stable user id.",
         )
-    return fingerprint_session_owner(f"jwt-user:{stable_user_id}")
+    owner_hash = fingerprint_session_owner(f"jwt-user:{stable_user_id}")
+    _jwt_cache_put(caller_api_key, owner_hash)
+    return owner_hash
 
 
 def create_router_app(
@@ -587,6 +649,12 @@ def create_router_app(
         session_factory: Optional ``(session_id) -> Session`` factory
             for tests / Postgres / Redis adapters.
     """
+    # OPT-1 / OPT-3: each app build starts with a clean outbound client and
+    # JWT fingerprint cache. Production builds the app once; tests rebuild
+    # per case and must not inherit tokens (or a respx MockTransport) from
+    # a previous case that reused the same synthetic JWT strings.
+    clear_jwt_owner_cache()
+    reset_http_client()
 
     registry = RemoteAgentRegistry(
         csp_base_url=settings.csp_base_url,
@@ -624,7 +692,11 @@ def create_router_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Router started")
-        yield
+        try:
+            yield
+        finally:
+            # OPT-1: drain the shared CSP client on shutdown.
+            await aclose_http_client()
 
     # P2.3: disable FastAPI's default public docs/schema dump.
     # nginx strips ``/router/`` so bare defaults would be reachable as
@@ -699,8 +771,28 @@ def create_router_app(
             or body.get("anila_session_id")
             or new_session_id()
         )
+        # OPT-4: run identity resolve + agent-registry refresh in parallel.
+        # They share no state and both sit on the critical path before the
+        # sentinel LLM call. Session ownership check still happens *after*
+        # identity resolve (security ordering unchanged). Revert: restore
+        # sequential ``await _resolve…`` then ``await registry.ensure_fresh``.
         if session_factory is None:
-            owner_key_hash = await _resolve_session_owner_hash(caller_api_key)
+            # ``return_exceptions=True`` so both halves are awaited to
+            # completion even when identity resolution rejects the caller.
+            # Bare gather propagates the first exception and leaves the
+            # registry refresh running orphaned *after* the request has
+            # already 401'd, which lands its side effects at an
+            # unpredictable point in someone else's turn.
+            owner_result, registry_result = await asyncio.gather(
+                _resolve_session_owner_hash(caller_api_key),
+                registry.ensure_fresh(caller_api_key),
+                return_exceptions=True,
+            )
+            if isinstance(owner_result, BaseException):
+                raise owner_result
+            if isinstance(registry_result, BaseException):
+                raise registry_result
+            owner_key_hash = owner_result
             owner_ok = await ensure_session_owner(
                 resolved_db_path, session_id, owner_key_hash
             )
@@ -709,6 +801,8 @@ def create_router_app(
                     status_code=403,
                     detail="Session belongs to a different caller.",
                 )
+        else:
+            await registry.ensure_fresh(caller_api_key)
         sess = _make_session(session_id)
         # Persist the latest user message so cross-turn orchestration
         # (PR 4 multi-turn handoff) and /v1/sessions/{id}/state have
@@ -725,7 +819,6 @@ def create_router_app(
         # — multi-turn streaming is deferred to a future PR.
         max_iterations = max(1, int(body.get("anila_multi_turn", 1)))
 
-        await registry.ensure_fresh(caller_api_key)
         agents = registry.list_agents(caller_api_key)
 
         system_prompt = _ROUTER_SYSTEM_TEMPLATE.format(
@@ -740,6 +833,13 @@ def create_router_app(
 
         started_at = time.time()
 
+        # Per-request, per-caller: another caller's rejected token must not
+        # make this user's trace claim their own registry refresh failed
+        # (traces are shown to operators — cross-user bleed is a privacy
+        # defect, not just a cosmetic one). The process-wide
+        # ``registry.last_refresh_error`` stays where it belongs: /health.
+        registry_error = registry.refresh_error_for(caller_api_key)
+
         base_trace = [
             _make_trace_step(
                 "thinking",
@@ -751,10 +851,10 @@ def create_router_app(
                 "同步 agent 清單",
                 (
                     f"已載入 {len(agents)} 個可用 agent"
-                    if not registry.last_refresh_error
-                    else f"registry refresh 失敗：{registry.last_refresh_error}"
+                    if not registry_error
+                    else f"registry refresh 失敗：{registry_error}"
                 ),
-                status="error" if registry.last_refresh_error else "ok",
+                status="error" if registry_error else "ok",
             ),
         ]
 
@@ -844,6 +944,7 @@ def create_router_app(
                 base_trace,
                 None,
                 latency_ms=int((time.time() - started_at) * 1000),
+                route={"decision": "llm_error", "error": llm_response["error"]},
             )
             return _respond(fallback_content, anila_meta, stream, session_id=session_id)
 
@@ -854,6 +955,7 @@ def create_router_app(
         # (it "forgot" to repeat the user query after the colon), scan the
         # sanitized reasoning for that header and re-substitute the user's
         # last message as the query so the agent still gets dispatched.
+        route_salvaged = False
         if not dispatch:
             reasoning_text = (llm_response.get("reasoning") or "").strip()
             empty_matches = list(_DISPATCH_EMPTY_RE.finditer(reasoning_text)) if reasoning_text else []
@@ -862,6 +964,7 @@ def create_router_app(
                 fallback_query = _flatten_last_user_query(messages)
                 if agent_guess and fallback_query:
                     dispatch = (agent_guess, fallback_query, 0, 0)
+                    route_salvaged = True
 
         # Non-dispatch path: Router answers directly.
         if not dispatch:
@@ -872,6 +975,7 @@ def create_router_app(
                 base_trace,
                 llm_response.get("anila_meta"),
                 latency_ms=int((time.time() - started_at) * 1000),
+                route={"decision": "direct"},
             )
             if llm_response.get("reasoning"):
                 anila_meta["reasoning"] = llm_response["reasoning"]
@@ -905,6 +1009,11 @@ def create_router_app(
                 base_trace,
                 llm_response.get("anila_meta"),
                 latency_ms=int((time.time() - started_at) * 1000),
+                route={
+                    "decision": "route_miss",
+                    "agent_id": agent_id,
+                    "correctable": True,
+                },
             )
             if router_reasoning:
                 anila_meta["reasoning"] = router_reasoning
@@ -1008,6 +1117,12 @@ def create_router_app(
                     agent_id=agent_id,
                     latency_ms=int((time.time() - started_at) * 1000),
                     classified_override=bool(manifest.requires_encryption),
+                    route={
+                        "decision": "dispatch_error" if had_error else "dispatch",
+                        "agent_id": agent_id,
+                        "salvaged": route_salvaged,
+                        "correctable": True,
+                    },
                 )
                 if router_reasoning:
                     final_meta["reasoning"] = router_reasoning
@@ -1172,6 +1287,14 @@ def create_router_app(
             classified_override=bool(
                 last_manifest.requires_encryption if last_manifest else False
             ),
+            route={
+                "decision": (
+                    "dispatch_error" if agent_response.get("error") else "dispatch"
+                ),
+                "agent_id": last_agent_id,
+                "salvaged": route_salvaged,
+                "correctable": True,
+            },
         )
         if router_reasoning:
             anila_meta["reasoning"] = router_reasoning
@@ -1425,40 +1548,41 @@ def create_router_app(
                 {"interrupt_id": body["interrupt_id"]},
             )
             try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    async with client.stream(
-                        "POST", url, json=body, headers=headers
-                    ) as resp:
-                        if resp.status_code >= 400:
-                            err_body = await resp.aread()
-                            yield _make_event(
-                                "anila.trace",
-                                _make_trace_step(
-                                    "error",
-                                    f"resume {agent_id} 失敗",
-                                    f"HTTP {resp.status_code} "
-                                    f"{err_body[:200].decode('utf-8', errors='replace')}",
-                                    status="error",
-                                ),
-                            )
-                            yield _make_chunk(
-                                f"（resume 失敗：HTTP {resp.status_code}）",
-                                "anila-router",
-                            )
-                            yield _make_chunk(
-                                "", "anila-router", finish="stop"
-                            )
-                            yield "data: [DONE]\n\n"
-                            return
-                        # Pass-through the agent's SSE stream verbatim.
-                        # The agent already emits in the same envelope
-                        # we want to surface (event: anila.* + data:
-                        # OpenAI chunks), so no re-parsing is needed.
-                        async for raw_line in resp.aiter_lines():
-                            if raw_line == "":
-                                yield "\n"
-                            else:
-                                yield raw_line + "\n"
+                # OPT-1: shared client
+                client = get_http_client()
+                async with client.stream(
+                    "POST", url, json=body, headers=headers
+                ) as resp:
+                    if resp.status_code >= 400:
+                        err_body = await resp.aread()
+                        yield _make_event(
+                            "anila.trace",
+                            _make_trace_step(
+                                "error",
+                                f"resume {agent_id} 失敗",
+                                f"HTTP {resp.status_code} "
+                                f"{err_body[:200].decode('utf-8', errors='replace')}",
+                                status="error",
+                            ),
+                        )
+                        yield _make_chunk(
+                            f"（resume 失敗：HTTP {resp.status_code}）",
+                            "anila-router",
+                        )
+                        yield _make_chunk(
+                            "", "anila-router", finish="stop"
+                        )
+                        yield "data: [DONE]\n\n"
+                        return
+                    # Pass-through the agent's SSE stream verbatim.
+                    # The agent already emits in the same envelope
+                    # we want to surface (event: anila.* + data:
+                    # OpenAI chunks), so no re-parsing is needed.
+                    async for raw_line in resp.aiter_lines():
+                        if raw_line == "":
+                            yield "\n"
+                        else:
+                            yield raw_line + "\n"
             except httpx.RequestError as exc:
                 yield _make_event(
                     "anila.trace",
@@ -2009,14 +2133,15 @@ async def _call_llm_non_stream(
                 continue
             headers[k] = v
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions",
-                json=payload,
-                headers=headers,
-            )
-            response.raise_for_status()
-            data = response.json()
+        # OPT-1: shared client
+        client = get_http_client()
+        response = await client.post(
+            f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+        response.raise_for_status()
+        data = response.json()
         message = data["choices"][0]["message"]
         # Reasoning models (TensorRT-LLM / vLLM / Ollama with gpt-oss, Qwen-R,
         # DeepSeek-R1, ...) surface chain-of-thought as a separate field so the
@@ -2148,38 +2273,39 @@ async def _stream_llm_sse(
             headers[k] = v
     url = f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions"
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", url, json=payload, headers=headers) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    yield {
-                        "type": "error",
-                        "error": f"LLM HTTP {resp.status_code}",
-                        "detail": body.decode("utf-8", errors="replace")[:300],
-                    }
+        # OPT-1: shared client
+        client = get_http_client()
+        async with client.stream("POST", url, json=payload, headers=headers) as resp:
+            if resp.status_code >= 400:
+                body = await resp.aread()
+                yield {
+                    "type": "error",
+                    "error": f"LLM HTTP {resp.status_code}",
+                    "detail": body.decode("utf-8", errors="replace")[:300],
+                }
+                return
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str == "[DONE]":
+                    yield {"type": "done"}
                     return
-                async for line in resp.aiter_lines():
-                    line = line.strip()
-                    if not line or not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str == "[DONE]":
-                        yield {"type": "done"}
-                        return
-                    try:
-                        chunk = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-                    try:
-                        delta = chunk["choices"][0].get("delta", {}) or {}
-                    except (KeyError, IndexError, TypeError):
-                        continue
-                    reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
-                    if isinstance(reasoning_piece, str) and reasoning_piece:
-                        yield {"type": "reasoning", "content": reasoning_piece}
-                    content_piece = delta.get("content")
-                    if isinstance(content_piece, str) and content_piece:
-                        yield {"type": "delta", "content": content_piece}
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                try:
+                    delta = chunk["choices"][0].get("delta", {}) or {}
+                except (KeyError, IndexError, TypeError):
+                    continue
+                reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(reasoning_piece, str) and reasoning_piece:
+                    yield {"type": "reasoning", "content": reasoning_piece}
+                content_piece = delta.get("content")
+                if isinstance(content_piece, str) and content_piece:
+                    yield {"type": "delta", "content": content_piece}
     except httpx.RequestError as exc:
         yield {"type": "error", "error": f"LLM connection: {type(exc).__name__}", "detail": str(exc)}
     except Exception as exc:
@@ -2384,71 +2510,72 @@ async def _stream_agent_sse(
         return None
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", url, json=payload, headers=headers) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    yield {
-                        "type": "error",
-                        "error": f"agent '{agent_id}' HTTP {resp.status_code}",
-                        "detail": body.decode("utf-8", errors="replace")[:300],
-                    }
-                    return
+        # OPT-1: shared client
+        client = get_http_client()
+        async with client.stream("POST", url, json=payload, headers=headers) as resp:
+            if resp.status_code >= 400:
+                body = await resp.aread()
+                yield {
+                    "type": "error",
+                    "error": f"agent '{agent_id}' HTTP {resp.status_code}",
+                    "detail": body.decode("utf-8", errors="replace")[:300],
+                }
+                return
 
-                # SSE message accumulator. Per spec
-                # (https://html.spec.whatwg.org/multipage/server-sent-events.html):
-                #   * blank line → dispatch buffered message
-                #   * lines starting with ":" → comment
-                #   * "field: value" → set/append field; trailing space
-                #     after the colon is optional and stripped
-                #   * multiple ``data:`` lines join with ``\n`` before
-                #     dispatch; ``event:`` resets to "" after dispatch
-                event_name: str | None = None
-                data_lines: list[str] = []
+            # SSE message accumulator. Per spec
+            # (https://html.spec.whatwg.org/multipage/server-sent-events.html):
+            #   * blank line → dispatch buffered message
+            #   * lines starting with ":" → comment
+            #   * "field: value" → set/append field; trailing space
+            #     after the colon is optional and stripped
+            #   * multiple ``data:`` lines join with ``\n`` before
+            #     dispatch; ``event:`` resets to "" after dispatch
+            event_name: str | None = None
+            data_lines: list[str] = []
 
-                async for raw_line in resp.aiter_lines():
-                    if raw_line == "":
-                        if data_lines:
-                            data_str = "\n".join(data_lines)
-                            data_lines = []
-                            dispatched_event = event_name
-                            event_name = None
-                            result = _classify_and_yield(
-                                dispatched_event, data_str
-                            )
-                            if result is not None:
-                                yield result
-                                if result.get("type") == "done":
-                                    return
-                        else:
-                            event_name = None
-                        continue
-                    if raw_line.startswith(":"):
-                        # SSE comment / heartbeat — ignore
-                        continue
-                    if raw_line.startswith("event:"):
-                        value = raw_line[6:]
-                        if value.startswith(" "):
-                            value = value[1:]
-                        event_name = value
-                        continue
-                    if raw_line.startswith("event"):
-                        # malformed (no colon) — ignore
-                        continue
-                    if raw_line.startswith("data:"):
-                        value = raw_line[5:]
-                        if value.startswith(" "):
-                            value = value[1:]
-                        data_lines.append(value)
-                        continue
-                    # id: / retry: / unknown → ignore
+            async for raw_line in resp.aiter_lines():
+                if raw_line == "":
+                    if data_lines:
+                        data_str = "\n".join(data_lines)
+                        data_lines = []
+                        dispatched_event = event_name
+                        event_name = None
+                        result = _classify_and_yield(
+                            dispatched_event, data_str
+                        )
+                        if result is not None:
+                            yield result
+                            if result.get("type") == "done":
+                                return
+                    else:
+                        event_name = None
+                    continue
+                if raw_line.startswith(":"):
+                    # SSE comment / heartbeat — ignore
+                    continue
+                if raw_line.startswith("event:"):
+                    value = raw_line[6:]
+                    if value.startswith(" "):
+                        value = value[1:]
+                    event_name = value
+                    continue
+                if raw_line.startswith("event"):
+                    # malformed (no colon) — ignore
+                    continue
+                if raw_line.startswith("data:"):
+                    value = raw_line[5:]
+                    if value.startswith(" "):
+                        value = value[1:]
+                    data_lines.append(value)
+                    continue
+                # id: / retry: / unknown → ignore
 
-                # Stream ended without a trailing blank line — flush.
-                if data_lines:
-                    data_str = "\n".join(data_lines)
-                    result = _classify_and_yield(event_name, data_str)
-                    if result is not None:
-                        yield result
+            # Stream ended without a trailing blank line — flush.
+            if data_lines:
+                data_str = "\n".join(data_lines)
+                result = _classify_and_yield(event_name, data_str)
+                if result is not None:
+                    yield result
 
     except httpx.RequestError as exc:
         yield {
@@ -2852,6 +2979,11 @@ async def _router_streaming(
         agent_id=agent_id,
         latency_ms=int((time.time() - started_at) * 1000),
         classified_override=bool(manifest.requires_encryption),
+        route={
+            "decision": "dispatch",
+            "agent_id": agent_id,
+            "correctable": True,
+        },
     )
     if router_reasoning:
         final_meta["reasoning"] = router_reasoning
