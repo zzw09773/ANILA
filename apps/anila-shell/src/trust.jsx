@@ -194,9 +194,14 @@ export const RedactionHint = ({ hits, mode, onChangeMode }) => {
 };
 
 // ---- RedactedSpan (in user bubble) ----
+// ⚠ 這個提示字曾經寫「已於 CSP 層遮罩 · LLM 未接觸原值」,那是**假的**:
+// `piiHits` 是 client-only(runtime/messageTree.js),遮罩只發生在這個畫面上,
+// 送出的 body 是原文。在四級密等的平台上,對使用者斷言「模型沒看過你的身分證號」
+// 而事實相反,是這份程式碼裡最貴的一句謊。
+// 2026-07-30 修掉了組字列那句承諾,漏了這句斷言 —— 同一個缺陷的第二個畫面。
 export const RedactedSpan = ({ kind, label, masked }) => (
   <span
-    title={`已於 CSP 層遮罩 · kind=${kind} · LLM 未接觸原值`}
+    title={`僅在本畫面遮蔽顯示（${kind}）· 送出內容為原文，未經遮罩`}
     style={{
       display: "inline-flex", alignItems: "center", gap: 4,
       padding: "0 6px",
