@@ -52,7 +52,7 @@ export function extractThinkTags(text) {
   if (d) {
     return {
       thinking: d[1].trim(),
-      body: "（Router 未能依分析結果分派；以下為分析過程）",
+      body: "（ANILA 沒能把這題交給合適的助手；以下是它的分析過程）",
     };
   }
 

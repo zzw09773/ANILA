@@ -208,7 +208,7 @@
             </option>
           </select>
           <p v-if="pendingDepartments.length === 0" style="font-size: var(--t-2xs); color: var(--c-warn); margin-top: 4px;">
-            尚無可選單位 — 請通知管理員到 admin 介面建立 departments 後再試。
+            目前沒有可選的單位，需要管理員先建立。{{ approvalNotice.text }}
           </p>
         </TermField>
         <div v-if="pendingError" class="login__msg is-err">! {{ pendingError }}</div>
@@ -219,6 +219,11 @@
         </p>
         <p class="login__legal">
           {{ pending.display_name }} ({{ pending.employee_id }}) — 一旦管理員核准，下次刷卡即可登入。
+        </p>
+        <!-- 「等核准」但沒說去問誰＝這一頁最大的死路。有公告就顯示公告，
+             沒有就顯示保底窗口說明（src/utils/approvalContact.js）。 -->
+        <p class="login__approval-contact" :class="`is-${approvalNotice.level}`">
+          {{ approvalNotice.text }}
         </p>
       </div>
 
@@ -284,6 +289,8 @@ import {
   listPublicAuthProviders,
   register as registerApi,
 } from '../api/auth'
+import { listActiveBanners } from '../api/banners'
+import { approvalContactNotice } from '../utils/approvalContact'
 import {
   CARD_COMPONENT_ORIGIN,
   CardComponentNotInstalledError,
@@ -375,6 +382,20 @@ const oidcProviders = computed(() =>
   providers.value.filter(p => p.provider_type === 'oidc')
 )
 
+// 等待核准畫面的「去問誰」。沿用既有的公告橫幅，不另建設定機制。
+const activeBanners = ref([])
+const approvalNotice = computed(() => approvalContactNotice(activeBanners.value))
+
+async function fetchActiveBanners() {
+  try {
+    const { data } = await listActiveBanners()
+    activeBanners.value = Array.isArray(data) ? data : []
+  } catch {
+    // 未登入時這支端點會回 401 —— 那是正常路徑，不是錯誤：直接走保底文案。
+    activeBanners.value = []
+  }
+}
+
 async function fetchProviders() {
   try {
     const { data } = await listPublicAuthProviders()
@@ -386,6 +407,7 @@ async function fetchProviders() {
 
 onMounted(() => {
   fetchProviders()
+  fetchActiveBanners()
   document.addEventListener('keydown', handleHotkey)
 })
 
@@ -780,6 +802,16 @@ async function handleRegister() {
   text-align: center;
   letter-spacing: 0.04em;
 }
+
+/* 「等核准 → 去問誰」那一行。預設同 legal 的低調灰，公告等級高時提亮。 */
+.login__approval-contact {
+  font-size: var(--t-2xs);
+  color: var(--c-fg-2);
+  text-align: center;
+  line-height: var(--lh-base);
+}
+.login__approval-contact.is-warning { color: var(--c-warn); }
+.login__approval-contact.is-error   { color: var(--c-danger); }
 
 .login__reg {
   display: flex;

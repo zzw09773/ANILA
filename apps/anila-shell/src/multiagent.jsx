@@ -20,7 +20,7 @@ export const HandoffTimeline = ({ chain, agents }) => {
         fontFamily: "var(--font-mono)",
       }}>
         <IconNodes size={13} />
-        agent handoff
+        經手的助手
         <span style={{ color: "var(--fg-subtle)" }}>· {chain.length} 段</span>
       </div>
       <div style={{ display: "flex", alignItems: "stretch", gap: 0, overflowX: "auto", paddingBottom: 2 }}>

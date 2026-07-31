@@ -130,13 +130,14 @@ import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
 import { ServicesPanel } from "./services.jsx";
 import { originHref } from "./shellNav.jsx";
+import { classifiedShareDenial, handoffNotice } from "./uxCopy.js";
 
 // ---- Router pseudo-agent ----------------------------------------------------
 const ROUTER_AGENT = Object.freeze({
   id: "anila-router",
-  name: "ANILA Router",
+  name: "ANILA 自動選助手",
   short: "auto",
-  description: "自動路由：由 Router 決定直接回答或分派給合適的 agent。",
+  description: "ANILA 會幫你找合適的助手，也可能直接回答你。",
   requiresEncryption: false,
 });
 
@@ -153,7 +154,7 @@ function buildStarterPrompts(agents) {
   return [
     {
       title: "ANILA 可以做什麼？",
-      sub: `${countLine}，點一下讓 Router 介紹平台與各 agent 的能力`,
+      sub: `${countLine}，點一下讓 ANILA 介紹平台與各助手的能力`,
       q: "請介紹 ANILA 這個平台能做什麼，並列出我目前可用的每一個 agent 與它們各自能解決的問題。",
       primary: true,
     },
@@ -2260,10 +2261,14 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     if (!selectedConvId) return;
     const label =
       agents.find((a) => a.id === newAgentId)?.name || newAgentId;
+    // 原本這一行寫的是助手 id,還掛著實作名稱的方括號前綴——而它會被存進
+    // 逐字稿。顯示名稱優先,找不到才退回 id。
+    const fromLabel =
+      agents.find((a) => a.id === selectedAgentId)?.name || selectedAgentId;
     const sysMsg = {
       id: makeId("sys"),
       role: "assistant",
-      text: `[Router] 已從 ${selectedAgentId} 交接給 ${label}，繼承上下文。`,
+      text: handoffNotice(fromLabel, label),
       streaming: false,
       routedAgentId: newAgentId,
       trace: [],
@@ -2427,7 +2432,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                 </a>
               )}
               <Dropdown align="right" width={260} trigger={() => (
-                <IconButton title="交接 handoff"><IconNodes size={14} /></IconButton>
+                <IconButton title="交給其他助手"><IconNodes size={14} /></IconButton>
               )}>
                 {(close) => (
                   <HandoffMenu
@@ -2439,7 +2444,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                 )}
               </Dropdown>
               <IconButton
-                title={selectedConv.classified ? "列管對話不可分享" : "分享"}
+                title={
+                  selectedConv.classified
+                    ? classifiedShareDenial(selectedConv.classificationLevel)
+                    : "分享"
+                }
                 onClick={() => !selectedConv.classified && setShareOpen(true)}
                 disabled={selectedConv.classified}
                 style={selectedConv.classified ? { opacity: 0.4, cursor: "not-allowed" } : {}}
@@ -2608,8 +2617,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                       placeholder="問 ANILA 任何事情，或用 @agent 指定 agent · Shift+Enter 換行"
                       footer={
                         selectedAgentId === ROUTER_AGENT.id
-                          ? "Auto route · 由 ANILA Router 判斷是否分派 agent"
-                          : `Direct target · ${activeAgent.name}`
+                          ? "ANILA 會幫你找合適的助手"
+                          : `已指定助手 · ${activeAgent.name}`
                       }
                       onUpload={(file) =>
                         apiUploadAttachment(multipartRequest, file, {
@@ -2624,7 +2633,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                       fontFamily: "var(--font-mono)",
                     }}>
                       ANILA {activeAgent?.id === ROUTER_AGENT.id
-                        ? "會自動分派給合適的 agent"
+                        ? "會幫你找合適的助手"
                         : `→ ${activeAgent?.name}`}
                       {" · 所有呼叫經 CSP · "}
                       <span
