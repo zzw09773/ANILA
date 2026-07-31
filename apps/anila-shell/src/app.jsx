@@ -32,6 +32,7 @@ import {
 import {
   buildPersistMeta,
   resolveAgentNameForPersist,
+  resolveAnsweringAgentId,
 } from "./runtime/messageMeta.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { relativeLabel } from "./runtime/time.js";
@@ -1259,7 +1260,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       usage: meta.usage || null,
       classified: meta.classified,
       reasoning: meta.reasoning || null,
-      routedAgentId: meta.handoff_chain?.at?.(-1)?.agent_id || agentId,
+      // Display-only, but it was showing the wrong agent name on every
+      // routed answer: BOTH ends of handoff_chain read "anila-router" on the
+      // router path, so `.at(-1)` never named the agent that answered.
+      routedAgentId: resolveAnsweringAgentId(meta) || agentId,
       stageLabel: meta.trace?.at?.(-1)?.label,
       conversationId: convId,
     });

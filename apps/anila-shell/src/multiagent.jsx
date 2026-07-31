@@ -166,20 +166,71 @@ export const ParallelCompareView = ({
 };
 
 // ---- @ Mention parser ----
+//
+// Matching is done against the ACTUAL known agent labels, not against a
+// character-class pattern. The old `/@([a-z][\w-]*)/gi` could never match a
+// CJK agent name (軍人法規智慧助手), so `@軍人法規智慧助手` looked like a
+// choice to the user but silently fell through to a full LLM routing pass.
+// A looser regex would fix that and immediately start matching stray `@` in
+// prose; matching known labels can't, because an unknown token matches
+// nothing. The autocomplete inserts `@<agent.name>` (chat.jsx `insertMention`),
+// so `name` has to be a candidate too — it previously was not.
+
+// A mention only starts at a word boundary the user can see: string start,
+// whitespace, or an opening bracket/quote. This is what keeps
+// `user@example.com` from being read as a mention of an agent called
+// "example.com" — the `@` there is preceded by a word character.
+const MENTION_BOUNDARY = /[\s([{（【「"'>]/;
+
+function mentionCandidates(agents) {
+  const out = [];
+  for (const a of agents || []) {
+    if (!a || a.id == null) continue;
+    for (const label of [a.name, a.short, a.id]) {
+      if (typeof label === "string" && label.trim()) {
+        out.push({ label: label.trim(), agent: a });
+      }
+    }
+  }
+  // Longest label first so "@Agent A" wins over an agent short-named "Agent".
+  return out.sort((x, y) => y.label.length - x.label.length);
+}
+
+/**
+ * Locate `@<agent label>` mentions in `text`.
+ * @returns {Array<{index: number, length: number, label: string, agent: object}>}
+ */
+export function findMentions(text, agents) {
+  if (!text) return [];
+  const candidates = mentionCandidates(agents);
+  const hits = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== "@") continue;
+    if (i > 0 && !MENTION_BOUNDARY.test(text[i - 1])) continue;
+    const rest = text.slice(i + 1);
+    const restLower = rest.toLowerCase();
+    const hit = candidates.find((c) =>
+      restLower.startsWith(c.label.toLowerCase()),
+    );
+    if (!hit) continue;
+    hits.push({
+      index: i,
+      length: hit.label.length + 1,
+      label: rest.slice(0, hit.label.length),
+      agent: hit.agent,
+    });
+    i += hit.label.length; // don't rescan inside the matched label
+  }
+  return hits;
+}
+
 export function parseMentions(text, agents) {
-  const re = /@([a-z][\w-]*)/gi;
   const seen = new Set();
   const explicit = [];
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const token = m[1].toLowerCase();
-    const a = agents.find(x =>
-      (x.short || "").toLowerCase() === token ||
-      (x.id || "").toLowerCase() === token,
-    );
-    if (a && !seen.has(a.id)) {
-      seen.add(a.id);
-      explicit.push(a.id);
+  for (const hit of findMentions(text, agents)) {
+    if (!seen.has(hit.agent.id)) {
+      seen.add(hit.agent.id);
+      explicit.push(hit.agent.id);
     }
   }
   return { content: text, explicitAgents: explicit };
@@ -187,25 +238,15 @@ export function parseMentions(text, agents) {
 
 export const HighlightedMentions = ({ text, agents }) => {
   if (!text) return null;
-  const re = /@([a-z][\w-]*)/gi;
   const parts = [];
-  let last = 0, m, key = 0;
-  while ((m = re.exec(text)) !== null) {
-    const token = m[1].toLowerCase();
-    const a = agents.find(x =>
-      (x.short || "").toLowerCase() === token ||
-      (x.id || "").toLowerCase() === token,
-    );
-    if (m.index > last) parts.push(<span key={key++}>{text.slice(last, m.index)}</span>);
-    if (a) {
-      parts.push(<span key={key++} style={{
-        background: "var(--accent-soft)", color: "var(--accent)",
-        padding: "1px 4px", borderRadius: 3, fontWeight: 500,
-      }}>@{m[1]}</span>);
-    } else {
-      parts.push(<span key={key++}>{m[0]}</span>);
-    }
-    last = m.index + m[0].length;
+  let last = 0, key = 0;
+  for (const hit of findMentions(text, agents)) {
+    if (hit.index > last) parts.push(<span key={key++}>{text.slice(last, hit.index)}</span>);
+    parts.push(<span key={key++} style={{
+      background: "var(--accent-soft)", color: "var(--accent)",
+      padding: "1px 4px", borderRadius: 3, fontWeight: 500,
+    }}>@{hit.label}</span>);
+    last = hit.index + hit.length;
   }
   if (last < text.length) parts.push(<span key={key++}>{text.slice(last)}</span>);
   return parts;

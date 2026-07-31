@@ -135,6 +135,14 @@ const DISPATCH_SUMMARY = /^\s*dispatch to\s+(\S.*?)\s*$/;
  * @returns {string | null} the dispatched agent id, or null
  */
 export function resolveAnsweringAgentId(meta) {
+  // Preferred: the first-class field the router now emits on both the
+  // streaming and non-streaming dispatch paths (`_merge_anila_meta`). The
+  // prose parse below stays as the fallback for messages persisted before
+  // the field existed, and for any upstream that only ships handoff_chain.
+  const firstClass = meta?.answering_agent_id;
+  if (typeof firstClass === "string" && firstClass.trim()) {
+    return firstClass.trim();
+  }
   const chain = Array.isArray(meta?.handoff_chain) ? meta.handoff_chain : [];
   // A downstream hop that names itself is the most precise answer, and the
   // LAST such hop is the one that produced the text (chains can nest).
