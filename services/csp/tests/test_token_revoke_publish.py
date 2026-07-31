@@ -60,13 +60,23 @@ from tests.conftest import make_user
 # flag again. ``app.main.lifespan`` does a fresh ``from
 # app.services.startup_security import assert_no_dev_defaults`` on
 # every call so we don't need to re-patch main.
+#
+# 2026-07-31:teardown 補上 ``app.config.settings`` 還原。reload 會讓
+# ``app.config.settings`` 變成一顆新物件,但 import 期就綁定 settings 的模組
+# (``app.utils.security`` 等) 手上還是舊那顆 —— 兩顆並存,誰 monkeypatch 誰
+# 就變成執行順序的函數。本 fixture 原本只補償別人的污染,自己也在製造污染。
 @pytest.fixture(autouse=True)
 def _ensure_dev_secret_gate(monkeypatch):
-    monkeypatch.setenv("ANILA_ALLOW_DEV_SECRET", "1")
     import importlib
     import app.config as config_module
-    importlib.reload(config_module)
     import app.services.startup_security as ss_module
+
+    original_settings = config_module.settings
+    monkeypatch.setenv("ANILA_ALLOW_DEV_SECRET", "1")
+    importlib.reload(config_module)
+    importlib.reload(ss_module)
+    yield
+    config_module.settings = original_settings
     importlib.reload(ss_module)
 
 

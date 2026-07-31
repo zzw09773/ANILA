@@ -25,16 +25,33 @@ def reload_startup_security(monkeypatch):
     The module captures ``settings`` at import time so tests need to
     apply env overrides BEFORE the import. Returning a closure lets
     each test stage its env mutations and then trigger the reload.
+
+    **Teardown 必須把 ``app.config.settings`` 放回原本那顆物件。**
+    ``importlib.reload(app.config)`` 會執行到 ``config.py`` 的
+    ``settings = Settings()``,於是 ``app.config.settings`` 指向一顆**新**物件,
+    而所有在 import 期做過 ``from app.config import settings`` 的模組
+    (``app.utils.security``、``app.services.card_auth_service`` …) 手上仍是舊
+    那顆。monkeypatch 只還原環境變數,還原不了「已經被建出來的物件」——
+    這就是 test_rs256_jwt::test_expired_token_rejected 之類的測試會隨執行順序
+    紅綠不定的原因:它 monkeypatch 新物件的欄位,被測程式讀的卻是舊物件。
     """
+    import app.config as config_module
+    import app.services.startup_security as ss_module
+
+    original_settings = config_module.settings
+
     def _factory():
         # Force a fresh import so module-level ``settings`` reflects
         # the current monkeypatched env.
-        import app.config as config_module
         importlib.reload(config_module)
-        import app.services.startup_security as ss_module
         importlib.reload(ss_module)
         return ss_module
-    return _factory
+
+    yield _factory
+
+    # 先把 module global 指回原物件,再 reload 一次受測模組,讓它重新綁到原物件。
+    config_module.settings = original_settings
+    importlib.reload(ss_module)
 
 
 def _override_all_to_safe(monkeypatch):

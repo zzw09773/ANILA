@@ -84,12 +84,20 @@ def _ensure_dev_secret_gate(monkeypatch):
     ``test_startup_security`` leaks a reloaded settings global that
     invalidates the dev-secret allow flag on subsequent lifespan
     boots. Re-apply + reload here so we don't depend on test order.
+
+    Teardown 把 ``app.config.settings`` 指回原物件:reload 建的新 Settings 跟
+    import 期綁定舊 Settings 的模組會並存,不還原就是把污染往後傳。
     """
-    monkeypatch.setenv("ANILA_ALLOW_DEV_SECRET", "1")
     import importlib
     import app.config as config_module
-    importlib.reload(config_module)
     import app.services.startup_security as ss_module
+
+    original_settings = config_module.settings
+    monkeypatch.setenv("ANILA_ALLOW_DEV_SECRET", "1")
+    importlib.reload(config_module)
+    importlib.reload(ss_module)
+    yield
+    config_module.settings = original_settings
     importlib.reload(ss_module)
 
 

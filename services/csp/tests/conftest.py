@@ -26,6 +26,21 @@ os.environ.setdefault("AUTO_REGISTER_LINKS", "")
 # JWT keys: auto-generate dev RSA pair if missing, so CI / fresh clones
 # don't have to manually run scripts/generate-jwt-keypair.py first.
 os.environ.setdefault("ALLOW_AUTO_KEYGEN", "true")
+# anila-core 的 credential_crypto 直接讀 ``os.environ["SECRET_KEY"]``,沒設就
+# RuntimeError。殼裡 export 過的人看到 test_agent_credentials 全綠、沒 export 的
+# 人看到 12 紅 —— 同一份碼兩種答案。在這裡釘死,讓「跑之前有沒有先設環境變數」
+# 不再是測試結果的變因。值必須**不在** ``startup_security._KNOWN_DEFAULTS`` 內,
+# 否則 dev-default 閘門會擋下 lifespan。這不是祕密,只是固定的測試用字串。
+os.environ.setdefault(
+    "SECRET_KEY", "pytest-fixed-not-a-real-secret-0123456789abcdef"
+)
+# ``app.main.lifespan`` 會呼叫 ``assert_no_dev_defaults()``,ADMIN_PASSWORD 之類
+# 還是 dev 預設值,沒開這個 flag 就 RuntimeError → 每一支用 ``client`` fixture 的
+# 測試都在 setup 炸掉。以前它是靠 ``test_token_revoke_publish.py`` import 期的
+# ``os.environ.setdefault`` 副作用「順便」被設起來的 —— 也就是說跑全套會綠、
+# 只挑幾個檔跑就整批 error。答案取決於你選了哪些檔,那不是基準線。搬到這裡。
+# ``test_startup_security`` 要測 production 行為時會自己 ``monkeypatch.delenv``。
+os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 from app.database import Base, get_db
 from app.main import app

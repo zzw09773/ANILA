@@ -12,12 +12,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models.agent import Agent
 from app.models.api_key import ApiKey
 from app.models.audit_log import AuditLog
 from app.models.user import User
 
-from tests.conftest import login, make_user
+from tests.conftest import login, make_agent, make_api_key, make_user
 
 
 def _make_admin(db) -> User:
@@ -112,17 +111,11 @@ def test_hard_delete_returns_404_for_missing_user(client: TestClient, db):
 def test_hard_delete_refused_when_user_owns_agents(client: TestClient, db):
     _make_owner(db)
     target = make_user(db, username="agent-owner")
-    # 給 target 弄一個 agent — 模擬「developer 開發者擁有 agent」
-    agent = Agent(
-        name="my-agent",
-        owner_user_id=target.id,
-        endpoint_url="http://agent:24786",
-        description_for_router="Test agent",
-        is_active=True,
-        is_approved=True,
-    )
-    db.add(agent)
-    db.commit()
+    # 給 target 弄一個 agent — 模擬「developer 開發者擁有 agent」。
+    # 用 conftest 的 factory,不要在這裡手寫欄位:``Agent`` 已經沒有
+    # ``is_active`` / ``is_approved``,審批狀態現在是 ``approval_status``。
+    # 手寫欄位讓這支測試在 production 完全正常時仍然紅。
+    make_agent(db, target, name="my-agent")
 
     login(client, "root-owner")
     resp = client.delete(
@@ -140,16 +133,10 @@ def test_hard_delete_refused_when_user_owns_agents(client: TestClient, db):
 def test_hard_delete_cascades_api_keys(client: TestClient, db):
     _make_owner(db)
     target = make_user(db, username="key-haver")
-    # 給 target 弄 2 把 api key
+    # 給 target 弄 2 把 api key。同樣走 factory —— 手寫的版本漏了 non-nullable
+    # 的 ``key_prefix``,commit 直接炸 IntegrityError。
     for n in range(2):
-        k = ApiKey(
-            user_id=target.id,
-            key_hash=f"deadbeef-{n}",
-            name=f"k-{n}",
-            is_active=True,
-        )
-        db.add(k)
-    db.commit()
+        make_api_key(db, target, raw_key=f"sk-hard-delete-{n}")
     assert db.query(ApiKey).filter(ApiKey.user_id == target.id).count() == 2
 
     login(client, "root-owner")
@@ -187,7 +174,11 @@ def test_hard_delete_preserves_audit_history_via_set_null(client: TestClient, db
     )
     assert resp.status_code == 200, resp.text
 
-    # Audit row 還在，但 actor_user_id = NULL
+    # Audit row 還在，但 actor_user_id = NULL。
+    # conftest 的 session 是 ``expire_on_commit=False``,所以 identity map 裡那顆
+    # AuditLog 還握著刪除前的 actor_user_id;不 expire 就等於在斷言記憶體裡的
+    # 舊值,production 有沒有做 SET NULL 都看不出來。
+    db.expire_all()
     refreshed = db.query(AuditLog).filter(AuditLog.id == audit_id).first()
     assert refreshed is not None
     assert refreshed.actor_user_id is None
