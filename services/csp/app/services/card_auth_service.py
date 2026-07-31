@@ -193,7 +193,8 @@ def verify_card_and_resolve_user(
 def _parse_initial_owners() -> set[str]:
     """從 ``settings.CARD_INITIAL_OWNERS`` 解析出員工編號集合。
 
-    支援 CSV 格式 (``"1147259,1090868"``),allow whitespace。空字串回空集合。
+    支援 CSV 格式 (``"9000001,9000002"``),allow whitespace。空字串回空集合。
+    (範例用假編號:PUBLIC repo,真人的員工編號不進註解。)
     """
     raw = settings.CARD_INITIAL_OWNERS or ""
     return {part.strip() for part in raw.split(",") if part.strip()}

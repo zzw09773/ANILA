@@ -190,7 +190,8 @@ class Settings(BaseSettings):
     # CARD_INITIAL_OWNERS: CSV 員工編號清單。列在裡面的第一次刷卡建為
     #   ``role="owner"`` + ``is_approved=True``,**直接登入** (bootstrap)。
     #   其他員工建為 ``role="user"`` + ``is_approved=False``,走 pending →
-    #   完成註冊 (填單位) → admin 核准 流程。範例:``"1147259,1090868"``。
+    #   完成註冊 (填單位) → admin 核准 流程。範例:``"9000001,9000002"``。
+    #   ⚠ 範例一律用假編號 —— 這是 PUBLIC repo,真人的員工編號不進註解。
     ENABLE_CARD_LOGIN: bool = False
     REQUIRE_CARD_LOGIN_ONLY: bool = False
     CARD_INITIAL_OWNERS: str = ""
