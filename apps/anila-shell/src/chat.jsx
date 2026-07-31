@@ -6,6 +6,7 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { hasBranch, neighbourId, pagerState } from "./runtime/messageTree.js";
+import { classifiedCopyDenial } from "./uxCopy.js";
 import {
   resolveActionIcon,
   splitTemplatePlaceholders,
@@ -807,7 +808,7 @@ export const MessageBubble = ({
               {copied ? <IconCheck /> : <IconCopy />}
             </IconButton>
           ) : (
-            <IconButton title="列管對話禁止複製" disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
+            <IconButton title={classifiedCopyDenial(classificationLevel)} disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
               <IconLock />
             </IconButton>
           )}
