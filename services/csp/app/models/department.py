@@ -13,10 +13,29 @@ class Department(Base):
             postgresql_where=text("parent_id IS NOT NULL"),
             sqlite_where=text("parent_id IS NOT NULL"),
         ),
+        # 名稱唯一性以「同一個母單位之下」為界，不是全院唯一：兩個所可以各有
+        # 一個「企劃組」，這是院內編制的常態，全域 unique 會直接擋掉。
+        Index(
+            "uq_departments_parent_id_name",
+            "parent_id",
+            "name",
+            unique=True,
+            postgresql_where=text("parent_id IS NOT NULL"),
+            sqlite_where=text("parent_id IS NOT NULL"),
+        ),
+        # NULL 在 UNIQUE 索引裡兩兩不相等，所以上面那個索引擋不住兩個同名的
+        # 根節點（兩個「院部」）。根層另外用一個偏索引補起來。
+        Index(
+            "uq_departments_root_name",
+            "name",
+            unique=True,
+            postgresql_where=text("parent_id IS NULL"),
+            sqlite_where=text("parent_id IS NULL"),
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(100), unique=True, nullable=False, index=True)
+    name = Column(String(100), nullable=False, index=True)
     description = Column(String(255), nullable=True)
     # NULL parent = 根節點（院）；深度由鏈推導，不存 level/path
     parent_id = Column(

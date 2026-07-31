@@ -24,12 +24,72 @@ from app.services.department_tree import (
 router = APIRouter(prefix="/api/departments", tags=["部門管理"])
 
 
-def _ensure_unique_name(db: Session, name: str, exclude_id: int | None = None) -> None:
+# 院內編制的層級稱呼，用來把「超過 N 層」翻成操作者看得懂的話。
+_DEPT_LEVEL_NAMES = ("院部", "研究所／中心", "組／科")
+
+
+def _level_name(level: int) -> str:
+    if 1 <= level <= len(_DEPT_LEVEL_NAMES):
+        return _DEPT_LEVEL_NAMES[level - 1]
+    return f"第 {level} 層"
+
+
+def _level_chain(cap: int) -> str:
+    return " → ".join(_level_name(i) for i in range(1, cap + 1))
+
+
+def _depth_cap_detail(
+    parent: "Department | None",
+    parent_depth: int,
+    resulting_depth: int,
+    cap: int,
+) -> str:
+    head = f"部門層級最多 {cap} 層：{_level_chain(cap)}。"
+    if parent is None:
+        return f"{head}這次調整會讓最深的子部門掉到第 {resulting_depth} 層，超過上限。"
+    return (
+        f"{head}「{parent.name}」已經在第 {parent_depth} 層"
+        f"（{_level_name(parent_depth)}），掛在它底下最深會變成第 {resulting_depth} 層。"
+        "請改掛到更上面一層，或把這個單位設在跟它同一層。"
+    )
+
+
+def _ensure_unique_name(
+    db: Session,
+    name: str,
+    parent_id: int | None,
+    exclude_id: int | None = None,
+) -> None:
+    """名稱只在「同一個母單位底下」要求唯一，不是全院唯一。
+
+    兩個所各有一個「企劃組」是院內常態，全域唯一會直接擋掉；根層（parent_id
+    IS NULL）另外檢查，因為 SQL 的 UNIQUE 視 NULL 兩兩不相等，光靠
+    (parent_id, name) 索引攔不住兩個同名的最上層單位。
+    """
     query = db.query(Department).filter(Department.name == name)
+    if parent_id is None:
+        query = query.filter(Department.parent_id.is_(None))
+    else:
+        query = query.filter(Department.parent_id == parent_id)
     if exclude_id is not None:
         query = query.filter(Department.id != exclude_id)
-    if query.first():
-        raise HTTPException(status_code=400, detail="部門名稱已存在")
+    if query.first() is None:
+        return
+
+    if parent_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"最上層（{_level_name(1)}）已經有「{name}」了。",
+        )
+    parent = db.query(Department).filter(Department.id == parent_id).first()
+    parent_label = f"「{parent.name}」" if parent is not None else "同一個母單位"
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"{parent_label}底下已經有「{name}」了。"
+            "不同單位底下可以有同名的部門，同一個單位底下不行。"
+        ),
+    )
 
 
 def _serialize_departments(db: Session) -> list[dict]:
@@ -89,8 +149,9 @@ def _validate_parent_assignment(
     node_id: int | None = None,
 ) -> None:
     """建立／改掛父節點時檢查：存在性、循環、深度上限（含子樹高度）。"""
+    parent: Department | None = None
     if parent_id is not None:
-        _resolve_active_parent(db, parent_id)
+        parent = _resolve_active_parent(db, parent_id)
         if node_id is not None:
             if parent_id == node_id:
                 raise HTTPException(status_code=400, detail="不可將部門設為自己的父部門")
@@ -100,10 +161,11 @@ def _validate_parent_assignment(
     new_depth = depth_under_parent(db, parent_id)
     subtree_height = get_subtree_height(db, node_id) if node_id is not None else 1
     cap = max_depth()
-    if new_depth + subtree_height - 1 > cap:
+    resulting_depth = new_depth + subtree_height - 1
+    if resulting_depth > cap:
         raise HTTPException(
             status_code=400,
-            detail=f"部門層級不可超過 {cap} 層（院→所→組）",
+            detail=_depth_cap_detail(parent, new_depth - 1, resulting_depth, cap),
         )
 
 
@@ -175,8 +237,9 @@ def create_department(
 ):
     if request.parent_id is not None:
         acquire_dept_tree_lock(db)
-    _ensure_unique_name(db, request.name)
+    # 先驗父節點，名稱衝突的訊息才叫得出母單位的名字。
     _validate_parent_assignment(db, parent_id=request.parent_id)
+    _ensure_unique_name(db, request.name, request.parent_id)
     dept = Department(**request.model_dump())
     db.add(dept)
     db.commit()
@@ -208,9 +271,6 @@ def update_department(
         acquire_dept_tree_lock(db)
         db.refresh(dept)
 
-    if "name" in update_data and update_data["name"]:
-        _ensure_unique_name(db, update_data["name"], exclude_id=dept.id)
-
     old_parent_id = dept.parent_id
     if "parent_id" in update_data:
         _validate_parent_assignment(
@@ -218,6 +278,14 @@ def update_department(
             parent_id=update_data["parent_id"],
             node_id=dept.id,
         )
+
+    # 改名或改掛都可能撞到新母單位底下的既有名稱，兩者任一有變就重驗。
+    new_name = update_data.get("name") or dept.name
+    new_parent_id = (
+        update_data["parent_id"] if "parent_id" in update_data else dept.parent_id
+    )
+    if (update_data.get("name") or "parent_id" in update_data):
+        _ensure_unique_name(db, new_name, new_parent_id, exclude_id=dept.id)
 
     if update_data.get("is_active") is False:
         _ensure_no_active_children(db, dept)
