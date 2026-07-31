@@ -43,16 +43,21 @@ from __future__ import annotations
 
 import base64
 import datetime
-import hashlib
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
-from asn1crypto import cms
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from fastapi.testclient import TestClient
+
+# ``cht/`` 是 repo 根目錄下的 dev mock(本機假的 HiPKI 元件),不是 csp 的
+# 套件,所以用路徑掛進來。借的是它的**簽章器**,不是它的金鑰 —— 見 _build_cms。
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cht"))
+from cms_sign import build_pkcs7  # noqa: E402
 
 from app.config import settings
 from app.middleware.cookies import (
@@ -135,52 +140,15 @@ def _issue_card(pki: _Pki, emp_id: str, cn: str, email: str, serial: int) -> _Ca
 def _build_cms(card: _Card, econtent: bytes) -> str:
     """把 ``econtent`` 包成一份卡片私鑰簽出的 base64 CMS SignedData。
 
-    形狀對齊真卡:有 signedAttrs,簽章覆蓋 signedAttrs 的 DER,signedAttrs 內的
-    messageDigest = sha256(eContent)。所以 ``card_auth._verify_signer_info``
-    的 messageDigest 比對也是真的被走到。
+    **刻意直接借用 ``cht/cms_sign.py`` 的 ``build_pkcs7``** —— 那正是本機
+    ``cht/`` mock 拿來簽章的同一段程式碼。這樣「一份合法卡片簽章長什麼樣」
+    在測試與跑著的系統之間只有一個答案;以前兩邊各寫一份,測試全綠並不保證
+    本機刷得進去(這個檔案 2026-07-31 重寫的理由就是這個)。
+
+    金鑰素材**不**共用:測試用自己現生的拋棄式 PKI,不依賴這台機器上
+    ``secrets/dev-card-ca/`` 有沒有東西,套件因此仍然 hermetic。
     """
-    der = card.cert.public_bytes(serialization.Encoding.DER)
-    signed_attrs = cms.CMSAttributes(
-        [
-            cms.CMSAttribute({"type": "content_type", "values": ["data"]}),
-            cms.CMSAttribute(
-                {
-                    "type": "message_digest",
-                    "values": [hashlib.sha256(econtent).digest()],
-                }
-            ),
-        ]
-    )
-    signature = card.key.sign(signed_attrs.dump(), padding.PKCS1v15(), hashes.SHA256())
-    signed_data = cms.SignedData(
-        {
-            "version": "v1",
-            "digest_algorithms": [{"algorithm": "sha256"}],
-            "encap_content_info": {"content_type": "data", "content": econtent},
-            "certificates": [cms.CertificateChoices.load(der)],
-            "signer_infos": [
-                {
-                    "version": "v1",
-                    "sid": cms.SignerIdentifier(
-                        {
-                            "issuer_and_serial_number": {
-                                "issuer": cms.Certificate.load(der)["tbs_certificate"][
-                                    "issuer"
-                                ],
-                                "serial_number": card.serial,
-                            }
-                        }
-                    ),
-                    "digest_algorithm": {"algorithm": "sha256"},
-                    "signed_attrs": signed_attrs,
-                    "signature_algorithm": {"algorithm": "rsassa_pkcs1v15"},
-                    "signature": signature,
-                }
-            ],
-        }
-    )
-    info = cms.ContentInfo({"content_type": "signed_data", "content": signed_data})
-    return base64.b64encode(info.dump()).decode()
+    return base64.b64encode(build_pkcs7(econtent, card.key, card.cert)).decode()
 
 
 @pytest.fixture(scope="session")

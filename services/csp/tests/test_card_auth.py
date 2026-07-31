@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import base64
 import datetime
+import sys
+from pathlib import Path
 
 import pytest
 from asn1crypto import cms
@@ -20,12 +22,18 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import NameOID
 
+from app.config import settings
+from app.services import card_auth
 from app.services.card_auth import (
     CardAuthError,
     CardClaims,
     InvalidSignatureError,
     verify_pkcs7_signature,
 )
+
+# 借 cht/ mock 的簽章器產測試素材 —— 見 test_card_endpoints.py 同段說明。
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cht"))
+from cms_sign import build_pkcs7  # noqa: E402
 
 
 # 來源:cht/app.py 的 "signature" 欄位 (鄒惠翔測試卡的 PKCS#7 簽章,eContent=b"TBS")。
@@ -220,3 +228,146 @@ class TestInvalidInput:
 def test_error_hierarchy() -> None:
     # 所有錯誤都應該繼承自 CardAuthError,方便上層 endpoint 統一捕捉。
     assert issubclass(InvalidSignatureError, CardAuthError)
+
+
+# ─── Dev 測試 CA 的 production fence ───────────────────────────────────────────
+#
+# 本機開發用的是 ``cht/`` mock 現生的測試 PKI,靠 ``CARD_CA_BUNDLE_PATH`` 把信任
+# 錨換過去。信任錨可換這件事在 production 是致命的(誰把測試 root 弄上內網,
+# 誰就能自簽一張任意工號的卡登入),所以 card_auth 認得測試 CA 的標記,
+# 條件不足時**整包拒收**。下面三支就是守這件事。
+
+
+def _dev_marked_pki(tmp_path):
+    """生一組帶 dev 標記的 root + 卡片,回 (bundle_path, key, cert)。
+
+    刻意用 ``card_auth._DEV_TEST_CA_MARKER_ORG`` 本人而不是複製一份字串 ——
+    標記字串在 cht/cms_sign.py 與 card_auth.py 兩邊必須一致,寫死副本會讓
+    這支測試在標記改掉時仍然綠。
+    """
+    root_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    root_name = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "TW"),
+            x509.NameAttribute(
+                NameOID.ORGANIZATION_NAME, card_auth._DEV_TEST_CA_MARKER_ORG
+            ),
+            x509.NameAttribute(NameOID.COMMON_NAME, "Dev Test Root"),
+        ]
+    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    root_cert = (
+        x509.CertificateBuilder()
+        .subject_name(root_name)
+        .issuer_name(root_name)
+        .public_key(root_key.public_key())
+        .serial_number(1)
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(root_key, hashes.SHA256())
+    )
+    card_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    card_cert = (
+        x509.CertificateBuilder()
+        .subject_name(
+            x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COUNTRY_NAME, "TW"),
+                    x509.NameAttribute(NameOID.ORGANIZATION_NAME, "MOCK ORG"),
+                    x509.NameAttribute(NameOID.COMMON_NAME, "測試人員（MOCK 假卡）"),
+                    x509.NameAttribute(NameOID.SERIAL_NUMBER, "9999999"),
+                ]
+            )
+        )
+        .issuer_name(root_name)
+        .public_key(card_key.public_key())
+        .serial_number(2)
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=30))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [x509.RFC822Name("mock-card-9999999@example.invalid")]
+            ),
+            critical=False,
+        )
+        .sign(root_key, hashes.SHA256())
+    )
+    bundle = tmp_path / "dev_ca_bundle.pem"
+    bundle.write_bytes(root_cert.public_bytes(serialization.Encoding.PEM))
+    return bundle, card_key, card_cert
+
+
+@pytest.fixture
+def _fresh_anchor_cache(monkeypatch):
+    """``_ca_anchor_cache`` 是 module global,不清掉就讀不到新 bundle。"""
+    monkeypatch.setattr(card_auth, "_ca_anchor_cache", None)
+
+
+@pytest.mark.unit
+def test_dev_test_ca_rejected_without_explicit_optin(
+    tmp_path, monkeypatch, _fresh_anchor_cache
+):
+    """沒開 ``CARD_DEV_TRUST_TEST_CA`` → 即使 bundle 指過去也不准載入。
+
+    這是 production 的常態:平台只會設 CARD_CA_BUNDLE_PATH(換 CA 用),
+    不會有人去設 CARD_DEV_TRUST_TEST_CA。
+    """
+    bundle, key, cert = _dev_marked_pki(tmp_path)
+    monkeypatch.setenv("CARD_CA_BUNDLE_PATH", str(bundle))
+    monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", False)
+
+    sig = base64.b64encode(build_pkcs7(b"n1", key, cert)).decode()
+    with pytest.raises(card_auth.CardConfigError) as exc:
+        verify_pkcs7_signature(sig, b"n1")
+    assert card_auth._DEV_TEST_CA_MARKER_ORG in str(exc.value)
+
+
+@pytest.mark.unit
+def test_dev_test_ca_rejected_when_card_login_is_the_only_way_in(
+    tmp_path, monkeypatch, _fresh_anchor_cache
+):
+    """``REQUIRE_CARD_LOGIN_ONLY=True`` = 內網正式部署 → 連開了旗標也不准。
+
+    這是「有人把 dev 的 .env 整份帶上內網」那個情境:旗標跟著複製過去了,
+    但 card-only 這個 production 特徵擋得住。
+    """
+    bundle, key, cert = _dev_marked_pki(tmp_path)
+    monkeypatch.setenv("CARD_CA_BUNDLE_PATH", str(bundle))
+    monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", "1")
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+
+    sig = base64.b64encode(build_pkcs7(b"n1", key, cert)).decode()
+    with pytest.raises(card_auth.CardConfigError) as exc:
+        verify_pkcs7_signature(sig, b"n1")
+    assert "REQUIRE_CARD_LOGIN_ONLY" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_dev_test_ca_accepted_on_a_dev_machine(
+    tmp_path, monkeypatch, _fresh_anchor_cache
+):
+    """兩個條件都成立 → 本機刷得進去,而且 nonce 綁定照樣行使。
+
+    fence 只擋 production,不能把開發機也一起擋死 —— 上一版本機刷不了卡,
+    整條登入路徑沒人走得完,就是這樣來的。
+    """
+    bundle, key, cert = _dev_marked_pki(tmp_path)
+    monkeypatch.setenv("CARD_CA_BUNDLE_PATH", str(bundle))
+    monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", "1")
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", False)
+
+    claims = verify_pkcs7_signature(
+        base64.b64encode(build_pkcs7(b"the-real-nonce", key, cert)).decode(),
+        b"the-real-nonce",
+    )
+    assert claims.employee_id == "9999999"
+
+    # 換一條 nonce 就必須被擋 —— 證明 fence 放行的是「換信任錨」,
+    # 不是「連 nonce 綁定也一起放掉」。
+    with pytest.raises(InvalidSignatureError):
+        verify_pkcs7_signature(
+            base64.b64encode(build_pkcs7(b"the-real-nonce", key, cert)).decode(),
+            b"a-different-nonce",
+        )
