@@ -15,7 +15,6 @@ from app.middleware.cookies import (
     set_session_cookies,
 )
 from app.models.user import User
-from app.models.token_revocation import TokenRevocation
 from app.schemas.user import (
     LoginRequest,
     TokenResponse,
@@ -24,7 +23,7 @@ from app.schemas.user import (
     RegisterRequest,
 )
 from app.services.audit_service import log_audit_event
-from app.services.token_revocation_publisher import publish_revocation_sync
+from app.services.token_revocation import commit_token_revocation
 from app.services.auth_service import (
     authenticate_user,
     create_tokens,
@@ -43,29 +42,10 @@ from ._common import (
 )
 
 
-def _commit_token_revocation(db: Session, user: User) -> None:
-    """Persist and publish a token-version revocation after bumping user.
-
-    ⚠ Contract with every consumer (anila-studio / asr-gateway revocation
-    caches): ``revoked_at_version`` is the **post-bump** ``token_version``,
-    i.e. the lowest version that is still valid — NOT the highest version
-    that is dead. It is exactly the ``tv`` claim that ``create_tokens``
-    will stamp into the next token this user is issued, so consumers must
-    reject ``tv < revoked_at_version`` and accept ``tv ==
-    revoked_at_version``. Do not subtract one here: that would make every
-    row already in ``token_revocations`` mean something different, and the
-    consumers would silently start honouring the last generation of
-    pre-revocation tokens. Pinned by
-    ``services/csp/tests/test_token_revoke_publish.py``.
-    """
-    lowest_valid_version = int(user.token_version or 0)
-    db.add(
-        TokenRevocation(user_id=user.id, revoked_at_version=lowest_valid_version)
-    )
-    db.commit()
-    publish_revocation_sync(
-        user_id=user.id, revoked_at_version=lowest_valid_version
-    )
+# Back-compat alias — callers and tests historically imported this name
+# from password.py; the shared implementation lives in
+# ``app.services.token_revocation``.
+_commit_token_revocation = commit_token_revocation
 
 
 @router.post("/register", status_code=201)

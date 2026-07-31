@@ -27,6 +27,7 @@ from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
 from app.schemas.base import ApiResponseModel
+from app.utils.client_ip import client_ip as _client_ip
 
 router = APIRouter(prefix="/api/banners", tags=["公告橫幅"])
 
@@ -95,13 +96,6 @@ def _require_admin(user: User = Depends(get_current_user)) -> User:
 def _validate_level(level: str) -> None:
     if level not in _LEVELS:
         raise HTTPException(status_code=400, detail=f"level 必須是 {', '.join(sorted(_LEVELS))}")
-
-
-def _client_ip(request: Request | None) -> str | None:
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    return xff.split(",")[0].strip() if xff else (request.client.host if request.client else None)
 
 
 @router.get("/public", response_model=list[PublicBannerResponse])

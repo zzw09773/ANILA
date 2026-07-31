@@ -16,7 +16,7 @@ from app.models.user import User
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import require_admin, verify_service_token
-from app.services.token_revocation_publisher import publish_revocation_sync
+from app.services.token_revocation import commit_token_revocation
 
 from ._common import router
 
@@ -62,7 +62,7 @@ def revoke_user_tokens(
 ):
     """Admin/owner force-revokes all outstanding JWTs for one user.
 
-    ⚠ Same contract as ``password.py::_commit_token_revocation``:
+    ⚠ Same contract as ``commit_token_revocation``:
     ``revoked_at_version`` is the **post-bump** value — the lowest version
     still valid. Consumers reject ``tv < revoked_at_version``. The user is
     NOT locked out; they log in again and get a token at the new version.
@@ -72,18 +72,7 @@ def revoke_user_tokens(
         raise HTTPException(status_code=404, detail="使用者不存在")
 
     user.token_version = (user.token_version or 0) + 1
-    revoked_at_version = int(user.token_version or 0)
-    db.add(
-        TokenRevocation(
-            user_id=user.id,
-            revoked_at_version=revoked_at_version,
-        )
-    )
-    db.commit()
-    publish_revocation_sync(
-        user_id=user.id,
-        revoked_at_version=revoked_at_version,
-    )
+    revoked_at_version = commit_token_revocation(db, user)
     log_audit_event(
         db,
         actor=admin,

@@ -36,6 +36,7 @@ from app.models.user import User
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import require_admin
+from app.utils.client_ip import client_ip as _client_ip
 from app.services.service_token_envelope import (
     compute_lookup_hash,
     encode_service_token_envelope,
@@ -112,15 +113,6 @@ def _resolve_client(db: Session, client_id: int) -> ServiceClient:
     if not client:
         raise HTTPException(status_code=404, detail="Service client 不存在")
     return client
-
-
-def _client_ip(request: Request | None) -> Optional[str]:
-    if request is None:
-        return None
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return getattr(request.client, "host", None) if request.client else None
 
 
 # ---- Endpoints -------------------------------------------------------------

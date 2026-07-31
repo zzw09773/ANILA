@@ -4,7 +4,7 @@ Split verbatim from the former single-module ``app/api/agents.py``
 (behavior-preserving refactor). Only helpers used by 2+ submodules
 live here.
 """
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -14,6 +14,7 @@ from app.models.user import User
 from app.schemas.contracts.agents import AgentManifest
 from app.schemas.contracts.classification import ClassificationLevel
 from app.services.auth_service import get_current_user, is_admin_tier
+from app.utils.client_ip import client_ip as _client_ip
 
 # Rank CASE shared by the race-safe raise-only UPDATE (X.6). Must stay
 # aligned with ClassificationLevel member order / ``_RANKS``.
@@ -75,18 +76,6 @@ def _require_developer_or_admin(current_user: User = Depends(get_current_user)) 
     if current_user.role not in ("admin", "developer", "owner"):
         raise HTTPException(status_code=403, detail="需要開發者或管理員權限")
     return current_user
-
-
-def _client_ip(request: Request | None) -> str | None:
-    """Extract caller IP from the Request — tolerant of reverse-proxy
-    setups (reads X-Forwarded-For first hop) and of None so endpoints
-    that don't inject a Request stay safe."""
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else None
 
 
 def _resolve_agent(db: Session, agent_id: int) -> Agent:
