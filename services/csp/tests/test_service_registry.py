@@ -71,10 +71,19 @@ class TestMigration:
         # 不釘死特定 head id(每加一個 migration 就過期,如 Slice 8a r1_0007);
         # 守住兩個不變量:恰一個 head + head 屬 r1_ 命名空間(對齊
         # tests/test_task_trace_schema.py 的 invariant 風格)。
+        from pathlib import Path
+
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 
-        script = ScriptDirectory.from_config(Config("alembic.ini"))
+        # 路徑一律從本檔推出來,不從 cwd 推。原本的 ``Config("alembic.ini")``
+        # 只有 cwd == services/csp 時才找得到檔;從 repo 根目錄跑就紅一支,
+        # 這是「基準線隨目錄改變」的其中一條。``script_location`` 也要一起覆寫
+        # —— alembic 是拿 cwd 解析那個相對路徑的。
+        csp_root = Path(__file__).resolve().parents[1]
+        cfg = Config(str(csp_root / "alembic.ini"))
+        cfg.set_main_option("script_location", str(csp_root / "migrations"))
+        script = ScriptDirectory.from_config(cfg)
         heads = list(script.get_heads())
         assert len(heads) == 1, f"alembic head 應唯一,實得 {heads}"
         assert heads[0].startswith("r1_"), (

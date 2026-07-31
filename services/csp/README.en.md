@@ -153,15 +153,16 @@ The redesign series follows the legacy numeric chain (`r1_0001` revises `0046`),
 
 ## 7. Testing
 
-Tests are sqlite-backed (`tests/conftest.py` sets `DATABASE_URL=sqlite:///./.pytest-csp.db`, so they never touch Postgres / running containers) and run standalone:
+Tests are sqlite-backed (`tests/conftest.py` sets `DATABASE_URL=sqlite:///./.pytest-csp.db`, so they never touch Postgres / running containers) and need no environment variables exported first:
 
 ```bash
-cd services/csp
-.venv/bin/python -m pytest            # full suite
-.venv/bin/python -m pytest -q tests/test_proxy_task_link.py   # single file
+python -m pytest services/csp/tests -q   # from the repo root
+cd services/csp && python -m pytest -q   # or from here; both MUST agree
 ```
 
-**Current scale (measured baseline)**: 684 collected → **628 passed · 43 failed · 1 skipped · 12 errors**. Those 43 failed / 12 errors are **pre-existing**, not redesign regressions; when reviewing Codex output use this as the baseline to separate new from old failures (run the tests — don't just read the diff).
+**Current baseline (measured 2026-07-31)**: **1 failed · 1296 passed · 13 skipped · 0 errors** (~8 min). The single red is `test_template_download.py::test_developer_can_download_template` — a **real production defect** (template directory resolution returns 404), not a test problem.
+
+📌 Full write-up in **[`tests/README.md`](tests/README.md)** — why the old "26 failing" baseline was fiction (the same code gave 27 vs 14 depending on which directory you ran from), the execution-order pollution and its fix, and the two-layer structure of the card-login tests.
 
 ---
 

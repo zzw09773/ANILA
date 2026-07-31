@@ -153,15 +153,16 @@ redesign 系列接在 legacy 數字鏈之後（`r1_0001` revises `0046`），保
 
 ## 7. 測試
 
-測試自帶 sqlite（`tests/conftest.py` 設 `DATABASE_URL=sqlite:///./.pytest-csp.db`，不碰 Postgres / 執行中容器），可獨立跑：
+測試自帶 sqlite（`tests/conftest.py` 設 `DATABASE_URL=sqlite:///./.pytest-csp.db`，不碰 Postgres / 執行中容器），不需要先 export 任何環境變數：
 
 ```bash
-cd services/csp
-.venv/bin/python -m pytest            # 全套
-.venv/bin/python -m pytest -q tests/test_proxy_task_link.py   # 單檔
+python -m pytest services/csp/tests -q   # 從 repo 根目錄
+cd services/csp && python -m pytest -q   # 或從這裡；兩者結果必須一致
 ```
 
-**目前規模（實跑基準）**：684 收集 → **628 passed · 43 failed · 1 skipped · 12 errors**。這 43 failed / 12 errors 為**既有（pre-existing）**，非 redesign regression；審查 Codex 產出時應以此為基準線區分新舊失敗（跑測試、別只看 diff）。
+**目前基準線（2026-07-31 實跑）**：**1 failed · 1296 passed · 13 skipped · 0 errors**（約 8 分鐘）。唯一的紅燈是 `test_template_download.py::test_developer_can_download_template`，那是 **production 真缺陷**（template 目錄解析回 404），不是測試問題。
+
+📌 完整說明看 **[`tests/README.md`](tests/README.md)** —— 包含為什麼舊的「26 failing」基準線是假的（同一份碼從不同目錄跑會得到 27 vs 14 兩個答案）、執行順序污染的成因與修法、以及卡登測試的兩層結構。
 
 ---
 
