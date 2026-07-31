@@ -85,6 +85,8 @@ class MessageOut(ApiResponseModel):
     # returning empty on reload.
     metadata: Optional[dict] = Field(None, validation_alias="metadata_")
     rating: Optional[str] = None
+    # Fine score beside the thumb (up→6–10, down→1–5); None = thumb only.
+    rating_score: Optional[int] = None
     created_at: datetime
     attachments: list[AttachmentOut] = []
     model_config = {"from_attributes": True, "populate_by_name": True}
@@ -98,6 +100,10 @@ _MAX_MSG_CHARS = 500_000
 
 class MessageRatingUpdate(BaseModel):
     rating: Optional[str] = Field(None, pattern="^(up|down)$")
+    # Optional fine score. Pairing with the thumb is enforced in the service
+    # (up→6–10, down→1–5); omit the field to leave an existing score alone
+    # (e.g. when only attaching a down-vote comment).
+    rating_score: Optional[int] = Field(None, ge=1, le=10)
     # Structured feedback (optional, usually accompanies a 'down' rating).
     # Air-gapped deployments rely on this as the main model-quality signal.
     comment: Optional[str] = Field(None, max_length=2000)
@@ -708,9 +714,11 @@ def set_message_rating(
     current_user: User = Depends(get_current_user),
 ):
     """Record thumbs-up/down on an assistant message, or clear with rating=null.
-    Optionally attaches structured feedback (comment + reason chips)."""
+    Optionally attaches a fine score and structured feedback (comment + reasons)."""
     msg = svc.set_message_rating(
         db, conv_id, message_id, current_user, body.rating,
+        rating_score=body.rating_score,
+        score_provided="rating_score" in body.model_fields_set,
         comment=body.comment, reasons=body.reasons,
     )
     edges = mtree.load_edges(db, conv_id)

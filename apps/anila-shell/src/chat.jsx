@@ -622,6 +622,12 @@ export const MessageBubble = ({
   const actionsLocked = assistantActionsLocked;
   const branchOpsLocked = conversationStreaming || isStreaming;
   const rating = msg.rating || null;
+  const ratingScore = typeof msg.ratingScore === "number" ? msg.ratingScore : null;
+  const scoreChoices = rating === "up"
+    ? [6, 7, 8, 9, 10]
+    : rating === "down"
+      ? [1, 2, 3, 4, 5]
+      : [];
   const actionProvenance = msg.metadata?.action;
   // Quiet attribution: persisted agent_name (action:NAME) for action-produced siblings.
   const showActionAgentName = Boolean(actionProvenance && msg.agentName);
@@ -1145,6 +1151,41 @@ export const MessageBubble = ({
             timestamp={msg.timestamp}
             usage={msg.usage}
           />
+        </div>
+      )}
+
+      {/* 細分分數(選填):拇指已寫入後才出現。不選也沒關係 —— 維運者仍有拇指訊號。
+          讚 6–10／爛 1–5 是兩個五分尺,點一下就存,不用多按送出。 */}
+      {!msg.streaming && rating && !classified && typeof onRate === "function" && scoreChoices.length > 0 && (
+        <div
+          data-testid="rating-score-picker"
+          style={{
+            marginTop: 8, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
+          }}
+        >
+          <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+            {rating === "up" ? "有多有用？（選填）" : "有多差？（選填）"}
+          </span>
+          {scoreChoices.map((n) => {
+            const on = ratingScore === n;
+            return (
+              <button
+                key={n}
+                type="button"
+                data-testid={`rating-score-${n}`}
+                onClick={() => onRate(msg, rating, { rating_score: n })}
+                style={{
+                  fontSize: 12, minWidth: 28, padding: "3px 8px", borderRadius: 4,
+                  background: on ? (rating === "up" ? "var(--accent)" : "var(--danger)") : "transparent",
+                  color: on ? "var(--accent-fg)" : "var(--fg-muted)",
+                  border: "1px solid " + (on
+                    ? (rating === "up" ? "var(--accent)" : "var(--danger)")
+                    : "var(--border)"),
+                  cursor: "pointer",
+                }}
+              >{n}</button>
+            );
+          })}
         </div>
       )}
 

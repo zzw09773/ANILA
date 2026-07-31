@@ -709,6 +709,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       latencyMs: msg.latency_ms,
       routedAgentId: meta.routed_agent_id || null,
       rating: msg.rating || null,
+      ratingScore: typeof msg.rating_score === "number" ? msg.rating_score : null,
       reasoning: meta.reasoning || null,
       // OW-3: action:NAME attribution (second channel alongside metadata.action).
       agentName: msg.agent_name || null,
@@ -1604,6 +1605,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           followUps: [],
           streaming: true,
           rating: null,
+          ratingScore: null,
           reasoning: null,
           routedAgentId: effectiveTarget,
           conversationId: convId,
@@ -1812,6 +1814,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           followUps: [],
           streaming: true,
           rating: null,
+          ratingScore: null,
           reasoning: null,
           routedAgentId: effectiveTarget,
           conversationId: convId,
@@ -2010,14 +2013,19 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     }
   }
 
-  // ---- thumbs up / down ----
+  // ---- thumbs up / down (+ optional fine score) ----
   // Optimistically toggles rating locally for instant feedback, then PUTs to
   // the CSP rating endpoint. On failure the optimistic value is rolled back
-  // so the UI never drifts from persisted state.
+  // so the UI never drifts from persisted state. Score is optional: pressing
+  // a thumb alone is enough; picking 1–5 / 6–10 is a free follow-up.
   async function handleRate(targetMsg, nextRating, feedback = null) {
     const convId = targetMsg.conversationId;
     const prevRating = targetMsg.rating ?? null;
-    updateMsg(convId, targetMsg.id, { rating: nextRating });
+    const prevScore = targetMsg.ratingScore ?? null;
+    const nextScore = feedback && Object.prototype.hasOwnProperty.call(feedback, "rating_score")
+      ? feedback.rating_score
+      : (nextRating === null || nextRating !== prevRating ? null : prevScore);
+    updateMsg(convId, targetMsg.id, { rating: nextRating, ratingScore: nextScore });
 
     if (typeof convId !== "number" || typeof targetMsg.dbId !== "number") {
       setRuntimeError("此訊息尚未儲存至後端，反饋僅保留於本地。");
@@ -2026,7 +2034,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     try {
       await apiRateMessage(authRequest, convId, targetMsg.dbId, nextRating, feedback);
     } catch (err) {
-      updateMsg(convId, targetMsg.id, { rating: prevRating });
+      updateMsg(convId, targetMsg.id, { rating: prevRating, ratingScore: prevScore });
       setRuntimeError(err.message || "反饋儲存失敗");
     }
   }

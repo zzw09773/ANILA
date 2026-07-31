@@ -18,6 +18,15 @@ class Message(Base):
             "parent_id IS NULL OR parent_id <> id",
             name="ck_messages_parent_not_self",
         ),
+        # 拇指 ↔ 分數配對:讚 6–10、爛 1–5;NULL = 只按拇指沒選數字。
+        CheckConstraint(
+            "("
+            "rating_score IS NULL OR "
+            "(rating = 'up' AND rating_score BETWEEN 6 AND 10) OR "
+            "(rating = 'down' AND rating_score BETWEEN 1 AND 5)"
+            ")",
+            name="ck_messages_rating_score_matches_thumb",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -47,6 +56,8 @@ class Message(Base):
     metadata_ = Column("metadata", JSONValue, nullable=True)
     # User feedback on assistant messages ('up' / 'down' / None)
     rating = Column(String(8), nullable=True)
+    # Optional fine score beside the thumb: up→6–10, down→1–5; NULL = thumb only.
+    rating_score = Column(Integer, nullable=True)
     # ── 四級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"

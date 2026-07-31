@@ -58,6 +58,7 @@ FEEDBACK_ITEM_KEYS = frozenset(
         "message_id",
         "conversation_id",
         "rating",
+        "rating_score",
         "comment",
         "reasons",
         "model_name",
@@ -82,6 +83,8 @@ _TPE_TZ = timezone(timedelta(hours=8))
 #: 順序對齊畫面欄位。
 _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("rating", "評分"),
+    # 兩個五分尺,不是一條十分尺 —— 表頭寫清楚,免得 Excel 裡被當成絕對分。
+    ("rating_score", "分數(讚6-10／爛1-5)"),
     ("comment", "留言"),
     ("reasons", "原因"),
     ("agent_name", "Agent"),
@@ -102,6 +105,8 @@ class FeedbackItem(ApiResponseModel):
     message_id: int
     conversation_id: int
     rating: str
+    # None = 舊列或只按拇指沒選數字;有值時與 rating 配對(讚 6–10／爛 1–5)。
+    rating_score: int | None = None
     comment: str | None = None
     reasons: list[str] = Field(default_factory=list)
     model_name: str | None = None
@@ -162,6 +167,7 @@ def _item_from_row(
         message_id=msg.id,
         conversation_id=conv.id,
         rating=msg.rating or "",
+        rating_score=msg.rating_score,
         comment=comment,
         reasons=reasons,
         model_name=msg.model_name,
@@ -177,6 +183,8 @@ def _csv_value(key: str, value) -> str:
         return " · ".join(value or [])
     if key == "rating":
         return _RATING_LABELS.get(value, value or "")
+    if key == "rating_score":
+        return "" if value is None else str(value)
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)

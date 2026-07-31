@@ -2,7 +2,8 @@ import client from './client'
 
 /**
  * 使用者回饋總覽(P3.4)。admin-tier only。
- * 後端永不回傳訊息正文 —— 只看 rating / comment / reasons / 密等徽章。
+ * 後端永不回傳訊息正文 —— 只看 rating / rating_score / comment / reasons / 密等徽章。
+ * rating_score 是拇指旁的細分(讚 6–10／爛 1–5 兩把尺);舊列或只按拇指時為 null。
  */
 export const listFeedback = (params = {}) =>
   client.get('/api/admin/feedback', { params })
