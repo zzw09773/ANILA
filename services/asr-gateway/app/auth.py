@@ -136,7 +136,10 @@ async def _check_revocation(user_id: int, token_version: int) -> None:
         logger.warning("revocation cache not ready; denying user_id=%s", user_id)
         raise AuthUnavailable("auth deny-list unhealthy")
     if await cache.is_revoked(user_id, token_version):
-        raise AuthError("權杖已失效,請重新登入")
+        # ⚠ 這句會變成 WebSocket close reason,RFC 6455 上限 123 bytes ——
+        # 中文一字 3 bytes,所以講得比 studio 短。要點一樣:說出成因(被撤銷
+        # 和「已過期」的解法不同),並給出重登仍失敗時的下一步。
+        raise AuthError("此工作階段已被撤銷,請重新登入;若仍被拒絕請洽管理員")
 
 
 async def authenticate(token: str) -> CurrentUserIdentity:

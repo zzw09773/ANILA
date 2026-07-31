@@ -128,7 +128,13 @@ async def _check_revocation(user_id: int, token_version: int) -> None:
         logger.info(
             "rejecting revoked token: user_id=%s tv=%s", user_id, token_version
         )
-        raise _unauthorized("權杖已失效，請重新登入")
+        # 「權杖已失效」對使用者沒有可行動的資訊,而且和「權杖已過期」的解法
+        # 不同:過期只要重新登入,被撤銷則要先知道自己是被誰、為什麼撤的。
+        # 講清楚成因,並給出「重登仍失敗 → 找管理員」這條出路。
+        raise _unauthorized(
+            "此工作階段已被撤銷（變更密碼、登出，或管理員強制登出）。"
+            "請重新登入；若重新登入後仍被拒絕，請聯絡管理員。"
+        )
 
 
 async def get_current_user_identity(

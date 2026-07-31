@@ -435,6 +435,113 @@ def test_admin_revoke_404_unknown_user(
     assert recording_sync_redis.published == []
 
 
+# ---------------------------------------------------------------------------
+# The producer-side contract, pinned.
+#
+# 2026-07-31:consumers (anila-studio / asr-gateway) 曾經把 `revoked_at_version`
+# 當成「最後一個該死的版本」而用 `>=` 比較,結果任何一次撤銷都會把該帳號
+# **永久**鎖在那兩個服務外面。修正落在 consumer 端(改成 `<`),前提是這裡發
+# 出去的值永遠是「撞完之後的 token_version」= 下一張權杖的 `tv`。
+#
+# 下面兩條就是那個前提的看門狗:誰把這裡改成 `token_version - 1`,誰就會看到
+# 它們變紅,而不是等到使用者改完密碼才發現語音壞了。
+# ---------------------------------------------------------------------------
+
+
+def _tv_of(token: str) -> int:
+    from app.utils.security import decode_token
+
+    payload = decode_token(token)
+    assert payload is not None
+    return int(payload["tv"])
+
+
+def test_published_version_equals_the_tv_of_the_next_token_issued(
+    client: TestClient, db, recording_sync_redis
+):
+    """改密碼後,發布的 `revoked_at_version` 必須等於 csp 當場簽出來的那張
+    新權杖的 `tv`。
+
+    這條等式就是 consumer 端 `tv < revoked_at_version` 的立足點:相等 ⇒
+    新權杖活得下來。若這裡改成發 `version - 1`,新權杖的 tv 會比它大 1,
+    consumer 端就會開始放行「撤銷前最後一代」的權杖 —— 那是安全破口,
+    而且不會有任何人抱怨,所以更該被測試擋住。
+    """
+    make_user(db, username="contract-user", role="user")
+
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "contract-user", "password": "password"},
+    )
+    assert resp.status_code == 200, resp.text
+    old_access = resp.json()["access_token"]
+
+    resp = client.put(
+        "/api/auth/password",
+        headers={"Authorization": f"Bearer {old_access}"},
+        json={"current_password": "password", "new_password": "Newpassw0rd!"},
+    )
+    assert resp.status_code == 200, resp.text
+    new_access = resp.json()["access_token"]
+
+    published_version = _bump_call(recording_sync_redis)["revoked_at_version"]
+
+    assert _tv_of(new_access) == published_version, (
+        "發布的 revoked_at_version 必須等於下一張權杖的 tv —— "
+        "consumer 端的 `tv < revoked_at_version` 規則靠這條等式成立"
+    )
+    assert _tv_of(old_access) < published_version, (
+        "撤銷前簽出的權杖必須嚴格小於發布值,否則 consumer 端殺不掉它"
+    )
+
+    # 把 consumer 端那條規則原地套一次,兩半一起驗。
+    def consumer_rejects(tv: int) -> bool:
+        return tv < published_version
+
+    assert consumer_rejects(_tv_of(old_access)) is True
+    assert consumer_rejects(_tv_of(new_access)) is False
+
+
+def test_admin_revoke_does_not_lock_the_user_out_of_relogin(
+    client: TestClient, db, recording_sync_redis
+):
+    """管理員強制登出之後,該使用者重新登入拿到的權杖,不能落在自己被撤銷
+    的範圍裡。
+
+    這是 `.15` 上線最怕的那個情境:管理員按了「撤銷權杖」,使用者重新登入
+    看似成功,結果半個平台不認他。
+    """
+    make_user(db, username="admin-relogin", role="admin")
+    target = make_user(db, username="target-relogin", role="user")
+
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "admin-relogin", "password": "password"},
+    )
+    admin_access = resp.json()["access_token"]
+
+    resp = client.post(
+        "/api/auth/revoke",
+        headers={"Authorization": f"Bearer {admin_access}"},
+        json={"user_id": target.id},
+    )
+    assert resp.status_code == 200, resp.text
+    revoked_at_version = resp.json()["revoked_at_version"]
+    assert _bump_call(recording_sync_redis)["revoked_at_version"] == revoked_at_version
+
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "target-relogin", "password": "password"},
+    )
+    assert resp.status_code == 200, resp.text
+    relogin_tv = _tv_of(resp.json()["access_token"])
+
+    assert relogin_tv == revoked_at_version
+    assert (relogin_tv < revoked_at_version) is False, (
+        "重新登入拿到的權杖若落在撤銷範圍內,帳號就被永久鎖死了"
+    )
+
+
 def test_publish_failure_does_not_break_logout(client: TestClient, db, monkeypatch):
     """End-to-end resilience: if Redis is unreachable, logout still
     returns 200 because the DB bump already happened."""
