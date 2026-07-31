@@ -119,8 +119,8 @@ Most of the platform's Slice 0–9 capabilities live in CSP / the frontends; ani
 |---|---|---|
 | **Full Trace** (spans + `/v1/traces` ingest) | `anila_trace_sdk` producer: batch-export spans to the CSP endpoint and mirror them into the `anila.spans` SSE event | `tracing/sdk.py`; doc `05` §6 / `09` §10 |
 | **Task spine** (`X-ANILA-Task-Id`) | the runtime reads it via `CallerContext` and threads the task-id through the turn | `api/caller_context.py` |
-| **Five-level classification + one-way latch** | the agent runtime honours the per-turn classified one-way latch (`ctx.classified_latch` → `anila_meta.classified`); `register` carries `classification_ceiling`. **Latch enforcement / declassification authority is CSP** | `context/agent_context.py`; doc `08` |
-| **Agent Registry** (7-state approval + trace-test gate) | `register` / `status` CLI submit into the CSP registry; `--draft` shadow registration. **The state machine & trace-test gate live in CSP** | `cli/register_cmd.py`; doc `05` |
+| **Five-level classification + one-way latch** | the agent runtime honours the per-turn classified one-way latch (`ctx.classified_latch` → `anila_meta.classified`); `register` carries `--classification-level` (written to `default_classification_level`). **Latch enforcement / declassification authority is CSP** | `context/agent_context.py`; doc `08` |
+| **Agent Registry** (OE-1 three states: registered / approved / disabled) | `register` / `status` CLI submit into the CSP registry; the base model may be given by NAME (`base_model`) and CSP resolves it to an id. **The state machine lives in CSP** | `cli/register_cmd.py`; doc `05` |
 | **Model Gateway** (`ANILA_ENV` http fail-closed) | `url_guard` hard-rejects http for `endpoint_kind='model'` in production (no flag can rescue it). **Per-model keys / 5-state health live in CSP** | `security/url_guard.py`; doc `04` §8 |
 
 ---
@@ -191,18 +191,25 @@ Three pieces in code: `TraceExporter` (thread-safe, batching, bounded queue, dro
 anila-core init my-agent      # scaffolds a non-RAG starter from cli/templates/agent-template
 anila-core register \
   --csp http://localhost:8000 --endpoint http://your-host:9100 \
-  --runtime-type anila_agent --classification-ceiling 機密 \
-  --version 1.0.0 [--draft]
+  --base-model gemma4 \
+  --runtime-type anila_agent --classification-level 機密 \
+  --version 1.0.0
 ```
 
-`register` reads `anila.yaml`, logs into CSP with JWT, then `POST /api/agents/register`. New flags (Slice 5c; each overrides the manifest and is validated against a closed set):
+`register` reads `anila.yaml`, logs into CSP with JWT, then `POST /api/agents/register`. Each flag overrides the manifest and is validated against a closed set:
 
 | Flag | Notes |
 |---|---|
+| `--base-model` | **required (or `base_model` in `anila.yaml`)**: the base model NAME. CSP resolves the name to an id, so a developer never has to copy a numeric database id out of the governance UI |
+| `--base-model-id` | only needed when two models share a display name: pass the numeric id directly |
 | `--runtime-type` | 5 values (doc `05` §3): `anila_agent` / `langchain` / `openwebui_pipe_compatible` / `openai_compatible_agent` / `custom_http` |
-| `--classification-ceiling` | four levels (doc `08`): `無機密` / `營業秘密` / `密` / `機密` |
+| `--classification-level` | four levels (doc `08`): `無機密` / `營業秘密` / `密` / `機密`. Written to `default_classification_level` |
 | `--version` | agent version string (e.g. `1.0.0`) |
-| `--draft` | shadow registration: visible only in the governance center, not yet usable for real tasks |
+
+> `--draft` (shadow registration) and `--classification-ceiling` were removed. Since OE-1
+> `approval_status` has three states (registered / approved / disabled) — there is no draft —
+> and agents have no classification ceiling; what is stored and enforced is
+> `default_classification_level`. Both flags only ever sent a field the server discarded.
 
 ---
 

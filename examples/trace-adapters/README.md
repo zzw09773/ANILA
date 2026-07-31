@@ -163,20 +163,22 @@ adapter 只解決 trace；agent 仍須先在 CSP 完成註冊、簽發 `csk-`、
 - **Wizard**：治理中心 `apps/csp-governance-ui` 的 `/developer/agents` 兩步精靈 —— 填 endpoint／
   runtime type／分類上限 → 簽發 Agent Integration Key（`csk-`）→ test-connection → trace-test。
 - **CLI**：`anila-core register`（讀 `anila.yaml` → `POST /api/agents/register`），支援
-  `--runtime-type`／`--classification-ceiling`／`--version`／`--draft`（影子註冊）旗標：
+  `--base-model`／`--base-model-id`／`--runtime-type`／`--classification-level`／`--version` 旗標：
 
   ```bash
   anila-core register \
       --endpoint http://your-host:9100 \
+      --base-model gemma4 \
       --runtime-type custom_http \
-      --classification-ceiling 機密 \
-      --version 1.0.0 \
-      --draft            # 影子註冊（先建治理視圖、暫不進正式任務）
+      --classification-level 機密 \
+      --version 1.0.0
   ```
 
+  `--base-model` 是底層模型「名稱」（CSP 端解析成 id）；顯示名稱撞名時才改用 `--base-model-id`。
   `--runtime-type` 合法值：`anila_agent`／`langchain`／`openwebui_pipe_compatible`／
   `openai_compatible_agent`／`custom_http`。
-  `--classification-ceiling` 合法值：`無機密`／`營業秘密`／`密`／`機密`。
+  `--classification-level` 合法值：`無機密`／`營業秘密`／`密`／`機密`。
+  `--draft`／`--classification-ceiling` 已移除：送出去只會被伺服器丟掉。
 
 ---
 

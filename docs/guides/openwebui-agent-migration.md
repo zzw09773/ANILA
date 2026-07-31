@@ -40,8 +40,9 @@ ANILA 是 air-gapped 內網平台，repo 內**沒有** ML Team OpenWebUI 的 age
 
 ## 盤點完成後（銜接 Phase 1）
 
-1. 依盤點表逐一在 CSP 註冊（`POST /api/agents/register`）。盤點暫存可用
-   `shadow=true` 建為 `draft` 狀態，不佔用審核關卡。
+1. 依盤點表逐一在 CSP 註冊（`POST /api/agents/register`；`base_model` 填模型「名稱」即可，
+   CSP 會解析成 id）。⚠ `shadow=true` 已無作用：OE-1 之後沒有 `draft` 狀態，
+   欄位仍被接受但一律落地 `registered`，不要當成「先暫存不上線」的開關。
 2. 核發 `csk-`（Agent Integration Key），貼進 agent `.env` 的 `CSP_SERVICE_TOKEN`。
 3. `POST /api/agents/{id}/test-connection` 驗連線與 token。
 4. `POST /api/agents/{id}/trace-test` 跑 Full Trace 準入測試 —— 全部 required 項

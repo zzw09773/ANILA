@@ -119,8 +119,8 @@ packages/anila-core/
 |---|---|---|
 | **Full Trace**(spans + `/v1/traces` ingest) | `anila_trace_sdk` 生產者:批次 export span 到 CSP 端點,並 mirror 進 `anila.spans` SSE | `tracing/sdk.py`;doc `05` §6 / `09` §10 |
 | **Task spine**(`X-ANILA-Task-Id`) | runtime 由 `CallerContext` 讀入並沿 turn 傳遞 task-id | `api/caller_context.py` |
-| **四級分類 + 單向 latch** | agent runtime 守 per-turn classified 單向 latch(`ctx.classified_latch` → `anila_meta.classified`);`register` CLI 帶 `classification_ceiling`（無機密／營業秘密／密／機密）。**latch 執法 / 解密權威在 CSP** | `context/agent_context.py`;doc `08` |
-| **Agent Registry**(7 態核准 + trace-test gate) | `register` / `status` CLI 送件進 CSP registry;`--draft` shadow 註冊。**核准態機與 trace-test gate 在 CSP** | `cli/register_cmd.py`;doc `05` |
+| **四級分類 + 單向 latch** | agent runtime 守 per-turn classified 單向 latch(`ctx.classified_latch` → `anila_meta.classified`);`register` CLI 帶 `--classification-level`（無機密／營業秘密／密／機密,寫入 `default_classification_level`）。**latch 執法 / 解密權威在 CSP** | `context/agent_context.py`;doc `08` |
+| **Agent Registry**(OE-1 三態:registered / approved / disabled) | `register` / `status` CLI 送件進 CSP registry;底層模型可用名稱(`base_model`)指定,由 CSP 解析成 id。**核准態機在 CSP** | `cli/register_cmd.py`;doc `05` |
 | **Model Gateway**(http 旗標分域) | `url_guard` 對 `endpoint_kind='model'` 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(PLAN.md P0.2,2026-07-29 拍板:production 與 dev 同準)。**per-model key / 5 態健康在 CSP** | `security/url_guard.py`;doc `04` §8 |
 
 ---
@@ -191,18 +191,24 @@ Tracing 是 **additive 且 fail-open**:`ANILA_TRACE_ENDPOINT` 未設 → 整條 
 anila-core init my-agent      # 用 cli/templates/agent-template 產生 non-RAG starter
 anila-core register \
   --csp http://localhost:8000 --endpoint http://your-host:9100 \
-  --runtime-type anila_agent --classification-ceiling 機密 \
-  --version 1.0.0 [--draft]
+  --base-model gemma4 \
+  --runtime-type anila_agent --classification-level 機密 \
+  --version 1.0.0
 ```
 
-`register` 讀 `anila.yaml`、以 JWT 登入 CSP 後 `POST /api/agents/register`。新增旗標(Slice 5c;皆 override manifest、對閉集驗證):
+`register` 讀 `anila.yaml`、以 JWT 登入 CSP 後 `POST /api/agents/register`。旗標皆 override manifest、對閉集驗證:
 
 | 旗標 | 說明 |
 |---|---|
+| `--base-model` | **必填(或寫在 `anila.yaml` 的 `base_model`)**:底層模型「名稱」。CSP 端把名稱解析成 id,開發者不必先去治理中心抄一個數字 |
+| `--base-model-id` | 只有在兩個模型顯示名稱撞名時才需要:直接指定數字 id |
 | `--runtime-type` | 5 值(doc `05` §3):`anila_agent` / `langchain` / `openwebui_pipe_compatible` / `openai_compatible_agent` / `custom_http` |
-| `--classification-ceiling` | 四級(SYSTEM-MAP §8):`無機密` / `營業秘密` / `密` / `機密` |
+| `--classification-level` | 四級(SYSTEM-MAP §8):`無機密` / `營業秘密` / `密` / `機密`。寫入 `default_classification_level` |
 | `--version` | agent 版本字串(如 `1.0.0`) |
-| `--draft` | shadow 註冊:僅治理中心可見,尚不可承接實際任務 |
+
+> `--draft`(shadow 註冊)與 `--classification-ceiling` 已移除。OE-1 之後 `approval_status`
+> 只有 registered / approved / disabled 三態,沒有 draft;agent 端也沒有分類上限,真正會寫入並
+> enforce 的是 `default_classification_level`。這兩個旗標以前都只是把欄位送出去被伺服器丟掉。
 
 ---
 
