@@ -127,7 +127,9 @@ env：`ANILA_TRACE_ENDPOINT`（預設 = `CSP_BASE_URL`）、`ANILA_TRACE_ENABLED
 - **精靈**：治理中心 `apps/csp-governance-ui` 的 `/developer/agents` 兩步精靈 —— 填 endpoint／runtime
   type／分類上限 → 簽發 `csk-` → test-connection → trace-test。
 - **CLI**：`anila-core register`（讀 `anila.yaml` → `POST /api/agents/register`），支援
-  `--runtime-type` / `--classification-ceiling` / `--version` / `--draft`（影子註冊）旗標。
+  `--base-model`（底層模型「名稱」，CSP 解析成 id）/ `--base-model-id` / `--runtime-type` /
+  `--classification-level` / `--version` 旗標。`--draft` 與 `--classification-ceiling` 已移除
+  （送出去只會被伺服器丟掉）。
 
 ## Docker / MLSteam 環境映像
 

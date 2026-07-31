@@ -67,14 +67,29 @@ def _enforce_endpoint_url(url: str) -> None:
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-# One extra ``.parent`` vs the old app/api/agents.py: this file lives one
-# package level deeper (app/api/agents/registration.py), and the default
-# must keep pointing at <repo-root>/anila-agent.
+def _repo_root() -> Path:
+    """``<repo-root>`` from services/csp/app/api/agents/registration.py.
+
+    Six levels: agents → api → app → csp → services → repo root.
+    """
+    return Path(__file__).parent.parent.parent.parent.parent.parent
+
+
+def _default_template_dir() -> Path:
+    """Fallback template location when ``ANILA_TEMPLATE_DIR`` is unset.
+
+    The tree used to keep the agent template at ``<repo-root>/anila-agent``;
+    the §17.1 directory move (b5c5e32e, a pure ``git mv``) relocated it to
+    ``packages/anila-agent`` and this default was not moved with it. Compose
+    hides the breakage because it sets ``ANILA_TEMPLATE_DIR``
+    (infra/compose/platform.yml), so only a csp started another way — bare
+    uvicorn, a demo box — served 404 to every template download.
+    """
+    return _repo_root() / "packages" / "anila-agent"
+
+
 _TEMPLATE_DIR = Path(
-    _os.environ.get(
-        "ANILA_TEMPLATE_DIR",
-        str(Path(__file__).parent.parent.parent.parent.parent.parent / "anila-agent"),
-    )
+    _os.environ.get("ANILA_TEMPLATE_DIR", str(_default_template_dir()))
 )
 
 router = APIRouter()
@@ -116,6 +131,14 @@ def _reject_dead_agent_controls(data: object) -> object:
 
 
 class AgentRegisterRequest(BaseModel):
+    # Undeclared fields are refused, not swallowed. Pydantic's default
+    # extra="ignore" is what let the CLI's ``draft: true`` be accepted and
+    # thrown away — the developer got "✓ registered" for a shadow agent
+    # that was never shadow. Both callers (anila-core CLI + governance UI)
+    # now send only declared fields, so a 422 here means a genuine
+    # client/server drift rather than a working feature being blocked.
+    model_config = {"extra": "forbid"}
+
     name: str
     endpoint_url: str
     description_for_router: str
@@ -124,7 +147,25 @@ class AgentRegisterRequest(BaseModel):
     # usage metering can attribute tokens to a real model_registry row.
     # Without this the dashboard's per-model breakdown has phantom
     # "agent X" traffic with no underlying model behind it.
-    base_model_id: int = Field(..., description="必須指定底層模型 ID")
+    #
+    # Either representation satisfies that: the numeric id (what the
+    # governance UI has, because it renders a <select> of models) or the
+    # model NAME (what a developer has, because ``anila.yaml`` writes
+    # ``base_model: "<name>"``). Requiring the id from the CLI meant the
+    # documented registration command could not succeed at all — the CLI
+    # only ever sends a name — and forced every developer to look a
+    # numeric database id up in the governance UI first.
+    base_model_id: int | None = Field(
+        default=None, description="底層模型 ID(與 base_model_name 擇一即可)"
+    )
+    base_model_name: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "底層模型名稱(model_registry.name,或治理中心顯示名稱);"
+            "與 base_model_id 擇一即可"
+        ),
+    )
     # RAG agents: collections this agent's csk- may search (P4.7 / S-Q1).
     # Prefer ``collection_ids`` (zero / one / several). Legacy ``collection_id``
     # is still accepted and expanded to a one-element set when the list is
@@ -167,6 +208,16 @@ class AgentRegisterRequest(BaseModel):
     @classmethod
     def _reject_dead_controls(cls, data: object) -> object:
         return _reject_dead_agent_controls(data)
+
+    @model_validator(mode="after")
+    def _require_a_base_model(self) -> "AgentRegisterRequest":
+        """One of the two base-model fields must be present (either shape)."""
+        if self.base_model_id is None and not (self.base_model_name or "").strip():
+            raise ValueError(
+                "必須指定底層模型:填 base_model_name(模型名稱)或 base_model_id(數字 id)"
+                "其中之一。anila.yaml 請填 base_model:「模型名稱」。"
+            )
+        return self
 
 
 class AgentResponse(ApiResponseModel):
@@ -285,6 +336,119 @@ class AgentUpdateRequest(BaseModel):
         return _reject_dead_agent_controls(data)
 
 
+def _active_model_names(db: Session, limit: int = 12) -> str:
+    """Comma-joined names of active models, for "what do I type instead?" hints."""
+    from app.models.model_registry import ModelRegistry
+
+    rows = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_active.is_(True))
+        .order_by(ModelRegistry.name)
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        return "(目前沒有已啟用的模型,請聯絡平台管理員)"
+    return "、".join(r.name for r in rows)
+
+
+def _lookup_model_by_name(db: Session, raw_name: str):
+    """Resolve a model NAME to its ``model_registry`` row.
+
+    ``model_registry.name`` is unique, so an exact hit on it is
+    authoritative and can never be ambiguous. Only the human-facing
+    ``display_name`` can collide, and when it does we say which rows
+    collided instead of silently picking one.
+    """
+    from app.models.model_registry import ModelRegistry
+
+    name = raw_name.strip()
+    exact = db.query(ModelRegistry).filter(ModelRegistry.name == name).first()
+    if exact is not None:
+        return exact
+
+    matches = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.display_name == name)
+        .order_by(ModelRegistry.id)
+        .all()
+    )
+    if not matches:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"底層模型「{name}」不存在。目前可用的模型名稱:"
+                f"{_active_model_names(db)};"
+                "請把 anila.yaml 的 base_model 改成其中之一,或改填 base_model_id。"
+            ),
+        )
+    if len(matches) > 1:
+        listed = "、".join(f"{m.name}(id={m.id})" for m in matches)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"底層模型名稱「{name}」對應到多個模型:{listed}。"
+                "請把 base_model 改成上列其中一個的完整名稱,或直接指定 base_model_id。"
+            ),
+        )
+    return matches[0]
+
+
+def _resolve_base_model(
+    db: Session, *, base_model_id: int | None, base_model_name: str | None
+):
+    """Resolve the agent's base model from an id, a name, or both.
+
+    Both are allowed for callers in transition, but they must agree —
+    accepting a contradictory pair and quietly honouring one of them is
+    the same silent-discard failure this endpoint is being fixed for.
+    """
+    from app.models.model_registry import ModelRegistry
+
+    base = None
+    if base_model_id is not None:
+        base = (
+            db.query(ModelRegistry)
+            .filter(ModelRegistry.id == base_model_id)
+            .first()
+        )
+        if base is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"底層模型 id={base_model_id} 不存在。"
+                    f"目前可用的模型名稱:{_active_model_names(db)};"
+                    "也可以改填 base_model_name(模型名稱)免去查 id。"
+                ),
+            )
+
+    if base_model_name and base_model_name.strip():
+        by_name = _lookup_model_by_name(db, base_model_name)
+        if base is None:
+            base = by_name
+        elif by_name.id != base.id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"base_model_id={base.id}(「{base.name}」)與 "
+                    f"base_model_name「{base_model_name}」(id={by_name.id})"
+                    "指向不同模型。請只填其中一個。"
+                ),
+            )
+
+    assert base is not None  # guaranteed by AgentRegisterRequest validation
+    if not base.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"底層模型「{base.display_name}」已停用,無法用來註冊 agent。"
+                f"請改用已啟用的模型({_active_model_names(db)}),"
+                "或請平台管理員重新啟用這個模型。"
+            ),
+        )
+    return base
+
+
 def _validate_collection_access_for_ids(
     db: Session, user: User, collection_ids: list[int]
 ) -> None:
@@ -358,22 +522,13 @@ def register_agent(
 
     # Validate base model — a registered agent must wrap a real, active
     # model_registry row so per-model usage accounting stays truthful.
-    from app.models.model_registry import ModelRegistry
-    base = (
-        db.query(ModelRegistry)
-        .filter(ModelRegistry.id == request.base_model_id)
-        .first()
+    # Accepts either the numeric id (governance UI) or the model name
+    # (anila.yaml / anila-core CLI); see ``_resolve_base_model``.
+    base = _resolve_base_model(
+        db,
+        base_model_id=request.base_model_id,
+        base_model_name=request.base_model_name,
     )
-    if base is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"底層模型 id={request.base_model_id} 不存在",
-        )
-    if not base.is_active:
-        raise HTTPException(
-            status_code=400,
-            detail=f"底層模型「{base.display_name}」已停用，請挑選已啟用的模型",
-        )
 
     # RAG agents: bind zero / one / several collections the csk- may search.
     # ``collection_ids`` wins; legacy ``collection_id`` expands to a singleton.
@@ -412,7 +567,7 @@ def register_agent(
         endpoint_url=request.endpoint_url,
         api_version=request.api_version,
         description_for_router=request.description_for_router,
-        base_model_id=request.base_model_id,
+        base_model_id=base.id,
         bound_collection_id=None,  # set via bindings helper after flush
         capabilities=None,
         input_schema=request.input_schema,

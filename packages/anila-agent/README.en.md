@@ -134,7 +134,9 @@ Running the template is only step one; to enter real tasks an agent must pass th
 - **Wizard**: the two-step wizard at `/developer/agents` in the governance UI `apps/csp-governance-ui` —
   fill endpoint / runtime type / classification ceiling → issue a `csk-` → test-connection → trace-test.
 - **CLI**: `anila-core register` (reads `anila.yaml` → `POST /api/agents/register`), with
-  `--runtime-type` / `--classification-ceiling` / `--version` / `--draft` (shadow registration) flags.
+  `--base-model` (base model NAME, resolved to an id by CSP) / `--base-model-id` /
+  `--runtime-type` / `--classification-level` / `--version` flags. `--draft` and
+  `--classification-ceiling` were removed — the server discarded both.
 
 ## Docker / MLSteam image
 

@@ -1030,19 +1030,25 @@ async function handleRegister() {
   if (!validateForm()) return
   registering.value = true
   try {
+    // ⚠ 這裡刻意「逐欄列出」，不要寫成 `...form.value`。
+    // POST /api/agents/register 的 AgentRegisterRequest 是 extra="forbid"：
+    // 未宣告的欄位會 422，不再被安靜丟掉。用展開的話，任何人日後在 form
+    // 上多加一個純 UI 用的暫存欄位（例如折疊狀態、草稿旗標），就會讓全院
+    // 每一次註冊都 422，而他不會知道原因。要送新欄位 → 先在後端宣告。
     const resp = await registerAgent({
-      ...form.value,
       name: form.value.name.trim(),
       endpoint_url: form.value.endpoint_url.trim(),
       description_for_router: form.value.description_for_router.trim(),
+      api_version: form.value.api_version,
+      base_model_id: form.value.base_model_id,
       collection_ids: Array.isArray(form.value.collection_ids)
         ? [...form.value.collection_ids]
         : [],
-      // G9 — 預設分類等級（四級字彙；後端據此衍生受控存取旗標）。
       runtime_type: form.value.runtime_type || 'openai_compatible_agent',
       // 欄位名對齊資料庫欄位與回應(agent_version)。以前送 version,
-      // 後端 extra="ignore" 收下就丟掉 —— 填了版本卻永遠顯示「—」。
+      // 後端收下就丟掉 —— 填了版本卻永遠顯示「—」。
       agent_version: form.value.agent_version.trim() || null,
+      // G9 — 預設分類等級（四級字彙；後端據此衍生受控存取旗標）。
       default_classification_level: form.value.default_classification_level || '無機密',
     })
     // Advance to step 2 (provision key) instead of closing — one onboarding

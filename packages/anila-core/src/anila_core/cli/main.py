@@ -3,8 +3,9 @@
 Usage:
     anila-core init [name] [--description TEXT] [--endpoint URL]
     anila-core register [--csp URL] [--endpoint URL] [--username USER]
-                        [--runtime-type TYPE] [--classification-ceiling LEVEL]
-                        [--version VER] [--draft]
+                        [--base-model NAME | --base-model-id ID]
+                        [--runtime-type TYPE] [--classification-level LEVEL]
+                        [--version VER]
     anila-core status [--csp URL] [--username USER] [--name NAME | --id ID | --all]
     anila-core agent bootstrap --csp-url URL --bootstrap-token bsk- --agent-id N --endpoint-url URL
     anila-core --help
