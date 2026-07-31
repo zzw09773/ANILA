@@ -11,7 +11,7 @@ from pathlib import Path
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agent
@@ -141,6 +141,19 @@ class AgentRegisterRequest(BaseModel):
     input_schema: dict | None = None
     # doc 05 §3 runtime_type(5 值;預設 openai_compatible_agent = 現況 endpoint proxy)。
     runtime_type: RuntimeType = RuntimeType.OPENAI_COMPATIBLE_AGENT
+    # doc 05 §3 agent semver。**欄位名以資料庫欄位為準**(models/agent.py:83
+    # ``agent_version``),回應也是這個名字(AgentResponse.agent_version)。
+    # 線上仍接受舊拼法 ``version``:治理 UI 與 anila-core CLI 都送過這個
+    # 名字,而 BaseModel 預設 extra="ignore" 會把它「收下然後丟掉」——
+    # 開發者填了版本、沒有錯誤、詳情頁永遠顯示「—」。別名讓舊送法真的
+    # 存進去,而不是在兩端各自沉默。manifest 的欄位名也是 ``version``
+    # (schemas/contracts/agents.py:130),對映同一欄。
+    agent_version: str | None = Field(
+        default=None,
+        max_length=40,
+        validation_alias=AliasChoices("agent_version", "version"),
+        description="agent 版本字串(例:1.0.0);未提供時取 manifest.version",
+    )
     # doc 05 §4 optional manifest —— 提供則 fail-closed 驗證(422)並留存 manifest_json。
     manifest: dict | None = None
     # OE-1: shadow/draft 已退場。欄位保留為相容(忽略),一律落地 registered。
@@ -386,6 +399,11 @@ def register_agent(
         else None
     )
 
+    # doc 05 §3 — 明送的版本優先,否則沿用 manifest.version。兩者都沒有才是 NULL。
+    agent_version = request.agent_version or (
+        (manifest_json or {}).get("version") or None
+    )
+
     # OE-1: every register lands as registered (shadow flag ignored).
     level = request.default_classification_level
     agent = Agent(
@@ -399,6 +417,7 @@ def register_agent(
         capabilities=None,
         input_schema=request.input_schema,
         runtime_type=request.runtime_type.value,
+        agent_version=agent_version,
         manifest_json=manifest_json,
         approval_status=REGISTER_DEFAULT_APPROVAL,
         default_classification_level=level.to_storage(),

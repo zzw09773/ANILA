@@ -153,7 +153,7 @@ def employee_count(department: str) -&gt; int:
             </td>
             <td>
               <div class="cell-strong" style="font-family: var(--font-mono); font-size: var(--t-2xs);">{{ agent.runtime_type || '—' }}</div>
-              <div class="cell-meta">{{ agent.version || '—' }}</div>
+              <div class="cell-meta">{{ agent.agent_version || '—' }}</div>
             </td>
             <td><TermBadge :variant="healthVariant(agent.health_status)" dot>{{ agent.health_status }}</TermBadge></td>
             <td><TermBadge :variant="approvalVariant(agent.approval_status)" dot>{{ approvalLabel(agent.approval_status) }}</TermBadge></td>
@@ -251,7 +251,7 @@ def employee_count(department: str) -&gt; int:
           </select>
         </TermField>
         <TermField label="版本" hint="agent 版本字串，例如 1.0.0（選填）">
-          <input v-model="form.version" class="term-input" placeholder="1.0.0" />
+          <input v-model="form.agent_version" class="term-input" placeholder="1.0.0" />
         </TermField>
 
         <TermSection title="起飛前檢查" />
@@ -392,7 +392,7 @@ def employee_count(department: str) -&gt; int:
           <div><dt>端點</dt><dd><code>{{ detailAgent.endpoint_url }}</code></dd></div>
           <div><dt>API 版本</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
           <div><dt>runtime 型別</dt><dd><code>{{ detailAgent.runtime_type || '—' }}</code></dd></div>
-          <div><dt>版本</dt><dd>{{ detailAgent.version || '—' }}</dd></div>
+          <div><dt>版本</dt><dd>{{ detailAgent.agent_version || '—' }}</dd></div>
           <div><dt>健康</dt><dd>{{ detailAgent.health_status }}</dd></div>
           <div>
             <dt>審批狀態</dt>
@@ -720,7 +720,7 @@ const form = ref({
   name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
   base_model_id: null, collection_ids: [],
   // Slice 5b — 新增治理欄位；G9 — 預設分類等級（取代舊鎖開關）
-  runtime_type: 'openai_compatible_agent', version: '',
+  runtime_type: 'openai_compatible_agent', agent_version: '',
   default_classification_level: '無機密',
 })
 const formErrors = ref({})
@@ -838,7 +838,7 @@ function resetForm() {
   form.value = {
     name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
     base_model_id: null, collection_ids: [],
-    runtime_type: 'openai_compatible_agent', version: '',
+    runtime_type: 'openai_compatible_agent', agent_version: '',
     default_classification_level: '無機密',
   }
   formErrors.value = {}
@@ -1040,7 +1040,9 @@ async function handleRegister() {
         : [],
       // G9 — 預設分類等級（四級字彙；後端據此衍生受控存取旗標）。
       runtime_type: form.value.runtime_type || 'openai_compatible_agent',
-      version: form.value.version.trim() || null,
+      // 欄位名對齊資料庫欄位與回應(agent_version)。以前送 version,
+      // 後端 extra="ignore" 收下就丟掉 —— 填了版本卻永遠顯示「—」。
+      agent_version: form.value.agent_version.trim() || null,
       default_classification_level: form.value.default_classification_level || '無機密',
     })
     // Advance to step 2 (provision key) instead of closing — one onboarding

@@ -65,7 +65,10 @@
       </article>
 
       <div v-if="sortedLinks.length === 0" class="term-box" style="padding: var(--gap-6);">
-        <TermEmpty message="尚無平台連結 · 請先在 /admin/platform-links 註冊" />
+        <!-- 路徑以 router/index.js 的 `platform-links` 為準(父層 path 是 '/'),
+             不是 AppHeader 麵包屑顯示的 /admin/platform-links —— 那個位址沒有
+             註冊任何 route,也沒有 catch-all,貼進網址列只會得到空白畫面。 -->
+        <TermEmpty message="尚無平台連結 · 請先在 /platform-links 註冊" />
       </div>
     </div>
 
