@@ -87,7 +87,7 @@
               <div class="cell-meta">id #{{ user.id }}</div>
             </td>
             <td class="cell-meta">{{ user.email || '—' }}</td>
-            <td class="cell-meta">{{ user.department_name || '—' }}</td>
+            <td class="cell-meta">{{ departmentLabel(user) }}</td>
             <td><TermBadge :variant="roleVariant(user.role)">{{ user.role }}</TermBadge></td>
             <td>
               <TermBadge :variant="statusVariant(user)" dot>{{ statusLabel(user) }}</TermBadge>
@@ -193,10 +193,10 @@
           <span>⛔</span>
           <span>只有擁有者能建立 / 提升 admin 或 owner 帳號。</span>
         </div>
-        <TermField label="部門">
+        <TermField label="部門" hint="可以掛在任何一層：直屬院部就選最上層，所底下沒有分組就選所。">
           <select v-model="form.department_id" class="term-select">
             <option :value="null">— 無 —</option>
-            <option v-for="d in activeDepartments" :key="d.id" :value="d.id">{{ d.name }}</option>
+            <option v-for="d in departmentChoices" :key="d.id" :value="d.id">{{ d.label }}</option>
           </select>
         </TermField>
       </div>
@@ -259,6 +259,7 @@
 import { computed, onMounted, ref } from 'vue'
 import client from '../api/client'
 import { listDepartments } from '../api/departments'
+import { departmentOptions, departmentPath, indexById } from '../utils/departmentTree'
 import { listModels } from '../api/models'
 import {
   createUser,
@@ -301,7 +302,14 @@ const allowedAgentsTarget = ref(null)
 const selectedAgentIds = ref([])
 const savingAgents = ref(false)
 
-const activeDepartments = computed(() => departments.value.filter(d => d.is_active))
+// 編制到三層之後，光看「企劃組」分不出是哪個所底下的（不同所可以同名），
+// 所以選單與列表一律攤開完整祖先路徑，綁在哪一層是看得出來的選擇。
+const departmentIndex = computed(() => indexById(departments.value))
+const departmentChoices = computed(() => departmentOptions(departments.value))
+function departmentLabel(user) {
+  if (user.department_id == null) return user.department_name || '—'
+  return departmentPath(user.department_id, departmentIndex.value) || user.department_name || '—'
+}
 const pendingCount = computed(() => users.value.filter(u => !u.is_approved).length)
 const developerCount = computed(() => users.value.filter(u => u.role === 'developer').length)
 const activeCount = computed(() => users.value.filter(u => u.is_active && u.is_approved).length)
