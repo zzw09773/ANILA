@@ -51,17 +51,21 @@ describe("originHref", () => {
 });
 
 describe("buildShellEntries", () => {
-  it("returns the four user entries in constitution order", () => {
+  it("returns the user entries in constitution order", () => {
     const entries = buildShellEntries({});
     expect(entries.map((e) => e.label)).toEqual([
       "任務中心",
       "我的知識庫",
-      "產出中心",
       "專案入口",
     ]);
-    // 知識庫 / 產出中心皆連向同源 /anilalm。
     expect(entries[1].href).toBe(`${ORIGIN}/anilalm`);
-    expect(entries[2].href).toBe(`${ORIGIN}/anilalm`);
+  });
+
+  // 「產出中心」與「我的知識庫」曾是逐字相同的 /anilalm 連結：兩個標籤指到
+  // 同一頁，使用者只會以為自己點錯。同一個 href 不得出現兩次。
+  it("never ships two entries pointing at the same destination", () => {
+    const hrefs = buildShellEntries({}).map((e) => e.href).filter(Boolean);
+    expect(new Set(hrefs).size).toBe(hrefs.length);
   });
 });
 
@@ -70,12 +74,16 @@ describe("buildShellEntries", () => {
 // ---------------------------------------------------------------------
 
 describe("ShellNav", () => {
-  it("renders the four user entries", () => {
+  it("renders the user entries", () => {
     render(<ShellNav user={{ role: "user" }} />);
     expect(screen.getByText("任務中心")).toBeTruthy();
     expect(screen.getByText("我的知識庫")).toBeTruthy();
-    expect(screen.getByText("產出中心")).toBeTruthy();
     expect(screen.getByText("專案入口")).toBeTruthy();
+  });
+
+  it("no longer renders the duplicate 產出中心 entry", () => {
+    render(<ShellNav user={{ role: "user" }} />);
+    expect(screen.queryByText("產出中心")).toBeNull();
   });
 
   it("does not surface ANILALM / Studio / CSP tech brand names", () => {
@@ -98,10 +106,9 @@ describe("ShellNav", () => {
     expect(gov.getAttribute("href")).toBe(`${ORIGIN}/`);
   });
 
-  it("points knowledge and output at the same-origin /anilalm surface", () => {
+  it("points 我的知識庫 at the same-origin /anilalm surface", () => {
     render(<ShellNav user={{ role: "user" }} />);
     expect(screen.getByText("我的知識庫").closest("a").getAttribute("href")).toBe(`${ORIGIN}/anilalm`);
-    expect(screen.getByText("產出中心").closest("a").getAttribute("href")).toBe(`${ORIGIN}/anilalm`);
   });
 
   it("opens the ServicesPanel via onOpenServices when 專案入口 is clicked", () => {

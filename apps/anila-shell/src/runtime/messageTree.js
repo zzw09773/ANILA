@@ -49,7 +49,28 @@ export function pagerState(msg, { streaming = false } = {}) {
 }
 
 /**
- * Replace the conversation's message list wholesale from a server active path.
+ * A branch exists only when a message has more than one sibling. `parentId`
+ * says nothing about branching — every message after the first has one — so
+ * gating branch affordances on it lit up a "delete this branch" control on
+ * perfectly healthy first exchanges. Single predicate, single place.
+ */
+export function hasBranch(msg) {
+  return deriveSiblingNav(msg).siblingCount > 1;
+}
+
+/**
+ * Reconcile the conversation's message list with a server active path.
+ *
+ * Server-known messages (numeric dbId) are server truth: anything missing
+ * from the path — a legitimately deleted branch, an inactive branch — is
+ * dropped. Local-only entries (no dbId) have NO server counterpart to compare
+ * against, so a wholesale replace erased them: the hydrate GET fired when a
+ * brand-new conversation is selected returns an empty path and used to land
+ * after the optimistic user+assistant bubbles were appended, wiping them.
+ * That is why the first click on a suggestion chip looked like a no-op.
+ * Keeping only dbId-less entries cannot resurrect a deleted message, because
+ * anything the server ever stored carries a dbId.
+ *
  * Preserves client-only fields (piiHits, explicitAgents, finishReason,
  * routedAgentId) by dbId.
  *
@@ -68,7 +89,7 @@ export function applyServerPath(prevList, serverMapped, convId) {
       });
     }
   }
-  return (serverMapped || []).map((sm) => {
+  const fromServer = (serverMapped || []).map((sm) => {
     const preserved = clientOnly.get(sm.dbId) || {};
     const next = { ...sm, conversationId: convId };
     if (preserved.piiHits !== undefined) next.piiHits = preserved.piiHits;
@@ -83,6 +104,11 @@ export function applyServerPath(prevList, serverMapped, convId) {
     }
     return next;
   });
+  // Pending / unpersisted tail: the server cannot have an opinion on these.
+  const pending = (prevList || [])
+    .filter((m) => m && typeof m.dbId !== "number")
+    .map((m) => (m.conversationId === convId ? m : { ...m, conversationId: convId }));
+  return pending.length > 0 ? [...fromServer, ...pending] : fromServer;
 }
 
 /**
@@ -122,6 +148,34 @@ export async function tryPersistUserMessage({
       saved: null,
       error,
     };
+  }
+}
+
+/**
+ * Persist the assistant turn. NEVER silent: both a rejected POST (e.g. the
+ * backend refusing an explicit parent role with 400) and a 2xx body without
+ * an id mean the answer on screen is not in the conversation record, and the
+ * user must be told — otherwise the reply simply vanishes on the next reload.
+ * Returns a user-facing `notice` the caller pins to the assistant bubble.
+ */
+export async function persistAssistantTurn({
+  appendMessage,
+  authRequest,
+  convId,
+  payload,
+}) {
+  const notice = (reason) =>
+    `這則回答沒有存進對話紀錄（${reason}），重新整理後就會消失。請先複製內容，或重新產生一次。`;
+  try {
+    const saved = await appendMessage(authRequest, convId, payload);
+    if (saved && typeof saved.id === "number") {
+      return { ok: true, saved, error: null, notice: null };
+    }
+    const error = new Error("對話訊息儲存失敗");
+    return { ok: false, saved: null, error, notice: notice(error.message) };
+  } catch (error) {
+    const reason = error?.message || "對話訊息儲存失敗";
+    return { ok: false, saved: null, error, notice: notice(reason) };
   }
 }
 

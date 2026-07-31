@@ -5,7 +5,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
-import { neighbourId, pagerState } from "./runtime/messageTree.js";
+import { hasBranch, neighbourId, pagerState } from "./runtime/messageTree.js";
 import {
   resolveActionIcon,
   splitTemplatePlaceholders,
@@ -551,8 +551,9 @@ export const MessageBubble = ({
           ) : (
             <RenderRedactedText text={msg.text} hits={msg.piiHits} />
           )}
-          {/* OW-1: user-bubble pager + delete — edit-re-ask siblings switchable/removable. */}
-          {!editing && (msg.siblingCount > 1 || msg.parentId != null) && (
+          {/* OW-1: user-bubble pager + delete — edit-re-ask siblings switchable/removable.
+              Only when the message actually HAS siblings; a lone turn is not a branch. */}
+          {!editing && hasBranch(msg) && (
             <div
               data-testid="user-branch-controls"
               style={{
@@ -563,18 +564,15 @@ export const MessageBubble = ({
                 gap: 4,
               }}
             >
-              {msg.siblingCount > 1 && (
-                <div data-testid="user-sibling-pager">
-                  <SiblingPager
-                    msg={msg}
-                    onSwitchBranch={onSwitchBranch}
-                    streaming={conversationStreaming || !!msg.streaming}
-                    style={{ marginLeft: 0 }}
-                  />
-                </div>
-              )}
-              {(msg.siblingCount > 1 || msg.parentId != null) &&
-                typeof onDeleteBranch === "function" && (
+              <div data-testid="user-sibling-pager">
+                <SiblingPager
+                  msg={msg}
+                  onSwitchBranch={onSwitchBranch}
+                  streaming={conversationStreaming || !!msg.streaming}
+                  style={{ marginLeft: 0 }}
+                />
+              </div>
+              {typeof onDeleteBranch === "function" && (
                 <IconButton
                   data-testid="user-delete-branch"
                   title="刪除此訊息分支"
@@ -713,6 +711,27 @@ export const MessageBubble = ({
                 }}
               >
                 {msg.error}
+              </div>
+            )}
+            {/* The answer streamed fine but never reached the conversation
+                record. Saying nothing here is how a reply gets silently lost:
+                it looks saved right up until the page reloads. */}
+            {!msg.streaming && msg.persistError && (
+              <div
+                role="alert"
+                data-testid="message-persist-error"
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  borderRadius: "var(--radius)",
+                  border: "1px solid var(--warning, var(--danger))",
+                  background: "color-mix(in oklch, var(--danger) 8%, var(--bg))",
+                  color: "var(--danger)",
+                  fontSize: 13,
+                  lineHeight: 1.55,
+                }}
+              >
+                {msg.persistError}
               </div>
             )}
             {!msg.streaming && msg.confidence != null && (
@@ -1099,9 +1118,10 @@ export const MessageBubble = ({
             onSwitchBranch={onSwitchBranch}
             streaming={branchOpsLocked}
           />
-          {/* OW-1: delete branch — gated when message has siblings or a parent. */}
-          {(msg.siblingCount > 1 || msg.parentId != null) &&
-            typeof onDeleteBranch === "function" && (
+          {/* OW-1: delete branch — only when the message really has siblings.
+              `parentId != null` is true for almost every message and used to
+              put a branch-deletion control on a healthy first answer. */}
+          {hasBranch(msg) && typeof onDeleteBranch === "function" && (
             <IconButton
               data-testid="assistant-delete-branch"
               title="刪除此訊息分支"
@@ -2013,7 +2033,7 @@ export const Sidebar = ({
         </button>
       </div>
 
-      {/* ANILA Shell 主導覽：任務中心 / 我的知識庫 / 產出中心 / 專案入口
+      {/* ANILA Shell 主導覽：任務中心 / 我的知識庫 / 專案入口
           （+ admin 才顯示的 治理中心）。doc 00 §2 唯一產品入口 / doc 10 §11。 */}
       <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
       <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />

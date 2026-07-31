@@ -1,6 +1,8 @@
 // ANILA Shell 主導覽（Slice 9a）— doc 00 §2 唯一產品入口 + doc 10 §11 Shell IA。
 //
-// 一般使用者只看到 ANILA 的四個入口：任務中心 / 我的知識庫 / 產出中心 / 專案入口。
+// 一般使用者只看到 ANILA 的三個入口：任務中心 / 我的知識庫 / 專案入口。
+// （原本另有「產出中心」，但它與「我的知識庫」是同一個 /anilalm 連結，
+//   兩個標籤指同一頁只會讓人以為點錯；產出中心這個產品概念仍在 anilalm 裡。）
 // 治理中心（CSP 控制面）不是一般使用者的日常入口，只對 owner / admin /
 // developer 顯示（doc 00 §2）。標籤一律用產品語彙，不得暴露 ANILALM /
 // Studio / CSP 等技術品牌名。
@@ -16,7 +18,6 @@ import {
   IconGrid,
   IconMessage,
   IconShield,
-  IconSpark,
 } from "./icons.jsx";
 
 // doc 00 §2：治理中心 = Admin / Developer / Service Admin 控制面，非一般入口。
@@ -47,17 +48,15 @@ export function originHref(path) {
 }
 
 /**
- * 四大使用者入口（doc 00 §2 / doc 10 §11 順序）。
+ * 使用者入口（doc 00 §2 / doc 10 §11 順序）。
  * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void }} handlers
  */
 export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
   return [
     // 任務中心 = 現有聊天工作區（預設視圖，chat 即任務工作台）。
     { id: "tasks", label: "任務中心", Icon: IconMessage, current: true, onClick: onTaskCenter },
-    // 我的知識庫 = 同源知識 SPA。
+    // 我的知識庫 = 同源知識 SPA（也承載 Studio / 產出）。
     { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: originHref("/anilalm") },
-    // 產出中心 = 知識 SPA 承載 Studio / artifacts。
-    { id: "output", label: "產出中心", Icon: IconSpark, href: originHref("/anilalm") },
     // 專案入口 = ServicesPanel（Registry 服務卡片）。
     { id: "projects", label: "專案入口", Icon: IconGrid, onClick: onOpenServices },
   ];

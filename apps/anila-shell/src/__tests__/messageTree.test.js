@@ -4,8 +4,10 @@ import React from "react";
 import {
   applyServerPath,
   deriveSiblingNav,
+  hasBranch,
   neighbourId,
   pagerState,
+  persistAssistantTurn,
   persistRegeneratedAssistant,
   runPersistedUserTurn,
   runRegenerateStreamPhase,
@@ -186,6 +188,158 @@ describe("MessageBubble sibling pager (user bubbles)", () => {
   });
 });
 
+// Defect B2. `parentId != null` is true for essentially every message after
+// the first, so the old predicate put a 「刪除此訊息分支」 control on the
+// assistant reply of a perfectly healthy first exchange — the owner read that
+// as "a branch appeared on the first message".
+describe("hasBranch / branch-deletion control", () => {
+  it("is false for a healthy first exchange and true only with real siblings", () => {
+    expect(hasBranch({ siblingCount: 1, parentId: 78 })).toBe(false);
+    expect(hasBranch({ siblingCount: 1, parentId: null })).toBe(false);
+    expect(hasBranch({ parentId: 78 })).toBe(false); // fields absent → 1 sibling
+    expect(hasBranch({ siblingCount: 2, parentId: 78 })).toBe(true);
+  });
+
+  it("does NOT render the delete-branch control on a healthy first answer", () => {
+    render(
+      React.createElement(MessageBubble, {
+        msg: {
+          id: "a1",
+          role: "assistant",
+          text: "第一則回答",
+          dbId: 80,
+          parentId: 79, // every reply has a parent — that is not a branch
+          siblingIndex: 0,
+          siblingCount: 1,
+          siblingIds: [80],
+        },
+        agents: [],
+        conversationId: 26,
+        onDeleteBranch: () => {},
+        onSwitchBranch: () => {},
+      }),
+    );
+    expect(screen.queryByTestId("assistant-delete-branch")).toBeNull();
+    expect(screen.queryByTitle("刪除此訊息分支")).toBeNull();
+  });
+
+  it("does render it once the answer actually has a sibling", () => {
+    render(
+      React.createElement(MessageBubble, {
+        msg: {
+          id: "a1",
+          role: "assistant",
+          text: "第一則回答",
+          dbId: 80,
+          parentId: 79,
+          siblingIndex: 0,
+          siblingCount: 2,
+          siblingIds: [80, 81],
+        },
+        agents: [],
+        conversationId: 26,
+        onDeleteBranch: () => {},
+        onSwitchBranch: () => {},
+      }),
+    );
+    expect(screen.getByTestId("assistant-delete-branch")).toBeTruthy();
+  });
+
+  it("does not render it on a user follow-up that has no sibling", () => {
+    render(
+      React.createElement(MessageBubble, {
+        msg: {
+          id: "u2",
+          role: "user",
+          text: "追問",
+          dbId: 79,
+          parentId: 78,
+          siblingIndex: 0,
+          siblingCount: 1,
+          siblingIds: [79],
+        },
+        agents: [],
+        onDeleteBranch: () => {},
+        onSwitchBranch: () => {},
+      }),
+    );
+    expect(screen.queryByTestId("user-delete-branch")).toBeNull();
+    expect(screen.queryByTestId("user-branch-controls")).toBeNull();
+  });
+});
+
+// The observed 400 (`_enforce_explicit_parent_role` rejecting click-1's
+// assistant) left the answer on screen with nothing marking it as unsaved —
+// it simply vanished on the next load.
+describe("persistAssistantTurn", () => {
+  it("reports a rejected POST instead of swallowing it", async () => {
+    const err = new Error("assistant message must specify an explicit parent");
+    err.status = 400;
+    const appendMessage = vi.fn().mockRejectedValue(err);
+    const result = await persistAssistantTurn({
+      appendMessage,
+      authRequest: vi.fn(),
+      convId: 26,
+      payload: { role: "assistant", content: "答案", parentId: 78 },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe(err);
+    expect(typeof result.notice).toBe("string");
+    expect(result.notice.length).toBeGreaterThan(0);
+    expect(result.notice).toContain("沒有存進對話紀錄");
+    expect(result.notice).toContain(err.message);
+  });
+
+  it("treats a 2xx body with no id as a failure, not a quiet success", async () => {
+    const result = await persistAssistantTurn({
+      appendMessage: vi.fn().mockResolvedValue({}),
+      authRequest: vi.fn(),
+      convId: 26,
+      payload: { role: "assistant", content: "答案" },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.notice).toContain("沒有存進對話紀錄");
+  });
+
+  it("reports success with the saved row and no notice", async () => {
+    const saved = { id: 80, parent_id: 79, sibling_index: 0, sibling_count: 1 };
+    const result = await persistAssistantTurn({
+      appendMessage: vi.fn().mockResolvedValue(saved),
+      authRequest: vi.fn(),
+      convId: 26,
+      payload: { role: "assistant", content: "答案" },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.saved).toBe(saved);
+    expect(result.notice).toBeNull();
+  });
+
+  it("surfaces the notice on the assistant bubble itself", () => {
+    render(
+      React.createElement(MessageBubble, {
+        msg: {
+          id: "a1",
+          role: "assistant",
+          text: "答案",
+          streaming: false,
+          persistError:
+            "這則回答沒有存進對話紀錄（assistant message must specify an explicit parent），重新整理後就會消失。請先複製內容，或重新產生一次。",
+          siblingIndex: 0,
+          siblingCount: 1,
+          siblingIds: [1],
+        },
+        agents: [],
+        conversationId: 26,
+      }),
+    );
+    const alert = screen.getByTestId("message-persist-error");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toContain("沒有存進對話紀錄");
+    // The streamed text is still there to copy.
+    expect(screen.getByText("答案")).toBeTruthy();
+  });
+});
+
 describe("applyServerPath", () => {
   it("replaces the list wholesale and preserves client-only fields by dbId", () => {
     const prev = [
@@ -223,6 +377,54 @@ describe("applyServerPath", () => {
     // prevList not mutated.
     expect(prev).toHaveLength(2);
     expect(prev[0].text).toBe("old");
+  });
+
+  // Defect A. A fresh tab creates the conversation, the hydrate GET for the
+  // still-empty conversation is issued, the optimistic bubbles are appended,
+  // and only THEN does the empty active path land. Wholesale replace wiped
+  // the turn the user had just sent, so the first click on a suggestion chip
+  // looked like it did nothing and the owner clicked again — which is how
+  // conversation 26 ended up with two identical user rows.
+  it("keeps optimistic messages the server has not seen yet (empty active path)", () => {
+    const prev = [
+      { id: "u-local", role: "user", text: "ANILA 可以做什麼？", conversationId: 26 },
+      { id: "a-local", role: "assistant", text: "", streaming: true, conversationId: 26 },
+    ];
+    const next = applyServerPath(prev, [], 26);
+    expect(next.map((m) => m.id)).toEqual(["u-local", "a-local"]);
+    expect(next[0].text).toBe("ANILA 可以做什麼？");
+    expect(next[1].streaming).toBe(true);
+  });
+
+  it("appends pending locals after the server path without reordering it", () => {
+    const prev = [
+      { id: "srv-1", dbId: 1, role: "user", text: "q" },
+      { id: "a-local", role: "assistant", text: "half a sentence" },
+    ];
+    const serverMapped = [
+      { id: "srv-1", dbId: 1, role: "user", text: "q" },
+      { id: "srv-2", dbId: 2, role: "assistant", text: "answer" },
+    ];
+    const next = applyServerPath(prev, serverMapped, 3);
+    expect(next.map((m) => m.id)).toEqual(["srv-1", "srv-2", "a-local"]);
+    expect(next[2].conversationId).toBe(3);
+  });
+
+  // The counterweight to the test above: keeping unsent work must not turn
+  // into "never drop anything", or a deleted branch would silently reappear
+  // and the user would think the delete failed. dbId is the discriminator —
+  // anything the server ever stored has one.
+  it("still drops a message the server really deleted", () => {
+    const prev = [
+      { id: "srv-1", dbId: 1, role: "user", text: "q" },
+      { id: "srv-2", dbId: 2, role: "assistant", text: "deleted answer" },
+      { id: "srv-3", dbId: 3, role: "user", text: "follow-up in deleted subtree" },
+    ];
+    const serverMapped = [{ id: "srv-1", dbId: 1, role: "user", text: "q" }];
+    const next = applyServerPath(prev, serverMapped, 5);
+    expect(next).toHaveLength(1);
+    expect(next.find((m) => m.dbId === 2)).toBeUndefined();
+    expect(next.find((m) => m.dbId === 3)).toBeUndefined();
   });
 
   it("preserves finishReason and routedAgentId by dbId", () => {
