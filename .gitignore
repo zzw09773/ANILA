@@ -177,3 +177,8 @@ models/model/*
 # 跑測試會在這裡留下附件檔（每次幾個 byte，但這是使用者上傳的落地路徑）。
 # 執行期資料不是原始碼；PUBLIC repo，不要讓任何一份真的附件跟著 commit 出去。
 /data/
+
+# 隨手放在樹根的截圖／貼圖。PUBLIC repo——平台畫面不要跟著 commit 出去。
+/image*.png
+/screenshot*.png
+/Screenshot*.png
