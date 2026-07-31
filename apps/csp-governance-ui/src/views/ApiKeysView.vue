@@ -77,7 +77,12 @@
               <span>{{ model.display_name }}</span>
               <TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge>
             </label>
-            <p v-if="allModels.length === 0" class="cell-meta">尚未註冊任何模型</p>
+            <!-- 讀不到 ≠ 沒有。文案由 allowListNotice() 依狀態決定。 -->
+            <p
+              v-if="allModelsNotice"
+              class="cell-meta"
+              :class="{ 'cell-meta--danger': allModelsStatus === ALLOW_LIST_UNREAD }"
+            >{{ allModelsNotice }}</p>
           </div>
         </TermField>
 
@@ -86,7 +91,12 @@
             <div v-if="myAllowedModels.length" class="chip-row">
               <TermBadge v-for="m in myAllowedModels" :key="m.id" variant="info">{{ m.display_name }}</TermBadge>
             </div>
-            <p v-else class="cell-meta">尚未指派模型 · 請聯絡管理員</p>
+            <!-- 讀不到 ≠ 沒有被指派 —— 兩者以前共用這一行字。 -->
+            <p
+              v-else
+              class="cell-meta"
+              :class="{ 'cell-meta--danger': myAllowedStatus === ALLOW_LIST_UNREAD }"
+            >{{ myAllowedNotice }}</p>
           </div>
         </TermField>
       </div>
@@ -146,13 +156,43 @@ import { listModels } from '../api/models'
 import { getMyAllowedModels } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermConfirm } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
+import {
+  ALLOW_LIST_UNREAD,
+  allowListNotice,
+  allowListStatus,
+  allowListUsable,
+  loadAllowList,
+} from '../utils/allowList'
 
 const { toast } = useDialog()
 const keysStore = useApiKeysStore()
 const authStore = useAuthStore()
 
-const allModels = ref([])
-const myAllowedModels = ref([])
+// ⚠ 這兩份清單以前是 `try { ... } catch {}`,讀取失敗時停在 [],畫面跟
+// 「本來就沒有模型」一模一樣 —— 使用者被告知去找管理員,管理員看自己的
+// 畫面一切正常(和 UsersView 那個最嚴重的缺陷同一個形狀)。現在讀取結果
+// 連同 loadFailed 一起保留,失敗有自己的狀態與自己的文案。
+const allModelsResult = ref({ items: [], loadFailed: false, error: null })
+const myAllowedResult = ref({ items: [], loadFailed: false, error: null })
+
+const allModels = computed(() => allModelsResult.value.items)
+const myAllowedModels = computed(() => myAllowedResult.value.items)
+
+const allModelsStatus = computed(() => allowListStatus(allModelsResult.value))
+const myAllowedStatus = computed(() => allowListStatus(myAllowedResult.value))
+
+const allModelsNotice = computed(() =>
+  allowListNotice(allModelsStatus.value, {
+    empty: '尚未註冊任何模型',
+    unread: '讀不到模型清單 · 這不代表沒有模型 · 請重新整理或聯絡管理員',
+  })
+)
+const myAllowedNotice = computed(() =>
+  allowListNotice(myAllowedStatus.value, {
+    empty: '尚未指派模型 · 請聯絡管理員',
+    unread: '讀不到你的允許清單 · 這不代表你沒有模型 · 請重新整理後再試',
+  })
+)
 
 const showCreateModal = ref(false)
 const showKeyModal = ref(false)
@@ -174,29 +214,40 @@ const canCreate = computed(() => {
   if (authStore.isAdmin) {
     if ((newKey.value.model_ids || []).length === 0) return false
   } else {
-    if (myAllowedModels.value.length === 0) return false
+    // 讀不到允許清單時也不能建立 —— 非 admin 的 payload 直接拿
+    // myAllowedModels 當 model_ids(見 handleCreate),用一份「不知道對不對」
+    // 的清單建金鑰,等於憑空決定這把金鑰能打哪些模型。
+    if (!allowListUsable(myAllowedStatus.value)) return false
   }
   return true
 })
 
 const createDisabledReason = computed(() => {
   if (!(newKey.value.name || '').trim()) return '名稱不得空白'
-  if (authStore.isAdmin && (newKey.value.model_ids || []).length === 0) return '請至少選擇一個模型'
-  if (!authStore.isAdmin && myAllowedModels.value.length === 0) return '允許清單中沒有模型 · 請聯絡管理員'
+  if (authStore.isAdmin && (newKey.value.model_ids || []).length === 0) {
+    return allModelsStatus.value === ALLOW_LIST_UNREAD
+      ? allModelsNotice.value
+      : '請至少選擇一個模型'
+  }
+  if (!authStore.isAdmin && !allowListUsable(myAllowedStatus.value)) {
+    return myAllowedStatus.value === ALLOW_LIST_UNREAD
+      ? myAllowedNotice.value
+      : '允許清單中沒有模型 · 請聯絡管理員'
+  }
   return ''
 })
 
 onMounted(async () => {
   await keysStore.fetchKeys()
-  try {
-    const { data } = await listModels()
-    allModels.value = data
-  } catch {}
+  allModelsResult.value = await loadAllowList(listModels)
+  if (allModelsResult.value.loadFailed) {
+    toast(allModelsNotice.value, { tone: 'error' })
+  }
   if (!authStore.isAdmin) {
-    try {
-      const { data } = await getMyAllowedModels()
-      myAllowedModels.value = data
-    } catch {}
+    myAllowedResult.value = await loadAllowList(getMyAllowedModels)
+    if (myAllowedResult.value.loadFailed) {
+      toast(myAllowedNotice.value, { tone: 'error' })
+    }
   }
 })
 
@@ -299,6 +350,8 @@ function formatDate(dateStr) {
 
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+/* 讀取失敗的說明文字要看得出是錯誤,不能和「本來就是空的」長一樣。 */
+.cell-meta--danger { color: var(--c-danger); font-weight: 500; }
 .cell-code {
   font-family: var(--font-mono);
   background: var(--c-bg);

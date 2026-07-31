@@ -42,7 +42,12 @@ class UserResponse(ApiResponseModel, UserBase):
     local_password_disabled: bool = False
     last_login_at: datetime | None = None
     created_at: datetime
-    updated_at: datetime
+    # users.updated_at 是 nullable(models/user.py:59 只有 default/onupdate,
+    # 沒有 server_default),所以任何在該欄位加入前就存在、或由 raw SQL /
+    # 舊 migration 寫進去的列都可能是 NULL。宣告成非選填時,這種列會讓
+    # response 序列化失敗 → 整個端點 500,而且看起來像是「使用者清單壞了」,
+    # 不像是某一列的資料問題。schema 對齊資料庫實況。
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

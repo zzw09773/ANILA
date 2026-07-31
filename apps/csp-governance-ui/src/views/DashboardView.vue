@@ -144,7 +144,9 @@
       <div v-if="platformLinks.length" class="links">
         <PlatformCard v-for="link in platformLinks" :key="link.id" :link="link" />
       </div>
-      <TermEmpty v-else message="尚無平台連結 · 管理員可於 /admin/platform-links 綁定外部工具" />
+      <!-- 路徑以 router/index.js 的 `platform-links` 為準;/admin/platform-links
+           是麵包屑用的顯示字串,不是可導覽的位址(沒有 route、沒有 catch-all)。 -->
+      <TermEmpty v-else message="尚無平台連結 · 管理員可於 /platform-links 綁定外部工具" />
     </TermBox>
   </div>
 </template>
