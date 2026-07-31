@@ -7,8 +7,8 @@
  *
  * 對照關係（狀態 → 繁中標籤 / TermBadge variant / 顏色語意）：
  *
- *   unknown    未知    ''(default) 中性灰   還沒探測過
- *   healthy    健康    ok          綠       探測通過
+ *   unknown    未知    ''(default) 中性灰   還沒探測過，或探測到但無法確認會為我們服務（例如 401）
+ *   healthy    健康    ok          綠       探測通過（真實 probe 路徑回 2xx）
  *   degraded   降級    warn        琥珀     部分能力受損／延遲偏高
  *   unhealthy  異常    danger      紅       探測失敗
  *   disabled   已停用  muted       暗灰     被管理者停用，不做探測

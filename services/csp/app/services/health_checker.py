@@ -3,8 +3,9 @@
 Slice 6a (doc 04 §9 / doc 01 §32 拍板):health 字彙收斂為五態
 ``unknown / healthy / degraded / unhealthy / disabled``。舊三值
 (online/connecting/offline)由 r1_0005 遷移到位;本模組的 probe 直接回五態
-(reachable → healthy、timeout → degraded、unreachable/unsafe → unhealthy),
-``unknown`` 為初始未檢查、``disabled`` 由讀取端依 ``is_active`` 呈現。
+(2xx on real path → healthy、401/403-only → unknown、timeout → degraded、
+unreachable/unsafe → unhealthy),``unknown`` 亦含「碰到但無法確認會為我們服務」、
+``disabled`` 由讀取端依 ``is_active`` 呈現。
 
 P3.3 / attic W3-3⑦ 追加**基礎服務**探測(csp-db / redis / router /
 anila-studio / ingestion-worker / pptx-renderer / nginx)。model/agent 那一套
@@ -69,9 +70,10 @@ def normalize_health_status(raw: str | None, *, is_active: bool = True) -> str:
 
 
 # Paths the platform actually uses for model/agent HTTP surfaces.
-# A response that is not 404 and <500 counts as ``healthy`` (API surface
-# liveness — credentials are out of scope for the health probe). 404 is
-# excluded: SPA/nginx catch-alls and wrong joins often answer 404.
+# Only a 2xx on these paths counts as ``healthy`` — that proves the
+# surface will serve an unauthenticated probe. 401/403 only prove that
+# something speaks HTTP; they do not prove our key still works
+# (2026-07-31 false green: rotated key stayed green on 401).
 REAL_PROBE_PATHS: tuple[str, ...] = ("/health", "/v1/models")
 
 # Host-liveness only. Kept so ops can tell "host answers something" from
@@ -95,8 +97,13 @@ def _probe_url(endpoint_url: str, path: str) -> str:
 
 
 def _real_probe_hit(status_code: int) -> bool:
-    """True when a REAL probe path answered as a live API surface."""
-    return status_code != 404 and status_code < 500
+    """True when a REAL probe path answered 2xx — usable without guessing auth."""
+    return 200 <= status_code < 300
+
+
+def _auth_rejected(status_code: int) -> bool:
+    """Probe reached an API surface that refused us; not proof of health."""
+    return status_code in (401, 403)
 
 
 async def probe_model_health_detailed(
@@ -107,7 +114,8 @@ async def probe_model_health_detailed(
 ) -> tuple[str, int]:
     """Active probe → ``(five_state_status, latency_ms)`` (health probe only).
 
-    - ``/health`` or ``/v1/models`` responding non-404 ``<500`` → ``healthy``
+    - ``/health`` or ``/v1/models`` responding 2xx → ``healthy``
+    - those paths answering 401/403 only → ``unknown`` (reachable, not proven)
     - only ``/`` responding ``<500`` → ``degraded`` (host up, API path unproven)
     - timeout → ``degraded``
     - unreachable / unsafe endpoint → ``unhealthy``
@@ -146,6 +154,7 @@ async def probe_model_health_detailed(
 
     saw_timeout = False
     saw_weak = False
+    saw_auth_reject = False
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             for url in real_urls:
@@ -153,11 +162,17 @@ async def probe_model_health_detailed(
                     resp = await client.get(url)
                     if _real_probe_hit(resp.status_code):
                         return HEALTH_HEALTHY, _elapsed_ms()
+                    if _auth_rejected(resp.status_code):
+                        saw_auth_reject = True
                 except httpx.ConnectError:
                     continue
                 except httpx.TimeoutException:
                     saw_timeout = True
                     break
+            # Auth rejection on a real path beats a weak `/` hit: we reached
+            # the API surface but cannot claim it will serve us.
+            if saw_auth_reject and not saw_timeout:
+                return HEALTH_UNKNOWN, _elapsed_ms()
             if not saw_timeout:
                 for url in weak_urls:
                     try:

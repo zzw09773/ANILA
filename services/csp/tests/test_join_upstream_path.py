@@ -603,7 +603,7 @@ def test_health_checker_probe_urls_both_conventions(monkeypatch, endpoint_url: s
         async def get(self, url):
             seen.append(url)
             if url.endswith("/v1/models"):
-                return _Resp(401)
+                return _Resp(200)
             raise health_checker.httpx.ConnectError("skip")
 
     monkeypatch.setattr(health_checker.httpx, "AsyncClient", _Client)
