@@ -1034,8 +1034,6 @@ def create_share(
     target_username: Optional[str] = None,
     target_department_id: Optional[int] = None,
     target_department_name: Optional[str] = None,
-    mode: str = "read_only",
-    allow_fork: bool = False,
     expires_at: Optional[datetime] = None,
 ) -> ConversationShare:
     from app.schemas.contracts.classification import (
@@ -1096,8 +1094,6 @@ def create_share(
         conversation_id=conv.id,
         target_user_id=resolved_user_id,
         target_department_id=resolved_dept_id,
-        mode=mode,
-        allow_fork=allow_fork,
         expires_at=expires_at,
         created_by=user.id,
     )

@@ -236,6 +236,7 @@ async def retrieve_relevant_chunks(
     query_text: str,
     *,
     exclude_conversation_id: int | None = None,
+    only_conversation_id: int | None = None,
     top_k: int | None = None,
     min_cosine: float | None = None,
 ) -> list[RetrievedChunk]:
@@ -245,9 +246,20 @@ async def retrieve_relevant_chunks(
     conversation — those messages are already in the chat history the
     LLM is about to see, so re-injecting them as "past discussion"
     just wastes context.
+
+    ``only_conversation_id`` is the P4.5 confinement: recall may not
+    leave the one conversation named here. Owner rule (PLAN 4.4/4.5) —
+    ANILALM 的「同一 session」= 同一個對話框 — so the LM side searches
+    its own conversation and nothing else. It is the inverse of
+    ``exclude_conversation_id``; when set, exclude is ignored (excluding
+    the only conversation we are allowed to read would return nothing
+    and quietly disable recall instead of confining it).
     """
     if not query_text.strip():
         return []
+
+    if only_conversation_id is not None:
+        exclude_conversation_id = None
 
     k = top_k if top_k is not None else _RETRIEVE_TOP_K
     threshold = min_cosine if min_cosine is not None else _RETRIEVE_MIN_COSINE
@@ -272,6 +284,7 @@ async def retrieve_relevant_chunks(
         FROM conversation_memory_chunks
         WHERE user_id = :user_id
           AND embedding_source_model = :source_model
+          AND (:only_conv IS NULL OR conversation_id = :only_conv)
           AND (:exclude_conv IS NULL OR conversation_id <> :exclude_conv)
         ORDER BY embedding <=> CAST(:vec AS halfvec) ASC
         LIMIT :k
@@ -283,6 +296,7 @@ async def retrieve_relevant_chunks(
             "vec": vec_literal,
             "user_id": user_id,
             "source_model": source_model,
+            "only_conv": only_conversation_id,
             "exclude_conv": exclude_conversation_id,
             "k": k,
         },
@@ -306,21 +320,30 @@ async def retrieve_relevant_chunks(
     return hits
 
 
-def get_user_facts(db: Session, user_id: int) -> list[UserFact]:
-    """Return ALL facts for a user, newest first (ORM rows).
+def get_user_facts(
+    db: Session,
+    user_id: int,
+    *,
+    only_conversation_id: int | None = None,
+) -> list[UserFact]:
+    """Return a user's facts, newest first (ORM rows).
 
     This returns the SQLAlchemy ORM ``UserFact`` rows directly because
     ``app.api.memory`` and ``_format_block`` consume them as ORM
     objects. The Adapter contract (``MemoryAdapter.get_user_facts``)
     returns ``UserFactDTO`` instead — see
     :meth:`PostgresMemoryAdapter.get_user_facts` for the conversion.
+
+    ``only_conversation_id`` restricts the result to facts extracted
+    from that one conversation (P4.5 confinement — see
+    :func:`retrieve_relevant_chunks`). Default ``None`` = every fact
+    the user has, which is what the ANILA side and the management page
+    want.
     """
-    return (
-        db.query(UserFact)
-        .filter(UserFact.user_id == user_id)
-        .order_by(UserFact.updated_at.desc())
-        .all()
-    )
+    q = db.query(UserFact).filter(UserFact.user_id == user_id)
+    if only_conversation_id is not None:
+        q = q.filter(UserFact.source_conversation_id == only_conversation_id)
+    return q.order_by(UserFact.updated_at.desc()).all()
 
 
 def _format_block(facts: list[UserFact], chunks: list[RetrievedChunk]) -> str | None:
@@ -376,14 +399,24 @@ async def build_memory_block(
     latest_user_message: str,
     *,
     exclude_conversation_id: int | None = None,
+    only_conversation_id: int | None = None,
 ) -> MemoryReadResult:
-    """Top-level read: fetch facts + run RAG, return formatted block."""
-    facts = get_user_facts(db, user_id)
+    """Top-level read: fetch facts + run RAG, return formatted block.
+
+    ``only_conversation_id`` confines BOTH stores — facts and chunks —
+    to a single conversation (P4.5). Passing it to just one of the two
+    would leak through the other; the whole point of the parameter is
+    that it covers every store the block is assembled from.
+    """
+    facts = get_user_facts(
+        db, user_id, only_conversation_id=only_conversation_id
+    )
     chunks = await retrieve_relevant_chunks(
         db,
         user_id,
         latest_user_message,
         exclude_conversation_id=exclude_conversation_id,
+        only_conversation_id=only_conversation_id,
     )
     return MemoryReadResult(
         block=_format_block(facts, chunks),
@@ -656,6 +689,47 @@ async def persist_turn(
             )
     finally:
         db.close()
+
+
+# ── P4.4: revoke memory when a conversation is upgraded ──────────────────────
+
+
+def purge_conversation_memory(db: Session, conversation_id: int) -> dict[str, int]:
+    """Delete every piece of memory derived from ``conversation_id``.
+
+    Owner rule (PLAN.md §4.4/4.5, 2026-07-30):
+    「對話**升密之後,先前萃取的記憶直接刪除**(不是標記不可用)。」
+    Real DELETE, not a tombstone or a retrieval-time filter — a filter
+    is one forgotten call site away from serving the content again, and
+    SYSTEM-MAP §5 L189 says 撤回, not 隱藏.
+
+    Both stores the memory subsystem writes are covered:
+
+    * ``conversation_memory_chunks`` — RAG recall rows. The embedding is
+      a column on this table, not a separate store, so the vector dies
+      with the row; there is no orphaned index entry to sweep.
+    * ``user_facts`` — extracted key/value facts, matched on
+      ``source_conversation_id`` (the provenance column SYSTEM-MAP §5
+      L189 requires precisely so an upgrade can find them again).
+
+    Caller owns the transaction — this stages the DELETEs and does not
+    commit, so the purge lands in the same transaction as the
+    classification upgrade that triggered it. Half-applied is not a
+    state this may end in.
+
+    Returns the per-store row counts for the audit trail.
+    """
+    chunks = (
+        db.query(ConversationMemoryChunk)
+        .filter(ConversationMemoryChunk.conversation_id == conversation_id)
+        .delete(synchronize_session=False)
+    )
+    facts = (
+        db.query(UserFact)
+        .filter(UserFact.source_conversation_id == conversation_id)
+        .delete(synchronize_session=False)
+    )
+    return {"chunks": int(chunks), "facts": int(facts)}
 
 
 # ── PostgresMemoryAdapter — implements anila_core.memory.long_term.MemoryAdapter ─

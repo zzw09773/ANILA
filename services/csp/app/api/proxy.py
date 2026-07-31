@@ -220,6 +220,34 @@ def _extract_latest_user_message(body: dict) -> str | None:
     return None
 
 
+def _memory_confined_to_conversation(
+    db: Session, conversation_id: int | None
+) -> int | None:
+    """P4.5 — return the conversation memory recall may not leave, else None.
+
+    Owner rule (PLAN.md §4.4/4.5, 2026-07-30):「ANILALM 的「同一 session」=
+    **同一個對話框**;不是關分頁,也不是登出。」So an ANILALM conversation
+    recalls from itself and from nowhere else, while ANILA keeps the
+    cross-conversation long-term memory SYSTEM-MAP §5 grants it (L51:
+    長期記憶 ANILA ✓ / ANILALM 只在同一 session 內).
+
+    ``origin`` on the conversation row is the only signal that says which
+    front end a completion came from; without a conversation id there is
+    no origin to read, so this returns None. That is not a hole in
+    practice — ANILALM cannot create a conversation without going through
+    ``POST /conversations`` with ``origin='anilalm'`` (and a required
+    ``collection_id``), and it sends the id back on every completion.
+    """
+    if conversation_id is None:
+        return None
+    origin = (
+        db.query(Conversation.origin)
+        .filter(Conversation.id == conversation_id)
+        .scalar()
+    )
+    return conversation_id if origin == "anilalm" else None
+
+
 async def _inject_memory(
     db: Session,
     user_id: int,
@@ -237,12 +265,16 @@ async def _inject_memory(
     user_text = _extract_latest_user_message(body)
     if not user_text:
         return None
+    only_conversation_id = _memory_confined_to_conversation(
+        db, exclude_conversation_id
+    )
     try:
         result = await memory_service.build_memory_block(
             db,
             user_id=user_id,
             latest_user_message=user_text,
             exclude_conversation_id=exclude_conversation_id,
+            only_conversation_id=only_conversation_id,
         )
     except Exception:
         logger.exception("memory_service: build_memory_block failed user_id=%s", user_id)
