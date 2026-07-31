@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 import httpx
 
+from anila_core.http_pool import get_http_client  # OPT-1
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,13 +78,15 @@ class RemoteAgentRegistry:
         url = f"{self._csp_base_url}/v1/agents"
         self._last_refresh_at = time.time()
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.get(
-                    url,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            # OPT-1: shared client
+            client = get_http_client()
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
         except Exception as exc:
             err_msg = f"{type(exc).__name__}: {exc}"
             self._last_refresh_error = err_msg

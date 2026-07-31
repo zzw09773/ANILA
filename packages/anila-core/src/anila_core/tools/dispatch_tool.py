@@ -36,6 +36,7 @@ from typing import Any, Optional
 import httpx
 
 from ..models.handoff import HandoffRequest
+from ..http_pool import get_http_client  # OPT-1
 
 logger = logging.getLogger(__name__)
 
@@ -111,17 +112,18 @@ async def dispatch_to_agent_response(
     }
     url = f"{csp_base_url.rstrip('/')}/v1/chat/completions"
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        if stream:
-            return await _collect_stream_response(client, url, payload, headers)
-        resp = await client.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-        return {
-            "content": data["choices"][0]["message"]["content"],
-            "anila_meta": data.get("anila_meta"),
-            "raw": data,
-        }
+    # OPT-1: shared client (was ``async with httpx.AsyncClient(timeout=…)``).
+    client = get_http_client()
+    if stream:
+        return await _collect_stream_response(client, url, payload, headers)
+    resp = await client.post(url, json=payload, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    return {
+        "content": data["choices"][0]["message"]["content"],
+        "anila_meta": data.get("anila_meta"),
+        "raw": data,
+    }
 
 
 async def dispatch_for_handoff(
