@@ -3,7 +3,7 @@
 > **這是重啟樹**:2026-07-28 平台擁有者決定回到 redesign 收斂點 `a4118a3`(2026-07-03)重新出發。
 > 權威文件就在本樹根目錄:**規格＝`SYSTEM-MAP.md`**(28 題 QA)、**順序＝`PLAN.md`**(到 8 月底上線)、
 > **歷史＝`RESTART-FROM-REDESIGN.md`**(373 commit 履歷＋attic 取回方式)。
-> 📌 **接手先讀 `docs/HANDOFF-2026-07-31-pm.md`**(最新;前兩份 `docs/HANDOFF-2026-07-31.md`、`HANDOFF-2026-07-29.md` 仍可參照)。
+> 📌 **接手先讀 `docs/HANDOFF-2026-08-01.md`**（最新，含本輪教訓）；擁有者要看的是 `docs/TOMORROW.md`。
 > ⚠ **`AGENTS.md` 是 2026-06-22 版,大幅過時**——讀碼以 SYSTEM-MAP 與現行程式碼為準,別照它辦事。
 > 舊資料夾 `~/桌面/ANILA/anila-migration-20260706/ANILA`(main＋attic/2026-07-28/*)只當**參照**,不在上面開發。
 > 回覆一律**繁體中文＋台灣用語**(禁簡體、禁大陸用語)。
