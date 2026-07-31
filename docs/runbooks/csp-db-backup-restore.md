@@ -19,12 +19,17 @@
 
 ### 1.1 目錄
 
+**不用做任何事**——預設路徑是 `~/anila-backups`，腳本會自己建，不需要 `sudo`。
+
+要放到系統目錄（例如給 root cron 用）才需要先開權限：
+
 ```bash
 sudo mkdir -p /var/backups/anila/{daily,monthly}
 sudo chown "$USER":"$USER" /var/backups/anila
 ```
 
-（路徑可改；改了就讓 cron 帶 `ANILA_BACKUP_DIR`。）
+（改路徑就讓 cron 帶 `ANILA_BACKUP_DIR`。）
+**選預設值時的判準是「跑得動最重要」**——備份最常見的死法不是放錯目錄，是因為每次都要 sudo 所以沒跑。
 
 ### 1.2 每晚跑一次
 
@@ -56,8 +61,7 @@ crontab -e
 
 ```bash
 export ANILA_DB_CONTAINER=anila-restart-csp-db-1   # 改成你的
-export ANILA_BACKUP_DIR=/var/backups/anila
-bash infra/deployment/scripts/backup-csp-db.sh
+bash infra/deployment/scripts/backup-csp-db.sh     # 寫到 ~/anila-backups
 ```
 
 成功會長這樣：`BACKUP_OK path=... size_bytes=... elapsed_s=...`

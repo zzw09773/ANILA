@@ -9,8 +9,10 @@
 #
 # 用法（在平台主機）：
 #   ANILA_DB_CONTAINER=anila-restart-csp-db-1 \
-#   ANILA_BACKUP_DIR=/var/backups/anila \
 #   bash infra/deployment/scripts/backup-csp-db.sh
+#
+# 預設寫到家目錄底下（~/anila-backups），所以不必 sudo 就跑得動。
+# 備份最怕的是「因為麻煩所以沒跑」；要放系統目錄請帶 ANILA_BACKUP_DIR=。
 #
 # 還原手順見 docs/runbooks/csp-db-backup-restore.md
 #
@@ -18,7 +20,7 @@
 #   ANILA_DB_CONTAINER   pg 容器名（預設：偵測 *csp-db* 且 Up 的第一個）
 #   ANILA_DB_NAME        資料庫名（預設 csp）
 #   ANILA_DB_USER        超級使用者（預設 csp；容器內 peer/trust，不需密碼）
-#   ANILA_BACKUP_DIR     備份目錄（預設 /var/backups/anila）
+#   ANILA_BACKUP_DIR     備份目錄（預設 ~/anila-backups，不需 sudo）
 #   ANILA_BACKUP_KEEP_DAYS   每日檔保留天數（預設 30）
 #   ANILA_BACKUP_KEEP_MONTHLY 月初檔保留個月數（預設 7，約半年稽核窗）
 # ============================================================================
@@ -30,7 +32,7 @@ fail() { log "ERROR: $*"; exit 1; }
 # 絕不把密碼印到 stdout／檔名。容器內以 -U 連本機 socket，不帶 PGPASSWORD。
 DB_NAME="${ANILA_DB_NAME:-csp}"
 DB_USER="${ANILA_DB_USER:-csp}"
-BACKUP_DIR="${ANILA_BACKUP_DIR:-/var/backups/anila}"
+BACKUP_DIR="${ANILA_BACKUP_DIR:-${HOME:-/root}/anila-backups}"
 KEEP_DAYS="${ANILA_BACKUP_KEEP_DAYS:-30}"
 KEEP_MONTHLY="${ANILA_BACKUP_KEEP_MONTHLY:-7}"
 
