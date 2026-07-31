@@ -6,7 +6,6 @@ an effect (silent success). Revert the production guard to confirm.
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
 
 from app.api import handoffs as handoffs_api
 from app.api.agents import registration as reg
@@ -94,17 +93,19 @@ def test_runtime_config_patch_is_gone(client, db):
     assert "runtime_config" in resp.json()["detail"]
 
 
-def test_handoff_accept_is_not_implemented():
-    """Revert: restore resolve_handoff call in accept_handoff → no 501."""
-    with pytest.raises(HTTPException) as exc:
-        handoffs_api.accept_handoff(handoff_id=1, db=None, current_user=None)
-    assert exc.value.status_code == 501
+def test_handoff_accept_reject_are_no_longer_stubs():
+    """2026-07-31：交接不再是假控制項，兩支端點真的做事。
 
+    這裡只釘「不是 501 佔位」這件事；真正的行為驗收(換手、原擁有者保留
+    讀取、密等擋下)在 ``tests/test_handoff_transfer.py``。
+    Revert: 把 accept/reject 改回 ``raise HTTPException(501)`` → 本測試轉紅。
+    """
+    import inspect
 
-def test_handoff_reject_is_not_implemented():
-    with pytest.raises(HTTPException) as exc:
-        handoffs_api.reject_handoff(handoff_id=1, db=None, current_user=None)
-    assert exc.value.status_code == 501
+    for fn in (handoffs_api.accept_handoff, handoffs_api.reject_handoff):
+        source = inspect.getsource(fn)
+        assert "501" not in source, f"{fn.__name__} 仍是 501 佔位"
+        assert "transfer." in source, f"{fn.__name__} 沒有接到 handoff_transfer"
 
 
 def test_enable_api_docs_flag_absent():
