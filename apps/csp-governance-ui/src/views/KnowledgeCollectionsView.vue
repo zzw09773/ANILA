@@ -53,6 +53,7 @@
           <div><dt>位元組</dt><dd class="tnum">{{ humanBytes(c.bytes_stored) }}</dd></div>
           <div><dt>策略</dt><dd>{{ c.chunking_config.strategy }}</dd></div>
           <div><dt>嵌入</dt><dd>{{ c.embedding_model }} · {{ c.embedding_dim }}-d</dd></div>
+          <div><dt>密等</dt><dd>{{ c.classification_level || '無機密' }}</dd></div>
           <div><dt>擁有者</dt><dd>user #{{ c.created_by }}</dd></div>
         </dl>
 
@@ -81,6 +82,14 @@
         </TermField>
         <TermField label="描述" optional>
           <textarea v-model.trim="form.description" rows="2" class="term-textarea" maxlength="2000" />
+        </TermField>
+        <TermField
+          label="密等"
+          hint="建立時選定；只能往上調，不能自行降級。預設無機密。"
+        >
+          <select v-model="form.classification_level" class="term-select">
+            <option v-for="lvl in CLASSIFICATION_LEVELS" :key="lvl" :value="lvl">{{ lvl }}</option>
+          </select>
         </TermField>
         <TermField label="切塊策略">
           <select v-model="form.strategy" class="term-select">
@@ -131,7 +140,11 @@ const formError = ref('')
 // leaf budget. Power users can crank it for legacy section-sized
 // chunking, but small leaves give vector recall the headroom the
 // parent-child design assumes.
-const form = ref({ name: '', description: '', strategy: 'hierarchical', maxTokens: 256 })
+const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
+const form = ref({
+  name: '', description: '', strategy: 'hierarchical', maxTokens: 256,
+  classification_level: '無機密',
+})
 
 const tokenLabel = computed(() => ({
   fixed: '大小（tokens）',
@@ -176,7 +189,10 @@ async function loadCollections() {
 function openCreateModal() {
   formError.value = ''
   // 256 matches HierarchicalChunker's post-Sprint-9-X default leaf budget.
-  form.value = { name: '', description: '', strategy: 'hierarchical', maxTokens: 256 }
+  form.value = {
+    name: '', description: '', strategy: 'hierarchical', maxTokens: 256,
+    classification_level: '無機密',
+  }
   creating.value = true
 }
 
@@ -203,6 +219,7 @@ async function submitCreate() {
       name: form.value.name,
       description: form.value.description || null,
       chunking_config: { strategy: s, params },
+      classification_level: form.value.classification_level || '無機密',
     })
     creating.value = false
     await loadCollections()

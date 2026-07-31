@@ -54,13 +54,18 @@ class IngestionCollection(Base):
 
     Sprint 1–3 scoped collections to ``agent_id`` (one collection per
     agent). Sprint 4 (migration 0019) drops that coupling — collections
-    are platform-shared resources owned by the user who created them;
-    any agent backend can configure ``RAG_COLLECTION_ID`` to point at
-    one. The platform stops caring which agent uses which collection.
+    are owned by the user who created them; any agent backend can
+    configure ``RAG_COLLECTION_ID`` to point at one.
 
-    Engine-level isolation moved with it: the RLS policy on
-    ``document_chunks`` is now keyed on ``anila.collection_id`` GUC
-    instead of ``anila.agent_id``. Agent backends issue
+    ``origin`` (migration r1_0029) records which product surface created
+    the row (``csp`` / ``anilalm`` / NULL legacy). Same shape as
+    ``conversations.origin``: inventory partitioning so CSP project
+    corpora and ANILALM personal notebooks do not share a shelf. Not an
+    authorization control — ownership, clearance and the classification
+    latch are unchanged; retrieval / RLS still key on collection id.
+
+    Engine-level isolation: the RLS policy on ``document_chunks`` is
+    keyed on ``anila.collection_id`` GUC. Agent backends issue
     ``SET LOCAL anila.collection_id = N`` before retrieval queries.
 
     Counter columns (``document_count`` / ``chunk_count`` /
@@ -88,6 +93,10 @@ class IngestionCollection(Base):
     created_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False
     )
+    # Product surface that created this row. Today's values: 'csp' /
+    # 'anilalm' / NULL (pre-r1_0029 legacy — still listed for the owner
+    # under every surface so existing corpora are never orphaned).
+    origin = Column(String(32), nullable=True)
     # ── 四級分類共通欄位(doc 08 §5,Slice 3a;backfill floor=無機密,
     # 最終等級以人工分類盤點為準,doc 08 §15)────────────────────────────
     classification_level = Column(
