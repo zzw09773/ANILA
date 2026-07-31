@@ -23,14 +23,23 @@ model 篩。維運者據此決定要不要調 prompt、換模型,或拿 ``conver
    得變成受控對話的旁路批量讀取面。需要正文時走已稽核的對話 GET。
 3. 回饋留言(``metadata.feedback.comment`` / ``reasons``)是使用者主動留下
    的品質訊號,屬於本頁要看的東西;密等等級以徽章標出供判斷。
+
+匯出(``?format=csv``)
+---------------------
+維運者要能把回饋拉出來排序、統計,不是只能捲畫面。CSV 走**同一支端點、
+同一個 ``require_admin``、同一份白名單** —— 匯出不是另一條讀取路徑,所以
+不會出現「JSON 擋住、CSV 漏出」的分歧。列數上限見 ``FEEDBACK_EXPORT_MAX_ROWS``。
 """
 
 from __future__ import annotations
 
+import csv
+import io
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -58,6 +67,33 @@ FEEDBACK_ITEM_KEYS = frozenset(
         "username",
     }
 )
+
+#: CSV 匯出的列數天花板。超過就**明講並拒絕**,不悄悄少給 —— 檔案下載後
+#: HTTP header 就消失了,被截斷的 CSV 在 Excel 裡完全沒有痕跡,那正是本專案
+#: 這週在抓的「看起來成功、實際少做」缺陷。5000 列 ≈ 1 MB,Excel 秒開;
+#: 真的更多時,縮天數或加 agent／模型篩選才是維運者想要的動作。
+FEEDBACK_EXPORT_MAX_ROWS = 5000
+
+#: 台北 = UTC+8。CSV 直接餵 Excel,沒有前端 JS 可以做時區轉換,所以在這層轉
+#: (與 ``usage_service._to_tpe_iso`` 同 convention:naive 一律當 UTC)。
+_TPE_TZ = timezone(timedelta(hours=8))
+
+#: CSV 欄位順序與繁中表頭;key 一律取自 :data:`FEEDBACK_ITEM_KEYS` 白名單,
+#: 順序對齊畫面欄位。
+_CSV_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("rating", "評分"),
+    ("comment", "留言"),
+    ("reasons", "原因"),
+    ("agent_name", "Agent"),
+    ("model_name", "模型"),
+    ("classification_level", "密等"),
+    ("message_created_at", "訊息時間"),
+    ("username", "使用者"),
+    ("conversation_id", "對話 ID"),
+    ("message_id", "訊息 ID"),
+)
+
+_RATING_LABELS = {"down": "爛", "up": "讚"}
 
 
 class FeedbackItem(ApiResponseModel):
@@ -136,6 +172,78 @@ def _item_from_row(
     )
 
 
+def _csv_value(key: str, value) -> str:
+    if key == "reasons":
+        return " · ".join(value or [])
+    if key == "rating":
+        return _RATING_LABELS.get(value, value or "")
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(_TPE_TZ).isoformat()
+    return "" if value is None else str(value)
+
+
+def _items_to_csv(items: list[FeedbackItem]) -> str:
+    """展平成 CSV;首列 BOM 供 Excel 正確以 UTF-8 開啟。
+
+    欄位只從 :class:`FeedbackItem`(= 白名單)取。白名單裡若出現 ``_CSV_COLUMNS``
+    沒宣告的鍵,會以原鍵名補在最後一欄 —— 這是刻意的絆線:任何人放寬白名單,
+    這裡會立刻長出一欄而被測試打紅,而不是讓 CSV 與 JSON 悄悄分歧。
+    """
+    declared = {key for key, _ in _CSV_COLUMNS}
+    extra = [key for key in sorted(FEEDBACK_ITEM_KEYS) if key not in declared]
+    columns = [*_CSV_COLUMNS, *((key, key) for key in extra)]
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([header for _, header in columns])
+    for item in items:
+        data = item.model_dump()
+        writer.writerow([_csv_value(key, data.get(key)) for key, _ in columns])
+    return "﻿" + buffer.getvalue()
+
+
+def _export_csv(q, *, only_with_comment: bool) -> StreamingResponse:
+    """把**整個篩選結果**(不是畫面當前那頁)展成 CSV。
+
+    ``only_with_comment`` 是 Python 端篩選(留言在 JSON metadata 裡,SQLite 與
+    Postgres 的 JSON path 語法不同),所以這裡不能靠 SQL ``LIMIT`` 湊列數 ——
+    掃到的列被留言篩掉時,那會給出一份比實際少的檔案。改成 ``yield_per`` 逐批
+    掃,湊滿上限就停,而超過上限一律回 400 說清楚。
+    """
+    items: list[FeedbackItem] = []
+    overflow = False
+    for msg, conv, username in q.yield_per(500):
+        item = _item_from_row(msg, conv, username)
+        if only_with_comment and not (item.comment or item.reasons):
+            continue
+        if len(items) >= FEEDBACK_EXPORT_MAX_ROWS:
+            overflow = True
+            break
+        items.append(item)
+
+    if overflow:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"符合目前篩選的回饋超過匯出上限 {FEEDBACK_EXPORT_MAX_ROWS} 列,"
+                "因此沒有匯出。請縮短天數,或加上評分／agent／模型篩選後再匯出 ——"
+                "寧可明講不給,也不給一份被默默砍短的檔案。"
+            ),
+        )
+
+    filename = f"feedback-{datetime.now(_TPE_TZ).strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        iter([_items_to_csv(items)]),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "X-Feedback-Export-Rows": str(len(items)),
+        },
+    )
+
+
 @router.get("", response_model=FeedbackListResponse)
 def list_feedback(
     rating: Literal["up", "down"] | None = Query(
@@ -153,10 +261,18 @@ def list_feedback(
         False, description="只看有文字留言的(差評追查常用)"
     ),
     limit: int = Query(100, ge=1, le=500),
+    format: Literal["json", "csv"] = Query(
+        "json", description="csv = 依目前篩選匯出(忽略 limit,匯出整個篩選結果)"
+    ),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
-) -> FeedbackListResponse:
-    """列出有評分的助理訊息。永不回傳訊息正文。"""
+) -> FeedbackListResponse | StreamingResponse:
+    """列出有評分的助理訊息。永不回傳訊息正文。
+
+    ``?format=csv`` 用**同樣的篩選條件**回傳含 BOM 的 UTF-8 ``text/csv``,
+    且不受 ``limit`` 這個畫面分頁參數限制(匯出的是整個篩選結果)。筆數超過
+    ``FEEDBACK_EXPORT_MAX_ROWS`` 時回 400 講清楚,不會給一份被默默砍短的檔案。
+    """
     since = datetime.now(timezone.utc) - timedelta(days=days)
 
     q = (
@@ -173,6 +289,9 @@ def list_feedback(
         q = q.filter(Message.agent_name == agent_name)
     if model_name:
         q = q.filter(Message.model_name == model_name)
+
+    if format == "csv":
+        return _export_csv(q, only_with_comment=only_with_comment)
 
     # Pull a bit more than limit when filtering comments in Python — feedback
     # lives in JSON metadata and SQLite/Postgres JSON path differs; keep the
