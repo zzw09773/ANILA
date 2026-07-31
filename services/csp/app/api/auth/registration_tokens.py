@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models.department import Department
 from app.models.user import User
 from app.schemas.card import (
+    CARD_PENDING_APPROVAL_MESSAGE,
     CardCompleteRegistrationRequest,
     CardCompleteRegistrationResponse,
     CardDepartmentOption,
@@ -109,5 +110,5 @@ def card_complete_registration(
     )
     return CardCompleteRegistrationResponse(
         status="pending_approval",
-        message="已記錄您的單位資訊，請等待管理員核准。",
+        message=CARD_PENDING_APPROVAL_MESSAGE,
     )

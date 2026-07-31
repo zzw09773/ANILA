@@ -29,6 +29,18 @@
         <textarea v-model="form.content" class="term-textarea" rows="3" maxlength="2000"
           placeholder="系統將於今晚 22:00–23:00 進行維護，期間服務暫停。"></textarea>
       </TermField>
+      <!-- 這個勾選框把公告的讀者從「已登入的人」放大到「連得到登入頁的任何人」，
+           所以標籤要把後果講完，不能只寫「顯示在登入頁」。 -->
+      <TermField label="同時顯示在登入頁">
+        <label class="login-opt">
+          <input type="checkbox" v-model="form.show_on_login" />
+          <span>
+            勾選後，這則公告的內容<strong>任何連得到登入頁的人都讀得到</strong>，
+            包含尚未擁有帳號、正在等待核准的人。這正是它的用途（讓等核准的人知道能問誰），
+            但也表示<strong>不要在這裡放只給院內看的內容</strong>。不勾就只有登入後看得到。
+          </span>
+        </label>
+      </TermField>
       <div class="row-actions">
         <TermButton variant="primary" :disabled="busy || !form.content.trim()" :loading="busy"
           label="張貼公告" @click="handleCreate" />
@@ -42,12 +54,16 @@
           <div class="banner-row__main">
             <div class="banner-row__meta">
               <TermBadge :variant="b.is_active ? 'accent' : ''">{{ b.is_active ? '使用中' : '關閉' }}</TermBadge>
+              <TermBadge v-if="b.show_on_login" variant="warn">登入頁公開</TermBadge>
               <span class="banner-row__level">{{ b.level }}</span>
             </div>
             <div class="banner-row__content">{{ b.content }}</div>
           </div>
           <div class="banner-row__actions">
             <TermButton :disabled="busy" :label="b.is_active ? '停用' : '啟用'" @click="toggleActive(b)" />
+            <TermButton :disabled="busy"
+              :label="b.show_on_login ? '取消登入頁公開' : '登入頁公開'"
+              @click="toggleShowOnLogin(b)" />
             <TermButton :disabled="busy" label="刪除" @click="handleDelete(b)" />
           </div>
         </li>
@@ -66,7 +82,8 @@ const { confirm } = useDialog()
 const banners = ref([])
 const error = ref('')
 const busy = ref(false)
-const form = ref({ level: 'info', content: '', is_active: true })
+// show_on_login 預設 false —— 公開必須是管理員主動勾的，不是預設值。
+const form = ref({ level: 'info', content: '', is_active: true, show_on_login: false })
 
 async function load() {
   try {
@@ -83,8 +100,14 @@ async function handleCreate() {
   busy.value = true
   error.value = ''
   try {
-    await createBanner({ level: form.value.level, content, is_active: form.value.is_active, sort_order: banners.value.length })
-    form.value = { level: 'info', content: '', is_active: true }
+    await createBanner({
+      level: form.value.level,
+      content,
+      is_active: form.value.is_active,
+      show_on_login: form.value.show_on_login,
+      sort_order: banners.value.length,
+    })
+    form.value = { level: 'info', content: '', is_active: true, show_on_login: false }
     await load()
   } catch (e) {
     error.value = e?.response?.data?.detail || '張貼失敗'
@@ -97,6 +120,28 @@ async function toggleActive(b) {
   busy.value = true
   try {
     await updateBanner(b.id, { is_active: !b.is_active })
+    await load()
+  } catch (e) {
+    error.value = e?.response?.data?.detail || '更新失敗'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function toggleShowOnLogin(b) {
+  // 開啟＝把讀者從「已登入的人」放大到「連得到登入頁的任何人」。這個方向要問一次；
+  // 關閉是收回權限，不用擋。
+  if (!b.show_on_login) {
+    const ok = await confirm({
+      title: '在登入頁公開這則公告',
+      message:
+        '登入頁不需要帳號就看得到。確定這則公告的內容可以讓任何連得到登入頁的人讀到嗎？',
+    })
+    if (!ok) return
+  }
+  busy.value = true
+  try {
+    await updateBanner(b.id, { show_on_login: !b.show_on_login })
     await load()
   } catch (e) {
     error.value = e?.response?.data?.detail || '更新失敗'
@@ -126,6 +171,8 @@ onMounted(load)
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .row-actions { display: flex; gap: 8px; margin-top: 8px; }
 .hint { color: var(--c-fg-mute); font-size: var(--t-xs, 12px); }
+.login-opt { display: flex; align-items: flex-start; gap: 8px; font-size: var(--t-xs, 12px); color: var(--c-fg-2); line-height: 1.5; cursor: pointer; }
+.login-opt input { margin-top: 3px; flex-shrink: 0; }
 .banner-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .banner-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 10px; border: 1px solid var(--c-border); border-left-width: 3px; border-radius: var(--radius, 6px); }
 .banner-row.is-warning { border-left-color: var(--c-warn); }
