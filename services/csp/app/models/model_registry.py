@@ -10,7 +10,7 @@ class ModelRegistry(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), unique=True, nullable=False, index=True)  # e.g. "aia/asrd"
     display_name = Column(String(200), nullable=False)
-    model_type = Column(String(20), nullable=False)  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image'
+    model_type = Column(String(20), nullable=False)  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image' / 'asr'
     endpoint_url = Column(String(500), nullable=False)
     api_version = Column(String(10), default="v1")  # 'v1' / 'v2'
     # Slice 6a (doc 04 §2): 'openai_compatible' / 'custom_adapter'. formalize 既
@@ -25,6 +25,11 @@ class ModelRegistry(Base):
     # is_router_primary for flux2-dev-agent / anila-studio's primary image
     # model (partial unique index in migration r1_0022).
     is_image_primary = Column(Boolean, nullable=False, default=False)
+    # ASR decoder designation (migration r1_0031): asr-gateway reads the
+    # endpoint of the row marked is_asr_primary via /api/models/asr-primary.
+    # Partial unique index enforces at most one. Shared decoder token stays
+    # in the gateway/decoder environment — never on this row.
+    is_asr_primary = Column(Boolean, nullable=False, default=False)
     # P4.8: at most one designated platform embedding model (partial unique
     # index). embedding_native_dim is measured by calling the model at
     # designation time — never a configured guess.

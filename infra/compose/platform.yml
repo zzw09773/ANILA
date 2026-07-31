@@ -653,6 +653,9 @@ services:
       - "8200"
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-}
+      # Fallback when CSP has no asr-primary designation. Governance console
+      # can override at runtime (asr-gateway refreshes /api/models/asr-primary
+      # on a TTL); shared secret ASR_DECODER_TOKEN stays env-only.
       ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
       # 不用 :? 硬性要求 —— compose 的變數插值在**解析階段**就會跑,即使這個服務
       # 在 profiles: ["asr"] 後面根本不會啟動。用 :? 會讓「不想開語音的人連平台都起不來」
@@ -660,6 +663,7 @@ services:
       # fail-loud —— 缺 token 的 asr-gateway 會拒絕開機,而沒開 asr profile 的人不受影響。
       ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-}
       ASR_ALLOW_HTTP_DECODER: ${ASR_ALLOW_HTTP_DECODER:-0}
+      ASR_DECODE_URL_TTL: ${ASR_DECODE_URL_TTL:-60}
       ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
       ASR_BEAM_SIZE: ${ASR_BEAM_SIZE:-5}
       ASR_PARTIALS_ENABLED: ${ASR_PARTIALS_ENABLED:-1}
@@ -682,11 +686,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      # ⚠ 這條 depends_on 是「使用者看得到麥克風 ⟺ 語音真的能用」的來源。
-      # gateway 的 /asr/health 只看 revocation cache,**不看 decoder** —— 少了
-      # 這條,decoder 還在載權重(或根本沒權重)時 gateway 就 200,前端
-      # probeAsrAvailable 看到 200 就把麥克風畫出來,使用者按下去才發現沒反應。
-      # 那正是本專案「靜默成功比報錯危險」那條教訓的形狀。
+      # Local bootstrap: wait for the compose-local decoder before claiming
+      # healthy. /asr/health now also probes whichever address is in force
+      # (CSP asr-primary or ASR_DECODE_URL), so a console-selected remote
+      # decoder that is down yields status≠ok and hides the microphone.
       # ⚠ 外部版(decoder 跑在別台 GPU 主機、ASR_DECODE_URL 指到遠端)要用
       #   docker compose --profile asr up -d --no-deps asr-gateway
       #   跳過本機 decoder,否則會被這條拖著一起起。

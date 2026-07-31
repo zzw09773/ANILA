@@ -21,10 +21,14 @@ class Settings(BaseSettings):
     # 也不得有任何由 client 決定目的地的請求。
     ASR_DECODE_URL: str = ""
     ASR_DECODER_TOKEN: str = ""
-    # 沿用 ANILA_ALLOW_HTTP_* 的旗標慣例:預設只准 https。外部版 decoder 走
-    # MLSteam NodePort 純 http 時才顯式開,開了等於接受語音明文過內網(§6 的
-    # 書面風險接受項)。
+    # 歷史旗標。內網(air-gapped)已依 P0.2 前例接受純 http 端點;環境變數門與
+    # 治理中心門必須行為一致,因此此旗標不再拒絕啟動。保留是為了既有 compose
+    # / .env 不會因為「多了一個變數」而炸。
     ASR_ALLOW_HTTP_DECODER: bool = False
+    # How often asr-gateway re-reads CSP's asr-primary designation (seconds).
+    # Read via Settings (not os.environ at import) so tests and operators share
+    # one knobs surface with the rest of this service.
+    ASR_DECODE_URL_TTL: float = 60.0
 
     # ── 辨識 ────────────────────────────────────────────────────────────
     # ⚠ 這個 prompt 是通用的,不是領域詞典。實測(規劃書 §10)顯示它讓 CER

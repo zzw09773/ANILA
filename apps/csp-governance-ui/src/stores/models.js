@@ -4,6 +4,7 @@ import {
   listModels, createModel, updateModel, deleteModel, activateModel, purgeModel, triggerHealthCheck,
   setRouterPrimary, unsetRouterPrimary, setImagePrimary as setImagePrimaryApi,
   unsetImagePrimary as unsetImagePrimaryApi,
+  setAsrPrimary as setAsrPrimaryApi, unsetAsrPrimary as unsetAsrPrimaryApi,
   setPlatformEmbedding, unsetPlatformEmbedding,
   testModelConnection, importModelsFromEndpoint,
   activateCreatedFromImport,
@@ -83,6 +84,16 @@ export const useModelsStore = defineStore('models', () => {
     await fetchModels()
   }
 
+  async function setAsrPrimary(id) {
+    await setAsrPrimaryApi(id)
+    await fetchModels()
+  }
+
+  async function unsetAsrPrimary(id) {
+    await unsetAsrPrimaryApi(id)
+    await fetchModels()
+  }
+
   async function setPlatformEmbed(id) {
     const { data } = await setPlatformEmbedding(id)
     await fetchModels()
@@ -111,6 +122,7 @@ export const useModelsStore = defineStore('models', () => {
   return {
     models, loading, fetchModels, create, update, remove, activate, purge, checkHealth, test,
     setPrimary, unsetPrimary, setImagePrimary, unsetImagePrimary,
+    setAsrPrimary, unsetAsrPrimary,
     setPlatformEmbed, unsetPlatformEmbed,
     importFromEndpoint, activateCreated,
   }

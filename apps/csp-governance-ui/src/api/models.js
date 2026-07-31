@@ -42,6 +42,14 @@ export const setImagePrimary = (id) =>
 export const unsetImagePrimary = (id) =>
   client.post(`/api/models/${id}/unset-image-primary`)
 
+// 主語音辨識 decoder（asr-primary）— 比照 image-primary；位址進 registry，
+// 共享密鑰 ASR_DECODER_TOKEN 仍只在 gateway／decoder 環境變數。
+export const setAsrPrimary = (id) =>
+  client.post(`/api/models/${id}/set-asr-primary`)
+
+export const unsetAsrPrimary = (id) =>
+  client.post(`/api/models/${id}/unset-asr-primary`)
+
 // P4.8 — 平台主 embedding（記憶／新建知識庫預設／ingestion-worker）。
 export const setPlatformEmbedding = (id) =>
   client.post(`/api/models/${id}/set-platform-embedding`)

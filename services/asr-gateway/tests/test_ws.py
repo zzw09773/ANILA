@@ -222,49 +222,29 @@ def test_missing_decoder_token_fails_loud():
                                     ASR_DECODER_TOKEN=""))
 
 
-def test_internal_service_name_over_http_needs_no_flag():
-    """內部版(`http://asr-decoder:9000`,走 anila-models-net)音訊不出主機。
+def test_internal_service_name_over_http_accepted():
+    """內部版(`http://asr-decoder:9000`)與外部版純 http 同一道門:都接受。
 
-    ⚠ 這是 compose 驗證抓出來的 regression:早期版本對**任何** http 都要求
-    放行旗標,導致 platform.yml 的預設設定(內部版)根本起不來。旗標管的是
-    「語音會不會明文離開這台主機」,不是「有沒有用 https」。
+    治理中心在 ANILA_ALLOW_HTTP_ENDPOINT=1 時已接受 http;環境變數門若再拒絕
+    會讓「同一位址、兩扇門、兩種結果」。內網前例(P0.2)以接受為準。
     """
     _validate_settings(Settings(ASR_DECODE_URL="http://asr-decoder:9000",
                                 ASR_DECODER_TOKEN="t"))
 
 
 @pytest.mark.parametrize("url", [
-    "http://gpu-host.ai.ncsist.org.tw:9000",   # FQDN → 跨主機
-    "http://10.53.100.12:9000",                # IP → 跨主機
-    "http://aiops.ai.ncsist.org.tw:30080",     # MLSteam NodePort
+    "http://gpu-host.example.test:9000",
+    "http://decoder.example.test:9000",
+    "http://asr-external.example.test:30080",
 ])
-def test_external_host_over_http_requires_explicit_opt_in(url):
-    """外部版純 http = 語音明文過內網(規劃書 §6 的書面風險接受項)。"""
-    with pytest.raises(RuntimeError, match="ASR_ALLOW_HTTP_DECODER"):
-        _validate_settings(Settings(ASR_DECODE_URL=url, ASR_DECODER_TOKEN="t"))
+def test_external_host_over_http_accepted_without_flag(url):
+    """環境變數門與治理中心門一致:純 http 不再要求 ASR_ALLOW_HTTP_DECODER。"""
+    _validate_settings(Settings(ASR_DECODE_URL=url, ASR_DECODER_TOKEN="t"))
 
 
-def test_external_http_allowed_when_opted_in():
-    _validate_settings(Settings(ASR_DECODE_URL="http://gpu-host.ai.ncsist.org.tw:9000",
-                                ASR_DECODER_TOKEN="t",
-                                ASR_ALLOW_HTTP_DECODER=True))
-
-
-def test_https_needs_no_flag_even_for_external():
-    _validate_settings(Settings(ASR_DECODE_URL="https://gpu.ai.ncsist.org.tw:9000",
+def test_https_accepted_for_external():
+    _validate_settings(Settings(ASR_DECODE_URL="https://gpu.example.test:9000",
                                 ASR_DECODER_TOKEN="t"))
-
-
-@pytest.mark.parametrize("host,internal", [
-    ("asr-decoder", True),          # compose 服務名
-    ("decoder", True),
-    ("gpu.ai.ncsist.org.tw", False),  # FQDN
-    ("10.53.100.12", False),          # IPv4
-    ("", False),
-])
-def test_internal_service_name_detection(host, internal):
-    from app.main import _is_internal_service_name
-    assert _is_internal_service_name(host) is internal
 
 
 def test_non_http_scheme_is_rejected():

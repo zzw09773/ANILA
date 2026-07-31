@@ -206,6 +206,7 @@ def _build_response(
         "is_active": model.is_active,
         "is_router_primary": bool(model.is_router_primary),
         "is_image_primary": bool(getattr(model, "is_image_primary", False)),
+        "is_asr_primary": bool(getattr(model, "is_asr_primary", False)),
         "is_platform_embedding": bool(
             getattr(model, "is_platform_embedding", False)
         ),
@@ -1238,7 +1239,122 @@ def unset_image_primary(
     return _build_response(model, caller=admin, db=db)
 
 
-# ── P4.8 platform embedding designation ────────────────────────────────────── ──────────────────────────────────────
+# ── ASR decoder primary designation ───────────────────────────────────────────
+
+
+@router.get("/asr-primary")
+def get_asr_primary(
+    request: Request,
+    db: Session = Depends(get_db),
+    x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+):
+    """Return the model designated as the primary ASR decoder.
+
+    Service-to-service consumers (asr-gateway) send ``X-CSP-Service-Token``.
+    Authenticated users may also read it; the address is shaped by
+    ``visible_endpoint_url`` — service tokens and designated callers see the
+    real URL, everyone else gets the redaction sentinel. Never returns the
+    decoder shared secret (that stays in the gateway/decoder environment).
+    """
+    is_svc = False
+    caller: User | None = None
+    if x_csp_service_token:
+        verify_service_token(request, db, x_csp_service_token)
+        is_svc = True
+    else:
+        caller = get_current_user(request, credentials, db)
+
+    model = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_asr_primary.is_(True))
+        .first()
+    )
+    if not model:
+        raise HTTPException(status_code=404, detail="尚未指定主語音辨識模型")
+    if not model.is_active:
+        raise HTTPException(status_code=409, detail="已指定的主語音辨識模型已被停用")
+    return {
+        "id": model.id,
+        "name": model.name,
+        "display_name": model.display_name,
+        "model_type": model.model_type,
+        "endpoint_url": visible_endpoint_url(
+            model.endpoint_url,
+            is_internal=bool(getattr(model, "is_internal", False)),
+            db=db,
+            caller=caller,
+            is_service_token=is_svc,
+        ),
+        "api_version": model.api_version,
+        "health_status": model.health_status,
+    }
+
+
+@router.post("/{model_id}/set-asr-primary", response_model=ModelResponse)
+def set_asr_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Mark a model as the primary ASR decoder (clearing any previous one)."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if model.model_type != "asr":
+        raise HTTPException(status_code=400, detail="僅 asr 類型可設為主語音辨識模型")
+    if not model.is_active:
+        raise HTTPException(status_code=400, detail="已停用的模型不能設為主語音辨識模型")
+
+    (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_asr_primary.is_(True), ModelRegistry.id != model_id)
+        .update({"is_asr_primary": False}, synchronize_session=False)
+    )
+    model.is_asr_primary = True
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="set_asr_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"設為主語音辨識模型: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model, caller=admin, db=db)
+
+
+@router.post("/{model_id}/unset-asr-primary", response_model=ModelResponse)
+def unset_asr_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Remove the primary ASR-decoder designation from a model."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if not model.is_asr_primary:
+        return _build_response(model, caller=admin, db=db)
+
+    model.is_asr_primary = False
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="unset_asr_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"取消主語音辨識模型: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model, caller=admin, db=db)
+
+
+# ── P4.8 platform embedding designation ──────────────────────────────────────
 
 
 async def _probe_embedding_native_dim(model: ModelRegistry) -> int:
@@ -1600,6 +1716,8 @@ def deactivate_model(
     # stay pinned as primary.
     if getattr(model, "is_image_primary", False):
         model.is_image_primary = False
+    if getattr(model, "is_asr_primary", False):
+        model.is_asr_primary = False
     if getattr(model, "is_platform_embedding", False):
         model.is_platform_embedding = False
     db.commit()

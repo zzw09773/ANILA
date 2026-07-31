@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-head__title">模型</h1>
         <p class="page-head__sub">
-          llm · vlm · embedding · agent — 經 /v1/* 代理的已註冊端點
+          llm · vlm · embedding · agent · image · asr — 經 /v1/* 代理的已註冊端點
         </p>
       </div>
       <div class="page-head__actions" v-if="authStore.isAdmin || canSetEndpointAddress">
@@ -156,13 +156,20 @@
                 ★ 主圖像
               </span>
               <span
+                v-if="model.is_asr_primary"
+                class="primary-pill"
+                title="asr-gateway 以此為主語音辨識 decoder"
+              >
+                ★ 主語音
+              </span>
+              <span
                 v-if="model.is_platform_embedding"
                 class="primary-pill primary-pill--embed"
                 :title="platformEmbedTitle(model)"
               >
                 ★ 主 embedding
               </span>
-              <span v-if="!model.is_router_primary && !model.is_image_primary && !model.is_platform_embedding" class="cell-meta">—</span>
+              <span v-if="!model.is_router_primary && !model.is_image_primary && !model.is_asr_primary && !model.is_platform_embedding" class="cell-meta">—</span>
             </td>
             <td v-if="authStore.isAdmin || canSetEndpointAddress">
               <div class="row-actions">
@@ -212,6 +219,24 @@
                     @click="handleUnsetImagePrimary(model.id)"
                   >
                     取消主圖像
+                  </button>
+                  <span v-if="model.model_type === 'asr' && !model.is_asr_primary" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.model_type === 'asr' && !model.is_asr_primary"
+                    class="term-action"
+                    :disabled="!model.is_active || settingAsrPrimaryId === model.id"
+                    @click="handleSetAsrPrimary(model.id)"
+                  >
+                    {{ settingAsrPrimaryId === model.id ? '設定中…' : '設為主語音辨識' }}
+                  </button>
+                  <span v-else-if="model.is_asr_primary" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.is_asr_primary"
+                    class="term-action"
+                    :disabled="settingAsrPrimaryId === model.id"
+                    @click="handleUnsetAsrPrimary(model.id)"
+                  >
+                    取消主語音
                   </button>
                   <span v-if="model.model_type === 'embedding' && !model.is_platform_embedding" class="row-actions__sep">·</span>
                   <button
@@ -284,6 +309,7 @@
               <option value="embedding">embedding</option>
               <option value="agent">agent</option>
               <option value="image">image</option>
+              <option value="asr">asr</option>
             </select>
           </TermField>
           <TermField label="API 版本">
@@ -295,19 +321,21 @@
         </div>
         <TermField
           label="端點 URL"
-          :hint="endpointFieldLocked
-            ? '🔒 僅擁有者與獲授權開發者可變更端點位址'
-            : addressOnlyEditor
-              ? '獲授權開發者僅可變更端點位址'
-              : '登錄／變更端點位址需擁有者或獲授權開發者身分'"
+          :hint="endpointUrlHint"
         >
           <input
             v-model="form.endpoint_url"
             class="term-input"
             :disabled="endpointFieldLocked"
-            :placeholder="endpointFieldLocked ? '— 無權設定位址 —' : 'http://gemma4:8000/v1'"
+            :placeholder="endpointUrlPlaceholder"
           />
         </TermField>
+        <p v-if="form.model_type === 'asr'" class="field-note">
+          asr-gateway 會呼叫 <code>{此位址}/transcribe</code>，請填 decoder 根位址（例如
+          <code>http://asr-decoder:9000</code>），不要加 <code>/v1</code>（模型登錄慣例的
+          <code>/v1</code> 在這裡會變成 404）。共享密鑰 <code>ASR_DECODER_TOKEN</code> 不進本登錄；
+          換到新的 GPU 主機時，該主機必須以相同 token 部署，否則每句都會 401。
+        </p>
         <TermField
           label="內部"
           hint="位於 anila-models-net（跨 stack docker DNS）— 不對外開 host port，URL 僅 owner 可見"
@@ -530,6 +558,7 @@ const editingId = ref(null)
 const purgingId = ref(null)
 const settingPrimaryId = ref(null)
 const settingImagePrimaryId = ref(null)
+const settingAsrPrimaryId = ref(null)
 const settingEmbedId = ref(null)
 // P4.6 — 整批帶入 modal 狀態
 const showImportModal = ref(false)
@@ -822,6 +851,19 @@ const endpointFieldLocked = computed(() => !canSetEndpointAddress.value)
 const addressOnlyEditor = computed(
   () => !!editingId.value && canSetEndpointAddress.value && !authStore.isAdmin,
 )
+const endpointUrlHint = computed(() => {
+  if (endpointFieldLocked.value) return '🔒 僅擁有者與獲授權開發者可變更端點位址'
+  if (form.value.model_type === 'asr') {
+    return 'decoder 根位址（呼叫 {base}/transcribe）；勿加 /v1'
+  }
+  if (addressOnlyEditor.value) return '獲授權開發者僅可變更端點位址'
+  return '登錄／變更端點位址需擁有者或獲授權開發者身分'
+})
+const endpointUrlPlaceholder = computed(() => {
+  if (endpointFieldLocked.value) return '— 無權設定位址 —'
+  if (form.value.model_type === 'asr') return 'http://asr-decoder:9000'
+  return 'http://gemma4:8000/v1'
+})
 
 // Phase 2 模型 stack 解耦 — SSRF guard 對 single-label / internal-zone
 // hostname 回 typed 400 (detail 是 dict 不是 string)。前端在 catch 偵測
@@ -982,6 +1024,21 @@ async function handleUnsetImagePrimary(id) {
   catch (e) { toast(e.response?.data?.detail || '取消主圖像模型失敗', { tone: 'error' }) }
   finally { settingImagePrimaryId.value = null }
 }
+async function handleSetAsrPrimary(id) {
+  settingAsrPrimaryId.value = id
+  try {
+    await modelsStore.setAsrPrimary(id)
+    toast('已設為主語音辨識。新主機須部署相同 ASR_DECODER_TOKEN；位址請為 decoder 根路徑（非 /v1）。', { tone: 'ok' })
+  } catch (e) { toast(e.response?.data?.detail || '設定主語音辨識失敗', { tone: 'error' }) }
+  finally { settingAsrPrimaryId.value = null }
+}
+async function handleUnsetAsrPrimary(id) {
+  if (!(await confirm({ message: '取消主語音辨識？在你指定新的主語音模型前，asr-gateway 將改用環境變數 ASR_DECODE_URL。共享密鑰 ASR_DECODER_TOKEN 仍只在環境變數，不會寫進模型登錄。', confirmText: '取消主語音', danger: true }))) return
+  settingAsrPrimaryId.value = id
+  try { await modelsStore.unsetAsrPrimary(id) }
+  catch (e) { toast(e.response?.data?.detail || '取消主語音辨識失敗', { tone: 'error' }) }
+  finally { settingAsrPrimaryId.value = null }
+}
 function platformEmbedTitle(model) {
   const dim = model.embedding_native_dim
   if (!dim) return '平台主 embedding（記憶／新建知識庫／ingestion-worker）'
@@ -1069,6 +1126,17 @@ async function handlePurge(model) {
 }
 .import-result__list--skip { color: var(--c-warn, #9a6700); }
 
+.field-note {
+  margin: -4px 0 12px;
+  font-size: var(--t-2xs);
+  color: var(--c-fg-2);
+  line-height: 1.45;
+}
+.field-note code {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  color: var(--c-accent);
+}
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
 .cell-meta--internal { color: var(--c-ok, #2ea043); }
