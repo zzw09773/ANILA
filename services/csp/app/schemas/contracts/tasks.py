@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.schemas.contracts.classification import ClassificationLevel
+from app.schemas.base import ApiResponseModel
 
 
 class TaskType(str, enum.Enum):
@@ -120,7 +121,7 @@ class TaskCreate(BaseModel):
     classification_level: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
 
 
-class TaskOut(BaseModel):
+class TaskOut(ApiResponseModel):
     """Task 讀出契約(from ORM)。"""
 
     id: int
@@ -145,7 +146,7 @@ class TaskOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TaskRunOut(BaseModel):
+class TaskRunOut(ApiResponseModel):
     """TaskRun 讀出契約(from ORM)。"""
 
     id: int
@@ -183,7 +184,7 @@ class SourceSnapshotIn(BaseModel):
     classification_level: ClassificationLevel | None = None
 
 
-class SourceSnapshotOut(BaseModel):
+class SourceSnapshotOut(ApiResponseModel):
     """SourceSnapshot 讀出契約(from ORM)。"""
 
     id: int
@@ -203,7 +204,7 @@ class SourceSnapshotOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class CitationOut(BaseModel):
+class CitationOut(ApiResponseModel):
     """Citation 讀出契約(from ORM);只指 snapshot 內 chunk(規則 2)。"""
 
     id: int

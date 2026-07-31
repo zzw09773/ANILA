@@ -27,7 +27,7 @@ class Attachment(Base):
     size_bytes = Column(BigInteger, nullable=False, default=0)
     # Relative path under ATTACHMENT_STORAGE_PATH; never exposed directly to clients
     storage_path = Column(String(500), nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # P1.5 — async text extraction (r1_0011).
     # extract_status: pending | ok | failed | unsupported | too_large
@@ -38,7 +38,7 @@ class Attachment(Base):
         String(20), nullable=False, default="pending", server_default="pending",
     )
     extract_error = Column(String(500), nullable=True)
-    extracted_at = Column(DateTime, nullable=True)
+    extracted_at = Column(DateTime(timezone=True), nullable=True)
     # Parser page_count when reported; not a budget column — only for prompt labels.
     # Persisted so chat-time injection can show「N 頁」without re-parsing.
     page_count = Column(Integer, nullable=True)

@@ -70,14 +70,14 @@ class SourceSnapshot(Base):
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
     # doc 08 §5 其餘三共通欄位(Slice 3a 補齊)。
-    classification_latched_at = Column(DateTime, nullable=True)
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     task = relationship("Task", back_populates="source_snapshots")
     # 不設 passive_deletes:SQLite 測試不開 FK pragma,由 ORM 刪子列;
@@ -113,6 +113,6 @@ class Citation(Base):
                      server_default="answer")
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     source_snapshot = relationship("SourceSnapshot", back_populates="citations")

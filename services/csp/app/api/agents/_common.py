@@ -96,10 +96,33 @@ def _resolve_agent(db: Session, agent_id: int) -> Agent:
     return agent
 
 
+def caller_may_view_agent(agent: Agent, current_user: User) -> bool:
+    """Single view predicate for agent by-id faces (models-style).
+
+    Admin-tier or the registering owner. Used by GET / runtime-config /
+    test-connection so a foreign id cannot be distinguished from missing.
+    """
+    if is_admin_tier(current_user):
+        return True
+    return agent.owner_user_id == current_user.id
+
+
+def ensure_agent_view_access(agent: Agent, current_user: User) -> None:
+    """Refuse with the same 404 as a missing agent when the caller may not view."""
+    if not caller_may_view_agent(agent, current_user):
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+
+
 def _require_agent_editor(agent: Agent, current_user: User) -> None:
-    """Same gate as ``PUT /api/agents/{id}``: admin-tier or owner."""
-    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="無權限編輯此 Agent")
+    """Write gate for ``PUT /api/agents/{id}``: admin-tier or owner.
+
+    Kept as its own predicate (not an alias of view) so a future wider
+    read audience does not silently gain write. Refusal status matches
+    the view face (404) so existence is not an oracle.
+    """
+    if is_admin_tier(current_user) or agent.owner_user_id == current_user.id:
+        return
+    raise HTTPException(status_code=404, detail="Agent 不存在")
 
 
 def parse_stored_classification_level(raw: str | None) -> ClassificationLevel:

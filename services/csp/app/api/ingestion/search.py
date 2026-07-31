@@ -320,6 +320,14 @@ async def _embed_query(
             detail=f"Embedding model '{model_name}' is registered but inactive.",
         )
 
+    from anila_core.memory.long_term import EMBED_DIM
+
+    native = getattr(model, "embedding_native_dim", None)
+    if isinstance(native, int) and native > 0 and native != EMBED_DIM:
+        pad_from: int | None = native
+    else:
+        pad_from = None
+
     # Snapshot every attribute proxy_request (and ceiling helpers) may read into
     # a plain namespace. ORM instances are subject to expire_on_commit; a bare
     # attribute touch before commit is NOT a load guarantee under either
@@ -335,6 +343,7 @@ async def _embed_query(
         classification_ceiling=model.classification_ceiling,
         is_active=model.is_active,
         display_name=getattr(model, "display_name", model.name),
+        is_internal=bool(getattr(model, "is_internal", False)),
     )
     user_id = user.id
     department_id = user.department_id
@@ -351,8 +360,8 @@ async def _embed_query(
         request_body=body,
         endpoint_path="/v1/embeddings",
         endpoint_display=visible_endpoint_url(
-            model.endpoint_url,
-            is_internal=bool(getattr(model, "is_internal", False)),
+            model_snapshot.endpoint_url,
+            is_internal=model_snapshot.is_internal,
             db=db,
             caller=user,
         ),
@@ -374,7 +383,20 @@ async def _embed_query(
             detail="Embedding endpoint returned a non-numeric vector.",
         )
 
-    if len(raw_vector) < embedding_dim:
+    from anila_core.memory.long_term import EMBED_DIM, truncate_embedding
+
+    try:
+        floats = [float(x) for x in raw_vector]
+        if embedding_dim == EMBED_DIM:
+            return truncate_embedding(floats, pad_from=pad_from)
+        # Non-production column widths (unit tests use small dims): keep
+        # the historical truncate-or-422 contract so fixtures stay cheap.
+        if len(floats) < embedding_dim:
+            raise ValueError(
+                f"dim {len(floats)} < collection embedding_dim {embedding_dim}"
+            )
+        return floats[:embedding_dim]
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
@@ -382,8 +404,7 @@ async def _embed_query(
                 f"chunks are stored as {embedding_dim}-d. The collection was "
                 "indexed against a different model — reindex before searching."
             ),
-        )
-    return [float(x) for x in raw_vector[:embedding_dim]]
+        ) from e
 
 
 async def _expand_relations(
@@ -538,10 +559,18 @@ async def search_collection(
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
+    # P4.8: query + filter both use the designated platform embedding when
+    # set, so the query lives in the same semantic space as retrieved rows.
+    from app.services.platform_embedding import resolve_platform_embedding
+
+    designated = resolve_platform_embedding(db)
+    embed_model = designated.name if designated is not None else coll.embedding_model
+    source_filter = designated.name if designated is not None else None
+
     query_vec = await _embed_query(
         db,
         current_user,
-        coll.embedding_model,
+        embed_model,
         coll.embedding_dim,
         payload.query,
     )
@@ -559,6 +588,7 @@ async def search_collection(
         query_embedding=query_vec,
         top_k=payload.top_k,
         min_score=payload.min_score,
+        source_model=source_filter,
     )
 
     # Optional document_ids filter — done in app code rather than SQL
@@ -665,17 +695,23 @@ async def search_collection_images(
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
+    from app.services.platform_embedding import resolve_platform_embedding
+
+    designated = resolve_platform_embedding(db)
+    embed_model = designated.name if designated is not None else coll.embedding_model
+    source_filter = designated.name if designated is not None else None
+
     q_vec = await _embed_query(
         db,
         current_user,
-        coll.embedding_model,
+        embed_model,
         coll.embedding_dim,
         payload.query,
     )
     if not q_vec:
         return ImageSearchResponse(
             query=payload.query,
-            embedding_model=coll.embedding_model,
+            embedding_model=embed_model,
             embedding_dim=coll.embedding_dim,
             results=[],
         )
@@ -706,32 +742,57 @@ async def search_collection_images(
         # is txn-scoped, so it never leaks to the next pooled user. The explicit
         # WHERE i.collection_id = $1 below stays as belt-and-suspenders.
         await conn.execute(f"SET LOCAL anila.collection_id = {int(collection_id)}")
-        rows = await conn.fetch(
-            """
-            SELECT
-                i.id AS pk_id,
-                i.image_id,
-                i.document_id,
-                i.page,
-                i.storage_path,
-                i.mime,
-                i.caption,
-                d.filename,
-                (i.embedding <=> $2) AS dist
-            FROM ingestion_images i
-            JOIN ingestion_documents d ON d.id = i.document_id
-            WHERE i.collection_id = $1
-              AND i.embedding IS NOT NULL
-              AND (i.embedding <=> $2) < $3
-            ORDER BY i.embedding <=> $2
-            LIMIT $4
-            """,
-            collection_id, q_value, max_dist, payload.top_k,
-        )
+        if source_filter is not None:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    i.id AS pk_id,
+                    i.image_id,
+                    i.document_id,
+                    i.page,
+                    i.storage_path,
+                    i.mime,
+                    i.caption,
+                    d.filename,
+                    (i.embedding <=> $2) AS dist
+                FROM ingestion_images i
+                JOIN ingestion_documents d ON d.id = i.document_id
+                WHERE i.collection_id = $1
+                  AND i.embedding IS NOT NULL
+                  AND i.embedding_source_model = $5
+                  AND (i.embedding <=> $2) < $3
+                ORDER BY i.embedding <=> $2
+                LIMIT $4
+                """,
+                collection_id, q_value, max_dist, payload.top_k, source_filter,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    i.id AS pk_id,
+                    i.image_id,
+                    i.document_id,
+                    i.page,
+                    i.storage_path,
+                    i.mime,
+                    i.caption,
+                    d.filename,
+                    (i.embedding <=> $2) AS dist
+                FROM ingestion_images i
+                JOIN ingestion_documents d ON d.id = i.document_id
+                WHERE i.collection_id = $1
+                  AND i.embedding IS NOT NULL
+                  AND (i.embedding <=> $2) < $3
+                ORDER BY i.embedding <=> $2
+                LIMIT $4
+                """,
+                collection_id, q_value, max_dist, payload.top_k,
+            )
 
     return ImageSearchResponse(
         query=payload.query,
-        embedding_model=coll.embedding_model,
+        embedding_model=embed_model,
         embedding_dim=coll.embedding_dim,
         results=[
             ImageHitOut(

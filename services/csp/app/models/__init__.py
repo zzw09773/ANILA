@@ -16,6 +16,7 @@ from app.models.agent import (
 )
 from app.models.agent_credential import AgentCredential
 from app.models.agent_prompt import AgentFunction, AgentPrompt
+from app.models.agent_session_owner import AgentSessionOwner
 from app.models.alert import Alert
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.artifact import (
@@ -32,7 +33,7 @@ from app.models.classification import (
     ClassificationEvent,
     DeclassificationRequest,
 )
-from app.models.conversation import Conversation
+from app.models.conversation import Conversation, ConversationUserMeta
 from app.models.department import Department
 from app.models.handoff import Handoff
 from app.models.ingestion import (
@@ -60,7 +61,6 @@ from app.models.source_snapshot import Citation, SourceSnapshot
 from app.models.task import Task, TaskRun
 from app.models.token_revocation import TokenRevocation
 from app.models.token_usage import TokenUsage
-from app.models.trace_span import TraceSpan
 from app.models.endpoint_author_grant import EndpointAuthorGrant
 from app.models.unit_admin_assignment import UnitAdminAssignment
 from app.models.user import User, UserModelPermission
@@ -72,6 +72,7 @@ __all__ = [
     "AgentCredential",
     "AgentFunction",
     "AgentPrompt",
+    "AgentSessionOwner",
     "Alert",
     "ApiKey",
     "ApiKeyAgentPermission",
@@ -87,6 +88,7 @@ __all__ = [
     "ClassificationAuthorityAssignment",
     "ClassificationEvent",
     "Conversation",
+    "ConversationUserMeta",
     "DeclassificationRequest",
     "Department",
     "AgentLlmCredential",
@@ -115,7 +117,6 @@ __all__ = [
     "TaskRun",
     "TokenRevocation",
     "TokenUsage",
-    "TraceSpan",
     "UnitAdminAssignment",
     "User",
     "UserAgentPermission",

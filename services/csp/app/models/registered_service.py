@@ -128,14 +128,13 @@ class RegisteredService(Base):
     config_source = Column(String(20), nullable=False, server_default="db")
     env_seed_key = Column(String(150), nullable=True)
     db_editable_fields = Column(_JSON_LIST, nullable=False, default=list)
-    last_seeded_at = Column(DateTime, nullable=True)
+    last_seeded_at = Column(DateTime(timezone=True), nullable=True)
 
     # Carried over from platform_links (compat / ordering). See module docstring.
     sort_order = Column(Integer, nullable=False, default=0, server_default="0")
 
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
-    updated_at = Column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
     )
 
     @property
@@ -175,6 +174,6 @@ class ServiceProjectBinding(Base):
     created_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     service = relationship("RegisteredService", foreign_keys=[service_id])

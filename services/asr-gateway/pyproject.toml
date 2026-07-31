@@ -1,0 +1,58 @@
+[project]
+name = "asr-gateway"
+version = "0.1.0"
+description = "ANILA ASR gateway — WebSocket mic stream, VAD segmentation, JWT auth; delegates decode to asr-decoder."
+requires-python = ">=3.11"
+authors = [
+  { name = "ANILA Platform" },
+]
+
+dependencies = [
+  # Web framework (原生 WebSocket)
+  "fastapi>=0.110,<1.0",
+  "uvicorn[standard]>=0.27",
+  # HTTP client → asr-decoder / csp(JWKS)
+  "httpx>=0.27,<1.0",
+  # JWT verify (asymmetric RS256, JWKS) — 對齊 anila-studio
+  "python-jose[cryptography]>=3.3",
+  # Pydantic settings
+  "pydantic>=2.6,<3.0",
+  "pydantic-settings>=2.2,<3.0",
+  # Redis pub/sub for cross-service token revocation — 對齊 anila-studio
+  "redis>=5.0",
+  # TTL cache for revocation cache — 對齊 anila-studio
+  "cachetools>=5.3",
+  # VAD 切句。純本地 C extension,不下載任何模型(silero 要抓 onnx,air-gap 會炸)。
+  # ⚠ 用 -wheels fork 而非原版 `webrtcvad`:原版(2.0.10,已停止維護)在 import
+  # 第一行就 `import pkg_resources`,而 setuptools 81+ 已移除 pkg_resources
+  # → 在現代環境 import 直接 ModuleNotFoundError(實測 setuptools 83.0.0)。
+  # -wheels fork 拿掉了該 import,並提供預編譯 wheel(air-gap 不用在內網編 C)。
+  "webrtcvad-wheels>=2.0.14",
+  # PCM bytes ↔ float32 samples
+  "numpy>=1.26",
+  # ⚠ 刻意不列 opencc:實測 whisper medium 在真實繁中語料的簡體率是 0%,而
+  # OpenCC 對正確繁體的誤傷率 6~10%(s2twp 甚至把「類型」轉成「型別」)。
+  # 見 docs/planning/asr-voice-input-plan.md §10。ASR_OPENCC_MODE 預設 off;
+  # 真的要開再把 opencc-python-reimplemented 加回來。
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "respx>=0.21",          # httpx mock for decode_client tests
+  "fakeredis>=2.20",      # in-memory Redis for revocation tests
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra"

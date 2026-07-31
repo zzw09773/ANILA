@@ -73,4 +73,4 @@ class PolicyDecision(Base):
     metadata_json = Column(JSONValue, nullable=True)
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)

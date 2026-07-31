@@ -12,12 +12,6 @@ export const registerAgent = (data) =>
 export const approveAgent = (id) =>
   client.post(`/api/agents/${id}/approve`)
 
-// Slice 5b — Full Trace 審批關卡。對 agent 跑一次軌跡測試，回傳逐項
-// pass/fail 報告（trace_test_report）。通過後 approve 才會放行；未過時
-// 後端 approve 回 409。200 -> { report... }；4xx -> error detail。
-export const traceTestAgent = (id) =>
-  client.post(`/api/agents/${id}/trace-test`)
-
 export const rejectAgent = (id, reason = '') =>
   client.post(`/api/agents/${id}/reject`, { reason })
 
@@ -35,19 +29,20 @@ export const deleteAgent = (id) =>
 export const triggerAgentHealthCheck = (id) =>
   client.post(`/api/agents/${id}/health-check`)
 
-// Owner / admin — patch any of endpoint / description / capabilities /
-// api_version / base_model_id / input_schema. Name and approval_status
-// are intentionally not updatable from here.
+// Owner / admin — patch endpoint / description / api_version /
+// base_model_id / input_schema / classification / collections.
+// Name, approval_status, capabilities, and classification_ceiling are
+// not updatable here (latter two retired as accept-and-ignore controls).
 export const updateAgent = (id, patch) =>
   client.put(`/api/agents/${id}`, patch)
 
-// Sprint 13 PR A3 — per-agent runtime config (tool permissions,
-// workspace caps, guardrails). Agents poll their own copy via
-// X-CSP-Service-Token at /api/agents/me/runtime-config; this admin
-// surface uses owner / admin auth.
+// Runtime-config admin writes are retired (PATCH → 410). GET remains for
+// read-only inspection of any historically stored JSON.
 export const getAgentRuntimeConfig = (id) =>
   client.get(`/api/agents/${id}/runtime-config`)
 
+// Kept only so the retired AgentRuntimeConfigView.vue still typechecks if
+// imported; callers get 410 from the API.
 export const setAgentRuntimeConfig = (id, runtime_config) =>
   client.patch(`/api/agents/${id}/runtime-config`, { runtime_config })
 

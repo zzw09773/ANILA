@@ -148,7 +148,21 @@
               <span v-if="model.is_router_primary" class="primary-pill" title="ANILA Router uses this as primary LLM">
                 ★ 主要
               </span>
-              <span v-else class="cell-meta">—</span>
+              <span
+                v-if="model.is_image_primary"
+                class="primary-pill"
+                title="flux2-dev-agent / anila-studio 以此為主圖像模型"
+              >
+                ★ 主圖像
+              </span>
+              <span
+                v-if="model.is_platform_embedding"
+                class="primary-pill primary-pill--embed"
+                :title="platformEmbedTitle(model)"
+              >
+                ★ 主 embedding
+              </span>
+              <span v-if="!model.is_router_primary && !model.is_image_primary && !model.is_platform_embedding" class="cell-meta">—</span>
             </td>
             <td v-if="authStore.isAdmin || canSetEndpointAddress">
               <div class="row-actions">
@@ -180,6 +194,42 @@
                     @click="handleUnsetPrimary(model.id)"
                   >
                     取消主要
+                  </button>
+                  <span v-if="model.model_type === 'image' && !model.is_image_primary" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.model_type === 'image' && !model.is_image_primary"
+                    class="term-action"
+                    :disabled="!model.is_active || settingImagePrimaryId === model.id"
+                    @click="handleSetImagePrimary(model.id)"
+                  >
+                    {{ settingImagePrimaryId === model.id ? '設定中…' : '設為主圖像模型' }}
+                  </button>
+                  <span v-else-if="model.is_image_primary" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.is_image_primary"
+                    class="term-action"
+                    :disabled="settingImagePrimaryId === model.id"
+                    @click="handleUnsetImagePrimary(model.id)"
+                  >
+                    取消主圖像
+                  </button>
+                  <span v-if="model.model_type === 'embedding' && !model.is_platform_embedding" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.model_type === 'embedding' && !model.is_platform_embedding"
+                    class="term-action"
+                    :disabled="!model.is_active || settingEmbedId === model.id"
+                    @click="handleSetPlatformEmbed(model.id)"
+                  >
+                    {{ settingEmbedId === model.id ? '設定中…' : '設為主 embedding' }}
+                  </button>
+                  <span v-else-if="model.is_platform_embedding" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.is_platform_embedding"
+                    class="term-action"
+                    :disabled="settingEmbedId === model.id"
+                    @click="handleUnsetPlatformEmbed(model.id)"
+                  >
+                    取消主 embedding
                   </button>
                   <span class="row-actions__sep">·</span>
                   <button
@@ -233,6 +283,7 @@
               <option value="vlm">vlm</option>
               <option value="embedding">embedding</option>
               <option value="agent">agent</option>
+              <option value="image">image</option>
             </select>
           </TermField>
           <TermField label="API 版本">
@@ -478,6 +529,8 @@ const showModal = ref(false)
 const editingId = ref(null)
 const purgingId = ref(null)
 const settingPrimaryId = ref(null)
+const settingImagePrimaryId = ref(null)
+const settingEmbedId = ref(null)
 // P4.6 — 整批帶入 modal 狀態
 const showImportModal = ref(false)
 const importSourceId = ref(null)
@@ -497,10 +550,9 @@ const revokingId = ref(null)
 const testingId = ref(null)
 const testResults = ref({})
 
-// doc 04 §2 protocol 列舉。label 為繁中；未知值以原字串回退顯示（防禦 6a）。
+// doc 04 §2 protocol 列舉。proxy 只實作 openai_compatible；custom_adapter 已退場。
 const PROTOCOL_OPTIONS = [
   { value: 'openai_compatible', label: 'OpenAI 相容' },
-  { value: 'custom_adapter', label: '自訂轉接' },
 ]
 const PROTOCOL_LABELS = Object.fromEntries(PROTOCOL_OPTIONS.map(p => [p.value, p.label]))
 
@@ -917,6 +969,56 @@ async function handleUnsetPrimary(id) {
   catch (e) { toast(e.response?.data?.detail || '取消主要失敗', { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
+async function handleSetImagePrimary(id) {
+  settingImagePrimaryId.value = id
+  try { await modelsStore.setImagePrimary(id) }
+  catch (e) { toast(e.response?.data?.detail || '設定主圖像模型失敗', { tone: 'error' }) }
+  finally { settingImagePrimaryId.value = null }
+}
+async function handleUnsetImagePrimary(id) {
+  if (!(await confirm({ message: '取消主圖像模型？在你指定新的主圖像模型前，flux2-dev-agent / anila-studio 將 fallback 使用環境變數設定的端點。', confirmText: '取消主圖像', danger: true }))) return
+  settingImagePrimaryId.value = id
+  try { await modelsStore.unsetImagePrimary(id) }
+  catch (e) { toast(e.response?.data?.detail || '取消主圖像模型失敗', { tone: 'error' }) }
+  finally { settingImagePrimaryId.value = null }
+}
+function platformEmbedTitle(model) {
+  const dim = model.embedding_native_dim
+  if (!dim) return '平台主 embedding（記憶／新建知識庫／ingestion-worker）'
+  if (dim > 4000) {
+    return `平台主 embedding · 原生 ${dim} 維（寫入時截斷至 4000；pgvector halfvec HNSW 上限）`
+  }
+  if (dim < 4000) {
+    return `平台主 embedding · 原生 ${dim} 維（寫入時補零至 4000）`
+  }
+  return `平台主 embedding · 原生 ${dim} 維`
+}
+async function handleSetPlatformEmbed(id) {
+  settingEmbedId.value = id
+  try {
+    const data = await modelsStore.setPlatformEmbed(id)
+    if (data?.truncation_warning) {
+      toast(data.truncation_warning, { tone: 'warn' })
+    } else if (data?.measured_native_dim) {
+      toast(`已設為平台主 embedding（探測原生維度 ${data.measured_native_dim}）`, { tone: 'ok' })
+    }
+  } catch (e) {
+    toast(e.response?.data?.detail || '設定主 embedding 失敗', { tone: 'error' })
+  } finally {
+    settingEmbedId.value = null
+  }
+}
+async function handleUnsetPlatformEmbed(id) {
+  if (!(await confirm({
+    message: '取消平台主 embedding？記憶與新建知識庫將改用第一個啟用中的 embedding 模型（若有）。',
+    confirmText: '取消主 embedding',
+    danger: true,
+  }))) return
+  settingEmbedId.value = id
+  try { await modelsStore.unsetPlatformEmbed(id) }
+  catch (e) { toast(e.response?.data?.detail || '取消主 embedding 失敗', { tone: 'error' }) }
+  finally { settingEmbedId.value = null }
+}
 async function handleDeactivate(id) {
   if (await confirm({ message: '停用此模型？之後可透過該列的「啟用」按鈕重新啟用。', confirmText: '停用', danger: true })) {
     await modelsStore.remove(id)
@@ -1039,6 +1141,12 @@ async function handlePurge(model) {
   padding: 1px 6px;
   background: var(--c-warn-soft);
   letter-spacing: 0.04em;
+}
+.primary-pill--embed {
+  margin-left: 4px;
+  color: var(--c-fg-2);
+  border-color: var(--c-border-strong);
+  background: transparent;
 }
 
 .row-actions { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-xs); flex-wrap: wrap; }

@@ -594,7 +594,8 @@ class TestAuditAndAuth:
             headers=_bearer(token),
             json={"default_classification_level": "密"},
         )
-        assert resp.status_code == 403, resp.text
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["detail"] == "Agent 不存在"
 
     def test_update_agent_accepts_level(self, client, db):
         dev = make_user(db, username="g9_upd", role="developer")

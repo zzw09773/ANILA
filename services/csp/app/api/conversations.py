@@ -12,11 +12,13 @@ from app.api.auth import get_current_user
 from app.database import get_db
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
-from app.models.conversation import Conversation, ConversationShare
+from app.models.conversation import Conversation, ConversationShare, ConversationUserMeta
 from app.models.message import Message
 from app.models.user import User
 from app.services import conversation_service as svc
 from app.services import message_tree as mtree
+from app.services.auth_service import is_admin_tier
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -38,7 +40,18 @@ class ConversationCreate(BaseModel):
 
 
 class ConversationUpdate(BaseModel):
-    title: str = Field(..., max_length=255)
+    """Partial update: title (owner) and/or the caller's personal meta.
+
+    ``tags`` are user-authored only — the derived ``classified`` tag is
+    stripped server-side and reattached from ``conversation.classified``.
+    """
+
+    title: Optional[str] = Field(None, max_length=255)
+    starred: Optional[bool] = None
+    folder: Optional[str] = Field(None, max_length=64)
+    tags: Optional[list[Annotated[str, Field(max_length=40)]]] = Field(
+        None, max_length=32,
+    )
 
 
 class AttachmentOut(BaseModel):
@@ -49,7 +62,7 @@ class AttachmentOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class MessageOut(BaseModel):
+class MessageOut(ApiResponseModel):
     id: int
     role: str
     content: str
@@ -106,7 +119,7 @@ class MessageUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 
-class ConversationOut(BaseModel):
+class ConversationOut(ApiResponseModel):
     id: int
     title: str
     agent_id: Optional[int]
@@ -129,6 +142,11 @@ class ConversationOut(BaseModel):
     # preserves old rank-2 controlled-set semantics). Defaults to
     # 無機密 so rows pre-dating the four-level column render unclassified.
     classification_level: str = "無機密"
+    # Per-caller view (conversation_user_meta). Defaults keep list/get
+    # working when the caller has never organised this thread.
+    starred: bool = False
+    folder: str = "all"
+    tags: list[str] = []
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}
@@ -174,20 +192,51 @@ class ActiveLeafUpdate(BaseModel):
 
 
 class ShareCreate(BaseModel):
+    """P4.3 — share to exactly one named person XOR one department unit."""
+
+    target_username: Optional[str] = Field(None, max_length=100)
+    target_user_id: Optional[int] = Field(None, ge=1)
+    target_department_id: Optional[int] = Field(None, ge=1)
+    target_department_name: Optional[str] = Field(None, max_length=100)
     mode: str = Field("read_only", pattern="^(read_only|fork)$")
     allow_fork: bool = False
     expires_at: Optional[datetime] = None
 
 
-class ShareOut(BaseModel):
+class ShareOut(ApiResponseModel):
     id: int
-    token: str
+    target_user_id: Optional[int] = None
+    target_username: Optional[str] = None
+    target_department_id: Optional[int] = None
+    target_department_name: Optional[str] = None
     mode: str
     allow_fork: bool
     expires_at: Optional[datetime]
-    view_count: int
     created_at: datetime
     model_config = {"from_attributes": True}
+
+
+def _share_out(share: ConversationShare) -> ShareOut:
+    """Enrich share row with target display names for the owner UI."""
+    username = None
+    if share.target_user is not None:
+        username = share.target_user.username
+    elif share.target_user_id is not None:
+        username = None
+    dept_name = None
+    if share.target_department is not None:
+        dept_name = share.target_department.name
+    return ShareOut(
+        id=share.id,
+        target_user_id=share.target_user_id,
+        target_username=username,
+        target_department_id=share.target_department_id,
+        target_department_name=dept_name,
+        mode=share.mode,
+        allow_fork=share.allow_fork,
+        expires_at=share.expires_at,
+        created_at=share.created_at,
+    )
 
 
 def _message_out(msg: Message, sibling_ids: list[int] | None = None) -> MessageOut:
@@ -219,18 +268,36 @@ def _enrich_message_list(
     ]
 
 
+def _enrich_out(
+    conv: Conversation,
+    meta: ConversationUserMeta | None = None,
+) -> dict:
+    data = ConversationOut.model_validate(conv).model_dump()
+    data.update(svc.meta_view(conv, meta))
+    return data
+
+
+def _conversation_out(
+    db: Session, user: User, conv: Conversation,
+) -> ConversationOut:
+    meta = svc.get_user_meta(db, user.id, conv.id)
+    return ConversationOut(**_enrich_out(conv, meta))
+
+
 def _conversation_detail(
     db: Session,
     conv: Conversation,
     *,
     view: str,
+    user: User,
 ) -> ConversationDetail:
     edges = mtree.load_edges(db, conv.id)
     if view == "all":
         messages = svc._all_messages_ordered(db, conv.id)
     else:
         messages = svc.load_active_path(db, conv)
-    data = ConversationOut.model_validate(conv).model_dump()
+    meta = svc.get_user_meta(db, user.id, conv.id)
+    data = _enrich_out(conv, meta)
     data["active_leaf_message_id"] = conv.active_leaf_message_id
     data["messages"] = _enrich_message_list(messages, edges)
     return ConversationDetail(**data)
@@ -282,12 +349,18 @@ def list_conversations(
             status_code=400,
             detail="origin and exclude_origin are mutually exclusive",
         )
-    return svc.list_conversations(
+    rows = svc.list_conversations(
         db, current_user,
         origin=origin,
         exclude_origin=exclude_origin,
         collection_id=collection_id,
     )
+    # One batch query for the caller's meta — keeps the sidebar O(1) extra.
+    metas = svc.load_user_metas(db, current_user.id, [c.id for c in rows])
+    return [
+        ConversationOut(**_enrich_out(c, metas.get(c.id)))
+        for c in rows
+    ]
 
 
 @router.post("", response_model=ConversationOut, status_code=201)
@@ -322,7 +395,7 @@ def create_conversation(
     if body.collection_id is not None:
         from app.api.ingestion.collections import _require_collection_access
         _require_collection_access(db, current_user, body.collection_id)
-    return svc.create_conversation(
+    conv = svc.create_conversation(
         db,
         current_user.id,
         title=body.title,
@@ -330,6 +403,71 @@ def create_conversation(
         origin=origin,
         collection_id=body.collection_id,
     )
+    return _conversation_out(db, current_user, conv)
+
+
+class AdoptCompareRequest(BaseModel):
+    """Promote one compare-mode answer into a persisted conversation.
+
+    Defined here (API layer) rather than ``app/schemas`` so this ticket can
+    land without touching the timezone package's schema rewrite.
+    """
+
+    title: str = Field("採用比較結果", max_length=255)
+    # Prefer agent_name (data-plane id / unique Agent.name). Numeric agent_id
+    # is accepted when the caller already knows the inventory PK.
+    agent_name: Optional[str] = Field(default=None, max_length=100)
+    agent_id: Optional[int] = Field(default=None, ge=1)
+    origin: Optional[str] = Field(default="anila-ui", max_length=32)
+    user_content: str = Field(..., max_length=_MAX_MSG_CHARS)
+    assistant_content: str = Field(..., max_length=_MAX_MSG_CHARS)
+    assistant_metadata: Optional[dict] = None
+    assistant_trace_id: Optional[str] = None
+    assistant_latency_ms: Optional[int] = None
+    assistant_agent_name: Optional[str] = Field(default=None, max_length=255)
+
+
+@router.post("/adopt", response_model=ConversationDetail, status_code=201)
+def adopt_compare_answer(
+    body: AdoptCompareRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Promote a compare answer into a real conversation (message tree + latch).
+
+    Compare mode itself stays ephemeral; only the adopted column is written.
+    Classification comes from the resolved agent's policy on the server —
+    the client must not invent ``classified``.
+    """
+    origin = body.origin or "anila-ui"
+    if origin == "anilalm":
+        raise HTTPException(
+            status_code=400,
+            detail="比較採用僅支援 ANILA UI 對話（origin 不可為 anilalm）",
+        )
+    if not (body.user_content or "").strip():
+        raise HTTPException(status_code=400, detail="採用內容缺少使用者訊息")
+    if not (body.assistant_content or "").strip():
+        raise HTTPException(status_code=400, detail="採用內容缺少助理訊息")
+
+    conv = svc.adopt_compare_answer(
+        db,
+        current_user,
+        title=body.title,
+        user_content=body.user_content,
+        assistant_content=body.assistant_content,
+        agent_id=body.agent_id,
+        agent_name=body.agent_name,
+        origin=origin,
+        assistant_metadata=body.assistant_metadata,
+        assistant_trace_id=body.assistant_trace_id,
+        assistant_latency_ms=body.assistant_latency_ms,
+        assistant_agent_name=body.assistant_agent_name,
+    )
+    # Re-load so classification latch + active_leaf are visible in the
+    # response the client treats as source of truth.
+    conv = svc.get_conversation(db, conv.id, current_user)
+    return _conversation_detail(db, conv, view="active", user=current_user)
 
 
 class ConversationSearchHit(ConversationOut):
@@ -379,6 +517,7 @@ def search_conversations(
     )
     hits: list[dict] = []
     audits_pending = False
+    metas = svc.load_user_metas(db, current_user.id, [c.id for c in convs])
     for c in convs:
         snippet = None
         # OE-4: snippet redaction follows outbound block line (level >=
@@ -412,7 +551,8 @@ def search_conversations(
                 ),
             ))
             audits_pending = True
-        data = ConversationOut.model_validate(c).model_dump()
+        meta = metas.get(c.id)
+        data = _enrich_out(c, meta)
         data["snippet"] = snippet
         hits.append(data)
     if audits_pending:
@@ -432,12 +572,23 @@ def get_conversation(
         classification_audit_required,
     )
 
-    conv = svc.get_conversation(db, conv_id, current_user)
+    conv = svc.get_conversation(db, conv_id, current_user, for_write=False)
     # SYSTEM-MAP §8 L242:要落稽核 = 密等 ≥ 營業秘密 (read-audit).
     level = ClassificationLevel.from_storage(conv.classification_level)
     if classification_audit_required(level):
         svc.log_classified_access(db, conv_id, current_user)
-    return _conversation_detail(db, conv, view=view)
+    # OW-1 / P4.3: named-share recipients only see the active path (same
+    # ceiling the retired public-share used). Owners/admins keep view=all.
+    effective_view = view
+    if (
+        view == "all"
+        and not is_admin_tier(current_user)
+        and conv.user_id != current_user.id
+    ):
+        effective_view = "active"
+    return _conversation_detail(
+        db, conv, view=effective_view, user=current_user,
+    )
 
 
 @router.put("/{conv_id}", response_model=ConversationOut)
@@ -447,7 +598,16 @@ def update_conversation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.update_title(db, conv_id, body.title, current_user)
+    conv = svc.update_conversation(
+        db,
+        conv_id,
+        current_user,
+        title=body.title,
+        starred=body.starred,
+        folder=body.folder,
+        tags=body.tags,
+    )
+    return _conversation_out(db, current_user, conv)
 
 
 @router.delete("/{conv_id}", status_code=204)
@@ -603,10 +763,11 @@ def classify_conversation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.classify_conversation(db, conv_id, current_user)
+    conv = svc.classify_conversation(db, conv_id, current_user)
+    return _conversation_out(db, current_user, conv)
 
 
-# ── Share links ───────────────────────────────────────────────────────────────
+# ── Named shares (P4.3) ───────────────────────────────────────────────────────
 
 @router.get("/{conv_id}/shares", response_model=list[ShareOut])
 def list_shares(
@@ -614,7 +775,7 @@ def list_shares(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.list_shares(db, conv_id, current_user)
+    return [_share_out(s) for s in svc.list_shares(db, conv_id, current_user)]
 
 
 @router.post("/{conv_id}/shares", response_model=ShareOut, status_code=201)
@@ -624,12 +785,17 @@ def create_share(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.create_share(
+    share = svc.create_share(
         db, conv_id, current_user,
+        target_user_id=body.target_user_id,
+        target_username=body.target_username,
+        target_department_id=body.target_department_id,
+        target_department_name=body.target_department_name,
         mode=body.mode,
         allow_fork=body.allow_fork,
         expires_at=body.expires_at,
     )
+    return _share_out(share)
 
 
 @router.delete("/{conv_id}/shares/{share_id}", status_code=204)
@@ -639,4 +805,4 @@ def revoke_share(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    svc.revoke_share(db, share_id, current_user)
+    svc.revoke_share(db, conv_id, share_id, current_user)

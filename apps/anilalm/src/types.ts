@@ -160,6 +160,14 @@ interface ArtifactBase {
   step?: string | null
   /** Populated on state="failed" — user-facing reason. */
   error?: string | null
+  /**
+   * Soft warning that must stay visible even when state="done".
+   * Used for: auto-download / re-download failure, consecutive poll
+   * blips, and backend-degraded success (e.g. LLM fallback deck).
+   * Download-failure warnings (prefix ``檔案下載失敗``) clear on a
+   * later successful download; pipeline warnings are kept.
+   */
+  warning?: string | null
 }
 
 /**

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from app.schemas.base import ApiResponseModel
 
 # Server-owned icon allow-list (governance picker + SPA ACTION_ICONS keys).
 ALLOWED_ACTION_ICONS: frozenset[str] = frozenset(
@@ -116,7 +117,7 @@ class MessageActionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class MessageActionAdminOut(BaseModel):
+class MessageActionAdminOut(ApiResponseModel):
     """Management read — body when caller may press (enabled) or may modify."""
 
     id: int
@@ -137,7 +138,7 @@ class MessageActionAdminOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class BindingOut(BaseModel):
+class BindingOut(ApiResponseModel):
     id: int
     action_id: int
     scope_type: str

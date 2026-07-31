@@ -95,15 +95,15 @@ class Artifact(Base):
     # 單向閂鎖由 policy 核心維護)。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    classification_latched_at = Column(DateTime, nullable=True)
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
-    updated_at = Column(DateTime, nullable=False, default=_utcnow,
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow,
                         onupdate=_utcnow)
 
     # ORM cascade(SQLite 測試不開 FK pragma;PG 另有 ON DELETE CASCADE)。
@@ -143,7 +143,7 @@ class ArtifactVersion(Base):
     # 每版記當時 effective 分類(隨 artifact 單向閂鎖同步)。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     artifact = relationship("Artifact", back_populates="versions")
 
@@ -194,10 +194,10 @@ class ArtifactJob(Base):
     artifact_id = Column(
         Integer, ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True
     )
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
-    updated_at = Column(DateTime, nullable=False, default=_utcnow,
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow,
                         onupdate=_utcnow)
-    expires_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class ExportRecord(Base):
@@ -237,13 +237,13 @@ class ExportRecord(Base):
     # doc 08 §5 四共通分類欄位(匯出當下 artifact 的 effective 分類)。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    classification_latched_at = Column(DateTime, nullable=True)
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     artifact = relationship("Artifact", back_populates="exports")

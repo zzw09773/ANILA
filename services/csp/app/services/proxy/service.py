@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
@@ -18,7 +17,6 @@ from anila_core.security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 
 from app.config import settings
 from app.models.model_registry import ModelRegistry
-from app.services.proxy import spans
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
     _apply_gateway_auth,
@@ -41,6 +39,33 @@ from app.services.usage_writer import enqueue_usage
 # Keep the pre-split logger channel ("app.services.proxy_service") so log
 # routing / filtering / capture behavior is identical after the package split.
 logger = logging.getLogger("app.services.proxy_service")
+
+
+def _note_proxy_outcome(
+    *,
+    model_id: int,
+    model_name: str,
+    model_type: str,
+    display_name: str | None = None,
+    success: bool,
+) -> None:
+    """P3.2 consecutive-failure hook. Best-effort; never raises into proxy."""
+    try:
+        from app.services.alert_detectors import record_proxy_outcome
+
+        record_proxy_outcome(
+            model_id=model_id,
+            model_name=model_name,
+            model_type=model_type,
+            display_name=display_name,
+            success=success,
+        )
+    except Exception:  # pragma: no cover - detection must not break serving
+        logger.exception(
+            "proxy alert streak update failed model_id=%s success=%s",
+            model_id,
+            success,
+        )
 
 
 def _proxy_detail(label: str, endpoint_display: str | None, *, stream: bool = False) -> str:
@@ -143,39 +168,6 @@ def build_default_anila_meta(
         # (None) when unknown; the client only renders when present.
         "usage": usage,
     }
-
-
-def _emit_proxy_dispatch_spans(
-    *,
-    trace_id: Optional[str],
-    task_id: Optional[int],
-    started_at: datetime,
-    run_status: str,
-    is_agent: bool,
-    target_id: Optional[int],
-    target_name: Optional[str],
-    usage: Optional[dict] = None,
-) -> None:
-    """Slice 4a — emit the proxy.dispatch + model/agent call spans for a
-    task-linked proxied call. ``run_status`` is the TaskRun terminal status
-    (``completed`` → span ``ok``; anything else → ``error``). Best-effort:
-    ``spans.record_proxy_dispatch`` already logs-not-raises, the extra guard
-    here keeps any unexpected error from touching the proxied response."""
-    span_status = "ok" if run_status == "completed" else "error"
-    try:
-        spans.record_proxy_dispatch(
-            trace_id=trace_id,
-            task_id=task_id,
-            started_at=started_at,
-            ended_at=datetime.now(timezone.utc),
-            status=span_status,
-            is_agent=is_agent,
-            target_id=target_id,
-            target_name=target_name,
-            usage=usage,
-        )
-    except Exception:  # pragma: no cover - defensive; helper is log-not-raise
-        logger.exception("proxy span 記錄失敗 trace_id=%s", trace_id)
 
 
 async def _proxy_request_impl(
@@ -288,6 +280,13 @@ async def _proxy_request_impl(
                     await asyncio.sleep(delay)
                     continue
                 logger.error("模型 %s 上游 5xx: %s", model.name, last_error)
+                _note_proxy_outcome(
+                    model_id=model.id,
+                    model_name=model.name,
+                    model_type=model.model_type,
+                    display_name=getattr(model, "display_name", None),
+                    success=False,
+                )
                 raise HTTPException(status_code=502, detail="模型服務暫時不可用")
 
             if response.status_code >= 400:
@@ -401,6 +400,13 @@ async def _proxy_request_impl(
                     caller_client_id=caller_client_id,
                 )
 
+            _note_proxy_outcome(
+                model_id=model.id,
+                model_name=model.name,
+                model_type=model.model_type,
+                display_name=getattr(model, "display_name", None),
+                success=True,
+            )
             return result
 
         except httpx.TimeoutException:
@@ -444,6 +450,13 @@ async def _proxy_request_impl(
                 await asyncio.sleep(delay)
                 continue
 
+    _note_proxy_outcome(
+        model_id=model.id,
+        model_name=model.name,
+        model_type=model.model_type,
+        display_name=getattr(model, "display_name", None),
+        success=False,
+    )
     raise HTTPException(
         status_code=502,
         detail=f"模型服務不可用，已重試 {settings.PROXY_MAX_RETRIES} 次: {last_error}",
@@ -477,8 +490,6 @@ async def proxy_request(
     (including SSRF-guard rejections and exhausted retries). No-op — and
     byte-identical behavior — for legacy task-less callers.
     """
-    span_started_at = datetime.now(timezone.utc)
-    is_agent_target = model.model_type == "agent" or target_agent_id is not None
     try:
         result = await _proxy_request_impl(
             model=model,
@@ -510,31 +521,9 @@ async def proxy_request(
                     "message": str(exc.detail),
                 },
             )
-            # Slice 4a: record the dispatch even on failure (error status).
-            _emit_proxy_dispatch_spans(
-                trace_id=task_trace_id,
-                task_id=task_id,
-                started_at=span_started_at,
-                run_status="failed",
-                is_agent=is_agent_target,
-                target_id=(target_agent_id if is_agent_target else model.id),
-                target_name=model.name,
-            )
         raise
     if task_run_id is not None:
         finalize_task_run(task_run_id, "completed")
-        # Slice 4a: usage tokens (when the upstream returned them) ride into
-        # the model/agent child span attributes.
-        _emit_proxy_dispatch_spans(
-            trace_id=task_trace_id,
-            task_id=task_id,
-            started_at=span_started_at,
-            run_status="completed",
-            is_agent=is_agent_target,
-            target_id=(target_agent_id if is_agent_target else model.id),
-            target_name=model.name,
-            usage=(result.get("usage") if isinstance(result, dict) else None),
-        )
     return result
 
 
@@ -804,7 +793,7 @@ async def proxy_stream(
     """
     status = "completed"
     error: dict | None = None
-    span_started_at = datetime.now(timezone.utc)
+    model_type = "agent" if target_agent_id is not None else "llm"
     try:
         async for chunk in _proxy_stream_impl(
             target_url=target_url,
@@ -829,8 +818,15 @@ async def proxy_stream(
             endpoint_display=endpoint_display,
         ):
             yield chunk
+        _note_proxy_outcome(
+            model_id=usage_model_id,
+            model_name=model_name or f"id:{usage_model_id}",
+            model_type=model_type,
+            success=True,
+        )
     except (GeneratorExit, asyncio.CancelledError) as exc:
         # Client disconnect / cancellation — no body left to write into.
+        # Do NOT count as gateway/agent consecutive failure (user hung up).
         status = "failed"
         error = {"code": "stream_aborted", "message": type(exc).__name__}
         raise
@@ -845,6 +841,13 @@ async def proxy_stream(
             model_name or "未知模型",
             exc.status_code,
         )
+        if int(exc.status_code) >= 500:
+            _note_proxy_outcome(
+                model_id=usage_model_id,
+                model_name=model_name or f"id:{usage_model_id}",
+                model_type=model_type,
+                success=False,
+            )
         yield format_anila_stream_error(
             stream_failure_user_message(exc, model_name=model_name)
         )
@@ -854,26 +857,15 @@ async def proxy_stream(
         logger.exception(
             "stream failure model=%s", model_name or "未知模型"
         )
+        _note_proxy_outcome(
+            model_id=usage_model_id,
+            model_name=model_name or f"id:{usage_model_id}",
+            model_type=model_type,
+            success=False,
+        )
         yield format_anila_stream_error(
             stream_failure_user_message(exc, model_name=model_name)
         )
     finally:
         if task_run_id is not None:
             finalize_task_run(task_run_id, status, error=error)
-            # Slice 4a: emit dispatch spans once the stream drains. Streaming
-            # usage is tallied inside _proxy_stream_impl and not surfaced here,
-            # so the child span carries timing/status but no token attributes
-            # (usage rides the token_usage row instead).
-            _emit_proxy_dispatch_spans(
-                trace_id=task_trace_id,
-                task_id=task_id,
-                started_at=span_started_at,
-                run_status=status,
-                is_agent=target_agent_id is not None,
-                target_id=(
-                    target_agent_id
-                    if target_agent_id is not None
-                    else usage_model_id
-                ),
-                target_name=model_name,
-            )

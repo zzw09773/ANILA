@@ -52,6 +52,7 @@ from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user
 from app.services.ingestion_queue import enqueue_evaluator_run
+from app.schemas.base import ApiResponseModel
 
 
 router = APIRouter(tags=["Ingestion / Evaluator"])
@@ -114,7 +115,7 @@ class EvalRunCreate(BaseModel):
         return self
 
 
-class EvalRunResponse(BaseModel):
+class EvalRunResponse(ApiResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int

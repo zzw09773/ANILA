@@ -197,6 +197,13 @@ def create_service(
         raise HTTPException(status_code=409, detail=f"slug「{slug}」已存在")
     if not slug:
         slug = unique_slug(data["name"], taken, fallback="service")
+    # healthcheck_url was never probed (FAKE-CONTROLS §7). Refuse rather than
+    # store a setting that looks like it protects availability.
+    if data.get("healthcheck_url"):
+        raise HTTPException(
+            status_code=422,
+            detail="healthcheck_url 已退場:平台不會探測此欄位,請勿再傳送",
+        )
     ceiling = data.get("classification_ceiling")
     service = RegisteredService(
         name=data["name"],
@@ -217,7 +224,7 @@ def create_service(
         supports_launch_token=data.get("supports_launch_token", False),
         data_ingress=data.get("data_ingress") or [],
         data_egress=data.get("data_egress") or [],
-        healthcheck_url=data.get("healthcheck_url"),
+        healthcheck_url=None,
         audit_callback_url=data.get("audit_callback_url"),
         trace_callback_url=data.get("trace_callback_url"),
         # R-SEC (ADR-0008): admin-tier only — create_service is require_admin.
@@ -254,8 +261,9 @@ def get_service(
     db: Session = Depends(get_db),
 ):
     service = _service_or_404(db, service_id)
+    # Unauthorised collapses to the same 404 as missing (models pattern).
     if not can_access_service(db, current_user, service):
-        raise HTTPException(status_code=403, detail="無權存取此服務")
+        raise HTTPException(status_code=404, detail="服務不存在")
     return service
 
 
@@ -269,9 +277,15 @@ def update_service(
     service = _service_or_404(db, service_id)
     admin_tier = is_admin_tier(current_user)
     if not (admin_tier or _is_service_admin(current_user, service)):
-        raise HTTPException(status_code=403, detail="需要管理員或該服務管理員權限")
+        # Same 404 as get_service — do not reveal that the slug exists.
+        raise HTTPException(status_code=404, detail="服務不存在")
 
     update_data = request.model_dump(exclude_unset=True)
+    if "healthcheck_url" in update_data:
+        raise HTTPException(
+            status_code=422,
+            detail="healthcheck_url 已退場:平台不會探測此欄位,請勿再傳送",
+        )
     if not admin_tier:
         # R-SEC (ADR-0008): admin-only fields are off-limits to a per-service
         # admin BEFORE the db_editable_fields whitelist is even consulted — so
@@ -403,7 +417,8 @@ def launch_service(
             detail=f"拒絕啟動服務「{service.name}」(access gate)",
             commit=True,
         )
-        raise HTTPException(status_code=403, detail="無權啟動此服務")
+        # Same 404 as get_service — existence is not an oracle.
+        raise HTTPException(status_code=404, detail="服務不存在")
 
     launch_id = launch_mod.new_launch_id()
     row = launch_mod.create_service_launch(
@@ -603,7 +618,7 @@ def list_project_bindings(
 ):
     service = _service_or_404(db, service_id)
     if not can_access_service(db, current_user, service):
-        raise HTTPException(status_code=403, detail="無權存取此服務")
+        raise HTTPException(status_code=404, detail="服務不存在")
     return (
         db.query(ServiceProjectBinding)
         .filter(ServiceProjectBinding.service_id == service.id)

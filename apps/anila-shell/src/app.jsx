@@ -42,8 +42,10 @@ import {
 import {
   listConversations as apiListConversations,
   createConversation as apiCreateConversation,
+  adoptConversation as apiAdoptConversation,
   getConversation as apiGetConversation,
   updateConversationTitle as apiUpdateConversationTitle,
+  updateConversation as apiUpdateConversation,
   deleteConversation as apiDeleteConversation,
   appendMessage as apiAppendMessage,
   rateMessage as apiRateMessage,
@@ -54,7 +56,6 @@ import {
   createShare as apiCreateShare,
   listShares as apiListShares,
   revokeShare as apiRevokeShare,
-  buildShareUrl,
   uploadAttachment as apiUploadAttachment,
   createHandoff as apiCreateHandoff,
   listAgentFunctions as apiListAgentFunctions,
@@ -63,6 +64,7 @@ import {
   searchConversations,
   listActiveBanners as apiListActiveBanners,
 } from "./runtime/conversations.js";
+import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
 import {
   applyServerPath,
   persistRegeneratedAssistant,
@@ -458,6 +460,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // Stop generation:每個進行中的串流對應一個 AbortController,以 convId 為鍵。
   // streamWithAbort 包住串流呼叫管理生命週期;stopStreaming 中止指定對話。
   const streamAbortRef = useRef(new Map());
+  const adoptInFlightRef = useRef(false);
   async function streamWithAbort(convId, opts) {
     const controller = new AbortController();
     streamAbortRef.current.set(convId, controller);
@@ -650,9 +653,15 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       agent: agentName || null,
       agentId: serverRow.agent_id || null,
       agentName: agentName || null,
-      folder: "all",
-      tags: classified ? appendClassifiedTag([]) : [],
-      starred: false,
+      folder: typeof serverRow.folder === "string" && serverRow.folder
+        ? serverRow.folder
+        : "all",
+      tags: (() => {
+        const raw = Array.isArray(serverRow.tags) ? serverRow.tags.filter(Boolean) : [];
+        const userTags = raw.filter((t) => t !== "classified");
+        return classified ? appendClassifiedTag(userTags) : userTags;
+      })(),
+      starred: Boolean(serverRow.starred),
       classified,
       // P3: distinguishes inheritance-driven latch from agent-required
       // or admin-set classification. Drives the warning banner copy
@@ -900,6 +909,36 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     setConversations((cs) =>
       cs.map((c) => (c.id === id ? { ...c, ...patch } : c)),
     );
+  }
+
+  // Persist star / folder / user-tags (same optimistic+rollback pattern as rename).
+  // The derived ``classified`` tag is never sent — server strips it and re-derives.
+  async function handleUpdateConvMeta(convId, patch) {
+    const prev = conversations.find((c) => c.id === convId);
+    if (!prev) return;
+    const next = { ...patch };
+    if (Array.isArray(next.tags)) {
+      const userTags = next.tags.filter((t) => t && t !== "classified");
+      next.tags = prev.classified ? appendClassifiedTag(userTags) : userTags;
+    }
+    updateConv(convId, next);
+    if (typeof convId !== "number") return;
+    const body = {};
+    if (typeof next.starred === "boolean") body.starred = next.starred;
+    if (typeof next.folder === "string") body.folder = next.folder;
+    if (Array.isArray(next.tags)) {
+      body.tags = next.tags.filter((t) => t !== "classified");
+    }
+    try {
+      await apiUpdateConversation(authRequest, convId, body);
+    } catch (err) {
+      updateConv(convId, {
+        starred: prev.starred,
+        folder: prev.folder,
+        tags: prev.tags,
+      });
+      setRuntimeError(err.message || "儲存對話分類失敗");
+    }
   }
 
   // ---- rename / delete a conversation from the sidebar ----
@@ -2110,39 +2149,64 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     setCompareMsgs({});
   }
 
-  // OW-1: compare-mode adopt stays client-only (no server branch persist).
-  function adoptColumn(col) {
+  // Promote the chosen compare column into a real server conversation.
+  // Failures stay in compare mode and surface an error — never invent a
+  // local-only row (that bypassed classification latch + audit).
+  async function adoptColumn(col) {
+    if (adoptInFlightRef.current) return;
+    if (!isAuthenticated) {
+      setRuntimeError("尚未登入，請重新登入後再試。");
+      return;
+    }
     const msgs = compareMsgs[col.id] || [];
-    if (!msgs.length) return;
-    const firstUser = msgs.find((m) => m.role === "user");
     const agentName =
       agents.find((a) => a.id === col.agentId)?.name || col.agentId;
-    const encryption = agentRequiresEncryption(col.agentId);
-    const convId = makeId("cv");
-    setConversations((prev) => [
-      {
-        id: convId,
-        title: makeConversationTitle(firstUser?.text || "採用比較結果"),
-        ts: relativeLabel(),
-        updatedLabel: relativeLabel(),
-        agent: col.agentId,
+    adoptInFlightRef.current = true;
+    try {
+      const detail = await promoteAdoptedAnswer({
+        authRequest,
+        adoptConversation: apiAdoptConversation,
         agentId: col.agentId,
-        agentName,
-        folder: "all",
-        tags: encryption ? ["compared", "classified"] : ["compared"],
-        starred: false,
-        classified: encryption,
-        updatedAt: nowIso(),
-      },
-      ...prev,
-    ]);
-    setMessagesByConv((prev) => ({
-      ...prev,
-      [convId]: msgs.map((m) => ({ ...m, conversationId: convId })),
-    }));
-    setSelectedConvId(convId);
-    setSelectedAgentId(col.agentId);
-    exitCompare();
+        agentDisplayName: agentName,
+        msgs,
+        makeTitle: makeConversationTitle,
+      });
+      if (!detail || typeof detail.id !== "number") {
+        throw new Error("採用回答失敗：伺服器未回傳對話");
+      }
+      const lookupName = (id) =>
+        agents.find((a) => a.id === id)?.name || agentName || null;
+      const lookupRequiresEncryption = (id) =>
+        Boolean(agents.find((a) => a.id === id)?.requiresEncryption);
+      // Reflect server latch — do not invent classified client-side.
+      const mapped = mapServerConversation(
+        detail,
+        lookupName,
+        lookupRequiresEncryption,
+      );
+      const tags = Array.isArray(mapped.tags) ? [...mapped.tags] : [];
+      if (!tags.includes("compared")) tags.push("compared");
+      const convRow = { ...mapped, tags };
+      setConversations((prev) => [
+        convRow,
+        ...prev.filter((c) => c.id !== detail.id),
+      ]);
+      const msgsMapped = (detail.messages || []).map((m) => ({
+        ...mapServerMessage(m),
+        conversationId: detail.id,
+      }));
+      setMessagesByConv((prev) => ({
+        ...prev,
+        [detail.id]: msgsMapped,
+      }));
+      setSelectedConvId(detail.id);
+      setSelectedAgentId(col.agentId);
+      exitCompare();
+    } catch (error) {
+      setRuntimeError(error.message || "採用回答失敗");
+    } finally {
+      adoptInFlightRef.current = false;
+    }
   }
 
   // ---- misc handlers ----
@@ -2261,7 +2325,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         folders={folders}
         onCreateFolder={createFolder}
         onDeleteFolder={deleteFolder}
-        onOpenTagEditor={(id, patch) => updateConv(id, patch)}
+        onOpenTagEditor={(id, patch) => handleUpdateConvMeta(id, patch)}
         onRenameConv={handleRenameConv}
         onDeleteConv={handleDeleteConv}
       />
@@ -2346,20 +2410,6 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                     agents={agents}
                     currentAgentId={selectedAgentId}
                     onHandoffAgent={handoffToAgent}
-                    onHandoffUser={async (target) => {
-                      if (!selectedConvId || typeof selectedConvId !== "number") {
-                        setRuntimeError("尚未建立後端對話，無法交接");
-                        return;
-                      }
-                      try {
-                        await apiCreateHandoff(authRequest, {
-                          conversationId: selectedConvId,
-                          note: `交接給 ${target}`,
-                        });
-                      } catch (error) {
-                        setRuntimeError(error.message || "交接請求失敗");
-                      }
-                    }}
                     close={close}
                   />
                 )}
@@ -2602,16 +2652,23 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onClose={() => setShareOpen(false)}
         conversation={selectedConv}
         user={user}
-        onCreateShare={async ({ mode, allowFork, expiresAt }) => {
+        onCreateShare={async ({
+          targetUsername,
+          targetDepartmentName,
+          mode,
+          allowFork,
+          expiresAt,
+        }) => {
           if (!selectedConvId || typeof selectedConvId !== "number") {
             throw new Error("尚未建立後端對話 — 請先送出第一則訊息");
           }
-          const share = await apiCreateShare(authRequest, selectedConvId, {
+          return apiCreateShare(authRequest, selectedConvId, {
+            targetUsername,
+            targetDepartmentName,
             mode,
             allowFork,
             expiresAt,
           });
-          return { ...share, url: buildShareUrl(share.token) };
         }}
         onListShares={() =>
           (typeof selectedConvId === "number")
@@ -2644,7 +2701,7 @@ function EmptyState({ agent, agents, onPick, loading }) {
         {loading
           ? "agent 清單載入中…"
           : agent?.id === ROUTER_AGENT.id
-            ? "輸入問題，Router 會自動分派；也可用 @agent 直接指定"
+            ? "輸入問題，ANILA 會幫你找合適的助手；也可以用 @名稱 直接指定"
             : `當前 agent: ${agent?.name}`}
       </div>
       <div style={{

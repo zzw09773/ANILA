@@ -18,6 +18,7 @@ from app.models.unit_admin_assignment import UnitAdminAssignment
 from app.models.user import User
 from app.services.auth_service import require_admin
 from app.services.unit_admin_service import assign, revoke
+from app.schemas.base import ApiResponseModel
 
 router = APIRouter(prefix="/api/unit-admins", tags=["單位管理員"])
 
@@ -27,7 +28,7 @@ class UnitAdminAssignRequest(BaseModel):
     department_id: int
 
 
-class UnitAdminAssignmentResponse(BaseModel):
+class UnitAdminAssignmentResponse(ApiResponseModel):
     id: int
     user_id: int
     department_id: int

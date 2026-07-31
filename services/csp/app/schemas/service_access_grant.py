@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from pydantic import BaseModel, model_validator
+from app.schemas.base import ApiResponseModel
 
 
 class ServiceAccessGrantCreate(BaseModel):
@@ -32,7 +33,7 @@ class ServiceAccessGrantCreate(BaseModel):
         return self
 
 
-class ServiceAccessGrantResponse(BaseModel):
+class ServiceAccessGrantResponse(ApiResponseModel):
     id: int
     user_id: int | None
     department_id: int | None

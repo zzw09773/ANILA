@@ -147,13 +147,13 @@ Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anil
 | `JWT_KID` / `JWT_ALGORITHMS` / `JWT_LEEWAY_SECONDS` | `anila-v1` / `("RS256",)` / `60` | JWT 設定 |
 | `JWKS_REFRESH_SECONDS` / `REVOCATION_CACHE_TTL_SECONDS` | `3600` / `2592000`（30 天） | JWKS 重抓 / 撤銷 deny-list TTL |
 | `INTERNAL_TIMEOUT_SECONDS` / `INTERNAL_TIMEOUT_CONNECT` / `INTERNAL_LLM_TIMEOUT_SECONDS` | `30.0` / `5.0` / `300.0` | csp_client 讀 / 連線 / LLM 長逾時 |
-| `FLUX_BACKEND_URL` / `RENDERER_BASE_URL` | `http://flux2-dev:8000` / `http://pptx-renderer:7100` | FLUX 後端 / pptx renderer |
+| `FLUX_BACKEND_URL` / `RENDERER_BASE_URL` | `http://flux2-dev:8000` / `http://pptx-renderer:7100` | FLUX 後端（OpenAI 相容 Images API base URL，伺服器根或含 `/v1` 皆可）/ pptx renderer |
 | `FLUX_CACHE_DIR` | `/var/anila/anila-studio-flux-cache` | FLUX cache |
 | `ARTIFACTS_DIR` | `/var/anila/anila-studio-artifacts` | **report/mindmap/infographic/datatable 產出持久化根目錄**；download endpoint 由此讀回 |
 | `JOB_STORE_KEY_PREFIX` / `JOB_STORE_TTL_SECONDS` | `anila-studio:jobs:` / `604800`（7 天） | Redis JobStore key 前綴 / TTL |
 | `STUDIO_ARTIFACT_REPORTING` | `true` | CSP artifact-job / artifact / trace span 回報總開關 |
 
-> 注意：部分渲染路徑直接讀 `os.environ`（`geometric_qa.py` 讀 `RENDERER_BASE_URL`、`studio_render.py` 用 `FLUX_BACKEND_URL`）；另有兩個 FLUX 旋鈕**只在 env、不在 config.py**：`FLUX_MAX_CONCURRENT`、`FLUX_TIMEOUT_SECONDS`。compose 內 `FLUX_BACKEND_URL` 空字串 → studio 生圖停用（內網無 FLUX）。
+> 注意：部分渲染路徑直接讀 `os.environ`（`geometric_qa.py` 讀 `RENDERER_BASE_URL`、`studio_render.py` 用 `FLUX_BACKEND_URL`）；另有四個 FLUX 旋鈕**只在 env、不在 config.py**：`FLUX_MODEL`（Images API 的 model 欄位，預設 `flux.2-dev`）、`FLUX_API_KEY`（有值才帶 Bearer）、`FLUX_MAX_CONCURRENT`、`FLUX_TIMEOUT_SECONDS`。compose 內 `FLUX_BACKEND_URL` 空字串 → studio 生圖停用（內網無 FLUX）。2026-07 起 FLUX 呼叫走 OpenAI 相容 `POST {base}/v1/images/generations`（`{model, prompt, n, size, response_format:"b64_json"}` → `{created, data:[{b64_json}]}`）。
 
 ---
 

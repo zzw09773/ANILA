@@ -16,7 +16,6 @@ from app.api.departments import router as departments_router
 from app.api.memory import router as memory_router
 from app.api.platform_links import router as platform_links_router
 from app.api.proxy import router as proxy_router
-from app.api.traces import router as traces_router
 from app.api.artifacts import router as artifacts_router
 from app.api.service_access_grants import router as service_access_grants_router
 from app.api.service_clients import router as service_clients_router
@@ -35,6 +34,7 @@ from app.api.ingestion import (
 )
 from app.api.jwks import router as jwks_router
 from app.api.classification_inventory import router as classification_inventory_router
+from app.api.admin import feedback_router, health_overview_router
 from app.modules.policy import router as policy_decisions_router
 from app.modules.tasks import router as tasks_router
 
@@ -72,9 +72,6 @@ api_router.include_router(trusted_hosts_router)
 api_router.include_router(tasks_router)
 api_router.include_router(policy_decisions_router)
 api_router.include_router(proxy_router)
-# Trace REST 面(Slice 4a):POST /v1/traces/{trace_id}/spans(data plane,和
-# proxy 一樣寫完整路徑無 prefix,nginx /v1 直通吃得到)+ GET /api/traces/{id}。
-api_router.include_router(traces_router)
 # Artifact 契約面(Slice 8a):/v1/artifact-jobs、/v1/artifacts(service token,
 # 寫完整路徑無 prefix,nginx /v1 直通吃得到)+ /api/artifacts 治理讀面。
 api_router.include_router(artifacts_router)
@@ -84,3 +81,6 @@ api_router.include_router(artifacts_router)
 api_router.include_router(jwks_router)
 # 機敏分類盤點(doc 08 §15 Classification Inventory Before Cutover;admin/owner)。
 api_router.include_router(classification_inventory_router)
+# P3.3 服務健康總覽 + P3.4 使用者回饋(admin-tier)。
+api_router.include_router(health_overview_router)
+api_router.include_router(feedback_router)

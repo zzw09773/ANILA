@@ -346,7 +346,9 @@ onMounted(async () => {
   try { const { data } = await listModels(); allModels.value = data } catch {}
   try {
     const { data } = await client.get('/api/agents')
-    allAgents.value = data.filter(a => a.approval_status === 'approved')
+    allAgents.value = data.filter(a =>
+      a.approval_status === 'approved' || a.approval_status === 'registered'
+    )
   } catch {}
 })
 
@@ -376,9 +378,22 @@ async function handleSubmit() {
 }
 
 async function openAllowedModelsModal(user) {
+  // ⚠ 讀不到現況就**不要開視窗**。這裡曾經是 `try {...} catch {}`,
+  // 讀取失敗時 selectedModelIds 停在 [],視窗照常開啟、每個框都沒勾——
+  // 跟「這個人本來就沒有權限」在畫面上完全無法分辨。管理員勾一個想加的、按儲存,
+  // 後端是**全量取代**(users.py:295 先 delete 再重建),還會連帶把被撤掉的模型
+  // 從該使用者所有 API key 上移除(:304)。畫面回報綠色成功。
+  // 也就是說:網路抖一下,一次正常的管理操作就靜默撤光一個人的權限。
   allowedModelsTarget.value = user
   selectedModelIds.value = []
-  try { const { data } = await getUserAllowedModels(user.id); selectedModelIds.value = data.map(m => m.id) } catch {}
+  try {
+    const { data } = await getUserAllowedModels(user.id)
+    selectedModelIds.value = data.map(m => m.id)
+  } catch (e) {
+    setFeedback('error', '讀不到目前的允許清單,先不開啟編輯視窗以免誤撤權限。請重試。')
+    allowedModelsTarget.value = null
+    return
+  }
   showAllowedModelsModal.value = true
 }
 async function handleSaveAllowedModels() {
@@ -393,9 +408,18 @@ async function handleSaveAllowedModels() {
 }
 
 async function openAllowedAgentsModal(user) {
+  // 同 openAllowedModelsModal:讀不到現況就不開視窗。後端同樣是全量取代
+  // (users.py:368 先 delete 再重建)。
   allowedAgentsTarget.value = user
   selectedAgentIds.value = []
-  try { const { data } = await getUserAllowedAgents(user.id); selectedAgentIds.value = data.map(a => a.id) } catch {}
+  try {
+    const { data } = await getUserAllowedAgents(user.id)
+    selectedAgentIds.value = data.map(a => a.id)
+  } catch (e) {
+    setFeedback('error', '讀不到目前的 Agent 允許清單,先不開啟編輯視窗以免誤撤權限。請重試。')
+    allowedAgentsTarget.value = null
+    return
+  }
   showAllowedAgentsModal.value = true
 }
 async function handleSaveAllowedAgents() {

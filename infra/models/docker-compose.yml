@@ -28,7 +28,7 @@
 # Profiles:
 #     (無 profile)        試用機現役組:gpt-oss-20b / gemma4 / nv-embed / flux
 #     --profile intranet  內網 H100 新增組:gemma-4-26b-a4b / gemma-4-12b /
-#                         gpt-oss-120b (generic vLLM image,權重走 ANILA_HF_DIR)
+#                         gpt-oss-120b asr-decoder (generic vLLM image,權重走 ANILA_HF_DIR)
 #
 # Endpoint URLs registered in CSP model_registry (走 docker DNS,
 # host port 完全沒開):
@@ -297,6 +297,12 @@ services:
       CSP_BASE_URL: http://csp:8000
       # Prod: 同 csp service,缺值 fail-loud(不要走 dev fallback)。
       CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
+      # image-primary 熱抓取用的 s2s token。不用 :? —— compose 解析階段就會
+      # 插值,models stack 與平台 stack 常分開起;硬性要求會讓「只起模型、
+      # 不起平台」的人整份 compose 掛掉(同 2026-07-30 ASR :? 踩雷)。
+      # 空預設 → agent 仍可啟動,但 GET /api/models/image-primary 會 401,
+      # fetcher fallback 到 env FLUX_BACKEND_URL(見 image_primary_fetcher)。
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-}
       GEMMA_MODEL: gemma4
       ENABLE_PROMPT_TRANSLATION: "1"
       SHARE_DIR: /share/flux
@@ -441,6 +447,49 @@ services:
       timeout: 10s
       retries: 10
       start_period: 180s
+
+  # ── 語音辨識解碼器 (faster-whisper) ───────────────────────────────────────
+  # 平台的 asr-gateway 走 anila-models-net 打這裡。decoder 無狀態 —— 切句/認證/WS
+  # 全在 gateway。音訊只在記憶體流轉,不寫檔。
+  #
+  # ⚠ ASR_GPU 請指向一張沒有 LLM 在跑的卡。
+  # ⚠ H100 / V100 都用 float16(Volta 無 int8 tensor core,int8 反而更慢)。
+  asr-decoder:
+    image: asr-decoder:0.1.0
+    container_name: anila-model-asr-decoder
+    build:
+      context: ../../services/asr-decoder
+    profiles: ["intranet"]
+    environment:
+      TZ: Asia/Taipei
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+      ASR_LOCAL_FILES_ONLY: "1"
+      ASR_MODEL_DIR: /workspace/model/faster-whisper-large-v3
+      ASR_MODEL_SIZE: ${ASR_MODEL_SIZE:-large-v3}
+      ASR_DEVICE: cuda
+      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-float16}
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:?ASR_DECODER_TOKEN must be set (openssl rand -hex 32)}
+    volumes:
+      - ${ANILA_HF_DIR:-../../models/model}/faster-whisper-large-v3:/workspace/model/faster-whisper-large-v3:ro
+    expose:
+      - "9000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${ASR_GPU:-0}"]
+              capabilities: [gpu]
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
 networks:
   models:

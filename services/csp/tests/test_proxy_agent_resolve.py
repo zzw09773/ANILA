@@ -83,7 +83,7 @@ class TestV1AgentsDataPlane:
         dev = make_user(db, username="apikeydev1", role="developer")
 
         agent1 = make_agent(db, dev, name="pub-agent-1", approval_status="approved")
-        _agent2 = make_agent(db, dev, name="pub-agent-2", approval_status="pending")
+        _agent2 = make_agent(db, dev, name="pub-agent-2", approval_status="registered")
 
         # Grant user permission for agent1
         from app.models.agent import UserAgentPermission

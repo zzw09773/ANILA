@@ -10,7 +10,7 @@ class ModelRegistry(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), unique=True, nullable=False, index=True)  # e.g. "aia/asrd"
     display_name = Column(String(200), nullable=False)
-    model_type = Column(String(20), nullable=False)  # 'llm' / 'vlm' / 'embedding' / 'agent'
+    model_type = Column(String(20), nullable=False)  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image'
     endpoint_url = Column(String(500), nullable=False)
     api_version = Column(String(10), default="v1")  # 'v1' / 'v2'
     # Slice 6a (doc 04 §2): 'openai_compatible' / 'custom_adapter'. formalize 既
@@ -21,12 +21,21 @@ class ModelRegistry(Base):
     )
     is_active = Column(Boolean, default=True)
     is_router_primary = Column(Boolean, nullable=False, default=False)
+    # Slice 8b (doc 2026-07-06-flux-image-primary-design.md §1): mirrors
+    # is_router_primary for flux2-dev-agent / anila-studio's primary image
+    # model (partial unique index in migration r1_0022).
+    is_image_primary = Column(Boolean, nullable=False, default=False)
+    # P4.8: at most one designated platform embedding model (partial unique
+    # index). embedding_native_dim is measured by calling the model at
+    # designation time — never a configured guess.
+    is_platform_embedding = Column(Boolean, nullable=False, default=False)
+    embedding_native_dim = Column(Integer, nullable=True)
     # Slice 6a (doc 04 §9 / doc 01 §32 拍板五態):
     # unknown / healthy / degraded / unhealthy / disabled。舊三值
     # (online/connecting/offline) 由 r1_0005 就地遷移;'disabled' 由讀取端
     # 依 is_active 呈現(見 health_checker.normalize_health_status)。
     health_status = Column(String(20), default="unknown")
-    health_checked_at = Column(DateTime, nullable=True)
+    health_checked_at = Column(DateTime(timezone=True), nullable=True)
     # Slice 6a (doc 04 §3): per-model API key 的 enc::v1:: envelope(與 csk- /
     # ingestion 憑證同一套 credential_crypto)。NULL = 退回全域
     # MODEL_GATEWAY_API_KEY(MVP fallback)。永不隨 API 回傳明文,GET 只露
@@ -71,9 +80,8 @@ class ModelRegistry(Base):
         nullable=True,
     )
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(
-        DateTime,
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )

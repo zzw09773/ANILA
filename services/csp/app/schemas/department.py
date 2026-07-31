@@ -1,5 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
+from app.schemas.base import ApiResponseModel
 
 
 class DepartmentCreate(BaseModel):
@@ -33,7 +34,7 @@ class DepartmentUpdate(BaseModel):
         return value
 
 
-class DepartmentResponse(BaseModel):
+class DepartmentResponse(ApiResponseModel):
     id: int
     name: str
     description: str | None = None

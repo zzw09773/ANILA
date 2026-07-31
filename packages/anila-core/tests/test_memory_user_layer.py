@@ -142,6 +142,87 @@ def test_truncate_embedding_raises_on_unexpected_dim():
         truncate_embedding([0.1] * 768)
 
 
+def test_truncate_embedding_pads_when_pad_from_matches():
+    """Declared native width below the column → zero-pad.
+
+    Mutant: drop the ``n == pad_from`` guard (pad any short vector) —
+    then a drifted 1536-d endpoint would also pad and this test's
+    sibling (wrong pad_from) would still pass while production
+    silently corrupted. Keep both directions.
+    """
+    native = 2048
+    vec = [0.5] * native
+    out = truncate_embedding(vec, pad_from=native)
+    assert len(out) == EMBED_DIM
+    assert out[:native] == vec
+    assert out[native:] == [0.0] * (EMBED_DIM - native)
+
+
+def test_truncate_embedding_rejects_short_when_pad_from_mismatches():
+    """pad_from=2048 must NOT accept a 1536-d vector."""
+    with pytest.raises(ValueError, match="1536"):
+        truncate_embedding([0.1] * 1536, pad_from=2048)
+
+
+def test_truncate_embedding_rejects_short_without_pad_from():
+    with pytest.raises(ValueError, match="pad_from|not in"):
+        truncate_embedding([0.1] * 2048)
+
+
+def test_truncate_embedding_truncates_when_pad_from_above_column():
+    """Declared native width above HNSW ceiling → truncate."""
+    native = 4096
+    vec = [float(i) for i in range(native)]
+    out = truncate_embedding(vec, pad_from=native)
+    assert len(out) == EMBED_DIM
+    assert out == vec[:EMBED_DIM]
+
+
+def test_padded_cosine_ranking_matches_native_ranking():
+    """Invariant 3: zero-padding must not change cosine ranking.
+
+    Build three native-dim vectors with a known order under cosine
+    similarity to a query; pad both query and candidates to EMBED_DIM;
+    assert the ranked order is identical. Mutant: replace pad with a
+    constant fill (e.g. 1.0) — ranking diverges and this fails.
+    """
+    import math
+
+    native = 8
+
+    def cosine(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(x * x for x in b))
+        return dot / (na * nb)
+
+    query = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # a ≈ query, b orthogonal-ish, c anti-aligned
+    cands = {
+        "a": [0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "b": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "c": [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    }
+    native_order = sorted(
+        cands.keys(), key=lambda k: cosine(query, cands[k]), reverse=True
+    )
+    assert native_order == ["a", "b", "c"]
+
+    q_pad = truncate_embedding(query, pad_from=native)
+    padded = {
+        k: truncate_embedding(v, pad_from=native) for k, v in cands.items()
+    }
+    padded_order = sorted(
+        padded.keys(), key=lambda k: cosine(q_pad, padded[k]), reverse=True
+    )
+    assert padded_order == native_order
+    # And absolute scores match (padding is mathematically exact).
+    for k in cands:
+        assert cosine(query, cands[k]) == pytest.approx(
+            cosine(q_pad, padded[k]), rel=1e-9, abs=1e-9
+        )
+
+
 # ── MemoryReadResult.encryption_inherited ────────────────────────────────────
 
 

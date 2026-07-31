@@ -15,7 +15,6 @@ from app.api.router import api_router
 from app.api.conversations import router as conversations_router
 from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
-from app.api.public_share import router as public_share_router
 from app.middleware.csrf import CsrfMiddleware
 from app.models.user import User
 from app.services.auth_service import require_admin
@@ -154,11 +153,13 @@ async def lifespan(app: FastAPI):
     trusted_host_service.register_with_url_guard()
 
     # Start background tasks
+    from app.services.alert_detectors import start_alert_detectors
     from app.services.health_checker import start_health_checker
     from app.services.usage_writer import start_usage_writer
 
     health_task = await start_health_checker()
     writer_task = await start_usage_writer()
+    alert_task = await start_alert_detectors()
 
     # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
     # used by the ingestion inspector endpoints (read-only chunk
@@ -182,6 +183,8 @@ async def lifespan(app: FastAPI):
         health_task.cancel()
     if writer_task:
         writer_task.cancel()
+    if alert_task:
+        alert_task.cancel()
     await close_pool()
 
 
@@ -192,7 +195,7 @@ app = FastAPI(
     redoc_url=None,
     # 預設 ``/openapi.json`` 是 unauth public,任何訪客都能拿到完整 API schema
     # (含 admin endpoints 的 request body shape) 做 recon。設 None 關掉內建路由,
-    # 改用下方 admin-gated 版本(中科院內網比 ENABLE_API_DOCS gating 更嚴)。
+    # 改用下方 admin-gated 版本。
     openapi_url=None,
     lifespan=lifespan,
 )
@@ -260,7 +263,6 @@ app.include_router(api_router)
 app.include_router(conversations_router)
 app.include_router(attachments_router)
 app.include_router(handoffs_router)
-app.include_router(public_share_router)
 
 # Mount static files for Swagger UI
 static_dir = Path(settings.STATIC_DIR)

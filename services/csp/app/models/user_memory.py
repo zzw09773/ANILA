@@ -126,6 +126,11 @@ class ConversationMemoryChunk(Base):
     # the str representation, which is fine for the UI's "what's
     # remembered" panel — RAG queries use raw SQL anyway.
     embedding = Column(Text, nullable=False)
+    # P4.8: which model produced this vector + its native width. Retrieval
+    # filters to the current platform designation; other rows stay for
+    # pending recompute.
+    embedding_source_model = Column(String(200), nullable=True)
+    embedding_native_dim = Column(Integer, nullable=True)
     is_encrypted = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )

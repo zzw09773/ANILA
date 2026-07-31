@@ -100,20 +100,6 @@ def _add_message(db: Session, conv: Conversation, content: str) -> Message:
     return msg
 
 
-def _plant_share(db: Session, conv: Conversation, user) -> ConversationShare:
-    share = ConversationShare(
-        conversation_id=conv.id,
-        token=secrets.token_urlsafe(32),
-        mode="read_only",
-        allow_fork=False,
-        created_by=user.id,
-    )
-    db.add(share)
-    db.commit()
-    db.refresh(share)
-    return share
-
-
 def _make_task(db: Session, user, level: str = "無機密") -> Task:
     task = Task(
         title="oe4", task_type="query", requester_user_id=user.id,
@@ -164,6 +150,7 @@ class TestShareTwoLine:
     @pytest.mark.parametrize("level", LEVELS)
     def test_share_truth_table(self, client: TestClient, db: Session, level: str):
         user = make_user(db, username=f"share_{level}")
+        peer = make_user(db, username=f"share_peer_{level}")
         conv = _make_conv(db, user, level)
         before = db.query(AuditLog).filter(
             AuditLog.action == "share_conversation",
@@ -172,7 +159,7 @@ class TestShareTwoLine:
         resp = client.post(
             f"/api/conversations/{conv.id}/shares",
             headers=_bearer(user),
-            json={"mode": "read_only"},
+            json={"mode": "read_only", "target_username": peer.username},
         )
         allow = outbound_action_allowed(ClassificationLevel.from_storage(level))
         audit = classification_audit_required(ClassificationLevel.from_storage(level))
@@ -209,6 +196,7 @@ class TestShareTwoLine:
         """Mutation-killer: classified=True disagreeing with level must not
         block share; gate follows LEVEL (營業秘密 → allow + audit)."""
         user = make_user(db, username="share_mut_killer")
+        peer = make_user(db, username="share_mut_peer")
         conv = Conversation(user_id=user.id, title="oe4-mut")
         db.add(conv)
         db.commit()
@@ -226,7 +214,7 @@ class TestShareTwoLine:
         resp = client.post(
             f"/api/conversations/{conv.id}/shares",
             headers=_bearer(user),
-            json={"mode": "read_only"},
+            json={"mode": "read_only", "target_username": peer.username},
         )
         assert resp.status_code == 201, resp.text
         assert db.query(ConversationShare).filter(
@@ -275,34 +263,6 @@ class TestReadAuditTwoLine:
             ClassificationLevel.from_storage(level)
         )
         assert after - before == (1 if expect_audit else 0)
-
-
-# ── Public share (unauthenticated) ────────────────────────────────────────────
-
-
-class TestPublicShareTwoLine:
-    @pytest.mark.parametrize("level", LEVELS)
-    def test_public_share_truth_table(
-        self, client: TestClient, db: Session, level: str, monkeypatch
-    ):
-        monkeypatch.setattr(settings, "ENABLE_PUBLIC_SHARE", True)
-        user = make_user(db, username=f"pub_{level}")
-        conv = _make_conv(db, user, level)
-        body = f"public-body-{MARKER}-{level}"
-        _add_message(db, conv, body)
-        share = _plant_share(db, conv, user)
-
-        resp = client.get(f"/api/public/share/{share.token}")
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        allow = outbound_action_allowed(ClassificationLevel.from_storage(level))
-        if allow:
-            assert data["conversation_title"] == conv.title
-            assert len(data["messages"]) == 1
-            assert data["messages"][0]["content"] == body
-        else:
-            assert data["conversation_title"] == "（列管對話）"
-            assert data["messages"] == []
 
 
 # ── Search snippet ────────────────────────────────────────────────────────────

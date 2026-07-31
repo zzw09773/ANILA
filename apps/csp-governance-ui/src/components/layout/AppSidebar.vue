@@ -79,6 +79,7 @@ const menuGroups = computed(() => {
       { path: '/users', label: '使用者' },
       { path: '/departments', label: '部門' },
       { path: '/alerts', label: '警報' },
+      { path: '/feedback', label: '使用者回饋' },
       { path: '/banners', label: '公告橫幅' },
       { path: '/audit-logs', label: '稽核紀錄' },
       { path: '/classification-inventory', label: '分類盤點' },

@@ -16,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 os.environ["DEBUG"] = "false"
 os.environ["DATABASE_URL"] = "sqlite:///./.pytest-csp.db"
 os.environ["HEALTH_CHECK_INTERVAL"] = "3600"
+os.environ["ALERT_CHECK_INTERVAL"] = "3600"
 # TestClient uses http://testserver — Secure cookies would be dropped.
 os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("AUTO_REGISTER_MODELS", "")
@@ -110,7 +111,7 @@ def make_model(db, name="gpt-4o-mini") -> ModelRegistry:
 
 
 def make_agent(db, owner: User, name="test-agent",
-               approval_status="pending") -> Agent:
+               approval_status="registered") -> Agent:
     a = Agent(
         name=name,
         owner_user_id=owner.id,

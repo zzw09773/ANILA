@@ -1,10 +1,15 @@
-import secrets
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Boolean, Column, DateTime, ForeignKey, Integer, String,
+    Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String,
+    UniqueConstraint, text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.types import JSON
 from app.database import Base
+
+# Postgres → JSONB; SQLite create_all (pytest) → plain JSON.
+_JSON_LIST = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Conversation(Base):
@@ -41,7 +46,7 @@ class Conversation(Base):
         nullable=True,
     )
     classified = Column(Boolean, nullable=False, default=False, server_default="false")
-    classified_at = Column(DateTime, nullable=True)
+    classified_at = Column(DateTime(timezone=True), nullable=True)
     classified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     # P3 / Sprint 14 — Bell-LaPadula style "no write down" inheritance.
     # When TRUE, the platform set classified=true automatically because
@@ -58,16 +63,15 @@ class Conversation(Base):
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )
-    classification_latched_at = Column(DateTime, nullable=True)
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(
-        DateTime,
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
@@ -85,20 +89,120 @@ class Conversation(Base):
         foreign_keys="Message.conversation_id",
     )
     shares = relationship("ConversationShare", back_populates="conversation", cascade="all, delete-orphan")
+    user_metas = relationship(
+        "ConversationUserMeta",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ConversationUserMeta(Base):
+    """Per-user view of a conversation: star, folder, user tags.
+
+    Not properties of the thread — if A stars a conversation shared with B,
+    B must not see A's star. The system ``classified`` tag is never stored
+    here; it is derived from ``conversations.classified`` on read.
+    """
+
+    __tablename__ = "conversation_user_meta"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "conversation_id",
+            name="uq_conversation_user_meta_user_conv",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    starred = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Folder id from the user's ui_settings.folders list; "all" = unfiled.
+    folder = Column(String(64), nullable=False, default="all", server_default="all")
+    # User-authored tags only. Never contains the derived "classified" tag.
+    user_tags = Column(_JSON_LIST, nullable=False, default=list)
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    conversation = relationship("Conversation", back_populates="user_metas")
+    user = relationship("User", foreign_keys=[user_id])
 
 
 class ConversationShare(Base):
+    """P4.3 — named share to a person XOR a department unit.
+
+    Anonymous token links are retired (SYSTEM-MAP §分享). A department
+    share reaches that node and its descendants, resolved at *read* time
+    via ``_department_scope_ids`` so later re-parenting is honoured.
+    Revoke = delete the row (no more server reads; no recall / no
+    read-tracking).
+    """
+
     __tablename__ = "conversation_shares"
+    __table_args__ = (
+        CheckConstraint(
+            "(target_user_id IS NOT NULL AND target_department_id IS NULL)"
+            " OR (target_user_id IS NULL AND target_department_id IS NOT NULL)",
+            name="ck_conversation_shares_one_target",
+        ),
+        Index(
+            "ix_conversation_shares_active_user",
+            "conversation_id",
+            "target_user_id",
+            unique=True,
+            postgresql_where=text("target_user_id IS NOT NULL"),
+            sqlite_where=text("target_user_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_conversation_shares_active_dept",
+            "conversation_id",
+            "target_department_id",
+            unique=True,
+            postgresql_where=text("target_department_id IS NOT NULL"),
+            sqlite_where=text("target_department_id IS NOT NULL"),
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
-    token = Column(String(64), nullable=False, unique=True, index=True, default=lambda: secrets.token_urlsafe(32))
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    target_department_id = Column(
+        Integer,
+        ForeignKey("departments.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     mode = Column(String(20), nullable=False, default="read_only")  # read_only / fork
     allow_fork = Column(Boolean, nullable=False, default=False)
-    expires_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    view_count = Column(Integer, nullable=False, default=0, server_default="0")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     conversation = relationship("Conversation", back_populates="shares")
     creator = relationship("User", foreign_keys=[created_by])
+    target_user = relationship("User", foreign_keys=[target_user_id])
+    target_department = relationship("Department", foreign_keys=[target_department_id])

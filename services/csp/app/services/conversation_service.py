@@ -1,23 +1,25 @@
-"""Conversation persistence and share-link service."""
+"""Conversation persistence and named-share service."""
 from __future__ import annotations
 
 import json
-import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
-from app.models.conversation import Conversation, ConversationShare
+from app.models.conversation import Conversation, ConversationShare, ConversationUserMeta
+from app.models.department import Department
 from app.models.message import Message
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier
 from app.services import message_tree as mtree
+from app.services.usage_service import _department_scope_ids
 
 
 # Client-supplied message metadata is an opaque dict persisted verbatim
@@ -209,11 +211,154 @@ def create_conversation(
     return conv
 
 
-def get_conversation(db: Session, conv_id: int, user: User) -> Conversation:
+def _resolve_agent_for_adopt(
+    db: Session,
+    user: User,
+    *,
+    agent_id: Optional[int] = None,
+    agent_name: Optional[str] = None,
+):
+    """Resolve an approved Agent the caller may use. None when absent/denied.
+
+    Mirrors chat-proxy discovery (approved + permission) so adopt cannot latch
+    classification via an agent the user could not have compared against.
+    """
+    from app.models.agent import Agent
+    from app.services.api_key_service import check_agent_permission
+
+    agent = None
+    if agent_id is not None:
+        agent = (
+            db.query(Agent)
+            .filter(Agent.id == agent_id, Agent.approval_status == "approved")
+            .first()
+        )
+    else:
+        name = (agent_name or "").strip()
+        if name:
+            agent = (
+                db.query(Agent)
+                .filter(Agent.name == name, Agent.approval_status == "approved")
+                .first()
+            )
+    if agent is None:
+        return None
+    if not is_admin_tier(user) and not check_agent_permission(
+        db, user=user, api_key_id=None, agent_id=agent.id,
+    ):
+        return None
+    return agent
+
+
+def _latch_agent_policy_on_conversation(db: Session, conv_id: int, agent) -> None:
+    """Mirror chat-proxy agent-policy latch (reason=agent_policy).
+
+    Uses ``effective_agent_policy_level`` (same rule as proxy). No-op when
+    the effective level is 無機密.
+    """
+    from app.api.agents._common import effective_agent_policy_level
+    from app.modules.policy import apply_classification
+    from app.schemas.contracts.classification import ClassificationLevel
+
+    level = effective_agent_policy_level(agent)
+    if level <= ClassificationLevel.UNCLASSIFIED:
+        return
+    apply_classification(
+        db,
+        resource_type="conversation",
+        resource_id=str(conv_id),
+        new_level=level.to_storage(),
+        actor_type="service",
+        actor_id="agent-policy",
+        reason="agent_policy",
+        source="agent_policy",
+    )
+
+
+def adopt_compare_answer(
+    db: Session,
+    user: User,
+    *,
+    title: str,
+    user_content: str,
+    assistant_content: str,
+    agent_id: Optional[int] = None,
+    agent_name: Optional[str] = None,
+    origin: Optional[str] = "anila-ui",
+    assistant_metadata: Optional[dict] = None,
+    assistant_trace_id: Optional[str] = None,
+    assistant_latency_ms: Optional[int] = None,
+    assistant_agent_name: Optional[str] = None,
+) -> Conversation:
+    """Promote a compare-mode answer into a real conversation + message tree.
+
+    Creates the conversation, appends user then assistant (parent_id=user via
+    active leaf), then latches classification from the resolved agent's policy
+    — the same path ordinary chat takes via the proxy. Does not re-call the
+    model.
+    """
+    _check_metadata_size(assistant_metadata)
+    agent = _resolve_agent_for_adopt(
+        db, user, agent_id=agent_id, agent_name=agent_name,
+    )
+    # Only persist a real FK — never write an unresolved agent_id (would 500).
+    resolved_agent_id = agent.id if agent is not None else None
+    conv = create_conversation(
+        db,
+        user.id,
+        title=title or "採用比較結果",
+        agent_id=resolved_agent_id,
+        origin=origin,
+        collection_id=None,
+    )
+    # Same chaining ordinary chat uses: user lands as active leaf, then
+    # assistant threads onto it (no explicit parent_id needed).
+    append_message(
+        db,
+        conv.id,
+        user,
+        role="user",
+        content=user_content,
+        set_active=True,
+    )
+    append_message(
+        db,
+        conv.id,
+        user,
+        role="assistant",
+        content=assistant_content,
+        trace_id=assistant_trace_id,
+        latency_ms=assistant_latency_ms,
+        agent_name=assistant_agent_name,
+        metadata=assistant_metadata,
+        set_active=True,
+    )
+    if agent is not None:
+        _latch_agent_policy_on_conversation(db, conv.id, agent)
+    db.refresh(conv)
+    return conv
+
+
+def get_conversation(
+    db: Session,
+    conv_id: int,
+    user: User,
+    *,
+    for_write: bool = True,
+) -> Conversation:
+    """Load a conversation with access control.
+
+    ``for_write=True`` (default): owner or admin — mutations, share
+    management. ``for_write=False``: also allows an active named share
+    targeting the caller (P4.3 read path).
+    """
     conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
     if not conv:
         raise HTTPException(status_code=404, detail="找不到此對話")
-    _check_access(conv, user)
+    if for_write:
+        _check_access(conv, user)
+    else:
+        _check_read_access(db, conv, user)
     return conv
 
 
@@ -225,6 +370,10 @@ def list_conversations(
     collection_id: Optional[int] = None,
 ) -> list[Conversation]:
     """List the caller's conversations, optionally filtered.
+
+    Includes conversations the caller owns **and** those shared with them
+    via an active named share (P4.3). Origin/collection filters apply to
+    both sets.
 
     Origin filtering modes (mutually exclusive — endpoint validates this):
       - ``origin='anilalm'``           → only LM-side conversations.
@@ -247,7 +396,14 @@ def list_conversations(
     belongs to whichever collection the user is currently viewing would
     re-introduce the cross-collection leak this filter exists to fix.
     """
-    q = db.query(Conversation).filter(Conversation.user_id == user.id)
+    shared_ids = _shared_conversation_ids_for_user(db, user)
+    ownership = Conversation.user_id == user.id
+    if shared_ids:
+        q = db.query(Conversation).filter(
+            or_(ownership, Conversation.id.in_(shared_ids))
+        )
+    else:
+        q = db.query(Conversation).filter(ownership)
     if origin is not None:
         q = q.filter(Conversation.origin == origin)
     elif exclude_origin is not None:
@@ -259,10 +415,179 @@ def list_conversations(
     return q.order_by(Conversation.updated_at.desc()).all()
 
 
+# System-derived tag — never persisted in conversation_user_meta.user_tags.
+CLASSIFIED_TAG = "classified"
+_MAX_USER_TAGS = 32
+_MAX_TAG_LEN = 40
+_MAX_FOLDER_LEN = 64
+
+
+def _sanitize_user_tags(raw: list | None) -> list[str]:
+    """Drop the derived classified tag and empty/oversized entries."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="tags 必須是字串陣列")
+    if len(raw) > _MAX_USER_TAGS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"標籤最多 {_MAX_USER_TAGS} 個",
+        )
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail="tags 必須是字串陣列")
+        tag = item.strip()
+        if not tag or tag == CLASSIFIED_TAG:
+            continue
+        if len(tag) > _MAX_TAG_LEN:
+            raise HTTPException(
+                status_code=400,
+                detail=f"單一標籤最長 {_MAX_TAG_LEN} 字元",
+            )
+        if tag in seen:
+            continue
+        seen.add(tag)
+        out.append(tag)
+    return out
+
+
+def _sanitize_folder(folder: str | None) -> str:
+    if folder is None:
+        return "all"
+    if not isinstance(folder, str):
+        raise HTTPException(status_code=400, detail="folder 必須是字串")
+    cleaned = folder.strip() or "all"
+    if len(cleaned) > _MAX_FOLDER_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"folder 最長 {_MAX_FOLDER_LEN} 字元",
+        )
+    # Built-in filter ids are not storage folders.
+    if cleaned in ("starred",):
+        raise HTTPException(status_code=400, detail="不可將對話歸入內建篩選匣")
+    return cleaned
+
+
+def get_user_meta(
+    db: Session, user_id: int, conversation_id: int,
+) -> ConversationUserMeta | None:
+    return (
+        db.query(ConversationUserMeta)
+        .filter(
+            ConversationUserMeta.user_id == user_id,
+            ConversationUserMeta.conversation_id == conversation_id,
+        )
+        .first()
+    )
+
+
+def load_user_metas(
+    db: Session, user_id: int, conversation_ids: list[int],
+) -> dict[int, ConversationUserMeta]:
+    """Batch-load meta for the list endpoint — one query, not N."""
+    if not conversation_ids:
+        return {}
+    rows = (
+        db.query(ConversationUserMeta)
+        .filter(
+            ConversationUserMeta.user_id == user_id,
+            ConversationUserMeta.conversation_id.in_(conversation_ids),
+        )
+        .all()
+    )
+    return {r.conversation_id: r for r in rows}
+
+
+def meta_view(
+    conv: Conversation, meta: ConversationUserMeta | None,
+) -> dict:
+    """Public view fields for the current user (classified tag derived)."""
+    user_tags = [
+        t for t in list((meta.user_tags if meta else None) or [])
+        if isinstance(t, str) and t and t != CLASSIFIED_TAG
+    ]
+    tags = list(user_tags)
+    if conv.classified and CLASSIFIED_TAG not in tags:
+        tags.append(CLASSIFIED_TAG)
+    return {
+        "starred": bool(meta.starred) if meta else False,
+        "folder": (meta.folder if meta and meta.folder else "all"),
+        "tags": tags,
+    }
+
+
+def upsert_user_meta(
+    db: Session,
+    user: User,
+    conv: Conversation,
+    *,
+    starred: bool | None = None,
+    folder: str | None = None,
+    tags: list | None = None,
+) -> ConversationUserMeta:
+    """Create or patch the caller's meta row. Does not touch title."""
+    row = get_user_meta(db, user.id, conv.id)
+    if row is None:
+        row = ConversationUserMeta(
+            user_id=user.id,
+            conversation_id=conv.id,
+            starred=False,
+            folder="all",
+            user_tags=[],
+        )
+        db.add(row)
+    if starred is not None:
+        row.starred = bool(starred)
+    if folder is not None:
+        row.folder = _sanitize_folder(folder)
+    if tags is not None:
+        row.user_tags = _sanitize_user_tags(tags)
+    row.updated_at = datetime.now(timezone.utc)
+    return row
+
+
 def update_title(db: Session, conv_id: int, title: str, user: User) -> Conversation:
     conv = get_conversation(db, conv_id, user)
     conv.title = title
     conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(conv)
+    return conv
+
+
+def update_conversation(
+    db: Session,
+    conv_id: int,
+    user: User,
+    *,
+    title: str | None = None,
+    starred: bool | None = None,
+    folder: str | None = None,
+    tags: list | None = None,
+) -> Conversation:
+    """Patch title (owner/admin) and/or the caller's personal meta.
+
+    Meta updates only need read access so a named-share recipient can
+    star / file / tag their own view without write rights on the thread.
+    """
+    meta_touch = starred is not None or folder is not None or tags is not None
+    if title is None and not meta_touch:
+        raise HTTPException(status_code=400, detail="沒有可更新的欄位")
+    if title is not None:
+        conv = get_conversation(db, conv_id, user, for_write=True)
+        cleaned = title.strip()
+        if not cleaned:
+            raise HTTPException(status_code=400, detail="標題不可為空")
+        conv.title = cleaned
+        conv.updated_at = datetime.now(timezone.utc)
+    else:
+        conv = get_conversation(db, conv_id, user, for_write=False)
+    if meta_touch:
+        upsert_user_meta(
+            db, user, conv, starred=starred, folder=folder, tags=tags,
+        )
     db.commit()
     db.refresh(conv)
     return conv
@@ -293,6 +618,11 @@ def delete_conversation(db: Session, conv_id: int, user: User) -> None:
     (
         db.query(Attachment)
         .filter(Attachment.conversation_id == conv.id)
+        .delete(synchronize_session=False)
+    )
+    (
+        db.query(ConversationUserMeta)
+        .filter(ConversationUserMeta.conversation_id == conv.id)
         .delete(synchronize_session=False)
     )
     db.delete(conv)
@@ -693,13 +1023,17 @@ def log_classified_access(db: Session, conv_id: int, user: User) -> None:
     db.commit()
 
 
-# ── Share links ───────────────────────────────────────────────────────────────
+# ── Named shares (P4.3) ───────────────────────────────────────────────────────
 
 def create_share(
     db: Session,
     conv_id: int,
     user: User,
     *,
+    target_user_id: Optional[int] = None,
+    target_username: Optional[str] = None,
+    target_department_id: Optional[int] = None,
+    target_department_name: Optional[str] = None,
     mode: str = "read_only",
     allow_fork: bool = False,
     expires_at: Optional[datetime] = None,
@@ -710,24 +1044,65 @@ def create_share(
         outbound_action_allowed,
     )
 
-    conv = get_conversation(db, conv_id, user)
+    conv = get_conversation(db, conv_id, user, for_write=True)
     level = ClassificationLevel.from_storage(conv.classification_level)
     # SYSTEM-MAP §8 L241-242: allow iff level <= TRADE_SECRET; audit iff
     # level >= TRADE_SECRET (including the allow path for 營業秘密).
     if not outbound_action_allowed(level):
         raise HTTPException(
             status_code=403,
-            detail="列管對話不允許建立分享連結",
+            detail=(
+                f"此對話密等為「{level.to_storage()}」，超過營業秘密，不可分享。"
+                "請改用密等較低的對話，或向管理員申請降密後再分享。"
+            ),
         )
+
+    resolved_user_id, resolved_dept_id = _resolve_share_target(
+        db,
+        target_user_id=target_user_id,
+        target_username=target_username,
+        target_department_id=target_department_id,
+        target_department_name=target_department_name,
+    )
+
+    # Reject sharing to self as a person (unit share covering own dept is OK).
+    if resolved_user_id is not None and resolved_user_id == user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="不能分享給自己。請指定其他帳號或單位。",
+        )
+
+    existing = _find_active_share(
+        db,
+        conversation_id=conv.id,
+        target_user_id=resolved_user_id,
+        target_department_id=resolved_dept_id,
+    )
+    if existing is not None:
+        if existing.expires_at and _as_utc(existing.expires_at) < datetime.now(
+            timezone.utc
+        ):
+            db.delete(existing)
+            db.flush()
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "已分享給此對象。若要調整權限，請先撤銷既有分享後再建一次。"
+                ),
+            )
+
     share = ConversationShare(
         conversation_id=conv.id,
-        token=secrets.token_urlsafe(32),
+        target_user_id=resolved_user_id,
+        target_department_id=resolved_dept_id,
         mode=mode,
         allow_fork=allow_fork,
         expires_at=expires_at,
         created_by=user.id,
     )
     db.add(share)
+    target_label = _share_target_label(db, share)
     if classification_audit_required(level):
         log_audit_event(
             db,
@@ -737,48 +1112,348 @@ def create_share(
             resource_id=conv_id,
             detail=(
                 f"User {user.username} shared conversation {conv_id} "
-                f"at level {level.to_storage()}"
+                f"with {target_label} at level {level.to_storage()}"
             ),
-            metadata={"classification_level": level.to_storage()},
+            metadata={
+                "classification_level": level.to_storage(),
+                "target_user_id": resolved_user_id,
+                "target_department_id": resolved_dept_id,
+            },
         )
     db.commit()
     db.refresh(share)
-    return share
+    # Re-load with target relationships for ShareOut enrichment.
+    from sqlalchemy.orm import joinedload
 
-
-def get_share_by_token(db: Session, token: str) -> ConversationShare:
-    share = (
+    return (
         db.query(ConversationShare)
-        .filter(ConversationShare.token == token)
-        .first()
+        .options(
+            joinedload(ConversationShare.target_user),
+            joinedload(ConversationShare.target_department),
+        )
+        .filter(ConversationShare.id == share.id)
+        .one()
     )
-    if not share:
-        raise HTTPException(status_code=404, detail="找不到此分享連結")
-    if share.expires_at and share.expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="此分享連結已過期")
-    share.view_count += 1
-    db.commit()
-    return share
 
 
 def list_shares(db: Session, conv_id: int, user: User) -> list[ConversationShare]:
-    conv = get_conversation(db, conv_id, user)
-    return conv.shares
+    get_conversation(db, conv_id, user, for_write=True)
+    from sqlalchemy.orm import joinedload
+
+    return (
+        db.query(ConversationShare)
+        .options(
+            joinedload(ConversationShare.target_user),
+            joinedload(ConversationShare.target_department),
+        )
+        .filter(ConversationShare.conversation_id == conv_id)
+        .order_by(ConversationShare.id)
+        .all()
+    )
 
 
-def revoke_share(db: Session, share_id: int, user: User) -> None:
+def revoke_share(db: Session, conv_id: int, share_id: int, user: User) -> None:
     share = db.query(ConversationShare).filter(ConversationShare.id == share_id).first()
-    if not share:
-        raise HTTPException(status_code=404, detail="找不到此分享連結")
-    conv = get_conversation(db, share.conversation_id, user)  # ownership check
+    if not share or share.conversation_id != conv_id:
+        raise HTTPException(status_code=404, detail="找不到此分享。請重新整理分享清單。")
+    get_conversation(db, share.conversation_id, user, for_write=True)
     db.delete(share)
     db.commit()
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize stored expiry to aware UTC for comparison.
+
+    Thin wrapper over ``app.time_utils.as_utc`` — same naive-UTC convention
+    as ``api_key_service._as_utc``. Safe after the column is ``timestamptz``.
+    """
+    from app.time_utils import as_utc
+
+    out = as_utc(dt)
+    assert out is not None
+    return out
+
+
+def _share_expired(share: ConversationShare, *, now: datetime | None = None) -> bool:
+    if share.expires_at is None:
+        return False
+    ref = now if now is not None else datetime.now(timezone.utc)
+    return _as_utc(share.expires_at) < ref
+
+
+def user_has_active_share(db: Session, conv: Conversation, user: User) -> bool:
+    """True when an unexpired named share grants ``user`` read access now.
+
+    Department shares expand via ``_department_scope_ids`` at read time so
+    re-parenting after the share was created is honoured.
+    """
+    if not user.is_active:
+        return False
+    now = datetime.now(timezone.utc)
+    shares = (
+        db.query(ConversationShare)
+        .filter(ConversationShare.conversation_id == conv.id)
+        .all()
+    )
+    for share in shares:
+        if _share_expired(share, now=now):
+            continue
+        if share.target_user_id is not None:
+            if share.target_user_id == user.id:
+                return True
+            continue
+        if share.target_department_id is None:
+            continue
+        if user.department_id is None:
+            continue
+        scope = _department_scope_ids(db, share.target_department_id)
+        if scope is not None and user.department_id in scope:
+            return True
+    return False
+
+
+def _shared_conversation_ids_for_user(db: Session, user: User) -> list[int]:
+    from app.schemas.contracts.classification import (
+        ClassificationLevel,
+        outbound_action_allowed,
+    )
+
+    if not user.is_active:
+        return []
+    now = datetime.now(timezone.utc)
+    ids: set[int] = set()
+    # Person-targeted shares.
+    person_rows = (
+        db.query(ConversationShare.conversation_id)
+        .filter(ConversationShare.target_user_id == user.id)
+        .all()
+    )
+    person_conv_ids = {row[0] for row in person_rows}
+    # Department-targeted: filter in Python so scope expands at read time.
+    dept_shares = (
+        db.query(ConversationShare)
+        .filter(ConversationShare.target_department_id.isnot(None))
+        .all()
+    )
+    for share in dept_shares:
+        if _share_expired(share, now=now):
+            continue
+        if user.department_id is None:
+            continue
+        scope = _department_scope_ids(db, share.target_department_id)
+        if scope is not None and user.department_id in scope:
+            ids.add(share.conversation_id)
+    # Apply expiry to person shares too.
+    if person_conv_ids:
+        person_shares = (
+            db.query(ConversationShare)
+            .filter(
+                ConversationShare.target_user_id == user.id,
+                ConversationShare.conversation_id.in_(person_conv_ids),
+            )
+            .all()
+        )
+        for share in person_shares:
+            if _share_expired(share, now=now):
+                continue
+            ids.add(share.conversation_id)
+    if not ids:
+        return []
+    # Drop shares whose conversation has latched above the outbound ceiling
+    # (create-time gate alone is not enough after later classify/latch).
+    allowed: list[int] = []
+    for conv in (
+        db.query(Conversation).filter(Conversation.id.in_(ids)).all()
+    ):
+        level = ClassificationLevel.from_storage(conv.classification_level)
+        if outbound_action_allowed(level):
+            allowed.append(conv.id)
+    return sorted(allowed)
+
+
+def _resolve_share_target(
+    db: Session,
+    *,
+    target_user_id: Optional[int],
+    target_username: Optional[str],
+    target_department_id: Optional[int],
+    target_department_name: Optional[str],
+) -> tuple[Optional[int], Optional[int]]:
+    """Resolve exactly one named target; fail closed with actionable detail."""
+    user_keys = sum(
+        1 for v in (target_user_id, (target_username or "").strip() or None) if v
+    )
+    dept_keys = sum(
+        1
+        for v in (
+            target_department_id,
+            (target_department_name or "").strip() or None,
+        )
+        if v
+    )
+    if user_keys + dept_keys == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "請指定分享對象：輸入對方帳號，或指定一個單位。"
+                "匿名連結已停用。"
+            ),
+        )
+    if user_keys > 0 and dept_keys > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="一次只能分享給「一個人」或「一個單位」，請只填其中一種。",
+        )
+    if user_keys > 1 or dept_keys > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="請只提供一種識別方式（帳號或 id；單位名稱或 id）。",
+        )
+
+    if target_user_id is not None or (target_username or "").strip():
+        target = _resolve_target_user(
+            db, user_id=target_user_id, username=target_username
+        )
+        return target.id, None
+
+    target_dept = _resolve_target_department(
+        db, department_id=target_department_id, name=target_department_name
+    )
+    return None, target_dept.id
+
+
+def _resolve_target_user(
+    db: Session, *, user_id: Optional[int], username: Optional[str]
+) -> User:
+    if user_id is not None:
+        target = db.query(User).filter(User.id == user_id).first()
+        label = f"id={user_id}"
+    else:
+        label = (username or "").strip()
+        target = db.query(User).filter(User.username == label).first()
+
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"找不到帳號「{label}」。請確認對方帳號拼寫，"
+                "或改分享給單位。"
+            ),
+        )
+    if not target.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"帳號「{target.username}」已停用，無法分享。"
+                "請改選其他人或單位。"
+            ),
+        )
+    return target
+
+
+def _resolve_target_department(
+    db: Session, *, department_id: Optional[int], name: Optional[str]
+) -> Department:
+    if department_id is not None:
+        dept = db.query(Department).filter(Department.id == department_id).first()
+        label = f"id={department_id}"
+    else:
+        label = (name or "").strip()
+        dept = db.query(Department).filter(Department.name == label).first()
+
+    if dept is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"找不到單位「{label}」。請確認單位名稱，"
+                "或改分享給指定人。"
+            ),
+        )
+    if not dept.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"單位「{dept.name}」已停用，無法分享。"
+                "請改選其他單位或指定人。"
+            ),
+        )
+    return dept
+
+
+def _find_active_share(
+    db: Session,
+    *,
+    conversation_id: int,
+    target_user_id: Optional[int],
+    target_department_id: Optional[int],
+) -> Optional[ConversationShare]:
+    q = db.query(ConversationShare).filter(
+        ConversationShare.conversation_id == conversation_id
+    )
+    if target_user_id is not None:
+        q = q.filter(ConversationShare.target_user_id == target_user_id)
+    else:
+        q = q.filter(
+            ConversationShare.target_department_id == target_department_id
+        )
+    return q.first()
+
+
+def _share_target_label(db: Session, share: ConversationShare) -> str:
+    if share.target_user_id is not None:
+        u = db.query(User).filter(User.id == share.target_user_id).first()
+        return f"user:{u.username}" if u else f"user_id:{share.target_user_id}"
+    d = (
+        db.query(Department)
+        .filter(Department.id == share.target_department_id)
+        .first()
+    )
+    return f"department:{d.name}" if d else f"department_id:{share.target_department_id}"
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _check_access(conv: Conversation, user: User) -> None:
+    """Owner-or-admin write gate (mutations, share management).
+
+    Unauthorised collapses to the same 404 as missing (models pattern).
+    """
     if is_admin_tier(user):
         return
     if conv.user_id != user.id:
-        raise HTTPException(status_code=403, detail="無權存取此對話")
+        raise HTTPException(status_code=404, detail="找不到此對話")
+
+
+def _check_read_access(db: Session, conv: Conversation, user: User) -> None:
+    """Owner, admin, or active named-share recipient (P4.3).
+
+    Share recipients additionally need the conversation still within the
+    outbound ceiling (≤營業秘密). Create-time gating alone would leave a
+    hole after a later classify / agent latch to 密／機密.
+
+    No relationship to the conversation → 404 (existence not an oracle).
+    Active share but over ceiling → 403 with a self-help message: the
+    recipient already knows the share exists, so distinguishing is useful.
+    """
+    from app.schemas.contracts.classification import (
+        ClassificationLevel,
+        outbound_action_allowed,
+    )
+
+    if is_admin_tier(user):
+        return
+    if conv.user_id == user.id:
+        return
+    if not user_has_active_share(db, conv, user):
+        raise HTTPException(status_code=404, detail="找不到此對話")
+    level = ClassificationLevel.from_storage(conv.classification_level)
+    if not outbound_action_allowed(level):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"此對話密等為「{level.to_storage()}」，超過營業秘密，"
+                "分享對象不可再讀取。請向擁有者確認是否另開較低密等的對話，"
+                "或請擁有者撤銷此分享。"
+            ),
+        )
+

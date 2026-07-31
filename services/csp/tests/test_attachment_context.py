@@ -462,7 +462,7 @@ def test_conversation_attachments_rejects_non_owner(client: TestClient, db):
         _require_conversation_access(
             db, Caller(user=attacker, api_key_id=None), conv.id,
         )
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == 404
 
     # HTTP endpoint must refuse too.
     token = login(client, username="att-attacker")
@@ -470,7 +470,7 @@ def test_conversation_attachments_rejects_non_owner(client: TestClient, db):
         f"/api/conversations/{conv.id}/attachments",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
 # ── FIX 1: upload refuses foreign conversation_id ─────────────────────────
@@ -490,7 +490,7 @@ def test_upload_rejects_foreign_conversation(
         files={"file": ("x.txt", io.BytesIO(b"CROSS_USER_MARKER_AAA"), "text/plain")},
         data={"conversation_id": str(conv.id)},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 404
     assert db.query(Attachment).filter(
         Attachment.conversation_id == conv.id,
     ).count() == 0

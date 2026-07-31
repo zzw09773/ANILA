@@ -1,5 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
+from app.schemas.base import ApiResponseModel
 
 
 class ApiKeyCreate(BaseModel):
@@ -37,7 +38,7 @@ class ApiKeyUpdate(BaseModel):
         return trimmed
 
 
-class ApiKeyResponse(BaseModel):
+class ApiKeyResponse(ApiResponseModel):
     id: int
     user_id: int
     name: str

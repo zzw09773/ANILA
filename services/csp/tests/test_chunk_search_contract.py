@@ -116,7 +116,7 @@ class _StubStore:
     def __init__(self, hits):
         self._hits = hits
 
-    async def similarity_search(self, *, query_embedding, top_k, min_score):
+    async def similarity_search(self, *, query_embedding, top_k, min_score, **_kwargs):
         return self._hits
 
 

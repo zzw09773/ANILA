@@ -2,7 +2,10 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
   listModels, createModel, updateModel, deleteModel, activateModel, purgeModel, triggerHealthCheck,
-  setRouterPrimary, unsetRouterPrimary, testModelConnection, importModelsFromEndpoint,
+  setRouterPrimary, unsetRouterPrimary, setImagePrimary as setImagePrimaryApi,
+  unsetImagePrimary as unsetImagePrimaryApi,
+  setPlatformEmbedding, unsetPlatformEmbedding,
+  testModelConnection, importModelsFromEndpoint,
   activateCreatedFromImport,
 } from '../api/models'
 
@@ -69,6 +72,28 @@ export const useModelsStore = defineStore('models', () => {
     await fetchModels()
   }
 
+  // FLUX 主圖像模型（image-primary）— 完全比照 setPrimary/unsetPrimary 寫法。
+  async function setImagePrimary(id) {
+    await setImagePrimaryApi(id)
+    await fetchModels()
+  }
+
+  async function unsetImagePrimary(id) {
+    await unsetImagePrimaryApi(id)
+    await fetchModels()
+  }
+
+  async function setPlatformEmbed(id) {
+    const { data } = await setPlatformEmbedding(id)
+    await fetchModels()
+    return data
+  }
+
+  async function unsetPlatformEmbed(id) {
+    await unsetPlatformEmbedding(id)
+    await fetchModels()
+  }
+
   // P4.6 — 自已註冊端點整批帶入。回傳後端計數結果並刷新列表。
   async function importFromEndpoint(sourceModelId) {
     const { data } = await importModelsFromEndpoint(sourceModelId)
@@ -85,6 +110,8 @@ export const useModelsStore = defineStore('models', () => {
 
   return {
     models, loading, fetchModels, create, update, remove, activate, purge, checkHealth, test,
-    setPrimary, unsetPrimary, importFromEndpoint, activateCreated,
+    setPrimary, unsetPrimary, setImagePrimary, unsetImagePrimary,
+    setPlatformEmbed, unsetPlatformEmbed,
+    importFromEndpoint, activateCreated,
   }
 })

@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.schemas.contracts.classification import ClassificationLevel
+from app.schemas.base import ApiResponseModel
 
 
 class PolicyAction(str, enum.Enum):
@@ -46,7 +47,7 @@ class PolicyActorType(str, enum.Enum):
     SERVICE = "service"
 
 
-class PolicyDecisionOut(BaseModel):
+class PolicyDecisionOut(ApiResponseModel):
     """PolicyDecision 讀出契約(from ORM;append-only,無更新契約)。
 
     doc 03 Done Criteria 4:所有 deny 必有可解釋原因(``reason`` +

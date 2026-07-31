@@ -45,7 +45,7 @@ class User(Base):
     # Stamped on every successful authentication (local login, OIDC).
     # Powers the "上次登入" column in the admin user panel and lets audit
     # reports flag dormant accounts without scanning AuditLog.
-    last_login_at = Column(DateTime, nullable=True)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
     # Server-synced chat-UI preferences (folders / stars / tweaks). Keeps the
     # ANILA UI's per-user settings off browser localStorage so they follow the
     # user across shared PKI-card workstations.
@@ -55,9 +55,8 @@ class User(Base):
         default=dict,
         server_default="{}",
     )
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(
-        DateTime,
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )

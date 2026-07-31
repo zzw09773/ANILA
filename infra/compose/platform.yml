@@ -331,10 +331,12 @@ services:
       anila-ui:
         condition: service_healthy
         restart: true
+    # Probe CSP via loopback :8080 /health (see anila.conf). `nginx -t`
+    # only checks syntax and stayed healthy during tonight's 502/503 floods.
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD-SHELL", "wget -qO- --timeout=3 http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
       retries: 3
       start_period: 10s
     restart: unless-stopped
@@ -623,6 +625,62 @@ services:
       timeout: 10s
       retries: 5
       start_period: 600s
+    restart: unless-stopped
+    logging: *anila-logging
+
+  # ── ASR gateway (串流語音輸入的 WS 端點) ─────────────────────────────────
+  # 瀏覽器麥克風 → WSS /asr/stream → 這裡切句 → asr-decoder (GPU) → 文字。
+  # 純 CPU、無 DB、無 GPU。語音與辨識結果都不落地 —— 只當鍵盤。
+  #
+  # ⚠ profiles: 預設不啟動。要開:COMPOSE_PROFILES=asr
+  #   (nginx 端已用變數式 proxy_pass,沒開也不會讓 nginx 起不來)。
+  asr-gateway:
+    profiles: ["asr"]
+    build:
+      context: ../../services/asr-gateway
+      dockerfile: Dockerfile
+    expose:
+      - "8200"
+    environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-}
+      ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
+      # 不用 :? 硬性要求 —— compose 的變數插值在**解析階段**就會跑,即使這個服務
+      # 在 profiles: ["asr"] 後面根本不會啟動。用 :? 會讓「不想開語音的人連平台都起不來」
+      # (2026-07-30 實際中招:up -d 整個失敗)。改成空字串預設,由服務自己在啟動時
+      # fail-loud —— 缺 token 的 asr-gateway 會拒絕開機,而沒開 asr profile 的人不受影響。
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-}
+      ASR_ALLOW_HTTP_DECODER: ${ASR_ALLOW_HTTP_DECODER:-0}
+      ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
+      ASR_BEAM_SIZE: ${ASR_BEAM_SIZE:-5}
+      ASR_PARTIALS_ENABLED: ${ASR_PARTIALS_ENABLED:-1}
+      ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
+      ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
+      CSP_BASE_URL: http://csp:8000
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
+      JWT_KID: anila-v1
+      JWT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
+      JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
+      REVOCATION_RECONCILE_INTERVAL_SECONDS: "${REVOCATION_RECONCILE_INTERVAL_SECONDS:-5}"
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
+      COOKIE_SECURE: "true"
+      LOG_LEVEL: INFO
+    depends_on:
+      csp:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - anila-models-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8200/asr/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     restart: unless-stopped
     logging: *anila-logging
 

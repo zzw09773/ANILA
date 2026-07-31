@@ -319,6 +319,9 @@ async def _persist_images(
     # deployment of this code path.
     from pgvector import HalfVector
 
+    source_model = getattr(embedder, "model_name", None)
+    native_dim = getattr(embedder, "native_dim", None)
+
     inserted = 0
     # Outer transaction so the SET LOCAL GUC takes effect (SET LOCAL is
     # txn-scoped) and is confined to this acquire — it never leaks to the next
@@ -342,18 +345,22 @@ async def _persist_images(
                         INSERT INTO ingestion_images
                             (collection_id, document_id, image_id, page,
                              storage_path, mime, alt_text, caption,
-                             bytes_size, embedding)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                             bytes_size, embedding,
+                             embedding_source_model, embedding_native_dim)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                         ON CONFLICT (document_id, image_id) DO UPDATE
                            SET caption     = EXCLUDED.caption,
                                storage_path= EXCLUDED.storage_path,
                                bytes_size  = EXCLUDED.bytes_size,
                                embedding   = EXCLUDED.embedding,
+                               embedding_source_model = EXCLUDED.embedding_source_model,
+                               embedding_native_dim   = EXCLUDED.embedding_native_dim,
                                updated_at  = CURRENT_TIMESTAMP
                         """,
                         collection_id, document_id, row["image_id"], row["page"],
                         row["storage_path"], row["mime"], row["alt_text"],
                         row["caption"], row["bytes_size"], emb_value,
+                        source_model, native_dim,
                     )
                 inserted += 1
             except Exception as e:  # noqa: BLE001
@@ -664,6 +671,35 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
     embedder: Embedder = ctx["embedder"]
     arq_job_id: str | None = ctx.get("job_id")
 
+    # P4.8: refresh embedder against the current platform designation so
+    # a mid-runtime admin change propagates without restarting the worker.
+    from ingestion_worker.platform_embedding import resolve_from_pool
+
+    try:
+        resolved = await resolve_from_pool(
+            pool,
+            settings_fallback_name=settings.embedding_model,
+            settings_fallback_native=getattr(
+                embedder, "native_dim", settings.embedding_dim
+            ),
+        )
+        if (
+            resolved.name != embedder.model_name
+            or resolved.native_dim != embedder.native_dim
+        ):
+            await embedder.close()
+            embedder = Embedder(
+                settings,
+                model_name=resolved.name,
+                native_dim=resolved.native_dim,
+            )
+            ctx["embedder"] = embedder
+    except Exception:
+        logger.exception(
+            "ingest_document: platform embedding resolve failed — "
+            "continuing with existing embedder"
+        )
+
     started_at = datetime.now(timezone.utc)
     await _update_job(pool, arq_job_id, status="running", started=True, progress_pct=5)
     try:
@@ -813,6 +849,8 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 chunks=leaves,
                 embeddings=embeddings,
                 parent_id_map=parent_id_map,
+                embedding_source_model=embedder.model_name,
+                embedding_native_dim=embedder.native_dim,
             )
 
         total_chunks = len(chunks)

@@ -798,18 +798,18 @@ async def invoke_action(
         raise HTTPException(status_code=404, detail="找不到此對話")
     try:
         _check_access(conv, actor)
-    except HTTPException as exc:
-        if exc.status_code == 403:
-            # Real conversation the caller cannot access — insider signal.
-            _audit_invoke_refused(
-                db,
-                actor=actor,
-                action=action,
-                conversation_id=conversation_id,
-                conversation_level=_conversation_level_value(conv),
-                reason="access_denied",
-                ip_address=ip_address,
-            )
+    except HTTPException:
+        # Row exists but caller may not access — client sees 404 (no
+        # existence oracle); still record the refused attempt for audit.
+        _audit_invoke_refused(
+            db,
+            actor=actor,
+            action=action,
+            conversation_id=conversation_id,
+            conversation_level=_conversation_level_value(conv),
+            reason="access_denied",
+            ip_address=ip_address,
+        )
         raise
 
     # 4. message validation

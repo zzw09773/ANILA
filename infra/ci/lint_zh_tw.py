@@ -9,7 +9,8 @@ lint 不會誤傷自己,也符合本 repo「禁簡體」政策。
 CONFIDENTIAL 浮水印);整檔/路徑豁免見 EXEMPT_PATHS。
 
 用法:python3 infra/ci/lint_zh_tw.py [root]  (exit 1 表示有未豁免命中)
-CI:與 infra/ci/lint-boundaries.sh 並列呼叫。
+
+手動檢查（擁有者裁定不要 CI）:infra/checks/run-all.sh 或 infra/ci/lint-zh-tw.sh。
 """
 from __future__ import annotations
 
@@ -62,11 +63,15 @@ EXEMPT_PATHS = (
 
 EXEMPT_MARKER = "zh-exempt"
 
-# 掃描目標:前端使用者字串 + 後端 detail=。
+# 掃描目標:前端使用者字串 + 後端使用者可見錯誤字串。
+# .py 除 detail= 外，補 studio 常見的 _unauthorized( / error="…" 入口
+# （註解與 LLM prompt 仍可能誤報；有則加 zh-exempt）。
 TARGETS = {
     ".vue": None, ".jsx": None, ".tsx": None,
     ".js": None, ".ts": None,
-    ".py": re.compile(r"detail\s*="),  # 後端只掃 HTTPException detail
+    ".py": re.compile(
+        r"detail\s*=|_unauthorized\s*\(|error\s*=\s*[\"']"
+    ),
 }
 
 

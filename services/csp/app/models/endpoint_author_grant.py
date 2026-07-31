@@ -56,10 +56,9 @@ class EndpointAuthorGrant(Base):
         ),
         nullable=True,
     )
-    granted_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    granted_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    revoked_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", foreign_keys=[user_id])
     grantor = relationship("User", foreign_keys=[granted_by])

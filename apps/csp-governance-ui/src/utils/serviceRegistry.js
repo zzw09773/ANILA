@@ -49,9 +49,15 @@ export function stickyEditableFields(service) {
 }
 
 // 某欄位在此服務上是否唯讀鎖定：只有 env_seeded 且不在白名單時才鎖。
+// url / entry_url 視為同一欄位（表單本地叫 url，契約／種子叫 entry_url）。
 export function isFieldLocked(service, field) {
   if (configSourceForRow(service) !== 'env_seeded') return false
-  return !stickyEditableFields(service).includes(field)
+  const sticky = stickyEditableFields(service)
+  if (sticky.includes(field)) return false
+  if (field === 'entry_url' || field === 'url') {
+    return !(sticky.includes('entry_url') || sticky.includes('url'))
+  }
+  return true
 }
 
 export function classificationLabel(level) {
@@ -70,7 +76,6 @@ export function normalizeService(row) {
       ? source.service_admin_user_ids
       : [],
     classification_ceiling: source.classification_ceiling || '',
-    healthcheck_url: source.healthcheck_url || '',
     required_roles: Array.isArray(source.required_roles) ? source.required_roles : [],
   }
 }

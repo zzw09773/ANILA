@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.contracts.classification import ClassificationLevel
+from app.schemas.base import ApiResponseModel
 
 
 def _validate_classification_ceiling(value: str | None) -> str | None:
@@ -17,7 +18,7 @@ def _validate_classification_ceiling(value: str | None) -> str | None:
 class ModelCreate(BaseModel):
     name: str
     display_name: str
-    model_type: str  # 'llm' / 'vlm' / 'embedding' / 'agent'
+    model_type: str  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image'
     endpoint_url: str
     api_version: str = "v1"
     description: str | None = None
@@ -72,7 +73,7 @@ class ModelUpdate(BaseModel):
         return _validate_classification_ceiling(v)
 
 
-class ModelResponse(BaseModel):
+class ModelResponse(ApiResponseModel):
     id: int
     name: str
     display_name: str
@@ -81,6 +82,9 @@ class ModelResponse(BaseModel):
     api_version: str
     is_active: bool
     is_router_primary: bool = False
+    is_image_primary: bool = False
+    is_platform_embedding: bool = False
+    embedding_native_dim: int | None = None
     health_status: str
     health_checked_at: datetime | None
     description: str | None

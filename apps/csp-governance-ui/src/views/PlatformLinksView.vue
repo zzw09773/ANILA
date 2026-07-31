@@ -72,7 +72,7 @@
           <input v-model="form.name" class="term-input" :disabled="locked('name')" />
         </TermField>
         <TermField label="網址">
-          <input v-model="form.url" class="term-input" placeholder="https://…" :disabled="locked('url')" />
+          <input v-model="form.url" class="term-input" placeholder="https://…" :disabled="locked('entry_url')" />
         </TermField>
         <div class="form-row-2">
           <TermField label="圖示" hint="workflow · git · notebook · chat · monitor · database · api · docs · cpu">
@@ -100,9 +100,6 @@
             </select>
           </TermField>
         </div>
-        <TermField v-if="registryMode" label="健康檢查 url" hint="用於探測服務可用性" optional>
-          <input v-model="form.healthcheck_url" class="term-input" placeholder="https://…/healthz" :disabled="locked('healthcheck_url')" />
-        </TermField>
 
         <TermSection title="存取控制" />
 
@@ -235,7 +232,7 @@ function emptyForm() {
   return {
     name: '', url: '', icon: '', description: '', sort_order: 0,
     is_public: false, required_roles: [],
-    launch_mode: 'new_tab', classification_ceiling: '', healthcheck_url: '',
+    launch_mode: 'new_tab', classification_ceiling: '',
     service_admin_user_ids: [],
   }
 }
@@ -357,7 +354,6 @@ function openEditModal(link) {
     required_roles: Array.isArray(link.required_roles) ? [...link.required_roles] : [],
     launch_mode: link.launch_mode === 'iframe' ? 'iframe' : 'new_tab',
     classification_ceiling: link.classification_ceiling || '',
-    healthcheck_url: link.healthcheck_url || '',
     service_admin_user_ids: Array.isArray(link.service_admin_user_ids) ? [...link.service_admin_user_ids] : [],
   }
   showModal.value = true
@@ -378,21 +374,23 @@ async function loadAuditCallbacks(id) {
 }
 
 function buildPayload() {
+  // registry 契約用 entry_url；legacy platform_links 相容面用 url。
+  // 混用會讓 Pydantic 默默丟掉網址（更新）或 422（建立）。
+  const address = form.value.url.trim()
   const base = {
     name: form.value.name.trim(),
-    url: form.value.url.trim(),
     icon: form.value.icon.trim() || null,
     description: form.value.description.trim() || null,
     sort_order: form.value.sort_order || 0,
     is_public: !!form.value.is_public,
     required_roles: form.value.required_roles,
   }
-  if (!registryMode.value) return base
+  if (!registryMode.value) return { ...base, url: address }
   return {
     ...base,
+    entry_url: address,
     launch_mode: form.value.launch_mode,
     classification_ceiling: form.value.classification_ceiling || null,
-    healthcheck_url: form.value.healthcheck_url.trim() || null,
     service_admin_user_ids: form.value.service_admin_user_ids,
   }
 }

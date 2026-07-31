@@ -48,11 +48,13 @@ def memory_db(monkeypatch):
         is_approved=True,
     )
     emb = ModelRegistry(
-        name=memory_service._EMBED_MODEL_NAME,
+        name="nvidia/nv-embed-v2",
         display_name="embed",
         model_type="embedding",
         endpoint_url="http://embed.test/v1",
         is_active=True,
+        is_platform_embedding=True,
+        embedding_native_dim=4000,
     )
     db.add_all([user, emb])
     db.commit()
@@ -82,7 +84,7 @@ def test_assistant_embed_failure_leaves_no_orphan_user_chunk(memory_db, monkeypa
         db.commit()
         calls["n"] += 1
         if calls["n"] == 1:
-            return [0.1] * 8
+            return [0.1] * 8, "nvidia/nv-embed-v2", 8
         raise RuntimeError("assistant embed boom")
 
     def track_insert(db, **kwargs):

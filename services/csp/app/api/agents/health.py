@@ -1,61 +1,142 @@
 """Agent endpoint probes (manual health-check + csk- test-connection).
 
 Split verbatim from the former single-module ``app/api/agents.py``
-(behavior-preserving refactor).
+(behavior-preserving refactor). D1 removed the on-demand Full Trace
+diagnostic (``POST …/trace-test``); connection probe remains.
+
+2026-07-30 false-green fix: connection test reports host / credentials /
+path as distinct facts; health probe no longer treats a `/`-only hit as
+``healthy``.
 """
-import asyncio
-import time
-import uuid
-from datetime import datetime, timezone
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field, model_validator
+from sqlalchemy.orm import Session
 
 import httpx
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.agent import Agent
-from app.models.trace_span import TraceSpan
 from app.models.user import User
-from app.schemas.contracts.agents import (
-    STATE_AFTER_TRACE_PASS,
-    TRACE_TEST_ELIGIBLE_STATES,
-    TraceTestItem,
-    TraceTestItemStatus,
-    TraceTestReport,
-)
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import is_admin_tier, require_admin
+from app.services.auth_service import require_admin
+from app.services.endpoint_author_service import can_see_endpoint_address
+from app.services.health_checker import (
+    HEALTH_DEGRADED,
+    HEALTH_HEALTHY,
+    HEALTH_UNHEALTHY,
+    probe_model_health_detailed,
+)
 from app.services.proxy.urls import join_upstream_path
 
 from app.api.agents._common import (
     _client_ip,
     _require_developer_or_admin,
     _resolve_agent,
+    ensure_agent_view_access,
 )
 
 router = APIRouter()
 
-# Bounded poll window for agent-emitted spans to arrive in ``trace_spans``
-# via the Full Trace callback (POST /v1/traces/{trace_id}/spans). Kept small
-# and module-level so tests can monkeypatch a fast timeout.
-_TRACE_TEST_POLL_TIMEOUT_S = 10.0
-_TRACE_TEST_POLL_INTERVAL_S = 0.25
+# Chat-path responses that prove the versioned route exists *and* the
+# presented csk- got past inbound auth. Agent empty-messages → 400 is the
+# canonical success; 422 is the structured-validation cousin. 401/403 are
+# NOT success: gateways often authenticate before routing, so a wrong path
+# returns 401 too. Other 4xx (405/429/…) only prove the path answered —
+# credentials stay unknown so we do not over-claim.
+_AUTH_CHALLENGE = frozenset({401, 403})
+_PATH_MISSING = frozenset({404})
+_CREDS_AND_PATH_OK = frozenset({400, 422}) | frozenset(range(200, 300))
 
-# doc 06 §6 — the mandatory (non-conditional) span types a real run must emit
-# to leave dev/test: run / model_call / output start+finish pairs. retrieval /
-# tool_call / error / step are conditional or triggerable and reported as
-# informational, not pass-blocking.
-_TRACE_TEST_REQUIRED_SPAN_TYPES: tuple[str, ...] = (
-    "agent.run.started",
-    "agent.run.finished",
-    "agent.model_call.started",
-    "agent.model_call.finished",
-    "agent.output.started",
-    "agent.output.finished",
-)
+
+def _classify_connection_status(status_code: int) -> tuple[bool, bool | None, bool | None, str]:
+    """Map an HTTP status from ``POST …/v1/chat/completions`` to facts.
+
+    Returns ``(host_reachable, credentials_accepted, path_verified, detail)``.
+    """
+    if status_code in _AUTH_CHALLENGE:
+        return (
+            True,
+            None,
+            None,
+            (
+                f"主機有回應（HTTP {status_code}）。"
+                f"未驗證路徑：閘道常在路由前認証，錯誤路徑也可能回 {status_code}。"
+                "未驗證憑證。"
+            ),
+        )
+    if status_code in _PATH_MISSING:
+        return (
+            True,
+            None,
+            False,
+            (
+                f"主機有回應，但呼叫路徑不存在（HTTP {status_code}）。"
+                "路徑未通過驗證；憑證是否被接受無法由此判斷。"
+            ),
+        )
+    if status_code >= 500:
+        return (
+            True,
+            None,
+            True,
+            (
+                f"路徑有回應但上游錯誤（HTTP {status_code}）。"
+                "已確認主機與路徑；憑證是否接受無法單憑此判斷。"
+                "不視為連線驗證成功。"
+            ),
+        )
+    if status_code in _CREDS_AND_PATH_OK:
+        return (
+            True,
+            True,
+            True,
+            (
+                f"路徑與憑證皆通過：端點接受了該 csk- 並處理請求"
+                f"（HTTP {status_code}）。"
+            ),
+        )
+    # Other 4xx (405, 415, 429, …): path answered, credentials unclear.
+    return (
+        True,
+        None,
+        True,
+        (
+            f"路徑有回應（HTTP {status_code}）。"
+            "已確認路徑；憑證是否接受無法單憑此判斷。"
+            "不視為連線驗證成功。"
+        ),
+    )
+
+
+def _safe_unreachable_detail(
+    exc: BaseException,
+    *,
+    db: Session,
+    caller: User,
+) -> str:
+    """Connection-error detail: never leak an address-shaped string unless
+    ``can_see_endpoint_address`` says the caller may see one. httpx errors
+    commonly embed the request URL.
+    """
+    if can_see_endpoint_address(db, caller):
+        return f"無法連線到 agent 端點: {exc}"
+    return "無法連線到 agent 端點（主機未回應或逾時）"
+
+
+def _safe_ssrf_detail(
+    exc: BaseException,
+    *,
+    db: Session,
+    caller: User,
+) -> str:
+    """SSRF-reject detail: ``UnsafeEndpointError`` often embeds hostname."""
+    if can_see_endpoint_address(db, caller):
+        return f"端點未通過出向安全驗證: {exc}"
+    return "端點未通過出向安全驗證"
 
 
 @router.post("/{agent_id}/health-check")
@@ -68,9 +149,9 @@ async def trigger_agent_health_check(
     """Probe an agent's endpoint and update ``health_status``.
 
     Mirrors ``POST /api/models/{id}/health-check`` for parity on the
-    management UI: the admin clicks "檢查", the backend tries a few
-    common liveness paths, and the DB stamp is updated so the colored
-    dot in the agents list reflects reality.
+    management UI: the admin clicks "檢查", the backend tries platform-used
+    liveness paths (and optionally `/` as a weak host signal), and the DB
+    stamp is updated so the colored dot in the agents list reflects reality.
     """
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -79,75 +160,88 @@ async def trigger_agent_health_check(
     ip = _client_ip(request)
     # Call-time SSRF guard — refuse to probe an endpoint that fails outbound
     # validation (TOCTOU / DNS-rebinding defense), even for an admin ping.
-    # Guard once per host (scheme/hostname only; getaddrinfo is blocking),
-    # then build the three probe URLs.
+    # Guard once per host (scheme/hostname only; getaddrinfo is blocking).
     try:
         validate_outbound_url(agent.endpoint_url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
-        agent.health_status = "unhealthy"
+        agent.health_status = HEALTH_UNHEALTHY
         db.commit()
+        # Audit detail must not embed hostname — serialize_audit_log does
+        # not scrub ``detail`` for non-authors.
         log_audit_event(
             db, actor=admin, action="health_check",
             resource_type="agent", resource_id=agent.id,
             status="failure",
-            detail=f"健康檢查拒絕: 端點未通過出向安全驗證 ({exc})",
+            detail="健康檢查拒絕: 端點未通過出向安全驗證",
             ip_address=ip,
             commit=True,
         )
-        return {"status": "unhealthy", "detail": f"端點未通過出向安全驗證: {exc}"}
-    probe_paths = ["/health", "/v1/models", "/"]
-    probe_urls = [join_upstream_path(agent.endpoint_url, path) for path in probe_paths]
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            for path, url in zip(probe_paths, probe_urls):
-                try:
-                    resp = await client.get(url)
-                    if resp.status_code < 500:
-                        agent.health_status = "healthy"
-                        db.commit()
-                        log_audit_event(
-                            db, actor=admin, action="health_check",
-                            resource_type="agent", resource_id=agent.id,
-                            detail=f"手動健康檢查成功: {agent.name}",
-                            ip_address=ip,
-                            commit=True,
-                        )
-                        return {
-                            "status": "healthy",
-                            "detail": f"端點 {path} 回應 {resp.status_code}",
-                        }
-                except httpx.ConnectError:
-                    continue
-            agent.health_status = "unhealthy"
-            db.commit()
-            log_audit_event(
-                db, actor=admin, action="health_check",
-                resource_type="agent", resource_id=agent.id,
-                detail=f"手動健康檢查離線: {agent.name}",
-                ip_address=ip,
-                commit=True,
-            )
-            return {"status": "unhealthy", "detail": "無法連線到 agent 端點"}
-    except Exception as e:
-        agent.health_status = "unhealthy"
-        db.commit()
-        log_audit_event(
-            db, actor=admin, action="health_check",
-            resource_type="agent", resource_id=agent.id,
-            status="failure",
-            detail=f"手動健康檢查失敗: {agent.name} ({e})",
-            ip_address=ip,
-            commit=True,
+        return {
+            "status": HEALTH_UNHEALTHY,
+            "detail": _safe_ssrf_detail(exc, db=db, caller=admin),
+        }
+
+    # Release pooled connection before the outbound probe (≤10s).
+    # skip_validate: already guarded above — keep once-per-host.
+    db.commit()
+    status, latency_ms = await probe_model_health_detailed(
+        agent.endpoint_url, endpoint_kind="agent", skip_validate=True
+    )
+    agent.health_status = status
+    db.commit()
+
+    if status == HEALTH_HEALTHY:
+        detail = "真實探測路徑（/health 或 /v1/models）有回應"
+        audit_status = "success"
+    elif status == HEALTH_DEGRADED:
+        detail = (
+            "僅根路徑有回應，或探測逾時——"
+            "主機可能存活，但未驗證平台實際使用的路徑"
         )
-        return {"status": "unhealthy", "detail": str(e)}
+        audit_status = "success"
+    else:
+        detail = "無法連線到 agent 端點"
+        audit_status = "failure"
+
+    log_audit_event(
+        db, actor=admin, action="health_check",
+        resource_type="agent", resource_id=agent.id,
+        status=audit_status,
+        detail=f"手動健康檢查: {agent.name} → {status}",
+        ip_address=ip,
+        commit=True,
+    )
+    return {
+        "status": status,
+        "detail": detail,
+        "latency_ms": latency_ms,
+    }
 
 
 class TestConnectionResponse(BaseModel):
-    reachable: bool
-    # None = could not determine (endpoint unreachable).
-    token_accepted: bool | None = None
+    """Honest connection-test outcome — three facts, not one pass/fail.
+
+    ``reachable`` / ``token_accepted`` remain as aliases so older clients
+    keep working; ``token_accepted`` is no longer ``status != 401``.
+    """
+
+    host_reachable: bool
+    credentials_accepted: bool | None = None
+    path_verified: bool | None = None
     status_code: int | None = None
     detail: str
+
+    # Aliases (populated from the three facts when omitted).
+    reachable: bool | None = Field(default=None)
+    token_accepted: bool | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _fill_aliases(self) -> TestConnectionResponse:
+        if self.reachable is None:
+            self.reachable = self.host_reachable
+        if self.token_accepted is None:
+            self.token_accepted = self.credentials_accepted
+        return self
 
 
 @router.post("/{agent_id}/test-connection", response_model=TestConnectionResponse)
@@ -157,17 +251,14 @@ async def test_agent_connection(
     current_user: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
-    """Probe the agent endpoint with its OWN csk- to confirm the operator wired
-    ``CSP_SERVICE_TOKEN`` into the agent's .env (S-Q3). Owner-or-admin.
+    """Probe the agent endpoint with its OWN csk- (diagnostic only — not a gate).
 
-    Sends an empty ``messages`` body so the agent's inbound token check fires
-    *before* any LLM work: 401 → the agent rejected our csk- (missing/wrong in
-    .env); anything else (e.g. 400 "no user message") → token accepted, .env
-    correctly wired. Connection error / timeout → unreachable.
+    Distinguishes host reachability, credential acceptance, and path
+    verification. A 401 on the versioned chat path is NOT a pass: gateways
+    often authenticate before routing, so a wrong path returns 401 too.
     """
     agent = _resolve_agent(db, agent_id)
-    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="無權限測試此 Agent")
+    ensure_agent_view_access(agent, current_user)
 
     # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as health-check.
     # Guard the FINAL url that will actually be requested.
@@ -175,7 +266,10 @@ async def test_agent_connection(
     try:
         validate_outbound_url(url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
-        raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
+        raise HTTPException(
+            status_code=400,
+            detail=_safe_ssrf_detail(exc, db=db, caller=current_user),
+        )
 
     # The token the Router would present == whatever
     # get_active_plaintext_for_agent selects for outbound dispatch. Reuse it
@@ -196,304 +290,30 @@ async def test_agent_connection(
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             resp = await client.post(url, json=body, headers=headers)
-        accepted = resp.status_code != 401
-        detail = (
-            "端點接受了該 csk-(agent .env 的 CSP_SERVICE_TOKEN 配對正確)"
-            if accepted
-            else "端點以 401 拒絕該 csk-(agent .env 未設或不符)"
-        )
+        host_ok, creds, path_ok, detail = _classify_connection_status(resp.status_code)
+        verified = bool(creds and path_ok)
         log_audit_event(
             db, actor=current_user, action="test_connection",
             resource_type="agent", resource_id=agent.id,
-            status="success" if accepted else "failure",
+            status="success" if verified else "failure",
             detail=f"測試連線 → HTTP {resp.status_code}", ip_address=ip, commit=True,
         )
         return TestConnectionResponse(
-            reachable=True, token_accepted=accepted,
-            status_code=resp.status_code, detail=detail,
+            host_reachable=host_ok,
+            credentials_accepted=creds,
+            path_verified=path_ok,
+            status_code=resp.status_code,
+            detail=detail,
         )
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as exc:
         log_audit_event(
             db, actor=current_user, action="test_connection",
             resource_type="agent", resource_id=agent.id, status="failure",
-            detail=f"測試連線無法連線: {exc}", ip_address=ip, commit=True,
+            detail="測試連線無法連線", ip_address=ip, commit=True,
         )
         return TestConnectionResponse(
-            reachable=False, token_accepted=None,
-            detail=f"無法連線到 agent 端點: {exc}",
+            host_reachable=False,
+            credentials_accepted=None,
+            path_verified=None,
+            detail=_safe_unreachable_detail(exc, db=db, caller=current_user),
         )
-
-
-async def _poll_trace_spans(
-    db: Session, trace_id: str, *, timeout_s: float, interval_s: float
-) -> list[TraceSpan]:
-    """Bounded poll for agent-emitted spans landing under ``trace_id``.
-
-    Each round runs a SELECT, then ``db.rollback()`` before either returning
-    or ``await``-ing sleep so the SELECT's transaction is never held across
-    the wait. Returns as soon as any span is seen, or an empty list once the
-    deadline lapses. Under READ COMMITTED each statement sees newly committed
-    rows, so releasing between rounds does not hide late-arriving spans.
-    """
-    deadline = time.monotonic() + max(timeout_s, 0.0)
-    while True:
-        rows = (
-            db.query(TraceSpan).filter(TraceSpan.trace_id == trace_id).all()
-        )
-        if rows or time.monotonic() >= deadline:
-            # End the SELECT's transaction before returning to the caller.
-            db.rollback()
-            return rows
-        # Release before sleep — holding the SELECT txn across await leaves
-        # idle-in-transaction for up to _TRACE_TEST_POLL_TIMEOUT_S.
-        db.rollback()
-        await asyncio.sleep(interval_s)
-
-
-def _evaluate_trace_test(
-    spans: list[TraceSpan],
-    *,
-    reachable: bool,
-    token_accepted: bool | None,
-    classification_level: str,
-    has_manifest: bool,
-) -> list[TraceTestItem]:
-    """Build the doc 06 §8 checklist from a synthetic run's observed spans.
-
-    Required (pass-blocking): endpoint reachable, service token accepted, spans
-    received, required span types complete, parentage reaches a single root.
-    Conditional / not-yet-checkable items (manifest / SSE / classification echo
-    / error path / citations) are reported as SKIPPED and do not block.
-    """
-    P, F, S = (
-        TraceTestItemStatus.PASSED,
-        TraceTestItemStatus.FAILED,
-        TraceTestItemStatus.SKIPPED,
-    )
-    items: list[TraceTestItem] = []
-
-    def add(name: str, status: TraceTestItemStatus, required: bool, detail: str = "") -> None:
-        items.append(
-            TraceTestItem(name=name, status=status, required=required, detail=detail)
-        )
-
-    # 1. endpoint reachable / 3. /v1/chat/completions reachable (合併:一次派發即測)
-    add(
-        "endpoint_reachable",
-        P if reachable else F,
-        True,
-        "端點回應 /v1/chat/completions" if reachable else "端點無法連線",
-    )
-    # 2. service token valid
-    if not reachable:
-        add("service_token_accepted", S, True, "端點無法連線,無法判定 token")
-    else:
-        add(
-            "service_token_accepted",
-            P if token_accepted else F,
-            True,
-            "端點接受該 csk-" if token_accepted else "端點以 401 拒絕該 csk-",
-        )
-
-    span_types = [s.span_type for s in spans]
-    type_set = set(span_types)
-
-    # 6. anila.spans received
-    add(
-        "spans_received",
-        P if spans else F,
-        True,
-        f"收到 {len(spans)} 個 span" if spans else "逾時未收到任何 span",
-    )
-    # 7. required span types complete (core run/model_call/output pairs)
-    missing = [t for t in _TRACE_TEST_REQUIRED_SPAN_TYPES if t not in type_set]
-    add(
-        "required_span_types",
-        P if (spans and not missing) else F,
-        True,
-        "必備 span type 齊備" if (spans and not missing) else f"缺少:{missing}",
-    )
-    # parentage reaches a single root
-    span_ids = {s.span_id for s in spans}
-    roots = [
-        s for s in spans if s.parent_span_id is None or s.parent_span_id not in span_ids
-    ]
-    add(
-        "parentage_single_root",
-        P if len(roots) == 1 else F,
-        True,
-        "span 樹收斂至單一根" if len(roots) == 1 else f"根 span 數={len(roots)}",
-    )
-
-    # ── 非 pass-blocking:條件式 / 目前未可查(SKIPPED)────────────────────────
-    from app.schemas.contracts.traces import REQUIRED_AGENT_SPAN_TYPES
-
-    full_missing = [t for t in REQUIRED_AGENT_SPAN_TYPES if t not in type_set]
-    add(
-        "full_trace_13_complete",
-        P if (spans and not full_missing) else S,
-        False,
-        "13 型別全齊" if not full_missing else f"尚缺 {len(full_missing)} 型別(非必要)",
-    )
-    # 4. manifest valid — 註冊時已 fail-closed 驗過;此處僅回報是否有 manifest。
-    add(
-        "manifest_valid",
-        P if has_manifest else S,
-        False,
-        "已存 manifest_json(註冊時驗過)" if has_manifest else "無 manifest,略過",
-    )
-    # 5. SSE valid — 採 callback(POST /v1/traces)回報,未測 SSE 通道。
-    add("sse_channel", S, False, "採 callback 回報,未測 SSE 通道")
-    # 8. classification header respected — 檢查 agent 是否於 span attributes 回報等級。
-    echoed = any(
-        (s.attributes or {}).get("classification_level") == classification_level
-        for s in spans
-    )
-    add(
-        "classification_respected",
-        P if echoed else S,
-        False,
-        f"span 回報分類等級={classification_level}"
-        if echoed
-        else "agent 未於 span attributes 回報分類等級,略過",
-    )
-    # error handling(optional item)— 合成測試不觸發錯誤路徑。
-    add("error_handling", S, False, "未於合成測試觸發錯誤路徑,略過")
-    # citations(conditional)— 有 retrieval span 才適用。
-    retrieval_spans = [s for s in spans if s.span_type.startswith("agent.retrieval")]
-    if not retrieval_spans:
-        add("citations_attributes", S, False, "未使用檢索,略過")
-    else:
-        cited = any(
-            (s.attributes or {}).get("collection_ids") or (s.attributes or {}).get("document_ids")
-            for s in retrieval_spans
-        )
-        add(
-            "citations_attributes",
-            P if cited else F,
-            False,
-            "retrieval span 帶引用屬性" if cited else "retrieval span 缺 collection/document 引用",
-        )
-    return items
-
-
-@router.post("/{agent_id}/trace-test", response_model=TraceTestReport)
-async def run_agent_trace_test(
-    agent_id: int,
-    request: Request,
-    current_user: User = Depends(_require_developer_or_admin),
-    db: Session = Depends(get_db),
-) -> TraceTestReport:
-    """Full Trace 準入測試(doc 05 §6 / doc 06 §8)—— owner-or-admin。
-
-    以合成 trace_id 對 ``{endpoint}/v1/chat/completions`` 發一次最小 chat run,
-    帶 ``X-ANILA-Trace-Id`` / ``X-ANILA-Task-Id`` / ``X-ANILA-Classification-Level``
-    (與 test-connection 同一套 csk- + SSRF guard),再有界輪詢 ``trace_spans``,
-    逐項評估 doc 06 §8 檢核表。所有 required 項通過才落 ``trace_test_passed_at``
-    並把狀態機推進 ``…→pending_security_review``(approve 的前置關卡);未過只留
-    診斷報告,不落章、不轉態。
-    """
-    agent = _resolve_agent(db, agent_id)
-    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="無權限測試此 Agent")
-
-    if agent.approval_status not in TRACE_TEST_ELIGIBLE_STATES:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Agent 目前狀態「{agent.approval_status}」不可執行 trace-test"
-                "(僅 draft / 審核中的 Agent 適用)"
-            ),
-        )
-
-    # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as test-connection.
-    # Guard the FINAL url that will actually be requested.
-    url = join_upstream_path(agent.endpoint_url, "/v1/chat/completions")
-    try:
-        validate_outbound_url(url, endpoint_kind="agent")
-    except UnsafeEndpointError as exc:
-        raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
-
-    token = agent_credential_service.get_active_plaintext_for_agent(
-        db, agent_id=agent.id
-    )
-    if not token:
-        raise HTTPException(
-            status_code=409,
-            detail="此 Agent 尚無有效憑證,請先核發 csk- 再執行 trace-test",
-        )
-
-    ip = _client_ip(request)
-    trace_id = f"tracetest-{uuid.uuid4().hex}"
-    synthetic_task_id = f"tracetest-task-{uuid.uuid4().hex}"
-    classification = agent.default_classification_level or "無機密"
-
-    body = {
-        "model": agent.name,
-        "messages": [{"role": "user", "content": "ANILA trace-test ping"}],
-        "stream": False,
-        "metadata": {"task_id": synthetic_task_id, "trace_id": trace_id},
-    }
-    headers = {
-        "X-CSP-Service-Token": token,
-        "X-ANILA-Trace-Id": trace_id,
-        "X-ANILA-Task-Id": synthetic_task_id,
-        "X-ANILA-Classification-Level": classification,
-    }
-
-    reachable = False
-    token_accepted: bool | None = None
-    # Release any read txn so the agent's callback session can commit spans on
-    # the shared connection before we poll (see _poll_trace_spans).
-    db.rollback()
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.post(url, json=body, headers=headers)
-        reachable = True
-        token_accepted = resp.status_code != 401
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
-        reachable = False
-
-    spans: list[TraceSpan] = []
-    if reachable and token_accepted:
-        spans = await _poll_trace_spans(
-            db,
-            trace_id,
-            timeout_s=_TRACE_TEST_POLL_TIMEOUT_S,
-            interval_s=_TRACE_TEST_POLL_INTERVAL_S,
-        )
-
-    items = _evaluate_trace_test(
-        spans,
-        reachable=reachable,
-        token_accepted=token_accepted,
-        classification_level=classification,
-        has_manifest=bool(getattr(agent, "manifest_json", None)),
-    )
-    passed = all(
-        item.status == TraceTestItemStatus.PASSED for item in items if item.required
-    )
-    report = TraceTestReport(
-        passed=passed,
-        trace_id=trace_id,
-        items=items,
-        checked_at=datetime.now(timezone.utc),
-    )
-
-    # Persist the report either way; only stamp trace_test_passed_at + advance
-    # the state machine on a full pass (doc 05 §6 approval blocker).
-    agent.trace_test_report = report.model_dump(mode="json")
-    if passed:
-        agent.trace_test_passed_at = datetime.now(timezone.utc)
-        agent.approval_status = STATE_AFTER_TRACE_PASS
-    db.commit()
-
-    log_audit_event(
-        db, actor=current_user, action="trace_test", resource_type="agent",
-        resource_id=agent.id, status="success" if passed else "failure",
-        detail=(
-            f"trace-test {'通過' if passed else '未通過'}(trace_id={trace_id})"
-        ),
-        ip_address=ip, commit=True,
-    )
-    return report

@@ -65,10 +65,11 @@ def resolve_handoff(
     accept: bool,
 ) -> Handoff:
     handoff = db.query(Handoff).filter(Handoff.id == handoff_id).first()
-    if not handoff:
+    # Unauthorised and missing collapse to the same 404 (same as cancel).
+    if not handoff or (
+        handoff.to_user_id != user.id and not is_admin_tier(user)
+    ):
         raise HTTPException(status_code=404, detail="找不到此交接請求")
-    if handoff.to_user_id != user.id and not is_admin_tier(user):
-        raise HTTPException(status_code=403, detail="無權處理此交接請求")
     if handoff.status != "pending":
         raise HTTPException(status_code=409, detail=f"此交接請求已處理 (狀態: {handoff.status})")
 
@@ -99,10 +100,11 @@ def resolve_handoff(
 
 def cancel_handoff(db: Session, handoff_id: int, user: User) -> Handoff:
     handoff = db.query(Handoff).filter(Handoff.id == handoff_id).first()
-    if not handoff:
+    # Unauthorised and missing collapse to the same 404 (models pattern).
+    if not handoff or (
+        handoff.from_user_id != user.id and not is_admin_tier(user)
+    ):
         raise HTTPException(status_code=404, detail="找不到此交接請求")
-    if handoff.from_user_id != user.id and not is_admin_tier(user):
-        raise HTTPException(status_code=403, detail="無權取消此交接請求")
     if handoff.status != "pending":
         raise HTTPException(status_code=409, detail="只能取消 pending 狀態的交接請求")
     handoff.status = "cancelled"

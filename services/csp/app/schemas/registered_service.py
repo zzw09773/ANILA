@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.contracts.classification import ClassificationLevel
 from app.schemas.platform_link import _validate_required_roles
+from app.schemas.base import ApiResponseModel
 
 
 class ServiceType(str, enum.Enum):
@@ -47,6 +48,15 @@ _DATA_EGRESS = {"artifact", "report", "table", "none"}
 
 
 class RegisteredServiceCreate(BaseModel):
+    """Create contract for ``POST /api/services``.
+
+    ``extra="forbid"`` is scoped to this write schema (and Update below) so a
+    client typo like ``url`` instead of ``entry_url`` returns 422 instead of
+    silently dropping the address. Not applied platform-wide.
+    """
+
+    model_config = {"extra": "forbid"}
+
     name: str = Field(..., min_length=1, max_length=100)
     slug: str | None = Field(None, max_length=120)
     description: str | None = None
@@ -98,6 +108,10 @@ class RegisteredServiceCreate(BaseModel):
 
 
 class RegisteredServiceUpdate(BaseModel):
+    """Partial update for ``PUT /api/services/{id}``. Same forbid scope as Create."""
+
+    model_config = {"extra": "forbid"}
+
     name: str | None = None
     description: str | None = None
     icon: str | None = None
@@ -134,7 +148,7 @@ class RegisteredServiceUpdate(BaseModel):
         return _validate_required_roles(v)
 
 
-class RegisteredServiceResponse(BaseModel):
+class RegisteredServiceResponse(ApiResponseModel):
     id: int
     name: str
     slug: str
@@ -188,7 +202,7 @@ class LaunchRequest(BaseModel):
     project_id: str | None = None
 
 
-class LaunchResponse(BaseModel):
+class LaunchResponse(ApiResponseModel):
     launch_id: str
     launch_token: str
     launch_url: str
@@ -230,7 +244,7 @@ class AuditCallbackPayload(BaseModel):
         return v
 
 
-class AuditCallbackResponse(BaseModel):
+class AuditCallbackResponse(ApiResponseModel):
     id: int
     service_id: int | None
     launch_id: str | None
@@ -248,7 +262,7 @@ class ProjectBindingCreate(BaseModel):
     is_primary_entry: bool = False
 
 
-class ProjectBindingResponse(BaseModel):
+class ProjectBindingResponse(ApiResponseModel):
     id: int
     service_id: int
     project_id: str

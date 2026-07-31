@@ -288,12 +288,14 @@ def test_agent_health_chat_url_both_conventions(endpoint_url: str):
     ["http://agent-box:9100/v1", "http://agent-box:9100", "http://agent-box:9100/v2"],
 )
 def test_agent_health_probe_models_path_both_conventions(endpoint_url: str):
-    urls = [
-        join_upstream_path(endpoint_url, p) for p in ("/health", "/v1/models", "/")
-    ]
+    from app.services.health_checker import REAL_PROBE_PATHS, WEAK_PROBE_PATHS, _probe_url
+
+    urls = [_probe_url(endpoint_url, p) for p in (*REAL_PROBE_PATHS, *WEAK_PROBE_PATHS)]
     assert urls[1] == "http://agent-box:9100/v1/models"
+    assert urls[0] == "http://agent-box:9100/health"
     assert "/v1/v1/" not in urls[1]
     assert "/v2/v1/" not in urls[1]
+    assert "/v1/health" not in urls[0]
 
 
 def test_agent_health_module_imports_join_helper():
@@ -326,7 +328,10 @@ def test_agent_health_guards_once_per_host(monkeypatch):
         async def get(self, url):
             return _Resp()
 
-    monkeypatch.setattr(agent_health.httpx, "AsyncClient", _Client)
+    # Manual health-check now delegates probing to health_checker (shared
+    # REAL/WEAK path logic); patch the client there. Outer guard stays on
+    # the agents.health module; probe is called with skip_validate=True.
+    monkeypatch.setattr(health_checker.httpx, "AsyncClient", _Client)
 
     agent = SimpleNamespace(
         id=1, name="a", endpoint_url="http://agent-box:9100/v1", health_status="unknown"
@@ -392,10 +397,23 @@ def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "nv-embed")
     captured: dict[str, Any] = {}
 
+    from types import SimpleNamespace
+
+    from app.services.platform_embedding import PlatformEmbedding
+
+    fake_model = SimpleNamespace(
+        name="nv-embed",
+        endpoint_url=endpoint_url.rstrip("/"),
+        is_platform_embedding=True,
+        embedding_native_dim=3,
+        is_active=True,
+    )
     monkeypatch.setattr(
         memory_service,
-        "_resolve_endpoint",
-        lambda db, name, typ: endpoint_url.rstrip("/"),
+        "resolve_platform_embedding",
+        lambda db: PlatformEmbedding(
+            model=fake_model, native_dim=3, truncates=False
+        ),
     )
     monkeypatch.setattr(
         memory_service,
@@ -406,7 +424,7 @@ def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
     monkeypatch.setattr(
         memory_service,
         "truncate_embedding",
-        lambda v: v[:2] if len(v) > 2 else v,
+        lambda v, pad_from=None: v[:2] if len(v) > 2 else list(v),
     )
 
     class _Resp:
@@ -431,8 +449,10 @@ def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
             return _Resp()
 
     monkeypatch.setattr(memory_service.httpx, "AsyncClient", _Client)
-    vec = asyncio.run(memory_service._embed(MagicMock(), "hello"))
+    vec, source, native = asyncio.run(memory_service._embed(MagicMock(), "hello"))
     assert vec == [0.1, 0.2]
+    assert source == "nv-embed"
+    assert native == 3
     assert captured["url"] == "http://nv-embed:8000/v1/embeddings"
     assert captured["guarded"] == captured["url"]
     assert "/v2/v1/" not in captured["url"]

@@ -7,15 +7,9 @@ class Settings(BaseSettings):
     APP_NAME: str = "CSP Platform"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
-    # Swagger UI (/docs) + OpenAPI schema (/openapi.json) exposure. These have
-    # no auth and leak the full API surface, so they are OFF by default
-    # (secure-by-default); dev environments opt in via ENABLE_API_DOCS=true.
-    ENABLE_API_DOCS: bool = False
-
-    # Public read-only share endpoint (/api/public/share/{token}) is
-    # unauthenticated by design. Air-gapped / card-only deployments that want
-    # zero unauthenticated surface set this False to disable it entirely.
-    ENABLE_PUBLIC_SHARE: bool = True
+    # /docs + /openapi.json are always registered and admin-gated in
+    # app.main (require_admin). A former ENABLE_API_DOCS flag was never
+    # read — removed so operators cannot believe they toggled docs off.
 
     # Database
     DATABASE_URL: str = "postgresql://csp:csp_password@localhost:5432/csp"
@@ -65,6 +59,23 @@ class Settings(BaseSettings):
 
     # Health Check
     HEALTH_CHECK_INTERVAL: int = 60
+
+    # P3.2 — alert detectors (platform ingress / DB / disk). Gateway + agent
+    # streaks are event-driven from the proxy path, not this interval.
+    ALERT_CHECK_INTERVAL: int = 60
+
+    # P3.2 — SMTP delivery (OWNER Q3: relay not available yet).
+    # Leave ENABLED=false until IT provides the Outlook/relay details.
+    # ANILA_ALERT_SMTP_TO should be a **group mailbox**, not a personal one
+    # (same reason as PLAN 5.4 support address).
+    ANILA_ALERT_SMTP_ENABLED: bool = False
+    ANILA_ALERT_SMTP_HOST: str = ""
+    ANILA_ALERT_SMTP_PORT: int = 587
+    ANILA_ALERT_SMTP_USER: str = ""
+    ANILA_ALERT_SMTP_PASSWORD: str = ""
+    ANILA_ALERT_SMTP_FROM: str = ""
+    ANILA_ALERT_SMTP_TO: str = ""
+    ANILA_ALERT_SMTP_USE_TLS: bool = True
 
     # Usage Writer
     USAGE_BATCH_SIZE: int = 100

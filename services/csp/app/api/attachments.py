@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, defer
 
@@ -68,6 +68,46 @@ def _admitted_set(capacity: dict | None) -> set[int]:
     return set(capacity.get("admitted_ids") or [])
 
 
+def _require_attachment_write_target(
+    db: Session,
+    current_user: User,
+    *,
+    conversation_id: Optional[int],
+    message_id: Optional[int],
+) -> tuple[Optional[int], Optional[int]]:
+    """Resolve upload target to a conversation the caller may write.
+
+    Same predicate as chat / list (``proxy._require_conversation_access``).
+    Access is checked before mismatch reporting so a foreign ``message_id``
+    cannot be distinguished from a missing one via 400 vs 404.
+    """
+    from app.api.proxy import _require_conversation_access
+    from app.models.message import Message
+
+    caller = Caller(user=current_user, api_key_id=None)
+    if message_id is not None:
+        msg = db.get(Message, message_id)
+        if msg is None:
+            raise HTTPException(status_code=404, detail="找不到此訊息")
+        try:
+            _require_conversation_access(db, caller, msg.conversation_id)
+        except HTTPException:
+            # Collapse unauthorised ↔ missing (no message-id oracle).
+            raise HTTPException(status_code=404, detail="找不到此訊息") from None
+        if (
+            conversation_id is not None
+            and msg.conversation_id != conversation_id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="message_id 與 conversation_id 不屬於同一對話",
+            )
+        return msg.conversation_id, message_id
+    if conversation_id is not None:
+        _require_conversation_access(db, caller, conversation_id)
+    return conversation_id, message_id
+
+
 @router.post("", response_model=AttachmentOut, status_code=201)
 async def upload(
     background_tasks: BackgroundTasks,
@@ -82,13 +122,13 @@ async def upload(
 ):
     # Same conversation-access rule as the chat path / list endpoint —
     # do not invent a second rule. Missing this check lets user A place
-    # extracted text into user B's model prompt via conversation_id.
-    if conversation_id is not None:
-        from app.api.proxy import _require_conversation_access
-
-        _require_conversation_access(
-            db, Caller(user=current_user, api_key_id=None), conversation_id,
-        )
+    # extracted text into user B's model prompt via conversation_id or
+    # message_id.
+    conversation_id, message_id = _require_attachment_write_target(
+        db, current_user,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
     att = await upload_attachment(
         db, file, current_user,
         conversation_id=conversation_id,

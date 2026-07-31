@@ -490,8 +490,8 @@ def test_16_foreign_403_admin_allowed(client: TestClient, db: Session):
             r = client.put(path, json=body, headers=h_other)
         else:
             r = client.delete(path, headers=h_other)
-        assert r.status_code == 403, (method, path, r.text)
-        assert r.json()["detail"] == "無權存取此對話"
+        assert r.status_code == 404, (method, path, r.text)
+        assert r.json()["detail"] == "找不到此對話"
 
     # admin can switch
     r_ok = client.put(
@@ -546,37 +546,41 @@ def test_18_classify_after_branch(client: TestClient, db: Session):
         assert msg.classification_level == "無機密"
 
 
-# ── 19. Public share = active path; classified → empty ────────────────────────
+# ── 19. Named share recipient sees active path; 密 blocks create ─────────────
 
 
-def test_19_public_share_active_path(client: TestClient, db: Session, monkeypatch):
-    monkeypatch.setattr(settings, "ENABLE_PUBLIC_SHARE", True)
-    user, h = _auth(client, db, "t19")
+def test_19_named_share_active_path(client: TestClient, db: Session):
+    owner, h = _auth(client, db, "t19")
+    peer = make_user(db, username="t19_peer")
+    peer_h = _bearer(peer)
     conv = _create_conv(client, h)
     cid = conv["id"]
     q1 = _append(client, h, cid, "user", "Q1")
     a1 = _append(client, h, cid, "assistant", "A1-secret-branch")
     a2 = _branch(client, h, cid, a1["id"], "assistant", "A2-active").json()
-    # active is a2
     share_resp = client.post(
         f"/api/conversations/{cid}/shares",
-        json={"mode": "read_only"},
+        json={"mode": "read_only", "target_username": peer.username},
         headers=h,
     )
     assert share_resp.status_code == 201, share_resp.text
-    token = share_resp.json()["token"]
-    pub = client.get(f"/api/public/share/{token}")
-    assert pub.status_code == 200, pub.text
-    bodies = [m["content"] for m in pub.json()["messages"]]
+    assert share_resp.json().get("token") is None
+
+    detail = client.get(f"/api/conversations/{cid}?view=active", headers=peer_h)
+    assert detail.status_code == 200, detail.text
+    bodies = [m["content"] for m in detail.json()["messages"]]
     assert bodies == ["Q1", "A2-active"]
     assert "A1-secret-branch" not in bodies
 
-    # Classified (≥密) → empty messages (OE-4 masking composed with active path)
+    # Classified (≥密) → further share create refused (outbound gate).
     client.post(f"/api/conversations/{cid}/classify", headers=h)
-    pub2 = client.get(f"/api/public/share/{token}")
-    assert pub2.status_code == 200
-    assert pub2.json()["messages"] == []
-    assert pub2.json()["conversation_title"] == "（列管對話）"
+    share2 = client.post(
+        f"/api/conversations/{cid}/shares",
+        json={"mode": "read_only", "target_username": "someone-else"},
+        headers=h,
+    )
+    assert share2.status_code == 403
+    assert "密" in share2.json()["detail"]
 
 
 # ── 20. /search still matches non-active-branch content ───────────────────────
@@ -642,10 +646,11 @@ def test_rev_set_active_false_first_append_sets_pointer(
 
 
 def test_rev_null_pointer_fallback_and_heal(
-    client: TestClient, db: Session, monkeypatch,
+    client: TestClient, db: Session,
 ):
-    monkeypatch.setattr(settings, "ENABLE_PUBLIC_SHARE", True)
-    user, h = _auth(client, db, "trev_null")
+    owner, h = _auth(client, db, "trev_null")
+    peer = make_user(db, username="trev_null_peer")
+    peer_h = _bearer(peer)
     conv = _create_conv(client, h)
     cid = conv["id"]
     m1 = _append(client, h, cid, "user", "Q1")
@@ -663,25 +668,23 @@ def test_rev_null_pointer_fallback_and_heal(
     db.expire_all()
     assert db.get(Conversation, cid).active_leaf_message_id == m2["id"]
 
-    # Reset pointer again and confirm public share positive path also heals.
+    # Reset pointer again and confirm named-share recipient GET also heals.
     row = db.get(Conversation, cid)
     row.active_leaf_message_id = None
     db.commit()
     share_resp = client.post(
         f"/api/conversations/{cid}/shares",
-        json={"mode": "read_only"},
+        json={"mode": "read_only", "target_username": peer.username},
         headers=h,
     )
     assert share_resp.status_code == 201, share_resp.text
-    # Share create may have re-read; force NULL again before public GET.
     row = db.get(Conversation, cid)
     row.active_leaf_message_id = None
     db.commit()
 
-    token = share_resp.json()["token"]
-    pub = client.get(f"/api/public/share/{token}")
-    assert pub.status_code == 200, pub.text
-    bodies = [m["content"] for m in pub.json()["messages"]]
+    shared = client.get(f"/api/conversations/{cid}?view=active", headers=peer_h)
+    assert shared.status_code == 200, shared.text
+    bodies = [m["content"] for m in shared.json()["messages"]]
     assert bodies == ["Q1", "A1"]
     db.expire_all()
     assert db.get(Conversation, cid).active_leaf_message_id == m2["id"]

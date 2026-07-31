@@ -93,18 +93,16 @@ class IngestionCollection(Base):
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )
-    classification_latched_at = Column(DateTime, nullable=True)
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    updated_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
     documents = relationship(
@@ -169,17 +167,16 @@ class IngestionDocument(Base):
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )
-    classification_latched_at = Column(DateTime, nullable=True)
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    uploaded_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    indexed_at = Column(DateTime, nullable=True)
+    indexed_at = Column(DateTime(timezone=True), nullable=True)
 
     collection = relationship("IngestionCollection", back_populates="documents")
 
@@ -216,11 +213,10 @@ class IngestionEvalRun(Base):
     created_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class UserLlmCredential(Base):
@@ -258,9 +254,8 @@ class UserLlmCredential(Base):
     api_key_encrypted = Column(LargeBinary, nullable=False)
     api_key_nonce = Column(LargeBinary, nullable=False)
     api_key_tag = Column(LargeBinary, nullable=False)
-    last_used_at = Column(DateTime, nullable=True)
-    created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
 
@@ -300,11 +295,10 @@ class IngestionJob(Base):
     enqueued_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    enqueued_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    enqueued_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class DocumentRelation(Base):

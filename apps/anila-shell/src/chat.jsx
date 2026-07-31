@@ -59,7 +59,9 @@ import {
   IconThumbDn,
   IconThumbUp,
   IconX,
+  IconMic,
 } from "./icons.jsx";
+import { useAsrInput, appendTranscript } from "./asr/useAsrInput.js";
 import { BUILTIN_FOLDER_IDS, detectPII } from "./data.jsx";
 import {
   AuditWatermark,
@@ -790,7 +792,11 @@ export const MessageBubble = ({
               <IconLock />
             </IconButton>
           )}
-          <span style={{ position: "relative", display: "inline-flex" }}>
+          {/* 沒有 handler 就不要畫這顆按鈕。比較模式曾經傳 `() => {}` 進來,
+              於是選單開得起來、四個選項點下去全部沒事——使用者會反覆點。
+              把判斷放在這裡而不是叫每個呼叫端加旗標,是為了讓這一類問題
+              不可能再出現:忘了接的人自然就沒有按鈕。 */}
+          {onRegenerate && <span style={{ position: "relative", display: "inline-flex" }}>
             <IconButton
               title={isStreaming ? "回應產生中…" : "重新產生（可選調整方向）"}
               onClick={(e) => { e?.stopPropagation?.(); if (!isStreaming) setRegenOpen((o) => !o); }}
@@ -849,7 +855,7 @@ export const MessageBubble = ({
                 </div>
               </div>
             )}
-          </span>
+          </span>}
           <IconButton
             title={rating === "up" ? "取消標記" : "標記為有用"}
             onClick={() => onRate?.(msg, rating === "up" ? null : "up")}
@@ -1280,6 +1286,13 @@ export const Composer = ({
     }
     return initialValue;
   });
+  // 語音輸入。定稿 append 進草稿讓使用者改完再送 —— ASR 不自動送出。
+  // setText 用 updater 形式:定稿可能在使用者邊打字時抵達,讀舊 closure 會
+  // 蓋掉他剛打的字。disabled(LLM 串流中)對應 anilalm 的 busy。
+  const asr = useAsrInput({
+    appendText: (t) => setText((prev) => appendTranscript(prev, t)),
+    busy: !!disabled,
+  });
   const [atts, setAtts] = useState([]);
   const [uploadError, setUploadError] = useState("");
   const [caret, setCaret] = useState(0);
@@ -1528,7 +1541,7 @@ export const Composer = ({
           fontFamily: "var(--font-mono)",
         }}>
           <IconAt size={12} />
-          <span>直接指定 (bypass router)：</span>
+          <span>已指定助手：</span>
           {mentionParse.explicitAgents.map((id) => {
             const a = agents.find((x) => x.id === id);
             return a ? <AgentPill key={id} agent={a} size="sm" /> : null;
@@ -1637,6 +1650,9 @@ export const Composer = ({
         onClick={updateCaret}
         onSelect={updateCaret}
         onKeyDown={onKey}
+        // 注音組字中不得 append 定稿 —— hook 會緩衝到 compositionend 再吐。
+        onCompositionStart={asr.onCompositionStart}
+        onCompositionEnd={asr.onCompositionEnd}
         onPaste={(e) => {
           const items = e.clipboardData?.items || [];
           // Some browsers/platforms — notably when copying rendered web
@@ -1678,6 +1694,28 @@ export const Composer = ({
           fontFamily: "inherit",
         }}
       />
+
+      {/* 即時預覽。**刻意不進 textarea** —— 原生 textarea 無法混排兩色文字,
+          overlay mirror 又會撞到這個元件既有的 mention/貼上/autosize 邏輯。
+          定稿才進 value。 */}
+      {asr.partial && (
+        <div aria-live="polite" style={{
+          padding: "0 14px 4px", fontSize: 13, fontStyle: "italic",
+          color: "var(--fg-subtle)", lineHeight: 1.4,
+        }}>{asr.partial}</div>
+      )}
+      {asr.error && (
+        <div role="alert" style={{
+          padding: "0 14px 4px", fontSize: 12, color: "var(--danger)",
+          display: "flex", alignItems: "flex-start", gap: 6,
+        }}>
+          <span style={{ flex: 1 }}>{asr.error}</span>
+          <button onClick={asr.clearError} aria-label="關閉提示" style={{
+            border: "none", background: "transparent", color: "var(--fg-subtle)",
+            cursor: "pointer", padding: 0, lineHeight: 1,
+          }}>✕</button>
+        </div>
+      )}
 
       <div style={{
         display: "flex", alignItems: "center", gap: 4,
@@ -1780,7 +1818,35 @@ export const Composer = ({
 
         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
           <Kbd>Enter</Kbd> <span>{streaming ? "產生中" : "送出"}</span>
+          {asr.state === "recording" && <span style={{ color: "var(--danger)" }}>· 辨識中…</span>}
+          {asr.state === "listening" && <span>· 聆聽中…</span>}
         </div>
+
+        {/* 語音輸入。ASR 沒部署就不渲染(probe /asr/health;gateway 是
+            profile-gated,沒開時 nginx 打不到 → probe 失敗)。不用 build-time
+            旗標:那會分裂 locked image。 */}
+        {asr.available && (
+          <button
+            onClick={asr.toggle}
+            // 對著鎖住的輸入框講話 = 講完沒地方去。
+            disabled={disabled && asr.state === "idle"}
+            aria-label={asr.state === "idle" ? "開始語音輸入" : "停止語音輸入"}
+            aria-pressed={asr.state !== "idle"}
+            title={asr.state === "idle" ? "語音輸入" : "停止語音輸入"}
+            style={{
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              width: 32, height: 32,
+              background: asr.state === "idle" ? "var(--bg-subtle)" : "var(--danger)",
+              color: asr.state === "idle" ? "var(--fg-subtle)" : "#fff",
+              border: "none", borderRadius: "var(--radius)",
+              cursor: disabled && asr.state === "idle" ? "not-allowed" : "pointer",
+              opacity: disabled && asr.state === "idle" ? 0.5 : 1,
+              marginLeft: 4,
+            }}
+          >
+            <IconMic size={15} />
+          </button>
+        )}
 
         {streaming ? (
           <button

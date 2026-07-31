@@ -3,7 +3,7 @@
     <header class="page-head">
       <div>
         <h1 class="page-head__title">警報</h1>
-        <p class="page-head__sub">系統偵測的異常 · 確認以靜音 · 解決以關閉</p>
+        <p class="page-head__sub">系統偵測的異常 · 確認以靜音 · 解決以關閉 · 每 30 秒自動更新</p>
       </div>
       <div class="page-head__chips">
         <TermBadge variant="danger" dot>待處理 · {{ summary.open_count }}</TermBadge>
@@ -87,8 +87,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { acknowledgeAlert, getAlertSummary, listAlerts, resolveAlert } from '../api/alerts'
+import { extractError } from '../api/errors'
+import { ALERT_POLL_INTERVAL_MS, createPoller } from '../utils/polling'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermDot } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
@@ -112,18 +114,26 @@ async function fetchData() {
     alerts.value = a
     summary.value = s
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '載入警報失敗'
+    pageError.value = extractError(e, '載入警報失敗')
   }
 }
-onMounted(fetchData)
+
+const poller = createPoller(fetchData, { intervalMs: ALERT_POLL_INTERVAL_MS })
+onMounted(() => {
+  fetchData()
+  poller.start()
+})
+onUnmounted(() => {
+  poller.stop()
+})
 
 async function handleAck(alert) {
   try { await acknowledgeAlert(alert.id); await fetchData() }
-  catch (e) { toast(e.response?.data?.detail || '確認失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '確認失敗'), { tone: 'error' }) }
 }
 async function handleResolve(alert) {
   try { await resolveAlert(alert.id); await fetchData() }
-  catch (e) { toast(e.response?.data?.detail || '解決失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '解決失敗'), { tone: 'error' }) }
 }
 
 function severityStatus(s) {

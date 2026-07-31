@@ -71,8 +71,6 @@ services:
       # Dev 寫死 "1"，不經 ${} 展開——避免被 .env 裡的 ANILA_ALLOW_DEV_SECRET=0
       # 鎖死。startup_security 在 dev 模式下只 log warning 不擋。
       ANILA_ALLOW_DEV_SECRET: "1"
-      # Dev keeps Swagger /docs + /openapi.json on (prod default off, S-117).
-      ENABLE_API_DOCS: "true"
       # Dev-only relax (S-117 URL guard): dev runs every model/agent on
       # docker-internal http endpoints (e.g. http://flux2-dev-agent:8000), so
       # register + health-check would otherwise fail "scheme must be https".
@@ -298,6 +296,54 @@ services:
     restart: unless-stopped
     logging: *anila-logging
 
+  # ── ASR gateway (串流語音輸入;dev / 帳密測試環境)──────────────────────
+  # 對應 platform.yml 的 asr-gateway,但走 dev 慣例:直接 build、dev 預設 env、
+  # REQUIRE_CARD_LOGIN_ONLY=false(帳密登入,不用卡)。
+  asr-gateway:
+    build:
+      context: ../../services/asr-gateway
+      dockerfile: Dockerfile
+    expose:
+      - "8200"
+    environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
+      ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
+      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-dev-asr-token}
+      ASR_ALLOW_HTTP_DECODER: ${ASR_ALLOW_HTTP_DECODER:-0}
+      ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
+      ASR_BEAM_SIZE: ${ASR_BEAM_SIZE:-5}
+      ASR_PARTIALS_ENABLED: ${ASR_PARTIALS_ENABLED:-1}
+      ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
+      ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
+      CSP_BASE_URL: http://csp:8000
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
+      JWT_KID: anila-v1
+      JWT_ISSUER: "https://anila.internal/csp"
+      JWT_AUDIENCE: "anila-platform"
+      JWT_LEEWAY_SECONDS: "60"
+      REVOCATION_RECONCILE_INTERVAL_SECONDS: "5"
+      REQUIRE_CARD_LOGIN_ONLY: "false"
+      COOKIE_SECURE: "true"
+      LOG_LEVEL: INFO
+    depends_on:
+      csp:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - anila-models-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8200/asr/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+    logging: *anila-logging
+
   # ── ANILA LM (no-SSO 版本，從 feature/no-sso branch build) ───────────────
   anilalm:
     build:
@@ -369,10 +415,12 @@ services:
       anila-ui:
         condition: service_healthy
         restart: true
+    # Same posture as platform.yml: probe CSP via loopback :8080 /health
+    # (anila.conf), not `nginx -t` syntax-only.
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD-SHELL", "wget -qO- --timeout=3 http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
       retries: 3
       start_period: 10s
     restart: unless-stopped

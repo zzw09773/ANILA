@@ -200,17 +200,15 @@ def _register(csp_url: str, token: str, manifest: dict[str, Any]) -> dict[str, A
     }
     if manifest.get("base_model"):
         payload["base_model_name"] = manifest["base_model"]
-    if manifest.get("capabilities"):
-        payload["capabilities"] = manifest["capabilities"]
     if manifest.get("input_schema"):
         payload["input_schema"] = manifest["input_schema"]
     # Slice 5c additive metadata. The CSP /register endpoint ignores keys it
     # doesn't yet model (Pydantic BaseModel defaults to extra="ignore"), so
     # sending these is forward-compatible until 5a formalizes the columns.
+    # Do NOT send capabilities / classification_ceiling — CSP now 422s those
+    # (accepted-then-discarded controls retired).
     if manifest.get("runtime_type"):
         payload["runtime_type"] = manifest["runtime_type"]
-    if manifest.get("classification_ceiling"):
-        payload["classification_ceiling"] = manifest["classification_ceiling"]
     if manifest.get("version"):
         payload["version"] = manifest["version"]
     if manifest.get("draft"):

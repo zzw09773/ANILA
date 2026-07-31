@@ -263,7 +263,28 @@ cmd_deploy() {
   docker compose up -d
 
   cmd_wait_healthy
+  reload_nginx
   cmd_verify
+}
+
+
+# ── nginx 上游 IP 重新解析 ────────────────────────────────────────────────────
+# csp / router / anila-studio 走 `upstream` 區塊(有 keepalive,對熱路徑重要),
+# 而 nginx OSS 對 upstream 區塊裡的 server 只在載入設定時解析一次 DNS 就釘死。
+# 任何一次 recreate 都會讓那個服務換到新的容器 IP,nginx 卻繼續打舊 IP →
+# **全站 502,但所有容器 healthy**(2026-07-30 實際中招:/api/auth/me 502 而
+# /anila/ 200,健康檢查完全看不出來)。
+#
+# 不改成 variable proxy_pass 是刻意的:那會失去對 csp 的 keepalive,
+# 每個請求多一次 TCP 握手,而那是使用者每則訊息都要走的路徑。
+# 換成部署後 reload 一次——成本是零,前提是不能忘,所以寫進腳本而不是寫進文件。
+reload_nginx() {
+  if docker ps --format '{{.Names}}' | grep -q '^anila-nginx$'; then
+    docker exec anila-nginx nginx -t >/dev/null 2>&1 \
+      && docker exec anila-nginx nginx -s reload >/dev/null 2>&1 \
+      && ok "nginx 已 reload(重新解析上游 IP)" \
+      || warn "nginx reload 失敗——若出現 502 但容器 healthy,手動跑 docker exec anila-nginx nginx -s reload"
+  fi
 }
 
 # ── Subcommand: up / down / restart ────────────────────────────────────────
@@ -273,6 +294,7 @@ cmd_up() {
   section "docker compose up -d"
   docker compose up -d
   cmd_wait_healthy
+  reload_nginx
 }
 
 cmd_down() {

@@ -118,6 +118,7 @@ from app.services.studio_render import (
     _hydrate_images,
     _infer_image_use_case,
     _render_pptx,
+    get_active_flux_provider,
     get_flux_provider,
 )
 from app.services.studio_retrieval import (
@@ -132,6 +133,13 @@ from app.services.studio_vision_qa import (
 
 router = APIRouter(prefix="/api/studio", tags=["Studio / Slides"])
 logger = logging.getLogger(__name__)
+
+# Soft warning shown on JobStatus when the pipeline ships the
+# synthetic fallback deck (LLM schema exhaustion). Kept as a module
+# constant so the API path and the regression test cannot drift.
+FALLBACK_DECK_WARNING = (
+    "模型無法產出合法簡報結構，已改為說明卡。請重試或精簡補充指示。"
+)
 
 
 # ── Tunables → moved to app/services/studio_config.py (god-module split) ─────
@@ -499,10 +507,11 @@ def _build_fallback_spec(
 
 
 # ── Step 7: render → moved to app/services/studio_render.py (god-module split)
-# get_flux_provider / _hydrate_images / _render_pptx / _generate_slide_illustration
-# / _infer_image_use_case / _apply_illustration_fallback live there now and are
-# imported above (same names). _gated_generate stays private to studio_render.
-# Tests monkeypatch the render chain on app.services.studio_render now.
+# get_flux_provider / get_active_flux_provider / _hydrate_images / _render_pptx /
+# _generate_slide_illustration / _infer_image_use_case / _apply_illustration_fallback
+# live there now and are imported above (same names). _gated_generate stays
+# private to studio_render. Tests monkeypatch the render chain on
+# app.services.studio_render now.
 
 
 # ── Step 8: vision QA → moved to app/services/studio_vision_qa.py (split) ──
@@ -682,7 +691,10 @@ async def _run_pipeline(
     # the FLUX cover-hero path will actually run; failure degrades to the
     # default style inside infer_deck_style.
     deck_style = None
-    if get_flux_provider() is not None and deck_base_seed is not None:
+    # deck_base_seed check first so a fallback-deck/skip-retrieval run
+    # (deck_base_seed None) never pays for the async csp image-primary
+    # round-trip inside get_active_flux_provider() (`and` short-circuits).
+    if deck_base_seed is not None and await get_active_flux_provider() is not None:
         from app.services.flux_style import infer_deck_style
 
         style_sample = spec.title or ""
@@ -747,11 +759,15 @@ async def _run_pipeline(
             )
 
     # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
+    # Fallback deck is still a downloadable .pptx (so the user isn't
+    # left with a toast and nothing), but we surface a soft warning so
+    # the SPA doesn't present it as a clean win.
     await updater.mark_done(
         spec=spec,
         pptx_bytes=pptx_bytes,
         defects=final_defects,
         qa_passes=qa_passes,
+        warning=(FALLBACK_DECK_WARNING if used_fallback else None),
     )
 
 

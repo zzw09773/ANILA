@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
+from app.schemas.base import ApiResponseModel
 
 
 class ConversationCapacity(BaseModel):
@@ -27,7 +28,7 @@ class ConversationCapacity(BaseModel):
     attachment_count: int
 
 
-class AttachmentOut(BaseModel):
+class AttachmentOut(ApiResponseModel):
     reference_id: str
     filename: str
     content_type: str

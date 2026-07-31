@@ -175,7 +175,7 @@ export const RedactionHint = ({ hits, mode, onChangeMode }) => {
       <IconShield size={13} style={{ color: "var(--warn)" }} />
       <span>
         偵測到 <b>{hits.length}</b> 個敏感片段（{summary}）·
-        {mode === "mask" ? " 送出時將自動遮罩" : mode === "warn" ? " 送出時會警告" : " 將阻擋送出"}
+        {mode === "mask" ? " 僅在本畫面遮蔽顯示,送出內容不變" : mode === "warn" ? " 送出時會提醒" : " 將阻擋送出"}
       </span>
       <div style={{ flex: 1 }} />
       <div style={{ display: "flex", gap: 2 }}>

@@ -109,6 +109,9 @@ class CollectionScopedPgVectorStore:
         chunks: list[ChunkResult],
         embeddings: list[list[float]],
         parent_id_map: dict[str, int] | None = None,
+        *,
+        embedding_source_model: str | None = None,
+        embedding_native_dim: int | None = None,
     ) -> int:
         """Bulk-insert leaf chunks with their embeddings.
 
@@ -122,6 +125,10 @@ class CollectionScopedPgVectorStore:
         translates those keys into FK ids written into the
         ``parent_chunk_id`` column. Missing references are silently
         treated as NULL — caller can validate ahead of time.
+
+        P4.8: ``embedding_source_model`` / ``embedding_native_dim`` record
+        which model produced the vectors so retrieval can exclude rows
+        from a different semantic space.
 
         Returns the number of rows written. Caller-supplied
         ``len(chunks) == len(embeddings)`` is enforced.
@@ -166,6 +173,8 @@ class CollectionScopedPgVectorStore:
                     chunk_type,
                     chunk_level,
                     parent_id,
+                    embedding_source_model,
+                    embedding_native_dim,
                 )
             )
 
@@ -173,11 +182,12 @@ class CollectionScopedPgVectorStore:
             INSERT INTO document_chunks
                 (collection_id, document_id, chunk_key,
                  content, content_tsv, embedding, metadata, token_count,
-                 chunk_type, chunk_level, parent_chunk_id)
+                 chunk_type, chunk_level, parent_chunk_id,
+                 embedding_source_model, embedding_native_dim)
             VALUES
                 ($1, $2, $3, $4,
                  to_tsvector('simple', $4),
-                 $5, $6, $7, $8, $9, $10)
+                 $5, $6, $7, $8, $9, $10, $11, $12)
         """
         try:
             async with self._acquire() as conn:
@@ -196,6 +206,8 @@ class CollectionScopedPgVectorStore:
         query_embedding: list[float],
         top_k: int = 10,
         min_score: float = 0.0,
+        *,
+        source_model: str | None = None,
     ) -> list[SearchHit]:
         """Vector similarity search scoped to this collection.
 
@@ -205,6 +217,10 @@ class CollectionScopedPgVectorStore:
 
         Cosine *similarity* is what we return (1 - cosine_distance), so
         ``min_score`` reads naturally: 0.7 = "at least 70% similar".
+
+        P4.8: when ``source_model`` is set, only rows whose
+        ``embedding_source_model`` matches are considered — vectors from
+        a different model live in a different semantic space.
         """
         if top_k <= 0:
             return []
@@ -219,6 +235,25 @@ class CollectionScopedPgVectorStore:
         # operator anyway, but the explicit filter lets the planner
         # skip them without computing distance.
         q = HalfVector(query_embedding)
+        if source_model is not None:
+            sql = """
+                SELECT id, collection_id, document_id, chunk_key,
+                       content, metadata, token_count, created_at,
+                       parent_chunk_id, chunk_type, chunk_level,
+                       1 - (embedding <=> $1) AS score
+                  FROM document_chunks
+                 WHERE chunk_type = 'leaf'
+                   AND embedding_source_model = $4
+                   AND 1 - (embedding <=> $1) >= $2
+                 ORDER BY embedding <=> $1
+                 LIMIT $3
+            """
+            async with self._acquire() as conn:
+                rows = await conn.fetch(sql, q, min_score, top_k, source_model)
+                hits = [self._row_to_search_hit(r) for r in rows]
+                await self._attach_parent_content(conn, hits)
+            return hits
+
         sql = """
             SELECT id, collection_id, document_id, chunk_key,
                    content, metadata, token_count, created_at,

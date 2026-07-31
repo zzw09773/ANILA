@@ -76,12 +76,11 @@ class AgentCredential(Base):
     # Previous-token overlap during rotation window (24h grace).
     service_token_previous_envelope = Column(Text, nullable=True)
     service_token_previous_lookup_hash = Column(String(64), nullable=True)
-    service_token_previous_expires_at = Column(DateTime, nullable=True)
+    service_token_previous_expires_at = Column(DateTime(timezone=True), nullable=True)
 
-    service_token_issued_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    service_token_issued_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    service_token_rotated_at = Column(DateTime, nullable=True)
+    service_token_rotated_at = Column(DateTime(timezone=True), nullable=True)
 
     # mTLS pre-deposit (Sprint 8 X / decision #7). Always NULL for now.
     client_cert_fingerprint = Column(String(128), nullable=True)
@@ -93,13 +92,12 @@ class AgentCredential(Base):
     # Soft delete. ``is_active=False`` means the verify path skips this
     # row even though it stays around for audit.
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
-    revoked_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
     revoked_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
-    created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
     # passive_deletes=True: trust the DB-level CASCADE on agent_credentials.

@@ -50,7 +50,7 @@ def test_v1_agents_via_jwt_returns_permitted_agents(client: TestClient, db: Sess
 def test_v1_agents_via_jwt_excludes_unapproved(client: TestClient, db: Session):
     user = make_user(db, username="spa_user2")
     dev = make_user(db, username="spa_dev2", role="developer")
-    ag = make_agent(db, dev, name="not-yet-approved", approval_status="pending")
+    ag = make_agent(db, dev, name="not-yet-approved", approval_status="registered")
     db.add(UserAgentPermission(user_id=user.id, agent_id=ag.id))
     db.commit()
 
