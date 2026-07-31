@@ -294,10 +294,10 @@ curl -X PUT http://localhost:8000/api/users/2 \
   -H "Content-Type: application/json" \
   -d '{"role":"developer"}'
 
-# 3. developer 下載官方 anila-core template（控制面：JWT）
+# 3. developer 下載官方 anila-agent 範本（控制面：JWT）
 curl -L http://localhost:8000/api/agents/template/download \
   -H "Authorization: Bearer <DEVELOPER_JWT>" \
-  -o anila-core-template.zip
+  -o anila-agent-template.zip
 
 # 4. Developer 另外部署 agent 後，再由控制面註冊該 agent
 curl -X POST http://localhost:8000/api/agents/register \
