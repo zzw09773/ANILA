@@ -18,7 +18,7 @@ def _validate_classification_ceiling(value: str | None) -> str | None:
 class ModelCreate(BaseModel):
     name: str
     display_name: str
-    model_type: str  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image'
+    model_type: str  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image' / 'asr'
     endpoint_url: str
     api_version: str = "v1"
     description: str | None = None
@@ -83,6 +83,7 @@ class ModelResponse(ApiResponseModel):
     is_active: bool
     is_router_primary: bool = False
     is_image_primary: bool = False
+    is_asr_primary: bool = False
     is_platform_embedding: bool = False
     embedding_native_dim: int | None = None
     health_status: str

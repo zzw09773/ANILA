@@ -19,12 +19,10 @@ close」的 WS 回 HTTP 403 拒絕握手,前端 onclose 只看得到 1006,永遠
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from urllib.parse import urlparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -33,6 +31,18 @@ from starlette.websockets import WebSocketState
 from app import auth as auth_mod
 from app.config import Settings, settings as default_settings
 from app.decode_client import DecodeClient
+from app.decode_endpoint import (
+    current_decode_url,
+    decode_url_refresh_meta,
+    decode_url_source,
+    refresh_decode_endpoint,
+    reset_decode_endpoint_cache,
+)
+from app.decode_probe import (
+    REASON_OK,
+    probe_decode_target,
+    strip_url_userinfo,
+)
 from app.services import jwks_client, revocation_cache as revocation_cache_mod
 from app.session import AsrSession, make_text_filter
 from app.transcriber import VadSegmenter
@@ -55,22 +65,6 @@ def _configure_logging(app_settings: Settings) -> None:
     logging.getLogger("app").setLevel(app_settings.LOG_LEVEL.upper())
 
 
-def _is_internal_service_name(host: str) -> bool:
-    """host 是不是 compose 內部的服務名(單一標籤,如 `asr-decoder`)。
-
-    單標籤主機名只有在 docker 的內部 DNS 裡解得開 —— 它出不了 compose
-    network,所以「http 到單標籤」的流量不會離開主機的 bridge。FQDN
-    (`gpu.ai.ncsist.org.tw`)或 IP 則代表要跨主機,那才是明文過內網。
-    """
-    if not host or "." in host or ":" in host:
-        return False
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        return True      # 不是 IP、又沒有點 → 單標籤服務名
-    return False         # 純數字 IP(如 http://10.53.100.12)算外部
-
-
 def _validate_settings(s: Settings) -> None:
     """prod fail-loud(對齊 csp / studio / router):缺值直接停,不留 fallback。"""
     if not s.ASR_DECODE_URL.strip():
@@ -80,24 +74,10 @@ def _validate_settings(s: Settings) -> None:
     url = s.ASR_DECODE_URL.strip()
     if not url.startswith(("http://", "https://")):
         raise RuntimeError(f"ASR_DECODE_URL must be http(s): {url!r}")
-
-    # ⚠ 旗標管的是「語音會不會明文離開這台主機」,不是「有沒有用 https」。
-    # 內部版(`http://asr-decoder:9000`,走 anila-models-net)音訊不出主機
-    # → 不該逼 operator 開放行旗標,否則預設設定直接起不來,而且會訓練大家
-    # 習慣性把旗標打開,反而弱化了外部版的那道關卡。
-    # 外部版(`http://gpu-host:9000` / `http://10.53.100.12:9000`)才是明文
-    # 過內網 —— 那是書面風險接受項(規劃書 §6),必須顯式承認。
-    host = urlparse(url).hostname or ""
-    if (
-        url.startswith("http://")
-        and not _is_internal_service_name(host)
-        and not s.ASR_ALLOW_HTTP_DECODER
-    ):
-        raise RuntimeError(
-            f"ASR_DECODE_URL 指向外部主機 {host!r} 且是純 http,但 "
-            "ASR_ALLOW_HTTP_DECODER=0。外部版 decoder 走 http 等於語音明文"
-            "過內網,是刻意的決策 —— 要開就顯式開(見規劃書 §6)。"
-        )
+    # Pure http is accepted here the same way the governance console accepts
+    # model endpoints under ANILA_ALLOW_HTTP_ENDPOINT (P0.2). The two doors
+    # must agree; refusing env while accepting CSP was confusing, not safer
+    # on an air-gapped network.
 
 
 class SessionRegistry:
@@ -150,6 +130,9 @@ def create_app(
     _configure_logging(app_settings)
     if not skip_upstreams:
         _validate_settings(app_settings)
+    # Each app build starts with a clean decoder-URL cache (tests rebuild
+    # per case; production builds once).
+    reset_decode_endpoint_cache()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -157,6 +140,16 @@ def create_app(
             await jwks_client.start(app)
             cache = revocation_cache_mod.get_revocation_cache()
             await cache.start(app)
+            # Read CSP's asr-primary at boot so the first session already
+            # uses the governance-selected decoder (no-op without a token).
+            await refresh_decode_endpoint(
+                app.state.settings, decode_client=app.state.decode_client
+            )
+            logger.info(
+                "ASR decode URL = %s (source=%s)",
+                current_decode_url(app.state.settings),
+                decode_url_source(),
+            )
         try:
             yield
         finally:
@@ -173,6 +166,11 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.settings = app_settings
+    app.state.skip_upstreams = skip_upstreams
+    # Unit tests that skip Redis/JWKS also skip the live decoder probe by
+    # default; health tests that assert probe behaviour flip this False and
+    # mock the decoder with respx.
+    app.state.skip_decoder_probe = skip_upstreams
     app.state.decode_client = decode_client or (
         None if skip_upstreams
         else DecodeClient(app_settings.ASR_DECODE_URL, app_settings.ASR_DECODER_TOKEN)
@@ -183,27 +181,135 @@ def create_app(
     return app
 
 
+async def _compose_health_status(
+    *,
+    revocation_ready: bool,
+    source: str,
+    refresh_error: str | None,
+    decode_url: str,
+    decoder_token: str,
+    service_token_configured: bool,
+    skip_decoder_probe: bool = False,
+) -> tuple[str, str, str | None, dict | None]:
+    """Decide top-level health status + operator-facing reason.
+
+    Returns ``(status, reason, detail, probe_dict_or_None)``.
+
+    * ``ok`` — microphone may be shown; speech can be transcribed.
+    * ``unavailable`` — voice is switched off (we will not point at a
+      machine the operator may not have chosen).
+    * ``degraded`` — voice is configured but something is broken.
+    """
+    if not revocation_ready:
+        return (
+            "degraded",
+            "revocation_not_ready",
+            "revocation cache not ready; WebSocket auth is fail-closed",
+            None,
+        )
+
+    # CSP transport failed and we never confirmed a designation → using the
+    # env fallback may be a different machine than the console selected.
+    # Prefer voice off over a green mic aimed at the wrong box.
+    if (
+        service_token_configured
+        and source == "env"
+        and refresh_error
+        and "CSP_SERVICE_TOKEN unset" not in refresh_error
+        and (
+            "lookup errored" in refresh_error
+            or "lookup failed" in refresh_error
+            or "unusable endpoint_url" in refresh_error
+        )
+    ):
+        return (
+            "unavailable",
+            "csp_unreachable",
+            (
+                "CSP asr-primary unreachable; refusing env fallback so the "
+                "microphone is not aimed at a machine the operator did not choose. "
+                f"refresh_error={refresh_error}"
+            ),
+            None,
+        )
+
+    if source == "csp_registry_stale":
+        # Still probe so detail shows whether the last-known box is up, but
+        # overall status stays degraded — designation may have changed.
+        probe = None
+        if not skip_decoder_probe:
+            probe = await probe_decode_target(decode_url, decoder_token)
+        detail = (
+            "CSP asr-primary refresh failed; still using last known address. "
+            "Voice stays off until CSP is reachable again."
+        )
+        if probe and not probe["ok"]:
+            detail = f"{detail} decoder also: {probe.get('detail') or probe['reason']}"
+        return ("degraded", "csp_stale", detail, probe)
+
+    if skip_decoder_probe:
+        return ("ok", REASON_OK, None, {"ok": True, "reason": REASON_OK, "detail": None})
+
+    probe = await probe_decode_target(decode_url, decoder_token)
+    if probe["ok"]:
+        return ("ok", REASON_OK, None, probe)
+    return ("degraded", probe["reason"], probe.get("detail"), probe)
+
+
 def _register_routes(app: FastAPI) -> None:
     @app.get("/asr/health")
-    def health() -> JSONResponse:
+    async def health() -> JSONResponse:
         """撤銷是 fail-closed → cache 沒 ready 時 ASR 其實不能用,health 必須
-        誠實反映,否則 operator 看到綠燈卻連不上,只會查錯方向。"""
-        cache = revocation_cache_mod.get_revocation_cache()
-        ready = cache.ready
-        return JSONResponse(
-            {
-                "status": "ok" if ready else "degraded",
-                "revocation_cache": ready,
-                "version": app.state.settings.APP_VERSION,
-            },
-            status_code=200 if ready else 503,
+        誠實反映,否則 operator 看到綠燈卻連不上,只會查錯方向。
+
+        Also refreshes the CSP-designated decoder URL (TTL), probes that
+        decoder, and folds the result into the top-level ``status`` — the
+        frontend microphone probe and compose healthcheck both key on HTTP
+        200 / status==ok. A buried field is not enough.
+        """
+        s: Settings = app.state.settings
+        await refresh_decode_endpoint(s, decode_client=app.state.decode_client)
+        if app.state.skip_upstreams:
+            ready = True
+        else:
+            ready = revocation_cache_mod.get_revocation_cache().ready
+        meta = decode_url_refresh_meta()
+        source = decode_url_source()
+        decode_url = current_decode_url(s)
+
+        status, reason, detail, probe = await _compose_health_status(
+            revocation_ready=ready,
+            source=source,
+            refresh_error=meta["last_refresh_error"],
+            decode_url=decode_url,
+            decoder_token=s.ASR_DECODER_TOKEN,
+            service_token_configured=bool((s.CSP_SERVICE_TOKEN or "").strip()),
+            skip_decoder_probe=bool(
+                getattr(app.state, "skip_decoder_probe", False)
+            ),
         )
+        body = {
+            "status": status,
+            "reason": reason,
+            "detail": detail,
+            "revocation_cache": ready,
+            "version": s.APP_VERSION,
+            "decode_url": strip_url_userinfo(decode_url),
+            "decode_url_source": source,
+            "decode_url_last_refresh_error": meta["last_refresh_error"],
+            "decode_url_last_refresh_at": meta["last_refresh_at"],
+            "decoder_probe": probe,
+        }
+        return JSONResponse(body, status_code=200 if status == "ok" else 503)
 
     @app.websocket("/asr/stream")
     async def stream(websocket: WebSocket) -> None:
         s: Settings = app.state.settings
         # 先 accept,否則自訂 close code 送不到前端(見檔頭)。
         await websocket.accept()
+        # TTL refresh so a governance change of decoder address takes effect
+        # on the next session without restarting the gateway.
+        await refresh_decode_endpoint(s, decode_client=app.state.decode_client)
 
         token = auth_mod.extract_token(websocket)
         if not token:

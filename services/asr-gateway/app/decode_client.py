@@ -42,6 +42,14 @@ class DecodeClient:
         self._token = token
         self._client = client or httpx.AsyncClient()
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    def set_base_url(self, base_url: str) -> None:
+        """Point at a new decoder without recreating the client (TTL refresh)."""
+        self._base_url = base_url.rstrip("/")
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

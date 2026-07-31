@@ -23,8 +23,9 @@ decoder 完全不知道 session 的存在;所有「時序」都在 gateway。
 
 ```
 WS  /asr/stream    主通道
-GET /asr/health    200 = 可用;503 = revocation cache 沒 ready(fail-closed,
-                   此時 WS 一律被拒 → health 誠實回 503,不騙 operator)
+GET /asr/health    200 + status=ok = 麥克風可顯示(撤銷 ready 且 decoder 探針通過)
+                   503 + status=degraded/unavailable = 隱藏麥克風;
+                   reason 區分 voice off(csp_unreachable)與指到壞位址(decoder_*)
 ```
 
 ### WS 協定
@@ -85,9 +86,10 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 
 | 變數 | 預設 | 說明 |
 |---|---|---|
-| `ASR_DECODE_URL` | (必填) | decoder 位置。內部版 `http://asr-decoder:9000`;外部版 `http://<host>:9000`。 |
-| `ASR_DECODER_TOKEN` | (必填) | 與 decoder 共享的密鑰,兩邊同值。 |
-| `ASR_ALLOW_HTTP_DECODER` | `0` | 外部主機走 http 才需要開(=語音明文過內網,見下)。 |
+| `ASR_DECODE_URL` | (必填) | decoder 位置。內部版 `http://asr-decoder:9000`;外部版 `http://<host>:9000`。CSP 無 asr-primary 時的 fallback。 |
+| `ASR_DECODER_TOKEN` | (必填) | 與 decoder 共享的密鑰,兩邊同值。密鑰不進 CSP;換 GPU 主機時新機器必須部署同一 token,否則 `/asr/health` 回 `decoder_unauthorized`。 |
+| `ASR_ALLOW_HTTP_DECODER` | `0` | 歷史旗標,不再拒絕啟動。純 http 與治理中心門一致(P0.2 / `ANILA_ALLOW_HTTP_ENDPOINT`)。 |
+| `ASR_DECODE_URL_TTL` | `60` | 重讀 CSP asr-primary 的間隔(秒)。走 pydantic Settings,不是 import 時讀 `os.environ`。 |
 | `ASR_INITIAL_PROMPT` | `以下是繁體中文。` | 通用 prompt,非領域詞典。 |
 | `ASR_BEAM_SIZE` | `5` | final 解碼的 beam。 |
 | `ASR_PARTIALS_ENABLED` | `1` | 負載旋鈕:設 0 只留定稿,GPU 壓力大減。 |
@@ -95,17 +97,11 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 | `ASR_MAX_SESSION_SECONDS` | `300` | 單次語音上限;逾時先 flush 再斷。 |
 | `CSP_BASE_URL` / `CSP_SERVICE_TOKEN` / `REDIS_URL` / `JWT_*` | — | 與 anila-studio 同名同義。`CSP_SERVICE_TOKEN` 是撤銷 cache 冷啟動同步用,漏了 cache 永遠不 ready → 所有 WS 被拒。 |
 
-### `ASR_ALLOW_HTTP_DECODER` 的語意
+### 純 http 與兩扇門一致
 
-旗標管的是「**語音會不會明文離開這台主機**」,不是「有沒有用 https」:
-
-- `http://asr-decoder:9000`(單標籤服務名,只在 docker 內部 DNS 解得開,出不了
-  compose network)→ **不需要旗標**,音訊不出主機。
-- `http://gpu-host.ai.ncsist.org.tw:9000` / `http://10.53.100.12:9000`(FQDN 或
-  IP → 跨主機)→ **明文過內網,必須顯式開旗標**。這是書面風險接受項(規劃書 §6)。
-
-不區分的話,operator 會被迫在內部版也開旗標,「習慣性打開」反而弱化了外部版
-那道真正該守的關卡。
+治理中心登錄端點在 `ANILA_ALLOW_HTTP_ENDPOINT=1` 時接受純 http;環境變數
+`ASR_DECODE_URL` 同樣接受。內網(air-gapped)不以「跨網域威脅」為由讓同一位址
+在兩扇門得到不同結果。
 
 ## 測試
 
