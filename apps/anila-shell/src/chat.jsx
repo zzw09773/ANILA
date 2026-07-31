@@ -2,7 +2,7 @@
 // ESM port of ANILA_templete/anila-ui/src/chat.jsx, with backend-driven classification:
 // no user-controlled "lock/unlock" icons here.
 
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { hasBranch, neighbourId, pagerState } from "./runtime/messageTree.js";
@@ -1270,6 +1270,12 @@ export const AgentSelector = ({ agents, value, onChange }) => {
 };
 
 // ---- Composer ----
+// 行高寫成整數像素(不是 1.55 這種倍率):自動長高要落在整行邊界,倍率算出來的
+// 21.7px 會讓每一行都帶零頭,捲到最後又切在字中間。
+export const COMPOSER_LINE_HEIGHT = 22;
+// 超過幾行才開始捲動。用「行」不用像素:8 × 22 = 176px,約等於原本的 200px 上限,
+// 但保證上限剛好切在行與行之間。
+export const COMPOSER_MAX_ROWS = 8;
 // `onUpload(file) → Promise<AttachmentOut>` is optional. When provided, picked
 // files are uploaded to /api/attachments and the returned reference_id is
 // attached to the message. When absent, files are tracked locally only (legacy
@@ -1395,12 +1401,40 @@ export const Composer = ({
     });
   };
 
-  const autosize = () => {
+  // 輸入框自動長高。
+  //
+  // 兩件事必須同時成立,少一件使用者就看不到自己在打什麼:
+  //
+  // 1. **每一條進到框裡的文字都要重新量高度**,不是只有鍵盤打字。文字還會從
+  //    語音定稿(asr.appendText)、切換對話回填草稿、提示詞範本、送出後清空
+  //    進來,這些都不經過 onChange。所以量測掛在 `text` 這個 state 上
+  //    (useLayoutEffect,在瀏覽器繪製前跑完,不會閃一下)。
+  //    ⚠ 原本只掛 onChange:口述一段話進來,框停在一行高,第二行被從字的
+  //    中間橫切掉,只看得到字的頭頂——擁有者回報的就是這個畫面。
+  // 2. **高度一律落在整行邊界**。textarea 的上下內距移到外層 div,自己的
+  //    垂直內距是 0,所以 scrollHeight 剛好是行高的整數倍;高度上限也用
+  //    「幾行」算,不用像素。這樣捲動時切在行與行之間,不會切在字中間。
+  const autosize = useCallback(() => {
     const el = taRef.current;
     if (!el) return;
+    const line = parseFloat(getComputedStyle(el).lineHeight) || COMPOSER_LINE_HEIGHT;
+    const max = line * COMPOSER_MAX_ROWS;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
-  };
+    // 子像素會讓 scrollHeight 落在兩行之間 —— 進位到整行,否則上限那一行
+    // 還是會被切一半。
+    const wanted = Math.ceil(el.scrollHeight / line) * line;
+    el.style.height = Math.min(wanted, max) + "px";
+    el.style.overflowY = wanted > max ? "auto" : "hidden";
+  }, []);
+
+  useLayoutEffect(() => { autosize(); }, [text, autosize]);
+
+  // 視窗寬度變了(收合側邊欄、縮視窗)換行數就變了,不重量會留下被切一半的
+  // 那一行。
+  useEffect(() => {
+    window.addEventListener("resize", autosize);
+    return () => window.removeEventListener("resize", autosize);
+  }, [autosize]);
 
   const submit = () => {
     const v = text.trim();
@@ -1416,7 +1450,7 @@ export const Composer = ({
     setText("");
     setAtts([]);
     if (draftKey && typeof sessionStorage !== "undefined") sessionStorage.removeItem(draftKey);
-    setTimeout(autosize, 0);
+    // 清空後縮回一行由 text 的 layout effect 負責,不需要再補一次。
   };
 
   const onKey = (e) => {
@@ -1663,58 +1697,64 @@ export const Composer = ({
         </div>
       )}
 
-      <textarea
-        ref={taRef}
-        value={text}
-        onChange={(e) => { setText(e.target.value); autosize(); setCaret(e.target.selectionStart || 0); }}
-        onKeyUp={updateCaret}
-        onClick={updateCaret}
-        onSelect={updateCaret}
-        onKeyDown={onKey}
-        // 注音組字中不得 append 定稿 —— hook 會緩衝到 compositionend 再吐。
-        onCompositionStart={asr.onCompositionStart}
-        onCompositionEnd={asr.onCompositionEnd}
-        onPaste={(e) => {
-          const items = e.clipboardData?.items || [];
-          // Some browsers/platforms — notably when copying rendered web
-          // content — populate clipboard with BOTH text/plain (the user's
-          // actual intent) AND image/png (an accessibility fallback
-          // screenshot of the selection). If we only scan for file-kind
-          // items we wrongly convert a text copy into an image upload.
-          // Rule: when any text/* payload exists, prefer text and let
-          // the browser's default paste handle it; treat as file only
-          // when the clipboard carries files and no text.
-          let hasText = false;
-          const files = [];
-          for (const it of items) {
-            if (it.kind === "string" && it.type.startsWith("text/")) {
-              hasText = true;
-            }
-            if (it.kind === "file") {
-              const f = it.getAsFile();
-              if (f) {
-                const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-                const ext = (f.type.split("/")[1] || "bin").split("+")[0];
-                const named = f.name && f.name !== "image.png" ? f : new File([f], `貼上-${stamp}.${ext}`, { type: f.type });
-                files.push(named);
+      {/* 垂直內距放在這層,textarea 自己的垂直內距是 0 —— textarea 的內距屬於
+          捲動區,捲到底時上方那條內距會露出上一行的下半截字。移出來以後捲動
+          一定停在行與行之間。 */}
+      <div style={{ padding: `12px 0 6px` }}>
+        <textarea
+          ref={taRef}
+          value={text}
+          onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart || 0); }}
+          onKeyUp={updateCaret}
+          onClick={updateCaret}
+          onSelect={updateCaret}
+          onKeyDown={onKey}
+          // 注音組字中不得 append 定稿 —— hook 會緩衝到 compositionend 再吐。
+          onCompositionStart={asr.onCompositionStart}
+          onCompositionEnd={asr.onCompositionEnd}
+          onPaste={(e) => {
+            const items = e.clipboardData?.items || [];
+            // Some browsers/platforms — notably when copying rendered web
+            // content — populate clipboard with BOTH text/plain (the user's
+            // actual intent) AND image/png (an accessibility fallback
+            // screenshot of the selection). If we only scan for file-kind
+            // items we wrongly convert a text copy into an image upload.
+            // Rule: when any text/* payload exists, prefer text and let
+            // the browser's default paste handle it; treat as file only
+            // when the clipboard carries files and no text.
+            let hasText = false;
+            const files = [];
+            for (const it of items) {
+              if (it.kind === "string" && it.type.startsWith("text/")) {
+                hasText = true;
+              }
+              if (it.kind === "file") {
+                const f = it.getAsFile();
+                if (f) {
+                  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+                  const ext = (f.type.split("/")[1] || "bin").split("+")[0];
+                  const named = f.name && f.name !== "image.png" ? f : new File([f], `貼上-${stamp}.${ext}`, { type: f.type });
+                  files.push(named);
+                }
               }
             }
-          }
-          if (!hasText && files.length) {
-            e.preventDefault();
-            onFiles(files);
-          }
-        }}
-        placeholder={placeholder || "問 ANILA 任何事情 — 用 @agent 指定 agent · Shift+Enter 換行 · 可直接貼上截圖"}
-        rows={1}
-        style={{
-          width: "100%",
-          background: "transparent", border: "none", outline: "none", resize: "none",
-          padding: "12px 14px 6px",
-          fontSize: 14, lineHeight: 1.55, color: "var(--fg)",
-          fontFamily: "inherit",
-        }}
-      />
+            if (!hasText && files.length) {
+              e.preventDefault();
+              onFiles(files);
+            }
+          }}
+          placeholder={placeholder || "問 ANILA 任何事情 — 用 @agent 指定 agent · Shift+Enter 換行 · 可直接貼上截圖"}
+          rows={1}
+          style={{
+            width: "100%",
+            background: "transparent", border: "none", outline: "none", resize: "none",
+            padding: "0 14px",
+            fontSize: 14, lineHeight: `${COMPOSER_LINE_HEIGHT}px`, color: "var(--fg)",
+            fontFamily: "inherit",
+            display: "block",
+          }}
+        />
+      </div>
 
       {/* 即時預覽。**刻意不進 textarea** —— 原生 textarea 無法混排兩色文字,
           overlay mirror 又會撞到這個元件既有的 mention/貼上/autosize 邏輯。
@@ -1805,7 +1845,7 @@ export const Composer = ({
                         setText("");
                       } else {
                         setText(body);
-                        setTimeout(() => { taRef.current?.focus(); autosize(); }, 0);
+                        setTimeout(() => { taRef.current?.focus(); }, 0);
                       }
                     }}
                     style={{
