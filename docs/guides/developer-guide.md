@@ -9,7 +9,7 @@
 
 ## TL;DR
 
-1. 在 Agent Console 按「下載官方模板」取得 `anila-core-template.zip`。
+1. 在 Agent Console 按「下載官方模板」取得 `anila-agent.zip`（解壓後根目錄為 `anila-agent/`）。
 2. 解壓、修改 `api.py` 的檢索/推論邏輯，設定 `.env`，`docker compose up -d`。
 3. 確認 `GET /health` 回 200、`POST /v1/chat/completions` 可接 OpenAI-compat 請求。
 4. 回到 Agent Console 按「註冊 Agent」，填名稱、endpoint URL、router 描述。
