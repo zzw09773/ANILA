@@ -29,9 +29,7 @@ from app.main import (
 from tests.test_session import FakeDecode
 
 
-IDENTITY = CurrentUserIdentity(
-    id=7, username="tester", role="user", token_version=1, jti="j1", sid="s1"
-)
+IDENTITY = CurrentUserIdentity(id=7, username="tester", role="user", token_version=1)
 
 
 class FakeDecodeClient:
@@ -121,11 +119,16 @@ def test_bearer_header_also_works(monkeypatch):
             assert ws.receive_json()["state"] == "listening"
 
 
-def test_cookie_name_follows_cookie_secure():
-    """本機 dev(COOKIE_SECURE=false)是 anila_dev_access_token —— 只做
-    __Host- 的話 M5 本機測試必 401。"""
-    assert auth_mod._access_cookie_name(True) == "__Host-anila_access_token"
-    assert auth_mod._access_cookie_name(False) == "anila_dev_access_token"
+def test_cookie_name_matches_what_csp_actually_issues():
+    """cookie 名必須逐字等於 csp 發的那個。
+
+    這個測試取代了原本的 `test_cookie_name_follows_cookie_secure` —— 那個測試
+    斷言的是 `__Host-anila_access_token` / `anila_dev_access_token`,兩個平台上
+    沒有任何地方會發的名字。它綠燈綠了一整輪,而使用者按麥克風一律 4401。
+    寫死常數是刻意的:要對齊的是 csp 的
+    `middleware/cookies.py:ACCESS_COOKIE_NAME`,不是本服務的某個旗標。
+    """
+    assert auth_mod.ACCESS_COOKIE_NAME == "anila_access_token"
 
 
 # ── 併發:踢舊留新 ───────────────────────────────────────────────────────

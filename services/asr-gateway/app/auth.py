@@ -1,9 +1,28 @@
 """WS 握手的 JWT 驗證。
 
-驗證邏輯逐條移植自 `services/anila-studio/app/auth.py`(RS256 + JWKS 本地驗
-章、session envelope 檢查、拒絕 refresh token、fail-closed 撤銷查核)。
-**不要在這裡「簡化」任何一條** —— 每一條都是信任錨的一部分,studio 那份的
-註解說明了它們為什麼存在。
+驗證邏輯逐條對齊 `services/anila-studio/app/auth.py`(RS256 + JWKS 本地驗章、
+要求 `kid`、拒絕 refresh token、fail-closed 撤銷查核)。**不要在這裡「簡化」
+任何一條** —— 每一條都是信任錨的一部分,studio 那份的註解說明了它們為什麼
+存在。
+
+⚠ **2026-07-31 修正:本檔原本驗的是一份這棵樹裡不存在的權杖規格。**
+原始版本要求 `iss`/`aud`/`jti`/`iat` 與一組 session assurance claim
+(`sid`/`amr`/`acr`/`auth_time`/`break_glass`),並到 `__Host-anila_access_token`
+這個 cookie 名去取權杖。實際上:
+
+- csp 的 `create_tokens()`(services/csp/app/services/auth_service.py:55)
+  只簽 `sub`/`username`/`role`/`tv`,`create_access_token()` 再補 `exp`/`type`
+  —— **沒有 iss、沒有 aud、沒有 jti、沒有 amr**。
+- csp 發的 cookie 叫 `anila_access_token`(services/csp/app/middleware/cookies.py:33),
+  `__Host-` 與 `anila_dev_` 兩個名字平台上沒有任何地方發出。
+- 卡登入走的是同一個 `create_tokens()`(services/csp/app/api/auth/card.py),
+  所以「用憑證卡就會過」是不成立的 —— 卡登入也一樣被擋。
+
+結果是**沒有任何簽發者能滿足的檢查**:握手成功後一律 4401。那不是安全性,
+是壞掉的契約剛好 fail-closed。修法是把本檔對齊平台真正在發的權杖,而不是去
+改全平台的權杖來遷就這一個服務。**移掉的是「從來沒被簽發過的 claim 的必填
+要求」,不是驗證本身** —— 簽章驗證、`kid` 要求、演算法白名單、過期、拒絕
+refresh token、fail-closed 撤銷查核全部原封不動。
 
 與 studio 的兩處必要差異(不是隨意偏離):
 
@@ -22,7 +41,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
@@ -33,22 +51,10 @@ from app.services import jwks_client, revocation_cache as revocation_cache_mod
 
 logger = logging.getLogger(__name__)
 
-SECURE_ACCESS_COOKIE_NAME = "__Host-anila_access_token"
-DEV_ACCESS_COOKIE_NAME = "anila_dev_access_token"
-
-_ACR_BY_PRIMARY_AMR = {
-    "sc": "urn:anila:acr:smart-card",
-    "oidc": "urn:anila:acr:federated",
-    "pwd": "urn:anila:acr:password",
-}
-_KNOWN_AMR = frozenset(_ACR_BY_PRIMARY_AMR)
-
-
-def _access_cookie_name(secure: bool) -> str:
-    return SECURE_ACCESS_COOKIE_NAME if secure else DEV_ACCESS_COOKIE_NAME
-
-
-ACCESS_COOKIE_NAME = _access_cookie_name(settings.COOKIE_SECURE)
+# csp 只發這一個名字(services/csp/app/middleware/cookies.py:33),studio 也只讀
+# 這一個(services/anila-studio/app/auth.py:38)。這裡不做 secure/dev 分軌 ——
+# 分軌的前提是有人會發 `__Host-` 前綴的那份,而平台上沒有。
+ACCESS_COOKIE_NAME = "anila_access_token"
 
 
 class AuthError(Exception):
@@ -65,9 +71,6 @@ class CurrentUserIdentity:
     username: str
     role: str
     token_version: int
-    # 長連線重查撤銷要用(studio 是 per-request 所以不必留)。
-    jti: str
-    sid: str
 
 
 def extract_token(websocket: WebSocket) -> str | None:
@@ -78,56 +81,6 @@ def extract_token(websocket: WebSocket) -> str | None:
         if scheme.lower() == "bearer" and value:
             return value
     return websocket.cookies.get(ACCESS_COOKIE_NAME)
-
-
-def _has_valid_session_assurance(payload: dict) -> bool:
-    """Mirror CSP's signed session-envelope validation at this boundary.
-
-    逐行移植自 studio,不要改。
-    """
-    jti = payload.get("jti")
-    sid = payload.get("sid")
-    amr = payload.get("amr")
-    acr = payload.get("acr")
-    auth_time = payload.get("auth_time")
-    issued_at = payload.get("iat")
-    break_glass = payload.get("break_glass")
-    if not isinstance(jti, str) or not jti:
-        return False
-    if not isinstance(sid, str) or not sid:
-        return False
-    if (
-        not isinstance(amr, list)
-        or any(
-            not isinstance(method, str) or method not in _KNOWN_AMR
-            for method in amr
-        )
-        or len(amr) != len(set(amr))
-    ):
-        return False
-    if not isinstance(acr, str) or not acr:
-        return False
-    if (
-        isinstance(auth_time, bool)
-        or not isinstance(auth_time, (int, float))
-        or isinstance(issued_at, bool)
-        or not isinstance(issued_at, (int, float))
-        or auth_time < 0
-        or auth_time > issued_at
-        or issued_at
-        > datetime.now(timezone.utc).timestamp() + settings.JWT_LEEWAY_SECONDS
-    ):
-        return False
-    if not isinstance(break_glass, bool):
-        return False
-    if break_glass:
-        return amr == ["pwd"] and acr == "urn:anila:acr:break-glass"
-    expected_acr = "urn:anila:acr:unspecified"
-    for method in ("sc", "oidc", "pwd"):
-        if method in amr:
-            expected_acr = _ACR_BY_PRIMARY_AMR[method]
-            break
-    return acr == expected_acr
 
 
 async def _verify_jwt(token: str) -> dict:
@@ -151,37 +104,38 @@ async def _verify_jwt(token: str) -> dict:
         raise AuthUnavailable("auth keys unavailable") from exc
 
     try:
+        # `verify_aud=False` 與 studio 逐字相同(services/anila-studio/app/auth.py:100):
+        # csp 不簽 `aud`,要求它等於要求一個沒有人會發的東西。`iss` 同理。
+        # ⚠ 這裡沒有關掉的是:簽章(public_key)、演算法白名單(擋 alg=none /
+        # HS256 混淆)、以及 `exp` —— python-jose 的 verify_exp 預設就是 True,
+        # 過期權杖會走上面的 ExpiredSignatureError。
         payload = jwt.decode(
             token,
             public_key,
             algorithms=list(settings.JWT_ALGORITHMS),
-            issuer=settings.JWT_ISSUER,
-            audience=settings.JWT_AUDIENCE,
-            options={
-                "require_exp": True,
-                "require_iat": True,
-                "require_iss": True,
-                "require_aud": True,
-                "require_jti": True,
-            },
+            options={"verify_aud": False},
         )
     except ExpiredSignatureError as exc:
         raise AuthError("權杖已過期,請重新登入") from exc
     except JWTError as exc:
         raise AuthError("無效的存取權杖") from exc
 
-    if not _has_valid_session_assurance(payload):
-        raise AuthError("無效的存取權杖")
     return payload
 
 
-async def _check_revocation(user_id: int, token_version: int, *, jti: str, sid: str) -> None:
-    """fail-closed:清單不可用時拒絕,不降級成放行(同 studio)。"""
+async def _check_revocation(user_id: int, token_version: int) -> None:
+    """fail-closed:清單不可用時拒絕,不降級成放行(同 studio)。
+
+    ⚠ 簽名要與 `app/services/revocation_cache.py` 的 `is_revoked(user_id,
+    token_version)` 一致 —— 那份是 studio 的逐位元組副本。原始版本在這裡多傳
+    了 `jti=`/`sid=`,而副本根本不收這兩個 kwarg:就算權杖驗過了,這一行也會
+    TypeError。撤銷查核是紅線,壞在這裡不會 fail-closed,會變成 500。
+    """
     cache = revocation_cache_mod.get_revocation_cache()
     if not cache.ready:
         logger.warning("revocation cache not ready; denying user_id=%s", user_id)
         raise AuthUnavailable("auth deny-list unhealthy")
-    if await cache.is_revoked(user_id, token_version, jti=jti, sid=sid):
+    if await cache.is_revoked(user_id, token_version):
         raise AuthError("權杖已失效,請重新登入")
 
 
@@ -193,16 +147,22 @@ async def authenticate(token: str) -> CurrentUserIdentity:
     if payload.get("type") != "access":
         raise AuthError("無效的存取權杖")
 
-    if settings.REQUIRE_CARD_LOGIN_ONLY:
-        raw_amr = payload.get("amr")
-        methods = (
-            set(raw_amr)
-            if isinstance(raw_amr, list) and all(isinstance(m, str) for m in raw_amr)
-            else set()
-        )
-        if "sc" not in methods:
-            raise AuthError("此服務僅接受憑證卡登入工作階段")
-
+    # ⚠ 這裡原本有一段 `REQUIRE_CARD_LOGIN_ONLY` → 要求 `amr` 含 "sc" 的檢查,
+    # 已移除。理由不是「放寬」,是那段程式做不到它宣稱的事:
+    #
+    # - csp 從不簽 `amr`,所以 flag 一開,**連憑證卡登入的人也一律被拒**
+    #   (卡登入走同一個 create_tokens)。compose 的預設值正是
+    #   `REQUIRE_CARD_LOGIN_ONLY:-true`,也就是內網 .15 一上線就是全員被擋。
+    # - 「只准卡登入」這件事的執法點在簽發端,不在這裡:csp 的
+    #   `REQUIRE_CARD_LOGIN_ONLY` 會把帳密與 OIDC 登入路徑關掉
+    #   (services/csp/app/api/auth/password.py:95、oidc.py:115、_common.py:39)。
+    #   csp 處於 card-only 時,它發得出來的權杖本來就只可能來自卡登入。
+    #
+    # ⚠ 已知的語意收窄(不是疏漏,是刻意記在這裡):csp 在 card-only 之下仍
+    # 保留 owner 的帳密 break-glass(password.py:267)。所以本服務的實際政策是
+    # 「csp 願意發的工作階段都能用語音」,而不是「僅限卡片」。要真的做到後者,
+    # 必須先讓 csp 把登入方式簽進權杖(例如 `amr`),再回來把這段檢查加回去 ——
+    # 在那之前留著它只是一個擋不住壞人、只擋得住所有人的假控制項。
     sub = payload.get("sub")
     if not sub:
         raise AuthError("無效的存取權杖")
@@ -212,16 +172,12 @@ async def authenticate(token: str) -> CurrentUserIdentity:
         raise AuthError("無效的存取權杖") from exc
 
     token_version = int(payload.get("tv", 0))
-    await _check_revocation(
-        user_id, token_version, jti=payload["jti"], sid=payload["sid"]
-    )
+    await _check_revocation(user_id, token_version)
     return CurrentUserIdentity(
         id=user_id,
         username=str(payload.get("username") or ""),
         role=str(payload.get("role") or "user"),
         token_version=token_version,
-        jti=payload["jti"],
-        sid=payload["sid"],
     )
 
 
@@ -238,6 +194,4 @@ async def is_still_valid(identity: CurrentUserIdentity) -> bool:
     cache = revocation_cache_mod.get_revocation_cache()
     if not cache.ready:
         return False
-    return not await cache.is_revoked(
-        identity.id, identity.token_version, jti=identity.jti, sid=identity.sid
-    )
+    return not await cache.is_revoked(identity.id, identity.token_version)
