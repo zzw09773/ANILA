@@ -115,7 +115,7 @@ async def dispatch_to_agent_response(
     # OPT-1: shared client (was ``async with httpx.AsyncClient(timeout=…)``).
     client = get_http_client()
     if stream:
-        return await _collect_stream_response(client, url, payload, headers)
+        return await _collect_stream_response(client, url, payload, headers, timeout)
     resp = await client.post(url, json=payload, headers=headers, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
@@ -207,10 +207,18 @@ async def _collect_stream_response(
     url: str,
     payload: dict[str, Any],
     headers: dict[str, str],
+    timeout: float,
 ) -> dict[str, Any]:
     content = ""
     anila_meta = None
-    async with client.stream("POST", url, json=payload, headers=headers) as resp:
+    # Required, not defaulted: httpx reads ``timeout=None`` as "never time out",
+    # so a default here would quietly turn a forgotten argument into a hang.
+    # The caller's timeout applies to streaming too — dropping it would let a
+    # slow agent run to the shared client's default while the non-streaming path
+    # next door honoured the argument. Same function, two behaviours.
+    async with client.stream(
+        "POST", url, json=payload, headers=headers, timeout=timeout
+    ) as resp:
         resp.raise_for_status()
         async for line in resp.aiter_lines():
             line = line.strip()

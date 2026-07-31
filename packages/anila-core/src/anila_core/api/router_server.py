@@ -777,10 +777,22 @@ def create_router_app(
         # identity resolve (security ordering unchanged). Revert: restore
         # sequential ``await _resolve…`` then ``await registry.ensure_fresh``.
         if session_factory is None:
-            owner_key_hash, _ = await asyncio.gather(
+            # ``return_exceptions=True`` so both halves are awaited to
+            # completion even when identity resolution rejects the caller.
+            # Bare gather propagates the first exception and leaves the
+            # registry refresh running orphaned *after* the request has
+            # already 401'd, which lands its side effects at an
+            # unpredictable point in someone else's turn.
+            owner_result, registry_result = await asyncio.gather(
                 _resolve_session_owner_hash(caller_api_key),
                 registry.ensure_fresh(caller_api_key),
+                return_exceptions=True,
             )
+            if isinstance(owner_result, BaseException):
+                raise owner_result
+            if isinstance(registry_result, BaseException):
+                raise registry_result
+            owner_key_hash = owner_result
             owner_ok = await ensure_session_owner(
                 resolved_db_path, session_id, owner_key_hash
             )
@@ -821,6 +833,13 @@ def create_router_app(
 
         started_at = time.time()
 
+        # Per-request, per-caller: another caller's rejected token must not
+        # make this user's trace claim their own registry refresh failed
+        # (traces are shown to operators — cross-user bleed is a privacy
+        # defect, not just a cosmetic one). The process-wide
+        # ``registry.last_refresh_error`` stays where it belongs: /health.
+        registry_error = registry.refresh_error_for(caller_api_key)
+
         base_trace = [
             _make_trace_step(
                 "thinking",
@@ -832,10 +851,10 @@ def create_router_app(
                 "同步 agent 清單",
                 (
                     f"已載入 {len(agents)} 個可用 agent"
-                    if not registry.last_refresh_error
-                    else f"registry refresh 失敗：{registry.last_refresh_error}"
+                    if not registry_error
+                    else f"registry refresh 失敗：{registry_error}"
                 ),
-                status="error" if registry.last_refresh_error else "ok",
+                status="error" if registry_error else "ok",
             ),
         ]
 

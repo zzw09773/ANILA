@@ -49,50 +49,10 @@ import ipaddress
 import logging
 import os
 import socket
-import threading
-import time
 from typing import Callable
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
-
-# OPT-2: short-TTL cache for ``socket.getaddrinfo`` answers.
-# Registration / worker call sites historically re-resolved the same host
-# many times in one request (and CSP loops have hit the same host thrice).
-# Cache is process-local, best-effort, and never changes the accept/reject
-# decision for a given DNS answer — it only skips repeated lookups within
-# ``_DNS_CACHE_TTL_S``. Revert: delete ``_dns_cache_*`` helpers and call
-# ``socket.getaddrinfo`` inline again at the bottom of ``validate_outbound_url``.
-_DNS_CACHE_TTL_S = float(os.environ.get("ANILA_URL_GUARD_DNS_TTL", "30"))
-_dns_cache: dict[str, tuple[float, list]] = {}
-_dns_cache_lock = threading.Lock()
-_DNS_CACHE_NEG = object()  # sentinel: previous lookup raised gaierror
-
-
-def _cached_getaddrinfo(host: str):
-    """Return getaddrinfo infos, or ``_DNS_CACHE_NEG`` on gaierror (cached)."""
-    now = time.monotonic()
-    with _dns_cache_lock:
-        hit = _dns_cache.get(host)
-        if hit is not None:
-            expires_at, value = hit
-            if now < expires_at:
-                return value
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        with _dns_cache_lock:
-            _dns_cache[host] = (now + _DNS_CACHE_TTL_S, _DNS_CACHE_NEG)
-        return _DNS_CACHE_NEG
-    with _dns_cache_lock:
-        _dns_cache[host] = (now + _DNS_CACHE_TTL_S, infos)
-    return infos
-
-
-def clear_dns_cache() -> None:
-    """Drop cached DNS answers. Test-only / ops escape hatch."""
-    with _dns_cache_lock:
-        _dns_cache.clear()
 
 
 def _env_flag(name: str) -> bool:
@@ -452,9 +412,9 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
     # Hostname: resolve and reject if any answer is unsafe. Same opt-in
     # rules as IP literals — link-local etc always blocked, RFC 1918
     # gated by ANILA_ALLOW_PRIVATE_ENDPOINT.
-    # OPT-2: TTL-cached getaddrinfo (see module top).
-    infos = _cached_getaddrinfo(host)
-    if infos is _DNS_CACHE_NEG:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
         # Unresolvable — let the actual call fail. We don't want to block
         # legitimate transient DNS outages at credential-create time.
         return
