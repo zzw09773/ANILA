@@ -33,15 +33,17 @@ function stripComments(source) {
     .join('\n')
 }
 
-/** `GET /api/banners/active` 的真實形狀。 */
+/**
+ * `GET /api/banners/public` 的真實形狀 —— 只有兩個欄位。
+ *
+ * 公開端點刻意不送 `id` / `is_active` / `sort_order` / `created_at`：未登入的人
+ * 用不到那些內部狀態。後端那一側由
+ * `services/csp/tests/test_banner_public_login.py` 把 key 集合釘死。
+ */
 function banner(overrides = {}) {
   return {
-    id: 1,
     level: 'info',
     content: '系統開通問題請洽資訊服務窗口分機 0000。',
-    is_active: true,
-    sort_order: 0,
-    created_at: '2026-07-31T00:00:00Z',
     ...overrides,
   }
 }
@@ -57,8 +59,8 @@ test('有啟用中的公告時,顯示公告內容', () => {
 
 test('多則公告時取後端排好的第一則', () => {
   const notice = approvalContactNotice([
-    banner({ id: 1, content: '第一則', sort_order: 0 }),
-    banner({ id: 2, content: '第二則', sort_order: 1 }),
+    banner({ content: '第一則' }),
+    banner({ content: '第二則' }),
   ])
   assert.equal(notice.text, '第一則')
 })
@@ -95,21 +97,44 @@ test('保底文案指得出方向,而且不含真人姓名／信箱／內網位�
 
 // ---- 原始碼層護欄:LoginView 真的把它掛上去了 -----------------------------
 
-test('LoginView 讀既有的公告 API,並把訊息掛在等待核准畫面上', () => {
+test('LoginView 讀**公開**的公告 API,並把訊息掛在等待核准畫面上', () => {
   const source = stripComments(readSource('./views/LoginView.vue'))
 
-  // 用既有端點,不另建設定機制。
-  assert.match(source, /listActiveBanners/)
+  // 用既有機制,不另建設定;但必須是不需要 token 的那一支 —— 這一頁的讀者
+  // 還沒有帳號,``/active`` 對他們永遠 401,公告貼了也看不到。
+  assert.match(source, /listPublicBanners/)
+  assert.doesNotMatch(source, /listActiveBanners/)
   assert.match(source, /approvalContactNotice/)
-  assert.match(source, /fetchActiveBanners\(\)/)
+  assert.match(source, /fetchPublicBanners\(\)/)
 
   // 等待核准區塊真的渲染那一行。
   assert.match(source, /\{\{ approvalNotice\.text \}\}/)
 
   // 「等管理員核准」不再是句點 —— 同一段裡必須跟著窗口說明。
+  const anchor = '已註冊，等待核准'
+  assert.ok(source.includes(anchor), '等待核准區塊的狀態說明不見了')
   const approvalBlock = source.slice(
-    source.indexOf('一旦管理員核准'),
-    source.indexOf('一旦管理員核准') + 400,
+    source.indexOf(anchor),
+    source.indexOf(anchor) + 400,
   )
   assert.match(approvalBlock, /approvalNotice\.text/)
+})
+
+test('api/banners.js 的公開端點指到 /api/banners/public', () => {
+  const source = stripComments(readSource('./api/banners.js'))
+  assert.match(source, /listPublicBanners[\s\S]*?\/api\/banners\/public/)
+})
+
+test('治理中心的勾選框把「誰讀得到」講完,而且預設不勾', () => {
+  const raw = readSource('./views/BannersView.vue')
+  const source = stripComments(raw)
+
+  // 送得出 show_on_login,而且新增表單的預設值是 false。
+  assert.match(source, /show_on_login/)
+  assert.match(source, /show_on_login:\s*false/)
+  assert.doesNotMatch(source, /show_on_login:\s*true/)
+
+  // 標籤要說出後果 —— 「顯示在登入頁」本身不會讓管理員意識到那是公開的。
+  assert.match(source, /任何連得到登入頁的人都讀得到/)
+  assert.match(source, /尚未擁有帳號/)
 })

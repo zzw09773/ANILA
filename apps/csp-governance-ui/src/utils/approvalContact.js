@@ -8,8 +8,12 @@
  * 是還沒有帳號、無處可問的那一群。
  *
  * 做法上刻意不新增設定機制、不新增角色、不新增資料表：直接讀既有的公告橫幅
- * （`GET /api/banners/active`，管理員在治理中心維護）。有公告就顯示公告，
- * 沒有就給一句誠實的保底說法。
+ * （管理員在治理中心維護）。有公告就顯示公告，沒有就給一句誠實的保底說法。
+ *
+ * 讀的是 `GET /api/banners/public`，不是 `/active`。`/active` 要 token，而這
+ * 一頁的讀者**還沒有帳號** —— 那支端點對他們永遠回 401，擁有者貼了公告也只有
+ * 已經進得來的人看得到。`/public` 只回管理員逐則勾過「登入頁公開」的那幾則，
+ * 欄位只有 `{ level, content }`。
  *
  * ⚠ 這個 repo 是公開的：保底文案不得寫入任何真人姓名、信箱或內網位址。
  *
@@ -21,11 +25,14 @@ export const APPROVAL_CONTACT_FALLBACK =
   '等候期間如需查詢申請進度，請洽貴單位窗口或平台管理員。'
 
 /**
- * 從 `/api/banners/active` 的回應挑出要顯示的那一則。
+ * 從 `/api/banners/public` 的回應挑出要顯示的那一則。
  *
  * 後端已依 `sort_order, id` 排序，所以取第一則有內容的即可。任何取不到／
- * 取到空陣列／取到壞資料的情況都退回保底文案——登入頁在使用者尚未取得
- * 憑證前呼叫此端點會拿到 401，那條路徑同樣走保底，不會讓畫面空白。
+ * 取到空陣列／取到壞資料的情況都退回保底文案，不會讓畫面空白。
+ *
+ * `is_active` 的檢查留著：`/public` 已經在後端濾掉停用的公告（欄位根本不送
+ * 出來，`undefined !== false` 照樣通過），但這是純函式，餵什麼進來都得有個
+ * 合理的答案。
  *
  * @param {Array<{content?: string, level?: string, is_active?: boolean}>|null|undefined} banners
  * @returns {{source: 'banner'|'fallback', text: string, level: string}}

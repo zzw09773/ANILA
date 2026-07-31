@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.schemas.card import (
+    CARD_PENDING_APPROVAL_MESSAGE,
+    CARD_PENDING_REGISTRATION_MESSAGE,
     CardChallengeResponse,
     CardVerifyRequest,
 )
@@ -129,7 +131,7 @@ def card_verify(
                 "email": claims.email,
                 "registration_token": reg_token,
                 "expires_in": expires_in,
-                "message": "請完成註冊：選擇您所屬的單位後送出。",
+                "message": CARD_PENDING_REGISTRATION_MESSAGE,
             }
             audit_detail = (
                 f"卡片驗章通過但 pending_registration: "
@@ -144,7 +146,7 @@ def card_verify(
                 "email": claims.email,
                 "registration_token": None,
                 "expires_in": None,
-                "message": "註冊資料已記錄，請等待管理員核准。",
+                "message": CARD_PENDING_APPROVAL_MESSAGE,
             }
             audit_detail = (
                 f"卡片驗章通過但 pending_approval: "

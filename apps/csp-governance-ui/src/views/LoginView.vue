@@ -177,7 +177,7 @@
       :visible="!!pending"
       :title="
         pending && pending.status === 'pending_approval'
-          ? '註冊 · 等待核准'
+          ? '已註冊 · 等待核准'
           : '註冊 · 完成資料'
       "
       width="480px"
@@ -218,10 +218,12 @@
           ⏳ {{ pending.message }}
         </p>
         <p class="login__legal">
-          {{ pending.display_name }} ({{ pending.employee_id }}) — 一旦管理員核准，下次刷卡即可登入。
+          {{ pending.display_name }} ({{ pending.employee_id }}) — 目前狀態：已註冊，等待核准。
         </p>
         <!-- 「等核准」但沒說去問誰＝這一頁最大的死路。有公告就顯示公告，
-             沒有就顯示保底窗口說明（src/utils/approvalContact.js）。 -->
+             沒有就顯示保底窗口說明（src/utils/approvalContact.js）。
+             公告走 /api/banners/public：這一頁的讀者還沒有帳號，需要登入的
+             端點對他們永遠是 401。 -->
         <p class="login__approval-contact" :class="`is-${approvalNotice.level}`">
           {{ approvalNotice.text }}
         </p>
@@ -289,7 +291,7 @@ import {
   listPublicAuthProviders,
   register as registerApi,
 } from '../api/auth'
-import { listActiveBanners } from '../api/banners'
+import { listPublicBanners } from '../api/banners'
 import { approvalContactNotice } from '../utils/approvalContact'
 import {
   CARD_COMPONENT_ORIGIN,
@@ -383,16 +385,16 @@ const oidcProviders = computed(() =>
 )
 
 // 等待核准畫面的「去問誰」。沿用既有的公告橫幅，不另建設定機制。
-const activeBanners = ref([])
-const approvalNotice = computed(() => approvalContactNotice(activeBanners.value))
+const publicBanners = ref([])
+const approvalNotice = computed(() => approvalContactNotice(publicBanners.value))
 
-async function fetchActiveBanners() {
+async function fetchPublicBanners() {
   try {
-    const { data } = await listActiveBanners()
-    activeBanners.value = Array.isArray(data) ? data : []
+    const { data } = await listPublicBanners()
+    publicBanners.value = Array.isArray(data) ? data : []
   } catch {
-    // 未登入時這支端點會回 401 —— 那是正常路徑，不是錯誤：直接走保底文案。
-    activeBanners.value = []
+    // 端點掛了 / 網路斷了 —— 不讓登入頁空白，直接走保底文案。
+    publicBanners.value = []
   }
 }
 
@@ -407,7 +409,7 @@ async function fetchProviders() {
 
 onMounted(() => {
   fetchProviders()
-  fetchActiveBanners()
+  fetchPublicBanners()
   document.addEventListener('keydown', handleHotkey)
 })
 

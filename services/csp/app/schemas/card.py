@@ -47,6 +47,20 @@ class CardVerifyRequest(BaseModel):
 
 # ─── Pending registration / approval (branch SSO) ─────────────────────────────
 
+# 刷完卡、還沒被核准的人讀到的那一句話。放在這裡而不是各 endpoint 寫死，是因為
+# ``pending_approval`` 有兩條路會回它（``/card/verify`` 與
+# ``/card/complete-registration``），而那是**同一個處境**：已經登記到了、不用再
+# 做任何事、等管理員點頭。兩邊各寫一份的話，改一邊忘了改另一邊，同一個人在同一
+# 天的兩個畫面上會讀到兩種說法，還會以為自己的狀態變了。
+#
+# 文案要回答的是使用者當下真正在問的兩件事：「我到底登記到了沒有」、「還要不要
+# 再做什麼」。原本的「註冊資料已記錄，請等待管理員核准」只答了第二件事的一半。
+# ``pending_registration`` 則相反 —— 他還沒登記完，文案不可以說他已完成註冊。
+CARD_PENDING_REGISTRATION_MESSAGE = "尚未完成註冊：請選擇您所屬的單位並送出。"
+CARD_PENDING_APPROVAL_MESSAGE = (
+    "您已完成註冊，正在等待管理員核准；核准後直接刷卡即可登入，不需要再做任何事。"
+)
+
 
 class CardPendingResponse(BaseModel):
     """``POST /api/auth/card/verify`` 在 user 尚未核准時的回應 (HTTP 202)。
