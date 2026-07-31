@@ -74,4 +74,12 @@ describe("評分挑選器", () => {
     expect(screen.getByTestId("rating-score-picker")).toBeTruthy();
     expect(screen.queryByTestId("rating-score-3").getAttribute("aria-pressed")).not.toBe("true");
   });
+
+  it("要跟操作列一起淡出 —— 否則分數那列會變成沒有上下文的孤兒", () => {
+    renderBubble({ rating: "up" }, vi.fn());
+    // .anila-msg-actions 的 opacity 由 index.html 控制:平常 0,
+    // 滑到訊息上或鍵盤 focus 進來才 1。挑選器必須掛同一個 class。
+    const picker = screen.getByTestId("rating-score-picker");
+    expect(picker.className.split(/\s+/)).toContain("anila-msg-actions");
+  });
 });

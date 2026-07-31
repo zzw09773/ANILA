@@ -1159,6 +1159,10 @@ export const MessageBubble = ({
       {!msg.streaming && rating && !classified && typeof onRate === "function" && scoreChoices.length > 0 && (
         <div
           data-testid="rating-score-picker"
+          // 跟操作列同一個 class,所以滑走時一起淡出。少了它,分數那列會變成
+          // 孤兒:上面的複製/重新產生都不見了,只剩「有多有用?」浮在訊息下面。
+          // `:focus-within` 讓鍵盤操作時仍然看得到,不會按到看不見的東西。
+          className="anila-msg-actions"
           style={{
             marginTop: 8, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
           }}
