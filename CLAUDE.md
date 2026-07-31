@@ -49,18 +49,31 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,P
 - csp 啟動要求 secrets 非 dev 預設值(`startup_security.py`),缺 JWT keypair → JWKS 500、登入炸;keypair 產到 `./secrets`(compose 掛 `:ro`)。
 - 本機起正式 compose 用**獨立 project 名**(如 `-p anila-restart`),避免撞舊 stack 的網路/volume 名。
 
-## 4. 當前快照(2026-07-31 凌晨,會變,動前核對)
+## 4. 當前快照(2026-08-01 凌晨,會變,動前核對)
 
-**細節看 `PLAN.md` 的〈現在在哪裡〉**——這裡只留每次 session 開頭必須知道的。
+**細節看 `PLAN.md` 的〈現在在哪裡〉、教訓看 `docs/HANDOFF-2026-08-01.md`**——這裡只留每次 session 開頭必須知道的。
 
-- alembic head = **`r1_0024`**。本機 `-p anila-restart` 12 容器全綠,三個入口(`/`、`/anila/`、`/anilalm/`)都通。
-- **7/30–7/31 一夜合併部署 46 包**:P4 **除 4.4/4.5 外**全關、P3 除 SMTP 外全關、OE-1～OE-4/OW/G9/D1 全關、
-  時區、連線池、串流錯誤可見、假綠燈、配色 AA、備份含還原演練、壓力測試、ASR/FLUX/心智圖撿回。
-- ⚠ **`.15` 尚未部署過任何一項**。本機是唯一驗證環境。
-- **待裁決集中在 `docs/OWNER-QUESTIONS.md`**(11 題,7 題已答),**不要重問**。
+- alembic head = **`r1_0031`**。本機 `-p anila-restart` **15 容器**,五個入口
+  (`/`、`/anila/`、`/anilalm/`、`/asr/health`、`/router/health`)都通。
+- 測試:csp **1431 passed / 0 failed**、anila-shell **366 passed**。
+  ⚠ 那個「26 個紅燈」的舊基準是**錯的數字**,2026-07-31 已修好並釘住(見 `services/csp/tests/README.md`)。
+- **7/30–8/01 共合併部署 73 包**。P4 全關、P2 只剩 2.1,P3 除 SMTP 寄送外全關。
+- ⚠ **`.15` 尚未部署過任何一項**。本機是唯一驗證環境,**P5.5 整段未開始**。
+- **待裁決集中在 `docs/OWNER-QUESTIONS.md`**(17 題,**未答的排在最前面**),**不要重問**。
   規則:遇到需要裁決的事**不停下來等**,記進去、用最保守假設繼續、註明假設。
-- **`wt/core-opt` 與 `wt/leak` 刻意未合併**——擁有者要親自體驗 anila-core 後才決定。
-- 其他文件:`docs/FAKE-CONTROLS.md`(26 項假控制項)、`docs/UX-IDEAS.md`、`docs/designs/`。
+- **氣隙防護盤點報告在 `~/anila-private-audits/`,刻意不在 repo**(寫了尚未修補的弱點位置,repo 是 PUBLIC)。
+- 其他文件:`docs/FAKE-CONTROLS.md`(30 項)、`docs/UX-IDEAS.md`、`docs/designs/`、
+  `docs/TOMORROW.md`(給擁有者的清單)。
+
+### 本機新增的環境事實(2026-07-31)
+
+- **語音輸入活體可用**:`cht/` mock 讀卡機 + `asr` profile。
+  `up -d` **必須帶 CPU overlay**,否則 nvidia driver 錯誤會中斷整批啟動:
+  `docker compose -p anila-restart -f compose.yaml -f infra/compose/asr-cpu.yml --profile asr up -d`
+- **卡登本機是開的**(mock 讀卡機 + 執行時生成的測試 CA,`secrets/dev-card-ca/`,gitignored)。
+  `.env` 那四個相關變數**內網一個都不能帶過去**。
+- **GPU 沒接進 Docker**(`nvidia-container-toolkit` 未裝),語音跑 CPU `small`,中文有同音錯字。
+- **`.well-known` 經 nginx 是 403**——`location ~ /\.` 的隱藏檔規則誤傷,不是政策。P2.1 的前置。
 
 ### 這台機器的操作陷阱(每一條都今晚踩過)
 
