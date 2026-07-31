@@ -34,6 +34,9 @@ export interface Collection {
   chunk_count: number
   bytes_stored: number
   created_by: number
+  /** Product surface that created the row; null = pre-origin legacy. */
+  origin?: string | null
+  classification_level?: string
   created_at: string
   updated_at: string
 }

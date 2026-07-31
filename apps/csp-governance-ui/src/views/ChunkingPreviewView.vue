@@ -213,6 +213,14 @@
         <TermField label="描述" optional>
           <textarea v-model.trim="commitForm.description" rows="2" class="term-textarea" maxlength="2000" />
         </TermField>
+        <TermField
+          label="密等"
+          hint="建立時選定；只能往上調，不能自行降級。預設無機密。"
+        >
+          <select v-model="commitForm.classification_level" class="term-select">
+            <option v-for="lvl in CLASSIFICATION_LEVELS" :key="lvl" :value="lvl">{{ lvl }}</option>
+          </select>
+        </TermField>
         <TermField :label="tokenLabel" :hint="tokenHint">
           <input v-model.number="commitForm.maxTokens" type="number" class="term-input" min="64" max="8192" />
         </TermField>
@@ -250,7 +258,10 @@ const strategies = ref([])  // catalogue from /strategies endpoint
 const expandedCount = reactive({})
 
 const chosen = ref(null)
-const commitForm = ref({ name: '', description: '', maxTokens: 1024 })
+const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
+const commitForm = ref({
+  name: '', description: '', maxTokens: 1024, classification_level: '無機密',
+})
 const commitError = ref('')
 const committing = ref(false)
 
@@ -430,6 +441,7 @@ function pickStrategy(entry) {
     name: '',
     description: '',
     maxTokens: defaultTokenForStrategy(entry),
+    classification_level: '無機密',
   }
   commitError.value = ''
 }
@@ -481,6 +493,7 @@ async function commitCreate() {
       name: commitForm.value.name,
       description: commitForm.value.description || null,
       chunking_config: { strategy: s, params },
+      classification_level: commitForm.value.classification_level || '無機密',
     })
     // Drop user back onto the new collection's detail page so they
     // can upload the real corpus there.

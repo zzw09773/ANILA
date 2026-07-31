@@ -12,10 +12,16 @@ to Sprint 2 alongside the worker.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.schemas.base import ApiResponseModel
+from app.schemas.contracts.classification import ClassificationLevel
+
+# Product surfaces that may own a collection shelf. Mirrors the attic
+# provenance vocabulary and conversations' ``anilalm`` tag. NULL on
+# the row means pre-origin legacy (see migration r1_0029).
+CollectionOrigin = Literal["csp", "anilalm"]
 
 
 # ── Chunking config ─────────────────────────────────────────────────────────
@@ -53,6 +59,11 @@ class CollectionCreate(BaseModel):
     Sprint 4: ``agent_id`` is gone. ``created_by`` is auto-set to the
     authenticated user; collections are user-owned and reusable across
     any agent backend that points at them.
+
+    ``classification_level`` defaults to 無機密 — one select on the form,
+    not a workflow. ``origin`` tags the creating product surface
+    (``csp`` / ``anilalm``); omit only for legacy callers that accept
+    dual-surface visibility.
     """
 
     name: str = Field(..., min_length=1, max_length=200)
@@ -76,6 +87,27 @@ class CollectionCreate(BaseModel):
             "0015. Native widths above 4000 are truncated by the worker."
         ),
     )
+    classification_level: str = Field(
+        default="無機密",
+        description="四級分類：無機密 < 營業秘密 < 密 < 機密。預設無機密。",
+    )
+    origin: Optional[CollectionOrigin] = Field(
+        default=None,
+        description=(
+            "Creating product surface: 'csp' (governance) or 'anilalm'. "
+            "NULL = legacy dual-surface visibility."
+        ),
+    )
+
+    @field_validator("classification_level")
+    @classmethod
+    def _validate_classification_level(cls, value: str) -> str:
+        try:
+            return ClassificationLevel.from_storage(value).to_storage()
+        except ValueError as exc:
+            raise ValueError(
+                "classification_level 必須是四級之一：無機密、營業秘密、密、機密"
+            ) from exc
 
 
 class CollectionUpdate(BaseModel):
@@ -121,6 +153,8 @@ class CollectionResponse(ApiResponseModel):
     chunk_count: int
     bytes_stored: int
     created_by: int
+    origin: str | None = None
+    classification_level: str = "無機密"
     created_at: datetime
     updated_at: datetime
 

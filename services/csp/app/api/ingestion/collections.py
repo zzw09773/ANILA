@@ -20,14 +20,17 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.ingestion import IngestionCollection
 from app.models.user import User
+from app.schemas.contracts.classification import ClassificationLevel
 from app.schemas.ingestion import (
     CollectionCreate,
     CollectionResponse,
@@ -38,6 +41,10 @@ from app.services.auth_service import get_current_user, is_admin_tier
 
 router = APIRouter(tags=["Ingestion / Collections"])
 logger = logging.getLogger(__name__)
+
+# Allowed product-surface tags (migration r1_0029 CHECK). Same vocabulary
+# as conversations' ANILALM tag; CSP governance uses ``csp``.
+_COLLECTION_ORIGINS = frozenset({"csp", "anilalm"})
 
 
 # ── Authorisation helper ────────────────────────────────────────────────────
@@ -119,6 +126,23 @@ def create_collection(
             # gate before an admin designates a platform embedding.
             embedding_model = "nvidia/NV-embed-V2"
 
+    # Schema validator already normalised the label; re-parse so a future
+    # schema drift cannot store a string the latch / bind rule reject.
+    try:
+        level = ClassificationLevel.from_storage(payload.classification_level)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="classification_level 必須是四級之一：無機密、營業秘密、密、機密",
+        ) from exc
+
+    origin = payload.origin or None
+    if origin is not None and origin not in _COLLECTION_ORIGINS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="origin 必須是 'csp' 或 'anilalm'",
+        )
+
     coll = IngestionCollection(
         name=payload.name,
         description=payload.description,
@@ -130,6 +154,8 @@ def create_collection(
         chunk_count=0,
         bytes_stored=0,
         created_by=current_user.id,
+        origin=origin,
+        classification_level=level.to_storage(),
     )
     db.add(coll)
     try:
@@ -152,7 +178,12 @@ def create_collection(
         action="ingestion_collection_create",
         resource_type="ingestion_collection",
         resource_id=coll.id,
-        metadata={"name": payload.name, "created_by": current_user.id},
+        metadata={
+            "name": payload.name,
+            "created_by": current_user.id,
+            "origin": origin,
+            "classification_level": level.to_storage(),
+        },
     )
     return CollectionResponse.model_validate(coll)
 
@@ -171,6 +202,20 @@ def list_collections(
             "預設只列自己的 collections；admin 設 False 可看全部"
         ),
     ),
+    origin: Optional[str] = Query(
+        None,
+        description=(
+            "只列此產品面建立的知識庫（csp / anilalm）。"
+            "NULL origin 的舊列仍會一併回傳，避免既有語料從貨架消失。"
+        ),
+    ),
+    exclude_origin: Optional[str] = Query(
+        None,
+        description=(
+            "排除此產品面。NULL origin 舊列保留。"
+            "與 origin 互斥；語意比照 /api/conversations。"
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[CollectionResponse]:
@@ -181,11 +226,31 @@ def list_collections(
       is rejected for non-admins).
     - admin: own collections by default; pass ``owned_only=false`` to
       see every collection on the platform.
+
+    Origin filter (r1_0029): same shape as conversations — CSP governance
+    passes ``origin=csp``, ANILALM passes ``origin=anilalm``. Pre-origin
+    rows (``origin IS NULL``) stay visible under every surface so an
+    existing corpus is never orphaned.
     """
     if not owned_only and not is_admin_tier(current_user):
         raise HTTPException(
             status_code=403,
             detail="owned_only=false requires admin role",
+        )
+    if origin is not None and exclude_origin is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="origin and exclude_origin are mutually exclusive",
+        )
+    if origin is not None and origin not in _COLLECTION_ORIGINS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="origin 必須是 'csp' 或 'anilalm'",
+        )
+    if exclude_origin is not None and exclude_origin not in _COLLECTION_ORIGINS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="exclude_origin 必須是 'csp' 或 'anilalm'",
         )
 
     q = db.query(IngestionCollection)
@@ -193,6 +258,20 @@ def list_collections(
         q = q.filter(IngestionCollection.created_by == current_user.id)
     if not include_archived:
         q = q.filter(IngestionCollection.status == "active")
+    if origin is not None:
+        q = q.filter(
+            or_(
+                IngestionCollection.origin == origin,
+                IngestionCollection.origin.is_(None),
+            )
+        )
+    elif exclude_origin is not None:
+        q = q.filter(
+            or_(
+                IngestionCollection.origin.is_(None),
+                IngestionCollection.origin != exclude_origin,
+            )
+        )
     rows = q.order_by(IngestionCollection.id).all()
     return [CollectionResponse.model_validate(r) for r in rows]
 
