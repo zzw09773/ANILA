@@ -173,3 +173,7 @@ n8n_DATA
 # ── 模型權重 (models/model = ANILA_HF_DIR 預設;權重數百 GB 不入 git) ────
 models/model/*
 !models/model/.gitkeep
+
+# 跑測試會在這裡留下附件檔（每次幾個 byte，但這是使用者上傳的落地路徑）。
+# 執行期資料不是原始碼；PUBLIC repo，不要讓任何一份真的附件跟著 commit 出去。
+/data/
