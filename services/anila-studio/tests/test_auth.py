@@ -278,6 +278,97 @@ def test_invalid_sub_returns_401(client, patched_deps, rsa_keypair):
     assert resp.status_code == 401
 
 
+# ── 撤銷語意:走真的 RevocationCache,不用 _FakeCache ────────────────────
+#
+# ⚠ 上面所有 revocation 測試用的是 `_FakeCache`,它的 `is_revoked` 是測試自己
+# 寫的一行 set lookup —— 那測不到生產環境真正做比較的那一行。2026-07-31 的
+# 永久鎖死案就是這樣活下來的。以下兩條一律注入**真的** `RevocationCache`,
+# 而且用它真正的事件處理函式 `_handle_message` 灌資料(就是 csp 發到 Redis
+# 的那個 payload),不去戳 `_cache`。
+
+
+@pytest.fixture
+def real_cache(monkeypatch, rsa_keypair):
+    """真的 RevocationCache(不連 Redis),接進 auth.py;JWKS 仍然替身。"""
+    import json
+
+    from app.services import jwks_client as jwks_mod
+    from app.services import revocation_cache as rev_mod
+
+    async def fake_get_public_key(kid: str):
+        if kid != "anila-v1":
+            raise jwks_mod.JwksKeyNotFoundError(kid)
+        return rsa_keypair["public_key_obj"]
+
+    monkeypatch.setattr(jwks_mod, "get_public_key", fake_get_public_key)
+
+    cache = rev_mod.RevocationCache()
+    cache._ready = True
+    monkeypatch.setattr(rev_mod, "get_revocation_cache", lambda: cache)
+
+    def revoke(user_id: int, revoked_at_version: int) -> None:
+        cache._handle_message(
+            json.dumps(
+                {
+                    "user_id": user_id,
+                    "revoked_at_version": revoked_at_version,
+                    "ts": "2026-07-31T00:00:00Z",
+                    "schema_version": 1,
+                }
+            )
+        )
+
+    cache.revoke = revoke  # type: ignore[attr-defined]
+    return cache
+
+
+def test_password_change_kills_the_old_token_and_spares_the_new_one(
+    client, real_cache, rsa_keypair
+):
+    """驗收條件 1 的 HTTP 版:同一條路徑上,舊的必須 401、新的必須 200。
+
+    csp 改密碼流程:token_version 0 → 1,寫下 revoked_at_version=1,並用
+    tv=1 簽發新權杖。
+    """
+    old = _sign_jwt(rsa_keypair["private_pem"], sub="42", token_version=0)
+    real_cache.revoke(42, 1)
+    new = _sign_jwt(rsa_keypair["private_pem"], sub="42", token_version=1)
+
+    assert client.get(
+        "/whoami", headers={"Authorization": f"Bearer {old}"}
+    ).status_code == 401
+
+    resp = client.get("/whoami", headers={"Authorization": f"Bearer {new}"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token_version"] == 1
+
+
+def test_revoked_message_is_actionable_and_distinct_from_expired(
+    client, real_cache, rsa_keypair
+):
+    """被撤銷與已過期是兩件事,解法也不同 —— 訊息不能長一樣。"""
+    import time
+
+    real_cache.revoke(42, 3)
+    revoked = _sign_jwt(rsa_keypair["private_pem"], sub="42", token_version=2)
+    expired = _sign_jwt(
+        rsa_keypair["private_pem"], sub="42", token_version=3,
+        exp=int(time.time()) - 60,
+    )
+
+    revoked_detail = client.get(
+        "/whoami", headers={"Authorization": f"Bearer {revoked}"}
+    ).json()["detail"]
+    expired_detail = client.get(
+        "/whoami", headers={"Authorization": f"Bearer {expired}"}
+    ).json()["detail"]
+
+    assert revoked_detail != expired_detail
+    assert "撤銷" in revoked_detail
+    assert "管理員" in revoked_detail   # 重登仍失敗時的下一步
+    assert "過期" in expired_detail
+
+
 def test_get_bearer_token_dependency_returns_raw_token(patched_deps, rsa_keypair):
     """Bearer dependency returns the bearer string for csp_client passthrough."""
     from app.auth import get_bearer_token

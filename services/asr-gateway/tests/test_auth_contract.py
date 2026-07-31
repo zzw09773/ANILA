@@ -24,6 +24,7 @@ close 4401 —— 因為 `authenticate()` 驗的是一份這棵樹裡沒有任�
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -121,6 +122,25 @@ def cache(monkeypatch) -> RevocationCache:
     return c
 
 
+def _revoke(cache: RevocationCache, *, user_id: int, revoked_at_version: int) -> None:
+    """把一次撤銷灌進 cache —— 走真的事件處理路徑,不去戳 `_cache`。
+
+    餵進去的字串就是 csp 發到 Redis channel 的 payload
+    (`services/csp/app/services/token_revocation_publisher.py::_revocation_message`)。
+    `revoked_at_version` 是 csp 把 `users.token_version` **撞完之後**的值。
+    """
+    cache._handle_message(
+        json.dumps(
+            {
+                "user_id": user_id,
+                "revoked_at_version": revoked_at_version,
+                "ts": "2026-07-31T00:00:00Z",
+                "schema_version": 1,
+            }
+        )
+    )
+
+
 @pytest.fixture
 def jwks(monkeypatch):
     """把 kid 換成公鑰。回傳的是測試簽章用的那把真公鑰。"""
@@ -178,17 +198,18 @@ async def test_expired_token_rejected(jwks, cache):
 async def test_revoked_token_rejected(jwks, cache):
     """驗收條件 2c:被撤銷。
 
-    用真的 cache 語意:csp 把 user 7 的 token_version 撞到 1,依 `is_revoked`
-    的 `revoked_at_version >= token_version` 規則,tv=1 的權杖即失效。
+    csp 把 user 7 的 token_version 從 1 撞到 2,並發布
+    `revoked_at_version=2`(撞**完之後**的值)。依 `is_revoked` 的
+    `token_version < revoked_at_version` 規則,撞之前簽出的 tv=1 即失效。
     """
-    cache._cache[7] = 1
+    _revoke(cache, user_id=7, revoked_at_version=2)
     with pytest.raises(auth_mod.AuthError):
         await auth_mod.authenticate(csp_access_token(user_id=7, token_version=1))
 
 
 async def test_revocation_is_scoped_to_the_revoked_user(jwks, cache):
     """撤銷不能變成「撤一個等於撤全部」,也不能撤了等於沒撤。"""
-    cache._cache[7] = 1
+    _revoke(cache, user_id=7, revoked_at_version=2)
     # 別人不受影響
     assert (await auth_mod.authenticate(csp_access_token(user_id=8))).id == 8
     # 同一個 user 換發的新權杖(tv 更高)必須能用
@@ -196,6 +217,133 @@ async def test_revocation_is_scoped_to_the_revoked_user(jwks, cache):
         csp_access_token(user_id=7, token_version=2)
     )
     assert identity.token_version == 2
+
+
+# ── 2.5 撤銷語意的邊界(2026-07-31 永久鎖死案的迴歸防線)────────────────
+#
+# 這一節每一條都走真的 `authenticate()` + 真的 `RevocationCache.is_revoked`,
+# 灌資料一律用 `_revoke()`(真的 `_handle_message`)。不准用替身 cache:
+# 那樣測到的是測試自己寫的那行比較,不是服務真的用的那行。
+
+
+async def test_revocation_kills_old_token_and_spares_the_replacement(jwks, cache):
+    """驗收條件 1:兩半必須同時成立,少一半都不算修好。
+
+    使用者改密碼:csp token_version 4 → 5,寫下 revoked_at_version=5,並用
+    tv=5 簽發新權杖。舊的必須死,新的必須活。
+
+    修好之前,後半會失敗 —— 那正是使用者改完密碼後語音再也不能用的原因。
+    """
+    uid = 500
+    _revoke(cache, user_id=uid, revoked_at_version=5)
+
+    with pytest.raises(auth_mod.AuthError):
+        await auth_mod.authenticate(
+            csp_access_token(user_id=uid, token_version=4)
+        )
+
+    identity = await auth_mod.authenticate(
+        csp_access_token(user_id=uid, token_version=5)
+    )
+    assert identity.token_version == 5, "撤銷後重新登入拿到的權杖必須被接受"
+
+
+async def test_boundary_token_at_exactly_the_revocation_version_is_accepted(
+    jwks, cache
+):
+    """驗收條件 2:`tv == revoked_at_version` 落在「活」的那一側。
+
+    因為 `revoked_at_version` 依定義就是 csp 撞完 `users.token_version` 之後
+    的值,而 `create_tokens` 拿同一個數字當新權杖的 `tv` —— 帶著這個 tv 的
+    權杖,是這次撤銷**發出來的**那張,不是它要殺的那張。
+    """
+    uid = 501
+    _revoke(cache, user_id=uid, revoked_at_version=5)
+
+    with pytest.raises(auth_mod.AuthError):     # 更舊 → 死
+        await auth_mod.authenticate(
+            csp_access_token(user_id=uid, token_version=4)
+        )
+    assert (                                     # 邊界 → 活
+        await auth_mod.authenticate(
+            csp_access_token(user_id=uid, token_version=5)
+        )
+    ).token_version == 5
+    assert (                                     # 更新 → 活
+        await auth_mod.authenticate(
+            csp_access_token(user_id=uid, token_version=6)
+        )
+    ).token_version == 6
+
+
+async def test_second_revocation_kills_the_token_issued_between_them(jwks, cache):
+    """驗收條件 3:安全那一半沒被放寬。
+
+    改密碼(→5)之後又被管理員強制登出(→6):
+    * 第一次之前的 tv=4:兩次之後仍然死,不會因為又撤一次就復活。
+    * 兩次**之間**的 tv=5:必須被第二次殺掉,否則「再撤一次」等於沒用。
+    * 第二次之後的 tv=6:活。
+    """
+    uid = 502
+    _revoke(cache, user_id=uid, revoked_at_version=5)
+    _revoke(cache, user_id=uid, revoked_at_version=6)
+
+    for dead_tv in (4, 5):
+        with pytest.raises(auth_mod.AuthError):
+            await auth_mod.authenticate(
+                csp_access_token(user_id=uid, token_version=dead_tv)
+            )
+
+    assert (
+        await auth_mod.authenticate(
+            csp_access_token(user_id=uid, token_version=6)
+        )
+    ).token_version == 6
+
+
+async def test_revoked_message_is_actionable_and_distinct_from_expired(jwks, cache):
+    """被撤銷 ≠ 已過期:解法不同,訊息就不能長一樣。
+
+    這句同時是 WebSocket close reason,RFC 6455 限 123 bytes —— 一併驗長度,
+    否則 close frame 送不出去,使用者只會看到連線莫名斷掉。
+    """
+    uid = 503
+    _revoke(cache, user_id=uid, revoked_at_version=3)
+
+    with pytest.raises(auth_mod.AuthError) as revoked:
+        await auth_mod.authenticate(
+            csp_access_token(user_id=uid, token_version=2)
+        )
+    with pytest.raises(auth_mod.AuthError) as expired:
+        await auth_mod.authenticate(
+            csp_access_token(user_id=uid, token_version=3, expires_in=-60)
+        )
+
+    revoked_msg, expired_msg = str(revoked.value), str(expired.value)
+    assert revoked_msg != expired_msg
+    assert "撤銷" in revoked_msg
+    assert "管理員" in revoked_msg          # 重登仍失敗時的下一步
+    assert "過期" in expired_msg
+    assert len(revoked_msg.encode("utf-8")) <= 123, "close reason 會被截斷"
+
+
+async def test_long_lived_session_recheck_follows_the_same_boundary(jwks, cache):
+    """`is_still_valid` 是長連線每 N 秒重查用的 —— 它必須和握手同一條線。
+
+    否則會出現「握手放行、下一次重查踢掉」的鬼打牆:麥克風按得下去,講兩句
+    就斷。
+    """
+    uid = 504
+    _revoke(cache, user_id=uid, revoked_at_version=5)
+
+    stale = auth_mod.CurrentUserIdentity(
+        id=uid, username="tester", role="user", token_version=4
+    )
+    fresh = auth_mod.CurrentUserIdentity(
+        id=uid, username="tester", role="user", token_version=5
+    )
+    assert await auth_mod.is_still_valid(stale) is False
+    assert await auth_mod.is_still_valid(fresh) is True
 
 
 async def test_no_token_at_all_is_rejected():
@@ -273,7 +421,8 @@ async def test_is_still_valid_tracks_revocation_midsession(jwks, cache):
     identity = await auth_mod.authenticate(csp_access_token())
     assert await auth_mod.is_still_valid(identity) is True
 
-    cache._cache[identity.id] = identity.token_version
+    # 講話講到一半被管理員撤銷:csp 把 token_version 撞到 identity.tv + 1。
+    _revoke(cache, user_id=identity.id, revoked_at_version=identity.token_version + 1)
     assert await auth_mod.is_still_valid(identity) is False
 
 

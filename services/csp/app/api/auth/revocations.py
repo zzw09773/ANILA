@@ -60,7 +60,13 @@ def revoke_user_tokens(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Admin/owner force-revokes all outstanding JWTs for one user."""
+    """Admin/owner force-revokes all outstanding JWTs for one user.
+
+    ⚠ Same contract as ``password.py::_commit_token_revocation``:
+    ``revoked_at_version`` is the **post-bump** value — the lowest version
+    still valid. Consumers reject ``tv < revoked_at_version``. The user is
+    NOT locked out; they log in again and get a token at the new version.
+    """
     user = db.get(User, request.user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="使用者不存在")

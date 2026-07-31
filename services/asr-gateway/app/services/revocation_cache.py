@@ -1,5 +1,5 @@
 """⚠⚠ VENDORED —— 本檔是 `services/anila-studio/app/services/revocation_cache.py`
-的逐位元組副本(vendor 於 ASR reclaim 2026-07-30,來源 md5 3b94421bb3ff8aadb5f0d4c926898e42)。
+的逐位元組副本(vendor 於 ASR reclaim 2026-07-30,來源 md5 612e04435bd0f543b98099c7d052ef59)。
 
 **改這裡就必須同步改 studio 那份,反之亦然。** 這是 JWT 信任錨的一部分:
 兩份分歧 = 被撤銷的權杖在一個服務被擋、在另一個服務仍然通行。
@@ -184,11 +184,26 @@ class RevocationCache:
         """True iff the JWT bearing ``(user_id, token_version)`` has
         been revoked by csp.
 
-        Rule: cached ``revoked_at_version >= token_version`` ⇒ revoked.
-        The ``>=`` is intentional and matches csp's invariant — when
-        csp bumps to version N, every token signed at N-1 or earlier
-        is invalidated, AND the bump represents "tokens up to and
-        including N are now compromised" for the hard-revoke flows.
+        **Rule: cached ``token_version < revoked_at_version`` ⇒ revoked.**
+
+        ``revoked_at_version`` is defined by the producer as the value of
+        ``users.token_version`` *after* the bump — i.e. the lowest version
+        that is still valid, not the highest version that is dead. csp
+        stamps that same number into the ``tv`` claim of every token it
+        mints from then on (``auth_service.create_tokens``), so:
+
+        * token signed before the bump → ``tv < revoked_at_version`` → dead.
+        * token signed after the bump  → ``tv == revoked_at_version`` → alive.
+
+        This mirrors csp's own authority check, which accepts a token iff
+        ``tv == users.token_version`` (``auth_service._load_user_from_payload``);
+        anything strictly below the newest revocation point is stale there
+        too. ⚠ 2026-07-31: this comparison used to be ``>=``, which rejected
+        the very tokens the bump had just issued — changing your password or
+        being logged out by an admin locked you out of this service
+        permanently. If you are tempted to "restore" the ``>=``, the producer
+        would first have to start publishing ``token_version - 1``; see
+        ``services/csp/app/api/auth/password.py::_commit_token_revocation``.
 
         A cache miss means we have no record of revocation for that
         user, so the token is considered valid. (TTL expiry yields a
@@ -197,7 +212,7 @@ class RevocationCache:
         revoked_at_version = self._cache.get(user_id)
         if revoked_at_version is None:
             return False
-        return revoked_at_version >= token_version
+        return token_version < revoked_at_version
 
     async def start(self, app: Any) -> None:
         """Cold-start sync + subscriber spinup, run once on lifespan.

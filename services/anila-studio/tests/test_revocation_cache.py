@@ -6,12 +6,17 @@ for the publisher side).
 
 Contract pinned by these tests:
 
-* ``is_revoked(user_id, token_version)`` returns True iff the cached
-  ``revoked_at_version`` for that user is ``>=`` the supplied
-  ``token_version``. The ``>=`` boundary matters — csp bumps
-  ``token_version`` to N to invalidate everything signed at N-1 or
-  before, AND the JWT carrying tv=N itself (because the bump happens
-  pre-issuance for hard revoke flows).
+* ``is_revoked(user_id, token_version)`` returns True iff the supplied
+  ``token_version`` is **strictly less than** the cached
+  ``revoked_at_version`` for that user.
+
+  ⚠ 2026-07-31: this block used to claim ``>=``, and the production code
+  implemented it. csp publishes ``revoked_at_version`` = the user's
+  ``token_version`` AFTER the bump, which is also the ``tv`` stamped into
+  every token issued from then on — so ``>=`` rejected the replacement
+  tokens too and the account was locked out of this service forever.
+  The boundary case (``tv == revoked_at_version``) belongs on the ALIVE
+  side; see ``test_boundary_token_at_exactly_the_revocation_version``.
 
 * Cache misses are ``False`` (no revocation on record).
 
@@ -181,9 +186,9 @@ async def test_publish_event_updates_cache(
     )
     assert fired, "subscriber never picked up the published event"
 
-    # Now is_revoked must reflect the >= rule.
+    # Now is_revoked must reflect the "strictly older is dead" rule.
     assert await started_cache.is_revoked(user_id, token_version=6) is True
-    assert await started_cache.is_revoked(user_id, token_version=7) is True
+    assert await started_cache.is_revoked(user_id, token_version=7) is False
     assert await started_cache.is_revoked(user_id, token_version=8) is False
 
 
@@ -220,10 +225,12 @@ async def test_cold_start_seeds_cache_from_csp(fake_redis_factory, respx_mock):
     await cache.start(app=None)
     try:
         assert cache.ready is True
-        assert await cache.is_revoked(1, token_version=3) is True
+        assert await cache.is_revoked(1, token_version=2) is True
+        assert await cache.is_revoked(1, token_version=3) is False
         assert await cache.is_revoked(2, token_version=4) is True
         assert await cache.is_revoked(2, token_version=6) is False
-        assert await cache.is_revoked(3, token_version=1) is True
+        assert await cache.is_revoked(3, token_version=0) is True
+        assert await cache.is_revoked(3, token_version=1) is False
         # User not in the cold-start set → not revoked.
         assert await cache.is_revoked(4, token_version=99) is False
     finally:
@@ -250,27 +257,112 @@ async def test_cold_start_failure_raises(fake_redis_factory, respx_mock):
 
 
 # ---------------------------------------------------------------------------
-# >= boundary
+# The revocation boundary — 這一節是 2026-07-31 鎖死案的迴歸防線
 # ---------------------------------------------------------------------------
 
 
-async def test_revoked_at_version_inclusive_boundary(started_cache, fake_redis_server):
-    """Revocation @ version=5 must block v4, v5 AND let v6 through."""
+async def _revoke(cache, server, user_id: int, revoked_at_version: int) -> None:
+    """Drive a revocation through the REAL pub/sub path and wait for it.
+
+    刻意不直接寫 ``cache._cache``:那樣就變成「測我剛剛塞進去的值」。這裡走
+    的是 csp 真的會發的那個 payload → 真的 subscriber → 真的 ``_handle_message``
+    → 真的 ``is_revoked`` 比較。
+    """
     await _publish(
-        fake_redis_server,
+        server,
         {
-            "user_id": 100,
-            "revoked_at_version": 5,
+            "user_id": user_id,
+            "revoked_at_version": revoked_at_version,
             "ts": datetime.now(timezone.utc).isoformat(),
             "schema_version": 1,
         },
     )
-    fired = await _wait_until(lambda: started_cache._cache.get(100) == 5)
-    assert fired
+    fired = await _wait_until(
+        lambda: cache._cache.get(user_id) == revoked_at_version
+    )
+    assert fired, "subscriber never picked up the published revocation"
 
-    assert await started_cache.is_revoked(100, token_version=4) is True
-    assert await started_cache.is_revoked(100, token_version=5) is True
-    assert await started_cache.is_revoked(100, token_version=6) is False
+
+async def test_revocation_kills_old_token_and_spares_the_replacement(
+    started_cache, fake_redis_server
+):
+    """驗收條件 1:兩半必須同時成立,少一半都不算修好。
+
+    情境就是使用者改密碼:
+    * 改密碼前手上的權杖 tv=4 —— 必須死。
+    * csp 把 token_version 撞到 5、寫下 revoked_at_version=5,並用 tv=5
+      發新權杖 —— 那張必須活。
+
+    修好之前,第二個 assert 會失敗(帳號被永久鎖在 studio 外面);把比較
+    改成「一律放行」的話,第一個 assert 會失敗(撤銷失效)。
+    """
+    uid = 100
+    old_token_version = 4          # 撤銷前手上那張
+    new_token_version = 5          # 撤銷這個動作本身發出來的那張
+
+    await _revoke(started_cache, fake_redis_server, uid, new_token_version)
+
+    assert await started_cache.is_revoked(uid, old_token_version) is True, (
+        "撤銷前簽發的權杖必須被拒 —— 這是撤銷機制存在的理由"
+    )
+    assert await started_cache.is_revoked(uid, new_token_version) is False, (
+        "撤銷後重新登入拿到的權杖必須被接受 —— 否則帳號被永久鎖死"
+    )
+
+
+async def test_boundary_token_at_exactly_the_revocation_version(
+    started_cache, fake_redis_server
+):
+    """驗收條件 2:``tv == revoked_at_version`` 落在「活」的那一側。
+
+    理由不是喜好問題,是生產者的定義:``revoked_at_version`` 是 csp 把
+    ``users.token_version`` **撞完之後**的值(見
+    ``services/csp/app/api/auth/password.py::_commit_token_revocation``),
+    而 ``create_tokens`` 就是拿同一個數字當新權杖的 ``tv``。所以帶著
+    ``tv == revoked_at_version`` 的權杖,定義上是這次撤銷**發出來的**那張,
+    不是它要殺的那張。它同時也對齊 csp 自己的權威判斷
+    (``tv == users.token_version`` 才算有效)。
+    """
+    uid = 101
+    await _revoke(started_cache, fake_redis_server, uid, 5)
+
+    assert await started_cache.is_revoked(uid, token_version=4) is True   # 更舊
+    assert await started_cache.is_revoked(uid, token_version=5) is False  # 邊界
+    assert await started_cache.is_revoked(uid, token_version=6) is False  # 更新
+
+
+async def test_old_token_stays_dead_and_second_revocation_kills_the_middle_one(
+    started_cache, fake_redis_server
+):
+    """驗收條件 3:安全那一半沒有被放寬。
+
+    連續兩次撤銷(改密碼 → 又被管理員強制登出):
+    * 第一次之前的 tv=4 —— 兩次之後仍然死。
+    * 兩次**之間**簽發的 tv=5 —— 必須被第二次殺掉,否則「再撤一次」等於沒用。
+    * 第二次之後的 tv=6 —— 活。
+    """
+    uid = 102
+
+    await _revoke(started_cache, fake_redis_server, uid, 5)
+    assert await started_cache.is_revoked(uid, token_version=4) is True
+
+    await _revoke(started_cache, fake_redis_server, uid, 6)
+
+    assert await started_cache.is_revoked(uid, token_version=4) is True, (
+        "第一次撤銷殺掉的權杖,不能因為又撤了一次就復活"
+    )
+    assert await started_cache.is_revoked(uid, token_version=5) is True, (
+        "兩次撤銷之間簽發的權杖必須被第二次殺掉"
+    )
+    assert await started_cache.is_revoked(uid, token_version=6) is False
+
+
+async def test_version_zero_user_is_not_pre_revoked(started_cache):
+    """從沒被撤銷過的使用者(``token_version`` 仍是 0)不能被誤判。
+
+    cache miss → False。這條擋的是「用 0 當哨兵值」那類重構。
+    """
+    assert await started_cache.is_revoked(999, token_version=0) is False
 
 
 # ---------------------------------------------------------------------------
@@ -290,15 +382,16 @@ async def test_ttl_expires_after_30_days(fake_redis_factory, empty_revocations_e
             # Force a value into the cache directly — we're testing TTL
             # semantics, not the subscriber path.
             cache._cache[123] = 9
-            assert await cache.is_revoked(123, token_version=9) is True
+            # tv=8 is strictly older than the revocation point → revoked.
+            assert await cache.is_revoked(123, token_version=8) is True
 
             # Just inside the TTL: still revoked.
             frozen.tick(timedelta(seconds=settings.REVOCATION_CACHE_TTL_SECONDS - 60))
-            assert await cache.is_revoked(123, token_version=9) is True
+            assert await cache.is_revoked(123, token_version=8) is True
 
             # Past the TTL: cache must miss → not revoked.
             frozen.tick(timedelta(seconds=120))
-            assert await cache.is_revoked(123, token_version=9) is False
+            assert await cache.is_revoked(123, token_version=8) is False
         finally:
             await cache.stop(app=None)
 
@@ -342,7 +435,9 @@ async def test_out_of_order_publish_keeps_max(started_cache, fake_redis_server):
 
     # Cache must still hold the max.
     assert started_cache._cache.get(uid) == 3
-    assert await started_cache.is_revoked(uid, token_version=3) is True
+    # tv=2 was issued before the v3 revocation → still dead. The stale v2
+    # event must not have narrowed the deny-list back down.
+    assert await started_cache.is_revoked(uid, token_version=2) is True
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +496,7 @@ async def test_unknown_schema_version_logs_warning_but_updates(
         fired = await _wait_until(lambda: started_cache._cache.get(uid) == 11)
         assert fired
 
-    assert await started_cache.is_revoked(uid, token_version=11) is True
+    assert await started_cache.is_revoked(uid, token_version=10) is True
     # A warning was emitted somewhere mentioning schema_version.
     assert any(
         "schema_version" in record.getMessage().lower()

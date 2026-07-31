@@ -132,8 +132,14 @@ async def publish_revocation(
     Args:
         user_id: The user whose tokens are now invalid.
         revoked_at_version: ``users.token_version`` value AFTER the
-            bump. Subscribers compare ``jwt.tv >= revoked_at_version``
-            and reject when the inequality holds.
+            bump — the lowest version that is still valid. Subscribers
+            compare ``jwt.tv < revoked_at_version`` and reject when the
+            inequality holds; a token stamped ``tv == revoked_at_version``
+            was issued *by* this bump and must be honoured. (This line
+            said ``>=`` until 2026-07-31, contradicting
+            ``models/token_revocation.py`` — and ``>=`` is what the
+            consumers were coded against, so any password change locked
+            the user out of studio and ASR permanently.)
         redis_url: Override the default URL (mostly for tests).
 
     The function MUST be called only after the corresponding DB
