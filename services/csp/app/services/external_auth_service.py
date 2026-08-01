@@ -48,6 +48,24 @@ EXTERNAL_STATE_AUDIENCE = "external-auth"
 
 _NEXT_PATH_MAX_LEN = 200
 
+# OIDC id_token signature algorithms accepted on this path.
+# Pin of the set already effective via python-jose's JWT signature algorithms
+# plus the HS* → client_secret / else → JWKS routing below — not a policy
+# narrowing. Keep this frozenset and the docstring in lockstep.
+_OIDC_ID_TOKEN_ALGS = frozenset(
+    {
+        "HS256",
+        "HS384",
+        "HS512",
+        "RS256",
+        "RS384",
+        "RS512",
+        "ES256",
+        "ES384",
+        "ES512",
+    }
+)
+
 
 def sanitize_next_path(raw: str | None) -> str:
     """Sprint 6 X / B3: open-redirect 防護。
@@ -293,10 +311,12 @@ async def _verify_id_token(
 
     Verification steps (OIDC Core §3.1.3.7):
 
-    1. Header ``alg`` must be one of the symmetric / asymmetric algorithms
-       we trust. 'none' is unconditionally rejected.
+    1. Header ``alg`` must be in ``_OIDC_ID_TOKEN_ALGS``
+       (``HS256``/``HS384``/``HS512``/``RS256``/``RS384``/``RS512``/
+       ``ES256``/``ES384``/``ES512``). ``none`` and any other value are
+       rejected *before* signature verification.
     2. Signature verified against the IdP's JWKS (``metadata['jwks_uri']``
-       with discovery fallback). HS256 falls back to client_secret.
+       with discovery fallback). ``HS*`` falls back to client_secret.
     3. ``iss`` must match the configured issuer URL (or its discovery
        form).
     4. ``aud`` must contain our ``client_id``; ``azp`` if present must
@@ -317,6 +337,9 @@ async def _verify_id_token(
     alg = header.get("alg")
     if not alg or alg.lower() == "none":
         raise ValueError("id_token alg 不可為 none")
+    if alg not in _OIDC_ID_TOKEN_ALGS:
+        allowed = ", ".join(sorted(_OIDC_ID_TOKEN_ALGS))
+        raise ValueError(f"id_token alg={alg!r} 不在允許清單 ({allowed})")
 
     # 2. signature verification
     issuer = (provider.oidc_issuer_url or "").rstrip("/") or metadata.get("issuer", "")

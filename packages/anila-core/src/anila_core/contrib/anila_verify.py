@@ -32,6 +32,9 @@ CSP 派工時會帶 ``Authorization: Bearer <JWT>``（RS256、約 5 分鐘有效
     jwks = fetch_jwks(jwks_url, ca_file=ca_file)
     claims = verify_authorization(authorization_header, jwks=jwks)
 
+離線／本機沒有 https CSP 時：先用別的方式取得 JWKS JSON、``parse_jwks`` 後
+傳 ``jwks=``——此路徑零網路呼叫，也不要求 ``CSP_BASE_URL`` 為 https。
+
 契約（與 CSP P2.1 簽發端對齊）
 ------------------------------
 * ``iss`` = ``anila-csp``
@@ -53,6 +56,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Mapping, Optional
+from urllib.parse import urlparse
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
@@ -148,27 +152,92 @@ def _ssl_context(ca_file: Optional[str]) -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+def _require_https_jwks_url(url: str) -> None:
+    """Reject transports where ``ca_file`` / SSLContext has no effect.
+
+    ``urllib`` only applies an SSL context to https. Plain ``http:`` silently
+    ignores ``ca_file``; ``file:`` and other schemes likewise never consult it.
+    Platform CSP is CSPKI https, so https is the only admitted scheme — for the
+    URL passed in **and** for any hop that would carry the JWKS bytes.
+    ``fetch_jwks`` therefore also refuses HTTP redirects (see opener below):
+    a followed ``Location`` could downgrade to cleartext or a host outside
+    ``ca_file``. Local offline verify should pass a pre-fetched ``jwks=`` map
+    instead — there is no http escape hatch on this verifier (unlike platform
+    outbound ``ANILA_ALLOW_HTTP_ENDPOINT`` flags, which gate model/agent
+    endpoints the control plane dials, not agent-side JWKS trust).
+    """
+    scheme = (urlparse(url).scheme or "").lower()
+    if scheme == "https":
+        return
+    if scheme == "http":
+        raise AnilaVerifyError(
+            "JWKS URL 必須是 https（http 不會套用 ca_file，TLS 信任錨無效）；"
+            "平台 CSP 走 CSPKI https。若只要本地驗章，請改傳已抓好的 jwks= 參數"
+        )
+    raise AnilaVerifyError(
+        f"JWKS URL 不支援的 scheme={scheme!r}（僅 https；"
+        "file:/其他協定不會套用 ca_file）"
+    )
+
+
+class _RefuseRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Block auto-follow so JWKS bytes cannot arrive on a different hop."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        raise AnilaVerifyError(
+            f"JWKS 拒絕跟隨 HTTP {code} 重新導向（redirect）；"
+            "fetch_jwks 不自動跟隨 Location，以免實際載體連線降級為 http "
+            "或改走不受 ca_file 約束的主機。請將 jwks_url 設為最終的 https 位址"
+        )
+
+
+def _jwks_urlopen(req: urllib.request.Request, *, ca_file: Optional[str], timeout: float):
+    """Open ``req`` with ``ca_file`` applied and redirects disabled."""
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_ssl_context(ca_file)),
+        _RefuseRedirectHandler(),
+    )
+    return opener.open(req, timeout=timeout)
+
+
 def fetch_jwks(
     jwks_url: str,
     *,
     ca_file: Optional[str] = None,
     timeout: float = 5.0,
 ) -> dict[str, RSAPublicKey]:
-    """GET JWKS and return ``kid -> RSAPublicKey``."""
+    """GET JWKS and return ``kid -> RSAPublicKey``.
+
+    Only https URLs are accepted, and HTTP redirects are refused (INV: the
+    connection that carries JWKS bytes must be the TLS hop under ``ca_file``).
+    """
     url = (jwks_url or "").strip()
     if not url:
         raise AnilaVerifyError("jwks_url 不可為空")
+    _require_https_jwks_url(url)
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(
-            req, context=_ssl_context(ca_file), timeout=timeout
-        ) as resp:
+        with _jwks_urlopen(req, ca_file=ca_file, timeout=timeout) as resp:
             body = resp.read()
             status = getattr(resp, "status", None) or resp.getcode()
+    except AnilaVerifyError:
+        raise
     except urllib.error.HTTPError as exc:
+        if 300 <= int(exc.code) < 400:
+            raise AnilaVerifyError(
+                f"JWKS 拒絕跟隨 HTTP {exc.code} 重新導向（redirect）；"
+                "fetch_jwks 不自動跟隨 Location，以免實際載體連線降級為 http "
+                "或改走不受 ca_file 約束的主機。請將 jwks_url 設為最終的 https 位址"
+            ) from exc
         raise AnilaVerifyError(f"JWKS HTTP {exc.code}") from exc
     except Exception as exc:  # noqa: BLE001 — surface as verify error
         raise AnilaVerifyError(f"無法抓取 JWKS: {exc}") from exc
+    if 300 <= int(status) < 400:
+        raise AnilaVerifyError(
+            f"JWKS 拒絕跟隨 HTTP {status} 重新導向（redirect）；"
+            "fetch_jwks 不自動跟隨 Location，以免實際載體連線降級為 http "
+            "或改走不受 ca_file 約束的主機。請將 jwks_url 設為最終的 https 位址"
+        )
     if status != 200:
         raise AnilaVerifyError(f"JWKS HTTP {status}")
     try:
