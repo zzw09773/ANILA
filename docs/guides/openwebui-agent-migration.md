@@ -13,8 +13,9 @@ ANILA 是 air-gapped 內網平台，repo 內**沒有** ML Team OpenWebUI 的 age
 - **不做**自動匯出 / import 工具、不做 `import-openwebui` CLI、不做 Pipe 自動
   bridge / sidecar（doc 06 §5/§7、doc 10 Slice 5「不做」清單）。
 - 既有 OpenWebUI Pipe agent **一律人工重新註冊**，走既有 L1 路徑：
-  `/developer/agents` 精靈或 `anila-core` CLI `register` → 核發 `csk-` →
-  test-connection → trace-test → admin 核准。
+  `/developer/agents` 精靈或 `anila-core` CLI `register` → 接上派工 JWT 驗簽
+  （三級制，見 `docs/guides/developer-guide.md`）→ 健康／trace 準入 → admin 核准。
+  **不核發 `csk-`／任何長效 agent 祕密。**
 
 因此 Phase 0 是「拿一張表把現況盤點清楚」，是整個遷移的唯一入口。
 
@@ -43,9 +44,10 @@ ANILA 是 air-gapped 內網平台，repo 內**沒有** ML Team OpenWebUI 的 age
 1. 依盤點表逐一在 CSP 註冊（`POST /api/agents/register`；`base_model` 填模型「名稱」即可，
    CSP 會解析成 id）。⚠ `shadow=true` 已無作用：OE-1 之後沒有 `draft` 狀態，
    欄位仍被接受但一律落地 `registered`，不要當成「先暫存不上線」的開關。
-2. 核發 `csk-`（Agent Integration Key），貼進 agent `.env` 的 `CSP_SERVICE_TOKEN`。
-3. `POST /api/agents/{id}/test-connection` 驗連線與 token。
+2. 在 agent 側接好派工 JWT 驗簽（樣板／`anila_verify.py`；`.env` 只放
+   `CSP_BASE_URL`＋`ANILA_CA_FILE` 等非祕密設定，**不貼長效服務憑證**）。
+3. `POST /api/agents/{id}/test-connection` 驗連線——現以派工 JWT 探測（與 live dispatch 同一簽發路徑，用來驗證 JWKS 接線）。
 4. `POST /api/agents/{id}/trace-test` 跑 Full Trace 準入測試 —— 全部 required 項
-   通過才會把狀態推進到 `pending_security_review`。
+   通過才會把狀態推進到 `pending_security_review`（任務內 trace 回呼複用派工 JWT）。
 5. Admin 於安全審查關卡核准（`POST /api/agents/{id}/approve`）。**未通過
    trace-test 的 Agent 一律無法核准為正式使用**（hard block，無 grandfather）。

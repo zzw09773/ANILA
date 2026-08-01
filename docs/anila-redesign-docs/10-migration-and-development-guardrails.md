@@ -1,3 +1,8 @@
+> ⚠ **2026-08-01 P2.1 契約更新**：下文若仍描述 `csk-`／`bsk-`／`X-CSP-Service-Token`／
+> `CSP_SERVICE_TOKEN` 作為 agent 派工身分，該段已過時。現行＝5 分鐘派工 JWT＋JWKS 驗簽
+> （開發者不領鑰匙；三級接入見 `docs/guides/developer-guide.md`）。
+> 歷史段落未逐字改寫，以免破壞 redesign 文件結構。
+
 # 10. Migration Plan and Development Guardrails
 
 > Status: draft v0.1  

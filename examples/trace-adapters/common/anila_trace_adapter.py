@@ -9,7 +9,7 @@
 它實作了 **FROZEN wire contract**（不可更動；與 CSP ingestion 對齊）：
 
     POST {csp_base}/v1/traces/{trace_id}/spans
-    Authorization: Bearer <Agent Integration Key（csk-）>
+    Authorization: Bearer <派工 JWT（與當次 dispatch 同一張）>
     Content-Type: application/json
     JSON {"spans":[{span_id, parent_span_id?, span_type, name,
                     started_at, ended_at?, status, attributes?, producer:"agent"}...]}
@@ -18,7 +18,7 @@
 設計不變量（照抄 packages/anila-agent/anila_agent/tracing.py 的 TraceEmitter 精神）：
 
 - **絕不讓 agent 掛掉**：ship 失敗一律 drop-and-log，``flush()`` 不拋例外。
-- **無 trace_id / 無 endpoint / 無 key → 完全停用**（``active`` 為 False，所有方法
+- **無 trace_id / 無 endpoint / 無派工 JWT → 完全停用**（``active`` 為 False，所有方法
   皆 no-op；未帶 trace header 的請求零行為變化、零外送）。
 - ``span_type`` 逐字採 doc-05 §6 的 13 種必備型別（6 對 started/finished + agent.error）。
 - 父子巢狀以每個 adapter 實例自持的堆疊追蹤（單一請求 = 單一 adapter 實例，
@@ -125,23 +125,24 @@ class AnilaTraceAdapter:
     """緩衝 + 批次 ship agent spans 回 CSP 的最小、零額外相依發送器。
 
     :param csp_base: CSP 根 URL（如 ``https://anila.ai.ncsist.org.tw``）。
-    :param integration_key: Agent Integration Key（``csk-`` 開頭；即 doc-08 的
-        雙角色金鑰；由 CSP dispatch 的 ``Authorization: Bearer`` 帶入或註冊時取得）。
+    :param dispatch_token: 當次派工 JWT（P2.1；由 CSP 的 ``Authorization: Bearer``
+        帶入）。任務內 trace ship 複用同一張；**不是**長效 ``csk-``。
     :param trace_id: 由 CSP dispatch 的 ``X-ANILA-Trace-Id`` header 帶入；缺它則
         adapter 停用（no-op、零外送）。
     :param task_id: 選填，來自 ``X-ANILA-Task-Id``；隨 run span 帶出以利歸因。
 
-    ``active`` 為 False（缺 trace_id、csp_base 或 integration_key，或 ``enabled=False``）
+    ``active`` 為 False（缺 trace_id、csp_base 或 dispatch_token，或 ``enabled=False``）
     時所有方法皆 no-op。
     """
 
     def __init__(
         self,
         csp_base: str | None,
-        integration_key: str | None,
+        dispatch_token: str | None,
         trace_id: str | None,
         task_id: str | None = None,
         *,
+        integration_key: str | None = None,  # 舊名別名；勿再當 csk- 上手路徑
         classification_level: str | None = None,
         enabled: bool = True,
         verify_ssl: bool = True,
@@ -149,7 +150,9 @@ class AnilaTraceAdapter:
         timeout: float = 5.0,
     ) -> None:
         self.csp_base = ((csp_base or "").rstrip("/")) or None
-        self.integration_key = (integration_key or "").strip() or None
+        token = dispatch_token if dispatch_token is not None else integration_key
+        self.dispatch_token = (token or "").strip() or None
+        self.integration_key = self.dispatch_token  # 相容舊屬性名
         self.trace_id = (trace_id or "").strip() or None
         self.task_id = (task_id or "").strip() or None
         self.classification_level = classification_level
@@ -169,7 +172,7 @@ class AnilaTraceAdapter:
             self._enabled
             and self.trace_id
             and self.csp_base
-            and self.integration_key
+            and self.dispatch_token
         )
 
     def _current_parent(self) -> str | None:
@@ -296,7 +299,7 @@ class AnilaTraceAdapter:
         url = f"{self.csp_base}/v1/traces/{self.trace_id}/spans"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.integration_key}",
+            "Authorization": f"Bearer {self.dispatch_token}",
         }
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=self.timeout) as client:

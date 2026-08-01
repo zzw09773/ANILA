@@ -1,5 +1,10 @@
 # ANILA 平台整合計畫 (v7 — Runtime-first / Router-first)
 
+> ⚠ **2026-08-01 P2.1**：下文若仍描述 `X-CSP-Service-Token`／靜態 service token＋明文
+> `X-ANILA-User-*` 作為 CSP→agent 派工身分，該契約已由 **5 分鐘派工 JWT＋JWKS 驗簽**取代
+> （開發者不領長效 agent 祕密）。本檔保留整合計畫歷史；現行上手見
+> `docs/guides/developer-guide.md`。
+
 ## Context
 
 三個子專案（onyx / myCSPPlatform / AgenticRAG）已合併進單一 repo 但尚未真正整合。目標是建立 **LLM-as-Router + Agent Registry + 開發者生態** 的多租戶 AI 平台：

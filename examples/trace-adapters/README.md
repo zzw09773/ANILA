@@ -6,6 +6,10 @@
 > §7 Slice 5 Done：**至少 1 個非 anila-agent runtime（LangChain／custom HTTP）以 trace
 > adapter 完成 Full Trace**。
 
+> ⚠ **2026-08-01 P2.1**：任務內 trace／RAG 回呼改帶平台派工 JWT
+> （`Authorization: Bearer <JWT>`），不再使用長效 `csk-`／`X-CSP-Service-Token`。
+> 入向驗簽見治理中心三級制與 `docs/guides/developer-guide.md`。
+
 `anila-agent` runtime 有原生內建的 Full Trace（見
 [`packages/anila-agent/anila_agent/tracing.py`](../../packages/anila-agent/anila_agent/tracing.py)）。
 本目錄示範**第三方 runtime**（LangChain、任何 OpenAI-compatible／custom HTTP agent）如何用
@@ -28,7 +32,7 @@ examples/trace-adapters/
 
 ```
 POST {csp_base}/v1/traces/{trace_id}/spans
-Authorization: Bearer <Agent Integration Key（csk-）>
+Authorization: Bearer <派工 JWT（與當次 dispatch 同一張）>
 Content-Type: application/json
 
 {"spans":[{ "span_id", "parent_span_id"?, "span_type", "name",
@@ -53,7 +57,7 @@ CSP dispatch 會帶下列 header，adapter 由此啟動（**缺 `X-ANILA-Trace-I
 
 | header | 用途 |
 |---|---|
-| `X-CSP-Service-Token` | 入向驗證 + 出向 trace ship 的雙角色 `csk-`（doc-08） |
+| `Authorization: Bearer <JWT>` | 入向派工身分（JWKS 驗簽）＋出向 trace ship 複用同一張憑條 |
 | `X-ANILA-Trace-Id` | 有它才發 trace |
 | `X-ANILA-Task-Id` | 歸因到任務中心的 Task |
 | `X-ANILA-Classification-Level` | 四級分類等級（無機密／營業秘密／密／機密；隨 run／output span 帶出） |
@@ -70,9 +74,13 @@ CSP dispatch 會帶下列 header，adapter 由此啟動（**缺 `X-ANILA-Trace-I
 ```python
 from anila_trace_adapter import AnilaTraceAdapter, RUN, STEP, MODEL_CALL, TOOL_CALL, RETRIEVAL, OUTPUT
 
+# 從當次派工請求取出 Bearer JWT（勿另存長效 csk-）
+auth = request.headers.get("Authorization", "")
+dispatch_jwt = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else auth
+
 adapter = AnilaTraceAdapter(
     csp_base=os.environ["ANILA_CSP_BASE"],                 # https://anila.ai.ncsist.org.tw
-    integration_key=os.environ["ANILA_INTEGRATION_KEY"],   # csk-...
+    dispatch_token=dispatch_jwt,                           # 當次派工 JWT
     trace_id=request.headers["X-ANILA-Trace-Id"],
     task_id=request.headers.get("X-ANILA-Task-Id"),
     classification_level=request.headers.get("X-ANILA-Classification-Level"),
@@ -96,7 +104,7 @@ adapter.flush()                                            # 批次 POST 回 CSP
   區塊內拋例外會自動補 `agent.error` 並以 `status="error"` 收尾後 re-raise。
 - 非巢狀成對事件（如 LangChain 回呼）改用 `adapter.begin(base, name, parent=...)` 取得
   `Span`，於結束回呼 `span.finish(status=..., **attrs)`。
-- `active` 為 False（缺 `trace_id`／`csp_base`／`integration_key`）時所有方法皆 no-op；
+- `active` 為 False（缺 `trace_id`／`csp_base`／`dispatch_token`）時所有方法皆 no-op；
   ship 失敗一律 drop-and-log，`flush()` 絕不拋例外——絕不讓 agent 掛掉。
 
 ### 2.2 LangChain（`langchain/adapter_example.py`）
@@ -125,8 +133,8 @@ pip install fastapi uvicorn httpx
 ANILA_CSP_BASE=https://anila.ai.ncsist.org.tw python fastapi_agent_example.py   # → :9100
 ```
 
-`POST /v1/chat/completions` 帶上 §1 的 header 時，會在回傳合法 completion 的同時，發出成功
-路徑的完整 span 集（run/step/model_call/tool_call/retrieval/output 六對）。
+`POST /v1/chat/completions` 帶上派工 JWT 與 §1 的 trace header 時，會在回傳合法 completion
+的同時，發出成功路徑的完整 span 集（run/step/model_call/tool_call/retrieval/output 六對）。
 
 ---
 
@@ -136,7 +144,7 @@ ANILA_CSP_BASE=https://anila.ai.ncsist.org.tw python fastapi_agent_example.py   
 |---|---|
 | endpoint health | custom-http `GET /health` |
 | manifest valid | custom-http `GET /.well-known/anila-agent.json` |
-| service token valid | 入向驗 `X-CSP-Service-Token`（agent 端自行 fail-closed；見 §4） |
+| dispatch JWT valid | 入向驗派工 JWT／JWKS（agent 端自行 fail-closed；見 `docs/guides/developer-guide.md`） |
 | `/v1/chat/completions` reachable | custom-http `POST /v1/chat/completions` |
 | SSE valid | 本範例走 POST callback 模式（`callback_mode:"post"`）；SSE 為選項 |
 | `anila.spans` received | `adapter.flush()` 送 `POST /v1/traces/{trace_id}/spans` |
@@ -147,21 +155,20 @@ Full Trace Acceptance（doc-06 §6）對照：run start/end、model call start/e
 start/end、retrieval chunks、error、final output、classification level、citations —— 皆由
 上述 span 集涵蓋（citations 取自最終答案的行內引用【來源：id】）。
 
-> **注意**：本範例的 agent 端**未內建** `X-CSP-Service-Token` 驗證中介層（留給各 runtime 依
-> [`apps/csp-governance-ui/src/components/agents/inboundGuardSnippets.js`](../../apps/csp-governance-ui/src/components/agents/inboundGuardSnippets.js)
-> 的 fail-closed 範例補上）；範例聚焦在**出向 Full Trace**。正式部署務必補入向驗證。
+> **注意**：本範例的 agent 端**未內建**完整 JWKS 驗簽中介層（請接治理中心
+> `AgentGuardPanel`／`anila_verify.py` 三級制）；範例聚焦在**出向 Full Trace**，
+> 並示範以當次派工 JWT 作為 ship 憑證。正式部署務必補入向 JWT 驗簽。
 
 ---
 
 ## 4. 註冊（wizard／CLI）
 
-adapter 只解決 trace；agent 仍須先在 CSP 完成註冊、簽發 `csk-`、通過 connection／trace test
-才能進正式任務。Agent Registry 走 **7 態審核**（`draft` → `pending_connection_test` →
-`pending_trace_test` → `pending_security_review` → `approved`，另有 `rejected`／`disabled`）。
+adapter 只解決 trace；agent 仍須先在 CSP 完成註冊、接好派工 JWT 驗簽、通過健康／trace 準入
+才能進正式任務。**註冊不核發長效 `csk-`。** Agent Registry 審核態以治理中心實際狀態機為準。
 兩條路徑：
 
-- **Wizard**：治理中心 `apps/csp-governance-ui` 的 `/developer/agents` 兩步精靈 —— 填 endpoint／
-  runtime type／分類上限 → 簽發 Agent Integration Key（`csk-`）→ test-connection → trace-test。
+- **Wizard**：治理中心 `apps/csp-governance-ui` 的 `/developer/agents` —— 填 endpoint／
+  runtime type／分類上限（不領鑰匙）→ 接 JWKS 驗簽 → 健康／trace 準入。
 - **CLI**：`anila-core register`（讀 `anila.yaml` → `POST /api/agents/register`），支援
   `--base-model`／`--base-model-id`／`--runtime-type`／`--classification-level`／`--version` 旗標：
 

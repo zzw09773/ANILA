@@ -1,3 +1,7 @@
+> ⚠ **2026-08-01 P2.1**：agent 派工身分已改為平台現簽的 5 分鐘 JWT（JWKS 驗簽；
+> 開發者不領 `csk-`／`CSP_SERVICE_TOKEN`）。下文保留當時紀錄，**勿依此做現行接入**；
+> 現行上手見 `docs/guides/developer-guide.md` 與治理中心「接入驗簽 · 三級制」。
+
 # Open WebUI vs ANILA UI 功能差距分析
 
 > 2026-06-11 · 方法:98 個平行 agent 三階段(8 域掃描 open-webui 原始碼 + 2 agent 全讀 ANILA UI 8,762 行 → 逐域差距分類 → 對 ANILA/ANILALM/CSP 源碼反向驗證每項宣稱)。共掃描 220 個 open-webui 功能,80 個高相關候選經對抗驗證:39 確認缺失、39 部分存在、2 被推翻(其實已有)。

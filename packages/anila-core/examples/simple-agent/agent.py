@@ -1,29 +1,45 @@
 """Simple agent example — echo agent registered on ANILA platform.
 
-Shows the minimal structure for a custom agent built with anila-core SDK:
-- Uses CSPPlatformProvider so all LLM calls go through CSP data plane
-- Validates incoming requests via CspServiceTokenMiddleware
+Shows the minimal structure for a custom agent:
 - Exposes OpenAI-compatible /v1/chat/completions
+- Verifies platform dispatch JWT (P2.1) via standalone ``anila_verify``
 
-Run:
-    CSP_BASE_URL=http://localhost:8000 CSP_API_KEY=sk-... \
-    CSP_SERVICE_TOKEN=my-service-secret \
+P2.1 (2026-08-01): the platform signs a ~5-minute RS256 JWT per dispatch
+(``Authorization: Bearer <JWT>``; claims ``user_id`` / ``department`` /
+``agent_id``). Agents verify against public JWKS — developers do **not**
+obtain or store a long-lived ``csk-`` / ``CSP_SERVICE_TOKEN``.
+
+Obtain ``anila_verify.py`` from the governance centre (tier ②). The template
+zip may not yet ship verify code / CA / wheel — open the downloaded zip and
+check; the UI states when download endpoints are not live yet. Verify
+sidecar image is **not** published today.
+
+Run (after placing ``anila_verify.py`` next to this file):
+
+    CSP_BASE_URL=https://<csp-host-reachable-from-agent> \\
+    ANILA_CA_FILE=/path/to/cspki_ca_bundle.pem \\
     uvicorn agent:app --port 9100
+
+Do **not** set ``SSL_CERT_FILE`` (it replaces the entire trust store).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from anila_core.api.middleware.auth import CspServiceTokenMiddleware
-from anila_core.config import settings
+try:
+    from anila_verify import AnilaVerifyError, verify_authorization
+except ImportError:  # pragma: no cover - example documents the download path
+    AnilaVerifyError = Exception  # type: ignore[misc, assignment]
+    verify_authorization = None  # type: ignore[assignment]
 
 
 @asynccontextmanager
@@ -32,11 +48,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Simple Echo Agent", version="0.1.0", lifespan=lifespan)
-app.add_middleware(
-    CspServiceTokenMiddleware,
-    service_token=settings.csp_service_token,
-    dev_mode=settings.api_dev_mode,
-)
+
+
+def _require_dispatch(request: Request) -> dict:
+    """Verify platform dispatch JWT; fail-closed."""
+    if verify_authorization is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "anila_verify.py not found — download it from the governance "
+                "centre (AgentGuardPanel tier ②) and place it beside this file"
+            ),
+        )
+    base = os.environ.get("CSP_BASE_URL", "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=503, detail="CSP_BASE_URL is required")
+    try:
+        return verify_authorization(
+            request.headers.get("Authorization"),
+            jwks_url=f"{base}/.well-known/jwks.json",
+            ca_file=os.environ.get("ANILA_CA_FILE") or None,
+        )
+    except AnilaVerifyError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 @app.get("/health")
@@ -45,7 +79,8 @@ async def health() -> dict:
 
 
 @app.get("/v1/models")
-async def list_models() -> JSONResponse:
+async def list_models(request: Request) -> JSONResponse:
+    _require_dispatch(request)
     return JSONResponse({
         "object": "list",
         "data": [{"id": "simple-echo-agent", "object": "model",
@@ -55,19 +90,19 @@ async def list_models() -> JSONResponse:
 
 @app.post("/v1/chat/completions", response_model=None)
 async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
+    claims = _require_dispatch(request)
     body: dict = await request.json()
     messages: list[dict] = body.get("messages", [])
     stream: bool = body.get("stream", False)
 
-    # Extract last user message
     user_text = ""
     for m in reversed(messages):
         if m.get("role") == "user":
             user_text = m.get("content", "")
             break
 
-    # Identity: echo with metadata from CSP-forwarded headers
-    user_id = request.headers.get("X-ANILA-User-Id", "anonymous")
+    # Identity comes from verified JWT claims (not plaintext X-ANILA-User-*).
+    user_id = claims.get("user_id") or "anonymous"
     reply = f"[Echo from simple-agent] User {user_id} said: {user_text}"
 
     if stream:

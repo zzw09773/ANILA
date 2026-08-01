@@ -15,8 +15,8 @@
 如此本檔可被 lint / import / 單元測試，而不必把 LangChain 拉進 air-gap 環境。
 
 真實接法：把 ``AnilaLangChainTracer`` 加進 LangChain 執行時的 ``callbacks=[...]``，
-trace_id / task_id / integration_key 由 CSP dispatch 的 header 帶入
-（``X-ANILA-Trace-Id`` / ``X-ANILA-Task-Id`` / ``Authorization: Bearer csk-``）。
+trace_id / task_id / 派工 JWT 由 CSP dispatch 的 header 帶入
+（``X-ANILA-Trace-Id`` / ``X-ANILA-Task-Id`` / ``Authorization: Bearer <JWT>``）。
 """
 
 from __future__ import annotations
@@ -68,8 +68,13 @@ def adapter_from_env(**overrides: Any) -> AnilaTraceAdapter:
     """
     return AnilaTraceAdapter(
         csp_base=overrides.get("csp_base", os.environ.get("ANILA_CSP_BASE")),
-        integration_key=overrides.get(
-            "integration_key", os.environ.get("ANILA_INTEGRATION_KEY")
+        dispatch_token=overrides.get(
+            "dispatch_token",
+            overrides.get(
+                "integration_key",
+                os.environ.get("ANILA_DISPATCH_TOKEN")
+                or os.environ.get("ANILA_INTEGRATION_KEY"),
+            ),
         ),
         trace_id=overrides.get("trace_id", os.environ.get("ANILA_TRACE_ID")),
         task_id=overrides.get("task_id", os.environ.get("ANILA_TASK_ID")),

@@ -1,3 +1,7 @@
+> ⚠ **2026-08-01 P2.1**：agent 派工身分已改為平台現簽的 5 分鐘 JWT（JWKS 驗簽；
+> 開發者不領 `csk-`／`CSP_SERVICE_TOKEN`）。下文保留當時紀錄，**勿依此做現行接入**；
+> 現行上手見 `docs/guides/developer-guide.md` 與治理中心「接入驗簽 · 三級制」。
+
 # OE-2 領域 B:AGENTS REGISTRY 對 SYSTEM-MAP 規格符合性稽核
 
 - 稽核基準:`SYSTEM-MAP.md`(repo 根,399 行,2026-07-29)——**唯一規格權威**。所有 Q1 證據皆為對該檔的實際 grep,行號逐條記錄。

@@ -270,7 +270,7 @@ bash /home/aia/c1147259/intranet-staging/rehearsal-r0.sh \
 
 ```bash
 echo "CSP_SECRET_KEY=$(openssl rand -hex 32)"
-echo "CSP_SERVICE_TOKEN=$(openssl rand -hex 32)"
+echo "CSP_SERVICE_TOKEN=$(openssl rand -hex 32)"   # 平台內部 s2s（若 compose 仍要求）；≠ agent 派工身分
 echo "INTERNAL_PLATFORM_API_KEY=sk-internal-$(openssl rand -hex 24)"
 echo "ADMIN_PASSWORD=$(openssl rand -base64 24)"
 echo "CSP_DB_PASSWORD=$(openssl rand -hex 32)"
@@ -280,6 +280,10 @@ echo "CODESERVER_PASSWORD=$(openssl rand -base64 24)"
 
 輸出直接進密碼管理器。**不要沿用試用機 .env 的值。**
 (DB 兩把用 hex 是必要的 — 會嵌進 DATABASE_URL,避免特殊字元。)
+
+> ⚠ **P2.1（2026-08-01）**：agent 派工改短效 JWT，**不要**再為所級 agent 核發／貼上
+> `csk-`／`CSP_SERVICE_TOKEN`。上列 `CSP_SERVICE_TOKEN` 若仍出現在平台 compose，屬
+> Router／gateway 等**平台內部**憑證，與 agent 上手無關（見 `docs/guides/developer-guide.md`）。
 
 ---
 
