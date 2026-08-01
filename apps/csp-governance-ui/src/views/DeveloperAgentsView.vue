@@ -9,8 +9,12 @@
       </div>
       <div class="page-head__actions">
         <TermButton @click="handleDownloadTemplate" label="下載樣板" />
+        <TermButton @click="handleDownloadPlatformCa" label="下載平台 CA" />
         <TermButton variant="primary" @click="openRegisterModal" label="註冊 Agent" />
       </div>
+      <p class="cell-meta page-head__ca-hint">
+        「下載平台 CA」在後端端點就緒後可用；未上線時會顯示錯誤提示，不會假裝下載成功。
+      </p>
     </header>
 
     <div v-if="feedback.message" class="feedback" :class="feedback.type === 'error' ? 'is-err' : 'is-ok'">
@@ -25,9 +29,11 @@
       </button>
       <div v-if="showGuide" class="guide">
         <p class="guide__lead">
-          Phase 2 ships <strong>anila-agent</strong> (openai-agents runtime + Claude-Code-style harness) as the official sub-agent template.
-          Fork it, add tools, wrap in FastAPI, register. Full walkthrough on the
-          <router-link to="/developer/guide" class="guide__link">developer guide page →</router-link>
+          下載樣板、加工具、包 FastAPI、註冊名稱與 endpoint——
+          <strong>不核發、不保管任何長效祕密</strong>。
+          派工身分改為短效 JWT；驗簽接法見下方三級制（請核對樣板 zip 實際內容，勿假設已內建）。
+          完整說明見
+          <router-link to="/developer/guide" class="guide__link">開發者指南 →</router-link>
         </p>
         <ol class="guide__list">
           <li>
@@ -80,6 +86,7 @@ def employee_count(department: str) -&gt; int:
             </div>
           </li>
         </ol>
+        <AgentGuardPanel :csp-url="cspUrl" />
       </div>
     </TermBox>
 
@@ -195,15 +202,17 @@ def employee_count(department: str) -&gt; int:
       </table>
     </TermBox>
 
-    <!-- Register wizard: step 1 = details, step 2 = provision csk- + verify -->
+    <!-- Register: single step — name / endpoint / base model（不發任何祕密） -->
     <TermModal
       :visible="showRegisterModal"
-      :title="registerStep === 1 ? '註冊 · Agent（1/2）' : `核發金鑰 · ${registeredAgent?.name || ''}（2/2）`"
+      title="註冊 · Agent"
       width="640px"
       @close="finishRegister"
     >
-      <!-- ── STEP 1 — details ────────────────────────────────────────── -->
-      <div v-if="registerStep === 1" class="form-grid">
+      <div class="form-grid">
+        <p class="cell-meta">
+          平台派工時會現簽 5 分鐘憑條；你不需要領取或保管任何長效祕密。
+        </p>
         <TermField label="名稱" hint="不可變更的識別碼 · 英數字與連字號" :error="formErrors.name">
           <input v-model="form.name" class="term-input" placeholder="hr-policy-agent" />
         </TermField>
@@ -226,7 +235,7 @@ def employee_count(department: str) -&gt; int:
             </select>
           </TermField>
         </div>
-        <TermField label="RAG 知識庫（選填）" hint="可綁定多個；此 agent 的 csk- 僅能搜尋所選知識庫 · 非 RAG agent 不勾選">
+        <TermField label="RAG 知識庫（選填）" hint="可綁定多個；非 RAG agent 不勾選。任務內回呼沿用派工憑條">
           <div v-if="collections.length" class="collection-checks">
             <label v-for="c in collections" :key="c.id" class="collection-check">
               <input type="checkbox" :value="c.id" v-model="form.collection_ids" />
@@ -264,74 +273,9 @@ def employee_count(department: str) -&gt; int:
         </ul>
       </div>
 
-      <!-- ── STEP 2 — provision the single csk- + verify ─────────────── -->
-      <div v-else class="form-grid">
-        <p class="cell-meta">
-          agent <strong>{{ registeredAgent?.name }}</strong>（#{{ registeredAgent?.id }}）已註冊 ·
-          <TermBadge :variant="approvalVariant(registeredAgent?.approval_status)" dot>{{ approvalLabel(registeredAgent?.approval_status) }}</TermBadge>
-          待管理員指派使用者後即可使用。
-        </p>
-
-        <div v-if="!newAgentCsk">
-          <p class="cell-meta">
-            核發此 agent 的單一 service token（<code>csk-</code>）。它同時驗證
-            Router→agent 派送，以及（綁定知識庫時）agent 的 RAG 搜尋 —
-            兩者共用一把。
-          </p>
-          <TermButton
-            variant="primary" :loading="issuingNew" :disabled="issuingNew"
-            label="核發 service token（csk-）" @click="handleIssueForNew"
-          />
-        </div>
-
-        <div v-else>
-          <div class="secret-banner secret-banner--csk">
-            <div class="secret-banner__head">
-              <span class="cell-strong">service token（csk-）</span>
-              <span class="cell-meta">立即複製 — 不會再顯示</span>
-            </div>
-            <div class="secret-banner__body">
-              <code class="secret-banner__token">{{ newAgentCsk }}</code>
-              <TermButton size="sm" variant="ghost" @click="copyToClipboard(newAgentCsk)" label="複製" />
-            </div>
-          </div>
-
-          <TermSection title="agent .env" />
-          <pre class="env-snippet">{{ newAgentEnvSnippet }}</pre>
-          <TermButton size="sm" variant="ghost" @click="copyToClipboard(newAgentEnvSnippet)" label="複製 .env" />
-
-          <TermSection title="inbound guard + RAG usage（非模板 agent）" />
-          <AgentGuardPanel
-            :csk="newAgentCsk"
-            :collection-id="registeredAgentCollectionId"
-          />
-
-          <TermSection title="驗證連線" />
-          <p class="cell-meta">
-            把上面的 <code>.env</code> 貼進你的 agent 並啟動，然後測試它是否
-            接受該 token（證明 <code>CSP_SERVICE_TOKEN</code> 已正確接上）。
-            回報會分開說明主機／憑證／路徑，不會把「主機有回應」當成全部通過。
-          </p>
-          <TermButton
-            variant="default" :loading="testing" :disabled="testing"
-            label="測試連線" @click="handleTestConnection"
-          />
-          <div
-            v-if="testResult"
-            class="test-result"
-            :class="connectionTestOk(testResult) ? 'test-result--ok' : 'test-result--bad'"
-          >
-            {{ connectionTestOk(testResult) ? '✅' : '○' }} {{ testResult.detail }}
-          </div>
-        </div>
-      </div>
-
       <template #footer>
-        <template v-if="registerStep === 1">
-          <TermButton variant="ghost" @click="finishRegister" label="取消" />
-          <TermButton variant="primary" :loading="registering" :disabled="registering" :label="registering ? '送出中' : '註冊 →'" @click="handleRegister" />
-        </template>
-        <TermButton v-else variant="primary" @click="finishRegister" label="完成" />
+        <TermButton variant="ghost" @click="finishRegister" label="取消" />
+        <TermButton variant="primary" :loading="registering" :disabled="registering" :label="registering ? '送出中' : '註冊'" @click="handleRegister" />
       </template>
     </TermModal>
 
@@ -441,11 +385,14 @@ def employee_count(department: str) -&gt; int:
         <TermSection title="router 說明" />
         <p class="detail__desc">{{ detailAgent.description_for_router || '—' }}</p>
 
-        <!-- OE-1 — 核准不需診斷。連線測試在註冊流程；此處僅核准／停用。 -->
+        <!-- OE-1 — 核准不需診斷。註冊已改單步。「測試連線」本包未重接是排序理由,不是契約限制:
+             W1 合併前新註冊的 agent 沒有憑證,重接會固定回 409＝假控制項。
+             W1 已把探測改送派工 JWT,P2.1 收尾時應把這顆按鈕接回本頁。 -->
         <template v-if="authStore.isAdmin && isPendingReview(detailAgent.approval_status)">
           <TermSection title="核准" />
           <p class="cell-meta">
-            管理員指派使用者後即可使用。連線測試僅供開發者自行排查，不影響核准。
+            管理員核准後即可被 router 發現。端點是否可達請用列上的「探測」（health-check）；
+            派工 JWT 驗簽須在 agent 側自行接好（見下方接入驗簽）。核准不依賴連線探測結果。
           </p>
           <div class="row-actions" style="margin: 8px 0;">
             <TermButton
@@ -468,166 +415,11 @@ def employee_count(department: str) -&gt; int:
           </li>
         </ol>
 
-        <!-- Sprint 8 X / Phase A — service token management ------------ -->
-        <!-- Owner-or-admin (canEditAgent): the agent owner may self-issue a
-             static csk- and see its one-time plaintext. bootstrap / rotate /
-             revoke / credential listing stay admin-only (backend authz), so
-             those controls below remain gated on authStore.isAdmin. -->
-        <template v-if="canEditAgent(detailAgent)">
-          <TermSection title="service token" />
-
-          <!-- One-shot plaintext display: only shown right after a
-               successful issue / rotate; clears when the modal closes. -->
-          <div v-if="issuedSecret" class="secret-banner" :class="`secret-banner--${issuedSecret.kind}`">
-            <div class="secret-banner__head">
-              <span class="cell-strong">
-                {{ issuedSecret.kind === 'bsk' ? 'bootstrap token（bsk-）' : 'service token（csk-）' }}
-              </span>
-              <span class="cell-meta">立即複製 — 不會再顯示</span>
-            </div>
-            <div class="secret-banner__body">
-              <code class="secret-banner__token">{{ issuedSecret.value }}</code>
-              <TermButton size="sm" variant="ghost" @click="copyToClipboard(issuedSecret.value)" label="複製" />
-              <TermButton size="sm" variant="ghost" @click="clearIssuedSecret" label="隱藏" />
-            </div>
-            <ul v-if="issuedSecret.meta" class="secret-banner__meta">
-              <li v-if="issuedSecret.kind === 'bsk'">
-                到期 {{ formatDate(issuedSecret.meta.expires_at) }} — agent 必須呼叫
-                <code>POST /api/agents/{{ issuedSecret.meta.agent_id }}/bootstrap</code>
-                附上此 token + <code>endpoint_url={{ issuedSecret.meta.endpoint_url }}</code>
-              </li>
-              <li v-if="issuedSecret.kind === 'csk' && issuedSecret.meta.kind">
-                {{ issuedSecret.meta.kind }} · credential_id={{ issuedSecret.meta.credential_id }}{{ issuedSecret.meta.label ? ` · label=${issuedSecret.meta.label}` : '' }}
-              </li>
-            </ul>
-
-            <!-- Phase 0.5 — collapsible "how to use" with per-language
-                 snippets pre-filled with this agent's bsk- + ids.
-                 bsk- uses this per-language exchange how-to; the csk-
-                 path has its own guard block below. -->
-            <details
-              v-if="issuedSecret.kind === 'bsk' && issuedSecret.meta"
-              class="secret-banner__howto"
-              open
-            >
-              <summary class="secret-banner__howto-summary">如何使用此 token →</summary>
-              <BootstrapHowToTabs
-                :csp-url="cspUrl"
-                :agent-id="issuedSecret.meta.agent_id"
-                :endpoint-url="issuedSecret.meta.endpoint_url"
-                :bsk="issuedSecret.value"
-              />
-            </details>
-
-            <!-- csk- direct-issue / rotate: non-template agents need the
-                 inbound guard (anila_core isn't pip-installable) + (when a
-                 collection is bound) the outbound RAG usage. -->
-            <details
-              v-if="issuedSecret.kind === 'csk' && issuedSecret.meta"
-              class="secret-banner__howto"
-              open
-            >
-              <summary class="secret-banner__howto-summary">非模板 agent？如何接上這把 csk- →</summary>
-              <AgentGuardPanel
-                :csk="issuedSecret.value"
-                :collection-id="detailAgentCollectionId"
-              />
-            </details>
-          </div>
-
-          <div class="row-actions" style="margin-bottom: 8px;">
-            <template v-if="authStore.isAdmin">
-              <button class="term-action" :disabled="credentialBusyId === -1" @click="handleIssueBootstrap">
-                {{ credentialBusyId === -1 ? '核發中…' : '核發 bootstrap（bsk-）' }}
-              </button>
-              <span class="row-actions__sep">·</span>
-            </template>
-            <button class="term-action" :disabled="credentialBusyId === -2" @click="openIssueStaticModal">
-              {{ credentialBusyId === -2 ? '核發中…' : '核發靜態（csk-）' }}
-            </button>
-            <template v-if="authStore.isAdmin">
-              <span class="row-actions__sep">·</span>
-              <button class="term-action" @click="refreshDetailCredentials">重新整理</button>
-            </template>
-          </div>
-
-          <!-- credential listing + rotate/revoke are admin-only (backend authz) -->
-          <template v-if="authStore.isAdmin">
-          <TermEmpty v-if="!credentialsLoading && detailCredentials.length === 0" message="尚無憑證 — 核發 bootstrap 或靜態 token 以開始" />
-          <table v-else class="cred-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>標籤</th>
-                <th>狀態</th>
-                <th>核發時間</th>
-                <th>輪替時間</th>
-                <th>寬限期</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="c in detailCredentials" :key="c.id" :class="{ 'is-revoked': !c.is_active }">
-                <td class="tnum">{{ c.id }}</td>
-                <td>
-                  <span v-if="c.label">{{ c.label }}</span>
-                  <span v-else class="cell-meta">—</span>
-                  <TermBadge v-if="c.is_legacy" variant="warn" style="margin-left: 6px;">舊版</TermBadge>
-                </td>
-                <td>
-                  <TermBadge :variant="c.is_active ? '' : 'danger'" dot>
-                    {{ c.is_active ? '使用中' : '已吊銷' }}
-                  </TermBadge>
-                  <TermBadge
-                    v-if="c.id === dispatchedCredentialId"
-                    variant="warn"
-                    style="margin-left: 6px;"
-                    title="CSP 派送此 agent 時用這把 csk-；fail-closed 守門碼要對應這把"
-                  >CSP 派送中</TermBadge>
-                </td>
-                <td class="cell-meta tnum">{{ formatDate(c.issued_at) }}</td>
-                <td class="cell-meta tnum">{{ c.rotated_at ? formatDate(c.rotated_at) : '—' }}</td>
-                <td class="cell-meta tnum">
-                  <span v-if="c.has_previous_token">至 {{ formatDate(c.previous_expires_at) }}</span>
-                  <span v-else>—</span>
-                </td>
-                <td>
-                  <div class="row-actions">
-                    <template v-if="c.is_active">
-                      <button class="term-action" :disabled="credentialBusyId === c.id" @click="handleRotateCredential(c)">
-                        {{ credentialBusyId === c.id ? '…' : '輪替' }}
-                      </button>
-                      <span class="row-actions__sep">·</span>
-                      <button class="term-action term-action--danger" :disabled="credentialBusyId === c.id" @click="handleRevokeCredential(c)">
-                        {{ credentialBusyId === c.id ? '…' : '吊銷' }}
-                      </button>
-                    </template>
-                    <span v-else class="cell-meta">—</span>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          </template>
-        </template>
+        <TermSection title="接入驗簽" />
+        <AgentGuardPanel :csp-url="cspUrl" />
       </div>
       <template #footer>
         <TermButton variant="ghost" @click="closeDetailModal" label="關閉" />
-      </template>
-    </TermModal>
-
-    <!-- Issue static token modal (Phase F Tier 0) -->
-    <TermModal :visible="showIssueStaticModal" title="核發靜態 service token" width="440px" @close="showIssueStaticModal = false">
-      <p class="cell-meta">
-        靜態 csk- 不會自動輪替；建議每 90 天手動 rotate 一次。
-        適合無法跑 anila-core bootstrap CLI 的舊版 / 第三方 agent（Phase F Tier 0）。
-      </p>
-      <TermField label="標籤（選填）" hint="例：vendor-foo / pod-1 / staging">
-        <input v-model="staticLabel" class="term-input" placeholder="" maxlength="100" />
-      </TermField>
-      <template #footer>
-        <TermButton variant="ghost" @click="showIssueStaticModal = false" label="取消" />
-        <TermButton variant="primary" :loading="credentialBusyId === -2" :disabled="credentialBusyId === -2" label="核發" @click="handleIssueStatic" />
       </template>
     </TermModal>
 
@@ -649,26 +441,17 @@ def employee_count(department: str) -&gt; int:
 import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import {
-  approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents,
+  approveAgent, deleteAgent, downloadPlatformCa, downloadTemplate, getAgent, listMyAgents,
   registerAgent, rejectAgent, setAgentClassification,
   triggerAgentHealthCheck, updateAgent,
 } from '../api/agents'
 import {
   APPROVAL_STATUSES, approvalLabel, approvalVariant, isApprovable, isPendingReview,
 } from '../utils/approvalStatus'
-import {
-  issueBootstrapToken,
-  issueStaticCredential,
-  listAgentCredentials,
-  revokeAgentCredential,
-  rotateAgentCredential,
-  testAgentConnection,
-} from '../api/agentCredentials'
 import { listCollections } from '../api/ingestionCollections'
 import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
-import BootstrapHowToTabs from '../components/agents/BootstrapHowToTabs.vue'
 import AgentGuardPanel from '../components/agents/AgentGuardPanel.vue'
 
 // CSP base URL the snippets should reference. Derived from the
@@ -705,30 +488,17 @@ const editForm = ref({
 })
 const feedback = ref({ type: 'success', message: '' })
 
-// ── Sprint 8 X / Phase A — agent service-token management ────────────────────
-// detailCredentials is loaded on detail-modal open. issuedSecret holds the
-// one-shot plaintext returned by issue-bootstrap / issue-static / rotate so
-// we can display it once and clear it the moment the modal closes.
-const detailCredentials = ref([])
-const credentialsLoading = ref(false)
-const credentialBusyId = ref(null)
-const issuedSecret = ref(null) // { kind: 'bsk'|'csk', value, meta?, ttlExpiresAt? }
-const showIssueStaticModal = ref(false)
-const staticLabel = ref('')
 const filters = ref({ query: '', approval: 'all', health: 'all', sort: 'newest' })
 const form = ref({
   name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
   base_model_id: null, collection_ids: [],
-  // Slice 5b — 新增治理欄位；G9 — 預設分類等級（取代舊鎖開關）
   runtime_type: 'openai_compatible_agent', agent_version: '',
   default_classification_level: '無機密',
 })
 const formErrors = ref({})
 
-// Slice 5b — 篩選下拉可選的七值審批狀態（含 all）。
 const approvalFilterOptions = APPROVAL_STATUSES
 
-// runtime_type 五選一（doc 05 §3）；值為機器 token（保留英文），helper 繁中說明。
 const RUNTIME_TYPE_OPTIONS = [
   { value: 'anila_agent', label: 'anila_agent', hint: '官方 anila-agent 樣板（openai-agents runtime）' },
   { value: 'langchain', label: 'langchain', hint: 'LangChain / LangGraph 服務' },
@@ -737,7 +507,6 @@ const RUNTIME_TYPE_OPTIONS = [
   { value: 'custom_http', label: 'custom_http', hint: '自訂 HTTP 介面（需自行對齊契約）' },
 ]
 
-// 分類等級四級（SYSTEM-MAP §8）；預設等級與上限共用同一字彙。由低到高排序。
 const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
 
 function levelBadgeVariant(level) {
@@ -749,54 +518,7 @@ function levelBadgeVariant(level) {
 const runtimeTypeHint = computed(() =>
   RUNTIME_TYPE_OPTIONS.find(o => o.value === form.value.runtime_type)?.hint || '')
 
-// Register wizard: step 1 = details form, step 2 = provision the csk- + verify.
-const registerStep = ref(1)
-const registeredAgent = ref(null) // { id, name, bound_collection_ids }
-const newAgentCsk = ref('')       // one-time plaintext csk- for the new agent
-const issuingNew = ref(false)
-// Bound collection ids for the csk- guard panel's outbound-RAG snippet.
-// undefined (→ panel hides the RAG block) when the agent has no bound
-// collections or the payload doesn't carry them. Passes the first id for
-// the legacy single-COLLECTION snippet; env lists all ids.
-const detailAgentCollectionId = computed(() => {
-  const ids = detailAgent.value?.bound_collection_ids
-  if (Array.isArray(ids) && ids.length) return ids[0]
-  if (typeof detailAgent.value?.bound_collection_id === 'number') {
-    return detailAgent.value.bound_collection_id
-  }
-  return undefined
-})
-const registeredAgentCollectionId = computed(() => {
-  const ids = registeredAgent.value?.bound_collection_ids
-  if (Array.isArray(ids) && ids.length) return ids[0]
-  if (typeof registeredAgent.value?.bound_collection_id === 'number') {
-    return registeredAgent.value.bound_collection_id
-  }
-  return undefined
-})
-// Which active credential CSP actually dispatches as X-CSP-Service-Token:
-// the most recently issued-OR-rotated active one — mirrors the backend's
-// get_active_plaintext_for_agent ordering (coalesce(rotated_at, issued_at),
-// Nit#2). Surfaced so operators with multiple active credentials know which
-// csk- a fail-closed guard must match. null when no active credential.
-const dispatchedCredentialId = computed(() => {
-  let best = null
-  let bestTs = -Infinity
-  for (const c of detailCredentials.value) {
-    if (!c.is_active) continue
-    const ts = new Date(c.rotated_at || c.issued_at).getTime()
-    if (!Number.isFinite(ts)) continue
-    // Tie-break by id (mirrors backend `, id DESC`) so badge == dispatch.
-    if (ts > bestTs || (ts === bestTs && c.id > best)) {
-      bestTs = ts
-      best = c.id
-    }
-  }
-  return best
-})
-const collections = ref([])       // owner's collections, for the optional RAG bind
-const testResult = ref(null)      // { host_reachable, credentials_accepted, path_verified, detail }
-const testing = ref(false)
+const collections = ref([])
 const availableModels = ref([])
 const baseModelOptions = computed(() =>
   availableModels.value.filter(m => m.is_active && (m.model_type === 'llm' || m.model_type === 'vlm'))
@@ -842,10 +564,6 @@ function resetForm() {
     default_classification_level: '無機密',
   }
   formErrors.value = {}
-  registerStep.value = 1
-  registeredAgent.value = null
-  newAgentCsk.value = ''
-  testResult.value = null
 }
 
 function validateForm() {
@@ -885,142 +603,14 @@ async function openDetailModal(agent) {
   try { const { data } = await getAgent(agent.id); detailAgent.value = data }
   catch { detailAgent.value = agent }
   showDetailModal.value = true
-  // Lazy-load credentials only when admin opens the modal — avoids
-  // hitting the endpoint for non-admin viewers.
-  if (authStore.isAdmin) await refreshDetailCredentials()
 }
 
-// 是否可核准（OE-1：registered／disabled 即可）。
 const detailIsApprovable = computed(() =>
   isApprovable(detailAgent.value?.approval_status))
-
-async function refreshDetailCredentials() {
-  if (!detailAgent.value) return
-  credentialsLoading.value = true
-  try {
-    detailCredentials.value = await listAgentCredentials(detailAgent.value.id)
-  } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '載入憑證失敗')
-    detailCredentials.value = []
-  } finally {
-    credentialsLoading.value = false
-  }
-}
-
-function clearIssuedSecret() {
-  issuedSecret.value = null
-}
 
 function closeDetailModal() {
   showDetailModal.value = false
   detailAgent.value = null
-  detailCredentials.value = []
-  clearIssuedSecret()
-}
-
-async function copyToClipboard(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-    setFeedback('success', '已複製到剪貼簿')
-  } catch {
-    setFeedback('error', 'clipboard write failed — copy manually')
-  }
-}
-
-async function handleIssueBootstrap() {
-  if (!detailAgent.value) return
-  if (!(await confirm({ message: `為「${detailAgent.value.name}」核發新的 bootstrap token？\n\n舊 bootstrap（若存在）會立即失效。`, confirmText: '核發', danger: true }))) return
-  credentialBusyId.value = -1
-  try {
-    const data = await issueBootstrapToken(detailAgent.value.id)
-    issuedSecret.value = {
-      kind: 'bsk',
-      value: data.bootstrap_token,
-      meta: {
-        agent_name: data.agent_name,
-        agent_id: data.agent_id,
-        endpoint_url: data.endpoint_url,
-        expires_at: data.expires_at,
-      },
-    }
-    setFeedback('success', 'bootstrap token 已核發 — 立即複製，不會再顯示')
-  } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '核發 bootstrap 失敗')
-  } finally {
-    credentialBusyId.value = null
-  }
-}
-
-function openIssueStaticModal() {
-  staticLabel.value = ''
-  showIssueStaticModal.value = true
-}
-
-async function handleIssueStatic() {
-  if (!detailAgent.value) return
-  credentialBusyId.value = -2
-  try {
-    const data = await issueStaticCredential(detailAgent.value.id, staticLabel.value || null)
-    issuedSecret.value = {
-      kind: 'csk',
-      value: data.service_token,
-      meta: {
-        credential_id: data.credential_id,
-        label: data.label,
-        issued_at: data.issued_at,
-        kind: 'static (no auto-rotate)',
-      },
-    }
-    setFeedback('success', 'service token 已核發 — 立即複製，不會再顯示')
-    showIssueStaticModal.value = false
-    // Listing credentials is admin-only (backend authz); an owner has already
-    // got the one-time plaintext from the banner above, so skip the refresh.
-    if (authStore.isAdmin) await refreshDetailCredentials()
-  } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '核發靜態 token 失敗')
-  } finally {
-    credentialBusyId.value = null
-  }
-}
-
-async function handleRotateCredential(credential) {
-  if (!detailAgent.value) return
-  if (!(await confirm({ message: `輪替 credential id=${credential.id}？舊 token 仍可用 24h（grace window）。`, confirmText: '輪替' }))) return
-  credentialBusyId.value = credential.id
-  try {
-    const data = await rotateAgentCredential(detailAgent.value.id, credential.id)
-    issuedSecret.value = {
-      kind: 'csk',
-      value: data.service_token,
-      meta: {
-        credential_id: data.credential_id,
-        label: credential.label,
-        issued_at: data.issued_at,
-        kind: 'rotated (previous valid 24h)',
-      },
-    }
-    setFeedback('success', '憑證已輪替 — 立即複製新 token')
-    await refreshDetailCredentials()
-  } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '輪替失敗')
-  } finally {
-    credentialBusyId.value = null
-  }
-}
-
-async function handleRevokeCredential(credential) {
-  if (!detailAgent.value) return
-  if (!(await confirm({ message: `立即吊銷 credential id=${credential.id}？無 grace window。`, confirmText: '吊銷', danger: true }))) return
-  credentialBusyId.value = credential.id
-  try {
-    await revokeAgentCredential(detailAgent.value.id, credential.id)
-    setFeedback('success', `憑證 id=${credential.id} 已吊銷`)
-    await refreshDetailCredentials()
-  } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '吊銷失敗')
-  } finally {
-    credentialBusyId.value = null
-  }
 }
 
 function openRejectModal(agent) { rejectTarget.value = agent; rejectReason.value = '' }
@@ -1035,7 +625,7 @@ async function handleRegister() {
     // 未宣告的欄位會 422，不再被安靜丟掉。用展開的話，任何人日後在 form
     // 上多加一個純 UI 用的暫存欄位（例如折疊狀態、草稿旗標），就會讓全院
     // 每一次註冊都 422，而他不會知道原因。要送新欄位 → 先在後端宣告。
-    const resp = await registerAgent({
+    await registerAgent({
       name: form.value.name.trim(),
       endpoint_url: form.value.endpoint_url.trim(),
       description_for_router: form.value.description_for_router.trim(),
@@ -1045,92 +635,19 @@ async function handleRegister() {
         ? [...form.value.collection_ids]
         : [],
       runtime_type: form.value.runtime_type || 'openai_compatible_agent',
-      // 欄位名對齊資料庫欄位與回應(agent_version)。以前送 version,
-      // 後端收下就丟掉 —— 填了版本卻永遠顯示「—」。
       agent_version: form.value.agent_version.trim() || null,
-      // G9 — 預設分類等級（四級字彙；後端據此衍生受控存取旗標）。
       default_classification_level: form.value.default_classification_level || '無機密',
     })
-    // Advance to step 2 (provision key) instead of closing — one onboarding
-    // flow: register → issue csk- → paste into .env → verify (S-Q2/Q3).
-    registeredAgent.value = resp.data
-    registerStep.value = 2
-    setFeedback('success', 'agent 已註冊 · 待管理員指派使用者 — 現在核發金鑰')
+    setFeedback('success', 'Agent 已註冊 · 待管理員指派使用者後即可使用（無需保管任何祕密）')
+    finishRegister()
     await fetchAgents()
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'register failed') }
   finally { registering.value = false }
 }
 
-async function handleIssueForNew() {
-  if (!registeredAgent.value) return
-  issuingNew.value = true
-  try {
-    const data = await issueStaticCredential(registeredAgent.value.id, null)
-    newAgentCsk.value = data.service_token
-    setFeedback('success', 'service token 已核發 — 立即複製，不會再顯示')
-  } catch (e) { setFeedback('error', e.response?.data?.detail || '核發 token 失敗') }
-  finally { issuingNew.value = false }
-}
-
-function connectionTestOk(result) {
-  // Green only when both path and credentials are positively verified.
-  // host_reachable alone (e.g. 401 on every path) must not look like success.
-  return !!(result && result.path_verified && result.credentials_accepted)
-}
-
-async function handleTestConnection() {
-  if (!registeredAgent.value) return
-  testing.value = true
-  testResult.value = null
-  try {
-    testResult.value = await testAgentConnection(registeredAgent.value.id)
-  } catch (e) {
-    testResult.value = {
-      host_reachable: false,
-      credentials_accepted: null,
-      path_verified: null,
-      reachable: false,
-      token_accepted: null,
-      detail: e.response?.data?.detail || 'test failed',
-    }
-  } finally { testing.value = false }
-}
-
 function finishRegister() {
   showRegisterModal.value = false
 }
-
-// env snippet pre-filled for the new agent's .env (S-Q1 one-key model).
-// CSP_BASE_URL: the browser origin (e.g. localhost) is the ADMIN's view, not
-// necessarily where the agent host can reach CSP — the agent usually runs on a
-// different machine. So when the origin is loopback (or unknown) we emit a
-// placeholder + comment instead of a misleading localhost value.
-const newAgentEnvSnippet = computed(() => {
-  const a = registeredAgent.value
-  if (!a) return ''
-  const origin = cspUrl || ''
-  const isLoopback = !origin || /localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0/.test(origin)
-  const lines = []
-  if (isLoopback) {
-    lines.push('# CSP_BASE_URL: set to the CSP host reachable FROM the agent machine')
-    lines.push('# (the agent rarely shares a host with CSP — do NOT use localhost)')
-    lines.push('CSP_BASE_URL=https://<csp-host-reachable-from-agent>')
-  } else {
-    lines.push(`CSP_BASE_URL=${origin}`)
-  }
-  lines.push(`ANILA_AGENT_NAME=${a.name}`)
-  lines.push(`CSP_SERVICE_TOKEN=${newAgentCsk.value || '<paste the csk- shown above>'}`)
-  const ids = Array.isArray(a.bound_collection_ids) && a.bound_collection_ids.length
-    ? a.bound_collection_ids
-    : (a.bound_collection_id ? [a.bound_collection_id] : [])
-  if (ids.length === 1) {
-    lines.push(`ANILA_COLLECTION_ID=${ids[0]}`)
-  } else if (ids.length > 1) {
-    lines.push(`ANILA_COLLECTION_IDS=${ids.join(',')}`)
-    lines.push(`# 亦可逐一查詢：${ids.map(id => `/api/ingestion/collections/${id}/search`).join(' · ')}`)
-  }
-  return lines.join('\n')
-})
 
 function canEditAgent(agent) {
   if (!agent) return false
@@ -1296,6 +813,28 @@ async function handleDownloadTemplate() {
   } catch (e) { setFeedback('error', e.response?.data?.detail || '下載失敗') }
 }
 
+async function handleDownloadPlatformCa() {
+  // Needs GET /api/agents/platform-ca/download (backend package not in W3 scope).
+  try {
+    const { data } = await downloadPlatformCa()
+    const url = URL.createObjectURL(new Blob([data], { type: 'application/x-pem-file' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'anila-platform-ca.pem'
+    link.click()
+    URL.revokeObjectURL(url)
+    setFeedback('success', '平台 CA 已下載')
+  } catch (e) {
+    const status = e.response?.status
+    const detail = e.response?.data?.detail
+    if (status === 404) {
+      setFeedback('error', '平台 CA 下載端點尚未上線（需後端提供 GET /api/agents/platform-ca/download）')
+    } else {
+      setFeedback('error', detail || '下載平台 CA 失敗')
+    }
+  }
+}
+
 function healthVariant(s) {
   if (s === 'healthy' || s === 'online') return 'ok'
   if (s === 'unhealthy' || s === 'offline') return 'danger'
@@ -1322,6 +861,7 @@ function buildStatusHistory(agent) {
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 .page-head__actions { display: inline-flex; gap: var(--gap-2); }
+.page-head__ca-hint { width: 100%; margin: 0; text-align: right; }
 
 .feedback { display: flex; gap: var(--gap-2); align-items: center; font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
 .feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
@@ -1471,91 +1011,4 @@ function buildStatusHistory(agent) {
 }
 .timeline__label { color: var(--c-fg-1); font-size: var(--t-sm); margin: 0; font-weight: 500; }
 .timeline__detail { color: var(--c-fg-2); font-size: var(--t-2xs); margin: 4px 0 0; }
-
-/* Sprint 8 X / Phase A — service-token banner + table */
-.secret-banner {
-  border: 1px solid var(--c-accent);
-  background: var(--c-surface-2);
-  padding: 8px 10px;
-  margin: 8px 0 12px;
-  font-size: var(--t-2xs);
-}
-.secret-banner--bsk { border-color: var(--c-warn, #c08a2c); }
-.secret-banner__head {
-  display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;
-}
-.secret-banner__body { display: flex; align-items: center; gap: 8px; }
-.secret-banner__token {
-  flex: 1;
-  font-family: var(--font-mono); font-size: var(--t-sm);
-  background: var(--c-surface-1); color: var(--c-fg-1);
-  border: var(--border-w) solid var(--c-border-strong);
-  padding: 4px 6px;
-  word-break: break-all; user-select: all;
-}
-.secret-banner__meta { margin: 6px 0 0; padding-left: 1.2em; color: var(--c-fg-2); }
-.secret-banner__meta li { line-height: 1.5; }
-.secret-banner__meta code {
-  background: var(--c-surface-1); color: var(--c-fg-1);
-  border: var(--border-w) solid var(--c-border);
-  padding: 1px 4px; font-size: var(--t-3xs);
-}
-
-.secret-banner__howto { margin-top: 12px; }
-.secret-banner__howto-summary {
-  cursor: pointer;
-  font-size: var(--t-2xs);
-  color: var(--c-fg-2);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 4px 0;
-  user-select: none;
-}
-.secret-banner__howto-summary:hover { color: var(--c-fg-1); }
-.secret-banner__howto[open] .secret-banner__howto-summary { margin-bottom: 8px; }
-
-.cred-table { width: 100%; border-collapse: collapse; font-size: var(--t-2xs); }
-.cred-table th {
-  text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--c-divider);
-  font-weight: 500; color: var(--c-fg-2); text-transform: uppercase;
-  font-size: var(--t-3xs); letter-spacing: 0.04em;
-}
-.cred-table td { padding: 6px; border-bottom: 1px solid var(--c-divider); vertical-align: middle; }
-.cred-table tr.is-revoked td { opacity: 0.5; }
-
-.env-snippet {
-  background: var(--c-surface-2);
-  border: 1px solid var(--c-divider);
-  border-radius: var(--r-sharp);
-  padding: 8px 10px;
-  margin: 6px 0;
-  font-family: var(--font-mono);
-  font-size: var(--t-2xs);
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  user-select: all;
-  color: var(--c-fg-1);
-}
-.test-result {
-  margin-top: 8px;
-  padding: 6px 10px;
-  border-radius: var(--r-sharp);
-  border: 1px solid var(--c-divider);
-  font-size: var(--t-2xs);
-  line-height: 1.5;
-}
-.test-result--ok { border-color: var(--c-ok); color: var(--c-ok); }
-.test-result--bad { border-color: var(--c-danger); color: var(--c-danger); }
-
-/* Slice 5b — shadow-registration checkbox */
-.draft-check {
-  display: flex; gap: var(--gap-2); align-items: flex-start;
-  font-size: var(--t-2xs); color: var(--c-fg-2); cursor: pointer;
-  border: var(--border-w) solid var(--c-border);
-  padding: var(--gap-2) var(--gap-3); background: var(--c-bg);
-}
-.draft-check input { margin-top: 2px; flex-shrink: 0; }
-.draft-check__title { display: block; color: var(--c-fg-1); font-weight: 500; }
-.draft-check__hint { display: block; color: var(--c-fg-3); margin-top: 2px; line-height: 1.5; }
 </style>

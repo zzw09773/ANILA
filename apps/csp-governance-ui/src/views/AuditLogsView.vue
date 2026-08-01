@@ -19,7 +19,7 @@
           <input v-model="filters.action" class="term-input" placeholder="例：create" />
         </TermField>
         <!-- Sprint 8 X / Phase H quick-filter — service-token cutover monitoring. -->
-        <TermField label="快速 · service token" hint="稽核 cutover 進度">
+        <TermField label="快速 · 舊版服務憑證事件" hint="歷史稽核篩選（agent 已改派工 JWT）">
           <select v-model="filters.action" class="term-select" @change="fetchLogs">
             <option value="">— 選擇以篩選 —</option>
             <option value="service_token_legacy_env_used">legacy env-var fallback 命中</option>

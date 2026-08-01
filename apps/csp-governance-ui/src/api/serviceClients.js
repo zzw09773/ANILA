@@ -1,7 +1,5 @@
 // Service-client (Router / worker / admin-tool) credential management.
-// Sprint 8 X / Phase A. Same shape as agentCredentials.js but talks to
-// the /api/service-clients/* family because Routers / workers are not
-// agents and don't go through the bootstrap / approval flow.
+// Platform-internal s2s only — not the agent dispatch JWT path.
 
 import client from './client'
 
