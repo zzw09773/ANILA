@@ -4,6 +4,11 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+> ⚠ **2026-08-01 P2.1**：historical entries below may mention `csk-` /
+> `X-CSP-Service-Token` / `CSP_SERVICE_TOKEN` as the agent dispatch credential.
+> That path is replaced by per-dispatch JWTs verified via JWKS; do not treat
+> changelog examples as current onboarding. See `docs/guides/developer-guide.md`.
+
 ## v0.13.0 (2026-05-04) — Sprint 14 · Unified user-tenant memory layer (route 3)
 
 Pulls the platform-level user memory feature (CSP P1/P2/P3) under

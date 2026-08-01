@@ -53,7 +53,7 @@ How each role relates to anila-core:
 ### Console script
 
 ```
-anila-core = anila_core.cli.main:main   # init / register / status / agent bootstrap
+anila-core = anila_core.cli.main:main   # init / register / status / agent bootstrap (legacy; superseded by P2.1 dispatch JWT)
 ```
 
 ---
@@ -77,7 +77,11 @@ packages/anila-core/
     ├── ──── Pillar 1 · agent runtime ────
     ├── api/                  # server / router_server (create_router_app) + events
     │   ├── session_owner.py · caller_context.py   # resume session→agent table + CallerContext (reads X-ANILA-Task-Id)
-    │   └── middleware/auth.py   # CSP service-token + rotating token
+    │   └── middleware/
+    │       ├── auth.py            # LEGACY: CSP service-token + rotating token (old path; new agents must not use)
+    │       ├── dispatch_auth.py   # P2.1 dispatch-JWT middleware (JWKS verify, fail-closed)
+    │       ├── dispatch_jwt.py    # P2.1 JWT parse / verify helpers
+    │       └── jwks_client.py     # P2.1 JWKS fetch / cache
     ├── engine/               # query_engine (multi-stage turn loop) + budget_tracker
     │                         #   + approvals / guardrails / handoff / lifecycle
     ├── coordinator/          # multi-step decomposition + sub-agent dispatch
@@ -97,7 +101,7 @@ packages/anila-core/
     ├── registry/             # agent_registry + remote_agent_manifest (fetches from CSP /v1/agents)
     ├── runtime_config/       # snapshot · poller · apply (hot-reload)
     ├── models/               # pydantic DTOs
-    ├── cli/                  # init / register / status / bootstrap + templates/
+    ├── cli/                  # init / register / status / bootstrap (legacy) + templates/
     │
     └── ──── Pillar 2 · shared infrastructure ────
         ├── security/         # credential_crypto (AES-GCM + PBKDF2) + url_guard (SSRF, incl. endpoint_kind split)
@@ -178,10 +182,10 @@ print(result.stop_reason, result.turn_count)
 
 ### Full Trace export (opt-in)
 
-Tracing is **additive and fail-open**: with `ANILA_TRACE_ENDPOINT` unset the whole trace path is a no-op and behaviour is byte-identical to before it was wired. When set, spans are POSTed by a background `TraceExporter` to CSP `POST {base}/v1/traces/{trace_id}/spans` (body `{"spans":[…]}`, ≤256/batch, `X-CSP-Service-Token` auth) AND mirrored into the `anila.spans` SSE event.
+Tracing is **additive and fail-open**: with `ANILA_TRACE_ENDPOINT` unset the whole trace path is a no-op and behaviour is byte-identical to before it was wired. When set, spans are POSTed by a background `TraceExporter` to CSP `POST {base}/v1/traces/{trace_id}/spans` (body `{"spans":[…]}`, ≤256/batch, authenticated with `X-CSP-Service-Token`), AND mirrored into the `anila.spans` SSE event.
 
 - `ANILA_TRACE_ENDPOINT`: a bare flag (`1`/`true`/`on`/`yes`/`default`) → reuse the router's known `CSP_BASE_URL`; any other value → an explicit trace base URL.
-- `ANILA_TRACE_TOKEN`: the service token for trace export (falls back to `CSP_SERVICE_TOKEN`).
+- `ANILA_TRACE_TOKEN`: service token for the router's / platform-internal s2s trace export (falls back to `CSP_SERVICE_TOKEN` when unset). This is the credential for **anila-core's `TraceExporter` (used by the Router)** — not agent dispatch identity. If unset, the exporter sends **no** auth header and spans are silently drop-and-logged. Third-party agent in-task callbacks may use a dispatch JWT on the CSP side; that path is separate from this exporter.
 
 Three pieces in code: `TraceExporter` (thread-safe, batching, bounded queue, drop-and-log), `TraceSession` (per-`trace_id` span factory; `span()` / `async_span()` context managers auto-time / mark ok/error / auto-parent), `ExportingProcessor` (bridges the in-tree `Tracer`/`Span` onto the exporter, mapping `SpanKind` → doc `05` §6 span-types). All exported from `anila_core.tracing`.
 
@@ -229,7 +233,7 @@ Fixed host rules: deny list (loopback / `169.254.169.254` metadata / mDNS), inte
 
 | Consumer | Scope | What it gets |
 |--------|----------|----------|
-| **anila-core-router** | Pillar 1 + Pillar 2 | `create_router_app()`, QueryEngine, Coordinator, `RemoteAgentRegistry`, service-token middleware, trace SDK |
+| **anila-core-router** | Pillar 1 + Pillar 2 | `create_router_app()`, QueryEngine, Coordinator, `RemoteAgentRegistry`, dispatch-JWT / JWKS middleware, trace SDK |
 | **anila-agent template** (fork point) | Pillar 1 + Pillar 2 + `[rag]` | full runtime + parsing / vision provider |
 | **ingestion-worker** (Arq + Redis) | Pillar 2 only | `chunking_plugins`, `IngestionError`, `pg_pool`, `CollectionScopedPgVectorStore`, `credential_crypto` |
 | **services/csp** (CSP backend) | Pillar 2 (partial) | `credential_crypto` (encrypts `user_llm_credentials`), `url_guard` (SSRF) and other shared primitives |

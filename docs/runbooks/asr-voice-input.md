@@ -208,7 +208,9 @@ docker ps -a --filter name=anila-restart-asr --format '{{.Names}}\t{{.Status}}'
 
 gateway 活著,但撤銷清單(revocation cache)還沒同步完,此時所有 WS 一律被拒 ——
 health 誠實回 503 而不是騙 operator。通常是 csp 或 redis 剛重啟。
-等 10–30 秒;一直不好就查 `CSP_SERVICE_TOKEN` 對不對、csp 與 redis 健不健康。
+等 10–30 秒;一直不好就查 asr-gateway↔csp 的**平台內部** s2s 設定（若部署仍使用
+`CSP_SERVICE_TOKEN`／等效服務客戶端）、以及 csp 與 redis 健不健康。
+（此處與 agent 派工 JWT／`csk-` 上手無關。）
 
 ### C. 有按鈕、按下去卻失敗
 

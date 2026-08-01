@@ -64,7 +64,7 @@ def test_flush_batches_over_256():
     ).mock(return_value=httpx.Response(202))
 
     adapter = ata.AnilaTraceAdapter(
-        "https://csp.test", "csk-key", "trace_x", batch_size=ata.MAX_SPANS_PER_BATCH,
+        "https://csp.test", "dispatch-jwt-test", "trace_x", batch_size=ata.MAX_SPANS_PER_BATCH,
     )
     assert adapter.active
     # 送 300 個成對 span → 600 筆記錄 → 應切成 ceil(600/256)=3 批。
@@ -74,7 +74,7 @@ def test_flush_batches_over_256():
     adapter.flush()
 
     assert route.call_count == 3
-    assert route.calls[0].request.headers["Authorization"] == "Bearer csk-key"
+    assert route.calls[0].request.headers["Authorization"] == "Bearer dispatch-jwt-test"
     import json
     sizes = [len(json.loads(c.request.content)["spans"]) for c in route.calls]
     assert sizes == [256, 256, 88]
@@ -89,7 +89,7 @@ def test_flush_batches_over_256():
 def test_inactive_adapter_no_egress():
     route = respx.post(url__regex=r".*").mock(return_value=httpx.Response(202))
     # 缺 trace_id → 停用。
-    adapter = ata.AnilaTraceAdapter("https://csp.test", "csk-key", trace_id=None)
+    adapter = ata.AnilaTraceAdapter("https://csp.test", "dispatch-jwt-test", trace_id=None)
     assert not adapter.active
     with adapter.span(ata.RUN, "r"):
         with adapter.span(ata.MODEL_CALL, "m"):
@@ -99,7 +99,7 @@ def test_inactive_adapter_no_egress():
 
 
 def test_error_span_on_exception():
-    adapter = ata.AnilaTraceAdapter("https://csp.test", "csk-key", "trace_e")
+    adapter = ata.AnilaTraceAdapter("https://csp.test", "dispatch-jwt-test", "trace_e")
     with pytest.raises(ValueError):
         with adapter.span(ata.RUN, "r"):
             with adapter.span(ata.TOOL_CALL, "boom"):
@@ -145,7 +145,7 @@ def test_custom_http_full_trace(monkeypatch):
         headers={
             "X-ANILA-Trace-Id": "trace_123",
             "X-ANILA-Task-Id": "task_9",
-            "X-CSP-Service-Token": "csk-abc",
+            "Authorization": "Bearer dispatch-jwt-abc",
         },
     )
     assert resp.status_code == 200
@@ -160,8 +160,8 @@ def test_custom_http_full_trace(monkeypatch):
         spans.extend(json.loads(call.request.content)["spans"])
     got = sorted(s["span_type"] for s in spans)
     assert got == _EXPECTED_MULTISET
-    # 出向 ship 帶 Bearer csk-（雙角色金鑰沿用）。
-    assert route.calls[0].request.headers["Authorization"] == "Bearer csk-abc"
+    # 出向 ship 複用當次派工 JWT。
+    assert route.calls[0].request.headers["Authorization"] == "Bearer dispatch-jwt-abc"
     # run span 帶 task_id，output span 帶 citations。
     run_started = next(s for s in spans if s["span_type"] == "agent.run.started")
     assert run_started["attributes"]["task_id"] == "task_9"
@@ -172,7 +172,7 @@ def test_custom_http_full_trace(monkeypatch):
 def test_run_span_carries_task_and_classification():
     """分類等級/task_id 隨 run span 帶出（HTTP header 不便帶繁中，改此單元覆蓋）。"""
     adapter = ata.AnilaTraceAdapter(
-        "https://csp.test", "csk-k", "trace_c",
+        "https://csp.test", "dispatch-jwt-k", "trace_c",
         task_id="task_1", classification_level="機密",
     )
     with adapter.span(ata.RUN, "chat"):
@@ -217,7 +217,7 @@ def test_langchain_example_imports_clean():
     # 未安裝 langchain 時 handler 為 None，但 module 與 helper 仍可用。
     assert hasattr(lce, "AnilaLangChainTracer")
     assert callable(lce.adapter_from_env)
-    adapter = lce.adapter_from_env(csp_base=None, integration_key=None, trace_id=None)
+    adapter = lce.adapter_from_env(csp_base=None, dispatch_token=None, trace_id=None)
     assert isinstance(adapter, ata.AnilaTraceAdapter)
     assert not adapter.active
     if not lce._LANGCHAIN_AVAILABLE:

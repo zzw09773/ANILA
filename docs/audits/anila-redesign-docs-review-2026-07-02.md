@@ -1,3 +1,7 @@
+> ⚠ **2026-08-01 P2.1**：agent 派工身分已改為平台現簽的 5 分鐘 JWT（JWKS 驗簽；
+> 開發者不領 `csk-`／`CSP_SERVICE_TOKEN`）。下文保留當時紀錄，**勿依此做現行接入**；
+> 現行上手見 `docs/guides/developer-guide.md` 與治理中心「接入驗簽 · 三級制」。
+
 # ANILA Redesign Docs 複核報告（2026-07-02）
 
 > 範圍：`docs/anila-redesign-docs/` 全部 11 份設計文件（00–10）對照當前程式碼逐條查核。

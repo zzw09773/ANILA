@@ -1,3 +1,8 @@
+> ⚠ **2026-08-01 P2.1 契約更新**：下文若仍描述 `csk-`／`bsk-`／`X-CSP-Service-Token`／
+> `CSP_SERVICE_TOKEN` 作為 agent 派工身分，該段已過時。現行＝5 分鐘派工 JWT＋JWKS 驗簽
+> （開發者不領鑰匙；三級接入見 `docs/guides/developer-guide.md`）。
+> 歷史段落未逐字改寫，以免破壞 redesign 文件結構。
+
 # Claude Code (TypeScript) Source 深度分析 — for anila-agent 移植 backlog
 
 > **目的**：對照 `anila-agent/templete/claude-code-src/` 的 TypeScript source（Anthropic 官方 Claude Code CLI），盤點哪些 design pattern 還沒被 `anila-agent/anila_agent/`（ANILA sub-agent template，Python / openai-agents SDK 為底）移植進來，列出可以借鑑的部分、估工作量、給出 Python port 草案。

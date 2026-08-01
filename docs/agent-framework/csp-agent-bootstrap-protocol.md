@@ -1,3 +1,21 @@
+# ⚠ SUPERSEDED BY P2.1（2026-08-01）— 請先讀本節
+
+> **本文件下方的 wire protocol（`bsk-`→`csk-` bootstrap、`X-CSP-Service-Token`、
+> 靜態 `CSP_SERVICE_TOKEN`）已由 P2.1 取代，不再是現行上手路徑。**
+>
+> **現行契約（摘要）**
+> - 平台每次派工現簽約 5 分鐘 RS256 JWT：`Authorization: Bearer <JWT>`
+> - claims：`{user_id, department, agent_id}`；`iss=anila-csp`、`aud=anila-agent`
+> - agent 用公開 JWKS（`{CSP}/.well-known/jwks.json`）＋平台 CA 驗簽；開發者**不領任何鑰匙**
+> - 任務內回呼平台複用同一張派工 JWT
+> - 接入三級制（樣板／單檔 `anila_verify.py`／sidecar）與誠實可用性邊界：
+>   見治理中心 `AgentGuardPanel` 與 `docs/guides/developer-guide.md`
+> - 權威設計：`docs/designs/p21-drop-csk-scope-2026-08-01.md`；規格：`SYSTEM-MAP.md` §身分
+>
+> **下方全文凍結保留**，作為歷史 wire 紀錄與遷移對照；實作與測試勿再把下方路徑當預設。
+
+---
+
 # CSP Agent Bootstrap Protocol
 
 > **Status**: protocol spec + Phase 0.5 implementation plan

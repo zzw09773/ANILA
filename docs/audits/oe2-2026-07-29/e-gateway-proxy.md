@@ -1,3 +1,7 @@
+> ⚠ **2026-08-01 P2.1**：agent 派工身分已改為平台現簽的 5 分鐘 JWT（JWKS 驗簽；
+> 開發者不領 `csk-`／`CSP_SERVICE_TOKEN`）。下文保留當時紀錄，**勿依此做現行接入**；
+> 現行上手見 `docs/guides/developer-guide.md` 與治理中心「接入驗簽 · 三級制」。
+
 # OE-2 Spec-Conformance Audit — E. MODEL GATEWAY / PROXY
 
 **Scope:** `services/csp/` — `app/api/proxy.py`, `app/services/proxy/{ceiling,headers,service}.py`,

@@ -1,3 +1,5 @@
+> ⚠ **2026-08-01 P2.1**：下文重建藍圖若仍寫靜態 `csk-`／`X-CSP-Service-Token` 上手，該段已過時；認證方向已改派工 JWT＋JWKS（見本檔後續已改寫之認證條目與 `docs/guides/developer-guide.md`）。
+
 # anila-agent 重建計畫（完整移植版）
 
 > 版本：2026-06-14 · **狀態：P0–P5 全部完成並 live 驗證、對抗式複核後修畢**
@@ -147,7 +149,7 @@ anila-agent/
 │   │   └── renderer.py         # 串流 text/thoughts/tool-call 分類渲染
 │   ├── serving/  ← 平台契約逐字保留
 │   │   ├── service_wrapper.py  # FastAPI: GET /health, GET /v1/models(model_type=agent), POST /v1/chat/completions
-│   │   └── auth.py             # verify service-token(hmac.compare_digest fail-closed) + X-ANILA-User-* trust-after-verify
+│   │   └── auth.py             # P2.1: verify dispatch JWT via JWKS (fail-closed); identity in claims
 │   ├── orchestration/  ← 完整移植：多代理
 │   │   └── deep_research.py    # planner→parallel-retrieve→writer→verifier（/deep-research 觸發）
 │   ├── observability/
@@ -183,7 +185,7 @@ anila-agent/
 | 長期跨 session 記憶 | **自製 memdir** | SDK 無；旗艦差異化 |
 | model 重試/backoff | **用原生** `retry_policies` | drop 舊 providers/retry.py |
 | guardrails（PII/注入/scope/未接地） | **用原生** input/output/tool guardrails | decorator + tripwire；判定走 gpt-oss |
-| MCP client | **用原生**（stdio/sse/http + tool filtering） | 對應 csk- 綁定 collection 最小權限 |
+| MCP client | **用原生**（stdio/sse/http + tool filtering） | 對應 agent 綁定 collection 最小權限（任務內回呼複用派工 JWT） |
 | tracing | **混合**：原生 spans/RunHooks，**必須 disable 預設 exporter** | 預設 exporter 會 POST platform.openai.com → air-gap 洩漏/401 |
 | cost 貨幣 | **自製** 薄價格表層 | SDK Usage 只有 token；Gemma 價格 unknown 時標註 |
 | slash command / output style | **自製** CLI 層 | SDK 無此概念 |
@@ -202,8 +204,8 @@ anila-agent/
 4. **CSP HTTP 契約**：`POST {ANILA_CSP_BASE_URL}/api/ingestion/collections/{id}/search`（origin 非 /v1 proxy base）、Bearer、`{query,top_k,min_score}`、回 `results[]{chunk_id,content,score,chunk_key,document_id,filename,metadata}`。
 5. **retriever 自動選擇優先序**：explicit arg > csp_http > anila_pgvector > generic pgvector > dummy；**csp_http 勝過 anila_pgvector**（base-url gate 區分）；CSP 漏設 base-url → csp 回 None → anila_pgvector RAISE（保留此**錯誤歸因**）。
 6. **service-wrapper**：三端點形狀逐字；`/v1/models` 回 `model_type:'agent'`（CSP 註冊標記）；port 8200。
-7. **認證方向**：驗 `X-CSP-Service-Token`(csk-) via `hmac.compare_digest`（fail-closed，未設→401 除非 `ANILA_ALLOW_NO_SERVICE_TOKEN=1`）；驗過才信 `X-ANILA-User-*`；**不驗 JWT**（Router 不轉發 user JWT — 對應 Router dispatch 認證 gap，RAG 認證方向變更須回報 user 不自行決定）。
-8. **env 契約 + fallback 鏈**：`ANILA_*`、`PGVECTOR_*`、`ANILA_CSP_*`、`CSP_SERVICE_TOKEN`(←`CSP_SEARCH_TOKEN`)、`ANILA_SSL_VERIFY`（1 預設；off 同時翻 litellm.ssl_verify）。
+7. **認證方向（P2.1）**：驗 `Authorization: Bearer <派工 JWT>`（RS256／JWKS／`iss=anila-csp`／`aud=anila-agent`，fail-closed）；身分取自 claims（`user_id`／`department`／`agent_id`），**不**再以靜態 `csk-`／明文 `X-ANILA-User-*` 當信任根。開發者不領長效 agent 祕密。
+8. **env 契約**：`ANILA_*`、`PGVECTOR_*`、`ANILA_CSP_*`、`CSP_BASE_URL`、`ANILA_CA_FILE`（勿設 `SSL_CERT_FILE`）、`ANILA_SSL_VERIFY`（1 預設；off 同時翻 litellm.ssl_verify）。**不再**要求 `CSP_SERVICE_TOKEN` 作為上手憑證。
 9. **RAG 工具契約**：`search_documents` k clamp 1..20；`read_document` 回 None 是契約（chunk 已帶全文）非 bug。
 10. **model.yaml settings allowlist**：只套已知 key，未知 key 靜默丟棄不報錯。
 
@@ -221,7 +223,7 @@ anila-agent/
 - **deny-all 政策預設** + 明列 allow read-only retrieval
 - **工具能力表唯一真相來源**：SDK `@function_tool` **沒有 is_read_only** → 在 `configs/tools.yaml` 建 `name→{read_only|write|admin}`，由 policy/dsl.py + agent_factory 守衛消費（沒這張表，read-only-by-default 做不出來 — 審查頭號修正）
 - **agent_factory fail-closed 啟動守衛**：偵測到 write/admin 工具但無對應 policy → 建構時 raise
-- **memdir 自動存檔前去敏**：剝 `X-CSP-Service-Token` / `X-ANILA-User-*` / `csk-`/`sk-` token，祕密不落地
+- **memdir 自動存檔前去敏**：剝 `Authorization` Bearer／舊 `X-CSP-Service-Token`／`X-ANILA-User-*`／`csk-`/`sk-` 等 token 形狀，祕密不落地
 - **memdir 路徑驗證**：拒相對/root/UNC/null-byte/裸-~ 路徑；排除 repo-committed 的 autoMemoryDirectory override
 
 ---
@@ -235,7 +237,7 @@ anila-agent/
 | **P2 原生 harness 接線** | 靠 SDK 原生取代舊 harness | 自製 Session(SQLite + Postgres opt + 非OpenAI compaction)、policy dsl+guardrail(deny-all)、input/output/tool guardrails(走 gpt-oss)、RunState resume、observability hooks+cost、原生 MCP + tool filtering | P1 |
 | **P3 差異化：memdir + UX** | 移植 SDK 缺的旗艦功能 | memdir 全模組（hybrid recall + 去敏 + freshness）、prompts/builder、cli slash/output-style/renderer、CitedAnswer + 接地 guardrail + chunk freshness 標記 | P2 |
 | **P4 完整移植：多代理 + skills + triggers** | 補齊「完整版」差異化 | orchestration/deep_research（/deep-research）、skills/loader（不信任 shell 邊界）+ 範例、triggers/runner | P3 |
-| **P5 強化 + 出貨** | 端到端驗證 + 離線出貨 | offline/ 離線輪檔包（pip download → --no-index 全相依閉包零網路）、Dockerfile/Makefile、e2e（CSP env → service_wrapper dispatch with service-token + X-ANILA-User-* → cited answer；read+邏輯驗證，不 docker exec、觸發由 user 從 frontend 點）、README zh-TW/en、安全 pass | P4 |
+| **P5 強化 + 出貨** | 端到端驗證 + 離線出貨 | offline/ 離線輪檔包（pip download → --no-index 全相依閉包零網路）、Dockerfile/Makefile、e2e（CSP env → service_wrapper dispatch with 派工 JWT → cited answer；read+邏輯驗證，不 docker exec、觸發由 user 從 frontend 點）、README zh-TW/en、安全 pass | P4 |
 
 ---
 
@@ -245,7 +247,7 @@ anila-agent/
 - **0.3.0→0.17.5 巨跳**：~230 exports，舊 import 全部不解析；一切對 0.17.5 真實介面重推。
 - **reasoning-model 結構化輸出（預設路徑就會碰）**：gpt-oss 與 gemma4 都是 reasoning 模型，`content=None` until reasoning done。gpt-oss 推理短（57 tok）實務上安全，但這是模型而非端點保證；model.py 須 max_tokens≥512 下限 + 剝 ```json fence + fail-closed parse，否則換更囉嗦的 reasoning 模型會靜默回空。gemma4 推理 ~235 tok，上線時下限調更高。
 - **平台契約漂移靜默且災難**：halfvec cast / leaf filter / SET LOCAL / 優先序 / CSP base 任一錯 → 空或錯 scope 不報錯；靠形狀斷言測試擋。
-- **認證方向回歸**：agent 拿 service token 非 JWT；勿重新引入 JWT 驗證（破壞 Router dispatch）；RAG 認證變更回報 user。
+- **認證方向回歸（P2.1 已翻轉）**：agent **必須**驗平台派工 JWT（JWKS）；勿把靜態 `csk-` 上手路徑寫回文件或預設設定。RAG／trace 任務內回呼複用同一張派工 JWT。
 - **離線安裝閉包**：openai-agents 拉 openai/httpx/pydantic 整棵樹；需 vendored wheelhouse 驗證零網路安裝（非只驗「沒拉 litellm」）。
 - **input guardrail 只跑第一輪**：HITL resume 不重跑；per-retrieval 安全須用 tool-input guardrail，勿依賴 input guardrail 做後續輪 scope 檢查。
 - **驗證紀律**：不 docker cp/exec 進 running 容器、不 CLI 模擬 job 觸發；service-wrapper dispatch 走 read+邏輯驗證 + user 從 frontend 觸發。

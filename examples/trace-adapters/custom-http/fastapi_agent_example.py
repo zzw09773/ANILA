@@ -10,11 +10,13 @@
     POST /v1/chat/completions             —— OpenAI-compatible chat（主流程）
     POST /anila/trace-test                —— 自我 trace 測試（doc-06 §8）
 
-主流程收到 CSP dispatch 的 header：
-    X-CSP-Service-Token           —— 入向驗證 + 出向 trace ship 的雙角色 csk-
+主流程收到 CSP dispatch 的 header（P2.1）：
+    Authorization: Bearer <JWT>   —— 入向派工身分（JWKS 驗簽）+ 出向 trace 複用
     X-ANILA-Trace-Id              —— 有它才發 trace（缺 → adapter 停用、零外送）
     X-ANILA-Task-Id               —— 歸因
     X-ANILA-Classification-Level  —— 分類等級（隨 run / output span 帶出）
+
+入向完整 JWKS 驗簽請接治理中心 anila_verify.py（本範例聚焦出向 Full Trace）。
 
 跑起來：
     pip install fastapi uvicorn httpx
@@ -52,18 +54,27 @@ BASE_MODEL = "gpt-oss-20b"
 app = FastAPI(title="ANILA custom-http agent example")
 
 
+def _extract_bearer(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    value = authorization.strip()
+    if value.lower().startswith("bearer "):
+        return value[7:].strip() or None
+    return value or None
+
+
 def _adapter_for_request(request: Request) -> AnilaTraceAdapter:
     """由入向 header + 環境變數組出 adapter。
 
-    - ``integration_key``：優先取 dispatch 帶的 ``X-CSP-Service-Token``（雙角色
-      csk-；出向 ship 沿用），否則退回 ``ANILA_INTEGRATION_KEY`` 環境變數。
+    - ``dispatch_token``：優先取 ``Authorization: Bearer <派工 JWT>``，
+      否則退回 ``ANILA_DISPATCH_TOKEN``（僅本機示範；正式環境應只用當次 header）。
     - 缺 ``X-ANILA-Trace-Id`` → adapter 停用（no-op、零外送）。
     """
     return AnilaTraceAdapter(
         csp_base=os.environ.get("ANILA_CSP_BASE"),
-        integration_key=(
-            request.headers.get("X-CSP-Service-Token")
-            or os.environ.get("ANILA_INTEGRATION_KEY")
+        dispatch_token=(
+            _extract_bearer(request.headers.get("Authorization"))
+            or os.environ.get("ANILA_DISPATCH_TOKEN")
         ),
         trace_id=request.headers.get("X-ANILA-Trace-Id"),
         task_id=request.headers.get("X-ANILA-Task-Id"),

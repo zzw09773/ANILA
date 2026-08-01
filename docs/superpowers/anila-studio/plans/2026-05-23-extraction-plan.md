@@ -1,3 +1,7 @@
+> ⚠ **2026-08-01 P2.1**：本計畫／規格所描述的 `csk-` 入向守衛與靜態服務憑證路徑，
+> 已由派工 JWT＋JWKS 驗簽取代。下文保留原設計決策軌跡；現行接入見
+> `docs/guides/developer-guide.md`。
+
 # ANILA Studio Service Extraction Plan
 
 **Date**: 2026-05-23

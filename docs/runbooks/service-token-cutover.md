@@ -1,3 +1,8 @@
+> ⚠ **SUPERSEDED · 2026-08-01 P2.1**
+> 本 runbook 描述的靜態 `csk-`／`bsk-`／`CSP_SERVICE_TOKEN` 上手與輪替路徑**已廢止**。
+> 現行：平台派工 JWT＋JWKS 驗簽；開發者不保管長效 agent 祕密。
+> 請改讀 `docs/guides/developer-guide.md`。下文僅供歷史對照，勿照做。
+
 # Service-token cutover runbook
 
 > Sprint 8 X / Phase A–F. Walks ops through the steps required to move

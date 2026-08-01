@@ -53,7 +53,7 @@
 ### Console script
 
 ```
-anila-core = anila_core.cli.main:main   # init / register / status / agent bootstrap
+anila-core = anila_core.cli.main:main   # init / register / status / agent bootstrap（legacy；已被 P2.1 派工 JWT 取代）
 ```
 
 ---
@@ -77,7 +77,11 @@ packages/anila-core/
     ├── ──── Pillar 1 · agent runtime ────
     ├── api/                  # server / router_server(create_router_app)+ events
     │   ├── session_owner.py · caller_context.py   # resume session→agent 表 + CallerContext(讀 X-ANILA-Task-Id)
-    │   └── middleware/auth.py   # CSP service-token + rotating token
+    │   └── middleware/
+    │       ├── auth.py            # LEGACY：CSP service-token + rotating token（舊路徑；新 agent 勿用）
+    │       ├── dispatch_auth.py   # P2.1 派工 JWT 中介層（JWKS 驗簽、fail-closed）
+    │       ├── dispatch_jwt.py    # P2.1 JWT parse／verify helpers
+    │       └── jwks_client.py     # P2.1 JWKS 抓取／快取
     ├── engine/               # query_engine(多階段 turn loop)+ budget_tracker
     │                         #   + approvals / guardrails / handoff / lifecycle
     ├── coordinator/          # multi-step decomposition + sub-agent dispatch
@@ -97,7 +101,7 @@ packages/anila-core/
     ├── registry/             # agent_registry + remote_agent_manifest(從 CSP /v1/agents 撈)
     ├── runtime_config/       # snapshot · poller · apply(hot-reload)
     ├── models/               # pydantic DTOs
-    ├── cli/                  # init / register / status / bootstrap + templates/
+    ├── cli/                  # init / register / status / bootstrap（legacy）+ templates/
     │
     └── ──── Pillar 2 · shared infrastructure ────
         ├── security/         # credential_crypto(AES-GCM + PBKDF2)+ url_guard(SSRF,含 endpoint_kind 分域)
@@ -181,7 +185,7 @@ print(result.stop_reason, result.turn_count)
 Tracing 是 **additive 且 fail-open**:`ANILA_TRACE_ENDPOINT` 未設 → 整條 trace 路徑 no-op,行為與未接前完全一致。設定後,span 由背景 `TraceExporter` POST 到 CSP `POST {base}/v1/traces/{trace_id}/spans`(body `{"spans":[…]}`,≤256/批,`X-CSP-Service-Token` 認證),同時 mirror 進 `anila.spans` SSE 事件。
 
 - `ANILA_TRACE_ENDPOINT`:bare flag(`1`/`true`/`on`/`yes`/`default`)→ 用 router 已知的 `CSP_BASE_URL`;其他值 → 當顯式 trace base URL。
-- `ANILA_TRACE_TOKEN`:trace export 用的 service token(未設則 fallback `CSP_SERVICE_TOKEN`)。
+- `ANILA_TRACE_TOKEN`:router／平台內部 s2s 的 trace export service token（未設則 fallback `CSP_SERVICE_TOKEN`）。這是 **anila-core `TraceExporter`（Router 用）** 的憑證，不是 agent 派工身分——未設時 exporter 送出無 auth header，span 會被靜默 drop-and-log。第三方 agent 任務內回呼在 CSP 側可接受派工 JWT；與本 exporter 無關。
 
 程式面三件:`TraceExporter`(執行緒安全、批次、bounded queue、drop-and-log)、`TraceSession`(per-`trace_id` span factory,`span()` / `async_span()` context manager 自動計時 / 標 ok/error / auto-parent)、`ExportingProcessor`(把 in-tree `Tracer`/`Span` 橋接到 exporter,`SpanKind` → doc `05` §6 的 span-type)。皆從 `anila_core.tracing` 匯出。
 
@@ -228,7 +232,7 @@ host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、i
 
 | 消費者 | 使用範圍 | 取得什麼 |
 |--------|----------|----------|
-| **anila-core-router** | Pillar 1 + Pillar 2 | `create_router_app()`、QueryEngine、Coordinator、`RemoteAgentRegistry`、service-token middleware、trace SDK |
+| **anila-core-router** | Pillar 1 + Pillar 2 | `create_router_app()`、QueryEngine、Coordinator、`RemoteAgentRegistry`、派工 JWT／JWKS middleware、trace SDK |
 | **anila-agent template**(fork 起點) | Pillar 1 + Pillar 2 + `[rag]` | 完整 runtime + 文件解析 / vision provider |
 | **ingestion-worker**(Arq + Redis) | 僅 Pillar 2 | `chunking_plugins`、`IngestionError`、`pg_pool`、`CollectionScopedPgVectorStore`、`credential_crypto` |
 | **services/csp**(CSP backend) | Pillar 2(部分) | `credential_crypto`(加密 `user_llm_credentials`)、`url_guard`(SSRF)等共用 primitives |

@@ -39,7 +39,7 @@
 | 多代理 | `/deep-research`（planner → 平行檢索 → writer） |
 | CLI | 串流 REPL + slash 指令 + 可切換 output style |
 | 擴充 | `SKILL.md` skills、事件 triggers、MCP client（config-gated） |
-| 服務化 | OpenAI-compatible service wrapper（CSP 可派工，`csk-` service-token 認證） |
+| 服務化 | OpenAI-compatible service wrapper（CSP 可派工；驗平台派工 JWT／JWKS） |
 | 觀測 | RunHooks 稽核 + token／cost 計量 + **原生 Full Trace**（見下） |
 
 ## 快速開始
@@ -90,17 +90,26 @@ service wrapper 對外開 3 個端點：`GET /health`、`GET /v1/models`（manif
 `model_type=agent`）、`POST /v1/chat/completions`（主入口，含 streaming）。這個 `host:port`
 就是註冊給 CSP 的 agent endpoint。
 
-認證走 doc-08 的 `csk-` 單金鑰：CSP Router 以 `X-CSP-Service-Token`（`csk-`）派工，**驗過才信**
-`X-ANILA-User-Id/-Email/-Groups`（Router 不轉發使用者 JWT，驗 `Authorization: Bearer <jwt>` 是錯的）。
-未設 `CSP_SERVICE_TOKEN` 時 fail-closed 拒絕（本地測試設 `ANILA_ALLOW_NO_SERVICE_TOKEN=1`）。
+認證走 **P2.1 派工 JWT**：CSP Router 以 `Authorization: Bearer <JWT>`（約 5 分鐘、RS256）派工；
+agent 用平台公開 JWKS（`/.well-known/jwks.json`）驗簽，claims 含 `user_id`／`department`／`agent_id`。
+入向已切派工 JWT；出向（RAG 搜尋／trace）在本樣板目前仍讀 `CSP_SERVICE_TOKEN`（`CSP_SEARCH_TOKEN`
+可覆寫，未設則 fallback），CSP 已接受派工 JWT，樣板端切換尚未落地——只設 `CSP_BASE_URL`＋
+`ANILA_CA_FILE` 時 inbound 會過，但**兩者失敗方式不同**：RAG **直接 500**（retriever 建構就 raise），
+trace 則**靜默** drop-and-log（emitter 照樣 active，只是不帶 auth header）。信任錨用
+`ANILA_CA_FILE` 指 PEM，**不要**設 `SSL_CERT_FILE`。接入三級制（樣板／單檔 `anila_verify.py`／sidecar）
+與「今日誠實可用」邊界見治理中心 `AgentGuardPanel` 與
+[`docs/guides/developer-guide.md`](../../docs/guides/developer-guide.md)。
+⚠ 樣板 zip 是否已內建驗簽／CA／wheel：**請打開實際下載的 zip 核對**；未落地時改走治理中心下載
+`anila_verify.py`（端點未上線會提示）。驗證 sidecar **今日尚無公開映像**。
 
 ## Full Trace（doc-05 §6 / doc-06 §6，L3 approval blocker）
 
 本樣板原生內建 `anila_agent/tracing.py`，示範 CSP 要求的完整 span 集，**衍生 agent 照抄即可**。
 CSP dispatch 帶 `X-ANILA-Trace-Id` 時自動啟用：把 `agent.run/step/model_call/tool_call/retrieval/`
-`output/error` spans 批次（≤256/批）callback `POST {CSP}/v1/traces/{trace_id}/spans`（CSP 回 202），
-憑證重用 agent 自己的 `csk-`（與 RAG 出向同一把）。**無 trace header 或無 endpoint → 完全停用、
-零外送、零行為變化**；ship 失敗一律 drop-and-log，絕不讓 agent 掛掉。
+`output/error` spans 批次（≤256/批）callback `POST {CSP}/v1/traces/{trace_id}/spans`，
+**本樣板出向仍以 `CSP_SERVICE_TOKEN`／`CSP_SEARCH_TOKEN` 認證**（與 RAG 出向同一憑條；派工 JWT
+複用尚未落地）。**無 trace header 或無 endpoint → 完全停用、零外送、零行為變化**；ship 失敗一律
+drop-and-log，絕不讓 agent 掛掉。
 
 三個接線元件，換自己的工具／retriever 一樣沿用即可，無需改核心：
 
@@ -111,7 +120,8 @@ CSP dispatch 帶 `X-ANILA-Trace-Id` 時自動啟用：把 `agent.run/step/model_
 - **`TraceEmitter`**：緩衝 + 批次發送器；`async with emitter.span(...)` 可自訂子區段，自動巢狀在當前
   span 下（併發下以 `contextvars` 分艙）。
 
-env：`ANILA_TRACE_ENDPOINT`（預設 = `CSP_BASE_URL`）、`ANILA_TRACE_ENABLED`（預設 1）、
+env：`CSP_SERVICE_TOKEN`（本樣板 RAG／trace 出向仍讀；`CSP_SEARCH_TOKEN` 可覆寫）、
+`ANILA_TRACE_ENDPOINT`（預設 = `CSP_BASE_URL`）、`ANILA_TRACE_ENABLED`（預設 1）、
 `ANILA_CLASSIFICATION_LEVEL`（四級分類等級：無機密／營業秘密／密／機密，隨 run／output span 帶出，滿足 doc-06 §8 trace-test 的
 分類等級必備項）；`X-ANILA-Task-Id` 亦隨 run span 帶出以歸因到任務中心的 Task。
 
@@ -124,12 +134,12 @@ env：`ANILA_TRACE_ENDPOINT`（預設 = `CSP_BASE_URL`）、`ANILA_TRACE_ENABLED
 （`draft` → `pending_connection_test` → `pending_trace_test` → `pending_security_review` → `approved`，
 另有 `rejected` / `disabled`）。兩條註冊路徑：
 
-- **精靈**：治理中心 `apps/csp-governance-ui` 的 `/developer/agents` 兩步精靈 —— 填 endpoint／runtime
-  type／分類上限 → 簽發 `csk-` → test-connection → trace-test。
+- **精靈**：治理中心 `apps/csp-governance-ui` 的 `/developer/agents` —— 填名稱／endpoint／runtime
+  type／分類上限（**不核發長效祕密**）→ 接好派工 JWT 驗簽 → 健康／trace 準入。
 - **CLI**：`anila-core register`（讀 `anila.yaml` → `POST /api/agents/register`），支援
   `--base-model`（底層模型「名稱」，CSP 解析成 id）/ `--base-model-id` / `--runtime-type` /
   `--classification-level` / `--version` 旗標。`--draft` 與 `--classification-ceiling` 已移除
-  （送出去只會被伺服器丟掉）。
+  （送出去只會被伺服器丟掉）。註冊同樣**不發** agent 長效金鑰。
 
 ## Docker / MLSteam 環境映像
 
