@@ -36,7 +36,7 @@ class CardVerifyRequest(BaseModel):
         challenge_token: 從 ``/card/challenge`` 拿到的同一份 JWT。
         signature: base64 編碼的 PKCS#7 SignedData（由本機 CHT 元件回傳，
             等同於 ``cht/app.py:18`` 的 ``signature`` 欄位）。
-        card_serial: 元件回應的 ``cardSN`` 欄位（例：``CS00000000025247``）。
+        card_serial: 元件回應的 ``cardSN`` 欄位（例：``CS00000000099999``）。
             純 audit log 用途；不參與密碼學驗證。
     """
 

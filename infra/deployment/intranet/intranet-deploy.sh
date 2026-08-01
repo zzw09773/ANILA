@@ -200,7 +200,7 @@ if [ -n "$DEF_CIO" ] && \
    [ "$(ask "偵測到預設 owner 員工編號 '$(c '1;33' "$DEF_CIO")' — 確定用這組?(N 則手動輸入) [y/N]" N)" = y ]; then
   CIO="$DEF_CIO"
 else
-  CIO="$(ask 'CARD_INITIAL_OWNERS — owner 員工編號 (CSV,含你自己,例 1147259,1090868)')"
+  CIO="$(ask 'CARD_INITIAL_OWNERS — owner 員工編號 (CSV,含你自己,例 1147259,1234567)')"
 fi
 [ -n "$CIO" ] || die "CARD_INITIAL_OWNERS 不能空(否則沒人是 owner,進不了管理)"
 ok "owner = $CIO"

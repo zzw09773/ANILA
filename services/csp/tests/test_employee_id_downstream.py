@@ -35,7 +35,7 @@ class _User:
 class TestDownstreamIdentity:
     def test_card_user_returns_employee_id(self):
         assert downstream_identity(_User("1147259")) == "1147259"
-        assert downstream_identity(_User("1090868")) == "1090868"
+        assert downstream_identity(_User("1234567")) == "1234567"
 
     def test_admin_non_numeric_fails_closed(self):
         # admin 帳密登入 username='admin' → 不送身分(不偽造 "admin" 當員編)。

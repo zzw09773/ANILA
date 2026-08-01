@@ -16,7 +16,7 @@
 
 現況（`prod-intranet-card`）：CSP 轉發給下游時送的 `X-ANILA-User-Id` 值是 **`user.id`（資料庫自增主鍵 PK）**，不是員編。對上述兩個需求都無用。
 
-員編來源：卡片登入時 `card_auth` 從 X.509 `subject.serialNumber` 抽出員編（例 `1090868`），並以 `username = employee_id` 建立/比對帳號。因此**本分支 `user.username ≡ 員編`**（卡登為唯一登入方式；唯一例外是 admin 帳密登入，其 `username = "admin"`）。
+員編來源：卡片登入時 `card_auth` 從 X.509 `subject.serialNumber` 抽出員編（例 `1234567`），並以 `username = employee_id` 建立/比對帳號。因此**本分支 `user.username ≡ 員編`**（卡登為唯一登入方式；唯一例外是 admin 帳密登入，其 `username = "admin"`）。
 
 ## 2. 已定案決策
 
