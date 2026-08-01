@@ -59,14 +59,31 @@ _search_bearer = HTTPBearer(auto_error=False)
 class SearchPrincipal:
     """Effective principal for a search request.
 
-    ``user`` is the identity we authorise against (for an agent csk- it is the
-    agent's OWNER). ``agent`` is set only when the caller authenticated with an
-    agent service token; the endpoint then hard-scopes it to the agent's
-    bound collection set (P4.7 / S-Q1, least privilege).
+    ``user`` is the identity we authorise against. For an in-task agent
+    callback (dispatch JWT) this is still the agent's OWNER — that mapping
+    is load-bearing for ``_require_collection_access`` / collection RLS
+    (bound collections are owned by the agent owner; swapping in the JWT's
+    real ``user_id`` would either 403 legitimate bound searches or widen
+    access). ``agent`` is set only for the dispatch-JWT path; the endpoint
+    then hard-scopes to the agent's bound collection set (P4.7 / S-Q1).
     """
 
     user: User
     agent: "object | None" = None
+
+
+def _principal_from_dispatch_claims(db: Session, claims: dict) -> SearchPrincipal:
+    """Map verified dispatch claims → SearchPrincipal (owner + agent)."""
+    from app.models.agent import Agent
+
+    agent_id = int(claims["agent_id"])
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if agent is None:
+        raise HTTPException(status_code=401, detail="dispatch token 對應的 agent 不存在")
+    owner = db.query(User).filter(User.id == agent.owner_user_id).first()
+    if owner is None:
+        raise HTTPException(status_code=401, detail="agent owner 不存在")
+    return SearchPrincipal(user=owner, agent=agent)
 
 
 def resolve_search_principal(
@@ -74,27 +91,47 @@ def resolve_search_principal(
     credentials: HTTPAuthorizationCredentials | None = Depends(_search_bearer),
     db: Session = Depends(get_db),
 ) -> SearchPrincipal:
-    """Search auth accepting EITHER a user (JWT/sk-/cookie) OR an agent csk-.
+    """Search auth: user (JWT/sk-/cookie) OR in-task agent dispatch JWT.
 
-    csk- path (S-Q1): one credential now serves both inbound Router→agent auth
-    and outbound RAG search. The token resolves to its agent; the effective
-    user becomes the agent's owner; the endpoint enforces the bound set.
+    P2.1 W2: agent callbacks present the same 5-minute RS256 dispatch JWT
+    CSP minted for the task (``Authorization: Bearer <jwt>``). Bare ``csk-``
+    strings are rejected — zero agents hold static credentials today.
     """
-    token = credentials.credentials if (credentials and credentials.credentials) else None
-    if token and token.startswith("csk-"):
-        from app.models.agent import Agent
-        from app.services import agent_credential_service
+    from jose import JWTError, jwt as jose_jwt
 
-        identity = agent_credential_service.verify_service_token(db, token=token)
-        if not identity or identity.kind != "agent" or not identity.agent_id:
-            raise HTTPException(status_code=401, detail="無效的 service token")
-        agent = db.query(Agent).filter(Agent.id == identity.agent_id).first()
-        if agent is None:
-            raise HTTPException(status_code=401, detail="service token 對應的 agent 不存在")
-        owner = db.query(User).filter(User.id == agent.owner_user_id).first()
-        if owner is None:
-            raise HTTPException(status_code=401, detail="agent owner 不存在")
-        return SearchPrincipal(user=owner, agent=agent)
+    from app.services.proxy.dispatch_token import (
+        DISPATCH_TOKEN_AUDIENCE,
+        verify_dispatch_token,
+    )
+
+    token = credentials.credentials if (credentials and credentials.credentials) else None
+    if token:
+        # Retired static agent credential — fail closed, no dual-accept.
+        if token.startswith("csk-"):
+            raise HTTPException(
+                status_code=401,
+                detail="agent 任務回呼請使用派工 JWT，不再接受 csk-",
+            )
+        claims = verify_dispatch_token(token)
+        if claims is not None:
+            return _principal_from_dispatch_claims(db, claims)
+        # Dispatch-shaped but invalid/expired/tampered → 401 (do not fall
+        # through to the user-JWT resolver and muddy the error).
+        try:
+            unverified = jose_jwt.get_unverified_claims(token)
+        except JWTError:
+            unverified = None
+        if unverified is not None:
+            aud = unverified.get("aud")
+            is_dispatch_aud = (
+                DISPATCH_TOKEN_AUDIENCE in aud
+                if isinstance(aud, list)
+                else aud == DISPATCH_TOKEN_AUDIENCE
+            )
+            if is_dispatch_aud:
+                raise HTTPException(
+                    status_code=401, detail="派工 JWT 無效或已過期"
+                )
 
     # User path — delegate to the existing resolver (Authorization header / sk- /
     # httpOnly cookie). Raises 401 when no valid user credential is present.
@@ -103,9 +140,9 @@ def resolve_search_principal(
 
 
 def _enforce_agent_collection_scope(principal: SearchPrincipal, collection_id: int) -> None:
-    """For the agent csk- path, reject any collection outside the agent's
-    bound set (P4.7). Empty set = non-RAG agent → every collection is
-    off-limits. No-op for user principals."""
+    """For the agent dispatch-JWT path, reject any collection outside the
+    agent's bound set (P4.7). Empty set = non-RAG agent → every collection
+    is off-limits. No-op for user principals."""
     agent = principal.agent
     if agent is None:
         return
@@ -544,10 +581,10 @@ async def search_collection(
 ) -> SearchResponse:
     """Semantic top-K retrieval over one collection's chunks.
 
-    Auth: ``_require_collection_access`` — admin or owner. An agent csk-
-    authenticates as its owner but is additionally hard-scoped to its
-    bound collection set (P4.7 / S-Q1). Cross-user sharing is a future
-    ``collection_access_grants`` feature.
+    Auth: ``_require_collection_access`` — admin or owner. An agent
+    dispatch JWT authenticates as its owner but is additionally
+    hard-scoped to its bound collection set (P4.7 / S-Q1). Cross-user
+    sharing is a future ``collection_access_grants`` feature.
     """
     _enforce_agent_collection_scope(principal, collection_id)
     current_user = principal.user
