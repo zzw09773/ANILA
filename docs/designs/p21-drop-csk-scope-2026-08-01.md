@@ -43,6 +43,13 @@ agent 回頭打 CSP（RAG 搜尋、trace、artifacts、runtime-config、撤銷�
   c) 拿掉輪詢改推送。開工時給兩案比較一頁，擁有者選。
 - Router／worker 的 `service_clients` 同一套 csk- ——建議同步換，否則只拿掉一半。
 
+### W1.5 開發者體驗原則（擁有者 08-01 問答定調）
+- **CA bundle 內建於範本**：`cspki_ca_bundle.pem` 是公開材料，直接放進 agent 範本 zip，
+  SDK 預設「檔案在就載入」；`.env` 只留覆寫項給特殊環境。開發者零 TLS 設定。
+- **P2.1 之後 agent `.env` 不再有祕密**：csk- 拿掉後剩平台位址等非機密設定；
+  短效憑條由平台每次派工時簽發，agent 不保管長效祕密（唯一例外＝W2 若選 poll-only 小鑰匙案）。
+- 不用 `SSL_CERT_FILE` 環境變數（取代整個信任庫的坑，平台側踩過）——SDK 明確吃 CA 檔設定。
+
 ### W3 發行／管理面拆除
 - csk- 簽發、輪替、`bsk-` bootstrap、治理中心精靈 Step 2、guard snippets、CLI `agent bootstrap`——按 W2 選案拆除或改造。
 - `agent_credentials` 的 AES 信封機制大幅縮水（或只留給 poll token）。
