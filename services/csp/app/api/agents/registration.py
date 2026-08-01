@@ -8,9 +8,11 @@ import os as _os
 import zipfile
 from datetime import datetime
 from pathlib import Path
+
+import anila_core
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -67,12 +69,19 @@ def _enforce_endpoint_url(url: str) -> None:
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-def _repo_root() -> Path:
+def _repo_root() -> Path | None:
     """``<repo-root>`` from services/csp/app/api/agents/registration.py.
 
-    Six levels: agents → api → app → csp → services → repo root.
+    Six levels: agents → api → app → csp → services → repo root. Returns
+    None when the walk does not land on a tree that looks like this repo —
+    inside the csp image the parents bottom out at ``/``. Returning None
+    rather than raising keeps that case a 404 on one route; raising here
+    runs at import time and would stop the whole service from starting.
     """
-    return Path(__file__).parent.parent.parent.parent.parent.parent
+    root = Path(__file__).resolve().parent.parent.parent.parent.parent.parent
+    if not (root / "services" / "csp").is_dir():
+        return None
+    return root
 
 
 def _default_template_dir() -> Path:
@@ -85,12 +94,40 @@ def _default_template_dir() -> Path:
     (infra/compose/platform.yml), so only a csp started another way — bare
     uvicorn, a demo box — served 404 to every template download.
     """
-    return _repo_root() / "packages" / "anila-agent"
+    root = _repo_root()
+    # No repo layout (the csp image): return a path that cannot exist, so the
+    # download route answers 404 instead of the service failing to import.
+    return (root / "packages" / "anila-agent") if root else Path("/nonexistent/anila-agent")
 
 
-_TEMPLATE_DIR = Path(
-    _os.environ.get("ANILA_TEMPLATE_DIR", str(_default_template_dir()))
+# Evaluate the default only when the env knob is absent. Eagerly calling
+# ``_default_template_dir()`` as ``dict.get``'s default would invoke
+# ``_repo_root()`` at import time inside the csp image (no repo layout).
+_env_template_dir = _os.environ.get("ANILA_TEMPLATE_DIR")
+_TEMPLATE_DIR = (
+    Path(_env_template_dir) if _env_template_dir else _default_template_dir()
 )
+
+# Bundled CSPKI trust anchors (public certs only). Same file card_auth loads
+# as ``_DEFAULT_CA_BUNDLE`` — resolved relative to ``app/services/``, no env knob.
+_PLATFORM_CA_BUNDLE = (
+    Path(__file__).resolve().parent.parent.parent / "services" / "cspki_ca_bundle.pem"
+)
+
+def _resolve_anila_verify_source() -> Path:
+    """Standalone JWT verifier path from the *installed* ``anila_core`` package.
+
+    Hatchling ships the whole ``src/anila_core`` tree (incl. ``contrib/``) in
+    the wheel. Resolve via ``anila_core.__file__`` — NOT
+    ``_repo_root()/packages/...``, which bottoms out at ``/`` in the csp
+    image and can never exist there. Absent until that package lands → 503.
+    """
+    return (
+        Path(anila_core.__file__).resolve().parent / "contrib" / "anila_verify.py"
+    )
+
+
+_ANILA_VERIFY_SOURCE = _resolve_anila_verify_source()
 
 router = APIRouter()
 
@@ -501,6 +538,54 @@ def download_template(
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=anila-agent.zip"},
+    )
+
+
+@router.get("/platform-ca/download")
+def download_platform_ca(
+    current_user: User = Depends(_require_developer_or_admin),
+) -> Response:
+    """Serve the intranet CSPKI CA bundle for third-party agent HTTPS/JWKS trust.
+
+    Public certificates only (no private keys). Auth matches ``/template/download``.
+    """
+    ca_path = _PLATFORM_CA_BUNDLE
+    if not ca_path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="平台 CA 套件在此部署環境中無法取得，請聯絡維運",
+        )
+    return Response(
+        content=ca_path.read_bytes(),
+        media_type="application/x-pem-file",
+        headers={
+            "Content-Disposition": "attachment; filename=anila-platform-ca.pem",
+        },
+    )
+
+
+@router.get("/anila-verify/download")
+def download_anila_verify(
+    current_user: User = Depends(_require_developer_or_admin),
+) -> Response:
+    """Serve the standalone ``anila_verify.py`` JWT verifier for copy-paste agents.
+
+    Auth matches ``/platform-ca/download``. If the sibling package has not
+    shipped the file into this deployment, refuse with 503 — never an empty
+    200 or a fabricated stub.
+    """
+    verify_path = _ANILA_VERIFY_SOURCE
+    if not verify_path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="JWT 驗證器原始碼在此部署環境中無法取得，請聯絡維運",
+        )
+    return Response(
+        content=verify_path.read_bytes(),
+        media_type="text/x-python",
+        headers={
+            "Content-Disposition": "attachment; filename=anila_verify.py",
+        },
     )
 
 
