@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-head__title">執行設定 · {{ agent?.name || agentId }}</h1>
         <p class="page-head__sub">
-          各 agent 的工具權限 · 工作區上限 · 護欄 — 透過 30 秒輪詢即時套用，無需重啟。
+          工具權限 · 工作區上限 · 護欄 — <strong>唯讀檢查</strong>。熱更新未出貨，官方 agent 不會輪詢此設定；此頁無法寫入。
         </p>
       </div>
       <div class="page-head__actions">
@@ -21,179 +21,117 @@
 
     <template v-else>
       <TermBox title="狀態" pad="md">
+        <div class="retired-banner" data-testid="runtime-config-retired-banner">
+          熱更新未出貨 — 此處顯示的是資料庫裡歷史留下的 JSON（若有），
+          <strong>不會套用到任何正式 agent</strong>。要改工具權限／護欄請改 agent 程式碼。
+          寫入 API 已回 410；本頁已移除儲存控制項。
+        </div>
         <dl class="status-list">
           <div>
             <dt>覆寫</dt>
             <dd>
               <TermBadge :variant="hasOverride ? 'accent' : ''">
-                {{ hasOverride ? '管理員設定' : '程式碼預設' }}
+                {{ hasOverride ? '資料庫有值（未生效）' : '無（程式碼預設）' }}
               </TermBadge>
             </dd>
           </div>
-          <div v-if="lastSavedAt">
-            <dt>最後儲存</dt>
-            <dd class="cell-meta tnum">{{ lastSavedAt }}</dd>
-          </div>
           <div>
-            <dt>輪詢頻率</dt>
-            <dd class="cell-meta">agent 程序約每 30 秒</dd>
+            <dt>生效狀態</dt>
+            <dd class="cell-meta">未出貨 · 唯讀</dd>
           </div>
         </dl>
-        <p class="cell-meta" style="margin-top: 8px;">
-          設為 <code>None</code> 會清除覆寫（agent 回到編譯內建預設）。
-          設為 <code>{}</code> 代表「明確為空」— 語意不同。
-        </p>
       </TermBox>
 
-      <TermBox title="工具權限" pad="md">
-        <p class="cell-meta">
-          <code>allow_list</code> + <code>deny_list</code> 由工具 router 判斷；
-          <code>ask_tools</code> 把該工具的旗標切為 ASK（中斷等使用者核准）；
-          <code>deny_tools</code> 直接拒絕。
-        </p>
+      <TermBox title="工具權限（唯讀）" pad="md">
         <div class="grid">
-          <TermField label="allow_list（逗號分隔 · '*' = 全部）">
-            <input v-model="permsForm.allow_list_csv" class="term-input" placeholder="*" />
+          <TermField label="allow_list">
+            <input :value="permsView.allow_list_csv" class="term-input" readonly disabled />
           </TermField>
           <TermField label="deny_list">
-            <input v-model="permsForm.deny_list_csv" class="term-input" placeholder="exec_bash" />
+            <input :value="permsView.deny_list_csv" class="term-input" readonly disabled />
           </TermField>
           <TermField label="ask_tools">
-            <input v-model="permsForm.ask_tools_csv" class="term-input" placeholder="exec_python,apply_patch" />
+            <input :value="permsView.ask_tools_csv" class="term-input" readonly disabled />
           </TermField>
           <TermField label="deny_tools">
-            <input v-model="permsForm.deny_tools_csv" class="term-input" placeholder="file_write" />
+            <input :value="permsView.deny_tools_csv" class="term-input" readonly disabled />
           </TermField>
         </div>
       </TermBox>
 
-      <TermBox title="工作區上限" pad="md">
-        <p class="cell-meta">
-          上限會疊加在 agent 的編譯內建預設上。欄位留空即沿用預設；否則覆寫。
-        </p>
+      <TermBox title="工作區上限（唯讀）" pad="md">
         <div class="grid">
           <TermField label="fs_read">
-            <select v-model="wsForm.fs_read" class="term-select">
-              <option :value="null">（預設）</option>
-              <option :value="true">true</option>
-              <option :value="false">false</option>
-            </select>
+            <input :value="fmtBool(wsView.fs_read)" class="term-input" readonly disabled />
           </TermField>
           <TermField label="fs_write">
-            <select v-model="wsForm.fs_write" class="term-select">
-              <option :value="null">（預設）</option>
-              <option :value="true">true</option>
-              <option :value="false">false</option>
-            </select>
+            <input :value="fmtBool(wsView.fs_write)" class="term-input" readonly disabled />
           </TermField>
           <TermField label="network">
-            <select v-model="wsForm.network" class="term-select">
-              <option :value="null">（預設）</option>
-              <option :value="true">true</option>
-              <option :value="false">false</option>
-            </select>
+            <input :value="fmtBool(wsView.network)" class="term-input" readonly disabled />
           </TermField>
           <TermField label="exec_bash">
-            <select v-model="wsForm.exec_bash" class="term-select">
-              <option :value="null">（預設）</option>
-              <option :value="true">true</option>
-              <option :value="false">false</option>
-            </select>
+            <input :value="fmtBool(wsView.exec_bash)" class="term-input" readonly disabled />
           </TermField>
           <TermField label="exec_python">
-            <select v-model="wsForm.exec_python" class="term-select">
-              <option :value="null">（預設）</option>
-              <option :value="true">true</option>
-              <option :value="false">false</option>
-            </select>
+            <input :value="fmtBool(wsView.exec_python)" class="term-input" readonly disabled />
           </TermField>
           <TermField label="max_exec_seconds">
-            <input v-model.number="wsForm.max_exec_seconds" class="term-input" type="number" min="1" placeholder="（預設 30）" />
+            <input :value="fmtNum(wsView.max_exec_seconds)" class="term-input" readonly disabled />
           </TermField>
           <TermField label="max_workspace_size_mb">
-            <input v-model.number="wsForm.max_workspace_size_mb" class="term-input" type="number" min="1" placeholder="（預設 100）" />
+            <input :value="fmtNum(wsView.max_workspace_size_mb)" class="term-input" readonly disabled />
           </TermField>
-          <TermField label="command_allowlist（逗號分隔）">
-            <input v-model="wsForm.command_allowlist_csv" class="term-input" placeholder="ls,cat,grep" />
+          <TermField label="command_allowlist">
+            <input :value="wsView.command_allowlist_csv" class="term-input" readonly disabled />
           </TermField>
         </div>
       </TermBox>
 
-      <TermBox title="護欄" pad="md">
-        <p class="cell-meta">
-          輸入護欄檢查工具輸入 dict（regex_block reject/redact）。
-          輸出護欄檢查工具結果文字（regex_block reject/redact、max_length 截斷）。
-          <code>tool='*'</code> 套用到所有已註冊工具；指定名稱可限縮範圍。
-        </p>
-
+      <TermBox title="護欄（唯讀）" pad="md">
         <TermSection title="輸入護欄" />
-        <table class="guardrail-table">
+        <p v-if="!guardrailsView.input.length" class="cell-meta">（無）</p>
+        <table v-else class="guardrail-table">
           <thead>
             <tr>
               <th>kind</th>
               <th>tool</th>
               <th>params</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(g, idx) in guardrailsForm.input" :key="`in-${idx}`">
-              <td>
-                <select v-model="g.kind" class="term-select">
-                  <option value="regex_block">regex_block</option>
-                </select>
-              </td>
-              <td>
-                <input v-model="g.tool" class="term-input" placeholder="*" />
-              </td>
-              <td>
-                <input v-model="g.paramsRaw" class="term-input mono" placeholder='{"pattern":"sk-\\w+","mode":"reject"}' />
-              </td>
-              <td>
-                <button class="term-action danger" @click="removeGuard('input', idx)">移除</button>
-              </td>
+            <tr v-for="(g, idx) in guardrailsView.input" :key="`in-${idx}`">
+              <td>{{ g.kind }}</td>
+              <td>{{ g.tool }}</td>
+              <td class="mono">{{ g.paramsRaw }}</td>
             </tr>
           </tbody>
         </table>
-        <button class="term-action" @click="addGuard('input')">+ 輸入護欄</button>
 
         <TermSection title="輸出護欄" />
-        <table class="guardrail-table">
+        <p v-if="!guardrailsView.output.length" class="cell-meta">（無）</p>
+        <table v-else class="guardrail-table">
           <thead>
             <tr>
               <th>kind</th>
               <th>tool</th>
               <th>params</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(g, idx) in guardrailsForm.output" :key="`out-${idx}`">
-              <td>
-                <select v-model="g.kind" class="term-select">
-                  <option value="regex_block">regex_block</option>
-                  <option value="max_length">max_length</option>
-                </select>
-              </td>
-              <td>
-                <input v-model="g.tool" class="term-input" placeholder="*" />
-              </td>
-              <td>
-                <input v-model="g.paramsRaw" class="term-input mono" :placeholder='outputPlaceholder(g.kind)' />
-              </td>
-              <td>
-                <button class="term-action danger" @click="removeGuard('output', idx)">移除</button>
-              </td>
+            <tr v-for="(g, idx) in guardrailsView.output" :key="`out-${idx}`">
+              <td>{{ g.kind }}</td>
+              <td>{{ g.tool }}</td>
+              <td class="mono">{{ g.paramsRaw }}</td>
             </tr>
           </tbody>
         </table>
-        <button class="term-action" @click="addGuard('output')">+ 輸出護欄</button>
       </TermBox>
 
       <TermBox title="功能" pad="md">
         <p class="hint" style="margin-bottom: 8px;">
           功能 — 在 ANILA 對話介面跟此 agent 對話時提供給使用者。純宣告式設定，
-          不執行任何程式碼。新增功能類型(kind)由前端 renderer 決定，未來可擴充。
+          不執行任何程式碼。此區塊仍可編輯（與上方未出貨的 runtime_config 無關）。
         </p>
         <div v-if="fnError" class="feedback is-err" style="margin-bottom: 8px;">
           <span>!</span><span>{{ fnError }}</span>
@@ -237,19 +175,13 @@
       </TermBox>
 
       <TermBox title="操作" pad="md">
-        <div v-if="parseError" class="feedback is-err" style="margin-bottom: 8px;">
-          <span>!</span><span>{{ parseError }}</span>
-        </div>
         <div class="row-actions">
-          <TermButton variant="primary" :disabled="saving" :loading="saving" @click="handleSave"
-            :label="saving ? '儲存中…' : '儲存執行設定'" />
-          <TermButton @click="handleClear" :disabled="saving" label="清除覆寫（回到預設）" />
-          <TermButton @click="handleReload" :disabled="saving" label="從伺服器重新載入" />
+          <TermButton @click="handleReload" label="從伺服器重新載入" />
         </div>
       </TermBox>
 
       <TermBox title="原始 JSON 預覽" pad="sm">
-        <pre class="json-preview">{{ buildPreview() }}</pre>
+        <pre class="json-preview">{{ jsonPreview }}</pre>
       </TermBox>
     </template>
   </div>
@@ -261,7 +193,6 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   getAgent,
   getAgentRuntimeConfig,
-  setAgentRuntimeConfig,
   listAgentFunctions,
   createAgentFunction,
   deleteAgentFunction,
@@ -283,13 +214,9 @@ const router = useRouter()
 const agentId = computed(() => Number(route.params.id))
 const agent = ref(null)
 const loading = ref(true)
-const saving = ref(false)
-const parseError = ref('')
 const feedback = ref({ type: 'success', message: '' })
-const lastSavedAt = ref('')
-const initialConfig = ref(null) // raw object as last fetched
+const initialConfig = ref(null)
 
-// Per-agent functions (2026-06-11, extensible)
 const functions = ref([])
 const fnError = ref('')
 const fnBusy = ref(false)
@@ -304,7 +231,6 @@ async function loadFunctions() {
   }
 }
 
-// 把 kind + body/autosend 組成後端的 config。新增 kind 時在這裡擴充。
 function buildFunctionConfig(fn) {
   if (fn.kind === 'preset_prompt') return { text: fn.body, autosend: !!fn.autosend }
   if (fn.kind === 'prompt_action') return { template: fn.body }
@@ -348,14 +274,14 @@ async function handleDeleteFunction(f) {
   }
 }
 
-const permsForm = ref({
+const permsView = ref({
   allow_list_csv: '',
   deny_list_csv: '',
   ask_tools_csv: '',
   deny_tools_csv: '',
 })
 
-const wsForm = ref({
+const wsView = ref({
   fs_read: null,
   fs_write: null,
   network: null,
@@ -366,38 +292,43 @@ const wsForm = ref({
   command_allowlist_csv: '',
 })
 
-const guardrailsForm = ref({
+const guardrailsView = ref({
   input: [],
   output: [],
 })
 
 const hasOverride = computed(() => initialConfig.value != null)
 
-function csvToArray(csv) {
-  if (!csv) return []
-  return csv.split(',').map(s => s.trim()).filter(Boolean)
-}
+const jsonPreview = computed(() => {
+  if (initialConfig.value == null) return 'null  // 無覆寫'
+  return JSON.stringify(initialConfig.value, null, 2)
+})
 
 function arrayToCsv(arr) {
   return Array.isArray(arr) ? arr.join(',') : ''
 }
 
-function outputPlaceholder(kind) {
-  if (kind === 'max_length') return '{"max_chars":4096}'
-  return '{"pattern":"secret","mode":"redact"}'
+function fmtBool(v) {
+  if (typeof v === 'boolean') return String(v)
+  return '（預設）'
+}
+
+function fmtNum(v) {
+  if (typeof v === 'number' && !Number.isNaN(v)) return String(v)
+  return '（預設）'
 }
 
 function loadFromConfig(cfg) {
   initialConfig.value = cfg
   const perms = (cfg && cfg.tool_permissions) || {}
-  permsForm.value = {
+  permsView.value = {
     allow_list_csv: arrayToCsv(perms.allow_list),
     deny_list_csv: arrayToCsv(perms.deny_list),
     ask_tools_csv: arrayToCsv(perms.ask_tools),
     deny_tools_csv: arrayToCsv(perms.deny_tools),
   }
   const ws = (cfg && cfg.workspace) || {}
-  wsForm.value = {
+  wsView.value = {
     fs_read: typeof ws.fs_read === 'boolean' ? ws.fs_read : null,
     fs_write: typeof ws.fs_write === 'boolean' ? ws.fs_write : null,
     network: typeof ws.network === 'boolean' ? ws.network : null,
@@ -413,7 +344,7 @@ function loadFromConfig(cfg) {
     tool: entry.tool || '*',
     paramsRaw: JSON.stringify(stripMeta(entry)),
   })
-  guardrailsForm.value = {
+  guardrailsView.value = {
     input: Array.isArray(guards.input) ? guards.input.map(toForm) : [],
     output: Array.isArray(guards.output) ? guards.output.map(toForm) : [],
   }
@@ -424,87 +355,6 @@ function stripMeta(entry) {
   delete out.kind
   delete out.tool
   return out
-}
-
-function addGuard(side) {
-  const blank = { kind: side === 'input' ? 'regex_block' : 'max_length', tool: '*', paramsRaw: '' }
-  guardrailsForm.value[side].push(blank)
-}
-
-function removeGuard(side, idx) {
-  guardrailsForm.value[side].splice(idx, 1)
-}
-
-function buildConfig() {
-  parseError.value = ''
-  const out = {}
-  const allow = csvToArray(permsForm.value.allow_list_csv)
-  const deny = csvToArray(permsForm.value.deny_list_csv)
-  const ask = csvToArray(permsForm.value.ask_tools_csv)
-  const denyTools = csvToArray(permsForm.value.deny_tools_csv)
-  if (allow.length || deny.length || ask.length || denyTools.length) {
-    out.tool_permissions = {}
-    if (allow.length) out.tool_permissions.allow_list = allow
-    if (deny.length) out.tool_permissions.deny_list = deny
-    if (ask.length) out.tool_permissions.ask_tools = ask
-    if (denyTools.length) out.tool_permissions.deny_tools = denyTools
-  }
-
-  const ws = {}
-  for (const key of ['fs_read', 'fs_write', 'network', 'exec_bash', 'exec_python']) {
-    if (wsForm.value[key] !== null && wsForm.value[key] !== undefined) ws[key] = wsForm.value[key]
-  }
-  for (const key of ['max_exec_seconds', 'max_workspace_size_mb']) {
-    const v = wsForm.value[key]
-    if (typeof v === 'number' && !Number.isNaN(v)) ws[key] = v
-  }
-  const cmds = csvToArray(wsForm.value.command_allowlist_csv)
-  if (cmds.length) ws.command_allowlist = cmds
-  if (Object.keys(ws).length) out.workspace = ws
-
-  const buildGuards = (side) => {
-    const list = []
-    for (const g of guardrailsForm.value[side]) {
-      let params = {}
-      if (g.paramsRaw && g.paramsRaw.trim()) {
-        try {
-          params = JSON.parse(g.paramsRaw)
-          if (typeof params !== 'object' || Array.isArray(params)) {
-            throw new Error('params must be a JSON object')
-          }
-        } catch (e) {
-          parseError.value = `${side} 護欄 #${list.length + 1} 的 JSON 無效：${e.message}`
-          throw e
-        }
-      }
-      list.push({ kind: g.kind, tool: g.tool || '*', ...params })
-    }
-    return list
-  }
-  let inputs, outputs
-  try {
-    inputs = buildGuards('input')
-    outputs = buildGuards('output')
-  } catch {
-    return null
-  }
-  if (inputs.length || outputs.length) {
-    out.guardrails = {}
-    if (inputs.length) out.guardrails.input = inputs
-    if (outputs.length) out.guardrails.output = outputs
-  }
-  return out
-}
-
-function buildPreview() {
-  try {
-    const cfg = buildConfig()
-    if (cfg === null) return '（無效 — 請修正上方錯誤）'
-    if (Object.keys(cfg).length === 0) return '{}  // 空 — 明確「無覆寫」語意'
-    return JSON.stringify(cfg, null, 2)
-  } catch {
-    return '（無效）'
-  }
 }
 
 async function load() {
@@ -523,40 +373,6 @@ async function load() {
   }
 }
 
-async function handleSave() {
-  const cfg = buildConfig()
-  if (cfg === null) return
-  saving.value = true
-  feedback.value = { type: 'success', message: '' }
-  try {
-    const resp = await setAgentRuntimeConfig(agentId.value, cfg)
-    initialConfig.value = resp.data?.runtime_config ?? cfg
-    lastSavedAt.value = new Date().toLocaleTimeString()
-    feedback.value = { type: 'success', message: '已儲存 · agent 約 30 秒內生效' }
-  } catch (e) {
-    feedback.value = { type: 'error', message: e.response?.data?.detail || e.message }
-  } finally {
-    saving.value = false
-  }
-}
-
-async function handleClear() {
-  if (!(await confirm({ message: '清除 runtime_config 覆寫？agent 會回到編譯內建預設。', confirmText: '清除', danger: true }))) return
-  saving.value = true
-  feedback.value = { type: 'success', message: '' }
-  try {
-    await setAgentRuntimeConfig(agentId.value, null)
-    initialConfig.value = null
-    loadFromConfig(null)
-    lastSavedAt.value = new Date().toLocaleTimeString()
-    feedback.value = { type: 'success', message: '已清除 · agent 約 30 秒內回到預設' }
-  } catch (e) {
-    feedback.value = { type: 'error', message: e.response?.data?.detail || e.message }
-  } finally {
-    saving.value = false
-  }
-}
-
 async function handleReload() {
   await load()
 }
@@ -572,6 +388,16 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.retired-banner {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--c-warn, #b08900);
+  background: var(--c-warn-soft, rgba(176, 137, 0, 0.12));
+  color: var(--c-fg-1);
+  font-size: 13px;
+  line-height: 1.45;
+  border-radius: var(--r-soft, 3px);
+}
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -612,7 +438,7 @@ onMounted(async () => {
   font-size: 10px;
   letter-spacing: 0.05em;
 }
-.term-input.mono {
+.mono {
   font-family: var(--font-mono);
   font-size: 11px;
 }
@@ -652,21 +478,6 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-.term-action {
-  background: transparent;
-  border: 1px solid var(--c-border);
-  color: var(--c-fg-1);
-  padding: 4px 10px;
-  font-size: 12px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-.term-action.danger {
-  color: var(--c-danger);
-}
-.term-action:hover {
-  background: var(--c-surface-2);
 }
 .json-preview {
   margin: 0;

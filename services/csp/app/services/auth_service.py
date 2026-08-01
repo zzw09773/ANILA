@@ -181,13 +181,23 @@ def verify_service_token(
     Sprint 8 X / Phase A — DB-backed verify. Resolves the token in this
     order:
 
-      1. ``service_clients`` (Router / worker traffic).
-      2. ``agent_credentials`` (per-agent traffic).
-      3. ``settings.CSP_SERVICE_TOKEN`` env var (legacy fleet-shared
-         fallback). Hits also write a ``service_token_legacy_env_used``
-         audit event so admins can watch cutover progress in the
-         dashboard. The fallback is removed entirely once the cutover
-         dashboard widget shows zero hits for a release window.
+      1. ``service_clients`` (Router / worker / platform s2s). On a stock
+         post-migration-0027 deploy the host ``CSP_SERVICE_TOKEN`` is
+         seeded as ``client_name='router-primary'``, so the fleet secret
+         matches **here** — attributed ``service_client``, not step 3.
+      2. ``agent_credentials`` (per-agent ``csk-`` traffic).
+      3. ``settings.CSP_SERVICE_TOKEN`` env-var fallback — only reached
+         when no active DB row matches. Hits write
+         ``service_token_legacy_env_used`` (Signal A / legacy-token-stats).
+         That signal is often already **zero** while step 1 still serves
+         the shared secret via the seeded ``router-primary`` row.
+
+    Do **not** delete this env branch because Signal A reads zero. The
+    gate for removing step 3 is Signal B = 0 for a full release window:
+    ``COUNT(*)`` of active ``is_legacy=TRUE`` rows in both
+    ``service_clients`` and ``agent_credentials`` (see
+    ``docs/runbooks/service-token-cutover.md`` Stage 3/4). On a stock
+    deploy Signal B is **non-zero today** (the ``router-primary`` row).
 
     On match we attach the ``CallerIdentity`` to ``request.state`` so
     downstream handlers / proxy / usage_writer can read who triggered

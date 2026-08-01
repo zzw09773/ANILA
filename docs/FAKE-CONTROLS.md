@@ -73,6 +73,8 @@
 ### 7. 服務 `healthcheck_url`:UI 宣稱會探測,**零讀取**
 
 ### 8. Admin「執行設定」`runtime_config`:寫入回 200、宣稱 30 秒生效,**生產 agent 無人輪詢**
+→ **已修**(wt/csk-cleanup):PATCH 維持 410;治理 UI 改唯讀並移除儲存/清除按鈕;
+agent 端 `GET /me/runtime-config`（HISTORICAL: removed）與 `RuntimeConfigPoller` 一併移除(零生產呼叫點)。
 
 ---
 
@@ -165,7 +167,7 @@
 |---|---|
 | `ENABLE_API_DOCS` | 移除(宣告了但沒人讀,維運者會以為自己關掉了文件) |
 | 服務 `healthcheck_url` | 移除;帶入即 422 |
-| Admin `runtime_config` | 寫入路徑 410,唯讀保留(沒有 agent 在輪詢,「30 秒生效」是假的) |
+| Admin `runtime_config` | 寫入路徑 410;治理 UI 改唯讀並拿掉儲存鈕;`GET /me` + poller 移除(沒有 agent 在輪詢) |
 | Agent `classification_ceiling` | **只拿掉收了就丟的表面**(回應/序列化/UI,帶入 422);**DB 欄位、`enforce_agent_ceiling`、G9 全部不動** |
 | Agent `capabilities` | 移除可編輯面,不加執行閘 |
 | 模型 `custom_adapter` | 移除,下拉只留 `openai_compatible` |

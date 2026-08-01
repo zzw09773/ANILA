@@ -541,7 +541,8 @@ GET    /api/agents/{agent_id}/credentials
 POST   /api/agents/{agent_id}/credentials/{credential_id}/rotate
 DELETE /api/agents/{agent_id}/credentials/{credential_id}
 GET    /api/agents/{agent_id}/credentials/me
-GET    /api/agents/me/runtime-config
+# HISTORICAL (removed): GET /api/agents/me/runtime-config
+#   — agent self-fetch + etag poller withdrawn; see runtime_config section.
 
 GET    /api/agents/{agent_ref}/functions
 POST   /api/agents/{agent_ref}/functions
@@ -622,8 +623,11 @@ rotation、revocation；但 Full Trace callback 的 endpoint 與 token scope 尚
 - `{}`：管理員明確設定為空設定。
 - 未做 deep merge。
 
-`GET /api/agents/me/runtime-config` 允許 Agent 以自己的
-`X-CSP-Service-Token` 讀設定，並回傳 etag，供 Agent process 輪詢 hot reload。
+> **HISTORICAL (removed):** `GET /api/agents/me/runtime-config` 曾允許
+> Agent 以自己的 `X-CSP-Service-Token` 讀設定並回傳 etag 做輪詢 hot
+> reload。該端點與 agent 端 `RuntimeConfigPoller` 已移除；admin
+> `PATCH /api/agents/{id}/runtime-config` 維持 410。治理 UI 對
+> `runtime_config` 為唯讀檢視。
 
 ### Permission model
 

@@ -51,25 +51,54 @@ needed; admins issue tokens fresh per agent from day one.
 
 ---
 
-## Stage 1 — Smoke-test that legacy traffic still works
+## Stage 1 — Smoke-test that the seeded fleet secret still works
 
-Existing AgenticRAG containers are still running with the old env-var
-token. They should keep working unchanged because Phase A's verify
-path falls back to the env-var on no-DB-match and writes a
-`service_token_legacy_env_used` audit event.
+Existing containers still present the host `CSP_SERVICE_TOKEN`. After
+migration `0027` that secret is **also** a `service_clients` row
+(`client_name='router-primary'`, `is_legacy=TRUE`), and
+`verify_service_token` matches the DB **before** the env fallback.
+Expect:
+
+* the token keeps working (HTTP 200 on a service-token endpoint), and
+* Signal A (`service_token_legacy_env_used`) is **already zero** —
+  the DB path wins, so there is nothing to "watch decay" here.
+* Signal B (active `is_legacy=TRUE` rows) is **non-zero** — that is
+  the real cutover watch metric; see Stage 3.
+
+Host ports for csp/router are not exposed on the stock compose; probe
+from inside the running containers (project name `anila-restart` below —
+adjust if yours differs).
 
 ```bash
-# Send a request via the Router. Expect 200 + a streaming response.
-curl -sN -X POST http://localhost:9000/v1/chat/completions \
-  -H "Authorization: Bearer $SMOKE_USER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"anila-router","messages":[{"role":"user","content":"hi"}]}' \
-  | head -5
+# Smoke: fleet secret still admitted on router-primary via the DB path.
+# Expect: 200 application/json and a model payload (not 401/403).
+docker exec anila-restart-csp-1 python3 -c "
+import os, httpx
+r = httpx.get(
+    'http://127.0.0.1:8000/api/models/router-primary',
+    headers={'X-CSP-Service-Token': os.environ['CSP_SERVICE_TOKEN']},
+    timeout=10,
+)
+print(r.status_code, r.headers.get('content-type'))
+print(r.text[:200])
+"
 
-# Verify the audit log shows legacy hits — these are what we'll watch
-# decay during cutover.
-curl -s http://localhost:8000/api/audit-logs?action=service_token_legacy_env_used \
-  -H "Authorization: Bearer $ADMIN_JWT" | jq '.[0:3]'
+# Signal A — expect 0 on a stock post-0027 deploy (DB path wins).
+docker exec anila-restart-csp-db-1 psql -U csp -d csp -c "
+SELECT count(*) AS legacy_env_audit_hits
+  FROM audit_logs
+ WHERE action = 'service_token_legacy_env_used';
+"
+
+# Signal B — expect non-zero today (the seeded router-primary row).
+docker exec anila-restart-csp-db-1 psql -U csp -d csp -c "
+SELECT count(*) AS active_legacy_service_clients
+  FROM service_clients
+ WHERE is_active = TRUE AND is_legacy = TRUE;
+SELECT id, client_name, client_type
+  FROM service_clients
+ WHERE is_active = TRUE AND is_legacy = TRUE;
+"
 ```
 
 ---
@@ -148,6 +177,8 @@ is_legacy=true). Cutting it over:
 
 ```bash
 # Issue a fresh csk- and disable the legacy backfill in one rotate call.
+# Look up by client_name — do not hard-code numeric id (rebuilt DBs
+# may allocate a different id for the same client_name).
 ROUTER_ID=$(curl -s http://localhost:8000/api/service-clients \
   -H "Authorization: Bearer $ADMIN_JWT" \
   | jq -r '.[] | select(.client_name=="router-primary") | .id')
@@ -166,16 +197,103 @@ curl -X POST http://localhost:8000/api/service-clients/${ROUTER_ID}/rotate \
 
 ---
 
+## Hazard — rotating `CSP_SERVICE_TOKEN` without the DB row
+
+⚠ **Ordinary key rotation is a landmine after the kind gate landed.**
+
+`GET /api/models/router-primary` admits only
+`service_client` + `client_type='router'`, with `allow_legacy_env=False`
+(see `services/csp/app/api/models.py`). That is deliberate: an
+unattributed env match cannot prove `client_type`.
+
+Consequence: if an operator rotates the shared secret in `.env` /
+compose **without** also rotating the `service_clients` row for
+`client_name='router-primary'`, then after recreate:
+
+1. Callers present the **new** env value.
+2. DB still holds the **old** hash → step 1/2 miss.
+3. Step 3 env fallback matches → `identity is None`.
+4. The kind gate returns **403** (previously this path returned 200).
+
+Failure body an operator will see (exact `detail` string):
+
+```json
+{
+  "detail": "GET /api/models/router-primary 要求 client_type=['router'];未歸屬的 legacy env token 無法證明 client_type"
+}
+```
+
+Pinned by `test_f6_env_rotated_without_db_row_returns_403_on_router_primary`
+in `services/csp/tests/test_service_principal_kind_gates.py`.
+
+**Safe rotation while still on the fleet secret:**
+
+1. Look up the row by `client_name='router-primary'` (not by numeric id).
+2. `POST /api/service-clients/{id}/rotate` (or otherwise update that
+   row's token to the new secret) **before or together with** changing
+   `CSP_SERVICE_TOKEN` in `.env`.
+3. Recreate the consumers that present the secret
+   (`docker compose up -d`, not `restart`).
+
+Until Signal B is zero, treating `.env` as the sole source of truth
+for the fleet secret is wrong — the DB row is what
+`router-primary` actually checks.
+
+---
+
 ## Stage 3 — Wait one release window
 
-Two-week soak is a reasonable default. During this window:
+Two-week soak is a reasonable default. During this window watch **two
+independent signals**. They measure different things; zero on one does
+**not** imply zero on the other.
 
-* Watch `/api/audit-logs?action=service_token_legacy_env_used` — should
-  decay to zero as you finish stage 2 for each agent.
-* Watch the dashboard's "legacy_token usage" widget (Phase E).
-* If a non-zero count persists, query the audit log's
-  `ip_address` field to find which host is still presenting the
-  fleet-shared token, then cut that agent over.
+### Signal A — unattributed env fallback (often already zero)
+
+`service_token_legacy_env_used` / `GET /api/usage/legacy-token-stats`
+only fire when verify misses every active DB row and falls through to
+`settings.CSP_SERVICE_TOKEN`. Migration `0027` seeded that same secret
+into `service_clients` as `router-primary` (`is_legacy=TRUE`), and the
+DB path wins — so a live stack can show **zero** legacy-env audit
+events for days while four services still present the shared secret.
+
+```bash
+# Useful, but NOT sufficient to remove the env fallback.
+curl -s http://localhost:8000/api/usage/legacy-token-stats \
+  -H "Authorization: Bearer $ADMIN_JWT"
+```
+
+### Signal B — shared secret still attributed via DB (the real gate)
+
+While any active credential still carries `is_legacy=TRUE`, the fleet
+secret (or a backfilled copy of it) is still in use as a first-class
+principal. This is the signal that is **non-zero today** on a stock
+deploy (`service_clients` `client_name='router-primary'`) and becomes
+zero only after stage 2 rotates/revokes every legacy row:
+
+```sql
+-- Must both be 0 before stage 4. Non-zero ⇒ shared secret still live
+-- via the DB path (env-fallback audit will misleadingly read 0).
+SELECT count(*) AS active_legacy_service_clients
+  FROM service_clients
+ WHERE is_active = TRUE AND is_legacy = TRUE;
+
+SELECT count(*) AS active_legacy_agent_credentials
+  FROM agent_credentials
+ WHERE is_active = TRUE AND is_legacy = TRUE;
+```
+
+Also list the remaining rows so you know what to cut over:
+
+```sql
+SELECT id, client_name, client_type
+  FROM service_clients
+ WHERE is_active = TRUE AND is_legacy = TRUE;
+
+SELECT c.id, a.name, c.label
+  FROM agent_credentials c
+  JOIN agents a ON a.id = c.agent_id
+ WHERE c.is_active = TRUE AND c.is_legacy = TRUE;
+```
 
 Stop here if your fleet has only a handful of agents and stage 2 was
 clean — the legacy fallback can stay enabled forever; it just means
@@ -186,8 +304,17 @@ recovery.
 
 ## Stage 4 — Final scrub (irreversible)
 
-Once `service_token_legacy_env_used` is zero for at least one full
-release window:
+⚠ **Exit criterion (both required for one full release window):**
+
+1. Signal B: `active_legacy_service_clients = 0` **and**
+   `active_legacy_agent_credentials = 0` (no DB row still embodies the
+   shared secret).
+2. Signal A: `service_token_legacy_env_used` / legacy-token-stats also
+   zero (no host still depending on the env fallback after the DB rows
+   are gone).
+
+Do **not** treat Signal A alone as proof the shared secret is unused —
+that is exactly the booby-trapped reading this runbook used to teach.
 
 ```bash
 # 1. Remove CSP_SERVICE_TOKEN from CSP's .env.
@@ -197,8 +324,8 @@ sed -i.bak '/^CSP_SERVICE_TOKEN=/d' .env
 #    to match anything (env value is empty).
 docker compose restart csp
 
-# 3. Smoke-test: existing per-agent tokens still work; legacy traffic
-#    now correctly fails with 401.
+# 3. Smoke-test: existing per-agent / per-client tokens still work;
+#    presenting the old fleet secret now correctly fails with 401.
 ```
 
 After this step, the legacy `CSP_SERVICE_TOKEN` env var is dead code
