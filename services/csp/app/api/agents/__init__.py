@@ -6,7 +6,7 @@ Data plane list endpoint (GET /v1/agents, API Key auth) lives in proxy.py.
 Package split (behavior-preserving refactor of the former 1384-line
 ``app/api/agents.py`` god-module — doc-10 Slice 1):
 
-- ``registration``   register / list / get / update / delete + template download
+- ``registration``   register / list / get / update / delete + template / platform-CA / anila-verify download
 - ``approval``       approve / reject
 - ``runtime_config`` runtime-config get/patch + ``/me/runtime-config``
 - ``credentials``    bootstrap / issue / rotate / revoke + classification level
@@ -106,8 +106,10 @@ from app.api.agents.health import (
 )
 from app.api.agents.registration import (
     _AGENT_HEALTH_MAP,
+    _ANILA_VERIFY_SOURCE,
     _IGNORED_TEMPLATE_PARTS,
     _IGNORED_TEMPLATE_SUFFIXES,
+    _PLATFORM_CA_BUNDLE,
     _TEMPLATE_DIR,
     AgentRegisterRequest,
     AgentResponse,
@@ -116,6 +118,8 @@ from app.api.agents.registration import (
     _serialize_agent,
     _should_include_template_path,
     delete_agent,
+    download_anila_verify,
+    download_platform_ca,
     download_template,
     get_agent,
     list_agents,
@@ -190,6 +194,8 @@ __all__ = [
     "_AGENT_HEALTH_MAP",
     "_IGNORED_TEMPLATE_PARTS",
     "_IGNORED_TEMPLATE_SUFFIXES",
+    "_ANILA_VERIFY_SOURCE",
+    "_PLATFORM_CA_BUNDLE",
     "_TEMPLATE_DIR",
     "AgentRegisterRequest",
     "AgentResponse",
@@ -197,6 +203,8 @@ __all__ = [
     "_enforce_endpoint_url",
     "_serialize_agent",
     "_should_include_template_path",
+    "download_anila_verify",
+    "download_platform_ca",
     "download_template",
     "register_agent",
     "list_agents",
