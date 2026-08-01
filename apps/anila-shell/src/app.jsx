@@ -35,6 +35,7 @@ import {
   resolveAnsweringAgentId,
 } from "./runtime/messageMeta.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
+import { resolveEditResend } from "./runtime/editResend.js";
 import { relativeLabel } from "./runtime/time.js";
 import {
   clearChunks as apiClearMemoryChunks,
@@ -1057,8 +1058,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // ---- edit a user message + re-run the chat turn (OW-1 branch) ----
   // New user message is a sibling of the edited one; old subtree retained.
   async function handleEditUser(userMsg, nextText) {
-    const trimmed = (nextText || "").trim();
-    if (!trimmed || trimmed === userMsg.text) return;
+    // Identical text is a legitimate re-send (owner 2026-08-01); only empty aborts.
+    const decision = resolveEditResend(nextText);
+    if (!decision.ok) return;
+    const trimmed = decision.text;
     if (!isAuthenticated) {
       setRuntimeError("尚未登入，請重新登入後再試。");
       return;

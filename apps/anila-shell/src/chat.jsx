@@ -6,6 +6,7 @@ import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallba
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { hasBranch, neighbourId, pagerState } from "./runtime/messageTree.js";
+import { resolveEditResend } from "./runtime/editResend.js";
 import { classifiedCopyDenial } from "./uxCopy.js";
 import {
   resolveActionIcon,
@@ -388,14 +389,17 @@ export const MessageBubble = ({
       setDraft(msg.text || "");
     };
     const saveEdit = () => {
-      const next = draft.trim();
-      if (!next || next === msg.text) {
+      // Empty draft still cancels. Identical text is allowed to re-send —
+      // owner decision 2026-08-01: silent no-op on confirm is forbidden.
+      const decision = resolveEditResend(draft);
+      if (!decision.ok) {
         cancelEdit();
         return;
       }
       setEditing(false);
-      onEditUser(msg, next);
+      onEditUser(msg, decision.text);
     };
+    const canSubmitEdit = resolveEditResend(draft).ok;
 
     return (
       <div
@@ -534,7 +538,7 @@ export const MessageBubble = ({
                   >取消</button>
                   <button
                     onClick={saveEdit}
-                    disabled={!draft.trim() || draft.trim() === msg.text}
+                    disabled={!canSubmitEdit}
                     style={{
                       padding: "4px 10px",
                       fontSize: 12,
@@ -542,8 +546,8 @@ export const MessageBubble = ({
                       border: "1px solid var(--accent)",
                       borderRadius: "var(--radius)",
                       color: "var(--bg)",
-                      cursor: !draft.trim() || draft.trim() === msg.text ? "not-allowed" : "pointer",
-                      opacity: !draft.trim() || draft.trim() === msg.text ? 0.5 : 1,
+                      cursor: !canSubmitEdit ? "not-allowed" : "pointer",
+                      opacity: !canSubmitEdit ? 0.5 : 1,
                     }}
                   >送出</button>
                 </div>

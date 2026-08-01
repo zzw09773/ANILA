@@ -268,6 +268,9 @@ describe("hasBranch / branch-deletion control", () => {
   });
 });
 
+// Edit-resend UI + handler invariants live in editResend.test.js
+// (MessageBubble half + resolveEditResend + source guards on handleEditUser).
+
 // The observed 400 (`_enforce_explicit_parent_role` rejecting click-1's
 // assistant) left the answer on screen with nothing marking it as unsaved —
 // it simply vanished on the next load.
