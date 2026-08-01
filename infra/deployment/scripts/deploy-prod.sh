@@ -130,6 +130,17 @@ check_env() {
          set -a; source /path/to/prod.env; set +a
          bash infra/deployment/scripts/deploy-prod.sh"
   fi
+  # ANILA_ALLOW_DEV_SECRET=1 會把 startup_security 的硬擋降成 log warning
+  # (含 P2.7 稽核帳防竄改)。prod 部署必須拒絕——本機開發逃生口不可進 .15。
+  # 對齊 Python ``.strip() == "1"``;同時掃 repo-root ./.env——docker compose
+  # 會讀那個檔,光看 shell env 會漏掉「shell 乾淨但 .env 帶 =1」的半盲路徑。
+  local _allow_dev="${ANILA_ALLOW_DEV_SECRET:-}"
+  _allow_dev="${_allow_dev#"${_allow_dev%%[![:space:]]*}"}"
+  _allow_dev="${_allow_dev%"${_allow_dev##*[![:space:]]}"}"
+  if [[ "$_allow_dev" == "1" ]] || \
+     { [[ -f .env ]] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?ANILA_ALLOW_DEV_SECRET[[:space:]]*=[[:space:]]*['"'"'"]?1['"'"'"]?[[:space:]]*$' .env; }; then
+    fatal "ANILA_ALLOW_DEV_SECRET=1 禁止用於 prod 部署:此旗標會關閉 startup_security 對 dev 預設值與 P2.7 稽核帳防竄改的硬擋(只剩 log warning)。請在 shell 與 .env 都設 ANILA_ALLOW_DEV_SECRET=0 後重跑。"
+  fi
   # Slice 6 旗標分域:少了 ANILA_ENV=production,「模型 http fail-closed」硬規則
   # 不會生效(url_guard 以此判定 production)。不擋部署,但大聲提醒。
   if [[ "${ANILA_ENV:-}" != "production" && "${ANILA_ENV:-}" != "prod" ]]; then
@@ -314,6 +325,7 @@ cmd_rebuild() {
   local svc="${1:-}"
   [[ -z "$svc" ]] && fatal "usage: $0 rebuild <service>  (e.g. csp / anila-studio / anila-ui)"
   check_docker
+  check_env
   section "Rebuild + restart: $svc"
   docker compose build "$svc"
   docker compose up -d "$svc"
