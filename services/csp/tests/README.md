@@ -33,15 +33,15 @@ DB 狀態,再看測試本身。
 ## 目前基準線(2026-08-01 實測)
 
 ```
-1431 passed · 13 skipped · 0 failed     (1444 collected)
+1471 passed · 13 skipped · 0 failed     (1484 collected)
 ```
 
 兩種跑法都是這個數字,已驗證:
 
 | 跑法 | cwd | 指令 | 結果 |
 |---|---|---|---|
-| 1 | worktree / repo 根 | `$PY -m pytest services/csp/tests -q` | 1431 passed · 13 skipped |
-| 2 | `services/csp` | `$PY -m pytest tests -q` | 1431 passed · 13 skipped |
+| 1 | worktree / repo 根 | `$PY -m pytest services/csp/tests -q` | 1471 passed · 13 skipped |
+| 2 | `services/csp` | `$PY -m pytest tests -q` | 1471 passed · 13 skipped |
 
 舊基準線(2026-07-31)的唯一紅燈
 `test_template_download.py::test_developer_can_download_template` 已由

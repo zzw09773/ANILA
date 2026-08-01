@@ -76,24 +76,112 @@ _INHERIT_REASON = "source_selected"
 
 @dataclass(frozen=True)
 class _ServiceCaller:
-    """/v1 service 面呼叫者(service token;legacy env 時 identity=None)。"""
+    """/v1 service 面呼叫者(dispatch JWT / service_client / legacy)。"""
 
     identity: object | None
+    # Set only for dispatch-JWT agent callers (claims.user_id). Used to
+    # pin job owner attribution; None for service_client / legacy.
+    dispatch_user_id: int | None = None
+
+
+def _looks_like_dispatch_jwt(token: str) -> bool:
+    """True when unverified claims declare the dispatch audience."""
+    from jose import JWTError, jwt
+
+    from app.services.proxy.dispatch_token import DISPATCH_TOKEN_AUDIENCE
+
+    try:
+        claims = jwt.get_unverified_claims(token)
+    except JWTError:
+        return False
+    aud = claims.get("aud")
+    if isinstance(aud, list):
+        return DISPATCH_TOKEN_AUDIENCE in aud
+    return aud == DISPATCH_TOKEN_AUDIENCE
+
+
+def _resolve_dispatch_jwt_identity(request: Request, db: Session):
+    """Try Authorization Bearer or X-CSP-Service-Token as a dispatch JWT.
+
+    Returns ``(CallerIdentity(kind="agent"), dispatch_user_id)`` on success,
+    ``None`` if no dispatch JWT was presented. Raises 401 when a
+    dispatch-shaped token fails verify or the agent row is missing.
+    """
+    from app.models.agent import Agent
+    from app.services.proxy.dispatch_token import (
+        extract_bearer_token,
+        verify_dispatch_token,
+    )
+
+    candidates: list[str] = []
+    bearer = extract_bearer_token(request.headers.get("Authorization"))
+    if bearer:
+        candidates.append(bearer)
+    header_token = request.headers.get("X-CSP-Service-Token")
+    if header_token and header_token not in candidates:
+        candidates.append(header_token)
+
+    for token in candidates:
+        if token.startswith("csk-"):
+            continue
+        claims = verify_dispatch_token(token)
+        if claims is None:
+            if _looks_like_dispatch_jwt(token):
+                raise HTTPException(
+                    status_code=401, detail="派工 JWT 無效或已過期"
+                )
+            continue
+        agent_id = int(claims["agent_id"])
+        dispatch_user_id = int(claims["user_id"])
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        if agent is None:
+            raise HTTPException(
+                status_code=401, detail="dispatch token 對應的 agent 不存在"
+            )
+        identity = agent_credential_service.CallerIdentity(
+            kind="agent",
+            agent_id=agent.id,
+            service_client_id=None,
+            credential_id=0,
+            is_legacy=False,
+            used_previous_token=False,
+        )
+        request.state.csp_caller = identity
+        return identity, dispatch_user_id
+    return None
 
 
 def _resolve_service_token(request: Request, db: Session):
-    """回 (matched: bool, identity)。matched=False 代表無有效 service token。"""
+    """回 (matched, identity, dispatch_user_id)。matched=False 代表無有效憑證。
+
+    P2.1 W2 order:
+      1. dispatch JWT (in-task agent callback) via Bearer or X-CSP-Service-Token
+      2. service_client ``csk-`` / legacy fleet token via X-CSP-Service-Token
+      3. bare agent ``csk-`` → 401 (retired; no dual-accept)
+    """
+    dispatch = _resolve_dispatch_jwt_identity(request, db)
+    if dispatch is not None:
+        identity, dispatch_user_id = dispatch
+        return True, identity, dispatch_user_id
+
     token = request.headers.get("X-CSP-Service-Token")
     if not token:
-        return False, None
+        return False, None, None
+
     identity = agent_credential_service.verify_service_token(db, token=token)
     if identity is not None:
+        if identity.kind == "agent":
+            raise HTTPException(
+                status_code=401,
+                detail="agent 任務回呼請使用派工 JWT，不再接受 csk-",
+            )
         request.state.csp_caller = identity
-        return True, identity
+        return True, identity, None
+
     legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
     if legacy and hmac.compare_digest(token, legacy):
         request.state.csp_caller = None  # legacy = unattributed
-        return True, None
+        return True, None, None
     # header present but invalid → 明確 401(不是 403)。
     raise HTTPException(status_code=401, detail="服務權杖無效")
 
@@ -101,14 +189,16 @@ def _resolve_service_token(request: Request, db: Session):
 def require_service_caller(
     request: Request, db: Session = Depends(get_db)
 ) -> _ServiceCaller:
-    """/v1 寫入面 gate:僅 service token(doc 10 §12)。
+    """/v1 寫入面 gate: dispatch JWT、service_client 或 legacy service token。
 
-    無 service token 但帶使用者憑證(JWT/cookie)→ 403(此端點不開放使用者
+    無服務憑證但帶使用者憑證(JWT/cookie)→ 403(此端點不開放使用者
     直建 artifact/job);完全匿名 → 401。
     """
-    matched, identity = _resolve_service_token(request, db)
+    matched, identity, dispatch_user_id = _resolve_service_token(request, db)
     if matched:
-        return _ServiceCaller(identity=identity)
+        return _ServiceCaller(
+            identity=identity, dispatch_user_id=dispatch_user_id
+        )
     has_user_cred = bool(
         _extract_bearer(request.headers.get("Authorization"))
         or request.cookies.get(ACCESS_COOKIE_NAME)
@@ -116,11 +206,81 @@ def require_service_caller(
     if has_user_cred:
         raise HTTPException(
             status_code=403,
-            detail="此端點僅接受服務憑證(X-CSP-Service-Token),不開放使用者直建",
+            detail="此端點僅接受服務憑證(派工 JWT 或 X-CSP-Service-Token),不開放使用者直建",
         )
     raise HTTPException(
-        status_code=401, detail="缺少 X-CSP-Service-Token(服務對服務端點)"
+        status_code=401,
+        detail="缺少派工 JWT 或 X-CSP-Service-Token(服務對服務端點)",
     )
+
+
+def _is_agent_caller(caller: _ServiceCaller) -> bool:
+    identity = caller.identity
+    return identity is not None and getattr(identity, "kind", None) == "agent"
+
+
+def _require_dispatch_user_id(caller: _ServiceCaller) -> int:
+    if caller.dispatch_user_id is None:
+        raise HTTPException(
+            status_code=401, detail="dispatch JWT 缺少 user_id"
+        )
+    return caller.dispatch_user_id
+
+
+def _enforce_agent_requester_scope(
+    caller: _ServiceCaller, *, requester_user_id: int | None, employee_id: str | None
+) -> int:
+    """Agent-kind callers may only attribute jobs to the dispatch JWT user_id."""
+    if not _is_agent_caller(caller):
+        raise RuntimeError("_enforce_agent_requester_scope called for non-agent")
+    dispatch_uid = _require_dispatch_user_id(caller)
+    if requester_user_id is not None and requester_user_id != dispatch_uid:
+        raise HTTPException(
+            status_code=403,
+            detail="agent 不得指定非派工對象的 requester_user_id",
+        )
+    if (employee_id or "").strip():
+        raise HTTPException(
+            status_code=403,
+            detail="agent 不得以 employee_id 指定 owner",
+        )
+    return dispatch_uid
+
+
+def _enforce_agent_owner_match(
+    caller: _ServiceCaller, *, owner_user_id: int | None, resource: str
+) -> None:
+    """Reject agent-kind callers that reference another user's resource.
+
+    The dispatch JWT already carries ``user_id`` (plumbed as
+    ``caller.dispatch_user_id``). Matching that against the resource owner's
+    user id closes cross-user laundering via foreign ``task_id`` /
+    ``job_id`` / ``artifact_id`` — no ``task_id`` claim is required.
+    """
+    if not _is_agent_caller(caller):
+        return
+    dispatch_uid = _require_dispatch_user_id(caller)
+    if owner_user_id is None or owner_user_id != dispatch_uid:
+        raise HTTPException(
+            status_code=403,
+            detail=f"agent 不得參照其他使用者的 {resource}",
+        )
+
+
+def _missing_resource(
+    caller: _ServiceCaller | None, *, resource: str, detail: str
+) -> HTTPException:
+    """404 for service/user; agents get the same 403 as a foreign hit.
+
+    Closes the exists-but-foreign (403) vs missing (404) oracle on the
+    write faces without weakening the owner-match deny.
+    """
+    if caller is not None and _is_agent_caller(caller):
+        return HTTPException(
+            status_code=403,
+            detail=f"agent 不得參照其他使用者的 {resource}",
+        )
+    return HTTPException(status_code=404, detail=detail)
 
 
 @dataclass(frozen=True)
@@ -145,7 +305,7 @@ def require_export_caller(
     other s2s paths, but must not open artifact export — that would let any
     developer-issued agent token bypass ``ensure_artifact_access``.
     """
-    matched, identity = _resolve_service_token(request, db)
+    matched, identity, _dispatch_user_id = _resolve_service_token(request, db)
     if matched:
         if identity is not None and getattr(identity, "kind", None) == "agent":
             raise HTTPException(
@@ -180,30 +340,43 @@ def require_export_caller(
 # ── 內部 helpers ─────────────────────────────────────────────────────────────
 
 
-def _load_artifact_or_404(db: Session, artifact_id: int) -> Artifact:
+def _load_artifact_or_404(
+    db: Session,
+    artifact_id: int,
+    caller: _ServiceCaller | None = None,
+) -> Artifact:
     artifact = artifacts.get_artifact(db, artifact_id)
     if artifact is None:
-        raise HTTPException(status_code=404, detail="找不到此 artifact")
+        raise _missing_resource(
+            caller, resource="artifact", detail="找不到此 artifact",
+        )
     return artifact
 
 
 def _resolve_binding(
-    db: Session, *, task_id: int | None, source_snapshot_id: int | None
+    db: Session,
+    *,
+    task_id: int | None,
+    source_snapshot_id: int | None,
+    caller: _ServiceCaller | None = None,
 ) -> tuple[Task | None, SourceSnapshot | None]:
-    """存在性驗證:給了 id 就必須查得到列,否則 404。"""
+    """存在性驗證:給了 id 就必須查得到列,否則 404(agent → 403)。"""
     task = None
     snapshot = None
     if task_id is not None:
         task = db.query(Task).filter(Task.id == task_id).first()
         if task is None:
-            raise HTTPException(status_code=404, detail=f"找不到 task {task_id}")
+            raise _missing_resource(
+                caller, resource="task", detail=f"找不到 task {task_id}",
+            )
     if source_snapshot_id is not None:
         snapshot = db.query(SourceSnapshot).filter(
             SourceSnapshot.id == source_snapshot_id
         ).first()
         if snapshot is None:
-            raise HTTPException(
-                status_code=404,
+            raise _missing_resource(
+                caller,
+                resource="source_snapshot",
                 detail=f"找不到 source_snapshot {source_snapshot_id}",
             )
     return task, snapshot
@@ -252,10 +425,29 @@ def register_artifact_job(
     db: Session = Depends(get_db),
 ):
     """冪等 upsert 一筆 Studio job(doc 02 ArtifactJob;restart 不丟失)。"""
-    owner_user_id, employee_id = artifacts.resolve_owner(
-        db, requester_user_id=payload.requester_user_id,
-        employee_id=payload.employee_id,
-    )
+    identity = caller.identity
+    if identity is not None and getattr(identity, "kind", None) == "agent":
+        pinned = _enforce_agent_requester_scope(
+            caller,
+            requester_user_id=payload.requester_user_id,
+            employee_id=payload.employee_id,
+        )
+        owner_user_id, employee_id = artifacts.resolve_owner(
+            db, requester_user_id=pinned, employee_id=None,
+        )
+    else:
+        owner_user_id, employee_id = artifacts.resolve_owner(
+            db, requester_user_id=payload.requester_user_id,
+            employee_id=payload.employee_id,
+        )
+    # Upsert must not take over an existing row owned by someone else.
+    # register_job keys on job_id and would otherwise overwrite owner /
+    # status / trace while echoing unmanaged fields (result_metadata, …).
+    existing = db.get(ArtifactJob, payload.job_id)
+    if existing is not None and _is_agent_caller(caller):
+        _enforce_agent_owner_match(
+            caller, owner_user_id=existing.owner_user_id, resource="job",
+        )
     job = artifacts.register_job(
         db, payload=payload, owner_user_id=owner_user_id,
         employee_id=employee_id,
@@ -272,11 +464,22 @@ def patch_artifact_job(
     caller: _ServiceCaller = Depends(require_service_caller),
     db: Session = Depends(get_db),
 ):
-    """狀態轉移 + 進度/回填;非法轉移 → 409、查無 → 404。"""
+    """狀態轉移 + 進度/回填;非法轉移 → 409、查無 → 404(agent → 403)。"""
+    job = db.get(ArtifactJob, job_id)
+    if job is None:
+        raise _missing_resource(
+            caller, resource="job", detail="找不到此 job",
+        )
+    # F3: agent may not patch another user's job (owner_user_id pin).
+    _enforce_agent_owner_match(
+        caller, owner_user_id=job.owner_user_id, resource="job",
+    )
     try:
         return artifacts.transition_job(db, job_id=job_id, patch=patch)
     except LookupError:
-        raise HTTPException(status_code=404, detail="找不到此 job") from None
+        raise _missing_resource(
+            caller, resource="job", detail="找不到此 job",
+        ) from None
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
@@ -289,22 +492,57 @@ def register_artifact(
     caller: _ServiceCaller = Depends(require_service_caller),
     db: Session = Depends(get_db),
 ):
-    """註冊成品 + 首版;binding 驗證 + 分類繼承(effective = max)。"""
+    """註冊成品 + 首版;binding 驗證 + 分類繼承(effective = max)。
+
+    All four /v1 write faces scope agent-kind callers by
+    ``caller.dispatch_user_id``: register job (including upsert over an
+    existing row), patch job, register artifact (task / snapshot / job
+    owners), and add version. Foreign ids cannot launder ownership,
+    ``trace_id``, or classification into the written row.
+    """
     task, snapshot = _resolve_binding(
         db, task_id=payload.task_id,
         source_snapshot_id=payload.source_snapshot_id,
+        caller=caller,
     )
+    job: ArtifactJob | None = None
+    if payload.job_id:
+        job = db.get(ArtifactJob, payload.job_id)
+
+    # F3: reject foreign task / snapshot / job BEFORE copying any field
+    # into owner_user_id / trace_id / ClassificationEvent actor_id.
+    if task is not None:
+        _enforce_agent_owner_match(
+            caller, owner_user_id=task.requester_user_id, resource="task",
+        )
+    if snapshot is not None:
+        snap_task = db.query(Task).filter(Task.id == snapshot.task_id).first()
+        _enforce_agent_owner_match(
+            caller,
+            owner_user_id=(
+                snap_task.requester_user_id if snap_task is not None else None
+            ),
+            resource="source_snapshot",
+        )
+    if job is not None:
+        _enforce_agent_owner_match(
+            caller, owner_user_id=job.owner_user_id, resource="job",
+        )
+
     # owner / trace 由 task 優先、否則 job。
     owner_user_id: int | None = None
     trace_id: str | None = None
     if task is not None:
         owner_user_id = task.requester_user_id
         trace_id = task.trace_id
-    elif payload.job_id:
-        job = db.get(ArtifactJob, payload.job_id)
-        if job is not None:
-            owner_user_id = job.owner_user_id
-            trace_id = job.trace_id
+    elif job is not None:
+        owner_user_id = job.owner_user_id
+        trace_id = job.trace_id
+
+    # actor_type is always "service" here; ClassificationEvent.actor_user_id
+    # is only populated when actor_type == USER, so this value is not
+    # observable on the event row.
+    actor_id = str(owner_user_id or 0)
 
     explicit = payload.classification_level or ClassificationLevel.UNCLASSIFIED
     try:
@@ -319,7 +557,7 @@ def register_artifact(
 
     effective = _latch_inheritance(
         db, artifact=artifact, task=task, snapshot=snapshot,
-        actor_id=str(owner_user_id or 0),
+        actor_id=actor_id,
     )
     version = artifacts.create_version(
         db, artifact=artifact, storage_ref=payload.storage_ref,
@@ -346,14 +584,23 @@ def add_artifact_version(
     db: Session = Depends(get_db),
 ):
     """新增版本;繼承重驗(可再升不可降)。"""
-    artifact = _load_artifact_or_404(db, artifact_id)
+    artifact = _load_artifact_or_404(db, artifact_id, caller=caller)
+    # F3: agent may not version another user's artifact.
+    _enforce_agent_owner_match(
+        caller, owner_user_id=artifact.owner_user_id, resource="artifact",
+    )
     task, snapshot = _resolve_binding(
         db, task_id=artifact.source_task_id,
         source_snapshot_id=artifact.source_snapshot_id,
+        caller=caller,
     )
+    # actor_type is always "service" here; ClassificationEvent.actor_user_id
+    # is only populated when actor_type == USER, so this value is not
+    # observable on the event row.
+    actor_id = str(artifact.owner_user_id or 0)
     effective = _latch_inheritance(
         db, artifact=artifact, task=task, snapshot=snapshot,
-        actor_id=str(artifact.owner_user_id or 0),
+        actor_id=actor_id,
         explicit_floor=payload.classification_level,
     )
     version = artifacts.create_version(

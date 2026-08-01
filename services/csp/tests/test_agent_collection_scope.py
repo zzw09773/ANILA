@@ -1,7 +1,7 @@
-"""Unit tests for the S-Q1 / P4.7 agent csk- search scope guard.
+"""Unit tests for the S-Q1 / P4.7 agent dispatch-JWT search scope guard.
 
 These exercise ``_enforce_agent_collection_scope`` in isolation — the
-security invariant that an agent service token may search ONLY the
+security invariant that an in-task agent principal may search ONLY the
 collections the agent is bound to — without standing up the full app/DB
 stack (the integration search path is env-flaky in this harness).
 """
