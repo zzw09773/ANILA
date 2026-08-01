@@ -1,22 +1,23 @@
 """{{AGENT_NAME}} — ANILA agent built with anila-core.
 
 This is the entry point for your agent.  It exposes an OpenAI-compatible
-/v1/chat/completions endpoint and validates that every inbound request
-originates from the ANILA CSP proxy (via X-CSP-Service-Token).
+/v1/chat/completions endpoint and verifies that every inbound request
+carries a short-lived CSP dispatch JWT (Authorization: Bearer …),
+checked against the platform JWKS.
 
-Run locally (development):
-    uvicorn agent:app --reload --port 9100
+Run locally (development — explicit auth bypass):
+    API_DEV_MODE=true uvicorn agent:app --reload --port 9100
 
 Run with full CSP wiring:
-    CSP_BASE_URL=http://localhost:8000 \\
-    CSP_API_KEY=sk-your-key \\
-    CSP_SERVICE_TOKEN=dev-service-token \\
+    CSP_BASE_URL=https://anila.example \\
+    ANILA_CA_FILE=/path/to/cspki_ca_bundle.pem \\
     uvicorn agent:app --host 0.0.0.0 --port 9100
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -25,7 +26,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from anila_core.api.middleware.auth import CspServiceTokenMiddleware
+from anila_core.api.middleware import DispatchIdentityMiddleware, claims_from_request
 from anila_core.config import settings
 from anila_core.context.agent_context import get_current_context
 from anila_core.providers.cspplatform_provider import CSPPlatformProvider
@@ -54,9 +55,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="{{AGENT_DISPLAY_NAME}}", version="0.1.0", lifespan=lifespan)
 
+# P2.1: verify short-lived CSP dispatch JWT against platform JWKS.
+# Blank CSP_BASE_URL / JWKS → fail-closed (401), not an open door.
 app.add_middleware(
-    CspServiceTokenMiddleware,
-    service_token=settings.csp_service_token,
+    DispatchIdentityMiddleware,
+    csp_base_url=settings.csp_base_url,
+    ca_file=(os.environ.get("ANILA_CA_FILE") or "").strip() or None,
     dev_mode=settings.api_dev_mode,
 )
 
@@ -89,9 +93,10 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     messages: list[dict] = body.get("messages", [])
     stream: bool = body.get("stream", False)
 
-    # Read identity injected by CSP proxy
-    user_id = request.headers.get("X-ANILA-User-Id", "anonymous")
-    user_email = request.headers.get("X-ANILA-User-Email", "")
+    # Identity comes from the verified dispatch JWT (not plaintext headers).
+    claims = claims_from_request(request) or {}
+    user_id = claims.get("user_id", "anonymous")
+    department = claims.get("department")
 
     # ── TODO: implement your agent logic here ────────────────────────────────
     # Examples:
@@ -106,7 +111,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         "",
     )
     reply = (
-        f"[{{AGENT_DISPLAY_NAME}}] Hello {user_email or user_id}! "
+        f"[{{AGENT_DISPLAY_NAME}}] Hello user={user_id} dept={department!r}! "
         f"You asked: {last_user_msg!r}. "
         "Implement your logic in agent.py."
     )

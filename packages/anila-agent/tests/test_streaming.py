@@ -132,9 +132,15 @@ async def test_stream_error_mid_flight_closes_cleanly(monkeypatch):
 # ---- HTTP 端點層（TestClient）：證明 branch + content-type + auth 守衛 ----
 
 
+async def _fake_dispatch_claims(_authorization=None, **_kwargs):
+    return {"user_id": 1, "department": None, "agent_id": 9}
+
+
 def _patch_guards(monkeypatch):
     monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 12)
-    monkeypatch.setattr(service_wrapper, "ALLOW_NO_SERVICE_TOKEN", True)
+    monkeypatch.setattr(
+        service_wrapper, "verify_dispatch_authorization", _fake_dispatch_claims
+    )
     # CspHttpRetriever 建構會驗 api_key 非空（search 重用 agent 的 csk-）。
     monkeypatch.setattr(service_wrapper, "CSP_SEARCH_TOKEN", "csk-test")
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
@@ -151,6 +157,7 @@ def test_http_stream_true_returns_event_stream(monkeypatch):
     with TestClient(service_wrapper.app) as client:
         resp = client.post(
             "/v1/chat/completions",
+            headers={"Authorization": "Bearer test"},
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}],
                   "stream": True},
         )
@@ -176,6 +183,7 @@ def test_http_stream_false_returns_json(monkeypatch):
     with TestClient(service_wrapper.app) as client:
         resp = client.post(
             "/v1/chat/completions",
+            headers={"Authorization": "Bearer test"},
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert resp.status_code == 200
@@ -187,10 +195,8 @@ def test_http_stream_false_returns_json(monkeypatch):
 def test_http_unauthorized_when_token_required(monkeypatch):
     from fastapi.testclient import TestClient
 
-    # 預設 fail-closed：未設 allow_unset 且 expected 非空 → 缺 header 應 401。
+    # 預設 fail-closed：缺 Authorization Bearer → 401。
     monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 12)
-    monkeypatch.setattr(service_wrapper, "ALLOW_NO_SERVICE_TOKEN", False)
-    monkeypatch.setattr(service_wrapper, "CSP_SERVICE_TOKEN", "csk-secret")
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
     with TestClient(service_wrapper.app) as client:
         resp = client.post(

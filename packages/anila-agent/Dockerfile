@@ -8,6 +8,9 @@
 #
 # 在「有網路的外部環境」build，再 `docker save | gzip` 搬進內網 `docker load`。
 # 詳見 DOCKER.md / scripts/docker-ship.sh。
+#
+# Build context = repo root（anila-core 是 in-repo、未上 PyPI；必須 path-pin 安裝，
+# 不可讓 bare-name 從預設 index 解析——見 ingestion-worker Dockerfile 同型先例）。
 
 # ============================================================
 # builder：把套件 + 依賴裝進獨立 venv（編譯工具只留這層）
@@ -21,14 +24,22 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /src
+
+# in-repo anila-core：PEP 508 file:// constraint 釘死來源。兩條 pip install
+# 都帶同一份 -c，順序對調也不會靜默改走預設 index（dependency confusion）。
+COPY packages/anila-core /tmp/anila-core
+RUN printf 'anila-core @ file:///tmp/anila-core\n' > /tmp/anila-core-constraints.txt \
+    && pip install -c /tmp/anila-core-constraints.txt /tmp/anila-core
+
 # 只 COPY 安裝套件所需（pyproject + 套件原始碼）。這份原始碼只用來「裝進 venv」，
 # 不會出現在 runtime image 的檔案樹（runtime 只 COPY /opt/venv）。
-COPY pyproject.toml README.md ./
-COPY anila_agent ./anila_agent
+COPY packages/anila-agent/pyproject.toml packages/anila-agent/README.md ./
+COPY packages/anila-agent/anila_agent ./anila_agent
 
 # serving=FastAPI wrapper；pgvector=ANILA 原生檢索(asyncpg)；jupyter=MLSteam Lab 需要；
 # dev=pytest/ruff/mypy（完整開發環境）。CSP HTTP retriever 只需 httpx（base deps 已有）。
-RUN pip install ".[serving,pgvector,jupyter,dev]"
+# -c 約束讓本步即使尚未裝過 anila-core，也只會走 file:///tmp/anila-core。
+RUN pip install -c /tmp/anila-core-constraints.txt ".[serving,pgvector,jupyter,dev]"
 
 # build-time 煙霧測試：import 不過就讓 build 當場失敗（外網好除錯）。
 RUN python -c "from anila_agent.serving.service_wrapper import app; print('import OK')"

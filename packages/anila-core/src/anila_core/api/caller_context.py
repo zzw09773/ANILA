@@ -1,31 +1,22 @@
 """Per-request caller identity for agents fronted by the CSP proxy.
 
-CSP's :func:`_build_downstream_headers` (in
-``myCSPPlatform.app.services.proxy_service``) sets a small set of
-``X-ANILA-*`` / ``X-CSP-*`` headers on every request it forwards to
-an agent. They carry the bits an agent needs to interact with
-platform services on the calling user's behalf:
+P2.1: inbound identity is the **verified dispatch JWT**
+(``request.state.anila_dispatch`` via :class:`DispatchIdentityMiddleware`).
+Plaintext ``X-ANILA-User-Id`` / ``-Email`` / ``-Groups`` headers are no
+longer a trusted identity source.
 
-* ``X-ANILA-User-Id`` — which user the agent is serving (the
-  employee ID / 員編 on the card-login intranet branch; an opaque
-  stable string identifier, NOT a numeric DB primary key).
-* ``X-ANILA-User-Email`` — convenience for audit / logging.
-* ``X-CSP-Service-Token`` — the agent's own service credential
-  (``csk-...``). Agent uses this to call back into CSP for
-  cross-tenant reads (most notably memory) without re-doing auth.
+:func:`extract_caller_context` previously read those plaintext headers as
+a FastAPI dependency — that path is retired and now raises so agent
+authors cannot accidentally re-introduce header-trusted identity.
 
-This module captures those headers as a typed
-:class:`CallerContext`. The :func:`extract_caller_context` FastAPI
-dependency surfaces it from the request, falling back to ``None``
-fields when a header is absent (e.g. local dev curl with no proxy
-in front). Agents that opt into anila-core's reference server
-(``api.server``) get the context automatically; agents using their
-own framework can call :func:`extract_caller_context` directly or
-construct a :class:`CallerContext` from the headers manually.
+Construct :class:`CallerContext` from verified claims (or tests) explicitly::
 
-``csp_base_url`` doesn't ride on a header — agents know the
-backplane URL from their deployment env (``ANILA_CSP_BASE_URL``).
-We resolve it here so callers don't repeat the env-lookup boilerplate.
+    from anila_core.api.middleware import claims_from_request
+    claims = claims_from_request(request) or {}
+    ctx = CallerContext(
+        user_id=str(claims["user_id"]) if claims.get("user_id") is not None else None,
+        ...
+    )
 """
 from __future__ import annotations
 
@@ -37,6 +28,13 @@ from fastapi import Header, Request
 
 
 _DEFAULT_BASE_URL_ENV = "ANILA_CSP_BASE_URL"
+
+_PLAINTEXT_IDENTITY_RETIRED = (
+    "extract_caller_context is retired (P2.1): plaintext X-ANILA-User-* "
+    "headers are no longer trusted for identity. Use claims_from_request("
+    "request) after DispatchIdentityMiddleware, or construct CallerContext "
+    "from verified JWT claims."
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +80,33 @@ class CallerContext:
         )
 
 
+def caller_context_from_dispatch(
+    request: Request,
+    *,
+    service_token: Optional[str] = None,
+) -> CallerContext:
+    """Build CallerContext from verified dispatch claims on ``request.state``.
+
+    Trace / task ids remain readable from correlation headers (not identity).
+    """
+    claims = getattr(request.state, "anila_dispatch", None) or {}
+    uid = claims.get("user_id")
+    csp_base_url = os.environ.get(_DEFAULT_BASE_URL_ENV)
+    if csp_base_url:
+        csp_base_url = csp_base_url.rstrip("/")
+    ctx = CallerContext(
+        user_id=str(uid) if uid is not None else None,
+        user_email=None,
+        user_groups=None,
+        service_token=service_token,
+        csp_base_url=csp_base_url,
+        trace_id=(request.headers.get("X-ANILA-Trace-Id") or "").strip() or None,
+        task_id=(request.headers.get("X-ANILA-Task-Id") or "").strip() or None,
+    )
+    request.state.caller_context = ctx
+    return ctx
+
+
 def extract_caller_context(
     request: Request,
     x_anila_user_id: Optional[str] = Header(default=None, alias="X-ANILA-User-Id"),
@@ -91,38 +116,19 @@ def extract_caller_context(
     x_anila_trace_id: Optional[str] = Header(default=None, alias="X-ANILA-Trace-Id"),
     x_anila_task_id: Optional[str] = Header(default=None, alias="X-ANILA-Task-Id"),
 ) -> CallerContext:
-    """FastAPI dependency. Read the CSP-forwarded identity headers.
+    """Retired FastAPI dependency — always raises.
 
-    ``request`` is taken so we can stash the resolved context on
-    ``request.state.caller_context`` — code paths that don't run
-    through the dependency (background tasks spawned mid-request)
-    can recover it without re-parsing headers.
-
-    Parsing rules:
-
-    * ``X-ANILA-User-Id`` carries the employee ID (員編) on the
-      card-login intranet branch — an opaque, stable string
-      identifier, NOT a numeric DB primary key. We keep it as a
-      stripped string; blank / whitespace-only headers degrade to
-      ``user_id=None`` ("no user attribution"). Downstream CSP
-      callbacks resolve this identifier to a user server-side.
+    Plaintext ``X-ANILA-User-*`` identity is no longer trusted (P2.1).
+    Use :func:`caller_context_from_dispatch` or build :class:`CallerContext`
+    from verified JWT claims.
     """
-    user_id: Optional[str] = (x_anila_user_id or "").strip() or None
-
-    csp_base_url = os.environ.get(_DEFAULT_BASE_URL_ENV)
-    if csp_base_url:
-        csp_base_url = csp_base_url.rstrip("/")
-
-    ctx = CallerContext(
-        user_id=user_id,
-        user_email=x_anila_user_email or None,
-        user_groups=x_anila_user_groups or None,
-        service_token=x_csp_service_token or None,
-        csp_base_url=csp_base_url,
-        trace_id=(x_anila_trace_id or "").strip() or None,
-        task_id=(x_anila_task_id or "").strip() or None,
+    del (
+        request,
+        x_anila_user_id,
+        x_anila_user_email,
+        x_anila_user_groups,
+        x_csp_service_token,
+        x_anila_trace_id,
+        x_anila_task_id,
     )
-    # Stash so background tasks / context-bound subagents can
-    # recover the same instance without re-parsing.
-    request.state.caller_context = ctx
-    return ctx
+    raise RuntimeError(_PLAINTEXT_IDENTITY_RETIRED)

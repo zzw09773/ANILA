@@ -88,12 +88,12 @@ def test_static_middleware_dev_mode_passes_through():
     assert r.status_code == 200
 
 
-def test_static_middleware_no_token_passes_through():
-    """Local dev: empty service_token = "skip auth"."""
+def test_static_middleware_no_token_rejects_fail_closed():
+    """Blank service_token must NOT open the door (P2.1)."""
     app = _build_app_with(CspServiceTokenMiddleware, service_token="")
     client = TestClient(app)
     r = client.get("/foo")
-    assert r.status_code == 200
+    assert r.status_code == 401
 
 
 def test_static_middleware_health_path_bypass():
@@ -142,14 +142,14 @@ def test_rotating_falls_back_to_env_token_when_no_state(tmp_path):
     assert r.status_code == 200
 
 
-def test_rotating_no_source_passes_through(tmp_path):
-    """No state file + no env: local dev mode."""
+def test_rotating_no_source_rejects_fail_closed(tmp_path):
+    """No state file + no env: fail-closed (P2.1)."""
     app = _build_app_with(
         RotatingServiceTokenMiddleware, state_dir=tmp_path, env_token=""
     )
     client = TestClient(app)
     r = client.get("/foo")  # no header
-    assert r.status_code == 200
+    assert r.status_code == 401
 
 
 def test_rotating_dev_mode_passes_through(tmp_path):

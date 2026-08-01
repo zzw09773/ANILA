@@ -352,8 +352,13 @@ def test_service_wrapper_ships_spans_when_trace_header_present(fake_http, monkey
     async def _fake_run_once(*a, **k):
         return _Result()
 
+    async def _fake_claims(_authorization=None, **_kwargs):
+        return {"user_id": 1, "department": None, "agent_id": 9}
+
     monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 12)
-    monkeypatch.setattr(service_wrapper, "ALLOW_NO_SERVICE_TOKEN", True)
+    monkeypatch.setattr(
+        service_wrapper, "verify_dispatch_authorization", _fake_claims
+    )
     monkeypatch.setattr(service_wrapper, "CSP_SEARCH_TOKEN", "csk-test")
     monkeypatch.setattr(service_wrapper, "TRACE_ENDPOINT", "https://csp.local")
     monkeypatch.setattr(service_wrapper, "TRACE_ENABLED", True)
@@ -364,7 +369,11 @@ def test_service_wrapper_ships_spans_when_trace_header_present(fake_http, monkey
     with TestClient(service_wrapper.app) as client:
         resp = client.post(
             "/v1/chat/completions",
-            headers={"X-ANILA-Trace-Id": "trace_xyz", "X-ANILA-Task-Id": "task_1"},
+            headers={
+                "Authorization": "Bearer test",
+                "X-ANILA-Trace-Id": "trace_xyz",
+                "X-ANILA-Task-Id": "task_1",
+            },
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert resp.status_code == 200
@@ -388,8 +397,13 @@ def test_service_wrapper_no_spans_without_trace_header(fake_http, monkeypatch):
     async def _fake_run_once(*a, **k):
         return _Result()
 
+    async def _fake_claims(_authorization=None, **_kwargs):
+        return {"user_id": 1, "department": None, "agent_id": 9}
+
     monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 12)
-    monkeypatch.setattr(service_wrapper, "ALLOW_NO_SERVICE_TOKEN", True)
+    monkeypatch.setattr(
+        service_wrapper, "verify_dispatch_authorization", _fake_claims
+    )
     monkeypatch.setattr(service_wrapper, "CSP_SEARCH_TOKEN", "csk-test")
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
     monkeypatch.setattr(service_wrapper, "build_agent", lambda *a, **k: object())
@@ -398,6 +412,7 @@ def test_service_wrapper_no_spans_without_trace_header(fake_http, monkeypatch):
     with TestClient(service_wrapper.app) as client:
         resp = client.post(
             "/v1/chat/completions",
+            headers={"Authorization": "Bearer test"},
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert resp.status_code == 200

@@ -19,7 +19,7 @@
 ## 1. 外網：build + 存 tar
 
 ```bash
-make docker-build          # docker build -t anila-agent:1.0.0 .
+make docker-build          # docker build -f Dockerfile -t anila-agent:1.0.0 ../..（context=repo root）
 make docker-save           # → anila-agent_1.0.0.tar.gz（也可用未壓縮 .tar）
 ```
 

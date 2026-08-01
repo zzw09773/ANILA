@@ -1,10 +1,8 @@
-"""Service-to-service authentication middleware for ANILA Core API.
+"""Legacy static / rotating service-token middleware (pre-P2.1).
 
-When deployed behind myCSPPlatform, requests must carry:
-    X-CSP-Service-Token: <csp_service_token>
-
-The real user identity arrives via trusted forwarded headers injected by CSP:
-    X-ANILA-User-Id, X-ANILA-User-Email, X-ANILA-User-Groups
+P2.1 inbound agent auth is :class:`DispatchIdentityMiddleware` (JWKS /
+short-lived Bearer JWT). This module remains for older call sites that still
+compare ``X-CSP-Service-Token``. New agents must not use these classes.
 
 Two middlewares live in this module:
 
@@ -25,13 +23,12 @@ Two middlewares live in this module:
     ``anila-core agent bootstrap``.
 
 Auth is skipped when:
-  - ``dev_mode`` is True
-  - For ``CspServiceTokenMiddleware``: ``service_token`` is empty.
-  - For ``RotatingServiceTokenMiddleware``: NO token source is
-    available (state file missing AND env var empty) — middleware
-    logs a warning and lets all requests through. This matches the
-    "local dev without CSP" deployment story.
-  - The request path is in ``_PUBLIC_PATHS`` (always passes through).
+  - ``dev_mode`` is True (explicit local bypass only)
+  - The request path is in ``_PUBLIC_PATHS`` (always passes through)
+
+Blank / missing token configuration is FAIL-CLOSED (401). The old
+hole (empty ``service_token`` / ``mode == "none"`` ⇒ pass-through) is
+gone — new agents must use :class:`DispatchIdentityMiddleware`.
 """
 
 from __future__ import annotations
@@ -81,11 +78,17 @@ class CspServiceTokenMiddleware(BaseHTTPMiddleware):
         self._dev_mode = dev_mode
 
     async def dispatch(self, request: Request, call_next):
-        if self._dev_mode or not self._service_token:
+        if self._dev_mode:
             return await call_next(request)
 
         if request.url.path in _PUBLIC_PATHS:
             return await call_next(request)
+
+        if not self._service_token:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "service token misconfigured"},
+            )
 
         token = request.headers.get("X-CSP-Service-Token", "")
         if not token:
@@ -117,8 +120,8 @@ class RotatingServiceTokenMiddleware(BaseHTTPMiddleware):
          a. ``state_dir/service_token.json`` (written by
             ``anila-core agent bootstrap`` CLI).
          b. ``env_token`` arg or ``CSP_SERVICE_TOKEN`` env var.
-         c. Nothing — middleware enters "local dev" mode (passes all
-            requests through with a warning at startup).
+         c. Nothing — middleware enters ``mode="none"`` and REJECTS
+            every non-public request (fail-closed).
 
     2. On each request the middleware compares the incoming header
        to the in-memory token using ``hmac.compare_digest``.
@@ -178,10 +181,10 @@ class RotatingServiceTokenMiddleware(BaseHTTPMiddleware):
         self._reload()
 
         if self._mode == "none" and not self._dev_mode:
-            logger.warning(
+            logger.error(
                 "RotatingServiceTokenMiddleware: no service token configured "
-                "(state file %s missing, CSP_SERVICE_TOKEN env unset). All "
-                "requests will pass — local dev only.",
+                "(state file %s missing, CSP_SERVICE_TOKEN env unset). Every "
+                "non-public request will be REJECTED (fail-closed).",
                 self._state_path,
             )
         elif self._mode == "env_legacy":
@@ -272,10 +275,10 @@ class RotatingServiceTokenMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if self._mode == "none":
-            # No source configured: matches the legacy "service_token
-            # is None" behaviour — pass through with a warning logged
-            # at startup.
-            return await call_next(request)
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "service token misconfigured"},
+            )
 
         presented = request.headers.get("X-CSP-Service-Token", "")
         if not presented:

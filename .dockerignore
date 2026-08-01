@@ -12,3 +12,11 @@ docs/
 cht/
 runtime_logic/
 *.log
+
+# anila-agent Docker context=repo root：擋掉原 package-level .dockerignore 的規則
+# （該檔在 context 根變更後已失效；勿再維護 package 副本）
+packages/anila-agent/offline/wheelhouse
+**/*.tar.gz
+**/*.tar
+**/__pycache__
+**/.env

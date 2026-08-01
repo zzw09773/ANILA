@@ -1,46 +1,38 @@
-"""Tests for the route-3 Phase 3 caller-context plumbing.
+"""Tests for caller-context plumbing after P2.1 identity retirement.
 
-Covers:
-
-* :func:`extract_caller_context` parses the CSP-set ``X-ANILA-*`` /
-  ``X-CSP-*`` headers into a typed :class:`CallerContext`.
-* :func:`create_subagent_context` propagates ``caller`` so a
-  subagent serves the same user as its parent.
-
-Identity note: ``X-ANILA-User-Id`` carries the employee ID (員編) on
-the card-login intranet branch — an opaque, stable *string* (NOT a DB
-primary key). These tests pin that string contract: non-numeric
-identities are kept verbatim; only blank / whitespace degrades to None.
+* :class:`CallerContext` dataclass semantics remain.
+* :func:`extract_caller_context` raises — plaintext X-ANILA-User-* is
+  no longer trusted.
+* :func:`caller_context_from_dispatch` reads verified JWT claims.
+* :func:`create_subagent_context` propagates ``caller``.
 """
 from __future__ import annotations
 
 import asyncio
 
 import pytest
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.testclient import TestClient
+from starlette.requests import Request as StarletteRequest
 
-from anila_core.api.caller_context import CallerContext, extract_caller_context
+from anila_core.api.caller_context import (
+    CallerContext,
+    caller_context_from_dispatch,
+    extract_caller_context,
+)
 from anila_core.context.agent_context import (
     AgentContext,
     create_subagent_context,
 )
 
 
-# ── CallerContext semantics ──────────────────────────────────────────────────
-
-
 def test_caller_context_has_user_requires_user_id():
     assert CallerContext(user_id="1147259").has_user is True
     assert CallerContext().has_user is False
-    # 員編 is a string now; blank / whitespace-only is "no identity".
     assert CallerContext(user_id="").has_user is False
 
 
 def test_caller_context_has_callback_credentials_requires_three_fields():
-    """All three of (user_id, service_token, csp_base_url) needed.
-    Pin so a refactor that quietly relaxes the check (e.g. forgets
-    csp_base_url) doesn't make the factory fall over with KeyError."""
     full = CallerContext(
         user_id="1147259",
         service_token="csk-x",
@@ -51,8 +43,6 @@ def test_caller_context_has_callback_credentials_requires_three_fields():
     assert CallerContext(user_id="1147259", service_token="csk-x").has_callback_credentials is False
     assert CallerContext(user_id="1147259", csp_base_url="http://csp:8000").has_callback_credentials is False
     assert CallerContext(service_token="csk-x", csp_base_url="http://csp:8000").has_callback_credentials is False
-    # Blank / whitespace fields must not satisfy the callback gate (would
-    # otherwise build a reader that calls /users//facts or auths with "").
     assert CallerContext(
         user_id="", service_token="csk-x", csp_base_url="http://csp:8000"
     ).has_callback_credentials is False
@@ -64,74 +54,66 @@ def test_caller_context_has_callback_credentials_requires_three_fields():
     ).has_callback_credentials is False
 
 
-# ── extract_caller_context FastAPI dependency ────────────────────────────────
+def test_extract_caller_context_raises_plaintext_retired():
+    """P2.1: dependency must not silently trust X-ANILA-User-* headers."""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 123),
+        "server": ("test", 80),
+    }
+    req = StarletteRequest(scope)
+    with pytest.raises(RuntimeError, match="no longer trusted"):
+        extract_caller_context(req)
 
 
-def _make_test_app() -> FastAPI:
+def test_extract_caller_context_dependency_returns_500_style_error():
     app = FastAPI()
 
     @app.get("/echo")
     def echo(caller: CallerContext = Depends(extract_caller_context)) -> dict:
+        return {"user_id": caller.user_id}
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/echo", headers={"X-ANILA-User-Id": "1147259"})
+    # FastAPI surfaces the RuntimeError as 500 — the point is it does NOT
+    # quietly accept the plaintext header as identity.
+    assert resp.status_code == 500
+
+
+def test_caller_context_from_dispatch_uses_verified_claims(monkeypatch):
+    monkeypatch.setenv("ANILA_CSP_BASE_URL", "http://csp:8000/")
+    app = FastAPI()
+
+    @app.get("/echo")
+    def echo(request: Request) -> dict:
+        request.state.anila_dispatch = {
+            "user_id": 7,
+            "department": 3,
+            "agent_id": 42,
+        }
+        ctx = caller_context_from_dispatch(request, service_token="csk-x")
         return {
-            "user_id": caller.user_id,
-            "user_email": caller.user_email,
-            "service_token": caller.service_token,
-            "csp_base_url": caller.csp_base_url,
-            "has_callback_credentials": caller.has_callback_credentials,
+            "user_id": ctx.user_id,
+            "csp_base_url": ctx.csp_base_url,
+            "has_callback_credentials": ctx.has_callback_credentials,
         }
 
-    return app
-
-
-def test_extract_caller_context_parses_full_header_set(monkeypatch):
-    monkeypatch.setenv("ANILA_CSP_BASE_URL", "http://csp:8000/")  # trailing slash stripped
-    client = TestClient(_make_test_app())
-    resp = client.get(
-        "/echo",
-        headers={
-            "X-ANILA-User-Id": "1147259",
-            "X-ANILA-User-Email": "alice@example.com",
-            "X-CSP-Service-Token": "csk-test",
-        },
-    )
-    body = resp.json()
-    assert body["user_id"] == "1147259"  # 員編 kept as string, not int-coerced
-    assert body["user_email"] == "alice@example.com"
-    assert body["service_token"] == "csk-test"
-    assert body["csp_base_url"] == "http://csp:8000"  # trailing slash stripped
+    client = TestClient(app)
+    body = client.get("/echo").json()
+    assert body["user_id"] == "7"
+    assert body["csp_base_url"] == "http://csp:8000"
     assert body["has_callback_credentials"] is True
 
 
-def test_extract_caller_context_tolerates_missing_headers(monkeypatch):
-    monkeypatch.delenv("ANILA_CSP_BASE_URL", raising=False)
-    client = TestClient(_make_test_app())
-    resp = client.get("/echo")
-    body = resp.json()
-    assert body["user_id"] is None
-    assert body["service_token"] is None
-    assert body["csp_base_url"] is None
-    assert body["has_callback_credentials"] is False
-
-
-def test_extract_caller_context_keeps_non_numeric_identity(monkeypatch):
-    """X-ANILA-User-Id now carries the employee ID (員編) — an opaque
-    string. Non-numeric identities (e.g. the admin account) are kept
-    verbatim; only blank / whitespace-only degrades to None. (Previously
-    the header was int-coerced and non-numeric values became None.)"""
-    monkeypatch.setenv("ANILA_CSP_BASE_URL", "http://csp:8000")
-    client = TestClient(_make_test_app())
-    assert client.get("/echo", headers={"X-ANILA-User-Id": "admin"}).json()["user_id"] == "admin"
-    assert client.get("/echo", headers={"X-ANILA-User-Id": "1147259"}).json()["user_id"] == "1147259"
-    assert client.get("/echo", headers={"X-ANILA-User-Id": "   "}).json()["user_id"] is None
-
-
-# ── AgentContext.caller propagation through subagent fork ────────────────────
-
-
 def test_subagent_inherits_caller_from_parent():
-    """A subagent serves the same user as its parent — the fork
-    must propagate the immutable caller bundle so the subagent
-    can call back into CSP for memory reads on the same user."""
     parent_caller = CallerContext(
         user_id="1147259",
         service_token="csk-x",
@@ -139,19 +121,16 @@ def test_subagent_inherits_caller_from_parent():
     )
 
     async def _make_parent() -> AgentContext:
-        # AgentContext.__post_init__ instantiates an asyncio.Event,
-        # which needs a running loop — wrap in a coroutine so the
-        # test runner provides one.
         return AgentContext(caller=parent_caller)
 
     parent = asyncio.run(_make_parent())
     sub = create_subagent_context(parent)
-    assert sub.caller is parent_caller  # exact same frozen instance
+    assert sub.caller is parent_caller
 
 
 def test_subagent_inherits_none_caller_when_parent_has_none():
     async def _make_parent() -> AgentContext:
-        return AgentContext()  # no caller
+        return AgentContext()
 
     parent = asyncio.run(_make_parent())
     sub = create_subagent_context(parent)
