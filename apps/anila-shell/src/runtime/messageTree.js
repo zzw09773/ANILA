@@ -158,14 +158,16 @@ export async function tryPersistUserMessage({
  * user must be told — otherwise the reply simply vanishes on the next reload.
  * Returns a user-facing `notice` the caller pins to the assistant bubble.
  */
+const PERSIST_MISS_NOTICE = (reason) =>
+  `這則回答沒有存進對話紀錄（${reason}），重新整理後就會消失。請先複製內容，或重新產生一次。`;
+
 export async function persistAssistantTurn({
   appendMessage,
   authRequest,
   convId,
   payload,
 }) {
-  const notice = (reason) =>
-    `這則回答沒有存進對話紀錄（${reason}），重新整理後就會消失。請先複製內容，或重新產生一次。`;
+  const notice = PERSIST_MISS_NOTICE;
   try {
     const saved = await appendMessage(authRequest, convId, payload);
     if (saved && typeof saved.id === "number") {
@@ -177,6 +179,43 @@ export async function persistAssistantTurn({
     const reason = error?.message || "對話訊息儲存失敗";
     return { ok: false, saved: null, error, notice: notice(reason) };
   }
+}
+
+/**
+ * Persist/branch 2xx body → optimistic-assistant backfill patch.
+ * Numeric `saved.id` required. Otherwise return a failure the caller must
+ * surface (runtime banner + persistError pin) — never silent skip.
+ * `fallbackParentId` is defensive only; prefer server `parent_id`, else null
+ * (same contract as mapServerMessage: `msg.parent_id ?? null`).
+ */
+export function reconcilePersistedAssistant(saved, fallbackParentId = null) {
+  const missNotice = PERSIST_MISS_NOTICE;
+  if (saved && typeof saved.id === "number") {
+    return {
+      ok: true,
+      patch: {
+        dbId: saved.id,
+        parentId: saved.parent_id ?? fallbackParentId ?? null,
+        siblingIndex: saved.sibling_index ?? 0,
+        siblingCount: saved.sibling_count ?? 1,
+        siblingIds: Array.isArray(saved.sibling_ids)
+          ? saved.sibling_ids
+          : [saved.id],
+        persistError: null,
+      },
+      activeLeafMessageId: saved.id,
+      error: null,
+      notice: null,
+    };
+  }
+  const error = new Error("對話訊息儲存失敗");
+  return {
+    ok: false,
+    patch: null,
+    activeLeafMessageId: null,
+    error,
+    notice: missNotice(error.message),
+  };
 }
 
 /**

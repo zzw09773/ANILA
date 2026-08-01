@@ -74,6 +74,7 @@ import {
   applyServerPath,
   persistAssistantTurn,
   persistRegeneratedAssistant,
+  reconcilePersistedAssistant,
   runPersistedUserTurn,
   runRegenerateStreamPhase,
   sanitizeRestoredMessages,
@@ -1192,7 +1193,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       });
       try {
         // Assistant threads under the newly branched user message.
-        await apiAppendMessage(authRequest, convId, {
+        // Must backfill dbId before refreshActivePath: applyServerPath keeps
+        // locals without dbId as a pending tail (hydrate protection), so a
+        // never-backfilled optimistic bubble would render twice.
+        const savedAssistant = await apiAppendMessage(authRequest, convId, {
           role: "assistant",
           content: finalText,
           parentId: newUserDbId,
@@ -1201,7 +1205,21 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           agentName: agentNameForPersist,
           metadata: persistMeta,
         });
-        await refreshActivePath(convId);
+        const reconciled = reconcilePersistedAssistant(
+          savedAssistant,
+          newUserDbId,
+        );
+        if (reconciled.ok) {
+          updateMsg(convId, assistantId, reconciled.patch);
+          updateConv(convId, {
+            activeLeafMessageId: reconciled.activeLeafMessageId,
+          });
+          await refreshActivePath(convId);
+        } else {
+          // 2xx-without-id: same contract as persistAssistantTurn / sendMessage.
+          setRuntimeError(reconciled.error?.message || "對話訊息儲存失敗");
+          updateMsg(convId, assistantId, { persistError: reconciled.notice });
+        }
       } catch (persistError) {
         setRuntimeError(persistError.message || "對話訊息儲存失敗");
       }
@@ -1907,9 +1925,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           reasoning: accumulatedReasoning,
         });
         try {
+          // Same contract as sendMessage / handleEditUser: backfill dbId on the
+          // optimistic placeholder before refreshActivePath, or applyServerPath
+          // will append the pending (no-dbId) bubble after the server copy.
+          let savedAssistant = null;
           if (typeof assistantMsg.dbId === "number") {
             // OW-1: never in-place updateMessage — POST /branch sibling.
-            await persistRegeneratedAssistant({
+            savedAssistant = await persistRegeneratedAssistant({
               branchMessage: apiBranchMessage,
               authRequest,
               convId,
@@ -1924,7 +1946,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             // Unpersisted assistant (degraded mode): fall back to append.
             const parentId =
               typeof prevUser.dbId === "number" ? prevUser.dbId : undefined;
-            await apiAppendMessage(authRequest, convId, {
+            savedAssistant = await apiAppendMessage(authRequest, convId, {
               role: "assistant",
               content: finalText,
               parentId,
@@ -1934,7 +1956,20 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
               metadata: persistMeta,
             });
           }
-          branchPersisted = true;
+          const reconciled = reconcilePersistedAssistant(savedAssistant, null);
+          if (reconciled.ok) {
+            updateMsg(convId, placeholderId, reconciled.patch);
+            updateConv(convId, {
+              activeLeafMessageId: reconciled.activeLeafMessageId,
+            });
+            branchPersisted = true;
+          } else {
+            // 2xx-without-id: keep streamed text, surface miss (no silent skip).
+            setRuntimeError(reconciled.error?.message || "對話訊息儲存失敗");
+            updateMsg(convId, placeholderId, {
+              persistError: reconciled.notice,
+            });
+          }
         } catch (persistError) {
           // Designed 409 (sibling cap) after a successful stream must not leave
           // the previous answer gone behind a phantom unpersisted placeholder.
