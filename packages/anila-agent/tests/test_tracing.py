@@ -359,7 +359,8 @@ def test_service_wrapper_ships_spans_when_trace_header_present(fake_http, monkey
     monkeypatch.setattr(
         service_wrapper, "verify_dispatch_authorization", _fake_claims
     )
-    monkeypatch.setattr(service_wrapper, "CSP_SEARCH_TOKEN", "csk-test")
+    # TRACE_ENDPOINT must share origin with CSP_BASE_URL or JWT is refused (F2).
+    monkeypatch.setattr(service_wrapper, "CSP_BASE_URL", "https://csp.local")
     monkeypatch.setattr(service_wrapper, "TRACE_ENDPOINT", "https://csp.local")
     monkeypatch.setattr(service_wrapper, "TRACE_ENABLED", True)
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
@@ -370,7 +371,7 @@ def test_service_wrapper_ships_spans_when_trace_header_present(fake_http, monkey
         resp = client.post(
             "/v1/chat/completions",
             headers={
-                "Authorization": "Bearer test",
+                "Authorization": "Bearer dispatch-jwt-xyz",
                 "X-ANILA-Trace-Id": "trace_xyz",
                 "X-ANILA-Task-Id": "task_1",
             },
@@ -380,6 +381,7 @@ def test_service_wrapper_ships_spans_when_trace_header_present(fake_http, monkey
     # emitter 應把 run + output span POST 回 CSP 的 /v1/traces/<id>/spans
     assert fake_http.calls, "沒有 trace span 被送出"
     assert fake_http.calls[0]["url"] == "https://csp.local/v1/traces/trace_xyz/spans"
+    assert fake_http.calls[0]["headers"]["Authorization"] == "Bearer dispatch-jwt-xyz"
     span_types = {s["span_type"] for c in fake_http.calls for s in c["json"]["spans"]}
     assert {"agent.run.started", "agent.run.finished",
             "agent.output.started", "agent.output.finished"} <= span_types
@@ -404,7 +406,6 @@ def test_service_wrapper_no_spans_without_trace_header(fake_http, monkeypatch):
     monkeypatch.setattr(
         service_wrapper, "verify_dispatch_authorization", _fake_claims
     )
-    monkeypatch.setattr(service_wrapper, "CSP_SEARCH_TOKEN", "csk-test")
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
     monkeypatch.setattr(service_wrapper, "build_agent", lambda *a, **k: object())
     monkeypatch.setattr(service_wrapper, "run_once", _fake_run_once)
