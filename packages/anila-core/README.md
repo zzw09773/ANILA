@@ -158,6 +158,9 @@ export CSP_BASE_URL=http://localhost:8000
 uvicorn main:app --host 0.0.0.0 --port 9000
 ```
 
+Agent 端單一檔驗章（`contrib/anila_verify.py`）的 `fetch_jwks` 只接受 https。
+離線／本機沒有 https CSP 時：預先抓好 JWKS，傳 `jwks=` 給 `verify_authorization`（零網路）。
+
 ### 直接驅動一輪 QueryEngine
 
 ```python

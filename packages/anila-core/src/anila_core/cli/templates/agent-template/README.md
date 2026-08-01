@@ -40,7 +40,9 @@ Unset / blank `CSP_BASE_URL` (no JWKS) → every non-public request is
 **rejected** (fail-closed). There is no open door when auth is misconfigured.
 
 For a single-file offline copy of the verifier (stdlib + cryptography), see
-`anila_core/contrib/anila_verify.py`.
+`anila_core/contrib/anila_verify.py`. Its `fetch_jwks` requires https; for
+offline/dev without https CSP, pre-fetch JWKS and pass `jwks=` to
+`verify_authorization` (no network).
 
 ## Register with ANILA Platform
 

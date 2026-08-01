@@ -20,7 +20,10 @@ Run (after placing ``anila_verify.py`` next to this file):
     ANILA_CA_FILE=/path/to/cspki_ca_bundle.pem \\
     uvicorn agent:app --port 9100
 
-Do **not** set ``SSL_CERT_FILE`` (it replaces the entire trust store).
+``fetch_jwks`` only accepts https. Offline/dev without an https CSP: load a
+JWKS JSON yourself, ``parse_jwks(...)``, and pass ``jwks=`` into
+``verify_authorization`` (zero network calls). Do **not** set
+``SSL_CERT_FILE`` (it replaces the entire trust store).
 """
 
 from __future__ import annotations
