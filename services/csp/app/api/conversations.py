@@ -6,7 +6,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.api.auth import get_current_user
 from app.database import get_db
@@ -243,8 +243,38 @@ def _share_out(share: ConversationShare) -> ShareOut:
     )
 
 
+def _attachments_for_sibling_group(
+    session: Session,
+    sibling_ids: list[int],
+    conversation_id: int,
+) -> list[Attachment]:
+    """Attachments bound to any message sharing the same parent_id group.
+
+    Display-only: one Attachment row per upload; no clone / re-point.
+    ``conversation_id`` is defence-in-depth — callers already scope via
+    ``get_conversation`` + ``mtree.load_edges(conv.id)``, but the query must
+    not rely on that discipline alone.
+    Extracted so tests can mutate the lookup and prove the chip path.
+    """
+    return (
+        session.query(Attachment)
+        .filter(
+            Attachment.conversation_id == conversation_id,
+            Attachment.message_id.in_(sibling_ids),
+        )
+        .order_by(Attachment.created_at.asc(), Attachment.id.asc())
+        .all()
+    )
+
+
 def _message_out(msg: Message, sibling_ids: list[int] | None = None) -> MessageOut:
-    """Build MessageOut with derived sibling nav fields."""
+    """Build MessageOut with derived sibling nav fields.
+
+    When the message belongs to a multi-member sibling group (same
+    ``parent_id``, via ``mtree.sibling_groups``), surface every attachment
+    bound to any sibling so branch chips match the turn. Solo messages keep
+    the ORM ``msg.attachments`` relationship unchanged.
+    """
     ids = sibling_ids if sibling_ids is not None else [msg.id]
     try:
         index = ids.index(msg.id)
@@ -252,14 +282,24 @@ def _message_out(msg: Message, sibling_ids: list[int] | None = None) -> MessageO
         index = 0
         ids = [msg.id]
     base = MessageOut.model_validate(msg)
-    return base.model_copy(
-        update={
-            "parent_id": msg.parent_id,
-            "sibling_index": index,
-            "sibling_count": len(ids),
-            "sibling_ids": ids,
-        }
-    )
+    update: dict = {
+        "parent_id": msg.parent_id,
+        "sibling_index": index,
+        "sibling_count": len(ids),
+        "sibling_ids": ids,
+    }
+    # Symmetric union is deliberate: siblings are two versions of the same
+    # question, so their chips must agree. Solo → leave ORM attachments alone.
+    if len(ids) > 1:
+        session = object_session(msg)
+        if session is not None:
+            rows = _attachments_for_sibling_group(
+                session, ids, msg.conversation_id,
+            )
+            update["attachments"] = [
+                AttachmentOut.model_validate(a) for a in rows
+            ]
+    return base.model_copy(update=update)
 
 
 def _enrich_message_list(

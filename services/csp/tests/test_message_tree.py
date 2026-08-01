@@ -7,7 +7,9 @@ search stays all-branches.
 """
 from __future__ import annotations
 
+import io
 import os
+from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
@@ -770,3 +772,460 @@ def test_rev_branch_system_tool_rejected(client: TestClient, db: Session):
         client, h, cid, tool_msg["id"], "tool", "fork2", expect=400,
     )
     assert resp2.json()["detail"] == "不可從 system/tool 訊息建立分支"
+
+
+# ── Q18: read-side sibling-group attachment chips (no row clone) ───────────────
+
+
+def _plant_attachment(
+    db: Session,
+    *,
+    user: User,
+    conversation_id: int,
+    message_id: int | None,
+    filename: str = "doc.pdf",
+    storage_path: str = "q18/doc.pdf",
+    uploaded_by: int | None = None,
+    extracted_text: str | None = "pdf body",
+    token_count: int = 12,
+    extract_status: str = "ok",
+) -> Attachment:
+    att = Attachment(
+        conversation_id=conversation_id,
+        message_id=message_id,
+        uploaded_by=uploaded_by if uploaded_by is not None else user.id,
+        filename=filename,
+        content_type="application/pdf",
+        size_bytes=100,
+        storage_path=storage_path,
+        extracted_text=extracted_text,
+        token_count=token_count,
+        extract_status=extract_status,
+        page_count=3,
+    )
+    db.add(att)
+    db.commit()
+    db.refresh(att)
+    return att
+
+
+def _att_refs(msg: dict) -> list[str]:
+    return [a["reference_id"] for a in msg.get("attachments", [])]
+
+
+def test_q18_branch_surfaces_sibling_attachments_one_row(
+    client: TestClient, db: Session,
+):
+    """Upload on A, branch A→A′: A′ shows same chips; attachments table stays 1."""
+    user, h = _auth(client, db, "tq18a")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "Q1 with pdf")
+    att = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1["id"],
+        storage_path="q18/shared.pdf",
+    )
+    before = db.query(Attachment).filter(Attachment.conversation_id == cid).count()
+    assert before == 1
+
+    q1p = _branch(client, h, cid, q1["id"], "user", "Q1′").json()
+    assert q1p["parent_id"] == q1["parent_id"]
+    assert q1p["sibling_count"] == 2
+    assert _att_refs(q1p) == [att.reference_id]
+    assert q1p["attachments"][0]["filename"] == "doc.pdf"
+
+    db.expire_all()
+    assert db.query(Attachment).filter(Attachment.conversation_id == cid).count() == 1
+    row = db.get(Attachment, att.id)
+    assert row is not None
+    assert row.message_id == q1["id"]
+    assert row.storage_path == "q18/shared.pdf"
+    assert (
+        db.query(Attachment).filter(Attachment.message_id == q1p["id"]).count()
+        == 0
+    )
+
+
+def test_q18_original_still_reports_attachments(client: TestClient, db: Session):
+    """Original message A still reports its attachments unchanged after branch."""
+    user, h = _auth(client, db, "tq18b")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "Q1")
+    att = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1["id"],
+    )
+    before_refs = _att_refs(
+        next(m for m in _get(client, h, cid, "all")["messages"] if m["id"] == q1["id"])
+    )
+    assert before_refs == [att.reference_id]
+
+    _branch(client, h, cid, q1["id"], "user", "Q1′")
+    detail = _get(client, h, cid, "all")
+    orig = next(m for m in detail["messages"] if m["id"] == q1["id"])
+    assert _att_refs(orig) == before_refs
+    assert orig["attachments"][0]["filename"] == "doc.pdf"
+    assert orig["sibling_count"] == 2
+    db.expire_all()
+    assert db.get(Attachment, att.id).message_id == q1["id"]
+
+
+def test_q18_solo_message_unaffected(client: TestClient, db: Session):
+    """Message with no siblings keeps ORM-bound attachments only (today's path)."""
+    user, h = _auth(client, db, "tq18c")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "solo")
+    att = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1["id"],
+    )
+    # Unrelated attachment on a later message must not leak onto the solo root.
+    a1 = _append(client, h, cid, "assistant", "A1")
+    _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=a1["id"],
+        filename="other.pdf", storage_path="q18/other.pdf",
+        extracted_text="other",
+    )
+
+    detail = _get(client, h, cid, "all")
+    solo = next(m for m in detail["messages"] if m["id"] == q1["id"])
+    assert solo["sibling_count"] == 1
+    assert solo["sibling_ids"] == [q1["id"]]
+    assert _att_refs(solo) == [att.reference_id]
+
+    # Branch response itself is the only API that could invent chips; solo path
+    # via append/get must stay relationship-only.
+    refreshed = _append(client, h, cid, "user", "Q2")
+    assert refreshed["sibling_count"] == 1
+    assert refreshed["attachments"] == []
+
+
+def test_q18_branch_does_not_change_prompt_injection(
+    client: TestClient, db: Session, monkeypatch,
+):
+    """Injection stays conversation-scoped: one doc body, used_tokens unchanged."""
+    from app.api.proxy import _inject_attachments
+    from app.config import settings
+    from app.services.attachment_context import (
+        effective_cost,
+        get_conversation_attachment_usage,
+    )
+
+    monkeypatch.setattr(settings, "ANILA_DEFAULT_CONTEXT_WINDOW", 1000)
+    monkeypatch.setattr(settings, "ANILA_ATTACHMENT_BUDGET_RATIO", 0.5)
+    monkeypatch.setattr(settings, "ANILA_ATTACHMENT_TOKEN_SAFETY", 1.15)
+
+    user, h = _auth(client, db, "tq18d")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "Q1")
+    body_text = "UNIQUE_Q18_DOC_BODY_ONCE"
+    att = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1["id"],
+        extracted_text=body_text, token_count=100,
+    )
+
+    def _snap():
+        chat = {
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "系統"},
+                {"role": "user", "content": "看附件"},
+            ],
+        }
+        result = _inject_attachments(db, cid, chat, None)
+        sys_content = chat["messages"][0]["content"]
+        usage = get_conversation_attachment_usage(db, cid, 1000)
+        return sys_content, usage, result
+
+    before_sys, before_usage, before_result = _snap()
+    assert before_sys.count(body_text) == 1
+    assert before_usage["attachment_count"] == 1
+    assert before_usage["used_tokens"] == effective_cost(att.token_count)
+    assert before_result is not None
+    assert before_result.injected_count == 1
+
+    _branch(client, h, cid, q1["id"], "user", "Q1′")
+    # Re-ask again — still one row / one injection (clone regression pin).
+    _branch(client, h, cid, q1["id"], "user", "Q1″")
+
+    db.expire_all()
+    assert db.query(Attachment).filter(Attachment.conversation_id == cid).count() == 1
+    after_sys, after_usage, after_result = _snap()
+    assert after_sys.count(body_text) == 1
+    assert after_usage["attachment_count"] == 1
+    assert after_usage["used_tokens"] == before_usage["used_tokens"]
+    assert after_result.injected_count == before_result.injected_count
+
+
+def test_q18_delete_attachment_unlinks_one_file_no_dangling(
+    client: TestClient, db: Session, tmp_path, monkeypatch,
+):
+    """DELETE /api/attachments/{ref} removes exactly one file; no shared-path hazard."""
+    from app.config import settings
+    from app.services import attachment_service as att_svc
+
+    root = tmp_path / "attachments"
+    root.mkdir()
+    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_PATH", str(root))
+    monkeypatch.setattr(att_svc, "_storage_root", lambda: root)
+
+    user, h = _auth(client, db, "tq18e")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "Q1")
+    rel = f"{user.id}/q18-only.bin"
+    full = root / rel
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_bytes(b"%PDF-only-one")
+    att = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1["id"],
+        storage_path=rel, extracted_text="only",
+    )
+    ref = att.reference_id
+    att_id = att.id
+
+    q1p = _branch(client, h, cid, q1["id"], "user", "Q1′").json()
+    assert _att_refs(q1p) == [ref]
+    assert full.is_file()
+    assert db.query(Attachment).filter(Attachment.conversation_id == cid).count() == 1
+
+    resp = client.delete(f"/api/attachments/{ref}", headers=h)
+    assert resp.status_code == 200, resp.text
+    db.expire_all()
+    assert db.get(Attachment, att_id) is None
+    assert not full.exists()
+    # No second row left pointing at the unlinked path.
+    assert (
+        db.query(Attachment).filter(Attachment.storage_path == rel).count() == 0
+    )
+    detail = _get(client, h, cid, "all")
+    for mid in (q1["id"], q1p["id"]):
+        msg = next(m for m in detail["messages"] if m["id"] == mid)
+        assert msg["attachments"] == []
+
+
+def test_q18_mutation_sibling_lookup_break_hides_chips(
+    client: TestClient, db: Session, monkeypatch,
+):
+    """Break sibling-group lookup → branched message shows no chips (RED proof)."""
+    import app.api.conversations as conv_api
+
+    user, h = _auth(client, db, "tq18f")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "Q1")
+    att = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1["id"],
+    )
+
+    # Control: branch surfaces the chip.
+    control = _branch(client, h, cid, q1["id"], "user", "Q1′").json()
+    assert _att_refs(control) == [att.reference_id]
+
+    monkeypatch.setattr(
+        conv_api, "_attachments_for_sibling_group", lambda *_a, **_k: [],
+    )
+    broken = _branch(client, h, cid, q1["id"], "user", "Q1″").json()
+    assert broken["sibling_count"] >= 2
+    assert broken["attachments"] == []
+    # Row still exists — display path only.
+    db.expire_all()
+    assert db.get(Attachment, att.id) is not None
+    assert db.get(Attachment, att.id).message_id == q1["id"]
+
+
+def test_q18_branched_chips_scoped_to_own_conversation(
+    client: TestClient, db: Session,
+):
+    """F1: two users / two convs, both branched — only own conversation refs."""
+    u1, h1 = _auth(client, db, "tq18g1")
+    u2, h2 = _auth(client, db, "tq18g2")
+    c1 = _create_conv(client, h1)
+    c2 = _create_conv(client, h2)
+    q1 = _append(client, h1, c1["id"], "user", "U1 Q1")
+    q2 = _append(client, h2, c2["id"], "user", "U2 Q1")
+    a1 = _plant_attachment(
+        db, user=u1, conversation_id=c1["id"], message_id=q1["id"],
+        filename="u1-secret.pdf", storage_path="q18/u1-secret.pdf",
+        extracted_text="u1 body",
+    )
+    a2 = _plant_attachment(
+        db, user=u2, conversation_id=c2["id"], message_id=q2["id"],
+        filename="u2-secret.pdf", storage_path="q18/u2-secret.pdf",
+        extracted_text="u2 body",
+    )
+
+    b1 = _branch(client, h1, c1["id"], q1["id"], "user", "U1 Q1′").json()
+    b2 = _branch(client, h2, c2["id"], q2["id"], "user", "U2 Q1′").json()
+    assert b1["sibling_count"] == 2
+    assert b2["sibling_count"] == 2
+    assert _att_refs(b1) == [a1.reference_id]
+    assert _att_refs(b2) == [a2.reference_id]
+    assert a2.reference_id not in _att_refs(b1)
+    assert a1.reference_id not in _att_refs(b2)
+
+    d1 = _get(client, h1, c1["id"], "all")
+    d2 = _get(client, h2, c2["id"], "all")
+    for mid in (q1["id"], b1["id"]):
+        msg = next(m for m in d1["messages"] if m["id"] == mid)
+        assert _att_refs(msg) == [a1.reference_id]
+    for mid in (q2["id"], b2["id"]):
+        msg = next(m for m in d2["messages"] if m["id"] == mid)
+        assert _att_refs(msg) == [a2.reference_id]
+
+
+def test_q18_branched_chips_exclude_other_turns_attachments(
+    client: TestClient, db: Session,
+):
+    """Branched turn chips stay turn-scoped — later-turn files must not leak in.
+
+    Pins Attachment.message_id.in_(sibling_ids) in _attachments_for_sibling_group:
+    without it, conversation_id alone would paint every file onto every branched
+    bubble (solo-path tests never enter that helper).
+    """
+    user, h = _auth(client, db, "tq18turn")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "Q1 with attach")
+    turn1_att = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1["id"],
+        filename="turn1.pdf", storage_path="q18/turn1.pdf",
+        extracted_text="turn1 body",
+    )
+    q1p = _branch(client, h, cid, q1["id"], "user", "Q1′").json()
+    assert q1p["sibling_count"] == 2
+
+    # Later, separate turn (not a sibling of turn 1).
+    _append(client, h, cid, "assistant", "A1")
+    q2 = _append(client, h, cid, "user", "Q2 later turn")
+    later_att = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q2["id"],
+        filename="report.xlsx", storage_path="q18/report.xlsx",
+        extracted_text="later body",
+    )
+
+    detail = _get(client, h, cid, "all")
+    for mid in (q1["id"], q1p["id"]):
+        msg = next(m for m in detail["messages"] if m["id"] == mid)
+        assert msg["sibling_count"] == 2
+        assert _att_refs(msg) == [turn1_att.reference_id]
+        assert later_att.reference_id not in _att_refs(msg)
+
+
+def test_q18_symmetric_union_branch_upload_visible_on_original(
+    client: TestClient, db: Session,
+):
+    """F2: attachment on the branch also renders on the original turn."""
+    user, h = _auth(client, db, "tq18h")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "Q1")
+    orig = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1["id"],
+        filename="orig.txt", storage_path="q18/orig.txt",
+        extracted_text="orig body",
+    )
+    q1p = _branch(client, h, cid, q1["id"], "user", "Q1′").json()
+    branch = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1p["id"],
+        filename="branchonly.txt", storage_path="q18/branchonly.txt",
+        extracted_text="branch body",
+    )
+
+    detail = _get(client, h, cid, "all")
+    orig_msg = next(m for m in detail["messages"] if m["id"] == q1["id"])
+    branch_msg = next(m for m in detail["messages"] if m["id"] == q1p["id"])
+    expected = [orig.reference_id, branch.reference_id]
+    assert _att_refs(orig_msg) == expected
+    assert _att_refs(branch_msg) == expected
+    assert [a["filename"] for a in orig_msg["attachments"]] == [
+        "orig.txt", "branchonly.txt",
+    ]
+    db.expire_all()
+    assert db.query(Attachment).filter(Attachment.conversation_id == cid).count() == 2
+
+
+def test_q18_sibling_attachment_chip_order_created_at_then_id(
+    client: TestClient, db: Session,
+):
+    """F5: branched path orders chips by created_at, id (not bare PK order)."""
+    user, h = _auth(client, db, "tq18i")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "Q1")
+    q1p = _branch(client, h, cid, q1["id"], "user", "Q1′").json()
+
+    # Insert so id(first_pdf) < id(second_pdf), then invert created_at.
+    later_row = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1["id"],
+        filename="second.pdf", storage_path="q18/second.pdf",
+        extracted_text="second",
+    )
+    earlier_row = _plant_attachment(
+        db, user=user, conversation_id=cid, message_id=q1p["id"],
+        filename="first.pdf", storage_path="q18/first.pdf",
+        extracted_text="first",
+    )
+    earlier = datetime.now(timezone.utc) - timedelta(hours=2)
+    later = datetime.now(timezone.utc) - timedelta(hours=1)
+    earlier_row.created_at = earlier
+    later_row.created_at = later
+    db.commit()
+    assert later_row.id < earlier_row.id
+
+    detail = _get(client, h, cid, "all")
+    for mid in (q1["id"], q1p["id"]):
+        msg = next(m for m in detail["messages"] if m["id"] == mid)
+        assert [a["filename"] for a in msg["attachments"]] == [
+            "first.pdf", "second.pdf",
+        ]
+        assert _att_refs(msg) == [
+            earlier_row.reference_id, later_row.reference_id,
+        ]
+
+
+def test_q18_message_branch_create_has_no_attachment_field():
+    """Branch body cannot carry attachments — display union is read-side only."""
+    from app.api.conversations import MessageBranchCreate
+
+    fields = MessageBranchCreate.model_fields
+    assert "attachment" not in fields
+    assert "attachments" not in fields
+    assert "attachment_ids" not in fields
+    assert "reference_id" not in fields
+
+
+def test_q18_real_upload_branch_keeps_one_row(
+    client: TestClient, db: Session, tmp_path, monkeypatch,
+):
+    """Real POST /api/attachments → branch: still exactly one Attachment row."""
+    from app.services import attachment_service as att_svc
+
+    root = tmp_path / "attachments"
+    root.mkdir()
+    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_PATH", str(root))
+    monkeypatch.setattr(att_svc, "_storage_root", lambda: root)
+
+    _, h = _auth(client, db, "tq18j")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    q1 = _append(client, h, cid, "user", "Q1")
+    up = client.post(
+        "/api/attachments",
+        headers=h,
+        data={"message_id": str(q1["id"])},
+        files={"file": ("real-orig.txt", io.BytesIO(b"hello-q18"), "text/plain")},
+    )
+    assert up.status_code == 201, up.text
+    ref = up.json()["reference_id"]
+    assert db.query(Attachment).filter(Attachment.conversation_id == cid).count() == 1
+
+    q1p = _branch(client, h, cid, q1["id"], "user", "Q1′").json()
+    assert _att_refs(q1p) == [ref]
+    db.expire_all()
+    assert db.query(Attachment).filter(Attachment.conversation_id == cid).count() == 1
+    assert (
+        db.query(Attachment).filter(Attachment.message_id == q1p["id"]).count()
+        == 0
+    )
