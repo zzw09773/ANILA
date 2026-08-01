@@ -1,8 +1,13 @@
 """card_auth.py 的單元測試。
 
-測試素材是 ``cht/app.py`` mock 簽章 (鄒惠翔測試卡)。這份 signature 是寫死在
-mock flask app 內的 base64 PKCS#7/CMS SignedData,eContent 固定為 ``b"TBS"``,
-所有開發者刷 PIN=``123456`` 都會拿到同一份。
+測試素材是 ``cht/app.py`` mock 簽章所附帶的 real reader-issued certificate
+(compatibility evidence:真實讀卡元件輸出能通過本 verifier)。這份 signature 是
+寫死在 mock flask app 內的 base64 PKCS#7/CMS SignedData,eContent 固定為
+``b"TBS"``,所有開發者刷 PIN=``123456`` 都會拿到同一份。
+
+個人識別值(工號 / 姓名 / email)不寫死在斷言裡——測試時從 fixture 憑證本體
+抽出期望值,再與 verifier 輸出比對,避免公開 repo 可 grep 到真人欄位,同時
+維持「verifier 解析錯就紅」的強度。
 
 2026-06-12:card_auth 從「只解析」改為「真驗證」(簽章 + 憑證鏈到釘死的 CSPKI
 CA + nonce 綁定)。本檔同步測新契約 + 把原本的 CVE(自簽偽造任意工號) 加進回歸守
@@ -13,6 +18,7 @@ from __future__ import annotations
 import base64
 import datetime
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -20,7 +26,7 @@ from asn1crypto import cms
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtensionOID, NameOID
 
 from app.config import settings
 from app.services import card_auth
@@ -36,7 +42,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cht"))
 from cms_sign import build_pkcs7  # noqa: E402
 
 
-# 來源:cht/app.py 的 "signature" 欄位 (鄒惠翔測試卡的 PKCS#7 簽章,eContent=b"TBS")。
+# 來源:cht/app.py 的 "signature" 欄位 (real reader-issued PKCS#7,eContent=b"TBS")。
+# DER 本體保持 byte-identical,作為相容性證據;勿改 blob。
 MOCK_SIGNATURE_B64 = (
     "MIIHNgYJKoZIhvcNAQcCoIIHJzCCByMCAQExDzANBglghkgBZQMEAgEFADASBgkqhkiG"
     "9w0BBwGgBQQDVEJToIIE6jCCBOYwggRsoAMCAQICEQCPfuzI3S+1D/OD79T2gKo5MAoG"
@@ -79,6 +86,52 @@ MOCK_SIGNATURE_B64 = (
 
 # mock 卡簽的 eContent(challenge nonce 在 dev mock 下固定為這串)。
 MOCK_NONCE = b"TBS"
+
+
+@dataclass(frozen=True)
+class _FixtureCertClaims:
+    """從 MOCK_SIGNATURE_B64 內嵌 signer cert 獨立抽出的期望 claims。
+
+    刻意走 cryptography / asn1crypto,不呼叫 ``card_auth._extract_claims``,
+    以免 verifier 與期望值共用同一條解析路徑而變成自我驗證。
+    """
+
+    employee_id: str
+    display_name: str
+    email: str
+
+
+def _fixture_cert_claims() -> _FixtureCertClaims:
+    """Parse the embedded signer certificate and return its subject/SAN claims."""
+    content_info = cms.ContentInfo.load(base64.b64decode(MOCK_SIGNATURE_B64))
+    signed_data = content_info["content"]
+    embedded: list[x509.Certificate] = []
+    for choice in signed_data["certificates"]:
+        if choice.name != "certificate":
+            continue
+        embedded.append(x509.load_der_x509_certificate(choice.chosen.dump()))
+    if not embedded:
+        raise AssertionError("fixture CMS 內找不到 signer 憑證")
+    cert = embedded[0]
+
+    serial_attrs = cert.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER)
+    cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    if not serial_attrs or not cn_attrs:
+        raise AssertionError("fixture cert 缺 subject.serialNumber 或 commonName")
+    try:
+        san_ext = cert.extensions.get_extension_for_oid(
+            ExtensionOID.SUBJECT_ALTERNATIVE_NAME
+        )
+    except x509.ExtensionNotFound as exc:
+        raise AssertionError("fixture cert 缺 SAN") from exc
+    rfc822 = san_ext.value.get_values_for_type(x509.RFC822Name)
+    if not rfc822:
+        raise AssertionError("fixture cert 缺 SAN.rfc822Name")
+    return _FixtureCertClaims(
+        employee_id=serial_attrs[0].value,
+        display_name=cn_attrs[0].value,
+        email=rfc822[0],
+    )
 
 
 def _forged_signed_cms(employee_id: str, nonce: bytes = MOCK_NONCE) -> str:
@@ -151,20 +204,24 @@ class TestVerifyValidSignature:
         assert isinstance(result, CardClaims)
 
     def test_employee_id_from_subject_serial_number(self) -> None:
+        expected = _fixture_cert_claims()
         claims = verify_pkcs7_signature(MOCK_SIGNATURE_B64, MOCK_NONCE)
-        assert claims.employee_id == "1090868"
+        assert claims.employee_id == expected.employee_id
 
     def test_display_name_from_common_name(self) -> None:
+        expected = _fixture_cert_claims()
         claims = verify_pkcs7_signature(MOCK_SIGNATURE_B64, MOCK_NONCE)
-        assert claims.display_name == "鄒惠翔"
+        assert claims.display_name == expected.display_name
 
     def test_email_from_san_rfc822(self) -> None:
+        expected = _fixture_cert_claims()
         claims = verify_pkcs7_signature(MOCK_SIGNATURE_B64, MOCK_NONCE)
-        assert claims.email == "C95THS@ncsist.org.tw"
+        assert claims.email == expected.email
 
     def test_nonce_accepts_str_or_bytes(self) -> None:
+        expected = _fixture_cert_claims()
         claims = verify_pkcs7_signature(MOCK_SIGNATURE_B64, "TBS")
-        assert claims.employee_id == "1090868"
+        assert claims.employee_id == expected.employee_id
 
     def test_card_serial_propagated_when_supplied(self) -> None:
         claims = verify_pkcs7_signature(
