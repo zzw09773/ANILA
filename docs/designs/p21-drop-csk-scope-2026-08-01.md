@@ -50,6 +50,14 @@ agent 回頭打 CSP（RAG 搜尋、trace、artifacts、runtime-config、撤銷�
   短效憑條由平台每次派工時簽發，agent 不保管長效祕密（唯一例外＝W2 若選 poll-only 小鑰匙案）。
 - 不用 `SSL_CERT_FILE` 環境變數（取代整個信任庫的坑，平台側踩過）——SDK 明確吃 CA 檔設定。
 
+### W1.6 非範本 agent（LangChain 等第三方框架；擁有者 08-01 問答定調）
+- **契約在 HTTP 層不在框架層**：OpenAI 相容端點＋驗派工 JWT＋（選用）憑同一張 JWT 回呼平台 API。
+  框架自由——用我們的 serving 殼裝任何腦（推薦），或完全自建。
+- **自建者靠標準**：JWT＋JWKS 是業界標準，各語言有成熟函式庫——這是捨 csk- 私規的直接紅利。
+  治理中心 guard snippets（現有 py/js/go/sh 四款）W4 改版成「標準函式庫驗簽」版，更短更不會錯。
+- **CA bundle 要讓非範本開發者拿得到**：治理中心接入頁放「下載平台 CA」，與驗簽片段並列
+  （範本使用者則已內建，見 W1.5）。
+
 ### W3 發行／管理面拆除
 - csk- 簽發、輪替、`bsk-` bootstrap、治理中心精靈 Step 2、guard snippets、CLI `agent bootstrap`——按 W2 選案拆除或改造。
 - `agent_credentials` 的 AES 信封機制大幅縮水（或只留給 poll token）。
