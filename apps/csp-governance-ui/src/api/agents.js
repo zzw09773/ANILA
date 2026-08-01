@@ -43,6 +43,12 @@ export const deleteAgent = (id) =>
 export const triggerAgentHealthCheck = (id) =>
   client.post(`/api/agents/${id}/health-check`)
 
+// P2.1 — probe with a signed dispatch JWT (same path as live dispatch).
+// Returns three facts separately: host_reachable / credentials_accepted /
+// path_verified (null = could not be determined — never collapse to one bool).
+export const testAgentConnection = (id) =>
+  client.post(`/api/agents/${id}/test-connection`)
+
 // Owner / admin — patch endpoint / description / api_version /
 // base_model_id / input_schema / classification / collections.
 // Name, approval_status, capabilities, and classification_ceiling are
