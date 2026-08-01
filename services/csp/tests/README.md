@@ -33,19 +33,32 @@ DB 狀態,再看測試本身。
 ## 目前基準線(2026-08-01 實測)
 
 ```
-1471 passed · 13 skipped · 0 failed     (1484 collected)
+1494 passed · 13 skipped · 0 failed     (1507 collected)
 ```
 
 兩種跑法都是這個數字,已驗證:
 
 | 跑法 | cwd | 指令 | 結果 |
 |---|---|---|---|
-| 1 | worktree / repo 根 | `$PY -m pytest services/csp/tests -q` | 1471 passed · 13 skipped |
-| 2 | `services/csp` | `$PY -m pytest tests -q` | 1471 passed · 13 skipped |
+| 1 | worktree / repo 根 | `$PY -m pytest services/csp/tests -q` | 1494 passed · 13 skipped |
+| 2 | `services/csp` | `$PY -m pytest tests -q` | 1494 passed · 13 skipped |
 
 舊基準線(2026-07-31)的唯一紅燈
 `test_template_download.py::test_developer_can_download_template` 已由
 commit `6f12e600` 修掉,不再列入紅燈表。
+
+### ⚠ 平行開發時這個數字一定會漂,原因是結構性的
+
+每一包在**自己的 worktree** 上量到的是「分歧點的數量 ＋ 自己加的那幾條」。
+合併之後的總數是「分歧點 ＋ 各包的總和」——**這個數字沒有任何一包量過**,
+所以每包各自更新 README 時,最後合進來的那一包會把基準線寫成它自己看到的偏低值。
+
+實例:`04da79f1` 把基準線從 1431 改成 1471(+40),但當時實際已經是 1482(+51),
+少記了 11 條;後續兩包合併又各加了一些,到 08-01 收工時真值是 1494,
+README 卻還停在 1471——**差 23,而且沒有任何測試是壞的**。
+
+**規則**:一批平行包全部合併完之後,**在主樹重跑一次兩種 cwd**,用實測值改這裡。
+不要用任何單一分支回報的數字。看到對不上,先假設是這個原因,再去懷疑測試。
 
 ## 這份基準線之前為什麼是假的
 
