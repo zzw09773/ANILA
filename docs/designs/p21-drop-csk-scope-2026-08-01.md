@@ -77,7 +77,12 @@ agent 回頭打平台（RAG 搜尋、trace、artifacts、runtime-config、撤銷
 - 任務外呼叫＝唯一待決，見〈六〉。
 
 ### W3 發行／管理面改造與交付
-- 拆改：csk- 簽發、輪替、`bsk-` bootstrap、治理中心精靈 Step 2、CLI `agent bootstrap`；
+- **⚠ 前端 agent 頁面必做（擁有者 08-01 明確交辦，不得只改後端）**：
+  治理中心 `DeveloperAgentsView.vue` 註冊精靈——Step 2「核發 service token」整段要拆掉
+  （P2.1 之後註冊不發任何祕密）、`AgentGuardPanel` 的 csk- 接入片段換成 JWT 驗簽版、
+  `.env` 產生器不再吐 `CSP_SERVICE_TOKEN`、加上「下載平台 CA」與三級接入指引。
+  **驗收標準：走完註冊流程，畫面上不該再出現任何要使用者保管的字串。**
+- 拆改：csk- 簽發、輪替、`bsk-` bootstrap、CLI `agent bootstrap`；
   `agent_credentials` AES 信封機制大幅縮水（或只留給 poll token）。
 - 交付三級接入物：範本 zip（含 wheel＋CA）、單檔 `anila_verify.py`、驗證 sidecar 映像、
   治理中心「下載平台 CA」、JWT 版 guard snippets（取代現有 py/js/go/sh 四款 csk- 私規片段）。
