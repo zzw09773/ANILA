@@ -81,15 +81,6 @@ def _client_returning(status_by_suffix: dict[str, int] | int):
     return _Client
 
 
-def _stub_csk(monkeypatch, token: str = "csk-greenlight-test-token"):
-    """Avoid encrypting a real credential — connection test only needs plaintext."""
-    monkeypatch.setattr(
-        agent_health.agent_credential_service,
-        "get_active_plaintext_for_agent",
-        lambda db, agent_id: token,
-    )
-
-
 def _bearer(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
@@ -105,7 +96,6 @@ def test_connection_401_does_not_verify_path(client: TestClient, db: Session, mo
     )
     agent.endpoint_url = "http://agent-box:9100"
     db.commit()
-    _stub_csk(monkeypatch)
 
     monkeypatch.setattr(agent_health.httpx, "AsyncClient", _client_returning(401))
 
@@ -152,7 +142,6 @@ def test_connection_versioned_path_works(client: TestClient, db: Session, monkey
     )
     agent.endpoint_url = "http://agent-box:9100"
     db.commit()
-    _stub_csk(monkeypatch)
 
     monkeypatch.setattr(agent_health.httpx, "AsyncClient", _client_returning(400))
 
@@ -169,6 +158,64 @@ def test_connection_versioned_path_works(client: TestClient, db: Session, monkey
     assert body["token_accepted"] is True
     assert body["status_code"] == 400
     assert "路徑與憑證皆通過" in body["detail"]
+
+
+def test_connection_probe_fires_without_issued_csk(
+    client: TestClient, db: Session, monkeypatch
+):
+    """P2.1: probe always mints a dispatch JWT — no 409 for missing csk-.
+
+    Pre-P2.1 returned 409 when no active credential existed. Governance UI
+    only surfaces ``detail`` on any non-2xx; nothing depends on 409 here.
+    """
+    from app.models.agent_credential import AgentCredential
+
+    owner = make_user(db, username="gl-owner-nocred", role="developer")
+    agent = make_agent(
+        db, owner=owner, name="gl-agent-nocred", approval_status="registered"
+    )
+    agent.endpoint_url = "http://agent-box:9100"
+    db.commit()
+    assert (
+        db.query(AgentCredential)
+        .filter(AgentCredential.agent_id == agent.id)
+        .count()
+        == 0
+    )
+
+    seen = {"posted": False}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            seen["posted"] = True
+            assert headers is not None
+            assert headers.get("Authorization", "").startswith("Bearer ")
+            assert "X-CSP-Service-Token" not in (headers or {})
+            return _Resp(400)
+
+    monkeypatch.setattr(agent_health.httpx, "AsyncClient", _Client)
+
+    token = login(client, "gl-owner-nocred")
+    resp = client.post(
+        f"/api/agents/{agent.id}/test-connection",
+        headers=_bearer(token),
+    )
+    assert resp.status_code != 409, resp.text
+    assert resp.status_code == 200, resp.text
+    assert seen["posted"] is True
+    body = resp.json()
+    assert body["host_reachable"] is True
+    assert body["credentials_accepted"] is True
+    assert body["path_verified"] is True
 
 
 def test_mutant_connection_success_requires_classify():
@@ -318,7 +365,6 @@ def test_connection_detail_redacts_address_for_non_author(
     )
     agent.endpoint_url = secret
     db.commit()
-    _stub_csk(monkeypatch)
 
     class _BoomClient:
         def __init__(self, *a, **k):
@@ -364,7 +410,6 @@ def test_connection_detail_may_include_exc_for_author(
     )
     agent.endpoint_url = secret
     db.commit()
-    _stub_csk(monkeypatch)
 
     class _BoomClient:
         def __init__(self, *a, **k):
@@ -402,7 +447,6 @@ def test_mutant_connection_always_embed_exc_goes_red(
     )
     agent.endpoint_url = "http://secret-host.internal:9100"
     db.commit()
-    _stub_csk(monkeypatch)
 
     leaked = "http://secret-host.internal:9100/v1/chat/completions"
     mutant_detail = f"無法連線到 agent 端點: ConnectError({leaked})"
@@ -576,7 +620,6 @@ def test_ssrf_reject_detail_redacts_host_for_non_author(
     )
     agent.endpoint_url = "http://secret-host.internal:9100"
     db.commit()
-    _stub_csk(monkeypatch)
 
     def _boom(url, endpoint_kind=None):
         raise UnsafeEndpointError(

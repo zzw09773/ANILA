@@ -466,7 +466,6 @@ def test_proxy_cache_invalidation_on_rotation(db):
     """When a credential rotates, the proxy_service token cache must reflect it."""
     from app.services.proxy_service import (
         _get_cached_agent_token,
-        _resolve_outgoing_service_token,
         invalidate_agent_token_cache,
     )
 
