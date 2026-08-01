@@ -22,6 +22,7 @@ import logging
 import ssl
 import time
 from typing import Any, Callable, Awaitable
+from urllib.parse import urlparse
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric.rsa import (
@@ -222,13 +223,46 @@ class JwksClient:
             return self._ca_file
         return True
 
+    def _require_https_jwks_url(self, url: str) -> None:
+        """Reject transports where httpx ``verify`` / ``ca_file`` has no effect.
+
+        httpx applies ``verify=`` only to https. Plain ``http:`` silently
+        ignores a configured CA pin; ``file:`` and other schemes likewise
+        never consult it. Platform CSP is CSPKI https, so https is the only
+        admitted scheme for network fetches.
+
+        Local / unit tests that need a JWKS without a live https CSP should
+        pass ``fetch_fn=`` (zero network calls) — that path bypasses this
+        check. This is intentionally *not* gated by
+        ``ANILA_ALLOW_HTTP_ENDPOINT`` / ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT``:
+        those flags cover the platform's outbound dials to model/agent
+        endpoints, not an agent's trust anchor toward CSP JWKS.
+        """
+        scheme = (urlparse(url).scheme or "").lower()
+        if scheme == "https":
+            return
+        if scheme == "http":
+            raise JwksFetchError(
+                "JWKS URL must be https (http ignores ca_file / verify; "
+                "TLS trust pin has no effect). Platform CSP uses CSPKI "
+                "https. For offline/local verify, pass fetch_fn= with a "
+                "pre-loaded key map instead of dialing http JWKS."
+            )
+        raise JwksFetchError(
+            f"JWKS URL unsupported scheme={scheme!r} (https only; "
+            "file:/other schemes never apply ca_file)"
+        )
+
     async def _fetch_jwks(self) -> dict[str, RSAPublicKey]:
         self.fetch_count += 1
         if self._fetch_fn is not None:
             return await self._fetch_fn()
 
         url = self._jwks_url
+        self._require_https_jwks_url(url)
         try:
+            # follow_redirects defaults to False on httpx.AsyncClient; leave
+            # it unset so https→http redirect cannot strip the CA pin.
             async with httpx.AsyncClient(
                 timeout=_HTTP_TIMEOUT, verify=self._httpx_verify()
             ) as http:
