@@ -78,7 +78,7 @@
 | B23 | `default_classification_level` | agent.py:104-110 | doc 08 §3/§4/§15 | **有據**:L227「密等在**專案啟動時就標好了**,平台主要是**記錄**它」;消費點 `api/proxy.py:77`、`api/classification_inventory.py:98` | 有(規格要求) | **CAT-A** | keep + re-cite L227;等級字彙隨 OE-3 改四級;缺寫入路徑見 D3 |
 | B24 | `approved_by` / `approved_at` | agent.py:111-114 | 前 doc | **無據**(searched: `核准者`、`誰核准`);L275「管理動作」要求的是**稽核帳**,不是資料列欄位 | 無 | CAT-B | keep + mark-debt(reject 也在寫這兩欄,語意混淆,見 F4) |
 | B25 | `bootstrap_token_hash` / `_expires_at` / `_consumed_at` / `_issued_by` | agent.py:117-129 | Sprint 8 X | **有據 + 紅線**:L135「| 3 | dev | 在 **CSP** 註冊 agent、**拿 API key** |」;憑證處理屬專案安全紅線(單次 `bsk-` → `csk-`,`_consumed_at` 的 atomic CAS 是防重放的關鍵) | 有(規格要求) | **CAT-A** | keep + re-cite L135 |
-| B26 | `runtime_config`(tool_permissions / workspace / guardrails,agent 每 30 秒輪詢) | agent.py:131-155 | Sprint 13 PR A3(**無 doc 引用**) | **無依據**(searched: `工具權限`、`護欄`、`guardrail`、`沙箱`、`輪詢`、`30 秒`——全 0 命中) | 有:整組端點面(`app/api/agents/runtime_config.py` + `/me/runtime-config`)+ agent 端輪詢契約 + admin 要維護的 JSON 形狀;L13「這個系統由**一個人**維運」 | **CAT-C** | converge 候選;⚠ 端點模組不在本次 FILE SET,裁決前需併看 |
+| B26 | `runtime_config`(tool_permissions / workspace / guardrails,agent 每 30 秒輪詢) | agent.py:131-155 | Sprint 13 PR A3(**無 doc 引用**) | **無依據**(searched: `工具權限`、`護欄`、`guardrail`、`沙箱`、`輪詢`、`30 秒`——全 0 命中) | 有:整組端點面(`app/api/agents/runtime_config.py` + `/me/runtime-config` [HISTORICAL: removed])+ agent 端輪詢契約 + admin 要維護的 JSON 形狀;L13「這個系統由**一個人**維運」 | **CAT-C** | converge 候選;⚠ 端點模組不在本次 FILE SET,裁決前需併看 |
 | B27 | `api_version` 欄位 | agent.py:57 | 前 doc | **無依據**(searched: `api_version`、`版本`) | 無(固定 "v1") | CAT-B | keep + mark-debt |
 
 ---

@@ -437,7 +437,18 @@ def test_undesignated_admin_sees_sentinel_on_every_face(
 def test_service_token_receives_real_address(
     client: TestClient, db: Session, monkeypatch
 ):
-    """PROVE RED: force is_service_token path to redact → assert fails."""
+    """PROVE RED: force is_service_token path to redact → assert fails.
+
+    Uses an attributed ``client_type='router'`` service_client — unattributed
+    legacy env is refused on router-primary (client_type fail-closed).
+    """
+    from app.models.service_client import ServiceClient
+    from app.services.service_token_envelope import (
+        compute_lookup_hash,
+        encode_service_token_envelope,
+        generate_service_token,
+    )
+
     model = _plant_model(db, name="epvis-svc-model")
     model.is_router_primary = True
     model.is_active = True
@@ -448,15 +459,16 @@ def test_service_token_receives_real_address(
     )
     assert data["endpoint_url"] == SECRET
 
-    from app.config import settings
-
-    token = "epvis-service-token-for-test-only"
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", token, raising=False)
-    import app.services.auth_service as auth_service
-
-    monkeypatch.setattr(
-        auth_service.settings, "CSP_SERVICE_TOKEN", token, raising=False
+    token = generate_service_token()
+    db.add(
+        ServiceClient(
+            client_name="epvis-router-primary",
+            client_type="router",
+            service_token_envelope=encode_service_token_envelope(token),
+            service_token_lookup_hash=compute_lookup_hash(token),
+        )
     )
+    db.commit()
     r = client.get(
         "/api/models/router-primary",
         headers={"X-CSP-Service-Token": token},

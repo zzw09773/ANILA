@@ -29,6 +29,7 @@ from app.schemas.model_registry import (
     ModelUpdate,
     ModelResponse,
 )
+from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import (
     get_current_user,
@@ -38,6 +39,7 @@ from app.services.auth_service import (
     security,
     verify_service_token,
 )
+from app.api._service_principal import require_admitted_service_principal
 from app.utils.client_ip import client_ip as _client_ip
 from app.services.endpoint_author_service import (
     ENDPOINT_INTERNAL,
@@ -1029,7 +1031,9 @@ def activate_created_from_import(
 
 @router.get("/router-primary")
 def get_router_primary(
-    _: None = Depends(verify_service_token),
+    identity: agent_credential_service.CallerIdentity | None = Depends(
+        verify_service_token
+    ),
     db: Session = Depends(get_db),
 ):
     """Return the LLM designated as ANILA Router's primary model.
@@ -1038,7 +1042,34 @@ def get_router_primary(
     TTL refresh. Returns 404 when no primary is set so the caller can fall
     back to a clear "no model available" error instead of silently using the
     wrong upstream.
+
+    Admitted principals:
+      * ``service_client`` with ``client_type='router'``.
+        Live: the host fleet secret is seeded as ``service_clients``
+        ``client_name='router-primary'`` (``is_legacy=TRUE``; numeric
+        ``id`` is whatever the DB allocated — do not assume ``1``);
+        csp/router/studio/asr-gateway all present that same secret, so
+        they share this ``router`` attribution — not "only the router
+        process".
+    Rejected: ``agent``-kind tokens; other ``client_type`` values;
+    unattributed legacy env (``identity is None``) — a ``client_type``
+    restriction fails closed so deactivating the owning row (or rotating
+    ``CSP_SERVICE_TOKEN`` in ``.env`` without also rotating that DB row)
+    cannot silently fall through to an unconditional allow.
     """
+    # KIND GATE — remove this call to prove A1 red for router-primary.
+    require_admitted_service_principal(
+        identity,
+        db=db,
+        allowed_kinds=("service_client",),
+        allowed_client_types=("router",),
+        # Must be False: unattributed legacy cannot prove client_type
+        # (helper also refuse-closed if these ever disagree).
+        # LANDMINE: rotating CSP_SERVICE_TOKEN in .env without rotating
+        # the router-primary DB row → identity is None → 403 here.
+        allow_legacy_env=False,
+        endpoint="GET /api/models/router-primary",
+    )
     model = (
         db.query(ModelRegistry)
         .filter(ModelRegistry.is_router_primary.is_(True))
@@ -1141,11 +1172,30 @@ def get_image_primary(
     ``can_see_endpoint_address`` / ``visible_endpoint_url`` — service
     tokens and designated callers see the real URL, everyone else gets
     the redaction sentinel. Never returns the model's API key.
+
+    Admitted service-token principals:
+      * ``service_client`` of any ``client_type`` (taxonomy:
+        router|worker|admin_tool). Live studio traffic presents the
+        fleet secret, which resolves as ``router-primary``
+        (``client_type='router'``) via the DB row — not as unattributed
+        legacy env.
+      * unattributed legacy env (``identity is None``) — only reached
+        when no active DB credential matches; kept for cutover / tests.
+    Rejected on the service-token path: ``agent``-kind ``csk-``.
     """
     is_svc = False
     caller: User | None = None
     if x_csp_service_token:
-        verify_service_token(request, db, x_csp_service_token)
+        identity = verify_service_token(request, db, x_csp_service_token)
+        # KIND GATE — remove this call to prove A1 red for image-primary.
+        require_admitted_service_principal(
+            identity,
+            db=db,
+            allowed_kinds=("service_client",),
+            allowed_client_types=None,
+            allow_legacy_env=True,
+            endpoint="GET /api/models/image-primary",
+        )
         is_svc = True
     else:
         caller = get_current_user(request, credentials, db)
@@ -1257,11 +1307,29 @@ def get_asr_primary(
     ``visible_endpoint_url`` — service tokens and designated callers see the
     real URL, everyone else gets the redaction sentinel. Never returns the
     decoder shared secret (that stays in the gateway/decoder environment).
+
+    Admitted service-token principals:
+      * ``service_client`` of any ``client_type``. Live asr-gateway
+        presents the fleet secret, which resolves as ``router-primary``
+        (``client_type='router'``) via the DB row — not as unattributed
+        legacy env.
+      * unattributed legacy env (``identity is None``) — only reached
+        when no active DB credential matches; kept for cutover / tests.
+    Rejected on the service-token path: ``agent``-kind ``csk-``.
     """
     is_svc = False
     caller: User | None = None
     if x_csp_service_token:
-        verify_service_token(request, db, x_csp_service_token)
+        identity = verify_service_token(request, db, x_csp_service_token)
+        # KIND GATE — remove this call to prove A1 red for asr-primary.
+        require_admitted_service_principal(
+            identity,
+            db=db,
+            allowed_kinds=("service_client",),
+            allowed_client_types=None,
+            allow_legacy_env=True,
+            endpoint="GET /api/models/asr-primary",
+        )
         is_svc = True
     else:
         caller = get_current_user(request, credentials, db)

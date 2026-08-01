@@ -8,7 +8,7 @@ Package split (behavior-preserving refactor of the former 1384-line
 
 - ``registration``   register / list / get / update / delete + template / platform-CA / anila-verify download
 - ``approval``       approve / reject
-- ``runtime_config`` runtime-config get/patch + ``/me/runtime-config``
+- ``runtime_config`` runtime-config get/patch (agent ``/me`` poll retired)
 - ``credentials``    bootstrap / issue / rotate / revoke + classification level
 - ``functions``      agent functions (prompts) CRUD + system-prompt suggest
 - ``health``         health-check + test-connection
@@ -129,7 +129,6 @@ from app.api.agents.registration import (
 from app.api.agents.runtime_config import (
     AgentRuntimeConfigUpdate,
     get_agent_runtime_config,
-    get_my_runtime_config,
     patch_agent_runtime_config,
 )
 
@@ -218,7 +217,6 @@ __all__ = [
     "AgentRuntimeConfigUpdate",
     "get_agent_runtime_config",
     "patch_agent_runtime_config",
-    "get_my_runtime_config",
     # credentials + classification
     "AgentClassificationUpdate",
     "IssueBootstrapRequest",

@@ -20,7 +20,7 @@
 
 **Files:** Create `services/csp/app/api/agents/{__init__,_common,registration,approval,runtime_config,credentials,functions,health}.py`; Delete `services/csp/app/api/agents.py`
 **Interfaces:** `from app.api import agents; agents.router` 不變；`__init__.py` re-export 全部原 module-level 符號（含測試 patch 目標）。
-分工：registration（register/list/get/delete/template 下載）、approval（approve/reject）、runtime_config（get/patch + `/me/runtime-config`）、credentials（issue/rotate/revoke + dev db credential + encryption 切換）、functions（agent functions CRUD + system-prompt suggest）、health（health-check/test-connection）。共用 helper 進 `_common.py`。
+分工：registration（register/list/get/delete/template 下載）、approval（approve/reject）、runtime_config（get/patch + `/me/runtime-config` [HISTORICAL: removed]）、credentials（issue/rotate/revoke + dev db credential + encryption 切換）、functions（agent functions CRUD + system-prompt suggest）、health（health-check/test-connection）。共用 helper 進 `_common.py`。
 
 - [ ] 逐字搬移（函式體不改）；`__init__` 組 router + re-exports
 - [ ] `grep -rn 'app\.api\.agents' services/csp/tests` 確認 patch 目標仍有效

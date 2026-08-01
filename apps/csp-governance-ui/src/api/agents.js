@@ -57,14 +57,11 @@ export const updateAgent = (id, patch) =>
   client.put(`/api/agents/${id}`, patch)
 
 // Runtime-config admin writes are retired (PATCH → 410). GET remains for
-// read-only inspection of any historically stored JSON.
+// read-only inspection of any historically stored JSON. The governance
+// view no longer calls PATCH — do not re-add a write helper that the UI
+// would present as a working control.
 export const getAgentRuntimeConfig = (id) =>
   client.get(`/api/agents/${id}/runtime-config`)
-
-// Kept only so the retired AgentRuntimeConfigView.vue still typechecks if
-// imported; callers get 410 from the API.
-export const setAgentRuntimeConfig = (id, runtime_config) =>
-  client.patch(`/api/agents/${id}/runtime-config`, { runtime_config })
 
 // Per-agent functions (2026-06-11, extensible) — developer-designed,
 // surfaced in the ANILA chat UI for the active agent. kind + config.
