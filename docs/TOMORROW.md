@@ -38,6 +38,13 @@ curl -sk -o /dev/null -w "jwks略驗證: %{http_code}\n" https://anila.ai.ncsist
 
 **這三行決定 P2.1 的形狀,所以它排在其他事情前面。**
 
+> **08-01 實測補充**:IP 版已跑——Lab 打得到 `.15`(`-k` 回 403,就是隱藏檔規則那個缺陷,本機已修),
+> 但 `000` 兩條讀不出信任錨,因為**FQDN 還沒跟網管申請**、憑證只認網域名。
+> ①改跑 `--resolve` 版(名字釘 IP,不用等 DNS):
+> `curl -s --resolve anila.ai.ncsist.org.tw:443:10.53.100.15 https://anila.ai.ncsist.org.tw/.well-known/jwks.json -o /dev/null -w "%{http_code}\n"`
+> → 000=Lab 沒 CSPKI 信任錨(佈 `cspki_ca_bundle.pem`);非 000=信任錨在。
+> ②**FQDN 申請要送**(P5.5 前置,網管流程有等待期);申請下來前 agent 端用 `extra_hosts`,同 `.12` 前例。
+
 ---
 
 ## 三、四個決定(每個回一句話就結束)
