@@ -141,8 +141,7 @@ def _patch_guards(monkeypatch):
     monkeypatch.setattr(
         service_wrapper, "verify_dispatch_authorization", _fake_dispatch_claims
     )
-    # CspHttpRetriever 建構會驗 api_key 非空（search 重用 agent 的 csk-）。
-    monkeypatch.setattr(service_wrapper, "CSP_SEARCH_TOKEN", "csk-test")
+    # In-task outbound auth = request-scoped dispatch JWT（不再要 csk-）。
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
     monkeypatch.setattr(service_wrapper, "build_agent", lambda *a, **k: object())
 

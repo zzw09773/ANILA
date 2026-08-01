@@ -5,6 +5,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from anila_agent.dispatch_token import (
+    MissingDispatchTokenError,
+    dispatch_bearer_scope,
+)
 from anila_agent.retrieval.csp_http import CspHttpRetriever
 
 pytestmark = pytest.mark.unit
@@ -48,8 +52,28 @@ async def test_request_shape(monkeypatch):
     await r.search("hello", k=4)
     # 路徑用 CSP origin（非 /v1 proxy base），尾斜線已去除。
     assert cap["url"] == "https://csp.internal/api/ingestion/collections/2/search"
+    # Out-of-task / CLI fallback still accepts constructor api_key.
     assert cap["headers"]["Authorization"] == "Bearer csk-x"
     assert cap["json"] == {"query": "hello", "top_k": 4, "min_score": 0.25}
+
+
+async def test_dispatch_scope_beats_constructor_api_key(monkeypatch):
+    """In-task: request-scoped dispatch JWT wins over any leftover api_key."""
+    cap: dict = {}
+    _patch_client(monkeypatch, cap, {"results": []})
+    r = CspHttpRetriever(
+        csp_base_url="https://csp", collection_id=2, api_key="csk-should-not-win"
+    )
+    with dispatch_bearer_scope("dispatch-jwt-A"):
+        await r.search("q")
+    assert cap["headers"]["Authorization"] == "Bearer dispatch-jwt-A"
+
+
+async def test_search_without_scope_or_api_key_fails_loudly(monkeypatch):
+    _patch_client(monkeypatch, {}, {"results": []})
+    r = CspHttpRetriever(csp_base_url="https://csp", collection_id=2, api_key=None)
+    with pytest.raises(MissingDispatchTokenError, match="no dispatch JWT"):
+        await r.search("q")
 
 
 async def test_response_mapping(monkeypatch):

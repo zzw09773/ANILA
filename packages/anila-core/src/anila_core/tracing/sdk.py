@@ -12,9 +12,12 @@ Three public pieces:
 * :class:`TraceExporter` — thread-safe, batching background exporter
   that POSTs spans to the FROZEN wire endpoint
   ``POST {base_url}/v1/traces/{trace_id}/spans`` with body
-  ``{"spans": [ <span dict>, ... ]}`` (≤256 per batch). Auth reuses the
-  router's CSP service-token mechanics via the ``X-CSP-Service-Token``
-  header, supplied lazily by ``token_provider``.
+  ``{"spans": [ <span dict>, ... ]}`` (≤256 per batch). Auth is
+  caller-chosen via ``header_name`` + ``token_provider``: platform
+  router keeps the default ``X-CSP-Service-Token`` (s2s).
+  ``Authorization`` mode is supported for explicit token providers only
+  — **never** pair it with a ``contextvars`` provider: the worker is a
+  background thread where request-scoped ContextVars are invisible.
 
 * :class:`TraceSession` — per-``trace_id`` span factory. ``span()`` /
   ``async_span()`` context managers auto-generate the span id, time the
@@ -194,6 +197,17 @@ class TraceExporter:
     drop counter (bounded memory, back-pressure). All POST failures are
     swallowed (drop-and-log) — tracing never propagates errors to the
     host.
+
+    Auth modes (``header_name``):
+
+    * ``X-CSP-Service-Token`` (default) — platform router s2s; empty token
+      omits the header (pre-existing fail-open for tracing).
+    * ``Authorization`` — Bearer dispatch JWT for callers with an
+      **explicit** ``token_provider`` that returns a non-empty token on the
+      worker thread. Empty token → refuse-and-ERROR (no silent unauthenticated
+      POST). Do **not** pair with a ``contextvars`` provider — the flush
+      worker cannot see request-scoped ContextVars. In-task agent callbacks
+      use ``anila_agent.tracing.TraceEmitter`` instead.
     """
 
     def __init__(
@@ -233,6 +247,23 @@ class TraceExporter:
         self._worker: Optional[threading.Thread] = None
         if start_worker:
             self.start()
+
+    def _auth_header(self, token: str) -> tuple[str, str]:
+        """Build ``(header_name, header_value)`` for the chosen auth style.
+
+        * ``X-CSP-Service-Token`` (default) — platform router s2s; raw token.
+        * ``Authorization`` — in-task agent dispatch JWT; ensure ``Bearer ``
+          prefix (token_provider may return raw JWT or a full Bearer value).
+        """
+        name = self._header_name
+        if name.lower() == "authorization":
+            value = (
+                token
+                if token.lower().startswith("bearer ")
+                else f"Bearer {token}"
+            )
+            return "Authorization", value
+        return name, token
 
     # -- lifecycle ------------------------------------------------------
 
@@ -334,8 +365,23 @@ class TraceExporter:
             token = self._token_provider()
         except Exception:
             token = None
+        auth_mode = self._header_name.lower() == "authorization"
+        if auth_mode and not token:
+            # Refuse: Authorization mode must not silently POST without a Bearer.
+            # Common footgun = contextvars provider on the background worker thread.
+            logger.error(
+                "trace export aborted for trace %s (%d spans dropped): "
+                "Authorization mode requires a non-empty token from "
+                "token_provider (do not pair with a contextvars provider — "
+                "the flush worker runs on a background thread)",
+                trace_id,
+                len(spans),
+            )
+            self.failed += len(spans)
+            return
         if token:
-            headers[self._header_name] = token
+            name, value = self._auth_header(token)
+            headers[name] = value
         try:
             client = self._build_client()
             try:

@@ -7,13 +7,15 @@
     POST {csp_base}/v1/traces/{trace_id}/spans
     JSON {"spans":[{span_id, parent_span_id?, span_type, name,
                     started_at, ended_at?, status, attributes?, producer:"agent"}...]}
-    ≤256 spans/batch，Authorization: Bearer <Agent Integration Key(csk-)>，回 202。
+    ≤256 spans/batch，Authorization: Bearer <dispatch JWT>（P2.1 in-task），回 202。
 
 設計不變量：
-- **絕不讓 agent 掛掉**：ship 失敗一律 drop-and-log，flush 不拋例外。
+- **絕不讓 agent 掛掉**：網路 / 序列化失敗一律 drop-and-log，flush 不拋例外。
+  缺憑證則**不送**並 ERROR log（不靜默 POST 無 auth）。
 - **無 trace_id / 無 endpoint → 完全停用**（zero behavior change；既有測試不受影響）。
 - span_type 逐字採 doc-05 §6 的 13 種必備型別（started/finished 成對 + agent.error）。
 - 巢狀關係以 ``contextvars`` 追蹤 current parent，併發下自動分艙（asyncio Task 各持 context 複本）。
+- 出向 auth 優先讀 request-scoped dispatch JWT（``dispatch_token``），``api_key`` 僅 fallback。
 """
 
 from __future__ import annotations
@@ -126,6 +128,7 @@ class TraceEmitter:
         trace_id: str | None,
         endpoint: str | None,
         api_key: str | None = None,
+        csp_base_url: str | None = None,
         agent_id: str | None = None,
         task_id: str | None = None,
         producer: str = "agent",
@@ -138,6 +141,10 @@ class TraceEmitter:
         self.trace_id = (trace_id or "").strip() or None
         self.endpoint = ((endpoint or "").rstrip("/")) or None
         self.api_key = api_key or None
+        # Trust anchor for dispatch-JWT attachment. Defaults to endpoint so a
+        # CSP-only deploy keeps working; when ANILA_TRACE_ENDPOINT ≠ CSP,
+        # callers must pass csp_base_url explicitly.
+        self.csp_base_url = ((csp_base_url or endpoint or "").rstrip("/")) or None
         self.agent_id = agent_id
         self.task_id = task_id
         self.producer = producer
@@ -157,6 +164,7 @@ class TraceEmitter:
         task_id: str | None = None,
         endpoint: str | None = None,
         api_key: str | None = None,
+        csp_base_url: str | None = None,
         agent_id: str | None = None,
         enabled: bool = True,
         verify_ssl: bool = True,
@@ -165,8 +173,8 @@ class TraceEmitter:
         """由 CSP dispatch header（X-ANILA-Trace-Id / X-ANILA-Task-Id）建 emitter。"""
         return cls(
             trace_id=trace_id, task_id=task_id, endpoint=endpoint, api_key=api_key,
-            agent_id=agent_id, enabled=enabled, verify_ssl=verify_ssl,
-            classification_level=classification_level,
+            csp_base_url=csp_base_url, agent_id=agent_id, enabled=enabled,
+            verify_ssl=verify_ssl, classification_level=classification_level,
         )
 
     @property
@@ -293,10 +301,30 @@ class TraceEmitter:
         except Exception:  # pragma: no cover - httpx 是宣告相依，理論上必在
             logger.warning("httpx unavailable; dropping %d trace spans", len(pending))
             return
+        # P2.1: prefer request-scoped dispatch JWT only when endpoint is CSP;
+        # api_key is fallback for foreign collectors / out-of-task. Missing both
+        # → refuse to POST unauthenticated (loud ERROR, no silent omit).
+        try:
+            from anila_agent.dispatch_token import (
+                MissingDispatchTokenError,
+                resolve_outbound_bearer,
+            )
+
+            bearer = resolve_outbound_bearer(
+                fallback=self.api_key,
+                target_base_url=self.endpoint,
+                csp_base_url=self.csp_base_url,
+            )
+        except MissingDispatchTokenError as exc:
+            logger.error(
+                "trace ship aborted (%d spans dropped): %s", len(pending), exc
+            )
+            return
         url = f"{self.endpoint}/v1/traces/{self.trace_id}/spans"
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {bearer}",
+        }
         try:
             async with httpx.AsyncClient(verify=self.verify_ssl, timeout=self.timeout) as client:
                 for i in range(0, len(pending), self.batch_size):

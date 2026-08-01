@@ -91,6 +91,7 @@ def _make_exporter(sink, *, status_code=202, **kw) -> TraceExporter:
 
 
 def test_flush_posts_to_frozen_endpoint_with_service_token() -> None:
+    """(d) Platform router s2s auth — default X-CSP-Service-Token unchanged."""
     sink: list = []
     exp = _make_exporter(sink)
     exp.enqueue("trace-1", {"span_id": "a", "span_type": "agent.run.finished",
@@ -105,7 +106,38 @@ def test_flush_posts_to_frozen_endpoint_with_service_token() -> None:
                                        "name": "x", "started_at": "t",
                                        "status": "ok"}]}
     assert call["headers"]["X-CSP-Service-Token"] == "csk-token"
+    assert "Authorization" not in call["headers"]
     assert exp.stats()["sent"] == 1
+
+
+def test_flush_authorization_bearer_for_in_task_dispatch_jwt() -> None:
+    """Caller-chosen Authorization mode: raw JWT → Bearer prefix."""
+    sink: list = []
+    exp = TraceExporter(
+        "http://csp.local",
+        token_provider=lambda: "eyJ.dispatch.jwt",
+        header_name="Authorization",
+        start_worker=False,
+        client_factory=lambda: _RecordingClient(sink),
+    )
+    exp.enqueue("trace-1", {"span_id": "a"})
+    exp.flush()
+    assert sink[0]["headers"]["Authorization"] == "Bearer eyJ.dispatch.jwt"
+    assert "X-CSP-Service-Token" not in sink[0]["headers"]
+
+
+def test_flush_authorization_preserves_existing_bearer_prefix() -> None:
+    sink: list = []
+    exp = TraceExporter(
+        "http://csp.local",
+        token_provider=lambda: "Bearer already-prefixed",
+        header_name="Authorization",
+        start_worker=False,
+        client_factory=lambda: _RecordingClient(sink),
+    )
+    exp.enqueue("trace-1", {"span_id": "a"})
+    exp.flush()
+    assert sink[0]["headers"]["Authorization"] == "Bearer already-prefixed"
 
 
 def test_flush_groups_by_trace_id() -> None:
@@ -150,6 +182,30 @@ def test_no_token_omits_header() -> None:
     exp.enqueue("t", {"span_id": "a"})
     exp.flush()
     assert "X-CSP-Service-Token" not in sink[0]["headers"]
+
+
+def test_authorization_mode_empty_token_refuses_and_errors(caplog) -> None:
+    """Authorization mode must not silently POST without a Bearer (F4).
+
+    Empty token_provider (e.g. contextvars invisible on the worker thread)
+    → abort, ERROR log, no outbound call.
+    """
+    import logging
+
+    sink: list = []
+    exp = TraceExporter(
+        "http://csp.local",
+        token_provider=lambda: None,
+        header_name="Authorization",
+        start_worker=False,
+        client_factory=lambda: _RecordingClient(sink),
+    )
+    exp.enqueue("t", {"span_id": "a"})
+    with caplog.at_level(logging.ERROR):
+        exp.flush()
+    assert sink == []
+    assert exp.stats()["failed"] == 1
+    assert any("Authorization mode requires a non-empty token" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

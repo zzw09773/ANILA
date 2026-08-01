@@ -6,8 +6,10 @@
 
 兩種都會先 load .env。env（或 .env）至少要有：
     ANILA_BASE_URL / ANILA_MODEL（模型端點）
-    CSP_BASE_URL / CSP_SERVICE_TOKEN / ANILA_COLLECTION_ID（檢索 + 派工認證）
-缺 token → fail-closed 401；collection ≤0 → 503。
+    CSP_BASE_URL / ANILA_COLLECTION_ID（檢索 origin + collection）
+    入向派工認證 = Authorization: Bearer <dispatch JWT>（JWKS 驗章）；
+    缺／無效 JWT → fail-closed 401；collection ≤0 → 503。
+    In-task 檢索／trace 帶回同一條 dispatch JWT（不再要 CSP_SERVICE_TOKEN）。
 
 起來後對外提供 /health、/v1/models、/v1/chat/completions（含 streaming）。
 這個 host:port 就是註冊到 CSP 的 endpoint。
@@ -18,7 +20,7 @@ from __future__ import annotations
 from dotenv import load_dotenv
 
 # 必須在 import service_wrapper 之前：它在 import 期就把 env 讀成模組常數
-# （COLLECTION_ID / CSP_BASE_URL / CSP_SERVICE_TOKEN ...）。晚一步就讀到預設值。
+# （COLLECTION_ID / CSP_BASE_URL / TRACE_ENDPOINT ...）。晚一步就讀到預設值。
 # 既有 os.environ（docker -e）優先於 .env（load_dotenv 預設不覆寫）。
 load_dotenv()
 

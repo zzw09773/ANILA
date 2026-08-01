@@ -2,11 +2,9 @@
 
 Unlike :mod:`anila_agent.retrieval.anila_pgvector` (direct Postgres) this goes
 through CSP's authenticated ``POST /api/ingestion/collections/{id}/search``
-endpoint. An agent therefore needs only a CSP API key — no Postgres
-credentials and no network path to the database. CSP enforces collection
-access, embeds the query with the collection's configured model, and applies
-RLS, so the agent stays fully decoupled from storage. This is the recommended
-built-in retriever for agents that already authenticate to CSP.
+endpoint. In-task (service-wrapper) auth is the request-scoped dispatch JWT
+(:mod:`anila_agent.dispatch_token`); CLI / out-of-task may still pass a static
+API key via ``api_key`` / ``from_env`` (OWNER-QUESTIONS Q19 — undecided).
 
 PLATFORM CONTRACT: the request shape (``{query, top_k, min_score}``, Bearer
 auth, the ``/api/ingestion/collections/{id}/search`` path on the CSP origin —
@@ -14,7 +12,7 @@ NOT the /v1 proxy base) and the response field names
 (``chunk_id/content/score/chunk_key/document_id/filename/metadata``) are owned
 by the CSP API. Keep them in sync with CSP.
 
-One-liner config:
+One-liner config (CLI / out-of-task):
 
     ANILA_CSP_BASE_URL=https://csp.internal      # CSP origin (NOT the /v1 proxy base)
     ANILA_COLLECTION_ID=<int collection id>
@@ -28,6 +26,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from anila_agent.dispatch_token import resolve_outbound_bearer
 from anila_agent.retrieval.schemas import Document
 
 _DEFAULT_MIN_SCORE = 0.25
@@ -39,6 +38,10 @@ class CspHttpRetriever:
     Stateless apart from a per-call ``httpx.AsyncClient``; cheap to construct.
     ``search()`` POSTs the query to CSP, which embeds + runs the pgvector
     similarity search server-side, then maps each hit into a :class:`Document`.
+
+    Auth resolution (P2.1 W5): request-scoped dispatch JWT first; optional
+    constructor ``api_key`` only as out-of-task / CLI fallback. Missing both
+    fails loudly — never POSTs without credentials.
     """
 
     def __init__(
@@ -46,7 +49,8 @@ class CspHttpRetriever:
         *,
         csp_base_url: str,
         collection_id: int,
-        api_key: str,
+        api_key: str | None = None,
+        trusted_csp_base_url: str | None = None,
         min_score: float = _DEFAULT_MIN_SCORE,
         verify_ssl: bool = True,
         timeout: float = 30.0,
@@ -57,11 +61,16 @@ class CspHttpRetriever:
             raise ValueError(f"collection_id must be > 0, got {collection_id}")
         if not csp_base_url:
             raise ValueError("csp_base_url must be a non-empty CSP origin")
-        if not api_key:
-            raise ValueError("api_key must be a non-empty CSP API key")
         self._base_url = csp_base_url.rstrip("/")
+        # Trust anchor for dispatch-JWT attachment. Defaults to constructor URL
+        # (CLI / normal deploy). When target ≠ trusted CSP origin, resolve
+        # refuses to attach the user JWT.
+        anchor = (trusted_csp_base_url or csp_base_url).rstrip("/")
+        self._csp_origin = anchor
         self._collection_id = collection_id
-        self._api_key = api_key
+        # Optional static fallback (CLI / out-of-task). In-task paths leave
+        # this None and rely on dispatch_bearer_scope.
+        self._api_key = (api_key or "").strip() or None
         self._min_score = min_score
         self._verify_ssl = verify_ssl
         self._timeout = timeout
@@ -85,10 +94,18 @@ class CspHttpRetriever:
     async def search(self, query: str, k: int = 5) -> list[Document]:
         import httpx
 
+        # Prefer in-flight dispatch JWT only when target origin is CSP;
+        # fall back to constructor api_key for out-of-task / CLI / foreign hosts.
+        bearer = resolve_outbound_bearer(
+            fallback=self._api_key,
+            target_base_url=self._base_url,
+            csp_base_url=self._csp_origin,
+        )
+
         async with httpx.AsyncClient(verify=self._verify_ssl, timeout=self._timeout) as client:
             response = await client.post(
                 self._search_url,
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers={"Authorization": f"Bearer {bearer}"},
                 json={"query": query, "top_k": k, "min_score": self._min_score},
             )
             response.raise_for_status()
