@@ -983,15 +983,14 @@ async def chat_completions(
         _guard_outbound(
             target, endpoint_kind=ENDPOINT_KIND_AGENT
         )  # call-time SSRF re-validation (TOCTOU defense) — FINAL url
-        # Phase G: also pass target_agent_id so the per-agent token + cache
-        # path applies to non-streaming calls. usage_writer attribution for
-        # this branch is still TODO — non-streaming agent forwards don't
-        # currently emit a token_usage row at all (orthogonal pre-existing
-        # gap, tracked in Sprint 9 X follow-ups).
+        # P2.1: mint per-dispatch signed identity JWT (no csk- / plaintext
+        # user headers). usage_writer attribution for this branch is still
+        # TODO — non-streaming agent forwards don't currently emit a
+        # token_usage row at all (orthogonal pre-existing gap).
         headers = build_agent_headers(
-            user_identity,
-            user_email,
-            target_agent_id=agent.id,
+            user_id=user.id,
+            department=department_id,
+            agent_id=agent.id,
             # Slice 2b-C (doc 05 §4): task/trace ids ride on agent dispatch.
             task_id=task_ctx.task_id if task_ctx else None,
             trace_id=task_ctx.trace_id if task_ctx else None,
@@ -1268,7 +1267,9 @@ async def resume_agent_session(
         target, endpoint_kind=ENDPOINT_KIND_AGENT
     )  # call-time SSRF re-validation (TOCTOU defense)
     headers = build_agent_headers(
-        downstream_identity(user), user.email, target_agent_id=agent.id,
+        user_id=user.id,
+        department=user.department_id,
+        agent_id=agent.id,
     )
 
     import httpx

@@ -7,8 +7,8 @@ docs/superpowers/specs/2026-06-23-employee-id-downstream-design.md):
   (admin)/空/格式不符 → None(呼叫端據此**省略**身分 header、不偽造,請求照常)。
 - ``build_model_gateway_headers``: 只帶員編,**絕不**帶 ``X-CSP-Service-Token``
   (CRITICAL 回歸鎖:服務憑證不可外流到 .12 模型閘道),也不帶 email/groups。
-- ``build_agent_headers``: 帶完整身分(員編 + email + groups);員編為 None 時
-  不送 ``X-ANILA-User-Id``。
+- ``build_agent_headers`` (P2.1): ``Authorization: Bearer`` 簽章 JWT +
+  可選 task/trace;絕不送 ``X-CSP-Service-Token`` 或明文 ``X-ANILA-User-*``。
 - ``proxy_stream`` 路由:MODEL 目的地一律走 model-gateway builder,即使設了
   legacy ``CSP_SERVICE_TOKEN`` 也絕不把 service token 送上模型閘道(整合層回歸鎖)。
 """
@@ -71,47 +71,48 @@ class TestModelGatewayHeaders:
 
 
 class TestAgentHeaders:
-    def test_full_identity(self):
-        h = build_agent_headers("1147259", "alice@ncsist.org.tw", "g1")
-        assert h["X-ANILA-User-Id"] == "1147259"
-        assert h["X-ANILA-User-Email"] == "alice@ncsist.org.tw"
-        assert h["X-ANILA-User-Groups"] == "g1"
+    def test_signed_bearer_no_plaintext_identity(self):
+        h = build_agent_headers(user_id=7, department=3, agent_id=42)
+        assert h["Authorization"].startswith("Bearer ")
+        assert "X-CSP-Service-Token" not in h
+        assert "X-ANILA-User-Id" not in h
+        assert "X-ANILA-User-Email" not in h
+        assert "X-ANILA-User-Groups" not in h
 
-    def test_none_identity_omits_user_id_header(self):
-        # 非卡片帳號 (downstream_identity→None):省略身分主鍵(不偽造),請求照常。
-        h = build_agent_headers(None, "alice@ncsist.org.tw")
+    def test_department_none_still_mints(self):
+        # 非部門帳號 (admin): department claim 可為 null,請求照常。
+        h = build_agent_headers(user_id=1, department=None, agent_id=9)
+        assert h["Authorization"].startswith("Bearer ")
         assert "X-ANILA-User-Id" not in h
 
 
 class TestServiceTokenScoping:
     def test_model_gateway_never_gets_token_even_when_legacy_configured(self, monkeypatch):
-        """Even with a legacy fleet-shared CSP_SERVICE_TOKEN set, the agent
-        path carries it but the model-gateway path never does. This is the
-        core safety property of the two-builder split."""
+        """Even with a legacy fleet-shared CSP_SERVICE_TOKEN set, the
+        model-gateway path never carries it. Agent dispatch uses a signed
+        JWT Bearer, not X-CSP-Service-Token (P2.1)."""
         from app.services import proxy_service
 
         monkeypatch.setattr(
             proxy_service.settings, "CSP_SERVICE_TOKEN", "csk-legacy", raising=False
         )
-        # agent path (no target_agent_id → legacy env token) carries it…
-        agent_h = build_agent_headers("1147259")
-        assert agent_h.get("X-CSP-Service-Token") == "csk-legacy"
-        # …model-gateway path never does.
+        agent_h = build_agent_headers(user_id=1, department=None, agent_id=99)
+        assert "X-CSP-Service-Token" not in agent_h
+        assert agent_h["Authorization"].startswith("Bearer ")
         model_h = build_model_gateway_headers("1147259")
         assert "X-CSP-Service-Token" not in model_h
 
-    def test_registered_agent_without_db_credential_does_not_get_legacy_token(
-        self, monkeypatch
-    ):
-        """A known target_agent_id must use its own credential row; missing
-        per-agent credential must not silently fall back to fleet token."""
+    def test_agent_dispatch_ignores_legacy_fleet_token(self, monkeypatch):
+        """Dispatch identity is the signed JWT; legacy CSP_SERVICE_TOKEN
+        must not appear on the wire even when configured."""
         from app.services import proxy_service
 
         monkeypatch.setattr(
             proxy_service.settings, "CSP_SERVICE_TOKEN", "csk-legacy", raising=False
         )
-        h = build_agent_headers("1147259", target_agent_id=12345)
+        h = build_agent_headers(user_id=1, department=2, agent_id=12345)
         assert "X-CSP-Service-Token" not in h
+        assert h["Authorization"].startswith("Bearer ")
 
 
 class _HeaderCapturingStream:

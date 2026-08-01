@@ -1,4 +1,4 @@
-"""Agent endpoint probes (manual health-check + csk- test-connection).
+"""Agent endpoint probes (manual health-check + dispatch-token test-connection).
 
 Split verbatim from the former single-module ``app/api/agents.py``
 (behavior-preserving refactor). D1 removed the on-demand Full Trace
@@ -7,6 +7,9 @@ diagnostic (``POST …/trace-test``); connection probe remains.
 2026-07-30 false-green fix: connection test reports host / credentials /
 path as distinct facts; health probe no longer treats a `/`-only hit as
 ``healthy``.
+
+P2.1: test-connection probes with the same signed dispatch JWT that
+outbound agent dispatch uses (requesting admin as probe identity).
 """
 from __future__ import annotations
 
@@ -20,7 +23,6 @@ from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
-from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import require_admin
 from app.services.endpoint_author_service import can_see_endpoint_address
@@ -30,6 +32,7 @@ from app.services.health_checker import (
     HEALTH_UNHEALTHY,
     probe_model_health_detailed,
 )
+from app.services.proxy.headers import build_agent_headers
 from app.services.proxy.urls import join_upstream_path
 
 from app.api.agents._common import (
@@ -42,11 +45,12 @@ from app.api.agents._common import (
 router = APIRouter()
 
 # Chat-path responses that prove the versioned route exists *and* the
-# presented csk- got past inbound auth. Agent empty-messages → 400 is the
-# canonical success; 422 is the structured-validation cousin. 401/403 are
-# NOT success: gateways often authenticate before routing, so a wrong path
-# returns 401 too. Other 4xx (405/429/…) only prove the path answered —
-# credentials stay unknown so we do not over-claim.
+# presented dispatch credential got past inbound auth. Agent
+# empty-messages → 400 is the canonical success; 422 is the
+# structured-validation cousin. 401/403 are NOT success: gateways often
+# authenticate before routing, so a wrong path returns 401 too. Other
+# 4xx (405/429/…) only prove the path answered — credentials stay
+# unknown so we do not over-claim.
 _AUTH_CHALLENGE = frozenset({401, 403})
 _PATH_MISSING = frozenset({404})
 _CREDS_AND_PATH_OK = frozenset({400, 422}) | frozenset(range(200, 300))
@@ -251,11 +255,13 @@ async def test_agent_connection(
     current_user: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
-    """Probe the agent endpoint with its OWN csk- (diagnostic only — not a gate).
+    """Probe the agent endpoint with a signed dispatch JWT (diagnostic only).
 
-    Distinguishes host reachability, credential acceptance, and path
-    verification. A 401 on the versioned chat path is NOT a pass: gateways
-    often authenticate before routing, so a wrong path returns 401 too.
+    Uses the same ``build_agent_headers`` path as live dispatch, with the
+    requesting admin/developer as probe identity. Distinguishes host
+    reachability, credential acceptance, and path verification. A 401 on
+    the versioned chat path is NOT a pass: gateways often authenticate
+    before routing, so a wrong path returns 401 too.
     """
     agent = _resolve_agent(db, agent_id)
     ensure_agent_view_access(agent, current_user)
@@ -271,22 +277,14 @@ async def test_agent_connection(
             detail=_safe_ssrf_detail(exc, db=db, caller=current_user),
         )
 
-    # The token the Router would present == whatever
-    # get_active_plaintext_for_agent selects for outbound dispatch. Reuse it
-    # so the probe tests the SAME credential CSP actually sends (consistent
-    # ordering, incl. after a rotate of a non-latest credential — Nit#2).
-    token = agent_credential_service.get_active_plaintext_for_agent(
-        db, agent_id=agent.id
-    )
-    if not token:
-        raise HTTPException(
-            status_code=409,
-            detail="此 Agent 尚無有效憑證,請先核發 csk- 再測試連線",
-        )
-
     ip = _client_ip(request)
     body = {"model": agent.name, "messages": [], "stream": False}
-    headers = {"X-CSP-Service-Token": token}
+    # Same builder as live CSP→agent dispatch; probe identity = requester.
+    headers = build_agent_headers(
+        user_id=current_user.id,
+        department=current_user.department_id,
+        agent_id=agent.id,
+    )
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             resp = await client.post(url, json=body, headers=headers)

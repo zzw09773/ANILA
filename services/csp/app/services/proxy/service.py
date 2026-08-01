@@ -235,15 +235,24 @@ async def _proxy_request_impl(
     last_error = None
     start_time = time.time()
 
-    # ``user_id`` (DB PK) is for usage attribution only; the wire identity
-    # is ``user_identity`` (員編). Builder chosen by DESTINATION (not a caller
-    # flag) so the model gateway can never receive the CSP service token:
-    # agent → full identity + token; model/embedding → 員編-only.
+    # Builder chosen by DESTINATION (not a caller flag): agent → signed
+    # dispatch JWT; model/embedding → 員編-only (never a CSP credential).
     if model.model_type == "agent":
+        if target_agent_id is None:
+            # Registry may seed model_type="agent" without a matching agents
+            # row (AUTO_REGISTER_MODELS). Refuse rather than fall back to a
+            # shared fleet token — no agent_id means no identity to sign.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "此模型標記為 agent 類型，但未對應已註冊的 Agent，"
+                    "無法簽署派工身分 token"
+                ),
+            )
         req_headers = build_agent_headers(
-            user_identity,
-            user_email,
-            target_agent_id=target_agent_id,
+            user_id=user_id,
+            department=department_id,
+            agent_id=target_agent_id,
             task_id=task_id,
             trace_id=task_trace_id,
         )
@@ -568,15 +577,13 @@ async def _proxy_stream_impl(
         ),
     )
 
-    # ``user_id`` (DB PK) is for usage attribution only; ``user_identity``
-    # (員編) is the wire identity. Builder chosen by DESTINATION
-    # (target_agent_id) — never a caller flag — so the model gateway can
-    # never receive the CSP service token.
+    # Builder chosen by DESTINATION (target_agent_id) — never a caller
+    # flag — so the model gateway can never receive a CSP credential.
     if target_agent_id is not None:
         headers = build_agent_headers(
-            user_identity,
-            user_email,
-            target_agent_id=target_agent_id,
+            user_id=user_id,
+            department=department_id,
+            agent_id=target_agent_id,
             task_id=task_id,
             trace_id=task_trace_id,
         )

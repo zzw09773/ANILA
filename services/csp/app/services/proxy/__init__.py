@@ -2,8 +2,8 @@
 
 Layout (behavior-preserving; bodies moved verbatim):
 
-- ``headers``  — downstream identity (員編) + credential header builders,
-  per-agent service-token cache, model-gateway key injection.
+- ``headers``  — agent dispatch JWT + model-gateway 員編 headers;
+  leftover per-agent csk- cache invalidate hooks (W3), gateway key injection.
 - ``sse``      — SSE block parsing / stream-to-completion aggregation.
 - ``usage``    — usage serialization + server-side token estimation.
 - ``guard``    — call-time outbound SSRF re-validation.
@@ -16,7 +16,6 @@ from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
     _apply_gateway_auth,
     _get_cached_agent_token,
-    _resolve_outgoing_service_token,
     _set_cached_agent_token,
     build_agent_headers,
     build_model_gateway_headers,
@@ -50,7 +49,6 @@ __all__ = [
     "_get_cached_agent_token",
     "_guard_outbound",
     "_parse_sse_block",
-    "_resolve_outgoing_service_token",
     "_serialize_request_for_usage",
     "_set_cached_agent_token",
     "build_agent_headers",

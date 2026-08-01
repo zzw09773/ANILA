@@ -68,3 +68,41 @@ def test_proxy_request_blocks_unsafe_model_before_network():
             )
         )
     assert exc.value.status_code == 502
+
+
+def test_proxy_request_agent_typed_without_target_agent_id_is_clean_http_error(
+    monkeypatch,
+):
+    """F1: agent-typed registry row without target_agent_id → 400 zh-TW, not 500.
+
+    Reachable when AUTO_REGISTER_MODELS seeds model_type='agent' but no
+    approved agents row matches — proxy_request is called without
+    target_agent_id. Must not raise bare ValueError (unhandled → 500).
+    """
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "agent-box")
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_AGENT_ENDPOINT", "1")
+    model = SimpleNamespace(
+        endpoint_url="http://agent-box:9100",
+        model_type="agent",
+        api_version="v1",
+        name="orphan-agent-model",
+        id=99,
+        display_name=None,
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            proxy_request(
+                model=model,
+                api_key_id=1,
+                user_id=1,
+                department_id=None,
+                request_body={"messages": []},
+                endpoint_path="/v1/chat/completions",
+                target_agent_id=None,
+            )
+        )
+    assert exc.value.status_code == 400
+    detail = str(exc.value.detail)
+    assert "agent" in detail.lower() or "Agent" in detail
+    assert "無法簽署" in detail
+    assert exc.value.status_code != 500

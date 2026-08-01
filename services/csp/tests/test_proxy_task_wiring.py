@@ -580,15 +580,25 @@ class TestServiceTokenCaller:
 class TestHeaderBuilders:
     def test_agent_headers_carry_task_and_trace_ids(self):
         h = build_agent_headers(
-            "1147259", "a@ncsist.org.tw", task_id="42", trace_id="trace-abc"
+            user_id=1,
+            department=None,
+            agent_id=7,
+            task_id="42",
+            trace_id="trace-abc",
         )
+        assert h["Authorization"].startswith("Bearer ")
         assert h["X-ANILA-Task-Id"] == "42"
         assert h["X-ANILA-Trace-Id"] == "trace-abc"
+        assert "X-CSP-Service-Token" not in h
+        assert "X-ANILA-User-Id" not in h
+        assert "X-ANILA-User-Email" not in h
+        assert "X-ANILA-User-Groups" not in h
 
     def test_agent_headers_omit_task_headers_when_absent(self):
-        h = build_agent_headers("1147259", "a@ncsist.org.tw")
+        h = build_agent_headers(user_id=1, department=None, agent_id=7)
         assert "X-ANILA-Task-Id" not in h
         assert "X-ANILA-Trace-Id" not in h
+        assert h["Authorization"].startswith("Bearer ")
 
     def test_model_gateway_headers_have_no_task_or_trace_surface(self):
         """doc 04 AC5 regression lock — the model-gateway builder must not
