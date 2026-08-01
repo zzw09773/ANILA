@@ -153,7 +153,7 @@ The redesign series follows the legacy numeric chain (`r1_0001` revises `0046`),
 
 ## 7. Testing
 
-Tests are sqlite-backed (`tests/conftest.py` sets `DATABASE_URL=sqlite:///./.pytest-csp.db`, so they never touch Postgres / running containers) and need no environment variables exported first:
+Tests are sqlite-backed (`tests/conftest.py` points `DATABASE_URL` at a per-session temp file, deleted when the session ends, so they never touch Postgres / running containers) and need no environment variables exported first:
 
 ```bash
 python -m pytest services/csp/tests -q   # from the repo root

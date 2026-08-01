@@ -5,7 +5,11 @@ Uses SQLite in-memory so tests have no external dependency on Postgres.
 
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,7 +18,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 os.environ["DEBUG"] = "false"
-os.environ["DATABASE_URL"] = "sqlite:///./.pytest-csp.db"
+# Per-session throwaway file DB for ``SessionLocal`` (headers.py 等直接開
+# session、繞過 fixture override 的路徑)。以前釘 ``./.pytest-csp.db``(相對
+# cwd)—— 全套跑過留下 schema 的目錄會綠、乾淨目錄 solo 跑就
+# ``no such table``。路徑與生命週期改成 session 專用臨時檔;pin 機制保留。
+_TEST_DB_DIR = tempfile.mkdtemp(prefix="pytest-csp-")
+_TEST_DB_PATH = Path(_TEST_DB_DIR) / "pytest-csp.db"
+os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
 os.environ["HEALTH_CHECK_INTERVAL"] = "3600"
 os.environ["ALERT_CHECK_INTERVAL"] = "3600"
 # TestClient uses http://testserver — Secure cookies would be dropped.
@@ -41,14 +51,40 @@ os.environ.setdefault(
 # 只挑幾個檔跑就整批 error。答案取決於你選了哪些檔,那不是基準線。搬到這裡。
 # ``test_startup_security`` 要測 production 行為時會自己 ``monkeypatch.delenv``。
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
+# ``app.config.Settings`` 的 ``env_file=".env"`` 是相對 cwd 解析的 —— 從 repo
+# 根跑會吃到根目錄 ``.env``(本機 07-31 起 ``ENABLE_CARD_LOGIN=true``),從
+# ``services/csp`` 跑吃不到。硬設(非 setdefault)讓 session 預設與 cwd /
+# 機上 `.env` 無關;要開的測試自己 monkeypatch ``settings.ENABLE_CARD_LOGIN``。
+os.environ["ENABLE_CARD_LOGIN"] = "false"
+# 成對釘死:``startup_security`` 檢查 ``REQUIRE_CARD_LOGIN_ONLY=true`` 而卡登
+# 關閉時會拒絕啟動 —— 只釘一半,repo 根 ``.env`` 翻成 card-only(內網預設姿態)
+# 那天,所有用 ``client`` fixture 的測試會在 setup 整批 error。
+os.environ["REQUIRE_CARD_LOGIN_ONLY"] = "false"
 
-from app.database import Base, get_db
+from app.database import Base, engine as _session_local_engine, get_db
 from app.main import app
 from app.models.user import User
 from app.models.model_registry import ModelRegistry
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.agent import Agent
 from app.utils.security import hash_password
+
+# ``SessionLocal`` 綁的是上面的臨時檔 DB;fixture 的 in-memory engine 是另一條。
+# 直接 ``SessionLocal()`` 的 production 路徑(如 proxy/headers.py)需要 schema
+# 已在,不能等「某個用過 TestClient 的測試碰巧跑過 lifespan create_all」。
+# 必須在 model import(含 ``app.main`` 帶進來的)之後才 create_all。
+Base.metadata.create_all(bind=_session_local_engine)
+
+
+def _cleanup_test_db_dir() -> None:
+    shutil.rmtree(_TEST_DB_DIR, ignore_errors=True)
+
+
+atexit.register(_cleanup_test_db_dir)
+
+
+def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
+    _cleanup_test_db_dir()
 
 
 TEST_DB_URL = "sqlite://"

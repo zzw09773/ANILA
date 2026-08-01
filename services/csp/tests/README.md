@@ -1,49 +1,51 @@
 # CSP 後端測試 —— 怎麼跑、基準線是什麼
 
-> 最後實測:**2026-07-31**。改動測試或 production 後請重跑並更新這份數字。
+> 最後實測:**2026-08-01**。改動測試或 production 後請重跑並更新這份數字。
 
 ## 怎麼跑
 
-```bash
-# 從 repo 根目錄
-python -m pytest services/csp/tests -q
+直譯器:本樹尚無自己的 venv,暫借
+`~/桌面/ANILA/anila-migration-20260706/ANILA/services/csp/.venv/bin/python`
+(套件版本已逐一比對過,與執行中的 csp 映像一致)。下文以 `$PY` 代稱該路徑。
 
-# 或從 services/csp
-cd services/csp && python -m pytest -q
+```bash
+# 跑法 1 — cwd = worktree / repo 根目錄
+cd /path/to/ANILA   # 本 worktree 根
+$PY -m pytest services/csp/tests -q
+
+# 跑法 2 — cwd = services/csp
+cd /path/to/ANILA/services/csp
+$PY -m pytest tests -q
 ```
 
-**兩種跑法的結果必須一模一樣。不一樣就是壞了,先修跑法再看測試。**
+維護者核對兩種跑法是否一致:把兩邊的 summary 行(passed / failed / skipped /
+collected)並排比對,**數字必須相同**。不一致就先查 cwd / `.env` / 殘留
+DB 狀態,再看測試本身。
 
 不需要先 export 任何環境變數,也不需要設 `PYTHONPATH`。`services/csp/pytest.ini`
 把 rootdir 釘在 `services/csp` 並注入 `pythonpath`;`tests/conftest.py` 在 import
-`app.*` 之前把 `SECRET_KEY` / `ANILA_ALLOW_DEV_SECRET` 等必要變數設好。
+`app.*` 之前把 `SECRET_KEY` / `ANILA_ALLOW_DEV_SECRET` / `ENABLE_CARD_LOGIN` /
+`REQUIRE_CARD_LOGIN_ONLY` / 臨時 `DATABASE_URL` 等變數釘死,這幾個就不依 cwd。
+⚠ 其餘 `Settings` 欄位(如 `ADMIN_PASSWORD`、`CARD_INITIAL_OWNERS`、
+`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`)從 repo 根跑時仍會讀到機上
+`.env`——目前沒有測試依賴它們的 ambient 值,新增依賴前先來這裡補釘。
 
-直譯器:本樹尚無自己的 venv,暫借
-`~/桌面/ANILA/anila-migration-20260706/ANILA/services/csp/.venv/bin/python`
-(套件版本已逐一比對過,與執行中的 csp 映像一致)。
-
-## 目前基準線(2026-07-31 實測)
+## 目前基準線(2026-08-01 實測)
 
 ```
-1 failed · 1296 passed · 13 skipped · 0 errors     (約 8 分鐘)
+1431 passed · 13 skipped · 0 failed     (1444 collected)
 ```
 
-四種跑法都是這個數字,已驗證:
+兩種跑法都是這個數字,已驗證:
 
-| 跑法 | 結果 |
-|---|---|
-| cwd = repo 根目錄 | 1 failed · 1296 passed · 13 skipped |
-| cwd = `services/csp` | 1 failed · 1296 passed · 13 skipped |
-| `services/csp` + 檔案順序反轉 | 1 failed · 1296 passed · 13 skipped |
+| 跑法 | cwd | 指令 | 結果 |
+|---|---|---|---|
+| 1 | worktree / repo 根 | `$PY -m pytest services/csp/tests -q` | 1431 passed · 13 skipped |
+| 2 | `services/csp` | `$PY -m pytest tests -q` | 1431 passed · 13 skipped |
 
-### 唯一的紅燈
-
-| 測試 | 分類 | 說明 |
-|---|---|---|
-| `test_template_download.py::test_developer_can_download_template` | **真缺陷** | `GET /api/agents/template/download` 回 404 —— `app/api/agents/registration.py` 找不到 template 目錄(該檔的 fallback 路徑缺陷由另一個包負責處理,不在本包範圍)。**這是 production 缺陷,不是測試問題。** |
-
-`test_plain_user_cannot_download_template` 是綠的(非 developer 本來就該被擋),
-所以權限那一半沒問題,壞的是 template 目錄解析。
+舊基準線(2026-07-31)的唯一紅燈
+`test_template_download.py::test_developer_can_download_template` 已由
+commit `6f12e600` 修掉,不再列入紅燈表。
 
 ## 這份基準線之前為什麼是假的
 
@@ -66,6 +68,14 @@ cd services/csp && python -m pytest -q
 變數以前是靠 `test_token_revoke_publish.py` 在 import 期
 `os.environ.setdefault` 的副作用「順便」被設起來的。跑全套會綠,跑子集全 error。
 現在搬進 `tests/conftest.py`,不再取決於你選了哪些檔。
+
+2026-08-01 又釘掉兩類 cwd / 磁碟狀態依賴:
+
+1. `Settings(env_file=".env")` 相對 cwd 解析 → 根目錄跑會吃到
+   `ENABLE_CARD_LOGIN=true`;`conftest` 現在硬設 `ENABLE_CARD_LOGIN=false`,
+   卡登負向測試也自己釘 precondition。
+2. 舊的 `DATABASE_URL=sqlite:///./.pytest-csp.db` 相對 cwd 且跨行程殘留 →
+   改成 per-session 臨時檔,並在 import 後對 `SessionLocal` 引擎 `create_all`。
 
 ## 執行順序污染(已修)
 
@@ -91,7 +101,7 @@ monkeypatch 新 settings 的 `ACCESS_TOKEN_EXPIRE_MINUTES`,而 `create_access_to
 
 ```bash
 cd services/csp
-python -m pytest $(ls tests/test_*.py | sort -r) -q
+$PY -m pytest $(ls tests/test_*.py | sort -r) -q
 ```
 
 ## 卡登測試怎麼看
