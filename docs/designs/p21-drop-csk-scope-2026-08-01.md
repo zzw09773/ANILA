@@ -57,6 +57,11 @@ agent 回頭打 CSP（RAG 搜尋、trace、artifacts、runtime-config、撤銷�
   治理中心 guard snippets（現有 py/js/go/sh 四款）W4 改版成「標準函式庫驗簽」版，更短更不會錯。
 - **CA bundle 要讓非範本開發者拿得到**：治理中心接入頁放「下載平台 CA」，與驗簽片段並列
   （範本使用者則已內建，見 W1.5）。
+- **接入成本三級制**（擁有者 08-01 問答定調）：①新 agent 用範本＝零驗證碼；
+  ②既有 Python 服務＝`pip install` SDK＋掛 middleware 兩三行；
+  ③零改碼＝提供**驗證 sidecar 容器**（驗完轉發，agent 本體不動，oauth2-proxy 思路）——W3 交付項。
+- 誠實邊界：驗證保護的是 agent 自己（防冒名直打 NodePort、保其日誌可信）；
+  平台端計費歸屬不依賴 agent 驗不驗。制度責任＝把鎖門做便宜，不是逼人鎖門。
 
 ### W3 發行／管理面拆除
 - csk- 簽發、輪替、`bsk-` bootstrap、治理中心精靈 Step 2、guard snippets、CLI `agent bootstrap`——按 W2 選案拆除或改造。
