@@ -23,6 +23,20 @@ export const setAgentClassification = (id, default_classification_level) =>
 export const downloadTemplate = () =>
   client.get('/api/agents/template/download', { responseType: 'blob' })
 
+// P2.1 — public CSPKI CA bundle for JWKS over https (agent-side trust anchor).
+// Backend route required: GET /api/agents/platform-ca/download → application/x-pem-file
+// (serves services/csp/app/services/cspki_ca_bundle.pem). Not implemented in this package.
+export const downloadPlatformCa = () =>
+  client.get('/api/agents/platform-ca/download', { responseType: 'blob' })
+
+// P2.1 — single-file dispatch JWT verifier for existing Python agents.
+// Backend route required: GET /api/agents/anila-verify/download
+// → text/x-python (or application/octet-stream), filename=anila_verify.py
+// Source of truth: packages/anila-core/.../contrib/anila_verify.py (served by CSP).
+// Not implemented in this package — UI degrades honestly on 404.
+export const downloadAnilaVerify = () =>
+  client.get('/api/agents/anila-verify/download', { responseType: 'blob' })
+
 export const deleteAgent = (id) =>
   client.delete(`/api/agents/${id}`)
 

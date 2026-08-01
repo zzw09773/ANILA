@@ -16,7 +16,7 @@
         <li><code>.env</code> 設模型：<code>ANILA_BASE_URL</code>＝<strong>CSP 平台真實 URL</strong>（非 docker 內部名）、<code>ANILA_MODEL</code>＝CSP 複製的 model 名、<code>ANILA_API_KEY</code>＝CSP 核發的 key</li>
         <li>用下方 <a href="#generator">🛠 產生器</a> 產 system prompt → 取代 <code>prompts/system.md</code></li>
         <li>MLSteam 設 port forwarding → 到 <router-link to="/developer/agents">/developer/agents</router-link> 註冊（endpoint 用 forward 後位址、填 <code>http://</code>），system prompt 貼到 description</li>
-        <li>領 <code>csk-</code> → 把 CSP 給的那串貼進 <code>.env</code> → <code>python app.py</code> → 回 CSP 按 test connection</li>
+        <li>若 https：用 Agent 頁「下載平台 CA」取 PEM（端點未上線會提示）→ 設 <code>CSP_BASE_URL</code>／<code>ANILA_CA_FILE</code>（無長效祕密）→ <code>python app.py</code></li>
       </ol>
     </TermBox>
 
@@ -98,8 +98,8 @@
         <li><strong>system prompt</strong>：用上方 <a href="#generator">🛠 產生器</a>（選 collection + 寫構想）產一份 → 取代 anila-agent 的 <code>anila_agent/prompts/system.md</code>。</li>
         <li><strong>port forwarding</strong>：MLSteam 設 port forwarding 把 agent 的 <code>:8200</code> 對外 → 到 <router-link to="/developer/agents">/developer/agents</router-link> 用 forward 後的位址註冊。<strong>endpoint 填 <code>http://</code>（agent 跑純 http；填 https 會 SSL WRONG_VERSION_NUMBER）。</strong></li>
         <li><strong>description</strong>：把 system prompt（或其摘要）貼到註冊的 <code>description</code> —— <strong>router 靠它判斷要不要把對話派給這支 agent</strong>。</li>
-        <li><strong>csk-</strong>：核發 <code>csk-</code> service token，把 CSP 給的那串（<code>CSP_BASE_URL</code> / <code>CSP_SERVICE_TOKEN</code> / <code>ANILA_COLLECTION_ID</code>）複製貼進 MLSteam 的 <code>.env</code>。</li>
-        <li><strong>啟動</strong>：<code>python app.py</code>（= <code>make serve</code>，起 <code>:8200</code>）→ 回 CSP 按 <strong>test connection</strong> → 審核後 router 自動發現上線。</li>
+        <li><strong>非祕密設定</strong>：在 <code>.env</code> 填 <code>CSP_BASE_URL</code>、<code>ANILA_CA_FILE</code>（用 Agent 頁「下載平台 CA」嘗試取得 PEM；端點未上線會提示）、選填 <code>ANILA_COLLECTION_ID</code>。<strong>不必領取任何長效祕密</strong>——平台派工時會現簽 5 分鐘 JWT；驗簽請接 <code>anila_verify.py</code> 或確認樣板 zip 實際是否已含驗簽。</li>
+        <li><strong>啟動</strong>：<code>python app.py</code>（= <code>make serve</code>，起 <code>:8200</code>）→ 審核後 router 自動發現上線。</li>
       </ol>
     </TermBox>
 
@@ -109,20 +109,20 @@
 #   ⚠ CSP 平台真實 URL，不是 docker 內部名（agent 在 MLSteam，連不到內部名）
 ANILA_BASE_URL=https://&lt;csp-host&gt;/v1      # 例 https://172.16.120.35/v1
 ANILA_MODEL=openai/gpt-oss-20b            # 從 CSP 平台複製
-ANILA_API_KEY=&lt;CSP 核發的 API key&gt;
-ANILA_SSL_VERIFY=0                        # CSP 自簽 https → 0
+ANILA_API_KEY=&lt;CSP 核發的 API key&gt;       # 僅供 agent 打平台 /v1 模型；非派工身分
+ANILA_SSL_VERIFY=0                        # 開發期捷徑；正式請用 ANILA_CA_FILE
 
-# ── 檢索 + 派工：註冊後把 CSP 給的那串貼進來（步驟 10）──
+# ── 平台位址 + CA（步驟 10；無長效派工祕密）──
 CSP_BASE_URL=https://&lt;csp-host&gt;
-CSP_SERVICE_TOKEN=csk-...                 # 註冊時核發；空則派工回 401
-ANILA_COLLECTION_ID=&lt;collection 數字 ID&gt;   # 見下方「指定 collection」
+ANILA_CA_FILE=/path/to/cspki_ca_bundle.pem   # Agent 頁「下載平台 CA」（端點未上線會提示）；勿設 SSL_CERT_FILE
+ANILA_COLLECTION_ID=&lt;collection 數字 ID&gt;     # 見下方「指定 collection」
 
 # ── 選用 ──
 ANILA_MEMORY=0  ·  ANILA_CITED=0  ·  ANILA_MAX_TURNS=10  ·  ANILA_TIMEOUT=60</pre>
       <p class="hint">
-        <strong>⚠ 兩套 CSP 名別搞混：</strong>跑 <code>python app.py</code>（service）→ 用
-        <code>CSP_BASE_URL</code> ＋ <code>CSP_SERVICE_TOKEN</code>；改用 <code>anila</code> CLI →
-        改讀 <code>ANILA_CSP_BASE_URL</code> ＋ <code>ANILA_CSP_API_KEY</code>。<code>ANILA_COLLECTION_ID</code> 兩邊共用。
+        <strong>派工身分：</strong>平台每次請求帶 <code>Authorization: Bearer &lt;JWT&gt;</code>（約 5 分鐘），
+        agent 用 JWKS 驗簽——<code>.env</code> 不保管派工祕密。
+        跑 <code>anila</code> CLI 時模型端用 <code>ANILA_CSP_BASE_URL</code> ＋ <code>ANILA_CSP_API_KEY</code>。
       </p>
     </TermBox>
 
@@ -135,7 +135,7 @@ ANILA_MEMORY=0  ·  ANILA_CITED=0  ·  ANILA_MAX_TURNS=10  ·  ANILA_TIMEOUT=60<
       <ol class="steps">
         <li>在 CSP 平台建一個 <strong>collection</strong> 並 ingest 你的文件（embedding 由 CSP 端做）。</li>
         <li>取得它的 <strong>ID（正整數）</strong>，填進 <code>.env</code> 的 <code>ANILA_COLLECTION_ID</code>。</li>
-        <li>搭配 <code>CSP_BASE_URL</code> ＋ <code>CSP_SERVICE_TOKEN</code> →
+        <li>搭配 <code>CSP_BASE_URL</code>，任務內回呼複用派工 JWT →
           agent 走 <code>POST /api/ingestion/collections/&#123;id&#125;/search</code>，
           <strong>認證 / 嵌入 / RLS 都在 CSP 端</strong>，agent 不碰 DB、不碰嵌入模型。</li>
       </ol>
@@ -164,7 +164,7 @@ ANILA_MEMORY=0  ·  ANILA_CITED=0  ·  ANILA_MAX_TURNS=10  ·  ANILA_TIMEOUT=60<
           </tr>
           <tr>
             <td>service 全 401 / chat 503</td>
-            <td>401＝沒設 <code>CSP_SERVICE_TOKEN</code>（本地測試設 <code>ANILA_ALLOW_NO_SERVICE_TOKEN=1</code>）；503＝缺 <code>ANILA_COLLECTION_ID</code>。</td>
+            <td>401＝請求缺合法派工 JWT（或驗簽失敗／過期）；503＝缺 <code>ANILA_COLLECTION_ID</code>。</td>
           </tr>
           <tr>
             <td><code>APIConnectionError</code>（curl 卻通）</td>

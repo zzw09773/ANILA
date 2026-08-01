@@ -78,7 +78,7 @@
     <section v-if="authStore.isAdmin" class="dash-grid">
       <!-- legacy-token cutover progress widget -->
       <TermBox
-        title="汰換 · 舊版 service token"
+        title="汰換 · 舊版長效服務憑證"
         :hint="legacyTokenHint"
         :tone="legacyTokenStats?.count_24h ? 'warn' : ''"
         pad="md"
@@ -94,7 +94,7 @@
             <span class="cutover__v tnum">{{ legacyTokenStats.last_seen_at ? formatTs(legacyTokenStats.last_seen_at) : 'never (cutover clean)' }}</span>
           </p>
           <p v-if="legacyTokenStats.count_30d === 0" class="cutover__hint cutover__hint--ok">
-            ✓ 30 天內無 fallback 命中 — 可進入 cutover stage 4（從 .env 拿掉 CSP_SERVICE_TOKEN）
+            ✓ 30 天內無 fallback 命中 — 可進入 cutover stage 4（從 .env 拿掉舊版長效服務憑證）
           </p>
           <p v-else class="cutover__hint cutover__hint--warn">
             仍有 agent / Router 走 legacy env-var fallback — 請至 audit log 查 ip_address 找出未 cutover 主機。
@@ -180,7 +180,7 @@ const loadError = ref('')
 const summaryLoaded = ref(false)
 
 // Sprint 8 X / Phase H — admin-only observability widgets.
-//   legacyTokenStats: cutover progress for the legacy CSP_SERVICE_TOKEN
+//   legacyTokenStats: cutover progress for the legacy long-lived service credential
 //                     fallback. When sustained at 0 for a release window
 //                     ops can drop the env var and remove the fallback
 //                     branch in auth_service.verify_service_token.
