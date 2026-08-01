@@ -385,14 +385,42 @@ def employee_count(department: str) -&gt; int:
         <TermSection title="router 說明" />
         <p class="detail__desc">{{ detailAgent.description_for_router || '—' }}</p>
 
-        <!-- OE-1 — 核准不需診斷。註冊已改單步。「測試連線」本包未重接是排序理由,不是契約限制:
-             W1 合併前新註冊的 agent 沒有憑證,重接會固定回 409＝假控制項。
-             W1 已把探測改送派工 JWT,P2.1 收尾時應把這顆按鈕接回本頁。 -->
+        <!-- OE-1 — 核准不需診斷。「測試連線」已接 POST …/test-connection（派工 JWT）；
+             核准仍不依賴探測結果。 -->
+        <TermSection title="測試連線" />
+        <p class="cell-meta">
+          以真實派工 JWT 探測 <code>/v1/chat/completions</code>。三個事實分開顯示——
+          「無法判定」不是失敗，也絕不是通過。核准不依賴此探測。
+        </p>
+        <div class="row-actions" style="margin: 8px 0;">
+          <TermButton
+            size="xs"
+            variant="primary"
+            :disabled="testingConnectionId === detailAgent.id"
+            :label="testingConnectionId === detailAgent.id ? '測試中…' : '測試連線'"
+            @click="handleTestConnection(detailAgent)"
+          />
+        </div>
+        <dl v-if="testConnectionView" class="probe-facts">
+          <div v-for="fact in testConnectionView.facts" :key="fact.key" class="probe-facts__row">
+            <dt>{{ fact.label }}</dt>
+            <dd :class="`probe-facts__val is-${fact.tone}`">{{ fact.display }}</dd>
+          </div>
+          <div v-if="testConnectionView.statusCode != null" class="probe-facts__row">
+            <dt>HTTP</dt>
+            <dd class="tnum">{{ testConnectionView.statusCode }}</dd>
+          </div>
+          <div class="probe-facts__row probe-facts__row--detail">
+            <dt>說明</dt>
+            <dd class="probe-facts__detail">{{ testConnectionView.detail }}</dd>
+          </div>
+        </dl>
+
         <template v-if="authStore.isAdmin && isPendingReview(detailAgent.approval_status)">
           <TermSection title="核准" />
           <p class="cell-meta">
-            管理員核准後即可被 router 發現。端點是否可達請用列上的「探測」（health-check）；
-            派工 JWT 驗簽須在 agent 側自行接好（見下方接入驗簽）。核准不依賴連線探測結果。
+            管理員核准後即可被 router 發現。端點健康用列上的「探測」；
+            派工 JWT 驗簽用上方「測試連線」與下方接入驗簽。核准不依賴連線探測結果。
           </p>
           <div class="row-actions" style="margin: 8px 0;">
             <TermButton
@@ -443,11 +471,12 @@ import { useAuthStore } from '../stores/auth'
 import {
   approveAgent, deleteAgent, downloadPlatformCa, downloadTemplate, getAgent, listMyAgents,
   registerAgent, rejectAgent, setAgentClassification,
-  triggerAgentHealthCheck, updateAgent,
+  testAgentConnection, triggerAgentHealthCheck, updateAgent,
 } from '../api/agents'
 import {
   APPROVAL_STATUSES, approvalLabel, approvalVariant, isApprovable, isPendingReview,
 } from '../utils/approvalStatus'
+import { formatTestConnectionFacts } from '../utils/testConnectionFacts'
 import { listCollections } from '../api/ingestionCollections'
 import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
@@ -461,7 +490,7 @@ import AgentGuardPanel from '../components/agents/AgentGuardPanel.vue'
 // different origin from the SPA.
 const cspUrl = import.meta.env?.VITE_CSP_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '')
 
-const { confirm } = useDialog()
+const { confirm, toast } = useDialog()
 const authStore = useAuthStore()
 
 const agents = ref([])
@@ -477,6 +506,13 @@ const classificationBusyId = ref(null)
 const classificationSelectEpoch = ref(0)
 const deletingId = ref(null)
 const healthCheckingId = ref(null)
+// P2.1 — 詳情「測試連線」：testingConnectionId 只鎖正在測的那顆；
+// testConnectionResult 快取最近一次三事實（null 顯示「無法判定」，不可當成功）。
+const testingConnectionId = ref(null)
+const testConnectionResult = ref(null)
+const testConnectionView = computed(() =>
+  testConnectionResult.value ? formatTestConnectionFacts(testConnectionResult.value) : null
+)
 const showEditModal = ref(false)
 const editTarget = ref(null)
 const editing = ref(false)
@@ -600,6 +636,7 @@ async function openRegisterModal() {
 }
 
 async function openDetailModal(agent) {
+  testConnectionResult.value = null
   try { const { data } = await getAgent(agent.id); detailAgent.value = data }
   catch { detailAgent.value = agent }
   showDetailModal.value = true
@@ -611,6 +648,7 @@ const detailIsApprovable = computed(() =>
 function closeDetailModal() {
   showDetailModal.value = false
   detailAgent.value = null
+  testConnectionResult.value = null
 }
 
 function openRejectModal(agent) { rejectTarget.value = agent; rejectReason.value = '' }
@@ -774,6 +812,34 @@ async function handleHealthCheck(agent) {
       `「${agent.name}」健康：${data.status}${data.detail ? ` — ${data.detail}` : ''}`)
   } catch (e) { setFeedback('error', e.response?.data?.detail || `「${agent.name}」健康探測失敗`) }
   finally { healthCheckingId.value = null }
+}
+
+// P2.1 — POST …/test-connection。結果以三事實渲染；detail 原樣顯示，不自拼 URL。
+async function handleTestConnection(agent) {
+  if (!agent || testingConnectionId.value === agent.id) return
+  const probeId = agent.id
+  testingConnectionId.value = probeId
+  try {
+    const { data } = await testAgentConnection(probeId)
+    // 探測可逾秒；期間若已關詳情／換另一支 agent，勿寫入或 toast（錯 agent 假綠）。
+    if (detailAgent.value?.id !== probeId) return
+    testConnectionResult.value = data
+    const view = formatTestConnectionFacts(data)
+    const summary = view.facts.map((f) => `${f.label}：${f.display}`).join(' · ')
+    const allOk = view.facts.every((f) => f.tone === 'ok')
+    toast(
+      `測試連線 → ${summary}${data.status_code != null ? `（HTTP ${data.status_code}）` : ''}`,
+      { tone: allOk ? 'success' : 'warn' },
+    )
+  } catch (e) {
+    if (detailAgent.value?.id !== probeId) return
+    testConnectionResult.value = null
+    const detail = e.response?.data?.detail
+    const msg = typeof detail === 'string' ? detail : (detail?.message || '測試連線失敗')
+    toast(msg, { tone: 'error' })
+  } finally {
+    if (testingConnectionId.value === probeId) testingConnectionId.value = null
+  }
 }
 
 async function handleDeleteAgent(agent) {
@@ -998,6 +1064,24 @@ function buildStatusHistory(agent) {
   background: var(--c-bg); border: var(--border-w) solid var(--c-border);
   padding: var(--gap-3); margin: 0; font-size: var(--t-2xs); color: var(--c-fg-2);
   max-height: 240px; overflow: auto;
+}
+
+/* P2.1 — 測試連線三事實（null＝無法判定，不用綠燈假裝通過） */
+.probe-facts {
+  display: grid; grid-template-columns: 110px 1fr; gap: 4px var(--gap-3);
+  margin: 8px 0 0; font-size: var(--t-sm);
+}
+.probe-facts__row { display: contents; }
+.probe-facts__row dt {
+  color: var(--c-fg-3); font-size: var(--t-2xs);
+  text-transform: uppercase; letter-spacing: var(--tracking-caps);
+}
+.probe-facts__row dd { margin: 0; color: var(--c-fg-1); }
+.probe-facts__val.is-ok { color: var(--c-ok); }
+.probe-facts__val.is-fail { color: var(--c-danger); }
+.probe-facts__val.is-unknown { color: var(--c-fg-3); }
+.probe-facts__detail {
+  color: var(--c-fg-2); font-size: var(--t-xs); white-space: pre-wrap;
 }
 
 .timeline { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--gap-2); }

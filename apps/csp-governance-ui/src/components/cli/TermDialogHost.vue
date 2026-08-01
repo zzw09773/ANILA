@@ -125,5 +125,6 @@ function onEnter() {
 }
 .term-toast--error { border-left-color: var(--c-danger); }
 .term-toast--success { border-left-color: var(--c-ok); }
+.term-toast--warn { border-left-color: var(--c-warn); }
 .term-toast--info { border-left-color: var(--c-accent); }
 </style>

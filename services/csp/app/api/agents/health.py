@@ -99,7 +99,7 @@ def _classify_connection_status(status_code: int) -> tuple[bool, bool | None, bo
             True,
             True,
             (
-                f"路徑與憑證皆通過：端點接受了該 csk- 並處理請求"
+                f"路徑與憑證皆通過：端點接受了該派工 JWT 並處理請求"
                 f"（HTTP {status_code}）。"
             ),
         )
