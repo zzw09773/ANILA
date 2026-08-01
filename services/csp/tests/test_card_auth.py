@@ -225,9 +225,9 @@ class TestVerifyValidSignature:
 
     def test_card_serial_propagated_when_supplied(self) -> None:
         claims = verify_pkcs7_signature(
-            MOCK_SIGNATURE_B64, MOCK_NONCE, card_serial="CS00000000025247"
+            MOCK_SIGNATURE_B64, MOCK_NONCE, card_serial="CS00000000099999"
         )
-        assert claims.card_serial == "CS00000000025247"
+        assert claims.card_serial == "CS00000000099999"
 
     def test_card_serial_none_when_omitted(self) -> None:
         claims = verify_pkcs7_signature(MOCK_SIGNATURE_B64, MOCK_NONCE)
