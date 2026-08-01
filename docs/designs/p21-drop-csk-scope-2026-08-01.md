@@ -132,7 +132,7 @@ CA 與單檔驗證器可下載、文件全面改寫。**這一半自足**:agent 
 未派工 agent 的身分目前仍靠既有的低權限服務憑證,那不是新風險,是既有現狀。
 **若擁有者要求第二期進上線範圍,請直接說,我重排 P5 的順序。**
 
-## 七、開工前要先確認的兩件## 七、開工前要先確認的兩件（掃描標 UNVERIFIED）
+## 七、開工前要先確認的兩件（掃描標 UNVERIFIED）
 
 1. 活體 DB `select count(*) from agents / agent_credentials`——「改契約免費」建立在真的是零上。
 2. 422 修復（f7f91b86）後 `anila-core register` 的真實 round-trip 沒實測過——開工先跑一次。
