@@ -38,8 +38,8 @@
 
 驗證通過後,從 signer cert 的 Subject 取::
 
-    Subject: C=TW, O=國家中山科學研究院, CN=鄒惠翔, serialNumber=1090868
-    SAN.rfc822Name: ['C95THS@ncsist.org.tw']
+    Subject: C=TW, O=國家中山科學研究院, CN=測試人員, serialNumber=1234567
+    SAN.rfc822Name: ['mock-card-1234567@example.invalid']
 
 員工編號 = ``serialNumber`` 屬性(非憑證序號)。
 """
@@ -63,7 +63,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.x509.oid import ExtensionOID, NameOID
 
 
-# 中科院員工編號:純數字,目前觀察到 7 digits (例:1147259、1090868);
+# 中科院員工編號:純數字,目前觀察到 7 digits (例:1147259、1234567);
 # 6/8/9 留邊界給歷史與未來 ID schema 變化。用 ``\A...\Z`` 嚴格頭尾。
 _EMPLOYEE_ID_RE = re.compile(r"\A\d{6,9}\Z")
 
@@ -157,8 +157,8 @@ class CardConfigError(CardAuthError):
 class CardClaims:
     """憑證卡驗證成功後抽出的不可變身分資訊。"""
 
-    employee_id: str  # X.509 subject.serialNumber (例:'1090868' / '1147259')
-    display_name: str  # X.509 subject.CN (例:'鄒惠翔')
+    employee_id: str  # X.509 subject.serialNumber (例:'1234567' / '1147259')
+    display_name: str  # X.509 subject.CN (例:'測試人員')
     email: str  # X.509 SAN.rfc822Name
     card_serial: str | None  # 元件回的 cardSN,純供 audit log 用
 
