@@ -15,6 +15,18 @@ agent 回頭打平台（RAG 搜尋、trace、artifacts、runtime-config、撤銷
 
 ## 二、換成什麼（目標圖像）
 
+**誰簽誰驗（08-01 問答補：簽章永遠只有平台在發，dev 只驗不簽也不領）**
+
+| 誰 | 做什麼 | 用什麼 |
+|---|---|---|
+| CSP（平台） | 每次派工**簽**憑條 | 私鑰（只在平台手上） |
+| dev 的 agent | 收到請求**驗**憑條 | 公鑰（自動抓 `/.well-known/jwks.json`，公開材料） |
+| dev 本人 | 註冊時登記名字與 endpoint | **不領任何鑰匙**（對比今日：領 csk- 即背保管責任） |
+
+驗簽材料（JWKS＋CA bundle）全是公開的，dev 不需要為驗簽申請任何東西；
+憑條隨每次派工自動送達。唯一例外＝〈六〉待決題選 a 案時 agent 有一把**自己產**的鑰匙
+（公鑰半邊登記給平台，仍非平台核發）、選 b 案才有一顆平台發的低權限小鑰匙。
+
 - 平台**每次派工現簽一張 5 分鐘憑條**（`user_id, department, agent_id`），隨請求送 agent。
 - agent 用平台公鑰驗簽（`/.well-known/jwks.json`，https＋CSPKI 信任錨）；改一字即失效、外洩有界。
 - agent 任務內回呼平台（RAG 搜尋、trace、artifacts）**複用同一張憑條**；
