@@ -153,7 +153,7 @@ redesign 系列接在 legacy 數字鏈之後（`r1_0001` revises `0046`），保
 
 ## 7. 測試
 
-測試自帶 sqlite（`tests/conftest.py` 設 `DATABASE_URL=sqlite:///./.pytest-csp.db`，不碰 Postgres / 執行中容器），不需要先 export 任何環境變數：
+測試自帶 sqlite（`tests/conftest.py` 把 `DATABASE_URL` 指到 per-session 的臨時檔，session 結束即刪，不碰 Postgres / 執行中容器），不需要先 export 任何環境變數：
 
 ```bash
 python -m pytest services/csp/tests -q   # 從 repo 根目錄

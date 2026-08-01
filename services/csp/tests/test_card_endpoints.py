@@ -210,6 +210,12 @@ def card_login_enabled(monkeypatch):
 
 
 @pytest.fixture
+def card_login_disabled(monkeypatch):
+    """關閉功能旗標 —— 負向測試必須自己釘 precondition,不可依賴 ambient 預設。"""
+    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", False)
+
+
+@pytest.fixture
 def card_login_pending_default(monkeypatch):
     """同上但 ``CARD_INITIAL_OWNERS`` 為空 —— 所有人第一次刷卡都進 pending。"""
     monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
@@ -251,12 +257,16 @@ def _make_department(db, name: str = "資通所人工智慧組") -> int:
 # ── disabled-by-default guard ──────────────────────────────────────────────────
 
 
-def test_challenge_returns_404_when_card_login_disabled(client: TestClient):
+def test_challenge_returns_404_when_card_login_disabled(
+    client: TestClient, card_login_disabled
+):
     resp = client.get("/api/auth/card/challenge")
     assert resp.status_code == 404
 
 
-def test_verify_returns_404_when_card_login_disabled(client: TestClient):
+def test_verify_returns_404_when_card_login_disabled(
+    client: TestClient, card_login_disabled
+):
     resp = client.post(
         "/api/auth/card/verify",
         json={"challenge_token": "x", "signature": "y"},
@@ -689,7 +699,9 @@ def test_departments_endpoint_lists_only_active(
     assert all(set(r.keys()) == {"id", "name"} for r in rows)
 
 
-def test_departments_endpoint_404_when_card_login_disabled(client: TestClient):
+def test_departments_endpoint_404_when_card_login_disabled(
+    client: TestClient, card_login_disabled
+):
     """同 challenge / verify,feature off 時 endpoint 假裝不存在。"""
     resp = client.get("/api/auth/card/registration/departments")
     assert resp.status_code == 404
