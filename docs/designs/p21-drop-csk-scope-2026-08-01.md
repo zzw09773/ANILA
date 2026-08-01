@@ -117,7 +117,11 @@ P2.1 已經關掉。氣隙內網、agent 院內自部署,為拿掉一顆低權�
 
 ## 七、開工前要先確認的兩件（掃描標 UNVERIFIED）
 
-1. 活體 DB `select count(*) from agents / agent_credentials`——「改契約免費」建立在真的是零上。
+1. ~~活體 DB `select count(*) from agents / agent_credentials`~~ —— **08-01 已查:`agents=1`、
+   `agent_credentials=0`**(本機 `-p anila-restart`)。注意數字**不是原本假設的「兩個都是零」**:
+   確實有一個註冊過的 agent,但**它沒有任何憑證**。
+   「改契約免費」的真正依據是後者——**沒有任何現場 `.env` 需要遷移**,所以前提成立;
+   但「零 agent」這句話本身是錯的,拆發行面時要記得那一列還在,別讓它變成孤兒。
 2. 422 修復（f7f91b86）後 `anila-core register` 的真實 round-trip 沒實測過——開工先跑一次。
 
 ## 八、順帶發現（已處理）
