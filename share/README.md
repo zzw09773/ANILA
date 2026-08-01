@@ -1,8 +1,9 @@
 # share/
 
-Runtime data served by the ANILA nginx container at `/static/*` and
-`/uploads/*`. Both subdirectories are git-ignored — the contents are
-workflow-specific assets and user uploads, not source code.
+Runtime data for the ANILA nginx container. `/static/*` is served publicly;
+`/uploads/` is allowlisted so only `/uploads/flux/*` is reachable (everything
+else under `/uploads/` returns 404). Both subdirectories are git-ignored —
+the contents are workflow-specific assets and user uploads, not source code.
 
 ## Layout
 
@@ -14,12 +15,13 @@ share/
 │   ├── icons/           ← service icons (mlsteam.png / gitlab.png / ...); brought in
 │   │                      from the prod source by the "Migrating" step below, empty initially
 │   └── ...              ← any other static assets the workflows reference
-├── uploads/   # served at /uploads/* (read-write)
+├── uploads/   # bind-mounted rw; nginx only serves /uploads/flux/*
 │   ├── ingestion/      ← raw upload blobs + parse artifacts from CSP; mounted as the
 │   │                     ingestion-worker UPLOAD_DIR (/var/anila/ingestion-uploads);
-│   │                     captioned images land in anila-images/<doc_id>/
-│   ├── flux/           ← FLUX image-generation output cache
-│   └── mock_11406/     ← finance sample xlsx test data
+│   │                     captioned images land in anila-images/<doc_id>/;
+│   │                     NOT served by nginx (404)
+│   ├── flux/           ← FLUX image-generation output cache (PUBLIC_URL_PREFIX)
+│   └── mock_11406/     ← finance sample xlsx test data (NOT served)
 ├── pki/                # certificate / key material (runtime; contents git-ignored)
 └── codeserver-sandbox/ # code-server sandbox workspace (git-ignored; only .gitkeep kept)
 ```
@@ -32,8 +34,8 @@ share/
   put anything you can't afford to lose; back up out-of-band.
 
 nginx (`infra/nginx/anila.conf`) serves these: `/static/` uses `try_files =404`
-with `expires 1y, immutable`; `/uploads/` uses `expires 1h`. Missing assets return 404
-(no SPA fallback).
+with `expires 1y, immutable`; `/uploads/flux/` uses `expires 1h`; bare
+`/uploads/` and other subtrees return 404 (no SPA fallback).
 
 ## Migrating from My-OpenAI-Frontend
 
