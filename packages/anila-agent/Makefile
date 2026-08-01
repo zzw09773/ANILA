@@ -49,8 +49,8 @@ IMAGE ?= anila-agent
 TAG ?= 1.0.0
 
 .PHONY: docker-build
-docker-build: ## build 開發環境 image（外網/有網路環境）
-	docker build -t $(IMAGE):$(TAG) .
+docker-build: ## build 開發環境 image（外網/有網路環境；context=repo root 以 path-pin anila-core）
+	docker build -f Dockerfile -t $(IMAGE):$(TAG) ../..
 
 .PHONY: docker-save
 docker-save: ## build + 存成 tar，供搬進 air-gap 內網 / MLSteam

@@ -5,11 +5,13 @@
     GET  /v1/models            manifest（model_type=agent ← CSP 註冊標記）
     POST /v1/chat/completions   主入口——CSP Router 把對話轉發到這裡
 
-認證（見 serving.auth）：驗 X-CSP-Service-Token（csk-，fail-closed），驗過才信
-X-ANILA-User-*；不驗使用者 JWT（Router 不轉發）。
+認證（P2.1，見 serving.auth）：驗 ``Authorization: Bearer <dispatch JWT>``
+（RS256、JWKS），身分取自已驗證 claims（user_id / department / agent_id）。
+相關聯標頭 ``X-ANILA-Task-Id`` / ``X-ANILA-Trace-Id`` 仍可讀。
 
-RAG：走 CSP HTTP search（無直連 DB），以 build_agent(retriever=...) 注入。S-Q1 一把
-金鑰：search 重用 agent 自己的 csk-（CSP_SEARCH_TOKEN 未設時退回 CSP_SERVICE_TOKEN）。
+RAG：走 CSP HTTP search（無直連 DB），以 build_agent(retriever=...) 注入。
+出向 search / trace 仍可用 agent 自己的 csk-（CSP_SEARCH_TOKEN 未設時退回
+CSP_SERVICE_TOKEN）——那是 agent→CSP 方向（W2），與入向派工驗章分開。
 
 跑：``uvicorn anila_agent.serving.service_wrapper:app --host 0.0.0.0 --port 8200``
 """
@@ -39,7 +41,13 @@ from anila_agent.retrieval.csp_http import CspHttpRetriever
 from anila_agent.runtime.agent_factory import build_agent
 from anila_agent.runtime.model import build_model
 from anila_agent.runtime.run import run_once, run_streamed
-from anila_agent.serving.auth import trusted_user_identity, verify_service_token
+from anila_agent.serving.auth import (
+    DispatchAuthError,
+    configure_jwks_client,
+    get_jwks_client,
+    identity_from_claims,
+    verify_dispatch_authorization,
+)
 from anila_agent.tracing import (
     OUTPUT,
     TraceEmitter,
@@ -54,13 +62,13 @@ MODEL_NAME = os.environ.get("ANILA_AGENT_NAME", "anila-agent")
 COLLECTION_ID = int(os.environ.get("ANILA_COLLECTION_ID", "0") or "0")
 CSP_BASE_URL = os.environ.get("CSP_BASE_URL", "https://172.16.120.35")
 SSL_VERIFY = os.environ.get("ANILA_SSL_VERIFY", "1").lower() not in ("0", "false", "no", "off")
-# Inbound: Router 的 X-CSP-Service-Token 必須等於這個（agent 的 csk-）。
-# 空 → 預設拒絕（fail-closed）；prod 必設。
+# Outbound (agent→CSP search/trace) still uses the agent's csk- until W2.
+# Inbound dispatch auth is JWKS-verified Bearer JWT (P2.1) — not this token.
 CSP_SERVICE_TOKEN = os.environ.get("CSP_SERVICE_TOKEN", "")
-# 明確的本地開發 opt-out：未設 token 時允許 inbound。否則未設 token 的 agent 拒絕每次派工。
-ALLOW_NO_SERVICE_TOKEN = os.environ.get("ANILA_ALLOW_NO_SERVICE_TOKEN", "") == "1"
 # S-Q1 一把金鑰：search 重用 agent 自己的 csk-；CSP_SEARCH_TOKEN 為可選覆寫。
 CSP_SEARCH_TOKEN = os.environ.get("CSP_SEARCH_TOKEN", "") or CSP_SERVICE_TOKEN
+# CSPKI CA bundle for JWKS HTTPS fetch. Never SSL_CERT_FILE.
+ANILA_CA_FILE = (os.environ.get("ANILA_CA_FILE") or "").strip() or None
 # 檢索分數門檻；與 CLI from_env 路徑讀同一個 env（ANILA_CSP_MIN_SCORE），預設 0.25。
 try:
     CSP_MIN_SCORE = float(os.environ.get("ANILA_CSP_MIN_SCORE", "0.25") or "0.25")
@@ -116,18 +124,18 @@ _MODEL: Any = None  # 共用的 OpenAIChatCompletionsModel（避免每請求新�
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _CONFIG, _MODEL
+    # Bind JWKS client to this process's platform URL + CA (fail-closed if blank).
+    jwks = configure_jwks_client(csp_base_url=CSP_BASE_URL, ca_file=ANILA_CA_FILE)
+    if not jwks.configured:
+        logger.error(
+            "CSP_BASE_URL unset/blank — inbound dispatch JWT verification cannot "
+            "reach JWKS; every /v1/chat/completions will be REJECTED (fail-closed)."
+        )
     if not CSP_SERVICE_TOKEN:
-        if ALLOW_NO_SERVICE_TOKEN:
-            logger.warning(
-                "CSP_SERVICE_TOKEN unset + ANILA_ALLOW_NO_SERVICE_TOKEN=1 — inbound "
-                "service-token verification DISABLED (local dev only)."
-            )
-        else:
-            logger.error(
-                "CSP_SERVICE_TOKEN unset — every dispatch will be REJECTED (401, "
-                "fail-closed). Set the agent's csk-, or ANILA_ALLOW_NO_SERVICE_TOKEN=1 "
-                "for local dev only."
-            )
+        logger.warning(
+            "CSP_SERVICE_TOKEN unset — outbound CSP search/trace will fail until set "
+            "(inbound dispatch auth no longer uses this token)."
+        )
     if not SSL_VERIFY:
         # 自簽憑證時翻 litellm 的全域 ssl_verify（僅在裝了 [litellm] extra 時）。
         try:
@@ -283,29 +291,24 @@ async def _sse_stream(
 @app.post("/v1/chat/completions")
 async def chat_completions(
     req: ChatCompletionRequest,
-    x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
-    x_anila_user_id: str | None = Header(default=None, alias="X-ANILA-User-Id"),
-    x_anila_user_email: str | None = Header(default=None, alias="X-ANILA-User-Email"),
-    x_anila_user_groups: str | None = Header(default=None, alias="X-ANILA-User-Groups"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
     x_anila_trace_id: str | None = Header(default=None, alias="X-ANILA-Trace-Id"),
     x_anila_task_id: str | None = Header(default=None, alias="X-ANILA-Task-Id"),
 ) -> Any:
-    allowed = verify_service_token(
-        x_csp_service_token, CSP_SERVICE_TOKEN, allow_unset=ALLOW_NO_SERVICE_TOKEN
-    )
-    if not allowed:
+    try:
+        claims = await verify_dispatch_authorization(
+            authorization, jwks_client=get_jwks_client()
+        )
+    except DispatchAuthError as exc:
         raise HTTPException(
             status_code=401,
             detail=(
-                "missing or invalid X-CSP-Service-Token. The CSP Router dispatch sends "
-                "the agent's csk- automatically; for a direct local test send the header "
-                "(or set ANILA_ALLOW_NO_SERVICE_TOKEN=1 to disable)."
+                "missing or invalid dispatch token. CSP Router sends "
+                "Authorization: Bearer <short-lived JWT>; agent verifies it "
+                f"against platform JWKS ({exc})."
             ),
-        )
-    # 驗過 service token 後才信任 X-ANILA-User-* 身分。
-    identity = trusted_user_identity(
-        allowed, user_id=x_anila_user_id, email=x_anila_user_email, groups=x_anila_user_groups
-    )
+        ) from exc
+    identity = identity_from_claims(claims)
 
     user_prompt = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
     if not user_prompt:
@@ -336,12 +339,10 @@ async def chat_completions(
         # 包一層 → search 前後送 agent.retrieval span（掛在工具 span 下）。
         retriever = TracingRetriever(retriever, emitter)
     # 重用 lifespan 建好的共用 model client；掛 AuditHooks 做 per-user 稽核/計量。
-    # 多租戶記憶：以 CSP 轉發的 X-ANILA-User-Id（退回 email）當分艙 key，記憶不跨用戶。
-    # 必須 strip 後再判斷——全空白 id 是 truthy，靠 `or` 會繞過 email 並塌縮成共用桶。
+    # 多租戶記憶：以已驗證 JWT claim 的 user_id 當分艙 key，記憶不跨用戶。
     # memory_requires_tenant=True：此為多人共用部署，無可辨識身分一律不給記憶。
     uid = (identity.get("user_id") or "").strip()
-    email = (identity.get("email") or "").strip()
-    tenant = uid or email or None
+    tenant = uid or None
     assembled = build_agent(
         _CONFIG,
         retriever=retriever,

@@ -16,6 +16,11 @@ dependencies = [
     "httpx>=0.27",
     "prompt-toolkit>=3.0",
     "rich>=13.0",
+    # P2.1 inbound dispatch JWT: serving.auth imports anila-core's verifier
+    # (JWKS + RS256). cryptography is also a direct dep so install cannot
+    # silently drop the RSA verify path if a transitive edge moves.
+    "anila-core>=0.14",
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]

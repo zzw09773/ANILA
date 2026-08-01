@@ -15,16 +15,20 @@ set -euo pipefail
 IMAGE="${ANILA_IMAGE:-anila-agent}"
 TAG="${ANILA_TAG:-1.0.0}"
 REF="${IMAGE}:${TAG}"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Dockerfile 需 path-pin in-repo anila-core → build context = repo root
+PKG="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$PKG/../.." && pwd)"
 
 cmd="${1:-save}"
 case "$cmd" in
   build)
-    docker build ${DOCKER_TARGET:+--target "$DOCKER_TARGET"} -t "$REF" "$ROOT"
+    docker build ${DOCKER_TARGET:+--target "$DOCKER_TARGET"} \
+      -f "$PKG/Dockerfile" -t "$REF" "$ROOT"
     ;;
   save)
-    docker image inspect "$REF" >/dev/null 2>&1 || docker build -t "$REF" "$ROOT"
-    out="${ROOT}/${IMAGE}_${TAG}.tar.gz"
+    docker image inspect "$REF" >/dev/null 2>&1 || \
+      docker build -f "$PKG/Dockerfile" -t "$REF" "$ROOT"
+    out="${PKG}/${IMAGE}_${TAG}.tar.gz"
     echo "→ saving ${REF} ..."
     docker save "$REF" | gzip > "$out"
     sz="$(du -h "$out" | cut -f1)"

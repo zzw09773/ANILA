@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -28,7 +29,7 @@ from ..memory.short_term import Session, SqliteSession
 from ..models.message import Usage, UserMessage
 from ..providers.base import Provider
 from ..router.tool_router import ToolRegistry
-from .middleware.auth import ApiKeyMiddleware
+from .middleware.dispatch_auth import DispatchIdentityMiddleware
 from .events import (
     ErrorPayload,
     EventType,
@@ -135,9 +136,10 @@ def create_app(
                              tools by default; callers wire whatever
                              they need.
         away_summary_fn:     Optional async function for away summary.
-        api_key:             Bearer token for ApiKeyMiddleware (None = no
-                             auth in production; use api_dev_mode for local).
-        api_dev_mode:        Disable auth when True.
+        api_key:             Deprecated (P2.1). Kept for call-site compat;
+                             inbound auth is now the CSP dispatch JWT via
+                             JWKS, not a static shared secret.
+        api_dev_mode:        Disable auth when True (explicit local bypass).
         session_db_path:     Override SQLite path for the default Session
                              adapter. Defaults to ``settings.session_db_path``.
                              Ignored when ``session_factory`` is provided.
@@ -146,18 +148,21 @@ def create_app(
                              None, a SqliteSession on ``session_db_path``
                              is used.
     """
+    _ = api_key  # P2.1: static shared-secret inbound auth retired; kept for call-site compat
     app = FastAPI(
         title="ANILA Core",
         description="Agent Runtime — query loop, tools, memory, compact",
         version="0.5.0",
     )
 
-    # Auth middleware. The ``api_key`` kwarg is the legacy name; the
-    # underlying ``CspServiceTokenMiddleware`` was renamed but kept
-    # back-compat aliased. Pass via ``service_token=`` to match the
-    # current signature.
+    # P2.1: verify short-lived CSP dispatch JWT against platform JWKS.
+    # JWKS URL derived from settings.csp_base_url / CSP_BASE_URL; CA from
+    # ANILA_CA_FILE (never SSL_CERT_FILE). Blank config → fail-closed.
     app.add_middleware(
-        ApiKeyMiddleware, service_token=api_key, dev_mode=api_dev_mode
+        DispatchIdentityMiddleware,
+        csp_base_url=settings.csp_base_url,
+        ca_file=(os.environ.get("ANILA_CA_FILE") or "").strip() or None,
+        dev_mode=api_dev_mode,
     )
 
     resolved_db_path = session_db_path or settings.session_db_path

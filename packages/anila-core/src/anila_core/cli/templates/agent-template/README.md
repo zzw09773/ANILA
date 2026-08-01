@@ -11,27 +11,45 @@ cp .env.example .env
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Run locally (dev mode, no auth)
+# 3. Run locally (dev mode, explicit auth bypass)
 API_DEV_MODE=true uvicorn agent:app --reload --port 9100
 
 # 4. Test the health endpoint
 curl http://localhost:9100/health
 
-# 5. Send a test query
+# 5. Send a test request (dev mode only — production needs a Bearer dispatch JWT)
 curl -X POST http://localhost:9100/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"hello"}],"stream":false}'
 ```
 
+## Inbound auth (P2.1)
+
+CSP Router→agent dispatch carries a short-lived RS256 JWT:
+
+```
+Authorization: Bearer <jwt>
+```
+
+This template mounts `DispatchIdentityMiddleware`, which verifies the JWT
+against `{CSP_BASE_URL}/.well-known/jwks.json` (`iss=anila-csp`,
+`aud=anila-agent`). Identity (`user_id` / `department` / `agent_id`) comes
+from verified claims — **not** from plaintext `X-ANILA-User-*` headers.
+
+Unset / blank `CSP_BASE_URL` (no JWKS) → every non-public request is
+**rejected** (fail-closed). There is no open door when auth is misconfigured.
+
+For a single-file offline copy of the verifier (stdlib + cryptography), see
+`anila_core/contrib/anila_verify.py`.
+
 ## Register with ANILA Platform
 
 Recommended: register from the CSP governance console (治理中心) —
-`/developer/agents` → **register** (two-step wizard). Step 1 takes the agent details (name / endpoint / base model /
-optional RAG collection). Step 2 issues this agent's single `csk-` service token
-and shows a pre-filled `.env` snippet; paste `CSP_SERVICE_TOKEN=csk-...` into your
-`.env`, start the agent, then click **test connection** to confirm the token is
-wired (CSP probes your endpoint with the csk-). See
-`docs/guides/developer-guide.md`.
+`/developer/agents` → **register** (two-step wizard). Step 1 takes the agent
+details (name / endpoint / base model / optional RAG collection). After the
+agent is approved, CSP dispatches with a Bearer JWT; point `CSP_BASE_URL` at
+the platform and (on CSPKI intranet) set `ANILA_CA_FILE` to the CA bundle.
+See `docs/guides/developer-guide.md`.
 
 CLI alternative (same registration, no wizard):
 
@@ -45,9 +63,8 @@ Or fill in `anila.yaml` first, then run:
 anila-core register
 ```
 
-The `csk-` is one key: it both verifies inbound Router→agent dispatch and
-authorises this agent's RAG search (CSP scopes it to the bound collection).
-Unset `CSP_SERVICE_TOKEN` → the agent rejects all dispatch (fail-closed).
+Optional: an outbound `csk-` (`CSP_SERVICE_TOKEN`) may still be issued for
+agent→CSP callbacks (RAG search). It is **not** the inbound dispatch credential.
 
 ## Implement Your Logic
 
@@ -67,5 +84,5 @@ See `examples/` in the `anila-core` repo or [`anila-agent/`](../../../../../../a
 | **A RAG agent** (搜文件 + 引用來源) | [`anila-agent/`](../../../../../../anila-agent/) — official template |
 | **A non-RAG agent** (workflow / external API / custom logic) | **This template** (`anila-core init my-agent`) — minimal starter |
 
-Both register to the CSP platform (services/csp) the same way — the `/developer/agents` register
-wizard issues one `csk-` into `CSP_SERVICE_TOKEN` (see `.env.example`).
+Both register to the CSP platform the same way; inbound dispatch auth is the
+JWKS-verified Bearer JWT described above.
