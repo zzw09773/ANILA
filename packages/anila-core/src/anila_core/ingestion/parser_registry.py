@@ -122,10 +122,18 @@ _UTF16_NON_ASCII_MESSAGE = (
 # file" would be a lie. Name the limit instead (I3, round 16). This is the
 # refusal that space-free two-byte-script runs and heavy combining-mark
 # prose now receive, after the two round-15 exemptions were removed.
+# ⚠ Owner-chosen wording (2026-08-02). The first draft said the platform
+# supports "Traditional Chinese and English", which is NARROWER than what
+# this code accepts — Japanese, Korean, Thai and spaced Cyrillic/Greek all
+# still pass. Understating is still a claim that does not match behaviour;
+# it just fails in the direction of people not bothering to try. Describe
+# the SHAPES that fail rather than enumerating supported languages: any
+# such list goes stale the moment a threshold moves, and is wrong again.
 _UNSUPPORTED_TEXT_CONTENT_MESSAGE = (
-    "此檔案可解讀為 UTF-8，但內容不在本平台支援的文字範圍內"
-    "（目前支援以繁體中文、英文為主的文件）。"
-    "請改以中文或英文提供內容後再上傳。"
+    "此檔案可解讀為 UTF-8，但內容無法可靠解讀為文字。"
+    "本平台支援中文、英文、日文、韓文等一般文件；"
+    "少數文字系統，以及大量使用組合符號或完全不含空白的長段落，目前可能無法解讀。"
+    "請確認檔案編碼，或改以中文／英文提供內容後再上傳。"
 )
 # C0 always exempt from _control_ratio. ESC / FF / VT are NOT blanket-
 # exempt: lone ESC pads binaries and bills invisible tokens; FF/VT are
