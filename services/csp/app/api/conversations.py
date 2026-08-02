@@ -674,6 +674,7 @@ def append_message(
 ):
     # parent_id explicitly supplied (including intentional fork) → branchable gate.
     explicit = "parent_id" in body.model_fields_set and body.parent_id is not None
+    # §6-3 zh-TW 正規化在 conversation_service 共用落庫邊界（append/branch/update）
     msg = svc.append_message(
         db, conv_id, current_user,
         role=body.role,

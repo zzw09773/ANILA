@@ -71,6 +71,7 @@ from anila_core.security import (
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.user_memory import ConversationMemoryChunk, UserFact
+from app.services import zh_normalize_service
 from app.services.platform_embedding import resolve_platform_embedding
 from app.services.proxy.urls import join_upstream_path
 from app.services.proxy_service import _apply_gateway_auth
@@ -539,7 +540,11 @@ async def _write_chunk(
     Embed runs before any INSERT is staged so ``_embed``'s connection-release
     ``commit()`` cannot make a sibling chunk durable mid-pair.
     """
-    if not content.strip():
+    # §6-3：assistant chunk 在 embed／落庫前正規化（與 persist_turn 同一契約）
+    content, zh_changed = zh_normalize_service.prepare_message_content(role, content)
+    if message_id is not None:
+        zh_normalize_service.log_if_changed(message_id, zh_changed)
+    if not content or not content.strip():
         return
     embedding, source_model, native_dim = await _embed(db, content)
     _insert_chunk(
@@ -611,6 +616,14 @@ async def persist_turn(
     logged so a memory write failure can never propagate up to break
     the user-facing response.
     """
+    # §6-3：assistant 側在 embed／chunk 落庫前正規化（proxy 原文經此統一邊界）
+    assistant_message, zh_changed = zh_normalize_service.prepare_message_content(
+        "assistant", assistant_message,
+    )
+    if assistant_message_id is not None:
+        zh_normalize_service.log_if_changed(assistant_message_id, zh_changed)
+    if assistant_message is None:
+        assistant_message = ""
     db = SessionLocal()
     try:
         try:
