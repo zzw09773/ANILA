@@ -279,6 +279,83 @@ export function uploadAttachment(multipartRequest, file, { conversationId, messa
   return multipartRequest("/api/attachments", form);
 }
 
+/** GET /api/attachments/{reference_id}/meta — includes extract_status. */
+export function getAttachmentMeta(authRequest, referenceId) {
+  return authRequest(
+    `/api/attachments/${encodeURIComponent(referenceId)}/meta`,
+    { method: "GET" },
+  );
+}
+
+/** Terminal extract_status values from CSP (pending is non-terminal). */
+export const EXTRACT_TERMINAL_STATUSES = new Set([
+  "ok",
+  "unsupported",
+  "failed",
+  "too_large",
+]);
+
+/** zh-TW reasons shown on chips / banners (aligned with CSP prompt notices). */
+export const EXTRACT_STATUS_REASONS = {
+  unsupported: "不支援的檔案格式",
+  failed: "解析失敗",
+  too_large: "抽取文字超過儲存上限",
+};
+
+export function extractStatusReason(status, extractError) {
+  if (!EXTRACT_STATUS_REASONS[status]) return null;
+  // Per-status policy for extract_error (not a blanket rule):
+  // - `failed`: always the fixed zh-TW label. Backend exception text may
+  //   contain filesystem paths or module names and must never reach the UI.
+  // - `unsupported` / `too_large`: surface the backend's user-facing message
+  //   when present (fixed actionable set / storage-cap wording). Fall back
+  //   to the generic label when absent or blank.
+  if (status === "failed") return EXTRACT_STATUS_REASONS.failed;
+  if (
+    (status === "unsupported" || status === "too_large")
+    && typeof extractError === "string"
+    && extractError.trim()
+  ) {
+    return extractError.trim();
+  }
+  return EXTRACT_STATUS_REASONS[status];
+}
+
+/**
+ * Poll attachment meta until extract_status is terminal, or give up ~10s.
+ * On timeout / network blips: timedOut=true and status stays pending —
+ * caller must NOT treat that as a user-visible failure.
+ */
+export async function pollAttachmentExtractStatus(
+  fetchMeta,
+  referenceId,
+  {
+    // 0.5 + 1 + 2×4 ≈ 9.5s of backoff after each pending read.
+    delaysMs = [500, 1000, 2000, 2000, 2000, 2000],
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  } = {},
+) {
+  for (let i = 0; ; i++) {
+    try {
+      const meta = await fetchMeta(referenceId);
+      const status = meta?.extract_status || "pending";
+      if (EXTRACT_TERMINAL_STATUSES.has(status)) {
+        return {
+          status,
+          extractError: meta?.extract_error ?? null,
+          timedOut: false,
+        };
+      }
+    } catch {
+      // Stay quiet — a blip must not become a false failure banner.
+    }
+    if (i >= delaysMs.length) {
+      return { status: "pending", extractError: null, timedOut: true };
+    }
+    await sleep(delaysMs[i]);
+  }
+}
+
 // ── Handoffs ────────────────────────────────────────────────────────────────
 
 export function listHandoffs(authRequest) {
