@@ -203,7 +203,7 @@ class AgentRegisterRequest(BaseModel):
             "與 base_model_id 擇一即可"
         ),
     )
-    # RAG agents: collections this agent's csk- may search (P4.7 / S-Q1).
+    # RAG agents: collections this agent may search via dispatch JWT (P4.7 / S-Q1).
     # Prefer ``collection_ids`` (zero / one / several). Legacy ``collection_id``
     # is still accepted and expanded to a one-element set when the list is
     # omitted — one representation is derived from the other, never both
@@ -492,7 +492,7 @@ def _validate_collection_access_for_ids(
     """Every id must be usable by ``user`` under ``_require_collection_access``.
 
     Bind and search ask about the same subject: the agent runs as its
-    owner (csk- search principal = owner), so entitlement is the
+    owner (dispatch-JWT search principal = owner), so entitlement is the
     owner's — not the editor's. An admin may edit an agent but may only
     bind collections that owner could themselves search; otherwise the
     binding is inert at search time and bricks the owner's console save
@@ -615,7 +615,7 @@ def register_agent(
         base_model_name=request.base_model_name,
     )
 
-    # RAG agents: bind zero / one / several collections the csk- may search.
+    # RAG agents: bind zero / one / several collections the agent may search.
     # ``collection_ids`` wins; legacy ``collection_id`` expands to a singleton.
     # Validate the registering owner actually has access to each id.
     fields_set = request.model_fields_set

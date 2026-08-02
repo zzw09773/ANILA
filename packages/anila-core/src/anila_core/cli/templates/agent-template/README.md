@@ -65,8 +65,9 @@ Or fill in `anila.yaml` first, then run:
 anila-core register
 ```
 
-Optional: an outbound `csk-` (`CSP_SERVICE_TOKEN`) may still be issued for
-agent→CSP callbacks (RAG search). It is **not** the inbound dispatch credential.
+Agent→CSP callbacks (RAG search) reuse the inbound dispatch JWT
+(`Authorization: Bearer`). Do not set `CSP_SERVICE_TOKEN` / `csk-` —
+agent credential issuance is retired (P2.1).
 
 ## Implement Your Logic
 

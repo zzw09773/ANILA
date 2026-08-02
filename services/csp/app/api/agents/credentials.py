@@ -1,7 +1,20 @@
 """Per-agent credential endpoints + classification level setter.
 
-Split verbatim from the former single-module ``app/api/agents.py``
-(behavior-preserving refactor).
+P2.1 Task 2+4 (2026-08-02): agent-facing long-lived ``csk-`` / ``bsk-``
+issuance and the Tier-1 ``GET .../credentials/me`` poll target are
+retired (410). Dispatch identity is the 5-minute RS256 JWT; there is
+no remaining agent-side consumer that needs an agent-kind credential
+(runtime-config self-fetch is gone; ``GET /api/auth/revocations``
+rejects ``kind=agent``).
+
+Kept:
+  * ``POST /{id}/classification`` — unrelated to service tokens
+  * ``GET /{id}/credentials`` — admin inspection of any orphan rows
+  * ``DELETE /{id}/credentials/{cid}`` — admin revoke of orphans
+
+``service_clients`` issuance (``POST /api/service-clients/{id}/issue-static``)
+is a different surface and is untouched. Shared envelope / verify
+helpers in ``agent_credential_service`` remain for that path.
 """
 from datetime import datetime
 
@@ -10,7 +23,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.agent import Agent
 from app.models.agent_credential import AgentCredential
 from app.models.user import User
 from app.schemas.contracts.classification import ClassificationLevel
@@ -20,7 +32,6 @@ from app.services.auth_service import (
     get_current_user,
     is_admin_tier,
     require_admin,
-    verify_service_token,
 )
 from app.services.proxy_service import invalidate_agent_token_cache
 
@@ -35,6 +46,12 @@ from app.api.agents._common import (
 from app.schemas.base import ApiResponseModel
 
 router = APIRouter()
+
+_AGENT_CSK_RETIRED_DETAIL = (
+    "agent 長效 csk-/bsk- 憑證發行已廢止 (P2.1)。"
+    "派工身分改走 5 分鐘 RS256 JWT＋JWKS；"
+    "請見 docs/guides/developer-guide.md。"
+)
 
 
 class AgentClassificationUpdate(BaseModel):
@@ -123,23 +140,23 @@ def set_agent_classification(
     }
 
 
-# ── Sprint 8 X / Phase A — service token bootstrap & credentials ─────────────
+# ── Agent csk-/bsk- surface (retired P2.1 Task 2+4) ─────────────────────────
 #
-# Six new endpoints sit on top of the ``agent_credentials`` table:
+# Former endpoints (all now 410 except list/revoke):
 #
-#   POST /api/agents/{id}/issue-bootstrap        admin → bsk- token (one-shot)
-#   POST /api/agents/{id}/bootstrap              caller → exchange bsk- for csk-
-#   POST /api/agents/{id}/credentials/issue-static  admin (Phase F Tier 0)
-#   GET  /api/agents/{id}/credentials            admin → list active credentials
-#   POST /api/agents/{id}/credentials/{cid}/rotate  admin → rotate one credential
-#   DELETE /api/agents/{id}/credentials/{cid}    admin → revoke one credential
+#   POST /api/agents/{id}/issue-bootstrap
+#   POST /api/agents/{id}/bootstrap
+#   POST /api/agents/{id}/credentials/issue-static
+#   POST /api/agents/{id}/credentials/{cid}/rotate
+#   GET  /api/agents/{id}/credentials/me
 #
-# Plus one self-service endpoint for Tier 1 polling agents:
+# Admin cleanup still available:
 #
-#   GET /api/agents/{id}/credentials/me          agent (auth = service token)
+#   GET    /api/agents/{id}/credentials
+#   DELETE /api/agents/{id}/credentials/{cid}
 
 
-# ---- Schemas ---------------------------------------------------------------
+# ---- Schemas (kept for OpenAPI / re-exports; unused by 410 stubs) ----------
 
 
 class IssueBootstrapRequest(BaseModel):
@@ -245,6 +262,10 @@ def _resolve_credential(
     return cred
 
 
+def _raise_agent_csk_retired() -> None:
+    raise HTTPException(status_code=410, detail=_AGENT_CSK_RETIRED_DETAIL)
+
+
 # ---- Endpoints -------------------------------------------------------------
 
 
@@ -258,30 +279,8 @@ def issue_bootstrap(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Admin: mint a single-use bsk- token for an agent.
-
-    The plaintext is returned exactly once; CSP only stores its sha256
-    hash. Re-issuing while a previous bootstrap is still pending
-    invalidates the previous token.
-    """
-    from datetime import timedelta as _td
-
-    agent = _resolve_agent(db, agent_id)
-    plaintext = agent_credential_service.issue_bootstrap_token(
-        db,
-        agent=agent,
-        issuer=admin,
-        ttl=_td(seconds=payload.ttl_seconds),
-    )
-    db.commit()
-    db.refresh(agent)
-    return IssueBootstrapResponse(
-        bootstrap_token=plaintext,
-        expires_at=agent.bootstrap_token_expires_at,
-        agent_id=agent.id,
-        agent_name=agent.name,
-        endpoint_url=agent.endpoint_url,
-    )
+    """Retired: admin no longer mints agent ``bsk-`` tokens."""
+    _raise_agent_csk_retired()
 
 
 @router.post(
@@ -293,32 +292,8 @@ def bootstrap_exchange(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Public (token-gated): exchange a bsk- for a long-lived csk-.
-
-    Anyone holding a valid bsk- can call this — the bsk- itself is the
-    auth. ``endpoint_url`` must match the agent's registered URL to
-    stop a leaked token from being replayed against a different agent.
-    """
-    agent = _resolve_agent(db, agent_id)
-    try:
-        cred, plaintext = agent_credential_service.consume_bootstrap_token(
-            db,
-            agent=agent,
-            presented_token=payload.bootstrap_token,
-            presented_endpoint_url=payload.endpoint_url,
-            label=payload.label,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    db.commit()
-    db.refresh(cred)
-    invalidate_agent_token_cache(agent_id)
-    return BootstrapExchangeResponse(
-        service_token=plaintext,
-        credential_id=cred.id,
-        issued_at=cred.service_token_issued_at,
-        label=cred.label,
-    )
+    """Retired: ``bsk-`` → ``csk-`` exchange is gone."""
+    _raise_agent_csk_retired()
 
 
 @router.post(
@@ -332,35 +307,12 @@ def issue_static_credential(
     current_user: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
-    """Owner (or admin) direct-issues a service token (``csk-``), no bootstrap.
+    """Retired: direct agent ``csk-`` minting is gone.
 
-    Skips the two-step ``bsk-`` → ``csk-`` bootstrap exchange: the agent
-    owner mints one long-lived ``csk-`` directly and pastes it into the
-    agent once — no bootstrap token to obtain, exchange, or swap out.
-
-    The approval gate is unchanged: a ``pending`` agent still isn't routed
-    until an admin approves it, so issuing a token early grants no routing.
-    A non-admin may only issue for an agent they own. No automatic
-    rotation; rotate periodically via the rotate endpoint.
+    Platform-internal ``POST /api/service-clients/{id}/issue-static`` is
+    a different endpoint and still works.
     """
-    agent = _resolve_agent(db, agent_id)
-    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="無權限為此 Agent 發行憑證")
-    cred, plaintext = agent_credential_service.issue_static_credential(
-        db,
-        agent=agent,
-        issuer=current_user,
-        label=payload.label,
-    )
-    db.commit()
-    db.refresh(cred)
-    invalidate_agent_token_cache(agent_id)
-    return BootstrapExchangeResponse(
-        service_token=plaintext,
-        credential_id=cred.id,
-        issued_at=cred.service_token_issued_at,
-        label=cred.label,
-    )
+    _raise_agent_csk_retired()
 
 
 @router.get("/{agent_id}/credentials", response_model=list[CredentialResponse])
@@ -369,7 +321,11 @@ def list_credentials(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Admin: list all credentials (active + revoked) for an agent."""
+    """Admin: list all credentials (active + revoked) for an agent.
+
+    Issuance is retired; this remains so an admin can confirm the table
+    is empty (or revoke any unexpected orphan row).
+    """
     _resolve_agent(db, agent_id)
     rows = (
         db.query(AgentCredential)
@@ -392,31 +348,8 @@ def rotate_credential(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Admin: rotate one credential. Returns the new plaintext (one-shot).
-
-    Old token stays valid for ``grace_seconds`` afterwards via
-    ``service_token_previous_*`` so streaming SSE doesn't drop.
-    """
-    from datetime import timedelta as _td
-
-    cred = _resolve_credential(db, agent_id, credential_id)
-    if not cred.is_active:
-        raise HTTPException(status_code=400, detail="無法輪替已撤銷的 credential")
-    plaintext = agent_credential_service.rotate_agent_credential(
-        db,
-        credential=cred,
-        actor=admin,
-        grace=_td(seconds=payload.grace_seconds),
-    )
-    db.commit()
-    db.refresh(cred)
-    invalidate_agent_token_cache(agent_id)
-    return BootstrapExchangeResponse(
-        service_token=plaintext,
-        credential_id=cred.id,
-        issued_at=cred.service_token_rotated_at or cred.service_token_issued_at,
-        label=cred.label,
-    )
+    """Retired: rotating an agent credential would mint a new ``csk-``."""
+    _raise_agent_csk_retired()
 
 
 @router.delete("/{agent_id}/credentials/{credential_id}")
@@ -427,7 +360,7 @@ def revoke_credential(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Admin: revoke a credential immediately (no grace window)."""
+    """Admin: revoke a leftover credential immediately (no grace window)."""
     cred = _resolve_credential(db, agent_id, credential_id)
     agent_credential_service.revoke_agent_credential(
         db,
@@ -441,24 +374,13 @@ def revoke_credential(
 
 
 @router.get("/{agent_id}/credentials/me", response_model=CredentialResponse)
-def get_my_credential(
-    agent_id: int,
-    db: Session = Depends(get_db),
-    identity: agent_credential_service.CallerIdentity | None = Depends(verify_service_token),
-):
-    """Phase F (Tier 1): agent self-introspection.
+def get_my_credential(agent_id: int):
+    """Retired (Task 2): Tier-1 rotation-detection poll target.
 
-    Authenticates with the agent's own service token; returns the
-    matching credential row's metadata. Used by polling-style agents
-    that don't run anila-core middleware to detect when their token
-    was rotated by admin (so they can fetch the new one out-of-band).
-    The plaintext token itself is NOT returned — agents must already
-    hold it.
+    Premise check (2026-08-02): the only Q19 justifications for an
+    agent-kind ``csk-`` were runtime-config self-fetch (removed) and a
+    revocation list (never built agent-side; the live endpoint rejects
+    ``kind=agent``). No in-tree caller. Retiring rather than scoping to
+    bootstrap-tier agents — bootstrap itself is also 410.
     """
-    if identity is None or identity.kind != "agent" or identity.agent_id != agent_id:
-        raise HTTPException(
-            status_code=403,
-            detail="此 endpoint 只能由 agent 自身的 service token 呼叫",
-        )
-    cred = _resolve_credential(db, agent_id, identity.credential_id)
-    return _serialize_credential(cred)
+    _raise_agent_csk_retired()

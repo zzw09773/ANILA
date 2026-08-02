@@ -7,7 +7,7 @@ Usage:
                         [--runtime-type TYPE] [--classification-level LEVEL]
                         [--version VER]
     anila-core status [--csp URL] [--username USER] [--name NAME | --id ID | --all]
-    anila-core agent bootstrap --csp-url URL --bootstrap-token bsk- --agent-id N --endpoint-url URL
+    anila-core agent bootstrap …   # RETIRED (P2.1) — exits 1
     anila-core --help
 """
 
@@ -30,7 +30,7 @@ Commands:
   init       Scaffold a new ANILA agent project
   register   Register an agent on the ANILA CSP platform
   status     Check agent registration / approval status
-  agent      Manage agent service-token credentials (bootstrap)
+  agent      RETIRED — former csk-/bsk- bootstrap (P2.1); use dispatch JWT
 
 Run `anila-core <command> --help` for details on each command.
 """
