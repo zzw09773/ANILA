@@ -62,6 +62,7 @@ import {
   listShares as apiListShares,
   revokeShare as apiRevokeShare,
   uploadAttachment as apiUploadAttachment,
+  getAttachmentMeta as apiGetAttachmentMeta,
   createHandoff as apiCreateHandoff,
   listAgentFunctions as apiListAgentFunctions,
   getUiSettings,
@@ -2690,6 +2691,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           conversationId:
                             typeof selectedConvId === "number" ? selectedConvId : undefined,
                         })
+                      }
+                      onFetchAttachmentMeta={(referenceId) =>
+                        apiGetAttachmentMeta(authRequest, referenceId)
                       }
                     />
                     <div style={{

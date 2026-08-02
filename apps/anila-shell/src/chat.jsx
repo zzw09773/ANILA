@@ -64,6 +64,10 @@ import {
   IconMic,
 } from "./icons.jsx";
 import { useAsrInput, appendTranscript } from "./asr/useAsrInput.js";
+import {
+  extractStatusReason,
+  pollAttachmentExtractStatus,
+} from "./runtime/conversations.js";
 import { BUILTIN_FOLDER_IDS, detectPII } from "./data.jsx";
 import {
   AuditWatermark,
@@ -1325,10 +1329,47 @@ export const COMPOSER_LINE_HEIGHT = 22;
 // 超過幾行才開始捲動。用「行」不用像素:8 × 22 = 176px,約等於原本的 200px 上限,
 // 但保證上限剛好切在行與行之間。
 export const COMPOSER_MAX_ROWS = 8;
+// File picker accept list — keep in sync with CSP text/code extractors.
+export const COMPOSER_FILE_ACCEPT = [
+  "image/*",
+  ".pdf",
+  ".txt",
+  ".md",
+  ".json",
+  ".py",
+  ".csv",
+  ".tsv",
+  ".log",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".ini",
+  ".xml",
+  ".svg",
+  ".sh",
+  ".sql",
+  ".js",
+  ".ts",
+  ".jsx",
+  ".tsx",
+  ".java",
+  ".go",
+  ".rs",
+  ".c",
+  ".cpp",
+  ".h",
+  ".rb",
+  ".php",
+].join(",");
+
+const EXTRACT_FAIL_STATUSES = new Set(["unsupported", "failed", "too_large"]);
+
 // `onUpload(file) → Promise<AttachmentOut>` is optional. When provided, picked
 // files are uploaded to /api/attachments and the returned reference_id is
 // attached to the message. When absent, files are tracked locally only (legacy
 // behaviour kept for storyboard / static rendering tests).
+// `onFetchAttachmentMeta(referenceId)` polls extract_status after upload so a
+// failed extraction is visibly signaled (pending → warning chip + banner).
 export const Composer = ({
   onSend,
   disabled,
@@ -1338,6 +1379,9 @@ export const Composer = ({
   placeholder,
   footer,
   onUpload,
+  onFetchAttachmentMeta,
+  // Test hook: shorten / stub poll backoff (production leaves default).
+  pollExtractOptions,
   // Stop generation:對話串流中時送出鈕變停止鈕。
   streaming = false,
   onStop,
@@ -1374,6 +1418,12 @@ export const Composer = ({
   const [caret, setCaret] = useState(0);
   const [mentionIdx, setMentionIdx] = useState(0);
   const taRef = useRef(null);
+  // Sync membership of composer attachments. Banner/chip finalization must
+  // NOT read liveness back out of a setAtts updater — under concurrent polls
+  // React may defer the updater, leaving an outer flag stale (N1).
+  const liveRefs = useRef(new Set());
+  const liveUploadIds = useRef(new Set());
+  const uploadIdSeq = useRef(0);
   const [mode, setMode] = useState(redactionMode);
 
   const piiHits = useMemo(() => detectPII(text), [text]);
@@ -1497,6 +1547,8 @@ export const Composer = ({
       explicitAgents: mentionParse.explicitAgents,
     });
     setText("");
+    liveRefs.current.clear();
+    liveUploadIds.current.clear();
     setAtts([]);
     if (draftKey && typeof sessionStorage !== "undefined") sessionStorage.removeItem(draftKey);
     // 清空後縮回一行由 text 的 layout effect 負責,不需要再補一次。
@@ -1555,16 +1607,32 @@ export const Composer = ({
     if (!picked.length) return;
 
     // Optimistically add a placeholder so the chip appears while uploading.
-    const placeholders = picked.map((f) => ({
-      name: f.name,
-      kind: (f.type || "").startsWith("image/") ? "image" : "file",
-      size: f.size,
-      uploading: Boolean(onUpload),
-    }));
-    setAtts((a) => [...a, ...placeholders]);
+    // Client uploadId tracks liveness before referenceId exists.
+    const batch = picked.map((f) => {
+      const uploadId = `u-${++uploadIdSeq.current}`;
+      liveUploadIds.current.add(uploadId);
+      return {
+        uploadId,
+        file: f,
+        placeholder: {
+          uploadId,
+          name: f.name,
+          kind: (f.type || "").startsWith("image/") ? "image" : "file",
+          size: f.size,
+          uploading: Boolean(onUpload),
+          extractStatus: null,
+          extractPolling: false,
+          extractUncertain: false,
+          extractReason: null,
+        },
+      };
+    });
+    setAtts((a) => [...a, ...batch.map((b) => b.placeholder)]);
     if (!onUpload) return;
 
-    for (const file of picked) {
+    // Upload every file without waiting on any extraction poll. Each file's
+    // poll runs independently and lands on its chip by referenceId.
+    await Promise.all(batch.map(async ({ uploadId, file }) => {
       try {
         // Read image bytes as data URL so the LLM can be given the image
         // inline (OpenAI vision format). Skipped for non-images to keep
@@ -1579,26 +1647,94 @@ export const Composer = ({
           });
         }
         const result = await onUpload(file);
+        if (!liveUploadIds.current.has(uploadId)) return;
+        const referenceId = result.reference_id;
+        if (referenceId) liveRefs.current.add(referenceId);
+        liveUploadIds.current.delete(uploadId);
         setAtts((list) =>
           list.map((a) =>
-            a.name === file.name && a.uploading
+            a.uploadId === uploadId
               ? {
+                  uploadId,
                   name: result.filename || file.name,
                   kind: (result.content_type || file.type || "").startsWith("image/") ? "image" : "file",
                   size: result.size_bytes || file.size,
-                  referenceId: result.reference_id,
+                  referenceId,
                   contentType: result.content_type,
                   dataUrl,
                   uploading: false,
+                  // Upload returns pending; poll below for the real outcome.
+                  extractStatus: result.extract_status || "pending",
+                  extractPolling: Boolean(onFetchAttachmentMeta && referenceId),
+                  extractUncertain: false,
+                  extractReason: null,
                 }
               : a,
           ),
         );
+
+        if (!onFetchAttachmentMeta || !referenceId) return;
+
+        const outcome = await pollAttachmentExtractStatus(
+          onFetchAttachmentMeta,
+          referenceId,
+          pollExtractOptions,
+        );
+        // Timeout / unresolved: stay quiet — never invent a failure.
+        // Chip must remain visibly uncertain (not look like confirmed ok).
+        if (outcome.timedOut) {
+          if (!liveRefs.current.has(referenceId)) return;
+          setAtts((list) =>
+            list.map((a) =>
+              a.referenceId === referenceId
+                ? {
+                    ...a,
+                    extractPolling: false,
+                    extractUncertain: true,
+                    extractStatus: a.extractStatus || "pending",
+                  }
+                : a,
+            ),
+          );
+          return;
+        }
+
+        const reason = extractStatusReason(
+          outcome.status,
+          outcome.extractError,
+        );
+        // Gate on the sync Set — never read liveness out of a setAtts updater.
+        if (!liveRefs.current.has(referenceId)) return;
+        setAtts((list) =>
+          list.map((a) =>
+            a.referenceId === referenceId
+              ? {
+                  ...a,
+                  extractStatus: outcome.status,
+                  extractPolling: false,
+                  extractUncertain: false,
+                  extractReason: reason,
+                }
+              : a,
+          ),
+        );
+        // Banner only if this attachment is still live (not removed / sent).
+        // Inline image path (dataUrl) delivers the file to the model regardless
+        // of extract_status — never accuse those of failure.
+        if (
+          liveRefs.current.has(referenceId)
+          && !dataUrl
+          && EXTRACT_FAIL_STATUSES.has(outcome.status)
+          && reason
+        ) {
+          setUploadError(`${result.filename || file.name}：${reason}`);
+        }
       } catch (error) {
+        liveUploadIds.current.delete(uploadId);
         setUploadError(error?.message || `${file.name} 上傳失敗`);
-        setAtts((list) => list.filter((a) => !(a.name === file.name && a.uploading)));
+        setAtts((list) => list.filter((a) => a.uploadId !== uploadId));
       }
-    }
+    }));
   };
 
   return (
@@ -1655,38 +1791,76 @@ export const Composer = ({
 
       {atts.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "8px 10px 0" }}>
-          {atts.map((a, i) => (
-            <div key={i} style={{
-              display: "flex", alignItems: "center", gap: 6,
-              padding: "4px 6px 4px 10px",
-              background: "var(--bg-subtle)",
-              border: "1px solid var(--border)",
-              borderRadius: 999,
-              fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--fg)",
-              opacity: a.uploading ? 0.6 : 1,
-            }}>
-              {a.kind === "image" ? <IconImage size={12} /> : <IconFile size={12} />}
-              {a.name}
-              <span style={{ color: "var(--fg-subtle)" }}>
-                {a.uploading ? "上傳中…" : `${Math.round(a.size / 1024)} KB`}
-              </span>
-              <IconButton
-                style={{ width: 18, height: 18 }}
-                onClick={() => setAtts((list) => list.filter((_, j) => j !== i))}
+          {atts.map((a, i) => {
+            // Inline images (dataUrl) reach the model via image_url; extraction
+            // failure is irrelevant and must not paint a false-accusation chip.
+            const extractFailed =
+              EXTRACT_FAIL_STATUSES.has(a.extractStatus) && !a.dataUrl;
+            const extractPending = Boolean(a.extractPolling);
+            const extractUncertain = Boolean(a.extractUncertain);
+            let statusLabel;
+            if (a.uploading) statusLabel = "上傳中…";
+            else if (extractPending) statusLabel = "處理中…";
+            else if (extractUncertain) statusLabel = "狀態未知";
+            else if (extractFailed && a.extractReason) statusLabel = a.extractReason;
+            else statusLabel = `${Math.round(a.size / 1024)} KB`;
+            return (
+              <div
+                key={i}
+                className={
+                  "composer-att-chip"
+                  + (extractFailed ? " composer-att-chip--extract-failed" : "")
+                }
+                data-extract-status={a.extractStatus || (a.uploading ? "uploading" : "")}
+                data-extract-failed={extractFailed ? "1" : "0"}
+                data-extract-uncertain={extractUncertain ? "1" : "0"}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  padding: "4px 6px 4px 10px",
+                  background: extractFailed
+                    ? "oklch(0.95 0.04 25 / 0.55)"
+                    : "var(--bg-subtle)",
+                  border: extractFailed
+                    ? "1px solid var(--danger)"
+                    : "1px solid var(--border)",
+                  borderRadius: 999,
+                  fontSize: 11, fontFamily: "var(--font-mono)",
+                  color: extractFailed ? "var(--danger)" : "var(--fg)",
+                  opacity: a.uploading || extractPending || extractUncertain ? 0.7 : 1,
+                }}
               >
-                <IconX size={11} />
-              </IconButton>
-            </div>
-          ))}
+                {a.kind === "image" ? <IconImage size={12} /> : <IconFile size={12} />}
+                {a.name}
+                <span style={{
+                  color: extractFailed ? "var(--danger)" : "var(--fg-subtle)",
+                }}>
+                  {statusLabel}
+                </span>
+                <IconButton
+                  style={{ width: 18, height: 18 }}
+                  onClick={() => {
+                    if (a.referenceId) liveRefs.current.delete(a.referenceId);
+                    if (a.uploadId) liveUploadIds.current.delete(a.uploadId);
+                    setAtts((list) => list.filter((_, j) => j !== i));
+                  }}
+                >
+                  <IconX size={11} />
+                </IconButton>
+              </div>
+            );
+          })}
         </div>
       )}
 
       {uploadError && (
-        <div style={{
-          padding: "4px 10px",
-          fontSize: 11, color: "var(--danger)",
-          fontFamily: "var(--font-mono)",
-        }}>
+        <div
+          role="alert"
+          style={{
+            padding: "4px 10px",
+            fontSize: 11, color: "var(--danger)",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
           {uploadError}
         </div>
       )}
@@ -1833,10 +2007,10 @@ export const Composer = ({
       }}>
         <label>
           <input type="file" multiple hidden onChange={(e) => onFiles(e.target.files)}
-            accept="image/*,.pdf,.txt,.md,.csv,.json" />
+            accept={COMPOSER_FILE_ACCEPT} />
           <span style={{ display: "inline-flex" }}>
             <IconButton
-              title="附加檔案 (圖片 / pdf / 文字)"
+              title="附加檔案 (圖片 / pdf / 文字與程式碼)"
               onClick={(e) => e.currentTarget.parentElement.previousSibling.click()}
             >
               <IconPaperclip />
