@@ -160,6 +160,7 @@ import { getHealthOverview } from '../api/health'
 import { getAlertSummary } from '../api/alerts'
 import { extractError } from '../api/errors'
 import client from '../api/client'
+import { filterPlatformLinksForRelease } from '../utils/anilalmReleaseGate'
 import UsageLineChart from '../components/charts/UsageLineChart.vue'
 import PlatformCard from '../components/dashboard/PlatformCard.vue'
 import ServiceHealthCard from '../components/dashboard/ServiceHealthCard.vue'
@@ -326,7 +327,8 @@ async function refresh() {
 
     try {
       const { data } = await listPlatformLinks()
-      platformLinks.value = Array.isArray(data) ? data : []
+      // ANILA LM release gate：關閉時儀表板不顯示該入口（見 anilalmReleaseGate.js）。
+      platformLinks.value = filterPlatformLinksForRelease(Array.isArray(data) ? data : [])
     } catch (e) {
       platformLinks.value = []
       if (!loadError.value) {

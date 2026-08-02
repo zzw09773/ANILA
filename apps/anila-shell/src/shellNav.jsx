@@ -14,6 +14,10 @@
 import React from "react";
 
 import {
+  ANILA_LM_COMING_SOON_LABEL,
+  ANILA_LM_ENTRY_ENABLED,
+} from "./anilalmReleaseGate.js";
+import {
   IconBook,
   IconGrid,
   IconMessage,
@@ -52,11 +56,22 @@ export function originHref(path) {
  * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void }} handlers
  */
 export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
+  const knowledge = ANILA_LM_ENTRY_ENABLED
+    ? { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: originHref("/anilalm") }
+    : {
+        id: "knowledge",
+        label: "我的知識庫",
+        Icon: IconBook,
+        disabled: true,
+        badge: ANILA_LM_COMING_SOON_LABEL,
+      };
+
   return [
     // 任務中心 = 現有聊天工作區（預設視圖，chat 即任務工作台）。
     { id: "tasks", label: "任務中心", Icon: IconMessage, current: true, onClick: onTaskCenter },
     // 我的知識庫 = 同源知識 SPA（也承載 Studio / 產出）。
-    { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: originHref("/anilalm") },
+    // 本 release 關閉：保留列、停用、標「即將推出」。重開改 anilalmReleaseGate.js。
+    knowledge,
     // 專案入口 = ServicesPanel（Registry 服務卡片）。
     { id: "projects", label: "專案入口", Icon: IconGrid, onClick: onOpenServices },
   ];
@@ -93,8 +108,9 @@ function hoverOff(e) {
 }
 
 function NavRow({ entry, collapsed }) {
-  const { Icon, label, href, onClick, current } = entry;
+  const { Icon, label, href, onClick, current, disabled, badge } = entry;
   const ariaCurrent = current ? "page" : undefined;
+  const title = badge ? `${label}（${badge}）` : label;
 
   const style = collapsed
     ? {
@@ -103,25 +119,61 @@ function NavRow({ entry, collapsed }) {
         height: 36,
         padding: 0,
         justifyContent: "center",
-        color: current ? "var(--fg)" : "var(--fg-muted)",
+        color: disabled ? "var(--fg-muted)" : current ? "var(--fg)" : "var(--fg-muted)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.55 : 1,
       }
-    : { ...rowBase, color: current ? "var(--fg)" : "var(--fg)" };
+    : {
+        ...rowBase,
+        color: disabled ? "var(--fg-muted)" : "var(--fg)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.7 : 1,
+      };
 
   const body = collapsed ? (
     <Icon size={18} />
   ) : (
     <>
       <Icon size={15} style={{ color: "var(--fg-muted)", flexShrink: 0 }} />
-      <span>{label}</span>
+      <span style={{ flex: 1, minWidth: 0 }}>{label}</span>
+      {badge ? (
+        <span
+          data-coming-soon=""
+          style={{
+            fontSize: 11,
+            fontWeight: 500,
+            color: "var(--fg-muted)",
+            letterSpacing: "0.02em",
+            flexShrink: 0,
+          }}
+        >
+          {badge}
+        </span>
+      ) : null}
     </>
   );
+
+  if (disabled) {
+    return (
+      <span
+        role="link"
+        aria-disabled="true"
+        title={title}
+        aria-label={collapsed ? title : undefined}
+        data-nav-disabled={entry.id}
+        style={style}
+      >
+        {body}
+      </span>
+    );
+  }
 
   if (href) {
     return (
       <a
         href={href}
-        title={label}
-        aria-label={collapsed ? label : undefined}
+        title={title}
+        aria-label={collapsed ? title : undefined}
         aria-current={ariaCurrent}
         style={style}
         onMouseEnter={hoverOn}
@@ -136,8 +188,8 @@ function NavRow({ entry, collapsed }) {
     <button
       type="button"
       onClick={onClick}
-      title={label}
-      aria-label={collapsed ? label : undefined}
+      title={title}
+      aria-label={collapsed ? title : undefined}
       aria-current={ariaCurrent}
       style={style}
       onMouseEnter={hoverOn}

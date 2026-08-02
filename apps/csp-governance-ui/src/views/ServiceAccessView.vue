@@ -113,6 +113,7 @@ import { listPlatformLinks } from '../api/platformLinks'
 import { listGrants, createGrant, revokeGrant } from '../api/serviceAccessGrants'
 import { listUsers } from '../api/users'
 import { listDepartments } from '../api/departments'
+import { filterPlatformLinksForRelease } from '../utils/anilalmReleaseGate'
 import { TermBadge, TermButton, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
@@ -142,7 +143,8 @@ async function loadAll() {
       listPlatformLinks({ include_inactive: true }),
       listGrants(), listUsers(), listDepartments(),
     ])
-    links.value = l.data || []
+    // ANILA LM release gate：關閉時服務存取頁亦不顯示該入口。
+    links.value = filterPlatformLinksForRelease(l.data || [])
     grants.value = g.data || []
     users.value = u.data || []
     departments.value = d.data || []

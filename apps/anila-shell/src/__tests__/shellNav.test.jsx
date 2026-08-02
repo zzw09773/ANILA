@@ -6,6 +6,10 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 
 import {
+  ANILA_LM_COMING_SOON_LABEL,
+  ANILA_LM_ENTRY_ENABLED,
+} from "../anilalmReleaseGate.js";
+import {
   ShellNav,
   canSeeGovernance,
   originHref,
@@ -58,7 +62,6 @@ describe("buildShellEntries", () => {
       "我的知識庫",
       "專案入口",
     ]);
-    expect(entries[1].href).toBe(`${ORIGIN}/anilalm`);
   });
 
   // 「產出中心」與「我的知識庫」曾是逐字相同的 /anilalm 連結：兩個標籤指到
@@ -66,6 +69,19 @@ describe("buildShellEntries", () => {
   it("never ships two entries pointing at the same destination", () => {
     const hrefs = buildShellEntries({}).map((e) => e.href).filter(Boolean);
     expect(new Set(hrefs).size).toBe(hrefs.length);
+  });
+
+  it("gates 我的知識庫 behind ANILA_LM_ENTRY_ENABLED (Coming Soon when closed)", () => {
+    const knowledge = buildShellEntries({}).find((e) => e.id === "knowledge");
+    expect(knowledge).toBeTruthy();
+    if (ANILA_LM_ENTRY_ENABLED) {
+      expect(knowledge.href).toBe(`${ORIGIN}/anilalm`);
+      expect(knowledge.disabled).toBeFalsy();
+    } else {
+      expect(knowledge.disabled).toBe(true);
+      expect(knowledge.href).toBeUndefined();
+      expect(knowledge.badge).toBe(ANILA_LM_COMING_SOON_LABEL);
+    }
   });
 });
 
@@ -106,9 +122,26 @@ describe("ShellNav", () => {
     expect(gov.getAttribute("href")).toBe(`${ORIGIN}/`);
   });
 
-  it("points 我的知識庫 at the same-origin /anilalm surface", () => {
+  it("shows 我的知識庫 as disabled Coming Soon when the release gate is closed", () => {
+    if (ANILA_LM_ENTRY_ENABLED) return; // gate open → this assertion does not apply
     render(<ShellNav user={{ role: "user" }} />);
-    expect(screen.getByText("我的知識庫").closest("a").getAttribute("href")).toBe(`${ORIGIN}/anilalm`);
+    expect(screen.getByText("我的知識庫")).toBeTruthy();
+    expect(screen.getByText(ANILA_LM_COMING_SOON_LABEL)).toBeTruthy();
+    const row = screen.getByText("我的知識庫").closest("[data-nav-disabled='knowledge']");
+    expect(row).toBeTruthy();
+    expect(row.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText("我的知識庫").closest("a")).toBeNull();
+  });
+
+  it("points 我的知識庫 at /anilalm only when the release gate is open", () => {
+    render(<ShellNav user={{ role: "user" }} />);
+    const link = screen.getByText("我的知識庫").closest("a");
+    if (ANILA_LM_ENTRY_ENABLED) {
+      expect(link).toBeTruthy();
+      expect(link.getAttribute("href")).toBe(`${ORIGIN}/anilalm`);
+    } else {
+      expect(link).toBeNull();
+    }
   });
 
   it("opens the ServicesPanel via onOpenServices when 專案入口 is clicked", () => {

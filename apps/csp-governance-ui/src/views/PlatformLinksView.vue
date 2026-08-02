@@ -210,6 +210,7 @@ import {
   LAUNCH_MODES, CLASSIFICATION_LEVELS, launchModeLabel, configSourceBadge,
   stickyEditableFields, isFieldLocked, normalizeService,
 } from '../utils/serviceRegistry'
+import { filterPlatformLinksForRelease } from '../utils/anilalmReleaseGate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
@@ -310,7 +311,10 @@ async function fetchLinks() {
         throw e
       }
     }
-    links.value = (Array.isArray(data) ? data : (data?.services || data?.data || [])).map(normalizeService)
+    // ANILA LM release gate：關閉時服務登記亦不顯示該入口。
+    links.value = filterPlatformLinksForRelease(
+      (Array.isArray(data) ? data : (data?.services || data?.data || [])).map(normalizeService),
+    )
   } catch (e) {
     pageError.value = e.response?.data?.detail || '載入服務清單失敗'
   }
