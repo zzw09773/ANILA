@@ -25,17 +25,22 @@ from typing import Any, Optional
 from ..context.agent_context import get_current_context
 from ..engine.query_engine import PostTurnHook, TurnResult
 from ..models.message import Message, UserMessage
+from ..prompts import LANGUAGE_PREAMBLE
+from ..prompts.sampling import get_sampling
 from ..providers.base import Provider, ProviderRequest
+from ..providers.guards import bumped_max_tokens, is_empty_length_failure
 
 logger = logging.getLogger(__name__)
 
 
-_DEFAULT_SYSTEM_PROMPT = (
-    "You are a helpful assistant that suggests follow-up questions a "
-    "user might ask next. Read the conversation, then output ONLY a "
-    "compact JSON array of {n} short strings (each one a complete "
-    "question, no leading bullet, no commentary). Example: "
-    '["What about edge cases?", "Can you show a test?", "How does that scale?"]'
+# 輕量前導（身分＋語言規則）＋任務指令。原版是英文＋英文範例，
+# 小模型會照範例的語言出英文 chips——範例即規格，所以範例必須是繁中。
+# 注意：本字串會過 str.format(n=...)，前導與範例內不得出現字面 {}。
+_DEFAULT_SYSTEM_PROMPT = LANGUAGE_PREAMBLE + (
+    "\n\n【任務】讀完以下對話，猜測使用者接下來最可能想問的 {n} 個追問問題。"
+    "只輸出一個緊湊的 JSON 字串陣列，每項是一個完整的繁體中文問題，"
+    "不加編號、不加項目符號、陣列前後不得有任何其他文字。範例："
+    '["這個方法的誤差來源是什麼？", "有沒有對應的測試數據？", "這個結論適用於哪些條件？"]'
 )
 
 
@@ -57,13 +62,18 @@ class PromptSuggestion:
         provider: Provider,
         model: str,
         n_suggestions: int = 3,
-        max_tokens: int = 200,
+        # 預設來自 TASK_SAMPLING["chips"]（設計文件 §6-5／§9b：思考型模型地板）。
+        max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
     ) -> None:
         self._provider = provider
         self._model = model
         self._n = max(1, min(8, n_suggestions))
-        self._max_tokens = max_tokens
+        chips = get_sampling("chips")
+        self._max_tokens = (
+            max_tokens if max_tokens is not None else chips.max_tokens
+        )
+        self._temperature = chips.temperature
         self._system = (system_prompt or _DEFAULT_SYSTEM_PROMPT).format(
             n=self._n
         )
@@ -92,19 +102,37 @@ class PromptSuggestion:
         # Use a short summary of the last few turns rather than the full
         # history — keeps the suggestion call cheap and focused.
         focus_window = _build_focus_window(history)
-        request = ProviderRequest(
-            model=self._model,
-            system=self._system,
-            messages=[UserMessage(content=focus_window)],
-            tools=[],
-            max_tokens=self._max_tokens,
-            temperature=0.4,
-        )
-        text_chunks: list[str] = []
-        async for delta in self._provider.stream_completion(request):
-            if delta.type == "text" and delta.text:
-                text_chunks.append(delta.text)
-        return _parse_suggestions("".join(text_chunks), limit=self._n)
+        max_tokens = self._max_tokens
+        for attempt in range(2):
+            request = ProviderRequest(
+                model=self._model,
+                system=self._system,
+                messages=[UserMessage(content=focus_window)],
+                tools=[],
+                max_tokens=max_tokens,
+                temperature=self._temperature,
+            )
+            text_chunks: list[str] = []
+            finish_reason: str | None = None
+            async for delta in self._provider.stream_completion(request):
+                if delta.type == "text" and delta.text:
+                    text_chunks.append(delta.text)
+                elif delta.type == "stop":
+                    finish_reason = delta.finish_reason
+            raw = "".join(text_chunks)
+            if raw.strip():
+                return _parse_suggestions(raw, limit=self._n)
+            # Only bump+retry when the model burned the budget (length + empty).
+            # Legitimate empty end_turn / stop must not cost a second call.
+            if attempt == 0 and is_empty_length_failure(finish_reason, raw):
+                max_tokens = bumped_max_tokens(max_tokens)
+                continue
+            if is_empty_length_failure(finish_reason, raw):
+                logger.warning(
+                    "chips 連續兩次空回覆 — 疑似思考預算吃光？（thinking budget）"
+                )
+            return []
+        return []
 
 
 def make_prompt_suggestion_hook(
@@ -112,7 +140,7 @@ def make_prompt_suggestion_hook(
     *,
     model: str,
     n_suggestions: int = 3,
-    max_tokens: int = 200,
+    max_tokens: Optional[int] = None,
 ) -> PostTurnHook:
     """Convenience factory mirroring the engine's hook signature."""
     suggester = PromptSuggestion(

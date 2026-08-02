@@ -26,7 +26,17 @@ export interface ChatRequest {
   traceId?: string
 }
 
-const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? 'gpt-4o-mini'
+// 沒有可猜的預設模型——內網不存在公雲模型名，缺設定就顯式炸，
+// 不要默默送出一個必然 404 的模型名（設計文件 §4-3）。
+const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? ''
+
+function resolveModel(model?: string): string {
+  const resolved = model || DEFAULT_MODEL
+  if (!resolved) {
+    throw new Error('聊天模型未設定：呼叫端未指定 model，且 VITE_DEFAULT_CHAT_MODEL 為空。')
+  }
+  return resolved
+}
 
 function authHeaders(): Record<string, string> {
   const token = useAuthStore.getState().accessToken
@@ -43,6 +53,145 @@ function tracingHeaders(req: ChatRequest): Record<string, string> {
 }
 
 /**
+ * Classify a failed chat response body (HTTP error text OR anila.error
+ * SSE message). Gateway (litellm) hard-rejects oversized prompts with
+ * ContextWindowExceededError; CSP may surface that text inside
+ * `event: anila.error` / `{"message":...}` over HTTP 200.
+ */
+export function classifyChatFailure(
+  status: number,
+  body: string,
+): 'context_overflow' | 'other' {
+  void status
+  if (/ContextWindowExceeded|exceeds the available context size|maximum context length/i.test(body)) {
+    return 'context_overflow'
+  }
+  return 'other'
+}
+
+/** True when assistant text is non-empty after trim (safe to persist). */
+export function isPersistableAssistantText(text: string): boolean {
+  return Boolean(text.trim())
+}
+
+/**
+ * Next retrieval-hit count for a context-overflow trim retry.
+ * Strictly decreases: n>2 → floor(n/2); n===2 → 1; n<=1 → null (no retry).
+ */
+export function nextTrimHitCount(n: number): number | null {
+  if (n <= 1) return null
+  if (n === 2) return 1
+  return Math.floor(n / 2)
+}
+
+/**
+ * Extract visible assistant text from one OpenAI-style choice.
+ * Prefers delta.content; falls back to message.content. Never concatenates
+ * both in the same frame (avoids double-count when a proxy emits both).
+ */
+export function extractChoiceContent(choice: {
+  delta?: { content?: string }
+  message?: { content?: string }
+} | null | undefined): string {
+  if (!choice) return ''
+  const delta = choice.delta?.content
+  if (typeof delta === 'string' && delta) return delta
+  const message = choice.message?.content
+  if (typeof message === 'string' && message) return message
+  return ''
+}
+
+export interface ChatSseState {
+  accumulated: string
+  finishReason: string | null
+  /** Payload message from a terminal `event: anila.error` frame, if any. */
+  anilaErrorMessage: string | null
+}
+
+export function createChatSseState(): ChatSseState {
+  return { accumulated: '', finishReason: null, anilaErrorMessage: null }
+}
+
+/**
+ * Reduce one complete SSE event block (lines joined by `\n`, no trailing
+ * blank separator). Recognises named `anila.error` and OpenAI data frames
+ * with either delta.content or message.content.
+ */
+export function reduceChatSseEvent(
+  state: ChatSseState,
+  eventBlock: string,
+): ChatSseState {
+  let eventName: string | null = null
+  const dataLines: string[] = []
+  for (const line of eventBlock.split('\n')) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim())
+    }
+  }
+
+  if (eventName === 'anila.error') {
+    let message = ''
+    for (const payload of dataLines) {
+      if (!payload || payload === '[DONE]') continue
+      try {
+        const parsed = JSON.parse(payload) as { message?: unknown }
+        if (typeof parsed.message === 'string') {
+          message = parsed.message
+          break
+        }
+      } catch {
+        // Malformed terminal error — keep scanning other data lines.
+      }
+    }
+    return { ...state, anilaErrorMessage: message || '串流發生錯誤' }
+  }
+
+  let next = state
+  for (const payload of dataLines) {
+    if (!payload || payload === '[DONE]') continue
+    try {
+      const frame = JSON.parse(payload) as {
+        choices?: {
+          delta?: { content?: string }
+          message?: { content?: string }
+          finish_reason?: string | null
+        }[]
+      }
+      const choice = frame.choices?.[0]
+      const text = extractChoiceContent(choice)
+      if (text) {
+        const accumulated = next.accumulated + text
+        next = { ...next, accumulated }
+      }
+      if (choice?.finish_reason) {
+        next = { ...next, finishReason: choice.finish_reason }
+      }
+    } catch {
+      // Mid-frame parse error; skip and keep streaming.
+    }
+  }
+  return next
+}
+
+/**
+ * Finalise a completed SSE reduce: surface anila.error / EMPTY_LENGTH, else
+ * return accumulated text (may be empty — callers must not persist empty).
+ */
+export function finaliseChatSse(state: ChatSseState): string {
+  if (state.anilaErrorMessage) {
+    // Status is informational; classifyChatFailure keys off the body text.
+    // CSP commits HTTP 200 before emitting event: anila.error.
+    throw new Error(`chat 200: ${state.anilaErrorMessage}`)
+  }
+  if (!state.accumulated.trim() && state.finishReason === 'length') {
+    throw new Error('EMPTY_LENGTH')
+  }
+  return state.accumulated
+}
+
+/**
  * One-shot completion. Returns the full text. Throws on non-2xx.
  */
 export async function chatComplete(req: ChatRequest): Promise<string> {
@@ -55,7 +204,7 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
       ...tracingHeaders(req),
     },
     body: JSON.stringify({
-      model: req.model || DEFAULT_MODEL,
+      model: resolveModel(req.model),
       messages: req.messages,
       temperature: req.temperature ?? 0.4,
       max_tokens: req.max_tokens,
@@ -75,9 +224,13 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
 
 /**
  * Streaming completion via SSE. The proxy emits OpenAI-style
- * `data: {...}\n\n` frames terminated by `data: [DONE]`. Each token
- * delta is surfaced via `onDelta`; the final accumulated text is the
- * resolution value of the returned promise.
+ * `data: {...}\n\n` frames terminated by `data: [DONE]`, and may emit a
+ * terminal named event `event: anila.error` / `data: {"message":...}`
+ * over HTTP 200 when upstream 4xx/5xx arrives after the response started.
+ *
+ * When the stream ends with empty content and finish_reason === 'length',
+ * throws Error('EMPTY_LENGTH') — thinking models can burn the whole
+ * budget on reasoning before any content (設計文件 §9b).
  */
 export async function chatStream(
   req: ChatRequest,
@@ -93,7 +246,7 @@ export async function chatStream(
       ...tracingHeaders(req),
     },
     body: JSON.stringify({
-      model: req.model || DEFAULT_MODEL,
+      model: resolveModel(req.model),
       messages: req.messages,
       temperature: req.temperature ?? 0.4,
       max_tokens: req.max_tokens,
@@ -109,7 +262,7 @@ export async function chatStream(
   const reader = res.body.getReader()
   const decoder = new TextDecoder('utf-8')
   let buffer = ''
-  let accumulated = ''
+  let state = createChatSseState()
 
   while (true) {
     const { value, done } = await reader.read()
@@ -124,24 +277,19 @@ export async function chatStream(
       const event = buffer.slice(0, sep)
       buffer = buffer.slice(sep + 2)
       sep = buffer.indexOf('\n\n')
-      const lines = event.split('\n').filter((l) => l.startsWith('data:'))
-      for (const line of lines) {
-        const payload = line.slice(5).trim()
-        if (!payload || payload === '[DONE]') continue
-        try {
-          const frame = JSON.parse(payload) as {
-            choices?: { delta?: { content?: string } }[]
-          }
-          const delta = frame.choices?.[0]?.delta?.content
-          if (delta) {
-            accumulated += delta
-            onDelta(delta, accumulated)
-          }
-        } catch {
-          // Mid-frame parse error; skip and keep streaming.
-        }
+      const prevLen = state.accumulated.length
+      state = reduceChatSseEvent(state, event)
+      if (state.anilaErrorMessage) {
+        // Terminal failure — stop reading; finaliseChatSse will throw.
+        break
+      }
+      if (state.accumulated.length > prevLen) {
+        const delta = state.accumulated.slice(prevLen)
+        onDelta(delta, state.accumulated)
       }
     }
+    if (state.anilaErrorMessage) break
   }
-  return accumulated
+
+  return finaliseChatSse(state)
 }

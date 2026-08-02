@@ -41,6 +41,44 @@ from app.services.usage_writer import enqueue_usage
 logger = logging.getLogger("app.services.proxy_service")
 
 
+def strip_inline_think_from_chat_result(result: dict | object) -> dict | object:
+    """非串流邊界：剝 ``message.content`` 內嵌 ``<think>`` 後再回傳／落庫。
+
+    Fail-open：任何例外只記 warning，內容原樣返回。串流路徑不走這裡。
+    """
+    if not isinstance(result, dict):
+        return result
+    try:
+        from anila_core.text.think_strip import strip_inline_think
+    except Exception:
+        logger.warning(
+            "think_strip import failed; leaving content untouched",
+            exc_info=True,
+        )
+        return result
+    try:
+        for choice in result.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or not content:
+                continue
+            clean, removed = strip_inline_think(content)
+            if removed:
+                message["content"] = clean
+                logger.info("think_strip removed_chars=%s", removed)
+        return result
+    except Exception:
+        logger.warning(
+            "think_strip failed; leaving content untouched",
+            exc_info=True,
+        )
+        return result
+
+
 def _note_proxy_outcome(
     *,
     model_id: int,
@@ -408,6 +446,9 @@ async def _proxy_request_impl(
                     caller_agent_id=caller_agent_id,
                     caller_client_id=caller_client_id,
                 )
+
+            # 量測／衛生：usage 入帳後、回傳前剝內嵌 think（不影響 metering）。
+            result = strip_inline_think_from_chat_result(result)
 
             _note_proxy_outcome(
                 model_id=model.id,

@@ -1,5 +1,6 @@
 import { chatComplete } from '../api/chat'
 import { searchCollection, type SearchHit } from '../api/search'
+import { COMMON_PREAMBLE } from '../generated/preamble'
 import { useArtifactStore } from '../store/artifacts'
 import {
   createReportJob,
@@ -63,17 +64,8 @@ const STUDIO_TOP_K = 12
 const STUDIO_MIN_SCORE = 0.25
 const STUDIO_CONTENT_LIMIT = 800
 
-// Hard language directive prepended to every Studio system prompt. Same
-// rules as WSChat.ZHTW_DIRECTIVE — duplicated locally instead of imported
-// to keep generators.ts free of cross-feature React deps.
-const ZHTW_DIRECTIVE = [
-  '【語言規則・最高優先】',
-  '- 一律以繁體中文（zh-TW，台灣慣用語）輸出。',
-  '- 即使檢索到的段落或使用者輸入是英文 / 簡體中文 / 其他語言，仍以繁體中文撰寫。',
-  '- 程式碼、API 名稱、技術專有名詞可保留原文，說明文字一律繁體中文。',
-  '- 引用簡體中文原文時，於引用後加上繁體中文翻譯或對照。',
-  '- 絕不在輸出中混用簡體字。',
-].join('\n')
+// 共同前導改由 SSOT 供應（src/generated/preamble.ts，無 React 依賴）——
+// 之前這裡與 WSChat 各養一份語言規則文字，已實際漂移過，不再複製。
 
 function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -289,7 +281,7 @@ export async function generateSlides({
   const countHint = SLIDE_COUNT_HINT[preset] ?? '預設 10-12 張投影片。'
   const hits = await retrieveContext(collection, preset, extraInstructions)
   const system = [
-    ZHTW_DIRECTIVE,
+    COMMON_PREAMBLE,
     '',
     '你是 ANILA LM 的簡報草稿生成器。',
     '',

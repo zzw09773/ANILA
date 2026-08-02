@@ -10,14 +10,25 @@ from anila_core.prompts.common_preamble import (
     NATIONAL_TERMINOLOGY,
     compose,
 )
+from anila_core.prompts.current_facts import (
+    CURRENT_FACTS,
+    FACTS_AS_OF,
+    OFFICEHOLDERS,
+)
+from anila_core.prompts.model_routing import TASK_CLASS, resolve_model
 
 __all__ = [
     "COMMON_PREAMBLE",
+    "CURRENT_FACTS",
     "DATA_DISCIPLINE",
     "ERA_RULES",
+    "FACTS_AS_OF",
     "IDENTITY",
     "LANGUAGE_PREAMBLE",
     "LANGUAGE_RULES",
     "NATIONAL_TERMINOLOGY",
+    "OFFICEHOLDERS",
+    "TASK_CLASS",
     "compose",
+    "resolve_model",
 ]

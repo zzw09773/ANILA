@@ -38,6 +38,10 @@ dependencies = [
     # Redis Session implementing the same Protocol; aiosqlite stays a
     # base dep so the in-tree adapter ships out of the box.
     "aiosqlite>=0.20",
+    # zh-TW output normalizer (anila_core.text): pure-Python OpenCC
+    # s2twp. Pin == CSP requirements.txt — normalization output is a
+    # persistence data contract; dictionary drift across consumers is not ok.
+    "opencc-python-reimplemented==0.1.7",
 ]
 
 # v0.14.0 — `[rag]` extra restored. AgenticRAG/ on this branch is now

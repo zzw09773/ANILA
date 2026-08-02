@@ -5,8 +5,9 @@
 之前 ``ZHTW_DIRECTIVE`` 在 ``apps/anilalm`` 有兩份複製品開始漂移；
 之後所有入口一律 import 這裡，前端經 build-time 產物或 API 取得。
 
-⚠ 【國家與用語規範】段的措辭定稿待 OWNER-QUESTIONS **Q26**；
-定稿前本模組可先合併（SSOT 就緒），但**不得**接進任何部署面的 system prompt。
+⚠ 【國家與用語規範】段的措辭定稿待 OWNER-QUESTIONS **Q26**。
+接線作業已依 2026-08-02 指示於 `wt/prompt-wire` 進行；該分支**合併與部署**
+仍以 Q26 定稿為前提（措辭若改，只改本檔文字，接線不動）。
 
 用法::
 
@@ -21,6 +22,8 @@ cache）；動態內容（檢索段落、記憶）放在其後；語言指令在
 """
 
 from __future__ import annotations
+
+from anila_core.prompts.current_facts import CURRENT_FACTS
 
 IDENTITY = """【平台身分】
 你是 ANILA，國家中山科學研究院（NCSIST，中科院）內部網路的研究助理平台。
@@ -64,11 +67,14 @@ def compose(*sections: str) -> str:
 
 
 #: 完整前導：主對話、RAG QA、agent、Studio 生成類入口用。
+#: CURRENT_FACTS（當前要職）放紀年之後：兩者同屬「時效性事實」，
+#: 且都在資料紀律（不臆測）之前建立好背景。
 COMMON_PREAMBLE = compose(
     IDENTITY,
     LANGUAGE_RULES,
     NATIONAL_TERMINOLOGY,
     ERA_RULES,
+    CURRENT_FACTS,
     DATA_DISCIPLINE,
 )
 

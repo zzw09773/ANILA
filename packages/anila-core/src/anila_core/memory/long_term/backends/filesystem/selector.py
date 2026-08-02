@@ -27,20 +27,17 @@ logger = logging.getLogger(__name__)
 MAX_RELEVANT_MEMORIES = 5
 SIDE_QUERY_TIMEOUT = 10.0  # seconds
 
-SELECT_MEMORIES_SYSTEM_PROMPT = """You are selecting memories that will be useful \
-to an AI assistant as it processes a user's query. You will be given the user's \
-query and a list of available memory files with their filenames and descriptions.
+SELECT_MEMORIES_SYSTEM_PROMPT = """你是記憶挑選器：從候選記憶檔中挑出對 AI 助理處理當前查詢明確有用的那幾筆。\
+輸入是使用者的查詢，以及候選記憶檔清單（檔名＋描述）。
 
-Return a JSON object with a "selected_memories" array containing filenames for \
-memories that will clearly be useful (up to 5). Only include memories you are \
-certain will be helpful based on their name and description.
-- If unsure whether a memory will be useful, do not include it. Be selective.
-- If no memories would clearly be useful, return an empty array.
-- If a list of recently-used tools is provided, do not select memories that are \
-usage reference or API documentation for those tools (the assistant is already \
-using them). DO still select memories containing warnings, gotchas, or known issues.
+輸出一個 JSON 物件，"selected_memories" 陣列放明確有用的檔名（最多 5 筆）。\
+只挑光看檔名與描述就能確定有幫助的：
+- 不確定有沒有用的就不要挑，寧缺勿濫。
+- 沒有任何明確有用的，回空陣列。
+- 若另有提供「最近使用過的工具」清單，該工具的使用說明／API 文件類記憶不要挑\
+（助理已經在用了）；但警告、陷阱、已知問題類**仍然要挑**。
 
-Respond with only valid JSON matching: {"selected_memories": ["file1.md", "file2.md"]}
+只輸出合法 JSON，格式：{"selected_memories": ["file1.md", "file2.md"]}
 """
 
 

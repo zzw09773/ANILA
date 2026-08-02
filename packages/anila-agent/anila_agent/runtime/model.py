@@ -26,7 +26,10 @@ from anila_agent.config import ModelConfig
 from anila_agent.runtime.compat import build_http_client
 
 # reasoning 模型在吐出最終 content 前會先耗 token 推理；下限確保不被截斷成空。
-REASONING_MAX_TOKENS_FLOOR = 512
+# 512 → 2048：gemma4 家活體實測單題 reasoning 燒 420–1258 completion tokens，
+# 512 之下常見「finish=length＋content 全空」的靜默失敗
+# （量測見 docs/designs/ncsist-prompt-localization-and-harness.md §9b）。
+REASONING_MAX_TOKENS_FLOOR = 2048
 
 _AIRGAP_LOCKED = False
 
