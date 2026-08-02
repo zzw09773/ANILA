@@ -91,6 +91,8 @@ services:
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # §6-3：assistant 落庫前 zh-TW 靜默正規化。預設 1；設 0 關閉。
       ANILA_ZH_NORMALIZE: "${ANILA_ZH_NORMALIZE:-1}"
+      # 檢索查詢擴展（民國↔西元＋域內同義）。預設 1；設 0 關閉。
+      ANILA_QUERY_EXPANSION: "${ANILA_QUERY_EXPANSION:-1}"
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"

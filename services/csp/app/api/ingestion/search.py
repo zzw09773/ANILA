@@ -24,6 +24,7 @@ Why a separate file from documents.py / collections.py:
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -49,8 +50,10 @@ from app.services.ingestion_pool import get_pool
 from app.services.proxy_service import downstream_identity, proxy_request
 from app.services.endpoint_author_service import visible_endpoint_url
 from app.services.relation_resolver import scope_collection_rls
+from app.services.search_expansion import expand_query
 
 router = APIRouter(tags=["Ingestion / Search"])
+logger = logging.getLogger(__name__)
 
 _search_bearer = HTTPBearer(auto_error=False)
 
@@ -604,12 +607,22 @@ async def search_collection(
     embed_model = designated.name if designated is not None else coll.embedding_model
     source_filter = designated.name if designated is not None else None
 
+    # 民國紀年／域內同義擴展後再 embedding（擴展詞會拉近向量空間，屬預期行為）。
+    search_query = expand_query(payload.query)
+    if search_query != payload.query:
+        added_n = len(search_query[len(payload.query) :].split())
+        logger.debug(
+            "query expansion applied: original_len=%d added_terms=%d",
+            len(payload.query),
+            added_n,
+        )
+
     query_vec = await _embed_query(
         db,
         current_user,
         embed_model,
         coll.embedding_dim,
-        payload.query,
+        search_query,
     )
 
     try:
