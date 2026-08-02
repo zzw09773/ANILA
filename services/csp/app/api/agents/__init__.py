@@ -9,7 +9,7 @@ Package split (behavior-preserving refactor of the former 1384-line
 - ``registration``   register / list / get / update / delete + template / platform-CA / anila-verify download
 - ``approval``       approve / reject
 - ``runtime_config`` runtime-config get/patch (agent ``/me`` poll retired)
-- ``credentials``    bootstrap / issue / rotate / revoke + classification level
+- ``credentials``    classification + admin list/revoke; agent csk-/bsk- issuance retired (410)
 - ``functions``      agent functions (prompts) CRUD + system-prompt suggest
 - ``health``         health-check + test-connection
 - ``_common``        helpers shared by 2+ submodules

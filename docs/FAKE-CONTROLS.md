@@ -76,6 +76,17 @@
 → **已修**(wt/csk-cleanup):PATCH 維持 410;治理 UI 改唯讀並移除儲存/清除按鈕;
 agent 端 `GET /me/runtime-config`（HISTORICAL: removed）與 `RuntimeConfigPoller` 一併移除(零生產呼叫點)。
 
+### 8b. Agent 長效 `csk-`／`bsk-` 後端發行面(治理 UI 已拆、API 仍核發)
+
+治理中心不再提供「核發 agent 憑證」按鈕,但後端仍接受
+`issue-bootstrap`／`bootstrap`／`credentials/issue-static`／`rotate` 與
+`GET .../credentials/me`(Tier-1 輪替偵測)。Q19 留下一顆低權限 agent 憑證的
+兩個前提(runtime-config 自拉、撤銷清單)分別是「已拆」與「agent 端從未建、
+且撤銷端點拒絕 `kind=agent`」——發行面成為無人消費的死路,卻仍能造出長效祕密。
+→ **已修**(wt/csk-teardown Task 2+4):上列 agent 端點一律 **410**;
+`anila-core agent bootstrap` exit 1;admin `GET/DELETE .../credentials` 保留清 orphan;
+`POST /api/service-clients/{id}/issue-static` 不動(平台內部 s2s)。
+
 ---
 
 ## 中:日常會遇到,但不涉及安全

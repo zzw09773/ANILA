@@ -6,6 +6,14 @@ HTTP endpoints and middleware go through here, so future schema
 tweaks (e.g. adding mTLS fingerprint enforcement, moving rotation to
 async tasks) only have to land in one file.
 
+P2.1 Task 4 (2026-08-02): the **HTTP** agent-facing issuance surface
+(``/api/agents/.../issue-bootstrap|bootstrap|issue-static|rotate`` and
+``credentials/me``) is retired (410). Service-layer helpers below that
+mint agent rows remain for (a) the shared verify / envelope path used
+by ``service_clients``, (b) kind-gate negative tests that need an
+agent-kind token, and (c) admin orphan cleanup via revoke. Do NOT
+re-wire them to public agent endpoints.
+
 Verification model
 ==================
 
