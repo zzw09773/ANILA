@@ -24,14 +24,13 @@ import { searchCollection, type SearchHit } from '../api/search'
 import { explainError } from '../api/client'
 import type { Message } from '../types'
 import { appendTranscript, useAsrInput } from '../asr/useAsrInput'
+import { COMMON_PREAMBLE } from '../generated/preamble'
 
 const FOLLOWUP_SUGGESTIONS = [
   '幫我整理這份文件的核心論點',
   '哪些段落值得深入追問？',
   '這份資料跟我的研究主題有什麼連結？',
 ] as const
-
-const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? 'gpt-4o-mini'
 
 // Top-K and min-score for the per-turn retrieval. 5 hits with cosine ≥ 0.3
 // keeps the prompt under ~3KB even on chunky documents while filtering out
@@ -44,17 +43,12 @@ const RAG_MIN_SCORE = 0.3
 // users who want the full text click the citation card to drill in.
 const RAG_CONTENT_LIMIT = 1200
 
-// Hard language directive prepended to every system prompt. Placed first so
-// it dominates any later instructions; covers the common drift modes
-// (English fallback, simplified-zh from quoted source material).
-const ZHTW_DIRECTIVE = [
-  '【語言規則・最高優先】',
-  '- 一律以繁體中文（zh-TW，台灣慣用語）回答。',
-  '- 即使使用者以英文、簡體中文、日文或其他語言提問，仍以繁體中文回答。',
-  '- 程式碼、API 名稱、技術專有名詞可保留原文，說明文字一律使用繁體中文。',
-  '- 引用簡體中文原文時，請於引用後加上繁體中文翻譯或對照。',
-  '- 絕不在輸出中混用簡體字。',
-].join('\n')
+// 共同前導（身分／語言／國家用語／紀年／要職／資料紀律）改由 SSOT 供應：
+// src/generated/preamble.ts（由 packages/anila-core 產生，勿在此複製文字）。
+
+// 聊天模型一律來自部署設定；沒有可猜的預設值——內網不存在公雲模型名，
+// 缺設定要在送出時擋下並明講，不要默默打一個 404 的模型（設計文件 §4-3）。
+const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? ''
 
 interface WSChatProps {
   flex: number
@@ -184,7 +178,8 @@ export function WSChat({ flex }: WSChatProps) {
 
       if (indexedCount === 0) {
         return [
-          ZHTW_DIRECTIVE,
+          COMMON_PREAMBLE,
+          '',
           '你是 ANILA LM 的研究助理。',
           `知識庫名稱：「${collName}」。`,
           '使用者尚未上傳已完成索引的文件，請依使用者輸入直接作答，',
@@ -194,7 +189,8 @@ export function WSChat({ flex }: WSChatProps) {
 
       if (hits.length === 0) {
         return [
-          ZHTW_DIRECTIVE,
+          COMMON_PREAMBLE,
+          '',
           '你是 ANILA LM 的研究助理。',
           `當前知識庫：「${collName}」（共 ${indexedCount} 份已索引文件）。`,
           '本次查詢在向量檢索中沒有命中相似度 ≥ 0.3 的段落。請：',
@@ -216,7 +212,8 @@ export function WSChat({ flex }: WSChatProps) {
         .join('\n\n')
 
       return [
-        ZHTW_DIRECTIVE,
+        COMMON_PREAMBLE,
+        '',
         '你是 ANILA LM 的研究助理，以使用者知識庫的段落為依據作答。',
         `當前知識庫：「${collName}」。`,
         '',
@@ -229,6 +226,14 @@ export function WSChat({ flex }: WSChatProps) {
         '2) 引用時用 [N] 標號（例如：「依據 [1]，...」），N 對應上方段落編號。',
         '3) 段落不足以回答時，明確說「目前段落沒有提供 X 資訊」，不要硬湊。',
         '4) 如使用者問的是檔案結構、條目順序之類的整體性問題，可彙整多個段落並交叉引用。',
+        '',
+        // 引用 few-shot：20B 級模型對格式的遵循靠範例不靠規則描述（設計文件 §4-4）。
+        '引用示範（僅供格式參考，內容一律以上方實際段落為準）：',
+        '問：測試結果有沒有達到規格要求？',
+        '答：依據 [1]，本次測試成功率為 93.3%，高於 [2] 規定的 90% 下限，符合規格要求。',
+        '',
+        // 語言指令句尾重複：長 context 下小模型會忘記開頭指令（recency，設計文件 §6-4）。
+        '請以繁體中文（台灣用語）回答。',
       ].join('\n')
     },
     [collection?.name, docs],
@@ -239,6 +244,11 @@ export function WSChat({ flex }: WSChatProps) {
   const send = useCallback(async (textOverride?: string) => {
     const text = (textOverride ?? composer).trim()
     if (!text || busy || !collection) return
+
+    if (!DEFAULT_MODEL) {
+      setErr('聊天模型未設定（VITE_DEFAULT_CHAT_MODEL）——請通知管理者在部署設定指定模型名稱。')
+      return
+    }
 
     setErr(null)
     setBusy(true)
@@ -641,7 +651,7 @@ export function WSChat({ flex }: WSChatProps) {
               }}
             >
               <div style={{ fontSize: 11, color: t.textSubtle }}>
-                模型 · {DEFAULT_MODEL}
+                模型 · {DEFAULT_MODEL || '未設定'}
                 {asr.state === 'recording' && ' · 辨識中…'}
                 {asr.state === 'listening' && ' · 聆聽中…'}
               </div>

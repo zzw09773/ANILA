@@ -26,7 +26,17 @@ export interface ChatRequest {
   traceId?: string
 }
 
-const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? 'gpt-4o-mini'
+// 沒有可猜的預設模型——內網不存在公雲模型名，缺設定就顯式炸，
+// 不要默默送出一個必然 404 的模型名（設計文件 §4-3）。
+const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? ''
+
+function resolveModel(model?: string): string {
+  const resolved = model || DEFAULT_MODEL
+  if (!resolved) {
+    throw new Error('聊天模型未設定：呼叫端未指定 model，且 VITE_DEFAULT_CHAT_MODEL 為空。')
+  }
+  return resolved
+}
 
 function authHeaders(): Record<string, string> {
   const token = useAuthStore.getState().accessToken
@@ -55,7 +65,7 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
       ...tracingHeaders(req),
     },
     body: JSON.stringify({
-      model: req.model || DEFAULT_MODEL,
+      model: resolveModel(req.model),
       messages: req.messages,
       temperature: req.temperature ?? 0.4,
       max_tokens: req.max_tokens,
@@ -93,7 +103,7 @@ export async function chatStream(
       ...tracingHeaders(req),
     },
     body: JSON.stringify({
-      model: req.model || DEFAULT_MODEL,
+      model: resolveModel(req.model),
       messages: req.messages,
       temperature: req.temperature ?? 0.4,
       max_tokens: req.max_tokens,

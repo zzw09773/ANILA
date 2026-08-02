@@ -257,3 +257,40 @@ SSOT 模組已落地 `packages/anila-core/src/anila_core/prompts/common_preamble
 - §6-5 取樣參數、§6-8 golden set：本輪測試題可直接當 golden set 種子
   （腳本在 session scratchpad `test_gemma26.py`，金鑰不落 repo）。
 - 新增待辦：**空回覆守則**（9b-2）與 **nothink 路由**（9b-3）併入 harness 實作包。
+
+---
+
+## 10. 接線執行紀錄（2026-08-02，分支 `wt/prompt-wire`，擁有者指示動工）
+
+### 10a. 本輪落地的東西
+
+| 項目 | 位置 |
+|---|---|
+| **要職事實段**（總統賴清德／國防部長顧立雄／中科院院長李世強＋防臆測守則） | `packages/anila-core/src/anila_core/prompts/current_facts.py`（人事異動只改這檔） |
+| 事實段併入完整前導（紀年之後、資料紀律之前） | `common_preamble.py`；前導現為 988 字元，天花板調至 1500 |
+| 空回覆守則第一刀：`REASONING_MAX_TOKENS_FLOOR` 512→2048 | `packages/anila-agent/anila_agent/runtime/model.py` |
+| chips 繁中化＋輕量前導＋max_tokens 200→1024 | `packages/anila-core/src/anila_core/post_turn/prompt_suggestion.py` |
+| 記憶挑選器提示詞繁中化（JSON 契約不變） | `memory/long_term/backends/filesystem/selector.py` |
+| agent instructions 前置共同前導（`preamble=None` 可關） | `packages/anila-agent/anila_agent/prompts/builder.py` |
+| 前端 SSOT 橋接：codegen 產 `preamble.ts`＋sync guard 測試 | `packages/anila-core/scripts/gen_preamble_ts.py` → `apps/anilalm/src/generated/preamble.ts` |
+| WSChat 三模式改用 COMMON_PREAMBLE＋引用 few-shot＋句尾語言提醒 | `apps/anilalm/src/workspace/WSChat.tsx` |
+| generators.ts 移除第二份 ZHTW 複製品、改用 SSOT | `apps/anilalm/src/studio/generators.ts` |
+| `gpt-4o-mini` fallback 地雷拆除（兩處）：缺設定顯式報錯 | `apps/anilalm/src/api/chat.ts`＋`WSChat.tsx`（送出前擋＋UI 顯示「未設定」） |
+
+### 10b. 驗證證據
+
+- 測試：anila-core 全套 **860 passed／4 failed（基線同樣 4 個，pre-existing，
+  與本包無關：chunking×1、g3 grep×1、router 合約×2）**；anila-agent 全套 **223 passed**；
+  前端 `tsc -b && vite build` ✅（本機 build；映像 build 未驗——合併後要 `docker compose build`）。
+- 活體（gemma26）：要職三問全對；**參謀總長（未列職位）→「建議查閱最新公告」不臆測**；
+  框架／紀年回歸乾淨。額外證據：**無前導問人事，模型把 2048 tokens 全燒在糾結上、
+  正文全空**——事實段同時治了亂答與這種空轉。
+- ⚠ **要職姓名由撰寫時公開資料填入，部署前請院方核對**（院長一職異動頻率最高）。
+
+### 10c. 本輪刻意沒做的（不是忘了）
+
+- Router 兩個 system prompt：**Q7 凍結**，等派工評估收貨後接前導＋改「以繁體中文」。
+- s2twp 聊天鏈兜底（§6-3）：動 csp／shell 面，與修復 session 的檔案集可能相交，另開包。
+- nothink 任務路由（9b-3）與空回覆重試守則的呼叫端（9b-2 後半）：要動 model registry
+  與 provider 層，規模較大，等這包收貨再排。
+- Studio 各 prompt 補國家／紀年段（§3 接入表）：等 Q26 定稿一起做，避免改兩次。

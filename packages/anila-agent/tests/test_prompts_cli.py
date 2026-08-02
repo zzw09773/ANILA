@@ -25,6 +25,20 @@ def test_build_instructions_minimal():
     assert "輸出風格" not in out and "長期記憶索引" not in out
 
 
+def test_build_instructions_preamble_first_by_default():
+    from anila_core.prompts import COMMON_PREAMBLE
+
+    out = build_instructions(system="SYS")
+    assert out.startswith(COMMON_PREAMBLE), "共同前導必須是靜態前綴（prefix cache）"
+    assert out.index(COMMON_PREAMBLE) < out.index("SYS")
+
+
+def test_build_instructions_preamble_can_be_disabled():
+    out = build_instructions(system="SYS", preamble=None)
+    assert "ANILA" not in out.split("SYS")[0]  # 前導關閉時 SYS 前面沒有前導內容
+    assert out == "SYS"
+
+
 # ---- output styles ----
 
 def test_builtin_styles_listed():

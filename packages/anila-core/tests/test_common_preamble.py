@@ -28,7 +28,16 @@ _SIMPLIFIED_ONLY = set(
     "恶惊愿战户报担拟拥挂损换据败货贴费资赛简体条来对时说话让证权满线"
 )
 
-_ALL_SECTIONS = (IDENTITY, LANGUAGE_RULES, NATIONAL_TERMINOLOGY, ERA_RULES, DATA_DISCIPLINE)
+from anila_core.prompts import CURRENT_FACTS, FACTS_AS_OF, OFFICEHOLDERS
+
+_ALL_SECTIONS = (
+    IDENTITY,
+    LANGUAGE_RULES,
+    NATIONAL_TERMINOLOGY,
+    ERA_RULES,
+    CURRENT_FACTS,
+    DATA_DISCIPLINE,
+)
 
 
 def test_full_preamble_contains_all_sections_in_order():
@@ -56,11 +65,40 @@ def test_era_formula_is_self_consistent():
 
 
 def test_full_preamble_length_budget():
-    assert len(COMMON_PREAMBLE) <= 1200, (
-        f"完整前導 {len(COMMON_PREAMBLE)} 字元，超出 1200 天花板——"
+    # 1200 → 1500：2026-08-02 併入【當前要職】段（擁有者指示）。
+    assert len(COMMON_PREAMBLE) <= 1500, (
+        f"完整前導 {len(COMMON_PREAMBLE)} 字元，超出 1500 天花板——"
         "要加內容先讀設計文件 §9 的成本量測再說"
     )
 
 
+def test_current_facts_present_and_guarded():
+    # 三個指定職位都要在完整前導裡；輕量版不帶（省 token）。
+    for title, name, _ in OFFICEHOLDERS:
+        assert title in COMMON_PREAMBLE and name in COMMON_PREAMBLE, f"缺 {title}"
+    assert FACTS_AS_OF in COMMON_PREAMBLE, "資訊時點沒進前導"
+    assert "不要臆測人名" in CURRENT_FACTS, "防臆測守則不見了"
+    assert CURRENT_FACTS not in LANGUAGE_PREAMBLE
+
+
+def test_current_facts_no_simplified_characters():
+    hits = sorted({ch for ch in CURRENT_FACTS if ch in _SIMPLIFIED_ONLY})
+    assert not hits, f"要職段含簡體字：{hits}"
+
+
 def test_compose_strips_and_joins():
     assert compose(" a ", "", "b") == "a\n\nb"
+
+
+def test_frontend_generated_preamble_in_sync():
+    # 前端吃 build-time 產物（apps/anilalm/src/generated/preamble.ts）。
+    # SSOT 改了沒重跑產生器 → 這裡紅。產生器：
+    # packages/anila-core/scripts/gen_preamble_ts.py
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[3]
+    ts = repo_root / "apps" / "anilalm" / "src" / "generated" / "preamble.ts"
+    assert ts.exists(), "前端 preamble.ts 不存在——跑 gen_preamble_ts.py"
+    text = ts.read_text(encoding="utf-8")
+    assert COMMON_PREAMBLE in text, "前端 COMMON_PREAMBLE 與 SSOT 不同步——重跑產生器"
+    assert LANGUAGE_PREAMBLE in text, "前端 LANGUAGE_PREAMBLE 與 SSOT 不同步——重跑產生器"

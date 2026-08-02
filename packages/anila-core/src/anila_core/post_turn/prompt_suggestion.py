@@ -25,17 +25,20 @@ from typing import Any, Optional
 from ..context.agent_context import get_current_context
 from ..engine.query_engine import PostTurnHook, TurnResult
 from ..models.message import Message, UserMessage
+from ..prompts import LANGUAGE_PREAMBLE
 from ..providers.base import Provider, ProviderRequest
 
 logger = logging.getLogger(__name__)
 
 
-_DEFAULT_SYSTEM_PROMPT = (
-    "You are a helpful assistant that suggests follow-up questions a "
-    "user might ask next. Read the conversation, then output ONLY a "
-    "compact JSON array of {n} short strings (each one a complete "
-    "question, no leading bullet, no commentary). Example: "
-    '["What about edge cases?", "Can you show a test?", "How does that scale?"]'
+# 輕量前導（身分＋語言規則）＋任務指令。原版是英文＋英文範例，
+# 小模型會照範例的語言出英文 chips——範例即規格，所以範例必須是繁中。
+# 注意：本字串會過 str.format(n=...)，前導與範例內不得出現字面 {}。
+_DEFAULT_SYSTEM_PROMPT = LANGUAGE_PREAMBLE + (
+    "\n\n【任務】讀完以下對話，猜測使用者接下來最可能想問的 {n} 個追問問題。"
+    "只輸出一個緊湊的 JSON 字串陣列，每項是一個完整的繁體中文問題，"
+    "不加編號、不加項目符號、陣列前後不得有任何其他文字。範例："
+    '["這個方法的誤差來源是什麼？", "有沒有對應的測試數據？", "這個結論適用於哪些條件？"]'
 )
 
 
@@ -57,7 +60,9 @@ class PromptSuggestion:
         provider: Provider,
         model: str,
         n_suggestions: int = 3,
-        max_tokens: int = 200,
+        # 200 → 1024：思考型模型（gemma4 家）單題 reasoning 就燒 400+ tokens，
+        # 200 的上限等於 chips 必定空手而回且無聲（設計文件 §9b 實測）。
+        max_tokens: int = 1024,
         system_prompt: Optional[str] = None,
     ) -> None:
         self._provider = provider
@@ -112,7 +117,7 @@ def make_prompt_suggestion_hook(
     *,
     model: str,
     n_suggestions: int = 3,
-    max_tokens: int = 200,
+    max_tokens: int = 1024,
 ) -> PostTurnHook:
     """Convenience factory mirroring the engine's hook signature."""
     suggester = PromptSuggestion(
