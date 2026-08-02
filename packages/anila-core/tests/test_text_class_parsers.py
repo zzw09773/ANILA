@@ -1760,88 +1760,203 @@ def _accepts(raw: bytes) -> bool:
         return False
 
 
-# Round-15 F3. The round-14 pin here swept 4 KiB slices of five small
-# coreutils at an aligned stride, LE BOM only, and found zero flips — and
-# a "0 flips across real binaries" claim was reported as verified on that
-# basis. Re-measured 2026-08-02 with an unaligned stride, BOTH BOM orders
-# and the large binaries that actually carry Unicode data tables:
+# Round-16 F1. What stood here was a permit wearing a pin's name: it was
+# called ``..._bom_does_not_rescue_binaries`` while its own assertion
+# allowed the residual to grow from 18 flips to 58 on this host, and its
+# docstring's population did not match the 14 files / 5 853 slices it
+# really swept. Acceptance review refuted it; this is the rewrite.
 #
-#     14 binaries, 5 853 slices  ->  18 REFUSE→ACCEPT flips (0.31%)
-#     /usr/bin/python3 @3990675 BE, libc.so.6 x5, locale-archive x12
+# The property under test: prepending a byte-order mark to bytes that were
+# refused must not turn them into an accept. It is split three ways by how
+# strong the guarantee can honestly be.
 #
-# The content is glibc UTF-32 locale / transliteration tables read as
-# UTF-16 with the high halves stripped as NUL. Exploiting it requires
-# deliberately slicing a binary at a specific offset AND prepending a BOM
-# the file does not contain, so there is no accidental user path — it is
-# recorded, not asserted away. Anything that is NOT that shape (a whole
-# binary, or any slice of a binary under 1 MiB) stays a hard zero.
-_F3_MEASURED_FLIPS = 18          # this host, 2026-08-02
-_F3_MEASURED_SLICES = 5853
+#   1. Hard zero, any host — whole binaries, and every 4 KiB slice of a
+#      system binary under 1 MiB.
+#   2. Hard zero, any host, deterministic — a generated corpus (PNG / ZIP /
+#      int32 / uint16 bands / seeded urandom / ASCII weave) that does not
+#      depend on which distribution is installed.
+#   3. The RECORD — the large glibc/CPython files carry UTF-32 locale and
+#      transliteration tables that read as UTF-16 once the high halves are
+#      stripped as NUL, so the residual is not zero. Exploiting it needs a
+#      deliberate slice at a specific offset PLUS a BOM the file does not
+#      contain, so it is recorded rather than wished away. Recorded means
+#      the exact set: file by file, offset by offset, byte order by byte
+#      order. One extra flip on the same file is red.
+#
+# Measured 2026-08-02 on this host: 14 files, 5 853 slices, 18 flips.
+_F3_STRIDE = 4093          # prime, so slices are not header-aligned
+_F3_SLICE = 4096
 _F3_LARGE_FILE_BYTES = 1_000_000
+_F3_SYSTEM_BINARIES = (
+    "/usr/bin/python3",
+    "/lib/x86_64-linux-gnu/libc.so.6",
+    "/usr/lib/locale/locale-archive",
+    "/lib/x86_64-linux-gnu/libcrypto.so.3",
+    "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+    "/lib/x86_64-linux-gnu/libm.so.6",
+    "/lib/x86_64-linux-gnu/libz.so.1",
+    "/bin/bash", "/bin/ls", "/bin/cat", "/bin/date", "/bin/grep",
+    "/bin/dircolors", "/bin/sed",
+)
+# basename -> (exact byte size when recorded, {(slice offset, bom order)}).
+# The size is part of the key: a rebuilt libc is a different population and
+# must not be silently checked against another build's offsets.
+_F3_RECORDED_FLIPS: dict[str, tuple[int, frozenset[tuple[int, str]]]] = {
+    "python3": (5917224, frozenset({(3990675, "be")})),
+    "libc.so.6": (2220400, frozenset({
+        (1833664, "le"), (1837757, "be"), (1841850, "le"),
+        (1845943, "be"), (1850036, "le"),
+    })),
+    "locale-archive": (6075312, frozenset({
+        (253766, "le"), (261952, "le"), (270138, "le"), (286510, "le"),
+        (306975, "be"), (311068, "le"), (5861176, "le"), (5877548, "le"),
+        (5885734, "le"), (5893920, "le"), (5902106, "le"), (5918478, "le"),
+    })),
+    "libcrypto.so.3": (4455728, frozenset()),
+    "libstdc++.so.6": (2260296, frozenset()),
+    "libm.so.6": (940560, frozenset()),
+    "libz.so.1": (108936, frozenset()),
+    "bash": (1396520, frozenset()),
+    "ls": (138216, frozenset()),
+    "cat": (35288, frozenset()),
+    "date": (104968, frozenset()),
+    "grep": (182728, frozenset()),
+    "dircolors": (39440, frozenset()),
+    "sed": (113224, frozenset()),
+}
 
 
-def test_r14_i2_bom_does_not_rescue_binaries() -> None:
-    """I2: BOM-flip sweep over the population where the property is weakest.
+def _bom_flip_offsets(blob: bytes) -> set[tuple[int, str]]:
+    """Slices of ``blob`` that a prepended BOM turns from refuse to accept."""
+    flips: set[tuple[int, str]] = set()
+    off = 0
+    while off + _F3_SLICE <= len(blob):
+        chunk = blob[off:off + _F3_SLICE]
+        if not _accepts(chunk):
+            for tag, bom in (("le", b"\xff\xfe"), ("be", b"\xfe\xff")):
+                if _accepts(bom + chunk):
+                    flips.add((off, tag))
+        off += _F3_STRIDE
+    return flips
 
-    Unaligned stride (4093, prime), both BOM orders, and the large
-    binaries carrying Unicode data tables. Hard zero for whole binaries
-    and for every slice of a binary under 1 MiB; the data-table residual
-    is recorded as the measured number, not asserted to be zero.
+
+def _f3_generated_corpus() -> dict[str, bytes]:
+    """Binaries this test builds itself, so the zero does not need a host."""
+    import random
+
+    rnd = random.Random(20260802)
+    return {
+        "png": _png_blob() * 20,
+        "zip": _zip_stored(b"hellohellohello\n" * 30_000),
+        "int32": _int32_array(60_000),
+        "uint16-20000": _uint16_band(120_000, 20000),
+        "uint16-32768": _uint16_band(120_000, 32768),
+        "urandom": bytes(rnd.randrange(256) for _ in range(240_000)),
+        "ascii-weave": bytes(
+            b for p in bytes(range(32, 127)) * 2000 for b in (ord("a"), p)
+        ),
+    }
+
+
+def test_bom_prefix_accepts_nothing_in_the_generated_binary_corpus() -> None:
+    """Hard zero on a corpus that is identical on every host.
+
+    Seven generated binaries, whole and sliced at an unaligned stride, both
+    byte orders. Measured 2026-08-02: 443 slices, 0 flips. This one carries
+    no host caveat — if it ever goes red, a gate stopped firing.
+    """
+    slices = 0
+    flips: list[tuple[str, int, str]] = []
+    for name, blob in _f3_generated_corpus().items():
+        for tag, bom in (("plain", b""), ("le", b"\xff\xfe"),
+                         ("be", b"\xfe\xff")):
+            assert not _accepts(bom + blob), f"whole binary accepted: {name} {tag}"
+        slices += max(0, (len(blob) - _F3_SLICE) // _F3_STRIDE + 1)
+        flips += [(name, off, tag) for off, tag in _bom_flip_offsets(blob)]
+    assert slices >= 400, f"corpus shrank: {slices} slices"
+    assert flips == [], f"BOM turned a generated binary slice into text: {flips}"
+
+
+def test_bom_prefix_accepts_no_whole_binary_and_no_small_binary_slice() -> None:
+    """Hard zero over the system binaries where it can be a hard zero.
+
+    Covers: every candidate that exists on this host, whole, in all three
+    forms (plain / LE BOM / BE BOM); plus every 4 KiB slice, at stride
+    4093, of each of those files under 1 MiB. It does NOT cover slices of
+    the large glibc/CPython files — those carry a non-zero residual and are
+    pinned by name and offset in the test below, not asserted to be zero.
     """
     import pathlib
 
-    candidates = (
-        "/usr/bin/python3",
-        "/lib/x86_64-linux-gnu/libc.so.6",
-        "/usr/lib/locale/locale-archive",
-        "/lib/x86_64-linux-gnu/libcrypto.so.3",
-        "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
-        "/lib/x86_64-linux-gnu/libm.so.6",
-        "/lib/x86_64-linux-gnu/libz.so.1",
-        "/bin/bash", "/bin/ls", "/bin/cat", "/bin/date", "/bin/grep",
-        "/bin/dircolors", "/bin/sed",
-    )
-    paths = [p for p in candidates if pathlib.Path(p).is_file()]
+    paths = [pathlib.Path(p) for p in _F3_SYSTEM_BINARIES]
+    paths = [p for p in paths if p.is_file()]
     assert paths, "no system binaries available on this host"
 
-    stride, size = 4093, 4096
-    slices = 0
-    flips: list[tuple[str, int, str]] = []
-    small_flips: list[tuple[str, int, str]] = []
-    for p in paths:
-        blob = pathlib.Path(p).read_bytes()
+    small_slices = 0
+    for path in paths:
+        blob = path.read_bytes()
         for tag, bom in (("plain", b""), ("le", b"\xff\xfe"),
                          ("be", b"\xfe\xff")):
-            assert not _accepts(bom + blob), f"whole binary accepted: {p} {tag}"
-        off = 0
-        while off + size <= len(blob):
-            chunk = blob[off:off + size]
-            slices += 1
-            plain = _accepts(chunk)
-            for tag, bom in (("le", b"\xff\xfe"), ("be", b"\xfe\xff")):
-                if _accepts(bom + chunk) and not plain:
-                    flips.append((p, off, tag))
-                    if len(blob) < _F3_LARGE_FILE_BYTES:
-                        small_flips.append((p, off, tag))
-            off += stride
+            assert not _accepts(bom + blob), f"whole binary accepted: {path} {tag}"
+        if len(blob) >= _F3_LARGE_FILE_BYTES:
+            continue
+        small_slices += max(0, (len(blob) - _F3_SLICE) // _F3_STRIDE + 1)
+        flips = _bom_flip_offsets(blob)
+        assert not flips, f"BOM rescued a slice of {path}: {sorted(flips)[:10]}"
+    assert small_slices > 300, f"too few small-binary slices: {small_slices}"
 
-    assert slices > 2000, f"too few slices exercised: {slices}"
-    # (1) Executables and libraries under 1 MiB: hard zero.
-    assert small_flips == [], f"BOM rescued a small-binary slice: {small_flips}"
-    # (2) No flip may come from a slice that already starts with a BOM —
-    #     the BOM is always something the attacker prepends by hand.
-    for p, off, _tag in flips:
-        head = pathlib.Path(p).read_bytes()[off:off + 2]
-        assert head not in (b"\xff\xfe", b"\xfe\xff"), (p, off)
-    # (3) The data-table residual, recorded rather than wished away. The
-    #     envelope allows for a different glibc/CPython build; a real
-    #     regression (a gate stops firing) blows past it by orders of
-    #     magnitude.
-    assert len(flips) <= max(3 * _F3_MEASURED_FLIPS, slices // 100), (
-        f"BOM-flip residual grew: {len(flips)}/{slices} slices "
-        f"(measured {_F3_MEASURED_FLIPS}/{_F3_MEASURED_SLICES} "
-        f"on 2026-08-02): {flips[:20]}"
+
+def test_bom_flip_residual_equals_the_recorded_set_file_by_file() -> None:
+    """The residual is a record, not a budget: growth by one flip is red.
+
+    For every recorded binary still present at its recorded byte size, the
+    set of (offset, byte order) flips must equal the recorded set exactly.
+    There is no headroom and no ratio — a file that gains a flip fails, and
+    so does a file that gains one and loses another.
+
+    Files that are absent or rebuilt are skipped individually and named in
+    the failure message, so a different distribution relaxes the pin for
+    that file alone; if none of the fourteen still matches, the record no
+    longer describes this host and the test says so rather than passing.
+    """
+    import pathlib
+
+    checked: list[str] = []
+    unmatched: list[str] = []
+    for spec in _F3_SYSTEM_BINARIES:
+        path = pathlib.Path(spec)
+        record = _F3_RECORDED_FLIPS.get(path.name)
+        if record is None or not path.is_file():
+            unmatched.append(f"{path.name}: absent")
+            continue
+        size, expected = record
+        if path.stat().st_size != size:
+            unmatched.append(
+                f"{path.name}: {path.stat().st_size} bytes, recorded {size}"
+            )
+            continue
+        blob = path.read_bytes()
+        observed = _bom_flip_offsets(blob)
+        assert observed == set(expected), (
+            f"{path.name}: BOM-flip set changed. "
+            f"new {sorted(observed - set(expected))[:10]}, "
+            f"gone {sorted(set(expected) - observed)[:10]}"
+        )
+        # A flip may never come from a slice that already starts with a BOM:
+        # the BOM is always something an attacker prepends by hand.
+        for off, _tag in observed:
+            assert blob[off:off + 2] not in (b"\xff\xfe", b"\xfe\xff"), (
+                path.name, off
+            )
+        checked.append(path.name)
+
+    assert checked, (
+        "no recorded binary matched this host, so the residual record was "
+        f"not exercised at all: {unmatched}"
     )
+    # 18 flips over 14 files / 5 853 slices, recorded 2026-08-02.
+    total = sum(len(_F3_RECORDED_FLIPS[name][1]) for name in checked)
+    assert total <= 18, f"recorded set itself grew: {total} flips in {checked}"
 
 
 def test_r14_natural_bom_prefixed_slices_never_accept() -> None:
@@ -2011,23 +2126,70 @@ def test_r15_i1_generator_covers_the_shapes_that_failed() -> None:
         assert " " not in bare and "\n" not in bare, label
 
 
+# Round 16. Round 15 asserted that every entry above accepts in every
+# shape at every length, and bought that with two exemptions that
+# acceptance review refuted; the owner ruled removal over narrowing
+# (2026-08-02). This is the envelope that remains, MEASURED over all
+# 13 x 3 x 4 = 156 cases on 2026-08-02 — 48 refused, 108 byte-exact.
+#
+# Two causes, neither of which knows what a script is:
+#   * parity lanes — a whitespace-free run of >= 24 distinct two-byte
+#     letters is a tiny lead alphabet against a rich trail alphabet
+#     (``ru``/``el`` bare; ``ar``/``he`` bare stay under 24 distinct and
+#     accept, which is the proof the rule is alphabet size, not script);
+#   * readability floor — bodies that are 30-46% combining marks
+#     (``ar-harakat``, ``he-niqqud``, ``deva``, ``vi-nfd``) measure
+#     0.54-0.70 readable and fall under the 0.85 floor. ``th`` measures
+#     0.94 and keeps working at every length and shape.
+_R16_REFUSED_SHAPES = frozenset(
+    (label, spacing, reps)
+    for label, cases in {
+        "ru": [("bare", r) for r in (1, 3, 20, 200)],
+        "el": [("bare", r) for r in (1, 3, 20, 200)],
+        "ar-harakat": ([("bare", r) for r in (3, 20, 200)]
+                       + [(s, r) for s in ("spaced", "lines")
+                          for r in (1, 3, 20, 200)]),
+        "deva": ([("bare", r) for r in (3, 20, 200)]
+                 + [(s, r) for s in ("spaced", "lines")
+                    for r in (1, 3, 20, 200)]),
+        "he-niqqud": [(s, r) for s in ("bare", "spaced", "lines")
+                      for r in (3, 20, 200)],
+        "vi-nfd": [(s, r) for s in ("bare", "spaced", "lines")
+                   for r in (3, 20, 200)],
+    }.items()
+    for spacing, reps in cases
+)
+
+
 @pytest.mark.parametrize("label", sorted(_R15_SCRIPT_UNITS))
 @pytest.mark.parametrize("spacing", ["bare", "spaced", "lines"])
 @pytest.mark.parametrize("reps", [1, 3, 20, 200])
-def test_r14_i1_utf8_non_ascii_scripts_untouched(
+def test_r16_utf8_script_corpus_envelope_is_exactly_measured(
     label: str, spacing: str, reps: int,
 ) -> None:
-    """I1: UTF-8 accepts every script at every length, spaced or space-free.
+    """I3: every case is byte-exact, or refused by NAME of the limit.
 
-    "Every script" now includes two-byte scripts written without spaces and
-    scripts whose prose is 18-41% combining marks — the two shapes round 14
-    claimed to cover and did not.
+    The refused set is pinned exactly, so widening it (a future gate that
+    starts eating Chinese) and narrowing it (a new script exemption of the
+    kind that was just removed) both turn this red. Nothing is ever
+    silently mangled, and nothing that decodes is called "not a text file".
     """
     sample = _r15_shape(_R15_SCRIPT_UNITS[label], spacing) * reps
-    text, _metadata, _images = extract_text(
-        f"{label}.txt", sample.encode("utf-8"), "text/plain",
-    )
-    assert text == sample
+    raw = sample.encode("utf-8")
+    if (label, spacing, reps) in _R16_REFUSED_SHAPES:
+        with pytest.raises(ParseError) as exc_info:
+            extract_text(f"{label}.txt", raw, "text/plain")
+        assert exc_info.value.code == "E_PARSE_FORMAT_UNSUPPORTED"
+        assert (exc_info.value.user_message
+                == parser_registry._UNSUPPORTED_TEXT_CONTENT_MESSAGE), (
+            f"{label}/{spacing}/{reps} refused with the wrong advice: "
+            f"{exc_info.value.user_message}"
+        )
+    else:
+        text, _metadata, _images = extract_text(
+            f"{label}.txt", raw, "text/plain",
+        )
+        assert text == sample
 
 
 # ── Round-15: F1 (script-mixing clause deleted) + F2 (combining marks) ──────
@@ -2081,17 +2243,53 @@ def test_r15_f1_ordinary_symbol_documents_extract_byte_exact(label: str) -> None
     assert text == sample
 
 
-def test_r15_f1_clause_and_its_helper_are_gone() -> None:
-    """F1: the deleted clause must not come back under any name.
+def test_r16_i1_no_script_predicate_survives_under_any_name() -> None:
+    """I1: no predicate may exempt a body on the basis of its script.
 
-    ``_script_block_name`` classified decoded scalars by script and was the
-    closest surviving relative of the six-round predicate family. Nothing
-    in the module may map scalars to script/block names again.
+    ``_script_block_name`` (round 15's F1 deletion) mapped scalars to
+    script names. ``_is_utf8_two_byte_script_body`` (round 16's removal)
+    exempted a body from the parity gate when every non-ASCII sequence was
+    two bytes wide, i.e. when it looked like a two-byte script. Neither may
+    come back, here or under another name — the parity gate must decide
+    from lane statistics alone and never from a decode.
     """
-    assert not hasattr(parser_registry, "_script_block_name")
+    for banned_attr in ("_script_block_name", "_is_utf8_two_byte_script_body"):
+        assert not hasattr(parser_registry, banned_attr), banned_attr
     src = inspect.getsource(parser_registry._is_text_like)
     for banned in ("hangul", "cyrillic", "_script_block_name", "blocks"):
         assert banned not in src, f"{banned!r} reappeared in _is_text_like"
+    parity_body = "\n".join(
+        line for line in inspect.getsource(
+            parser_registry._parity_lanes_show_filler_smuggle,
+        ).split('"""')[-1].splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    for banned in ("decode(", "_is_utf8_two_byte_script_body", "unicodedata"):
+        assert banned not in parity_body, (
+            f"{banned!r} reappeared in the parity gate's executable body"
+        )
+
+
+def test_r16_i2_readable_ratio_has_no_positional_rule() -> None:
+    """I2: one rule for combining marks, checked by behaviour not by eye.
+
+    Round 15's rule looked backwards for a base, so the same multiset of
+    scalars scored differently depending on their order — that is exactly
+    how one readable scalar could carry an unbounded run of marks. The
+    ratio must now depend only on WHICH scalars are present.
+    """
+    import random
+
+    pool = list("Aa1中 ·│") * 6 + ["̀", "ְ", "॑"] * 6
+    for seed in range(25):
+        shuffled = pool[:]
+        random.Random(seed).shuffle(shuffled)
+        assert parser_registry._readable_ratio("".join(shuffled)) == (
+            parser_registry._readable_ratio("".join(sorted(pool)))
+        ), f"order changed the readable ratio (seed {seed})"
+
+    # A readable base followed by 99 marks is 1/100 readable, not 100/100.
+    assert parser_registry._readable_ratio("A" + "̀" * 99) == 0.01
 
 
 _R15_COMBINING_PROSE = {
@@ -2105,29 +2303,63 @@ _R15_COMBINING_PROSE = {
 
 
 @pytest.mark.parametrize("label", sorted(_R15_COMBINING_PROSE))
-def test_r15_f2_combining_mark_prose_extracts_byte_exact(label: str) -> None:
-    """F2: prose that is 20-41% Mn/Mc/Me must not be called "not text"."""
+def test_r16_combining_mark_prose_outcome_follows_the_one_mark_rule(
+    label: str,
+) -> None:
+    """I2: one rule — a mark never counts — and the outcome follows from it.
+
+    Round 15 counted marks behind a readable base, which made all four of
+    these accept and also let one readable scalar carry an unbounded run of
+    marks. With the positional case removed, the outcome is decided by the
+    0.85 readable floor alone: Thai measures 0.94 and keeps working, the
+    three heavier scripts measure 0.54-0.62 and are refused BY NAME of the
+    limit — never as "not a text file" (I3).
+    """
     unit, min_share = _R15_COMBINING_PROSE[label]
     sample = (unit * (200 // len(unit) + 1))[:200]
     share = sum(
         1 for c in sample if unicodedata.category(c) in ("Mn", "Mc", "Me")
     ) / len(sample)
     assert share >= min_share, f"{label} fixture lost its marks: {share:.1%}"
-    text, _metadata, _images = extract_text(
-        f"{label}.txt", sample.encode("utf-8"), "text/plain",
-    )
-    assert text == sample
+    ratio = parser_registry._readable_ratio(sample)
+    raw = sample.encode("utf-8")
+    if ratio >= parser_registry._MIN_READABLE_RATIO:
+        assert label == "thai", f"{label} unexpectedly clears the floor"
+        text, _metadata, _images = extract_text(
+            f"{label}.txt", raw, "text/plain",
+        )
+        assert text == sample
+    else:
+        with pytest.raises(ParseError) as exc_info:
+            extract_text(f"{label}.txt", raw, "text/plain")
+        assert (exc_info.value.user_message
+                == parser_registry._UNSUPPORTED_TEXT_CONTENT_MESSAGE), (
+            f"{label} ({ratio:.2f} readable) got the wrong advice: "
+            f"{exc_info.value.user_message}"
+        )
 
 
-def test_r15_f2_vietnamese_nfd_extracts_byte_exact() -> None:
-    """F2: NFD Vietnamese (23% combining) is the same file as its NFC form."""
+def test_r16_vietnamese_nfc_extracts_nfd_is_refused_by_name() -> None:
+    """The NFC/NFD split is the honest cost of dropping the mark exemption.
+
+    NFC Vietnamese carries no marks at all and is byte-exact. NFD is 23%
+    Mn, measures 0.67 readable, and is refused — with the limit named, so
+    the user can act (re-save NFC / write in Chinese or English) instead of
+    being told a valid UTF-8 file is not text.
+    """
     nfc = ("Đây là tài liệu nội bộ của mạng lưới trung tâm nghiên cứu " * 4)[:200]
     nfd = unicodedata.normalize("NFD", nfc)
-    for tag, sample in (("nfc", nfc), ("nfd", nfd)):
-        text, _metadata, _images = extract_text(
-            f"vi-{tag}.txt", sample.encode("utf-8"), "text/plain",
-        )
-        assert text == sample, tag
+    assert nfd != nfc
+
+    text, _metadata, _images = extract_text(
+        "vi-nfc.txt", nfc.encode("utf-8"), "text/plain",
+    )
+    assert text == nfc
+
+    with pytest.raises(ParseError) as exc_info:
+        extract_text("vi-nfd.txt", nfd.encode("utf-8"), "text/plain")
+    assert (exc_info.value.user_message
+            == parser_registry._UNSUPPORTED_TEXT_CONTENT_MESSAGE)
 
 
 @pytest.mark.parametrize(
@@ -2140,60 +2372,90 @@ def test_r15_f2_vietnamese_nfd_extracts_byte_exact() -> None:
     ],
 )
 @pytest.mark.parametrize("length", [31, 32, 64, 200, 400])
-def test_r15_f2_space_free_two_byte_script_runs_extract(
+def test_r16_space_free_two_byte_runs_stop_at_64_bytes(
     label: str, unit: str, length: int,
 ) -> None:
-    """F2: a space-free 2-byte script must accept at EVERY length.
+    """The cost of removing the exemption, pinned at its exact boundary.
 
-    UTF-8 puts one or two lead bytes on one parity lane and the whole
-    alphabet on the other, which is the same shape as a tiny filler
-    alphabet opposite a rich payload lane. Before round 15 these runs
-    accepted at 31 characters and were refused from 32 (64 bytes) up.
-    Deleting F1's script-mixing clause did NOT fix this — a different
-    predicate (``_parity_lanes_show_filler_smuggle``) was the cause.
+    Round 15 made these accept at every length via
+    ``_is_utf8_two_byte_script_body``; acceptance review showed the same
+    predicate admitted machine-generated byte patterns, and the owner ruled
+    removal (2026-08-02). Measured envelope: 31 characters (62 bytes) is
+    under the 64-byte parity window and accepts; 32 characters (64 bytes)
+    and up is refused — with the limit NAMED, not as "not a text file".
+
+    ``ar``/``he`` in ``_R15_SCRIPT_UNITS`` still accept space-free at every
+    length because their samples stay under 24 distinct trail bytes. The
+    rule is alphabet size, not script.
+
+    Correcting the round-15 record (F4): that round reported "one wider
+    character declines, two accept", measured only at regularly spaced
+    positions. Re-measured on this code 2026-08-02, over a 400-character
+    Cyrillic run: ONE inserted three-byte character accepts 92/100, two
+    ADJACENT decline 0/340, two scattered accept 77/85. The cause is byte
+    parity — an odd-length insertion moves every following lead byte onto
+    the other lane, so neither lane is a tiny alphabet any more. That makes
+    the gate more permissive for real text, not less safe: the same
+    perturbation over the whole adversarial matrix (4 914 weaves; +1 byte,
+    +3 bytes, +1 byte mid-body) accepted 0.
     """
     sample = (unit * (length // len(unit) + 1))[:length]
+    raw = sample.encode("utf-8")
     assert all(0x80 <= ord(c) < 0x800 for c in sample)
-    text, _metadata, _images = extract_text(
-        f"{label}.txt", sample.encode("utf-8"), "text/plain",
-    )
-    assert text == sample
+    if len(raw) < 64:
+        text, _metadata, _images = extract_text(
+            f"{label}.txt", raw, "text/plain",
+        )
+        assert text == sample
+    else:
+        with pytest.raises(ParseError) as exc_info:
+            extract_text(f"{label}.txt", raw, "text/plain")
+        assert (exc_info.value.user_message
+                == parser_registry._UNSUPPORTED_TEXT_CONTENT_MESSAGE)
 
 
-def test_r15_f2_utf8_two_byte_exemption_is_narrow(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The exemption must not hand the parity gate to anything else.
+def test_r16_parity_alphabet_rule_over_the_whole_two_byte_space() -> None:
+    """F3: pin the check on the population it actually decides.
 
-    It fires only when the body is valid UTF-8 with at least one 2-byte
-    sequence and no wider one. Both halves are checked here: a binary
-    woven with a filler alphabet does not decode at all, and an all-ASCII
-    weave has no 2-byte sequence — and forcing the exemption on turns the
-    binary weave into an accept, which is what makes the narrowness
-    load-bearing rather than decorative.
+    The exemption's own test sampled natural Cyrillic against two negatives
+    that happened not to satisfy the helper, so it never touched the 1 920
+    scalars the helper served. What now carries that decision is the
+    tiny-filler clause of ``_parity_lanes_show_filler_smuggle``, and this
+    sweeps its whole population: every two-byte lead family (0xC2-0xDF, all
+    of U+0080-U+07FF), every alphabet size within each family, whitespace-
+    free, 400 characters.
+
+    The rule, measured 2026-08-02 and identical in all 29 usable families
+    (0xCC is entirely combining marks, so no readable run exists there): a
+    whitespace-free run accepts while it uses fewer than 24 distinct
+    scalars and is refused from 24 up. Nothing depends on which block the
+    scalars come from — if a script exemption comes back under any name,
+    some family stops matching and this goes red.
     """
-    payload = _uint16_band(2000, 20000)
-    raw = bytes(b for pair in zip(b"ABCD" * (len(payload) // 4 + 1), payload)
-                for b in pair)
-    assert not parser_registry._is_utf8_two_byte_script_body(raw)
-    assert parser_registry._parity_lanes_show_filler_smuggle(raw)
-    with pytest.raises(ParseError):
-        extract_text("evil.dat", raw, "application/octet-stream")
-
-    # All-ASCII diverse ⊗ constant-``a`` weave: valid UTF-8, but no 2-byte
-    # sequence, so the exemption must stay off (CSP T3 pins this shape).
-    ascii_weave = bytes(
-        b for p in bytes(range(32, 127)) * 50 for b in (ord("a"), p)
-    )
-    assert not parser_registry._is_utf8_two_byte_script_body(ascii_weave)
-    assert parser_registry._parity_lanes_show_filler_smuggle(ascii_weave)
-
-    # A pure 2-byte-script run is the one shape it does cover.
-    cyrillic = ("абвгдежзийклмнопрстуфхцчшщъыьэюя" * 13)[:400].encode("utf-8")
-    assert parser_registry._is_utf8_two_byte_script_body(cyrillic)
-    assert not parser_registry._parity_lanes_show_filler_smuggle(cyrillic)
-
-    monkeypatch.setattr(
-        parser_registry, "_is_utf8_two_byte_script_body", lambda _r: True,
-    )
-    assert not parser_registry._parity_lanes_show_filler_smuggle(raw)
+    threshold = 24
+    families = 0
+    for lead in range(0xC2, 0xE0):
+        base = (lead & 0x1F) << 6
+        block = [chr(base + i) for i in range(64)]
+        readable = [c for c in block if parser_registry._is_readable_char(c)]
+        if len(readable) < 2:
+            continue  # 0xCC is entirely combining marks: no run to build
+        families += 1
+        # The full readable block, space-free, is refused in every family.
+        full = "".join((readable * (400 // len(readable) + 1)))[:400]
+        if len(readable) >= threshold:
+            assert not _accepts(full.encode("utf-8")), (
+                f"lead {lead:#04x}: {len(readable)} distinct scalars accepted"
+            )
+        # Alphabet-size sweep. k == 1 is decided by the mono-symbol pad
+        # rule, not by parity, so it is excluded here by construction.
+        for k in range(2, len(readable) + 1):
+            alphabet = readable[:k]
+            sample = "".join(alphabet * (400 // k + 1))[:400]
+            accepted = _accepts(sample.encode("utf-8"))
+            assert accepted == (k < threshold), (
+                f"lead {lead:#04x}, {k} distinct scalars: "
+                f"{'accepted' if accepted else 'refused'}, expected the "
+                f"opposite — the boundary moved off {threshold}"
+            )
+    assert families == 29, f"expected 29 usable two-byte lead families, got {families}"

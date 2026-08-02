@@ -117,6 +117,16 @@ _UTF16_NON_ASCII_MESSAGE = (
     "此檔案可解讀為 UTF-16，但內容以非 ASCII 文字（例如中文）為主；"
     "UTF-16 僅支援以 ASCII 為主的檔案。請另存為 UTF-8 後再上傳。"
 )
+# Valid UTF-8 whose decoded scalars do not clear the readability / lane
+# structure contract: a text reading plainly exists, so "this is not a text
+# file" would be a lie. Name the limit instead (I3, round 16). This is the
+# refusal that space-free two-byte-script runs and heavy combining-mark
+# prose now receive, after the two round-15 exemptions were removed.
+_UNSUPPORTED_TEXT_CONTENT_MESSAGE = (
+    "此檔案可解讀為 UTF-8，但內容不在本平台支援的文字範圍內"
+    "（目前支援以繁體中文、英文為主的文件）。"
+    "請改以中文或英文提供內容後再上傳。"
+)
 # C0 always exempt from _control_ratio. ESC / FF / VT are NOT blanket-
 # exempt: lone ESC pads binaries and bills invisible tokens; FF/VT are
 # rare in real listings (≪5%) so they count toward the ordinary cap.
@@ -169,11 +179,11 @@ def _is_readable_char(ch: str) -> bool:
       - U+FFFD (replacement) — evidence of FAILED decoding, never of text
       - DEL, other ``Cc`` / ``C1``, ``Cf`` (ZWSP, IAA…), ``Cs``, ``Co``,
         ``Zl`` / ``Zp``. Private-use is excluded explicitly.
-      - ``M*`` combining marks *on their own*. A mark has no glyph of its
-        own; it renders on the base character in front of it, and with no
-        base a renderer shows a dotted-circle placeholder. Marks are
-        therefore counted by ``_readable_ratio``, which knows what
-        precedes them — see there.
+      - ``M*`` combining marks. A mark has no glyph of its own; it renders
+        on whatever base happens to precede it, so its presence is not by
+        itself evidence that the body is text. Decided here, per
+        character, exactly like every other category — ``_readable_ratio``
+        adds no positional rule on top (round 16).
     Justification is the Unicode general category of the scalar — not a
     code-point allow-list — so new box-drawing / checklist glyphs stay
     visible without per-character patches.
@@ -196,32 +206,24 @@ def _is_readable_char(ch: str) -> bool:
 
 
 def _readable_ratio(text: str) -> float:
-    """Fraction of scalars that render as a glyph, marks counted in context.
+    """Fraction of scalars that render as a glyph of their own.
 
-    Everything except ``M*`` is decided per character by
-    ``_is_readable_char``. A combining mark counts as readable exactly when
-    the scalar in front of it is readable, because that is the character it
-    renders on — mark stacks (Devanagari matra + nukta, Hebrew point +
-    dagesh) therefore count in full, while a mark with no base does not.
+    THE RULE (round 16): every scalar is decided by ``_is_readable_char``
+    and by nothing else. A combining mark never counts, wherever it sits —
+    no "behind a readable base" case, no look-back. Round 15's positional
+    rule let one readable scalar pull an arbitrarily long run of marks to
+    1.0; owner ruling 2026-08-02 was to remove it, not narrow it.
 
-    Why the context matters: Arabic with harakat, Hebrew with niqqud,
-    Devanagari, Thai and NFD Vietnamese are 18-41% marks, so counting no
-    mark at all dragged ordinary prose under the 0.85 floor and refused it
-    as "not a text file" (round-15 F2). Counting every mark unconditionally
-    over-corrected: an int32 array read as UTF-16 is 16% unattached marks
-    and rose from 0.68 to 0.86, crossing the floor and earning a binary the
-    "re-save as UTF-8" advice. In context it measures 0.79 and stays
-    correctly diagnosed, while every prose sample above measures 1.00.
+    Cost, stated: prose that is 18-41% marks (Thai, Devanagari, Hebrew
+    with niqqud, Arabic with harakat, NFD Vietnamese) falls under the 0.85
+    floor and is refused — by name of the limit, see
+    ``_UNSUPPORTED_TEXT_CONTENT_MESSAGE``. Counting marks unconditionally
+    instead is worse: an int32 array read as UTF-16 is 16% unattached
+    marks and rises 0.68 → 0.86, earning a binary "re-save as UTF-8".
     """
     if not text:
         return 0.0
-    readable = 0
-    on_base = False  # renderability of the base the next mark would attach to
-    for ch in text:
-        if unicodedata.category(ch)[0] != "M":
-            on_base = _is_readable_char(ch)
-        readable += on_base
-    return readable / len(text)
+    return sum(1 for ch in text if _is_readable_char(ch)) / len(text)
 
 
 def _ascii_textual_ratio(text: str) -> float:
@@ -406,45 +408,6 @@ def _lane_printable_ratio(lane: bytes) -> float:
     ) / len(lane)
 
 
-def _is_utf8_two_byte_script_body(raw: bytes) -> bool:
-    """Valid UTF-8, at least one 2-byte sequence, and no wider sequence.
-
-    Pure encoding structure: nothing here decides whether the text is real,
-    which script it is in, or how varied it is. It answers one question —
-    is the parity shape below explained by UTF-8's own ``110xxxxx
-    10xxxxxx`` layout rather than by a weave?
-
-    Why it is needed: a document written in a two-byte script with no
-    spaces (Cyrillic, Greek, Hebrew, Arabic, Latin Extended…) puts one or
-    two distinct lead bytes on one lane and the whole alphabet on the
-    other — byte-for-byte the same shape as a tiny filler alphabet
-    opposite a rich payload lane. Round-15 measurement: such a run accepts
-    at 31 characters and is refused from 32 (64 bytes) up.
-
-    Why it cannot smuggle: for this to hold, every non-ASCII byte pair must
-    already be a valid 2-byte sequence, so the body *is* text in
-    U+0080–U+07FF. The C1 block inside that range stays unreadable under
-    ``_is_readable_char``, and real container / array payloads carry bytes
-    that break the decode outright.
-
-    Both halves of the condition are load-bearing, measured 2026-08-02:
-      * without the ``< 0x800`` ceiling the exemption would also cover
-        bodies built from 3-byte sequences, where the parity gate is still
-        the thing doing work;
-      * without ``>= 0x80`` it would cover an all-ASCII body, and the
-        diverse-ASCII ⊗ constant-``a`` weave pinned by
-        ``test_csp_parity_smuggle_low_nul_unsupported`` would be billed.
-    """
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    if not text:
-        return False
-    top = max(ord(c) for c in text)
-    return 0x80 <= top < 0x800
-
-
 def _parity_lanes_show_filler_smuggle(raw: bytes) -> bool:
     """I-1': one parity lane carries text; the opposite lane is non-text.
 
@@ -462,10 +425,15 @@ def _parity_lanes_show_filler_smuggle(raw: bytes) -> bool:
     if po >= _MIN_PARITY_PRINTABLE and pe < _MAX_PARITY_OTHER_PRINTABLE:
         return True
     # Tiny filler alphabet on one lane (≤32 distinct) opposite a rich lane.
-    # Exempt the one shape that produces it legitimately: UTF-8's own
-    # 2-byte lead/trail split (space-free Cyrillic, Greek, Hebrew, Arabic).
+    # No exemption (round 16): round 15 exempted "valid UTF-8, no sequence
+    # wider than two bytes" so space-free Cyrillic/Greek/Hebrew/Arabic runs
+    # would accept; review showed it also admits machine-generated byte
+    # patterns, and the owner ruled removal over narrowing. Cost, stated: a
+    # whitespace-free run of two-byte-script letters is refused from 64
+    # bytes up — with the limit named, not as "not a text file". Nothing
+    # here decodes: the decision is distinct byte values per parity lane.
     ue, uo = len(set(even)), len(set(odd))
-    if pe >= 0.50 and po >= 0.50 and not _is_utf8_two_byte_script_body(raw):
+    if pe >= 0.50 and po >= 0.50:
         if ue <= 32 and uo >= max(24, ue * 3):
             return True
         if uo <= 32 and ue >= max(24, uo * 3):
@@ -562,6 +530,24 @@ def _unsupported_user_message(raw: bytes) -> str:
     return _NOT_TEXT_MESSAGE
 
 
+def _clean_utf8_refusal_message(text: str, control_ratio: float) -> str:
+    """Refusal sentence for a body that IS valid UTF-8 but fails a gate.
+
+    Two causes (I3): nothing renders at all / dense C0 / container-header
+    C0 bursts → it is not text, say so. Anything else → the scalars do
+    render and the platform simply does not accept this content
+    (space-free two-byte-script runs, mark-heavy prose, filler weaves);
+    "not a readable text file" would be false, so name the limit.
+    Messaging only — the caller already decided. No script inspection.
+    """
+    plausible_text = (
+        _readable_ratio(text) > 0
+        and control_ratio < _MAX_CONTROL_RATIO
+        and not _soft_residual_controls_reject(text)
+    )
+    return _UNSUPPORTED_TEXT_CONTENT_MESSAGE if plausible_text else _NOT_TEXT_MESSAGE
+
+
 def _decode_text_bytes(raw: bytes) -> str:
     """Decode text bytes: UTF-8, or BOM'd ASCII-dominant UTF-16.
 
@@ -596,7 +582,9 @@ def _decode_text_bytes(raw: bytes) -> str:
         # high NUL falls through to the BOM-less UTF-16 refusal below.
         if nul_ratio <= _MAX_RAW_NUL_RATIO:
             raise ParseError.format_unsupported(
-                user_message="此檔案不是可讀的文字檔（偵測到大量無效位元組）。",
+                user_message=_clean_utf8_refusal_message(
+                    utf8_text, ctrl_with_nul,
+                ),
                 details={
                     "replacement_ratio": 0.0,
                     "threshold": _MAX_REPLACEMENT_RATIO,
@@ -1240,7 +1228,10 @@ class ParserRegistry:
         ".docx": DocxParser(),
         ".doc": DocParser(),
         ".odt": OdtParser(),
-        # text-class / source formats (utf-8 with errors="replace")
+        # text-class / source formats — decoded by ``_decode_text_bytes``
+        # (strict UTF-8, or BOM'd ASCII-dominant UTF-16; anything else is
+        # refused). NOT errors="replace": that was the base-version bug
+        # this package exists to close.
         ".py": PlainTextParser(),
         ".csv": PlainTextParser(),
         ".tsv": PlainTextParser(),

@@ -2084,7 +2084,15 @@ def test_csp_i2_bom_prefix_never_creates_tokens(
 def test_csp_refusal_notice_advice_matches_cause(
     client: TestClient, db, storage_root,
 ):
-    """I3/I4 at the chat notice: four causes, four different sentences."""
+    """I3/I4 at the chat notice: five causes, five different sentences.
+
+    Round 16 added the fifth: a body that IS valid UTF-8 but whose scalars
+    the platform does not accept (a whitespace-free run of >= 24 distinct
+    two-byte letters; prose that is mostly combining marks). Those two used
+    to accept, via the exemptions removed this round, and must now be
+    refused by NAME of the limit — telling a user that a perfectly valid
+    UTF-8 file "is not a readable text file" is the failure I3 forbids.
+    """
     import struct
     import zlib
 
@@ -2111,6 +2119,13 @@ def test_csp_refusal_notice_advice_matches_cause(
         ("elf", elf),
         ("big5", ("姓名,單位,代號\n王小明,資訊室,A01\n" * 40).encode("big5")),
         ("png", _png()),
+        # Valid UTF-8, refused on content: a space-free Cyrillic run and
+        # Devanagari prose (66% combining marks).
+        ("utf8_run",
+         ("абвгдежзийклмнопрстуфхцчшщъыьэюя" * 13)[:400].encode("utf-8")),
+        ("utf8_marks",
+         (("यह एक आंतरिक नेटवर्क दस्तावेज़ है जिसमें विवरण दिया गया है " * 4)[:200]
+          ).encode("utf-8")),
     ]
     atts = _extract_many(client, db, username="advice", items=items)
     notices = {}
@@ -2130,3 +2145,12 @@ def test_csp_refusal_notice_advice_matches_cause(
         assert "另存" not in notices[tag], (
             f"{tag} must not be told to re-save as UTF-8: {notices[tag]}"
         )
+    # I3: a valid UTF-8 body must never be called "not a readable text file".
+    for tag in ("utf8_run", "utf8_marks"):
+        assert "不是可讀的文字檔" not in notices[tag], notices[tag]
+        assert "可解讀為 UTF-8" in notices[tag], notices[tag]
+        assert "支援" in notices[tag] and "中文" in notices[tag], notices[tag]
+    assert len({notices[k] for k in ("big5", "zh_utf16", "png", "utf8_run")}) == 4
+    assert notices["utf8_run"].split("：", 1)[-1] == (
+        notices["utf8_marks"].split("：", 1)[-1]
+    ), "one limit, one sentence"
