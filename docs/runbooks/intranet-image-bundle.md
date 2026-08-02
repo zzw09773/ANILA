@@ -230,10 +230,39 @@ Error response from daemon: open /var/lib/docker/overlay2/.../merged/run/sisidsd
 
 腳本在最終打包前會**逐張 preflight save**並點名失敗的 tag。不要略過。
 
-可行解法(擇一):
+### ⚠ 更正(2026-08-02 實測):停棧**沒有用**
 
-1. **明天正式打包推薦**:先 `docker compose -p anila-restart ... stop`(或 down),再跑 export,再 up。不碰 IDS、tag 就是內網要的 `anila-restart-*`。
-2. **驗證棧不能停時**(本預演路徑):用**另一個** `COMPOSE_PROJECT_NAME`(例如 `anila-pack-rehearsal`)build出新 tag 再 save。對被毒到的服務要 `--no-cache`,否則 cache 命中同一層仍會失敗。`codeserver` 的 image 名寫死 `anila-codeserver:local`,必須加 overlay 改成別的 tag,否則 compose build 會 retag 正在跑的那張。
+本節原本寫「先停棧再 export」是推薦解法。**實測推翻**:2026-08-02 演練時整棧
+`stop`(15 個容器全數停止,`ps -q` 為 0)後直接 export,同樣那四張
+(`anila-codeserver:local`、`anila-restart-anila-studio`、`anila-restart-asr-gateway`、
+`anila-restart-ingestion-worker`)照樣 save 失敗,錯誤訊息一字不差。
+
+IDS 毒的是 **overlay 層本身**,不是「容器正在跑」這件事。停棧不會讓被毒的層恢復。
+照原建議做的人會停掉整個平台、等九分鐘、然後拿到一樣的失敗。
+
+**實際可行的解法**:
+
+`REBUILD_ON_SAVE_FAIL=1` —— save 失敗時對「有 `build:` 的服務」立刻
+`compose build --no-cache` 該服務並馬上再 save,搶在 IDS 再次掃描前完成。
+
+```bash
+COMPOSE_PROJECT_NAME=anila-restart INCLUDE_ASR=1 \
+SKIP_BUILD=1 SKIP_PULL=1 REBUILD_ON_SAVE_FAIL=1 \
+  bash infra/deployment/intranet/build-and-export-for-intranet.sh /tmp/anila-intranet-bundle
+```
+
+⚠ 這個旗標會對失敗的服務 `--no-cache` 重建,而 `anila-codeserver:local` 與
+`anila/asr-decoder:0.1.0` 是**寫死的共用 tag**——重建會 retag 正在跑的那張。
+所以**執行前要先停棧**(停棧對 IDS 無效,但對「不要動到正在服務的映像」有效),
+或改用另一個 `COMPOSE_PROJECT_NAME` 加 overlay 換 tag(見下)。
+
+**上游 image**(pg/redis/nginx/n8n/gitlab)沒有 `build:`,救不回來——那幾張如果被毒到
+只能 `docker pull` 重抓,內網無網路時就必須從有網路的機器重新打包。
+
+**替代路徑**(棧完全不能動時):用另一個 `COMPOSE_PROJECT_NAME`(例如
+`anila-pack-rehearsal`)build 出新 tag 再 save,並用 overlay 把 `codeserver` 的
+寫死 tag 換掉。⚠ 這樣產出的 bundle 內 tag 前綴是那個 project 名,
+**內網起棧的 `-p` 必須同名**,否則 compose 找不到映像。
 
 ---
 
