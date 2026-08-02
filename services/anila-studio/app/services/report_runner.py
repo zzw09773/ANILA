@@ -66,6 +66,7 @@ from app.clients.csp_client import (
     search_chunks,
 )
 from app.config import settings
+from app.generated_preamble import ERA_RULES, NATIONAL_TERMINOLOGY
 from app.schemas.report import (
     JOB_STEP_DRAFTING,
     JOB_STEP_NORMALIZING,
@@ -142,6 +143,17 @@ _PRESET_TITLE_HINT: dict[ReportPreset, str] = {
     ReportPreset.TEACHING_HANDOUT: "教學講義",
     ReportPreset.EXTERNAL_COMMS: "對外溝通文件",
 }
+
+
+def _compose_system_prompt(voice: str) -> str:
+    """Persona voice + 平台共同前導的國家用語／紀年段（單一組裝點）。"""
+    return "\n\n".join(
+        (
+            NATIONAL_TERMINOLOGY.strip(),
+            ERA_RULES.strip(),
+            voice.strip(),
+        )
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -262,7 +274,7 @@ async def _llm_outline(
     collection. The schema is constrained but deliberately loose on
     section count (4-6) so the model can match the material.
     """
-    voice = _PRESET_VOICE[request.preset]
+    voice = _compose_system_prompt(_PRESET_VOICE[request.preset])
     seed = _derive_seed_query(request.preset, request.extra_instructions)
 
     chunk_block_lines: list[str] = []
@@ -338,7 +350,7 @@ async def _llm_draft_section(
     chunks present in its slice; this avoids spurious citations to
     unrelated references.
     """
-    voice = _PRESET_VOICE[preset]
+    voice = _compose_system_prompt(_PRESET_VOICE[preset])
 
     chunk_lines: list[str] = []
     ref_lookup: dict[int, ReportReference] = {r.chunk_id: r for r in references if r.chunk_id is not None}
