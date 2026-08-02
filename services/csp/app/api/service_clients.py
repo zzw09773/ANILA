@@ -1,11 +1,15 @@
 """Admin API for ``service_clients`` (Router / worker / admin tool tokens).
 
-Sprint 8 X / Phase A. Sister to ``agents.py``'s credential endpoints —
-same shape, different table. Only admins ever interact with these
-rows; the clients themselves don't have a ``/credentials/me`` self
-endpoint here (Router boots from a state file populated by the same
-``anila-core agent bootstrap`` CLI used for AgenticRAG agents, but
-the bootstrap target is this table instead of ``agent_credentials``).
+Sprint 8 X / Phase A. Only admins ever interact with these rows; the
+clients themselves have no ``/credentials/me`` self endpoint here.
+
+⚠ This table is NOT the agent path and must not be confused with it.
+``agent_credentials`` issuance was retired to 410 on 2026-08-02 —
+agents authenticate with a per-dispatch 5-minute RS256 JWT and hold no
+long-lived secret. The ``anila-core agent bootstrap`` CLI this
+docstring used to point at is gone with it. Platform service-to-service
+identity (Router / worker / admin tool) still lives here and is still
+issued by an admin; ``router-primary`` is live and depends on it.
 
 Endpoint surface
 ================
