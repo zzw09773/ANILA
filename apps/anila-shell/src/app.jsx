@@ -133,6 +133,7 @@ import { TweaksPanel } from "./tweaks.jsx";
 import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
 import { ServicesPanel } from "./services.jsx";
+import { ANILA_LM_ENTRY_ENABLED } from "./anilalmReleaseGate.js";
 import { originHref } from "./shellNav.jsx";
 import { classifiedShareDenial, handoffNotice } from "./uxCopy.js";
 import { ArtifactPanel } from "./artifact.jsx";
@@ -2482,8 +2483,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
               )}
               {/* Slice 9a — Task result 可轉 artifact（doc 10 §11）：對話已建立
                   Task 時，提供薄連結深連到知識 SPA 的 Studio 面，帶 taskId
-                  query 讓 ALM 承接；不在 shell 內另建 Studio 啟動器。 */}
-              {selectedConv?.taskId != null && (
+                  query 讓 ALM 承接；不在 shell 內另建 Studio 啟動器。
+                  本 release ANILA LM 關閉時一併隱藏（同一旗標 anilalmReleaseGate）。 */}
+              {ANILA_LM_ENTRY_ENABLED && selectedConv?.taskId != null && (
                 <a
                   href={originHref(`/anilalm?taskId=${encodeURIComponent(selectedConv.taskId)}`)}
                   title="將此任務結果轉為產出（Studio / artifact）"

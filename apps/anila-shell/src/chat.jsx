@@ -1329,37 +1329,29 @@ export const COMPOSER_LINE_HEIGHT = 22;
 // 超過幾行才開始捲動。用「行」不用像素:8 × 22 = 176px,約等於原本的 200px 上限,
 // 但保證上限剛好切在行與行之間。
 export const COMPOSER_MAX_ROWS = 8;
-// File picker accept list — keep in sync with CSP text/code extractors.
+// File picker accept list — must be ⊆ CSP ALLOWED_EXTENSIONS
+// (services/csp/app/services/attachment_service.py). `image/*` is a MIME
+// wildcard for the browser dialog; concrete image exts still listed so a
+// user can filter to .svg etc. ⚠ .svg is accepted as image-only (no text
+// parser on the backend) — keep offering it; that asymmetry is deliberate.
+// Guarded by src/__tests__/composerFileAccept.test.js (derived lists).
 export const COMPOSER_FILE_ACCEPT = [
   "image/*",
-  ".pdf",
-  ".txt",
-  ".md",
-  ".json",
-  ".py",
-  ".csv",
-  ".tsv",
-  ".log",
-  ".yaml",
-  ".yml",
-  ".toml",
-  ".ini",
-  ".xml",
-  ".svg",
-  ".sh",
-  ".sql",
-  ".js",
-  ".ts",
-  ".jsx",
-  ".tsx",
-  ".java",
-  ".go",
-  ".rs",
-  ".c",
-  ".cpp",
-  ".h",
-  ".rb",
-  ".php",
+  // 文件
+  ".pdf", ".txt", ".md", ".csv", ".tsv", ".json", ".log",
+  ".doc", ".docx", ".odt", ".rtf",
+  ".ppt", ".pptx", ".odp",
+  ".xls", ".xlsx", ".ods",
+  // 圖檔（含 .svg：後端無文字解析器，僅當圖）
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
+  // 純文字 / 程式碼
+  ".html", ".htm", ".xml", ".yaml", ".yml", ".toml", ".ini",
+  ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".sql",
+  ".sh", ".bash", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".r", ".m", ".tex",
+  // USAF Digital DATCOM / 工程純文字
+  ".dcm", ".dat", ".inp", ".out",
+  // 壓縮
+  ".zip",
 ].join(",");
 
 const EXTRACT_FAIL_STATUSES = new Set(["unsupported", "failed", "too_large"]);
