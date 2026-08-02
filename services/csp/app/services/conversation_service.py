@@ -19,6 +19,7 @@ from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier
 from app.services import message_tree as mtree
+from app.services import zh_normalize_service
 from app.services.usage_service import _department_scope_ids
 
 
@@ -665,6 +666,8 @@ def append_message(
     if parent_id_explicit:
         _enforce_explicit_parent_role(db, conv.id, resolved_parent, role)
     _enforce_sibling_cap(db, conv.id, resolved_parent)
+    # §6-3：assistant 落庫前靜默 s2twp＋域內用語；user 原文不動（fail-open）
+    content, zh_changed = zh_normalize_service.prepare_message_content(role, content)
     msg = Message(
         conversation_id=conv.id,
         parent_id=resolved_parent,
@@ -678,6 +681,7 @@ def append_message(
     )
     db.add(msg)
     db.flush()
+    zh_normalize_service.log_if_changed(msg.id, zh_changed)
     # set_active=false only declines to MOVE an existing pointer; never leave NULL.
     if set_active or conv.active_leaf_message_id is None:
         conv.active_leaf_message_id = msg.id
@@ -731,6 +735,8 @@ def branch_message(
         )
     parent = target.parent_id
     _enforce_sibling_cap(db, conv.id, parent)
+    # §6-3：與 append_message 同一落庫邊界（regenerate / edit-re-ask）
+    content, zh_changed = zh_normalize_service.prepare_message_content(role, content)
     msg = Message(
         conversation_id=conv.id,
         parent_id=parent,
@@ -744,6 +750,7 @@ def branch_message(
     )
     db.add(msg)
     db.flush()
+    zh_normalize_service.log_if_changed(msg.id, zh_changed)
     # set_active=false only declines to MOVE an existing pointer; never leave NULL.
     if set_active or conv.active_leaf_message_id is None:
         conv.active_leaf_message_id = msg.id
@@ -887,7 +894,12 @@ def update_message_content(
     )
     if msg is None:
         raise HTTPException(status_code=404, detail="訊息不存在")
+    zh_changed = 0
     if content is not None:
+        # §6-3：依既有訊息角色正規化（ANILALM finalize 等 in-place 寫入）
+        content, zh_changed = zh_normalize_service.prepare_message_content(
+            msg.role, content,
+        )
         msg.content = content
     if trace_id is not None:
         msg.trace_id = trace_id
@@ -903,6 +915,7 @@ def update_message_content(
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(msg)
+    zh_normalize_service.log_if_changed(msg.id, zh_changed)
     return msg
 
 

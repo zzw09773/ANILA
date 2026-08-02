@@ -78,6 +78,8 @@ services:
       # .env=0 → stays strict (https + no private).
       ANILA_ALLOW_HTTP_ENDPOINT: "1"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "1"
+      # §6-3：assistant 落庫前 zh-TW 靜默正規化。預設 1；設 0 關閉。
+      ANILA_ZH_NORMALIZE: "${ANILA_ZH_NORMALIZE:-1}"
       # flux2-dev-agent added: the image-generator agent + image model use this
       # docker service name (single-label), which the URL guard blocks unless
       # trusted (ALLOW_PRIVATE does NOT bypass the single-label check).
