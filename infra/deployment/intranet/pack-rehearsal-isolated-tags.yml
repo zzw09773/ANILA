@@ -1,0 +1,24 @@
+# Overlay for packaging when the live stack must stay up.
+#
+# codeserver / asr-decoder use fixed image names in platform.yml
+# (`anila-codeserver:local`, `anila/asr-decoder:0.1.0`). A compose build
+# under any project would retag those shared names. This overlay moves
+# them into the anila-pack-rehearsal/* namespace so export can
+# build --no-cache / docker save without touching the running tags.
+#
+# Usage:
+#   COMPOSE_PROJECT_NAME=anila-pack-rehearsal \
+#   COMPOSE_EXTRA_FILES=infra/deployment/intranet/pack-rehearsal-isolated-tags.yml \
+#   INCLUDE_ASR=1 REBUILD_ON_SAVE_FAIL=1 SKIP_PULL=1 \
+#   bash infra/deployment/intranet/build-and-export-for-intranet.sh /tmp/out
+#
+# Tomorrow on .15 (preferred): stop the stack and export with
+# COMPOSE_PROJECT_NAME=anila-restart and NO this overlay.
+
+services:
+  codeserver-init:
+    image: anila-pack-rehearsal/codeserver:local
+  codeserver:
+    image: anila-pack-rehearsal/codeserver:local
+  asr-decoder:
+    image: anila-pack-rehearsal/asr-decoder:0.1.0
