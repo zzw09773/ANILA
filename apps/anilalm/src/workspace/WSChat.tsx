@@ -19,7 +19,13 @@ import {
   getConversation,
   updateConversationTitle,
 } from '../api/conversations'
-import { chatStream, type ChatMessage } from '../api/chat'
+import {
+  chatStream,
+  classifyChatFailure,
+  isPersistableAssistantText,
+  nextTrimHitCount,
+  type ChatMessage,
+} from '../api/chat'
 import { searchCollection, type SearchHit } from '../api/search'
 import { explainError } from '../api/client'
 import type { Message } from '../types'
@@ -42,6 +48,9 @@ const RAG_MIN_SCORE = 0.3
 // monopolise the prompt window. The model still gets enough to ground;
 // users who want the full text click the citation card to drill in.
 const RAG_CONTENT_LIMIT = 1200
+// ≈28k tokens（實測 ~1.6 chars/token）；gateway 對超過 32768 tokens 硬拒
+// （ContextWindowExceededError）。整段截斷、不切斷單一 chunk。
+const MAX_SYSTEM_PROMPT_CHARS = 45000
 
 // 共同前導（身分／語言／國家用語／紀年／要職／資料紀律）改由 SSOT 供應：
 // src/generated/preamble.ts（由 packages/anila-core 產生，勿在此複製文字）。
@@ -200,39 +209,54 @@ export function WSChat({ flex }: WSChatProps) {
         ].join('\n')
       }
 
-      const chunkBlock = hits
-        .map((h, i) => {
-          const n = i + 1
-          const trimmed =
-            h.content.length > RAG_CONTENT_LIMIT
-              ? h.content.slice(0, RAG_CONTENT_LIMIT) + '…'
-              : h.content
-          return `[${n}] 來源：${h.filename}（chunk ${h.chunk_key}，相似度 ${h.score.toFixed(3)}）\n${trimmed}`
-        })
-        .join('\n\n')
+      const slabs = hits.map((h, i) => {
+        const n = i + 1
+        const trimmed =
+          h.content.length > RAG_CONTENT_LIMIT
+            ? h.content.slice(0, RAG_CONTENT_LIMIT) + '…'
+            : h.content
+        return `[${n}] 來源：${h.filename}（chunk ${h.chunk_key}，相似度 ${h.score.toFixed(3)}）\n${trimmed}`
+      })
 
+      // 從尾端整塊丟棄 chunk，直到 system prompt 不超過硬上限。
+      let kept = slabs
+      while (kept.length > 0) {
+        const chunkBlock = kept.join('\n\n')
+        const prompt = [
+          COMMON_PREAMBLE,
+          '',
+          '你是 ANILA LM 的研究助理，以使用者知識庫的段落為依據作答。',
+          `當前知識庫：「${collName}」。`,
+          '',
+          '以下是針對本次提問檢索到的相關段落（已依相似度排序）：',
+          '',
+          chunkBlock,
+          '',
+          '回答規則：',
+          `1) 僅根據上方 ${kept.length} 個段落作答；不要編造段落中沒有的資訊。`,
+          '2) 引用時用 [N] 標號（例如：「依據 [1]，...」），N 對應上方段落編號。',
+          '3) 段落不足以回答時，明確說「目前段落沒有提供 X 資訊」，不要硬湊。',
+          '4) 如使用者問的是檔案結構、條目順序之類的整體性問題，可彙整多個段落並交叉引用。',
+          '',
+          // 引用 few-shot：20B 級模型對格式的遵循靠範例不靠規則描述（設計文件 §4-4）。
+          '引用示範（僅供格式參考，內容一律以上方實際段落為準）：',
+          '問：測試結果有沒有達到規格要求？',
+          '答：依據 [1]，本次測試成功率為 93.3%，高於 [2] 規定的 90% 下限，符合規格要求。',
+          '',
+          // 語言指令句尾重複：長 context 下小模型會忘記開頭指令（recency，設計文件 §6-4）。
+          '請以繁體中文（台灣用語）回答。',
+        ].join('\n')
+        if (prompt.length <= MAX_SYSTEM_PROMPT_CHARS) return prompt
+        kept = kept.slice(0, -1)
+      }
+
+      // 單段就超長時退回無段落模式說明（仍帶共同前導）。
       return [
         COMMON_PREAMBLE,
         '',
-        '你是 ANILA LM 的研究助理，以使用者知識庫的段落為依據作答。',
+        '你是 ANILA LM 的研究助理。',
         `當前知識庫：「${collName}」。`,
-        '',
-        '以下是針對本次提問檢索到的相關段落（已依相似度排序）：',
-        '',
-        chunkBlock,
-        '',
-        '回答規則：',
-        `1) 僅根據上方 ${hits.length} 個段落作答；不要編造段落中沒有的資訊。`,
-        '2) 引用時用 [N] 標號（例如：「依據 [1]，...」），N 對應上方段落編號。',
-        '3) 段落不足以回答時，明確說「目前段落沒有提供 X 資訊」，不要硬湊。',
-        '4) 如使用者問的是檔案結構、條目順序之類的整體性問題，可彙整多個段落並交叉引用。',
-        '',
-        // 引用 few-shot：20B 級模型對格式的遵循靠範例不靠規則描述（設計文件 §4-4）。
-        '引用示範（僅供格式參考，內容一律以上方實際段落為準）：',
-        '問：測試結果有沒有達到規格要求？',
-        '答：依據 [1]，本次測試成功率為 93.3%，高於 [2] 規定的 90% 下限，符合規格要求。',
-        '',
-        // 語言指令句尾重複：長 context 下小模型會忘記開頭指令（recency，設計文件 §6-4）。
+        '檢索段落過長無法放入上下文，請依領域知識作答並提醒使用者縮小範圍。',
         '請以繁體中文（台灣用語）回答。',
       ].join('\n')
     },
@@ -319,49 +343,126 @@ export function WSChat({ flex }: WSChatProps) {
         }
       }
 
-      const citations: Citation[] = hits.map((h, i) => ({
-        index: i + 1,
-        chunk_id: h.chunk_id,
-        document_id: h.document_id,
-        filename: h.filename,
-        chunk_key: h.chunk_key,
-        excerpt: h.content.slice(0, 240),
-        score: h.score,
-      }))
-
-      // Build LLM request: full chat history + the new user turn,
-      // prefixed with the retrieval-aware system prompt.
       const history: ChatMessage[] = messages.map((m) => ({
         role: m.role,
         content: m.content,
       }))
-      const llmMessages: ChatMessage[] = [
-        { role: 'system', content: buildSystemPrompt(hits) },
-        ...history,
-        { role: 'user', content: text },
-      ]
 
-      // 4) Stream completion
+      const citationsFrom = (streamHits: SearchHit[]): Citation[] =>
+        streamHits.map((h, i) => ({
+          index: i + 1,
+          chunk_id: h.chunk_id,
+          document_id: h.document_id,
+          filename: h.filename,
+          chunk_key: h.chunk_key,
+          excerpt: h.content.slice(0, 240),
+          score: h.score,
+        }))
+
+      let activeHits = hits
+      let citations = citationsFrom(activeHits)
+
+      const runStream = (streamHits: SearchHit[]) => {
+        const streamCitations = citationsFrom(streamHits)
+        citations = streamCitations
+        const llmMessages: ChatMessage[] = [
+          { role: 'system', content: buildSystemPrompt(streamHits) },
+          ...history,
+          { role: 'user', content: text },
+        ]
+        return chatStream(
+          {
+            model: DEFAULT_MODEL,
+            messages: llmMessages,
+            temperature: 0.4,
+            conversationId: convId!,
+          },
+          (_delta, accumulated) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === tempAssistantId
+                  ? { ...m, content: accumulated, citations: streamCitations }
+                  : m,
+              ),
+            )
+          },
+          abortRef.current!.signal,
+        )
+      }
+
+      const failChat = (message: string) => {
+        setErr(message)
+        setMessages((prev) => prev.filter((m) => !m.id.startsWith('tmp-')))
+      }
+
+      const parseChatError = (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        const m = /^chat (\d+):\s*([\s\S]*)$/.exec(msg)
+        return {
+          msg,
+          status: m ? Number(m[1]) : 0,
+          body: m ? m[2] : msg,
+        }
+      }
+
+      // 4) Stream completion（空回覆／context overflow 呼叫端守則）
       const t0 = performance.now()
-      const finalText = await chatStream(
-        {
-          model: DEFAULT_MODEL,
-          messages: llmMessages,
-          temperature: 0.4,
-          conversationId: convId,
-        },
-        (_delta, accumulated) => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === tempAssistantId
-                ? { ...m, content: accumulated, citations }
-                : m,
-            ),
+      let finalText: string
+      try {
+        finalText = await runStream(activeHits)
+      } catch (streamErr) {
+        const { msg, status, body } = parseChatError(streamErr)
+        if (msg === 'EMPTY_LENGTH') {
+          failChat(
+            '模型把生成預算全用在思考上，請重試或縮短問題／降低文件段落數',
           )
-        },
-        abortRef.current.signal,
-      )
+          return
+        }
+        if (classifyChatFailure(status, body) === 'context_overflow') {
+          const keep = nextTrimHitCount(activeHits.length)
+          if (keep === null) {
+            failChat(
+              '上下文超過模型上限。請縮短問題或減少引用的文件段落。',
+            )
+            return
+          }
+          const trimmedHits = activeHits.slice(0, keep)
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[anilalm] context overflow — trimming retrieval hits and retrying once',
+            { from: activeHits.length, to: trimmedHits.length },
+          )
+          activeHits = trimmedHits
+          try {
+            finalText = await runStream(activeHits)
+          } catch (retryErr) {
+            const retry = parseChatError(retryErr)
+            if (retry.msg === 'EMPTY_LENGTH') {
+              failChat(
+                '模型把生成預算全用在思考上，請重試或縮短問題／降低文件段落數',
+              )
+              return
+            }
+            if (classifyChatFailure(retry.status, retry.body) === 'context_overflow') {
+              failChat(
+                '上下文超過模型上限，刪減檢索段落後仍失敗。請縮短問題或減少引用的文件段落。',
+              )
+              return
+            }
+            throw retryErr
+          }
+        } else {
+          throw streamErr
+        }
+      }
       const latency = Math.round(performance.now() - t0)
+
+      // Never persist an empty assistant turn (anila.error / silent empty
+      // stream / misclassified length). failChat drops the tmp bubble.
+      if (!isPersistableAssistantText(finalText)) {
+        failChat('模型未回傳內容，請重試或縮短問題。')
+        return
+      }
 
       // 5) Persist assistant message → DB; citations ride in metadata
       // so a reload of the conversation re-renders the citation cards.
