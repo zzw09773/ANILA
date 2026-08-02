@@ -1,115 +1,323 @@
 #!/usr/bin/env bash
 # build-and-export-for-intranet.sh
 # ============================================================================
-# 把整套 ANILA stack (含 csp + anila-shell + anilalm + ingestion-worker
-# + router + pptx-renderer + 3 個 base + 3 個 cold-service + 4 個 model) 全部
-# build 完 → save 成 tar.gz,可以帶進無外網的內網環境 docker load。
+# 從「有效 compose 組態」衍生要打包的 image 清單 → 確認本機都有 →
+# docker save 成 tar.gz,帶進無外網的內網主機 docker load。
 #
-# 用法 (在有外網的環境執行):
+# ⚠ 清單不再手寫。新增 compose service 會自動進 bundle;漏包只能發生在
+#   「本機根本沒有那張 image」,那時腳本會大聲失敗而不是靜默略過。
+#
+# 用法 (在有外網 / 已 build 好的機器執行):
 #   bash infra/deployment/intranet/build-and-export-for-intranet.sh [OUTPUT_DIR]
 #   OUTPUT_DIR 預設 /tmp/anila-images-export
 #
 # 環境變數:
-#   WITH_MODELS=1   把 model image 一起打包進 04-models.tar.gz。
-#                    預設 OFF — image 數十 GB,確定內網要本機跑模型才開。
-#   WITH_WEIGHTS=1  把 HF 權重打包成 05-weights-<name>.tar (無壓縮 —
-#                    safetensors 壓不動,gzip 數百 GB 純耗時)。
-#                    內網無下載通道,權重只能從這裡帶。
-#   WEIGHTS_LIST    要打包的權重目錄名 (空白分隔),預設內網需要的最小集:
-#                    "FLUX.2-dev gemma-4-31B-it gemma-4-31B-it-assistant"
-#                    (gemma-4-31B-it-assistant 是 MTP 投機解碼的 draft model,
-#                    跑 gemma4 必帶;gpt-oss/NV-Embed 預設不帶 — aiagent2
-#                    gateway 已服務,要重複部署再自行加進清單)
-#   ANILA_HF_DIR    權重來源目錄 (default /home/aia/c1147259/project/Huggingface)
+#   COMPOSE_PROJECT_NAME  compose project(-p)。決定 build 出來的 image 前綴
+#                         (例如 anila-restart-csp)。預設 anila-restart。
+#                         內網 up 時必須用同一個 -p,否則找不到 image。
+#   COMPOSE_ENV_FILE      給 compose 插值用的 env 檔。預設 $REPO_ROOT/.env。
+#                         worktree 預演可指到主樹 .env(只讀插值,不寫入)。
+#   INCLUDE_ASR=1         預設 ON。把 --profile asr 算進有效組態,bundle 會含
+#                         asr-gateway / asr-decoder。高階審查與本機驗證棧都
+#                         開了語音;關掉才設 INCLUDE_ASR=0。
+#                         註:asr-cpu.yml 只改 deploy/device,不改 image 名,
+#                         打包不必帶;內網 .15 有 GPU 時用平台預設即可。
+#   COMPOSE_EXTRA_FILES   額外 -f 檔(空白分隔),接在 compose.yaml 後面。
+#                         例:本機 CPU 語音預演可設
+#                         COMPOSE_EXTRA_FILES=infra/compose/asr-cpu.yml
+#                         (仍不改 image 清單,只影響 config 其他欄位)。
+#   SKIP_BUILD=1          不跑 docker compose build(預演 / 已有映像時用)。
+#                         預設 0=會 build 有效組態裡有 build: 的服務。
+#   SKIP_PULL=1           不跑 docker pull。缺的上游 image 直接失敗。
+#                         預設 0=對「非本專案 build」的缺圖嘗試 pull。
+#   REBUILD_ON_SAVE_FAIL=1  若 docker save 被本機 IDS 毒到的 overlay 擋下,
+#                         對「有 build: 的服務」立刻 compose build --no-cache
+#                         該服務並馬上再 save(搶在 IDS 再次掃描前)。
+#                         預設 0。不影響上游 image(pg/redis/…);那些 save
+#                         失敗就直接 abort。
+#                         ⚠ 若服務的 image: 寫死共用 tag(如 asr-decoder 的
+#                         anila/asr-decoder:0.1.0、未 overlay 的
+#                         anila-codeserver:local),--no-cache build 會 retag
+#                         正在跑的那張 — 驗證棧不能動時不要開,或先用
+#                         COMPOSE_EXTRA_FILES 把 image 名改到獨立命名空間。
+#   WITH_MODELS=1         另打包 04-models.tar.gz(數十 GB)。預設 OFF。
+#   WITH_WEIGHTS=1        另打包 05-weights-*.tar(數百 GB)。預設 OFF。
+#   WEIGHTS_LIST / ANILA_HF_DIR  權重清單與來源,見舊註解。
 #
 # 輸出:
 #   $OUTPUT_DIR/
-#     ├── 01-anila-built.tar.gz      (csp / ui / lm / worker / router / pptx / studio)
-#     ├── 02-base.tar.gz             (postgres / redis / nginx)
-#     ├── 03-cold.tar.gz             (codeserver / n8n / gitlab)
-#     ├── 04-models.tar.gz           (僅當 WITH_MODELS=1)
-#     ├── INTRANET-LOAD.sh           (內網端用的 import 腳本)
-#     └── MANIFEST.txt               (image 清單 + 大小,給 IT 對 checksum)
+#     ├── 01-images/<safe>.tar.gz   (有效 compose 每一張 image 一檔;可續傳)
+#     ├── 01-compose-images.images.txt
+#     ├── 04-models.tar.gz          (僅 WITH_MODELS=1)
+#     ├── 05-weights-*.tar          (僅 WITH_WEIGHTS=1)
+#     ├── CHECKSUMS.sha256
+#     ├── INTRANET-LOAD.sh
+#     └── MANIFEST.txt              (檔案大小 + sha256 + 每張 image 的 RepoDigest/Id)
 #
-# 內網端執行:
+# 內網端:
 #   bash INTRANET-LOAD.sh
+#   然後用同一個 COMPOSE_PROJECT_NAME 起棧(見 docs/runbooks/intranet-image-bundle.md)
 # ============================================================================
 set -euo pipefail
 
 OUTPUT_DIR="${1:-/tmp/anila-images-export}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila-restart}"
+COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-$REPO_ROOT/.env}"
+INCLUDE_ASR="${INCLUDE_ASR:-1}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
+SKIP_PULL="${SKIP_PULL:-0}"
+REBUILD_ON_SAVE_FAIL="${REBUILD_ON_SAVE_FAIL:-0}"
+
 cd "$REPO_ROOT"
 mkdir -p "$OUTPUT_DIR"
 
+# ── compose 引數(單一真相來源)──────────────────────────────────────────
+COMPOSE_FILES=(-f compose.yaml)
+# 額外 overlay(空白分隔路徑,相對 REPO_ROOT 或絕對路徑)
+if [ -n "${COMPOSE_EXTRA_FILES:-}" ]; then
+    # shellcheck disable=SC2086
+    for extra in $COMPOSE_EXTRA_FILES; do
+        COMPOSE_FILES+=(-f "$extra")
+    done
+fi
+COMPOSE_PROFILE_ARGS=()
+if [ "$INCLUDE_ASR" = "1" ]; then
+    COMPOSE_PROFILE_ARGS=(--profile asr)
+fi
+
+compose() {
+    docker compose --env-file "$COMPOSE_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" \
+        "${COMPOSE_FILES[@]}" "${COMPOSE_PROFILE_ARGS[@]}" "$@"
+}
+
+die() { echo "✗ $*" >&2; exit 1; }
+
 echo "============================================================"
 echo "ANILA — Build & Export for Intranet"
-echo "  Repo:   $REPO_ROOT"
-echo "  Output: $OUTPUT_DIR"
+echo "  Repo:       $REPO_ROOT"
+echo "  Output:     $OUTPUT_DIR"
+echo "  Project:    $COMPOSE_PROJECT_NAME  (-p;内網 up 必須同名)"
+echo "  Env file:   $COMPOSE_ENV_FILE"
+echo "  INCLUDE_ASR:$INCLUDE_ASR  (1 → --profile asr 納入有效組態)"
+echo "  SKIP_BUILD: $SKIP_BUILD   SKIP_PULL: $SKIP_PULL"
+echo "  REBUILD_ON_SAVE_FAIL: $REBUILD_ON_SAVE_FAIL"
 echo "============================================================"
 echo
 
-# ── Phase 1: build 7 個自家 image ──────────────────────────────────────────
-echo "▶ [1/5] Building 7 self-built images via docker compose..."
-docker compose build csp ingestion-worker router anilalm anila-ui pptx-renderer anila-studio
-echo "✓ Built."
-echo
+[ -f "$COMPOSE_ENV_FILE" ] || die "COMPOSE_ENV_FILE 不存在:$COMPOSE_ENV_FILE(compose 插值需要它)"
 
-# ── Phase 2: pull base + cold-service image (外網) ────────────────────────
-echo "▶ [2/5] Pulling 6 upstream images (base + cold-service)..."
-for img in \
-    pgvector/pgvector:pg16 \
-    redis:7-alpine \
-    nginx:alpine \
-    codercom/code-server:latest \
-    n8nio/n8n:1.98.2 \
-    gitlab/gitlab-ce:16.10.10-ce.0
-do
-    echo "  - $img"
-    docker pull "$img"
+# ── Phase 0: 從有效 compose 組態衍生 image 清單 ─────────────────────────
+echo "▶ [0/5] Deriving image list from effective compose config..."
+echo "  \$ docker compose -p $COMPOSE_PROJECT_NAME ${COMPOSE_FILES[*]} ${COMPOSE_PROFILE_ARGS[*]:-} config --images"
+mapfile -t RAW_IMAGES < <(compose config --images | sed '/^$/d')
+[ ${#RAW_IMAGES[@]} -gt 0 ] || die "compose config --images 回傳空清單"
+
+# 去重、排序(codeserver-init 與 codeserver 共用同一 tag)
+mapfile -t IMAGES < <(printf '%s\n' "${RAW_IMAGES[@]}" | sort -u)
+
+echo "  Effective images (${#IMAGES[@]} unique):"
+for img in "${IMAGES[@]}"; do
+    echo "    - $img"
 done
-echo "✓ Pulled."
 echo
 
-# ── Phase 3: save tar.gz ──────────────────────────────────────────────────
-echo "▶ [3/5] Saving images to compressed tar.gz..."
+# 任何 anila-platform- 殘留都是腳本或 project 名設錯
+for img in "${IMAGES[@]}"; do
+    case "$img" in
+        anila-platform-*)
+            die "衍生清單出現過期前綴 anila-platform-*:$img — 請設 COMPOSE_PROJECT_NAME 對齊本機棧"
+            ;;
+    esac
+done
 
-# 自家 build 出來的 image 名稱由 compose project name + service name 決定。
-# project name = anila-platform (見 infra/compose/platform.yml ``name:`` 頂層欄位)。
-echo "  • 01-anila-built.tar.gz"
-docker save \
-    anila-platform-csp \
-    anila-platform-ingestion-worker \
-    anila-platform-router \
-    anila-platform-anilalm \
-    anila-platform-anila-ui \
-    anila-platform-pptx-renderer \
-    anila-platform-anila-studio \
-  | gzip > "$OUTPUT_DIR/01-anila-built.tar.gz"
+# 服務 → image 對照(寫進 MANIFEST,給 IT / 預演驗收用)。
+# compose config --format json 對「只有 build:、沒寫 image:」的服務會給 null,
+# 但實際 tag 是 {project}-{service}(與 config --images 一致)。
+SERVICE_IMAGE_MAP="$(
+    COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" compose config --format json | python3 -c '
+import json, os, sys
+project = os.environ["COMPOSE_PROJECT_NAME"]
+cfg = json.load(sys.stdin)
+services = cfg.get("services") or {}
+for name in sorted(services):
+    img = services[name].get("image") or ""
+    if not img and services[name].get("build") is not None:
+        img = f"{project}-{name}"
+    print(f"{name}\t{img}")
+')"
 
-echo "  • 02-base.tar.gz"
-docker save \
-    pgvector/pgvector:pg16 \
-    redis:7-alpine \
-    nginx:alpine \
-  | gzip > "$OUTPUT_DIR/02-base.tar.gz"
+# ── Phase 1: build(可跳過)─────────────────────────────────────────────
+if [ "$SKIP_BUILD" = "1" ]; then
+    echo "▶ [1/5] Build skipped (SKIP_BUILD=1)"
+else
+    echo "▶ [1/5] Building services with a build section via docker compose..."
+    # 不列服務名 — compose 自己知道誰有 build:;避免再手寫一份會過期的清單
+    compose build
+    echo "✓ Built."
+fi
+echo
 
-echo "  • 03-cold.tar.gz"
-docker save \
-    codercom/code-server:latest \
-    n8nio/n8n:1.98.2 \
-    gitlab/gitlab-ce:16.10.10-ce.0 \
-  | gzip > "$OUTPUT_DIR/03-cold.tar.gz"
+# ── Phase 2: 確認每張 image 都在本機;缺的上游可 pull,否則失敗 ──────────
+echo "▶ [2/5] Ensuring every derived image exists locally..."
+MISSING=()
+for img in "${IMAGES[@]}"; do
+    if docker image inspect "$img" >/dev/null 2>&1; then
+        echo "  ✓ $img"
+        continue
+    fi
+    # 專案 build 出來的 image(前綴 = project name)沒有 registry 可 pull
+    if [[ "$img" == "${COMPOSE_PROJECT_NAME}-"* ]] || [[ "$img" == anila-codeserver:* ]] || [[ "$img" == anila/* ]]; then
+        echo "  ✗ MISSING (local build/tag): $img"
+        MISSING+=("$img")
+        continue
+    fi
+    if [ "$SKIP_PULL" = "1" ]; then
+        echo "  ✗ MISSING (SKIP_PULL=1, not pulling): $img"
+        MISSING+=("$img")
+        continue
+    fi
+    echo "  → pulling $img"
+    if ! docker pull "$img"; then
+        echo "  ✗ pull failed: $img"
+        MISSING+=("$img")
+    else
+        echo "  ✓ pulled $img"
+    fi
+done
 
-# ── Phase 4: model image (預設跳過,WITH_MODELS=1 啟用) ──────────────────
-# Model image 動輒 45+ GB (Triton + TensorRT-LLM + vLLM weights),通常走
-# 別的管道 (USB / 內部資料閘道) 進內網。預設不打包,需要時:
-#   WITH_MODELS=1 bash infra/deployment/intranet/build-and-export-for-intranet.sh
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo
+    echo "============================================================"
+    echo "✗ REFUSING TO EXPORT — missing images would produce a short bundle."
+    echo "  The following images are named by the effective compose config"
+    echo "  but are not present locally:"
+    for img in "${MISSING[@]}"; do
+        echo "    - $img"
+    done
+    echo
+    echo "  Fix: build/tag them (SKIP_BUILD=0) or pull upstream, then re-run."
+    echo "============================================================"
+    exit 1
+fi
+echo "✓ All ${#IMAGES[@]} images present."
+echo
+
+# ── Phase 3: 逐張 save(一 image 一檔;點名失敗;可續傳)──────────────────
+echo "▶ [3/5] Saving compose images → 01-images/*.tar.gz ..."
+IMG_DIR="$OUTPUT_DIR/01-images"
+mkdir -p "$IMG_DIR"
+{
+    printf '%s\n' "${IMAGES[@]}"
+} > "$OUTPUT_DIR/01-compose-images.images.txt"
+
+# image → 擁有它的 compose service 名(供 REBUILD_ON_SAVE_FAIL)
+declare -A IMAGE_TO_SERVICE=()
+while IFS=$'\t' read -r svc img; do
+    [ -n "$img" ] || continue
+    # 同一 image 可能被多個 service 共用(codeserver-init/codeserver);留一個即可
+    IMAGE_TO_SERVICE["$img"]="$svc"
+done <<<"$SERVICE_IMAGE_MAP"
+
+# 先 docker save -o 成未壓縮 tar,再 gzip。pipe 拉長 save 時間,本機 IDS
+# 更容易在中途把 overlay 弄壞;分兩步比較搶得過。
+save_one_image() {
+    # $1=image  $2=out.tar.gz  → 0/1
+    local img="$1" out="$2" err raw
+    err="$(mktemp)"
+    raw="$(mktemp --suffix=.tar)"
+    if ! docker save "$img" -o "$raw" 2>"$err"; then
+        echo "FAIL"
+        echo "    $(tr '\n' ' ' <"$err")"
+        rm -f "$err" "$raw" "$out"
+        return 1
+    fi
+    if [ ! -s "$raw" ] || [ "$(stat -c%s "$raw")" -lt 1024 ]; then
+        echo "FAIL (raw tar too small)"
+        rm -f "$err" "$raw" "$out"
+        return 1
+    fi
+    if ! gzip -c "$raw" >"$out"; then
+        echo "FAIL (gzip)"
+        rm -f "$err" "$raw" "$out"
+        return 1
+    fi
+    rm -f "$err" "$raw"
+    echo "OK ($(du -h "$out" | cut -f1))"
+    return 0
+}
+
+SAVE_FAIL=()
+: > "$OUTPUT_DIR/01-compose-images.files.txt"
+for img in "${IMAGES[@]}"; do
+    safe="$(printf '%s' "$img" | tr '/:' '__')"
+    out="$IMG_DIR/$safe.tar.gz"
+    echo -n "  save $img → 01-images/$safe.tar.gz ... "
+    if save_one_image "$img" "$out"; then
+        echo "$safe.tar.gz	$img" >> "$OUTPUT_DIR/01-compose-images.files.txt"
+        continue
+    fi
+
+    if [ "$REBUILD_ON_SAVE_FAIL" != "1" ]; then
+        SAVE_FAIL+=("$img")
+        continue
+    fi
+    svc="${IMAGE_TO_SERVICE[$img]:-}"
+    if [ -z "$svc" ]; then
+        echo "    REBUILD_ON_SAVE_FAIL: no buildable service owns $img — cannot recover"
+        SAVE_FAIL+=("$img")
+        continue
+    fi
+
+    recovered=0
+    for attempt in 1 2 3; do
+        echo "    → REBUILD_ON_SAVE_FAIL attempt $attempt/3: compose build --no-cache $svc"
+        if ! compose build --no-cache "$svc"; then
+            echo "    ✗ rebuild failed for service $svc"
+            continue
+        fi
+        echo -n "    re-save $img ... "
+        if save_one_image "$img" "$out"; then
+            echo "$safe.tar.gz	$img" >> "$OUTPUT_DIR/01-compose-images.files.txt"
+            recovered=1
+            break
+        fi
+    done
+    if [ "$recovered" -ne 1 ]; then
+        SAVE_FAIL+=("$img")
+    fi
+done
+
+if [ ${#SAVE_FAIL[@]} -gt 0 ]; then
+    echo
+    echo "============================================================"
+    echo "✗ REFUSING TO EXPORT — docker save failed for:"
+    for img in "${SAVE_FAIL[@]}"; do
+        echo "    - $img"
+    done
+    echo
+    echo "  Common cause on this host: host IDS (sisidsdaemon) poisons overlay"
+    echo "  merged/ views so docker save fails for affected images."
+    echo "  Fix A (recommended tomorrow): stop the stack, re-run, then up."
+    echo "  Fix B (stack must stay up): REBUILD_ON_SAVE_FAIL=1 with a separate"
+    echo "  COMPOSE_PROJECT_NAME (+ codeserver image overlay); see runbook §8."
+    echo "  Do NOT ship a partial bundle."
+    echo "============================================================"
+    exit 1
+fi
+
+# 確認 images.txt 與實際檔案 1:1
+while IFS= read -r img; do
+    safe="$(printf '%s' "$img" | tr '/:' '__')"
+    [ -f "$IMG_DIR/$safe.tar.gz" ] || die "missing $IMG_DIR/$safe.tar.gz for $img"
+done < "$OUTPUT_DIR/01-compose-images.images.txt"
+echo "  ✓ $(du -sh "$IMG_DIR" | cut -f1) across $(find "$IMG_DIR" -name '*.tar.gz' | wc -l) files"
+echo
+
+# ── Phase 4: model image(預設跳過;開了也 fail-loud,不再靜默 skip)─────
 if [ "${WITH_MODELS:-0}" = "1" ]; then
     echo "  • 04-models.tar.gz (WITH_MODELS=1)"
-    # 內網拓撲備註 (2026-06):gpt-oss/nv-embed 已由 aiagent2 gateway 服務,
-    # image 通常不必帶;優先帶 FLUX (獨家繪圖) + gemma4 (VLM captions)。
-    # 權重 (~295GB) 不打包 — 內網下載通道直接抓 HuggingFace。
     MODEL_IMAGES=(
         tensorrt-llm-hf:1.3.0rc10
         vllm-gemma4:latest
@@ -118,52 +326,58 @@ if [ "${WITH_MODELS:-0}" = "1" ]; then
         flux2-dev:bf16
         anila-flux-agent:latest
     )
-    EXISTING_MODELS=()
+    MODEL_MISSING=()
     for img in "${MODEL_IMAGES[@]}"; do
         if docker image inspect "$img" >/dev/null 2>&1; then
-            EXISTING_MODELS+=("$img")
+            echo "    ✓ $img"
         else
-            echo "    ⚠  missing on host, skip: $img"
+            echo "    ✗ MISSING: $img"
+            MODEL_MISSING+=("$img")
         fi
     done
-
-    if [ ${#EXISTING_MODELS[@]} -gt 0 ]; then
-        docker save "${EXISTING_MODELS[@]}" | gzip > "$OUTPUT_DIR/04-models.tar.gz"
-        echo "    ✓ Saved ${#EXISTING_MODELS[@]} model image(s)"
-    else
-        echo "    (no model images found — 04-models.tar.gz not created)"
+    if [ ${#MODEL_MISSING[@]} -gt 0 ]; then
+        die "WITH_MODELS=1 but missing: ${MODEL_MISSING[*]}"
     fi
+    docker save "${MODEL_IMAGES[@]}" | gzip > "$OUTPUT_DIR/04-models.tar.gz"
+    printf '%s\n' "${MODEL_IMAGES[@]}" > "$OUTPUT_DIR/04-models.images.txt"
+    echo "    ✓ Saved ${#MODEL_IMAGES[@]} model image(s)"
 else
-    echo "  • 04-models.tar.gz — skipped (WITH_MODELS=0,model 走別的管道進內網)"
+    echo "  • 04-models.tar.gz — skipped (WITH_MODELS=0)"
 fi
 echo
 
-# ── Phase 4b: HF 權重 (預設跳過,WITH_WEIGHTS=1 啟用) ─────────────────────
-# 內網沒有對外下載通道 — 權重只能在外網抓好再轉進去。無壓縮 tar:
-# safetensors 已是高熵格式,gzip 換不到體積只換到小時級的 CPU 時間。
+# ── Phase 4b: HF 權重 ───────────────────────────────────────────────────
 if [ "${WITH_WEIGHTS:-0}" = "1" ]; then
     HF_DIR="${ANILA_HF_DIR:-/home/aia/c1147259/project/Huggingface}"
     WEIGHTS_LIST="${WEIGHTS_LIST:-FLUX.2-dev gemma-4-31B-it gemma-4-31B-it-assistant}"
     echo "  • 05-weights-*.tar (WITH_WEIGHTS=1,來源 $HF_DIR)"
+    WEIGHT_MISSING=()
     for w in $WEIGHTS_LIST; do
         if [ -d "$HF_DIR/$w" ]; then
             echo "    - $w ($(du -sh "$HF_DIR/$w" | cut -f1))"
             tar -cf "$OUTPUT_DIR/05-weights-${w}.tar" -C "$HF_DIR" "$w"
         else
-            echo "    ⚠  missing, skip: $HF_DIR/$w"
+            echo "    ✗ MISSING: $HF_DIR/$w"
+            WEIGHT_MISSING+=("$HF_DIR/$w")
         fi
     done
+    if [ ${#WEIGHT_MISSING[@]} -gt 0 ]; then
+        die "WITH_WEIGHTS=1 but missing: ${WEIGHT_MISSING[*]}"
+    fi
 else
     echo "  • 05-weights-*.tar — skipped (WITH_WEIGHTS=0)"
 fi
 echo
 
-# ── Phase 5: 寫 manifest + intranet import script ────────────────────────
+# ── Phase 5: MANIFEST + INTRANET-LOAD.sh ────────────────────────────────
 echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
 
-# CHECKSUMS.sha256:純機器可讀格式 (相對路徑),供 INTRANET-LOAD.sh 內網端
-# `sha256sum -c` 自動驗檔用。MANIFEST.txt 內也保留一份人類可讀版,給 IT 對檔。
-( cd "$OUTPUT_DIR" && shopt -s nullglob && sha256sum *.tar.gz *.tar > CHECKSUMS.sha256 )
+(
+    cd "$OUTPUT_DIR"
+    shopt -s nullglob
+    sha256sum 01-images/*.tar.gz 04-models.tar.gz 05-weights-*.tar 2>/dev/null > CHECKSUMS.sha256 \
+        || sha256sum 01-images/*.tar.gz > CHECKSUMS.sha256
+)
 
 {
     echo "ANILA Platform — Intranet Image Bundle"
@@ -172,79 +386,138 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
     echo "Repo:     $REPO_ROOT"
     echo "Branch:   $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'n/a')"
     echo "Commit:   $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo 'n/a')"
+    echo "Project:  $COMPOSE_PROJECT_NAME"
+    echo "INCLUDE_ASR: $INCLUDE_ASR"
+    echo "Compose:  ${COMPOSE_FILES[*]} ${COMPOSE_PROFILE_ARGS[*]:-}"
     echo
-    echo "── Image files ────────────────────────────────────────"
-    ls -lh "$OUTPUT_DIR"/*.tar.gz 2>/dev/null
+    echo "── Service → image (from compose config) ──────────────"
+    echo "$SERVICE_IMAGE_MAP"
     echo
-    echo "── SHA256 checksum (IT 對檔用,機器驗檔請用 CHECKSUMS.sha256) ──"
+    echo "── Images in 01-images/*.tar.gz ───────────────────────"
+    while IFS=$'\t' read -r file img; do
+        [ -n "$img" ] || continue
+        meta="$(docker image inspect "$img" --format '{{.Id}} {{.Size}} {{json .RepoDigests}}' 2>/dev/null || echo '? ? []')"
+        id="$(awk '{print $1}' <<<"$meta")"
+        bytes="$(awk '{print $2}' <<<"$meta")"
+        digests="$(awk '{$1="";$2=""; sub(/^  /,""); print}' <<<"$meta")"
+        hr="$(numfmt --to=iec --suffix=B "$bytes" 2>/dev/null || echo "${bytes}B")"
+        fbytes="$(stat -c%s "$IMG_DIR/$file" 2>/dev/null || echo 0)"
+        fhr="$(numfmt --to=iec --suffix=B "$fbytes" 2>/dev/null || echo "${fbytes}B")"
+        echo "  $img"
+        echo "    Archive: 01-images/$file ($fhr, $fbytes bytes)"
+        echo "    Id:      $id"
+        echo "    Size:    $hr ($bytes bytes)"
+        echo "    Digests: $digests"
+    done < "$OUTPUT_DIR/01-compose-images.files.txt"
+    if [ -f "$OUTPUT_DIR/04-models.images.txt" ]; then
+        echo
+        echo "── Images in 04-models.tar.gz ─────────────────────────"
+        while IFS= read -r img; do
+            meta="$(docker image inspect "$img" --format '{{.Id}} {{.Size}} {{json .RepoDigests}}' 2>/dev/null || echo '? ? []')"
+            id="$(awk '{print $1}' <<<"$meta")"
+            bytes="$(awk '{print $2}' <<<"$meta")"
+            digests="$(awk '{$1="";$2=""; sub(/^  /,""); print}' <<<"$meta")"
+            hr="$(numfmt --to=iec --suffix=B "$bytes" 2>/dev/null || echo "${bytes}B")"
+            echo "  $img"
+            echo "    Id:      $id"
+            echo "    Size:    $hr ($bytes bytes)"
+            echo "    Digests: $digests"
+        done < "$OUTPUT_DIR/04-models.images.txt"
+    fi
+    echo
+    echo "── Bundle files ───────────────────────────────────────"
+    du -sh "$OUTPUT_DIR" "$IMG_DIR"
+    ls -lh "$IMG_DIR"
+    ls -lh "$OUTPUT_DIR"/*.{txt,sha256,sh,tar.gz,tar} 2>/dev/null || true
+    echo
+    echo "── SHA256 (IT 對檔;機器驗檔用 CHECKSUMS.sha256) ──────"
     cat "$OUTPUT_DIR/CHECKSUMS.sha256"
 } > "$OUTPUT_DIR/MANIFEST.txt"
 
-cat > "$OUTPUT_DIR/INTRANET-LOAD.sh" <<'EOF'
+# INTRANET-LOAD.sh:載入 01-images/*.tar.gz(+ 可選 04-models)
+cat > "$OUTPUT_DIR/INTRANET-LOAD.sh" <<EOF
 #!/usr/bin/env bash
-# INTRANET-LOAD.sh — 內網端 docker load 用。執行前確認:
+# INTRANET-LOAD.sh — 內網端 docker load。由此次 export 產生,勿手改檔名清單。
+# 執行前確認:
 #   1. docker 已裝且能跑 (docker info 不報錯)
-#   2. 跟此檔同目錄底下放著 01~04-*.tar.gz + CHECKSUMS.sha256
-#   3. /home/aia/c1147259/ANILA repo 已 clone 到內網機器 (帶 .env 進去)
+#   2. 同目錄有 01-images/*.tar.gz + CHECKSUMS.sha256 + 01-compose-images.images.txt
+#   3. repo 已在內網機器就緒,且 up 時 -p 與打包時 COMPOSE_PROJECT_NAME 相同
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "\$(dirname "\${BASH_SOURCE[0]}")"
 
-# ── SHA256 完整性檢查 (供應鏈防護) ──────────────────────────────────────
-# tar.gz 從外網機器經 USB / 內部閘道送進內網,任何中途竄改都可能塞後門進
-# image。`sha256sum -c` 比對 build 時計算的 hash,不通過就拒絕 load。
 if [ -f CHECKSUMS.sha256 ]; then
     echo "── Verifying SHA256 checksums ──"
     if ! sha256sum -c CHECKSUMS.sha256; then
         echo
-        echo "✗ Checksum mismatch — tar.gz 與 build 時的 hash 不符,拒絕 load。"
-        echo "  可能原因:傳輸中損毀、或檔案被竄改。請重新從外網取得 bundle。"
+        echo "✗ Checksum mismatch — 拒絕 load。請重新取得 bundle。"
         exit 1
     fi
     echo "✓ All checksums verified."
     echo
 else
-    echo "⚠ CHECKSUMS.sha256 不存在 — 略過完整性檢查 (不建議在 prod 用)"
+    echo "⚠ CHECKSUMS.sha256 不存在 — 略過完整性檢查(不建議在 prod 用)"
     echo
 fi
 
-echo "── Loading ANILA images into local docker ──"
-for tar in 01-anila-built.tar.gz 02-base.tar.gz 03-cold.tar.gz 04-models.tar.gz; do
-    if [ -f "$tar" ]; then
-        echo "▶ $tar"
-        gunzip -c "$tar" | docker load
-    else
-        echo "  (missing $tar — skipped)"
+echo "── Checking expected per-image tarballs exist ──"
+[ -f 01-compose-images.files.txt ] || { echo "✗ missing 01-compose-images.files.txt"; exit 1; }
+while IFS=\$'\\t' read -r file img; do
+    [ -n "\$file" ] || continue
+    if [ ! -f "01-images/\$file" ]; then
+        echo "✗ missing 01-images/\$file (for \$img)"
+        exit 1
     fi
-done
+    echo "  ✓ 01-images/\$file  (\$img)"
+done < 01-compose-images.files.txt
 echo
 
-# ── HF 權重 (05-weights-*.tar,WITH_WEIGHTS=1 打包時才有) ────────────────
-# 解到 ANILA_HF_DIR — 慣例是 <repo>/models/model (infra/models/
-# docker-compose.yml 的權重掛載預設)。先 export ANILA_HF_DIR=<repo>/models/model
-# 再跑本腳本;放別處就之後在 .env 設同一個值。
-HF_DIR="${ANILA_HF_DIR:-/home/aia/c1147259/project/Huggingface}"
+echo "── Loading ANILA images into local docker ──"
+while IFS=\$'\\t' read -r file img; do
+    [ -n "\$file" ] || continue
+    echo "▶ 01-images/\$file  (\$img)"
+    gunzip -c "01-images/\$file" | docker load
+done < 01-compose-images.files.txt
+
+if [ -f 04-models.tar.gz ]; then
+    echo "▶ 04-models.tar.gz"
+    gunzip -c 04-models.tar.gz | docker load
+fi
+echo
+
+HF_DIR="\${ANILA_HF_DIR:-/home/aia/c1147259/project/Huggingface}"
 shopt -s nullglob
 WEIGHT_TARS=(05-weights-*.tar)
-if [ ${#WEIGHT_TARS[@]} -gt 0 ]; then
-    echo "── Extracting model weights → $HF_DIR ──"
-    mkdir -p "$HF_DIR"
-    for tar in "${WEIGHT_TARS[@]}"; do
-        echo "▶ $tar"
-        tar -xf "$tar" -C "$HF_DIR"
+if [ \${#WEIGHT_TARS[@]} -gt 0 ]; then
+    echo "── Extracting model weights → \$HF_DIR ──"
+    mkdir -p "\$HF_DIR"
+    for tar in "\${WEIGHT_TARS[@]}"; do
+        echo "▶ \$tar"
+        tar -xf "\$tar" -C "\$HF_DIR"
     done
     echo
 fi
-echo "── Verifying ──"
-docker images | grep -E "anila-platform|pgvector|redis|nginx|code-server|n8n|gitlab|tensorrt-llm-hf|vllm-gemma4|tritonserver|embedding-proxy" || true
+
+echo "── Verifying loaded tags (from *.images.txt) ──"
+shopt -s nullglob
+for list in *.images.txt; do
+    while IFS= read -r img; do
+        [ -z "\$img" ] && continue
+        if docker image inspect "\$img" >/dev/null 2>&1; then
+            echo "  ✓ \$img"
+        else
+            echo "  ✗ missing after load: \$img"
+            exit 1
+        fi
+    done < "\$list"
+done
 echo
-echo "✓ Load complete. 後續步驟:"
-echo "   cd <repo-root>"
-echo "   docker network create anila-models-net  # 若還沒建"
-echo "   docker compose up -d --no-build"
+echo "✓ Load complete."
+echo "  下一步見 docs/runbooks/intranet-image-bundle.md"
+echo "  起棧時 -p 必須是: $COMPOSE_PROJECT_NAME"
+echo "  INCLUDE_ASR 打包值: $INCLUDE_ASR → up 時記得 --profile asr(若為 1)"
 EOF
 chmod +x "$OUTPUT_DIR/INTRANET-LOAD.sh"
 
-# ── 完成 ─────────────────────────────────────────────────────────────────
 echo "✓ Done."
 echo
 echo "▶ [5/5] Summary"
@@ -252,6 +525,6 @@ du -sh "$OUTPUT_DIR"
 ls -lh "$OUTPUT_DIR"
 echo
 echo "============================================================"
-echo "下一步:把 $OUTPUT_DIR/ 整個 (含 INTRANET-LOAD.sh) 帶進內網,"
-echo "然後在內網執行 bash INTRANET-LOAD.sh 就會把所有 image load 進去。"
+echo "下一步:把 $OUTPUT_DIR/ 整個帶進內網,執行 bash INTRANET-LOAD.sh"
+echo "起棧 -p 必須 = $COMPOSE_PROJECT_NAME"
 echo "============================================================"
