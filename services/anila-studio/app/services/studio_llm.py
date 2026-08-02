@@ -35,6 +35,7 @@ from app.clients.csp_client import (
     CspUnauthorizedError,
     proxy_chat_completions,
 )
+from app.generated_preamble import ERA_RULES, NATIONAL_TERMINOLOGY
 from app.services.llm_json import extract_json_object
 from app.services.studio_config import SLIDES_LLM_MODEL, VISION_LLM_MODEL
 
@@ -270,6 +271,10 @@ def build_generation_prompt(
             "- 每張 3-6 個 bullet（layout 不需要 bullet 也要填 1-2 句保險用）。",
             "- speaker_notes 寫 2-4 句講者口述稿。",
             "- standard slide 的 title 不可重複（section_break 例外、可重複）。",
+            "",
+            NATIONAL_TERMINOLOGY,
+            "",
+            ERA_RULES,
             "",
             "── 其他 layout 條件選用 ──",
             "- **stat_callout**：文件含量化結果（百分比、實驗數值、KPI、提升幅度）",
