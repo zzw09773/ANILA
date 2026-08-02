@@ -43,18 +43,36 @@ ALLOWED_EXTENSIONS = {
     ".xls", ".xlsx", ".ods",
     # 圖檔（聊天附件可能會貼）
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
-    # 純文字 / 程式碼
+    # 純文字 / 程式碼（與 parser registry 文字類對齊；.zip 可上傳但解析仍 unsupported）
     ".html", ".htm", ".xml", ".yaml", ".yml", ".toml", ".ini",
     ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".sql",
+    ".sh", ".bash", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".r", ".m", ".tex",
+    # USAF Digital DATCOM / 工程純文字（.dat/.out 他工具也可能是二進位——靠內容閘拒絕）
+    ".dcm", ".dat", ".inp", ".out",
     # 壓縮
     ".zip",
 }
+
+# 副檔名是真正的閘門；主流瀏覽器／Python mimetypes 對原始碼常送
+# application/x-*、video/mp2t(.ts)、octet-stream 等。MIME prefix 檢查只套在
+# 「有副檔名且非文字類」的上傳（PDF / Office / 圖 / zip）；文字類與無副檔名
+# （for005 / README 等）跳過 MIME，由 extract 內容閘決定。無副檔名視為未定型
+# 可接受——Content-Disposition: attachment 已關閉 XSS 路徑。
+# 此集合＝ALLOWED 內會走 PlainTextParser 的文字類。
+TEXT_CLASS_EXTENSIONS = frozenset({
+    ".txt", ".md", ".csv", ".tsv", ".json", ".log",
+    ".html", ".htm", ".xml", ".yaml", ".yml", ".toml", ".ini",
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".sql",
+    ".sh", ".bash", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".r", ".m", ".tex",
+    ".dcm", ".dat", ".inp", ".out",
+})
 
 ALLOWED_MIME_PREFIXES = (
     "image/",
     "text/",
     "application/json",
     "application/pdf",
+    "application/rtf",
     "application/zip",
     "application/vnd.openxmlformats-officedocument.",  # docx / pptx / xlsx
     "application/vnd.oasis.opendocument.",  # odt / ods / odp
@@ -248,15 +266,24 @@ async def upload_attachment(
     if ext and ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"不允許上傳 {ext} 類型的檔案")
 
+    # Extension is the gate for text-class uploads. Browsers send
+    # application/x-shellscript, video/mp2t (.ts), application/javascript,
+    # etc. — chasing application/x-* prefixes forever is the wrong model.
+    # Extensionless (for005/for006, README, Makefile, …): allow upload so
+    # extract can decide by content guards — same honesty as text-class
+    # (binary still lands unsupported; MIME must not block the path).
+    # Keep the MIME prefix check for non-text-class typed extensions
+    # (PDFs / Office / images / zip).
     declared_mime = (file.content_type or "").split(";")[0].strip().lower()
-    if declared_mime and not any(
-        declared_mime == m or declared_mime.startswith(m)
-        for m in ALLOWED_MIME_PREFIXES
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=f"不允許上傳 {declared_mime!r} 類型的檔案",
-        )
+    if declared_mime and ext and ext not in TEXT_CLASS_EXTENSIONS:
+        if not any(
+            declared_mime == m or declared_mime.startswith(m)
+            for m in ALLOWED_MIME_PREFIXES
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"不允許上傳 {declared_mime!r} 類型的檔案",
+            )
 
     content = await file.read()
     if len(content) > MAX_FILE_SIZE:

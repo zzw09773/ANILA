@@ -78,9 +78,10 @@ def extract_text(
         ) from e
 
     # Use the original filename's extension for routing — uploaders
-    # sometimes lie in MIME but rarely in the extension. The registry
-    # raises ValueError for unsupported extensions; map that to the
-    # structured ParseError code.
+    # sometimes lie in MIME but rarely in the extension. Empty suffix
+    # (for005 / README / …) is content-gated by PlainTextParser, not a
+    # hard reject. The registry raises ValueError for unsupported
+    # extensions; map that to the structured ParseError code.
     import tempfile
 
     suffix = os.path.splitext(filename)[1] or ""
@@ -93,12 +94,22 @@ def extract_text(
     try:
         try:
             parsed = ParserRegistry.parse(tmp_path)
+        except ParseError:
+            # Structured parser refusals (e.g. binary-as-text) must not be
+            # collapsed into E_PARSE_CORRUPT by the generic handler below.
+            raise
         except ValueError as e:
-            # Unsupported extension. Surface the registry's own message
-            # so the dev sees the supported list.
+            # Unsupported extension — plain sentence for users; full
+            # registry listing stays in structured details only.
             raise ParseError.format_unsupported(
-                user_message=str(e),
-                details={"filename": filename, "ext": suffix},
+                user_message=(
+                    f"不支援此檔案格式（副檔名 {suffix or '未知'}）。"
+                ),
+                details={
+                    "filename": filename,
+                    "ext": suffix,
+                    "registry_message": str(e),
+                },
             ) from e
         except Exception as e:  # parser-specific errors
             raise ParseError.corrupt(

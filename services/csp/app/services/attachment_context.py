@@ -220,9 +220,10 @@ def build_attachment_prompt_block(
             pending += 1
         elif status in _STATUS_REASON:
             reason = _STATUS_REASON[status]
-            if status == "failed" and att.extract_error:
-                reason = f"{reason}：{att.extract_error}"
-            elif status == "too_large" and att.extract_error:
+            # Surface actionable extract_error (e.g. "請另存為 UTF-8") so the
+            # user sees more than a generic unsupported/failed label. The
+            # stored message is already user-facing — do not invent a new UI.
+            if status in {"failed", "too_large", "unsupported"} and att.extract_error:
                 reason = f"{reason}：{att.extract_error}"
             omitted.append((att.filename, reason))
         else:
