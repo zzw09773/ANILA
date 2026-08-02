@@ -174,11 +174,17 @@ def test_zero_agents_prompt_has_no_dispatch_instructions(db_path, monkeypatch):
     assert _post(client, [{"role": "user", "content": "嗨"}]).status_code == 200
 
     system = _system_of(captured[0])
+    # Plain assistant: no routing contract at all — teaching DISPATCH: here
+    # caused models to emit a line for a nonexistent agent (see router_server
+    # comment around _DISPATCH_LINE_START).
     assert "DISPATCH" not in system
     assert "Available agents" not in system
+    assert "智慧查詢派工器" not in system
+    assert "本平台的助理" in system
+    assert "第一個字元" in system
     # …but the platform's own voice survives: no leaked analysis, truthful
     # "no agents" answer, personalization.
-    assert "PERSONALIZATION" in system
+    assert "個人化" in system
     assert "目前沒有已註冊的 agent" in system
 
 
@@ -198,9 +204,14 @@ def test_registering_an_agent_routes_on_the_very_next_request(db_path, monkeypat
     _post(client, [{"role": "user", "content": "嗨"}])
     second = _post(client, [{"role": "user", "content": "查一下"}])
 
-    assert "DISPATCH" not in _system_of(captured[0])
+    plain = _system_of(captured[0])
+    assert "DISPATCH" not in plain
+    assert "Available agents" not in plain
+    assert "智慧查詢派工器" not in plain
+    assert "本平台的助理" in plain
     routed = _system_of(captured[1])
     assert "DISPATCH" in routed
+    assert "智慧查詢派工器" in routed
     assert "agent-a" in routed
     assert second.json()["choices"][0]["message"]["content"] == "agent answered"
 
