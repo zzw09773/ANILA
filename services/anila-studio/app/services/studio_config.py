@@ -15,6 +15,8 @@ appears.
 
 from __future__ import annotations
 
+import os
+
 # ── Retrieval: images ─────────────────────────────────────────────────────
 # How many image hits to surface alongside the chunks. Pulling fewer
 # than chunks because (a) we have ~10× fewer images than chunks per
@@ -51,11 +53,16 @@ VISUAL_QA_PASSES = 1
 # Renderer service — same docker network, same compose stack.
 RENDERER_BASE_URL = "http://pptx-renderer:7100"
 
-# Default LLM for slide generation. Could be made overridable per-request
-# but the current product is "Studio just works" — admin-configurable
-# default is enough.
-SLIDES_LLM_MODEL = "gemma4"
-VISION_LLM_MODEL = "gemma4"
+# Default LLM for slide generation / vision QA. Env-overridable per
+# deployment (variant names differ). These are **analysis-class** tasks
+# (deck quality depends on reasoning) — do NOT casually point them at a
+# fast／nothink variant; see docs/runbooks/model-variants.md.
+SLIDES_LLM_MODEL = (
+    (os.environ.get("ANILA_STUDIO_SLIDES_MODEL") or "").strip() or "gemma4"
+)
+VISION_LLM_MODEL = (
+    (os.environ.get("ANILA_STUDIO_VISION_MODEL") or "").strip() or "gemma4"
+)
 
 # ── Flux quality gate (Stage 2 / Layer C) ─────────────────────────────────
 # How many extra times to regenerate a slide's image when every candidate

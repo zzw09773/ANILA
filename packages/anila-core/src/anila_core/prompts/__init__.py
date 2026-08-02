@@ -15,6 +15,7 @@ from anila_core.prompts.current_facts import (
     FACTS_AS_OF,
     OFFICEHOLDERS,
 )
+from anila_core.prompts.model_routing import TASK_CLASS, resolve_model
 
 __all__ = [
     "COMMON_PREAMBLE",
@@ -27,5 +28,7 @@ __all__ = [
     "LANGUAGE_RULES",
     "NATIONAL_TERMINOLOGY",
     "OFFICEHOLDERS",
+    "TASK_CLASS",
     "compose",
+    "resolve_model",
 ]
