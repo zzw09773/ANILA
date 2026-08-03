@@ -38,7 +38,16 @@ docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
       END \$\$;"
 
 WORKDIR="$(mktemp -d /tmp/anila-restore.XXXXXX)"
-cleanup() { rm -rf "$WORKDIR"; }
+RESTORE_OUT="$(mktemp /tmp/anila-restore-pg.XXXXXX.out)"
+RESTORE_ERR="$(mktemp /tmp/anila-restore-pg.XXXXXX.err)"
+# 成功才清 log；失敗保留，讓「詳見 $RESTORE_ERR」真的指得到檔案。
+_RESTORE_KEEP_LOGS=0
+cleanup() {
+  rm -rf "$WORKDIR"
+  if [[ "$_RESTORE_KEEP_LOGS" -eq 0 ]]; then
+    rm -f "$RESTORE_OUT" "$RESTORE_ERR"
+  fi
+}
 trap cleanup EXIT
 cp "$DUMP" "$WORKDIR/restore.dump"
 
@@ -62,14 +71,24 @@ docker run --rm --network "container:${CONTAINER}" \
   pgvector/pgvector:pg16 \
   pg_restore -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
     /backup/restore.dump \
-  >/tmp/anila-restore-pg.out 2>/tmp/anila-restore-pg.err
+  >"$RESTORE_OUT" 2>"$RESTORE_ERR"
 RC=$?
 set -e
 
-if grep -qE '^pg_restore: error:' /tmp/anila-restore-pg.err; then
+# docker run 本身失敗時 stderr 是 `docker: Error ...`，不會有
+# `pg_restore: error:` 前綴——必須先驗 RC，否則空庫姿態檢查會誤報成功。
+if [[ "$RC" -ne 0 ]]; then
+  _RESTORE_KEEP_LOGS=1
+  log "pg_restore／docker run 失敗（exit=$RC）；stderr 見 $RESTORE_ERR"
+  log "ERROR: 還原未啟動或未完成（exit=$RC），詳見 $RESTORE_ERR"
+  exit "$RC"
+fi
+
+if grep -qE '^pg_restore: error:' "$RESTORE_ERR"; then
+  _RESTORE_KEEP_LOGS=1
   log "pg_restore 仍有 error（exit=$RC）；不重複的摘要："
-  grep -E '^pg_restore: error:' /tmp/anila-restore-pg.err | sort -u | head -n 20
-  fail "還原未乾淨結束，詳見 /tmp/anila-restore-pg.err"
+  grep -E '^pg_restore: error:' "$RESTORE_ERR" | sort -u | head -n 20
+  fail "還原未乾淨結束，詳見 $RESTORE_ERR"
 fi
 
 # ── 擁有權/權限不變式（自動，操作者不需要記得任何事） ──────────────────

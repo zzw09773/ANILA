@@ -320,9 +320,12 @@ that is exactly the booby-trapped reading this runbook used to teach.
 # 1. Remove CSP_SERVICE_TOKEN from CSP's .env.
 sed -i.bak '/^CSP_SERVICE_TOKEN=/d' .env
 
-# 2. Restart CSP. The verify path's env-var fallback will now refuse
-#    to match anything (env value is empty).
-docker compose restart csp
+# 2. Recreate CSP so the new environment is loaded. The verify path's
+#    env-var fallback will now refuse to match anything (env value is
+#    empty). `docker compose restart` is NOT enough — it does not
+#    reload `.env` or compose changes; the fleet secret would still be
+#    live in the running process.
+docker compose up -d csp
 
 # 3. Smoke-test: existing per-agent / per-client tokens still work;
 #    presenting the old fleet secret now correctly fails with 401.

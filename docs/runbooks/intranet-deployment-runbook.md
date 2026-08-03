@@ -529,12 +529,14 @@ cd /opt/anila && docker compose up -d csp
 
 ### 5.1 解凍 codeserver / n8n / gitlab
 
-nginx 對 `/codeserver` `/n8n` `/gitlab/` 預設 `return 404`。解凍 = 把該 location 的那一行 `return 404;` 刪掉 → `docker compose restart nginx`。
+nginx 對 `/codeserver` `/n8n` `/gitlab/` 預設 `return 404`。解凍 = 把該 location 的那一行 `return 404;` 刪掉 → `docker compose up -d --force-recreate nginx`。
+（`infra/nginx/anila.conf` 是**單檔 bind-mount**；git 改檔會換 inode，容器仍抓舊檔且無任何錯誤。`restart`／`reload` 都不夠，見 `anila.conf:447`。）
 
 ### 5.2 TLS cert rotation
 
 wildcard 憑證 2029 到期;換發後同 §2.2 步驟 1 重抽,`docker compose restart nginx`。
 NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose restart csp`。
+（§5.2 的 restart 沒問題：憑證／CA 是**目錄**掛載，不是單檔 inode 綁定，換成新檔後 restart 就能讀到。）
 
 ### 5.3 Postgres backup
 
