@@ -23,17 +23,11 @@ import pytest
 from app.services.triton_grpc import client as triton_client
 from app.services.triton_grpc import grpc_service_pb2
 
-
-def _decode_bytes_tensor(raw: bytes) -> list[str]:
-    """Triton BYTES raw contents 的逆運算(le_u32 長度 + utf-8)。"""
-    out: list[str] = []
-    i = 0
-    while i < len(raw):
-        (n,) = struct.unpack_from("<I", raw, i)
-        i += 4
-        out.append(raw[i : i + n].decode("utf-8"))
-        i += n
-    return out
+# 解碼器只有一份,從 test_triton_grpc_wire.py 借過來。
+# 這裡本來自己抄了一份會 slice 的版本 —— 兩份各自寬鬆,於是長度前綴改成
+# big-endian 時兩個檔案的 payload 斷言全都照樣過(對真 Triton 是每一次
+# embedding 都 INVALID_ARGUMENT)。同一個不變式不留兩份實作,才不會只補到一邊。
+from tests.test_triton_grpc_wire import decode_bytes_tensor
 
 
 class _RecordingStub:
@@ -95,7 +89,7 @@ def test_query_role_lands_on_the_query_tensor(captured):
     assert tensor.name == "query"
     assert list(tensor.shape) == [1]
     assert tensor.datatype == "BYTES"
-    assert _decode_bytes_tensor(captured[0].raw_input_contents[0]) == ["法規查詢"]
+    assert decode_bytes_tensor(captured[0].raw_input_contents[0]) == ["法規查詢"]
 
 
 def test_document_role_lands_on_the_documents_tensor(captured):
@@ -110,7 +104,7 @@ def test_document_role_lands_on_the_documents_tensor(captured):
     assert tensor.name == "documents"
     assert list(tensor.shape) == [1, 1]
     assert tensor.datatype == "BYTES"
-    assert _decode_bytes_tensor(captured[0].raw_input_contents[0]) == ["受檢索的段落"]
+    assert decode_bytes_tensor(captured[0].raw_input_contents[0]) == ["受檢索的段落"]
 
 
 # ── 差分契約:兩個 role 必須落在不同 tensor ─────────────────────────────────
@@ -142,8 +136,8 @@ def test_query_and_document_must_not_collapse_onto_the_same_tensor(captured):
     )
     # payload 相同才代表差異純粹來自 role,而不是測試自己送了不同文字。
     assert (
-        _decode_bytes_tensor(captured[0].raw_input_contents[0])
-        == _decode_bytes_tensor(captured[1].raw_input_contents[0])
+        decode_bytes_tensor(captured[0].raw_input_contents[0])
+        == decode_bytes_tensor(captured[1].raw_input_contents[0])
         == [same_text]
     )
 
@@ -167,7 +161,7 @@ def test_document_batch_issues_one_request_per_text_on_the_documents_tensor(capt
     )
     assert len(captured) == 2
     assert [c.inputs[0].name for c in captured] == ["documents", "documents"]
-    assert [_decode_bytes_tensor(c.raw_input_contents[0])[0] for c in captured] == [
+    assert [decode_bytes_tensor(c.raw_input_contents[0])[0] for c in captured] == [
         "甲",
         "乙",
     ]

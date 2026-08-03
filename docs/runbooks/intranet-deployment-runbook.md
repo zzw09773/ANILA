@@ -448,7 +448,8 @@ done
 > (`query` vs `documents`),走 OpenAI `/v1/embeddings` 沒有辦法表達這個差別 —— 全部
 > 被當文件編碼,檢索排序會**無聲**變差(不會報錯、不會有 log)。
 
-**四件事都要做。`grpc://` 端點要過的是 url_guard 的兩關 —— scheme 一關、
+**端點填 IP 字面值(Triton 的常態)→ 下面四件都要做;端點填 FQDN → 第 2 件
+不用做,共三件。`grpc://` 端點要過的是 url_guard 的兩關 —— scheme 一關、
 主機/IP 一關 —— 少哪一件,400 的 `reason` 就不一樣(下面排錯表有對照):**
 
 1. `.env` 設 `ANILA_ALLOW_GRPC_ENDPOINT=1`(過 **scheme** 關)
@@ -456,7 +457,7 @@ done
    這是 http 旗標的**姊妹分支**,開它不會放寬任何 `http://` 端點;
    loopback / link-local / multicast / cloud metadata 對 `grpc://` 一樣永遠擋。
 2. `.env` 設 `ANILA_ALLOW_PRIVATE_ENDPOINT=1`(過 **主機/IP** 關)
-   —— **端點填 IP 字面值時才需要**,而 Triton 通常就是填 IP(例
+   —— **只有端點填 IP 字面值時才要做這一件**(用 FQDN 就跳過),而 Triton 通常就是填 IP(例
    `grpc://172.16.120.35:9001`,10/8、172.16/12、192.168/16 都算私網)。
    ⚠ **把那個 IP 加進 trusted-hosts 沒有用。** trusted-hosts 只繞得過
    「主機名的 DNS 解析結果落在私網」;IP 字面值是先判私網、根本不看 trusted。
@@ -481,9 +482,13 @@ done
 
 > **重跑 `intranet-deploy.sh` 不會把這兩個旗標改回 0。** 腳本對
 > `ANILA_ALLOW_GRPC_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT` /
-> `ANILA_ALLOW_HTTP_ENDPOINT` 一律「缺鍵才補 0,已有值就保留」,並在值為 1 時
-> 印 warn。以前是每次硬寫 0 —— 操作者照本節開好、隔天重跑一次部署腳本,
+> `ANILA_ALLOW_HTTP_ENDPOINT` 一律「缺鍵才補 0,已有值就一個字都不動」,並在值
+> 為 1 時印 warn。以前是每次硬寫 0 —— 操作者照本節開好、隔天重跑一次部署腳本,
 > Triton embedder 就靜默失效,而症狀只是 400,現場幾乎反推不出原因。
+> 「已有值」的判準跟 docker compose 一致(實測 v2.36.2):行首空白、`export`
+> 前綴、`=` 前後空白、單/雙引號、行尾空白、CRLF 都算已設。以前只認 `^KEY=`,
+> 所以手寫成 ` ANILA_ALLOW_GRPC_ENDPOINT=1`(前面多一個空格)時腳本看不見那一
+> 行,會在檔尾再 append 一行 `=0`,compose 取最後一筆 → 旗標被靜默關掉。
 
 ```bash
 # 1. 兩個旗標真的進到容器(沒輸出 = 沒進去,回頭做第 3 步)
@@ -511,8 +516,11 @@ d = tc.embed_texts(URL, MODEL, ['找出去年的採購紀錄'], role='document')
 cos = sum(a*b for a,b in zip(q,d)) / ((sum(a*a for a in q)**.5)*(sum(b*b for b in d)**.5))
 print('dim', len(q), 'cosine(query,document)', round(cos,4))
 "
-# 2026-08-03 在本開發機對 172.16.120.35:9001 實測:health ('healthy', 4)、
+# 2026-08-03 在本開發機對 172.16.120.35:9001 實測:health ('healthy', <ms>)、
 # dim 4096、cosine 0.7467。
+# ⚠ probe_triton_health 回的第二個值是**那一次的延遲毫秒數**,不是期望值 ——
+#   當天量到 4,下一次是別的數字都正常。要對得上的是 'healthy'、4096,以及
+#   cosine 明顯小於 1.0(當天 0.7467;不同權重/文字會不同,重點是 ≠ 1.0)。
 ```
 
 **排錯**
@@ -523,8 +531,26 @@ print('dim', len(q), 'cosine(query,document)', round(cos,4))
 | 註冊 422「必須為 grpc:// 或 grpcs://」 | protocol 選了 triton_grpc 卻填 http URL |
 | 健檢 unhealthy、但 TCP 通 | Triton 上沒載入這個 model name(`ModelReady` 說了算,不會用 ServerLive 漂綠) |
 | 502「模型服務暫時不可用」,csp log 是「triton 未在 30s 內回應 ModelInfer」 | **單筆**逾時 —— 上游過慢或該 model 沒載入。單次請求的執行緒佔用上限 35 秒(`_wait_ready` 5s + ModelInfer 30s),重試 3 次 |
-| 502,csp log 是「triton call exceeded its 35s budget … 請縮小批次」 | **整批**吃光了整通呼叫的 35 秒預算(每段文字各一次 ModelInfer)—— 縮小批次或調高 `EMBEDDING_TIMEOUT` |
+| 502,csp log 是「triton call exceeded its 35s budget … 請縮小批次」 | **整批**吃光了整通呼叫的 35 秒預算(每段文字各一次 ModelInfer)—— 縮小批次,或調高 `EMBEDDING_TIMEOUT`(見下方「調高 EMBEDDING_TIMEOUT」) |
 | 整批帶入(bulk import)報 422 | Triton 沒有 OpenAI `/v1/models` 列表,不支援整批帶入 —— 逐一註冊 |
+
+**調高 `EMBEDDING_TIMEOUT`**
+
+```bash
+# .env 改值 → up -d csp → 確認它真的到了容器裡(這一步不能跳)
+docker exec anila-restart-csp-1 printenv EMBEDDING_TIMEOUT   # 應印出你設的值
+```
+
+它同時是整通呼叫的預算主項:budget = `_wait_ready` 5s + `EMBEDDING_TIMEOUT`,
+與批次大小無關;調到 60,單次請求的執行緒佔用上限就從 35 秒變成 65 秒,
+一個 HTTP 請求最久 `3 × 65 + 0.5 + 1.0` ≈ 196.5 秒(重試 3 次)。調之前先確認上游真的
+只是慢,而不是 model 沒載入 —— 後者調多久都不會好。
+
+> ⚠ 這個變數要有 `infra/compose/platform.yml` 的 csp 區塊裡那一行
+> `EMBEDDING_TIMEOUT: "${EMBEDDING_TIMEOUT:-30}"`(v-2026-08-03 起有)才會進到
+> 容器。compose **沒有 `env_file:`**,`.env` 只是變數來源,不會整包灌進容器 ——
+> 缺那一行的版本,`.env` 怎麼改都沒有作用,而且沒有任何錯誤訊息:`printenv` 是
+> 空的、行為一模一樣。上面那條 `printenv` 就是用來看穿這件事的。
 
 ### 3.2 startup_security 一定要過
 

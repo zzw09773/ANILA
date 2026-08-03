@@ -324,3 +324,23 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   沒有改 shim 的理由:`infra/models/` 是另一套獨立 build 的 model stack,
   本樹沒有任何測試會跑到它,改了也沒有人驗得到——那正是這份清單在收的東西。
   兩個 README 與 `recall.py` 的 docstring 已就地註明這個差異。
+
+### #36 ✅ runbook 叫操作者調的 `EMBEDDING_TIMEOUT` 到不了容器
+
+- **文件說**:runbook §3.1c 排錯表(以及 `triton_grpc/client.py` 兩則逾時錯誤
+  訊息)叫操作者「調高 `EMBEDDING_TIMEOUT`」;`services/csp/.env.example` 也列著
+  `EMBEDDING_TIMEOUT=30`。
+- **實際**:`infra/compose/platform.yml` 的 csp 區塊沒有這一行,而整棵樹
+  **沒有任何 `env_file:`** —— compose 只把「列舉出來的」環境變數放進容器,
+  `.env` 本身不會整包灌進去。實測:`.env` 設了值 `docker compose config` 零命中,
+  `docker exec anila-restart-csp-1 printenv EMBEDDING_TIMEOUT` 空、rc=1。
+- **後果**:操作者照著 runbook 改 `.env`、`up -d csp`,**什麼都沒有改變**,
+  而且沒有任何錯誤訊息 —— 502 照舊,他會以為是別的原因。
+  這與 #34 之前 `ANILA_ALLOW_GRPC_ENDPOINT` 的形狀是同一個(旗標到不了容器),
+  也是這份清單裡「按了沒反應」那一類最貴的變體:**指示本身是假的**。
+- **現況**:`platform.yml` csp 區塊補上
+  `EMBEDDING_TIMEOUT: "${EMBEDDING_TIMEOUT:-30}"`(預設值與 `Settings` 同),
+  根目錄 `.env.example` 補上該鍵與說明,runbook 加了「調高 EMBEDDING_TIMEOUT」
+  小節(含 `printenv` 驗證那一步)。
+  `services/csp/tests/test_compose_csp_env_passthrough.py` 把「文件叫人去設的
+  旋鈕 → csp 環境區塊有直通」整組釘住,免得第三次再犯。

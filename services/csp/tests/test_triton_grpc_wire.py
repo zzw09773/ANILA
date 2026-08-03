@@ -55,13 +55,39 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb + 1e-12)
 
 
-def _decode_bytes_tensor(raw: bytes) -> list[str]:
-    """Inverse of client._encode_bytes_tensor — read the strings off the wire."""
+class MalformedBytesTensor(AssertionError):
+    """The payload is not valid Triton BYTES raw contents."""
+
+
+def decode_bytes_tensor(raw: bytes) -> list[str]:
+    """Inverse of client._encode_bytes_tensor — and it is allowed to FAIL.
+
+    The previous version sliced: ``raw[i : i + length]`` returns whatever is
+    there and never complains, so it round-tripped a one-element tensor no
+    matter what the length prefix said. That is why flipping the prefix to
+    big-endian left every payload assertion in this file and in
+    ``test_triton_grpc_tensor_contract.py`` green while, against the real
+    Triton, every embed call died with ``INVALID_ARGUMENT`` (measured
+    2026-08-03 against 172.16.120.35:9001).
+
+    A decoder that cannot fail is not a check. This one refuses a length
+    prefix that does not fit what is left, which is exactly what a big-endian
+    27 looks like when read little-endian (452984832).
+    """
     out: list[str] = []
     i = 0
     while i < len(raw):
+        if len(raw) - i < 4:
+            raise MalformedBytesTensor(
+                f"BYTES tensor 在 offset {i} 只剩 {len(raw) - i} bytes,不夠一個長度前綴"
+            )
         (length,) = struct.unpack_from("<I", raw, i)
         i += 4
+        if length > len(raw) - i:
+            raise MalformedBytesTensor(
+                f"BYTES tensor 在 offset {i - 4} 宣告長度 {length},"
+                f"但只剩 {len(raw) - i} bytes —— payload 不是 little-endian 長度前綴?"
+            )
         out.append(raw[i : i + length].decode("utf-8"))
         i += length
     return out
@@ -145,6 +171,77 @@ def triton():
         triton_client.reset_channel_pool_for_tests()
 
 
+# ── the BYTES length prefix: little-endian, pinned byte for byte ─────────────
+#
+# ``struct.pack("<I", …)`` → ``">I"`` in ``_encode_bytes_tensor`` is one
+# character, and it kills **every** embedding call on the Triton path. Measured
+# 2026-08-03 against the live Triton at 172.16.120.35:9001:
+#
+#     little-endian (shipped) → dim 4096, cosine(query, document) 0.7467
+#     big-endian              → TritonEmbedError: triton RpcError
+#                               code=INVALID_ARGUMENT
+#
+# and the full suite stayed at 1892 passed / 13 skipped / **0 failed**, byte
+# identical to the clean baseline. Every payload assertion in this file and in
+# ``test_triton_grpc_tensor_contract.py`` sent exactly **one** string, and the
+# decoder above used to slice instead of check, so one element round-tripped
+# whatever the prefix said. (Two strings do not: with a slicing decoder the
+# big-endian payload came back as ``'找出去年的採購紀錄\x00\x00\x00\t第二段'``.)
+#
+# The tests below therefore compare raw bytes against literals — nothing here
+# is derived from ``struct``, so they cannot follow the implementation if it
+# moves. With them and the strict decoder in place the same mutation is
+# **12 failed / 1905 passed / 13 skipped** on the full suite (re-measured
+# 2026-08-03): 8 here and 4 in the tensor-contract file.
+
+
+def test_the_length_prefix_of_one_string_is_little_endian():
+    text = "找出去年的採購紀錄"  # 9 CJK chars = 27 utf-8 bytes = 0x1b
+    assert triton_client._encode_bytes_tensor([text]) == (
+        b"\x1b\x00\x00\x00" + text.encode("utf-8")
+    )
+
+
+def test_a_multi_element_bytes_tensor_is_pinned_byte_for_byte():
+    """Two strings in one tensor — the case a single string cannot show.
+
+    ``"甲"`` is 3 utf-8 bytes (E7 94 B2), ``"ab"`` is 2. Confirmed identical to
+    what the shipped encoder produced when the live acceptance ran.
+    """
+    assert triton_client._encode_bytes_tensor(["ab", "甲"]) == (
+        b"\x02\x00\x00\x00ab\x03\x00\x00\x00\xe7\x94\xb2"
+    )
+
+
+def test_the_encoder_round_trips_a_multi_element_tensor():
+    texts = ["找出去年的採購紀錄", "第二段", "", "x"]
+    assert decode_bytes_tensor(triton_client._encode_bytes_tensor(texts)) == texts
+
+
+def test_the_decoder_refuses_a_big_endian_payload():
+    """The decoder must be able to fail, or it papers over exactly this.
+
+    Big-endian 27 read little-endian is 452984832 — a length that cannot fit
+    in what is left. The old slicing decoder happily returned one correct
+    string from this payload, which is how the mutation stayed invisible.
+    """
+    text = "找出去年的採購紀錄"
+    raw = text.encode("utf-8")
+    big_endian = struct.pack(">I", len(raw)) + raw
+
+    with pytest.raises(MalformedBytesTensor):
+        decode_bytes_tensor(big_endian)
+
+
+def test_the_decoder_refuses_a_truncated_payload():
+    good = triton_client._encode_bytes_tensor(["找出去年的採購紀錄"])
+
+    with pytest.raises(MalformedBytesTensor):
+        decode_bytes_tensor(good[:-3])
+    with pytest.raises(MalformedBytesTensor):
+        decode_bytes_tensor(good + b"\x05\x00")
+
+
 # ── the query/document split, on the wire ────────────────────────────────────
 
 
@@ -160,7 +257,7 @@ def test_query_role_sends_the_query_tensor(triton):
     assert tensor.name == "query"
     assert list(tensor.shape) == [1]
     assert tensor.datatype == "BYTES"
-    assert _decode_bytes_tensor(req.raw_input_contents[0]) == ["找出去年的採購紀錄"]
+    assert decode_bytes_tensor(req.raw_input_contents[0]) == ["找出去年的採購紀錄"]
 
 
 def test_document_role_sends_the_documents_tensor(triton):
@@ -172,7 +269,7 @@ def test_document_role_sends_the_documents_tensor(triton):
     assert tensor.name == "documents"
     assert list(tensor.shape) == [1, 1]
     assert tensor.datatype == "BYTES"
-    assert _decode_bytes_tensor(req.raw_input_contents[0]) == ["採購紀錄全文"]
+    assert decode_bytes_tensor(req.raw_input_contents[0]) == ["採購紀錄全文"]
 
 
 def test_query_and_document_do_not_collapse_to_one_vector(triton):
@@ -326,12 +423,21 @@ def test_unreachable_peer_is_bounded_by_the_channel_ready_wait():
 #
 # The stall tests above monkeypatch every constant they exercise, so they pin
 # how the budget WORKS and say nothing about the numbers the module docstring
-# and the runbook promise. Measured: ``HEALTH_PROBE_BUDGET_S = 600.0`` left 26
-# of these tests passing, and widening the embed budget to
-# ``CHANNEL_READY_TIMEOUT_S + timeout_s * 4`` (35 s → 125 s) left 24 passing —
-# a shared executor thread could be held nearly four times as long with the
-# suite still green. The two tests below close that: the first pins the
-# documented numbers, the second pins the budget the calls actually construct.
+# and the runbook promise — a shared executor thread could be held nearly four
+# times as long with the suite still green. The two tests below close that: the
+# first pins the documented numbers, the second pins the budget the calls
+# actually construct.
+#
+# Both mutations re-measured on the FULL suite, 2026-08-03 (the round-3 report
+# quoted 1 failure for the second one; it is 2 — under-reporting your own
+# coverage is the mirror of over-claiming it):
+#
+#   HEALTH_PROBE_BUDGET_S = 600.0                      → 2 failed / 1915 passed
+#     test_default_ceilings_are_the_documented_ones
+#     test_the_budget_a_call_actually_constructs
+#   _Budget(CHANNEL_READY_TIMEOUT_S + timeout_s * 4)   → 2 failed / 1915 passed
+#     test_the_budget_a_call_actually_constructs
+#     test_an_oversized_batch_still_says_shrink_the_batch
 
 
 def test_default_ceilings_are_the_documented_ones():
@@ -619,9 +725,14 @@ def test_http_input_type_reaches_the_gRPC_input_tensor(
     tensor = servicer.requests[0].inputs[0]
     assert tensor.name == expected_tensor
     assert list(tensor.shape) == expected_shape
-    assert _decode_bytes_tensor(
+    assert decode_bytes_tensor(
         servicer.requests[0].raw_input_contents[0]
     ) == ["找出去年的採購紀錄"]
+    # 連位元組本身都釘住 —— 這條鏈是唯一沒有任何替身的那一條,所以「線上真的
+    # 長這樣」在這裡講最有份量:長度前綴的位元序一動就變紅。
+    assert servicer.requests[0].raw_input_contents[0] == (
+        b"\x1b\x00\x00\x00" + "找出去年的採購紀錄".encode("utf-8")
+    )
 
     # And the vector that came back is the one that tensor selects, so a
     # query-shaped request can never be answered by the documents branch.

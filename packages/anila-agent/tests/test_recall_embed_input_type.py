@@ -104,23 +104,82 @@ class _ShortRespClient(_Client):
         return _Resp([[0.0, 1.0]])  # 送 2 段,只回 1 個
 
 
+class _NoQueryVectorClient(_Client):
+    """查詢側一個向量都沒回 —— 端點回了 ``data: []``。"""
+
+    async def post(self, url, headers=None, json=None):
+        body = json or {}
+        _Client.calls.append(body)
+        if body.get("input_type") == "query":
+            return _Resp([])
+        return _Resp([[0.0, 1.0], [1.0, 0.0]])
+
+
+# ── 兩側各一道防線,而且要各自可被殺死 ──────────────────────────────────────
+#
+# 這兩支的重點不只是「有擋到」,是**互不遮蔽**。前一版把兩道檢查疊在同一個
+# 地方(``_post`` 的長度檢查 + ``zip(strict=True)``),任拿掉一道,另一道都會
+# 替它把測試撐綠 —— 兩道都在,卻等於一道都沒釘住。所以底下刻意一支對一道:
+#   拿掉 ``strict=True``            → 只有 test_a_short_vector_batch... 變紅
+#   拿掉查詢側的 ``len(q_vecs)!=1`` → 只有 test_a_missing_query_vector... 變紅
+
+
 async def test_a_short_vector_batch_is_not_silently_truncated(monkeypatch):
     """少回一個向量 = 少一條候選記憶,而且沒有任何人會知道。
 
-    原本是 ``zip(names, doc_vecs, strict=False)``:向量比文字少時 zip 直接把
-    尾巴吃掉,``embed_fn`` 照樣回一份「看起來正常、只是短了」的排序。
-    現在拋 —— ``recall()`` 會接住並退回 keyword 粗篩(候選一條不少),
-    那比一份被無聲截短的排序誠實。
+    ``zip(names, doc_vecs, strict=False)`` 時向量比文字少,zip 直接把尾巴吃掉,
+    ``embed_fn`` 照樣回一份「看起來正常、只是短了」的排序。現在拋 ——
+    ``recall()`` 會接住並退回 keyword 粗篩(候選一條不少),那比一份被無聲
+    截短的排序誠實。
+
+    刻意不對訊息內容斷言:這裡拋的是 ``zip`` 自己的 ValueError,把它的字面
+    訊息寫進斷言只會綁死 CPython 的用字。要釘的是「有沒有拋」,而
+    ``strict=True`` 一旦被拿掉就不會拋。
     """
     import httpx
 
     monkeypatch.setattr(httpx, "AsyncClient", _ShortRespClient)
     embed = make_embed_fn(base_url="http://csp:8000/v1", model="m", api_key="k")
 
+    with pytest.raises(ValueError):
+        await embed("查詢字串", {"甲": "甲的描述", "乙": "乙的描述"}, 2)
+
+
+async def test_a_missing_query_vector_is_reported_not_indexed(monkeypatch):
+    """查詢側回空清單:要說「端點回了 0 個向量」,不是 IndexError。
+
+    兩者都會被 ``recall()`` 接住,所以行為上都退回 keyword —— 差別在現場看到
+    的是哪一種 log。少了那道檢查,``q_vecs[0]`` 直接 IndexError,訊息裡不會有
+    「端點」「查詢」「0 個向量」任何一個字,操作者會往程式的方向查而不是往
+    端點的方向查。IndexError 不是 ValueError,所以這支會變紅。
+    """
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _NoQueryVectorClient)
+    embed = make_embed_fn(base_url="http://csp:8000/v1", model="m", api_key="k")
+
     with pytest.raises(ValueError) as exc:
         await embed("查詢字串", {"甲": "甲的描述", "乙": "乙的描述"}, 2)
 
-    assert "2" in str(exc.value) and "1" in str(exc.value)
+    message = str(exc.value)
+    assert "查詢" in message and "0 個向量" in message
+
+
+async def test_recall_falls_back_to_keywords_when_the_query_vector_is_missing(
+    monkeypatch,
+):
+    """整條 recall 的行為:查詢側壞掉時候選數一樣不減。"""
+    import httpx
+
+    from anila_agent.memory.recall import recall
+
+    monkeypatch.setattr(httpx, "AsyncClient", _NoQueryVectorClient)
+    embed = make_embed_fn(base_url="http://csp:8000/v1", model="m", api_key="k")
+    manifest = {"甲": "甲的描述", "乙": "乙的描述"}
+
+    names = await recall("查詢字串", manifest, embed_fn=embed, k=5)
+
+    assert set(names) == set(manifest)
 
 
 async def test_recall_falls_back_to_keywords_instead_of_a_short_list(monkeypatch):

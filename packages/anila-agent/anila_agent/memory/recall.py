@@ -121,17 +121,7 @@ def make_embed_fn(
             json={"model": model, "input": inputs, "input_type": input_type},
         )
         resp.raise_for_status()
-        vectors = [d["embedding"] for d in resp.json()["data"]]
-        # 少回一個向量就少一個候選。原本 ``zip(..., strict=False)`` 直接把尾巴
-        # 吃掉,結果是「粗篩少了幾條記憶」而沒有任何人知道 —— 不報錯、不留 log。
-        # 寧可拋:``recall()`` 會接住並退回 keyword_shortlist(候選一條不少),
-        # 那比一份被無聲截短的排序誠實。
-        if len(vectors) != len(inputs):
-            raise ValueError(
-                f"embedding 端點對 {len(inputs)} 段輸入只回了 {len(vectors)} "
-                f"個向量(input_type={input_type})"
-            )
-        return vectors
+        return [d["embedding"] for d in resp.json()["data"]]
 
     async def _embed(query: str, manifest: dict[str, str], n: int) -> list[str]:
         import httpx
@@ -140,14 +130,29 @@ def make_embed_fn(
         if not names:
             return []
         async with httpx.AsyncClient(verify=verify_ssl, timeout=timeout) as client:
-            q_vec = (await _post(client, [query], "query"))[0]
+            q_vecs = await _post(client, [query], "query")
             doc_vecs = await _post(
                 client, [manifest[name] for name in names], "document"
             )
-        # strict=True:``_post`` 已經擋掉數量不符,這裡是第二道 —— 兩邊都不准
-        # 靠 zip 悄悄截短候選清單。
+        # 兩側各有一道「端點少回向量」的防線,而且**各自是唯一的那一道**
+        # (兩道都放在 ``_post`` 裡的版本互相遮蔽:任拿掉一道,另一道都會替它
+        # 把測試撐綠,等於誰也沒被釘住)。
+        #
+        # 查詢側:沒有查詢向量就沒有東西可比。少了這行,``q_vecs[0]`` 是
+        # IndexError —— 一樣會被 ``recall()`` 接住退回 keyword,但錯的是
+        # 「程式碰到空清單」而不是「端點回話不對」,現場看 log 差很多。
+        if len(q_vecs) != 1:
+            raise ValueError(
+                f"embedding 端點對 1 段查詢回了 {len(q_vecs)} 個向量(input_type=query)"
+            )
+        # 文件側:``strict=True`` 是這裡唯一擋住無聲截短的東西,不是裝飾 ——
+        # 向量比候選少時 zip 直接把尾巴吃掉,``embed_fn`` 照樣回一份「看起來
+        # 正常、只是短了」的排序,少掉的記憶沒有人會知道(不報錯、不留 log)。
+        # 拋出去比較誠實:``recall()`` 會接住並退回 keyword 粗篩,候選一條不少。
         ranked = sorted(
-            zip(names, doc_vecs, strict=True), key=lambda nv: _cosine(q_vec, nv[1]), reverse=True
+            zip(names, doc_vecs, strict=True),
+            key=lambda nv: _cosine(q_vecs[0], nv[1]),
+            reverse=True,
         )
         return [name for name, _ in ranked[:n]]
 

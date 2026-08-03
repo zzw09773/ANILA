@@ -184,6 +184,69 @@ def test_query_and_document_do_not_take_the_same_route_branch(
 
 
 @pytest.mark.parametrize("path", ["/v1/embeddings", "/v2/embeddings"])
+def test_query_side_refuses_a_multi_string_batch(
+    client, db, monkeypatch, _grpc_endpoint_allowed, path
+):
+    """``input_type=query`` + 多個字串 → 400,而且一個 RPC 都不發。
+
+    Triton 的 query 側 tensor 是 ``shape=[1]``:一次只收一個字串。少了
+    ``proxy/service.py`` 那道 400(拿掉它整套測試照樣全綠),送兩段文字的
+    呼叫端不會收到任何錯誤 —— ``embed_texts`` 會照著 loop 逐段發 N 次 query
+    tensor 的 RPC,回一份長度看起來對的 embedding list。也就是說,呼叫端
+    以為自己送了一個批次,實際上是 N 次單筆查詢,而且沒有人會發現。
+    """
+    _register_triton_embedder(db)
+    called: list = []
+
+    def fake_embed(endpoint_url, model_name, texts, *, role, timeout_s=30.0):
+        called.append((role, list(texts)))
+        return [[0.1] * 4 for _ in texts]
+
+    monkeypatch.setattr("app.services.triton_grpc.embed_texts", fake_embed)
+
+    resp = _post_embeddings(
+        client,
+        db,
+        path,
+        {"model": "nv-embed-v2", "input": ["甲", "乙"], "input_type": "query"},
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert resp.headers["content-type"].startswith("application/json")
+    assert called == [], "query 側收下了多段文字 —— 上游會被當成 N 次單筆查詢"
+
+
+@pytest.mark.parametrize("path", ["/v1/embeddings", "/v2/embeddings"])
+def test_document_side_still_accepts_a_multi_string_batch(
+    client, db, monkeypatch, _grpc_endpoint_allowed, path
+):
+    """對照組:同樣兩段文字,document 側必須照收。
+
+    沒有這一支,上面那道 400 可以用「多段文字一律拒收」通過 —— 那會把
+    ingestion 整批文件的路徑一起關掉。
+    """
+    _register_triton_embedder(db)
+    seen: dict = {}
+
+    def fake_embed(endpoint_url, model_name, texts, *, role, timeout_s=30.0):
+        seen["role"] = role
+        seen["texts"] = list(texts)
+        return [[0.1] * 4 for _ in texts]
+
+    monkeypatch.setattr("app.services.triton_grpc.embed_texts", fake_embed)
+
+    resp = _post_embeddings(
+        client,
+        db,
+        path,
+        {"model": "nv-embed-v2", "input": ["甲", "乙"], "input_type": "document"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert seen == {"role": "document", "texts": ["甲", "乙"]}
+
+
+@pytest.mark.parametrize("path", ["/v1/embeddings", "/v2/embeddings"])
 def test_unknown_input_type_is_400_at_the_http_boundary(
     client, db, monkeypatch, _grpc_endpoint_allowed, path
 ):
