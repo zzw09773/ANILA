@@ -27,17 +27,24 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.agents._common import effective_agent_policy_level
 from app.database import get_db
 from app.models.ingestion import IngestionCollection
 from app.models.user import User
+from app.modules.policy import apply_classification
 from app.schemas.contracts.classification import ClassificationLevel
 from app.schemas.ingestion import (
+    CollectionClassificationRaise,
     CollectionCreate,
     CollectionResponse,
     CollectionUpdate,
 )
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
+from app.services.ingestion_classification import (
+    agents_bound_below_level,
+    cascade_raise_documents,
+)
 
 router = APIRouter(tags=["Ingestion / Collections"])
 logger = logging.getLogger(__name__)
@@ -286,6 +293,135 @@ def get_collection(
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
     coll = _require_collection_access(db, current_user, collection_id)
+    return CollectionResponse.model_validate(coll)
+
+
+@router.post(
+    "/api/ingestion/collections/{collection_id}/classification",
+    response_model=CollectionResponse,
+)
+def raise_collection_classification(
+    collection_id: int,
+    payload: CollectionClassificationRaise,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CollectionResponse:
+    """Raise a collection's classification level (one-way latch).
+
+    Goes through ``apply_classification`` — never writes the column
+    directly — so ClassificationEvent + memory-purge side effects stay
+    on the single latch path. Lowering is refused with a pointer to the
+    declassification flow (``apply_classification`` would no-op; we turn
+    that into an explicit error instead of a misleading 200).
+
+    Before writing: refuse if any bound agent is below the new level
+    (name the agents; do not silently raise them). Documents below the
+    new level are cascaded via ``apply_classification`` first so a
+    document never ends up effectively less classified than its
+    collection.
+
+    Auth matches other collection mutations (owner or admin-tier). Not
+    looser than ``create_collection`` (any authenticated user may create
+    at any level today — see recommendation in the package notes).
+    """
+    coll = _require_collection_access(db, current_user, collection_id)
+    try:
+        target = ClassificationLevel.from_storage(payload.classification_level)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="classification_level 必須是四級之一：無機密、營業秘密、密、機密",
+        ) from exc
+
+    previous = ClassificationLevel.from_storage(
+        getattr(coll, "classification_level", None) or "無機密"
+    )
+    if target < previous:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"知識庫密等只能往上調（目前「{previous.to_storage()}」，"
+                f"請求「{target.to_storage()}」）。"
+                f"降級請走降密申請流程"
+                f"（POST /api/classification/declassification-requests），"
+                f"須主管核准，不可由此路由自行降級。"
+            ),
+        )
+    if target == previous:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"知識庫已是「{previous.to_storage()}」，無須升密。"
+                f"若要降級，請走降密申請流程。"
+            ),
+        )
+
+    under = agents_bound_below_level(db, collection_id, target)
+    if under:
+        named = "、".join(
+            f"「{a.name}」(id={a.id}，有效密等「"
+            f"{effective_agent_policy_level(a).to_storage()}」)"
+            for a in under
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"無法將知識庫升至「{target.to_storage()}」：下列已綁定的 "
+                f"agent 有效密等低於目標等級：{named}。"
+                f"請先透過 POST /api/agents/{{id}}/classification "
+                f"將那些 agent 升至「{target.to_storage()}」以上，"
+                f"再重試本知識庫升密。系統不會自動提升 agent。"
+            ),
+        )
+
+    raised_doc_ids = cascade_raise_documents(
+        db,
+        collection_id=collection_id,
+        new_level=target,
+        actor_user_id=current_user.id,
+    )
+
+    event = apply_classification(
+        db,
+        resource_type="collection",
+        resource_id=str(collection_id),
+        new_level=target.to_storage(),
+        actor_type="user",
+        actor_id=str(current_user.id),
+        reason="manual_admin",
+        source="manual_admin",
+    )
+    if event is None:
+        # Concurrent raise or stale session — re-read and report honestly.
+        db.refresh(coll)
+        current = ClassificationLevel.from_storage(
+            getattr(coll, "classification_level", None) or "無機密"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"知識庫密等未變更（目前「{current.to_storage()}」；"
+                f"請求「{target.to_storage()}」）。若目標未高於現行等級，"
+                f"升密不會生效；降級請走降密申請流程。"
+            ),
+        )
+
+    db.refresh(coll)
+    log_audit_event(
+        db,
+        commit=True,
+        actor=current_user,
+        action="ingestion_collection_classification_raise",
+        resource_type="ingestion_collection",
+        resource_id=coll.id,
+        metadata={
+            "name": coll.name,
+            "from_level": previous.to_storage(),
+            "to_level": target.to_storage(),
+            "classification_event_id": event.id,
+            "cascaded_document_ids": raised_doc_ids,
+        },
+    )
     return CollectionResponse.model_validate(coll)
 
 

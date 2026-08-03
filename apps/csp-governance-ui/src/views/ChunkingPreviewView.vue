@@ -12,10 +12,10 @@
     </header>
 
     <!-- Step 1: upload ------------------------------------------------- -->
-    <TermBox v-if="!result" title="步驟 1 · 上傳一份文件" pad="md" hint="≤ 10 MB · txt / md / pdf / docx / odt / rtf / 圖片">
+    <TermBox v-if="!result" title="步驟 1 · 上傳一份文件" pad="md" hint="≤ 10 MB · ParserRegistry 支援的副檔名（含 .out / .dcm / 原始碼 / 圖片）">
       <div class="upload" @drop.prevent="onDrop" @dragover.prevent>
         <input ref="fileInput" type="file"
-               accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,.png,.jpg,.jpeg,.webp,.gif,.bmp,text/plain,text/markdown,application/pdf"
+               :accept="INGESTION_FILE_ACCEPT"
                @change="onFilePicked" style="display:none" />
         <TermButton variant="primary" :disabled="loading" :loading="loading"
                     :label="loading ? `執行中 ${runningSec}s…` : '+ 選擇檔案'"
@@ -244,6 +244,7 @@ import { useRouter } from 'vue-router'
 import { listStrategies, previewChunking } from '../api/chunkingPreview'
 import { createCollection } from '../api/ingestionCollections'
 import { TermBox, TermButton, TermField, TermModal, TermStat } from '../components/cli'
+import { INGESTION_FILE_ACCEPT } from '../utils/ingestionFileAccept'
 
 const router = useRouter()
 

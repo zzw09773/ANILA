@@ -118,6 +118,11 @@ class CollectionUpdate(BaseModel):
     intentionally NOT allowed by the API (would silently invalidate
     every existing embedding); both fields are absent here. Reindex
     happens via a future ``POST /reindex`` endpoint.
+
+    ``classification_level`` is intentionally absent — raising a
+    collection's level is a dedicated route
+    (``POST .../classification``) so ordinary updates cannot silently
+    latch or bypass the stranded-bind / document-cascade checks.
     """
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
@@ -128,6 +133,30 @@ class CollectionUpdate(BaseModel):
         pattern="^(active|archived)$",
         description="'active' or 'archived'. Use DELETE to actually drop.",
     )
+
+
+class CollectionClassificationRaise(BaseModel):
+    """Payload to ``POST /api/ingestion/collections/{id}/classification``.
+
+    Raise-only. Lowering must go through the declassification request
+    flow; the route refuses a non-raise rather than letting
+    ``apply_classification`` no-op into a misleading 200.
+    """
+
+    classification_level: str = Field(
+        ...,
+        description="目標密等（須嚴格高於現行）；無機密 < 營業秘密 < 密 < 機密",
+    )
+
+    @field_validator("classification_level")
+    @classmethod
+    def _validate_classification_level(cls, value: str) -> str:
+        try:
+            return ClassificationLevel.from_storage(value).to_storage()
+        except ValueError as exc:
+            raise ValueError(
+                "classification_level 必須是四級之一：無機密、營業秘密、密、機密"
+            ) from exc
 
 
 # ── Collection: response shapes ─────────────────────────────────────────────
