@@ -143,21 +143,74 @@ def test_query_site_regression_fails_if_wired_as_document(monkeypatch):
     assert seen["role"] == "query"
 
 
-def test_search_embed_query_passes_query_role():
-    """Static invariant: _embed_query source must pass embedding_input_role=query."""
-    import inspect
+def test_search_embed_query_passes_query_role(db, monkeypatch):
+    """Collection search embeds its query on the query side.
+
+    Was an ``inspect.getsource()`` grep — which sees a literal at one call
+    site and nothing else, so a wrapper, a variable, or a later re-assignment
+    walks past it. This runs ``_embed_query`` and reads the argument
+    ``proxy_request`` is actually handed.
+    """
     from app.api.ingestion import search as search_mod
+    from app.models.model_registry import ModelRegistry
 
-    src = inspect.getsource(search_mod._embed_query)
-    assert "embedding_input_role=\"query\"" in src or "embedding_input_role='query'" in src
+    from tests.conftest import make_user
+
+    user = make_user(db, username="search_query_role")
+    model = ModelRegistry(
+        name="nv-embed-v2",
+        display_name="nv-embed-v2",
+        model_type="embedding",
+        endpoint_url="grpc://172.16.120.35:9001",
+        api_version="v1",
+        protocol="triton_grpc",
+        is_active=True,
+    )
+    db.add(model)
+    db.commit()
+
+    seen: dict = {}
+
+    async def fake_proxy_request(**kwargs):
+        seen["role"] = kwargs.get("embedding_input_role")
+        return {"data": [{"embedding": [0.1, 0.2, 0.3, 0.4]}]}
+
+    monkeypatch.setattr(search_mod, "proxy_request", fake_proxy_request)
+
+    vec = asyncio.run(
+        search_mod._embed_query(db, user, "nv-embed-v2", 4, "去年的採購紀錄")
+    )
+
+    assert len(vec) == 4
+    assert seen["role"] == "query"
 
 
-def test_memory_retrieve_passes_query_role():
-    import inspect
+def test_memory_retrieve_passes_query_role(monkeypatch):
+    """Long-term memory recall embeds its query on the query side.
+
+    Also was a source grep. ``_embed`` is the single decision point the
+    recall path goes through, so recording its keyword is the behaviour; the
+    embed is made to fail afterwards so no DB is needed (``retrieve_relevant_
+    chunks`` is fail-closed and returns []).
+    """
     from app.services import memory_service
 
-    src = inspect.getsource(memory_service.retrieve_relevant_chunks)
-    assert "embedding_input_role=\"query\"" in src or "embedding_input_role='query'" in src
+    seen: dict = {}
+
+    async def fake_embed(db, text_input, **kwargs):
+        seen["role"] = kwargs.get("embedding_input_role")
+        raise RuntimeError("stop here — the role is already decided")
+
+    monkeypatch.setattr(memory_service, "_embed", fake_embed)
+
+    result = asyncio.run(
+        memory_service.retrieve_relevant_chunks(
+            db=None, user_id=1, query_text="去年的採購紀錄"
+        )
+    )
+
+    assert result == []
+    assert seen["role"] == "query"
 
 
 def test_triton_rejects_non_embedding_path():

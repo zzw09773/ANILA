@@ -448,23 +448,47 @@ done
 > (`query` vs `documents`),走 OpenAI `/v1/embeddings` 沒有辦法表達這個差別 —— 全部
 > 被當文件編碼,檢索排序會**無聲**變差(不會報錯、不會有 log)。
 
-**三件事都要做,少一件就是 400 `scheme`:**
+**四件事都要做。`grpc://` 端點要過的是 url_guard 的兩關 —— scheme 一關、
+主機/IP 一關 —— 少哪一件,400 的 `reason` 就不一樣(下面排錯表有對照):**
 
-1. `.env` 設 `ANILA_ALLOW_GRPC_ENDPOINT=1`
+1. `.env` 設 `ANILA_ALLOW_GRPC_ENDPOINT=1`(過 **scheme** 關)
    —— 只有 cleartext `grpc://` 需要;`grpcs://`(TLS)不需要,維持 0 即可。
    這是 http 旗標的**姊妹分支**,開它不會放寬任何 `http://` 端點;
    loopback / link-local / multicast / cloud metadata 對 `grpc://` 一樣永遠擋。
-2. **`up -d csp`,不是 `docker restart csp`**
-   —— `restart` 不重載 `.env`。旗標沒進容器的症狀與旗標沒設**完全一樣**(400 `scheme`),
+2. `.env` 設 `ANILA_ALLOW_PRIVATE_ENDPOINT=1`(過 **主機/IP** 關)
+   —— **端點填 IP 字面值時才需要**,而 Triton 通常就是填 IP(例
+   `grpc://172.16.120.35:9001`,10/8、172.16/12、192.168/16 都算私網)。
+   ⚠ **把那個 IP 加進 trusted-hosts 沒有用。** trusted-hosts 只繞得過
+   「主機名的 DNS 解析結果落在私網」;IP 字面值是先判私網、根本不看 trusted。
+   實測(2026-08-03,本樹 `anila_core.security.url_guard`):
+   ```
+   grpc 旗標=1,grpc://172.16.120.35:9001                    → 400 reason=private_ip
+   grpc 旗標=1 + ANILA_TRUSTED_HOSTS 加 172.16.120.35        → 400 reason=private_ip(沒變)
+   grpc 旗標=1 + ANILA_ALLOW_PRIVATE_ENDPOINT=1              → 通過
+   grpc 旗標=1 + 端點改 FQDN + 該 FQDN 進 trusted-hosts       → 通過
+   ```
+   (最後一列在開發機是把 resolver 固定成該 IP 量的 —— 開發機解不到內網 FQDN,
+   guard 的判斷邏輯沒有動。)
+   兩條路二選一:開私網旗標(簡單,但整段 RFC1918 都放行),
+   或端點改用 FQDN 並把該 FQDN 加進 trusted-hosts(較窄,但要有內網 DNS)。
+3. **`up -d csp`,不是 `docker restart csp`**
+   —— `restart` 不重載 `.env`。旗標沒進容器的症狀與旗標沒設**完全一樣**,
    確認方式:`docker exec <csp 容器> printenv ANILA_ALLOW_GRPC_ENDPOINT`,
-   **沒有輸出就是沒進去**。
-3. 模型頁註冊:protocol 選「Triton/KServe gRPC」,端點填 `grpc://host:9001`
+   **沒有輸出就是沒進去**(私網旗標同理)。
+4. 模型頁註冊:protocol 選「Triton/KServe gRPC」,端點填 `grpc://host:9001`
    (**不要加 `/v1` 路徑**,gRPC 沒有路徑),模型名稱要與 Triton 上的 model name 一字不差。
    Triton 不吃 Bearer 金鑰,所以該協定下表單**不顯示**金鑰欄位。
 
+> **重跑 `intranet-deploy.sh` 不會把這兩個旗標改回 0。** 腳本對
+> `ANILA_ALLOW_GRPC_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT` /
+> `ANILA_ALLOW_HTTP_ENDPOINT` 一律「缺鍵才補 0,已有值就保留」,並在值為 1 時
+> 印 warn。以前是每次硬寫 0 —— 操作者照本節開好、隔天重跑一次部署腳本,
+> Triton embedder 就靜默失效,而症狀只是 400,現場幾乎反推不出原因。
+
 ```bash
-# 1. 旗標真的進到容器(沒輸出 = 沒進去,回頭做第 2 步)
+# 1. 兩個旗標真的進到容器(沒輸出 = 沒進去,回頭做第 3 步)
 docker exec anila-restart-csp-1 printenv ANILA_ALLOW_GRPC_ENDPOINT
+docker exec anila-restart-csp-1 printenv ANILA_ALLOW_PRIVATE_ENDPOINT
 
 # 2. 端點在網路上通(csp 容器沒裝 curl / grpcurl,用 python socket)
 docker exec anila-restart-csp-1 python3 -c \
@@ -472,15 +496,34 @@ docker exec anila-restart-csp-1 python3 -c \
 
 # 3. 註冊後:模型頁該列應為 online;取一段文字經 /v1/embeddings 應回 4096 維
 #    (Content-Type 要是 application/json —— SPA catch-all 會回 200 text/html)
+
+# 4. 查詢/文件真的走不同張量(這條路徑存在的理由,也是 url_guard 的活體驗收):
+#    同一段文字送兩次、一次 query 一次 document,cosine 必須明顯小於 1.0。
+#    等於 1.0 = 查詢被當文件編碼了,不會報錯、排序無聲變差。
+docker exec anila-restart-csp-1 python3 -c "
+from anila_core.security.url_guard import validate_outbound_url
+from app.services.triton_grpc import client as tc
+URL, MODEL = 'grpc://172.16.120.35:9001', 'nv-embed-v2'
+validate_outbound_url(URL, 'model')            # 旗標不對這行就先炸
+print('health', tc.probe_triton_health(URL, model_name=MODEL))
+q = tc.embed_texts(URL, MODEL, ['找出去年的採購紀錄'], role='query')[0]
+d = tc.embed_texts(URL, MODEL, ['找出去年的採購紀錄'], role='document')[0]
+cos = sum(a*b for a,b in zip(q,d)) / ((sum(a*a for a in q)**.5)*(sum(b*b for b in d)**.5))
+print('dim', len(q), 'cosine(query,document)', round(cos,4))
+"
+# 2026-08-03 在本開發機對 172.16.120.35:9001 實測:health ('healthy', 4)、
+# dim 4096、cosine 0.7467。
 ```
 
 **排錯**
 | 症狀 | 原因 |
 |---|---|
-| 註冊 400,detail 提到 `scheme` | 旗標沒設,或設了但沒 `up -d`(見第 2 步) |
+| 註冊 400,detail 提到 `scheme` | grpc 旗標沒設,或設了但沒 `up -d`(見第 3 步) |
+| 註冊 400,detail 提到私網 / `reason=private_ip` | 端點是私網 IP 字面值而 `ANILA_ALLOW_PRIVATE_ENDPOINT` 沒開(見第 2 步)。**加 trusted-host 治不了這個** |
 | 註冊 422「必須為 grpc:// 或 grpcs://」 | protocol 選了 triton_grpc 卻填 http URL |
 | 健檢 unhealthy、但 TCP 通 | Triton 上沒載入這個 model name(`ModelReady` 說了算,不會用 ServerLive 漂綠) |
-| 502「模型服務暫時不可用」 | 上游逾時;單次請求的執行緒佔用上限為 35 秒(`_wait_ready` 5s + ModelInfer 30s),重試 3 次 |
+| 502「模型服務暫時不可用」,csp log 是「triton 未在 30s 內回應 ModelInfer」 | **單筆**逾時 —— 上游過慢或該 model 沒載入。單次請求的執行緒佔用上限 35 秒(`_wait_ready` 5s + ModelInfer 30s),重試 3 次 |
+| 502,csp log 是「triton call exceeded its 35s budget … 請縮小批次」 | **整批**吃光了整通呼叫的 35 秒預算(每段文字各一次 ModelInfer)—— 縮小批次或調高 `EMBEDDING_TIMEOUT` |
 | 整批帶入(bulk import)報 422 | Triton 沒有 OpenAI `/v1/models` 列表,不支援整批帶入 —— 逐一註冊 |
 
 ### 3.2 startup_security 一定要過

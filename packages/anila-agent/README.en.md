@@ -78,6 +78,17 @@ ANILA_CITED=1                  # inline source citations
 ANILA_OUTPUT_STYLE=zh-tw-formal
 ```
 
+> ⚠ **Where `ANILA_EMBED_BASE_URL` points decides whether the query/document
+> split does anything.** Memory shortlisting and pgvector retrieval send an
+> `input_type` field (`query` / `document`) — a Triton-class embedder puts the
+> two on **different input tensors**, and getting it wrong does not error, it
+> just quietly degrades ranking. The `nv-embed-proxy:8000` above is the **model
+> container**: its shim does not declare that field and pydantic defaults to
+> `extra="ignore"`, so the field is **neither rejected nor read** and the query
+> is still embedded as a document. To actually get the split, point this at
+> **CSP**'s `/v1` (e.g. `https://<platform>/v1`) and register the embedder with
+> `protocol=triton_grpc`. See `docs/FAKE-CONTROLS.md` #35.
+
 CLI commands: `/help`, `/memory [query]`, `/style`, `/clear`, `/deep-research <question>`, plus a
 `/<name>` per file in `configs/commands/*.md` (example: `/summarize`).
 

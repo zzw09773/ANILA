@@ -303,3 +303,24 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   慣例）,不帶維持 `document`,打錯字回 400 不靜默退回;該欄位不會轉送到上游。
   `anila_pgvector.search` 改帶 `query`;`memory/recall.py` 原本把
   `[query, *documents]` 併成一批送 —— 拆成兩次呼叫,一次 query 一次 document。
+
+### #35 ⚠ `input_type` 送到 `nv-embed-proxy` 會被照單全收然後丟掉
+
+- **文件說**:`packages/anila-agent/README.md:72`（`.en.md:76` 同）教人設
+  `ANILA_EMBED_BASE_URL=http://nv-embed-proxy:8000/v1`。#34 之後,
+  `memory/recall.py` 與 `retrieval/anila_pgvector.py` 都會在 body 裡帶
+  `input_type`,看起來查詢側就有了。
+- **實際**:那個 URL 指的是 **model 容器**,不是 CSP。
+  `infra/models/src/embedding_proxy/app.py` 的 `EmbeddingRequest` 沒有宣告
+  這個欄位,pydantic 預設 `extra="ignore"` → **不會 400,也不會被讀**;
+  該 shim 對 Triton 一律送 `{"name": "documents", "shape": [1, N]}`。
+  也就是說:欄位送得出去、不會壞,但查詢仍舊被當文件編碼。
+- **後果**:照 README 設定的 agent,RAG 查詢的排序照舊悄悄變差,
+  而呼叫端沒有任何訊號說它的 `input_type` 沒人理。
+- **現況**:**尚未修**,先記在這裡。要真的拿到 query/document 分流,
+  `ANILA_EMBED_BASE_URL` 要指向 **CSP** 的 `/v1`,且該 embedding model 在模型頁
+  以 `protocol=triton_grpc` 註冊(runbook §3.1c)——那條路徑有測試把關
+  (`services/csp/tests/test_triton_grpc_wire.py`)。
+  沒有改 shim 的理由:`infra/models/` 是另一套獨立 build 的 model stack,
+  本樹沒有任何測試會跑到它,改了也沒有人驗得到——那正是這份清單在收的東西。
+  兩個 README 與 `recall.py` 的 docstring 已就地註明這個差異。

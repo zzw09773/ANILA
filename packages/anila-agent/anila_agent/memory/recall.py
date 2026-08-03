@@ -103,6 +103,13 @@ def make_embed_fn(
     結果是查詢也被當文件編碼 —— 不會報錯,只是相似度排序悄悄變差
     (實測 cosine 0.828 → 1.0,等於把查詢與文件混為一談)。
     對 OpenAI 相容端點,拆兩次只是多一個 round-trip,結果不變。
+
+    ⚠ ``input_type`` 只有在 ``base_url`` 指向 **CSP** 的 ``/v1`` 時才真的生效
+    (CSP 讀它、據以選 Triton 的 query/documents 張量,並在轉發上游前把欄位拿掉)。
+    README 記錄的 ``ANILA_EMBED_BASE_URL=http://nv-embed-proxy:8000/v1`` 指的是
+    **model 容器**:那支 shim 的 pydantic model 沒宣告這個欄位、預設
+    ``extra="ignore"`` —— 送過去不會壞(不是 400),但也不會被讀,查詢一樣落在
+    documents 張量。這條差異記在 ``docs/FAKE-CONTROLS.md`` #35。
     """
 
     async def _post(
@@ -114,7 +121,17 @@ def make_embed_fn(
             json={"model": model, "input": inputs, "input_type": input_type},
         )
         resp.raise_for_status()
-        return [d["embedding"] for d in resp.json()["data"]]
+        vectors = [d["embedding"] for d in resp.json()["data"]]
+        # 少回一個向量就少一個候選。原本 ``zip(..., strict=False)`` 直接把尾巴
+        # 吃掉,結果是「粗篩少了幾條記憶」而沒有任何人知道 —— 不報錯、不留 log。
+        # 寧可拋:``recall()`` 會接住並退回 keyword_shortlist(候選一條不少),
+        # 那比一份被無聲截短的排序誠實。
+        if len(vectors) != len(inputs):
+            raise ValueError(
+                f"embedding 端點對 {len(inputs)} 段輸入只回了 {len(vectors)} "
+                f"個向量(input_type={input_type})"
+            )
+        return vectors
 
     async def _embed(query: str, manifest: dict[str, str], n: int) -> list[str]:
         import httpx
@@ -127,8 +144,10 @@ def make_embed_fn(
             doc_vecs = await _post(
                 client, [manifest[name] for name in names], "document"
             )
+        # strict=True:``_post`` 已經擋掉數量不符,這裡是第二道 —— 兩邊都不准
+        # 靠 zip 悄悄截短候選清單。
         ranked = sorted(
-            zip(names, doc_vecs, strict=False), key=lambda nv: _cosine(q_vec, nv[1]), reverse=True
+            zip(names, doc_vecs, strict=True), key=lambda nv: _cosine(q_vec, nv[1]), reverse=True
         )
         return [name for name, _ in ranked[:n]]
 

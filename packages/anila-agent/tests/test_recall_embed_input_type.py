@@ -91,3 +91,48 @@ async def test_empty_manifest_makes_no_request():
     embed = make_embed_fn(base_url="http://csp:8000/v1", model="m", api_key="k")
     assert await embed("查詢字串", {}, 3) == []
     assert _Client.calls == []
+
+
+class _ShortRespClient(_Client):
+    """文件側少回一個向量 —— 端點壞掉、批次被截斷時真的會發生。"""
+
+    async def post(self, url, headers=None, json=None):
+        body = json or {}
+        _Client.calls.append(body)
+        if body.get("input_type") == "query":
+            return _Resp([[1.0, 0.0]])
+        return _Resp([[0.0, 1.0]])  # 送 2 段,只回 1 個
+
+
+async def test_a_short_vector_batch_is_not_silently_truncated(monkeypatch):
+    """少回一個向量 = 少一條候選記憶,而且沒有任何人會知道。
+
+    原本是 ``zip(names, doc_vecs, strict=False)``:向量比文字少時 zip 直接把
+    尾巴吃掉,``embed_fn`` 照樣回一份「看起來正常、只是短了」的排序。
+    現在拋 —— ``recall()`` 會接住並退回 keyword 粗篩(候選一條不少),
+    那比一份被無聲截短的排序誠實。
+    """
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _ShortRespClient)
+    embed = make_embed_fn(base_url="http://csp:8000/v1", model="m", api_key="k")
+
+    with pytest.raises(ValueError) as exc:
+        await embed("查詢字串", {"甲": "甲的描述", "乙": "乙的描述"}, 2)
+
+    assert "2" in str(exc.value) and "1" in str(exc.value)
+
+
+async def test_recall_falls_back_to_keywords_instead_of_a_short_list(monkeypatch):
+    """整條 recall 的行為:候選數不減,而不是悄悄少一條。"""
+    import httpx
+
+    from anila_agent.memory.recall import recall
+
+    monkeypatch.setattr(httpx, "AsyncClient", _ShortRespClient)
+    embed = make_embed_fn(base_url="http://csp:8000/v1", model="m", api_key="k")
+    manifest = {"甲": "甲的描述", "乙": "乙的描述"}
+
+    names = await recall("查詢字串", manifest, embed_fn=embed, k=5)
+
+    assert set(names) == set(manifest), "粗篩失敗時應退回 keyword,候選不該變少"

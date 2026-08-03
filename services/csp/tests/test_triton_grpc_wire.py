@@ -26,6 +26,8 @@ documented in ``triton_grpc/client.py`` — see ``_Budget``.
 """
 from __future__ import annotations
 
+import inspect
+import ipaddress
 import socket
 import struct
 import threading
@@ -318,3 +320,311 @@ def test_unreachable_peer_is_bounded_by_the_channel_ready_wait():
 
     assert "channel not ready" in str(exc.value)
     assert elapsed < triton_client.CHANNEL_READY_TIMEOUT_S + 2.0
+
+
+# ── the documented default ceilings, not just the mechanism ──────────────────
+#
+# The stall tests above monkeypatch every constant they exercise, so they pin
+# how the budget WORKS and say nothing about the numbers the module docstring
+# and the runbook promise. Measured: ``HEALTH_PROBE_BUDGET_S = 600.0`` left 26
+# of these tests passing, and widening the embed budget to
+# ``CHANNEL_READY_TIMEOUT_S + timeout_s * 4`` (35 s → 125 s) left 24 passing —
+# a shared executor thread could be held nearly four times as long with the
+# suite still green. The two tests below close that: the first pins the
+# documented numbers, the second pins the budget the calls actually construct.
+
+
+def test_default_ceilings_are_the_documented_ones():
+    """35 s per embed call, 10 s per health probe — at default settings.
+
+    These exact numbers are quoted in the module docstring, in the runbook's
+    §3.1c troubleshooting table (「單次請求的執行緒佔用上限為 35 秒」) and in
+    the retry arithmetic (3 × 35 ≈ 106.5 s per HTTP request). Changing them is
+    allowed; changing them without noticing is not.
+    """
+    assert triton_client.CHANNEL_READY_TIMEOUT_S == 5.0
+    assert triton_client.HEALTH_TIMEOUT_S == 5.0
+    assert triton_client.HEALTH_PROBE_BUDGET_S == 10.0
+    # The advertised 35 s is 5 s handshake + the default per-RPC timeout, so
+    # that default is part of the promise too.
+    default_timeout = inspect.signature(
+        triton_client.embed_texts
+    ).parameters["timeout_s"].default
+    assert default_timeout == 30.0
+    assert triton_client.CHANNEL_READY_TIMEOUT_S + default_timeout == 35.0
+
+
+def test_the_budget_a_call_actually_constructs(triton, monkeypatch):
+    """Not the constant — the ceiling ``embed_texts`` / ``probe_triton_health``
+    hand to ``_Budget`` on a real call.
+
+    A constant can stay 5.0 while the call multiplies it. Recording the
+    construction is what makes ``_Budget(CHANNEL_READY_TIMEOUT_S + timeout_s
+    * 4)`` visible.
+    """
+    _servicer, url = triton
+    totals: list[float] = []
+
+    class _RecordingBudget(triton_client._Budget):
+        def __init__(self, total_s: float) -> None:
+            totals.append(total_s)
+            super().__init__(total_s)
+
+    monkeypatch.setattr(triton_client, "_Budget", _RecordingBudget)
+
+    triton_client.embed_texts(url, "nv-embed-v2", ["一段文字"], role="document")
+    assert totals == [35.0], "embed_texts 的整通呼叫上限不是文件寫的 35 秒"
+
+    # Scales with the caller's per-RPC timeout, and with nothing else — in
+    # particular not with len(texts).
+    totals.clear()
+    triton_client.embed_texts(
+        url, "nv-embed-v2", ["甲", "乙", "丙"], role="document", timeout_s=1.0
+    )
+    assert totals == [6.0]
+
+    totals.clear()
+    triton_client.probe_triton_health(url, model_name="nv-embed-v2")
+    assert totals == [10.0], "health probe 的整通呼叫上限不是文件寫的 10 秒"
+
+
+# ── the connectivity watcher must not accumulate on a pooled channel ─────────
+
+
+class _CallbackCountingChannel:
+    """Just enough channel for ``grpc.channel_ready_future`` to run on.
+
+    ``channel_ready_future`` works by ``subscribe``-ing a connectivity-state
+    callback and ``unsubscribe``-ing it again when it matures or is cancelled.
+    Channels here are pooled for the process lifetime, so a callback left
+    behind on the failure path is a per-call leak on a long-lived object —
+    invisible to every other test, which is why removing ``future.cancel()``
+    from ``_wait_ready`` left 26 of them passing.
+    """
+
+    def __init__(self, *, becomes_ready: bool) -> None:
+        self.callbacks: list = []
+        self._becomes_ready = becomes_ready
+
+    def subscribe(self, callback, try_to_connect=False):  # noqa: ARG002
+        self.callbacks.append(callback)
+        if self._becomes_ready:
+            callback(grpc.ChannelConnectivity.READY)
+
+    def unsubscribe(self, callback):
+        self.callbacks.remove(callback)
+
+
+def test_wait_ready_leaves_no_watcher_behind_when_it_times_out():
+    """The failure path is the leaking one — nothing matures, so only the
+    explicit cancel takes the callback off the channel."""
+    channel = _CallbackCountingChannel(becomes_ready=False)
+
+    with pytest.raises(triton_client.TritonEmbedError):
+        triton_client._wait_ready(channel, triton_client._Budget(0.1))
+
+    assert channel.callbacks == [], (
+        "channel_ready_future 的連線狀態 callback 沒被取消 —— "
+        "channel 是整個 process 共用的,每次 embed 失敗就多留一個"
+    )
+
+
+def test_wait_ready_leaves_no_watcher_behind_on_success():
+    channel = _CallbackCountingChannel(becomes_ready=True)
+
+    triton_client._wait_ready(channel, triton_client._Budget(5.0))
+
+    assert channel.callbacks == []
+
+
+def test_repeated_failed_waits_do_not_pile_up_on_one_pooled_channel():
+    """The shape of the leak as an operator would hit it: one long-lived
+    channel, many failed embed calls."""
+    channel = _CallbackCountingChannel(becomes_ready=False)
+
+    for _ in range(10):
+        with pytest.raises(triton_client.TritonEmbedError):
+            triton_client._wait_ready(channel, triton_client._Budget(0.02))
+
+    assert channel.callbacks == []
+
+
+# ── which deadline fired: the RPC's own, or the whole-call budget ────────────
+
+
+def test_a_slow_upstream_is_not_reported_as_an_oversized_batch(monkeypatch):
+    """One text, upstream too slow → say so; do not advise shrinking a batch.
+
+    The budget is 35 s at defaults and one ModelInfer is 30 s, so on the most
+    common failure — a single embed against a peer that has stopped answering
+    — the budget is never exhausted and the operator used to get
+    ``triton RpcError code=DEADLINE_EXCEEDED``: the symptom, with nothing to
+    act on. The batch advice would be worse than useless here; there is no
+    batch.
+    """
+    monkeypatch.setattr(triton_client, "CHANNEL_READY_TIMEOUT_S", 0.5)
+    triton_client.reset_channel_pool_for_tests()
+    servicer = _RecordingTriton(infer_delay_s=1.0)
+    server, url = _serve(servicer)
+    try:
+        with pytest.raises(triton_client.TritonEmbedError) as exc:
+            triton_client.embed_texts(
+                url, "nv-embed-v2", ["一段文字"], role="query", timeout_s=0.3
+            )
+    finally:
+        server.stop(None).wait(2.0)
+        time.sleep(0.1)
+        triton_client.reset_channel_pool_for_tests()
+
+    message = str(exc.value)
+    assert "0.3s" in message and "ModelInfer" in message
+    assert "縮小批次" not in message, "單筆逾時被講成批次太大"
+    assert "DEADLINE_EXCEEDED" not in message
+
+
+def test_an_oversized_batch_still_says_shrink_the_batch(monkeypatch):
+    """The other side of the same fork: the budget clipped this RPC short.
+
+    Every infer (0.3 s) fits inside its own 0.5 s timeout, so no single text is
+    slow — it is the batch that does not fit the 0.7 s budget, and the RPC that
+    finally fails does so on a deadline the budget shortened.
+    """
+    monkeypatch.setattr(triton_client, "CHANNEL_READY_TIMEOUT_S", 0.2)
+    triton_client.reset_channel_pool_for_tests()
+    servicer = _RecordingTriton(infer_delay_s=0.3)
+    server, url = _serve(servicer)
+    try:
+        with pytest.raises(triton_client.TritonEmbedError) as exc:
+            triton_client.embed_texts(
+                url,
+                "nv-embed-v2",
+                [f"文件 {i}" for i in range(5)],
+                role="document",
+                timeout_s=0.5,
+            )
+    finally:
+        server.stop(None).wait(2.0)
+        time.sleep(0.1)
+        triton_client.reset_channel_pool_for_tests()
+
+    message = str(exc.value)
+    assert "budget" in message
+    assert "縮小批次" in message
+
+
+# ── the whole chain: HTTP body → proxy → gRPC input tensor ───────────────────
+#
+# ``test_embeddings_input_type.py`` proves the route hands the declared role to
+# the Triton client; the tests at the top of this file prove the client turns a
+# role into a tensor name. This one refuses to take the join on trust: a real
+# POST to ``/v1/embeddings`` and the ``ModelInferRequest`` a real gRPC server
+# receives, with nothing faked in between.
+#
+# The URL guard rejects loopback for grpc:// unconditionally (and must keep
+# doing so), so the server binds to a non-loopback RFC1918 address on this
+# host and the endpoint is registered with the private-IP flag set — exactly
+# the on-prem posture the runbook describes.
+
+
+def _private_ipv4() -> str | None:
+    """A non-loopback RFC1918 address this host can bind and reach."""
+    candidates: list[str] = []
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("10.255.255.255", 1))  # no packet leaves the host
+        candidates.append(probe.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        probe.close()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            candidates.append(info[4][0])
+    except socket.gaierror:
+        pass
+    for addr in candidates:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if ip.is_private and not (ip.is_loopback or ip.is_link_local):
+            return addr
+    return None
+
+
+_LAN_IPV4 = _private_ipv4()
+
+
+@pytest.mark.skipif(
+    _LAN_IPV4 is None,
+    reason="no non-loopback RFC1918 address to bind (loopback is refused by the URL guard, correctly)",
+)
+@pytest.mark.parametrize(
+    "declared,expected_tensor,expected_shape",
+    [("query", "query", [1]), ("document", "documents", [1, 1]), (None, "documents", [1, 1])],
+)
+def test_http_input_type_reaches_the_gRPC_input_tensor(
+    client, db, monkeypatch, declared, expected_tensor, expected_shape
+):
+    from app.models.model_registry import ModelRegistry
+    from app.services.auth_service import create_tokens
+
+    from tests.conftest import make_user
+
+    monkeypatch.setenv("ANILA_ALLOW_GRPC_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+
+    triton_client.reset_channel_pool_for_tests()
+    servicer = _RecordingTriton()
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+    grpc_service_pb2_grpc.add_GRPCInferenceServiceServicer_to_server(
+        servicer, server
+    )
+    port = server.add_insecure_port(f"{_LAN_IPV4}:0")
+    server.start()
+    try:
+        model = ModelRegistry(
+            name="nv-embed-v2",
+            display_name="nv-embed-v2",
+            model_type="embedding",
+            endpoint_url=f"grpc://{_LAN_IPV4}:{port}",
+            api_version="v1",
+            protocol="triton_grpc",
+            is_active=True,
+        )
+        db.add(model)
+        db.commit()
+        user = make_user(db, username="wire_caller", role="admin")
+
+        body = {"model": "nv-embed-v2", "input": "找出去年的採購紀錄"}
+        if declared is not None:
+            body["input_type"] = declared
+
+        resp = client.post(
+            "/v1/embeddings",
+            json=body,
+            headers={
+                "Authorization": f"Bearer {create_tokens(user)['access_token']}"
+            },
+        )
+    finally:
+        server.stop(None).wait(2.0)
+        time.sleep(0.05)
+        triton_client.reset_channel_pool_for_tests()
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/json")
+
+    assert len(servicer.requests) == 1
+    tensor = servicer.requests[0].inputs[0]
+    assert tensor.name == expected_tensor
+    assert list(tensor.shape) == expected_shape
+    assert _decode_bytes_tensor(
+        servicer.requests[0].raw_input_contents[0]
+    ) == ["找出去年的採購紀錄"]
+
+    # And the vector that came back is the one that tensor selects, so a
+    # query-shaped request can never be answered by the documents branch.
+    returned = resp.json()["data"][0]["embedding"]
+    expected_vec = list(_QUERY_VEC if expected_tensor == "query" else _DOCUMENT_VEC)
+    assert [round(x, 5) for x in returned] == expected_vec

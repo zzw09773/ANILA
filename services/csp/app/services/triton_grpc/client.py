@@ -26,6 +26,14 @@ wall-clock budget covering **every** RPC it makes:
   grpc.health.v1 fallback chain, which was previously ~20 s with no overall
   deadline.
 
+A ``DEADLINE_EXCEEDED`` from Triton therefore has two different causes, and
+``embed_texts`` tells them apart by whether the budget had to shorten that
+RPC's deadline: either the upstream did not answer within ``timeout_s`` (the
+common single-text failure) or the batch did not fit the budget. At default
+settings the first is by far the more likely, so reporting the batch advice
+for it — or reporting only ``code=DEADLINE_EXCEEDED``, which names the symptom
+and nothing actionable — sends the operator after a problem that is not there.
+
 Above this layer, ``proxy/service.py`` retries ``PROXY_MAX_RETRIES`` (3) times
 with exponential backoff, and the backoff ``asyncio.sleep`` releases the
 thread. So one HTTP request is bounded at ``3 × 35 + 0.5 + 1.0`` ≈ 106.5 s
@@ -58,6 +66,10 @@ HEALTH_TIMEOUT_S = 5.0
 # Whole-probe ceiling for ``probe_triton_health`` — ready wait plus the entire
 # ModelReady → ServerLive → grpc.health.v1 fallback chain, not per RPC.
 HEALTH_PROBE_BUDGET_S = CHANNEL_READY_TIMEOUT_S + HEALTH_TIMEOUT_S
+# Float slack when asking "did the budget clip this RPC's deadline?".
+# ``remaining_for`` returns ``min(timeout_s, left)``; equality up to this much
+# means the RPC got its own full timeout.
+_BUDGET_EPS_S = 1e-6
 
 # Standard gRPC health checking protocol (grpc.health.v1) — this Triton
 # answers it; we encode the tiny messages by hand to avoid a second stub set.
@@ -273,6 +285,10 @@ def embed_texts(
 
     def _once(text: str) -> list[float]:
         channel = _get_channel(host, port, secure)
+        # Which deadline a DEADLINE_EXCEEDED came from is decided here, not in
+        # the handler below: ``infer_s < timeout_s`` means the budget clipped
+        # this RPC short, i.e. earlier texts ate the call's time.
+        infer_s = timeout_s
         try:
             _wait_ready(channel, budget)
             stub = grpc_service_pb2_grpc.GRPCInferenceServiceStub(channel)
@@ -308,15 +324,27 @@ def embed_texts(
             code = exc.code() if hasattr(exc, "code") else None
             if code == grpc.StatusCode.UNAVAILABLE:
                 _drop_channel(host, port, secure)
-            if code == grpc.StatusCode.DEADLINE_EXCEEDED and budget.exhausted():
-                # The deadline that fired was the budget's, not this RPC's own
-                # timeout. Saying DEADLINE_EXCEEDED here would send an operator
-                # hunting a slow upstream when the actual answer is "this batch
-                # is too big for one call".
+            if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+                if infer_s < timeout_s - _BUDGET_EPS_S:
+                    # The deadline that fired was the budget's, not this RPC's
+                    # own timeout: earlier texts in this batch already spent
+                    # the call's time. Saying DEADLINE_EXCEEDED here would send
+                    # an operator hunting a slow upstream when the actual
+                    # answer is "this batch is too big for one call".
+                    raise TritonEmbedError(
+                        f"triton call exceeded its {budget.total:g}s budget "
+                        f"({len(texts)} 段文字未在時限內完成;請縮小批次或調高 "
+                        f"EMBEDDING_TIMEOUT)"
+                    ) from exc
+                # This RPC got its full ``timeout_s`` and the upstream still
+                # did not answer. That is the common single-text failure, and
+                # the batch advice above would be actively misleading for it —
+                # ``code=DEADLINE_EXCEEDED`` alone was too, since it named the
+                # symptom and not one thing the operator can do.
                 raise TritonEmbedError(
-                    f"triton call exceeded its {budget.total:g}s budget "
-                    f"({len(texts)} 段文字未在時限內完成;請縮小批次或調高 "
-                    f"EMBEDDING_TIMEOUT)"
+                    f"triton 未在 {infer_s:g}s 內回應 ModelInfer —— 上游過慢或"
+                    f"該 model 未載入;確認 Triton 上的 model name 與 "
+                    f"EMBEDDING_TIMEOUT"
                 ) from exc
             raise TritonEmbedError(
                 f"triton RpcError code={getattr(code, 'name', code)}"

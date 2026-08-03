@@ -41,7 +41,10 @@ set_env() {  # set_env KEY VALUE — 去重後 append (literal,不怕特殊字�
   mv .env.tmp .env
   printf '%s=%s\n' "$key" "$val" >> .env
 }
-get_env() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true; }
+# 重複鍵取**最後一行** —— docker compose 就是這樣解 .env(實測 v2.36.2:
+# FOO=first / FOO=second → second)。取第一行會讓腳本看到的值與 stack 實際用的
+# 值不同:操作者用 `>> .env` 追加開啟某個旗標,compose 吃到 1,腳本卻讀到舊的 0。
+get_env() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true; }
 
 echo "============================================================"
 echo " ANILA 內網一條龍部署 — V1.0.0 (prod-intranet-card / 卡片登入)"
@@ -171,22 +174,32 @@ fi
 
 # 內網 strict 模式 + 卡片登入 + 模型 CA 路徑(每次都確保正確)
 set_env ANILA_ALLOW_DEV_SECRET      0
-set_env ANILA_ALLOW_HTTP_ENDPOINT   0
-set_env ANILA_ALLOW_PRIVATE_ENDPOINT 0
-# Slice 6 旗標分域:ANILA_ENV=production → 「模型」http 一律 fail-closed(不受
-# 任何旗標放行);MLSteam agent 是純 http NodePort → agent 專用旗標開 1。
 set_env ANILA_ENV                   production
+# MLSteam agent 是純 http NodePort → agent 專用旗標開 1。
 set_env ANILA_ALLOW_HTTP_AGENT_ENDPOINT 1
-# Triton/KServe cleartext grpc:// 放行旗標(protocol=triton_grpc 專用,model kind
-# 限定;grpcs:// 不需要)。與上面幾行不同:**保留操作者已設的值**,只在缺鍵時補 0。
-# 硬寫 0 會讓「重跑一次部署腳本」把已啟用的 Triton embedder 靜默關掉,
-# 而症狀只會是註冊/健檢 400 scheme,現場很難反推。
-_grpc_flag="$(get_env ANILA_ALLOW_GRPC_ENDPOINT)"
-set_env ANILA_ALLOW_GRPC_ENDPOINT   "${_grpc_flag:-0}"
-if [ "${_grpc_flag:-0}" = "1" ]; then
-  warn "ANILA_ALLOW_GRPC_ENDPOINT=1 — 放行 cleartext grpc:// 模型端點(Triton);內網無 TLS 時才需要,有 grpcs:// 請改回 0"
-fi
-unset _grpc_flag
+
+# ── url_guard 的三個 opt-in 旗標:預設 0,但**保留操作者已設的值** ─────────
+# 這三個都是 runbook §3.1b/§3.1c 明文要求現場自己開的。硬寫 0 的版本會讓
+# 「重跑一次部署腳本」把操作者剛剛開起來的東西靜默關掉 —— 症狀只是註冊/健檢
+# 400,現場幾乎不可能反推到「是部署腳本把它改回去了」。缺鍵時仍補 0,所以
+# 全新部署的預設姿態沒有變寬,變的只是「腳本不再推翻現場的決定」。
+# ⚠ 舊註解寫「ANILA_ENV=production → 模型 http 一律 fail-closed,不受任何旗標
+#    放行」——那句自 2026-07-29(PLAN P0.2)起就不成立了:model kind 的 http
+#    改成純由 ANILA_ALLOW_HTTP_ENDPOINT 決定、與 env 無關,所以這一行真的會把
+#    §3.1b 的本機模型組態關掉。
+preserve_flag() {  # preserve_flag KEY 提醒字串
+  local key="$1" note="$2" cur
+  cur="$(get_env "$key")"
+  set_env "$key" "${cur:-0}"
+  [ "${cur:-0}" = "1" ] && warn "$key=1 — $note"
+  return 0
+}
+preserve_flag ANILA_ALLOW_HTTP_ENDPOINT \
+  "放行 http:// 模型端點(runbook §3.1b 本機模型容器);模型走 https gateway 就該是 0"
+preserve_flag ANILA_ALLOW_PRIVATE_ENDPOINT \
+  "放行 RFC1918 私網 IP 端點(runbook §3.1c 直連 Triton 用);端點都是 FQDN 就該是 0"
+preserve_flag ANILA_ALLOW_GRPC_ENDPOINT \
+  "放行 cleartext grpc:// 模型端點(Triton);內網無 TLS 時才需要,有 grpcs:// 請改回 0"
 set_env ENABLE_CARD_LOGIN           true
 set_env REQUIRE_CARD_LOGIN_ONLY     true
 # 只在 model-ca.pem 真的有憑證時才指過去。ANILA_MODEL_CA_FILE → csp 的 SSL_CERT_FILE,

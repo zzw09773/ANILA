@@ -138,6 +138,12 @@ class AnilaPgVectorRetriever:
         Triton 類 embedder 的查詢與文件走**不同輸入張量**，用錯不會報錯，
         只是排序悄悄變差。CSP 端不帶就當 ``document``，所以查詢側一定要明寫。
         對 OpenAI 相容端點是 no-op（CSP 會把這個欄位拿掉再往上游送）。
+
+        ⚠ 前提是 ``ANILA_EMBED_BASE_URL`` 真的指向 **CSP** 的 ``/v1``。
+        README 記錄的 ``http://nv-embed-proxy:8000/v1`` 指的是 **model 容器**：
+        那支 shim 的 pydantic model 沒宣告這個欄位、預設 ``extra="ignore"``
+        → 不會 400，但也不會被讀，查詢照樣落在 documents 張量。
+        見 ``docs/FAKE-CONTROLS.md`` #35。
         """
         import httpx
 
