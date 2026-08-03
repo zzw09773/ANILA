@@ -379,6 +379,7 @@ async def _embed_query(
         model_type=model.model_type,
         endpoint_url=model.endpoint_url,
         api_version=model.api_version,
+        protocol=getattr(model, "protocol", None) or "openai_compatible",
         api_key_secret_ref=model.api_key_secret_ref,
         classification_ceiling=model.classification_ceiling,
         is_active=model.is_active,
@@ -388,6 +389,7 @@ async def _embed_query(
     user_id = user.id
     department_id = user.department_id
     identity = downstream_identity(user)
+    api_version = model_snapshot.api_version if model_snapshot.api_version in ("v1", "v2") else "v1"
     db.commit()
 
     body = {"model": model_name, "input": query}
@@ -398,13 +400,15 @@ async def _embed_query(
         user_identity=identity,
         department_id=department_id,
         request_body=body,
-        endpoint_path="/v1/embeddings",
+        endpoint_path=f"/{api_version}/embeddings",
         endpoint_display=visible_endpoint_url(
             model_snapshot.endpoint_url,
             is_internal=model_snapshot.is_internal,
             db=db,
             caller=user,
         ),
+        # Query-side: must not silently fall through to Triton's documents input.
+        embedding_input_role="query",
     )
 
     try:

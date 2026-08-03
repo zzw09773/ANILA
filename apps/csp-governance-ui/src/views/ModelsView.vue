@@ -312,10 +312,13 @@
               <option value="asr">asr</option>
             </select>
           </TermField>
-          <TermField label="API 版本">
+          <TermField
+            label="URL 路徑前綴"
+            hint="只改上游路徑的 /v1 或 /v2，不是通訊協定；body 與回應解析相同。Triton gRPC 模型可忽略此欄。"
+          >
             <select v-model="form.api_version" class="term-select" :disabled="addressOnlyEditor">
-              <option value="v1">v1</option>
-              <option value="v2">v2</option>
+              <option value="v1">v1（路徑前綴）</option>
+              <option value="v2">v2（路徑前綴）</option>
             </select>
           </TermField>
         </div>
@@ -350,7 +353,10 @@
           </label>
         </TermField>
         <div class="form-row-2">
-          <TermField label="協定 · protocol" hint="端點所講的 wire protocol">
+          <TermField
+            label="協定 · protocol"
+            hint="端點所講的 wire protocol（與上方 URL 路徑前綴無關）"
+          >
             <select v-model="form.protocol" class="term-select" :disabled="addressOnlyEditor">
               <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
             </select>
@@ -366,6 +372,10 @@
             </select>
           </TermField>
         </div>
+        <p v-if="form.protocol === 'triton_grpc'" class="field-note">
+          Triton/KServe gRPC：平台會依呼叫端決定 query／documents 輸入張量（搜尋＝query、匯入＝documents）。
+          模型名稱須與 Triton 上的 model name 一致（例如 <code>nv-embed-v2</code>）。
+        </p>
         <TermField
           label="模型金鑰 · api key"
           optional
@@ -579,9 +589,14 @@ const revokingId = ref(null)
 const testingId = ref(null)
 const testResults = ref({})
 
-// doc 04 §2 protocol 列舉。proxy 只實作 openai_compatible；custom_adapter 已退場。
+// doc 04 §2 protocol 列舉。openai_compatible = HTTP OpenAI shape；
+// triton_grpc = Triton/KServe gRPC（端點填 grpc://host:port）。custom_adapter 已退場。
 const PROTOCOL_OPTIONS = [
-  { value: 'openai_compatible', label: 'OpenAI 相容' },
+  { value: 'openai_compatible', label: 'OpenAI 相容（HTTP）' },
+  {
+    value: 'triton_grpc',
+    label: 'Triton / KServe gRPC',
+  },
 ]
 const PROTOCOL_LABELS = Object.fromEntries(PROTOCOL_OPTIONS.map(p => [p.value, p.label]))
 
@@ -853,6 +868,9 @@ const addressOnlyEditor = computed(
 )
 const endpointUrlHint = computed(() => {
   if (endpointFieldLocked.value) return '🔒 僅擁有者與獲授權開發者可變更端點位址'
+  if (form.value.protocol === 'triton_grpc') {
+    return 'Triton gRPC：填 grpc://host:port 或 grpcs://host:port（不要加 /v1 路徑）；cleartext grpc 需 ANILA_ALLOW_GRPC_ENDPOINT=1'
+  }
   if (form.value.model_type === 'asr') {
     return 'decoder 根位址（呼叫 {base}/transcribe）；勿加 /v1'
   }
@@ -861,6 +879,7 @@ const endpointUrlHint = computed(() => {
 })
 const endpointUrlPlaceholder = computed(() => {
   if (endpointFieldLocked.value) return '— 無權設定位址 —'
+  if (form.value.protocol === 'triton_grpc') return 'grpc://172.16.120.35:9001'
   if (form.value.model_type === 'asr') return 'http://asr-decoder:9000'
   return 'http://gemma4:8000/v1'
 })

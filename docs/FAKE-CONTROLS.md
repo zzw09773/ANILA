@@ -252,3 +252,29 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 `ServiceAccessView.vue:68`、`DashboardView.vue:147` 指向 `/admin/platform-links`,真實路由不是這個。
 
 **#28–#30 已開工(wt/govclean),#27 等 core-opt 合併後隨路由那批一起修。**
+
+---
+
+## 第三輪(2026-08-03)——模型登錄的假控制與假紅燈
+
+### #31 ✅ `api_version`（v1／v2）看起來像協定，其實只換 URL 路徑前綴
+
+- **畫面說**：治理中心模型頁「API 版本」下拉 v1／v2，像在選通訊協定。
+- **實際**：proxy 只把路徑改成 `/v1/...` 或 `/v2/...`（`proxy/service.py`、
+  `proxy.py` 串流）；**送出的 body 與回應解析完全相同**。更糟的是維度探測
+  曾硬編碼 `/v1/embeddings`，與 `api_version=v2` 的呼叫路徑對同一模型各說各話。
+- **schema**：曾是任意 `str`，打錯字可靜默寫入，下游只有 v1／v2 有意義。
+- **現況**：
+  - 探測改走 `proxy_request`，與 live 路徑共用 `api_version`／`protocol`。
+  - schema 收成 `v1`｜`v2`；治理 UI 標明「URL 路徑前綴，不是通訊協定」。
+  - **保留 v2 選項**（庫內已有 `api_version='v2'` 列）；不把它重載成
+    Triton——Triton 走獨立的 `protocol=triton_grpc`。
+
+### #32 ✅ Triton gRPC 模型健康檢查永遠紅（假紅燈）
+
+- **實際**：`probe_model_health_detailed` 對 gRPC port 發 httpx GET
+  `/health`、`/v1/models`、`/` → 全失敗 → `unhealthy`＋告警「模型離線」，
+  即使 Triton `ServerLive`／`ModelReady` 都正常。
+- **後果**：工作中的模型長期顯示異常，訓練維運者忽略紅燈——比壞掉的模型更糟。
+- **現況**：sweep／手動重測帶入 `protocol`＋`model_name`；`triton_grpc` 改探
+  Triton gRPC（及 `grpc.health.v1`），不再對 gRPC port 做 HTTP 探測。

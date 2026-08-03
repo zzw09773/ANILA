@@ -74,7 +74,6 @@ from app.models.user_memory import ConversationMemoryChunk, UserFact
 from app.services import zh_normalize_service
 from app.services.platform_embedding import resolve_platform_embedding
 from app.services.proxy.urls import join_upstream_path
-from app.services.proxy_service import _apply_gateway_auth
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +173,14 @@ def _resolve_extraction_target(db: Session) -> tuple[str, str] | None:
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
 
-async def _embed(db: Session, text_input: str) -> tuple[list[float], str, int]:
+async def _embed(
+    db: Session,
+    text_input: str,
+    *,
+    user_id: int = 0,
+    department_id: int | None = None,
+    embedding_input_role: str = "query",
+) -> tuple[list[float], str, int]:
     """Return ``(vector, source_model_name, native_dim)`` for ``text_input``.
 
     Resolves the embedder through the platform's ``is_platform_embedding``
@@ -182,39 +188,49 @@ async def _embed(db: Session, text_input: str) -> tuple[list[float], str, int]:
     exact-name path was the silent production defect
     (``nvidia/NV-embed-V2`` vs registered ``nvidia/nv-embed-v2``).
 
-    Calls the embedding endpoint directly (not via CSP /v1/embeddings
-    proxy) — we're already running inside CSP and the proxy adds an
-    auth + token-usage layer we don't need for an internal background
-    job.
+    Goes through ``proxy_request`` so OpenAI-compatible and ``triton_grpc``
+    share one query/document decision point (recall → ``query``; chunk
+    persist → ``document``).
     """
+    from types import SimpleNamespace
+
+    from app.services.proxy.service import proxy_request
+
     resolved = resolve_platform_embedding(db)
     if resolved is None:
         raise RuntimeError(
             "memory_service: no platform embedding model available "
             "(designate one via POST /api/models/{id}/set-platform-embedding)"
         )
+    model = resolved.model
     model_name = resolved.name
     native_dim = resolved.native_dim
-    base_url = resolved.model.endpoint_url.rstrip("/")
-    # Registry rows store bare host or ``…/v1``; join once to the FINAL URL.
-    url = join_upstream_path(base_url, "/v1/embeddings")
-    # SSRF re-validation BEFORE attaching the gateway key — never send the
-    # bearer token to a host that fails the outbound guard. Guard the FINAL
-    # url that will actually be requested.
-    _guard_outbound(url)
-    # 內網 gateway 拓撲下 /v1 全路由要 Bearer(MODEL_GATEWAY_API_KEY);
-    # 本機 proxy 模式 key 為空 = no-op。直呼叫繞過 CSP proxy 層,要自帶。
-    headers = _apply_gateway_auth({})
-    # Release the pooled connection before the outbound embed HTTP call.
+    raw_ver = getattr(model, "api_version", None)
+    api_version = raw_ver if raw_ver in ("v1", "v2") else "v1"
+    model_snapshot = SimpleNamespace(
+        id=getattr(model, "id", 0),
+        name=model.name,
+        model_type=getattr(model, "model_type", "embedding"),
+        endpoint_url=model.endpoint_url,
+        api_version=api_version,
+        protocol=getattr(model, "protocol", None) or "openai_compatible",
+        api_key_secret_ref=getattr(model, "api_key_secret_ref", None),
+        classification_ceiling=getattr(model, "classification_ceiling", None),
+        is_active=getattr(model, "is_active", True),
+        display_name=getattr(model, "display_name", model.name),
+        is_internal=bool(getattr(model, "is_internal", False)),
+    )
+    # Release the pooled connection before the outbound embed call.
     db.commit()
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        r = await client.post(
-            url,
-            json={"model": model_name, "input": [text_input]},
-            headers=headers,
-        )
-        r.raise_for_status()
-    data = r.json()
+    data = await proxy_request(
+        model=model_snapshot,
+        api_key_id=None,
+        user_id=user_id,
+        department_id=department_id,
+        request_body={"model": model_name, "input": [text_input]},
+        endpoint_path=f"/{api_version}/embeddings",
+        embedding_input_role=embedding_input_role,
+    )
     vec = data["data"][0]["embedding"]
     return (
         truncate_embedding(vec, pad_from=resolved.pad_from),
@@ -266,7 +282,12 @@ async def retrieve_relevant_chunks(
     threshold = min_cosine if min_cosine is not None else _RETRIEVE_MIN_COSINE
 
     try:
-        embedding, source_model, _native = await _embed(db, query_text)
+        embedding, source_model, _native = await _embed(
+            db,
+            query_text,
+            user_id=user_id,
+            embedding_input_role="query",
+        )
     except Exception:
         logger.exception("memory_service: embed failed during retrieve")
         return []
@@ -546,7 +567,12 @@ async def _write_chunk(
         zh_normalize_service.log_if_changed(message_id, zh_changed)
     if not content or not content.strip():
         return
-    embedding, source_model, native_dim = await _embed(db, content)
+    embedding, source_model, native_dim = await _embed(
+        db,
+        content,
+        user_id=user_id,
+        embedding_input_role="document",
+    )
     _insert_chunk(
         db,
         user_id=user_id,
@@ -633,10 +659,22 @@ async def persist_turn(
             # later assistant-embed failure could no longer roll it back.
             # Pair atomicity = both vectors ready → both INSERTs → one commit.
             user_emb = (
-                await _embed(db, user_message) if user_message.strip() else None
+                await _embed(
+                    db,
+                    user_message,
+                    user_id=user_id,
+                    embedding_input_role="document",
+                )
+                if user_message.strip()
+                else None
             )
             asst_emb = (
-                await _embed(db, assistant_message)
+                await _embed(
+                    db,
+                    assistant_message,
+                    user_id=user_id,
+                    embedding_input_role="document",
+                )
                 if assistant_message.strip()
                 else None
             )

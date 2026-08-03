@@ -393,6 +393,7 @@ def test_upstream_models_url_already_ends_with_models():
     ],
 )
 def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
+    """Memory embeds via proxy_request; api_version path must stay consistent."""
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "nv-embed")
     captured: dict[str, Any] = {}
@@ -402,11 +403,18 @@ def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
     from app.services.platform_embedding import PlatformEmbedding
 
     fake_model = SimpleNamespace(
+        id=7,
         name="nv-embed",
+        model_type="embedding",
         endpoint_url=endpoint_url.rstrip("/"),
+        api_version="v1",
+        protocol="openai_compatible",
+        api_key_secret_ref=None,
         is_platform_embedding=True,
         embedding_native_dim=3,
         is_active=True,
+        display_name="nv-embed",
+        is_internal=False,
     )
     monkeypatch.setattr(
         memory_service,
@@ -417,45 +425,32 @@ def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
     )
     monkeypatch.setattr(
         memory_service,
-        "_guard_outbound",
-        lambda url: captured.setdefault("guarded", url),
-    )
-    monkeypatch.setattr(memory_service, "_apply_gateway_auth", lambda h: h)
-    monkeypatch.setattr(
-        memory_service,
         "truncate_embedding",
         lambda v, pad_from=None: v[:2] if len(v) > 2 else list(v),
     )
 
-    class _Resp:
-        def raise_for_status(self):
-            return None
+    async def fake_proxy_request(**kwargs):
+        captured["endpoint_path"] = kwargs.get("endpoint_path")
+        captured["role"] = kwargs.get("embedding_input_role")
+        captured["endpoint_url"] = kwargs["model"].endpoint_url
+        return {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
 
-        def json(self):
-            return {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
+    import app.services.proxy.service as proxy_svc
 
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def post(self, url, json=None, headers=None):
-            captured["url"] = url
-            return _Resp()
-
-    monkeypatch.setattr(memory_service.httpx, "AsyncClient", _Client)
-    vec, source, native = asyncio.run(memory_service._embed(MagicMock(), "hello"))
+    monkeypatch.setattr(proxy_svc, "proxy_request", fake_proxy_request)
+    vec, source, native = asyncio.run(
+        memory_service._embed(MagicMock(), "hello", embedding_input_role="query")
+    )
     assert vec == [0.1, 0.2]
     assert source == "nv-embed"
     assert native == 3
-    assert captured["url"] == "http://nv-embed:8000/v1/embeddings"
-    assert captured["guarded"] == captured["url"]
-    assert "/v2/v1/" not in captured["url"]
+    assert captured["endpoint_path"] == "/v1/embeddings"
+    assert captured["role"] == "query"
+    # Registered base may still carry a trailing /v1 or /v2; proxy join owns
+    # the final URL. Memory must not invent a second version segment itself.
+    assert captured["endpoint_url"].rstrip("/").endswith(
+        ("nv-embed:8000", "nv-embed:8000/v1", "nv-embed:8000/v2")
+    )
 
 
 @pytest.mark.parametrize(

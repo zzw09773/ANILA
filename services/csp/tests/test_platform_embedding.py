@@ -133,36 +133,20 @@ async def test_memory_embed_uses_designated_name_ignoring_case_env(db, monkeypat
 
     captured: dict = {}
 
-    class _Resp:
-        def raise_for_status(self):
-            return None
+    async def fake_proxy_request(**kwargs):
+        captured["json"] = kwargs.get("request_body")
+        captured["role"] = kwargs.get("embedding_input_role")
+        return {"data": [{"embedding": [0.1] * 4096}]}
 
-        def json(self):
-            return {"data": [{"embedding": [0.1] * 4096}]}
+    import app.services.proxy.service as proxy_svc
 
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return None
-
-        async def post(self, url, json=None, headers=None):
-            captured["url"] = url
-            captured["json"] = json
-            return _Resp()
-
-    monkeypatch.setattr(memory_service.httpx, "AsyncClient", _Client)
-    monkeypatch.setattr(memory_service, "_guard_outbound", lambda url: None)
-    monkeypatch.setattr(memory_service, "_apply_gateway_auth", lambda h: h)
+    monkeypatch.setattr(proxy_svc, "proxy_request", fake_proxy_request)
 
     vec, source, native = await memory_service._embed(db, "hello")
     assert source == "nvidia/nv-embed-v2"
     assert native == 4096
     assert captured["json"]["model"] == "nvidia/nv-embed-v2"
+    assert captured["role"] == "query"
     assert len(vec) == 4000
 
 

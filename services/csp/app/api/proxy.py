@@ -1337,6 +1337,8 @@ async def embeddings_v1(
             model.endpoint_url,
             is_internal=bool(getattr(model, "is_internal", False)),
         ),
+        # Public OpenAI-compat surface (incl. ingestion-worker) = documents.
+        embedding_input_role="document",
     )
 
 
@@ -1366,4 +1368,5 @@ async def embeddings_v2(
             model.endpoint_url,
             is_internal=bool(getattr(model, "is_internal", False)),
         ),
+        embedding_input_role="document",
     )

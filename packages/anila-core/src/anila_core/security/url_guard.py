@@ -18,6 +18,9 @@ Policy (current):
   endpoints (PLAN.md P0.2, 2026-07-29: the intranet model gateway speaks
   plain http, production included); ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1``
   for agent endpoints. Default posture rejects http for every kind.
+- ``grpc`` / ``grpcs`` are a **sibling** scheme branch (model kind only):
+  ``grpcs`` always; cleartext ``grpc`` requires
+  ``ANILA_ALLOW_GRPC_ENDPOINT=1``. Not folded into the http allow-list.
 - Hostname must resolve to a globally-routable address. Loopback,
   link-local, multicast, reserved, and unspecified blocks are blocked
   unconditionally.
@@ -76,6 +79,12 @@ ENDPOINT_KIND_GENERIC = "generic"
 _HTTP_MODEL_FLAG = "ANILA_ALLOW_HTTP_ENDPOINT"
 _HTTP_AGENT_FLAG = "ANILA_ALLOW_HTTP_AGENT_ENDPOINT"
 
+# Cleartext gRPC (``grpc://``) for model endpoints — sibling of the http
+# model flag. ``grpcs://`` never needs this. Do NOT fold grpc into the http
+# flag: that would couple two transports and invite collapsing the scheme
+# branches into a shared allow-list (forbidden; see ``validate_outbound_url``).
+_GRPC_MODEL_FLAG = "ANILA_ALLOW_GRPC_ENDPOINT"
+
 
 def _is_production() -> bool:
     """Deployment posture via ``ANILA_ENV`` in {production, prod}.
@@ -129,6 +138,41 @@ def _reject_http_scheme(endpoint_kind: str) -> None:
         raise UnsafeEndpointError(
             "endpoint_url scheme must be 'https' "
             "(set ANILA_ALLOW_HTTP_ENDPOINT=1 in dev to relax)",
+            reason=REASON_SCHEME,
+        )
+
+
+def _reject_grpc_scheme(scheme: str, endpoint_kind: str) -> None:
+    """Enforce gRPC scheme acceptance. Raise on rejection.
+
+    Called only when the scheme is ``grpc`` or ``grpcs``. Keyed on
+    ``parsed.scheme`` from the caller — this is intentionally a sibling
+    branch of ``_reject_http_scheme``, not a shared scheme allow-list.
+    Collapsing http/https/grpc into one set would bypass the per-kind http
+    flag split and silently widen what ordinary ``http://`` endpoints may
+    reach.
+
+    - ``grpcs`` (TLS): allowed for ``model`` only.
+    - ``grpc`` (cleartext): allowed for ``model`` only when
+      ``ANILA_ALLOW_GRPC_ENDPOINT=1`` (air-gap Triton often speaks plain
+      gRPC on an internal port).
+    - ``agent`` / ``generic``: always rejected — gRPC model transport is
+      not an agent or BYO-credential surface.
+    """
+    if endpoint_kind != ENDPOINT_KIND_MODEL:
+        raise UnsafeEndpointError(
+            f"endpoint_url scheme {scheme!r} not allowed for "
+            f"endpoint_kind={endpoint_kind!r} (grpc/grpcs 僅供 model)",
+            reason=REASON_SCHEME,
+        )
+    if scheme == "grpcs":
+        return
+    # scheme == "grpc"
+    if not _env_flag(_GRPC_MODEL_FLAG):
+        raise UnsafeEndpointError(
+            "model endpoint scheme must be 'grpcs' "
+            "(設 ANILA_ALLOW_GRPC_ENDPOINT=1 放寬 cleartext grpc://;"
+            "預設拒收)",
             reason=REASON_SCHEME,
         )
 
@@ -340,6 +384,10 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
         # BEFORE the trusted-host bypass below, so a trusted host can never
         # rescue an http:// endpoint whose kind-flag is unset.
         _reject_http_scheme(endpoint_kind)
+    elif parsed.scheme == "grpcs" or parsed.scheme == "grpc":
+        # Additive sibling branch — keyed on scheme, own kind/flag gate.
+        # Do NOT refactor into a shared allowlist set with http/https.
+        _reject_grpc_scheme(parsed.scheme, endpoint_kind)
     else:
         raise UnsafeEndpointError(
             f"endpoint_url scheme {parsed.scheme!r} not allowed "
