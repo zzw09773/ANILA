@@ -30,6 +30,68 @@ from app.services.usage_service import _department_scope_ids
 _MAX_METADATA_BYTES = 64 * 1024
 
 
+# ── 串流前預留助理訊息（reserve-then-stream） ─────────────────────────────────
+#
+# 助理訊息在串流「開始之前」就先落庫成一列空白的 reserved 列。理由是 active
+# leaf：舊流程要等串流跑完才 append 助理訊息，所以整段串流期間 leaf 都還停在
+# 使用者訊息上。使用者在串流中途按 Enter 再送一則，預設的 leaf 解析就把第二
+# 則使用者訊息掛成第一則使用者訊息的子節點，等第一則助理回覆終於要落庫時，
+# _enforce_explicit_parent_role 以 400 擋下——而訊息樹在報錯之前就已經錯了。
+# 先預留這一列之後 leaf 落在助理訊息上，後續使用者訊息的預設解析自然正確，
+# 不需要放寬任何既有的不變式。
+STREAM_META_KEY = "anila_stream"
+
+STREAM_STATE_RESERVED = "reserved"        # 已預留，內容尚未產生
+STREAM_STATE_STREAMING = "streaming"      # 串流中，內容是部分的
+STREAM_STATE_COMPLETE = "complete"        # 正常結束，內容完整
+STREAM_STATE_STOPPED = "stopped"          # 使用者按停止，內容是部分的
+STREAM_STATE_FAILED = "failed"            # 串流出錯，內容是部分的
+STREAM_STATE_INTERRUPTED = "interrupted"  # 前端消失（關分頁／重整／當掉）
+
+# 終局狀態 = 不會再有人寫這一列。寫入者權杖在進入終局時一併清掉，
+# 後續的 ANILALM finalize / Continue Response 等 in-place patch 不受影響。
+STREAM_TERMINAL_STATES = frozenset(
+    {
+        STREAM_STATE_COMPLETE,
+        STREAM_STATE_STOPPED,
+        STREAM_STATE_FAILED,
+        STREAM_STATE_INTERRUPTED,
+    }
+)
+
+# 內容不完整、但不是「還在跑」的狀態。UI 必須據此標示，
+# 絕不能把半截答案當成完整答案呈現。
+STREAM_INCOMPLETE_STATES = frozenset(
+    {STREAM_STATE_STOPPED, STREAM_STATE_FAILED, STREAM_STATE_INTERRUPTED}
+)
+
+_STREAM_ALL_STATES = frozenset(
+    {STREAM_STATE_RESERVED, STREAM_STATE_STREAMING} | STREAM_TERMINAL_STATES
+)
+
+
+def stream_envelope(metadata: Optional[dict]) -> Optional[dict]:
+    """Return the ``anila_stream`` envelope of a message's metadata, if any."""
+    if not isinstance(metadata, dict):
+        return None
+    envelope = metadata.get(STREAM_META_KEY)
+    return envelope if isinstance(envelope, dict) else None
+
+
+def _active_stream_writer(metadata: Optional[dict]) -> Optional[str]:
+    """Writer token of a row that is still reserved/streaming, else None.
+
+    終局狀態一律回 None —— 那一列已經沒有寫入者，任何人都可以正常 patch。
+    """
+    envelope = stream_envelope(metadata)
+    if envelope is None:
+        return None
+    if envelope.get("state") in STREAM_TERMINAL_STATES:
+        return None
+    writer = envelope.get("writer")
+    return writer if isinstance(writer, str) and writer else None
+
+
 def _check_metadata_size(metadata: Optional[dict]) -> None:
     if metadata is None:
         return
@@ -691,6 +753,73 @@ def append_message(
     return msg
 
 
+def reserve_assistant_reply(
+    db: Session,
+    conv_id: int,
+    parent_message_id: int,
+    user: User,
+    *,
+    writer: str,
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> Message:
+    """Reserve an empty assistant row under a user message, before streaming.
+
+    這條路徑刻意「不是」分支：parent 必須是一則還沒有任何子訊息的 user
+    訊息，所以它只可能是線性接續。因此不需要 _require_branchable
+    （ANILALM 不支援分支的規則不受影響），也不會有同層角色衝突。
+
+    回傳的列 content='' 且 metadata.anila_stream.state='reserved'，
+    active leaf 前進到這一列。
+    """
+    if not isinstance(writer, str) or not writer:
+        raise HTTPException(status_code=400, detail="缺少串流寫入者權杖")
+    conv = get_conversation(db, conv_id, user)
+    # 與 append_message 相同的序列化邊界：預留和 append 會競爭同一個 leaf。
+    conv = _lock_conversation(db, conv.id)
+    parent = (
+        db.query(Message)
+        .filter(Message.id == parent_message_id, Message.conversation_id == conv.id)
+        .first()
+    )
+    if parent is None:
+        raise HTTPException(status_code=404, detail="父訊息不存在")
+    if parent.role != "user":
+        raise HTTPException(
+            status_code=400,
+            detail="只能在使用者訊息底下預留助理回覆",
+        )
+    if _sibling_count(db, conv.id, parent.id) > 0:
+        # 已經有子訊息 = 這是分支，不是線性接續。走 /branch 才對。
+        raise HTTPException(
+            status_code=409,
+            detail="這則使用者訊息已經有回覆，無法重複預留",
+        )
+    metadata = {
+        STREAM_META_KEY: {
+            "state": STREAM_STATE_RESERVED,
+            "writer": writer,
+        }
+    }
+    _check_metadata_size(metadata)
+    msg = Message(
+        conversation_id=conv.id,
+        parent_id=parent.id,
+        role="assistant",
+        content="",
+        model_name=model_name,
+        agent_name=agent_name,
+        metadata_=metadata,
+    )
+    db.add(msg)
+    db.flush()
+    conv.active_leaf_message_id = msg.id
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
 def branch_message(
     db: Session,
     conv_id: int,
@@ -879,12 +1008,19 @@ def update_message_content(
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None,
     metadata: Optional[dict] = None,
+    stream_writer: Optional[str] = None,
 ) -> Message:
     """In-place patch of an existing message (metadata / ANILALM finalize).
 
     OW-1: ANILA regenerate no longer uses this path — it creates an assistant
     sibling via ``branch_message``. This endpoint remains for non-forking
-    patches (ANILALM finalize, metadata updates).
+    patches (ANILALM finalize, metadata updates) and for streaming content
+    into a row reserved by ``reserve_assistant_reply``.
+
+    預留列的所有權：只要那一列還掛著未終局的 writer 權杖，就只有持有相同
+    權杖的呼叫端能寫它。兩個分頁各自預留自己的列，所以正常情況不會撞；
+    這道閘門擋的是重播與寫錯列（409，不是靜默覆蓋）。終局後權杖清空，
+    Continue Response / ANILALM finalize 等既有 patch 一律不受影響。
     """
     conv = get_conversation(db, conv_id, user)
     msg = (
@@ -894,6 +1030,12 @@ def update_message_content(
     )
     if msg is None:
         raise HTTPException(status_code=404, detail="訊息不存在")
+    owner_token = _active_stream_writer(msg.metadata_)
+    if owner_token is not None and stream_writer != owner_token:
+        raise HTTPException(
+            status_code=409,
+            detail="這則回覆正由其他來源產生中，無法覆寫",
+        )
     zh_changed = 0
     if content is not None:
         # §6-3：依既有訊息角色正規化（ANILALM finalize 等 in-place 寫入）
@@ -911,12 +1053,31 @@ def update_message_content(
         msg.agent_name = agent_name
     if metadata is not None:
         _check_metadata_size(metadata)
-        msg.metadata_ = metadata
+        msg.metadata_ = _normalize_stream_envelope(metadata)
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(msg)
     zh_normalize_service.log_if_changed(msg.id, zh_changed)
     return msg
+
+
+def _normalize_stream_envelope(metadata: dict) -> dict:
+    """Validate an incoming ``anila_stream`` envelope and strip spent tokens.
+
+    未知 state 直接擋（400）——沉默接受一個沒人看得懂的狀態，就是把
+    「半截答案」偽裝成完整答案的那條路。進入終局時清掉 writer 權杖，
+    這一列從此對一般 patch 開放。
+    """
+    envelope = stream_envelope(metadata)
+    if envelope is None:
+        return metadata
+    state = envelope.get("state")
+    if state not in _STREAM_ALL_STATES:
+        raise HTTPException(status_code=400, detail="串流狀態不合法")
+    if state in STREAM_TERMINAL_STATES and "writer" in envelope:
+        cleaned = {k: v for k, v in envelope.items() if k != "writer"}
+        return {**metadata, STREAM_META_KEY: cleaned}
+    return metadata
 
 
 def _validate_rating_score(rating: Optional[str], score: Optional[int]) -> None:

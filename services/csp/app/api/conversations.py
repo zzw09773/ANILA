@@ -123,6 +123,17 @@ class MessageUpdate(BaseModel):
     model_name: Optional[str] = None
     agent_name: Optional[str] = None
     metadata: Optional[dict] = None
+    # 預留列的寫入者權杖。只有那一列還在 reserved/streaming 時才會被檢查；
+    # 一般的 in-place patch（ANILALM finalize 等）不必帶。
+    stream_writer: Optional[str] = Field(None, max_length=200)
+
+
+class ReserveReplyCreate(BaseModel):
+    """Reserve an empty assistant row under a user message, before streaming."""
+    # 由前端產生的隨機權杖；持有者才能把內容寫進這一列。
+    stream_writer: str = Field(..., min_length=8, max_length=200)
+    model_name: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class ConversationOut(ApiResponseModel):
@@ -694,6 +705,35 @@ def append_message(
 
 
 @router.post(
+    "/{conv_id}/messages/{message_id}/reserve-reply",
+    response_model=MessageOut,
+    status_code=201,
+)
+def reserve_reply(
+    conv_id: int,
+    message_id: int,
+    body: ReserveReplyCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reserve the assistant row under ``message_id`` before streaming starts.
+
+    這是「先落庫再串流」的第一步：助理訊息先有 id 和固定的 parent，
+    active leaf 隨即前進到它身上，所以串流期間再送出的使用者訊息會正確
+    掛在它底下，而不是變成前一則使用者訊息的同層兄弟。
+    """
+    msg = svc.reserve_assistant_reply(
+        db, conv_id, message_id, current_user,
+        writer=body.stream_writer,
+        model_name=body.model_name,
+        agent_name=body.agent_name,
+    )
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+
+
+@router.post(
     "/{conv_id}/messages/{message_id}/branch",
     response_model=MessageOut,
     status_code=201,
@@ -788,6 +828,7 @@ def update_message(
         model_name=body.model_name,
         agent_name=body.agent_name,
         metadata=body.metadata,
+        stream_writer=body.stream_writer,
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)

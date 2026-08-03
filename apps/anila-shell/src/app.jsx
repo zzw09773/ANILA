@@ -53,6 +53,8 @@ import {
   updateConversation as apiUpdateConversation,
   deleteConversation as apiDeleteConversation,
   appendMessage as apiAppendMessage,
+  reserveReply as apiReserveReply,
+  updateMessage as apiUpdateMessage,
   rateMessage as apiRateMessage,
   branchMessage as apiBranchMessage,
   setActiveLeaf as apiSetActiveLeaf,
@@ -76,7 +78,6 @@ import {
   persistAssistantTurn,
   persistRegeneratedAssistant,
   reconcilePersistedAssistant,
-  runPersistedUserTurn,
   runRegenerateStreamPhase,
   sanitizeRestoredMessages,
   switchBranch as switchBranchPath,
@@ -85,6 +86,16 @@ import {
   listVisibleActions,
   runActionInvokeFillback,
 } from "./runtime/messageActions.js";
+import {
+  STREAM_STATE,
+  createTurnChain,
+  finalizeStreamedAssistant,
+  historyBefore,
+  makeStreamWriter,
+  persistTurnHead,
+  readStreamState,
+  streamStateNotice,
+} from "./runtime/reservedTurn.js";
 
 import {
   AgentSelector,
@@ -265,7 +276,10 @@ function applyTweaks(t) {
 }
 
 // ---- Chat Runtime ----------------------------------------------------------
-function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
+// Exported so tests can mount the real send path. The behavioural suite for
+// reserve-then-stream drives THIS component — a previous round's tests only
+// grepped the source text and stayed green while the fix was deleted.
+export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // Sprint 7 X follow-up：SPA 完全不持有 API Key，認證統一走 httpOnly
   // session cookie + double-submit CSRF（見 runtime/sse.js）。原本為了
   // 過渡保留的 apiKey / apiKeyStatus / updateApiKey stub 已移除，避免
@@ -292,7 +306,20 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const lastAgentsRefreshAtRef = useRef(0);
 
   const [conversations, setConversations] = useState([]);
-  const [messagesByConv, setMessagesByConv] = useState({});
+  const [messagesByConvState, setMessagesByConvState] = useState({});
+  // 串流階段是「之後」才跑的,它要的是即時的訊息清單。讀 render 當下捕捉到
+  // 的 state 一定是舊的 —— 上一次嘗試就是在這裡把排隊的每一輪都送成零上下文,
+  // 而 442 個測試沒有一個抓得到。鏡像寫在 updater 裡面(不是 useEffect),
+  // 所以它與 state 完全同步,不會落後一個 commit。
+  const messagesRef = useRef({});
+  const messagesByConv = messagesByConvState;
+  const setMessagesByConv = useCallback((update) => {
+    setMessagesByConvState((prev) => {
+      const next = typeof update === "function" ? update(prev) : update;
+      messagesRef.current = next;
+      return next;
+    });
+  }, []);
   const [selectedConvId, setSelectedConvId] = useState(null);
   // Conversations this tab created itself. They start empty on the server and
   // this client is their only author, so hydrating them can only lose the
@@ -494,10 +521,47 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       streamAbortRef.current.delete(convId);
     }
   }
+  // 使用者主動按停止 vs 串流自己出錯 —— 落庫的狀態不同(stopped / failed),
+  // 使用者看到的說明也不同。少了這個旗標,兩者都會被寫成 failed。
+  const userStoppedRef = useRef(new Set());
   function stopStreaming(convId) {
     const controller = streamAbortRef.current.get(convId);
-    if (controller) controller.abort();
+    if (controller) {
+      userStoppedRef.current.add(convId);
+      controller.abort();
+    }
   }
+
+  // 送出路徑的兩條串行鏈(runtime/reservedTurn.js)。
+  // head = 使用者訊息落庫 + 助理列預留:必須依序,否則第二則使用者訊息
+  //        可能搶在第一則的預留之前落地 —— 那就是原本的 bug。
+  // stream = 實際串流:排隊感留在這裡(第二輪要拿到第一輪的答案當上下文)。
+  const chainTurnHead = useRef(createTurnChain()).current;
+  const chainTurnStream = useRef(createTurnChain()).current;
+
+  // 串流中的預留列:視窗要關掉時,把半截內容誠實標成 interrupted。
+  // 這是 best-effort —— 送不出去也「沒有任何東西遺失」,使用者的文字和
+  // 助理的位置早就在伺服器上了;送不出去只是標示會停在非終局狀態,
+  // 而那個狀態在 UI 上一樣顯示為未完成。
+  const inFlightStreamsRef = useRef(new Map());
+  useEffect(() => {
+    function markInterrupted() {
+      for (const record of inFlightStreamsRef.current.values()) {
+        try {
+          apiUpdateMessage(authRequest, record.convId, record.messageId, {
+            content: record.text,
+            metadata: { anila_stream: { state: STREAM_STATE.INTERRUPTED } },
+            streamWriter: record.writer,
+            keepalive: true,
+          });
+        } catch {
+          // 卸載途中不做任何補救 —— 見上面的註解。
+        }
+      }
+    }
+    window.addEventListener("pagehide", markInterrupted);
+    return () => window.removeEventListener("pagehide", markInterrupted);
+  }, [authRequest]);
 
   const selectedConv = useMemo(
     () => conversations.find((c) => c.id === selectedConvId) || null,
@@ -723,6 +787,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       agentName: msg.agent_name || null,
       // OW-3 provenance (metadata.action) — quiet action-name attribution.
       metadata: meta,
+      // 先預留再串流:一則從伺服器載回來的助理訊息可能是半截的(使用者按
+      // 停止、串流出錯、寫它的分頁消失)。狀態如實帶進 UI,半截的答案一定
+      // 要標示出來,不能長得跟完整答案一樣。
+      streamState: readStreamState(meta),
+      incompleteNotice: streamStateNotice(readStreamState(meta)),
       streaming: false,
       attachments: (msg.attachments || []).map((a) => ({
         id: a.reference_id,
@@ -1382,197 +1451,229 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       createdAt: nowIso(),
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
     };
-    const priorForHistory = messagesByConv[convId] || [];
     setMessagesByConv((prev) => ({
       ...prev,
       [convId]: [...(prev[convId] || []), userMsg, assistantMsg],
     }));
 
-    // OW-1 mandated ordering: persist the USER message BEFORE streaming so
-    // the assistant append can carry a real parent_id. Also fixes silent
-    // loss of the user turn when persist-after-stream used to fail.
-    // Numeric convId + failed user persist → abort (no stream / no assistant
-    // persist); local user bubble text stays for manual copy/retry.
-    // Non-numeric convId keeps the degraded offline path (stream without
-    // parent_id).
+    // 先落庫再串流(runtime/reservedTurn.js)。使用者訊息立刻上伺服器,
+    // 助理訊息「在串流開始之前」先預留一列 —— active leaf 因此不會在串流
+    // 期間停在使用者訊息上,串流中途送出的下一則訊息會正確掛在它底下。
     const baseUrl =
       effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
-    const payload = {
-      model: effectiveTarget,
-      messages: buildMessageHistory(priorForHistory, text, attachments),
-    };
 
-    // Keep trace / reasoning accumulators as plain locals so we are NOT at
-    // the mercy of React's stale-closure semantics when persisting below.
-    // `messagesByConv` captured by this function is frozen at the render
-    // that dispatched sendMessage — reading it after streaming always
-    // yields empty trace / reasoning even though setState visibly updated
-    // the UI. The locals here collect the same deltas in lockstep and
-    // feed buildPersistMeta with the live values.
-    try {
-      const turn = await runPersistedUserTurn({
-        appendMessage: apiAppendMessage,
-        authRequest,
-        convId,
-        content: text,
-        stream: async (gate) => {
-          if (gate.saved) {
-            const savedUser = gate.saved;
-            updateMsg(convId, userMsg.id, {
-              dbId: savedUser.id,
-              parentId: savedUser.parent_id ?? null,
-              siblingIndex: savedUser.sibling_index ?? 0,
-              siblingCount: savedUser.sibling_count ?? 1,
-              siblingIds: Array.isArray(savedUser.sibling_ids)
-                ? savedUser.sibling_ids
-                : [savedUser.id],
-            });
-            updateConv(convId, { activeLeafMessageId: savedUser.id });
-          }
+    // 降級路徑:對話還沒有真的 id(離線/建立失敗)時沒有東西可以落庫,
+    // 照舊直接串流,只是這一輪不會被保存。
+    const persistable = typeof convId === "number";
+    const writer = makeStreamWriter();
 
-          let finalText = "";
-          let finalMeta = null;
-          const accumulatedTrace = [];
-          let accumulatedReasoning = "";
-          await streamWithAbort(convId, {
-            url: `${baseUrl}/v1/chat/completions`,
-            payload,
-            conversationId: typeof convId === "number" ? convId : undefined,
-            // 首回合 taskId 剛建立、state 還沒落地,顯式覆寫 streamWithAbort
-            // 的 state 查找;null(建立失敗)= 不送標頭。
-            taskId,
-            onText: (acc) => {
-              finalText = acc;
-              updateMsg(convId, assistantId, { text: acc });
-            },
-            onFinishReason: (reason) => {
-              // Continue Response:截斷標記存到訊息,UI 才知道要不要顯示「繼續」鈕。
-              updateMsg(convId, assistantId, { finishReason: reason });
-            },
-            onTrace: (step) => {
-              accumulatedTrace.push(step);
-              setMessagesByConv((prev) => ({
-                ...prev,
-                [convId]: (prev[convId] || []).map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        trace: [...(m.trace || []), step],
-                        stageLabel: step.label,
-                        stage: (m.trace?.length ?? 0),
-                      }
-                    : m,
-                ),
-              }));
-            },
-            onMeta: (meta) => {
-              finalMeta = meta;
-              applyMeta(convId, assistantId, effectiveTarget, meta);
-            },
-            onReasoning: (delta) => {
-              accumulatedReasoning += delta;
-              setMessagesByConv((prev) => ({
-                ...prev,
-                [convId]: (prev[convId] || []).map((m) =>
-                  m.id === assistantId
-                    ? { ...m, reasoning: (m.reasoning || "") + delta }
-                    : m,
-                ),
-              }));
-            },
-          });
-          updateMsg(convId, assistantId, { streaming: false });
-          return {
-            finalText,
-            finalMeta,
-            accumulatedTrace,
-            accumulatedReasoning,
-          };
-        },
-        appendAssistant: async ({ userDbId, streamResult }) => {
-          // Persist the assistant turn under the user message's db id.
-          if (typeof convId !== "number") return;
-          const finalText = streamResult?.finalText ?? "";
-          const finalMeta = streamResult?.finalMeta ?? null;
-          const accumulatedTrace = streamResult?.accumulatedTrace || [];
-          const accumulatedReasoning = streamResult?.accumulatedReasoning || "";
-          const agentNameForPersist = resolveAgentNameForPersist(
-            finalMeta,
-            effectiveTarget,
-            agents,
-          );
-          const persistMeta = buildPersistMeta(finalMeta, {
-            trace: accumulatedTrace,
-            reasoning: accumulatedReasoning,
-          });
-          const assistantPayload = {
-            role: "assistant",
-            content: finalText,
-            traceId: finalMeta?.trace_id,
-            latencyMs: finalMeta?.latency_ms,
-            agentName: agentNameForPersist,
-            metadata: persistMeta,
-          };
-          if (typeof userDbId === "number") {
-            assistantPayload.parentId = userDbId;
-          }
-          const persisted = await persistAssistantTurn({
-            appendMessage: apiAppendMessage,
-            authRequest,
-            convId,
-            payload: assistantPayload,
-          });
-          if (persisted.ok) {
-            const savedAssistant = persisted.saved;
-            updateMsg(convId, assistantId, {
-              dbId: savedAssistant.id,
-              parentId: savedAssistant.parent_id ?? userDbId,
-              siblingIndex: savedAssistant.sibling_index ?? 0,
-              siblingCount: savedAssistant.sibling_count ?? 1,
-              siblingIds: Array.isArray(savedAssistant.sibling_ids)
-                ? savedAssistant.sibling_ids
-                : [savedAssistant.id],
-              persistError: null,
-            });
-            updateConv(convId, { activeLeafMessageId: savedAssistant.id });
-          } else {
-            // Banner AND a marker on the bubble itself: the banner is easy to
-            // miss / dismiss, and the answer looks saved until it disappears.
-            setRuntimeError(persisted.error?.message || "對話訊息儲存失敗");
-            updateMsg(convId, assistantId, { persistError: persisted.notice });
-          }
-
-          // Bump updatedAt so the sidebar re-sorts / re-labels with live time.
-          updateConv(convId, { updatedAt: nowIso() });
-
-          // First-turn auto title: fires once (only when the existing title was
-          // produced by the first-message truncator). Background task; silent
-          // failure is acceptable.
-          const convRow = conversations.find((c) => c.id === convId);
-          const looksLikeAutoTitle =
-            !convRow?.title || convRow.title === makeConversationTitle(text);
-          if (looksLikeAutoTitle && finalText) {
-            generateConversationTitle(convId, text, finalText, effectiveTarget);
-          }
-        },
-      });
-      if (turn.aborted) {
+    // 第一段:使用者訊息落庫 + 助理列預留。同一個對話的 head 必須依序,
+    // 否則第二則使用者訊息可能搶在第一則的預留之前落地 —— 那就是原本
+    // 的 bug。這一段刻意不等前一輪的串流:按下 Enter 的當下文字就要
+    // 到伺服器上。
+    let head = null;
+    if (persistable) {
+      head = await chainTurnHead(convId, () =>
+        persistTurnHead({
+          appendMessage: apiAppendMessage,
+          reserveReply: apiReserveReply,
+          authRequest,
+          convId,
+          content: text,
+          agentName: effectiveTarget,
+          writer,
+        }),
+      );
+      if (!head.ok) {
+        // 使用者的文字有沒有保住,說法不一樣 —— 不要含糊帶過。
         setRuntimeError(
-          turn.error?.message || "使用者訊息儲存失敗",
+          head.stage === "user"
+            ? head.error?.message || "使用者訊息儲存失敗"
+            : head.error?.message || "助理回覆位置預留失敗",
         );
-        setMessagesByConv((prev) => ({
-          ...prev,
-          [convId]: (prev[convId] || []).filter((m) => m.id !== assistantId),
-        }));
+        updateMsg(convId, userMsg.id, {
+          dbId: head.userSaved?.id,
+          persistError: head.stage === "user" ? head.notice : null,
+        });
+        updateMsg(convId, assistantId, {
+          streaming: false,
+          persistError: head.notice,
+        });
         return;
       }
-    } catch (error) {
-      // Keep any already-streamed assistant text; attach a readable error.
+      const savedUser = head.userSaved;
+      const reserved = head.assistantSaved;
+      updateMsg(convId, userMsg.id, {
+        dbId: savedUser.id,
+        parentId: savedUser.parent_id ?? null,
+        siblingIndex: savedUser.sibling_index ?? 0,
+        siblingCount: savedUser.sibling_count ?? 1,
+        siblingIds: Array.isArray(savedUser.sibling_ids)
+          ? savedUser.sibling_ids
+          : [savedUser.id],
+        persistError: null,
+      });
+      updateMsg(convId, assistantId, {
+        dbId: reserved.id,
+        parentId: reserved.parent_id ?? savedUser.id,
+        siblingIndex: reserved.sibling_index ?? 0,
+        siblingCount: reserved.sibling_count ?? 1,
+        siblingIds: Array.isArray(reserved.sibling_ids)
+          ? reserved.sibling_ids
+          : [reserved.id],
+        persistError: null,
+      });
+      updateConv(convId, { activeLeafMessageId: reserved.id });
+    }
+
+    // 第二段:串流。排隊感在這裡 —— 第二輪要等第一輪跑完才開始,
+    // 因為它需要第一輪的答案當上下文。等待期間使用者的文字已經在
+    // 伺服器上了,這正是與「把文字留在瀏覽器排隊」的結構差異。
+    await chainTurnStream(convId, async () => {
+      const reservedId = head?.assistantSaved?.id ?? null;
+      // 上下文取即時清單、並且切在這一輪的使用者訊息之前 —— 排在後面
+      // 等著跑的那幾輪,它們的訊息已經在清單裡了。
+      const priorForHistory = historyBefore(
+        messagesRef.current[convId] || [],
+        userMsg.id,
+      );
+      const payload = {
+        model: effectiveTarget,
+        messages: buildMessageHistory(priorForHistory, text, attachments),
+      };
+
+      // trace / reasoning 用純區域變數累積,不受 React stale-closure 影響。
+      let finalText = "";
+      let finalMeta = null;
+      const accumulatedTrace = [];
+      let accumulatedReasoning = "";
+      let streamState = STREAM_STATE.COMPLETE;
+      let streamError = null;
+
+      if (persistable && reservedId != null) {
+        inFlightStreamsRef.current.set(assistantId, {
+          convId,
+          messageId: reservedId,
+          writer,
+          text: "",
+        });
+      }
+
+      try {
+        await streamWithAbort(convId, {
+          url: `${baseUrl}/v1/chat/completions`,
+          payload,
+          conversationId: persistable ? convId : undefined,
+          taskId,
+          onText: (acc) => {
+            finalText = acc;
+            const record = inFlightStreamsRef.current.get(assistantId);
+            if (record) record.text = acc;
+            updateMsg(convId, assistantId, { text: acc });
+          },
+          onFinishReason: (reason) => {
+            updateMsg(convId, assistantId, { finishReason: reason });
+          },
+          onTrace: (step) => {
+            accumulatedTrace.push(step);
+            setMessagesByConv((prev) => ({
+              ...prev,
+              [convId]: (prev[convId] || []).map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      trace: [...(m.trace || []), step],
+                      stageLabel: step.label,
+                      stage: (m.trace?.length ?? 0),
+                    }
+                  : m,
+              ),
+            }));
+          },
+          onMeta: (metaFrame) => {
+            finalMeta = metaFrame;
+            applyMeta(convId, assistantId, effectiveTarget, metaFrame);
+          },
+          onReasoning: (delta) => {
+            accumulatedReasoning += delta;
+            setMessagesByConv((prev) => ({
+              ...prev,
+              [convId]: (prev[convId] || []).map((m) =>
+                m.id === assistantId
+                  ? { ...m, reasoning: (m.reasoning || "") + delta }
+                  : m,
+              ),
+            }));
+          },
+        });
+        // ⚠ 使用者按停止時 streamChatCompletion 是「正常返回」而不是拋出
+        // (runtime/sse.js:153 吞掉 AbortError 以保留已累積的文字)。只靠
+        // catch 判斷的話,被中斷的半截答案會被寫成 complete —— 半截答案
+        // 偽裝成完整答案,正是本專案第四條教訓要擋的事。
+        if (userStoppedRef.current.has(convId)) {
+          streamState = STREAM_STATE.STOPPED;
+        }
+      } catch (error) {
+        streamError = error;
+        // 按停止 vs 真的出錯 —— 使用者看到的說明不同,落庫的狀態也不同。
+        streamState = userStoppedRef.current.has(convId)
+          ? STREAM_STATE.STOPPED
+          : STREAM_STATE.FAILED;
+      } finally {
+        userStoppedRef.current.delete(convId);
+        inFlightStreamsRef.current.delete(assistantId);
+      }
+
+      const notice = streamStateNotice(streamState);
       updateMsg(convId, assistantId, {
         streaming: false,
-        error: error.message || "產生回應時發生錯誤，請稍後再試。",
+        streamState,
+        incompleteNotice: notice,
+        error:
+          streamState === STREAM_STATE.FAILED
+            ? streamError?.message || "產生回應時發生錯誤，請稍後再試。"
+            : null,
       });
-    }
+
+      if (!persistable || reservedId == null) return;
+
+      // 內容寫回預留的那一列。狀態必須誠實 —— 半截的答案要標成半截。
+      const agentNameForPersist = resolveAgentNameForPersist(
+        finalMeta,
+        effectiveTarget,
+        agents,
+      );
+      const persistMeta = buildPersistMeta(finalMeta, {
+        trace: accumulatedTrace,
+        reasoning: accumulatedReasoning,
+      });
+      const persisted = await finalizeStreamedAssistant({
+        updateMessage: apiUpdateMessage,
+        authRequest,
+        convId,
+        messageId: reservedId,
+        writer,
+        state: streamState,
+        content: finalText,
+        traceId: finalMeta?.trace_id,
+        latencyMs: finalMeta?.latency_ms,
+        agentName: agentNameForPersist,
+        metadata: persistMeta,
+      });
+      if (!persisted.ok) {
+        setRuntimeError(persisted.error?.message || "對話訊息儲存失敗");
+        updateMsg(convId, assistantId, { persistError: persisted.notice });
+      }
+
+      updateConv(convId, { updatedAt: nowIso() });
+
+      const convRow = conversations.find((c) => c.id === convId);
+      const looksLikeAutoTitle =
+        !convRow?.title || convRow.title === makeConversationTitle(text);
+      if (looksLikeAutoTitle && finalText) {
+        generateConversationTitle(convId, text, finalText, effectiveTarget);
+      }
+    });
   }
 
   // ---- regenerate a single assistant message ----

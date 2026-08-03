@@ -176,6 +176,27 @@ export function branchMessage(authRequest, convId, messageId, payload) {
   );
 }
 
+/**
+ * Reserve the assistant row under `messageId` BEFORE streaming starts.
+ * Server fixes parent_id and advances the active leaf onto the reserved row,
+ * so a mid-stream follow-up threads under it instead of becoming a sibling
+ * of the user message. See runtime/reservedTurn.js.
+ */
+export function reserveReply(authRequest, convId, messageId, payload) {
+  const body = {
+    stream_writer: payload.streamWriter,
+    model_name: payload.modelName || null,
+    agent_name: payload.agentName || null,
+  };
+  return authRequest(
+    `/api/conversations/${convId}/messages/${messageId}/reserve-reply`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
 /** Switch the active path; response is ConversationPathOut. */
 export function setActiveLeaf(authRequest, convId, messageId) {
   return authRequest(`/api/conversations/${convId}/active-leaf`, {
@@ -202,11 +223,17 @@ export function updateMessage(authRequest, convId, messageId, patch) {
     model_name: patch.modelName ?? null,
     agent_name: patch.agentName ?? null,
     metadata: patch.metadata ?? null,
+    // 預留列的寫入者權杖;一般 patch 不帶(後端只在該列仍未終局時檢查)。
+    stream_writer: patch.streamWriter ?? null,
   };
-  return authRequest(`/api/conversations/${convId}/messages/${messageId}`, {
+  const options = {
     method: "PUT",
     body: JSON.stringify(body),
-  });
+  };
+  // 視窗卸載途中送出的「標記為中斷」需要 keepalive,否則瀏覽器會直接
+  // 取消這個請求。一般呼叫不帶。
+  if (patch.keepalive) options.keepalive = true;
+  return authRequest(`/api/conversations/${convId}/messages/${messageId}`, options);
 }
 
 // ── Shares (P4.3 named person / unit; anonymous link retired) ────────────────

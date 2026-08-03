@@ -749,6 +749,26 @@ export const MessageBubble = ({
                 {msg.persistError}
               </div>
             )}
+            {/* 半截的答案。停止/出錯/連線中斷都會留下部分內容 —— 把它當成
+                完整答案呈現,就是本專案第四條教訓(靜默成功比報錯危險)的
+                翻版:使用者會以為這就是模型的完整回答。 */}
+            {!msg.streaming && msg.incompleteNotice && (
+              <div
+                role="status"
+                data-testid="message-incomplete-notice"
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  borderRadius: "var(--radius)",
+                  border: "1px dashed var(--warning, var(--muted))",
+                  color: "var(--muted-fg, var(--muted))",
+                  fontSize: 13,
+                  lineHeight: 1.55,
+                }}
+              >
+                {msg.incompleteNotice}
+              </div>
+            )}
             {!msg.streaming && msg.confidence != null && (
               <div style={{ marginTop: 6 }}>
                 <ConfidenceChip confidence={msg.confidence} />

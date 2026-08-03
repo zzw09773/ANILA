@@ -221,6 +221,12 @@ export function reconcilePersistedAssistant(saved, fallbackParentId = null) {
 /**
  * Orchestrate user-persist → stream → assistant-persist. When user persist
  * aborts, stream and appendAssistant are never called.
+ *
+ * ⚠ 送出路徑已經不走這裡。這個順序把助理訊息留到串流「之後」才 append,
+ * 所以整段串流期間 active leaf 都停在使用者訊息上 —— 使用者中途插話時,
+ * 第二則使用者訊息會掛成第一則的同層兄弟,第一則的答案就被 400 擋掉而
+ * 消失。現行送出路徑是 runtime/reservedTurn.js 的「先預留再串流」。
+ * 這裡保留給尚未搬遷的呼叫端;新程式不要用。
  */
 export async function runPersistedUserTurn({
   appendMessage,
