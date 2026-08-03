@@ -62,6 +62,69 @@ export function classifiedCopyDenial(level) {
 }
 
 /**
+ * 「專案入口」開啟服務失敗時,使用者讀到的那一句。
+ *
+ * 為什麼不是直接把後端的 detail 印出來:後端 400 的原文是
+ * 「服務 entry_url 必須是 http(s) URL」——`entry_url` 是資料表欄位名,不是
+ * 使用者的詞。讀到它的人只知道「壞了」,不知道**壞在哪一邊、該找誰**。
+ * 這裡按狀態碼翻成「這是誰的問題 / 你能做什麼」;原始 detail 由呼叫端另外
+ * 以「技術訊息」附在後面給管理員看,不丟掉,也不放在第一行。
+ *
+ * @param {string} serviceName 服務顯示名稱
+ * @param {{ status?: number }} [error] authRequest 丟出的錯誤(帶 status)
+ * @returns {string}
+ */
+export function launchFailureNotice(serviceName, error) {
+  const named = serviceName ? `「${serviceName}」` : "此服務";
+  const status = error?.status;
+  if (status === 503) {
+    return `${named}尚未開放，此功能仍在整備中。`;
+  }
+  if (status === 409) {
+    return `${named}目前已停用，請聯絡平台管理員。`;
+  }
+  if (status === 404) {
+    return `找不到${named}，或你目前沒有使用權限。需要的話請聯絡平台管理員。`;
+  }
+  if (status === 401) {
+    return `登入狀態已過期，請重新登入後再開啟${named}。`;
+  }
+  if (status === 400 || status === 422) {
+    return `${named}的註冊設定有誤，平台已擋下這次開啟。請把這則訊息告訴平台管理員。`;
+  }
+  return `無法開啟${named}，請稍後再試；若持續發生請聯絡平台管理員。`;
+}
+
+/**
+ * 在新分頁開啟服務後,留在抽屜裡的那一行回饋。
+ *
+ * 為什麼不是「偵測到被擋才說」:`window.open(url, '_blank', 'noopener')`
+ * **依規格一定回傳 null**(有 noopener 就拿不到 WindowProxy),所以前端
+ * 分不出「被擋掉」和「開起來了」——2026-08-02 實測,照回傳值判斷會在五次
+ * 成功開啟時全部誤報「被擋掉」。誤報比不報更糟:它會訓練使用者忽略警示。
+ *
+ * 拿掉 noopener 就分得出來,但那是拿掉一道瀏覽器層級的保護換一個偵測,
+ * 不划算。所以改成:**每一次點擊都給回饋**,並且只陳述我們真的知道的事
+ * (「已請瀏覽器開新分頁」),再把使用者自己查得到的那一步講出來。
+ * 這樣「按了、什麼也沒發生」就不會再是靜默的了。
+ */
+export function newTabOpenedNotice(serviceName) {
+  const named = serviceName ? `「${serviceName}」` : "此服務";
+  return `已在新分頁開啟${named}。沒看到新分頁的話，請檢查瀏覽器是否封鎖了彈出視窗。`;
+}
+
+/**
+ * 平台自家(同源)服務不用內嵌視窗、改開新分頁時的說明。
+ *
+ * 同源內容沒辦法真的沙箱化(理由見 services.jsx 的 IframeOverlay 註解),
+ * 寧可換一種開法,也不要把「內容於受限沙箱中執行」這條假保證掛在使用者眼前。
+ */
+export function sameOriginOpenedInNewTabNotice(serviceName) {
+  const named = serviceName ? `「${serviceName}」` : "此服務";
+  return `${named}是平台自家服務，已改用新分頁開啟。`;
+}
+
+/**
  * 列管對話按不了「分享」時的說明。門檻與 gate 本身完全一致(boolean latch),
  * 這裡只把理由講出來,不放寬也不收緊。
  *

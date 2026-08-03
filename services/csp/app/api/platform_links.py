@@ -19,6 +19,7 @@ from app.schemas.platform_link import (
     PlatformLinkResponse,
     PlatformLinkUpdate,
 )
+from app.services import anilalm_release_gate as release_gate
 from app.services.access_control import accessible_links_for
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier, require_admin
@@ -39,14 +40,19 @@ def list_links(
 ):
     # admin / owner 全可視 + include_inactive 切換;一般 user 走
     # access_control 的 role gate + grant check(include_inactive 靜默忽略)。
+    #
+    # Release gate:與 /api/services 同一條規則(見 app/api/services.py 的
+    # list_services)—— 預設清單是使用者面的「可用服務」,閘門關著的不列;
+    # include_inactive=true 的 admin 管理清單照列,否則管理員管不到。
     if is_admin_tier(current_user):
         query = db.query(RegisteredService).order_by(
             RegisteredService.sort_order, RegisteredService.created_at
         )
         if not include_inactive:
             query = query.filter(RegisteredService.is_active.is_(True))
-        return query.all()
-    return accessible_links_for(db, current_user)
+        rows = query.all()
+        return rows if include_inactive else release_gate.filter_available(rows)
+    return release_gate.filter_available(accessible_links_for(db, current_user))
 
 
 @router.post("", response_model=PlatformLinkResponse)

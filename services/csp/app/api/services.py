@@ -56,6 +56,7 @@ from app.schemas.registered_service import (
     RegisteredServiceUpdate,
 )
 from app.services import agent_credential_service
+from app.services import anilalm_release_gate as release_gate
 from app.services.access_control import can_access_service
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier, require_admin
@@ -107,8 +108,41 @@ def _bearer_token(authorization: str | None) -> str:
     return authorization[7:].strip()
 
 
+# WHATWG URL parsing 會在解析前刪掉 tab / CR / LF,所以瀏覽器眼中
+# "/\t/evil.example" == "//evil.example"(協定相對 ⇒ 別的主機)。先照同一條
+# 規則正規化,再判斷同源,否則同源判斷會與瀏覽器實際解析結果分歧。
+_URL_CONTROL_STRIP = str.maketrans("", "", "\t\n\r")
+
+# 同源(相對路徑)entry_url 的 origin 表示法。平台自營的服務由同一台 nginx
+# 同源代理,相對路徑是唯一與主機名無關的寫法(本機 localhost、內網
+# anila.ai.ncsist.org.tw),寫死絕對 URL 會變成兩份互相分歧、錯了也不會叫的
+# 設定。同源啟動不會把 launch token 送出本 origin,所以沒有跨站外洩面。
+_SAME_ORIGIN = ""
+
+
+def _normalise_entry_url(raw_url: str) -> str:
+    return (raw_url or "").strip().translate(_URL_CONTROL_STRIP)
+
+
+def _is_same_origin_path(entry_url: str) -> bool:
+    """entry_url 是否為「本平台同源的絕對路徑」(RFC 3986 path-absolute),
+    例如 ``/anila``、``/n8n?x=1``。
+
+    刻意收緊 —— 任何可能解析到別的主機的寫法一律不算同源:
+      ``//evil.example``   協定相對 ⇒ 另一個 origin
+      ``/\\evil.example``  瀏覽器在 authority 位置會把 ``\\`` 折成 ``/``
+      ``anila``            相對參照 ⇒ 取決於當下頁面,不可預測
+    """
+    if not entry_url.startswith("/"):
+        return False
+    if entry_url[1:2] in {"/", "\\"}:
+        return False
+    parsed = urlparse(entry_url)
+    return not parsed.scheme and not parsed.netloc
+
+
 def _url_origin(raw_url: str) -> str:
-    parsed = urlparse((raw_url or "").strip())
+    parsed = urlparse(_normalise_entry_url(raw_url))
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(status_code=400, detail="服務 entry_url 必須是 http(s) URL")
     if parsed.username or parsed.password:
@@ -125,9 +159,24 @@ def _url_origin(raw_url: str) -> str:
     return f"{parsed.scheme}://{host.lower()}{port}"
 
 
-def _validate_launch_entry_url(service: RegisteredService) -> None:
-    """Fail closed before appending a launch token to service.entry_url."""
-    origin = _url_origin(service.entry_url)
+def _validate_launch_entry_url(service: RegisteredService) -> str:
+    """Fail closed before appending a launch token to service.entry_url.
+
+    回傳「要拿去組 launch URL 的那個 entry URL」(已正規化),讓驗過的字串與
+    發出去的字串是同一個 —— 否則正規化本身就是一個 TOCTOU 縫。
+
+    同源相對路徑(``/anila``)視為本 origin:token 不離開本站,跨主機白名單
+    在這裡沒有可保護的東西,所以 ``allowed_origins`` 空的時候直接放行 ——
+    這正是 auto_seed 對相對路徑產生 ``allowed_origins=[]`` 的原因(見
+    ``app/services/auto_seed.py`` 的 ``_origin_of``)。
+    反之,若管理員替一個同源服務填了 ``allowed_origins``,那組設定自相矛盾,
+    照舊 fail closed 擋下來(大聲拒絕,不靜默忽略)。
+    """
+    entry_url = _normalise_entry_url(service.entry_url)
+    if _is_same_origin_path(entry_url):
+        origin = _SAME_ORIGIN
+    else:
+        origin = _url_origin(entry_url)
     allowed = {
         _url_origin(candidate)
         for candidate in (service.allowed_origins or [])
@@ -138,6 +187,7 @@ def _validate_launch_entry_url(service: RegisteredService) -> None:
             status_code=400,
             detail="服務 entry_url origin 不在 allowed_origins",
         )
+    return entry_url
 
 
 def _validate_source_snapshot_access(
@@ -171,7 +221,13 @@ def list_services(
     db: Session = Depends(get_db),
 ):
     """Accessible services for regular users (mirrors accessible_links_for +
-    classification handled at launch time); admin/owner see all."""
+    classification handled at launch time); admin/owner see all.
+
+    Release gate(``anilalm_release_gate``):預設清單 = 使用者面的「可用服務」
+    (shell 專案入口就是照這份畫的),閘門關著的服務不列。
+    ``include_inactive=true`` 是 admin-tier 的**管理**清單(治理中心服務登記
+    用它),那份照列 —— 管理員必須看得到、管得動一個關著的門。
+    """
     from app.services.access_control import accessible_services_for
 
     if is_admin_tier(current_user):
@@ -180,8 +236,12 @@ def list_services(
         )
         if not include_inactive:
             q = q.filter(RegisteredService.is_active.is_(True))
-        return q.all()
-    return accessible_services_for(db, current_user)
+        rows = q.all()
+        return rows if include_inactive else release_gate.filter_available(rows)
+    # 一般使用者拿不到管理清單(include_inactive 對他們本來就靜默忽略)。
+    return release_gate.filter_available(
+        accessible_services_for(db, current_user)
+    )
 
 
 @router.post("", response_model=RegisteredServiceResponse, status_code=201)
@@ -363,6 +423,50 @@ def launch_service(
 ):
     service = _service_or_404(db, service_id)
 
+    # ── Release gate ────────────────────────────────────────────────────────
+    # 閘門關著的服務不得啟動 —— 這道要在 is_active 之前,才不會依賴資料庫裡
+    # 那一格:種子在全新資料庫會把 ANILA LM 建成 is_active=True,靠人工停用
+    # 撐著的「擋住了」在下一次冷啟就沒了。回 503 與 nginx 那道同一個語意
+    # (尚未開放,不是不存在)。
+    if release_gate.is_gated(service):
+        log_audit_event(
+            db,
+            actor=current_user,
+            action="service.launch",
+            resource_type="registered_service",
+            resource_id=service.id,
+            status="denied",
+            detail=f"拒絕啟動服務「{service.name}」(release gate 未開放)",
+            commit=True,
+        )
+        raise HTTPException(
+            status_code=503, detail=release_gate.GATED_LAUNCH_DETAIL
+        )
+
+    # ── 停用的服務不得啟動 ──────────────────────────────────────────────────
+    # ``can_access_service`` 內部也看 is_active,但那條路一律塌成 404
+    # 「服務不存在」。這裡明寫一道:(a) 不把「停用」這個保證託付給別的函式
+    # 的內部細節,(b) 對本來就看得到整份註冊表的 admin-tier 給得出「已停用」
+    # 這個能自救的訊息。一般使用者仍收 404 —— 與「id 不存在」完全同形,
+    # 不做存在性 oracle(與 get_service / access gate 同一套說法)。
+    if not service.is_active:
+        log_audit_event(
+            db,
+            actor=current_user,
+            action="service.launch",
+            resource_type="registered_service",
+            resource_id=service.id,
+            status="denied",
+            detail=f"拒絕啟動服務「{service.name}」(服務已停用)",
+            commit=True,
+        )
+        if is_admin_tier(current_user):
+            raise HTTPException(
+                status_code=409,
+                detail="服務已停用,請先於治理中心重新啟用後再啟動",
+            )
+        raise HTTPException(status_code=404, detail="服務不存在")
+
     # Resolve classification / trace / snapshot context. A task ties the launch
     # to its classification + trace; otherwise the caller declares a floor.
     task_id: int | None = None
@@ -390,7 +494,7 @@ def launch_service(
     _validate_source_snapshot_access(
         db, current_user, source_snapshot_id, task_id=task_id
     )
-    _validate_launch_entry_url(service)
+    entry_url = _validate_launch_entry_url(service)
 
     # 8-step access algorithm with the launch classification as context_level:
     # step 6 (classification clearance) denies when level > service ceiling.
@@ -451,7 +555,8 @@ def launch_service(
         expires_at=row.expires_at,
     )
     token = launch_mod.issue_launch_token(claims)
-    launch_url = launch_mod.build_launch_url(service.entry_url, token)
+    # 用驗過的那個字串,不是再讀一次 service.entry_url。
+    launch_url = launch_mod.build_launch_url(entry_url, token)
 
     # record_decision commits the launch row in the same session/transaction.
     policy_mod.record_decision(
