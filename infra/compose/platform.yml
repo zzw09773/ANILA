@@ -89,6 +89,11 @@ services:
       # 放行但記 deprecation warning)。
       ANILA_ENV: "${ANILA_ENV:-}"
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
+      # protocol=triton_grpc 的 cleartext grpc:// 放行旗標(model kind 專用,
+      # 與 http 旗標是姊妹分支不共用 allow-list)。grpcs:// 永遠不需要它。
+      # 沒有這一行,.env 裡設 ANILA_ALLOW_GRPC_ENDPOINT=1 不會進到容器 →
+      # 註冊 grpc:// 端點一律 400 reason=scheme,而且沒有任何提示。
+      ANILA_ALLOW_GRPC_ENDPOINT: "${ANILA_ALLOW_GRPC_ENDPOINT:-0}"
       # §6-3：assistant 落庫前 zh-TW 靜默正規化。預設 1；設 0 關閉。
       ANILA_ZH_NORMALIZE: "${ANILA_ZH_NORMALIZE:-1}"
       # 檢索查詢擴展（民國↔西元＋域內同義）。預設 1；設 0 關閉。

@@ -95,22 +95,38 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def make_embed_fn(
     *, base_url: str, model: str, api_key: str = "EMPTY", verify_ssl: bool = True, timeout: float = 30.0
 ) -> EmbedFn:
-    """建構打 ``/embeddings`` 的粗篩 embed_fn。"""
+    """建構打 ``/embeddings`` 的粗篩 embed_fn。
+
+    **兩次呼叫,不是一次。** 這裡要比較的是「查詢 vs 候選記憶描述」,兩邊
+    在 Triton 類 embedder 上走**不同輸入張量**(``query`` / ``documents``),
+    一個請求只能是其中一側。原本把 ``[query, *descriptions]`` 併成一批送,
+    結果是查詢也被當文件編碼 —— 不會報錯,只是相似度排序悄悄變差
+    (實測 cosine 0.828 → 1.0,等於把查詢與文件混為一談)。
+    對 OpenAI 相容端點,拆兩次只是多一個 round-trip,結果不變。
+    """
+
+    async def _post(
+        client, inputs: list[str], input_type: str
+    ) -> list[list[float]]:
+        resp = await client.post(
+            f"{base_url.rstrip('/')}/embeddings",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": model, "input": inputs, "input_type": input_type},
+        )
+        resp.raise_for_status()
+        return [d["embedding"] for d in resp.json()["data"]]
 
     async def _embed(query: str, manifest: dict[str, str], n: int) -> list[str]:
         import httpx
 
         names = list(manifest)
-        inputs = [query, *[manifest[name] for name in names]]
+        if not names:
+            return []
         async with httpx.AsyncClient(verify=verify_ssl, timeout=timeout) as client:
-            resp = await client.post(
-                f"{base_url.rstrip('/')}/embeddings",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": model, "input": inputs},
+            q_vec = (await _post(client, [query], "query"))[0]
+            doc_vecs = await _post(
+                client, [manifest[name] for name in names], "document"
             )
-            resp.raise_for_status()
-            vectors = [d["embedding"] for d in resp.json()["data"]]
-        q_vec, doc_vecs = vectors[0], vectors[1:]
         ranked = sorted(
             zip(names, doc_vecs, strict=False), key=lambda nv: _cosine(q_vec, nv[1]), reverse=True
         )

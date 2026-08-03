@@ -115,9 +115,16 @@
               <div class="cell-caps">
                 <TermBadge v-if="model.protocol" variant="" class="cap-chip">{{ protocolLabel(model.protocol) }}</TermBadge>
                 <TermBadge v-for="cap in capabilityChips(model)" :key="cap" variant="info" class="cap-chip">{{ cap }}</TermBadge>
-                <span class="cap-key" :class="model.has_api_key ? 'cap-key--set' : 'cap-key--global'">
+                <!-- triton_grpc 不走金鑰:顯示「使用全域金鑰」會讓人以為
+                     gRPC 呼叫帶了全域 Bearer,實際上一個 byte 都沒帶。 -->
+                <span
+                  v-if="model.protocol !== 'triton_grpc'"
+                  class="cap-key"
+                  :class="model.has_api_key ? 'cap-key--set' : 'cap-key--global'"
+                >
                   {{ model.has_api_key ? '已設定模型金鑰' : '使用全域金鑰' }}
                 </span>
+                <span v-else class="cap-key cap-key--global">不使用金鑰</span>
               </div>
             </td>
             <td><TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge></td>
@@ -375,8 +382,16 @@
         <p v-if="form.protocol === 'triton_grpc'" class="field-note">
           Triton/KServe gRPC：平台會依呼叫端決定 query／documents 輸入張量（搜尋＝query、匯入＝documents）。
           模型名稱須與 Triton 上的 model name 一致（例如 <code>nv-embed-v2</code>）。
+          本協定不送金鑰（gRPC 通道不帶 call credentials），故不顯示金鑰欄位。
         </p>
+        <!--
+          金鑰欄位只在會真的送出金鑰的協定下出現。triton_grpc 路徑從不呼叫
+          resolve_model_gateway_key / _apply_gateway_auth,client.py 也沒有掛
+          call credentials 或 metadata —— 留著這個欄位就是「打了字、跳成功、
+          什麼也沒送出去」的假控制項(docs/FAKE-CONTROLS.md)。
+        -->
         <TermField
+          v-if="form.protocol !== 'triton_grpc'"
           label="模型金鑰 · api key"
           optional
           hint="僅寫入,不會回顯;留空=沿用現值或全域金鑰"
@@ -906,6 +921,10 @@ function buildModelPayload() {
   if (endpointFieldLocked.value) delete payload.endpoint_url
   // api_key 為 write-only：留空 = 沿用現值或全域金鑰,絕不送空字串把既有金鑰清掉。
   if (!payload.api_key) delete payload.api_key
+  // triton_grpc 從不送金鑰。欄位在該協定下不顯示,但使用者可能先在
+  // openai_compatible 下打了字再切協定 —— 值還留在 form 裡。不丟掉的話
+  // 就是「存了一把永遠不會被用到的金鑰」,比不顯示欄位更誤導。
+  if (payload.protocol === 'triton_grpc') delete payload.api_key
   return payload
 }
 

@@ -177,6 +177,16 @@ set_env ANILA_ALLOW_PRIVATE_ENDPOINT 0
 # 任何旗標放行);MLSteam agent 是純 http NodePort → agent 專用旗標開 1。
 set_env ANILA_ENV                   production
 set_env ANILA_ALLOW_HTTP_AGENT_ENDPOINT 1
+# Triton/KServe cleartext grpc:// 放行旗標(protocol=triton_grpc 專用,model kind
+# 限定;grpcs:// 不需要)。與上面幾行不同:**保留操作者已設的值**,只在缺鍵時補 0。
+# 硬寫 0 會讓「重跑一次部署腳本」把已啟用的 Triton embedder 靜默關掉,
+# 而症狀只會是註冊/健檢 400 scheme,現場很難反推。
+_grpc_flag="$(get_env ANILA_ALLOW_GRPC_ENDPOINT)"
+set_env ANILA_ALLOW_GRPC_ENDPOINT   "${_grpc_flag:-0}"
+if [ "${_grpc_flag:-0}" = "1" ]; then
+  warn "ANILA_ALLOW_GRPC_ENDPOINT=1 — 放行 cleartext grpc:// 模型端點(Triton);內網無 TLS 時才需要,有 grpcs:// 請改回 0"
+fi
+unset _grpc_flag
 set_env ENABLE_CARD_LOGIN           true
 set_env REQUIRE_CARD_LOGIN_ONLY     true
 # 只在 model-ca.pem 真的有憑證時才指過去。ANILA_MODEL_CA_FILE → csp 的 SSL_CERT_FILE,

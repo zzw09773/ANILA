@@ -379,6 +379,7 @@ D 全綠 = port/key/模型 ID/TLS 四件事一次確認完。F(FQDN 解析)要�
 ANILA_ALLOW_DEV_SECRET=0          # prod 模式,dev 預設值一律拒啟
 ANILA_ALLOW_HTTP_ENDPOINT=0       # 模型走 https,不用開
 ANILA_ALLOW_PRIVATE_ENDPOINT=0
+ANILA_ALLOW_GRPC_ENDPOINT=0       # 只有要接 Triton gRPC embedder 才設 1,見 §3.1c
 ANILA_TRUSTED_HOSTS=aiagent2.ai.ncsist.org.tw   # FQDN 解到私網 IP,要點名放行
 
 ANILA_HOST=anila.ai.ncsist.org.tw
@@ -438,6 +439,49 @@ done
 # 等下一輪 health check (~60s) → /models 頁應全轉 online
 # 驗收:R2 實測此組態下 registry 4/4 online、embedding 經 csp 200 (4096 維)
 ```
+
+### 3.1c 接 Triton / KServe gRPC embedder (protocol=triton_grpc)
+
+> **模型全走 aiagent2 的 OpenAI 相容 https 端點者跳過本節。**
+> 只有要把 embedding 直接指到 Triton Inference Server 的 gRPC 埠(預設 9001)時才做。
+> 這條路徑之所以存在:Triton 的 embedding model 把「查詢」與「文件」放在**不同輸入張量**
+> (`query` vs `documents`),走 OpenAI `/v1/embeddings` 沒有辦法表達這個差別 —— 全部
+> 被當文件編碼,檢索排序會**無聲**變差(不會報錯、不會有 log)。
+
+**三件事都要做,少一件就是 400 `scheme`:**
+
+1. `.env` 設 `ANILA_ALLOW_GRPC_ENDPOINT=1`
+   —— 只有 cleartext `grpc://` 需要;`grpcs://`(TLS)不需要,維持 0 即可。
+   這是 http 旗標的**姊妹分支**,開它不會放寬任何 `http://` 端點;
+   loopback / link-local / multicast / cloud metadata 對 `grpc://` 一樣永遠擋。
+2. **`up -d csp`,不是 `docker restart csp`**
+   —— `restart` 不重載 `.env`。旗標沒進容器的症狀與旗標沒設**完全一樣**(400 `scheme`),
+   確認方式:`docker exec <csp 容器> printenv ANILA_ALLOW_GRPC_ENDPOINT`,
+   **沒有輸出就是沒進去**。
+3. 模型頁註冊:protocol 選「Triton/KServe gRPC」,端點填 `grpc://host:9001`
+   (**不要加 `/v1` 路徑**,gRPC 沒有路徑),模型名稱要與 Triton 上的 model name 一字不差。
+   Triton 不吃 Bearer 金鑰,所以該協定下表單**不顯示**金鑰欄位。
+
+```bash
+# 1. 旗標真的進到容器(沒輸出 = 沒進去,回頭做第 2 步)
+docker exec anila-restart-csp-1 printenv ANILA_ALLOW_GRPC_ENDPOINT
+
+# 2. 端點在網路上通(csp 容器沒裝 curl / grpcurl,用 python socket)
+docker exec anila-restart-csp-1 python3 -c \
+  "import socket;s=socket.create_connection(('172.16.120.35',9001),3);print('tcp ok');s.close()"
+
+# 3. 註冊後:模型頁該列應為 online;取一段文字經 /v1/embeddings 應回 4096 維
+#    (Content-Type 要是 application/json —— SPA catch-all 會回 200 text/html)
+```
+
+**排錯**
+| 症狀 | 原因 |
+|---|---|
+| 註冊 400,detail 提到 `scheme` | 旗標沒設,或設了但沒 `up -d`(見第 2 步) |
+| 註冊 422「必須為 grpc:// 或 grpcs://」 | protocol 選了 triton_grpc 卻填 http URL |
+| 健檢 unhealthy、但 TCP 通 | Triton 上沒載入這個 model name(`ModelReady` 說了算,不會用 ServerLive 漂綠) |
+| 502「模型服務暫時不可用」 | 上游逾時;單次請求的執行緒佔用上限為 35 秒(`_wait_ready` 5s + ModelInfer 30s),重試 3 次 |
+| 整批帶入(bulk import)報 422 | Triton 沒有 OpenAI `/v1/models` 列表,不支援整批帶入 —— 逐一註冊 |
 
 ### 3.2 startup_security 一定要過
 

@@ -278,3 +278,28 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 - **後果**：工作中的模型長期顯示異常，訓練維運者忽略紅燈——比壞掉的模型更糟。
 - **現況**：sweep／手動重測帶入 `protocol`＋`model_name`；`triton_grpc` 改探
   Triton gRPC（及 `grpc.health.v1`），不再對 gRPC port 做 HTTP 探測。
+
+### #33 ✅ Triton gRPC 模型的「模型金鑰 · api key」欄位送不出去
+
+- **畫面說**：`protocol=triton_grpc` 的模型登錄表單照樣顯示「模型金鑰 · api key」，
+  輸入後存檔跳成功;列表列還標示「使用全域金鑰」。
+- **實際**：Triton 路徑從不呼叫 `resolve_model_gateway_key` / `_apply_gateway_auth`
+  （只有 HTTP 分支 `proxy/service.py:545` 會），`triton_grpc/client.py` 也沒有
+  掛 call credentials 或 metadata。**一個 byte 都沒有送出去。**
+- **後果**：管理員以為這個 Triton 端點有金鑰保護,實際上是裸的。
+  這正是「使用者以為鎖住了存取但沒有」那一類。
+- **現況**：`ModelsView.vue` 在該協定下**不顯示**金鑰欄位;先在別的協定下打過字
+  再切協定的殘值會在 `buildModelPayload()` 丟掉;列表列改顯示「不使用金鑰」。
+  端點提示同時說明本協定不送金鑰。
+
+### #34 ✅ 公開 `/v1`、`/v2` embeddings 對外沒有 query／document 開關
+
+- **畫面說**（對開發者）：CSP 的 embeddings 是 OpenAI 相容端點,送什麼進去就編碼什麼。
+- **實際**：兩個路由都硬寫 `embedding_input_role="document"`,行程外呼叫端
+  （含平台自己的 anila-agent SDK）**無法**表示自己是查詢側。對 Triton 類 embedder,
+  查詢與文件走不同輸入張量 → 每一次 agent RAG 查詢都被當文件編碼,
+  **不會報錯**,只是排序悄悄變差（實測 cosine 0.828 → 1.0）。
+- **現況**：兩個路由接受 `input_type`（`query`／`document`,沿用 Cohere/Voyage/Jina
+  慣例）,不帶維持 `document`,打錯字回 400 不靜默退回;該欄位不會轉送到上游。
+  `anila_pgvector.search` 改帶 `query`;`memory/recall.py` 原本把
+  `[query, *documents]` 併成一批送 —— 拆成兩次呼叫,一次 query 一次 document。

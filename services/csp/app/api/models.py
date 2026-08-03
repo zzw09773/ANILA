@@ -878,6 +878,23 @@ async def import_models_from_endpoint(
     if not source:
         raise HTTPException(status_code=404, detail="來源模型不存在")
 
+    # Bulk import is an OpenAI ``GET …/v1/models`` listing walk, and it copies
+    # the source row's endpoint_url + protocol onto every created row without
+    # re-running _enforce_protocol_endpoint. From a triton_grpc source that
+    # built ``grpc://host:9001/v1/models``, which passes the SSRF guard (the
+    # scheme is legal for model endpoints) and then dies inside httpx as a
+    # generic 502 — an unactionable error for something that can never work,
+    # since gRPC has no listing endpoint. Refuse up front and say why.
+    if (getattr(source, "protocol", None) or "") == "triton_grpc":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "protocol=triton_grpc 的來源不支援整批帶入："
+                "gRPC 沒有 OpenAI 相容的 /v1/models 列表可以掃描。"
+                "請逐一註冊 Triton 模型（名稱須與 Triton 上的 model name 一致）"
+            ),
+        )
+
     # Same outbound guard as create/update — disallowed endpoints stay
     # disallowed. Guard the FINAL listing URL (never guard one string and
     # request another). Import path must not echo hostname / resolved address

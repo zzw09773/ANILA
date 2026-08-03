@@ -131,20 +131,32 @@ class AnilaPgVectorRetriever:
         self._embed_dim = int(row["embedding_dim"])
         return self._embed_dim
 
-    async def _embed(self, text: str) -> list[float]:
+    async def _embed(self, text: str, *, input_type: str = "document") -> list[float]:
+        """打 CSP ``/embeddings``。
+
+        ``input_type`` 是 CSP 的向量化擴充欄位（``query`` / ``document``）：
+        Triton 類 embedder 的查詢與文件走**不同輸入張量**，用錯不會報錯，
+        只是排序悄悄變差。CSP 端不帶就當 ``document``，所以查詢側一定要明寫。
+        對 OpenAI 相容端點是 no-op（CSP 會把這個欄位拿掉再往上游送）。
+        """
         import httpx
 
         async with httpx.AsyncClient(verify=self._verify_ssl, timeout=30.0) as client:
             response = await client.post(
                 f"{self._embed_base_url}/embeddings",
                 headers={"Authorization": f"Bearer {self._embed_api_key}"},
-                json={"model": self._embed_model, "input": text},
+                json={
+                    "model": self._embed_model,
+                    "input": text,
+                    "input_type": input_type,
+                },
             )
             response.raise_for_status()
             return response.json()["data"][0]["embedding"]
 
     async def search(self, query: str, k: int = 5) -> list[Document]:
-        full = await self._embed(query)
+        # 檢索查詢 → query 側。文件是匯入時（ingestion）以 document 側入庫的。
+        full = await self._embed(query, input_type="query")
         dim = await self._ensure_dim()
         emb = full[:dim] if len(full) >= dim else full + [0.0] * (dim - len(full))
         emb_text = _format_halfvec(emb)

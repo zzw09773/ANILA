@@ -191,7 +191,17 @@ def test_persist_turn_normalizes_assistant_chunk(
     monkeypatch.delenv("ANILA_ZH_NORMALIZE", raising=False)
     captured: dict = {}
 
-    async def fake_embed(db, text_input):
+    async def fake_embed(
+        db,
+        text_input,
+        *,
+        user_id: int = 0,
+        department_id: int | None = None,
+        embedding_input_role: str = "query",
+    ):
+        # 這個 stub 必須與 memory_service._embed 的真實簽章一致；只寫
+        # (db, text_input) 會在生產端新增具名參數時變成 TypeError。
+        captured.setdefault("roles", []).append(embedding_input_role)
         return [0.1] * 8, "nvidia/nv-embed-v2", 8
 
     def track_insert(db, **kwargs):
@@ -221,6 +231,8 @@ def test_persist_turn_normalizes_assistant_chunk(
     by_role = {c["role"]: c["content"] for c in captured["chunks"]}
     assert by_role["user"] == SIMPLIFIED
     assert by_role["assistant"] == EXPECTED_TW
+    # 落庫的是「被檢索的一方」＝ document 側。
+    assert captured["roles"] == ["document", "document"]
 
 
 def test_write_chunk_adapter_normalizes_assistant(
@@ -230,8 +242,16 @@ def test_write_chunk_adapter_normalizes_assistant(
     monkeypatch.delenv("ANILA_ZH_NORMALIZE", raising=False)
     captured: dict = {}
 
-    async def fake_embed(db, text_input):
+    async def fake_embed(
+        db,
+        text_input,
+        *,
+        user_id: int = 0,
+        department_id: int | None = None,
+        embedding_input_role: str = "query",
+    ):
         captured["embedded"] = text_input
+        captured["role"] = embedding_input_role
         return [0.1] * 8, "nvidia/nv-embed-v2", 8
 
     def track_insert(db, **kwargs):
@@ -260,6 +280,7 @@ def test_write_chunk_adapter_normalizes_assistant(
     assert captured["chunks"][0]["role"] == "assistant"
     assert captured["chunks"][0]["content"] == EXPECTED_TW
     assert captured["embedded"] == EXPECTED_TW
+    assert captured["role"] == "document"
 
 
 class _DummySession:

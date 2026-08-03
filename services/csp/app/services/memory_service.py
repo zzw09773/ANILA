@@ -191,6 +191,20 @@ async def _embed(
     Goes through ``proxy_request`` so OpenAI-compatible and ``triton_grpc``
     share one query/document decision point (recall → ``query``; chunk
     persist → ``document``).
+
+    **Not metered** (``record_usage=False``). Long-term memory embedding is a
+    platform-internal background job the user never asked for: ``persist_turn``
+    embeds both halves of every turn, so metering it would add ~3
+    ``token_usage`` rows per ordinary chat turn and silently inflate every
+    per-user and per-department figure the pilot is measuring. Before this
+    call site moved onto ``proxy_request`` it bypassed the proxy entirely and
+    wrote nothing, so ``False`` is the choice that keeps the numbers
+    comparable across the change. The dimension probe
+    (``api/models.py``) made the same call for the same reason.
+    If metering internal memory embedding is ever wanted, it needs its own
+    ``request_type`` so it can be told apart from user-initiated calls —
+    flipping this flag alone would just make the existing rows wrong.
+    See ``tests/test_memory_embed_not_metered.py``.
     """
     from types import SimpleNamespace
 
@@ -230,6 +244,7 @@ async def _embed(
         request_body={"model": model_name, "input": [text_input]},
         endpoint_path=f"/{api_version}/embeddings",
         embedding_input_role=embedding_input_role,
+        record_usage=False,
     )
     vec = data["data"][0]["embedding"]
     return (

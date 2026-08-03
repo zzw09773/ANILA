@@ -86,12 +86,20 @@ async def test_search_sql_contract(monkeypatch):
     r._pool = _Pool(_Conn(rows, cap))
     r._embed_dim = 4
 
-    async def fake_embed(text):
+    seen: dict = {}
+
+    async def fake_embed(text, *, input_type="document"):
+        # 簽章必須與正式 _embed 一致；只寫 (text) 會在新增具名參數時變 TypeError。
+        seen["input_type"] = input_type
         return [0.1, 0.2, 0.3, 0.4]
 
     monkeypatch.setattr(r, "_embed", fake_embed)
 
     docs = await r.search("q", k=3)
+
+    # 檢索查詢一定走 query 側。漏掉的話在 Triton 類 embedder 上不會報錯，
+    # 只是查詢被當成文件編碼、排序悄悄變差。
+    assert seen["input_type"] == "query"
 
     # RLS：SET LOCAL anila.collection_id = <id>
     assert any("SET LOCAL anila.collection_id = 5" in s for s in cap["execute"])
@@ -116,7 +124,7 @@ async def test_search_pads_short_embedding(monkeypatch):
     r._pool = _Pool(_Conn([], cap))
     r._embed_dim = 6  # 比 embed 回的 4 維大 → 補零到 6
 
-    async def fake_embed(text):
+    async def fake_embed(text, *, input_type="document"):
         return [1.0, 2.0, 3.0, 4.0]
 
     monkeypatch.setattr(r, "_embed", fake_embed)
