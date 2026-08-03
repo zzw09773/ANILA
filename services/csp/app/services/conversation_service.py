@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import or_, update as sa_update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -29,6 +29,11 @@ from app.services.usage_service import _department_scope_ids
 # above any legitimate metadata payload.
 _MAX_METADATA_BYTES = 64 * 1024
 
+# start_turn 的 compare-and-swap 重試上限。每次重試都代表另一個 client 在
+# 同一瞬間推進了同一個對話的 leaf；連續撞這麼多次已經不是「兩個分頁」，
+# 停下來報 409 比無限重試安全。
+_START_TURN_MAX_ATTEMPTS = 5
+
 
 # ── 串流前預留助理訊息（reserve-then-stream） ─────────────────────────────────
 #
@@ -39,6 +44,21 @@ _MAX_METADATA_BYTES = 64 * 1024
 # _enforce_explicit_parent_role 以 400 擋下——而訊息樹在報錯之前就已經錯了。
 # 先預留這一列之後 leaf 落在助理訊息上，後續使用者訊息的預設解析自然正確，
 # 不需要放寬任何既有的不變式。
+#
+# ⚠ 已知缺陷（2026-08-03，刻意不在這一輪修，記在這裡不要讓它變成口耳相傳）：
+# **孤兒 reserved 列沒有回收機制。**
+#   前端在關視窗／重整時會用 pagehide 把自己預留的每一列（含還在排隊、尚未
+#   開始串流的那些）標成 interrupted。但那是 best-effort：瀏覽器當掉、斷電、
+#   分頁被作業系統殺掉時那個請求送不出去，那一列就永遠停在 reserved。
+#   後果，說清楚：
+#     • 不是資料遺失 —— 使用者的問題已經落庫，UI 會誠實標示那一列沒寫完，
+#       後續的對話照常繼續，空內容的列也不會進到送給模型的上下文。
+#     • 但那個答案的位置永遠是空的，而且**永遠寫不進去**：它掛著一個沒有人
+#       持有的 writer 權杖，帶錯權杖、不帶權杖、只改 metadata 一律 409。
+#       未來任何想 in-place 寫它的功能（ANILALM finalize、Continue Response）
+#       打到這一列都會 409。
+#   要關掉它需要一個 reaper（或在 envelope 裡放時間戳、逾時後允許接管）。
+#   整個 repo 目前沒有任何 reaper。
 STREAM_META_KEY = "anila_stream"
 
 STREAM_STATE_RESERVED = "reserved"        # 已預留，內容尚未產生
@@ -753,6 +773,15 @@ def append_message(
     return msg
 
 
+def _reserved_metadata(writer: str) -> dict:
+    return {
+        STREAM_META_KEY: {
+            "state": STREAM_STATE_RESERVED,
+            "writer": writer,
+        }
+    }
+
+
 def reserve_assistant_reply(
     db: Session,
     conv_id: int,
@@ -795,12 +824,7 @@ def reserve_assistant_reply(
             status_code=409,
             detail="這則使用者訊息已經有回覆，無法重複預留",
         )
-    metadata = {
-        STREAM_META_KEY: {
-            "state": STREAM_STATE_RESERVED,
-            "writer": writer,
-        }
-    }
+    metadata = _reserved_metadata(writer)
     _check_metadata_size(metadata)
     msg = Message(
         conversation_id=conv.id,
@@ -818,6 +842,107 @@ def reserve_assistant_reply(
     db.commit()
     db.refresh(msg)
     return msg
+
+
+def start_turn(
+    db: Session,
+    conv_id: int,
+    user: User,
+    *,
+    content: str,
+    writer: str,
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> tuple[Message, Message]:
+    """使用者訊息落庫 ＋ 助理列預留，在同一個交易裡完成。
+
+    為什麼要合成一次：分成兩次 HTTP 往返時，兩者之間那段 RTT 就是一個窗口。
+    兩個分頁同一瞬間按 Enter 的話：A 先 append 了 U_A（leaf=U_A），B 的
+    append 走預設 leaf 解析掛到 U_A 底下（leaf=U_B），A 這時才來預留 U_A 的
+    回覆——U_A 已經有子訊息了，於是 409。結果是 U_A 這則使用者訊息永遠拿不
+    到答案，而且它明明已經在資料庫裡。
+
+    合成一次之後，兩個分頁各自的「append + reserve」都在同一個
+    ``_lock_conversation`` 交易內完成，後到的那個看到的 leaf 已經是前一個
+    預留好的助理列，樹維持線性。
+
+    ⚠ 這裡**不依賴** ``FOR UPDATE``。``_lock_conversation`` 在 PostgreSQL 上
+    會先序列化，但它在 SQLite 上是 no-op，實測（2026-08-03，真 uvicorn＋真
+    socket、兩個併發 client、5 回合）就會出現另一種壞法：兩邊都讀到同一個
+    leaf，樹在根部長出兩個分岔。所以 leaf 的推進改用 compare-and-swap ——
+    ``UPDATE ... WHERE active_leaf_message_id = 我讀到的那個``。0 rows 代表
+    有人在這中間動過 leaf：整個交易回滾（訊息也一併回滾，不留半截），
+    重讀 leaf 再來一次。這個機制在任何引擎上語意都一樣，而且測得到。
+
+    回傳 ``(user_message, reserved_assistant_message)``；active leaf 停在
+    預留的助理列上。
+    """
+    if not isinstance(writer, str) or not writer:
+        raise HTTPException(status_code=400, detail="缺少串流寫入者權杖")
+    conv = get_conversation(db, conv_id, user)
+    conv_pk = conv.id
+    metadata = _reserved_metadata(writer)
+    _check_metadata_size(metadata)
+    # §6-3：user 原文不動（fail-open），與 append_message 同一條正規化邊界。
+    user_content, zh_changed = zh_normalize_service.prepare_message_content(
+        "user", content,
+    )
+
+    for _attempt in range(_START_TURN_MAX_ATTEMPTS):
+        # PostgreSQL 上這一行先把競爭者擋在門外；SQLite 上它什麼也不做，
+        # 底下的 CAS 才是真正保證正確性的那一步。
+        conv = _lock_conversation(db, conv_pk)
+        expected_leaf = conv.active_leaf_message_id
+        _enforce_sibling_cap(db, conv_pk, expected_leaf)
+
+        user_msg = Message(
+            conversation_id=conv_pk,
+            parent_id=expected_leaf,
+            role="user",
+            content=user_content,
+        )
+        db.add(user_msg)
+        db.flush()
+        assistant_msg = Message(
+            conversation_id=conv_pk,
+            parent_id=user_msg.id,
+            role="assistant",
+            content="",
+            model_name=model_name,
+            agent_name=agent_name,
+            metadata_=metadata,
+        )
+        db.add(assistant_msg)
+        db.flush()
+
+        stmt = (
+            sa_update(Conversation)
+            .where(Conversation.id == conv_pk)
+            .values(
+                active_leaf_message_id=assistant_msg.id,
+                updated_at=datetime.now(timezone.utc),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        stmt = stmt.where(
+            Conversation.active_leaf_message_id.is_(None)
+            if expected_leaf is None
+            else Conversation.active_leaf_message_id == expected_leaf
+        )
+        if db.execute(stmt).rowcount == 1:
+            db.commit()
+            db.refresh(user_msg)
+            db.refresh(assistant_msg)
+            zh_normalize_service.log_if_changed(user_msg.id, zh_changed)
+            return user_msg, assistant_msg
+
+        # 有人在這中間推進了 leaf。整個交易丟掉（兩列都不會留下），重來。
+        db.rollback()
+
+    raise HTTPException(
+        status_code=409,
+        detail="這個對話同時有太多訊息在送出，請稍後再試一次",
+    )
 
 
 def branch_message(
@@ -1067,6 +1192,13 @@ def _normalize_stream_envelope(metadata: dict) -> dict:
     未知 state 直接擋（400）——沉默接受一個沒人看得懂的狀態，就是把
     「半截答案」偽裝成完整答案的那條路。進入終局時清掉 writer 權杖，
     這一列從此對一般 patch 開放。
+
+    未終局的 state 也擋（400）。未終局的 envelope 只能由
+    ``reserve_assistant_reply`` / ``start_turn`` 建立：如果 PUT 也能寫，
+    任何人都能替自己的任何一則訊息裝上一個只有自己知道的 writer 權杖，
+    之後那一列的每一次 in-place patch（ANILALM finalize、Continue
+    Response）都會被 409 擋掉——一條把自己的訊息永久鎖死的路。串流結束
+    時本來就只會寫終局狀態，所以這裡沒有擋掉任何真實流程。
     """
     envelope = stream_envelope(metadata)
     if envelope is None:
@@ -1074,7 +1206,12 @@ def _normalize_stream_envelope(metadata: dict) -> dict:
     state = envelope.get("state")
     if state not in _STREAM_ALL_STATES:
         raise HTTPException(status_code=400, detail="串流狀態不合法")
-    if state in STREAM_TERMINAL_STATES and "writer" in envelope:
+    if state not in STREAM_TERMINAL_STATES:
+        raise HTTPException(
+            status_code=400,
+            detail="串流狀態只能由預留流程建立，這裡只接受已結束的狀態",
+        )
+    if "writer" in envelope:
         cleaned = {k: v for k, v in envelope.items() if k != "writer"}
         return {**metadata, STREAM_META_KEY: cleaned}
     return metadata

@@ -601,6 +601,29 @@ export const MessageBubble = ({
               )}
             </div>
           )}
+          {/* 送出失敗要說在使用者自己那顆氣泡上 —— 出問題的是這則訊息,
+              只在下面的回答氣泡講,使用者不會知道自己的話怎麼了。
+              ⚠ 文案在 runtime/reservedTurn.js:已經落庫的訊息,任何介面
+              都不得描述成沒有存到。 */}
+          {msg.persistError && (
+            <div
+              role="alert"
+              data-testid="message-persist-error"
+              style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                borderRadius: "var(--radius)",
+                border: "1px solid var(--warning, var(--danger))",
+                background: "color-mix(in oklch, var(--danger) 8%, var(--bg))",
+                color: "var(--danger)",
+                fontSize: 13,
+                lineHeight: 1.55,
+                textAlign: "left",
+              }}
+            >
+              {msg.persistError}
+            </div>
+          )}
         </div>
       </div>
     );

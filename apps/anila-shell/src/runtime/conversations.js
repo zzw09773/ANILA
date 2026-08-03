@@ -177,25 +177,29 @@ export function branchMessage(authRequest, convId, messageId, payload) {
 }
 
 /**
- * Reserve the assistant row under `messageId` BEFORE streaming starts.
- * Server fixes parent_id and advances the active leaf onto the reserved row,
- * so a mid-stream follow-up threads under it instead of becoming a sibling
- * of the user message. See runtime/reservedTurn.js.
+ * Persist the user message AND reserve its assistant row in ONE round trip.
+ *
+ * 兩次往返之間的 RTT 就是「兩個分頁同一瞬間按 Enter」那個 bug 的窗口:
+ * 後到的 append 掛在前一則使用者訊息底下,前一個分頁的 reserve 隨即 409,
+ * 那則使用者訊息就永遠拿不到答案。伺服器把兩件事放進同一個交易。
+ * 回應是 {user, assistant}。
  */
-export function reserveReply(authRequest, convId, messageId, payload) {
+export function startTurn(authRequest, convId, payload) {
   const body = {
+    content: payload.content,
     stream_writer: payload.streamWriter,
     model_name: payload.modelName || null,
     agent_name: payload.agentName || null,
   };
-  return authRequest(
-    `/api/conversations/${convId}/messages/${messageId}/reserve-reply`,
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+  return authRequest(`/api/conversations/${convId}/turn`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
+
+// POST /messages/{id}/reserve-reply 這個端點仍然存在(start_turn 建在同一個
+// 原始操作上),但前端沒有任何呼叫端 —— 送出路徑一律走 startTurn 的一次往返。
+// 這裡不留沒有人用的包裝函式。
 
 /** Switch the active path; response is ConversationPathOut. */
 export function setActiveLeaf(authRequest, convId, messageId) {

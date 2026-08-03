@@ -9,6 +9,7 @@
 //   _resolve_parent_id            → 省略 parent_id 時採用 active_leaf
 //   _enforce_explicit_parent_role → 同層兄弟角色必須一致(400)
 //   reserve_assistant_reply       → 只能掛在沒有子訊息的 user 訊息底下
+//   start_turn                    → 使用者訊息 ＋ 預留列在同一個交易裡
 //   _active_stream_writer         → 未終局的預留列只有持有權杖者能寫(409)
 
 const TERMINAL_STATES = new Set(["complete", "stopped", "failed", "interrupted"]);
@@ -21,6 +22,48 @@ export class FakeConversationBackend {
     this.nextMsgId = 100;
     /** 依序記錄每一次寫入,測試據此斷言「預留發生在串流之前」。 */
     this.calls = [];
+    /** 測試用的閘門佇列(見下)。 */
+    this._gatesBefore = new Map();
+    this._gatesAfter = new Map();
+  }
+
+  // ── 測試用的閘門 ───────────────────────────────────────────────────────────
+  //
+  // 真實世界裡請求會塞車,而且兩件事塞的位置不同,所以要兩種閘門:
+  //
+  //   holdRequest(op)  —— 請求還沒送到伺服器就卡住。用來測「送出順序」:
+  //                       先按 Enter 的那一則慢,後按的那一則快,誰先落庫?
+  //   holdResponse(op) —— 伺服器已經做完了,回應卡在路上。用來測「同一瞬間
+  //                       按 Enter」:head 如果是兩次往返,這裡就正好是那兩
+  //                       次之間的窗口,另一個分頁的請求會整個插進來。
+  //
+  // op 目前只有 "turnHead" —— 一次送出的第一個寫入請求,不管它實作成
+  // POST /turn 還是 POST /messages。閘門刻意不綁在某一個端點上:綁死的話,
+  // 只要實作換回兩次往返,測試就會靜悄悄地停止重現那個 bug。
+
+  holdRequest(op) {
+    return this._pushGate(this._gatesBefore, op);
+  }
+
+  holdResponse(op) {
+    return this._pushGate(this._gatesAfter, op);
+  }
+
+  _pushGate(store, op) {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const queue = store.get(op) || [];
+    queue.push(gate);
+    store.set(op, queue);
+    return release;
+  }
+
+  async _awaitGate(store, op) {
+    const queue = store.get(op);
+    if (!queue || queue.length === 0) return;
+    await queue.shift();
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
@@ -119,6 +162,54 @@ export class FakeConversationBackend {
       parentId: msg.parent_id,
     });
     return this._out(msg);
+  }
+
+  /**
+   * POST /api/conversations/:id/turn —— 使用者訊息 ＋ 預留列,同一個交易。
+   *
+   * 對齊 conversation_service.start_turn。兩件事之間沒有任何縫隙:這正是
+   * 「兩個分頁同一瞬間按 Enter」不再把樹弄壞的原因。
+   */
+  startTurn(convId, body) {
+    const conv = this._conv(convId);
+    if (!body?.stream_writer) throw new HttpError(400, "缺少串流寫入者權杖");
+    const parentId = conv.active_leaf_message_id;
+    const userMsg = {
+      id: this.nextMsgId++,
+      conversation_id: conv.id,
+      parent_id: parentId ?? null,
+      role: "user",
+      content: body.content ?? "",
+      metadata: null,
+      trace_id: null,
+      latency_ms: null,
+      agent_name: null,
+      created_at: new Date().toISOString(),
+    };
+    this.messages.set(userMsg.id, userMsg);
+    const assistantMsg = {
+      id: this.nextMsgId++,
+      conversation_id: conv.id,
+      parent_id: userMsg.id,
+      role: "assistant",
+      content: "",
+      metadata: { anila_stream: { state: "reserved", writer: body.stream_writer } },
+      trace_id: null,
+      latency_ms: null,
+      agent_name: body.agent_name ?? null,
+      created_at: new Date().toISOString(),
+    };
+    this.messages.set(assistantMsg.id, assistantMsg);
+    conv.active_leaf_message_id = assistantMsg.id;
+    this.calls.push({
+      op: "startTurn",
+      convId: conv.id,
+      id: userMsg.id,
+      role: "user",
+      parentId: userMsg.parent_id,
+      reservedId: assistantMsg.id,
+    });
+    return { user: this._out(userMsg), assistant: this._out(assistantMsg) };
   }
 
   reserveReply(convId, parentMessageId, body) {
@@ -232,7 +323,22 @@ export function makeAuthRequest(backend, { fallback = () => [] } = {}) {
     const method = (options.method || "GET").toUpperCase();
     const body = options.body ? JSON.parse(options.body) : null;
 
-    let match = path.match(/^\/api\/conversations\/(\d+)\/messages\/(\d+)\/reserve-reply$/);
+    // 「一次送出的第一個寫入請求」——閘門看的是這件事,不是某個端點。
+    const startsTurn =
+      method === "POST" &&
+      (/^\/api\/conversations\/\d+\/turn$/.test(path) ||
+        (/^\/api\/conversations\/\d+\/messages$/.test(path) && body?.role === "user"));
+    if (startsTurn) await backend._awaitGate(backend._gatesBefore, "turnHead");
+    const settle = async (result) => {
+      if (startsTurn) await backend._awaitGate(backend._gatesAfter, "turnHead");
+      return result;
+    };
+
+    let match = path.match(/^\/api\/conversations\/(\d+)\/turn$/);
+    if (match && method === "POST") {
+      return settle(backend.startTurn(match[1], body));
+    }
+    match = path.match(/^\/api\/conversations\/(\d+)\/messages\/(\d+)\/reserve-reply$/);
     if (match && method === "POST") {
       return backend.reserveReply(match[1], match[2], body);
     }
@@ -242,7 +348,7 @@ export function makeAuthRequest(backend, { fallback = () => [] } = {}) {
     }
     match = path.match(/^\/api\/conversations\/(\d+)\/messages$/);
     if (match && method === "POST") {
-      return backend.appendMessage(match[1], body);
+      return settle(backend.appendMessage(match[1], body));
     }
     match = path.match(/^\/api\/conversations\/(\d+)(\?.*)?$/);
     if (match && method === "GET") {

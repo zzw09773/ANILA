@@ -136,6 +136,14 @@ class ReserveReplyCreate(BaseModel):
     agent_name: Optional[str] = None
 
 
+class TurnHeadCreate(BaseModel):
+    """Append the user message and reserve its assistant row in one request."""
+    content: str = Field(..., max_length=_MAX_MSG_CHARS)
+    stream_writer: str = Field(..., min_length=8, max_length=200)
+    model_name: Optional[str] = None
+    agent_name: Optional[str] = None
+
+
 class ConversationOut(ApiResponseModel):
     id: int
     title: str
@@ -178,6 +186,12 @@ class ConversationPathOut(BaseModel):
     """Active path after leaf switch or subtree delete (OW-1)."""
     active_leaf_message_id: Optional[int] = None
     messages: list[MessageOut] = []
+
+
+class TurnHeadOut(BaseModel):
+    """Both rows created by ``POST /{conv_id}/turn`` — they are one unit."""
+    user: MessageOut
+    assistant: MessageOut
 
 
 class MessageAppend(BaseModel):
@@ -702,6 +716,38 @@ def append_message(
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
     return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+
+
+@router.post("/{conv_id}/turn", response_model=TurnHeadOut, status_code=201)
+def start_turn(
+    conv_id: int,
+    body: TurnHeadCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Persist the user message and reserve its assistant row atomically.
+
+    這是聊天送出路徑的第一步，取代「POST /messages 之後再 POST
+    /reserve-reply」的兩次往返。兩次往返之間的 RTT 是一個窗口：兩個
+    分頁同一瞬間按 Enter 時，後到的 append 會掛在前一則使用者訊息底下，
+    前一個分頁的 reserve 隨即 409，那則使用者訊息就永遠拿不到答案。
+    合成一次之後兩件事在同一個交易裡完成，這個窗口不存在。
+    """
+    user_msg, assistant_msg = svc.start_turn(
+        db, conv_id, current_user,
+        content=body.content,
+        writer=body.stream_writer,
+        model_name=body.model_name,
+        agent_name=body.agent_name,
+    )
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return TurnHeadOut(
+        user=_message_out(user_msg, groups.get(user_msg.parent_id, [user_msg.id])),
+        assistant=_message_out(
+            assistant_msg, groups.get(assistant_msg.parent_id, [assistant_msg.id]),
+        ),
+    )
 
 
 @router.post(

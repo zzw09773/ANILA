@@ -53,7 +53,7 @@ import {
   updateConversation as apiUpdateConversation,
   deleteConversation as apiDeleteConversation,
   appendMessage as apiAppendMessage,
-  reserveReply as apiReserveReply,
+  startTurn as apiStartTurn,
   updateMessage as apiUpdateMessage,
   rateMessage as apiRateMessage,
   branchMessage as apiBranchMessage,
@@ -533,8 +533,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }
 
   // 送出路徑的兩條串行鏈(runtime/reservedTurn.js)。
-  // head = 使用者訊息落庫 + 助理列預留:必須依序,否則第二則使用者訊息
-  //        可能搶在第一則的預留之前落地 —— 那就是原本的 bug。
+  // head = POST /turn(使用者訊息落庫 + 助理列預留,伺服器端一次交易)。
+  //        樹的形狀由那個交易保證,這條鏈保證的是「送出順序」:兩則訊息
+  //        連著按 Enter 時,先按的必須先落庫,否則兩則的請求誰先回來,
+  //        對話紀錄裡的順序就跟著顛倒 —— 使用者看得到,而且無法自救。
   // stream = 實際串流:排隊感留在這裡(第二輪要拿到第一輪的答案當上下文)。
   const chainTurnHead = useRef(createTurnChain()).current;
   const chainTurnStream = useRef(createTurnChain()).current;
@@ -1467,16 +1469,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const persistable = typeof convId === "number";
     const writer = makeStreamWriter();
 
-    // 第一段:使用者訊息落庫 + 助理列預留。同一個對話的 head 必須依序,
-    // 否則第二則使用者訊息可能搶在第一則的預留之前落地 —— 那就是原本
-    // 的 bug。這一段刻意不等前一輪的串流:按下 Enter 的當下文字就要
-    // 到伺服器上。
+    // 第一段:使用者訊息落庫 + 助理列預留,伺服器端一次交易(POST /turn)。
+    // 同一個對話的 head 之間仍然要依序 —— 那是為了保住送出順序(先按
+    // Enter 的先落庫);樹的形狀則由伺服器的單一交易保證。這一段刻意
+    // 不等前一輪的串流:按下 Enter 的當下文字就要到伺服器上。
     let head = null;
     if (persistable) {
       head = await chainTurnHead(convId, () =>
         persistTurnHead({
-          appendMessage: apiAppendMessage,
-          reserveReply: apiReserveReply,
+          startTurn: apiStartTurn,
           authRequest,
           convId,
           content: text,
@@ -1485,16 +1486,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         }),
       );
       if (!head.ok) {
-        // 使用者的文字有沒有保住,說法不一樣 —— 不要含糊帶過。
-        setRuntimeError(
-          head.stage === "user"
-            ? head.error?.message || "使用者訊息儲存失敗"
-            : head.error?.message || "助理回覆位置預留失敗",
-        );
-        updateMsg(convId, userMsg.id, {
-          dbId: head.userSaved?.id,
-          persistError: head.stage === "user" ? head.notice : null,
-        });
+        setRuntimeError(head.error?.message || "這一輪沒有順利送出");
+        // head 是一個交易 —— 兩列同進同退,所以兩顆氣泡講同一句話。
+        // ⚠ 那句話不斷言「沒有存進去」,見 reservedTurn.js 的 TURN_FAILURE_NOTICE。
+        updateMsg(convId, userMsg.id, { persistError: head.notice });
         updateMsg(convId, assistantId, {
           streaming: false,
           persistError: head.notice,
@@ -1524,6 +1519,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         persistError: null,
       });
       updateConv(convId, { activeLeafMessageId: reserved.id });
+
+      // 從「預留成功」的這一刻起就登記,而不是等串流開始才登記。
+      // 插話送出的第二輪會在這裡排隊等第一輪跑完,那段期間它的預留列
+      // 已經在伺服器上了 —— 這時重整或關視窗,如果沒登記,那一列就會
+      // 永遠停在 reserved:誰都寫不進去(沒有權杖),也沒有任何清理程序。
+      inFlightStreamsRef.current.set(assistantId, {
+        convId,
+        messageId: reserved.id,
+        writer,
+        text: "",
+      });
     }
 
     // 第二段:串流。排隊感在這裡 —— 第二輪要等第一輪跑完才開始,
@@ -1549,15 +1555,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       let accumulatedReasoning = "";
       let streamState = STREAM_STATE.COMPLETE;
       let streamError = null;
-
-      if (persistable && reservedId != null) {
-        inFlightStreamsRef.current.set(assistantId, {
-          convId,
-          messageId: reservedId,
-          writer,
-          text: "",
-        });
-      }
 
       try {
         await streamWithAbort(convId, {

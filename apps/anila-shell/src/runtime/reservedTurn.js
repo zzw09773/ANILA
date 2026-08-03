@@ -6,9 +6,15 @@
 // 回來落庫時被後端的同層角色不變式以 400 擋下 —— 而訊息樹在報錯之前就已經
 // 錯了,Q1 根本沒有地方放它的答案。
 //
-// 這裡的順序是:使用者訊息立刻落庫 → 助理訊息「在串流開始之前」先預留一列
-// 空白列(parent 固定指向那則使用者訊息)→ 串流的內容之後以 PUT 寫回那一列。
-// leaf 因此不會在串流期間停在使用者訊息上,後續訊息的預設 leaf 解析自然正確。
+// 這裡的順序是:使用者訊息落庫＋助理訊息預留一列空白列(parent 固定指向那則
+// 使用者訊息)—— 這兩件事在伺服器端是**同一個交易**(POST /turn),串流開始
+// 之前就完成;串流的內容之後再以 PUT 寫回那一列。leaf 因此不會在串流期間停
+// 在使用者訊息上,後續訊息的預設 leaf 解析自然正確。
+//
+// 為什麼一定要是一個交易而不是兩次往返:兩次之間的 RTT 就是窗口。兩個分頁
+// 同一瞬間按 Enter 時,後到的 append 走預設 leaf 解析掛到前一則使用者訊息
+// 底下,前一個分頁的 reserve 隨即 409 —— 那則使用者訊息永遠拿不到答案,
+// 而它明明已經在資料庫裡(獨立驗證 5 次有 3 次重現)。
 //
 // 這也是為什麼文字不再需要留在瀏覽器裡等:一旦 UI 告訴使用者「收到了」,
 // 文字已經在伺服器上。重整、關分頁、當掉、兩個分頁 —— 都不再是特例。
@@ -22,18 +28,6 @@ export const STREAM_STATE = {
   FAILED: "failed",
   INTERRUPTED: "interrupted",
 };
-
-/** 內容不完整、而且不會再變的狀態 —— UI 一定要標示出來。 */
-export const INCOMPLETE_STREAM_STATES = new Set([
-  STREAM_STATE.STOPPED,
-  STREAM_STATE.FAILED,
-  STREAM_STATE.INTERRUPTED,
-]);
-
-const TERMINAL_STREAM_STATES = new Set([
-  STREAM_STATE.COMPLETE,
-  ...INCOMPLETE_STREAM_STATES,
-]);
 
 /**
  * 這則回答要不要掛「沒有講完」的標示,以及標示的文字。
@@ -51,10 +45,11 @@ export function streamStateNotice(state) {
       return "這則回答沒有產生完成（連線中斷或視窗關閉），以下是中斷前的內容。";
     case STREAM_STATE.RESERVED:
     case STREAM_STATE.STREAMING:
-      // 從伺服器載回來時還停在非終局狀態 = 寫它的那個前端已經不在了。
-      // 另一個分頁正在寫的情況下這個標示會短暫地過度保守,等對方寫完
-      // 重新載入就會消失 —— 寧可過度保守,也不要把半截當完整。
-      return "這則回答沒有產生完成（連線中斷或視窗關閉），以下是中斷前的內容。";
+      // 從伺服器載回來時還停在非終局狀態,有兩種可能:寫它的那個前端已經
+      // 不在了,或是另一個分頁此刻正在寫。前端分不出來 —— 所以措辭不能
+      // 斷言「連線中斷」,那會把一個正在跑的串流講成當掉的串流(一個人
+      // 開兩個分頁就會遇到)。講「還沒寫完」對兩種情況都是真的。
+      return "這則回答還沒有寫完（可能正在另一個視窗產生，或連線已中斷）。";
     default:
       return null;
   }
@@ -66,10 +61,6 @@ export function readStreamState(metadata) {
   if (!envelope || typeof envelope !== "object") return null;
   const state = envelope.state;
   return typeof state === "string" ? state : null;
-}
-
-export function isTerminalStreamState(state) {
-  return TERMINAL_STREAM_STATES.has(state);
 }
 
 /**
@@ -89,23 +80,39 @@ export function makeStreamWriter() {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** 落庫失敗時釘在氣泡上的說明(與 messageTree 的措辭同一族)。 */
-const HEAD_FAILURE_NOTICE =
-  "這則訊息沒有存進對話紀錄，重新整理後就會消失。請先複製內容，或重新送出一次。";
+/**
+ * 送出失敗時釘在氣泡上的說明。
+ *
+ * ⚠ 措辭刻意不斷言「沒有存進對話紀錄」。head 是一個交易:伺服器回錯 =
+ * 整個交易 rollback,兩列都不存在;但如果是回應在路上斷掉,它其實可能
+ * 已經存好了 —— 前端分不出來。斷言「沒有存進…請重新送出一次」在後面
+ * 那種情況下是假的,而使用者照著做就會貼出兩次。
+ * 不變式:已經落庫的訊息,任何介面都不得描述成沒有存到。
+ */
+const TURN_FAILURE_NOTICE =
+  "這一輪沒有順利送出。請重新整理確認這則訊息在不在，不在的話再送一次。";
 
 /**
- * 送出路徑的第一階段:使用者訊息落庫 → 助理訊息預留。
+ * 答案寫不回去時釘在「回答」氣泡上的說明。
+ *
+ * 這裡的事實跟上面不同,而且是確定的:使用者的問題和這則回答的位置
+ * 都已經在伺服器上,只有回答的內容沒寫回去。所以不能共用同一句話。
+ */
+const ANSWER_PERSIST_FAILURE_NOTICE =
+  "這則回答沒有存回對話紀錄，重新整理後就會消失（你的問題已經存好了）。";
+
+/**
+ * 送出路徑的第一階段:使用者訊息落庫 ＋ 助理訊息預留,一次往返。
  *
  * 這一段刻意「不」等前一輪的串流 —— 使用者按下 Enter 的當下文字就要到
- * 伺服器上。呼叫端只需要保證同一個對話的 head 之間彼此串行(否則第二則
- * 使用者訊息可能搶在第一則的預留之前落地,那就是原本的 bug)。
+ * 伺服器上。同一個對話的 head 之間仍然要串行,但那是為了保住送出順序
+ * (先送的先落庫),樹的形狀由伺服器端的單一交易保證。
  *
  * @returns {{ok: true, userSaved, assistantSaved, writer}}
- *        | {ok: false, stage: "user"|"reserve", error, notice, userSaved}
+ *        | {ok: false, error, notice}
  */
 export async function persistTurnHead({
-  appendMessage,
-  reserveReply,
+  startTurn,
   authRequest,
   convId,
   content,
@@ -113,35 +120,27 @@ export async function persistTurnHead({
   agentName = null,
   writer = makeStreamWriter(),
 }) {
-  let userSaved = null;
+  let head = null;
   try {
-    userSaved = await appendMessage(authRequest, convId, {
-      role: "user",
+    head = await startTurn(authRequest, convId, {
       content,
-    });
-  } catch (error) {
-    return { ok: false, stage: "user", error, notice: HEAD_FAILURE_NOTICE, userSaved: null };
-  }
-  if (!userSaved || typeof userSaved.id !== "number") {
-    const error = new Error("使用者訊息儲存失敗");
-    return { ok: false, stage: "user", error, notice: HEAD_FAILURE_NOTICE, userSaved: null };
-  }
-
-  let assistantSaved = null;
-  try {
-    assistantSaved = await reserveReply(authRequest, convId, userSaved.id, {
       streamWriter: writer,
       modelName,
       agentName,
     });
   } catch (error) {
-    // 使用者的話已經落庫了(這是重點)。只是這一輪沒有預留到位置,
-    // 呼叫端不會開始串流,而且要說出來。
-    return { ok: false, stage: "reserve", error, notice: HEAD_FAILURE_NOTICE, userSaved };
+    return { ok: false, error, notice: TURN_FAILURE_NOTICE };
   }
-  if (!assistantSaved || typeof assistantSaved.id !== "number") {
-    const error = new Error("助理訊息預留失敗");
-    return { ok: false, stage: "reserve", error, notice: HEAD_FAILURE_NOTICE, userSaved };
+  const userSaved = head?.user;
+  const assistantSaved = head?.assistant;
+  if (
+    !userSaved ||
+    typeof userSaved.id !== "number" ||
+    !assistantSaved ||
+    typeof assistantSaved.id !== "number"
+  ) {
+    const error = new Error("送出失敗：伺服器沒有回傳這一輪的訊息");
+    return { ok: false, error, notice: TURN_FAILURE_NOTICE };
   }
   return { ok: true, userSaved, assistantSaved, writer };
 }
@@ -182,9 +181,9 @@ export async function finalizeStreamedAssistant({
       return { ok: true, saved, error: null, notice: null };
     }
     const error = new Error("對話訊息儲存失敗");
-    return { ok: false, saved: null, error, notice: HEAD_FAILURE_NOTICE };
+    return { ok: false, saved: null, error, notice: ANSWER_PERSIST_FAILURE_NOTICE };
   } catch (error) {
-    return { ok: false, saved: null, error, notice: HEAD_FAILURE_NOTICE };
+    return { ok: false, saved: null, error, notice: ANSWER_PERSIST_FAILURE_NOTICE };
   }
 }
 
