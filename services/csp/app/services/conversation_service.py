@@ -50,15 +50,23 @@ _START_TURN_MAX_ATTEMPTS = 5
 #   前端在關視窗／重整時會用 pagehide 把自己預留的每一列（含還在排隊、尚未
 #   開始串流的那些）標成 interrupted。但那是 best-effort：瀏覽器當掉、斷電、
 #   分頁被作業系統殺掉時那個請求送不出去，那一列就永遠停在 reserved。
-#   後果，說清楚：
+#   後果，逐條說清楚（2026-08-05 逐條實測後修正過一次，別再憑印象轉述）：
 #     • 不是資料遺失 —— 使用者的問題已經落庫，UI 會誠實標示那一列沒寫完，
 #       後續的對話照常繼續，空內容的列也不會進到送給模型的上下文。
-#     • 但那個答案的位置永遠是空的，而且**永遠寫不進去**：它掛著一個沒有人
-#       持有的 writer 權杖，帶錯權杖、不帶權杖、只改 metadata 一律 409。
-#       未來任何想 in-place 寫它的功能（ANILALM finalize、Continue Response）
-#       打到這一列都會 409。
-#   要關掉它需要一個 reaper（或在 envelope 裡放時間戳、逾時後允許接管）。
-#   整個 repo 目前沒有任何 reaper。
+#     • **寫不進去**：它掛著一個沒有人持有的 writer 權杖，帶錯權杖、不帶
+#       權杖、只改 metadata 一律 409。未來任何想 in-place 寫它的功能
+#       （ANILALM finalize、Continue Response）打到這一列都會 409。
+#     • **刪得掉**：`DELETE /api/conversations/{cid}/messages/{mid}`
+#       （delete_message_branch）沒有任何 writer 閘門，整棵子樹會被刪掉。
+#       先前這裡寫成「永遠寫不進去」而沒有說刪得掉，害驗證者只能從缺少
+#       控制項推論「使用者被卡死」——那是文件的錯，不是行為的錯。
+#     • 使用者可用的出口是**重新產生**：它走 branch_message 在同一則使用者
+#       訊息底下長出一列新的助理訊息（同層角色一致，不需要動到卡住的那列），
+#       所以 UI 只要讓那一列顯示動作列就有出路（apps/anila-shell/src/chat.jsx
+#       的動作列條件含 msg.incompleteNotice）。空白的那一列會留在樹上當
+#       兄弟節點，不進 active path、不進模型上下文。
+#   真正把它回收掉仍然需要一個 reaper（或在 envelope 裡放時間戳、逾時後允許
+#   接管）。整個 repo 目前沒有任何 reaper。
 STREAM_META_KEY = "anila_stream"
 
 STREAM_STATE_RESERVED = "reserved"        # 已預留，內容尚未產生
@@ -945,6 +953,90 @@ def start_turn(
     )
 
 
+def branch_turn(
+    db: Session,
+    conv_id: int,
+    message_id: int,
+    user: User,
+    *,
+    content: str,
+    writer: str,
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> tuple[Message, Message]:
+    """編輯重問：分支一則使用者訊息 ＋ 預留它的助理列，同一個交易。
+
+    為什麼需要這條路徑（2026-08-05）：編輯重問原本是「branch 出新的使用者
+    訊息 → 串流 → 串流跑完才 append 助理訊息」。branch 之後 active leaf 落在
+    一則**使用者**訊息上，而整段串流期間都停在那裡。使用者這時再打一句送出，
+    預設 leaf 解析就把新的使用者訊息掛到編輯後的問題底下（user → user）；
+    等編輯後那題的答案要落庫時，``_enforce_explicit_parent_role`` 以 400 擋
+    下——答案永遠寫不進去，而使用者剛剛才看著它在螢幕上跑完。
+
+    這正是送出路徑已經修掉的那個形狀，只是換了一條路徑重新武裝。修法也一樣：
+    助理列在串流開始「之前」就存在，leaf 因此落在助理列上。
+
+    不變式：任何會產生一輪問答的路徑，都不得在串流期間把 active leaf 留在
+    使用者訊息上。
+
+    回傳 ``(new_user_message, reserved_assistant_message)``。
+    """
+    if not isinstance(writer, str) or not writer:
+        raise HTTPException(status_code=400, detail="缺少串流寫入者權杖")
+    conv = get_conversation(db, conv_id, user)
+    # 與 branch_message 相同的序列化邊界（同層上限／指標不得競爭）。
+    conv = _lock_conversation(db, conv.id)
+    _require_branchable(conv)
+    target = (
+        db.query(Message)
+        .filter(Message.id == message_id, Message.conversation_id == conv.id)
+        .first()
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="訊息不存在")
+    if target.role != "user":
+        # 這條路徑只服務「編輯重問」。助理訊息的重新產生走 branch_message，
+        # 它不需要預留（重新產生是先串流、再把成品分支上去）。
+        raise HTTPException(
+            status_code=400,
+            detail="只能從使用者訊息分支出新的一輪問答",
+        )
+    parent_id = target.parent_id
+    _enforce_sibling_cap(db, conv.id, parent_id)
+    metadata = _reserved_metadata(writer)
+    _check_metadata_size(metadata)
+    # §6-3：與 branch_message 同一條正規化邊界。
+    user_content, zh_changed = zh_normalize_service.prepare_message_content(
+        "user", content,
+    )
+    user_msg = Message(
+        conversation_id=conv.id,
+        parent_id=parent_id,
+        role="user",
+        content=user_content,
+    )
+    db.add(user_msg)
+    db.flush()
+    assistant_msg = Message(
+        conversation_id=conv.id,
+        parent_id=user_msg.id,
+        role="assistant",
+        content="",
+        model_name=model_name,
+        agent_name=agent_name,
+        metadata_=metadata,
+    )
+    db.add(assistant_msg)
+    db.flush()
+    zh_normalize_service.log_if_changed(user_msg.id, zh_changed)
+    conv.active_leaf_message_id = assistant_msg.id
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(user_msg)
+    db.refresh(assistant_msg)
+    return user_msg, assistant_msg
+
+
 def branch_message(
     db: Session,
     conv_id: int,
@@ -1178,7 +1270,7 @@ def update_message_content(
         msg.agent_name = agent_name
     if metadata is not None:
         _check_metadata_size(metadata)
-        msg.metadata_ = _normalize_stream_envelope(metadata)
+        msg.metadata_ = _normalize_stream_envelope(metadata, msg.metadata_)
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(msg)
@@ -1186,23 +1278,42 @@ def update_message_content(
     return msg
 
 
-def _normalize_stream_envelope(metadata: dict) -> dict:
-    """Validate an incoming ``anila_stream`` envelope and strip spent tokens.
+def _normalize_stream_envelope(metadata: dict, existing: Optional[dict]) -> dict:
+    """Validate an incoming ``anila_stream`` envelope against the stored row.
 
-    未知 state 直接擋（400）——沉默接受一個沒人看得懂的狀態，就是把
-    「半截答案」偽裝成完整答案的那條路。進入終局時清掉 writer 權杖，
-    這一列從此對一般 patch 開放。
+    ``metadata`` 會**整包取代** ``msg.metadata_``（PUT 的語意），所以這個
+    函式同時負責三件事，缺一都是一條讓「半截答案看起來完整」的路：
 
-    未終局的 state 也擋（400）。未終局的 envelope 只能由
-    ``reserve_assistant_reply`` / ``start_turn`` 建立：如果 PUT 也能寫，
-    任何人都能替自己的任何一則訊息裝上一個只有自己知道的 writer 權杖，
-    之後那一列的每一次 in-place patch（ANILALM finalize、Continue
-    Response）都會被 409 擋掉——一條把自己的訊息永久鎖死的路。串流結束
-    時本來就只會寫終局狀態，所以這裡沒有擋掉任何真實流程。
+    1. **未知 state 擋掉（400）。** 沉默接受一個沒人看得懂的狀態，前端的
+       標示函式就回 null，那一列會渲染得跟完整答案一模一樣。
+    2. **未終局的 state 擋掉（400）。** 未終局的 envelope 只能由
+       ``reserve_assistant_reply`` / ``start_turn`` 建立：如果 PUT 也能寫，
+       任何人都能替自己的任何一則訊息裝上一個只有自己知道的 writer 權杖，
+       之後那一列的每一次 in-place patch（ANILALM finalize、Continue
+       Response）都會被 409 擋掉——一條把自己的訊息永久鎖死的路。
+    3. **已經終局的列不得再改狀態（409）。** 終局時 writer 權杖被清掉，
+       所以這一列從此對「不帶權杖的 PUT」開放——而 terminal→terminal 原本
+       沒有任何閘門：`PUT {"anila_stream":{"state":"interrupted"}}` 可以把
+       一則使用者親眼看著跑完的答案改標成「沒有產生完成」。前端只要有一個
+       bug（例如串流結束後忘了把那一列從 in-flight 清單移除，pagehide 就會
+       替每一列送出 interrupted）就會發生，而使用者無法自救。
+       同一個狀態重送視為冪等，允許。
+       ⚠ 代價寫在這裡：未來的 Continue Response 若想把 ``stopped`` 的列
+       改標成 ``complete``，會被這一條擋下。那是刻意的——被停掉的答案就是
+       被停掉的答案；真要改，該走「新增一列」而不是竄改既有那一列的狀態。
+    4. **不帶 envelope 的 patch 不得抹掉既有標記。** ``update_message_content``
+       是整包取代，所以 `PUT {"metadata":{"citations":[…]}}` 原本會讓
+       ``anila_stream`` 整個消失——一則 ``stopped`` 的半截答案就此看起來
+       完整。既有的 envelope 一律原封帶回。
     """
+    existing_envelope = stream_envelope(existing)
     envelope = stream_envelope(metadata)
     if envelope is None:
-        return metadata
+        if existing_envelope is None:
+            return metadata
+        # 既有標記是那一列的屬性，不是這次 payload 的屬性。原封帶回
+        # （含還沒用掉的 writer 權杖：那一列的所有權不因一次 patch 而消失）。
+        return {**metadata, STREAM_META_KEY: dict(existing_envelope)}
     state = envelope.get("state")
     if state not in _STREAM_ALL_STATES:
         raise HTTPException(status_code=400, detail="串流狀態不合法")
@@ -1210,6 +1321,14 @@ def _normalize_stream_envelope(metadata: dict) -> dict:
         raise HTTPException(
             status_code=400,
             detail="串流狀態只能由預留流程建立，這裡只接受已結束的狀態",
+        )
+    existing_state = (
+        existing_envelope.get("state") if existing_envelope is not None else None
+    )
+    if existing_state in STREAM_TERMINAL_STATES and state != existing_state:
+        raise HTTPException(
+            status_code=409,
+            detail="這則回覆已經結束，狀態不能再更動",
         )
     if "writer" in envelope:
         cleaned = {k: v for k, v in envelope.items() if k != "writer"}

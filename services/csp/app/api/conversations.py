@@ -780,6 +780,42 @@ def reserve_reply(
 
 
 @router.post(
+    "/{conv_id}/messages/{message_id}/branch-turn",
+    response_model=TurnHeadOut,
+    status_code=201,
+)
+def branch_turn(
+    conv_id: int,
+    message_id: int,
+    body: TurnHeadCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """編輯重問的 head：分支使用者訊息 ＋ 預留助理列，同一個交易。
+
+    與 ``POST /{conv_id}/turn`` 是同一件事，差別只在新的使用者訊息是既有
+    那一則的同層兄弟（編輯重問）而不是接在 leaf 後面。分開兩件事做的話，
+    branch 之後 leaf 會停在一則使用者訊息上，串流期間插話就會 user → user
+    ——編輯後那題的答案再也寫不進去。
+    """
+    user_msg, assistant_msg = svc.branch_turn(
+        db, conv_id, message_id, current_user,
+        content=body.content,
+        writer=body.stream_writer,
+        model_name=body.model_name,
+        agent_name=body.agent_name,
+    )
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return TurnHeadOut(
+        user=_message_out(user_msg, groups.get(user_msg.parent_id, [user_msg.id])),
+        assistant=_message_out(
+            assistant_msg, groups.get(assistant_msg.parent_id, [assistant_msg.id]),
+        ),
+    )
+
+
+@router.post(
     "/{conv_id}/messages/{message_id}/branch",
     response_model=MessageOut,
     status_code=201,

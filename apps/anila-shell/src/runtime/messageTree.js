@@ -79,8 +79,19 @@ export function hasBranch(msg) {
  */
 export function applyServerPath(prevList, serverMapped, convId) {
   const clientOnly = new Map();
+  // 這個分頁此刻正在寫的那幾列(dbId → 本地氣泡)。
+  //
+  // ⚠ 先落庫再串流之後,「已經在伺服器上、但這個分頁還在往裡面寫」的助理
+  // 訊息是常態:預留列在串流開始前就存在,排隊中的那幾輪也一樣。這裡若照單
+  // 全收伺服器的版本,本地氣泡就被換成另一個 id 的物件,串流中的
+  // updateMsg(convId, assistantId, …) 從此打在一個不存在的 id 上 —— 畫面停
+  // 在「這則回答還沒有寫完」而且一個字都不再長出來,直到使用者重整。
+  // (2026-08-05 真 Chrome 實測:編輯重問之後緊接著插話就會出現。)
+  // 不變式:伺服器的快照不得覆蓋這個分頁正在寫的那一列。
+  const liveLocal = new Map();
   for (const m of prevList || []) {
     if (typeof m?.dbId === "number") {
+      if (m.streaming) liveLocal.set(m.dbId, m);
       clientOnly.set(m.dbId, {
         piiHits: m.piiHits,
         explicitAgents: m.explicitAgents,
@@ -90,6 +101,12 @@ export function applyServerPath(prevList, serverMapped, convId) {
     }
   }
   const fromServer = (serverMapped || []).map((sm) => {
+    const live = liveLocal.get(sm.dbId);
+    if (live) {
+      return live.conversationId === convId
+        ? live
+        : { ...live, conversationId: convId };
+    }
     const preserved = clientOnly.get(sm.dbId) || {};
     const next = { ...sm, conversationId: convId };
     if (preserved.piiHits !== undefined) next.piiHits = preserved.piiHits;

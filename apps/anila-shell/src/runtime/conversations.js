@@ -197,6 +197,27 @@ export function startTurn(authRequest, convId, payload) {
   });
 }
 
+/**
+ * Edit-and-re-ask head: branch the user message AND reserve its assistant row.
+ *
+ * 與 startTurn 是同一件事,差別只在新的使用者訊息是既有那一則的同層兄弟。
+ * 分開兩件事做的話,branch 之後 active leaf 會停在一則使用者訊息上,串流
+ * 期間插話就會 user → user,編輯後那題的答案再也寫不進去(後端 400)。
+ * 回應是 {user, assistant}。
+ */
+export function branchTurn(authRequest, convId, messageId, payload) {
+  const body = {
+    content: payload.content,
+    stream_writer: payload.streamWriter,
+    model_name: payload.modelName || null,
+    agent_name: payload.agentName || null,
+  };
+  return authRequest(
+    `/api/conversations/${convId}/messages/${messageId}/branch-turn`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
 // POST /messages/{id}/reserve-reply 這個端點仍然存在(start_turn 建在同一個
 // 原始操作上),但前端沒有任何呼叫端 —— 送出路徑一律走 startTurn 的一次往返。
 // 這裡不留沒有人用的包裝函式。

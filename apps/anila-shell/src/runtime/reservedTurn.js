@@ -34,15 +34,36 @@ export const STREAM_STATE = {
  *
  * 半截的答案絕不能長得跟完整答案一樣 —— 這是本專案第四條教訓(靜默成功
  * 比報錯危險)在這條路徑上的具體形態。回 null = 這則答案是完整的。
+ *
+ * ⚠ 兩件事刻意不用列舉:
+ *  1. **未知 state 一律掛標示**,不是回 null。列舉已知的壞狀態、其他都當
+ *     成好的,就是黑名單 —— 而黑名單永遠補不完。後端加一個新狀態、或有
+ *     一列被別的東西寫進奇怪的值,回 null 會讓那一列渲染得**跟完整答案
+ *     一模一樣**。沒有 envelope(null/undefined)才是「這是一則普通訊息」,
+ *     那一種才回 null。
+ *  2. **沒有內容時措辭要換掉**。「以下是中斷前的內容」底下什麼都沒有,
+ *     那句話本身就是假的(排隊中被取消、開頭就斷線都會這樣)。
+ *
+ * @param {string|null|undefined} state
+ * @param {boolean} hasContent 這一列有沒有留下任何文字
  */
-export function streamStateNotice(state) {
+export function streamStateNotice(state, hasContent = true) {
+  if (state === null || state === undefined) return null;
   switch (state) {
+    case STREAM_STATE.COMPLETE:
+      return null;
     case STREAM_STATE.STOPPED:
-      return "已停止產生，以下是中斷前的內容。";
+      return hasContent
+        ? "已停止產生，以下是中斷前的內容。"
+        : "已停止產生，這則回答沒有留下任何內容。";
     case STREAM_STATE.FAILED:
-      return "產生過程發生錯誤，以下是中斷前的內容。";
+      return hasContent
+        ? "產生過程發生錯誤，以下是中斷前的內容。"
+        : "產生過程發生錯誤，這則回答沒有留下任何內容。";
     case STREAM_STATE.INTERRUPTED:
-      return "這則回答沒有產生完成（連線中斷或視窗關閉），以下是中斷前的內容。";
+      return hasContent
+        ? "這則回答沒有產生完成（連線中斷或視窗關閉），以下是中斷前的內容。"
+        : "這則回答沒有產生完成（連線中斷或視窗關閉），而且沒有留下任何內容。";
     case STREAM_STATE.RESERVED:
     case STREAM_STATE.STREAMING:
       // 從伺服器載回來時還停在非終局狀態,有兩種可能:寫它的那個前端已經
@@ -51,7 +72,7 @@ export function streamStateNotice(state) {
       // 開兩個分頁就會遇到)。講「還沒寫完」對兩種情況都是真的。
       return "這則回答還沒有寫完（可能正在另一個視窗產生，或連線已中斷）。";
     default:
-      return null;
+      return "這則回答的狀態無法辨識，不能當成完整的回答看待。";
   }
 }
 
@@ -66,6 +87,11 @@ export function readStreamState(metadata) {
 /**
  * 預留列的寫入者權杖。只有持有者能把內容寫進那一列(後端以 409 擋其他人)。
  * 用途不是防惡意 —— 是防「同一個使用者的兩個分頁互相覆蓋」和重播。
+ *
+ * ⚠ **每次呼叫必須不一樣。** 回固定字串的話兩套測試都還是綠的(每個前端
+ * 拿自己的權杖去寫自己的列,當然對得上),但兩個分頁就共用同一把鑰匙:
+ * 誰都能寫誰的列,整道閘門等於不存在。這個不變式由
+ * __tests__/reservedTurn.test.jsx 的「每一輪各自持有不同的權杖」釘住。
  */
 export function makeStreamWriter() {
   const bytes = new Uint8Array(16);
@@ -98,7 +124,7 @@ const TURN_FAILURE_NOTICE =
  * 這裡的事實跟上面不同,而且是確定的:使用者的問題和這則回答的位置
  * 都已經在伺服器上,只有回答的內容沒寫回去。所以不能共用同一句話。
  */
-const ANSWER_PERSIST_FAILURE_NOTICE =
+export const ANSWER_PERSIST_FAILURE_NOTICE =
   "這則回答沒有存回對話紀錄，重新整理後就會消失（你的問題已經存好了）。";
 
 /**

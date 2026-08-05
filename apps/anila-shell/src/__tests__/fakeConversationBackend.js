@@ -10,9 +10,13 @@
 //   _enforce_explicit_parent_role → 同層兄弟角色必須一致(400)
 //   reserve_assistant_reply       → 只能掛在沒有子訊息的 user 訊息底下
 //   start_turn                    → 使用者訊息 ＋ 預留列在同一個交易裡
+//   branch_turn                   → 編輯重問:分支使用者訊息 ＋ 預留,同一交易
 //   _active_stream_writer         → 未終局的預留列只有持有權杖者能寫(409)
+//   _normalize_stream_envelope    → 未知 state 400、終局後狀態封存 409、
+//                                   不帶 envelope 的 patch 不抹掉既有標記
 
 const TERMINAL_STATES = new Set(["complete", "stopped", "failed", "interrupted"]);
+const ALL_STATES = new Set([...TERMINAL_STATES, "reserved", "streaming"]);
 
 export class FakeConversationBackend {
   constructor() {
@@ -22,6 +26,15 @@ export class FakeConversationBackend {
     this.nextMsgId = 100;
     /** 依序記錄每一次寫入,測試據此斷言「預留發生在串流之前」。 */
     this.calls = [];
+    /**
+     * 每一次 PUT 的「嘗試」——包含被 409 擋下來的那些。
+     *
+     * calls 只記成功的寫入,所以「前端不該送出的那個請求」在 calls 裡看不
+     * 出來:伺服器擋掉之後結果一樣,測試就綠了,而那個 bug 還在(前端仍然
+     * 對一則已經結束的回答送出 interrupted,只是被伺服器救了)。兩道防線
+     * 要各自測得到,所以嘗試記在這裡。
+     */
+    this.updateAttempts = [];
     /** 測試用的閘門佇列(見下)。 */
     this._gatesBefore = new Map();
     this._gatesAfter = new Map();
@@ -212,6 +225,94 @@ export class FakeConversationBackend {
     return { user: this._out(userMsg), assistant: this._out(assistantMsg) };
   }
 
+  /**
+   * POST /api/conversations/:id/messages/:mid/branch-turn —— 編輯重問的 head。
+   *
+   * 對齊 conversation_service.branch_turn:新的使用者訊息是被編輯那一則的同層
+   * 兄弟,助理列在同一個交易裡預留好,leaf 落在助理列上(不是使用者訊息上)。
+   */
+  branchTurn(convId, messageId, body) {
+    const conv = this._conv(convId);
+    if (!body?.stream_writer) throw new HttpError(400, "缺少串流寫入者權杖");
+    const target = this.messages.get(Number(messageId));
+    if (!target || target.conversation_id !== conv.id) {
+      throw new HttpError(404, "訊息不存在");
+    }
+    if (target.role !== "user") {
+      throw new HttpError(400, "只能從使用者訊息分支出新的一輪問答");
+    }
+    const userMsg = {
+      id: this.nextMsgId++,
+      conversation_id: conv.id,
+      parent_id: target.parent_id ?? null,
+      role: "user",
+      content: body.content ?? "",
+      metadata: null,
+      trace_id: null,
+      latency_ms: null,
+      agent_name: null,
+      created_at: new Date().toISOString(),
+    };
+    this.messages.set(userMsg.id, userMsg);
+    const assistantMsg = {
+      id: this.nextMsgId++,
+      conversation_id: conv.id,
+      parent_id: userMsg.id,
+      role: "assistant",
+      content: "",
+      metadata: { anila_stream: { state: "reserved", writer: body.stream_writer } },
+      trace_id: null,
+      latency_ms: null,
+      agent_name: body.agent_name ?? null,
+      created_at: new Date().toISOString(),
+    };
+    this.messages.set(assistantMsg.id, assistantMsg);
+    conv.active_leaf_message_id = assistantMsg.id;
+    this.calls.push({
+      op: "branchTurn",
+      convId: conv.id,
+      id: userMsg.id,
+      role: "user",
+      parentId: userMsg.parent_id,
+      reservedId: assistantMsg.id,
+    });
+    return { user: this._out(userMsg), assistant: this._out(assistantMsg) };
+  }
+
+  /** POST /api/conversations/:id/messages/:mid/branch —— 重新產生用的同層兄弟。 */
+  branchMessage(convId, messageId, body) {
+    const conv = this._conv(convId);
+    const target = this.messages.get(Number(messageId));
+    if (!target || target.conversation_id !== conv.id) {
+      throw new HttpError(404, "訊息不存在");
+    }
+    if (body.role !== target.role) {
+      throw new HttpError(400, "分支訊息的角色必須與原訊息相同");
+    }
+    const msg = {
+      id: this.nextMsgId++,
+      conversation_id: conv.id,
+      parent_id: target.parent_id ?? null,
+      role: body.role,
+      content: body.content ?? "",
+      metadata: body.metadata ?? null,
+      trace_id: body.trace_id ?? null,
+      latency_ms: body.latency_ms ?? null,
+      agent_name: body.agent_name ?? null,
+      created_at: new Date().toISOString(),
+    };
+    this.messages.set(msg.id, msg);
+    if (body.set_active !== false) conv.active_leaf_message_id = msg.id;
+    this.calls.push({
+      op: "branchMessage",
+      convId: conv.id,
+      id: msg.id,
+      role: msg.role,
+      parentId: msg.parent_id,
+    });
+    return this._out(msg);
+  }
+
   reserveReply(convId, parentMessageId, body) {
     const conv = this._conv(convId);
     if (!body?.stream_writer) throw new HttpError(400, "缺少串流寫入者權杖");
@@ -251,6 +352,12 @@ export class FakeConversationBackend {
   updateMessage(convId, messageId, body) {
     const conv = this._conv(convId);
     const msg = this.messages.get(Number(messageId));
+    this.updateAttempts.push({
+      convId: Number(convId),
+      id: Number(messageId),
+      state: body?.metadata?.anila_stream?.state ?? null,
+      writer: body?.stream_writer ?? null,
+    });
     if (!msg || msg.conversation_id !== conv.id) {
       throw new HttpError(404, "訊息不存在");
     }
@@ -260,19 +367,36 @@ export class FakeConversationBackend {
     if (owner && body.stream_writer !== owner) {
       throw new HttpError(409, "這則回覆正由其他來源產生中，無法覆寫");
     }
+    if (body.metadata != null) {
+      const next = { ...body.metadata };
+      const nextEnvelope = next.anila_stream;
+      if (nextEnvelope) {
+        if (!ALL_STATES.has(nextEnvelope.state)) {
+          throw new HttpError(400, "串流狀態不合法");
+        }
+        if (!TERMINAL_STATES.has(nextEnvelope.state)) {
+          throw new HttpError(
+            400, "串流狀態只能由預留流程建立，這裡只接受已結束的狀態",
+          );
+        }
+        if (
+          envelope && TERMINAL_STATES.has(envelope.state)
+          && envelope.state !== nextEnvelope.state
+        ) {
+          throw new HttpError(409, "這則回覆已經結束，狀態不能再更動");
+        }
+        const { writer: _drop, ...rest } = nextEnvelope;
+        next.anila_stream = rest;
+      } else if (envelope) {
+        // 既有標記是那一列的屬性,不是這次 payload 的屬性 —— 原封帶回。
+        next.anila_stream = { ...envelope };
+      }
+      msg.metadata = next;
+    }
     if (body.content !== null && body.content !== undefined) msg.content = body.content;
     if (body.trace_id != null) msg.trace_id = body.trace_id;
     if (body.latency_ms != null) msg.latency_ms = body.latency_ms;
     if (body.agent_name != null) msg.agent_name = body.agent_name;
-    if (body.metadata != null) {
-      const next = { ...body.metadata };
-      const nextEnvelope = next.anila_stream;
-      if (nextEnvelope && TERMINAL_STATES.has(nextEnvelope.state)) {
-        const { writer: _drop, ...rest } = nextEnvelope;
-        next.anila_stream = rest;
-      }
-      msg.metadata = next;
-    }
     this.calls.push({
       op: "updateMessage",
       convId: conv.id,
@@ -327,6 +451,7 @@ export function makeAuthRequest(backend, { fallback = () => [] } = {}) {
     const startsTurn =
       method === "POST" &&
       (/^\/api\/conversations\/\d+\/turn$/.test(path) ||
+        /^\/api\/conversations\/\d+\/messages\/\d+\/branch-turn$/.test(path) ||
         (/^\/api\/conversations\/\d+\/messages$/.test(path) && body?.role === "user"));
     if (startsTurn) await backend._awaitGate(backend._gatesBefore, "turnHead");
     const settle = async (result) => {
@@ -337,6 +462,14 @@ export function makeAuthRequest(backend, { fallback = () => [] } = {}) {
     let match = path.match(/^\/api\/conversations\/(\d+)\/turn$/);
     if (match && method === "POST") {
       return settle(backend.startTurn(match[1], body));
+    }
+    match = path.match(/^\/api\/conversations\/(\d+)\/messages\/(\d+)\/branch-turn$/);
+    if (match && method === "POST") {
+      return settle(backend.branchTurn(match[1], match[2], body));
+    }
+    match = path.match(/^\/api\/conversations\/(\d+)\/messages\/(\d+)\/branch$/);
+    if (match && method === "POST") {
+      return backend.branchMessage(match[1], match[2], body);
     }
     match = path.match(/^\/api\/conversations\/(\d+)\/messages\/(\d+)\/reserve-reply$/);
     if (match && method === "POST") {

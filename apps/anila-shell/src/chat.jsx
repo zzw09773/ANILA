@@ -847,8 +847,15 @@ export const MessageBubble = ({
       )}
 
       {/* Actions stay available after a mid-stream failure (text and/or
-          error) so the user can regenerate without retyping. */}
-      {!msg.streaming && (msg.text || msg.error) && (
+          error) so the user can regenerate without retyping.
+
+          ⚠ incompleteNotice 也算。一列「預留了但沒寫成」的空白回答(寫它的
+          分頁被作業系統殺掉,pagehide 那個請求送不出去)text 和 error 都是空
+          的,整條動作列就不畫 —— 使用者面前只剩一顆什麼都沒有的氣泡:那一列
+          既寫不進去(伺服器 409),畫面上也沒有任何按鈕。「重新產生」是這種列
+          的出口:它在同一則問題底下長出一列新的回答,完全不必去動卡住的那一
+          列(伺服器行為見 test_a_stuck_reserved_row_can_still_be_answered...)。 */}
+      {!msg.streaming && (msg.text || msg.error || msg.incompleteNotice) && (
         <div
           className="anila-msg-actions"
           style={{

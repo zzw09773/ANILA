@@ -313,6 +313,49 @@ def test_start_turn_writer_owns_the_reserved_row(client, db):
     assert intruder.status_code == 409
 
 
+def test_start_turn_writer_can_write_the_row_it_reserved(client, db):
+    """M-A：權杖從 request body 到儲存列的那一段接線，本身要有往返測試。
+
+    ⚠ 這是整個設計唯一承重的一行。把 ``api/conversations.py`` 的
+    ``writer=body.stream_writer`` 換成任何常數，兩套測試（csp 1822、
+    anila-shell 436）原本會全綠，而瀏覽器裡的每一則回答都寫不回去：409
+    「這則回覆正由其他來源產生中，無法覆寫」，資料庫留下一列空白的
+    reserved。原因是只有「入侵者被擋」被測過，「正主寫得進去」沒有。
+
+    不變式：預留時發出的那個權杖，必須就是後續放行寫入的那一個；
+    動到這條接線，一定要有測試變紅。
+    """
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    body = _turn(client, headers, cid, "問題", writer="w-roundtrip-token").json()
+    reserved_id = body["assistant"]["id"]
+
+    # 伺服器存下來的權杖就是我送出去的那一個（不是常數、不是別的欄位）。
+    assert (
+        body["assistant"]["metadata"]["anila_stream"]["writer"]
+        == "w-roundtrip-token"
+    )
+
+    ok = client.put(
+        f"/api/conversations/{cid}/messages/{reserved_id}",
+        json={
+            "content": "串流寫回來的答案",
+            "stream_writer": "w-roundtrip-token",
+            "metadata": {"anila_stream": {"state": "complete"}},
+        },
+        headers=headers,
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["content"] == "串流寫回來的答案"
+
+    # 真的落庫了，不是只有回應好看。
+    stored = client.get(f"/api/conversations/{cid}?view=all", headers=headers).json()
+    row = [m for m in stored["messages"] if m["id"] == reserved_id][0]
+    assert row["content"] == "串流寫回來的答案"
+    assert row["metadata"]["anila_stream"]["state"] == "complete"
+    assert "writer" not in row["metadata"]["anila_stream"]
+
+
 def test_start_turn_on_a_foreign_conversation_is_404(client, db):
     _user, headers = _auth(client, db, username="turn_owner")
     cid = _create_conv(client, headers)["id"]
@@ -432,7 +475,14 @@ def test_owner_token_writes_and_terminal_state_releases_the_row(client, db):
 
 
 def test_update_rejects_an_unknown_stream_state(client, db):
-    """A state nobody understands is how a half answer gets to look complete."""
+    """A state nobody understands is how a half answer gets to look complete.
+
+    ⚠ 斷言必須指名「不合法」那一句。原本只斷言 detail 含「串流狀態」——
+    未終局那一條的訊息也含這三個字，所以把未知 state 的 400 整段刪掉，
+    這個測試照樣綠（未知 state 會掉進未終局那條路）。而未知 state 一旦
+    寫進資料庫，前端的 streamStateNotice 回 null，那一列就渲染得跟完整
+    答案一模一樣。
+    """
     _user, headers = _auth(client, db)
     cid = _create_conv(client, headers)["id"]
     q1 = _append(client, headers, cid, "user", "問題")
@@ -448,7 +498,120 @@ def test_update_rejects_an_unknown_stream_state(client, db):
         headers=headers,
     )
     assert resp.status_code == 400
-    assert "串流狀態" in resp.json()["detail"]
+    assert resp.json()["detail"] == "串流狀態不合法"
+
+    # 而且沒有任何東西被寫進去 —— 那一列還是原樣。
+    stored = client.get(f"/api/conversations/{cid}?view=all", headers=headers).json()
+    row = [m for m in stored["messages"] if m["id"] == a1["id"]][0]
+    assert row["content"] == ""
+    assert row["metadata"]["anila_stream"]["state"] == "reserved"
+
+
+def test_a_finished_answer_cannot_be_downgraded(client, db):
+    """終局→終局原本完全沒有閘門（驗證者 2026-08-05 實測 200）。
+
+    情境不是攻擊，是前端一個 bug 就會發生：串流結束後忘了把那一列從
+    in-flight 清單移除，關分頁時 pagehide 就替**每一列**送出
+    ``interrupted``——使用者親眼看完的兩則答案，重整後變成「沒有產生完成」。
+    終局後 writer 權杖已經清掉，所以那個 PUT 連權杖都不用帶。
+
+    不變式：已經結束的那一列，狀態不得再被改成別的狀態。
+    """
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    body = _turn(client, headers, cid, "問題", writer="w-done-token").json()
+    mid = body["assistant"]["id"]
+    done = client.put(
+        f"/api/conversations/{cid}/messages/{mid}",
+        json={
+            "content": "完整的答案",
+            "stream_writer": "w-done-token",
+            "metadata": {"anila_stream": {"state": "complete"}},
+        },
+        headers=headers,
+    )
+    assert done.status_code == 200, done.text
+
+    for state in ("interrupted", "stopped", "failed"):
+        resp = client.put(
+            f"/api/conversations/{cid}/messages/{mid}",
+            json={"metadata": {"anila_stream": {"state": state}}},
+            headers=headers,
+        )
+        assert resp.status_code == 409, (state, resp.text)
+        assert "已經結束" in resp.json()["detail"]
+
+    stored = client.get(f"/api/conversations/{cid}?view=all", headers=headers).json()
+    row = [m for m in stored["messages"] if m["id"] == mid][0]
+    assert row["metadata"]["anila_stream"]["state"] == "complete"
+    assert row["content"] == "完整的答案"
+
+    # 同一個狀態重送是冪等的，不是衝突 —— 重試不該變成錯誤。
+    again = client.put(
+        f"/api/conversations/{cid}/messages/{mid}",
+        json={"metadata": {"anila_stream": {"state": "complete"}}},
+        headers=headers,
+    )
+    assert again.status_code == 200, again.text
+
+
+def test_a_later_metadata_patch_keeps_the_partial_marker(client, db):
+    """metadata 是整包取代 —— 半截標記不能被一次無關的 patch 抹掉。
+
+    ``update_message_content`` 直接 ``msg.metadata_ = metadata``：先把一則
+    答案 finalize 成 ``stopped``，再 PUT 一包只有 citations 的 metadata，
+    ``anila_stream`` 就整個不見了，一則被停掉的半截答案從此看起來完整。
+    """
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    body = _turn(client, headers, cid, "問題", writer="w-stop-token").json()
+    mid = body["assistant"]["id"]
+    stopped = client.put(
+        f"/api/conversations/{cid}/messages/{mid}",
+        json={
+            "content": "只講到一半",
+            "stream_writer": "w-stop-token",
+            "metadata": {"anila_stream": {"state": "stopped"}},
+        },
+        headers=headers,
+    )
+    assert stopped.status_code == 200, stopped.text
+
+    later = client.put(
+        f"/api/conversations/{cid}/messages/{mid}",
+        json={"metadata": {"citations": [{"title": "來源"}]}},
+        headers=headers,
+    )
+    assert later.status_code == 200, later.text
+    assert later.json()["metadata"]["citations"] == [{"title": "來源"}]
+    assert later.json()["metadata"]["anila_stream"]["state"] == "stopped"
+
+    stored = client.get(f"/api/conversations/{cid}?view=all", headers=headers).json()
+    row = [m for m in stored["messages"] if m["id"] == mid][0]
+    assert row["metadata"]["anila_stream"]["state"] == "stopped"
+
+
+def test_a_metadata_patch_keeps_a_live_reservation(client, db):
+    """未終局的列被 patch 掉 envelope，等於任何人都能接手寫它。"""
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    body = _turn(client, headers, cid, "問題", writer="w-live-token").json()
+    mid = body["assistant"]["id"]
+
+    patched = client.put(
+        f"/api/conversations/{cid}/messages/{mid}",
+        json={"stream_writer": "w-live-token", "metadata": {"citations": []}},
+        headers=headers,
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["metadata"]["anila_stream"]["state"] == "reserved"
+
+    intruder = client.put(
+        f"/api/conversations/{cid}/messages/{mid}",
+        json={"content": "別人寫的"},
+        headers=headers,
+    )
+    assert intruder.status_code == 409
 
 
 @pytest.mark.parametrize("state", ["stopped", "failed", "interrupted"])
@@ -567,3 +730,184 @@ def test_active_stream_writer_ignores_terminal_rows():
         assert svc._active_stream_writer(spent) is None
     assert svc._active_stream_writer(None) is None
     assert svc._active_stream_writer({"other": 1}) is None
+
+
+# ── 編輯重問：同一個保證，另一條路徑 ─────────────────────────────────────────
+#
+# 驗證者 2026-08-05 在瀏覽器裡實測到的事故：編輯重問先 branch 出新的使用者
+# 訊息（leaf 落在一則 **user** 上），才開始串流。串流途中打一句送出，新的
+# 使用者訊息就掛到編輯後的問題底下（user → user）；編輯後那題的答案接著被
+# 400「分支訊息的角色必須與既有子訊息相同」擋掉，重整之後就沒了 —— 而它一
+# 秒鐘前還完整地顯示在螢幕上。
+#
+# 觀測到的樹：#2530 user 'ER2 edited question' → #2531 user 'ER3 followup'
+#             → #2532 assistant
+#
+# 不變式：任何會產生一輪問答的路徑，都不得在串流期間把 active leaf 留在
+# 使用者訊息上。
+
+def _branch_turn(client, headers, cid, message_id, content,
+                 writer="w-branch-abcdef", **extra):
+    return client.post(
+        f"/api/conversations/{cid}/messages/{message_id}/branch-turn",
+        json={"content": content, "stream_writer": writer, **extra},
+        headers=headers,
+    )
+
+
+def test_branch_turn_reserves_the_answer_and_moves_the_leaf_off_the_user_row(
+    client, db,
+):
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    first = _turn(client, headers, cid, "原本的問題", writer="w-first-token").json()
+
+    resp = _branch_turn(client, headers, cid, first["user"]["id"], "編輯後的問題")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["user"]["role"] == "user"
+    assert body["user"]["content"] == "編輯後的問題"
+    # 同層兄弟：parent 與被編輯的那一則相同。
+    assert body["user"]["parent_id"] == first["user"]["parent_id"]
+    assert body["assistant"]["role"] == "assistant"
+    assert body["assistant"]["content"] == ""
+    assert body["assistant"]["parent_id"] == body["user"]["id"]
+    assert body["assistant"]["metadata"]["anila_stream"]["state"] == "reserved"
+
+    conv = client.get(f"/api/conversations/{cid}", headers=headers).json()
+    # leaf 落在助理列上 —— 不是使用者訊息。這一行就是整條路徑的重點。
+    assert conv["active_leaf_message_id"] == body["assistant"]["id"]
+
+
+def test_edit_and_reask_survives_a_midstream_follow_up(client, db):
+    """完整重演事故序列，斷言沒有任何答案落單。"""
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    first = _turn(client, headers, cid, "ER1 原問題", writer="w-er1-token").json()
+    client.put(
+        f"/api/conversations/{cid}/messages/{first['assistant']['id']}",
+        json={
+            "content": "原問題的答案",
+            "stream_writer": "w-er1-token",
+            "metadata": {"anila_stream": {"state": "complete"}},
+        },
+        headers=headers,
+    )
+
+    # 編輯重問：使用者訊息分支 ＋ 助理列預留，一個交易。
+    edited = _branch_turn(
+        client, headers, cid, first["user"]["id"], "ER2 編輯後的問題",
+        writer="w-er2-token",
+    ).json()
+
+    # 串流還在跑，使用者插話（不帶 parent_id，走預設 leaf 解析）。
+    follow_up = _turn(client, headers, cid, "ER3 插話", writer="w-er3-token").json()
+    assert follow_up["user"]["parent_id"] == edited["assistant"]["id"], (
+        "插話必須掛在預留的助理列底下，不是掛在編輯後的問題底下"
+    )
+
+    # 編輯後那題的答案現在寫得回去 —— 這正是原本 400 消失的那一則。
+    put = client.put(
+        f"/api/conversations/{cid}/messages/{edited['assistant']['id']}",
+        json={
+            "content": "編輯後那題的答案",
+            "stream_writer": "w-er2-token",
+            "metadata": {"anila_stream": {"state": "complete"}},
+        },
+        headers=headers,
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["content"] == "編輯後那題的答案"
+
+    tree = _tree(client, headers, cid)
+    assert _unanswered_user_messages(tree) == []
+    # 沒有 user → user 這種邊。
+    roles = {mid: role for mid, role, _p in tree}
+    for _mid, role, parent in tree:
+        if role == "user" and parent is not None:
+            assert roles[parent] != "user"
+
+
+def test_branch_turn_refuses_an_assistant_target(client, db):
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    first = _turn(client, headers, cid, "問題", writer="w-a-token-x").json()
+    resp = _branch_turn(client, headers, cid, first["assistant"]["id"], "亂分支")
+    assert resp.status_code == 400
+    assert "使用者訊息" in resp.json()["detail"]
+
+
+def test_branch_turn_requires_a_writer_token(client, db):
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    first = _turn(client, headers, cid, "問題", writer="w-a-token-x").json()
+    resp = client.post(
+        f"/api/conversations/{cid}/messages/{first['user']['id']}/branch-turn",
+        json={"content": "編輯後", "stream_writer": ""},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+
+
+def test_branch_turn_on_a_foreign_conversation_is_404(client, db):
+    _user, headers = _auth(client, db, username="bt_owner")
+    cid = _create_conv(client, headers)["id"]
+    first = _turn(client, headers, cid, "問題", writer="w-a-token-x").json()
+    _other, other_headers = _auth(client, db, username="bt_stranger")
+    resp = _branch_turn(client, other_headers, cid, first["user"]["id"], "偷改")
+    assert resp.status_code == 404
+
+
+def test_branch_turn_is_still_refused_on_an_anilalm_conversation(client, db):
+    """ANILALM 不支援分支 —— 新端點不得是那條規則的後門。"""
+    _user, headers = _auth(client, db)
+    cid = _anilalm_conv(client, headers, db)
+    first = _turn(client, headers, cid, "問題", writer="w-a-token-x").json()
+    resp = _branch_turn(client, headers, cid, first["user"]["id"], "編輯後")
+    # _require_branchable 的既有回應碼是 409，與 POST /branch 一致。
+    assert resp.status_code == 409, resp.text
+
+
+# ── 卡住的預留列：使用者的出口 ───────────────────────────────────────────────
+
+def test_a_stuck_reserved_row_can_still_be_answered_by_branching(client, db):
+    """孤兒 reserved 列寫不進去（409），但重新產生走得通。
+
+    這是 UI 上「重新產生」那顆按鈕背後的伺服器行為：在同一則使用者訊息底下
+    長出一列新的助理訊息，完全不去動卡住的那一列。conversation_service.py
+    開頭的已知缺陷區塊記的就是這條出口。
+    """
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    body = _turn(client, headers, cid, "問題", writer="w-dead-tab").json()
+    stuck_id = body["assistant"]["id"]
+
+    # 分頁被殺掉，權杖跟著消失：這一列從此寫不進去。
+    blocked = client.put(
+        f"/api/conversations/{cid}/messages/{stuck_id}",
+        json={"content": "接手寫"},
+        headers=headers,
+    )
+    assert blocked.status_code == 409
+
+    # 出口：branch 一列新的助理訊息（同層角色一致）。
+    fresh = client.post(
+        f"/api/conversations/{cid}/messages/{stuck_id}/branch",
+        json={"role": "assistant", "content": "重新產生的答案"},
+        headers=headers,
+    )
+    assert fresh.status_code == 201, fresh.text
+    assert fresh.json()["parent_id"] == body["user"]["id"]
+
+    conv = client.get(f"/api/conversations/{cid}", headers=headers).json()
+    assert conv["active_leaf_message_id"] == fresh.json()["id"]
+    # active path 走新的那一列，空白的那一列留在樹上當兄弟。
+    assert [m["id"] for m in conv["messages"]] == [
+        body["user"]["id"], fresh.json()["id"],
+    ]
+
+    # 另一條出口確實存在：整棵子樹刪得掉（沒有 writer 閘門）。
+    gone = client.delete(
+        f"/api/conversations/{cid}/messages/{stuck_id}", headers=headers,
+    )
+    assert gone.status_code == 200, gone.text
