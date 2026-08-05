@@ -43,7 +43,13 @@
                 </span>
               </div>
             </td>
-            <td><TermBadge :variant="link.is_active ? 'ok' : 'danger'" dot>{{ link.is_active ? '啟用' : '停用' }}</TermBadge></td>
+            <td>
+              <TermBadge :variant="link.is_active ? 'ok' : 'danger'" dot>{{ link.is_active ? '啟用' : '停用' }}</TermBadge>
+              <!-- 閘門關著的服務**留在表上**（拿掉整列 = 管理員管不動它），只標出來。 -->
+              <TermBadge v-if="isReleaseGateClosedFor(link)" variant="danger" :title="RELEASE_GATE_HINT">
+                {{ RELEASE_GATE_BADGE }}
+              </TermBadge>
+            </td>
             <td>
               <div class="row-actions">
                 <button class="term-action" @click="openEditModal(link)">編輯</button>
@@ -210,7 +216,9 @@ import {
   LAUNCH_MODES, CLASSIFICATION_LEVELS, launchModeLabel, configSourceBadge,
   stickyEditableFields, isFieldLocked, normalizeService,
 } from '../utils/serviceRegistry'
-import { filterPlatformLinksForRelease } from '../utils/anilalmReleaseGate'
+import {
+  isReleaseGateClosedFor, RELEASE_GATE_BADGE, RELEASE_GATE_HINT,
+} from '../utils/anilalmReleaseGate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
@@ -311,10 +319,12 @@ async function fetchLinks() {
         throw e
       }
     }
-    // ANILA LM release gate：關閉時服務登記亦不顯示該入口。
-    links.value = filterPlatformLinksForRelease(
-      (Array.isArray(data) ? data : (data?.services || data?.data || [])).map(normalizeService),
-    )
+    // ANILA LM release gate：這裡是**管理面**，關著的服務照列、標「未開放」。
+    // 後端已經把它從使用者面清單濾掉了（app/services/anilalm_release_gate.py），
+    // 這一頁用 include_inactive=true 取的正是管理清單，不再重複前端過濾——
+    // 前端過濾會連編輯／停用／刪除按鈕一起拿走。
+    links.value = (Array.isArray(data) ? data : (data?.services || data?.data || []))
+      .map(normalizeService)
   } catch (e) {
     pageError.value = e.response?.data?.detail || '載入服務清單失敗'
   }
