@@ -19,6 +19,31 @@ import { ConfirmProvider } from "../../confirm.jsx";
 import { createFakeBackend } from "./fakeBackend.js";
 
 /**
+ * 登入之後瀏覽器裡真的會有的那個 CSRF token。
+ * 真環境由 `/api/auth/login` 的 Set-Cookie 帶下來(non-httpOnly,SPA 讀得到)。
+ */
+export const TEST_CSRF_TOKEN = "test-csrf-token-9f3a";
+export const CSRF_COOKIE = "anila_csrf";
+export const ACCESS_COOKIE = "anila_access_token";
+
+/**
+ * 種下登入後的兩個 cookie。
+ *
+ * `anila_access_token` 在真環境是 httpOnly(JS 讀不到),但 CSRF 中介層
+ * 是看「有沒有這個 cookie」來決定要不要檢查 —— jsdom 沒有 httpOnly 的
+ * 概念,所以這裡種一個佔位值,讓假後端能重現同一個判斷。
+ */
+export function seedSessionCookies(csrfToken = TEST_CSRF_TOKEN) {
+  document.cookie = `${ACCESS_COOKIE}=cookie-session-placeholder; path=/`;
+  document.cookie = `${CSRF_COOKIE}=${csrfToken}; path=/`;
+}
+
+/** 清掉某個 cookie(jsdom 只認「過期」這一招)。 */
+export function clearCookie(name) {
+  document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+}
+
+/**
  * 掛載 orchestrator,等到 composer 出現(= 登入態已就緒、首批載入結束)。
  *
  * @param {object} [opts]
@@ -26,6 +51,9 @@ import { createFakeBackend } from "./fakeBackend.js";
  * @returns {Promise<{ backend, ...RenderResult }>}
  */
 export async function mountOrchestrator({ backend, ...backendOptions } = {}) {
+  // cookie 要先種再 render:`AuthProvider` 一掛上就打 `/api/auth/me`,
+  // 而假後端的 CSRF 中介層和真的一樣看 cookie。
+  seedSessionCookies();
   const be = backend || createFakeBackend(backendOptions);
   vi.stubGlobal("fetch", vi.fn(be.fetch));
 

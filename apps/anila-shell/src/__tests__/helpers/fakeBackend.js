@@ -10,8 +10,62 @@
 // 這個假後端是**有狀態**的:訊息樹(parent_id / sibling_*)、active leaf、
 // 對話列表都真的維護。因為「多輪之後歷史還是對的」這件事,只有在後端
 // 會回覆連貫的 id 時才驗得出來。
+//
+// ⚠ **假後端最大的風險是「和真後端往同一個方向錯」** —— 那種假後端證明
+// 不了任何事,而且會在真後端改變之後繼續全綠。所以凡是這裡模擬的行為,
+// 都必須註明它對應真後端的哪一段,並在改動時重新量過。
+// 已對齊的項目與量測記錄見 `src/__tests__/README.md` 的〈假後端對真度稽核〉。
 
 const encoder = new TextEncoder();
+
+// ---- 真後端行為常數(2026-08-05 對活體 CSP 量過) ---------------------------
+//
+// 來源:`services/csp/app/middleware/csrf.py`。活體量測(帶 session cookie、
+// 不帶 header 打 POST /api/conversations)回 403 與下面這段 detail;帶了
+// 相符的 header 就穿過中介層(接著才是 401 權杖問題)。
+//
+// 少了這一段強制,把 `X-CSRF-Token` 從 runtime/api.js、runtime/sse.js 或
+// runtime/tasks.js 刪掉,整套測試照樣全綠——而瀏覽器裡每一次送出都 403。
+const CSRF_COOKIE_NAME = "anila_csrf";
+const ACCESS_COOKIE_NAME = "anila_access_token";
+const CSRF_HEADER_NAME = "x-csrf-token";
+const CSRF_FAILURE_DETAIL = "CSRF 驗證失敗，請重新登入";
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+/** 與 csrf.py 的 `_EXEMPT_PREFIXES` 逐條對齊。 */
+const CSRF_EXEMPT_PREFIXES = [
+  "/api/auth/login",
+  "/api/auth/register",
+  "/api/auth/providers",
+  "/api/auth/oidc/",
+  "/health",
+  "/docs",
+  "/openapi.json",
+  "/static/",
+];
+
+/** 讀 jsdom 的 document.cookie。沒有 document(node 環境)一律回 null。 */
+function readCookie(name) {
+  if (typeof document === "undefined") return null;
+  const raw = String(document.cookie || "");
+  const match = raw.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+/**
+ * 取請求標頭(大小寫不敏感,HTTP 標頭本來就是)。
+ * `init.headers` 在本專案的呼叫端一律是純物件,但 Headers 也一併支援。
+ */
+export function headerValue(recordOrInit, name) {
+  const init = recordOrInit?.init ?? recordOrInit;
+  const headers = init?.headers;
+  if (!headers) return undefined;
+  if (typeof headers.get === "function") return headers.get(name) ?? undefined;
+  const lower = String(name).toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (String(key).toLowerCase() === lower) return value;
+  }
+  return undefined;
+}
 
 // ---- SSE frame 組裝 --------------------------------------------------------
 
@@ -35,13 +89,48 @@ export function doneFrame() {
 }
 
 /**
+ * 真後端保證會出現的 `anila.meta` 骨架。
+ *
+ * 欄位與 `services/csp/app/services/proxy/service.py` 的
+ * `build_default_anila_meta()` 逐項對齊。**這個 frame 不是選配的**:
+ * proxy_stream 在下游沒送 meta 時會自己補一個(`if not meta_seen`),
+ * 而且刻意排在 `[DONE]` 之前(`pending_done_block` 延後 yield)。
+ */
+export function defaultMeta(overrides = {}) {
+  return {
+    trace_id: `trace-${Date.now()}`,
+    trace: [
+      {
+        kind: "call",
+        label: "呼叫 示範助手",
+        detail: "示範助手 (串流)",
+        status: "ok",
+      },
+    ],
+    citations: [],
+    confidence: null,
+    handoff_chain: [],
+    follow_ups: [],
+    latency_ms: 120,
+    classified: false,
+    usage: null,
+    ...overrides,
+  };
+}
+
+/**
  * 把一段回答拆成數個 delta frame,後面接 meta 與 [DONE]。
  * `chunks` 讓測試可以驗「串到一半」的中間狀態。
+ *
+ * ⚠ meta frame **一定會送**(即使測試沒指定),因為真後端一定會送。
+ * 之前只在測試指定時才送,結果 app.jsx 的 `applyMeta` 整條路徑在所有
+ * orchestrator 測試裡都沒被執行過 —— 那是假後端往「比真後端寬鬆」的
+ * 方向漂移,會讓 meta 相關的壞掉完全測不到。
  */
 export function scriptAnswer(text, { meta = null, chunks = null } = {}) {
   const parts = Array.isArray(chunks) ? chunks : [text];
   const frames = parts.map((p) => deltaFrame(p));
-  if (meta) frames.push(metaFrame(meta));
+  frames.push(metaFrame(defaultMeta(meta || {})));
   frames.push(doneFrame());
   return frames;
 }
@@ -180,12 +269,16 @@ export const DEFAULT_AGENTS = [
  * @param {Array}  [options.agents]        `/v1/agents` 回的 agent 列
  * @param {Array}  [options.conversations] 初始對話列(server row 形狀)
  * @param {object} [options.user]          `/api/auth/me` 回的使用者
+ * @param {boolean} [options.enforceCsrf]  是否強制 double-submit CSRF(預設 true)
  */
 export function createFakeBackend(options = {}) {
   const {
     agents = DEFAULT_AGENTS,
     conversations: initialConversations = [],
     user = { id: 1, username: "tester", display_name: "測試使用者" },
+    // 預設就強制 —— 「假後端比真後端寬鬆」正是讓 transport 層的壞掉
+    // 全程隱形的原因。要關掉必須在測試裡明說,而且要寫清楚為什麼。
+    enforceCsrf = true,
   } = options;
 
   /** 每一個真的打出去的請求。 */
@@ -270,6 +363,28 @@ export function createFakeBackend(options = {}) {
     return { path, query };
   }
 
+  /**
+   * double-submit CSRF —— 逐條照抄 `csrf.py` 的 `_should_skip` + `dispatch`。
+   * 回傳 403 response 代表擋下,回傳 null 代表放行。
+   */
+  function csrfRejection({ method, path, init }) {
+    if (SAFE_METHODS.has(method)) return null;
+    if (CSRF_EXEMPT_PREFIXES.some((prefix) => path.startsWith(prefix))) return null;
+    // Bearer 認證的請求不是 cookie 認證,不受 CSRF 影響。
+    if (String(headerValue(init, "authorization") || "").startsWith("Bearer ")) {
+      return null;
+    }
+    // 沒有 session cookie → 沒有東西可以被劫持,中介層放行讓下游回 401。
+    if (!readCookie(ACCESS_COOKIE_NAME)) return null;
+
+    const cookieToken = readCookie(CSRF_COOKIE_NAME);
+    const headerToken = headerValue(init, CSRF_HEADER_NAME);
+    if (!cookieToken || !headerToken || cookieToken !== headerToken) {
+      return errorResponse(403, CSRF_FAILURE_DETAIL);
+    }
+    return null;
+  }
+
   function takeStreamScript() {
     if (streamQueue.length > 0) return streamQueue.shift();
     return { frames: scriptAnswer(defaultAnswer) };
@@ -286,6 +401,17 @@ export function createFakeBackend(options = {}) {
     if (path === "/v1/agents") return jsonResponse({ data: agents });
 
     if (path === "/v1/chat/completions" && method === "POST") {
+      // `X-ANILA-Conversation-Id` 是伺服器唯一知道「這一輪屬於哪個對話」的
+      // 依據(proxy.py `_coerce_conversation_id` → `_require_conversation_access`
+      // → 記憶寫入 / 附件注入 / classified latch)。可轉成整數卻不是呼叫者
+      // 的對話 → 404;不可轉成整數 → 視同沒帶(真後端也是這樣降級)。
+      const rawConvHeader = headerValue(init, "X-ANILA-Conversation-Id");
+      if (rawConvHeader != null && rawConvHeader !== "") {
+        const asInt = Number(rawConvHeader);
+        if (Number.isInteger(asInt) && !convs.has(asInt)) {
+          return errorResponse(404, "Conversation not found");
+        }
+      }
       // stream:false 是標題產生器,不是對話回合 — 不記進 chatPayloads,
       // 否則「第 N 回合送了什麼歷史」的斷言會被標題呼叫汙染。
       // 標題回傳「摘要-<使用者原句>」,讓多個對話在側邊欄可以被分辨出來。
@@ -310,8 +436,9 @@ export function createFakeBackend(options = {}) {
     }
 
     // ---- 控制面 ----
+    // 201 而非 200:`app/modules/tasks/router.py:41` 是 status_code=201。
     if (path === "/api/tasks" && method === "POST") {
-      return jsonResponse({ id: 900, trace_id: "trace-900" });
+      return jsonResponse({ id: 900, trace_id: "trace-900" }, 201);
     }
     if (path === "/api/message-actions/visible") return jsonResponse([]);
     if (path === "/api/banners/active") return jsonResponse([]);
@@ -342,7 +469,8 @@ export function createFakeBackend(options = {}) {
       convs.set(id, row);
       msgsByConv.set(id, []);
       activeLeafByConv.set(id, null);
-      return jsonResponse(row);
+      // 201:`app/api/conversations.py:410` 是 status_code=201。
+      return jsonResponse(row, 201);
     }
 
     const convMatch = path.match(/^\/api\/conversations\/(\d+)$/);
@@ -377,7 +505,8 @@ export function createFakeBackend(options = {}) {
         body.parent_id !== undefined && body.parent_id !== null
           ? body.parent_id
           : activeLeafByConv.get(convId) ?? (list.at(-1)?.id ?? null);
-      return jsonResponse(makeMessage(convId, body, { parentId }));
+      // 201:`app/api/conversations.py:668` 是 status_code=201。
+      return jsonResponse(makeMessage(convId, body, { parentId }), 201);
     }
 
     const branchMatch = path.match(
@@ -389,8 +518,10 @@ export function createFakeBackend(options = {}) {
       const list = msgsByConv.get(convId) || [];
       const target = list.find((m) => m.id === targetId);
       if (!target) return errorResponse(404, "找不到訊息");
+      // 201:`app/api/conversations.py:699` 是 status_code=201。
       return jsonResponse(
         makeMessage(convId, body, { parentId: target.parent_id }),
+        201,
       );
     }
 
@@ -428,6 +559,11 @@ export function createFakeBackend(options = {}) {
     }
     const record = { method, url: String(url), path, query, body, init };
     requests.push(record);
+
+    // CSRF 中介層先於任何路由 —— 真後端也是(Starlette middleware 在
+    // router 之前)。所以它連被 `route()` 覆寫的端點都擋得到。
+    const rejected = enforceCsrf && csrfRejection(record);
+    if (rejected) return rejected;
 
     for (const o of overrides) {
       if (o.method && o.method !== method) continue;
@@ -522,6 +658,17 @@ export function createFakeBackend(options = {}) {
     /** 假後端目前存下來的訊息(用來驗「真的存進去了」)。 */
     storedMessages(convId) {
       return [...(msgsByConv.get(convId) || [])];
+    },
+
+    /** 假後端目前有的對話 id(伺服器端真值,不是 app 的暫態 id)。 */
+    conversationIds() {
+      return [...convs.keys()];
+    },
+
+    /** 某個對話目前的伺服器列(用來驗 latch / 標題之類的落庫結果)。 */
+    storedConversation(convId) {
+      const row = convs.get(convId);
+      return row ? { ...row } : null;
     },
   };
 }

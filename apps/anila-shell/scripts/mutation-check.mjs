@@ -5,33 +5,54 @@
 //   node scripts/mutation-check.mjs            # 全部突變
 //   node scripts/mutation-check.mjs history-*  # 只跑符合的
 //   node scripts/mutation-check.mjs --list
+//   node scripts/mutation-check.mjs --check-anchors  # 只驗錨點,不跑測試
+//   node scripts/mutation-check.mjs --restore        # 只修上一輪中止的殘留
 //
 // 每一個突變都做同一件事:
-//   1. 確認乾淨狀態下目標測試是綠的
+//   1. 確認乾淨狀態下**兩組**測試都是綠的
 //   2. 把 `find` 換成 `replace`(必須剛好命中一次,否則報錯離開)
-//   3. 跑**新的 orchestrator 測試**與**改動前就存在的測試**兩組
-//   4. 還原檔案,再確認回到綠
+//   3. 跑**新寫的行為測試**與**改動前就存在的測試**兩組
+//   4. 還原檔案,再確認**兩組**都回到綠 —— 這同時就是下一個突變的前置狀態
+//
+// 為什麼第 4 步要驗**兩組**而不只是新測試:整份報告最有價值的那個數字是
+// 「既有測試只抓到 N 個」。如果某條既有測試在突變**之前**就已經是紅的,
+// 「被突變殺掉」和「本來就壞著」在結果裡長得一模一樣,那個數字就沒有意義。
+// 所以每一個突變都必須從一個**已知全綠**的狀態出發,而不是假設它是。
 //
 // 設計約束:每個突變都**保留所有識別字**。改的是運算子、索引、
 // 屬性名這種東西,所以「grep 原始碼有沒有這個字」的測試救不了你。
 // 至少要有一個是「刪掉一個賦值 / 讓存取器回空值」那一型 —— 那正是
 // 既有測試全綠、產品卻送出零歷史的那一型。
 //
+// ── 無法從這個 harness 觸及的形狀(刻意留白,不是忘了)──────────────
+//
+// * `runtime/api.js` 的 `authMultipart`(附件上傳自己組的第三份 CSRF):
+//   從掛起來的 shell 觸發需要走完檔案挑選 → 上傳的 UI 流程,jsdom 下的
+//   FormData/File 行為和瀏覽器差太多,做出來的會是在測 harness。
+//   已由 `wt/shell-reserve` 的 `csrfHeaders.test.js` 在函式層面收掉;
+//   兩個分支合併後這一格才會有守衛。**在本分支單獨跑會存活**,所以
+//   不列進清單 —— 列了就是報一個假的紅。
+// * `runtime/sse.js` 的 `streamSessionAnswer`:`app.jsx` 目前沒有任何
+//   呼叫端(全樹 grep 只有定義與註解),掛起來的 shell 走不到。
+//   改用直接呼叫的 `transportSessionAnswer.test.js` 收,突變照列。
+//
 // 離開碼:任何一個突變存活(該紅卻沒紅)= 1。
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 const ROOT = process.cwd();
 
-// 新寫的 orchestrator 行為測試。
-const NEW_TESTS = ["src/__tests__/orchestrator"];
+// 這個工作包新寫的行為測試(orchestrator 掛載 + transport 標頭)。
+const NEW_TESTS = ["src/__tests__/orchestrator", "src/__tests__/transport"];
 // 這個工作包之前就存在的測試(用來量「舊套件漏了什麼」)。
 const PRE_EXISTING_EXCLUDES = [
   "**/node_modules/**",
   "**/*.node.test.mjs",
   "**/orchestrator*.test.jsx",
+  "**/transport*.test.*",
+  "**/__tests__/guards/**",
   "**/sourceTextGuardRegistry.test.js",
 ];
 
@@ -195,6 +216,92 @@ const MUTATIONS = [
     find: '          if (typeof assistantMsg.dbId === "number") {',
     replace: '          if (typeof assistantMsg.dbId === "string") {',
   },
+
+  // ── transport:請求離開瀏覽器之前 ─────────────────────────────────
+  //
+  // 上面每一個突變都落在「請求送出之後」。這一區補的是**送出之前**那一格:
+  // 標頭沒掛上去。它是本清單原本整個缺掉的象限,而缺掉的原因很典型 ——
+  // 清單繼承了作者對「什麼會壞」的想像。實測過的後果:把 `X-CSRF-Token`
+  // 從 api.js 或 sse.js 刪掉,兩套測試全綠,瀏覽器裡每一次送出都 403
+  // (帶 cookie 不帶 header 打 POST /api/conversations → 403;帶了 → 201)。
+  //
+  // CSRF 的組裝在 shell 裡有**五份**,分別在三個檔;修好一份不會連帶
+  // 修好其他四份,所以每一份都要有自己的突變。
+  {
+    id: "csrf-missing-on-control-plane",
+    file: "src/runtime/api.js",
+    shape: "標頭沒掛上去",
+    intent: "控制面每一個 unsafe 請求都不帶 CSRF（送出/編輯/重試全部 403）",
+    find:
+      "    const csrf = readCsrfCookie();\n" +
+      '    if (csrf && !out["X-CSRF-Token"] && !out["x-csrf-token"]) {',
+    replace:
+      "    const csrf = readCsrfCookie();\n" +
+      '    if (!csrf && !out["X-CSRF-Token"] && !out["x-csrf-token"]) {',
+  },
+  {
+    id: "csrf-missing-on-stream",
+    file: "src/runtime/sse.js",
+    shape: "標頭沒掛上去",
+    intent: "串流請求不帶 CSRF（模型呼叫全部 403，聊天完全不能用）",
+    // 同一行在 sse.js 出現兩次（streamChatCompletion 與 streamSessionAnswer），
+    // 用後面那段註解鎖定前者。
+    find:
+      '    if (match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);\n' +
+      "  }\n" +
+      "  // Surface the conversation id to CSP so server-side latches",
+    replace:
+      '    if (!match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);\n' +
+      "  }\n" +
+      "  // Surface the conversation id to CSP so server-side latches",
+  },
+  {
+    id: "csrf-missing-on-session-answer",
+    file: "src/runtime/sse.js",
+    shape: "標頭沒掛上去",
+    intent: "續答（interrupt resume）不帶 CSRF，而且它自己抄了一份邏輯",
+    find:
+      '    if (match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);\n' +
+      "  }\n" +
+      "\n" +
+      "  const url = `${(routerBaseUrl || \"\").replace(/\\/$/, \"\")}/v1/sessions/${encodeURIComponent(",
+    replace:
+      '    if (!match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);\n' +
+      "  }\n" +
+      "\n" +
+      "  const url = `${(routerBaseUrl || \"\").replace(/\\/$/, \"\")}/v1/sessions/${encodeURIComponent(",
+  },
+  {
+    id: "csrf-missing-on-task-create",
+    file: "src/runtime/tasks.js",
+    shape: "標頭沒掛上去（靜默降級）",
+    intent: "建立 Task 403，而它的失敗契約是靜默回 null —— 用量從此掛不回任務",
+    find:
+      "    const csrf = readCsrfCookie();\n" +
+      '    if (csrf) headers["X-CSRF-Token"] = csrf;',
+    replace:
+      "    const csrf = readCsrfCookie();\n" +
+      '    if (!csrf) headers["X-CSRF-Token"] = csrf;',
+  },
+  {
+    id: "conversation-id-header-not-attached",
+    file: "src/runtime/sse.js",
+    shape: "標頭沒掛上去（靜默 no-op）",
+    intent: "這一輪不再告訴伺服器屬於哪個對話（機敏 latch、記憶寫入、附件注入全部靜悄悄地不作用）",
+    find: '  if (typeof conversationId === "number") {',
+    replace: '  if (typeof conversationId === "string") {',
+  },
+  {
+    id: "task-id-header-not-attached",
+    file: "src/runtime/sse.js",
+    shape: "標頭沒掛上去（靜默 no-op）",
+    intent: "這一輪不再掛回 Task（用量記錄與任務脫鉤，畫面上完全看不出來）",
+    // 兩個條件同時反轉 = 恆偽,標頭從此不掛。只反轉第一個的話,taskId 不存在
+    // 時反而會掛上一個字面上的 "undefined",那是另一種壞法,會把「沒掛上去」
+    // 和「掛錯值」兩件事混在同一個突變裡。
+    find: '  if (taskId !== undefined && taskId !== null && taskId !== "") {',
+    replace: '  if (taskId === undefined && taskId === null && taskId !== "") {',
+  },
 ];
 
 // ---- 執行 ------------------------------------------------------------------
@@ -209,6 +316,15 @@ function runVitest(args) {
     });
     return { green: true, out };
   } catch (err) {
+    // 互動式 Ctrl-C 送給整個 process group,`npx vitest` 也會收到 —— 子行程
+    // 被 SIGINT/SIGTERM 打死是我們唯一能即時知道「使用者要停」的可靠訊號
+    // (送給本行程的那一份會被 execFileSync 吃掉,見上面的說明)。
+    // 這時候絕不能把它當成「測試紅了」記進結果,那會變成一個假的「抓到」。
+    if (err.signal === "SIGINT" || err.signal === "SIGTERM") {
+      console.error(`\n測試行程被 ${err.signal} 中止,還原被突變的檔案後離開。`);
+      restoreAll();
+      process.exit(130);
+    }
     return { green: false, out: `${err.stdout || ""}${err.stderr || ""}` };
   }
 }
@@ -222,6 +338,99 @@ function summarise(out) {
   return m ? m[1].trim() : "（無法解析）";
 }
 
+// ---- 中途中止的還原 --------------------------------------------------------
+//
+// 這個腳本會把 production 檔案改壞再改回來。中途被打斷而沒有還原,工作目錄
+// 就留著一個改壞的檔案**而且不吭聲** —— 下一個人會以為那是別人寫的碼。
+// 2e082489 的版本就是這樣:Ctrl-C 之後 app.jsx 停在
+// `messagesByConv[convId] && []`,git status 只說「M app.jsx」。
+//
+// ⚠ 量到的事實(2026-08-05,node v22.23.1):**在 `execFileSync` 阻塞期間送到
+// 本行程的 SIGINT 會被整個吃掉** —— `process.on("SIGINT")` 的處理器完全不會
+// 觸發,而且因為註冊了處理器,連 node 預設的「收到就死」也一併失效。
+// 這個腳本 99% 的時間都卡在 `execFileSync` 裡,所以**光靠訊號處理器等於沒做**。
+// (最小重現:`process.on("SIGINT",…)` + `execFileSync("sleep",["4"])`,
+//  期間 `kill -INT` → 處理器不觸發、離開碼 0。)
+//
+// 所以真正扛住的是另外兩層:
+//
+//   1. **落一份還原日誌**。改壞之前先把原始內容寫到 node_modules/.cache 下,
+//      還原成功才刪掉。下一次啟動看到日誌就先把樹修回去並大聲說出來 ——
+//      連 `kill -9` 都救得回來,因為它不依賴本行程還活著。
+//   2. **看子行程是怎麼死的**。互動式 Ctrl-C 送給的是整個 process group,
+//      `npx vitest` 也會收到;`execFileSync` 因此丟出 `signal === "SIGINT"`。
+//      那是我們唯一能即時、可靠地知道「使用者按了 Ctrl-C」的訊號。
+//
+// 訊號處理器仍然留著,但它只在事件迴圈有空的那些短暫縫隙有用,不是主力。
+
+/** @type {Map<string, string>} 路徑 → 原始內容 */
+const pendingRestores = new Map();
+
+// 放 node_modules/.cache 下:那裡一定在 .gitignore 裡,不會有人不小心 commit
+// 一份 production 原始碼的副本進 PUBLIC repo。
+const JOURNAL = resolve(ROOT, "node_modules/.cache/anila-mutation-check.json");
+
+function writeJournal() {
+  mkdirSync(dirname(JOURNAL), { recursive: true });
+  writeFileSync(
+    JOURNAL,
+    JSON.stringify({ at: new Date().toISOString(), files: [...pendingRestores] }, null, 2),
+    "utf8",
+  );
+}
+
+function clearJournal() {
+  if (existsSync(JOURNAL)) rmSync(JOURNAL, { force: true });
+}
+
+function restoreAll() {
+  for (const [path, original] of pendingRestores) {
+    writeFileSync(path, original, "utf8");
+  }
+  pendingRestores.clear();
+  clearJournal();
+}
+
+/** 啟動時把上一輪沒還原完的東西修回去。回傳修了幾個檔。 */
+function recoverFromJournal() {
+  if (!existsSync(JOURNAL)) return 0;
+  let entry;
+  try {
+    entry = JSON.parse(readFileSync(JOURNAL, "utf8"));
+  } catch {
+    console.error(`還原日誌 ${JOURNAL} 讀不動 —— 請自己確認工作目錄狀態。`);
+    return -1;
+  }
+  const files = entry.files || [];
+  for (const [path, original] of files) {
+    if (readFileSync(path, "utf8") !== original) writeFileSync(path, original, "utf8");
+  }
+  clearJournal();
+  if (files.length > 0) {
+    console.error(
+      `⚠ 上一輪(${entry.at})中途中止,已把 ${files.length} 個檔案還原:\n` +
+        files.map(([p]) => `    ${p}`).join("\n"),
+    );
+  }
+  return files.length;
+}
+
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    if (pendingRestores.size > 0) {
+      console.error(`\n收到 ${signal},還原 ${pendingRestores.size} 個被突變的檔案…`);
+      restoreAll();
+    }
+    process.exit(130);
+  });
+}
+// 未捕捉的例外同樣不能把改壞的檔案留在原地。
+process.on("uncaughtException", (err) => {
+  restoreAll();
+  console.error(err);
+  process.exit(2);
+});
+
 function applyMutation(mut) {
   const path = resolve(ROOT, mut.file);
   const original = readFileSync(path, "utf8");
@@ -232,16 +441,56 @@ function applyMutation(mut) {
         `原始碼可能已改動，請更新 scripts/mutation-check.mjs。`,
     );
   }
-  writeFileSync(path, original.replace(mut.find, mut.replace), "utf8");
-  return () => writeFileSync(path, original, "utf8");
+  const mutated = original.replace(mut.find, mut.replace);
+  if (mutated === original) {
+    throw new Error(
+      `突變 ${mut.id}: find 與 replace 產生完全相同的內容 —— 這不是突變。`,
+    );
+  }
+  // 先落日誌再改檔 —— 順序反過來的話,兩者之間被 kill -9 就沒人知道要修什麼。
+  pendingRestores.set(path, original);
+  writeJournal();
+  writeFileSync(path, mutated, "utf8");
+  return () => {
+    writeFileSync(path, original, "utf8");
+    pendingRestores.delete(path);
+    if (pendingRestores.size === 0) clearJournal();
+    else writeJournal();
+  };
 }
 
 function main() {
   const argv = process.argv.slice(2);
+  // 任何模式(含 --list / --check-anchors)都先修上一輪的殘留 —— 沒有比
+  // 「在一個被上一輪改壞的樹上驗錨點」更會誤導人的事。
+  if (recoverFromJournal() < 0) return 2;
+  if (argv.includes("--restore")) {
+    console.log("還原日誌已處理完畢。");
+    return 0;
+  }
   if (argv.includes("--list")) {
     for (const m of MUTATIONS) console.log(`${m.id}\t${m.file}\t${m.intent}`);
     return 0;
   }
+  if (argv.includes("--check-anchors")) {
+    // 不跑測試,只驗每個錨點在目標檔剛好命中一次、而且 replace 真的不同。
+    // 原始碼一動就會有錨點漂掉,這個模式讓那件事在幾毫秒內被說出來,
+    // 而不是在跑到第 17 個突變時才炸。
+    let bad = 0;
+    for (const mut of MUTATIONS) {
+      const body = readFileSync(resolve(ROOT, mut.file), "utf8");
+      const hits = body.split(mut.find).length - 1;
+      const noop = body.replace(mut.find, mut.replace) === body;
+      const ok = hits === 1 && !noop;
+      if (!ok) bad += 1;
+      console.log(
+        `${ok ? "ok  " : "BAD "} ${mut.id}\t命中 ${hits} 處${noop ? "、且 replace 與原文相同" : ""}`,
+      );
+    }
+    console.log(`\n${MUTATIONS.length - bad} / ${MUTATIONS.length} 個錨點唯一且非空操作。`);
+    return bad === 0 ? 0 : 2;
+  }
+
   const patterns = argv.filter((a) => !a.startsWith("--"));
   const selected = patterns.length
     ? MUTATIONS.filter((m) =>
@@ -256,16 +505,28 @@ function main() {
     return 2;
   }
 
-  console.log("== 前置:確認未突變時是綠的 ==");
+  console.log("== 前置:確認未突變時兩組都是綠的 ==");
   const baseNew = runNew();
   if (!baseNew.green) {
     console.error("新測試在乾淨狀態下就是紅的，先修好再跑突變檢查。");
     console.error(baseNew.out.slice(-3000));
     return 2;
   }
-  console.log(`  新 orchestrator 測試: ${summarise(baseNew.out)}`);
+  console.log(`  新行為測試: ${summarise(baseNew.out)}`);
   const basePre = runPreExisting();
-  console.log(`  既有測試:             ${summarise(basePre.out)}`);
+  // 這一關就是整份報告裡「既有測試只抓到 N 個」那個數字的全部價值所在。
+  // 少了它，一條本來就紅的既有測試會被算成「被這個突變殺掉」，而兩者在
+  // 輸出上長得一模一樣。基準線不綠 = 這一輪量不出東西，直接離開。
+  if (!basePre.green) {
+    console.error(
+      "既有測試在乾淨狀態下就是紅的 —— 這一輪量不出「既有測試抓到幾個」。\n" +
+        "  （紅著的既有測試在每一個突變下都會紅，會被誤記成突變被抓到。）\n" +
+        "  先讓既有測試回到綠，再跑突變檢查。",
+    );
+    console.error(basePre.out.slice(-3000));
+    return 2;
+  }
+  console.log(`  既有測試:   ${summarise(basePre.out)}`);
   console.log("");
 
   const results = [];
@@ -292,9 +553,22 @@ function main() {
     } finally {
       if (restore) restore();
     }
-    const after = runNew();
-    if (!after.green) {
-      console.error(`還原後 ${mut.id} 仍是紅的 — 工作目錄可能已污染，中止。`);
+    // 還原之後兩組都要回到綠。這既是「工作目錄沒被弄髒」的檢查，也是
+    // **下一個突變的前置綠燈** —— 每一個突變都從一個已知全綠的狀態出發，
+    // 而不是沿用一開始那次基準線的結論。
+    const afterNew = runNew();
+    if (!afterNew.green) {
+      console.error(`還原後新測試在 ${mut.id} 仍是紅的 — 工作目錄可能已污染，中止。`);
+      console.error(afterNew.out.slice(-3000));
+      return 2;
+    }
+    const afterPre = runPreExisting();
+    if (!afterPre.green) {
+      console.error(
+        `還原後既有測試在 ${mut.id} 仍是紅的 —— 後面每一個突變的「既有測試抓到」` +
+          `都會變成假的，中止。`,
+      );
+      console.error(afterPre.out.slice(-3000));
       return 2;
     }
   }
