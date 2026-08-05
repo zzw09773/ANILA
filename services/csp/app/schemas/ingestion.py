@@ -119,10 +119,14 @@ class CollectionUpdate(BaseModel):
     every existing embedding); both fields are absent here. Reindex
     happens via a future ``POST /reindex`` endpoint.
 
-    ``classification_level`` is intentionally absent — raising a
-    collection's level is a dedicated route
-    (``POST .../classification``) so ordinary updates cannot silently
-    latch or bypass the stranded-bind / document-cascade checks.
+    ``classification_level`` is **declared but always rejected** (422).
+    Raising a collection's level is a dedicated route
+    (``POST .../classification``) so ordinary updates cannot bypass the
+    stranded-bind / document-cascade checks. It is declared rather than
+    merely omitted because Pydantic's default is to *ignore* unknown
+    keys — a caller sending a new level would get 200 with the field
+    quietly dropped, which is precisely this project's worst failure
+    mode (使用者以為改了，其實沒有). Fail loudly, point at the right route.
     """
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
@@ -133,6 +137,23 @@ class CollectionUpdate(BaseModel):
         pattern="^(active|archived)$",
         description="'active' or 'archived'. Use DELETE to actually drop.",
     )
+    classification_level: str | None = Field(
+        default=None,
+        description="不接受；改用 POST /api/ingestion/collections/{id}/classification。",
+    )
+
+    @field_validator("classification_level")
+    @classmethod
+    def _reject_classification_level(cls, value: str | None) -> None:
+        # Only runs when the key is present (defaults are not validated),
+        # so an ordinary PATCH without it is unaffected.
+        raise ValueError(
+            "PATCH 不能變更知識庫密等。升密請改用 "
+            "POST /api/ingestion/collections/{id}/classification"
+            "（會檢查已綁定 agent 並級聯庫內文件）；"
+            "降級請走降密申請流程 "
+            "POST /api/classification/declassification-requests。"
+        )
 
 
 class CollectionClassificationRaise(BaseModel):

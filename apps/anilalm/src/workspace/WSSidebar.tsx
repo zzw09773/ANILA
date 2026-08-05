@@ -14,6 +14,7 @@ import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
 import { Spinner } from '../components/Spinner'
 import { formatBytes, shortName, timeAgo } from '../utils/format'
+import { INGESTION_FILE_ACCEPT } from '../utils/ingestionFileAccept'
 
 const STATUS_LABELS: Record<string, string> = {
   pending: '排隊中',
@@ -279,7 +280,7 @@ export function WSSidebar() {
           multiple
           onChange={onFiles}
           style={{ display: 'none' }}
-          accept=".pdf,.txt,.md,.docx,.html,.htm,.json"
+          accept={INGESTION_FILE_ACCEPT}
         />
         <button
           onClick={onPickFiles}

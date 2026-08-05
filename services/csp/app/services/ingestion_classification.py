@@ -14,6 +14,11 @@
 本模組的 helper 是文件密等的**唯一公開讀取入口**——禁止在呼叫端直接
 讀 ``IngestionDocument.classification_level`` 當有效密等（
 ``apply_classification`` 內部對該列做閂鎖寫入除外）。
+
+唯一的例外是 ``api/classification_inventory.py::_document_levels``：盤點
+報表要的是整表的計數，逐列呼叫本模組會變成 N+1，因此它在 SQL 端分組後
+在 Python 端折同一個 max。**它必須與本模組的規則一致**；改這裡就要一起
+改那裡（那一支的 docstring 也指回這裡，兩邊都有測試釘住）。
 """
 
 from __future__ import annotations
@@ -89,11 +94,16 @@ def cascade_raise_documents(
     collection_id: int,
     new_level: ClassificationLevel,
     actor_user_id: int,
+    commit: bool = True,
 ) -> list[int]:
     """將知識庫內低於 ``new_level`` 的文件經 ``apply_classification`` 升密。
 
-    回傳實際升級的文件 id 清單。須在知識庫本身升密**之前**呼叫，
-    避免知識庫已升、文件級聯中斷時留下「庫高於文件」的窗口。
+    回傳實際升級的文件 id 清單。
+
+    ``commit=False``（升密路由的用法）讓整批文件與知識庫本身落在同一個
+    交易裡：任何一筆炸掉就整批 rollback，不會出現「文件已閂鎖、知識庫
+    沒升」的半套狀態。閂鎖是單向的——半套狀態只能靠三方降密流程逐筆
+    撈回來，所以這裡寧可整批失敗。
     """
     from app.modules.policy import apply_classification
 
@@ -118,7 +128,32 @@ def cascade_raise_documents(
             actor_id=str(actor_user_id),
             reason="manual_admin",
             source="collection_raise",
+            commit=commit,
         )
         if event is not None:
             raised.append(int(doc.id))
     return raised
+
+
+def unreadable_classification_rows(
+    db: Session, collection_id: int
+) -> list[tuple[int, str]]:
+    """升密前置檢查：回傳儲存值無法解讀的文件 ``(id, 原始值)``。
+
+    分類欄位只有四個合法值，API 與 enum 兩層都擋得住，所以壞值只可能
+    來自繞過應用層的直接寫入（手動 SQL、外部匯入）。這種列會讓級聯在
+    半途丟 ``ValueError``；先掃一遍、整批拒絕並點名，比讓呼叫端收到
+    沒有訊息的 500、然後重試到「看起來成功」要好。
+    """
+    bad: list[tuple[int, str]] = []
+    rows = (
+        db.query(IngestionDocument.id, IngestionDocument.classification_level)
+        .filter(IngestionDocument.collection_id == collection_id)
+        .all()
+    )
+    for doc_id, stored in rows:
+        try:
+            ClassificationLevel.from_storage(stored or "無機密")
+        except ValueError:
+            bad.append((int(doc_id), str(stored)))
+    return bad

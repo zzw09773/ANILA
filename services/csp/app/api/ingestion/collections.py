@@ -44,6 +44,7 @@ from app.services.auth_service import get_current_user, is_admin_tier
 from app.services.ingestion_classification import (
     agents_bound_below_level,
     cascade_raise_documents,
+    unreadable_classification_rows,
 )
 
 router = APIRouter(tags=["Ingestion / Collections"])
@@ -316,26 +317,56 @@ def raise_collection_classification(
 
     Before writing: refuse if any bound agent is below the new level
     (name the agents; do not silently raise them). Documents below the
-    new level are cascaded via ``apply_classification`` first so a
-    document never ends up effectively less classified than its
-    collection.
+    new level are cascaded via ``apply_classification`` in the **same
+    transaction** as the collection's own latch — all-or-nothing.
+
+    Atomicity (this is the whole point of the ``commit=False`` plumbing):
+    the latch is one-way, so a half-applied raise is not a retryable
+    blip — it strands documents at a level only the three-party
+    declassification flow can undo, one document at a time, while the
+    caller sees a failure and retries into what looks like success. So
+    every write here lives in one transaction and there is exactly one
+    ``db.commit()``. Any failure rolls the whole set back.
+
+    Atomicity does **not** depend on row locking: ``apply_classification``
+    does take ``SELECT … FOR UPDATE`` (a no-op under SQLite), but what
+    makes this all-or-nothing is the single enclosing transaction.
+    Locking only narrows the concurrent-raise window, and that case is
+    handled explicitly by the ``event is None`` branch below.
+
+    Known cost of that choice: the transaction (and, under Postgres, the
+    row locks on every cascaded document) lives for the whole cascade,
+    so a raise on a very large collection is one long write transaction.
+    That is the price of not stranding documents, and this is a rare,
+    admin-triggered, non-streaming operation. If collections ever get
+    large enough for it to matter, the answer is batching with a
+    resumable record of what advanced — not going back to per-document
+    commits, which is the bug this replaced.
 
     Auth matches other collection mutations (owner or admin-tier). Not
     looser than ``create_collection`` (any authenticated user may create
-    at any level today — see recommendation in the package notes).
+    at any level today).
     """
     coll = _require_collection_access(db, current_user, collection_id)
+    # The Pydantic validator on ``CollectionClassificationRaise`` already
+    # rejects the four-value violation with 422 before the route body runs,
+    # so no defensive re-parse of ``payload`` is needed here.
+    target = ClassificationLevel.from_storage(payload.classification_level)
+
+    stored_previous = getattr(coll, "classification_level", None) or "無機密"
     try:
-        target = ClassificationLevel.from_storage(payload.classification_level)
+        previous = ClassificationLevel.from_storage(stored_previous)
     except ValueError as exc:
+        # Only reachable if something wrote the column outside the app.
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="classification_level 必須是四級之一：無機密、營業秘密、密、機密",
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"知識庫 #{collection_id} 的密等儲存值「{stored_previous}」不是"
+                f"四級之一（無機密／營業秘密／密／機密），無法判斷是否為升密，"
+                f"因此整批拒絕、未做任何變更。請先修正該筆資料再重試。"
+            ),
         ) from exc
 
-    previous = ClassificationLevel.from_storage(
-        getattr(coll, "classification_level", None) or "無機密"
-    )
     if target < previous:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -374,54 +405,102 @@ def raise_collection_classification(
             ),
         )
 
-    raised_doc_ids = cascade_raise_documents(
-        db,
-        collection_id=collection_id,
-        new_level=target,
-        actor_user_id=current_user.id,
-    )
-
-    event = apply_classification(
-        db,
-        resource_type="collection",
-        resource_id=str(collection_id),
-        new_level=target.to_storage(),
-        actor_type="user",
-        actor_id=str(current_user.id),
-        reason="manual_admin",
-        source="manual_admin",
-    )
-    if event is None:
-        # Concurrent raise or stale session — re-read and report honestly.
-        db.refresh(coll)
-        current = ClassificationLevel.from_storage(
-            getattr(coll, "classification_level", None) or "無機密"
+    # Pre-flight: a document row whose stored level is not one of the four
+    # values would blow up mid-cascade. Refuse the whole raise and name the
+    # rows rather than half-applying — "silently skipping" would leave a
+    # document below its collection, which is invariant (a) inverted.
+    unreadable = unreadable_classification_rows(db, collection_id)
+    if unreadable:
+        named = "、".join(
+            f"文件 #{doc_id}（儲存值「{stored}」）" for doc_id, stored in unreadable
         )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"知識庫密等未變更（目前「{current.to_storage()}」；"
-                f"請求「{target.to_storage()}」）。若目標未高於現行等級，"
-                f"升密不會生效；降級請走降密申請流程。"
+                f"無法升密：下列文件的密等儲存值不是四級之一"
+                f"（無機密／營業秘密／密／機密）：{named}。"
+                f"整批拒絕、未做任何變更——修正這些資料列後再重試。"
             ),
         )
 
+    # ── single transaction: documents + collection + audit ──────────────
+    try:
+        raised_doc_ids = cascade_raise_documents(
+            db,
+            collection_id=collection_id,
+            new_level=target,
+            actor_user_id=current_user.id,
+            commit=False,
+        )
+
+        event = apply_classification(
+            db,
+            resource_type="collection",
+            resource_id=str(collection_id),
+            new_level=target.to_storage(),
+            actor_type="user",
+            actor_id=str(current_user.id),
+            reason="manual_admin",
+            source="manual_admin",
+            commit=False,
+        )
+        if event is None:
+            # Concurrent raise or stale session. Roll the cascade back too —
+            # otherwise the caller gets 409 while documents stayed raised.
+            db.rollback()
+            db.refresh(coll)
+            current = ClassificationLevel.from_storage(
+                getattr(coll, "classification_level", None) or "無機密"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"知識庫密等未變更（目前「{current.to_storage()}」；"
+                    f"請求「{target.to_storage()}」）。若目標未高於現行等級，"
+                    f"升密不會生效；降級請走降密申請流程。"
+                    f"本次未變更任何文件密等。"
+                ),
+            )
+
+        log_audit_event(
+            db,
+            commit=False,
+            actor=current_user,
+            action="ingestion_collection_classification_raise",
+            resource_type="ingestion_collection",
+            resource_id=coll.id,
+            metadata={
+                "name": coll.name,
+                "from_level": previous.to_storage(),
+                "to_level": target.to_storage(),
+                "classification_event_id": event.id,
+                "cascaded_document_ids": raised_doc_ids,
+            },
+        )
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception(
+            "collection classification raise failed collection_id=%s %s→%s",
+            collection_id,
+            previous.to_storage(),
+            target.to_storage(),
+        )
+        # 說清楚「什麼都沒動」是重點——沒有訊息的 500 會讓操作者直覺重試，
+        # 而重試在半套狀態下會成功並看起來正常。錯誤內文只給例外類型，
+        # 細節留在伺服器日誌（不把內部訊息回給呼叫端）。
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"升密失敗，已整批回復：知識庫仍為「{previous.to_storage()}」，"
+                f"庫內文件密等一律未變更，重試是安全的。"
+                f"錯誤類型 {type(exc).__name__}，細節見伺服器日誌。"
+            ),
+        ) from exc
+
     db.refresh(coll)
-    log_audit_event(
-        db,
-        commit=True,
-        actor=current_user,
-        action="ingestion_collection_classification_raise",
-        resource_type="ingestion_collection",
-        resource_id=coll.id,
-        metadata={
-            "name": coll.name,
-            "from_level": previous.to_storage(),
-            "to_level": target.to_storage(),
-            "classification_event_id": event.id,
-            "cascaded_document_ids": raised_doc_ids,
-        },
-    )
     return CollectionResponse.model_validate(coll)
 
 

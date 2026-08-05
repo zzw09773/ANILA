@@ -226,7 +226,14 @@ class TestRaiseCollectionClassification:
         assert listed.status_code == 200, listed.text
         assert listed.json()[0]["classification_level"] == "密"
 
-    def test_patch_cannot_change_classification(self, client, db):
+    def test_patch_rejects_classification_level_loudly(self, client, db):
+        """PATCH 帶密等 → **422**，不是「200 但欄位被靜默忽略」。
+
+        Pydantic 預設會丟掉未知鍵，所以原本會回 200、名字改了、密等沒改、
+        什麼也沒說——正是本專案列為最糟的失敗模式（使用者以為改了）。
+        這支測試把裁決釘住：只接受 422，訊息要指向正確的路由，而且整個
+        PATCH 一起被拒（name 也不得被寫進去）。
+        """
         user = make_user(db, username="coll_raise_patch", role="developer")
         token = login(client, "coll_raise_patch")
         h = _auth(token)
@@ -241,9 +248,20 @@ class TestRaiseCollectionClassification:
             headers=h,
             json={"classification_level": "機密", "name": "patch-no-cls-renamed"},
         )
-        # Extra field ignored by Pydantic (or 422); either way level must stay.
-        if patched.status_code == 200:
-            assert patched.json()["classification_level"] == "無機密"
-            assert patched.json()["name"] == "patch-no-cls-renamed"
+        assert patched.status_code == 422, patched.text
+        assert "classification" in patched.text
+
         row = db.get(IngestionCollection, cid)
+        db.refresh(row)
         assert row.classification_level == "無機密"
+        assert row.name == "patch-no-cls", "422 之後不該有任何欄位被寫入"
+
+        # 不帶密等的 PATCH 仍然正常。
+        ok = client.patch(
+            f"/api/ingestion/collections/{cid}",
+            headers=h,
+            json={"name": "patch-no-cls-renamed"},
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["name"] == "patch-no-cls-renamed"
+        assert ok.json()["classification_level"] == "無機密"
