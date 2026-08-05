@@ -574,6 +574,7 @@ import { listUsers } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
+import { designationConfirm, designationToast } from '../utils/platformEmbedding'
 
 const { confirm, toast } = useDialog()
 const modelsStore = useModelsStore()
@@ -1089,14 +1090,18 @@ function platformEmbedTitle(model) {
   return `平台主 embedding · 原生 ${dim} 維`
 }
 async function handleSetPlatformEmbed(id) {
+  // 換模型＝把舊索引整批作廢。本畫面對停用／取消主模型／永久刪除都先 confirm，
+  // 唯獨後果最大的這個動作沒有；先攔一次（同一個模型重新確認則不攔）。
+  const gate = designationConfirm(modelsStore.models, id)
+  if (gate.needed && !(await confirm({
+    message: gate.message, confirmText: gate.confirmText, danger: gate.danger,
+  }))) return
   settingEmbedId.value = id
   try {
     const data = await modelsStore.setPlatformEmbed(id)
-    if (data?.truncation_warning) {
-      toast(data.truncation_warning, { tone: 'warn' })
-    } else if (data?.measured_native_dim) {
-      toast(`已設為平台主 embedding（探測原生維度 ${data.measured_native_dim}）`, { tone: 'ok' })
-    }
+    // 嚴重度排序在 designationToast 裡；索引不一致絕不能落回綠色成功提示。
+    const notice = designationToast(data)
+    if (notice) toast(notice.message, { tone: notice.tone, duration: notice.duration })
   } catch (e) {
     toast(e.response?.data?.detail || '設定主 embedding 失敗', { tone: 'error' })
   } finally {

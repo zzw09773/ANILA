@@ -174,7 +174,15 @@ class SearchRequest(BaseModel):
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="cosine 相似度最低門檻 (0=不過濾)；0.7 ≈ '至少七成相似'",
+        description=(
+            "cosine 相似度最低門檻 (0=不過濾)。"
+            "⚠ 不要把它讀成「相似百分比」,也不要沿用 0.7 之類看起來合理的預設值:"
+            "本平台的 embedder 是非對稱的 —— 查詢側與文件側對「同一句話」的編碼,"
+            "實測餘弦值約在 0.60–0.83 之間,不會是 1.0。"
+            "0.7 剛好壓在「同一句話」的分數帶上方,設下去會把所有段落永遠濾光,"
+            "而且看起來像是知識庫沒有資料。"
+            "目前平台上線的門檻沒有高於 0.3 的;要設門檻請先以自己的語料實測。"
+        ),
     )
     document_ids: list[int] | None = Field(
         default=None,
@@ -573,6 +581,142 @@ async def _expand_relations(
     return out
 
 
+async def _assert_index_matches_designation(
+    store: "CollectionScopedPgVectorStore",
+    *,
+    hits: list,
+    designated: str | None,
+    collection_id: int,
+) -> None:
+    """Refuse to answer "nothing" when the corpus is indexed under another model.
+
+    ``similarity_search`` filters on ``embedding_source_model`` (P4.8).
+    Designating a different platform embedding is a supported admin
+    action, and the instant it happens every existing chunk stops
+    matching: the endpoint keeps returning ``200 {"results": []}``,
+    forever, with no error and no log line. A knowledge base full of
+    documents becomes a knowledge base that answers nothing, and nothing
+    anywhere says why. That is the failure mode this guard exists for —
+    silent success is more dangerous than an error.
+
+    Fires only when the vector layer itself returned nothing AND a
+    designation filter was in play. A legitimately empty result — empty
+    collection, or a query that genuinely matched no passage — takes the
+    early return and the response is byte-for-byte what it was before.
+
+    Three outcomes:
+
+    * no rows under any other model → genuinely empty; say nothing.
+    * rows under both the designated and another model → the collection
+      is mid-reindex, search still works on the matching half. Log for
+      the operator; the caller's result is unchanged. ``has_matching``
+      is an exact ``EXISTS``, so a deliberate mixed-model corpus during
+      a migration lands here every time and is never refused.
+    * rows only under another model → the whole collection is stranded.
+      409, same code this endpoint already uses for "the collection is
+      not in a searchable state" (archived collections, above).
+
+    This is the only hard failure in the package, so it is held to the
+    owner's three questions:
+
+    ① Who gets blocked? Only a caller whose collection holds zero
+      retrievable chunks — every such call previously returned an empty
+      list, so no call that could have returned results can reach the
+      raise. The early return above is the guarantee: ``hits`` non-empty
+      exits first, and the check runs before the ``document_ids``
+      post-filter so a narrowed search cannot be misread.
+    ② How do they rescue themselves? Only remedies that were executed
+      end to end are named. The operator re-designates the previous
+      embedding model — instant, non-destructive, and it is the one that
+      actually fixes the whole platform at once. The user's own option is
+      DELETE the document then upload it again. Two routes that look
+      obvious were checked and do NOT work, so the message warns against
+      one and never mentions the other: plain re-upload hits
+      ``uq_documents_collection_sha256``, whose ``IntegrityError`` handler
+      returns the existing row *above* the ``enqueue_ingest_document``
+      call (``documents.py``), so no job is created; and ``/reprocess``
+      accepts only ``status='failed'`` while a stranded document is
+      ``indexed``. There is no reindex capability on this platform —
+      do not write one into a user-facing message.
+    ③ Will it one day block us? A mixed-model migration cannot trigger
+      it (see above — that is why ``has_matching`` is exact rather than
+      sampled). Callers of this endpoint on a 409, each checked rather
+      than assumed: ``anila-studio`` handles it everywhere —
+      ``report_runner`` catches ``CspClientError`` explicitly,
+      ``datatables`` / ``infographics`` / ``studio`` swallow it via
+      ``except Exception`` and fall through to no-context mode, and
+      ``mindmaps`` surfaces it as a failed job carrying the message.
+      ``anila_agent.retrieval.csp_http`` calls ``raise_for_status()``,
+      so an in-task agent sees an exception rather than empty context.
+      ``infra/loadtest/profile-search.js`` hard-fails on any non-200, so
+      the load-test profile will fail against a stranded corpus instead
+      of reporting empty results — worth knowing before someone reads a
+      red load test as a regression.
+
+    The end-user detail names the designated model (already readable by
+    any authenticated caller via ``GET /api/models/platform-embedding``)
+    and nothing else. Which model the stale rows carry, and how the
+    collection got there, go to the operator log only.
+
+    Scope — do NOT read this as "the platform no longer returns a silent
+    empty". It covers **chunk search on this endpoint only**. Image
+    search (``search_collection_images`` below) and memory retrieval
+    (``app/services/memory_service.py``) apply the same
+    ``embedding_source_model`` filter and still return an empty result
+    with nothing said — by decision, not oversight. A designation change
+    strands those paths exactly as it strands this one.
+
+    ``coverage`` describes a bounded sample, not the whole collection;
+    ``source_model_coverage`` documents what that sampling can miss.
+    """
+    if hits or designated is None:
+        return
+
+    coverage = await store.source_model_coverage(designated)
+    if not coverage.has_other:
+        return
+
+    if coverage.has_matching:
+        logger.warning(
+            "collection %s is partially indexed: some chunks are under the "
+            "designated embedding %r and some under %r. Search still works "
+            "over the matching half; the rest stays unreachable until those "
+            "documents are deleted and re-uploaded, or the designation is "
+            "put back (there is no reindex capability on this platform).",
+            collection_id,
+            designated,
+            coverage.sample_other_model,
+        )
+        return
+
+    logger.error(
+        "collection %s has no chunks under the designated embedding %r — "
+        "every indexed chunk carries %r instead. Search is answering 409 "
+        "rather than an empty result set. Restore by designating (and if "
+        "necessary reactivating) the model those chunks carry; there is no "
+        "reindex capability on this platform.",
+        collection_id,
+        designated,
+        coverage.sample_other_model,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "這個知識庫目前檢索不到任何內容。原因不是沒有資料——文件都還在,"
+            f"是既有文件的索引由另一個向量模型建立,與平台現在指定的"
+            f"「{designated}」對不起來。"
+            "這要由平台管理員處理:把這些文件當初使用的 embedding 模型"
+            "重新指定為平台主 embedding;若那個模型已被停用,要先重新啟用再指定"
+            "(停用中的模型不能指定,系統會直接拒絕)。"
+            "受影響的知識庫會立刻恢復,而且不會動到任何資料。"
+            "請聯絡管理員,並附上這個知識庫的名稱。"
+            "你自己唯一能做的是把急著要用的文件「先刪除、再重新上傳」,"
+            "一次一份;刪掉的文件與其處理歷程不會回來。"
+            "直接重傳同一個檔沒有用——系統會判定為重複,不會重建索引。"
+        ),
+    )
+
+
 # ── Endpoint ────────────────────────────────────────────────────────────────
 
 
@@ -644,6 +788,12 @@ async def search_collection(
         min_score=payload.min_score,
         source_model=source_filter,
     )
+
+    # Zero hits under a designation filter is ambiguous — resolve it before
+    # the caller can read the emptiness as "this knowledge base has nothing
+    # to say". Runs before the document_ids post-filter below so a caller
+    # narrowing to one document never gets misdiagnosed as a stranded index.
+    await _assert_index_matches_designation(store, hits=hits, designated=source_filter, collection_id=coll.id)
 
     # Optional document_ids filter — done in app code rather than SQL
     # because ``similarity_search`` lives in anila_core and we don't want
@@ -813,7 +963,7 @@ async def search_collection_images(
                 JOIN ingestion_documents d ON d.id = i.document_id
                 WHERE i.collection_id = $1
                   AND i.embedding IS NOT NULL
-                  AND i.embedding_source_model = $5
+                  AND lower(i.embedding_source_model) = lower($5)
                   AND (i.embedding <=> $2) < $3
                 ORDER BY i.embedding <=> $2
                 LIMIT $4

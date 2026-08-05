@@ -31,6 +31,7 @@ Sprint 4 dropped agent_id throughout.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, AsyncIterator
 
@@ -41,6 +42,47 @@ from anila_core.ingestion.chunking_plugins.base import ChunkResult
 from anila_core.ingestion.errors import StoreError
 from anila_core.models.ingestion import IngestionChunk, SearchHit
 from anila_core.storage.adapters.pg_pool import PgPool
+
+
+# How many leaf rows ``source_model_coverage`` may look at. Bounds the
+# healthy-corpus case, which is the one that would otherwise pay a full
+# collection scan on every zero-hit query. See that method's docstring
+# for the detection accuracy this buys and what it gives up.
+_COVERAGE_SAMPLE_ROWS = 200
+
+
+@dataclass(frozen=True)
+class SourceModelCoverage:
+    """Which embedding model(s) a collection's leaf chunks were indexed under.
+
+    Exists so a caller staring at an empty ``similarity_search`` result
+    can name the cause instead of guessing. The three fields do NOT carry
+    equal weight, and mixing them up is how this becomes a check that
+    refuses legitimate work:
+
+    * ``has_matching`` — **exact**. True when the collection holds at
+      least one leaf chunk under the source model the caller filtered
+      on, so the filter is not what emptied the set. This is the only
+      field allowed to decide a status code.
+    * ``has_other`` — **approximate**. True when at least one leaf chunk
+      *in a bounded sample* carries a different source model (NULL
+      counts: legacy rows predate P4.8 provenance). False does NOT mean
+      "no other model exists anywhere". Operator logging only.
+    * ``sample_other_model`` — one such name, for the operator log only.
+      Never put it in an end-user response; it is inventory detail, and
+      it is None whenever the sampled row's provenance is NULL.
+
+    ``has_other and not has_matching`` is the collection stranded in
+    another semantic space — an empty result there is a lie. The
+    load-bearing half of that conjunction is ``not has_matching``, which
+    is exact: a collection mid-migration, holding both old and new
+    vectors, always reports ``has_matching=True`` and so can never be
+    refused.
+    """
+
+    has_matching: bool
+    has_other: bool
+    sample_other_model: str | None
 
 
 class CollectionScopedPgVectorStore:
@@ -216,11 +258,35 @@ class CollectionScopedPgVectorStore:
         ``anila.collection_id`` GUC set inside ``_acquire()``.
 
         Cosine *similarity* is what we return (1 - cosine_distance), so
-        ``min_score`` reads naturally: 0.7 = "at least 70% similar".
+        ``min_score`` is a floor on that value. Do NOT read it as a
+        percentage of meaning, and in particular do not reach for 0.7 as
+        a "reasonable default": this platform's embedder is
+        **asymmetric** — query-side and document-side encodings of the
+        *same sentence* measure roughly 0.60–0.83 cosine, never 1.0. A
+        0.7 floor therefore sits on top of the identical-sentence band
+        and would filter every real passage out, forever, while looking
+        like a sane setting. Nothing on this platform runs a floor above
+        0.3; anyone who wants one must measure it against their own
+        corpus first.
 
         P4.8: when ``source_model`` is set, only rows whose
         ``embedding_source_model`` matches are considered — vectors from
-        a different model live in a different semantic space.
+        a different model live in a different semantic space. A caller
+        that gets zero hits under a ``source_model`` filter cannot tell
+        "nothing matched" from "everything is indexed under a different
+        model"; ``source_model_coverage`` below answers that question.
+
+        The match is **case-insensitive**, and that is load-bearing, not
+        tidiness. ``ingestion_collections.embedding_model`` defaults to
+        ``nvidia/NV-embed-V2`` while the same model registers as
+        ``nvidia/nv-embed-v2``, and migration ``r1_0018`` backfilled
+        chunk provenance straight from that column
+        (``SET embedding_source_model = ic.embedding_model``). A
+        case-sensitive ``=`` therefore hides a correctly-indexed corpus
+        behind its own column default — every chunk invisible, forever,
+        on a knowledge base nobody touched. This is the same casing
+        collision ``app/services/platform_embedding.py`` was written to
+        end; it simply had one more hiding place.
         """
         if top_k <= 0:
             return []
@@ -243,7 +309,7 @@ class CollectionScopedPgVectorStore:
                        1 - (embedding <=> $1) AS score
                   FROM document_chunks
                  WHERE chunk_type = 'leaf'
-                   AND embedding_source_model = $4
+                   AND lower(embedding_source_model) = lower($4)
                    AND 1 - (embedding <=> $1) >= $2
                  ORDER BY embedding <=> $1
                  LIMIT $3
@@ -270,6 +336,96 @@ class CollectionScopedPgVectorStore:
             hits = [self._row_to_search_hit(r) for r in rows]
             await self._attach_parent_content(conn, hits)
         return hits
+
+    async def source_model_coverage(self, source_model: str) -> SourceModelCoverage:
+        """Answer "empty corpus, or wrong index?" for this collection.
+
+        ``similarity_search`` filters on ``embedding_source_model`` when
+        a platform embedding is designated. Re-designating a different
+        model is a supported operator action, and the moment it happens
+        every pre-existing row stops matching: the table is still full,
+        the query still succeeds, and the result set is empty with no
+        error and no log line. This method is the only way to tell that
+        state apart from a genuinely empty collection.
+
+        **Cost, and which half is allowed to be approximate.** The two
+        fields do very different jobs, so they get different queries.
+
+        ``has_matching`` decides whether the caller gets a hard 409, so
+        it must be exact — a sampled answer could refuse a collection
+        that is only *mostly* stale, which is precisely the shape of a
+        deliberate mid-migration corpus. It is a bare ``EXISTS``, and
+        the direction it short-circuits in is the one that matters:
+        finding a single row under the designated model stops the scan
+        immediately. Healthy corpus → first row answers it. Corpus
+        mid-reindex → the first freshly-written row answers it. The only
+        case that pays a full collection scan is the one where the
+        answer is genuinely "nothing here is retrievable", which is a
+        broken state an operator is about to be told to fix, not a
+        steady state anyone searches in for long.
+
+        ``has_other`` and ``sample_other_model`` only drive an operator
+        log line, never a status code, so they read a bounded sample of
+        at most ``_COVERAGE_SAMPLE_ROWS`` rows. Proving "no other model
+        anywhere" is the expensive direction and buys nothing a log
+        line needs. What that gives up, stated rather than absorbed:
+
+        * A partially reindexed collection whose stale rows all fall
+          outside the window will not produce the "partially indexed"
+          WARNING. The user-visible behaviour is identical either way.
+        * There is no ``ORDER BY``; the window is whatever the scan
+          yields first. Reindexing appends rather than rewriting in
+          place, which biases toward seeing stale rows rather than
+          missing them, but it is a bias, not a guarantee.
+        * ``has_other`` can therefore be False while stale rows exist.
+          It must never be used to decide that a corpus is healthy —
+          only ``has_matching`` carries that weight.
+
+        An earlier revision of this method had it backwards: two bare
+        ``EXISTS`` probes, so the healthy corpus paid a full scan on
+        every zero-hit query to prove a negative that only fed a log.
+
+        RLS scopes every read to this collection via ``_acquire()``, so
+        the answer is per-collection: one stranded knowledge base does
+        not make a healthy neighbour look broken.
+        """
+        sql = f"""
+            WITH sample AS (
+                SELECT embedding_source_model AS src
+                  FROM document_chunks
+                 WHERE chunk_type = 'leaf'
+                   AND embedding IS NOT NULL
+                 LIMIT {int(_COVERAGE_SAMPLE_ROWS)}
+            )
+            SELECT
+                EXISTS (
+                    SELECT 1
+                      FROM document_chunks
+                     WHERE chunk_type = 'leaf'
+                       AND embedding IS NOT NULL
+                       AND lower(embedding_source_model) = lower($1)
+                ) AS has_matching,
+                COALESCE(bool_or(lower(src) IS DISTINCT FROM lower($1)), false)
+                    AS has_other,
+                (
+                    SELECT src FROM sample
+                     WHERE lower(src) IS DISTINCT FROM lower($1)
+                     LIMIT 1
+                ) AS sample_other_model
+              FROM sample
+        """
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, source_model)
+        if row is None:
+            return SourceModelCoverage(
+                has_matching=False, has_other=False, sample_other_model=None
+            )
+        sample = row["sample_other_model"]
+        return SourceModelCoverage(
+            has_matching=bool(row["has_matching"]),
+            has_other=bool(row["has_other"]),
+            sample_other_model=str(sample) if sample is not None else None,
+        )
 
     async def similarity_search_per_document(
         self,
