@@ -74,6 +74,14 @@ ANILA_CITED=1                  # 行內來源引用
 ANILA_OUTPUT_STYLE=zh-tw-formal
 ```
 
+> ⚠ **`ANILA_EMBED_BASE_URL` 指到哪裡,決定查詢/文件分流有沒有效。**
+> 記憶粗篩與 pgvector 檢索會在 body 帶 `input_type`(`query` / `document`)——
+> Triton 類 embedder 的查詢與文件走**不同輸入張量**,用錯不會報錯,只是排序悄悄變差。
+> 上面這個 `nv-embed-proxy:8000` 是 **model 容器**,它的 shim 沒宣告這個欄位、
+> pydantic 預設 `extra="ignore"` → **不會 400,也不會被讀**,查詢一樣被當文件編碼。
+> 要真的拿到分流,請把它指向 **CSP** 的 `/v1`(例 `https://<平台>/v1`),
+> 並在模型頁以 `protocol=triton_grpc` 註冊該 embedder。見 `docs/FAKE-CONTROLS.md` #35。
+
 CLI 指令：`/help`、`/memory [查詢]`、`/style`、`/clear`、`/deep-research <問題>`，以及
 `configs/commands/*.md` 定義的 `/<檔名>`（範例：`/summarize`）。
 

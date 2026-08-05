@@ -110,15 +110,20 @@ async def probe_model_health_detailed(
     endpoint_url: str,
     *,
     endpoint_kind: str | None = None,
+    protocol: str | None = None,
+    model_name: str | None = None,
     skip_validate: bool = False,
 ) -> tuple[str, int]:
     """Active probe → ``(five_state_status, latency_ms)`` (health probe only).
 
-    - ``/health`` or ``/v1/models`` responding 2xx → ``healthy``
-    - those paths answering 401/403 only → ``unknown`` (reachable, not proven)
-    - only ``/`` responding ``<500`` → ``degraded`` (host up, API path unproven)
-    - timeout → ``degraded``
-    - unreachable / unsafe endpoint → ``unhealthy``
+    - ``protocol=triton_grpc``: Triton ``ModelReady`` / ``ServerLive`` /
+      ``grpc.health.v1`` (never httpx GETs against a gRPC port).
+    - otherwise HTTP:
+      - ``/health`` or ``/v1/models`` responding 2xx → ``healthy``
+      - those paths answering 401/403 only → ``unknown`` (reachable, not proven)
+      - only ``/`` responding ``<500`` → ``degraded`` (host up, API path unproven)
+      - timeout → ``degraded``
+      - unreachable / unsafe endpoint → ``unhealthy``
 
     Carries NO real user data (doc 04 §9). Call-time SSRF re-validation
     (TOCTOU/rebinding) runs once against the registered host — an unsafe
@@ -148,6 +153,15 @@ async def probe_model_health_detailed(
                 getattr(exc, "reason", type(exc).__name__),
             )
             return HEALTH_UNHEALTHY, _elapsed_ms()
+
+    if (protocol or "").strip() == "triton_grpc":
+        from app.services.triton_grpc import probe_triton_health
+
+        return await asyncio.to_thread(
+            probe_triton_health,
+            endpoint_url,
+            model_name=model_name,
+        )
 
     real_urls = [_probe_url(endpoint_url, path) for path in REAL_PROBE_PATHS]
     weak_urls = [_probe_url(endpoint_url, path) for path in WEAK_PROBE_PATHS]
@@ -198,11 +212,16 @@ async def check_model_health(
     endpoint_url: str,
     *,
     endpoint_kind: str | None = None,
+    protocol: str | None = None,
+    model_name: str | None = None,
 ) -> str:
     """Check a single model/agent endpoint. Returns a five-state status
     ('healthy' / 'degraded' / 'unhealthy')."""
     status, _ = await probe_model_health_detailed(
-        endpoint_url, endpoint_kind=endpoint_kind
+        endpoint_url,
+        endpoint_kind=endpoint_kind,
+        protocol=protocol,
+        model_name=model_name,
     )
     return status
 
@@ -220,6 +239,7 @@ async def _health_check_loop():
                         m.name,
                         m.display_name,
                         m.health_status,
+                        m.protocol or "openai_compatible",
                     )
                     for m in (
                         db.query(ModelRegistry)
@@ -233,8 +253,21 @@ async def _health_check_loop():
                 db.close()
 
             results = []
-            for model_id, endpoint_url, name, display_name, prev_status in targets:
-                status = await check_model_health(model_id, endpoint_url)
+            for (
+                model_id,
+                endpoint_url,
+                name,
+                display_name,
+                prev_status,
+                protocol,
+            ) in targets:
+                status = await check_model_health(
+                    model_id,
+                    endpoint_url,
+                    endpoint_kind="model",
+                    protocol=protocol,
+                    model_name=name,
+                )
                 results.append(
                     (model_id, endpoint_url, name, display_name, prev_status, status)
                 )

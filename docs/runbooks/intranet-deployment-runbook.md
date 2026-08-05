@@ -379,6 +379,7 @@ D 全綠 = port/key/模型 ID/TLS 四件事一次確認完。F(FQDN 解析)要�
 ANILA_ALLOW_DEV_SECRET=0          # prod 模式,dev 預設值一律拒啟
 ANILA_ALLOW_HTTP_ENDPOINT=0       # 模型走 https,不用開
 ANILA_ALLOW_PRIVATE_ENDPOINT=0
+ANILA_ALLOW_GRPC_ENDPOINT=0       # 只有要接 Triton gRPC embedder 才設 1,見 §3.1c
 ANILA_TRUSTED_HOSTS=aiagent2.ai.ncsist.org.tw   # FQDN 解到私網 IP,要點名放行
 
 ANILA_HOST=anila.ai.ncsist.org.tw
@@ -438,6 +439,139 @@ done
 # 等下一輪 health check (~60s) → /models 頁應全轉 online
 # 驗收:R2 實測此組態下 registry 4/4 online、embedding 經 csp 200 (4096 維)
 ```
+
+### 3.1c 接 Triton / KServe gRPC embedder (protocol=triton_grpc)
+
+> **模型全走 aiagent2 的 OpenAI 相容 https 端點者跳過本節。**
+> 只有要把 embedding 直接指到 Triton Inference Server 的 gRPC 埠(預設 9001)時才做。
+> 這條路徑之所以存在:Triton 的 embedding model 把「查詢」與「文件」放在**不同輸入張量**
+> (`query` vs `documents`),走 OpenAI `/v1/embeddings` 沒有辦法表達這個差別 —— 全部
+> 被當文件編碼,檢索排序會**無聲**變差(不會報錯、不會有 log)。
+
+**端點填 IP 字面值(Triton 的常態)→ 下面四件都要做;端點填 FQDN → 第 2 件
+不用做,共三件。`grpc://` 端點要過的是 url_guard 的兩關 —— scheme 一關、
+主機/IP 一關 —— 少哪一件,400 的 `reason` 就不一樣(下面排錯表有對照):**
+
+1. `.env` 設 `ANILA_ALLOW_GRPC_ENDPOINT=1`(過 **scheme** 關)
+   —— 只有 cleartext `grpc://` 需要;`grpcs://`(TLS)不需要,維持 0 即可。
+   這是 http 旗標的**姊妹分支**,開它不會放寬任何 `http://` 端點;
+   loopback / link-local / multicast / cloud metadata 對 `grpc://` 一樣永遠擋。
+2. `.env` 設 `ANILA_ALLOW_PRIVATE_ENDPOINT=1`(過 **主機/IP** 關)
+   —— **只有端點填 IP 字面值時才要做這一件**(用 FQDN 就跳過),而 Triton 通常就是填 IP(例
+   `grpc://172.16.120.35:9001`,10/8、172.16/12、192.168/16 都算私網)。
+   ⚠ **把那個 IP 加進 trusted-hosts 沒有用。** trusted-hosts 只繞得過
+   「主機名的 DNS 解析結果落在私網」;IP 字面值是先判私網、根本不看 trusted。
+   實測(2026-08-03,本樹 `anila_core.security.url_guard`):
+   ```
+   grpc 旗標=1,grpc://172.16.120.35:9001                    → 400 reason=private_ip
+   grpc 旗標=1 + ANILA_TRUSTED_HOSTS 加 172.16.120.35        → 400 reason=private_ip(沒變)
+   grpc 旗標=1 + ANILA_ALLOW_PRIVATE_ENDPOINT=1              → 通過
+   grpc 旗標=1 + 端點改 FQDN + 該 FQDN 進 trusted-hosts       → 通過
+   ```
+   (最後一列在開發機是把 resolver 固定成該 IP 量的 —— 開發機解不到內網 FQDN,
+   guard 的判斷邏輯沒有動。)
+   兩條路二選一:開私網旗標(簡單,但整段 RFC1918 都放行),
+   或端點改用 FQDN 並把該 FQDN 加進 trusted-hosts(較窄,但要有內網 DNS)。
+3. **`up -d csp`,不是 `docker restart csp`;而且 `up -d csp` 之後要 reload nginx**
+   —— `restart` 不重載 `.env`。旗標沒進容器的症狀與旗標沒設**完全一樣**,
+   確認方式:`docker exec <csp 容器> printenv ANILA_ALLOW_GRPC_ENDPOINT`,
+   **沒有輸出就是沒進去**(私網旗標同理)。
+   ⚠ recreate 過的容器會換 IP,而 nginx 的 upstream 區塊只在載入設定時解析一次
+   → **全站 502,但 `docker compose ps` 每個容器都是綠的**,從容器狀態完全看不
+   出來。`deploy-prod.sh` 的 `up` / `restart` 路徑已經內建這一步(`reload_nginx`),
+   但手動只 recreate 一個服務時沒有人幫你做:
+   ```bash
+   docker compose up -d csp
+   docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
+   ```
+4. 模型頁註冊:protocol 選「Triton/KServe gRPC」,端點填 `grpc://host:9001`
+   (**不要加 `/v1` 路徑**,gRPC 沒有路徑),模型名稱要與 Triton 上的 model name 一字不差。
+   Triton 不吃 Bearer 金鑰,所以該協定下表單**不顯示**金鑰欄位。
+
+> **重跑 `intranet-deploy.sh` 不會把這兩個旗標改回 0。** 腳本對
+> `ANILA_ALLOW_GRPC_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT` /
+> `ANILA_ALLOW_HTTP_ENDPOINT` 一律「缺鍵才補 0,已有值就一個字都不動」,並在值
+> 為 1 時印 warn。以前是每次硬寫 0 —— 操作者照本節開好、隔天重跑一次部署腳本,
+> Triton embedder 就靜默失效,而症狀只是 400,現場幾乎反推不出原因。
+> 「已有值」的判準跟 docker compose 一致(實測 v2.36.2):行首空白、`export`
+> 前綴、`=` 前後空白、單/雙引號、行尾空白、CRLF、行尾註解,以及**引號加行尾
+> 註解**(`ANILA_ALLOW_GRPC_ENDPOINT="1"  # 為了 Triton`)都算已設。以前只認
+> `^KEY=`,所以手寫成 ` ANILA_ALLOW_GRPC_ENDPOINT=1`(前面多一個空格)時腳本
+> 看不見那一行,會在檔尾再 append 一行 `=0`,compose 取最後一筆 → 旗標被靜默
+> 關掉。(「引號 + 註解」那一種 2026-08-05 才補上:值有被保留、只是**沒有印出
+> warn**,所以部署輸出不會提醒你這台機器帶著放寬的旗標在跑。)
+
+```bash
+# 1. 兩個旗標真的進到容器(沒輸出 = 沒進去,回頭做第 3 步)
+docker exec anila-restart-csp-1 printenv ANILA_ALLOW_GRPC_ENDPOINT
+docker exec anila-restart-csp-1 printenv ANILA_ALLOW_PRIVATE_ENDPOINT
+
+# 2. 端點在網路上通(csp 容器沒裝 curl / grpcurl,用 python socket)
+docker exec anila-restart-csp-1 python3 -c \
+  "import socket;s=socket.create_connection(('172.16.120.35',9001),3);print('tcp ok');s.close()"
+
+# 3. 註冊後:模型頁該列應為 online;取一段文字經 /v1/embeddings 應回 4096 維
+#    (Content-Type 要是 application/json —— SPA catch-all 會回 200 text/html)
+
+# 4. 查詢/文件真的走不同張量(這條路徑存在的理由,也是 url_guard 的活體驗收):
+#    同一段文字送兩次、一次 query 一次 document,cosine 必須明顯小於 1.0。
+#    等於 1.0 = 查詢被當文件編碼了,不會報錯、排序無聲變差。
+docker exec anila-restart-csp-1 python3 -c "
+from anila_core.security.url_guard import validate_outbound_url
+from app.services.triton_grpc import client as tc
+URL, MODEL = 'grpc://172.16.120.35:9001', 'nv-embed-v2'
+validate_outbound_url(URL, 'model')            # 旗標不對這行就先炸
+print('health', tc.probe_triton_health(URL, model_name=MODEL))
+q = tc.embed_texts(URL, MODEL, ['找出去年的採購紀錄'], role='query')[0]
+d = tc.embed_texts(URL, MODEL, ['找出去年的採購紀錄'], role='document')[0]
+cos = sum(a*b for a,b in zip(q,d)) / ((sum(a*a for a in q)**.5)*(sum(b*b for b in d)**.5))
+print('dim', len(q), 'cosine(query,document)', round(cos,4))
+"
+# 2026-08-03 在本開發機對 172.16.120.35:9001 實測:health ('healthy', <ms>)、
+# dim 4096、cosine 0.7467。
+# ⚠ probe_triton_health 回的第二個值是**那一次的延遲毫秒數**,不是期望值 ——
+#   當天量到 4,下一次是別的數字都正常。要對得上的是 'healthy'、4096,以及
+#   cosine 明顯小於 1.0(當天 0.7467;不同權重/文字會不同,重點是 ≠ 1.0)。
+```
+
+**排錯**
+| 症狀 | 原因 |
+|---|---|
+| 註冊 400,detail 提到 `scheme` | grpc 旗標沒設,或設了但沒 `up -d`(見第 3 步) |
+| 註冊 400,detail 提到私網 / `reason=private_ip` | 端點是私網 IP 字面值而 `ANILA_ALLOW_PRIVATE_ENDPOINT` 沒開(見第 2 步)。**加 trusted-host 治不了這個** |
+| 註冊 422「必須為 grpc:// 或 grpcs://」 | protocol 選了 triton_grpc 卻填 http URL |
+| 健檢 unhealthy、但 TCP 通 | Triton 上沒載入這個 model name(`ModelReady` 說了算,不會用 ServerLive 漂綠) |
+| 502「模型服務暫時不可用」,csp log 是「triton 未在 30s 內回應 ModelInfer」 | **單筆**逾時 —— 上游過慢或該 model 沒載入。單次請求的執行緒佔用上限 35 秒(`_wait_ready` 5s + ModelInfer 30s),重試 3 次 |
+| 502,csp log 是「triton call exceeded its 35s budget … 請縮小批次」 | **整批**吃光了整通呼叫的 35 秒預算(每段文字各一次 ModelInfer)—— 縮小批次,或調高 `EMBEDDING_TIMEOUT`(見下方「調高 EMBEDDING_TIMEOUT」) |
+| 整批帶入(bulk import)報 422 | Triton 沒有 OpenAI `/v1/models` 列表,不支援整批帶入 —— 逐一註冊 |
+
+**調高 `EMBEDDING_TIMEOUT`**
+
+```bash
+# 1. .env 改值(沒有這個鍵就自己加一行;compose 預設 30)
+#    這裡用 grep 先看現況,再自己編輯 —— 不用 sed,避免改到別的鍵。
+grep -nE '^[[:space:]]*(export[[:space:]]+)?EMBEDDING_TIMEOUT[[:space:]]*=' .env
+
+# 2. 套用:一定是 up -d(recreate),docker restart 不重載 .env
+docker compose up -d csp
+
+# 3. recreate 過就要 reload nginx,否則上游 IP 是舊的 → 全站 502 但容器全綠
+docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
+
+# 4. 確認它真的到了容器裡(這一步不能跳)
+docker exec anila-restart-csp-1 printenv EMBEDDING_TIMEOUT   # 應印出你設的值
+```
+
+它同時是整通呼叫的預算主項:budget = `_wait_ready` 5s + `EMBEDDING_TIMEOUT`,
+與批次大小無關;調到 60,單次請求的執行緒佔用上限就從 35 秒變成 65 秒,
+一個 HTTP 請求最久 `3 × 65 + 0.5 + 1.0` ≈ 196.5 秒(重試 3 次)。調之前先確認上游真的
+只是慢,而不是 model 沒載入 —— 後者調多久都不會好。
+
+> ⚠ 這個變數要有 `infra/compose/platform.yml` 的 csp 區塊裡那一行
+> `EMBEDDING_TIMEOUT: "${EMBEDDING_TIMEOUT:-30}"`(v-2026-08-03 起有)才會進到
+> 容器。compose **沒有 `env_file:`**,`.env` 只是變數來源,不會整包灌進容器 ——
+> 缺那一行的版本,`.env` 怎麼改都沒有作用,而且沒有任何錯誤訊息:`printenv` 是
+> 空的、行為一模一樣。上面那條 `printenv` 就是用來看穿這件事的。
 
 ### 3.2 startup_security 一定要過
 

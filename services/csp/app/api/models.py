@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import asyncio
 import json
 import logging
+from urllib.parse import urlparse
 
 import httpx
 from anila_core.security import UnsafeEndpointError, validate_outbound_url, ENDPOINT_KIND_MODEL
@@ -17,6 +18,7 @@ from app.models.token_usage import TokenUsage
 from app.models.user import User
 from app.schemas.contracts.classification import ClassificationLevel
 from app.schemas.model_registry import (
+    ALLOWED_PROTOCOLS,
     ModelBulkActivateCreatedRequest,
     ModelBulkActivateCreatedResponse,
     ModelBulkImportCreated,
@@ -130,6 +132,33 @@ def _caller_may_view_model(
     if _caller_is_designated_author_of(db, caller, model):
         return True
     return False
+
+
+def _enforce_protocol_endpoint(protocol: str, endpoint_url: str) -> None:
+    """Refuse protocol/URL pairs that cannot work.
+
+    ``triton_grpc`` requires ``grpc://`` / ``grpcs://`` (no HTTP path join).
+    ``openai_compatible`` requires ``http://`` / ``https://``.
+    """
+    scheme = (urlparse((endpoint_url or "").strip()).scheme or "").lower()
+    if protocol == "triton_grpc":
+        if scheme not in ("grpc", "grpcs"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "protocol=triton_grpc 的端點必須為 grpc:// 或 grpcs:// "
+                    "（例如 grpc://host:9001），不可填 http(s) URL"
+                ),
+            )
+        return
+    if protocol == "openai_compatible":
+        if scheme not in ("http", "https"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "protocol=openai_compatible 的端點必須為 http:// 或 https://"
+                ),
+            )
 
 
 def _enforce_endpoint_url(url: str) -> None:
@@ -291,14 +320,16 @@ def create_model(
 
     _enforce_endpoint_url(request.endpoint_url)
 
-    if (request.protocol or "openai_compatible") != "openai_compatible":
+    protocol = request.protocol or "openai_compatible"
+    if protocol not in ALLOWED_PROTOCOLS:
         raise HTTPException(
             status_code=422,
             detail=(
-                "protocol 僅支援 openai_compatible;"
+                "protocol 僅支援 openai_compatible 或 triton_grpc;"
                 "custom_adapter 未被 proxy 實作,請勿選用"
             ),
         )
+    _enforce_protocol_endpoint(protocol, request.endpoint_url)
 
     # Validate base_model_id if provided
     if request.base_model_id:
@@ -846,6 +877,23 @@ async def import_models_from_endpoint(
     )
     if not source:
         raise HTTPException(status_code=404, detail="來源模型不存在")
+
+    # Bulk import is an OpenAI ``GET …/v1/models`` listing walk, and it copies
+    # the source row's endpoint_url + protocol onto every created row without
+    # re-running _enforce_protocol_endpoint. From a triton_grpc source that
+    # built ``grpc://host:9001/v1/models``, which passes the SSRF guard (the
+    # scheme is legal for model endpoints) and then dies inside httpx as a
+    # generic 502 — an unactionable error for something that can never work,
+    # since gRPC has no listing endpoint. Refuse up front and say why.
+    if (getattr(source, "protocol", None) or "") == "triton_grpc":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "protocol=triton_grpc 的來源不支援整批帶入："
+                "gRPC 沒有 OpenAI 相容的 /v1/models 列表可以掃描。"
+                "請逐一註冊 Triton 模型（名稱須與 Triton 上的 model name 一致）"
+            ),
+        )
 
     # Same outbound guard as create/update — disallowed endpoints stay
     # disallowed. Guard the FINAL listing URL (never guard one string and
@@ -1427,36 +1475,31 @@ def unset_asr_primary(
 
 
 async def _probe_embedding_native_dim(model: ModelRegistry) -> int:
-    """Call the model's /v1/embeddings once and return len(vector).
+    """Embed once through ``proxy_request`` and return len(vector).
 
-    Measured fact — never trust a configured value. Releases no DB
-    connection (caller owns the session lifecycle around this).
+    Uses the same path as live traffic (including ``api_version`` URL prefix
+    for openai_compatible, and Triton gRPC for ``triton_grpc``) so the probe
+    cannot disagree with the call path about the same model. Measured fact —
+    never trust a configured value. Caller owns the session lifecycle.
     """
     from anila_core.memory.long_term import EMBED_DIM
-    from app.services.proxy.headers import resolve_model_gateway_key
+    from app.services.proxy.service import proxy_request
 
-    base = (model.endpoint_url or "").rstrip("/")
-    url = join_upstream_path(base, "/v1/embeddings")
+    api_version = getattr(model, "api_version", None)
+    if api_version not in ("v1", "v2"):
+        api_version = "v1"
     try:
-        validate_outbound_url(url, endpoint_kind=ENDPOINT_KIND_MODEL)
-    except UnsafeEndpointError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"embedding 探測端點未通過 SSRF 守衛: {exc}",
-        ) from exc
-    headers: dict[str, str] = {}
-    key = resolve_model_gateway_key(model)
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(
-                url,
-                json={"model": model.name, "input": ["anila-dim-probe"]},
-                headers=headers,
-            )
-            r.raise_for_status()
-            vec = r.json()["data"][0]["embedding"]
+        response = await proxy_request(
+            model=model,
+            api_key_id=None,
+            user_id=0,
+            department_id=None,
+            request_body={"model": model.name, "input": ["anila-dim-probe"]},
+            endpoint_path=f"/{api_version}/embeddings",
+            embedding_input_role="query",
+            record_usage=False,
+        )
+        vec = response["data"][0]["embedding"]
     except HTTPException:
         raise
     except Exception as exc:
@@ -1560,6 +1603,7 @@ async def set_platform_embedding(
         model_type=model.model_type,
         endpoint_url=model.endpoint_url,
         api_version=model.api_version,
+        protocol=model.protocol or "openai_compatible",
         api_key_secret_ref=model.api_key_secret_ref,
         is_active=model.is_active,
     )
@@ -1692,16 +1736,16 @@ def update_model(
 
     update_data = request.model_dump(exclude_unset=True)
 
-    if "protocol" in update_data and (
-        update_data["protocol"] or "openai_compatible"
-    ) != "openai_compatible":
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "protocol 僅支援 openai_compatible;"
-                "custom_adapter 未被 proxy 實作,請勿選用"
-            ),
-        )
+    if "protocol" in update_data:
+        protocol = update_data["protocol"] or "openai_compatible"
+        if protocol not in ALLOWED_PROTOCOLS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "protocol 僅支援 openai_compatible 或 triton_grpc;"
+                    "custom_adapter 未被 proxy 實作,請勿選用"
+                ),
+            )
 
     # Designated non-admin authors: address only. Any other field in the
     # same request is refused — activation, ceiling, department, credentials
@@ -1721,6 +1765,20 @@ def update_model(
         if update_data["endpoint_url"] is None:
             raise HTTPException(status_code=400, detail="端點位址不可為空")
         _enforce_endpoint_url(update_data["endpoint_url"])
+
+    # Protocol/URL consistency after both fields (or retained row values) known.
+    effective_protocol = (
+        update_data["protocol"]
+        if "protocol" in update_data
+        else (model.protocol or "openai_compatible")
+    ) or "openai_compatible"
+    effective_url = (
+        update_data["endpoint_url"]
+        if "endpoint_url" in update_data
+        else model.endpoint_url
+    )
+    if "protocol" in update_data or "endpoint_url" in update_data:
+        _enforce_protocol_endpoint(effective_protocol, effective_url)
 
     # Validate base_model_id if provided
     if "base_model_id" in update_data and update_data["base_model_id"]:
@@ -1887,9 +1945,16 @@ async def _probe_and_persist(model: ModelRegistry, admin: User, db: Session, ip:
     endpoint_url = model.endpoint_url
     model_id = model.id
     display_name = model.display_name
+    protocol = model.protocol or "openai_compatible"
+    model_name = model.name
     # Release pooled connection before the outbound probe (≤10s).
     db.commit()
-    status, latency_ms = await probe_model_health_detailed(endpoint_url)
+    status, latency_ms = await probe_model_health_detailed(
+        endpoint_url,
+        endpoint_kind=ENDPOINT_KIND_MODEL,
+        protocol=protocol,
+        model_name=model_name,
+    )
     checked_at = datetime.now(timezone.utc)
     model.health_status = status
     model.health_checked_at = checked_at

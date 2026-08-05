@@ -95,24 +95,64 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def make_embed_fn(
     *, base_url: str, model: str, api_key: str = "EMPTY", verify_ssl: bool = True, timeout: float = 30.0
 ) -> EmbedFn:
-    """建構打 ``/embeddings`` 的粗篩 embed_fn。"""
+    """建構打 ``/embeddings`` 的粗篩 embed_fn。
+
+    **兩次呼叫,不是一次。** 這裡要比較的是「查詢 vs 候選記憶描述」,兩邊
+    在 Triton 類 embedder 上走**不同輸入張量**(``query`` / ``documents``),
+    一個請求只能是其中一側。原本把 ``[query, *descriptions]`` 併成一批送,
+    結果是查詢也被當文件編碼 —— 不會報錯,只是相似度排序悄悄變差
+    (實測 cosine 0.828 → 1.0,等於把查詢與文件混為一談)。
+    對 OpenAI 相容端點,拆兩次只是多一個 round-trip,結果不變。
+
+    ⚠ ``input_type`` 只有在 ``base_url`` 指向 **CSP** 的 ``/v1`` 時才真的生效
+    (CSP 讀它、據以選 Triton 的 query/documents 張量,並在轉發上游前把欄位拿掉)。
+    README 記錄的 ``ANILA_EMBED_BASE_URL=http://nv-embed-proxy:8000/v1`` 指的是
+    **model 容器**:那支 shim 的 pydantic model 沒宣告這個欄位、預設
+    ``extra="ignore"`` —— 送過去不會壞(不是 400),但也不會被讀,查詢一樣落在
+    documents 張量。這條差異記在 ``docs/FAKE-CONTROLS.md`` #35。
+    """
+
+    async def _post(
+        client, inputs: list[str], input_type: str
+    ) -> list[list[float]]:
+        resp = await client.post(
+            f"{base_url.rstrip('/')}/embeddings",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": model, "input": inputs, "input_type": input_type},
+        )
+        resp.raise_for_status()
+        return [d["embedding"] for d in resp.json()["data"]]
 
     async def _embed(query: str, manifest: dict[str, str], n: int) -> list[str]:
         import httpx
 
         names = list(manifest)
-        inputs = [query, *[manifest[name] for name in names]]
+        if not names:
+            return []
         async with httpx.AsyncClient(verify=verify_ssl, timeout=timeout) as client:
-            resp = await client.post(
-                f"{base_url.rstrip('/')}/embeddings",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": model, "input": inputs},
+            q_vecs = await _post(client, [query], "query")
+            doc_vecs = await _post(
+                client, [manifest[name] for name in names], "document"
             )
-            resp.raise_for_status()
-            vectors = [d["embedding"] for d in resp.json()["data"]]
-        q_vec, doc_vecs = vectors[0], vectors[1:]
+        # 兩側各有一道「端點少回向量」的防線,而且**各自是唯一的那一道**
+        # (兩道都放在 ``_post`` 裡的版本互相遮蔽:任拿掉一道,另一道都會替它
+        # 把測試撐綠,等於誰也沒被釘住)。
+        #
+        # 查詢側:沒有查詢向量就沒有東西可比。少了這行,``q_vecs[0]`` 是
+        # IndexError —— 一樣會被 ``recall()`` 接住退回 keyword,但錯的是
+        # 「程式碰到空清單」而不是「端點回話不對」,現場看 log 差很多。
+        if len(q_vecs) != 1:
+            raise ValueError(
+                f"embedding 端點對 1 段查詢回了 {len(q_vecs)} 個向量(input_type=query)"
+            )
+        # 文件側:``strict=True`` 是這裡唯一擋住無聲截短的東西,不是裝飾 ——
+        # 向量比候選少時 zip 直接把尾巴吃掉,``embed_fn`` 照樣回一份「看起來
+        # 正常、只是短了」的排序,少掉的記憶沒有人會知道(不報錯、不留 log)。
+        # 拋出去比較誠實:``recall()`` 會接住並退回 keyword 粗篩,候選一條不少。
         ranked = sorted(
-            zip(names, doc_vecs, strict=False), key=lambda nv: _cosine(q_vec, nv[1]), reverse=True
+            zip(names, doc_vecs, strict=True),
+            key=lambda nv: _cosine(q_vecs[0], nv[1]),
+            reverse=True,
         )
         return [name for name, _ in ranked[:n]]
 

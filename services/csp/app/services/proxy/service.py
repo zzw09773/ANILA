@@ -170,6 +170,221 @@ def _get_timeout(model_type: str) -> float:
     return settings.LLM_TIMEOUT
 
 
+def _normalize_embed_inputs(request_body: dict) -> list[str]:
+    """OpenAI-shape ``input`` → list[str]."""
+    raw = request_body.get("input", [])
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, list):
+        out: list[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                raise HTTPException(
+                    status_code=400, detail="embedding input 必須為字串或字串陣列"
+                )
+            out.append(item)
+        return out
+    raise HTTPException(status_code=400, detail="embedding input 必須為字串或字串陣列")
+
+
+def _resolve_embedding_input_role(
+    embedding_input_role: Optional[str],
+) -> str:
+    """Return ``query`` or ``document``. Default ``document`` for public /v1.
+
+    Query-side call sites (search, memory, dim probe) must pass
+    ``embedding_input_role='query'`` explicitly — silent default-to-document
+    on those paths is the quality bug this parameter exists to prevent.
+    """
+    if embedding_input_role is None or embedding_input_role == "":
+        return "document"
+    if embedding_input_role in ("query", "document"):
+        return embedding_input_role
+    raise HTTPException(
+        status_code=400,
+        detail="embedding_input_role 僅接受 query 或 document",
+    )
+
+
+async def _proxy_triton_embedding(
+    *,
+    model: ModelRegistry,
+    api_key_id: int,
+    user_id: int,
+    department_id: int | None,
+    request_body: dict,
+    endpoint_path: str,
+    conversation_id: Optional[str],
+    trace_id: Optional[str],
+    requires_encryption: bool,
+    caller_agent_id: Optional[int],
+    caller_client_id: Optional[int],
+    task_id: Optional[int],
+    legacy_runtime_call: bool,
+    endpoint_display: Optional[str],
+    embedding_input_role: Optional[str],
+    timeout: float,
+    request_type: str,
+    record_usage: bool = True,
+) -> dict:
+    """Triton/KServe gRPC embedding path — never through join_upstream_path."""
+    from app.services.triton_grpc import TritonEmbedError, embed_texts
+
+    if request_type != "embedding" and model.model_type != "embedding":
+        raise HTTPException(
+            status_code=400,
+            detail="protocol=triton_grpc 目前僅支援 embedding 呼叫",
+        )
+
+    # Guard the registered endpoint as-is (grpc://host:port). Path joining
+    # is meaningless for gRPC — do not call join_upstream_path.
+    endpoint_url = (model.endpoint_url or "").strip()
+    _guard_outbound(endpoint_url, endpoint_kind=ENDPOINT_KIND_MODEL)
+
+    role = _resolve_embedding_input_role(embedding_input_role)
+    texts = _normalize_embed_inputs(request_body)
+    if not texts:
+        raise HTTPException(status_code=400, detail="embedding input 不可為空")
+    if role == "query" and len(texts) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="triton query embedding 每次僅接受一個字串",
+        )
+
+    start_time = time.time()
+    last_error = None
+    for attempt in range(settings.PROXY_MAX_RETRIES):
+        try:
+            vectors = await asyncio.to_thread(
+                embed_texts,
+                endpoint_url,
+                model.name,
+                texts,
+                role=role,
+                timeout_s=float(timeout),
+            )
+            duration_ms = int((time.time() - start_time) * 1000)
+            prompt_tokens = sum(max(1, len(t.split())) for t in texts)
+            result = {
+                "object": "list",
+                "model": model.name,
+                "data": [
+                    {"object": "embedding", "index": i, "embedding": vec}
+                    for i, vec in enumerate(vectors)
+                ],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "total_tokens": prompt_tokens,
+                },
+                "anila_meta": build_default_anila_meta(
+                    model.name,
+                    detail=_proxy_detail(model.name, endpoint_display),
+                    latency_ms=duration_ms,
+                    classified=requires_encryption,
+                    usage={
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": 0,
+                        "total_tokens": prompt_tokens,
+                    },
+                ),
+            }
+            if record_usage:
+                if task_id is not None or legacy_runtime_call:
+                    await enqueue_usage_task_linked(
+                        api_key_id=api_key_id,
+                        user_id=user_id,
+                        department_id=department_id,
+                        model_id=model.id,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=0,
+                        total_tokens=prompt_tokens,
+                        request_duration_ms=duration_ms,
+                        conversation_id=conversation_id,
+                        trace_id=trace_id,
+                        request_type=request_type,
+                        caller_agent_id=caller_agent_id,
+                        caller_client_id=caller_client_id,
+                        task_id=task_id,
+                        legacy_runtime_call=legacy_runtime_call,
+                    )
+                else:
+                    await enqueue_usage(
+                        api_key_id=api_key_id,
+                        user_id=user_id,
+                        department_id=department_id,
+                        model_id=model.id,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=0,
+                        total_tokens=prompt_tokens,
+                        request_duration_ms=duration_ms,
+                        conversation_id=conversation_id,
+                        trace_id=trace_id,
+                        request_type=request_type,
+                        caller_agent_id=caller_agent_id,
+                        caller_client_id=caller_client_id,
+                    )
+            _note_proxy_outcome(
+                model_id=model.id,
+                model_name=model.name,
+                model_type=model.model_type,
+                display_name=getattr(model, "display_name", None),
+                success=True,
+            )
+            return result
+        except TritonEmbedError as exc:
+            last_error = str(exc)
+            if attempt < settings.PROXY_MAX_RETRIES - 1:
+                delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "模型 %s Triton 呼叫失敗，%ss 後重試 (%s/%s): %s",
+                    model.name,
+                    delay,
+                    attempt + 1,
+                    settings.PROXY_MAX_RETRIES,
+                    last_error,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.error("模型 %s Triton  upstream 失敗: %s", model.name, last_error)
+            _note_proxy_outcome(
+                model_id=model.id,
+                model_name=model.name,
+                model_type=model.model_type,
+                display_name=getattr(model, "display_name", None),
+                success=False,
+            )
+            raise HTTPException(status_code=502, detail="模型服務暫時不可用") from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            last_error = "未預期的代理錯誤"
+            logger.error("Triton 代理請求錯誤: %s", exc, exc_info=True)
+            if attempt < settings.PROXY_MAX_RETRIES - 1:
+                delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
+                await asyncio.sleep(delay)
+                continue
+            _note_proxy_outcome(
+                model_id=model.id,
+                model_name=model.name,
+                model_type=model.model_type,
+                display_name=getattr(model, "display_name", None),
+                success=False,
+            )
+            raise HTTPException(status_code=502, detail="模型服務暫時不可用") from exc
+
+    _note_proxy_outcome(
+        model_id=model.id,
+        model_name=model.name,
+        model_type=model.model_type,
+        display_name=getattr(model, "display_name", None),
+        success=False,
+    )
+    raise HTTPException(
+        status_code=502,
+        detail=f"模型服務不可用，已重試 {settings.PROXY_MAX_RETRIES} 次: {last_error}",
+    )
+
+
 def build_default_anila_meta(
     source_name: str,
     *,
@@ -227,6 +442,8 @@ async def _proxy_request_impl(
     task_trace_id: Optional[str] = None,
     legacy_runtime_call: bool = False,
     endpoint_display: Optional[str] = None,
+    embedding_input_role: Optional[str] = None,
+    record_usage: bool = True,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -249,10 +466,34 @@ async def _proxy_request_impl(
         else "chat"
     )
 
+    protocol = (getattr(model, "protocol", None) or "openai_compatible").strip()
+    if protocol == "triton_grpc":
+        return await _proxy_triton_embedding(
+            model=model,
+            api_key_id=api_key_id,
+            user_id=user_id,
+            department_id=department_id,
+            request_body=request_body,
+            endpoint_path=endpoint_path,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+            requires_encryption=requires_encryption,
+            caller_agent_id=caller_agent_id,
+            caller_client_id=caller_client_id,
+            task_id=task_id,
+            legacy_runtime_call=legacy_runtime_call,
+            endpoint_display=endpoint_display,
+            embedding_input_role=embedding_input_role,
+            timeout=timeout,
+            request_type=request_type,
+            record_usage=record_usage,
+        )
+
     # Registry rows store bare host or ``.../v1``; join_upstream_path is
     # correct for both. Preserve the api_version=="v2" embedding special case
     # (strip any trailing version segment first so …/v1 + v2 does not become
-    # …/v1/v2/embeddings).
+    # …/v1/v2/embeddings). api_version is a URL path prefix only — not a
+    # wire protocol (see docs/FAKE-CONTROLS.md).
     if model.api_version == "v2" and "embedding" in endpoint_path:
         target_url = join_upstream_path(
             strip_trailing_api_version(model.endpoint_url),
@@ -412,40 +653,41 @@ async def _proxy_request_impl(
             # Slice 2b-C: task-linked / legacy-marked /v1 chat rows go
             # through the task-aware variant; every other caller keeps the
             # byte-identical legacy enqueue path.
-            if task_id is not None or legacy_runtime_call:
-                await enqueue_usage_task_linked(
-                    api_key_id=api_key_id,
-                    user_id=user_id,
-                    department_id=department_id,
-                    model_id=model.id,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    request_duration_ms=duration_ms,
-                    conversation_id=conversation_id,
-                    trace_id=trace_id,
-                    request_type=request_type,
-                    caller_agent_id=caller_agent_id,
-                    caller_client_id=caller_client_id,
-                    task_id=task_id,
-                    legacy_runtime_call=legacy_runtime_call,
-                )
-            else:
-                await enqueue_usage(
-                    api_key_id=api_key_id,
-                    user_id=user_id,
-                    department_id=department_id,
-                    model_id=model.id,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    request_duration_ms=duration_ms,
-                    conversation_id=conversation_id,
-                    trace_id=trace_id,
-                    request_type=request_type,
-                    caller_agent_id=caller_agent_id,
-                    caller_client_id=caller_client_id,
-                )
+            if record_usage:
+                if task_id is not None or legacy_runtime_call:
+                    await enqueue_usage_task_linked(
+                        api_key_id=api_key_id,
+                        user_id=user_id,
+                        department_id=department_id,
+                        model_id=model.id,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        request_duration_ms=duration_ms,
+                        conversation_id=conversation_id,
+                        trace_id=trace_id,
+                        request_type=request_type,
+                        caller_agent_id=caller_agent_id,
+                        caller_client_id=caller_client_id,
+                        task_id=task_id,
+                        legacy_runtime_call=legacy_runtime_call,
+                    )
+                else:
+                    await enqueue_usage(
+                        api_key_id=api_key_id,
+                        user_id=user_id,
+                        department_id=department_id,
+                        model_id=model.id,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        request_duration_ms=duration_ms,
+                        conversation_id=conversation_id,
+                        trace_id=trace_id,
+                        request_type=request_type,
+                        caller_agent_id=caller_agent_id,
+                        caller_client_id=caller_client_id,
+                    )
 
             # 量測／衛生：usage 入帳後、回傳前剝內嵌 think（不影響 metering）。
             result = strip_inline_think_from_chat_result(result)
@@ -533,12 +775,22 @@ async def proxy_request(
     task_run_id: Optional[int] = None,
     legacy_runtime_call: bool = False,
     endpoint_display: Optional[str] = None,
+    embedding_input_role: Optional[str] = None,
+    record_usage: bool = True,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
     the run is marked completed on success / failed on any HTTP error
     (including SSRF-guard rejections and exhausted retries). No-op — and
     byte-identical behavior — for legacy task-less callers.
+
+    ``embedding_input_role`` is in-process only (``query`` / ``document``);
+    it selects the Triton input tensor for ``protocol=triton_grpc`` and is
+    ignored on the OpenAI-compatible path. Public ``/v1/embeddings`` leaves
+    it unset → documents; search/memory/probe must pass ``query``.
+
+    ``record_usage=False`` skips token_usage enqueue (dim probe / internal
+    checks that must not pollute dashboards).
     """
     try:
         result = await _proxy_request_impl(
@@ -560,6 +812,8 @@ async def proxy_request(
             task_trace_id=task_trace_id,
             legacy_runtime_call=legacy_runtime_call,
             endpoint_display=endpoint_display,
+            embedding_input_role=embedding_input_role,
+            record_usage=record_usage,
         )
     except HTTPException as exc:
         if task_run_id is not None:

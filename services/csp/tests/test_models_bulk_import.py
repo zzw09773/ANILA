@@ -1108,3 +1108,64 @@ def test_bulk_import_require_admin_rejects_regular_user():
         require_admin(user)
     assert exc.value.status_code == 403
     assert "管理員" in str(exc.value.detail)
+
+
+# ── triton_grpc source: refused before it can build a nonsense URL ────────────
+
+
+def test_bulk_import_refuses_a_triton_grpc_source(db, monkeypatch):
+    """gRPC has no OpenAI ``/v1/models`` listing to walk.
+
+    Import inherits ``endpoint_url`` + ``protocol`` from the source row and
+    does not re-run ``_enforce_protocol_endpoint``, so a triton_grpc source
+    used to build ``grpc://host:9001/v1/models`` — which *passes* the SSRF
+    guard (grpc is a legal model scheme) and then dies inside httpx as a
+    generic 502. An operator gets "模型服務暫時不可用" for something that can
+    never work under any configuration. Refuse up front with the reason.
+    """
+    _allow_https_endpoint(monkeypatch)
+    admin = make_user(db, "admin_triton_bi", role="admin")
+    source = make_model(db, name="triton-embedder")
+    source.endpoint_url = "grpc://mock-llm:9001"
+    source.protocol = "triton_grpc"
+    source.model_type = "embedding"
+    db.commit()
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("upstream listing must not be fetched for gRPC")
+
+    monkeypatch.setattr(models_api, "_fetch_upstream_model_listing", _must_not_run)
+
+    req = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.1"))
+    body = ModelBulkImportRequest(source_model_id=source.id)
+    with pytest.raises(HTTPException) as exc:
+        _run(models_api.import_models_from_endpoint(body, req, admin, db))
+
+    assert exc.value.status_code == 422
+    detail = str(exc.value.detail)
+    assert "triton_grpc" in detail
+    # Actionable: says what to do instead, not just "unsupported".
+    assert "逐一註冊" in detail
+    # Nothing was created from the refused source.
+    assert (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.protocol == "triton_grpc")
+        .count()
+        == 1
+    )
+
+
+def test_bulk_import_still_works_for_an_openai_compatible_source(db, monkeypatch):
+    """The gRPC refusal must not become a blanket block. Control case."""
+    _allow_https_endpoint(monkeypatch)
+    admin = make_user(db, "admin_ctrl_bi", role="admin")
+    source = make_model(db, name="ctrl-gateway")
+    source.endpoint_url = "http://mock-llm:8080/v1"
+    source.protocol = "openai_compatible"
+    db.commit()
+
+    _stub_listing(monkeypatch, [{"id": "ctrl-model-a", "object": "model"}])
+    req = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.1"))
+    body = ModelBulkImportRequest(source_model_id=source.id)
+    result = _run(models_api.import_models_from_endpoint(body, req, admin, db))
+    assert result.created == 1

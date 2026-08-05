@@ -34,14 +34,82 @@ asksecret() { local p="$1" a; read -rsp "$(c '1;35' '?') ${p}: " a; echo >&2; pr
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
+# ── .env 存取:腳本眼中的「已設」必須等於 compose 眼中的「已設」 ─────────────
+# 舊版用 `^KEY=` 認鍵,compose 不是這樣解的。實測 v2.36.2,下面每一種寫法
+# compose 都讀成同一個值,而 `^KEY=` 一種都認不出來:
+#     ` KEY=1`(行首空白)  `\tKEY=1`  `export KEY=1`  `KEY =1`(= 前空白)
+#     `KEY="1"` / `KEY='1'`(引號)  `KEY=1 `(行尾空白)  `KEY=1\r\n`(CRLF)
+# 差別會直接吃掉操作者的設定:手寫 ` ANILA_ALLOW_GRPC_ENDPOINT=1` 之後重跑本
+# 腳本 → grep 看不見那一行 → 檔尾又 append 一行 `...=0` → compose 取最後一筆 →
+# 剛開起來的旗標被靜默關掉。症狀只是註冊 400,現場反推不出是腳本改的,而
+# preserve_flag 存在的理由正是要防這件事。
+# (同一套判準已經在 infra/deployment/scripts/deploy-prod.sh 的 check_env 裡:
+#  `^[[:space:]]*(export[[:space:]]+)?KEY[[:space:]]*=` —— 這裡跟它對齊。)
+_trim() {  # 去前後空白(對齊 url_guard._env_flag 的 .strip())
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  printf '%s' "${s%"${s##*[![:space:]]}"}"
+}
+_env_key_re() { printf '^[[:space:]]*(export[[:space:]]+)?%s[[:space:]]*=' "$1"; }
+env_has_key() { grep -qE "$(_env_key_re "$1")" .env 2>/dev/null; }
+
 set_env() {  # set_env KEY VALUE — 去重後 append (literal,不怕特殊字元/sed 跳脫)
   local key="$1" val="$2"
   [ -f .env ] || die ".env 不存在"
-  grep -vE "^${key}=" .env > .env.tmp 2>/dev/null || true
+  grep -vE "$(_env_key_re "$key")" .env > .env.tmp 2>/dev/null || true
   mv .env.tmp .env
   printf '%s=%s\n' "$key" "$val" >> .env
 }
-get_env() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true; }
+# 回傳 compose 會讀到的那個值:重複鍵取**最後一行**(實測 v2.36.2:FOO=first /
+# FOO=second → second;取第一行會讓腳本看到的值與 stack 實際用的值不同),
+# 去 CR、去引號、去 ` #` 行尾註解(compose 只吃「空白+#」這一種)、去前後空白。
+#
+# ⚠ 引號要**先**認、而且只認到「下一個同款引號」為止,不能要求整串頭尾都是引號。
+# 舊版的 `'"'*'"'` 樣式對 `KEY="1" # 註解` 不成立(結尾是註解不是引號),掉進
+# `*)` 分支只砍掉註解、引號留著 → `"1" != "1"` → **compose 讀成 1、腳本卻不警示**。
+# 這是本檔矩陣裡兩種情況(引號、行尾註解)的組合,單獨各自都對、合起來就漏。
+# 實測 compose v2.36.2(2026-08-05,本機 `docker compose config`):
+#     `K="1" # note` → 1     `K='1' # note` → 1     `export K="1" # note` → 1
+#     `K="1" # note` + CRLF → 1                     `K="1"junk` → 1
+#     `K="1 # note"` → `1 # note`(引號內的 # 不是註解)  `K=" 1 "` → ` 1 `
+#     `K=1#note` → `1#note`  `K=#1` → `#1`(compose 只認「空白+#」)
+# (`K="1` 這種沒收尾的引號 compose 直接報錯拒絕渲染,這裡怎麼判都不影響結果。)
+get_env() {
+  local line val
+  line="$(grep -E "$(_env_key_re "$1")" .env 2>/dev/null | tail -1)" || true
+  [ -n "$line" ] || return 0
+  val="${line%$'\r'}"
+  val="$(_trim "${val#*=}")"
+  case "$val" in
+    '"'*) val="${val#\"}"; case "$val" in *'"'*) val="${val%%\"*}" ;; esac ;;
+    "'"*) val="${val#\'}"; case "$val" in *"'"*) val="${val%%\'*}" ;; esac ;;
+    *)    val="$(_trim "${val%% #*}")" ;;
+  esac
+  printf '%s' "$val"
+}
+
+# ── url_guard 的三個 opt-in 旗標:預設 0,但**保留操作者已設的值** ─────────
+# 這三個都是 runbook §3.1b/§3.1c 明文要求現場自己開的。硬寫 0 的版本會讓
+# 「重跑一次部署腳本」把操作者剛剛開起來的東西靜默關掉 —— 症狀只是註冊/健檢
+# 400,現場幾乎不可能反推到「是部署腳本把它改回去了」。缺鍵時仍補 0,所以
+# 全新部署的預設姿態沒有變寬,變的只是「腳本不再推翻現場的決定」。
+# 鍵已經在就**一個字都不改**(不重寫、不搬到檔尾):重寫會吃掉操作者的註解與
+# 引號,而 compose 讀得到就夠了。警示的判準是「容器裡會不會拿到 1」:引號與
+# 行尾註解由 compose 拆掉(見 get_env 上方的實測),app 端的 ``_env_flag`` 只
+# 再 ``.strip() == "1"``。所以 `KEY="1"`、`KEY="1" # 註解` 都會被警示。
+# ⚠ 舊註解寫「ANILA_ENV=production → 模型 http 一律 fail-closed,不受任何旗標
+#    放行」——那句自 2026-07-29(PLAN P0.2)起就不成立了:model kind 的 http
+#    改成純由 ANILA_ALLOW_HTTP_ENDPOINT 決定、與 env 無關,所以那一行真的會把
+#    §3.1b 的本機模型組態關掉。
+preserve_flag() {  # preserve_flag KEY 提醒字串
+  local key="$1" note="$2"
+  if env_has_key "$key"; then
+    [ "$(_trim "$(get_env "$key")")" = "1" ] && warn "$key=1 — $note"
+  else
+    set_env "$key" 0
+  fi
+  return 0
+}
 
 echo "============================================================"
 echo " ANILA 內網一條龍部署 — V1.0.0 (prod-intranet-card / 卡片登入)"
@@ -171,12 +239,18 @@ fi
 
 # 內網 strict 模式 + 卡片登入 + 模型 CA 路徑(每次都確保正確)
 set_env ANILA_ALLOW_DEV_SECRET      0
-set_env ANILA_ALLOW_HTTP_ENDPOINT   0
-set_env ANILA_ALLOW_PRIVATE_ENDPOINT 0
-# Slice 6 旗標分域:ANILA_ENV=production → 「模型」http 一律 fail-closed(不受
-# 任何旗標放行);MLSteam agent 是純 http NodePort → agent 專用旗標開 1。
 set_env ANILA_ENV                   production
+# MLSteam agent 是純 http NodePort → agent 專用旗標開 1。
 set_env ANILA_ALLOW_HTTP_AGENT_ENDPOINT 1
+
+# url_guard 的三個 opt-in 旗標:預設 0,但保留操作者已設的值(preserve_flag
+# 定義在檔案上方,與其他 .env 存取函式放在一起)。
+preserve_flag ANILA_ALLOW_HTTP_ENDPOINT \
+  "放行 http:// 模型端點(runbook §3.1b 本機模型容器);模型走 https gateway 就該是 0"
+preserve_flag ANILA_ALLOW_PRIVATE_ENDPOINT \
+  "放行 RFC1918 私網 IP 端點(runbook §3.1c 直連 Triton 用);端點都是 FQDN 就該是 0"
+preserve_flag ANILA_ALLOW_GRPC_ENDPOINT \
+  "放行 cleartext grpc:// 模型端點(Triton);內網無 TLS 時才需要,有 grpcs:// 請改回 0"
 set_env ENABLE_CARD_LOGIN           true
 set_env REQUIRE_CARD_LOGIN_ONLY     true
 # 只在 model-ca.pem 真的有憑證時才指過去。ANILA_MODEL_CA_FILE → csp 的 SSL_CERT_FILE,

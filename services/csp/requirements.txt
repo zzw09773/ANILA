@@ -46,3 +46,14 @@ respx==0.22.0
 # 升 asyncio 外掛是 major，且此 CVE 只在「跑 pytest」時觸發 /tmp 競態；
 # 正式 runtime 不跑測試 → 本輪刻意不升，見報告「刻意留下」。
 pytest-asyncio==0.24.0
+
+# Triton/KServe gRPC embedding（protocol=triton_grpc）。air-gap 友善：
+# grpcio 在 python:3.11-slim 上拉 manylinux binary wheel（~18MB，無編譯），
+# 但 wheel 大且平台相依。與 protobuf 一併顯式 pin，避免氣隙重裝時
+# generated stub／runtime protobuf 主版本漂移造成靜默失敗；csp 映像已解析
+# 到 protobuf 7.35.1，鎖同一版。grpcio 1.83 對齊 vendored
+# ``triton_grpc/*_pb2_grpc.py``（grpcio-tools 產生時寫死的下限）。
+# 勿把這對依賴加進 anila-core 基底或 ingestion-worker／router
+# （router 裝裸 `.`，不可繼承此 wheel）。
+grpcio==1.83.0
+protobuf==7.35.1

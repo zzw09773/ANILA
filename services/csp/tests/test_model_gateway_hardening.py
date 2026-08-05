@@ -191,7 +191,7 @@ def test_test_endpoint_probes_and_persists_five_state(db, monkeypatch):
     admin = make_user(db, "admin_tp", role="admin")
     m = make_model(db, name="tm")
 
-    async def fake_probe(url):
+    async def fake_probe(url, **_kwargs):
         return (HEALTH_HEALTHY, 42)
 
     monkeypatch.setattr(models_api, "probe_model_health_detailed", fake_probe)
@@ -207,7 +207,7 @@ def test_legacy_health_check_alias_is_deprecated(db, monkeypatch):
     admin = make_user(db, "admin_la", role="admin")
     m = make_model(db, name="lm")
 
-    async def fake_probe(url):
+    async def fake_probe(url, **_kwargs):
         return (HEALTH_UNHEALTHY, 99)
 
     monkeypatch.setattr(models_api, "probe_model_health_detailed", fake_probe)

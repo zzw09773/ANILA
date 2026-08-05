@@ -115,9 +115,16 @@
               <div class="cell-caps">
                 <TermBadge v-if="model.protocol" variant="" class="cap-chip">{{ protocolLabel(model.protocol) }}</TermBadge>
                 <TermBadge v-for="cap in capabilityChips(model)" :key="cap" variant="info" class="cap-chip">{{ cap }}</TermBadge>
-                <span class="cap-key" :class="model.has_api_key ? 'cap-key--set' : 'cap-key--global'">
+                <!-- triton_grpc 不走金鑰:顯示「使用全域金鑰」會讓人以為
+                     gRPC 呼叫帶了全域 Bearer,實際上一個 byte 都沒帶。 -->
+                <span
+                  v-if="model.protocol !== 'triton_grpc'"
+                  class="cap-key"
+                  :class="model.has_api_key ? 'cap-key--set' : 'cap-key--global'"
+                >
                   {{ model.has_api_key ? '已設定模型金鑰' : '使用全域金鑰' }}
                 </span>
+                <span v-else class="cap-key cap-key--global">不使用金鑰</span>
               </div>
             </td>
             <td><TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge></td>
@@ -312,10 +319,13 @@
               <option value="asr">asr</option>
             </select>
           </TermField>
-          <TermField label="API 版本">
+          <TermField
+            label="URL 路徑前綴"
+            hint="只改上游路徑的 /v1 或 /v2，不是通訊協定；body 與回應解析相同。Triton gRPC 模型可忽略此欄。"
+          >
             <select v-model="form.api_version" class="term-select" :disabled="addressOnlyEditor">
-              <option value="v1">v1</option>
-              <option value="v2">v2</option>
+              <option value="v1">v1（路徑前綴）</option>
+              <option value="v2">v2（路徑前綴）</option>
             </select>
           </TermField>
         </div>
@@ -350,7 +360,10 @@
           </label>
         </TermField>
         <div class="form-row-2">
-          <TermField label="協定 · protocol" hint="端點所講的 wire protocol">
+          <TermField
+            label="協定 · protocol"
+            hint="端點所講的 wire protocol（與上方 URL 路徑前綴無關）"
+          >
             <select v-model="form.protocol" class="term-select" :disabled="addressOnlyEditor">
               <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
             </select>
@@ -366,7 +379,19 @@
             </select>
           </TermField>
         </div>
+        <p v-if="form.protocol === 'triton_grpc'" class="field-note">
+          Triton/KServe gRPC：平台會依呼叫端決定 query／documents 輸入張量（搜尋＝query、匯入＝documents）。
+          模型名稱須與 Triton 上的 model name 一致（例如 <code>nv-embed-v2</code>）。
+          本協定不送金鑰（gRPC 通道不帶 call credentials），故不顯示金鑰欄位。
+        </p>
+        <!--
+          金鑰欄位只在會真的送出金鑰的協定下出現。triton_grpc 路徑從不呼叫
+          resolve_model_gateway_key / _apply_gateway_auth,client.py 也沒有掛
+          call credentials 或 metadata —— 留著這個欄位就是「打了字、跳成功、
+          什麼也沒送出去」的假控制項(docs/FAKE-CONTROLS.md)。
+        -->
         <TermField
+          v-if="form.protocol !== 'triton_grpc'"
           label="模型金鑰 · api key"
           optional
           hint="僅寫入,不會回顯;留空=沿用現值或全域金鑰"
@@ -579,9 +604,14 @@ const revokingId = ref(null)
 const testingId = ref(null)
 const testResults = ref({})
 
-// doc 04 §2 protocol 列舉。proxy 只實作 openai_compatible；custom_adapter 已退場。
+// doc 04 §2 protocol 列舉。openai_compatible = HTTP OpenAI shape；
+// triton_grpc = Triton/KServe gRPC（端點填 grpc://host:port）。custom_adapter 已退場。
 const PROTOCOL_OPTIONS = [
-  { value: 'openai_compatible', label: 'OpenAI 相容' },
+  { value: 'openai_compatible', label: 'OpenAI 相容（HTTP）' },
+  {
+    value: 'triton_grpc',
+    label: 'Triton / KServe gRPC',
+  },
 ]
 const PROTOCOL_LABELS = Object.fromEntries(PROTOCOL_OPTIONS.map(p => [p.value, p.label]))
 
@@ -853,6 +883,9 @@ const addressOnlyEditor = computed(
 )
 const endpointUrlHint = computed(() => {
   if (endpointFieldLocked.value) return '🔒 僅擁有者與獲授權開發者可變更端點位址'
+  if (form.value.protocol === 'triton_grpc') {
+    return 'Triton gRPC：填 grpc://host:port 或 grpcs://host:port（不要加 /v1 路徑）；cleartext grpc 需 ANILA_ALLOW_GRPC_ENDPOINT=1'
+  }
   if (form.value.model_type === 'asr') {
     return 'decoder 根位址（呼叫 {base}/transcribe）；勿加 /v1'
   }
@@ -861,6 +894,7 @@ const endpointUrlHint = computed(() => {
 })
 const endpointUrlPlaceholder = computed(() => {
   if (endpointFieldLocked.value) return '— 無權設定位址 —'
+  if (form.value.protocol === 'triton_grpc') return 'grpc://172.16.120.35:9001'
   if (form.value.model_type === 'asr') return 'http://asr-decoder:9000'
   return 'http://gemma4:8000/v1'
 })
@@ -887,6 +921,10 @@ function buildModelPayload() {
   if (endpointFieldLocked.value) delete payload.endpoint_url
   // api_key 為 write-only：留空 = 沿用現值或全域金鑰,絕不送空字串把既有金鑰清掉。
   if (!payload.api_key) delete payload.api_key
+  // triton_grpc 從不送金鑰。欄位在該協定下不顯示,但使用者可能先在
+  // openai_compatible 下打了字再切協定 —— 值還留在 form 裡。不丟掉的話
+  // 就是「存了一把永遠不會被用到的金鑰」,比不顯示欄位更誤導。
+  if (payload.protocol === 'triton_grpc') delete payload.api_key
   return payload
 }
 

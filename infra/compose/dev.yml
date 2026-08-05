@@ -78,6 +78,9 @@ services:
       # .env=0 → stays strict (https + no private).
       ANILA_ALLOW_HTTP_ENDPOINT: "1"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "1"
+      # 同理:dev 的 Triton embedder 走 cleartext grpc://（內網 9001 沒有 TLS），
+      # 不放行就連本機都註冊不了 protocol=triton_grpc 的模型。
+      ANILA_ALLOW_GRPC_ENDPOINT: "1"
       # §6-3：assistant 落庫前 zh-TW 靜默正規化。預設 1；設 0 關閉。
       ANILA_ZH_NORMALIZE: "${ANILA_ZH_NORMALIZE:-1}"
       # 檢索查詢擴展（民國↔西元＋域內同義）。預設 1；設 0 關閉。

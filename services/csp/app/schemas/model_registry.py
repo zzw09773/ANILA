@@ -1,9 +1,15 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.contracts.classification import ClassificationLevel
 from app.schemas.base import ApiResponseModel
+
+# URL path prefix only — not a wire protocol. See docs/FAKE-CONTROLS.md.
+ALLOWED_API_VERSIONS = frozenset({"v1", "v2"})
+# App-level only (no DB CHECK). custom_adapter remains rejected at the API.
+ALLOWED_PROTOCOLS = frozenset({"openai_compatible", "triton_grpc"})
 
 
 def _validate_classification_ceiling(value: str | None) -> str | None:
@@ -15,12 +21,34 @@ def _validate_classification_ceiling(value: str | None) -> str | None:
     return value
 
 
+def _validate_api_version(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value not in ALLOWED_API_VERSIONS:
+        raise ValueError(
+            "api_version 僅接受 v1 或 v2（URL 路徑前綴，不是通訊協定）"
+        )
+    return value
+
+
+def _validate_protocol(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value not in ALLOWED_PROTOCOLS:
+        raise ValueError(
+            "protocol 僅接受 openai_compatible 或 triton_grpc"
+        )
+    return value
+
+
 class ModelCreate(BaseModel):
     name: str
     display_name: str
     model_type: str  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image' / 'asr'
     endpoint_url: str
-    api_version: str = "v1"
+    # URL path prefix for OpenAI-compatible endpoints only (v1/v2).
+    # Ignored for protocol=triton_grpc (gRPC has no versioned HTTP path).
+    api_version: Literal["v1", "v2"] = "v1"
     description: str | None = None
     context_window: int | None = None
     base_model_id: int | None = None  # For agents: the underlying LLM model ID
@@ -30,7 +58,8 @@ class ModelCreate(BaseModel):
     # (migration 0033) is False so historical rows aren't auto-flipped.
     is_internal: bool = True
     # Slice 6a (doc 04 §2): ModelEndpoint formalized fields.
-    protocol: str = "openai_compatible"  # 'openai_compatible' / 'custom_adapter'
+    # openai_compatible = HTTP OpenAI shape; triton_grpc = Triton/KServe gRPC.
+    protocol: str = "openai_compatible"
     classification_ceiling: str | None = None  # 四級字串;None = 不設限
     owner_department_id: int | None = None
     supports_streaming: bool = True
@@ -46,12 +75,22 @@ class ModelCreate(BaseModel):
     def _ceiling(cls, v: str | None) -> str | None:
         return _validate_classification_ceiling(v)
 
+    @field_validator("api_version")
+    @classmethod
+    def _api_version(cls, v: str) -> str:
+        return _validate_api_version(v)  # type: ignore[return-value]
+
+    @field_validator("protocol")
+    @classmethod
+    def _protocol(cls, v: str) -> str:
+        return _validate_protocol(v)  # type: ignore[return-value]
+
 
 class ModelUpdate(BaseModel):
     display_name: str | None = None
     model_type: str | None = None
     endpoint_url: str | None = None
-    api_version: str | None = None
+    api_version: Literal["v1", "v2"] | None = None
     is_active: bool | None = None
     description: str | None = None
     context_window: int | None = None
@@ -71,6 +110,16 @@ class ModelUpdate(BaseModel):
     @classmethod
     def _ceiling(cls, v: str | None) -> str | None:
         return _validate_classification_ceiling(v)
+
+    @field_validator("api_version")
+    @classmethod
+    def _api_version(cls, v: str | None) -> str | None:
+        return _validate_api_version(v)
+
+    @field_validator("protocol")
+    @classmethod
+    def _protocol(cls, v: str | None) -> str | None:
+        return _validate_protocol(v)
 
 
 class ModelResponse(ApiResponseModel):

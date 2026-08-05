@@ -270,3 +270,95 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 `ServiceAccessView.vue:68`、`DashboardView.vue:147` 指向 `/admin/platform-links`,真實路由不是這個。
 
 **#28–#30 已開工(wt/govclean),#27 等 core-opt 合併後隨路由那批一起修。**
+
+---
+
+## 第三輪(2026-08-03)——模型登錄的假控制與假紅燈
+
+### #31 ✅ `api_version`（v1／v2）看起來像協定，其實只換 URL 路徑前綴
+
+- **畫面說**：治理中心模型頁「API 版本」下拉 v1／v2，像在選通訊協定。
+- **實際**：proxy 只把路徑改成 `/v1/...` 或 `/v2/...`（`proxy/service.py`、
+  `proxy.py` 串流）；**送出的 body 與回應解析完全相同**。更糟的是維度探測
+  曾硬編碼 `/v1/embeddings`，與 `api_version=v2` 的呼叫路徑對同一模型各說各話。
+- **schema**：曾是任意 `str`，打錯字可靜默寫入，下游只有 v1／v2 有意義。
+- **現況**：
+  - 探測改走 `proxy_request`，與 live 路徑共用 `api_version`／`protocol`。
+  - schema 收成 `v1`｜`v2`；治理 UI 標明「URL 路徑前綴，不是通訊協定」。
+  - **保留 v2 選項**（庫內已有 `api_version='v2'` 列）；不把它重載成
+    Triton——Triton 走獨立的 `protocol=triton_grpc`。
+
+### #32 ✅ Triton gRPC 模型健康檢查永遠紅（假紅燈）
+
+- **實際**：`probe_model_health_detailed` 對 gRPC port 發 httpx GET
+  `/health`、`/v1/models`、`/` → 全失敗 → `unhealthy`＋告警「模型離線」，
+  即使 Triton `ServerLive`／`ModelReady` 都正常。
+- **後果**：工作中的模型長期顯示異常，訓練維運者忽略紅燈——比壞掉的模型更糟。
+- **現況**：sweep／手動重測帶入 `protocol`＋`model_name`；`triton_grpc` 改探
+  Triton gRPC（及 `grpc.health.v1`），不再對 gRPC port 做 HTTP 探測。
+
+### #33 ✅ Triton gRPC 模型的「模型金鑰 · api key」欄位送不出去
+
+- **畫面說**：`protocol=triton_grpc` 的模型登錄表單照樣顯示「模型金鑰 · api key」，
+  輸入後存檔跳成功;列表列還標示「使用全域金鑰」。
+- **實際**：Triton 路徑從不呼叫 `resolve_model_gateway_key` / `_apply_gateway_auth`
+  （只有 HTTP 分支 `proxy/service.py:545` 會），`triton_grpc/client.py` 也沒有
+  掛 call credentials 或 metadata。**一個 byte 都沒有送出去。**
+- **後果**：管理員以為這個 Triton 端點有金鑰保護,實際上是裸的。
+  這正是「使用者以為鎖住了存取但沒有」那一類。
+- **現況**：`ModelsView.vue` 在該協定下**不顯示**金鑰欄位;先在別的協定下打過字
+  再切協定的殘值會在 `buildModelPayload()` 丟掉;列表列改顯示「不使用金鑰」。
+  端點提示同時說明本協定不送金鑰。
+
+### #34 ✅ 公開 `/v1`、`/v2` embeddings 對外沒有 query／document 開關
+
+- **畫面說**（對開發者）：CSP 的 embeddings 是 OpenAI 相容端點,送什麼進去就編碼什麼。
+- **實際**：兩個路由都硬寫 `embedding_input_role="document"`,行程外呼叫端
+  （含平台自己的 anila-agent SDK）**無法**表示自己是查詢側。對 Triton 類 embedder,
+  查詢與文件走不同輸入張量 → 每一次 agent RAG 查詢都被當文件編碼,
+  **不會報錯**,只是排序悄悄變差（實測 cosine 0.828 → 1.0）。
+- **現況**：兩個路由接受 `input_type`（`query`／`document`,沿用 Cohere/Voyage/Jina
+  慣例）,不帶維持 `document`,打錯字回 400 不靜默退回;該欄位不會轉送到上游。
+  `anila_pgvector.search` 改帶 `query`;`memory/recall.py` 原本把
+  `[query, *documents]` 併成一批送 —— 拆成兩次呼叫,一次 query 一次 document。
+
+### #35 ⚠ `input_type` 送到 `nv-embed-proxy` 會被照單全收然後丟掉
+
+- **文件說**:`packages/anila-agent/README.md:72`（`.en.md:76` 同）教人設
+  `ANILA_EMBED_BASE_URL=http://nv-embed-proxy:8000/v1`。#34 之後,
+  `memory/recall.py` 與 `retrieval/anila_pgvector.py` 都會在 body 裡帶
+  `input_type`,看起來查詢側就有了。
+- **實際**:那個 URL 指的是 **model 容器**,不是 CSP。
+  `infra/models/src/embedding_proxy/app.py` 的 `EmbeddingRequest` 沒有宣告
+  這個欄位,pydantic 預設 `extra="ignore"` → **不會 400,也不會被讀**;
+  該 shim 對 Triton 一律送 `{"name": "documents", "shape": [1, N]}`。
+  也就是說:欄位送得出去、不會壞,但查詢仍舊被當文件編碼。
+- **後果**:照 README 設定的 agent,RAG 查詢的排序照舊悄悄變差,
+  而呼叫端沒有任何訊號說它的 `input_type` 沒人理。
+- **現況**:**尚未修**,先記在這裡。要真的拿到 query/document 分流,
+  `ANILA_EMBED_BASE_URL` 要指向 **CSP** 的 `/v1`,且該 embedding model 在模型頁
+  以 `protocol=triton_grpc` 註冊(runbook §3.1c)——那條路徑有測試把關
+  (`services/csp/tests/test_triton_grpc_wire.py`)。
+  沒有改 shim 的理由:`infra/models/` 是另一套獨立 build 的 model stack,
+  本樹沒有任何測試會跑到它,改了也沒有人驗得到——那正是這份清單在收的東西。
+  兩個 README 與 `recall.py` 的 docstring 已就地註明這個差異。
+
+### #36 ✅ runbook 叫操作者調的 `EMBEDDING_TIMEOUT` 到不了容器
+
+- **文件說**:runbook §3.1c 排錯表(以及 `triton_grpc/client.py` 兩則逾時錯誤
+  訊息)叫操作者「調高 `EMBEDDING_TIMEOUT`」;`services/csp/.env.example` 也列著
+  `EMBEDDING_TIMEOUT=30`。
+- **實際**:`infra/compose/platform.yml` 的 csp 區塊沒有這一行,而整棵樹
+  **沒有任何 `env_file:`** —— compose 只把「列舉出來的」環境變數放進容器,
+  `.env` 本身不會整包灌進去。實測:`.env` 設了值 `docker compose config` 零命中,
+  `docker exec anila-restart-csp-1 printenv EMBEDDING_TIMEOUT` 空、rc=1。
+- **後果**:操作者照著 runbook 改 `.env`、`up -d csp`,**什麼都沒有改變**,
+  而且沒有任何錯誤訊息 —— 502 照舊,他會以為是別的原因。
+  這與 #34 之前 `ANILA_ALLOW_GRPC_ENDPOINT` 的形狀是同一個(旗標到不了容器),
+  也是這份清單裡「按了沒反應」那一類最貴的變體:**指示本身是假的**。
+- **現況**:`platform.yml` csp 區塊補上
+  `EMBEDDING_TIMEOUT: "${EMBEDDING_TIMEOUT:-30}"`(預設值與 `Settings` 同),
+  根目錄 `.env.example` 補上該鍵與說明,runbook 加了「調高 EMBEDDING_TIMEOUT」
+  小節(含 `printenv` 驗證那一步)。
+  `services/csp/tests/test_compose_csp_env_passthrough.py` 把「文件叫人去設的
+  旋鈕 → csp 環境區塊有直通」整組釘住,免得第三次再犯。

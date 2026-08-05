@@ -89,6 +89,11 @@ services:
       # 放行但記 deprecation warning)。
       ANILA_ENV: "${ANILA_ENV:-}"
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
+      # protocol=triton_grpc 的 cleartext grpc:// 放行旗標(model kind 專用,
+      # 與 http 旗標是姊妹分支不共用 allow-list)。grpcs:// 永遠不需要它。
+      # 沒有這一行,.env 裡設 ANILA_ALLOW_GRPC_ENDPOINT=1 不會進到容器 →
+      # 註冊 grpc:// 端點一律 400 reason=scheme,而且沒有任何提示。
+      ANILA_ALLOW_GRPC_ENDPOINT: "${ANILA_ALLOW_GRPC_ENDPOINT:-0}"
       # §6-3：assistant 落庫前 zh-TW 靜默正規化。預設 1；設 0 關閉。
       ANILA_ZH_NORMALIZE: "${ANILA_ZH_NORMALIZE:-1}"
       # 檢索查詢擴展（民國↔西元＋域內同義）。預設 1；設 0 關閉。
@@ -103,6 +108,13 @@ services:
       # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
       # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
       LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
+      # Embedding proxy 的上游逾時,也是 Triton gRPC 路徑「整通呼叫」預算的
+      # 主項(budget = _wait_ready 5s + EMBEDDING_TIMEOUT)。runbook §3.1c 的
+      # 排錯表叫操作者「調高 EMBEDDING_TIMEOUT」,client.py 兩則錯誤訊息也是
+      # 這樣寫 —— 少了這一行,那句指示對容器**沒有任何作用**:.env 改了、
+      # `up -d csp` 了,`printenv EMBEDDING_TIMEOUT` 仍是空的,行為一模一樣。
+      # 預設值與 app/config.py 的 Settings.EMBEDDING_TIMEOUT 同為 30。
+      EMBEDDING_TIMEOUT: "${EMBEDDING_TIMEOUT:-30}"
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
       # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}

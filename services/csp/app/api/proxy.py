@@ -1311,6 +1311,33 @@ async def resume_agent_session(
     )
 
 
+def _pop_input_type(body: dict) -> str:
+    """Read and remove the ``input_type`` extension from an embeddings body.
+
+    Triton embedders put queries and documents in **different input tensors**;
+    an out-of-process caller (agent SDK, ingestion worker, anything holding an
+    API key) has no other way to say which side it is on. Without this the
+    public ``/v1`` and ``/v2`` surfaces were hardcoded to ``document`` and
+    every agent RAG query was embedded as a document — no error, just worse
+    ranking. Naming follows the Cohere/Voyage/Jina convention so it reads as
+    an ordinary vendor extension rather than an ANILA-only word.
+
+    Default stays ``document``: that is what every existing caller means, so
+    silence keeps today's behaviour. Popped rather than read so the key never
+    rides on to an OpenAI-compatible upstream that would reject an unknown
+    field.
+    """
+    raw = body.pop("input_type", None)
+    if raw is None or raw == "":
+        return "document"
+    if raw in ("query", "document"):
+        return raw
+    raise HTTPException(
+        status_code=400,
+        detail="input_type 僅接受 query 或 document",
+    )
+
+
 @router.post("/v1/embeddings")
 async def embeddings_v1(
     request: Request,
@@ -1321,6 +1348,8 @@ async def embeddings_v1(
     model_name = body.get("model")
     if not model_name:
         raise HTTPException(status_code=400, detail="缺少 model 參數")
+
+    input_type = _pop_input_type(body)
 
     model = _resolve_model(db, caller, model_name)
     return await proxy_request(
@@ -1337,6 +1366,9 @@ async def embeddings_v1(
             model.endpoint_url,
             is_internal=bool(getattr(model, "is_internal", False)),
         ),
+        # Public OpenAI-compat surface (incl. ingestion-worker) defaults to
+        # documents; ``input_type: "query"`` opts a caller onto the query side.
+        embedding_input_role=input_type,
     )
 
 
@@ -1350,6 +1382,8 @@ async def embeddings_v2(
     model_name = body.get("model")
     if not model_name:
         raise HTTPException(status_code=400, detail="缺少 model 參數")
+
+    input_type = _pop_input_type(body)
 
     model = _resolve_model(db, caller, model_name)
     return await proxy_request(
@@ -1366,4 +1400,5 @@ async def embeddings_v2(
             model.endpoint_url,
             is_internal=bool(getattr(model, "is_internal", False)),
         ),
+        embedding_input_role=input_type,
     )
