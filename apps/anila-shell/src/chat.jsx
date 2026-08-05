@@ -1417,6 +1417,7 @@ export const Composer = ({
   disabled,
   agents,
   redactionMode = "mask",
+  onChangeRedactionMode,
   initialValue = "",
   placeholder,
   footer,
@@ -1466,7 +1467,17 @@ export const Composer = ({
   const liveRefs = useRef(new Set());
   const liveUploadIds = useRef(new Set());
   const uploadIdSeq = useRef(0);
-  const [mode, setMode] = useState(redactionMode);
+  // 父層有給 onChangeRedactionMode 就由父層持有這個模式(才存得回
+  // users.ui_settings);沒給就退回本地狀態(multiagent.jsx 與單元測試)。
+  //
+  // ⚠ 不可以退回成單純的 `useState(redactionMode)`:後端存的偏好是掛載之後才
+  // 非同步到的,而 useState 只認第一次的值。使用者上次選的 block 會在讀回來的
+  // 那一刻被靜默丟掉,畫面停在預設的 mask —— 也就是使用者選了最嚴的模式,
+  // 下一則訊息卻照原文送出去。這正是這個包在修的那一類缺陷。
+  const [localMode, setLocalMode] = useState(redactionMode);
+  const modeControlled = typeof onChangeRedactionMode === "function";
+  const mode = modeControlled ? redactionMode : localMode;
+  const setMode = modeControlled ? onChangeRedactionMode : setLocalMode;
 
   const piiHits = useMemo(() => detectPII(text), [text]);
   const mentionParse = useMemo(() => parseMentions(text, agents || []), [text, agents]);
@@ -1577,13 +1588,33 @@ export const Composer = ({
     return () => window.removeEventListener("resize", autosize);
   }, [autosize]);
 
+  /**
+   * 送出前的敏感資訊閘門。**每一條會呼叫 onSend 的路徑都必須先過這裡。**
+   *
+   * ⚠ 這個閘門原本直接寫在 submit 裡,而「預設提示詞 autosend」那條路
+   * (本檔的 presetPrompts 按鈕)自己呼叫 onSend —— 於是 block 模式對它完全
+   * 無效:使用者選了阻擋,點一個帶身分證號的範本,照樣送出去,而且提示列上
+   * 還寫著「將阻擋送出」。模式變成可以跨機器保存的偏好之後,這個破口從
+   * 「一個分頁」變成「一直都在」,所以抽成共用閘門,不再讓任何呼叫端自己判斷。
+   *
+   * @returns {boolean} 允不允許送出。
+   */
+  const passesRedactionGate = (hits) => {
+    if (mode === "block" && hits.length > 0) {
+      // ⚠ 這句話曾經寫「管理員已設定為阻擋送出」—— 那是假的。這個模式是使用者
+      // 自己的偏好(存在 users.ui_settings),後端沒有對應的管理員政策欄位。
+      // 真正把它切到 block 的就是使用者自己,而且就在上面那條提示列的按鈕上。
+      // 把決定推給一個不存在的管理員,使用者既不知道是誰擋的,也找不到路自救。
+      toast("偵測到敏感資訊，目前模式為「阻擋」，所以這則訊息沒有送出。可在上方提示列切換模式，或清除後再送。", { tone: "error" });
+      return false;
+    }
+    return true;
+  };
+
   const submit = () => {
     const v = text.trim();
     if (!v && atts.length === 0) return;
-    if (mode === "block" && piiHits.length > 0) {
-      toast("偵測到敏感資訊，管理員已設定為阻擋送出。請清除後再試。", { tone: "error" });
-      return;
-    }
+    if (!passesRedactionGate(piiHits)) return;
     onSend(v, atts, {
       piiHits: mode === "mask" ? piiHits : [],
       explicitAgents: mentionParse.explicitAgents,
@@ -2106,7 +2137,19 @@ export const Composer = ({
                       setPromptsOpen(false);
                       // autosend:直接送出;否則填入輸入框讓使用者編輯。
                       if (p.config?.autosend && body.trim()) {
-                        onSend(body, [], { piiHits: mode === "mask" ? detectPII(body) : [], explicitAgents: mentionParse.explicitAgents });
+                        const bodyHits = detectPII(body);
+                        // ⚠ 被閘門擋下來時,把範本內容**放進輸入框**,不要什麼都
+                        // 不留。原本只跳一個 toast:輸入框是空的、提示列不存在
+                        // (它要草稿裡有個資才出現)、模式按鈕自然也不在,而 toast
+                        // 卻叫使用者「去提示列切換」或「清掉再送」—— 兩條路當下
+                        // 都不存在,等於把人鎖在門外還給他一把假鑰匙。放進輸入框
+                        // 之後提示列連同模式按鈕會立刻出現,「清掉再送」也才成立。
+                        if (!passesRedactionGate(bodyHits)) {
+                          setText(body);
+                          setTimeout(() => { taRef.current?.focus(); }, 0);
+                          return;
+                        }
+                        onSend(body, [], { piiHits: mode === "mask" ? bodyHits : [], explicitAgents: mentionParse.explicitAgents });
                         setText("");
                       } else {
                         setText(body);

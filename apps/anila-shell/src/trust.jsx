@@ -157,6 +157,18 @@ export const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }
 };
 
 // ---- Redaction composer hint ----
+
+/**
+ * 敏感資訊模式,由寬到嚴。單一真相來源:提示列的按鈕、以及 app.jsx 從
+ * users.ui_settings 讀回偏好時的驗證,都讀這一份。
+ *
+ * ⚠ 順序有意義:`block` 對「離開瀏覽器的內容」最嚴(真的擋住送出),`warn` 最寬
+ * (只顯示這條提示)。所以把使用者從自己選的模式改回預設,方向上是**放寬**保護,
+ * 不是單純忘記一個偏好 —— 這就是它必須被存下來的理由。
+ */
+export const REDACTION_MODES = ["warn", "mask", "block"];
+export const REDACTION_MODE_DEFAULT = "mask";
+
 export const RedactionHint = ({ hits, mode, onChangeMode }) => {
   if (!hits || hits.length === 0) return null;
   const byKind = {};
@@ -175,11 +187,11 @@ export const RedactionHint = ({ hits, mode, onChangeMode }) => {
       <IconShield size={13} style={{ color: "var(--warn)" }} />
       <span>
         偵測到 <b>{hits.length}</b> 個敏感片段（{summary}）·
-        {mode === "mask" ? " 僅在本畫面遮蔽顯示,送出內容不變" : mode === "warn" ? " 送出時會提醒" : " 將阻擋送出"}
+        {mode === "mask" ? " 僅在本畫面遮蔽顯示,送出內容不變" : mode === "warn" ? " 僅顯示這則提醒,送出內容不變" : " 將阻擋送出"}
       </span>
       <div style={{ flex: 1 }} />
       <div style={{ display: "flex", gap: 2 }}>
-        {["warn", "mask", "block"].map(m => (
+        {REDACTION_MODES.map(m => (
           <button key={m} onClick={() => onChangeMode?.(m)} style={{
             padding: "2px 7px",
             fontSize: 10.5, fontFamily: "var(--font-mono)",

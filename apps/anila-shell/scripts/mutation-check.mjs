@@ -82,6 +82,14 @@ const NEW_TESTS = [
   "src/__tests__/orchestrator",
   "src/__tests__/transport",
   "src/__tests__/csrfHeaders",
+  // 敏感資訊閘門與模式偏好(`wt/pii-honesty`,2026-08-05)。這一組守的是新加的
+  // 那五個突變 —— 連同它們釘的行為都是本包才長出來的,所以歸「新測試」。
+  // ⚠ `redactionHonesty.test.jsx` 不在這裡:它是 2026-07-30 寫的,是舊套件。
+  "src/__tests__/redactionBlockAttribution",
+  "src/__tests__/redactionModePersistence",
+  "src/__tests__/redactionGateCoverage",
+  "src/__tests__/redactionChokePoint",
+  "src/__tests__/settingsPrivacyHonesty",
 ];
 // 這個工作包之前就存在的測試(用來量「舊套件漏了什麼」)。
 const PRE_EXISTING_EXCLUDES = [
@@ -90,6 +98,11 @@ const PRE_EXISTING_EXCLUDES = [
   "**/orchestrator*.test.jsx",
   "**/transport*.test.*",
   "**/csrfHeaders.test.js",
+  "**/redactionBlockAttribution.test.jsx",
+  "**/redactionModePersistence.test.jsx",
+  "**/redactionGateCoverage.test.jsx",
+  "**/redactionChokePoint.test.jsx",
+  "**/settingsPrivacyHonesty.test.jsx",
   "**/__tests__/guards/**",
   "**/sourceTextGuardRegistry.test.js",
 ];
@@ -387,6 +400,90 @@ const MUTATIONS = [
     // 和「掛錯值」兩件事混在同一個突變裡。
     find: '  if (taskId !== undefined && taskId !== null && taskId !== "") {',
     replace: '  if (taskId === undefined && taskId === null && taskId !== "") {',
+  },
+
+  // ── 敏感資訊閘門與模式偏好 ────────────────────────────────────────
+  //
+  // 這一區守的東西和上面幾區不同:上面守「功能會不會壞」,這一區守
+  // **「畫面上那句話會不會變成謊話」**。
+  //
+  // 三種模式(warn/mask/block)裡只有 block 真的攔得住東西離開瀏覽器,而且它
+  // 現在是可以跨機器保存的使用者偏好。所以任何一條讓 block 靜默失效的改動,
+  // 後果都不是「功能壞了」,是「使用者以為自己被保護著,而他不是」——
+  // 這正是本專案第四條教訓(靜默成功比報錯危險)的形狀。
+  //
+  // ⚠ 每一個都實測過:改下去,`--check-anchors` 以外的舊套件不會紅。
+  {
+    id: "redaction-gate-bypassed",
+    file: "src/chat.jsx",
+    shape: "條件反轉",
+    intent: "block 模式不再攔任何東西（使用者選了阻擋，身分證號照樣送出去）",
+    find: '    if (mode === "block" && hits.length > 0) {',
+    replace: '    if (mode === "block" && hits.length < 0) {',
+  },
+  {
+    id: "redaction-gate-skipped-on-autosend",
+    file: "src/chat.jsx",
+    shape: "守衛被跳過（靜默 no-op）",
+    intent: "預設提示詞的 autosend 繞過閘門（block 對範本送出完全無效）",
+    // 這個破口真的存在過。閘門抽成共用函式之前,這條路自己呼叫 onSend。
+    // 2026-08-05 重新錨定:被擋下來時現在會把範本內容放回輸入框(讓提示列與
+    // 模式按鈕出現,使用者才走得出去),原本那一行單行 return 不存在了。
+    // 改釘在條件本身 —— 不管擋下來之後要做什麼,這個判斷都得在。
+    find: "                        if (!passesRedactionGate(bodyHits)) {",
+    replace: "                        if (!passesRedactionGate(bodyHits) && false) {",
+  },
+  {
+    id: "redaction-choke-point-stream-removed",
+    file: "src/app.jsx",
+    shape: "扼流點被拆掉（靜默 no-op）",
+    intent: "模型呼叫的扼流點失效（編輯重問／引導式重試／建議提示／對比模式全部繞過阻擋）",
+    // 這是「呼叫端清單」退化回來的那個突變。閘門要留在所有人都必須經過的
+    // 地方,而不是留在每一個發起點 —— 後者已經漏掉兩次。
+    find: "    if (!passesRedactionGate(outgoingUserText(opts?.payload))) {",
+    replace: "    if (!passesRedactionGate(outgoingUserText(opts?.payload)) && false) {",
+  },
+  {
+    id: "redaction-choke-point-persist-removed",
+    file: "src/app.jsx",
+    shape: "扼流點被拆掉（靜默 no-op）",
+    intent: "落庫扼流點失效（模型沒看到，但資料庫裡照樣存了一份原文）",
+    find: "    if (!passesRedactionGate(content)) {",
+    replace: "    if (!passesRedactionGate(content) && false) {",
+  },
+  {
+    id: "redaction-outgoing-text-blind",
+    file: "src/app.jsx",
+    shape: "存取器回空值",
+    intent: "扼流點永遠看到空字串（閘門還在、但再也偵測不到任何東西）",
+    // 最安靜的那一種:兩個扼流點都還在,`--check-anchors` 全綠,
+    // 而它們檢查的永遠是空字串。
+    find: "  const msgs = Array.isArray(payload?.messages) ? payload.messages : [];",
+    replace: "  const msgs = Array.isArray(payload?.messages) && [];",
+  },
+  {
+    id: "redaction-mode-not-persisted",
+    file: "src/app.jsx",
+    shape: "存取器回空值",
+    intent: "使用者選的模式不再存回後端（重新整理就被放寬回預設，畫面卻說會保留）",
+    find: "      putUiSettings(authRequest, { folders, redactionMode }).catch(() => { /* best-effort */ });",
+    replace: "      putUiSettings(authRequest, { folders }).catch(() => { /* best-effort */ });",
+  },
+  {
+    id: "redaction-mode-whitelist-dropped",
+    file: "src/app.jsx",
+    shape: "驗證放寬",
+    intent: "讀回來的模式不再白名單驗證（不明值讓提示列說「將阻擋送出」而實際照送）",
+    find: "        if (alive && REDACTION_MODES.includes(s.redactionMode)) {",
+    replace: "        if (alive && typeof s.redactionMode === \"string\") {",
+  },
+  {
+    id: "redaction-mode-lost-in-compare",
+    file: "src/multiagent.jsx",
+    shape: "props 沒傳下去（靜默 no-op）",
+    intent: "對比模式的輸入框收不到模式，退回預設 mask（block 在對比模式裡靜默失效）",
+    find: "          redactionMode={redactionMode}",
+    replace: "          redactionMode={undefined}",
   },
 ];
 

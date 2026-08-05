@@ -295,7 +295,16 @@ export function createFakeBackend(options = {}) {
     // 預設就強制 —— 「假後端比真後端寬鬆」正是讓 transport 層的壞掉
     // 全程隱形的原因。要關掉必須在測試裡明說,而且要寫清楚為什麼。
     enforceCsrf = true,
+    // users.ui_settings 的初始值。真後端存的是 per-user blob,PUT 整包覆蓋。
+    uiSettings: initialUiSettings = {},
   } = options;
+
+  /**
+   * users.ui_settings。真後端就是一個 per-user JSON blob,PUT 整包換掉 ——
+   * 所以這裡也整包換,不做 merge。假後端比真後端聰明的話,「PUT 少帶一個 key
+   * 就把另一個 key 洗掉」這種錯在測試裡會永遠看不到。
+   */
+  let uiSettings = { ...initialUiSettings };
 
   /** 每一個真的打出去的請求。 */
   const requests = [];
@@ -527,7 +536,10 @@ export function createFakeBackend(options = {}) {
     if (path === "/api/message-actions/visible") return jsonResponse([]);
     if (path === "/api/banners/active") return jsonResponse([]);
     if (path === "/api/users/me/ui-settings") {
-      return jsonResponse({ ui_settings: {} });
+      if (method === "PUT") {
+        uiSettings = body?.ui_settings || {};
+      }
+      return jsonResponse({ ui_settings: uiSettings });
     }
     if (/^\/api\/agents\/[^/]+\/functions$/.test(path)) return jsonResponse([]);
     if (path === "/api/handoffs") return jsonResponse([]);
