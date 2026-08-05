@@ -17,18 +17,36 @@ class Settings(BaseSettings):
     ANILA_DEPLOYMENT_PROFILE: str = "development"
 
     # ── decoder ─────────────────────────────────────────────────────────
-    # gateway 出向只允許這一個 URL。不是使用者輸入 → 不經 SSRF guard,但程式內
-    # 也不得有任何由 client 決定目的地的請求。
+    # gateway 出向只允許這一個 URL(或治理中心指派的那一個)。兩個採用點都
+    # 過 anila_core 的 SSRF guard(`validate_outbound_url`,endpoint_kind
+    # ='model')—— 遠端解碼一旦成立,ASR 就是平台唯一會跳過那道門的模型呼叫。
     ASR_DECODE_URL: str = ""
+    # native 協定的共享祕密,送成 `X-Token`(本地 services/asr-decoder)。
     ASR_DECODER_TOKEN: str = ""
-    # 歷史旗標。內網(air-gapped)已依 P0.2 前例接受純 http 端點;環境變數門與
-    # 治理中心門必須行為一致,因此此旗標不再拒絕啟動。保留是為了既有 compose
-    # / .env 不會因為「多了一個變數」而炸。
-    ASR_ALLOW_HTTP_DECODER: bool = False
+    # ── 傳輸協定 ────────────────────────────────────────────────────────
+    # 'native' = ANILA 自有契約(裸 PCM + X-Token,本地 decoder / 氣隙 bundle)
+    # 'openai' = POST {base}/v1/audio/transcriptions(multipart WAV + Bearer)
+    # ⚠ 認不得的值**開不了機**(app/main.py:_validate_settings)。選錯協定的
+    # 症狀是每句話都 404/401 而麥克風看起來正常 —— 這種「設了、沒報錯、其實
+    # 沒生效」的靜默錯誤,本專案已經有一整份紀錄(docs/FAKE-CONTROLS.md)。
+    ASR_DECODE_PROTOCOL: str = "native"
+    # openai 協定的 Bearer 金鑰(治理中心沒替該端點掛金鑰時的環境變數退路)。
+    # ⚠ 祕密:不進 log、不進 /asr/health、不進錯誤訊息。
+    ASR_DECODE_API_KEY: str = ""
+    # multipart 的 `model` 欄位。OpenAI 相容端點一律必填,名稱由對方決定。
+    ASR_OPENAI_MODEL: str = "whisper-1"
     # How often asr-gateway re-reads CSP's asr-primary designation (seconds).
     # Read via Settings (not os.environ at import) so tests and operators share
     # one knobs surface with the rest of this service.
     ASR_DECODE_URL_TTL: float = 60.0
+    # ── 健康探針 timeout ────────────────────────────────────────────────
+    # 舊值是 2.0s 總計 / 1.0s 連線 —— 那是「decoder 就在同一台的容器裡」調出來
+    # 的。解碼端一旦在 WAN 另一頭(或是會冷啟動的算力中心端點),2 秒會回報
+    # decoder_unreachable 並把一支**其實能用**的麥克風藏起來。
+    # 連線 3.0s 對齊本檔既有的 INTERNAL_TIMEOUT_CONNECT;總計 8.0s 容得下一次
+    # 冷啟動,又仍遠低於 final 解碼的 30s(探針不該比真正的工作還能等)。
+    ASR_PROBE_CONNECT_TIMEOUT_SECONDS: float = 3.0
+    ASR_PROBE_TIMEOUT_SECONDS: float = 8.0
 
     # ── 辨識 ────────────────────────────────────────────────────────────
     # ⚠ 這個 prompt 是通用的,不是領域詞典。實測(規劃書 §10)顯示它讓 CER

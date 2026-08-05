@@ -1,13 +1,24 @@
 # ── ASR 的 CPU 覆蓋檔(給「沒有 GPU 直通」的主機)─────────────────────────
 #
-# platform.yml 的 asr-decoder 預設要 GPU,而且是刻意硬性要求:沒有 nvidia
-# container runtime 的機器 `up` 會直接以
-#     could not select device driver "nvidia" with capabilities: [[gpu]]
-# 失敗。那是設計,不是 bug —— 悄悄退回 CPU 跑 large-v3 會得到 RTF>1 的
-# 「能用但難用到沒人想用」,那比明著壞更糟。
+# ⚠ 2026-08-05 更新:GPU 保留**已經不在 platform.yml 裡了**,搬到
+# `infra/compose/asr-gpu.yml` —— 平台要搬到沒有 GPU 的 CPU 主機(2× EPYC 9334),
+# 寫死的 nvidia 保留會讓**整批** up 失敗,連不碰語音的服務都起不來。
+# 所以本檔的 `deploy: !reset null` 現在只在「同時疊了 asr-gpu.yml」時才有作用;
+# 留著是為了那種情況,以及既有的 COMPOSE_FILE 設定。
 #
-# 這個檔把那個要求拿掉,改用 CPU + 小模型,讓沒有 GPU 直通的機器仍然可以
-# 真的把麥克風按下去。**這是權宜之計,不是內網 .15 的目標組態。**
+# 這個檔真正還在做事的是下面的 environment:CPU + 小模型,讓沒有 GPU 直通的
+# 機器仍然可以真的把麥克風按下去。**這是權宜之計,不是內網 .15 的目標組態。**
+#
+# (歷史:原本硬性要求 GPU 是刻意的 —— 沒有 nvidia container runtime 的機器
+#  `up` 會直接以 could not select device driver "nvidia" 失敗,而不是悄悄退回
+#  CPU 跑 large-v3 得到 RTF>1 的「能用但難用到沒人想用」。
+#
+#  ⚠ 訂正:那個 fail-loud **不是「一字未改」,是換了地方也換了樣子**。疊了
+#  asr-gpu.yml 才會回到「`up` 當場失敗、訊息就寫在螢幕上」;**兩個覆蓋檔都
+#  沒疊**時 ASR_DEVICE 仍預設 cuda,於是 asr-decoder 起得來、載模型時才死,
+#  進入重啟迴圈,而 asr-gateway 卡在 `depends_on: service_healthy` 最多
+#  20 × 30s ≈ 10 分鐘才放棄 —— 一樣會壞,但慢十分鐘、訊息還藏在 decoder 的
+#  日誌裡。本檔把 ASR_DEVICE 明確設成 cpu,正是為了不落進那個狀態。)
 #
 # 用法(注意 -f 的順序,後者覆蓋前者):
 #   docker compose -p anila-restart \

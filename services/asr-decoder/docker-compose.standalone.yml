@@ -10,8 +10,13 @@
 #   - ASR_DECODER_TOKEN 必須是長亂數(建議 `openssl rand -hex 32`),絕不進 repo。
 #   - ports 預設綁 0.0.0.0(gateway 在別台,必須能連進來)。務必用防火牆
 #     把來源限縮到平台主機 IP,不要讓整個內網都打得到。
-#   - 純 http 是 MLSteam NodePort 的現實(同 anila-agent);gateway 端必須
-#     顯式開 ASR_ALLOW_HTTP_DECODER=1 才會接受,預設是關的。
+#   - 純 http 是 MLSteam NodePort 的現實(同 anila-agent)。gateway 端仍然要
+#     顯式放行,但**旗標換名字了**:`ANILA_ALLOW_HTTP_ENDPOINT=1`,跟其他
+#     model endpoint 同一道門(P0.2 拍板)。
+#     ⚠ 舊名 `ASR_ALLOW_HTTP_DECODER` 已於 2026-08-05 退役 —— 它從被「馴服」
+#       之後就沒有任何程式在讀(docs/FAKE-CONTROLS.md #31)。照舊名去設,
+#       症狀正是這個 repo 最貴的那一種:設了、沒報錯、gateway 照樣拒收
+#       http 位址並在啟動時停住。
 #
 # 部署:
 #   cp .env.example .env   # 填 ASR_DECODER_TOKEN / ASR_MODEL_SIZE / 卡號

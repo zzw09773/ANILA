@@ -222,14 +222,34 @@ def test_missing_decoder_token_fails_loud():
                                     ASR_DECODER_TOKEN=""))
 
 
-def test_internal_service_name_over_http_accepted():
+def test_internal_service_name_over_http_accepted(intranet_guard_env):
     """內部版(`http://asr-decoder:9000`)與外部版純 http 同一道門:都接受。
 
     治理中心在 ANILA_ALLOW_HTTP_ENDPOINT=1 時已接受 http;環境變數門若再拒絕
     會讓「同一位址、兩扇門、兩種結果」。內網前例(P0.2)以接受為準。
+
+    ⚠ 2026-08-05:這道門現在**就是** anila_core 的 `validate_outbound_url`
+    (以前是本檔自己的 startswith 字串檢查)。同一位址要通過的條件因此變成
+    「旗標 + ANILA_TRUSTED_HOSTS 點名」—— 那正是 guard 為 docker 服務名準備
+    的 operator 機制,platform.yml 已把 `asr-decoder` 併進 asr-gateway 自己的
+    trusted hosts。fixture 只是把部署時的環境在測試裡明說出來,**不是**放寬
+    檢查:反向那一半在下面兩條。
     """
     _validate_settings(Settings(ASR_DECODE_URL="http://asr-decoder:9000",
                                 ASR_DECODER_TOKEN="t"))
+
+
+def test_internal_service_name_refused_when_not_trusted(monkeypatch):
+    """`asr-decoder` 沒被 ANILA_TRUSTED_HOSTS 點名時必須被擋。
+
+    PROVE RED:把 main.py `_validate_settings` 裡的 `guard_decode_url(url)`
+    拿掉 → 這條變綠(而且遠端 ASR 就成了唯一不過 guard 的模型呼叫)。
+    """
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "")
+    with pytest.raises(RuntimeError, match="未通過出向檢查"):
+        _validate_settings(Settings(ASR_DECODE_URL="http://asr-decoder:9000",
+                                    ASR_DECODER_TOKEN="t"))
 
 
 @pytest.mark.parametrize("url", [
@@ -237,9 +257,43 @@ def test_internal_service_name_over_http_accepted():
     "http://decoder.example.test:9000",
     "http://asr-external.example.test:30080",
 ])
-def test_external_host_over_http_accepted_without_flag(url):
-    """環境變數門與治理中心門一致:純 http 不再要求 ASR_ALLOW_HTTP_DECODER。"""
+def test_external_host_over_http_accepted_without_flag(url, intranet_guard_env):
+    """環境變數門與治理中心門一致:純 http 由 ANILA_ALLOW_HTTP_ENDPOINT 一個
+    旗標決定,不再有 ASR 專屬的第二個(ASR_ALLOW_HTTP_DECODER 已退役)。"""
     _validate_settings(Settings(ASR_DECODE_URL=url, ASR_DECODER_TOKEN="t"))
+
+
+def test_external_host_over_http_refused_without_flag(monkeypatch):
+    """沒開 ANILA_ALLOW_HTTP_ENDPOINT 時,http 解碼端要被擋。
+
+    這正是「http 旗標分域」的語意:ASR 跟其他 model endpoint 用同一個旗標,
+    行為也必須一樣。
+    """
+    monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
+    with pytest.raises(RuntimeError, match="未通過出向檢查"):
+        _validate_settings(
+            Settings(ASR_DECODE_URL="http://gpu-host.example.test:9000",
+                     ASR_DECODER_TOKEN="t")
+        )
+
+
+@pytest.mark.parametrize("url", [
+    "https://127.0.0.1:9000",
+    "https://localhost:9000",
+    "https://169.254.169.254/latest/meta-data",
+    "https://10.53.100.15:9000",
+])
+def test_loopback_metadata_and_private_ip_decoders_are_refused(url, monkeypatch):
+    """迴環 / cloud metadata / RFC1918:解碼端不該是這些位址。
+
+    前三條無論旗標怎麼設都擋;私網那一條靠 ANILA_ALLOW_PRIVATE_ENDPOINT
+    (此處刻意不開)。
+    """
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "")
+    with pytest.raises(RuntimeError, match="未通過出向檢查"):
+        _validate_settings(Settings(ASR_DECODE_URL=url, ASR_DECODER_TOKEN="t"))
 
 
 def test_https_accepted_for_external():

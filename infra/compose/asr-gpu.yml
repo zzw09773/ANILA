@@ -1,0 +1,50 @@
+# ── ASR 的 GPU 覆蓋檔(給「有 nvidia container runtime 直通」的主機)────────
+#
+# 2026-08-05 之前這段 GPU 保留寫死在 platform.yml 的 asr-decoder 裡。那在
+# 「平台主機本來就有 GPU」的年代是刻意的 fail-loud:沒有 nvidia runtime 的
+# 機器 `up` 會直接以
+#     could not select device driver "nvidia" with capabilities: [[gpu]]
+# 失敗,而不是悄悄退回 CPU 跑 large-v3(RTF>1,比說話還慢的假可用)。
+#
+# 平台正在搬到**沒有 GPU** 的 CPU 主機(2× EPYC 9334 / 64 核 / 755 GB),
+# 模型改由算力中心以 API 端點提供。寫死的保留在那台機器上會讓**整批** up
+# 失敗,連不碰語音的服務都起不來 —— 所以保留搬到這個覆蓋檔,想要 GPU 的
+# 主機自己疊上去。
+#
+# ⚠ **fail-loud 沒有消失,但它換了地方、也換了樣子。** 別把「一樣會壞」讀成
+#   「一樣好診斷」:
+#     疊了本檔 → 跟以前一樣:`up` 當場失敗,訊息就是
+#                could not select device driver "nvidia"。
+#     沒疊本檔 → 不是 `up` 失敗。asr-decoder 起得來,載模型時才死,進入
+#                重啟迴圈;asr-gateway 卡在 `depends_on: service_healthy`
+#                最多 20 × 30s ≈ **10 分鐘**才放棄,而且真正的訊息在
+#                decoder 的日誌裡,不在 `up` 的輸出上。
+#   沒有 GPU 又想要語音的主機別走這條:疊 asr-cpu.yml 換小模型,或
+#   `--profile asr-remote` 只起 gateway、解碼交給算力中心。
+#
+# 用法(注意 -f 的順序,後者覆蓋前者):
+#   docker compose -p anila-restart \
+#     -f compose.yaml -f infra/compose/asr-gpu.yml \
+#     --profile asr up -d
+#
+# 要讓它變成常駐設定,在 .env 加:
+#   COMPOSE_FILE=compose.yaml:infra/compose/asr-gpu.yml
+#
+# ⚠ 不要同時疊 asr-cpu.yml —— 後者用 `deploy: !reset null` 把這裡的保留清掉,
+#   誰在後面誰贏,而那個「誰贏」在錯誤訊息裡看不出來。
+
+services:
+  asr-decoder:
+    environment:
+      ASR_DEVICE: ${ASR_DEVICE:-cuda}
+      # ⚠ V100(Volta)用 float16:Volta 沒有 int8 tensor core,int8 省 VRAM
+      # 但更慢。int8 的價值要 Turing 之後。
+      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-float16}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # 釘卡:不要跟 LLM 搶同一張,推論延遲互相干擾很難 debug。
+              device_ids: ["${ASR_GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]

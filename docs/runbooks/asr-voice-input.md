@@ -20,6 +20,23 @@
 這也是 2026-07-31 平台擁有者問「怎麼沒有麥克風」的答案 —— 按鈕的程式碼一直都在,
 是 `asr-gateway` 這個容器沒有跑。
 
+⚠ **2026-08-05 起兩個 app 都會重探。**
+`apps/anilalm/src/asr/useAsrInput.ts` 與 `apps/anila-shell/src/asr/useAsrInput.js`
+(首頁 `/` 的聊天室在用的那一份)都改成每 60 秒重探一次:**只在分頁看得見時跑**,
+分頁切回來立刻補一次,WebSocket 出錯也立刻補一次;**錄音中那一輪跳過**(不然按鈕
+會在使用者講話講到一半消失)。
+
+原本兩邊都只在載入時探一次 → 解碼端**開頁之後**才掛掉,會留下一顆「按了就壞」的
+按鈕。遠端解碼端斷斷續續的機率遠高於本機容器,而首頁聊天室是大多數人真正在用的
+入口,所以這條在遠端部署下是必要的。實測(瀏覽器,解碼端改回 503):
+改動前 → 100 秒後麥克風仍在、探測次數 0;改動後 → 60 秒時按鈕消失、背景分頁期間
+探測 0 次、切回前景 0.5 秒內恢復。
+
+代價:解碼端掛掉之後按鈕最多多留 60 秒,那 60 秒內按下去會拿到明確的錯誤訊息
+(WS 連不上),不是靜默。**別把間隔調小** —— `/asr/health` 會真的向解碼端送一次
+探測請求(openai 協定是 100 ms 靜音的辨識),縮到 10 秒等於拿使用者的分頁去打
+算力中心,流量 ×6。
+
 ---
 
 ## 1. 打開語音
@@ -113,10 +130,146 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
 
 ---
 
-## 4. GPU 是硬需求,以及沒有 GPU 時怎麼辦
+## 3b. 解碼端在別的機器上(外部 / 算力中心)
 
-`platform.yml` 的 `asr-decoder` 帶 `deploy.resources.reservations.devices`(nvidia)。
-沒有 nvidia container runtime 的機器,`up` 會直接失敗:
+擁有者的要求:**「不論是本地還是外部伺服器都要可以連線」——兩條都要留,不是二選一。**
+手提氣隙 bundle 帶的是本地 decoder,沒有算力中心的站台只有它;有算力中心的站台可能
+連 GPU 都沒有。
+
+### 三個決定
+
+| 決定 | 變數 | 說明 |
+|---|---|---|
+| 講哪種協定 | `ASR_DECODE_PROTOCOL` | `native`(本地 decoder)/ `openai`(`/v1/audio/transcriptions`)。**填錯的值會讓 asr-gateway 開不了機** —— 這是刻意的,選錯協定的症狀是每句話 404/401 而麥克風看起來正常。 |
+| 打哪個位址 | `ASR_DECODE_URL`,或治理中心的 asr-primary | 治理中心指派優先;位址**兩條路都會過 SSRF guard**。 |
+| 拿什麼憑證 | 治理中心那筆模型的 `api_key` > `ASR_DECODE_API_KEY`(openai)/ `ASR_DECODER_TOKEN`(native) | 祕密不會出現在 `/asr/health`、log 或錯誤訊息。 |
+
+### 只起 gateway、不起本機 decoder
+
+```bash
+# 本地全套(現行指令,沒有變):
+docker compose -p anila-restart --profile asr up -d
+
+# 遠端:只起 gateway,解碼交給算力中心
+docker compose -p anila-restart --profile asr-remote up -d
+docker exec anila-nginx nginx -s reload
+```
+
+`asr-decoder` 掛在 `["asr","asr-local"]`,`asr-gateway` 掛在 `["asr","asr-remote"]`。
+
+**讓「只起 gateway」成立的是 `depends_on: asr-decoder` 上那行 `required: false`,
+不是 profile 的分軌。** 相依服務不在啟用的 profile 裡時,少了那一行 Compose 會直接
+拒收整份檔案 —— `service "gw" depends on undefined service "dec": invalid compose
+project`,連 `up` 都進不去。`asr-local` 只是順手給「只想起本機 decoder」一個名字
+(`--profile asr-local`,實測可用),不是遠端部署的前提。
+(2026-08-05 用 Compose v2.36.2 最小重現;先前這裡把兩者寫成一組條件,是錯的因果。)
+
+⚠ **不要再用 `--no-deps`** —— 它會把 `csp` / `redis` 的等待一起跳過,那兩個是真的要等的。
+
+### 驗證
+
+```bash
+docker exec anila-restart-asr-gateway-1 \
+  python3 -c "import httpx,json;print(json.dumps(httpx.get('http://localhost:8200/asr/health').json(),ensure_ascii=False,indent=2))"
+```
+
+看三個欄位:`decode_protocol`(生效的協定)、`decode_url_source`(env / csp_registry /
+csp_registry_stale)、`decode_credential_source`(env / csp_registry)。
+`reason` 分三種病因:`decoder_unreachable`(連不到)、`decoder_unauthorized`(**金鑰錯**,
+不要去查網路)、`decoder_not_ready`(對方在載模型或被限流)。
+
+⚠ csp 容器沒裝 `curl`,用上面的 `python3 -c` 版本;`curl` 回空是假陰性。
+
+---
+
+## 3c. asr-gateway 開不了機 / 位址被出向檢查擋下來
+
+`ASR_DECODE_URL` 與治理中心指派的位址**兩條路都會過 SSRF guard**
+(`validate_outbound_url(..., endpoint_kind="model")`)。沒過就是**啟動時就停**,
+不是跑一跑才壞 —— 日誌裡會有:
+
+```
+RuntimeError: ASR_DECODE_URL 未通過出向檢查(<reason>): ...
+```
+
+`<reason>` 就是分診碼:
+
+| reason | 意思 | 怎麼修 |
+|---|---|---|
+| `scheme` | 位址是 `http://`,而純 http 沒被放行 | 設 `ANILA_ALLOW_HTTP_ENDPOINT=1` |
+| `single_label` | host 是單標籤(多半是 docker 服務名,如 `asr-decoder`) | 把它加進 `ANILA_TRUSTED_HOSTS` |
+| `private_ip` | 位址指向 RFC1918 私網 | 優先用 `ANILA_TRUSTED_HOSTS` 點名該主機;真的要開整段才動 `ANILA_ALLOW_PRIVATE_ENDPOINT` |
+| `unsafe_ip` | 迴環(`127.0.0.1`)、link-local | **沒有旗標救得了** —— 實測把它同時放進 `ANILA_TRUSTED_HOSTS` 並開兩個旗標,照樣 refused。位址填錯了 |
+| `deny_host` | `localhost`、cloud metadata(`169.254.169.254`)等拒絕清單 | 同上,硬擋 |
+| `internal_zone` | 命中內部網域清單 | 位址填錯了,或那台真的不該被連 |
+
+(完整清單是 `packages/anila-core/src/anila_core/security/url_guard.py` 的 `REASON_*`。)
+
+### ⚠ 本地語音現在也依賴 `ANILA_ALLOW_HTTP_ENDPOINT`
+
+本地解碼端的位址是 `http://asr-decoder:9000` —— **純 http、而且是單標籤**,兩個條件
+都要放行。實測(2026-08-05):
+
+| `ANILA_ALLOW_HTTP_ENDPOINT` | `ANILA_TRUSTED_HOSTS` | 結果 |
+|---|---|---|
+| `1` | 含 `asr-decoder` | 正常啟動 |
+| `0` | 含 `asr-decoder` | **拒絕,reason=`scheme`** |
+| 未設 | 含 `asr-decoder` | **拒絕,reason=`scheme`** |
+| `1` | 不含 | 拒絕,reason=`single_label` |
+
+**`ANILA_TRUSTED_HOSTS` 救不了 `http://`** —— scheme 檢查排在主機名檢查前面,先撞先死。
+
+`.env.example` 出廠是 `ANILA_ALLOW_HTTP_ENDPOINT=1`,所以新站台不會遇到;會遇到的是
+**把它收緊成 `0`** 的站台 —— 收緊之後本地語音會直接開不了機。
+(`.env.example` 的註解原本寫「兩個 opt-in 都維持 0(最嚴)」,跟它自己下一行的 `=1`
+矛盾,是那個矛盾在鼓勵人去「改正」它;已一併更正,並在那裡註明代價。)
+這是 fail-loud、可接受,但要知道是自己關的,不要去查網路。
+遠端 openai 端點走 https 時不受影響。
+
+### 部署的 SSRF guard 跟 repo 不一定同一份
+
+asr-gateway 的 `url_guard.py` 是 **build 時複製進 image 的拷貝**,沒有 bind mount,
+`up -d` 不會重建 image。改了 `packages/anila-core/.../url_guard.py` 之後只 `up -d`,
+gateway 會**繼續用舊規則,而且沒有任何錯誤訊息**。比對指紋:
+
+```bash
+docker exec anila-restart-asr-gateway-1 cat /app/.url_guard.sha256
+sha256sum packages/anila-core/src/anila_core/security/url_guard.py
+```
+
+兩邊不同 → `docker compose -p anila-restart build asr-gateway && ... up -d asr-gateway`。
+
+- 指紋檔是 2026-08-05 才加進 Dockerfile 的。**`cat` 回 `No such file` 就代表這個
+  映像比那天更舊** —— 那本身就是答案,直接重建。
+- csp 與 router 是同一個形狀(build 時複製、`up -d` 不重建),只是它們還沒有這個
+  指紋檔。懷疑它們漂了,只能用 `docker compose build` 重建來排除。
+
+### `/asr/health` 目前是**不認證**的
+
+它會回 `decode_url`(已剝掉 URL 裡的 userinfo,但主機與埠是明文)。本地部署時那只是
+`http://asr-decoder:9000`;**接上算力中心之後,那個欄位就是算力中心的位址**。
+金鑰不在裡面(`decode_credential_source` 只說來源、不說值)。這是既有狀態、這一批沒有
+改變它 —— 記在這裡是為了讓「要不要在 nginx 上把 `/asr/health` 關進內部」變成一個
+有人做過決定的問題,而不是沒人注意到的事。
+
+---
+
+## 4. GPU:什麼時候要,以及沒有 GPU 時怎麼辦
+
+⚠ **2026-08-05 起 GPU 保留不在 `platform.yml` 裡了**,搬到
+`infra/compose/asr-gpu.yml`。原因:平台要搬到**沒有 GPU** 的 CPU 主機
+(2× EPYC 9334 / 64 核 / 755 GB),寫死的 nvidia 保留會讓**整批** `up` 失敗,
+連不碰語音的服務都起不來。
+
+**GPU 主機要自己疊回去:**
+
+```bash
+docker compose -p anila-restart \
+  -f compose.yaml -f infra/compose/asr-gpu.yml \
+  --profile asr up -d
+```
+
+疊上去之後,沒有 nvidia container runtime 的機器 `up` 會直接失敗:
 
 ```
 could not select device driver "nvidia" with capabilities: [[gpu]]
@@ -124,6 +277,18 @@ could not select device driver "nvidia" with capabilities: [[gpu]]
 
 **那是設計,不是 bug。** 悄悄退回 CPU 跑 large-v3 會得到 RTF>1(解碼比說話還慢),
 那種「能用但難用到沒人想用」比明著壞更糟。
+
+⚠ **但要知道那個 fail-loud 換了樣子。** 搬家前它一定是「`up` 當場失敗、訊息就在螢幕上」;
+現在只有**疊了 `asr-gpu.yml`** 才是那樣。**兩個覆蓋檔都沒疊**時 `ASR_DEVICE` 仍預設 `cuda`,
+於是:
+
+| | 症狀 | 多久看得出來 | 訊息在哪 |
+|---|---|---|---|
+| 疊 `asr-gpu.yml` | `up` 直接失敗 | 立刻 | `up` 的輸出 |
+| 都沒疊 | asr-decoder 起得來 → 載模型時死 → 重啟迴圈;asr-gateway 卡在 `depends_on: service_healthy` | 最多 20 × 30s ≈ **10 分鐘** | `docker logs anila-restart-asr-decoder-1` |
+
+一樣不會偷偷用 CPU 跑大模型,但慢十分鐘、而且要自己去翻 decoder 的日誌。
+沒有 GPU 又要語音,就明確選一邊:`asr-cpu.yml`(小模型)或 `--profile asr-remote`(交給算力中心)。
 
 > ⚠ **本開發機(2026-07-31)目前就是這個狀態。** `nvidia-smi` 正常、卡是 RTX A4000 16GB,
 > 但 `nvidia-container-toolkit` **沒有安裝**(`nvidia-container-cli` / `nvidia-container-runtime`

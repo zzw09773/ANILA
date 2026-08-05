@@ -188,6 +188,141 @@ class TestGetAsrPrimary:
         ):
             assert forbidden not in body
 
+    def test_service_token_gets_the_rows_own_api_key(self, client, db, service_token_header):
+        """遠端解碼端唯一放得下金鑰的地方(2026-08-05 解除自我設限)。
+
+        算力中心的辨識端點要 ``Authorization: Bearer``;在此之前 ASR 路徑連一個
+        放金鑰的欄位都沒有,結果會是每一句話 401 而麥克風看起來正常。
+
+        PROVE RED:把 models.py 裡 ``payload["api_key"] = ...`` 那兩行拿掉 →
+        這條紅。
+        """
+        from app.services.service_token_envelope import encode_service_token_envelope
+
+        model = make_asr_model(db, name="asr-remote-with-key")
+        model.api_key_secret_ref = encode_service_token_envelope("sk-compute-centre")
+        db.commit()
+        headers = admin_headers(client, db, username="admin-asr-key")
+        client.post(f"/api/models/{model.id}/set-asr-primary", headers=headers)
+
+        resp = client.get("/api/models/asr-primary", headers=service_token_header)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["api_key"] == "sk-compute-centre"
+
+    def test_human_caller_never_gets_the_api_key(self, client, db):
+        """PROVE RED:把條件裡的 ``is_svc and`` 拿掉 → 這條紅。"""
+        from app.services.service_token_envelope import encode_service_token_envelope
+
+        model = make_asr_model(db, name="asr-remote-key-2")
+        model.api_key_secret_ref = encode_service_token_envelope("sk-compute-centre")
+        db.commit()
+        headers = admin_headers(client, db, username="admin-asr-key2")
+        client.post(f"/api/models/{model.id}/set-asr-primary", headers=headers)
+
+        make_user(db, username="plain-asr-key", role="user")
+        token = login(client, "plain-asr-key")
+        resp = client.get(
+            "/api/models/asr-primary",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert "api_key" not in resp.json()
+        assert "sk-compute-centre" not in resp.text
+
+    def test_row_without_its_own_key_gets_no_global_fallback(
+        self, client, db, service_token_header, monkeypatch
+    ):
+        """沒掛金鑰的那筆不可以拿到全域 ``MODEL_GATEWAY_API_KEY``。
+
+        本地 asr-decoder 用的是 ``X-Token`` 共享祕密;把不相干的模型金鑰送過去
+        只會 401,而 401 跟「金鑰設錯」長得一模一樣 —— 最貴的那種誤診。
+
+        PROVE RED:把條件裡的 ``getattr(model, "api_key_secret_ref", None)``
+        拿掉(只留 ``is_svc``)→ 這條紅。
+        """
+        from app.services.proxy import headers as proxy_headers
+
+        monkeypatch.setattr(
+            proxy_headers.settings,
+            "MODEL_GATEWAY_API_KEY",
+            "sk-global-do-not-send",
+            raising=False,
+        )
+        model = make_asr_model(db, name="asr-local-no-key")
+        headers = admin_headers(client, db, username="admin-asr-nokey")
+        client.post(f"/api/models/{model.id}/set-asr-primary", headers=headers)
+
+        resp = client.get("/api/models/asr-primary", headers=service_token_header)
+
+        assert resp.status_code == 200, resp.text
+        assert "api_key" not in resp.json()
+        assert "sk-global-do-not-send" not in resp.text
+
+    def test_undecodable_ref_does_not_fall_back_to_the_global_gateway_key(
+        self, client, db, service_token_header, monkeypatch
+    ):
+        """解不開的 ``api_key_secret_ref`` 也不准變成全域模型金鑰。
+
+        這是「沒掛金鑰」以外的另一半,而且是現實會發生的那一半:輪替
+        ``CSP_SECRET_KEY``、或把資料庫還原進另一組金鑰的環境,**每一筆 ref
+        會同時解不開**。``resolve_model_gateway_key`` 對這種情形是 fail-soft
+        退回 ``MODEL_GATEWAY_API_KEY`` —— 那把是 LLM gateway 的憑證,送到
+        算力中心的辨識端點等於祕密跨了信任邊界,而症狀(每句話 401)跟
+        「金鑰設錯」完全分不出來。
+
+        PROVE RED:把 ``_asr_row_own_key`` 換回
+        ``payload["api_key"] = resolve_model_gateway_key(model)`` → 這條紅。
+        """
+        from app.services.proxy import headers as proxy_headers
+
+        monkeypatch.setattr(
+            proxy_headers.settings,
+            "MODEL_GATEWAY_API_KEY",
+            "sk-global-llm-gateway-canary",
+            raising=False,
+        )
+        model = make_asr_model(db, name="asr-remote-broken-ref")
+        # 損毀的信封 = 輪替過金鑰之後每一筆 ref 的樣子(解密丟 InvalidTag)。
+        model.api_key_secret_ref = "enc::v1::" + ("A" * 64)
+        db.commit()
+        headers = admin_headers(client, db, username="admin-asr-brokenref")
+        client.post(f"/api/models/{model.id}/set-asr-primary", headers=headers)
+
+        resp = client.get("/api/models/asr-primary", headers=service_token_header)
+
+        assert resp.status_code == 200, resp.text
+        assert "api_key" not in resp.json()
+        assert "sk-global-llm-gateway-canary" not in resp.text
+
+    def test_ref_that_is_not_an_envelope_also_gets_no_fallback(
+        self, client, db, service_token_header, monkeypatch
+    ):
+        """缺 ``enc::v1::`` 前綴(未加密 / 資料損毀的 row)走 ``ValueError``
+        那條路 —— 同樣不准變成全域金鑰。"""
+        from app.services.proxy import headers as proxy_headers
+
+        monkeypatch.setattr(
+            proxy_headers.settings,
+            "MODEL_GATEWAY_API_KEY",
+            "sk-global-llm-gateway-canary",
+            raising=False,
+        )
+        model = make_asr_model(db, name="asr-remote-plaintext-ref")
+        model.api_key_secret_ref = "sk-someone-stored-this-in-the-clear"
+        db.commit()
+        headers = admin_headers(client, db, username="admin-asr-plainref")
+        client.post(f"/api/models/{model.id}/set-asr-primary", headers=headers)
+
+        resp = client.get("/api/models/asr-primary", headers=service_token_header)
+
+        assert resp.status_code == 200, resp.text
+        assert "api_key" not in resp.json()
+        assert "sk-global-llm-gateway-canary" not in resp.text
+        # 解不開的內容本身也不准回音出去。
+        assert "sk-someone-stored-this-in-the-clear" not in resp.text
+
     def test_undesignated_user_sees_redacted_endpoint(self, client, db):
         model = make_asr_model(db)
         headers = admin_headers(client, db)

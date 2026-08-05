@@ -28,21 +28,31 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketState
 
+from anila_core.security.url_guard import UnsafeEndpointError
+
 from app import auth as auth_mod
 from app.config import Settings, settings as default_settings
-from app.decode_client import DecodeClient
+from app.decode_client import (
+    PROTOCOL_OPENAI,
+    DecodeClient,
+    env_credential,
+    make_decode_client,
+    normalise_protocol,
+)
 from app.decode_endpoint import (
+    current_decode_credential,
     current_decode_url,
     decode_url_refresh_meta,
     decode_url_source,
+    guard_decode_url,
     refresh_decode_endpoint,
     reset_decode_endpoint_cache,
 )
 from app.decode_probe import (
     REASON_OK,
     probe_decode_target,
-    strip_url_userinfo,
 )
+from app.redaction import install_userinfo_redaction, strip_url_userinfo
 from app.services import jwks_client, revocation_cache as revocation_cache_mod
 from app.session import AsrSession, make_text_filter
 from app.transcriber import VadSegmenter
@@ -63,21 +73,57 @@ def _configure_logging(app_settings: Settings) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logging.getLogger("app").setLevel(app_settings.LOG_LEVEL.upper())
+    # ⚠ httpx 在 INFO 印的 `HTTP Request: GET <url> "…"` 是**每一次請求**一行,
+    # 而 `%s` 走 `httpx.URL.__str__` —— 那個**不遮蔽密碼**(只有 __repr__ 會)。
+    # 解碼位址是 operator 填的,把憑證貼進 userinfo 是很自然的寫法,結果會是
+    # 每 0.5 秒把金鑰寫進 log 一次。濾網掛在這裡,不是等 log 出事再說。
+    install_userinfo_redaction("httpx", "httpcore", "app", "uvicorn.error")
 
 
 def _validate_settings(s: Settings) -> None:
     """prod fail-loud(對齊 csp / studio / router):缺值直接停,不留 fallback。"""
+    # 協定先驗:值不合法時後面每一項檢查的語意都會跟著錯(要哪一把憑證、
+    # 探針走哪條路、URL 怎麼接),與其帶著錯的假設繼續,不如當場停。
+    try:
+        protocol = normalise_protocol(s.ASR_DECODE_PROTOCOL)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+
     if not s.ASR_DECODE_URL.strip():
         raise RuntimeError("ASR_DECODE_URL must be set")
-    if not s.ASR_DECODER_TOKEN.strip():
+    if protocol == PROTOCOL_OPENAI:
+        if not s.ASR_DECODE_API_KEY.strip():
+            raise RuntimeError(
+                "ASR_DECODE_PROTOCOL=openai 時必須設 ASR_DECODE_API_KEY;"
+                "沒有金鑰的話遠端會對每一句話回 401,而麥克風看起來是好的"
+            )
+        if not s.ASR_OPENAI_MODEL.strip():
+            raise RuntimeError("ASR_OPENAI_MODEL must be set when ASR_DECODE_PROTOCOL=openai")
+    elif not s.ASR_DECODER_TOKEN.strip():
         raise RuntimeError("ASR_DECODER_TOKEN must be set")
+
     url = s.ASR_DECODE_URL.strip()
     if not url.startswith(("http://", "https://")):
         raise RuntimeError(f"ASR_DECODE_URL must be http(s): {url!r}")
+    # 出向檢查(SSRF)。以前這條環境變數路徑**任何一層都沒驗** —— 解碼端還在
+    # 同一台機器時被「operator 自己設的」擋著,一旦位址可以指到院外,它就會
+    # 是平台唯一跳過 guard 的模型呼叫。
     # Pure http is accepted here the same way the governance console accepts
     # model endpoints under ANILA_ALLOW_HTTP_ENDPOINT (P0.2). The two doors
     # must agree; refusing env while accepting CSP was confusing, not safer
-    # on an air-gapped network.
+    # on an air-gapped network —— 現在是**同一道門**,不再是兩份各自實作。
+    try:
+        guard_decode_url(url)
+    except UnsafeEndpointError as exc:
+        hint = ""
+        if exc.fixable_by_trust_host:
+            hint = (
+                f";若 {exc.host!r} 是本站台刻意要連的解碼端,"
+                "把它加進 ANILA_TRUSTED_HOSTS"
+            )
+        raise RuntimeError(
+            f"ASR_DECODE_URL 未通過出向檢查({exc.reason}): {exc}{hint}"
+        ) from exc
 
 
 class SessionRegistry:
@@ -145,10 +191,12 @@ def create_app(
             await refresh_decode_endpoint(
                 app.state.settings, decode_client=app.state.decode_client
             )
+            # ⚠ 只記位址、來源與協定 —— **不記憑證**。
             logger.info(
-                "ASR decode URL = %s (source=%s)",
-                current_decode_url(app.state.settings),
+                "ASR decode URL = %s (source=%s, protocol=%s)",
+                strip_url_userinfo(current_decode_url(app.state.settings)),
                 decode_url_source(),
+                app.state.settings.ASR_DECODE_PROTOCOL,
             )
         try:
             yield
@@ -172,8 +220,7 @@ def create_app(
     # mock the decoder with respx.
     app.state.skip_decoder_probe = skip_upstreams
     app.state.decode_client = decode_client or (
-        None if skip_upstreams
-        else DecodeClient(app_settings.ASR_DECODE_URL, app_settings.ASR_DECODER_TOKEN)
+        None if skip_upstreams else make_decode_client(app_settings)
     )
     app.state.registry = SessionRegistry()
     app.state.text_filter = make_text_filter(app_settings.ASR_OPENCC_MODE)
@@ -189,6 +236,7 @@ async def _compose_health_status(
     decode_url: str,
     decoder_token: str,
     service_token_configured: bool,
+    settings: Settings,
     skip_decoder_probe: bool = False,
 ) -> tuple[str, str, str | None, dict | None]:
     """Decide top-level health status + operator-facing reason.
@@ -199,7 +247,22 @@ async def _compose_health_status(
     * ``unavailable`` — voice is switched off (we will not point at a
       machine the operator may not have chosen).
     * ``degraded`` — voice is configured but something is broken.
+
+    ``settings`` 是**必要**的:協定與探針 timeout 都從它來。留一個「省略就當
+    native」的預設等於讓遠端部署可以悄悄走錯的探針路徑 —— 那正是這一批要修掉
+    的病。
     """
+
+    async def _probe(url: str) -> dict:
+        return await probe_decode_target(
+            url,
+            decoder_token,
+            protocol=settings.ASR_DECODE_PROTOCOL,
+            openai_model=settings.ASR_OPENAI_MODEL,
+            timeout_seconds=settings.ASR_PROBE_TIMEOUT_SECONDS,
+            connect_timeout_seconds=settings.ASR_PROBE_CONNECT_TIMEOUT_SECONDS,
+        )
+
     if not revocation_ready:
         return (
             "degraded",
@@ -238,7 +301,7 @@ async def _compose_health_status(
         # overall status stays degraded — designation may have changed.
         probe = None
         if not skip_decoder_probe:
-            probe = await probe_decode_target(decode_url, decoder_token)
+            probe = await _probe(decode_url)
         detail = (
             "CSP asr-primary refresh failed; still using last known address. "
             "Voice stays off until CSP is reachable again."
@@ -250,7 +313,7 @@ async def _compose_health_status(
     if skip_decoder_probe:
         return ("ok", REASON_OK, None, {"ok": True, "reason": REASON_OK, "detail": None})
 
-    probe = await probe_decode_target(decode_url, decoder_token)
+    probe = await _probe(decode_url)
     if probe["ok"]:
         return ("ok", REASON_OK, None, probe)
     return ("degraded", probe["reason"], probe.get("detail"), probe)
@@ -282,11 +345,14 @@ def _register_routes(app: FastAPI) -> None:
             source=source,
             refresh_error=meta["last_refresh_error"],
             decode_url=decode_url,
-            decoder_token=s.ASR_DECODER_TOKEN,
+            # 治理中心指派的金鑰優先;沒有才用環境變數那把。
+            # ⚠ 只交給探針去發請求,**不進 body**(下面沒有任何 key 欄位)。
+            decoder_token=current_decode_credential(s),
             service_token_configured=bool((s.CSP_SERVICE_TOKEN or "").strip()),
             skip_decoder_probe=bool(
                 getattr(app.state, "skip_decoder_probe", False)
             ),
+            settings=s,
         )
         body = {
             "status": status,
@@ -296,6 +362,15 @@ def _register_routes(app: FastAPI) -> None:
             "version": s.APP_VERSION,
             "decode_url": strip_url_userinfo(decode_url),
             "decode_url_source": source,
+            # 哪一種傳輸在生效要看得見 —— 協定選錯的症狀(每句話 404/401)
+            # 在別的欄位上長得像網路問題。
+            "decode_protocol": s.ASR_DECODE_PROTOCOL,
+            # 憑證來自治理中心還是環境變數。**只說來源,不說值。**
+            "decode_credential_source": (
+                "csp_registry"
+                if current_decode_credential(s) != env_credential(s)
+                else "env"
+            ),
             "decode_url_last_refresh_error": meta["last_refresh_error"],
             "decode_url_last_refresh_at": meta["last_refresh_at"],
             "decoder_probe": probe,

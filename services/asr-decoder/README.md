@@ -42,7 +42,10 @@ decoder 定義在 `infra/models/docker-compose.yml`(隨 `anila-models` stack 起
 ASR_DECODE_URL=http://asr-decoder:9000
 ```
 
-走內部 network,不需要 `ASR_ALLOW_HTTP_DECODER`。本機 dev 也用這版。
+走內部 network,本機 dev 也用這版。⚠ 這個位址一樣要過 gateway 的 SSRF guard:
+`asr-decoder` 是**單標籤** docker 服務名 → 靠 `ANILA_TRUSTED_HOSTS` 點名;
+`http://` 這個 scheme → 靠 `ANILA_ALLOW_HTTP_ENDPOINT=1` 放行。兩者缺一
+asr-gateway **啟動時就會停**(見 `docs/runbooks/asr-voice-input.md` §3c)。
 
 ### 外部版 — decoder 在獨立 GPU 主機(MLSteam / aiops 模式)
 
@@ -58,8 +61,12 @@ gateway 端設:
 
 ```
 ASR_DECODE_URL=http://<gpu-host>:9000
-ASR_ALLOW_HTTP_DECODER=1     # 預設 0;純 http 必須顯式放行
+ANILA_ALLOW_HTTP_ENDPOINT=1  # 純 http 必須顯式放行(跟其他 model endpoint 同一道門)
 ```
+
+⚠ 舊名 `ASR_ALLOW_HTTP_DECODER` 已於 2026-08-05 **退役**:它從被「馴服」之後就
+沒有任何程式在讀(`docs/FAKE-CONTROLS.md` #31)。照舊名去設 = 設了、沒報錯、
+gateway 照樣在啟動時拒收 http 位址。
 
 ⚠ **這個模式會把 decoder 綁上 host port,`X-Token` 是唯一的防線。**
 密鑰要夠長,並用防火牆把來源限縮到平台主機 IP —— 不要讓整個內網都打得到。

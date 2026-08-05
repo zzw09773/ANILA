@@ -362,3 +362,34 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   小節(含 `printenv` 驗證那一步)。
   `services/csp/tests/test_compose_csp_env_passthrough.py` 把「文件叫人去設的
   旋鈕 → csp 環境區塊有直通」整組釘住,免得第三次再犯。
+
+---
+
+## 第四輪(2026-08-05)——ASR 遠端化順帶清掉的一條
+
+### #37 `ASR_ALLOW_HTTP_DECODER` —— 宣告了一個安全旗標,**沒有任何程式在讀**(已退役)
+
+- **看起來是什麼**:`.env.example:218`、`infra/compose/platform.yml`、`infra/compose/dev.yml`
+  都宣告 `ASR_ALLOW_HTTP_DECODER=0`,名字讀起來像「預設不准解碼端走純 http」。
+  `services/asr-gateway/app/config.py` 也有對應欄位。
+- **實際**:**零讀取**。`ASR_ALLOW_HTTP_DECODER` 在整個 repo 只出現在宣告處,
+  沒有任何一行程式碼查詢它。`services/asr-gateway/tests/test_ws.py` 甚至有一條
+  測試明白斷言「這個旗標不再擋任何東西」,而 `config.py:24-27` 的註解自承
+  它是為了讓舊 .env 還能解析才留著。設成 0 的維運者會以為自己關掉了 http。
+- **這一條的形狀**:不是「按了沒反應」,是**「以為鎖住了其實沒鎖」**——
+  跟本清單最前面那一類同源,所以即使它只是一個環境變數也要記。
+- **處置(2026-08-05)**:**拿掉**,不是接上去。http 的放行決定本來就已經由
+  `ANILA_ALLOW_HTTP_ENDPOINT` 擁有(PLAN.md P0.2 拍板),ASR 沒有理由有第二個
+  旗標——兩個旗標對同一件事表態,遲早會不一致,而不一致的那一天沒有人會發現。
+  同一批把 asr-gateway 的解碼位址接進 `anila_core` 的 `validate_outbound_url`,
+  所以「http 准不准」現在跟其他 model endpoint 走同一道門、同一個旗標。
+- **舊 `.env` 留著那一行不會壞**(pydantic-settings 只對顯式 kwargs forbid extra)。
+- **補登(同日,審查抓到)**:退役當下**文件沒清乾淨**。
+  `services/asr-decoder/docker-compose.standalone.yml:14` 與
+  `services/asr-decoder/README.md:61` 仍在教維運者「gateway 端設
+  `ASR_ALLOW_HTTP_DECODER=1`」—— 而那兩個檔正是**遠端解碼端部署時唯一會被讀到
+  的**。照著做的人得到的是「設了、沒報錯、gateway 照樣在啟動時拒收 http 位址」,
+  也就是這一條原本要消滅的那個形狀。
+  **教訓:退役一個假控制項,要把指向它的文件一起改掉才算退役完** —— 否則假控制項
+  只是從程式碼搬進了文件,而文件比程式碼更難被測試抓到。兩處已改成
+  `ANILA_ALLOW_HTTP_ENDPOINT=1`。
