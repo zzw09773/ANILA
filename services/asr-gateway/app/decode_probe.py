@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -28,6 +27,10 @@ from app.decode_client import (
     PROTOCOL_OPENAI,
     normalise_protocol,
 )
+# `strip_url_userinfo` 的家搬到 app/redaction.py(錯誤訊息、log 與 health 共用
+# 同一份清洗),這裡 re-export 讓既有的 `from app.decode_probe import
+# strip_url_userinfo` 呼叫端不必跟著改。
+from app.redaction import scrub, strip_url_userinfo  # noqa: F401 — re-export
 from app.wav import silence_wav
 
 logger = logging.getLogger(__name__)
@@ -45,28 +48,13 @@ DEFAULT_PROBE_TIMEOUT_SECONDS = 8.0
 DEFAULT_PROBE_CONNECT_TIMEOUT_SECONDS = 3.0
 
 
-def strip_url_userinfo(url: str) -> str:
-    """Keep host/path; drop userinfo so a pasted secret is not echoed."""
-    if not url:
-        return url
-    parsed = urlparse(url)
-    if parsed.username is None and parsed.password is None:
-        return url
-    hostname = parsed.hostname or ""
-    if ":" in hostname:
-        host = f"[{hostname}]"
-    else:
-        host = hostname
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
-    return urlunparse(parsed._replace(netloc=host))
-
-
 def _redact(text: str, credential: str) -> str:
-    token = (credential or "").strip()
-    if len(token) >= 4:
-        return text.replace(token, "<redacted>")
-    return text
+    """探針 detail 會出現在 `/asr/health`(目前未認證)。
+
+    只抹憑證字面值不夠 —— httpx 的例外訊息會把**完整 URL**(含 operator 貼
+    在位址裡的 userinfo)寫進去。`scrub` 兩件事一起做,長度多短的憑證都抹。
+    """
+    return scrub(text, credential)
 
 
 def _timeout(total: float | None, connect: float | None) -> httpx.Timeout:

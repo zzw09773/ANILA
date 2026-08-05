@@ -11,8 +11,14 @@
 #
 # (歷史:原本硬性要求 GPU 是刻意的 —— 沒有 nvidia container runtime 的機器
 #  `up` 會直接以 could not select device driver "nvidia" 失敗,而不是悄悄退回
-#  CPU 跑 large-v3 得到 RTF>1 的「能用但難用到沒人想用」。那個 fail-loud 行為
-#  一字未改,只是變成疊 asr-gpu.yml 才會有。)
+#  CPU 跑 large-v3 得到 RTF>1 的「能用但難用到沒人想用」。
+#
+#  ⚠ 訂正:那個 fail-loud **不是「一字未改」,是換了地方也換了樣子**。疊了
+#  asr-gpu.yml 才會回到「`up` 當場失敗、訊息就寫在螢幕上」;**兩個覆蓋檔都
+#  沒疊**時 ASR_DEVICE 仍預設 cuda,於是 asr-decoder 起得來、載模型時才死,
+#  進入重啟迴圈,而 asr-gateway 卡在 `depends_on: service_healthy` 最多
+#  20 × 30s ≈ 10 分鐘才放棄 —— 一樣會壞,但慢十分鐘、訊息還藏在 decoder 的
+#  日誌裡。本檔把 ASR_DEVICE 明確設成 cpu,正是為了不落進那個狀態。)
 #
 # 用法(注意 -f 的順序,後者覆蓋前者):
 #   docker compose -p anila-restart \

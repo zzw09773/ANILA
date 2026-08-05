@@ -139,6 +139,13 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
   platform.yml 把 `asr-decoder` 併進本服務的 `ANILA_TRUSTED_HOSTS` 放行 ——
   那是 guard 文件寫明給 operator 的機制,**不是把檢查關掉**。
 - guard **沒有為了 ASR 放寬任何一條**。迴環 / cloud metadata / link-local 一律擋。
+- ⚠ **本地語音因此也依賴 `ANILA_ALLOW_HTTP_ENDPOINT=1`。** 把它收成 `0` 的站台
+  會在**啟動時**被 reason=`scheme` 擋下 —— `ANILA_TRUSTED_HOSTS` 救不了,scheme
+  檢查排在主機名檢查前面。分診表見 `docs/runbooks/asr-voice-input.md` §3c。
+- ⚠ **image 裡的 guard 是 build 時的拷貝,會跟 repo 漂開。** 沒有 bind mount、
+  `up -d` 不重建 → 改了 `packages/anila-core/.../url_guard.py` 之後只 `up -d`,
+  這個服務仍在跑舊規則,**而且沒有任何錯誤訊息**。指紋在
+  `/app/.url_guard.sha256`,比對方式見同一節。
 
 ### 解碼端憑證從哪來
 
@@ -146,8 +153,14 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
    只在**服務權杖**通道上回傳,人類呼叫者永遠拿不到。
 2. 沒有的話才用環境變數(`ASR_DECODER_TOKEN` / `ASR_DECODE_API_KEY`,依協定)。
 
-⚠ 刻意**不吃** `MODEL_GATEWAY_API_KEY` 全域退路:沒掛金鑰的那筆(本地 decoder)
-拿到一把不相干的模型金鑰只會 401,而 401 跟「金鑰設錯」分不出來。
+⚠ 刻意**不吃** `MODEL_GATEWAY_API_KEY` 全域退路 —— 不論是「這筆沒掛金鑰」還是
+「掛了但**解不開**」。csp 端用的是 `_asr_row_own_key`(直接解信封、失敗回 `None`),
+不是 LLM proxy 那支會 fail-soft 退回全域金鑰的 `resolve_model_gateway_key`。
+兩個理由:
+1. 拿到一把不相干的模型金鑰只會 401,而 401 跟「金鑰設錯」分不出來;
+2. 解不開這件事**很現實** —— 輪替 `CSP_SECRET_KEY`、或把資料庫還原進另一組金鑰的
+   環境,每一筆 ref 會同時解不開。那時 fail-soft 等於把 LLM gateway 的憑證交給
+   算力中心的辨識端點,跨了信任邊界。
 
 ## 測試
 

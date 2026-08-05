@@ -217,7 +217,15 @@ async def test_remote_base_with_v1_does_not_double_the_version_segment():
 @pytest.mark.asyncio
 @respx.mock
 async def test_missing_credential_sends_no_authorization_header():
-    """空金鑰時不要送 `Bearer `(空字串)—— 那會把 401 偽裝成 400。"""
+    """空金鑰時不要送 `Bearer `(空字串)—— 那會把 401 偽裝成 400。
+
+    ⚠ 誠實標註:`_validate_settings` 在 `ASR_DECODE_PROTOCOL=openai` 時要求
+    `ASR_DECODE_API_KEY` 非空,而治理中心沒指派金鑰時 `current_decode_credential`
+    退回的正是它 —— 所以**正式部署走不到這個狀態**。這條測的是
+    `auth_headers()` 這個函式自己的契約(空值不要偽造出一個 header),
+    不是一個活體情境;留著是因為那個契約是 `set_credential("")` 之類的
+    未來呼叫端會依賴的東西,不是因為它擋得住什麼現行的病。
+    """
     route = respx.post(f"{REMOTE}/v1/audio/transcriptions").mock(
         return_value=Response(200, json={"text": "ok"})
     )

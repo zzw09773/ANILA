@@ -56,7 +56,10 @@ from app.services.health_checker import (
 )
 from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.urls import join_upstream_path
-from app.services.service_token_envelope import encode_service_token_envelope
+from app.services.service_token_envelope import (
+    decode_service_token_envelope,
+    encode_service_token_envelope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1293,6 +1296,36 @@ def unset_image_primary(
 # ── ASR decoder primary designation ───────────────────────────────────────────
 
 
+def _asr_row_own_key(model) -> str | None:
+    """解出**該筆自己**掛的 ``api_key_secret_ref``;解不開就回 ``None``。
+
+    ⚠ **刻意不用 ``resolve_model_gateway_key``。** 那一支(LLM proxy 在用的)
+    在解密失敗時會**退回全域 ``MODEL_GATEWAY_API_KEY``**。對 LLM 出向那是
+    合理的 fail-soft —— 同一個 gateway、本來就是同一把金鑰;對 ASR 卻是把
+    「另一個服務的祕密」交到算力中心的辨識端點手上,跨了信任邊界。
+
+    而且觸發條件很現實:輪替 ``CSP_SECRET_KEY``、或把資料庫還原進另一組
+    金鑰的環境,**每一筆 ref 會同時變成解不開**。症狀是每一句話 401 ——
+    跟「金鑰設錯」完全分不出來,正是這條路徑存在的理由所要避免的誤診。
+
+    不變式:ASR payload 只帶「這一筆自己的金鑰」,否則什麼都不帶。
+    """
+    ref = getattr(model, "api_key_secret_ref", None)
+    if not ref:
+        return None
+    try:
+        key = decode_service_token_envelope(ref)
+    except Exception:
+        logger.warning(
+            "asr-primary 的 api_key_secret_ref 解不開 model_id=%s;"
+            "**不**退回全域 MODEL_GATEWAY_API_KEY,payload 不帶金鑰",
+            getattr(model, "id", None),
+            exc_info=True,
+        )
+        return None
+    return (key or "").strip() or None
+
+
 @router.get("/asr-primary")
 def get_asr_primary(
     request: Request,
@@ -1312,10 +1345,11 @@ def get_asr_primary(
     算力中心的 gateway 要 ``Authorization: Bearer``,而 ASR 路徑原本連一個放
     金鑰的欄位都沒有,結果是每一句話 401。人類呼叫者永遠拿不到這個欄位。
 
-    ⚠ **刻意不吃 ``MODEL_GATEWAY_API_KEY`` 全域退路。** 沒掛金鑰的那筆(例如
-    本地 ``asr-decoder``)必須回 ``None``,讓 gateway 用自己的環境變數祕密;
-    回傳全域模型金鑰會把一把不相干的祕密送去解碼端,而且症狀是 401 ——
-    跟「金鑰設錯」完全分不出來。
+    ⚠ **刻意不吃 ``MODEL_GATEWAY_API_KEY`` 全域退路** —— 不論是「這筆沒掛
+    金鑰」還是「掛了但解不開」。兩種情形都回不帶 ``api_key`` 的 payload,
+    讓 gateway 用自己的環境變數祕密;回傳全域模型金鑰會把一把不相干的祕密
+    送去解碼端,而且症狀是 401 —— 跟「金鑰設錯」完全分不出來。解密那一半
+    的理由寫在 ``_asr_row_own_key``。
 
     Admitted service-token principals:
       * ``service_client`` of any ``client_type``. Live asr-gateway
@@ -1367,10 +1401,13 @@ def get_asr_primary(
         "api_version": model.api_version,
         "health_status": model.health_status,
     }
-    # 祕密只走服務權杖通道,而且只有該筆真的掛了金鑰時才解密 —— 沒掛金鑰的
-    # 那筆(本地 asr-decoder)payload 與 2026-08-05 之前**逐欄位相同**。
-    if is_svc and getattr(model, "api_key_secret_ref", None):
-        payload["api_key"] = resolve_model_gateway_key(model)
+    # 祕密只走服務權杖通道,而且只有該筆真的掛了、而且解得開金鑰時才帶 ——
+    # 沒掛(本地 asr-decoder)或解不開的那筆,payload 與 2026-08-05 之前
+    # **逐欄位相同**。
+    if is_svc:
+        own_key = _asr_row_own_key(model)
+        if own_key:
+            payload["api_key"] = own_key
     return payload
 
 

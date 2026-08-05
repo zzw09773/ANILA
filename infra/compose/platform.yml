@@ -721,12 +721,18 @@ services:
       # (CSP asr-primary or ASR_DECODE_URL), so a console-selected remote
       # decoder that is down yields status≠ok and hides the microphone.
       #
-      # `required: false` + profile 分軌 = 遠端部署不需要本機 decoder:
+      # `required: false` = 遠端部署不需要本機 decoder:
       #   本地(現行不變)  docker compose --profile asr        up -d
       #   遠端(無 decoder)docker compose --profile asr-remote up -d
-      # asr-decoder 掛 ["asr","asr-local"]、asr-gateway 掛 ["asr","asr-remote"],
-      # 所以 `--profile asr-remote` 只會起 gateway,而 required:false 讓它不等
-      # 一個根本不存在的相依(2026-08-05 用 Compose v2.36.2 實測兩條都對)。
+      #
+      # ⚠ 訂正(2026-08-05 用 Compose v2.36.2 最小重現):**做事的只有
+      #   `required: false` 這一行**。相依的服務不在啟用的 profile 裡時:
+      #     有 required:false → gateway 單獨起得來;
+      #     沒有             → `service "gw" depends on undefined service "dec":
+      #                        invalid compose project` —— 硬錯誤,連 up 都進不去。
+      #   asr-decoder 的 "asr-local" **不是**「只起 gateway」的必要條件,原本
+      #   寫成一組條件是錯的因果。它真正的用途是給「只想起本機 decoder」那個
+      #   情境一個名字(`--profile asr-local`),那個情境實測也成立。
       # ⚠ 這取代了原本那條 `--no-deps` 的口頭約定 —— `--no-deps` 會連 csp /
       #   redis 的等待一起跳過,那兩個是真的需要等的。
       asr-decoder:
@@ -768,8 +774,13 @@ services:
   #   GPU 主機請疊 `infra/compose/asr-gpu.yml`(釘卡設定原封不動搬過去);
   #   CPU 主機疊 `infra/compose/asr-cpu.yml` 換小模型,或乾脆用
   #   `--profile asr-remote` 只起 gateway、解碼交給算力中心。
-  #   ⚠ 沒疊 GPU 覆蓋檔時 ASR_DEVICE 仍預設 cuda —— 容器會在載模型時
-  #   fail-loud(而不是悄悄用 CPU 跑 large-v3 得到 RTF>1 的假可用)。
+  #   ⚠ 沒疊**任何**覆蓋檔時 ASR_DEVICE 仍預設 cuda —— 容器會在載模型時
+  #   fail-loud(而不是悄悄用 CPU 跑 large-v3 得到 RTF>1 的假可用),但那個
+  #   fail-loud 跟搬家前**不一樣**:不再是 `up` 當場失敗,而是 asr-decoder
+  #   起得來→載模型時死→重啟迴圈,asr-gateway 卡在下面的
+  #   `condition: service_healthy` 最多 20 × 30s ≈ 10 分鐘才放棄,訊息只在
+  #   decoder 的日誌裡。要語音就選一邊疊:asr-gpu.yml / asr-cpu.yml /
+  #   `--profile asr-remote`。
   asr-decoder:
     # "asr" 保留 = 現行 `--profile asr` 指令不變(gateway + decoder 一起起);
     # "asr-local" 讓「只想起本機 decoder」也有名字可用。

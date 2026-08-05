@@ -51,8 +51,8 @@ from app.decode_endpoint import (
 from app.decode_probe import (
     REASON_OK,
     probe_decode_target,
-    strip_url_userinfo,
 )
+from app.redaction import install_userinfo_redaction, strip_url_userinfo
 from app.services import jwks_client, revocation_cache as revocation_cache_mod
 from app.session import AsrSession, make_text_filter
 from app.transcriber import VadSegmenter
@@ -73,6 +73,11 @@ def _configure_logging(app_settings: Settings) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logging.getLogger("app").setLevel(app_settings.LOG_LEVEL.upper())
+    # ⚠ httpx 在 INFO 印的 `HTTP Request: GET <url> "…"` 是**每一次請求**一行,
+    # 而 `%s` 走 `httpx.URL.__str__` —— 那個**不遮蔽密碼**(只有 __repr__ 會)。
+    # 解碼位址是 operator 填的,把憑證貼進 userinfo 是很自然的寫法,結果會是
+    # 每 0.5 秒把金鑰寫進 log 一次。濾網掛在這裡,不是等 log 出事再說。
+    install_userinfo_redaction("httpx", "httpcore", "app", "uvicorn.error")
 
 
 def _validate_settings(s: Settings) -> None:

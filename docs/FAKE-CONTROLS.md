@@ -274,3 +274,12 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   同一批把 asr-gateway 的解碼位址接進 `anila_core` 的 `validate_outbound_url`,
   所以「http 准不准」現在跟其他 model endpoint 走同一道門、同一個旗標。
 - **舊 `.env` 留著那一行不會壞**(pydantic-settings 只對顯式 kwargs forbid extra)。
+- **補登(同日,審查抓到)**:退役當下**文件沒清乾淨**。
+  `services/asr-decoder/docker-compose.standalone.yml:14` 與
+  `services/asr-decoder/README.md:61` 仍在教維運者「gateway 端設
+  `ASR_ALLOW_HTTP_DECODER=1`」—— 而那兩個檔正是**遠端解碼端部署時唯一會被讀到
+  的**。照著做的人得到的是「設了、沒報錯、gateway 照樣在啟動時拒收 http 位址」,
+  也就是這一條原本要消滅的那個形狀。
+  **教訓:退役一個假控制項,要把指向它的文件一起改掉才算退役完** —— 否則假控制項
+  只是從程式碼搬進了文件,而文件比程式碼更難被測試抓到。兩處已改成
+  `ANILA_ALLOW_HTTP_ENDPOINT=1`。

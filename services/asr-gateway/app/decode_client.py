@@ -32,6 +32,7 @@ import numpy as np
 
 from anila_core.security.upstream_urls import join_upstream_path
 
+from app.redaction import scrub
 from app.wav import pcm16_to_wav
 
 logger = logging.getLogger(__name__)
@@ -78,16 +79,14 @@ def _pcm_bytes(samples: np.ndarray) -> bytes:
 def _redact(text: str, *secrets: str) -> str:
     """把祕密從要外流的字串裡抹掉。
 
-    ⚠ repo 是 PUBLIC,而這串字會進 log、進 `{"type":"error"}` 送給前端。
-    httpx 的例外訊息本身不含 header,但 URL 可能被貼上 userinfo,回應 body
-    也可能把金鑰回音出來 —— 一律先過這裡。
+    ⚠ repo 是 PUBLIC,而這串字會進 log、進 `{"type":"error"}` **送到使用者的
+    瀏覽器**(`app/session.py`)。兩個來源都要收:
+      * 回應 body 可能把金鑰回音出來(`{"error":"invalid api key: sk-…"}`);
+      * httpx 的 `HTTPStatusError` 訊息會貼上**完整 URL** —— operator 把憑證
+        寫進位址(`https://user:sk-…@host/…`)時,那就是一條祕密。
+    `scrub` 兩件事一起做;細節見 app/redaction.py。
     """
-    result = text
-    for secret in secrets:
-        token = (secret or "").strip()
-        if len(token) >= 4:
-            result = result.replace(token, "<redacted>")
-    return result
+    return scrub(text, *secrets)
 
 
 class _BaseDecodeClient:

@@ -9,7 +9,18 @@
 # 平台正在搬到**沒有 GPU** 的 CPU 主機(2× EPYC 9334 / 64 核 / 755 GB),
 # 模型改由算力中心以 API 端點提供。寫死的保留在那台機器上會讓**整批** up
 # 失敗,連不碰語音的服務都起不來 —— 所以保留搬到這個覆蓋檔,想要 GPU 的
-# 主機自己疊上去。fail-loud 的行為一字未改,只是變成選配。
+# 主機自己疊上去。
+#
+# ⚠ **fail-loud 沒有消失,但它換了地方、也換了樣子。** 別把「一樣會壞」讀成
+#   「一樣好診斷」:
+#     疊了本檔 → 跟以前一樣:`up` 當場失敗,訊息就是
+#                could not select device driver "nvidia"。
+#     沒疊本檔 → 不是 `up` 失敗。asr-decoder 起得來,載模型時才死,進入
+#                重啟迴圈;asr-gateway 卡在 `depends_on: service_healthy`
+#                最多 20 × 30s ≈ **10 分鐘**才放棄,而且真正的訊息在
+#                decoder 的日誌裡,不在 `up` 的輸出上。
+#   沒有 GPU 又想要語音的主機別走這條:疊 asr-cpu.yml 換小模型,或
+#   `--profile asr-remote` 只起 gateway、解碼交給算力中心。
 #
 # 用法(注意 -f 的順序,後者覆蓋前者):
 #   docker compose -p anila-restart \
