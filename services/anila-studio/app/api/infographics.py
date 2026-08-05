@@ -77,6 +77,10 @@ from app.services.llm_json import (
     extract_json_object as _extract_json_object,
     loads_lenient as _loads_lenient,
 )
+from app.services.retrieval_status import (
+    RETRIEVAL_FAILED_PROMPT_NOTE,
+    RETRIEVAL_FAILED_WARNING,
+)
 from app.services.studio_text_normalizer import strip_inline_citations, strip_latex
 
 logger = logging.getLogger(__name__)
@@ -149,8 +153,16 @@ def _build_generation_prompt(
     preset: InfographicPreset,
     extra_instructions: str | None,
     chunks: list[dict[str, Any]],
+    *,
+    retrieval_failed: bool,
 ) -> tuple[str, str]:
     """Compose (system, user) prompts for the InfographicSpec LLM call.
+
+    ``retrieval_failed=True`` means the search errored rather than
+    returning nothing, so an empty ``chunks`` list is not evidence about
+    the corpus — see ``app.services.retrieval_status``. Required, without
+    a default — ``False`` is the value that reinstates the defect, so
+    forgetting it must break the call rather than the copy.
 
     Hard rules echoed in the system prompt:
       - Output JSON only (first char '{', last char '}').
@@ -234,6 +246,8 @@ def _build_generation_prompt(
             )
             parts.append(c["content"])
             parts.append("")
+    elif retrieval_failed:
+        parts.append(RETRIEVAL_FAILED_PROMPT_NOTE.format(where="takeaway"))
     else:
         parts.append(
             "（本次未檢索到相關段落；請依使用者輸入直接發揮，"
@@ -297,6 +311,8 @@ async def _generate_validated_spec(
     preset: InfographicPreset,
     extra_instructions: str | None,
     chunks: list[dict[str, Any]],
+    *,
+    retrieval_failed: bool,
 ) -> InfographicSpec:
     """LLM → JSON → InfographicSpec, with one correction pass on failure.
 
@@ -307,6 +323,7 @@ async def _generate_validated_spec(
     """
     system, user_msg = _build_generation_prompt(
         collection_name, preset, extra_instructions, chunks,
+        retrieval_failed=retrieval_failed,
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
@@ -507,6 +524,9 @@ async def _run_pipeline(
             parts.append(payload.extra_instructions.strip())
         seed_query = " · ".join(parts)
 
+    # hits / zero hits / failed are three outcomes, not two. Only the
+    # third sets this flag — zero hits is a real answer about the corpus.
+    retrieval_failed = False
     try:
         chunks = await _retrieve_chunks(
             bearer,
@@ -535,8 +555,13 @@ async def _run_pipeline(
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
+        # Still ship the infographic, but declare the degradation: the
+        # prompt stops claiming "0 hits" and the job status carries a
+        # warning. The exception text stays in this operator log only.
+        retrieval_failed = True
         logger.warning(
-            "Infographic retrieval failed (%s); proceeding without context.",
+            "Infographic retrieval failed (%s); proceeding without context "
+            "and declaring it to the user.",
             e,
         )
         chunks = []
@@ -545,6 +570,7 @@ async def _run_pipeline(
     await updater.set(step=JOB_STEP_GENERATING)
     spec = await _generate_validated_spec(
         bearer, coll.name, payload.preset, payload.extra_instructions, chunks,
+        retrieval_failed=retrieval_failed,
     )
     spec = _normalize_spec(spec)
     await updater.set(title=spec.title, chart_count=len(spec.charts))
@@ -579,6 +605,9 @@ async def _run_pipeline(
         chart_count=len(spec.charts),
         html_path=str(html_path),
         pdf_path=str(pdf_path),
+        # Soft warning coexisting with done: the infographic exists, it
+        # just isn't grounded in the user's documents.
+        warning=(RETRIEVAL_FAILED_WARNING if retrieval_failed else None),
     )
 
 

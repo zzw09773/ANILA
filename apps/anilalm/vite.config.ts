@@ -39,5 +39,9 @@ export default defineConfig(({ mode }) => {
         '@': '/src',
       },
     },
+    // 測試設定刻意**不放這裡**:這個檔案會被 `tsc -b` 型別檢查(見
+    // tsconfig.node.json 的 include),放 `test:` 就得引用 vitest 的型別,
+    // 而 vitest 是 devDependency —— 哪天映像改成 --omit=dev,生產建置
+    // 就會被一個測試專用的型別引用炸掉。測試設定在 vitest.config.ts。
   }
 })

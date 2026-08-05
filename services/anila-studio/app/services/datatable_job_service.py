@@ -67,6 +67,9 @@ class DatatableJobRecord:
     artifact_paths: dict[str, Path]
     created_at: datetime
     updated_at: datetime
+    # Soft warning that coexists with done (e.g. retrieval failed, so the
+    # table shipped but isn't grounded). Same channel as slides.
+    warning: str | None = None
     # Slice 8b: control-plane passthrough, back-filled after artifact register.
     artifact_id: str | None = None
     classification_level: str | None = None
@@ -95,6 +98,7 @@ class DatatableJobRecord:
             row_count=self.row_count,
             column_count=self.column_count,
             error=self.error,
+            warning=self.warning,
             download_urls=download_urls,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
@@ -308,6 +312,7 @@ class DatatableJobUpdater:
         row_count: int | None = None,
         column_count: int | None = None,
         error: str | None = None,
+        warning: str | None = None,
         artifact_paths: dict[str, Path] | None = None,
         artifact_id: str | None = None,
         classification_level: str | None = None,
@@ -331,6 +336,8 @@ class DatatableJobUpdater:
                 patch["column_count"] = column_count
             if error is not None:
                 patch["error"] = error
+            if warning is not None:
+                patch["warning"] = warning
             if artifact_paths is not None:
                 patch["artifact_paths"] = dict(artifact_paths)
             if artifact_id is not None:
@@ -349,8 +356,13 @@ class DatatableJobUpdater:
         row_count: int,
         column_count: int,
         artifact_paths: dict[str, Path],
+        warning: str | None = None,
     ) -> None:
-        """Convenience: write the terminal "done" state in one call."""
+        """Convenience: write the terminal "done" state in one call.
+
+        ``warning`` rides along so a degraded-but-usable result (e.g.
+        retrieval failed) lands as done+warning rather than a silent win.
+        """
         await self.set(
             state="done",
             step=JOB_STEP_DONE,
@@ -359,4 +371,5 @@ class DatatableJobUpdater:
             row_count=row_count,
             column_count=column_count,
             artifact_paths=artifact_paths,
+            warning=warning,
         )
