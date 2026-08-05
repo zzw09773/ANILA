@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hmac
 
+from anila_core.api.routing import routed_path
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -53,6 +54,36 @@ _EXEMPT_PREFIXES: tuple[str, ...] = (
     "/openapi.json",
     "/static/",
 )
+
+
+def _matches_exempt_prefix(path: str) -> bool:
+    """Prefix match that respects path-segment boundaries.
+
+    Plain ``startswith`` has no boundary, so ``/api/auth/login`` would also
+    exempt ``/api/auth/login-as``, ``/health`` would exempt ``/healthz``,
+    and ``/openapi.json`` would exempt ``/openapi.json.bak`` — permanently
+    and silently, the moment such a route is added. An entry that already
+    ends in ``/`` keeps plain prefix semantics, because the trailing slash
+    *is* the boundary.
+
+    This changes nothing for the entries currently listed: every one of
+    them still matches exactly the routes it matched before (pinned by
+    ``test_no_unexpected_mutating_route_is_csrf_exempt``). It is a
+    narrowing of what a *future* route could accidentally inherit.
+
+    Note this is not what closed CVE-2026-48710 — a polluted ``Host`` put
+    the exempt prefix at a real segment boundary, so boundary matching
+    alone would still have skipped the check. That fix is
+    :func:`~anila_core.api.routing.routed_path`; this is defence in depth
+    against a different mistake.
+    """
+    for prefix in _EXEMPT_PREFIXES:
+        if prefix.endswith("/"):
+            if path.startswith(prefix):
+                return True
+        elif path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
 
 
 class CsrfMiddleware(BaseHTTPMiddleware):
@@ -85,10 +116,13 @@ def _should_skip(request: Request) -> bool:
     if method in SAFE_METHODS:
         return True
 
-    path = request.url.path
-    for prefix in _EXEMPT_PREFIXES:
-        if path.startswith(prefix):
-            return True
+    # SECURITY: the exemption is decided on the path the router dispatches
+    # on, never on ``request.url.path`` — see ``routed_path``'s docstring
+    # for why (CVE-2026-48710: ``request.url`` is built from the caller's
+    # ``Host`` header, so it can be made to report an exempt prefix while
+    # the router still reaches the real endpoint).
+    if _matches_exempt_prefix(routed_path(request)):
+        return True
 
     # Bearer-authenticated requests are not cookie-authenticated and thus
     # not susceptible to CSRF. The middleware trusts the presence of

@@ -43,11 +43,18 @@ from typing import Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from anila_core.api.routing import routed_path
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
 logger = logging.getLogger(__name__)
 
+# Membership is tested against ``routed_path(request)``, never
+# ``request.url.path`` — see that helper's docstring. Exact-set
+# membership happens to fail closed here (a polluted Host turns
+# ``/health`` into ``/x/health`` and demands a token rather than
+# skipping one), but the middleware and the router must read the same
+# string, or the next edit to this check inherits an auth bypass.
 _PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
 
 # Default location for the agent's per-agent service token state.
@@ -81,7 +88,7 @@ class CspServiceTokenMiddleware(BaseHTTPMiddleware):
         if self._dev_mode:
             return await call_next(request)
 
-        if request.url.path in _PUBLIC_PATHS:
+        if routed_path(request) in _PUBLIC_PATHS:
             return await call_next(request)
 
         if not self._service_token:
@@ -271,7 +278,7 @@ class RotatingServiceTokenMiddleware(BaseHTTPMiddleware):
         if self._dev_mode:
             return await call_next(request)
 
-        if request.url.path in _PUBLIC_PATHS:
+        if routed_path(request) in _PUBLIC_PATHS:
             return await call_next(request)
 
         if self._mode == "none":
