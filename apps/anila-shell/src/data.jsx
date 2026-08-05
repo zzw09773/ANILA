@@ -14,7 +14,13 @@ export const DEFAULT_FOLDERS = [
 
 export const BUILTIN_FOLDER_IDS = new Set(["all", "starred"]);
 
-// ---- PII detection patterns (front-end UX only; real redaction at CSP proxy) ----
+// ---- PII detection patterns ----
+// Front-end only. These feed `renderWithRedaction` → the on-screen masking, and
+// nothing else: no part of this file is on the send path. The request body and
+// the stored conversation both keep the ORIGINAL text. There is no PII
+// redaction anywhere in the CSP backend — no model, column, migration, or API.
+// (This comment used to claim "real redaction at CSP proxy"; that was false, and
+// it is the likely seed of the same false claim in the settings privacy panel.)
 const PII_PATTERNS = [
   { kind: "id",    label: "身分證",   regex: /\b[A-Z]\d{9}\b/g },
   { kind: "phone", label: "電話",     regex: /\b09\d{2}-?\d{3}-?\d{3}\b/g },

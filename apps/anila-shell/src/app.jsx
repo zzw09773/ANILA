@@ -130,7 +130,7 @@ import {
   IconTrash,
   IconUser,
 } from "./icons.jsx";
-import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS } from "./data.jsx";
+import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS, detectPII } from "./data.jsx";
 import {
   CitationsDrawer,
   ConfidentialWatermark,
@@ -138,6 +138,8 @@ import {
   watermarkLevel,
   watermarkReaderLabel,
   WATERMARK_DISCLAIMER,
+  REDACTION_MODES,
+  REDACTION_MODE_DEFAULT,
 } from "./trust.jsx";
 import { ParallelCompareView } from "./multiagent.jsx";
 import { HandoffMenu, ShareDialog } from "./collab.jsx";
@@ -190,6 +192,33 @@ function buildStarterPrompts(agents) {
 // Fold prior conversation turns (excluding the live streaming assistant)
 // into the OpenAI message history so the model remembers what was said —
 // and, critically, so images from earlier turns stay visible.
+/**
+ * 從一個「要送出去的 payload」裡取出**這一輪使用者新講的那段話**。
+ *
+ * 敏感資訊閘門看的就是這一段:不是整串歷史(那會讓任何一個曾經出現過個資的
+ * 對話再也不能重試),而是使用者這次提交的內容。
+ *
+ * 刻意只認 payload 本身,不讓呼叫端多傳任何東西 —— 呼叫端一旦能選擇「傳不傳」,
+ * 這個閘門就退化回一份要大家記得去呼叫的清單,而那份清單已經漏掉兩次了。
+ */
+function outgoingUserText(payload) {
+  const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
+  for (let i = msgs.length - 1; i >= 0; i -= 1) {
+    const m = msgs[i];
+    if (!m || m.role !== "user") continue;
+    const c = m.content;
+    if (typeof c === "string") return c;
+    if (Array.isArray(c)) {
+      return c
+        .filter((p) => p && p.type === "text")
+        .map((p) => p.text || "")
+        .join("\n");
+    }
+    return "";
+  }
+  return "";
+}
+
 function buildMessageHistory(priorMsgs, currentText, currentAttachments) {
   const out = [];
   for (const m of priorMsgs || []) {
@@ -347,6 +376,43 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [collapsed, setCollapsed] = useState(false);
   const [folder, setFolder] = useState("all");
 
+  // 敏感資訊模式(提醒／遮蔽／阻擋)。使用者自己在提示列選的偏好,跟資料夾
+  // 共用 users.ui_settings 這個 per-user blob。
+  //
+  // ⚠ 存後端而不是 localStorage,理由和資料夾同一條(見下面那段註解),但對這一
+  // 項更要緊:卡登共用工作站上,localStorage 會把前一個人的選擇留給下一個人 ——
+  // 那不是「使用者的選擇」,而是別人的。blob 跟著卡走才對得起「這是你的偏好」。
+  //
+  // ⚠ 這**不是**管理員政策。後端沒有這種欄位,這裡也刻意不做成那樣:要不要有
+  // 一個管理員層級的強制政策,是還沒裁決的產品問題(OWNER-QUESTIONS)。
+  // 這裡存的只是使用者自己的選擇。
+  const [redactionMode, setRedactionMode] = useState(REDACTION_MODE_DEFAULT);
+
+  /**
+   * 敏感資訊閘門本體。**唯一**判斷「這段文字准不准離開瀏覽器」的地方。
+   *
+   * 它自己不知道也不在乎是誰要送 —— 呼叫它的是下面兩個扼流點,而不是各個
+   * 發起點。這個形狀是被逼出來的:上一版是一個「呼叫端要記得呼叫」的函式,
+   * 兩輪驗收就找出兩批漏掉的路徑(範本 autosend;編輯重問 + 引導式重試 +
+   * 建議提示),而且每一次的徵狀都一樣 —— 畫面說擋住了,東西照樣送出去。
+   * 會漏第三次的清單不是防線。
+   *
+   * @returns {boolean} 准不准送。
+   */
+  const passesRedactionGate = (text) => {
+    if (redactionMode !== "block") return true;
+    if (detectPII(text || "").length === 0) return true;
+    // ⚠ 這句話必須告訴使用者一條**當下真的走得到**的出路。它曾經只寫「可在
+    // 上方提示列切換模式」,而提示列只在輸入框裡剛好有個資時才存在 —— 從範本
+    // 或重試被擋下來的人,畫面上根本沒有那條提示列,等於被鎖在外面沒有鑰匙。
+    // 設定 →「隱私 / 信任」那組按鈕是永遠都在的那一條,所以指向它。
+    toast(
+      "偵測到敏感資訊，目前模式為「阻擋」，所以這則訊息沒有送出。可到「設定 → 隱私 / 信任」改成提醒或遮蔽，或把個資清掉再送。",
+      { tone: "error" },
+    );
+    return false;
+  };
+
   // folders: persisted locally. Users can add/delete; built-ins (all, starred)
   // are guarded because the sidebar filter logic treats them specially.
   const [folders, setFolders] = useState(() => {
@@ -375,6 +441,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         if (alive && Array.isArray(s.folders) && s.folders.length > 0) {
           setFolders(s.folders.filter((f) => f && typeof f.id === "string" && typeof f.name === "string"));
         }
+        // 白名單驗證:blob 是使用者可寫的,不明值一律退回預設,不要拿它去比對模式。
+        if (alive && REDACTION_MODES.includes(s.redactionMode)) {
+          setRedactionMode(s.redactionMode);
+        }
       })
       .catch(() => { /* 後端無設定 → 維持 localStorage 值 */ })
       .finally(() => { uiSettingsLoadedRef.current = true; });
@@ -390,11 +460,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
     // 載入後才回存後端(避免用初始 localStorage 值蓋掉後端真值)。debounce。
     if (!uiSettingsLoadedRef.current || !isAuthenticated) return;
+    // ⚠ PUT 是整包覆寫,所以每一次都要把 blob 的每個 key 都帶上。少帶一個,
+    // 另一個設定就會被這次的寫入洗掉。
     const t = setTimeout(() => {
-      putUiSettings(authRequest, { folders }).catch(() => { /* best-effort */ });
+      putUiSettings(authRequest, { folders, redactionMode }).catch(() => { /* best-effort */ });
     }, 600);
     return () => clearTimeout(t);
-  }, [folders, isAuthenticated, authRequest]);
+  }, [folders, redactionMode, isAuthenticated, authRequest]);
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
   // OW-1: hydration/list already hold the server active path, so export
@@ -508,6 +580,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const streamAbortRef = useRef(new Map());
   const adoptInFlightRef = useRef(false);
   async function streamWithAbort(convId, opts) {
+    // ── 敏感資訊閘門・扼流點 2/2:模型呼叫 ─────────────────────────
+    // 送出路徑上**每一次**模型呼叫都經過這裡(送出、編輯重問、重試、引導式
+    // 重試、對照建議、對比模式),所以檢查放在這裡,而不是放在每一個發起點。
+    // 新增一條送出路徑的人不必記得呼叫任何東西,他必須刻意繞開這個函式才躲得掉。
+    if (!passesRedactionGate(outgoingUserText(opts?.payload))) {
+      return null;
+    }
     const controller = new AbortController();
     streamAbortRef.current.set(convId, controller);
     try {
@@ -558,8 +637,28 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   //        連著按 Enter 時,先按的必須先落庫,否則兩則的請求誰先回來,
   //        對話紀錄裡的順序就跟著顛倒 —— 使用者看得到,而且無法自救。
   // stream = 實際串流:排隊感留在這裡(第二輪要拿到第一輪的答案當上下文)。
-  const chainTurnHead = useRef(createTurnChain()).current;
+  const turnHeadChain = useRef(createTurnChain()).current;
   const chainTurnStream = useRef(createTurnChain()).current;
+
+  /**
+   * ── 敏感資訊閘門・扼流點 1/2:使用者訊息落庫 ──────────────────────
+   *
+   * 只在模型呼叫那一端擋是不夠的:落庫發生在串流之前,擋在後面等於「模型沒
+   * 看到,但資料庫裡存了一份原文」。所以新使用者訊息要進資料庫,也只有這一條路。
+   *
+   * ⚠ `content` 是**必填位置參數**,而且閘門就在這裡面。這是刻意的:呼叫端
+   * 沒辦法「忘記讓它過閘門」——他連呼叫都得先把要落庫的文字交出來。
+   *
+   * 被擋下時回 `{ ok: false, blockedByRedaction: true }`。呼叫端本來就檢查
+   * `head.ok`,所以就算沒特別處理這個旗標,也只是錯誤訊息不夠貼切,
+   * **不會**變成原文外流。
+   */
+  const chainTurnHead = (convId, content, fn) => {
+    if (!passesRedactionGate(content)) {
+      return Promise.resolve({ ok: false, blockedByRedaction: true });
+    }
+    return turnHeadChain(convId, fn);
+  };
 
   // 串流中的預留列:視窗要關掉時,把半截內容誠實標成 interrupted。
   // 這是 best-effort —— 送不出去也「沒有任何東西遺失」,使用者的文字和
@@ -1195,7 +1294,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // 上(驗證者 2026-08-05 於瀏覽器實測,樹是 user → user → assistant)。
     // 不變式:任何會產生一輪問答的路徑,都不得在串流期間把 active leaf 留在
     // 使用者訊息上。送出路徑與這條路徑因此共用同一個 head 原語。
-    const head = await chainTurnHead(convId, () =>
+    const head = await chainTurnHead(convId, trimmed, () =>
       persistTurnHead({
         startTurn: (auth, cid, payload) =>
           apiBranchTurn(auth, cid, userMsg.dbId, payload),
@@ -1206,6 +1305,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         writer,
       }),
     );
+    // 閘門擋下來的不是故障,toast 已經說明了 —— 不要再蓋一條錯誤橫幅上去。
+    if (head.blockedByRedaction) return;
     if (!head.ok) {
       setRuntimeError(head.error?.message || "訊息分支建立失敗");
       // 這一條路徑上舊的問答還原封不動地在畫面上,沒有任何東西被取代 ——
@@ -1495,6 +1596,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     if (explicitAgents.length > 1) {
       return sendCompare(text, attachments, { explicitAgents, piiHits });
     }
+    // ⚠ 這裡要**早於** ensureConversation / createTaskForConversation:那兩個會
+    // 拿這段草稿當標題送到伺服器上。等到落庫扼流點才擋,訊息本身是保住了,
+    // 對話標題和 Task 標題卻已經帶著身分證號出去了。
+    // 這不是閘門的第二份實作,是同一個閘門在更早的位置再問一次;
+    // 後面兩個扼流點仍然是保證,漏掉這一行也不會讓訊息內容外流。
+    if (!passesRedactionGate(text)) return;
 
     const effectiveTarget = explicitAgents[0] || selectedAgentId;
     const convId = await ensureConversation(text, effectiveTarget);
@@ -1561,7 +1668,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // 不等前一輪的串流:按下 Enter 的當下文字就要到伺服器上。
     let head = null;
     if (persistable) {
-      head = await chainTurnHead(convId, () =>
+      head = await chainTurnHead(convId, text, () =>
         persistTurnHead({
           startTurn: apiStartTurn,
           authRequest,
@@ -1571,6 +1678,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           writer,
         }),
       );
+      // 閘門擋下來的不是故障,toast 已經說明了 —— 不要再蓋一條錯誤橫幅上去。
+      if (head.blockedByRedaction) return;
       if (!head.ok) {
         setRuntimeError(head.error?.message || "這一輪沒有順利送出");
         // head 是一個交易 —— 兩列同進同退,所以兩顆氣泡講同一句話。
@@ -2873,6 +2982,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 setColumns={setCompareColumns}
                 messagesByColumn={compareMsgs}
                 onSend={(text, atts, meta) => sendCompare(text, atts, meta)}
+                redactionMode={redactionMode}
+                onChangeRedactionMode={setRedactionMode}
                 onExit={exitCompare}
                 onAdoptColumn={adoptColumn}
                 AgentSelector={AgentSelector}
@@ -2945,6 +3056,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                     <Composer
                       onSend={sendMessage}
                       agents={agents}
+                      redactionMode={redactionMode}
+                      onChangeRedactionMode={setRedactionMode}
                       conversationId={selectedConvId}
                       presetPrompts={presetPrompts}
                       streaming={currentMsgs.some((m) => m.streaming)}
@@ -3021,6 +3134,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         user={user}
         agents={agents}
         authRequest={authRequest}
+        redactionMode={redactionMode}
+        onChangeRedactionMode={setRedactionMode}
       />
 
       <ChangelogModal open={changelogOpen} onClose={() => setChangelogOpen(false)} />
@@ -3389,6 +3504,7 @@ function MemoryTab({ authRequest }) {
 function SettingsModal({
   open, tab, setTab, onClose,
   user, agents, authRequest,
+  redactionMode, onChangeRedactionMode,
 }) {
   return (
     <Modal open={open} onClose={onClose} title="設定" subtitle="runtime 偏好與帳號" width={680}>
@@ -3436,7 +3552,35 @@ function SettingsModal({
               <div>
                 <div style={{ fontWeight: 500, marginBottom: 4 }}>敏感資訊處理</div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
-                  實際遮罩在 CSP proxy 層執行。UI 只在送出前提示；無法關閉後端的審計與遮罩。
+                  遮蔽僅套用於本畫面的顯示。送出內容為原文——模型與存下來的對話紀錄都會收到完整文字，未經遮罩；平台目前沒有伺服器端的個資遮罩。
+                </div>
+                <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6, marginTop: 6 }}>
+                  下面選的模式會存在你的帳號下，換一台機器登入同一張卡也會保留。這是你自己的偏好，沒有管理員替你設定過，你隨時可以改回來。
+                </div>
+                {/* ⚠ 這組按鈕是這個設定在整個平台上**唯一永遠到得了**的入口。
+                    在它之前,唯一能改模式的地方是輸入框上方那條提示列 —— 而那條
+                    提示列只在草稿裡剛好偵測到個資時才出現。於是被「阻擋」擋下來的
+                    人(尤其是從範本或重試被擋的,輸入框根本是空的)看不到任何開關,
+                    而那個偏好現在還是跨機器長期保存的:幾週前在別台機器設的,
+                    今天在這裡把自己鎖在門外。擋人的控制項一定要有一條自救的路。 */}
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  {REDACTION_MODES.map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => onChangeRedactionMode?.(m)}
+                      aria-pressed={redactionMode === m}
+                      style={{
+                        padding: "4px 10px",
+                        fontSize: 11, fontFamily: "var(--font-mono)",
+                        background: redactionMode === m ? "var(--bg-subtle)" : "transparent",
+                        border: "1px solid " + (redactionMode === m ? "var(--border-strong)" : "var(--border)"),
+                        borderRadius: 4, cursor: "pointer", color: "var(--fg)",
+                      }}
+                    >{m}</button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.6, marginTop: 6 }}>
+                  warn＝只提醒，照原文送出；mask＝本畫面遮蔽顯示，仍照原文送出；block＝偵測到個資時不送出。
                 </div>
               </div>
               <div>
