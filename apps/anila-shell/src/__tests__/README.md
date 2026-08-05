@@ -91,6 +91,61 @@ orchestrator**,沒有任何一個它自己的函式被替身取代。
 - **`enqueueFrames()` 送的是原始 frames,不會自動補 meta**——那是給
   「我要驗一個不尋常的串流」用的逃生口。用它就要自己把 frame 序列排對。
 
+### 合併漂移事故(2026-08-05):假後端落後真後端一個架構
+
+`wt/shell-reserve` 與 `wt/test-foundation` 是從同一個基底平行長出來的,
+git 合併(`263d4f46`)**零衝突** —— 兩包動的是不同的 hunk。但 reserve 把送出
+路徑整個換掉了:使用者訊息與助理列改由 `POST /api/conversations/{id}/turn` 在
+**同一個交易**裡建好,串流結束再 `PUT …/messages/{id}` 把內容寫回那一列。
+
+`helpers/fakeBackend.js` 當時只認得舊的 `POST …/messages`,於是對 `/turn` 回
+404 → `persistTurnHead` 判定失敗 → 整輪在串流開始前就中止 → **28 條測試同時
+紅**(orchestratorSend 5/5、orchestratorBranching 6/6、orchestratorFailures
+7/8、orchestratorConversations 4/5、transportHeaders 6/7)。
+
+值得記下來的是**它壞得很大聲**。這份文件開頭警告的那個失敗模式是反過來的:
+假後端和真後端往同一個方向錯,測試繼續全綠,而產品已經壞了。這次是假後端
+**落後**真後端,所以 28 條測試立刻倒下。落後比同向錯好太多。
+
+處置:`helpers/fakeBackend.js` 補上 `POST /turn`、`POST …/branch-turn`、
+`PUT …/messages/{id}` 三條,語意逐段照抄 `fakeConversationBackend.js`
+(寫入者權杖 409、非終局狀態不得由 PUT 建立、終局後狀態封存 409、
+不帶 envelope 的 patch 不抹掉既有標記、`_close_unanswered_leaf`)。
+另外四處注入點跟著搬,斷言的**意圖**一個都沒有放寬:
+
+| 測試 | 原本注入在 | 現在注入在 | 為什麼不算放寬 |
+|---|---|---|---|
+| 助理回答存檔失敗 | `POST …/messages` (role=assistant) | `PUT …/messages/{id}` | 助理內容現在就是走 PUT 落庫的 |
+| 2xx-without-id(送出 / 編輯重問) | 同上 | 同上 | 同上 |
+| 使用者訊息存檔失敗 | `POST …/messages` (role=user) | `POST …/turn` | 使用者訊息現在由 turn 落庫 |
+| 編輯重問不得就地覆寫 | 斷言「PUT 一次都沒有」 | 斷言「沒有一個 PUT 打在使用者訊息上」 | 預留列的寫回本來就是 PUT;要擋的是**舊問句被覆寫**,那一條原封保留 |
+
+還有一條斷言是被**產品改對**而失效的:`/儲存|失敗/` 釘的是措辭,而 reserve
+把文案換成更精確的「這則回答沒有存回對話紀錄，重新整理後就會消失（你的問題
+已經存好了）。」。改成斷言 `ANSWER_PERSIST_FAILURE_NOTICE` 這個常數 ——
+它仍然分得出「回答沒存回去」與「head 失敗」兩種說明,而後者刻意**不**斷言
+沒存進去(那時使用者的問題其實已經在資料庫裡)。
+
+### 為什麼有兩個假後端,還沒有合併
+
+| | `helpers/fakeBackend.js` | `fakeConversationBackend.js` |
+|---|---|---|
+| 攔在哪 | 全域 `fetch` | 注入的 `authRequest` |
+| 涵蓋面 | 整個 shell:auth、agents、tasks、banners、ui-settings、SSE(可逐格 push)、CSRF 中介層 | 只有對話/訊息樹 |
+| 強項 | 端到端,測得到 transport 層(標頭有沒有掛上去) | 協定嚴格,還有請求/回應閘門可以編排兩個分頁互相插隊 |
+| 誰在用 | orchestrator*、transportHeaders | reservedTurn |
+
+**目前的決定:保持兩份,但訊息樹那一半以 `fakeConversationBackend.js` 為準。**
+理由是合併的兩個方向都要付一次大改寫:把 SSE/auth/agents/CSRF 那一層搬進
+class 版,或把權杖狀態機＋閘門搬進 fetch 版;而兩邊各自的強項(端到端 vs
+可編排)其實是兩種不同的測試需求,不是重複。
+
+**但這個決定有明確的代價,而這次事故就是帳單。** 所以配套是:訊息樹相關的
+端點,`helpers/fakeBackend.js` **不自己詮釋**,一律照抄 class 版 —— 檔案裡
+那三段新程式碼都標了對應的方法名。下一次真後端再改協定,要改的仍然是兩個
+地方,這一點沒有解決,只是把「兩份會分歧」降級成「兩份會一起過時」。
+真正的收斂應該排進 PLAN,不該夾在這一輪裡順手做。
+
 ## 突變檢查(證明測試真的會紅)
 
 一條「把它宣稱保護的行為還原回去、卻仍然通過」的測試等於不存在。

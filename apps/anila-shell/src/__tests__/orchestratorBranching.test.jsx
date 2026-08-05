@@ -82,8 +82,21 @@ describe("orchestrator — 編輯重問", () => {
     const stored = backend.storedMessages(101).map((m) => m.content);
     expect(stored).toContain("原問題");
     expect(stored).toContain("新問題");
-    // 就地覆寫的 PUT 一次都不該有。
-    expect(backend.requestsFor("/messages/", "PUT")).toHaveLength(0);
+    // 就地覆寫的 PUT 一次都不該落在**使用者訊息**上 —— 舊問句必須原封留著。
+    //
+    // ⚠ 2026-08-05:原本寫的是「PUT 一次都不該有」。那個斷言在 reserve-then-
+    // stream 之後已經不成立,因為助理回答本來就是用 PUT 寫回預留列的。直接
+    // 刪掉會把「編輯重問不得就地覆寫舊問句」這個不變式一起刪掉,所以改成只
+    // 針對使用者訊息斷言 —— 要擋的那件事一個字都沒有放寬。
+    const userMsgIds = backend
+      .storedMessages(101)
+      .filter((m) => m.role === "user")
+      .map((m) => String(m.id));
+    const putTargets = backend
+      .requestsFor("/messages/", "PUT")
+      .map((r) => r.path.split("/").pop());
+    expect(userMsgIds.length).toBeGreaterThan(0);
+    expect(putTargets.filter((id) => userMsgIds.includes(id))).toEqual([]);
   });
 
   it("空白內容不送出,也不動後端", async () => {

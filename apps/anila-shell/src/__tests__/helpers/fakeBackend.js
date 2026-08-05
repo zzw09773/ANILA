@@ -43,6 +43,22 @@ const CSRF_EXEMPT_PREFIXES = [
   "/static/",
 ];
 
+// ---- 先落庫再串流(reserve-then-stream)------------------------------------
+//
+// 2026-08-05:`wt/shell-reserve` 把送出路徑換成「使用者訊息 ＋ 助理列預留在
+// 同一個交易裡(POST /turn),串流結束再 PUT 寫回那一列」。這個假後端當時只
+// 認得舊的 `POST /messages`,合併之後對 `/turn` 一律回 404 —— 整輪在串流開始
+// 前就中止,28 條測試同時紅。**這正是本檔第 14 行警告的那件事的反面**:假後端
+// 沒有跟著真後端走,只是這一次它壞得很大聲(還好)。
+//
+// ⚠ 協定的權威實作是 `src/__tests__/fakeConversationBackend.js`(reserve 包
+// 寫的,對齊 conversation_service.py)。下面每一段都照著它寫,行為要一致。
+// 兩個假後端為什麼還沒合併,見 `src/__tests__/README.md`。
+const TERMINAL_STATES = new Set([
+  "complete", "stopped", "failed", "interrupted", "unanswered",
+]);
+const ALL_STATES = new Set([...TERMINAL_STATES, "reserved", "streaming"]);
+
 /** 讀 jsdom 的 document.cookie。沒有 document(node 環境)一律回 null。 */
 function readCookie(name) {
   if (typeof document === "undefined") return null;
@@ -285,7 +301,16 @@ export function createFakeBackend(options = {}) {
   const requests = [];
   /** 送到 `/v1/chat/completions` 的 payload(含 messages 歷史)。 */
   const chatPayloads = [];
-  /** 送到 `POST /api/conversations/{id}/messages` 的 body。 */
+  /**
+   * 真的落到後端的訊息,依落庫時序。
+   *
+   * 名字沿用 `appendedMessages`(斷言在用),但語意在 reserve-then-stream 之後
+   * 比「`POST /messages` 的 body」廣:使用者訊息現在由 `POST /turn` 落庫,助理
+   * 訊息由 `PUT /messages/{id}` 寫回預留列。斷言問的一直是同一件事 ——
+   * 「這則訊息有沒有真的存進後端」—— 所以記錄的口徑跟著落庫方式走,
+   * 而不是跟著某一個端點走。預留但從來沒被寫回的那一列**不算**落庫
+   * (它在資料庫裡是空的,重新整理什麼都看不到),所以在寫回時才記。
+   */
   const appendedMessages = [];
 
   const convs = new Map();
@@ -342,6 +367,65 @@ export function createFakeBackend(options = {}) {
       sibling_count: ids.length,
       sibling_ids: ids,
     };
+  }
+
+  /**
+   * 把一列記進 `appendedMessages`。同一個 id 只佔一格,內容以最後寫進去的
+   * 為準 —— 一列被 PUT 好幾次(串到一半標 interrupted、最後標 complete)在
+   * 資料庫裡仍然只是一列。
+   */
+  function recordPersisted(convId, row) {
+    const seen = appendedMessages.find((m) => m.msgId === row.id);
+    if (seen) {
+      seen.content = row.content;
+      return;
+    }
+    appendedMessages.push({
+      convId,
+      msgId: row.id,
+      role: row.role,
+      content: row.content,
+      parent_id: row.parent_id,
+    });
+  }
+
+  /** 這一列目前的串流狀態封套;一般訊息沒有,回 null。 */
+  function envelopeOf(row) {
+    const envelope = row?.metadata?.anila_stream;
+    return envelope && typeof envelope === "object" ? envelope : null;
+  }
+
+  /**
+   * `_close_unanswered_leaf` —— leaf 停在一則沒有回答的使用者訊息上時,先補一
+   * 列終局的空回答,新的一輪才接在它底下。不補的話下一次送出會產生 user →
+   * user,那則問題從此永遠拿不到回答。沒補就回 null。
+   */
+  function closeUnansweredLeaf(convId) {
+    const leafId = activeLeafByConv.get(convId);
+    if (leafId == null) return null;
+    const list = msgsByConv.get(convId) || [];
+    const leaf = list.find((m) => m.id === leafId);
+    if (!leaf || leaf.role !== "user") return null;
+    if (list.some((m) => m.parent_id === leaf.id)) return null;
+    return makeMessage(
+      convId,
+      { role: "assistant", content: "", metadata: { anila_stream: { state: "unanswered" } } },
+      { parentId: leaf.id },
+    );
+  }
+
+  /** 預留一列助理回覆(空內容 + 寫入者權杖)。對齊 reserve_assistant_reply。 */
+  function reserveAssistantRow(convId, parentId, body) {
+    return makeMessage(
+      convId,
+      {
+        role: "assistant",
+        content: "",
+        agent_name: body.agent_name ?? null,
+        metadata: { anila_stream: { state: "reserved", writer: body.stream_writer } },
+      },
+      { parentId },
+    );
   }
 
   /** 從 active leaf 往上走到根,得到目前這條路徑。 */
@@ -499,14 +583,120 @@ export function createFakeBackend(options = {}) {
     const appendMatch = path.match(/^\/api\/conversations\/(\d+)\/messages$/);
     if (appendMatch && method === "POST") {
       const convId = Number(appendMatch[1]);
-      appendedMessages.push({ convId, ...body });
       const list = msgsByConv.get(convId) || [];
       const parentId =
         body.parent_id !== undefined && body.parent_id !== null
           ? body.parent_id
           : activeLeafByConv.get(convId) ?? (list.at(-1)?.id ?? null);
+      const row = makeMessage(convId, body, { parentId });
+      recordPersisted(convId, row);
       // 201:`app/api/conversations.py:668` 是 status_code=201。
-      return jsonResponse(makeMessage(convId, body, { parentId }), 201);
+      return jsonResponse(row, 201);
+    }
+
+    // ---- POST /turn —— 使用者訊息 ＋ 助理列預留,同一個交易 ----------------
+    //
+    // 對齊 conversation_service.start_turn(權威鏡像在 fakeConversationBackend
+    // 的 startTurn)。兩件事之間沒有縫隙,這正是「兩個分頁同一瞬間按 Enter」
+    // 不再把訊息樹弄壞的原因,所以這裡也不能拆成兩步做。
+    const turnMatch = path.match(/^\/api\/conversations\/(\d+)\/turn$/);
+    if (turnMatch && method === "POST") {
+      const convId = Number(turnMatch[1]);
+      if (!convs.has(convId)) return errorResponse(404, "找不到對話");
+      if (!body?.stream_writer) return errorResponse(400, "缺少串流寫入者權杖");
+      const filler = closeUnansweredLeaf(convId);
+      const parentId = filler ? filler.id : activeLeafByConv.get(convId) ?? null;
+      const userRow = makeMessage(
+        convId,
+        { role: "user", content: body.content ?? "" },
+        { parentId },
+      );
+      recordPersisted(convId, userRow);
+      const assistantRow = reserveAssistantRow(convId, userRow.id, body);
+      return jsonResponse(
+        { user: userRow, assistant: assistantRow, unanswered: filler },
+        201,
+      );
+    }
+
+    // ---- POST /messages/{id}/branch-turn —— 編輯重問的 head ---------------
+    //
+    // 對齊 conversation_service.branch_turn:新的使用者訊息是被編輯那一則的
+    // 同層兄弟,助理列在同一個交易裡預留好,leaf 落在**助理列**上。leaf 若停
+    // 在使用者訊息上,串流期間插一句話就會 user → user。
+    const branchTurnMatch = path.match(
+      /^\/api\/conversations\/(\d+)\/messages\/(\d+)\/branch-turn$/,
+    );
+    if (branchTurnMatch && method === "POST") {
+      const convId = Number(branchTurnMatch[1]);
+      const targetId = Number(branchTurnMatch[2]);
+      const list = msgsByConv.get(convId) || [];
+      const target = list.find((m) => m.id === targetId);
+      if (!target) return errorResponse(404, "訊息不存在");
+      if (target.role !== "user") {
+        return errorResponse(400, "只能從使用者訊息分支出新的一輪問答");
+      }
+      if (!body?.stream_writer) return errorResponse(400, "缺少串流寫入者權杖");
+      const userRow = makeMessage(
+        convId,
+        { role: "user", content: body.content ?? "" },
+        { parentId: target.parent_id ?? null },
+      );
+      recordPersisted(convId, userRow);
+      const assistantRow = reserveAssistantRow(convId, userRow.id, body);
+      return jsonResponse({ user: userRow, assistant: assistantRow }, 201);
+    }
+
+    // ---- PUT /messages/{id} —— 把串流結果寫回預留的那一列 ------------------
+    //
+    // 對齊 _active_stream_writer 與 _normalize_stream_envelope:未終局的列只有
+    // 持有權杖的人寫得進去(409);state 只收得下合法且**終局**的值;沒帶
+    // envelope 的 patch 不會把既有標記抹掉。假後端比真後端寬鬆的話,「半截答案
+    // 被寫成 complete」這種錯就會全程隱形。
+    const msgMatch = path.match(/^\/api\/conversations\/(\d+)\/messages\/(\d+)$/);
+    if (msgMatch && method === "PUT") {
+      const convId = Number(msgMatch[1]);
+      const msgId = Number(msgMatch[2]);
+      const list = msgsByConv.get(convId) || [];
+      const row = list.find((m) => m.id === msgId);
+      if (!row) return errorResponse(404, "訊息不存在");
+      const envelope = envelopeOf(row);
+      const owner = envelope && !TERMINAL_STATES.has(envelope.state) ? envelope.writer : null;
+      if (owner && body?.stream_writer !== owner) {
+        return errorResponse(409, "這則回覆正由其他來源產生中，無法覆寫");
+      }
+      if (body?.metadata != null) {
+        const next = { ...body.metadata };
+        const nextEnvelope = next.anila_stream;
+        if (nextEnvelope) {
+          if (!ALL_STATES.has(nextEnvelope.state)) {
+            return errorResponse(400, "串流狀態不合法");
+          }
+          if (!TERMINAL_STATES.has(nextEnvelope.state)) {
+            return errorResponse(
+              400, "串流狀態只能由預留流程建立，這裡只接受已結束的狀態",
+            );
+          }
+          if (
+            envelope && TERMINAL_STATES.has(envelope.state)
+            && envelope.state !== nextEnvelope.state
+          ) {
+            return errorResponse(409, "這則回覆已經結束，狀態不能再更動");
+          }
+          const { writer: _drop, ...rest } = nextEnvelope;
+          next.anila_stream = rest;
+        } else if (envelope) {
+          // 既有標記是那一列的屬性,不是這次 payload 的屬性 —— 原封帶回。
+          next.anila_stream = { ...envelope };
+        }
+        row.metadata = next;
+      }
+      if (body?.content !== null && body?.content !== undefined) row.content = body.content;
+      if (body?.trace_id != null) row.trace_id = body.trace_id;
+      if (body?.latency_ms != null) row.latency_ms = body.latency_ms;
+      if (body?.agent_name != null) row.agent_name = body.agent_name;
+      recordPersisted(convId, row);
+      return jsonResponse(withSiblings(convId, row));
     }
 
     const branchMatch = path.match(

@@ -20,6 +20,17 @@ import {
   waitFor,
 } from "./helpers/orchestrator.jsx";
 import { deltaFrame, errorFrame } from "./helpers/fakeBackend.js";
+import { ANSWER_PERSIST_FAILURE_NOTICE } from "../runtime/reservedTurn.js";
+
+// 為什麼斷言的是常數而不是一段正規式:原本寫的是 `/儲存|失敗/`,釘的是**措辭**。
+// `wt/shell-reserve` 把文案改得更精確(「這則回答沒有存回對話紀錄，重新整理後就
+// 會消失（你的問題已經存好了）。」)之後,那個正規式就對不上了 —— 而產品其實
+// 更對了。措辭不是不變式;「使用者拿到的是哪一種失敗說明」才是。
+//
+// 這一句仍然有牙齒,因為它把兩種失敗分開:回答沒存回去要用這一句,而 head
+// 失敗(POST /turn 掛掉)**不能**用它 —— 那時使用者的問題其實已經在資料庫裡,
+// 說「沒有存進去」是假的。那一格由 reservedTurn.test.jsx 的
+// 「never tells the user a message was not saved when it might have been」守著。
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -35,14 +46,13 @@ describe("orchestrator — 儲存失敗必須可見", () => {
   it("助理回答存檔失敗:氣泡上有標記,而不是安靜地掉了", async () => {
     const backend = createFakeBackend();
     backend.enqueueAnswer("看起來成功的回答");
-    // 只讓 assistant 那一次 append 失敗;user 那一次要成功,
-    // 否則整輪會在串流前就中止,驗不到「回答已經在畫面上但沒存進去」。
-    backend.route("POST", /\/messages$/, (req, { errorResponse }) => {
-      if (req.body?.role === "assistant") {
-        return errorResponse(500, "資料庫寫入失敗");
-      }
-      return undefined;
-    });
+    // 只讓**寫回預留列**那一次失敗;POST /turn 要成功,否則整輪會在串流前就
+    // 中止,驗不到「回答已經在畫面上但沒存進去」。
+    // (2026-08-05:助理訊息改由 PUT 寫回預留列,不再是 POST /messages。
+    //  注入點跟著搬,斷言完全沒動 —— 要驗的還是同一件事。)
+    backend.route("PUT", /\/messages\/\d+$/, (_req, { errorResponse }) =>
+      errorResponse(500, "資料庫寫入失敗"),
+    );
 
     await mountOrchestrator({ backend });
     await sendText("請回答");
@@ -50,7 +60,7 @@ describe("orchestrator — 儲存失敗必須可見", () => {
 
     // 1. 氣泡自己被標記(banner 會被關掉/被忽略,氣泡不會)
     const pin = await screen.findByTestId("message-persist-error");
-    expect(pin.textContent).toMatch(/儲存|失敗/);
+    expect(pin.textContent).toBe(ANSWER_PERSIST_FAILURE_NOTICE);
 
     // 2. 全域 banner 也要出現
     await waitFor(() => {
@@ -62,24 +72,22 @@ describe("orchestrator — 儲存失敗必須可見", () => {
   it("助理回答存檔回 2xx 但沒有 id:一樣要標記,不能當成功", async () => {
     const backend = createFakeBackend();
     backend.enqueueAnswer("回答內容");
-    backend.route("POST", /\/messages$/, (req, { jsonResponse }) => {
-      if (req.body?.role === "assistant") {
-        // 2xx、body 合法、就是沒有 id — 最容易被當成功的那一種。
-        return jsonResponse({ ok: true });
-      }
-      return undefined;
-    });
+    // 2xx、body 合法、就是沒有 id — 最容易被當成功的那一種。
+    backend.route("PUT", /\/messages\/\d+$/, (_req, { jsonResponse }) =>
+      jsonResponse({ ok: true }),
+    );
 
     await mountOrchestrator({ backend });
     await sendText("請回答");
     await waitForAnswer("回答內容");
 
     const pin = await screen.findByTestId("message-persist-error");
-    expect(pin.textContent).toMatch(/儲存|失敗/);
+    expect(pin.textContent).toBe(ANSWER_PERSIST_FAILURE_NOTICE);
   });
 
-  // 送出 / 編輯重問 / 重新產生是三條各自獨立的存檔程式碼:
-  // 送出走 persistAssistantTurn,另外兩條走 reconcilePersistedAssistant。
+  // 送出 / 編輯重問 / 重新產生仍然是三條各自獨立的存檔程式碼,只是分法在
+  // 2026-08-05 之後變了:送出與編輯重問共用 finalizeStreamedAssistant(PUT
+  // 寫回預留列),重新產生仍然走 branchMessage + reconcilePersistedAssistant。
   // 只驗送出那一條,另外兩條的「2xx 沒有 id」照樣可以安靜地過去 ——
   // 這個缺口是本包的突變檢查自己抓出來的（persist-2xx-without-id-accepted
   // 一開始存活）。
@@ -92,16 +100,16 @@ describe("orchestrator — 儲存失敗必須可見", () => {
     await waitForAnswer("原回答");
     await waitForIdle();
 
-    // 第一輪正常存檔;從這裡開始 assistant 的 append 回 2xx-without-id。
-    backend.route("POST", /\/messages$/, (req, { jsonResponse }) =>
-      req.body?.role === "assistant" ? jsonResponse({ ok: true }) : undefined,
+    // 第一輪正常存檔;從這裡開始寫回預留列回 2xx-without-id。
+    backend.route("PUT", /\/messages\/\d+$/, (_req, { jsonResponse }) =>
+      jsonResponse({ ok: true }),
     );
 
     await editUserMessage("改寫後的問題");
     await waitForAnswer("改寫後的回答");
 
     const pin = await screen.findByTestId("message-persist-error");
-    expect(pin.textContent).toMatch(/儲存|失敗/);
+    expect(pin.textContent).toBe(ANSWER_PERSIST_FAILURE_NOTICE);
   });
 
   it("重新產生:分支回 2xx 但沒有 id,一樣要標記", async () => {
@@ -121,16 +129,21 @@ describe("orchestrator — 儲存失敗必須可見", () => {
     await waitForAnswer("重試回答");
 
     const pin = await screen.findByTestId("message-persist-error");
-    expect(pin.textContent).toMatch(/儲存|失敗/);
+    // ⚠ 這一條路徑的文案**不是**上面那一句:重新產生仍然走 branchMessage +
+    // reconcilePersistedAssistant,用的是 messageTree.js 的 PERSIST_MISS_NOTICE
+    // (它會把失敗原因夾帶進去)。斷言分開寫,才看得出兩條路徑各自有沒有守衛。
+    expect(pin.textContent).toContain("沒有存進對話紀錄");
+    expect(pin.textContent).not.toBe(ANSWER_PERSIST_FAILURE_NOTICE);
   });
 
   it("使用者訊息存檔失敗:整輪中止,不會留下一個假的空助理氣泡", async () => {
     const backend = createFakeBackend();
     backend.enqueueAnswer("不該出現的回答");
-    backend.route("POST", /\/messages$/, (req, { errorResponse }) => {
-      if (req.body?.role === "user") return errorResponse(500, "使用者訊息寫入失敗");
-      return undefined;
-    });
+    // 使用者訊息與預留列現在是同一個交易(POST /turn);它失敗 = 這一輪
+    // 連個落腳處都沒有,所以串流一格都不該開始。
+    backend.route("POST", /\/turn$/, (_req, { errorResponse }) =>
+      errorResponse(500, "使用者訊息寫入失敗"),
+    );
 
     await mountOrchestrator({ backend });
     await sendText("送不出去的問題");

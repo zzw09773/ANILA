@@ -32,9 +32,36 @@
 //   已由 `wt/shell-reserve` 的 `csrfHeaders.test.js` 在函式層面收掉;
 //   兩個分支合併後這一格才會有守衛。**在本分支單獨跑會存活**,所以
 //   不列進清單 —— 列了就是報一個假的紅。
+//   ⚠ 2026-08-05 兩個分支已經合併(263d4f46),`csrfHeaders.test.js` 在樹上了
+//   (而且已歸進 NEW_TESTS,理由見下面),所以這一格**可以**補一個突變了。
+//   這一輪沒補,是因為範圍只有重新錨定與修基準線;補的人請照
+//   `csrf-missing-on-*` 那幾條的寫法。
 // * `runtime/sse.js` 的 `streamSessionAnswer`:`app.jsx` 目前沒有任何
 //   呼叫端(全樹 grep 只有定義與註解),掛起來的 shell 走不到。
 //   改用直接呼叫的 `transportSessionAnswer.test.js` 收,突變照列。
+//
+// ── 合併 263d4f46 之後發生過的事(留著,因為它會再發生一次)─────────────
+//
+// 本包(`wt/test-foundation`)是從 reserve 改寫**之前**的 app.jsx 長出來的。
+// `wt/shell-reserve` 把送出路徑換成「先落庫再串流」:使用者訊息與助理列由
+// `POST /api/conversations/{id}/turn` 在同一個交易裡建好,串流結束再
+// `PUT .../messages/{id}` 寫回。git 合併零衝突,因為兩包動的是不同的 hunk。
+//
+// 於是同一個原因造成了三種不同大聲程度的損壞:
+//
+//  1. **28 條測試紅**:`helpers/fakeBackend.js` 不認得 `/turn`,一律回 404 →
+//     整輪在串流開始前就中止。已修(該檔補了三個端點,語意照抄
+//     `fakeConversationBackend.js`);細節與注入點的搬移記在
+//     `src/__tests__/README.md` 的〈合併漂移事故〉。
+//  2. **4 個錨點漂掉**:舊錨點釘在被改寫掉的那幾行(其中一個還把註解一起
+//     釘了進去)。已重新錨定,每一個都寫了為什麼釘在新的那一行。
+//  3. **1 個錨點還在、但守的碼變成死碼**:`persist-turn-2xx-without-id-accepted`
+//     原本釘 `messageTree.js` 的 `persistAssistantTurn`,而送出路徑已經不走
+//     它了。**這一種最安靜** —— `--check-anchors` 全綠、既有測試照樣紅,
+//     唯一的徵兆是它在「新測試」那一組存活。已改釘到 `reservedTurn.js`。
+//
+// 教訓:`--check-anchors` 通過**不代表**突變清單還對得上產品。它只證明那些
+// 字串還在檔案裡,不證明產品還會跑到那裡。整輪跑完才會說出第 3 種。
 //
 // 離開碼:任何一個突變存活(該紅卻沒紅)= 1。
 
@@ -45,13 +72,24 @@ import { dirname, resolve } from "node:path";
 const ROOT = process.cwd();
 
 // 這個工作包新寫的行為測試(orchestrator 掛載 + transport 標頭)。
-const NEW_TESTS = ["src/__tests__/orchestrator", "src/__tests__/transport"];
+//
+// `csrfHeaders.test.js` 是 `wt/shell-reserve` 寫的,不是本包寫的 —— 但它同樣是
+// 2026-08-05 才落地的**新**測試,而且收的正是本清單 transport 那一區的同一格
+// (見檔頭第 29 行起的說明)。把它留在「既有測試」那一桶,csrf-* 那幾個突變
+// 就會顯示成「既有測試也抓到了」,而那個數字整份報告只有一個用途:量**舊套件**
+// 漏了什麼。今天早上才寫的守衛不是舊套件。所以歸到這一桶。
+const NEW_TESTS = [
+  "src/__tests__/orchestrator",
+  "src/__tests__/transport",
+  "src/__tests__/csrfHeaders",
+];
 // 這個工作包之前就存在的測試(用來量「舊套件漏了什麼」)。
 const PRE_EXISTING_EXCLUDES = [
   "**/node_modules/**",
   "**/*.node.test.mjs",
   "**/orchestrator*.test.jsx",
   "**/transport*.test.*",
+  "**/csrfHeaders.test.js",
   "**/__tests__/guards/**",
   "**/sourceTextGuardRegistry.test.js",
 ];
@@ -65,8 +103,14 @@ const MUTATIONS = [
     file: "src/app.jsx",
     shape: "存取器回空值",
     intent: "送出時的對話歷史永遠是空的（模型看不到前文）",
-    find: "    const priorForHistory = messagesByConv[convId] || [];",
-    replace: "    const priorForHistory = messagesByConv[convId] && [];",
+    // 2026-08-05 重新錨定(reserve-then-stream 落地後)。舊錨點是
+    // `const priorForHistory = messagesByConv[convId] || [];` —— 歷史來源改成
+    // `historyBefore(messagesRef.current[convId] || [], userMsg.id)` 之後整行消失。
+    // 缺陷本身完全沒有消失:歷史照樣可能送成空的。新錨點釘在**送給模型的
+    // payload 那一行** —— 不管歷史怎麼組、組在哪裡,它都得從這個交界出去,
+    // 下一次重寫搬得動組裝方式,搬不掉這一行。
+    find: "        messages: buildMessageHistory(priorForHistory, text, attachments),",
+    replace: "        messages: buildMessageHistory(priorForHistory && [], text, attachments),",
   },
   {
     id: "history-loop-skipped",
@@ -112,21 +156,36 @@ const MUTATIONS = [
     file: "src/app.jsx",
     shape: "刪掉整段存檔（靜默失敗）",
     intent: "助理回答完全沒有存進後端，畫面正常、重新整理就不見了",
-    // appendAssistant 開頭的守衛反轉 = 存檔整段被跳過，而且沒有任何錯誤訊息。
-    find:
-      "          // Persist the assistant turn under the user message's db id.\n" +
-      '          if (typeof convId !== "number") return;',
-    replace:
-      "          // Persist the assistant turn under the user message's db id.\n" +
-      '          if (typeof convId === "number") return;',
+    // 2026-08-05 重新錨定。舊錨點是 appendAssistant 開頭的守衛(連同它上面
+    // 那行英文註解)—— 助理列改成 POST /turn 先預留、串流結束才 PUT 寫回之後,
+    // append 那條路整段不存在了。⚠ 舊錨點把註解也一起釘進去,那正是它為什麼
+    // 這麼容易漂掉:註解是最不 load-bearing 的東西。
+    //
+    // 缺陷仍然成立,而且比以前更安靜:寫回那一段被跳過的話,那一列會永遠停在
+    // reserved 且內容是空的,畫面上答案好端端地顯示著(text 在上面幾行就已經
+    // updateMsg 進去了),重新整理才發現不見了。新錨點是寫回段的前置守衛,
+    // 與舊突變同型 —— 前置守衛反轉 = 整段存檔靜悄悄地跳過,零錯誤訊息。
+    find: "      if (!persistable || reservedId == null) return;",
+    replace: "      if (persistable || reservedId == null) return;",
   },
   {
     id: "persist-error-not-pinned",
     file: "src/app.jsx",
     shape: "刪掉標記（靜默失敗）",
     intent: "存檔失敗時氣泡上不再標記（使用者以為存好了）",
-    find: "            updateMsg(convId, assistantId, { persistError: persisted.notice });",
-    replace: "            updateMsg(convId, assistantId, { persistError: persisted.saved });",
+    // 2026-08-05 重新錨定。突變本身與舊的一字不差(notice → saved;存檔失敗時
+    // saved 是 null,氣泡就不會被標記,而全域 banner 照樣出現 —— 使用者看到的
+    // 是「有個東西閃過去了，但這則回答看起來好好的」)。漂掉的原因只是縮排:
+    // 這一段從 appendAssistant 的深層 callback 搬到了串流鏈的頂層。
+    //
+    // 它現在在 app.jsx 出現**兩次**(送出路徑與編輯重問路徑),所以多帶一個
+    // 右大括號把它鎖在送出路徑上 —— 編輯重問那一份的下一行是 `return;`。
+    find:
+      "        updateMsg(convId, assistantId, { persistError: persisted.notice });\n" +
+      "      }",
+    replace:
+      "        updateMsg(convId, assistantId, { persistError: persisted.saved });\n" +
+      "      }",
   },
   {
     id: "persist-2xx-without-id-accepted",
@@ -145,15 +204,28 @@ const MUTATIONS = [
   },
   {
     id: "persist-turn-2xx-without-id-accepted",
-    file: "src/runtime/messageTree.js",
+    file: "src/runtime/reservedTurn.js",
     shape: "條件放寬",
     intent: "送出路徑上，2xx-without-id 被當成存檔成功",
+    // 2026-08-05 重新錨定,而且理由跟另外四個不一樣 —— 這一個的舊錨點**還在**,
+    // 只是它守的那個函式已經沒有人呼叫了。
+    //
+    // 舊錨點在 `messageTree.js` 的 `persistAssistantTurn`。reserve 改寫之後送出
+    // 路徑改走 `finalizeStreamedAssistant`(PUT 寫回預留列),全樹 grep
+    // `persistAssistantTurn` 只剩定義與它自己的單元測試 —— 產品端零呼叫。
+    // 錨點照樣命中一次、測試照樣紅(messageTree.test.js 直接呼叫它),所以
+    // `--check-anchors` 和「既有測試抓到」都看不出異狀;唯一的徵兆是它在
+    // **新測試**那一組存活 —— 掛起來的 shell 根本走不到那一行。
+    //
+    // 這正是這份清單存在的意義:一個「守著沒有人跑的碼」的守衛,是零。所以
+    // 把同一個形狀(2xx-without-id 當成功)移到產品真的會跑的那一行。
+    // ⚠ `persistAssistantTurn` 現在是死碼,該不該刪是產品決定,不在本輪範圍。
     find:
-      "    const saved = await appendMessage(authRequest, convId, payload);\n" +
-      '    if (saved && typeof saved.id === "number") {',
+      '    if (saved && typeof saved.id === "number") {\n' +
+      "      return { ok: true, saved, error: null, notice: null };",
     replace:
-      "    const saved = await appendMessage(authRequest, convId, payload);\n" +
-      '    if (saved || typeof saved.id === "number") {',
+      '    if (saved || typeof saved.id === "number") {\n' +
+      "      return { ok: true, saved, error: null, notice: null };",
   },
   {
     id: "backend-error-text-swallowed",
@@ -204,9 +276,23 @@ const MUTATIONS = [
     intent: "「停止產生」按了沒有反應（串流照樣跑完）",
     // 註:改成 `get(selectedConvId)` 是**等價突變** —— stopStreaming 的每一個
     // 可達呼叫端傳進來的都已經是當前選取的對話，換掉不改變任何行為。
-    // 真正會壞的是 abort 本身沒被呼叫，所以守衛反轉才是有效的突變。
-    find: "    if (controller) controller.abort();",
-    replace: "    if (!controller) controller.abort();",
+    // 真正會壞的是 abort 本身沒被呼叫。
+    //
+    // 2026-08-05 重新錨定。stopStreaming 從一行守衛長成一個區塊(按停止還要
+    // 連帶取消排隊中、還沒開始串流的那幾輪)。這裡**刻意不**沿用「反轉
+    // `if (controller)`」的舊做法:編輯重問與重新產生會在沒有任何串流時呼叫
+    // stopStreaming(app.jsx 的 handleEditUser),反轉之後會對 undefined 呼叫
+    // abort 而拋例外 —— 那是「當機」不是「按了沒反應」,兩種壞法混進同一個
+    // 突變裡,測試紅了也證明不了停止鍵有守衛。
+    //
+    // 改成拿掉**呼叫運算子**:識別字一個沒少,abort 從此不發生,串流照樣跑到
+    // 完 —— 這正是這個突變要編碼的那個使用者可見失敗。
+    find:
+      "      userStoppedRef.current.add(convId);\n" +
+      "      controller.abort();",
+    replace:
+      "      userStoppedRef.current.add(convId);\n" +
+      "      controller.abort;",
   },
   {
     id: "regenerate-not-branched",
