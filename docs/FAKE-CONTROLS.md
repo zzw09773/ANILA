@@ -16,6 +16,13 @@
 > `CSP_SERVICE_TOKEN`／舊版 token 汰換卡，屬當時假控制項紀錄，**勿當成現行 agent 上手步驟**
 > （現行見 `docs/guides/developer-guide.md`）。
 
+> 🔴 **2026-08-05 讀這份文件之前先讀這段。**
+> 這份清單**曾經沒有把修復狀態回寫**，代價是 2026-08-05 開第 3 段時整整多跑一輪分診：
+> 六條候選逐一追到兩端，**六條全部早就修好了**。
+> 現在規則是：**條目一旦修好，就在那一條上標明，並附「現在讓它正確的那一行」的 file:line。**
+> 不要只寫「已修（wt/某分支）」——分支會被刪掉，讀的人無從確認它有沒有進主線。
+> 本輪的逐條回寫在文末〈第六輪〉。
+
 ---
 
 ## 最高:讓人以為資料被保護了
@@ -463,3 +470,258 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 - **要決定的事**:知識庫升密時,對「該知識庫來源的記憶片段」應該
   (a) 刪除、(b) 跟著升密、還是 (c) 什麼都不做但在 UI 明講。
   在能回答之前,**不要**在 UI 上暗示升密會回收已外流的內容。
+  → **2026-08-05 已進裁決冊 Q33**,現行假設 = (c)。
+
+---
+
+## 第六輪(2026-08-05 下午)——第 3 段開工前的分診回寫
+
+### 一、六條舊候選:**全部已修**,不要再開包
+
+逐條追到 UI 與後端**兩端**確認,並刻意不採信「說已修好」的註解。
+
+| 舊條目 | 現在讓它正確的那一行 |
+|---|---|
+| **#3** 分享 `mode`／`allow_fork` 存而不用 | `services/csp/app/services/conversation_service.py:1638-1643` 建構子根本沒有這兩欄;`ShareCreate`／`ShareOut`(`api/conversations.py:229-253`)已移除;全樹無授權讀取點 |
+| **#4** Agent 測試連線「不是 401 就算成功」 | `api/agents/health.py:60-110` 改回三項事實,401／403 明確**不算**成功;`DeveloperAgentsView.vue:404-415,513` 逐條渲染 |
+| **#5** 健康檢查命中 `/` 就 healthy | `services/health_checker.py:73-80` 把 `/` 隔離成 WEAK path,`:191-205` 最多只能落到 `degraded`,**永不 healthy**;`utils/healthStatus.js:40,49` 顯示琥珀色「降級」,不塌縮回綠燈 |
+| **#11／#29** Agent 版本欄位兩端不符 | `registration.py:229-233` 用 `AliasChoices("agent_version","version")` 兩拼法都收,且 `extra="forbid"`;UI 四處同名 |
+| **#28** `ApiKeysView.vue` 空 `catch{}` | 換成 `utils/allowList.js` 三態模型,`:220` 守衛擋住「讀不到就送出」;後端 `api_keys.py:61` 更進一步——非 admin 的 `model_ids` 由**後端自算**,不採信前端 |
+| **#30** `/admin/platform-links` 死連結 | 兩處都已改成 `/platform-links`,與 `router/index.js:80` 一致 |
+
+同一輪對治理中心做了兩種形狀的主動掃描:**「空 catch 的結果被拿去組寫入酬載」比對了全部 view,
+「欄位名不符被靜默丟棄」比對了 13 條寫入路徑 → 零發現**。
+三處追到兩端後判定**不構成**該形狀,列出來免得日後重查:
+`UsersView.vue:353-360`(寫入走的是另一條已加守衛的讀取)、
+`PlatformLinksView.vue:337`(管理員 id 來自伺服器回傳物件,非 users 清單)、以及數個輪詢迴圈。
+
+### #41 對話路由是**假綠燈**:探測打在一個不存在的路徑上 🔴
+
+- **畫面說**:健康總覽的「對話路由」卡片是綠的。
+- **實際**:`health_checker.py:500` 探的是 `http://router:9000/ready` → **404**。
+  而 `_probe_http_service` 的規則是 `<500 → healthy`,所以 **404 被讀成「服務在答話」**。
+  router 真正的健康端點是 `/health`,回 200 且帶著 `last_refresh_error` 這種有內容的欄位。
+- **後果**:總覽**從來沒有問過 router 好不好**,只問了「你會不會回話」。
+  router 內部壞掉(例如模型清單刷新一直失敗)而 FastAPI 還活著時,卡片照樣是綠的。
+- **實測(2026-08-05,本機 `-p anila-restart`)**:`/ready` → 404 `{"detail":"Not Found"}`;
+  `/health` → 200。
+
+### #42 文件匯入工作者是**永久假紅燈**,而且會把整個總覽拖紅 🔴
+
+- **實際**:`health_checker.py:501` 探 `http://ingestion-worker:8081/ready`,
+  但它是 **Arq 佇列工作者,根本沒有 HTTP 伺服器**——`infra/compose/platform.yml:261-300`
+  沒有宣告任何埠。實測 8081／8080／8000 全部 connection refused。
+- **後果**:這張卡片**永遠 unhealthy**,而 `aggregate_health` 取「最差的那一個」,
+  於是**整個健康總覽永遠是紅的**。
+- 📌 **這一條最值得記的是**:`health_checker.py:518-523` 自己寫著
+  「把『沒部署』跟『部署了但掛了』混成同一個紅點,卡片會天天喊狼,管理者三天後就不看了
+  —— 那等於這個功能沒做。」**它的註解說中了它自己在做的事。**
+
+### #43 反向代理探測被**今天自己的修正**打壞(迴歸)
+
+- **實際**:port 80 的 Host 允許清單(今日合併 `be969f99`)結尾是
+  `if ($is_anila_host = 0) { return 444; }`,而探測用的 `Host: nginx` 不在清單裡
+  → nginx **直接關連線、不回任何回應** → httpx 丟 `RemoteProtocolError`。
+  那個例外是 `ProtocolError` **不是** `NetworkError`,所以躲過
+  `except (httpx.ConnectError, httpx.NetworkError)`,掉進通用 `except Exception`
+  → 卡片標成 **unhealthy / probe_failed**。
+- **確認是迴歸**:該合併的第一父 `de368194` 的 port-80 區塊是裸的 `return 301`,
+  探測拿到 301 → healthy。**沒有任何測試抓到這個。**
+- ⚠ **那個 nginx 修正本身是對的**(它封掉 open redirect:攻擊者控制的 `Host`
+  會被原樣寫進 `Location`)。**要改的是探測,不是允許清單。**
+- 📌 **順帶第三次踩到同一個形狀**:`health_checker.py:497-499` 的註解寫著
+  「nginx :80 對所有路徑 `return 301`」——那是合併**之前**的狀態。
+  Router 那次(#27)、ASR 旗標那次(#37)、這次,**都是被一句描述舊狀態的註解帶偏**。
+
+### #44 anilalm:檢索失敗會**對模型說謊**,不只是對使用者靜默 🔴
+
+- **實際**:`apps/anilalm/.../WSChat.tsx:334` 呼叫檢索,`:340-343` 把任何失敗吞成瀏覽器
+  `console.warn` 然後繼續;`:199-210` 接著組出一段 prompt,**向模型斷言**
+  「本次查詢在向量檢索中沒有命中相似度 ≥ 0.3 的段落」。
+  檢索是**錯誤**而不是**空結果**的時候,**那句話是假的,而且是餵給模型當前提的**。
+- **同形狀的還有三條**:anila-studio 五條產線裡的
+  slides(`studio.py:580-585`)、datatable(`datatables.py:483-486`)、
+  infographic(`infographics.py:537-542`)。
+- **後果**:使用者拿到一個流暢、自信、**完全沒有依據**的答案,而且看起來跟有依據的一模一樣。
+  在一個「就是要用院內文件回答」的平台上,這是最貴的一種——**因為沒有人會回報它**。
+- **現成的正解就在同一棵樹裡**:報告產線兩條路徑都**大聲失敗**
+  (`report_runner.py:487`、`:495`)且兩條都有測試(`test_report_runner.py:142`、`:162`);
+  軟警告通道 `FALLBACK_DECK_WARNING` → `mark_done(warning=…)`(`studio.py:140`、`:770`)
+  也已經接好而且有測試守著,只是沒接到檢索失敗上。
+- ⚠ **`apps/anilalm` 完全沒有測試執行器**(`package.json` 沒有 `test` script、沒有 vitest)。
+
+### #45 索引錯配 → **永遠回空,零筆日誌** 🔴
+
+- **實際**:`pgvector_store.py:246` 以 `embedding_source_model = $4` 過濾。
+  當平台指定的 embedding 模型與既有 chunk 當初索引用的不一致時,
+  每一次搜尋都回 `200 {"results": []}`——**永遠,而且任何層級都沒有一行日誌**。
+- **後果**:一個裝滿文件的知識庫變成一個什麼都答不出來的知識庫,而**沒有任何地方說得出為什麼**。
+  觸發它不需要任何人犯錯——在治理中心改指定 embedding 模型是支援的操作。
+
+### #46 `test_platform_embedding.py:211-256` 是**恆真測試**
+
+- 它**從來沒有呼叫那個端點**:`:246` 自己手寫警告字串,然後斷言自己寫的字面值。
+- **實測突變**:把真正的 `set_platform_embedding` 換成一個直接拋例外的函式,**6 條照樣通過**。
+  刪掉 `models.py:1708` 不會讓任何東西轉紅。
+- **這正是「測試全綠不是證據」在後端的樣本**,而 csp 目前**還沒有**前端那種突變檢查工具。
+
+### #47 文件裡的 0.7 門檻:程式沒事,**教材有事**
+
+- `api/search.py:177`(**會渲染進 OpenAPI schema,因此進到產生出來的 client**)
+  與 `pgvector_store.py:219` 都把 0.7 講成一個合理的相似度門檻。
+- **為什麼危險**:這個平台的 embedder 是**非對稱**的——同一句話的查詢側與文件側編碼
+  實測 cosine 約 **0.60–0.83**,不是 1.0。所以 0.7 這個值**壓在「同一句話」的分數上**,
+  設下去會**永遠濾掉每一段落**,而且看起來完全合理。
+- 現行程式沒有任何門檻高於 0.3,**風險全在它教會下一個維護者什麼**。
+
+### #48 評測頁:憑證讀取失敗會偽裝成「尚未註冊」(低)
+
+`EvaluatorView.vue:350` 的 `.catch(() => ({ data: [] }))` 讓讀取失敗長得像「尚未註冊 LLM 憑證」,
+操作者於是略過評審直接送出評測。**減輕因素**:覆核面板 `:158` 仍誠實顯示「已停用」,
+所以被誤導的是**原因**不是**結果**——與治理權限那次靜默全撤不同量級。**未修**,值得順手併包。
+
+### #49 零 chunk 的文件仍標成 `indexed`(低,未修)
+
+`handlers.py:797-803`(無測試)與影像說明嵌入失敗(`handlers.py:292-309`)兩條路徑
+都在 WARNING 記了一筆,但最後**仍以 `status='indexed'` 收尾**。
+一份實際上什麼都沒索引到的文件,在畫面上與正常文件無法分辨。
+
+### #50 csp 有**兩個 Dockerfile**,而「已改非 root」的那個是死的 🔴
+
+- **看起來是什麼**:`services/csp/Dockerfile` 有 `USER csp`。任何人翻 repo 都會得出
+  「csp 已經降權跑」的結論。
+- **實際**:compose 建的是 `infra/docker/csp.Dockerfile`,**沒有 `USER`**;
+  實測跑著的容器 `uid=0`。三個部署中的映像(csp、ingestion-worker、pptx-renderer)都是 root。
+- **這一條的形狀**:不是「按了沒反應」,是**「修正不在部署路徑上」**——
+  比沒修更糟,因為它讓稽核和交接都以為這件事做完了。
+- 📌 **CLAUDE.md 早就寫過這條**:「查部署路徑要**從跑著的容器往回追**,
+  不要從 repo 裡看起來對的檔案往前推。」這是同一句話的第二次應驗
+  (第一次是治理中心在 csp 映像裡,改了 anila-ui 沒有用)。
+- **修的時候會踩到的兩件**(偵察已量):`main.py:60-67` 對 root 所有的 `/app/logs/csp.log`
+  開 `RotatingFileHandler`,降權即 `PermissionError` 開不起來;
+  `share/uploads/ingestion` 掛載內容已經是 `root:root`,只加一行 `USER` 會得到
+  **容器全綠、上傳靜默 500**。要有一次性 `chown` 的部署步驟。
+
+### #56 embedding 模型名稱的**大小寫碰撞**——資料缺陷,不是程式缺陷 🔴
+
+- **事實**:`ingestion_collections.embedding_model` 的 DB DEFAULT 是 `nvidia/NV-embed-V2`,
+  而模型在 `model_registry` 註冊的名字是 `nvidia/nv-embed-v2`。
+  migration `r1_0018` 又從那個欄位回填了 chunk 的來源模型欄位。
+  → **一個索引完全正常的語料庫,會被大小寫敏感的比較判成「索引在別的模型下」。**
+- **2026-08-05 的處置**:把三個比較改成大小寫不敏感
+  (`similarity_search` 的查詢過濾、409 背後的 `EXISTS`、以及 `_collections_not_indexed_under`)。
+  ⚠ **只修其中一個會更糟**——實測證明:只修偵測、不修查詢過濾,
+  會讓正常語料庫變成 **200 筆空結果、零日誌**,也就是原本那個缺陷。
+- ⚠ **這不是權宜之計,但它會讓資料缺陷變安靜。** 大小寫不敏感在兩個各自獨立寫入的
+  自由文字欄位之間本來就是正確語意;但修完之後,**那個資料缺陷不再有任何徵兆**,
+  而它每建一個用預設值的新集合就再犯一次。
+- **所以下面這份清單必須被寫下來。** 沒有它,合併換到的是一個安靜的平台,
+  而失去的是本來會發現這件事的那個人:
+
+| # | 位置 | 事情 |
+|---|---|---|
+| 1 | `services/csp/app/api/ingestion/collections.py:135` | 硬寫 `"nvidia/NV-embed-V2"` |
+| 2 | `ingestion_collections.embedding_model` 的 DB DEFAULT | 同一個拼法,需要 migration |
+| 3 | 建立集合的 payload(`collections.py:127`→`:158`) | `payload.embedding_model` **存進去前沒有任何正規化** |
+| 4 | `memory_service.py:323` | 記憶檢索,**仍大小寫敏感** |
+| 5 | `platform_embedding.py:149` 的 `count_pending_recompute` | **兩個缺陷在同一支**:大小寫敏感 ＋ 因 RLS 恆回 0(見 #52) |
+| 6 | `r1_0018` 的回填是**歷史資料** | 之後把欄位正規化**不會重寫已經寫進去的列**,要一支資料 migration |
+| 7 | worker 寫 `embedding_source_model` 用的是**註冊表**的名字 | 舊 chunk 帶的是**集合欄位**的名字 → **同一個集合裡兩種拼法天生共存** |
+| 8 | `model_registry.name` | **沒有唯一性也沒有正規化**——只差大小寫的兩列仍然建得出來,**正是原本那個缺陷的形狀** |
+| 9 | **停用**指定的 embedding 模型 | 軟回退會移動 → 健康語料庫從 200 變 409(**刻意不關,見下**) |
+
+- **4、5 是既有的靜默空結果路徑**(不是這次改動造成的),但它們**帶著同一個碰撞**——
+  chunk 檢索修好之後,**記憶檢索仍然會因為大小寫而悄悄回空**。
+  影像檢索(`search.py:966`)已於同一輪順手修掉,不在清單上。
+- **第 9 條刻意不關,理由值得記**:要讓它不 409,就得在指定落在軟回退時放棄來源模型過濾。
+  但那樣**查詢向量來自 F 模型、段落來自 M 模型**,跨兩個嵌入空間的 cosine 沒有意義,
+  端點會回一批任意段落**並且宣稱它們相關**。
+  **有自信的錯答案比誠實的錯誤更糟**——那個語料庫真的取不到,壞的只是措辭。
+  訊息已改成平台**接受**的動作(重新指定回原模型;若已停用要先重新啟用,因為停用的模型會被拒絕)。
+- ⚠ 一條**待確認**:`DEFAULT_EMBED_MODEL` 這個名字在全樹 `.py` 找不到(只在測試 docstring 出現),
+  可能是舊名。**變成工作項之前先確認它存不存在。**
+
+### #54 `ANILA_MODEL_FAST` —— 設了不會有任何效果(接線未完成)
+
+- **看起來是什麼**:設這個環境變數,期待自動標題改用比較快的模型。
+- **實際**:**接線還沒做完**。自動標題送的是 `model: effectiveTarget`——
+  **跟回答那輪對話的同一顆模型**(`apps/anila-shell/src/app.jsx:1111-1136`),
+  跟這個環境變數無關。`packages/anila-core/src/anila_core/prompts/model_routing.py:20-21`
+  自己註明「待接」。
+- **處置**:**接線包落地之前不要在任何文件或部署說明裡提這個變數。**
+  現行行為(跟著對話那顆走)反而是零設定、自我維護的——模型陣容換了會自動跟著
+  治理中心指定的主路由走,一人維運要的就是這個形狀。
+- 📌 順帶澄清一個誤解:自動標題**沒有**綁定 `nothink` 變體,
+  所以內網沒有那個變體也不會壞;失敗時保留「使用者第一句截 28 字」,靜默但無害
+  (使用者沒有表達過「請下標題」的意圖,不構成假控制項)。
+  anilalm 工作區**完全沒有** LLM 標題,只截前 60 字。
+
+### #55 匯入失敗的原因**存了但前端一次都沒畫**
+
+- **畫面說**:側欄只顯示紅色的「失敗」兩個字。
+- **實際**:後端**有存** `error_message`,而且訊息是準確的
+  (例如「檔案抽取後沒有可用文字(純圖片 / 加密 / 空檔)」);
+  `apps/anilalm/src/workspace/WSSidebar.tsx:428` 附近零渲染,全 `src` grep 無命中。
+- **後果**:擁有者 2026-08-05 回報「大型空白表格建不了索引,好像被判沒語意」——
+  **那是誤診,而誤診的原因就是這一條**。系統其實明確知道也存下了原因,只是沒說。
+- **真正的機制**(fable5 在活體容器實測):沒有 chunk 層級的語意判斷;
+  唯一的判定是整份文件層級的
+  `packages/anila-core/src/anila_core/ingestion/parsers.py:132-138`
+  「抽取後零文字即毀損」。**DOCX 的空白表格可以正常索引**,
+  症狀只發生在**沒有文字圖層的 PDF／掃描檔**。
+- **修法方向**:把已存在的 `error_message` 畫進失敗列。不動匯入邏輯、不加啟發式。
+  ⚠ **不要**為此引入表格結構解析那類重依賴——那正對著「越複雜就被放棄」那條教訓。
+
+### #53 「哪一則回答變成沒有依據」沒有人記(座標已定,待排小包)
+
+- **背景**:#44 的 RAG 靜默退化修好之後,失敗會被寫進訊息的
+  `metadata.retrieval_failed`,而且撐得過重整。**紀錄是有的,問題是沒有人會發現它。**
+- **已查證的兩件(2026-08-05,活體容器)**:
+  ① csp **有**每請求存取日誌(`services/csp/app/main.py:76-88` 的 `setup_logging()`
+  明確掛 `StreamHandler(sys.stdout)`、root level INFO,呼叫點在 `lifespan()` 是部署路徑),
+  活體容器內數到 **6344 行**,含 502×1、401×211、404×3334 ——
+  **打到 csp 的檢索失敗今天就已經有一行日誌**。
+  ② 它看不到的只有兩類:**根本沒到 csp 的失敗**(nginx 502／TLS／DNS／離線／中止),
+  以及**「哪一則回答因此變成沒有依據」的關聯**。
+- **座標(RAG 那包追出來後停手,因為 csp 不在它範圍內)**:
+  `services/csp/app/api/conversations.py:698`(`POST /{conv_id}/messages`,metadata 在 `:716`),
+  以及同一份 metadata 會經 `:831` 的 turn/finalize 路徑進來——**兩條要一起處理**。
+  寫入帶該旗標的訊息時吐一行 WARNING 即可。
+- 📌 **這一條記在這裡本身就是教訓**:驗收指出這組座標原本只活在交接報告裡,
+  全樹 grep 零命中。**查得到 ≠ 有人會發現**,對日誌是這樣,對座標也是這樣。
+
+### #52 「待重算筆數」**結構性地永遠是 0** —— 一個有自信的零 🔴
+
+- **畫面說**:`GET /api/models/platform-embedding` 回報 `pending_recompute`,
+  也就是「換了平台 embedding 模型之後,還有多少東西沒重算」。
+- **實際**:`app/services/platform_embedding.py:121-155` 在一個**沒有設定 RLS 情境**的
+  session 上計數,而 `document_chunks` 與 `ingestion_images` 都是 **FORCE-RLS**,
+  runtime 角色 `csp_app` 又**不繞過 RLS**(這是刻意的,見鐵則)。
+  於是這兩個數字**恆為 0,與真實積欠量無關**;只有沒開 RLS 的
+  `conversation_memory_chunks` 講的是實話。
+- **實測(2026-08-05,活體 DB 唯讀)**:兩張表 `relrowsecurity=t, relforcerowsecurity=t`;
+  `csp_app` 的 `rolbypassrls=f, rolsuper=f`;GUC 未設時該述詞為真 → 全部濾掉。
+- **為什麼算最糟的形狀**:它不是「按了沒反應」,是**主動報一個令人安心的數字**。
+  維運者換完模型看到「待重算 0」,會直接認為換模型沒有代價。
+- 📌 **這一條是索引錯配那包挖出來的,而且它拒絕把這個數字接進自己的新畫面**——
+  理由是「那會在一個專門為了誠實而做的功能上,送出一個謊」。**這個判斷是對的。**
+- **未修**:`platform_embedding.py` 不在該包範圍內,而且 `health_overview.py` 可能也在消費它,
+  要一起看。
+
+### #51 CSRF 豁免清單看的是**攻擊者可控的路徑**(第 4 段要修) 🔴
+
+- **實際**:`middleware/csrf.py:88-90` 用 `request.url.path` 判斷豁免;
+  而 starlette 0.49.3 的 `request.url` 是**把原始 Host 標頭字串串接**出來的
+  (`url = f"{scheme}://{host_header}{path}"`)。所以 `Host: x/api/auth/login`
+  可以把路徑邊界整個挪走,讓 `startswith()` 命中豁免——**同一個請求**
+  FastAPI 卻是用乾淨的 `scope["path"]` 繞送,照樣進到目標端點。
+- **已重現(2026-08-05,活體容器內跑本專案自己的 `_should_skip`)**:
+  四種污染 Host 全部拿到 `SKIP_CSRF=True`。
+- **兩個成因,要一起修**:starlette 的缺陷(CVE-2026-48710,1.0.1 修掉)
+  **加上**本專案選了 `url.path` 而不是 `scope["path"]`。
+  **只升版不改判斷來源,等於把安全邊界外包給函式庫。**
+- **nginx 擋得住,但不夠**:Host 允許清單在 80／443／4443 三個埠都擋掉了(已實測),
+  然而 csp 與 codeserver／n8n／gitlab 同在 `anila-net`,那三個都跑使用者提供的程式碼,
+  可以直接打 `csp:8000` 繞過 nginx。
+  ⚠ `TrustedHostMiddleware` **沒有註冊**,而且就算註冊,它掛在 `CsrfMiddleware` **內側**,
+  補不到這個洞。
