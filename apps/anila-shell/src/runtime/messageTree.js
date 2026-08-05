@@ -103,6 +103,10 @@ export function applyServerPath(prevList, serverMapped, convId) {
   const fromServer = (serverMapped || []).map((sm) => {
     const live = liveLocal.get(sm.dbId);
     if (live) {
+      // 正在寫的那一列一律留本地版本。conversationId 的重新標記是防禦性的:
+      // live 氣泡本來就取自這個對話的清單,理應已經等於 convId ——
+      // 所以改與不改在行為上量不出差別,不值得為它寫測試。留著只是不讓
+      // 「清單不會搬家」變成一個沒人擋的隱含假設。
       return live.conversationId === convId
         ? live
         : { ...live, conversationId: convId };

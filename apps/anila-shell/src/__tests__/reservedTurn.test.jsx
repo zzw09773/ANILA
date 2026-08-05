@@ -7,7 +7,9 @@
 
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act, waitFor, within } from "@testing-library/react";
+import {
+  render, screen, act, waitFor, within, cleanup,
+} from "@testing-library/react";
 
 import {
   FakeConversationBackend,
@@ -983,7 +985,8 @@ describe("a state we do not recognise", () => {
 // ── 編輯重問:同一個保證,另一條路徑 ─────────────────────────────────────────
 
 async function editFirstUserMessage(from, to) {
-  const editButton = await screen.findByTitle("編輯");
+  // 一則以上的使用者訊息時取最上面那一顆 —— 「第一則」就是這個意思。
+  const editButton = (await screen.findAllByTitle("編輯"))[0];
   await act(async () => {
     editButton.click();
   });
@@ -1299,5 +1302,469 @@ describe("a queued turn survives a path refresh", () => {
     });
     const notices = screen.queryAllByTestId("message-incomplete-notice");
     expect(notices.map((n) => n.textContent).join("|")).not.toContain("還沒有寫完");
+  });
+});
+
+// ── 編輯重問也要誠實 ─────────────────────────────────────────────────────────
+//
+// 送出路徑有五個測試釘住「被停掉的答案不能寫成 complete」;編輯重問是它的
+// 孿生路徑,而它一個都沒有。這正是這個 codebase 反覆產生的形態:一條修好了,
+// 它的孿生安安靜靜地留著舊行為。
+//
+// 不變式:任何會寫入終局串流狀態的路徑,都要有一個測試在它被寫死成
+// complete 時變紅。
+
+describe("edit and re-ask — honesty about a stopped answer", () => {
+  it("stores the half answer as stopped, not complete", async () => {
+    renderRuntime();
+    await typeAndSend("原問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("原問題的答案");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(0));
+
+    await editFirstUserMessage("原問題", "編輯後的問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("編輯後那題只寫到一半");
+    });
+
+    const stop = await screen.findByRole("button", { name: /停止/ });
+    await act(async () => {
+      stop.click();
+    });
+
+    const head = backend.calls.find((c) => c.op === "branchTurn");
+    await waitFor(() => {
+      const row = backend.message(head.reservedId);
+      expect(row.content).toBe("編輯後那題只寫到一半");
+      // 這一行就是缺口:寫死成 complete 的話,重整之後那半截答案會渲染成
+      // 一則完整的回答,而且沒有任何標示。
+      expect(row.metadata.anila_stream.state).toBe("stopped");
+    });
+  });
+
+  it("stores a failed answer as failed, not complete", async () => {
+    renderRuntime();
+    await typeAndSend("原問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("原問題的答案");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(0));
+
+    await editFirstUserMessage("原問題", "編輯後的問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("斷線之前寫到這裡");
+      streamControl.latest().fail(new Error("連線中斷"));
+    });
+
+    const head = backend.calls.find((c) => c.op === "branchTurn");
+    await waitFor(() => {
+      const row = backend.message(head.reservedId);
+      expect(row.content).toBe("斷線之前寫到這裡");
+      expect(row.metadata.anila_stream.state).toBe("failed");
+    });
+  });
+
+  it("reloading shows the stopped answer as unfinished", async () => {
+    // 落庫狀態的使用者面:重整之後(＝從伺服器重新載入那一列)必須看得到標示。
+    renderRuntime();
+    await typeAndSend("原問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("原問題的答案");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(0));
+
+    await editFirstUserMessage("原問題", "編輯後的問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("只寫到一半");
+    });
+    const stop = await screen.findByRole("button", { name: /停止/ });
+    await act(async () => {
+      stop.click();
+    });
+    await waitFor(() => {
+      const head = backend.calls.find((c) => c.op === "branchTurn");
+      expect(backend.message(head.reservedId).content).toBe("只寫到一半");
+    });
+
+    // 重整:整個 runtime 重新掛載,清單只能從伺服器來。
+    cleanup();
+    renderRuntime();
+    const row = await screen.findByText(backend.conversations.get(1).title);
+    await act(async () => {
+      row.click();
+    });
+    expect(await screen.findByText("只寫到一半")).toBeTruthy();
+    const notice = await screen.findByTestId("message-incomplete-notice");
+    expect(notice.textContent).toContain("已停止產生");
+  });
+});
+
+// ── 「沒有留下任何內容」不能講成「以下是中斷前的內容」 ───────────────────────
+//
+// 這是這個 commit 存在的理由本身。唯一覆蓋到那句措辭的測試打的是「排隊中被
+// 取消」那條分支,而那條分支的 hasContent 是寫死的 false —— 兩條真正用算出來
+// 的參數呼叫的地方(送出路徑、編輯重問),把參數換成 true 兩套測試照樣全綠。
+
+describe("a stopped turn that produced nothing says so", () => {
+  it("on the send path", async () => {
+    renderRuntime();
+    await typeAndSend("問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    // 一個 token 都還沒到就按停止。
+    const stop = await screen.findByRole("button", { name: /停止/ });
+    await act(async () => {
+      stop.click();
+    });
+
+    const notice = await screen.findByTestId("message-incomplete-notice");
+    expect(notice.textContent).toContain("沒有留下任何內容");
+    // 底下一個字都沒有,所以絕不能說「以下是中斷前的內容」。
+    expect(notice.textContent).not.toContain("以下是中斷前的內容");
+    await waitFor(() => {
+      const row = [...backend.messages.values()].find((m) => m.role === "assistant");
+      expect(row.content).toBe("");
+      expect(row.metadata.anila_stream.state).toBe("stopped");
+    });
+  });
+
+  it("on the edit-and-re-ask path", async () => {
+    // ⚠ 這條路徑串流結束後會重讀 active path,而重讀會用伺服器版本換掉本地
+    // 氣泡 —— 也就是說,講錯話的標示會被下一次重讀自己蓋掉。所以這裡把重讀
+    // 擋住:要量的正是「串流剛結束、路徑還沒讀回來」那段使用者真的讀得到的
+    // 時間。不擋的話這個缺陷在 jsdom 裡看不見,在瀏覽器裡卻是一段真的會被
+    // 讀到的錯話。
+    renderRuntime();
+    await typeAndSend("原問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("原問題的答案");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(0));
+
+    await editFirstUserMessage("原問題", "編輯後的問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+
+    const releasePath = backend.holdRequest("activePath");
+    const stop = await screen.findByRole("button", { name: /停止/ });
+    await act(async () => {
+      stop.click();
+    });
+
+    const notice = await screen.findByTestId("message-incomplete-notice");
+    expect(notice.textContent).toContain("沒有留下任何內容");
+    expect(notice.textContent).not.toContain("以下是中斷前的內容");
+
+    await act(async () => {
+      releasePath();
+    });
+  });
+});
+
+// ── 串流結束的那一列要從 in-flight 名單上除名 ───────────────────────────────
+//
+// 沒除名的話,關視窗時 pagehide 會對一則**已經結束**的回答送出 interrupted。
+// 今天那個請求會被伺服器的 terminal→terminal 409 擋掉 —— 但那是第二道控制
+// 幫忙擋住了,不是這一道有被測到。兩道防線各自要測得到,所以這裡看的是
+// 「有沒有送出」(updateAttempts),不是「有沒有寫進去」(calls)。
+
+function strayInterrupted(convId, messageId) {
+  return backend.updateAttempts.filter(
+    (a) => a.convId === convId && a.id === messageId && a.state === "interrupted",
+  );
+}
+
+describe("a finished turn is off the unload sweep", () => {
+  it("after an edit-and-re-ask completes", async () => {
+    renderRuntime();
+    await typeAndSend("原問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("原問題的答案");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(0));
+
+    await editFirstUserMessage("原問題", "編輯後的問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("編輯後那題的完整答案");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(0));
+    const head = backend.calls.find((c) => c.op === "branchTurn");
+    await waitFor(() => {
+      expect(backend.message(head.reservedId).metadata.anila_stream.state)
+        .toBe("complete");
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(strayInterrupted(1, head.reservedId)).toEqual([]);
+  });
+
+  it("after a queued turn on the send path is cancelled by Stop", async () => {
+    renderRuntime();
+    await typeAndSend("第一個問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("第一個答案的前半");
+    });
+    await typeAndSend("排在後面的第二個問題");
+    await waitFor(() => {
+      expect(backend.calls.filter((c) => c.op === "startTurn").length).toBe(2);
+    });
+    const queuedHead = backend.calls.filter((c) => c.op === "startTurn")[1];
+
+    const stop = await screen.findByRole("button", { name: /停止/ });
+    await act(async () => {
+      stop.click();
+    });
+    await waitFor(() => {
+      expect(backend.message(queuedHead.reservedId).metadata.anila_stream.state)
+        .toBe("stopped");
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(strayInterrupted(1, queuedHead.reservedId)).toEqual([]);
+  });
+
+  it("after a queued edit-and-re-ask is cancelled by Stop", async () => {
+    renderRuntime();
+    await typeAndSend("第一個問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("第一個答案的前半");
+    });
+    // 第二則插話:它在鏈上排隊。
+    await typeAndSend("插話的第二個問題");
+    await waitFor(() => {
+      expect(backend.calls.filter((c) => c.op === "startTurn").length).toBe(2);
+    });
+
+    // 編輯重問第一則:它會停掉當下那條串流(不連坐排隊中的),自己排到最後面。
+    await editFirstUserMessage("第一個問題", "編輯後的第一個問題");
+    await waitFor(() => {
+      expect(backend.calls.filter((c) => c.op === "branchTurn").length).toBe(1);
+    });
+    const head = backend.calls.find((c) => c.op === "branchTurn");
+
+    // 現在按停止:排隊中那幾輪(含編輯重問這一輪)一起取消。
+    const stop = await screen.findByRole("button", { name: /停止/ });
+    await act(async () => {
+      stop.click();
+    });
+    await waitFor(() => {
+      expect(backend.message(head.reservedId).metadata.anila_stream.state)
+        .toBe("stopped");
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(strayInterrupted(1, head.reservedId)).toEqual([]);
+  });
+});
+
+// ── 「停止產生」只停這個對話 ─────────────────────────────────────────────────
+//
+// queuedTurnsRef 是整個 runtime 共用的一個 Map,唯一把它切開的就是那一行
+// `record.convId === convId`。少了它,在 B 對話按停止會把 A 對話裡使用者
+// 已經打好、已經落庫、正在排隊的訊息整個丟掉 —— 那則訊息永遠不會送到模型
+// 面前,而畫面上只留下一列空的、標成 stopped 的回答。
+
+async function openNewChat() {
+  const button = await waitFor(() => {
+    const found = [...document.querySelectorAll("button")].find(
+      (b) => b.title === "新對話" || b.textContent.includes("新對話"),
+    );
+    expect(found, "找不到「新對話」按鈕").toBeTruthy();
+    return found;
+  });
+  await act(async () => {
+    button.click();
+  });
+}
+
+describe("Stop is scoped to the conversation the user is looking at", () => {
+  it("does not discard a queued turn in another conversation", async () => {
+    renderRuntime();
+
+    // A 對話:第一輪在跑,第二輪排隊。
+    await typeAndSend("A 的第一個問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("A 第一個答案的前半");
+    });
+    await typeAndSend("A 排隊中的第二個問題");
+    await waitFor(() => {
+      expect(backend.calls.filter((c) => c.op === "startTurn").length).toBe(2);
+    });
+    expect(streamControl.pending.length).toBe(1);
+
+    // B 對話:另開一個,送出一則,它自己也在跑。
+    await openNewChat();
+    await typeAndSend("B 的問題");
+    await waitFor(() => expect(backend.conversations.size).toBe(2));
+    await waitFor(() => expect(streamControl.pending.length).toBe(2));
+
+    // 使用者在 B 對話按停止。意思是「B 不要再產生了」。
+    const stop = await screen.findByRole("button", { name: /停止/ });
+    await act(async () => {
+      stop.click();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+
+    // A 對話的第一輪跑完 —— 排隊中的第二輪必須接著跑。
+    await act(async () => {
+      streamControl.latest().emit("A 的第一個答案");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    // 它送到模型面前的,正是使用者打的那一句。
+    const queued = streamControl.latest();
+    const lastUser = [...queued.opts.payload.messages]
+      .reverse()
+      .find((m) => m.role === "user");
+    expect(lastUser.content).toBe("A 排隊中的第二個問題");
+
+    await act(async () => {
+      queued.emit("A 的第二個答案");
+      queued.finish();
+    });
+
+    await waitFor(() => {
+      const answers = [...backend.messages.values()]
+        .filter((m) => m.conversation_id === 1 && m.role === "assistant")
+        .sort((a, b) => a.id - b.id);
+      expect(answers.length).toBe(2);
+      expect(answers[1].content).toBe("A 的第二個答案");
+      expect(answers[1].metadata.anila_stream.state).toBe("complete");
+    });
+    // B 對話那一則才是被停掉的那個。
+    const bAnswer = [...backend.messages.values()].find(
+      (m) => m.conversation_id === 2 && m.role === "assistant",
+    );
+    expect(bAnswer.metadata.anila_stream.state).toBe("stopped");
+  });
+});
+
+// ── 沒有得到回答的問題:不能悄悄變成死路 ─────────────────────────────────────
+//
+// 到得了這個狀態的路徑不只一條,而且都是支援的操作:預留列卡住 → 使用者用
+// 「刪除此訊息分支」把它刪掉 → leaf 退回那則問題,而它現在沒有子訊息;舊對話
+// (這個功能之前留下的、最後一則是沒被回答的問題)本來就長這樣。
+//
+// 直接往下接會產生 user → user,那則問題從此永遠拿不到回答(reserve 會 409,
+// 同層角色不變式也擋住助理兄弟),而畫面上沒有任何說明。伺服器因此改成先替
+// 它補一列終局的空回答再往下接:形狀維持交錯、問題留在畫面上、而且有出口。
+
+describe("a question that never got an answer", () => {
+  it("does not become a user→user dead end when the next message is sent", async () => {
+    // 驗證者 2026-08-05 的序列:預留列卡住 → 刪掉它 → 再送一則。
+    const conv = backend.createConversation({ title: "卡住的對話" });
+    const q1 = backend.appendMessage(conv.id, { role: "user", content: "卡住的問題" });
+    const stuck = backend.reserveReply(conv.id, q1.id, {
+      stream_writer: "dead-tab-token",
+    });
+
+    renderRuntime();
+    const row = await screen.findByText("卡住的對話");
+    await act(async () => {
+      row.click();
+    });
+    await screen.findByTestId("message-incomplete-notice");
+
+    // 使用者用「刪除此訊息分支」把那一列清掉(支援的操作,有 UI 控制項)。
+    backend.deleteMessageBranch(conv.id, stuck.id);
+    expect(backend.conversations.get(conv.id).active_leaf_message_id).toBe(q1.id);
+
+    await typeAndSend("刪掉之後送出的下一個問題");
+    await waitFor(() => {
+      expect(backend.calls.filter((c) => c.op === "startTurn").length).toBe(1);
+    });
+
+    const rows = [...backend.messages.values()];
+    const byId = new Map(rows.map((m) => [m.id, m]));
+    // 沒有任何一則使用者訊息掛在使用者訊息底下。
+    for (const m of rows) {
+      if (m.role !== "user" || m.parent_id == null) continue;
+      expect(byId.get(m.parent_id).role, `訊息 ${m.id} 掛在使用者訊息底下`)
+        .not.toBe("user");
+    }
+    // 那則沒有回答的問題拿到一列誠實的空回答,而不是變成死路。
+    const filler = rows.find(
+      (m) => m.parent_id === q1.id && m.role === "assistant",
+    );
+    expect(filler, "沒有回答的問題底下什麼都沒有").toBeTruthy();
+    expect(filler.content).toBe("");
+    expect(filler.metadata.anila_stream.state).toBe("unanswered");
+  });
+
+  it("says so on screen instead of leaving a blank bubble", async () => {
+    const conv = backend.createConversation({ title: "沒有回答的對話" });
+    const q1 = backend.appendMessage(conv.id, { role: "user", content: "落單的問題" });
+    const stuck = backend.reserveReply(conv.id, q1.id, { stream_writer: "dead" });
+    backend.deleteMessageBranch(conv.id, stuck.id);
+
+    renderRuntime();
+    const row = await screen.findByText("沒有回答的對話");
+    await act(async () => {
+      row.click();
+    });
+    await typeAndSend("下一個問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("下一個問題的答案");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(0));
+
+    // 落單的那則問題還在畫面上(不是悄悄從路徑上消失),而且底下講清楚了。
+    expect(await screen.findByText("落單的問題")).toBeTruthy();
+    const notices = await screen.findAllByTestId("message-incomplete-notice");
+    const texts = notices.map((n) => n.textContent).join("|");
+    expect(texts).toContain("這則問題沒有得到回答");
+    // 而且不是一句沒有出口的話。
+    expect(texts).toContain("重新產生");
+  });
+
+  it("keeps the exit open — the empty row still offers regenerate", async () => {
+    const conv = backend.createConversation({ title: "還有救的對話" });
+    const q1 = backend.appendMessage(conv.id, { role: "user", content: "落單的問題" });
+    const stuck = backend.reserveReply(conv.id, q1.id, { stream_writer: "dead" });
+    backend.deleteMessageBranch(conv.id, stuck.id);
+
+    renderRuntime();
+    const row = await screen.findByText("還有救的對話");
+    await act(async () => {
+      row.click();
+    });
+    await typeAndSend("下一個問題");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("下一個問題的答案");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(0));
+
+    // 補上的那一列是終局狀態、沒有 writer 權杖 —— 所以「重新產生」可以在它
+    // 旁邊長出一列真正的回答,落單的那則問題因此回得來。
+    const regens = await screen.findAllByTitle(/重新產生/);
+    expect(regens.length).toBeGreaterThan(0);
+    expect(regens.some((b) => !b.disabled)).toBe(true);
   });
 });

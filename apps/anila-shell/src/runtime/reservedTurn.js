@@ -27,6 +27,10 @@ export const STREAM_STATE = {
   STOPPED: "stopped",
   FAILED: "failed",
   INTERRUPTED: "interrupted",
+  // 伺服器補的:leaf 停在一則沒有得到回答的問題上時,start_turn 先補這一列,
+  // 新的一輪才接在它底下(見 conversation_service.start_turn 的 docstring)。
+  // 前端從不寫這個狀態,只負責把它誠實地顯示出來。
+  UNANSWERED: "unanswered",
 };
 
 /**
@@ -64,6 +68,11 @@ export function streamStateNotice(state, hasContent = true) {
       return hasContent
         ? "這則回答沒有產生完成（連線中斷或視窗關閉），以下是中斷前的內容。"
         : "這則回答沒有產生完成（連線中斷或視窗關閉），而且沒有留下任何內容。";
+    case STREAM_STATE.UNANSWERED:
+      // 這一列不是「答到一半」,是「從來沒有答」——所以措辭跟上面三種不同,
+      // 而且要指出出口(重新產生會在它旁邊長出一列真正的回答)。
+      // hasContent 對它沒有意義:伺服器補的這一列永遠是空的。
+      return "這則問題沒有得到回答，可以按「重新產生」再試一次。";
     case STREAM_STATE.RESERVED:
     case STREAM_STATE.STREAMING:
       // 從伺服器載回來時還停在非終局狀態,有兩種可能:寫它的那個前端已經
@@ -134,7 +143,11 @@ export const ANSWER_PERSIST_FAILURE_NOTICE =
  * 伺服器上。同一個對話的 head 之間仍然要串行,但那是為了保住送出順序
  * (先送的先落庫),樹的形狀由伺服器端的單一交易保證。
  *
- * @returns {{ok: true, userSaved, assistantSaved, writer}}
+ * `unansweredSaved` = 伺服器替上一則沒有得到回答的問題補上的那一列(沒有就是
+ * null)。要把它帶回呼叫端,否則那一列要等到下一次重整才出現在畫面上 ——
+ * 而使用者剛剛才看著自己那則舊問題被跳過去,中間沒有任何說明。
+ *
+ * @returns {{ok: true, userSaved, assistantSaved, unansweredSaved, writer}}
  *        | {ok: false, error, notice}
  */
 export async function persistTurnHead({
@@ -168,7 +181,11 @@ export async function persistTurnHead({
     const error = new Error("送出失敗：伺服器沒有回傳這一輪的訊息");
     return { ok: false, error, notice: TURN_FAILURE_NOTICE };
   }
-  return { ok: true, userSaved, assistantSaved, writer };
+  const unansweredSaved =
+    head?.unanswered && typeof head.unanswered.id === "number"
+      ? head.unanswered
+      : null;
+  return { ok: true, userSaved, assistantSaved, unansweredSaved, writer };
 }
 
 /**

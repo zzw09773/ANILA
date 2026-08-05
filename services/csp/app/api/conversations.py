@@ -192,6 +192,11 @@ class TurnHeadOut(BaseModel):
     """Both rows created by ``POST /{conv_id}/turn`` — they are one unit."""
     user: MessageOut
     assistant: MessageOut
+    # 送出之前 leaf 停在一則沒有得到回答的問題上時，伺服器會先替它補一列
+    # 終局的空回答（見 conversation_service.start_turn）。回傳它是為了讓前端
+    # 當下就把那一列畫出來 —— 不回傳的話它要等到下一次重整才出現，而使用者
+    # 剛剛才看著那則問題被跳過去，中間什麼說明都沒有。
+    unanswered: Optional[MessageOut] = None
 
 
 class MessageAppend(BaseModel):
@@ -733,7 +738,7 @@ def start_turn(
     前一個分頁的 reserve 隨即 409，那則使用者訊息就永遠拿不到答案。
     合成一次之後兩件事在同一個交易裡完成，這個窗口不存在。
     """
-    user_msg, assistant_msg = svc.start_turn(
+    user_msg, assistant_msg, unanswered_msg = svc.start_turn(
         db, conv_id, current_user,
         content=body.content,
         writer=body.stream_writer,
@@ -746,6 +751,14 @@ def start_turn(
         user=_message_out(user_msg, groups.get(user_msg.parent_id, [user_msg.id])),
         assistant=_message_out(
             assistant_msg, groups.get(assistant_msg.parent_id, [assistant_msg.id]),
+        ),
+        unanswered=(
+            None
+            if unanswered_msg is None
+            else _message_out(
+                unanswered_msg,
+                groups.get(unanswered_msg.parent_id, [unanswered_msg.id]),
+            )
         ),
     )
 

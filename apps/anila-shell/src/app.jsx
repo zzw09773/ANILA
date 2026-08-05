@@ -76,7 +76,6 @@ import {
 import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
 import {
   applyServerPath,
-  persistAssistantTurn,
   persistRegeneratedAssistant,
   reconcilePersistedAssistant,
   runRegenerateStreamPhase,
@@ -777,6 +776,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // badge simply renders nothing; the boolean latch above is unaffected.
       classificationLevel: serverRow.classification_level,
       // OW-1: server-truth active leaf pointer for the message tree.
+      // ⚠ 這個欄位在 shell 裡**沒有任何讀取者**(2026-08-05 全樹確認):路徑一律
+      // 由伺服器回傳的 messages 決定,leaf 只是鏡像。保留是因為它零成本且是
+      // 除錯時唯一看得到的伺服器指標;動它不會改變任何畫面,所以也不值得測。
       activeLeafMessageId: serverRow.active_leaf_message_id ?? null,
       updatedAt: serverRow.updated_at || serverRow.created_at || nowIso(),
     };
@@ -1270,6 +1272,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     };
 
     await chainTurnStream(convId, async () => {
+      // 保留(M6 裁決):cancelled 旗標在下一行就讀完了,所以刪不刪不影響行為 ——
+      // 但 queuedTurnsRef 是整個 runtime 共用的一個 Map,不清就只增不減。
       queuedTurnsRef.current.delete(assistantId);
       let finalText = "";
       let finalMeta = null;
@@ -1580,6 +1584,26 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       }
       const savedUser = head.userSaved;
       const reserved = head.assistantSaved;
+      // 上一則問題從來沒有得到回答時,伺服器會先替它補一列終局的空回答,
+      // 這一輪才接在那一列底下(不然就是 user → user,那則問題永遠拿不到
+      // 回答)。它是伺服器做的事,使用者當下就該看見 —— 所以插進清單裡,
+      // 而不是等下一次重整才冒出來。
+      if (head.unansweredSaved) {
+        const filler = {
+          ...mapServerMessage(head.unansweredSaved),
+          conversationId: convId,
+        };
+        setMessagesByConv((prev) => {
+          const list = prev[convId] || [];
+          if (list.some((m) => m.dbId === filler.dbId)) return prev;
+          const at = list.findIndex((m) => m.id === userMsg.id);
+          const cut = at >= 0 ? at : list.length;
+          return {
+            ...prev,
+            [convId]: [...list.slice(0, cut), filler, ...list.slice(cut)],
+          };
+        });
+      }
       updateMsg(convId, userMsg.id, {
         dbId: savedUser.id,
         parentId: savedUser.parent_id ?? null,
@@ -1623,6 +1647,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // 伺服器上了,這正是與「把文字留在瀏覽器排隊」的結構差異。
     await chainTurnStream(convId, async () => {
       const reservedId = head?.assistantSaved?.id ?? null;
+      // 保留(M6 裁決):理由同編輯重問那一條 —— 行為等價,但這個 Map 是整個
+      // runtime 共用的一份,不清就只增不減。
       queuedTurnsRef.current.delete(assistantId);
       if (queueRecord.cancelled) {
         // 排隊期間使用者按了「停止產生」。這一輪連串流都不要開始,

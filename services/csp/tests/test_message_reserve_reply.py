@@ -911,3 +911,169 @@ def test_a_stuck_reserved_row_can_still_be_answered_by_branching(client, db):
         f"/api/conversations/{cid}/messages/{stuck_id}", headers=headers,
     )
     assert gone.status_code == 200, gone.text
+
+
+# ── 沒有得到回答的問題：leaf 停在它身上時，下一次送出不能變成死路 ────────────
+#
+# 到得了這個狀態的路徑不只一條，而且都是支援的操作：
+#   • 預留列卡住 → 使用者用「刪除此訊息分支」把它刪掉 → delete_message_branch
+#     把 leaf 退回那則使用者訊息，而它現在沒有子訊息（驗證者 2026-08-05 以
+#     支援的操作逐步重現）。
+#   • 舊對話：本功能之前留下的、最後一則是沒被回答的問題。
+#
+# 直接往下接會產生 user → user：那則問題從此永遠拿不到回答（reserve 409、
+# 同層角色不變式也擋住助理兄弟），而且畫面上沒有任何說明。
+
+
+def test_delete_of_a_stuck_row_leaves_the_leaf_on_a_user_message(client, db):
+    """先把前提釘住：這個狀態確實到得了，而且只用支援的操作。"""
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    body = _turn(client, headers, cid, "卡住的問題", writer="w-dead-tab").json()
+    q1_id = body["user"]["id"]
+    stuck_id = body["assistant"]["id"]
+
+    gone = client.delete(
+        f"/api/conversations/{cid}/messages/{stuck_id}", headers=headers,
+    )
+    assert gone.status_code == 200, gone.text
+
+    conv = client.get(f"/api/conversations/{cid}", headers=headers).json()
+    assert conv["active_leaf_message_id"] == q1_id
+    # 這一刻它還是可以被回答的 —— 壞掉的是「下一次送出」。
+    assert _unanswered_user_messages(_tree(client, headers, cid)) == [q1_id]
+
+
+def test_next_send_after_that_delete_never_makes_a_user_to_user_edge(client, db):
+    """驗證者的完整序列：卡住 → 刪掉 → 再送一則。不得產生 user → user。"""
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    first = _turn(client, headers, cid, "卡住的問題", writer="w-dead-tab").json()
+    q1_id = first["user"]["id"]
+    client.delete(
+        f"/api/conversations/{cid}/messages/{first['assistant']['id']}",
+        headers=headers,
+    )
+
+    second = _turn(client, headers, cid, "刪掉之後的下一個問題", writer="w-next-token")
+    assert second.status_code == 201, second.text
+    q2 = second.json()["user"]
+
+    tree = _tree(client, headers, cid)
+    by_id = {mid: role for mid, role, _p in tree}
+    for mid, role, parent in tree:
+        if role == "user" and parent is not None:
+            assert by_id[parent] != "user", f"訊息 {mid} 掛在使用者訊息底下"
+    # 落單的那則問題拿到一列誠實的空回答，新的一輪接在它底下。
+    filler = second.json()["unanswered"]
+    assert filler is not None, "沒有回答的問題底下什麼都沒有"
+    assert filler["parent_id"] == q1_id
+    assert filler["role"] == "assistant"
+    assert filler["content"] == ""
+    assert filler["metadata"]["anila_stream"]["state"] == "unanswered"
+    assert q2["parent_id"] == filler["id"]
+    # 而且沒有留下任何一則永遠拿不到回答的使用者訊息。
+    assert _unanswered_user_messages(tree) == []
+
+
+def test_legacy_conversation_ending_on_a_bare_question_is_not_rejected(client, db):
+    """舊對話最後一則是沒被回答的問題 —— 送出必須被接受，不是被拒絕。
+
+    這正是「不加閘門」那個理由裡站得住的一半：拒絕會把使用者已經打好的字
+    丟掉。修法因此是補一列、不是擋下來。
+    """
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    # 直接用 append 造出舊資料的形狀（沒有經過預留流程）。
+    q1 = _append(client, headers, cid, "user", "舊對話裡沒被回答的問題")
+
+    resp = _turn(client, headers, cid, "接下來的問題", writer="w-legacy")
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["unanswered"]["parent_id"] == q1["id"]
+    assert _unanswered_user_messages(_tree(client, headers, cid)) == []
+
+
+def test_the_filler_row_can_be_regenerated_into_a_real_answer(client, db):
+    """補的那一列不是死路：重新產生會在它旁邊長出一列真正的回答。
+
+    這是「補一列」相對於「把舊問題從路徑上拿掉」的差別 —— 問題留在畫面上，
+    而且回得來。
+    """
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    first = _turn(client, headers, cid, "落單的問題", writer="w-dead-token").json()
+    client.delete(
+        f"/api/conversations/{cid}/messages/{first['assistant']['id']}",
+        headers=headers,
+    )
+    filler = _turn(client, headers, cid, "下一個問題", writer="w-next-token").json()[
+        "unanswered"
+    ]
+
+    fresh = client.post(
+        f"/api/conversations/{cid}/messages/{filler['id']}/branch",
+        json={"role": "assistant", "content": "補回來的答案", "set_active": False},
+        headers=headers,
+    )
+    assert fresh.status_code == 201, fresh.text
+    assert fresh.json()["parent_id"] == first["user"]["id"]
+
+
+def test_the_filler_row_holds_no_writer_token(client, db):
+    """補的那一列是終局的、沒有權杖 —— 不能變成第二種孤兒。
+
+    帶著權杖而且非終局的話，它會跟卡住的預留列一樣誰都寫不進去，而整個
+    repo 沒有任何回收程序。
+    """
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    first = _turn(client, headers, cid, "落單的問題", writer="w-dead-token").json()
+    client.delete(
+        f"/api/conversations/{cid}/messages/{first['assistant']['id']}",
+        headers=headers,
+    )
+    filler = _turn(client, headers, cid, "下一個問題", writer="w-next-token").json()[
+        "unanswered"
+    ]
+
+    assert "writer" not in filler["metadata"]["anila_stream"]
+    assert svc._active_stream_writer(filler["metadata"]) is None
+    # 終局狀態一旦寫上去就封存：任何人都不能把它改成 complete。
+    downgrade = client.put(
+        f"/api/conversations/{cid}/messages/{filler['id']}",
+        json={"metadata": {"anila_stream": {"state": "complete"}}},
+        headers=headers,
+    )
+    assert downgrade.status_code == 409, downgrade.text
+
+
+def test_an_answered_leaf_gets_no_filler(client, db):
+    """一般情況一列都不多補 —— 這個修法只在落單的問題上起作用。"""
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    first = _turn(client, headers, cid, "第一個問題", writer="w-first-token").json()
+    client.put(
+        f"/api/conversations/{cid}/messages/{first['assistant']['id']}",
+        json={
+            "content": "第一個答案",
+            "stream_writer": "w-first-token",
+            "metadata": {"anila_stream": {"state": "complete"}},
+        },
+        headers=headers,
+    )
+
+    second = _turn(client, headers, cid, "第二個問題", writer="w-second-token")
+    assert second.status_code == 201, second.text
+    assert second.json()["unanswered"] is None
+    assert second.json()["user"]["parent_id"] == first["assistant"]["id"]
+    assert len(_tree(client, headers, cid)) == 4
+
+
+def test_the_first_message_of_a_conversation_gets_no_filler(client, db):
+    """空對話（leaf 是 NULL）不受影響。"""
+    _user, headers = _auth(client, db)
+    cid = _create_conv(client, headers)["id"]
+    resp = _turn(client, headers, cid, "第一個問題", writer="w-first-token")
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["unanswered"] is None
+    assert resp.json()["user"]["parent_id"] is None

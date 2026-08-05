@@ -14,8 +14,13 @@
 //   _active_stream_writer         → 未終局的預留列只有持有權杖者能寫(409)
 //   _normalize_stream_envelope    → 未知 state 400、終局後狀態封存 409、
 //                                   不帶 envelope 的 patch 不抹掉既有標記
+//   _close_unanswered_leaf        → leaf 停在沒有回答的使用者訊息上時，
+//                                   start_turn 先補一列 state=unanswered
+//   delete_message_branch         → 子樹刪除＋leaf 退回存活的祖先
 
-const TERMINAL_STATES = new Set(["complete", "stopped", "failed", "interrupted"]);
+const TERMINAL_STATES = new Set([
+  "complete", "stopped", "failed", "interrupted", "unanswered",
+]);
 const ALL_STATES = new Set([...TERMINAL_STATES, "reserved", "streaming"]);
 
 export class FakeConversationBackend {
@@ -50,9 +55,15 @@ export class FakeConversationBackend {
   //                       按 Enter」:head 如果是兩次往返,這裡就正好是那兩
   //                       次之間的窗口,另一個分頁的請求會整個插進來。
   //
-  // op 目前只有 "turnHead" —— 一次送出的第一個寫入請求,不管它實作成
-  // POST /turn 還是 POST /messages。閘門刻意不綁在某一個端點上:綁死的話,
-  // 只要實作換回兩次往返,測試就會靜悄悄地停止重現那個 bug。
+  // op 有兩個:
+  //   "turnHead"   —— 一次送出的第一個寫入請求,不管它實作成 POST /turn 還是
+  //                   POST /messages。閘門刻意不綁在某一個端點上:綁死的話,
+  //                   只要實作換回兩次往返,測試就會靜悄悄地停止重現那個 bug。
+  //   "activePath" —— 串流結束後的路徑重讀(GET /api/conversations/:id)。
+  //                   它會用伺服器版本換掉本地氣泡,所以「串流剛結束、路徑還
+  //                   沒讀回來」那段時間裡使用者看到的字,只有把它擋住才量得到
+  //                   ——不擋的話,一個講錯話的標示會被下一次重讀自己蓋掉,
+  //                   測試綠、而使用者確實讀到過那句錯話。
 
   holdRequest(op) {
     return this._pushGate(this._gatesBefore, op);
@@ -178,6 +189,73 @@ export class FakeConversationBackend {
   }
 
   /**
+   * _close_unanswered_leaf —— leaf 停在一則沒有回答的使用者訊息上時,先補一列
+   * 終局的空回答(state=unanswered),回傳新的一輪該掛的 parent。
+   *
+   * 這個狀態不是理論上的:預留列卡住 → 使用者刪掉它 → leaf 退回那則問題。
+   * 不補這一列,下一次送出就會產生 user → user,那則問題從此永遠拿不到回答。
+   * 沒有補的時候回 null(呼叫端沿用原本的 leaf)。
+   */
+  _closeUnansweredLeaf(conv) {
+    const leafId = conv.active_leaf_message_id;
+    if (leafId == null) return null;
+    const leaf = this.messages.get(leafId);
+    if (!leaf || leaf.role !== "user") return null;
+    if (this._childrenOf(conv.id, leaf.id).length > 0) return null;
+    const placeholder = {
+      id: this.nextMsgId++,
+      conversation_id: conv.id,
+      parent_id: leaf.id,
+      role: "assistant",
+      content: "",
+      metadata: { anila_stream: { state: "unanswered" } },
+      trace_id: null,
+      latency_ms: null,
+      agent_name: null,
+      created_at: new Date().toISOString(),
+    };
+    this.messages.set(placeholder.id, placeholder);
+    this.calls.push({
+      op: "closeUnansweredLeaf",
+      convId: conv.id,
+      id: placeholder.id,
+      parentId: leaf.id,
+    });
+    return placeholder;
+  }
+
+  /** DELETE /api/conversations/:id/messages/:mid —— 子樹刪除。 */
+  deleteMessageBranch(convId, messageId) {
+    const conv = this._conv(convId);
+    const target = this.messages.get(Number(messageId));
+    if (!target || target.conversation_id !== conv.id) {
+      throw new HttpError(404, "訊息不存在");
+    }
+    const doomed = new Set();
+    const walk = (id) => {
+      doomed.add(id);
+      for (const child of this._childrenOf(conv.id, id)) walk(child.id);
+    };
+    walk(target.id);
+    const remaining = [...this.messages.values()].filter(
+      (m) => m.conversation_id === conv.id && !doomed.has(m.id),
+    );
+    if (remaining.length === 0) {
+      throw new HttpError(409, "對話至少需保留一則訊息;請改為刪除整個對話");
+    }
+    for (const id of doomed) this.messages.delete(id);
+    if (doomed.has(conv.active_leaf_message_id)) {
+      // 真後端一樣:leaf 退回被刪那一列的父節點(存活的話)。
+      conv.active_leaf_message_id =
+        target.parent_id != null && this.messages.has(target.parent_id)
+          ? target.parent_id
+          : remaining[remaining.length - 1].id;
+    }
+    this.calls.push({ op: "deleteMessageBranch", convId: conv.id, id: target.id });
+    return this.getConversation(conv.id);
+  }
+
+  /**
    * POST /api/conversations/:id/turn —— 使用者訊息 ＋ 預留列,同一個交易。
    *
    * 對齊 conversation_service.start_turn。兩件事之間沒有任何縫隙:這正是
@@ -186,7 +264,8 @@ export class FakeConversationBackend {
   startTurn(convId, body) {
     const conv = this._conv(convId);
     if (!body?.stream_writer) throw new HttpError(400, "缺少串流寫入者權杖");
-    const parentId = conv.active_leaf_message_id;
+    const filler = this._closeUnansweredLeaf(conv);
+    const parentId = filler ? filler.id : conv.active_leaf_message_id;
     const userMsg = {
       id: this.nextMsgId++,
       conversation_id: conv.id,
@@ -222,7 +301,11 @@ export class FakeConversationBackend {
       parentId: userMsg.parent_id,
       reservedId: assistantMsg.id,
     });
-    return { user: this._out(userMsg), assistant: this._out(assistantMsg) };
+    return {
+      user: this._out(userMsg),
+      assistant: this._out(assistantMsg),
+      unanswered: filler ? this._out(filler) : null,
+    };
   }
 
   /**
@@ -479,13 +562,19 @@ export function makeAuthRequest(backend, { fallback = () => [] } = {}) {
     if (match && method === "PUT") {
       return backend.updateMessage(match[1], match[2], body);
     }
+    if (match && method === "DELETE") {
+      return backend.deleteMessageBranch(match[1], match[2]);
+    }
     match = path.match(/^\/api\/conversations\/(\d+)\/messages$/);
     if (match && method === "POST") {
       return settle(backend.appendMessage(match[1], body));
     }
     match = path.match(/^\/api\/conversations\/(\d+)(\?.*)?$/);
     if (match && method === "GET") {
-      return backend.getConversation(match[1]);
+      await backend._awaitGate(backend._gatesBefore, "activePath");
+      const result = backend.getConversation(match[1]);
+      await backend._awaitGate(backend._gatesAfter, "activePath");
+      return result;
     }
     if (path === "/api/conversations" && method === "POST") {
       return backend.createConversation(body);

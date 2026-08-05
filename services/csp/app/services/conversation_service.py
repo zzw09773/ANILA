@@ -60,6 +60,10 @@ _START_TURN_MAX_ATTEMPTS = 5
 #       （delete_message_branch）沒有任何 writer 閘門，整棵子樹會被刪掉。
 #       先前這裡寫成「永遠寫不進去」而沒有說刪得掉，害驗證者只能從缺少
 #       控制項推論「使用者被卡死」——那是文件的錯，不是行為的錯。
+#       ⚠ 但刪掉之後 leaf 會退回**那則沒有得到回答的使用者訊息**
+#       （2026-08-05 驗證者以支援的操作實測）。下一次送出若直接往下接就是
+#       user → user，那則問題從此永遠拿不到回答。處理寫在 ``start_turn`` ／
+#       ``_close_unanswered_leaf``：先補一列終局的空回答再往下接。
 #     • 使用者可用的出口是**重新產生**：它走 branch_message 在同一則使用者
 #       訊息底下長出一列新的助理訊息（同層角色一致，不需要動到卡住的那列），
 #       所以 UI 只要讓那一列顯示動作列就有出路（apps/anila-shell/src/chat.jsx
@@ -75,6 +79,7 @@ STREAM_STATE_COMPLETE = "complete"        # 正常結束，內容完整
 STREAM_STATE_STOPPED = "stopped"          # 使用者按停止，內容是部分的
 STREAM_STATE_FAILED = "failed"            # 串流出錯，內容是部分的
 STREAM_STATE_INTERRUPTED = "interrupted"  # 前端消失（關分頁／重整／當掉）
+STREAM_STATE_UNANSWERED = "unanswered"    # 這則問題從來沒有得到回答（見 start_turn）
 
 # 終局狀態 = 不會再有人寫這一列。寫入者權杖在進入終局時一併清掉，
 # 後續的 ANILALM finalize / Continue Response 等 in-place patch 不受影響。
@@ -84,13 +89,19 @@ STREAM_TERMINAL_STATES = frozenset(
         STREAM_STATE_STOPPED,
         STREAM_STATE_FAILED,
         STREAM_STATE_INTERRUPTED,
+        STREAM_STATE_UNANSWERED,
     }
 )
 
 # 內容不完整、但不是「還在跑」的狀態。UI 必須據此標示，
 # 絕不能把半截答案當成完整答案呈現。
 STREAM_INCOMPLETE_STATES = frozenset(
-    {STREAM_STATE_STOPPED, STREAM_STATE_FAILED, STREAM_STATE_INTERRUPTED}
+    {
+        STREAM_STATE_STOPPED,
+        STREAM_STATE_FAILED,
+        STREAM_STATE_INTERRUPTED,
+        STREAM_STATE_UNANSWERED,
+    }
 )
 
 _STREAM_ALL_STATES = frozenset(
@@ -852,6 +863,43 @@ def reserve_assistant_reply(
     return msg
 
 
+def _close_unanswered_leaf(
+    db: Session, conv_pk: int, leaf_id: Optional[int],
+) -> tuple[Optional[int], Optional[Message]]:
+    """leaf 若是一則沒有回答的使用者訊息，補上終局空回答。
+
+    回傳 ``(新的一輪該掛的 parent_id, 補出來的那一列或 None)``；其他情況
+    原封回傳 ``(leaf_id, None)``。呼叫端在 ``start_turn`` 的 CAS 迴圈內，
+    所以補出來的那一列跟著整個交易同進同退。
+
+    ⚠ 補的那一列**不帶 writer 權杖**、狀態直接是終局的 ``unanswered``：
+    沒有任何串流會寫它，所以它不能長得像一列「還在跑」的預留列（那會變成
+    第二種孤兒，而且同樣沒有回收程序）。終局＋無權杖也正是「重新產生」
+    能在它旁邊長出真正回答的前提。
+    """
+    if leaf_id is None:
+        return None, None
+    leaf = (
+        db.query(Message)
+        .filter(Message.id == leaf_id, Message.conversation_id == conv_pk)
+        .first()
+    )
+    if leaf is None or leaf.role != "user":
+        return leaf_id, None
+    if _sibling_count(db, conv_pk, leaf.id) > 0:
+        return leaf_id, None
+    placeholder = Message(
+        conversation_id=conv_pk,
+        parent_id=leaf.id,
+        role="assistant",
+        content="",
+        metadata_={STREAM_META_KEY: {"state": STREAM_STATE_UNANSWERED}},
+    )
+    db.add(placeholder)
+    db.flush()
+    return placeholder.id, placeholder
+
+
 def start_turn(
     db: Session,
     conv_id: int,
@@ -861,7 +909,7 @@ def start_turn(
     writer: str,
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None,
-) -> tuple[Message, Message]:
+) -> tuple[Message, Message, Optional[Message]]:
     """使用者訊息落庫 ＋ 助理列預留，在同一個交易裡完成。
 
     為什麼要合成一次：分成兩次 HTTP 往返時，兩者之間那段 RTT 就是一個窗口。
@@ -882,8 +930,27 @@ def start_turn(
     有人在這中間動過 leaf：整個交易回滾（訊息也一併回滾，不留半截），
     重讀 leaf 再來一次。這個機制在任何引擎上語意都一樣，而且測得到。
 
-    回傳 ``(user_message, reserved_assistant_message)``；active leaf 停在
-    預留的助理列上。
+    ⚠ **leaf 停在一則沒有回答的使用者訊息上時，這裡不能直接往下接。**
+    這個狀態確實存在，而且不需要任何奇怪的操作就到得了（2026-08-05 驗證者以
+    支援的操作重現）：預留列卡住 → 使用者用「刪除此訊息分支」把它刪掉 →
+    ``delete_message_branch`` 把 leaf 退回那則使用者訊息，而它現在沒有子訊息。
+    舊對話（本功能之前留下的、最後一則是沒被回答的問題）也是同一個形狀。
+    直接往下接會產生 ``user → user``：那則舊問題從此**永遠拿不到回答**
+    （``reserve_assistant_reply`` 會 409，同層角色不變式也擋住助理兄弟），
+    而畫面上不會有任何說明。
+
+    處理方式刻意**不是拒絕**——使用者已經打好的字不該被丟掉，何況舊對話本來
+    就長這樣。改成先替那則落單的問題補上一列**空的、終局的**助理訊息
+    （``state=unanswered``），再把新的使用者訊息接在它底下：
+      • 樹維持 user → assistant → user → assistant，不變式一條都沒放寬；
+      • 那則舊問題留在畫面上（不是悄悄從路徑上消失），並且掛著誠實的說明；
+      • 補的那一列是終局狀態且沒有 writer 權杖，所以「重新產生」可以在它旁邊
+        長出一列真正的回答——舊問題因此**回得來**，不是死路。
+    唯一留下來的代價：送給模型的上下文會有兩則連續的 user（空的助理訊息不進
+    上下文）。那是實話——這段對話裡確實有一則問題沒有被回答。
+
+    回傳 ``(user_message, reserved_assistant_message, unanswered_filler_or_None)``；
+    active leaf 停在預留的助理列上。
     """
     if not isinstance(writer, str) or not writer:
         raise HTTPException(status_code=400, detail="缺少串流寫入者權杖")
@@ -901,11 +968,16 @@ def start_turn(
         # 底下的 CAS 才是真正保證正確性的那一步。
         conv = _lock_conversation(db, conv_pk)
         expected_leaf = conv.active_leaf_message_id
-        _enforce_sibling_cap(db, conv_pk, expected_leaf)
+        # leaf 是一則沒有回答的使用者訊息時，先替它補一列終局的空回答，
+        # 新的一輪接在那一列底下（理由與代價寫在 docstring）。
+        parent_for_user, unanswered_msg = _close_unanswered_leaf(
+            db, conv_pk, expected_leaf,
+        )
+        _enforce_sibling_cap(db, conv_pk, parent_for_user)
 
         user_msg = Message(
             conversation_id=conv_pk,
-            parent_id=expected_leaf,
+            parent_id=parent_for_user,
             role="user",
             content=user_content,
         )
@@ -941,8 +1013,10 @@ def start_turn(
             db.commit()
             db.refresh(user_msg)
             db.refresh(assistant_msg)
+            if unanswered_msg is not None:
+                db.refresh(unanswered_msg)
             zh_normalize_service.log_if_changed(user_msg.id, zh_changed)
-            return user_msg, assistant_msg
+            return user_msg, assistant_msg, unanswered_msg
 
         # 有人在這中間推進了 leaf。整個交易丟掉（兩列都不會留下），重來。
         db.rollback()
