@@ -20,6 +20,14 @@
 這也是 2026-07-31 平台擁有者問「怎麼沒有麥克風」的答案 —— 按鈕的程式碼一直都在,
 是 `asr-gateway` 這個容器沒有跑。
 
+⚠ **2026-08-05 起 anilalm 會重探,anila-shell 還不會。**
+`apps/anilalm/src/asr/useAsrInput.ts` 改成每 60 秒重探一次(只在分頁看得見時跑,
+另外在 WebSocket 出錯時立刻補一次)。原本只在載入時探一次 → 解碼端**開頁之後**
+才掛掉會留下一顆「按了就壞」的按鈕;遠端解碼端斷斷續續的機率遠高於本機容器,
+所以遠端部署下這條是必要的。
+`apps/anila-shell/src/asr/useAsrInput.js` 是同一份邏輯的孿生檔,**這一批沒有動**
+(不在本包的檔案範圍內)→ anila-shell 那邊仍然只探一次,兩邊行為目前不一致。
+
 ---
 
 ## 1. 打開語音
@@ -113,17 +121,76 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
 
 ---
 
-## 4. GPU 是硬需求,以及沒有 GPU 時怎麼辦
+## 3b. 解碼端在別的機器上(外部 / 算力中心)
 
-`platform.yml` 的 `asr-decoder` 帶 `deploy.resources.reservations.devices`(nvidia)。
-沒有 nvidia container runtime 的機器,`up` 會直接失敗:
+擁有者的要求:**「不論是本地還是外部伺服器都要可以連線」——兩條都要留,不是二選一。**
+手提氣隙 bundle 帶的是本地 decoder,沒有算力中心的站台只有它;有算力中心的站台可能
+連 GPU 都沒有。
+
+### 三個決定
+
+| 決定 | 變數 | 說明 |
+|---|---|---|
+| 講哪種協定 | `ASR_DECODE_PROTOCOL` | `native`(本地 decoder)/ `openai`(`/v1/audio/transcriptions`)。**填錯的值會讓 asr-gateway 開不了機** —— 這是刻意的,選錯協定的症狀是每句話 404/401 而麥克風看起來正常。 |
+| 打哪個位址 | `ASR_DECODE_URL`,或治理中心的 asr-primary | 治理中心指派優先;位址**兩條路都會過 SSRF guard**。 |
+| 拿什麼憑證 | 治理中心那筆模型的 `api_key` > `ASR_DECODE_API_KEY`(openai)/ `ASR_DECODER_TOKEN`(native) | 祕密不會出現在 `/asr/health`、log 或錯誤訊息。 |
+
+### 只起 gateway、不起本機 decoder
+
+```bash
+# 本地全套(現行指令,沒有變):
+docker compose -p anila-restart --profile asr up -d
+
+# 遠端:只起 gateway,解碼交給算力中心
+docker compose -p anila-restart --profile asr-remote up -d
+docker exec anila-nginx nginx -s reload
+```
+
+`asr-decoder` 掛在 `["asr","asr-local"]`,`asr-gateway` 掛在 `["asr","asr-remote"]`,
+gateway 的 `depends_on: asr-decoder` 帶 `required: false` → `--profile asr-remote`
+只會起 gateway,而且不會去等一個根本不存在的相依。
+⚠ **不要再用 `--no-deps`** —— 它會把 `csp` / `redis` 的等待一起跳過,那兩個是真的要等的。
+
+### 驗證
+
+```bash
+docker exec anila-restart-asr-gateway-1 \
+  python3 -c "import httpx,json;print(json.dumps(httpx.get('http://localhost:8200/asr/health').json(),ensure_ascii=False,indent=2))"
+```
+
+看三個欄位:`decode_protocol`(生效的協定)、`decode_url_source`(env / csp_registry /
+csp_registry_stale)、`decode_credential_source`(env / csp_registry)。
+`reason` 分三種病因:`decoder_unreachable`(連不到)、`decoder_unauthorized`(**金鑰錯**,
+不要去查網路)、`decoder_not_ready`(對方在載模型或被限流)。
+
+⚠ csp 容器沒裝 `curl`,用上面的 `python3 -c` 版本;`curl` 回空是假陰性。
+
+---
+
+## 4. GPU:什麼時候要,以及沒有 GPU 時怎麼辦
+
+⚠ **2026-08-05 起 GPU 保留不在 `platform.yml` 裡了**,搬到
+`infra/compose/asr-gpu.yml`。原因:平台要搬到**沒有 GPU** 的 CPU 主機
+(2× EPYC 9334 / 64 核 / 755 GB),寫死的 nvidia 保留會讓**整批** `up` 失敗,
+連不碰語音的服務都起不來。
+
+**GPU 主機要自己疊回去:**
+
+```bash
+docker compose -p anila-restart \
+  -f compose.yaml -f infra/compose/asr-gpu.yml \
+  --profile asr up -d
+```
+
+疊上去之後,沒有 nvidia container runtime 的機器 `up` 會直接失敗:
 
 ```
 could not select device driver "nvidia" with capabilities: [[gpu]]
 ```
 
 **那是設計,不是 bug。** 悄悄退回 CPU 跑 large-v3 會得到 RTF>1(解碼比說話還慢),
-那種「能用但難用到沒人想用」比明著壞更糟。
+那種「能用但難用到沒人想用」比明著壞更糟。沒疊覆蓋檔時 `ASR_DEVICE` 仍預設 `cuda`,
+所以容器會在載模型階段 fail-loud,一樣不會偷偷用 CPU 跑大模型。
 
 > ⚠ **本開發機(2026-07-31)目前就是這個狀態。** `nvidia-smi` 正常、卡是 RTX A4000 16GB,
 > 但 `nvidia-container-toolkit` **沒有安裝**(`nvidia-container-cli` / `nvidia-container-runtime`

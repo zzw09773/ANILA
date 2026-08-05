@@ -234,7 +234,7 @@ def test_strip_url_userinfo_keeps_host():
 
 
 @respx.mock
-def test_health_strips_userinfo_from_decode_url():
+def test_health_strips_userinfo_from_decode_url(intranet_guard_env):
     dirty = "http://user:s3cret@csp-decoder.example.test:9000"
     _mock_csp_primary(dirty)
     s = _settings()

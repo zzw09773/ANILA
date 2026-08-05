@@ -252,3 +252,25 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 `ServiceAccessView.vue:68`、`DashboardView.vue:147` 指向 `/admin/platform-links`,真實路由不是這個。
 
 **#28–#30 已開工(wt/govclean),#27 等 core-opt 合併後隨路由那批一起修。**
+
+---
+
+## 第三輪之後的單筆補登
+
+### #31 `ASR_ALLOW_HTTP_DECODER` —— 宣告了一個安全旗標,**沒有任何程式在讀**(已退役)
+
+- **看起來是什麼**:`.env.example:218`、`infra/compose/platform.yml`、`infra/compose/dev.yml`
+  都宣告 `ASR_ALLOW_HTTP_DECODER=0`,名字讀起來像「預設不准解碼端走純 http」。
+  `services/asr-gateway/app/config.py` 也有對應欄位。
+- **實際**:**零讀取**。`ASR_ALLOW_HTTP_DECODER` 在整個 repo 只出現在宣告處,
+  沒有任何一行程式碼查詢它。`services/asr-gateway/tests/test_ws.py` 甚至有一條
+  測試明白斷言「這個旗標不再擋任何東西」,而 `config.py:24-27` 的註解自承
+  它是為了讓舊 .env 還能解析才留著。設成 0 的維運者會以為自己關掉了 http。
+- **這一條的形狀**:不是「按了沒反應」,是**「以為鎖住了其實沒鎖」**——
+  跟本清單最前面那一類同源,所以即使它只是一個環境變數也要記。
+- **處置(2026-08-05)**:**拿掉**,不是接上去。http 的放行決定本來就已經由
+  `ANILA_ALLOW_HTTP_ENDPOINT` 擁有(PLAN.md P0.2 拍板),ASR 沒有理由有第二個
+  旗標——兩個旗標對同一件事表態,遲早會不一致,而不一致的那一天沒有人會發現。
+  同一批把 asr-gateway 的解碼位址接進 `anila_core` 的 `validate_outbound_url`,
+  所以「http 准不准」現在跟其他 model endpoint 走同一道門、同一個旗標。
+- **舊 `.env` 留著那一行不會壞**(pydantic-settings 只對顯式 kwargs forbid extra)。

@@ -649,10 +649,14 @@ services:
   # ⚠ profiles: 預設不啟動。要開:COMPOSE_PROFILES=asr
   #   (nginx 端已用變數式 proxy_pass,沒開也不會讓 nginx 起不來)。
   asr-gateway:
-    profiles: ["asr"]
+    # "asr"        = 現行的本地全套(gateway + decoder),指令不變。
+    # "asr-remote" = 只起 gateway;解碼交給算力中心的端點(見下面 depends_on)。
+    profiles: ["asr", "asr-remote"]
     build:
-      context: ../../services/asr-gateway
-      dockerfile: Dockerfile
+      # ⚠ context 是 repo 根目錄(不是 services/asr-gateway):Dockerfile 要複製
+      # packages/anila-core 的 SSRF guard 進來。同 router / ingestion-worker。
+      context: ../..
+      dockerfile: services/asr-gateway/Dockerfile
     expose:
       - "8200"
     environment:
@@ -666,7 +670,29 @@ services:
       # (2026-07-30 實際中招:up -d 整個失敗)。改成空字串預設,由服務自己在啟動時
       # fail-loud —— 缺 token 的 asr-gateway 會拒絕開機,而沒開 asr profile 的人不受影響。
       ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-}
-      ASR_ALLOW_HTTP_DECODER: ${ASR_ALLOW_HTTP_DECODER:-0}
+      # ── 本地 or 外部:兩條都要能連 ────────────────────────────────────
+      # native = 本地 services/asr-decoder(裸 PCM + X-Token,氣隙 bundle 帶的
+      #          就是它);openai = 算力中心的 /v1/audio/transcriptions
+      #          (multipart WAV + Bearer)。
+      # ⚠ 認不得的值會讓 asr-gateway 開不了機 —— 選錯協定的症狀是每句話
+      #   404/401 而麥克風看起來正常,那種靜默失敗不准再多一條。
+      ASR_DECODE_PROTOCOL: ${ASR_DECODE_PROTOCOL:-native}
+      ASR_DECODE_API_KEY: ${ASR_DECODE_API_KEY:-}
+      ASR_OPENAI_MODEL: ${ASR_OPENAI_MODEL:-whisper-1}
+      # ── 出向檢查(SSRF guard)────────────────────────────────────────
+      # asr-gateway 現在跟 csp 用同一個 anila_core guard 驗解碼位址。
+      # ⚠ 尾巴的 `,asr-decoder` 是**必要的**:本地 decoder 是 docker 服務名
+      #   (單標籤),guard 一律擋單標籤主機名,靠 trusted hosts 點名放行 ——
+      #   那是 guard 文件寫明給 operator 的機制,不是把檢查關掉。少了它,
+      #   本地語音會在啟動時就 fail-loud(而不是安靜地不能用)。
+      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
+      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-},asr-decoder"
+      # ── 健康探針 timeout ─────────────────────────────────────────────
+      # 舊值(2.0s/1.0s,寫死在程式裡)是「decoder 在同一台」調出來的。解碼端
+      # 在 WAN 另一頭時會誤報 decoder_unreachable,把一支能用的麥克風藏起來。
+      ASR_PROBE_TIMEOUT_SECONDS: ${ASR_PROBE_TIMEOUT_SECONDS:-8}
+      ASR_PROBE_CONNECT_TIMEOUT_SECONDS: ${ASR_PROBE_CONNECT_TIMEOUT_SECONDS:-3}
       ASR_DECODE_URL_TTL: ${ASR_DECODE_URL_TTL:-60}
       ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
       ASR_BEAM_SIZE: ${ASR_BEAM_SIZE:-5}
@@ -694,18 +720,29 @@ services:
       # healthy. /asr/health now also probes whichever address is in force
       # (CSP asr-primary or ASR_DECODE_URL), so a console-selected remote
       # decoder that is down yields status≠ok and hides the microphone.
-      # ⚠ 外部版(decoder 跑在別台 GPU 主機、ASR_DECODE_URL 指到遠端)要用
-      #   docker compose --profile asr up -d --no-deps asr-gateway
-      #   跳過本機 decoder,否則會被這條拖著一起起。
+      #
+      # `required: false` + profile 分軌 = 遠端部署不需要本機 decoder:
+      #   本地(現行不變)  docker compose --profile asr        up -d
+      #   遠端(無 decoder)docker compose --profile asr-remote up -d
+      # asr-decoder 掛 ["asr","asr-local"]、asr-gateway 掛 ["asr","asr-remote"],
+      # 所以 `--profile asr-remote` 只會起 gateway,而 required:false 讓它不等
+      # 一個根本不存在的相依(2026-08-05 用 Compose v2.36.2 實測兩條都對)。
+      # ⚠ 這取代了原本那條 `--no-deps` 的口頭約定 —— `--no-deps` 會連 csp /
+      #   redis 的等待一起跳過,那兩個是真的需要等的。
       asr-decoder:
         condition: service_healthy
+        required: false
     networks:
       - default
       - anila-models-net
     healthcheck:
+      # timeout 要蓋得住探針:解碼端在 WAN 另一頭時 /asr/health 自己就可能花掉
+      # ASR_PROBE_TIMEOUT_SECONDS(預設 8s)。舊的 5s 會把「遠端慢」誤判成
+      # 「gateway 掛了」。interval 拉到 30s 是為了不要對外部端點狂打探針
+      # (探針會真的送一段 100ms 靜音去辨識)—— 2 次/分鐘。
       test: ["CMD-SHELL", "curl -sf http://localhost:8200/asr/health || exit 1"]
-      interval: 15s
-      timeout: 5s
+      interval: 30s
+      timeout: 12s
       retries: 6
       start_period: 30s
     restart: unless-stopped
@@ -723,12 +760,20 @@ services:
   #   decoder 要跑在別台 GPU 主機時,用 services/asr-decoder/docker-compose.standalone.yml
   #   並把 ASR_DECODE_URL 指過去。
   #
-  # ⚠ GPU 是硬需求。沒有 nvidia container runtime 的機器 up 會直接以
-  #   "could not select device driver nvidia with capabilities [[gpu]]" 失敗 ——
-  #   刻意讓它明著炸,而不是悄悄退回 CPU(large-v3 在 CPU 上 RTF≈1,互動場景
-  #   等於壞的)。CPU-only 主機請不要開 asr profile。
+  # ⚠ **GPU 保留已從這裡移出**(2026-08-05)。原本的 `deploy.resources.
+  #   reservations.devices: nvidia` 會讓沒有 nvidia container runtime 的機器
+  #   `up` 直接以 "could not select device driver nvidia" 失敗 —— 那在「平台
+  #   本來就有 GPU」的年代是刻意的 fail-loud,但平台正在搬到**沒有 GPU** 的
+  #   CPU 主機(2× EPYC 9334 / 755 GB),那條保留會變成「整批 up 起不來」。
+  #   GPU 主機請疊 `infra/compose/asr-gpu.yml`(釘卡設定原封不動搬過去);
+  #   CPU 主機疊 `infra/compose/asr-cpu.yml` 換小模型,或乾脆用
+  #   `--profile asr-remote` 只起 gateway、解碼交給算力中心。
+  #   ⚠ 沒疊 GPU 覆蓋檔時 ASR_DEVICE 仍預設 cuda —— 容器會在載模型時
+  #   fail-loud(而不是悄悄用 CPU 跑 large-v3 得到 RTF>1 的假可用)。
   asr-decoder:
-    profiles: ["asr"]
+    # "asr" 保留 = 現行 `--profile asr` 指令不變(gateway + decoder 一起起);
+    # "asr-local" 讓「只想起本機 decoder」也有名字可用。
+    profiles: ["asr", "asr-local"]
     build:
       context: ../../services/asr-decoder
       dockerfile: Dockerfile
@@ -764,14 +809,9 @@ services:
       - ${ASR_MODEL_HOST_DIR:-../../models/model/asr-models}:/var/anila/asr-models:ro
     networks:
       - default
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              # 釘卡:不要跟 LLM 搶同一張,推論延遲互相干擾很難 debug。
-              device_ids: ["${ASR_GPU_DEVICE_ID:-0}"]
-              capabilities: [gpu]
+    # ⚠ GPU 保留搬到 infra/compose/asr-gpu.yml(見上面區塊註解)。這裡刻意
+    # 不留空的 deploy: —— asr-cpu.yml 用 `deploy: !reset null` 覆蓋它,留一個
+    # 空殼只會讓兩個覆蓋檔的語意變模糊。
     healthcheck:
       # 模型是背景載入的,ready 之前回 503。large-v3 冷啟動是分鐘級,
       # retries × interval 要蓋得住(20 × 30s = 10 分鐘)。

@@ -16,12 +16,38 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# ⚠ **build context 是 repo 根目錄**(platform.yml / dev.yml 的 `context: ../..`),
+# 不是 services/asr-gateway/ —— 因為下面要複製 packages/anila-core 的 SSRF guard。
+# 對齊 services/anila-core-router 與 services/ingestion-worker 的既有做法。
+
 # 依賴宣告的 SSOT 是 pyproject.toml(對齊 anila-studio)。裝 `.` 而非 `.[dev]`,
 # pytest 不進 runtime image。setuptools 要讀得到 package 原始碼才能算 metadata,
 # 所以 app/ 必須在 pip install 之前 COPY。
-COPY pyproject.toml ./
-COPY app/ ./app/
+COPY services/asr-gateway/pyproject.toml ./
+COPY services/asr-gateway/app/ ./app/
 RUN pip install --upgrade pip && pip install --no-cache-dir .
+
+# ── SSRF guard(anila_core.security)────────────────────────────────────────
+# 解碼位址一旦可以指到院外,ASR 就會是平台唯一跳過 validate_outbound_url 的
+# 模型呼叫。guard 必須進來。
+#
+# 為什麼是「複製子樹」而不是 `pip install packages/anila-core`:
+#   * 整包 anila-core 會拖進 asyncpg / pgvector / aiosqlite / opencc —— 這個
+#     服務刻意是「純 CPU、無 GPU、無 DB」(見 README 職責邊界),而且氣隙
+#     bundle 每多一個輪子就多一份維護。
+#   * 為什麼不 vendor 成 services/asr-gateway/app/url_guard.py:那會在 repo 裡
+#     產生第二份安全檢查,而本服務已經吃過一次 vendored 副本的苦(見
+#     app/services/jwks_client.py 的 VENDORED 標頭)。**這裡複製的是 build 時
+#     的原檔,repo 裡永遠只有一份 url_guard.py**,沒有東西可以漂移。
+#
+# anila_core/__init__.py 只有 docstring(零 import);security/ 這個子套件只相依
+# `cryptography`,而 python-jose[cryptography] 已經帶進來了。子套件之外的相依
+# 一旦被加進去,這個 image 會在啟動 import 時當場炸 —— 那是刻意的,不要包
+# try/except 吞掉。
+COPY packages/anila-core/src/anila_core/__init__.py ./anila_core/__init__.py
+COPY packages/anila-core/src/anila_core/security/ ./anila_core/security/
+RUN python -c "from anila_core.security.url_guard import validate_outbound_url; \
+from anila_core.security.upstream_urls import join_upstream_path; print('url_guard ok')"
 
 # Run as non-root for defence-in-depth
 RUN useradd --create-home --uid 10001 anila \

@@ -1305,8 +1305,17 @@ def get_asr_primary(
     Service-to-service consumers (asr-gateway) send ``X-CSP-Service-Token``.
     Authenticated users may also read it; the address is shaped by
     ``visible_endpoint_url`` — service tokens and designated callers see the
-    real URL, everyone else gets the redaction sentinel. Never returns the
-    decoder shared secret (that stays in the gateway/decoder environment).
+    real URL, everyone else gets the redaction sentinel.
+
+    ``api_key`` (2026-08-05):**只在服務權杖通道**上、而且**只有該筆自己掛了
+    ``api_key_secret_ref``** 時才回傳。這是遠端解碼端唯一能拿到憑證的地方 ——
+    算力中心的 gateway 要 ``Authorization: Bearer``,而 ASR 路徑原本連一個放
+    金鑰的欄位都沒有,結果是每一句話 401。人類呼叫者永遠拿不到這個欄位。
+
+    ⚠ **刻意不吃 ``MODEL_GATEWAY_API_KEY`` 全域退路。** 沒掛金鑰的那筆(例如
+    本地 ``asr-decoder``)必須回 ``None``,讓 gateway 用自己的環境變數祕密;
+    回傳全域模型金鑰會把一把不相干的祕密送去解碼端,而且症狀是 401 ——
+    跟「金鑰設錯」完全分不出來。
 
     Admitted service-token principals:
       * ``service_client`` of any ``client_type``. Live asr-gateway
@@ -1343,7 +1352,7 @@ def get_asr_primary(
         raise HTTPException(status_code=404, detail="尚未指定主語音辨識模型")
     if not model.is_active:
         raise HTTPException(status_code=409, detail="已指定的主語音辨識模型已被停用")
-    return {
+    payload = {
         "id": model.id,
         "name": model.name,
         "display_name": model.display_name,
@@ -1358,6 +1367,11 @@ def get_asr_primary(
         "api_version": model.api_version,
         "health_status": model.health_status,
     }
+    # 祕密只走服務權杖通道,而且只有該筆真的掛了金鑰時才解密 —— 沒掛金鑰的
+    # 那筆(本地 asr-decoder)payload 與 2026-08-05 之前**逐欄位相同**。
+    if is_svc and getattr(model, "api_key_secret_ref", None):
+        payload["api_key"] = resolve_model_gateway_key(model)
+    return payload
 
 
 @router.post("/{model_id}/set-asr-primary", response_model=ModelResponse)

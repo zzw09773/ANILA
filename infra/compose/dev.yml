@@ -305,15 +305,26 @@ services:
   # REQUIRE_CARD_LOGIN_ONLY=false(帳密登入,不用卡)。
   asr-gateway:
     build:
-      context: ../../services/asr-gateway
-      dockerfile: Dockerfile
+      # context = repo 根目錄:Dockerfile 要複製 packages/anila-core 的 SSRF
+      # guard 進來(同 platform.yml)。
+      context: ../..
+      dockerfile: services/asr-gateway/Dockerfile
     expose:
       - "8200"
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
       ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
       ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-dev-asr-token}
-      ASR_ALLOW_HTTP_DECODER: ${ASR_ALLOW_HTTP_DECODER:-0}
+      ASR_DECODE_PROTOCOL: ${ASR_DECODE_PROTOCOL:-native}
+      ASR_DECODE_API_KEY: ${ASR_DECODE_API_KEY:-}
+      ASR_OPENAI_MODEL: ${ASR_OPENAI_MODEL:-whisper-1}
+      # 出向檢查(SSRF)。dev 的本機 decoder 一樣是單標籤 docker 服務名 ——
+      # 尾巴的 `,asr-decoder` 少了會在啟動時 fail-loud。
+      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-1}"
+      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-},asr-decoder"
+      ASR_PROBE_TIMEOUT_SECONDS: ${ASR_PROBE_TIMEOUT_SECONDS:-8}
+      ASR_PROBE_CONNECT_TIMEOUT_SECONDS: ${ASR_PROBE_CONNECT_TIMEOUT_SECONDS:-3}
       ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
       ASR_BEAM_SIZE: ${ASR_BEAM_SIZE:-5}
       ASR_PARTIALS_ENABLED: ${ASR_PARTIALS_ENABLED:-1}
