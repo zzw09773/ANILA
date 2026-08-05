@@ -102,13 +102,19 @@ class TestSameOriginRelativeEntryUrl:
         [
             "//evil.example/x",  # 協定相對 ⇒ 另一個 origin
             "/\\evil.example/x",  # 瀏覽器在 authority 位置把 \ 折成 /
-            "/\t/evil.example/x",  # WHATWG 解析前會刪 tab ⇒ 等同 //evil…
+            "/\t/evil.example/x",  # 見下面 TestControlCharStripIsPinned 的說明
             "anila",  # 相對參照,解析結果取決於當下頁面
             "ftp://x/y",  # 非 http(s)
         ],
     )
     def test_non_same_origin_lookalikes_still_refused(self, client, db, entry_url):
-        """看起來像同源、實際會跑到別的主機的寫法,一律照舊 400。"""
+        """看起來像同源、實際會跑到別的主機的寫法,一律照舊 400。
+
+        ⚠ 這一組**不是** ``_URL_CONTROL_STRIP`` 的覆蓋。``/\\t/evil.example`` 這
+        個形狀就算把正規化整段拿掉也照樣被擋(CPython ≥3.6 的 ``urlsplit`` 自己
+        就會刪 tab/CR/LF),所以它證明不了那行程式有在做事。真正釘住正規化的是
+        下面那個 class ——「刪掉 ``\\t`` 就要有測試變紅」。
+        """
         headers = _headers(client, db)
         svc = _make_service(
             db, name="壞資料", slug="bad-url", entry_url=entry_url, is_public=True
@@ -116,6 +122,102 @@ class TestSameOriginRelativeEntryUrl:
         resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
         assert resp.status_code == 400, resp.text
         assert "http(s)" in resp.json()["detail"]
+
+
+# ── 1b. 控制字元正規化:每個刪掉的字元都要有自己的紅燈 ────────────────────────
+
+# WHATWG URL Standard 在解析前刪掉的三個字元(tab / LF / CR)。
+# ⚠ 刻意**不從** ``_URL_CONTROL_STRIP`` 讀回來:若測試的清單是正式碼那份的投影,
+#   從正式碼刪掉 ``\t`` 會連同它的測試案例一起消失,整組照樣全綠 —— 那不叫覆蓋。
+#   這份是測試自己的副本,兩份不一致要有人來裁決(見 test_strip_set_is_exactly…)。
+_WHATWG_STRIPPED = ("\t", "\n", "\r")
+
+
+class TestControlCharStripIsPinned:
+    """``_normalise_entry_url`` 刪掉的每一個控制字元,都要有一條「拿掉它就變紅」
+    的測試。
+
+    為什麼是「控制字元 + 反斜線」這個形狀:CPython 的 ``urlsplit`` 本來就會刪
+    tab/CR/LF,所以 ``/<TAB>/host`` 有沒有我們這行都會被擋。**只有控制字元後面
+    接反斜線**時,我們手寫的正規化才真的在做事 ——
+
+        輸入 ``/<TAB>\\evil.example``
+          有正規化:先刪 tab ⇒ ``/\\evil.example`` ⇒ ``[1:2] == "\\"`` ⇒ 擋下,400。
+          沒正規化:``[1:2]`` 是 tab 不是反斜線 ⇒ 過關;而 ``urlsplit`` 又把 tab
+                    刪掉,於是判成「同源相對路徑」⇒ 帶著 launch token 發出去。
+                    瀏覽器拿到 ``/<TAB>\\evil.example`` 一樣刪 tab、把 ``\\`` 折成
+                    ``/`` ⇒ ``//evil.example`` ⇒ **token 送到別人的主機**。
+    """
+
+    @pytest.mark.parametrize(
+        "ctrl", _WHATWG_STRIPPED, ids=["tab", "lf", "cr"]
+    )
+    def test_control_char_then_backslash_is_refused(self, client, db, ctrl):
+        headers = _headers(client, db)
+        svc = _make_service(
+            db,
+            name="控制字元逃逸",
+            slug="ctrl-escape",
+            entry_url=f"/{ctrl}\\evil.example",
+            is_public=True,
+        )
+        resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
+        assert resp.status_code == 400, resp.text
+        assert "http(s)" in resp.json()["detail"]
+
+    def test_strip_set_is_exactly_the_pinned_characters(self):
+        """正式碼刪的字元集合 == 上面逐一釘過的集合。
+
+        往集合裡加字元(而沒有補一條上面那種測試)會在這裡停下來 —— 這道就是
+        「每個刪掉的字元都要有紅燈」這條不變式的維護閘門。
+        """
+        from app.api import services as services_api
+
+        stripped = {chr(code) for code in services_api._URL_CONTROL_STRIP}
+        assert stripped == set(_WHATWG_STRIPPED)
+
+
+# ── 1c. 發出去的字串 == 驗過的字串 ───────────────────────────────────────────
+
+
+class TestLaunchUrlUsesTheValidatedString:
+    """launch URL 必須由 ``_validate_launch_entry_url`` **回傳的**那個字串組成,
+    不能回頭再讀一次 ``service.entry_url`` —— 驗一個、發另一個就是 TOCTOU 縫。
+
+    釘的是兩個位置:``_validate_launch_entry_url`` 的 return,以及 launch 端點
+    呼叫 ``build_launch_url`` 時傳進去的那個引數。任一處換成 ``service.entry_url``
+    都要有測試變紅。
+
+    ⚠ **這條的嚴重度說清楚**:目前查得到的差異全是「尾端空白/控制字元」這種
+    形狀(``/anila``+空白、``/anila\\x0b``)。可觀察的後果是**路徑壞掉**(服務打
+    不開),不是 origin 逃逸 —— 因為會逃逸的寫法在驗證階段就 400 了,根本走不到
+    這裡。釘它的理由是這條不變式本身撐著整個設計,不是因為它現在能被打穿。
+    (順帶一提:``/an\\tila`` 這種**夾在中間**的控制字元證明不了任何事,
+    ``urlparse``/``urlunparse`` 自己就會把它抹掉,兩邊輸出一模一樣。)
+
+    真實來源:治理中心表單裡 entry_url 尾巴多打一個空白。
+    """
+
+    @pytest.mark.parametrize(
+        "trailing", [" ", "\x0b"], ids=["space", "vertical-tab"]
+    )
+    def test_launch_url_is_built_from_the_normalised_entry_url(
+        self, client, db, trailing
+    ):
+        headers = _headers(client, db)
+        svc = _make_service(
+            db,
+            name="尾端有空白",
+            slug="trailing-ws",
+            entry_url=f"/anila{trailing}",
+            is_public=True,
+        )
+        body = client.post(
+            f"/api/services/{svc.slug}/launch", json={}, headers=headers
+        ).json()
+        # 完全相等,不是 startswith —— 尾端那個字元有沒有被帶進來,只有等號看得出來。
+        assert body["launch_url"] == f"/anila?launch_token={body['launch_token']}"
+        assert urlparse(body["launch_url"]).path == "/anila"
 
 
 # ── 2. 跨主機白名單沒被放寬 ──────────────────────────────────────────────────

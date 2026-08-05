@@ -1,8 +1,6 @@
 // 專案入口（Service Platform）— fetch fallback、卡片渲染、launch 分流、iframe 覆蓋層、失敗路徑。
 
 import React from "react";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
@@ -242,10 +240,32 @@ describe("ServicesPanel — 啟動失敗一定看得見", () => {
     openSpy.mockRestore();
   });
 
-  it("noopener 沒有被拿掉（不為了偵測而拆掉瀏覽器層級的保護）", () => {
-    const src = readFileSync(
-      resolve(process.cwd(), "src", "services.jsx"), "utf8");
-    expect(src).toContain('window.open(url, "_blank", "noopener")');
+  it("noopener 沒有被拿掉（不為了偵測而拆掉瀏覽器層級的保護）", async () => {
+    // 可觀察的事實:交給 window.open 的 features 一定帶 noopener,所以開出去的
+    // 分頁拿不到 opener 參照(拿得到就能回頭改我們這一頁的 location)。
+    // ⚠ 這條斷言的是**傳出去的引數**,不是 services.jsx 的原始碼字串。原始碼
+    //   比對一次重排版就壞,卻擋不住真正的退化;而寫死整串 features 又會把
+    //   「再加上 noreferrer」這種正確的加強誤判成退化。所以切成 token 比對。
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce([
+        { id: 2, name: "ANILA", url: "/anila", launch_mode: "new_tab" },
+      ])
+      .mockResolvedValueOnce({
+        mode: "new_tab",
+        launch_url: "/anila?launch_token=t",
+        launch_id: "L1",
+      });
+    render(<ServicesPanel open onClose={() => {}} request={request} toast={vi.fn()} />);
+    fireEvent.click(await screen.findByText("ANILA"));
+    await waitFor(() => expect(openSpy).toHaveBeenCalled());
+
+    const [, target, features] = openSpy.mock.calls[0];
+    expect(target).toBe("_blank");
+    // 第三個引數被省略 / 改成 "" / 換成別的旗標,都會在這裡變紅。
+    expect(String(features ?? "").split(/[\s,]+/)).toContain("noopener");
+    openSpy.mockRestore();
   });
 
   it("完全拿不到網址時報錯,不是靜靜地什麼也沒開", async () => {
