@@ -1228,6 +1228,10 @@ class ParserRegistry:
     _PARSERS: dict[str, DocumentParser] = {
         ".txt": PlainTextParser(),
         ".md": MarkdownParser(),
+        # Common alias for Markdown; same parser as .md (picker used to
+        # offer .markdown while the registry only knew .md → upload 202
+        # then worker E_PARSE_FORMAT_UNSUPPORTED).
+        ".markdown": MarkdownParser(),
         ".json": JsonParser(),
         ".html": HtmlParser(),
         ".htm": HtmlParser(),

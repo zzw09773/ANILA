@@ -10,6 +10,12 @@ backfill 映射:``classified=true → 機密``(SECRET)、
 舊行為 rank >= 2 → 現為 RESTRICTED(密)(SYSTEM-MAP §8);凡舊 boolean
 為真、但等級卻低於「密」的列即為 **不一致**(``inconsistent``)。
 
+``ingestion_documents`` 的等級分佈用**有效密等**
+(``max(文件欄位, 知識庫欄位)``,與 documents API 同一讀模型),不是原始
+欄位——否則升密前就建立的舊文件會在報表裡報低一級。``latched`` 仍看
+文件自身的 ``classification_latched_at``(那是「這一列有沒有被閂鎖過」,
+是另一個問題,不套讀模型)。
+
 本報表把這個不變量做成可稽核的計數。Wire 形狀::
 
     {
@@ -102,12 +108,61 @@ _RESOURCES: list[_ResourceSpec] = [
 ]
 
 
+def _document_levels(db: Session) -> dict[str, int]:
+    """文件的**有效**密等分佈 = max(文件欄位, 所屬知識庫欄位)。
+
+    必須與 ``GET /api/ingestion/documents/{id}`` 用同一個讀模型
+    (``services.ingestion_classification.effective_document_classification_level``)
+    ——否則升密前就存在的舊文件會在盤點裡報成「無機密」、在 API 裡報成
+    「機密」,而這份報表是治理交付物,兩邊不能各說各話。
+
+    做法:以 (文件欄位, 知識庫欄位) 分組取回計數,在 Python 端折成 max。
+    無法解讀的儲存值仍計入 total 但不落格(與其他資源一致的 fail-closed)。
+    """
+    levels = {value: 0 for value in _LEVELS}
+    grouped = (
+        db.query(
+            IngestionDocument.classification_level,
+            IngestionCollection.classification_level,
+            func.count(),
+        )
+        .outerjoin(
+            IngestionCollection,
+            IngestionDocument.collection_id == IngestionCollection.id,
+        )
+        .group_by(
+            IngestionDocument.classification_level,
+            IngestionCollection.classification_level,
+        )
+        .all()
+    )
+    for doc_stored, coll_stored, count in grouped:
+        try:
+            doc_level = ClassificationLevel.from_storage(doc_stored or "無機密")
+        except ValueError:
+            continue
+        effective = doc_level
+        if coll_stored is not None:
+            try:
+                effective = ClassificationLevel.max_of(
+                    [doc_level, ClassificationLevel.from_storage(coll_stored)]
+                )
+            except ValueError:
+                # 知識庫欄位壞掉:退回文件自身等級,不臆測。
+                effective = doc_level
+        levels[effective.value] += count
+    return levels
+
+
 def _row_for(db: Session, spec: _ResourceSpec) -> dict:
     """計算單一資源的盤點列(levels / latched / inconsistent / total)。"""
     total = db.query(func.count()).select_from(spec.model).scalar() or 0
     levels = {value: 0 for value in _LEVELS}
 
-    if spec.level_attr is None:
+    if spec.resource_type == "ingestion_documents":
+        # 唯一用讀模型而非原欄位的資源(見 _document_levels)。
+        levels = _document_levels(db)
+    elif spec.level_attr is None:
         # 無分類欄位(model_registry):read-model floor = 全部視為無機密。
         levels[ClassificationLevel.UNCLASSIFIED.value] = total
     else:

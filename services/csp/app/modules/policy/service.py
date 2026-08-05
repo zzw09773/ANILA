@@ -309,6 +309,7 @@ def apply_classification(
     reason: str,
     task_id: int | None = None,
     source: str = "propagation",
+    commit: bool = True,
 ) -> ClassificationEvent | None:
     """單向閂鎖(doc 08 §2):effective = max(current, new),絕不降級。
 
@@ -321,10 +322,21 @@ def apply_classification(
       查無資源列 → ``ValueError``,不落任何列。
     - ``reason == "memory_inherited"`` 時同步鏡射舊
       ``classification_inherited`` 旗標(doc 08 §3 bridge)。
+
+    ``commit=False``(唯一使用者:知識庫升密的文件級聯,見
+    ``api/ingestion/collections.py``):只 ``flush``,把 commit 交給呼叫端,
+    讓「多筆資源一次升密」能落在**同一個交易**裡 —— 一筆失敗就整批
+    rollback,不會留下「部分文件已閂鎖、知識庫沒升」這種半套狀態
+    (閂鎖是單向的,半套要靠三方降密流程逐筆撈回來)。
+    ⚠ 副作用:``FOR UPDATE`` 的列鎖會活到呼叫端 commit 為止。所以只給
+    「短、admin 觸發、非串流」的路徑用;proxy 熱路徑一律維持預設
+    ``commit=True``(見下方註解)。例外仍然 ``rollback`` —— 此時整個
+    呼叫端交易一起消失,這正是不變式要的。
     """
     # FOR UPDATE must not outlive this call: the hot path (proxy latch)
     # may invoke us up to 3× per request and then stream SSE for minutes.
     # Every exit — no-op, upgrade, or exception — ends the transaction.
+    # (commit=False callers opt out and own that lifetime themselves.)
     try:
         reason_value = _validate_enum("reason", reason, ClassificationEventReason)
         actor_type_value = _validate_enum(
@@ -342,7 +354,8 @@ def apply_classification(
             # Still commit: release the RowShareLock immediately. Returning
             # with an open transaction leaves idle-in-transaction + blocks
             # concurrent FOR UPDATE for the rest of the request.
-            db.commit()
+            if commit:
+                db.commit()
             return None
 
         event = _write_event(
@@ -387,8 +400,12 @@ def apply_classification(
             and hasattr(row, "classification_inherited")
         ):
             row.classification_inherited = True
-        db.commit()
-        db.refresh(event)
+        if commit:
+            db.commit()
+            db.refresh(event)
+        else:
+            # 已 flush(``_write_event``),event.id 可用;交易由呼叫端結束。
+            db.flush()
         return event
     except Exception:
         # After FOR UPDATE a failure aborts the PG txn (25P02). Clear it so

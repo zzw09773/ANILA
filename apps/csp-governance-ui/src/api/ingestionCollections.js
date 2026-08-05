@@ -50,5 +50,17 @@ export const createCollection = (payload) =>
 export const updateCollection = (collectionId, patch) =>
   client.patch(`/api/ingestion/collections/${collectionId}`, patch)
 
+/**
+ * Raise-only classification latch. Body must be a higher level than
+ * current; lowering is refused by the API (declassification flow).
+ *
+ * @param {number} collectionId
+ * @param {string} classificationLevel
+ */
+export const raiseCollectionClassification = (collectionId, classificationLevel) =>
+  client.post(`/api/ingestion/collections/${collectionId}/classification`, {
+    classification_level: classificationLevel,
+  })
+
 export const deleteCollection = (collectionId) =>
   client.delete(`/api/ingestion/collections/${collectionId}`)

@@ -52,6 +52,9 @@ from app.models.ingestion import (
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user
+from app.services.ingestion_classification import (
+    effective_document_classification_level,
+)
 from app.services.ingestion_queue import enqueue_ingest_document
 from app.schemas.base import ApiResponseModel
 
@@ -179,6 +182,9 @@ class DocumentResponse(ApiResponseModel):
     uploaded_by: int | None
     uploaded_at: datetime
     indexed_at: datetime | None
+    # 有效密等（max(文件, 知識庫)）；由 _document_response 填入，
+    # 不要直接從 ORM 欄位投影，以免讀到未級聯的較低值。
+    classification_level: str = "無機密"
 
 
 class DocumentDetailResponse(DocumentResponse):
@@ -203,6 +209,23 @@ def _resolve_collection(
     working unchanged.
     """
     return _require_collection_access(db, user, collection_id)
+
+
+def _document_response(
+    db: Session,
+    doc: IngestionDocument,
+    *,
+    collection: IngestionCollection | None = None,
+) -> DocumentResponse:
+    """Project a document with effective classification (never the column alone)."""
+    coll = collection
+    if coll is None:
+        coll = db.get(IngestionCollection, doc.collection_id)
+    payload = DocumentResponse.model_validate(doc)
+    payload.classification_level = effective_document_classification_level(
+        doc, coll
+    ).to_storage()
+    return payload
 
 
 def _persist_blob(content: bytes, sha256: str) -> str:
@@ -275,6 +298,8 @@ async def upload_document(
     # Insert the document row. Uniqueness on (collection_id, sha256) gives
     # us cheap content-level dedup — re-uploading the same file just
     # returns the existing row.
+    # Inherit the collection's level at insert so a document never starts
+    # below its library (raise path cascades later via apply_classification).
     doc = IngestionDocument(
         collection_id=collection_id,
         filename=file.filename or sha256,
@@ -287,6 +312,9 @@ async def upload_document(
         status="pending",
         chunk_count=0,
         uploaded_by=current_user.id,
+        classification_level=(
+            getattr(coll, "classification_level", None) or "無機密"
+        ),
     )
     db.add(doc)
     try:
@@ -306,7 +334,7 @@ async def upload_document(
         )
         if existing is None:
             raise HTTPException(status_code=500, detail="Upload conflict")
-        return DocumentResponse.model_validate(existing)
+        return _document_response(db, existing, collection=coll)
     db.refresh(doc)
 
     # Enqueue + create the matching jobs row. We do this in two steps
@@ -339,7 +367,7 @@ async def upload_document(
             "arq_job_id": arq_job_id,
         },
     )
-    return DocumentResponse.model_validate(doc)
+    return _document_response(db, doc, collection=coll)
 
 
 @router.post(
@@ -426,7 +454,7 @@ async def reprocess_document(
             "arq_job_id": arq_job_id,
         },
     )
-    return DocumentResponse.model_validate(doc)
+    return _document_response(db, doc)
 
 
 class ZipUploadResult(BaseModel):
@@ -641,6 +669,9 @@ async def upload_zip(
             status="pending",
             chunk_count=0,
             uploaded_by=current_user.id,
+            classification_level=(
+                getattr(coll, "classification_level", None) or "無機密"
+            ),
         )
         db.add(doc)
         try:
@@ -718,7 +749,7 @@ def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[DocumentResponse]:
-    _resolve_collection(db, current_user, collection_id)
+    coll = _resolve_collection(db, current_user, collection_id)
     rows = (
         db.query(IngestionDocument)
         .filter(IngestionDocument.collection_id == collection_id)
@@ -727,7 +758,7 @@ def list_documents(
         .offset(offset)
         .all()
     )
-    return [DocumentResponse.model_validate(r) for r in rows]
+    return [_document_response(db, r, collection=coll) for r in rows]
 
 
 @router.get(
@@ -753,8 +784,7 @@ def get_document(
     )
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    coll = _resolve_collection(db, current_user, doc.collection_id)  # auth + 404
-    _ = coll  # only invoked for its side-effect (auth check).
+    coll = _resolve_collection(db, current_user, doc.collection_id)
 
     latest_job = (
         db.query(IngestionJob)
@@ -763,7 +793,8 @@ def get_document(
         .first()
     )
 
-    payload = DocumentDetailResponse.model_validate(doc)
+    base = _document_response(db, doc, collection=coll)
+    payload = DocumentDetailResponse(**base.model_dump())
     if latest_job is not None:
         payload.latest_job_id = latest_job.id
         payload.latest_job_status = latest_job.status

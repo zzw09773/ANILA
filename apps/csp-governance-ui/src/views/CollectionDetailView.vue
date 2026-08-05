@@ -8,7 +8,7 @@
           <span v-else>載入中…</span>
         </h1>
         <p v-if="collection" class="page-head__sub">
-          agent #{{ collection.agent_id }} · {{ collection.embedding_model }} · {{ collection.embedding_dim }}-d ·
+          {{ collection.embedding_model }} · {{ collection.embedding_dim }}-d ·
           策略 <code>{{ collection.chunking_config.strategy }}</code>
         </p>
       </div>
@@ -16,9 +16,39 @@
 
     <div v-if="loadError" class="feedback is-err">! {{ loadError }}</div>
 
-    <TermBox v-if="collection" title="上傳 · 匯入" pad="md" hint="text / md / pdf / docx · ≤ 50 MB single · ≤ 500 MB / 200 files zip">
+    <TermBox
+      v-if="collection"
+      title="密等"
+      pad="md"
+      hint="建立時選定；只能往上調，不能自行降級。預設無機密。"
+    >
+      <div class="cls-row">
+        <div class="cls-current">
+          <span class="cell-meta">目前密等</span>
+          <strong class="cls-current__level">{{ collection.classification_level || '無機密' }}</strong>
+        </div>
+        <div class="cls-raise" v-if="raisableLevels.length">
+          <label class="cell-meta" for="raise-level">升密至</label>
+          <select id="raise-level" v-model="raiseTarget" class="term-select cls-raise__select">
+            <option v-for="lvl in raisableLevels" :key="lvl" :value="lvl">{{ lvl }}</option>
+          </select>
+          <TermButton
+            variant="primary"
+            :disabled="!raiseTarget || raising"
+            :loading="raising"
+            :label="raising ? '升密中…' : '確認升密'"
+            @click="doRaiseClassification"
+          />
+        </div>
+        <span v-else class="cell-meta">已是最高密等「機密」；降級請走降密申請流程。</span>
+      </div>
+      <div v-if="raiseError" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ raiseError }}</div>
+      <div v-if="raiseMsg" class="feedback is-ok" style="margin-top: var(--gap-2);">{{ raiseMsg }}</div>
+    </TermBox>
+
+    <TermBox v-if="collection" title="上傳 · 匯入" pad="md" :hint="INGESTION_FILE_ACCEPT_HINT">
       <div class="upload" @drop.prevent="onDrop" @dragover.prevent>
-        <input ref="fileInput" type="file" multiple accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,.json,.html,.htm,text/plain,text/markdown,application/pdf,application/json,text/html" @change="onFilePicked" style="display:none" />
+        <input ref="fileInput" type="file" multiple :accept="INGESTION_FILE_ACCEPT" @change="onFilePicked" style="display:none" />
         <input ref="zipInput" type="file" accept=".zip,application/zip" @change="onZipPicked" style="display:none" />
         <TermButton variant="primary" :disabled="uploading" :loading="uploading" :label="uploading ? `上傳中… ${Math.round(progress * 100)}%` : '+ 檔案(可多選)'" @click="$refs.fileInput.click()" />
         <TermButton :disabled="uploading" label="+ zip · 多檔" @click="$refs.zipInput.click()" />
@@ -215,14 +245,20 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { getCollection } from '../api/ingestionCollections'
+import { getCollection, raiseCollectionClassification } from '../api/ingestionCollections'
 import { listDocuments, uploadDocument, uploadZip, listDocumentChunks, documentBlobUrl, getChunkEmbeddingDebug, reprocessDocument } from '../api/ingestionDocuments'
 import { listRelations, createRelation, deleteRelation, reresolveRelations } from '../api/ingestionRelations'
 import { streamJob } from '../api/ingestionJobs'
 import { TermBox, TermButton, TermBadge, TermEmpty, TermModal } from '../components/cli'
 import RelationGraph from '../components/RelationGraph.vue'
+import {
+  INGESTION_FILE_ACCEPT,
+  INGESTION_FILE_ACCEPT_HINT,
+} from '../utils/ingestionFileAccept'
+
+const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
 
 const route = useRoute()
 const collectionId = ref(Number(route.params.id))
@@ -241,6 +277,22 @@ const uploadError = ref('')
 const reprocessingId = ref(null)
 const preserveFolderStructure = ref(false)
 const zipResult = ref(null)
+
+const raiseTarget = ref('')
+const raising = ref(false)
+const raiseError = ref('')
+const raiseMsg = ref('')
+
+const raisableLevels = computed(() => {
+  const current = collection.value?.classification_level || '無機密'
+  const idx = CLASSIFICATION_LEVELS.indexOf(current)
+  if (idx < 0) return CLASSIFICATION_LEVELS.slice(1)
+  return CLASSIFICATION_LEVELS.slice(idx + 1)
+})
+
+watch(raisableLevels, (levels) => {
+  raiseTarget.value = levels[0] || ''
+}, { immediate: true })
 
 const showVectorDebug = ref(false)
 const vecDebug = ref({})
@@ -386,6 +438,27 @@ async function doReprocess(d) {
   finally { reprocessingId.value = null }
 }
 
+async function doRaiseClassification() {
+  if (!collection.value || !raiseTarget.value) return
+  raising.value = true
+  raiseError.value = ''
+  raiseMsg.value = ''
+  try {
+    const { data } = await raiseCollectionClassification(
+      collectionId.value,
+      raiseTarget.value,
+    )
+    collection.value = data
+    raiseMsg.value = `已升密至「${data.classification_level}」`
+    await loadDocs()
+  } catch (e) {
+    const detail = e.response?.data?.detail
+    raiseError.value = typeof detail === 'string' ? detail : (detail?.msg || e.message)
+  } finally {
+    raising.value = false
+  }
+}
+
 async function loadRelations() {
   loadingRels.value = true
   relError.value = ''
@@ -478,7 +551,19 @@ function zipBadgeVariant(s) {
 
 .feedback { font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
 .feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+.feedback.is-ok { color: var(--c-ok); border-color: var(--c-ok); background: var(--c-ok-soft); }
 .loading { padding: var(--gap-4); text-align: center; color: var(--c-fg-3); font-size: var(--t-sm); }
+
+.cls-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--gap-3);
+}
+.cls-current { display: flex; flex-direction: column; gap: 2px; min-width: 120px; }
+.cls-current__level {
+  font-size: var(--t-xl); font-weight: 600; color: var(--c-fg-1);
+  letter-spacing: var(--tracking-tight);
+}
+.cls-raise { display: flex; align-items: center; gap: var(--gap-2); flex-wrap: wrap; }
+.cls-raise__select { min-width: 140px; }
 
 .upload {
   display: flex;
