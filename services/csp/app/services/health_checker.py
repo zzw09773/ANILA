@@ -459,6 +459,10 @@ SERVICE_KIND_SELF = "self"
 SERVICE_KIND_DATABASE = "database"
 SERVICE_KIND_CACHE = "cache"
 SERVICE_KIND_HTTP = "http"
+#: 沒有 HTTP 面的佇列工作者(arq)。liveness 來自它自己寫進 redis 的
+#: health-check key,而不是去敲一個它從來沒開過的 port —— 見
+#: ``_probe_queue_worker``。
+SERVICE_KIND_QUEUE = "queue"
 
 
 @dataclass(frozen=True, slots=True)
@@ -486,27 +490,75 @@ BASE_SERVICE_SPECS: tuple[BaseServiceSpec, ...] = (
     BaseServiceSpec("redis", "佇列與快取", SERVICE_KIND_CACHE),
     BaseServiceSpec("nginx", "反向代理", SERVICE_KIND_HTTP),
     BaseServiceSpec("router", "對話路由", SERVICE_KIND_HTTP),
-    BaseServiceSpec("ingestion-worker", "文件匯入工作者", SERVICE_KIND_HTTP),
+    BaseServiceSpec("ingestion-worker", "文件匯入工作者", SERVICE_KIND_QUEUE),
     BaseServiceSpec("anila-studio", "簡報產生服務", SERVICE_KIND_HTTP),
     BaseServiceSpec("pptx-renderer", "簡報渲染服務", SERVICE_KIND_HTTP),
 )
 
+
+@dataclass(frozen=True, slots=True)
+class _HttpProbeTarget:
+    """一個 HTTP 探測目標(**私有**:url 與 headers 都不進回應)。
+
+    ``healthy_statuses`` 逐服務寫死,門檻是「**這個服務回答了關於它自己健康的
+    問題**」,不是「有東西在答話」。舊版一律 ``<500`` 算綠,於是 router 一個
+    **不存在路徑**的 404 被畫成綠燈 —— 總覽從來沒問過 router 它好不好
+    (2026-08-05 量到)。
+    """
+
+    url: str
+    healthy_statuses: frozenset[int]
+    #: 探測要帶的 request header。目前只有 nginx 需要(見下面的 Host 說明)。
+    headers: tuple[tuple[str, str], ...] = ()
+
+
 #: **私有**探測目標表。與 ``BASE_SERVICE_SPECS`` 分開放,是為了讓「這些字串
 #: 不進回應」成為結構上的事實而不是一句承諾 —— 序列化只讀 specs。
-_HTTP_PROBE_TARGETS: dict[str, str] = {
-    # nginx :80 對所有路徑 `return 301`(見 infra/nginx/anila.conf:89-91),
-    # 不會 proxy 回 csp,所以探測不會形成請求迴圈。
-    "nginx": "http://nginx:80/",
-    "router": "http://router:9000/ready",
-    "ingestion-worker": "http://ingestion-worker:8081/ready",
-    "anila-studio": "http://anila-studio:8100/health",
-    "pptx-renderer": "http://pptx-renderer:7100/health",
+_HTTP_PROBE_TARGETS: dict[str, _HttpProbeTarget] = {
+    # nginx :80 對 allowlist 內的 Host `return 301`,對清單外的 Host
+    # `return 444`(直接關連線、不送回應)。那條 allowlist 是 open redirect
+    # 的修補:沒有它的時候 `return 301 https://$host...` 會把攻擊者控制的
+    # Host 原樣寫進 `Location`。所以探測**帶一個 allowlist 內的 Host** 去問,
+    # 而不是去放寬 allowlist 遷就探測;`localhost` 在那張 map 內,而且不是
+    # 任何真實部署位址。301 不 follow,也不會 proxy 回 csp,所以探測不會
+    # 形成請求迴圈。
+    "nginx": _HttpProbeTarget(
+        "http://nginx:80/", frozenset({301}), (("Host", "localhost"),)
+    ),
+    # router 的健康在 `/health`;`/ready` 這條路徑 router 沒有,探它只會拿到
+    # 404。這支探測**只採信 status code**,不讀 body —— 包含 `/health` 裡的
+    # `last_refresh_error`。刻意不讀的理由:那個欄位只有在「下一次 refresh
+    # 成功」時才被清回 None(`anila_core/registry/remote_agent_manifest.py:181`),
+    # 而 refresh 是對話流量經 `ensure_fresh` 觸發的,不是定時器。平台一晚沒人用
+    # 的話,一次暫時性失敗會讓這張卡黃到有人來聊天為止 —— 正是這包在關掉的
+    # 那種喊狼。要改成讀它,得先給 router 一條與流量無關的 refresh 路徑。
+    "router": _HttpProbeTarget("http://router:9000/health", frozenset({200})),
+    "anila-studio": _HttpProbeTarget(
+        "http://anila-studio:8100/health", frozenset({200})
+    ),
+    "pptx-renderer": _HttpProbeTarget(
+        "http://pptx-renderer:7100/health", frozenset({200})
+    ),
 }
+
+#: arq worker 每 ``health_check_interval`` 秒把一行狀態 ``psetex`` 進這個 redis
+#: key,TTL = interval + 1s(``arq.worker.Worker.record_health``)。key 名 =
+#: ``arq.constants.default_queue_name + health_check_key_suffix``,csp 端 arq
+#: 0.26.1 與 worker 端 0.28.0 這兩個常數同值(2026-08-05 兩邊都印過)。
+#: 所以「key 在」= worker 在上一個 interval 內還在回報;「key 不在」= 它不寫了。
+#: 這是 arq worker 唯一自己產生的 liveness 訊號 —— 它沒有 HTTP 面可敲。
+_ARQ_HEALTH_CHECK_KEY = "arq:queue:health-check"
 
 
 #: 允許探測的名稱集合。closed set —— ``probe_base_service`` 只認這裡面的字。
 _BASE_SERVICE_NAMES: frozenset[str] = frozenset(
     spec.name for spec in BASE_SERVICE_SPECS
+)
+
+#: 走佇列 liveness 而非 HTTP 的服務。**從 specs 推導**,不另抄一份名單 ——
+#: 兩份名單遲早會分歧,而分歧的那一刻卡片就開始說謊。
+_QUEUE_SERVICE_NAMES: frozenset[str] = frozenset(
+    spec.name for spec in BASE_SERVICE_SPECS if spec.kind == SERVICE_KIND_QUEUE
 )
 
 
@@ -532,19 +584,23 @@ def _resolves(host: str, port: int) -> bool:
         return True
 
 
-async def _probe_http_service(name: str, url: str) -> ServiceProbeResult:
+async def _probe_http_service(
+    name: str, target: _HttpProbeTarget
+) -> ServiceProbeResult:
     """HTTP 基礎服務探測。回本模組五態 + bounded reason。
 
-    <500 → healthy(301 / 401 / 404 都算「服務在答話」);5xx → degraded
-    (活著但壞);timeout → degraded;連不上 → unhealthy。這組映射刻意與
-    ``probe_model_health_detailed`` 同姿態。
+    綠燈的門檻是 ``target.healthy_statuses`` —— 只有那些 status 算「這個服務
+    回答了關於它自己健康的問題」。其他會答話的 status(5xx、404、401…)一律
+    ``degraded``:活著,但沒證明它好。timeout → degraded;連不上 → unhealthy。
+    這組映射刻意與 ``probe_model_health_detailed`` 同姿態:那邊的 ``/`` 弱探
+    也是只到 degraded,不到 healthy。
     """
     started = time.monotonic()
 
     def _elapsed_ms() -> int:
         return int((time.monotonic() - started) * 1000)
 
-    parts = urlsplit(url)
+    parts = urlsplit(target.url)
     host = parts.hostname or name
     port = parts.port or 80
     if not await asyncio.to_thread(_resolves, host, port):
@@ -557,12 +613,12 @@ async def _probe_http_service(name: str, url: str) -> ServiceProbeResult:
             trust_env=False,
             follow_redirects=False,
         ) as client:
-            resp = await client.get(url)
-        if resp.status_code >= 500:
-            return ServiceProbeResult(
-                HEALTH_DEGRADED, PROBE_UPSTREAM_ERROR, _elapsed_ms()
-            )
-        return ServiceProbeResult(HEALTH_HEALTHY, PROBE_OK, _elapsed_ms())
+            resp = await client.get(target.url, headers=dict(target.headers))
+        if resp.status_code in target.healthy_statuses:
+            return ServiceProbeResult(HEALTH_HEALTHY, PROBE_OK, _elapsed_ms())
+        # status code 只進 log,不進回應(bounded reason 不承載後端細節)。
+        logger.debug("基礎服務 %s 回了非預期 status %s", name, resp.status_code)
+        return ServiceProbeResult(HEALTH_DEGRADED, PROBE_UPSTREAM_ERROR, _elapsed_ms())
     except httpx.TimeoutException:
         return ServiceProbeResult(HEALTH_DEGRADED, PROBE_TIMEOUT, _elapsed_ms())
     except (httpx.ConnectError, httpx.NetworkError):
@@ -576,6 +632,22 @@ async def _probe_http_service(name: str, url: str) -> ServiceProbeResult:
 def _redis_probe_url() -> str:
     """與 ``token_revocation_publisher`` 同一個來源,避免兩份真相。"""
     return os.environ.get("REDIS_URL", "redis://redis:6379/0")
+
+
+async def _aclose_redis(client) -> None:
+    """關掉探測用的 redis 連線。redis-py 新舊兩代分別是 ``aclose`` / ``close``。
+
+    關不掉不影響判定 —— 這裡吞例外是刻意的,不要讓收尾把已經得到的結果蓋掉。
+    """
+    closer = getattr(client, "aclose", None) or getattr(client, "close", None)
+    if closer is None:
+        return
+    try:
+        result = closer()
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception:  # pragma: no cover - 關連線失敗不影響判定
+        logger.debug("redis 探測連線關閉失敗", exc_info=True)
 
 
 async def _probe_redis() -> ServiceProbeResult:
@@ -624,14 +696,93 @@ async def _probe_redis() -> ServiceProbeResult:
         return ServiceProbeResult(HEALTH_UNHEALTHY, PROBE_UNREACHABLE, _elapsed_ms())
     finally:
         if client is not None:
-            closer = getattr(client, "aclose", None) or getattr(client, "close", None)
-            if closer is not None:
-                try:
-                    result = closer()
-                    if asyncio.iscoroutine(result):
-                        await result
-                except Exception:  # pragma: no cover - 關連線失敗不影響判定
-                    logger.debug("redis 探測連線關閉失敗", exc_info=True)
+            await _aclose_redis(client)
+
+
+async def _probe_queue_worker(name: str) -> ServiceProbeResult:
+    """佇列工作者(arq)探測:讀它自己寫進 redis 的 health-check key。
+
+    為什麼不敲 HTTP:``infra/compose/platform.yml`` 的 ingestion-worker 沒有
+    ``ports``、沒有 HTTP server,它跑的是 ``arq ingestion_worker.main.WorkerSettings``。
+    舊設定去打 ``:8081/ready`` 只會永遠 connection refused,那張卡永遠紅,而
+    ``aggregate_health`` 取最差 → **整張總覽永遠紅**。永遠紅的儀表板等於沒有
+    儀表板(見 ``_resolves`` 的註解)。
+
+    兩個訊號一起看,而不是任一個單獨看
+    ------------------------------------
+    ``_resolves`` 只在**容器正在跑**的時候解得出 compose 服務名(2026-08-05
+    量到:repo 裡有定義但本 project 沒起的 ``flux2-dev`` 直接 gaierror)。
+    key 則活在 redis 裡,worker 不在了仍會撐到 TTL 到期。兩個湊起來才分得出
+    四種狀態,單看任一個都會說謊:
+
+    ==========  ======  ==========================================  ============
+    名稱解析      key     真實情況                                      卡片
+    ==========  ======  ==========================================  ============
+    解得出       在      正在跑而且在回報                              healthy/ok
+    解得出       不在    容器在,但它超過一個 TTL 沒回報(卡死)        unhealthy
+    解不出       在      TTL 內還在回報過,現在名字沒了 → 容器停了      unhealthy
+    解不出       不在    這個部署沒有這個服務(或早就不在了)           unknown/
+                                                                    not_deployed
+    ==========  ======  ==========================================  ============
+
+    **只用「解不出 → 未部署」是不夠的**:那是 2026-08-05 驗收抓到的謊 ——
+    容器一停,DNS 記錄就消失,於是「worker 掛了」會被畫成黃色的「此部署未啟用」,
+    而那一格的說明是「不是故障」。加上 key 這一維,停掉的容器在 key 還活著的
+    期間會**立刻**翻紅,不必等 TTL。
+
+    這也是為什麼**不去縮短 worker 的 ``health_check_interval``**:key 活得久,
+    「名字沒了但 key 還在」這個判斷才有足夠長的窗;而且 handler 是同步阻塞的
+    (parse 一份 400 頁 PDF 就佔住事件迴圈幾十秒,大 collection 的
+    ``reresolve_collection_relations`` 是整個迴圈連續解析),TTL 一短,
+    **正在正常工作的 worker 就會被畫成死的**。細節見
+    ``services/ingestion-worker/README.md`` 的〈治理首頁那盞燈〉。
+
+    redis 自己壞掉時回 ``unknown`` 而不是 ``unhealthy``:那是「我們問不到」,
+    不是「worker 死了」,把帳算到 worker 頭上會讓管理者去修錯的東西
+    (redis 那張卡會自己紅,真正的原因在那裡)。
+    """
+    started = time.monotonic()
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - started) * 1000)
+
+    resolves = await asyncio.to_thread(_resolves, name, 0)
+
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import-not-found]
+    except ImportError:
+        logger.warning("redis 套件未安裝,無法探測 %s 的佇列 liveness", name)
+        return ServiceProbeResult(HEALTH_UNKNOWN, PROBE_UNSUPPORTED, _elapsed_ms())
+
+    client = None
+    try:
+        client = aioredis.from_url(
+            _redis_probe_url(),
+            socket_connect_timeout=BASE_SERVICE_PROBE_TIMEOUT,
+            socket_timeout=BASE_SERVICE_PROBE_TIMEOUT,
+        )
+        reporting = await asyncio.wait_for(
+            client.exists(_ARQ_HEALTH_CHECK_KEY),
+            timeout=BASE_SERVICE_PROBE_TIMEOUT,
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        return ServiceProbeResult(HEALTH_DEGRADED, PROBE_TIMEOUT, _elapsed_ms())
+    except Exception:
+        logger.warning("%s 佇列 liveness 探測失敗", name, exc_info=True)
+        return ServiceProbeResult(HEALTH_UNKNOWN, PROBE_PROBE_FAILED, _elapsed_ms())
+    finally:
+        if client is not None:
+            await _aclose_redis(client)
+
+    if resolves and reporting:
+        return ServiceProbeResult(HEALTH_HEALTHY, PROBE_OK, _elapsed_ms())
+    if not resolves and not reporting:
+        # 名字沒了、key 也沒了 —— 分不出「本來就沒部署」跟「早就不在了」。
+        # 這種時候閉嘴比亂猜好(見 ``_resolves`` 的註解)。
+        logger.debug("基礎服務 %s 名稱與 health key 都不在,視為未部署", name)
+        return ServiceProbeResult(HEALTH_UNKNOWN, PROBE_NOT_DEPLOYED, _elapsed_ms())
+    # 剩下兩格都是「它應該在,但不對勁」:容器在卻不回報,或回報過但名字沒了。
+    return ServiceProbeResult(HEALTH_UNHEALTHY, PROBE_UNREACHABLE, _elapsed_ms())
 
 
 def probe_database(db) -> ServiceProbeResult:
@@ -678,6 +829,8 @@ async def probe_base_service(name: str, *, db=None) -> ServiceProbeResult:
         return await asyncio.to_thread(probe_database, db)
     if name == "redis":
         return await _probe_redis()
+    if name in _QUEUE_SERVICE_NAMES:
+        return await _probe_queue_worker(name)
     return await _probe_http_service(name, _HTTP_PROBE_TARGETS[name])
 
 

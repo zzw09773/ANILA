@@ -40,6 +40,49 @@ reresolve_collection_relations(collection_id)   # re-extract a collection's rela
 
 Arq retry / timeout policy (`main.py`): `max_tries=3`, `job_timeout=300` (s), `keep_result=3600` (so CSP can poll completion within an hour). `on_startup` opens one shared `PgPool` + builds an `Embedder`; `on_shutdown` drains both.
 
+### Where the light on the governance dashboard comes from (ops)
+
+No HTTP health route does not mean no health signal. The worker uses **arq's default heartbeat**: every 3600 s it writes a status line into the Redis key `arq:queue:health-check` with TTL = 3601 s. CSP's **service health overview** reads two signals together — that key, and whether docker DNS still resolves the name `ingestion-worker` (**it does not when the container is not running**). Four cases from those two signals, plus two where Redis itself cannot be asked:
+
+| Name resolves | Key | Card | When you see it |
+|---|---|---|---|
+| yes | present | green (`ok`) | working normally (including mid-parse on a large document) |
+| yes | absent | red (`unreachable`) | container is up but the process has been wedged for over 3601 s |
+| no | present | red (`unreachable`) | **the container stopped or crashed**, within the last 3601 s |
+| no | absent | amber (`not deployed`) | this deployment does not run ingestion-worker; **or** it has been gone for over 3601 s |
+| (either) | unaskable | amber (`probe failed`) | Redis is unreachable, so the worker is unknown — check the Redis card |
+| (either) | no answer | amber (`probe timeout`) | Redis did not answer within 4 s; still "could not ask", not "it is fine" |
+
+**Detection times each state actually delivers (measured behaviour, not a target):**
+
+- **Container stopped / crashed** → **red the next time the overview is opened** (the DNS record disappears at once while the key is still alive). This is the common death, and the only fast case.
+- **Container up but process wedged** → up to **3601 s (~1 hour)** before it turns red, because only key expiry can reveal it.
+- **Gone for more than 3601 s** → degrades to amber "not deployed". By then the key has expired too, and from CSP's side "long gone" and "never deployed" are the same observation; guessing either way would be a guess.
+- **Not deployed** → amber throughout, correctly.
+
+> 📌 **A planned shutdown also shows red.** After you run `docker compose stop ingestion-worker` yourself, this card stays red for **up to 3601 s** before degrading to amber "not deployed". The card cannot tell "you stopped it" from "it died" — red during maintenance is expected, not something to chase.
+
+> ⚠ **`PDF_OCR_FALLBACK` eats the safety margin.** Default `false`. Turned `true`, PDFs with no extractable text go through per-page OCR/VLM and parse time jumps from tens of seconds toward the 1800 s range — the 3601 s headroom shrinks from roughly 40× to roughly 2× (measured by the acceptance pass). **Re-read this section before enabling that flag**, and note that no test will warn you when you do.
+
+> ⚠ **Why the heartbeat is not made faster.** All three handlers do synchronous work on arq's event loop: `extract_text` was measured occupying it for 33–89 s on a 400-page PDF and 81–103 s on 1000 pages (the spread is host load, not code), and `evaluate_strategies` and `reresolve_collection_relations` call it **once per document in a loop** (a collection can hold hundreds). Once the heartbeat's TTL is shorter than that, **a worker doing its job correctly gets painted as dead** — the one mistake this card must never make. 3601 s clears any document the platform will accept (50 MB per file).
+>
+> Making the heartbeat faster requires first moving **every blocking path in every handler** off the event loop (table below), not just `ingest_document`'s parse. `tests/test_worker_liveness.py` guards this.
+
+#### Synchronous work on the event loop (clear this table before touching the heartbeat)
+
+> This table is a **point-in-time audit taken 2026-08-05, not a guarantee**. It was assembled by hand and nothing checks it automatically, so a newly added blocking call will not announce itself — whoever edits a handler owns keeping this list true. The eighth row (`split_segments`) was found in review after the first pass missed it.
+
+| Handler | Where | What blocks |
+|---|---|---|
+| `ingest_document` | `handlers.py` parse step | `open().read()` + `extract_text` (measured 33–102 s) |
+| `ingest_document` | `handlers.py` chunk step | `chunker.chunk` (measured 0.03–0.6 s) |
+| `ingest_document` | `handlers.py` semantic pre-split | `SemanticChunker.split_segments` (0.12 s on a 934k-char document) |
+| `ingest_document` | `handlers.py` `_uniform_color` | PIL `Image.open` + `convert` + sampled `getpixel`, **per embedded image** |
+| `ingest_document` | `handlers.py` `_persist_images` | `open(...,"wb").write()` + `os.chmod`, **per image** |
+| `evaluate_strategies` | `evaluator.py` `_load_sample_docs` | `open().read()` + `extract_text`, **per sample document** |
+| `evaluate_strategies` | `evaluator.py` `_chunk_doc` | `chunker.chunk` + `SemanticChunker.split_segments`, **per strategy × per document** |
+| `reresolve_collection_relations` | `handlers.py` tail loop | `open().read()` + `extract_text`, **per indexed document in the collection** |
+
 ### `ingest_document` pipeline (with progress pct)
 
 | pct | Stage | Notes |
