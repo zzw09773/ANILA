@@ -176,6 +176,52 @@ export function branchMessage(authRequest, convId, messageId, payload) {
   );
 }
 
+/**
+ * Persist the user message AND reserve its assistant row in ONE round trip.
+ *
+ * 兩次往返之間的 RTT 就是「兩個分頁同一瞬間按 Enter」那個 bug 的窗口:
+ * 後到的 append 掛在前一則使用者訊息底下,前一個分頁的 reserve 隨即 409,
+ * 那則使用者訊息就永遠拿不到答案。伺服器把兩件事放進同一個交易。
+ * 回應是 {user, assistant}。
+ */
+export function startTurn(authRequest, convId, payload) {
+  const body = {
+    content: payload.content,
+    stream_writer: payload.streamWriter,
+    model_name: payload.modelName || null,
+    agent_name: payload.agentName || null,
+  };
+  return authRequest(`/api/conversations/${convId}/turn`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Edit-and-re-ask head: branch the user message AND reserve its assistant row.
+ *
+ * 與 startTurn 是同一件事,差別只在新的使用者訊息是既有那一則的同層兄弟。
+ * 分開兩件事做的話,branch 之後 active leaf 會停在一則使用者訊息上,串流
+ * 期間插話就會 user → user,編輯後那題的答案再也寫不進去(後端 400)。
+ * 回應是 {user, assistant}。
+ */
+export function branchTurn(authRequest, convId, messageId, payload) {
+  const body = {
+    content: payload.content,
+    stream_writer: payload.streamWriter,
+    model_name: payload.modelName || null,
+    agent_name: payload.agentName || null,
+  };
+  return authRequest(
+    `/api/conversations/${convId}/messages/${messageId}/branch-turn`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+// POST /messages/{id}/reserve-reply 這個端點仍然存在(start_turn 建在同一個
+// 原始操作上),但前端沒有任何呼叫端 —— 送出路徑一律走 startTurn 的一次往返。
+// 這裡不留沒有人用的包裝函式。
+
 /** Switch the active path; response is ConversationPathOut. */
 export function setActiveLeaf(authRequest, convId, messageId) {
   return authRequest(`/api/conversations/${convId}/active-leaf`, {
@@ -202,11 +248,17 @@ export function updateMessage(authRequest, convId, messageId, patch) {
     model_name: patch.modelName ?? null,
     agent_name: patch.agentName ?? null,
     metadata: patch.metadata ?? null,
+    // 預留列的寫入者權杖;一般 patch 不帶(後端只在該列仍未終局時檢查)。
+    stream_writer: patch.streamWriter ?? null,
   };
-  return authRequest(`/api/conversations/${convId}/messages/${messageId}`, {
+  const options = {
     method: "PUT",
     body: JSON.stringify(body),
-  });
+  };
+  // 視窗卸載途中送出的「標記為中斷」需要 keepalive,否則瀏覽器會直接
+  // 取消這個請求。一般呼叫不帶。
+  if (patch.keepalive) options.keepalive = true;
+  return authRequest(`/api/conversations/${convId}/messages/${messageId}`, options);
 }
 
 // ── Shares (P4.3 named person / unit; anonymous link retired) ────────────────

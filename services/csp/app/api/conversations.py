@@ -123,6 +123,25 @@ class MessageUpdate(BaseModel):
     model_name: Optional[str] = None
     agent_name: Optional[str] = None
     metadata: Optional[dict] = None
+    # 預留列的寫入者權杖。只有那一列還在 reserved/streaming 時才會被檢查；
+    # 一般的 in-place patch（ANILALM finalize 等）不必帶。
+    stream_writer: Optional[str] = Field(None, max_length=200)
+
+
+class ReserveReplyCreate(BaseModel):
+    """Reserve an empty assistant row under a user message, before streaming."""
+    # 由前端產生的隨機權杖；持有者才能把內容寫進這一列。
+    stream_writer: str = Field(..., min_length=8, max_length=200)
+    model_name: Optional[str] = None
+    agent_name: Optional[str] = None
+
+
+class TurnHeadCreate(BaseModel):
+    """Append the user message and reserve its assistant row in one request."""
+    content: str = Field(..., max_length=_MAX_MSG_CHARS)
+    stream_writer: str = Field(..., min_length=8, max_length=200)
+    model_name: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class ConversationOut(ApiResponseModel):
@@ -167,6 +186,17 @@ class ConversationPathOut(BaseModel):
     """Active path after leaf switch or subtree delete (OW-1)."""
     active_leaf_message_id: Optional[int] = None
     messages: list[MessageOut] = []
+
+
+class TurnHeadOut(BaseModel):
+    """Both rows created by ``POST /{conv_id}/turn`` — they are one unit."""
+    user: MessageOut
+    assistant: MessageOut
+    # 送出之前 leaf 停在一則沒有得到回答的問題上時，伺服器會先替它補一列
+    # 終局的空回答（見 conversation_service.start_turn）。回傳它是為了讓前端
+    # 當下就把那一列畫出來 —— 不回傳的話它要等到下一次重整才出現，而使用者
+    # 剛剛才看著那則問題被跳過去，中間什麼說明都沒有。
+    unanswered: Optional[MessageOut] = None
 
 
 class MessageAppend(BaseModel):
@@ -693,6 +723,111 @@ def append_message(
     return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
 
 
+@router.post("/{conv_id}/turn", response_model=TurnHeadOut, status_code=201)
+def start_turn(
+    conv_id: int,
+    body: TurnHeadCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Persist the user message and reserve its assistant row atomically.
+
+    這是聊天送出路徑的第一步，取代「POST /messages 之後再 POST
+    /reserve-reply」的兩次往返。兩次往返之間的 RTT 是一個窗口：兩個
+    分頁同一瞬間按 Enter 時，後到的 append 會掛在前一則使用者訊息底下，
+    前一個分頁的 reserve 隨即 409，那則使用者訊息就永遠拿不到答案。
+    合成一次之後兩件事在同一個交易裡完成，這個窗口不存在。
+    """
+    user_msg, assistant_msg, unanswered_msg = svc.start_turn(
+        db, conv_id, current_user,
+        content=body.content,
+        writer=body.stream_writer,
+        model_name=body.model_name,
+        agent_name=body.agent_name,
+    )
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return TurnHeadOut(
+        user=_message_out(user_msg, groups.get(user_msg.parent_id, [user_msg.id])),
+        assistant=_message_out(
+            assistant_msg, groups.get(assistant_msg.parent_id, [assistant_msg.id]),
+        ),
+        unanswered=(
+            None
+            if unanswered_msg is None
+            else _message_out(
+                unanswered_msg,
+                groups.get(unanswered_msg.parent_id, [unanswered_msg.id]),
+            )
+        ),
+    )
+
+
+@router.post(
+    "/{conv_id}/messages/{message_id}/reserve-reply",
+    response_model=MessageOut,
+    status_code=201,
+)
+def reserve_reply(
+    conv_id: int,
+    message_id: int,
+    body: ReserveReplyCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reserve the assistant row under ``message_id`` before streaming starts.
+
+    這是「先落庫再串流」的第一步：助理訊息先有 id 和固定的 parent，
+    active leaf 隨即前進到它身上，所以串流期間再送出的使用者訊息會正確
+    掛在它底下，而不是變成前一則使用者訊息的同層兄弟。
+    """
+    msg = svc.reserve_assistant_reply(
+        db, conv_id, message_id, current_user,
+        writer=body.stream_writer,
+        model_name=body.model_name,
+        agent_name=body.agent_name,
+    )
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+
+
+@router.post(
+    "/{conv_id}/messages/{message_id}/branch-turn",
+    response_model=TurnHeadOut,
+    status_code=201,
+)
+def branch_turn(
+    conv_id: int,
+    message_id: int,
+    body: TurnHeadCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """編輯重問的 head：分支使用者訊息 ＋ 預留助理列，同一個交易。
+
+    與 ``POST /{conv_id}/turn`` 是同一件事，差別只在新的使用者訊息是既有
+    那一則的同層兄弟（編輯重問）而不是接在 leaf 後面。分開兩件事做的話，
+    branch 之後 leaf 會停在一則使用者訊息上，串流期間插話就會 user → user
+    ——編輯後那題的答案再也寫不進去。
+    """
+    user_msg, assistant_msg = svc.branch_turn(
+        db, conv_id, message_id, current_user,
+        content=body.content,
+        writer=body.stream_writer,
+        model_name=body.model_name,
+        agent_name=body.agent_name,
+    )
+    edges = mtree.load_edges(db, conv_id)
+    groups = mtree.sibling_groups(edges)
+    return TurnHeadOut(
+        user=_message_out(user_msg, groups.get(user_msg.parent_id, [user_msg.id])),
+        assistant=_message_out(
+            assistant_msg, groups.get(assistant_msg.parent_id, [assistant_msg.id]),
+        ),
+    )
+
+
 @router.post(
     "/{conv_id}/messages/{message_id}/branch",
     response_model=MessageOut,
@@ -788,6 +923,7 @@ def update_message(
         model_name=body.model_name,
         agent_name=body.agent_name,
         metadata=body.metadata,
+        stream_writer=body.stream_writer,
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)

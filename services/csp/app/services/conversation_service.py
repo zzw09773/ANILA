@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import or_, update as sa_update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -28,6 +28,107 @@ from app.services.usage_service import _department_scope_ids
 # serialized size so an authenticated insider can't bloat a row; 64KB is far
 # above any legitimate metadata payload.
 _MAX_METADATA_BYTES = 64 * 1024
+
+# start_turn 的 compare-and-swap 重試上限。每次重試都代表另一個 client 在
+# 同一瞬間推進了同一個對話的 leaf；連續撞這麼多次已經不是「兩個分頁」，
+# 停下來報 409 比無限重試安全。
+_START_TURN_MAX_ATTEMPTS = 5
+
+
+# ── 串流前預留助理訊息（reserve-then-stream） ─────────────────────────────────
+#
+# 助理訊息在串流「開始之前」就先落庫成一列空白的 reserved 列。理由是 active
+# leaf：舊流程要等串流跑完才 append 助理訊息，所以整段串流期間 leaf 都還停在
+# 使用者訊息上。使用者在串流中途按 Enter 再送一則，預設的 leaf 解析就把第二
+# 則使用者訊息掛成第一則使用者訊息的子節點，等第一則助理回覆終於要落庫時，
+# _enforce_explicit_parent_role 以 400 擋下——而訊息樹在報錯之前就已經錯了。
+# 先預留這一列之後 leaf 落在助理訊息上，後續使用者訊息的預設解析自然正確，
+# 不需要放寬任何既有的不變式。
+#
+# ⚠ 已知缺陷（2026-08-03，刻意不在這一輪修，記在這裡不要讓它變成口耳相傳）：
+# **孤兒 reserved 列沒有回收機制。**
+#   前端在關視窗／重整時會用 pagehide 把自己預留的每一列（含還在排隊、尚未
+#   開始串流的那些）標成 interrupted。但那是 best-effort：瀏覽器當掉、斷電、
+#   分頁被作業系統殺掉時那個請求送不出去，那一列就永遠停在 reserved。
+#   後果，逐條說清楚（2026-08-05 逐條實測後修正過一次，別再憑印象轉述）：
+#     • 不是資料遺失 —— 使用者的問題已經落庫，UI 會誠實標示那一列沒寫完，
+#       後續的對話照常繼續，空內容的列也不會進到送給模型的上下文。
+#     • **寫不進去**：它掛著一個沒有人持有的 writer 權杖，帶錯權杖、不帶
+#       權杖、只改 metadata 一律 409。未來任何想 in-place 寫它的功能
+#       （ANILALM finalize、Continue Response）打到這一列都會 409。
+#     • **刪得掉**：`DELETE /api/conversations/{cid}/messages/{mid}`
+#       （delete_message_branch）沒有任何 writer 閘門，整棵子樹會被刪掉。
+#       先前這裡寫成「永遠寫不進去」而沒有說刪得掉，害驗證者只能從缺少
+#       控制項推論「使用者被卡死」——那是文件的錯，不是行為的錯。
+#       ⚠ 但刪掉之後 leaf 會退回**那則沒有得到回答的使用者訊息**
+#       （2026-08-05 驗證者以支援的操作實測）。下一次送出若直接往下接就是
+#       user → user，那則問題從此永遠拿不到回答。處理寫在 ``start_turn`` ／
+#       ``_close_unanswered_leaf``：先補一列終局的空回答再往下接。
+#     • 使用者可用的出口是**重新產生**：它走 branch_message 在同一則使用者
+#       訊息底下長出一列新的助理訊息（同層角色一致，不需要動到卡住的那列），
+#       所以 UI 只要讓那一列顯示動作列就有出路（apps/anila-shell/src/chat.jsx
+#       的動作列條件含 msg.incompleteNotice）。空白的那一列會留在樹上當
+#       兄弟節點，不進 active path、不進模型上下文。
+#   真正把它回收掉仍然需要一個 reaper（或在 envelope 裡放時間戳、逾時後允許
+#   接管）。整個 repo 目前沒有任何 reaper。
+STREAM_META_KEY = "anila_stream"
+
+STREAM_STATE_RESERVED = "reserved"        # 已預留，內容尚未產生
+STREAM_STATE_STREAMING = "streaming"      # 串流中，內容是部分的
+STREAM_STATE_COMPLETE = "complete"        # 正常結束，內容完整
+STREAM_STATE_STOPPED = "stopped"          # 使用者按停止，內容是部分的
+STREAM_STATE_FAILED = "failed"            # 串流出錯，內容是部分的
+STREAM_STATE_INTERRUPTED = "interrupted"  # 前端消失（關分頁／重整／當掉）
+STREAM_STATE_UNANSWERED = "unanswered"    # 這則問題從來沒有得到回答（見 start_turn）
+
+# 終局狀態 = 不會再有人寫這一列。寫入者權杖在進入終局時一併清掉，
+# 後續的 ANILALM finalize / Continue Response 等 in-place patch 不受影響。
+STREAM_TERMINAL_STATES = frozenset(
+    {
+        STREAM_STATE_COMPLETE,
+        STREAM_STATE_STOPPED,
+        STREAM_STATE_FAILED,
+        STREAM_STATE_INTERRUPTED,
+        STREAM_STATE_UNANSWERED,
+    }
+)
+
+# 內容不完整、但不是「還在跑」的狀態。UI 必須據此標示，
+# 絕不能把半截答案當成完整答案呈現。
+STREAM_INCOMPLETE_STATES = frozenset(
+    {
+        STREAM_STATE_STOPPED,
+        STREAM_STATE_FAILED,
+        STREAM_STATE_INTERRUPTED,
+        STREAM_STATE_UNANSWERED,
+    }
+)
+
+_STREAM_ALL_STATES = frozenset(
+    {STREAM_STATE_RESERVED, STREAM_STATE_STREAMING} | STREAM_TERMINAL_STATES
+)
+
+
+def stream_envelope(metadata: Optional[dict]) -> Optional[dict]:
+    """Return the ``anila_stream`` envelope of a message's metadata, if any."""
+    if not isinstance(metadata, dict):
+        return None
+    envelope = metadata.get(STREAM_META_KEY)
+    return envelope if isinstance(envelope, dict) else None
+
+
+def _active_stream_writer(metadata: Optional[dict]) -> Optional[str]:
+    """Writer token of a row that is still reserved/streaming, else None.
+
+    終局狀態一律回 None —— 那一列已經沒有寫入者，任何人都可以正常 patch。
+    """
+    envelope = stream_envelope(metadata)
+    if envelope is None:
+        return None
+    if envelope.get("state") in STREAM_TERMINAL_STATES:
+        return None
+    writer = envelope.get("writer")
+    return writer if isinstance(writer, str) and writer else None
 
 
 def _check_metadata_size(metadata: Optional[dict]) -> None:
@@ -691,6 +792,325 @@ def append_message(
     return msg
 
 
+def _reserved_metadata(writer: str) -> dict:
+    return {
+        STREAM_META_KEY: {
+            "state": STREAM_STATE_RESERVED,
+            "writer": writer,
+        }
+    }
+
+
+def reserve_assistant_reply(
+    db: Session,
+    conv_id: int,
+    parent_message_id: int,
+    user: User,
+    *,
+    writer: str,
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> Message:
+    """Reserve an empty assistant row under a user message, before streaming.
+
+    這條路徑刻意「不是」分支：parent 必須是一則還沒有任何子訊息的 user
+    訊息，所以它只可能是線性接續。因此不需要 _require_branchable
+    （ANILALM 不支援分支的規則不受影響），也不會有同層角色衝突。
+
+    回傳的列 content='' 且 metadata.anila_stream.state='reserved'，
+    active leaf 前進到這一列。
+    """
+    if not isinstance(writer, str) or not writer:
+        raise HTTPException(status_code=400, detail="缺少串流寫入者權杖")
+    conv = get_conversation(db, conv_id, user)
+    # 與 append_message 相同的序列化邊界：預留和 append 會競爭同一個 leaf。
+    conv = _lock_conversation(db, conv.id)
+    parent = (
+        db.query(Message)
+        .filter(Message.id == parent_message_id, Message.conversation_id == conv.id)
+        .first()
+    )
+    if parent is None:
+        raise HTTPException(status_code=404, detail="父訊息不存在")
+    if parent.role != "user":
+        raise HTTPException(
+            status_code=400,
+            detail="只能在使用者訊息底下預留助理回覆",
+        )
+    if _sibling_count(db, conv.id, parent.id) > 0:
+        # 已經有子訊息 = 這是分支，不是線性接續。走 /branch 才對。
+        raise HTTPException(
+            status_code=409,
+            detail="這則使用者訊息已經有回覆，無法重複預留",
+        )
+    metadata = _reserved_metadata(writer)
+    _check_metadata_size(metadata)
+    msg = Message(
+        conversation_id=conv.id,
+        parent_id=parent.id,
+        role="assistant",
+        content="",
+        model_name=model_name,
+        agent_name=agent_name,
+        metadata_=metadata,
+    )
+    db.add(msg)
+    db.flush()
+    conv.active_leaf_message_id = msg.id
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
+def _close_unanswered_leaf(
+    db: Session, conv_pk: int, leaf_id: Optional[int],
+) -> tuple[Optional[int], Optional[Message]]:
+    """leaf 若是一則沒有回答的使用者訊息，補上終局空回答。
+
+    回傳 ``(新的一輪該掛的 parent_id, 補出來的那一列或 None)``；其他情況
+    原封回傳 ``(leaf_id, None)``。呼叫端在 ``start_turn`` 的 CAS 迴圈內，
+    所以補出來的那一列跟著整個交易同進同退。
+
+    ⚠ 補的那一列**不帶 writer 權杖**、狀態直接是終局的 ``unanswered``：
+    沒有任何串流會寫它，所以它不能長得像一列「還在跑」的預留列（那會變成
+    第二種孤兒，而且同樣沒有回收程序）。終局＋無權杖也正是「重新產生」
+    能在它旁邊長出真正回答的前提。
+    """
+    if leaf_id is None:
+        return None, None
+    leaf = (
+        db.query(Message)
+        .filter(Message.id == leaf_id, Message.conversation_id == conv_pk)
+        .first()
+    )
+    if leaf is None or leaf.role != "user":
+        return leaf_id, None
+    if _sibling_count(db, conv_pk, leaf.id) > 0:
+        return leaf_id, None
+    placeholder = Message(
+        conversation_id=conv_pk,
+        parent_id=leaf.id,
+        role="assistant",
+        content="",
+        metadata_={STREAM_META_KEY: {"state": STREAM_STATE_UNANSWERED}},
+    )
+    db.add(placeholder)
+    db.flush()
+    return placeholder.id, placeholder
+
+
+def start_turn(
+    db: Session,
+    conv_id: int,
+    user: User,
+    *,
+    content: str,
+    writer: str,
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> tuple[Message, Message, Optional[Message]]:
+    """使用者訊息落庫 ＋ 助理列預留，在同一個交易裡完成。
+
+    為什麼要合成一次：分成兩次 HTTP 往返時，兩者之間那段 RTT 就是一個窗口。
+    兩個分頁同一瞬間按 Enter 的話：A 先 append 了 U_A（leaf=U_A），B 的
+    append 走預設 leaf 解析掛到 U_A 底下（leaf=U_B），A 這時才來預留 U_A 的
+    回覆——U_A 已經有子訊息了，於是 409。結果是 U_A 這則使用者訊息永遠拿不
+    到答案，而且它明明已經在資料庫裡。
+
+    合成一次之後，兩個分頁各自的「append + reserve」都在同一個
+    ``_lock_conversation`` 交易內完成，後到的那個看到的 leaf 已經是前一個
+    預留好的助理列，樹維持線性。
+
+    ⚠ 這裡**不依賴** ``FOR UPDATE``。``_lock_conversation`` 在 PostgreSQL 上
+    會先序列化，但它在 SQLite 上是 no-op，實測（2026-08-03，真 uvicorn＋真
+    socket、兩個併發 client、5 回合）就會出現另一種壞法：兩邊都讀到同一個
+    leaf，樹在根部長出兩個分岔。所以 leaf 的推進改用 compare-and-swap ——
+    ``UPDATE ... WHERE active_leaf_message_id = 我讀到的那個``。0 rows 代表
+    有人在這中間動過 leaf：整個交易回滾（訊息也一併回滾，不留半截），
+    重讀 leaf 再來一次。這個機制在任何引擎上語意都一樣，而且測得到。
+
+    ⚠ **leaf 停在一則沒有回答的使用者訊息上時，這裡不能直接往下接。**
+    這個狀態確實存在，而且不需要任何奇怪的操作就到得了（2026-08-05 驗證者以
+    支援的操作重現）：預留列卡住 → 使用者用「刪除此訊息分支」把它刪掉 →
+    ``delete_message_branch`` 把 leaf 退回那則使用者訊息，而它現在沒有子訊息。
+    舊對話（本功能之前留下的、最後一則是沒被回答的問題）也是同一個形狀。
+    直接往下接會產生 ``user → user``：那則舊問題從此**永遠拿不到回答**
+    （``reserve_assistant_reply`` 會 409，同層角色不變式也擋住助理兄弟），
+    而畫面上不會有任何說明。
+
+    處理方式刻意**不是拒絕**——使用者已經打好的字不該被丟掉，何況舊對話本來
+    就長這樣。改成先替那則落單的問題補上一列**空的、終局的**助理訊息
+    （``state=unanswered``），再把新的使用者訊息接在它底下：
+      • 樹維持 user → assistant → user → assistant，不變式一條都沒放寬；
+      • 那則舊問題留在畫面上（不是悄悄從路徑上消失），並且掛著誠實的說明；
+      • 補的那一列是終局狀態且沒有 writer 權杖，所以「重新產生」可以在它旁邊
+        長出一列真正的回答——舊問題因此**回得來**，不是死路。
+    唯一留下來的代價：送給模型的上下文會有兩則連續的 user（空的助理訊息不進
+    上下文）。那是實話——這段對話裡確實有一則問題沒有被回答。
+
+    回傳 ``(user_message, reserved_assistant_message, unanswered_filler_or_None)``；
+    active leaf 停在預留的助理列上。
+    """
+    if not isinstance(writer, str) or not writer:
+        raise HTTPException(status_code=400, detail="缺少串流寫入者權杖")
+    conv = get_conversation(db, conv_id, user)
+    conv_pk = conv.id
+    metadata = _reserved_metadata(writer)
+    _check_metadata_size(metadata)
+    # §6-3：user 原文不動（fail-open），與 append_message 同一條正規化邊界。
+    user_content, zh_changed = zh_normalize_service.prepare_message_content(
+        "user", content,
+    )
+
+    for _attempt in range(_START_TURN_MAX_ATTEMPTS):
+        # PostgreSQL 上這一行先把競爭者擋在門外；SQLite 上它什麼也不做，
+        # 底下的 CAS 才是真正保證正確性的那一步。
+        conv = _lock_conversation(db, conv_pk)
+        expected_leaf = conv.active_leaf_message_id
+        # leaf 是一則沒有回答的使用者訊息時，先替它補一列終局的空回答，
+        # 新的一輪接在那一列底下（理由與代價寫在 docstring）。
+        parent_for_user, unanswered_msg = _close_unanswered_leaf(
+            db, conv_pk, expected_leaf,
+        )
+        _enforce_sibling_cap(db, conv_pk, parent_for_user)
+
+        user_msg = Message(
+            conversation_id=conv_pk,
+            parent_id=parent_for_user,
+            role="user",
+            content=user_content,
+        )
+        db.add(user_msg)
+        db.flush()
+        assistant_msg = Message(
+            conversation_id=conv_pk,
+            parent_id=user_msg.id,
+            role="assistant",
+            content="",
+            model_name=model_name,
+            agent_name=agent_name,
+            metadata_=metadata,
+        )
+        db.add(assistant_msg)
+        db.flush()
+
+        stmt = (
+            sa_update(Conversation)
+            .where(Conversation.id == conv_pk)
+            .values(
+                active_leaf_message_id=assistant_msg.id,
+                updated_at=datetime.now(timezone.utc),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        stmt = stmt.where(
+            Conversation.active_leaf_message_id.is_(None)
+            if expected_leaf is None
+            else Conversation.active_leaf_message_id == expected_leaf
+        )
+        if db.execute(stmt).rowcount == 1:
+            db.commit()
+            db.refresh(user_msg)
+            db.refresh(assistant_msg)
+            if unanswered_msg is not None:
+                db.refresh(unanswered_msg)
+            zh_normalize_service.log_if_changed(user_msg.id, zh_changed)
+            return user_msg, assistant_msg, unanswered_msg
+
+        # 有人在這中間推進了 leaf。整個交易丟掉（兩列都不會留下），重來。
+        db.rollback()
+
+    raise HTTPException(
+        status_code=409,
+        detail="這個對話同時有太多訊息在送出，請稍後再試一次",
+    )
+
+
+def branch_turn(
+    db: Session,
+    conv_id: int,
+    message_id: int,
+    user: User,
+    *,
+    content: str,
+    writer: str,
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> tuple[Message, Message]:
+    """編輯重問：分支一則使用者訊息 ＋ 預留它的助理列，同一個交易。
+
+    為什麼需要這條路徑（2026-08-05）：編輯重問原本是「branch 出新的使用者
+    訊息 → 串流 → 串流跑完才 append 助理訊息」。branch 之後 active leaf 落在
+    一則**使用者**訊息上，而整段串流期間都停在那裡。使用者這時再打一句送出，
+    預設 leaf 解析就把新的使用者訊息掛到編輯後的問題底下（user → user）；
+    等編輯後那題的答案要落庫時，``_enforce_explicit_parent_role`` 以 400 擋
+    下——答案永遠寫不進去，而使用者剛剛才看著它在螢幕上跑完。
+
+    這正是送出路徑已經修掉的那個形狀，只是換了一條路徑重新武裝。修法也一樣：
+    助理列在串流開始「之前」就存在，leaf 因此落在助理列上。
+
+    不變式：任何會產生一輪問答的路徑，都不得在串流期間把 active leaf 留在
+    使用者訊息上。
+
+    回傳 ``(new_user_message, reserved_assistant_message)``。
+    """
+    if not isinstance(writer, str) or not writer:
+        raise HTTPException(status_code=400, detail="缺少串流寫入者權杖")
+    conv = get_conversation(db, conv_id, user)
+    # 與 branch_message 相同的序列化邊界（同層上限／指標不得競爭）。
+    conv = _lock_conversation(db, conv.id)
+    _require_branchable(conv)
+    target = (
+        db.query(Message)
+        .filter(Message.id == message_id, Message.conversation_id == conv.id)
+        .first()
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="訊息不存在")
+    if target.role != "user":
+        # 這條路徑只服務「編輯重問」。助理訊息的重新產生走 branch_message，
+        # 它不需要預留（重新產生是先串流、再把成品分支上去）。
+        raise HTTPException(
+            status_code=400,
+            detail="只能從使用者訊息分支出新的一輪問答",
+        )
+    parent_id = target.parent_id
+    _enforce_sibling_cap(db, conv.id, parent_id)
+    metadata = _reserved_metadata(writer)
+    _check_metadata_size(metadata)
+    # §6-3：與 branch_message 同一條正規化邊界。
+    user_content, zh_changed = zh_normalize_service.prepare_message_content(
+        "user", content,
+    )
+    user_msg = Message(
+        conversation_id=conv.id,
+        parent_id=parent_id,
+        role="user",
+        content=user_content,
+    )
+    db.add(user_msg)
+    db.flush()
+    assistant_msg = Message(
+        conversation_id=conv.id,
+        parent_id=user_msg.id,
+        role="assistant",
+        content="",
+        model_name=model_name,
+        agent_name=agent_name,
+        metadata_=metadata,
+    )
+    db.add(assistant_msg)
+    db.flush()
+    zh_normalize_service.log_if_changed(user_msg.id, zh_changed)
+    conv.active_leaf_message_id = assistant_msg.id
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(user_msg)
+    db.refresh(assistant_msg)
+    return user_msg, assistant_msg
+
+
 def branch_message(
     db: Session,
     conv_id: int,
@@ -879,12 +1299,19 @@ def update_message_content(
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None,
     metadata: Optional[dict] = None,
+    stream_writer: Optional[str] = None,
 ) -> Message:
     """In-place patch of an existing message (metadata / ANILALM finalize).
 
     OW-1: ANILA regenerate no longer uses this path — it creates an assistant
     sibling via ``branch_message``. This endpoint remains for non-forking
-    patches (ANILALM finalize, metadata updates).
+    patches (ANILALM finalize, metadata updates) and for streaming content
+    into a row reserved by ``reserve_assistant_reply``.
+
+    預留列的所有權：只要那一列還掛著未終局的 writer 權杖，就只有持有相同
+    權杖的呼叫端能寫它。兩個分頁各自預留自己的列，所以正常情況不會撞；
+    這道閘門擋的是重播與寫錯列（409，不是靜默覆蓋）。終局後權杖清空，
+    Continue Response / ANILALM finalize 等既有 patch 一律不受影響。
     """
     conv = get_conversation(db, conv_id, user)
     msg = (
@@ -894,6 +1321,12 @@ def update_message_content(
     )
     if msg is None:
         raise HTTPException(status_code=404, detail="訊息不存在")
+    owner_token = _active_stream_writer(msg.metadata_)
+    if owner_token is not None and stream_writer != owner_token:
+        raise HTTPException(
+            status_code=409,
+            detail="這則回覆正由其他來源產生中，無法覆寫",
+        )
     zh_changed = 0
     if content is not None:
         # §6-3：依既有訊息角色正規化（ANILALM finalize 等 in-place 寫入）
@@ -911,12 +1344,70 @@ def update_message_content(
         msg.agent_name = agent_name
     if metadata is not None:
         _check_metadata_size(metadata)
-        msg.metadata_ = metadata
+        msg.metadata_ = _normalize_stream_envelope(metadata, msg.metadata_)
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(msg)
     zh_normalize_service.log_if_changed(msg.id, zh_changed)
     return msg
+
+
+def _normalize_stream_envelope(metadata: dict, existing: Optional[dict]) -> dict:
+    """Validate an incoming ``anila_stream`` envelope against the stored row.
+
+    ``metadata`` 會**整包取代** ``msg.metadata_``（PUT 的語意），所以這個
+    函式同時負責三件事，缺一都是一條讓「半截答案看起來完整」的路：
+
+    1. **未知 state 擋掉（400）。** 沉默接受一個沒人看得懂的狀態，前端的
+       標示函式就回 null，那一列會渲染得跟完整答案一模一樣。
+    2. **未終局的 state 擋掉（400）。** 未終局的 envelope 只能由
+       ``reserve_assistant_reply`` / ``start_turn`` 建立：如果 PUT 也能寫，
+       任何人都能替自己的任何一則訊息裝上一個只有自己知道的 writer 權杖，
+       之後那一列的每一次 in-place patch（ANILALM finalize、Continue
+       Response）都會被 409 擋掉——一條把自己的訊息永久鎖死的路。
+    3. **已經終局的列不得再改狀態（409）。** 終局時 writer 權杖被清掉，
+       所以這一列從此對「不帶權杖的 PUT」開放——而 terminal→terminal 原本
+       沒有任何閘門：`PUT {"anila_stream":{"state":"interrupted"}}` 可以把
+       一則使用者親眼看著跑完的答案改標成「沒有產生完成」。前端只要有一個
+       bug（例如串流結束後忘了把那一列從 in-flight 清單移除，pagehide 就會
+       替每一列送出 interrupted）就會發生，而使用者無法自救。
+       同一個狀態重送視為冪等，允許。
+       ⚠ 代價寫在這裡：未來的 Continue Response 若想把 ``stopped`` 的列
+       改標成 ``complete``，會被這一條擋下。那是刻意的——被停掉的答案就是
+       被停掉的答案；真要改，該走「新增一列」而不是竄改既有那一列的狀態。
+    4. **不帶 envelope 的 patch 不得抹掉既有標記。** ``update_message_content``
+       是整包取代，所以 `PUT {"metadata":{"citations":[…]}}` 原本會讓
+       ``anila_stream`` 整個消失——一則 ``stopped`` 的半截答案就此看起來
+       完整。既有的 envelope 一律原封帶回。
+    """
+    existing_envelope = stream_envelope(existing)
+    envelope = stream_envelope(metadata)
+    if envelope is None:
+        if existing_envelope is None:
+            return metadata
+        # 既有標記是那一列的屬性，不是這次 payload 的屬性。原封帶回
+        # （含還沒用掉的 writer 權杖：那一列的所有權不因一次 patch 而消失）。
+        return {**metadata, STREAM_META_KEY: dict(existing_envelope)}
+    state = envelope.get("state")
+    if state not in _STREAM_ALL_STATES:
+        raise HTTPException(status_code=400, detail="串流狀態不合法")
+    if state not in STREAM_TERMINAL_STATES:
+        raise HTTPException(
+            status_code=400,
+            detail="串流狀態只能由預留流程建立，這裡只接受已結束的狀態",
+        )
+    existing_state = (
+        existing_envelope.get("state") if existing_envelope is not None else None
+    )
+    if existing_state in STREAM_TERMINAL_STATES and state != existing_state:
+        raise HTTPException(
+            status_code=409,
+            detail="這則回覆已經結束，狀態不能再更動",
+        )
+    if "writer" in envelope:
+        cleaned = {k: v for k, v in envelope.items() if k != "writer"}
+        return {**metadata, STREAM_META_KEY: cleaned}
+    return metadata
 
 
 def _validate_rating_score(rating: Optional[str], score: Optional[int]) -> None:

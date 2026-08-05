@@ -601,6 +601,29 @@ export const MessageBubble = ({
               )}
             </div>
           )}
+          {/* 送出失敗要說在使用者自己那顆氣泡上 —— 出問題的是這則訊息,
+              只在下面的回答氣泡講,使用者不會知道自己的話怎麼了。
+              ⚠ 文案在 runtime/reservedTurn.js:已經落庫的訊息,任何介面
+              都不得描述成沒有存到。 */}
+          {msg.persistError && (
+            <div
+              role="alert"
+              data-testid="message-persist-error"
+              style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                borderRadius: "var(--radius)",
+                border: "1px solid var(--warning, var(--danger))",
+                background: "color-mix(in oklch, var(--danger) 8%, var(--bg))",
+                color: "var(--danger)",
+                fontSize: 13,
+                lineHeight: 1.55,
+                textAlign: "left",
+              }}
+            >
+              {msg.persistError}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -749,6 +772,26 @@ export const MessageBubble = ({
                 {msg.persistError}
               </div>
             )}
+            {/* 半截的答案。停止/出錯/連線中斷都會留下部分內容 —— 把它當成
+                完整答案呈現,就是本專案第四條教訓(靜默成功比報錯危險)的
+                翻版:使用者會以為這就是模型的完整回答。 */}
+            {!msg.streaming && msg.incompleteNotice && (
+              <div
+                role="status"
+                data-testid="message-incomplete-notice"
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  borderRadius: "var(--radius)",
+                  border: "1px dashed var(--warning, var(--muted))",
+                  color: "var(--muted-fg, var(--muted))",
+                  fontSize: 13,
+                  lineHeight: 1.55,
+                }}
+              >
+                {msg.incompleteNotice}
+              </div>
+            )}
             {!msg.streaming && msg.confidence != null && (
               <div style={{ marginTop: 6 }}>
                 <ConfidenceChip confidence={msg.confidence} />
@@ -804,8 +847,15 @@ export const MessageBubble = ({
       )}
 
       {/* Actions stay available after a mid-stream failure (text and/or
-          error) so the user can regenerate without retyping. */}
-      {!msg.streaming && (msg.text || msg.error) && (
+          error) so the user can regenerate without retyping.
+
+          ⚠ incompleteNotice 也算。一列「預留了但沒寫成」的空白回答(寫它的
+          分頁被作業系統殺掉,pagehide 那個請求送不出去)text 和 error 都是空
+          的,整條動作列就不畫 —— 使用者面前只剩一顆什麼都沒有的氣泡:那一列
+          既寫不進去(伺服器 409),畫面上也沒有任何按鈕。「重新產生」是這種列
+          的出口:它在同一則問題底下長出一列新的回答,完全不必去動卡住的那一
+          列(伺服器行為見 test_a_stuck_reserved_row_can_still_be_answered...)。 */}
+      {!msg.streaming && (msg.text || msg.error || msg.incompleteNotice) && (
         <div
           className="anila-msg-actions"
           style={{

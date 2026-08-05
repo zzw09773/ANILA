@@ -79,8 +79,19 @@ export function hasBranch(msg) {
  */
 export function applyServerPath(prevList, serverMapped, convId) {
   const clientOnly = new Map();
+  // 這個分頁此刻正在寫的那幾列(dbId → 本地氣泡)。
+  //
+  // ⚠ 先落庫再串流之後,「已經在伺服器上、但這個分頁還在往裡面寫」的助理
+  // 訊息是常態:預留列在串流開始前就存在,排隊中的那幾輪也一樣。這裡若照單
+  // 全收伺服器的版本,本地氣泡就被換成另一個 id 的物件,串流中的
+  // updateMsg(convId, assistantId, …) 從此打在一個不存在的 id 上 —— 畫面停
+  // 在「這則回答還沒有寫完」而且一個字都不再長出來,直到使用者重整。
+  // (2026-08-05 真 Chrome 實測:編輯重問之後緊接著插話就會出現。)
+  // 不變式:伺服器的快照不得覆蓋這個分頁正在寫的那一列。
+  const liveLocal = new Map();
   for (const m of prevList || []) {
     if (typeof m?.dbId === "number") {
+      if (m.streaming) liveLocal.set(m.dbId, m);
       clientOnly.set(m.dbId, {
         piiHits: m.piiHits,
         explicitAgents: m.explicitAgents,
@@ -90,6 +101,16 @@ export function applyServerPath(prevList, serverMapped, convId) {
     }
   }
   const fromServer = (serverMapped || []).map((sm) => {
+    const live = liveLocal.get(sm.dbId);
+    if (live) {
+      // 正在寫的那一列一律留本地版本。conversationId 的重新標記是防禦性的:
+      // live 氣泡本來就取自這個對話的清單,理應已經等於 convId ——
+      // 所以改與不改在行為上量不出差別,不值得為它寫測試。留著只是不讓
+      // 「清單不會搬家」變成一個沒人擋的隱含假設。
+      return live.conversationId === convId
+        ? live
+        : { ...live, conversationId: convId };
+    }
     const preserved = clientOnly.get(sm.dbId) || {};
     const next = { ...sm, conversationId: convId };
     if (preserved.piiHits !== undefined) next.piiHits = preserved.piiHits;
@@ -221,6 +242,12 @@ export function reconcilePersistedAssistant(saved, fallbackParentId = null) {
 /**
  * Orchestrate user-persist → stream → assistant-persist. When user persist
  * aborts, stream and appendAssistant are never called.
+ *
+ * ⚠ 送出路徑已經不走這裡。這個順序把助理訊息留到串流「之後」才 append,
+ * 所以整段串流期間 active leaf 都停在使用者訊息上 —— 使用者中途插話時,
+ * 第二則使用者訊息會掛成第一則的同層兄弟,第一則的答案就被 400 擋掉而
+ * 消失。現行送出路徑是 runtime/reservedTurn.js 的「先預留再串流」。
+ * 這裡保留給尚未搬遷的呼叫端;新程式不要用。
  */
 export async function runPersistedUserTurn({
   appendMessage,

@@ -271,19 +271,24 @@ describe("原始碼護欄: both callers wire reconcilePersistedAssistant", () =>
   const editBody = functionBody(appSrc, "handleEditUser");
   const regenBody = functionBody(appSrc, "regenerateMessage");
 
-  it("handleEditUser uses reconcile + surfaces !ok with persistError", () => {
-    expect(editBody).toMatch(/reconcilePersistedAssistant\s*\(/);
-    // Load-bearing line: the patch must actually be APPLIED — mutation
-    // dropping this is the original defect itself (dup bubble until F5).
-    expect(editBody).toMatch(
-      /updateMsg\(\s*convId\s*,\s*assistantId\s*,\s*reconciled\.patch\s*\)/,
-    );
-    // Branch polarity: success applies, failure surfaces.
-    expect(editBody).toMatch(/if \(reconciled\.ok\) \{/);
-    expect(editBody).toMatch(/persistError:\s*reconciled\.notice/);
-    expect(editBody).toMatch(/setRuntimeError\s*\(\s*reconciled\.error/);
-    // Backfill must land BEFORE the server reconciliation reads the list.
-    const backfillIdx = editBody.indexOf("reconciled.patch");
+  // ⚠ 2026-08-05:handleEditUser 不再「串流跑完才 append 助理訊息」——它改成
+  // 先落庫再串流(POST /branch-turn 一次交易建立分支的使用者訊息 ＋ 預留的助理
+  // 列),所以這條路徑上沒有 reconcilePersistedAssistant 可用。守的不變式沒有
+  // 變:**樂觀氣泡必須在 refreshActivePath 讀清單之前就帶著 dbId**,否則
+  // applyServerPath 會把它當成 pending tail 留著,畫面上出現兩則助理回答。
+  // 新結構其實更強:dbId 在串流「開始之前」就填好了。
+  // 行為面的守衛(掛載元件、真的跑一次編輯重問、數氣泡)在
+  // __tests__/reservedTurn.test.jsx 的 "edit and re-ask"。
+  it("handleEditUser backfills the reserved dbId before refreshActivePath", () => {
+    // 助理氣泡建立時就帶著預留列的 id。
+    expect(editBody).toMatch(/dbId:\s*reserved\.id/);
+    // 內容寫回那一列(不是 append 一則新的)。
+    expect(editBody).toMatch(/finalizeStreamedAssistant\s*\(/);
+    // 失敗要浮出來,不能靜默。
+    expect(editBody).toMatch(/persistError:\s*persisted\.notice/);
+    expect(editBody).toMatch(/setRuntimeError\s*\(\s*persisted\.error/);
+    // 順序:dbId 先落在氣泡上,refreshActivePath 才讀清單。
+    const backfillIdx = editBody.indexOf("dbId: reserved.id");
     const refreshIdx = editBody.indexOf("await refreshActivePath");
     expect(backfillIdx).toBeGreaterThanOrEqual(0);
     expect(refreshIdx).toBeGreaterThan(backfillIdx);
