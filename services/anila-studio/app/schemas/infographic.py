@@ -147,6 +147,10 @@ class InfographicJobStatus(BaseModel):
     preset: InfographicPreset | None = None
     chart_count: int | None = None
     error: str | None = None
+    # 與 state="done" 並存的軟警告 ── 跟 slide JobStatus 同一個欄位、
+    # 前端同一條算繪路徑。用在「有產出但已降級」的情形,例如檢索失敗
+    # 導致內容沒有文件依據。
+    warning: str | None = None
     # 兩個 download endpoint 的相對路徑 ── 前端拼上 host 即可直接 GET。
     # None 直到 state == "done" 才填上。
     download_urls: dict[str, str] | None = None

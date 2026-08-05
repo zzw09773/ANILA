@@ -18,6 +18,7 @@ def test_build_generation_prompt_includes_national_and_era():
         preset="教學投影片",
         extra_instructions=None,
         chunks=[],
+        retrieval_failed=False,
     )
     assert "中華民國" in system
     assert "民國114年" in system

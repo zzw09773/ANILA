@@ -66,6 +66,9 @@ class InfographicJobRecord:
     pdf_path: str | None
     created_at: datetime
     updated_at: datetime
+    # Soft warning that coexists with done (e.g. retrieval failed, so the
+    # infographic shipped but isn't grounded). Same channel as slides.
+    warning: str | None = None
     # Slice 8b: control-plane passthrough, back-filled after artifact register.
     artifact_id: str | None = None
     classification_level: str | None = None
@@ -93,6 +96,7 @@ class InfographicJobRecord:
             preset=self.preset,
             chart_count=self.chart_count,
             error=self.error,
+            warning=self.warning,
             download_urls=download_urls,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
@@ -282,6 +286,7 @@ class InfographicJobUpdater:
         title: str | None = None,
         chart_count: int | None = None,
         error: str | None = None,
+        warning: str | None = None,
         html_path: str | None = None,
         pdf_path: str | None = None,
         artifact_id: str | None = None,
@@ -302,6 +307,8 @@ class InfographicJobUpdater:
                 patch["chart_count"] = chart_count
             if error is not None:
                 patch["error"] = error
+            if warning is not None:
+                patch["warning"] = warning
             if html_path is not None:
                 patch["html_path"] = html_path
             if pdf_path is not None:
@@ -321,8 +328,13 @@ class InfographicJobUpdater:
         chart_count: int,
         html_path: str,
         pdf_path: str,
+        warning: str | None = None,
     ) -> None:
-        """Convenience: terminal "done" state in one call."""
+        """Convenience: terminal "done" state in one call.
+
+        ``warning`` rides along so a degraded-but-usable result (e.g.
+        retrieval failed) lands as done+warning rather than a silent win.
+        """
         await self.set(
             state="done",
             step=JOB_STEP_DONE,
@@ -330,4 +342,5 @@ class InfographicJobUpdater:
             chart_count=chart_count,
             html_path=html_path,
             pdf_path=pdf_path,
+            warning=warning,
         )

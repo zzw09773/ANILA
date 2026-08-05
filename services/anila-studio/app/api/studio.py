@@ -94,6 +94,7 @@ from app.services.llm_json import (
     extract_json_object as _extract_json_object,
     loads_lenient as _loads_lenient,
 )
+from app.services.retrieval_status import RETRIEVAL_FAILED_WARNING
 from app.services.studio_config import (
     RENDERER_BASE_URL,
     SCHEMA_CORRECTION_PASSES,
@@ -177,6 +178,8 @@ async def _generate_validated_spec(
     extra_instructions: str | None,
     chunks: list[dict[str, Any]],
     images: list[dict[str, Any]] | None = None,
+    *,
+    retrieval_failed: bool,
 ) -> tuple[SlidesSpec, bool]:
     """LLM → JSON → SlidesSpec, retrying once on validation failure.
 
@@ -184,10 +187,15 @@ async def _generate_validated_spec(
     a synthetic safety-net deck explaining the failure to the user; the
     caller should skip vision QA (which would try to "fix" a deliberately
     minimal deck and might trigger another LLM call that also fails).
+
+    ``retrieval_failed`` is threaded straight to the prompt builder so an
+    empty ``chunks`` list caused by an error is never described to the
+    model as "the knowledge base had no match".
     """
 
     system, user_msg = _build_generation_prompt(
         collection_name, preset, extra_instructions, chunks, images=images,
+        retrieval_failed=retrieval_failed,
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
@@ -570,18 +578,33 @@ async def _run_pipeline(
     )
     chunks: list[dict[str, Any]] = []
     images: list[dict[str, Any]] = []
+    # Three outcomes, not two: hits / zero hits / failed. Only the third
+    # sets this flag — zero hits is a legitimate statement about the
+    # corpus and keeps the existing prompt copy.
+    retrieval_failed = False
     if not payload.skip_retrieval:
         try:
             chunks = await _retrieve_chunks(
                 bearer, payload.collection_id, seed_query,
             )
+            if not chunks:
+                logger.warning(
+                    "Studio retrieval returned 0 hits: collection=%s(id=%s) "
+                    "seed_query=%r — deck will be generated without context.",
+                    coll.name, payload.collection_id, seed_query[:80],
+                )
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001
-            # Retrieval is best-effort — see commentary on the
-            # original sync endpoint. Continue without context.
+            # Retrieval is best-effort — the deck still ships (that is
+            # the product contract; skip_retrieval is a supported mode).
+            # But the degradation is DECLARED, not swallowed: honest
+            # prompt copy for the model, warning on JobStatus for the
+            # user. The exception text stays in this operator log only.
+            retrieval_failed = True
             logger.warning(
-                "Studio retrieval failed (%s); generating without context.", e,
+                "Studio retrieval failed (%s); generating without context "
+                "and declaring it to the user.", e,
             )
         # Phase 5: image vector search runs alongside chunk search
         # so the LLM gets both kinds of context in one prompt. Empty
@@ -623,6 +646,7 @@ async def _run_pipeline(
         payload.extra_instructions,
         chunks,
         images=images,
+        retrieval_failed=retrieval_failed,
     )
     # ── Step 6.5: zh-CN → zh-TW post-processing ──
     # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
@@ -759,15 +783,24 @@ async def _run_pipeline(
             )
 
     # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
-    # Fallback deck is still a downloadable .pptx (so the user isn't
-    # left with a toast and nothing), but we surface a soft warning so
-    # the SPA doesn't present it as a clean win.
+    # Fallback deck / failed retrieval are still a downloadable .pptx (so
+    # the user isn't left with a toast and nothing), but we surface a soft
+    # warning so the SPA doesn't present it as a clean win. Both can fire
+    # in the same run — the user needs to know about both.
+    degradations = [
+        note
+        for note, fired in (
+            (RETRIEVAL_FAILED_WARNING, retrieval_failed),
+            (FALLBACK_DECK_WARNING, used_fallback),
+        )
+        if fired
+    ]
     await updater.mark_done(
         spec=spec,
         pptx_bytes=pptx_bytes,
         defects=final_defects,
         qa_passes=qa_passes,
-        warning=(FALLBACK_DECK_WARNING if used_fallback else None),
+        warning=("\n".join(degradations) or None),
     )
 
 

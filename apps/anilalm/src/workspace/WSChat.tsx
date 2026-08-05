@@ -26,11 +26,17 @@ import {
   nextTrimHitCount,
   type ChatMessage,
 } from '../api/chat'
-import { searchCollection, type SearchHit } from '../api/search'
+import { type SearchHit } from '../api/search'
+import {
+  buildSystemPrompt,
+  retrieveTurnContext,
+  RETRIEVAL_FAILED_META_KEY,
+  UNGROUNDED_NOTICE,
+  type RetrievalStatus,
+} from './retrieval'
 import { explainError } from '../api/client'
 import type { Message } from '../types'
 import { appendTranscript, useAsrInput } from '../asr/useAsrInput'
-import { COMMON_PREAMBLE } from '../generated/preamble'
 
 const FOLLOWUP_SUGGESTIONS = [
   '幫我整理這份文件的核心論點',
@@ -38,22 +44,9 @@ const FOLLOWUP_SUGGESTIONS = [
   '這份資料跟我的研究主題有什麼連結？',
 ] as const
 
-// Top-K and min-score for the per-turn retrieval. 5 hits with cosine ≥ 0.3
-// keeps the prompt under ~3KB even on chunky documents while filtering out
-// the long tail of weakly-related neighbors that just dilute the LLM's
-// attention. Dial up if users complain "the model didn't see X".
-const RAG_TOP_K = 5
-const RAG_MIN_SCORE = 0.3
-// Trim chunk content before injection so a single 8KB chunk doesn't
-// monopolise the prompt window. The model still gets enough to ground;
-// users who want the full text click the citation card to drill in.
-const RAG_CONTENT_LIMIT = 1200
-// ≈28k tokens（實測 ~1.6 chars/token）；gateway 對超過 32768 tokens 硬拒
-// （ContextWindowExceededError）。整段截斷、不切斷單一 chunk。
-const MAX_SYSTEM_PROMPT_CHARS = 45000
-
-// 共同前導（身分／語言／國家用語／紀年／要職／資料紀律）改由 SSOT 供應：
-// src/generated/preamble.ts（由 packages/anila-core 產生，勿在此複製文字）。
+// 檢索呼叫、三種結果的分類（命中／零命中／失敗）與 system prompt 文案
+// 都在 ./retrieval；共同前導（身分／語言／國家用語／紀年／要職／資料
+// 紀律）由 SSOT src/generated/preamble.ts 供應，勿在此複製文字。
 
 // 聊天模型一律來自部署設定；沒有可猜的預設值——內網不存在公雲模型名，
 // 缺設定要在送出時擋下並明講，不要默默打一個 404 的模型（設計文件 §4-3）。
@@ -81,6 +74,8 @@ interface ChatRow {
   createdAt: string
   streaming?: boolean
   citations?: Citation[]
+  /** Retrieval failed for this turn — the answer has no document backing. */
+  ungrounded?: boolean
 }
 
 export function WSChat({ flex }: WSChatProps) {
@@ -129,7 +124,9 @@ export function WSChat({ flex }: WSChatProps) {
             // Citations were stashed in metadata.citations when the
             // assistant turn was persisted; restore so the bubble's
             // citation cards reappear after a reload.
-            const meta = m.metadata as { citations?: Citation[] } | null
+            const meta = m.metadata as
+              | ({ citations?: Citation[] } & Record<string, unknown>)
+              | null
             return {
               id: `srv-${m.id}`,
               dbId: m.id,
@@ -137,6 +134,7 @@ export function WSChat({ flex }: WSChatProps) {
               content: m.content,
               createdAt: m.created_at,
               citations: Array.isArray(meta?.citations) ? meta.citations : undefined,
+              ungrounded: meta?.[RETRIEVAL_FAILED_META_KEY] === true,
             }
           })
         setMessages(rows)
@@ -167,99 +165,15 @@ export function WSChat({ flex }: WSChatProps) {
   }, [activeConversationId, conversations])
 
   /**
-   * Build the system prompt for a turn given retrieved hits.
-   *
-   * Three modes:
-   *   1. No indexed docs at all → "free-form chat" prompt.
-   *   2. Indexed docs but query returned no hits above min-score →
-   *      "you have docs but this query didn't match" prompt.
-   *   3. Hits available → standard RAG prompt with [N] citation markers
-   *      and trimmed content slabs.
-   *
-   * The model is told to cite as `[N]` and only use the supplied chunks.
-   * The citation cards in the UI map [N] → filename + chunk_key so the
-   * user can verify provenance.
+   * Prompt context for this turn. The prompt itself (four modes: no
+   * indexed docs / retrieval failed / zero hits / hits) lives in
+   * ./retrieval so it can be pinned by tests without mounting the panel.
    */
-  const buildSystemPrompt = useCallback(
-    (hits: SearchHit[]): string => {
-      const indexedCount = docs.filter((d) => d.doc.status === 'indexed').length
-      const collName = collection?.name ?? '未指定'
-
-      if (indexedCount === 0) {
-        return [
-          COMMON_PREAMBLE,
-          '',
-          '你是 ANILA LM 的研究助理。',
-          `知識庫名稱：「${collName}」。`,
-          '使用者尚未上傳已完成索引的文件，請依使用者輸入直接作答，',
-          '並提醒可上傳資料以獲得引用支撐的回答。',
-        ].join('\n')
-      }
-
-      if (hits.length === 0) {
-        return [
-          COMMON_PREAMBLE,
-          '',
-          '你是 ANILA LM 的研究助理。',
-          `當前知識庫：「${collName}」（共 ${indexedCount} 份已索引文件）。`,
-          '本次查詢在向量檢索中沒有命中相似度 ≥ 0.3 的段落。請：',
-          '1) 先告知使用者「已搜尋但無高相似度命中」，',
-          '2) 依你領域知識先給出嘗試性回答，並標註此回答未經文件支撐，',
-          '3) 建議使用者改寫問題或上傳更相關文件。',
-        ].join('\n')
-      }
-
-      const slabs = hits.map((h, i) => {
-        const n = i + 1
-        const trimmed =
-          h.content.length > RAG_CONTENT_LIMIT
-            ? h.content.slice(0, RAG_CONTENT_LIMIT) + '…'
-            : h.content
-        return `[${n}] 來源：${h.filename}（chunk ${h.chunk_key}，相似度 ${h.score.toFixed(3)}）\n${trimmed}`
-      })
-
-      // 從尾端整塊丟棄 chunk，直到 system prompt 不超過硬上限。
-      let kept = slabs
-      while (kept.length > 0) {
-        const chunkBlock = kept.join('\n\n')
-        const prompt = [
-          COMMON_PREAMBLE,
-          '',
-          '你是 ANILA LM 的研究助理，以使用者知識庫的段落為依據作答。',
-          `當前知識庫：「${collName}」。`,
-          '',
-          '以下是針對本次提問檢索到的相關段落（已依相似度排序）：',
-          '',
-          chunkBlock,
-          '',
-          '回答規則：',
-          `1) 僅根據上方 ${kept.length} 個段落作答；不要編造段落中沒有的資訊。`,
-          '2) 引用時用 [N] 標號（例如：「依據 [1]，...」），N 對應上方段落編號。',
-          '3) 段落不足以回答時，明確說「目前段落沒有提供 X 資訊」，不要硬湊。',
-          '4) 如使用者問的是檔案結構、條目順序之類的整體性問題，可彙整多個段落並交叉引用。',
-          '',
-          // 引用 few-shot：20B 級模型對格式的遵循靠範例不靠規則描述（設計文件 §4-4）。
-          '引用示範（僅供格式參考，內容一律以上方實際段落為準）：',
-          '問：測試結果有沒有達到規格要求？',
-          '答：依據 [1]，本次測試成功率為 93.3%，高於 [2] 規定的 90% 下限，符合規格要求。',
-          '',
-          // 語言指令句尾重複：長 context 下小模型會忘記開頭指令（recency，設計文件 §6-4）。
-          '請以繁體中文（台灣用語）回答。',
-        ].join('\n')
-        if (prompt.length <= MAX_SYSTEM_PROMPT_CHARS) return prompt
-        kept = kept.slice(0, -1)
-      }
-
-      // 單段就超長時退回無段落模式說明（仍帶共同前導）。
-      return [
-        COMMON_PREAMBLE,
-        '',
-        '你是 ANILA LM 的研究助理。',
-        `當前知識庫：「${collName}」。`,
-        '檢索段落過長無法放入上下文，請依領域知識作答並提醒使用者縮小範圍。',
-        '請以繁體中文（台灣用語）回答。',
-      ].join('\n')
-    },
+  const promptCtx = useMemo(
+    () => ({
+      collectionName: collection?.name ?? '未指定',
+      indexedCount: docs.filter((d) => d.doc.status === 'indexed').length,
+    }),
     [collection?.name, docs],
   )
 
@@ -324,24 +238,24 @@ export function WSChat({ flex }: WSChatProps) {
       abortRef.current = new AbortController()
 
       // 3) Retrieve top-K chunks for grounding. Skip if no indexed docs;
-      // fall through to "free-form chat" prompt. Search failures are
-      // soft — log but proceed with empty hits so a temporarily down
-      // embedding service doesn't block chat entirely.
+      // fall through to "free-form chat" prompt. A failed search stays
+      // soft — it must not block chat when the embedding service is
+      // briefly down — but it is NOT reported as "no match": the status
+      // rides through to the prompt, the bubble and the stored metadata.
       const indexedDocs = docs.filter((d) => d.doc.status === 'indexed')
+      let retrievalStatus: RetrievalStatus = 'skipped'
       let hits: SearchHit[] = []
       if (indexedDocs.length > 0) {
-        try {
-          const { data } = await searchCollection(collection.id, text, {
-            topK: RAG_TOP_K,
-            minScore: RAG_MIN_SCORE,
-            signal: abortRef.current.signal,
-          })
-          hits = data.results
-        } catch (searchErr) {
-          // eslint-disable-next-line no-console
-          console.warn('[anilalm] search failed, falling back to no-RAG mode', searchErr)
-        }
+        const outcome = await retrieveTurnContext(
+          collection.id,
+          text,
+          abortRef.current.signal,
+        )
+        retrievalStatus = outcome.status
+        hits = outcome.hits
       }
+      // 檢索失敗 = 這一則回答沒有任何文件依據，使用者必須看得出來。
+      const ungrounded = retrievalStatus === 'failed'
 
       const history: ChatMessage[] = messages.map((m) => ({
         role: m.role,
@@ -366,7 +280,13 @@ export function WSChat({ flex }: WSChatProps) {
         const streamCitations = citationsFrom(streamHits)
         citations = streamCitations
         const llmMessages: ChatMessage[] = [
-          { role: 'system', content: buildSystemPrompt(streamHits) },
+          {
+            role: 'system',
+            content: buildSystemPrompt(
+              { status: retrievalStatus, hits: streamHits },
+              promptCtx,
+            ),
+          },
           ...history,
           { role: 'user', content: text },
         ]
@@ -381,7 +301,12 @@ export function WSChat({ flex }: WSChatProps) {
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === tempAssistantId
-                  ? { ...m, content: accumulated, citations: streamCitations }
+                  ? {
+                      ...m,
+                      content: accumulated,
+                      citations: streamCitations,
+                      ungrounded,
+                    }
                   : m,
               ),
             )
@@ -466,12 +391,20 @@ export function WSChat({ flex }: WSChatProps) {
 
       // 5) Persist assistant message → DB; citations ride in metadata
       // so a reload of the conversation re-renders the citation cards.
+      // The ungrounded flag rides along for the same reason: an
+      // ungrounded answer must still look ungrounded after a reload.
+      // Key comes from the same constant the reader above uses — nothing
+      // server-side validates this field, so one literal is all there is.
+      const persistedMeta: Record<string, unknown> = {}
+      if (citations.length > 0) persistedMeta.citations = citations
+      if (ungrounded) persistedMeta[RETRIEVAL_FAILED_META_KEY] = true
       const { data: asstMsg } = await appendMessage(convId, {
         role: 'assistant',
         content: finalText,
         latency_ms: latency,
         model_name: DEFAULT_MODEL,
-        metadata: citations.length > 0 ? { citations } : undefined,
+        metadata:
+          Object.keys(persistedMeta).length > 0 ? persistedMeta : undefined,
       })
 
       setMessages((prev) =>
@@ -485,6 +418,7 @@ export function WSChat({ flex }: WSChatProps) {
                 createdAt: asstMsg.created_at,
                 streaming: false,
                 citations: citations.length > 0 ? citations : undefined,
+                ungrounded,
               }
             : m,
         ),
@@ -514,7 +448,8 @@ export function WSChat({ flex }: WSChatProps) {
     collection,
     activeConversationId,
     messages,
-    buildSystemPrompt,
+    docs,
+    promptCtx,
     upsertConversation,
     setActiveConversationId,
     navigate,
@@ -851,7 +786,10 @@ export function WSChat({ flex }: WSChatProps) {
   )
 }
 
-function ChatBubble({ row }: { row: ChatRow }) {
+// Exported for the ungrounded-notice regression test — rendering the
+// bubble is the only way to prove the user can SEE that a turn was
+// answered without any document backing.
+export function ChatBubble({ row }: { row: ChatRow }) {
   const { t } = useTheme()
   // #3: clicking a [N] marker in the answer scrolls to + flashes the matching
   // citation card (scoped to this bubble so duplicate [1]s across messages
@@ -912,6 +850,26 @@ function ChatBubble({ row }: { row: ChatRow }) {
         <Icon name="sparkle" size={14} stroke={t.accent} />
       </div>
       <div ref={bubbleRef} style={{ flex: 1, minWidth: 0 }}>
+        {/* 檢索失敗的回答長得跟有根據的回答一模一樣 —— 這條就是唯一
+            的差別，所以放在內容上方、用 role="alert" 讓輔助科技也讀得到。*/}
+        {row.ungrounded && (
+          <div
+            role="alert"
+            data-ungrounded="true"
+            style={{
+              marginBottom: 8,
+              padding: '7px 11px',
+              borderRadius: 8,
+              background: t.surface2,
+              border: `1px solid ${t.warning}`,
+              color: t.text,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+            }}
+          >
+            {UNGROUNDED_NOTICE}
+          </div>
+        )}
         {row.streaming && row.content === '' ? (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: t.textMuted }}>
             <Spinner size={12} /> 檢索 + 思考中...

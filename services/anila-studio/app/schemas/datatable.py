@@ -212,6 +212,11 @@ class DatatableJobStatus(BaseModel):
     row_count: int | None = None
     column_count: int | None = None
     error: str | None = None
+    # Soft warning that coexists with state="done" — same channel (and
+    # same SPA rendering path) as the slides JobStatus field. Set when
+    # the table shipped but is degraded, e.g. retrieval failed so the
+    # content is not grounded in the user's documents.
+    warning: str | None = None
     # Three artifact formats — populated only when state == "done". Keys:
     #   "html" → /api/datatables/jobs/{id}/download/html
     #   "csv"  → /api/datatables/jobs/{id}/download/csv

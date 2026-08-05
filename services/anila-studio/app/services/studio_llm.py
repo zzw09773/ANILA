@@ -37,6 +37,7 @@ from app.clients.csp_client import (
 )
 from app.generated_preamble import ERA_RULES, NATIONAL_TERMINOLOGY
 from app.services.llm_json import extract_json_object
+from app.services.retrieval_status import RETRIEVAL_FAILED_PROMPT_NOTE
 from app.services.studio_config import SLIDES_LLM_MODEL, VISION_LLM_MODEL
 
 logger = logging.getLogger(__name__)
@@ -68,8 +69,20 @@ def build_generation_prompt(
     extra_instructions: str | None,
     chunks: list[dict[str, Any]],
     images: list[dict[str, Any]] | None = None,
+    *,
+    retrieval_failed: bool,
 ) -> tuple[str, str]:
     """Compose (system, user) prompts for the slide-deck LLM call.
+
+    ``retrieval_failed=True`` means the retrieval call errored rather
+    than returning nothing. An empty ``chunks`` list then does NOT mean
+    "the knowledge base had no match", and the prompt must not say so —
+    see ``app.services.retrieval_status``.
+
+    Required keyword, deliberately without a default: ``False`` is the
+    value that reinstates the original defect, so a caller who forgets
+    it must fail at the call rather than quietly tell the model that the
+    search ran and found nothing.
 
     Phase 3 expands the prompt with:
       * theme selection (5 options, tone-based; palette deprecated)
@@ -373,6 +386,8 @@ def build_generation_prompt(
             )
             parts.append(c["content"])
             parts.append("")
+    elif retrieval_failed:
+        parts.append(RETRIEVAL_FAILED_PROMPT_NOTE.format(where="speaker_notes"))
     else:
         parts.append(
             "（本次未檢索到相關段落；請依使用者輸入直接發揮，"

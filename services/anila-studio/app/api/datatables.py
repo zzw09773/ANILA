@@ -72,6 +72,10 @@ from app.services.llm_json import (
     extract_json_object as _extract_json_object,
     loads_lenient as _loads_lenient,
 )
+from app.services.retrieval_status import (
+    RETRIEVAL_FAILED_PROMPT_NOTE,
+    RETRIEVAL_FAILED_WARNING,
+)
 from app.services.studio_text_normalizer import strip_latex
 
 
@@ -149,8 +153,16 @@ def _build_prompt(
     extra_instructions: str | None,
     target_columns: list[str] | None,
     chunks: list[dict[str, Any]],
+    retrieval_failed: bool,
 ) -> tuple[str, str]:
     """Build (system, user) messages for the LLM.
+
+    ``retrieval_failed=True`` means the search errored instead of coming
+    back empty; an empty ``chunks`` list then says nothing about the
+    corpus and the prompt must not claim it does (see
+    ``app.services.retrieval_status``). Required, without a default —
+    ``False`` is the value that reinstates the defect, so forgetting it
+    must break the call rather than the copy.
 
     The system message locks the response shape (JSON only, no fences,
     no preamble). The user message carries the preset hint, extra
@@ -199,10 +211,15 @@ def _build_prompt(
         "}"
     )
 
+    empty_chunks_block = (
+        RETRIEVAL_FAILED_PROMPT_NOTE.format(where="notes")
+        if retrieval_failed
+        else "（無檢索結果 — 你可以基於 collection 名稱 + preset 給出合理的空白範本,並在 notes 註明資料來源不足。）"
+    )
     chunks_block = "\n\n".join(
         f"[{i + 1}] {c.get('filename', '<unknown>')}\n{c.get('content', '')}"
         for i, c in enumerate(chunks)
-    ) or "（無檢索結果 — 你可以基於 collection 名稱 + preset 給出合理的空白範本,並在 notes 註明資料來源不足。）"
+    ) or empty_chunks_block
 
     target_cols_block = (
         f"使用者希望的欄位(僅供參考,你可以增刪): {', '.join(target_columns)}"
@@ -284,6 +301,7 @@ async def _generate_validated_spec(
     collection_name: str,
     payload: GenerateDatatableRequest,
     chunks: list[dict[str, Any]],
+    retrieval_failed: bool,
 ) -> DatatableSpec:
     """LLM → JSON → DatatableSpec, retrying once on validation failure.
 
@@ -297,6 +315,7 @@ async def _generate_validated_spec(
         extra_instructions=payload.extra_instructions,
         target_columns=payload.target_columns,
         chunks=chunks,
+        retrieval_failed=retrieval_failed,
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
@@ -441,6 +460,9 @@ async def _run_pipeline(
             parts.append(payload.extra_instructions.strip())
         seed_query = " · ".join(parts)
     chunks: list[dict[str, Any]] = []
+    # hits / zero hits / failed are three different outcomes. Only the
+    # third sets this flag — zero hits is a real answer about the corpus.
+    retrieval_failed = False
     try:
         hits = await search_chunks(
             payload.collection_id,
@@ -481,8 +503,13 @@ async def _run_pipeline(
                 coll.name, payload.collection_id, seed_query[:80], MIN_SCORE,
             )
     except Exception as exc:  # noqa: BLE001 — retrieval is best-effort
+        # Best-effort means the table still ships, NOT that the failure
+        # is hidden: the prompt stops claiming "0 hits" and the job
+        # status carries a warning. Exception text stays in this log.
+        retrieval_failed = True
         logger.warning(
-            "Datatable retrieval failed (%s); generating without context.", exc,
+            "Datatable retrieval failed (%s); generating without context "
+            "and declaring it to the user.", exc,
         )
 
     # ── generate ──
@@ -492,6 +519,7 @@ async def _run_pipeline(
         collection_name=coll.name,
         payload=payload,
         chunks=chunks,
+        retrieval_failed=retrieval_failed,
     )
 
     # ── normalize ──
@@ -529,6 +557,9 @@ async def _run_pipeline(
             "csv": csv_path,
             "xlsx": xlsx_path,
         },
+        # Soft warning coexisting with done: the table exists, it just
+        # isn't grounded in the user's documents.
+        warning=(RETRIEVAL_FAILED_WARNING if retrieval_failed else None),
     )
 
 
