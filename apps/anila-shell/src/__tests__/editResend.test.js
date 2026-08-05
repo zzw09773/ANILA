@@ -7,6 +7,12 @@
 // a call-site regression (reintroducing `trimmed === userMsg.text`) cannot hide
 // behind a green helper suite.
 
+// @source-text-guard — 本檔含「讀原始碼 + toContain」的字串比對測試。
+// 這類斷言只證明某段文字還在檔案裡,**不證明它在執行時會發生**:
+// 呼叫端整個被繞過、狀態沒接上、時序錯了,它照樣綠。
+// 它們擋的是「整段被刪掉」,不能當成行為覆蓋率。
+// 對應的行為測試在 src/__tests__/orchestrator*.test.jsx。
+
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup, screen, fireEvent } from "@testing-library/react";
 import React from "react";
