@@ -8,13 +8,14 @@ Proves the three invariants without touching the live platform DB:
 2. Retrieval excludes non-designated source models; pending-recompute
    count is correct.
 3. Designating a model with native_dim > 4000 surfaces a truncation
-   warning; pad_from ranking equality lives in anila-core tests.
+   warning — now proved against the live endpoint in
+   ``test_platform_embedding_designation.py``; pad_from ranking equality
+   lives in anila-core tests.
 
 Mutants documented per test.
 """
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import httpx
@@ -205,52 +206,13 @@ def test_memory_retrieve_sql_filters_by_source_model():
 
 
 # ── Invariant 3 (API warning) ────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_set_platform_embedding_warns_when_native_above_4000(monkeypatch, db):
-    """Designating a >4000-d model must surface truncation_warning.
-
-    Mutant: omit the warning when truncates — response has no key and
-    the UI cannot tell the operator.
-    """
-    from app.api import models as models_api
-
-    row = _add_embedding(db, name="nvidia/nv-embed-v2", designated=False)
-
-    async def fake_probe(model):
-        return 4096
-
-    monkeypatch.setattr(models_api, "_probe_embedding_native_dim", fake_probe)
-
-    admin = SimpleNamespace(id=1, username="admin", role="admin")
-
-    # Bypass FastAPI Depends by calling the coroutine body pieces:
-    # clear + set designation the same way the endpoint does, then
-    # build the warning payload.
-    from anila_core.memory.long_term import EMBED_DIM
-
-    native_dim = await fake_probe(row)
-    (
-        db.query(ModelRegistry)
-        .filter(ModelRegistry.is_platform_embedding.is_(True))
-        .update({"is_platform_embedding": False}, synchronize_session=False)
-    )
-    row.is_platform_embedding = True
-    row.embedding_native_dim = native_dim
-    db.commit()
-    db.refresh(row)
-
-    truncates = native_dim > EMBED_DIM
-    assert truncates is True
-    truncation_warning = (
-        f"此模型原生維度為 {native_dim}，超過 pgvector halfvec HNSW 上限 "
-        f"{EMBED_DIM}，寫入時會截斷尾端 {native_dim - EMBED_DIM} 維。"
-        "這是資料庫限制，不是設定錯誤。"
-    )
-    assert "截斷" in truncation_warning
-    assert str(EMBED_DIM) in truncation_warning
-    assert row.embedding_native_dim == 4096
-    assert row.is_platform_embedding is True
-    # silence unused
-    assert admin.role == "admin"
+#
+# Lives in ``test_platform_embedding_designation.py`` now, against the real
+# ``POST /api/models/{id}/set-platform-embedding`` endpoint.
+#
+# What used to be here was a tautology: it never called the endpoint. It
+# re-ran the designation UPDATE by hand, then built the truncation warning
+# string itself and asserted on its own literal. Replacing the production
+# ``set_platform_embedding`` with a function that only raises left this
+# file entirely green — the test could not observe the endpoint at all,
+# so no change to it could ever be caught here.

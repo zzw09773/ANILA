@@ -1617,6 +1617,58 @@ def get_platform_embedding(
     }
 
 
+_STRANDED_NAMES_SHOWN = 5
+
+
+def _collections_not_indexed_under(db: Session, designated_name: str) -> list[str]:
+    """Active collections whose vectors a given embedding model cannot retrieve.
+
+    Reads ``ingestion_collections.embedding_model`` — the platform's own
+    per-collection record of which model produced that collection's
+    vectors. Retrieval filters chunks on exactly that provenance, so any
+    collection whose recorded model differs from ``designated_name`` is a
+    collection that will answer nothing once ``designated_name`` is the
+    designation.
+
+    This is a question about the **state of the corpus**, not about the
+    shape of the transition, and that distinction is the whole point.
+    The previous version compared the incoming model against whatever
+    ``resolve_platform_embedding`` returned beforehand, which silently
+    lost the warning for an ordinary operator sequence: deactivating the
+    old model first clears ``is_platform_embedding`` (``deactivate_model``
+    below), so the "previous" name resolved to the soft fallback — often
+    the very model being designated — and the comparison came out equal
+    while the corpus was every bit as stranded. Asking the collections
+    gives the same answer whichever order the operator worked in.
+
+    ``ingestion_collections`` carries no row-level security (unlike
+    ``document_chunks``), so an unscoped admin session sees every row and
+    the count is honest. One indexed query; cost tracks the number of
+    collections, not the number of chunks.
+    """
+    from sqlalchemy import func
+
+    from app.models.ingestion import IngestionCollection
+
+    # Case-insensitive on purpose. This column DEFAULTs to
+    # ``nvidia/NV-embed-V2`` while the same model registers as
+    # ``nvidia/nv-embed-v2``, so a case-sensitive ``!=`` reports a
+    # default-valued collection as stranded against its own model. A
+    # warning that is wrong on the platform's most common configuration
+    # teaches the operator to ignore the warning.
+    rows = (
+        db.query(IngestionCollection.name)
+        .filter(
+            IngestionCollection.status == "active",
+            func.lower(IngestionCollection.embedding_model)
+            != func.lower(designated_name),
+        )
+        .order_by(IngestionCollection.id)
+        .all()
+    )
+    return [r.name for r in rows]
+
+
 @router.post("/{model_id}/set-platform-embedding")
 async def set_platform_embedding(
     model_id: int,
@@ -1628,6 +1680,20 @@ async def set_platform_embedding(
     Probes the live endpoint once to measure native dimension. When
     native > 4000 (pgvector halfvec HNSW ceiling) the response carries
     ``truncation_warning`` so the UI can say so plainly.
+
+    When any active collection is indexed under a different model, the
+    response also carries ``index_mismatch_warning`` and the offending
+    ``stranded_collections``. Retrieval filters chunks on the model that
+    produced them, so from the moment this call returns, everything
+    indexed under another model is unreachable. The operator is the only
+    person who can act on that, and this call is the moment they can
+    still act cheaply — telling them here beats letting a user discover
+    it as a knowledge base that answers nothing.
+
+    The check reads the corpus (``_collections_not_indexed_under``), not
+    the before/after pair, so it does not depend on the operator having
+    designated straight over the old model rather than deactivating it
+    first.
     """
     from anila_core.memory.long_term import EMBED_DIM
 
@@ -1642,6 +1708,17 @@ async def set_platform_embedding(
         raise HTTPException(
             status_code=400, detail="已停用的模型不能設為平台主 embedding"
         )
+
+    # What embed callers resolve to *right now* — the designated row, or
+    # the soft fallback when nobody has designated one yet. Either way it
+    # is the name existing vectors were written under, so it is the name
+    # this change strands. Captured as a plain str before any commit:
+    # the ORM instance behind it expires and we must not re-load it after
+    # the designation flips.
+    from app.services.platform_embedding import resolve_platform_embedding
+
+    _previous = resolve_platform_embedding(db)
+    previous_name: str | None = _previous.name if _previous is not None else None
 
     # Snapshot fields the probe needs, then release the pooled connection
     # before the outbound HTTP call (same posture as _embed_query).
@@ -1686,6 +1763,29 @@ async def set_platform_embedding(
             "這是資料庫限制，不是設定錯誤。"
         )
 
+    stranded = _collections_not_indexed_under(db, model.name)
+    has_stranded_collections = bool(stranded)
+    index_mismatch_warning = None
+    if stranded:
+        shown = "、".join(stranded[:_STRANDED_NAMES_SHOWN])
+        if len(stranded) > _STRANDED_NAMES_SHOWN:
+            shown += f"⋯（共 {len(stranded)} 個）"
+        revert_hint = (
+            f"把平台主 embedding 改回「{previous_name}」即可立刻恢復，不會動到資料。"
+            if previous_name and previous_name != model.name
+            else "把平台主 embedding 改回這些知識庫原本使用的模型即可立刻恢復。"
+        )
+        index_mismatch_warning = (
+            f"平台主 embedding 已設為「{model.name}」，"
+            f"但下列知識庫的索引是以其他模型建立的：{shown}。"
+            "檢索只會取用以現行模型建立索引的段落，"
+            "所以這些知識庫現在檢索不到任何內容——"
+            "它們在搜尋時會明確回報索引模型不一致，不會靜靜地回空結果。"
+            f"{revert_hint}"
+            "若確定要換模型，平台目前沒有重新索引的功能，"
+            "必須把這些知識庫裡的文件逐份刪除後重新上傳。"
+        )
+
     log_audit_event(
         db,
         actor=admin,
@@ -1695,18 +1795,30 @@ async def set_platform_embedding(
         detail=(
             f"設為平台主 embedding: {model.display_name} "
             f"(native_dim={native_dim}"
-            f"{', truncates' if truncates else ''})"
+            f"{', truncates' if truncates else ''}"
+            f"{f', 取代 {previous_name}' if previous_name and previous_name != model.name else ''}"
+            f"{f', {len(stranded)} 個知識庫檢索不到' if stranded else ''})"
         ),
         metadata={
             "native_dim": native_dim,
             "storage_dim": EMBED_DIM,
             "truncates": truncates,
+            "previous_embedding_model": previous_name,
+            "has_stranded_collections": has_stranded_collections,
+            "stranded_collections": stranded,
         },
         commit=True,
     )
     body = _build_response(model, caller=admin, db=db)
     body["truncation_warning"] = truncation_warning
     body["measured_native_dim"] = native_dim
+    # Only ``index_mismatch_warning`` goes back on the wire: the console
+    # renders it, and it carries the collection names and the remedy in
+    # its own text. ``stranded_collections`` / ``previous_embedding_model``
+    # were returned here and read by nobody — the same send-and-ignore
+    # shape this package exists to remove. The structured form lives in
+    # the audit metadata above, which is durable and queryable.
+    body["index_mismatch_warning"] = index_mismatch_warning
     return body
 
 

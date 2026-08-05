@@ -25,7 +25,7 @@ from typing import Any
 import asyncpg
 
 from anila_core.ingestion.chunking_plugins import get_chunker
-from anila_core.ingestion.errors import IngestionError, StoreError
+from anila_core.ingestion.errors import ChunkError, IngestionError, StoreError
 from anila_core.storage.adapters.pg_pool import PgPool
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
@@ -795,12 +795,65 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 params["_embeddings"] = []
         chunks = chunker.chunk(text, parse_meta, params)
         if not chunks:
-            await _update_document_status(
-                pool, document_id, "indexed",
-                chunk_count=0,
-                error_message=None,
+            # A document with zero chunks has nothing in the vector index
+            # and can never be retrieved, so reporting it as 'indexed' told
+            # the user the one thing that isn't true: the sidebar counted it
+            # under 「已索引」 and chat counted it as a source, while it
+            # contributed nothing to any answer.
+            #
+            # 'failed' is the right value by this file's own conventions,
+            # not a new one invented here:
+            #   * the status vocabulary is closed and rendered by a label
+            #     map elsewhere; an eighth value would render unlabelled.
+            #   * this branch already declines to call
+            #     ``_bump_collection_counters`` (the success path below does)
+            #     — the code already refuses to count this document, only
+            #     the status string disagreed.
+            #   * ``error_message`` exists to carry the user-facing reason
+            #     when status='failed'; this branch was passing None, i.e.
+            #     explicitly claiming there was nothing to report.
+            #
+            # Two things were silent here, not one. There was no log call
+            # at all on this path — the only trace was the string "no
+            # chunks produced" inside the returned dict, which lands in
+            # the arq job result and nowhere an operator looks. And the
+            # ``return`` skipped the job's terminal-state update, so the
+            # ingestion_jobs row stayed at status='running', progress 30.
+            # The SSE progress stream only closes on a terminal status
+            # and otherwise heartbeats to a 30-minute cap
+            # (services/csp/app/api/ingestion/jobs.py), so the uploader
+            # watched a spinner for half an hour and learned nothing.
+            # Settling the document row without settling the job row
+            # would leave the document saying 'failed' while the job
+            # still said 'running'.
+            #
+            # We do NOT raise: the pipeline itself did not malfunction, and
+            # raising would hand the job to Arq's retry policy to re-run a
+            # parse that will produce zero chunks again every time.
+            empty = ChunkError(
+                code="E_CHUNK_EMPTY",
+                retryable=False,
+                severity="warning",
+                user_message=(
+                    "這份文件沒有解析出任何可索引的文字內容，無法被檢索到。"
+                    "常見原因是純圖片的掃描檔或空白檔；"
+                    "請改用文字可選取的版本重新上傳。"
+                ),
+                details={"document_id": document_id},
             )
-            return {"chunk_count": 0, "warning": "no chunks produced"}
+            logger.warning(
+                "doc %s produced 0 chunks — recording %s instead of "
+                "'indexed'; a document indexed with nothing in it is "
+                "indistinguishable from a working one.",
+                document_id, empty.code,
+            )
+            await _update_document_status(
+                pool, document_id, "failed",
+                chunk_count=0,
+                error_message=empty.user_message,
+            )
+            await _record_job_failure(pool, arq_job_id, empty)
+            return {"chunk_count": 0, "error_code": empty.code}
 
         # Sprint 9 X / parent-child — two-pass persistence.
         #
