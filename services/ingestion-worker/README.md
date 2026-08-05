@@ -40,6 +40,49 @@ reresolve_collection_relations(collection_id)   # 重抽整個 collection 的關
 
 Arq 重試 / 逾時策略（`main.py`）：`max_tries=3`、`job_timeout=300`（秒）、`keep_result=3600`（讓 CSP 一小時內輪詢得到結果）。`on_startup` 開一個共享 `PgPool` + 建 `Embedder`，`on_shutdown` 收乾淨。
 
+### 治理首頁那盞燈是怎麼來的（維運看這段）
+
+沒有 HTTP health route，不代表沒有健康訊號。worker 用的是 **arq 的預設心跳**：每 3600 秒把一行狀態寫進 Redis 的 `arq:queue:health-check`，TTL = 3601 秒。CSP 的**服務健康總覽**同時看兩個訊號 —— 這把 key，以及 docker DNS 解不解得出 `ingestion-worker` 這個名字（**容器沒在跑就解不出來**）。兩個訊號交叉出四格，再加上兩種「問不到 Redis」的情形：
+
+| 名稱解析 | key | 卡片 | 什麼時候會看到 |
+|---|---|---|---|
+| 解得出 | 在 | 綠（`可連線`） | 正常運作中（包含正在解析大文件時） |
+| 解得出 | 不在 | 紅（`無法連線`） | 容器還在，但 process 卡死超過 3601 秒 |
+| 解不出 | 在 | 紅（`無法連線`） | **容器停了／崩了**，而且是在最近 3601 秒內 |
+| 解不出 | 不在 | 黃（`此部署未啟用`） | 這個部署沒起 ingestion-worker；**或**它已經消失超過 3601 秒 |
+| （任一） | 問不到 | 黃（`探測失敗`） | Redis 連不上，無從判斷 —— 先看 Redis 那張卡 |
+| （任一） | 沒答完 | 黃（`探測逾時`） | Redis 沒在 4 秒內回答；同樣是「問不到」，不是「它很好」 |
+
+**各狀態實際的偵測時間（這是系統真的做得到的數字，不是目標值）：**
+
+- **容器停掉 / 崩掉** → **下一次開啟總覽就是紅的**（DNS 記錄立刻消失，而 key 還在）。這是最常見的死法，也是唯一快的一格。
+- **容器還在跑但 process 卡死** → 最久 **3601 秒（約 1 小時）** 才翻紅，因為只有 key 過期能反映它。
+- **消失超過 3601 秒** → 退化成黃色「此部署未啟用」。到那時 key 也過期了，從 CSP 看出去，「早就不在」與「本來就沒部署」是同一件事，猜哪一個都是瞎猜。
+- **沒部署** → 一直是黃色，正確。
+
+> 📌 **計畫性停機也是紅的。** 你自己 `docker compose stop ingestion-worker` 之後，這張卡會紅**最多 3601 秒**才退成黃色的「此部署未啟用」。卡片分不出「你關的」跟「它掛的」——維護期間看到紅燈是預期行為，不用追。
+
+> ⚠ **`PDF_OCR_FALLBACK` 會吃掉這個保險。** 預設 `false`。一旦開成 `true`，抽不到文字的 PDF 會逐頁走 OCR／VLM，解析時間從幾十秒跳到接近 1800 秒等級 —— 3601 秒的餘裕會從約 40 倍縮到約 2 倍（驗收方量到）。**開這個旗標之前先重讀本節**，而且沒有任何測試會在你開它的時候提醒你。
+
+> ⚠ **為什麼心跳不調快。** 三個 handler 全部在 arq 的事件迴圈上做同步工作：`extract_text` 量到 400 頁 PDF 佔住迴圈 33–89 秒、1000 頁 81–103 秒（同一份程式碼，區間差異來自主機負載），而 `evaluate_strategies` 與 `reresolve_collection_relations` 是**逐份文件跑迴圈**（一個 collection 可以有上百份）。心跳的 TTL 一旦短於這個時間，**正在正常工作的 worker 就會被畫成死的** —— 而那正是這張卡最不能犯的錯。3601 秒蓋得住平台會收的任何文件（單檔上限 50 MB）。
+>
+> 要把心跳調快，前提是先把**每一個 handler 的每一條阻塞路徑**都搬離事件迴圈（清單見下），不是只搬 `ingest_document` 的 parse。`tests/test_worker_liveness.py` 擋著這件事。
+
+#### 事件迴圈上的同步工作（要動心跳前先把這張表清乾淨）
+
+> 這張表是 **2026-08-05 的一次盤點，不是保證**。它是人工掃出來的，沒有任何自動檢查會在有人新增一條阻塞路徑時提醒你 —— 動 handler 的人有責任同步更新它。第八條（`split_segments`）就是驗收補上的，我第一次盤點時漏了。
+
+| Handler | 位置 | 阻塞的東西 |
+|---|---|---|
+| `ingest_document` | `handlers.py` parse 段 | `open().read()` + `extract_text`（量到 33–102 秒） |
+| `ingest_document` | `handlers.py` chunk 段 | `chunker.chunk`（量到 0.03–0.6 秒） |
+| `ingest_document` | `handlers.py` semantic 前處理 | `SemanticChunker.split_segments`（934k 字量到 0.12 秒） |
+| `ingest_document` | `handlers.py` `_uniform_color` | PIL `Image.open` + `convert` + 取樣 `getpixel`，**每張內嵌圖一次** |
+| `ingest_document` | `handlers.py` `_persist_images` | `open(...,"wb").write()` + `os.chmod`，**每張圖一次** |
+| `evaluate_strategies` | `evaluator.py` `_load_sample_docs` | `open().read()` + `extract_text`，**每份樣本文件一次** |
+| `evaluate_strategies` | `evaluator.py` `_chunk_doc` | `chunker.chunk` + `SemanticChunker.split_segments`，**每個策略 × 每份文件一次** |
+| `reresolve_collection_relations` | `handlers.py` 尾段迴圈 | `open().read()` + `extract_text`，**整個 collection 每份 indexed 文件一次** |
+
 ### `ingest_document` 管線（附進度 pct）
 
 | pct | 階段 | 說明 |

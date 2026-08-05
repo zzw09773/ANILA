@@ -71,7 +71,7 @@ class ServiceHealthEntry(BaseModel):
 
     name: str = Field(description="compose 服務名")
     label: str = Field(description="繁中顯示名")
-    kind: str = Field(description="self / database / cache / http")
+    kind: str = Field(description="self / database / cache / http / queue")
     status: str = Field(description="五態:unknown/healthy/degraded/unhealthy/disabled")
     reason: str = Field(description="bounded 原因碼,非自由文字")
     latency_ms: int

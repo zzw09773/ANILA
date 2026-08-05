@@ -723,7 +723,12 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 details={"storage_path": storage_path},
             )
 
-        # 1. Parse — pure function, fast.
+        # 1. Parse — pure function, but NOT fast, and NOT off the event loop:
+        # measured 2026-08-05 in this image, 33–89 s for a 400-page PDF and
+        # 81–103 s for 1000 pages (the spread is host load, not code), all of it
+        # occupying arq's poll loop. That is why the worker's liveness key is
+        # left on arq's hour-long default TTL — see README.md 〈治理首頁那盞燈〉
+        # and tests/test_worker_liveness.py.
         await _update_document_status(pool, document_id, "parsing")
         await _update_job(pool, arq_job_id, progress_pct=15, progress_message="parsing")
         with open(storage_path, "rb") as f:
@@ -762,7 +767,10 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                     document_id, e,
                 )
 
-        # 2. Chunk — bounded by document size, also fast.
+        # 2. Chunk — bounded by document size. Also synchronous and also on the
+        # poll loop, but two orders of magnitude cheaper than the parse above
+        # (measured 0.03–0.6 s; ``SemanticChunker.split_segments`` below adds
+        # ~0.12 s on a 934k-character document). "Fast" only relative to parsing.
         # Semantic strategies need embeddings up-front: pre-split into
         # candidate segments, embed each, then call ``chunk()`` with the
         # embeddings stuffed into params. This keeps the chunker

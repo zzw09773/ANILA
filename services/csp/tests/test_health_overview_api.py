@@ -20,8 +20,12 @@ import os
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
+import asyncio
 import re
+from pathlib import Path
+from urllib.parse import urlsplit
 
+import httpx
 import pytest
 from sqlalchemy.orm import Session
 
@@ -451,3 +455,297 @@ def test_outbound_probes_do_not_receive_the_request_db(client, db: Session, monk
     for name in ("redis", "nginx", "router", "ingestion-worker", "anila-studio", "pptx-renderer"):
         assert name in seen
         assert seen[name] is None, f"{name} must not receive the request db"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 2026-08-05:三個「訊號說謊」的回歸鎖
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 這張卡是單人維運者判斷「平台還好嗎」的唯一畫面,所以它往兩個方向說謊都是
+# 致命的:把壞的畫成綠(管理者不知道要動手)、把好的畫成紅(卡片天天喊狼,
+# 三天後沒人看,等於這個功能沒做)。下面三個測試各鎖一個當天量到的謊,而且
+# 都驗行為 —— 只斷言常數長什麼樣的測試,把 production 改回去它照樣綠。
+
+
+class _FakeResponse:
+    """替身回應。探測只看 ``status_code``,所以這裡也只有它。"""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _FakeAsyncClient:
+    """替身 httpx 客戶端;``handler(url, headers)`` 扮演被探測的那個服務。"""
+
+    def __init__(self, handler, **kwargs) -> None:
+        self._handler = handler
+        self.kwargs = kwargs
+
+    async def __aenter__(self) -> "_FakeAsyncClient":
+        return self
+
+    async def __aexit__(self, *exc_info) -> bool:
+        return False
+
+    async def get(self, url, headers=None):
+        return self._handler(url, dict(headers or {}))
+
+
+class _FakeRedis:
+    """替身 redis:只實作探測用得到的 ``exists`` 與關閉。"""
+
+    def __init__(self, keys, *, boom: bool = False, timeout: bool = False) -> None:
+        self._keys = set(keys)
+        self._boom = boom
+        self._timeout = timeout
+        self.asked: list[str] = []
+        self.closed = False
+
+    async def exists(self, key):
+        self.asked.append(key)
+        if self._timeout:
+            # 與 ``asyncio.wait_for`` 逾時打到同一個 except 分支。
+            raise asyncio.TimeoutError
+        if self._boom:
+            raise ConnectionError("redis 連不上")
+        return 1 if key in self._keys else 0
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _RecordingResolves:
+    """``_resolves`` 的替身,**會記下被問的是哪個名字**。
+
+    只回傳常數的 lambda 有一個致命破綻:``_probe_queue_worker`` 把
+    ``_resolves(name, 0)`` 改成 ``_resolves("redis", 0)`` 也照樣全綠 —— 而
+    production 裡 ``redis`` 永遠解得出來,於是那一維被釘死在 True,**停掉的
+    worker 會變綠燈**,正好是這一輪要殺的那個謊。所以問了誰必須被斷言。
+    """
+
+    def __init__(self, answer: bool) -> None:
+        self._answer = answer
+        self.hosts: list[str] = []
+
+    def __call__(self, host, port) -> bool:
+        self.hosts.append(host)
+        return self._answer
+
+
+def _install_fake_http(monkeypatch, handler) -> None:
+    """換掉探測用的 httpx 客戶端,並讓 DNS 預檢一律通過。
+
+    DNS 也要換:測試機沒有 compose 網路,``_resolves`` 會回 False,探測會在
+    碰到替身之前就短路成 ``not_deployed`` —— 那樣測到的不是我們要測的東西。
+    """
+    monkeypatch.setattr(
+        health_checker.httpx,
+        "AsyncClient",
+        lambda **kwargs: _FakeAsyncClient(handler, **kwargs),
+    )
+    monkeypatch.setattr(health_checker, "_resolves", lambda host, port: True)
+
+
+def _is_anila_host_allowlist() -> set[str]:
+    """從 ``infra/nginx/anila.conf`` 讀出 ``$is_anila_host`` 的字面 host。
+
+    設定檔是真相,測試去讀它,而不是在測試裡再抄一份會靜默分歧的名單
+    (同 ``test_nginx_upload_exposure`` 的姿態)。wildcard regex 那條不取 ——
+    探測要帶的是一個確定的字面 host。
+    """
+    conf = (
+        Path(__file__).resolve().parents[3] / "infra" / "nginx" / "anila.conf"
+    ).read_text(encoding="utf-8")
+    block = re.search(r"map \$host \$is_anila_host \{(.*?)\n\}", conf, re.DOTALL)
+    assert block, "anila.conf 找不到 $is_anila_host map"
+    return set(re.findall(r'"([^"]+)"\s+1;', block.group(1)))
+
+
+def test_router_card_is_green_only_when_the_router_answered_about_itself(monkeypatch):
+    """① router:404 不是綠燈。
+
+    2026-08-05 量到:探測目標是 ``/ready``,router 根本沒有這條路徑,回 404;
+    而舊的 ``<500 → healthy`` 把它畫成綠燈。也就是說總覽從來沒問過 router
+    它好不好,卻一路說它好。
+
+    替身 router 只有 ``/health`` 回 200,其餘一律 404:把探測目標改回任何
+    router 沒有的路徑,第一段就紅;把綠燈門檻放寬回 ``<500``,第二段就紅。
+    """
+    asked: list[str] = []
+
+    def only_health_answers(url, headers):
+        path = urlsplit(url).path
+        asked.append(path)
+        return _FakeResponse(200 if path == "/health" else 404)
+
+    _install_fake_http(monkeypatch, only_health_answers)
+    result = asyncio.run(health_checker.probe_base_service("router"))
+
+    assert (result.status, result.reason) == ("healthy", PROBE_OK)
+    assert asked == ["/health"], f"探測沒去問 router 自己的健康端點:{asked}"
+
+    # 同一支探測拿到 404 時**絕不可以**是綠燈 —— 那是「有東西在答話」,
+    # 不是「這個服務回答了關於它自己健康的問題」。
+    _install_fake_http(monkeypatch, lambda url, headers: _FakeResponse(404))
+    not_found = asyncio.run(health_checker.probe_base_service("router"))
+
+    assert not_found.status == "degraded"
+
+
+def test_ingestion_worker_liveness_comes_from_the_queue_not_an_http_port(monkeypatch):
+    """② ingestion-worker:別去敲一個它從來沒開過的 port。
+
+    2026-08-05 量到:它是 arq queue worker,``infra/compose/platform.yml`` 沒
+    給它 ports,8081 / 8080 / 8000 一律 connection refused。舊探測因此永遠紅,
+    而 ``aggregate_health`` 取最差 → **整張總覽永遠紅**。
+
+    真訊號是 worker 自己 psetex 進 redis 的 arq health-check key(TTL =
+    ``WorkerSettings.health_check_interval`` + 1s)。四段:key 在 → 綠;
+    key 過期 → 紅(所以**不是**一律綠,死掉的 worker 分得出來);redis 連不上
+    → unknown;redis 逾時 → degraded。後兩段都不是綠 —— 「問不到」絕不能被
+    當成「它很好」。把 ``_ARQ_HEALTH_CHECK_KEY`` 改成任何別的字,第一段就紅。
+    """
+    import redis.asyncio as aioredis
+
+    _install_fake_http(
+        monkeypatch,
+        lambda url, headers: pytest.fail(f"佇列工作者不該被 HTTP 探測:{url}"),
+    )
+    assert "ingestion-worker" not in health_checker._HTTP_PROBE_TARGETS
+
+    # 記名版的 _resolves:蓋掉 _install_fake_http 裝的常數 lambda,
+    # 這樣「問的是哪個名字」才有斷言(見 _RecordingResolves)。
+    resolver = _RecordingResolves(True)
+    monkeypatch.setattr(health_checker, "_resolves", resolver)
+
+    def _use(fake: _FakeRedis) -> None:
+        monkeypatch.setattr(aioredis, "from_url", lambda *a, **kw: fake)
+
+    # 刻意寫字面值,**不從 health_checker 讀那個常數**:讀常數的話,把常數改成
+    # 別的字時替身也跟著改,測試照樣綠 —— 那種測試等於不存在。這個字面值是
+    # 2026-08-05 從跑著的 worker 量到的(redis `KEYS *` 對得上),另一端由
+    # services/ingestion-worker/tests/test_worker_liveness.py 從 arq 那側釘住。
+    key = "arq:queue:health-check"
+
+    alive = _FakeRedis({key})
+    _use(alive)
+    reporting = asyncio.run(health_checker.probe_base_service("ingestion-worker"))
+    assert (reporting.status, reporting.reason) == ("healthy", PROBE_OK)
+    assert alive.asked == [key], f"探測問錯了 key:{alive.asked}"
+    assert alive.closed, "探測用的 redis 連線沒還回去"
+    assert resolver.hosts == ["ingestion-worker"], (
+        f"名稱解析問錯了對象:{resolver.hosts} —— 問任何一個「一定解得出來」的"
+        f"名字(例如 redis)等於把這一維釘死在 True,停掉的 worker 會變綠燈"
+    )
+
+    dead = _FakeRedis(set())
+    _use(dead)
+    expired = asyncio.run(health_checker.probe_base_service("ingestion-worker"))
+    assert expired.status == "unhealthy", "key 過期的 worker 必須紅,不能一律綠"
+
+    _use(_FakeRedis(set(), boom=True))
+    unknown = asyncio.run(health_checker.probe_base_service("ingestion-worker"))
+    assert unknown.status == "unknown", "redis 壞掉不該把帳算到 worker 頭上"
+    assert unknown.reason in PROBE_REASONS
+
+    # redis 逾時同樣不是綠燈 —— 逾時的時候我們根本沒讀到 key。
+    _use(_FakeRedis({key}, timeout=True))
+    slow = asyncio.run(health_checker.probe_base_service("ingestion-worker"))
+    assert (slow.status, slow.reason) == ("degraded", "timeout"), (
+        "redis 逾時被畫成綠燈 = 問不到卻說它很好"
+    )
+
+
+def test_queue_worker_reads_dns_and_key_together(monkeypatch):
+    """②b 名稱解析 ⊗ health key 的四格,一格都不能少。
+
+    2026-08-05 驗收抓到的謊:容器一停,docker DNS 記錄就跟著消失(本機量到
+    repo 有定義但沒起的 ``flux2-dev`` 直接 gaierror),於是「只用 DNS 判未部署」
+    會把**掛掉的 worker** 畫成黃色的「此部署未啟用」—— 而那一格的說明是
+    「不是故障」。管理者永遠不會看到紅燈。
+
+    加上 key 這一維才分得出來:名字沒了但 key 還在 = 它剛剛還活著,現在容器
+    不在了 → 紅,而且不必等 TTL。兩個訊號都不在,才是真的沒部署。
+    """
+    import redis.asyncio as aioredis
+
+    key = "arq:queue:health-check"
+    resolvers: list[_RecordingResolves] = []
+
+    def _scenario(*, resolves: bool, key_present: bool):
+        resolver = _RecordingResolves(resolves)
+        resolvers.append(resolver)
+        monkeypatch.setattr(health_checker, "_resolves", resolver)
+        monkeypatch.setattr(
+            aioredis,
+            "from_url",
+            lambda *a, **kw: _FakeRedis({key} if key_present else set()),
+        )
+        return asyncio.run(health_checker.probe_base_service("ingestion-worker"))
+
+    # 正在跑而且在回報。
+    assert _scenario(resolves=True, key_present=True).status == "healthy"
+
+    # 容器在,但超過一個 TTL 沒回報 —— 卡死。
+    assert _scenario(resolves=True, key_present=False).status == "unhealthy"
+
+    # 名字沒了但 key 還在 = 容器停了。這一格就是驗收抓到的那個謊。
+    stopped = _scenario(resolves=False, key_present=True)
+    assert (stopped.status, stopped.reason) == ("unhealthy", "unreachable"), (
+        "停掉的容器必須是紅的,不能畫成「此部署未啟用／不是故障」"
+    )
+
+    # 兩個都不在 = 這個部署沒有這個服務(或早就不在了),閉嘴比亂猜好。
+    absent = _scenario(resolves=False, key_present=False)
+    assert (absent.status, absent.reason) == ("unknown", "not_deployed")
+
+    # 四格都必須是**問 ingestion-worker 這個名字**問出來的。改成任何一個
+    # production 裡一定解得出來的名字(redis / csp / nginx…),這一維就被釘死
+    # 在 True,停掉的 worker 會變綠燈,而上面四格照樣全過。
+    for resolver in resolvers:
+        assert resolver.hosts == ["ingestion-worker"], (
+            f"名稱解析問錯了對象:{resolver.hosts}"
+        )
+
+
+def test_nginx_probe_speaks_a_host_the_allowlist_accepts(monkeypatch):
+    """③ nginx:port-80 的 Host allowlist 是修補,不是故障。
+
+    2026-08-05 量到:allowlist 合併後 ``Host: nginx`` 落在清單外 → nginx
+    ``return 444`` 直接關連線 → httpx 丟 ``RemoteProtocolError``。那是
+    ``ProtocolError`` 而**不是** ``NetworkError``,躲過既有的連線例外分支,
+    掉進 generic except → 卡片紅,但 nginx 好好的。
+
+    修法是探測改帶 allowlist 內的 Host,**不是**放寬 allowlist。替身 nginx
+    照量到的真實行為演。把探測的 Host header 拿掉,第一段就紅。
+    """
+    allowlist = _is_anila_host_allowlist()
+    # 這條同時鎖住「探測帶的 Host 必須真的在 nginx 那張 map 裡」:改成清單外
+    # 的字、或 map 裡把它拿掉,這裡就紅,而不是等到線上才發現卡片變紅。
+    probe_host = dict(health_checker._HTTP_PROBE_TARGETS["nginx"].headers).get("Host")
+    assert probe_host in allowlist, (
+        f"探測帶的 Host {probe_host!r} 不在 nginx 的 $is_anila_host 允許清單內"
+    )
+
+    def port_80_with_allowlist(url, headers):
+        if headers.get("Host") not in allowlist:
+            # nginx `return 444`:關連線,不送任何回應。
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response."
+            )
+        return _FakeResponse(301)
+
+    _install_fake_http(monkeypatch, port_80_with_allowlist)
+    result = asyncio.run(health_checker.probe_base_service("nginx"))
+
+    assert (result.status, result.reason) == ("healthy", PROBE_OK)
+
+    # 反向:沒帶清單內的 Host 依然進不來。這個修法沒有動到 allowlist 的性質
+    # —— 平台在攻擊者控制的 Host 之下仍然不可達。
+    without_host = asyncio.run(
+        health_checker._probe_http_service(
+            "nginx",
+            health_checker._HttpProbeTarget("http://nginx:80/", frozenset({301})),
+        )
+    )
+    assert without_host.status != "healthy"
