@@ -12,6 +12,15 @@ docker compose 取最後一筆 —— 剛照 runbook §3.1c 開起來的旗標�
     ` KEY=1`  `\tKEY=1`  `export KEY=1`  `KEY =1`  `KEY="1"`  `KEY='1'`
     `KEY=1 `  `KEY=1\r\n`(CRLF)  `KEY=1 # 註解`
 
+2026-08-05 補測「引號 × 行尾註解」的**組合**,compose 一樣讀成 1 ——
+
+    `KEY="1" # 註解`  `KEY='1' # 註解`  `export KEY="1" # 註解`
+    `KEY="1" # 註解` + CRLF
+
+而腳本當時一個都不警示(``get_env`` 要求整串頭尾都是引號),所以「腳本眼中的
+已設 == compose 眼中的已設」在這裡是破的。同一天把整組寫法對 `docker compose
+config` 做了差分,13 種寫法兩邊逐字相同。
+
 重複鍵取最後一行(`FOO=first` / `FOO=second` → second)。
 
 這裡不叫 docker:要釘的不變式是**腳本的行為**,而測試環境不保證有 daemon。
@@ -48,7 +57,10 @@ def _run(workdir: Path, runs: int = 2) -> subprocess.CompletedProcess:
     """在 workdir 上跑 preserve_flag `runs` 次(重跑部署腳本的樣子)。"""
     body = "\n".join(
         [
-            "set -uo pipefail",
+            # 真腳本第 23 行就是 `set -euo pipefail`。少一個 `-e`,「只在 errexit
+            # 底下才會現形」的行為(例如 preserve_flag 裡那個判偽的 `[ … ] &&`)
+            # 在這個 harness 裡就永遠看不見 —— 旗標要跟被測的腳本同一套。
+            "set -euo pipefail",
             'c() { printf "%s" "$2"; }',
             'warn() { echo "WARN:$*"; }',
             'die() { echo "DIE:$*" >&2; exit 1; }',
@@ -86,6 +98,14 @@ _ENABLED_WRITINGS = [
     pytest.param(f"{_KEY}=1 \n", id="trailing-space"),
     pytest.param(f"{_KEY}=1\r\n", id="crlf"),
     pytest.param(f"{_KEY}=1 # 為了 Triton\n", id="inline-comment"),
+    # ↓ 引號 × 行尾註解的**組合**。上面兩種各自單獨都已經對了,合起來卻漏:
+    #   `get_env` 舊版要求整串頭尾都是引號,`KEY="1" # 註解` 不符合 → 掉進
+    #   「只砍註解」那條 → 剩 `"1"` → 與 "1" 不等 → compose 讀成 1 而腳本不警示。
+    #   操作者照 runbook 開了旗標又寫了理由在後面,是很自然的寫法。
+    pytest.param(f'{_KEY}="1" # 為了 Triton\n', id="double-quoted-comment"),
+    pytest.param(f"{_KEY}='1' # 為了 Triton\n", id="single-quoted-comment"),
+    pytest.param(f'export {_KEY}="1" # 為了 Triton\n', id="export-quoted-comment"),
+    pytest.param(f'{_KEY}="1" # 為了 Triton\r\n', id="crlf-quoted-comment"),
 ]
 
 

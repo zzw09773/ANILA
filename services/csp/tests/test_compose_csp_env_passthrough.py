@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -107,3 +108,92 @@ def test_embedding_timeout_default_matches_the_application_default():
     # "${EMBEDDING_TIMEOUT:-30}" → 30
     fallback = value.split(":-", 1)[1].rstrip("}")
     assert int(fallback) == settings.EMBEDDING_TIMEOUT
+
+
+# ── 放寬旗標的「預設值」 ─────────────────────────────────────────────────────
+#
+# 上面那幾條只問「鍵在不在、插值有沒有貼錯」。少的那一半是**預設值**:
+# `${ANILA_ALLOW_GRPC_ENDPOINT:-0}` 改成 `:-1` 是一個字元,而 `.env` 沒有這個
+# 鍵時 compose 就會把 1 送進容器 —— 全新部署的預設姿態直接變寬。
+# 這一半原本零覆蓋。2026-08-05 實測:把 `ANILA_ALLOW_GRPC_ENDPOINT` 改成 `:-1`
+# 跑全套,紅的**只有**下面這條新測試 —— 換句話說,在它之前這個改動是全綠的。
+#
+# `intranet-deploy.sh` 的 `preserve_flag` 釘的是「腳本不會推翻現場的決定」,
+# 那是另一半;`.env` 缺鍵時真正生效的是 compose 這一行的 fallback,而部署
+# 腳本只在缺鍵時補一行 `KEY=0`,它保護不到「有人把 compose 的預設改掉」。
+#
+# 用前綴掃描而不是寫死清單:以後新增 `ANILA_ALLOW_*` 旗標會自動被納入,
+# 不必記得回來加一行。下面另有一條測試釘住「掃到的東西不能無聲變少」。
+_RELAXATION_PREFIX = "ANILA_ALLOW_"
+
+# 掃描應該至少涵蓋這些。任何一個從 compose 消失(改名、刪掉、搬走),上面那條
+# 前綴掃描會安靜地變成掃 0 個然後照樣綠 —— 這條就是那個空集合的煞車。
+_KNOWN_RELAXATION_FLAGS = {
+    "ANILA_ALLOW_DEV_SECRET",
+    "ANILA_ALLOW_HTTP_ENDPOINT",
+    "ANILA_ALLOW_PRIVATE_ENDPOINT",
+    "ANILA_ALLOW_HTTP_AGENT_ENDPOINT",
+    "ANILA_ALLOW_GRPC_ENDPOINT",
+}
+
+# `"${KEY:-0}"` —— 必須是 `:-`(unset **或空字串**都取 fallback)。
+# `${KEY-0}` 只在 unset 時才 fallback,`.env` 裡寫 `KEY=` 就會送空字串進去;
+# 這裡一併擋掉那種寫法,不是為了 fallback 值,是為了「值從哪裡來」講得死。
+_DEFAULTED = re.compile(r"^\$\{(?P<key>[A-Z0-9_]+):-(?P<default>.*)\}$")
+
+
+def _relaxation_flags_in_platform_yml() -> list[tuple[str, str, str]]:
+    """(service, key, value) —— platform.yml 裡所有服務的放寬旗標。
+
+    不只 csp:ingestion-worker 也自己讀同一批旗標(它同樣會出向連模型),
+    那邊的預設值變寬一樣沒有任何錯誤訊息。
+    """
+    doc = yaml.safe_load(_PLATFORM_YML.read_text(encoding="utf-8"))
+    found = []
+    for service, spec in (doc.get("services") or {}).items():
+        env = (spec or {}).get("environment") or {}
+        if not isinstance(env, dict):
+            continue
+        for key, value in env.items():
+            if key.startswith(_RELAXATION_PREFIX):
+                found.append((service, key, str(value)))
+    return found
+
+
+def test_the_relaxation_flag_scan_still_finds_the_known_flags():
+    """前綴掃描不能無聲地掃到空集合 —— 否則下面那條就永遠是真的。"""
+    found = {key for _, key, _ in _relaxation_flags_in_platform_yml()}
+    missing = _KNOWN_RELAXATION_FLAGS - found
+    assert not missing, (
+        f"platform.yml 裡找不到這些放寬旗標:{sorted(missing)} —— "
+        f"要嘛它們被刪了(那 csp 的對應功能就關不掉/開不了),"
+        f"要嘛改名了(那預設值的覆蓋就跟著失效,要更新本檔)"
+    )
+
+
+@pytest.mark.parametrize(
+    "service,key,value",
+    [
+        pytest.param(s, k, v, id=f"{s}:{k}")
+        for s, k, v in _relaxation_flags_in_platform_yml()
+    ],
+)
+def test_a_relaxation_flag_defaults_to_off(service, key, value):
+    """每一個放寬旗標,`.env` 缺鍵時 compose 都要渲染成 0。
+
+    這是「全新部署的預設姿態」本身。實測 compose v2.36.2(2026-08-05):
+    `.env` 沒有這個鍵時 `${K:-0}` 渲染成 `0`、`${K:-1}` 渲染成 `1`,
+    容器拿到什麼完全由這一行決定。
+    """
+    match = _DEFAULTED.match(value)
+    assert match, (
+        f"{service}.{key} 的值是 {value!r} —— 不是 `${{{key}:-0}}` 這個形狀,"
+        f"缺鍵時容器會拿到什麼變得要另外推敲"
+    )
+    assert match.group("key") == key, (
+        f"{service}.{key} 插值到 {match.group('key')} —— 貼錯變數了"
+    )
+    assert match.group("default") == "0", (
+        f"{service}.{key} 的預設值是 {match.group('default')!r},不是 '0' —— "
+        f"`.env` 沒有這個鍵的全新部署會直接帶著放寬的姿態起來,沒有任何提示"
+    )

@@ -472,10 +472,18 @@ done
    guard 的判斷邏輯沒有動。)
    兩條路二選一:開私網旗標(簡單,但整段 RFC1918 都放行),
    或端點改用 FQDN 並把該 FQDN 加進 trusted-hosts(較窄,但要有內網 DNS)。
-3. **`up -d csp`,不是 `docker restart csp`**
+3. **`up -d csp`,不是 `docker restart csp`;而且 `up -d csp` 之後要 reload nginx**
    —— `restart` 不重載 `.env`。旗標沒進容器的症狀與旗標沒設**完全一樣**,
    確認方式:`docker exec <csp 容器> printenv ANILA_ALLOW_GRPC_ENDPOINT`,
    **沒有輸出就是沒進去**(私網旗標同理)。
+   ⚠ recreate 過的容器會換 IP,而 nginx 的 upstream 區塊只在載入設定時解析一次
+   → **全站 502,但 `docker compose ps` 每個容器都是綠的**,從容器狀態完全看不
+   出來。`deploy-prod.sh` 的 `up` / `restart` 路徑已經內建這一步(`reload_nginx`),
+   但手動只 recreate 一個服務時沒有人幫你做:
+   ```bash
+   docker compose up -d csp
+   docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
+   ```
 4. 模型頁註冊:protocol 選「Triton/KServe gRPC」,端點填 `grpc://host:9001`
    (**不要加 `/v1` 路徑**,gRPC 沒有路徑),模型名稱要與 Triton 上的 model name 一字不差。
    Triton 不吃 Bearer 金鑰,所以該協定下表單**不顯示**金鑰欄位。
@@ -486,9 +494,12 @@ done
 > 為 1 時印 warn。以前是每次硬寫 0 —— 操作者照本節開好、隔天重跑一次部署腳本,
 > Triton embedder 就靜默失效,而症狀只是 400,現場幾乎反推不出原因。
 > 「已有值」的判準跟 docker compose 一致(實測 v2.36.2):行首空白、`export`
-> 前綴、`=` 前後空白、單/雙引號、行尾空白、CRLF 都算已設。以前只認 `^KEY=`,
-> 所以手寫成 ` ANILA_ALLOW_GRPC_ENDPOINT=1`(前面多一個空格)時腳本看不見那一
-> 行,會在檔尾再 append 一行 `=0`,compose 取最後一筆 → 旗標被靜默關掉。
+> 前綴、`=` 前後空白、單/雙引號、行尾空白、CRLF、行尾註解,以及**引號加行尾
+> 註解**(`ANILA_ALLOW_GRPC_ENDPOINT="1"  # 為了 Triton`)都算已設。以前只認
+> `^KEY=`,所以手寫成 ` ANILA_ALLOW_GRPC_ENDPOINT=1`(前面多一個空格)時腳本
+> 看不見那一行,會在檔尾再 append 一行 `=0`,compose 取最後一筆 → 旗標被靜默
+> 關掉。(「引號 + 註解」那一種 2026-08-05 才補上:值有被保留、只是**沒有印出
+> warn**,所以部署輸出不會提醒你這台機器帶著放寬的旗標在跑。)
 
 ```bash
 # 1. 兩個旗標真的進到容器(沒輸出 = 沒進去,回頭做第 3 步)
@@ -537,7 +548,17 @@ print('dim', len(q), 'cosine(query,document)', round(cos,4))
 **調高 `EMBEDDING_TIMEOUT`**
 
 ```bash
-# .env 改值 → up -d csp → 確認它真的到了容器裡(這一步不能跳)
+# 1. .env 改值(沒有這個鍵就自己加一行;compose 預設 30)
+#    這裡用 grep 先看現況,再自己編輯 —— 不用 sed,避免改到別的鍵。
+grep -nE '^[[:space:]]*(export[[:space:]]+)?EMBEDDING_TIMEOUT[[:space:]]*=' .env
+
+# 2. 套用:一定是 up -d(recreate),docker restart 不重載 .env
+docker compose up -d csp
+
+# 3. recreate 過就要 reload nginx,否則上游 IP 是舊的 → 全站 502 但容器全綠
+docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
+
+# 4. 確認它真的到了容器裡(這一步不能跳)
 docker exec anila-restart-csp-1 printenv EMBEDDING_TIMEOUT   # 應印出你設的值
 ```
 

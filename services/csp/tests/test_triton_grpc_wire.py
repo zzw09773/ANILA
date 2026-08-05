@@ -181,8 +181,8 @@ def triton():
 #     big-endian              → TritonEmbedError: triton RpcError
 #                               code=INVALID_ARGUMENT
 #
-# and the full suite stayed at 1892 passed / 13 skipped / **0 failed**, byte
-# identical to the clean baseline. Every payload assertion in this file and in
+# and the full suite stayed **0 failed**, byte identical to the clean
+# baseline (measured 2026-08-03). Every payload assertion in this file and in
 # ``test_triton_grpc_tensor_contract.py`` sent exactly **one** string, and the
 # decoder above used to slice instead of check, so one element round-tripped
 # whatever the prefix said. (Two strings do not: with a slicing decoder the
@@ -190,9 +190,19 @@ def triton():
 #
 # The tests below therefore compare raw bytes against literals — nothing here
 # is derived from ``struct``, so they cannot follow the implementation if it
-# moves. With them and the strict decoder in place the same mutation is
-# **12 failed / 1905 passed / 13 skipped** on the full suite (re-measured
-# 2026-08-03): 8 here and 4 in the tensor-contract file.
+# moves. With them and the strict decoder in place the same mutation turns
+# **12 tests red**: 8 in this file and 4 in
+# ``test_triton_grpc_tensor_contract.py`` (re-measured 2026-08-05, those two
+# files run together). Three of the 8 are the LAN-dependent parametrisation at
+# the bottom of this file, so on a host without an RFC1918 address it is 9 —
+# still red, which is the point of the other five.
+#
+# ⚠ 這裡刻意不再寫「全套 N passed」。上一版寫的 1905 是在
+#   ``test_intranet_deploy_env_file.py``(21 條)還不存在的時候量的,之後沒有
+#   人回來重量 —— 本檔三處的 passed 全都少報 21,方向剛好對自己有利。手抄進
+#   註解的總數會**安靜地**過期,而這個包存在的理由正是要清掉「安靜地不對」。
+#   紅燈的條數與位置跟被測的程式碼一起變、可以在這裡就地驗證;全套總數不會,
+#   它的家在 ``tests/README.md``(那裡有「合併後重量」的規矩)。
 
 
 def test_the_length_prefix_of_one_string_is_little_endian():
@@ -240,6 +250,102 @@ def test_the_decoder_refuses_a_truncated_payload():
         decode_bytes_tensor(good[:-3])
     with pytest.raises(MalformedBytesTensor):
         decode_bytes_tensor(good + b"\x05\x00")
+
+
+# ── the FP32 output side: pinned on any host, LAN or no LAN ─────────────────
+#
+# ``struct.unpack(f"<{n}f", raw)`` → ``">{n}f"`` in ``_decode_fp32_matrix`` is
+# the mirror of the length-prefix mutation above and it is the worse of the
+# two: **nothing raises**. The byte length is identical either way, so the
+# length check passes and every embedding simply comes back as different
+# numbers — silent wrongness, which is this tree's defined worst failure mode.
+#
+# It used to be pinned by exactly one test: the end-to-end one at the bottom of
+# this file, which is **skipped** on a host with no non-loopback RFC1918
+# address (the URL guard refuses loopback for grpc://, correctly). So on a
+# loopback-only build machine that mutation was completely invisible.
+#
+# The cosine tests next door do not catch it either, and that is worth naming:
+# both fake vectors are unit axes, so byte-swapping (1,0,0,0) gives
+# (4.6e-41,0,0,0) — a different vector with exactly the **same** cosine.
+# Only asserting the numbers themselves catches a byte-order flip.
+#
+# Measured 2026-08-05, mutation applied **and** ``_LAN_IPV4`` forced to None
+# (a simulated loopback-only host): the only red in the whole suite is the
+# three tests below. Nothing else in the tree was watching this line.
+#
+# None of the three needs anything beyond loopback, and the literals are
+# hand-written rather than derived from ``struct``, so they cannot follow the
+# implementation if it moves.
+
+_FP32_LE_PAYLOAD = (
+    b"\x00\x00\x80\x3f"  # 1.0
+    b"\x00\x00\x00\xc0"  # -2.0
+    b"\x00\x00\x00\x3f"  # 0.5
+    b"\x00\x00\x70\x40"  # 3.75
+)
+_FP32_EXPECTED = [[1.0, -2.0], [0.5, 3.75]]
+
+
+def test_fp32_output_is_decoded_little_endian():
+    """四個 float、手寫的位元組、寫死的數值 —— 不需要任何網路設定。"""
+    assert (
+        triton_client._decode_fp32_matrix(_FP32_LE_PAYLOAD, 2, 2) == _FP32_EXPECTED
+    )
+
+
+def test_the_same_bytes_read_big_endian_are_different_numbers():
+    """上面那條之所以是「檢查」,靠的是位元序一翻數值就不同。
+
+    每四個 byte 反轉一次 = 同一批位元組用另一個位元序讀。長度一模一樣,所以
+    ``_decode_fp32_matrix`` 的長度檢查完全攔不到 —— 攔得到的只有數值本身。
+    """
+    swapped = b"".join(
+        _FP32_LE_PAYLOAD[i : i + 4][::-1] for i in range(0, len(_FP32_LE_PAYLOAD), 4)
+    )
+    assert len(swapped) == len(_FP32_LE_PAYLOAD)
+    assert triton_client._decode_fp32_matrix(swapped, 2, 2) != _FP32_EXPECTED
+
+
+class _LiteralVectorTriton(grpc_service_pb2_grpc.GRPCInferenceServiceServicer):
+    """Answers with a hand-written FP32 payload, whatever it is asked."""
+
+    def __init__(self, payload: bytes, cols: int) -> None:
+        self._payload = payload
+        self._cols = cols
+
+    def ModelInfer(self, request, context):
+        return grpc_service_pb2.ModelInferResponse(
+            model_name=request.model_name,
+            outputs=[
+                grpc_service_pb2.ModelInferResponse.InferOutputTensor(
+                    name="embeddings",
+                    datatype="FP32",
+                    shape=[1, self._cols],
+                )
+            ],
+            raw_output_contents=[self._payload],
+        )
+
+
+def test_embed_texts_returns_the_numbers_the_server_sent():
+    """整條回程:真 gRPC 回應的位元組 → 呼叫端拿到的向量,值要對得上。
+
+    走 loopback、直接呼叫 ``embed_texts``(不經 URL guard),所以這條在任何
+    主機上都會跑 —— 沒有 RFC1918 位址的機器也一樣。
+    """
+    triton_client.reset_channel_pool_for_tests()
+    server, url = _serve(_LiteralVectorTriton(_FP32_LE_PAYLOAD[:8], cols=2))
+    try:
+        vectors = triton_client.embed_texts(
+            url, "nv-embed-v2", ["找出去年的採購紀錄"], role="query", timeout_s=5.0
+        )
+    finally:
+        server.stop(None).wait(2.0)
+        time.sleep(0.05)
+        triton_client.reset_channel_pool_for_tests()
+
+    assert vectors == [[1.0, -2.0]]
 
 
 # ── the query/document split, on the wire ────────────────────────────────────
@@ -428,14 +534,15 @@ def test_unreachable_peer_is_bounded_by_the_channel_ready_wait():
 # first pins the documented numbers, the second pins the budget the calls
 # actually construct.
 #
-# Both mutations re-measured on the FULL suite, 2026-08-03 (the round-3 report
-# quoted 1 failure for the second one; it is 2 — under-reporting your own
-# coverage is the mirror of over-claiming it):
+# Both mutations measured 2026-08-03, re-verified 2026-08-05 (the round-3
+# report quoted 1 failure for the second one; it is 2 — under-reporting your
+# own coverage is the mirror of over-claiming it). 只寫紅燈是哪幾條,不寫
+# 「全套 N passed」——理由見本檔上方那段 ⚠:
 #
-#   HEALTH_PROBE_BUDGET_S = 600.0                      → 2 failed / 1915 passed
+#   HEALTH_PROBE_BUDGET_S = 600.0                      → 這 2 條紅
 #     test_default_ceilings_are_the_documented_ones
 #     test_the_budget_a_call_actually_constructs
-#   _Budget(CHANNEL_READY_TIMEOUT_S + timeout_s * 4)   → 2 failed / 1915 passed
+#   _Budget(CHANNEL_READY_TIMEOUT_S + timeout_s * 4)   → 這 2 條紅
 #     test_the_budget_a_call_actually_constructs
 #     test_an_oversized_batch_still_says_shrink_the_batch
 

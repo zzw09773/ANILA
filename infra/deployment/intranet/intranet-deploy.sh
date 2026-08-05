@@ -62,7 +62,18 @@ set_env() {  # set_env KEY VALUE — 去重後 append (literal,不怕特殊字�
 }
 # 回傳 compose 會讀到的那個值:重複鍵取**最後一行**(實測 v2.36.2:FOO=first /
 # FOO=second → second;取第一行會讓腳本看到的值與 stack 實際用的值不同),
-# 去 CR、去成對引號、去 ` #` 行尾註解(compose 只吃「空白+#」這一種)、去前後空白。
+# 去 CR、去引號、去 ` #` 行尾註解(compose 只吃「空白+#」這一種)、去前後空白。
+#
+# ⚠ 引號要**先**認、而且只認到「下一個同款引號」為止,不能要求整串頭尾都是引號。
+# 舊版的 `'"'*'"'` 樣式對 `KEY="1" # 註解` 不成立(結尾是註解不是引號),掉進
+# `*)` 分支只砍掉註解、引號留著 → `"1" != "1"` → **compose 讀成 1、腳本卻不警示**。
+# 這是本檔矩陣裡兩種情況(引號、行尾註解)的組合,單獨各自都對、合起來就漏。
+# 實測 compose v2.36.2(2026-08-05,本機 `docker compose config`):
+#     `K="1" # note` → 1     `K='1' # note` → 1     `export K="1" # note` → 1
+#     `K="1" # note` + CRLF → 1                     `K="1"junk` → 1
+#     `K="1 # note"` → `1 # note`(引號內的 # 不是註解)  `K=" 1 "` → ` 1 `
+#     `K=1#note` → `1#note`  `K=#1` → `#1`(compose 只認「空白+#」)
+# (`K="1` 這種沒收尾的引號 compose 直接報錯拒絕渲染,這裡怎麼判都不影響結果。)
 get_env() {
   local line val
   line="$(grep -E "$(_env_key_re "$1")" .env 2>/dev/null | tail -1)" || true
@@ -70,9 +81,9 @@ get_env() {
   val="${line%$'\r'}"
   val="$(_trim "${val#*=}")"
   case "$val" in
-    '"'*'"') val="${val#\"}"; val="${val%\"}" ;;
-    "'"*"'") val="${val#\'}"; val="${val%\'}" ;;
-    *)       val="$(_trim "${val%% #*}")" ;;
+    '"'*) val="${val#\"}"; case "$val" in *'"'*) val="${val%%\"*}" ;; esac ;;
+    "'"*) val="${val#\'}"; case "$val" in *"'"*) val="${val%%\'*}" ;; esac ;;
+    *)    val="$(_trim "${val%% #*}")" ;;
   esac
   printf '%s' "$val"
 }
@@ -83,8 +94,9 @@ get_env() {
 # 400,現場幾乎不可能反推到「是部署腳本把它改回去了」。缺鍵時仍補 0,所以
 # 全新部署的預設姿態沒有變寬,變的只是「腳本不再推翻現場的決定」。
 # 鍵已經在就**一個字都不改**(不重寫、不搬到檔尾):重寫會吃掉操作者的註解與
-# 引號,而 compose 讀得到就夠了。警示的判準也對齊 app 端的 ``_env_flag``
-# (去引號、去空白後 == "1"),所以 `KEY="1"` 這種寫法一樣會被警示。
+# 引號,而 compose 讀得到就夠了。警示的判準是「容器裡會不會拿到 1」:引號與
+# 行尾註解由 compose 拆掉(見 get_env 上方的實測),app 端的 ``_env_flag`` 只
+# 再 ``.strip() == "1"``。所以 `KEY="1"`、`KEY="1" # 註解` 都會被警示。
 # ⚠ 舊註解寫「ANILA_ENV=production → 模型 http 一律 fail-closed,不受任何旗標
 #    放行」——那句自 2026-07-29(PLAN P0.2)起就不成立了:model kind 的 http
 #    改成純由 ANILA_ALLOW_HTTP_ENDPOINT 決定、與 env 無關,所以那一行真的會把
