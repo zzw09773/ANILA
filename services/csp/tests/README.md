@@ -30,18 +30,28 @@ DB 狀態,再看測試本身。
 `CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`)從 repo 根跑時仍會讀到機上
 `.env`——目前沒有測試依賴它們的 ambient 值,新增依賴前先來這裡補釘。
 
-## 目前基準線(2026-08-01 實測)
+> ⚠ **2026-08-05 補充 —— 這份基準線這次是怎麼量的**
+> 本檔第 54 行那條警告(「每包各自更新,最後合進來的那一包會寫成偏低值」)這次確實被遵守了:
+> 八包在 08-05 分三批合併期間,**沒有任何一包在 worktree 裡改這個數字**,
+> 全部由合併者在主樹跑完整套之後一次更新。三批各自量到的中間值是
+> **1966 → 2025 → 2069**,可交叉對照。
+>
+> ⚠ 另外要知道:**這個數字綠不代表覆蓋夠。** 同一天六輪獨立驗收,每一輪都找到
+> 「改一行讓功能整個死掉、而套件全綠」的位置。前端已經有突變檢查
+> (`apps/anila-shell/scripts/mutation-check.mjs`),**csp 這邊還沒有**。
+
+## 目前基準線(2026-08-05 實測,八包合併完成後在主樹量)
 
 ```
-1494 passed · 13 skipped · 0 failed     (1507 collected)
+2069 passed · 13 skipped · 0 failed     (2082 collected)
 ```
 
 兩種跑法都是這個數字,已驗證:
 
 | 跑法 | cwd | 指令 | 結果 |
 |---|---|---|---|
-| 1 | worktree / repo 根 | `$PY -m pytest services/csp/tests -q` | 1494 passed · 13 skipped |
-| 2 | `services/csp` | `$PY -m pytest tests -q` | 1494 passed · 13 skipped |
+| 1 | worktree / repo 根 | `$PY -m pytest services/csp/tests -q` | 2069 passed · 13 skipped |
+| 2 | `services/csp` | `$PY -m pytest tests -q` | 2069 passed · 13 skipped |
 
 舊基準線(2026-07-31)的唯一紅燈
 `test_template_download.py::test_developer_can_download_template` 已由
