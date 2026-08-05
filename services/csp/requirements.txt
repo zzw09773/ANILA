@@ -1,9 +1,17 @@
 fastapi==0.136.1
-# starlette 顯式 pin:fastapi 0.136.1 對 starlette 只有 >=0.46.0 下限,pip
-# 預設會拉到 1.0.0 (主版本變動,行為可能有非顯式變化)。鎖在 0.49.3 —
-# CVE-2025-54121 / CVE-2025-62727 修復線中最新的 patch,API 與 0.41 系列
-# 變化最小。
-starlette==0.49.3
+# starlette 顯式 pin:fastapi 0.136.1 對 starlette 只有 `>=0.46.0` 下限、
+# sse-starlette 只有 `>=0.49.1`,兩者都沒有上限,所以這個版本是我們自己選的,
+# 不是被 fastapi 綁住的。
+# 2026-08-05 由 0.49.3 前進到 1.3.1:0.49.3 有 CVE-2026-48710 —— `request.url`
+# 是拿呼叫端的 `Host` 標頭直接字串串接出來的(`f"{scheme}://{host}{path}"`),
+# 攻擊者送 `Host: x/api/auth/login` 就能移動路徑邊界,騙過任何讀 `request.url.path`
+# 的中介層,而路由仍照 `scope["path"]` 派送。1.0.1 起改成先用主機名格式驗過再組
+# `SplitResult`,路徑一律取自 scope。
+# ⚠ 這只是這個缺陷的一半:程式側的判斷也已改讀 `scope["path"]`
+#(`app/middleware/csrf.py`),兩半要一起維持,不要因為升級了就把程式側改回去。
+# csp 直接用到的 starlette 符號只有四個(BaseHTTPMiddleware / TrustedHostMiddleware
+# / Request / JSONResponse+Response),1.x 全部保留。
+starlette==1.3.1
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 alembic==1.14.1

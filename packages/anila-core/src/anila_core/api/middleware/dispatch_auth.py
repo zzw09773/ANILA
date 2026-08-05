@@ -21,6 +21,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from ..routing import routed_path
 from .dispatch_jwt import (
     DISPATCH_TOKEN_AUDIENCE,
     DISPATCH_TOKEN_ISSUER,
@@ -40,6 +41,9 @@ from .jwks_client import (
 
 logger = logging.getLogger(__name__)
 
+# Tested against ``routed_path(request)``, never ``request.url.path`` —
+# the latter is assembled from the caller's ``Host`` header, so it is not
+# the string the router dispatches on.
 _PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
 
 # Env already used by agents for the platform base URL — prefer over new knobs.
@@ -107,7 +111,7 @@ class DispatchIdentityMiddleware(BaseHTTPMiddleware):
         if self._dev_mode:
             return await call_next(request)
 
-        if request.url.path in _PUBLIC_PATHS:
+        if routed_path(request) in _PUBLIC_PATHS:
             return await call_next(request)
 
         if not self._jwks.configured:

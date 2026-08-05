@@ -59,6 +59,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from anila_core.api.router_server import create_router_app
+from anila_core.api.routing import routed_path
 from anila_core.config import settings
 
 logger = logging.getLogger("anila-router")
@@ -329,7 +330,11 @@ async def _bootstrap() -> None:
 async def _gate_on_primary(request: Request, call_next):
     # Only gate the chat completions path; leave /health and /v1/models alone.
     # Docs/openapi are disabled at create_router_app (P2.3) — not exempted here.
-    if request.url.path == "/v1/chat/completions" and request.method == "POST":
+    # ``routed_path`` rather than ``request.url.path``: the latter is built
+    # from the caller's ``Host`` header, so ``Host: x/v1`` makes this
+    # comparison miss and the request goes through ungated while the router
+    # still dispatches it to the chat completions endpoint.
+    if routed_path(request) == "/v1/chat/completions" and request.method == "POST":
         name, err = await _ensure_primary()
         if not name:
             return JSONResponse(

@@ -3,6 +3,7 @@ import sys
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 from pathlib import Path
+from anila_core.api.routing import routed_path
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -224,12 +225,17 @@ async def _request_access_log(request, call_next):
     import time as _time
     start = _time.monotonic()
     response = await call_next(request)
-    if request.url.path not in ("/health",):
+    # The access log has to name the endpoint that actually ran, or an
+    # incident reconstructed from it points at the wrong one — hence
+    # ``routed_path`` rather than ``request.url.path``, which is assembled
+    # from the caller's ``Host`` header.
+    path = routed_path(request)
+    if path not in ("/health",):
         elapsed_ms = int((_time.monotonic() - start) * 1000)
         logging.getLogger("csp.access").info(
             "%s %s → %s %dms",
             request.method,
-            request.url.path,
+            path,
             response.status_code,
             elapsed_ms,
         )
