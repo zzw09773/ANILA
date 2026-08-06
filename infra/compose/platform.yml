@@ -221,6 +221,14 @@ services:
       FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
       FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
       # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
+      # ⚠ csp 是 anila_core parser 的第二個消費者:/api/ingestion/chunking-preview
+      # (app/api/ingestion/preview.py:240) 呼叫同一支 extract_text。這裡**寫死
+      # false、不吃 ${PDF_OCR_FALLBACK}**,是刻意讓預覽與 ingest 不一致:
+      # OCR 是 1800 秒等級的同步工作,ingest 有佇列可以扛,HTTP request 沒有。
+      # 寫成常數而不是「不設」,是為了讓這個差異是**決定**而不是漏接 —— 哪天有人
+      # 幫 csp 補上 VISION_URL/VISION_MODEL,也不會順手把 OCR 開進 request 路徑。
+      # 差異寫在 .env.example 與 services/ingestion-worker/README.md。
+      PDF_OCR_FALLBACK: "false"
     volumes:
       # packages/anila-agent subtree (github.com/zzw09773/anila-agent) — 模板下載端用。
       # 更新走 git subtree pull/push,見 README §"Updating anila-agent"。
@@ -305,6 +313,17 @@ services:
       VISION_VERIFY_SSL: "${VISION_VERIFY_SSL:-false}"
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
+      # 掃描件 PDF 的 OCR fallback。預設 false —— 這幾行在的理由是「不設定就
+      # 傳不進來」:沒有 env_file,所以 .env 寫了 PDF_OCR_FALLBACK=true 而這裡
+      # 沒有對應的一行,旗標根本到不了 worker,而看起來像是開了。
+      # ⚠ 開之前讀 services/ingestion-worker/README.md 的〈心跳〉那節:單份
+      #    文件解析會跳到 1800 秒等級,而本 worker 宣告的預算是 300 秒
+      #    (main.py:71 job_timeout) —— 超出 6 倍,期間其他 ingest 全排隊。
+      # ⚠ MAX_PAGES 不要調大;超過上限的頁連原生抽到的文字都會被取代掉。
+      PDF_OCR_FALLBACK: "${PDF_OCR_FALLBACK:-false}"
+      PDF_OCR_DPI: "${PDF_OCR_DPI:-200}"
+      PDF_OCR_CONCURRENCY: "${PDF_OCR_CONCURRENCY:-4}"
+      PDF_OCR_MAX_PAGES: "${PDF_OCR_MAX_PAGES:-100}"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
