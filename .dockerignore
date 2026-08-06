@@ -3,7 +3,6 @@
 **/.venv
 share/
 share-dev/
-secrets/
 models/model/
 n8n_DATA/
 onyx/
@@ -11,7 +10,22 @@ scraps/
 docs/
 cht/
 runtime_logic/
-*.log
+
+# ── 執行期產物:**任何深度**都不進 build context ────────────────────────────
+# ⚠ 前面那些不帶 `**/` 的規則(share/、docs/…)只比對 **context 根**。
+# 這裡的三條刻意帶 `**/`,因為執行期產物長在服務目錄底下,不是長在根:
+#   services/csp/logs/csp.log        ← 在 services/csp 跑過 pytest / uvicorn 就會有
+#   services/csp/secrets/*.pem       ← 同上(auto-keygen 寫在 cwd 底下)
+# 沒有 `**/` 的話,csp.Dockerfile 的 `COPY services/csp/ ./` 會把它們一起搬進映像:
+#   - `/app/logs/csp.log` 屬 root → 降權後 setup_logging() PermissionError,**容器起不來**
+#   - `/app/secrets/jwt-private.pem` → **真的私鑰被烤進映像**,而映像會被匯出到內網
+# 實測(2026-08-06):`secrets/` 擋不掉 `services/csp/secrets/`,`*.log` 擋不掉
+# `services/csp/logs/csp.log`;換成 `**/` 之後兩者都擋掉,而且根層也照樣擋。
+# 全樹只有 services/csp/secrets/.gitignore 這一個 tracked 檔會被一起排除 —— 它是
+# 用來壓制產物的,不是 build 輸入;compose 以 bind mount 提供真正的 /app/secrets。
+**/secrets/
+**/logs/
+**/*.log
 
 # anila-agent Docker context=repo root：擋掉原 package-level .dockerignore 的規則
 # （該檔在 context 根變更後已失效；勿再維護 package 副本）

@@ -586,7 +586,7 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 都在 WARNING 記了一筆,但最後**仍以 `status='indexed'` 收尾**。
 一份實際上什麼都沒索引到的文件,在畫面上與正常文件無法分辨。
 
-### #50 csp 有**兩個 Dockerfile**,而「已改非 root」的那個是死的 🔴
+### #50 ~~csp 有**兩個 Dockerfile**,而「已改非 root」的那個是死的~~ ✅ **已修,本節保留為紀錄**
 
 - **看起來是什麼**:`services/csp/Dockerfile` 有 `USER csp`。任何人翻 repo 都會得出
   「csp 已經降權跑」的結論。
@@ -601,6 +601,28 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   開 `RotatingFileHandler`,降權即 `PermissionError` 開不起來;
   `share/uploads/ingestion` 掛載內容已經是 `root:root`,只加一行 `USER` 會得到
   **容器全綠、上傳靜默 500**。要有一次性 `chown` 的部署步驟。
+
+→ **已修(2026-08-06)**。現在讓它正確的那幾行:
+
+| 讓它正確的那一行 | 做什麼 |
+|---|---|
+| `infra/docker/csp.Dockerfile:92-96` | `groupadd --gid 10001` + `useradd --uid 10001 --gid 10001` + `chown` `/app/logs` + `USER anila` |
+| `services/ingestion-worker/Dockerfile:55-58` | 同一組 **10001:10001**(跟 csp 共用 `share/uploads/ingestion`,號碼不同就單向壞掉) |
+| `services/pptx-renderer/Dockerfile:69-70` | `chown node:node $PPTX_TMP_DIR` + `USER node`(node 官方映像釘死的 1000:1000) |
+| `infra/deployment/scripts/fix-runtime-ownership.sh` | 一次性、**冪等**的 host 端所有權對齊。**四個**掛載各自處理:兩個 RW 目錄 `chown -R` 給 10001;`secrets/` 走**白名單**(只放寬 JWT keypair 與 dev-card-ca bundle,其餘原封不動**並列印出來**);`share/pki` 遞迴放寬(公開 CA 憑證,讀不到 = 出向 https 全掛)。擁有者一律不動。映像不在時 warn 但 **exit 0**,不擋 up。 |
+| `infra/deployment/scripts/deploy-prod.sh:278,293,328,363` | `fix_runtime_ownership()` 接進**所有會 (re)start 服務的路徑**:`deploy` / `up` / `rebuild`(`restart` 走 `up`)。漏掉 `rebuild` 曾是驗收抓到的 FAIL —— 那正是「把這包套到已在跑的部署上」最自然的命令。 |
+| `infra/deployment/intranet/intranet-deploy.sh:323,334-337` | `[4b]` 產金鑰的 one-shot 補 `--user 0:0`(映像預設已非 root,不搶回 root 會 PermissionError);新增 `[4c]` 跑上面那支腳本 |
+| `services/csp/app/utils/security.py:128-149` | 金鑰缺席的錯誤訊息不再叫人 `set ALLOW_AUTO_KEYGEN=true` —— 那件事在容器裡做不到(runtime user 非 root、`/app/secrets` 是 `:ro`),改指向真的能用的 host 端步驟。**指名一個做不到的補救,比不指名更糟**:操作者會拿整段停機時間去試它。 |
+| `infra/compose/dev.yml:129-134,212-213` | dev 的 `share-dev/` 缺口:註解寫明第一次 `up` 會被 Docker 建成 root:root,以及那一行 root one-shot 的解法。**刻意不接腳本**(dev 沒有部署腳本可掛)。 |
+
+- **死檔已刪**:`services/csp/Dockerfile` 不存在了。留著它就是留著下一次「改對了檔案但那個檔案沒人建」。
+  遷移對照表 `docs/anila-redesign-docs/10-migration-and-development-guardrails.md:412` 原本還把它列成
+  合法的 image 位置(那是**指示性**的,不是歷史敘述),已一併更正。
+- ⚠ **這條留下的是一條口頭契約**:`10001` 同時寫在兩個 Dockerfile 與對齊腳本裡,三者必須相等,
+  而**沒有任何機器檢查會發現它們漂開** —— 漂開的症狀是上傳單向壞掉,而兩個容器都 healthy。
+- ⚠ **白名單要人維護**:以後任何新的「csp 要讀的 secrets 檔」,不加進 `fix-runtime-ownership.sh`
+  就讀不到。這是刻意的取捨:代價是要記得加一行,換到的是不會把未來每一把私鑰都對 gid 10001 開讀。
+  腳本每次都會把「刻意沒動的檔」印出來,所以漏掉時看得見。
 
 ### #57 掃描 PDF 的 OCR **永遠不會觸發**——佔位符自己撞破門檻(潛伏,打開就會以為生效) 🔴
 

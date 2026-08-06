@@ -54,6 +54,21 @@ ENV PORT=7100 \
 
 RUN mkdir -p $PPTX_TMP_DIR
 
+# ── 降權:非 root 跑 (FAKE-CONTROLS #50) ────────────────────────────────────
+# 這支不用自己建帳號:node 官方映像已經帶一個 **釘死的** `node` = 1000:1000
+# (getent passwd node → node:x:1000:1000::/home/node),而且 /home/node 存在
+# 且屬於它 —— soffice 會在 $HOME 下建 UserInstallation,HOME 不可寫的話
+# /screenshots 會在轉 PDF 那一步炸掉。
+# 用 1000:1000 而不是跟 csp 一樣的 10001:10001 是刻意的:這個服務**沒有任何
+# bind mount**,不跟誰共用檔案,沒有對齊的必要。
+#
+# $PPTX_TMP_DIR 是唯一要寫的路徑:server.js:442 在載入時 mkdir(recursive),
+# 目錄已存在時那行是 no-op 而不會報錯 —— 真正會炸的是後面 :1418 的
+# writeFile / :1469 的 writeFileSync。所以這裡一定要 chown,不能只靠 mkdir。
+# (:1478 的 mkdtemp 走 os.tmpdir() = /tmp,world-writable+sticky,不用處理。)
+RUN chown node:node $PPTX_TMP_DIR
+USER node
+
 EXPOSE 7100
 
 # tini ensures SIGTERM propagates from compose down → node → soffice

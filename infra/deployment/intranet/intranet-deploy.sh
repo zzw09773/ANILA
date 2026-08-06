@@ -316,11 +316,25 @@ mkdir -p secrets
 if [ -f secrets/jwt-private.pem ] && [ -f secrets/jwt-public.pem ]; then
   ok "已有 JWT keypair (重跑沿用,token 不失效)"
 else
-  docker run --rm -v "$PWD/secrets:/out" --entrypoint python anila-platform-csp:latest \
+  # --user 0:0 是**必要的**,不是保險。csp image 自 2026-08-06 起預設 uid 10001
+  # (FAKE-CONTROLS #50),而 $PWD/secrets 這個 bind mount 屬於 host 帳號 →
+  # 不搶回 root 的話,這一步會在寫檔時 PermissionError,整個部署卡在這裡。
+  # 產出來的私鑰是 root:root 0600;下一步 [4c] 再把 group 開給 runtime user。
+  docker run --rm --user 0:0 -v "$PWD/secrets:/out" --entrypoint python anila-platform-csp:latest \
     /app/scripts/generate-jwt-keypair.py --output-dir /out \
     && ok "已產生 JWT keypair (RSA-2048 / RS256 / PKCS#8)" \
     || die "JWT keypair 產生失敗 (csp image 在? scripts/generate-jwt-keypair.py 在?)"
 fi
+
+# ── 4c. bind mount 所有權對齊 ─────────────────────────────────────────────
+# csp / ingestion-worker 以 uid 10001 跑,但 bind mount 的所有權是 host 說了算。
+# 不修的症狀**不是**起不來,是**容器全綠、上傳回 500、JWKS 回 500、出向 https 全掛**
+# —— 一條龍部署最不該留的那種。冪等,重跑安全。理由與細節在腳本檔頭。
+# 排在 [4b] 之後(私鑰要先存在)、[2] 放 model CA 之後、[6] up 之前。
+info "[4c/7] bind mount 所有權對齊 (share/uploads/ingestion、share/attachments、share/pki、secrets)"
+bash infra/deployment/scripts/fix-runtime-ownership.sh \
+  && ok "所有權已對齊 runtime uid 10001" \
+  || die "所有權對齊失敗 — 沒有這一步 csp 會 healthy 但上傳與登入都壞掉,不要跳過"
 
 # ── 5. network ───────────────────────────────────────────────────────────
 info "[5/7] docker network anila-models-net"

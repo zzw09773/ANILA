@@ -96,7 +96,9 @@
   ```
 - root compose 沒有 `env_file:`；Compose 會自動讀根目錄 `.env` 做 `${...}` interpolation。不要把 `.env` 或任何 secret commit。
 - `.env`、compose、build args 或 mounted config 變更後，用 `docker compose up -d` recreate；不要只 `docker restart`。
-- CSP 正式 image 使用 `infra/docker/csp.Dockerfile`。`services/csp/Dockerfile` 是 dead/legacy，不要改成部署目標。
+- CSP 正式 image 使用 `infra/docker/csp.Dockerfile`，而且現在**只剩這一份**——曾經另有一份 compose 從不建的 `services/csp/Dockerfile`，已於 2026-08-06 刪除（FAKE-CONTROLS #50：改對了檔案但那個檔案沒人建）。
+- csp / ingestion-worker 以 uid **10001** 跑、pptx-renderer 以 `node` (1000) 跑。bind mount 的所有權由 host 決定，映像裡 chown 沒有用 → 部署前必須跑 `infra/deployment/scripts/fix-runtime-ownership.sh`（deploy-prod.sh 的 `deploy`/`up`/`rebuild` 三條路徑與 intranet-deploy.sh `[4c]` 都已接進去）。涵蓋四個掛載：`share/uploads/ingestion`、`share/attachments`、`share/pki`、`secrets/`。少了它的症狀是**容器全綠、上傳回 500、JWKS 回 500、出向 https 全掛**。
+- ⚠ `secrets/` 的放寬是**白名單**：日後新增「csp 執行期要讀的 secrets 檔」必須在該腳本加一行 `widen_file`，否則讀不到（腳本每次會把刻意沒動的檔列出來，所以漏掉看得見）。`infra/compose/dev.yml` 的 `share-dev/` 刻意不接腳本，一行解法寫在該檔的掛載註解裡。
 - prod 部署優先走：
   ```bash
   bash infra/deployment/scripts/deploy-prod.sh preflight

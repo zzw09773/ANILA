@@ -27,6 +27,7 @@ Cutover notes:
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -127,12 +128,45 @@ def _auto_generate_keypair(private_path: Path, public_path: Path) -> None:
 
 def _load_pem(path: Path, *, label: str) -> bytes:
     if not path.exists():
+        # The remedy named here has to be one that works *where this error is
+        # actually seen*, which is inside the container. Since 2026-08-06 the
+        # runtime user is non-root (uid 10001) and ``/app/secrets`` is a
+        # read-only mount, so the old advice ("set ALLOW_AUTO_KEYGEN=true")
+        # dies with PermissionError one line later — a remedy that cannot
+        # work is worse than no remedy, because the operator spends the
+        # outage trying it. Point at the host-side provisioning step instead.
         raise JwtKeyLoadError(
             f"JWT {label} key not found at {path}. "
-            f"Generate one with `python scripts/generate-jwt-keypair.py` "
-            f"or set ALLOW_AUTO_KEYGEN=true for dev environments."
+            "Provision it from the host, then restart this service: "
+            "`bash infra/deployment/scripts/deploy-prod.sh` (its "
+            "ensure_jwt_keypair step) or, on the intranet host, "
+            "intranet-deploy.sh step [4b]; both write into ./secrets as root. "
+            "Then run infra/deployment/scripts/fix-runtime-ownership.sh so "
+            "the non-root runtime user can read the key. "
+            "ALLOW_AUTO_KEYGEN=true only helps where the process can write "
+            "the key directory itself (local dev / pytest) — it cannot work "
+            "in the container."
         )
-    return path.read_bytes()
+    try:
+        return path.read_bytes()
+    except PermissionError as exc:
+        # The second failure mode this package can produce, and the one that
+        # actually happens on a host where the keys were provisioned but the
+        # alignment step was skipped: the file is right there, and we still
+        # cannot read it. Without this branch the operator sees a bare
+        # ``PermissionError`` with no pointer to the one command that fixes
+        # it — indistinguishable from a corrupt deployment.
+        raise JwtKeyLoadError(
+            f"JWT {label} key exists at {path} but is not readable by this "
+            f"process (uid {os.geteuid()}): {exc.strerror}. "
+            "The key was provisioned but the ownership alignment step was "
+            "skipped: run infra/deployment/scripts/fix-runtime-ownership.sh "
+            "on the host, then restart this service. That step leaves the "
+            "key owned by whoever created it and only adds group read for "
+            "the runtime user (mode 0640, group = the container's gid); it "
+            "does not move ownership away from the deployer. "
+            "Do not chmod the key world-readable as a workaround."
+        ) from exc
 
 
 @lru_cache(maxsize=1)

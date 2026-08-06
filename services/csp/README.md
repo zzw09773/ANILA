@@ -54,7 +54,11 @@ CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgve
 | 文字後處理 | opencc-python-reimplemented 0.1.7 |
 | 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
-> 部署 image 走 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)（multi-stage、含 `anila-core[rag]`）；`services/csp/Dockerfile` 為**單容器 legacy**（compose 不使用它）。前端治理介面已移為頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，官方藍視覺改版），由 Nginx 提供靜態檔。
+> 部署 image 走 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)（multi-stage、含 `anila-core[rag]`），而且**只有這一份**——曾經另有一份 compose 從不建的 `services/csp/Dockerfile`，已於 2026-08-06 刪除（[FAKE-CONTROLS](../../docs/FAKE-CONTROLS.md) #50）。前端治理介面已移為頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，官方藍視覺改版），由 Nginx 提供靜態檔。
+>
+> 容器以 **uid 10001（非 root）** 跑。映像裡只有 `/app/logs` 是可寫的；上傳、附件、`share/pki`、`secrets/` 四個都在 bind mount 上，所有權由 host 決定 → 部署前要跑 [`infra/deployment/scripts/fix-runtime-ownership.sh`](../../infra/deployment/scripts/fix-runtime-ownership.sh)（deploy-prod.sh 的 `deploy`/`up`/`rebuild` 與 intranet-deploy.sh `[4c]` 都已接進去）。
+>
+> ⚠ `secrets/` 的放寬是**白名單**（只有 JWT keypair 與 dev-card-ca bundle）：日後新增「執行期要讀的 secrets 檔」要在那支腳本加一行 `widen_file`，否則讀不到。這樣換到的是不會把未來每一把丟進 `secrets/` 的私鑰都對 gid 10001 開讀。
 
 ---
 
