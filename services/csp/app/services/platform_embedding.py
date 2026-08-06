@@ -25,6 +25,15 @@ from app.models.model_registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
+# Only reached when ``model_registry`` holds no active embedding row at
+# all, so collection create never becomes a new gate. Spelled the way
+# the model registers itself, NOT the way migration 0014's column
+# default used to spell it (``nvidia/NV-embed-V2``) — that disagreement
+# between two independently-written free-text fields is FAKE-CONTROLS
+# #56, and every collection created off the old default committed it
+# again.
+LAST_RESORT_EMBEDDING_MODEL = "nvidia/nv-embed-v2"
+
 
 @dataclass(frozen=True)
 class PlatformEmbedding:
@@ -116,6 +125,77 @@ def resolve_platform_embedding(db: Session) -> Optional[PlatformEmbedding]:
         native_dim=native,
         truncates=native > EMBED_DIM,
     )
+
+
+def canonical_embedding_model_name(db: Session, name: str | None) -> str | None:
+    """Return ``model_registry``'s own spelling of ``name``.
+
+    ``model_registry.name`` is this platform's canonical name for a
+    model (module docstring). A model name that arrives from anywhere
+    else — an API payload, a column default, a hand-written seed — is
+    free text, and free text that differs from the registry only in
+    case is the shape of FAKE-CONTROLS #56: retrieval filters chunk
+    provenance on the model name, so one wrong capital turns a
+    perfectly-indexed corpus into one that answers nothing, with no
+    error and no log line.
+
+    Normalising here (write time) rather than at every comparison is
+    what stops the defect being re-committed once per new collection.
+    The case-insensitive comparisons already in the read paths stay:
+    they still carry rows written before this existed, and
+    ``model_registry.name`` carries no case-insensitive uniqueness
+    (#56 item 8), so two spellings can still be registered side by side.
+
+    Candidates are ``model_type='embedding'`` rows only. This column
+    records which model produced a collection's vectors, so a chat model
+    that happens to share the name is not a candidate — and if it were
+    counted, one unrelated ``llm`` row named ``NVIDIA/NV-Embed-V2`` would
+    make the real embedder look ambiguous and stop being applied.
+    ``is_active`` is deliberately not filtered: a deactivated embedder is
+    still the right name for the vectors it already produced (#56 item 9
+    tells the operator to re-designate and if necessary reactivate
+    exactly that model). ``is_active`` decides what may be *chosen*, not
+    how an existing name is *spelled*.
+
+    Returns
+    -------
+    * ``None`` when ``name`` is missing or blank — the caller decides
+      what the default is, not this function.
+    * the registry's spelling when exactly one registered embedding name
+      matches case-insensitively.
+    * the trimmed request otherwise. We do not guess: an unregistered
+      name still fails loudly at search time ("is not registered in
+      model_registry"), which beats silently binding a corpus to a row
+      the caller never asked for. Two embedding registrations differing
+      only in case is that same ambiguity, so it is left alone too.
+    """
+    if name is None:
+        return None
+    requested = name.strip()
+    if not requested:
+        return None
+
+    from sqlalchemy import func
+
+    spellings = {
+        row[0]
+        for row in db.query(ModelRegistry.name)
+        .filter(
+            ModelRegistry.model_type == "embedding",
+            func.lower(ModelRegistry.name) == requested.lower(),
+        )
+        .all()
+    }
+    if len(spellings) == 1:
+        return spellings.pop()
+    if len(spellings) > 1:
+        logger.warning(
+            "model_registry holds %d embedding spellings of %r that differ "
+            "only in case; storing the request unchanged",
+            len(spellings),
+            requested,
+        )
+    return requested
 
 
 def count_pending_recompute(db: Session, designated_name: str | None) -> dict[str, int]:

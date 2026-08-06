@@ -277,16 +277,24 @@ class CollectionScopedPgVectorStore:
         model"; ``source_model_coverage`` below answers that question.
 
         The match is **case-insensitive**, and that is load-bearing, not
-        tidiness. ``ingestion_collections.embedding_model`` defaults to
-        ``nvidia/NV-embed-V2`` while the same model registers as
-        ``nvidia/nv-embed-v2``, and migration ``r1_0018`` backfilled
-        chunk provenance straight from that column
+        tidiness. Historically ``ingestion_collections.embedding_model``
+        defaulted to ``nvidia/NV-embed-V2`` while the same model
+        registers as ``nvidia/nv-embed-v2``, and migration ``r1_0018``
+        backfilled chunk provenance straight from that column
         (``SET embedding_source_model = ic.embedding_model``). A
-        case-sensitive ``=`` therefore hides a correctly-indexed corpus
+        case-sensitive ``=`` therefore hid a correctly-indexed corpus
         behind its own column default — every chunk invisible, forever,
-        on a knowledge base nobody touched. This is the same casing
-        collision ``app/services/platform_embedding.py`` was written to
-        end; it simply had one more hiding place.
+        on a knowledge base nobody touched.
+
+        ⚠ **That default is gone and this leniency still is not
+        optional.** Migration ``r1_0032`` drops the column default and
+        recases the rows it can vouch for, but it aligns them only to
+        what ``model_registry`` held at upgrade time, and
+        ``model_registry.name`` still has no case-insensitive uniqueness
+        (FAKE-CONTROLS #56 item 8) — two spellings can be registered
+        side by side tomorrow. Rows the migration deliberately left
+        alone (ambiguous or naming an unregistered model) also still
+        depend on this. Tighten to ``=`` only after item 8 is closed.
         """
         if top_k <= 0:
             return []
