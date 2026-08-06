@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from "react";
 import { IconBook, IconX, IconExternal, IconShield, IconGauge, IconLock } from "./icons.jsx";
 import { IconButton } from "./components.jsx";
-import { summarizePIIHits } from "./data.jsx";
+import { blockingHits, summarizePIIHits } from "./data.jsx";
 import { classificationLevelBadge } from "./runtime/classified.js";
 
 // ---- Inline citation [N] ----
@@ -178,13 +178,22 @@ export const REDACTION_MODE_DEFAULT = "warn";
 // 提示列的工作是讓人停一秒自己判斷,不是替他決定:說出**看到了什麼**、
 // 以及**送出去之後會怎樣**,然後就閉嘴。不給指示、不代為動作。
 //
-// ⚠ 用「疑似」不用「有」。偵測器只比對格式,它並不知道那串字究竟是什麼 ——
-// 實測七個常見院內樣本有六個是誤報(採購案號、預算欄、年度欄、16 位料號、
-// 公文編號、承辦人 email)。對著一張預算表斷言「這裡有 1 個信用卡」,
-// 錯一次使用者就再也不看這條橫幅了。這是偵測→警示,不是偵測→斷定。
+// ⚠ 用「疑似」不用「有」。偵測器認的是**形狀**(身分證與信用卡另外驗檢查碼),
+// 它並不知道那串字究竟是什麼。2026-08-06 以前的版本在十個常見院內樣本上
+// 十個全誤報(採購案號、預算欄、年度欄、16 位料號、公文編號、承辦人 email…);
+// 檢查碼與分隔符收窄之後那十個都不再命中,但「可能認錯」這件事沒有消失,
+// 只是變少了。對著一張預算表斷言「這裡有 1 個信用卡」,錯一次使用者就再也
+// 不看這條橫幅了。這是偵測→警示,不是偵測→斷定。
+//
+// ⚠ 同樣重要的是**反過來**那一句:它只認得清單上的那幾種形狀,沒被指出來的
+// 個資與祕密照樣在草稿裡。這條橫幅沒出現不代表草稿是乾淨的。
 export const RedactionHint = ({ hits, mode, onChangeMode }) => {
   if (!hits || hits.length === 0) return null;
   const summary = summarizePIIHits(hits);
+  // ⚠ block 攔得住的只有 pii 那一類。憑證(API 金鑰、權杖、私密金鑰、密碼)
+  // 是只警示的 —— 草稿裡只有一把 API 金鑰的時候,這條橫幅**不可以**寫
+  // 「這則不會送出」,因為它送得出去。橫幅說了會發生的事就必須真的發生。
+  const willBlock = mode === "block" && blockingHits(hits).length > 0;
 
   return (
     <div style={{
@@ -198,9 +207,11 @@ export const RedactionHint = ({ hits, mode, onChangeMode }) => {
       <IconShield size={13} style={{ color: "var(--warn)" }} />
       <span>
         這則草稿裡疑似有 <b>{summary}</b>（只比對格式，可能認錯）。
-        {mode === "block"
+        {willBlock
           ? "目前模式是 block，這則不會送出。"
-          : "送出後，模型和這份對話紀錄都會留著它，收不回來。"}
+          : mode === "block"
+            ? "這幾種只提醒、不擋送出——送出後，模型和這份對話紀錄都會留著它，收不回來。"
+            : "送出後，模型和這份對話紀錄都會留著它，收不回來。"}
       </span>
       <div style={{ flex: 1 }} />
       <div style={{ display: "flex", gap: 2 }}>

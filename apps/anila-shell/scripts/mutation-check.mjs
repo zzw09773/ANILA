@@ -89,6 +89,8 @@ const NEW_TESTS = [
   "src/__tests__/redactionGateCoverage",
   "src/__tests__/redactionChokePoint",
   "src/__tests__/settingsPrivacyHonesty",
+  // 憑證偵測與四條既有 pattern 的精準度(`wt/credential-detect`,2026-08-06)。
+  "src/__tests__/credentialDetect",
 ];
 // 這個工作包之前就存在的測試(用來量「舊套件漏了什麼」)。
 const PRE_EXISTING_EXCLUDES = [
@@ -102,6 +104,7 @@ const PRE_EXISTING_EXCLUDES = [
   "**/redactionGateCoverage.test.jsx",
   "**/redactionChokePoint.test.jsx",
   "**/settingsPrivacyHonesty.test.jsx",
+  "**/credentialDetect.test.jsx",
   "**/__tests__/guards/**",
   "**/sourceTextGuardRegistry.test.js",
 ];
@@ -417,8 +420,10 @@ const MUTATIONS = [
     file: "src/chat.jsx",
     shape: "條件反轉",
     intent: "block 模式不再攔任何東西（使用者選了阻擋，身分證號照樣送出去）",
-    find: '    if (mode === "block" && hits.length > 0) {',
-    replace: '    if (mode === "block" && hits.length < 0) {',
+    // 2026-08-06 重新錨定:閘門改看 `blockingHits` 的結果(憑證進不了阻擋),
+    // 原本那一行 `hits.length > 0` 不存在了。守的東西一字未變。
+    find: '    if (mode === "block" && blocking.length > 0) {',
+    replace: '    if (mode === "block" && blocking.length < 0) {',
   },
   {
     id: "redaction-gate-skipped-on-autosend",
@@ -494,6 +499,158 @@ const MUTATIONS = [
     find: "        if (alive && REDACTION_MODES.includes(s.redactionMode)) {",
     replace: "        if (alive && typeof s.redactionMode === \"string\") {",
   },
+
+  // ── 偵測器本身:認得的形狀與認錯的機率 ──────────────────────────────
+  //
+  // 上面那一區守「閘門會不會被繞過」。這一區守**閘門看到的東西對不對** ——
+  // 一個誤報成災的偵測器不會壞掉,它只是會被使用者學會忽略,然後在真的有
+  // 東西的那一天靜靜地失效。所以這裡每一個突變都對應一個**使用者可見的
+  // 誤報或漏報**,而不是一行程式碼。
+  {
+    id: "id-check-digit-not-verified",
+    file: "src/data.jsx",
+    shape: "驗證放寬",
+    intent: "身分證只比形狀不驗檢查碼（採購案號、料號、財產編號全部變成「疑似身分證」）",
+    find: "    validate: isTaiwanIdNumber,",
+    replace: "    validate: isTaiwanIdNumber && undefined,",
+  },
+  {
+    id: "id-second-digit-unconstrained",
+    file: "src/data.jsx",
+    shape: "條件放寬",
+    intent: "身分證第二碼不再限性別碼／新式證號碼（多一批院內編號進來排隊碰運氣）",
+    find: "    regex: /\\b[A-Z][1289]\\d{8}\\b/g,",
+    replace: "    regex: /\\b[A-Z][0-9]\\d{8}\\b/g,",
+  },
+  {
+    id: "card-luhn-not-verified",
+    file: "src/data.jsx",
+    shape: "驗證放寬",
+    intent: "信用卡不驗 Luhn（年度欄「2021 2022 2023 2024」變成一張卡）",
+    find: "    validate: passesLuhn,",
+    replace: "    validate: passesLuhn && undefined,",
+  },
+  {
+    id: "card-separator-swallows-newline",
+    file: "src/data.jsx",
+    shape: "字元類別放寬",
+    intent: "信用卡分隔符又含換行與 tab（任何從表格貼上的四欄四位數都是一張卡）",
+    // `[- ]` → `[-\s]` 就是改動前的原樣。這一個突變等於把整包最主要的
+    // 誤報來源放回去。
+    find: "    regex: /\\b[2-6]\\d{3}([- ]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b/g,",
+    replace: "    regex: /\\b[2-6]\\d{3}([-\\s]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b/g,",
+  },
+  {
+    id: "card-first-digit-unconstrained",
+    file: "src/data.jsx",
+    shape: "條件放寬",
+    intent: "信用卡首碼不再限發卡產業別（1 開頭的十六位序號只要湊巧過 Luhn 就命中）",
+    find: "    regex: /\\b[2-6]\\d{3}([- ]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b/g,\n    validate: passesLuhn,",
+    replace: "    regex: /\\b\\d{4}([- ]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b/g,\n    validate: passesLuhn,",
+  },
+  {
+    id: "email-tld-accepts-digits",
+    file: "src/data.jsx",
+    shape: "字元類別放寬",
+    intent: "Email 的頂級網域又可以是數字（貼一段程式碼，`react-dom@18.3.1` 就是一個人的信箱）",
+    find: "    regex: /[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)*\\.[A-Za-z]{2,}\\b/g,",
+    replace: "    regex: /[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)*\\.[\\w.-]+/g,",
+  },
+  {
+    id: "api-key-not-detected",
+    file: "src/data.jsx",
+    shape: "偵測靜默失效",
+    intent: "API 金鑰完全偵測不到（貼一把 sk- 金鑰進去，一個字都不會說）",
+    // `\b` → `\B`:識別字一個沒少,而每一把貼在空白或行首後面的金鑰都不再命中。
+    find: "    regex: /\\b(?:sk-(?:proj|ant-api",
+    replace: "    regex: /\\B(?:sk-(?:proj|ant-api",
+  },
+  {
+    id: "bearer-token-not-detected",
+    file: "src/data.jsx",
+    shape: "偵測靜默失效",
+    intent: "`Authorization: Bearer …` 偵測不到（JWT 那一半還在，所以測試不紅就代表沒人守 Bearer）",
+    find: "    regex: /\\bBearer[ \\t]+",
+    replace: "    regex: /\\BBearer[ \\t]+",
+  },
+  {
+    id: "private-key-block-not-detected",
+    file: "src/data.jsx",
+    shape: "偵測靜默失效",
+    intent: "貼一整段私鑰進來完全沒有提醒（最不該漏的那一種）",
+    find: "PRIVATE KEY(?: BLOCK)?-----/g,",
+    replace: "PRIVATE  KEY(?: BLOCK)?-----/g,",
+  },
+  {
+    id: "chinese-password-not-detected",
+    file: "src/data.jsx",
+    shape: "偵測靜默失效",
+    intent: "中文的「密碼：…」偵測不到（英文的還在，所以這裡不紅＝中文使用者沒人守）",
+    find: "    regex: /(?:[Pp]assword|PASSWORD|[Pp]asswd|[Pp]wd|密碼)[ \\t]*",
+    replace: "    regex: /(?:[Pp]assword|PASSWORD|[Pp]asswd|[Pp]wd)[ \\t]*",
+  },
+  {
+    id: "sk-prefix-length-unpinned",
+    file: "src/data.jsx",
+    shape: "條件放寬（回到驗收抓到的那一版）",
+    intent: "`sk-` 又變成「三字元前綴＋16 字」（貼一段前端程式碼，SpinKit 的 CSS class 就是一把 API 金鑰）",
+    find: "sk-(?:proj|ant-api\\d{2})-[A-Za-z0-9_-]{40,}|sk-[A-Za-z0-9]{32,}",
+    replace: "sk-[A-Za-z0-9_-]{16,}",
+  },
+  {
+    id: "password-value-accepts-code-shapes",
+    file: "src/data.jsx",
+    shape: "字元類別放寬（回到驗收抓到的那一版）",
+    intent: "`password:` 後面又什麼都收（`varchar(255)`、`z.string().min(8)`、`${DB_PASSWORD}` 全部變成疑似密碼）",
+    find: '(?=[A-Za-z0-9._~+\\/=!@#%^&*-]*[0-9])[A-Za-z0-9._~+\\/=!@#%^&*-]{8,}/g,',
+    replace: '(?=[^\\s"\'<>]*[0-9!@#$%^&*+=?~])[^\\s"\'<>]{6,}/g,',
+  },
+  {
+    id: "blocking-whitelist-not-frozen",
+    file: "src/data.jsx",
+    shape: "保證被拿掉（而且沒有人會發現）",
+    intent: "阻擋白名單變成可以就地改的陣列（任何一段程式碼都能把 credential 加成擋人的一族）",
+    find: 'export const BLOCKING_FAMILIES = Object.freeze(["pii"]);',
+    replace: 'export const BLOCKING_FAMILIES = ["pii"];',
+  },
+  {
+    id: "credential-becomes-blocking",
+    file: "src/data.jsx",
+    shape: "白名單被放寬",
+    intent: "憑證變成擋得住送出（貼一段含金鑰的程式碼就送不出去 —— 這正是本包要避免的那件事）",
+    find: 'export const BLOCKING_FAMILIES = Object.freeze(["pii"]);',
+    replace: 'export const BLOCKING_FAMILIES = Object.freeze(["pii", "credential"]);',
+  },
+  {
+    id: "composer-gate-ignores-family",
+    file: "src/chat.jsx",
+    shape: "分流被繞過",
+    intent: "輸入框閘門不再分辨個資與憑證（block 模式下貼金鑰就送不出去）",
+    // ⚠ 突變本身要挑「看起來很無害」的那一種:個資有命中時行為完全一樣,
+    // 只有在**只剩憑證**的時候才退回去擋人。這正是未來會被誰隨手加上去的
+    // 那一行 fallback。
+    find: "    const blocking = blockingHits(hits);",
+    replace: "    const blocking = blockingHits(hits).length ? blockingHits(hits) : hits;",
+  },
+  {
+    id: "choke-point-gate-ignores-family",
+    file: "src/app.jsx",
+    shape: "分流被繞過",
+    intent: "扼流點不再分辨個資與憑證（範本、重試、對比模式裡貼金鑰全部送不出去）",
+    find: '    const blocking = blockingHits(detectPII(text || ""));',
+    replace:
+      '    const blocking = blockingHits(detectPII(text || "")).length' +
+      ' ? blockingHits(detectPII(text || "")) : detectPII(text || "");',
+  },
+  {
+    id: "hint-bar-claims-block-for-credentials",
+    file: "src/trust.jsx",
+    shape: "畫面上那句話變成謊話",
+    intent: "草稿裡只有金鑰時提示列說「這則不會送出」，而它送得出去",
+    find: '  const willBlock = mode === "block" && blockingHits(hits).length > 0;',
+    replace: '  const willBlock = mode === "block" && hits.length > 0;',
+  },
+
   {
     id: "redaction-mode-lost-in-compare",
     file: "src/multiagent.jsx",

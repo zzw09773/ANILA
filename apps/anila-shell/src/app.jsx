@@ -130,7 +130,7 @@ import {
   IconTrash,
   IconUser,
 } from "./icons.jsx";
-import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS, detectPII, summarizePIIHits } from "./data.jsx";
+import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS, blockingHits, detectPII, summarizePIIHits } from "./data.jsx";
 import {
   CitationsDrawer,
   ConfidentialWatermark,
@@ -401,15 +401,18 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
    */
   const passesRedactionGate = (text) => {
     if (redactionMode !== "block") return true;
-    const hits = detectPII(text || "");
-    if (hits.length === 0) return true;
+    // ⚠ 擋不擋只看 `blockingHits`。憑證(family "credential")會在提示列上
+    // 出現,但不在 BLOCKING_FAMILIES 裡 —— 它永遠不會讓訊息送不出去。
+    // 那條白名單是這件事的結構(data.jsx),不是這裡的一句約定。
+    const blocking = blockingHits(detectPII(text || ""));
+    if (blocking.length === 0) return true;
     // ⚠ 這句話必須說出**擋的是什麼**,而且必須給一條**當下真的走得到**的出路。
     // 它曾經只寫「可在上方提示列切換模式」,而提示列只在輸入框裡剛好有個資時
     // 才存在 —— 從範本或重試被擋下來的人,畫面上根本沒有那條提示列,等於被鎖
     // 在外面沒有鑰匙。設定 →「隱私 / 信任」那組按鈕是永遠都在的那一條,
     // 所以指向它。
     toast(
-      `這則訊息裡疑似有 ${summarizePIIHits(hits)}（只比對格式，可能認錯）。目前模式是 block，所以沒有送出 —— 這個模式是你自己選的，可到「設定 → 隱私 / 信任」改。`,
+      `這則訊息裡疑似有 ${summarizePIIHits(blocking)}（只比對格式，可能認錯）。目前模式是 block，所以沒有送出 —— 這個模式是你自己選的，可到「設定 → 隱私 / 信任」改。`,
       { tone: "error" },
     );
     return false;
@@ -3589,8 +3592,10 @@ function SettingsModal({
                   ))}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.6, marginTop: 6 }}>
-                  偵測只比對格式，不保證判斷正確——公文編號、預算表格、案號都可能被誤認。
-                  warn＝送出前提醒你，照樣送出；block＝偵測到時不送出。
+                  偵測只認得它知道的那幾種形狀（身分證、電話、Email、信用卡、
+                  API 金鑰、權杖、私密金鑰、密碼），認不出來的不代表沒有，認出來的也可能認錯。
+                  warn＝送出前提醒你，照樣送出；block＝偵測到個資時不送出。
+                  金鑰、權杖、密碼這類憑證一律只提醒，不會擋你送出——貼一段程式碼被擋住，比漏提醒更糟。
                 </div>
               </div>
               <div>
