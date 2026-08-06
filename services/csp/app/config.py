@@ -96,10 +96,23 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443"
 
     # Incoming Host-header allow-list (anti Host-header-injection /
-    # cache-poisoning). Comma-separated hostnames; "*" disables the check
-    # (default, non-breaking). Production should pin this to the real
-    # ingress host(s), e.g. "anila.ncsist.org.tw,172.16.120.35". Distinct
-    # from ANILA_TRUSTED_HOSTS, which is the *outgoing* SSRF allow-list.
+    # cache-poisoning). Comma-separated hostnames; "*" disables the check.
+    # Distinct from ANILA_TRUSTED_HOSTS, which is the *outgoing* SSRF
+    # allow-list.
+    #
+    # Trade-off, deliberate: the *library* default stays "*" (check off)
+    # and the *deployment* turns it on — infra/compose/platform.yml passes
+    # ALLOWED_HOSTS with the real ingress set as its compose-level default,
+    # so every `up -d` is protected even with an empty .env. The reverse
+    # (a restrictive default here) locks out callers this file cannot
+    # enumerate: starlette's TestClient alone speaks `Host: testserver`
+    # (tests/conftest.py:128 drives the whole suite through it), and a bare
+    # uvicorn dev loop is reached under whatever name the operator typed.
+    # Owner rule ③ "will it block US in the future" — a default that only
+    # a container knows how to satisfy would.
+    #
+    # Whatever this is set to, app.main._INTERNAL_HOSTS is unioned in, so
+    # narrowing it can never cut the healthcheck or the in-network callers.
     ALLOWED_HOSTS: str = "*"
 
     # Mark session cookies as Secure (HTTPS-only). Defaults to True; set

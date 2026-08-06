@@ -44,6 +44,11 @@ _OPERATOR_KNOBS = [
     "ANILA_TRUSTED_HOSTS",
     # anila-studio ReadTimeout 那次的旋鈕。
     "LLM_TIMEOUT",
+    # 入向 Host 白名單(runbook §3.1d / .env.example)。這一條特別要緊:它
+    # **就是功能的開關本身** —— app/config.py 的預設是 "*",等於中間層不註冊,
+    # 所以少了 compose 這一行,Host 檢查永遠是關的,而 `.env` 裡躺著一份
+    # 看起來已經生效的名單。少了它沒有 400、沒有錯誤,只是保護不存在。
+    "ALLOWED_HOSTS",
 ]
 
 
