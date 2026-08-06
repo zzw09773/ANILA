@@ -40,7 +40,26 @@ DB 狀態,再看測試本身。
 > 「改一行讓功能整個死掉、而套件全綠」的位置。前端已經有突變檢查
 > (`apps/anila-shell/scripts/mutation-check.mjs`),**csp 這邊還沒有**。
 
-## 目前基準線(2026-08-05 實測,八包合併完成後在主樹量)
+## 目前基準線(2026-08-06 晚實測,第八包〔非 root 化〕合併後在 worktree 量,與主樹同 content)
+
+```
+2114 passed · 60 skipped · 0 failed     (未設 ANILA_TEST_PG_DSN)
+```
+
+60 個略過裡 **36 個是 `ANILA_TEST_PG_DSN` 閘住的 PG-only 測試**。補跑配方(丟棄式,不碰活體 csp-db):
+
+```bash
+docker run -d --name testpg -e POSTGRES_PASSWORD=throwaway -p 127.0.0.1:5544:5432 pgvector/pgvector:pg16
+docker exec testpg psql -U postgres -c "CREATE ROLE csp WITH LOGIN PASSWORD 'x'"   # restore-ownership 測試需要
+ANILA_TEST_PG_DSN="postgresql://postgres:throwaway@127.0.0.1:5544/postgres" $PY -m pytest -q $(grep -ln ANILA_TEST_PG_DSN tests/*.py)
+```
+
+⚠ 這 36 個在乾淨 PG 上是 **32 過、4 失敗**——`test_memory_scope_pg.py` 全檔(檢索回空,1 秒內全倒),
+pg16 與 pg17 同況、**基底 commit 與第八包分支結果逐字相同**、檔內無凍結日期。
+08-06 早上的 2150/24/0 是在某個這 4 個會過的環境量的(推測是 `/tmp/anila-test-pg-dsn`
+指向的實例,該檔已不存在)。**這 4 個要單獨診斷;在乾淨 PG 上看到它們紅,不是你的回歸。**
+
+## 舊基準線(2026-08-05 實測,八包合併完成後在主樹量)
 
 ```
 2069 passed · 13 skipped · 0 failed     (2082 collected)
