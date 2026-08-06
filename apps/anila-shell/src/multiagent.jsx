@@ -154,7 +154,7 @@ export const ParallelCompareView = ({
 
       <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg)" }}>
         {/* ⚠ 敏感資訊模式一定要傳進來。少傳這兩個 prop,這個 Composer 會退回
-            自己的預設 mask —— 使用者存的 block 在對比模式裡就悄悄失效,而設定頁
+            自己的預設 warn —— 使用者存的 block 在對比模式裡就悄悄失效,而設定頁
             正寫著那個選擇「會存在你的帳號下」。一個問題在這裡是平行送給多個
             agent 的,漏掉等於同一段原文外流的份數還變多。 */}
         <Composer

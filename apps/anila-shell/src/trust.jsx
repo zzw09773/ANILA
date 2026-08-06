@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from "react";
 import { IconBook, IconX, IconExternal, IconShield, IconGauge, IconLock } from "./icons.jsx";
 import { IconButton } from "./components.jsx";
-import { renderWithRedaction } from "./data.jsx";
+import { summarizePIIHits } from "./data.jsx";
 import { classificationLevelBadge } from "./runtime/classified.js";
 
 // ---- Inline citation [N] ----
@@ -156,24 +156,35 @@ export const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }
   );
 };
 
-// ---- Redaction composer hint ----
+// ---- 敏感資訊提示列 ----
 
 /**
- * 敏感資訊模式,由寬到嚴。單一真相來源:提示列的按鈕、以及 app.jsx 從
- * users.ui_settings 讀回偏好時的驗證,都讀這一份。
+ * 敏感資訊模式,由寬到嚴。單一真相來源:提示列的按鈕、設定頁的那組按鈕、
+ * 以及 app.jsx 從 users.ui_settings 讀回偏好時的驗證,都讀這一份。
+ *
+ * 兩個模式做的都是它字面上的事:`warn` 告訴你草稿裡疑似有什麼,`block` 不讓它送出。
  *
  * ⚠ 順序有意義:`block` 對「離開瀏覽器的內容」最嚴(真的擋住送出),`warn` 最寬
  * (只顯示這條提示)。所以把使用者從自己選的模式改回預設,方向上是**放寬**保護,
  * 不是單純忘記一個偏好 —— 這就是它必須被存下來的理由。
+ *
+ * ⚠ 預設是 `warn`:兩個裡最寬的那個,只告知、不替使用者動手。
+ * ⚠ `users.ui_settings` 裡可能還留著已經不存在的舊值。白名單驗證(app.jsx)
+ *   會讓它落在預設上 —— 讀回不認得的值不是錯誤,不要在那裡噴 console。
  */
-export const REDACTION_MODES = ["warn", "mask", "block"];
-export const REDACTION_MODE_DEFAULT = "mask";
+export const REDACTION_MODES = ["warn", "block"];
+export const REDACTION_MODE_DEFAULT = "warn";
 
+// 提示列的工作是讓人停一秒自己判斷,不是替他決定:說出**看到了什麼**、
+// 以及**送出去之後會怎樣**,然後就閉嘴。不給指示、不代為動作。
+//
+// ⚠ 用「疑似」不用「有」。偵測器只比對格式,它並不知道那串字究竟是什麼 ——
+// 實測七個常見院內樣本有六個是誤報(採購案號、預算欄、年度欄、16 位料號、
+// 公文編號、承辦人 email)。對著一張預算表斷言「這裡有 1 個信用卡」,
+// 錯一次使用者就再也不看這條橫幅了。這是偵測→警示,不是偵測→斷定。
 export const RedactionHint = ({ hits, mode, onChangeMode }) => {
   if (!hits || hits.length === 0) return null;
-  const byKind = {};
-  hits.forEach(h => { byKind[h.label] = (byKind[h.label] || 0) + 1; });
-  const summary = Object.entries(byKind).map(([k, v]) => `${v} ${k}`).join(" · ");
+  const summary = summarizePIIHits(hits);
 
   return (
     <div style={{
@@ -186,8 +197,10 @@ export const RedactionHint = ({ hits, mode, onChangeMode }) => {
     }}>
       <IconShield size={13} style={{ color: "var(--warn)" }} />
       <span>
-        偵測到 <b>{hits.length}</b> 個敏感片段（{summary}）·
-        {mode === "mask" ? " 僅在本畫面遮蔽顯示,送出內容不變" : mode === "warn" ? " 僅顯示這則提醒,送出內容不變" : " 將阻擋送出"}
+        這則草稿裡疑似有 <b>{summary}</b>（只比對格式，可能認錯）。
+        {mode === "block"
+          ? "目前模式是 block，這則不會送出。"
+          : "送出後，模型和這份對話紀錄都會留著它，收不回來。"}
       </span>
       <div style={{ flex: 1 }} />
       <div style={{ display: "flex", gap: 2 }}>
@@ -203,39 +216,6 @@ export const RedactionHint = ({ hits, mode, onChangeMode }) => {
       </div>
     </div>
   );
-};
-
-// ---- RedactedSpan (in user bubble) ----
-// ⚠ 這個提示字曾經寫「已於 CSP 層遮罩 · LLM 未接觸原值」,那是**假的**:
-// `piiHits` 是 client-only(runtime/messageTree.js),遮罩只發生在這個畫面上,
-// 送出的 body 是原文。在四級密等的平台上,對使用者斷言「模型沒看過你的身分證號」
-// 而事實相反,是這份程式碼裡最貴的一句謊。
-// 2026-07-30 修掉了組字列那句承諾,漏了這句斷言 —— 同一個缺陷的第二個畫面。
-export const RedactedSpan = ({ kind, label, masked }) => (
-  <span
-    title={`僅在本畫面遮蔽顯示（${kind}）· 送出內容為原文，未經遮罩`}
-    style={{
-      display: "inline-flex", alignItems: "center", gap: 4,
-      padding: "0 6px",
-      background: "oklch(0.82 0.12 70 / 0.35)",
-      borderBottom: "1px dashed var(--warn)",
-      borderRadius: 3,
-      fontFamily: "var(--font-mono)", fontSize: 12,
-      color: "var(--fg)",
-    }}>
-    <IconShield size={10} />
-    <span>{masked}</span>
-    <span style={{ fontSize: 9, color: "var(--fg-subtle)", marginLeft: 2 }}>[{label}]</span>
-  </span>
-);
-
-export const RenderRedactedText = ({ text, hits }) => {
-  const parts = renderWithRedaction(text, hits);
-  if (typeof parts === "string") return parts;
-  return parts.map((p, i) => {
-    if (typeof p === "string") return <React.Fragment key={i}>{p}</React.Fragment>;
-    return <RedactedSpan key={i} kind={p.kind} label={p.label} masked={p.masked} />;
-  });
 };
 
 // ---- Confidence chip ----

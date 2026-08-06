@@ -15,12 +15,15 @@ export const DEFAULT_FOLDERS = [
 export const BUILTIN_FOLDER_IDS = new Set(["all", "starred"]);
 
 // ---- PII detection patterns ----
-// Front-end only. These feed `renderWithRedaction` → the on-screen masking, and
-// nothing else: no part of this file is on the send path. The request body and
-// the stored conversation both keep the ORIGINAL text. There is no PII
-// redaction anywhere in the CSP backend — no model, column, migration, or API.
-// (This comment used to claim "real redaction at CSP proxy"; that was false, and
-// it is the likely seed of the same false claim in the settings privacy panel.)
+// Front-end only. The detector has exactly two consumers: the composer hint bar
+// (`warn` — tell the user what is in the draft) and the send gate (`block` —
+// refuse to send it). Neither of them alters the text: what the user typed is
+// what the model receives and what the conversation record keeps, byte for byte.
+//
+// ⚠ These four patterns are unvalidated and fire on plenty of ordinary institute
+// prose (case numbers, budget columns, year lists, any official email address).
+// Whether they are worth keeping in this shape is an open product question —
+// widening or narrowing them is a decision, not a cleanup.
 const PII_PATTERNS = [
   { kind: "id",    label: "身分證",   regex: /\b[A-Z]\d{9}\b/g },
   { kind: "phone", label: "電話",     regex: /\b09\d{2}-?\d{3}-?\d{3}\b/g },
@@ -41,29 +44,19 @@ export function detectPII(text) {
   return hits.sort((a, b) => a.index - b.index);
 }
 
-export function maskPII(value, kind) {
-  if (!value) return value;
-  if (kind === "email") {
-    const [u, d] = value.split("@");
-    return u.slice(0, 2) + "***@" + d;
-  }
-  if (kind === "phone") {
-    return value.replace(/(\d{2,4})[^\d]?(\d{3})[^\d]?(\d{3,4})/, "$1-***-$3");
-  }
-  if (kind === "id") return value.slice(0, 1) + "****" + value.slice(-3);
-  if (kind === "card") return "****-****-****-" + value.slice(-4);
-  return "[REDACTED]";
-}
-
-export function renderWithRedaction(text, hits) {
-  if (!hits || hits.length === 0) return text;
-  const parts = [];
-  let cursor = 0;
-  hits.forEach((h, i) => {
-    if (h.index > cursor) parts.push(text.slice(cursor, h.index));
-    parts.push({ __redacted: true, kind: h.kind, label: h.label, masked: maskPII(h.value, h.kind), idx: i });
-    cursor = h.index + h.value.length;
-  });
-  if (cursor < text.length) parts.push(text.slice(cursor));
-  return parts;
+/**
+ * 把偵測結果講成一句人話:`1 個身分證、2 個 Email`。
+ *
+ * 提示列與阻擋通知都用它。理由:「偵測到敏感資訊」只講了一個關於字串的事實,
+ * 本來就知道那是什麼的人只是被拖了一秒,不知道的人什麼也沒學到。要讓人停下來
+ * 想一下,得先說出**找到的是什麼**。
+ *
+ * @param {{label: string}[]} hits
+ * @returns {string} 空陣列回空字串。
+ */
+export function summarizePIIHits(hits) {
+  if (!hits || hits.length === 0) return "";
+  const byLabel = new Map();
+  hits.forEach((h) => byLabel.set(h.label, (byLabel.get(h.label) || 0) + 1));
+  return [...byLabel].map(([label, n]) => `${n} 個${label}`).join("、");
 }

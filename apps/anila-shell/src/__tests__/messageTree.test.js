@@ -351,16 +351,16 @@ describe("applyServerPath", () => {
         dbId: 1,
         role: "user",
         text: "old",
-        piiHits: [{ start: 0, end: 2 }],
         explicitAgents: ["agent-a"],
+        routedAgentId: "agent-a",
       },
       {
         id: "srv-2",
         dbId: 2,
         role: "assistant",
         text: "old-a",
-        piiHits: undefined,
         explicitAgents: undefined,
+        routedAgentId: undefined,
       },
     ];
     const serverMapped = [
@@ -370,11 +370,12 @@ describe("applyServerPath", () => {
     const next = applyServerPath(prev, serverMapped, 42);
     expect(next).toHaveLength(2);
     expect(next[0].text).toBe("new path user");
-    expect(next[0].piiHits).toEqual([{ start: 0, end: 2 }]);
     expect(next[0].explicitAgents).toEqual(["agent-a"]);
+    expect(next[0].routedAgentId).toBe("agent-a");
     expect(next[0].conversationId).toBe(42);
     expect(next[1].dbId).toBe(9);
-    expect(next[1].piiHits).toBeUndefined();
+    expect(next[1].explicitAgents).toBeUndefined();
+    expect(next[1].routedAgentId).toBeUndefined();
     // Wholesale replace — old assistant dbId 2 is gone.
     expect(next.find((m) => m.dbId === 2)).toBeUndefined();
     // prevList not mutated.
@@ -454,7 +455,7 @@ describe("applyServerPath", () => {
 describe("switchBranch", () => {
   it("calls PUT active-leaf and rebuilds from response without optimistic mutation", async () => {
     const prevList = [
-      { id: "srv-1", dbId: 1, role: "user", text: "q", piiHits: ["x"] },
+      { id: "srv-1", dbId: 1, role: "user", text: "q", explicitAgents: ["x"] },
       { id: "srv-2", dbId: 2, role: "assistant", text: "a1" },
     ];
     const frozen = prevList;
@@ -509,7 +510,7 @@ describe("switchBranch", () => {
     );
     expect(result.activeLeafMessageId).toBe(3);
     expect(result.messages.map((m) => m.dbId)).toEqual([1, 3]);
-    expect(result.messages[0].piiHits).toEqual(["x"]);
+    expect(result.messages[0].explicitAgents).toEqual(["x"]);
     // No optimistic mutation of the input list.
     expect(prevList).toBe(frozen);
     expect(prevList.map((m) => m.dbId)).toEqual([1, 2]);

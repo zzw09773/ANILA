@@ -68,7 +68,7 @@ import {
   extractStatusReason,
   pollAttachmentExtractStatus,
 } from "./runtime/conversations.js";
-import { BUILTIN_FOLDER_IDS, detectPII } from "./data.jsx";
+import { BUILTIN_FOLDER_IDS, detectPII, summarizePIIHits } from "./data.jsx";
 import {
   AuditWatermark,
   ClassificationWatermark,
@@ -76,7 +76,6 @@ import {
   ConfidenceChip,
   FollowUpSuggestions,
   RedactionHint,
-  RenderRedactedText,
   renderTextWithCitations,
 } from "./trust.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
@@ -558,7 +557,7 @@ export const MessageBubble = ({
               </div>
             </div>
           ) : (
-            <RenderRedactedText text={msg.text} hits={msg.piiHits} />
+            msg.text
           )}
           {/* OW-1: user-bubble pager + delete — edit-re-ask siblings switchable/removable.
               Only when the message actually HAS siblings; a lone turn is not a branch. */}
@@ -1416,7 +1415,7 @@ export const Composer = ({
   onSend,
   disabled,
   agents,
-  redactionMode = "mask",
+  redactionMode = "warn",
   onChangeRedactionMode,
   initialValue = "",
   placeholder,
@@ -1472,8 +1471,8 @@ export const Composer = ({
   //
   // ⚠ 不可以退回成單純的 `useState(redactionMode)`:後端存的偏好是掛載之後才
   // 非同步到的,而 useState 只認第一次的值。使用者上次選的 block 會在讀回來的
-  // 那一刻被靜默丟掉,畫面停在預設的 mask —— 也就是使用者選了最嚴的模式,
-  // 下一則訊息卻照原文送出去。這正是這個包在修的那一類缺陷。
+  // 那一刻被靜默丟掉,畫面停在預設的 warn —— 也就是使用者選了會擋的那個模式,
+  // 下一則訊息卻照樣送出去。這正是這一類缺陷的形狀。
   const [localMode, setLocalMode] = useState(redactionMode);
   const modeControlled = typeof onChangeRedactionMode === "function";
   const mode = modeControlled ? redactionMode : localMode;
@@ -1601,11 +1600,21 @@ export const Composer = ({
    */
   const passesRedactionGate = (hits) => {
     if (mode === "block" && hits.length > 0) {
-      // ⚠ 這句話曾經寫「管理員已設定為阻擋送出」—— 那是假的。這個模式是使用者
+      // 這句話要做三件事:說出**擋的是什麼**(不是含糊的「敏感資訊」)、
+      // 說明那只是**格式像**(擋錯的機率不低)、以及**是誰擋的**。
+      //
+      // ⚠ 「疑似」不是客套。偵測器只比對格式,而院內的採購案號、預算表格、
+      // 料號都會命中 —— 一個被擋下來的人多半是被誤擋的,他必須看得出來這是
+      // 格式判斷不是事實認定,才知道可以放心把模式切回 warn。
+      //
+      // ⚠ 它曾經寫「管理員已設定為阻擋送出」—— 那是假的。這個模式是使用者
       // 自己的偏好(存在 users.ui_settings),後端沒有對應的管理員政策欄位。
       // 真正把它切到 block 的就是使用者自己,而且就在上面那條提示列的按鈕上。
       // 把決定推給一個不存在的管理員,使用者既不知道是誰擋的,也找不到路自救。
-      toast("偵測到敏感資訊，目前模式為「阻擋」，所以這則訊息沒有送出。可在上方提示列切換模式，或清除後再送。", { tone: "error" });
+      toast(
+        `這則訊息裡疑似有 ${summarizePIIHits(hits)}（只比對格式，可能認錯）。目前模式是 block，所以沒有送出 —— 這個模式是你自己選的，上方提示列可以改。`,
+        { tone: "error" },
+      );
       return false;
     }
     return true;
@@ -1615,10 +1624,7 @@ export const Composer = ({
     const v = text.trim();
     if (!v && atts.length === 0) return;
     if (!passesRedactionGate(piiHits)) return;
-    onSend(v, atts, {
-      piiHits: mode === "mask" ? piiHits : [],
-      explicitAgents: mentionParse.explicitAgents,
-    });
+    onSend(v, atts, { explicitAgents: mentionParse.explicitAgents });
     setText("");
     liveRefs.current.clear();
     liveUploadIds.current.clear();
@@ -2149,7 +2155,7 @@ export const Composer = ({
                           setTimeout(() => { taRef.current?.focus(); }, 0);
                           return;
                         }
-                        onSend(body, [], { piiHits: mode === "mask" ? bodyHits : [], explicitAgents: mentionParse.explicitAgents });
+                        onSend(body, [], { explicitAgents: mentionParse.explicitAgents });
                         setText("");
                       } else {
                         setText(body);
