@@ -896,6 +896,24 @@ class PdfParser:
         images: dict[str, ImageRef] = {}
         doc = fitz.open(file_path)
         try:
+            # Everything below numbers pages by the extractor's own output:
+            # ``page_chunks`` decides the count and ``doc[pno - 1]`` trusts
+            # the index to line up with the physical document. Both the
+            # ``has_page_boundaries`` check and the chunker's guard compare
+            # the extractor to *itself*, so an extractor that silently drops
+            # pages is self-consistent and invisible to them — a real 5-page
+            # PDF read as 3 would tell the reader 「第 3 頁／共 3 頁」 and
+            # every mechanism downstream would agree. ``doc`` is already open,
+            # so the physical count is free; this is the only comparison
+            # against ground truth in the whole path.
+            if len(page_chunks) != doc.page_count:
+                logger.warning(
+                    "PDF %s: text extractor returned %d page(s) but the "
+                    "document has %d — page numbers derived from this "
+                    "extraction will be wrong",
+                    path.name, len(page_chunks), doc.page_count,
+                )
+
             parts: list[str] = []
             # Kept separately from ``parts``: this is the per-page extraction
             # before any placeholder is appended, which is what the OCR
@@ -908,8 +926,18 @@ class PdfParser:
                     if isinstance(page_entry, dict)
                     else str(page_entry)
                 )
+                # ``\f`` is the page delimiter (see the join below), so it
+                # must not survive *inside* a page. PDF text streams can
+                # legitimately carry U+000C; leaving it in splits one real
+                # page into two and shifts every later citation by one.
+                page_md = page_md.replace("\f", "\n")
+                # Sanitised, pre-placeholder text — what the OCR trigger
+                # measures. ``\f``→``\n`` is whitespace either way, so the
+                # substitution does not move that decision.
                 page_texts.append(page_md)
-                parts.append(page_md.rstrip())
+                # One element per page — image placeholders are appended to
+                # this same string, never as separate ``parts`` entries.
+                page_parts: list[str] = [page_md.rstrip()]
 
                 page = doc[pno - 1]
                 for img_info in page.get_images(full=True):
@@ -929,25 +957,48 @@ class PdfParser:
                         mime=mime,
                         page=pno,
                     )
-                    parts.append(f"\n[[IMAGE:{img_id}]]\n")
+                    page_parts.append(f"\n[[IMAGE:{img_id}]]\n")
+
+                parts.append("".join(page_parts))
         finally:
             doc.close()
 
         # Page join uses ``\f\n`` (form-feed) so consumers that need
         # per-page boundaries (e.g. the central ingestion-worker's
         # ``pdf-page`` chunker) can split on the marker without
-        # re-parsing the PDF. ``\f`` is rarely emitted by PDF text
-        # extractors so the marker is safe to insert. Markdown-style
-        # consumers ignore it as whitespace.
+        # re-parsing the PDF. Markdown-style consumers ignore it as
+        # whitespace.
         #
-        # ⚠ The marker goes between *parts*, and each of a page's images is
-        # its own part — so one page bearing two images already emits two
-        # form-feeds. ``\f`` therefore over-counts pages for any
-        # image-bearing PDF, and nothing downstream knows. Measured, not
-        # fixed here (it changes chunking for every such document); see the
-        # lead in the OCR-trigger report. Do not derive page structure from
-        # ``content`` — use ``page_texts``.
-        content = "\f\n".join(p for p in parts if p)
+        # ⚠ INVARIANT — of the join expression on the next line, and only
+        # from there until the OCR fallback below:
+        # ``"\f\n".join(parts)`` contains exactly ``len(page_chunks) - 1``
+        # form feeds, and its Nth ``\f``-separated field is real PDF page N.
+        # Three things enforce it and all three are load-bearing — reverting
+        # any one alone turns a test in test_pdf_page_markers.py red:
+        #   * ``parts`` holds exactly one entry per page — image
+        #     placeholders go *inside* their page's entry. Appending them
+        #     as separate parts made an N-page PDF with M images per page
+        #     report N×(1+M) pages, so on a 10-page/3-image spec real
+        #     page 10 was cited to the user as "page 37 of 40".
+        #   * empty pages are NOT filtered out. A blank page is still a
+        #     page; dropping it renumbers every page after it.
+        #   * in-page ``\f`` is rewritten to ``\n`` above (:896-900). A form
+        #     feed carried by the PDF's own text stream is indistinguishable
+        #     from one we inserted, and splits a real page in two.
+        #
+        # ⚠ It is NOT an invariant of what this function RETURNS. The OCR
+        # fallback below reassigns ``content`` wholesale to backend output
+        # that carries no page structure of its own, so an OCR'd document
+        # typically returns zero ``\f`` while ``metadata["pages"]`` still
+        # says N — and a backend whose text happens to contain ``\f`` would
+        # return a count that is wrong rather than absent. ``ocr_used``
+        # distinguishes the two cases. Nothing downstream may infer page
+        # structure from ``metadata["pages"]`` alone: ``extract_text``
+        # re-derives ``has_page_boundaries`` by counting the fields and
+        # comparing, and the ``pdf-page`` chunker warns when they disagree.
+        content = "\f\n".join(parts)
+        # Snapshot before the OCR fallback may replace ``content`` wholesale;
+        # the loss report below diffs the two to say what OCR destroyed.
         native_content = content
         ocr_used = False
         ocr_losses: dict[str, Any] | None = None
