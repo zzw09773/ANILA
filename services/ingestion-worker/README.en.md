@@ -62,7 +62,55 @@ No HTTP health route does not mean no health signal. The worker uses **arq's def
 
 > 📌 **A planned shutdown also shows red.** After you run `docker compose stop ingestion-worker` yourself, this card stays red for **up to 3601 s** before degrading to amber "not deployed". The card cannot tell "you stopped it" from "it died" — red during maintenance is expected, not something to chase.
 
-> ⚠ **`PDF_OCR_FALLBACK` eats the safety margin.** Default `false`. Turned `true`, PDFs with no extractable text go through per-page OCR/VLM and parse time jumps from tens of seconds toward the 1800 s range — the 3601 s headroom shrinks from roughly 40× to roughly 2× (measured by the acceptance pass). **Re-read this section before enabling that flag**, and note that no test will warn you when you do.
+> ⚠ **`PDF_OCR_FALLBACK`'s ceiling is not this 3601 s.** Default `false`. Turned `true`, PDFs with no extractable text go through per-page OCR/VLM and parse time jumps from tens of seconds toward the 1800 s range. This paragraph used to weigh that against the 3601 s heartbeat TTL and call it "40× headroom down to 2×" — **the wrong ceiling**. What binds first is `job_timeout = 300` at `src/ingestion_worker/main.py:71` (the same file, :21, says "5 minutes per ingest"). **1800 s does not eat the headroom; it is 6× over the declared budget.**
+>
+> And it is not cleanly cut off either: `extract_text` is a **synchronous** call (`handlers.py:736`) that occupies arq's event loop per the table below, and arq enforces `job_timeout` with `asyncio.wait_for` (`arq/worker.py:591`) — **which cannot interrupt blocking synchronous code, and whose timer cannot even fire while the loop is blocked**. So the outcome is one of two bad ones, indeterminately: either it runs to completion and the 300 s budget is silently exceeded (with **every other queued ingest waiting** behind it), or the timer fires the moment the loop is released and discards 1800 s of already-paid VLM work, then retries (`max_tries=3`). Neither is what "5 minutes per ingest" promises.
+>
+> 📌 **Before 2026-08-07 that cost had never once been charged.** The trigger measured the `[[IMAGE:<id>]]` placeholders the parser itself inserts as "extracted text" — 24 characters each, so **a two-page pure scan already had 48**, cleared the 40-character floor, and was declared "has text, no OCR needed". With the flag on, no scan ever reached OCR. **These numbers are what you start paying now; they were not already happening.**
+>
+> **The rule now** (`packages/anila-core/src/anila_core/ingestion/ocr.py`): measure after placeholders are stripped, **drop short lines that repeat on most pages** (page numbers, document ids, watermarks, and the classification marking every page here carries — length is not what identifies furniture, **repetition is**), then ask how many pages still carry text; **fewer than half ⇒ it is a scan**. The old per-page *average* was defeated by one 10 000-character index page hiding a 200-page scan, so it counts pages instead.
+>
+> ⚠ **This rule trades one family of defeats for another.** The old rule (per-page average) was killed outright by one long-enough marking per page; the new one does not care about length, but it does care about how much a line repeats. **Every row below is measured, not reasoned** (data fed straight to `needs_ocr_fallback`):
+>
+> **A. Misses: a scan reads as "has text" ⇒ no OCR, and nothing says so**
+>
+> | Case | Example | Why it slips through |
+> |---|---|---|
+> | Running head whose **words** change per page | `Page 3 of 50 - Section Environmental Limits` (section name changes) | a different line is not a repeated line, so it is not furniture |
+> | Rotating reviewer / sign-off token | `Reviewed by inspector A - internal` (A–G in rotation) | same |
+> | Furniture **longer than 80 characters** | measured with an 85-char classification + distribution-list header | a repeated line over 80 chars is treated as content, never as furniture |
+> | **Two** alternating odd/even headers | each on exactly 50% of pages | below the "on 60% of pages" threshold |
+> | Marking stamped on **some** pages only | 59 of 100 pages | same, 59% < 60% |
+>
+> 📌 **Digits changing is not a miss**: `Page 3 of 250 - Section 4.2`, where only the *numbers* vary, normalises to one line and is still caught. What defeats it is changing **words**, not changing numbers.
+>
+> **B. False triggers: a real-text document read as a scan ⇒ its text is replaced by the OCR result**
+>
+> | Case | Measured | Consequence |
+> |---|---|---|
+> | Many **fixed-layout forms** (labels repeat, filled values differ) | 250 of them ⇒ classified as a scan | the labels are dropped as furniture and the remaining values are too short to clear 20 chars a page |
+> | **Uniform slide deck** | 60 slides ⇒ classified as a scan | each slide is a title plus a line or two; take out the repeated chrome and there is not enough left |
+>
+> ⚠ **B is worse than A.** A merely leaves things as they are today; B **replaces text that was readable**, and by the arithmetic above a 250-page document going through OCR **will certainly blow the 300 s `job_timeout`** (250 pages is far past the ~16-page budget derived earlier). **If what you ingest is fixed-layout forms or slide decks, do not turn this flag on.**
+>
+> ⚠ **A separate single gap**: a **single-page** scan whose own marking exceeds 40 characters. Nothing repeats on a one-page document, so furniture cannot be told from content. Example: a one-page scan stamped `CONFIDENTIAL - NCSIST Internal Use Only - Page 1 of 1` reads as having text and will not be OCR'd. Multi-page documents are unaffected.
+>
+> The decision is pinned by tests (`packages/anila-core/tests/test_pdf_ocr_trigger.py`). But **still no test warns you about the cost when you flip the flag** — that is this paragraph's job.
+>
+> ⚠ **Raising `PDF_OCR_MAX_PAGES` (default 100) is the wrong direction.** It caps two things at once: how many pages get OCR'd, and how long the job runs. Raising it means longer, which makes the 300 s conflict above certain. The value to pick is the one where `ceil(pages ÷ PDF_OCR_CONCURRENCY) × per-page VLM seconds` fits inside 300 s; **working backwards from 1800 s / 100 pages / concurrency 4 gives ~72 s a page, i.e. about 16 pages** (derived, not measured). **A document needing more pages than that should not take this path at all.**
+>
+> ⚠ **And pages past the cap lose their natively extracted text as well.** On success `content` is *replaced* wholesale, not merged, so a 120-page document (pages 1-100 scanned, 101-120 real text) gets OCR over the first 100 only and **all 1880 characters of the annex are gone**. That used to be one log line. All four losses are now reported in `metadata`, in the same dict as `ocr_used` (`ocr_lossy` + `ocr_losses`), because `ocr_used: True` on its own reads as success:
+>
+> | `ocr_losses` field | meaning | where it surfaces |
+> |---|---|---|
+> | `native_text_chars_dropped` | natively extracted characters discarded | those pages vanish from retrieval |
+> | `pages_not_ocred` | pages past the cap, never OCR'd | same, and it is text the user can read in the original |
+> | `page_boundaries_lost` | the OCR result carries no `\f` | the `pdf-page` chunker sees one page; every "page 4" citation is wrong |
+> | `image_placeholders_dropped` | `[[IMAGE:…]]` anchors gone, `.images` still populated | the captioning step still runs and still pays VLM, with nowhere to write back |
+>
+> ⚠ **`ocr_lossy` / `ocr_losses` is not an alert, and nobody can see it today.** The `parse_meta` that `handlers.py:736` receives is handed to `chunker.chunk` (`:804`) and that is the end of it — **never written to the database, never attached to document status, shown nowhere in the UI**. The user still just sees "indexed". The only place it surfaces is the **worker log** (truncation at ERROR, the other three at WARNING), and you have to go and read it. **Do not assume it will tell you** — making it visible means wiring it to document status, which has not been done.
+>
+> ⚠ **csp does not take these flags, deliberately.** csp's `/api/ingestion/chunking-preview` (`services/csp/app/api/ingestion/preview.py:240`) calls the **same** `extract_text`, but the csp block in `infra/compose/platform.yml` hard-codes `PDF_OCR_FALLBACK: "false"` instead of taking `${PDF_OCR_FALLBACK}`. Reason: OCR is 1800 s-class synchronous work; ingest has a queue to absorb that, an HTTP request does not. **The consequence is that preview and real ingest will disagree about chunking** — a scan still previews as empty / image placeholders, and only the real ingest goes through OCR. **That difference is not a bug.**
 
 > ⚠ **Why the heartbeat is not made faster.** All three handlers do synchronous work on arq's event loop: `extract_text` was measured occupying it for 33–89 s on a 400-page PDF and 81–103 s on 1000 pages (the spread is host load, not code), and `evaluate_strategies` and `reresolve_collection_relations` call it **once per document in a loop** (a collection can hold hundreds). Once the heartbeat's TTL is shorter than that, **a worker doing its job correctly gets painted as dead** — the one mistake this card must never make. 3601 s clears any document the platform will accept (50 MB per file).
 >
