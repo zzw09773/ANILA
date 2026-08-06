@@ -7,6 +7,22 @@
 
 ---
 
+## 🟡 Q38 — 上游 base 映像裡的私鑰,要不要為它換 base(2026-08-07 凌晨,**等你回答**)
+
+**問題**:codeserver 的上游 base 層帶著 `usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key`
+——**內容是真的 RSA 私鑰**(相依套件自己的測試夾具,不是我們放的);asr-decoder 的 ubuntu base 帶 `var/log/bootstrap.log`。
+我們的刪除只是在上面蓋白遮罩:**攤平的掃描過得了,`docker save` 仍會把原始 bytes 搬進氣隙**。
+
+**為什麼需要你決定**:清乾淨的兩條路都有代價——①**換 base 映像**(code-server 官方以外的來源,或自建;維護成本與信任來源都變)
+②**壓平映像**(`docker export | docker import`,會**丟掉 metadata**:多階段快取、`ENTRYPOINT`/`USER` 等要重設,且失去逐層更新)。
+
+**目前假設**:**維持現狀**(遮蔽、不換 base)。理由:那把鑰匙是公開 npm 套件裡人人可下載的測試夾具,
+**不是我們的機密**,威脅模型是「氣隙內有人拿它當可信憑證」而不是「祕密外洩」;`bootstrap.log` 同理無敏感內容。
+
+**改變主意的成本**:低但不是零——換 base 要重驗整個 codeserver(擴充、fixuid、非 root),建議**與第 8 段重建一起做**,不要單獨排。
+
+---
+
 ## 🟡 Q37 — 舊交付包裡有一把被烤進去的測試私鑰,怎麼處置(2026-08-06 晚,**等你回答**)
 
 **問題**:`~/桌面/ANILA-DELIVERY/01-images/anila-restart-csp.tar.gz`(08-03 建)的映像裡
