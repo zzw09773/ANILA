@@ -101,6 +101,22 @@ services:
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
+      # **入向** Host header allow-list (TrustedHostMiddleware) —— 跟上面那條
+      # 出向 SSRF allow-list 是兩回事,別搞混。csp 的 library 預設是 "*"(等於
+      # 關著),所以**這一行就是打開它的地方**:沒有它,.env 設 ALLOWED_HOSTS
+      # 不會進到容器,中間層永遠不註冊,而且沒有任何提示
+      # (同 ANILA_ALLOW_GRPC_ENDPOINT 上面那則的坑)。
+      # compose 端預設 ≈ nginx `map $is_anila_host` 的實測放行集(見
+      # infra/nginx/anila.conf 檔頂),差兩項,兩項都是刻意的:
+      #   − 10.53.100.12:模型主機,沒有任何呼叫方拿它當 Host 打 csp
+      #   + csp:容器間走 docker DNS,nginx 那層看不到這個 Host
+      # 所以空 .env 的 `up -d` 是通的。換 prod IP / 加新入口:改 .env 的
+      # ALLOWED_HOSTS,**同步改 nginx 那條 map**(兩份是手工同步的)。
+      # ⚠ 值不帶 port(starlette 比對 host.split(":")[0]);localhost /
+      # 127.0.0.1 / csp 由程式強制併入,拿掉也砍不掉 healthcheck。
+      # ⚠ 萬用字元只支援 `*.suffix` 一種形狀;寫成 `10.53.*.15` 這類子網樣式
+      # csp 會**拒絕啟動**並印出那個 pattern(不會變成開著但每個請求 500)。
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,csp,10.53.100.15,172.16.120.35,*.ncsist.org.tw}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"

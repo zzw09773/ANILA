@@ -123,6 +123,12 @@ async def lifespan(app: FastAPI):
     # handler + level 補回(setup_logging 已改 idempotent)。
     setup_logging()
 
+    # Now — and not at import time, and not before the line above — is the
+    # first moment a log record from this module actually reaches docker
+    # logs. The runbook's "is the Host allow-list on?" check greps for
+    # this line, so it has to be emitted where logging works.
+    log_host_allowlist_state(_allowed_hosts)
+
     # Legacy SQLite migration + column backfills (kept for zero-downtime upgrades
     # from pre-Alembic deployments — safe to re-run, idempotent).
     from app.services.startup_migrations import run_startup_migrations
@@ -262,20 +268,187 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Incoming Host-header allow-list. Default "*" is a no-op (non-breaking);
-# operators pin ALLOWED_HOSTS in prod to block Host-header injection.
-_allowed_hosts = [
-    h.strip() for h in (settings.ALLOWED_HOSTS or "*").split(",") if h.strip()
-] or ["*"]
-if _allowed_hosts != ["*"]:
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
-    logging.getLogger("csp").info(
-        "TrustedHostMiddleware enabled for %d host(s)", len(_allowed_hosts)
-    )
-
 # CSRF protection for cookie-authenticated mutating requests. Runs after
 # CORS so preflight OPTIONS responses are generated without the check.
 app.add_middleware(CsrfMiddleware)
+
+
+# ── Incoming Host-header allow-list ────────────────────────────────────────
+# Hosts that are a structural property of this deployment rather than a
+# policy choice, so they are unioned into whatever the operator configures:
+#
+#   localhost   — the csp container healthcheck calls
+#                 http://localhost:8000/health (infra/compose/platform.yml)
+#   127.0.0.1   — nginx's loopback readiness listener proxies /health to
+#                 csp_backend with `proxy_set_header Host $host`
+#                 (infra/nginx/anila.conf), and its own healthcheck speaks
+#                 to 127.0.0.1:8080
+#   csp         — every in-network caller reaches us at http://csp:8000 over
+#                 docker DNS (router, anila-studio, asr-gateway,
+#                 ingestion-worker), so the Host is the service name
+#
+# Without the union, an operator who sets ALLOWED_HOSTS to just the FQDN —
+# the obvious thing to type — takes the healthcheck down with it, and
+# `depends_on: csp: service_healthy` then stops nginx from starting at all.
+# The union opens nothing new: nginx's own $is_anila_host map already
+# accepts localhost / 127.0.0.1 from the LAN.
+_INTERNAL_HOSTS = ("localhost", "127.0.0.1", "csp")
+
+# The log line the runbook greps for. One token, two verdicts, so that
+# "no line at all" reads as "something is wrong" rather than as "off".
+HOST_ALLOWLIST_LOG_TAG = "host allow-list:"
+
+
+def normalize_host(value: str) -> str:
+    """Canonical form of a Host header (or of an allow-list entry).
+
+    Hostnames are case-insensitive and the DNS root label is optional, so
+    ``ANILA.AI.NCSIST.ORG.TW.`` and ``anila.ai.ncsist.org.tw`` are the same
+    name and must get the same verdict. nginx folds case into ``$host``,
+    but several csp locations forward ``$http_host`` — the raw header — so
+    csp really can see either spelling.
+
+    The port is left attached: ``TrustedHostMiddleware`` strips it itself.
+    Splitting on the first ``:`` leaves IPv6 literals (``[::1]:8000``)
+    byte-identical, which keeps their existing verdict rather than
+    inventing a new one here.
+    """
+    host, sep, port = value.partition(":")
+    return host.lower().rstrip(".") + sep + port
+
+
+def _validate_host_pattern(pattern: str) -> None:
+    """Reject a wildcard shape starlette would only reject on first request.
+
+    ``TrustedHostMiddleware`` checks its patterns with bare ``assert``
+    statements, but FastAPI instantiates middleware lazily — so
+    ``ALLOWED_HOSTS=10.53.*.15`` (the "cover the subnet" typo) registers
+    happily and then raises on *every* request, ``/health`` included. The
+    container is then healthy-looking for one probe interval, then
+    unhealthy, and `depends_on: csp: service_healthy` keeps nginx from
+    starting: a total outage from a typo, with no error naming it.
+
+    Checking here makes it a boot failure that names the pattern, which is
+    this tree's established shape for bad config (cf. startup_security).
+    It also does not evaporate under ``python -O``, which is what an
+    ``assert``-based guard does.
+    """
+    if "*" not in pattern:
+        return
+    if not pattern.startswith("*.") or "*" in pattern[1:]:
+        raise ValueError(
+            f"ALLOWED_HOSTS contains a malformed wildcard pattern: {pattern!r}. "
+            "A wildcard entry must be exactly one leading '*.' followed by a "
+            "domain suffix (e.g. '*.ncsist.org.tw'); '*' anywhere else — "
+            "including subnet-style values like '10.53.*.15' — is not "
+            "supported. Use '*' on its own to disable the check entirely."
+        )
+
+
+def parse_allowed_hosts(raw: str | None) -> list[str]:
+    """Turn the ALLOWED_HOSTS env string into a starlette allow-list.
+
+    ``"*"`` — and blank, which means "the operator said nothing" — stay the
+    disabled sentinel and are returned as ``["*"]``; anything else is a real
+    list and gets ``_INTERNAL_HOSTS`` folded in. Entries carry no port:
+    ``TrustedHostMiddleware`` matches on ``host.split(":")[0]``, so
+    ``Host: csp:8000`` is compared as ``csp``.
+
+    Raises ``ValueError`` on a malformed wildcard — see
+    :func:`_validate_host_pattern` for why that is better than letting
+    starlette's lazy assert fire on the first request.
+    """
+    hosts = [h.strip() for h in (raw or "*").split(",") if h.strip()] or ["*"]
+    if "*" in hosts:
+        return ["*"]
+    hosts = [normalize_host(h) for h in hosts]
+    for pattern in hosts:
+        _validate_host_pattern(pattern)
+    return hosts + [h for h in _INTERNAL_HOSTS if h not in hosts]
+
+
+class HostAllowlistMiddleware(TrustedHostMiddleware):
+    """``TrustedHostMiddleware`` with RFC-correct Host comparison.
+
+    The parent compares the raw header, so ``ANILA.AI.NCSIST.ORG.TW`` and a
+    trailing-dot FQDN are rejected by an allow-list that contains the same
+    name in lower case. Normalising here — rather than reimplementing the
+    match — keeps the security decision in the library and confines this
+    subclass to spelling.
+
+    The normalised scope is what continues downstream, so the rest of the
+    app sees one canonical Host. That is the same folding nginx already
+    applies to ``$host``, so it is not a new behaviour for the deployed
+    path — only for callers that reach csp:8000 directly.
+    """
+
+    async def __call__(self, scope, receive, send):
+        if not self.allow_any and scope["type"] in ("http", "websocket"):
+            scope = self._normalize_scope_host(scope)
+        await super().__call__(scope, receive, send)
+
+    @staticmethod
+    def _normalize_scope_host(scope):
+        headers = scope.get("headers") or []
+        rewritten = []
+        changed = False
+        for name, value in headers:
+            if name == b"host":
+                canonical = normalize_host(value.decode("latin-1")).encode("latin-1")
+                changed = changed or canonical != value
+                rewritten.append((name, canonical))
+            else:
+                rewritten.append((name, value))
+        if not changed:
+            return scope
+        # Shallow copy: never mutate the scope dict handed to us.
+        scope = dict(scope)
+        scope["headers"] = rewritten
+        return scope
+
+
+def install_host_allowlist(target_app: FastAPI, raw: str | None) -> list[str]:
+    """Register the Host allow-list unless it is disabled.
+
+    Called last on purpose, which makes it the **outermost** middleware:
+    starlette builds the stack so that the most recently added wrapper runs
+    first. An untrusted Host is therefore rejected before ``CsrfMiddleware``
+    — the layer a path-carrying Host header fooled on 2026-08-06 — gets to
+    read it at all.
+    """
+    hosts = parse_allowed_hosts(raw)
+    if hosts != ["*"]:
+        target_app.add_middleware(HostAllowlistMiddleware, allowed_hosts=hosts)
+    return hosts
+
+
+def log_host_allowlist_state(hosts: list[str]) -> None:
+    """Say, in the logs, whether the check is on — and with which hosts.
+
+    Deliberately **not** called at import time. ``setup_logging`` runs
+    inside the lifespan, so anything logged while ``app.main`` is being
+    imported goes to a root logger with no handlers at level WARNING and
+    is dropped: the operator greps, finds nothing, and cannot tell "off"
+    from "never printed". Both branches log, so an absent line means the
+    boot did not get this far — a third, distinguishable state.
+    """
+    log = logging.getLogger("csp")
+    if hosts == ["*"]:
+        log.warning(
+            "%s DISABLED — ALLOWED_HOSTS is '*', every incoming Host header "
+            "is accepted",
+            HOST_ALLOWLIST_LOG_TAG,
+        )
+    else:
+        log.info(
+            "%s ENFORCED — %d host(s): %s",
+            HOST_ALLOWLIST_LOG_TAG,
+            len(hosts),
+            ", ".join(hosts),
+        )
+
+
+_allowed_hosts = install_host_allowlist(app, settings.ALLOWED_HOSTS)
 
 app.include_router(api_router)
 app.include_router(conversations_router)
