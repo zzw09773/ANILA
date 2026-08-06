@@ -53,12 +53,13 @@
 | | 事情 | 為什麼卡在第 8 段之前 |
 |---|---|---|
 | **匯入** | worker 的 embedding 請求**零批次切分**——整份文件塞單一請求,而 CSP 那側逐筆推論卻共用約 35 秒總預算 | **任何大文件**都會整份失敗;跟表格無關 |
-| **匯入** | **DOCX 的表格全部被搬到文件最後**(`parser_registry.py:1037` 迴圈順序) | 每一份**有表格的規範**都中,現在就在發生;引導句與表格被拆開 |
+| ✅ **匯入** | ~~DOCX 的表格全部被搬到文件最後~~ **08-06 深夜已修**(wt/docx-tables):body 順序單迴圈,預設 chunker 實測表格與引導句同 chunk 0/3→3/3;`w:sdt`/`w:ins` 靜默丟棄已釘測試＋每份文件一則彙總警告 | 驗收 2 輪 ACCEPT;⚠ 映像未重建前不到達執行環境 |
 | **匯入** | 掃描 PDF 的 **OCR 永遠不觸發**(圖片佔位符自己撐過 40 字門檻) | 潛伏:旗標現在關著,**誰打開都會以為生效** |
 | **資料** | `embedding_model` **大小寫碰撞**(FAKE-CONTROLS #56,九條清單) | 大小寫比對已放寬,但**資料缺陷還在每建一個新集合就再犯一次** |
-| **設定** | `ALLOWED_HOSTS` 預設 `"*"`,設定檔沒設 → `TrustedHostMiddleware` 等於關著 | CSRF 修好之後,它是唯一便宜的第二層 |
-| **設定** | ingestion-worker 若要吃到新的健康鍵行為,**要 recreate 不是 restart** | 部署步驟,不是程式 |
-| **映像** | build context 仍會吃進 `services/csp/data/`(08-06 驗收在映像裡撈出**三個真實使用者附件**)與 `.pytest_cache`——`.dockerignore` 是黑名單,補不完 | 重建前加「**建後掃描映像內非預期檔案**」步驟,關整類;黑名單再補幾行都只是點殺 |
+| ✅ **設定** | ~~`ALLOWED_HOSTS` 等於關著~~ **08-06 深夜關板**:allowlist 移到最外層、compose 單一旋鈕、**開關那一行有守衛測試看著(刪掉即紅)**、格式錯誤開機即拒(不再 healthy-but-500)、runbook 的「確認有開」實測雙向可用 | 驗收 2 輪(首輪 REJECT:開關無守衛);⚠ nginx `$is_anila_host` map 是最後一份手抄本,會先腐 |
+| ✅ **設定** | ~~ingestion-worker 要 recreate 不是 restart~~ **08-06 深夜關板**:追查證實 deploy-prod 四條路徑**本來就全是 recreate**(沒發明改動);規則落 `docs/runbooks/restart-vs-recreate.md`,含實測(restart 後 env 仍舊值、容器 ID 不變) | 純文件包 |
+| ✅ **映像** | ~~build context 吃進產物、黑名單補不完~~ **08-06 深夜關板**:`scan-image-artifacts.sh` 建後掃描已接進匯出路徑(build 後、save 前、無跳過旗標);檔名家族＋**內容規則凌駕白名單**(私鑰藏在白名單路徑也抓)＋自我測試(掏空規則/白名單長歪/抽檔沒做完都大聲死) | 驗收 3 輪 ACCEPT;掃不到 ENV/history 層,檔頭誠實列明 |
+| 🔴 **映像** | **匯出閘門現在是紅的(這是設計)**:pptx-renderer 烘進 npm debug log、codeserver 帶 npm 測試夾具**真私鑰**(httpolyglot)、asr-decoder 帶**本機 IDS agent 日誌**(`var/lib/sdcssagent/`) | 三處 Dockerfile 清理後閘門才會放行;**在那之前內網匯出會被自己的閘門擋下** |
 | **交付包** | 08-03 交付包的 `anila-restart-csp.tar.gz` 內含**測試 RSA 私鑰＋約 25MB 本機開發日誌**(根因=舊 `.dockerignore` 只擋根層,08-06 已修) | 第 8 段重建出新包後**銷毀舊 tar**;它是要手提進氣隙的,不能讓有鑰匙的版本進去 |
 
 ### ⚠ 一條不在段落裡、但每次動到它都要當紅線審的
