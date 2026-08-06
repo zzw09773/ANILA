@@ -7,6 +7,11 @@
 # ⚠ 清單不再手寫。新增 compose service 會自動進 bundle;漏包只能發生在
 #   「本機根本沒有那張 image」,那時腳本會大聲失敗而不是靜默略過。
 #
+# ⚠ build 之後、save 之前有一道**建後雜物掃描**([2b/5],
+#   infra/deployment/scripts/scan-image-artifacts.sh):本專案 build 出來的映像
+#   若烘進私鑰 / 日誌 / secrets/ / 使用者附件 / 測試快取就**中止匯出**。
+#   沒有跳過的旗標 —— 交付品出了門收不回來。修法見中止時印出的自救路徑。
+#
 # 用法 (在有外網 / 已 build 好的機器執行):
 #   bash infra/deployment/intranet/build-and-export-for-intranet.sh [OUTPUT_DIR]
 #   OUTPUT_DIR 預設 /tmp/anila-images-export
@@ -204,6 +209,88 @@ fi
 echo "✓ All ${#IMAGES[@]} images present."
 echo
 
+# ── Phase 2b: 建後雜物掃描(髒映像不准變成交付品)────────────────────────
+# 2026-08-06 驗收在 08-03 那包交付的 csp 映像裡撈出測試用 RSA 私鑰與 25MB 開發期
+# 日誌;補了 .dockerignore 之後**重建**的映像裡還是有真實使用者附件與 .pytest_cache。
+# 閘門設在這裡而不是 build 之後隨便一個地方:這是「本機髒映像」變成「交付品」的
+# 那一步,過了這一步就出門了。
+#
+# 只掃**本專案 build 出來的**映像(有 build: 的服務),不掃 pg/redis/nginx/gitlab
+# 這些上游映像 —— 那些映像的內容不是我們的 build context 決定的,而且實測就會紅:
+# nginx:alpine 有 etc/ssl/cert.pem 與 var/log/nginx/*.log、redis:7-alpine 有
+# etc/ssl/cert.pem(2026-08-06 實測)。把不歸我們管、也修不動的東西擋在閘門上,
+# 只會逼人去亂加白名單或整段跳過,那時這個閘門就等於不存在了。
+echo "▶ [2b/5] Scanning locally built images for baked runtime artifacts..."
+SCAN_SCRIPT="$REPO_ROOT/infra/deployment/scripts/scan-image-artifacts.sh"
+[ -f "$SCAN_SCRIPT" ] || die "找不到掃描腳本:$SCAN_SCRIPT"
+
+mapfile -t BUILT_IMAGES < <(
+    COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" compose config --format json | python3 -c '
+import json, os, sys
+project = os.environ["COMPOSE_PROJECT_NAME"]
+cfg = json.load(sys.stdin)
+out = set()
+for name, svc in (cfg.get("services") or {}).items():
+    if svc.get("build") is None:
+        continue
+    out.add(svc.get("image") or f"{project}-{name}")
+for img in sorted(out):
+    print(img)
+'
+)
+# 衍生不到任何 build 出來的映像 = 上面那段或 compose 組態壞了。靜默略過掃描
+# 正好會在「最需要它」的時候發生,所以這裡硬失敗。
+[ ${#BUILT_IMAGES[@]} -gt 0 ] || die "衍生不到任何有 build: 的服務映像 — 掃描無法進行,拒絕匯出"
+
+# 進 bundle 的貨**全部**要過這一關,不是只有 compose 那批。
+# MODEL_IMAGES 是 WITH_MODELS=1 時 Phase 4 會 save 的六張(其中 embedding-proxy、
+# anila-flux-agent 是本專案自建的),原本完全不經過掃描 —— 那等於留了一條
+# 「換個旗標就能把髒映像送出門」的路。定義寫在這裡當單一真相來源,Phase 4 直接用。
+# 掃在 save **之前**:一發現髒就停,不要先寫了 1.5GB 的 tar 再說。
+MODEL_IMAGES=(
+    tensorrt-llm-hf:1.3.0rc10
+    vllm-gemma4:latest
+    tritonserver:25.04-nv-embed-v2
+    embedding-proxy:migration
+    flux2-dev:bf16
+    anila-flux-agent:latest
+)
+
+SCAN_IMAGES=("${BUILT_IMAGES[@]}")
+if [ "${WITH_MODELS:-0}" = "1" ]; then
+    echo "  (WITH_MODELS=1 → 另外 ${#MODEL_IMAGES[@]} 張 model image 也一起掃;這幾張很大,會花時間)"
+    SCAN_IMAGES+=("${MODEL_IMAGES[@]}")
+fi
+
+# 掃描輸出留一份,除了給人看,也用來檢查「有沒有哪張其實一個檔都沒掃到」。
+SCAN_LOG="$(mktemp)"
+SCAN_RC=0
+bash "$SCAN_SCRIPT" "${SCAN_IMAGES[@]}" 2>&1 | tee "$SCAN_LOG" || SCAN_RC=$?
+# 掃到 0 個檔**不是乾淨**,是掃描沒真的看到東西。掃描器自己也會擋(exit 2),
+# 這裡再攔一次:閘門不該有「看起來綠的」這種狀態。
+if grep -q 'SCAN-SUMMARY .* content_paths=0 ' "$SCAN_LOG"; then
+    rm -f "$SCAN_LOG"
+    die "有映像回報 content_paths=0(扣掉 docker 容器骨架之後什麼都沒有)— 當成掃描失敗,拒絕匯出"
+fi
+rm -f "$SCAN_LOG"
+if [ "$SCAN_RC" -eq 1 ]; then
+    echo
+    echo "============================================================"
+    echo "✗ REFUSING TO EXPORT — 上面列出的映像烘進了不該出門的執行期產物。"
+    echo "  (私鑰 / 日誌 / secrets/ / 使用者附件 / 測試快取)"
+    echo
+    echo "  沒有跳過這個閘門的旗標,這是刻意的:一包交付品出了門就收不回來。"
+    echo "  自救路徑(照順序試):"
+    echo "    1. 修 .dockerignore 或 Dockerfile 的 COPY,重 build,再跑一次"
+    echo "    2. 成品真的需要它、而且它是公開資訊 → 在掃描腳本的 ALLOWLIST"
+    echo "       補一條並寫清楚理由:$SCAN_SCRIPT"
+    echo "============================================================"
+    exit 1
+elif [ "$SCAN_RC" -ne 0 ]; then
+    die "映像掃描本身失敗(exit $SCAN_RC)— 在確認掃描能跑之前不匯出"
+fi
+echo
+
 # ── Phase 3: 逐張 save(一 image 一檔;點名失敗;可續傳)──────────────────
 echo "▶ [3/5] Saving compose images → 01-images/*.tar.gz ..."
 IMG_DIR="$OUTPUT_DIR/01-images"
@@ -318,14 +405,8 @@ echo
 # ── Phase 4: model image(預設跳過;開了也 fail-loud,不再靜默 skip)─────
 if [ "${WITH_MODELS:-0}" = "1" ]; then
     echo "  • 04-models.tar.gz (WITH_MODELS=1)"
-    MODEL_IMAGES=(
-        tensorrt-llm-hf:1.3.0rc10
-        vllm-gemma4:latest
-        tritonserver:25.04-nv-embed-v2
-        embedding-proxy:migration
-        flux2-dev:bf16
-        anila-flux-agent:latest
-    )
+    # 清單在 Phase 2b 定義(單一真相來源);這幾張已經在那裡跟其他映像
+    # **一起掃過**了,掃不過的話根本走不到這裡。
     MODEL_MISSING=()
     for img in "${MODEL_IMAGES[@]}"; do
         if docker image inspect "$img" >/dev/null 2>&1; then
