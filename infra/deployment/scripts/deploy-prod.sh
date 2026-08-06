@@ -19,11 +19,21 @@
 #   deploy           preflight + build + up + wait healthy + verify  (預設)
 #   up               docker compose up -d (不 rebuild)
 #   down             docker compose down (保留 volumes,db 資料不丟)
-#   restart          down + up
-#   rebuild <svc>    rebuild + restart 單一 service (e.g. rebuild csp)
+#   restart          down + up   ⚠ 是 recreate,不是 `docker restart`
+#   rebuild <svc>    rebuild + recreate 單一 service (e.g. rebuild csp)
 #   status           顯示所有 service health
 #   logs <svc>       tail -f 單一 service logs
 #   help             顯示這份說明
+#
+# ⚠ 套設定一律 recreate:這支腳本裡**每一條**會讓服務吃到新設定的路徑都是
+#   `docker compose up -d`(deploy / up / restart / rebuild <svc>),
+#   沒有一條是 `docker restart`。`docker restart` 只是把同一個容器停掉再開,
+#   **不重讀 `.env`、也不重讀 compose**,新的環境變數不會生效,而且容器照樣
+#   變 healthy —— 症狀跟「設定根本沒改到」一模一樣。
+#   ingestion-worker 最容易中招(它整包行為都是 compose 的 environment: 插值來的,
+#   而且是背景 worker,沒有 /health 幫你發現它吃的是舊設定)。
+#   新增會起服務的 subcommand 時照這四條的樣子寫 up -d。
+#   完整說明:docs/runbooks/restart-vs-recreate.md
 #
 # 環境變數(必要,缺值 fail-loud):
 #   CSP_SERVICE_TOKEN         service-to-service token,csp/router/anila-studio/
@@ -456,7 +466,11 @@ cmd_verify() {
 
 # ── 顯示說明 ──────────────────────────────────────────────────────────────
 cmd_help() {
-  sed -n '/^# ====/,/^# ====/p' "$0" | head -50 | sed 's/^# \?//'
+  # 邊界是檔頭那兩條 `# ====` 這個 sentinel,不是行數。
+  # ⚠ 這裡本來是 `| head -N`,那是顆定時炸彈:檔頭一旦長過 N 行,說明會被從
+  # 中間切掉,而且上游 sed 收到 SIGPIPE、加上檔首的 `set -o pipefail`,
+  # 會讓 `deploy-prod.sh help` **以非零退出** —— 說明文字變成部署腳本的失敗。
+  sed -n '/^# ====/,/^# ====/p' "$0" | sed 's/^# \?//'
 }
 
 # ── Entrypoint ────────────────────────────────────────────────────────────
