@@ -60,7 +60,51 @@ class WorkerSettings(BaseSettings):
     )
     embedding_timeout_seconds: float = Field(
         default=30.0,
-        description="Per-request embedding timeout.",
+        description=(
+            "httpx timeout for ONE /v1/embeddings POST. NOT the same knob "
+            "as CSP's EMBEDDING_TIMEOUT: different variable, different "
+            "container, and the smaller of the two binds. At defaults this "
+            "one (30 s) is shorter than CSP's whole-call budget (5 s "
+            "channel-ready + 30 s = 35 s), and far shorter than CSP's three "
+            "retries (~106.5 s), so the worker hangs up while CSP is still "
+            "working. Two consequences, with different evidence behind "
+            "them: (1) the COMPUTE is certainly spent — CSP's "
+            "asyncio.to_thread cannot be cancelled, so that batch runs to "
+            "completion with nobody to receive the vectors (readable from "
+            "the code); (2) whether it is also BILLED is NOT verified here "
+            "— enqueue_usage sits after that await (proxy/service.py:291), "
+            "so it does not run if the ASGI server cancels the handler on "
+            "client disconnect, and does run if it doesn't. Which one "
+            "happens needs a live test nobody has run, so the warning is "
+            "written the expensive way on purpose: a conservative "
+            "assumption, not a measurement. Raising this above ~106.5 s is "
+            "what would make CSP's retries reachable; the default is "
+            "deliberately left alone here."
+        ),
+    )
+    embedding_batch_size: int = Field(
+        default=32,
+        ge=1,
+        description=(
+            "Max chunks per POST to /v1/embeddings. The sizing rule is a "
+            "time budget, not a size limit: on the Triton gRPC path CSP "
+            "embeds one text per ModelInfer and bounds the WHOLE call at "
+            "`_wait_ready 5s + EMBEDDING_TIMEOUT` (35 s at defaults, "
+            "independent of len(input) — services/csp/app/services/"
+            "triton_grpc/client.py). So the invariant an operator has to "
+            "keep is `EMBEDDING_BATCH_SIZE × per-text latency < "
+            "min(EMBEDDING_TIMEOUT_SECONDS, EMBEDDING_TIMEOUT)` — two "
+            "clocks in two containers, smaller one binds; at defaults that "
+            "is this service's own 30 s httpx timeout, not CSP's 35 s "
+            "budget. At the per-text latency CSP's client claims (~0.02 s, "
+            "client.py module docstring — a docstring claim, not a "
+            "measurement taken here) 32 spends ~0.64 s of the 30 s; the "
+            "default only gets tight above ~0.9 s per text, "
+            "which is what this knob is for. Sending the whole document as "
+            "one request — what this replaced — could not satisfy that "
+            "invariant at ANY latency, because len(input) grows without "
+            "bound while the budget does not."
+        ),
     )
 
     upload_dir: str = Field(

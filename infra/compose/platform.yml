@@ -286,6 +286,21 @@ services:
       EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
       EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       EMBEDDING_DIM: "4000"
+      # 一份文件切成幾段送。csp 的 Triton gRPC 路徑是「每段文字各一次
+      # ModelInfer,整通呼叫共用 5s + EMBEDDING_TIMEOUT 的預算,且與
+      # len(input) 無關」—— 不切批的話,文件一大就整份失敗,而 runbook
+      # §3.1c 叫操作者「縮小批次」卻沒有任何旋鈕可縮。要守的不變式是
+      # EMBEDDING_BATCH_SIZE × 每段延遲 < min(下面那個, csp 的 EMBEDDING_TIMEOUT)。
+      # 預設值與 WorkerSettings.embedding_batch_size 同為 32。
+      EMBEDDING_BATCH_SIZE: "${EMBEDDING_BATCH_SIZE:-32}"
+      # 不變式的另一項。⚠ 這是 **worker 自己的 httpx 逾時**,跟 csp 區塊那個
+      # EMBEDDING_TIMEOUT 是兩個不同的鐘,而**小的那個說了算**:預設 worker 30s
+      # < csp 的 5s channel-ready + 30s = 35s,所以 worker 先掛斷。只調 csp 那一個,
+      # worker 照樣 30 秒放棄 —— 而 csp 的 to_thread 取消不掉,它會把那批做完並
+      # 記帳,向量卻沒人收。2026-08-07 補進來以前,這個變數根本到不了容器,
+      # 而 runbook 已經在印一條它是其中一項的不變式。
+      # 預設值與 WorkerSettings.embedding_timeout_seconds 同為 30。
+      EMBEDDING_TIMEOUT_SECONDS: "${EMBEDDING_TIMEOUT_SECONDS:-30}"
       UPLOAD_DIR: /var/anila/ingestion-uploads
       # judge 路徑要解 AES-encrypted credentials,cipher key 從 SECRET_KEY 派生,
       # **必須**跟 csp 同值,不然每次 judge decrypt 失敗會 silently skip。

@@ -545,8 +545,116 @@ print('dim', len(q), 'cosine(query,document)', round(cos,4))
 | 註冊 422「必須為 grpc:// 或 grpcs://」 | protocol 選了 triton_grpc 卻填 http URL |
 | 健檢 unhealthy、但 TCP 通 | Triton 上沒載入這個 model name(`ModelReady` 說了算,不會用 ServerLive 漂綠) |
 | 502「模型服務暫時不可用」,csp log 是「triton 未在 30s 內回應 ModelInfer」 | **單筆**逾時 —— 上游過慢或該 model 沒載入。單次請求的執行緒佔用上限 35 秒(`_wait_ready` 5s + ModelInfer 30s),重試 3 次 |
-| 502,csp log 是「triton call exceeded its 35s budget … 請縮小批次」 | **整批**吃光了整通呼叫的 35 秒預算(每段文字各一次 ModelInfer)—— 縮小批次,或調高 `EMBEDDING_TIMEOUT`(見下方「調高 EMBEDDING_TIMEOUT」) |
+| 502,csp log 是「triton call exceeded its 35s budget … 請縮小批次」 | **整批**吃光了整通呼叫的 35 秒預算(每段文字各一次 ModelInfer)—— 縮小 `EMBEDDING_BATCH_SIZE`(見下方「縮小批次」),或調高 `EMBEDDING_TIMEOUT`(見下方「調高 EMBEDDING_TIMEOUT」) |
 | 整批帶入(bulk import)報 422 | Triton 沒有 OpenAI `/v1/models` 列表,不支援整批帶入 —— 逐一註冊 |
+
+**縮小批次(`EMBEDDING_BATCH_SIZE`,ingestion-worker 側)**
+
+上面那句「縮小批次」在 2026-08-07 以前是**做不到的動作**:ingestion-worker
+把一份文件的所有 chunk 塞進單一 `/v1/embeddings` 請求,沒有任何旋鈕可縮,
+所以文件一大就整份失敗,跟表格內容無關。現在它會切成每次最多
+`EMBEDDING_BATCH_SIZE` 段(預設 32),每個請求各自拿到完整的 35 秒預算。
+
+要守的不變式是這一條 —— 注意它有**兩個鐘**,而**小的那個說了算**:
+
+```
+EMBEDDING_BATCH_SIZE × 每段文字的推論延遲
+        < min( EMBEDDING_TIMEOUT_SECONDS ,  EMBEDDING_TIMEOUT )
+                 ↑ ingestion-worker 的        ↑ csp 的(另外還要
+                   httpx 逾時,預設 30           扣掉 5s channel-ready,
+                                                所以整通預算 5+30=35)
+```
+
+**預設姿態下是 worker 那個鐘先響**(30 < 35)。兩個變數在**不同容器**裡,
+只調其中一個不會改變什麼;兩個都已接進 compose(見下方兩段的第 3 步)。
+
+**每段延遲要用哪個數字**:樹裡唯一的數字是 `triton_grpc/client.py` 模組
+docstring 的「measured per-text latency is ~0.02s」。⚠ **那是該檔案的說法,
+不是本 runbook 量出來的**;上線前請在自己的機器上量一次(§3.1c 第 4 步的
+`embed_texts` 片段跑 N 段計時即可)。以 0.02 秒代入:
+
+| | 依 0.02 秒/段推算 |
+|---|---|
+| 預設 32 段用掉的時間 | 0.64 秒 / 30 秒 |
+| 開始吃緊的每段延遲 | 約 0.9 秒(32 × 0.9 = 28.8) |
+| **改版前**單一請求撐得住的段數 | 約 **1500 段**(worker 30 秒)/ 1750 段(csp 35 秒) |
+
+最後一列是**判斷舊故障是不是這個 bug** 的依據:每段 0.02 秒時,舊碼要到
+~1500 段才會整份失敗。`ingestion-worker/main.py:21` 引用的是「5k chunks」的
+文件,所以真實文件確實會越過它;但若你的文件遠小於 1500 段而仍然失敗,
+那**不是**這個 bug,請往表格上面幾列找。段數越多、或每段延遲比 0.02 秒高,
+門檻越低 —— 例如每段 0.2 秒時,150 段就會炸。
+
+```bash
+# 1. .env 改值(沒有這個鍵就自己加一行;compose 預設 32)
+grep -nE '^[[:space:]]*(export[[:space:]]+)?EMBEDDING_BATCH_SIZE[[:space:]]*=' .env
+
+# 2. 套用:一定是 up -d(recreate),docker restart 不重載 .env
+docker compose up -d ingestion-worker
+
+# 3. 確認它真的到了容器裡(這一步不能跳)
+docker exec anila-restart-ingestion-worker-1 printenv EMBEDDING_BATCH_SIZE
+```
+
+> ⚠ 這個變數要有 `infra/compose/platform.yml` 的 **ingestion-worker** 區塊裡
+> 那一行 `EMBEDDING_BATCH_SIZE: "${EMBEDDING_BATCH_SIZE:-32}"` 才會進到容器
+> (compose 沒有 `env_file:`)。缺那一行,`.env` 怎麼改都沒有作用,而且沒有
+> 任何錯誤訊息。上面第 3 步就是用來看穿這件事的。
+
+**調 worker 這一側的逾時(`EMBEDDING_TIMEOUT_SECONDS`)**
+
+不變式的另一項,2026-08-07 才接進 worker 容器(在那之前 `.env` 怎麼設都到不了)。
+
+```bash
+grep -nE '^[[:space:]]*(export[[:space:]]+)?EMBEDDING_TIMEOUT_SECONDS[[:space:]]*=' .env
+docker compose up -d ingestion-worker
+docker exec anila-restart-ingestion-worker-1 printenv EMBEDDING_TIMEOUT_SECONDS
+```
+
+> ⚠ 它跟 csp 的 `EMBEDDING_TIMEOUT` **不是同一個變數**,也不在同一個容器。
+> 預設 30 秒短於 csp 單次呼叫的 35 秒預算,更短於 csp 連重試 3 次的 ~106.5 秒
+> (`3 × 35 + 0.5 + 1.0`)。所以 **worker 會在 csp 還在重試時就放棄**。後果有兩半,
+> 證據強度不同,請分開看:
+>
+> - **算力一定白花(讀碼可證)**:csp 的 `asyncio.to_thread` 取消不掉,那一批會被
+>   做完,而向量沒有人收得到。
+> - **會不會被記帳:本包未驗證**。`enqueue_usage` 寫在那個 `await` 之後
+>   (`proxy/service.py:291`),所以 handler 若因客戶端斷線被 ASGI server 取消,
+>   它就不會執行(＝不記帳);沒被取消就會記。是哪一種要活體測才知道,本包沒測。
+>   上面那句按「成本可能較高」的方向提醒 —— **那是刻意保守的假設,不是量到的
+>   結論**,跟本節其他數字不同級。
+>
+> 要讓 csp 的重試真的幫得上忙,這個值得大於 ~106.5 —— 本包**沒有**改預設值,
+> 只是把旋鈕接進容器並把關係寫清楚,改不改是運維決定。
+
+**帳單怎麼算(成功與失敗不一樣,請分開看)**
+
+- **成功的文件:金額不變。** csp 逐段文字計價(`prompt_tokens = sum(...)`),
+  同樣的內容切成幾批,`token_usage` 的總和一樣。實測 20 段文件,批次 4 與
+  不切批同為 60 tokens。調 `EMBEDDING_BATCH_SIZE` 只改變 HTTP 請求次數與
+  `token_usage` 的**列數**,不改變總額。
+- **失敗的嘗試:會計到錢,而改版前是 0。** csp 只在成功時 `enqueue_usage`
+  (`proxy/service.py:291`),所以舊碼一份失敗的文件整趟計 0;現在失敗批次
+  **之前**那幾批已經各自成功、各自記過帳。而 arq `max_tries=3` 會把整個 job
+  重跑,那幾批**每次重試都重算一遍**。實測(20 段,乾淨通過 = 60 tokens):
+
+  | 情境 | 改版後 | 改版前 |
+  |---|---|---|
+  | 中段永久失敗(重試 3 次) | 72 | 0 |
+  | 最後一批永久失敗 | 144 | 0 |
+  | 中段失敗、第 3 次成功 | 108(1.80×) | 60 |
+  | 最後一批失敗、第 3 次成功 | 156(2.60×) | 60 |
+
+  上限**嚴格小於一次乾淨通過的 3 倍**(失敗那一批本身永遠不計帳,而
+  `max_tries=3`)。縮小批次**不會**降低這個上限,只讓已付的粒度變細。
+  ⚠ 舊版的那個 0 不是折扣:上游其實已經逐段推論到失敗點才停(`client.py:354`
+  是逐段迴圈),那些算力當時**做了卻沒有人被計費**。新行為計的是真的做過的工。
+
+**某一批失敗會怎樣**:整份文件失敗,不會半份入索引。csp log / 文件的
+`error_message` 會指出是第幾批、對應原文的哪一段範圍(例:「第 7/12 批失敗,
+對應第 192–223 段文字」)。**失敗那批之後的批次不會送出**,所以不會為一份
+已經注定失敗的文件繼續花 token。刻意不做「續傳」:入索引是全份一次寫入,
+而 arq `max_tries=3` 會把記住的進度重新 embed 一次 —— 那是重複計費,不是省事。
 
 **調高 `EMBEDDING_TIMEOUT`**
 
