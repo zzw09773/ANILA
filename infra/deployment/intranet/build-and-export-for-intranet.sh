@@ -291,6 +291,78 @@ elif [ "$SCAN_RC" -ne 0 ]; then
 fi
 echo
 
+# ── Phase 2c: 匯不匯得出去(save-ability)—— 掃描器結構上看不見的那一類 ────
+# 為什麼掃描綠了還要再擋一道:掃描器讀的是 `docker export` 的**攤平**檔案系統,
+# 交付品卻是 `docker save` 的**每一層**。兩者看到的東西不一樣,而且差異不是理論的
+# —— 2026-08-06 實測(alpine:layer A 被本機 IDS 注入且不清、layer B 事後才清):
+#   攤平後乾淨 → 掃描器印「✓ 乾淨」;同一張映像 `docker save` 直接失敗
+#   open …/merged/run/sisidsdaemon.pid: no such file or directory
+# 也就是說**掃描器判乾淨不代表這張映像出得了門**。同一天驗收就是被這個形狀擋下的:
+# 同一份 Dockerfile,一次建置匯得出去、下一次匯不出去。
+#
+# 沒有這道檢查的話,一張匯不出來的映像會一路綠燈走到 Phase 3,在已經寫了好幾 GB
+# 之後才炸 —— 這是最貴的失敗時機:人已經走開了,而 OUTPUT_DIR 裡是半包東西。
+#
+# 只檢 `$BUILT_IMAGES`(compose 裡有 build: 的那批)。範圍邊界寫清楚,不要以為
+# 這一關蓋住全部:
+#   • pull 進來的上游映像(pg/redis/nginx/…)不檢 —— 這個缺陷來自「在這台主機上
+#     跑過 build 容器」,它們沒跑過。真的因別的原因 save 失敗,Phase 3 原本的
+#     處理照舊,這一關是加上去的、不是取代。
+#   • WITH_MODELS=1 的那六張**也不檢**:其中兩張是本機自建的,原則上會中,但它們
+#     動輒數十 GB,為了這一關多讀一遍不划算。它們在 Phase 4 被 save 時一樣會擋。
+#
+# 檢查方式就是真的 save 一次然後丟掉(不落地、不 gzip;gzip 才是貴的那一半)。
+# 代價是把 build 出來的那批多讀一遍;換到的是壞消息出現在**還沒寫任何 bytes 之前**。
+echo "▶ [2c/5] Verifying locally built images can actually be saved..."
+SAVE_UNABLE=()
+for img in "${BUILT_IMAGES[@]}"; do
+    docker image inspect "$img" >/dev/null 2>&1 || continue   # 缺圖已在 Phase 2 擋過
+    echo -n "  save-check $img ... "
+    save_err="$(mktemp)"
+    if docker save "$img" >/dev/null 2>"$save_err"; then
+        echo "OK"
+    else
+        echo "FAIL"
+        echo "    $(tr '\n' ' ' <"$save_err")"
+        SAVE_UNABLE+=("$img")
+    fi
+    rm -f "$save_err"
+done
+
+if [ ${#SAVE_UNABLE[@]} -gt 0 ]; then
+    if [ "$REBUILD_ON_SAVE_FAIL" = "1" ]; then
+        # 使用者已經明講要自動重建重試,那就把處置交給 Phase 3 原本那條路,
+        # 不要在這裡先斬 —— 否則 REBUILD_ON_SAVE_FAIL 這個逃生口等於被廢掉。
+        echo
+        echo "  ⚠ 上面 ${#SAVE_UNABLE[@]} 張映像現在 save 不出來,但 REBUILD_ON_SAVE_FAIL=1,"
+        echo "    交給 Phase 3 的重建重試處理。"
+    else
+        echo
+        echo "============================================================"
+        echo "✗ REFUSING TO EXPORT — 這些映像掃描是綠的,但 docker save 匯不出去:"
+        for img in "${SAVE_UNABLE[@]}"; do
+            echo "    - $img"
+        done
+        echo
+        echo "  這台主機上最常見的成因:Symantec DCS 代理(sisidsdaemon)在 build"
+        echo "  容器啟動當下注入 /run/sisidsdaemon.pid 與 /var/lib/sdcssagent,"
+        echo "  容器結束後又自己刪掉 pid 檔,layer metadata 留下懸空項目。"
+        echo "  自救路徑(照順序試):"
+        echo "    1. 重 build 那張映像(每次建置各擲一次骰子,重建通常就過了)"
+        echo "    2. 根治:在**產生它的那一個 RUN 自己的結尾**加"
+        echo "       \`rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid\`。"
+        echo "       ⚠ 事後補一層 RUN 清理是**無效**的 —— 攤平後乾淨、掃描器也會"
+        echo "       說乾淨,但早一層已經 commit 進去的懸空項目修不回來。"
+        echo "    3. 棧可以停的話:停棧再匯出(Fix A),或 REBUILD_ON_SAVE_FAIL=1"
+        echo "       走 Phase 3 的自動重建(見 runbook §8)。"
+        echo
+        echo "  停在這裡是刻意的:此刻 $OUTPUT_DIR 還沒被寫進任何一個 bytes。"
+        echo "============================================================"
+        exit 1
+    fi
+fi
+echo
+
 # ── Phase 3: 逐張 save(一 image 一檔;點名失敗;可續傳)──────────────────
 echo "▶ [3/5] Saving compose images → 01-images/*.tar.gz ..."
 IMG_DIR="$OUTPUT_DIR/01-images"
