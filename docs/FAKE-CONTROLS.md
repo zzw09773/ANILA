@@ -651,7 +651,34 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   `heading_path`),同時關掉這條與「附件標題不跟著表格走」兩者;
   代價是 leaf 變長且**要重跑 ingestion**,所以是「量到不夠再做」。
 
-### #56 embedding 模型名稱的**大小寫碰撞**——資料缺陷,不是程式缺陷 🔴
+### #56 embedding 模型名稱的**大小寫碰撞**——資料缺陷,不是程式缺陷 🟡 寫入端已關,讀取端還有三條
+
+> ✅ **2026-08-07 處置(第 1、2、3、6 條已關)**:寫入端一律存 `model_registry` 的拼法,
+> 既有列由 migration `r1_0032` 就地改寫。**現在讓它正確的那幾行**:
+> `services/csp/app/services/platform_embedding.py:130`(`canonical_embedding_model_name`,
+> 恰好一種註冊拼法對得上才改寫,對不上或有兩種拼法就原樣存、不猜)、
+> `services/csp/app/api/ingestion/collections.py:136`(建立集合時套用)、
+> 同檔 `:145` 與 `platform_embedding.py:35`(最後手段預設值改成模型自己註冊的拼法)、
+> `services/csp/migrations/versions/r1_0032_canonical_embedding_model_name.py`
+> (拿掉 0014 的欄位預設值 ＋ 改寫四個欄位的既有列)。
+> **候選只取 `model_type='embedding'` 的註冊列**;`is_active` **故意不濾**——已停用的 embedder
+> 仍然是它產出的那些列的正確名字(見第 9 條)。這條不是潔癖:驗收實測過,只要多一列
+> **已停用的聊天模型**叫 `NVIDIA/NV-Embed-V2`,不濾就會讓真正的 embedder 變成「有歧義」,
+> **整批安靜跳過**——修正被一筆不相干的清冊資料繳械。
+> **沒改的也會說**:每張表跑完會記一行 WARNING,講「拼法有歧義而不敢猜」與
+> 「根本沒有對應 embedding 註冊列」各幾列。只記改了幾列,等於教操作者把沉默當乾淨。
+> ⚠ **大小寫不敏感的比較要留著,不是死碼**:第 8 條沒關(`model_registry.name` 仍可
+> 建出只差大小寫的兩列),而 r1_0032 只在**升級當下**對得上註冊表的列才改寫;
+> 被它刻意留下的那些列(歧義／未註冊)也還靠那個比較。
+> `packages/anila-core/src/anila_core/storage/adapters/pgvector_store.py:279` 的理由段
+> 已同步改寫——它原本用「欄位預設值是 `nvidia/NV-embed-V2`」當理由,而那個預設值被 r1_0032 拿掉了。
+> ⚠ **`r1_0032` 的資料改寫不可逆**——原本的大小寫沒有留在任何地方;`downgrade()` 只還原欄位預設值。
+> ⚠ chunk 來源欄位在 `document_chunks` / `ingestion_images` 的 **FORCE RLS** 後面,
+> migration 逐一集合設 `anila.collection_id` GUC 再改寫,**不假設 migration 角色是 superuser**
+> (本專案目前是,但這正是 #52 的形狀,不值得賭)。
+> 驗收測試 `services/csp/tests/test_embedding_model_canonical_pg.py` **刻意用
+> NOSUPERUSER／NOBYPASSRLS 的擁有者角色跑這支 migration**——csp 現有 PG 測試都用 superuser DSN,
+> 而 superuser 直接繞過 RLS,**所有跟 RLS 有關的突變在那種夾具下天生看不見**。
 
 - **事實**:`ingestion_collections.embedding_model` 的 DB DEFAULT 是 `nvidia/NV-embed-V2`,
   而模型在 `model_registry` 註冊的名字是 `nvidia/nv-embed-v2`。
@@ -667,18 +694,33 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 - **所以下面這份清單必須被寫下來。** 沒有它,合併換到的是一個安靜的平台,
   而失去的是本來會發現這件事的那個人:
 
-| # | 位置 | 事情 |
-|---|---|---|
-| 1 | `services/csp/app/api/ingestion/collections.py:135` | 硬寫 `"nvidia/NV-embed-V2"` |
-| 2 | `ingestion_collections.embedding_model` 的 DB DEFAULT | 同一個拼法,需要 migration |
-| 3 | 建立集合的 payload(`collections.py:127`→`:158`) | `payload.embedding_model` **存進去前沒有任何正規化** |
-| 4 | `memory_service.py:323` | 記憶檢索,**仍大小寫敏感** |
-| 5 | `platform_embedding.py:149` 的 `count_pending_recompute` | **兩個缺陷在同一支**:大小寫敏感 ＋ 因 RLS 恆回 0(見 #52) |
-| 6 | `r1_0018` 的回填是**歷史資料** | 之後把欄位正規化**不會重寫已經寫進去的列**,要一支資料 migration |
-| 7 | worker 寫 `embedding_source_model` 用的是**註冊表**的名字 | 舊 chunk 帶的是**集合欄位**的名字 → **同一個集合裡兩種拼法天生共存** |
-| 8 | `model_registry.name` | **沒有唯一性也沒有正規化**——只差大小寫的兩列仍然建得出來,**正是原本那個缺陷的形狀** |
-| 9 | **停用**指定的 embedding 模型 | 軟回退會移動 → 健康語料庫從 200 變 409(**刻意不關,見下**) |
+| # | 位置 | 事情 | 2026-08-07 |
+|---|---|---|---|
+| 1 | `services/csp/app/api/ingestion/collections.py:135` | 硬寫 `"nvidia/NV-embed-V2"` | ✅ 改成 `LAST_RESORT_EMBEDDING_MODEL`(`platform_embedding.py:35`) |
+| 2 | `ingestion_collections.embedding_model` 的 DB DEFAULT | 同一個拼法,需要 migration | ✅ `r1_0032` **直接拿掉這個預設值**(ORM 本來就沒宣告,每條寫入路徑都給值;沒給值的寫入應該當場失敗而不是靜靜寫錯) |
+| 3 | 建立集合的 payload(`collections.py:127`→`:158`) | `payload.embedding_model` **存進去前沒有任何正規化** | ✅ `collections.py:136` 過 `canonical_embedding_model_name` |
+| 4 | `memory_service.py:323` | 記憶檢索,**仍大小寫敏感** | ⬜ 未動。r1_0032 把 `conversation_memory_chunks.embedding_source_model` 也一起正規化了,**但比較本身仍敏感** |
+| 5 | `platform_embedding.py:149` 的 `count_pending_recompute` | **兩個缺陷在同一支**:大小寫敏感 ＋ 因 RLS 恆回 0(見 #52) | ⬜ 未動,兩個都還在 |
+| 6 | `r1_0018` 的回填是**歷史資料** | 之後把欄位正規化**不會重寫已經寫進去的列**,要一支資料 migration | ✅ `r1_0032` 改寫四個欄位:collections、document_chunks、ingestion_images、conversation_memory_chunks |
+| 7 | worker 寫 `embedding_source_model` 用的是**註冊表**的名字 | 舊 chunk 帶的是**集合欄位**的名字 → **同一個集合裡兩種拼法天生共存** | 🟡 舊 chunk 已由 r1_0032 對齊;但 worker 的最後手段預設值 `services/ingestion-worker/src/ingestion_worker/settings.py:45` **還是 `nvidia/NV-embed-V2`**,與 csp 這邊不一致(不在該包範圍,見下) |
+| 8 | `model_registry.name` | **沒有唯一性也沒有正規化**——只差大小寫的兩列仍然建得出來,**正是原本那個缺陷的形狀** | ⬜ 未動——**這一條就是「大小寫不敏感比較不能拆」的理由** |
+| 9 | **停用**指定的 embedding 模型 | 軟回退會移動 → 健康語料庫從 200 變 409(**刻意不關,見下**) | ⬜ 刻意不關 |
 
+- 🔁 **復發途徑,仍然開著(2026-08-07 記)**:
+  `services/ingestion-worker/src/ingestion_worker/settings.py:45` 的最後手段預設值
+  **仍是 `nvidia/NV-embed-V2`**,而 csp 這邊已改成 `nvidia/nv-embed-v2`
+  (`services/csp/app/services/platform_embedding.py:35`)。
+  worker 只有在 `model_registry` **一列 embedding 都沒有**時才會落到這個值
+  (`services/ingestion-worker/src/ingestion_worker/platform_embedding.py:82`),
+  但**只要落到一次,那批新 chunk 就帶著錯的拼法**,r1_0032 已經跑完不會再回頭修。
+  **兩邊的最後手段預設值要對齊**,這是一行的事;`services/ingestion-worker/**`
+  不在本包範圍,所以留成工作項而不是留在會被歸檔的報告裡。
+- 📌 **誰在寫 `embedding_source_model`(修這條之前要先知道的完整清單)**:
+  `services/ingestion-worker/src/ingestion_worker/handlers.py:351`、`:358`、`:915`
+  (用 `embedder.model_name`)、`services/csp/app/services/memory_service.py:544`
+  (用 `resolve_platform_embedding` 的名字)、
+  `packages/anila-core/src/anila_core/storage/adapters/pgvector_store.py:218`、`:228`。
+  **不是只有 worker**;先前的紀錄把這件事講得太窄。
 - **4、5 是既有的靜默空結果路徑**(不是這次改動造成的),但它們**帶著同一個碰撞**——
   chunk 檢索修好之後,**記憶檢索仍然會因為大小寫而悄悄回空**。
   影像檢索(`search.py:966`)已於同一輪順手修掉,不在清單上。
@@ -687,8 +729,12 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   端點會回一批任意段落**並且宣稱它們相關**。
   **有自信的錯答案比誠實的錯誤更糟**——那個語料庫真的取不到,壞的只是措辭。
   訊息已改成平台**接受**的動作(重新指定回原模型;若已停用要先重新啟用,因為停用的模型會被拒絕)。
-- ⚠ 一條**待確認**:`DEFAULT_EMBED_MODEL` 這個名字在全樹 `.py` 找不到(只在測試 docstring 出現),
-  可能是舊名。**變成工作項之前先確認它存不存在。**
+- ✅ **那條「待確認」查清楚了(2026-08-07)**:`DEFAULT_EMBED_MODEL` **存在**,在
+  `packages/anila-core/src/anila_core/memory/long_term/embedding.py:40`,值是 `nvidia/NV-embed-V2`
+  (**又一個同族拼法**)。目前只被 `memory/__init__.py`、`memory/user.py` 再匯出,
+  以及 `packages/anila-core/tests/test_memory_user_layer.py:306` 釘住那個字串;
+  **全樹沒有任何寫入路徑用它**。所以它是潛伏的第 10 條,不是現行缺陷。
+  `packages/anila-core/**` 不在本包範圍(同期被另外三包動過),留給後續。
 
 ### #54 `ANILA_MODEL_FAST` —— 設了不會有任何效果(接線未完成)
 

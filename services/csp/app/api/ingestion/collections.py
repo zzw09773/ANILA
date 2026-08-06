@@ -122,17 +122,27 @@ def create_collection(
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
     """Create a new (empty) collection owned by the calling user."""
-    from app.services.platform_embedding import resolve_platform_embedding
+    from app.services.platform_embedding import (
+        LAST_RESORT_EMBEDDING_MODEL,
+        canonical_embedding_model_name,
+        resolve_platform_embedding,
+    )
 
-    embedding_model = payload.embedding_model
+    # FAKE-CONTROLS #56: this column is compared against model_registry
+    # names, and migration r1_0018 copied it onto chunk provenance. A
+    # caller-supplied spelling that differs only in case is therefore a
+    # corpus that silently retrieves nothing, so store the registry's
+    # own spelling rather than whatever arrived.
+    embedding_model = canonical_embedding_model_name(db, payload.embedding_model)
     if not embedding_model:
         resolved = resolve_platform_embedding(db)
         if resolved is not None:
+            # Already a model_registry name — canonical by construction.
             embedding_model = resolved.name
         else:
             # Last-resort default so collection create never becomes a new
             # gate before an admin designates a platform embedding.
-            embedding_model = "nvidia/NV-embed-V2"
+            embedding_model = LAST_RESORT_EMBEDDING_MODEL
 
     # Schema validator already normalised the label; re-parse so a future
     # schema drift cannot store a string the latch / bind rule reject.
