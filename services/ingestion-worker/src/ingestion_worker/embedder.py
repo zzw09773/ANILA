@@ -17,6 +17,59 @@ time; ``truncate_embedding(..., pad_from=)`` pads or truncates to the
 column width. Vectors shorter than the column are rejected unless
 ``pad_from`` equals their length — unconditional padding was tried and
 reverted (silent corruption when the endpoint drifts).
+
+Batching (2026-08-07): ``embed()`` splits its input into consecutive
+slices of ``settings.embedding_batch_size`` and posts one request per
+slice. Before this, a document's entire chunk list went out as a single
+``input`` array, which cannot be made to work on the Triton gRPC path:
+CSP embeds one text per ModelInfer and bounds the **whole call** at
+``_wait_ready 5s + EMBEDDING_TIMEOUT`` (35 s at defaults), a budget that
+does not grow with ``len(input)``. Past some document size every upload
+failed as a whole, and the runbook's advice ("縮小批次") named something
+no operator could actually do. See ``WorkerSettings.embedding_batch_size``
+for the sizing rule.
+
+Batches are issued **sequentially**. Concurrency here would multiply the
+pressure on CSP's shared ``asyncio.to_thread`` executor — the resource
+whose exhaustion the 35 s budget exists to prevent — so it is not a free
+speed-up and is deliberately not done.
+
+Partial-failure contract: batch *k* failing aborts the call. Batches
+after *k* are never requested (tokens are not spent past a known
+failure), nothing partial is returned, and the raised ``EmbedError``
+keeps the original ``code``/``retryable``/``severity`` while naming the
+range that failed in ``details`` (``batch_index``, ``batch_count``,
+``failed_range``, ``embedded_before_failure``). It does **not** record
+progress: the caller indexes chunks in one ``index_chunks`` call after
+the full vector list exists (handlers.py), so there is no partial-index
+state to resume into, and arq's ``max_tries=3`` would re-embed anything
+we did remember — i.e. a resume feature without a schema change would
+double-bill rather than save work.
+
+What batching costs, stated in full (this platform meters usage, so it
+is not a footnote):
+
+- **Success path: identical bill.** CSP meters a request as
+  ``sum(max(1, len(t.split())) for t in texts)`` (proxy/service.py:267),
+  which is additive over texts, and the batches are an exact partition —
+  so the total is what it was unbatched. Measured: 20 texts cost 60
+  tokens at batch size 4 and at batch size 1000.
+- **A failed attempt now costs money where it used to cost zero.** CSP
+  calls ``enqueue_usage`` only after a successful call
+  (proxy/service.py:291), so before batching a failed document billed
+  **0** — one request, one failure, no usage row. Now batches 1..k-1
+  each succeeded and each wrote a row, and arq re-runs the whole job up
+  to ``max_tries=3``, re-billing them every time. Measured on a 20-text
+  document whose clean pass is 60 tokens: mid-document permanent failure
+  72 (was 0); last-batch permanent failure 144 (was 0); mid-document
+  failure healing on try 3, 108 = 1.80x; last-batch failure healing on
+  try 3, 156 = 2.60x. Bounded strictly under 3x a clean pass
+  (``max_tries=3``, and the failing batch itself is never billed).
+  Shrinking the batch size does **not** lower that bound; it only
+  changes how finely the already-paid-for work is divided.
+- The old zero was not a discount: on the Triton path the upstream had
+  already inferred text-by-text up to the failure point
+  (client.py:354), so that work happened and nobody was charged for it.
 """
 
 from __future__ import annotations
@@ -80,6 +133,11 @@ class Embedder:
             return None
         return n
 
+    @property
+    def batch_size(self) -> int:
+        """Max texts per request. See ``WorkerSettings.embedding_batch_size``."""
+        return max(1, int(self._settings.embedding_batch_size))
+
     async def embed(
         self,
         texts: list[str],
@@ -88,13 +146,104 @@ class Embedder:
     ) -> list[list[float]]:
         """Return one vector per input text in the same order.
 
-        Batches everything in a single request — most OpenAI-compatible
-        endpoints accept up to ~8k tokens of input combined, which is
-        comfortable for typical chunk batches (e.g. 50 chunks ×
-        average 300 tokens each = 15k chars / ~3.7k tokens).
+        The input is partitioned into consecutive slices of
+        ``batch_size`` — every text lands in exactly one batch, in
+        order. On a run that *succeeds*, that partition is what keeps
+        the bill unchanged: CSP meters a request as ``sum(per-text)``
+        (proxy/service.py), so a sum over the batches equals the sum
+        over the unbatched list.
+
+        That equality is **success-path only**. A run that fails part
+        way has already been billed for the batches that succeeded,
+        where the unbatched shape would have billed nothing — see the
+        module docstring for the measured numbers and the bound.
+
+        On the first failing batch this raises and stops; see the module
+        docstring for the partial-failure contract.
         """
         if not texts:
             return []
+
+        size = self.batch_size
+        batch_count = (len(texts) + size - 1) // size
+        vectors: list[list[float]] = []
+        for batch_index in range(batch_count):
+            offset = batch_index * size
+            batch = texts[offset : offset + size]
+            try:
+                vectors.extend(await self._embed_batch(batch))
+            except EmbedError as e:
+                raise self._locate_failure(
+                    e,
+                    batch_index=batch_index,
+                    batch_count=batch_count,
+                    offset=offset,
+                    batch_len=len(batch),
+                    total=len(texts),
+                ) from e
+
+        # Sprint 5 / Chunk W: usage tracking happens on the CSP side
+        # (proxy_service.proxy_request writes the token_usage row with
+        # request_type='embedding'). The ``user_id`` arg is kept for
+        # callsite compatibility — we don't need it here because CSP
+        # attributes the call via the ``ingestion-worker`` system API
+        # key. Future: pass user_id as ``X-Anila-Bill-To-User`` header
+        # if we want to bill to the uploading user instead of the
+        # worker's system user.
+        del user_id  # explicitly discarded; see comment above
+        return vectors
+
+    @staticmethod
+    def _locate_failure(
+        error: EmbedError,
+        *,
+        batch_index: int,
+        batch_count: int,
+        offset: int,
+        batch_len: int,
+        total: int,
+    ) -> EmbedError:
+        """Re-raise ``error`` saying WHICH slice of the document died.
+
+        A rebuilt error rather than a mutated one: ``IngestionError``
+        freezes ``str(self)`` in ``__post_init__``, so editing
+        ``user_message`` in place would leave the log line saying
+        something the details contradict.
+
+        ``code`` / ``retryable`` / ``severity`` are carried over
+        untouched — the batch a failure happened in says nothing about
+        whether retrying it can help, and the worker's retry policy
+        reads ``retryable``.
+        """
+        end = offset + batch_len
+        details = dict(error.details)
+        details.update(
+            {
+                "batch_index": batch_index,
+                "batch_count": batch_count,
+                # Half-open [start, end) over the ORIGINAL text list.
+                "failed_range": [offset, end],
+                # Chunk-local keys such as ``index`` refer to a position
+                # inside the failed batch; add this to get the document
+                # position.
+                "embedded_before_failure": offset,
+                "input_total": total,
+            }
+        )
+        suffix = (
+            f"(第 {batch_index + 1}/{batch_count} 批失敗,對應第 "
+            f"{offset}–{end - 1} 段文字;前 {offset} 段已送出但不會被索引)"
+        )
+        return EmbedError(
+            code=error.code,
+            retryable=error.retryable,
+            severity=error.severity,
+            user_message=f"{error.user_message} {suffix}".strip(),
+            details=details,
+        )
+
+    async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """One POST. ``texts`` is already bounded by ``batch_size``."""
         try:
             r = await self._client.post(
                 "/embeddings",
@@ -216,15 +365,6 @@ class Embedder:
                     details={"got": len(v), "expected": expected, "index": i},
                 )
 
-        # Sprint 5 / Chunk W: usage tracking happens on the CSP side
-        # (proxy_service.proxy_request writes the token_usage row with
-        # request_type='embedding'). The ``user_id`` arg is kept for
-        # callsite compatibility — we don't need it here because CSP
-        # attributes the call via the ``ingestion-worker`` system API
-        # key. Future: pass user_id as ``X-Anila-Bill-To-User`` header
-        # if we want to bill to the uploading user instead of the
-        # worker's system user.
-        del user_id  # explicitly discarded; see comment above
         return vectors
 
     async def close(self) -> None:

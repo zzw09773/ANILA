@@ -19,6 +19,7 @@ into the assertions. No network, time, or randomness is involved.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from ingestion_worker.settings import WorkerSettings, settings
 
@@ -32,6 +33,7 @@ _ENV_VARS = [
     "EMBEDDING_API_KEY",
     "EMBEDDING_DIM",
     "EMBEDDING_TIMEOUT_SECONDS",
+    "EMBEDDING_BATCH_SIZE",
     "UPLOAD_DIR",
     "PG_POOL_MIN",
     "PG_POOL_MAX",
@@ -94,6 +96,19 @@ def test_embedding_timeout_seconds_default(clean_env):
     assert isinstance(s.embedding_timeout_seconds, float)
 
 
+def test_embedding_batch_size_default(clean_env):
+    s = _fresh()
+    assert s.embedding_batch_size == 32
+    assert isinstance(s.embedding_batch_size, int)
+
+
+def test_embedding_batch_size_rejects_zero(clean_env):
+    """0 would mean "no batches" — every document silently embeds nothing."""
+    clean_env.setenv("EMBEDDING_BATCH_SIZE", "0")
+    with pytest.raises(ValidationError):
+        _fresh()
+
+
 def test_upload_dir_default(clean_env):
     assert _fresh().upload_dir == "/var/anila/ingestion-uploads"
 
@@ -152,6 +167,7 @@ def test_all_defaults_at_once(clean_env):
         "embedding_api_key": "not-set",
         "embedding_dim": 4000,
         "embedding_timeout_seconds": 30.0,
+        "embedding_batch_size": 32,
         "upload_dir": "/var/anila/ingestion-uploads",
         "pg_pool_min": 1,
         "pg_pool_max": 5,

@@ -286,9 +286,11 @@ async def _persist_images(
     if not rows:
         return 0
 
-    # Embed all captions in one HTTP roundtrip; on failure, persist the
-    # rows without an embedding (caption text + storage path are still
-    # valuable, image-vector search just won't surface them).
+    # Embed the captions in as few roundtrips as the batch size allows
+    # (``Embedder.embed`` splits at ``EMBEDDING_BATCH_SIZE``, so an
+    # image-heavy PDF is several requests, not one); on failure, persist
+    # the rows without an embedding (caption text + storage path are
+    # still valuable, image-vector search just won't surface them).
     embeddings: list[list[float]] | None = None
     try:
         embeddings = await embedder.embed(
