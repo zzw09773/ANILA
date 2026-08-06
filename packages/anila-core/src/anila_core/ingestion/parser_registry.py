@@ -25,9 +25,10 @@ import re
 import unicodedata
 import uuid
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -988,11 +989,15 @@ class DocxParser:
     Paragraphs are emitted as Markdown with heading levels preserved.
     Embedded images are extracted per paragraph (when a run contains a
     ``w:drawing`` element) and inserted inline as ``[[IMAGE:<id>]]``.
-    Tables are rendered as pipe-separated rows.
+    Tables are rendered as pipe-separated rows, **at their true position
+    in the document** — a table's lead-in sentence ("各項規格如下表：") has
+    to stay next to the table, otherwise chunking splits the two apart and
+    retrieval returns one without the other.
     """
 
     _NS_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
     _NS_R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    _NS_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
     def parse(self, file_path: str) -> ParsedDocument:
         try:
@@ -1010,7 +1015,17 @@ class DocxParser:
         images: dict[str, ImageRef] = {}
         title = path.stem
 
-        for para in doc.paragraphs:
+        for kind, block in self._iter_body_blocks(doc):
+            if kind == "table":
+                rows = []
+                for row in block.rows:
+                    cells = [cell.text.strip() for cell in row.cells]
+                    rows.append(" | ".join(cells))
+                if rows:
+                    parts.append("\n".join(rows))
+                continue
+
+            para = block
             text = para.text.strip()
             para_images = self._collect_para_images(para, doc, images)
 
@@ -1034,14 +1049,6 @@ class DocxParser:
             for img_id in para_images:
                 parts.append(f"[[IMAGE:{img_id}]]")
 
-        for table in doc.tables:
-            rows = []
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells]
-                rows.append(" | ".join(cells))
-            if rows:
-                parts.append("\n".join(rows))
-
         return ParsedDocument(
             content="\n\n".join(parts),
             metadata={"title": title, "embedded_images": len(images)},
@@ -1049,6 +1056,61 @@ class DocxParser:
             format="docx",
             images=images,
         )
+
+    def _iter_body_blocks(self, doc: Any) -> Iterator[tuple[str, Any]]:
+        """Yield ``("paragraph" | "table", obj)`` in true document order.
+
+        ``doc.paragraphs`` and ``doc.tables`` are two *independent*
+        collections: iterating one after the other necessarily emits every
+        table after every paragraph, no matter where the tables actually sit.
+        The body element is the only place that records the interleaving, so
+        walk it directly. This yields exactly the same objects as those two
+        collections (top-level ``w:p`` / ``w:tbl`` children) — only the order
+        differs — so nothing that used to be captured can be lost here.
+
+        Body children that are neither ``w:p`` nor ``w:tbl`` are skipped, as
+        they always were. Most are inert (``w:sectPr``, bookmarks, comments).
+        But some — content controls (``w:sdt``) and tracked insertions
+        (``w:ins``) — *wrap* real paragraphs and tables, and their text has
+        never been extracted by this parser. That is silent data loss on
+        exactly the kind of template an organisation standardises on, so
+        count those and say so once per document: a number in the worker log
+        beats text quietly going missing. Detection is by content (does this
+        child contain a ``w:p`` / ``w:tbl`` anywhere below it?), not by a
+        list of known wrapper tags, so an unanticipated wrapper still counts.
+        """
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+
+        skipped_with_content: Counter[str] = Counter()
+
+        for child in doc.element.body.iterchildren():
+            tag = child.tag
+            if not isinstance(tag, str):
+                continue  # lxml comment / processing instruction
+            if tag == f"{self._NS_W}p":
+                yield "paragraph", Paragraph(child, doc)
+            elif tag == f"{self._NS_W}tbl":
+                yield "table", Table(child, doc)
+            elif (
+                child.find(f".//{self._NS_W}p") is not None
+                or child.find(f".//{self._NS_W}tbl") is not None
+            ):
+                skipped_with_content[tag.rpartition("}")[2]] += 1
+
+        if skipped_with_content:
+            logger.warning(
+                "DOCX: skipped %d body element(s) that wrap text but are not "
+                "top-level w:p / w:tbl (%s); their content is NOT extracted. "
+                "These are usually content controls (w:sdt) or tracked "
+                "insertions (w:ins) — accept the revisions or convert the "
+                "content controls to plain text before uploading.",
+                sum(skipped_with_content.values()),
+                ", ".join(
+                    f"w:{tag}={count}"
+                    for tag, count in sorted(skipped_with_content.items())
+                ),
+            )
 
     def _collect_para_images(
         self,
