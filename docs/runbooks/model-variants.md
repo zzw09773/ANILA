@@ -41,10 +41,20 @@ fast 熱機約 0.8s、品質不輸；思考版卻可能燒 400–1300 reasoning 
 | `ANILA_STUDIO_SLIDES_MODEL` | `anila-studio` | 投影片主 LLM（analysis；預設 `gemma4`） |
 | `ANILA_STUDIO_VISION_MODEL` | `anila-studio` | Vision／VLM gate（analysis；預設 `gemma4`） |
 
-範例（名稱依你站 registry 為準）：
+> 🔴 **`ANILA_MODEL_FAST` 與 `ANILA_MODEL_ANALYSIS` 目前沒有任何程式在讀（2026-08-05 查證）。**
+> 設下去**不會有任何效果**,不會報錯,也不會有任何訊號告訴你它沒生效。
+> **自動標題實際上用的是「回答那一輪對話的同一顆模型」**
+> (`apps/anila-shell/src/app.jsx:1210-1253` 送 `model: effectiveTarget`),
+> 也就是治理中心指定的主路由。
+> **擁有者 2026-08-05 裁定不接這條線**——理由是零設定、自我維護:模型陣容換了會自動跟著
+> 治理中心走,而實質開關本來就存在。所以下面這個範例**是保留給未來的形狀,不是現在能用的設定**。
+> 詳見 `docs/FAKE-CONTROLS.md` #54 與 `docs/OWNER-QUESTIONS.md` Q35。
+
+範例（名稱依你站 registry 為準；⚠ 上面兩個變數目前無效）：
 
 ```bash
 # 根 .env — 輔助任務走 nothink；分析留思考版
+# ⚠ 以下兩行目前不生效（無人讀取），保留為未來接線時的形狀
 ANILA_MODEL_ANALYSIS=gemma26
 ANILA_MODEL_FAST=gemma26-nothink
 
