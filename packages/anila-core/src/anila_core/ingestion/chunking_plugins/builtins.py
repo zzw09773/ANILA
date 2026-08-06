@@ -26,11 +26,14 @@ not retrieval).
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, ClassVar
 
 from anila_core.ingestion.chunking_plugins.base import ChunkResult, ChunkerStrategy
 from anila_core.ingestion.chunking_plugins.registry import register_chunker
+
+logger = logging.getLogger(__name__)
 
 # Latin-script token density. OpenAI's CL100K BPE averages ~4 chars per
 # token for English / Latin-script content. Used as the divisor for
@@ -519,6 +522,10 @@ class PdfPageChunker(ChunkerStrategy):
     fixed-size windowing if any single page exceeds ``max_page_tokens``.
     Each chunk's metadata records the 1-based page number so the dev
     UI / retrieval layer can surface "see page 4 of doc.pdf" cleanly.
+    That number is only as good as the delimiter: ``page`` counts
+    ``\\f`` fields, so **one ``\\f`` per page boundary and no others** is
+    a contract the PDF parser owes this chunker, not a nicety. Blank
+    pages therefore keep their slot rather than being filtered away.
 
     When the input has no ``\\f`` markers (e.g. single-page PDF, or a
     non-PDF source mistakenly routed here), behaves as the fixed
@@ -545,16 +552,46 @@ class PdfPageChunker(ChunkerStrategy):
         merged = {**self.default_params, **params}
         max_tok = int(merged["max_page_tokens"])
 
-        pages = [p for p in document_text.split("\f") if p.strip()]
-        if not pages:
+        # Split positionally — the Nth field IS real page N. Blank pages
+        # keep their slot on purpose: filtering them out here renumbered
+        # every page after a blank verso (common in printed specs) and
+        # under-reported ``total_pages``, so a citation pointed the reader
+        # at the wrong page and the page they wanted appeared not to exist.
+        pages = document_text.split("\f")
+        total_pages = len(pages)
+        if not any(p.strip() for p in pages):
             return []
+
+        # This is the only place that holds both halves of the promise: the
+        # parser hands over ``page_count`` and the text in the same breath,
+        # and nothing else ever compares them. When they disagree the page
+        # numbers below are fiction — the PDF parser's OCR fallback replaces
+        # the text wholesale and keeps ``page_count`` from the native pass,
+        # which is exactly how a 4-page document gets cited as "第 1 頁／共
+        # 1 頁". Warn rather than raise: refusing would turn a degraded
+        # citation into a failed ingestion, and the chunks themselves are
+        # still worth retrieving.
+        declared = metadata.get("page_count")
+        if isinstance(declared, int) and not isinstance(declared, bool):
+            if declared != total_pages:
+                logger.warning(
+                    "pdf-page: text splits into %d page field(s) but the "
+                    "parser reported page_count=%d — page numbers for this "
+                    "document are not trustworthy (ocr_used=%r, format=%r)",
+                    total_pages, declared,
+                    metadata.get("ocr_used"), metadata.get("format"),
+                )
 
         chunks: list[ChunkResult] = []
         for page_idx, page_text in enumerate(pages, start=1):
             page_text = page_text.strip()
+            if not page_text:
+                # Nothing to embed, but ``page_idx`` has still advanced so
+                # the pages after this one keep their true numbers.
+                continue
             base_meta = {
                 "page": page_idx,
-                "total_pages": len(pages),
+                "total_pages": total_pages,
                 "strategy": self.name,
             }
 

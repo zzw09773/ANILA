@@ -49,8 +49,33 @@ def extract_text(
     ``metadata`` is the parser's own metadata dict augmented with:
     - ``format``: extension key the registry resolved (e.g. ``"pdf"``).
     - ``page_count``: present iff the parser counted pages.
-    - ``has_page_boundaries``: True iff text contains ``\\f`` markers
-      that the ``pdf-page`` chunker can split on.
+    - ``has_page_boundaries``: True iff ``page_count > 1`` **and**
+      ``text.split("\\f")`` yields exactly ``page_count`` fields. The
+      ``> 1`` is deliberate: a single-page document has no boundary to
+      mark, so the flag is False for it even though its one field
+      trivially matches — "has boundaries" is read as "has separators
+      between pages", not "has pages".
+
+      The field count is **measured here, not taken on trust from the
+      parser**, so a parser that emits the wrong number of markers turns
+      the flag off rather than asserting a page structure it does not
+      have. Callers get one guarantee from it and only one: when it is
+      True, the field count matches ``page_count``. That field N is also
+      *page* N is guaranteed by ``PdfParser``'s native extraction (it
+      keeps image placeholders, and any ``\\f`` carried by the source
+      text, inside their own page) but **not** by its OCR fallback,
+      which replaces the text wholesale with backend output having no
+      page structure of its own — see ``ocr_used``.
+
+      ⚠ Nothing in this tree reads this flag today: it is an honest
+      signal published for future consumers (a chunker-picker, an
+      inspector badge), **not** a control. Turning it off does not stop
+      anything — a document whose markers disagree with ``page_count``
+      is still chunked by ``pdf-page`` if that strategy is selected, and
+      the page numbers it derives still reach the user through
+      ``chunk.metadata["page"]`` / ``["total_pages"]``. The one place
+      that is loud about the disagreement at runtime is
+      ``PdfPageChunker.chunk``, which logs a warning.
 
     ``images`` is the parser's per-image map: ``{image_id: ImageRef}``
     where each ``ImageRef`` carries ``image_bytes``, ``mime``, ``page``
@@ -149,8 +174,21 @@ def extract_text(
     page_count = metadata.get("page_count") or metadata.get("pages")
     if page_count is not None:
         metadata["page_count"] = int(page_count)
+    # Measured, not assumed. "text contains \f" is not evidence that \f
+    # means *page boundary* here: PdfParser's OCR fallback swaps the text
+    # for backend output that has no page structure, and a backend whose
+    # own output carries \f (Tesseract's plain-text mode does) would make
+    # the marker present but meaningless. Counting the fields and
+    # comparing them to page_count is the cheap check that tells a real
+    # page marker from a coincidence. ⚠ Turning the flag off does not
+    # suppress anything — nothing reads it yet (see the docstring); the
+    # wrong page number still reaches the user via the chunker. This
+    # keeps the *signal* honest so a future consumer can trust it; the
+    # runtime alarm for the same disagreement is in PdfPageChunker.
     metadata["has_page_boundaries"] = bool(
-        page_count and int(page_count) > 1 and "\f" in text
+        page_count
+        and int(page_count) > 1
+        and len(text.split("\f")) == int(page_count)
     )
 
     # parsed.images may be empty (.txt etc.) or unset on older parser
