@@ -68,7 +68,7 @@ import {
   extractStatusReason,
   pollAttachmentExtractStatus,
 } from "./runtime/conversations.js";
-import { BUILTIN_FOLDER_IDS, detectPII, summarizePIIHits } from "./data.jsx";
+import { BUILTIN_FOLDER_IDS, blockingHits, detectPII, summarizePIIHits } from "./data.jsx";
 import {
   AuditWatermark,
   ClassificationWatermark,
@@ -1599,20 +1599,27 @@ export const Composer = ({
    * @returns {boolean} 允不允許送出。
    */
   const passesRedactionGate = (hits) => {
-    if (mode === "block" && hits.length > 0) {
+    // ⚠ 擋不擋只看 `blockingHits`,不看命中總數。憑證(API 金鑰、權杖、私密
+    // 金鑰、密碼賦值)是 family "credential",不在 BLOCKING_FAMILIES 裡 ——
+    // 它們會出現在提示列上,但**永遠不會**讓一則訊息送不出去。理由寫在
+    // data.jsx 的 BLOCKING_FAMILIES:憑證形狀最常出現在貼上來的程式碼裡,
+    // 誤擋一次就換來一個永遠切在 warn 的使用者。
+    const blocking = blockingHits(hits);
+    if (mode === "block" && blocking.length > 0) {
       // 這句話要做三件事:說出**擋的是什麼**(不是含糊的「敏感資訊」)、
       // 說明那只是**格式像**(擋錯的機率不低)、以及**是誰擋的**。
       //
-      // ⚠ 「疑似」不是客套。偵測器只比對格式,而院內的採購案號、預算表格、
-      // 料號都會命中 —— 一個被擋下來的人多半是被誤擋的,他必須看得出來這是
-      // 格式判斷不是事實認定,才知道可以放心把模式切回 warn。
+      // ⚠ 「疑似」不是客套。偵測器認的是形狀 —— 身分證與信用卡雖然再驗過
+      // 檢查碼(採購案號、預算欄那些因此不再命中),但一個十位數字串剛好
+      // 湊出合法檢查碼仍然是可能的。被擋下來的人必須看得出來這是格式判斷
+      // 不是事實認定,才知道可以放心把模式切回 warn。
       //
       // ⚠ 它曾經寫「管理員已設定為阻擋送出」—— 那是假的。這個模式是使用者
       // 自己的偏好(存在 users.ui_settings),後端沒有對應的管理員政策欄位。
       // 真正把它切到 block 的就是使用者自己,而且就在上面那條提示列的按鈕上。
       // 把決定推給一個不存在的管理員,使用者既不知道是誰擋的,也找不到路自救。
       toast(
-        `這則訊息裡疑似有 ${summarizePIIHits(hits)}（只比對格式，可能認錯）。目前模式是 block，所以沒有送出 —— 這個模式是你自己選的，上方提示列可以改。`,
+        `這則訊息裡疑似有 ${summarizePIIHits(blocking)}（只比對格式，可能認錯）。目前模式是 block，所以沒有送出 —— 這個模式是你自己選的，上方提示列可以改。`,
         { tone: "error" },
       );
       return false;
