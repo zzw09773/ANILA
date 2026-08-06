@@ -64,9 +64,20 @@ def test_there_is_still_no_env_file_shortcut():
         + list(_REPO_ROOT.glob("infra/compose/*.yml"))
     )
     assert compose_files, "找不到平台的 compose 檔,路徑推導壞了"
-    hits = [
-        p.name for p in compose_files if "env_file" in p.read_text(encoding="utf-8")
-    ]
+    # 找的是 ``env_file:`` **這個鍵**,不是這七個字元 —— 對照
+    # services/csp/tests/test_compose_csp_env_passthrough.py 的同名測試,
+    # 兩邊踩過同一個坑:platform.yml 有一句**說明「這裡沒有 env_file」的
+    # 註解**,字串搜尋會把那句註解本身判成違規,守衛對著自己要保護的那句話
+    # 轉紅。(改用 yaml.safe_load 解析也不行:overlay 檔用了 compose 自己的
+    # ``!reset`` 標籤,safe_load 會丟 ConstructorError。)
+    key_re = re.compile(r"^\s*env_file\s*:")
+    hits = []
+    for path in compose_files:
+        for lineno, raw in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if key_re.match(raw.split("#", 1)[0]):
+                hits.append(f"{path.name}:{lineno}")
     assert hits == [], f"出現 env_file:,本檔的前提要重新檢視 — {hits}"
 
 
