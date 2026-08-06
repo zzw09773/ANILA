@@ -125,6 +125,20 @@ services:
     volumes:
       - ../../packages/anila-agent:/app/anila-template:ro
       # ⚠️ dev 用獨立 share 目錄，不撞 live stack 的 ./share/
+      #
+      # ⚠️ csp 自 2026-08-06 起以 uid 10001 跑（FAKE-CONTROLS #50）。這兩個目錄
+      # 不在樹上，**第一次 `up` 由 Docker 建成 root:root** → 上傳會回 500 而容器
+      # 照樣 healthy。prod 那條路徑由 infra/deployment/scripts/fix-runtime-ownership.sh
+      # 處理，dev 刻意不接腳本（dev 沒有部署腳本可掛）。第一次起 dev stack 前手動跑一次：
+      #   docker run --rm -u 0 -v "$PWD/share-dev:/s" alpine chown -R 10001:10001 /s
+      # 冪等，重跑無害。（ingestion-worker 掛同一個 uploads 目錄，一起修好。）
+      #
+      # ⚠️ 同日起 csp 映像不再內含 JWT keypair——以前 dev 能簽 token 是因為
+      # build context 把 services/csp/secrets/ 的測試鑰污染進映像（.dockerignore
+      # 只擋根層），2026-08-06 已整類關掉。dev 的 csp 現在會在啟動時大聲失敗
+      # （JwtKeyLoadError），這是正確行為。自救：自備 dev 專用 keypair 目錄再掛
+      # `<dir>:/app/secrets:ro`。**不要**直接掛 live 的 ../../secrets——兩個 stack
+      # 共用簽章鑰＝dev 簽的 token 在 live 也有效。
       - ../../share-dev/uploads/ingestion:/var/anila/ingestion-uploads
       - ../../share-dev/attachments:/var/anila/attachments
     extra_hosts:
@@ -202,6 +216,8 @@ services:
       SIMILARITY_MIN: "${SIMILARITY_MIN:-0.75}"
       PYTHONUNBUFFERED: "1"
     volumes:
+      # ⚠️ 跟 csp 同一顆 inode，也同樣以 uid 10001 跑。第一次 `up` 之前的
+      # 一次性 chown 見上面 csp 服務那段註解（同一條命令一起修好兩邊）。
       - ../../share-dev/uploads/ingestion:/var/anila/ingestion-uploads
     depends_on:
       csp-db:

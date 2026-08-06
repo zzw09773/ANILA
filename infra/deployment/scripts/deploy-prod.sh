@@ -260,6 +260,25 @@ ensure_jwt_keypair() {
   fi
 }
 
+# csp / ingestion-worker 自 2026-08-06 起以非 root (uid 10001) 跑
+# (FAKE-CONTROLS #50)。bind mount 的所有權由 **host** 決定,映像裡 chown 沒有用,
+# 所以**每一條會 (re)start 服務的路徑**都要先把 host 端對齊一次
+# (細節與理由都寫在那支腳本的檔頭):
+#   share/uploads/ingestion + share/attachments → chown 給 10001:10001
+#   secrets/ → 擁有者不動,只對指名的檔補 group 讀(白名單,非 -R)
+#   share/pki → 遞迴補 group 讀(公開 CA 憑證;讀不到 = 出向 https 全掛)
+# 少了這一步,症狀**不是**容器起不來,而是**容器全綠、上傳回 500、JWKS 回 500**。
+#
+# 目前的呼叫點:cmd_deploy / cmd_up / cmd_rebuild(cmd_restart 走 cmd_up)。
+# 之後若新增別的會 up 服務的 subcommand,也要加進來。
+#
+# 無條件跑、不做「看起來修過就跳過」的判斷 —— 那支腳本本身冪等,而條件判斷正好
+# 會在「有人手動新增了一個目錄」時漏掉。必須排在 ensure_jwt_keypair 之後:
+# 私鑰要先存在,才輪得到改它的 group。
+fix_runtime_ownership() {
+  bash infra/deployment/scripts/fix-runtime-ownership.sh
+}
+
 # ── Subcommand: deploy ─────────────────────────────────────────────────────
 cmd_deploy() {
   cmd_preflight
@@ -269,6 +288,9 @@ cmd_deploy() {
 
   section "JWT 簽章金鑰"
   ensure_jwt_keypair
+
+  section "Bind mount 所有權對齊 (csp / ingestion-worker 非 root)"
+  fix_runtime_ownership
 
   section "Bring up the stack"
   docker compose up -d
@@ -302,6 +324,8 @@ reload_nginx() {
 cmd_up() {
   check_branch; check_docker; check_env
   ensure_jwt_keypair
+  # `up` 這條路徑不 build,但一樣會掛 bind mount,所以一樣要對齊所有權。
+  fix_runtime_ownership
   section "docker compose up -d"
   docker compose up -d
   cmd_wait_healthy
@@ -328,6 +352,15 @@ cmd_rebuild() {
   check_env
   section "Rebuild + restart: $svc"
   docker compose build "$svc"
+  # 這條路徑也會 (re)start 服務,所以一樣要對齊所有權 —— 而且它正是「把這包套到
+  # 已經在跑的部署上」最自然的命令(這支腳本的 help 第 23 行就這樣教)。
+  # 少了這一行,`rebuild csp` 會建出降權映像、起起來、healthy,然後上傳靜默 500。
+  #
+  # 不判斷 $svc 是不是 csp / ingestion-worker,一律跑:那種判斷等於再維護一份
+  # 服務清單,會在有人新增共用掛載的服務時默默漏掉。腳本冪等,對 nginx 這種
+  # 無關的服務多跑一次的成本是幾秒鐘。
+  # 排在 build 之後:build 保證映像存在,對齊步驟才借得到那個 root 容器。
+  fix_runtime_ownership
   docker compose up -d "$svc"
   log "等 15 秒 healthcheck..."
   sleep 15

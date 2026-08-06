@@ -41,6 +41,22 @@ RUN pip install /tmp/ingestion-worker
 RUN mkdir -p /var/anila/ingestion-uploads
 VOLUME ["/var/anila/ingestion-uploads"]
 
+# ── 降權:非 root 跑 (FAKE-CONTROLS #50) ────────────────────────────────────
+# 10001:10001 **必須跟 infra/docker/csp.Dockerfile 同號**。csp 寫進
+# share/uploads/ingestion 的原始檔,這支 worker 要讀;worker 寫回的
+# <UPLOAD_DIR>/anila-images/<doc_id>/ (handlers.py:219-260),csp 的
+# image_blob 端點要讀。兩邊 uid 不同 = 影像/上傳路徑單向壞掉,而且兩個容器
+# 都還是 healthy。改號碼請一併改 csp.Dockerfile 與
+# infra/deployment/scripts/fix-runtime-ownership.sh。
+#
+# chown 這個目錄有兩個作用:(a) 沒掛 bind mount 時 VOLUME 產生的匿名 volume
+# 會繼承映像裡的所有權,不會又變回 root:root;(b) 掛了 bind mount 時 host
+# 端所有權蓋過映像 —— 那條路徑由上面那支部署腳本負責。
+RUN groupadd --gid 10001 anila \
+ && useradd --create-home --uid 10001 --gid 10001 anila \
+ && chown anila:anila /var/anila/ingestion-uploads
+USER anila
+
 # Run the Arq worker. ``--watch`` is intentionally OFF here — we want
 # explicit restarts on code change in dev; production would never use it.
 CMD ["arq", "ingestion_worker.main.WorkerSettings"]

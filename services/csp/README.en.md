@@ -54,7 +54,11 @@ CSP also hosts the **Ingestion knowledge base** (document → chunk → embeddin
 | Text post-processing | opencc-python-reimplemented 0.1.7 |
 | Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
-> The deployed image uses [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) (multi-stage, bundles `anila-core[rag]`); `services/csp/Dockerfile` is a **single-container legacy** file (compose does not use it). The governance frontend now lives at the top level, [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, "官方藍" visual redesign), served statically by Nginx.
+> The deployed image uses [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) (multi-stage, bundles `anila-core[rag]`), and it is now the **only** one — a second `services/csp/Dockerfile` that compose never built was deleted on 2026-08-06 ([FAKE-CONTROLS](../../docs/FAKE-CONTROLS.md) #50). The governance frontend now lives at the top level, [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, "官方藍" visual redesign), served statically by Nginx.
+>
+> The container runs as **uid 10001 (non-root)**. `/app/logs` is the only writable path baked into the image; uploads, attachments, `share/pki` and `secrets/` all live on bind mounts whose ownership is decided by the host — so [`infra/deployment/scripts/fix-runtime-ownership.sh`](../../infra/deployment/scripts/fix-runtime-ownership.sh) must run before the stack comes up (deploy-prod.sh's `deploy`/`up`/`rebuild` paths and intranet-deploy.sh `[4c]` all call it).
+>
+> ⚠ Widening under `secrets/` is an **allow-list** (the JWT keypair and the dev-card-ca bundle, nothing else). A new file the runtime needs to read must get its own `widen_file` line in that script, otherwise it stays unreadable. The trade is deliberate: no future private key dropped into `secrets/` becomes group-readable by gid 10001 by accident.
 
 ---
 
