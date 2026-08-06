@@ -71,8 +71,8 @@ export function hasBranch(msg) {
  * Keeping only dbId-less entries cannot resurrect a deleted message, because
  * anything the server ever stored carries a dbId.
  *
- * Preserves client-only fields (piiHits, explicitAgents, finishReason,
- * routedAgentId) by dbId.
+ * Preserves client-only fields (explicitAgents, finishReason, routedAgentId)
+ * by dbId.
  *
  * `serverMapped` must already be in the client message shape (dbId, role, …);
  * this helper only merges + stamps conversationId.
@@ -93,7 +93,6 @@ export function applyServerPath(prevList, serverMapped, convId) {
     if (typeof m?.dbId === "number") {
       if (m.streaming) liveLocal.set(m.dbId, m);
       clientOnly.set(m.dbId, {
-        piiHits: m.piiHits,
         explicitAgents: m.explicitAgents,
         finishReason: m.finishReason,
         routedAgentId: m.routedAgentId,
@@ -113,7 +112,6 @@ export function applyServerPath(prevList, serverMapped, convId) {
     }
     const preserved = clientOnly.get(sm.dbId) || {};
     const next = { ...sm, conversationId: convId };
-    if (preserved.piiHits !== undefined) next.piiHits = preserved.piiHits;
     if (preserved.explicitAgents !== undefined) {
       next.explicitAgents = preserved.explicitAgents;
     }

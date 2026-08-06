@@ -130,7 +130,7 @@ import {
   IconTrash,
   IconUser,
 } from "./icons.jsx";
-import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS, detectPII } from "./data.jsx";
+import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS, detectPII, summarizePIIHits } from "./data.jsx";
 import {
   CitationsDrawer,
   ConfidentialWatermark,
@@ -376,7 +376,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [collapsed, setCollapsed] = useState(false);
   const [folder, setFolder] = useState("all");
 
-  // 敏感資訊模式(提醒／遮蔽／阻擋)。使用者自己在提示列選的偏好,跟資料夾
+  // 敏感資訊模式(提醒／阻擋)。使用者自己在提示列選的偏好,跟資料夾
   // 共用 users.ui_settings 這個 per-user blob。
   //
   // ⚠ 存後端而不是 localStorage,理由和資料夾同一條(見下面那段註解),但對這一
@@ -401,13 +401,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
    */
   const passesRedactionGate = (text) => {
     if (redactionMode !== "block") return true;
-    if (detectPII(text || "").length === 0) return true;
-    // ⚠ 這句話必須告訴使用者一條**當下真的走得到**的出路。它曾經只寫「可在
-    // 上方提示列切換模式」,而提示列只在輸入框裡剛好有個資時才存在 —— 從範本
-    // 或重試被擋下來的人,畫面上根本沒有那條提示列,等於被鎖在外面沒有鑰匙。
-    // 設定 →「隱私 / 信任」那組按鈕是永遠都在的那一條,所以指向它。
+    const hits = detectPII(text || "");
+    if (hits.length === 0) return true;
+    // ⚠ 這句話必須說出**擋的是什麼**,而且必須給一條**當下真的走得到**的出路。
+    // 它曾經只寫「可在上方提示列切換模式」,而提示列只在輸入框裡剛好有個資時
+    // 才存在 —— 從範本或重試被擋下來的人,畫面上根本沒有那條提示列,等於被鎖
+    // 在外面沒有鑰匙。設定 →「隱私 / 信任」那組按鈕是永遠都在的那一條,
+    // 所以指向它。
     toast(
-      "偵測到敏感資訊，目前模式為「阻擋」，所以這則訊息沒有送出。可到「設定 → 隱私 / 信任」改成提醒或遮蔽，或把個資清掉再送。",
+      `這則訊息裡疑似有 ${summarizePIIHits(hits)}（只比對格式，可能認錯）。目前模式是 block，所以沒有送出 —— 這個模式是你自己選的，可到「設定 → 隱私 / 信任」改。`,
       { tone: "error" },
     );
     return false;
@@ -442,6 +444,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           setFolders(s.folders.filter((f) => f && typeof f.id === "string" && typeof f.name === "string"));
         }
         // 白名單驗證:blob 是使用者可寫的,不明值一律退回預設,不要拿它去比對模式。
+        //
+        // ⚠ 這裡也是**舊值的退場口**。曾經有第三個模式,使用者的 blob 裡可能還
+        // 存著它。那不是錯誤、不是壞資料,是我們自己把選項拿掉了 —— 所以它就
+        // 安安靜靜地落在預設(warn)上:不 throw、不 toast、也不 console.warn。
+        // 對使用者噴一條看起來像 bug 的警告,只會讓他以為自己的帳號壞了。
         if (alive && REDACTION_MODES.includes(s.redactionMode)) {
           setRedactionMode(s.redactionMode);
         }
@@ -1592,15 +1599,19 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       setRuntimeError("尚未登入，請重新登入後再試。");
       return;
     }
-    const { explicitAgents = [], piiHits = [] } = meta;
+    const { explicitAgents = [] } = meta;
     if (explicitAgents.length > 1) {
-      return sendCompare(text, attachments, { explicitAgents, piiHits });
+      return sendCompare(text, attachments, { explicitAgents });
     }
     // ⚠ 這裡要**早於** ensureConversation / createTaskForConversation:那兩個會
     // 拿這段草稿當標題送到伺服器上。等到落庫扼流點才擋,訊息本身是保住了,
     // 對話標題和 Task 標題卻已經帶著身分證號出去了。
     // 這不是閘門的第二份實作,是同一個閘門在更早的位置再問一次;
     // 後面兩個扼流點仍然是保證,漏掉這一行也不會讓訊息內容外流。
+    //
+    // ⚠ 但標題會。這一行有自己的釘子:redactionChokePoint 的「Task 標題」
+    // (走建議追問,不經過 composer 閘門)+ 突變 `redaction-gate-skipped-before-title`。
+    // 走 composer 的測試釘不住它 —— chat.jsx 的閘門會先擋,拿掉這一行照樣全綠。
     if (!passesRedactionGate(text)) return;
 
     const effectiveTarget = explicitAgents[0] || selectedAgentId;
@@ -1627,7 +1638,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       role: "user",
       text,
       attachments,
-      piiHits,
       explicitAgents,
       conversationId: convId,
       createdAt: nowIso(),
@@ -2489,7 +2499,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           role: "user",
           text,
           attachments,
-          piiHits: meta.piiHits || [],
           conversationId: col.id,
           createdAt: nowIso(),
         };
@@ -3552,7 +3561,7 @@ function SettingsModal({
               <div>
                 <div style={{ fontWeight: 500, marginBottom: 4 }}>敏感資訊處理</div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
-                  遮蔽僅套用於本畫面的顯示。送出內容為原文——模型與存下來的對話紀錄都會收到完整文字，未經遮罩；平台目前沒有伺服器端的個資遮罩。
+                  平台只負責提醒你草稿裡可能有什麼，不會替你改寫內容：送給模型的文字、以及存下來的對話紀錄，都是你打的原文（只去掉頭尾的空白），中間一字不改。送出去之後就收不回來，要不要送由你決定。
                 </div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6, marginTop: 6 }}>
                   下面選的模式會存在你的帳號下，換一台機器登入同一張卡也會保留。這是你自己的偏好，沒有管理員替你設定過，你隨時可以改回來。
@@ -3580,7 +3589,8 @@ function SettingsModal({
                   ))}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.6, marginTop: 6 }}>
-                  warn＝只提醒，照原文送出；mask＝本畫面遮蔽顯示，仍照原文送出；block＝偵測到個資時不送出。
+                  偵測只比對格式，不保證判斷正確——公文編號、預算表格、案號都可能被誤認。
+                  warn＝送出前提醒你，照樣送出；block＝偵測到時不送出。
                 </div>
               </div>
               <div>

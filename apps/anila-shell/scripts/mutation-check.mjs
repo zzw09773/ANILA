@@ -83,8 +83,7 @@ const NEW_TESTS = [
   "src/__tests__/transport",
   "src/__tests__/csrfHeaders",
   // 敏感資訊閘門與模式偏好(`wt/pii-honesty`,2026-08-05)。這一組守的是新加的
-  // 那五個突變 —— 連同它們釘的行為都是本包才長出來的,所以歸「新測試」。
-  // ⚠ `redactionHonesty.test.jsx` 不在這裡:它是 2026-07-30 寫的,是舊套件。
+  // 那幾個突變 —— 連同它們釘的行為都是本包才長出來的,所以歸「新測試」。
   "src/__tests__/redactionBlockAttribution",
   "src/__tests__/redactionModePersistence",
   "src/__tests__/redactionGateCoverage",
@@ -407,7 +406,7 @@ const MUTATIONS = [
   // 這一區守的東西和上面幾區不同:上面守「功能會不會壞」,這一區守
   // **「畫面上那句話會不會變成謊話」**。
   //
-  // 三種模式(warn/mask/block)裡只有 block 真的攔得住東西離開瀏覽器,而且它
+  // 兩個模式(warn/block)裡只有 block 真的攔得住東西離開瀏覽器,而且它
   // 現在是可以跨機器保存的使用者偏好。所以任何一條讓 block 靜默失效的改動,
   // 後果都不是「功能壞了」,是「使用者以為自己被保護著,而他不是」——
   // 這正是本專案第四條教訓(靜默成功比報錯危險)的形狀。
@@ -432,6 +431,24 @@ const MUTATIONS = [
     // 改釘在條件本身 —— 不管擋下來之後要做什麼,這個判斷都得在。
     find: "                        if (!passesRedactionGate(bodyHits)) {",
     replace: "                        if (!passesRedactionGate(bodyHits) && false) {",
+  },
+  {
+    id: "redaction-gate-skipped-before-title",
+    file: "src/app.jsx",
+    shape: "守衛被跳過（靜默 no-op）",
+    intent: "送出路徑最前面那道閘門失效（訊息本身擋住了，對話標題與 Task 標題照樣帶著身分證號出去）",
+    // 這一行守的東西**兩個扼流點都來不及守**:ensureConversation 與
+    // createTaskForConversation 都在它們之前跑,而且都拿這段草稿當標題送上去。
+    //
+    // 釘子是 redactionChokePoint 的「Task 標題」那一條:它走建議追問
+    // (`app.jsx` 把它接成 `onPickFollowUp={(q) => sendMessage(q, [], {})}`,
+    // 直接進 sendMessage,不經過 composer 閘門),並讓 Task 建立一直失敗,
+    // 所以每一輪都會再送一次標題。
+    //
+    // ⚠ 走 composer 的那條路**釘不住**這一行:chat.jsx 的閘門會先擋下來,
+    // 於是拿掉這一行整套照樣全綠。這個突變存在的理由就是把那件事說出來。
+    find: "    if (!passesRedactionGate(text)) return;",
+    replace: "    if (!passesRedactionGate(text) && false) return;",
   },
   {
     id: "redaction-choke-point-stream-removed",
@@ -481,7 +498,7 @@ const MUTATIONS = [
     id: "redaction-mode-lost-in-compare",
     file: "src/multiagent.jsx",
     shape: "props 沒傳下去（靜默 no-op）",
-    intent: "對比模式的輸入框收不到模式，退回預設 mask（block 在對比模式裡靜默失效）",
+    intent: "對比模式的輸入框收不到模式，退回預設 warn（block 在對比模式裡靜默失效）",
     find: "          redactionMode={redactionMode}",
     replace: "          redactionMode={undefined}",
   },

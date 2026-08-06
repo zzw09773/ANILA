@@ -20,7 +20,7 @@ import {
 // 送出去」:
 //
 //   1. 預設提示詞的 autosend 直接呼叫 onSend,從來沒經過閘門。
-//   2. 對比模式的 Composer 沒有收到模式 prop,退回自己的預設 mask。
+//   2. 對比模式的 Composer 沒有收到模式 prop,退回自己的預設(不擋的那個)。
 //
 // 兩個破口在模式還是「一個分頁的暫時狀態」時就已經存在;模式變成可以跨機器
 // 保存的偏好之後,它們從「這一次」變成「一直都在」—— 而且會去踩它的,正是
@@ -86,25 +86,24 @@ describe("敏感資訊閘門:每一條送出路徑都要過", () => {
     // 自然也不在,而 toast 卻叫使用者「去提示列切換」或「清掉再送」——
     // 兩條路當下都不存在,等於給了一把假鑰匙。
     //
-    // 現在把範本內容放回輸入框,提示列連同 warn/mask/block 按鈕就都出現了,
+    // 現在把範本內容放回輸入框,提示列連同 warn/block 按鈕就都出現了,
     // 「清掉再送」也才成立。
     const box = rtlScreen.getByPlaceholderText(/問 ANILA 任何事情/);
     expect(box.value).toContain(ID_NUMBER);
-    // 「敏感片段」是提示列的字,toast 用的是「敏感資訊」—— 兩者都含「偵測到」。
-    expect(rtlScreen.getByText(/敏感片段/)).toBeTruthy();
-    for (const m of ["warn", "mask", "block"]) {
+    expect(rtlScreen.getByText(/這則草稿裡/)).toBeTruthy();
+    for (const m of ["warn", "block"]) {
       expect(rtlScreen.getByText(m)).toBeTruthy();
     }
   });
 
-  it("對照組:同一條 autosend 路徑,不是 block 的時候要送得出去", async () => {
+  it("對照組:同一條 autosend 路徑,warn 的時候要送得出去", async () => {
     const onSend = vi.fn();
     render(
       <ConfirmProvider>
         <Composer
           onSend={onSend}
           agents={[]}
-          redactionMode="mask"
+          redactionMode="warn"
           presetPrompts={[
             { id: "p1", label: "帶個資的範本", config: { text: DRAFT, autosend: true } },
           ]}
@@ -122,7 +121,7 @@ describe("敏感資訊閘門:每一條送出路徑都要過", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
   });
 
-  it("對比模式也要吃到使用者存的 block —— 它曾經退回自己的預設 mask", async () => {
+  it("對比模式也要吃到使用者存的 block —— 它曾經退回自己那個不擋的預設", async () => {
     const backend = createFakeBackend({
       agents: TWO_AGENTS,
       uiSettings: { redactionMode: "block" },
@@ -155,10 +154,10 @@ describe("敏感資訊閘門:每一條送出路徑都要過", () => {
     expect(screen.getByRole("alert")).toBeTruthy();
   });
 
-  it("對照組:對比模式在 mask 之下要送得出去", async () => {
+  it("對照組:對比模式在 warn 之下要送得出去", async () => {
     const backend = createFakeBackend({
       agents: TWO_AGENTS,
-      uiSettings: { redactionMode: "mask" },
+      uiSettings: { redactionMode: "warn" },
     });
     await mountOrchestrator({ backend });
 

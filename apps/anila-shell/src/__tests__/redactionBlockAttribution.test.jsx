@@ -18,9 +18,10 @@ import { ConfirmProvider } from "../confirm.jsx";
 //
 // 把一個不存在的人搬出來當理由,比講錯技術細節更糟:使用者既不知道是誰擋的,
 // 也不知道那條路是自己一鍵可以走回去的,只好去找一個並不存在的管理員。
-// 這和設定頁那句「實際遮罩在 CSP proxy 層執行」是同一類缺陷 —— 用一個不存在的
-// 權威,讓使用者相信有人替他做了決定。
-describe("block 模式擋下送出時,要說清楚是誰擋的", () => {
+//
+// 而且這句話還要**說出擋的是什麼**。「偵測到敏感資訊」只講了一個關於字串的
+// 事實 —— 本來就知道那是什麼的人只是被拖了一秒,不知道的人什麼也沒學到。
+describe("block 模式擋下送出時,要說清楚是誰擋的、擋的是什麼", () => {
   const ID_NUMBER = "A123456789";
 
   const blocked = async () => {
@@ -56,5 +57,20 @@ describe("block 模式擋下送出時,要說清楚是誰擋的", () => {
     const { notice } = await blocked();
     expect(notice).toContain("模式");
     expect(notice).toContain("提示列");
+  });
+
+  it("要說出擋的是什麼,不是含糊的「敏感資訊」", async () => {
+    const { notice } = await blocked();
+    expect(notice).toContain("身分證");
+  });
+
+  // ⚠ 被 block 擋下來的人,多數時候是被**誤擋**的:偵測器只比對格式,而院內的
+  // 採購案號、預算表格、16 位料號都會命中。所以這句話不可以寫成事實認定 ——
+  // 他要看得出來這是格式判斷而不是平台真的認出了個資,才知道可以放心把模式
+  // 切回 warn 再送,而不是以為自己真的差點外洩。
+  it("不可以斷定那真的是個資 —— 只能說疑似,而且要講明可能認錯", async () => {
+    const { notice } = await blocked();
+    expect(notice).toContain("疑似");
+    expect(notice).toMatch(/可能認錯|只比對格式/);
   });
 });
