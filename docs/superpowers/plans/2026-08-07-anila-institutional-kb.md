@@ -880,11 +880,38 @@ git commit -m "feat(governance-ui): mark a collection ANILA-searchable, and say 
 
 ## Task 8：前端五狀態徽章與原文泡泡
 
-**Files:**
-- Modify: `apps/anila-shell/src/chat.jsx:665`（助理分支）、`apps/anila-shell/src/app.jsx:898`／`:1552`（meta 映射）
-- Test: `apps/anila-shell/src/__tests__/kbStateBadge.test.jsx`（新，vitest）
+> **契約來源**：payload 欄位以 Task 6 實際出貨為準（`task-6-report.md` 的 file:line 地圖）——
+> `anila_meta.kb_state`（五值字串，四個出口都明帶）、`kb_hits`（collection_id/document_id/
+> filename/content/score）、`kb_failed_collections`（partial 時）；命中同時已填進既有
+> `citations`（`{id, title, score?, snippet?}`，drawer 契約）。**router 合併路徑已驗會原樣
+> 透傳 kb_*（`_normalize_anila_meta` 是 spread）；串流出口的透傳釘在 Task 9 的 router 側工作。**
 
-- [ ] **Step 1: 寫失敗測試**
+**Files:**（錨點 2026-08-07 偵察驗過）
+- Modify: `apps/anila-shell/src/chat.jsx` — 助理分支 `:665` 起；徽章照 `:676–691`
+  `action-agent-name` 樣板；原文泡泡沿用 `renderTextWithCitations`（trust.jsx:30，
+  已在 chat.jsx:722 使用）＋「查看 N 筆來源」footer（:830–844）。⚠ **不碰 `:892–940`
+  的 regenerate 選單——那是 Task 9 的地**
+- Modify: `apps/anila-shell/src/app.jsx` — **兩個 meta 映射縫都要**：
+  `mapServerMessage`（`:896`，欄位映射 `:906–916`；⚠ 計畫原引 :898 是 `siblingIndex`）
+  與 `applyMeta`（`:1541`，映射 `:1550–1566`）。**漏掉任何一個＝SSE 現場與重新載入
+  兩個世界各說各話（靜默分裂）**，兩個都要測
+- 不碰 `runtime/messageMeta.js`：`buildPersistMeta`（:34）spread `finalMeta`，
+  kb_* 是整包抵達不跨 frame 累積，自動存活——在報告寫一句確認即可
+- Test: `apps/anila-shell/src/__tests__/kbStateBadge.test.jsx`（新，vitest；
+  render 樣板照 `classificationBadge.test.jsx`，元件掛載照 `messageTree.test.js:667–682`）
+
+**硬規則（設計 §5）：**
+1. 徽章**只**從明帶的 `kbState` 渲染；`not_searched` 與「欄位缺席（舊訊息）」都不畫任何
+   kb 記號——但這是**有資料背書的渲染決定**：兩種情況都要有測試釘住 DOM 裡零 kb 標記。
+2. 「沒命中」與「查不了」是**兩句不同的話**（誠實不變式 1）；`searched_miss` 明示
+   「院內規章裡沒找到相關條文，以下是模型的一般知識」語意；`search_error` 明示檢索失敗。
+3. `partial_error` 要讓使用者看得出「這不是全部的依據」（點名失敗庫或整體示警）。
+4. `searched_hit`：出處顯示**文件名**、hover 原文泡泡＋信心分數（`score`）——全部走
+   既有 citations 管線，不新建渲染機制；引用**不顯示頁碼**（擁有者裁決：規章定位點是條號）。
+5. 兩個映射縫（`:906–916`、`:1550–1566`）都補 `kb_state`/`kb_hits`/`kb_failed_collections`
+   → msg 欄位，且兩縫的測試各自獨立（只改一縫另一縫的測試必須紅）。
+
+- [ ] **Step 1: 寫失敗測試**（原兩條保留，範圍補強）
 
 ```jsx
 it("四種狀態互相分得出來", () => {
@@ -893,8 +920,11 @@ it("四種狀態互相分得出來", () => {
     const { container } = render(<MessageBubble msg={{ ...base, kbState: state }} />);
     expect(container.querySelector(`[data-testid="kb-state-${state}"]`)).toBeTruthy();
   }
-  const plain = render(<MessageBubble msg={{ ...base, kbState: "not_searched" }} />);
-  expect(plain.container.querySelector('[data-testid^="kb-state-"]')).toBeNull();
+  // not_searched 與欄位缺席都不畫——兩種都要測,而且是資料背書的決定,不是壞掉
+  for (const msg of [{ ...base, kbState: "not_searched" }, { ...base }]) {
+    const plain = render(<MessageBubble msg={msg} />);
+    expect(plain.container.querySelector('[data-testid^="kb-state-"]')).toBeNull();
+  }
 });
 
 it("沒命中與檢索失敗是兩句不同的話", () => {
@@ -902,9 +932,16 @@ it("沒命中與檢索失敗是兩句不同的話", () => {
   const err = render(<MessageBubble msg={{ ...base, kbState: "search_error" }} />);
   expect(miss.container.textContent).not.toBe(err.container.textContent);
 });
+
+it("兩個映射縫各自把 kb_state 帶到 msg 上", () => {
+  // mapServerMessage(重新載入) 與 applyMeta(SSE 現場) 各測各的;
+  // 只接一縫會讓現場與歷史各說各話,而且不報錯。
+});
+
+it("命中徽章帶文件名,泡泡帶原文與分數", () => { /* 走 citations 管線 */ });
 ```
 
-- [ ] **Step 2–5**：跑失敗 → 實作（徽章照 `chat.jsx:676-691` 的 `action-agent-name` 樣板；原文泡泡用 `msg.citations` + 既有 `renderTextWithCitations`）→ 跑通過 → commit
+- [ ] **Step 2–5**:跑失敗 → 實作 → 跑通過(`npx vitest run`)→ commit
 
 ```bash
 git commit -m "feat(shell): show whether an answer is backed by a regulation, and which"
