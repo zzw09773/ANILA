@@ -547,42 +547,115 @@ git commit -m "feat(csp): institutional knowledge retrieval, per collection beca
 ## Task 4：分數門檻設定 + 校準視圖
 
 **Files:**
-- Modify: `services/csp/app/api/ingestion/collections.py`（或新增 `settings` 端點）
-- Create: `services/csp/app/models/platform_setting.py`（若無既有設定表）
-- Modify: `apps/csp-governance-ui/src/views/KnowledgeCollectionsView.vue`
+- Create: `services/csp/app/models/platform_setting.py`
+- Create: `services/csp/migrations/versions/r1_0034_platform_settings.py`
+- Create: `services/csp/app/api/institutional_kb.py`（設定端點 + 校準端點）
+- Modify: `services/csp/app/main.py`（掛新 router）
 - Test: `services/csp/tests/test_kb_threshold_setting.py`（新）
 
+⚠ **前提查驗（指揮官已做）**：這個系統**沒有**平台層級設定表。唯一的 `ui_settings`
+（`app/models/user.py:52`）是**掛在使用者身上**的 JSON blob、整包取代，交接文件記著
+「寫第三個 key 會在下次存檔被洗掉」——**不可拿來當前例**。所以本 Task 要新建。
+
+⚠ **migration 編號由指揮官分配：`r1_0034`，`down_revision = "r1_0033"`。**
+（已知：`origin/main` 上也有 r1_0033/r1_0034 之類的編號，兩條線在 r1_0030 之後已經各走各的；
+本分支照本地線編號，不要為了避開 main 而跳號。）
+
 **Interfaces:**
-- Produces: `GET/PUT /api/settings/institutional-kb-threshold`；`POST /api/ingestion/institutional-kb/preview`（校準用，回 hits + scores）
+- Consumes: Task 3 的 `retrieve_institutional(...)`
+- Produces:
+  - `PlatformSetting` model：`key: str` (PK)、`value: str`、`updated_at`、`updated_by`
+  - `get_kb_threshold(db) -> float` / `set_kb_threshold(db, value, *, actor) -> None`
+  - `GET/PUT /api/institutional-kb/threshold`
+  - `POST /api/institutional-kb/preview` → `{"hits": [{"content", "score", "filename", "collection_id"}], "threshold": float, "state": str}`
 
 - [ ] **Step 1: 寫失敗測試**
 
 ```python
 def test_threshold_change_takes_effect_without_restart(client, admin_token, marked_collection):
-    """⚠ 這條是設定頁那件大工程的第一塊磚。改了畫面卻不影響行為 = 假控制項。"""
-    client.put("/api/settings/institutional-kb-threshold",
-               json={"value": 0.0}, headers=_auth(admin_token))
-    before = client.post("/api/ingestion/institutional-kb/preview",
-                         json={"query": "申誡"}, headers=_auth(admin_token)).json()
-    assert before["hits"]
+    """⚠ 這是「設定頁」那件大工程的第一塊磚。改了畫面卻不影響行為 = 假控制項。"""
+    client.put("/api/institutional-kb/threshold", json={"value": 0.0}, headers=_auth(admin_token))
+    before = client.post("/api/institutional-kb/preview", json={"query": "申誡"},
+                         headers=_auth(admin_token)).json()
+    assert before["hits"], "門檻 0 應該有命中"
 
-    client.put("/api/settings/institutional-kb-threshold",
-               json={"value": 0.99}, headers=_auth(admin_token))
-    after = client.post("/api/ingestion/institutional-kb/preview",
-                        json={"query": "申誡"}, headers=_auth(admin_token)).json()
-    assert after["hits"] == []      # 同一個行程內就要生效,不重啟
+    client.put("/api/institutional-kb/threshold", json={"value": 0.99}, headers=_auth(admin_token))
+    after = client.post("/api/institutional-kb/preview", json={"query": "申誡"},
+                        headers=_auth(admin_token)).json()
+    assert after["hits"] == [], "同一個行程內就要生效,不重啟"
 
 
 def test_preview_returns_scores_so_an_admin_can_calibrate(client, admin_token, marked_collection):
     """給數字輸入框而不給證據,等於叫人猜。"""
-    r = client.post("/api/ingestion/institutional-kb/preview",
-                    json={"query": "申誡"}, headers=_auth(admin_token))
+    r = client.post("/api/institutional-kb/preview", json={"query": "申誡"},
+                    headers=_auth(admin_token))
     assert all("score" in h and "content" in h for h in r.json()["hits"])
+
+
+def test_threshold_is_admin_only(client, plain_token):
+    r = client.put("/api/institutional-kb/threshold", json={"value": 0.5},
+                   headers=_auth(plain_token))
+    assert r.status_code == 403
+
+
+def test_default_is_declared_uncalibrated(client, admin_token):
+    """PLAN.md:77 —— 手上的 0.3 是用替代模型量的,對真 nv-embed 必須重校。
+    不准假裝它是已知數。"""
+    r = client.get("/api/institutional-kb/threshold", headers=_auth(admin_token))
+    body = r.json()
+    assert body["value"] == 0.3
+    assert body["calibrated"] is False
+
+
+def test_out_of_range_is_refused_with_a_usable_message(client, admin_token):
+    for bad in (-0.1, 1.1):
+        r = client.put("/api/institutional-kb/threshold", json={"value": bad},
+                       headers=_auth(admin_token))
+        assert r.status_code == 422 or r.status_code == 400
+
+
+def test_preview_never_leaks_a_classified_document(client, admin_token, marked_collection_with_classified_doc):
+    """校準視圖跟正式檢索走同一條路,不可以有自己的較寬鬆版本。"""
+    r = client.post("/api/institutional-kb/preview", json={"query": "任何字"},
+                    headers=_auth(admin_token))
+    assert all(h["document_id"] != marked_collection_with_classified_doc.classified_doc_id
+               for h in r.json()["hits"])
 ```
 
-- [ ] **Step 2–5**：跑失敗 → 實作（設定存 DB、讀取不快取或快取可失效）→ 跑通過 → commit
+- [ ] **Step 2: 跑測試確認失敗**
 
-預設值 `0.3`，畫面上**必須標示「未對真 nv-embed 校準」**（`PLAN.md:77`）。
+```bash
+cd services/csp && $PY -m pytest tests/test_kb_threshold_setting.py -q
+```
+Expected: FAIL — 404（端點不存在）
+
+- [ ] **Step 3: 實作 model + migration**
+
+`platform_setting.py`：key/value 單列設定，`key` 為主鍵。migration `r1_0034` 建表，
+`down_revision = "r1_0033"`，`downgrade()` drop table。
+
+- [ ] **Step 4: 實作端點**
+
+⚠ **讀取不可快取成行程生命期**——否則「改了立刻生效」就是假的。若要快取，必須在
+`set_kb_threshold` 時失效，並且要有測試證明同一行程內改完即生效（Step 1 第一支）。
+
+⚠ **校準端點必須呼叫 Task 3 的 `retrieve_institutional`**，不可以自己寫一份較寬鬆的檢索——
+一旦兩條路徑分岔，校準看到的就不是正式檢索會看到的。
+
+- [ ] **Step 5: 跑測試確認通過**
+
+Expected: 6 passed。
+
+- [ ] **Step 6: 突變檢查**
+
+```
+突變 A：讀取改成行程啟動時讀一次           → test_threshold_change_takes_effect… 必須紅
+突變 B：preview 自己寫一份不濾密等的檢索    → test_preview_never_leaks…        必須紅
+突變 C：admin 檢查拿掉                     → test_threshold_is_admin_only      必須紅
+突變 D：calibrated 硬寫 True               → test_default_is_declared_uncalibrated 必須紅
+```
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git commit -m "feat(csp): the retrieval threshold is a setting with a calibration view, not a constant"
