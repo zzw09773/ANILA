@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Awaitable, Callable, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -275,6 +275,59 @@ _THOUGHT_PREFIX_RE = re.compile(
     r"^\s*(?:\*{0,2}|`)?(?:thought|thinking)(?:\*{0,2}|`)?\s*[:：]?\s*(?:\n|$)",
     re.IGNORECASE,
 )
+
+# ---------------------------------------------------------------------------
+# X-ANILA-Route — the Router's answer channel, declared to CSP
+# ---------------------------------------------------------------------------
+# CSP otherwise cannot tell a Router-mediated turn apart from any other model
+# call: when the Router answers by itself it replies to the SPA directly, and
+# the only thing that ever reaches CSP is a plain /v1/chat/completions.
+# Without a marker CSP has no moment at which to attach institutional
+# regulation retrieval.
+#
+# ⚠ What this header does NOT say. The routing LLM call *precedes* the routing
+# decision — the decision is parsed out of that same call's output (see the
+# ``_parse_dispatch`` call below the non-stream call, and the mid-stream state
+# machine in ``_router_streaming``). So the header cannot report a verdict that
+# has not been reached yet. It marks the Router's own **answer channel**: if
+# this call's output carries no DISPATCH line, its text is what the user reads.
+# The verdict itself keeps living where it always did — ``route.decision`` in
+# anila_meta and the ``direct`` trace step.
+#
+# Consequence, stated plainly because it is a real cost: on turns that end in a
+# dispatch, CSP will have run retrieval whose result the Router then discards.
+# Task 4's score threshold is what keeps that from polluting the routing prompt
+# — an off-topic query scores below it and nothing is injected.
+_ROUTE_HEADER = "X-ANILA-Route"
+# The Router's own verdict. The Router only ever emits this value.
+_ROUTE_DIRECT = "direct"
+# A human asked for the retrieval explicitly (Task 9's "search the institutional
+# regulations again" button). Only a client can cause this value, and this is
+# the *only* value a client can cause — see ``_resolve_route_signal``.
+_ROUTE_FORCED = "forced"
+
+
+def _resolve_route_signal(inbound_headers: Mapping[str, str]) -> str:
+    """Decide which route value goes out, from what the client sent.
+
+    ``anila_headers`` is copied wholesale off the inbound request, so a client
+    can put ``X-ANILA-Route`` on the wire itself. That is wanted — Task 9 needs
+    a path for a user to force the retrieval — but a client must never be able
+    to make CSP's record read "the machine decided this" when a human did.
+
+    So the mapping is deliberately lossy in one direction: the forced request is
+    the only thing a client can express, and everything else (a spoofed
+    ``direct``, garbage, an empty value) collapses to the Router's own verdict.
+    Normalising rather than echoing is also what makes CSP's side a single exact
+    token instead of whatever casing a caller happened to type.
+    """
+    for key, value in inbound_headers.items():
+        if key.lower() == _ROUTE_HEADER.lower():
+            if value.strip().lower() == _ROUTE_FORCED:
+                return _ROUTE_FORCED
+            break
+    return _ROUTE_DIRECT
+
 
 _CJK_RE = re.compile(r"[一-鿿]")
 
@@ -904,10 +957,25 @@ def create_router_app(
         # SPA originally sent. Without this, CSP's per-conversation features
         # (memory writer, classification latch, token_usage attribution)
         # silently no-op for every Router-mediated turn — they need the FK.
+        # ``X-ANILA-Route`` is excluded on purpose: it is the one header in this
+        # family the Router *authors* rather than relays. Leaving the inbound
+        # copy in would put a client-chosen value on the calls that shape an
+        # agent's answer (dispatch, recompose), where CSP would then attach
+        # regulations to a reply the agent already sourced from its own library.
+        # It is re-attached, normalised, only to the Router's own LLM calls.
+        # Stripping is also why merely overriding would not have done: starlette
+        # lowercases inbound header names, so an inbound ``x-anila-route`` and
+        # our ``X-ANILA-Route`` are two distinct dict keys and both would go on
+        # the wire — CSP would see the header twice and read whichever it likes.
         anila_headers = {
             k: v for k, v in request.headers.items()
             if k.lower().startswith("x-anila-")
+            and k.lower() != _ROUTE_HEADER.lower()
         }
+        route_signal = _resolve_route_signal(request.headers)
+        # Per-call dict — never mutate ``anila_headers`` itself, or the signal
+        # rides along to every downstream call it must stay off.
+        router_llm_headers = {**anila_headers, _ROUTE_HEADER: route_signal}
 
         # Full Trace Protocol: pick up the inbound correlation id (CSP forwards
         # ``X-ANILA-Trace-Id``; OpenAI-style callers may put it in
@@ -1050,6 +1118,11 @@ def create_router_app(
                     _router_streaming_multi_turn(
                         caller_api_key=caller_api_key,
                         forwarded_headers=anila_headers,
+                        # Route marker only, deliberately not the merged set:
+                        # this path's router LLM call has never relayed the
+                        # inbound X-ANILA-* audit headers (see the call inside),
+                        # and switching that on is a separate change.
+                        router_llm_headers={_ROUTE_HEADER: route_signal},
                         routing_messages=routing_messages,
                         user_messages=messages,
                         registry=registry,
@@ -1081,6 +1154,7 @@ def create_router_app(
                     session=sess,
                     pin_owner=_pin_owner_cb_single,
                     forwarded_headers=anila_headers,
+                    router_llm_headers=router_llm_headers,
                     trace_session=trace_session,
                 ),
                 media_type="text/event-stream",
@@ -1096,7 +1170,7 @@ def create_router_app(
         llm_response = await _call_llm_non_stream(
             caller_api_key,
             routing_messages,
-            forwarded_headers=anila_headers,
+            forwarded_headers=router_llm_headers,
         )
         if llm_response["error"]:
             base_trace.append(
@@ -1795,6 +1869,7 @@ async def _router_streaming_multi_turn(
     *,
     caller_api_key: str,
     forwarded_headers: dict[str, str] | None = None,
+    router_llm_headers: dict[str, str] | None = None,
     routing_messages: list[dict[str, Any]],
     user_messages: list[dict[str, Any]],
     registry: Any,
@@ -1823,9 +1898,15 @@ async def _router_streaming_multi_turn(
     for step in base_trace:
         yield _make_event("anila.trace", step)
 
-    # First router LLM call.
+    # First router LLM call. ``router_llm_headers`` carries the answer-channel
+    # marker; ``forwarded_headers`` stays reserved for the recompose call below.
+    # ⚠ Pre-existing and left alone: this call has never relayed the inbound
+    # X-ANILA-* audit headers the other two paths relay (conversation id &c.).
+    # Widening it here would switch CSP's FK-bound features on for a path where
+    # they have never run — out of scope for this change, recorded so the gap is
+    # not mistaken for a side effect of it.
     llm_response = await _call_llm_non_stream(
-        caller_api_key, routing_messages
+        caller_api_key, routing_messages, forwarded_headers=router_llm_headers
     )
     if llm_response["error"]:
         err_step = _make_trace_step(
@@ -2782,6 +2863,7 @@ async def _router_streaming(
     session: Session | None = None,
     pin_owner: PinOwnerFn = None,
     forwarded_headers: dict[str, str] | None = None,
+    router_llm_headers: dict[str, str] | None = None,
     trace_session: Any = None,
 ) -> AsyncIterator[str]:
     """Router's streaming endpoint (plan C).
@@ -2835,8 +2917,15 @@ async def _router_streaming(
         _id, _q, _start, end = parsed
         return parsed if end < len(text) else None
 
+    # ``router_llm_headers`` = the relayed audit headers *plus* the answer-channel
+    # marker. Plain ``forwarded_headers`` stays for the recompose call at the end
+    # of the dispatch branch, which must not carry the marker.
     async for ev in _stream_llm_sse(
-        caller_api_key, routing_messages, forwarded_headers=forwarded_headers
+        caller_api_key,
+        routing_messages,
+        forwarded_headers=(
+            router_llm_headers if router_llm_headers is not None else forwarded_headers
+        ),
     ):
         kind = ev.get("type")
         if kind == "error":
