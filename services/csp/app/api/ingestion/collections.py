@@ -64,10 +64,13 @@ _UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.to_storage()
 # 不會靜默退回 500。
 _ANILA_SEARCHABLE_CHECK = "ck_ingestion_collections_anila_searchable_unclassified"
 
-# 拒絕標記時,訊息固定的那兩則(另外兩則要帶當下的密等／模型名,寫在
-# ``_guard_anila_searchable`` 裡)。⚠ 每一則都要帶「怎麼拿到你要的東西」,
-# 而且那條路要真的走得通:這一包的驗收標準不是擋住了,是被擋的人照著做
-# 之後真的拿得到他要的東西。指一條不存在的路比不給路更糟。
+# 拒絕標記的訊息:措辭固定、不必帶當下資料的放這裡;要帶密等或模型名的,
+# 就地寫在 ``_guard_anila_searchable``。
+# ⚠ 每一則都要帶「怎麼拿到你要的東西」,而且那條路要真的走得通——這一包的
+# 驗收標準不是擋住了,是被擋的人照著做之後真的拿得到他要的東西。指一條不
+# 存在的路比不給路更糟:照做的人會以為是自己弄錯了。
+# (刻意不寫「共 N 則」:那個數字每多一道檢查就過期一次,這個檔案已經為此
+# 錯過兩輪。要知道有幾則,去數 ``_guard_anila_searchable`` 的 raise。)
 _MARK_ERRORS = {
     "not_admin": (
         "只有管理員可以設定 ANILA 檢索標記。這個標記等同於把整個庫公開給"
