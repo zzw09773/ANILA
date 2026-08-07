@@ -652,3 +652,215 @@ def test_kb_fields_survive_the_multi_turn_streaming_meta_exit(
     events = _meta_events(body)
     assert events, "the Router emitted no anila.meta frame at all"
     _assert_kb_survived(events[-1])
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 / I1 — a dispatched turn must not wear the routing call's badge
+#
+# The Router issues its routing call to CSP *before* it knows whether the turn
+# will be answered here or handed to an agent, so CSP attaches regulation
+# retrieval to a call whose output is sometimes thrown away (Task 5 §1, an
+# accepted cost). What must never happen is the opposite of this whole feature:
+# the agent's answer arriving decorated with regulations it never consulted.
+# "An answer wearing the wrong sources" is worse than "an answer with no
+# sources" — the citation drawer would invite the reader to verify a claim
+# against a document that had nothing to do with it.
+#
+# The behaviour is correct today, held by one line in the dispatch branch of
+# ``_router_streaming`` that resets ``downstream_meta`` before the agent's own
+# stream is read. Nothing pinned it. Worse, Task 9 made deleting that line
+# *silent*: before the function-scope ``downstream_meta`` existed, removing the
+# reset raised NameError on the spot; now it quietly swaps the source of every
+# dispatched answer's metadata. That widened blast radius is this package's
+# doing, so the pin belongs here.
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_leak_replies() -> list:
+    """Routing call retrieves regulations, then the turn dispatches anyway.
+
+    The DISPATCH line carries **no terminator**, which is what makes this
+    reachable: mid-stream detection refuses to commit without one, so the loop
+    keeps reading, consumes CSP's ``anila.meta`` frame, and only dispatches at
+    the end-of-stream final parse. A trailing newline would dispatch before the
+    meta frame is ever seen and the test would pass vacuously.
+    """
+    return [
+        _sse(DISPATCH_LINE, meta=_kb_meta()),
+        _sse("這是 agent 畫好的圖說明。"),
+        _completion("整理後的回覆"),
+    ]
+
+
+@respx.mock
+def test_a_dispatched_streaming_turn_does_not_wear_the_routing_calls_kb_meta(
+    db_path: Path,
+) -> None:
+    seen, body = _run_turn(db_path, replies=_dispatch_leak_replies(), stream=True)
+
+    # Not vacuous: the turn really did end in a dispatch.
+    assert len(seen.of("dispatch")) == 1
+    events = _meta_events(body)
+    assert events, "the Router emitted no anila.meta frame at all"
+    final = events[-1]
+    assert final.get("answering_agent_id") == AGENT_ID
+    # The routing call's regulations must not have followed the answer out.
+    assert final.get("kb_state") is None
+    assert final.get("kb_hits") in (None, [])
+    assert not final.get("citations")
+
+
+@respx.mock
+def test_a_dispatched_non_stream_turn_does_not_wear_the_routing_calls_kb_meta(
+    db_path: Path,
+) -> None:
+    """Same invariant on the payload path, where the two metas live in separate
+    locals rather than one reused variable — cheap to assert, and it stops a
+    future refactor from importing the streaming path's shape."""
+    seen, body = _run_turn(
+        db_path,
+        replies=[
+            _completion(DISPATCH_LINE, meta=_kb_meta()),
+            _completion("here is your image", model=AGENT_ID),
+            _completion("整理後的回覆"),
+        ],
+    )
+    assert len(seen.of("dispatch")) == 1
+    final = json.loads(body)["anila_meta"]
+    assert final.get("answering_agent_id") == AGENT_ID
+    assert final.get("kb_state") is None
+    assert final.get("kb_hits") in (None, [])
+    assert not final.get("citations")
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 / I2 — a forced turn's bubble never shows machine syntax
+#
+# Proven on unmutated code by the reviewer: a forced turn whose model still
+# emits a compliant DISPATCH line renders a bubble whose *entire contents* are
+# ``DISPATCH:image-generator:…``. The dispatch is correctly suppressed — but the
+# reader pressed「改用院內規章重查」and got a protocol string back. That is this
+# package's own target shape in its purest form.
+#
+# The cause is a deliberate skip: when content carries a DISPATCH directive the
+# Router leaves it untouched so the parser downstream can see it. On a forced
+# turn there is no parser left to serve — Q40 already guaranteed no dispatch —
+# so the skip has only its cost. Cleaning is scoped to forced turns; the
+# ordinary dispatch flow must keep seeing the raw text, and the controls above
+# (``test_the_bait_really_dispatches…``, the three streaming bait controls)
+# fail loudly if it stops.
+# ---------------------------------------------------------------------------
+
+
+FORCED_BUBBLE_CASES = [
+    pytest.param(f"DISPATCH:{AGENT_ID}:", id="query-less"),
+    pytest.param(DISPATCH_LINE, id="complete-no-terminator"),
+    pytest.param(DISPATCH_LINE + "\n", id="complete-with-terminator"),
+    pytest.param(f"{LONG_ANSWER}\n{DISPATCH_LINE}", id="answer-then-dispatch"),
+]
+
+
+@pytest.mark.parametrize("model_text", FORCED_BUBBLE_CASES)
+@respx.mock
+def test_a_forced_streaming_bubble_never_shows_dispatch_syntax(
+    db_path: Path, model_text: str
+) -> None:
+    _seen, body = _run_turn(
+        db_path, replies=[_sse(model_text)], stream=True, inbound_headers=FORCED
+    )
+    visible = _stream_text(body)
+    assert "DISPATCH" not in visible
+    assert AGENT_ID not in visible
+    # …and the bubble is not merely empty instead. A blank answer is the same
+    # "I pressed it and nothing happened" the button exists to cure.
+    assert visible.strip()
+
+
+@pytest.mark.parametrize("model_text", FORCED_BUBBLE_CASES)
+@respx.mock
+def test_a_forced_non_stream_bubble_never_shows_dispatch_syntax(
+    db_path: Path, model_text: str
+) -> None:
+    _seen, body = _run_turn(
+        db_path, replies=[_completion(model_text)], inbound_headers=FORCED
+    )
+    visible = json.loads(body)["choices"][0]["message"]["content"]
+    assert "DISPATCH" not in visible
+    assert AGENT_ID not in visible
+    assert visible.strip()
+
+
+@respx.mock
+def test_a_forced_turn_keeps_the_answer_that_came_with_the_stray_directive(
+    db_path: Path,
+) -> None:
+    """Cleaning removes the directive, not the reply that surrounded it."""
+    _seen, body = _run_turn(
+        db_path,
+        replies=[_completion(f"{LONG_ANSWER}\n{DISPATCH_LINE}")],
+        inbound_headers=FORCED,
+    )
+    assert LONG_ANSWER in json.loads(body)["choices"][0]["message"]["content"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@respx.mock
+def test_an_ordinary_turn_answer_is_not_rewritten(db_path: Path, stream: bool) -> None:
+    """The cleaning is scoped to forced turns. An ordinary direct answer must
+    come through exactly as the model wrote it."""
+    _seen, body = _run_turn(
+        db_path, replies=[_sse(LONG_ANSWER) if stream else _completion(LONG_ANSWER)],
+        stream=stream,
+    )
+    visible = (
+        _stream_text(body) if stream
+        else json.loads(body)["choices"][0]["message"]["content"]
+    )
+    assert visible == LONG_ANSWER
+
+
+@respx.mock
+def test_an_ordinary_turn_keeps_even_a_stray_query_less_directive(
+    db_path: Path,
+) -> None:
+    """The scoping pin, and the only shape that can show it.
+
+    A complete directive on an ordinary turn never reaches a bubble — it
+    dispatches. A *query-less* one on the payload path does: ``_parse_dispatch``
+    does not match it (no query), the non-stream path has no salvage door, so it
+    falls through to a direct answer carrying the stray text. That makes it the
+    one observable difference between "clean on forced turns" and "clean
+    always", and without it the scope could be widened with the suite green.
+
+    Pinning the status quo rather than improving it is deliberate: the fix round
+    authorised a forced-turn-only change, and the ordinary skip exists to serve
+    the real dispatch flow.
+    """
+    _seen, body = _run_turn(
+        db_path,
+        replies=[_completion(f"{LONG_ANSWER}\nDISPATCH:{AGENT_ID}:")],
+    )
+    visible = json.loads(body)["choices"][0]["message"]["content"]
+    assert f"DISPATCH:{AGENT_ID}:" in visible
+
+
+@pytest.mark.parametrize("model_text", FORCED_BUBBLE_CASES)
+@respx.mock
+def test_a_forced_multi_turn_streaming_bubble_never_shows_dispatch_syntax(
+    db_path: Path, model_text: str
+) -> None:
+    """The third cleaned exit. ``anila_multi_turn>1`` streams through its own
+    generator with its own direct-answer branch, so the cleaning is wired there
+    separately — and an exit that is cleaned but not pinned is precisely the
+    shape that let the un-cleaned bubble ship in the first place."""
+    _seen, body = _run_turn(
+        db_path,
+        replies=[_completion(model_text)],
+        stream=True,
+        extra_body={"anila_multi_turn": 2},
+        inbound_headers=FORCED,
+    )
+    visible = _stream_text(body)
+    assert "DISPATCH" not in visible
+    assert AGENT_ID not in visible
+    assert visible.strip()

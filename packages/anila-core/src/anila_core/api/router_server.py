@@ -495,6 +495,57 @@ def _parse_dispatch_unless_forced(
     return _parse_dispatch(text)
 
 
+# Shown instead of an empty bubble when a forced turn's reply was *nothing but*
+# a stray directive. Silence would be the same "I pressed it and nothing
+# happened" the button exists to cure, and inventing a regulation answer here
+# would be worse than either.
+_FORCED_EMPTY_FALLBACK = (
+    "（這次重查沒有得到可用的回覆，請再按一次「改用院內規章重查」。）"
+)
+
+
+def _strip_dispatch_syntax(text: str) -> str:
+    """Remove DISPATCH directives from text the user is about to read.
+
+    ``_call_llm_non_stream`` deliberately skips its thought-sanitizer when the
+    content carries a directive, so the caller's parser can still see it. On a
+    forced turn there is no parser left to serve — Q40 already guaranteed the
+    turn will not dispatch — so that skip keeps only its cost: the directive
+    rides all the way into the bubble. A compliant model whose whole reply *is*
+    the directive therefore hands the reader a protocol string where their
+    answer should be.
+
+    Both directive shapes are removed (complete, and the query-less form the
+    salvage door used to act on), then blank runs left behind are collapsed so
+    the excision does not show as a hole in the middle of a reply.
+    """
+    if not text:
+        return text
+    cleaned = _DISPATCH_RE.sub("", text)
+    cleaned = _DISPATCH_EMPTY_RE.sub("", cleaned)
+    if cleaned == text:
+        return text
+    # A removed line leaves its surrounding newlines behind; collapse runs of
+    # three or more so paragraph structure survives but gaps do not.
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _forced_visible_text(text: str, route_signal: str) -> str:
+    """Clean a *terminal* answer on a forced turn (ordinary turns untouched).
+
+    Terminal because of the empty-reply fallback: mid-stream the Router does not
+    yet know whether more content is coming, so the streaming state machine uses
+    ``_strip_dispatch_syntax`` directly and only the final exits come here.
+    """
+    if route_signal != _ROUTE_FORCED:
+        return text
+    cleaned = _strip_dispatch_syntax(text)
+    if text.strip() and not cleaned.strip():
+        return _FORCED_EMPTY_FALLBACK
+    return cleaned
+
+
 def _make_chunk(content: str, model: str, finish: str | None = None) -> str:
     chunk = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
@@ -1290,7 +1341,14 @@ def create_router_app(
             )
             if llm_response.get("reasoning"):
                 anila_meta["reasoning"] = llm_response["reasoning"]
-            return _respond(_normalize_clarify_bullets(llm_text), anila_meta, stream, session_id=session_id)
+            return _respond(
+                _forced_visible_text(
+                    _normalize_clarify_bullets(llm_text), route_signal
+                ),
+                anila_meta,
+                stream,
+                session_id=session_id,
+            )
 
         agent_id, query, dispatch_start, _dispatch_end = dispatch
         # Anything the model wrote before the DISPATCH line is router-side
@@ -2024,7 +2082,9 @@ async def _router_streaming_multi_turn(
             "direct", "Router 直接回答", "無需分派 agent",
         )
         yield _make_event("anila.trace", direct_step)
-        cleaned = _normalize_clarify_bullets(llm_text)
+        cleaned = _forced_visible_text(
+            _normalize_clarify_bullets(llm_text), route_signal
+        )
         async for chunk in _emit_soft_chunks(cleaned):
             yield chunk
         anila_meta = _merge_anila_meta(
@@ -3154,7 +3214,13 @@ async def _router_streaming(
         # Non-thought leading, non-DISPATCH → Gemma went straight to a
         # direct answer. Forward the buffer and switch to answering.
         if not _THOUGHT_PREFIX_RE.match(buf) and len(buf) >= 12:
-            yield _make_chunk(buf, "anila-router")
+            # On a forced turn the whole buffer is in hand at this instant, so
+            # a directive trailing the answer is excised before it is sent
+            # rather than chased afterwards. Not a terminal exit — no empty
+            # fallback here, the stream may still have content coming.
+            first = buf if route_signal != _ROUTE_FORCED else _strip_dispatch_syntax(buf)
+            if first:
+                yield _make_chunk(first, "anila-router")
             answer_emitted_up_to = len(buf)
             state = "answering"
             continue
@@ -3195,6 +3261,11 @@ async def _router_streaming(
                     state = "dispatching"
         if state == "detecting":
             clean_content, merged_reasoning = _sanitize_leaked_thought(buf, upstream_reasoning)
+            # Terminal exit, and the one a *compliant* stray directive lands in:
+            # a buffer that starts with "DISPATCH:" never commits to answering
+            # above, so the whole reply arrives here. Without this the reader
+            # pressed the button and got a protocol string.
+            clean_content = _forced_visible_text(clean_content, route_signal)
             yield _make_chunk(clean_content, "anila-router")
             anila_meta = _merge_anila_meta(
                 base_trace + [_make_trace_step("direct", "Router 直接回答", "無需分派 agent")],
@@ -3215,6 +3286,8 @@ async def _router_streaming(
     if state == "answering":
         # Flush any residue not yet forwarded (shouldn't happen but be safe).
         tail = buf[answer_emitted_up_to:]
+        if route_signal == _ROUTE_FORCED:
+            tail = _strip_dispatch_syntax(tail)
         if tail:
             yield _make_chunk(tail, "anila-router")
         # Reasoning is only meaningful when thought was actually detected
