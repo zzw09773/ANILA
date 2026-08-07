@@ -1043,6 +1043,28 @@ export const MessageBubble = ({
                     onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                   >{opt.label}</button>
                 ))}
+                {/* 「改用院內規章重查」——設計 §8 的事後自救。Router 判錯
+                    (該查院內規章而沒查)時畫面上什麼標記都不會有,使用者是
+                    看到答案才知道自己需要這一顆的,所以它出現在這裡而不是
+                    輸入框旁邊。
+
+                    ⚠ 刻意**不在上面那個陣列裡**。那四個選項的通道是 steer
+                    ——把一句話串進使用者訊息;重查要的是改變後端行為,走
+                    steer 只會改寫問句而 CSP 什麼也收不到。它傳的是第三個
+                    參數,而且 steer 一律留空:同一個問句原樣重問。 */}
+                <div style={{ borderTop: "1px solid var(--border)", marginTop: 2, paddingTop: 2 }}>
+                  <button
+                    onClick={() => { setRegenOpen(false); onRegenerate?.(msg, "", { forceKbSearch: true }); }}
+                    title="用同一個問句重問一次，這次一定會查院內規章"
+                    style={{
+                      width: "100%", textAlign: "left", padding: "6px 8px", fontSize: 13,
+                      color: "var(--fg)", background: "transparent", border: "none",
+                      borderRadius: 4, cursor: "pointer",
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >改用院內規章重查</button>
+                </div>
                 <div style={{ display: "flex", gap: 4, padding: "4px 4px 2px", borderTop: "1px solid var(--border)" }}>
                   <input
                     value={steerText}

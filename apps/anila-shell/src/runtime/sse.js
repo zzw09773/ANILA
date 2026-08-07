@@ -67,6 +67,12 @@ export async function streamChatCompletion({
   // X-ANILA-Task-Id,讓 CSP 把這次派發掛回同一個 Task。null/undefined
   // (任務建立失敗的降級模式)則完全不送此標頭。
   taskId,
+  // 「改用院內規章重查」:這一次呼叫強制檢索院內規章,不看 Router 判斷。
+  // ⚠ 這是一個**真的參數**,不是串進 user 訊息的一句請託。既有的 guided
+  // regenerate 四個選項走的是後者(steer 文字),那條路對這件事行不通——
+  // 檢索發生在 CSP,而 CSP 只看標頭;寫在訊息裡的話模型看得到、CSP 看不到,
+  // 使用者會得到一個「按了、沒報錯、規章沒被查」的按鈕。
+  forceKbSearch = false,
   onText,
   onTrace,
   onMeta,
@@ -110,6 +116,12 @@ export async function streamChatCompletion({
   }
   if (taskId !== undefined && taskId !== null && taskId !== "") {
     headers["X-ANILA-Task-Id"] = String(taskId);
+  }
+  // 只有這一個值送得出去:Router 會把任何其他值(包含偽造的 `direct`)
+  // 塌回它自己的判斷,所以前端能表達的只有「這是人按的」。沒按就完全不送,
+  // 而不是送一個 `direct` —— 兩者在 Router 端等價,不送比較誠實。
+  if (forceKbSearch) {
+    headers["X-ANILA-Route"] = "forced";
   }
   const response = await fetch(url, {
     method: "POST",

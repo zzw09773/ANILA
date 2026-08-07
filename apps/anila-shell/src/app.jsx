@@ -2213,8 +2213,21 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   // steer:guided regenerate 的調整指令(更詳細/更簡潔/換個說法/自由文字);
   // 空 = 盲目重試(原行為)。non-empty 時附加到使用者原文後重新生成。
-  // ---- regenerate: stream a new assistant sibling, then POST /branch ----
-  async function regenerateMessage(assistantMsg, steer = "") {
+  //
+  // forceKbSearch:「改用院內規章重查」(設計 §8 的事後自救、擁有者 Q40)。
+  // ⚠ 它**不是**第五個 steer。steer 的通道是「把字串進使用者訊息」,而重查要
+  // 改變的是後端行為(CSP 檢索院內規章),那個開關只認標頭。走 steer 的話問句
+  // 會被改寫、CSP 什麼也收不到,而畫面上看起來一切正常——本專案第四條教訓
+  // 說的就是這種控制項。所以兩者是分開的兩個參數,而且重查那一輪**不帶任何
+  // steer**:同一個問句原樣重問,答案才可比。
+  //
+  // ⚠ 第三個參數刻意**不在簽章裡解構、也不給 `= {}` 預設值**:
+  // `dupReplyReconcile.test.js` 的原始碼護欄靠「從本函式的宣告處起數大括號」
+  // 切出函式本體,簽章裡只要出現一對大括號(解構或預設物件),它就會在參數列
+  // 收工,護的那三條不變式全部退化成在比對簽章——**而測試還是綠的**。
+  // 那個護欄不在本包範圍內,所以改的是這一邊。
+  async function regenerateMessage(assistantMsg, steer = "", opts) {
+    const { forceKbSearch = false } = opts || {};
     if (!isAuthenticated) {
       setRuntimeError("尚未登入，請重新登入後再試。");
       return;
@@ -2290,6 +2303,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           url: `${baseUrl}/v1/chat/completions`,
           payload,
           conversationId: typeof convId === "number" ? convId : undefined,
+          // 隨這一次呼叫走,不進 state:寫進 state 的旗標會黏在對話上,
+          // 之後每一輪都強制檢索,等於前端單方面關掉 Router 的判斷。
+          forceKbSearch,
           onText: (acc) => {
             finalText = acc;
             updateMsg(convId, placeholderId, { text: acc });
