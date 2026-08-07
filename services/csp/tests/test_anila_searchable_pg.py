@@ -1,18 +1,32 @@
 # -*- coding: utf-8 -*-
-"""r1_0033 的 CHECK 約束：已標記的庫不可能是機密。
+"""r1_0033 的 CHECK 約束：已標記的庫不可能帶密等。
 
-為什麼要 PG：SQLite 不執行 CHECK 約束，這支測的就是資料庫層擋不擋。
+為什麼要 PG：這支測的是 **migration 建出來的那一份 schema** —— 既有部署跑完
+``alembic upgrade`` 之後真正上線的 DDL。那條路只有 PostgreSQL 走得完
+（``ingestion_collections`` 前面串著 pgvector 與 RLS 的一整條 migration 鏈）。
+``create_all()`` 那條路（ORM ``__table_args__``）另由
+``tests/test_anila_searchable_orm.py`` 在 SQLite 上釘住 —— **兩層各自宣告、
+各自被行為測試釘住**，任何一層漏掉都會有東西變紅。
+
+⚠ 更正：SQLite **會**執行 CHECK 約束（本檔初版寫「SQLite 不執行」是錯的）。
+選 PG 的理由是上面那條：要驗的是 migration 產出的真實 DDL，不是 ORM 渲染出來
+的近似品。
 ⚠ 這支刻意用 superuser 跑就好 —— CHECK 對 superuser 一樣會擋（不像 RLS 會被 bypass）。
 
 ⚠ ``upgraded_conn`` 是 **function-scoped**：每支測試各拿一列全新的 collection。
 共用同一列會讓第一支測完留下 ``anila_searchable = true``，第二支的**前置**
-UPDATE（升密到 機密）就當場撞上同一條 CHECK —— 而那次違反發生在
+UPDATE（升密）就當場撞上同一條 CHECK —— 而那次違反發生在
 ``pytest.raises`` 外面，測試會以 error 收場而不是紅燈。scratch DB 與 alembic
 升級仍是 module-scoped，一次就好。
 
-⚠ 兩支「擋得住」的測試單獨看是**不夠**的：把約束寫成恆假（例如
-``NOT anila_searchable``，也就是誰都不准標記）兩支照樣全綠，而功能已經死了。
-``test_marking_an_unclassified_collection_succeeds`` 就是為了殺這個突變體。
+⚠ 兩支「擋得住」的測試單獨看是**不夠**的，有兩個方向都會漏：
+
+* 恆假的約束（例如 ``NOT anila_searchable``，誰都不准標記）照樣全綠而功能已死
+  → ``test_marking_an_unclassified_collection_succeeds`` 殺它；
+* 只擋最高階的約束（例如 ``classification_level <> '機密'``）也照樣全綠，而
+  ``密`` / ``營業秘密`` 的庫就被全院檢索得到 → 兩支「擋得住」的測試**參數化跑遍
+  除了無機密以外的每一級**。清單由 ``ClassificationLevel`` 取補集推導，不寫死：
+  日後新增等級會自動納入，而且這樣釘住的是「必須等於無機密」而非「不等於機密」。
 """
 import json
 import os
@@ -21,6 +35,8 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 import pytest
+
+from app.schemas.contracts.classification import ClassificationLevel
 
 psycopg2 = pytest.importorskip("psycopg2")
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT  # noqa: E402
@@ -32,6 +48,15 @@ pytestmark = pytest.mark.skipif(
 
 _CSP_ROOT = Path(__file__).resolve().parents[1]
 _ALEMBIC_INI = _CSP_ROOT / "alembic.ini"
+
+# 唯一能開標記的等級，以及它的補集 —— 兩者都從契約 enum 推導，避免與
+# ``app/schemas/contracts/classification.py`` 漂開。
+_UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.value
+_CLASSIFIED = [
+    level.value
+    for level in ClassificationLevel
+    if level is not ClassificationLevel.UNCLASSIFIED
+]
 
 
 def _scratch_url(admin_dsn: str, dbname: str) -> str:
@@ -144,9 +169,14 @@ def upgraded_conn(upgraded):
         "INSERT INTO ingestion_collections "
         "  (name, chunking_config, embedding_model, embedding_dim, "
         "   created_by, origin, status, classification_level) "
-        "VALUES (%s, %s::jsonb, 'nv-embed-v2', 4000, %s, 'csp', 'active', '無機密') "
+        "VALUES (%s, %s::jsonb, 'nv-embed-v2', 4000, %s, 'csp', 'active', %s) "
         "RETURNING id",
-        (f"kb-{uuid.uuid4().hex[:8]}", json.dumps({"strategy": "fixed"}), owner),
+        (
+            f"kb-{uuid.uuid4().hex[:8]}",
+            json.dumps({"strategy": "fixed"}),
+            owner,
+            _UNCLASSIFIED,
+        ),
     )
     coll_id = cur.fetchone()[0]
     conn.commit()
@@ -160,7 +190,8 @@ def upgraded_conn(upgraded):
     conn.commit()
 
 
-def test_raising_classification_on_a_marked_collection_fails(upgraded_conn):
+@pytest.mark.parametrize("level", _CLASSIFIED)
+def test_raising_classification_on_a_marked_collection_fails(upgraded_conn, level):
     conn, cur, coll_id = upgraded_conn
     cur.execute(
         "UPDATE ingestion_collections SET anila_searchable = true WHERE id = %s",
@@ -169,17 +200,18 @@ def test_raising_classification_on_a_marked_collection_fails(upgraded_conn):
     conn.commit()
     with pytest.raises(psycopg2.errors.CheckViolation):
         cur.execute(
-            "UPDATE ingestion_collections SET classification_level = '機密' WHERE id = %s",
-            (coll_id,),
+            "UPDATE ingestion_collections SET classification_level = %s WHERE id = %s",
+            (level, coll_id),
         )
     conn.rollback()
 
 
-def test_marking_a_classified_collection_fails(upgraded_conn):
+@pytest.mark.parametrize("level", _CLASSIFIED)
+def test_marking_a_classified_collection_fails(upgraded_conn, level):
     conn, cur, coll_id = upgraded_conn
     cur.execute(
-        "UPDATE ingestion_collections SET classification_level = '機密' WHERE id = %s",
-        (coll_id,),
+        "UPDATE ingestion_collections SET classification_level = %s WHERE id = %s",
+        (level, coll_id),
     )
     conn.commit()
     with pytest.raises(psycopg2.errors.CheckViolation):

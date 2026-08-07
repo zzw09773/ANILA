@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -76,6 +77,22 @@ class IngestionCollection(Base):
     """
 
     __tablename__ = "ingestion_collections"
+    __table_args__ = (
+        # 與 migration r1_0033 同名同式的雙宣告 —— 這個閘門必須在**本專案
+        # 建得出來的每一份 schema** 裡都生效,不只在走完 alembic 的那一份:
+        # ``app/main.py:115`` 的 alembic 失敗退路、``scripts/init_db.py``、
+        # 以及測試 conftest 都是 ``Base.metadata.create_all()``,少了這一行
+        # 它們建出來的表就是「有標記欄位、沒有密等閘門」。
+        # house style 就是這樣:``ck_messages_parent_not_self``(ORM +
+        # r1_0012)、``ck_messages_rating_score_matches_thumb``(ORM +
+        # r1_0030)都是同名雙宣告。r1_0029 的 ``ck_ingestion_collections_origin``
+        # 只放 migration,是因為它自陳「產品貨架分區,不是授權邊界」——
+        # 那個理由不適用於一個密等閘門。
+        CheckConstraint(
+            "NOT anila_searchable OR classification_level = '無機密'",
+            name="ck_ingestion_collections_anila_searchable_unclassified",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), nullable=False)
@@ -112,7 +129,8 @@ class IngestionCollection(Base):
     )
     # ANILA 聊天可直接檢索這個庫（SYSTEM-MAP §3 的「不需要 agent」那條路）。
     # ⚠ 只有「無機密」能開,由 DB CHECK ck_ingestion_collections_anila_searchable_unclassified
-    # 閉合 —— 升密時忘了取消標記會讓 UPDATE 失敗,不是靜默留洞。
+    # 閉合(見上方 ``__table_args__``＋migration r1_0033)—— 升密時忘了取消
+    # 標記會讓 UPDATE 失敗,不是靜默留洞。
     # ⚠ 無機密是必要條件不是觸發條件:沒標記的無機密庫不會被 ANILA 搜到。
     anila_searchable = Column(
         Boolean, nullable=False, default=False, server_default="false"
