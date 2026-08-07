@@ -80,6 +80,22 @@ function citationsFor(hits) {
   }));
 }
 
+/**
+ * 上線前的舊訊息:**帶著下游來源、但一個 kb_ 欄位都沒有**。
+ *
+ * 這個 fixture 存在的理由(驗收 I1):原本所有「欄位缺席」的 fixture 都**沒有
+ * citations**,於是「kb_state 缺席時就從 citations 反推 searched_hit」這種壞法
+ * 整套 636 條一條都攔不住。而真實世界的舊訊息**是會帶 citations 的**——下游
+ * agent／RAG 自己給的來源(後端所有 citation 生產者的預設是空陣列,但只是預設)。
+ * 那樣的話每一則有引用的舊答案都會宣稱「依據院內規章」,**正是本包要消滅的那句謊**。
+ */
+const DOWNSTREAM_ONLY_META = {
+  citations: [
+    { id: "ds-1", title: "下游 agent 給的來源", snippet: "與院規無關的一段話。" },
+    { id: "ds-2", title: "另一份下游來源", snippet: "也與院規無關。" },
+  ],
+};
+
 function assistantMsg(fragment, overrides = {}) {
   return {
     id: 42,
@@ -89,7 +105,8 @@ function assistantMsg(fragment, overrides = {}) {
     siblingIndex: 0,
     siblingCount: 1,
     siblingIds: [42],
-    citations: citationsFor(fragment?.kb_hits || []),
+    // meta 自己帶 citations 就用它(下游來源的情況);否則照命中推出來。
+    citations: fragment?.citations || citationsFor(fragment?.kb_hits || []),
     ...kbMetaFields(fragment),
     ...overrides,
   };
@@ -141,6 +158,20 @@ describe("五狀態徽章 — 渲染", () => {
       expect(container.textContent).toContain("以下是回答。");
       cleanup();
     }
+  });
+
+  it("舊訊息帶著下游來源、但沒有 kb_state:一樣零個 kb 記號", () => {
+    // 「安靜」必須是從 **kb_state 缺席** 推出來的,不是從「反正也沒有來源」
+    // 推出來的。有來源、但那些來源不是院規 —— 這正是最容易被反推誤判的一格。
+    const { container } = renderBubble(
+      assistantMsg(DOWNSTREAM_ONLY_META, { text: "根據既有資料[1]與[2]。" }),
+    );
+    expect(kbMarkers(container)).toHaveLength(0);
+    // ⚠ 而且安靜**不是**靠把 citations 弄壞換來的:既有來源管線照常運作,
+    // 否則這條測試就會用「把來源整個弄不見」的方式假裝通過。
+    expect(container.textContent).toContain("查看 2 筆來源");
+    expect(container.textContent).toContain("[1]");
+    expect(container.textContent).toContain("[2]");
   });
 
   it("認不得的狀態字串也不畫(未來多一個狀態時寧可安靜,不要亂講)", () => {
@@ -244,6 +275,56 @@ describe("命中徽章 — 文件名、原文與分數", () => {
     expect(container.textContent).toContain("[2]");
     // 既有的「查看 N 筆來源」footer
     expect(container.textContent).toContain("查看 2 筆來源");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 行內引用的 hover(trust.jsx:12)
+//
+// 規章引用**永遠沒有 `section`**(`proxy.py:688-696` 只給 id/title/score/snippet,
+// 而全樹沒有任何 citation 生產者填過 section)。在 Task 6 之前 `[N]` 幾乎不會出現,
+// 所以沒人看得到;**這個功能就是讓它現形的那一包**——而它現形的地方是一個
+// 信任表面:使用者正把游標停在那裡查證這句話的依據是什麼。
+// 抽屜端本來就有守衛(`trust.jsx:107` 的 `c.section &&`),只有行內 hover 沒有,
+// 於是同一份資料的兩個表面講了不一樣的話——與本功能的誠實不變式同型。
+// ---------------------------------------------------------------------------
+
+describe("行內引用的 hover", () => {
+  afterEach(cleanup);
+
+  /** 內文裡的 `[N]` 行內按鈕(CitationInline 渲染成 `[n]`)。 */
+  function inlineCitation(container, n) {
+    return [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === `[${n}]`,
+    );
+  }
+
+  it("沒有 section 的引用,hover 不會冒出 undefined", () => {
+    const { container } = renderBubble(
+      assistantMsg(REALISTIC.searched_hit, { text: "依規定辦理[1]。" }),
+    );
+    const inline = inlineCitation(container, 1);
+    expect(inline, "行內 [1] 按鈕應該有渲染").toBeTruthy();
+    const title = inline.getAttribute("title");
+    expect(title).not.toContain("undefined");
+    // 也不要留下一個沒有右半邊的分隔號(「檔名 · 」)。
+    expect(title.trim()).toBe("人事管理規則.pdf");
+  });
+
+  it("有 section 的引用維持既有的「標題 · 章節」形式(不回歸下游 RAG 的情況)", () => {
+    const { container } = renderBubble(
+      assistantMsg(
+        {
+          citations: [
+            { id: "rag-1", title: "作業手冊.pdf", section: "第 3 章 權責", snippet: "…" },
+          ],
+        },
+        { text: "見手冊[1]。" },
+      ),
+    );
+    expect(inlineCitation(container, 1).getAttribute("title")).toBe(
+      "作業手冊.pdf · 第 3 章 權責",
+    );
   });
 });
 
@@ -371,8 +452,10 @@ describe("映射縫", () => {
             role: "assistant",
             content: "這是上線前存下來的答案。",
             parent_id: 8001,
-            // 這個功能存在之前存的訊息:metadata 裡一個 kb_ 欄位都沒有。
-            metadata: { trace: [], citations: [] },
+            // 這個功能存在之前存的訊息:metadata 裡一個 kb_ 欄位都沒有,
+            // 但**帶著下游 agent 自己給的來源**——空的 citations 會讓
+            // 「從 citations 反推狀態」這條路在這一縫上也沒有釘子(驗收 I1)。
+            metadata: { trace: [], ...DOWNSTREAM_ONLY_META },
           },
         ],
       }),
