@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -108,6 +109,13 @@ class IngestionCollection(Base):
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # ANILA 聊天可直接檢索這個庫（SYSTEM-MAP §3 的「不需要 agent」那條路）。
+    # ⚠ 只有「無機密」能開,由 DB CHECK ck_ingestion_collections_anila_searchable_unclassified
+    # 閉合 —— 升密時忘了取消標記會讓 UPDATE 失敗,不是靜默留洞。
+    # ⚠ 無機密是必要條件不是觸發條件:沒標記的無機密庫不會被 ANILA 搜到。
+    anila_searchable = Column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
