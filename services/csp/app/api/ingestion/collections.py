@@ -64,8 +64,10 @@ _UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.to_storage()
 # 不會靜默退回 500。
 _ANILA_SEARCHABLE_CHECK = "ck_ingestion_collections_anila_searchable_unclassified"
 
-# 拒絕標記的四種理由。⚠ 每一則都要帶「怎麼拿到你要的東西」——這一包的
-# 驗收標準不是擋住了,是被擋的人知道下一步走哪裡。
+# 拒絕標記時,訊息固定的那兩則(另外兩則要帶當下的密等／模型名,寫在
+# ``_guard_anila_searchable`` 裡)。⚠ 每一則都要帶「怎麼拿到你要的東西」,
+# 而且那條路要真的走得通:這一包的驗收標準不是擋住了,是被擋的人照著做
+# 之後真的拿得到他要的東西。指一條不存在的路比不給路更糟。
 _MARK_ERRORS = {
     "not_admin": (
         "只有管理員可以設定 ANILA 檢索標記。這個標記等同於把整個庫公開給"
@@ -174,11 +176,19 @@ def _guard_anila_searchable(db: Session, coll: IngestionCollection) -> None:
         .first()
     )
     if marked_model and marked_model[0] != coll.embedding_model:
+        # ⚠ 出路只能寫「另建一個庫、重新上傳」,不能寫「把這個庫重新嵌入」:
+        # 本平台沒有 reindex,``search.py:639`` 已經裁定過,並且明文寫著
+        # 「do not write one into a user-facing message」。PATCH 也不收
+        # embedding_model(送了會回 200 但什麼都沒發生)。指一條不存在的路,
+        # 跟不給路是同一件事,而且更難察覺——照做的人會以為是自己弄錯了。
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"此庫用 {coll.embedding_model}，已標記集用 {marked_model[0]}；"
-                f"跨嵌入空間的分數不能互相比較。請先用 {marked_model[0]} 重新嵌入再標記。"
+                f"跨嵌入空間的分數不能互相比較。既有知識庫沒有辦法換嵌入模型"
+                f"（平台沒有 reindex，改 embedding_model 也不會生效），"
+                f"請用 {marked_model[0]} 另建一個知識庫、重新上傳這批文件，"
+                f"再標記那一個。"
             ),
         )
 
@@ -655,7 +665,9 @@ def update_collection(
     # ── ANILA 檢索標記 ──────────────────────────────────────────────────
     # 擁有者本人也不行:``_require_collection_access`` 放行的是「管理自己的庫」,
     # 而標記的影響範圍是全院的聊天檢索,不是這一個庫。所以在這裡多一道 admin
-    # 閘,而不是去改那個 8 個 caller 共用的 helper(改它會一併放寬上傳與刪除)。
+    # 閘,而不是去改那個 helper——它有 19 個 call site、散在 9 個檔案
+    # (agents/registration、conversations、本檔、documents、eval_runs、
+    # image_blob、jobs、relations、search),動它會一併放寬文件上傳與刪除。
     mark_flip: Optional[tuple[bool, bool]] = None
     if payload.anila_searchable is not None:
         if not is_admin_tier(current_user):

@@ -1,13 +1,22 @@
-"""ANILA 檢索標記端點：管理員限定 ＋ 三道前置檢查，每一次拒絕都要給做法。
+"""ANILA 檢索標記端點：管理員限定 ＋ 四道前置檢查，每一次拒絕都要給做法。
 
 AC:
 1. 標記是密等相鄰操作 → 只有 admin 動得了（非 admin 403）
-2. 個人知識庫（origin=anilalm）不可標記
-3. 嵌入模型與「已標記集」不同 → 拒絕，並指名兩邊的模型與「重新嵌入」的做法
-4. 庫內有非無機密文件 → 拒絕，並指名那個密等
-5. 已標記的庫要升密 → 撞到 DB CHECK 時翻譯成看得懂的 400，指向「先取消標記」
+2. 本庫密等不是無機密 → 拒絕，指名該密等並指向降密申請流程（四級逐一驗）
+3. 個人知識庫（origin=anilalm）不可標記 → 出路是「另建一個庫重新上傳」
+4. 嵌入模型與「已標記集」不同 → 拒絕，指名兩邊的模型；出路是「用已標記集
+   那個模型另建一個庫、重新上傳」
+5. 庫內有非無機密文件 → 拒絕，並指名那個密等
+6. 已標記的庫要升密 → 撞到 DB CHECK 時翻譯成看得懂的 400，指向「先取消標記」，
+   而且整批回復（庫與庫內文件的密等都不動）
+7. 取消標記永遠放行，兩個方向都留稽核
 
-⚠ 這一包的驗收標準不是「回了 400」，而是「被擋的人看完訊息知道下一步怎麼走」。
+⚠ 這一包的驗收標準不是「回了 400」，也不是「訊息裡有出現做法」，而是
+**照著那個做法走真的拿得到想要的東西**。第 4 條踩過一次：原本寫「請先重新
+嵌入再標記」，但本平台根本沒有 reindex（`search.py:639` 已經裁定過，並明文
+禁止把它寫進使用者訊息），PATCH 也不收 embedding_model（送了回 200、什麼
+都沒發生）。那是一扇畫在牆上的門，比直接說「不行」更糟——照做的人會以為
+是自己弄錯了。
 """
 
 from __future__ import annotations
@@ -121,7 +130,48 @@ def test_cannot_mark_when_embedding_model_differs_from_the_marked_set(
     assert r.status_code == 400
     detail = r.json()["detail"]
     assert "other-model" in detail and "nv-embed-v2" in detail
-    assert "重新嵌入" in detail   # 給做法,不是只說不行
+    # 給做法,不是只說不行——而且必須是走得通的那一條。
+    assert "另建" in detail and "重新上傳" in detail
+    # 不可以再指回「重新嵌入這個庫」：本平台沒有 reindex（search.py:639）。
+    assert "重新嵌入" not in detail, detail
+
+
+def test_the_embedding_remedy_actually_opens_the_door(client, db, admin_token):
+    """走一遍訊息叫人做的事，確認那扇門真的開得了。
+
+    這一支是本輪修正的核心：上一版訊息寫的是「請先重新嵌入再標記」，而
+    `PATCH {"embedding_model": ...}` 回 200 卻什麼都沒改、平台也沒有 reindex
+    ——訊息指的是一扇畫在牆上的門。所以這裡不只驗訊息內容，直接照做：
+    用已標記集的模型另建一個庫，然後標記，必須成功。
+    """
+    a = _create_collection(client, admin_token, "甲庫", embedding_model="nv-embed-v2")
+    assert client.patch(f"/api/ingestion/collections/{a['id']}",
+                        json={"anila_searchable": True},
+                        headers=_auth(admin_token)).status_code == 200
+
+    b = _create_collection(client, admin_token, "乙庫", embedding_model="other-model")
+    refused = client.patch(f"/api/ingestion/collections/{b['id']}",
+                           json={"anila_searchable": True}, headers=_auth(admin_token))
+    assert refused.status_code == 400
+
+    # 訊息裡沒說、實際上也做不到的那條路：改 embedding_model。回 200，
+    # 但模型原封不動——這正是不能把它寫進出路的理由。
+    patched = client.patch(f"/api/ingestion/collections/{b['id']}",
+                           json={"embedding_model": "nv-embed-v2"},
+                           headers=_auth(admin_token))
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["embedding_model"] == "other-model"
+    assert client.patch(f"/api/ingestion/collections/{b['id']}",
+                        json={"anila_searchable": True},
+                        headers=_auth(admin_token)).status_code == 400
+
+    # 訊息真正叫人做的那條路：用已標記集的模型另建一個庫、重新上傳。
+    c = _create_collection(client, admin_token, "丙庫", embedding_model="nv-embed-v2")
+    _add_document(db, c["id"])
+    ok = client.patch(f"/api/ingestion/collections/{c['id']}",
+                      json={"anila_searchable": True}, headers=_auth(admin_token))
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["anila_searchable"] is True
 
 
 def test_cannot_mark_when_the_library_holds_a_classified_document(
@@ -241,13 +291,17 @@ def test_mark_round_trips_and_writes_audit(client, db, admin_token):
     db.refresh(row)
     assert row.anila_searchable is True
 
-    audits = [
-        a
-        for a in db.query(AuditLog)
-        .filter(AuditLog.action == "ingestion_collection_anila_searchable_set")
-        .all()
-        if str(getattr(a, "resource_id", "")) == str(coll["id"])
-    ]
+    def _mark_audits() -> list:
+        return [
+            a
+            for a in db.query(AuditLog)
+            .filter(AuditLog.action == "ingestion_collection_anila_searchable_set")
+            .order_by(AuditLog.id)
+            .all()
+            if str(getattr(a, "resource_id", "")) == str(coll["id"])
+        ]
+
+    audits = _mark_audits()
     assert audits, "標記翻面必須留稽核"
     assert parse_metadata(audits[-1].metadata_json)["to"] is True
 
@@ -258,3 +312,10 @@ def test_mark_round_trips_and_writes_audit(client, db, admin_token):
     assert off.json()["anila_searchable"] is False
     db.refresh(row)
     assert row.anila_searchable is False
+
+    # 關的方向也要留稽核。全院檢索範圍「縮小」跟「擴大」一樣是要能查的事：
+    # 只記開不記關，稽核帳上會永遠停在「這個庫是開著的」。
+    audits = _mark_audits()
+    assert len(audits) == 2, [parse_metadata(a.metadata_json) for a in audits]
+    closing = parse_metadata(audits[-1].metadata_json)
+    assert closing["from"] is True and closing["to"] is False
