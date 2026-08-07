@@ -61,8 +61,8 @@
 | ✅ **設定** | ~~ingestion-worker 要 recreate 不是 restart~~ **08-06 深夜關板**:追查證實 deploy-prod 四條路徑**本來就全是 recreate**(沒發明改動);規則落 `docs/runbooks/restart-vs-recreate.md`,含實測(restart 後 env 仍舊值、容器 ID 不變) | 純文件包 |
 | ✅ **映像** | ~~build context 吃進產物、黑名單補不完~~ **08-06 深夜關板**:`scan-image-artifacts.sh` 建後掃描已接進匯出路徑(build 後、save 前、無跳過旗標);檔名家族＋**內容規則凌駕白名單**(私鑰藏在白名單路徑也抓)＋自我測試(掏空規則/白名單長歪/抽檔沒做完都大聲死) | 驗收 3 輪 ACCEPT;掃不到 ENV/history 層,檔頭誠實列明 |
 | ✅ **映像** | ~~匯出閘門是紅的~~ **08-07 凌晨關板**:三張映像清乾淨(修在源頭,掃描器一個字沒動)。⚠ 真根因不是 COPY——**本機 Symantec DCS 在 RUN 執行當下把自己的目錄注入容器可寫層**(用零 COPY 的映像重現);它同時讓 `docker save` 失敗,**約六分之一的建置會產出根本匯不出去的映像**。清理只能寫在會被注入的那一層(後補 `rm` 修不掉已 commit 的上層),所以匯出閘門**加了 `docker save` 檢查**——掃描器結構上看不見這一類 | 驗收 2 輪(首輪 REJECT:驗收自己重建的 codeserver 存不出來);⚠ **儀式沒有強制力**:新 Dockerfile 漏抄那幾行,只有匯出當下才會發現 |
-| 🟡 **映像(待裁決)** | **上游 base 層裡的東西我們清不掉,只能遮**:codeserver 的 `httpolyglot/test/fixtures/server.key`(**真私鑰**)、asr 的 `var/log/bootstrap.log`。白遮罩讓攤平掃描過關,但 **`docker save` 仍把原始 bytes 搬進氣隙** | 要真的移除得**換 base 映像或壓平映像**,兩者都有代價 → **Q38 等擁有者裁決** |
-| **交付包** | 08-03 交付包的 `anila-restart-csp.tar.gz` 內含**測試 RSA 私鑰＋約 25MB 本機開發日誌**(根因=舊 `.dockerignore` 只擋根層,08-06 已修) | 第 8 段重建出新包後**銷毀舊 tar**;它是要手提進氣隙的,不能讓有鑰匙的版本進去 |
+| ✅ **映像** | ~~上游 base 層的東西只能遮不能刪~~ **08-07 裁決:兩者都豁免**(Q38)。codeserver 那把是**公開 npm 套件的測試夾具**;asr 的 `bootstrap.log` 逐行查過是 **Canonical 2024-10-16 建 base 時的 debootstrap 紀錄**(零筆我方資料、零筆祕密、零筆內網位址)。⚠ 別跟 asr 的 **IDS 日誌**搞混——那個嚇人的已經修掉了,不屬於 Q38 | 不換 base、不壓平 |
+| ✅ **交付包** | ~~08-03 交付包的 csp tar 內含測試 RSA 私鑰＋25MB 日誌~~ **08-07 裁決:銷毀,已執行**(Q37)。該 tar 已刪,同目錄留 `00-這包不能用了.md` 說明其餘 tar 也落後 95 個 commit。⚠ **`02-weights/` 7.7 GB 權重沒動**;`CHECKSUMS.sha256` 刻意不改,讓校驗失敗指出「這包已作廢」 | 第 8 段重建全部映像出新包 |
 
 ### ⚠ 一條不在段落裡、但每次動到它都要當紅線審的
 

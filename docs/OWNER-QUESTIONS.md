@@ -7,7 +7,43 @@
 
 ---
 
-## 🟡 Q38 — 上游 base 映像裡的私鑰,要不要為它換 base(2026-08-07 凌晨,**等你回答**)
+## ✅ Q38 — 上游 base 映像裡的私鑰,要不要為它換 base(2026-08-07 **已裁決:兩者都豁免**)
+
+> **擁有者裁決**:「codeserver 可以豁免,畢竟那是相依賴套件的」;asr-decoder 查證後**同樣豁免**(見下)。
+> **不換 base、不壓平映像。** 維持白遮罩現狀。
+
+**codeserver** — `httpolyglot/test/fixtures/server.key` 是**公開 npm 套件自帶的測試夾具**,
+人人下載得到,不是我們的機密;威脅模型是「有人在氣隙內拿它當可信憑證」,不是外洩。
+
+**asr-decoder** — 查證後**根本不是問題**,而且容易跟另一件事搞混,這裡寫清楚:
+
+| | 內容 | 狀態 |
+|---|---|---|
+| ~~`var/lib/sdcssagent/IDS/log/*`~~ | **本機資安代理注入的日誌**——這才是嚇人的那個 | ✅ **08-07 已修**(Dockerfile 清理包),**不屬於 Q38** |
+| `var/log/bootstrap.log` | Q38 的 asr 部分**只有這一個** | ✅ 豁免 |
+
+`bootstrap.log` 實際內容已逐行查過(61 KB,mtime **2024-10-16**,早於本專案重啟):
+它是 **Canonical 自己建 ubuntu noble base 時的 debootstrap 安裝紀錄**,
+內容全部是 `ftpmaster.internal`(Canonical 內部鏡像)的套件下載與 gpg 驗章。
+敏感字掃描 9 個命中**逐條看過,全部無害**:GPG **公開**金鑰指紋
+(`F6ECB376…` = Ubuntu Archive Automatic Signing Key)、`ubuntu-keyring` 套件安裝、
+以及 apt 標準訊息 `Shadow passwords are now on.`。
+**零筆我方資料、零筆祕密、零筆內網位址。**
+
+---
+
+## ✅ Q37 — 舊交付包裡有一把被烤進去的測試私鑰(2026-08-07 **已裁決:銷毀,已執行**)
+
+> **擁有者裁決**:「可以銷毀,反正都要重包」。
+
+**已執行**:`~/桌面/ANILA-DELIVERY/01-images/anila-restart-csp.tar.gz`(326 MB)已刪除,
+同目錄留下 `00-這包不能用了.md` 說明為什麼、其餘 tar 為何也不要用、以及正確做法。
+⚠ **`02-weights/`(7.7 GB 模型權重)沒有動**——那是下載成本最高的部分,與本次無關。
+`CHECKSUMS.sha256` 刻意不改:校驗失敗要能指出「這包已作廢」,而不是安靜通過。
+
+---
+
+## 🗄 Q38 原始題目(已答,保留脈絡)
 
 **問題**:codeserver 的上游 base 層帶著 `usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key`
 ——**內容是真的 RSA 私鑰**(相依套件自己的測試夾具,不是我們放的);asr-decoder 的 ubuntu base 帶 `var/log/bootstrap.log`。
@@ -23,7 +59,7 @@
 
 ---
 
-## 🟡 Q37 — 舊交付包裡有一把被烤進去的測試私鑰,怎麼處置(2026-08-06 晚,**等你回答**)
+## 🗄 Q37 原始題目(已答,保留脈絡)
 
 **問題**:`~/桌面/ANILA-DELIVERY/01-images/anila-restart-csp.tar.gz`(08-03 建)的映像裡
 含 `/app/secrets/jwt-private.pem`(一把 **測試用** RSA-2048 私鑰,07-29 產,來源是
@@ -35,9 +71,7 @@
 (它不是正式環境在用的——正式 keypair 走 `:ro` 掛載,不在映像裡;dev stack 曾意外靠它簽 token,
 現在已改成大聲失敗)。
 
-**目前假設**:舊包**原封不動**放著、不刪任何鑰匙;第 8 段用修正後的樹重建全部映像出新包。
-
-**改變主意的成本**:趨近零——重建本來就是第 8 段的既定內容,唯一要記得的是**舊 tar 不要再手提進氣隙**。
+~~**目前假設**~~ → **08-07 已裁決:銷毀,已執行**(見本檔上方 Q37 結案段)。
 
 ---
 
