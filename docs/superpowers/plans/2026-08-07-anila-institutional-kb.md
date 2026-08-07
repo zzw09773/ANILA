@@ -949,18 +949,58 @@ git commit -m "feat(shell): show whether an answer is backed by a regulation, an
 
 ---
 
-## Task 9：「改用院內規章重查」
+## Task 9：「改用院內規章重查」（forced）——跨 router 與 shell 兩側
+
+> **裁決脈絡（Q40，2026-08-07）**：按了重查＝這一輪**必走直答＋規章檢索，不會被 agent 接走**。
+> 設計 §8：事後自救、同一問句重跑、強制查（略過 Router 判斷）、結果照 §5 五狀態。
+> Task 5 已出貨的地基：前端本來就能送 `X-ANILA-Route`；router 在複製點濾掉它、
+> 由 `_resolve_route_signal` 算出值再掛回自己的答案通道呼叫（語意見 task-5-report §2）。
+
+### A 側：Router（packages/anila-core）
+
+**硬規則：**
+1. **route signal 解析為 `forced` 的回合絕不派工**——非串流、單發串流（三態機）、多輪
+   全部三條路徑。兩層防禦、各自釘住：(a) forced 回合的 routing prompt **不含派工指令**
+   （模型直接作答）；(b) 解析層硬閘——即使模型輸出長得像 DISPATCH，forced 回合也不派
+   （突變：拿掉硬閘 → 必紅）。
+2. forced 照常騎在答案通道 header 上抵達 CSP（Task 5 既有機制，別重建）。
+3. **透傳釘（收掉帳本 CARRY 項）**：CSP 蓋的 `kb_state`／`kb_hits`／`citations` 必須原樣
+   到達客戶端——合併路徑（`_normalize_anila_meta:499` spread，已人工驗過）與**串流 meta
+   event 出口**兩邊都要有測試釘住（突變：串流出口丟掉 kb_* → 必紅）。
 
 **Files:**
-- Modify: `apps/anila-shell/src/chat.jsx:884-930`（既有「重新產生」選單）
-- Test: `apps/anila-shell/src/__tests__/kbRetry.test.jsx`（新）
+- Modify: `router_server.py`（forced 抑制；行號以 Task 5 修訂後為準，別抄計畫舊行號）
+- Test: 擴充 `packages/anila-core/tests/test_router_direct_header.py` 或新檔
 
-⚠ **不必新建機制**：`chat.jsx:884` 已有 guided regenerate 選單（重試／更詳細／更簡潔／換個說法 + 自由輸入），加一個選項即可。注意 `chat.jsx:880-883` 的既有註解：**沒有 handler 就不要畫這顆按鈕**。
+### B 側：Shell（apps/anila-shell）
 
-- [ ] **Step 1: 寫失敗測試** — 點該選項會以同一問句重送且**強制檢索**（略過 Router 判斷）
-- [ ] **Step 2–5**：跑失敗 → 實作 → 跑通過 → commit
+⚠ **不必新建選單機制**：`chat.jsx:892–940` 已有 guided regenerate 選單（四選項＋自由輸入），
+加一個選項即可。注意 `:878–881` 的既有註解：**沒有 handler 就不要畫這顆按鈕**。
+
+**兩個地雷（2026-08-07 偵察驗過，照抄舊機制必錯）：**
+- **steer 是文字不是 metadata**：既有選項唯一的後端通道是把 steer 串進 user 訊息
+  （app.jsx:2207–2209）。「重查」**不能**走這條——要新增一個真正的參數，
+  沿 `regenerateMessage`（:2179）→ payload（:2211–2214）→ `runRegenerateStreamPhase`
+  （:2248）→ `streamWithAbort`（:592，`...opts` spread :607）→ `sse.js:62` destructure
+  ＋在 :112 附近加 header 行（`X-ANILA-Route: forced`）。同一問句原樣重送，
+  **不得**把任何 steer 文字摻進去。
+- **baseUrl 分流**（app.jsx:2204–2206）：router-target 走 `routerBaseUrl`
+  （header 由 router 的 Task 5 relay 轉換＋A 側 Q40 抑制）；指名 agent 的對話走
+  `cspBaseUrl` 直達 CSP——**Task 6 的 seam 對 agent-named 標記呼叫照樣檢索注入，
+  那個行為在這裡從 concern 變成 feature**（Task 6 concern 2 在此收案）。兩種 target
+  都要帶 header、都要測。
+
+**Files:**
+- Modify: `apps/anila-shell/src/chat.jsx`（選單一項）、`src/app.jsx`（參數穿線）、
+  `src/runtime/sse.js`（header 組裝，樣板 :96–114）
+- Test: `apps/anila-shell/src/__tests__/kbRetry.test.jsx`（新，vitest）
+
+- [ ] **Step 1: 寫失敗測試** — A 側：forced 三路徑皆不派工（含硬閘突變）＋ kb_* 兩出口透傳；
+  B 側：點選項→同問句重送＋header 掛上＋steer 文字未摻入，router/csp 兩種 target 都測
+- [ ] **Step 2–5**：跑失敗 → 實作 → 跑通過 → 各側一個 commit
 
 ```bash
+git commit -m "feat(router): a forced regulation retry never gets dispatched away"
 git commit -m "feat(shell): let the reader force a regulation search when the router did not"
 ```
 
