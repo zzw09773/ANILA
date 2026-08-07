@@ -448,6 +448,9 @@ def test_miss_prompt_forbids_article_style_citation(
     system = _system_text(_FakeClient.last_body)
     assert proxy_api._KB_NO_CITATION_RULE in system
     assert proxy_api._KB_MISS_NOTICE in system
+    # 硬規則 4 的另一半：**明令**以一般知識的口吻作答。只擋條號、不交代這是
+    # 一般知識，模型仍然會用規章的語氣講一段沒有依據的話。
+    assert "一般知識" in system
 
 
 def test_search_error_prompt_is_not_the_miss_prompt(
@@ -458,6 +461,7 @@ def test_search_error_prompt_is_not_the_miss_prompt(
     _chat(client, actor, target=model_target.name, route="direct")
     system = _system_text(_FakeClient.last_body)
     assert proxy_api._KB_NO_CITATION_RULE in system
+    assert "一般知識" in system
     assert proxy_api._KB_ERROR_NOTICE in system
     assert proxy_api._KB_MISS_NOTICE not in system
 
