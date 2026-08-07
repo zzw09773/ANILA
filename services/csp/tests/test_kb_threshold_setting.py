@@ -37,6 +37,11 @@ import pytest
 import app.services.institutional_kb as kb_mod
 from anila_core.storage.adapters.pgvector_store import SourceModelCoverage
 from app.models.ingestion import IngestionCollection, IngestionDocument
+from app.models.platform_setting import (
+    KB_THRESHOLD_DEFAULT,
+    KB_THRESHOLD_KEY,
+    PlatformSetting,
+)
 from app.models.user import User
 from app.schemas.contracts.classification import ClassificationLevel
 from tests.conftest import login, make_user
@@ -370,6 +375,93 @@ def test_preview_never_leaks_a_classified_document(
     assert all("個案當事人姓名" not in h["content"] for h in hits)
     # 無機密那一筆要在 —— 否則一個「永遠回空」的實作也會通過上面兩條。
     assert [h["document_id"] for h in hits] == [coll.clean_doc_id]
+
+
+# ── 顯示的數字必須就是生效的數字 ────────────────────────────────────────────
+
+
+def _write_row_bypassing_the_api(db, raw: str) -> None:
+    """繞過 API 直接寫一列 —— 匯入腳本、手動 SQL、backfill 都是這樣進來的。
+
+    這條路是真的（``platform_settings`` 沒有 CHECK，那是刻意的取捨），所以
+    「壞值進來之後平台怎麼表現」不是假想情境。
+    """
+    db.add(PlatformSetting(key=KB_THRESHOLD_KEY, value=raw))
+    db.commit()
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        (None, KB_THRESHOLD_DEFAULT),  # 沒有列
+        ("0.55", 0.55),  # 正常值
+        ("2.5", KB_THRESHOLD_DEFAULT),  # 界外：退回預設
+        ("abc", KB_THRESHOLD_DEFAULT),  # 不是數字：退回預設
+    ],
+)
+def test_the_number_on_screen_is_the_number_retrieval_uses(
+    client, db, admin_token, marked_collection, backend, stored, expected
+):
+    """畫面上的門檻與檢索實際套用的門檻，必須是同一個數字。
+
+    ⚠ 這一支補的是驗收找到的洞：原本「顯示 = 生效」只是因為兩個呼叫端**碰巧**
+    都走 ``get_kb_threshold``，沒有任何東西會在它們分岔時叫出來。把讀取端改成
+    自己 ``float(row.value)``（值壞掉時顯示 2.5、檢索卻用 0.3）——十支測試全綠。
+
+    所以這裡不比「顯示的值等於某個預期常數」，而是比**顯示的值等於真正傳進
+    ``similarity_search`` 的 ``min_score``**。那是唯一不會跟著實作一起漂的參照點。
+    設定頁後面還有 41 個開關要照這個形狀證明。
+    """
+    if stored is not None:
+        _write_row_bypassing_the_api(db, stored)
+
+    shown = client.get(_THRESHOLD_URL, headers=_auth(admin_token)).json()["value"]
+    r = client.post(_PREVIEW_URL, json={"query": "申誡"}, headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+
+    assert backend.min_scores, "檢索要真的跑過，否則下面比的是空氣"
+    assert backend.min_scores[-1] == shown, (
+        f"畫面顯示 {shown}，檢索實際用的是 {backend.min_scores[-1]}"
+    )
+    assert r.json()["threshold"] == shown
+    assert shown == expected
+
+
+@pytest.mark.parametrize("stored", ["2.5", "-0.2", "abc", ""])
+def test_a_stored_value_that_cannot_be_used_is_not_calibrated(
+    client, db, admin_token, stored
+):
+    """壞值退回預設值時，``calibrated`` 必須跟著翻回 false。
+
+    ⚠ 這是「有列就算校準」那個判準真正會騙到人的地方：實際跑的是那個沒有人
+    量過的預設值，而畫面說「有人校準過」。管理員因此不會去量——這個旗標存在
+    的唯一理由就是讓他去量。
+
+    ⚠ 空字串也在清單裡：匯入把欄位清空是最常見的那一種，而 ``float("")``
+    跟 ``float("abc")`` 走的是同一條例外路徑，漏掉一條就整條沒守。
+    """
+    _write_row_bypassing_the_api(db, stored)
+
+    body = client.get(_THRESHOLD_URL, headers=_auth(admin_token)).json()
+    assert body["value"] == KB_THRESHOLD_DEFAULT
+    assert body["calibrated"] is False, f"{stored!r} 退回預設值了，不可以說已校準"
+
+
+def test_storing_exactly_the_default_still_counts_as_calibrated(client, admin_token):
+    """按下儲存的是 0.3 也算校準過 —— 差別在於有沒有人看過證據，不在數字。
+
+    ⚠ 這條保證原本只寫在報告裡、沒有測試守著：把判準改成「值不等於預設值才算
+    校準」，十支測試全綠。那個實作會讓「我看過分數，確認 0.3 就是對的」這個
+    結論**存不進系統**，下一個人打開設定頁看到的還是「沒有人量過」。
+    """
+    put = client.put(
+        _THRESHOLD_URL, json={"value": KB_THRESHOLD_DEFAULT}, headers=_auth(admin_token)
+    )
+    assert put.status_code == 200, put.text
+
+    body = client.get(_THRESHOLD_URL, headers=_auth(admin_token)).json()
+    assert body["value"] == KB_THRESHOLD_DEFAULT
+    assert body["calibrated"] is True
 
 
 def test_preview_says_not_searched_when_no_library_is_marked(client, admin_token, backend):

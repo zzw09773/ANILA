@@ -68,47 +68,68 @@ KB_THRESHOLD_KEY = "institutional_kb.score_threshold"
 KB_THRESHOLD_DEFAULT = 0.3
 
 
+def _resolve_kb_threshold(db: Session) -> tuple[float, bool]:
+    """一次解出「實際生效的門檻」與「有沒有人真的量過」。
+
+    ⚠ **這兩個答案一定要出自同一次解析。** 拆成兩份各自讀 DB 的邏輯，就會有
+    「畫面顯示 A、檢索用 B」或「顯示已校準、跑的卻是預設值」的空間，而那兩種
+    分歧都不會有錯誤訊息。設定頁後面還有 41 個開關要照這個形狀寫。
+
+    值壞掉時（不是數字、或落在 [0, 1] 之外）退回預設值並留 log：那種列只可能
+    是繞過 API 寫進去的，而讓檢索整個炸掉的代價比退回預設值高。**但這時
+    calibrated 必須是 false** —— 跑的既然是那個沒有人量過的預設值，就不可以
+    跟管理員說有人量過。回 true 才是這裡真正會騙到人的地方：他會以為這個
+    數字被人挑過，而畫面上那個 0.3 其實是退回來的。
+    """
+    row = db.get(PlatformSetting, KB_THRESHOLD_KEY)
+    if row is None:
+        return KB_THRESHOLD_DEFAULT, False
+    try:
+        value = float(row.value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "platform_settings[%s] 不是數字（%r），退回預設值 %s（視為未校準）",
+            KB_THRESHOLD_KEY,
+            row.value,
+            KB_THRESHOLD_DEFAULT,
+        )
+        return KB_THRESHOLD_DEFAULT, False
+    if not 0.0 <= value <= 1.0:
+        logger.warning(
+            "platform_settings[%s] = %s 落在 [0, 1] 之外，退回預設值 %s（視為未校準）",
+            KB_THRESHOLD_KEY,
+            value,
+            KB_THRESHOLD_DEFAULT,
+        )
+        return KB_THRESHOLD_DEFAULT, False
+    return value, True
+
+
 def get_kb_threshold(db: Session) -> float:
     """讀出目前的分數門檻。**每次呼叫都真的查一次 DB。**
 
     見模組 docstring：這裡不可以有任何形式的行程生命期快取，否則設定頁上的
     每一個開關都會變成假控制項。一次主鍵查詢的成本遠低於那個風險。
 
-    值壞掉時（不是數字、或落在 [0, 1] 之外）退回預設值並留 log：那種列只可能
-    是繞過 API 寫進去的，而讓檢索整個炸掉的代價比退回預設值高。
+    ⚠ **顯示與生效必須是同一個數字**，所以 API 的讀取端也走這個函式，不可以
+    自己 `float(row.value)` 一次。差一個字，畫面上的數字就不再是檢索用的那個。
     """
-    row = db.get(PlatformSetting, KB_THRESHOLD_KEY)
-    if row is None:
-        return KB_THRESHOLD_DEFAULT
-    try:
-        value = float(row.value)
-    except (TypeError, ValueError):
-        logger.warning(
-            "platform_settings[%s] 不是數字（%r），退回預設值 %s",
-            KB_THRESHOLD_KEY,
-            row.value,
-            KB_THRESHOLD_DEFAULT,
-        )
-        return KB_THRESHOLD_DEFAULT
-    if not 0.0 <= value <= 1.0:
-        logger.warning(
-            "platform_settings[%s] = %s 落在 [0, 1] 之外，退回預設值 %s",
-            KB_THRESHOLD_KEY,
-            value,
-            KB_THRESHOLD_DEFAULT,
-        )
-        return KB_THRESHOLD_DEFAULT
-    return value
+    return _resolve_kb_threshold(db)[0]
 
 
 def is_kb_threshold_calibrated(db: Session) -> bool:
     """有沒有人真的量過。
 
-    判準是「這一列存不存在」：沒有列 = 還是那個用替代模型量出來的預設值；
-    有列 = 有一個管理員看過 ``POST /preview`` 回的實際分數之後按下儲存。
-    即使他存的剛好也是 0.3 也算——差別在於有沒有人看過證據。
+    判準是「有一列**而且那一列的值是可用的**」：
+
+    * 沒有列 → false。還是那個用替代模型量出來的預設值。
+    * 有列、值可用 → true。有一個管理員看過 ``POST /preview`` 回的實際分數之後
+      按下儲存。**即使他存的剛好也是預設值 0.3 也算**——差別不在數字，在有沒有
+      人看過證據。
+    * 有列、值不可用（繞過 API 寫進來的壞值）→ false。實際跑的是預設值，
+      這時說「已校準」就是騙人。
     """
-    return db.get(PlatformSetting, KB_THRESHOLD_KEY) is not None
+    return _resolve_kb_threshold(db)[1]
 
 
 def set_kb_threshold(db: Session, value: float, *, actor: User | None = None) -> None:
