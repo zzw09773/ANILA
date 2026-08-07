@@ -270,6 +270,19 @@ def test_dispatch_path_does_not_forward_it_to_agent_or_recompose(
     assert seen.route_header_of("recompose") is None
 
 
+# A client value that is visibly not the Router's own, on a turn that still
+# dispatches.
+#
+# Task 9 (owner ruling Q40) made ``forced`` unable to reach the dispatch path at
+# all — a forced turn is answered by the Router, never handed to an agent — so
+# these fixtures can no longer use ``forced`` as bait and still produce a
+# dispatch. What the leak tests need is only that the inbound value be
+# *distinguishable from the Router's own* if it survived the copy: garbage
+# collapses to ``direct`` in ``_resolve_route_signal``, but an unstripped copy
+# would ride the wire verbatim. Same detection strength, different token.
+SPOOF_SENTINEL = "forced-but-not-really"
+
+
 @respx.mock
 def test_a_client_route_header_does_not_leak_onto_the_dispatch_path(
     db_path: Path,
@@ -282,7 +295,7 @@ def test_a_client_route_header_does_not_leak_onto_the_dispatch_path(
             _completion("here is your image", model="image-generator"),
             _completion("整理後的回覆"),
         ],
-        inbound_headers={ROUTE_HEADER: "forced"},
+        inbound_headers={ROUTE_HEADER: SPOOF_SENTINEL},
     )
     assert seen.route_header_of("dispatch") is None
     assert seen.route_header_of("recompose") is None
@@ -371,7 +384,7 @@ def _multi_turn_dispatch_script() -> list:
     ]
 
 
-@pytest.mark.parametrize("inbound", [None, {ROUTE_HEADER: "forced"}])
+@pytest.mark.parametrize("inbound", [None, {ROUTE_HEADER: SPOOF_SENTINEL}])
 @respx.mock
 def test_streaming_dispatch_keeps_the_agent_facing_calls_clean(
     db_path: Path, inbound: dict[str, str] | None
@@ -391,7 +404,7 @@ def test_streaming_dispatch_keeps_the_agent_facing_calls_clean(
     assert seen.route_header_of("recompose") is None
 
 
-@pytest.mark.parametrize("inbound", [None, {ROUTE_HEADER: "forced"}])
+@pytest.mark.parametrize("inbound", [None, {ROUTE_HEADER: SPOOF_SENTINEL}])
 @respx.mock
 def test_multi_turn_streaming_dispatch_keeps_the_agent_facing_calls_clean(
     db_path: Path, inbound: dict[str, str] | None
@@ -477,7 +490,11 @@ def test_multi_turn_streaming_keeps_the_two_origins_distinguishable(
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     ("sent", "expected"),
-    [(None, "direct"), ("forced", "forced"), ("Direct", "direct")],
+    # ``forced`` was a third case here until Task 9. Owner ruling Q40 made it
+    # unreachable rather than wrong: a forced turn never dispatches, so it never
+    # arrives at a synthesis call to be marked. The scenario is not dropped —
+    # it moved one test down, where it now asserts the stronger fact.
+    [(None, "direct"), (SPOOF_SENTINEL, "direct"), ("Direct", "direct")],
 )
 @respx.mock
 def test_the_multi_turn_synthesis_call_is_marked(
@@ -493,3 +510,30 @@ def test_the_multi_turn_synthesis_call_is_marked(
         inbound_headers=None if sent is None else {ROUTE_HEADER: sent},
     )
     assert seen.route_header_of("router-llm-followup") == expected
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@respx.mock
+def test_a_forced_turn_never_reaches_the_multi_turn_synthesis_call(
+    db_path: Path, stream: bool
+) -> None:
+    """Q40 (Task 9), asserted from this file's own vantage point.
+
+    The synthesis call only exists downstream of a dispatch, and a forced turn
+    has none — so the whole multi-turn machine stays folded up. Kept here rather
+    than only in ``test_router_forced_retry.py`` because this file is where the
+    marker's call-site map lives: someone re-marking calls should see that this
+    call site is unreachable on a forced turn, not rediscover it.
+    """
+    seen = _run_turn(
+        db_path,
+        replies=_multi_turn_dispatch_script(),
+        stream=stream,
+        extra_body={"anila_multi_turn": 2},
+        inbound_headers={ROUTE_HEADER: "forced"},
+    )
+    assert seen.of("router-llm-followup") == []
+    assert seen.of("dispatch") == []
+    # The one Router call it did make is still marked — the button has to reach
+    # CSP or it retrieves nothing.
+    assert seen.route_header_of("router-llm") == "forced"
