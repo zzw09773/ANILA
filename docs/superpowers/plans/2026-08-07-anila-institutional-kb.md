@@ -1022,7 +1022,9 @@ git commit -m "feat(shell): let the reader force a regulation search when the ro
 - [ ] **Step 1: 改 SYSTEM-MAP §5**（規格變更）
 - [ ] **Step 2: 設計文件裁決修訂＋PLAN 校準清單**
 - [ ] **Step 3: 交接「留下什麼要長期照顧」**（軸線是維護成本）：
-  1. **門檻**是唯一隨嵌入模型更換必須重新校準的數字（設定＋校準視圖已入 Task 4；換模型＝已知失效事件）
+  1. **門檻**是唯一隨嵌入模型更換必須重新校準的數字（Task 4 出的是**後端**：設定＋三個
+     admin API 端點；**校準畫面沒被任何 task 承載**，見交接 §七——別再把它寫成已出貨；
+     換模型＝已知失效事件）
   2. 標記集的**同模型限制**在標記時擋；換模型時要重新檢視已標記集
   3. **`kb_state` 五值是前後端契約**（producer：csp proxy；consumer：shell 兩個映射縫；
      改值＝跨三個 repo 區域的 breaking change）
