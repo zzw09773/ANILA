@@ -50,6 +50,7 @@ from app.models.message import Message
 from app.models.message_action import MessageAction, MessageActionBinding
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
+from app.models.platform_setting import PlatformSetting
 from app.models.policy_decision import PolicyDecision
 from app.models.registered_service import (
     RegisteredService,
@@ -107,6 +108,7 @@ __all__ = [
     "MessageActionBinding",
     "ModelRegistry",
     "PlatformLink",
+    "PlatformSetting",
     "PolicyDecision",
     "RegisteredService",
     "ServiceAccessGrant",
