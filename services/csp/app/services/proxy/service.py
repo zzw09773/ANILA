@@ -412,6 +412,19 @@ def build_default_anila_meta(
             }
         ],
         "citations": [],
+        # 院內規章檢索的狀態（``KbState``，app/services/institutional_kb.py）。
+        # **明帶在骨架裡是刻意的**：缺席不等於「沒查過」——欄位一旦可以不存在，
+        # 任何一條漏接的路徑都會靜默降級成 not_searched，而使用者在畫面上看不出
+        # 差別。真正的值由 ``app/api/proxy.py`` 的 ``_merge_kb_meta`` /
+        # ``_sse_with_kb_meta`` 在每一個 chat 出口上蓋過去；這裡只保證欄位一定在。
+        # ⚠ 字面值不從 institutional_kb 匯入：那個模組會拉進 app.api.ingestion.*
+        # 與 pgvector，等於讓每一通 proxy 呼叫背上檢索層的 import。名稱與 enum
+        # 的耦合改由測試釘住（test_institutional_kb_injection.py::
+        # test_build_default_anila_meta_declares_the_state）。
+        # ⚠ embedding 路徑（:279）也共用這個骨架，所以 embedding 回應的 meta 上
+        # 也會多一個 not_searched。那是刻意接受的溢出：多一個誠實的欄位，比讓
+        # chat 與 embedding 的骨架分家便宜。
+        "kb_state": "not_searched",
         "confidence": None,
         "handoff_chain": [],
         "follow_ups": [],

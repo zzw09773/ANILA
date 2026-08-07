@@ -14,8 +14,14 @@ from app.models.agent import Agent, UserAgentPermission
 from app.models.attachment import Attachment
 from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
+from app.models.platform_setting import get_kb_threshold
 from app.schemas.contracts.classification import ClassificationLevel
 from app.services import memory_service
+from app.services.institutional_kb import (
+    KbResult,
+    KbState,
+    retrieve_institutional,
+)
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
@@ -520,6 +526,299 @@ async def _sse_with_attachment_trace(
         yield buf
 
 
+# ── 院內規章檢索與注入（SYSTEM-MAP §3 的「不需要 agent」那條路，Q39）─────────
+#
+# 觸發條件是 **``X-ANILA-Route`` 這個 header 在**，不是「router 已經決定直答」
+# ——那個判定在時序上晚於這通呼叫（task-5-report.md §1：判定就是從這通呼叫的
+# 回覆解析出來的）。header 的語意是「這是 router 的答案通道」。代價講明白：
+# 派工收尾的回合會白做一次檢索，離題的問題靠分數門檻擋掉。
+#
+# ⚠ 反過來那一半才是本包真正要消滅的形狀：**沒有這個 header 的呼叫（agent
+# 派工、ANILALM）一律不檢索**。派工回合那通的命中要是漏進使用者看得到的
+# payload，就會出現「以為有依據、其實那不是給他看的東西」。
+#
+# ⚠ 注入**只騎系統訊息**（照 ``_inject_memory`` 的樣板），永遠不與 user /
+# assistant 回合交錯。被標記的多輪合成呼叫裡對話已經含有 agent 的輸出，靠這個
+# 結構性的分界，規章段落與 agent 文字才分得開——不必靠讀字面去猜哪一段是規章。
+
+_ROUTE_HEADER = "X-ANILA-Route"
+
+_KB_BLOCK_TITLE = "【院內規章檢索結果】"
+# ⚠ 這一句是硬規則，不是文案：使用者信的是正文，不是標記。沒有依據卻用條號
+# 說話，看起來就跟有依據一模一樣。
+_KB_NO_CITATION_RULE = "不得以條號格式引用"
+# miss 與 error 的第一句必須不同——「查過，沒有」和「查不了」是兩件事，混成
+# 同一句話，兩個狀態就從使用者那邊消失了。
+_KB_MISS_NOTICE = "已查詢院內規章知識庫，門檻之上沒有相關條文"
+_KB_ERROR_NOTICE = "本次無法查詢院內規章知識庫（檢索失敗）"
+_KB_NO_BASIS_INSTRUCTION = (
+    "請以一般知識的口吻作答，並明白告訴使用者這個回答沒有院內規章作為依據；"
+    f"{_KB_NO_CITATION_RULE}（例如「依第三條」「依 XX 要點第五點」），"
+    "也不得杜撰任何條號、函頒日期或文號。"
+)
+_KB_HIT_INSTRUCTION = (
+    "以下是從院內已標記的規章知識庫查到的段落，依相關度排序。回答時以這些段落"
+    "為依據，並在用到某一段時於句末標出該段的編號（例如 [1]）。段落之外的內容"
+    "請說明是一般知識，不要寫成院內規章的規定。"
+)
+_KB_PARTIAL_NOTICE = (
+    "⚠ 有 {n} 個規章庫這次查詢失敗，以下**不是**全部的依據；回答時請一併告訴"
+    "使用者這次的檢索並不完整。"
+)
+# citation 的 snippet 只是抽屜裡的預覽；完整內容在 ``kb_hits``。
+_KB_SNIPPET_CHARS = 200
+_KB_TRACE_LABEL = "院內規章檢索"
+
+
+def _route_marked(headers) -> bool:
+    """這通呼叫是不是 router 的答案通道。
+
+    值是 ``direct`` 還是 ``forced`` 在這裡不重要（router 已正規化，前端造得出
+    的只有 ``forced``）——**存在即檢索**。空白值當作沒送：router 永遠送得出
+    正規化過的值，只有別的來源會送出空的。
+    """
+    raw = headers.get(_ROUTE_HEADER)
+    return bool(raw and raw.strip())
+
+
+async def _retrieve_institutional_kb(
+    db: Session,
+    user,
+    *,
+    marked: bool,
+    query: str | None,
+) -> KbResult:
+    """跑檢索，回一個**一定有狀態**的結果。
+
+    ⚠ 狀態一律取自 ``KbResult.state``，呼叫端不得自行重推：``SEARCH_ERROR``
+    優先於 ``PARTIAL_ERROR`` 的次序是模組內釘死的不變式
+    （institutional_kb.py:225-227），在這裡重推等於把修好的缺陷蓋回來。
+    唯一由本函式決定狀態的情形是**根本沒有 KbResult**（沒標記、沒有問題文字、
+    或模組整個拋例外），三種都不是在重推分界。
+    """
+    if not marked or not query:
+        # 沒標記 = 沒搜過（不是「搜了沒有」）；沒有使用者訊息也沒得搜。
+        return KbResult(state=KbState.NOT_SEARCHED)
+    try:
+        # ⚠ 每個請求重讀門檻。這裡加任何快取，設定頁上那個數字就變成假控制項
+        # （platform_setting.py 的模組 docstring）。
+        threshold = get_kb_threshold(db)
+        return await retrieve_institutional(db, user, query, threshold=threshold)
+    except Exception:
+        # 設計 §5：檢索失敗**絕不擋回答**。查不了與沒命中是兩件事，所以這裡是
+        # SEARCH_ERROR 而不是靜靜地當作沒命中。
+        logger.exception("institutional_kb: 檢索失敗 user_id=%s", getattr(user, "id", None))
+        return KbResult(state=KbState.SEARCH_ERROR)
+
+
+def _build_kb_block(result: KbResult) -> str | None:
+    """把檢索結果變成要注入系統訊息的那一段字（None ＝ 什麼都不注入）。"""
+    if result.state is KbState.NOT_SEARCHED:
+        # 一個庫都沒標記的院所，聊天內容不該因為這個功能而改變。
+        return None
+    parts = [_KB_BLOCK_TITLE]
+    if result.hits:
+        if result.failed_collections:
+            parts.append(_KB_PARTIAL_NOTICE.format(n=len(result.failed_collections)))
+        parts.append(_KB_HIT_INSTRUCTION)
+        parts.extend(
+            f"[{idx}]（來源：{hit.filename}）\n{hit.content}"
+            for idx, hit in enumerate(result.hits, start=1)
+        )
+    elif result.state is KbState.SEARCHED_MISS:
+        parts.append(f"{_KB_MISS_NOTICE}。{_KB_NO_BASIS_INSTRUCTION}")
+    else:
+        # SEARCH_ERROR，以及「有狀態卻沒有段落」的退化情形：兩者共通的事實是
+        # 手上沒有任何可以引用的院規，所以走同一條「不准用條號說話」的指示。
+        parts.append(f"{_KB_ERROR_NOTICE}。{_KB_NO_BASIS_INSTRUCTION}")
+    return "\n\n".join(parts)
+
+
+def _inject_kb_block(body: dict, block: str) -> None:
+    """Mutate ``body`` in-place to prepend the regulation block to system msg.
+
+    照 ``_inject_memory`` 的樣板：有 system 訊息就 prepend，沒有就在 index 0
+    插一則。**只動 messages[0]**——見本節開頭的來源可分辨性說明。
+    """
+    messages = list(body.get("messages") or [])
+    if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
+        existing = messages[0].get("content") or ""
+        if isinstance(existing, str):
+            messages[0] = {
+                **messages[0],
+                "content": f"{block}\n\n{existing}" if existing else block,
+            }
+        else:
+            # Multimodal system content — 規章段落當成一個並列的 text part，
+            # 不去動既有的 parts。
+            messages[0] = {
+                **messages[0],
+                "content": [{"type": "text", "text": block}, *list(existing)],
+            }
+    else:
+        messages.insert(0, {"role": "system", "content": block})
+    body["messages"] = messages
+
+
+def _kb_meta_fragment(result: KbResult) -> dict:
+    """要蓋到每一個 payload 出口上的 ``anila_meta`` 片段。
+
+    ``kb_state`` **一定**在（硬規則 1）。``citations`` 沿用既有的 drawer 契約
+    ``{id, title, score?, snippet?}``，``id`` 必填且必須逐筆唯一——命中是 chunk
+    級的，同一份文件可以中兩段，id 撞號會讓抽屜對到錯的訊息（app.jsx 用 id
+    跨訊息找來源）。第 N 段對應 ``citations[N-1]``，router 提示詞裡既有的
+    ``[N]`` 指令因此活過來。
+    """
+    fragment: dict = {
+        "kb_state": result.state.value,
+        "kb_hits": [
+            {
+                "collection_id": hit.collection_id,
+                "document_id": hit.document_id,
+                "filename": hit.filename,
+                "content": hit.content,
+                "score": hit.score,
+            }
+            for hit in result.hits
+        ],
+    }
+    if result.failed_collections:
+        fragment["kb_failed_collections"] = list(result.failed_collections)
+    if result.hits:
+        fragment["citations"] = [
+            {
+                "id": f"kb:{hit.collection_id}:{hit.document_id}:{idx}",
+                "title": hit.filename,
+                "score": hit.score,
+                "snippet": hit.content[:_KB_SNIPPET_CHARS],
+            }
+            for idx, hit in enumerate(result.hits, start=1)
+        ]
+    return fragment
+
+
+def _kb_trace_entry(fragment: dict) -> dict | None:
+    """檢索這件事在 trace 上的樣子（沒搜過就不留痕，避免每一通聊天都多一行）。"""
+    state = fragment.get("kb_state")
+    if state in (None, KbState.NOT_SEARCHED.value):
+        return None
+    hit_n = len(fragment.get("kb_hits") or [])
+    failed_n = len(fragment.get("kb_failed_collections") or [])
+    if state == KbState.SEARCHED_HIT.value:
+        detail, status = f"命中 {hit_n} 段", "ok"
+    elif state == KbState.SEARCHED_MISS.value:
+        detail, status = "查過，門檻之上沒有相關條文", "ok"
+    elif state == KbState.PARTIAL_ERROR.value:
+        detail = f"命中 {hit_n} 段，但有 {failed_n} 個庫查詢失敗"
+        status = "partial"
+    else:
+        detail, status = "檢索失敗，本次回答沒有院規依據", "error"
+    return {
+        "kind": "institutional_kb",
+        "label": _KB_TRACE_LABEL,
+        "detail": detail,
+        "status": status,
+    }
+
+
+def _apply_kb_fragment(meta: dict, fragment: dict) -> None:
+    """把片段蓋到一份 ``anila_meta`` 上（payload 與 SSE 共用同一段邏輯）。"""
+    for key, value in fragment.items():
+        if key == "citations":
+            # 不覆蓋下游自己的 citations：我們的排在前面，[N] 才對得上，
+            # 而下游（例如 agent）給的來源也不會被吃掉。
+            existing = meta.get("citations")
+            existing = list(existing) if isinstance(existing, list) else []
+            meta["citations"] = [*value, *existing]
+        else:
+            meta[key] = value
+    entry = _kb_trace_entry(fragment)
+    if entry is not None:
+        trace = meta.get("trace")
+        if not isinstance(trace, list):
+            trace = []
+            meta["trace"] = trace
+        trace.append(entry)
+
+
+def _merge_kb_meta(payload, fragment: dict):
+    """非串流出口：狀態一定要騎上去，連下游沒給 meta 的情形也要。"""
+    if not isinstance(payload, dict):
+        return payload
+    meta = payload.get("anila_meta")
+    if not isinstance(meta, dict):
+        meta = build_default_anila_meta(
+            "institutional_kb", detail="institutional kb state",
+        )
+        payload["anila_meta"] = meta
+    _apply_kb_fragment(meta, fragment)
+    return payload
+
+
+async def _sse_with_kb_meta(
+    upstream: AsyncIterator[str],
+    fragment: dict,
+) -> AsyncIterator[str]:
+    """串流出口：把狀態蓋進 ``anila.meta`` frame，沒有 frame 就補一個。
+
+    ``proxy_stream`` 今天保證會有一個終端 meta frame（下游沒給就自己合成），
+    但**本層不依賴那個保證**：硬規則 1 說的是「狀態明帶在出口上」，那條保證
+    哪天被改掉，狀態就會靜默消失。所以這裡自己也留一條合成路徑，並且照
+    ``proxy_stream`` 的做法把 ``[DONE]`` 壓到最後才吐——補上去的 meta 必須落在
+    ``[DONE]`` 之前，否則客戶端早就收工了。
+    """
+    import json
+
+    buf = ""
+    stamped = False
+    pending_done: str | None = None
+    async for chunk in upstream:
+        buf += chunk
+        while "\n\n" in buf:
+            block, buf = buf.split("\n\n", 1)
+            block_out = block + "\n\n"
+            event_name = None
+            data_line = None
+            for line in block.split("\n"):
+                if line.startswith("event:"):
+                    event_name = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_line = line[5:].strip()
+            if data_line == "[DONE]":
+                pending_done = block_out
+                continue
+            if event_name == "anila.meta" and data_line:
+                try:
+                    meta = json.loads(data_line)
+                except (json.JSONDecodeError, TypeError):
+                    yield block_out
+                    continue
+                if isinstance(meta, dict):
+                    _apply_kb_fragment(meta, fragment)
+                    stamped = True
+                    yield (
+                        "event: anila.meta\n"
+                        + "data: "
+                        + json.dumps(meta, ensure_ascii=False)
+                        + "\n\n"
+                    )
+                    continue
+            yield block_out
+    if buf:
+        yield buf
+    if not stamped:
+        meta: dict = {}
+        _apply_kb_fragment(meta, fragment)
+        yield (
+            "event: anila.meta\n"
+            + "data: "
+            + json.dumps(meta, ensure_ascii=False)
+            + "\n\n"
+        )
+    if pending_done:
+        yield pending_done
+
+
 def _schedule_memory_write(
     *,
     user_id: int,
@@ -805,6 +1104,29 @@ async def chat_completions(
     attach_inject = _inject_attachments(
         db, conv_id_int, body, model_name,
     )
+    # Capture the user message text NOW (after memory / attachment injection
+    # but before any downstream mutation) so the post-turn writer has the
+    # exact string the user sent.
+    # ⚠ 這一次抽取同時是**檢索的 query**（硬規則 6：兩者是同一個定義）。共用
+    # 一次呼叫而不是各抽一次，是為了讓「送去檢索的字」與「記進記憶的字」不可能
+    # 漂開——漂開時兩邊都不會報錯。
+    captured_user_text = _extract_latest_user_message(
+        # _inject_memory may have altered the messages list; use the
+        # last user message which is unchanged across that path.
+        body
+    )
+    # 院內規章檢索（Q39）：header 在就檢索並注入；不在就一次都不查。狀態在下面
+    # 四個出口上明帶。詳見 ``_route_marked`` 上方那一段。
+    kb_result = await _retrieve_institutional_kb(
+        db,
+        user,
+        marked=_route_marked(request.headers),
+        query=captured_user_text,
+    )
+    kb_block = _build_kb_block(kb_result)
+    if kb_block:
+        _inject_kb_block(body, kb_block)
+    kb_meta = _kb_meta_fragment(kb_result)
     # P3: latch the consuming conversation into classified state when
     # memory recall pulled at least one encrypted chunk. One-shot — once
     # set, never cleared by a later non-encrypted turn (would otherwise
@@ -823,15 +1145,6 @@ async def chat_completions(
                 "memory_service: classification latch failed conv_id=%s",
                 conv_id_int,
             )
-    # Capture the user message text NOW (after memory injection but
-    # before any downstream mutation) so the post-turn writer has the
-    # exact string the user sent.
-    captured_user_text = _extract_latest_user_message(
-        # _inject_memory may have altered the messages list; use the
-        # last user message which is unchanged across that path.
-        body
-    )
-
     # Try agent first, fallback to model_registry
     agent = _resolve_agent(db, caller, model_name)
     if agent:
@@ -964,6 +1277,8 @@ async def chat_completions(
             )
             # Same attachment trace entry as non-streaming anila_meta.
             traced = _sse_with_attachment_trace(teed, attach_inject)
+            # 出口 1/4（agent SSE）：kb 包在最外層，狀態是最後一個寫入者。
+            traced = _sse_with_kb_meta(traced, kb_meta)
             return StreamingResponse(
                 traced,
                 media_type="text/event-stream",
@@ -1037,7 +1352,10 @@ async def chat_completions(
                 # usage row — orthogonal pre-existing gap, see above.)
                 if task_ctx is not None:
                     finalize_task_run(task_ctx.task_run_id, "completed")
-                return _merge_attachment_trace(payload, attach_inject)
+                # 出口 2/4（agent 非串流）。
+                return _merge_kb_meta(
+                    _merge_attachment_trace(payload, attach_inject), kb_meta,
+                )
         except httpx.HTTPStatusError as e:
             logger.error(
                 "Agent %s 上游 HTTP 錯誤 url=%s: %s",
@@ -1176,6 +1494,8 @@ async def chat_completions(
         )
         # Same attachment trace entry as non-streaming anila_meta.
         traced = _sse_with_attachment_trace(teed, attach_inject)
+        # 出口 3/4（model SSE）——使用者實際踩到的那一條。
+        traced = _sse_with_kb_meta(traced, kb_meta)
         return StreamingResponse(
             traced,
             media_type="text/event-stream",
@@ -1211,7 +1531,10 @@ async def chat_completions(
         assistant_message=assistant_text,
         is_encrypted=inherited_encryption,
     )
-    return _merge_attachment_trace(payload, attach_inject)
+    # 出口 4/4（model 非串流）。
+    return _merge_kb_meta(
+        _merge_attachment_trace(payload, attach_inject), kb_meta,
+    )
 
 
 @router.post("/v1/agents/{agent_name}/sessions/{session_id}/answer")
