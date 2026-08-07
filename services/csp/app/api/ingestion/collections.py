@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import NoReturn, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import or_
@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.api.agents._common import effective_agent_policy_level
 from app.database import get_db
-from app.models.ingestion import IngestionCollection
+from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.user import User
 from app.modules.policy import apply_classification
 from app.schemas.contracts.classification import ClassificationLevel
@@ -53,6 +53,30 @@ logger = logging.getLogger(__name__)
 # Allowed product-surface tags (migration r1_0029 CHECK). Same vocabulary
 # as conversations' ANILALM tag; CSP governance uses ``csp``.
 _COLLECTION_ORIGINS = frozenset({"csp", "anilalm"})
+
+# 唯一「可以被 ANILA 檢索」的密等。取自 enum,不是抄一份字串常數——
+# 四級的儲存拼法只有契約層說了算(SYSTEM-MAP §8)。
+_UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.to_storage()
+
+# Task 1 那道 CHECK 的名字(ORM ``__table_args__`` ＋ migration r1_0033 同名
+# 雙宣告)。撞到它時要把驅動層訊息翻成人話,所以這裡認名字;改名會讓
+# ``test_raising_classification_while_marked_says_what_to_do`` 立刻紅,
+# 不會靜默退回 500。
+_ANILA_SEARCHABLE_CHECK = "ck_ingestion_collections_anila_searchable_unclassified"
+
+# 拒絕標記的四種理由。⚠ 每一則都要帶「怎麼拿到你要的東西」——這一包的
+# 驗收標準不是擋住了,是被擋的人知道下一步走哪裡。
+_MARK_ERRORS = {
+    "not_admin": (
+        "只有管理員可以設定 ANILA 檢索標記。這個標記等同於把整個庫公開給"
+        "全院的聊天檢索，屬於密等相鄰的決定。請把庫的網址交給管理員代為標記。"
+    ),
+    "anilalm": (
+        "個人知識庫（origin=anilalm）不可標記為 ANILA 可檢索。"
+        "個人筆記變成全院可搜不是這個功能的本意。若這批資料確實是院級法規，"
+        "請在治理中心（CSP）另建一個知識庫並重新上傳，再標記那一個。"
+    ),
+}
 
 
 # ── Authorisation helper ────────────────────────────────────────────────────
@@ -106,6 +130,105 @@ def _require_agent_access(db: Session, user: User, agent_id: int):  # noqa: ARG0
         status_code=status.HTTP_403_FORBIDDEN,
         detail="legacy _require_agent_access called; refactor to use _require_collection_access",
     )
+
+
+# ── ANILA 檢索標記／升密失敗收尾 ───────────────────────────────────────────
+
+
+def _guard_anila_searchable(db: Session, coll: IngestionCollection) -> None:
+    """開標記前的四道檢查。⚠ 全部要給做法,不能只說不行。
+
+    只在「開啟」時跑。關閉永遠放行:每一則拒絕訊息都叫人去關標記,把關閉
+    也擋起來等於把自己寫的出口封死。
+    """
+    # (1) 密等。DB CHECK 已經擋死了,這裡先攔一次是為了把
+    # 「conflicts with an existing collection」那種 409 換成看得懂的話。
+    stored_level = getattr(coll, "classification_level", None) or _UNCLASSIFIED
+    if stored_level != _UNCLASSIFIED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"此庫密等是「{stored_level}」，只有「{_UNCLASSIFIED}」的庫可以"
+                f"標記為 ANILA 可檢索（資料庫層也擋著，改不進去）。"
+                f"若這批資料實際上不需要密等，請先走降密申請流程"
+                f"（POST /api/classification/declassification-requests）"
+                f"降到「{_UNCLASSIFIED}」，再回來標記。"
+            ),
+        )
+
+    # (2) 產品面。
+    if coll.origin == "anilalm":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_MARK_ERRORS["anilalm"],
+        )
+
+    # (3) 嵌入空間。已標記集必須是同一個嵌入模型,否則 ANILA 那邊把兩組
+    # 分數排在一起比大小,而那兩組分數根本不在同一個空間裡。
+    marked_model = (
+        db.query(IngestionCollection.embedding_model)
+        .filter(
+            IngestionCollection.anila_searchable.is_(True),
+            IngestionCollection.id != coll.id,
+        )
+        .first()
+    )
+    if marked_model and marked_model[0] != coll.embedding_model:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"此庫用 {coll.embedding_model}，已標記集用 {marked_model[0]}；"
+                f"跨嵌入空間的分數不能互相比較。請先用 {marked_model[0]} 重新嵌入再標記。"
+            ),
+        )
+
+    # (4) 庫內文件。CHECK 只鎖 collection 那一列,管不到文件——標記時先把
+    # 話講明,別讓管理員以為「庫是無機密」就代表裡面每一份都是。
+    classified = (
+        db.query(IngestionDocument.classification_level)
+        .filter(
+            IngestionDocument.collection_id == coll.id,
+            IngestionDocument.classification_level != _UNCLASSIFIED,
+        )
+        .first()
+    )
+    if classified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"此庫內含密等「{classified[0]}」的文件。標記後這些文件不會被檢索，"
+                "但請先確認它們是否應該留在這個庫裡：若不該留，請移到另一個庫再標記；"
+                "若該留且其實不需要密等，請走降密申請流程。"
+            ),
+        )
+
+
+def _abort_raise_rolled_back(
+    exc: Exception,
+    collection_id: int,
+    previous: ClassificationLevel,
+    target: ClassificationLevel,
+) -> NoReturn:
+    """升密整批失敗的收尾（呼叫端已經 rollback 過）。
+
+    說清楚「什麼都沒動」是重點——沒有訊息的 500 會讓操作者直覺重試，
+    而重試在半套狀態下會成功並看起來正常。錯誤內文只給例外類型，
+    細節留在伺服器日誌（不把內部訊息回給呼叫端）。
+    """
+    logger.exception(
+        "collection classification raise failed collection_id=%s %s→%s",
+        collection_id,
+        previous.to_storage(),
+        target.to_storage(),
+    )
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=(
+            f"升密失敗，已整批回復：知識庫仍為「{previous.to_storage()}」，"
+            f"庫內文件密等一律未變更，重試是安全的。"
+            f"錯誤類型 {type(exc).__name__}，細節見伺服器日誌。"
+        ),
+    ) from exc
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -490,25 +613,27 @@ def raise_collection_classification(
         db.commit()
     except HTTPException:
         raise
+    except IntegrityError as exc:
+        # 這條路是 collection 密等的唯一寫入點,所以 Task 1 那道
+        # 「標記了就不准升密」的 CHECK 只可能在這裡撞到。不翻譯的話它會
+        # 掉進下面那個 500——操作者只看得到「錯誤類型 IntegrityError」,
+        # 而他其實只差一個「先取消標記」的動作。
+        db.rollback()
+        if _ANILA_SEARCHABLE_CHECK in str(exc.orig):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"此庫已標記為 ANILA 可檢索，不能升密——已整批回復，"
+                    f"知識庫與庫內文件的密等都沒有變更。"
+                    f"請先取消 ANILA 檢索標記"
+                    f"（PATCH /api/ingestion/collections/{collection_id} "
+                    f"帶 anila_searchable=false），再調整密等。"
+                ),
+            ) from exc
+        _abort_raise_rolled_back(exc, collection_id, previous, target)
     except Exception as exc:
         db.rollback()
-        logger.exception(
-            "collection classification raise failed collection_id=%s %s→%s",
-            collection_id,
-            previous.to_storage(),
-            target.to_storage(),
-        )
-        # 說清楚「什麼都沒動」是重點——沒有訊息的 500 會讓操作者直覺重試，
-        # 而重試在半套狀態下會成功並看起來正常。錯誤內文只給例外類型，
-        # 細節留在伺服器日誌（不把內部訊息回給呼叫端）。
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"升密失敗，已整批回復：知識庫仍為「{previous.to_storage()}」，"
-                f"庫內文件密等一律未變更，重試是安全的。"
-                f"錯誤類型 {type(exc).__name__}，細節見伺服器日誌。"
-            ),
-        ) from exc
+        _abort_raise_rolled_back(exc, collection_id, previous, target)
 
     db.refresh(coll)
     return CollectionResponse.model_validate(coll)
@@ -527,6 +652,26 @@ def update_collection(
     coll = _require_collection_access(db, current_user, collection_id)
 
     changed: dict[str, object] = {}
+    # ── ANILA 檢索標記 ──────────────────────────────────────────────────
+    # 擁有者本人也不行:``_require_collection_access`` 放行的是「管理自己的庫」,
+    # 而標記的影響範圍是全院的聊天檢索,不是這一個庫。所以在這裡多一道 admin
+    # 閘,而不是去改那個 8 個 caller 共用的 helper(改它會一併放寬上傳與刪除)。
+    mark_flip: Optional[tuple[bool, bool]] = None
+    if payload.anila_searchable is not None:
+        if not is_admin_tier(current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=_MARK_ERRORS["not_admin"],
+            )
+        was = bool(coll.anila_searchable)
+        wants = bool(payload.anila_searchable)
+        if wants != was:
+            if wants:
+                _guard_anila_searchable(db, coll)
+            coll.anila_searchable = wants
+            changed["anila_searchable"] = wants
+            mark_flip = (was, wants)
+
     if payload.name is not None:
         coll.name = payload.name
         changed["name"] = payload.name
@@ -564,6 +709,24 @@ def update_collection(
         resource_id=coll.id,
         metadata={"changed": list(changed.keys())},
     )
+    if mark_flip is not None:
+        # 標記翻面自己一列:全院檢索範圍的變動要能單獨查,不必從一堆
+        # 「changed: [...]」裡撈。
+        log_audit_event(
+            db,
+            commit=True,
+            actor=current_user,
+            action="ingestion_collection_anila_searchable_set",
+            resource_type="ingestion_collection",
+            resource_id=coll.id,
+            metadata={
+                "name": coll.name,
+                "from": mark_flip[0],
+                "to": mark_flip[1],
+                "classification_level": coll.classification_level,
+                "embedding_model": coll.embedding_model,
+            },
+        )
     return CollectionResponse.model_validate(coll)
 
 
