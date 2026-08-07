@@ -47,7 +47,13 @@ from app.schemas.contracts.classification import ClassificationLevel
 from app.services.institutional_kb import KbState, retrieve_institutional
 
 _UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.to_storage()
-_SECRET = ClassificationLevel.SECRET.to_storage()
+# ⚠ 從 enum 推導，不是自己列一份清單。將來加一級密等時，這裡要自動跟著長出
+# 一輪測試；手寫的清單只會停在寫的那一天，而且不會有任何東西提醒你。
+_CLASSIFIED_LEVELS = [
+    level.to_storage()
+    for level in ClassificationLevel
+    if level is not ClassificationLevel.UNCLASSIFIED
+]
 _EMBED_MODEL = "nvidia/nv-embed-v2"
 _DIM = 8
 
@@ -138,12 +144,17 @@ def two_marked_collections(db):
     return first, second
 
 
-@pytest.fixture
-def mixed_collection(db):
-    """已標記的庫，裡面混著一份機密文件（見模組 docstring 的說明）。"""
+def _mixed_collection(db, level: str) -> IngestionCollection:
+    """已標記的庫，裡面混著一份 ``level`` 密等的文件（見模組 docstring 的說明）。
+
+    ⚠ 這裡收 ``level`` 參數而不是寫死「機密」，是本專案第二次因為同一個形狀
+    被抓：**只造一個密等的 fixture，會讓其餘每一級都沒有人看著，而測試全綠。**
+    把白名單（``== 無機密``）改成黑名單（``!= 機密``）時，營業秘密與密會外洩，
+    而寫死機密的測試不會有任何反應。所以呼叫端一律 parametrize 整個 enum。
+    """
     coll = _collection(db, "人事規章", searchable=True)
     clean = _document(db, coll, "獎懲作業要點.pdf", _UNCLASSIFIED)
-    classified = _document(db, coll, "個案調查報告.pdf", _SECRET)
+    classified = _document(db, coll, f"個案調查報告-{level}.pdf", level)
     coll._clean_doc_ids = [clean.id]
     coll._classified_doc_ids = [classified.id]
     return coll
@@ -269,17 +280,23 @@ async def test_inactive_marked_collection_is_not_searched(db, user, backend):
 # ── 文件密等 ────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("level", _CLASSIFIED_LEVELS)
 @pytest.mark.asyncio
-async def test_classified_documents_never_appear(db, user, mixed_collection, backend):
+async def test_classified_documents_never_appear(db, user, backend, level):
     """CHECK 管不到文件層 —— 真正會外洩的東西在這裡。
 
-    後端同時回無機密與機密兩份文件的 chunk。兩筆是刻意的：只回機密那一筆的話，
-    一個「什麼都不回」的壞實作也會綠。
+    後端同時回無機密與帶密等兩份文件的 chunk。兩筆是刻意的：只回帶密等那一筆
+    的話，一個「什麼都不回」的壞實作也會綠。
+
+    ⚠ **逐級跑遍整個 enum**（而不是只測「機密」）：過濾寫成黑名單時，只有被
+    列舉到的那一級會被擋，其餘各級照樣出得去。密等的級數是 enum 的事，不是
+    這支測試可以自己挑的。
     """
+    mixed_collection = _mixed_collection(db, level)
     clean_id = mixed_collection._clean_doc_ids[0]
     classified_id = mixed_collection._classified_doc_ids[0]
     backend.hits[mixed_collection.id] = [
-        _StubHit(classified_id, 0.99, content="機密：個案當事人姓名"),
+        _StubHit(classified_id, 0.99, content=f"{level}：個案當事人姓名"),
         _StubHit(clean_id, 0.42),
     ]
 
@@ -381,6 +398,35 @@ async def test_one_failing_and_one_empty_is_error_not_miss(
 
     assert result.state is KbState.SEARCH_ERROR
     assert result.failed_collections == [second.id]
+
+
+@pytest.mark.asyncio
+async def test_pool_unavailable_is_error_not_miss(
+    db, user, two_marked_collections, backend, monkeypatch
+):
+    """連線池起不來 = 一庫都沒查成。這**不是**「搜過了，沒有」。
+
+    這是整個功能存在的理由的最短版本：檢索根本沒有跑，而使用者被告知它跑過、
+    而且院內規章沒有講到這件事。把這個分支的狀態改成 SEARCHED_MISS，本檔其餘
+    每一支都還是綠的——所以這一支必須存在。
+
+    ``get_pool`` 起不來是真的會發生的（``ingestion_pool.py`` 在 pool 尚未初始化
+    時丟 RuntimeError），而且它是**全域**失敗：兩個庫要全數列進 failed，不是
+    只列第一個。
+    """
+    first, second = two_marked_collections
+
+    def _no_pool():
+        raise RuntimeError("ingestion pool 尚未初始化")
+
+    monkeypatch.setattr(kb_mod, "get_pool", _no_pool)
+
+    result = await retrieve_institutional(db, user, "申誡", threshold=0.0)
+
+    assert result.state is KbState.SEARCH_ERROR
+    assert result.hits == []
+    assert sorted(result.failed_collections) == sorted([first.id, second.id])
+    assert backend.constructed == []
 
 
 @pytest.mark.asyncio
