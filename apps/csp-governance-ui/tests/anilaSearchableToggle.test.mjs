@@ -292,6 +292,39 @@ test('後端拒絕時，detail 原樣上畫面，且不動顯示值', async () =
   assert.deepEqual(calls.map((x) => x.fn), ['updateCollection'], '拒絕了還去 reload')
 })
 
+test('先失敗再成功：舊的失敗訊息必須從畫面上消失', async () => {
+  // 驗收探針 R2：把 handler 開頭那行 `markErrors.value[c.id] = ''` 拿掉，
+  // 原本 24 個測試沒有一個會紅。而 `loadCollections()` **不會**重設 markErrors，
+  // 所以那則舊訊息會永久留在一張剛剛成功、卡頭已經掛上「ANILA 可檢索」徽章的卡片旁邊：
+  // 徽章說標記好了、下面說標記失敗，管理員會相信下面那句。
+  // 這是「以為失敗了，其實成功了」——本專案點名那個形狀的鏡像。
+  // 可達路徑：後端守門 (4)（庫內有密等文件）拒絕 → 管理員把那份文件搬走 → 回來再按一次 → 成功。
+  const detail = '此庫內含密等「機密」的文件。標記後這些文件不會被檢索，但請先確認它們是否應該留在這個庫裡。'
+  const c = collection()
+  let attempt = 0
+  const { toggle, calls, markErrors } = buildToggle({
+    updateCollection: async () => {
+      attempt += 1
+      if (attempt === 1) throw { response: { data: { detail } } }
+      return { data: {} }
+    },
+  })
+
+  await toggle(c)
+  assert.ok(markErrors.value[c.id].includes(detail), '第一次拒絕沒顯示出來，這個測試就白測了')
+
+  await toggle(c)
+  assert.ok(
+    !markErrors.value[c.id],
+    '標記成功了，舊的「標記失敗」還留在卡片上——徽章說成功、下面說失敗，看的人會相信失敗的那句',
+  )
+  assert.deepEqual(
+    calls.map((x) => x.fn),
+    ['updateCollection', 'updateCollection', 'loadCollections'],
+    '第二次應該成功並 reload',
+  )
+})
+
 test('後端沒給 detail 時退回 e.message，不要吞掉', async () => {
   const { toggle, markErrors } = buildToggle({
     updateCollection: async () => { throw new Error('Network Error') },
