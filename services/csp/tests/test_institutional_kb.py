@@ -54,6 +54,10 @@ _CLASSIFIED_LEVELS = [
     for level in ClassificationLevel
     if level is not ClassificationLevel.UNCLASSIFIED
 ]
+# enum 以外、但**存得進去**的密等字串（該欄位是 String(20) 且沒有 CHECK）。
+# 每一個都是真的會出現的漂移形狀：英文拼法、加註記、他系統的字彙、以及
+# 尾隨空白（匯入/backfill 最常見的那一種，肉眼還看不出來）。
+_OFF_ENUM_VALUES = ["SECRET", "機密(限閱)", "top_secret", "無機密 "]
 _EMBED_MODEL = "nvidia/nv-embed-v2"
 _DIM = 8
 
@@ -306,6 +310,41 @@ async def test_classified_documents_never_appear(db, user, backend, level):
     assert [h.document_id for h in result.hits] == [clean_id]
     assert all("個案當事人姓名" not in h.content for h in result.hits)
     assert result.state is KbState.SEARCHED_HIT
+
+
+@pytest.mark.parametrize("stored_value", _OFF_ENUM_VALUES)
+@pytest.mark.asyncio
+async def test_a_classification_value_outside_the_enum_never_passes(
+    db, user, backend, stored_value
+):
+    """白名單要被釘成**白名單**，不能只是「一個列得比較齊的黑名單」。
+
+    讀完上一輪的 K（「要跑遍整個 enum」），下一個人最自然的修法是把過濾寫成
+    ``classification_level.notin_([enum 裡每一個帶密等的值])``——列得很齊、
+    parametrize 全綠、而且**是黑名單**。這一支就是為了讓那個修法當場死掉。
+
+    ⚠ 事實根據，不是假想：``ingestion_documents.classification_level`` 是
+    ``String(20), nullable=False``，**沒有 CHECK 約束**（``app/models/ingestion.py``
+    裡唯一的 CHECK 是 Task 1 加在 collection 那一列的）。也就是說 enum 以外的
+    字串是**存得進去的**——匯入、backfill、外部工具、手動 SQL、或哪天有人把
+    「機密」寫成 ``'SECRET'`` 或「機密(限閱)」。黑名單對這些一律放行。
+
+    這就是本專案寫在 memory 裡的那條教訓：**黑名單防護永遠補不完。** 判準只有
+    一條——不是**明確**標為「無機密」的，一律不給。
+    """
+    coll = _collection(db, "人事規章", searchable=True)
+    clean = _document(db, coll, "獎懲作業要點.pdf", _UNCLASSIFIED)
+    off_enum = _document(db, coll, f"來路不明-{stored_value}.pdf", stored_value)
+    backend.hits[coll.id] = [
+        _StubHit(off_enum.id, 0.99, content="這份文件的密等沒有人認得"),
+        _StubHit(clean.id, 0.42),
+    ]
+
+    result = await retrieve_institutional(db, user, "任何字", threshold=0.0)
+
+    assert all(h.document_id != off_enum.id for h in result.hits)
+    assert [h.document_id for h in result.hits] == [clean.id]
+    assert all("沒有人認得" not in h.content for h in result.hits)
 
 
 @pytest.mark.asyncio
