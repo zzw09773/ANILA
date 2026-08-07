@@ -1456,6 +1456,13 @@ def create_router_app(
                 router_reasoning,
             ) = await _multi_turn_dispatch(
                 caller_api_key=caller_api_key,
+                # Marker only, deliberately not the merged ``router_llm_headers``
+                # in scope here: the loop's LLM call has never relayed the
+                # inbound X-ANILA-* audit headers, and widening that is a
+                # separate change (same reasoning as the multi-turn streaming
+                # call above). This adds the answer-channel marker and nothing
+                # else.
+                router_llm_headers={_ROUTE_HEADER: route_signal},
                 routing_messages=routing_messages,
                 first_llm_text=llm_text,
                 first_agent_id=agent_id,
@@ -2019,6 +2026,8 @@ async def _router_streaming_multi_turn(
         router_reasoning,
     ) = await _multi_turn_dispatch(
         caller_api_key=caller_api_key,
+        # Already marker-only on this path (see the generator's signature).
+        router_llm_headers=router_llm_headers,
         routing_messages=routing_messages,
         first_llm_text=llm_text,
         first_agent_id=agent_id,
@@ -2110,6 +2119,11 @@ async def _emit_soft_chunks(content: str) -> AsyncIterator[str]:
 async def _multi_turn_dispatch(
     *,
     caller_api_key: str,
+    # Required on purpose (no default): the loop's LLM call is an answer
+    # channel — see the call site below — and a future caller that forgot to
+    # pass this would silently drop the marker, which is exactly the failure
+    # mode this header exists to prevent. Pass ``None`` to mean "no headers".
+    router_llm_headers: dict[str, str] | None,
     routing_messages: list[dict[str, Any]],
     first_llm_text: str,
     first_agent_id: str,
@@ -2181,7 +2195,19 @@ async def _multi_turn_dispatch(
                 ),
             },
         ]
-        next_llm = await _call_llm_non_stream(caller_api_key, convo)
+        # This call is an answer channel by the same definition as the first
+        # routing call: when its output carries no DISPATCH line it becomes
+        # ``final_text``, and ``final_text`` is what the caller returns to the
+        # user (non-stream) / soft-chunks to the user (streaming multi-turn).
+        # So it carries the marker too — otherwise the one reply the Router
+        # writes in its own words at the end of a multi-turn run would be the
+        # only user-visible Router answer CSP never attaches regulations to.
+        # Same accepted cost as the first routing call: when this iteration
+        # dispatches again instead of synthesising, the retrieval CSP ran for
+        # it is discarded.
+        next_llm = await _call_llm_non_stream(
+            caller_api_key, convo, forwarded_headers=router_llm_headers
+        )
         if next_llm["error"]:
             base_trace.append(
                 _make_trace_step(

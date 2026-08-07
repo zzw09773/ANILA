@@ -17,10 +17,13 @@ the ``direct`` trace step.
 Consequences these tests pin:
 
 * every Router-self LLM call is marked, on all three code paths
-  (non-stream, single-shot streaming, multi-turn streaming);
+  (non-stream, single-shot streaming, multi-turn streaming) — including the
+  multi-turn loop's own call, whose output becomes the final answer whenever
+  it synthesises instead of dispatching again;
 * the calls that shape an **agent's** answer — the dispatch call and the
   recompose call — are never marked, so CSP never grafts regulations onto
-  a reply an agent already sourced from its own library;
+  a reply an agent already sourced from its own library; asserted on each
+  path separately, because the marker is wired per call site;
 * a client may ask for retrieval (Task 9's "re-search the regulations"
   button) but may never dress its request up as the Router's own verdict:
   inbound values are normalised to ``forced``, never to ``direct``.
@@ -103,6 +106,23 @@ def _json_str(text: str) -> str:
     return json.dumps(text)
 
 
+def _is_multi_turn_followup(messages: list[dict]) -> bool:
+    """Is this the multi-turn loop asking the Router what to do next?
+
+    The loop (``_multi_turn_dispatch``) appends the previous directive plus a
+    ``Agent '<id>' responded:`` turn and re-asks the *same* model, so this call
+    is indistinguishable from the first routing call by model alone — and it
+    matters separately, because when its output has no DISPATCH line that
+    output *is* the answer the user reads.
+    """
+    if not messages:
+        return False
+    last = messages[-1]
+    return last.get("role") == "user" and str(last.get("content", "")).startswith(
+        "Agent '"
+    )
+
+
 class _Downstream:
     """Every request the Router made to CSP, classified by *purpose*.
 
@@ -127,6 +147,8 @@ class _Downstream:
             kind = "recompose"
         elif payload.get("model") != rs.current_router_model():
             kind = "dispatch"
+        elif _is_multi_turn_followup(messages):
+            kind = "router-llm-followup"
         else:
             kind = "router-llm"
         self.calls.append({"kind": kind, "headers": request.headers, "payload": payload})
@@ -314,3 +336,160 @@ def test_the_forced_request_is_normalised_not_echoed(
         inbound_headers={ROUTE_HEADER: sent},
     )
     assert seen.route_header_of("router-llm") == "forced"
+
+
+# ---------------------------------------------------------------------------
+# The dispatch branch, reached through the *streaming* paths
+#
+# Everything above this line drives the non-streaming code path. The
+# agent-facing calls are wired per call site, not once at the copy point, so
+# "recompose never carries the marker" needs an assertion on each path that
+# has its own recompose call: ``_router_streaming`` and
+# ``_router_streaming_multi_turn`` each have their own, and streaming is the
+# path users actually hit.
+# ---------------------------------------------------------------------------
+
+
+def _streaming_dispatch_script() -> list:
+    """Routing SSE that dispatches → the agent's SSE → the recompose call."""
+    return [
+        # Trailing newline: mid-stream dispatch detection requires a
+        # terminator past the query before it will commit.
+        _sse("DISPATCH:image-generator:畫一張圖\n"),
+        _sse("here is your image"),
+        _completion("整理後的回覆"),  # recompose
+    ]
+
+
+def _multi_turn_dispatch_script() -> list:
+    """The multi-turn loop's four calls: route → agent → synthesis → recompose."""
+    return [
+        _completion("DISPATCH:image-generator:畫一張圖"),
+        _completion("here is your image", model="image-generator"),
+        _completion("綜合 agent 回覆後的最終答案。"),  # the loop's own LLM call
+        _completion("整理後的回覆"),  # recompose
+    ]
+
+
+@pytest.mark.parametrize("inbound", [None, {ROUTE_HEADER: "forced"}])
+@respx.mock
+def test_streaming_dispatch_keeps_the_agent_facing_calls_clean(
+    db_path: Path, inbound: dict[str, str] | None
+) -> None:
+    """Single-shot streaming, dispatch branch: neither the agent call nor the
+    recompose call may be marked — CSP must not graft regulations onto a reply
+    the agent already sourced from its own library. Asserted with and without
+    an inbound header, because the marker can leak in from either side (the
+    Router's own value, or an unstripped client copy)."""
+    seen = _run_turn(
+        db_path,
+        replies=_streaming_dispatch_script(),
+        stream=True,
+        inbound_headers=inbound,
+    )
+    assert seen.route_header_of("dispatch") is None
+    assert seen.route_header_of("recompose") is None
+
+
+@pytest.mark.parametrize("inbound", [None, {ROUTE_HEADER: "forced"}])
+@respx.mock
+def test_multi_turn_streaming_dispatch_keeps_the_agent_facing_calls_clean(
+    db_path: Path, inbound: dict[str, str] | None
+) -> None:
+    """``anila_multi_turn>1`` streaming has its *own* recompose call site."""
+    seen = _run_turn(
+        db_path,
+        replies=_multi_turn_dispatch_script(),
+        stream=True,
+        extra_body={"anila_multi_turn": 2},
+        inbound_headers=inbound,
+    )
+    assert seen.route_header_of("dispatch") is None
+    assert seen.route_header_of("recompose") is None
+
+
+# ---------------------------------------------------------------------------
+# Client-supplied vs Router-decided, on the streaming paths
+#
+# The distinction is only worth anything on the path the user is actually on.
+# Wiring it per call site means the non-streaming assertions above say nothing
+# about ``_router_streaming``: a streaming path that hardcoded ``direct``
+# would swallow the human's ``forced`` silently, and the audit trail would read
+# "the machine decided this" for a turn a person forced.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("sent", "expected"),
+    [
+        ("forced", "forced"),
+        ("FORCED", "forced"),
+        (" forced ", "forced"),
+        ("direct", "direct"),
+        ("Direct", "direct"),
+        ("rubbish", "direct"),
+        ("", "direct"),
+    ],
+)
+@respx.mock
+def test_single_shot_streaming_keeps_the_two_origins_distinguishable(
+    db_path: Path, sent: str, expected: str
+) -> None:
+    seen = _run_turn(
+        db_path,
+        replies=[_sse("差旅費依規定核實報支，請檢附單據。")],
+        stream=True,
+        inbound_headers={ROUTE_HEADER: sent},
+    )
+    assert seen.route_header_of("router-llm") == expected
+
+
+@pytest.mark.parametrize(
+    ("sent", "expected"),
+    [("forced", "forced"), ("direct", "direct"), ("rubbish", "direct")],
+)
+@respx.mock
+def test_multi_turn_streaming_keeps_the_two_origins_distinguishable(
+    db_path: Path, sent: str, expected: str
+) -> None:
+    seen = _run_turn(
+        db_path,
+        replies=[_completion("差旅費依規定核實報支。")],
+        stream=True,
+        extra_body={"anila_multi_turn": 2},
+        inbound_headers={ROUTE_HEADER: sent},
+    )
+    assert seen.route_header_of("router-llm") == expected
+
+
+# ---------------------------------------------------------------------------
+# The multi-turn synthesis is an answer channel too
+#
+# When the loop ends by synthesising instead of dispatching again, that
+# synthesis is what the user reads — non-stream returns it in place of the
+# agent's output, streaming soft-chunks it. By the definition this header
+# carries ("if this call's output has no DISPATCH line, its text is the
+# answer"), it is an answer channel, so it is marked. Unmarked it would be the
+# one Router-authored reply CSP never attaches regulations to.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("sent", "expected"),
+    [(None, "direct"), ("forced", "forced"), ("Direct", "direct")],
+)
+@respx.mock
+def test_the_multi_turn_synthesis_call_is_marked(
+    db_path: Path, stream: bool, sent: str | None, expected: str
+) -> None:
+    seen = _run_turn(
+        db_path,
+        # Non-stream returns the synthesis directly (no recompose); streaming
+        # recomposes it first. The extra reply is simply unused on one path.
+        replies=_multi_turn_dispatch_script(),
+        stream=stream,
+        extra_body={"anila_multi_turn": 2},
+        inbound_headers=None if sent is None else {ROUTE_HEADER: sent},
+    )
+    assert seen.route_header_of("router-llm-followup") == expected
