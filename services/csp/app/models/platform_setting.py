@@ -67,8 +67,28 @@ KB_THRESHOLD_KEY = "institutional_kb.score_threshold"
 # 就再也沒有人會去量它。
 KB_THRESHOLD_DEFAULT = 0.3
 
+# 相似度分數的定義域，**兩端都含**。
+#
+# ⚠ 1.0 是刻意收的：校準中的管理員把門檻拉到 1.0（＝只認完全相同、實質上什麼都
+# 不收）是合法的動作，跟拉到 0.0（全收）是同一件事的兩端。要看某個庫到底能回
+# 出什麼分數的人，需要這兩個極端都按得動。
+KB_THRESHOLD_MIN = 0.0
+KB_THRESHOLD_MAX = 1.0
 
-def _resolve_kb_threshold(db: Session) -> tuple[float, bool]:
+
+def _is_usable_kb_threshold(value: float) -> bool:
+    """收得下來的值域判準。**寫入與讀取共用這一個函式，不可以各寫一份。**
+
+    ⚠ 這不是為了少打幾個字。兩端各寫一次 ``0.0 <= v <= 1.0``，其中一邊哪天被改成
+    ``<`` ，就會出現這種狀態：``PUT {"value": 1.0}`` 回 **200**、值真的存進 DB，
+    而解析端判定它不可用 → 檢索跑的是預設值 0.3、畫面還告訴管理員「沒有人校準過」。
+    他存的那個數字被靜默丟掉了，只留下一行 log。驗收就是這樣把 19 支測試全部
+    繞過去的。**收得下來的、與算得出來的，必須是同一條規則。**
+    """
+    return KB_THRESHOLD_MIN <= value <= KB_THRESHOLD_MAX
+
+
+def resolve_kb_threshold(db: Session) -> tuple[float, bool]:
     """一次解出「實際生效的門檻」與「有沒有人真的量過」。
 
     ⚠ **這兩個答案一定要出自同一次解析。** 拆成兩份各自讀 DB 的邏輯，就會有
@@ -94,7 +114,7 @@ def _resolve_kb_threshold(db: Session) -> tuple[float, bool]:
             KB_THRESHOLD_DEFAULT,
         )
         return KB_THRESHOLD_DEFAULT, False
-    if not 0.0 <= value <= 1.0:
+    if not _is_usable_kb_threshold(value):
         logger.warning(
             "platform_settings[%s] = %s 落在 [0, 1] 之外，退回預設值 %s（視為未校準）",
             KB_THRESHOLD_KEY,
@@ -111,10 +131,13 @@ def get_kb_threshold(db: Session) -> float:
     見模組 docstring：這裡不可以有任何形式的行程生命期快取，否則設定頁上的
     每一個開關都會變成假控制項。一次主鍵查詢的成本遠低於那個風險。
 
-    ⚠ **顯示與生效必須是同一個數字**，所以 API 的讀取端也走這個函式，不可以
-    自己 `float(row.value)` 一次。差一個字，畫面上的數字就不再是檢索用的那個。
+    ⚠ **顯示與生效必須是同一個數字**，所以 API 的讀取端也走 ``resolve_kb_threshold``，
+    不可以自己 `float(row.value)` 一次。差一個字，畫面上的數字就不再是檢索用的那個。
+
+    只要 float 的呼叫端（檢索）用這一支；同時要 calibrated 的呼叫端請直接用
+    ``resolve_kb_threshold``，一次解析拿兩個答案。
     """
-    return _resolve_kb_threshold(db)[0]
+    return resolve_kb_threshold(db)[0]
 
 
 def is_kb_threshold_calibrated(db: Session) -> bool:
@@ -129,17 +152,23 @@ def is_kb_threshold_calibrated(db: Session) -> bool:
     * 有列、值不可用（繞過 API 寫進來的壞值）→ false。實際跑的是預設值，
       這時說「已校準」就是騙人。
     """
-    return _resolve_kb_threshold(db)[1]
+    return resolve_kb_threshold(db)[1]
 
 
 def set_kb_threshold(db: Session, value: float, *, actor: User | None = None) -> None:
     """寫入分數門檻。範圍由呼叫端先擋，這裡再擋一次（值域是這個設定的定義）。
 
+    ⚠ 值域判準走 ``_is_usable_kb_threshold`` —— 與解析端**同一個函式**。收得下來
+    卻算不出來的值（存進去了、檢索卻用預設值）是這個設定唯一會靜默吃掉管理員
+    輸入的地方，見那個函式的 docstring。
+
     只 ``flush``、不 ``commit``：呼叫端要把設定與稽核事件寫在同一個交易裡，
     不然會出現「門檻改了但沒有人知道是誰改的」。
     """
-    if not 0.0 <= float(value) <= 1.0:
-        raise ValueError(f"分數門檻必須介於 0.0 與 1.0 之間，收到 {value}")
+    if not _is_usable_kb_threshold(float(value)):
+        raise ValueError(
+            f"分數門檻必須介於 {KB_THRESHOLD_MIN} 與 {KB_THRESHOLD_MAX} 之間，收到 {value}"
+        )
     row = db.get(PlatformSetting, KB_THRESHOLD_KEY)
     if row is None:
         row = PlatformSetting(key=KB_THRESHOLD_KEY, value=str(float(value)))

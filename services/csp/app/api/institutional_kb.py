@@ -40,9 +40,11 @@ from app.database import get_db
 from app.models.platform_setting import (
     KB_THRESHOLD_DEFAULT,
     KB_THRESHOLD_KEY,
+    KB_THRESHOLD_MAX,
+    KB_THRESHOLD_MIN,
     PlatformSetting,
     get_kb_threshold,
-    is_kb_threshold_calibrated,
+    resolve_kb_threshold,
     set_kb_threshold,
 )
 from app.models.user import User
@@ -101,14 +103,20 @@ class PreviewResponse(ApiResponseModel):
 
 
 def _threshold_payload(db: Session) -> ThresholdResponse:
+    # ⚠ 一次解析拿兩個答案 —— ``resolve_kb_threshold`` 的 docstring 要求的就是
+    # 這件事。分成 ``get_kb_threshold()`` ＋ ``is_kb_threshold_calibrated()`` 兩次
+    # 呼叫今天是等價的（同一列、同一個 identity map），但那等於把「顯示的值」
+    # 與「顯示的校準狀態」放回兩條可以各自漂的路上，而這個模組的存在理由就是
+    # 讓那種漂移不可能發生。
+    value, calibrated = resolve_kb_threshold(db)
     row = db.get(PlatformSetting, KB_THRESHOLD_KEY)
     updated_by = None
     if row is not None and row.updated_by_user_id is not None:
         actor = db.get(User, row.updated_by_user_id)
         updated_by = actor.username if actor is not None else None
     return ThresholdResponse(
-        value=get_kb_threshold(db),
-        calibrated=is_kb_threshold_calibrated(db),
+        value=value,
+        calibrated=calibrated,
         default=KB_THRESHOLD_DEFAULT,
         updated_at=row.updated_at if row is not None else None,
         updated_by=updated_by,
@@ -129,8 +137,7 @@ def update_threshold(
     current_user: User = Depends(require_admin),
 ) -> ThresholdResponse:
     """改門檻。下一次檢索就會用新值——不需要重啟，也沒有生效延遲。"""
-    previous = get_kb_threshold(db)
-    was_calibrated = is_kb_threshold_calibrated(db)
+    previous, was_calibrated = resolve_kb_threshold(db)
     try:
         set_kb_threshold(db, payload.value, actor=current_user)
     except ValueError:
@@ -140,8 +147,9 @@ def update_threshold(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"分數門檻必須介於 0.0 與 1.0 之間（收到 {payload.value}）。"
-                "要決定填多少：先把門檻設成 0.0，用 "
+                f"分數門檻必須介於 {KB_THRESHOLD_MIN} 與 {KB_THRESHOLD_MAX} 之間"
+                f"（兩端都收，收到 {payload.value}）。"
+                f"要決定填多少：先把門檻設成 {KB_THRESHOLD_MIN}，用 "
                 "POST /api/institutional-kb/preview 拿實際問題跑一次，"
                 "看回傳的 score 落在哪裡再定。"
             ),

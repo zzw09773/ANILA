@@ -427,6 +427,47 @@ def test_the_number_on_screen_is_the_number_retrieval_uses(
     assert shown == expected
 
 
+@pytest.mark.parametrize("value", [0.0, 0.5, 1.0])
+def test_what_a_successful_put_saved_is_what_retrieval_runs_on(
+    client, db, admin_token, marked_collection, backend, value
+):
+    """收得下來的值，必須就是算得出來的值。
+
+    ⚠ 這一支補的是第二輪驗收找到的洞，而它是「顯示 = 生效」那條的兄弟：
+    把**解析端**的上界改成 exclusive（``0.0 <= v < 1.0``）而寫入端維持 inclusive，
+    19 支測試全綠。實際行為是 ``PUT {"value": 1.0}`` 回 **200**、``'1.0'`` 真的存進
+    DB，然後解析端判定它不可用 → 檢索跑預設值 0.3、畫面說「沒有人校準過」。
+    管理員存的那個數字被靜默丟掉，只留一行 log。
+
+    ⚠ 邊界值 **0.0 與 1.0 兩端都要跑**：原本只有 0.0 有人走過，而拒絕路徑只用
+    ``-0.1`` / ``1.1`` 驗——正好繞開了「收與算可能不同意」的那兩個點。
+    1.0（只認完全相同、實質上什麼都不收）是校準中的管理員合法會按的東西，
+    跟 0.0（全收）是同一件事的兩端，所以值域兩端都收，兩端都要證明存得住。
+    """
+    put = client.put(_THRESHOLD_URL, json={"value": value}, headers=_auth(admin_token))
+    assert put.status_code == 200, put.text
+    # 回應就是重新解析出來的結果 —— 存進去卻算不出來的值在這裡就會現形。
+    assert put.json()["value"] == value, put.text
+    assert put.json()["calibrated"] is True, put.text
+
+    # 真的落到那一列上（不是只是回應長得對）。
+    db.expire_all()
+    row = db.get(PlatformSetting, KB_THRESHOLD_KEY)
+    assert row is not None and float(row.value) == value
+
+    body = client.get(_THRESHOLD_URL, headers=_auth(admin_token)).json()
+    assert body["value"] == value
+    assert body["calibrated"] is True
+
+    r = client.post(_PREVIEW_URL, json={"query": "申誡"}, headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["threshold"] == value
+    assert backend.min_scores, "檢索要真的跑過，否則下面比的是空氣"
+    assert backend.min_scores[-1] == value, (
+        f"存進去的是 {value}，檢索實際用的是 {backend.min_scores[-1]}"
+    )
+
+
 @pytest.mark.parametrize("stored", ["2.5", "-0.2", "abc", ""])
 def test_a_stored_value_that_cannot_be_used_is_not_calibrated(
     client, db, admin_token, stored
