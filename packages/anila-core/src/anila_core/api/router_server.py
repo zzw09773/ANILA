@@ -3229,6 +3229,14 @@ async def _router_streaming(
         split_at = _find_answer_split(buf)
         if split_at > 0:
             prefix = buf[split_at:]
+            # Sixth presentation exit, and the easiest one to miss: a model that
+            # leaks its thought *and* emits a directive reaches the reader only
+            # through here. The cleaned commit above is guarded by
+            # ``not _THOUGHT_PREFIX_RE.match(buf)``, so on exactly this shape it
+            # is skipped — and its cleaning with it. Same buffer-in-hand
+            # situation as that commit, so the same call at the same cost.
+            if route_signal == _ROUTE_FORCED:
+                prefix = _strip_dispatch_syntax(prefix)
             if prefix.strip():
                 yield _make_chunk(prefix, "anila-router")
                 answer_emitted_up_to = len(buf)

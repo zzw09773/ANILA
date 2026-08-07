@@ -864,3 +864,62 @@ def test_a_forced_multi_turn_streaming_bubble_never_shows_dispatch_syntax(
     assert "DISPATCH" not in visible
     assert AGENT_ID not in visible
     assert visible.strip()
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2 / I2 remainder — the sixth presentation exit
+#
+# Re-review found a door the five-exit census missed: the *thought-prefixed*
+# commit. A model that leaks its analysis and then emits a directive slips every
+# earlier gate on a forced turn —
+#
+#   * ``_has_dispatch_signal`` → None (forced, and the directive has no
+#     terminator anyway);
+#   * ``startswith("DISPATCH:")`` → False, the buffer starts with the thought;
+#   * the cleaned commit is **skipped**, because it is guarded by
+#     ``not _THOUGHT_PREFIX_RE.match(buf)`` and the prefix matches.
+#
+# …and lands on the density-boundary yield, which had no forced guard at all.
+# Proven on unmutated HEAD before this fix, one SSE delta, all three prefix
+# spellings. This is the same class as the exits already cleaned, at the same
+# zero cost — the full buffer is in hand at that instant, so no line-buffering
+# and no loss of streaming cadence is involved.
+# ---------------------------------------------------------------------------
+
+
+THOUGHT_PREFIXES = [
+    pytest.param("Thought:", id="thought"),
+    pytest.param("Thinking:", id="thinking"),
+    pytest.param("**Thought**", id="bold-thought"),
+]
+
+
+@pytest.mark.parametrize("prefix", THOUGHT_PREFIXES)
+@respx.mock
+def test_a_forced_thought_prefixed_bubble_never_shows_dispatch_syntax(
+    db_path: Path, prefix: str
+) -> None:
+    """The leaked-thought door. The answer must survive; the directive must not."""
+    _seen, body = _run_turn(
+        db_path,
+        replies=[_sse(f"{prefix}\n{LONG_ANSWER}\n{DISPATCH_LINE}")],
+        stream=True,
+        inbound_headers=FORCED,
+    )
+    visible = _stream_text(body)
+    assert "DISPATCH" not in visible
+    assert AGENT_ID not in visible
+    # The reply the thought was hiding still has to arrive — cleaning removes
+    # the directive, never the answer.
+    #
+    # Asserted on the tail plus a length floor rather than on the whole string,
+    # deliberately. Where the answer *begins* is decided by
+    # ``_find_answer_split``, which ignores CJK before index 10 — so a
+    # 9-character prefix (``Thought:\n``) costs the answer its first character
+    # while a 10-character one (``Thinking:\n``) does not. That is pre-existing
+    # behaviour of the thought splitter, untouched by this fix and outside its
+    # scope. Pinning the exact string here would quietly promote a quirk of that
+    # function into a contract of this one, and the next person to correct the
+    # splitter would get a red test for doing the right thing.
+    assert LONG_ANSWER[-40:] in visible
+    assert len(visible.strip()) >= len(LONG_ANSWER) - 1
