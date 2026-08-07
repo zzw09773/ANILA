@@ -1374,9 +1374,17 @@ def create_router_app(
                     status="error",
                 )
             )
+            # The routing call's meta must NOT ride out here. That call is
+            # always marked as the Router's own answer channel, so CSP may have
+            # attached regulation retrieval to it — but the text below is a
+            # fixed "agent not registered" notice, not an answer derived from
+            # those passages. Merging the routing meta would hand the notice a
+            # ``kb_state``/citations it did not earn, which is exactly the shape
+            # this feature exists to prevent. The streaming twin (:3358) already
+            # merges ``None``; this branch now matches it.
             anila_meta = _merge_anila_meta(
                 base_trace,
-                llm_response.get("anila_meta"),
+                None,
                 latency_ms=int((time.time() - started_at) * 1000),
                 route={
                     "decision": "route_miss",

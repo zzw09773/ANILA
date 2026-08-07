@@ -734,6 +734,100 @@ def test_a_dispatched_non_stream_turn_does_not_wear_the_routing_calls_kb_meta(
 
 
 # ---------------------------------------------------------------------------
+# Final review / I1 — the route-miss fallback must not wear the badge either
+#
+# The sibling of the two tests above, and the one that was actually broken.
+# When the model names an agent that is not registered, nothing is dispatched
+# and nothing is answered: the user gets a fixed "that agent is not registered"
+# notice. The non-stream branch nevertheless merged the *routing* call's meta
+# into that notice, and the routing call is always marked — so a
+# regulation-adjacent question whose retrieval cleared the threshold shipped
+# the notice with ``kb_state=searched_hit`` plus the routing call's citations.
+# Text that came from no document, wearing a "sourced from institutional
+# regulations" badge and a drawer of passages to verify it against.
+#
+# Reachability is not theoretical: the agents table is empty in the shipped
+# configuration, so *every* dispatch decision lands in this branch, and the
+# questions most likely to provoke a hallucinated dispatch are the regulation
+# ones — precisely the turns where retrieval hits.
+#
+# Both paths are pinned, though only the non-stream one was wrong: the
+# streaming twin already merged ``None``, and that asymmetry is what showed the
+# non-stream side was an oversight rather than a decision. Pinning only the
+# broken half would let a future "make them symmetric" refactor restore the bug
+# from the wrong direction.
+#
+# Anti-vacuity: that ``_completion(..., meta=…)`` / ``_sse(..., meta=…)``
+# really do deliver kb meta through these code paths is proved live by
+# ``test_kb_fields_survive_the_non_stream_meta_exit`` and
+# ``…_the_streaming_meta_exit`` above — if the fixtures stopped delivering, the
+# suite goes red there, not silently green here.
+# ---------------------------------------------------------------------------
+
+# An id that is deliberately absent from ``_agents_payload()``. The Router
+# parses the DISPATCH line, fails to find it in the registry, and takes the
+# route-miss exit.
+GHOST_AGENT_ID = "ghost-agent"
+GHOST_DISPATCH_LINE = f"DISPATCH:{GHOST_AGENT_ID}:畫一張差旅費流程圖"
+
+
+def _assert_route_miss_wears_no_badge(final: dict) -> None:
+    # Branch proof first: without it "no kb fields" is true of any turn that
+    # simply never retrieved.
+    assert (final.get("route") or {}).get("decision") == "route_miss"
+    assert (final.get("route") or {}).get("agent_id") == GHOST_AGENT_ID
+    # The routing call's regulations must not have followed the notice out.
+    assert final.get("kb_state") is None
+    assert final.get("kb_hits") in (None, [])
+    assert not final.get("citations")
+
+
+@respx.mock
+def test_a_route_miss_non_stream_fallback_does_not_wear_the_routing_calls_kb_meta(
+    db_path: Path,
+) -> None:
+    seen, body = _run_turn(
+        db_path,
+        replies=[_completion(GHOST_DISPATCH_LINE, meta=_kb_meta())],
+    )
+
+    # Not vacuous: the turn really did end in a route miss, not a dispatch and
+    # not a direct answer.
+    assert seen.of("dispatch") == []
+    payload = json.loads(body)
+    content = payload["choices"][0]["message"]["content"]
+    assert "尚未於 CSP 註冊" in content
+    _assert_route_miss_wears_no_badge(payload["anila_meta"])
+
+
+@respx.mock
+def test_a_route_miss_streaming_fallback_does_not_wear_the_routing_calls_kb_meta(
+    db_path: Path,
+) -> None:
+    """The twin that was already correct — pinned so it stays that way.
+
+    No terminator on the DISPATCH line, for the same reason
+    ``_dispatch_leak_replies`` documents: with one, mid-stream detection
+    commits before CSP's ``anila.meta`` frame is ever read and the assertion
+    would hold vacuously.
+    """
+    seen, body = _run_turn(
+        db_path,
+        replies=[_sse(GHOST_DISPATCH_LINE, meta=_kb_meta())],
+        stream=True,
+    )
+
+    assert seen.of("dispatch") == []
+    assert "尚未於 CSP 註冊" in _stream_text(body)
+    events = _meta_events(body)
+    assert events, "the Router emitted no anila.meta frame at all"
+    final = events[-1]
+    assert final.get("kb_state") is None
+    assert final.get("kb_hits") in (None, [])
+    assert not final.get("citations")
+
+
+# ---------------------------------------------------------------------------
 # Fix round 1 / I2 — a forced turn's bubble never shows machine syntax
 #
 # Proven on unmutated code by the reviewer: a forced turn whose model still
