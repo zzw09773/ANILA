@@ -576,18 +576,34 @@ def _assert_kb_survived(meta: dict) -> None:
     ]
 
 
+# Every exit is asserted on a forced turn **and an ordinary one**. The
+# pass-through is not a feature of the retry button: Task 8's badges are drawn
+# for every Router-answered turn, and most turns that carry regulations were
+# never forced — CSP attaches retrieval whenever the answer-channel marker is
+# present, which is always. Asserting only the forced case would leave "capture
+# the meta only when route_signal is forced" alive: one line, every ordinary
+# turn silently loses its badges, whole suite green.
+KB_TURNS = [pytest.param(None, id="ordinary-turn"), pytest.param(FORCED, id="forced-turn")]
+
+
+@pytest.mark.parametrize("inbound", KB_TURNS)
 @respx.mock
-def test_kb_fields_survive_the_non_stream_meta_exit(db_path: Path) -> None:
+def test_kb_fields_survive_the_non_stream_meta_exit(
+    db_path: Path, inbound: dict[str, str] | None
+) -> None:
     _seen, body = _run_turn(
         db_path,
         replies=[_completion(LONG_ANSWER, meta=_kb_meta())],
-        inbound_headers=FORCED,
+        inbound_headers=inbound,
     )
     _assert_kb_survived(json.loads(body)["anila_meta"])
 
 
+@pytest.mark.parametrize("inbound", KB_TURNS)
 @respx.mock
-def test_kb_fields_survive_the_streaming_meta_exit(db_path: Path) -> None:
+def test_kb_fields_survive_the_streaming_meta_exit(
+    db_path: Path, inbound: dict[str, str] | None
+) -> None:
     """The exit no one had evidence for. The SPA streams, so if this drops the
     fields, every badge Task 8 drew is blank in production while retrieval works
     perfectly — the failure mode with no error message."""
@@ -595,15 +611,18 @@ def test_kb_fields_survive_the_streaming_meta_exit(db_path: Path) -> None:
         db_path,
         replies=[_sse(LONG_ANSWER, meta=_kb_meta())],
         stream=True,
-        inbound_headers=FORCED,
+        inbound_headers=inbound,
     )
     events = _meta_events(body)
     assert events, "the Router emitted no anila.meta frame at all"
     _assert_kb_survived(events[-1])
 
 
+@pytest.mark.parametrize("inbound", KB_TURNS)
 @respx.mock
-def test_kb_fields_survive_the_short_answer_streaming_exit(db_path: Path) -> None:
+def test_kb_fields_survive_the_short_answer_streaming_exit(
+    db_path: Path, inbound: dict[str, str] | None
+) -> None:
     """A second streaming exit. Short answers never commit mid-stream and leave
     through the end-of-stream sanitizer instead — a fix applied to only one of
     the two would look complete."""
@@ -611,21 +630,24 @@ def test_kb_fields_survive_the_short_answer_streaming_exit(db_path: Path) -> Non
         db_path,
         replies=[_sse("好。", meta=_kb_meta())],
         stream=True,
-        inbound_headers=FORCED,
+        inbound_headers=inbound,
     )
     events = _meta_events(body)
     assert events, "the Router emitted no anila.meta frame at all"
     _assert_kb_survived(events[-1])
 
 
+@pytest.mark.parametrize("inbound", KB_TURNS)
 @respx.mock
-def test_kb_fields_survive_the_multi_turn_streaming_meta_exit(db_path: Path) -> None:
+def test_kb_fields_survive_the_multi_turn_streaming_meta_exit(
+    db_path: Path, inbound: dict[str, str] | None
+) -> None:
     _seen, body = _run_turn(
         db_path,
         replies=[_completion(LONG_ANSWER, meta=_kb_meta())],
         stream=True,
         extra_body={"anila_multi_turn": 2},
-        inbound_headers=FORCED,
+        inbound_headers=inbound,
     )
     events = _meta_events(body)
     assert events, "the Router emitted no anila.meta frame at all"
