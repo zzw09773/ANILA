@@ -332,7 +332,11 @@ const KB_STATE_COPY = {
 const KB_TONE_COLOR = {
   ok: { fg: "var(--accent)", bg: "var(--accent-soft)", border: "var(--accent)" },
   muted: { fg: "var(--fg-muted)", bg: "var(--bg-subtle)", border: "var(--border)" },
-  warn: { fg: "var(--warning, #b45309)", bg: "var(--bg-subtle)", border: "var(--border-strong)" },
+  // ⚠ `--warning` 在 index.html 的變數表裡**沒有定義**(只有 --danger / --success),
+  // 所以一定會落到 fallback。寫死一個十六進位色的話深色主題不會跟著換
+  // (index.html:66-78 是深色那一組),而 --danger 兩組都有 —— 沿用本檔既有的
+  // 寫法(`var(--warning, var(--danger))`,見 :729 與 :886)。
+  warn: { fg: "var(--warning, var(--danger))", bg: "var(--bg-subtle)", border: "var(--border-strong)" },
 };
 
 /**
