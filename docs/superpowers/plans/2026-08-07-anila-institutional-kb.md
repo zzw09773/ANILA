@@ -666,19 +666,83 @@ git commit -m "feat(csp): the retrieval threshold is a setting with a calibratio
 ## Task 5：Router 直答訊號
 
 **Files:**
-- Modify: `packages/anila-core/src/anila_core/api/router_server.py:1132`（非串流）與 `:1851`（串流）
+- Modify: `packages/anila-core/src/anila_core/api/router_server.py`（直答分支 `:1133` 非串流、`:1853` 串流）
 - Test: `packages/anila-core/tests/test_router_direct_header.py`（新）
 
+⚠ **前提查驗（指揮官已做）**：
+- CSP 端**不存在**「Router 決定直答」的訊號。判定在 router 服務內（`:1133` / `:1853`），
+  而 router 直答時**自己回給前端**；只有 LLM 呼叫會打到 CSP，CSP 看到的是一個普通模型呼叫。
+  `routed_agent_id` 在非測試 Python 碼中 **0 命中**。
+- **已有現成通道**：`router_server.py:907-910` 的 `anila_headers` 會把進來的 `x-anila-*`
+  header 轉發給 CSP，四個呼叫點在用（`:1052`、`:1083`、`:1099`、`:1432`）。
+  訊號搭這條，**不要新建機制**。
+
 **Interfaces:**
-- Produces: router 直答時對 CSP 的 LLM 呼叫帶 `X-Anila-Route: direct`
+- Produces: router 直答時，對 CSP 的 LLM 呼叫帶 `X-ANILA-Route: direct`；派工路徑**不帶**。
 
-⚠ **設計文件原寫「不動 Router」，這是實作時發現的必要例外**：CSP 端**分不出**「Router 決定直答」與「使用者自己選了一顆模型」，兩者傳進來的都是模型名（`routed_agent_id` 在非測試 Python 碼中 0 命中）。
+### ⚠ 這個 Task 要決定並在報告寫清楚的一件事
 
-- [ ] **Step 1: 寫失敗測試** — 斷言直答路徑送出的 header 含 `X-Anila-Route: direct`，派工路徑**不含**
+`anila_headers` 是**從 inbound 請求複製**的，所以**前端也能送 `X-ANILA-Route`**。
+
+- 這不是安全漏洞：檢索範圍只有「已標記且無機密」的庫，全院本來就看得到。
+- 而且 **Task 9 的「改用院內規章重查」按鈕正需要一條使用者強制檢索的路**。
+- 但 CSP 會**分不出「router 判斷要查」與「使用者按了重查」**。
+
+**決定怎麼區分並實作**：建議兩個不同的值（例如 `direct` 與 `forced`），
+router 只會送前者，前端送後者。理由：兩者在五狀態機裡的意義不同——
+router 判斷錯時使用者按重查，稽核上要看得出來是人救的還是機器決定的。
+如果你有更好的做法，做你的，但**必須在報告裡說明前端可偽造這件事怎麼處理**。
+
+- [ ] **Step 1: 寫失敗測試**
+
+```python
+def test_direct_answer_forwards_the_route_header():
+    """Router 判斷不需要 agent 時,CSP 要知道這是它在直答。"""
+    captured = _capture_downstream_headers(dispatch=None)
+    assert captured.get("X-ANILA-Route") == "direct"
+
+
+def test_dispatch_path_does_not_forward_it():
+    """派給 agent 的路徑不加規章檢索 —— agent 自己搜自己的庫。"""
+    captured = _capture_downstream_headers(dispatch={"agent": "image-generator"})
+    assert "X-ANILA-Route" not in captured
+
+
+def test_streaming_direct_answer_forwards_it_too():
+    """payload 有兩條路,訊號必須兩條都騎(串流 :1853 / 非串流 :1133)。"""
+    captured = _capture_downstream_headers(dispatch=None, stream=True)
+    assert captured.get("X-ANILA-Route") == "direct"
+
+
+def test_a_client_supplied_route_header_is_distinguishable():
+    """前端可以送(Task 9 的重查按鈕要用),但不可以冒充成 router 的判斷。"""
+    captured = _capture_downstream_headers(
+        dispatch=None, inbound_headers={"X-ANILA-Route": "forced"}
+    )
+    assert captured.get("X-ANILA-Route") in ("forced", "direct")
+    # 斷言兩者可分辨——實作者決定確切語意後,把這條寫成明確斷言。
+```
+
 - [ ] **Step 2: 跑測試確認失敗**
-- [ ] **Step 3: 實作**（兩條路徑都要，串流與非串流）
+
+```bash
+cd packages/anila-core && $PY -m pytest tests/test_router_direct_header.py -q
+```
+Expected: FAIL — header 不存在
+
+- [ ] **Step 3: 實作**（兩條路徑都要）
+
 - [ ] **Step 4: 跑測試確認通過**
-- [ ] **Step 5: Commit**
+
+- [ ] **Step 5: 突變檢查**
+
+```
+突變 A：只在非串流路徑加 header        → 串流那條測試必須紅
+突變 B：派工路徑也加 header            → dispatch 那條測試必須紅
+突變 C：把 client 送的值原樣當 router 的判斷 → 可分辨那條必須紅
+```
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git commit -m "feat(router): tell CSP when the router is answering directly"
