@@ -3,7 +3,7 @@
 > **這是重啟樹**:2026-07-28 平台擁有者決定回到 redesign 收斂點 `a4118a3`(2026-07-03)重新出發。
 > 權威文件就在本樹根目錄:**規格＝`SYSTEM-MAP.md`**(28 題 QA)、**順序＝`PLAN.md`**(到 8 月底上線)、
 > **歷史＝`RESTART-FROM-REDESIGN.md`**(373 commit 履歷＋attic 取回方式)。
-> 📌 **接手先讀 `docs/HANDOFF-2026-08-06.md`**（最新）；擁有者要看的是 `docs/TOMORROW.md`。
+> 📌 **接手先讀 `docs/HANDOFF-2026-08-07.md`**（最新）；擁有者要看的是 `docs/TOMORROW.md`。
 > 🔎 **驗收單一定要有這一句**：「去找這一包自己有沒有長出它要消滅的那個形狀」。
 > 2026-08-06 六包，**六包全中**，而且全部是驗收抓的——命中率比逐條檢查驗收條件還高。
 > 🔬 **宣稱「測試過了」之前先跑突變檢查**：`cd apps/anila-shell && node scripts/mutation-check.mjs`。
