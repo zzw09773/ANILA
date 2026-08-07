@@ -286,6 +286,40 @@ export function normalizeAgents(data) {
   ];
 }
 
+/**
+ * 院內規章檢索的三個欄位,從 `anila_meta` 抄到 UI 的訊息列上。
+ *
+ * meta 有**兩個**入口,而且兩個都必須抄:重新載入走 `mapServerMessage`、
+ * SSE 現場走 `applyMeta`。只接一邊不會有任何錯誤訊息,只會讓同一則答案在
+ * 串完的當下說「依據是人事管理規則」、重新整理之後說不出話來(或反過來)。
+ * 抽成一個函式而不是在兩處各寫一次,是為了讓「兩邊講的是同一件事」變成
+ * 結構上的事實,而不是靠人記得同步兩份欄位清單。
+ *
+ * ⚠ **狀態只從 `kb_state` 抄,不從資料反推。** 生產端的事實
+ * (`services/csp/app/services/institutional_kb.py:226-233`):`partial_error`
+ * **一定帶著命中**,`search_error` 有失敗的庫而沒有命中。所以「有 kb_hits
+ * 就當命中」會把 `partial_error` 講成乾淨的命中,使用者就永遠看不到
+ * 「這不是全部的依據」——那正是他最需要知道的一句話。
+ *
+ * `citations` 不在這裡:兩個縫本來就各自映射了那個欄位,CSP 命中時是把
+ * 規章**前綴**進既有的 citations(不覆蓋下游來源),沿用原本的管線即可。
+ *
+ * @param {object | null | undefined} meta - 一份 `anila_meta`
+ */
+export function kbMetaFields(meta) {
+  const m = meta && typeof meta === "object" ? meta : {};
+  return {
+    // 缺席就是缺席:這個功能上線前存下來的訊息沒有這個欄位,而
+    // `undefined` 與 `"not_searched"` 在畫面上一樣安靜(chat.jsx 的
+    // KbStateBadge 只認得四個「查過了」的狀態)。
+    kbState: typeof m.kb_state === "string" ? m.kb_state : undefined,
+    kbHits: Array.isArray(m.kb_hits) ? m.kb_hits : [],
+    kbFailedCollections: Array.isArray(m.kb_failed_collections)
+      ? m.kb_failed_collections
+      : [],
+  };
+}
+
 function applyTweaks(t) {
   const r = document.documentElement;
   r.setAttribute("data-theme", t.dark ? "dark" : "light");
@@ -909,6 +943,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       citations: meta.citations || [],
       followUps: meta.follow_ups || [],
       handoffChain: meta.handoff_chain || [],
+      // 重新載入這一縫。同一份定義也要接在 applyMeta(SSE 現場那一縫)上。
+      ...kbMetaFields(meta),
       confidence: meta.confidence,
       classified: meta.classified,
       traceId: msg.trace_id || meta.trace_id,
@@ -1553,6 +1589,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       confidence: meta.confidence,
       handoffChain: meta.handoff_chain || [],
       followUps: meta.follow_ups || [],
+      // SSE 現場這一縫。同一份定義也要接在 mapServerMessage(重新載入那一縫)上。
+      ...kbMetaFields(meta),
       latencyMs: meta.latency_ms,
       usage: meta.usage || null,
       classified: meta.classified,

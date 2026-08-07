@@ -300,6 +300,120 @@ function SiblingPager({ msg, onSwitchBranch, streaming = false, style }) {
   );
 }
 
+// ---- 院內規章檢索狀態 ----
+//
+// 「這個答案有沒有院規當依據、依據是哪一份」。誠實不變式:**「沒命中」與
+// 「查不了」是兩句不同的話**。把檢索失敗說成「查過了、規章裡沒有」是這個
+// 功能最貴的一種說謊——使用者會拿它當「本院沒有這條規定」的結論。
+//
+// ⚠ **只有明帶的 kb_state 會畫東西。** `not_searched`(全院一個庫都沒標記)
+// 與欄位缺席(這個功能上線前存下來的舊訊息)都畫**零個**記號,而且那是有
+// 資料背書的決定:兩種情況我們都不知道院規裡有什麼,所以什麼都不說。認不
+// 得的狀態字串同樣安靜——將來後端多長一個狀態時,寧可少說一句,不要亂講。
+//
+// ⚠ **狀態不從 kb_hits 反推。** `partial_error` 一定帶著命中
+// (institutional_kb.py:226-233),反推會把它畫成乾淨的命中,而「有幾個庫
+// 這次查不到、以下依據不是全部」就消失了。
+const KB_STATE_COPY = {
+  searched_hit: { tone: "ok", label: "依據院內規章" },
+  searched_miss: {
+    tone: "muted",
+    label: "院內規章裡沒找到相關條文，以下是模型的一般知識",
+  },
+  search_error: {
+    tone: "warn",
+    // 用詞與後端 trace 的同一句話對齊(proxy.py `_kb_trace_entry`),免得
+    // 同一件事在畫面上的兩個地方講得不一樣。
+    label: "院內規章檢索失敗，本次回答沒有院規依據",
+  },
+  partial_error: { tone: "warn", label: null }, // 見下面:要帶失敗庫數量
+};
+
+const KB_TONE_COLOR = {
+  ok: { fg: "var(--accent)", bg: "var(--accent-soft)", border: "var(--accent)" },
+  muted: { fg: "var(--fg-muted)", bg: "var(--bg-subtle)", border: "var(--border)" },
+  warn: { fg: "var(--warning, #b45309)", bg: "var(--bg-subtle)", border: "var(--border-strong)" },
+};
+
+/**
+ * 命中來源的小標籤:顯示**文件名**,hover 給原文與信心分數。
+ *
+ * 資料取自 `msg.kbHits`(完整原文)而不是 `citations[].snippet`(後端截到
+ * 200 字);行內的 `[N]`、「查看 N 筆來源」與來源抽屜仍然走既有的 citations
+ * 管線,這裡沒有新建任何渲染機制,只是多一個 title。
+ *
+ * ⚠ **不顯示頁碼**(擁有者裁決):規章的定位點是條號,而已匯入文件上的頁碼
+ * 是已知會錯的值——顯示一個錯的頁碼比不顯示更糟。所以這裡只讀 filename /
+ * content / score 三個欄位,上游哪天多送一個 page 也不會漏到畫面上。
+ */
+const KbSourceChip = ({ hit, index }) => {
+  const pct = typeof hit.score === "number" ? Math.round(hit.score * 100) : null;
+  const title = [
+    pct === null ? hit.filename : `${hit.filename}（信心 ${pct}%）`,
+    hit.content || "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return (
+    <span
+      data-testid={`kb-source-${index}`}
+      title={title}
+      style={{
+        display: "inline-flex", alignItems: "center",
+        maxWidth: "100%", padding: "1px 7px",
+        background: "var(--bg-elev)",
+        border: "1px solid var(--border)",
+        borderRadius: 999,
+        fontSize: 11, color: "var(--fg-muted)",
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        cursor: "help",
+      }}
+    >
+      {hit.filename}
+    </span>
+  );
+};
+
+export const KbStateBadge = ({ state, hits = [], failedCollections = [] }) => {
+  const copy = KB_STATE_COPY[state];
+  if (!copy) return null;
+
+  // partial:失敗庫只有 id(前端沒有庫名的查詢管道),所以說數量不說名字——
+  // 「有 N 個規章庫查不到」對讀者的意義是「下面這些不是全部」,而那正是
+  // 這個狀態唯一必須傳達的事。
+  const label =
+    copy.label ??
+    `有 ${failedCollections.length} 個規章庫檢索失敗，以下依據不是全部`;
+  const tone = KB_TONE_COLOR[copy.tone];
+  const sources = Array.isArray(hits) ? hits : [];
+
+  return (
+    <div
+      data-testid={`kb-state-${state}`}
+      style={{
+        display: "flex", alignItems: "center", gap: 6,
+        flexWrap: "wrap", marginBottom: 8,
+        padding: "3px 9px",
+        background: tone.bg,
+        border: `1px solid ${tone.border}`,
+        borderRadius: 999,
+        fontSize: 11, color: tone.fg,
+        width: "fit-content", maxWidth: "100%",
+      }}
+    >
+      <IconBook size={11} />
+      <span>{label}</span>
+      {sources.map((hit, i) => (
+        <KbSourceChip
+          key={`${hit.collection_id}:${hit.document_id}:${i}`}
+          hit={hit}
+          index={i + 1}
+        />
+      ))}
+    </div>
+  );
+};
+
 // ---- Message Bubble ----
 export const MessageBubble = ({
   msg,
@@ -689,6 +803,14 @@ export const MessageBubble = ({
           </span>
         </div>
       )}
+
+      {/* 依據在答案**上面**:讀者要先知道這段話有沒有院規撐著,再讀內容。
+          串流中 kbState 還沒到(meta 是最後一格),這時自然什麼都不畫。 */}
+      <KbStateBadge
+        state={msg.kbState}
+        hits={msg.kbHits}
+        failedCollections={msg.kbFailedCollections}
+      />
 
       {(() => {
         // Combine reasoning from two channels so gpt-oss-20b (native field) and
