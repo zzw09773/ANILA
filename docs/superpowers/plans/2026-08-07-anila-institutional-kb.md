@@ -752,14 +752,44 @@ git commit -m "feat(router): tell CSP when the router is answering directly"
 
 ## Task 6：CSP 注入與五狀態 payload
 
-**Files:**
-- Modify: `services/csp/app/api/proxy.py:803`（注入點）、`:1012`／`:1214`（非串流）、`:965`／`:1177`（SSE）
-- Modify: `services/csp/app/services/proxy/service.py:388`（`build_default_anila_meta`）
+> **裁決脈絡（Q39，2026-08-07，取代本計畫原先的「收到直答訊號才檢索」前提）**：
+> 注入掛在 router 的**答案通道**呼叫上——`X-ANILA-Route` header 在就檢索，不等「直答判定」
+> （那個判定在時序上晚於這通呼叫；header 語意以 `task-5-report.md` §1 為準，不是本計畫
+> Interfaces 原句）。離題靠分數門檻擋；派工收尾的回合白做一次檢索是擁有者接受的代價。
+> **新出現的危險型**：派工回合裡答案通道那通的檢索命中，絕不能漏進使用者看到的 payload
+> ——那正是本包要消滅的形狀（「以為有依據，其實沒有」）在 Task 6 自己地盤上的長法。
+
+**Files:**（行號 2026-08-07 偵察逐一驗過；計畫先前引的 :803/:965/:1177 都落在註解上）
+- Modify: `services/csp/app/api/proxy.py` — 注入 seam 在 **:797–:807 視窗**（`_inject_memory` 呼叫 :797 之後、`captured_user_text` :829 之前）；回應出口**四個都要騎**：agent SSE **:966**、agent 非串流 **:1019**（合流回傳 :1040）、model SSE **:1178**、model 非串流 **:1214**
+- Modify: `services/csp/app/services/proxy/service.py:388`（`build_default_anila_meta` 增列 `kb_state` 明帶預設）＋兩個 chat 建構點 `:638`（非串流）、`:1010`（SSE）。⚠ `service.py:279` 是 embedding 路徑，不碰
 - Test: `services/csp/tests/test_institutional_kb_injection.py`（新）
 
-**Interfaces:**
-- Consumes: Task 3 的 `retrieve_institutional`、Task 5 的 header
-- Produces: `anila_meta["kb_state"]`（五值之一）、`anila_meta["kb_hits"]`
+**Interfaces（真實簽章，偵察已驗）:**
+- Consumes: `retrieve_institutional(db, user, query, *, threshold, top_k=...)`（`institutional_kb.py:83`）——
+  **async，必須 await**（seam 現場是 sync 呼叫形，別照抄 `_inject_attachments` 的形狀）；
+  `user` 必填（嵌入計量歸戶）用 `caller.user`（`proxy.py:776`）；`threshold` 是必填 keyword-only，
+  模組自己**不讀設定**——呼叫端用 `get_kb_threshold(db)`（**`app/models/platform_setting.py:128`**，
+  key `institutional_kb.score_threshold`；⚠ 不存在任何 `services/*settings*` 模組，別寫錯 import）
+- Consumes: `request.headers.get("X-ANILA-Route")`（`request` 在 :805 在 scope，Starlette 大小寫不敏感；
+  現成樣板 :785–786）
+- Produces: `anila_meta["kb_state"]`（`KbState` 五值字串，enum 在 `institutional_kb.py:59–64`，
+  名稱與本計畫完全一致）、`anila_meta["kb_hits"]`（`KbHit`：collection_id/document_id/filename/content/score）、
+  命中時同步填 `anila_meta["citations"]`（**沿用既有 drawer 契約：`{id, title, score?, snippet?}`，
+  `id` 必填**——空 id 會弄壞 CitationsDrawer 不只是樣式）、partial 時 `anila_meta["kb_failed_collections"]`
+
+**硬規則（設計 §5 ＋ Q39 重推）：**
+1. `kb_state` 必須**明帶**在全部四個 chat 出口上，缺席≠`not_searched`——渲染管線一壞、
+   所有答案靜默降級成「沒查過」是本專案頭號家賊。
+2. 檢索觸發 ＝ header 存在（`direct`／`forced`）。**無 header 的呼叫（agent 派工、ANILALM）
+   一律明帶 `not_searched` 且不做檢索**——這條就是「派工回合命中不外漏」的防線。
+3. 狀態一律取 `KbResult.state`，**呼叫端不得自行重推**——`SEARCH_ERROR` 優先於 `PARTIAL_ERROR`
+   的次序是模組內釘死的不變式（`institutional_kb.py:225–227`），重推等於把修掉的缺陷再蓋回來。
+4. `searched_miss` 注入的系統指示必含「不得以條號格式引用」且明令以一般知識口吻作答；
+   `searched_hit` 注入段落編 `[1]..[N]`，對應 `citations[N-1]`（router 提示詞既有的 `[N]` 指令因此活過來）。
+5. 檢索失敗**絕不擋回答**（設計 §5：`search_error` 明示但照答）。
+6. 檢索 query ＝ 使用者最新一則 user 訊息，與 `captured_user_text`（:829）同一定義——共用抽取，不複製邏輯。
+7. 注入的訊息變形照 `_inject_memory`（:251，system msg prepend）樣板；trace 合流沿用
+   `_merge_attachment_trace`（:447）／`_sse_with_attachment_trace`（:466）的既有機制。
 
 - [ ] **Step 1: 寫失敗測試**
 
@@ -767,9 +797,14 @@ git commit -m "feat(router): tell CSP when the router is answering directly"
 def test_state_is_always_present_in_the_payload(client, ...):
     """⚠ 第四狀態絕不能靠「payload 裡沒資料」表示。
     若缺席即 not_searched,渲染管線一壞,**所有答案都會靜默降級成沒查過** ——
-    這是本專案的頭號家賊。"""
-    payload = _chat(client, "你好", route_direct=False).json()
+    這是本專案的頭號家賊。四個出口(agent SSE/agent 非串流/model SSE/model 非串流)都要斷言。"""
+    payload = _chat(client, "你好", header=None).json()
     assert payload["anila_meta"]["kb_state"] == "not_searched"   # 明帶,不是缺席
+
+
+def test_no_header_means_no_retrieval_at_all(client, ...):
+    """Q39 的洩漏防線:無 header(派工/ANILALM)不只標 not_searched,
+    retrieve_institutional 根本不得被呼叫——派工回合的命中絕不能漏進 payload。"""
 
 
 def test_miss_prompt_forbids_article_style_citation(client, ...):
@@ -778,26 +813,64 @@ def test_miss_prompt_forbids_article_style_citation(client, ...):
     assert "不得以條號格式引用" in body["messages"][0]["content"]
 
 
-def test_both_stream_and_nonstream_carry_the_state(client, ...):
-    """payload 有兩條建構路徑,狀態必須兩條都騎。"""
+def test_hit_injects_numbered_passages_matching_citations(client, ...):
+    """[1]..[N] 與 citations[N-1] 對齊;每筆 citation 有非空 id 與 title(drawer 契約)。"""
+
+
+def test_all_four_payload_exits_carry_the_state(client, ...):
+    """payload 有三個建構點、四個出口(偵察修正:不是計畫原寫的兩條),狀態必須全部騎到。
+    只接兩條會讓 agent 分支與一條串流分支靜默無狀態。"""
+
+
+def test_search_error_does_not_block_the_answer(client, ...):
+    """設計 §5:檢索失敗明示,但照答。"""
+
+
+def test_threshold_change_takes_effect_next_request(client, ...):
+    """設計 §7 的驗收釘:從設定改完,檢索行為真的變了(不重啟)——
+    否則門檻設定就是假控制項的第一塊磚。"""
 ```
 
-- [ ] **Step 2–5**：跑失敗 → 實作（照 `_inject_memory`／`_inject_attachments` 樣板；合流用既有的 `_merge_attachment_trace` 與 `_sse_with_attachment_trace` 這對 helper）→ 跑通過 → commit
+- [ ] **Step 2–5**：跑失敗 → 實作 → 跑通過 → commit
 
 ```bash
-git commit -m "feat(csp): five retrieval states, carried explicitly on both payload paths"
+git commit -m "feat(csp): five retrieval states, carried explicitly on every payload exit"
 ```
 
 ---
 
 ## Task 7：治理中心的標記 toggle
 
-**Files:**
-- Modify: `apps/csp-governance-ui/src/views/KnowledgeCollectionsView.vue:66-73`
-- Test: `apps/csp-governance-ui/tests/anilaSearchableToggle.test.mjs`（新，`node --test`）
+**Files:**（行號 2026-08-07 偵察驗過）
+- Modify: `apps/csp-governance-ui/src/views/KnowledgeCollectionsView.vue` — footer 是 `:65–74`
+  （`cc__foot` 開 :65 收 :74；計畫原引的 66–73 是裡面那排動作鈕：檢視器 :66、評測器 :68、
+  封存/還原 :70–71、刪除 :73）
+- Modify: `apps/csp-governance-ui/src/api/ingestionCollections.js` — `updateCollection` 的 JSDoc
+  `@param` 漏了 `anila_searchable`（碼是通的，但文件讀起來像「不支援」——順手補上，別讓審查者誤判）
+- Test: `apps/csp-governance-ui/tests/anilaSearchableToggle.test.mjs`（新）
+  ⚠ **這個 app 的測試是 `node --test` + `*.test.mjs`（`package.json:9`），不是 vitest**；
+  照 `tests/platformEmbedding.test.mjs` 的形式寫
 
-- [ ] **Step 1: 寫失敗測試** — 密等非無機密時 toggle **停用但仍然顯示**，且顯示停用原因（**不是藏起來**——藏起來的控制項是本專案付過代價的形狀）
-- [ ] **Step 2–5**：跑失敗 → 實作（footer 加 toggle，錯誤走既有的 `e.response?.data?.detail` 通道）→ 跑通過 → commit
+**已有的地基（不要重建）：**
+- `CollectionResponse` **已經帶** `classification_level`（schemas/ingestion.py:216）與
+  `anila_searchable`（:219）；LIST 端點（collections.py:345）用它——前端拿得到，不用改後端
+- PATCH 後端已在 Task 2 關板：`collections.py:655`，守門 `_guard_anila_searchable`（:143）；
+  拒絕訊息會指一條走得通的路（Task 2 裁決過的措辭），前端**原樣呈現 detail，不要改寫**
+- 客戶端 `updateCollection(collectionId, patch)` 是 passthrough；照 `archiveCollection`
+  （view.vue:231–233）的「PATCH → `e.response?.data?.detail` → reload」慣用形
+
+**硬規則：**
+1. 密等非無機密時 toggle **停用但仍然顯示**，且顯示停用原因——**不是藏起來**
+   （藏起來的控制項是本專案付過代價的形狀；同 Task 9 的「沒有 handler 就不要畫」是一體兩面：
+   畫了就要真的能用，不能用就要說為什麼）。
+2. 切換成功後 reload 清單，顯示值一律來自後端回應——**不做樂觀更新**
+   （顯示值≠生效值是 Task 4 抓過的形狀）。
+3. 錯誤走既有 `e.response?.data?.detail` 通道原樣呈現（後端訊息含自救路徑）。
+
+- [ ] **Step 1: 寫失敗測試**（node --test）——**密等測試必須跑過整個 ClassificationLevel 列舉**
+  （常設要求，這類缺陷出現過兩次）：只有「無機密」啟用 toggle，**其餘每一級都**停用＋顯示原因；
+  另測：切換成功發出 PATCH 且 reload、後端 detail 原樣上畫面、未標記→標記與標記→未標記雙向。
+- [ ] **Step 2–5**：跑失敗 → 實作 → 跑通過 → commit
 
 ```bash
 git commit -m "feat(governance-ui): mark a collection ANILA-searchable, and say why when you cannot"
