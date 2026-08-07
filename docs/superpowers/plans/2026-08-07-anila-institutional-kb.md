@@ -1008,18 +1008,37 @@ git commit -m "feat(shell): let the reader force a regulation search when the ro
 
 ## Task 10：文件與待辦收尾
 
-**Files:**
-- Modify: `SYSTEM-MAP.md`（§5「general 知識庫**一個**」→ 可標記多個）
-- Modify: `PLAN.md`（門檻校準加入內網量測清單）
-- Modify: `docs/HANDOFF-2026-08-07.md`（本包留下什麼要長期照顧）
+**Files:**（清單在施工中長大了——以下是收案時的完整集合）
+- Modify: `SYSTEM-MAP.md`（§5「general 知識庫**一個**」→ 可標記多個；擁有者 08-07 裁決）
+- Modify: `docs/superpowers/specs/2026-08-07-anila-institutional-kb-design.md`
+  （§2 裁決 3「Router 判斷再搜」→ 依 Q39 修訂為「檢索照門檻走，掛在答案通道」，
+  註明 OWNER-QUESTIONS Q39 與時序原因；§8 的重查按鈕補一句 Q40：forced 必不派工）
+- Modify: `PLAN.md`（門檻校準加入內網量測清單：對真 `nv-embed` 校準、trace 要看得見段落數）
+- Modify: `docs/HANDOFF-2026-08-07.md`（兩處：§二進度表更新為十任務全關；
+  加「本包留下什麼要長期照顧」一節，內容見 Step 3）
+- Modify: `docs/HANDOFF-2026-08-06.md:230`（alembic head 寫 `r1_0032` → 實際 `r1_0034`；
+  Task 1 遞延至今）
 
-- [ ] **Step 1: 改 SYSTEM-MAP §5**（規格變更，擁有者 08-07 裁決）
-- [ ] **Step 2: PLAN 加一條**：對真 `nv-embed` 校準門檻
-- [ ] **Step 3: 交接寫「留下什麼要長期照顧」**：門檻是**唯一**需要隨模型更換重新校準的數字；標記集的同模型限制在標記時擋、換模型時要重新檢視；`kb_state` 的五值是前後端契約
-- [ ] **Step 4: Commit**
+- [ ] **Step 1: 改 SYSTEM-MAP §5**（規格變更）
+- [ ] **Step 2: 設計文件裁決修訂＋PLAN 校準清單**
+- [ ] **Step 3: 交接「留下什麼要長期照顧」**（軸線是維護成本）：
+  1. **門檻**是唯一隨嵌入模型更換必須重新校準的數字（設定＋校準視圖已入 Task 4；換模型＝已知失效事件）
+  2. 標記集的**同模型限制**在標記時擋；換模型時要重新檢視已標記集
+  3. **`kb_state` 五值是前後端契約**（producer：csp proxy；consumer：shell 兩個映射縫；
+     改值＝跨三個 repo 區域的 breaking change）
+  4. **`scripts/mutation-check.mjs` 在這台開發機跑不完**（兩次獨立失敗：~2min/mutant 逾時、
+     mutation 4 卡死貌似 Ctrl-C）——CLAUDE.md 把它列為「宣稱測試過」前置，這個矛盾要擁有者知道
+  5. **思考摺頁在 forced 回合仍會原樣露出 DISPATCH**（氣泡已清乾淨；摺頁是既有行為）＋
+     短答 fallback 會請使用者展開正是那個摺頁——一體的 UX 議題，留給擁有者裁
+  6. **多 frame「先答案後指令」殘餘**：唯一還會在氣泡尾露出指令的形狀；修法要 line-buffer
+     forced 串流（犧牲串流節奏），值不值得是擁有者的取捨
+  7. **擁有者可見的 UI 變化**：非管理員每張知識庫卡多一行常駐停用原因；助理答案出現規章
+     徽章／原文泡泡；重新產生選單多「改用院內規章重查」一項
+  8. `_find_answer_split` 的 CJK index-10 門檻讓 `Thought:\n`（9 字元）掉答案首字（既有，已入帳）
+- [ ] **Step 4: Commit**（訊息照下方；只准動上列檔案）
 
 ```bash
-git commit -m "docs: the spec now allows several institutional libraries, and what needs recalibrating"
+git commit -m "docs: the spec now allows several institutional libraries, and what needs long-term care"
 ```
 
 ---
