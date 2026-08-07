@@ -43,8 +43,13 @@ export const createCollection = (payload) =>
  * Partial update — only provided fields change. ``embedding_*`` are
  * intentionally omitted from the API surface (silent reindex hazard).
  *
+ * ``anila_searchable`` is admin-only and guarded server-side (four pre-checks
+ * in app/api/ingestion/collections.py); refusals come back as a ``detail``
+ * string that names a way out — show it verbatim.
+ *
  * @param {number} collectionId
  * @param {{ name?: string, description?: string, status?: 'active' | 'archived',
+ *          anila_searchable?: boolean,
  *          chunking_config?: { strategy: string, params?: Record<string, unknown> } }} patch
  */
 export const updateCollection = (collectionId, patch) =>
