@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import json
+import json as json_module  # ``post()`` 的參數名就叫 json，會遮蔽模組名
 import os
 
 # 同 house pattern（test_proxy_task_wiring.py）：endpoint 測試會啟動 app，
@@ -101,6 +102,11 @@ class _FakeClient:
     last_body: dict | None = None
     last_headers: dict = {}
     stream_lines: list[str] | None = None
+    # 下游自己回的 ``anila_meta``。設了之後 CSP 的骨架就**不會**被建出來
+    # （proxy.py:1327-1328 的 ``if not existing_meta:``、service.py:635 同形），
+    # 於是 kb_state 只能靠本層蓋上去——那是硬規則 1 唯一分得出
+    # 「真的蓋了」與「骨架預設值剛好也是 not_searched」的路徑。
+    post_meta: dict | None = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -114,18 +120,21 @@ class _FakeClient:
     async def post(self, url, json=None, headers=None):
         type(self).last_body = json
         type(self).last_headers = dict(headers or {})
-        return _PostResponse(
-            {
-                "choices": [
-                    {"message": {"role": "assistant", "content": "上游的回答"}}
-                ],
-                "usage": {
-                    "prompt_tokens": 3,
-                    "completion_tokens": 4,
-                    "total_tokens": 7,
-                },
-            }
-        )
+        payload = {
+            "choices": [
+                {"message": {"role": "assistant", "content": "上游的回答"}}
+            ],
+            "usage": {
+                "prompt_tokens": 3,
+                "completion_tokens": 4,
+                "total_tokens": 7,
+            },
+        }
+        if type(self).post_meta is not None:
+            payload["anila_meta"] = json_module.loads(
+                json_module.dumps(type(self).post_meta)
+            )
+        return _PostResponse(payload)
 
     def stream(self, method, url, json=None, headers=None):
         type(self).last_body = json
@@ -148,6 +157,7 @@ def _fake_upstream(monkeypatch):
     _FakeClient.last_body = None
     _FakeClient.last_headers = {}
     _FakeClient.stream_lines = None
+    _FakeClient.post_meta = None
     monkeypatch.setattr(
         proxy_service.httpx, "AsyncClient", lambda *a, **k: _FakeClient(*a, **k)
     )
@@ -670,3 +680,158 @@ async def test_sse_wrapper_passes_everything_else_through():
     )
     for chunk in chunks:
         assert chunk.strip() in out
+
+
+# ── 7. 下游自帶 anila_meta：狀態仍然必須是本層蓋上去的 ───────────────────────
+
+
+def _downstream_meta_lines(meta: dict) -> list[str]:
+    """下游自己送一個 anila.meta frame 的串流（``meta_seen`` → 骨架不會被合成）。"""
+    return [
+        'data: {"choices":[{"index":0,"delta":{"content":"上游的回答"},'
+        '"finish_reason":"stop"}],"usage":{"prompt_tokens":2,'
+        '"completion_tokens":2,"total_tokens":4}}',
+        "",
+        "event: anila.meta",
+        "data: " + json.dumps(meta, ensure_ascii=False),
+        "",
+        "data: [DONE]",
+        "",
+    ]
+
+
+@pytest.mark.parametrize("exit_kind", _EXITS)
+@pytest.mark.parametrize(
+    "route, expected",
+    [(None, "not_searched"), ("direct", "searched_hit")],
+    ids=["unmarked", "marked"],
+)
+def test_downstream_supplied_meta_still_carries_the_state(
+    client, db, actor, model_target, agent_target, kb, exit_kind, route, expected
+):
+    """⚠ 硬規則 1 的**核心釘子**：狀態必須是本層真的蓋上去的，不可以只是
+    「骨架的預設值剛好也是 not_searched」。
+
+    下游（agent 或模型）自己回了 ``anila_meta`` 時，CSP 的骨架**根本不會被建
+    出來**（proxy.py:1327-1328、service.py:635 都是 ``if not existing_meta:``），
+    串流那邊 ``meta_seen`` 也會讓 proxy_stream 不再合成。這條路徑上「靠缺席
+    表示 not_searched」會讓欄位**整個消失**，而畫面上與「查過、沒命中」
+    一模一樣——那正是本檔開頭第 1 條寫的頭號家賊。
+    """
+    downstream = {
+        "citations": [{"id": "ds-1", "title": "下游自己的來源"}],
+        "trace": [{"kind": "call", "label": "下游", "detail": "d", "status": "ok"}],
+    }
+    _FakeClient.post_meta = downstream
+    _FakeClient.stream_lines = _downstream_meta_lines(downstream)
+    kb.result = KbResult(state=KbState.SEARCHED_HIT, hits=[_hit(1), _hit(2)])
+
+    meta = _run_exit(
+        client, actor, model_target, agent_target, exit_kind, route=route
+    )
+    assert "kb_state" in meta, "下游自帶 meta 時 kb_state 整個不見了"
+    assert meta["kb_state"] == expected
+    # 下游自己的來源不可以被吃掉（我們的排前面，[N] 才對得上）。
+    assert any(c["id"] == "ds-1" for c in meta["citations"])
+    if expected == "searched_hit":
+        assert [c["id"] for c in meta["citations"]][-1] == "ds-1"
+        assert len(meta["citations"]) == 3
+
+
+# ── 8. trace 是第三個表面，也要說同一個故事 ─────────────────────────────────
+
+
+def _kb_trace(meta: dict) -> dict | None:
+    for entry in meta.get("trace") or []:
+        if isinstance(entry, dict) and entry.get("kind") == "institutional_kb":
+            return entry
+    return None
+
+
+@pytest.mark.parametrize(
+    "state, failed, expected_status",
+    [
+        (KbState.SEARCHED_HIT, [], "ok"),
+        (KbState.SEARCHED_MISS, [], "ok"),
+        (KbState.PARTIAL_ERROR, [3], "partial"),
+        (KbState.SEARCH_ERROR, [3], "error"),
+    ],
+    ids=lambda v: str(v),
+)
+def test_the_trace_entry_tells_the_same_story_as_the_state(
+    client, db, actor, model_target, kb, state, failed, expected_status
+):
+    """trace 是使用者真的會讀到的**第三個表面**（``apps/anila-shell/src/chat.jsx``
+    的 RoutingTrace／ReasoningSummary 逐則渲染）。payload 與提示詞都套了誠實
+    紀律，trace 漏掉就會出現「payload 說查不了、畫面上寫查過沒有」——設計 §5
+    「沒命中與查不了是兩件事」的逐字違反。
+    """
+    hits = [_hit(1), _hit(2)] if state in (
+        KbState.SEARCHED_HIT, KbState.PARTIAL_ERROR
+    ) else []
+    kb.result = KbResult(state=state, hits=hits, failed_collections=failed)
+    resp = _chat(client, actor, target=model_target.name, route="direct")
+    entry = _kb_trace(resp.json()["anila_meta"])
+    assert entry is not None, f"{state.value} 沒有留下 trace 條目"
+    assert entry["status"] == expected_status
+    assert entry["label"] == proxy_api._KB_TRACE_LABEL
+
+
+def test_the_trace_never_calls_a_failure_a_miss(
+    client, db, actor, model_target, kb
+):
+    """「查不了」不可以在 trace 上被寫成「查過、沒有」——兩個狀態就這樣從
+    使用者那邊消失了。"""
+    kb.result = KbResult(state=KbState.SEARCH_ERROR, failed_collections=[1])
+    resp = _chat(client, actor, target=model_target.name, route="direct")
+    entry = _kb_trace(resp.json()["anila_meta"])
+    assert entry["status"] == "error"
+    assert "失敗" in entry["detail"]
+    assert "沒有相關條文" not in entry["detail"]
+
+    kb.result = KbResult(state=KbState.SEARCHED_MISS)
+    resp = _chat(client, actor, target=model_target.name, route="direct")
+    miss_entry = _kb_trace(resp.json()["anila_meta"])
+    assert miss_entry["status"] == "ok"
+    assert miss_entry["detail"] != entry["detail"]
+
+
+def test_not_searched_leaves_no_trace_entry(
+    client, db, actor, model_target, kb
+):
+    """沒搜過就不要在每一通聊天的 trace 上多一行（也不可以留一行說搜過了）。"""
+    resp = _chat(client, actor, target=model_target.name)
+    assert _kb_trace(resp.json()["anila_meta"]) is None
+
+
+# ── 9. partial 的「這不是全部的依據」必須進到提示詞 ──────────────────────────
+
+
+def test_partial_error_tells_the_model_the_basis_is_incomplete(
+    client, db, actor, model_target, kb
+):
+    """payload 誠實還不夠：模型手上少了一庫卻沒被告知，就會照著這幾段當成
+    完整依據作答，而使用者讀到的是那段話，不是 meta 欄位。"""
+    kb.result = KbResult(
+        state=KbState.PARTIAL_ERROR,
+        hits=[_hit(1), _hit(2)],
+        failed_collections=[3, 9],
+    )
+    _chat(client, actor, target=model_target.name, route="direct")
+    system = _system_text(_FakeClient.last_body)
+    assert proxy_api._KB_PARTIAL_NOTICE.format(n=2) in system
+
+
+def test_a_clean_hit_does_not_claim_the_basis_is_incomplete(
+    client, db, actor, model_target, kb
+):
+    """反向：全庫都查成時不可以無中生有地說檢索不完整。"""
+    kb.result = KbResult(state=KbState.SEARCHED_HIT, hits=[_hit(1), _hit(2)])
+    _chat(client, actor, target=model_target.name, route="direct")
+    system = _system_text(_FakeClient.last_body)
+    # ⚠ 斷言的字串必須真的是 ``_KB_PARTIAL_NOTICE`` 裡有的片段，否則這條是
+    # 永遠不會紅的假斷言（markdown 的星號位置很容易抄錯一格）。
+    assert "全部的依據" in proxy_api._KB_PARTIAL_NOTICE
+    assert "查詢失敗" in proxy_api._KB_PARTIAL_NOTICE
+    assert "全部的依據" not in system
+    assert "查詢失敗" not in system
