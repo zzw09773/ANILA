@@ -97,10 +97,29 @@ Vue 3（governance-ui，node --test）、pytest。
 - [ ] Step 1 失敗測試（十顆 round-trip＋回退鏈行為各一）
 - [ ] Step 2–5：跑失敗 → 實作 → 跑通過 → commit
   （`feat(csp): ten knobs take effect on the next request, not the next restart`）
-## Task 3：C 類消費端改造（b：速率逾時 5＋memory 4）
+## Task 3：C 類消費端改造（b：速率逾時 5＋memory 4）（展開 2026-08-09）
 
-同上；timeout 下限防呆特別釘
-   （值域拒 0——從畫面打掛平台必須不可能）。
+**九顆**（key 拼法以登錄表為準）：proxy 組 5＝`ANILA_ACTION_INVOKE_PER_MIN`／`LLM_TIMEOUT`／
+`EMBEDDING_TIMEOUT`／`PROXY_MAX_RETRIES`／`PROXY_RETRY_BASE_DELAY`；memory 組 4＝
+`MEMORY_RETRIEVE_TOP_K`／`MEMORY_RETRIEVE_MIN_COSINE`／`MEMORY_MAX_CHUNK_CHARS`／`MEMORY_HTTP_TIMEOUT`。
+
+**方法同 Task 2**（讀取點改 `get_setting(db, key)`、env 留回退鏈、動手前對 env-recon §2
+重驗行號、沒 session 就沿現有依賴鏈穿、真的改不動就 STOP 別假裝），外加本組的三個特別點：
+1. **memory 組是模組層讀取**（recon 組 C 明寫）——改造必須殺掉模組層捕捉，
+   突變「把某顆改回模組層常數」必死。
+2. **timeout 兩顆可能織進 httpx client 的建構**——若 client 是池化/模組層單例，
+   per-request 值要下沉到**呼叫時參數**（httpx 允許 per-request timeout override），
+   不是重建 client；哪一層生效要在報告寫清楚並被釘住。
+3. **值域下限是命門**：timeout 拒 0 與過小值、retries 0–10、`MIN_COSINE` 0–1——
+   Task 1 的 domain_fn 已宣告，本任務加**行為級**釘（set 一個下限外的值→被拒→
+   生效值仍是舊的，而不是半套用）。
+
+**常設規則（吃過兩次虧）**：行為測試的值必須 ≠ 場上每一個預設值（登錄表／config／env），
+否則凍結與活讀分不出來。round-trip 三點照舊（下界／內插／上界）。
+
+- [ ] Step 1 失敗測試（九顆 round-trip＋回退鏈＋上列三特別點）
+- [ ] Step 2–5：跑失敗 → 實作 → 跑通過 → commit
+  （`feat(csp): nine operational knobs go live-read, with floors that keep the platform up`）
 ## Task 4：B 類開機覆蓋
 
 config 載入 hook＋模擬 boot 測試工具＋載入失敗誠實路徑
