@@ -120,10 +120,31 @@ Vue 3（governance-ui，node --test）、pytest。
 - [ ] Step 1 失敗測試（九顆 round-trip＋回退鏈＋上列三特別點）
 - [ ] Step 2–5：跑失敗 → 實作 → 跑通過 → commit
   （`feat(csp): nine operational knobs go live-read, with floors that keep the platform up`）
-## Task 4：B 類開機覆蓋
+## Task 4：B 類開機覆蓋（展開 2026-08-09）
 
-config 載入 hook＋模擬 boot 測試工具＋載入失敗誠實路徑
-   （env 開機＋警告＋來源欄如實；「靜默假裝成功」突變必紅）。
+**機制（設計 §2 追加裁決）**：csp 開機時（DB 可達之後、開始服務之前——實務上是 app lifespan
+啟動段）讀 `platform_settings` 的 B_EDIT 類覆蓋值，套到凍結的 `Settings` 物件上。
+pydantic v2 的凍結模型怎麼寫入（`object.__setattr__`／`model_copy`／wrapper）是實作判斷，
+但**套用後所有既有讀取點看到的必須是覆蓋值**——不是第二份平行狀態。
+
+**要件：**
+1. **套用紀錄**：hook 留一份「哪些 key 套了什麼值」的紀錄（模組層唯讀 snapshot），
+   Task 5 的 overview 靠它把「來源」欄寫成 db-boot——沒有紀錄，來源欄就得用猜的。
+2. **載入失敗誠實三件組**（設計 §6.6）：DB 可達但讀取炸→以 env 值開機＋大聲警告＋
+   snapshot 記「載入失敗」讓來源欄如實；**開機絕不能因設定表掛掉**；
+   突變「載入失敗靜默假裝成功」必紅。
+3. **收掉 Task 1 的 C1 遞延**：逐顆裁「這顆 B_EDIT 在 hook 套用前就被消費了嗎」——
+   會的（已知嫌疑：`PYTHONUNBUFFERED`／`STATIC_DIR`／`DEBUG`／`ANILA_HOST`，以真碼為準）
+   **降級 B_LOCKED＋locked_reason「開機序早於覆蓋載入」**（登錄表改動，屬本任務 SCOPE，
+   逐顆在報告揭露）。降級後 B_EDIT 名單重算，census 測試同步更新。
+4. **模擬 boot 測試工具**：fresh Settings＋跑一次 hook（對測試 DB）→ 斷言
+   `PUT → DB 列 → 模擬 boot → 生效值` round-trip；至少三顆代表性 B_EDIT 各測
+   （值 ≠ 場上每個預設——常設規則）。
+5. worker／其他行程不載覆蓋（本輪範圍外，設計 §3.2 已鎖相關顆）——hook 只進 csp。
+
+- [ ] Step 1 失敗測試（round-trip×3、失敗三件組、snapshot 誠實、降級顆的 census）
+- [ ] Step 2–5：跑失敗 → 實作 → 跑通過 → commit
+  （`feat(csp): boot picks up what the admin saved, and says so honestly`）
 ## Task 5：Overview＋PUT 端點
 
 全 95 顆 payload（A 後端遮蔽、類別、來源、需重啟旗標、
