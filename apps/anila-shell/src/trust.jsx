@@ -9,7 +9,11 @@ import { classificationLevelBadge } from "./runtime/classified.js";
 export const CitationInline = ({ n, citation, onOpen }) => (
   <button
     onClick={() => onOpen?.(citation)}
-    title={citation ? `${citation.title} · ${citation.section}` : ""}
+    // `section` 是選配的:院內規章的引用沒有這個欄位(定位點是條號,不是章節),
+    // 而樣板字串會把缺席印成字面的 "undefined" —— 在一個使用者正拿來查證依據
+    // 的表面上顯示 "undefined" 是最糟的一種。守衛沿用抽屜端既有的寫法(:107 的
+    // `c.section &&`),讓同一份資料的兩個表面講同一句話。
+    title={citation ? (citation.section ? `${citation.title} · ${citation.section}` : citation.title) : ""}
     style={{
       display: "inline-flex", alignItems: "center", justifyContent: "center",
       minWidth: 18, height: 18, padding: "0 4px",

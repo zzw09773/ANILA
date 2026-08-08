@@ -33,6 +33,7 @@ from app.api.ingestion import (
     search_router as ingestion_search_router,
 )
 from app.api.jwks import router as jwks_router
+from app.api.institutional_kb import router as institutional_kb_router
 from app.api.classification_inventory import router as classification_inventory_router
 from app.api.admin import feedback_router, health_overview_router
 from app.modules.policy import router as policy_decisions_router
@@ -81,6 +82,8 @@ api_router.include_router(artifacts_router)
 api_router.include_router(jwks_router)
 # 機敏分類盤點(doc 08 §15 Classification Inventory Before Cutover;admin/owner)。
 api_router.include_router(classification_inventory_router)
+# 院內規章檢索的分數門檻設定 ＋ 校準視圖(admin-tier,整個 router 都關著)。
+api_router.include_router(institutional_kb_router)
 # P3.3 服務健康總覽 + P3.4 使用者回饋(admin-tier)。
 api_router.include_router(health_overview_router)
 api_router.include_router(feedback_router)

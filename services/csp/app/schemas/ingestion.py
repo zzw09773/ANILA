@@ -141,6 +141,15 @@ class CollectionUpdate(BaseModel):
         default=None,
         description="不接受；改用 POST /api/ingestion/collections/{id}/classification。",
     )
+    anila_searchable: bool | None = Field(
+        default=None,
+        description=(
+            "ANILA 聊天可否直接檢索本庫。僅管理員可設；開啟前要過四道檢查"
+            "（本庫是無機密／不是個人知識庫／嵌入模型與已標記集一致／庫內"
+            "沒有密等文件）。關閉（false）不受那四道限制——每一則拒絕訊息"
+            "叫人去做的正是這個動作，把它擋住等於把出口封死。"
+        ),
+    )
 
     @field_validator("classification_level")
     @classmethod
@@ -205,6 +214,9 @@ class CollectionResponse(ApiResponseModel):
     created_by: int
     origin: str | None = None
     classification_level: str = "無機密"
+    # 標記後端真的收到了嗎——沒有這個欄位，一次成功的 PATCH 就只是「回了 200，
+    # 畫面什麼也沒變」，正是本專案盤點過的靜默成功形狀。
+    anila_searchable: bool = False
     created_at: datetime
     updated_at: datetime
 

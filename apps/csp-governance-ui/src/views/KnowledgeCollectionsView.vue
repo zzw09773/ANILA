@@ -42,6 +42,7 @@
           <div class="cc__title">
             <span class="cc__name">{{ c.name }}</span>
             <TermBadge :variant="c.status === 'active' ? 'ok' : ''">{{ c.status }}</TermBadge>
+            <TermBadge v-if="c.anila_searchable" variant="ok">ANILA 可檢索</TermBadge>
           </div>
           <div class="cc__id tnum">id #{{ c.id }}</div>
         </header>
@@ -70,7 +71,19 @@
           <button v-if="c.status === 'active'" class="term-action" @click="archiveCollection(c)">封存</button>
           <button v-else class="term-action" @click="restoreCollection(c)">還原</button>
           <span class="cc__sep">·</span>
+          <!-- 標記不可用時停用但不藏起來：藏掉的控制項讓管理員以為這個功能不存在，
+               而他其實只差一個降密流程／一句「請管理員代標」。原因用文字寫出來，
+               不是只掛 :title —— 滑鼠不停在上面的人永遠看不到 tooltip。 -->
+          <button
+            class="term-action"
+            :disabled="!markStates[c.id].allowed || markingId === c.id"
+            :title="markStates[c.id].reason"
+            @click="toggleAnilaSearchable(c)"
+          >{{ c.anila_searchable ? '取消 ANILA 檢索標記' : '標記為 ANILA 可檢索' }}</button>
+          <span class="cc__sep">·</span>
           <button class="term-action term-action--danger" @click="confirmDelete(c)">刪除</button>
+          <p v-if="markStates[c.id].reason" class="cc__foot-note cell-meta">{{ markStates[c.id].reason }}</p>
+          <p v-if="markErrors[c.id]" class="cc__foot-note feedback is-err">{{ markErrors[c.id] }}</p>
         </footer>
       </article>
     </div>
@@ -141,6 +154,12 @@ const formError = ref('')
 // chunking, but small leaves give vector recall the headroom the
 // parent-child design assumes.
 const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
+// ANILA 檢索標記(institutional-kb Task 7)。DB CHECK
+// ``ck_ingestion_collections_anila_searchable_unclassified`` 只允許無機密的庫
+// 帶著這個旗標,所以密等一離開無機密,標記在資料庫層就已經不可能了。
+const ANILA_MARK_UNCLASSIFIED = '無機密'
+const markErrors = ref({})
+const markingId = ref(null)
 const form = ref({
   name: '', description: '', strategy: 'hierarchical', maxTokens: 256,
   classification_level: '無機密',
@@ -236,6 +255,68 @@ async function restoreCollection(c) {
   try { await updateCollection(c.id, { status: 'active' }); await loadCollections() }
   catch (e) { error.value = `還原失敗：${e.response?.data?.detail || e.message}` }
 }
+const markStates = computed(() => {
+  const map = {}
+  for (const c of collections.value) map[c.id] = anilaMarkState(c, isAdmin.value)
+  return map
+})
+
+/**
+ * 這個庫的 ANILA 檢索標記能不能按,不能按的話原因是什麼。
+ *
+ * 順序照後端 `_guard_anila_searchable`(collections.py:143)與 PATCH 的 admin 閘
+ * (collections.py:676):
+ *   1. admin 閘在最前面,**兩個方向**都擋(標記的影響範圍是全院的聊天檢索)。
+ *   2. 密等只擋「開啟」;關閉永遠放行 —— 後端每一則拒絕訊息都叫人「先取消標記」,
+ *      把關閉也擋起來等於指了一條走不通的路。
+ * 只做這兩道:嵌入空間一致與庫內文件密等要跨列查,前端手上的清單是篩過的
+ * (只有 origin=csp、可能只有自己的),自己算會跟後端漂開。那兩道交給後端拒絕,
+ * 訊息原樣呈現。
+ *
+ * 純函式、無 Vue 相依:tests/anilaSearchableToggle.test.mjs 會把這段原始碼抽出來
+ * 直接評估,所以裡面不用樣板字串與正規表示式字面量(抽取器不處理那兩種狀態)。
+ */
+function anilaMarkState(c, isAdminUser) {
+  const marked = Boolean(c && c.anila_searchable)
+  if (!isAdminUser) {
+    return {
+      marked,
+      allowed: false,
+      reason: '只有管理員可以設定 ANILA 檢索標記——這等同於把整個庫開放給全院的聊天檢索。請把這個庫的網址交給管理員代為標記。',
+    }
+  }
+  if (marked) return { marked, allowed: true, reason: '' }
+  const level = (c && c.classification_level) || ANILA_MARK_UNCLASSIFIED
+  if (level !== ANILA_MARK_UNCLASSIFIED) {
+    return {
+      marked,
+      allowed: false,
+      reason: '此庫密等是「' + level + '」，只有「' + ANILA_MARK_UNCLASSIFIED
+        + '」的庫可以標記為 ANILA 可檢索（資料庫層也擋著）。若這批資料實際上不需要密等，'
+        + '請先走降密申請流程降到「' + ANILA_MARK_UNCLASSIFIED + '」，再回來標記。',
+    }
+  }
+  return { marked, allowed: true, reason: '' }
+}
+
+async function toggleAnilaSearchable(c) {
+  if (!anilaMarkState(c, isAdmin.value).allowed) return
+  markingId.value = c.id
+  markErrors.value[c.id] = ''
+  try {
+    // 不做樂觀更新:畫面上那個值等下一輪 LIST 回來的,不是這裡先寫上去的。
+    // 「顯示值≠生效值」是本專案盤點過的靜默成功形狀。
+    await updateCollection(c.id, { anila_searchable: !c.anila_searchable })
+    await loadCollections()
+  } catch (e) {
+    // 後端的拒絕訊息裡寫著一條走得通的路(降密流程／另建一個庫／請管理員代標),
+    // 原樣呈現,不要改寫成「操作失敗」。
+    markErrors.value[c.id] = '標記失敗：' + (e.response?.data?.detail || e.message)
+  } finally {
+    markingId.value = null
+  }
+}
+
 async function confirmDelete(c) {
   if (!(await confirm({ message: `刪除「${c.name}」？CASCADE 會移除 ${c.document_count} 份文件與 ${c.chunk_count} 個區塊。`, danger: true }))) return
   try { await deleteCollection(c.id); await loadCollections() }
@@ -338,6 +419,8 @@ function humanBytes(n) {
 }
 .cc__sep { color: var(--c-border-strong); }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+/* 停用原因／後端拒絕訊息各自佔滿一行（cc__foot 是 wrap 的 flex）。 */
+.cc__foot-note { flex-basis: 100%; margin: 2px 0 0; line-height: 1.5; }
 
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
 </style>
