@@ -54,11 +54,20 @@ from enum import Enum
 from typing import Any, Callable
 
 from anila_core.ingestion.ocr import _DEFAULT_VISION_PROMPT
+from app.config import Settings
 from app.models.platform_setting import (
     KB_THRESHOLD_DEFAULT,
     KB_THRESHOLD_KEY,
     _is_usable_kb_threshold,
 )
+
+# ⚠ 這一顆的預設值**不能寫死**。``config.py:125`` 是
+# ``STATIC_DIR: str = str(Path(__file__).parent / "static")`` —— 一個隨安裝位置變動的
+# **絕對**路徑。抄一個 ``"app/static"`` 進來，畫面上「程式預設」欄就會印出一個這個行程
+# 從來沒有用過的相對路徑，而 ``main.py:460`` 是拿 CWD 去解相對路徑的：差別不是外觀，
+# 是行為。直接取欄位宣告的那個值，宣告與現實就由**建構方式**保證是同一個。
+# （其餘 52 顆 pydantic 欄位的預設值仍然逐顆字面宣告，由測試比對 —— 那才是真的核對。）
+_STATIC_DIR_DEFAULT: str = Settings.model_fields["STATIC_DIR"].default
 
 
 class UnknownSettingError(KeyError):
@@ -153,8 +162,19 @@ _CARD_TRUTHY = frozenset({"1", "true", "yes"})
 
 
 def _parse_card_truthy(raw: str) -> bool:
-    """``card_auth``：``strip().lower() in ("1", "true", "yes")``。"""
+    """``card_auth:109``（``CARD_DEV_TRUST_TEST_CA``）：``strip().lower() in (...)``。"""
     return raw.strip().lower() in _CARD_TRUTHY
+
+
+def _parse_card_truthy_nostrip(raw: str) -> bool:
+    """``card_auth:121``（``CARD_DEV_SKIP_NONCE_BINDING``）：``lower() in (...)``，**沒有 strip**。
+
+    ⚠ 兩顆是兄弟旗標，判準卻差一個 ``strip()``。共用「差不多」的那一份規則會讓
+    ``CARD_DEV_SKIP_NONCE_BINDING=" true "`` 在畫面上顯示成已開啟，而模組層那個
+    flag 其實是關的 —— 一個 SEC 類（反 replay 綁定）的顯示謊言。差一個字的規則
+    要各自宣告，不是四捨五入成同一個。
+    """
+    return raw.lower() in _CARD_TRUTHY
 
 
 def _format_flag_eq_1(value: bool) -> str:
@@ -177,7 +197,10 @@ T_BOOL_LOWER_TRUE = SettingType(
     "bool(lower() == 'true')", bool, _parse_lower_eq_true, _format_lowercase_bool
 )
 T_BOOL_CARD_TRUTHY = SettingType(
-    "bool(in 1/true/yes)", bool, _parse_card_truthy, _format_lowercase_bool
+    "bool(strip, in 1/true/yes)", bool, _parse_card_truthy, _format_lowercase_bool
+)
+T_BOOL_CARD_TRUTHY_NOSTRIP = SettingType(
+    "bool(no strip, in 1/true/yes)", bool, _parse_card_truthy_nostrip, _format_lowercase_bool
 )
 
 
@@ -198,6 +221,9 @@ def _closed_int_range(low: int, high: int) -> Callable[[Any], bool]:
         return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
 
     _in_range.__doc__ = f"整數，閉區間 [{low}, {high}]。"
+    # ⚠ 掛在函式上而不是複製到別處：測試靠它反問「有值域的條目，說明文字有沒有把
+    # 值域寫出來」。值域的**唯一**來源仍然是這個閉包本身。
+    _in_range.bounds = (low, high)
     return _in_range
 
 
@@ -208,6 +234,7 @@ def _closed_float_range(low: float, high: float) -> Callable[[Any], bool]:
         )
 
     _in_range.__doc__ = f"數值，閉區間 [{low}, {high}]。"
+    _in_range.bounds = (low, high)
     return _in_range
 
 
@@ -312,7 +339,9 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("app.site_url", "SITE_URL", SettingClass.B_EDIT, T_STR, _is_non_empty_str,
           "http://localhost", True, "平台對外網址，產生連結時用。"),
     _spec("app.static_dir", "STATIC_DIR", SettingClass.B_EDIT, T_STR, _is_non_empty_str,
-          "app/static", True, "靜態檔目錄。import 期算出，改了要重建容器。"),
+          _STATIC_DIR_DEFAULT, True,
+          "靜態檔目錄。import 期由 config.py 算成絕對路徑，改了要重建容器；"
+          "填相對路徑的話是相對於行程的工作目錄解析的。"),
     _spec("app.host", "ANILA_HOST", SettingClass.B_EDIT, T_STR, _is_str,
           "", True, "部署主機名。csp 本身不消費，只在開機檢查它不是 placeholder。"),
     _spec("app.python_unbuffered", "PYTHONUNBUFFERED", SettingClass.B_EDIT, T_STR, _is_str,
@@ -381,7 +410,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
           T_BOOL_CARD_TRUTHY, _accept_any, False, False,
           "開發用：信任測試 CA（卡登唯一入口時強制失效）。", _SEC_CARD_REASON),
     _spec("card.dev_skip_nonce_binding", "CARD_DEV_SKIP_NONCE_BINDING", SettingClass.SEC,
-          T_BOOL_CARD_TRUTHY, _accept_any, False, True,
+          T_BOOL_CARD_TRUTHY_NOSTRIP, _accept_any, False, True,
           "開發用：跳過 nonce 綁定（反 replay）。內網一律不可設。", _SEC_CARD_REASON),
 
     # ── network.* —— 入向白名單與出向 SSRF 閘 ───────────────────────────
@@ -494,9 +523,10 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "檔案系統語意；三個讀取點（含模組層）時機不一，執行期改會讓它們對不齊（設計 §3.2）"),
     _spec("queue.redis_url", "REDIS_URL", SettingClass.B_LOCKED, T_STR, _accept_any,
           "redis://redis:6379", True,
-          "Redis DSN。⚠ 兩個模組層讀取點的內建預設不同"
-          "（ingestion_queue 是 redis://redis:6379，token_revocation_publisher 是 "
-          "redis://redis:6379/0），此處取前者。",
+          "Redis DSN。⚠ 三個讀取點的內建預設不一致，而且**多數是另一個值**："
+          "ingestion_queue.py:24 是 redis://redis:6379，"
+          "token_revocation_publisher.py:79 與 health_checker.py:634 都是 "
+          "redis://redis:6379/0。此處宣告前者（收斂是獨立 follow-up）。",
           "跨服務基礎設施 DSN，執行期改＝事故製造機（設計 §3.2）"),
     _spec("queue.token_revocation_redis_timeout", "TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS",
           SettingClass.B_EDIT, T_FLOAT, _closed_float_range(0.1, 60.0), 2.0, True,
@@ -561,14 +591,14 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "", True, "agent 註冊範本目錄；空值＝用程式推導的 repo 內路徑。"),
 
     # ── ingestion.* —— OCR 與視覺模型（消費者主要在 anila_core） ────────
-    _spec("ingestion.pdf_ocr_fallback", "PDF_OCR_FALLBACK", SettingClass.B_EDIT,
-          T_BOOL_LOWER_TRUE, _is_bool, False, False,
+    _spec("ingestion.pdf_ocr_fallback", "PDF_OCR_FALLBACK", SettingClass.B_LOCKED,
+          T_BOOL_LOWER_TRUE, _accept_any, False, False,
           "掃描 PDF 走視覺模型 OCR 後援。⚠ csp 端的 compose 刻意寫死 false，"
-          "預覽與實際 ingest 的不一致是刻意設計。"),
-    _spec("ingestion.vision_url", "VISION_URL", SettingClass.B_EDIT, T_STR, _is_str,
-          "", False, "OCR 用視覺模型的 base URL。"),
-    _spec("ingestion.vision_model", "VISION_MODEL", SettingClass.B_EDIT, T_STR, _is_str,
-          "", False, "OCR 用視覺模型的模型名。"),
+          "預覽與實際 ingest 的不一致是刻意設計。", _OCR_REASON),
+    _spec("ingestion.vision_url", "VISION_URL", SettingClass.B_LOCKED, T_STR, _accept_any,
+          "", False, "OCR 用視覺模型的 base URL。", _OCR_REASON),
+    _spec("ingestion.vision_model", "VISION_MODEL", SettingClass.B_LOCKED, T_STR,
+          _accept_any, "", False, "OCR 用視覺模型的模型名。", _OCR_REASON),
     _spec("ingestion.vision_api_key", "VISION_API_KEY", SettingClass.A, T_STR, _is_str,
           "", False, "OCR 用視覺模型的 Bearer key。", _SECRET_REASON),
     _spec("ingestion.vision_verify_ssl", "VISION_VERIFY_SSL", SettingClass.SEC,

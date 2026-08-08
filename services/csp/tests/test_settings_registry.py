@@ -28,13 +28,18 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import os
+import pathlib
+import re
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import pytest
 
+from anila_core.ingestion.ocr import _DEFAULT_VISION_PROMPT
+from app.config import Settings
 from app.models.platform_setting import (
     KB_THRESHOLD_DEFAULT,
     KB_THRESHOLD_KEY,
@@ -134,7 +139,15 @@ EXPECTED_C_ENV_NAMES = frozenset({
     "MEMORY_HTTP_TIMEOUT",
 })
 
-# 設計 §3.2 具名排除 → B-鎖定。
+#: fix round 1（I1，控制方裁定）：這三顆**不在**設計 §3.2 的具名清單裡，但它們與
+#: 那六顆一起被讀在 ``build_ocr_backend_from_env()``（ocr.py:367-387）**同一個函式**
+#: 內，主要消費者同樣是 ingestion-worker（另一行程，讀不到 csp DB）。留在 B-可編輯
+#: 等於在一個「其餘六個輸入全鎖住」的建構器上開放三個輸入可改 —— 改了不會生效，
+#: 正是設計 §6.7 列的第一種形狀。
+#: ⚠ env 名是**不帶前綴**的 ``VISION_URL``／``VISION_MODEL``，不是 ``PDF_OCR_VISION_*``。
+_OCR_TRIO = frozenset({"PDF_OCR_FALLBACK", "VISION_URL", "VISION_MODEL"})
+
+# 設計 §3.2 具名排除（＋ I1 的三顆）→ B-鎖定。
 EXPECTED_B_LOCKED_ENV_NAMES = frozenset({
     "MEMORY_LLM_MODEL",
     "ANILA_ALERT_SMTP_ENABLED", "ANILA_ALERT_SMTP_HOST", "ANILA_ALERT_SMTP_PORT",
@@ -143,7 +156,7 @@ EXPECTED_B_LOCKED_ENV_NAMES = frozenset({
     "PDF_OCR_DPI", "PDF_OCR_CONCURRENCY", "PDF_OCR_MAX_PAGES",
     "PDF_OCR_VISION_PROMPT", "DOC_PARSER", "DOCLING_OCR_LANGS",
     "INGESTION_UPLOAD_DIR", "REDIS_URL",
-})
+} | _OCR_TRIO)
 
 # 盤點 §1 的 13 顆 SECRET。
 EXPECTED_A_ENV_NAMES = frozenset({
@@ -170,7 +183,7 @@ EXPECTED_SEC_ENV_NAMES = frozenset({
 # 沒有一顆可以留在「未裁定」狀態偷偷變成可編輯。
 AMBIGUOUS_ENV_NAMES = (
     EXPECTED_C_ENV_NAMES
-    | EXPECTED_B_LOCKED_ENV_NAMES
+    | (EXPECTED_B_LOCKED_ENV_NAMES - _OCR_TRIO)
     | {"ANILA_TRUSTED_HOSTS", "ACCESS_TOKEN_EXPIRE_MINUTES", "REFRESH_TOKEN_EXPIRE_DAYS"}
 )
 
@@ -284,7 +297,7 @@ def test_class_census_matches_the_rulings():
         len(by_class[SettingClass.B_LOCKED]),
         len(by_class[SettingClass.SEC]),
         len(by_class[SettingClass.A]),
-    ) == (19, 22, 16, 25, 13)
+    ) == (19, 19, 19, 25, 13)
 
 
 def test_every_ambiguous_variable_was_explicitly_ruled_on():
@@ -296,6 +309,26 @@ def test_every_ambiguous_variable_was_explicitly_ruled_on():
         spec = _by_env_name(name)
         assert spec.setting_class is not SettingClass.B_EDIT, (
             f"{name} 是盤點列為歧義的變數，卻落在 B-可編輯"
+        )
+
+
+def test_every_input_of_the_ocr_builder_is_locked_together():
+    """``build_ocr_backend_from_env()`` 讀的九顆，一顆都不可編輯（fix round 1 I1）。
+
+    在一個「六個輸入鎖住、三個輸入可改」的建構器上開放編輯，等於在畫面上承諾一件
+    改了不會生效的事 —— 那個函式的主要消費者是 ingestion-worker，另一個行程，
+    讀不到 csp 的 ``platform_settings``。這一支釘的是**整組**，不是那三顆，
+    所以往後往那個函式加一顆新的 env 也逃不掉。
+    """
+    ocr_builder_inputs = {
+        "PDF_OCR_FALLBACK", "VISION_URL", "VISION_MODEL", "VISION_API_KEY",
+        "PDF_OCR_VISION_PROMPT", "PDF_OCR_DPI", "PDF_OCR_CONCURRENCY",
+        "PDF_OCR_MAX_PAGES", "VISION_VERIFY_SSL",
+    }
+    for name in sorted(ocr_builder_inputs):
+        spec = _by_env_name(name)
+        assert spec.setting_class not in EDITABLE_CLASSES, (
+            f"{name} 被 build_ocr_backend_from_env() 讀，卻宣告成可編輯"
         )
 
 
@@ -390,9 +423,14 @@ def test_c_class_never_requires_a_restart():
         ("PDF_OCR_FALLBACK", "true", True),
         ("PDF_OCR_FALLBACK", "1", False),
         ("VISION_VERIFY_SSL", "false", False),
-        # card_auth：strip().lower() in ("1", "true", "yes")。
+        # card_auth:109 —— strip().lower() in ("1", "true", "yes")。
         ("CARD_DEV_TRUST_TEST_CA", "yes", True),
         ("CARD_DEV_TRUST_TEST_CA", "on", False),
+        ("CARD_DEV_TRUST_TEST_CA", " true ", True),
+        # card_auth:121 —— **同一族但沒有 strip**（`.lower() in (...)`）。
+        # 兩顆共用一個「差不多」的規則，會讓 " true " 在畫面上是開、在模組層是關。
+        ("CARD_DEV_SKIP_NONCE_BINDING", "true", True),
+        ("CARD_DEV_SKIP_NONCE_BINDING", " true ", False),
         # config.py 的 53 顆走 pydantic 的 bool 解析。
         ("DEBUG", "true", True),
         ("DEBUG", "on", True),
@@ -620,7 +658,8 @@ def test_set_setting_records_the_actor(db):
 def test_set_setting_refuses_every_non_editable_key(db):
     """全類別掃過，不是抽一顆。"""
     refused = [s for s in SETTINGS if s.setting_class not in EDITABLE_CLASSES]
-    assert len(refused) == 54
+    # 96 條目 − 可編輯 39（C 19 ＋ 門檻別名 1 ＋ B-可編輯 19）= 57。
+    assert len(refused) == 57
     for spec in refused:
         with pytest.raises(ValueError):
             set_setting(db, spec.key, spec.default)
@@ -692,6 +731,205 @@ def test_rejection_message_carries_the_range_in_plain_words(db):
 
 
 # ── 9. 祕密：登錄表本身不可以夾帶祕密值 ────────────────────────────────────
+
+
+# ── 10. 宣告 vs 現實（fix round 1，I3：三個活下來的探針就在這一段） ────────
+#
+# 前面每一支測試都在問「登錄表**內部**自洽嗎」——類別集合、值域、來回、回退鏈。
+# 內部自洽擋不住的是**配對漂掉**：某一顆的 env 名換成另一顆的、某一顆的預設值
+# 跟真正的讀取點對不上、說明文字寫的值域跟 domain_fn 收的不是同一段。三者都
+# 讓整套測試全綠，而畫面上會印出一個這個行程從來沒有用過的值。
+#
+# 所以這一段刻意**不**再嵌一份名單去比對自己，而是去讀**現實**：
+#   * pydantic 那 53 顆 → `Settings.model_fields[...].default`
+#   * 原生讀取點 → 掃原始碼裡 `os.environ.get("NAME", "字面值")` 的字面值
+#   * 值域 → 拿說明文字裡印出來的那兩個數字**去試** domain_fn 的邊界
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+_SOURCE_ROOTS = (
+    _REPO_ROOT / "services" / "csp" / "app",
+    _REPO_ROOT / "packages" / "anila-core" / "src" / "anila_core",
+)
+
+# `os.environ.get("NAME", "literal")` / `os.getenv("NAME", "literal")`。
+# 只認**兩個引數都是字面值**的形式 —— 名字是變數（startup_security 的泛型 helper、
+# url_guard 的 `_env_flag(name)`）或預設值是常數的，這裡看不到，由下面的
+# `_DEFAULT_NOT_MECHANICALLY_PINNABLE` 具名交代。
+_ENV_LITERAL_DEFAULT = re.compile(
+    r"""os\.(?:environ\.get|getenv)\(\s*["']([A-Z0-9_]+)["']\s*,\s*(["'][^"']*["'])\s*\)"""
+)
+
+#: 兩種比對都構不到的 15 顆，逐顆有理由。名單本身被 `test_no_entry_escapes_both_default_pins`
+#: 釘成相等，所以將來新增的條目不可能默默掉進這個豁免區。
+_DEFAULT_NOT_MECHANICALLY_PINNABLE = {
+    # url_guard 的 `_env_flag(name)`：名字是參數，字面上看不到。
+    "ANILA_ALLOW_HTTP_ENDPOINT", "ANILA_ALLOW_HTTP_AGENT_ENDPOINT",
+    "ANILA_ALLOW_GRPC_ENDPOINT", "ANILA_ALLOW_PRIVATE_ENDPOINT",
+    # startup_security 的泛型 helper：名字來自 `_KNOWN_DEFAULTS` 的鍵。
+    "ANILA_HOST", "INTERNAL_PLATFORM_API_KEY", "CODESERVER_PASSWORD",
+    # 讀取點沒有給預設值（None／`or` 後備／常數轉指）。
+    "ANILA_TEMPLATE_DIR", "ANILA_ZIP_FILENAME_ENC", "CSP_APP_DB_PASSWORD",
+    "CSP_SECRET_KEY", "LEGACY_SQLITE_PATH",
+    # 預設值是一個常數而不是字面值 —— 改用同一性比對，見下一支測試。
+    "PDF_OCR_VISION_PROMPT",
+    # 沒有任何 app 讀取點：CPython／httpx runtime 自己消費。
+    "PYTHONUNBUFFERED", "SSL_CERT_FILE",
+}
+
+#: key 的末段一律要能在 env 名裡認出來（去底線後的子字串）。以下十顆是刻意的
+#: 例外 —— 登錄表是拼法的唯一權威（brief），但「刻意」必須寫下來，否則跟打錯字
+#: 長得一模一樣。
+_KEY_TO_ENV_EXCEPTIONS = {
+    "db.migration_url": "MIGRATION_DATABASE_URL",
+    "db.app_role_password": "CSP_APP_DB_PASSWORD",
+    "auth.secret_key_fallback": "CSP_SECRET_KEY",
+    "auth.jwt_algorithm": "ALGORITHM",
+    "card.enabled": "ENABLE_CARD_LOGIN",
+    "card.require_card_only": "REQUIRE_CARD_LOGIN_ONLY",
+    "network.allow_http_model_endpoint": "ANILA_ALLOW_HTTP_ENDPOINT",
+    "network.environment": "ANILA_ENV",
+    "storage.attachment_path": "ATTACHMENT_STORAGE_PATH",
+    "intl.zip_filename_encoding": "ANILA_ZIP_FILENAME_ENC",
+}
+
+#: 說明文字裡的「允許 A–B」。這句話會原樣送到管理員眼前（設計 §5）。
+_DECLARED_RANGE = re.compile(r"允許\s*(-?[0-9.]+)\s*[–—~-]\s*(-?[0-9.]+)")
+
+
+def _literal_defaults_from_source() -> dict[str, set[str]]:
+    found: dict[str, set[str]] = {}
+    for root in _SOURCE_ROOTS:
+        assert root.is_dir(), f"掃描不到 {root}"
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for name, literal in _ENV_LITERAL_DEFAULT.findall(text):
+                found.setdefault(name, set()).add(ast.literal_eval(literal))
+    return found
+
+
+def test_pydantic_backed_defaults_equal_the_settings_field_default():
+    """53 顆 config.py 欄位：宣告的預設值 == `Settings` 那個欄位真正的預設值。
+
+    ⚠ 這一支就是抓出 `STATIC_DIR` 的那一支（fix round 1 的 I2）：登錄表寫
+    ``"app/static"``，而 `config.py:125` 算出來的是**絕對路徑**，`main.py` 又是拿
+    CWD 去解相對路徑的 —— 畫面上的「程式預設」會印一個這個行程從來沒有用過的值。
+    「畫面上看到的設定與實際生效的值不一致」正是本包要消滅的形狀。
+    """
+    fields = Settings.model_fields
+    checked = 0
+    for spec in _env_backed():
+        if spec.env_name not in fields:
+            continue
+        checked += 1
+        assert spec.default == fields[spec.env_name].default, (
+            f"{spec.key} 宣告 {spec.default!r}，但 Settings.{spec.env_name} 的預設是 "
+            f"{fields[spec.env_name].default!r}"
+        )
+    assert checked == 53, f"只比到 {checked} 顆 pydantic 欄位，應該是 53"
+
+
+def test_native_read_site_defaults_equal_the_declared_default():
+    """原生 ``os.environ.get`` 讀取點：字面上的預設值 == 登錄表宣告的預設值。
+
+    比的是**解析後**的值，不是字串 —— ``"1"`` 在 ``!= "0"`` 的規則下是 True，
+    在 ``lower() == "true"`` 的規則下是 False，所以這一支同時守著解讀規則。
+    同一個名字有多個讀取點且預設值不同時（``REDIS_URL``），只要求宣告的那個
+    真的是其中之一，並由該條目的說明文字交代分歧。
+    """
+    found = _literal_defaults_from_source()
+    checked = 0
+    for spec in _env_backed():
+        literals = found.get(spec.env_name)
+        if not literals:
+            continue
+        checked += 1
+        parsed = {spec.value_type.parse(raw) for raw in literals}
+        assert spec.default in parsed, (
+            f"{spec.key} 宣告 {spec.default!r}，讀取點的字面預設是 {sorted(literals)!r}"
+        )
+    assert checked >= 30, f"只掃到 {checked} 個原生讀取點，掃描器可能壞了"
+
+
+def test_no_entry_escapes_both_default_pins():
+    """每一顆要嘛被 pydantic 比對到，要嘛被原始碼掃描比對到，要嘛具名豁免。
+
+    豁免名單是相等比對而不是包含比對：新增一顆而忘了讓它可比對時，這一支會紅，
+    不會讓它默默溜進「沒有人核對過」的那一區。
+    """
+    found = _literal_defaults_from_source()
+    fields = set(Settings.model_fields)
+    unpinned = {
+        spec.env_name
+        for spec in _env_backed()
+        if spec.env_name not in fields and spec.env_name not in found
+    }
+    assert unpinned == _DEFAULT_NOT_MECHANICALLY_PINNABLE
+
+
+def test_the_vision_prompt_default_is_the_program_constant_itself():
+    """那一顆比不了字面值的，用同一性比 —— 不是抄一份提示詞過來。"""
+    spec = REGISTRY["ingestion.pdf_ocr_vision_prompt"]
+    assert spec.default is _DEFAULT_VISION_PROMPT
+
+
+def test_every_key_identifies_its_own_env_variable():
+    """key 的末段要指得出**它自己**那個 env 名，不是隔壁那個。
+
+    ⚠ 兩顆條目同類別、同型別、同預設值時（``VISION_URL``／``VISION_MODEL``），
+    把它們的 env 名對調，名字**集合**沒變、類別統計沒變、需重啟集合沒變 ——
+    前面每一支測試都還是綠的，而畫面上會把一顆變數的現行值印在另一顆的標籤底下。
+    """
+    for spec in _env_backed():
+        expected = _KEY_TO_ENV_EXCEPTIONS.get(spec.key)
+        if expected is not None:
+            assert spec.env_name == expected, (
+                f"{spec.key} 列在具名例外裡，卻對到 {spec.env_name}"
+            )
+            continue
+        leaf = spec.key.split(".", 1)[1].replace("_", "")
+        assert leaf in spec.env_name.lower().replace("_", ""), (
+            f"{spec.key} 的末段在 {spec.env_name} 裡認不出來；"
+            f"若是刻意的拼法，請加進 _KEY_TO_ENV_EXCEPTIONS 並說明"
+        )
+    assert set(_KEY_TO_ENV_EXCEPTIONS) <= {s.key for s in SETTINGS}
+
+
+def test_the_range_in_the_description_is_the_range_the_domain_fn_enforces():
+    """說明文字印出來的值域，就是 ``domain_fn`` 真正收的那一段 —— 用邊界去試。
+
+    ⚠ 設計 §5 要求被拒時的 ``detail`` **原樣**呈現給管理員，而那句話來自
+    ``description``。說明寫「允許 1–7200」而 ``domain_fn`` 只收到 3600，管理員會
+    照著說明填 7200、然後被拒 —— 畫面告訴他的規則不是後端執行的規則。
+    這裡不比常數、比行為：任何 ``domain_fn`` 都適用（含門檻那個已關板的函式）。
+    """
+    checked = 0
+    for spec in SETTINGS:
+        match = _DECLARED_RANGE.search(spec.description)
+        if match is None:
+            continue
+        checked += 1
+        cast = int if spec.value_type.py_type is int else float
+        low, high = cast(float(match.group(1))), cast(float(match.group(2)))
+        step = 1 if cast is int else 1e-9
+        assert spec.domain_fn(low) is True, f"{spec.key} 說明寫下界 {low}，domain_fn 不收"
+        assert spec.domain_fn(high) is True, f"{spec.key} 說明寫上界 {high}，domain_fn 不收"
+        assert spec.domain_fn(cast(low - step)) is False, (
+            f"{spec.key} 的 domain_fn 收得比說明寫的下界更低"
+        )
+        assert spec.domain_fn(high + step) is False, (
+            f"{spec.key} 的 domain_fn 收得比說明寫的上界更高"
+        )
+    assert checked >= 21, f"只核到 {checked} 段值域說明，正規表示式可能沒對上"
+
+
+def test_every_bounded_setting_prints_its_range_in_the_description():
+    """有值域的條目一定要把值域寫進說明 —— 否則管理員只能用猜的去撞。"""
+    for spec in SETTINGS:
+        if getattr(spec.domain_fn, "bounds", None) is None:
+            continue
+        assert _DECLARED_RANGE.search(spec.description), (
+            f"{spec.key} 的 domain_fn 有值域 {spec.domain_fn.bounds}，說明卻沒寫出來"
+        )
 
 
 def test_secret_entries_are_declared_but_carry_no_live_secret():
