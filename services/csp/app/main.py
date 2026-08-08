@@ -17,6 +17,7 @@ from app.api.conversations import router as conversations_router
 from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
 from app.api.directory import router as directory_router
+from app.api.platform_settings import router as platform_settings_router
 from app.middleware.csrf import CsrfMiddleware
 from app.models.user import User
 from app.services.auth_service import require_admin
@@ -516,6 +517,8 @@ app.include_router(conversations_router)
 app.include_router(attachments_router)
 app.include_router(handoffs_router)
 app.include_router(directory_router)
+# 設定頁的後端（登錄表全 96 顆的實情 + 可編輯那些的寫入）。
+app.include_router(platform_settings_router)
 
 # Mount static files for Swagger UI
 static_dir = Path(settings.STATIC_DIR)

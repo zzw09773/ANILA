@@ -340,7 +340,25 @@ _INTERPRETER_REASON = (
     "由 CPython 直譯器在行程啟動時消費，開機序早於覆蓋載入、也早於一切應用程式碼"
     "（Task 4 C1）"
 )
-_OCR_REASON = "主要消費者是 ingestion-worker（另一行程，讀不到 csp DB）；搬遷需 worker 側設定通道（設計 §3.2）"
+
+
+def _compose_hint(env_name: str) -> str:
+    """「不能從畫面改」後面要接的那一句：**那要去哪裡改**。
+
+    ⚠ 降級的那七顆現在完全沒有活路（Task 4 報告 §concern 4）：鎖定理由說了原因，
+    卻沒有說做法，於是管理員只剩「重開機試試看」可以做——而重開機正是那件對這
+    七顆**永遠不會有效**的事。指路要指到唯一真的有效的通道：compose 的 csp 服務
+    ``environment``。措辭是「設（沒有這一行就自己加）」而不是「改」，因為這七顆
+    裡今天只有 ``PYTHONUNBUFFERED``／``ANILA_TEMPLATE_DIR`` 真的寫在 compose 裡，
+    其餘四顆連那一行都還不存在。
+    """
+    return (
+        f"。改法：在 compose 的 csp 服務 environment 設 {env_name}"
+        "（現在沒有這一行就自己加），改完 up -d 重建容器"
+    )
+
+
+_OCR_REASON ="主要消費者是 ingestion-worker（另一行程，讀不到 csp DB）；搬遷需 worker 側設定通道（設計 §3.2）"
 
 
 SETTINGS: tuple[SettingSpec, ...] = (
@@ -352,21 +370,21 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("app.debug", "DEBUG", SettingClass.B_LOCKED, T_BOOL_PYDANTIC, _is_bool,
           False, True, "FastAPI 除錯姿態。內網正式部署一律關閉。"
           "⚠ 唯一讀取點是 database.py:10 的 engine ``echo``，engine 在 import 期就建好了。",
-          _BOOT_ORDER_REASON),
+          _BOOT_ORDER_REASON + _compose_hint("DEBUG")),
     _spec("app.site_url", "SITE_URL", SettingClass.B_EDIT, T_STR, _is_non_empty_str,
           "http://localhost", True, "平台對外網址，產生連結時用。"),
     _spec("app.static_dir", "STATIC_DIR", SettingClass.B_LOCKED, T_STR, _is_non_empty_str,
           _STATIC_DIR_DEFAULT, True,
           "靜態檔目錄。import 期由 config.py 算成絕對路徑，改了要重建容器；"
           "填相對路徑的話是相對於行程的工作目錄解析的。",
-          _BOOT_ORDER_REASON),
+          _BOOT_ORDER_REASON + _compose_hint("STATIC_DIR")),
     _spec("app.host", "ANILA_HOST", SettingClass.B_LOCKED, T_STR, _is_str,
           "", True, "部署主機名。csp 本身不消費，只在開機檢查它不是 placeholder。",
-          _ENV_ONLY_CHANNEL_REASON),
+          _ENV_ONLY_CHANNEL_REASON + _compose_hint("ANILA_HOST")),
     _spec("app.python_unbuffered", "PYTHONUNBUFFERED", SettingClass.B_LOCKED, T_STR,
           _is_str, "", True,
           "CPython 的 stdout 緩衝旗標，由直譯器消費，不經應用程式。",
-          _INTERPRETER_REASON),
+          _INTERPRETER_REASON + _compose_hint("PYTHONUNBUFFERED")),
 
     # ── db.* ─────────────────────────────────────────────────────────────
     _spec("db.url", "DATABASE_URL", SettingClass.A, T_STR, _is_str,
@@ -382,7 +400,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "舊 SQLite 資料檔位置；未設時走程式內建的候選路徑清單。"
           "⚠ 讀取點是 startup_migrations 的 ``os.environ``（不是 Settings 欄位），"
           "時機雖然在覆蓋之後，通道卻接不上。",
-          _ENV_ONLY_CHANNEL_REASON),
+          _ENV_ONLY_CHANNEL_REASON + _compose_hint("LEGACY_SQLITE_PATH")),
 
     # ── auth.* ───────────────────────────────────────────────────────────
     _spec("auth.secret_key", "SECRET_KEY", SettingClass.A, T_STR, _is_str,
@@ -528,12 +546,25 @@ SETTINGS: tuple[SettingSpec, ...] = (
           _SECRET_REASON),
 
     # ── seed.* —— 開機自動註冊 ──────────────────────────────────────────
+    # ⚠ 這三顆的「改了會怎樣」**各自不同**，所以說明不可以是同一句複製。以真碼為準
+    # （auto_seed.py），不是照類別猜：一句「僅首次開機生效」抄三次，對後兩顆是假的。
     _spec("seed.models", "AUTO_REGISTER_MODELS", SettingClass.B_EDIT, T_STR, _is_str,
-          "", True, "開機自動註冊的模型清單（JSON 字串）。"),
+          "", True,
+          "開機自動註冊的模型清單（JSON 字串）。⚠ env **只負責建立**：清單裡的名字"
+          "若已經在模型登錄裡，這一次開機不會動它任何一個欄位（連端點都不蓋回去，"
+          "auto_seed.py:272 的 OE-2 B3）。所以改這裡只對**新加的名字**有效，"
+          "既有模型請到治理中心改。"),
     _spec("seed.agents", "AUTO_REGISTER_AGENTS", SettingClass.B_EDIT, T_STR, _is_str,
-          "", True, "開機自動註冊的 agent 清單（JSON 字串）。"),
+          "", True,
+          "開機自動註冊的 agent 清單（JSON 字串）。⚠ 端點以外的欄位（owner、"
+          "描述、能力、核准狀態）**每次開機都會照這份清單重新同步**既有的 agent"
+          "（auto_seed.py:383 起）；端點本身建立之後歸管理員，不會被蓋回去。"),
     _spec("seed.links", "AUTO_REGISTER_LINKS", SettingClass.B_EDIT, T_STR, _is_str,
-          "", True, "開機自動註冊的平台連結清單（JSON 字串）。"),
+          "", True,
+          "開機自動註冊的平台連結清單（JSON 字串）。⚠ **每次開機都會 upsert**："
+          "env 擁有的欄位（網址、圖示、說明、排序、是否公開）會照這份清單蓋回去"
+          "（auto_seed.py:96 起）；治理中心自建的連結（config_source=db）與"
+          "「是否啟用」不受影響。"),
     _spec("seed.api_keys", "AUTO_SEED_API_KEYS", SettingClass.A, T_STR, _is_str,
           "", True,
           "開機自動建立的帳號與 API key 清單（JSON 字串）。⚠ 值裡面內嵌 API key，"
@@ -558,7 +589,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "同步撤銷發布的 Redis 逾時秒數。允許 0.1–60 秒。"
           "⚠ token_revocation_publisher.py:80 在 import 期就把它算成模組常數，"
           "而且讀的是 os.environ。",
-          _BOOT_ORDER_REASON),
+          _BOOT_ORDER_REASON + _compose_hint("TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS")),
 
     # ── limits.* —— 純數值調節鈕 ────────────────────────────────────────
     _spec("limits.department_max_depth", "ANILA_DEPARTMENT_MAX_DEPTH", SettingClass.C,
@@ -620,7 +651,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "agent 註冊範本目錄；空值＝用程式推導的 repo 內路徑。"
           "⚠ api/agents/registration.py:106 在 import 期就把它算成模組常數，"
           "而且讀的是 os.environ。",
-          _BOOT_ORDER_REASON),
+          _BOOT_ORDER_REASON + _compose_hint("ANILA_TEMPLATE_DIR")),
 
     # ── ingestion.* —— OCR 與視覺模型（消費者主要在 anila_core） ────────
     _spec("ingestion.pdf_ocr_fallback", "PDF_OCR_FALLBACK", SettingClass.B_LOCKED,
