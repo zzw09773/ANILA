@@ -145,11 +145,40 @@ pydantic v2 的凍結模型怎麼寫入（`object.__setattr__`／`model_copy`／
 - [ ] Step 1 失敗測試（round-trip×3、失敗三件組、snapshot 誠實、降級顆的 census）
 - [ ] Step 2–5：跑失敗 → 實作 → 跑通過 → commit
   （`feat(csp): boot picks up what the admin saved, and says so honestly`）
-## Task 5：Overview＋PUT 端點
+## Task 5：Overview＋PUT 端點（展開 2026-08-09）
 
-全 95 顆 payload（A 後端遮蔽、類別、來源、需重啟旗標、
-   待生效值）；PUT 類別閘（非可編輯 key 一律 400 人話）；稽核同交易＋補
-   `platform_setting_set` 斷言（帳本舊債）。測試：A 全名單零值外洩、非法 key 全類掃。
+**Files:** New `services/csp/app/api/platform_settings.py`（admin router，照
+`institutional_kb.py` 的 `Depends(require_admin)` 形）＋ 新測試檔；main.py 掛 router。
+
+**GET `/api/platform-settings/overview`**——全登錄表（96 條含門檻別名）payload，每列：
+`key`／`class`／`description`／`restart_required`／`locked_reason`（有則帶）／
+**`effective`＝現在真正生效的值**（C 類走 `get_setting`；B 類走 `getattr(settings,…)`——
+**不是** snapshot 的 applied：`max(15,…)` 樓地板那型會讓兩者不同，Task 4 帳本明記）／
+`stored`＝DB 列原值（無列＝null）／`pending`＝B_EDIT 且 stored≠本次開機套用值時為 stored
+（＝「重啟後生效」的預告）／`source`∈ db｜db-boot｜env｜default（B 類靠 Task 4 的
+`boot_override_snapshot()`；`load_failed=True` 時 B 類 source 一律如實回 env/default 並帶
+`boot_override_load_failed: true` 頂層旗標——畫面要說「這次開機沒載入覆蓋」）。
+**A 類**：`effective`／`stored` 一律 null，改帶 `is_set: bool`——**遮蔽在後端**，
+測試掃全 13 顆名單斷言 payload 任何角落不含其值（用植入的 sentinel 值驗，不是抽查）。
+
+**PUT `/api/platform-settings/{key}`**——只收 C 與 B_EDIT；B_LOCKED／SEC／A → 400
+帶人話（含 locked_reason）；驗值走登錄表 domain_fn；稽核 `platform_setting_set`
+**同交易**（flush 不 commit 的既有形），**並補上這個事件的測試斷言**（帳本舊債，
+Task 4 之前就欠）。回應＝該列的 overview payload（改完立刻能看到 pending/effective 分態）。
+
+**一次收掉的遞延（各一條測試）：**
+1. **孤兒欄位掃描**（Task 2 carry）：`app/` 不得再出現那七顆 `settings.<FIELD>` 讀取
+   （registry 有 env_name 對照，掃描照 Task 3 的 construction-pattern 經驗寫，零手抄）。
+2. **降級七顆的自救路徑**（Task 4 carry）：`locked_reason` 補「怎麼改」（compose 鍵名）——
+   登錄表文字修改屬本任務 SCOPE。
+3. seed.* 三顆的 no-op 語意：description 補一句「僅首次開機生效」型說明（以真碼為準）。
+
+**測試．常設規則全套用**：值 ≠ 場上每個預設；非法 key 的 PUT 全類別完整名單迭代；
+A 類 sentinel 掃描全名單；`effective≠stored≠pending` 三態各有分辨測試
+（ALERT_CHECK_INTERVAL 那顆樓地板案例直接入測）。
+
+- [ ] Step 1 失敗測試 → Step 2–5：實作 → 通過 → commit
+  （`feat(csp): one endpoint that tells the whole truth about every setting`）
 ## Task 6：前端四區三態頁
 
 照 DepartmentsView 形＋補初載錯誤 UI；三態並列（生效/待生效/預設）；
