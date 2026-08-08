@@ -42,6 +42,7 @@ import inspect
 import logging
 import os
 import pathlib
+from typing import Any
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
@@ -57,7 +58,7 @@ from app.config import (
     settings,
 )
 from app.models.platform_setting import PlatformSetting, set_setting
-from app.services.settings_registry import SETTINGS, SettingClass
+from app.services.settings_registry import REGISTRY, SETTINGS, SettingClass
 
 # ── 場上的固定樣本 ─────────────────────────────────────────────────────────
 
@@ -209,6 +210,65 @@ def test_the_override_is_visible_through_a_reference_captured_before_the_hook(
     for name in sharing:
         assert consumers[name].USAGE_BATCH_SIZE == 4321, f"{name} 看不到覆蓋"
     assert config_module.settings is captured, "模組屬性被換掉了 —— 舊參考會看不到覆蓋"
+
+
+def _probe_value_for(spec, boot_value: Any) -> Any:
+    """給這顆設定挑一個**合法**、且不等於場上任何一份預設值的探針值。
+
+    值撞到預設值時「真的套上去了」與「什麼也沒發生」會一起變綠（本專案的常設
+    規則），所以要避開三個來源：登錄表的 ``default``、這次開機算出來的值
+    （env／``.env``／程式預設），以及目前欄位上的值。同時要通過這顆自己的
+    ``domain_fn``，並且 ``format``／``parse`` 來回不變 —— 不然測的就是編碼而不是套用。
+    """
+    forbidden = {spec.default, boot_value, getattr(settings, spec.env_name)}
+    candidates = {
+        int: [4321, 7777, 137, 43, 7],
+        float: [0.375, 4.25, 37.5, 1.5],
+        str: [f"boot-probe-4321-{spec.key}", "boot-probe-4321"],
+        bool: [not spec.default],
+    }[spec.value_type.py_type]
+    for candidate in candidates:
+        if candidate in forbidden or not spec.domain_fn(candidate):
+            continue
+        if spec.value_type.parse(spec.value_type.format(candidate)) != candidate:
+            continue
+        return candidate
+    raise AssertionError(
+        f"{spec.key} 找不到一個合法又避開所有預設值的探針值 —— 請補一個候選進來，"
+        "不要讓這顆從全體釘裡漏掉"
+    )
+
+
+def test_every_applied_key_really_landed_on_settings(db, simulated_boot):
+    """快照的核心承諾：``applied`` ＝ **真的蓋到 ``settings`` 上**的值。
+
+    ⚠ 這一支涵蓋**當下登錄表裡的每一顆 B-可編輯**（從 ``SETTINGS`` 推導，不是
+    手寫名單——手寫名單的教訓已經在帳上）。上一輪只有四顆有 per-key 證據，於是
+    「寫入迴圈靜默跳過一顆、而 ``pending``／快照原封不動」在 297 passed 底下走得
+    過去：Task 5 的來源欄會指著一個從來沒有落地的值說 db-boot。
+
+    後置條件是通用的（逐 key 比對欄位現值），所以將來新增的 B-可編輯顆會自動
+    加入，不需要有人記得回來補。
+    """
+    fresh = Settings()
+    probes = {
+        spec.key: _probe_value_for(spec, getattr(fresh, spec.env_name))
+        for spec in _b_edit_specs()
+    }
+    assert len(probes) == len(_b_edit_specs()) >= 12, "B-可編輯的顆數變了，先確認是有意的"
+    for key, value in probes.items():
+        set_setting(db, key, value)
+
+    snapshot = simulated_boot(db)
+
+    assert set(snapshot.applied) == set(probes), "快照的鍵集合與存進去的不一致"
+    for key, recorded in snapshot.applied.items():
+        field = REGISTRY[key].env_name
+        assert recorded == probes[key], f"{key} 的快照值不是我們存的那個"
+        assert getattr(settings, field) == recorded, (
+            f"{key}：快照宣稱套用了 {recorded!r}，但 settings.{field} 上是 "
+            f"{getattr(settings, field)!r} —— 來源欄會指著一個從來沒有落地的值"
+        )
 
 
 def test_the_hook_leaves_untouched_settings_alone(db, simulated_boot):
@@ -509,11 +569,19 @@ def test_no_b_edit_field_is_consumed_at_import_time():
     assert offenders == {}, (
         f"這些 B-可編輯欄位在 import 期就被讀走了，覆蓋來不及：{offenders}"
     )
-    # 豁免名單用等式釘：這兩顆之所以還能是 B-可編輯，是因為 hook 之後有一段
-    # 把值補寫回 FastAPI 物件；多一顆進來就必須先給出同等的補救。
+    # 豁免名單用**等式**釘（三條合起來才真的是等式，缺一條就只是包含關係）：
+    #   ① offenders == {}            → (模組層 ∩ B-可編輯) ⊆ 豁免名單
+    #   ② EXEMPT ⊆ module_level      → 名單裡沒有已經不存在的殘骸
+    #   ③ EXEMPT ⊆ B_EDIT            → 名單沒有因為某顆被降級而靜默變得過寬
+    # 少了 ③，哪天 APP_NAME 降級成 B-鎖定，這張豁免名單會繼續放行一個不需要
+    # 豁免的欄位，而沒有任何測試會說話。
     assert MODULE_LEVEL_READ_EXEMPT <= set(module_level), (
         "豁免名單裡有已經不存在的模組層讀取 —— 名單該縮了"
     )
+    assert MODULE_LEVEL_READ_EXEMPT <= set(_b_edit_fields()), (
+        "豁免名單裡有已經不是 B-可編輯的欄位 —— 它不需要豁免了，名單該縮了"
+    )
+    assert set(module_level) & set(_b_edit_fields()) == MODULE_LEVEL_READ_EXEMPT
 
 
 DEMOTION_EVIDENCE = {
@@ -558,11 +626,17 @@ def test_the_hook_runs_after_the_schema_and_before_every_consumer():
     from app import main
 
     source = inspect.getsource(main.lifespan)
+    # ⚠ 錨點必須是**呼叫**，不是 import 敘述。lifespan 裡的 import 是就地寫的，
+    # ``source.find("apply_boot_overrides")`` 命中的是那一行；把整個呼叫區塊搬到
+    # ``auto_seed()`` 之後、import 留在原位，這個釘就完全看不見（驗收自創突變
+    # P-A 正是這樣活下來的）。真正的行為釘在
+    # ``test_every_lifespan_consumer_observes_the_override_at_the_moment_it_runs``，
+    # 這一支是**補充**的原始碼位置釘。
     positions = {
         name: source.find(name)
         for name in (
             "_run_alembic_upgrade",
-            "apply_boot_overrides",
+            "= apply_boot_overrides(",
             "run_startup_migrations",
             "auto_seed(",
             "start_health_checker(",
@@ -572,7 +646,10 @@ def test_the_hook_runs_after_the_schema_and_before_every_consumer():
     }
     missing = [n for n, i in positions.items() if i < 0]
     assert missing == [], f"lifespan 裡找不到這些呼叫：{missing}"
-    assert positions["_run_alembic_upgrade"] < positions["apply_boot_overrides"]
+    assert positions["= apply_boot_overrides("] > source.find("apply_boot_overrides"), (
+        "錨點又指到 import 敘述了 —— 這個釘會漏掉「呼叫搬走、import 留下」那個突變"
+    )
+    assert positions["_run_alembic_upgrade"] < positions["= apply_boot_overrides("]
     for later in (
         "run_startup_migrations",
         "auto_seed(",
@@ -580,36 +657,50 @@ def test_the_hook_runs_after_the_schema_and_before_every_consumer():
         "start_usage_writer(",
         "start_alert_detectors(",
     ):
-        assert positions["apply_boot_overrides"] < positions[later], (
+        assert positions["= apply_boot_overrides("] < positions[later], (
             f"覆蓋套在 {later} 之後 —— 那顆設定的消費端讀到的是舊值"
         )
 
 
-def test_the_boot_path_survives_a_hook_that_explodes(monkeypatch):
+def test_the_boot_path_survives_a_hook_that_explodes(monkeypatch, real_boot_row):
     """hook 自己炸了也不可以擋住開機 —— 而且快照要說「我們沒有去看」。
 
     ``apply_boot_overrides`` 擋得住它自己看得到的例外；連 session 都開不起來的
     時候它根本沒被呼叫過，快照會停在初始值（``load_failed=False``、
     ``applied={}``）—— 那正好長得跟「沒有人設定過」一模一樣。開機端的保險絲要
     把這一次記成失敗，否則設定頁會把一次沒看到說成一次乾淨的開機。
+
+    ⚠ **先跑一次成功的開機**再引爆。少了這一步，下面的 ``applied == {}`` 是恆真
+    的（模組層快照本來就是空的），於是「失敗時把**上一輪**的 ``applied`` 留著」
+    ——快照同時說「載入失敗」又列著幾顆套用過的 key，而 Task 5 的畫面會自相
+    矛盾——那個形狀就有出口（驗收自創突變 P-C 正是這樣活下來的）。同一個行程
+    內開機兩次不是假想：``TestClient`` 每進一次 context 就是一次 lifespan。
     """
     from fastapi.testclient import TestClient
 
     from app import main
 
+    # ① 成功的那一次：把模組層快照填成非空。
+    real_boot_row("usage.batch_size", 4321)
+    with TestClient(main.app) as c:
+        assert c.get("/health").status_code == 200
+    assert boot_override_snapshot().applied == {"usage.batch_size": 4321}, (
+        "第一次開機沒有套到東西 —— 這一支的前提沒有建立起來"
+    )
+
+    # ② 第二次開機，hook 自爆。
     def _boom(_db):
         raise RuntimeError("hook 自己炸了")
 
     monkeypatch.setattr(config_module, "apply_boot_overrides", _boom)
-    monkeypatch.setattr(
-        config_module, "_current_snapshot", config_module._current_snapshot
-    )
     with TestClient(main.app) as c:
         assert c.get("/health").status_code == 200
 
     snapshot = boot_override_snapshot()
     assert snapshot.load_failed is True, "開機沒讀到設定表，快照卻說一切正常"
-    assert snapshot.applied == {}
+    assert snapshot.applied == {}, (
+        "失敗的開機留著上一輪的 applied —— 快照同時說「載入失敗」又列著套用過的 key"
+    )
     assert "RuntimeError" in snapshot.failure_reason
 
 
@@ -623,17 +714,19 @@ def real_boot_row():
     收尾一定要把列刪掉並還原欄位：這個 DB 是整個 session 共用的，留一列下來
     等於讓後面每一支測試都在一個被改過名字的平台上跑。
     """
+    from app import main
     from app.database import SessionLocal
 
     written: list[str] = []
-    saved = {
-        "APP_NAME": settings.APP_NAME,
-        "APP_VERSION": settings.APP_VERSION,
-        "title": None,
-        "version": None,
-    }
+    #: 每寫一個 key 就先把它對應的 ``Settings`` 欄位存起來 —— 真的 lifespan 會把
+    #: 覆蓋蓋到全域單例上，不還原就等於讓後面每一支測試在一個被改過的平台上跑。
+    saved_fields: dict[str, Any] = {}
+    saved_app = {"title": main.app.title, "version": main.app.version}
 
     def _write(key: str, value):
+        field = REGISTRY[key].env_name
+        if field is not None and field not in saved_fields:
+            saved_fields[field] = getattr(settings, field)
         session = SessionLocal()
         try:
             set_setting(session, key, value)
@@ -642,10 +735,6 @@ def real_boot_row():
             session.close()
         written.append(key)
 
-    from app import main
-
-    saved["title"] = main.app.title
-    saved["version"] = main.app.version
     try:
         yield _write
     finally:
@@ -658,14 +747,99 @@ def real_boot_row():
             session.commit()
         finally:
             session.close()
-        settings.APP_NAME = saved["APP_NAME"]
-        settings.APP_VERSION = saved["APP_VERSION"]
-        main.app.title = saved["title"]
-        main.app.version = saved["version"]
+        for field, value in saved_fields.items():
+            setattr(settings, field, value)
+        main.app.title = saved_app["title"]
+        main.app.version = saved_app["version"]
         main.app.openapi_schema = None
         config_module._current_snapshot = BootOverrideSnapshot(
             applied=config_module._EMPTY_OVERRIDES, load_failed=False, failure_reason=""
         )
+
+
+def test_every_lifespan_consumer_observes_the_override_at_the_moment_it_runs(
+    real_boot_row, monkeypatch
+):
+    """**行為**版的順序釘：每一個消費端執行的當下，看到的必須是覆蓋後的值。
+
+    原始碼位置比對可以被繞過（把呼叫區塊搬走、import 留在原位）；這一支問的是
+    執行期的事實，所以與原始碼怎麼排版無關。做法是把 lifespan 會呼叫的那幾個
+    消費端換成探針，記下**它被呼叫的那一刻** ``settings`` 上的值。
+
+    覆蓋要是套得太晚，``admin.username``／``seed.*`` 會被 ``auto_seed`` 以覆蓋前
+    的值消費掉，三個背景迴圈也會用舊的間隔跑一輪——管理員在畫面上改了、重啟
+    了、值照舊，而且沒有任何錯誤訊息。**那正是本包宣稱要消滅的形狀。**
+
+    ⚠ lifespan 裡的 import 都是就地寫的（``from ... import x`` 在函式體內），
+    所以換掉模組屬性就換得掉它真正呼叫到的那一個。
+    """
+    from fastapi.testclient import TestClient
+
+    from app import main
+    from app.services import alert_detectors, auto_seed as auto_seed_module
+    from app.services import health_checker, startup_migrations, usage_writer
+
+    overrides = {
+        "admin.username": ("ADMIN_USERNAME", "驗收用管理員-4321"),
+        "seed.models": ("AUTO_REGISTER_MODELS", '[{"probe":"boot-order-4321"}]'),
+        "health.check_interval": ("HEALTH_CHECK_INTERVAL", 4321),
+        "usage.flush_interval": ("USAGE_FLUSH_INTERVAL", 137),
+        "alerts.check_interval": ("ALERT_CHECK_INTERVAL", 7777),
+    }
+    watched = {field for field, _v in overrides.values()}
+    for key, (field, value) in overrides.items():
+        assert getattr(settings, field) != value, f"{key} 的測試值撞到場上的值"
+        real_boot_row(key, value)
+
+    seen: dict[str, dict[str, Any]] = {}
+
+    def _observe(label: str) -> None:
+        seen[label] = {field: getattr(settings, field) for field in watched}
+
+    def _spy_startup_migrations() -> None:
+        _observe("run_startup_migrations")
+
+    def _spy_auto_seed() -> None:
+        _observe("auto_seed")
+
+    def _spy_starter(label: str):
+        async def _start():
+            _observe(label)
+            return None  # lifespan 只在非 None 時 cancel，回 None 是安全的
+
+        return _start
+
+    monkeypatch.setattr(
+        startup_migrations, "run_startup_migrations", _spy_startup_migrations
+    )
+    monkeypatch.setattr(auto_seed_module, "auto_seed", _spy_auto_seed)
+    monkeypatch.setattr(
+        health_checker, "start_health_checker", _spy_starter("start_health_checker")
+    )
+    monkeypatch.setattr(
+        usage_writer, "start_usage_writer", _spy_starter("start_usage_writer")
+    )
+    monkeypatch.setattr(
+        alert_detectors, "start_alert_detectors", _spy_starter("start_alert_detectors")
+    )
+
+    with TestClient(main.app) as c:
+        assert c.get("/health").status_code == 200
+
+    expected = {field: value for field, value in overrides.values()}
+    for label in (
+        "run_startup_migrations",
+        "auto_seed",
+        "start_health_checker",
+        "start_usage_writer",
+        "start_alert_detectors",
+    ):
+        assert label in seen, f"{label} 根本沒被呼叫到 —— 這一支沒有測到東西"
+        for field, value in expected.items():
+            assert seen[label][field] == value, (
+                f"{label} 執行的當下 settings.{field} 是 {seen[label][field]!r}，"
+                f"不是覆蓋值 {value!r} —— 覆蓋套得太晚，這顆設定要等下下次開機才生效"
+            )
 
 
 def test_boot_override_reaches_the_openapi_title(real_boot_row):
