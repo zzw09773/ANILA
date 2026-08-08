@@ -70,6 +70,7 @@ from anila_core.security import (
 
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
+from app.models.platform_setting import get_setting
 from app.models.user_memory import ConversationMemoryChunk, UserFact
 from app.services import zh_normalize_service
 from app.services.platform_embedding import resolve_platform_embedding
@@ -94,17 +95,19 @@ def _guard_outbound(url: str) -> None:
         ) from exc
 
 
-# ── Tunables (env-overridable, CSP-deployment specific) ──────────────────────
+# ── Tunables ─────────────────────────────────────────────────────────────────
 #
-# These don't belong in anila-core because they're per-deployment knobs
-# (top_k / cosine threshold are quality/perf trade-offs the operator
-# tunes; the model names point at deployment-specific registry rows).
+# ⚠ 四顆檢索參數（``memory.retrieve_top_k`` / ``memory.retrieve_min_cosine`` /
+# ``memory.max_chunk_chars`` / ``memory.http_timeout``）**曾經是這裡的模組層常數**
+# —— import 期讀一次 env、之後整個行程都用那一份。那正是設定頁要消滅的形狀：
+# 畫面上改得動、後端到重啟前都不會知道。現在四顆都在**用到它的那個函式裡**走
+# ``get_setting(db, key)`` 解析（``platform_settings`` → env → 程式預設），env
+# 一層沒有拿掉，仍然是回退鏈的中間層。**不要把任何一顆搬回模組層。**
+#
+# ``MEMORY_LLM_MODEL`` 留在模組層是刻意的：它在登錄表是 B_LOCKED（換模型牽動
+# per-model 授權，畫面上補不了），本輪不搬。
 
-_RETRIEVE_TOP_K = int(os.environ.get("MEMORY_RETRIEVE_TOP_K", "3"))
-_RETRIEVE_MIN_COSINE = float(os.environ.get("MEMORY_RETRIEVE_MIN_COSINE", "0.4"))
-_MAX_CHUNK_CHARS = int(os.environ.get("MEMORY_MAX_CHUNK_CHARS", "1200"))
 _LLM_MODEL_NAME = os.environ.get("MEMORY_LLM_MODEL", "gemma4")
-_HTTP_TIMEOUT = float(os.environ.get("MEMORY_HTTP_TIMEOUT", "30"))
 
 # Don't waste an LLM call on a no-op turn. The extractor is robust to
 # short text but spending a round-trip to confirm "[]" on every "yes"
@@ -208,7 +211,7 @@ async def _embed(
     """
     from types import SimpleNamespace
 
-    from app.services.proxy.service import proxy_request
+    from app.services.proxy.service import proxy_request, resolve_proxy_tuning
 
     resolved = resolve_platform_embedding(db)
     if resolved is None:
@@ -234,6 +237,9 @@ async def _embed(
         display_name=getattr(model, "display_name", model.name),
         is_internal=bool(getattr(model, "is_internal", False)),
     )
+    # 逾時／重試四顆在這裡解（**還握著連線的時候**），凍結成 tuning 往下傳；
+    # commit 之後 proxy 那一層就不該再碰 DB 了。
+    tuning = resolve_proxy_tuning(db)
     # Release the pooled connection before the outbound embed call.
     db.commit()
     data = await proxy_request(
@@ -245,6 +251,7 @@ async def _embed(
         endpoint_path=f"/{api_version}/embeddings",
         embedding_input_role=embedding_input_role,
         record_usage=False,
+        tuning=tuning,
     )
     vec = data["data"][0]["embedding"]
     return (
@@ -293,8 +300,14 @@ async def retrieve_relevant_chunks(
     if only_conversation_id is not None:
         exclude_conversation_id = None
 
-    k = top_k if top_k is not None else _RETRIEVE_TOP_K
-    threshold = min_cosine if min_cosine is not None else _RETRIEVE_MIN_COSINE
+    # 每次呼叫解一次（管理員改完，下一次檢索就是新值）。⚠ 這兩行在 ``_embed``
+    # 之前 —— ``_embed`` 會 ``commit()`` 把池化連線還回去，之後才走出向 HTTP。
+    k = top_k if top_k is not None else int(get_setting(db, "memory.retrieve_top_k"))
+    threshold = (
+        min_cosine
+        if min_cosine is not None
+        else float(get_setting(db, "memory.retrieve_min_cosine"))
+    )
 
     try:
         embedding, source_model, _native = await _embed(
@@ -383,12 +396,22 @@ def get_user_facts(
     return q.order_by(UserFact.updated_at.desc()).all()
 
 
-def _format_block(facts: list[UserFact], chunks: list[RetrievedChunk]) -> str | None:
+def _format_block(
+    facts: list[UserFact],
+    chunks: list[RetrievedChunk],
+    *,
+    max_chunk_chars: int,
+) -> str | None:
     """Compose the markdown block prepended to system prompts.
 
     ``preference.*`` facts get their own ``### 使用者偏好`` section so the
     routing LLM and the Router's personalization layer can find the user's
     stable preferences in the CSP-injected memory.
+
+    ``max_chunk_chars`` 是**必填的關鍵字參數**，而且刻意沒有預設值：這個函式是
+    純的（不碰 DB），切塊上限由握著 session 的 ``build_memory_block`` 當場解析後
+    傳進來。給它一個預設值就等於把那顆設定又釘回模組層一次 —— 呼叫端漏傳會變成
+    靜默用舊值，而不是當場 ``TypeError``。
     """
     if not facts and not chunks:
         return None
@@ -415,8 +438,8 @@ def _format_block(facts: list[UserFact], chunks: list[RetrievedChunk]) -> str | 
         lines.append("### 過往相關討論")
         for i, c in enumerate(chunks, start=1):
             content = c.content
-            if len(content) > _MAX_CHUNK_CHARS:
-                content = content[:_MAX_CHUNK_CHARS] + "…"
+            if len(content) > max_chunk_chars:
+                content = content[:max_chunk_chars] + "…"
             tag = " (加密來源)" if c.is_encrypted else ""
             lines.append(
                 f"[{i}] {c.role}{tag} (similarity {c.cosine:.2f}): {content}"
@@ -456,7 +479,11 @@ async def build_memory_block(
         only_conversation_id=only_conversation_id,
     )
     return MemoryReadResult(
-        block=_format_block(facts, chunks),
+        block=_format_block(
+            facts,
+            chunks,
+            max_chunk_chars=int(get_setting(db, "memory.max_chunk_chars")),
+        ),
         facts_count=len(facts),
         chunks=chunks,
     )
@@ -503,10 +530,14 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
         "temperature": 0.0,
         "max_tokens": 512,
     }
+    # ⚠ 逾時要在 ``commit()`` **之前**解析。那個 commit 是刻意把池化連線還回池子
+    # 再走出向 HTTP；commit 之後才查 ``platform_settings`` 會重新 checkout 一條
+    # 連線，並且一路握到 LLM 回應為止。
+    http_timeout = float(get_setting(db, "memory.http_timeout"))
     # Release the pooled connection before the outbound LLM HTTP call.
     db.commit()
     try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             r = await client.post(url, json=payload)
             r.raise_for_status()
         raw = r.json()["choices"][0]["message"]["content"]
@@ -936,9 +967,17 @@ class PostgresMemoryAdapter:
         query_text: str,
         *,
         exclude_conversation_id: Optional[int] = None,
-        top_k: int = 3,
-        min_cosine: float = 0.4,
+        top_k: Optional[int] = None,
+        min_cosine: Optional[float] = None,
     ) -> list[RetrievedChunk]:
+        """``None`` = 用平台設定（``memory.retrieve_top_k`` /
+        ``memory.retrieve_min_cosine``）。
+
+        ⚠ 這兩個參數原本是 ``top_k: int = 3`` / ``min_cosine: float = 0.4`` ——
+        兩個字面值剛好等於登錄表的預設值，所以「設定沒接上」與「設定就是預設值」
+        在這條路徑上分不出來，而管理員從畫面改的值**永遠到不了這裡**。預設值只能
+        有一份，它在登錄表。
+        """
         db = self._db_factory()
         try:
             return await retrieve_relevant_chunks(

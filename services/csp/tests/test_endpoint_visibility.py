@@ -30,6 +30,18 @@ from app.services import proxy_service
 from app.services.proxy import service as proxy_impl
 from tests.conftest import login, make_model, make_user
 
+import dataclasses as _dataclasses
+
+from app.services.proxy.service import ProxyTuning
+
+#: 這一支只想跑一次上游、不想等重試的退避（原本是 monkeypatch
+#: ``settings.PROXY_MAX_RETRIES``，那個讀取點已經不存在了）。逾時／重試四顆現在
+#: 由呼叫端解析後傳進去，所以「跑幾次」在這裡直接寫成 tuning 的一部分。
+_PROXY_TUNING = _dataclasses.replace(
+    ProxyTuning.from_registry_defaults(), max_retries=1, retry_base_delay=0.0
+)
+
+
 
 SECRET = "https://epvis-secret-box.example.com/v1"
 
@@ -222,7 +234,6 @@ def test_designated_developer_sees_address_on_every_face(
     assert display == SECRET
 
     monkeypatch.setattr(proxy_impl, "_guard_outbound", lambda *a, **k: None)
-    monkeypatch.setattr(proxy_impl.settings, "PROXY_MAX_RETRIES", 1)
 
     class _FailClient:
         def __init__(self, *a, **k):
@@ -262,6 +273,7 @@ def test_designated_developer_sees_address_on_every_face(
                 },
                 endpoint_path="/v1/chat/completions",
                 endpoint_display=display,
+                tuning=_PROXY_TUNING,
             )
         )
     assert SECRET in str(exc.value.detail)
@@ -387,7 +399,6 @@ def test_undesignated_admin_sees_sentinel_on_every_face(
     assert display == ea_svc.ENDPOINT_REDACTED
 
     monkeypatch.setattr(proxy_impl, "_guard_outbound", lambda *a, **k: None)
-    monkeypatch.setattr(proxy_impl.settings, "PROXY_MAX_RETRIES", 1)
 
     class _FailClient:
         def __init__(self, *a, **k):
@@ -427,6 +438,7 @@ def test_undesignated_admin_sees_sentinel_on_every_face(
                 },
                 endpoint_path="/v1/chat/completions",
                 endpoint_display=display,
+                tuning=_PROXY_TUNING,
             )
         )
     err = str(exc.value.detail)

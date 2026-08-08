@@ -23,6 +23,18 @@ from app.api import models as models_api
 from app.services import endpoint_author_service as ea_svc
 from tests.conftest import login, make_model, make_user
 
+import dataclasses as _dataclasses
+
+from app.services.proxy.service import ProxyTuning
+
+#: 這一支只想跑一次上游、不想等重試的退避（原本是 monkeypatch
+#: ``settings.PROXY_MAX_RETRIES``，那個讀取點已經不存在了）。逾時／重試四顆現在
+#: 由呼叫端解析後傳進去，所以「跑幾次」在這裡直接寫成 tuning 的一部分。
+_PROXY_TUNING = _dataclasses.replace(
+    ProxyTuning.from_registry_defaults(), max_retries=1, retry_base_delay=0.0
+)
+
+
 
 @pytest.fixture(autouse=True)
 def _bypass_dev_secret_gate(monkeypatch):
@@ -841,6 +853,7 @@ def test_proxy_response_gates_endpoint_by_visibility(monkeypatch, db: Session):
             },
             endpoint_path="/v1/chat/completions",
             endpoint_display=endpoint_display,
+            tuning=_PROXY_TUNING,
         )
 
     payload = asyncio.run(_run(hidden))
@@ -861,7 +874,6 @@ def test_proxy_response_gates_endpoint_by_visibility(monkeypatch, db: Session):
     monkeypatch.setattr(
         proxy_service.httpx, "AsyncClient", lambda *a, **k: _FailClient()
     )
-    monkeypatch.setattr(proxy_impl.settings, "PROXY_MAX_RETRIES", 1)
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(_run(hidden))
@@ -1052,7 +1064,6 @@ def test_proxy_generic_exception_uses_fixed_message(monkeypatch):
         proxy_service.httpx, "AsyncClient", lambda *a, **k: _Client()
     )
     monkeypatch.setattr(proxy_impl, "_guard_outbound", lambda *a, **k: None)
-    monkeypatch.setattr(proxy_impl.settings, "PROXY_MAX_RETRIES", 1)
 
     async def _run():
         return await proxy_service.proxy_request(
@@ -1065,6 +1076,7 @@ def test_proxy_generic_exception_uses_fixed_message(monkeypatch):
                 "messages": [{"role": "user", "content": "hi"}],
             },
             endpoint_path="/v1/chat/completions",
+            tuning=_PROXY_TUNING,
         )
 
     with pytest.raises(HTTPException) as exc:

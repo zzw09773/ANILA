@@ -17,9 +17,18 @@ from fastapi import HTTPException
 from app.services import proxy_service
 from app.services.proxy import service as proxy_impl
 from app.services.proxy.service import (
+
     format_anila_stream_error,
     stream_failure_user_message,
 )
+
+from app.services.proxy.service import ProxyTuning
+
+#: 這些測試量的不是逾時／重試（那四顆在 ``test_settings_takes_effect_ops.py``），
+#: 所以把它們釘在登錄表宣告的程式預設值上。``tuning`` 是必填的關鍵字參數：
+#: production 的每一個呼叫點都要自己從 session 解一次，漏傳是 TypeError 而不是
+#: 靜默凍結在預設值 —— 那個「必填」正是本包不想再出現假控制項的那道保險。
+_PROXY_TUNING = ProxyTuning.from_registry_defaults()
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +112,7 @@ def _collect(monkeypatch, response: _FakeStreamResponse, **kwargs):
             },
             model_name=kwargs.get("model_name", "google/gemma4"),
             endpoint_display=kwargs.get("endpoint_display"),
+            tuning=_PROXY_TUNING,
         ):
             chunks.append(chunk)
         return chunks

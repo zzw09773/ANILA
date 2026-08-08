@@ -47,6 +47,18 @@ from app.services.proxy_service import (
 
 from tests.conftest import make_agent, make_api_key, make_model, make_user
 
+import dataclasses as _dataclasses
+
+from app.services.proxy.service import ProxyTuning
+
+#: 這一支只想跑一次上游、不想等重試的退避（原本是 monkeypatch
+#: ``settings.PROXY_MAX_RETRIES``，那個讀取點已經不存在了）。逾時／重試四顆現在
+#: 由呼叫端解析後傳進去，所以「跑幾次」在這裡直接寫成 tuning 的一部分。
+_PROXY_TUNING = _dataclasses.replace(
+    ProxyTuning.from_registry_defaults(), max_retries=1, retry_base_delay=0.0
+)
+
+
 
 # ── Shared fixtures / helpers ───────────────────────────────────────────────
 
@@ -323,8 +335,6 @@ class TestUserCallerWithTask:
         make_model(db, name="task-llm3")
         task = _make_task(db, admin)
         _patch_post_client(monkeypatch, status_code=500)
-        monkeypatch.setattr(proxy_service.settings, "PROXY_MAX_RETRIES", 1)
-        monkeypatch.setattr(proxy_service.settings, "PROXY_RETRY_BASE_DELAY", 0)
 
         resp = client.post(
             "/v1/chat/completions",
@@ -633,6 +643,7 @@ class TestHeaderBuilders:
                 target_agent_id=None,  # MODEL destination
                 task_id=42,
                 task_trace_id="trace-abc",
+                tuning=_PROXY_TUNING,
             ):
                 pass
 

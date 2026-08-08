@@ -27,7 +27,6 @@ from typing import Any
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation
 from app.models.department import Department
@@ -725,8 +724,18 @@ def resolve_for_invoke(db: Session, action_id: int, user: User) -> MessageAction
 # ── Rate limit ───────────────────────────────────────────────────────────────
 
 
-def _check_rate_limit(user_id: int) -> None:
-    limit = int(settings.ANILA_ACTION_INVOKE_PER_MIN)
+def _invoke_limit(db: Session) -> int:
+    """每使用者每分鐘的動作呼叫上限（``limits.action_invoke_per_min``）。
+
+    **唯一的讀取點**。每次呼叫都真的解一次（DB 那一列 →
+    ``ANILA_ACTION_INVOKE_PER_MIN`` → 程式預設 20），所以管理員在洪水當下把上限
+    調低，下一次呼叫就算數 —— 不必等重啟。
+    """
+    return int(get_setting(db, "limits.action_invoke_per_min"))
+
+
+def _check_rate_limit(db: Session, user_id: int) -> None:
+    limit = _invoke_limit(db)
     now = time.monotonic()
     window = 60.0
     stale = [
@@ -799,7 +808,7 @@ async def invoke_action(
     action = resolve_for_invoke(db, action_id, actor)
 
     # 2. rate limit (before any refusal audit / substantive gate)
-    _check_rate_limit(actor.id)
+    _check_rate_limit(db, actor.id)
 
     # 3. conversation access
     conv = (

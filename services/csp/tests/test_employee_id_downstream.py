@@ -19,10 +19,19 @@ import asyncio
 from app.services import proxy_service
 from app.services.proxy import service as proxy_impl
 from app.services.proxy_service import (
+
     build_agent_headers,
     build_model_gateway_headers,
     downstream_identity,
 )
+
+from app.services.proxy.service import ProxyTuning
+
+#: 這些測試量的不是逾時／重試（那四顆在 ``test_settings_takes_effect_ops.py``），
+#: 所以把它們釘在登錄表宣告的程式預設值上。``tuning`` 是必填的關鍵字參數：
+#: production 的每一個呼叫點都要自己從 session 解一次，漏傳是 TypeError 而不是
+#: 靜默凍結在預設值 —— 那個「必填」正是本包不想再出現假控制項的那道保險。
+_PROXY_TUNING = ProxyTuning.from_registry_defaults()
 
 
 class _User:
@@ -199,6 +208,7 @@ class TestProxyStreamRoutingNeverLeaksToken:
                 user_identity="1147259",  # 員編 → wire identity
                 model_name="m",
                 target_agent_id=None,  # MODEL destination
+                tuning=_PROXY_TUNING,
             ):
                 pass
 
@@ -294,6 +304,7 @@ class TestProxyRequestRoutingNeverLeaksToken:
                 },
                 endpoint_path="/v1/chat/completions",
                 user_identity="1147259",  # 員編 → wire identity
+                tuning=_PROXY_TUNING,
             )
 
         asyncio.run(_run())

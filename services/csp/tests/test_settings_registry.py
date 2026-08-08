@@ -775,6 +775,14 @@ _DEFAULT_NOT_MECHANICALLY_PINNABLE = {
     # 去比登錄表沒有意義，所以改由 ``test_settings_takes_effect`` 的「兩層都沒有
     # 就回退到宣告的預設值」那一輪守著 —— 那是**行為**上的核對，比字面掃描強。
     "ANILA_ZH_NORMALIZE", "ANILA_QUERY_EXPANSION",
+    # Task 3 同理：memory 那四顆的讀取點原本是 ``memory_service.py:103-107`` 的
+    # **模組層常數**（import 期讀一次 env、整個行程都用那一份），現在改成用到它
+    # 的那個函式裡走 ``get_setting``。字面預設值因此只剩登錄表這一份 —— 這正是
+    # 本包要的終點：**預設值只能有一個來源**。守它的是
+    # ``test_settings_takes_effect_ops`` 的「兩層都沒有就回退到宣告的預設值」，
+    # 那是行為上的核對，比字面掃描強。
+    "MEMORY_RETRIEVE_TOP_K", "MEMORY_RETRIEVE_MIN_COSINE",
+    "MEMORY_MAX_CHUNK_CHARS", "MEMORY_HTTP_TIMEOUT",
     # 預設值是一個常數而不是字面值 —— 改用同一性比對，見下一支測試。
     "PDF_OCR_VISION_PROMPT",
     # 沒有任何 app 讀取點：CPython／httpx runtime 自己消費。
@@ -853,8 +861,11 @@ def test_native_read_site_defaults_equal_the_declared_default():
             f"{spec.key} 宣告 {spec.default!r}，讀取點的字面預設是 {sorted(literals)!r}"
         )
     # Task 2 把 ANILA_ZH_NORMALIZE／ANILA_QUERY_EXPANSION 的讀取點搬到
-    # ``get_setting``，各自帶走一個字面預設值，所以下限從 30 降到 28。
-    assert checked >= 28, f"只掃到 {checked} 個原生讀取點，掃描器可能壞了"
+    # ``get_setting``，各自帶走一個字面預設值（30 → 28）；Task 3 又帶走 memory
+    # 那四顆的模組層常數（28 → 24）。⚠ 這個下限是**掃描器還活著**的煙霧測試，
+    # 不是覆蓋率目標：搬遷本來就會讓它一路往下掉，真正的核對在
+    # ``_DEFAULT_NOT_MECHANICALLY_PINNABLE`` 那份相等比對的名單上。
+    assert checked >= 24, f"只掃到 {checked} 個原生讀取點，掃描器可能壞了"
 
 
 def test_no_entry_escapes_both_default_pins():
