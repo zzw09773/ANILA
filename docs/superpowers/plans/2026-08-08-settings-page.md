@@ -76,10 +76,27 @@ Vue 3（governance-ui，node --test）、pytest。
      回退鏈三態（DB 有列／無列有 env／全無）；壞 DB 值退回且 source 誠實。
    - [ ] Step 2–5：跑失敗 → 實作 → 跑通過 → commit
    （`feat(csp): every setting the platform reads, declared in one place`）
-## Task 2：C 類消費端改造（a：嚴格 3＋數值鈕 7）
+## Task 2：C 類消費端改造（a：嚴格 3＋數值鈕 7）（展開 2026-08-08）
 
-逐顆改讀取點＋round-trip 釘
-   （PUT→DB 列→GET→下游參數，下界/內插/上界）。
+**十顆**（key 以登錄表 `settings_registry.py` 為準）：嚴格 3＝`ANILA_ZH_NORMALIZE`／
+`ANILA_QUERY_EXPANSION`／`ANILA_ZIP_FILENAME_ENC`；數值鈕 7＝`ANILA_MESSAGE_MAX_SIBLINGS`／
+`ANILA_DEPARTMENT_MAX_DEPTH`／`ANILA_ATTACHMENT_BUDGET_RATIO`／`ANILA_ATTACHMENT_TOKEN_SAFETY`／
+`ANILA_DEFAULT_CONTEXT_WINDOW`／`ANILA_ATTACHMENT_MAX_STORED_TOKENS`／`ANILA_ACTION_MAX_BODS_CHARS`
+（⚠ 最後一顆的正確拼法以登錄表為準——別抄這行，抄登錄表）。
+
+**方法（每顆同一套）**：
+1. 讀取點改 `get_setting(db, key)`（每請求；讀取點 file:line 以
+   `.superpowers/sdd/2026-08-08-settings-page/env-recon.md` §2 為準，動手前逐顆重驗——
+   Task 1 之後行號可能漂）。呼叫點沒有 db session 的要沿現有依賴鏈拿，**不得**自開 session。
+2. 該顆的 `restart_required` 翻成 False 的宣告**此刻才成真**——登錄表若已是 False 不動，
+   若展開時發現登錄表與事實不符，STOP 回報（那是 Task 1 的回歸，不是你的鍋）。
+3. **service 層 round-trip 釘**（HTTP 層等 Task 5）：`set_setting → DB 列 → get_setting →
+   真正抵達下游函式的那個參數`，下界／**內插值**（0.375 型）／上界三點。
+4. 舊 env 讀取路徑保留為回退鏈的一環（DB 無列→env→預設），**不是刪掉 env**。
+
+- [ ] Step 1 失敗測試（十顆 round-trip＋回退鏈行為各一）
+- [ ] Step 2–5：跑失敗 → 實作 → 跑通過 → commit
+  （`feat(csp): ten knobs take effect on the next request, not the next restart`）
 ## Task 3：C 類消費端改造（b：速率逾時 5＋memory 4）
 
 同上；timeout 下限防呆特別釘
