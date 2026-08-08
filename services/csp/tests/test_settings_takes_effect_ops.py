@@ -944,25 +944,287 @@ def test_search_embed_query_carries_the_tuning_it_resolved(db, monkeypatch):
     assert seen["tuning"].embedding_timeout == EMBED_TIMEOUT_V
 
 
-def test_no_production_call_site_uses_the_registry_defaults_helper():
-    """``ProxyTuning.from_registry_defaults()`` 只給測試用。
+def test_production_never_builds_its_own_proxy_tuning():
+    """``app/`` 裡**唯一**合法的 ``ProxyTuning`` 建構點是 ``resolve_proxy_tuning``。
 
-    ⚠ 這一支守的是「呼叫點凍結」那種突變：``tuning`` 必填擋得住**漏傳**，但擋不住
-    「傳一份預設值下去」—— 那不會有錯誤訊息，只會讓管理員改的逾時到不了那條路。
-    八個 production 呼叫點裡任何一個改用這個 helper，這裡就會紅。
-    （定義它的那個檔案自己除外。）
+    ⚠ 這一支的第一版只認 ``from_registry_defaults`` 這**一個字串**，驗收的探針
+    P3 用一行 ``ProxyTuning(120, 30, 3, 0.5)`` 就繞過去、854 支全綠 ——
+    守衛的名字比它的能力大，正是本包在 adapter ``top_k=3`` 上抓到的同一種病。
+    凍結有無限多種寫法，所以這裡改成掃**建構動作本身**：``app/`` 底下除了定義它
+    的那個檔案，出現任何一個 ``ProxyTuning(`` 就是紅的。
+
+    今天這個掃描是**零誤報**的（全 ``app/`` 只有 ``proxy/service.py`` 裡
+    ``resolve_proxy_tuning`` 那一個建構點），而且它只 rglob ``app/`` 這個套件，
+    永遠碰不到 ``tests/`` —— 測試要自己建 ``ProxyTuning`` 是合法的。
+
+    ⚠ 這是機械守衛，不是行為釘：它擋「新長出來的凍結點」。既有兩條串流路徑的
+    行為釘在 ``test_agent_chat_carries_the_stored_timeout_all_the_way_out`` 與
+    ``test_resume_stream_carries_the_stored_timeout_all_the_way_out``。
     """
     import pathlib
+    import re
 
     import app
 
     root = pathlib.Path(app.__file__).parent
     definition = root / "services" / "proxy" / "service.py"
-    offenders = [
-        str(path.relative_to(root))
-        for path in root.rglob("*.py")
-        if path != definition and "from_registry_defaults" in path.read_text("utf-8")
-    ]
+    # 建構動作（``ProxyTuning(``，容忍空白）與測試專用的預設值 helper。
+    # 型別註解（``tuning: ProxyTuning``）與 import 不含左括號，不會誤中。
+    forbidden = re.compile(r"ProxyTuning\s*\(|from_registry_defaults")
+
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if path == definition:
+            continue
+        text = path.read_text("utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if forbidden.search(line):
+                offenders.append(f"{path.relative_to(root)}:{lineno}: {line.strip()}")
+
     assert offenders == [], (
-        f"production 呼叫點用了測試專用的預設值 helper：{offenders}"
+        "production 自己建了一個 ProxyTuning（或用了測試專用的預設值 helper）——"
+        f"逾時／重試必須由 resolve_proxy_tuning 從 session 解出來：{offenders}"
+    )
+
+
+def test_the_one_sanctioned_construction_site_still_exists():
+    """反向釘：上面那支掃描不可以因為「建構點被改名了」而空轉成全綠。
+
+    掃描型的守衛最容易的壞法是**它掃的東西已經不存在了** —— 那時它永遠是綠的，
+    而它宣稱守著的事情沒有人在守。所以這裡確認被豁免的那個檔案裡真的還有一個
+    建構點，而且它就在 ``resolve_proxy_tuning`` 的函式體內。
+    """
+    import inspect
+    import re
+
+    source = inspect.getsource(resolve_proxy_tuning)
+    assert re.search(r"ProxyTuning\s*\(", source), (
+        "resolve_proxy_tuning 裡已經沒有 ProxyTuning 的建構點了 —— "
+        "上面那支掃描正在空轉"
+    )
+
+
+# ── 8. Fix round 1：驗收探針 P2／P3／P4b 存活的三個缺口 ──────────────────────
+#
+# 驗收自跑四條突變，三條活著通過全套。三個位置都落在報告自己宣告的不變式上，
+# 而且都是同一種病：**守衛的名字比它的能力大**。
+#
+# * P2 —— `api/models.py:1743` 的「解析在 commit 之前」沒有任何釘（另外兩個
+#   地基位置各有一支）。把那兩行對調 → 810 支全綠，而每一次平台嵌入指派都會在
+#   探測那通出向 HTTP 期間握著一條池化連線。
+# * P3 —— agent 分支的 `tuning` 改成字面值 `ProxyTuning(120, 30, 3, 0.5)`
+#   → 854 支全綠。必填參數只擋「漏傳」；`from_registry_defaults` 的掃描只認**那一個
+#   字串**。凍結有無限多種寫法，掃字串只認得一種。
+# * P4b —— resume 那條路改吃模組層 `_RESUME_LLM_TIMEOUT = float(os.environ.get(
+#   "LLM_TIMEOUT", "120"))` → 841 支全綠。**本包宣稱要消滅的形狀，在另一個檔案
+#   原地復活。** ⚠ 若預設值抄成 300（compose 的值）會被登錄表的字面掃描咬到；
+#   忠實抄對 120 就沒有人吭聲 —— 而後者才是實務上會發生的那一種。
+
+
+def test_designation_probe_resolves_the_tuning_before_the_pool_releasing_commit(
+    db, monkeypatch
+):
+    """第三個地基位置的順序釘（驗收探針 P2）。
+
+    `set_platform_embedding` 與 `_embed`／`_embed_query` 是同一個形狀：快照 →
+    **解析** → `commit()` 還連線 → 出向探測。少了這一支，把解析搬到 commit 之後
+    不會有任何測試紅，而每一次指派都在探測期間握著一條連線。
+    """
+    from app.api import models as models_api
+    from app.models.model_registry import ModelRegistry
+    from tests.conftest import make_user
+
+    admin = make_user(db, username="ops_knob_designate", role="admin")
+    row = ModelRegistry(
+        name="ops-knob-designate-embed",
+        display_name="ops-knob-designate-embed",
+        model_type="embedding",
+        endpoint_url="http://embed.test/v1",
+        api_version="v1",
+        classification_ceiling="密",
+        is_active=True,
+    )
+    db.add(row)
+    db.commit()
+
+    order: list[str] = []
+    real_resolve = models_api.resolve_proxy_tuning
+    real_commit = db.commit
+
+    def _spy_resolve(session):
+        order.append("resolve")
+        return real_resolve(session)
+
+    def _spy_commit():
+        order.append("commit")
+        real_commit()
+
+    async def _fake_probe(model, tuning):
+        order.append("outbound")
+        assert tuning is not None, "探測沒有拿到呼叫端解出來的 tuning"
+        return 8
+
+    monkeypatch.setattr(models_api, "resolve_proxy_tuning", _spy_resolve)
+    monkeypatch.setattr(models_api, "_probe_embedding_native_dim", _fake_probe)
+    monkeypatch.setattr(db, "commit", _spy_commit)
+
+    asyncio.run(models_api.set_platform_embedding(model_id=row.id, admin=admin, db=db))
+
+    assert "outbound" in order, "探測沒有被呼叫，這一支沒有量到東西"
+    i = order.index("outbound")
+    assert order[i - 2 : i + 1] == ["resolve", "commit", "outbound"], (
+        f"解析／commit／出向的先後是 {order!r} —— 值在連線還回池子之後才解的話，"
+        f"每一次指派都會在探測那通 HTTP 期間握著一條池化連線"
+    )
+
+
+def _approved_agent_with_permission(db, *, username: str, agent_name: str):
+    from app.models.agent import UserAgentPermission
+    from tests.conftest import make_agent, make_user
+
+    owner = make_user(db, username=username)
+    agent = make_agent(db, owner, name=agent_name)
+    agent.approval_status = "approved"
+    db.commit()
+    db.add(UserAgentPermission(user_id=owner.id, agent_id=agent.id))
+    db.commit()
+    return owner, agent
+
+
+def _bearer(user) -> dict:
+    from app.services.auth_service import create_access_token
+
+    token = create_access_token(
+        {
+            "sub": str(user.id),
+            "username": user.username,
+            "role": user.role,
+            "tv": user.token_version,
+        }
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_agent_chat_carries_the_stored_timeout_all_the_way_out(
+    client, db, monkeypatch
+):
+    """agent 那條路的行為釘（驗收探針 P3）。
+
+    ⚠ 這一支存在的理由：`tuning` 必填擋得住「漏傳」，`from_registry_defaults`
+    的掃描擋得住「用那個 helper」，但兩者都擋不住 `ProxyTuning(120, 30, 3, 0.5)`
+    這種**字面值凍結**。DB 存 77（≠ 登錄表 120、≠ compose 300），agent 出向就
+    必須是 77 —— 這一條不管凍結是用哪種寫法寫的。
+    """
+    owner, agent = _approved_agent_with_permission(
+        db, username="ops_knob_agent", agent_name="ops-knob-agent"
+    )
+    set_setting(db, "proxy.llm_timeout", LLM_TIMEOUT_V)
+    db.commit()
+
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "agent")
+
+    captured: list[Any] = []
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        _fake_client_factory(
+            captured,
+            payload={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"},
+                     "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                          "total_tokens": 2},
+            },
+        ),
+    )
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers=_bearer(owner),
+        json={
+            "model": agent.name,
+            "stream": False,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured, "agent 那條路沒有走到出向呼叫，這一支沒有量到東西"
+    assert set(captured) == {LLM_TIMEOUT_V}, (
+        f"agent 出向用的逾時是 {captured!r}，不是存進 platform_settings 的 "
+        f"{LLM_TIMEOUT_V}"
+    )
+
+
+def test_resume_stream_carries_the_stored_timeout_all_the_way_out(
+    client, db, monkeypatch
+):
+    """resume 那條路的行為釘（驗收探針 P4b）。
+
+    ⚠ 這一支專門殺「模組層擷取在別的檔案原地復活」：
+    `_RESUME_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))` 這種寫法
+    **忠實抄對登錄表的預設值**，所以登錄表那份字面掃描一個字也不會說
+    （抄錯成 300 才會被咬到 —— 而抄錯不是實務上會發生的那一種）。
+    只有「DB 存 77 就必須是 77」這種行為釘擋得住它。
+    """
+    from app.services.agent_session_owner_service import ensure_agent_session_owner
+
+    owner, agent = _approved_agent_with_permission(
+        db, username="ops_knob_resume", agent_name="ops-knob-resume"
+    )
+    session_id = "sid-ops-knob-resume"
+    ensure_agent_session_owner(db, session_id=session_id, owner_user_id=owner.id)
+    db.commit()
+
+    set_setting(db, "proxy.llm_timeout", LLM_TIMEOUT_V)
+    db.commit()
+
+    captured: list[Any] = []
+
+    class _FakeStreamResponse:
+        status_code = 200
+
+        async def aread(self):
+            return b""
+
+        async def aiter_lines(self):
+            yield 'data: {"ok": true}'
+            yield ""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeStreamClient:
+        def __init__(self, *args, **kwargs) -> None:
+            captured.append(kwargs.get("timeout"))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def stream(self, method, url, **kwargs):
+            return _FakeStreamResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeStreamClient)
+    monkeypatch.setattr(
+        "app.services.proxy_service._guard_outbound", lambda *a, **k: None
+    )
+
+    resp = client.post(
+        f"/v1/agents/{agent.name}/sessions/{session_id}/answer",
+        headers=_bearer(owner),
+        json={"interrupt_id": "i1", "answer": "yes"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured, "resume 那條路沒有走到出向呼叫，這一支沒有量到東西"
+    assert set(captured) == {float(LLM_TIMEOUT_V)}, (
+        f"resume 出向用的逾時是 {captured!r}，不是存進 platform_settings 的 "
+        f"{float(LLM_TIMEOUT_V)}"
     )
