@@ -44,28 +44,72 @@ Vue 3（governance-ui，node --test）、pytest。
 
 ## Tasks（每個派工前展開＋commit；壓縮段落絕不直接派）
 
-1. **設定登錄表＋泛化存取層**：registry 宣告 19 C＋~30 B-edit（名單以盤點報告為準、
-   B-edit/B-locked 分界照設計 §3.2）；泛化 `get_setting(db, key)`／`set_setting`；
-   每顆值域函式；env→DB→預設回退鏈。測試：登錄表完整性（每顆有值域、預設過自己的值域）、
-   值域掃描含內插值。
-2. **C 類消費端改造（a：嚴格 3＋數值鈕 7）**：逐顆改讀取點＋round-trip 釘
+## Task 1：設定登錄表＋泛化存取層（展開 2026-08-08）
+
+   **Files:**
+   - New: `services/csp/app/services/settings_registry.py` — 唯一宣告點
+   - Modify: `services/csp/app/models/platform_setting.py` — 泛化 getter/setter
+     （**門檻既有函式一行不動**——它們是已關板的範本，泛化層是新函式不是改寫）
+   - Test: `services/csp/tests/test_settings_registry.py`（新）
+
+   **登錄表條目形**（dataclass／NamedTuple，欄位全必填）：
+   `key`（點號命名空間：`limits.*` 數值鈕、`proxy.*` 速率逾時、`memory.*`、`intl.*` 語系類；
+   命名規則＝env 名去 `ANILA_` 前綴、小寫、按消費模組分群——**登錄表是拼法的唯一權威**，
+   審查驗一致性）／`env_name`（回退鏈用）／`setting_class`（`C`｜`B_EDIT`｜`B_LOCKED`｜`SEC`｜`A`，
+   **全 95 顆都宣告**，不只可編輯的——overview 端點靠它分區）／`value_type`／
+   `domain_fn`（**寫入與解析共用同一個函式物件**，不變式 2）／`default`／
+   `restart_required: bool`／`description`（繁中，上畫面）／`locked_reason`（B_LOCKED/SEC 必填）。
+
+   **名單來源**：C 19 顆＝設計 §3.1 逐字；B_EDIT/B_LOCKED 分界＝設計 §3.2 具名排除；
+   每顆的 env 名與讀取點對 `.superpowers/sdd/2026-08-08-settings-page/env-recon.md` §2 逐一核。
+   **死變數（FLUX_*×3 等）不入登錄表**——它們在 Task 7 從 compose 消失，頁面永不認識它們。
+
+   **泛化存取層**（照 `platform_setting.py` 門檻三函式的形逐一對應）：
+   `get_setting(db, key) -> value`（回退鏈 DB 列→env（若設）→default；每次主鍵查詢，禁快取）／
+   `resolve_setting(db, key) -> (value, source)`（source ∈ db/env/default，一次解析拿兩個答案）／
+   `set_setting(db, key, raw, user_id)`（domain_fn 驗過才寫、只 flush 不 commit）。
+   壞值（DB 列存在但 domain_fn 拒絕）→ 退回下一層回退＋`source` 如實＋warning log。
+
+   - [ ] Step 1 失敗測試：登錄表完整性（95 顆全宣告零孤兒——對 env-recon 名單集合運算；
+     每顆 default 過自己的 domain_fn；C/B_EDIT 顆顆有 restart_required 正確值；
+     B_LOCKED/SEC 顆顆有 locked_reason）；值域掃描**含內插值**（0.375 型）；
+     回退鏈三態（DB 有列／無列有 env／全無）；壞 DB 值退回且 source 誠實。
+   - [ ] Step 2–5：跑失敗 → 實作 → 跑通過 → commit
+   （`feat(csp): every setting the platform reads, declared in one place`）
+## Task 2：C 類消費端改造（a：嚴格 3＋數值鈕 7）
+
+逐顆改讀取點＋round-trip 釘
    （PUT→DB 列→GET→下游參數，下界/內插/上界）。
-3. **C 類消費端改造（b：速率逾時 5＋memory 4）**：同上；timeout 下限防呆特別釘
+## Task 3：C 類消費端改造（b：速率逾時 5＋memory 4）
+
+同上；timeout 下限防呆特別釘
    （值域拒 0——從畫面打掛平台必須不可能）。
-4. **B 類開機覆蓋**：config 載入 hook＋模擬 boot 測試工具＋載入失敗誠實路徑
+## Task 4：B 類開機覆蓋
+
+config 載入 hook＋模擬 boot 測試工具＋載入失敗誠實路徑
    （env 開機＋警告＋來源欄如實；「靜默假裝成功」突變必紅）。
-5. **Overview＋PUT 端點**：全 95 顆 payload（A 後端遮蔽、類別、來源、需重啟旗標、
+## Task 5：Overview＋PUT 端點
+
+全 95 顆 payload（A 後端遮蔽、類別、來源、需重啟旗標、
    待生效值）；PUT 類別閘（非可編輯 key 一律 400 人話）；稽核同交易＋補
    `platform_setting_set` 斷言（帳本舊債）。測試：A 全名單零值外洩、非法 key 全類掃。
-6. **前端四區三態頁**：照 DepartmentsView 形＋補初載錯誤 UI；三態並列（生效/待生效/預設）；
+## Task 6：前端四區三態頁
+
+照 DepartmentsView 形＋補初載錯誤 UI；三態並列（生效/待生效/預設）；
    來源欄；不做樂觀更新；detail 原樣呈現；編輯邏輯抽 utils 直測＋唯讀區 regex 護欄
    （照 runtimeConfigReadOnly 樣板）。
-7. **死變數清理＋卡登旁路防守**（🔴 後者紅線雙票）：compose/.env.example 移除＋歸檔註記；
+## Task 7：死變數清理＋卡登旁路防守（🔴 後者紅線雙票）
+
+compose/.env.example 移除＋歸檔註記；
    `CARD_DEV_SKIP_NONCE_BINDING` 非 dev-card 模式設值→開機即拒（照 startup_security 既有形）。
-8. **文件收尾**：runbook（B 類重啟措辭對齊）、HANDOFF 長期照顧（登錄表是唯一宣告點／
+## Task 8：文件收尾
+
+runbook（B 類重啟措辭對齊）、HANDOFF 長期照顧（登錄表是唯一宣告點／
    雙層優先序 DB>env 的除錯指南／TRUSTED_HOSTS 雙源收斂 follow-up）、
    設計文件與 OWNER-QUESTIONS 對齊。
-9. **最終全分支審查**（最強模型＋跨家第二票；sol 08-09 起可用）→
+## Task 9：最終全分支審查
+
+（最強模型＋跨家第二票；sol 08-09 起可用）→
    `finishing-a-development-branch`。
 
 ## 驗收（另派 fresh agent，不自驗）
