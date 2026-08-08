@@ -30,6 +30,7 @@ Task 1 蓋好了登錄表與回退鏈（``get_setting`` = DB → env → 程式�
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import zipfile
 from typing import Any, Callable
@@ -373,6 +374,74 @@ def test_token_safety_pushes_an_attachment_out_of_the_budget(db):
     set_setting(db, "limits.attachment_token_safety", 1.5)
     admitted, excluded = attachment_context.admit(db, rows, 1000)
     assert (admitted, excluded) == ([1], [2])
+
+
+def test_sibling_cap_blocks_by_the_stored_value(db):
+    """**擋人的那一行**（``_enforce_sibling_cap`` 裡的 ``cap``）要讀到存進 DB 的值。
+
+    ⚠ 這一支是補第一輪驗收的探針 P1 咬不到的那個縫：把
+    ``conversation_service.py`` 那一行改回讀 import 期凍結的 ``settings``，
+    當時 262 支測試全綠。原因是唯一的行為測試把 env 設成 ``"20"`` ——
+    而 20 同時是登錄表預設**也是** ``config.py`` 的欄位預設，那一輪根本分不出
+    「有讀到設定」與「讀到凍結的預設值」。**所以這裡用的每一個值都刻意不是 20。**
+
+    釘兩個值而不是一個：一個證明擋得動、一個證明**同一個行程內**改了立刻改判。
+    """
+    from app.models.conversation import Conversation
+    from app.models.message import Message
+    from tests.conftest import make_user
+
+    user = make_user(db, username="sibling_cap_probe")
+    conv = Conversation(user_id=user.id, title="分支上限測試")
+    db.add(conv)
+    db.flush()
+    root = Message(conversation_id=conv.id, parent_id=None, role="user", content="Q")
+    db.add(root)
+    db.flush()
+    for i in range(3):
+        db.add(
+            Message(
+                conversation_id=conv.id,
+                parent_id=root.id,
+                role="assistant",
+                content=f"A{i}",
+            )
+        )
+    db.flush()
+    assert conversation_service._sibling_count(db, conv.id, root.id) == 3
+
+    # 上限 5（≠ 預設 20）、已有 3 個 → 還開得動。
+    set_setting(db, "limits.message_max_siblings", 5)
+    conversation_service._enforce_sibling_cap(db, conv.id, root.id)
+
+    # 同一個行程內降到 3（≠ 預設 20）→ 下一次呼叫就該擋。
+    set_setting(db, "limits.message_max_siblings", 3)
+    with pytest.raises(HTTPException) as exc:
+        conversation_service._enforce_sibling_cap(db, conv.id, root.id)
+    assert exc.value.status_code == 409
+    # 送到使用者眼前的那個數字，也必須是存進去的那一個。
+    assert "3" in exc.value.detail
+
+
+def test_normalize_never_raises_when_the_setting_lookup_fails(db, monkeypatch, caplog):
+    """設定讀不到時：原文落庫＋一行 warning，**不可以**往外拋。
+
+    ⚠ 改造前 ``_enabled`` 讀的是 ``os.environ``，不可能拋，所以模組 docstring
+    那句「永不拋出」是白拿的。改成每請求查 DB 之後，那句承諾要靠這一支才成立。
+    正規化是錦上添花：設定查不到不可以變成使用者送不出訊息。
+    """
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("platform_settings 讀取失敗（模擬 DB 抖動）")
+
+    monkeypatch.setattr(zh_normalize_service, "get_setting", _boom)
+
+    with caplog.at_level(logging.WARNING, logger=zh_normalize_service.__name__):
+        result = zh_normalize_service.prepare_message_content(db, "assistant", "软件测试")
+
+    assert result == ("软件测试", 0), "設定讀不到時應該原文落庫，不是改字也不是拋"
+    assert any(r.levelno >= logging.WARNING for r in caplog.records), (
+        "靜默吞掉比拋出更危險 —— 至少要留一行 warning"
+    )
 
 
 def test_department_depth_cap_blocks_by_the_stored_value(db):

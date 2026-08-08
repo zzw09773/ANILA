@@ -24,18 +24,37 @@ SETTING_KEY = "intl.zh_normalize"
 
 
 def _enabled(db: Session) -> bool:
+    """開關現在會查 DB —— 所以它**會拋**，呼叫端必須把它包在守備區內。
+
+    改造前這裡讀的是 ``os.environ``，不可能拋；「永不拋出」那句承諾因此是白拿的。
+    現在不是了：session 處於失敗狀態、連線斷掉，這一行都會炸。見
+    ``prepare_message_content`` 為什麼要把它移進 ``try``。
+    """
     return bool(get_setting(db, SETTING_KEY))
 
 
 def prepare_message_content(
     db: Session, role: str, content: Optional[str]
 ) -> tuple[Optional[str], int]:
-    """assistant 才正規化；回傳 (content, changed_char_count)。永不拋出。"""
-    if role != "assistant" or not _enabled(db):
+    """assistant 才正規化；回傳 (content, changed_char_count)。**永不拋出。**
+
+    ⚠ **開關的讀取也在守備區內**，不是只有正規化本身。改造成每請求查 DB 之後，
+    ``_enabled`` 變成一個會拋的呼叫；它若留在 ``try`` 外面，一次 DB 抖動就會讓
+    這條**設計上 fail-open** 的路徑（失敗只記 warning、原文落庫）改成往外拋，
+    把聊天打斷。正規化是錦上添花，設定查不到不可以變成使用者送不出訊息。
+
+    讀不到設定時的姿態＝**這個模組本來就有的那個失敗姿態：原文落庫＋一行
+    warning**。不是「退回 env 再猜一次開或關」—— 猜錯的那一半會把使用者的原文
+    改掉，而原文落庫在兩種猜法底下都是安全的那一邊。
+    """
+    if role != "assistant":
         return content, 0
     if content is None or content == "":
         return content, 0
     try:
+        if not _enabled(db):
+            return content, 0
+
         from anila_core.text import normalize_report
 
         return normalize_report(content)
