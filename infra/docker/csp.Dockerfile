@@ -69,33 +69,31 @@ COPY --from=frontend-build /build/dist /app/frontend-dist
 # 錯誤訊息 —— 正是「靜默成功比報錯危險」那條教訓的形狀。
 #
 # 現在兩個檔直接進版控(`services/csp/app/static/`,由上面的
-# `COPY services/csp/ ./` 帶進來),來源與雜湊記在這裡,可覆核:
-#   swagger-ui-dist@5.18.2(Apache-2.0),同時自 cdn.jsdelivr.net 與
-#   unpkg.com 取得、逐位元組相同:
-#     swagger-ui-bundle.js  1426050 bytes
-#       sha256 c50b94bbc4f02394326fb7aed1f4fb693b3677f4b3d3344e0d6131808cbf281f
-#     swagger-ui.css         152072 bytes
-#       sha256 8f33d996025317049d4a9864f421eab2b2a247872f388026fa94c654913259e7
+# `COPY services/csp/ ./` 帶進來),來源:swagger-ui-dist@5.18.2(Apache-2.0),
+# 同時自 cdn.jsdelivr.net 與 unpkg.com 取得、逐位元組相同。
 #
-# 這一段是**取代那個靜默失敗的檢查**:檔案不見、或還是舊的 placeholder 殘骸,
-# build 就當場失敗,不會生出一個「看起來好了」的映像。
+# ⚠ 2026-08-08 修訂(審查 I1):**這一段原本只驗檔案大小與 placeholder 標記**,
+# 雜湊只寫在註解裡、build 從來沒算過。審查者用三個突變打穿它,三個全過:
+# (a) 把 css 的位元組放進 js 的路徑、(b) 150KB 隨機位元組、(c) 真檔截斷到 120KB。
+# 也就是「/docs 壞掉」只要換一種壞法,守衛照樣說 ok —— **一道不守的守衛,正是
+# 本包第 0 條為 starlette 修掉的同一個形狀**。現在改成驗**內容**:雜湊是唯一
+# 判準(順帶把大小與 placeholder 兩種情況也一起蓋住,錯了就是雜湊對不上)。
+#
+# 換版本時:換檔 → 重算 `sha256sum services/csp/app/static/*` → 改下面兩行。
+# 對不上就當場 build 失敗,不會生出一個「看起來好了」的映像。
 RUN set -eu; \
-    for f in app/static/swagger-ui-bundle.js app/static/swagger-ui.css; do \
-      if [ ! -f "$f" ]; then \
-        echo "FATAL: $f 不在映像裡 —— Swagger UI 靜態檔應由 repo 帶入(git ls-files services/csp/app/static)"; \
-        exit 1; \
-      fi; \
-      size=$(wc -c < "$f"); \
-      if [ "$size" -lt 100000 ]; then \
-        echo "FATAL: $f 只有 ${size} bytes,不是真的 swagger-ui-dist 檔(placeholder?)"; \
-        exit 1; \
-      fi; \
-      if grep -q 'Place it here for offline Swagger UI support' "$f"; then \
-        echo "FATAL: $f 還是 placeholder,請把 swagger-ui-dist@5.18.2 的真檔放進 repo"; \
-        exit 1; \
-      fi; \
-      echo "ok: $f (${size} bytes)"; \
-    done
+    printf '%s  %s\n' \
+      c50b94bbc4f02394326fb7aed1f4fb693b3677f4b3d3344e0d6131808cbf281f app/static/swagger-ui-bundle.js \
+      8f33d996025317049d4a9864f421eab2b2a247872f388026fa94c654913259e7 app/static/swagger-ui.css \
+      > /tmp/swagger-ui.sha256; \
+    if ! sha256sum -c --strict /tmp/swagger-ui.sha256; then \
+      echo "FATAL: Swagger UI 靜態檔與 swagger-ui-dist@5.18.2 的雜湊對不上。" >&2; \
+      echo "       檔案不見／是 placeholder／被截斷／換了版本都會走到這裡。" >&2; \
+      echo "       修法:把 swagger-ui-dist@5.18.2 的真檔放回 services/csp/app/static/," >&2; \
+      echo "       或換版本後同步更新本 Dockerfile 裡的兩個 sha256。" >&2; \
+      exit 1; \
+    fi; \
+    rm -f /tmp/swagger-ui.sha256
 
 ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 
