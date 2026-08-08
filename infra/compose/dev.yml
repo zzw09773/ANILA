@@ -424,7 +424,8 @@ services:
 
   # ── nginx (dev 入口，獨立 port + 獨立 container_name) ───────────────────
   nginx:
-    image: nginx:alpine
+    # 版本＋digest 釘死,與 platform.yml 同一個 image(見該檔的說明)。
+    image: nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
     # ⚠️ 必須顯式不同名——compose 對 container_name 不會自動加 project prefix。
     container_name: anila-nginx-dev
     ports:

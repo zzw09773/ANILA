@@ -5,8 +5,13 @@
 # Stage 1: Build frontend
 FROM node:22-alpine AS frontend-build
 WORKDIR /build
-COPY apps/csp-governance-ui/package.json apps/csp-governance-ui/package-lock.json* ./
-RUN npm install
+# 鎖檔是必要輸入,不是可選的:原本寫 `package-lock.json*`,那個 `*` 讓「鎖檔
+# 不在建置脈絡裡」變成靜默成功(照樣 build,直接跟 registry 要當下最新版)。
+COPY apps/csp-governance-ui/package.json apps/csp-governance-ui/package-lock.json ./
+# `npm ci`(不是 `npm install`):install 在 package.json 與鎖檔不一致時會**重新
+# 解析並改寫鎖檔**,凍結後那等於映像裡裝了什麼沒有人決定過;ci 則直接失敗。
+# 代價是改 package.json 之後要在 host 端跑一次 `npm install` 更新鎖檔再 build。
+RUN npm ci
 COPY apps/csp-governance-ui/ ./
 RUN npm run build
 
@@ -57,13 +62,40 @@ COPY services/csp/ ./
 # Copy built frontend
 COPY --from=frontend-build /build/dist /app/frontend-dist
 
-# Download Swagger UI static files for offline use
-RUN pip install --no-cache-dir requests && \
-    python -c "\
-import requests; \
-open('app/static/swagger-ui-bundle.js','wb').write(requests.get('https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui-bundle.js').content); \
-open('app/static/swagger-ui.css','wb').write(requests.get('https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui.css').content); \
-print('Swagger UI downloaded')" 2>/dev/null || echo "Swagger UI download skipped (offline build)"
+# ── Swagger UI 靜態檔:vendored,不在 build 時抓 ────────────────────────────
+# 2026-08-08 以前這裡是「build 時去 cdn.jsdelivr.net 抓兩個檔,失敗就
+# `|| echo "Swagger UI download skipped (offline build)"`」。氣隙內重建映像時
+# 那一定失敗,而 build **照樣成功**,只是 /docs 變成一個壞掉的頁面,沒有任何
+# 錯誤訊息 —— 正是「靜默成功比報錯危險」那條教訓的形狀。
+#
+# 現在兩個檔直接進版控(`services/csp/app/static/`,由上面的
+# `COPY services/csp/ ./` 帶進來),來源與雜湊記在這裡,可覆核:
+#   swagger-ui-dist@5.18.2(Apache-2.0),同時自 cdn.jsdelivr.net 與
+#   unpkg.com 取得、逐位元組相同:
+#     swagger-ui-bundle.js  1426050 bytes
+#       sha256 c50b94bbc4f02394326fb7aed1f4fb693b3677f4b3d3344e0d6131808cbf281f
+#     swagger-ui.css         152072 bytes
+#       sha256 8f33d996025317049d4a9864f421eab2b2a247872f388026fa94c654913259e7
+#
+# 這一段是**取代那個靜默失敗的檢查**:檔案不見、或還是舊的 placeholder 殘骸,
+# build 就當場失敗,不會生出一個「看起來好了」的映像。
+RUN set -eu; \
+    for f in app/static/swagger-ui-bundle.js app/static/swagger-ui.css; do \
+      if [ ! -f "$f" ]; then \
+        echo "FATAL: $f 不在映像裡 —— Swagger UI 靜態檔應由 repo 帶入(git ls-files services/csp/app/static)"; \
+        exit 1; \
+      fi; \
+      size=$(wc -c < "$f"); \
+      if [ "$size" -lt 100000 ]; then \
+        echo "FATAL: $f 只有 ${size} bytes,不是真的 swagger-ui-dist 檔(placeholder?)"; \
+        exit 1; \
+      fi; \
+      if grep -q 'Place it here for offline Swagger UI support' "$f"; then \
+        echo "FATAL: $f 還是 placeholder,請把 swagger-ui-dist@5.18.2 的真檔放進 repo"; \
+        exit 1; \
+      fi; \
+      echo "ok: $f (${size} bytes)"; \
+    done
 
 ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 
