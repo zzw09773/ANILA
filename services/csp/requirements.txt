@@ -15,7 +15,11 @@ starlette==1.3.1
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 alembic==1.14.1
-pydantic-settings==2.7.1
+# pydantic-settings 2026-08-08 由 2.7.1 前進到 2.14.2:不是為了新功能,是為了
+# 收斂 —— ingestion-worker／router／asr-gateway／asr-decoder／anila-studio 五個
+# 容器早就跑在 2.14.2(它們的 spec 是 `>=2.2` 之類的下限),同一個平台的同一套
+# 設定庫不該有兩個版本進氣隙 wheelhouse。2.15.0(2026-08-07)刻意不追。
+pydantic-settings==2.14.2
 # python-jose 3.4.0 修復 PYSEC-2024-232 / PYSEC-2024-233 (JWT 相關)。3.5.0 為最新。
 python-jose[cryptography]==3.5.0
 # asn1crypto:純 Python ASN.1/CMS 解析,卡片登入 PKCS#7 簽章驗證用
@@ -29,12 +33,21 @@ bcrypt==4.0.1
 #（負 Content-Length）。鎖最新 patch，仍在 0.0.x。
 python-multipart==0.0.32
 httpx==0.28.1
-psycopg2-binary==2.9.10
+# psycopg2-binary 2026-08-08 由 2.9.10(2024-10-16)前進到 2.9.12(2026-04-20):
+# 這是**編譯好的 wheel,裡面自帶 libpq 與 OpenSSL**,凍一個 2024 年編出來的
+# 二進位到 2028 沒有道理;2.9.12 已四個月大,同一條 2.9.x 線。
+psycopg2-binary==2.9.12
 # ldap3 已移除：LDAP 認證自系統下線，後續以 OIDC SSO 取代
 # Phase 2 Sprint 1: Arq job queue client. CSP enqueues ingestion jobs;
 # the worker container (separate service) consumes them. Importing arq
 # alone gives us create_pool + enqueue_job; no extra redis client needed.
-arq==0.26.1
+# 2026-08-08 由 0.26.1 前進到 0.28.0:csp 是**生產端**,而 ingestion-worker
+# 容器的**消費端**早就是 0.28.0 —— 同一條 Redis 佇列兩個版本沒有理由凍進去。
+# 查過 HISTORY.rst:0.27/0.28 只動 Python 版本支援與型別註解,沒動序列化格式
+# 也沒動 Redis key 命名,所以這不是在修一個活著的 bug,是衛生。
+# ⚠ arq 帶進 redis-py;本次實測 0.28.0 解出的仍是 redis 5.3.1(與 csp 現況同),
+#   沒有把 redis 拉過 8.x(RESP3 預設變更那條仍是擁有者待裁決項)。
+arq==0.28.0
 
 # Studio Phase 3 X: OpenCC for simplified→traditional+TW-localized
 # post-processing. Pure-Python reimplementation chosen over the C++
