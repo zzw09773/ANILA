@@ -61,7 +61,7 @@ The shell **holds no business logic or models**. It handles session guarding, co
 ```
 apps/anila-shell/
 ├── index.html · vite.config.js · vitest.setup.js
-├── Dockerfile              # node:22-alpine build → nginx:1.27-alpine serve; EXPOSE 80
+├── Dockerfile              # node:22-alpine build (npm ci) → nginx:1.30.4-alpine (digest-pinned) serve; EXPOSE 80
 ├── .env.example · docker/nginx.conf · docs/ · e2e/ (historical README only)
 └── src/
     ├── main.jsx            # entry; BrowserRouter(basename=BASE_URL) + AuthProvider + ConfirmProvider; /app/* only, no login page

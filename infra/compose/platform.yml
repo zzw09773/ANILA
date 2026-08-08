@@ -381,7 +381,14 @@ services:
   # TLS termination (self-signed dev cert),HTTP→HTTPS 301,proxy /, /api/,
   # /v1/, /v2/, /router/* 到對應內部 service。
   nginx:
-    image: nginx:alpine
+    # 版本＋digest 都釘死(2026-08-08,氣隙凍結前)。這是平台唯一的對外大門,
+    # 原本寫 `nginx:alpine`——完全沒有版本號,重建一次就可能換一個 nginx。
+    # digest 取的是 **manifest-list**(多架構)的那一個:
+    #   docker buildx imagetools inspect nginx:1.30.4-alpine
+    # 1.30.4-alpine 建置日 2026-07-15;1.27 線已於 2025-06-24 EOL。
+    # ⚠ 換版本時 tag 與 digest 要一起換 —— 兩者不一致時實際拉的是 digest,
+    #   tag 只剩註解作用。
+    image: nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
     container_name: anila-nginx
     ports:
       - "${NGINX_HTTP_PORT:-80}:80"

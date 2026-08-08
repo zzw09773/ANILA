@@ -61,7 +61,7 @@ ANILA
 ```
 apps/anila-shell/
 ├── index.html · vite.config.js · vitest.setup.js
-├── Dockerfile              # node:22-alpine build（npm install）→ nginx:1.27-alpine serve；EXPOSE 80
+├── Dockerfile              # node:22-alpine build（npm ci）→ nginx:1.30.4-alpine（釘 digest）serve；EXPOSE 80
 ├── .env.example · docker/nginx.conf · docs/ · e2e/（僅歷史 README，無 spec）
 └── src/
     ├── main.jsx            # 入口；BrowserRouter(basename=BASE_URL) + AuthProvider + ConfirmProvider；僅 /app/*，無登入頁
