@@ -49,6 +49,7 @@ from app.models.ingestion import (
     IngestionDocument,
     IngestionJob,
 )
+from app.models.platform_setting import get_setting
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user
@@ -78,16 +79,19 @@ _ZIP_MAX_TOTAL_BYTES = 1 * 1024 * 1024 * 1024  # 1 GB
 _FILENAME_BAD_CHARS = ("\x00", "\r", "\n")
 
 
-def _zip_member_name(member: zipfile.ZipInfo) -> str:
+def _zip_member_name(db: Session, member: zipfile.ZipInfo) -> str:
     """還原 zip 內檔名的正確編碼。
 
     ``zipfile`` 對「沒設 UTF-8 旗標(general-purpose bit 11 / 0x800)」的 entry
     一律用 CP437 解檔名;但 Windows 內建壓縮存的中文檔名其實是 CP950/Big5(或
     GBK)→ 被 CP437 解成亂碼。偵測到無 UTF-8 旗標時,把字串還原成原始 bytes 再用
     台灣常見編碼重解。單檔上傳沒這問題(檔名來自 multipart,本來就 UTF-8)。
-    """
-    import os
 
+    覆寫碼頁走 ``intl.zip_filename_encoding``(DB 那一列 → ``ANILA_ZIP_FILENAME_ENC``
+    → 程式預設的空字串),**每個成員都重解一次**。一次 zip 上限 200 個成員,而每個
+    成員本來就要落檔＋雜湊＋寫一列,一次主鍵查詢在這裡不是熱點;把它提到迴圈外
+    先讀起來反而多一個「讀取時機」要解釋,而那正是本包在消滅的那種形狀。
+    """
     name = member.filename
     if member.flag_bits & 0x800:
         return name  # entry 已標 UTF-8,zipfile 解對了
@@ -100,10 +104,11 @@ def _zip_member_name(member: zipfile.ZipInfo) -> str:
     if all(b < 0x80 for b in raw):
         return name
     # 非 UTF-8 旗標 + 含非 ASCII bytes → 多半是本地碼頁存的 CJK 檔名被 zipfile 用
-    # CP437 誤解。台灣內網優先 CP950(Big5 是其子集);可由 ANILA_ZIP_FILENAME_ENC
-    # 覆寫(例如 gbk)。⚠ 啟發式:各 CJK 碼頁 byte 範圍重疊,"decode 成功" 不保證
-    # 100% 正確,但對單一語系內網是合理預設。
-    encs = [e for e in (os.getenv("ANILA_ZIP_FILENAME_ENC"), "cp950", "gbk") if e]
+    # CP437 誤解。台灣內網優先 CP950(Big5 是其子集);可由設定頁的
+    # intl.zip_filename_encoding 覆寫(例如 gbk)。⚠ 啟發式:各 CJK 碼頁 byte 範圍
+    # 重疊,"decode 成功" 不保證 100% 正確,但對單一語系內網是合理預設。
+    override = get_setting(db, "intl.zip_filename_encoding")
+    encs = [e for e in (override, "cp950", "gbk") if e]
     for enc in encs:
         try:
             return raw.decode(enc)
@@ -581,7 +586,7 @@ async def upload_zip(
     for member in members:
         # Choose the document filename based on preserve_folder_structure.
         # 先還原檔名編碼(zip 內非 UTF-8 旗標的中文檔名會被 CP437 解成亂碼)。
-        in_zip_path = _zip_member_name(member)
+        in_zip_path = _zip_member_name(db, member)
         out_name = _sanitize_archive_filename(
             in_zip_path,
             preserve_folder_structure=preserve_folder_structure,

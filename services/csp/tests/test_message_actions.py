@@ -1347,4 +1347,13 @@ def test_icons_endpoint_returns_list(client: TestClient, db: Session):
     data = r.json()
     assert isinstance(data, dict)
     assert sorted(data["icons"]) == sorted(ALLOWED_ACTION_ICONS)
-    assert data["max_body_chars"] == int(settings.ANILA_ACTION_MAX_BODY_CHARS)
+    # ⚠ 別跟 ``settings.ANILA_ACTION_MAX_BODY_CHARS`` 比 —— 上限已改成每請求解
+    # 一次，兩邊都退回同一個程式預設 20000 時，即使端點根本沒接上設定也會綠。
+    # 存一個**誰也猜不到的值**進去，端點必須跟著變：畫面上顯示的上限與後端實際
+    # 擋人的上限，必須是同一個數字。
+    from app.models.platform_setting import set_setting
+
+    set_setting(db, "limits.action_max_body_chars", 4321)
+    db.commit()
+    again = client.get("/api/message-actions/icons", headers=dh)
+    assert again.json()["max_body_chars"] == 4321

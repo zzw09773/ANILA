@@ -9,19 +9,24 @@ from __future__ import annotations
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models.department import Department
+from app.models.platform_setting import get_setting
 from app.models.user import User
 
 
-def max_depth() -> int:
+def max_depth(db: Session) -> int:
     """部門樹允許的最大層數(院=1、所=2、組=3)。
 
     可設定而非寫死:SYSTEM-MAP 定的是三層,但院內實際編制(例如處下設科)
-    若需要第四層,改 .env 即可,不必動程式碼與重跑審查。放寬只影響新建
+    若需要第四層,從設定頁改即可,不必動程式碼與重跑審查。放寬只影響新建
     與 re-parent 的檢查,既有資料不受影響。
+
+    **每次呼叫都真的解一次**(``limits.department_max_depth``:DB 那一列 →
+    ``ANILA_DEPARTMENT_MAX_DEPTH`` → 程式預設 3)。以前讀的是 ``config.py``
+    那個 import 期就凍結的 ``settings`` 物件 —— 那表示改完要 recreate 容器,
+    而登錄表把這一顆宣告成不需重啟。宣告與現實的那道縫在這裡焊起來。
     """
-    return int(settings.ANILA_DEPARTMENT_MAX_DEPTH)
+    return int(get_setting(db, "limits.department_max_depth"))
 
 # Transaction-scoped advisory lock for hierarchy mutations (create-with-parent,
 # re-parent, activate/deactivate). Fixed key so concurrent writers serialize

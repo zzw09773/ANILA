@@ -770,6 +770,11 @@ _DEFAULT_NOT_MECHANICALLY_PINNABLE = {
     # 讀取點沒有給預設值（None／`or` 後備／常數轉指）。
     "ANILA_TEMPLATE_DIR", "ANILA_ZIP_FILENAME_ENC", "CSP_APP_DB_PASSWORD",
     "CSP_SECRET_KEY", "LEGACY_SQLITE_PATH",
+    # Task 2 之後這兩顆的讀取點是 ``get_setting``，字面預設值只剩登錄表這一份
+    # （原本 ``os.environ.get(name, "1")`` 那個重複的 "1" 已經消失）。拿登錄表
+    # 去比登錄表沒有意義，所以改由 ``test_settings_takes_effect`` 的「兩層都沒有
+    # 就回退到宣告的預設值」那一輪守著 —— 那是**行為**上的核對，比字面掃描強。
+    "ANILA_ZH_NORMALIZE", "ANILA_QUERY_EXPANSION",
     # 預設值是一個常數而不是字面值 —— 改用同一性比對，見下一支測試。
     "PDF_OCR_VISION_PROMPT",
     # 沒有任何 app 讀取點：CPython／httpx runtime 自己消費。
@@ -847,7 +852,9 @@ def test_native_read_site_defaults_equal_the_declared_default():
         assert spec.default in parsed, (
             f"{spec.key} 宣告 {spec.default!r}，讀取點的字面預設是 {sorted(literals)!r}"
         )
-    assert checked >= 30, f"只掃到 {checked} 個原生讀取點，掃描器可能壞了"
+    # Task 2 把 ANILA_ZH_NORMALIZE／ANILA_QUERY_EXPANSION 的讀取點搬到
+    # ``get_setting``，各自帶走一個字面預設值，所以下限從 30 降到 28。
+    assert checked >= 28, f"只掃到 {checked} 個原生讀取點，掃描器可能壞了"
 
 
 def test_no_entry_escapes_both_default_pins():

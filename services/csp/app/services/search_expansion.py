@@ -8,8 +8,16 @@ Precision beats recall：錯誤擴展詞會污染 embedding，拿不準就不擴
 
 from __future__ import annotations
 
-import os
 import re
+
+from sqlalchemy.orm import Session
+
+from app.models.platform_setting import get_setting
+
+#: 登錄表裡這一顆的 key。env 回退（``ANILA_QUERY_EXPANSION``，判準 ``!= "0"``）
+#: 由 ``get_setting`` 那一層負責；本模組不再自己讀 env，否則會出現「畫面顯示
+#: 已關閉、檢索照樣擴展」這種沒有錯誤訊息的分歧。
+SETTING_KEY = "intl.query_expansion"
 
 _MAX_ADDED = 12
 _ROC_MIN = 80
@@ -70,11 +78,15 @@ def _preceded_by_identifier(q: str, digit_start: int) -> bool:
     return any(window.endswith(p) for p in _ID_PREFIXES)
 
 
-def expand_query(q: str) -> str:
-    """回傳原查詢＋擴展詞（空白分隔）。``ANILA_QUERY_EXPANSION=0`` 時原樣回傳。"""
+def expand_query(db: Session, q: str) -> str:
+    """回傳原查詢＋擴展詞（空白分隔）。``intl.query_expansion`` 關閉時原樣回傳。
+
+    開關**每一次檢索都重新解一次**（DB 那一列 → env → 程式預設），所以管理員
+    從畫面關掉之後，下一個檢索請求就不再擴展，不必重啟容器。
+    """
     if not q:
         return q
-    if os.environ.get("ANILA_QUERY_EXPANSION", "1") == "0":
+    if not get_setting(db, SETTING_KEY):
         return q
 
     added: list[str] = []

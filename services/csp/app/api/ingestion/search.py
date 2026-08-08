@@ -756,7 +756,7 @@ async def search_collection(
     source_filter = designated.name if designated is not None else None
 
     # 民國紀年／域內同義擴展後再 embedding（擴展詞會拉近向量空間，屬預期行為）。
-    search_query = expand_query(payload.query)
+    search_query = expand_query(db, payload.query)
     if search_query != payload.query:
         added_n = len(search_query[len(payload.query) :].split())
         logger.debug(

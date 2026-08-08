@@ -33,6 +33,7 @@ from app.models.conversation import Conversation
 from app.models.department import Department
 from app.models.message import Message
 from app.models.message_action import MessageAction, MessageActionBinding
+from app.models.platform_setting import get_setting
 from app.models.user import User
 from app.schemas.contracts.classification import (
     ClassificationLevel,
@@ -125,9 +126,21 @@ def _validate_choices(choices: list[ChoiceSpec] | list[dict] | None) -> list[dic
     return out
 
 
-def _validate_body(body: str) -> None:
-    max_chars = int(settings.ANILA_ACTION_MAX_BODY_CHARS)
-    if len(body) > max_chars:
+def _max_body_chars(db: Session) -> int:
+    """自訂動作 body 的字元上限（``limits.action_max_body_chars``）。
+
+    **唯一的讀取點** —— 擋人的 ``_validate_body`` 與畫面上顯示上限的
+    ``GET /api/message-actions/icons`` 都走這一支。兩邊各讀一次就會有
+    「畫面說 20000、後端其實擋在 5000」那種沒有錯誤訊息的分歧。
+
+    每次呼叫都真的解一次（DB 那一列 → ``ANILA_ACTION_MAX_BODY_CHARS`` →
+    程式預設 20000）。
+    """
+    return int(get_setting(db, "limits.action_max_body_chars"))
+
+
+def _validate_body(db: Session, body: str) -> None:
+    if len(body) > _max_body_chars(db):
         raise HTTPException(status_code=413, detail="動作內容過大")
 
 
@@ -317,7 +330,7 @@ def create_action(
 ) -> MessageAction:
     icon = _validate_icon(payload.icon)
     choices = _validate_choices(payload.choices)
-    _validate_body(payload.body)
+    _validate_body(db, payload.body)
 
     exists = (
         db.query(MessageAction)
@@ -393,7 +406,7 @@ def update_action(
             raise HTTPException(status_code=400, detail="名稱已存在")
 
     new_body = data.get("body", row.body)
-    _validate_body(new_body)
+    _validate_body(db, new_body)
 
     for key, value in data.items():
         setattr(row, key, value)

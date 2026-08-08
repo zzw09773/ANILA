@@ -140,7 +140,7 @@ async def retrieve_institutional(
     source_filter = designated.name if designated is not None else None
 
     # 民國紀年／域內同義擴展 —— 院規正是它存在的理由（「105 年函頒」）。
-    search_query = expand_query(query)
+    search_query = expand_query(db, query)
 
     try:
         pool = get_pool()

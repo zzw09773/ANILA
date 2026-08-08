@@ -353,8 +353,8 @@ def _inject_attachments(
 
         # model_name None → explicit default-window fallback.
         context_window = attachment_context.get_context_window(db, model_name)
-        budget = attachment_context.attachment_budget_tokens(context_window)
-        admitted_list, excluded_list = attachment_context.admit(meta_rows, budget)
+        budget = attachment_context.attachment_budget_tokens(db, context_window)
+        admitted_list, excluded_list = attachment_context.admit(db, meta_rows, budget)
         admitted_set = set(admitted_list)
 
         text_by_id: dict[int, str | None] = {}

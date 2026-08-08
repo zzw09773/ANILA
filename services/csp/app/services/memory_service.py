@@ -577,7 +577,7 @@ async def _write_chunk(
     ``commit()`` cannot make a sibling chunk durable mid-pair.
     """
     # §6-3：assistant chunk 在 embed／落庫前正規化（與 persist_turn 同一契約）
-    content, zh_changed = zh_normalize_service.prepare_message_content(role, content)
+    content, zh_changed = zh_normalize_service.prepare_message_content(db, role, content)
     if message_id is not None:
         zh_normalize_service.log_if_changed(message_id, zh_changed)
     if not content or not content.strip():
@@ -657,16 +657,19 @@ async def persist_turn(
     logged so a memory write failure can never propagate up to break
     the user-facing response.
     """
-    # §6-3：assistant 側在 embed／chunk 落庫前正規化（proxy 原文經此統一邊界）
-    assistant_message, zh_changed = zh_normalize_service.prepare_message_content(
-        "assistant", assistant_message,
-    )
-    if assistant_message_id is not None:
-        zh_normalize_service.log_if_changed(assistant_message_id, zh_changed)
-    if assistant_message is None:
-        assistant_message = ""
     db = SessionLocal()
     try:
+        # §6-3：assistant 側在 embed／chunk 落庫前正規化（proxy 原文經此統一邊界）。
+        # ⚠ 必須在 session 開好之後 —— 開關 ``intl.zh_normalize`` 現在是每次
+        # 呼叫查一次 DB，而這條背景路徑的 session 本來就是它自己的（request
+        # scope 早已關閉）。順序不變：仍在任何 embed／INSERT 之前。
+        assistant_message, zh_changed = zh_normalize_service.prepare_message_content(
+            db, "assistant", assistant_message,
+        )
+        if assistant_message_id is not None:
+            zh_normalize_service.log_if_changed(assistant_message_id, zh_changed)
+        if assistant_message is None:
+            assistant_message = ""
         try:
             # Embed BOTH sides before staging either INSERT. ``_embed`` releases
             # the pooled connection via commit(); if a user INSERT were already

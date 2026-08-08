@@ -216,7 +216,7 @@ def extract_attachment_text(
 
         # 儲存上限是絕對值,與模型無關:抽取當下不知道會用哪個模型,若拿
         # 預算推導上限,大 context 模型本來吃得下的文件會在這裡被永久丟棄。
-        store_cap = max_stored_tokens()
+        store_cap = max_stored_tokens(db)
 
         if raw_tokens > store_cap:
             # Too large to persist — keep token_count for metering / notices,

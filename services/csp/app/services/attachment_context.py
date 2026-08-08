@@ -1,7 +1,14 @@
 """Per-conversation attachment token budget helpers (P1.5).
 
-Budget = int(context_window * ANILA_ATTACHMENT_BUDGET_RATIO).
-Effective cost of one attachment = int(token_count * ANILA_ATTACHMENT_TOKEN_SAFETY).
+Budget = int(context_window * limits.attachment_budget_ratio).
+Effective cost of one attachment = int(token_count * limits.attachment_token_safety).
+
+The four knobs below (default_context_window / attachment_budget_ratio /
+attachment_token_safety / attachment_max_stored_tokens) are resolved PER
+REQUEST via ``get_setting`` (platform_settings row -> ANILA_* env -> code
+default) — hence the ``db`` first argument on helpers that used to be pure.
+They used to read the import-frozen ``settings`` object, which meant an
+admin editing them had to wait for a container recreate.
 
 Admission is a DERIVED value computed at the moment of use (meter / inject /
 API), never persisted. Among rows with extract_status == 'ok' and a
@@ -11,7 +18,7 @@ is excluded; later smaller rows may still be admitted (existing rule).
 
 extract_status is purely an extraction outcome:
   pending | ok | failed | unsupported | too_large
-(too_large = refused to store text past ANILA_ATTACHMENT_MAX_STORED_TOKENS)
+(too_large = refused to store text past limits.attachment_max_stored_tokens)
 
 DELIBERATE NON-CHANGE: conversation history is NOT subtracted dynamically
 from the attachment budget. The 0.7 ratio exists precisely so that
@@ -28,8 +35,8 @@ from typing import Any, Protocol, Sequence
 
 from sqlalchemy.orm import Session, defer
 
-from app.config import settings
 from app.models.attachment import Attachment
+from app.models.platform_setting import get_setting
 from app.models.model_registry import ModelRegistry
 
 
@@ -37,7 +44,7 @@ def get_context_window(db: Session, model_name: str | None) -> int:
     """Resolve context window: model_registry value when set, else settings default.
 
     When ``model_name`` is None or the model has no ``context_window``, this
-    falls back to ``ANILA_DEFAULT_CONTEXT_WINDOW`` (upload before any turn
+    falls back to ``limits.default_context_window`` (upload before any turn
     has chosen a model — that fallback is intentional and explicit).
     """
     if model_name:
@@ -49,29 +56,29 @@ def get_context_window(db: Session, model_name: str | None) -> int:
         if row is not None and row[0] is not None:
             return int(row[0])
     # Explicit fallback: model unknown (pre-turn upload) or registry NULL.
-    return int(settings.ANILA_DEFAULT_CONTEXT_WINDOW)
+    return int(get_setting(db, "limits.default_context_window"))
 
 
-def attachment_budget_tokens(context_window: int) -> int:
+def attachment_budget_tokens(db: Session, context_window: int) -> int:
     # History is NOT subtracted here — see module docstring (0.7 ratio).
-    return int(context_window * float(settings.ANILA_ATTACHMENT_BUDGET_RATIO))
+    return int(context_window * float(get_setting(db, "limits.attachment_budget_ratio")))
 
 
-def max_stored_tokens() -> int:
+def max_stored_tokens(db: Session) -> int:
     """Refuse to persist extracted_text beyond this raw-token ceiling.
 
     Absolute, not budget-derived: extraction runs before any model is known,
     so a budget-derived ceiling would discard text a larger-context model
     could still admit, with re-upload the only recovery. See config.
     """
-    return int(settings.ANILA_ATTACHMENT_MAX_STORED_TOKENS)
+    return int(get_setting(db, "limits.attachment_max_stored_tokens"))
 
 
-def effective_cost(token_count: int | None) -> int:
+def effective_cost(db: Session, token_count: int | None) -> int:
     """Apply the safety multiplier to a raw estimate."""
     if token_count is None or token_count <= 0:
         return 0
-    return int(token_count * float(settings.ANILA_ATTACHMENT_TOKEN_SAFETY))
+    return int(token_count * float(get_setting(db, "limits.attachment_token_safety")))
 
 
 class _AdmitRow(Protocol):
@@ -81,6 +88,7 @@ class _AdmitRow(Protocol):
 
 
 def admit(
+    db: Session,
     attachments: Sequence[_AdmitRow],
     budget: int,
 ) -> tuple[list[int], list[int]]:
@@ -100,7 +108,7 @@ def admit(
             continue
         if att.token_count is None:
             continue
-        cost = effective_cost(att.token_count)
+        cost = effective_cost(db, att.token_count)
         if running + cost <= budget:
             admitted.append(att.id)
             running += cost
@@ -120,7 +128,7 @@ def get_conversation_attachment_usage(
     Excess from ok-but-excluded rows is ``over_budget_tokens``.
     Invariant: ``used_tokens + remaining_tokens == budget_tokens``.
     """
-    budget = attachment_budget_tokens(context_window)
+    budget = attachment_budget_tokens(db, context_window)
     # 排除 extracted_text(可能到數 MB);容量計算用不到,注入路徑另行只對
     # 已納入的 id 撈文字。用 defer 而非逐一列舉,漏欄位會退化成 lazy load。
     rows = (
@@ -130,16 +138,16 @@ def get_conversation_attachment_usage(
         .order_by(Attachment.created_at.asc(), Attachment.id.asc())
         .all()
     )
-    admitted_ids, excluded_ids = admit(rows, budget)
+    admitted_ids, excluded_ids = admit(db, rows, budget)
     admitted_set = set(admitted_ids)
     excluded_set = set(excluded_ids)
     used_raw = 0
     excluded_raw = 0
     for att in rows:
         if att.id in admitted_set:
-            used_raw += effective_cost(att.token_count)
+            used_raw += effective_cost(db, att.token_count)
         elif att.id in excluded_set:
-            excluded_raw += effective_cost(att.token_count)
+            excluded_raw += effective_cost(db, att.token_count)
     used = min(used_raw, budget)
     remaining = budget - used
     percent = 0 if budget <= 0 else min(100, int(round(100.0 * used / budget)))
