@@ -1,5 +1,14 @@
-from pydantic_settings import BaseSettings
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any, Mapping
+
+from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -213,3 +222,157 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ── B 類設定的開機覆蓋 ─────────────────────────────────────────────────────
+#
+# C 類設定改完下一個請求就生效（Task 3 把讀取點搬成 per-request）。B 類做不到
+# 那件事：它們的讀取點是背景迴圈的間隔、開機自動註冊的清單、附件落地的目錄
+# —— 全都在開機那一刻決定。擁有者裁定的機制是**開機覆蓋**（明確否決了「把值
+# 寫回 .env 再重啟」）：csp 開機、DB 可達之後、任何消費端讀到它之前，把
+# ``platform_settings`` 裡的 B-可編輯覆蓋值蓋回**上面那個單例**。
+#
+# 為什麼是就地覆寫那一顆，不是 ``model_copy`` 出一份新的
+# ======================================================
+# 全樹幾百處寫的是 ``from app.config import settings``，也就是說每一個消費模組
+# 在 import 期就把**那個物件的參考**抓在手上了。重建一份新的、把模組屬性換掉，
+# 對它們一點效果也沒有：畫面說改好了、後端跑的還是舊值，而且不會有任何錯誤
+# 訊息。所以套用一定是就地 ``setattr``；``Settings`` 沒有 ``frozen``，也沒有
+# ``validate_assignment``（值在 ``resolve_setting`` 那一端就已經按登錄表的規則
+# 解析並過完值域了）。
+#
+# 為什麼只套 DB 那一層
+# ====================
+# ``resolve_setting`` 的回退鏈是 DB → ``os.environ`` → 程式預設，而
+# ``Settings`` 自己的值可能來自 ``.env`` **檔**（``model_config`` 有
+# ``env_file``）—— 那一層 ``os.environ`` 讀不到。把 env／預設層也蓋回去，等於
+# 用一個這個行程從來沒有用過的值取代佈署真正在跑的值。只有 ``source == db``
+# 的才是「管理員真的存過」，也只有那些才進快照。
+#
+# ⚠ **凡是 hook 跑之前就被消費掉的顆，都不可以是 B-可編輯。** 那包括 import
+# 期就被讀走的欄位（``DEBUG`` 進了 engine 的 ``echo``、``STATIC_DIR`` 進了
+# ``/static`` 掛載）與根本不住在 ``Settings`` 上、直接讀 ``os.environ`` 的顆。
+# 它們一律在登錄表降級成 B-鎖定 —— 留著就是畫面上的謊。
+
+#: 運維 grep 用的標記。成功與失敗兩邊都會印，所以「一行都沒有」讀得出第三種
+#: 狀態（開機沒走到這裡），而不是被誤讀成「沒有覆蓋」。
+BOOT_OVERRIDE_LOG_TAG = "boot-override:"
+
+
+@dataclass(frozen=True)
+class BootOverrideSnapshot:
+    """這一次開機到底套了什麼 —— 設定頁「來源」欄的唯一依據。
+
+    ``applied``：設定 key → 真的蓋到 ``settings`` 上的值。**不在裡面的 key 就
+    不是 db-boot 來的**，包括那些有列但值壞掉、已經退回 env／預設的。
+
+    ``load_failed``：設定表整個讀不動。這時 ``applied`` 必然是空的，而畫面要
+    照實說「這一次開機沒有載入覆蓋」——把載入失敗顯示成「沒有人設定過」，
+    是這個包最該死的那種靜默成功。
+
+    ``failure_reason``：只放例外的**類別名**。連線錯誤的訊息會帶著 DSN，而
+    ``DATABASE_URL`` 內嵌帳密 —— 完整的細節（含 traceback）只進 log，不進
+    這個會上管理員畫面的欄位。
+    """
+
+    applied: Mapping[str, Any]
+    load_failed: bool
+    failure_reason: str
+
+
+_EMPTY_OVERRIDES: Mapping[str, Any] = MappingProxyType({})
+
+#: 模組層唯讀狀態。每一次 ``apply_boot_overrides`` **整份取代**它，不累加：
+#: 同一個行程可能跑很多次 lifespan（測試的 ``TestClient`` 就是），累加會讓來源
+#: 欄記著上一輪的事。
+_current_snapshot = BootOverrideSnapshot(
+    applied=_EMPTY_OVERRIDES, load_failed=False, failure_reason=""
+)
+
+
+def boot_override_snapshot() -> BootOverrideSnapshot:
+    """這一次開機的套用紀錄。沒有它，設定頁的「來源」欄只能用猜的。"""
+    return _current_snapshot
+
+
+def record_boot_override_failure(reason: str) -> BootOverrideSnapshot:
+    """記下「這一次開機根本沒能去讀設定表」。
+
+    ``apply_boot_overrides`` 只擋得住它自己看得到的例外 —— 連 session 都開不起來
+    的時候（DB 整個不通），它**沒有被呼叫過**，於是快照會停在初始值：
+    ``load_failed=False``、``applied={}``。那正好是「沒有人設定過」的長相，而事
+    實是「我們沒有去看」。開機端因此要在自己的保險絲裡呼叫這一支，讓來源欄不會
+    把一次失敗說成一次乾淨的開機。
+    """
+    global _current_snapshot
+
+    _current_snapshot = BootOverrideSnapshot(
+        applied=_EMPTY_OVERRIDES, load_failed=True, failure_reason=reason
+    )
+    return _current_snapshot
+
+
+def apply_boot_overrides(db) -> BootOverrideSnapshot:
+    """把 ``platform_settings`` 裡的 B-可編輯覆蓋值蓋回 ``settings``。
+
+    ``db`` 是一個已經開好的 session（呼叫端負責關）。回傳的就是新的模組層快照。
+
+    **開機絕不因為這張表掛掉。** 讀取階段任何一個例外都會被收成「這一次沒有
+    載入覆蓋」：欄位一顆都不動（＝以 env 值開機）、留一則大聲的 ERROR、快照記
+    載失敗。讀與寫刻意分兩段，所以失敗時不會留下「套了一半」那種最難查的狀態。
+    """
+    global _current_snapshot
+
+    from app.models.platform_setting import SOURCE_DB, resolve_setting
+    from app.services.settings_registry import SETTINGS, SettingClass
+
+    pending: list[tuple[str, str, Any]] = []  # (設定 key, Settings 欄位, 值)
+    try:
+        for spec in SETTINGS:
+            if spec.setting_class is not SettingClass.B_EDIT:
+                continue
+            field = spec.env_name
+            if field is None or field not in Settings.model_fields:
+                # 登錄表把一顆蓋不到的設定標成可編輯 = 畫面上的假控制項。
+                # 測試（test_every_b_edit_entry_is_a_field_on_settings）擋在前面，
+                # 所以真的走到這裡就是登錄表出事了，要看得見。
+                logger.error(
+                    "%s 登錄表把 %s 標成 B-可編輯，但 %r 不是 Settings 的欄位 —— "
+                    "這一顆改了不會生效",
+                    BOOT_OVERRIDE_LOG_TAG,
+                    spec.key,
+                    field,
+                )
+                continue
+            value, source = resolve_setting(db, spec.key)
+            if source == SOURCE_DB:
+                pending.append((spec.key, field, value))
+    except Exception as exc:
+        _current_snapshot = BootOverrideSnapshot(
+            applied=_EMPTY_OVERRIDES,
+            load_failed=True,
+            failure_reason=f"讀取 platform_settings 失敗（{type(exc).__name__}）",
+        )
+        logger.error(
+            "%s 讀取 platform_settings 失敗 —— 本次開機一律沿用環境變數與程式預設值，"
+            "管理員存過的 B 類覆蓋一顆都沒有套用",
+            BOOT_OVERRIDE_LOG_TAG,
+            exc_info=True,
+        )
+        return _current_snapshot
+
+    for _key, field, value in pending:
+        setattr(settings, field, value)
+
+    _current_snapshot = BootOverrideSnapshot(
+        applied=MappingProxyType({key: value for key, _field, value in pending}),
+        load_failed=False,
+        failure_reason="",
+    )
+    logger.info(
+        "%s 套用 %d 顆管理員存過的 B 類設定%s",
+        BOOT_OVERRIDE_LOG_TAG,
+        len(pending),
+        ("：" + "、".join(key for key, _f, _v in pending)) if pending else "",
+    )
+    return _current_snapshot

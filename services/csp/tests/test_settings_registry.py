@@ -147,7 +147,21 @@ EXPECTED_C_ENV_NAMES = frozenset({
 #: ⚠ env 名是**不帶前綴**的 ``VISION_URL``／``VISION_MODEL``，不是 ``PDF_OCR_VISION_*``。
 _OCR_TRIO = frozenset({"PDF_OCR_FALLBACK", "VISION_URL", "VISION_MODEL"})
 
-# 設計 §3.2 具名排除（＋ I1 的三顆）→ B-鎖定。
+#: Task 4 的 C1 裁決：這七顆在**開機覆蓋 hook 跑到之前**就被消費掉了，所以
+#: 「存進 DB、重啟後生效」對它們是假的。兩種成因（逐顆的證據在
+#: ``tests/test_settings_boot_override.py`` 的 ``DEMOTION_EVIDENCE``）：
+#:   * import 期就被讀走 —— ``DEBUG``（engine 的 echo）、``STATIC_DIR``（/static
+#:     掛載）、``TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS``／``ANILA_TEMPLATE_DIR``
+#:     （模組常數）、``PYTHONUNBUFFERED``（直譯器）
+#:   * 通道接不上 —— ``ANILA_HOST``／``LEGACY_SQLITE_PATH`` 的讀取點是
+#:     ``os.environ``，``Settings`` 上根本沒有這兩個欄位
+_BOOT_ORDER_DEMOTED = frozenset({
+    "DEBUG", "STATIC_DIR", "ANILA_HOST", "PYTHONUNBUFFERED",
+    "LEGACY_SQLITE_PATH", "TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS",
+    "ANILA_TEMPLATE_DIR",
+})
+
+# 設計 §3.2 具名排除（＋ I1 的三顆 ＋ Task 4 C1 的七顆）→ B-鎖定。
 EXPECTED_B_LOCKED_ENV_NAMES = frozenset({
     "MEMORY_LLM_MODEL",
     "ANILA_ALERT_SMTP_ENABLED", "ANILA_ALERT_SMTP_HOST", "ANILA_ALERT_SMTP_PORT",
@@ -156,7 +170,7 @@ EXPECTED_B_LOCKED_ENV_NAMES = frozenset({
     "PDF_OCR_DPI", "PDF_OCR_CONCURRENCY", "PDF_OCR_MAX_PAGES",
     "PDF_OCR_VISION_PROMPT", "DOC_PARSER", "DOCLING_OCR_LANGS",
     "INGESTION_UPLOAD_DIR", "REDIS_URL",
-} | _OCR_TRIO)
+} | _OCR_TRIO | _BOOT_ORDER_DEMOTED)
 
 # 盤點 §1 的 13 顆 SECRET。
 EXPECTED_A_ENV_NAMES = frozenset({
@@ -181,9 +195,12 @@ EXPECTED_SEC_ENV_NAMES = frozenset({
 
 # 盤點 §6 逐組列出的「真正歧義」變數。每一顆都必須被設計 §3.1／§3.2 具名裁定過，
 # 沒有一顆可以留在「未裁定」狀態偷偷變成可編輯。
+# ⚠ ``_OCR_TRIO``（I1）與 ``_BOOT_ORDER_DEMOTED``（Task 4 C1）都不是盤點 §6 列的
+# 歧義變數，是後來各自的裁決搬進 B-鎖定的，所以要扣掉 —— 否則這個集合會隨著每
+# 一次降級默默長大，「§6 的歧義清單」就名不副實了。
 AMBIGUOUS_ENV_NAMES = (
     EXPECTED_C_ENV_NAMES
-    | (EXPECTED_B_LOCKED_ENV_NAMES - _OCR_TRIO)
+    | (EXPECTED_B_LOCKED_ENV_NAMES - _OCR_TRIO - _BOOT_ORDER_DEMOTED)
     | {"ANILA_TRUSTED_HOSTS", "ACCESS_TOKEN_EXPIRE_MINUTES", "REFRESH_TOKEN_EXPIRE_DAYS"}
 )
 
@@ -297,7 +314,7 @@ def test_class_census_matches_the_rulings():
         len(by_class[SettingClass.B_LOCKED]),
         len(by_class[SettingClass.SEC]),
         len(by_class[SettingClass.A]),
-    ) == (19, 19, 19, 25, 13)
+    ) == (19, 12, 26, 25, 13)
 
 
 def test_every_ambiguous_variable_was_explicitly_ruled_on():
@@ -658,8 +675,9 @@ def test_set_setting_records_the_actor(db):
 def test_set_setting_refuses_every_non_editable_key(db):
     """全類別掃過，不是抽一顆。"""
     refused = [s for s in SETTINGS if s.setting_class not in EDITABLE_CLASSES]
-    # 96 條目 − 可編輯 39（C 19 ＋ 門檻別名 1 ＋ B-可編輯 19）= 57。
-    assert len(refused) == 57
+    # 96 條目 − 可編輯 32（C 19 ＋ 門檻別名 1 ＋ B-可編輯 12）= 64。
+    # ⚠ 57 → 64 是 Task 4 的 C1 降級（``_BOOT_ORDER_DEMOTED`` 那七顆）。
+    assert len(refused) == 64
     for spec in refused:
         with pytest.raises(ValueError):
             set_setting(db, spec.key, spec.default)

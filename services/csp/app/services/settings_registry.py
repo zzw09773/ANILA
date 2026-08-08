@@ -325,6 +325,21 @@ _SEC_REASON = "安全類 —— 本輪不可編輯（platform_settings 無 CHECK
 _SEC_CARD_REASON = "安全類 —— 卡登信任鏈，改錯等於放行偽卡"
 _SEC_TICKET_REASON = "安全類 —— 延長票期等於延長被竊 token 的有效期（設計 §3.2）"
 _SMTP_REASON = "SMTP_HOST 是出向連線目標＝SSRF 鄰接面，且 relay 方案未定（設計 §3.2）"
+# Task 4 的 C1 裁決。B-可編輯的承諾是「存進 DB，下一次開機生效」，而開機覆蓋是在
+# lifespan 裡（DB 可達之後）才載入的 —— 在那之前就被消費掉的顆，按下去、重啟、值
+# 照舊，而且不會有任何錯誤訊息。逐顆的證據在 tests/test_settings_boot_override.py
+# 的 DEMOTION_EVIDENCE 表。
+_BOOT_ORDER_REASON = "開機序早於覆蓋載入 —— import 期就被讀走，重啟也套不上（Task 4 C1）"
+# 同一件事的另一種成因：值根本不住在 ``Settings`` 上，讀取點直接讀 os.environ，
+# 所以覆蓋機制碰不到它。**時機不是問題，通道才是** —— 理由要說對，管理員才知道
+# 這顆要改就得動 compose。
+_ENV_ONLY_CHANNEL_REASON = (
+    "讀取點直接讀 os.environ、Settings 上沒有這個欄位，開機覆蓋碰不到（Task 4 C1）"
+)
+_INTERPRETER_REASON = (
+    "由 CPython 直譯器在行程啟動時消費，開機序早於覆蓋載入、也早於一切應用程式碼"
+    "（Task 4 C1）"
+)
 _OCR_REASON = "主要消費者是 ingestion-worker（另一行程，讀不到 csp DB）；搬遷需 worker 側設定通道（設計 §3.2）"
 
 
@@ -334,18 +349,24 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "CSP Platform", True, "平台名稱（顯示用）。"),
     _spec("app.version", "APP_VERSION", SettingClass.B_EDIT, T_STR, _is_non_empty_str,
           "1.0.0", True, "平台版本字串（顯示用，anila-studio 也讀）。"),
-    _spec("app.debug", "DEBUG", SettingClass.B_EDIT, T_BOOL_PYDANTIC, _is_bool,
-          False, True, "FastAPI 除錯姿態。內網正式部署一律關閉。"),
+    _spec("app.debug", "DEBUG", SettingClass.B_LOCKED, T_BOOL_PYDANTIC, _is_bool,
+          False, True, "FastAPI 除錯姿態。內網正式部署一律關閉。"
+          "⚠ 唯一讀取點是 database.py:10 的 engine ``echo``，engine 在 import 期就建好了。",
+          _BOOT_ORDER_REASON),
     _spec("app.site_url", "SITE_URL", SettingClass.B_EDIT, T_STR, _is_non_empty_str,
           "http://localhost", True, "平台對外網址，產生連結時用。"),
-    _spec("app.static_dir", "STATIC_DIR", SettingClass.B_EDIT, T_STR, _is_non_empty_str,
+    _spec("app.static_dir", "STATIC_DIR", SettingClass.B_LOCKED, T_STR, _is_non_empty_str,
           _STATIC_DIR_DEFAULT, True,
           "靜態檔目錄。import 期由 config.py 算成絕對路徑，改了要重建容器；"
-          "填相對路徑的話是相對於行程的工作目錄解析的。"),
-    _spec("app.host", "ANILA_HOST", SettingClass.B_EDIT, T_STR, _is_str,
-          "", True, "部署主機名。csp 本身不消費，只在開機檢查它不是 placeholder。"),
-    _spec("app.python_unbuffered", "PYTHONUNBUFFERED", SettingClass.B_EDIT, T_STR, _is_str,
-          "", True, "CPython 的 stdout 緩衝旗標，由直譯器消費，不經應用程式。"),
+          "填相對路徑的話是相對於行程的工作目錄解析的。",
+          _BOOT_ORDER_REASON),
+    _spec("app.host", "ANILA_HOST", SettingClass.B_LOCKED, T_STR, _is_str,
+          "", True, "部署主機名。csp 本身不消費，只在開機檢查它不是 placeholder。",
+          _ENV_ONLY_CHANNEL_REASON),
+    _spec("app.python_unbuffered", "PYTHONUNBUFFERED", SettingClass.B_LOCKED, T_STR,
+          _is_str, "", True,
+          "CPython 的 stdout 緩衝旗標，由直譯器消費，不經應用程式。",
+          _INTERPRETER_REASON),
 
     # ── db.* ─────────────────────────────────────────────────────────────
     _spec("db.url", "DATABASE_URL", SettingClass.A, T_STR, _is_str,
@@ -356,8 +377,12 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("db.app_role_password", "CSP_APP_DB_PASSWORD", SettingClass.A, T_STR, _is_str,
           "csp", True, "runtime 使用的 csp_app role 密碼（migration 0014 建 role 時用）。",
           _SECRET_REASON),
-    _spec("db.legacy_sqlite_path", "LEGACY_SQLITE_PATH", SettingClass.B_EDIT, T_STR, _is_str,
-          "", True, "舊 SQLite 資料檔位置；未設時走程式內建的候選路徑清單。"),
+    _spec("db.legacy_sqlite_path", "LEGACY_SQLITE_PATH", SettingClass.B_LOCKED, T_STR,
+          _is_str, "", True,
+          "舊 SQLite 資料檔位置；未設時走程式內建的候選路徑清單。"
+          "⚠ 讀取點是 startup_migrations 的 ``os.environ``（不是 Settings 欄位），"
+          "時機雖然在覆蓋之後，通道卻接不上。",
+          _ENV_ONLY_CHANNEL_REASON),
 
     # ── auth.* ───────────────────────────────────────────────────────────
     _spec("auth.secret_key", "SECRET_KEY", SettingClass.A, T_STR, _is_str,
@@ -529,8 +554,11 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "redis://redis:6379/0。此處宣告前者（收斂是獨立 follow-up）。",
           "跨服務基礎設施 DSN，執行期改＝事故製造機（設計 §3.2）"),
     _spec("queue.token_revocation_redis_timeout", "TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS",
-          SettingClass.B_EDIT, T_FLOAT, _closed_float_range(0.1, 60.0), 2.0, True,
-          "同步撤銷發布的 Redis 逾時秒數。允許 0.1–60 秒。"),
+          SettingClass.B_LOCKED, T_FLOAT, _closed_float_range(0.1, 60.0), 2.0, True,
+          "同步撤銷發布的 Redis 逾時秒數。允許 0.1–60 秒。"
+          "⚠ token_revocation_publisher.py:80 在 import 期就把它算成模組常數，"
+          "而且讀的是 os.environ。",
+          _BOOT_ORDER_REASON),
 
     # ── limits.* —— 純數值調節鈕 ────────────────────────────────────────
     _spec("limits.department_max_depth", "ANILA_DEPARTMENT_MAX_DEPTH", SettingClass.C,
@@ -587,8 +615,12 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "模型名不是數值鈕 —— 換模型牽動 per-model 授權，畫面上補不了（設計 §3.2）"),
 
     # ── agents.* ─────────────────────────────────────────────────────────
-    _spec("agents.template_dir", "ANILA_TEMPLATE_DIR", SettingClass.B_EDIT, T_STR, _is_str,
-          "", True, "agent 註冊範本目錄；空值＝用程式推導的 repo 內路徑。"),
+    _spec("agents.template_dir", "ANILA_TEMPLATE_DIR", SettingClass.B_LOCKED, T_STR,
+          _is_str, "", True,
+          "agent 註冊範本目錄；空值＝用程式推導的 repo 內路徑。"
+          "⚠ api/agents/registration.py:106 在 import 期就把它算成模組常數，"
+          "而且讀的是 os.environ。",
+          _BOOT_ORDER_REASON),
 
     # ── ingestion.* —— OCR 與視覺模型（消費者主要在 anila_core） ────────
     _spec("ingestion.pdf_ocr_fallback", "PDF_OCR_FALLBACK", SettingClass.B_LOCKED,
