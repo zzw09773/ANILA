@@ -34,8 +34,8 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 
+import bcrypt
 from jose import jwt, JWTError
-from passlib.context import CryptContext
 
 from app.config import settings
 
@@ -46,15 +46,25 @@ logger = logging.getLogger(__name__)
 ALGORITHM: str = "RS256"
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_BCRYPT_ROUNDS = 12
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    if not isinstance(password, str):
+        raise TypeError("password must be a string")
+    return bcrypt.hashpw(
+        password.encode("utf-8"),
+        bcrypt.gensalt(rounds=_BCRYPT_ROUNDS),
+    ).decode("ascii")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    if not isinstance(plain_password, str) or not isinstance(hashed_password, str):
+        raise TypeError("password and hashed password must be strings")
+    return bcrypt.checkpw(
+        plain_password.encode("utf-8"),
+        hashed_password.encode("ascii"),
+    )
 
 
 # ── Key loading ────────────────────────────────────────────────────────────────

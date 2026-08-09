@@ -47,7 +47,7 @@ CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgve
 | 語言 / 框架 | Python 3.11 · FastAPI 0.136.1 · uvicorn[standard] 0.34.0 |
 | ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1（legacy `0001`–`0046`〔無 0025〕接 redesign `r1_0001`–`r1_0008`） |
 | 設定 | pydantic-settings 2.7.1（`app/config.py`） |
-| 認證 | **JWT 為 RS256**（非對稱，`app/utils/security.py` + JWKS；`python-jose[cryptography] 3.5.0`）· passlib[bcrypt] 1.7.4 + bcrypt 4.0.1（pin） |
+| 認證 | **JWT 為 RS256**（非對稱，`app/utils/security.py` + JWKS；`python-jose[cryptography] 3.5.0`）· bcrypt 5.0.0（直接使用，cost 12） |
 | 資料庫驅動 | psycopg2-binary 2.9.10（PostgreSQL 16 + pgvector）+ asyncpg（`csp_app` RLS pool，ingestion 用） |
 | HTTP client | httpx 0.28.1（代理下游模型 / agent） |
 | 佇列 | arq 0.26.1（ingestion / eval / relation-reresolve 推進 Redis）+ Redis pub/sub（token revoke） |

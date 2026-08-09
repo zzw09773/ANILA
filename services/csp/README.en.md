@@ -47,7 +47,7 @@ CSP also hosts the **Ingestion knowledge base** (document → chunk → embeddin
 | Language / framework | Python 3.11 · FastAPI 0.136.1 · uvicorn[standard] 0.34.0 |
 | ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1 (legacy `0001`–`0046` [no 0025] then redesign `r1_0001`–`r1_0008`) |
 | Config | pydantic-settings 2.7.1 (`app/config.py`) |
-| Auth | **JWT is RS256** (asymmetric, `app/utils/security.py` + JWKS; `python-jose[cryptography] 3.5.0`) · passlib[bcrypt] 1.7.4 + bcrypt 4.0.1 (pinned) |
+| Auth | **JWT is RS256** (asymmetric, `app/utils/security.py` + JWKS; `python-jose[cryptography] 3.5.0`) · bcrypt 5.0.0 (direct, cost 12) |
 | DB drivers | psycopg2-binary 2.9.10 (PostgreSQL 16 + pgvector) + asyncpg (`csp_app` RLS pool, ingestion) |
 | HTTP client | httpx 0.28.1 (proxies downstream models / agents) |
 | Queue | arq 0.26.1 (ingestion / eval / relation-reresolve onto Redis) + Redis pub/sub (token revoke) |
