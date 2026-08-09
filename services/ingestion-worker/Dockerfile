@@ -12,6 +12,7 @@
 # AgenticRAG/ in this branch is a pure starter template and is NOT
 # installed at runtime — production code (this worker, CSP, evaluator)
 # imports parsers/vision from ``anila_core.*`` directly.
+# Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
 
 FROM python:3.13-slim
 
@@ -27,18 +28,21 @@ WORKDIR /app
 #     "antiword is required for .doc parsing".
 RUN apt-get update \
     && apt-get install -y --no-install-recommends antiword \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Install in dependency order. anila-core changes less often than
 # worker code, so its layer stays cached on most rebuilds.
 COPY packages/anila-core /tmp/anila-core
-RUN pip install '/tmp/anila-core[rag]'
+RUN pip install '/tmp/anila-core[rag]' \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 COPY services/ingestion-worker /tmp/ingestion-worker
-RUN pip install /tmp/ingestion-worker
+RUN pip install /tmp/ingestion-worker \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Default upload dir — overridden by env / volume mount in compose.
-RUN mkdir -p /var/anila/ingestion-uploads
+RUN mkdir -p /var/anila/ingestion-uploads \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 VOLUME ["/var/anila/ingestion-uploads"]
 
 # ── 降權:非 root 跑 (FAKE-CONTROLS #50) ────────────────────────────────────
@@ -54,7 +58,8 @@ VOLUME ["/var/anila/ingestion-uploads"]
 # 端所有權蓋過映像 —— 那條路徑由上面那支部署腳本負責。
 RUN groupadd --gid 10001 anila \
  && useradd --create-home --uid 10001 --gid 10001 anila \
- && chown anila:anila /var/anila/ingestion-uploads
+ && chown anila:anila /var/anila/ingestion-uploads \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
 
 # Run the Arq worker. ``--watch`` is intentionally OFF here — we want

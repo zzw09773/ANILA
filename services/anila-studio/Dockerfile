@@ -1,4 +1,5 @@
 FROM python:3.13-slim AS base
+# Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
 
 # System binaries the runtime needs:
 # - graphviz (subprocess `dot -Tpng/svg`): diagram_renderer + mindmap_renderer
@@ -21,7 +22,7 @@ RUN apt-get update \
       libxext6 libxfixes3 libxrandr2 libgbm1 libcairo2 libpango-1.0-0 \
       libasound2 libdrm2 libxshmfence1 \
       fontconfig \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Noto Sans CJK TC 獨立 single-face OTF。
 # fonts-noto-cjk Debian 套件給的是 .ttc collection,matplotlib 對 .ttc 只
@@ -40,7 +41,8 @@ RUN mkdir -p /usr/share/fonts/opentype/noto-tc \
         https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Bold.otf \
    || wget -q --tries=3 -O /usr/share/fonts/opentype/noto-tc/NotoSansCJKtc-Bold.otf \
         https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Bold.otf ) \
- && fc-cache -fv /usr/share/fonts/opentype/noto-tc
+ && fc-cache -fv /usr/share/fonts/opentype/noto-tc \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -69,7 +71,8 @@ RUN pip install --upgrade pip && \
     # 把 binary + symlinks 放這裡,任何 user 跑 process 都讀同一份。
     mkdir -p /opt/playwright-browsers && \
     playwright install chromium && \
-    chmod -R a+rX /opt/playwright-browsers
+    chmod -R a+rX /opt/playwright-browsers && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Run as non-root for defence-in-depth
 RUN useradd --create-home --uid 10001 anila \
@@ -80,7 +83,8 @@ RUN useradd --create-home --uid 10001 anila \
  # root:root → anila uid 10001 寫不進。預先 mkdir + chown 確保 volume
  # owner 對齊(named volume 在 first mount 時會 inherit dir owner)。
  && mkdir -p /var/anila/anila-studio-artifacts \
- && chown anila:anila /var/anila/anila-studio-artifacts
+ && chown anila:anila /var/anila/anila-studio-artifacts \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
 
 EXPOSE 8100
