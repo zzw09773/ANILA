@@ -26,9 +26,14 @@ Task 4）或該讀取點自己的 ``os.environ``。**絕不拿快照當生效值
 的），所以這條規則只有在上面那三種狀態下問得出來 —— 實測過：少了那三支，
 一個「優先讀 applied」的實作可以讓整個測試檔全綠。
 
-⚠ 另有一種**不屬於**這個分岔的落差：``alert_detectors.py:577`` 的 ``max(15, …)``
-是**消費端自己**的樓地板，``settings`` 上仍然是原值。本模組刻意不把 15 抄進
-payload（值域的唯一來源是登錄表），落差記在 Task 5 報告 §7-1。
+⚠ 曾經有一種**不屬於**這個分岔的落差：``alert_detectors.py:577`` 的 ``max(15, …)``
+是**消費端自己**的樓地板，``settings`` 上仍然是原值 —— 存 7 進去，畫面說 7，而迴圈
+跑 15。修法不是把 15 抄進 payload（值域的唯一來源是登錄表），而是把**宣告拉齊
+現實**：``alerts.check_interval`` 的值域下界改成 15（controller 2026-08-09 裁定，
+理由寫在 ``settings_registry.py`` 那一顆上面）。所以今天從這個頁面存得進去的每一個
+值，消費端那個 ``max`` 對它都是 no-op，它只剩安全帶的角色。釘住「宣告 ＝ 現實」的是
+``test_the_declared_lower_bound_is_the_consumers_real_floor``（下界從
+``alert_detectors`` 的原始碼讀出來比對：消費端改了樓地板而登錄表沒跟上就會紅）。
 
 ⚠ **A 類的遮蔽做在這裡，不是做在畫面上。** 13 顆祕密的 ``effective``／``stored``／
 ``default`` 一律 ``None``，只回一個 ``is_set``。遮蔽若留給前端，任何一個 curl、

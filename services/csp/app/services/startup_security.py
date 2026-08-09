@@ -260,9 +260,14 @@ def assert_card_dev_bypass_not_in_a_real_boot() -> None:
     ``docs/runbooks/intranet-deployment-runbook.md:26`` 那句「內網一律不可設」。
     這支函式把那句話變成開機硬檢查。
 
-    **真值判定不自己寫。** 呼叫 ``card_auth.card_dev_skip_nonce_binding_enabled()``
-    —— 消費端凍結 ``_SKIP_NONCE_BINDING`` 用的就是那一支。守衛與消費端只要
-    各寫一份「差不多」的解析,就會在邊緣形狀上分岔:守衛較窄(例如只認
+    **主判準是「這個行程已經凍結成什麼」,不是「環境現在寫什麼」。** 驗章那一行讀
+    的是 ``card_auth`` 在 import 當下凍結的 ``_SKIP_NONCE_BINDING``,所以主判準是
+    ``card_dev_skip_nonce_binding_frozen()``;``card_dev_skip_nonce_binding_enabled()``
+    (重讀環境)是第二個維度,涵蓋「環境已設、``card_auth`` 還沒被 import」的設定
+    意圖。**任一為真就進入判斷**(只讀環境會漏掉哪個視窗,見下方 frozen/live 註解)。
+
+    **兩支都在 ``card_auth``,真值解析不自己寫。** 守衛與消費端只要各寫一份
+    「差不多」的解析,就會在邊緣形狀上分岔:守衛較窄(例如只認
     ``== "true"``)→ ``=yes`` 守衛放行、消費端啟用,**旁路照開**;守衛較寬
     (例如自己補了 ``strip()``)→ ``=" true "`` 擋住開機,而消費端其實是關的。
 
