@@ -37,7 +37,7 @@
 | 3 | **開工修復** | ~~治理中心 11 個靜默控制項~~(分診證實**早已全修**)、健康總覽假訊號、PII 誠實化→**拆掉遮罩**(Q32)、anilalm RAG 靜默退化、索引錯配靜默全空、**憑證偵測＋四條規則精度**(Q36) | ✅ 08-06 |
 | 4 | **安全** | CSRF 繞過＋starlette 1.3.1 ✅ 08-06;csp／ingestion-worker／pptx-renderer 非 root 化＋所有權對齊腳本＋`.dockerignore` 整類修正 ✅ 08-06 晚(三輪實作、三輪驗收) | ✅ 08-06 |
 | 6 | **檢視套件是否為穩定版** | 不只看有沒有 CVE,要看版本本身穩不穩(**移到 5 之前**,見下)。9 條 BUMP `b5a519cd`;Q42 四件全數關板:python 3.13 `61053045`、gitlab 19.2.1 `0dba473d`、passlib 退役 `30c41da9`、依賴上限＋下限守衛 `7e7878bb`;另加 mermaid 主題 `d653408a`、npm 範圍內安全修復 `a5040f11`。**七張映像重建通過** | ✅ 08-10 |
-| 5 | **wheelhouse** | 進氣隙前必須。沒有它,內網之後任何套件問題都動不了 | ⬜ |
+| 5 | **wheelhouse** | 進氣隙前必須。沒有它,內網之後任何套件問題都動不了。**前置已全數關板**(第 6 段定版 ＋ 兩道匯出閘門 08-10 轉綠) | 🔶 下一件 |
 | 7 | **重掃、重打包** | P2.6 全項重掃(Q22 已裁決不縮範圍)＋ trivy 掃 OS 層 | ⬜ |
 | 8 | **部署包＋部署文件** | 重建映像、重跑一次全新安裝驗證 | ⬜ |
 | 9 | **使用者操作手冊(HTML)** | P5.1,三千人用。擁有者指定 HTML | ⬜ |
@@ -76,8 +76,8 @@
 | ✅ **設定** | ~~ingestion-worker 要 recreate 不是 restart~~ **08-06 深夜關板**:追查證實 deploy-prod 四條路徑**本來就全是 recreate**(沒發明改動);規則落 `docs/runbooks/restart-vs-recreate.md`,含實測(restart 後 env 仍舊值、容器 ID 不變) | 純文件包 |
 | ✅ **映像** | ~~build context 吃進產物、黑名單補不完~~ **08-06 深夜關板**:`scan-image-artifacts.sh` 建後掃描已接進匯出路徑(build 後、save 前、無跳過旗標);檔名家族＋**內容規則凌駕白名單**(私鑰藏在白名單路徑也抓)＋自我測試(掏空規則/白名單長歪/抽檔沒做完都大聲死) | 驗收 3 輪 ACCEPT;掃不到 ENV/history 層,檔頭誠實列明 |
 | ✅ **映像** | ~~匯出閘門是紅的~~ **08-07 凌晨關板**:三張映像清乾淨(修在源頭,掃描器一個字沒動)。⚠ 真根因不是 COPY——**本機 Symantec DCS 在 RUN 執行當下把自己的目錄注入容器可寫層**(用零 COPY 的映像重現);它同時讓 `docker save` 失敗,**約六分之一的建置會產出根本匯不出去的映像**。清理只能寫在會被注入的那一層(後補 `rm` 修不掉已 commit 的上層),所以匯出閘門**加了 `docker save` 檢查**——掃描器結構上看不見這一類 | 驗收 2 輪(首輪 REJECT:驗收自己重建的 codeserver 存不出來);⚠ **儀式沒有強制力**:新 Dockerfile 漏抄那幾行,只有匯出當下才會發現 |
-| 🔴 **映像** | 🆕 **`docker save` 2/7 張失敗**(2026-08-10):ingestion-worker 與 anila-studio 存不出去,錯在 `…/merged/run/sisidsdaemon.pid`——本機 DCS 代理的注入,08-06 就查清楚並寫在 `services/asr-decoder/Dockerfile:5-25`。⚠ **全 repo 只有 asr-decoder 有那幾行清理**,另外五個 Dockerfile 一行都沒有;而**掃描器結構上看不見這一類**(export 之後 grep 是 0 筆,東西在 layer metadata 裡)。這正是本表上一輪自己寫的「儀式沒有強制力」兌現。修復要把清理**變成守衛**(住 pytest,不做 CI) | 掃描器綠 ≠ 出得了門 |
-| 🔴 **映像** | 🆕 **匯出閘門今天是紅的:65 筆違規、4/7 張映像**(2026-08-10 從分支頭重建七張映像實測)。csp 47(29 份本機真附件經 `services/csp/data/attachments/` ＋兩處 `.pytest_cache`)、ingestion-worker 16(兩處 `.pytest_cache`)、anila-ui／anilalm 各 1(`var/log/apk.log`,**來自 nginx:alpine base 本身**,Q38 那個形狀)。⚠ **不是回歸**:`build-and-export-for-intranet.sh:210` 的 08-06 註解就寫著「補了 `.dockerignore` 之後重建的映像裡還是有真實使用者附件與 `.pytest_cache`」——當時的處置是**加閘門**,把它們擋在 context 外的那一半從沒做。**這是第 5 段凍結的前置**,不是第 8 段才處理 | 修在源頭:`.dockerignore` ＋ 一條有實測理由的白名單 |
+| ✅ **映像** | ~~**`docker save` 2/7 張失敗**~~ **08-10 關板**(`e779369e`):ingestion-worker 與 anila-studio 存不出去,錯在 `…/merged/run/sisidsdaemon.pid`——本機 DCS 代理的注入,08-06 就查清楚並寫在 `services/asr-decoder/Dockerfile:5-25`。⚠ 當時**全 repo 只有三個 Dockerfile 抄了那幾行**;現在 16 份交付 Dockerfile 全部有,而且**儀式變成守衛**(`services/csp/tests/test_dockerfile_save_cleanup.py`,住 pytest 不做 CI)。⚠ **掃描器結構上看不見這一類**(export 之後 grep 是 0 筆,東西在 layer metadata 裡),而 `--no-cache` 重建**實測 0/4 救不回來** | 五輪修訂、四輪跨家審查;缺陷全出在「哪些檔案算 Dockerfile」,最後用 `git ls-files` 收斂 |
+| ✅ **映像** | ~~**匯出閘門 65 筆違規、4/7 張映像**~~ **08-10 關板**(`a8dbfbf4`):csp 47(29 份本機真附件＋兩處 `.pytest_cache`)、ingestion-worker 16、anila-ui／anilalm 各 1(`var/log/apk.log`,來自 nginx:alpine base 本身,依 Q38 白名單豁免)。⚠ **不是回歸**:`build-and-export-for-intranet.sh:210` 的 08-06 註解就寫著「補了 `.dockerignore` 之後重建的映像裡還是有真實使用者附件與 `.pytest_cache`」——當時的處置是**加閘門**,把它們擋在 build context 外的那一半從沒做 | 修在源頭:`.dockerignore` 兩條最窄規則＋一條有實測理由的白名單 |
 | ✅ **映像** | ~~上游 base 層的東西只能遮不能刪~~ **08-07 裁決:兩者都豁免**(Q38)。codeserver 那把是**公開 npm 套件的測試夾具**;asr 的 `bootstrap.log` 逐行查過是 **Canonical 2024-10-16 建 base 時的 debootstrap 紀錄**(零筆我方資料、零筆祕密、零筆內網位址)。⚠ 別跟 asr 的 **IDS 日誌**搞混——那個嚇人的已經修掉了,不屬於 Q38 | 不換 base、不壓平 |
 | ✅ **交付包** | ~~08-03 交付包的 csp tar 內含測試 RSA 私鑰＋25MB 日誌~~ **08-07 裁決:銷毀,已執行**(Q37)。該 tar 已刪,同目錄留 `00-這包不能用了.md` 說明其餘 tar 也落後 95 個 commit。⚠ **`02-weights/` 7.7 GB 權重沒動**;`CHECKSUMS.sha256` 刻意不改,讓校驗失敗指出「這包已作廢」 | 第 8 段重建全部映像出新包 |
 
