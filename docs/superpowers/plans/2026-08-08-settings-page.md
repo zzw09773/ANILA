@@ -179,11 +179,40 @@ A 類 sentinel 掃描全名單；`effective≠stored≠pending` 三態各有分�
 
 - [ ] Step 1 失敗測試 → Step 2–5：實作 → 通過 → commit
   （`feat(csp): one endpoint that tells the whole truth about every setting`）
-## Task 6：前端四區三態頁
+## Task 6：前端四區三態頁（展開 2026-08-09）
 
-照 DepartmentsView 形＋補初載錯誤 UI；三態並列（生效/待生效/預設）；
-   來源欄；不做樂觀更新；detail 原樣呈現；編輯邏輯抽 utils 直測＋唯讀區 regex 護欄
-   （照 runtimeConfigReadOnly 樣板）。
+**契約來源＝`task-5-report.md` 的 payload schema**（143 條後端測試釘著）：
+`GET /api/platform-settings/overview` → `{total, boot_override_load_failed,
+boot_override_failure_reason, boot_override_applied_count, items[96]}`；
+`PUT /api/platform-settings/{key}` 回同型單列。**別抄本段，抄報告。**
+
+**Files:**
+- New: `apps/csp-governance-ui/src/views/SettingsOverviewView.vue`（路由照 `/users` 的
+  `meta.requiresAdmin`；導覽入 `AppSidebar.vue` 的 `adminItems`，兩位數編號＋文字）
+- New: `apps/csp-governance-ui/src/api/platformSettings.js`（照 departments.js 慣例）
+- New: `apps/csp-governance-ui/src/utils/settingsView.js`——**分區／分態／顯示字串邏輯全抽這裡**
+  （`node --test` 無法掛載元件，行為測試全打這個模組；.vue 只留樣板與呼叫）
+- Test: `apps/csp-governance-ui/tests/settingsOverview.test.mjs`（新，node --test）
+
+**版面（四區依 `class`）**：C（可編輯，改完下一請求生效）／B_EDIT（可編輯，儲存後顯示
+「已儲存，**重啟後生效**：`docker compose up -d csp`」＋ pending 值並列）／
+B_LOCKED＋SEC（唯讀＋`locked_reason` 全文——降級七顆的 compose 鍵指引要看得到）／
+A（名稱＋`is_set`，永無值）。每列：`effective`／`stored`／`pending`／`default`／`source`。
+頂部：`boot_override_load_failed=true` → 大字 banner「這次開機沒有載入覆蓋（原因）」。
+
+**硬規則（全部有前科）：**
+1. 顯示值一律來自後端回應——**不做樂觀更新**；PUT 後用回應那列**整列**取代（後端已釘
+   回應＝事實）。2. `pending` 存在時必須與 `effective` **可分辨並列**（「待生效畫成已生效」
+   是本計畫的殺形）。3. 錯誤 `detail` 原樣呈現（含值域說明與 locked_reason）。
+4. 初載失敗要有錯誤 UI（DepartmentsView 沒有——**別抄它這點**，其餘照抄）。
+5. 唯讀區用 runtimeConfigReadOnly 樣板的**原始碼 regex 護欄**釘「無 save handler」。
+6. 測試值 ≠ 場上每個預設（三度前科）；分區測試全 96 列驅動（fixture 抄 task-5-report
+   的 schema，各 class 至少兩列真實 key）。
+
+- [ ] Step 1 失敗測試（utils 層：分區、三態分辨、banner、pending 字串、來源欄）＋
+  regex 護欄（唯讀區無 handler、無樂觀更新樣式）
+- [ ] Step 2–5：跑失敗 → 實作 → `npm run test` 通過 → commit
+  （`feat(governance-ui): every setting on one page, telling only the truth`）
 ## Task 7：死變數清理＋卡登旁路防守（🔴 後者紅線雙票）
 
 compose/.env.example 移除＋歸檔註記；
