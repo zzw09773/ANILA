@@ -248,6 +248,66 @@ def assert_audit_ledger_locked_down() -> None:
     )
 
 
+def assert_card_dev_bypass_not_in_a_real_boot() -> None:
+    """``CARD_DEV_SKIP_NONCE_BINDING`` 只准活在 dev-card 模式裡。
+
+    這顆旗標開啟 = ``card_auth`` 的 **nonce 綁定(反 replay)整條關掉**;
+    簽章與憑證鏈驗證照跑,所以它唯一的後果就是「攔到一次成功的刷卡簽章 →
+    無限重放」。它的兄弟 ``CARD_DEV_TRUST_TEST_CA`` 有 compose 明列 ＋
+    ``_reject_dev_test_ca_in_production`` 的 fail-closed 檢查;這一顆在
+    2026-08-08 的環境盤點之前**沒有任何程式層攔截** —— 任何人在 compose
+    overlay 加一行就靜默生效,唯一的防線是
+    ``docs/runbooks/intranet-deployment-runbook.md:26`` 那句「內網一律不可設」。
+    這支函式把那句話變成開機硬檢查。
+
+    **真值判定不自己寫。** 呼叫 ``card_auth.card_dev_skip_nonce_binding_enabled()``
+    —— 消費端凍結 ``_SKIP_NONCE_BINDING`` 用的就是那一支。守衛與消費端只要
+    各寫一份「差不多」的解析,就會在邊緣形狀上分岔:守衛較窄(例如只認
+    ``== "true"``)→ ``=yes`` 守衛放行、消費端啟用,**旁路照開**;守衛較寬
+    (例如自己補了 ``strip()``)→ ``=" true "`` 擋住開機,而消費端其實是關的。
+
+    **「dev-card 模式」不自己定義。** 直接呼叫
+    ``card_auth._dev_test_ca_explicitly_allowed()`` —— 那是這棵樹裡唯一一份
+    dev 卡登路徑的定義(``CARD_DEV_TRUST_TEST_CA`` 開啟 ∧
+    ``REQUIRE_CARD_LOGIN_ONLY`` 為 False,``platform.yml:150-158`` 是同一句話的
+    部署面說法)。刻意呼叫這個底線開頭的名字而不是包一層公開別名:多一個名字
+    就多一個會漂開的定義,而這裡要的正是「只有一個」。
+
+    ⚠ **``ANILA_ALLOW_DEV_SECRET=1`` 不是這一條的逃生口**(本模組其他檢查是)。
+    那顆旗標守的是「祕密還是不是預設值」,dev 機器降級成警告很合理;這一條守的
+    是反 replay 綁定有沒有被關掉,而 ``ANILA_ALLOW_DEV_SECRET`` 誤帶進內網是
+    **已知會發生**的事(``platform.yml:8`` 特地為它寫了一段)。給第二把鑰匙
+    等於讓一個設錯的 dev 旗標把紅線一起帶開。真的需要用舊的固定簽章素材時,
+    出口寫在錯誤訊息裡:把那兩個 dev-card 旗標明確設好。
+    """
+    from app.services.card_auth import (
+        _dev_test_ca_explicitly_allowed,
+        card_dev_skip_nonce_binding_enabled,
+    )
+
+    if not card_dev_skip_nonce_binding_enabled():
+        return
+
+    dev_card_mode, why_not = _dev_test_ca_explicitly_allowed()
+    if dev_card_mode:
+        logger.warning(
+            "[startup_security] CARD_DEV_SKIP_NONCE_BINDING 已開啟 —— "
+            "卡登的 nonce 綁定(反 replay)在這台機器上是關的。"
+            "dev-card 模式下允許,但這台機器的刷卡結果不可以當成身分證據。"
+        )
+        return
+
+    raise RuntimeError(
+        "Refusing to start: CARD_DEV_SKIP_NONCE_BINDING 已開啟,但這不是 "
+        f"dev-card 模式({why_not})。這顆旗標會關掉卡登的 nonce 綁定,"
+        "也就是反 replay 保護 —— 任何人攔到一次成功的刷卡簽章就能無限重放,"
+        "而簽章與憑證鏈驗證全都會通過,log 上看起來是正常登入。"
+        "內網正式部署一律不可設(見 docs/runbooks/intranet-deployment-runbook.md)。"
+        "若確實要在本機接舊的固定簽章素材,請一併設 CARD_DEV_TRUST_TEST_CA=1 "
+        "並讓 REQUIRE_CARD_LOGIN_ONLY 為 false —— 那兩個旗標就是 dev-card 模式的定義。"
+    )
+
+
 def assert_intranet_lockdown_consistency() -> None:
     """Branch ``SSO``:``REQUIRE_CARD_LOGIN_ONLY`` 與其他 auth flag 的相容性。
 

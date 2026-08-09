@@ -118,11 +118,34 @@ def _dev_test_ca_explicitly_allowed() -> tuple[bool, str]:
 
 # Dev-only:跳過 nonce 綁定。**prod 一律不可開**;簽章 + 憑證鏈驗證照常執行。
 # 誠實的 mock 上線後本機也不需要它了(見上),留著只為了萬一要接舊的固定簽章素材。
-_SKIP_NONCE_BINDING = os.environ.get("CARD_DEV_SKIP_NONCE_BINDING", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
+#
+# 判定被抽成下面兩支函式,**規則本身一個字沒動**(``lower() in ("1","true","yes")``,
+# 依舊**沒有 strip**)。抽出來的理由是 ``startup_security`` 的開機守衛要拒絕
+# 「非 dev-card 模式卻設了這顆」,而守衛與消費端對「這個值算不算開啟」如果各寫
+# 一份,任一方向的分岔都是缺陷:守衛較窄 → ``=yes`` 放行而消費端啟用,旁路照開;
+# 守衛較寬(例如自己補了 strip)→ ``=" true "`` 擋住開機而消費端其實是關的。
+# 兩邊呼叫同一支,分岔就不存在。
+
+
+def _skip_nonce_binding_value_enables(raw: str) -> bool:
+    """這個字面值會不會讓下面的 nonce 綁定被跳過 —— **唯一的一份真值判定**。
+
+    ⚠ 沒有 ``strip()``。兄弟旗標 ``CARD_DEV_TRUST_TEST_CA``
+    (``_dev_test_ca_explicitly_allowed``)有,兩顆差這一個字,是既有語意,
+    這一包刻意不動它 —— 要動也是另一個決定,不是順手。
+    """
+    return raw.lower() in ("1", "true", "yes")
+
+
+def card_dev_skip_nonce_binding_enabled() -> bool:
+    """目前的環境會不會讓 nonce 綁定被跳過。``startup_security`` 的守衛也讀這支。"""
+    return _skip_nonce_binding_value_enables(
+        os.environ.get("CARD_DEV_SKIP_NONCE_BINDING", "")
+    )
+
+
+# 模組層 = boot 時凍結一次(既有語意,維持不變)。
+_SKIP_NONCE_BINDING = card_dev_skip_nonce_binding_enabled()
 
 _HASH_BY_NAME = {
     "sha256": hashes.SHA256,

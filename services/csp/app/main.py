@@ -117,6 +117,7 @@ async def lifespan(app: FastAPI):
     # place (SECRET_KEY / admin / service token / DB password). Skipping
     # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
     from app.services.startup_security import (
+        assert_card_dev_bypass_not_in_a_real_boot,
         assert_intranet_lockdown_consistency,
         assert_no_dev_defaults,
     )
@@ -124,6 +125,9 @@ async def lifespan(app: FastAPI):
     # Branch SSO: 確保 REQUIRE_CARD_LOGIN_ONLY 與 ENABLE_CARD_LOGIN 互相一致，
     # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。
     assert_intranet_lockdown_consistency()
+    # CARD_DEV_SKIP_NONCE_BINDING（關掉卡登反 replay 綁定）只准活在 dev-card
+    # 模式裡。這一顆以前沒有任何程式層攔截，加上去就靜默生效。
+    assert_card_dev_bypass_not_in_a_real_boot()
 
     # Run Alembic migrations to bring schema to head.
     # Falls back to create_all if Alembic config is not found (e.g. in tests).
