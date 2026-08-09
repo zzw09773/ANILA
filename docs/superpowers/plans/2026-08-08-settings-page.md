@@ -237,11 +237,42 @@ A（名稱＋`is_set`，永無值）。每列：`effective`／`stored`／`pendin
 - [ ] Step 1 失敗測試 → Step 2–5：實作 → 通過 → commit
   （A、B 各一 commit：`chore(compose): retire the knobs nothing reads` ／
   `fix(csp): the card dev bypass cannot ride into a real boot`）
-## Task 8：文件收尾
+## Task 8：文件收尾（展開 2026-08-09）
 
-runbook（B 類重啟措辭對齊）、HANDOFF 長期照顧（登錄表是唯一宣告點／
-   雙層優先序 DB>env 的除錯指南／TRUSTED_HOSTS 雙源收斂 follow-up）、
-   設計文件與 OWNER-QUESTIONS 對齊。
+**A. repo 內文件（會進 commit）**
+1. `docs/runbooks/`：新增或補一節「從畫面改設定」——C 類下一請求生效／B_EDIT 儲存後要
+   `docker compose up -d csp`／鎖定類要改 compose 哪個鍵（登錄表 locked_reason 已有指引，
+   runbook 引一次即可，別抄第二份會漂的清單）。
+2. `docs/HANDOFF-2026-08-07.md` §七：加「設定頁留下什麼要長期照顧」，逐條**軸線是維護成本**：
+   - **登錄表是唯一宣告點**（`settings_registry.py`）：新增設定＝改一處；分類決定顯示與可編輯性。
+   - **雙層優先序 DB > env > 程式預設** 的除錯指南：畫面「來源」欄說的就是哪一層贏了；
+     值沒生效先看來源欄，不要先翻 compose。
+   - **B_EDIT 靠開機覆蓋**：改了要重啟；`load_failed` 時畫面會說「這次開機沒有載入覆蓋」。
+   - 🆕 **env 層不套值域**（Task 5 審查發現）：compose 填超出值域的值，畫面照實顯示 env 值，
+     但消費端若自己另有夾限（如 alert 迴圈的 `max(15,…)`、token 撤銷逾時直讀 env）會出現
+     「畫面 vs 實跑」分歧。**具名 follow-up：把這兩個直讀 env 的消費端改走登錄表**。
+   - 🆕 `ANILA_TRUSTED_HOSTS` 與 DB 表 `trusted_hosts` 雙來源未收斂（Task 1 起遞延）。
+   - 🆕 A 類的 `updated_at`／`updated_by` 後端仍會回（值本身遮蔽了，metadata 沒有）。
+   - 🆕 鎖定區 51 列無分頁／搜尋（可用性，非誠實性；擁有者可裁）。
+   - 🆕 `dev.yml:121-123`／`:242` 仍留著已退役的旋鈕（Task 7 範圍外，待掃）。
+3. `docs/superpowers/specs/2026-08-08-settings-page-design.md`：與**實際出貨**對齊
+   （分類最終數字 C19／B_EDIT19／B_LOCKED19／SEC25／A13＋別名；B 類機制＝開機覆蓋；
+   校準畫面缺口那條沿用既有寫法）。⚠ 原句保留可讀，用「原句…實際出貨…」形。
+4. `docs/OWNER-QUESTIONS.md`：Q41 補一句「已實作，範圍見設計文件」。
+5. **本計畫檔自身的反向例子要更正**：Task 7 段落寫的 `" true "` 方向相反
+   （消費端不 strip，補空白反而不會啟用；真正的風險是守衛比消費端窄）——原地更正並註明。
+
+**B. SDD 工作區報告（不進 commit，但要正確——最終審查與下一任接手都讀它）**
+6. `task-5-report.md`：§2 三處殘留的舊值、§7-1 未標關閉且引用已刪測試名、
+   `platform_settings.py:29-31` docstring 指向 §7-1。
+7. `task-7-report.md` §F1：**論證錯誤**（跨家鑰匙已證：frozen-only 不會讓矩陣空綠，
+   而是那條環境值形測試會紅）——結論（保留 OR）不變，改理由。
+8. `task-7-report.md` §7 的 9 檔 431 與本輪 475 差 2 無解釋——重數或註明未解。
+9. `startup_security.py:263-267` 與 `test_card_dev_bypass_guard.py:2-30` 的頭部說明仍教
+   round-0 心智模型（只講共用函式、沒講 frozen 才是主判準）——**這兩處是程式檔，會進 commit**。
+
+- [ ] Step 1：改上列 → Step 2：commit
+  （`docs: what the settings page leaves behind, and what still reads env directly`）
 ## Task 9：最終全分支審查
 
 （最強模型＋跨家第二票；sol 08-09 起可用）→
