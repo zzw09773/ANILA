@@ -33,6 +33,11 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+import asyncio
+import itertools
+import os
+import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -42,6 +47,7 @@ from app.config import settings
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CARD_AUTH_PY = _REPO_ROOT / "services" / "csp" / "app" / "services" / "card_auth.py"
 _MAIN_PY = _REPO_ROOT / "services" / "csp" / "app" / "main.py"
+_CSP_ROOT = _REPO_ROOT / "services" / "csp"
 
 # ── 形狀矩陣 ────────────────────────────────────────────────────────────────
 #
@@ -150,10 +156,14 @@ def _generated_value_space() -> list[str]:
     是**不存在的形狀**。
     """
     space = [chr(code) for code in range(1, 256)]
-    for literal in ("1", "true", "yes", "0", "no", "on"):
-        space.append(literal)
-        space.append(literal.upper())
-        space.append(literal.capitalize())
+    for literal in ("1", "true", "yes", "0", "no", "on", "off"):
+        # ⚠ **每一種**大小寫排列,不是 upper()／capitalize() 兩三個樣本。
+        # 2026-08-09 紅線雙票指出:只取樣本的話,一份「恰好匹配這些樣本」的
+        # 自寫 parser 可以讓整套全綠,而 ``TrUe``／``trUE``／``yEs`` 照樣放行。
+        # 消費端的啟用集合＝所有 ``lower()`` 落在三個字面上的字串,對 ASCII
+        # 而言就是下面這個 product ——所以這裡是**窮舉**,不是抽樣。
+        for combo in itertools.product(*[(ch.lower(), ch.upper()) for ch in literal]):
+            space.append("".join(combo))
         for pad in (" ", "  ", "\t", "\n", "\r", "\x0b", "　", " "):
             space += [pad + literal, literal + pad, pad + literal + pad]
     # 大小寫摺疊的邊角。``lower()`` 與 ``casefold()`` 對 ASCII 完全一致,只在
@@ -190,7 +200,16 @@ def test_the_guard_refuses_exactly_when_the_consumer_would_enable(
     這一條不看守衛怎麼寫的,只看它的行為 —— 守衛自己寫任何一份跟消費端
     不同的解析（窄的、寬的、正則的、白名單的），都會在某個生成值上分岔。
     """
-    from app.services.card_auth import card_dev_skip_nonce_binding_enabled
+    from app.services.card_auth import (
+        card_dev_skip_nonce_binding_enabled,
+        card_dev_skip_nonce_binding_frozen,
+    )
+
+    # 前提:這個測試行程的凍結狀態是「關」。守衛是 frozen OR live,凍結若為真
+    # 就會**每個值都拒絕**,本條的意義會安靜地垮成同義反覆。
+    assert card_dev_skip_nonce_binding_frozen() is False, (
+        "測試行程本身是帶著旗標 import 的 —— 本條測的東西已經不是它宣稱的東西"
+    )
 
     diverged = []
     for raw in _generated_value_space():
@@ -362,3 +381,366 @@ def test_the_settings_registry_parser_agrees_with_the_consumer(raw):
 
     spec = REGISTRY["card.dev_skip_nonce_binding"]
     assert spec.value_type.parse(raw) is _skip_nonce_binding_value_enables(raw)
+
+
+# ══ Fix round 1 ═══════════════════════════════════════════════════════════════
+#
+# 紅線雙票（2026-08-09）回來了。sol 那一票的 Critical 是真的，我先實測重現才動手：
+#
+#     以 CARD_DEV_SKIP_NONCE_BINDING=1 import card_auth  → _SKIP_NONCE_BINDING = True
+#     lifespan 之前把該變數從環境移除                      → 守衛重讀環境 → 看不到 → 放行
+#     結果：反 replay 旁路**生效中**，而開機沒有被拒絕。
+#
+# 我第一輪的閉合證明比對的是**動態 helper**（`card_dev_skip_nonce_binding_enabled()`），
+# 不是驗章那一行真正消費的**凍結常數** `_SKIP_NONCE_BINDING`（card_auth.py:148,257）。
+# 兩者在「import 之後環境才變動」的視窗裡會分岔，而那正是唯一重要的視窗。
+# 修法：守衛改看凍結狀態（frozen），並保留環境即時值（live）做為第二個觸發條件。
+
+
+# ── 7. Critical 回歸：凍結的旁路不准搭著開機混進來 ──────────────────────────
+
+
+def test_a_bypass_frozen_at_import_is_refused_even_if_the_env_is_gone(
+    monkeypatch, guard, not_dev_card_mode
+):
+    """sol 的 Critical，最小 in-process 形式。
+
+    ``_SKIP_NONCE_BINDING`` 是 import 當下凍結的;環境變數之後被移除或改值，
+    **凍結的那個 True 不會跟著變**，而它才是 ``card_auth:257`` 真正讀的東西。
+    守衛只看環境 = 看一個已經過期的問題。
+    """
+    import app.services.card_auth as card_auth
+
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
+    monkeypatch.delenv("CARD_DEV_SKIP_NONCE_BINDING", raising=False)
+
+    with pytest.raises(RuntimeError) as exc:
+        guard()
+    assert "CARD_DEV_SKIP_NONCE_BINDING" in str(exc.value)
+
+
+@pytest.mark.parametrize("later_env", ["", "0", "false", " true ", "no"])
+def test_a_frozen_bypass_is_refused_whatever_the_env_was_changed_to(
+    monkeypatch, guard, not_dev_card_mode, later_env
+):
+    """環境「被改成別的值」與「被移除」是同一個視窗的兩種形狀。"""
+    import app.services.card_auth as card_auth
+
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
+    monkeypatch.setenv("CARD_DEV_SKIP_NONCE_BINDING", later_env)
+
+    with pytest.raises(RuntimeError):
+        guard()
+
+
+def test_the_guard_reads_the_same_constant_the_nonce_comparison_reads(monkeypatch, guard):
+    """凍結狀態的來源必須是 ``card_auth._SKIP_NONCE_BINDING`` 本人。
+
+    守衛若自己另外記一份（例如 import 時抄一份到 startup_security），
+    monkeypatch 這顆常數就影響不到它 —— 那就是第二份會漂開的真相。
+    """
+    import app.services.card_auth as card_auth
+
+    monkeypatch.delenv("CARD_DEV_SKIP_NONCE_BINDING", raising=False)
+    monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", False)
+    guard()  # 凍結是關的、環境也沒設 → 放行
+
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
+    with pytest.raises(RuntimeError):
+        guard()
+
+
+def test_a_real_process_that_imported_with_the_flag_then_lost_it_refuses_to_boot():
+    """sol 的 Critical，**真的另起一個行程**跑一次（不靠 monkeypatch 模擬）。
+
+    monkeypatch 版證明「守衛讀的是那顆常數」；這一版證明「真實的 import 時序
+    確實會產生那個狀態」。少了這一版，凍結語意就只是測試裡的假設。
+    """
+    script = textwrap.dedent(
+        """
+        import os
+        import app.services.card_auth as ca
+        assert ca._SKIP_NONCE_BINDING is True, "SETUP_FAILED: flag did not freeze on"
+        # lifespan 之前，環境變數不見了 —— 凍結的旁路仍然生效。
+        os.environ.pop("CARD_DEV_SKIP_NONCE_BINDING", None)
+        os.environ.pop("CARD_DEV_TRUST_TEST_CA", None)
+        from app.config import settings
+        settings.REQUIRE_CARD_LOGIN_ONLY = True          # 非 dev-card 模式
+        from app.services.startup_security import (
+            assert_card_dev_bypass_not_in_a_real_boot as guard,
+        )
+        try:
+            guard()
+            print("BOOT_PROCEEDED")
+        except RuntimeError:
+            print("BOOT_REFUSED")
+        print("EFFECTIVE_SKIP=%r" % (ca._SKIP_NONCE_BINDING,))
+        """
+    )
+    env = dict(os.environ)
+    env["CARD_DEV_SKIP_NONCE_BINDING"] = "1"
+    env["ENABLE_CARD_LOGIN"] = "true"
+    env["REQUIRE_CARD_LOGIN_ONLY"] = "false"
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(_CSP_ROOT), str(_REPO_ROOT / "packages" / "anila-core" / "src")]
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(_CSP_ROOT), env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert "SETUP_FAILED" not in proc.stdout + proc.stderr, proc.stderr[-2000:]
+    assert "EFFECTIVE_SKIP=True" in proc.stdout, (
+        f"前提沒成立:旁路並未凍結成開啟。stdout={proc.stdout!r} stderr={proc.stderr[-2000:]!r}"
+    )
+    assert "BOOT_REFUSED" in proc.stdout, (
+        "凍結的反 replay 旁路生效中,開機卻沒有被拒絕 —— "
+        f"stdout={proc.stdout!r} stderr={proc.stderr[-2000:]!r}"
+    )
+
+
+# ── 8. 接線要釘「執行」,不是釘原始碼字串（殺 A-P1／A-P1b）─────────────────
+#
+# KEY A 那一票投了兩顆突變,兩顆都活著:
+#   A-P1  把 main.py 的守衛呼叫搬到 ``yield`` 之後 → 整段服役期都沒有守衛
+#   A-P1b 把它包進 ``try/except Exception: logger.warning(...)`` → fail-closed 變 no-op
+# 兩顆的共同點:那一行**還在原始碼裡**,regex 掃得到。所以掃字串的測試守不住它。
+
+
+def _drive_lifespan_startup(monkeypatch):
+    """真的把 ``main.lifespan`` 的啟動段跑一次。回 (raised, served)。
+
+    姊妹守衛先中性化,好讓「開機被拒」這件事**可歸因**到本包這一支;
+    ``lifespan`` 內是函式內 import,所以 monkeypatch 模組屬性攔得到。
+    """
+    import app.main as main_module
+    import app.services.startup_security as ss
+
+    monkeypatch.setattr(ss, "assert_no_dev_defaults", lambda: None)
+    monkeypatch.setattr(ss, "assert_intranet_lockdown_consistency", lambda: None)
+
+    served: list[str] = []
+
+    async def _boot():
+        async with main_module.lifespan(main_module.app):
+            served.append("serving")
+
+    raised: list[BaseException] = []
+    try:
+        asyncio.run(_boot())
+    except BaseException as exc:  # noqa: BLE001 - 要看的就是「有沒有東西逃出來」
+        raised.append(exc)
+    return raised, served
+
+
+def test_the_guard_actually_refuses_the_boot_and_nothing_gets_served(monkeypatch):
+    """非 dev-card × 旁路凍結開啟 → ``lifespan`` 的啟動段必須炸,而且**不准開始服務**。
+
+    這一條同時殺死兩顆突變:
+    - 呼叫被搬到 ``yield`` 之後 → ``served`` 會是 ``["serving"]`` → 紅。
+    - 呼叫被 try/except 吞掉   → 什麼都沒丟出來 → 紅。
+    """
+    import app.services.card_auth as card_auth
+
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
+    monkeypatch.setenv("CARD_DEV_SKIP_NONCE_BINDING", "1")
+    monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+
+    raised, served = _drive_lifespan_startup(monkeypatch)
+
+    assert raised, "開機沒有被拒絕 —— 守衛要嘛沒跑,要嘛例外被吞掉了"
+    assert isinstance(raised[0], RuntimeError), f"丟出來的不是 RuntimeError:{raised[0]!r}"
+    assert "CARD_DEV_SKIP_NONCE_BINDING" in str(raised[0]), (
+        f"拒絕是別的原因,不是本包這一支:{raised[0]!r}"
+    )
+    # ⚠ 這一行才是殺死「搬到 yield 之後」的那一刀:那顆突變照樣會在關閉階段
+    # 丟出同一個 RuntimeError,上面三條都會綠 —— 只有「服務從來沒開始過」擋得住。
+    assert served == [], "守衛拒絕之前應用程式就已經開始服務了"
+
+
+def test_a_healthy_config_still_boots_past_the_guard(monkeypatch):
+    """反向釘:守衛不可以變成「永遠擋住開機」。
+
+    少了這一條,把守衛改成無條件 raise 也會讓上面那條全綠。
+    """
+    import app.services.card_auth as card_auth
+
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", False)
+    monkeypatch.delenv("CARD_DEV_SKIP_NONCE_BINDING", raising=False)
+    monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+
+    import app.services.startup_security as ss
+
+    ran: list[str] = []
+    real = ss.assert_card_dev_bypass_not_in_a_real_boot
+
+    def _watched():
+        ran.append("ran")
+        return real()
+
+    monkeypatch.setattr(ss, "assert_card_dev_bypass_not_in_a_real_boot", _watched)
+
+    _drive_lifespan_startup(monkeypatch)
+    assert ran == ["ran"], (
+        "健康設定下 lifespan 的啟動段沒有呼叫到守衛 —— 接線在某個分支裡消失了"
+    )
+
+
+# ── 9. 命門的另一半:dev-card 模式判定也不准自寫（殺 A-P2／A-P2b）───────────
+#
+# 第一輪只把「值判定」釘住了。守衛承諾的是**兩件事**都共用真定義,
+# 而 CARD_DEV_TRUST_TEST_CA 的值軸一次都沒被測過 —— KEY A 用一份「比真定義寬」
+# 的自寫模式判定，讓守衛在 CARD_DEV_TRUST_TEST_CA=false 時放行了旁路，全套仍綠。
+
+# ⚠ 這顆兄弟旗標的判定**有** strip（``card_auth:109``），與 SKIP 那顆差一個字。
+# 手寫期望表,不是呼叫受測函式算出來的。
+_TRUST_CA_EXPECTATIONS = [
+    ("1", True), ("true", True), ("yes", True), ("TRUE", True), ("Yes", True),
+    (" 1 ", True),      # ← 有 strip:這一格殺死「漏掉 .strip()」的自寫複本
+    ("\t1\n", True),
+    ("", False), ("0", False), ("false", False), ("no", False),
+    ("2", False), ("on", False), ("y", False),   # ← 「非空非 0 即算開」的自寫複本死在這幾格
+]
+
+
+@pytest.mark.parametrize("trust_ca,is_trusted", _TRUST_CA_EXPECTATIONS)
+@pytest.mark.parametrize("card_only", [True, False])
+def test_the_guard_passes_exactly_when_the_real_dev_card_definition_says_so(
+    monkeypatch, guard, trust_ca, is_trusted, card_only
+):
+    """二維閉合:CARD_DEV_TRUST_TEST_CA 的值 × REQUIRE_CARD_LOGIN_ONLY 的真假。
+
+    期望值來自**手寫表**（``_TRUST_CA_EXPECTATIONS``）與 dev-card 模式的定義
+    「兩個條件都要成立」,不是呼叫 ``_dev_test_ca_explicitly_allowed()`` 算出來的。
+    """
+    import app.services.card_auth as card_auth
+
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
+    monkeypatch.setenv("CARD_DEV_SKIP_NONCE_BINDING", "1")
+    monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", trust_ca)
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", card_only)
+
+    dev_card_mode = is_trusted and not card_only
+    if dev_card_mode:
+        guard()  # 放行
+    else:
+        with pytest.raises(RuntimeError):
+            guard()
+
+
+def test_the_guard_agrees_with_the_real_definition_across_the_whole_value_space(
+    monkeypatch, guard
+):
+    """行為層閉合:守衛放行 ⟺ ``_dev_test_ca_explicitly_allowed()[0]``。
+
+    手寫表守的是「真定義本身沒被改」,這一條守的是「守衛沒有另寫一份」——
+    兩者缺一，A-P2／A-P2b 就有一顆活得下來。
+    """
+    from app.services.card_auth import _dev_test_ca_explicitly_allowed
+    import app.services.card_auth as card_auth
+
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
+    monkeypatch.setenv("CARD_DEV_SKIP_NONCE_BINDING", "1")
+
+    diverged = []
+    for trust_ca in _generated_value_space():
+        for card_only in (True, False):
+            monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", trust_ca)
+            monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", card_only)
+            expected_pass = _dev_test_ca_explicitly_allowed()[0]
+            try:
+                guard()
+                guard_passes = True
+            except RuntimeError:
+                guard_passes = False
+            if guard_passes != expected_pass:
+                diverged.append((trust_ca, card_only, guard_passes, expected_pass))
+    assert diverged == [], (
+        f"守衛的 dev-card 判定與真定義分岔(值, card_only, 守衛放行?, 真定義?):{diverged!r}"
+    )
+
+
+def test_the_guard_consults_the_real_dev_card_helper_object(monkeypatch, guard):
+    """身分證明:守衛呼叫的必須是 ``card_auth`` 那個函式**物件**本人。
+
+    行為閉合抓得到「判定結果不一樣」的複本,抓不到「複製貼上、目前剛好一樣」的
+    複本 —— 那種複本會在原版被修正的那天安靜地留在舊語意上。
+    """
+    import app.services.card_auth as card_auth
+
+    real = card_auth._dev_test_ca_explicitly_allowed
+    consulted: list[str] = []
+
+    def _spy():
+        consulted.append("dev_card_mode")
+        return real()
+
+    monkeypatch.setattr(card_auth, "_dev_test_ca_explicitly_allowed", _spy)
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
+    monkeypatch.setenv("CARD_DEV_SKIP_NONCE_BINDING", "1")
+    monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+
+    with pytest.raises(RuntimeError):
+        guard()
+    assert consulted == ["dev_card_mode"], (
+        "守衛沒有呼叫 card_auth._dev_test_ca_explicitly_allowed —— "
+        "它自己另外寫了一份 dev-card 模式判定"
+    )
+
+
+def test_the_guard_consults_the_real_flag_helpers(monkeypatch, guard):
+    """同上,值判定那一半:frozen 與 live 兩支都要被真的呼叫到。"""
+    import app.services.card_auth as card_auth
+
+    consulted: list[str] = []
+    real_frozen = card_auth.card_dev_skip_nonce_binding_frozen
+    real_live = card_auth.card_dev_skip_nonce_binding_enabled
+
+    def _spy_frozen():
+        consulted.append("frozen")
+        return real_frozen()
+
+    def _spy_live():
+        consulted.append("live")
+        return real_live()
+
+    monkeypatch.setattr(card_auth, "card_dev_skip_nonce_binding_frozen", _spy_frozen)
+    monkeypatch.setattr(card_auth, "card_dev_skip_nonce_binding_enabled", _spy_live)
+    monkeypatch.delenv("CARD_DEV_SKIP_NONCE_BINDING", raising=False)
+    monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+
+    guard()
+    assert "frozen" in consulted, (
+        "守衛沒有讀凍結狀態 —— 那是驗章那一行真正消費的東西(sol Critical)"
+    )
+    assert "live" in consulted, "守衛沒有讀環境即時值"
+
+
+# ── 10. 登錄表 agreement 閉合到生成空間（殺 A-P3）──────────────────────────
+
+
+def test_the_registry_parser_agrees_with_the_consumer_across_the_whole_space():
+    """第一輪這一條只跑 22 個手寫形狀,所以我自己在消費端抓到的 casefold 突變
+    換到登錄表就抓不到（KEY A 的 A-P3 因此存活）。改吃生成空間。
+
+    後果具體是什麼:設定頁會把 ``CARD_DEV_SKIP_NONCE_BINDING=yeſ`` 顯示成
+    「已開啟」,而實際上是關的 —— 一個 SEC 類的顯示謊言。
+    """
+    from app.services.card_auth import _skip_nonce_binding_value_enables
+    from app.services.settings_registry import REGISTRY
+
+    spec = REGISTRY["card.dev_skip_nonce_binding"]
+    diverged = [
+        (raw, spec.value_type.parse(raw), _skip_nonce_binding_value_enables(raw))
+        for raw in _generated_value_space()
+        if spec.value_type.parse(raw) is not _skip_nonce_binding_value_enables(raw)
+    ]
+    assert diverged == [], (
+        f"登錄表的解析與消費端分岔(值, 登錄表, 消費端):{diverged!r}"
+    )

@@ -138,7 +138,7 @@ def _skip_nonce_binding_value_enables(raw: str) -> bool:
 
 
 def card_dev_skip_nonce_binding_enabled() -> bool:
-    """目前的環境會不會讓 nonce 綁定被跳過。``startup_security`` 的守衛也讀這支。"""
+    """**現在的環境**會不會讓 nonce 綁定被跳過(下一次 import 會凍結成什麼)。"""
     return _skip_nonce_binding_value_enables(
         os.environ.get("CARD_DEV_SKIP_NONCE_BINDING", "")
     )
@@ -146,6 +146,24 @@ def card_dev_skip_nonce_binding_enabled() -> bool:
 
 # 模組層 = boot 時凍結一次(既有語意,維持不變)。
 _SKIP_NONCE_BINDING = card_dev_skip_nonce_binding_enabled()
+
+
+def card_dev_skip_nonce_binding_frozen() -> bool:
+    """**這個行程實際上有沒有在跳過 nonce 綁定** —— 驗章那一行讀的就是它。
+
+    與 ``card_dev_skip_nonce_binding_enabled()`` 的差別是整件事的關鍵:
+    後者讀**現在的環境**,這一支回**import 當下凍結的結果**。兩者在
+    「import 之後環境才變動」的視窗裡會分岔,而那個視窗裡凍結的值才算數——
+    環境變數事後被移除,``_SKIP_NONCE_BINDING`` 仍是 True,反 replay 仍是關的。
+
+    2026-08-09 紅線雙票實測:守衛只讀環境時,「以 ``=1`` import → 開機前把該
+    變數移除」可以讓旁路生效而開機不被拒絕。所以守衛必須讀**這一支**。
+
+    刻意每次呼叫都重讀模組全域,而不是讓別的模組在 import 期抄一份走:
+    抄過去的那一份就是第二個會漂開的真相,正是這條紅線在防的東西。
+    """
+    return _SKIP_NONCE_BINDING
+
 
 _HASH_BY_NAME = {
     "sha256": hashes.SHA256,

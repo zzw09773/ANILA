@@ -283,9 +283,18 @@ def assert_card_dev_bypass_not_in_a_real_boot() -> None:
     from app.services.card_auth import (
         _dev_test_ca_explicitly_allowed,
         card_dev_skip_nonce_binding_enabled,
+        card_dev_skip_nonce_binding_frozen,
     )
 
-    if not card_dev_skip_nonce_binding_enabled():
+    # frozen = 這個行程**現在就是**什麼姿態(驗章那一行讀的那顆常數);
+    # live   = 現在的環境**要求**什麼(下一次 import 會凍結成的樣子)。
+    # 兩個都要看。只看 live 會漏掉「以 =1 import、開機前把變數移除」那個視窗
+    # ——2026-08-09 紅線雙票實測到的旁路:凍結的旗標仍然是開的,反 replay 已經
+    # 關掉,而守衛重讀環境看不到任何東西於是放行。只看 frozen 則會放過
+    # 「環境已經設了、但 card_auth 剛好還沒被 import」的設定意圖。
+    frozen_active = card_dev_skip_nonce_binding_frozen()
+    env_requests = card_dev_skip_nonce_binding_enabled()
+    if not (frozen_active or env_requests):
         return
 
     dev_card_mode, why_not = _dev_test_ca_explicitly_allowed()
@@ -297,8 +306,14 @@ def assert_card_dev_bypass_not_in_a_real_boot() -> None:
         )
         return
 
+    trigger = (
+        "這個行程已經凍結成「跳過 nonce 綁定」(旗標在 card_auth import 當下是開的——"
+        "之後把環境變數移除或改成別的值**不會**把它關回去)"
+        if frozen_active
+        else "環境要求開啟它"
+    )
     raise RuntimeError(
-        "Refusing to start: CARD_DEV_SKIP_NONCE_BINDING 已開啟,但這不是 "
+        f"Refusing to start: CARD_DEV_SKIP_NONCE_BINDING —— {trigger},但這不是 "
         f"dev-card 模式({why_not})。這顆旗標會關掉卡登的 nonce 綁定,"
         "也就是反 replay 保護 —— 任何人攔到一次成功的刷卡簽章就能無限重放,"
         "而簽章與憑證鏈驗證全都會通過,log 上看起來是正常登入。"
