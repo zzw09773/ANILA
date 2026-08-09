@@ -13,7 +13,7 @@
 # installed at runtime — production code (this worker, CSP, evaluator)
 # imports parsers/vision from ``anila_core.*`` directly.
 
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \

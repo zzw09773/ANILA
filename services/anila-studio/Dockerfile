@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS base
+FROM python:3.13-slim AS base
 
 # System binaries the runtime needs:
 # - graphviz (subprocess `dot -Tpng/svg`): diagram_renderer + mindmap_renderer

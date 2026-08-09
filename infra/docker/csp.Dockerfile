@@ -16,7 +16,7 @@ COPY apps/csp-governance-ui/ ./
 RUN npm run build
 
 # Stage 2: Production
-FROM python:3.11-slim
+FROM python:3.13-slim
 WORKDIR /app
 
 # graphviz + fonts-noto-cjk: Studio Fix 2 (2026-05-18). CSP shells out
