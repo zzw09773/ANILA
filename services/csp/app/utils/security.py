@@ -47,22 +47,36 @@ ALGORITHM: str = "RS256"
 
 
 _BCRYPT_ROUNDS = 12
+_BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
 def hash_password(password: str) -> str:
     if not isinstance(password, str):
         raise TypeError("password must be a string")
+    # Restore passlib's historical 72-byte truncation; bcrypt 5.0.0 raises
+    # instead, which would turn previously accepted long passwords into 500s.
+    password_bytes = password.encode("utf-8")[:_BCRYPT_MAX_PASSWORD_BYTES]
     return bcrypt.hashpw(
-        password.encode("utf-8"),
+        password_bytes,
         bcrypt.gensalt(rounds=_BCRYPT_ROUNDS),
     ).decode("ascii")
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    if not isinstance(plain_password, str) or not isinstance(hashed_password, str):
+def verify_password(plain_password: str, hashed_password: str | None) -> bool:
+    if not isinstance(plain_password, str):
         raise TypeError("password and hashed password must be strings")
+    if hashed_password is None:
+        return False
+    if not isinstance(hashed_password, str):
+        raise TypeError("password and hashed password must be strings")
+    # bcrypt 5 rejects the legacy bare "$2$" identifier. Do not relabel it as
+    # "$2b$": the old digest is not equivalent under that rewrite, so fail closed.
+    if hashed_password.startswith("$2$"):
+        return False
+    # Keep verification byte-for-byte symmetric with hash_password and passlib.
+    password_bytes = plain_password.encode("utf-8")[:_BCRYPT_MAX_PASSWORD_BYTES]
     return bcrypt.checkpw(
-        plain_password.encode("utf-8"),
+        password_bytes,
         hashed_password.encode("ascii"),
     )
 
