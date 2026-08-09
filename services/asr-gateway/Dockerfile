@@ -1,6 +1,6 @@
 # gateway 是純 CPU:VAD 切句 + WS + JWT 驗證,沒有模型、沒有 CUDA。
-# 對齊 anila-studio 的 python:3.11-slim 基底,不要用 decoder 那個 CUDA image。
-FROM python:3.11-slim AS base
+# 對齊 anila-studio 的 python:3.13-slim 基底,不要用 decoder 那個 CUDA image。
+FROM python:3.13-slim AS base
 
 # curl + ca-certificates:health probe + TLS to csp(JWKS / revocations)
 RUN apt-get update \
