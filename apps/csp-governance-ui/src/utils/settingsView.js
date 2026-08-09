@@ -11,8 +11,21 @@
 //   `pending`   = 存了但這次開機還沒套上去的（＝重啟後才生效）。
 // 前端唯一的工作是**不要把它們畫成同一件事**。
 
-/** 存完之後要跟管理員說的那一句（B_EDIT／任何 restart_required 的列）。 */
-export const RESTART_HINT = '已儲存，重啟後生效：docker compose up -d csp'
+/**
+ * 這一頁叫得動的、真的會讓 csp 重讀一次設定的那一道命令。
+ *
+ * ⚠ **不可以是裸的 `docker compose up -d csp`。** 改一顆設定只寫了一列 DB，
+ * compose 檔與容器的設定雜湊**一個字都沒變**，於是 `up -d` 會判定「已是最新」
+ * 而**根本不重建容器** —— 開機覆蓋不會重跑、存的值不會生效，而我們卻叫管理員
+ * 去執行一道什麼也不做的命令。那正是這一頁存在要消滅的東西（叫得動、
+ * 沒報錯、什麼也沒發生）。做法與理由見 `docs/runbooks/settings-page.md`。
+ */
+export const RECREATE_COMMAND = 'docker compose up -d --force-recreate csp'
+
+/** 存完之後要跟管理員說的那一句（B_EDIT／任何 restart_required 的列）。
+ *  後半句是**證明**那一步：這一頁是唯一能當場驗出「到底有沒有生效」的地方。 */
+export const RESTART_HINT =
+  `已儲存，重啟後生效：${RECREATE_COMMAND}；重開後回頭看這一列，「現在生效」要變成你存的值`
 
 /** C 類存完那一句 —— 下一個請求就會讀到，不必重啟。 */
 export const SAVED_NOW_HINT = '已儲存，下一個請求就生效'
@@ -63,7 +76,7 @@ export const SECTION_DEFS = [
     id: 'apply-on-restart',
     classes: ['B_EDIT'],
     title: '改得動，但要重啟才生效',
-    hint: `存進 DB，下一次開機才會套上去。存完請執行：docker compose up -d csp`,
+    hint: `存進 DB，下一次開機才會套上去。存完請執行：${RECREATE_COMMAND}`,
     editable: true,
     showsValues: true,
   },

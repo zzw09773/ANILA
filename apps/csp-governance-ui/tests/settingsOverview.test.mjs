@@ -27,6 +27,7 @@ import {
   SECTION_DEFS,
   UNKNOWN_SECTION_ID,
   bootOverrideBanner,
+  RECREATE_COMMAND,
   canEdit,
   countMismatchWarning,
   draftValue,
@@ -561,8 +562,57 @@ test('開機正常時不掛 banner（也不對壞形狀 payload 炸）', () => {
 test('B_EDIT 存完要講「重啟後生效」，而且把指令講出來', () => {
   const notice = saveNotice(threeStateRow())
   assert.equal(notice.message, RESTART_HINT)
-  assert.equal(RESTART_HINT, '已儲存，重啟後生效：docker compose up -d csp')
+  assert.match(RESTART_HINT, /^已儲存，重啟後生效：/)
   assert.notEqual(notice.tone, 'ok', '重啟才生效的事不可以用成功語氣蓋過去')
+})
+
+test('⚠ 那道命令必須真的會讓容器重建 —— 裸的 up -d 是空包彈', () => {
+  // 改一顆設定只寫了一列 DB：compose 檔與容器的設定雜湊一個字都沒變，
+  // 於是 `up -d` 判定「已是最新」而不重建容器 —— 開機覆蓋不重跑、值不生效，
+  // 而畫面卻叫人去跑一道什麼也不做的命令。這裡釘的是**性質**不是字面，
+  // 所以哪天有人改回無效的那一道，這一支會紅。
+  // 判準：一道命令要嘛強制重建、要嘛先把容器停掉，否則它對 DB-only 的改動無效。
+  const FORCES_RECREATION = /--force-recreate\b|\bdown\b/
+  assert.match(RECREATE_COMMAND, FORCES_RECREATION, '沒有強制重建，這道命令對 DB-only 的改動是 no-op')
+
+  // 反向自證：判準必須認得出那道空包彈，否則上面那句話等於沒問。
+  assert.doesNotMatch(
+    'docker compose up -d csp',
+    FORCES_RECREATION,
+    '判準自己認不出那道會回報 up-to-date 然後什麼也不做的命令',
+  )
+  assert.match(RECREATE_COMMAND, /\bcsp\b/, '沒有指名服務會把整個 stack 重建掉')
+  assert.match(RESTART_HINT, new RegExp(RECREATE_COMMAND.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')))
+})
+
+test('⚠ 存完那句要叫人回頭驗 —— 這一頁是唯一能證明它到底有沒有生效的地方', () => {
+  assert.match(RESTART_HINT, /現在生效/, '沒有叫人回頭看那一列，命令跑了也不知道有沒有用')
+  assert.match(RESTART_HINT, /回頭看|再看|重新整理/)
+})
+
+test('版面上那一區的說明與存完那一句講的是同一道命令', () => {
+  // 兩份文字各寫各的，就是兩份會各自漂掉的操作指南。
+  const section = SECTION_DEFS.find((s) => s.id === 'apply-on-restart')
+  assert.ok(section.hint.includes(RECREATE_COMMAND), '區塊說明的命令與存完那一句不一致')
+  assert.equal(
+    (section.hint.match(/docker compose[^\s，。]*(?:\s+[^\s，。]+)*/g) || []).length,
+    1,
+    '區塊說明裡有不只一道 docker compose 命令',
+  )
+})
+
+test('那道命令與 runbook 講的是同一道', () => {
+  // runbook 是 Task 8 寫的操作指南；命令有兩份而只改了一份，
+  // 就是這一頁存在要消滅的那種漂移。
+  const runbook = readFileSync(resolve(REPO_ROOT, 'docs/runbooks/settings-page.md'), 'utf8')
+  assert.ok(
+    runbook.includes('--force-recreate'),
+    'runbook 沒有提到強制重建 —— 兩份操作指南對不起來了',
+  )
+  const flags = RECREATE_COMMAND.match(/--\S+/g) || []
+  for (const flag of flags) {
+    assert.ok(runbook.includes(flag), `runbook 沒有這個旗標：${flag}`)
+  }
 })
 
 test('回應沒有 pending 但 restart_required 為真，一樣要講重啟', () => {
