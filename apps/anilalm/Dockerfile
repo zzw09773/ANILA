@@ -11,6 +11,7 @@
 #     docker build --build-arg BASE_PATH=/lm/ -t anilalm .
 # ──────────────────────────────────────────────────────────────────────
 
+# Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
 FROM node:22-alpine AS builder
 
 WORKDIR /app
@@ -27,12 +28,14 @@ COPY package.json package-lock.json ./
 # `npm ci`(不是 `npm install`):install 在 package.json 與鎖檔不一致時會**重新
 # 解析並改寫鎖檔**,凍結後那等於映像裡裝了什麼沒有人決定過;ci 則直接失敗。
 # 代價是改 package.json 之後要在 host 端跑一次 `npm install` 更新鎖檔再 build。
-RUN npm ci --no-audit --no-fund
+RUN npm ci --no-audit --no-fund \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 COPY tsconfig*.json vite.config.ts index.html ./
 COPY src ./src
 
-RUN npm run build
+RUN npm run build \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 
 # ── Runtime ───────────────────────────────────────────────────────────

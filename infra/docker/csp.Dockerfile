@@ -1,6 +1,7 @@
 # Build context is repo root (set in compose). Dockerfile paths are
 # repo-relative — services/csp + apps/csp-governance-ui for the app,
 # packages/anila-core for the central SDK the inspector endpoints need.
+# Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
 #
 # Stage 1: Build frontend
 FROM node:22-alpine AS frontend-build
@@ -11,9 +12,9 @@ COPY apps/csp-governance-ui/package.json apps/csp-governance-ui/package-lock.jso
 # `npm ci`(不是 `npm install`):install 在 package.json 與鎖檔不一致時會**重新
 # 解析並改寫鎖檔**,凍結後那等於映像裡裝了什麼沒有人決定過;ci 則直接失敗。
 # 代價是改 package.json 之後要在 host 端跑一次 `npm install` 更新鎖檔再 build。
-RUN npm ci
+RUN npm ci && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 COPY apps/csp-governance-ui/ ./
-RUN npm run build
+RUN npm run build && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Stage 2: Production
 FROM python:3.13-slim
@@ -34,7 +35,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     graphviz \
     fonts-noto-cjk \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Install anila-core first (changes less often than backend code, so
 # layer caching survives most builds). The package brings asyncpg +
@@ -48,11 +49,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # code (CSP, ingestion-worker, evaluator) imports parsers/vision from
 # anila_core.* directly and does NOT install AgenticRAG at runtime.
 COPY packages/anila-core /tmp/anila-core
-RUN pip install --no-cache-dir '/tmp/anila-core[rag]'
+RUN pip install --no-cache-dir '/tmp/anila-core[rag]' \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Install Python dependencies (CSP-specific)
 COPY services/csp/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Copy backend code (includes scripts/: generate-jwt-keypair.py + init_db.py
 # land in /app/scripts — no separate scripts COPY needed since §17.1 folded
@@ -93,7 +96,8 @@ RUN set -eu; \
       echo "       或換版本後同步更新本 Dockerfile 裡的兩個 sha256。" >&2; \
       exit 1; \
     fi; \
-    rm -f /tmp/swagger-ui.sha256
+    rm -f /tmp/swagger-ui.sha256; \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 
@@ -130,7 +134,8 @@ ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 RUN groupadd --gid 10001 anila \
  && useradd --create-home --uid 10001 --gid 10001 anila \
  && mkdir -p /app/logs \
- && chown -R anila:anila /app/logs
+ && chown -R anila:anila /app/logs \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
 
 EXPOSE 8000

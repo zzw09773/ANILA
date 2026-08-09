@@ -1,5 +1,6 @@
 # gateway 是純 CPU:VAD 切句 + WS + JWT 驗證,沒有模型、沒有 CUDA。
 # 對齊 anila-studio 的 python:3.13-slim 基底,不要用 decoder 那個 CUDA image。
+# Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
 FROM python:3.13-slim AS base
 
 # curl + ca-certificates:health probe + TLS to csp(JWKS / revocations)
@@ -7,7 +8,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       curl \
       ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -25,7 +26,8 @@ WORKDIR /app
 # 所以 app/ 必須在 pip install 之前 COPY。
 COPY services/asr-gateway/pyproject.toml ./
 COPY services/asr-gateway/app/ ./app/
-RUN pip install --upgrade pip && pip install --no-cache-dir .
+RUN pip install --upgrade pip && pip install --no-cache-dir . \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # ── SSRF guard(anila_core.security)────────────────────────────────────────
 # 解碼位址一旦可以指到院外,ASR 就會是平台唯一跳過 validate_outbound_url 的
@@ -59,11 +61,13 @@ COPY packages/anila-core/src/anila_core/security/ ./anila_core/security/
 RUN python -c "from anila_core.security.url_guard import validate_outbound_url; \
 from anila_core.security.upstream_urls import join_upstream_path; print('url_guard ok')" \
  && sha256sum anila_core/security/url_guard.py | cut -d' ' -f1 > /app/.url_guard.sha256 \
- && echo "url_guard sha256 = $(cat /app/.url_guard.sha256)"
+ && echo "url_guard sha256 = $(cat /app/.url_guard.sha256)" \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Run as non-root for defence-in-depth
 RUN useradd --create-home --uid 10001 anila \
- && chown -R anila:anila /app
+ && chown -R anila:anila /app \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
 
 EXPOSE 8200
