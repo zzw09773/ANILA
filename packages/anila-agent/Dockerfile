@@ -11,6 +11,7 @@
 #
 # Build context = repo root（anila-core 是 in-repo、未上 PyPI；必須 path-pin 安裝，
 # 不可讓 bare-name 從預設 index 解析——見 ingestion-worker Dockerfile 同型先例）。
+# Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
 
 # ============================================================
 # builder：把套件 + 依賴裝進獨立 venv（編譯工具只留這層）
@@ -20,7 +21,8 @@ FROM python:3.12-slim AS builder
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-RUN python -m venv /opt/venv
+RUN python -m venv /opt/venv && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /src
@@ -29,7 +31,8 @@ WORKDIR /src
 # 都帶同一份 -c，順序對調也不會靜默改走預設 index（dependency confusion）。
 COPY packages/anila-core /tmp/anila-core
 RUN printf 'anila-core @ file:///tmp/anila-core\n' > /tmp/anila-core-constraints.txt \
-    && pip install -c /tmp/anila-core-constraints.txt /tmp/anila-core
+    && pip install -c /tmp/anila-core-constraints.txt /tmp/anila-core && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # 只 COPY 安裝套件所需（pyproject + 套件原始碼）。這份原始碼只用來「裝進 venv」，
 # 不會出現在 runtime image 的檔案樹（runtime 只 COPY /opt/venv）。
@@ -39,10 +42,12 @@ COPY packages/anila-agent/anila_agent ./anila_agent
 # serving=FastAPI wrapper；pgvector=ANILA 原生檢索(asyncpg)；jupyter=MLSteam Lab 需要；
 # dev=pytest/ruff/mypy（完整開發環境）。CSP HTTP retriever 只需 httpx（base deps 已有）。
 # -c 約束讓本步即使尚未裝過 anila-core，也只會走 file:///tmp/anila-core。
-RUN pip install -c /tmp/anila-core-constraints.txt ".[serving,pgvector,jupyter,dev]"
+RUN pip install -c /tmp/anila-core-constraints.txt ".[serving,pgvector,jupyter,dev]" && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # build-time 煙霧測試：import 不過就讓 build 當場失敗（外網好除錯）。
-RUN python -c "from anila_agent.serving.service_wrapper import app; print('import OK')"
+RUN python -c "from anila_agent.serving.service_wrapper import app; print('import OK')" && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # ============================================================
 # runtime：精簡層、非 root；只有「環境」，沒有源碼
@@ -53,10 +58,11 @@ FROM python:3.12-slim AS runtime
 # + less/curl（順手）。slim 這些都沒有。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates nano vim less curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # 非 root 執行；建 home 給 jupyter 寫設定/runtime
-RUN useradd --create-home --uid 10001 anila
+RUN useradd --create-home --uid 10001 anila && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 COPY --from=builder /opt/venv /opt/venv
 
@@ -64,7 +70,8 @@ COPY --from=builder /opt/venv /opt/venv
 # 把 venv 的 jupyter 連到標準位置，兩種叫法都找得到（避免 ERRORCODE=127）。
 RUN ln -sf /opt/venv/bin/jupyter /usr/local/bin/jupyter \
     && ln -sf /opt/venv/bin/jupyter-lab /usr/local/bin/jupyter-lab \
-    && ln -sf /opt/venv/bin/jupyter-notebook /usr/local/bin/jupyter-notebook
+    && ln -sf /opt/venv/bin/jupyter-notebook /usr/local/bin/jupyter-notebook && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # 關鍵：JupyterLab terminal 開的是 login bash，會 source /etc/profile 並 reset PATH，
 # 把 Docker ENV 的 /opt/venv/bin 弄丟 → terminal 裡 python/anila/pytest 不是預裝環境的。
@@ -73,14 +80,16 @@ RUN ln -sf /opt/venv/bin/jupyter /usr/local/bin/jupyter \
 RUN printf 'export VIRTUAL_ENV=/opt/venv\nexport PATH="/opt/venv/bin:$PATH"\n' > /etc/profile.d/venv.sh \
     && chmod 0644 /etc/profile.d/venv.sh \
     && cat /etc/profile.d/venv.sh >> /etc/bash.bashrc \
-    && usermod -s /bin/bash anila
+    && usermod -s /bin/bash anila \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # JupyterLab：① server 允許 serve 隱藏檔（.env 等），② file browser 預設「顯示隱藏檔」。
 # 否則 .env 在 Jupyter 檔案瀏覽器裡看不到、也編不了。
 RUN mkdir -p /etc/jupyter /opt/venv/share/jupyter/lab/settings \
     && printf 'c.ContentsManager.allow_hidden = True\n' > /etc/jupyter/jupyter_server_config.py \
     && printf '{\n  "@jupyterlab/filebrowser-extension:browser": { "showHiddenFiles": true }\n}\n' \
-        > /opt/venv/share/jupyter/lab/settings/overrides.json
+        > /opt/venv/share/jupyter/lab/settings/overrides.json && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 ENV PATH="/opt/venv/bin:$PATH" \
     SHELL=/bin/bash \

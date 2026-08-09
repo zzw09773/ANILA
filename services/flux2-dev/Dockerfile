@@ -4,6 +4,8 @@
 # and transformers >=5.x use; bumping to torch 2.6.0 fixes both import errors.
 FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
+# Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -14,16 +16,18 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.11 python3-pip python3.11-venv \
         curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
-    ln -sf /usr/bin/pip3 /usr/bin/pip
+    ln -sf /usr/bin/pip3 /usr/bin/pip && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 WORKDIR /workspace
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 COPY server.py .
 
