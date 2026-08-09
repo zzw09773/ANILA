@@ -18,49 +18,55 @@ from tests.conftest import make_user
 
 
 def _on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回到「兩層都沒設」的狀態 —— 展開開關退回登錄表宣告的預設（開）。
+
+    ⚠ ``expand_query`` 現在每次呼叫都解一次 ``intl.query_expansion``
+    （``platform_settings`` 那一列 → ``ANILA_QUERY_EXPANSION`` → 程式預設），
+    所以每一支單元測試都要拿一個 session 給它。
+    """
     monkeypatch.delenv("ANILA_QUERY_EXPANSION", raising=False)
 
 
 # ── expand_query 單元（既有正向）────────────────────────────────────────────
 
 
-def test_expand_roc_du_to_western(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_expand_roc_du_to_western(db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    out = expand_query("113年度測評結果")
+    out = expand_query(db, "113年度測評結果")
     assert out.startswith("113年度測評結果")
     assert "2024" in out
 
 
-def test_expand_western_to_roc(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_expand_western_to_roc(db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    out = expand_query("2024年測試")
+    out = expand_query(db, "2024年測試")
     assert "民國113" in out
 
 
-def test_expand_lidar_synonyms(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_expand_lidar_synonyms(db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    out = expand_query("激光雷達的測距精度")
+    out = expand_query(db, "激光雷達的測距精度")
     assert "光達" in out
     assert "雷射" in out
 
 
-def test_expand_ncsist_synonym(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_expand_ncsist_synonym(db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    out = expand_query("中科院的無人機")
+    out = expand_query(db, "中科院的無人機")
     assert "NCSIST" in out
     assert "國家中山科學研究院" in out
 
 
-def test_pure_english_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pure_english_unchanged(db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
     q = "radar ranging accuracy report"
-    assert expand_query(q) == q
+    assert expand_query(db, q) == q
 
 
-def test_flag_zero_disables(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flag_zero_disables(db, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANILA_QUERY_EXPANSION", "0")
-    assert expand_query("113年度測評結果") == "113年度測評結果"
-    assert expand_query("激光雷達") == "激光雷達"
+    assert expand_query(db, "113年度測評結果") == "113年度測評結果"
+    assert expand_query(db, "激光雷達") == "激光雷達"
 
 
 # ── F2 / F3 / F6 負向：不得擴展 ─────────────────────────────────────────────
@@ -81,18 +87,18 @@ def test_flag_zero_disables(monkeypatch: pytest.MonkeyPatch) -> None:
     ],
 )
 def test_no_expansion_precision_negatives(
-    monkeypatch: pytest.MonkeyPatch, q: str,
+    db, monkeypatch: pytest.MonkeyPatch, q: str,
 ) -> None:
     _on(monkeypatch)
-    out = expand_query(q)
+    out = expand_query(db, q)
     assert out == q
 
 
-def test_cas_disambiguation_no_ncsist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cas_disambiguation_no_ncsist(db, monkeypatch: pytest.MonkeyPatch) -> None:
     """含『中國科學院』時不得把中科院擴成 NCSIST／國家中山科學研究院。"""
     _on(monkeypatch)
     q = "中國科學院（中科院）量子研究"
-    out = expand_query(q)
+    out = expand_query(db, q)
     assert "NCSIST" not in out
     assert "國家中山科學研究院" not in out
 
@@ -100,28 +106,28 @@ def test_cas_disambiguation_no_ncsist(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── F6 / F4 正向 ────────────────────────────────────────────────────────────
 
 
-def test_bare_roc_year_expands(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bare_roc_year_expands(db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    assert "2024" in expand_query("113年測評")
-    assert "2024" in expand_query("113 年報告")
+    assert "2024" in expand_query(db, "113年測評")
+    assert "2024" in expand_query(db, "113 年報告")
 
 
-def test_western_range_symmetric_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_western_range_symmetric_edges(db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    assert "民國130" in expand_query("2041年")
-    assert "民國80" in expand_query("1991年")
+    assert "民國130" in expand_query(db, "2041年")
+    assert "民國80" in expand_query(db, "1991年")
 
 
-def test_ncsist_still_expands_without_cas(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ncsist_still_expands_without_cas(db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    out = expand_query("中科院的無人機")
+    out = expand_query(db, "中科院的無人機")
     assert "國家中山科學研究院" in out
     assert "NCSIST" in out
 
 
-def test_western_date_slash_expands(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_western_date_slash_expands(db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    assert "民國113" in expand_query("截止 2024/05")
+    assert "民國113" in expand_query(db, "截止 2024/05")
 
 
 # ── search_collection hook ──────────────────────────────────────────────────

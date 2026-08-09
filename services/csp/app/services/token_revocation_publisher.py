@@ -77,9 +77,15 @@ SCHEMA_VERSION = 1
 # Default Redis URL — anila-platform docker-compose puts a Redis at
 # this hostname, and tests don't need a real connection.
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-SYNC_REDIS_TIMEOUT_SECONDS = float(
-    os.environ.get("TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS", "2.0")
-)
+
+# ⚠ 同步發布的 Redis 逾時**不再是這裡的模組常數**。它以前是
+# ``float(os.environ.get("TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS", "2.0"))`` —— import
+# 期算一次、直接讀 os.environ、不過登錄表的值域。於是 env 填 999 時，設定頁照登錄表
+# 值域（0.1–60）退回顯示 2.0，而這裡真的用 999 去連 Redis：畫面與實跑分歧，
+# 兩家最終審查各自實測到（final-review-sol.md、primary 的 T5-裁決1）。
+# 現在由**手上有 session 的呼叫端**解析（``token_revocation.commit_token_revocation``）
+# 並以必填關鍵字傳進來 —— 與 Task 3 的 ProxyTuning 同一個形狀：值在還握著連線時解好，
+# 沒有第二份預設值可以漂走。
 
 
 # Module-level singleton for the async Redis client. Cleared by tests
@@ -175,16 +181,22 @@ async def publish_revocation(
         )
 
 
-def _make_sync_redis_client(redis_url: Optional[str] = None):
-    """Return a short-lived sync Redis client for sync FastAPI endpoints."""
+def _make_sync_redis_client(redis_url: Optional[str] = None, *, timeout: float):
+    """Return a short-lived sync Redis client for sync FastAPI endpoints.
+
+    ``timeout`` is a **required keyword**: the caller resolved it through the
+    settings registry while it still held a DB session. Giving it a default here
+    would recreate the second-default drift Task 3 retired — the page would show
+    one number and this client would use another, with no error anywhere.
+    """
     import redis  # type: ignore[import-not-found]
 
     url = redis_url or DEFAULT_REDIS_URL
     return redis.from_url(
         url,
         decode_responses=True,
-        socket_connect_timeout=SYNC_REDIS_TIMEOUT_SECONDS,
-        socket_timeout=SYNC_REDIS_TIMEOUT_SECONDS,
+        socket_connect_timeout=timeout,
+        socket_timeout=timeout,
     )
 
 
@@ -193,6 +205,7 @@ def publish_revocation_sync(
     revoked_at_version: int,
     *,
     redis_url: Optional[str] = None,
+    timeout: float,
 ) -> None:
     """Broadcast one revocation event from a synchronous call path.
 
@@ -205,7 +218,7 @@ def publish_revocation_sync(
     message = _revocation_message(user_id, revoked_at_version)
     client = None
     try:
-        client = _make_sync_redis_client(redis_url)
+        client = _make_sync_redis_client(redis_url, timeout=timeout)
     except Exception:  # noqa: BLE001
         logger.exception(
             "token-revoke sync publish skipped: cannot build Redis client "

@@ -64,12 +64,18 @@ def _bypass_dev_secret_gate(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _budget_knobs(monkeypatch):
-    monkeypatch.setattr(settings, "ANILA_DEFAULT_CONTEXT_WINDOW", _TEST_WINDOW)
-    monkeypatch.setattr(settings, "ANILA_ATTACHMENT_BUDGET_RATIO", _TEST_RATIO)
-    monkeypatch.setattr(settings, "ANILA_ATTACHMENT_TOKEN_SAFETY", _TEST_SAFETY)
-    monkeypatch.setattr(
-        settings, "ANILA_ATTACHMENT_MAX_STORED_TOKENS", _TEST_STORE_CAP,
-    )
+    """把四顆預算鈕釘在 **env 那一層**。
+
+    ⚠ 這四顆已經改成每請求解一次（``platform_settings`` 那一列 → env → 程式
+    預設），``settings`` 物件不再是它們的讀取點 —— 照舊 ``setattr(settings, ...)``
+    的話這個 fixture 會靜默失效，測試改用 production 預設值跑，而且全綠。
+    env 是回退鏈仍然活著的一層，跨 session（``db`` fixture、TestClient 的
+    override、``SessionLocal``）都作數，所以這裡用它。
+    """
+    monkeypatch.setenv("ANILA_DEFAULT_CONTEXT_WINDOW", str(_TEST_WINDOW))
+    monkeypatch.setenv("ANILA_ATTACHMENT_BUDGET_RATIO", str(_TEST_RATIO))
+    monkeypatch.setenv("ANILA_ATTACHMENT_TOKEN_SAFETY", str(_TEST_SAFETY))
+    monkeypatch.setenv("ANILA_ATTACHMENT_MAX_STORED_TOKENS", str(_TEST_STORE_CAP))
 
 
 @pytest.fixture
@@ -189,8 +195,8 @@ def test_small_ok_large_excluded_injection(db, storage_root, monkeypatch):
     assert large.extracted_text
     assert large.token_count is not None
 
-    budget = attachment_budget_tokens(_TEST_WINDOW)
-    admitted, excluded = admit(_ordered_ok(db, conv.id), budget)
+    budget = attachment_budget_tokens(db, _TEST_WINDOW)
+    admitted, excluded = admit(db, _ordered_ok(db, conv.id), budget)
     assert small.id in admitted
     assert large.id in excluded
 
@@ -240,8 +246,8 @@ def test_budget_accumulation_oldest_first(db, storage_root, monkeypatch):
         atts.append(att)
 
     assert all(a.extract_status == "ok" for a in atts)
-    budget = attachment_budget_tokens(_TEST_WINDOW)
-    admitted, excluded = admit(_ordered_ok(db, conv.id), budget)
+    budget = attachment_budget_tokens(db, _TEST_WINDOW)
+    admitted, excluded = admit(db, _ordered_ok(db, conv.id), budget)
     assert admitted == [atts[0].id, atts[1].id]
     assert excluded == [atts[2].id]
 
@@ -273,8 +279,8 @@ def test_delete_promotes_without_recheck(db, storage_root, monkeypatch):
         db.refresh(att)
         atts.append(att)
 
-    budget = attachment_budget_tokens(_TEST_WINDOW)
-    admitted, excluded = admit(_ordered_ok(db, conv.id), budget)
+    budget = attachment_budget_tokens(db, _TEST_WINDOW)
+    admitted, excluded = admit(db, _ordered_ok(db, conv.id), budget)
     assert atts[2].id in excluded
     assert all(a.extract_status == "ok" for a in atts)
 
@@ -283,7 +289,7 @@ def test_delete_promotes_without_recheck(db, storage_root, monkeypatch):
 
     remaining = _ordered_ok(db, conv.id)
     assert len(remaining) == 2
-    admitted2, excluded2 = admit(remaining, budget)
+    admitted2, excluded2 = admit(db, remaining, budget)
     assert set(admitted2) == {atts[1].id, atts[2].id}
     assert excluded2 == []
 
@@ -328,7 +334,7 @@ def test_capacity_object_consistent(db, storage_root, monkeypatch):
     window = get_context_window(db, None)
     usage = get_conversation_attachment_usage(db, conv.id, window)
     assert usage["budget_tokens"] == int(_TEST_WINDOW * _TEST_RATIO)
-    assert usage["used_tokens"] == effective_cost(att.token_count)
+    assert usage["used_tokens"] == effective_cost(db, att.token_count)
     assert usage["remaining_tokens"] == usage["budget_tokens"] - usage["used_tokens"]
     assert usage["over_budget_tokens"] == 0
     assert 0 <= usage["percent"] <= 100
@@ -363,7 +369,7 @@ def test_capacity_used_remaining_invariant_with_overflow(db):
     assert usage["used_tokens"] + usage["remaining_tokens"] == budget
     assert usage["used_tokens"] == 0  # nothing admitted
     assert usage["remaining_tokens"] == budget
-    assert usage["over_budget_tokens"] == effective_cost(2_000_000)
+    assert usage["over_budget_tokens"] == effective_cost(db, 2_000_000)
     assert usage["excluded_ids"] == [att.id]
 
 
@@ -428,7 +434,7 @@ def test_extraction_failure_named_in_block(db, storage_root, monkeypatch):
 def test_safety_multiplier_on_known_string(db):
     text = "hello world token safety check 12345"
     raw = _estimate_token_count(None, text)
-    assert effective_cost(raw) == int(raw * _TEST_SAFETY)
+    assert effective_cost(db, raw) == int(raw * _TEST_SAFETY)
 
 
 # ── h. No attachments → body unchanged ────────────────────────────────────
@@ -515,12 +521,10 @@ def test_http_text_300kib_uploads_and_classifies_ok(
     """~300 KiB ASCII: old size//2 guard returned 400; now 201 → ok."""
     # Production-like window so 300 KiB ASCII (~76.8k raw, ~88k effective)
     # fits the 89.6k budget (was falsely refused by bytes//2 ≈ 150k).
-    monkeypatch.setattr(settings, "ANILA_DEFAULT_CONTEXT_WINDOW", 128_000)
-    monkeypatch.setattr(settings, "ANILA_ATTACHMENT_BUDGET_RATIO", 0.7)
-    monkeypatch.setattr(settings, "ANILA_ATTACHMENT_TOKEN_SAFETY", 1.15)
-    monkeypatch.setattr(
-        settings, "ANILA_ATTACHMENT_MAX_STORED_TOKENS", 800_000,
-    )
+    monkeypatch.setenv("ANILA_DEFAULT_CONTEXT_WINDOW", "128000")
+    monkeypatch.setenv("ANILA_ATTACHMENT_BUDGET_RATIO", "0.7")
+    monkeypatch.setenv("ANILA_ATTACHMENT_TOKEN_SAFETY", "1.15")
+    monkeypatch.setenv("ANILA_ATTACHMENT_MAX_STORED_TOKENS", "800000")
 
     user = make_user(db, username="att-300k")
     conv = _make_conv(db, user)
@@ -547,7 +551,7 @@ def test_http_text_300kib_uploads_and_classifies_ok(
     assert att.extract_status == "ok"
     assert att.extracted_text is not None
     assert att.token_count is not None
-    assert effective_cost(att.token_count) <= int(128_000 * 0.7)
+    assert effective_cost(db, att.token_count) <= int(128_000 * 0.7)
 
 
 def test_http_text_excluded_after_extract_not_upload_400(
@@ -592,8 +596,8 @@ def test_http_text_excluded_after_extract_not_upload_400(
     assert att.extract_status == "ok"
     assert att.extracted_text
 
-    budget = attachment_budget_tokens(_TEST_WINDOW)
-    admitted, excluded = admit(_ordered_ok(db, conv.id), budget)
+    budget = attachment_budget_tokens(db, _TEST_WINDOW)
+    admitted, excluded = admit(db, _ordered_ok(db, conv.id), budget)
     assert att.id in excluded
     assert admitted == []
 
@@ -639,8 +643,8 @@ def test_text_budget_excluded_via_admit_not_stored_status(
     assert att.extract_status == "ok"
     assert att.extracted_text  # kept for promotion when budget frees
 
-    budget = attachment_budget_tokens(_TEST_WINDOW)
-    _, excluded = admit(_ordered_ok(db, conv.id), budget)
+    budget = attachment_budget_tokens(db, _TEST_WINDOW)
+    _, excluded = admit(db, _ordered_ok(db, conv.id), budget)
     assert att.id in excluded
 
 

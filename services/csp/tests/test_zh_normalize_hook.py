@@ -284,7 +284,15 @@ def test_write_chunk_adapter_normalizes_assistant(
 
 
 class _DummySession:
-    """Minimal stand-in: persist_turn only needs commit/rollback/close."""
+    """Minimal stand-in: persist_turn only needs commit/rollback/close/get.
+
+    ``get`` 是 Task 2 之後才需要的：正規化開關 ``intl.zh_normalize`` 現在每次
+    呼叫都查一次 ``platform_settings``。回 ``None`` ＝「這個 key 沒有那一列」，
+    於是解析退到 env、再退到程式預設（開）—— 正是本檔要測的那個姿態。
+    """
+
+    def get(self, *_args, **_kwargs):
+        return None
 
     def commit(self):
         return None

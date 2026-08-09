@@ -212,15 +212,11 @@ services:
       # Authorization: Bearer。proxy_service 只對 model 呼叫注入,agent
       # dispatch 不帶。空值 = 不注入 (同主機裸 vLLM 不需要)。
       MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY-}
-      # FLUX image-gen for ANILALM studio pptx pipeline — wires
-      # studio.image_provider.FluxImageProvider; empty BACKEND_URL
-      # would make get_flux_provider() return None (toggle OFF).
-      # `${VAR-default}` 無冒號:設成空字串 → get_flux_provider() 回 None
-      # (toggle OFF,內網無 FLUX 時整個圖像 pipeline 乾淨停用)。
-      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL-http://flux2-dev:8000}
-      FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
-      FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
-      # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
+      # 歸檔 2026-08-09:FLUX_BACKEND_URL / FLUX_MAX_CONCURRENT / FLUX_TIMEOUT_SECONDS
+      # (＋ FLUX_CACHE_DIR 的說明) 曾列在這裡,但 services/csp 全樹零讀取點 ——
+      # get_flux_provider() 住在 anila-studio,而 csp.Dockerfile 沒把 anila-studio
+      # COPY 進 csp 映像。真正生效的那一份在下面的 anila-studio 區塊;哪天
+      # anila-studio 進了 csp 映像,照那邊的寫法把三行加回來。
       # ⚠ csp 是 anila_core parser 的第二個消費者:/api/ingestion/chunking-preview
       # (app/api/ingestion/preview.py:240) 呼叫同一支 extract_text。這裡**寫死
       # false、不吃 ${PDF_OCR_FALLBACK}**,是刻意讓預覽與 ingest 不一致:
@@ -364,7 +360,9 @@ services:
       CSP_BASE_URL: http://csp:8000
       # 必須跟 csp 的 CSP_SERVICE_TOKEN 一致 — router 用它走 service-auth endpoint。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
-      MODEL: ${LLM_MODEL:-gemma4}
+      # 歸檔 2026-08-09:`MODEL: ${LLM_MODEL:-gemma4}` 曾列在這裡,但 main.py 不讀它
+      # (README.md:107)——主路由模型完全由 CSP /api/models/router-primary runtime
+      # 決定。留著只會讓人以為改 LLM_MODEL 就能換主路由模型。
     depends_on:
       csp:
         condition: service_healthy

@@ -57,6 +57,7 @@ from app.services.health_checker import (
     probe_model_health_detailed,
 )
 from app.services.proxy.headers import resolve_model_gateway_key
+from app.services.proxy.service import ProxyTuning, resolve_proxy_tuning
 from app.services.proxy.urls import join_upstream_path
 from app.services.service_token_envelope import (
     decode_service_token_envelope,
@@ -1525,7 +1526,9 @@ def unset_asr_primary(
 # ── P4.8 platform embedding designation ──────────────────────────────────────
 
 
-async def _probe_embedding_native_dim(model: ModelRegistry) -> int:
+async def _probe_embedding_native_dim(
+    model: ModelRegistry, tuning: ProxyTuning
+) -> int:
     """Embed once through ``proxy_request`` and return len(vector).
 
     Uses the same path as live traffic (including ``api_version`` URL prefix
@@ -1549,6 +1552,7 @@ async def _probe_embedding_native_dim(model: ModelRegistry) -> int:
             endpoint_path=f"/{api_version}/embeddings",
             embedding_input_role="query",
             record_usage=False,
+            tuning=tuning,
         )
         vec = response["data"][0]["embedding"]
     except HTTPException:
@@ -1735,8 +1739,10 @@ async def set_platform_embedding(
         api_key_secret_ref=model.api_key_secret_ref,
         is_active=model.is_active,
     )
+    # 逾時／重試在 commit 之前解（commit 把池化連線還回去，之後不該再查 DB）。
+    probe_tuning = resolve_proxy_tuning(db)
     db.commit()
-    native_dim = await _probe_embedding_native_dim(probe_snap)
+    native_dim = await _probe_embedding_native_dim(probe_snap, probe_tuning)
 
     (
         db.query(ModelRegistry)

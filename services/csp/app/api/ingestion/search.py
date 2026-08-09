@@ -47,6 +47,7 @@ from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.services.auth_service import get_current_user
 from app.services.ingestion_pool import get_pool
+from app.services.proxy.service import resolve_proxy_tuning
 from app.services.proxy_service import downstream_identity, proxy_request
 from app.services.endpoint_author_service import visible_endpoint_url
 from app.services.relation_resolver import scope_collection_rls
@@ -398,6 +399,9 @@ async def _embed_query(
     department_id = user.department_id
     identity = downstream_identity(user)
     api_version = model_snapshot.api_version if model_snapshot.api_version in ("v1", "v2") else "v1"
+    # 逾時／重試四顆在 commit 之前解 —— commit 之後連線已經還回池子，
+    # 再查一次 platform_settings 會把它重新握在手上直到出向 HTTP 回來。
+    tuning = resolve_proxy_tuning(db)
     db.commit()
 
     body = {"model": model_name, "input": query}
@@ -417,6 +421,7 @@ async def _embed_query(
         ),
         # Query-side: must not silently fall through to Triton's documents input.
         embedding_input_role="query",
+        tuning=tuning,
     )
 
     try:
@@ -756,7 +761,7 @@ async def search_collection(
     source_filter = designated.name if designated is not None else None
 
     # 民國紀年／域內同義擴展後再 embedding（擴展詞會拉近向量空間，屬預期行為）。
-    search_query = expand_query(payload.query)
+    search_query = expand_query(db, payload.query)
     if search_query != payload.query:
         added_n = len(search_query[len(payload.query) :].split())
         logger.debug(

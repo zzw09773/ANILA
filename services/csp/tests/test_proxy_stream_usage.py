@@ -9,6 +9,15 @@ import pytest
 from app.services import proxy_service
 from app.services.proxy import service as proxy_impl
 
+from app.services.proxy.service import ProxyTuning
+
+#: 這些測試量的不是逾時／重試（那四顆在 ``test_settings_takes_effect_ops.py``），
+#: 所以把它們釘在登錄表宣告的程式預設值上。``tuning`` 是必填的關鍵字參數：
+#: production 的每一個呼叫點都要自己從 session 解一次，漏傳是 TypeError 而不是
+#: 靜默凍結在預設值 —— 那個「必填」正是本包不想再出現假控制項的那道保險。
+_PROXY_TUNING = ProxyTuning.from_registry_defaults()
+
+
 
 @pytest.fixture(autouse=True)
 def _allow_mock_llm_endpoint(monkeypatch):
@@ -85,6 +94,7 @@ def test_proxy_stream_estimates_usage_when_missing(monkeypatch):
                 "stream": True,
             },
             model_name="google/gemma4",
+            tuning=_PROXY_TUNING,
         ):
             chunks.append(chunk)
         return chunks
@@ -133,6 +143,7 @@ def test_proxy_stream_estimates_usage_from_message_content(monkeypatch):
                 "stream": True,
             },
             model_name="google/gemma4",
+            tuning=_PROXY_TUNING,
         ):
             pass
 
@@ -176,6 +187,7 @@ def test_proxy_stream_prefers_upstream_usage(monkeypatch):
                 "stream": True,
             },
             model_name="google/gemma4",
+            tuning=_PROXY_TUNING,
         ):
             pass
 
@@ -235,6 +247,7 @@ def test_proxy_stream_preserves_custom_anila_events(monkeypatch):
                 "stream": True,
             },
             model_name="google/gemma4",
+            tuning=_PROXY_TUNING,
         ):
             chunks.append(chunk)
         return chunks

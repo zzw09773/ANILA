@@ -7,14 +7,13 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
-from app.config import settings
 from app.database import get_db
 from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
 from app.models.attachment import Attachment
 from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
-from app.models.platform_setting import get_kb_threshold
+from app.models.platform_setting import get_kb_threshold, get_setting
 from app.schemas.contracts.classification import ClassificationLevel
 from app.services import memory_service
 from app.services.institutional_kb import (
@@ -26,6 +25,7 @@ from app.services.api_key_service import check_model_permission, check_agent_per
 from app.services.auth_service import is_admin_tier
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.headers import resolve_model_gateway_key
+from app.services.proxy.service import resolve_proxy_tuning
 from app.services.proxy.task_link import begin_task_run, finalize_task_run
 from app.services.proxy.urls import join_upstream_path
 from app.services.proxy_service import (
@@ -353,8 +353,8 @@ def _inject_attachments(
 
         # model_name None → explicit default-window fallback.
         context_window = attachment_context.get_context_window(db, model_name)
-        budget = attachment_context.attachment_budget_tokens(context_window)
-        admitted_list, excluded_list = attachment_context.admit(meta_rows, budget)
+        budget = attachment_context.attachment_budget_tokens(db, context_window)
+        admitted_list, excluded_list = attachment_context.admit(db, meta_rows, budget)
         admitted_set = set(admitted_list)
 
         text_by_id: dict[int, str | None] = {}
@@ -1227,6 +1227,10 @@ async def chat_completions(
         # contract); a task-linked call without one falls back to the
         # task row's trace id (doc 04 AC10 歸戶).
         usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
+        # 逾時／重試在 handler 期解一次。⚠ 串流那條路是 async generator，
+        # **在 handler 回傳之後才被抽乾**，那時 request scope 的 session 可能
+        # 已經關了 —— 所以值要在這裡凍結，不能讓 proxy 那一層自己去查。
+        tuning = resolve_proxy_tuning(db)
         if stream:
             upstream = proxy_stream(
                 target_url=join_upstream_path(
@@ -1262,6 +1266,7 @@ async def chat_completions(
                 endpoint_display=_endpoint_display_for(
                     db, user, agent.endpoint_url
                 ),
+                tuning=tuning,
             )
             # Tee the SSE so we can capture the final assistant text and
             # schedule the memory writer once the stream drains.
@@ -1312,7 +1317,7 @@ async def chat_completions(
         )
         started_at = time.time()
         try:
-            async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
                 resp = await client.post(target, json=body, headers=headers)
                 resp.raise_for_status()
                 # SSE-only agents (e.g. asrd) ignore ``stream: false`` and
@@ -1449,6 +1454,8 @@ async def chat_completions(
         conv_id_int=conv_id_int,
     )
     usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
+    # 同上：串流在 handler 回傳之後才抽乾，值必須在這裡解。
+    tuning = resolve_proxy_tuning(db)
     if stream:
         chat_path = (
             "/v2/chat/completions"
@@ -1481,6 +1488,7 @@ async def chat_completions(
                 model.endpoint_url,
                 is_internal=bool(getattr(model, "is_internal", False)),
             ),
+            tuning=tuning,
         )
         teed = _tee_stream_capture_assistant(
             upstream,
@@ -1522,6 +1530,7 @@ async def chat_completions(
             model.endpoint_url,
             is_internal=bool(getattr(model, "is_internal", False)),
         ),
+        tuning=tuning,
     )
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
@@ -1597,9 +1606,13 @@ async def resume_agent_session(
 
     import httpx
 
+    # ⚠ 在 closure **外面**解析：``_passthrough_stream`` 是 StreamingResponse 的
+    # generator，執行時 handler 已經回傳，session 不保證還活著。
+    llm_timeout = float(get_setting(db, "proxy.llm_timeout"))
+
     async def _passthrough_stream():
         try:
-            async with httpx.AsyncClient(timeout=float(settings.LLM_TIMEOUT)) as client:
+            async with httpx.AsyncClient(timeout=llm_timeout) as client:
                 async with client.stream(
                     "POST", target, json=body, headers=headers,
                 ) as resp:
@@ -1692,6 +1705,7 @@ async def embeddings_v1(
         # Public OpenAI-compat surface (incl. ingestion-worker) defaults to
         # documents; ``input_type: "query"`` opts a caller onto the query side.
         embedding_input_role=input_type,
+        tuning=resolve_proxy_tuning(db),
     )
 
 
@@ -1724,4 +1738,5 @@ async def embeddings_v2(
             is_internal=bool(getattr(model, "is_internal", False)),
         ),
         embedding_input_role=input_type,
+        tuning=resolve_proxy_tuning(db),
     )

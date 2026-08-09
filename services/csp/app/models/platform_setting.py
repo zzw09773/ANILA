@@ -26,7 +26,9 @@ value 一律存字串
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Session
@@ -175,6 +177,212 @@ def set_kb_threshold(db: Session, value: float, *, actor: User | None = None) ->
         db.add(row)
     else:
         row.value = str(float(value))
+        row.updated_at = _utcnow()
+    row.updated_by_user_id = actor.id if actor is not None else None
+    db.flush()
+
+
+# ── 泛化存取層 ─────────────────────────────────────────────────────────────
+#
+# 上面那三支函式是門檻**自己**的，已經關板（形狀被引用為範本，一行不動）。
+# 下面這一段把同一個形狀泛化成「登錄表裡任何一顆設定都能用」的三支，五條不變式
+# 逐條繼承：
+#
+# 1. **讀不快取** —— ``resolve_setting`` 每次都真的查一次 DB、每次都真的重讀一次
+#    ``os.environ``。設定頁上的每一個開關都靠這件事才不是假控制項。
+# 2. **收得下來的 ＝ 算得出來的** —— 值域判準是 ``spec.domain_fn``，寫入端與解析
+#    端拿的是**同一個函式物件**（登錄表那一筆裡的那一個），不是各自複製的規則。
+# 3. **一次解析拿兩個答案** —— ``resolve_setting`` 同時回「生效值」與「來源」。
+#    顯示值與生效值必須出自同一次解析。
+# 4. **壞值退回下一層，來源如實** —— DB 那一列存在但解不開或落在值域外時，退回
+#    env（若設）再退回程式預設，而 ``source`` **絕不可以**還說 ``db``。門檻那一顆
+#    的 ``calibrated`` 講的是同一件事：跑的既然不是他存的值，就不可以說是他設的。
+# 5. **只 flush 不 commit** —— 設定與稽核事件要在同一個交易裡。
+#
+# ⚠ 登錄表（``app.services.settings_registry``）在**函式內**才 import：它需要本
+# 模組的 ``_is_usable_kb_threshold`` 來宣告門檻那一筆別名，模組層互 import 會成環。
+
+#: ``resolve_setting`` 回的來源。畫面上「來源」那一欄就是這三個值。
+SOURCE_DB = "db"
+SOURCE_ENV = "env"
+SOURCE_DEFAULT = "default"
+
+#: 「這一層沒有可用的值」。用 sentinel 而不是 ``None``，因為 ``None`` 對某些
+#: 設定是合法值。
+_NO_VALUE = object()
+
+
+def _usable_or_nothing(spec, raw: str, layer: str) -> Any:
+    """把某一層的字串解成值；解不開或不在值域內就回 ``_NO_VALUE`` 並留 warning。
+
+    **靜默成功比報錯危險**：退回下一層本身是對的（讓檢索整個炸掉的代價更高），
+    但它必須留下痕跡，否則管理員會看著一個他以為設好了的值繼續用下去。
+    """
+    try:
+        value = spec.value_type.parse(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "設定 %s 在 %s 層的值 %r 解不成 %s，改用下一層回退",
+            spec.key,
+            layer,
+            raw,
+            spec.value_type.name,
+        )
+        return _NO_VALUE
+    if not spec.domain_fn(value):
+        logger.warning(
+            "設定 %s 在 %s 層的值 %r 落在值域之外（%s），改用下一層回退",
+            spec.key,
+            layer,
+            value,
+            spec.description,
+        )
+        return _NO_VALUE
+    return value
+
+
+def resolve_setting(db: Session, key: str) -> tuple[Any, str]:
+    """一次解出「實際生效的值」與「它是哪一層來的」。
+
+    回退鏈：``platform_settings`` 那一列 → 環境變數（若有設）→ 程式內預設值。
+    env 繼續有效直到管理員第一次從畫面改 —— 氣隙升級因此不需要遷移手續。
+
+    ⚠ **這兩個答案一定要出自同一次解析。** 拆成「顯示走一套、生效走另一套」就
+    會有「畫面顯示 A、實際用 B」的空間，而那種分歧不會有錯誤訊息。
+    """
+    from app.services.settings_registry import require_spec
+
+    spec = require_spec(key)
+
+    row = db.get(PlatformSetting, key)
+    if row is not None:
+        value = _usable_or_nothing(spec, row.value, SOURCE_DB)
+        if value is not _NO_VALUE:
+            return value, SOURCE_DB
+
+    return resolve_setting_without_db(key)
+
+
+def resolve_setting_without_db(key: str) -> tuple[Any, str]:
+    """同一條回退鏈，**扣掉 DB 那一層**：env（若可用）→ 程式內預設值。
+
+    誰需要這一支：**DB 這一刻問不到、但還是得拿一個值繼續跑的呼叫端**（例如告警
+    偵測那個背景迴圈——它存在的理由正是 DB 出事的時候還在跑）。
+
+    ⚠ **不可以在那種時候直接跳到 ``spec.default``**：那會一次跳過兩層，把運維人員
+    寫在 compose 裡的值當成不存在。畫面（走得到 DB）顯示 env 的 37、迴圈卻睡 60，
+    而且沒有任何錯誤訊息——正是這個包要消滅的形狀，只是換到故障路徑上發生。
+    所以退化路徑與正常路徑共用**這一支**，不是各寫一份。
+    """
+    from app.services.settings_registry import require_spec
+
+    spec = require_spec(key)
+    if spec.env_name is not None:
+        raw = os.environ.get(spec.env_name)
+        if raw is not None:
+            value = _usable_or_nothing(spec, raw, SOURCE_ENV)
+            if value is not _NO_VALUE:
+                return value, SOURCE_ENV
+
+    return spec.default, SOURCE_DEFAULT
+
+
+def get_setting(db: Session, key: str) -> Any:
+    """讀出目前實際生效的值。**每次呼叫都真的查一次 DB、真的重讀一次 env。**
+
+    需要「來源」的呼叫端請直接用 ``resolve_setting``，一次解析拿兩個答案；不要
+    自己再查一次 DB 湊出來。
+    """
+    return resolve_setting(db, key)[0]
+
+
+#: 寫入端認得的布林寫法。**這是「人在畫面上打字」的詞彙**，與 env 讀取端那五種
+#: 判準是兩件事：env 的規則要忠實反映消費模組怎麼讀那個字串（那是既成事實），
+#: 而寫入端要忠實反映**管理員的意圖**。
+_WRITE_TRUE_WORDS = ("1", "true", "yes", "on", "t", "y")
+_WRITE_FALSE_WORDS = ("0", "false", "no", "off", "f", "n")
+
+
+def _coerce_bool_for_write(spec, raw: str) -> bool:
+    """把人打進來的字串對照成布林。**對不上就拒收，絕不猜。**
+
+    ⚠ 這裡以前直接走 ``spec.value_type.parse``——也就是**讀取端**那顆設定自己的規則。
+    對 ``!= "0"`` 那一型（``intl.zh_normalize``／``intl.query_expansion``）後果是：
+    管理員在畫面上打 ``false``，``"false" != "0"`` 成立 → 存成**開啟**。他按下儲存、
+    沒有錯誤、開關卻朝反方向動了。那是這一頁最不能出的那種錯（靜默反轉意圖），
+    最終審查跨家實證。
+
+    讀取端的規則**不動**（env 那五種判準是消費模組的既成事實，改了就等於騙人）；
+    改的是寫入端：認得的詞彙列出來，其餘一律 400 並把可用寫法講給人聽。
+    存進去的仍然是 ``format()`` 的正規字串，所以「存得下來 ＝ 讀得回來」不變。
+    """
+    token = raw.strip().lower()
+    if token in _WRITE_TRUE_WORDS:
+        return True
+    if token in _WRITE_FALSE_WORDS:
+        return False
+    raise ValueError(
+        f"{spec.key} 是開關，看不懂 {raw!r}。"
+        f"開請填：{'／'.join(_WRITE_TRUE_WORDS)}；"
+        f"關請填：{'／'.join(_WRITE_FALSE_WORDS)}。"
+    )
+
+
+def _coerce_for(spec, value: Any) -> Any:
+    """把呼叫端給的東西轉成這顆設定的值型別。**轉不了就拋，不猜。**
+
+    字串走這顆設定自己的 ``parse``（HTTP 送上來的一律是字串），**布林除外**——
+    見 ``_coerce_bool_for_write``：讀取端的真值判準拿來收人打的字，會靜默反轉意圖。
+    已經是原生型別的就原樣收下。``bool`` 不可以當數字用 —— ``isinstance(True, int)``
+    是真，讓 ``True`` 悄悄變成 1 會存下一個沒有人打算存的值。
+    """
+    value_type = spec.value_type
+    if isinstance(value, str):
+        if value_type.py_type is bool:
+            return _coerce_bool_for_write(spec, value)
+        return value_type.parse(value)
+    if value_type.py_type is bool:
+        if isinstance(value, bool):
+            return value
+        raise TypeError(f"{spec.key} 需要布林值，收到 {type(value).__name__}")
+    if isinstance(value, bool):
+        raise TypeError(f"{spec.key} 需要 {value_type.name}，收到布林值")
+    if value_type.py_type is float and isinstance(value, (int, float)):
+        return float(value)
+    if value_type.py_type is int and isinstance(value, int):
+        return value
+    raise TypeError(f"{spec.key} 需要 {value_type.name}，收到 {type(value).__name__}")
+
+
+def set_setting(db: Session, key: str, value: Any, *, actor: User | None = None) -> None:
+    """寫入一顆設定。值域由登錄表那一筆的 ``domain_fn`` 把關 —— 與解析端同一個。
+
+    只有 C 與 B-可編輯收得下來。其餘類別（祕密、安全類、B-鎖定）在這一層就拒絕，
+    端點不必自己記得名單；拒絕訊息帶著登錄表裡的鎖定理由，因為那句話要上畫面。
+
+    只 ``flush``、不 ``commit``：呼叫端要把設定與稽核事件寫在同一個交易裡，不然
+    會出現「值改了但沒有人知道是誰改的」。
+    """
+    from app.services.settings_registry import EDITABLE_CLASSES, require_spec
+
+    spec = require_spec(key)
+    if spec.setting_class not in EDITABLE_CLASSES:
+        raise ValueError(
+            f"{key} 是 {spec.setting_class.value} 類設定，不可從畫面修改："
+            f"{spec.locked_reason}"
+        )
+
+    parsed = _coerce_for(spec, value)
+    if not spec.domain_fn(parsed):
+        raise ValueError(f"{key}：{spec.description} 收到的是 {value!r}")
+
+    rendered = spec.value_type.format(parsed)
+    row = db.get(PlatformSetting, key)
+    if row is None:
+        row = PlatformSetting(key=key, value=rendered)
+        db.add(row)
+    else:
+        row.value = rendered
         row.updated_at = _utcnow()
     row.updated_by_user_id = actor.id if actor is not None else None
     db.flush()

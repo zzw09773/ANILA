@@ -59,7 +59,11 @@ def admin(db):
 def _stub_probe(monkeypatch):
     """The designation path probes the live embedding endpoint once."""
 
-    async def fake_probe(model):
+    async def fake_probe(model, tuning):
+        # ⚠ 第二個參數是**呼叫端解析出來的**逾時／重試（``ProxyTuning``）。探測是
+        # 一通真的出向呼叫，所以它跟其他出向點走同一套：值在 ``db.commit()``
+        # 之前解好再傳進來。假貨照收，順便釘住這條線沒有被繞過去。
+        assert tuning is not None
         return PROBED_NATIVE_DIM
 
     monkeypatch.setattr(models_api, "_probe_embedding_native_dim", fake_probe)

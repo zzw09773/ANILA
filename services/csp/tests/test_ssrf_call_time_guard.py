@@ -19,6 +19,15 @@ from fastapi import HTTPException
 
 from app.services.proxy_service import _guard_outbound, proxy_request
 
+from app.services.proxy.service import ProxyTuning
+
+#: 這些測試量的不是逾時／重試（那四顆在 ``test_settings_takes_effect_ops.py``），
+#: 所以把它們釘在登錄表宣告的程式預設值上。``tuning`` 是必填的關鍵字參數：
+#: production 的每一個呼叫點都要自己從 session 解一次，漏傳是 TypeError 而不是
+#: 靜默凍結在預設值 —— 那個「必填」正是本包不想再出現假控制項的那道保險。
+_PROXY_TUNING = ProxyTuning.from_registry_defaults()
+
+
 
 def test_guard_blocks_cloud_metadata_ip():
     with pytest.raises(HTTPException) as exc:
@@ -65,6 +74,7 @@ def test_proxy_request_blocks_unsafe_model_before_network():
                 department_id=None,
                 request_body={"messages": []},
                 endpoint_path="/v1/chat/completions",
+                tuning=_PROXY_TUNING,
             )
         )
     assert exc.value.status_code == 502
@@ -99,6 +109,7 @@ def test_proxy_request_agent_typed_without_target_agent_id_is_clean_http_error(
                 request_body={"messages": []},
                 endpoint_path="/v1/chat/completions",
                 target_agent_id=None,
+                tuning=_PROXY_TUNING,
             )
         )
     assert exc.value.status_code == 400

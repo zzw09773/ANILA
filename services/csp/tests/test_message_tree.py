@@ -222,7 +222,9 @@ def test_06_active_leaf_foreign_conv_404(client: TestClient, db: Session):
 
 
 def test_07_sibling_cap(client: TestClient, db: Session, monkeypatch):
-    monkeypatch.setattr(settings, "ANILA_MESSAGE_MAX_SIBLINGS", 20)
+    # ⚠ 分支上限已改成每請求解一次（DB 那一列 → env → 預設），``settings``
+    # 物件不再是讀取點；照舊 setattr 會靜默失效、測試改用預設值跑而且全綠。
+    monkeypatch.setenv("ANILA_MESSAGE_MAX_SIBLINGS", "20")
     _, h = _auth(client, db, "t07")
     conv = _create_conv(client, h)
     cid = conv["id"]
@@ -911,9 +913,9 @@ def test_q18_branch_does_not_change_prompt_injection(
         get_conversation_attachment_usage,
     )
 
-    monkeypatch.setattr(settings, "ANILA_DEFAULT_CONTEXT_WINDOW", 1000)
-    monkeypatch.setattr(settings, "ANILA_ATTACHMENT_BUDGET_RATIO", 0.5)
-    monkeypatch.setattr(settings, "ANILA_ATTACHMENT_TOKEN_SAFETY", 1.15)
+    monkeypatch.setenv("ANILA_DEFAULT_CONTEXT_WINDOW", "1000")
+    monkeypatch.setenv("ANILA_ATTACHMENT_BUDGET_RATIO", "0.5")
+    monkeypatch.setenv("ANILA_ATTACHMENT_TOKEN_SAFETY", "1.15")
 
     user, h = _auth(client, db, "tq18d")
     conv = _create_conv(client, h)
@@ -941,7 +943,7 @@ def test_q18_branch_does_not_change_prompt_injection(
     before_sys, before_usage, before_result = _snap()
     assert before_sys.count(body_text) == 1
     assert before_usage["attachment_count"] == 1
-    assert before_usage["used_tokens"] == effective_cost(att.token_count)
+    assert before_usage["used_tokens"] == effective_cost(db, att.token_count)
     assert before_result is not None
     assert before_result.injected_count == 1
 

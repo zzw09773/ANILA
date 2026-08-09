@@ -21,7 +21,6 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.api.agents._common import _client_ip, _require_developer_or_admin
-from app.config import settings
 from app.database import get_db
 from app.models.user import User
 from app.schemas.message_action import (
@@ -42,11 +41,19 @@ router = APIRouter(prefix="/api/message-actions", tags=["訊息動作"])
 
 
 @router.get("/icons")
-def list_icons(_: User = Depends(_require_developer_or_admin)):
-    """Icon allow-list plus body-char limit for the authoring console."""
+def list_icons(
+    _: User = Depends(_require_developer_or_admin),
+    db: Session = Depends(get_db),
+):
+    """Icon allow-list plus body-char limit for the authoring console.
+
+    ⚠ 上限走 ``svc._max_body_chars`` —— 與 ``_validate_body`` **同一個讀取點**。
+    這裡自己讀一次 ``settings`` 的話，管理員從設定頁調低上限之後，畫面還會
+    照著舊值放行使用者打字，送出時才被 413 擋下來。
+    """
     return {
         "icons": sorted(ALLOWED_ACTION_ICONS),
-        "max_body_chars": int(settings.ANILA_ACTION_MAX_BODY_CHARS),
+        "max_body_chars": svc._max_body_chars(db),
     }
 
 

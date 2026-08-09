@@ -17,6 +17,7 @@ from app.api.conversations import router as conversations_router
 from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
 from app.api.directory import router as directory_router
+from app.api.platform_settings import router as platform_settings_router
 from app.middleware.csrf import CsrfMiddleware
 from app.models.user import User
 from app.services.auth_service import require_admin
@@ -88,6 +89,26 @@ def setup_logging():
     logging.getLogger("uvicorn.access").propagate = True
 
 
+def _resync_app_identity(target_app: FastAPI) -> None:
+    """Re-apply the platform name / version onto the FastAPI object after boot.
+
+    ``FastAPI(title=..., version=...)`` below copies both values **at import
+    time**, and the B-class override does not land until the lifespan runs. Skip
+    this and one setting gets two answers: ``/health`` and the ``/docs`` page
+    title show the new name while ``/openapi.json``'s ``info.title`` still shows
+    the old one — exactly the display-vs-effective split this package exists to
+    remove. ``openapi_schema`` is FastAPI's cache of the generated document, so
+    it is invalidated rather than left holding the pre-override title.
+
+    These two are the only settings read at import time that stay B-editable;
+    every other such read is a B_LOCKED entry (the import-time scan in
+    tests/test_settings_boot_override.py pins that both ways).
+    """
+    target_app.title = settings.APP_NAME
+    target_app.version = settings.APP_VERSION
+    target_app.openapi_schema = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
@@ -96,6 +117,7 @@ async def lifespan(app: FastAPI):
     # place (SECRET_KEY / admin / service token / DB password). Skipping
     # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
     from app.services.startup_security import (
+        assert_card_dev_bypass_not_in_a_real_boot,
         assert_intranet_lockdown_consistency,
         assert_no_dev_defaults,
     )
@@ -103,6 +125,9 @@ async def lifespan(app: FastAPI):
     # Branch SSO: 確保 REQUIRE_CARD_LOGIN_ONLY 與 ENABLE_CARD_LOGIN 互相一致，
     # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。
     assert_intranet_lockdown_consistency()
+    # CARD_DEV_SKIP_NONCE_BINDING（關掉卡登反 replay 綁定）只准活在 dev-card
+    # 模式裡。這一顆以前沒有任何程式層攔截，加上去就靜默生效。
+    assert_card_dev_bypass_not_in_a_real_boot()
 
     # Run Alembic migrations to bring schema to head.
     # Falls back to create_all if Alembic config is not found (e.g. in tests).
@@ -128,6 +153,47 @@ async def lifespan(app: FastAPI):
     # logs. The runbook's "is the Host allow-list on?" check greps for
     # this line, so it has to be emitted where logging works.
     log_host_allowlist_state(_allowed_hosts)
+
+    # B-editable settings: whatever the admin last saved in platform_settings is
+    # laid over the frozen ``settings`` object here. The position is deliberate
+    # and pinned by test_the_hook_runs_after_the_schema_and_before_every_consumer:
+    # AFTER the alembic upgrade (the table has to exist) and BEFORE every
+    # consumer of a B-editable value — startup migrations, auto_seed
+    # (ADMIN_USERNAME / AUTO_REGISTER_*) and the background loops (the health /
+    # usage / alert intervals). Applied one line later, the override would be a
+    # control that reports success and changes nothing.
+    #
+    # ⚠ Boot must never hang on the settings table. ``apply_boot_overrides``
+    # already turns a broken read into "env values + one loud ERROR + a snapshot
+    # that says so"; this second net covers the session itself failing to open.
+    from app.config import (
+        BOOT_OVERRIDE_LOG_TAG,
+        apply_boot_overrides,
+        record_boot_override_failure,
+    )
+    from app.database import SessionLocal as _BootSessionLocal
+    _boot_overrides = None
+    _boot_db = None
+    try:
+        _boot_db = _BootSessionLocal()
+        _boot_overrides = apply_boot_overrides(_boot_db)
+    except Exception as exc:
+        # The snapshot must say "we did not look", not stay at its initial
+        # "nothing was overridden" — those look identical on the settings page
+        # and only one of them is true.
+        record_boot_override_failure(
+            f"開機時無法連上設定表（{type(exc).__name__}）"
+        )
+        logging.getLogger(__name__).exception(
+            "%s 覆蓋載入本身失敗 —— 以環境變數的值繼續開機", BOOT_OVERRIDE_LOG_TAG
+        )
+    finally:
+        if _boot_db is not None:
+            _boot_db.close()
+    if _boot_overrides is not None and (
+        "app.name" in _boot_overrides.applied or "app.version" in _boot_overrides.applied
+    ):
+        _resync_app_identity(app)
 
     # Legacy SQLite migration + column backfills (kept for zero-downtime upgrades
     # from pre-Alembic deployments — safe to re-run, idempotent).
@@ -455,6 +521,8 @@ app.include_router(conversations_router)
 app.include_router(attachments_router)
 app.include_router(handoffs_router)
 app.include_router(directory_router)
+# 設定頁的後端（登錄表全 96 顆的實情 + 可編輯那些的寫入）。
+app.include_router(platform_settings_router)
 
 # Mount static files for Swagger UI
 static_dir = Path(settings.STATIC_DIR)

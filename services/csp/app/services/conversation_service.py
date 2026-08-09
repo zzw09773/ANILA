@@ -9,12 +9,12 @@ from fastapi import HTTPException, status
 from sqlalchemy import or_, update as sa_update
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare, ConversationUserMeta
 from app.models.department import Department
 from app.models.message import Message
+from app.models.platform_setting import get_setting
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier
@@ -144,8 +144,14 @@ def _check_metadata_size(metadata: Optional[dict]) -> None:
         raise HTTPException(status_code=413, detail="metadata 過大")
 
 
-def _max_siblings() -> int:
-    return int(settings.ANILA_MESSAGE_MAX_SIBLINGS)
+def _max_siblings(db: Session) -> int:
+    """同一節點下的訊息分支上限（``limits.message_max_siblings``）。
+
+    **每次呼叫都真的解一次**（DB 那一列 → ``ANILA_MESSAGE_MAX_SIBLINGS`` →
+    程式預設 20）。以前讀 ``config.py`` 那個 import 期凍結的 ``settings``：
+    管理員從畫面把上限調高，要等容器 recreate 才算數。
+    """
+    return int(get_setting(db, "limits.message_max_siblings"))
 
 
 def _require_branchable(conv: Conversation) -> None:
@@ -172,7 +178,7 @@ def _sibling_count(db: Session, conversation_id: int, parent_id: int | None) -> 
 def _enforce_sibling_cap(
     db: Session, conversation_id: int, parent_id: int | None,
 ) -> None:
-    cap = _max_siblings()
+    cap = _max_siblings(db)
     if _sibling_count(db, conversation_id, parent_id) >= cap:
         raise HTTPException(
             status_code=409,
@@ -768,7 +774,7 @@ def append_message(
         _enforce_explicit_parent_role(db, conv.id, resolved_parent, role)
     _enforce_sibling_cap(db, conv.id, resolved_parent)
     # §6-3：assistant 落庫前靜默 s2twp＋域內用語；user 原文不動（fail-open）
-    content, zh_changed = zh_normalize_service.prepare_message_content(role, content)
+    content, zh_changed = zh_normalize_service.prepare_message_content(db, role, content)
     msg = Message(
         conversation_id=conv.id,
         parent_id=resolved_parent,
@@ -960,7 +966,7 @@ def start_turn(
     _check_metadata_size(metadata)
     # §6-3：user 原文不動（fail-open），與 append_message 同一條正規化邊界。
     user_content, zh_changed = zh_normalize_service.prepare_message_content(
-        "user", content,
+        db, "user", content,
     )
 
     for _attempt in range(_START_TURN_MAX_ATTEMPTS):
@@ -1081,7 +1087,7 @@ def branch_turn(
     _check_metadata_size(metadata)
     # §6-3：與 branch_message 同一條正規化邊界。
     user_content, zh_changed = zh_normalize_service.prepare_message_content(
-        "user", content,
+        db, "user", content,
     )
     user_msg = Message(
         conversation_id=conv.id,
@@ -1156,7 +1162,7 @@ def branch_message(
     parent = target.parent_id
     _enforce_sibling_cap(db, conv.id, parent)
     # §6-3：與 append_message 同一落庫邊界（regenerate / edit-re-ask）
-    content, zh_changed = zh_normalize_service.prepare_message_content(role, content)
+    content, zh_changed = zh_normalize_service.prepare_message_content(db, role, content)
     msg = Message(
         conversation_id=conv.id,
         parent_id=parent,
@@ -1331,7 +1337,7 @@ def update_message_content(
     if content is not None:
         # §6-3：依既有訊息角色正規化（ANILALM finalize 等 in-place 寫入）
         content, zh_changed = zh_normalize_service.prepare_message_content(
-            msg.role, content,
+            db, msg.role, content,
         )
         msg.content = content
     if trace_id is not None:

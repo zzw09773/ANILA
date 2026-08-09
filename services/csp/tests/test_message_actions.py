@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.models.platform_setting import set_setting
 from app.models.audit_log import AuditLog
 from app.models.department import Department
 from app.models.message_action import MessageAction
@@ -30,7 +30,10 @@ def _bypass_dev_secret_gate(monkeypatch):
 
     monkeypatch.setattr(ss_module, "assert_no_dev_defaults", lambda: None)
     reset_rate_limit_for_tests()
-    monkeypatch.setattr(settings, "ANILA_ACTION_INVOKE_PER_MIN", 20)
+    # ⚠ 這裡原本是 ``monkeypatch.setattr(settings, "ANILA_ACTION_INVOKE_PER_MIN", 20)``。
+    # 上限已經改成每請求走 ``get_setting``（``limits.action_invoke_per_min``），
+    # 那個 config 欄位**不再是讀取點** —— 留著它會變成一個「設了、什麼也沒發生」
+    # 的假控制項。20 本來就是登錄表的程式預設值，所以不寫任何一列就是這個值。
 
 
 def _auth(client: TestClient, db: Session, username: str, role: str = "user",
@@ -778,7 +781,7 @@ def test_18_user_role_target_400(client: TestClient, db: Session):
 
 
 def test_19_rate_limit(client: TestClient, db: Session, monkeypatch):
-    monkeypatch.setattr(settings, "ANILA_ACTION_INVOKE_PER_MIN", 20)
+    # 20 ＝ 登錄表預設值；不寫列就是它。
     reset_rate_limit_for_tests()
     _, oh = _auth(client, db, "ma19o", role="owner")
     u, uh = _auth(client, db, "ma19u", role="user")
@@ -1279,7 +1282,8 @@ def test_rate_limit_stops_refusal_audit_rows(
     client: TestClient, db: Session, monkeypatch,
 ):
     """Repeated refused attempts stop writing rows once the limit is hit."""
-    monkeypatch.setattr(settings, "ANILA_ACTION_INVOKE_PER_MIN", 3)
+    set_setting(db, "limits.action_invoke_per_min", 3)
+    db.commit()
     reset_rate_limit_for_tests()
     _, oh = _auth(client, db, "ma_rlr_o", role="owner")
     ua, uh = _auth(client, db, "ma_rlr_a", role="user")
@@ -1347,4 +1351,11 @@ def test_icons_endpoint_returns_list(client: TestClient, db: Session):
     data = r.json()
     assert isinstance(data, dict)
     assert sorted(data["icons"]) == sorted(ALLOWED_ACTION_ICONS)
-    assert data["max_body_chars"] == int(settings.ANILA_ACTION_MAX_BODY_CHARS)
+    # ⚠ 別跟 ``settings.ANILA_ACTION_MAX_BODY_CHARS`` 比 —— 上限已改成每請求解
+    # 一次，兩邊都退回同一個程式預設 20000 時，即使端點根本沒接上設定也會綠。
+    # 存一個**誰也猜不到的值**進去，端點必須跟著變：畫面上顯示的上限與後端實際
+    # 擋人的上限，必須是同一個數字。
+    set_setting(db, "limits.action_max_body_chars", 4321)
+    db.commit()
+    again = client.get("/api/message-actions/icons", headers=dh)
+    assert again.json()["max_body_chars"] == 4321

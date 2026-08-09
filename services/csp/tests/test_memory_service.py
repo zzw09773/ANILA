@@ -31,6 +31,9 @@ from app.services.memory_service import (
     _format_block,
     parse_extraction_response,
 )
+
+#: 見 ``test_memory_block_format.py``：上限是必填參數，這裡不測截斷。
+_NO_TRUNCATION = 100_000
 from anila_core.security import ENDPOINT_KIND_MODEL
 
 
@@ -90,7 +93,7 @@ def test_format_block_returns_none_when_nothing_to_inject():
     Skips the ``db`` fixture (and its pre-existing JSONB / SQLite
     metadata collision) because ``_format_block`` is pure.
     """
-    assert _format_block([], []) is None
+    assert _format_block([], [], max_chunk_chars=_NO_TRUNCATION) is None
 
 
 def test_format_block_marks_encrypted_chunks_with_visible_tag():
@@ -118,7 +121,7 @@ def test_format_block_marks_encrypted_chunks_with_visible_tag():
             is_encrypted=True,
         ),
     ]
-    block = _format_block([], chunks)
+    block = _format_block([], chunks, max_chunk_chars=_NO_TRUNCATION)
     assert block is not None
     assert "(加密來源)" in block
     # Public chunk gets no tag.

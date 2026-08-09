@@ -10,6 +10,15 @@ from fastapi import HTTPException
 
 from app.services.proxy import service as proxy_impl
 
+from app.services.proxy.service import ProxyTuning
+
+#: 這些測試量的不是逾時／重試（那四顆在 ``test_settings_takes_effect_ops.py``），
+#: 所以把它們釘在登錄表宣告的程式預設值上。``tuning`` 是必填的關鍵字參數：
+#: production 的每一個呼叫點都要自己從 session 解一次，漏傳是 TypeError 而不是
+#: 靜默凍結在預設值 —— 那個「必填」正是本包不想再出現假控制項的那道保險。
+_PROXY_TUNING = ProxyTuning.from_registry_defaults()
+
+
 
 def _model(**overrides):
     base = dict(
@@ -69,6 +78,7 @@ def test_query_role_calls_embed_texts_as_query(monkeypatch):
             request_body={"model": "nv-embed-v2", "input": "hello query"},
             endpoint_path="/v1/embeddings",
             embedding_input_role="query",
+            tuning=_PROXY_TUNING,
         )
     )
     assert seen["role"] == "query"
@@ -94,6 +104,7 @@ def test_default_role_is_document_for_public_surface(monkeypatch):
             request_body={"model": "nv-embed-v2", "input": ["doc"]},
             endpoint_path="/v1/embeddings",
             # embedding_input_role omitted → document
+            tuning=_PROXY_TUNING,
         )
     )
     assert seen["role"] == "document"
@@ -122,6 +133,7 @@ def test_query_site_regression_fails_if_wired_as_document(monkeypatch):
             department_id=None,
             request_body={"model": "nv-embed-v2", "input": "q"},
             endpoint_path="/v1/embeddings",
+            tuning=_PROXY_TUNING,
         )
     )
     # This assertion IS the guard: if someone "fixes" a call site by
@@ -138,6 +150,7 @@ def test_query_site_regression_fails_if_wired_as_document(monkeypatch):
             request_body={"model": "nv-embed-v2", "input": "q"},
             endpoint_path="/v1/embeddings",
             embedding_input_role="query",
+            tuning=_PROXY_TUNING,
         )
     )
     assert seen["role"] == "query"
@@ -185,13 +198,17 @@ def test_search_embed_query_passes_query_role(db, monkeypatch):
     assert seen["role"] == "query"
 
 
-def test_memory_retrieve_passes_query_role(monkeypatch):
+def test_memory_retrieve_passes_query_role(db, monkeypatch):
     """Long-term memory recall embeds its query on the query side.
 
     Also was a source grep. ``_embed`` is the single decision point the
     recall path goes through, so recording its keyword is the behaviour; the
-    embed is made to fail afterwards so no DB is needed (``retrieve_relevant_
-    chunks`` is fail-closed and returns []).
+    embed is made to fail afterwards so nothing is written
+    (``retrieve_relevant_chunks`` is fail-closed and returns []).
+
+    ⚠ 這一支原本傳 ``db=None`` —— 檢索的筆數與門檻現在是**每次呼叫**從
+    ``platform_settings`` 解出來的（在 ``_embed`` 之前），所以這條路徑真的需要一個
+    session 了。給它 fixture 的那一個；沒有寫任何一列，走的就是 env／程式預設。
     """
     from app.services import memory_service
 
@@ -205,7 +222,7 @@ def test_memory_retrieve_passes_query_role(monkeypatch):
 
     result = asyncio.run(
         memory_service.retrieve_relevant_chunks(
-            db=None, user_id=1, query_text="去年的採購紀錄"
+            db=db, user_id=1, query_text="去年的採購紀錄"
         )
     )
 
@@ -223,6 +240,7 @@ def test_triton_rejects_non_embedding_path():
                 department_id=None,
                 request_body={"messages": []},
                 endpoint_path="/v1/chat/completions",
+                tuning=_PROXY_TUNING,
             )
         )
     assert exc.value.status_code == 400
@@ -250,6 +268,7 @@ def test_join_upstream_path_not_used_for_triton(monkeypatch):
             request_body={"input": ["x"]},
             endpoint_path="/v1/embeddings",
             embedding_input_role="query",
+            tuning=_PROXY_TUNING,
         )
     )
     assert called["join"] == 0

@@ -29,6 +29,15 @@ from app.services.triton_grpc import grpc_service_pb2
 # embedding 都 INVALID_ARGUMENT)。同一個不變式不留兩份實作,才不會只補到一邊。
 from tests.test_triton_grpc_wire import decode_bytes_tensor
 
+from app.services.proxy.service import ProxyTuning
+
+#: 這些測試量的不是逾時／重試（那四顆在 ``test_settings_takes_effect_ops.py``），
+#: 所以把它們釘在登錄表宣告的程式預設值上。``tuning`` 是必填的關鍵字參數：
+#: production 的每一個呼叫點都要自己從 session 解一次，漏傳是 TypeError 而不是
+#: 靜默凍結在預設值 —— 那個「必填」正是本包不想再出現假控制項的那道保險。
+_PROXY_TUNING = ProxyTuning.from_registry_defaults()
+
+
 
 class _RecordingStub:
     """記下每一顆 ModelInferRequest,回傳一個形狀正確的合成 response。"""
@@ -234,6 +243,7 @@ def test_proxy_role_reaches_the_wire_tensor(
             request_body={"model": "nv-embed-v2", "input": "檢索用文字"},
             endpoint_path="/v1/embeddings",
             embedding_input_role=role,
+            tuning=_PROXY_TUNING,
         )
     )
     assert len(captured) == 1
@@ -251,6 +261,7 @@ def test_proxy_public_surface_defaults_to_the_documents_tensor(captured, proxy_e
             department_id=None,
             request_body={"model": "nv-embed-v2", "input": ["段落"]},
             endpoint_path="/v1/embeddings",
+            tuning=_PROXY_TUNING,
         )
     )
     assert captured[0].inputs[0].name == "documents"

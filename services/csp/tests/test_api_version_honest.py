@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.model_registry import ModelCreate, ModelUpdate
+from app.services.proxy.service import ProxyTuning
 
 
 def test_api_version_typo_rejected_on_create():
@@ -74,7 +75,7 @@ async def test_probe_uses_api_version_path(monkeypatch):
         classification_ceiling=None,
         is_active=True,
     )
-    n = await models_api._probe_embedding_native_dim(model)
+    n = await models_api._probe_embedding_native_dim(model, ProxyTuning.from_registry_defaults())
     assert n == 16
     assert captured.get("endpoint_path") == "/v2/embeddings"
     assert captured.get("embedding_input_role") == "query"

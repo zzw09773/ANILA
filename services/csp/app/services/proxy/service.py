@@ -9,14 +9,16 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
 import httpx
+from sqlalchemy.orm import Session
 from anila_core.security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 
-from app.config import settings
 from app.models.model_registry import ModelRegistry
+from app.models.platform_setting import get_setting
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
     _apply_gateway_auth,
@@ -164,10 +166,69 @@ def format_anila_stream_error(message: str) -> str:
     )
 
 
-def _get_timeout(model_type: str) -> float:
+# ── 出向呼叫的四顆調節鈕 ──────────────────────────────────────────────────────
+#
+# ⚠ **在呼叫端解析一次、往下傳；本模組不自己查 DB。** 兩個理由都是這個檔案自己
+# 的形狀，不是風格偏好：
+#
+# 1. ``memory_service._embed`` 與 ``api/ingestion/search.py`` 都**刻意**在呼叫
+#    ``proxy_request`` 之前 ``db.commit()``，把池化連線還回池子再走出向 HTTP
+#    （``tests/test_embed_query_releases_pool.py`` 量的就是這件事）。在本模組裡
+#    查一次 ``platform_settings`` 會重新 checkout 一條連線，而且一路握到 HTTP
+#    回來為止 —— 而那支測試 stub 掉 ``proxy_request``，**抓不到這個回歸**。
+# 2. ``proxy_stream`` 是 async generator，**在 handler 回傳之後才被抽乾**；那時
+#    request scope 的 session 可能已經關閉。handler 期解析是唯一安全的時點。
+#
+# 所以四顆值在「呼叫端還合法握著連線」的那一刻解一次，凍結成這個物件往下傳。
+# 凍結的範圍是**一次出向呼叫**，不是一個行程 —— 下一個請求會再解一次。
+
+
+@dataclass(frozen=True)
+class ProxyTuning:
+    """一次出向呼叫用的逾時與重試。四顆都是 C 類，改完下一個請求生效。"""
+
+    llm_timeout: int
+    embedding_timeout: int
+    max_retries: int
+    retry_base_delay: float
+
+    @classmethod
+    def from_registry_defaults(cls) -> "ProxyTuning":
+        """登錄表宣告的程式預設值。
+
+        **只給手上真的沒有 session 的呼叫端用（實務上＝測試）。** 它跳過
+        ``platform_settings`` 與 env 兩層，所以 production 路徑一律走
+        :func:`resolve_proxy_tuning`；值的唯一來源仍然是登錄表那一筆，不是
+        ``config.py`` 再抄一份。
+        """
+        from app.services.settings_registry import REGISTRY
+
+        return cls(
+            llm_timeout=int(REGISTRY["proxy.llm_timeout"].default),
+            embedding_timeout=int(REGISTRY["proxy.embedding_timeout"].default),
+            max_retries=int(REGISTRY["proxy.max_retries"].default),
+            retry_base_delay=float(REGISTRY["proxy.retry_base_delay"].default),
+        )
+
+
+def resolve_proxy_tuning(db: Session) -> ProxyTuning:
+    """把四顆解成這一次呼叫要用的值（``platform_settings`` → env → 程式預設）。
+
+    呼叫端要在**還握著連線的那一刻**呼叫它（例如 ``db.commit()`` 釋放連線之前），
+    再把結果傳給 ``proxy_request`` / ``proxy_stream``。
+    """
+    return ProxyTuning(
+        llm_timeout=int(get_setting(db, "proxy.llm_timeout")),
+        embedding_timeout=int(get_setting(db, "proxy.embedding_timeout")),
+        max_retries=int(get_setting(db, "proxy.max_retries")),
+        retry_base_delay=float(get_setting(db, "proxy.retry_base_delay")),
+    )
+
+
+def _get_timeout(model_type: str, tuning: ProxyTuning) -> float:
     if model_type == "embedding":
-        return settings.EMBEDDING_TIMEOUT
-    return settings.LLM_TIMEOUT
+        return tuning.embedding_timeout
+    return tuning.llm_timeout
 
 
 def _normalize_embed_inputs(request_body: dict) -> list[str]:
@@ -225,6 +286,7 @@ async def _proxy_triton_embedding(
     embedding_input_role: Optional[str],
     timeout: float,
     request_type: str,
+    tuning: ProxyTuning,
     record_usage: bool = True,
 ) -> dict:
     """Triton/KServe gRPC embedding path — never through join_upstream_path."""
@@ -253,7 +315,7 @@ async def _proxy_triton_embedding(
 
     start_time = time.time()
     last_error = None
-    for attempt in range(settings.PROXY_MAX_RETRIES):
+    for attempt in range(tuning.max_retries):
         try:
             vectors = await asyncio.to_thread(
                 embed_texts,
@@ -333,14 +395,14 @@ async def _proxy_triton_embedding(
             return result
         except TritonEmbedError as exc:
             last_error = str(exc)
-            if attempt < settings.PROXY_MAX_RETRIES - 1:
-                delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
+            if attempt < tuning.max_retries - 1:
+                delay = tuning.retry_base_delay * (2 ** attempt)
                 logger.warning(
                     "模型 %s Triton 呼叫失敗，%ss 後重試 (%s/%s): %s",
                     model.name,
                     delay,
                     attempt + 1,
-                    settings.PROXY_MAX_RETRIES,
+                    tuning.max_retries,
                     last_error,
                 )
                 await asyncio.sleep(delay)
@@ -359,8 +421,8 @@ async def _proxy_triton_embedding(
         except Exception as exc:
             last_error = "未預期的代理錯誤"
             logger.error("Triton 代理請求錯誤: %s", exc, exc_info=True)
-            if attempt < settings.PROXY_MAX_RETRIES - 1:
-                delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
+            if attempt < tuning.max_retries - 1:
+                delay = tuning.retry_base_delay * (2 ** attempt)
                 await asyncio.sleep(delay)
                 continue
             _note_proxy_outcome(
@@ -381,7 +443,7 @@ async def _proxy_triton_embedding(
     )
     raise HTTPException(
         status_code=502,
-        detail=f"模型服務不可用，已重試 {settings.PROXY_MAX_RETRIES} 次: {last_error}",
+        detail=f"模型服務不可用，已重試 {tuning.max_retries} 次: {last_error}",
     )
 
 
@@ -457,6 +519,8 @@ async def _proxy_request_impl(
     endpoint_display: Optional[str] = None,
     embedding_input_role: Optional[str] = None,
     record_usage: bool = True,
+    *,
+    tuning: ProxyTuning,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -472,7 +536,7 @@ async def _proxy_request_impl(
     /v1 chat traffic. Run finalization lives in the ``proxy_request``
     wrapper.
     """
-    timeout = _get_timeout(model.model_type)
+    timeout = _get_timeout(model.model_type, tuning)
     request_type = (
         "embedding"
         if "embedding" in endpoint_path or model.model_type == "embedding"
@@ -499,6 +563,7 @@ async def _proxy_request_impl(
             embedding_input_role=embedding_input_role,
             timeout=timeout,
             request_type=request_type,
+            tuning=tuning,
             record_usage=record_usage,
         )
 
@@ -557,7 +622,7 @@ async def _proxy_request_impl(
     if model.model_type != "agent":
         _apply_gateway_auth(req_headers, resolve_model_gateway_key(model))
 
-    for attempt in range(settings.PROXY_MAX_RETRIES):
+    for attempt in range(tuning.max_retries):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
@@ -572,11 +637,11 @@ async def _proxy_request_impl(
                 # Full upstream body stays server-side only; the client gets a
                 # generic message so internal errors / stack traces never leak.
                 last_error = f"後端回應 {response.status_code}: {response.text[:500]}"
-                if attempt < settings.PROXY_MAX_RETRIES - 1:
-                    delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
+                if attempt < tuning.max_retries - 1:
+                    delay = tuning.retry_base_delay * (2 ** attempt)
                     logger.warning(
                         f"模型 {model.name} 回應 {response.status_code}，"
-                        f"{delay}s 後重試 ({attempt + 1}/{settings.PROXY_MAX_RETRIES})"
+                        f"{delay}s 後重試 ({attempt + 1}/{tuning.max_retries})"
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -716,11 +781,11 @@ async def _proxy_request_impl(
 
         except httpx.TimeoutException:
             last_error = f"請求逾時 ({timeout}s)"
-            if attempt < settings.PROXY_MAX_RETRIES - 1:
-                delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
+            if attempt < tuning.max_retries - 1:
+                delay = tuning.retry_base_delay * (2 ** attempt)
                 logger.warning(
                     f"模型 {model.name} 請求逾時，"
-                    f"{delay}s 後重試 ({attempt + 1}/{settings.PROXY_MAX_RETRIES})"
+                    f"{delay}s 後重試 ({attempt + 1}/{tuning.max_retries})"
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -729,15 +794,15 @@ async def _proxy_request_impl(
             # Caller-facing text identifies the model; endpoint_display is
             # the visibility-gated form (real or sentinel) from the API.
             last_error = _proxy_connect_failure(model.name, endpoint_display)
-            if attempt < settings.PROXY_MAX_RETRIES - 1:
-                delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
+            if attempt < tuning.max_retries - 1:
+                delay = tuning.retry_base_delay * (2 ** attempt)
                 logger.warning(
                     "模型 %s 連線失敗（%s），%ss 後重試 (%s/%s)",
                     model.name,
                     target_url,
                     delay,
                     attempt + 1,
-                    settings.PROXY_MAX_RETRIES,
+                    tuning.max_retries,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -750,8 +815,8 @@ async def _proxy_request_impl(
             # exception classes can embed hostnames / URLs.
             last_error = "未預期的代理錯誤"
             logger.error("代理請求錯誤: %s", e, exc_info=True)
-            if attempt < settings.PROXY_MAX_RETRIES - 1:
-                delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
+            if attempt < tuning.max_retries - 1:
+                delay = tuning.retry_base_delay * (2 ** attempt)
                 await asyncio.sleep(delay)
                 continue
 
@@ -764,7 +829,7 @@ async def _proxy_request_impl(
     )
     raise HTTPException(
         status_code=502,
-        detail=f"模型服務不可用，已重試 {settings.PROXY_MAX_RETRIES} 次: {last_error}",
+        detail=f"模型服務不可用，已重試 {tuning.max_retries} 次: {last_error}",
     )
 
 
@@ -790,6 +855,8 @@ async def proxy_request(
     endpoint_display: Optional[str] = None,
     embedding_input_role: Optional[str] = None,
     record_usage: bool = True,
+    *,
+    tuning: ProxyTuning,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -827,6 +894,7 @@ async def proxy_request(
             endpoint_display=endpoint_display,
             embedding_input_role=embedding_input_role,
             record_usage=record_usage,
+            tuning=tuning,
         )
     except HTTPException as exc:
         if task_run_id is not None:
@@ -865,6 +933,8 @@ async def _proxy_stream_impl(
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
     endpoint_display: Optional[str] = None,
+    *,
+    tuning: ProxyTuning,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -917,7 +987,7 @@ async def _proxy_stream_impl(
     pending_done_block: str | None = None
 
     try:
-        async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
             async with client.stream("POST", target_url, json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
                     raise HTTPException(status_code=resp.status_code,
@@ -1097,6 +1167,8 @@ async def proxy_stream(
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
     endpoint_display: Optional[str] = None,
+    *,
+    tuning: ProxyTuning,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -1131,6 +1203,7 @@ async def proxy_stream(
             legacy_runtime_call=legacy_runtime_call,
             gateway_api_key=gateway_api_key,
             endpoint_display=endpoint_display,
+            tuning=tuning,
         ):
             yield chunk
         _note_proxy_outcome(

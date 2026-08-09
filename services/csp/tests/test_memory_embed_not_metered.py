@@ -27,6 +27,15 @@ import pytest
 from app.services import memory_service
 from app.services.platform_embedding import PlatformEmbedding
 
+from app.services.proxy.service import ProxyTuning
+
+#: 這些測試量的不是逾時／重試（那四顆在 ``test_settings_takes_effect_ops.py``），
+#: 所以把它們釘在登錄表宣告的程式預設值上。``tuning`` 是必填的關鍵字參數：
+#: production 的每一個呼叫點都要自己從 session 解一次，漏傳是 TypeError 而不是
+#: 靜默凍結在預設值 —— 那個「必填」正是本包不想再出現假控制項的那道保險。
+_PROXY_TUNING = ProxyTuning.from_registry_defaults()
+
+
 
 def _install_fake_embedder(monkeypatch, captured: dict):
     fake_model = SimpleNamespace(
@@ -142,6 +151,7 @@ def test_proxy_honours_record_usage_false_on_the_triton_path(monkeypatch):
                 endpoint_path="/v1/embeddings",
                 embedding_input_role="document",
                 record_usage=record_usage,
+                tuning=_PROXY_TUNING,
             )
         )
 

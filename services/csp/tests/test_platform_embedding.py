@@ -26,6 +26,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.models.model_registry import ModelRegistry
+from app.models.platform_setting import PlatformSetting
 from app.models.user import User
 from app.services.platform_embedding import (
     count_pending_recompute,
@@ -42,6 +43,9 @@ def db():
     )
     # Minimal tables for these unit tests.
     ModelRegistry.__table__.create(bind=engine, checkfirst=True)
+    # ``_embed`` 現在會在出向之前解一次逾時／重試（``platform_settings`` → env →
+    # 程式預設），所以那張表也要在最小 schema 裡；沒有列時走的就是後兩層。
+    PlatformSetting.__table__.create(bind=engine, checkfirst=True)
     # pending-count queries hit three vector tables — create stubs.
     from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 

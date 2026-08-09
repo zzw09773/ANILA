@@ -160,7 +160,7 @@ def _validate_parent_assignment(
 
     new_depth = depth_under_parent(db, parent_id)
     subtree_height = get_subtree_height(db, node_id) if node_id is not None else 1
-    cap = max_depth()
+    cap = max_depth(db)
     resulting_depth = new_depth + subtree_height - 1
     if resulting_depth > cap:
         raise HTTPException(

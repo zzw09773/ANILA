@@ -31,6 +31,15 @@ from app.services.proxy import service as proxy_impl
 from app.services.proxy.urls import join_upstream_path
 from tests.conftest import make_model, make_user
 
+from app.services.proxy.service import ProxyTuning
+
+#: 這些測試量的不是逾時／重試（那四顆在 ``test_settings_takes_effect_ops.py``），
+#: 所以把它們釘在登錄表宣告的程式預設值上。``tuning`` 是必填的關鍵字參數：
+#: production 的每一個呼叫點都要自己從 session 解一次，漏傳是 TypeError 而不是
+#: 靜默凍結在預設值 —— 那個「必填」正是本包不想再出現假控制項的那道保險。
+_PROXY_TUNING = ProxyTuning.from_registry_defaults()
+
+
 
 # ── helper behaviour table ────────────────────────────────────────────────────
 
@@ -208,6 +217,7 @@ def test_proxy_request_both_conventions_same_url(monkeypatch, endpoint_url: str)
                 department_id=None,
                 request_body={"messages": [{"role": "user", "content": "hi"}]},
                 endpoint_path="/v1/chat/completions",
+                tuning=_PROXY_TUNING,
             )
         )
     assert exc.value.status_code == 502
@@ -244,6 +254,7 @@ def test_proxy_request_v2_embedding_special_case(monkeypatch, endpoint_url: str)
                 department_id=None,
                 request_body={"input": ["hi"]},
                 endpoint_path="/v1/embeddings",
+                tuning=_PROXY_TUNING,
             )
         )
     assert captured["url"] == "http://mock-llm:8080/v2/embeddings"
