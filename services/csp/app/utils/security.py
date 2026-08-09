@@ -34,8 +34,8 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 
+import bcrypt
 from jose import jwt, JWTError
-from passlib.context import CryptContext
 
 from app.config import settings
 
@@ -46,15 +46,51 @@ logger = logging.getLogger(__name__)
 ALGORITHM: str = "RS256"
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_BCRYPT_ROUNDS = 12
+_BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    if not isinstance(password, str):
+        raise TypeError("password must be a string")
+    # Restore passlib's historical 72-byte truncation; bcrypt 5.0.0 raises
+    # instead, which would turn previously accepted long passwords into 500s.
+    password_bytes = password.encode("utf-8")[:_BCRYPT_MAX_PASSWORD_BYTES]
+    return bcrypt.hashpw(
+        password_bytes,
+        bcrypt.gensalt(rounds=_BCRYPT_ROUNDS),
+    ).decode("ascii")
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+def verify_password(plain_password: str, hashed_password: str | None) -> bool:
+    if not isinstance(plain_password, str):
+        raise TypeError("password and hashed password must be strings")
+    if hashed_password is None:
+        return False
+    if not isinstance(hashed_password, str):
+        raise TypeError("password and hashed password must be strings")
+    # Keep verification byte-for-byte symmetric with hash_password and passlib.
+    password_bytes = plain_password.encode("utf-8")[:_BCRYPT_MAX_PASSWORD_BYTES]
+    bcrypt_hash = hashed_password
+    if hashed_password.startswith("$2$"):
+        # bcrypt 5 rejects the legacy bare "$2$" identifier. Passlib's
+        # fallback for backends without native "$2$" support repeated a
+        # non-empty password to 72 bytes before using the compatible bcrypt
+        # implementation; reproduce that input transformation before using
+        # the accepted "$2b$" identifier. The 72-byte limit keeps the old
+        # wraparound distinction unreachable.
+        bcrypt_hash = "$2b$" + hashed_password[len("$2$"):]
+        if password_bytes:
+            repeat_count = (
+                _BCRYPT_MAX_PASSWORD_BYTES + len(password_bytes) - 1
+            ) // len(password_bytes)
+            password_bytes = (
+                password_bytes * repeat_count
+            )[:_BCRYPT_MAX_PASSWORD_BYTES]
+    return bcrypt.checkpw(
+        password_bytes,
+        bcrypt_hash.encode("ascii"),
+    )
 
 
 # ── Key loading ────────────────────────────────────────────────────────────────

@@ -25,9 +25,9 @@ python-jose[cryptography]==3.5.0
 # asn1crypto:純 Python ASN.1/CMS 解析,卡片登入 PKCS#7 簽章驗證用
 # (cryptography 41 無 CMS verify API)。air-gap 友善(純 wheel,無編譯)。
 asn1crypto==1.5.1
-passlib[bcrypt]==1.7.4
-# passlib 1.7.4 still probes bcrypt.__about__.__version__, which was removed in bcrypt 4.1+
-bcrypt==4.0.1
+# Direct bcrypt preserves the existing $2b$ password-hash format; cost is pinned
+# in app/utils/security.py so new hashes cannot silently weaken.
+bcrypt==5.0.0
 # python-multipart：0.0.22~0.0.27 修舊 form CVE；0.0.30+ 修
 # CVE-2026-53538/53539（urlencoded `;`／掃描）；0.0.31+ 修 CVE-2026-53540
 #（負 Content-Length）。鎖最新 patch，仍在 0.0.x。
