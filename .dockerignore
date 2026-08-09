@@ -26,6 +26,13 @@ runtime_logic/
 **/secrets/
 **/logs/
 **/*.log
+# Any machine that ran tests leaves this beside source; COPY packages/anila-core/
+# and the service-tree COPYs would carry it into the image.
+**/.pytest_cache/
+
+# The local stack writes runtime attachments here; COPY services/csp/ ./ would
+# otherwise carry them into the image. Keep services/csp/data/.gitkeep present.
+services/csp/data/attachments/
 
 # anila-agent Docker context=repo root：擋掉原 package-level .dockerignore 的規則
 # （該檔在 context 根變更後已失效；勿再維護 package 副本）
