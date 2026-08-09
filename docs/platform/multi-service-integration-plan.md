@@ -97,7 +97,7 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 - `https://localhost:4443/codeserver/` → 302 redirect 到 `/codeserver/login` ✓
 - `https://localhost:4443/gitlab/` → 302 redirect 到 `/gitlab/users/sign_in`（port 保留）✓
 - `https://localhost:4443/gitlab/users/sign_in` → 200，HTML 是真 GitLab login page，asset path 都帶 `/gitlab` prefix ✓
-- GitLab 初始 root password 在 `docker exec anila-platform-gitlab-1 cat /etc/gitlab/initial_root_password`，**首次登入立即 rotate**
+- GitLab 初始 root password 來自部署來源的 `GITLAB_ROOT_PASSWORD`（`.env` / bundle 的 `intranet-defaults.env`），不是容器內檔案；需要時從該來源取得並在登入後立即 rotate
 
 **已知未解但 acceptable**：
 - 既存 gitlab container 仍顯示 `unhealthy`（用著舊 healthcheck URL `/gitlab/-/health`），純粹 cosmetic — 容器其實 work。下次 `docker compose up -d gitlab` 觸發 recreate 即會套新 healthcheck 變 healthy
@@ -772,8 +772,8 @@ services:
   # ... csp / router / anila-ui / csp-db / codeserver 既有 ...
 
   gitlab:
-    image: gitlab/gitlab-ce:16.10.0-ce.0     # 或更新版（注意 Omnibus 升級規則）
-    container_name: anila-gitlab
+    image: gitlab/gitlab-ce:19.2.1-ce.0@sha256:2777b4a990a05a40947437d3c8e0e03347974d8998663d266064cebaff00ba87
+    # Compose 依 project/service 產生容器名稱，不固定 container_name。
     hostname: gitlab.anila.internal
     environment:
       GITLAB_OMNIBUS_CONFIG: |
@@ -1417,7 +1417,7 @@ ISO 42001 影響面遠超出 GitLab 本身。**這次 design doc 範圍內先處
 2. 首次啟動流程（5-10 分鐘）：
    ☐ docker compose up -d gitlab
    ☐ 等 healthcheck 變 healthy（首次 reconfigure 約 5-10 分鐘）
-   ☐ docker exec anila-gitlab gitlab-rails runner "..." 設 root 密碼
+   ☐ 從部署 env/secret source 取得 `GITLAB_ROOT_PASSWORD`；必要時登入後 rotate
    ☐ 登入 GitLab admin → 開帳號 / 設定 group
 
 3. AUTO_REGISTER_LINKS 註冊 GitLab card（URL = /gitlab）：
@@ -1630,7 +1630,7 @@ await audit_log(
 | 4 | CSP UI Dashboard 顯示卡片時依 `can_access_link()` 過濾 + Service Access 管理 UI（§7.5.3）| 1-1.5 天 | ⏳ |
 | 5 | ANILA monorepo `docker-compose.yml` 新增 `codeserver` service（§5.0.1）| 30 分鐘 | ✅ commit `11d572c` |
 | 6 | **(v0.4)** ANILA monorepo `docker-compose.yml` 新增 `gitlab` service（§5.0.2）| 1 小時 | ✅ commits `11d572c` + `ec2272e`（healthcheck fix）|
-| 7 | **(v0.4)** GitLab 首次啟動 + reconfigure（等 healthy）+ root 密碼設定 + 開 admin 帳號 | 1-2 小時 | ✅ booted；初始 root password 在 `/etc/gitlab/initial_root_password`（首次登入務必輪換）|
+| 7 | **(v0.4)** GitLab 首次啟動 + reconfigure（等 healthy）+ root 密碼設定 + 開 admin 帳號 | 1-2 小時 | ✅ booted；初始 root password 由部署來源的 `GITLAB_ROOT_PASSWORD` 注入（`.env` / bundle 的 `intranet-defaults.env`），需要時從該來源取得並在登入後輪換|
 | 8 | Nginx 設定 `/codeserver` + `/gitlab` 同源 reverse proxy（§5.0.1、§5.0.2）| 1.5 小時 | ✅ commits `11d572c` + `ec2272e`（Host header fix）|
 | 9 | E2E 測試 1：admin grant 工程部 access ANILA LM → 部門使用者 dashboard 看到卡片 → 點開（Phase 1 仍重新登入）| 1.5 小時 | ✅ `scripts/phase1-e2e.sh` Step 9（default-deny → dept grant unlock → revoke 三段全綠）|
 | 10 | E2E 測試 2：admin / developer 進 codeserver 與 GitLab 同源 path、WebSocket terminal / CI log live tail 都能用 | 1.5 小時 | ✅ `scripts/phase1-e2e.sh` Step 10（codeserver/gitlab/n8n title 都正確；WS upgrade probe 401 = 路由通但 auth gate 擋下，跟 standalone 部署一致）|
