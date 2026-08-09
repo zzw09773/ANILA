@@ -20,56 +20,56 @@ dependencies = [
   # ⚠ 下限仍然不是「驗過的版本」:2026-08-06 實測(當時下限還是 1.0.1)解析到
   # **1.4.1**;0.49.3／1.3.1／1.4.1 三個版本都跑過本服務的測試套件與突變檢查,
   # 結論一致;要往上動之前請重跑,不要假設。
-  "starlette>=1.3.1",
-  "uvicorn[standard]>=0.27",
+  "starlette>=1.3.1,<1.7",
+  "uvicorn[standard]>=0.27,<0.53",
   # HTTP client → csp / flux2-dev / pptx-renderer
   "httpx>=0.27,<1.0",
   # JWT verify (asymmetric RS256, JWKS)
-  "python-jose[cryptography]>=3.3",
+  "python-jose[cryptography]>=3.3,<3.6",
   # Pydantic settings
   "pydantic>=2.6,<3.0",
   "pydantic-settings>=2.2,<3.0",
   # Redis pub/sub for cross-service token revocation
-  "redis>=5.0",
+  "redis>=5.0,<8.2",
   # TTL cache for revocation_cache
-  "cachetools>=5.3",
+  "cachetools>=5.3,<7.2",
   # 簡體 → 繁體轉換 (studio_text_normalizer)
-  "opencc-python-reimplemented>=0.1.7",
+  "opencc-python-reimplemented>=0.1.7,<0.1.8",
   # flux_quality_gate FFT analysis for striping detection
-  "numpy>=1.26",
+  "numpy>=1.26,<2.6",
   # PPTX 生成路徑用,留給後續 phase 搬程式時即可 import
   # NOTE: python-pptx 不會用到 (PPTX 由 pptx-renderer Node service 渲染)
   # 但 diagram_renderer 用 Graphviz CLI subprocess,Docker 內裝 apt graphviz
 
   # ── Report / Mindmap / Infographic / Datatable artifacts(全新四種)──
   # Jinja2:報告 / 資訊圖表的 HTML 模板渲染
-  "jinja2>=3.1",
+  "jinja2>=3.1,<3.2",
   # Playwright:HTML → PDF(headless Chromium · 對複雜 CSS 支援最完整)
-  "playwright>=1.43",
+  "playwright>=1.43,<1.63",
   # pandoc Python wrapper:HTML → DOCX(實際的 pandoc binary 由 apt 裝)
-  "pypandoc>=1.13",
+  "pypandoc>=1.13,<1.18",
   # matplotlib:資訊圖表 / 報告內的圖表(barchart / pie / line)
   # 用 Agg backend(無 X)輸出 PNG 嵌進 HTML
-  "matplotlib>=3.8",
+  "matplotlib>=3.8,<3.12",
   # openpyxl:資料表的 XLSX 輸出
-  "openpyxl>=3.1",
+  "openpyxl>=3.1,<3.2",
   # markdown-it-py:LLM 輸出 markdown 區塊轉乾淨 HTML 給模板嵌
-  "markdown-it-py>=3.0",
+  "markdown-it-py>=3.0,<4.3",
   # python-docx:讀 DOCX 輸出做最終 sanity check(不靠它 render)
-  "python-docx>=1.1",
+  "python-docx>=1.1,<1.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0",
-  "pytest-asyncio>=0.23",
-  "respx>=0.21",          # httpx mock for csp_client tests
-  "fakeredis>=2.20",      # in-memory Redis for revocation_cache tests
-  "freezegun>=1.4",       # time travel for TTL tests
+  "pytest>=8.0,<9.0",
+  "pytest-asyncio>=0.23,<0.25",
+  "respx>=0.21,<0.23",          # httpx mock for csp_client tests
+  "fakeredis>=2.20,<3.0",      # in-memory Redis for revocation_cache tests
+  "freezegun>=1.4,<2.0",       # time travel for TTL tests
 ]
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68,<83", "wheel<0.48"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
