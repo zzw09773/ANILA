@@ -87,6 +87,7 @@ const menuGroups = computed(() => {
       { path: '/service-access', label: '服務存取' },
       { path: '/service-clients', label: '服務客戶端' },
       { path: '/trusted-hosts', label: '信任主機' },
+      { path: '/platform-settings', label: '平台設定' },
     ]
     groups.push({
       label: '管理',
