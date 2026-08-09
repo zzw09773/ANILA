@@ -3,7 +3,13 @@
 > **這是重啟樹**:2026-07-28 平台擁有者決定回到 redesign 收斂點 `a4118a3`(2026-07-03)重新出發。
 > 權威文件就在本樹根目錄:**規格＝`SYSTEM-MAP.md`**(28 題 QA)、**順序＝`PLAN.md`**(到 8 月底上線)、
 > **歷史＝`RESTART-FROM-REDESIGN.md`**(373 commit 履歷＋attic 取回方式)。
-> 📌 **接手先讀 `docs/HANDOFF-2026-08-07.md`**（最新）；擁有者要看的是 `docs/TOMORROW.md`。
+> 📌 **接手先讀 `docs/HANDOFF-2026-08-10.md`**（最新；前一份 `docs/HANDOFF-2026-08-07.md` 仍有效，
+> 院內規章檢索與設定頁的長期照顧事項在那份）；擁有者要看的是 `docs/TOMORROW.md`。
+> 🔴 **凍結前的硬閘，而且是兩道獨立的關**（2026-08-10 實測，兩道都紅過）：
+> ① 雜物掃描（`infra/deployment/scripts/scan-image-artifacts.sh`）**65 筆違規／4 張映像**；
+> ② `docker save` **2/7 張存不出去**（本機 DCS 代理注入，掃描器結構上看不見）。
+> **`docker build` 成功不等於映像出得了門，而且兩道關互相看不見對方漏掉的東西**——
+> **每次「重建映像」的收貨都要把這兩步都跑一次**。
 > 🔎 **驗收單一定要有這一句**：「去找這一包自己有沒有長出它要消滅的那個形狀」。
 > 2026-08-06 六包，**六包全中**，而且全部是驗收抓的——命中率比逐條檢查驗收條件還高。
 > 🔬 **宣稱「測試過了」之前先跑突變檢查**：`cd apps/anila-shell && node scripts/mutation-check.mjs`。
@@ -24,7 +30,8 @@
 
 ## 0. 一句話定位
 
-ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,PKI 自然人憑證卡登入。目前**單一開發線 `restart/from-redesign`**(工作 worktree 分支除外);舊 4 分支模型已進 attic,**不要**在 PLAN 排到之前重建部署分支。Repo 是 **PUBLIC** → 祕密零外洩。目標:**8 月底全院上線**(PLAN.md),一人維運。
+ANILA = 中科院(NCSIST)**院內內網(air-gapped)** 的 NotebookLM 式平台,PKI 自然人憑證卡登入。
+(⚠ 用語:擁有者已兩度糾正「不要再寫軍方」——這是中科院內部用的平台。)目前**單一開發線 `restart/from-redesign`**(工作 worktree 分支除外);舊 4 分支模型已進 attic,**不要**在 PLAN 排到之前重建部署分支。Repo 是 **PUBLIC** → 祕密零外洩。目標:**8 月底全院上線**(PLAN.md),一人維運。
 
 ---
 
