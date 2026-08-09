@@ -757,6 +757,56 @@ test('banner 站在版面最前面（優先位置）', () => {
   assert.ok(src.indexOf('settings-count-warning') < src.indexOf('data-region="editable"'))
 })
 
+// ── 接線層：括號裡放什麼 ────────────────────────────────────────────────────
+// review-1 的 P4／P5 從這裡穿過去：位置對、函式名對、有渲染，
+// 但**沒有人釘住參數**。`bootOverrideBanner(items.value)` 對陣列回 null、
+// `countMismatchWarning(null)` 回 null —— 兩塊招牌各一行就改成永遠不會亮，
+// 而套件一字不動。M20 修的是「有沒有接」，這一組修的是「接到哪裡」。
+
+/** 吃**整包 overview payload** 的 utils（不是吃 items、不是吃單列）。 */
+const OVERVIEW_CONSUMERS = ['bootOverrideBanner', 'countMismatchWarning']
+
+test('⚠ 吃 overview payload 的每一支，括號裡都必須是 overview.value', () => {
+  const src = stripComments(readSource('views/SettingsOverviewView.vue'))
+  for (const fn of OVERVIEW_CONSUMERS) {
+    const args = [...src.matchAll(new RegExp(`${fn}\\(([^)]*)\\)`, 'g'))].map((m) => m[1])
+    assert.ok(args.length > 0, `${fn} 根本沒有被呼叫`)
+    for (const arg of args) {
+      assert.equal(
+        arg.trim(),
+        'overview.value',
+        `${fn} 收到的不是 overview payload（收到「${arg.trim() || '（空）'}」）—— 那一塊招牌永遠不會亮`,
+      )
+    }
+  }
+})
+
+test('⚠ overview.value 真的接得到後端回應（load 那一行）', () => {
+  const src = stripComments(readSource('views/SettingsOverviewView.vue'))
+  const load = src.slice(src.indexOf('async function load()'), src.indexOf('onMounted('))
+  assert.ok(load.length > 100, '找不到 load()')
+
+  // 參數釘死了、賦值卻被拿掉，一樣是兩塊永遠不會亮的招牌（P4 的變體）。
+  assert.match(load, /const \{ data \} = await getPlatformSettingsOverview\(\)/, '總覽不是從那支端點拿的')
+  assert.match(load, /^\s*overview\.value = data$/m, 'payload 沒有進到 overview，banner 與少收警告都不會亮')
+
+  // 反向：overview 只能從後端回應來，或被清成 null，不可以被別的東西灌進去。
+  const assigned = [...src.matchAll(/overview\.value\s*=\s*([^\n]+)/g)].map((m) => m[1].trim())
+  assert.deepEqual(
+    [...new Set(assigned)].sort(),
+    ['data', 'null'],
+    'overview 被指派了「後端回應」與「清空」以外的東西',
+  )
+})
+
+test('⚠ 讀不到的時候 overview 要清掉 —— 上一輪的 banner 不可以留在畫面上', () => {
+  const src = stripComments(readSource('views/SettingsOverviewView.vue'))
+  const load = src.slice(src.indexOf('async function load()'), src.indexOf('onMounted('))
+  const failure = load.slice(load.indexOf('catch'))
+  assert.ok(failure.length > 40, '找不到 load() 的 catch')
+  assert.match(failure, /overview\.value = null/, '讀取失敗卻留著上一輪的 overview')
+})
+
 test('初載失敗有專屬 UI，而且與空清單分得開', () => {
   const src = stripComments(readSource('views/SettingsOverviewView.vue'))
   assert.match(src, /loadError/, '沒有初載失敗狀態（DepartmentsView 缺的就是這個）')
