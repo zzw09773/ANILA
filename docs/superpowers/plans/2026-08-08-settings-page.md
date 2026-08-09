@@ -213,10 +213,30 @@ A（名稱＋`is_set`，永無值）。每列：`effective`／`stored`／`pendin
   regex 護欄（唯讀區無 handler、無樂觀更新樣式）
 - [ ] Step 2–5：跑失敗 → 實作 → `npm run test` 通過 → commit
   （`feat(governance-ui): every setting on one page, telling only the truth`）
-## Task 7：死變數清理＋卡登旁路防守（🔴 後者紅線雙票）
+## Task 7：死變數清理＋卡登旁路防守（🔴 後者紅線雙票）（展開 2026-08-09）
 
-compose/.env.example 移除＋歸檔註記；
-   `CARD_DEV_SKIP_NONCE_BINDING` 非 dev-card 模式設值→開機即拒（照 startup_security 既有形）。
+**A. 死變數清理**：csp 的 `FLUX_BACKEND_URL`／`FLUX_MAX_CONCURRENT`／`FLUX_TIMEOUT_SECONDS`
+與 router 的 `MODEL` 自 `infra/compose/platform.yml` 與 `.env.example` 移除＋原位歸檔註記
+（一行：哪天 anila-studio 進 csp 映像再加回）；compose 有但 csp 不讀的 3 顆
+（名單照 env-recon §0／§2.6，動手前重驗 grep 仍為零讀取點）同步處理。
+測試：compose/.env.example 零出現（pattern 掃描）；登錄表本來就不認識它們（既有 census 頂著）。
+
+**B. 卡登旁路防守（紅線鄰接：只加拒絕、不碰驗章邏輯）**：
+`CARD_DEV_SKIP_NONCE_BINDING` 在**非 dev-card 模式**下被設（任何會讓消費端啟用的值）→
+`startup_security` 開機即拒、錯誤訊息人話（照既有 dev 預設值檢查的形）。
+1. **⚠ 命門：真值判定必須與消費端共用同一個函式。** `card_auth.py:121` 讀旗標**不 strip**
+   （Task 2 M2 修過顯示端、消費端語意未動）——守衛若自寫解析，「` true `」會守衛放行、
+   消費端啟用，旁路照開。抽出消費端的判定為單一函式，守衛與消費端都呼叫它；
+   突變「守衛換成自己的解析」必死。
+2. 「dev-card 模式」的定義以真碼為準（mock 讀卡機／dev CA 的既有旗標鏈，查
+   `card_auth`／`startup_security` 現行判定），報告寫明依據 file:line。
+3. 測試：非 dev 模式×消費端會啟用的每一種值形（含不 strip 語意的邊界形）→ 拒；
+   dev 模式→放；未設→放；**紅線反向釘**：守衛存在不得影響 dev 模式下旗標的既有行為
+   （驗章邏輯 diff 必須零觸碰——`card_auth.py` 只有抽函式的搬移，無語意變更）。
+
+- [ ] Step 1 失敗測試 → Step 2–5：實作 → 通過 → commit
+  （A、B 各一 commit：`chore(compose): retire the knobs nothing reads` ／
+  `fix(csp): the card dev bypass cannot ride into a real boot`）
 ## Task 8：文件收尾
 
 runbook（B 類重啟措辭對齊）、HANDOFF 長期照顧（登錄表是唯一宣告點／
