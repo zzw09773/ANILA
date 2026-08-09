@@ -205,7 +205,7 @@ export function cleanupMermaidError(renderId) {
   if (typeof document === "undefined" || !renderId || !document.body) return;
   const prefix = `d${renderId}`;
   document.body.querySelectorAll("[id]").forEach((node) => {
-    if (node.id.startsWith(prefix)) node.remove();
+    if (node.id === prefix) node.remove();
   });
 }
 

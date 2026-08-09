@@ -9,7 +9,7 @@ const mermaidMock = vi.hoisted(() => ({
 
 vi.mock("mermaid", () => ({ default: mermaidMock }));
 
-import { MarkdownView } from "../markdown.jsx";
+import { MarkdownView, mermaidThemeForApp } from "../markdown.jsx";
 
 const DIAGRAM = "```mermaid\ngraph TD\n  A --> B\n```";
 
@@ -25,11 +25,20 @@ beforeEach(() => {
 });
 
 describe("MermaidDiagram theme and failed-render wiring", () => {
+  it("maps dark, light, and unset app themes to Mermaid themes", () => {
+    expect(mermaidThemeForApp("dark")).toBe("dark");
+    expect(mermaidThemeForApp("light")).toBe("default");
+    expect(mermaidThemeForApp()).toBe("default");
+  });
+
   it("passes the app dark theme and removes Mermaid's injected error node", async () => {
     mermaidMock.render.mockImplementation(async (renderId) => {
       const stray = document.createElement("svg");
       stray.id = `d${renderId}`;
+      const sibling = document.createElement("svg");
+      sibling.id = `${stray.id}-sibling`;
       document.body.appendChild(stray);
+      document.body.appendChild(sibling);
       throw new Error("syntax error");
     });
     document.documentElement.setAttribute("data-theme", "dark");
@@ -42,7 +51,9 @@ describe("MermaidDiagram theme and failed-render wiring", () => {
       securityLevel: "strict",
       theme: "dark",
     }));
-    expect(document.querySelectorAll('[id^="dmmd-"]')).toHaveLength(0);
+    const renderId = mermaidMock.render.mock.calls[0][0];
+    expect(document.getElementById(`d${renderId}`)).toBeNull();
+    expect(document.getElementById(`d${renderId}-sibling`)).not.toBeNull();
   });
 
   it("re-renders an existing diagram when the app theme attribute changes", async () => {
@@ -51,6 +62,10 @@ describe("MermaidDiagram theme and failed-render wiring", () => {
 
     renderView(<MarkdownView text={DIAGRAM} />);
     await waitFor(() => expect(mermaidMock.render).toHaveBeenCalledTimes(1));
+    expect(mermaidMock.initialize.mock.calls[0][0]).toEqual(expect.objectContaining({
+      securityLevel: "strict",
+      theme: "default",
+    }));
 
     document.documentElement.setAttribute("data-theme", "dark");
     await waitFor(() => expect(mermaidMock.render).toHaveBeenCalledTimes(2));
