@@ -29,6 +29,21 @@ EXCLUDED_DOCKERFILES: dict[str, str] = {
 }
 
 
+class _ComposeLoader(yaml.SafeLoader):
+    """Read Compose extension tags without needing to evaluate their semantics."""
+
+
+def _construct_compose_tag(loader: yaml.SafeLoader, _tag_suffix: str, node: yaml.Node) -> object:
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node)
+    return loader.construct_scalar(node)
+
+
+_ComposeLoader.add_multi_constructor("!", _construct_compose_tag)
+
+
 def _display_path(path: Path) -> str:
     try:
         return str(path.relative_to(REPO_ROOT))
@@ -39,15 +54,14 @@ def _display_path(path: Path) -> str:
 def _all_dockerfiles() -> tuple[Path, ...]:
     """Find Dockerfiles physically present in the repo, including untracked ones."""
 
-    return tuple(
-        sorted(
-            {
-                path.resolve()
-                for path in REPO_ROOT.rglob("Dockerfile*")
-                if path.is_file() and ".git" not in path.parts
-            }
+    paths: set[Path] = set()
+    for pattern in ("Dockerfile*", "*.Dockerfile"):
+        paths.update(
+            path.resolve()
+            for path in REPO_ROOT.rglob(pattern)
+            if path.is_file() and ".git" not in path.parts
         )
-    )
+    return tuple(sorted(paths))
 
 
 def _excluded_paths() -> set[Path]:
@@ -63,35 +77,106 @@ def _excluded_paths() -> set[Path]:
     return {(REPO_ROOT / relative).resolve() for relative in EXCLUDED_DOCKERFILES}
 
 
-def _assert_overlay_builds_are_in_repo() -> None:
-    """Make an overlay build outside this guard's filesystem scope fail loudly."""
+def _read_compose_document(path: Path) -> dict[str, object]:
+    try:
+        document = yaml.load(path.read_text(encoding="utf-8"), Loader=_ComposeLoader) or {}
+    except yaml.YAMLError as exc:
+        raise AssertionError(f"{_display_path(path)} is not valid YAML: {exc}") from exc
+    return document if isinstance(document, dict) else {}
 
+
+def _repo_compose_files() -> tuple[Path, ...]:
+    """Find Compose-shaped YAML files without maintaining a compose allowlist."""
+
+    compose_files: set[Path] = set()
+    for pattern in ("*.yml", "*.yaml"):
+        for path in REPO_ROOT.rglob(pattern):
+            if not path.is_file() or ".git" in path.parts:
+                continue
+            document = _read_compose_document(path)
+            if "services" in document or "include" in document:
+                compose_files.add(path.resolve())
+    return tuple(sorted(compose_files))
+
+
+def _compose_files_to_check() -> tuple[tuple[Path, Path], ...]:
+    """Return compose files and the base used to resolve their build paths."""
+
+    pending = [(path, path.parent) for path in _repo_compose_files()]
     for raw_path in os.environ.get("COMPOSE_EXTRA_FILES", "").split():
         compose_file = Path(raw_path)
         if not compose_file.is_absolute():
             compose_file = REPO_ROOT / compose_file
         compose_file = compose_file.resolve()
         assert compose_file.is_file(), f"COMPOSE_EXTRA_FILES references missing file {compose_file}"
+        # The exporter documents extra compose paths as relative to the repo
+        # root, so preserve that resolution base for the top-level overlay.
+        pending.append((compose_file, REPO_ROOT))
 
-        document = yaml.safe_load(compose_file.read_text(encoding="utf-8")) or {}
-        for service_name, service in (document.get("services") or {}).items():
+    files: list[tuple[Path, Path]] = []
+    seen: set[tuple[Path, Path]] = set()
+    while pending:
+        compose_file, build_base = pending.pop()
+        key = (compose_file, build_base)
+        if key in seen:
+            continue
+        seen.add(key)
+        assert compose_file.is_file(), f"compose include references missing file {compose_file}"
+        document = _read_compose_document(compose_file)
+        files.append((compose_file, build_base))
+
+        includes = document.get("include", [])
+        if isinstance(includes, (str, Path)):
+            includes = [includes]
+        if not isinstance(includes, list):
+            raise AssertionError(f"{_display_path(compose_file)} has an unsupported include shape")
+        for include in includes:
+            include_paths = include.get("path", []) if isinstance(include, dict) else include
+            if isinstance(include_paths, (str, Path)):
+                include_paths = [include_paths]
+            if not isinstance(include_paths, list):
+                raise AssertionError(
+                    f"{_display_path(compose_file)} has an unsupported include path shape"
+                )
+            for include_path in include_paths:
+                included_file = (compose_file.parent / str(include_path)).resolve()
+                pending.append((included_file, included_file.parent))
+
+    return tuple(files)
+
+
+def _compose_build_dockerfiles() -> set[Path]:
+    """Derive Dockerfiles from every discovered Compose build definition."""
+
+    dockerfiles: set[Path] = set()
+    for compose_file, build_base in _compose_files_to_check():
+        document = _read_compose_document(compose_file)
+        services = document.get("services") or {}
+        if not isinstance(services, dict):
+            raise AssertionError(f"{_display_path(compose_file)} has an unsupported services shape")
+        for service_name, service in services.items():
+            if not isinstance(service, dict):
+                continue
             build = service.get("build")
             if build is None:
                 continue
             if isinstance(build, str):
                 context, dockerfile = build, "Dockerfile"
-            else:
+            elif isinstance(build, dict):
                 context = build.get("context", ".")
                 dockerfile = build.get("dockerfile", "Dockerfile")
+            else:
+                raise AssertionError(
+                    f"{_display_path(compose_file)} service {service_name!r} has an unsupported "
+                    "build shape"
+                )
             if "$" in str(context) or "$" in str(dockerfile):
                 raise AssertionError(
                     f"{_display_path(compose_file)} service {service_name!r} has an unresolved "
                     "variable in its build path; make coverage explicit before exporting"
                 )
 
-            # docker compose resolves -f overlay build paths relative to the
-            # first compose file (compose.yaml, i.e. the repo root here).
-            dockerfile_path = (REPO_ROOT / str(context) / str(dockerfile)).resolve()
+            dockerfile_path = (build_base / str(context) / str(dockerfile)).resolve()
             assert dockerfile_path.is_relative_to(REPO_ROOT), (
                 f"{_display_path(compose_file)} service {service_name!r} builds outside the "
                 f"repo and is not covered by the save-cleanup guard: {dockerfile_path}"
@@ -100,6 +185,19 @@ def _assert_overlay_builds_are_in_repo() -> None:
                 f"{_display_path(compose_file)} service {service_name!r} references missing "
                 f"Dockerfile {dockerfile_path}"
             )
+            dockerfiles.add(dockerfile_path)
+    return dockerfiles
+
+
+def _assert_compose_builds_are_discovered(discovered: set[Path]) -> None:
+    """Make a shrinking filesystem coverage set fail loudly."""
+
+    missing = sorted(_compose_build_dockerfiles() - discovered)
+    assert not missing, (
+        "Compose build coverage shrank: these shipped Dockerfiles are not in the filesystem "
+        "discovery set: "
+        + ", ".join(_display_path(path) for path in missing)
+    )
 
 
 def _delivery_dockerfiles() -> tuple[Path, ...]:
@@ -113,15 +211,15 @@ def _delivery_dockerfiles() -> tuple[Path, ...]:
     path-specific exception here.
     """
 
-    _assert_overlay_builds_are_in_repo()
-    excluded = _excluded_paths()
     dockerfiles = set(_all_dockerfiles())
     assert dockerfiles, "repo has no Dockerfiles to protect"
 
+    excluded = _excluded_paths()
     assert excluded <= dockerfiles, (
         "Dockerfile exclusion paths are not discovered by the default scan: "
         + ", ".join(sorted(_display_path(path) for path in excluded - dockerfiles))
     )
+    _assert_compose_builds_are_discovered(dockerfiles)
     return tuple(sorted(dockerfiles - excluded))
 
 
@@ -198,15 +296,15 @@ def _shell_segments(command: str) -> list[str]:
             quote = char
             index += 1
             continue
-        if char == ";":
-            segments.append(command[start:index].strip())
-            start = index + 1
-            index += 1
-            continue
-        if command.startswith("&&", index):
+        if command.startswith(("&&", "||"), index):
             segments.append(command[start:index].strip())
             start = index + 2
             index += 2
+            continue
+        if char in ";|&":
+            segments.append(command[start:index].strip())
+            start = index + 1
+            index += 1
             continue
         index += 1
 
@@ -231,7 +329,9 @@ def _is_dcs_cleanup_segment(segment: str) -> bool:
 
 
 def _is_trailing_rm_f(segment: str) -> bool:
-    return re.fullmatch(r"rm\s+-f\s+[^&;]+", segment) is not None
+    if re.fullmatch(r"rm\s+-f\s+[^|&;]+", segment) is None:
+        return False
+    return "$(" not in segment and "`" not in segment
 
 
 def _ends_with_dcs_cleanup(instruction: str) -> bool:
@@ -281,22 +381,56 @@ def test_delivery_dockerfiles_clean_dcs_injection_before_each_layer_commit() -> 
 
 
 def test_default_discovery_covers_a_new_dockerfile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    dockerfile = tmp_path / "services" / "newthing" / "Dockerfile"
-    dockerfile.parent.mkdir(parents=True)
-    dockerfile.write_text("FROM alpine\n", encoding="utf-8")
+    dockerfiles = (
+        tmp_path / "services" / "newthing" / "Dockerfile",
+        tmp_path / "services" / "newthing" / "Dockerfile.dev",
+        tmp_path / "infra" / "docker" / "csp.Dockerfile",
+    )
+    for dockerfile in dockerfiles:
+        dockerfile.parent.mkdir(parents=True, exist_ok=True)
+        dockerfile.write_text("FROM alpine\n", encoding="utf-8")
     module = sys.modules[__name__]
     monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(module, "EXCLUDED_DOCKERFILES", {})
 
-    assert _delivery_dockerfiles() == (dockerfile.resolve(),)
+    assert _delivery_dockerfiles() == tuple(sorted(dockerfile.resolve() for dockerfile in dockerfiles))
+
+
+def test_compose_build_cannot_disappear_from_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = sys.modules[__name__]
+    monkeypatch.delenv("COMPOSE_EXTRA_FILES", raising=False)
+    csp_dockerfile = REPO_ROOT / "infra/docker/csp.Dockerfile"
+    assert csp_dockerfile.resolve() in _compose_build_dockerfiles()
+
+    discovered_without_csp = tuple(
+        path for path in _all_dockerfiles() if path != csp_dockerfile.resolve()
+    )
+    monkeypatch.setattr(module, "_all_dockerfiles", lambda: discovered_without_csp)
+
+    with pytest.raises(AssertionError, match="infra/docker/csp.Dockerfile"):
+        _delivery_dockerfiles()
 
 
 def test_exclusion_list_cannot_name_a_missing_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     module = sys.modules[__name__]
     monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(module, "EXCLUDED_DOCKERFILES", {"gone/Dockerfile": "removed"})
+    present = tmp_path / "present" / "Dockerfile"
+    present.parent.mkdir(parents=True)
+    present.write_text("FROM alpine\n", encoding="utf-8")
 
     with pytest.raises(AssertionError, match="gone/Dockerfile"):
+        _delivery_dockerfiles()
+
+
+def test_empty_dockerfile_root_fails_with_vacuous_pass_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(module, "EXCLUDED_DOCKERFILES", {"gone/Dockerfile": "removed"})
+
+    with pytest.raises(AssertionError, match="repo has no Dockerfiles to protect"):
         _delivery_dockerfiles()
 
 
@@ -319,6 +453,10 @@ def test_overlay_build_outside_repo_fails_loudly(monkeypatch: pytest.MonkeyPatch
         (f"RUN pip install x && {DCS_CLEANUP} && rm -f /var/log/bootstrap.log", True),
         (f"RUN pip install x && {DCS_CLEANUP} && rm -f /tmp/y && pip install evil", False),
         (f"RUN {DCS_CLEANUP} && rm -f /tmp/y", False),
+        (f"RUN pip install x && {DCS_CLEANUP} || pip install evil", False),
+        (f"RUN pip install x && {DCS_CLEANUP} | tee /tmp/output", False),
+        (f"RUN pip install x && {DCS_CLEANUP} & pip install evil", False),
+        (f"RUN pip install x && {DCS_CLEANUP} && rm -f $(pip install evil)", False),
     ],
 )
 def test_dcs_cleanup_is_the_last_substantive_shell_command(instruction: str, expected: bool) -> None:
