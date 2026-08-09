@@ -34,9 +34,21 @@
 |---|---|---|
 | A 祕密 | 13 | **13** |
 | SEC 安全類 | 23 | **25**（差額在 Task 1 盤點時逐顆對過帳） |
-| B-可編輯 | ~30 | **12** |
-| B-鎖定 | ~10 | **26** |
-| C 執行期可調 | 19 | **20** ＝ 19 顆環境變數 ＋ `institutional_kb.score_threshold`（本來就只住在 DB、無 env 回退層的別名） |
+| B-可編輯 | ~30 | **11** |
+| B-鎖定 | ~10 | **25** |
+| C 執行期可調 | 19 | **22** ＝ 21 顆環境變數 ＋ `institutional_kb.score_threshold`（本來就只住在 DB、無 env 回退層的別名） |
+
+> ⚠ **這張表是轉錄，不是權威。** 權威是
+> `services/csp/app/services/settings_registry.py` 的 `SETTINGS`，而它由
+> `services/csp/tests/test_settings_registry.py`（類別普查等式）與
+> `apps/csp-governance-ui/tests/settingsOverview.test.mjs`（直接 parse 登錄表原始碼，
+> 逐顆比對 96 個 `(key, class)`）兩邊釘住。**數字要以那兩支跑出來的為準**；
+> 這一行若與它們不符，錯的是這一行。
+> 2026-08-09 訂正紀錄：`(C, B-可編輯, B-鎖定, SEC, A)` 由 `(20, 12, 26, 25, 13)`
+> 改為 **`(22, 11, 25, 25, 13)`**（96 顆全體的框；只算 env-backed 的 95 顆框是
+> `(21, 11, 25, 25, 13)`）。成因是最終審查把 `alerts.check_interval` 與
+> `queue.token_revocation_redis_timeout` 的消費端重接線成走登錄表解析，
+> 那兩顆因此真的變成執行期可調。
 
 ⚠ **中間有一段，不要把它讀成「一次定案」**：Task 1 盤點定案是
 C 19／B-可編輯 **19**／B-鎖定 **19**／SEC 25／A 13（＋1 別名）；
@@ -45,7 +57,14 @@ Task 4 把開機覆蓋接上去之後，量到**七顆 B-可編輯是在覆蓋�
 `LEGACY_SQLITE_PATH`、`TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS`、`ANILA_TEMPLATE_DIR`）——
 **留在可編輯就等於畫面說謊**，所以逐顆降成 B-鎖定並在鎖定理由句尾附上自救路徑
 （要改的話去改哪個 compose 鍵）。19−7＝**12**、19＋7＝**26**。
-所以頁面上「這裡改不動」那一區是 **51 列**（26 ＋ 25）。
+
+⚠ **2026-08-09 再一次改動（最終審查）**：上面那七顆現在是**六顆**。
+`TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS` 的降級成因（import 期算成模組常數、直讀
+`os.environ`）已經被拿掉——呼叫端改為在 `db.commit()` 之前走 `get_setting` 解析、
+以必填關鍵字往下傳，所以那一顆升成 **C**。同一輪 `alerts.check_interval` 也從
+B-可編輯升成 **C**（消費端改成每一輪走 `get_setting`）。
+於是 B-可編輯 12→**11**、B-鎖定 26→**25**、C 20→**22**，
+頁面上「這裡改不動」那一區是 **50 列**（25 ＋ 25）。
 
 **B-可編輯的機制（擁有者選定：DB 開機覆蓋，不寫 `.env`）**：修改存 `platform_settings`
 （同一張表、同命名空間規則）；csp 開機時（DB 可達之後、開始服務之前）載入 B 類覆蓋值
@@ -66,13 +85,16 @@ DB 覆蓋不碰 `.env`、不新增掛載、稽核白拿。**開機悖論排除**
 決定 B/C 的那一行是 `config.py:215` `settings = Settings()`——pydantic 在 import 當下讀完凍結。
 所以「搬進 C」不是 UI 工，是**逐顆把消費端改成每請求讀 DB**（§4 範本）。
 
-## 3. C 類名單（19 顆）與不搬裁定
+## 3. C 類名單（原 19 顆，現 21 顆 env-backed）與不搬裁定
 
 ### 3.1 搬（19）——每顆都要：點號命名空間 key、值域函式、round-trip 釘
 
-> 🟢 **實際出貨：登錄表的 C 類是 20 筆** —— 下表這 19 顆，
+> 🟢 **實際出貨：登錄表的 C 類是 22 筆** —— 下表這 19 顆，
 > 外加 `institutional_kb.score_threshold`（唯一 `env_name is None` 的條目，
-> `domain_fn` 直接指向範本那個函式物件本身，不是抄一份規則過來）。
+> `domain_fn` 直接指向範本那個函式物件本身，不是抄一份規則過來），
+> 再加上 2026-08-09 最終審查升上來的 `alerts.check_interval` 與
+> `queue.token_revocation_redis_timeout`（消費端重接線成走登錄表解析）。
+> **名單以登錄表為準，這裡是轉錄**（見 §2 那段警語）。
 
 | 組 | 變數 | 裁定理由 |
 |---|---|---|

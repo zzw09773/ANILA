@@ -495,6 +495,140 @@ def test_the_revocation_publisher_uses_exactly_what_the_page_says(
     assert captured["timeout"] == _page_value() == 7.5
 
 
+def test_the_timeout_is_resolved_before_the_pool_releasing_commit(db, monkeypatch):
+    """順序釘：**解析 → commit → 發布**。Task 3 的形狀，搬到這個新站點。
+
+    ``db.commit()`` 會把那條池化連線還回池子。把 ``get_setting`` 搬到 commit **之後**，
+    每一次撤銷都會在 Redis publish 還在飛的時候又借一條連線——而所有數值斷言都還是綠的
+    （commit 前後 ``get_setting`` 回同一個數字）。驗收的 Probe A 就是這樣活下來的。
+    所以這一支不看值，看**先後**。
+    """
+    from app.models import platform_setting as ps_module
+    from app.services import token_revocation, token_revocation_publisher
+
+    order: list[str] = []
+    real_resolve = ps_module.resolve_setting
+
+    def _spy_resolve(session, key):
+        if key == "queue.token_revocation_redis_timeout":
+            order.append("resolve")
+        return real_resolve(session, key)
+
+    monkeypatch.setattr(ps_module, "resolve_setting", _spy_resolve)
+
+    real_commit = type(db).commit
+
+    def _spy_commit(self, *args, **kwargs):
+        order.append("commit")
+        return real_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(db), "commit", _spy_commit)
+
+    class _FakeClient:
+        def publish(self, *args, **kwargs):
+            order.append("publish")
+            return 1
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        token_revocation_publisher,
+        "_make_sync_redis_client",
+        lambda redis_url=None, *, timeout: _FakeClient(),
+    )
+
+    user = make_user(db, username="revoke_order_probe")
+    order.clear()
+    token_revocation.commit_token_revocation(db, user)
+
+    assert "resolve" in order and "publish" in order, f"探針沒被走到：{order!r}"
+    i = order.index("publish")
+    assert order[:i + 1][-3:] == ["resolve", "commit", "publish"], (
+        f"解析／commit／發布的先後是 {order!r} —— 值在連線還回池子之後才解的話，"
+        "每一次撤銷都會在 Redis publish 期間握著第二條池化連線"
+    )
+
+
+def test_the_alert_loop_re_reads_the_interval_every_cycle(monkeypatch):
+    """「改完下一輪就生效」是**寫在管理員畫面上的承諾**，所以它要有釘子。
+
+    ⚠ 修訂前全樹**沒有任何測試碰過 ``_alert_detector_loop``**：把
+    ``resolve_check_interval()`` 提到 ``while`` 外面（＝退回開機時決定一次的老樣子），
+    整套測試一個都不會紅，而登錄表的說明還在跟管理員說「下一輪就生效」。
+    """
+    import asyncio
+
+    from app.services import alert_detectors
+
+    seen: list[int] = []
+    sleeps = {"n": 0}
+
+    def _fake_resolve():
+        seen.append(len(seen))
+        return 15
+
+    async def _stop_after_three(_seconds):
+        # ⚠ 停止條件要**獨立於被測的那個呼叫**：早先的版本是「解析滿三次就停」，
+        # 於是把解析提到迴圈外的突變會讓這一支**跑不完**（掛住），而不是變紅。
+        # 掛住的測試比紅的測試難查得多。改成數 sleep 的次數。
+        sleeps["n"] += 1
+        if sleeps["n"] >= 3:
+            raise asyncio.CancelledError
+        return None
+
+    monkeypatch.setattr(alert_detectors, "resolve_check_interval", _fake_resolve)
+    monkeypatch.setattr(alert_detectors, "evaluate_database", lambda *a, **k: [])
+    monkeypatch.setattr(alert_detectors, "evaluate_disk", lambda *a, **k: [])
+
+    async def _no_ingress():
+        return []
+
+    monkeypatch.setattr(alert_detectors, "evaluate_platform_ingress", _no_ingress)
+    monkeypatch.setattr(alert_detectors.asyncio, "sleep", _stop_after_three)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(alert_detectors._alert_detector_loop())
+
+    assert len(seen) >= 3, (
+        f"三輪只解析了 {len(seen)} 次 —— 間隔是開機時決定一次的，不是每輪重問"
+    )
+
+
+def test_the_alert_fail_safe_falls_through_env_not_straight_to_default(monkeypatch):
+    """DB 打嗝時退回**下一層**（env），不是一路跳到程式預設。
+
+    直接跳等於一次跳過兩層：運維寫在 compose 的 37 會被當成不存在，畫面（走得到 DB）
+    顯示 37、迴圈睡 60，沒有任何錯誤訊息 —— 這個包要消滅的形狀，換到故障路徑上發生。
+    """
+    from app.services import alert_detectors
+
+    class _ExplodingSession:
+        def get(self, *args, **kwargs):
+            raise RuntimeError("DB 打嗝（模擬）")
+
+        def query(self, *args, **kwargs):
+            raise RuntimeError("DB 打嗝（模擬）")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(alert_detectors, "SessionLocal", lambda: _ExplodingSession())
+
+    # env 有一個合法值 → 退到 env 那一層，不是程式預設 60。
+    monkeypatch.setenv("ALERT_CHECK_INTERVAL", "37")
+    assert alert_detectors.resolve_check_interval() == 37, (
+        "跳過了 env 層 —— compose 裡的值在 DB 打嗝時被當成不存在"
+    )
+
+    # env 的值不可用（值域外）→ 這時才輪到程式預設。
+    monkeypatch.setenv("ALERT_CHECK_INTERVAL", "5")
+    assert alert_detectors.resolve_check_interval() == 60
+
+    monkeypatch.delenv("ALERT_CHECK_INTERVAL", raising=False)
+    assert alert_detectors.resolve_check_interval() == 60
+
+
 def test_a_row_that_cannot_be_read_back_is_shown_as_unusable(client, admin_token, db):
     """繞過 API 寫進來的壞值：``effective`` 退回下一層，而 ``stored`` 照實顯示。
 
@@ -997,6 +1131,57 @@ def test_a_wrong_json_type_is_a_400_not_a_500(client, admin_token):
     assert null.status_code == 400, null.text
 
 
+BOOL_KEYS = sorted(s.key for s in SETTINGS if s.value_type.py_type is bool)
+
+#: 「關」的寫法。⚠ 這一組**不是**讀取端那五種判準——那些是消費模組怎麼讀 env 的既成
+#: 事實；這一組是**人在畫面上打字**的詞彙。用讀取端的規則收人打的字，``!= "0"`` 那一型
+#: 會把 ``false`` 讀成開啟（實測：存成 "1"、開關朝反方向動、沒有錯誤訊息）。
+OFF_WORDS = ("false", "0", "no", "off", "n", "f", " FALSE ")
+
+
+def test_the_bool_census_is_derived_not_typed():
+    assert len(BOOL_KEYS) == 18, f"布林顆數變了：{BOOL_KEYS}"
+
+
+@pytest.mark.parametrize("key", BOOL_KEYS)
+@pytest.mark.parametrize("word", OFF_WORDS)
+def test_writing_a_falsey_word_never_turns_a_switch_on(db, key, word):
+    """**每一顆**布林設定、**每一種**「關」的寫法：存成關，或當場被拒。絕不是開。
+
+    最終審查跨家實證：``intl.zh_normalize`` 打 ``false`` → 200、存成 ``"1"``、
+    畫面顯示開啟。管理員的意圖被靜默反轉，而這一頁存在的理由就是不讓那件事發生。
+    """
+    try:
+        set_setting(db, key, word)
+    except (ValueError, TypeError):
+        # 鎖定類別、或看不懂的寫法 —— 兩種都可以拒絕，只要**沒有寫進去**。
+        # （這裡不能斷言生效值不是 True：鎖定顆的現值本來就可能是 True，
+        #   例如 conftest 把 ANILA_ALLOW_DEV_SECRET 設成 1。）
+        assert db.get(PlatformSetting, key) is None, f"{key} 被拒卻留下一列"
+        return
+    assert get_setting(db, key) is False, f"{key} 打 {word!r} 竟然變成開啟"
+
+
+@pytest.mark.parametrize("key", [k for k in BOOL_KEYS if REGISTRY[k].setting_class.value in ("C", "B_EDIT")])
+def test_writing_a_truthy_word_turns_it_on(db, key):
+    for word in ("true", "1", "yes", "ON"):
+        set_setting(db, key, word)
+        assert get_setting(db, key) is True, f"{key} 打 {word!r} 沒有變成開啟"
+
+
+def test_a_word_the_switch_cannot_map_is_refused_with_the_accepted_forms(
+    client, admin_token, db
+):
+    """看不懂就拒收，並且把可用寫法講出來 —— 不猜、不預設成關。"""
+    resp = client.put(
+        _put_url("intl.zh_normalize"), json={"value": "maybe"}, headers=_auth(admin_token)
+    )
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert "true" in detail and "false" in detail, "沒有告訴管理員可以填什麼"
+    assert db.get(PlatformSetting, "intl.zh_normalize") is None
+
+
 # ── 6. 稽核與設定寫在同一個交易裡（帳本舊債） ──────────────────────────────
 
 
@@ -1079,6 +1264,47 @@ def test_a_swallowed_audit_failure_is_never_answered_with_success(
         "回了錯誤，那一列卻留了下來 —— 交易語意破了"
     )
     assert get_setting(db, "proxy.llm_timeout") == 120, "生效值必須還是改之前那個"
+
+
+def test_a_persisted_write_is_answered_2xx_even_if_the_helper_returns_none(
+    client, admin_token, db, monkeypatch
+):
+    """**資料存好了就要說存好了** —— 即使稽核輔助函式回了 ``None``。
+
+    ``log_audit_event`` 在 **commit 之後**才 ``refresh``（``audit_service.py:108-124``）：
+    refresh 失敗一樣回 ``None``，而那時候設定與稽核**都已經落地**。端點若拿回傳值當
+    「有沒有存成」的判準，就會對一個成功的寫入說「已回復，請重試」——管理員一重試，
+    稽核就多一筆。把假成功換成假失敗不是修好，只是把謊換一個方向講。
+
+    所以判準改成**查實際狀態**。這一支釘的是那個方向：helper 回 None、但東西真的在，
+    答案必須是 2xx、不可以有重試指引、而且重試一次也不會多出第二筆稽核。
+    """
+    from sqlalchemy.orm import Session as SASession
+
+    calls = {"n": 0}
+    real_refresh = SASession.refresh
+
+    def _flaky_refresh(self, *args, **kwargs):
+        calls["n"] += 1
+        raise RuntimeError("refresh 炸掉（commit 已經成功）")
+
+    monkeypatch.setattr(SASession, "refresh", _flaky_refresh)
+
+    resp = client.put(
+        _put_url("proxy.llm_timeout"), json={"value": 137}, headers=_auth(admin_token)
+    )
+
+    assert calls["n"] >= 1, "沒有走到 refresh —— 這一支的前提要重寫"
+    assert resp.status_code == 200, f"資料存好了卻回 {resp.status_code}：{resp.text}"
+    assert resp.json()["effective"] == 137
+    assert "重試" not in resp.text, "對一個成功的寫入給了重試指引"
+
+    monkeypatch.setattr(SASession, "refresh", real_refresh)
+    db.rollback()
+    assert db.get(PlatformSetting, "proxy.llm_timeout").value == "137"
+    assert len(_audit_events(db, "proxy.llm_timeout")) == 1, (
+        "假失敗會讓管理員重試 —— 那就會變成兩筆稽核"
+    )
 
 
 def test_the_audit_event_records_the_old_value_not_the_new_one(client, admin_token, db):

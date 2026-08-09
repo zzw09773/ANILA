@@ -787,9 +787,13 @@ def test_every_lifespan_consumer_observes_the_override_at_the_moment_it_runs(
     overrides = {
         "admin.username": ("ADMIN_USERNAME", "驗收用管理員-4321"),
         "seed.models": ("AUTO_REGISTER_MODELS", '[{"probe":"boot-order-4321"}]'),
+        # ⚠ 原本這裡有兩顆：``alerts.check_interval`` 那一行在重接線之後被機械式改名成
+        # ``health.check_interval``，於是與上一行**重複**（ruff F601），watched 欄位默默
+        # 從 5 掉到 4。機械式取代正是「調整藏在裡面」的地方，所以直接刪掉那一行、
+        # 補一顆真的不同的設定回來，維持四顆各自不同的 Settings 欄位。
         "health.check_interval": ("HEALTH_CHECK_INTERVAL", 4321),
         "usage.flush_interval": ("USAGE_FLUSH_INTERVAL", 137),
-        "health.check_interval": ("HEALTH_CHECK_INTERVAL", 7777),
+        "storage.attachment_path": ("ATTACHMENT_STORAGE_PATH", "data/attachments-order-4321"),
     }
     watched = {field for field, _v in overrides.values()}
     for key, (field, value) in overrides.items():

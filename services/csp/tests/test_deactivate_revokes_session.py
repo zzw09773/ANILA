@@ -60,7 +60,7 @@ def recording_sync_redis(monkeypatch) -> _RecordingSyncRedis:
         token_revocation_publisher,
         "_make_sync_redis_client",
         # ⚠ ``timeout`` 是必填關鍵字（2026-08-09 起）：呼叫端走登錄表解析後傳進來。
-        lambda redis_url=None, *, timeout=None: fake,
+        lambda redis_url=None, *, timeout: fake,
     )
     return fake
 

@@ -593,12 +593,16 @@ def resolve_check_interval() -> int:
     所以畫面上那個數字就是這個迴圈真的睡的秒數。
 
     ⚠ **讀不到設定不可以讓告警系統停擺。** 這個迴圈存在的理由正是 DB／磁碟出事的時候
-    還在跑；所以任何例外都退回登錄表預設值並留一行 warning，而不是讓迴圈死掉。
-    """
-    from app.models.platform_setting import get_setting
-    from app.services.settings_registry import require_spec
+    還在跑；所以任何例外都退回下一層並留一行 warning，而不是讓迴圈死掉。
 
-    spec = require_spec(ALERT_CHECK_INTERVAL_KEY)
+    ⚠ **退回的是「同一條鏈扣掉 DB 那一層」（env → 程式預設），不是直接跳到程式預設。**
+    直接跳等於一次跳過兩層：運維人員寫在 compose 裡的值會在 DB 打嗝的那幾分鐘被當成
+    不存在——畫面（走得到 DB）顯示 env 的 37、迴圈卻睡 60，而且沒有錯誤訊息。那正是
+    這個包要消滅的形狀，只是換到故障路徑上發生。共用
+    ``resolve_setting_without_db``，不是在這裡再寫一份回退規則。
+    """
+    from app.models.platform_setting import get_setting, resolve_setting_without_db
+
     try:
         db = SessionLocal()
         try:
@@ -606,13 +610,15 @@ def resolve_check_interval() -> int:
         finally:
             db.close()
     except Exception:  # noqa: BLE001
+        fallback, source = resolve_setting_without_db(ALERT_CHECK_INTERVAL_KEY)
         logger.warning(
-            "告警偵測讀不到 %s，這一輪用程式預設值 %s 秒繼續",
+            "告警偵測讀不到 %s（DB 那一層），這一輪改用 %s 層的 %s 秒繼續",
             ALERT_CHECK_INTERVAL_KEY,
-            spec.default,
+            source,
+            fallback,
             exc_info=True,
         )
-        value = int(spec.default)
+        value = int(fallback)
     return max(ALERT_INTERVAL_FLOOR_SECONDS, value)
 
 

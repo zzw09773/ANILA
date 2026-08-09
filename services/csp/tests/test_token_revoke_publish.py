@@ -168,7 +168,7 @@ def recording_sync_redis(monkeypatch) -> _RecordingSyncRedis:
     monkeypatch.setattr(
         token_revocation_publisher,
         "_make_sync_redis_client",
-        lambda redis_url=None, *, timeout=None: fake,
+        lambda redis_url=None, *, timeout: fake,
     )
     return fake
 
@@ -245,7 +245,7 @@ def test_publish_revocation_sync_uses_fresh_client_per_call(monkeypatch):
 
     clients: list[_RecordingSyncRedis] = []
 
-    def factory(redis_url: str | None = None, *, timeout: float | None = None):
+    def factory(redis_url: str | None = None, *, timeout: float):
         client = _RecordingSyncRedis()
         clients.append(client)
         return client
@@ -572,7 +572,7 @@ def test_publish_failure_does_not_break_logout(client: TestClient, db, monkeypat
 
     fake = _RecordingSyncRedis(raise_on_publish=ConnectionError("redis down"))
 
-    def _factory(redis_url: str | None = None, *, timeout: float | None = None):
+    def _factory(redis_url: str | None = None, *, timeout: float):
         return fake
 
     monkeypatch.setattr(

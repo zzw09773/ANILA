@@ -50,6 +50,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import func
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -62,6 +63,7 @@ from app.models.platform_setting import (
     resolve_setting,
     set_setting,
 )
+from app.models.audit_log import AuditLog
 from app.models.user import User
 from app.schemas.base import ApiResponseModel
 from app.services.audit_service import log_audit_event
@@ -296,6 +298,24 @@ def _rows_and_actors(db: Session) -> tuple[dict[str, PlatformSetting], dict[str,
     }
 
 
+def _count_audit_events(db: Session, key: str) -> int:
+    """這顆設定目前有幾筆 ``platform_setting_set`` 稽核事件。
+
+    事後查證用。數量而不是「存在與否」：管理員重試時，上一次留下的事件會讓
+    「有沒有稽核」永遠是真，於是查證退化成一句空話。
+    """
+    return (
+        db.query(func.count(AuditLog.id))
+        .filter(
+            AuditLog.action == "platform_setting_set",
+            AuditLog.resource_type == "platform_setting",
+            AuditLog.resource_id == str(key),
+        )
+        .scalar()
+        or 0
+    )
+
+
 @router.get("/overview", response_model=PlatformSettingsOverview)
 def read_overview(db: Session = Depends(get_db)) -> PlatformSettingsOverview:
     """登錄表全部 96 顆，含那 57 顆從來沒有出現在 compose 的隱形設定。
@@ -343,6 +363,9 @@ def update_setting(
         )
 
     previous = _effective_and_source(db, spec, boot_override_snapshot())[0]
+    # 寫入**之前**的稽核筆數：事後查證要問的是「這一次有沒有多出一筆」，
+    # 而不是「有沒有任何一筆」（後者在重試時會被上一次的殘留騙過去）。
+    audit_before = _count_audit_events(db, key)
     # ⚠ **複製那個字串，不要抓著那一列**。``db.get`` 回的是 identity map 裡的同一顆
     # ORM 物件，而 ``set_setting`` 是**就地**改 ``row.value`` —— 抓著物件的話，等到下面
     # 組稽核 metadata 時，「舊值」已經變成新值了，稽核紀錄會永遠寫著 from == to。
@@ -358,8 +381,11 @@ def update_setting(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     row = db.get(PlatformSetting, key)
+    # ``set_setting`` 已經 flush，所以這就是**這一次要落地的那個字串**。事後查證比對的
+    # 是它，不是我們以為送進去的那個值。
+    rendered = row.value if row is not None else None
     stored_now = _usable_or_nothing(spec, row.value, SOURCE_DB) if row is not None else _NO_VALUE
-    event = log_audit_event(
+    log_audit_event(
         db,
         commit=True,
         actor=current_user,
@@ -377,21 +403,29 @@ def update_setting(
             "restart_required": spec.restart_required,
         },
     )
-    if event is None:
-        # ⚠ **回 200 卻什麼也沒存**，是這個包存在要消滅的那個形狀本身。
-        # ``log_audit_event`` 是 fail-soft 的：commit 炸掉時它會 rollback、吞掉例外、
-        # 回 ``None``（``audit_service.py:105-124``）。而設定與稽核在**同一個交易**裡，
-        # 所以那一次 rollback 把管理員存的值一起帶走了 —— 端點若不看回傳值，畫面會說
-        # 「已儲存」，DB 裡卻沒有那一列，而且沒有任何錯誤訊息。
-        # 回傳值本身就是持久化的證據：``commit=True`` 只有在 commit 成功之後才會回事件，
-        # 而那一次 commit 帶著的正是同交易裡的設定列。
+    # ⚠ **成功是查出來的事實，不是推論出來的。**
+    #
+    # 這裡曾經看 ``log_audit_event`` 的回傳值：``None`` 就回 500。那個判準是錯的，
+    # 因為 ``None`` 把好幾種結局混成一種 —— ``audit_service.py:108-124`` 的 ``refresh``
+    # 是在 **commit 之後**做的，refresh 失敗一樣回 ``None``，而那時候設定與稽核**都已經
+    # 存好了**。於是端點跟管理員說「已回復，請重試」，他一重試就多一筆稽核。
+    # 把一個「假成功」換成一個「假失敗」不是修好，只是把謊換一個方向講。
+    #
+    # 所以現在**去看實際狀態**：那一列在不在、值是不是這一次要寫的那個、這一次的稽核
+    # 事件有沒有多出來。``expire_all`` 讓下面兩次查詢一定回到 DB，而不是 identity map
+    # 裡那顆可能還帶著未提交修改的物件。
+    db.expire_all()
+    persisted = db.get(PlatformSetting, key)
+    audit_now = _count_audit_events(db, key)
+    if persisted is None or persisted.value != rendered or audit_now != audit_before + 1:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
-                f"{key} **沒有存起來**：稽核事件寫入失敗，這一次修改已經整筆回復"
-                "（設定與稽核在同一個交易裡，不會只存一半）。畫面上的值仍是舊的，"
-                "請稍後重試；持續失敗請看 csp 容器日誌裡的 audit_log 寫入錯誤。"
+                f"{key} **沒有存起來**：寫入後查證發現那一列（或它的稽核事件）不在 DB 裡，"
+                "這一次修改已經整筆回復（設定與稽核在同一個交易裡，不會只存一半）。"
+                "畫面上的值仍是舊的，請稍後重試；持續失敗請看 csp 容器日誌裡的"
+                " audit_log 寫入錯誤。"
             ),
         )
 
-    return _describe(db, spec, boot_override_snapshot(), row, current_user.username)
+    return _describe(db, spec, boot_override_snapshot(), persisted, current_user.username)

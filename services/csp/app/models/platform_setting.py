@@ -260,6 +260,23 @@ def resolve_setting(db: Session, key: str) -> tuple[Any, str]:
         if value is not _NO_VALUE:
             return value, SOURCE_DB
 
+    return resolve_setting_without_db(key)
+
+
+def resolve_setting_without_db(key: str) -> tuple[Any, str]:
+    """同一條回退鏈，**扣掉 DB 那一層**：env（若可用）→ 程式內預設值。
+
+    誰需要這一支：**DB 這一刻問不到、但還是得拿一個值繼續跑的呼叫端**（例如告警
+    偵測那個背景迴圈——它存在的理由正是 DB 出事的時候還在跑）。
+
+    ⚠ **不可以在那種時候直接跳到 ``spec.default``**：那會一次跳過兩層，把運維人員
+    寫在 compose 裡的值當成不存在。畫面（走得到 DB）顯示 env 的 37、迴圈卻睡 60，
+    而且沒有任何錯誤訊息——正是這個包要消滅的形狀，只是換到故障路徑上發生。
+    所以退化路徑與正常路徑共用**這一支**，不是各寫一份。
+    """
+    from app.services.settings_registry import require_spec
+
+    spec = require_spec(key)
     if spec.env_name is not None:
         raw = os.environ.get(spec.env_name)
         if raw is not None:
@@ -279,15 +296,50 @@ def get_setting(db: Session, key: str) -> Any:
     return resolve_setting(db, key)[0]
 
 
+#: 寫入端認得的布林寫法。**這是「人在畫面上打字」的詞彙**，與 env 讀取端那五種
+#: 判準是兩件事：env 的規則要忠實反映消費模組怎麼讀那個字串（那是既成事實），
+#: 而寫入端要忠實反映**管理員的意圖**。
+_WRITE_TRUE_WORDS = ("1", "true", "yes", "on", "t", "y")
+_WRITE_FALSE_WORDS = ("0", "false", "no", "off", "f", "n")
+
+
+def _coerce_bool_for_write(spec, raw: str) -> bool:
+    """把人打進來的字串對照成布林。**對不上就拒收，絕不猜。**
+
+    ⚠ 這裡以前直接走 ``spec.value_type.parse``——也就是**讀取端**那顆設定自己的規則。
+    對 ``!= "0"`` 那一型（``intl.zh_normalize``／``intl.query_expansion``）後果是：
+    管理員在畫面上打 ``false``，``"false" != "0"`` 成立 → 存成**開啟**。他按下儲存、
+    沒有錯誤、開關卻朝反方向動了。那是這一頁最不能出的那種錯（靜默反轉意圖），
+    最終審查跨家實證。
+
+    讀取端的規則**不動**（env 那五種判準是消費模組的既成事實，改了就等於騙人）；
+    改的是寫入端：認得的詞彙列出來，其餘一律 400 並把可用寫法講給人聽。
+    存進去的仍然是 ``format()`` 的正規字串，所以「存得下來 ＝ 讀得回來」不變。
+    """
+    token = raw.strip().lower()
+    if token in _WRITE_TRUE_WORDS:
+        return True
+    if token in _WRITE_FALSE_WORDS:
+        return False
+    raise ValueError(
+        f"{spec.key} 是開關，看不懂 {raw!r}。"
+        f"開請填：{'／'.join(_WRITE_TRUE_WORDS)}；"
+        f"關請填：{'／'.join(_WRITE_FALSE_WORDS)}。"
+    )
+
+
 def _coerce_for(spec, value: Any) -> Any:
     """把呼叫端給的東西轉成這顆設定的值型別。**轉不了就拋，不猜。**
 
-    字串走這顆設定自己的 ``parse``（HTTP 送上來的一律是字串）；已經是原生型別的
-    就原樣收下。``bool`` 不可以當數字用 —— ``isinstance(True, int)`` 是真，讓
-    ``True`` 悄悄變成 1 會存下一個沒有人打算存的值。
+    字串走這顆設定自己的 ``parse``（HTTP 送上來的一律是字串），**布林除外**——
+    見 ``_coerce_bool_for_write``：讀取端的真值判準拿來收人打的字，會靜默反轉意圖。
+    已經是原生型別的就原樣收下。``bool`` 不可以當數字用 —— ``isinstance(True, int)``
+    是真，讓 ``True`` 悄悄變成 1 會存下一個沒有人打算存的值。
     """
     value_type = spec.value_type
     if isinstance(value, str):
+        if value_type.py_type is bool:
+            return _coerce_bool_for_write(spec, value)
         return value_type.parse(value)
     if value_type.py_type is bool:
         if isinstance(value, bool):
