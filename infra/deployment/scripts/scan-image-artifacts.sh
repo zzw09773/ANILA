@@ -124,6 +124,7 @@ ALLOWLIST=(
     '*/grpc/_cython/_credentials/roots.pem|grpcio 套件自帶的公開 root CA bundle(2026-08-06 在 csp 映像實測:115 段 CERTIFICATE、0 段私鑰)。'
     'usr/share/gnupg/sks-keyservers.netCA.pem|gnupg 套件自帶的 keyserver 公開 CA 憑證(base image 帶的,pptx-renderer 那類要裝 gnupg 的映像會有)。'
     'var/log/nginx/*.log|官方 nginx 映像把它們連到 /dev/stdout、/dev/stderr(2026-08-06 tar -tv 實測是 symlink、0 bytes),不是真的日誌檔。'
+    'var/log/apk.log|nginx:1.30.4-alpine pinned base layer 自帶的 apk 安裝紀錄(2026-07-15,8908 bytes,203 lines);內容只有上游維護者的 apk 操作,0 行本專案資料、0 行 secrets。依 Q38 裁決不重整或壓平上游 base,以理由豁免。'
     'var/log/dpkg.log|Debian 套件管理器的安裝紀錄(base image 帶的,內容是套件名與版本)。'
     'var/log/alternatives.log|同上,update-alternatives 的紀錄。'
     'var/log/apt/*.log|同上,apt 的安裝紀錄。'
