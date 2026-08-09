@@ -137,6 +137,12 @@ EXPECTED_C_ENV_NAMES = frozenset({
     "PROXY_MAX_RETRIES", "PROXY_RETRY_BASE_DELAY",
     "MEMORY_RETRIEVE_TOP_K", "MEMORY_RETRIEVE_MIN_COSINE", "MEMORY_MAX_CHUNK_CHARS",
     "MEMORY_HTTP_TIMEOUT",
+    # 2026-08-09 最終審查（跨家雙票 Important）：這兩顆的消費端原本直讀 env／直讀
+    # ``settings`` 而不過登錄表，畫面與實跑會分歧（ALERT 填 5 → 畫面 5、迴圈 15；
+    # TOKEN 填 999 → 畫面 2.0、連線 999）。兩個消費端都重接線成 ``get_setting``
+    # （``alert_detectors.resolve_check_interval``／``token_revocation`` 在 commit 前解析），
+    # 所以它們現在真的是 C 類：改完下一輪／下一次撤銷就生效。
+    "ALERT_CHECK_INTERVAL", "TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS",
 })
 
 #: fix round 1（I1，控制方裁定）：這三顆**不在**設計 §3.2 的具名清單裡，但它們與
@@ -155,9 +161,12 @@ _OCR_TRIO = frozenset({"PDF_OCR_FALLBACK", "VISION_URL", "VISION_MODEL"})
 #:     （模組常數）、``PYTHONUNBUFFERED``（直譯器）
 #:   * 通道接不上 —— ``ANILA_HOST``／``LEGACY_SQLITE_PATH`` 的讀取點是
 #:     ``os.environ``，``Settings`` 上根本沒有這兩個欄位
+# ⚠ 2026-08-09：原本七顆，現在六顆。TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS 的降級成因
+# （import 期算成模組常數、直讀 os.environ）已被最終審查的修訂拿掉——消費端改由手上有
+# session 的呼叫端走 get_setting 解析，那一顆因此升成 C 類。
 _BOOT_ORDER_DEMOTED = frozenset({
     "DEBUG", "STATIC_DIR", "ANILA_HOST", "PYTHONUNBUFFERED",
-    "LEGACY_SQLITE_PATH", "TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS",
+    "LEGACY_SQLITE_PATH",
     "ANILA_TEMPLATE_DIR",
 })
 
@@ -222,6 +231,9 @@ EXPECTED_NO_RESTART_KEYS = frozenset({
     "memory.retrieve_top_k", "memory.retrieve_min_cosine", "memory.max_chunk_chars",
     "memory.http_timeout",
     "institutional_kb.score_threshold",
+    # 2026-08-09 升成 C 類的兩顆：消費端已改成每輪／每次呼叫走 get_setting，
+    # 所以「需重啟」對它們是假的（改完下一輪偵測／下一次撤銷就生效）。
+    "alerts.check_interval", "queue.token_revocation_redis_timeout",
     # 非 C 但讀取點本來就是 per-call 的。
     "network.allow_http_model_endpoint", "network.allow_http_agent_endpoint",
     "network.allow_grpc_endpoint", "network.allow_private_endpoint",
@@ -238,6 +250,9 @@ EXPECTED_NO_RESTART_KEYS = frozenset({
 # 內插值來回釘的三點（下界／中間值／上界）＋ 兩個必須被拒的界外值。
 # 「0.375 型」不是裝飾：只測邊界的測試對「解析端把上界改成開區間」是全綠的。
 INTERIOR_ROUND_TRIP = {
+    # 2026-08-09 升成 C 類的兩顆：值域下界就是消費端的硬樓地板／實務下限。
+    "alerts.check_interval": (15, 137, 86400, 14, 86401),
+    "queue.token_revocation_redis_timeout": (0.1, 7.5, 60.0, 0.05, 60.5),
     "limits.attachment_budget_ratio": (0.0, 0.375, 1.0, -0.1, 1.1),
     "limits.attachment_token_safety": (1.0, 1.375, 4.0, 0.9, 4.1),
     "limits.message_max_siblings": (1, 37, 1000, 0, 1001),
@@ -314,7 +329,7 @@ def test_class_census_matches_the_rulings():
         len(by_class[SettingClass.B_LOCKED]),
         len(by_class[SettingClass.SEC]),
         len(by_class[SettingClass.A]),
-    ) == (19, 12, 26, 25, 13)
+    ) == (21, 11, 25, 25, 13)
 
 
 def test_every_ambiguous_variable_was_explicitly_ruled_on():
@@ -675,9 +690,11 @@ def test_set_setting_records_the_actor(db):
 def test_set_setting_refuses_every_non_editable_key(db):
     """全類別掃過，不是抽一顆。"""
     refused = [s for s in SETTINGS if s.setting_class not in EDITABLE_CLASSES]
-    # 96 條目 − 可編輯 32（C 19 ＋ 門檻別名 1 ＋ B-可編輯 12）= 64。
-    # ⚠ 57 → 64 是 Task 4 的 C1 降級（``_BOOT_ORDER_DEMOTED`` 那七顆）。
-    assert len(refused) == 64
+    # 96 條目 − 可編輯 33（C 21 ＋ 門檻別名 1 ＋ B-可編輯 11）= 63。
+    # ⚠ 57 → 64 是 Task 4 的 C1 降級（``_BOOT_ORDER_DEMOTED`` 那七顆）；
+    # 64 → 63 是 2026-08-09 最終審查把 TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS
+    # 的消費端重接線之後升回可編輯（ALERT_CHECK_INTERVAL 本來就可編輯，只是換了類別）。
+    assert len(refused) == 63
     for spec in refused:
         with pytest.raises(ValueError):
             set_setting(db, spec.key, spec.default)

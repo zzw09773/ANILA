@@ -111,7 +111,8 @@ const REGISTRY_96 = [
   ['proxy.retry_base_delay', 'PROXY_RETRY_BASE_DELAY', 'C', false, false],
   ['proxy.model_gateway_api_key', 'MODEL_GATEWAY_API_KEY', 'A', true, true],
   ['health.check_interval', 'HEALTH_CHECK_INTERVAL', 'B_EDIT', true, false],
-  ['alerts.check_interval', 'ALERT_CHECK_INTERVAL', 'B_EDIT', true, false],
+  // 2026-08-09 最終審查：消費端重接線成每輪 get_setting → 升成 C 類、不需重啟。
+  ['alerts.check_interval', 'ALERT_CHECK_INTERVAL', 'C', false, false],
   ['alerts.smtp_enabled', 'ANILA_ALERT_SMTP_ENABLED', 'B_LOCKED', true, true],
   ['alerts.smtp_host', 'ANILA_ALERT_SMTP_HOST', 'B_LOCKED', true, true],
   ['alerts.smtp_port', 'ANILA_ALERT_SMTP_PORT', 'B_LOCKED', true, true],
@@ -132,7 +133,8 @@ const REGISTRY_96 = [
   ['storage.attachment_path', 'ATTACHMENT_STORAGE_PATH', 'B_EDIT', true, false],
   ['storage.ingestion_upload_dir', 'INGESTION_UPLOAD_DIR', 'B_LOCKED', true, true],
   ['queue.redis_url', 'REDIS_URL', 'B_LOCKED', true, true],
-  ['queue.token_revocation_redis_timeout', 'TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS', 'B_LOCKED', true, true],
+  // 2026-08-09 最終審查：模組常數拿掉、呼叫端在 commit 前解析 → 升成 C 類、可編輯。
+  ['queue.token_revocation_redis_timeout', 'TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS', 'C', false, false],
   ['limits.department_max_depth', 'ANILA_DEPARTMENT_MAX_DEPTH', 'C', false, false],
   ['limits.message_max_siblings', 'ANILA_MESSAGE_MAX_SIBLINGS', 'C', false, false],
   ['limits.action_invoke_per_min', 'ANILA_ACTION_INVOKE_PER_MIN', 'C', false, false],
@@ -262,11 +264,13 @@ test('fixture 的 96 顆 (key, class) 與後端登錄表原始碼一致', () => 
   )
 })
 
-test('五個 class 的顆數與後端報告的 20／12／26／25／13 對得起來', () => {
+test('五個 class 的顆數與後端報告的 22／11／25／25／13 對得起來', () => {
+  // ⚠ 2026-08-09 最終審查後：20／12／26 → 22／11／25。兩顆的消費端從「直讀 env／
+  // 直讀 settings」重接線成走登錄表解析，於是它們真的變成「改完下一輪就生效」的 C 類。
   const count = (cls) => ALL_96.filter((i) => i.class === cls).length
-  assert.equal(count('C'), 20)
-  assert.equal(count('B_EDIT'), 12)
-  assert.equal(count('B_LOCKED'), 26)
+  assert.equal(count('C'), 22)
+  assert.equal(count('B_EDIT'), 11)
+  assert.equal(count('B_LOCKED'), 25)
   assert.equal(count('SEC'), 25)
   assert.equal(count('A'), 13)
   assert.equal(ALL_96.length, 96)
@@ -291,9 +295,11 @@ test('四區各自收到自己的 class，一顆都不串門', () => {
   assert.deepEqual(classesIn('locked'), ['B_LOCKED', 'SEC'])
   assert.deepEqual(classesIn('secrets'), ['A'])
 
-  assert.equal(byId['apply-now'].items.length, 20)
-  assert.equal(byId['apply-on-restart'].items.length, 12)
-  assert.equal(byId['locked'].items.length, 51)
+  // ⚠ 2026-08-09：20／12／51 → 22／11／50。兩顆的消費端重接線後升成 C 類，
+  // 其中一顆是從「鎖定區」升上來的（原 B_LOCKED），所以鎖定區也少一列。
+  assert.equal(byId['apply-now'].items.length, 22)
+  assert.equal(byId['apply-on-restart'].items.length, 11)
+  assert.equal(byId['locked'].items.length, 50)
   assert.equal(byId['secrets'].items.length, 13)
 })
 

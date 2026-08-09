@@ -68,16 +68,20 @@ from app.services.settings_registry import REGISTRY, SETTINGS, SettingClass
 ROUND_TRIP_CASES = {
     # key: (Settings 欄位, 要存進去的值)
     "usage.batch_size": ("USAGE_BATCH_SIZE", 4321),
-    "alerts.check_interval": ("ALERT_CHECK_INTERVAL", 7777),
+    "health.check_interval": ("HEALTH_CHECK_INTERVAL", 7777),
     "storage.attachment_path": ("ATTACHMENT_STORAGE_PATH", "data/attachments-boot-4321"),
     "seed.agents": ("AUTO_REGISTER_AGENTS", '[{"name":"boot-override-probe-4321"}]'),
 }
 
-#: C1 裁決：這七顆從 B-可編輯降到 B-鎖定。每一顆的證據寫在
+#: C1 裁決：原本七顆從 B-可編輯降到 B-鎖定（今天剩六顆，見下）。每一顆的證據寫在
 #: ``test_each_demoted_entry_says_why_it_cannot_be_edited`` 的表裡。
+# ⚠ 2026-08-09：原本七顆，現在**六顆**。TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS 那顆的
+#: 成因（import 期算成模組常數、直讀 os.environ）已經被最終審查的修訂拿掉——消費端改由
+#: 手上有 session 的呼叫端走 ``get_setting`` 解析，所以它升回可編輯（C 類），
+#: 不再是降級名單的一員。名單縮水本身就是這張表要記的事。
 DEMOTED_ENV_NAMES = frozenset({
     "DEBUG", "STATIC_DIR", "ANILA_HOST", "PYTHONUNBUFFERED",
-    "LEGACY_SQLITE_PATH", "TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS",
+    "LEGACY_SQLITE_PATH",
     "ANILA_TEMPLATE_DIR",
 })
 
@@ -255,7 +259,10 @@ def test_every_applied_key_really_landed_on_settings(db, simulated_boot):
         spec.key: _probe_value_for(spec, getattr(fresh, spec.env_name))
         for spec in _b_edit_specs()
     }
-    assert len(probes) == len(_b_edit_specs()) >= 12, "B-可編輯的顆數變了，先確認是有意的"
+    # ⚠ 12 → 11：``alerts.check_interval`` 的消費端在 2026-08-09 重接線成每輪 get_setting，
+    # 那一顆升成 C 類（改完下一輪生效，不再需要開機覆蓋）。縮水要當場看得見，所以這個
+    # 下限跟著調而不是放寬成不等式。
+    assert len(probes) == len(_b_edit_specs()) >= 11, "B-可編輯的顆數變了，先確認是有意的"
     for key, value in probes.items():
         set_setting(db, key, value)
 
@@ -317,14 +324,14 @@ def test_a_broken_row_is_not_reported_as_applied(db, simulated_boot):
     good = 4321
     set_setting(db, "usage.batch_size", good)
     # 繞過 API 直接塞一列解不開的（只有這種路徑寫得出來）。
-    db.add(PlatformSetting(key="alerts.check_interval", value="不是數字"))
+    db.add(PlatformSetting(key="health.check_interval", value="不是數字"))
     db.flush()
 
     snapshot = simulated_boot(db)
 
     assert set(snapshot.applied) == {"usage.batch_size"}
     assert snapshot.applied["usage.batch_size"] == good
-    assert "alerts.check_interval" not in snapshot.applied
+    assert "health.check_interval" not in snapshot.applied
     assert snapshot.load_failed is False, "單一列壞掉不是整體載入失敗"
 
 
@@ -383,13 +390,13 @@ def test_a_failure_midway_leaves_nothing_half_applied(monkeypatch, db, simulated
     # 兩顆都存好，但**引爆點排在第一顆之後**：先讀出來的那顆如果是邊讀邊套，
     # 這裡就會抓到它已經落在欄位上。引爆點用 key 判斷（不是第幾次呼叫），所以
     # 登錄表重新排序也不會讓這一支失去意義。
-    early_key, boom_key = "alerts.check_interval", "usage.batch_size"
+    early_key, boom_key = "health.check_interval", "usage.batch_size"
     b_edit_keys = [s.key for s in _b_edit_specs()]
     assert b_edit_keys.index(early_key) < b_edit_keys.index(boom_key)
     for key in (early_key, boom_key):
         set_setting(db, key, ROUND_TRIP_CASES[key][1])
     simulated_boot(db)  # 先確認這兩顆本來是套得上的
-    assert settings.ALERT_CHECK_INTERVAL == 7777
+    assert settings.HEALTH_CHECK_INTERVAL == 7777
 
     fresh = Settings()
     for field in _b_edit_fields():
@@ -591,14 +598,12 @@ DEMOTION_EVIDENCE = {
     "ANILA_HOST": "startup_security 讀 os.environ，且 lifespan 早於 hook",
     "PYTHONUNBUFFERED": "由 CPython 直譯器消費，全樹零讀取點",
     "LEGACY_SQLITE_PATH": "startup_migrations 讀 os.environ，Settings 上沒有這個欄位",
-    "TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS":
-        "token_revocation_publisher.py:80 —— import 期算成模組常數",
     "ANILA_TEMPLATE_DIR": "api/agents/registration.py:106 —— import 期算成模組常數",
 }
 
 
 def test_each_demoted_entry_says_why_it_cannot_be_edited():
-    """降級的七顆：類別要是 B-鎖定，而且鎖定理由要講得出「為什麼」。
+    """降級的那些（今天六顆）：類別要是 B-鎖定，而且鎖定理由要講得出「為什麼」。
 
     「不能改」對管理員沒有用，「為什麼不能改」才有——那句話會原樣上畫面。
     """
@@ -784,7 +789,7 @@ def test_every_lifespan_consumer_observes_the_override_at_the_moment_it_runs(
         "seed.models": ("AUTO_REGISTER_MODELS", '[{"probe":"boot-order-4321"}]'),
         "health.check_interval": ("HEALTH_CHECK_INTERVAL", 4321),
         "usage.flush_interval": ("USAGE_FLUSH_INTERVAL", 137),
-        "alerts.check_interval": ("ALERT_CHECK_INTERVAL", 7777),
+        "health.check_interval": ("HEALTH_CHECK_INTERVAL", 7777),
     }
     watched = {field for field, _v in overrides.values()}
     for key, (field, value) in overrides.items():

@@ -343,7 +343,12 @@ def update_setting(
         )
 
     previous = _effective_and_source(db, spec, boot_override_snapshot())[0]
-    stored_before = db.get(PlatformSetting, key)
+    # ⚠ **複製那個字串，不要抓著那一列**。``db.get`` 回的是 identity map 裡的同一顆
+    # ORM 物件，而 ``set_setting`` 是**就地**改 ``row.value`` —— 抓著物件的話，等到下面
+    # 組稽核 metadata 時，「舊值」已經變成新值了，稽核紀錄會永遠寫著 from == to。
+    # 那是一條看起來有在記、其實什麼都沒記的稽核軌跡（本包要消滅的形狀，長在本包自己身上）。
+    _stored_before_row = db.get(PlatformSetting, key)
+    stored_before = _stored_before_row.value if _stored_before_row is not None else None
     try:
         set_setting(db, key, payload.value, actor=current_user)
     except (ValueError, TypeError) as exc:
@@ -354,7 +359,7 @@ def update_setting(
 
     row = db.get(PlatformSetting, key)
     stored_now = _usable_or_nothing(spec, row.value, SOURCE_DB) if row is not None else _NO_VALUE
-    log_audit_event(
+    event = log_audit_event(
         db,
         commit=True,
         actor=current_user,
@@ -367,10 +372,26 @@ def update_setting(
             # 生效值等於在稽核紀錄裡說一件還沒發生的事。
             "from": previous,
             "to": None if stored_now is _NO_VALUE else stored_now,
-            "stored_before": stored_before.value if stored_before is not None else None,
+            "stored_before": stored_before,
             "class": spec.setting_class.value,
             "restart_required": spec.restart_required,
         },
     )
+    if event is None:
+        # ⚠ **回 200 卻什麼也沒存**，是這個包存在要消滅的那個形狀本身。
+        # ``log_audit_event`` 是 fail-soft 的：commit 炸掉時它會 rollback、吞掉例外、
+        # 回 ``None``（``audit_service.py:105-124``）。而設定與稽核在**同一個交易**裡，
+        # 所以那一次 rollback 把管理員存的值一起帶走了 —— 端點若不看回傳值，畫面會說
+        # 「已儲存」，DB 裡卻沒有那一列，而且沒有任何錯誤訊息。
+        # 回傳值本身就是持久化的證據：``commit=True`` 只有在 commit 成功之後才會回事件，
+        # 而那一次 commit 帶著的正是同交易裡的設定列。
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"{key} **沒有存起來**：稽核事件寫入失敗，這一次修改已經整筆回復"
+                "（設定與稽核在同一個交易裡，不會只存一半）。畫面上的值仍是舊的，"
+                "請稍後重試；持續失敗請看 csp 容器日誌裡的 audit_log 寫入錯誤。"
+            ),
+        )
 
     return _describe(db, spec, boot_override_snapshot(), row, current_user.username)

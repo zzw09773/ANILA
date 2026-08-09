@@ -516,11 +516,15 @@ SETTINGS: tuple[SettingSpec, ...] = (
     # 那正是這個頁面存在的理由所要消滅的東西。controller 2026-08-09 裁定：把宣告拉齊
     # 現實，而不是在顯示層抄一份消費端的規則（值域的唯一來源仍然是登錄表）。消費端那
     # 個 ``max`` 保留當安全帶 —— 它現在永遠不會再改變任何一個從畫面存進來的值。
-    _spec("alerts.check_interval", "ALERT_CHECK_INTERVAL", SettingClass.B_EDIT, T_INT,
-          _closed_int_range(15, 86400), 60, True,
-          "告警偵測輪詢週期（秒）。允許 15–86400。⚠ 下界 15 是消費端的硬樓地板"
-          "（alert_detectors.py:577 的 max(15, …)）：填更小的值不會讓偵測更密，"
-          "只會被靜默提到 15，所以這裡直接不收。"),
+    # 2026-08-09 最終審查（跨家雙票）：這一顆原本是 B_EDIT，而消費端讀的是
+    # ``settings`` 上的原值再自己 clamp —— env 填 5 時畫面說 5、迴圈睡 15。現在
+    # ``alert_detectors.resolve_check_interval()`` 每一輪走 ``get_setting``（同一條解析鏈、
+    # 同一個 domain_fn），所以這一顆真的是 **C 類**：改完**下一輪**就生效，不必重啟。
+    _spec("alerts.check_interval", "ALERT_CHECK_INTERVAL", SettingClass.C, T_INT,
+          _closed_int_range(15, 86400), 60, False,
+          "告警偵測輪詢週期（秒）。允許 15–86400。改完下一輪偵測就生效（最久等一個週期）。"
+          "⚠ 下界 15 是消費端的硬樓地板（alert_detectors.ALERT_INTERVAL_FLOOR_SECONDS）："
+          "填更小的值不會讓偵測更密，只會被靜默提到 15，所以這裡直接不收。"),
     _spec("alerts.smtp_enabled", "ANILA_ALERT_SMTP_ENABLED", SettingClass.B_LOCKED,
           T_BOOL_PYDANTIC, _accept_any, False, True, "是否寄送告警信。", _SMTP_REASON),
     _spec("alerts.smtp_host", "ANILA_ALERT_SMTP_HOST", SettingClass.B_LOCKED, T_STR,
@@ -595,12 +599,15 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "token_revocation_publisher.py:79 與 health_checker.py:634 都是 "
           "redis://redis:6379/0。此處宣告前者（收斂是獨立 follow-up）。",
           "跨服務基礎設施 DSN，執行期改＝事故製造機（設計 §3.2）"),
+    # 2026-08-09 最終審查（跨家雙票）：這一顆原本是 B_LOCKED，理由是「import 期就算成
+    # 模組常數、而且讀 os.environ」——那個模組常數已經拿掉了。現在由手上有 session 的
+    # 呼叫端（``token_revocation.commit_token_revocation``，在 commit 之前）走
+    # ``get_setting`` 解析，再以必填關鍵字傳給發布端，所以它真的是 **C 類**。
+    # 舊狀態下 env 填 999：畫面照值域退回顯示 2.0、而 Redis 連線真的用 999。
     _spec("queue.token_revocation_redis_timeout", "TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS",
-          SettingClass.B_LOCKED, T_FLOAT, _closed_float_range(0.1, 60.0), 2.0, True,
-          "同步撤銷發布的 Redis 逾時秒數。允許 0.1–60 秒。"
-          "⚠ token_revocation_publisher.py:80 在 import 期就把它算成模組常數，"
-          "而且讀的是 os.environ。",
-          _BOOT_ORDER_REASON + _compose_hint("TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS")),
+          SettingClass.C, T_FLOAT, _closed_float_range(0.1, 60.0), 2.0, False,
+          "同步撤銷發布的 Redis 逾時秒數。允許 0.1–60 秒。改完下一次撤銷就生效，"
+          "不必重啟（值在發布**之前**由呼叫端解析）。"),
 
     # ── limits.* —— 純數值調節鈕 ────────────────────────────────────────
     _spec("limits.department_max_depth", "ANILA_DEPARTMENT_MAX_DEPTH", SettingClass.C,

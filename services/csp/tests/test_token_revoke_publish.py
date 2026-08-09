@@ -164,10 +164,11 @@ def recording_sync_redis(monkeypatch) -> _RecordingSyncRedis:
 
     from app.services import token_revocation_publisher
 
+    # ⚠ ``timeout`` 是必填關鍵字（2026-08-09 起）：值由呼叫端走登錄表解析後傳進來。
     monkeypatch.setattr(
         token_revocation_publisher,
         "_make_sync_redis_client",
-        lambda redis_url=None: fake,
+        lambda redis_url=None, *, timeout=None: fake,
     )
     return fake
 
@@ -244,7 +245,7 @@ def test_publish_revocation_sync_uses_fresh_client_per_call(monkeypatch):
 
     clients: list[_RecordingSyncRedis] = []
 
-    def factory(redis_url: str | None = None):
+    def factory(redis_url: str | None = None, *, timeout: float | None = None):
         client = _RecordingSyncRedis()
         clients.append(client)
         return client
@@ -256,10 +257,10 @@ def test_publish_revocation_sync_uses_fresh_client_per_call(monkeypatch):
     )
 
     token_revocation_publisher.publish_revocation_sync(
-        user_id=1, revoked_at_version=2
+        user_id=1, revoked_at_version=2, timeout=7.5
     )
     token_revocation_publisher.publish_revocation_sync(
-        user_id=1, revoked_at_version=3
+        user_id=1, revoked_at_version=3, timeout=7.5
     )
 
     assert len(clients) == 2
@@ -282,14 +283,18 @@ def test_make_sync_redis_client_sets_timeouts(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "redis", FakeRedisModule)
 
+    # ⚠ 2026-08-09：逾時不再是這個模組的常數（那份 import 期常數直讀 os.environ、
+    # 不過登錄表值域，於是畫面顯示 2.0 而連線用 999）。現在是**必填關鍵字**，由手上有
+    # session 的呼叫端解析後傳進來。這裡刻意用 7.5 而不是登錄表預設 2.0 —— 用預設值問，
+    # 「真的把參數傳下去了」與「又掉回某個預設」會一起變綠。
     client = token_revocation_publisher._make_sync_redis_client(
-        "redis://example.test:6379/0"
+        "redis://example.test:6379/0", timeout=7.5
     )
 
     assert isinstance(client, _RecordingSyncRedis)
     assert captured["url"] == "redis://example.test:6379/0"
-    assert captured["socket_connect_timeout"] == 2.0
-    assert captured["socket_timeout"] == 2.0
+    assert captured["socket_connect_timeout"] == 7.5
+    assert captured["socket_timeout"] == 7.5
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +572,7 @@ def test_publish_failure_does_not_break_logout(client: TestClient, db, monkeypat
 
     fake = _RecordingSyncRedis(raise_on_publish=ConnectionError("redis down"))
 
-    def _factory(redis_url: str | None = None):
+    def _factory(redis_url: str | None = None, *, timeout: float | None = None):
         return fake
 
     monkeypatch.setattr(

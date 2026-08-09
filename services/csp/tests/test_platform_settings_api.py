@@ -17,7 +17,7 @@ B 類開機覆蓋。剩下最後一個、也是最容易長出來的：**畫面�
    包含錯誤訊息、``default`` 欄、以及「有人繞過 API 寫進 DB 的那一列」。
    釘法：13 顆全部植入 sentinel（env ＋ ``settings`` 欄位 ＋ DB 列三路），
    然後對整份 JSON 做**字串**掃描，不是逐欄位抽查。
-3. **鎖定類別其實收得下來**。釘法：非可編輯的**全名單**逐顆 PUT（64 顆，
+3. **鎖定類別其實收得下來**。釘法：非可編輯的**全名單**逐顆 PUT（63 顆，
    由登錄表推導，零手抄），每一顆都要 400、都要把鎖定理由講給人聽、
    而且不可以留下任何一列。
 4. **值改了、沒有人知道是誰改的**。釘法：稽核事件與設定寫入必須同一個交易——
@@ -140,22 +140,16 @@ def _overview(client, token) -> dict:
 
 
 def _consumer_alert_floor() -> int:
-    """``alert_detectors`` 那個 ``max(15, …)`` 裡的 15 —— 從**原始碼**讀，不抄。
+    """消費端那個樓地板 —— 讀**它宣告的常數**，不抄字面。
 
-    抄一份到測試裡，「宣告 ＝ 現實」就只是修訂當天為真的一句話：消費端改成
-    ``max(30, …)`` 而登錄表沒跟上時，沒有任何東西會紅。
+    2026-08-09 之前這裡是用 regex 去原始碼裡撈 ``max(15, int(getattr(settings, …)))``
+    的 15。那一行已經不存在了（消費端改走 ``resolve_check_interval()``），現在讀的是
+    ``alert_detectors.ALERT_INTERVAL_FLOOR_SECONDS`` 這個具名常數：消費端哪天改成 30
+    而登錄表沒跟上，比對會紅——而且是符號層級的比對，不是文字比對。
     """
-    import inspect
-
     from app.services import alert_detectors
 
-    source = inspect.getsource(alert_detectors)
-    match = re.search(
-        r"max\(\s*(\d+)\s*,\s*int\(\s*getattr\(\s*settings\s*,\s*[\"']ALERT_CHECK_INTERVAL",
-        source,
-    )
-    assert match, "找不到 alert_detectors 的樓地板 —— 這一支的前提要重寫"
-    return int(match.group(1))
+    return int(alert_detectors.ALERT_INTERVAL_FLOOR_SECONDS)
 
 
 def _row(body: dict, key: str) -> dict:
@@ -250,17 +244,17 @@ def test_b_class_effective_stored_and_pending_are_three_different_values(
     登錄表預設 60。任何一種「拿快照當生效值」或「拿 stored 當生效值」的實作，
     在這裡都會露出來。
     """
-    set_setting(db, "alerts.check_interval", 17)
+    set_setting(db, "health.check_interval", 17)
     db.commit()
     snapshot = simulated_boot(db)
-    assert snapshot.applied["alerts.check_interval"] == 17
+    assert snapshot.applied["health.check_interval"] == 17
 
     put = client.put(
-        _put_url("alerts.check_interval"), json={"value": 23}, headers=_auth(admin_token)
+        _put_url("health.check_interval"), json={"value": 23}, headers=_auth(admin_token)
     )
     assert put.status_code == 200, put.text
 
-    row = _row(_overview(client, admin_token), "alerts.check_interval")
+    row = _row(_overview(client, admin_token), "health.check_interval")
     assert row["stored"] == "23", "DB 列的原值"
     assert row["effective"] == 17, "現在真正在跑的是開機時套上去的那個值"
     assert row["pending"] == 23, "重啟之後才會變成 23"
@@ -325,12 +319,12 @@ def test_a_row_written_after_boot_is_pending_not_effective(client, admin_token, 
     會宣稱 47 已經在跑（實際上背景迴圈跑的是 env 的 3600）。
     """
     client.put(
-        _put_url("alerts.check_interval"), json={"value": 47}, headers=_auth(admin_token)
+        _put_url("health.check_interval"), json={"value": 47}, headers=_auth(admin_token)
     )
 
-    row = _row(_overview(client, admin_token), "alerts.check_interval")
+    row = _row(_overview(client, admin_token), "health.check_interval")
     assert row["stored"] == "47"
-    assert row["effective"] == 3600, "env 層（conftest 塞的 ALERT_CHECK_INTERVAL）還在跑"
+    assert row["effective"] == 3600, "env 層（conftest 塞的 HEALTH_CHECK_INTERVAL）還在跑"
     assert row["pending"] == 47
     assert row["source"] == "env"
 
@@ -348,14 +342,14 @@ def test_effective_follows_the_field_the_consumers_read_not_the_snapshot(
     單例的路徑），讓兩個來源分岔：快照說 17，欄位說 4321。消費模組手上的是**欄位**，
     畫面就必須說 4321。
     """
-    set_setting(db, "alerts.check_interval", 17)
+    set_setting(db, "health.check_interval", 17)
     db.commit()
     snapshot = simulated_boot(db)
-    assert snapshot.applied["alerts.check_interval"] == 17
+    assert snapshot.applied["health.check_interval"] == 17
 
-    monkeypatch.setattr(settings, "ALERT_CHECK_INTERVAL", 4321, raising=False)
+    monkeypatch.setattr(settings, "HEALTH_CHECK_INTERVAL", 4321, raising=False)
 
-    row = _row(_overview(client, admin_token), "alerts.check_interval")
+    row = _row(_overview(client, admin_token), "health.check_interval")
     assert row["effective"] == 4321, "讀了快照的 applied，不是消費端手上的那顆欄位"
     assert row["source"] == "db-boot", "來源仍然是這次開機套上去的那一層"
 
@@ -395,6 +389,110 @@ def test_the_declared_lower_bound_is_the_consumers_real_floor(client, admin_toke
     assert ok.status_code == 200, ok.text
     assert ok.json()["stored"] == str(low)
     assert max(_consumer_alert_floor(), low) == low
+
+
+def test_the_alert_loop_sleeps_exactly_what_the_page_says(
+    client, admin_token, db, monkeypatch
+):
+    """**畫面上的秒數就是那個迴圈真的睡的秒數。**
+
+    最終審查跨家雙票的實證：env 填 5 時，設定頁顯示 5（``settings`` 上的原值），
+    而 ``alert_detectors`` 的迴圈跑的是 ``max(15, 5)`` ＝ 15 —— 平台收下了一個它不
+    照辦的值。修法不是在顯示層抄一份 clamp（規則就會變兩份），而是讓消費端走**同一條
+    解析鏈**：``resolve_check_interval()`` 現在也是 DB → env → 預設 ＋ 同一個 domain_fn。
+
+    這一支不比常數、比**行為**：問頁面一次、問消費端一次，兩個數字必須相等。
+    三種狀態各問一次（值域外的 env／值域內的 env／管理員從畫面存的值）。
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.services import alert_detectors
+
+    # ⚠ 消費端自己開 session（``SessionLocal``），而那指向 conftest 的 session 級檔案 DB，
+    # 不是本測試 fixture 那顆引擎——不接上去的話，第 (3) 段會讀不到剛存的那一列，
+    # 而那正是這一支最要問的一段。接到同一顆引擎上，問的才是「同一個 DB、兩條路」。
+    monkeypatch.setattr(
+        alert_detectors,
+        "SessionLocal",
+        sessionmaker(bind=db.get_bind(), expire_on_commit=False),
+    )
+
+    # (1) 值域外的 env（審查用的那個 5）：兩邊都必須落回登錄表預設 60。
+    monkeypatch.setenv("ALERT_CHECK_INTERVAL", "5")
+    row = _row(_overview(client, admin_token), "alerts.check_interval")
+    assert row["effective"] == alert_detectors.resolve_check_interval()
+    assert row["effective"] == 60, "值域外的 env 要退回程式預設，兩邊一起退"
+    assert row["source"] == "default"
+
+    # (2) 值域內的 env：兩邊都用它。37 不等於預設 60、也不等於 conftest 的 3600。
+    monkeypatch.setenv("ALERT_CHECK_INTERVAL", "37")
+    row = _row(_overview(client, admin_token), "alerts.check_interval")
+    assert row["effective"] == 37
+    assert row["effective"] == alert_detectors.resolve_check_interval()
+    assert row["source"] == "env"
+
+    # (3) 管理員從畫面存的值 —— 這一顆現在是 C 類，改完下一輪就生效。
+    put = client.put(
+        _put_url("alerts.check_interval"), json={"value": 41}, headers=_auth(admin_token)
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["effective"] == 41
+    assert put.json()["restart_required"] is False
+    assert alert_detectors.resolve_check_interval() == 41, "迴圈還在讀舊來源"
+
+
+def test_the_revocation_publisher_uses_exactly_what_the_page_says(
+    client, admin_token, db, monkeypatch
+):
+    """撤銷發布的 Redis 逾時：畫面上那個數字就是連線真的用的那個。
+
+    最終審查實證：env 填 999 時，設定頁照登錄表值域（0.1–60）退回顯示 2.0，而
+    ``token_revocation_publisher`` 的模組常數直接拿 999 去連 Redis —— 畫面與實跑分歧。
+    模組常數已經拿掉；值改由**手上有 session 的呼叫端**在 ``db.commit()`` **之前**解析
+    （Task 3 的 pool 教訓），以必填關鍵字往下傳。
+    """
+    from app.services import token_revocation, token_revocation_publisher
+
+    captured: dict = {}
+
+    class _FakeClient:
+        def publish(self, *args, **kwargs):
+            return 1
+
+        def close(self):
+            return None
+
+    def _fake_factory(redis_url=None, *, timeout):
+        captured["timeout"] = timeout
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        token_revocation_publisher, "_make_sync_redis_client", _fake_factory
+    )
+
+    def _page_value() -> float:
+        return _row(_overview(client, admin_token), "queue.token_revocation_redis_timeout")[
+            "effective"
+        ]
+
+    # (1) 值域外的 env（審查用的那個 999）：兩邊都退回 2.0。
+    monkeypatch.setenv("TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS", "999")
+    user = make_user(db, username="revoke_probe_one")
+    token_revocation.commit_token_revocation(db, user)
+    assert captured["timeout"] == _page_value() == 2.0, (
+        "連線用的逾時與畫面顯示的不一樣"
+    )
+
+    # (2) 管理員從畫面存一個值域內的值 —— 這一顆現在是 C 類。
+    put = client.put(
+        _put_url("queue.token_revocation_redis_timeout"),
+        json={"value": 7.5},
+        headers=_auth(admin_token),
+    )
+    assert put.status_code == 200, put.text
+    other = make_user(db, username="revoke_probe_two")
+    token_revocation.commit_token_revocation(db, other)
+    assert captured["timeout"] == _page_value() == 7.5
 
 
 def test_a_row_that_cannot_be_read_back_is_shown_as_unusable(client, admin_token, db):
@@ -458,8 +556,10 @@ ENV_LAYER_CASES = [
     ("card.dev_skip_nonce_binding", "true", True, "沒有空白就收得下來"),
     ("ingestion.pdf_ocr_fallback", "TRUE", True, "lower()=='true'：大小寫不拘"),
     ("ingestion.vision_verify_ssl", "false", False, "預設 True，env 關掉要看得見"),
-    # 非布林的三種型別也各問一顆。
-    ("queue.token_revocation_redis_timeout", "7.5", 7.5, "float"),
+    # 非布林的型別也問。⚠ 這條路上**今天沒有 float 顆了**——原本那顆
+    # （queue.token_revocation_redis_timeout）在 2026-08-09 重接線後升成 C 類，
+    # 走的是 resolve_setting 那條（另有測試）。所以這裡是兩顆 int ＋一顆 str。
+    ("ingestion.pdf_ocr_concurrency", "7", 7, "int"),
     ("ingestion.pdf_ocr_dpi", "137", 137, "int"),
     ("memory.llm_model", "anila-probe-model-4321", "anila-probe-model-4321", "str"),
 ]
@@ -468,7 +568,7 @@ ENV_LAYER_CASES = [
 def test_the_env_layer_covers_the_keys_this_file_thinks_it_covers():
     """名單是推導的；這一支只是把「29 顆」說出來，並確認案例真的落在這批裡。"""
     specs = {spec.key for spec in _env_layer_specs()}
-    assert len(specs) == 29, f"走 env 層的顆數變了：{len(specs)}"
+    assert len(specs) == 28, f"走 env 層的顆數變了：{len(specs)}"
     for key, *_ in ENV_LAYER_CASES:
         assert key in specs, f"{key} 不走 _env_layer —— 這一支問錯路了"
 
@@ -780,8 +880,8 @@ EDITABLE_KEYS = sorted(
 
 def test_the_census_matches_the_registry():
     """名單是推導出來的，不是抄的——這一支只是把數字說出來。"""
-    assert len(NON_EDITABLE_KEYS) == 64
-    assert len(EDITABLE_KEYS) == 32
+    assert len(NON_EDITABLE_KEYS) == 63
+    assert len(EDITABLE_KEYS) == 33
     assert len(NON_EDITABLE_KEYS) + len(EDITABLE_KEYS) == len(REGISTRY) == 96
 
 
@@ -942,6 +1042,73 @@ def test_the_setting_and_its_audit_event_share_one_transaction(
     )
 
 
+def test_a_swallowed_audit_failure_is_never_answered_with_success(
+    client, admin_token, db, monkeypatch
+):
+    """稽核**軟失敗**時，端點不可以回 200 說「已儲存」。
+
+    ``log_audit_event`` 是 fail-soft 的：commit 炸掉時它 rollback、吞例外、回 ``None``
+    （``audit_service.py:105-124``）。而設定與稽核同交易，所以那一次 rollback 把管理員
+    存的值一起帶走了。端點若不看回傳值，畫面會說「已儲存」而 DB 裡沒有那一列 ——
+    **正是這一包存在要消滅的形狀，長在這一包自己身上**（最終審查跨家雙票同判 Important）。
+
+    這裡走的是**真的** fail-soft 路徑：把 ``Session.commit`` 換成會炸的，
+    ``log_audit_event`` 自己的 try 會接住 → rollback → 回 None。
+    （建構子炸掉那條路是另一支測試，兩條都要有。）
+    """
+    from sqlalchemy.orm import Session as SASession
+
+    def _boom_commit(self, *args, **kwargs):
+        raise RuntimeError("commit 炸掉（模擬）")
+
+    monkeypatch.setattr(SASession, "commit", _boom_commit)
+
+    resp = client.put(
+        _put_url("proxy.llm_timeout"), json={"value": 137}, headers=_auth(admin_token)
+    )
+
+    assert resp.status_code >= 400, f"稽核失敗了卻回 {resp.status_code}：{resp.text}"
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "沒有存起來" in detail, "錯誤訊息要說清楚「沒存成」，不是一句 500"
+    assert "重試" in detail, "拒絕要給做法"
+
+    monkeypatch.undo()
+    db.rollback()
+    assert db.get(PlatformSetting, "proxy.llm_timeout") is None, (
+        "回了錯誤，那一列卻留了下來 —— 交易語意破了"
+    )
+    assert get_setting(db, "proxy.llm_timeout") == 120, "生效值必須還是改之前那個"
+
+
+def test_the_audit_event_records_the_old_value_not_the_new_one(client, admin_token, db):
+    """稽核的「舊值」必須真的是舊值。
+
+    ``db.get`` 回的是 identity map 裡那顆 ORM 物件，而 ``set_setting`` 是**就地**改
+    ``row.value``：端點若抓著物件不放，等到組 metadata 時「舊值」已經變成新值，
+    稽核軌跡會永遠寫著 from == to —— 一條看起來有在記、其實什麼都沒記的軌跡。
+
+    兩次寫入的值互不相同、也都不等於登錄表預設 3（避開帳本那條「值不可以等於場上
+    任何預設」——否則 from/to 相等與「真的記了舊值」會一起變綠）。
+    """
+    first = client.put(
+        _put_url("memory.retrieve_top_k"), json={"value": 47}, headers=_auth(admin_token)
+    )
+    assert first.status_code == 200, first.text
+    second = client.put(
+        _put_url("memory.retrieve_top_k"), json={"value": 61}, headers=_auth(admin_token)
+    )
+    assert second.status_code == 200, second.text
+
+    events = _audit_events(db, "memory.retrieve_top_k")
+    assert len(events) == 2
+    latest = json.loads(events[-1].metadata_json)
+    assert latest["from"] == 47, "舊值被就地改成新值了"
+    assert latest["to"] == 61
+    assert latest["stored_before"] == "47", "stored_before 抓的是 ORM 物件，不是當時的字串"
+    assert latest["from"] != latest["to"]
+
+
 # ── 7. 孤兒欄位掃描（Task 2 carry） ────────────────────────────────────────
 
 
@@ -993,7 +1160,7 @@ def _settings_field_reads(path: pathlib.Path) -> list[tuple[str, int]]:
 def test_no_app_module_reads_the_orphaned_config_fields():
     """Task 2 的遞延：那些欄位只剩宣告，不可以再有讀取點。"""
     orphans = _orphaned_config_fields()
-    assert len(orphans) == 12, f"孤兒名單變了：{sorted(orphans)}"
+    assert len(orphans) == 13, f"孤兒名單變了：{sorted(orphans)}"
 
     app_dir = pathlib.Path(__file__).resolve().parents[1] / "app"
     offenders: list[str] = []
@@ -1040,9 +1207,14 @@ def _demoted_specs():
 
 
 def test_every_demoted_entry_says_how_to_change_it(client, admin_token):
-    """「不能從畫面改」要接一句「那要去哪裡改」，否則管理員只剩重開機可以試。"""
+    """「不能從畫面改」要接一句「那要去哪裡改」，否則管理員只剩重開機可以試。
+
+    ⚠ 2026-08-09 起是**六顆**不是七顆：``queue.token_revocation_redis_timeout`` 的降級
+    成因（import 期模組常數）已被最終審查的修訂拿掉，那一顆升回 C 類。名單由
+    ``locked_reason`` 前綴推導，所以縮水這件事本身就被這一支記著。
+    """
     demoted = _demoted_specs()
-    assert len(demoted) == 7, f"降級名單變了：{[s.key for s in demoted]}"
+    assert len(demoted) == 6, f"降級名單變了：{[s.key for s in demoted]}"
 
     body = _overview(client, admin_token)
     for spec in demoted:

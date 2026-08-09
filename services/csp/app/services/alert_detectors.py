@@ -573,8 +573,50 @@ def evaluate_disk(
 
 # ── Background loop ──────────────────────────────────────────────────────────
 
+#: 這個迴圈能接受的最短週期。**它與登錄表宣告的值域下界必須是同一個數字**
+#: （``settings_registry`` 的 ``alerts.check_interval`` 收 15–86400）；測試比對的是
+#: 這個常數本身，不是原始碼字面。留著是安全帶：值域已經擋在 15 以上，所以它對任何
+#: 從畫面存進來的值都是 no-op。
+ALERT_INTERVAL_FLOOR_SECONDS = 15
+
+#: 登錄表裡的那一顆。名字宣告一次，讓消費端與測試指得到同一個字串。
+ALERT_CHECK_INTERVAL_KEY = "alerts.check_interval"
+
+
+def resolve_check_interval() -> int:
+    """這一輪要睡多久 —— 走**登錄表的解析鏈**，與設定頁讀的是同一條路。
+
+    ⚠ 這裡以前是 ``max(15, int(getattr(settings, "ALERT_CHECK_INTERVAL", 60)))``，
+    而設定頁顯示的是 ``settings`` 上那個**原值**：env 填 5，畫面說 5、迴圈實際睡 15
+    —— 平台收下了一個它不照辦的值，而且不說。最終審查跨家雙票同判 Important。
+    現在兩邊問同一條鏈（DB → env → 程式預設，值域由登錄表那一筆的 ``domain_fn`` 把關），
+    所以畫面上那個數字就是這個迴圈真的睡的秒數。
+
+    ⚠ **讀不到設定不可以讓告警系統停擺。** 這個迴圈存在的理由正是 DB／磁碟出事的時候
+    還在跑；所以任何例外都退回登錄表預設值並留一行 warning，而不是讓迴圈死掉。
+    """
+    from app.models.platform_setting import get_setting
+    from app.services.settings_registry import require_spec
+
+    spec = require_spec(ALERT_CHECK_INTERVAL_KEY)
+    try:
+        db = SessionLocal()
+        try:
+            value = int(get_setting(db, ALERT_CHECK_INTERVAL_KEY))
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "告警偵測讀不到 %s，這一輪用程式預設值 %s 秒繼續",
+            ALERT_CHECK_INTERVAL_KEY,
+            spec.default,
+            exc_info=True,
+        )
+        value = int(spec.default)
+    return max(ALERT_INTERVAL_FLOOR_SECONDS, value)
+
+
 async def _alert_detector_loop() -> None:
-    interval = max(15, int(getattr(settings, "ALERT_CHECK_INTERVAL", 60)))
     while True:
         try:
             evaluate_database()
@@ -584,8 +626,9 @@ async def _alert_detector_loop() -> None:
             raise
         except Exception:
             logger.exception("alert detector loop iteration failed")
+        # 每一輪重問一次 —— 這一顆現在是 C 類：改完下一輪就生效，不必重啟。
         try:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(resolve_check_interval())
         except asyncio.CancelledError:
             raise
 
