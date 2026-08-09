@@ -169,30 +169,77 @@ function hashString(s) {
 // Mermaid lazy loader — keeps the ~2.8MB lib in its own chunk; only fetched
 // when a diagram renders (offline: bundled at build, no CDN).
 let _mermaidPromise = null;
-function loadMermaid() {
+export function mermaidThemeForApp(theme) {
+  return theme === "dark" ? "dark" : "default";
+}
+
+function readAppTheme() {
+  if (typeof document === "undefined") return "light";
+  return document.documentElement?.getAttribute("data-theme") === "dark"
+    ? "dark"
+    : "light";
+}
+
+// The app's tweaks state is projected to this existing DOM attribute by
+// applyTweaks() in app.jsx. Observe that projection so MarkdownView does not
+// create a second theme source just for diagrams.
+function useAppTheme() {
+  const [theme, setTheme] = useState(readAppTheme);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const root = document.documentElement;
+    const sync = () => setTheme(readAppTheme());
+    const observer = typeof MutationObserver === "function"
+      ? new MutationObserver(sync)
+      : null;
+    sync();
+    observer?.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer?.disconnect();
+  }, []);
+
+  return theme;
+}
+
+export function cleanupMermaidError(renderId) {
+  if (typeof document === "undefined" || !renderId || !document.body) return;
+  const prefix = `d${renderId}`;
+  document.body.querySelectorAll("[id]").forEach((node) => {
+    if (node.id.startsWith(prefix)) node.remove();
+  });
+}
+
+function loadMermaid(theme) {
   if (!_mermaidPromise) {
-    _mermaidPromise = import("mermaid").then((m) => {
-      const mermaid = m.default || m;
-      mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
-      return mermaid;
-    });
+    _mermaidPromise = import("mermaid").then((m) => m.default || m);
   }
-  return _mermaidPromise;
+  return _mermaidPromise.then((mermaid) => {
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: mermaidThemeForApp(theme),
+    });
+    return mermaid;
+  });
 }
 
 function MermaidDiagram({ source }) {
   const [svg, setSvg] = useState("");
   const [err, setErr] = useState("");
+  const theme = useAppTheme();
   const idRef = useRef(`mmd-${Math.abs(hashString(source))}`);
   useEffect(() => {
     let alive = true;
     setErr("");
-    loadMermaid()
+    loadMermaid(theme)
       .then((mermaid) => mermaid.render(idRef.current, source))
       .then(({ svg }) => { if (alive) setSvg(svg); })
-      .catch((e) => { if (alive) setErr(e?.message || "圖表渲染失敗"); });
+      .catch((e) => {
+        cleanupMermaidError(idRef.current);
+        if (alive) setErr(e?.message || "圖表渲染失敗");
+      });
     return () => { alive = false; };
-  }, [source]);
+  }, [source, theme]);
   if (err) {
     return (
       <pre style={{
