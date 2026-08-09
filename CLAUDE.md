@@ -89,6 +89,9 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,P
   不是 anila-ui。⚠ 查部署路徑要**從跑著的容器往回追**,不要從 repo 裡看起來對的檔案往前推。
 - **`npm run build` 過 ≠ 映像建得起來**。本機借用的 node_modules 有 devDeps,映像只裝 production。
   前端要合併前用 `docker compose build <service>` 驗;平行建置的錯誤訊息不會說是哪個服務。
+- **新增 Dockerfile 的每個 `RUN` 都要以同一個 shell layer 的尾端清理 DCS 注入**：直接複製
+  `rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid`，規則與原因見 `services/asr-decoder/Dockerfile:8-26`；
+  guard 會掃 repo 內所有 Dockerfile，只有明列非交付用途的檔案例外。
 - **平行派多包前先分配 migration 編號**,並把檔案集真的列出來對。一晚撞三次(兩次編號、一次同檔)。
 - **驗 API 要看 Content-Type**。SPA catch-all 會回 `200 text/html`,看起來像端點沒有保護。
 - **改 bind-mount 的單一檔案,內容不會進到容器裡**。Docker 用 inode 綁定,而 git 改檔是「建新檔取代」
