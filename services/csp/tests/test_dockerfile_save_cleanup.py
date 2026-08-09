@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,26 +28,10 @@ EXCLUDED_DOCKERFILES: dict[str, str] = {
     "scraps/ANILA_UI/scraps/anila-ui-backup-2026-04-21/Dockerfile": "dead backup",
 }
 
-_SKIPPED_DIRECTORIES = frozenset({".git", "node_modules", ".venv", "dist", "build"})
-_MAX_CLASSIFICATION_BYTES = 64 * 1024
-# Content remains authoritative; the basename is only a secondary signal when
-# content cannot be classified, so unreadable Dockerfile-looking paths fail loud.
 _DOCKERFILE_NAME = re.compile(
-    r"^(?:dockerfile|containerfile)(?:[._-].*)?$|"
-    r"^.+\.(?:dockerfile|containerfile)$",
-    re.IGNORECASE,
+    r"^(?:Dockerfile|Containerfile)(?:\..*)?$|"
+    r"^.+\.(?:Dockerfile|Containerfile)$"
 )
-
-
-class _UnclassifiableFileError(Exception):
-    def __init__(self, path: Path, reason: str) -> None:
-        self.path = path
-        self.reason = reason
-        super().__init__(reason)
-
-
-class _NonRegularFileError(_UnclassifiableFileError):
-    """A filesystem entry that must never be opened by content discovery."""
 
 
 def _display_path(path: Path) -> str:
@@ -57,150 +41,51 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
-def _repo_files() -> list[Path]:
-    """Walk repository-owned files while pruning generated and nested repos."""
+def _tracked_files() -> tuple[Path, ...]:
+    """Read the repository index instead of inspecting the filesystem."""
 
-    files: list[Path] = []
-    for root, directories, filenames in os.walk(REPO_ROOT, topdown=True, followlinks=False):
-        root_path = Path(root)
-        if root_path != REPO_ROOT and (".git" in directories or ".git" in filenames):
-            directories[:] = []
-            continue
-
-        directories[:] = sorted(
-            name
-            for name in directories
-            if name not in _SKIPPED_DIRECTORIES and not (root_path / name).is_symlink()
+    command = ["git", "ls-files", "-z", "--"]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        for name in filenames:
-            if name == ".git":
-                continue
-            path = root_path / name
-            try:
-                mode = path.lstat().st_mode
-            except OSError:
-                # Keep a raced-away or otherwise unstatable path long enough
-                # for _all_dockerfiles to apply the basename fail-loud rule.
-                files.append(path)
-                continue
-            # os.walk reports FIFOs and sockets as filenames.  Never pass them
-            # to a content reader: opening a FIFO can block forever.
-            if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
-                continue
-            files.append(path)
-    return files
-
-
-def _format_os_error(operation: str, exc: OSError) -> str:
-    detail = str(exc) or "no additional details"
-    return f"{operation} failed with {type(exc).__name__}: {detail}"
-
-
-def _read_classification_text(path: Path) -> str:
-    """Read a bounded, regular-file UTF-8 snapshot for content classification."""
-
-    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-
-    try:
-        file_descriptor = os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise AssertionError(
+            f"git ls-files unavailable: git executable not found while checking {REPO_ROOT}"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        detail = os.fsdecode(exc.stderr or b"").strip()
+        raise AssertionError(
+            f"git ls-files unavailable for {REPO_ROOT}: "
+            f"repository index unavailable (exit status {exc.returncode}); "
+            f"{detail or 'git command failed without stderr'}"
+        ) from exc
     except OSError as exc:
-        raise _UnclassifiableFileError(path, _format_os_error("open", exc)) from exc
-
-    try:
-        try:
-            mode = os.fstat(file_descriptor).st_mode
-        except OSError as exc:
-            raise _UnclassifiableFileError(path, _format_os_error("stat", exc)) from exc
-        if not stat.S_ISREG(mode):
-            raise _NonRegularFileError(
-                path, f"not a regular file ({stat.filemode(mode)})"
-            )
-
-        content = bytearray()
-        while True:
-            try:
-                chunk = os.read(
-                    file_descriptor, _MAX_CLASSIFICATION_BYTES + 1 - len(content)
-                )
-            except OSError as exc:
-                raise _UnclassifiableFileError(path, _format_os_error("read", exc)) from exc
-            if not chunk:
-                break
-            content.extend(chunk)
-            if len(content) > _MAX_CLASSIFICATION_BYTES:
-                raise _UnclassifiableFileError(
-                    path,
-                    "content exceeds the safe classification limit of "
-                    f"{_MAX_CLASSIFICATION_BYTES} bytes",
-                )
-    finally:
-        try:
-            os.close(file_descriptor)
-        except OSError:
-            # A close race must not turn a completed classification into a
-            # guard crash.  The descriptor is no longer usable here anyway.
-            pass
-
-    raw_content = bytes(content)
-    if b"\x00" in raw_content:
-        raise _UnclassifiableFileError(path, "binary content contains a NUL byte")
-    try:
-        return raw_content.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise _UnclassifiableFileError(
-            path, f"content is not valid UTF-8: {exc}"
+        raise AssertionError(
+            f"git ls-files unavailable for {REPO_ROOT}: {type(exc).__name__}: {exc}"
         ) from exc
 
-
-def _is_delivery_dockerfile(path: Path) -> bool:
-    """Classify a delivery Dockerfile by its first meaningful instruction."""
-
-    for line in _read_classification_text(path).splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        return re.match(r"FROM(?:\s|$)", stripped, re.IGNORECASE) is not None
-    return False
-
-
-def _looks_like_dockerfile_name(path: Path) -> bool:
-    return _DOCKERFILE_NAME.fullmatch(path.name) is not None
+    return tuple(
+        REPO_ROOT / Path(os.fsdecode(raw_path))
+        for raw_path in result.stdout.split(b"\0")
+        if raw_path
+    )
 
 
 def _all_dockerfiles() -> tuple[Path, ...]:
-    """Find repository-owned delivery Dockerfiles regardless of their names."""
+    """Find tracked Dockerfiles by the naming conventions used in this repo."""
 
-    dockerfiles: set[Path] = set()
-    for path in _repo_files():
-        try:
-            is_delivery_dockerfile = _is_delivery_dockerfile(path)
-        except _NonRegularFileError:
-            # A path can change type after os.walk.  The fstat check in the
-            # reader makes that race safe and keeps the non-regular file out.
-            continue
-        except _UnclassifiableFileError as exc:
-            if _looks_like_dockerfile_name(path):
-                raise AssertionError(
-                    f"{path}: cannot classify Dockerfile content: {exc.reason}"
-                ) from exc
-            continue
-
-        if is_delivery_dockerfile:
-            try:
-                dockerfiles.add(path.resolve())
-            except OSError as exc:
-                failure = _UnclassifiableFileError(
-                    path, _format_os_error("resolve", exc)
-                )
-                if _looks_like_dockerfile_name(path):
-                    raise AssertionError(
-                        f"{path}: cannot classify Dockerfile path: {failure.reason}"
-                    ) from failure
-    return tuple(sorted(dockerfiles))
+    return tuple(
+        sorted(
+            path.resolve()
+            for path in _tracked_files()
+            if _DOCKERFILE_NAME.fullmatch(path.name) is not None
+        )
+    )
 
 
 def _excluded_paths() -> set[Path]:
@@ -217,7 +102,7 @@ def _excluded_paths() -> set[Path]:
 
 
 def _delivery_dockerfiles() -> tuple[Path, ...]:
-    """Return all repository-owned delivery Dockerfiles with explicit exceptions."""
+    """Return all tracked delivery Dockerfiles with explicit exceptions."""
 
     dockerfiles = set(_all_dockerfiles())
     assert dockerfiles, "repo has no Dockerfiles to protect"
@@ -237,15 +122,7 @@ def _run_instructions(path: Path) -> list[tuple[int, str]]:
     start_line: int | None = None
     lines: list[str] = []
 
-    try:
-        source = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise AssertionError(
-            f"{_display_path(path)}: classified Dockerfile became unreadable: "
-            f"{_format_os_error('read', exc) if isinstance(exc, OSError) else exc}"
-        ) from exc
-
-    for line_number, line in enumerate(source.splitlines(), 1):
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         stripped = line.lstrip()
         if stripped.startswith("#"):
             if start_line is not None:
@@ -461,219 +338,56 @@ def test_delivery_dockerfiles_clean_dcs_injection_before_each_layer_commit() -> 
     )
 
 
-def test_default_discovery_uses_content_and_prunes_non_repo_trees(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    dockerfiles = (
-        tmp_path / "services" / "newthing" / "Dockerfile",
-        tmp_path / "services" / "newthing" / "Dockerfile.dev",
-        tmp_path / "infra" / "docker" / "csp.Dockerfile",
-        tmp_path / "services" / "newthing" / "Containerfile",
-        tmp_path / "services" / "newthing" / "image.recipe",
-    )
-    for dockerfile in dockerfiles:
-        dockerfile.parent.mkdir(parents=True, exist_ok=True)
-        dockerfile.write_text("# syntax=docker/dockerfile:1\n\nFROM alpine\n", encoding="utf-8")
+def test_tracked_discovery_covers_delivery_paths_without_python_content_scan() -> None:
+    discovered = {_display_path(path) for path in _all_dockerfiles()}
 
-    late_from = tmp_path / "services" / "newthing" / "late-from.txt"
-    late_from.write_text("RUN echo not-a-dockerfile\nFROM alpine\n", encoding="utf-8")
-    (tmp_path / "apps" / "ui" / "node_modules" / "@vendor" / "invalid-yaml.yaml").parent.mkdir(
-        parents=True
-    )
-    (tmp_path / "apps" / "ui" / "node_modules" / "@vendor" / "invalid-yaml.yaml").write_text(
-        "test: '\n", encoding="utf-8"
-    )
-    for directory in ("node_modules", ".venv", "dist", "build"):
-        ignored = tmp_path / directory / "third-party" / "Containerfile"
-        ignored.parent.mkdir(parents=True, exist_ok=True)
-        ignored.write_text("FROM alpine\nRUN install evil\n", encoding="utf-8")
-
-    nested_worktree = tmp_path / "nested-worktree"
-    nested_worktree.mkdir()
-    (nested_worktree / ".git").write_text("gitdir: /outside\n", encoding="utf-8")
-    (nested_worktree / "Containerfile").write_text("FROM alpine\nRUN install evil\n", encoding="utf-8")
-
-    module = sys.modules[__name__]
-    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(module, "EXCLUDED_DOCKERFILES", {})
-
-    assert _delivery_dockerfiles() == tuple(sorted(dockerfile.resolve() for dockerfile in dockerfiles))
-
-
-def test_readable_content_is_primary_over_a_plausible_basename(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    named_like_dockerfile = tmp_path / "Dockerfile"
-    named_like_dockerfile.write_text("This is documentation\n", encoding="utf-8")
-    content_like_dockerfile = tmp_path / "release.recipe"
-    content_like_dockerfile.write_text("FROM alpine\n", encoding="utf-8")
-
-    module = sys.modules[__name__]
-    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-
-    assert _all_dockerfiles() == (content_like_dockerfile.resolve(),)
-
-
-def test_unreadable_plausible_name_fails_loud_with_path_and_reason(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    unreadable = tmp_path / "Dockerfile.private"
-    unreadable.write_text("FROM alpine\n", encoding="utf-8")
-    real_open = os.open
-
-    def deny_open(candidate: str | os.PathLike[str], flags: int) -> int:
-        if Path(candidate) == unreadable:
-            raise PermissionError("permission denied during classification")
-        return real_open(candidate, flags)
-
-    module = sys.modules[__name__]
-    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(os, "open", deny_open)
-
-    with pytest.raises(AssertionError) as excinfo:
-        _all_dockerfiles()
-
-    message = str(excinfo.value)
-    assert str(unreadable) in message
-    assert "cannot classify" in message
-    assert "PermissionError" in message
-
-
-def test_unreadable_non_docker_name_is_ignored(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    valid = tmp_path / "Dockerfile.valid"
-    valid.write_text("FROM alpine\n", encoding="utf-8")
-    unreadable = tmp_path / "release-notes.txt"
-    unreadable.write_text("FROM alpine\n", encoding="utf-8")
-    real_open = os.open
-
-    def fail_raced_read(candidate: str | os.PathLike[str], flags: int) -> int:
-        if Path(candidate) == unreadable:
-            raise OSError("file disappeared during classification")
-        return real_open(candidate, flags)
-
-    module = sys.modules[__name__]
-    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(os, "open", fail_raced_read)
-
-    assert _all_dockerfiles() == (valid.resolve(),)
+    assert "infra/codeserver/Dockerfile" in discovered
+    assert "infra/docker/csp.Dockerfile" in discovered
+    assert all(_DOCKERFILE_NAME.fullmatch(Path(path).name) for path in discovered)
+    assert not any(path.endswith(".py") for path in discovered)
 
 
 @pytest.mark.parametrize(
-    ("filename", "content", "reason"),
+    ("filename", "expected"),
     [
-        ("Dockerfile.binary", b"FROM alpine\n\x00", "binary"),
-        ("Containerfile.invalid", b"FROM alpine\n\xff", "UTF-8"),
+        ("Dockerfile", True),
+        ("Dockerfile.dev", True),
+        ("image.Dockerfile", True),
+        ("Containerfile", True),
+        ("Containerfile.dev", True),
+        ("image.Containerfile", True),
+        ("Dockerfile~", False),
+        ("Dockerfile-dev", False),
+        ("notes.md", False),
     ],
 )
-def test_binary_or_decode_failure_is_reported_for_a_plausible_name(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    filename: str,
-    content: bytes,
-    reason: str,
-) -> None:
-    unreadable = tmp_path / filename
-    unreadable.write_bytes(content)
-
-    module = sys.modules[__name__]
-    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-
-    with pytest.raises(AssertionError) as excinfo:
-        _all_dockerfiles()
-
-    message = str(excinfo.value)
-    assert str(unreadable) in message
-    assert "cannot classify" in message
-    assert reason in message
+def test_dockerfile_filename_conventions(filename: str, expected: bool) -> None:
+    assert (_DOCKERFILE_NAME.fullmatch(filename) is not None) is expected
 
 
-def test_content_over_safe_classification_limit_fails_loud(
+def test_missing_git_executable_fails_loud(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    oversized = tmp_path / "Dockerfile.oversized"
-    oversized.write_bytes(b"FROM alpine\n" + b"x" * _MAX_CLASSIFICATION_BYTES)
-
     module = sys.modules[__name__]
     monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
 
-    with pytest.raises(AssertionError) as excinfo:
+    def missing_git(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    monkeypatch.setattr(subprocess, "run", missing_git)
+
+    with pytest.raises(AssertionError, match="git ls-files unavailable: git executable not found"):
         _all_dockerfiles()
 
-    message = str(excinfo.value)
-    assert str(oversized) in message
-    assert "safe classification limit" in message
 
-
-def test_read_race_is_ignored_for_a_non_docker_name(
+def test_export_without_git_index_fails_loud(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    raced = tmp_path / "notes-race.txt"
-    raced.write_text("FROM alpine\n", encoding="utf-8")
-
-    def raise_read_race(_file_descriptor: int, _size: int) -> bytes:
-        raise OSError("file changed during classification")
-
     module = sys.modules[__name__]
     monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(os, "read", raise_read_race)
 
-    assert _all_dockerfiles() == ()
-
-
-def test_read_race_fails_loud_for_a_plausible_name(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    raced = tmp_path / "Dockerfile.race"
-    raced.write_text("FROM alpine\n", encoding="utf-8")
-
-    def raise_read_race(_file_descriptor: int, _size: int) -> bytes:
-        raise OSError("file changed during classification")
-
-    module = sys.modules[__name__]
-    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(os, "read", raise_read_race)
-
-    with pytest.raises(AssertionError) as excinfo:
+    with pytest.raises(AssertionError, match="repository index unavailable"):
         _all_dockerfiles()
-
-    message = str(excinfo.value)
-    assert str(raced) in message
-    assert "read failed" in message
-
-
-def test_dangling_symlink_is_ignored(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    valid = tmp_path / "Dockerfile.valid"
-    valid.write_text("FROM alpine\n", encoding="utf-8")
-    dangling = tmp_path / "Dockerfile.dangling"
-    try:
-        dangling.symlink_to(tmp_path / "missing-target")
-    except OSError as exc:
-        pytest.skip(f"symlinks unavailable: {exc}")
-
-    module = sys.modules[__name__]
-    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-
-    assert _all_dockerfiles() == (valid.resolve(),)
-
-
-def test_fifo_is_ignored_without_opening(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    valid = tmp_path / "Dockerfile.valid"
-    valid.write_text("FROM alpine\n", encoding="utf-8")
-    fifo = tmp_path / "Dockerfile.fifo"
-    try:
-        os.mkfifo(fifo)
-    except (AttributeError, OSError) as exc:
-        pytest.skip(f"FIFO unavailable: {exc}")
-
-    try:
-        module = sys.modules[__name__]
-        monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-
-        assert _all_dockerfiles() == (valid.resolve(),)
-    finally:
-        fifo.unlink(missing_ok=True)
 
 
 def test_exclusion_list_cannot_name_a_missing_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -683,6 +397,7 @@ def test_exclusion_list_cannot_name_a_missing_path(monkeypatch: pytest.MonkeyPat
     present = tmp_path / "present" / "Dockerfile"
     present.parent.mkdir(parents=True)
     present.write_text("FROM alpine\n", encoding="utf-8")
+    monkeypatch.setattr(module, "_all_dockerfiles", lambda: (present.resolve(),))
 
     with pytest.raises(AssertionError, match="gone/Dockerfile"):
         _delivery_dockerfiles()
@@ -693,7 +408,7 @@ def test_empty_dockerfile_root_fails_with_vacuous_pass_message(
 ) -> None:
     module = sys.modules[__name__]
     monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(module, "EXCLUDED_DOCKERFILES", {"gone/Dockerfile": "removed"})
+    monkeypatch.setattr(module, "_all_dockerfiles", lambda: ())
 
     with pytest.raises(AssertionError, match="repo has no Dockerfiles to protect"):
         _delivery_dockerfiles()
