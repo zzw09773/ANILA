@@ -358,7 +358,7 @@ def _compose_hint(env_name: str) -> str:
     )
 
 
-_OCR_REASON ="主要消費者是 ingestion-worker（另一行程，讀不到 csp DB）；搬遷需 worker 側設定通道（設計 §3.2）"
+_OCR_REASON = "主要消費者是 ingestion-worker（另一行程，讀不到 csp DB）；搬遷需 worker 側設定通道（設計 §3.2）"
 
 
 SETTINGS: tuple[SettingSpec, ...] = (
@@ -510,8 +510,17 @@ SETTINGS: tuple[SettingSpec, ...] = (
     # ── health.* / alerts.* / usage.* ────────────────────────────────────
     _spec("health.check_interval", "HEALTH_CHECK_INTERVAL", SettingClass.B_EDIT, T_INT,
           _closed_int_range(1, 86400), 60, True, "健康檢查輪詢週期（秒）。允許 1–86400。"),
+    # ⚠ 下界是 **15**，不是 1 —— 那個 15 不是這裡發明的：消費端
+    # ``alert_detectors.py:577`` 是 ``max(15, …)``（背景迴圈啟動時算一次）。宣告寫 1 的
+    # 時候，平台會**收下一個它不會照辦的值**（存 7、畫面說 7、迴圈跑 15），而且不說 ——
+    # 那正是這個頁面存在的理由所要消滅的東西。controller 2026-08-09 裁定：把宣告拉齊
+    # 現實，而不是在顯示層抄一份消費端的規則（值域的唯一來源仍然是登錄表）。消費端那
+    # 個 ``max`` 保留當安全帶 —— 它現在永遠不會再改變任何一個從畫面存進來的值。
     _spec("alerts.check_interval", "ALERT_CHECK_INTERVAL", SettingClass.B_EDIT, T_INT,
-          _closed_int_range(1, 86400), 60, True, "告警偵測輪詢週期（秒）。允許 1–86400。"),
+          _closed_int_range(15, 86400), 60, True,
+          "告警偵測輪詢週期（秒）。允許 15–86400。⚠ 下界 15 是消費端的硬樓地板"
+          "（alert_detectors.py:577 的 max(15, …)）：填更小的值不會讓偵測更密，"
+          "只會被靜默提到 15，所以這裡直接不收。"),
     _spec("alerts.smtp_enabled", "ANILA_ALERT_SMTP_ENABLED", SettingClass.B_LOCKED,
           T_BOOL_PYDANTIC, _accept_any, False, True, "是否寄送告警信。", _SMTP_REASON),
     _spec("alerts.smtp_host", "ANILA_ALERT_SMTP_HOST", SettingClass.B_LOCKED, T_STR,
@@ -562,9 +571,11 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("seed.links", "AUTO_REGISTER_LINKS", SettingClass.B_EDIT, T_STR, _is_str,
           "", True,
           "開機自動註冊的平台連結清單（JSON 字串）。⚠ **每次開機都會 upsert**："
-          "env 擁有的欄位（網址、圖示、說明、排序、是否公開）會照這份清單蓋回去"
-          "（auto_seed.py:96 起）；治理中心自建的連結（config_source=db）與"
-          "「是否啟用」不受影響。"),
+          "env 擁有的欄位（網址、圖示、說明、排序、是否公開、可見角色）會照這份清單"
+          "蓋回去（auto_seed.py:96 起）。兩種例外不會被蓋："
+          "治理中心自建的連結（config_source=db 整列跳過），"
+          "以及列在該列 db_editable_fields 裡的欄位（目前是「是否啟用」）—— "
+          "管理員在畫面上改過的那些，seed 不會還原。"),
     _spec("seed.api_keys", "AUTO_SEED_API_KEYS", SettingClass.A, T_STR, _is_str,
           "", True,
           "開機自動建立的帳號與 API key 清單（JSON 字串）。⚠ 值裡面內嵌 API key，"

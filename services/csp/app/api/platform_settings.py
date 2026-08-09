@@ -179,7 +179,15 @@ def _effective_and_source(db: Session, spec: SettingSpec, snapshot) -> tuple[Any
         # 套了什麼」，套完之後有人再動到欄位，它不會知道。
         return getattr(settings, spec.env_name), source
     value = _env_layer(spec)
-    return (spec.default if value is _NO_VALUE else value), source
+    if value is _NO_VALUE:
+        # env 沒設，**或**設了卻讀不回來（解不開／落在值域外）—— 兩種情況跑的都是程式
+        # 預設值，來源就必須說 ``default``。⚠ 這裡曾經一律回 ``source``（＝``env``，因為
+        # 那個變數確實有設）：那是存取層不變式 4 點名的謊——「跑的既然不是他設的值，
+        # 就不可以說是他設的」。畫面會告訴管理員他 compose 裡那個打錯的值正在生效，
+        # 而真正在跑的是程式預設。``resolve_setting`` 對 C 類早就處理對了，這條路是
+        # 本模組自己走的，補上（fix round 1，實測見 test_an_unreadable_env_value_…）。
+        return spec.default, SOURCE_DEFAULT
+    return value, source
 
 
 def _is_set(spec: SettingSpec) -> bool:

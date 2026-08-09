@@ -17,7 +17,7 @@ B 類開機覆蓋。剩下最後一個、也是最容易長出來的：**畫面�
    包含錯誤訊息、``default`` 欄、以及「有人繞過 API 寫進 DB 的那一列」。
    釘法：13 顆全部植入 sentinel（env ＋ ``settings`` 欄位 ＋ DB 列三路），
    然後對整份 JSON 做**字串**掃描，不是逐欄位抽查。
-3. **鎖定類別其實收得下來**。釘法：非可編輯的**全名單**逐顆 PUT（76 顆，
+3. **鎖定類別其實收得下來**。釘法：非可編輯的**全名單**逐顆 PUT（64 顆，
    由登錄表推導，零手抄），每一顆都要 400、都要把鎖定理由講給人聽、
    而且不可以留下任何一列。
 4. **值改了、沒有人知道是誰改的**。釘法：稽核事件與設定寫入必須同一個交易——
@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import os
 import pathlib
 
@@ -138,6 +139,25 @@ def _overview(client, token) -> dict:
     return resp.json()
 
 
+def _consumer_alert_floor() -> int:
+    """``alert_detectors`` 那個 ``max(15, …)`` 裡的 15 —— 從**原始碼**讀，不抄。
+
+    抄一份到測試裡，「宣告 ＝ 現實」就只是修訂當天為真的一句話：消費端改成
+    ``max(30, …)`` 而登錄表沒跟上時，沒有任何東西會紅。
+    """
+    import inspect
+
+    from app.services import alert_detectors
+
+    source = inspect.getsource(alert_detectors)
+    match = re.search(
+        r"max\(\s*(\d+)\s*,\s*int\(\s*getattr\(\s*settings\s*,\s*[\"']ALERT_CHECK_INTERVAL",
+        source,
+    )
+    assert match, "找不到 alert_detectors 的樓地板 —— 這一支的前提要重寫"
+    return int(match.group(1))
+
+
 def _row(body: dict, key: str) -> dict:
     for item in body["items"]:
         if item["key"] == key:
@@ -225,15 +245,15 @@ def test_b_class_effective_stored_and_pending_are_three_different_values(
 ):
     """三態分辨：**存的**、**現在生效的**、**重啟後才生效的**必須各自看得出來。
 
-    情境：開機時套用了 7（快照 applied=7、欄位=7），開機之後管理員又改成 23。
-    此刻 stored=23、effective=7、env 層是 3600——三個值互不相同，也都不等於
+    情境：開機時套用了 17（快照 applied=17、欄位=17），開機之後管理員又改成 23。
+    此刻 stored=23、effective=17、env 層是 3600——三個值互不相同，也都不等於
     登錄表預設 60。任何一種「拿快照當生效值」或「拿 stored 當生效值」的實作，
     在這裡都會露出來。
     """
-    set_setting(db, "alerts.check_interval", 7)
+    set_setting(db, "alerts.check_interval", 17)
     db.commit()
     snapshot = simulated_boot(db)
-    assert snapshot.applied["alerts.check_interval"] == 7
+    assert snapshot.applied["alerts.check_interval"] == 17
 
     put = client.put(
         _put_url("alerts.check_interval"), json={"value": 23}, headers=_auth(admin_token)
@@ -242,12 +262,60 @@ def test_b_class_effective_stored_and_pending_are_three_different_values(
 
     row = _row(_overview(client, admin_token), "alerts.check_interval")
     assert row["stored"] == "23", "DB 列的原值"
-    assert row["effective"] == 7, "現在真正在跑的是開機時套上去的那個值"
+    assert row["effective"] == 17, "現在真正在跑的是開機時套上去的那個值"
     assert row["pending"] == 23, "重啟之後才會變成 23"
     assert row["source"] == "db-boot"
     assert row["restart_required"] is True
     # PUT 的回應就是這一列（改完立刻看得到分態）。
     assert put.json() == row
+
+
+PUT_ROW_CASES = {
+    # key: (送出去的值, 期望的 stored 字串)
+    "proxy.llm_timeout": (137, "137"),        # C：改完立刻生效
+    "usage.batch_size": (73, "73"),           # B_EDIT：改完要等重啟
+}
+
+
+@pytest.mark.parametrize("key", sorted(PUT_ROW_CASES))
+def test_the_put_response_is_the_same_truth_as_the_overview_row(
+    client, admin_token, db, key
+):
+    """不變式：**PUT 的回應與緊接的 overview，對同一顆 key 必須逐欄位相同。**
+
+    brief 寫的是「回應＝該列的 overview payload」，而原本唯一的全列比對騎在一顆
+    B_EDIT 上——B 類的生效值本來就不隨寫入改變（前後都是 7），比不出來。驗收的 P2
+    因此可以把回應的 ``effective`` 換成寫入**之前**的值而 125 全綠：實測回應說
+    ``stored=137, effective=120``，同一顆的 overview 卻說 137。管理員改完 C 類設定，
+    畫面說值還是舊的 → 以為沒生效 → 再按一次。這正是本頁要消滅的形狀。
+
+    所以這一支兩類都跑，而且比的是**整列**（未來多一個欄位也自動涵蓋），
+    不是挑幾格對。
+    """
+    value, rendered = PUT_ROW_CASES[key]
+    spec = REGISTRY[key]
+    before = _row(_overview(client, admin_token), key)
+    assert before["stored"] is None
+    assert before["effective"] != value, f"{key} 的測試值撞到改之前的生效值 —— 會假綠"
+
+    put = client.put(_put_url(key), json={"value": value}, headers=_auth(admin_token))
+    assert put.status_code == 200, put.text
+    body = put.json()
+    after = _row(_overview(client, admin_token), key)
+
+    assert body == after, "PUT 的回應與 overview 對同一顆 key 說了不同的話"
+    assert body["stored"] == rendered
+
+    if spec.setting_class is SettingClass.C:
+        # 改完下一個請求就生效 —— 回應就必須已經是新值。
+        assert body["effective"] == value
+        assert body["pending"] is None
+        assert get_setting(db, key) == value
+    else:
+        # 要等重啟 —— 回應必須說「還沒生效」，而不是假裝已經生效。
+        assert body["effective"] != value
+        assert body["pending"] == value
+        assert body["restart_required"] is True
 
 
 def test_a_row_written_after_boot_is_pending_not_effective(client, admin_token, db):
@@ -277,13 +345,13 @@ def test_effective_follows_the_field_the_consumers_read_not_the_snapshot(
     ``getattr(settings, field)`` **必然相等**——「不可以拿快照當生效值」這條規則在
     那個狀態下根本問不出來（實測：一個「優先讀 applied、否則讀欄位」的實作可以讓
     整檔全綠）。所以這裡在開機之後把欄位改掉（模擬任何一個在 hook 之後動到那顆
-    單例的路徑），讓兩個來源分岔：快照說 7，欄位說 4321。消費模組手上的是**欄位**，
+    單例的路徑），讓兩個來源分岔：快照說 17，欄位說 4321。消費模組手上的是**欄位**，
     畫面就必須說 4321。
     """
-    set_setting(db, "alerts.check_interval", 7)
+    set_setting(db, "alerts.check_interval", 17)
     db.commit()
     snapshot = simulated_boot(db)
-    assert snapshot.applied["alerts.check_interval"] == 7
+    assert snapshot.applied["alerts.check_interval"] == 17
 
     monkeypatch.setattr(settings, "ALERT_CHECK_INTERVAL", 4321, raising=False)
 
@@ -292,28 +360,41 @@ def test_effective_follows_the_field_the_consumers_read_not_the_snapshot(
     assert row["source"] == "db-boot", "來源仍然是這次開機套上去的那一層"
 
 
-def test_the_effective_column_is_the_settings_value_not_the_consumer_floor(
-    client, admin_token, db, simulated_boot
-):
-    """⚠ **已揭露的落差**：``alert_detectors.py:577`` 是 ``max(15, …)``。
+def test_the_declared_lower_bound_is_the_consumers_real_floor(client, admin_token, db):
+    """**收得下來的 ＝ 跑得出來的**——這一顆的下界不是挑的，是消費端量的。
 
-    存 7 進去，欄位上是 7、快照 applied 也是 7，但背景迴圈實際用的是 15。
-    ``effective`` 照定義回 7（那是 ``settings`` 上的值，也是登錄表值域裡的值），
-    登錄表沒有宣告這個樓地板、本包也不准改那一顆的文字，所以**不把 15 抄進
-    payload**——抄一份消費端的規則進顯示層，正是登錄表 docstring 說的那種病。
-    這一支把落差釘成**已知**，Task 5 報告列為 concern（帳本 Task 4 carry 1）。
+    2026-08-09 controller 裁決之前：值域宣告 1–86400，而 ``alert_detectors.py:577``
+    是 ``max(15, …)``（背景迴圈啟動時算一次）。於是管理員存 7、畫面說 7、迴圈其實
+    跑 15 —— **平台收下了一個它不會照辦的值，而且不說**。那是假控制項的定義，也是
+    這個頁面存在的理由要消滅的東西。裁定的修法是把**宣告拉齊現實**（下界改 15），
+    不是在顯示層抄一份消費端的規則（值域的唯一來源仍然只有登錄表一處）。
+
+    ⚠ 下界不是寫死在這支測試裡的：它從 ``alert_detectors`` 的**原始碼**把那個樓地板
+    讀出來比對。哪天消費端改成 ``max(30, …)`` 而登錄表沒跟上，這裡會紅 —— 否則
+    「宣告 ＝ 現實」就只是修訂當天為真的一句話。
     """
-    from app.services import alert_detectors
+    spec = REGISTRY["alerts.check_interval"]
+    low, high = spec.domain_fn.bounds
+    assert low == _consumer_alert_floor(), (
+        "登錄表宣告的下界與消費端的樓地板對不上 —— 兩者必須是同一個數字"
+    )
 
-    set_setting(db, "alerts.check_interval", 7)
-    db.commit()
-    simulated_boot(db)
+    refused = client.put(
+        _put_url("alerts.check_interval"), json={"value": low - 8}, headers=_auth(admin_token)
+    )
+    assert refused.status_code == 400, refused.text
+    detail = refused.json()["detail"]
+    assert str(low) in detail and str(high) in detail, "拒絕訊息要把合法區間講出來"
+    assert db.get(PlatformSetting, "alerts.check_interval") is None, "被拒還是留了一列"
 
-    row = _row(_overview(client, admin_token), "alerts.check_interval")
-    assert row["effective"] == 7
-    consumer_floor = max(15, int(getattr(alert_detectors.settings, "ALERT_CHECK_INTERVAL")))
-    assert consumer_floor == 15, "樓地板不見了——這一支的前提要重寫"
-    assert row["effective"] != consumer_floor
+    # 下界本身收得下來，而且存進去之後消費端那個 max 對它是 no-op：
+    # 值域裡的每一個值都不會再被靜默改寫。
+    ok = client.put(
+        _put_url("alerts.check_interval"), json={"value": low}, headers=_auth(admin_token)
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["stored"] == str(low)
+    assert max(_consumer_alert_floor(), low) == low
 
 
 def test_a_row_that_cannot_be_read_back_is_shown_as_unusable(client, admin_token, db):
@@ -343,6 +424,142 @@ def test_a_broken_b_class_row_never_advertises_a_pending_value(client, admin_tok
     assert row["stored_usable"] is False
     assert row["pending"] is None
     assert row["effective"] == 100
+
+
+# ── 2b. env 那一層：29 顆設定的生效值走這條路 ──────────────────────────────
+
+
+def _env_layer_specs():
+    """走 ``_env_layer`` 的那一批：非 C、非 A，且 ``Settings`` 上**沒有**這個欄位。
+
+    名單由登錄表推導。這批的讀取點（``url_guard``／``card_auth``／``ocr``）自己讀
+    ``os.environ``，而且**每一顆的真值判準都不一樣**——登錄表存在的第一個理由。
+    """
+    return [
+        spec
+        for spec in SETTINGS
+        if spec.setting_class not in (SettingClass.C, SettingClass.A)
+        and spec.env_name is not None
+        and spec.env_name not in Settings.model_fields
+    ]
+
+
+#: 每一顆走的是**它自己那個讀取點**的字串規則。這裡刻意把五種互不相容的真值判準
+#: 全部拉出來問一次，而且值一律不等於登錄表預設（否則「讀了 env」與「回了預設」
+#: 會一起變綠 —— 驗收的 P3 就是這樣讓 ``_env_layer`` 整段變成死碼還 125 全綠的）。
+ENV_LAYER_CASES = [
+    # (key, env 字串, 期望的生效值, 說明)
+    ("network.allow_http_model_endpoint", "1", True, "== '1' 判準：1 才是開"),
+    ("network.allow_private_endpoint", " 1 ", True, "== '1' 判準會先 strip"),
+    # SEC 類的開發豁免：驗收 P3 實際翻掉的就是這一顆。
+    ("auth.allow_dev_secret", "1", True, "開發祕密豁免真的開著時要說開著"),
+    # 兄弟旗標，判準差一個 strip()。
+    ("card.dev_trust_test_ca", " yes ", True, "card_auth:109 有 strip"),
+    ("card.dev_skip_nonce_binding", "true", True, "沒有空白就收得下來"),
+    ("ingestion.pdf_ocr_fallback", "TRUE", True, "lower()=='true'：大小寫不拘"),
+    ("ingestion.vision_verify_ssl", "false", False, "預設 True，env 關掉要看得見"),
+    # 非布林的三種型別也各問一顆。
+    ("queue.token_revocation_redis_timeout", "7.5", 7.5, "float"),
+    ("ingestion.pdf_ocr_dpi", "137", 137, "int"),
+    ("memory.llm_model", "anila-probe-model-4321", "anila-probe-model-4321", "str"),
+]
+
+
+def test_the_env_layer_covers_the_keys_this_file_thinks_it_covers():
+    """名單是推導的；這一支只是把「29 顆」說出來，並確認案例真的落在這批裡。"""
+    specs = {spec.key for spec in _env_layer_specs()}
+    assert len(specs) == 29, f"走 env 層的顆數變了：{len(specs)}"
+    for key, *_ in ENV_LAYER_CASES:
+        assert key in specs, f"{key} 不走 _env_layer —— 這一支問錯路了"
+
+
+@pytest.mark.parametrize(
+    "key,raw,expected,why",
+    ENV_LAYER_CASES,
+    ids=[f"{k}={r!r}" for k, r, _e, _w in ENV_LAYER_CASES],
+)
+def test_the_env_layer_reads_each_key_with_its_own_string_rule(
+    client, admin_token, monkeypatch, key, raw, expected, why
+):
+    """畫面上的值必須跟著**那一顆自己的** ``parse`` 走，不是跟著登錄表預設走。
+
+    這條路覆蓋 29 顆（``url_guard``／卡登／OCR 的讀取點），而在 fix round 1 之前
+    **沒有任何測試用非預設值問過它**：把整段 ``_env_layer`` 換成「回 `_NO_VALUE`」
+    ——等於這一層變死碼、29 顆全部退回程式預設——125 個測試一個都沒紅，
+    而 SEC 類的 ``auth.allow_dev_secret`` 從 True 翻成 False（豁免實際開著、
+    畫面說關著），``source`` 還照樣寫 ``env``。值與來源互相矛盾，且沒有錯誤訊息。
+    """
+    spec = REGISTRY[key]
+    assert expected != spec.default, f"{key} 的期望值撞到登錄表預設 —— 會假綠（{why}）"
+    monkeypatch.setenv(spec.env_name, raw)
+
+    row = _row(_overview(client, admin_token), key)
+    assert row["effective"] == expected, f"{key}：{why}"
+    assert row["source"] == "env", "值來自 env，來源就要說 env"
+
+
+#: 「這個字串在這一顆是**關**」的案例。單獨問分不出來——那三顆的登錄表預設也是
+#: ``False``，所以「真的按規則讀成關」與「根本沒讀、回了預設」會一起變綠（這正是
+#: 驗收 P3 的假綠機制）。所以一律成對問：同一顆、兩個字串、一關一開。
+ENV_LAYER_FLIP_CASES = [
+    # (key, 讀成關的字串, 讀成開的字串, 為什麼)
+    # ⚠ 模組 docstring 自己點名的那個案例：url_guard 的判準是 ``strip() == "1"``，
+    # 所以 "true" 在這一顆是**關**。用通用 bool 解析的畫面會說它開著。
+    ("network.allow_http_model_endpoint", "true", "1", "== '1'：true 是關、1 才是開"),
+    # 兄弟旗標差一個 ``strip()``：帶空白的 " true " 在這一顆是關，去掉空白才是開。
+    ("card.dev_skip_nonce_binding", " true ", "true", "card_auth:121 沒有 strip"),
+    # ocr 的判準是 ``lower() == "true"``：這一顆的 "1" 是關。
+    ("ingestion.pdf_ocr_fallback", "1", "true", "lower()=='true'：1 是關"),
+]
+
+
+@pytest.mark.parametrize(
+    "key,raw_off,raw_on,why",
+    ENV_LAYER_FLIP_CASES,
+    ids=[k for k, _o, _n, _w in ENV_LAYER_FLIP_CASES],
+)
+def test_a_string_that_reads_as_off_is_not_the_same_as_no_value_at_all(
+    client, admin_token, monkeypatch, key, raw_off, raw_on, why
+):
+    """同一顆、兩個字串、一關一開 —— 兩個斷言一起才問得出「規則真的被套用了」。
+
+    這三顆的登錄表預設都是 ``False``，所以「按規則讀成關」與「這一層是死碼、
+    回了預設」單看一次是分不出來的。成對問就分得出來：死碼實作在「開」那一邊
+    只能回 False。⚠ 這也是本檔第二次踩到同一條帳本規則（值不可以等於場上的預設），
+    第一次是 M4；差別是這次由測試自己的守衛當場攔下來。
+    """
+    spec = REGISTRY[key]
+
+    monkeypatch.setenv(spec.env_name, raw_off)
+    off = _row(_overview(client, admin_token), key)
+    assert off["effective"] is False, f"{key}：{why}"
+
+    monkeypatch.setenv(spec.env_name, raw_on)
+    on = _row(_overview(client, admin_token), key)
+    assert on["effective"] is True, f"{key}：{why}"
+    assert on["effective"] != spec.default, "「開」那一邊必須不等於預設，否則整支假綠"
+
+
+def test_an_unreadable_env_value_is_reported_as_default_not_as_env(
+    client, admin_token, monkeypatch
+):
+    """env 有設但讀不回來時，``source`` **不可以**還說 env。
+
+    存取層不變式 4：跑的既然不是他設的值，就不可以說是他設的。這一格在 fix round 1
+    之前是錯的（實測 ``PDF_OCR_DPI=not-a-number`` → ``effective=200``、``source='env'``）：
+    畫面會告訴管理員他 compose 裡那個打錯的值正在生效，而真正在跑的是程式預設 ——
+    正是這個頁面要消滅的那種「不會有錯誤訊息的分歧」。
+    """
+    monkeypatch.setenv("PDF_OCR_DPI", "not-a-number")
+    row = _row(_overview(client, admin_token), "ingestion.pdf_ocr_dpi")
+    assert row["effective"] == 200, "壞值要退回程式預設"
+    assert row["source"] == "default", "退回預設了，來源就不可以說 env"
+
+    # 值域外的值同理（解得開、但不在值域裡）。
+    monkeypatch.setenv("TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS", "999")
+    row = _row(_overview(client, admin_token), "queue.token_revocation_redis_timeout")
+    assert row["effective"] == 2.0
+    assert row["source"] == "default"
 
 
 # ── 3. 開機覆蓋沒載入的時候，畫面要照實說 ──────────────────────────────────
@@ -405,6 +622,27 @@ def _a_specs():
     return [s for s in SETTINGS if s.setting_class is SettingClass.A]
 
 
+def _plant_a_class_sentinels(db, monkeypatch) -> dict[str, str]:
+    """13 顆祕密**三路**植入可辨識的值，回 ``{key: sentinel}``。
+
+    三路：``os.environ``（env 層）、``settings`` 欄位（``.env`` 檔那一層）、以及一列
+    繞過 API 寫進 ``platform_settings`` 的 DB 列。名單由登錄表推導並釘住顆數 ——
+    多一顆祕密而沒有人告訴掃描器，是這個頁面最貴的那種漏。
+    """
+    specs = _a_specs()
+    assert len(specs) == 13, "A 類名單變了——遮蔽掃描要跟著走"
+    sentinels: dict[str, str] = {}
+    for index, spec in enumerate(specs):
+        sentinel = f"anila-secret-sentinel-{index}-4321"
+        sentinels[spec.key] = sentinel
+        monkeypatch.setenv(spec.env_name, sentinel)
+        if spec.env_name in Settings.model_fields:
+            monkeypatch.setattr(settings, spec.env_name, sentinel, raising=False)
+        db.add(PlatformSetting(key=spec.key, value=sentinel))
+    db.commit()
+    return sentinels
+
+
 def test_no_secret_value_appears_anywhere_in_the_overview(
     client, admin_token, db, monkeypatch
 ):
@@ -414,18 +652,8 @@ def test_no_secret_value_appears_anywhere_in_the_overview(
     以及一列繞過 API 寫進 ``platform_settings`` 的 DB 列。逐欄位抽查會漏掉
     ``default`` 欄、錯誤訊息、以及任何一個「順手回出去」的新欄位；字串掃描不會。
     """
+    sentinels = _plant_a_class_sentinels(db, monkeypatch)
     specs = _a_specs()
-    assert len(specs) == 13, "A 類名單變了——遮蔽掃描要跟著走"
-
-    sentinels = {}
-    for index, spec in enumerate(specs):
-        sentinel = f"anila-secret-sentinel-{index}-4321"
-        sentinels[spec.key] = sentinel
-        monkeypatch.setenv(spec.env_name, sentinel)
-        if spec.env_name in Settings.model_fields:
-            monkeypatch.setattr(settings, spec.env_name, sentinel, raising=False)
-        db.add(PlatformSetting(key=spec.key, value=sentinel))
-    db.commit()
 
     resp = client.get(OVERVIEW_URL, headers=_auth(admin_token))
     assert resp.status_code == 200, resp.text
@@ -440,6 +668,42 @@ def test_no_secret_value_appears_anywhere_in_the_overview(
         assert row["stored"] is None
         assert row["default"] is None
         assert row["is_set"] is True
+
+
+def test_no_secret_value_escapes_through_any_response_this_router_returns(
+    client, admin_token, db, monkeypatch
+):
+    """遮蔽是**這個 router 的**不變式，不是「overview 這一支」的不變式。
+
+    A 類的 PUT 必然是 400，而 400 的 detail 正是最容易被善意加料的地方
+    （「順便告訴他目前值是什麼」）。驗收的 P4 證實那條路今天沒有守門員：
+    讓 detail 附上 ``os.environ.get(env_name)``，``SECRET_KEY`` 的 sentinel 直接出現在
+    回應 body，而 125 個測試一個都沒紅。所以掃描要跟著**表面**走，不是跟著端點走：
+    13 顆各發一次 PUT、掃 400 的原始字串，順帶把未知 key 的 404 也掃過
+    （它會把使用者送上來的 key 原樣回出去，是同一類的加料面）。
+    """
+    sentinels = _plant_a_class_sentinels(db, monkeypatch)
+
+    surfaces: list[tuple[str, str]] = []
+    for spec in _a_specs():
+        refused = client.put(
+            _put_url(spec.key),
+            json={"value": "anila-probe-4321"},
+            headers=_auth(admin_token),
+        )
+        assert refused.status_code == 400, f"{spec.key} 竟然不是 400：{refused.text}"
+        assert spec.locked_reason in refused.json()["detail"]
+        surfaces.append((f"PUT {spec.key} 的 400", refused.text))
+
+    unknown = client.put(
+        _put_url("auth.secret_keyy"), json={"value": 1}, headers=_auth(admin_token)
+    )
+    assert unknown.status_code == 404
+    surfaces.append(("未知 key 的 404", unknown.text))
+
+    for label, raw in surfaces:
+        for key, sentinel in sentinels.items():
+            assert sentinel not in raw, f"{key} 的值從「{label}」漏出去了"
 
 
 def test_is_set_is_false_when_only_the_code_default_is_in_play(
