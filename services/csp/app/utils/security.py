@@ -69,15 +69,27 @@ def verify_password(plain_password: str, hashed_password: str | None) -> bool:
         return False
     if not isinstance(hashed_password, str):
         raise TypeError("password and hashed password must be strings")
-    # bcrypt 5 rejects the legacy bare "$2$" identifier. Do not relabel it as
-    # "$2b$": the old digest is not equivalent under that rewrite, so fail closed.
-    if hashed_password.startswith("$2$"):
-        return False
     # Keep verification byte-for-byte symmetric with hash_password and passlib.
     password_bytes = plain_password.encode("utf-8")[:_BCRYPT_MAX_PASSWORD_BYTES]
+    bcrypt_hash = hashed_password
+    if hashed_password.startswith("$2$"):
+        # bcrypt 5 rejects the legacy bare "$2$" identifier. Passlib's
+        # fallback for backends without native "$2$" support repeated a
+        # non-empty password to 72 bytes before using the compatible bcrypt
+        # implementation; reproduce that input transformation before using
+        # the accepted "$2b$" identifier. The 72-byte limit keeps the old
+        # wraparound distinction unreachable.
+        bcrypt_hash = "$2b$" + hashed_password[len("$2$"):]
+        if password_bytes:
+            repeat_count = (
+                _BCRYPT_MAX_PASSWORD_BYTES + len(password_bytes) - 1
+            ) // len(password_bytes)
+            password_bytes = (
+                password_bytes * repeat_count
+            )[:_BCRYPT_MAX_PASSWORD_BYTES]
     return bcrypt.checkpw(
         password_bytes,
-        hashed_password.encode("ascii"),
+        bcrypt_hash.encode("ascii"),
     )
 
 

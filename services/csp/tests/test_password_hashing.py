@@ -15,6 +15,34 @@ LEGACY_BARE_BCRYPT_HASH = "$2$12$2bCOQitoAIFTNEMzyEssfu.hWjorcG0S5YF6fwmzre/j4y9
 LEGACY_PASSLIB_BCRYPT_HASH = "$2b$12$Chzl3YRRv.pMg5VKcDmXW.68qjZiFmc9TBUEXHqB/X9X54H6mY6om"
 LEGACY_PASSWORD = "fixture-legacy-password"
 
+LEGACY_PREFIX_CASES = (
+    (
+        "$2$",
+        LEGACY_BARE_BCRYPT_PASSWORD,
+        LEGACY_BARE_BCRYPT_HASH,
+    ),
+    (
+        "$2a$",
+        LEGACY_PASSWORD,
+        LEGACY_PASSLIB_BCRYPT_HASH.replace("$2b$", "$2a$", 1),
+    ),
+    (
+        "$2b$",
+        LEGACY_PASSWORD,
+        LEGACY_PASSLIB_BCRYPT_HASH,
+    ),
+    (
+        "$2x$",
+        LEGACY_PASSWORD,
+        LEGACY_PASSLIB_BCRYPT_HASH.replace("$2b$", "$2x$", 1),
+    ),
+    (
+        "$2y$",
+        LEGACY_PASSWORD,
+        LEGACY_PASSLIB_BCRYPT_HASH.replace("$2b$", "$2y$", 1),
+    ),
+)
+
 
 def test_verifies_hash_written_by_legacy_passlib() -> None:
     assert verify_password(LEGACY_PASSWORD, LEGACY_PASSLIB_BCRYPT_HASH)
@@ -38,7 +66,6 @@ def test_hashing_keeps_bcrypt_format_and_cost() -> None:
 
 def test_passwords_preserve_historical_72_byte_truncation() -> None:
     cases = (
-        ("ascii-72", "A" * 72, "A" * 72),
         ("ascii-73", "A" * 73, "A" * 72),
         ("cjk-75-bytes", "你" * 25, "你" * 24),
     )
@@ -46,6 +73,20 @@ def test_passwords_preserve_historical_72_byte_truncation() -> None:
         hashed = hash_password(password)
         assert verify_password(password, hashed), label
         assert verify_password(truncated_password, hashed), label
+
+
+def test_byte_truncation_does_not_decode_a_partial_utf8_character() -> None:
+    password = "A" * 70 + "你"
+    password_with_suffix = password + "-suffix"
+    truncated_bytes = password.encode("utf-8")[:72]
+
+    assert len(truncated_bytes) == 72
+    with pytest.raises(UnicodeDecodeError):
+        truncated_bytes.decode("utf-8")
+
+    hashed = hash_password(password)
+    assert verify_password(password, hashed)
+    assert verify_password(password_with_suffix, hashed)
 
 
 def test_old_passlib_overlong_hash_still_verifies() -> None:
@@ -65,11 +106,19 @@ def test_nul_bytes_are_accepted_without_nul_termination() -> None:
     assert not verify_password(second, hashed)
 
 
-def test_bare_bcrypt_prefix_is_rejected_fail_closed() -> None:
-    assert not verify_password(
-        LEGACY_BARE_BCRYPT_PASSWORD,
-        LEGACY_BARE_BCRYPT_HASH,
-    )
+@pytest.mark.parametrize(
+    ("prefix", "password", "hashed_password"),
+    LEGACY_PREFIX_CASES,
+    ids=("bare-2", "2a", "2b", "2x", "2y"),
+)
+def test_legacy_bcrypt_prefixes_keep_old_verifications(
+    prefix: str,
+    password: str,
+    hashed_password: str,
+) -> None:
+    assert hashed_password.startswith(prefix)
+    verified = verify_password(password, hashed_password)
+    assert verified is True, prefix
 
 
 def test_none_handling_matches_legacy_wrapper() -> None:
