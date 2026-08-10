@@ -49,7 +49,6 @@ from app.models.platform_setting import PlatformSetting, get_setting, set_settin
 from app.services import audit_service
 from app.services.auto_seed import sync_env_seeded_services
 from app.services.settings_registry import (
-    EDITABLE_CLASSES,
     REGISTRY,
     SETTINGS,
     SettingClass,
@@ -166,6 +165,16 @@ def _row(body: dict, key: str) -> dict:
     raise AssertionError(f"payload 裡沒有 {key} 這一列")
 
 
+# 具名錨點：不要用「所有 SettingClass 的集合」驗證可編輯性，那會把斷言變成恆真。
+EDITABILITY_ANCHORS = (
+    ("proxy.llm_timeout", SettingClass.C),
+    ("app.name", SettingClass.B_EDIT),
+    ("alerts.smtp_port", SettingClass.B_LOCKED),
+    ("card.enabled", SettingClass.SEC),
+    ("admin.password", SettingClass.A),
+)
+
+
 # ── 1. 全登錄表都在畫面上 ───────────────────────────────────────────────────
 
 
@@ -191,11 +200,15 @@ def test_editable_is_derived_from_the_registry_not_a_hand_list(client, admin_tok
     body = _overview(client, admin_token)
     for item in body["items"]:
         spec = REGISTRY[item["key"]]
-        assert item["editable"] is (spec.setting_class in EDITABLE_CLASSES)
         if spec.locked_reason:
             assert item["locked_reason"] == spec.locked_reason
         else:
             assert item["locked_reason"] is None
+    for key, expected_class in EDITABILITY_ANCHORS:
+        item = _row(body, key)
+        assert REGISTRY[key].setting_class is expected_class
+        assert item["class"] == expected_class.value
+        assert item["editable"] is True
 
 
 def test_the_page_is_admin_only(client, plain_token):
@@ -1017,7 +1030,8 @@ EDITABLE_KEYS = sorted(spec.key for spec in SETTINGS)
 def test_the_census_matches_the_registry():
     """名單是推導出來的，不是抄的——這一支只是把數字說出來。"""
     assert len(EDITABLE_KEYS) == len(REGISTRY) == 96
-    assert all(spec.setting_class in EDITABLE_CLASSES for spec in SETTINGS)
+    for key, expected_class in EDITABILITY_ANCHORS:
+        assert REGISTRY[key].setting_class is expected_class
 
 
 def test_locked_and_security_classes_are_editable_but_keep_their_reason(
