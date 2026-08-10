@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import logging
-import os
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -225,16 +224,13 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-# ── 非 C 類設定的開機覆蓋 ─────────────────────────────────────────────────
+# ── B 類設定的開機覆蓋 ─────────────────────────────────────────────────────
 #
 # C 類設定改完下一個請求就生效（Task 3 把讀取點搬成 per-request）。B 類做不到
 # 那件事：它們的讀取點是背景迴圈的間隔、開機自動註冊的清單、附件落地的目錄
 # —— 全都在開機那一刻決定。擁有者裁定的機制是**開機覆蓋**（明確否決了「把值
 # 寫回 .env 再重啟」）：csp 開機、DB 可達之後、任何消費端讀到它之前，把
-# ``platform_settings`` 裡的 B_EDIT／B_LOCKED／SEC／A 覆蓋值重新驗證後蓋回**上面
-# 那個單例**，或同步到該讀取點仍使用的環境變數。C 類已有每次請求的 DB 解析，不走
-# 這條開機層。B_LOCKED 的提醒仍可能指出 import-time、其他行程或 interpreter 限制；
-# 那些限制不會因為把值同步到本行程而消失。
+# ``platform_settings`` 裡的 B-可編輯覆蓋值蓋回**上面那個單例**。
 #
 # 為什麼是就地覆寫那一顆，不是 ``model_copy`` 出一份新的
 # ======================================================
@@ -245,18 +241,18 @@ settings = Settings()
 # ``validate_assignment``（值在 ``resolve_setting`` 那一端就已經按登錄表的規則
 # 解析並過完值域了）。
 #
-# 為什麼只把 DB 那一層送進 boot 快照
-# ==================================
+# 為什麼只套 DB 那一層
+# ====================
 # ``resolve_setting`` 的回退鏈是 DB → ``os.environ`` → 程式預設，而
 # ``Settings`` 自己的值可能來自 ``.env`` **檔**（``model_config`` 有
 # ``env_file``）—— 那一層 ``os.environ`` 讀不到。把 env／預設層也蓋回去，等於
 # 用一個這個行程從來沒有用過的值取代佈署真正在跑的值。只有 ``source == db``
 # 的才是「管理員真的存過」，也只有那些才進快照。
 #
-# ⚠ 開機覆蓋會同步 Settings／env，但不會改寫 CPython 已經消費的
-# ``PYTHONUNBUFFERED``，也不會自動重建 import-time 已建立的 engine／mount／模組常數。
-# 這些欄位仍由登錄表的 B_LOCKED 提醒指出真正的部署通道；快照的 ``applied`` 表示
-# 「CSP 開機同步已完成」，不是對每個跨行程或 import-time consumer 的保證。
+# ⚠ **凡是 hook 跑之前就被消費掉的顆，都不可以是 B-可編輯。** 那包括 import
+# 期就被讀走的欄位（``DEBUG`` 進了 engine 的 ``echo``、``STATIC_DIR`` 進了
+# ``/static`` 掛載）與根本不住在 ``Settings`` 上、直接讀 ``os.environ`` 的顆。
+# 它們一律在登錄表降級成 B-鎖定 —— 留著就是畫面上的謊。
 
 #: 運維 grep 用的標記。成功與失敗兩邊都會印，所以「一行都沒有」讀得出第三種
 #: 狀態（開機沒走到這裡），而不是被誤讀成「沒有覆蓋」。
@@ -267,10 +263,8 @@ BOOT_OVERRIDE_LOG_TAG = "boot-override:"
 class BootOverrideSnapshot:
     """這一次開機到底套了什麼 —— 設定頁「來源」欄的唯一依據。
 
-    ``applied``：設定 key → 已通過值域、並同步到 CSP ``settings`` 或其 env
-    bridge 的 DB 值。**不在裡面的 key 就不是 db-boot 來的**，包括那些有列但值壞掉、
-    已經退回 env／預設的。這個快照證明的是 CSP 開機同步，不替其他行程或
-    import-time consumer 背書。
+    ``applied``：設定 key → 真的蓋到 ``settings`` 上的值。**不在裡面的 key 就
+    不是 db-boot 來的**，包括那些有列但值壞掉、已經退回 env／預設的。
 
     ``load_failed``：設定表整個讀不動。這時 ``applied`` 必然是空的，而畫面要
     照實說「這一次開機沒有載入覆蓋」——把載入失敗顯示成「沒有人設定過」，
@@ -284,24 +278,15 @@ class BootOverrideSnapshot:
     applied: Mapping[str, Any]
     load_failed: bool
     failure_reason: str
-    #: DB 列存在，但寫入後到這次開機之間已不再通過 domain_fn 的 key → 原因。
-    #: 原始值（尤其 A 類）永遠不放進來。
-    rejected: Mapping[str, str] = dataclass_field(
-        default_factory=lambda: MappingProxyType({})
-    )
 
 
 _EMPTY_OVERRIDES: Mapping[str, Any] = MappingProxyType({})
-_EMPTY_REJECTIONS: Mapping[str, str] = MappingProxyType({})
 
 #: 模組層唯讀狀態。每一次 ``apply_boot_overrides`` **整份取代**它，不累加：
 #: 同一個行程可能跑很多次 lifespan（測試的 ``TestClient`` 就是），累加會讓來源
 #: 欄記著上一輪的事。
 _current_snapshot = BootOverrideSnapshot(
-    applied=_EMPTY_OVERRIDES,
-    load_failed=False,
-    failure_reason="",
-    rejected=_EMPTY_REJECTIONS,
+    applied=_EMPTY_OVERRIDES, load_failed=False, failure_reason=""
 )
 
 
@@ -322,16 +307,13 @@ def record_boot_override_failure(reason: str) -> BootOverrideSnapshot:
     global _current_snapshot
 
     _current_snapshot = BootOverrideSnapshot(
-        applied=_EMPTY_OVERRIDES,
-        load_failed=True,
-        failure_reason=reason,
-        rejected=_EMPTY_REJECTIONS,
+        applied=_EMPTY_OVERRIDES, load_failed=True, failure_reason=reason
     )
     return _current_snapshot
 
 
 def apply_boot_overrides(db) -> BootOverrideSnapshot:
-    """把非 C 類的 DB 覆蓋值同步到 ``settings`` 與其既有 env 讀取點。
+    """把 ``platform_settings`` 裡的 B-可編輯覆蓋值蓋回 ``settings``。
 
     ``db`` 是一個已經開好的 session（呼叫端負責關）。回傳的就是新的模組層快照。
 
@@ -341,66 +323,56 @@ def apply_boot_overrides(db) -> BootOverrideSnapshot:
     """
     global _current_snapshot
 
-    from app.models.platform_setting import PlatformSetting, SOURCE_DB, resolve_setting
+    from app.models.platform_setting import SOURCE_DB, resolve_setting
     from app.services.settings_registry import SETTINGS, SettingClass
 
-    pending: list[tuple[Any, Any]] = []  # (SettingSpec, 已重新驗證的值)
-    rejected: dict[str, str] = {}
+    pending: list[tuple[str, str, Any]] = []  # (設定 key, Settings 欄位, 值)
     try:
         for spec in SETTINGS:
-            if spec.setting_class is SettingClass.C:
+            if spec.setting_class is not SettingClass.B_EDIT:
                 continue
-            if spec.env_name is None:
-                # 非 C 類目前都由 env-backed registry 宣告；若日後新增 DB-only
-                # 設定，沒有可同步的 runtime 通道時要明確列為拒絕，而不是假裝套用。
-                rejected[spec.key] = "沒有開機同步通道，已退回程式預設"
+            field = spec.env_name
+            if field is None or field not in Settings.model_fields:
+                # 登錄表把一顆蓋不到的設定標成可編輯 = 畫面上的假控制項。
+                # 測試（test_every_b_edit_entry_is_a_field_on_settings）擋在前面，
+                # 所以真的走到這裡就是登錄表出事了，要看得見。
+                logger.error(
+                    "%s 登錄表把 %s 標成 B-可編輯，但 %r 不是 Settings 的欄位 —— "
+                    "這一顆改了不會生效",
+                    BOOT_OVERRIDE_LOG_TAG,
+                    spec.key,
+                    field,
+                )
                 continue
-            row = db.get(PlatformSetting, spec.key)
             value, source = resolve_setting(db, spec.key)
-            if row is not None and source != SOURCE_DB:
-                rejected[spec.key] = "開機重新驗證未通過，已退回 env／程式預設"
             if source == SOURCE_DB:
-                pending.append((spec, value))
+                pending.append((spec.key, field, value))
     except Exception as exc:
         _current_snapshot = BootOverrideSnapshot(
             applied=_EMPTY_OVERRIDES,
             load_failed=True,
             failure_reason=f"讀取 platform_settings 失敗（{type(exc).__name__}）",
-            rejected=_EMPTY_REJECTIONS,
         )
         logger.error(
             "%s 讀取 platform_settings 失敗 —— 本次開機一律沿用環境變數與程式預設值，"
-            "管理員存過的非 C 類覆蓋一顆都沒有套用",
+            "管理員存過的 B 類覆蓋一顆都沒有套用",
             BOOT_OVERRIDE_LOG_TAG,
             exc_info=True,
         )
         return _current_snapshot
 
-    for spec, value in pending:
-        if spec.env_name in Settings.model_fields:
-            setattr(settings, spec.env_name, value)
-        # 部分既有 consumers（CA bundle、SSRF hosts、legacy migration、OCR）
-        # 仍在 per-call 或開機函式中讀 os.environ；把同一個已驗證的值同步過去。
-        # env-only 的列沒有 Settings 欄位，consumer 是否能在 bridge 後讀到仍由
-        # 該列 locked_reason 的時序／跨行程說明負責。
-        os.environ[spec.env_name] = spec.value_type.format(value)
+    for _key, field, value in pending:
+        setattr(settings, field, value)
 
     _current_snapshot = BootOverrideSnapshot(
-        applied=MappingProxyType({spec.key: value for spec, value in pending}),
+        applied=MappingProxyType({key: value for key, _field, value in pending}),
         load_failed=False,
-        failure_reason=(
-            "有 %d 顆設定覆蓋在開機重新驗證時退回 env／程式預設：%s"
-            % (len(rejected), "、".join(sorted(rejected)))
-            if rejected
-            else ""
-        ),
-        rejected=MappingProxyType(dict(rejected)),
+        failure_reason="",
     )
     logger.info(
-        "%s 套用 %d 顆管理員存過的非 C 類設定%s%s",
+        "%s 套用 %d 顆管理員存過的 B 類設定%s",
         BOOT_OVERRIDE_LOG_TAG,
         len(pending),
-        ("：" + "、".join(spec.key for spec, _value in pending)) if pending else "",
-        ("；退回：" + "、".join(sorted(rejected))) if rejected else "",
+        ("：" + "、".join(key for key, _f, _v in pending)) if pending else "",
     )
     return _current_snapshot

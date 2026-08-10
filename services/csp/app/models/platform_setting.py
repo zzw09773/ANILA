@@ -218,8 +218,6 @@ def _usable_or_nothing(spec, raw: str, layer: str) -> Any:
     **靜默成功比報錯危險**：退回下一層本身是對的（讓檢索整個炸掉的代價更高），
     但它必須留下痕跡，否則管理員會看著一個他以為設好了的值繼續用下去。
     """
-    # A 類的原始字串永遠不進 log；尤其 seed.api_keys 的 JSON 會內嵌真正的 key。
-    diagnostic_raw = "<masked>" if getattr(spec.setting_class, "value", None) == "A" else raw
     try:
         value = spec.value_type.parse(raw)
     except (TypeError, ValueError):
@@ -227,26 +225,16 @@ def _usable_or_nothing(spec, raw: str, layer: str) -> Any:
             "設定 %s 在 %s 層的值 %r 解不成 %s，改用下一層回退",
             spec.key,
             layer,
-            diagnostic_raw,
+            raw,
             spec.value_type.name,
         )
         return _NO_VALUE
-    try:
-        usable = spec.domain_fn(value)
-    except (TypeError, ValueError):
-        logger.warning(
-            "設定 %s 在 %s 層的值域函式無法驗證 %r，改用下一層回退",
-            spec.key,
-            layer,
-            diagnostic_raw,
-        )
-        return _NO_VALUE
-    if not usable:
+    if not spec.domain_fn(value):
         logger.warning(
             "設定 %s 在 %s 層的值 %r 落在值域之外（%s），改用下一層回退",
             spec.key,
             layer,
-            "<masked>" if getattr(spec.setting_class, "value", None) == "A" else value,
+            value,
             spec.description,
         )
         return _NO_VALUE
@@ -369,37 +357,24 @@ def _coerce_for(spec, value: Any) -> Any:
 def set_setting(db: Session, key: str, value: Any, *, actor: User | None = None) -> None:
     """寫入一顆設定。值域由登錄表那一筆的 ``domain_fn`` 把關 —— 與解析端同一個。
 
-    所有 registry class 都可以保存；A 類另外要求 actor 的 username 精確等於
-    ``settings_registry.SECRET_WRITE_USERNAME``。這個帳號閘門放在共用寫入層，避免
-    端點或其他呼叫端各自抄一份祕密清單／role 判準。
+    只有 C 與 B-可編輯收得下來。其餘類別（祕密、安全類、B-鎖定）在這一層就拒絕，
+    端點不必自己記得名單；拒絕訊息帶著登錄表裡的鎖定理由，因為那句話要上畫面。
 
     只 ``flush``、不 ``commit``：呼叫端要把設定與稽核事件寫在同一個交易裡，不然
     會出現「值改了但沒有人知道是誰改的」。
     """
-    from app.services.settings_registry import SECRET_WRITE_USERNAME, SettingClass, require_spec
+    from app.services.settings_registry import EDITABLE_CLASSES, require_spec
 
     spec = require_spec(key)
-    if spec.setting_class is SettingClass.A and (
-        actor is None or actor.username != SECRET_WRITE_USERNAME
-    ):
+    if spec.setting_class not in EDITABLE_CLASSES:
         raise ValueError(
-            f"{key} 是祕密設定，只能由 username={SECRET_WRITE_USERNAME} 的帳號寫入"
+            f"{key} 是 {spec.setting_class.value} 類設定，不可從畫面修改："
+            f"{spec.locked_reason}"
         )
 
     parsed = _coerce_for(spec, value)
-    try:
-        usable = spec.domain_fn(parsed)
-    except (TypeError, ValueError) as exc:
-        usable = False
-        domain_error = exc
-    else:
-        domain_error = None
-    if not usable:
-        if spec.setting_class.value == "A":
-            message = f"{key}：輸入值不符合這顆祕密設定宣告的值域"
-        else:
-            message = f"{key}：{spec.description} 收到的是 {value!r}"
-        raise ValueError(message) from domain_error
+    if not spec.domain_fn(parsed):
+        raise ValueError(f"{key}：{spec.description} 收到的是 {value!r}")
 
     rendered = spec.value_type.format(parsed)
     row = db.get(PlatformSetting, key)

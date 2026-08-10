@@ -525,7 +525,7 @@ def test_a_real_process_that_imported_with_the_flag_then_lost_it_refuses_to_boot
 # 兩顆的共同點:那一行**還在原始碼裡**,regex 掃得到。所以掃字串的測試守不住它。
 
 
-def _drive_lifespan_startup(monkeypatch, *, guard_events=None):
+def _drive_lifespan_startup(monkeypatch):
     """真的把 ``main.lifespan`` 的啟動段跑一次。回 (raised, served)。
 
     姊妹守衛先中性化,好讓「開機被拒」這件事**可歸因**到本包這一支;
@@ -534,20 +534,8 @@ def _drive_lifespan_startup(monkeypatch, *, guard_events=None):
     import app.main as main_module
     import app.services.startup_security as ss
 
-    if guard_events is None:
-        monkeypatch.setattr(ss, "assert_no_dev_defaults", lambda: None)
-        monkeypatch.setattr(ss, "assert_intranet_lockdown_consistency", lambda: None)
-    else:
-        for name in (
-            "assert_no_dev_defaults",
-            "assert_intranet_lockdown_consistency",
-            "assert_card_dev_bypass_not_in_a_real_boot",
-        ):
-            monkeypatch.setattr(
-                ss,
-                name,
-                lambda name=name: guard_events.append(name),
-            )
+    monkeypatch.setattr(ss, "assert_no_dev_defaults", lambda: None)
+    monkeypatch.setattr(ss, "assert_intranet_lockdown_consistency", lambda: None)
 
     served: list[str] = []
 
@@ -616,31 +604,6 @@ def test_a_healthy_config_still_boots_past_the_guard(monkeypatch):
     assert ran == ["ran"], (
         "健康設定下 lifespan 的啟動段沒有呼叫到守衛 —— 接線在某個分支裡消失了"
     )
-
-
-def test_startup_guards_run_once_after_boot_override(monkeypatch):
-    """安全守衛要在覆蓋完成後各跑一次，不能前後各跑一輪。"""
-    from app import config as config_module
-
-    events: list[str] = []
-    real_apply = config_module.apply_boot_overrides
-
-    def _watched_apply(db):
-        snapshot = real_apply(db)
-        events.append("boot_overrides_applied")
-        return snapshot
-
-    monkeypatch.setattr(config_module, "apply_boot_overrides", _watched_apply)
-    raised, served = _drive_lifespan_startup(monkeypatch, guard_events=events)
-
-    assert not raised, f"健康設定下開機不應失敗：{raised!r}"
-    assert served == ["serving"]
-    assert events == [
-        "boot_overrides_applied",
-        "assert_no_dev_defaults",
-        "assert_intranet_lockdown_consistency",
-        "assert_card_dev_bypass_not_in_a_real_boot",
-    ], f"開機安全守衛順序／次數不對：{events!r}"
 
 
 # ── 9. 命門的另一半:dev-card 模式判定也不准自寫（殺 A-P2／A-P2b）───────────
