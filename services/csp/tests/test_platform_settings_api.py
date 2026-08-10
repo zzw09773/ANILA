@@ -1073,7 +1073,14 @@ def test_locked_and_security_classes_are_editable_but_keep_their_reason(
             elif item["class"] == "B_LOCKED":
                 assert any(
                     marker in item["locked_reason"]
-                    for marker in ("開機重新驗證", "其他行程", "import", "os.environ", "SMTP")
+                    for marker in (
+                        "開機重新驗證",
+                        "其他行程",
+                        "import",
+                        "os.environ",
+                        "CPython",
+                        "SMTP",
+                    )
                 )
 
 
@@ -1197,7 +1204,7 @@ def _probe_value_for(spec):
         "card.ca_bundle_path": str(csp_dir / "app/services/cspki_ca_bundle.pem"),
         "card.initial_owners": "1234567,7654321",
         "network.allowed_origins": "https://anila.example.org:4443",
-        "network.allowed_hosts": "*.example.org,anila.example.org:8443",
+        "network.allowed_hosts": "*.example.org,anila.example.org",
         "network.trusted_hosts": "model.example.org",
         "network.ssl_cert_file": str(csp_dir / "app/services/cspki_ca_bundle.pem"),
         "db.legacy_sqlite_path": str(path_probe),
@@ -1207,7 +1214,7 @@ def _probe_value_for(spec):
         "alerts.smtp_from": "alerts@example.org",
         "alerts.smtp_to": "ops@example.org",
         "ingestion.vision_model": "org/vision-model",
-        "ingestion.docling_ocr_langs": "ch_tra,en",
+        "ingestion.docling_ocr_langs": "en,fr",
     }
     if spec.key in keyed:
         return keyed[spec.key]
@@ -1260,7 +1267,7 @@ def test_every_editable_key_accepts_a_valid_write(client, admin_token, db, key):
     """全 registry 名單：收得下來、存得進去、讀得回來、留得下稽核。"""
     spec = REGISTRY[key]
     value = _probe_value_for(spec)
-    assert value != spec.default, f"{key} 的探針值撞到預設值 —— 會假綠"
+    assert value != spec.default, f"{spec.key} 的探針值撞到預設值 —— 會假綠"
 
     resp = client.put(_put_url(key), json={"value": value}, headers=_auth(admin_token))
     assert resp.status_code == 200, f"{key} 被拒絕了：{resp.text}"

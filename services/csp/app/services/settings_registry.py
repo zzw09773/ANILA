@@ -706,16 +706,18 @@ _SECRET_REASON = (
 )
 _SEC_REASON = (
     "安全類 —— 可保存但要先想清楚安全影響；值域由本列 domain_fn 把關，"
-    "合法值會在下一次 CSP 開機重新驗證後同步到該行程的 Settings／env；"
+    "platform_settings 的合法值會在下一次 CSP 開機重新驗證後同步到該行程的 Settings／env；"
     "若讀取點在其他行程或 import 時已凍結，請循本列提醒變更 consumer 使用的來源"
 )
 _SEC_CARD_REASON = (
     "安全類 —— 卡登信任鏈，改錯等於放行偽卡。"
-    "合法值會在下一次 CSP 開機重新驗證後同步；卡片驗章仍會重新檢查信任錨與 dev 閘門"
+    "platform_settings 的合法值會在下一次 CSP 開機重新驗證後同步；"
+    "卡片驗章仍會重新檢查信任錨與 dev 閘門"
 )
 _SEC_TICKET_REASON = (
     "安全類 —— 延長票期等於延長被竊 token 的有效期（設計 §3.2）。"
-    "合法值會在下一次 CSP 開機重新驗證後同步；改動前請確認票期政策與重啟結果"
+    "platform_settings 的合法值會在下一次 CSP 開機重新驗證後同步；"
+    "改動前請確認票期政策與重啟結果"
 )
 _SMTP_REASON = (
     "SMTP_HOST 是出向連線目標＝SSRF 鄰接面，且 relay 方案未定（設計 §3.2）。"
@@ -753,7 +755,7 @@ def _compose_hint(env_name: str) -> str:
 
 
 _OCR_REASON = (
-    "CSP 會同步合法值到自己的 Settings／env；主要消費者是 ingestion-worker（另一行程，"
+    "CSP 會在下一次開機重新驗證後同步合法值到自己的 Settings／env；主要消費者是 ingestion-worker（另一行程，"
     "讀不到 csp DB），因此要改 worker 的實際行為仍需 worker 側設定通道（設計 §3.2）"
 )
 

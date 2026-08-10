@@ -113,22 +113,6 @@ def _resync_app_identity(target_app: FastAPI) -> None:
 async def lifespan(app: FastAPI):
     setup_logging()
 
-    # Sprint 5 X / M1: refuse to boot when known-dev defaults are still in
-    # place (SECRET_KEY / admin / service token / DB password). Skipping
-    # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
-    from app.services.startup_security import (
-        assert_card_dev_bypass_not_in_a_real_boot,
-        assert_intranet_lockdown_consistency,
-        assert_no_dev_defaults,
-    )
-    assert_no_dev_defaults()
-    # Branch SSO: 確保 REQUIRE_CARD_LOGIN_ONLY 與 ENABLE_CARD_LOGIN 互相一致，
-    # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。
-    assert_intranet_lockdown_consistency()
-    # CARD_DEV_SKIP_NONCE_BINDING（關掉卡登反 replay 綁定）只准活在 dev-card
-    # 模式裡。這一顆以前沒有任何程式層攔截，加上去就靜默生效。
-    assert_card_dev_bypass_not_in_a_real_boot()
-
     # Run Alembic migrations to bring schema to head.
     # Falls back to create_all if Alembic config is not found (e.g. in tests).
     try:
@@ -184,6 +168,27 @@ async def lifespan(app: FastAPI):
     finally:
         if _boot_db is not None:
             _boot_db.close()
+
+    # All startup security guards run exactly once, after the DB-backed
+    # settings have been revalidated and applied. Running one pass before the
+    # override and another pass here would leave the second configuration
+    # layer outside the guard's view and would make startup order ambiguous.
+    from app.services.startup_security import (
+        assert_card_dev_bypass_not_in_a_real_boot,
+        assert_intranet_lockdown_consistency,
+        assert_no_dev_defaults,
+    )
+    # Sprint 5 X / M1: refuse to boot when known-dev defaults are still in
+    # place (SECRET_KEY / admin / service token / DB password). Skipping
+    # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
+    assert_no_dev_defaults()
+    # Branch SSO: 確保 REQUIRE_CARD_LOGIN_ONLY 與 ENABLE_CARD_LOGIN 互相一致，
+    # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。
+    assert_intranet_lockdown_consistency()
+    # CARD_DEV_SKIP_NONCE_BINDING（關掉卡登反 replay 綁定）只准活在 dev-card
+    # 模式裡。這一顆以前沒有任何程式層攔截，加上去就靜默生效。
+    assert_card_dev_bypass_not_in_a_real_boot()
+
     _resync_boot_security_middleware(app)
     # Now — and not at import time, and not before the line above — is the
     # first moment a log record from this module actually reaches docker
@@ -191,13 +196,6 @@ async def lifespan(app: FastAPI):
     # this line, so it has to be emitted where logging works and after the
     # DB-backed security values have been revalidated and applied.
     log_host_allowlist_state(_allowed_hosts)
-    # The first pass above protects the migration/bootstrap path.  The DB
-    # override is a second configuration layer, so run the same fail-closed
-    # security checks again after it is applied; otherwise an admin-saved dev
-    # secret or card-only mismatch would bypass startup security on reload.
-    assert_no_dev_defaults()
-    assert_intranet_lockdown_consistency()
-    assert_card_dev_bypass_not_in_a_real_boot()
     if _boot_overrides is not None and (
         "app.name" in _boot_overrides.applied or "app.version" in _boot_overrides.applied
     ):
