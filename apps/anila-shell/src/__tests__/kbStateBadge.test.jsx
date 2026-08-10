@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 import React from "react";
 
-import { MessageBubble } from "../chat.jsx";
+import { KbStateBadge, MessageBubble } from "../chat.jsx";
 // ⚠ 元件層的 fixture 刻意呼叫**真的**映射函式,而不是在測試裡手抄一份
 // camelCase。手抄版會跟著 production 漂開,然後這一整組測試就變成在測
 // 測試自己(`dupReplyReconcile.test.js:44` 就是那個形狀)。
@@ -128,32 +128,15 @@ function kbMarkers(root = document.body) {
 describe("五狀態徽章 — 渲染", () => {
   afterEach(cleanup);
 
-  it("來源抽屜在時只移除重複的命中徽章,無來源的命中仍明示狀態", () => {
+  it("來源抽屜在時只移除重複的命中徽章", () => {
     const withSources = renderBubble(assistantMsg(REALISTIC.searched_hit));
     expect(kbMarkers(withSources.container)).toHaveLength(0);
     expect(withSources.container.textContent).toContain("查看 2 筆來源");
-    cleanup();
-
-    const withoutSources = renderBubble(
-      assistantMsg({ ...REALISTIC.searched_hit, citations: [] }),
-    );
-    const badge = withoutSources.container.querySelector(
-      '[data-testid="kb-state-searched_hit"]',
-    );
-    expect(badge).toBeTruthy();
-    expect(badge.textContent).toContain("依據院內規章");
-    expect(withoutSources.container.textContent).not.toContain("查看 ");
   });
 
   it("枚舉五態與欄位缺席,不讓薄化製造新的靜默", () => {
     const cases = [
       ["searched_hit 有來源", REALISTIC.searched_hit, false, true],
-      [
-        "searched_hit 無來源",
-        { ...REALISTIC.searched_hit, citations: [] },
-        true,
-        false,
-      ],
       ["searched_miss", REALISTIC.searched_miss, true, false],
       ["search_error", REALISTIC.search_error, true, false],
       ["partial_error", REALISTIC.partial_error, true, true],
@@ -171,6 +154,29 @@ describe("五狀態徽章 — 渲染", () => {
         container.textContent.includes("查看 2 筆來源"),
         `${name} 的來源抽屜 affordance 不符合預期`,
       ).toBe(wantsDrawer);
+      cleanup();
+    }
+  });
+
+  it("串流中來源抽屜尚未出現,有話可說的狀態仍有 badge", () => {
+    const cases = [
+      ["searched_hit", REALISTIC.searched_hit, true],
+      ["searched_miss", REALISTIC.searched_miss, true],
+      ["search_error", REALISTIC.search_error, true],
+      ["partial_error", REALISTIC.partial_error, true],
+      ["not_searched", { kb_state: "not_searched", kb_hits: [] }, false],
+      ["欄位缺席", undefined, false],
+    ];
+
+    for (const [name, fragment, wantsBadge] of cases) {
+      const { container } = renderBubble(
+        assistantMsg(fragment, { streaming: true }),
+      );
+      expect(
+        kbMarkers(container).length > 0,
+        `${name} 串流中的 badge 表面不符合預期`,
+      ).toBe(wantsBadge);
+      expect(container.textContent).not.toContain("查看 ");
       cleanup();
     }
   });
@@ -237,15 +243,16 @@ describe("五狀態徽章 — 渲染", () => {
     // 失敗庫的數量要說出來,而且要明說依據不完整。
     expect(badge.textContent).toContain("1");
     expect(badge.textContent).toMatch(/不是全部|不完整/);
-    // 但查到的那兩份還是要看得見——「不完整」不等於「什麼都不給」。
-    expect(badge.textContent).toContain("人事管理規則.pdf");
-    expect(badge.textContent).toContain("差勤作業要點.docx");
+    // 句子不是抽屜會說的話,所以保留;文件名 chips 則交給下面的來源抽屜。
+    expect(badge.querySelectorAll('[data-testid^="kb-source-"]')).toHaveLength(0);
+    expect(container.textContent).toContain("查看 2 筆來源");
   });
 
   it("查得乾淨的命中不得無中生有地說依據不完整", () => {
-    // 沒有 citations 時 badge 不能因為薄化規則消失,才能檢查它的原文案。
-    const { container } = renderBubble(
-      assistantMsg({ ...REALISTIC.searched_hit, citations: [] }),
+    // 這裡直接測 badge 元件本身的文案,不捏造一則 backend 不會產生的
+    // MessageBubble payload(searched_hit + hits 但沒有 citations)。
+    const { container } = render(
+      <KbStateBadge state="searched_hit" hits={REALISTIC.searched_hit.kb_hits} />,
     );
     const badge = container.querySelector('[data-testid="kb-state-searched_hit"]');
     expect(badge.textContent).not.toMatch(/不是全部|不完整|失敗/);
@@ -257,7 +264,7 @@ describe("命中徽章 — 文件名、原文與分數", () => {
 
   it("徽章列出每一筆命中的文件名", () => {
     const { container } = renderBubble(
-      assistantMsg({ ...REALISTIC.searched_hit, citations: [] }),
+      assistantMsg(REALISTIC.partial_error, { streaming: true }),
     );
     const chips = [...container.querySelectorAll('[data-testid^="kb-source-"]')];
     expect(chips).toHaveLength(2);
@@ -272,7 +279,7 @@ describe("命中徽章 — 文件名、原文與分數", () => {
 
   it("hover 泡泡帶原文與信心分數", () => {
     const { container } = renderBubble(
-      assistantMsg({ ...REALISTIC.searched_hit, citations: [] }),
+      assistantMsg(REALISTIC.partial_error, { streaming: true }),
     );
     const chips = [...container.querySelectorAll('[data-testid^="kb-source-"]')];
     const first = chips[0].getAttribute("title");
@@ -290,12 +297,11 @@ describe("命中徽章 — 文件名、原文與分數", () => {
     // 已知會錯的值,顯示它比不顯示更糟。
     const { container } = renderBubble(
       assistantMsg({
-        kb_state: "searched_hit",
+        ...REALISTIC.partial_error,
         kb_hits: [{ ...HIT_A, page: 12 }],
-        citations: [],
-      }),
+      }, { streaming: true }),
     );
-    const badge = container.querySelector('[data-testid="kb-state-searched_hit"]');
+    const badge = container.querySelector('[data-testid="kb-state-partial_error"]');
     expect(badge.textContent).not.toMatch(/頁|p\.\s*\d/);
     const chip = container.querySelector('[data-testid^="kb-source-"]');
     expect(chip.getAttribute("title")).not.toMatch(/頁|p\.\s*\d/);
@@ -383,9 +389,8 @@ describe("映射縫", () => {
     backend.disableTitleGeneration();
     backend.enqueueAnswer("依規定辦理如附。", {
       meta: {
-        ...REALISTIC.searched_hit,
-        // 命中但沒有 citations 時,兩個映射縫都仍要把狀態顯示出來。
-        citations: [],
+        ...REALISTIC.partial_error,
+        citations: citationsFor(REALISTIC.partial_error.kb_hits),
       },
     });
     await mountOrchestrator({ backend });
@@ -396,8 +401,9 @@ describe("映射縫", () => {
 
     // ⚠ 這一條**沒有**重新載入。它單獨釘住 applyMeta;把 mapServerMessage
     // 那一縫拿掉,這條照樣綠。
-    const badge = await screen.findByTestId("kb-state-searched_hit");
-    expect(badge.textContent).toContain("人事管理規則.pdf");
+    const badge = await screen.findByTestId("kb-state-partial_error");
+    expect(badge.textContent).toContain("不是全部");
+    expect(screen.getByText("查看 2 筆來源")).toBeTruthy();
   });
 
   it("mapServerMessage(重新載入)這一縫:從伺服器讀回來的舊訊息徽章也在", async () => {
@@ -440,9 +446,8 @@ describe("映射縫", () => {
             content: "依規定辦理如附。",
             parent_id: 9001,
             metadata: {
-              ...REALISTIC.searched_hit,
-              // 同上:這一輪沒有來源抽屜,不能因為隱藏重複 badge 而靜默。
-              citations: [],
+              ...REALISTIC.partial_error,
+              citations: citationsFor(REALISTIC.partial_error.kb_hits),
             },
           },
         ],
@@ -454,8 +459,9 @@ describe("映射縫", () => {
     await waitForAnswer("依規定辦理如附。");
     // ⚠ 這一條**沒有送過任何一輪**。它單獨釘住 mapServerMessage;把 applyMeta
     // 那一縫拿掉,這條照樣綠。
-    const badge = await screen.findByTestId("kb-state-searched_hit");
-    expect(badge.textContent).toContain("人事管理規則.pdf");
+    const badge = await screen.findByTestId("kb-state-partial_error");
+    expect(badge.textContent).toContain("不是全部");
+    expect(screen.getByText("查看 2 筆來源")).toBeTruthy();
   });
 
   it("mapServerMessage 這一縫:沒有 kb 欄位的舊訊息載回來,畫面上零 kb 記號", async () => {
@@ -573,6 +579,7 @@ describe("映射縫", () => {
 
     const badge = await screen.findByTestId("kb-state-partial_error");
     expect(badge.textContent).toMatch(/不是全部|不完整/);
-    expect(badge.textContent).toContain("人事管理規則.pdf");
+    expect(badge.querySelectorAll('[data-testid^="kb-source-"]')).toHaveLength(0);
+    expect(screen.getByText("查看 2 筆來源")).toBeTruthy();
   });
 });
