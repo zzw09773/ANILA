@@ -120,6 +120,15 @@ Dockerfile 不會漏抄。已實測有效(七張映像全部存得出去)。
 > → **第 1 條:試 v7**(anila-shell ＋ anilalm 兩個 app 一起)。**試不成就整包退回、凍在 6.30.4**,
 > 不硬幹。⚠ 我的建議(ECharts 面積最小)**沒有被採用**,擁有者選了風險最高但價值最高的那顆
 > ——React Router 那三條 advisory 是**開放轉址 → XSS**,是真正會被使用者踩到的那一類。
+> **結果(2026-08-10 收):v7 成功,已合併 `c0877c05`。**
+> anila-shell 的 npm audit **2 moderate → 0**;anilalm 剩下的兩條 high 是裁定不動的 js-yaml。
+> 兩個 app 都只是換 package(`react-router-dom` → `react-router`)＋鎖定檔,
+> **登入跳轉與 basename 一行沒動**。⚠ 實測基線只列出**兩條** advisory,
+> 第三條 `GHSA-jjmj-jmhj-qwj2` 升級前後都沒出現在 audit 裡——原始清單那個「三條」是報告轉述,不是量測。
+> 瀏覽器親驗:兩個 app 未登入都**整頁跳 `/login?next=…` 並停住**(不是 client-side 迴圈);
+> `/anilalm/` 子路徑下資產解析正確、深連結吃得下去。
+> **沒驗到的**:用點擊進入 `/c/:collectionId`——這台機器上 anilalm 一個知識庫都沒有。
+>
 > → **第 2、3、4 條:不動**,照現況凍結。這等於接受:ECharts XSS、js-yaml(dev-only)、
 > pytest CVE(正式環境不跑測試)三者留在交付包裡,理由都已寫在上表。
 
