@@ -2,7 +2,7 @@
 """設定頁的後端：一個端點，把每一顆設定的全部實情講完。
 
 * ``GET /api/platform-settings/overview``  登錄表全部 96 顆，每一顆五個欄位的實情
-* ``PUT /api/platform-settings/{key}``     只收 C 與 B-可編輯；其餘連同理由一起退回
+* ``PUT /api/platform-settings/{key}``     收下 registry 全部類別；A 類另有 username 閘門
 
 為什麼「生效值」要自己算，不能拿現成的
 ======================================
@@ -50,8 +50,8 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import Settings, boot_override_snapshot, settings
@@ -61,16 +61,15 @@ from app.models.platform_setting import (
     _usable_or_nothing,
     PlatformSetting,
     resolve_setting,
+    resolve_setting_without_db,
     set_setting,
 )
-from app.models.audit_log import AuditLog
 from app.models.user import User
 from app.schemas.base import ApiResponseModel
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import require_admin
 from app.services.settings_registry import (
     EDITABLE_CLASSES,
-    REGISTRY,
     SETTINGS,
     SettingClass,
     SettingSpec,
@@ -175,11 +174,22 @@ def _effective_and_source(db: Session, spec: SettingSpec, snapshot) -> tuple[Any
         # 每請求讀 DB → env → 預設。改完下一個請求就生效的那條路。
         return resolve_setting(db, spec.key)
 
-    source = _boot_layer_source(spec, snapshot)
     if spec.setting_class is SettingClass.A:
-        # 祕密：值一步都不進 payload。來源仍然回，畫面靠它分辨「有人設過」與
-        # 「跑的是程式預設」——那正是 ``changeme`` 那顆要講清楚的事。
+        # 祕密值只作待部署保存，csp 目前的 consumer 仍讀 env／Settings 的開機值；
+        # 所以來源必須走扣掉 DB 的同一條解析鏈，不能把「已存一列」謊報成「本次
+        # 行程已套用」。值本身仍永遠遮罩，只有 is_set 另說明有人存過。
+        # ``resolve_setting_without_db`` 讀的是 process env；pydantic 的 ``.env``
+        # layer 只存在 ``settings`` 單例上，A 類 consumer 仍可能直接讀它。
+        if (
+            spec.env_name is not None
+            and spec.env_name in Settings.model_fields
+            and os.environ.get(spec.env_name) is None
+            and getattr(settings, spec.env_name) != spec.default
+        ):
+            return None, SOURCE_ENV
+        _, source = resolve_setting_without_db(spec.key)
         return None, source
+    source = _boot_layer_source(spec, snapshot)
     if spec.env_name is not None and spec.env_name in Settings.model_fields:
         # 開機覆蓋是**就地** setattr 這一顆單例（Task 4），全樹的消費模組手上抓著
         # 的也是它。⚠ 不可以改讀 ``snapshot.applied``：那份紀錄說的是「這次開機
@@ -197,8 +207,10 @@ def _effective_and_source(db: Session, spec: SettingSpec, snapshot) -> tuple[Any
     return value, source
 
 
-def _is_set(spec: SettingSpec) -> bool:
+def _is_set(spec: SettingSpec, row: PlatformSetting | None) -> bool:
     """A 類的「有沒有人設過」。**不是**「有沒有值」——見模組 docstring。"""
+    if row is not None:
+        return True
     if spec.env_name is not None and os.environ.get(spec.env_name, "").strip():
         return True
     if spec.env_name is not None and spec.env_name in Settings.model_fields:
@@ -271,7 +283,7 @@ def _describe(
         stored_usable=stored_value is not _NO_VALUE,
         pending=None if masked else _pending(spec, stored_value, snapshot),
         source=source,
-        is_set=_is_set(spec) if masked else None,
+        is_set=_is_set(spec, row) if masked else None,
         updated_at=row.updated_at if row is not None else None,
         updated_by=updated_by,
     )
@@ -296,24 +308,6 @@ def _rows_and_actors(db: Session) -> tuple[dict[str, PlatformSetting], dict[str,
         for key, row in rows.items()
         if row.updated_by_user_id is not None
     }
-
-
-def _count_audit_events(db: Session, key: str) -> int:
-    """這顆設定目前有幾筆 ``platform_setting_set`` 稽核事件。
-
-    事後查證用。數量而不是「存在與否」：管理員重試時，上一次留下的事件會讓
-    「有沒有稽核」永遠是真，於是查證退化成一句空話。
-    """
-    return (
-        db.query(func.count(AuditLog.id))
-        .filter(
-            AuditLog.action == "platform_setting_set",
-            AuditLog.resource_type == "platform_setting",
-            AuditLog.resource_id == str(key),
-        )
-        .scalar()
-        or 0
-    )
 
 
 @router.get("/overview", response_model=PlatformSettingsOverview)
@@ -347,9 +341,9 @@ def update_setting(
 ) -> SettingItem:
     """改一顆設定。收不收、為什麼不收，一律照登錄表那一筆。
 
-    類別閘門與值域都在 ``set_setting`` 那一層（端點不自己記名單——手抄的名單
-    在這個 repo 已經漏過兩次）。這裡只負責把它的拒絕理由變成 400 的人話，
-    並且把稽核事件與設定寫入放進**同一個交易**。
+    值域與 A 類 username 閘門都在 ``set_setting`` 那一層（端點不自己記名單——
+    手抄的名單在這個 repo 已經漏過兩次）。這裡只負責把它的拒絕理由變成 400 的
+    人話，並且把稽核事件與設定寫入放進**同一個交易**。
     """
     try:
         spec = require_spec(key)
@@ -363,69 +357,111 @@ def update_setting(
         )
 
     previous = _effective_and_source(db, spec, boot_override_snapshot())[0]
-    # 寫入**之前**的稽核筆數：事後查證要問的是「這一次有沒有多出一筆」，
-    # 而不是「有沒有任何一筆」（後者在重試時會被上一次的殘留騙過去）。
-    audit_before = _count_audit_events(db, key)
     # ⚠ **複製那個字串，不要抓著那一列**。``db.get`` 回的是 identity map 裡的同一顆
     # ORM 物件，而 ``set_setting`` 是**就地**改 ``row.value`` —— 抓著物件的話，等到下面
     # 組稽核 metadata 時，「舊值」已經變成新值了，稽核紀錄會永遠寫著 from == to。
     # 那是一條看起來有在記、其實什麼都沒記的稽核軌跡（本包要消滅的形狀，長在本包自己身上）。
     _stored_before_row = db.get(PlatformSetting, key)
-    stored_before = _stored_before_row.value if _stored_before_row is not None else None
+    is_secret = spec.setting_class is SettingClass.A
+    stored_before = (
+        None
+        if is_secret or _stored_before_row is None
+        else _stored_before_row.value
+    )
     try:
         set_setting(db, key, payload.value, actor=current_user)
     except (ValueError, TypeError) as exc:
-        # ``_coerce_for`` 對錯型別丟 ``TypeError``、值域與類別閘門丟 ``ValueError``；
+        # ``_coerce_for`` 對錯型別丟 ``TypeError``、值域與 A 類帳號閘門丟 ``ValueError``；
         # 漏接任何一種都會變成 500，而畫面上什麼也看不到。
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except SQLAlchemyError as exc:
+        # flush 期間的 constraint／connection failure 也必須明確回復這個交易；
+        # 否則呼叫端會只得到裸 500，無法知道設定列沒有落地。
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"{key} 沒有存起來：設定列未能在交易中寫入，請稍後重試。",
+        ) from exc
 
     row = db.get(PlatformSetting, key)
-    # ``set_setting`` 已經 flush，所以這就是**這一次要落地的那個字串**。事後查證比對的
-    # 是它，不是我們以為送進去的那個值。
-    rendered = row.value if row is not None else None
-    stored_now = _usable_or_nothing(spec, row.value, SOURCE_DB) if row is not None else _NO_VALUE
-    log_audit_event(
-        db,
-        commit=True,
-        actor=current_user,
-        action="platform_setting_set",
-        resource_type="platform_setting",
-        resource_id=key,
-        ip_address=_client_ip(request),
-        metadata={
-            # ⚠ ``to`` 是**存進去的值**，不是生效值：B 類要等下一次開機，寫成
-            # 生效值等於在稽核紀錄裡說一件還沒發生的事。
-            "from": previous,
-            "to": None if stored_now is _NO_VALUE else stored_now,
-            "stored_before": stored_before,
-            "class": spec.setting_class.value,
-            "restart_required": spec.restart_required,
-        },
+    if row is None:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"{key} 沒有存起來：寫入後找不到設定列，請稍後重試。",
+        )
+    # ``set_setting`` 已經 flush，所以這就是**這一次要落地的那個字串**。A 類只在
+    # 記憶體中使用它，稽核 metadata 的 from/to/stored_before 永遠是 None。
+    rendered = row.value
+    stored_now = (
+        _NO_VALUE
+        if is_secret
+        else _usable_or_nothing(spec, rendered, SOURCE_DB)
     )
-    # ⚠ **成功是查出來的事實，不是推論出來的。**
-    #
-    # 這裡曾經看 ``log_audit_event`` 的回傳值：``None`` 就回 500。那個判準是錯的，
-    # 因為 ``None`` 把好幾種結局混成一種 —— ``audit_service.py:108-124`` 的 ``refresh``
-    # 是在 **commit 之後**做的，refresh 失敗一樣回 ``None``，而那時候設定與稽核**都已經
-    # 存好了**。於是端點跟管理員說「已回復，請重試」，他一重試就多一筆稽核。
-    # 把一個「假成功」換成一個「假失敗」不是修好，只是把謊換一個方向講。
-    #
-    # 所以現在**去看實際狀態**：那一列在不在、值是不是這一次要寫的那個、這一次的稽核
-    # 事件有沒有多出來。``expire_all`` 讓下面兩次查詢一定回到 DB，而不是 identity map
-    # 裡那顆可能還帶著未提交修改的物件。
-    db.expire_all()
-    persisted = db.get(PlatformSetting, key)
-    audit_now = _count_audit_events(db, key)
-    if persisted is None or persisted.value != rendered or audit_now != audit_before + 1:
+    audit_metadata = {
+        # ⚠ ``to`` 是**存進去的值**，不是生效值：B 類要等下一次開機，寫成
+        # 生效值等於在稽核紀錄裡說一件還沒發生的事。
+        "from": None if is_secret else previous,
+        "to": None if is_secret or stored_now is _NO_VALUE else stored_now,
+        "stored_before": None if is_secret else stored_before,
+        "class": spec.setting_class.value,
+        "restart_required": spec.restart_required,
+    }
+    # 先 flush 取得這一次事件自己的 PK，再由端點 commit；不能用「最後一列的值」或
+    # 「該 key 的稽核筆數 + 1」歸屬成功。兩個並行寫入可以互相覆蓋列值／改變筆數，
+    # 但各自 flush 出來的 audit PK 仍然只屬於這一次交易。
+    try:
+        audit_event = log_audit_event(
+            db,
+            commit=False,
+            actor=current_user,
+            action="platform_setting_set",
+            resource_type="platform_setting",
+            resource_id=key,
+            ip_address=_client_ip(request),
+            metadata=audit_metadata,
+        )
+        if audit_event is None:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"{key} 沒有存起來：稽核事件未寫入，設定與稽核已整筆回復。"
+                    "請稍後重試。"
+                ),
+            )
+        db.flush()
+        audit_id = audit_event.id
+        # flush 成功後，audit PK 是這次交易自己的可辨識事實；不要用 identity map
+        # 再查同一個 session 裡剛 flush 的物件，那只會證明物件仍在 session，不能
+        # 額外證明 DB 已持久化。commit 成功本身就是持久化邊界，不能在 commit 後
+        # 再做一次可能暫時失敗的查詢，然後把「已存好」誤報成 500。
+        if audit_id is None:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"{key} 沒有存起來：本次稽核事件沒有取得識別碼，"
+                    "設定與稽核已整筆回復。請稍後重試。"
+                ),
+            )
+        response = _describe(
+            db, spec, boot_override_snapshot(), row, current_user.username
+        )
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
-                f"{key} **沒有存起來**：寫入後查證發現那一列（或它的稽核事件）不在 DB 裡，"
-                "這一次修改已經整筆回復（設定與稽核在同一個交易裡，不會只存一半）。"
-                "畫面上的值仍是舊的，請稍後重試；持續失敗請看 csp 容器日誌裡的"
-                " audit_log 寫入錯誤。"
+                f"{key} 沒有存起來：設定與稽核未能在同一個交易提交，已整筆回復。"
+                "請稍後重試。"
             ),
-        )
-
-    return _describe(db, spec, boot_override_snapshot(), persisted, current_user.username)
+        ) from exc
+    # ``response`` 在 commit 前已由這次 transaction 的兩筆 row 組好；commit 成功後
+    # 直接回它，不再用一個新的 post-commit read 把成功寫入誤報成失敗，也不會把並行
+    # writer 的最後列值冒認成這次 request 的結果。
+    return response

@@ -53,9 +53,7 @@ from app.models.platform_setting import (
     resolve_setting,
     set_setting,
 )
-from app.services import settings_registry as reg
 from app.services.settings_registry import (
-    EDITABLE_CLASSES,
     REGISTRY,
     SETTINGS,
     SettingClass,
@@ -345,7 +343,7 @@ def test_every_ambiguous_variable_was_explicitly_ruled_on():
 
 
 def test_every_input_of_the_ocr_builder_is_locked_together():
-    """``build_ocr_backend_from_env()`` 讀的九顆，一顆都不可編輯（fix round 1 I1）。
+    """``build_ocr_backend_from_env()`` 讀的九顆仍保留跨行程提醒。
 
     在一個「六個輸入鎖住、三個輸入可改」的建構器上開放編輯，等於在畫面上承諾一件
     改了不會生效的事 —— 那個函式的主要消費者是 ingestion-worker，另一個行程，
@@ -359,9 +357,8 @@ def test_every_input_of_the_ocr_builder_is_locked_together():
     }
     for name in sorted(ocr_builder_inputs):
         spec = _by_env_name(name)
-        assert spec.setting_class not in EDITABLE_CLASSES, (
-            f"{name} 被 build_ocr_backend_from_env() 讀，卻宣告成可編輯"
-        )
+        assert spec.setting_class in {SettingClass.B_LOCKED, SettingClass.SEC, SettingClass.A}
+        assert spec.locked_reason
 
 
 def test_entry_shape_is_complete():
@@ -372,9 +369,9 @@ def test_entry_shape_is_complete():
         assert isinstance(spec.restart_required, bool)
         assert spec.description.strip(), f"{spec.key} 沒有說明文字（要上畫面）"
         if spec.setting_class in (SettingClass.B_LOCKED, SettingClass.SEC, SettingClass.A):
-            assert spec.locked_reason.strip(), f"{spec.key} 是不可編輯類別卻沒有鎖定理由"
+            assert spec.locked_reason.strip(), f"{spec.key} 是提醒類別卻沒有理由"
         else:
-            assert spec.locked_reason == "", f"{spec.key} 可編輯卻帶著鎖定理由"
+            assert spec.locked_reason == "", f"{spec.key} 可編輯類別卻帶著提醒理由"
 
 
 def test_keys_and_env_names_are_unique_and_namespaced():
@@ -666,7 +663,7 @@ def test_generic_resolution_agrees_with_the_threshold_template(
     assert (source == SOURCE_DB) is calibrated
 
 
-# ── 7. 寫入端：只 flush 不 commit、只有可編輯類別收得下來 ─────────────────
+# ── 7. 寫入端：只 flush 不 commit，A 類另有帳號閘門 ────────────────────────
 
 
 def test_set_setting_flushes_but_never_commits(db):
@@ -687,18 +684,29 @@ def test_set_setting_records_the_actor(db):
     assert row.updated_by_user_id == user.id
 
 
-def test_set_setting_refuses_every_non_editable_key(db):
-    """全類別掃過，不是抽一顆。"""
-    refused = [s for s in SETTINGS if s.setting_class not in EDITABLE_CLASSES]
-    # 96 條目 − 可編輯 33（C 21 ＋ 門檻別名 1 ＋ B-可編輯 11）= 63。
-    # ⚠ 57 → 64 是 Task 4 的 C1 降級（``_BOOT_ORDER_DEMOTED`` 那七顆）；
-    # 64 → 63 是 2026-08-09 最終審查把 TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS
-    # 的消費端重接線之後升回可編輯（ALERT_CHECK_INTERVAL 本來就可編輯，只是換了類別）。
-    assert len(refused) == 63
-    for spec in refused:
-        with pytest.raises(ValueError):
-            set_setting(db, spec.key, spec.default)
-        assert db.get(PlatformSetting, spec.key) is None, f"{spec.key} 竟然被寫進去了"
+def test_set_setting_accepts_non_secret_classes_and_keeps_the_transaction_open(db):
+    """B_LOCKED／SEC 不是拒絕名單；它們仍由各自 domain_fn 把關。"""
+    for spec in SETTINGS:
+        if spec.setting_class in {SettingClass.A, SettingClass.C}:
+            continue
+        value = spec.default
+        if spec.value_type.py_type is bool:
+            value = not value
+        elif spec.value_type.py_type is int:
+            value = value + 1 if value != 0 else 1
+        elif spec.value_type.py_type is str and not spec.domain_fn(value):
+            value = "anila-registry-probe"
+        set_setting(db, spec.key, value)
+    assert all(db.get(PlatformSetting, spec.key) is not None for spec in SETTINGS
+               if spec.setting_class in {SettingClass.B_LOCKED, SettingClass.SEC})
+    db.rollback()
+
+
+def test_set_setting_rejects_secret_without_the_literal_admin_actor(db):
+    spec = next(s for s in SETTINGS if s.setting_class is SettingClass.A)
+    with pytest.raises(ValueError, match="username=admin"):
+        set_setting(db, spec.key, "anila-secret-probe")
+    assert db.get(PlatformSetting, spec.key) is None
 
 
 def test_set_setting_refuses_an_unknown_key(db):

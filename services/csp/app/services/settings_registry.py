@@ -6,8 +6,9 @@
 2026-08-08 的環境變數全盤點戳破一件事：folklore 說的「41 顆」是 compose 的鍵
 數，**csp 這個行程實際讀 95 顆**，其中 **57 顆從未出現在 compose**——它們吃程
 式內的預設值，今天的管理員根本不知道它們存在。設定頁的價值因此有兩層：
-**可見性**（95 顆全上畫面，包含那 57 顆隱形的）與 **可修性**（19 顆真的能從畫
-面改）。這兩層都靠同一份宣告：**本檔是拼法、類別、值域與預設值的唯一權威**。
+**可見性**（95 顆全上畫面，包含那 57 顆隱形的）與 **可修性**（所有宣告都能從畫
+面送出，差別只在生效時機與提醒）。這兩層都靠同一份宣告：**本檔是拼法、類別、
+值域與預設值的唯一權威**。
 
 宣告是「全部」不是「可編輯的那些」
 ==================================
@@ -49,9 +50,11 @@ url_guard 認定 **關**，設定頁卻顯示 **開**。那正是本包要消滅
 from __future__ import annotations
 
 import codecs
+import json
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from anila_core.ingestion.ocr import _DEFAULT_VISION_PROMPT
 from app.config import Settings
@@ -75,13 +78,16 @@ class UnknownSettingError(KeyError):
 
 
 class SettingClass(Enum):
-    """畫面上的分區，也是「能不能從畫面改」的判準。
+    """畫面上的分區與生效時機；是否可寫由這張 registry 統一宣告。
 
     * ``C``       —— 每請求讀 DB，改完下一個請求生效。
     * ``B_EDIT``  —— boot 讀定，但可以存進 DB、開機時覆蓋 env（重啟後生效）。
-    * ``B_LOCKED``—— boot 讀定且踩到設計 §3.2 的具名理由，連編輯都不開放。
-    * ``SEC``     —— 安全類。``platform_settings`` 沒有 CHECK/RLS，地基未補前不搬。
-    * ``A``       —— 祕密。畫面只顯示「已設定／未設定」，永不顯示值。
+    * ``B_LOCKED``—— boot 讀定且有設計 §3.2 的具名提醒；仍可保存，但未必由 csp
+      這次啟動流程套用。
+    * ``SEC``     —— 安全類；仍可保存，寫入時必須通過該列的值域，安全語意與
+      生效通道由 ``locked_reason`` 說明。
+    * ``A``       —— 祕密。只有固定 username ``admin`` 可寫；畫面只顯示「已設定／
+      未設定」，永不顯示值。
     """
 
     C = "C"
@@ -91,9 +97,13 @@ class SettingClass(Enum):
     A = "A"
 
 
-#: 唯一可以被 ``set_setting`` 寫進去的兩類。其餘一律拒收 —— 設計 §4 的
-#: 「非 C key 一律 400」在後端這一層就先擋掉，端點不必自己記得。
-EDITABLE_CLASSES = frozenset({SettingClass.C, SettingClass.B_EDIT})
+#: 設定頁的可寫類別全集。這個集合保留為 registry/API 的單一契約，不在端點或
+#: 前端另抄一份 class 名單；A 類的帳號閘門另由 ``SECRET_WRITE_USERNAME`` 控制。
+EDITABLE_CLASSES = frozenset(SettingClass)
+
+#: 擁有者 Q45 指定的是**帳號名**，不是 role。不要改成 ``is_owner`` 或讀可變的
+#: ``ADMIN_USERNAME``；那會把裁決的固定維運帳號悄悄變成另一套權限規則。
+SECRET_WRITE_USERNAME = "admin"
 
 
 # ── 字串規則：每一顆用它自己那個讀取點的判準 ──────────────────────────────
@@ -207,13 +217,48 @@ T_BOOL_CARD_TRUTHY_NOSTRIP = SettingType(
 # ── 值域函式 ───────────────────────────────────────────────────────────────
 
 
-def _accept_any(value: Any) -> bool:
-    """唯讀條目的值域：不收任何寫入，所以沒有需要把關的東西。
+def _is_csv(value: Any) -> bool:
+    """逗號分隔清單；允許空值，但不允許空白項目。"""
+    if not isinstance(value, str):
+        return False
+    return not value.strip() or all(part.strip() for part in value.split(","))
 
-    ⚠ 這**不是**「什麼都可以」的通行證：``set_setting`` 只認 C 與 B-可編輯，
-    掛著這個函式的條目一律在類別那一關就被擋掉了。
-    """
-    return True
+
+def _is_url_or_empty(value: Any) -> bool:
+    """可選的 HTTP(S) URL；不在這裡放寬 host/IP，SSRF guard 仍是另一道門。"""
+    if not isinstance(value, str) or not value.strip():
+        return isinstance(value, str)
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_redis_url(value: Any) -> bool:
+    """Redis 連線字串；密碼與 host 的安全性仍由連線層及部署環境負責。"""
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return False
+    return parsed.scheme in {"redis", "rediss"} and bool(parsed.netloc)
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _one_of(*choices: str) -> Callable[[Any], bool]:
+    allowed = frozenset(choices)
+
+    def _matches(value: Any) -> bool:
+        return value in allowed
+
+    _matches.__doc__ = f"只能是：{'、'.join(choices)}。"
+    _matches.choices = allowed
+    return _matches
 
 
 def _closed_int_range(low: int, high: int) -> Callable[[Any], bool]:
@@ -266,6 +311,78 @@ def _is_bool(value: Any) -> bool:
     return isinstance(value, bool)
 
 
+def _json_list_of_objects(
+    value: Any,
+    *,
+    required_non_empty: tuple[str, ...] = (),
+    required_strings: tuple[str, ...] = (),
+    string_list_fields: tuple[str, ...] = (),
+) -> bool:
+    """Validate the shape consumed by the startup seed readers.
+
+    An empty string means "no seed" and remains valid.  The seed consumers
+    index required fields and iterate optional model/agent lists directly; a
+    JSON string or an object with missing fields therefore has the same
+    dangerous shape as invalid JSON: the setting can be stored while startup
+    quietly skips the intended work.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return isinstance(value, str)
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(parsed, list):
+        return False
+    for item in parsed:
+        if not isinstance(item, dict):
+            return False
+        for key in required_non_empty:
+            if not isinstance(item.get(key), str) or not item[key].strip():
+                return False
+        for key in required_strings:
+            if not isinstance(item.get(key), str):
+                return False
+        for key in string_list_fields:
+            entries = item.get(key, [])
+            if not isinstance(entries, list) or not all(
+                isinstance(entry, str) for entry in entries
+            ):
+                return False
+    return True
+
+
+def _is_seed_models(value: Any) -> bool:
+    return _json_list_of_objects(
+        value,
+        required_non_empty=("name",),
+        required_strings=("endpoint_url",),
+    )
+
+
+def _is_seed_agents(value: Any) -> bool:
+    return _json_list_of_objects(
+        value,
+        required_non_empty=("name",),
+        required_strings=("endpoint_url",),
+    )
+
+
+def _is_seed_links(value: Any) -> bool:
+    return _json_list_of_objects(
+        value,
+        required_non_empty=("name", "url"),
+    )
+
+
+def _is_seed_api_keys(value: Any) -> bool:
+    return _json_list_of_objects(
+        value,
+        required_non_empty=("username", "key"),
+        string_list_fields=("models", "agents"),
+    )
+
+
 # ── 條目 ───────────────────────────────────────────────────────────────────
 
 
@@ -291,8 +408,8 @@ class SettingSpec:
     #: 上畫面的繁中說明。可編輯的條目要在這裡把值域講成人話 —— 被拒時的錯誤
     #: 訊息會原樣送到畫面上。
     description: str
-    #: 鎖定理由（B_LOCKED／SEC／A 必填，其餘必須是空字串）。這句話會原樣上畫面，
-    #: 也會出現在寫入被拒時的錯誤訊息裡 —— 「為什麼不能改」比「不能改」有用。
+    #: 提醒理由（B_LOCKED／SEC／A 必填，其餘必須是空字串）。這句話會原樣上畫面；
+    #: A 類帳號不符時，API 會另外補上固定 username 閘門的理由。
     locked_reason: str
 
 
@@ -320,10 +437,24 @@ def _spec(
     )
 
 
-_SECRET_REASON = "祕密類 —— 畫面只顯示已設定／未設定，值永不出後端"
-_SEC_REASON = "安全類 —— 本輪不可編輯（platform_settings 無 CHECK/RLS，地基未補前不搬）"
-_SEC_CARD_REASON = "安全類 —— 卡登信任鏈，改錯等於放行偽卡"
-_SEC_TICKET_REASON = "安全類 —— 延長票期等於延長被竊 token 的有效期（設計 §3.2）"
+_SECRET_REASON = (
+    "祕密類 —— 畫面只顯示已設定／未設定，值永不出後端；寫入僅限 username=admin。"
+    "本列先作待部署保存，這次行程的 consumer 仍依來源欄的 env／程式預設；"
+    "請循部署通道輪替，不能只按儲存就視為已套用"
+)
+_SEC_REASON = (
+    "安全類 —— 可保存但要先想清楚安全影響；值域由本列 domain_fn 把關，"
+    "目前 CSP 的 platform_settings 開機覆蓋通道只套 B_EDIT；本列雖可保存，"
+    "重啟或下一個請求也不會自動套用，請循 env／compose／部署通道變更 consumer 使用的來源"
+)
+_SEC_CARD_REASON = (
+    "安全類 —— 卡登信任鏈，改錯等於放行偽卡。"
+    "目前此 platform_settings 列不會自動套用，請循部署通道變更 consumer 使用的來源"
+)
+_SEC_TICKET_REASON = (
+    "安全類 —— 延長票期等於延長被竊 token 的有效期（設計 §3.2）。"
+    "目前此 platform_settings 列不會自動套用，請循部署通道變更 consumer 使用的來源"
+)
 _SMTP_REASON = "SMTP_HOST 是出向連線目標＝SSRF 鄰接面，且 relay 方案未定（設計 §3.2）"
 # Task 4 的 C1 裁決。B-可編輯的承諾是「存進 DB，下一次開機生效」，而開機覆蓋是在
 # lifespan 裡（DB 可達之後）才載入的 —— 在那之前就被消費掉的顆，按下去、重啟、值
@@ -343,11 +474,11 @@ _INTERPRETER_REASON = (
 
 
 def _compose_hint(env_name: str) -> str:
-    """「不能從畫面改」後面要接的那一句：**那要去哪裡改**。
+    """提醒「目前 csp 不會套用」的那一句：**那要去哪裡改**。
 
-    ⚠ 降級的那七顆現在完全沒有活路（Task 4 報告 §concern 4）：鎖定理由說了原因，
-    卻沒有說做法，於是管理員只剩「重開機試試看」可以做——而重開機正是那件對這
-    七顆**永遠不會有效**的事。指路要指到唯一真的有效的通道：compose 的 csp 服務
+    ⚠ 降級的那幾顆不能只留下「可以存」的假承諾：鎖定理由要說明原因與唯一真的
+    有效的通道，避免管理員只剩「重開機試試看」——而重開機正是對這些顆**永遠不會
+    有效**的事。指路要指到 compose 的 csp 服務
     ``environment``。措辭是「設（沒有這一行就自己加）」而不是「改」，因為這七顆
     裡今天只有 ``PYTHONUNBUFFERED``／``ANILA_TEMPLATE_DIR`` 真的寫在 compose 裡，
     其餘四顆連那一行都還不存在。
@@ -408,26 +539,27 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "對稱祕密（憑證加密與開機檢查用；access/refresh 已走 RS256）。", _SECRET_REASON),
     _spec("auth.secret_key_fallback", "CSP_SECRET_KEY", SettingClass.A, T_STR, _is_str,
           "", False, "SECRET_KEY 缺席時的憑證加密備援來源。", _SECRET_REASON),
-    _spec("auth.jwt_algorithm", "ALGORITHM", SettingClass.SEC, T_STR, _accept_any,
-          "HS256", True, "legacy JWT 演算法欄位；實際簽發走 RS256。", _SEC_REASON),
+    _spec("auth.jwt_algorithm", "ALGORITHM", SettingClass.SEC, T_STR,
+          _one_of("HS256", "RS256"), "HS256", True,
+          "legacy JWT 演算法欄位；只允許 HS256 或 RS256，實際簽發走 RS256。", _SEC_REASON),
     _spec("auth.access_token_expire_minutes", "ACCESS_TOKEN_EXPIRE_MINUTES",
-          SettingClass.SEC, T_INT, _accept_any, 60, True,
-          "access token 有效分鐘數。", _SEC_TICKET_REASON),
+          SettingClass.SEC, T_INT, _positive_int, 60, True,
+          "access token 有效分鐘數。必須是正整數。", _SEC_TICKET_REASON),
     _spec("auth.refresh_token_expire_days", "REFRESH_TOKEN_EXPIRE_DAYS",
-          SettingClass.SEC, T_INT, _accept_any, 30, True,
-          "refresh token 有效天數。", _SEC_TICKET_REASON),
+          SettingClass.SEC, T_INT, _positive_int, 30, True,
+          "refresh token 有效天數。必須是正整數。", _SEC_TICKET_REASON),
     _spec("auth.jwt_private_key_path", "JWT_PRIVATE_KEY_PATH", SettingClass.SEC, T_STR,
-          _accept_any, "secrets/jwt-private.pem", True, "RS256 簽章私鑰位置。", _SEC_REASON),
+          _is_non_empty_str, "secrets/jwt-private.pem", True, "RS256 簽章私鑰位置。", _SEC_REASON),
     _spec("auth.jwt_public_key_path", "JWT_PUBLIC_KEY_PATH", SettingClass.SEC, T_STR,
-          _accept_any, "secrets/jwt-public.pem", True, "JWKS 公開的公鑰位置。", _SEC_REASON),
-    _spec("auth.jwt_kid", "JWT_KID", SettingClass.SEC, T_STR, _accept_any,
+          _is_non_empty_str, "secrets/jwt-public.pem", True, "JWKS 公開的公鑰位置。", _SEC_REASON),
+    _spec("auth.jwt_kid", "JWT_KID", SettingClass.SEC, T_STR, _is_non_empty_str,
           "anila-v1", True, "JWT 金鑰識別碼；三個服務必須同值。", _SEC_REASON),
     _spec("auth.allow_auto_keygen", "ALLOW_AUTO_KEYGEN", SettingClass.SEC, T_BOOL_PYDANTIC,
-          _accept_any, False, True, "缺金鑰時自動生成；正式部署一律關閉。", _SEC_REASON),
+          _is_bool, False, True, "缺金鑰時自動生成；正式部署一律關閉。", _SEC_REASON),
     _spec("auth.cookie_secure", "COOKIE_SECURE", SettingClass.SEC, T_BOOL_PYDANTIC,
-          _accept_any, True, True, "session cookie 的 Secure 旗標。", _SEC_REASON),
+          _is_bool, True, True, "session cookie 的 Secure 旗標。", _SEC_REASON),
     _spec("auth.allow_dev_secret", "ANILA_ALLOW_DEV_SECRET", SettingClass.SEC, T_BOOL_EQ_1,
-          _accept_any, False, True,
+          _is_bool, False, True,
           "開發模式豁免：略過開機的 dev 預設祕密檢查。", _SEC_REASON),
 
     # ── admin.* ──────────────────────────────────────────────────────────
@@ -438,52 +570,52 @@ SETTINGS: tuple[SettingSpec, ...] = (
 
     # ── card.* —— 自然人憑證卡登入 ──────────────────────────────────────
     _spec("card.enabled", "ENABLE_CARD_LOGIN", SettingClass.SEC, T_BOOL_PYDANTIC,
-          _accept_any, False, True, "是否註冊卡登 endpoints。", _SEC_CARD_REASON),
+          _is_bool, False, True, "是否註冊卡登 endpoints。", _SEC_CARD_REASON),
     _spec("card.require_card_only", "REQUIRE_CARD_LOGIN_ONLY", SettingClass.SEC,
-          T_BOOL_PYDANTIC, _accept_any, False, True,
+          T_BOOL_PYDANTIC, _is_bool, False, True,
           "卡登為唯一登入路徑（內網正式部署必開）。", _SEC_CARD_REASON),
     _spec("card.initial_owners", "CARD_INITIAL_OWNERS", SettingClass.SEC, T_STR,
-          _accept_any, "", True,
+          _is_csv, "", True,
           "bootstrap owner 的員工編號 CSV；填錯會變成沒有人能核准。", _SEC_CARD_REASON),
     _spec("card.ca_bundle_path", "CARD_CA_BUNDLE_PATH", SettingClass.SEC, T_STR,
-          _accept_any, "", True,
+          _is_str, "", True,
           "卡片 CA bundle 路徑；空值＝用釘死的那份。⚠ 首次驗章後有行程級快取"
           "（card_auth._ca_anchor_cache），所以改了要重啟。", _SEC_CARD_REASON),
     _spec("card.dev_trust_test_ca", "CARD_DEV_TRUST_TEST_CA", SettingClass.SEC,
-          T_BOOL_CARD_TRUTHY, _accept_any, False, False,
+          T_BOOL_CARD_TRUTHY, _is_bool, False, False,
           "開發用：信任測試 CA（卡登唯一入口時強制失效）。", _SEC_CARD_REASON),
     _spec("card.dev_skip_nonce_binding", "CARD_DEV_SKIP_NONCE_BINDING", SettingClass.SEC,
-          T_BOOL_CARD_TRUTHY_NOSTRIP, _accept_any, False, True,
+          T_BOOL_CARD_TRUTHY_NOSTRIP, _is_bool, False, True,
           "開發用：跳過 nonce 綁定（反 replay）。內網一律不可設。", _SEC_CARD_REASON),
 
     # ── network.* —— 入向白名單與出向 SSRF 閘 ───────────────────────────
     _spec("network.allowed_origins", "ALLOWED_ORIGINS", SettingClass.SEC, T_STR,
-          _accept_any,
+          _is_csv,
           "http://localhost:5173,http://localhost:3001,http://localhost:80,"
           "http://localhost,https://localhost,https://localhost:4443",
           True, "CORS 來源白名單（逗號分隔）。", _SEC_REASON),
-    _spec("network.allowed_hosts", "ALLOWED_HOSTS", SettingClass.SEC, T_STR, _accept_any,
+    _spec("network.allowed_hosts", "ALLOWED_HOSTS", SettingClass.SEC, T_STR, _is_csv,
           "*", True, "入向 Host 標頭白名單；\"*\" ＝關閉檢查。", _SEC_REASON),
     _spec("network.trusted_hosts", "ANILA_TRUSTED_HOSTS", SettingClass.SEC, T_STR,
-          _accept_any, "", True,
+          _is_csv, "", True,
           "出向 SSRF 白名單（逗號分隔）。⚠ 兩個讀取點：開機 backfill 與 url_guard "
           "per-call，取保守值標為需重啟。另有 DB 表 trusted_hosts 做同一件事，"
           "雙重來源的收斂是獨立 follow-up。", _SEC_REASON),
     _spec("network.allow_http_model_endpoint", "ANILA_ALLOW_HTTP_ENDPOINT",
-          SettingClass.SEC, T_BOOL_EQ_1, _accept_any, False, False,
+          SettingClass.SEC, T_BOOL_EQ_1, _is_bool, False, False,
           "放行 http:// 的模型端點（內網 gateway 用）。", _SEC_REASON),
     _spec("network.allow_http_agent_endpoint", "ANILA_ALLOW_HTTP_AGENT_ENDPOINT",
-          SettingClass.SEC, T_BOOL_EQ_1, _accept_any, False, False,
+          SettingClass.SEC, T_BOOL_EQ_1, _is_bool, False, False,
           "放行 http:// 的 agent 端點（MLSteam NodePort 用）。", _SEC_REASON),
     _spec("network.allow_grpc_endpoint", "ANILA_ALLOW_GRPC_ENDPOINT", SettingClass.SEC,
-          T_BOOL_EQ_1, _accept_any, False, False,
+          T_BOOL_EQ_1, _is_bool, False, False,
           "放行明文 grpc:// 的模型端點。", _SEC_REASON),
     _spec("network.allow_private_endpoint", "ANILA_ALLOW_PRIVATE_ENDPOINT",
-          SettingClass.SEC, T_BOOL_EQ_1, _accept_any, False, False,
+          SettingClass.SEC, T_BOOL_EQ_1, _is_bool, False, False,
           "放行指向私網位址的出向端點。", _SEC_REASON),
-    _spec("network.environment", "ANILA_ENV", SettingClass.SEC, T_STR, _accept_any,
+    _spec("network.environment", "ANILA_ENV", SettingClass.SEC, T_STR, _is_str,
           "", False, "部署姿態字串（production/prod 視為正式）。", _SEC_REASON),
-    _spec("network.ssl_cert_file", "SSL_CERT_FILE", SettingClass.SEC, T_STR, _accept_any,
+    _spec("network.ssl_cert_file", "SSL_CERT_FILE", SettingClass.SEC, T_STR, _is_str,
           "", True,
           "出向 TLS 的信任庫檔案。⚠ 它是**取代**整個信任庫而不是疊加，"
           "指到空或壞檔會讓所有出向 https 全掛。", _SEC_REASON),
@@ -526,21 +658,21 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "⚠ 下界 15 是消費端的硬樓地板（alert_detectors.ALERT_INTERVAL_FLOOR_SECONDS）："
           "填更小的值不會讓偵測更密，只會被靜默提到 15，所以這裡直接不收。"),
     _spec("alerts.smtp_enabled", "ANILA_ALERT_SMTP_ENABLED", SettingClass.B_LOCKED,
-          T_BOOL_PYDANTIC, _accept_any, False, True, "是否寄送告警信。", _SMTP_REASON),
+          T_BOOL_PYDANTIC, _is_bool, False, True, "是否寄送告警信。", _SMTP_REASON),
     _spec("alerts.smtp_host", "ANILA_ALERT_SMTP_HOST", SettingClass.B_LOCKED, T_STR,
-          _accept_any, "", True, "SMTP 主機。", _SMTP_REASON),
+          _is_str, "", True, "SMTP 主機。", _SMTP_REASON),
     _spec("alerts.smtp_port", "ANILA_ALERT_SMTP_PORT", SettingClass.B_LOCKED, T_INT,
-          _accept_any, 587, True, "SMTP 埠。", _SMTP_REASON),
+          _closed_int_range(1, 65535), 587, True, "SMTP 埠。允許 1–65535。", _SMTP_REASON),
     _spec("alerts.smtp_user", "ANILA_ALERT_SMTP_USER", SettingClass.B_LOCKED, T_STR,
-          _accept_any, "", True, "SMTP 帳號。", _SMTP_REASON),
+          _is_str, "", True, "SMTP 帳號。", _SMTP_REASON),
     _spec("alerts.smtp_password", "ANILA_ALERT_SMTP_PASSWORD", SettingClass.A, T_STR,
           _is_str, "", True, "SMTP 密碼。", _SECRET_REASON),
     _spec("alerts.smtp_from", "ANILA_ALERT_SMTP_FROM", SettingClass.B_LOCKED, T_STR,
-          _accept_any, "", True, "告警信寄件人。", _SMTP_REASON),
+          _is_str, "", True, "告警信寄件人。", _SMTP_REASON),
     _spec("alerts.smtp_to", "ANILA_ALERT_SMTP_TO", SettingClass.B_LOCKED, T_STR,
-          _accept_any, "", True, "告警信收件人（請用群組信箱，不要個人信箱）。", _SMTP_REASON),
+          _is_str, "", True, "告警信收件人（請用群組信箱，不要個人信箱）。", _SMTP_REASON),
     _spec("alerts.smtp_use_tls", "ANILA_ALERT_SMTP_USE_TLS", SettingClass.B_LOCKED,
-          T_BOOL_PYDANTIC, _accept_any, True, True, "SMTP 是否走 TLS。", _SMTP_REASON),
+          T_BOOL_PYDANTIC, _is_bool, True, True, "SMTP 是否走 TLS。", _SMTP_REASON),
     _spec("usage.batch_size", "USAGE_BATCH_SIZE", SettingClass.B_EDIT, T_INT,
           _closed_int_range(1, 10000), 100, True, "用量批次寫入筆數。允許 1–10000。"),
     _spec("usage.flush_interval", "USAGE_FLUSH_INTERVAL", SettingClass.B_EDIT, T_INT,
@@ -561,18 +693,18 @@ SETTINGS: tuple[SettingSpec, ...] = (
     # ── seed.* —— 開機自動註冊 ──────────────────────────────────────────
     # ⚠ 這三顆的「改了會怎樣」**各自不同**，所以說明不可以是同一句複製。以真碼為準
     # （auto_seed.py），不是照類別猜：一句「僅首次開機生效」抄三次，對後兩顆是假的。
-    _spec("seed.models", "AUTO_REGISTER_MODELS", SettingClass.B_EDIT, T_STR, _is_str,
+    _spec("seed.models", "AUTO_REGISTER_MODELS", SettingClass.B_EDIT, T_STR, _is_seed_models,
           "", True,
           "開機自動註冊的模型清單（JSON 字串）。⚠ env **只負責建立**：清單裡的名字"
           "若已經在模型登錄裡，這一次開機不會動它任何一個欄位（連端點都不蓋回去，"
           "auto_seed.py:272 的 OE-2 B3）。所以改這裡只對**新加的名字**有效，"
           "既有模型請到治理中心改。"),
-    _spec("seed.agents", "AUTO_REGISTER_AGENTS", SettingClass.B_EDIT, T_STR, _is_str,
+    _spec("seed.agents", "AUTO_REGISTER_AGENTS", SettingClass.B_EDIT, T_STR, _is_seed_agents,
           "", True,
           "開機自動註冊的 agent 清單（JSON 字串）。⚠ 端點以外的欄位（owner、"
           "描述、能力、核准狀態）**每次開機都會照這份清單重新同步**既有的 agent"
           "（auto_seed.py:383 起）；端點本身建立之後歸管理員，不會被蓋回去。"),
-    _spec("seed.links", "AUTO_REGISTER_LINKS", SettingClass.B_EDIT, T_STR, _is_str,
+    _spec("seed.links", "AUTO_REGISTER_LINKS", SettingClass.B_EDIT, T_STR, _is_seed_links,
           "", True,
           "開機自動註冊的平台連結清單（JSON 字串）。⚠ **每次開機都會 upsert**："
           "env 擁有的欄位（網址、圖示、說明、排序、是否公開、可見角色）會照這份清單"
@@ -580,7 +712,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "治理中心自建的連結（config_source=db 整列跳過），"
           "以及列在該列 db_editable_fields 裡的欄位（目前是「是否啟用」）—— "
           "管理員在畫面上改過的那些，seed 不會還原。"),
-    _spec("seed.api_keys", "AUTO_SEED_API_KEYS", SettingClass.A, T_STR, _is_str,
+    _spec("seed.api_keys", "AUTO_SEED_API_KEYS", SettingClass.A, T_STR, _is_seed_api_keys,
           "", True,
           "開機自動建立的帳號與 API key 清單（JSON 字串）。⚠ 值裡面內嵌 API key，"
           "長得像設定但不是。", _SECRET_REASON),
@@ -589,10 +721,10 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("storage.attachment_path", "ATTACHMENT_STORAGE_PATH", SettingClass.B_EDIT, T_STR,
           _is_non_empty_str, "data/attachments", True, "附件落地目錄（對應容器掛載）。"),
     _spec("storage.ingestion_upload_dir", "INGESTION_UPLOAD_DIR", SettingClass.B_LOCKED,
-          T_STR, _accept_any, "/var/anila/ingestion-uploads", True,
+          T_STR, _is_non_empty_str, "/var/anila/ingestion-uploads", True,
           "文件上傳暫存目錄。",
           "檔案系統語意；三個讀取點（含模組層）時機不一，執行期改會讓它們對不齊（設計 §3.2）"),
-    _spec("queue.redis_url", "REDIS_URL", SettingClass.B_LOCKED, T_STR, _accept_any,
+    _spec("queue.redis_url", "REDIS_URL", SettingClass.B_LOCKED, T_STR, _is_redis_url,
           "redis://redis:6379", True,
           "Redis DSN。⚠ 三個讀取點的內建預設不一致，而且**多數是另一個值**："
           "ingestion_queue.py:24 是 redis://redis:6379，"
@@ -659,7 +791,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("memory.http_timeout", "MEMORY_HTTP_TIMEOUT", SettingClass.C, T_FLOAT,
           _closed_float_range(1.0, 3600.0), 30.0, False,
           "記憶抽取的 HTTP 逾時秒數。允許 1–3600 秒。"),
-    _spec("memory.llm_model", "MEMORY_LLM_MODEL", SettingClass.B_LOCKED, T_STR, _accept_any,
+    _spec("memory.llm_model", "MEMORY_LLM_MODEL", SettingClass.B_LOCKED, T_STR, _is_non_empty_str,
           "gemma4", True, "記憶抽取用的模型名。",
           "模型名不是數值鈕 —— 換模型牽動 per-model 授權，畫面上補不了（設計 §3.2）"),
 
@@ -673,31 +805,35 @@ SETTINGS: tuple[SettingSpec, ...] = (
 
     # ── ingestion.* —— OCR 與視覺模型（消費者主要在 anila_core） ────────
     _spec("ingestion.pdf_ocr_fallback", "PDF_OCR_FALLBACK", SettingClass.B_LOCKED,
-          T_BOOL_LOWER_TRUE, _accept_any, False, False,
+          T_BOOL_LOWER_TRUE, _is_bool, False, False,
           "掃描 PDF 走視覺模型 OCR 後援。⚠ csp 端的 compose 刻意寫死 false，"
           "預覽與實際 ingest 的不一致是刻意設計。", _OCR_REASON),
-    _spec("ingestion.vision_url", "VISION_URL", SettingClass.B_LOCKED, T_STR, _accept_any,
+    _spec("ingestion.vision_url", "VISION_URL", SettingClass.B_LOCKED, T_STR, _is_url_or_empty,
           "", False, "OCR 用視覺模型的 base URL。", _OCR_REASON),
     _spec("ingestion.vision_model", "VISION_MODEL", SettingClass.B_LOCKED, T_STR,
-          _accept_any, "", False, "OCR 用視覺模型的模型名。", _OCR_REASON),
+          _is_str, "", False, "OCR 用視覺模型的模型名。", _OCR_REASON),
     _spec("ingestion.vision_api_key", "VISION_API_KEY", SettingClass.A, T_STR, _is_str,
           "", False, "OCR 用視覺模型的 Bearer key。", _SECRET_REASON),
     _spec("ingestion.vision_verify_ssl", "VISION_VERIFY_SSL", SettingClass.SEC,
-          T_BOOL_LOWER_TRUE, _accept_any, True, False,
+          T_BOOL_LOWER_TRUE, _is_bool, True, False,
           "呼叫視覺模型時是否驗證 TLS 憑證。", _SEC_REASON),
     _spec("ingestion.pdf_ocr_vision_prompt", "PDF_OCR_VISION_PROMPT", SettingClass.B_LOCKED,
-          T_STR, _accept_any, _DEFAULT_VISION_PROMPT, False,
+          T_STR, _is_non_empty_str, _DEFAULT_VISION_PROMPT, False,
           "OCR 提示詞。", _OCR_REASON),
-    _spec("ingestion.pdf_ocr_dpi", "PDF_OCR_DPI", SettingClass.B_LOCKED, T_INT, _accept_any,
-          200, False, "PDF 轉圖的解析度（DPI）。", _OCR_REASON),
+    _spec("ingestion.pdf_ocr_dpi", "PDF_OCR_DPI", SettingClass.B_LOCKED, T_INT,
+          _closed_int_range(1, 1200), 200, False,
+          "PDF 轉圖的解析度（DPI）。允許 1–1200。", _OCR_REASON),
     _spec("ingestion.pdf_ocr_concurrency", "PDF_OCR_CONCURRENCY", SettingClass.B_LOCKED,
-          T_INT, _accept_any, 4, False, "OCR 併發頁數。", _OCR_REASON),
+          T_INT, _closed_int_range(1, 64), 4, False,
+          "OCR 併發頁數。允許 1–64。", _OCR_REASON),
     _spec("ingestion.pdf_ocr_max_pages", "PDF_OCR_MAX_PAGES", SettingClass.B_LOCKED, T_INT,
-          _accept_any, 100, False, "單份 PDF 的 OCR 頁數上限。", _OCR_REASON),
-    _spec("ingestion.doc_parser", "DOC_PARSER", SettingClass.B_LOCKED, T_STR, _accept_any,
-          "native", False, "文件解析器（native／docling）。", _OCR_REASON),
+          _closed_int_range(1, 10000), 100, False,
+          "單份 PDF 的 OCR 頁數上限。允許 1–10000。", _OCR_REASON),
+    _spec("ingestion.doc_parser", "DOC_PARSER", SettingClass.B_LOCKED, T_STR,
+          _one_of("native", "docling"),
+          "native", False, "文件解析器（只能是 native／docling）。", _OCR_REASON),
     _spec("ingestion.docling_ocr_langs", "DOCLING_OCR_LANGS", SettingClass.B_LOCKED, T_STR,
-          _accept_any, "ch_tra,en", False, "docling 的 OCR 語系清單（逗號分隔）。",
+          _is_csv, "ch_tra,en", False, "docling 的 OCR 語系清單（逗號分隔）。",
           _OCR_REASON),
 
     # ── 已經落地的那一顆：別名，不是複製 ────────────────────────────────

@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import ast
 import json
-import re
 import os
 import pathlib
 
@@ -43,6 +42,7 @@ os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import pytest
 
+from app.api import platform_settings as platform_settings_api
 from app import config as config_module
 from app.config import BootOverrideSnapshot, Settings, apply_boot_overrides, settings
 from app.models.platform_setting import PlatformSetting, get_setting, set_setting
@@ -57,6 +57,7 @@ from app.services.settings_registry import (
     _ENV_ONLY_CHANNEL_REASON,
     _INTERPRETER_REASON,
 )
+from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import login, make_user
 
 OVERVIEW_URL = "/api/platform-settings/overview"
@@ -72,8 +73,14 @@ def _auth(token: str) -> dict:
 
 @pytest.fixture()
 def admin_token(client, db) -> str:
-    make_user(db, username="platform_settings_admin", role="admin")
-    return login(client, "platform_settings_admin")
+    make_user(db, username="admin", role="admin")
+    return login(client, "admin")
+
+
+@pytest.fixture()
+def other_admin_token(client, db) -> str:
+    make_user(db, username="platform_settings_other_admin", role="admin")
+    return login(client, "platform_settings_other_admin")
 
 
 @pytest.fixture()
@@ -905,11 +912,11 @@ def test_no_secret_value_appears_anywhere_in_the_overview(
 
 
 def test_no_secret_value_escapes_through_any_response_this_router_returns(
-    client, admin_token, db, monkeypatch
+    client, other_admin_token, db, monkeypatch
 ):
     """遮蔽是**這個 router 的**不變式，不是「overview 這一支」的不變式。
 
-    A 類的 PUT 必然是 400，而 400 的 detail 正是最容易被善意加料的地方
+    非固定維運帳號的 A 類 PUT 必須是 400，而 400 的 detail 正是最容易被善意加料的地方
     （「順便告訴他目前值是什麼」）。驗收的 P4 證實那條路今天沒有守門員：
     讓 detail 附上 ``os.environ.get(env_name)``，``SECRET_KEY`` 的 sentinel 直接出現在
     回應 body，而 125 個測試一個都沒紅。所以掃描要跟著**表面**走，不是跟著端點走：
@@ -923,14 +930,14 @@ def test_no_secret_value_escapes_through_any_response_this_router_returns(
         refused = client.put(
             _put_url(spec.key),
             json={"value": "anila-probe-4321"},
-            headers=_auth(admin_token),
+            headers=_auth(other_admin_token),
         )
         assert refused.status_code == 400, f"{spec.key} 竟然不是 400：{refused.text}"
-        assert spec.locked_reason in refused.json()["detail"]
+        assert "username=admin" in refused.json()["detail"]
         surfaces.append((f"PUT {spec.key} 的 400", refused.text))
 
     unknown = client.put(
-        _put_url("auth.secret_keyy"), json={"value": 1}, headers=_auth(admin_token)
+        _put_url("auth.secret_keyy"), json={"value": 1}, headers=_auth(other_admin_token)
     )
     assert unknown.status_code == 404
     surfaces.append(("未知 key 的 404", unknown.text))
@@ -1004,31 +1011,135 @@ def test_the_effective_value_has_the_type_the_registry_declares(client, admin_to
 # ── 5. PUT 的類別閘門：全名單迭代，零手抄 ──────────────────────────────────
 
 
-NON_EDITABLE_KEYS = sorted(
-    spec.key for spec in SETTINGS if spec.setting_class not in EDITABLE_CLASSES
-)
-EDITABLE_KEYS = sorted(
-    spec.key for spec in SETTINGS if spec.setting_class in EDITABLE_CLASSES
-)
+EDITABLE_KEYS = sorted(spec.key for spec in SETTINGS)
 
 
 def test_the_census_matches_the_registry():
     """名單是推導出來的，不是抄的——這一支只是把數字說出來。"""
-    assert len(NON_EDITABLE_KEYS) == 63
-    assert len(EDITABLE_KEYS) == 33
-    assert len(NON_EDITABLE_KEYS) + len(EDITABLE_KEYS) == len(REGISTRY) == 96
+    assert len(EDITABLE_KEYS) == len(REGISTRY) == 96
+    assert all(spec.setting_class in EDITABLE_CLASSES for spec in SETTINGS)
 
 
-@pytest.mark.parametrize("key", NON_EDITABLE_KEYS)
-def test_every_non_editable_key_is_refused_with_its_reason(client, admin_token, db, key):
-    """B_LOCKED／SEC／A 一顆都不可以收。拒絕訊息要帶**為什麼**。"""
-    spec = REGISTRY[key]
-    resp = client.put(_put_url(key), json={"value": "anila-probe-4321"}, headers=_auth(admin_token))
+def test_locked_and_security_classes_are_editable_but_keep_their_reason(
+    client, admin_token
+):
+    body = _overview(client, admin_token)
+    for item in body["items"]:
+        if item["class"] in {"B_LOCKED", "SEC"}:
+            assert item["editable"] is True
+            assert item["locked_reason"]
+            if item["class"] == "SEC":
+                assert "platform_settings" in item["locked_reason"]
+                assert "不會自動套用" in item["locked_reason"]
 
-    assert resp.status_code == 400, f"{key} 竟然收下了：{resp.text}"
-    detail = resp.json()["detail"]
-    assert spec.locked_reason in detail, f"{key} 的拒絕訊息沒有說為什麼"
-    assert db.get(PlatformSetting, key) is None, f"{key} 被拒絕了卻留下一列"
+
+def test_secret_writes_require_the_literal_admin_username(
+    client, admin_token, other_admin_token, db
+):
+    refused = client.put(
+        _put_url("admin.password"),
+        json={"value": "anila-secret-probe-4321"},
+        headers=_auth(other_admin_token),
+    )
+    assert refused.status_code == 400, refused.text
+    assert "username=admin" in refused.json()["detail"]
+    assert db.get(PlatformSetting, "admin.password") is None
+
+    accepted = client.put(
+        _put_url("admin.password"),
+        json={"value": "anila-secret-probe-4321"},
+        headers=_auth(admin_token),
+    )
+    assert accepted.status_code == 200, accepted.text
+    body = accepted.json()
+    assert body["is_set"] is True
+    assert body["effective"] is None
+    assert body["stored"] is None
+    assert "anila-secret-probe-4321" not in accepted.text
+
+
+def test_b_locked_write_is_accepted_and_bad_security_value_is_refused(
+    client, admin_token, db
+):
+    accepted = client.put(
+        _put_url("alerts.smtp_port"), json={"value": 2525}, headers=_auth(admin_token)
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["editable"] is True
+    assert accepted.json()["locked_reason"]
+    assert db.get(PlatformSetting, "alerts.smtp_port").value == "2525"
+
+    refused = client.put(
+        _put_url("auth.access_token_expire_minutes"),
+        json={"value": -1},
+        headers=_auth(admin_token),
+    )
+    assert refused.status_code == 400, refused.text
+    assert "正整數" in refused.json()["detail"]
+    assert db.get(PlatformSetting, "auth.access_token_expire_minutes") is None
+
+
+def test_secret_source_describes_the_runtime_fallback_not_the_staged_db_row(
+    client, admin_token, db, monkeypatch
+):
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    monkeypatch.setattr(
+        settings, "ADMIN_PASSWORD", REGISTRY["admin.password"].default, raising=False
+    )
+    accepted = client.put(
+        _put_url("admin.password"),
+        json={"value": "anila-staged-secret-4321"},
+        headers=_auth(admin_token),
+    )
+    assert accepted.status_code == 200, accepted.text
+    row = accepted.json()
+    assert row["is_set"] is True
+    assert row["source"] == "default"
+    assert row["effective"] is None
+    assert row["stored"] is None
+    assert "anila-staged-secret-4321" not in accepted.text
+
+
+def test_secret_source_reports_the_settings_file_layer(monkeypatch, client, admin_token):
+    """A 類 consumer 可能拿的是 pydantic Settings 的 ``.env`` 值，不是 os.environ。"""
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    settings_file_value = "anila-settings-file-secret-4321"
+    monkeypatch.setattr(settings, "ADMIN_PASSWORD", settings_file_value, raising=False)
+
+    response = client.get(OVERVIEW_URL, headers=_auth(admin_token))
+    assert response.status_code == 200, response.text
+    row = _row(response.json(), "admin.password")
+    assert row["source"] == "env"
+    assert row["is_set"] is True
+    assert settings_file_value not in response.text
+
+
+def test_invalid_seed_json_is_rejected_before_it_can_be_stored(client, admin_token, db):
+    refused = client.put(
+        _put_url("seed.models"),
+        json={"value": "{not-json"},
+        headers=_auth(admin_token),
+    )
+    assert refused.status_code == 400, refused.text
+    assert "{not-json" in refused.json()["detail"]
+    assert db.get(PlatformSetting, "seed.models") is None
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("ingestion.vision_url", "http://[broken"),
+        ("queue.redis_url", "redis://[broken"),
+    ],
+)
+def test_malformed_url_values_are_rejected_without_crashing_the_endpoint(
+    client, admin_token, db, key, value
+):
+    refused = client.put(
+        _put_url(key), json={"value": value}, headers=_auth(admin_token)
+    )
+    assert refused.status_code == 400, refused.text
+    assert db.get(PlatformSetting, key) is None
 
 
 def _probe_value_for(spec):
@@ -1048,10 +1159,29 @@ def _probe_value_for(spec):
         if candidate == spec.default:
             candidate = round(float(low) + (float(high) - float(low)) * 0.61, 4)
         return candidate
+    choices = getattr(spec.domain_fn, "choices", ())
+    if choices:
+        return next(value for value in choices if value != spec.default)
     if spec.value_type.py_type is bool:
         return not spec.default
+    if spec.domain_fn.__name__ == "_is_url_or_empty":
+        return "https://example.test/anila-probe"
+    if spec.domain_fn.__name__ == "_is_redis_url":
+        return "redis://redis:6379/0"
+    if spec.domain_fn.__name__ == "_is_csv":
+        return "anila-probe-4321,anila-probe-4322"
+    if spec.domain_fn.__name__ == "_positive_int":
+        return 4321
     if spec.domain_fn.__name__ == "_is_supported_text_encoding":
         return "gbk"
+    if spec.domain_fn.__name__ == "_is_seed_models":
+        return '[{"name":"anila-probe-model","endpoint_url":""}]'
+    if spec.domain_fn.__name__ == "_is_seed_agents":
+        return '[{"name":"anila-probe-agent","endpoint_url":""}]'
+    if spec.domain_fn.__name__ == "_is_seed_links":
+        return '[{"name":"anila-probe-link","url":"http://probe.example"}]'
+    if spec.domain_fn.__name__ == "_is_seed_api_keys":
+        return '[{"username":"anila-probe-user","key":"sk-anila-probe"}]'
     if spec.value_type.py_type is float:
         # 門檻那一顆的值域函式是別名（``_is_usable_kb_threshold``），沒有 bounds。
         return 0.61
@@ -1062,7 +1192,7 @@ def _probe_value_for(spec):
 
 @pytest.mark.parametrize("key", EDITABLE_KEYS)
 def test_every_editable_key_accepts_a_valid_write(client, admin_token, db, key):
-    """C 與 B_EDIT 全名單：收得下來、存得進去、讀得回來、留得下稽核。"""
+    """全 registry 名單：收得下來、存得進去、讀得回來、留得下稽核。"""
     spec = REGISTRY[key]
     value = _probe_value_for(spec)
     assert value != spec.default, f"{key} 的探針值撞到預設值 —— 會假綠"
@@ -1074,7 +1204,12 @@ def test_every_editable_key_accepts_a_valid_write(client, admin_token, db, key):
     assert row is not None
     assert row.value == spec.value_type.format(value)
     body = resp.json()
-    assert body["stored"] == row.value
+    if spec.setting_class is SettingClass.A:
+        assert body["stored"] is None
+        assert body["effective"] is None
+        assert body["is_set"] is True
+    else:
+        assert body["stored"] == row.value
     assert body["stored_usable"] is True
 
     events = _audit_events(db, key)
@@ -1193,7 +1328,7 @@ def test_a_successful_write_records_who_changed_what(client, admin_token, db):
     events = _audit_events(db, "memory.retrieve_top_k")
     assert len(events) == 1
     event = events[0]
-    assert event.actor_username == "platform_settings_admin"
+    assert event.actor_username == "admin"
     assert event.resource_type == "platform_setting"
     metadata = json.loads(event.metadata_json)
     assert metadata["from"] == 3, "改之前生效的是登錄表預設值"
@@ -1216,15 +1351,37 @@ def test_the_setting_and_its_audit_event_share_one_transaction(
 
     monkeypatch.setattr(audit_service, "AuditLog", _ExplodingAuditLog)
 
-    with pytest.raises(RuntimeError):
-        client.put(
-            _put_url("usage.batch_size"), json={"value": 73}, headers=_auth(admin_token)
-        )
+    resp = client.put(
+        _put_url("usage.batch_size"), json={"value": 73}, headers=_auth(admin_token)
+    )
+    assert resp.status_code == 500
+    assert "沒有存起來" in resp.json()["detail"]
 
     db.rollback()
     assert db.get(PlatformSetting, "usage.batch_size") is None, (
         "稽核失敗了，設定卻留了下來 —— 兩件事不在同一個交易裡"
     )
+
+
+def test_setting_flush_failure_is_explicitly_rolled_back(
+    client, admin_token, db, monkeypatch
+):
+    """flush 的 DB 例外也要說明未落地，不留下半個交易。"""
+
+    def _boom(*args, **kwargs):
+        raise SQLAlchemyError("flush 炸掉（模擬）")
+
+    monkeypatch.setattr(platform_settings_api, "set_setting", _boom)
+
+    resp = client.put(
+        _put_url("usage.batch_size"), json={"value": 73}, headers=_auth(admin_token)
+    )
+    assert resp.status_code == 500
+    assert "沒有存起來" in resp.json()["detail"]
+    assert "重試" in resp.json()["detail"]
+
+    db.rollback()
+    assert db.get(PlatformSetting, "usage.batch_size") is None
 
 
 def test_a_swallowed_audit_failure_is_never_answered_with_success(
@@ -1266,27 +1423,21 @@ def test_a_swallowed_audit_failure_is_never_answered_with_success(
     assert get_setting(db, "proxy.llm_timeout") == 120, "生效值必須還是改之前那個"
 
 
-def test_a_persisted_write_is_answered_2xx_even_if_the_helper_returns_none(
+def test_a_persisted_write_does_not_depend_on_post_commit_refresh(
     client, admin_token, db, monkeypatch
 ):
-    """**資料存好了就要說存好了** —— 即使稽核輔助函式回了 ``None``。
+    """**資料存好了就要說存好了** —— 判準是自己的 audit PK，不是 refresh 回傳值。
 
-    ``log_audit_event`` 在 **commit 之後**才 ``refresh``（``audit_service.py:108-124``）：
-    refresh 失敗一樣回 ``None``，而那時候設定與稽核**都已經落地**。端點若拿回傳值當
-    「有沒有存成」的判準，就會對一個成功的寫入說「已回復，請重試」——管理員一重試，
-    稽核就多一筆。把假成功換成假失敗不是修好，只是把謊換一個方向講。
-
-    所以判準改成**查實際狀態**。這一支釘的是那個方向：helper 回 None、但東西真的在，
-    答案必須是 2xx、不可以有重試指引、而且重試一次也不會多出第二筆稽核。
+    舊的 helper 在 commit 後 refresh；refresh 失敗會把已提交的寫入誤報成失敗。
+    端點現在由自己 flush audit、commit，再查自己的 audit PK，因此不需要 refresh。
     """
     from sqlalchemy.orm import Session as SASession
 
     calls = {"n": 0}
-    real_refresh = SASession.refresh
 
     def _flaky_refresh(self, *args, **kwargs):
         calls["n"] += 1
-        raise RuntimeError("refresh 炸掉（commit 已經成功）")
+        raise RuntimeError("不應依賴 refresh")
 
     monkeypatch.setattr(SASession, "refresh", _flaky_refresh)
 
@@ -1294,12 +1445,11 @@ def test_a_persisted_write_is_answered_2xx_even_if_the_helper_returns_none(
         _put_url("proxy.llm_timeout"), json={"value": 137}, headers=_auth(admin_token)
     )
 
-    assert calls["n"] >= 1, "沒有走到 refresh —— 這一支的前提要重寫"
+    assert calls["n"] == 0, "設定寫入不應以 post-commit refresh 作為成功判準"
     assert resp.status_code == 200, f"資料存好了卻回 {resp.status_code}：{resp.text}"
     assert resp.json()["effective"] == 137
     assert "重試" not in resp.text, "對一個成功的寫入給了重試指引"
 
-    monkeypatch.setattr(SASession, "refresh", real_refresh)
     db.rollback()
     assert db.get(PlatformSetting, "proxy.llm_timeout").value == "137"
     assert len(_audit_events(db, "proxy.llm_timeout")) == 1, (

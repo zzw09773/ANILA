@@ -70,7 +70,10 @@ ROUND_TRIP_CASES = {
     "usage.batch_size": ("USAGE_BATCH_SIZE", 4321),
     "health.check_interval": ("HEALTH_CHECK_INTERVAL", 7777),
     "storage.attachment_path": ("ATTACHMENT_STORAGE_PATH", "data/attachments-boot-4321"),
-    "seed.agents": ("AUTO_REGISTER_AGENTS", '[{"name":"boot-override-probe-4321"}]'),
+    "seed.agents": (
+        "AUTO_REGISTER_AGENTS",
+        '[{"name":"boot-override-probe-4321","endpoint_url":""}]',
+    ),
 }
 
 #: C1 裁決：原本七顆從 B-可編輯降到 B-鎖定（今天剩六顆，見下）。每一顆的證據寫在
@@ -225,6 +228,14 @@ def _probe_value_for(spec, boot_value: Any) -> Any:
     ``domain_fn``，並且 ``format``／``parse`` 來回不變 —— 不然測的就是編碼而不是套用。
     """
     forbidden = {spec.default, boot_value, getattr(settings, spec.env_name)}
+    structured_probes = {
+        "_is_seed_models": '[{"name":"boot-probe-model-4321","endpoint_url":""}]',
+        "_is_seed_agents": '[{"name":"boot-probe-agent-4321","endpoint_url":""}]',
+        "_is_seed_links": '[{"name":"boot-probe-link-4321","url":"http://boot-probe.example"}]',
+    }
+    structured = structured_probes.get(spec.domain_fn.__name__)
+    if structured not in forbidden and spec.domain_fn(structured):
+        return structured
     candidates = {
         int: [4321, 7777, 137, 43, 7],
         float: [0.375, 4.25, 37.5, 1.5],
@@ -786,7 +797,10 @@ def test_every_lifespan_consumer_observes_the_override_at_the_moment_it_runs(
 
     overrides = {
         "admin.username": ("ADMIN_USERNAME", "驗收用管理員-4321"),
-        "seed.models": ("AUTO_REGISTER_MODELS", '[{"probe":"boot-order-4321"}]'),
+        "seed.models": (
+            "AUTO_REGISTER_MODELS",
+            '[{"name":"boot-order-4321","endpoint_url":""}]',
+        ),
         # ⚠ 原本這裡有兩顆：``alerts.check_interval`` 那一行在重接線之後被機械式改名成
         # ``health.check_interval``，於是與上一行**重複**（ruff F601），watched 欄位默默
         # 從 5 掉到 4。機械式取代正是「調整藏在裡面」的地方，所以直接刪掉那一行、
