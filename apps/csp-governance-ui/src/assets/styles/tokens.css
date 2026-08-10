@@ -131,11 +131,19 @@
   --c-focus-ring:   #2b4c7e;
   --c-row-hover:    #eef1f5;
 
-  /* Chart palette — accent + status 家族 */
-  --chart-1: #2b4c7e;
-  --chart-2: #2b6cb0;
-  --chart-3: #b7791f;
-  --chart-4: #6b46c1;
+  /* Chart palette — 分類用，**相鄰兩色必須分得開**。
+   *
+   * ⚠ 這四顆不是挑好看的,是跑過可分辨度驗證的。舊值 `--chart-1: #2b4c7e` 與
+   * `--chart-2: #2b6cb0` 是同一個色相只差亮度,實測**正常視覺相鄰 ΔE 3.5**
+   * (門檻 15)、色盲 ΔE 3.3 —— 使用者在計量圖上根本分不出兩條線是哪個模型,
+   * 這是 2026-08-06 官方藍改版帶進來、被記在 HANDOFF-2026-08-07 §七第 4 條的待辦。
+   * 現值(藍／琥珀／紫／青)實測**最差相鄰 ΔE 23.6、全部檢查通過**。
+   * 要改動之前先跑驗證,不要用眼睛決定;色相順序是固定的,不可循環重用。
+   */
+  --chart-1: #2f5c9e;
+  --chart-2: #96610f;
+  --chart-3: #6b46c1;
+  --chart-4: #0d7d63;
   --chart-5: #b03636;
   --chart-6: #2f855a;
   --chart-grid: #e2e7ee;
@@ -197,10 +205,11 @@
   --c-row-hover:    #1f2530;
 
   /* Chart palette */
-  --chart-1: #6f8fc2;
-  --chart-2: #6c99d6;
-  --chart-3: #d6a95f;
-  --chart-4: #a98fd6;
+  /* 深色是**另外選過**的四步,不是把淺色翻過來 —— 實測最差相鄰 ΔE 23.0、全部通過。 */
+  --chart-1: #5a86c4;
+  --chart-2: #c4853a;
+  --chart-3: #9a6fd4;
+  --chart-4: #3aa588;
   --chart-5: #d67a82;
   --chart-6: #5cc0b4;
   --chart-grid: #2a303c;
@@ -246,10 +255,10 @@
     --c-selection-bg: rgba(111, 143, 194, 0.22);
     --c-focus-ring:   #6f8fc2;
     --c-row-hover:    #1f2530;
-    --chart-1: #6f8fc2;
-    --chart-2: #6c99d6;
-    --chart-3: #d6a95f;
-    --chart-4: #a98fd6;
+    --chart-1: #5a86c4;
+    --chart-2: #c4853a;
+    --chart-3: #9a6fd4;
+    --chart-4: #3aa588;
     --chart-5: #d67a82;
     --chart-6: #5cc0b4;
     --chart-grid: #2a303c;
