@@ -779,6 +779,13 @@ export const MessageBubble = ({
   const actionProvenance = msg.metadata?.action;
   // Quiet attribution: persisted agent_name (action:NAME) for action-produced siblings.
   const showActionAgentName = Boolean(actionProvenance && msg.agentName);
+  // The successful-hit copy is redundant only when this same message has the
+  // citation affordance below. A hit can still arrive without citations; keep
+  // the state explicit in that case instead of leaving the answer silent.
+  const hasCitationSources = msg.citations && msg.citations.length > 0;
+  const showKbStateBadge = !(
+    msg.kbState === "searched_hit" && hasCitationSources
+  );
 
   return (
     <div
@@ -809,12 +816,16 @@ export const MessageBubble = ({
       )}
 
       {/* 依據在答案**上面**:讀者要先知道這段話有沒有院規撐著,再讀內容。
-          串流中 kbState 還沒到(meta 是最後一格),這時自然什麼都不畫。 */}
-      <KbStateBadge
-        state={msg.kbState}
-        hits={msg.kbHits}
-        failedCollections={msg.kbFailedCollections}
-      />
+          串流中 kbState 還沒到(meta 是最後一格),這時自然什麼都不畫。
+          成功命中若已有來源抽屜,上方的「依據院內規章」只是在重複它；
+          沒有 citations 的命中仍須保留狀態。 */}
+      {showKbStateBadge && (
+        <KbStateBadge
+          state={msg.kbState}
+          hits={msg.kbHits}
+          failedCollections={msg.kbFailedCollections}
+        />
+      )}
 
       {(() => {
         // Combine reasoning from two channels so gpt-oss-20b (native field) and

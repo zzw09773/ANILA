@@ -68,8 +68,6 @@ const REALISTIC = {
   },
 };
 
-const EVERY_SEARCHED_STATE = Object.keys(REALISTIC);
-
 /** CSP 命中時同時填的 drawer 契約(同函式 :688-696)。 */
 function citationsFor(hits) {
   return hits.map((h, i) => ({
@@ -130,21 +128,51 @@ function kbMarkers(root = document.body) {
 describe("五狀態徽章 — 渲染", () => {
   afterEach(cleanup);
 
-  it("四個「查過了」的狀態各自畫出自己的徽章,而且互相分得出來", () => {
-    const seen = new Set();
-    for (const state of EVERY_SEARCHED_STATE) {
-      const { container } = renderBubble(assistantMsg(REALISTIC[state]));
-      const badge = container.querySelector(`[data-testid="kb-state-${state}"]`);
-      expect(badge, `${state} 應該畫出自己的徽章`).toBeTruthy();
-      // 同一輪裡不得同時出現第二個狀態的記號(反推狀態會這樣壞)。
-      expect(kbMarkers(container).map((n) => n.dataset.testid)).toEqual([
-        `kb-state-${state}`,
-      ]);
-      seen.add(badge.textContent.trim());
+  it("來源抽屜在時只移除重複的命中徽章,無來源的命中仍明示狀態", () => {
+    const withSources = renderBubble(assistantMsg(REALISTIC.searched_hit));
+    expect(kbMarkers(withSources.container)).toHaveLength(0);
+    expect(withSources.container.textContent).toContain("查看 2 筆來源");
+    cleanup();
+
+    const withoutSources = renderBubble(
+      assistantMsg({ ...REALISTIC.searched_hit, citations: [] }),
+    );
+    const badge = withoutSources.container.querySelector(
+      '[data-testid="kb-state-searched_hit"]',
+    );
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toContain("依據院內規章");
+    expect(withoutSources.container.textContent).not.toContain("查看 ");
+  });
+
+  it("枚舉五態與欄位缺席,不讓薄化製造新的靜默", () => {
+    const cases = [
+      ["searched_hit 有來源", REALISTIC.searched_hit, false, true],
+      [
+        "searched_hit 無來源",
+        { ...REALISTIC.searched_hit, citations: [] },
+        true,
+        false,
+      ],
+      ["searched_miss", REALISTIC.searched_miss, true, false],
+      ["search_error", REALISTIC.search_error, true, false],
+      ["partial_error", REALISTIC.partial_error, true, true],
+      ["not_searched", { kb_state: "not_searched", kb_hits: [] }, false, false],
+      ["欄位缺席", undefined, false, false],
+    ];
+
+    for (const [name, fragment, wantsBadge, wantsDrawer] of cases) {
+      const { container } = renderBubble(assistantMsg(fragment));
+      expect(
+        kbMarkers(container).length > 0,
+        `${name} 的 badge 表面不符合預期`,
+      ).toBe(wantsBadge);
+      expect(
+        container.textContent.includes("查看 2 筆來源"),
+        `${name} 的來源抽屜 affordance 不符合預期`,
+      ).toBe(wantsDrawer);
       cleanup();
     }
-    // 四句話彼此不同——四個狀態共用同一句話等於只有一個狀態。
-    expect(seen.size).toBe(EVERY_SEARCHED_STATE.length);
   });
 
   it("not_searched 與欄位缺席都不畫任何 kb 記號(這是決定,不是壞掉)", () => {
@@ -215,7 +243,10 @@ describe("五狀態徽章 — 渲染", () => {
   });
 
   it("查得乾淨的命中不得無中生有地說依據不完整", () => {
-    const { container } = renderBubble(assistantMsg(REALISTIC.searched_hit));
+    // 沒有 citations 時 badge 不能因為薄化規則消失,才能檢查它的原文案。
+    const { container } = renderBubble(
+      assistantMsg({ ...REALISTIC.searched_hit, citations: [] }),
+    );
     const badge = container.querySelector('[data-testid="kb-state-searched_hit"]');
     expect(badge.textContent).not.toMatch(/不是全部|不完整|失敗/);
   });
@@ -225,7 +256,9 @@ describe("命中徽章 — 文件名、原文與分數", () => {
   afterEach(cleanup);
 
   it("徽章列出每一筆命中的文件名", () => {
-    const { container } = renderBubble(assistantMsg(REALISTIC.searched_hit));
+    const { container } = renderBubble(
+      assistantMsg({ ...REALISTIC.searched_hit, citations: [] }),
+    );
     const chips = [...container.querySelectorAll('[data-testid^="kb-source-"]')];
     expect(chips).toHaveLength(2);
     // 顯示的是**文件名**,不是 document_id / collection_id。
@@ -238,7 +271,9 @@ describe("命中徽章 — 文件名、原文與分數", () => {
   });
 
   it("hover 泡泡帶原文與信心分數", () => {
-    const { container } = renderBubble(assistantMsg(REALISTIC.searched_hit));
+    const { container } = renderBubble(
+      assistantMsg({ ...REALISTIC.searched_hit, citations: [] }),
+    );
     const chips = [...container.querySelectorAll('[data-testid^="kb-source-"]')];
     const first = chips[0].getAttribute("title");
     // 原文(完整,不是截斷過的 snippet)
@@ -257,6 +292,7 @@ describe("命中徽章 — 文件名、原文與分數", () => {
       assistantMsg({
         kb_state: "searched_hit",
         kb_hits: [{ ...HIT_A, page: 12 }],
+        citations: [],
       }),
     );
     const badge = container.querySelector('[data-testid="kb-state-searched_hit"]');
@@ -348,7 +384,8 @@ describe("映射縫", () => {
     backend.enqueueAnswer("依規定辦理如附。", {
       meta: {
         ...REALISTIC.searched_hit,
-        citations: citationsFor(REALISTIC.searched_hit.kb_hits),
+        // 命中但沒有 citations 時,兩個映射縫都仍要把狀態顯示出來。
+        citations: [],
       },
     });
     await mountOrchestrator({ backend });
@@ -404,7 +441,8 @@ describe("映射縫", () => {
             parent_id: 9001,
             metadata: {
               ...REALISTIC.searched_hit,
-              citations: citationsFor(REALISTIC.searched_hit.kb_hits),
+              // 同上:這一輪沒有來源抽屜,不能因為隱藏重複 badge 而靜默。
+              citations: [],
             },
           },
         ],
