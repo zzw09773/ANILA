@@ -137,6 +137,16 @@ describe("五狀態徽章 — 渲染", () => {
   it("枚舉五態與欄位缺席,不讓薄化製造新的靜默", () => {
     const cases = [
       ["searched_hit 有來源", REALISTIC.searched_hit, false, true],
+      // ⚠ 生產目前到不了「命中卻零引用」(`institutional_kb.py:232` 令 searched_hit ⇔ hits
+      // 非空;`proxy.py:686-697` 有 hits 就填 citations)。**這一格留著不是為了那條路徑,
+      // 是為了守住述詞本身**:薄化的條件必須是「抽屜此刻真的在畫面上」,而不是「狀態是命中」。
+      // 拿掉它,一個「settled 命中就無條件藏徽章」的改動會整套綠燈通過(複審實測 0 failed)。
+      [
+        "searched_hit 零引用(述詞防呆,非生產路徑)",
+        { ...REALISTIC.searched_hit, citations: [] },
+        true,
+        false,
+      ],
       ["searched_miss", REALISTIC.searched_miss, true, false],
       ["search_error", REALISTIC.search_error, true, false],
       ["partial_error", REALISTIC.partial_error, true, true],
