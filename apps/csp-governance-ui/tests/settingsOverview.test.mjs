@@ -535,6 +535,11 @@ test('⚠ 編輯框裡放的是可送出的字串，不是顯示字串', () => {
   assert.equal(draftValue(threeStateRow()), '1301')
   // B_LOCKED／SEC 沒有 pending 欄位，但不能在 PUT 成功後把框換回舊 effective。
   assert.equal(draftValue({ effective: 587, stored: '2525', pending: null }), '2525')
+  // stored_usable=false 是讀不回來、永遠不會生效的 DB 字串；輸入框應回到實際生效值。
+  assert.equal(
+    draftValue({ effective: 587, stored: '不是數字', stored_usable: false, pending: null }),
+    '587',
+  )
 })
 
 test('A 類空白草稿不可直接儲存，避免把已存祕密靜默清掉', () => {

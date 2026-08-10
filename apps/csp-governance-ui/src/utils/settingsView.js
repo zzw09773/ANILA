@@ -302,9 +302,10 @@ export function filterSections(sections, query) {
  * 人看的，一旦被送回後端就會變成一個真的字串值。
  */
 export function draftValue(item) {
-  // B_LOCKED／SEC 也能保存，但目前 consumer 不由 DB 這條通道套用；保留 stored
+  // B_LOCKED／SEC 也能保存，但目前 consumer 不由 DB 這條通道套用；保留可讀回的 stored
   // 才不會 PUT 成功後把輸入框換回舊 effective，下一次保存再覆蓋管理員剛存的值。
-  const value = item?.pending ?? item?.stored ?? item?.effective
+  const stored = item?.stored_usable === false ? null : item?.stored
+  const value = item?.pending ?? stored ?? item?.effective
   return value === null || value === undefined ? '' : String(value)
 }
 
