@@ -5,8 +5,8 @@
 // anilaSearchableToggle 已確立的兩層作法：
 //   1. 行為層：分區／分態／字串全抽進 `utils/settingsView.js`，直接 import 斷言。
 //   2. 原始碼層護欄：真正會壞的是呼叫端 —— 純函式全綠而 .vue 忘了接（或自己
-//      重寫一份判斷），行為測試一個都不會紅。唯讀區的「沒有 save handler」
-//      沿用 runtimeConfigReadOnly.test.mjs 的 regex 護欄型式。
+//      重寫一份判斷），行為測試一個都不會紅。設定表的搜尋／收合與單一編輯區
+//      也在原始碼層釘住，避免元件漏接 utils。
 //
 // 96 列的 fixture **不是手抄的**：(key, class, env, restart_required) 直接對著
 // `services/csp/app/services/settings_registry.py` 的原始碼核對（見「契約漂移」
@@ -29,11 +29,14 @@ import {
   bootOverrideBanner,
   RECREATE_COMMAND,
   canEdit,
+  canSaveDraft,
   countMismatchWarning,
   draftValue,
   extractDetail,
+  filterSections,
   formatSettingValue,
   groupIntoSections,
+  isSecretItem,
   isSetLabel,
   lockedReasonText,
   overviewState,
@@ -174,7 +177,7 @@ function fixtureItem([key, env, cls, restart, hasLock], i) {
     description: `${key} 的繁中說明（含值域人話）`,
     env_name: env,
     value_type: 'str',
-    editable: cls === 'C' || cls === 'B_EDIT',
+    editable: true,
     restart_required: restart,
     locked_reason: hasLock ? `鎖定理由 · ${key} · 改法：在 compose 的 csp 服務 environment 設 ${env}` : null,
     default: null,
@@ -303,7 +306,7 @@ test('四區各自收到自己的 class，一顆都不串門', () => {
   assert.equal(byId['secrets'].items.length, 13)
 })
 
-test('版面順序＝C → B_EDIT → 唯讀 → A（brief 的四區順序）', () => {
+test('版面順序＝C → B_EDIT → B_LOCKED／SEC → A（brief 的四區順序）', () => {
   assert.deepEqual(
     groupIntoSections(ALL_96).map((s) => s.id),
     ['apply-now', 'apply-on-restart', 'locked', 'secrets'],
@@ -319,15 +322,23 @@ test('區內順序照後端回的順序，不自己排序', () => {
   assert.notDeepEqual(rendered, [...rendered].sort())
 })
 
-test('可編輯／唯讀的區旗標：只有前兩區可以放編輯器', () => {
+test('四個區都可編輯，但 A 區仍然遮住值', () => {
   const byId = Object.fromEntries(groupIntoSections(ALL_96).map((s) => [s.id, s]))
   assert.equal(byId['apply-now'].editable, true)
   assert.equal(byId['apply-on-restart'].editable, true)
-  assert.equal(byId['locked'].editable, false)
-  assert.equal(byId['secrets'].editable, false)
+  assert.equal(byId['locked'].editable, true)
+  assert.equal(byId['secrets'].editable, true)
   // A 區永遠沒有值欄位——後端根本不回值。
   assert.equal(byId['secrets'].showsValues, false)
   assert.equal(byId['locked'].showsValues, true)
+})
+
+test('搜尋只過濾後端 items，不建立第二份設定名單', () => {
+  const sections = groupIntoSections(ALL_96)
+  const filtered = filterSections(sections, 'smtp_port')
+  assert.deepEqual(filtered.flatMap((section) => section.items.map((item) => item.key)), ['alerts.smtp_port'])
+  assert.equal(filterSections(sections, '').reduce((n, section) => n + section.items.length, 0), 96)
+  assert.deepEqual(filterSections(sections, '不存在的設定'), [])
 })
 
 test('後端回了這一頁還不認得的 class：進唯讀溢位區，值不顯示，也不會被丟掉', () => {
@@ -381,6 +392,20 @@ test('存了但讀不回來的那一列，不可以被講成待生效', () => {
   const state = rowState({ ...threeStateRow(), stored: '壞掉的值', stored_usable: false, pending: null })
   assert.equal(state.id, 'unusable')
   assert.match(state.label, /不會生效|讀不回|用不了/)
+})
+
+test('B_LOCKED／SEC 存了但目前通道不套用時，不可以被講成現在生效', () => {
+  const state = rowState({
+    ...threeStateRow(),
+    class: 'B_LOCKED',
+    pending: null,
+    stored: '2525',
+    effective: 587,
+    source: 'env',
+  })
+  assert.equal(state.id, 'staged')
+  assert.match(state.label, /已保存|尚未|通道/)
+  assert.notEqual(state.className, 'setting-state--effective')
 })
 
 test('A 類沒有值，就沒有三態徽章可以掛', () => {
@@ -504,6 +529,15 @@ test('⚠ 編輯框裡放的是可送出的字串，不是顯示字串', () => {
   assert.equal(draftValue({ effective: false, pending: null }), 'false')
   // 已經存了待生效值的列，框裡放的是那個待生效值（管理員接著改的就是它）。
   assert.equal(draftValue(threeStateRow()), '1301')
+  // B_LOCKED／SEC 沒有 pending 欄位，但不能在 PUT 成功後把框換回舊 effective。
+  assert.equal(draftValue({ effective: 587, stored: '2525', pending: null }), '2525')
+})
+
+test('A 類空白草稿不可直接儲存，避免把已存祕密靜默清掉', () => {
+  assert.equal(canSaveDraft({ class: 'A' }, ''), false)
+  assert.equal(canSaveDraft({ class: 'A' }), false)
+  assert.equal(canSaveDraft({ class: 'A' }, 'new-secret'), true)
+  assert.equal(canSaveDraft({ class: 'C' }, ''), true)
 })
 
 // ═══ 開機覆蓋 banner ═══════════════════════════════════════════════════════
@@ -635,6 +669,23 @@ test('C 類存完是「下一個請求就生效」，不可以叫人去重啟', 
   assert.notEqual(notice.message, RESTART_HINT)
 })
 
+test('B_LOCKED／SEC 存完說明已進 DB，但不假稱目前生效', () => {
+  const notice = saveNotice({
+    key: 'alerts.smtp_port', class: 'B_LOCKED', restart_required: true,
+    locked_reason: '安全提醒', pending: null,
+  })
+  assert.equal(notice.tone, 'warn')
+  assert.match(notice.message, /DB/)
+  assert.match(notice.message, /來源|提醒/)
+})
+
+test('A 類存完只說待部署保存，絕不回顯值', () => {
+  const notice = saveNotice({ key: 'admin.password', class: 'A', locked_reason: '祕密' })
+  assert.equal(notice.tone, 'warn')
+  assert.match(notice.message, /不會回顯/)
+  assert.match(notice.message, /部署通道/)
+})
+
 // ═══ 顯示值一律來自後端回應 ════════════════════════════════════════════════
 
 test('PUT 之後整列取代，不是把新舊欄位合起來', () => {
@@ -664,12 +715,14 @@ test('replaceRow 不動其他列，也不會把不認識的 key 硬塞進來', (
 })
 
 test('可不可以編輯，問後端那個欄位，不是自己看 class 猜', () => {
-  // 後端哪天把某一顆 C 降級成唯讀而 class 還沒動，畫面必須立刻停手。
+  // class 只說明生效／遮罩語意，真正是否顯示編輯器仍問後端 editable。
   assert.equal(canEdit({ class: 'C', editable: true }), true)
   assert.equal(canEdit({ class: 'C', editable: false }), false)
   assert.equal(canEdit({ class: 'B_LOCKED', editable: true }), true)
-  assert.equal(canEdit({ class: 'A' }), false)
+  assert.equal(canEdit({ class: 'A', editable: true }), true)
   assert.equal(canEdit(null), false)
+  assert.equal(isSecretItem({ class: 'A' }), true)
+  assert.equal(isSecretItem({ class: 'SEC' }), false)
 })
 
 // ═══ 錯誤與初載狀態 ════════════════════════════════════════════════════════
@@ -738,25 +791,22 @@ test('每一格的樣式由 utils 給，畫面不得硬寫死同一個 class', (
   assert.doesNotMatch(src, /class="[^"]*setting-cell--pending/)
 })
 
-test('唯讀區在版面最後，而且裡面一個控制項都沒有', () => {
-  const src = stripComments(readSource('views/SettingsOverviewView.vue'))
-  const editableAt = src.indexOf('data-region="editable"')
-  const readonlyAt = src.indexOf('data-region="readonly"')
-  assert.ok(editableAt >= 0, '找不到可編輯區')
-  assert.ok(readonlyAt > editableAt, '唯讀區不在可編輯區之後，下面的切片就切錯了')
-
-  const readonly = src.slice(readonlyAt, src.indexOf('<script setup>'))
-  assert.ok(readonly.length > 200, '唯讀區切出來是空的，這支護欄形同虛設')
-  for (const forbidden of [/<input/, /<textarea/, /<select/, /v-model/, /handleSave/, /TermButton/, /@click/]) {
-    assert.doesNotMatch(readonly, forbidden, `唯讀區出現了控制項：${forbidden}`)
-  }
-})
-
-test('唯讀區照樣把 locked_reason 全文渲染出來，而且沒有被 CSS 截斷', () => {
+test('設定表只有一個編輯區，搜尋／收合與所有列的編輯器都接到 payload', () => {
   const src = readSource('views/SettingsOverviewView.vue')
   const stripped = stripComments(src)
-  const readonly = stripped.slice(stripped.indexOf('data-region="readonly"'), stripped.indexOf('<script setup>'))
-  assert.match(readonly, /lockedReasonText\(item\)/, 'locked_reason 沒有渲染，降級七顆就沒有自救路徑')
+  assert.equal((stripped.match(/data-region="settings"/g) || []).length, 1)
+  assert.doesNotMatch(stripped, /data-region="readonly"/)
+  assert.match(stripped, /v-model="query"/)
+  assert.match(stripped, /filterSections/)
+  assert.match(stripped, /toggleAllSections/)
+  assert.match(stripped, /v-if="section\.editable && canEdit\(item\)"/)
+  assert.match(stripped, /<div v-show="!isCollapsed\(section\.id\)">/)
+  assert.doesNotMatch(stripped, /v-show="!isCollapsed\(section\.id\) \|\| !!query"/)
+  assert.match(stripped, /v-else-if="section\.editable && canEdit\(item\)"/)
+  assert.match(stripped, /後端說這一顆不可編輯，這裡只列名稱。/)
+  assert.match(stripped, /:disabled="!canSaveDraft\(item, drafts\[item\.key\]\)"/)
+  assert.match(stripped, /autocomplete.*new-password/)
+  assert.match(stripped, /lockedReasonText\(item\)/, 'locked_reason 沒有渲染')
 
   const style = src.slice(src.indexOf('<style'))
   const lockedBlock = style.slice(style.indexOf('.setting-locked'), style.indexOf('.setting-locked') + 400)
@@ -767,12 +817,11 @@ test('唯讀區照樣把 locked_reason 全文渲染出來，而且沒有被 CSS 
 
 test('編輯器只掛在 canEdit 為真的列上', () => {
   const stripped = stripComments(readSource('views/SettingsOverviewView.vue'))
-  const editable = stripped.slice(
-    stripped.indexOf('data-region="editable"'),
-    stripped.indexOf('data-region="readonly"'),
-  )
-  assert.match(editable, /v-if="canEdit\(item\)"/, '編輯器沒有綁在後端的 editable 欄位上')
-  assert.match(editable, /v-model="drafts\[item\.key\]"/)
+  assert.match(stripped, /v-if="section\.editable && canEdit\(item\)"/, '編輯器沒有綁在後端的 editable 欄位上')
+  assert.match(stripped, /v-model="drafts\[item\.key\]"/)
+  assert.match(stripped, /isSecretItem\(item\)/)
+  assert.match(stripped, /canSaveDraft\(item, drafts\[item\.key\]\)/)
+  assert.match(stripped, /errors\.value\[item\.key\] = '祕密設定請輸入新值；空白不會清除已存祕密。'/)
 })
 
 test('⚠ 不做樂觀更新：畫面上的值不得由前端指派', () => {
@@ -804,13 +853,12 @@ test('banner 站在版面最前面（優先位置）', () => {
   assert.match(src, /const banner = computed\(\(\) => bootOverrideBanner\(/, 'banner 不是從 bootOverrideBanner 來的')
   assert.match(src, /\{\{ banner\.reason \}\}/, '原因沒有渲染出來')
   assert.match(src, /\{\{ banner\.title \}\}/)
-  assert.ok(bannerAt < src.indexOf('data-region="editable"'), 'banner 排在設定區後面，捲下去才看得到')
-  assert.ok(bannerAt < src.indexOf('data-region="readonly"'))
+  assert.ok(bannerAt < src.indexOf('data-region="settings"'), 'banner 排在設定區後面，捲下去才看得到')
 
   // 「少收到幾顆」的警告同樣要在設定區之前，否則它就在第 96 列下面。
   const mismatchAt = src.indexOf('countMismatchWarning')
   assert.ok(mismatchAt >= 0, '畫面沒有接總數不符的警告')
-  assert.ok(src.indexOf('settings-count-warning') < src.indexOf('data-region="editable"'))
+  assert.ok(src.indexOf('settings-count-warning') < src.indexOf('data-region="settings"'))
 })
 
 // ── 接線層：括號裡放什麼 ────────────────────────────────────────────────────

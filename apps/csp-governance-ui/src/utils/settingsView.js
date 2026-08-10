@@ -46,6 +46,11 @@ const STATES = {
     label: '待生效（重啟後）',
     className: 'setting-state--pending',
   },
+  staged: {
+    id: 'staged',
+    label: '已保存，尚未由目前通道套用',
+    className: 'setting-state--staged',
+  },
   unusable: {
     id: 'unusable',
     label: '存了但讀不回來，永遠不會生效',
@@ -57,7 +62,8 @@ const STATES = {
 const VALUE_BEARING = new Set(['C', 'B_EDIT', 'B_LOCKED', 'SEC'])
 
 /**
- * 四個區，順序就是版面順序。
+ * 四個區，順序就是版面順序。所有 registry class 都能編輯；分區只說明生效時機與
+ * 祕密遮罩，不再把 B_LOCKED／SEC／A 畫成沒有控制項的唯讀區。
  *
  * `editable` 是**版面**的性質（這一區能不能放編輯器）；某一列到底給不給編輯器，
  * 一律再問 `canEdit(item)`，也就是後端那個 `editable` 欄位 —— 後端哪天把一顆
@@ -83,17 +89,17 @@ export const SECTION_DEFS = [
   {
     id: 'locked',
     classes: ['B_LOCKED', 'SEC'],
-    title: '這裡改不動',
-    hint: '每一列都寫著為什麼改不動，以及真的要改的話該去哪裡改。',
-    editable: false,
+    title: '可保存，但先看每列提醒',
+    hint: '可以保存至 DB；每一列的提醒說明安全影響與目前生效通道。',
+    editable: true,
     showsValues: true,
   },
   {
     id: 'secrets',
     classes: ['A'],
-    title: '祕密：只說設了沒有',
-    hint: '值不會離開後端 —— 這裡連 default 都看不到，只看得出有沒有人設過。',
-    editable: false,
+    title: '祕密：只能輸入，不回顯',
+    hint: '只顯示已設定／未設定；值永不回到畫面，寫入權限由後端固定 username=admin 閘門控管。',
+    editable: true,
     showsValues: false,
   },
 ]
@@ -144,6 +150,16 @@ export function canEdit(item) {
   return item?.editable === true
 }
 
+/** A 類只能顯示狀態，輸入框仍可送出新值但永遠不預填。 */
+export function isSecretItem(item) {
+  return item?.class === 'A'
+}
+
+/** 空白 A 類輸入不是「沒有修改」：送出它可能靜默清掉已存的祕密。 */
+export function canSaveDraft(item, draft) {
+  return !isSecretItem(item) || (typeof draft === 'string' && draft !== '')
+}
+
 /**
  * 三態之一，或 `null`（沒有值可講的列：A 類與不認得的類別）。
  *
@@ -154,6 +170,7 @@ export function rowState(item) {
   if (!item || !VALUE_BEARING.has(item.class)) return null
   if (item.stored != null && item.stored_usable === false) return STATES.unusable
   if (item.pending != null) return STATES.pending
+  if (item.stored != null && ['B_LOCKED', 'SEC'].includes(item.class)) return STATES.staged
   return STATES.effective
 }
 
@@ -260,6 +277,22 @@ export function isSetLabel(item) {
   return '—'
 }
 
+/** 以後端 payload 的欄位過濾，避免前端再維護一份設定 key 清單。 */
+export function filterSections(sections, query) {
+  const needle = String(query ?? '').trim().toLocaleLowerCase()
+  if (!needle) return Array.isArray(sections) ? sections : []
+
+  return (Array.isArray(sections) ? sections : [])
+    .map((section) => ({
+      ...section,
+      items: (Array.isArray(section.items) ? section.items : []).filter((item) =>
+        [item?.key, item?.description, item?.env_name, item?.value_type, item?.locked_reason]
+          .some((field) => String(field ?? '').toLocaleLowerCase().includes(needle)),
+      ),
+    }))
+    .filter((section) => section.items.length > 0)
+}
+
 /**
  * 編輯框裡要放的**可送出字串** —— 不是顯示字串。
  *
@@ -267,7 +300,9 @@ export function isSetLabel(item) {
  * 人看的，一旦被送回後端就會變成一個真的字串值。
  */
 export function draftValue(item) {
-  const value = item?.pending ?? item?.effective
+  // B_LOCKED／SEC 也能保存，但目前 consumer 不由 DB 這條通道套用；保留 stored
+  // 才不會 PUT 成功後把輸入框換回舊 effective，下一次保存再覆蓋管理員剛存的值。
+  const value = item?.pending ?? item?.stored ?? item?.effective
   return value === null || value === undefined ? '' : String(value)
 }
 
@@ -295,6 +330,18 @@ export function bootOverrideBanner(overview) {
  * `pending` 有值就是鐵證（這個值還沒生效），`restart_required` 是宣告。
  */
 export function saveNotice(row) {
+  if (isSecretItem(row)) {
+    return {
+      tone: 'warn',
+      message: '已儲存至 DB；祕密值不會回顯，實際 consumer 仍依「來源」欄，請循部署通道生效',
+    }
+  }
+  if (lockedReasonText(row)) {
+    return {
+      tone: 'warn',
+      message: '已儲存至 DB；目前生效值請以「來源」與本列提醒為準',
+    }
+  }
   if (row?.pending != null || row?.restart_required === true) {
     return { tone: 'warn', message: RESTART_HINT }
   }

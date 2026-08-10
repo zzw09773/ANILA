@@ -1,5 +1,5 @@
 <!--
-  平台設定總覽 —— 96 顆設定，四區三態。
+  平台設定總覽 —— 96 顆設定，四區三態，全部可保存。
 
   這一頁刻意只有樣板：分區、分態、顯示字串全部出自 `utils/settingsView.js`，
   由 tests/settingsOverview.test.mjs 直接 import 驗（本 app 掛載不了元件，
@@ -8,7 +8,7 @@
   兩件不可以在這裡自己做的事：
   1. **不做樂觀更新**。畫面上的值一律是後端回應那一列，PUT 之後整列取代。
   2. **不改寫後端的話**。`detail` 與 `locked_reason` 原樣上畫面 —— 那兩段字裡
-     寫著值域說明與「真的要改的話該去哪裡改」，改寫等於把自救路徑刪掉。
+     寫著值域說明與安全／生效提醒，改寫等於把管理員的判斷依據刪掉。
 -->
 <template>
   <div class="page">
@@ -42,120 +42,130 @@
     <TermEmpty v-else-if="state === 'empty'" :message="overviewStateMessage('empty')" />
 
     <template v-else>
-      <div data-region="editable" class="settings-region">
-        <TermBox
-          v-for="section in editableSections"
-          :key="section.id"
-          :title="`${section.title} · ${section.items.length}`"
-          :hint="section.hint"
-          pad="none"
-          flush
-        >
-          <table class="term-table">
-            <thead>
-              <tr>
-                <th style="width: 26%">設定</th>
-                <th>現況</th>
-                <th style="width: 30%">改成</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="item in section.items" :key="item.key">
-                <td>
-                  <div class="cell-strong">{{ item.key }}</div>
-                  <div class="cell-meta">{{ item.description }}</div>
-                  <div class="cell-meta">{{ item.env_name || '（只住在 DB，沒有 env 回退層）' }} · {{ item.value_type }}</div>
-                </td>
-                <td>
-                  <span v-if="rowState(item)" class="setting-state" :class="rowState(item).className">
-                    {{ rowState(item).label }}
-                  </span>
-                  <dl class="setting-cells">
-                    <div v-for="cell in valueCells(item)" :key="cell.field" class="setting-cell" :class="cell.className">
-                      <dt>{{ cell.label }}</dt>
-                      <dd>{{ cell.text }}</dd>
-                    </div>
-                  </dl>
-                </td>
-                <td>
-                  <div v-if="canEdit(item)" class="setting-editor">
-                    <input
-                      v-model="drafts[item.key]"
-                      class="term-input"
-                      :aria-label="`${item.key} 的新值`"
-                    />
-                    <TermButton
-                      variant="primary"
-                      :loading="!!saving[item.key]"
-                      label="儲存"
-                      @click="handleSave(item)"
-                    />
-                  </div>
-                  <p v-else class="cell-meta">後端說這一顆不可編輯。</p>
-                  <p
-                    v-if="notices[item.key]"
-                    class="setting-notice"
-                    :class="`setting-notice--${notices[item.key].tone}`"
-                  >{{ notices[item.key].message }}</p>
-                  <p v-if="errors[item.key]" class="setting-error">{{ errors[item.key] }}</p>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </TermBox>
+      <div class="settings-toolbar" role="search">
+        <label class="settings-search">
+          <span class="cell-meta">搜尋設定</span>
+          <input
+            v-model="query"
+            class="term-input"
+            type="search"
+            placeholder="key、說明、env 名稱或提醒"
+            aria-label="搜尋平台設定"
+          />
+        </label>
+        <span class="settings-count" aria-live="polite">
+          顯示 {{ visibleCount }} / {{ items.length }} 顆
+        </span>
+        <div class="settings-toolbar__actions">
+          <TermButton
+            size="xs"
+            variant="ghost"
+            :disabled="!query"
+            label="清除搜尋"
+            @click="query = ''"
+          />
+          <TermButton
+            size="xs"
+            variant="ghost"
+            :label="allCollapsed ? '全部展開' : '全部收合'"
+            @click="toggleAllSections"
+          />
+        </div>
       </div>
 
-      <!--
-        唯讀區：這裡**一個控制項都不能有**。按了沒反應的儲存鈕，正是
-        FAKE-CONTROLS 上那三十項的長相。護欄在 settingsOverview.test.mjs，
-        它從 data-region="readonly" 一路切到 <script setup>。
-      -->
-      <div data-region="readonly" class="settings-region">
+      <p v-if="query && filteredSections.length === 0" class="settings-no-match">
+        找不到符合「{{ query }}」的設定。
+      </p>
+
+      <div data-region="settings" class="settings-region">
         <TermBox
-          v-for="section in readonlySections"
+          v-for="section in filteredSections"
           :key="section.id"
           :title="`${section.title} · ${section.items.length}`"
           :hint="section.hint"
           pad="none"
           flush
         >
-          <table class="term-table">
-            <thead>
-              <tr>
-                <th style="width: 26%">設定</th>
-                <th>{{ section.showsValues ? '現況' : '設了沒有' }}</th>
-                <th style="width: 34%">為什麼改不動</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="item in section.items" :key="item.key">
-                <td>
-                  <div class="cell-strong">{{ item.key }}</div>
-                  <div class="cell-meta">{{ item.description }}</div>
-                  <div class="cell-meta">{{ item.env_name || '（只住在 DB，沒有 env 回退層）' }} · {{ item.value_type }}</div>
-                </td>
-                <td v-if="section.showsValues">
-                  <span v-if="rowState(item)" class="setting-state" :class="rowState(item).className">
-                    {{ rowState(item).label }}
-                  </span>
-                  <dl class="setting-cells">
-                    <div v-for="cell in valueCells(item)" :key="cell.field" class="setting-cell" :class="cell.className">
-                      <dt>{{ cell.label }}</dt>
-                      <dd>{{ cell.text }}</dd>
+          <template #trailing>
+            <TermButton
+              size="xs"
+              variant="ghost"
+              :label="isCollapsed(section.id) ? '展開' : '收合'"
+              @click="toggleSection(section.id)"
+            />
+          </template>
+          <div v-show="!isCollapsed(section.id)">
+            <table class="term-table">
+              <thead>
+                <tr>
+                  <th style="width: 24%">設定</th>
+                  <th>{{ section.showsValues ? '現況' : '設了沒有' }}</th>
+                  <th style="width: 30%">改成</th>
+                  <th style="width: 24%">提醒</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in section.items" :key="item.key">
+                  <td>
+                    <div class="cell-strong">{{ item.key }}</div>
+                    <div class="cell-meta">{{ item.description }}</div>
+                    <div class="cell-meta">{{ item.env_name || '（只住在 DB，沒有 env 回退層）' }} · {{ item.value_type }}</div>
+                  </td>
+                  <td>
+                    <template v-if="section.showsValues">
+                      <span v-if="rowState(item)" class="setting-state" :class="rowState(item).className">
+                        {{ rowState(item).label }}
+                      </span>
+                      <dl class="setting-cells">
+                        <div v-for="cell in valueCells(item)" :key="cell.field" class="setting-cell" :class="cell.className">
+                          <dt>{{ cell.label }}</dt>
+                          <dd>{{ cell.text }}</dd>
+                        </div>
+                      </dl>
+                    </template>
+                    <template v-else>
+                      <span class="setting-state setting-state--isset">{{ isSetLabel(item) }}</span>
+                      <div class="cell-meta">來源：{{ sourceLabel(item.source) }}</div>
+                    </template>
+                  </td>
+                  <td>
+                    <div v-if="section.editable && canEdit(item)" class="setting-editor">
+                      <input
+                        v-model="drafts[item.key]"
+                        class="term-input"
+                        :type="isSecretItem(item) ? 'password' : 'text'"
+                        :placeholder="isSecretItem(item) ? '輸入新值（不會回顯）' : ''"
+                        :autocomplete="isSecretItem(item) ? 'new-password' : 'off'"
+                        :aria-label="`${item.key} 的新值`"
+                      />
+                      <TermButton
+                        size="xs"
+                        variant="primary"
+                        :loading="!!saving[item.key]"
+                        :disabled="!canSaveDraft(item, drafts[item.key])"
+                        label="儲存"
+                        @click="handleSave(item)"
+                      />
                     </div>
-                  </dl>
-                </td>
-                <td v-else>
-                  <span class="setting-state setting-state--isset">{{ isSetLabel(item) }}</span>
-                  <div class="cell-meta">來源：{{ sourceLabel(item.source) }}</div>
-                </td>
-                <td>
-                  <p v-if="lockedReasonText(item)" class="setting-locked">{{ lockedReasonText(item) }}</p>
-                  <p v-else class="cell-meta">後端沒有給鎖定理由。</p>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                    <p v-if="notices[item.key]" class="setting-notice" :class="`setting-notice--${notices[item.key].tone}`">
+                      {{ notices[item.key].message }}
+                    </p>
+                    <p v-if="isSecretItem(item) && drafts[item.key] === ''" class="cell-meta">
+                      請輸入新值後才能儲存；空白不會清除已存祕密。
+                    </p>
+                    <p v-if="errors[item.key]" class="setting-error">{{ errors[item.key] }}</p>
+                  </td>
+                  <td>
+                    <p v-if="lockedReasonText(item)" class="setting-locked">{{ lockedReasonText(item) }}</p>
+                    <p v-else-if="section.editable && canEdit(item)" class="cell-meta">
+                      這顆改完會依上方分區說明生效。
+                    </p>
+                    <p v-else class="cell-meta">後端說這一顆不可編輯，這裡只列名稱。</p>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </TermBox>
       </div>
     </template>
@@ -168,11 +178,14 @@ import { getPlatformSettingsOverview, updatePlatformSetting } from '../api/platf
 import { TermBox, TermButton, TermEmpty } from '../components/cli'
 import {
   bootOverrideBanner,
+  canSaveDraft,
   canEdit,
   countMismatchWarning,
   draftValue,
   extractDetail,
+  filterSections,
   groupIntoSections,
+  isSecretItem,
   isSetLabel,
   lockedReasonText,
   overviewState,
@@ -193,6 +206,8 @@ const drafts = ref({})
 const errors = ref({})
 const notices = ref({})
 const saving = ref({})
+const query = ref('')
+const collapsed = ref({})
 
 const state = computed(() =>
   overviewState({ loaded: loaded.value, error: loadError.value, items: items.value }),
@@ -200,8 +215,25 @@ const state = computed(() =>
 const banner = computed(() => bootOverrideBanner(overview.value))
 const countWarning = computed(() => countMismatchWarning(overview.value))
 const sections = computed(() => groupIntoSections(items.value))
-const editableSections = computed(() => sections.value.filter((s) => s.editable))
-const readonlySections = computed(() => sections.value.filter((s) => !s.editable))
+const filteredSections = computed(() => filterSections(sections.value, query.value))
+const visibleCount = computed(() => filteredSections.value.reduce((count, section) => count + section.items.length, 0))
+const allCollapsed = computed(() => (
+  filteredSections.value.length > 0
+  && filteredSections.value.every((section) => collapsed.value[section.id] === true)
+))
+
+function isCollapsed(sectionId) {
+  return collapsed.value[sectionId] === true
+}
+
+function toggleSection(sectionId) {
+  collapsed.value[sectionId] = !isCollapsed(sectionId)
+}
+
+function toggleAllSections() {
+  const next = !allCollapsed.value
+  for (const section of filteredSections.value) collapsed.value[section.id] = next
+}
 
 async function load() {
   loading.value = true
@@ -226,6 +258,11 @@ async function load() {
 onMounted(load)
 
 async function handleSave(item) {
+  if (!canSaveDraft(item, drafts.value[item.key])) {
+    delete notices.value[item.key]
+    errors.value[item.key] = '祕密設定請輸入新值；空白不會清除已存祕密。'
+    return
+  }
   saving.value[item.key] = true
   try {
     // 送的是使用者原原本本打的那個字串（沒有 trim、沒有轉型）——
@@ -252,6 +289,12 @@ async function handleSave(item) {
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 
 .settings-region { display: flex; flex-direction: column; gap: var(--gap-4); }
+.settings-toolbar { display: flex; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
+.settings-search { display: flex; flex: 1 1 360px; flex-direction: column; gap: 4px; }
+.settings-search .term-input { width: 100%; }
+.settings-count { color: var(--c-fg-3); font-size: var(--t-2xs); white-space: nowrap; padding-bottom: 7px; }
+.settings-toolbar__actions { display: flex; gap: 6px; }
+.settings-no-match { color: var(--c-warn); font-size: var(--t-sm); }
 
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
@@ -299,6 +342,7 @@ async function handleSave(item) {
 }
 .setting-state--effective { color: var(--c-fg-1); border-color: var(--c-border-strong); }
 .setting-state--pending { color: var(--c-warn); border-color: var(--c-warn); border-style: dashed; }
+.setting-state--staged { color: var(--c-warn); border-color: var(--c-warn); border-style: dotted; }
 .setting-state--unusable { color: var(--c-danger); border-color: var(--c-danger); }
 .setting-state--isset { color: var(--c-fg-3); }
 
