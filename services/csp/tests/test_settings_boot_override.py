@@ -325,6 +325,28 @@ def test_only_the_db_layer_is_applied(monkeypatch, db):
     assert snapshot.applied == {}
 
 
+@pytest.mark.parametrize(
+    ("key", "field", "value"),
+    [
+        ("app.static_dir", "STATIC_DIR", "boot-override-must-not-apply"),
+        ("card.enabled", "ENABLE_CARD_LOGIN", "true"),
+        ("admin.password", "ADMIN_PASSWORD", "boot-secret-must-not-apply"),
+    ],
+)
+def test_non_b_edit_rows_are_never_applied_at_boot(
+    db, simulated_boot, key, field, value
+):
+    """只有 B_EDIT 的 DB 列能進開機覆蓋，其他類別保存後仍不會被套用。"""
+    before = getattr(settings, field)
+    db.add(PlatformSetting(key=key, value=value))
+    db.flush()
+
+    snapshot = simulated_boot(db)
+
+    assert getattr(settings, field) == before, f"{key} 不應改動 settings.{field}"
+    assert key not in snapshot.applied, f"{key} 不應被記成已套用的開機覆蓋"
+
+
 def test_a_broken_row_is_not_reported_as_applied(db, simulated_boot):
     """壞值退回下一層時，快照**不可以**說它套用了。
 
