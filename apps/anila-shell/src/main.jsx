@@ -12,7 +12,7 @@ import {
   Navigate,
   Route,
   Routes,
-} from "react-router-dom";
+} from "react-router";
 
 import App from "./app.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";

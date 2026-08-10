@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { getCollection } from '../api/collections'

@@ -10,7 +10,7 @@
  *   2. the bubble alone — given an ungrounded row, the reader sees it.
  */
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { searchCollection } from '../api/search'

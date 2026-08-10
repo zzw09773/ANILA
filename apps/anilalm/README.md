@@ -43,7 +43,7 @@
 | 模組 | 版本 |
 | --- | --- |
 | Build | **Vite 6.0.5 + React 18.3.1 + TypeScript 5.7.2** |
-| 路由 | `react-router-dom` 6.28.0（`BrowserRouter` + 巢狀 Outlet 守衛） |
+| 路由 | `react-router` 7.18.0（`BrowserRouter` + 巢狀 Outlet 守衛） |
 | 狀態 | **Zustand 5.0.2**（auth / workspace / artifacts） |
 | HTTP | `axios` 1.7.9 + 攔截器（401 refresh、`withCredentials`） |
 | Markdown | `marked` 14.1.3 + `DOMPurify` 3.2.3（LLM 輸出視為 untrusted，雙層防 XSS） |

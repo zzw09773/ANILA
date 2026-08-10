@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
 import { ThemeProvider } from './theme/ThemeContext'
 import { useAuthStore } from './store/auth'
 // branch SSO: LoginPage 留檔但不再 mount route — 唯一登入頁是 myCSPPlatform
