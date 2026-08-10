@@ -104,7 +104,7 @@ def db_engine():
 
 @pytest.fixture(scope="function")
 def db(db_engine):
-    Session = sessionmaker(bind=db_engine, expire_on_commit=False)
+    Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     session = Session()
     try:
         yield session
@@ -115,7 +115,7 @@ def db(db_engine):
 @pytest.fixture(scope="function")
 def client(db_engine):
     """TestClient with overridden DB dependency."""
-    Session = sessionmaker(bind=db_engine, expire_on_commit=False)
+    Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
 
     def override_get_db():
         session = Session()

@@ -38,6 +38,7 @@ C 類（Task 3）改完下一個**請求**就生效；B 類做不到那件事，
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import logging
 import os
@@ -70,16 +71,19 @@ ROUND_TRIP_CASES = {
     "usage.batch_size": ("USAGE_BATCH_SIZE", 4321),
     "health.check_interval": ("HEALTH_CHECK_INTERVAL", 7777),
     "storage.attachment_path": ("ATTACHMENT_STORAGE_PATH", "data/attachments-boot-4321"),
-    "seed.agents": ("AUTO_REGISTER_AGENTS", '[{"name":"boot-override-probe-4321"}]'),
+    "seed.agents": (
+        "AUTO_REGISTER_AGENTS",
+        '[{"name":"boot-override-probe-4321","endpoint_url":""}]',
+    ),
 }
 
-#: C1 裁決：原本七顆從 B-可編輯降到 B-鎖定（今天剩六顆，見下）。每一顆的證據寫在
-#: ``test_each_demoted_entry_says_why_it_cannot_be_edited`` 的表裡。
+#: C1 裁決留下的特殊 boot channel（今天六顆，見下）。它們仍可保存；每一顆的
+#: consumer 限制與真正通道寫在 ``test_boot_channel_limits_are_explicit`` 的表裡。
 # ⚠ 2026-08-09：原本七顆，現在**六顆**。TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS 那顆的
 #: 成因（import 期算成模組常數、直讀 os.environ）已經被最終審查的修訂拿掉——消費端改由
 #: 手上有 session 的呼叫端走 ``get_setting`` 解析，所以它升回可編輯（C 類），
 #: 不再是降級名單的一員。名單縮水本身就是這張表要記的事。
-DEMOTED_ENV_NAMES = frozenset({
+BOOT_CHANNEL_LIMIT_ENV_NAMES = frozenset({
     "DEBUG", "STATIC_DIR", "ANILA_HOST", "PYTHONUNBUFFERED",
     "LEGACY_SQLITE_PATH",
     "ANILA_TEMPLATE_DIR",
@@ -98,6 +102,10 @@ def _b_edit_specs():
 
 def _b_edit_fields() -> list[str]:
     return [s.env_name for s in _b_edit_specs() if s.env_name is not None]
+
+
+def _boot_specs():
+    return [s for s in SETTINGS if s.setting_class is not SettingClass.C]
 
 
 # ── 模擬 boot 工具 ─────────────────────────────────────────────────────────
@@ -121,18 +129,37 @@ def _settings_identity_precondition():
 
 
 @pytest.fixture
-def simulated_boot(monkeypatch):
-    """跑一次「開機」：把 B 類欄位還原成 env／預設決定的開機值，再套一次覆蓋。
+def simulated_boot(monkeypatch, request):
+    """跑一次「開機」：把非 C 類欄位還原成 env／預設值，再套一次覆蓋。
 
     ⚠ 刻意**不**讓 hook 寫到另一份物件上：它套的就是那個全域單例，因為那才是
     全樹讀的東西。還原交給 ``monkeypatch``（含模組層的快照），所以測試之間不會
     互相污染。
     """
 
+    env_names = {spec.env_name for spec in _boot_specs() if spec.env_name is not None}
+    original_env = {name: os.environ.get(name) for name in env_names}
+    baseline_settings = None
+
+    def _restore_env():
+        for name, value in original_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    request.addfinalizer(_restore_env)
+
     def _boot(db):
-        fresh = Settings()
-        for field in _b_edit_fields():
-            monkeypatch.setattr(settings, field, getattr(fresh, field), raising=False)
+        nonlocal baseline_settings
+        if baseline_settings is None:
+            baseline_settings = Settings()
+        for spec in _boot_specs():
+            field = spec.env_name
+            if field in Settings.model_fields:
+                monkeypatch.setattr(
+                    settings, field, getattr(baseline_settings, field), raising=False
+                )
         monkeypatch.setattr(
             config_module,
             "_current_snapshot",
@@ -225,6 +252,14 @@ def _probe_value_for(spec, boot_value: Any) -> Any:
     ``domain_fn``，並且 ``format``／``parse`` 來回不變 —— 不然測的就是編碼而不是套用。
     """
     forbidden = {spec.default, boot_value, getattr(settings, spec.env_name)}
+    structured_probes = {
+        "_is_seed_models": '[{"name":"boot-probe-model-4321","endpoint_url":""}]',
+        "_is_seed_agents": '[{"name":"boot-probe-agent-4321","endpoint_url":""}]',
+        "_is_seed_links": '[{"name":"boot-probe-link-4321","url":"http://boot-probe.example"}]',
+    }
+    structured = structured_probes.get(spec.domain_fn.__name__)
+    if structured not in forbidden and spec.domain_fn(structured):
+        return structured
     candidates = {
         int: [4321, 7777, 137, 43, 7],
         float: [0.375, 4.25, 37.5, 1.5],
@@ -289,7 +324,7 @@ def test_the_hook_leaves_untouched_settings_alone(db, simulated_boot):
     assert settings.ATTACHMENT_STORAGE_PATH == before_flush
 
 
-# ── 2. 只套 DB 那一層 ──────────────────────────────────────────────────────
+# ── 2. 只把 DB 層送進 boot bridge ──────────────────────────────────────────
 
 
 def test_only_the_db_layer_is_applied(monkeypatch, db):
@@ -298,7 +333,7 @@ def test_only_the_db_layer_is_applied(monkeypatch, db):
     ``Settings`` 的值可能來自 ``.env`` 檔（``model_config`` 有 ``env_file``），
     而 ``resolve_setting`` 的 env 層讀的是 ``os.environ``：兩邊本來就會不一樣。
     沒有 DB 那一列時把 env／預設蓋回去，等於用一個**這個行程從來沒有用過的
-    值**取代佈署真正在跑的值，而且 Task 5 的來源欄會把它寫成 db-boot。
+    值**取代佈署真正在跑的值，而且來源欄會把它寫成 db-boot。
     """
     monkeypatch.setattr(settings, "USAGE_BATCH_SIZE", 87)  # 假裝 .env 說 87
     monkeypatch.setenv("USAGE_BATCH_SIZE", "999")  # os.environ 說別的
@@ -312,6 +347,108 @@ def test_only_the_db_layer_is_applied(monkeypatch, db):
     assert settings.USAGE_BATCH_SIZE == 87, "沒有 DB 那一列，欄位不可以被動到"
     assert "usage.batch_size" not in snapshot.applied
     assert snapshot.applied == {}
+
+
+@pytest.mark.parametrize(
+    ("key", "field", "value"),
+    [
+        ("app.static_dir", "STATIC_DIR", "boot-override-must-not-apply"),
+        ("card.enabled", "ENABLE_CARD_LOGIN", "true"),
+        ("admin.password", "ADMIN_PASSWORD", "boot-secret-must-not-apply"),
+        ("network.environment", "ANILA_ENV", "production"),
+        (
+            "network.trusted_hosts",
+            "ANILA_TRUSTED_HOSTS",
+            "model.example.org",
+        ),
+        (
+            "service.internal_platform_api_key",
+            "INTERNAL_PLATFORM_API_KEY",
+            "internal-platform-key-4321",
+        ),
+        (
+            "db.legacy_sqlite_path",
+            "LEGACY_SQLITE_PATH",
+            __file__,
+        ),
+    ],
+)
+def test_all_boot_classes_are_applied_at_boot(
+    db, simulated_boot, key, field, value
+):
+    """B_EDIT 以外的可保存類別也要在開機後進入真正的 runtime 狀態。"""
+    db.add(PlatformSetting(key=key, value=value))
+    db.flush()
+
+    snapshot = simulated_boot(db)
+
+    expected = value == "true" if field == "ENABLE_CARD_LOGIN" else value
+    if field in Settings.model_fields:
+        assert getattr(settings, field) == expected, f"{key} 沒有改動 settings.{field}"
+    else:
+        assert os.environ.get(field) == expected, f"{key} 沒有同步 env {field}"
+    assert snapshot.applied[key] == expected
+
+
+def test_sec_boot_override_reaches_security_middleware_after_reload(
+    db, simulated_boot, monkeypatch
+):
+    """SEC 的 DB 值要進實際 Host/CORS middleware，不只停在資料列。"""
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from app import main
+
+    # _resync_boot_security_middleware 更新 module-level diagnostics；讓這支測試
+    # 完成後回到 import-time 的基準，不污染後續 lifespan 檢查。
+    monkeypatch.setattr(main, "_allowed_hosts", list(main._allowed_hosts))
+    monkeypatch.setattr(main, "_allowed_origins", list(main._allowed_origins))
+
+    target = FastAPI()
+    target.add_middleware(
+        CORSMiddleware,
+        allow_origins=["https://old.example.org"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    target.add_middleware(main.HostAllowlistMiddleware, allowed_hosts=["old.example.org"])
+
+    db.add(PlatformSetting(key="network.allowed_hosts", value="admin.example.org"))
+    db.add(
+        PlatformSetting(
+            key="network.allowed_origins", value="https://admin.example.org"
+        )
+    )
+    db.flush()
+
+    snapshot = simulated_boot(db)
+    assert snapshot.applied["network.allowed_hosts"] == "admin.example.org"
+    assert snapshot.applied["network.allowed_origins"] == "https://admin.example.org"
+
+    main._resync_boot_security_middleware(target)
+
+    host_kwargs = [
+        middleware.kwargs
+        for middleware in target.user_middleware
+        if middleware.cls is main.HostAllowlistMiddleware
+    ]
+    cors_kwargs = [
+        middleware.kwargs
+        for middleware in target.user_middleware
+        if middleware.cls is CORSMiddleware
+    ]
+    assert host_kwargs == [
+        {"allowed_hosts": ["admin.example.org", "localhost", "127.0.0.1", "csp"]}
+    ]
+    assert cors_kwargs == [
+        {
+            "allow_origins": ["https://admin.example.org"],
+            "allow_credentials": True,
+            "allow_methods": ["*"],
+            "allow_headers": ["*"],
+        }
+    ]
 
 
 def test_a_broken_row_is_not_reported_as_applied(db, simulated_boot):
@@ -332,7 +469,62 @@ def test_a_broken_row_is_not_reported_as_applied(db, simulated_boot):
     assert set(snapshot.applied) == {"usage.batch_size"}
     assert snapshot.applied["usage.batch_size"] == good
     assert "health.check_interval" not in snapshot.applied
+    assert "health.check_interval" in snapshot.rejected
+    assert "health.check_interval" in snapshot.failure_reason
     assert snapshot.load_failed is False, "單一列壞掉不是整體載入失敗"
+
+
+def test_file_valid_at_write_but_missing_at_boot_is_rejected_and_disclosed(
+    db, simulated_boot, tmp_path
+):
+    """不變式二：寫入時的檔案存在，不代表下一次開機仍可讀。"""
+    source = pathlib.Path(__file__).resolve().parents[1] / "app/services/cspki_ca_bundle.pem"
+    bundle = tmp_path / "boot-revalidation.pem"
+    bundle.write_bytes(source.read_bytes())
+    set_setting(db, "network.ssl_cert_file", str(bundle))
+    assert db.get(PlatformSetting, "network.ssl_cert_file") is not None
+    before_env = os.environ.get("SSL_CERT_FILE")
+
+    bundle.unlink()
+    snapshot = simulated_boot(db)
+
+    assert "network.ssl_cert_file" not in snapshot.applied
+    assert snapshot.rejected["network.ssl_cert_file"]
+    assert "network.ssl_cert_file" in snapshot.failure_reason
+    assert os.environ.get("SSL_CERT_FILE") == before_env
+
+
+def test_file_revalidation_guard_is_the_red_green_boundary(
+    db, simulated_boot, monkeypatch, tmp_path
+):
+    """把 boot guard 拔掉會紅；保留它則拒絕同一個已消失的檔案。"""
+    source = pathlib.Path(__file__).resolve().parents[1] / "app/services/cspki_ca_bundle.pem"
+    bundle = tmp_path / "red-green.pem"
+    bundle.write_bytes(source.read_bytes())
+    set_setting(db, "network.ssl_cert_file", str(bundle))
+    bundle.unlink()
+    original_spec = REGISTRY["network.ssl_cert_file"]
+    before_env = os.environ.get("SSL_CERT_FILE")
+
+    # RED: 若開機沒有重新走同一個 domain_fn，DB 列會被當成可用覆蓋。
+    monkeypatch.setitem(
+        REGISTRY,
+        "network.ssl_cert_file",
+        dataclasses.replace(original_spec, domain_fn=lambda _value: True),
+    )
+    red = apply_boot_overrides(db)
+    assert "network.ssl_cert_file" in red.applied
+
+    if before_env is None:
+        os.environ.pop("SSL_CERT_FILE", None)
+    else:
+        os.environ["SSL_CERT_FILE"] = before_env
+    monkeypatch.setitem(REGISTRY, "network.ssl_cert_file", original_spec)
+
+    # GREEN: the real domain sees the missing path and records the rejection.
+    green = simulated_boot(db)
+    assert "network.ssl_cert_file" not in green.applied
+    assert "network.ssl_cert_file" in green.rejected
 
 
 def test_snapshot_keys_are_exactly_the_keys_with_a_usable_db_row(db, simulated_boot):
@@ -591,31 +783,35 @@ def test_no_b_edit_field_is_consumed_at_import_time():
     assert set(module_level) & set(_b_edit_fields()) == MODULE_LEVEL_READ_EXEMPT
 
 
-DEMOTION_EVIDENCE = {
-    # env 名: 為什麼覆蓋碰不到它（報告 §2 逐顆的證據）
+BOOT_CHANNEL_EVIDENCE = {
+    # env 名: boot bridge 之後仍需留意的 consumer 限制（報告逐顆證據）
     "DEBUG": "app/database.py:10 —— engine 在 import 期建好，echo 當場定案",
     "STATIC_DIR": "app/main.py:460 —— import 期 mount /static",
-    "ANILA_HOST": "startup_security 讀 os.environ，且 lifespan 早於 hook",
+    "ANILA_HOST": "startup_security 讀 os.environ；boot bridge 會先同步它",
     "PYTHONUNBUFFERED": "由 CPython 直譯器消費，全樹零讀取點",
-    "LEGACY_SQLITE_PATH": "startup_migrations 讀 os.environ，Settings 上沒有這個欄位",
+    "LEGACY_SQLITE_PATH": "startup_migrations 讀 os.environ；boot bridge 會先同步它",
     "ANILA_TEMPLATE_DIR": "api/agents/registration.py:106 —— import 期算成模組常數",
 }
 
 
-def test_each_demoted_entry_says_why_it_cannot_be_edited():
-    """降級的那些（今天六顆）：類別要是 B-鎖定，而且鎖定理由要講得出「為什麼」。
+def test_boot_channel_limits_are_explicit():
+    """特殊 boot channel 仍是 B_LOCKED，但提醒要講清楚同步與限制。
 
-    「不能改」對管理員沒有用，「為什麼不能改」才有——那句話會原樣上畫面。
+    Q45 已把寫入全部放開；這裡不是把它們判成唯讀，而是防止 UI 把
+    interpreter/import-time/外部 env channel 假裝成一般 Settings 欄位。
     """
-    assert set(DEMOTION_EVIDENCE) == DEMOTED_ENV_NAMES
+    assert set(BOOT_CHANNEL_EVIDENCE) == BOOT_CHANNEL_LIMIT_ENV_NAMES
     by_env = {s.env_name: s for s in SETTINGS if s.env_name is not None}
-    for env_name in sorted(DEMOTED_ENV_NAMES):
+    for env_name in sorted(BOOT_CHANNEL_LIMIT_ENV_NAMES):
         spec = by_env[env_name]
         assert spec.setting_class is SettingClass.B_LOCKED, (
-            f"{env_name} 沒有降級 —— 它宣稱重啟後會生效，但它不會"
+            f"{env_name} 的特殊 boot channel 類別被意外改掉"
         )
         assert spec.locked_reason.strip()
-        assert "開機序早於覆蓋載入" in spec.locked_reason or "os.environ" in spec.locked_reason
+        assert any(
+            marker in spec.locked_reason
+            for marker in ("import", "CPython", "os.environ", "Settings 上沒有")
+        )
 
 
 # ── 6. hook 真的接在開機路徑上，而且接在對的位置 ──────────────────────────
@@ -726,6 +922,12 @@ def real_boot_row():
     #: 每寫一個 key 就先把它對應的 ``Settings`` 欄位存起來 —— 真的 lifespan 會把
     #: 覆蓋蓋到全域單例上，不還原就等於讓後面每一支測試在一個被改過的平台上跑。
     saved_fields: dict[str, Any] = {}
+    boot_env_names = {
+        spec.env_name
+        for spec in SETTINGS
+        if spec.setting_class is not SettingClass.C and spec.env_name is not None
+    }
+    saved_env = {name: os.environ.get(name) for name in boot_env_names}
     saved_app = {"title": main.app.title, "version": main.app.version}
 
     def _write(key: str, value):
@@ -754,6 +956,11 @@ def real_boot_row():
             session.close()
         for field, value in saved_fields.items():
             setattr(settings, field, value)
+        for name, value in saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         main.app.title = saved_app["title"]
         main.app.version = saved_app["version"]
         main.app.openapi_schema = None
@@ -786,7 +993,10 @@ def test_every_lifespan_consumer_observes_the_override_at_the_moment_it_runs(
 
     overrides = {
         "admin.username": ("ADMIN_USERNAME", "驗收用管理員-4321"),
-        "seed.models": ("AUTO_REGISTER_MODELS", '[{"probe":"boot-order-4321"}]'),
+        "seed.models": (
+            "AUTO_REGISTER_MODELS",
+            '[{"name":"boot-order-4321","endpoint_url":""}]',
+        ),
         # ⚠ 原本這裡有兩顆：``alerts.check_interval`` 那一行在重接線之後被機械式改名成
         # ``health.check_interval``，於是與上一行**重複**（ruff F601），watched 欄位默默
         # 從 5 掉到 4。機械式取代正是「調整藏在裡面」的地方，所以直接刪掉那一行、
