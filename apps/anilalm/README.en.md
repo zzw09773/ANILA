@@ -43,7 +43,7 @@ In the ANILA product constitution (doc 00 §2) this SPA implements two first-cla
 | Module | Version |
 | --- | --- |
 | Build | **Vite 6.0.5 + React 18.3.1 + TypeScript 5.7.2** |
-| Router | `react-router-dom` 6.28.0 (`BrowserRouter` + nested Outlet guards) |
+| Router | `react-router` 7.18.0 (`BrowserRouter` + nested Outlet guards) |
 | State | **Zustand 5.0.2** (auth / workspace / artifacts) |
 | HTTP | `axios` 1.7.9 + interceptors (401 refresh, `withCredentials`) |
 | Markdown | `marked` 14.1.3 + `DOMPurify` 3.2.3 (LLM output treated as untrusted, double-layer XSS defense) |

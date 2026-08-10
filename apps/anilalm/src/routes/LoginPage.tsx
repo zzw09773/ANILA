@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 import { useAuthStore } from '../store/auth'
 import { explainError } from '../api/client'

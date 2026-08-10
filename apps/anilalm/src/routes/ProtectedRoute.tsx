@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Outlet } from 'react-router-dom'
+import { Outlet } from 'react-router'
 import { useAuthStore } from '../store/auth'
 
 // branch SSO：ANILALM 不再持有自己的登入頁；唯一登入入口是 myCSPPlatform

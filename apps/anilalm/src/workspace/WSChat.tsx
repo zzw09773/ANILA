@@ -6,7 +6,7 @@ import {
   useState,
   type KeyboardEvent,
 } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { Icon } from '../components/Icon'
