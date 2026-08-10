@@ -94,7 +94,7 @@
               @click="toggleSection(section.id)"
             />
           </template>
-          <div v-show="!isCollapsed(section.id)">
+          <div v-show="!isCollapsed(section.id) || hasQuery">
             <table class="term-table">
               <thead>
                 <tr>
@@ -217,6 +217,7 @@ const countWarning = computed(() => countMismatchWarning(overview.value))
 const sections = computed(() => groupIntoSections(items.value))
 const filteredSections = computed(() => filterSections(sections.value, query.value))
 const visibleCount = computed(() => filteredSections.value.reduce((count, section) => count + section.items.length, 0))
+const hasQuery = computed(() => query.value.trim() !== '')
 const allCollapsed = computed(() => (
   filteredSections.value.length > 0
   && filteredSections.value.every((section) => collapsed.value[section.id] === true)
