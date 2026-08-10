@@ -50,9 +50,13 @@ url_guard 認定 **關**，設定頁卻顯示 **開**。那正是本包要消滅
 from __future__ import annotations
 
 import codecs
+import ipaddress
 import json
+import re
 from dataclasses import dataclass
 from enum import Enum
+from email.utils import parseaddr
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -217,17 +221,265 @@ T_BOOL_CARD_TRUTHY_NOSTRIP = SettingType(
 # ── 值域函式 ───────────────────────────────────────────────────────────────
 
 
-def _is_csv(value: Any) -> bool:
-    """逗號分隔清單；允許空值，但不允許空白項目。"""
+_MAX_SETTING_TEXT_LENGTH = 2048
+_MAX_PATH_LENGTH = 1024
+_MAX_MODEL_NAME_LENGTH = 256
+_MAX_SECRET_JSON_LENGTH = 65536
+_EMPLOYEE_ID_RE = re.compile(r"\A\d{6,9}\Z")
+_TOKEN_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:@+\-/]{0,255}\Z")
+_OCR_LANGUAGE_RE = re.compile(r"\A[A-Za-z0-9_-]{2,32}\Z")
+_HOST_LABEL_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
+_PRIVATE_KEY_MARKERS = (
+    b"-----BEGIN PRIVATE KEY-----",
+    b"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+    b"-----BEGIN RSA PRIVATE KEY-----",
+    b"-----BEGIN EC PRIVATE KEY-----",
+    b"-----BEGIN DSA PRIVATE KEY-----",
+    b"-----BEGIN ED25519 PRIVATE KEY-----",
+    b"-----BEGIN OPENSSH PRIVATE KEY-----",
+)
+
+
+def _is_safe_text(
+    value: Any,
+    *,
+    allow_empty: bool = False,
+    max_length: int = _MAX_SETTING_TEXT_LENGTH,
+    reject_edge_whitespace: bool = True,
+) -> bool:
+    """Reject values that cannot safely survive an env/DB/runtime round-trip."""
     if not isinstance(value, str):
         return False
-    return not value.strip() or all(part.strip() for part in value.split(","))
+    if not value:
+        return allow_empty
+    if len(value) > max_length or value.strip() == "":
+        return False
+    if reject_edge_whitespace and value != value.strip():
+        return False
+    return "\x00" not in value and "\r" not in value and "\n" not in value
+
+
+def _is_token(value: Any, *, max_length: int = _MAX_SETTING_TEXT_LENGTH) -> bool:
+    if not _is_safe_text(value, max_length=max_length):
+        return False
+    return bool(_TOKEN_RE.fullmatch(value))
+
+
+def _is_host_token(value: Any, *, allow_wildcard: bool = False) -> bool:
+    if not _is_safe_text(value, max_length=253, reject_edge_whitespace=False):
+        return False
+    token = value.strip().lower().rstrip(".")
+    if not token or "*" in token:
+        if not (allow_wildcard and token.startswith("*.") and token.count("*") == 1):
+            return False
+        token = token[2:]
+    if not token or "/" in token or "://" in token:
+        return False
+    if token.startswith("[") and token.endswith("]"):
+        token = token[1:-1]
+    try:
+        ipaddress.ip_address(token)
+        return True
+    except ValueError:
+        pass
+    if len(token) > 253:
+        return False
+    labels = token.split(".")
+    return all(_HOST_LABEL_RE.fullmatch(label) for label in labels)
+
+
+def _is_host_entry(
+    value: str, *, allow_wildcard: bool = False, allow_port: bool = False
+) -> bool:
+    entry = value.strip()
+    host = entry
+    if allow_port:
+        if entry.startswith("["):
+            closing = entry.find("]")
+            if closing < 0:
+                return False
+            host = entry[: closing + 1]
+            suffix = entry[closing + 1 :]
+            if suffix:
+                if not suffix.startswith(":") or not suffix[1:].isdigit():
+                    return False
+                port = int(suffix[1:])
+                if not 1 <= port <= 65535:
+                    return False
+        elif entry.count(":") == 1:
+            host, port_text = entry.rsplit(":", 1)
+            if not port_text.isdigit() or not 1 <= int(port_text) <= 65535:
+                return False
+    if allow_wildcard and host.startswith("*.") and host != entry:
+        return False
+    return _is_host_token(host, allow_wildcard=allow_wildcard)
+
+
+def _is_host_csv(
+    value: Any, *, allow_wildcard: bool = False, allow_port: bool = False
+) -> bool:
+    if not _is_safe_text(value, reject_edge_whitespace=False):
+        return False
+    entries = [part.strip() for part in value.split(",")]
+    if not entries or any(not entry for entry in entries):
+        return False
+    if allow_wildcard and entries == ["*"]:
+        return True
+    return all(
+        _is_host_entry(
+            entry,
+            allow_wildcard=allow_wildcard,
+            allow_port=allow_port,
+        )
+        for entry in entries
+    )
+
+
+def _is_trusted_host_csv(value: Any) -> bool:
+    return _is_host_csv(value, allow_wildcard=False)
+
+
+def _is_allowed_host_csv(value: Any) -> bool:
+    # Starlette's TrustedHostMiddleware compares host names, not host:port
+    # patterns.  Keep the registry grammar aligned with parse_allowed_hosts;
+    # accepting a port here would create a stored value that never matches.
+    return _is_host_csv(value, allow_wildcard=True, allow_port=False)
+
+
+def _is_origin_csv(value: Any) -> bool:
+    if not _is_safe_text(value, reject_edge_whitespace=False):
+        return False
+    entries = [part.strip() for part in value.split(",")]
+    if not entries or any(not entry for entry in entries):
+        return False
+    for entry in entries:
+        try:
+            parsed = urlsplit(entry)
+            port = parsed.port
+        except ValueError:
+            return False
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or not _is_host_token(parsed.hostname)
+            or (port is not None and not 1 <= port <= 65535)
+        ):
+            return False
+    return True
+
+
+def _is_initial_owner_csv(value: Any) -> bool:
+    if not _is_safe_text(value, reject_edge_whitespace=False):
+        return False
+    entries = [part.strip() for part in value.split(",")]
+    return bool(entries) and all(_EMPLOYEE_ID_RE.fullmatch(entry) for entry in entries)
+
+
+def _is_ocr_languages(value: Any) -> bool:
+    if not _is_safe_text(value, reject_edge_whitespace=False):
+        return False
+    entries = [part.strip() for part in value.split(",")]
+    return bool(entries) and all(_OCR_LANGUAGE_RE.fullmatch(entry) for entry in entries)
+
+
+def _is_model_name(value: Any) -> bool:
+    if not _is_safe_text(value, max_length=_MAX_MODEL_NAME_LENGTH):
+        return False
+    # Model identifiers may contain an organisation slash, but path traversal
+    # and display-name whitespace are not model identifiers consumed by OCR.
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", value)) and ".." not in value
+
+
+def _is_email_address(value: Any) -> bool:
+    if not _is_safe_text(value, max_length=320):
+        return False
+    display, address = parseaddr(value)
+    if display or address != value or address.count("@") != 1:
+        return False
+    local, host = address.rsplit("@", 1)
+    return bool(local) and _is_host_token(host)
+
+
+def _is_existing_file_path(value: Any) -> bool:
+    if not _is_safe_text(value, max_length=_MAX_PATH_LENGTH):
+        return False
+    try:
+        path = Path(value)
+        if not path.is_file():
+            return False
+        with path.open("rb"):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def _is_existing_directory_path(value: Any) -> bool:
+    if not _is_safe_text(value, max_length=_MAX_PATH_LENGTH):
+        return False
+    try:
+        return Path(value).is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_certificate_bundle_path(value: Any) -> bool:
+    """A csp-visible, readable PEM certificate bundle without private keys."""
+    if not _is_safe_text(value, max_length=_MAX_PATH_LENGTH):
+        return False
+    try:
+        pem_bytes = Path(value).read_bytes()
+    except (OSError, ValueError):
+        return False
+    if any(marker in pem_bytes for marker in _PRIVATE_KEY_MARKERS):
+        return False
+    try:
+        from cryptography import x509
+
+        loader = getattr(x509, "load_pem_x509_certificates", None)
+        if loader is not None:
+            certificates = loader(pem_bytes)
+        else:  # pragma: no cover - compatibility with older cryptography wheels
+            marker = b"-----BEGIN CERTIFICATE-----"
+            end = b"-----END CERTIFICATE-----"
+            certificates = []
+            start = 0
+            while True:
+                begin = pem_bytes.find(marker, start)
+                if begin < 0:
+                    break
+                finish = pem_bytes.find(end, begin)
+                if finish < 0:
+                    return False
+                block = pem_bytes[begin : finish + len(end)] + b"\n"
+                certificates.append(x509.load_pem_x509_certificate(block))
+                start = finish + len(end)
+        return bool(certificates)
+    except (AttributeError, ValueError, TypeError):
+        return False
+
+
+def _is_csv(value: Any) -> bool:
+    """通用的非空 CSV；專用安全清單再用各自的語法函式。"""
+    if not _is_safe_text(value, reject_edge_whitespace=False):
+        return False
+    parts = [part.strip() for part in value.split(",")]
+    return bool(parts) and all(parts)
 
 
 def _is_url_or_empty(value: Any) -> bool:
     """可選的 HTTP(S) URL；不在這裡放寬 host/IP，SSRF guard 仍是另一道門。"""
-    if not isinstance(value, str) or not value.strip():
-        return isinstance(value, str)
+    if not _is_safe_text(value, allow_empty=True, reject_edge_whitespace=False):
+        return False
+    if value == "":
+        return True
+    if not value.strip():
+        return False
     try:
         parsed = urlsplit(value.strip())
     except ValueError:
@@ -237,7 +489,7 @@ def _is_url_or_empty(value: Any) -> bool:
 
 def _is_redis_url(value: Any) -> bool:
     """Redis 連線字串；密碼與 host 的安全性仍由連線層及部署環境負責。"""
-    if not isinstance(value, str):
+    if not _is_safe_text(value, reject_edge_whitespace=False):
         return False
     try:
         parsed = urlsplit(value.strip())
@@ -300,11 +552,11 @@ def _is_supported_text_encoding(value: Any) -> bool:
 
 
 def _is_non_empty_str(value: Any) -> bool:
-    return isinstance(value, str) and value.strip() != ""
+    return _is_safe_text(value)
 
 
 def _is_str(value: Any) -> bool:
-    return isinstance(value, str)
+    return _is_safe_text(value)
 
 
 def _is_bool(value: Any) -> bool:
@@ -314,6 +566,8 @@ def _is_bool(value: Any) -> bool:
 def _json_list_of_objects(
     value: Any,
     *,
+    allow_empty: bool = True,
+    max_length: int = _MAX_SECRET_JSON_LENGTH,
     required_non_empty: tuple[str, ...] = (),
     required_strings: tuple[str, ...] = (),
     string_list_fields: tuple[str, ...] = (),
@@ -326,8 +580,15 @@ def _json_list_of_objects(
     dangerous shape as invalid JSON: the setting can be stored while startup
     quietly skips the intended work.
     """
-    if not isinstance(value, str) or not value.strip():
-        return isinstance(value, str)
+    if not _is_safe_text(
+        value,
+        allow_empty=allow_empty,
+        max_length=max_length,
+        reject_edge_whitespace=False,
+    ):
+        return False
+    if not value.strip():
+        return allow_empty
     try:
         parsed = json.loads(value)
     except (TypeError, ValueError):
@@ -439,57 +700,62 @@ def _spec(
 
 _SECRET_REASON = (
     "祕密類 —— 畫面只顯示已設定／未設定，值永不出後端；寫入僅限 username=admin。"
-    "本列先作待部署保存，這次行程的 consumer 仍依來源欄的 env／程式預設；"
-    "請循部署通道輪替，不能只按儲存就視為已套用"
+    "合法值會在下一次 CSP 開機重新驗證後同步到該行程的 Settings／env；"
+    "若消費者在其他行程或 import 時已凍結，仍須依本列提醒走對應部署通道，"
+    "不能只按儲存就視為所有 consumer 都已套用"
 )
 _SEC_REASON = (
     "安全類 —— 可保存但要先想清楚安全影響；值域由本列 domain_fn 把關，"
-    "目前 CSP 的 platform_settings 開機覆蓋通道只套 B_EDIT；本列雖可保存，"
-    "重啟或下一個請求也不會自動套用，請循 env／compose／部署通道變更 consumer 使用的來源"
+    "合法值會在下一次 CSP 開機重新驗證後同步到該行程的 Settings／env；"
+    "若讀取點在其他行程或 import 時已凍結，請循本列提醒變更 consumer 使用的來源"
 )
 _SEC_CARD_REASON = (
     "安全類 —— 卡登信任鏈，改錯等於放行偽卡。"
-    "目前此 platform_settings 列不會自動套用，請循部署通道變更 consumer 使用的來源"
+    "合法值會在下一次 CSP 開機重新驗證後同步；卡片驗章仍會重新檢查信任錨與 dev 閘門"
 )
 _SEC_TICKET_REASON = (
     "安全類 —— 延長票期等於延長被竊 token 的有效期（設計 §3.2）。"
-    "目前此 platform_settings 列不會自動套用，請循部署通道變更 consumer 使用的來源"
+    "合法值會在下一次 CSP 開機重新驗證後同步；改動前請確認票期政策與重啟結果"
 )
-_SMTP_REASON = "SMTP_HOST 是出向連線目標＝SSRF 鄰接面，且 relay 方案未定（設計 §3.2）"
-# Task 4 的 C1 裁決。B-可編輯的承諾是「存進 DB，下一次開機生效」，而開機覆蓋是在
-# lifespan 裡（DB 可達之後）才載入的 —— 在那之前就被消費掉的顆，按下去、重啟、值
-# 照舊，而且不會有任何錯誤訊息。逐顆的證據在 tests/test_settings_boot_override.py
-# 的 DEMOTION_EVIDENCE 表。
-_BOOT_ORDER_REASON = "開機序早於覆蓋載入 —— import 期就被讀走，重啟也套不上（Task 4 C1）"
-# 同一件事的另一種成因：值根本不住在 ``Settings`` 上，讀取點直接讀 os.environ，
-# 所以覆蓋機制碰不到它。**時機不是問題，通道才是** —— 理由要說對，管理員才知道
-# 這顆要改就得動 compose。
+_SMTP_REASON = (
+    "SMTP_HOST 是出向連線目標＝SSRF 鄰接面，且 relay 方案未定（設計 §3.2）。"
+    "合法值會在下一次 CSP 開機重新驗證後同步到 Settings／env"
+)
+# Task 4 的 C1 裁決。這些提醒現在仍然保留，但語意從「不能保存」改成「CSP boot
+# bridge 能同步到哪裡，以及哪個 consumer 仍然早於它」。逐顆的證據在
+# tests/test_settings_boot_override.py 的 BOOT_CHANNEL_EVIDENCE 表。
+_BOOT_ORDER_REASON = (
+    "CSP 會在開機重新驗證後同步這顆，但 consumer 在 import 期已讀走，"
+    "所以已建立的 engine／mount／模組常數不會被回溯改寫；要改該 consumer 請走部署通道"
+)
+# 另一種情況：值不住在 ``Settings`` 上，讀取點直接讀 os.environ。現在 boot bridge
+# 會同步這個 env，但不會替它創造一個 Settings 欄位；若讀取點早於 bridge，仍需走部署通道。
 _ENV_ONLY_CHANNEL_REASON = (
-    "讀取點直接讀 os.environ、Settings 上沒有這個欄位，開機覆蓋碰不到（Task 4 C1）"
+    "讀取點直接讀 os.environ、Settings 上沒有這個欄位；CSP 開機會同步合法 DB 值到該 env，"
+    "但不會替早於 bridge 的 consumer 回溯改寫"
 )
 _INTERPRETER_REASON = (
-    "由 CPython 直譯器在行程啟動時消費，開機序早於覆蓋載入、也早於一切應用程式碼"
-    "（Task 4 C1）"
+    "CSP 會同步合法 DB 值到 env，但這個旗標由 CPython 在行程啟動時消費，"
+    "早於一切應用程式碼，執行中的 interpreter 不會被回溯改寫"
+)
+_BOOT_SYNC_REASON = (
+    "CSP 會在下一次開機重新驗證後同步合法值到 Settings／env；"
+    "若實際 consumer 在其他行程，仍須同步該行程的部署設定"
 )
 
 
 def _compose_hint(env_name: str) -> str:
-    """提醒「目前 csp 不會套用」的那一句：**那要去哪裡改**。
-
-    ⚠ 降級的那幾顆不能只留下「可以存」的假承諾：鎖定理由要說明原因與唯一真的
-    有效的通道，避免管理員只剩「重開機試試看」——而重開機正是對這些顆**永遠不會
-    有效**的事。指路要指到 compose 的 csp 服務
-    ``environment``。措辭是「設（沒有這一行就自己加）」而不是「改」，因為這七顆
-    裡今天只有 ``PYTHONUNBUFFERED``／``ANILA_TEMPLATE_DIR`` 真的寫在 compose 裡，
-    其餘四顆連那一行都還不存在。
-    """
+    """提醒 import-time／interpreter consumer 的真正部署通道。"""
     return (
         f"。改法：在 compose 的 csp 服務 environment 設 {env_name}"
         "（現在沒有這一行就自己加），改完 up -d 重建容器"
     )
 
 
-_OCR_REASON = "主要消費者是 ingestion-worker（另一行程，讀不到 csp DB）；搬遷需 worker 側設定通道（設計 §3.2）"
+_OCR_REASON = (
+    "CSP 會同步合法值到自己的 Settings／env；主要消費者是 ingestion-worker（另一行程，"
+    "讀不到 csp DB），因此要改 worker 的實際行為仍需 worker 側設定通道（設計 §3.2）"
+)
 
 
 SETTINGS: tuple[SettingSpec, ...] = (
@@ -509,11 +775,11 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "靜態檔目錄。import 期由 config.py 算成絕對路徑，改了要重建容器；"
           "填相對路徑的話是相對於行程的工作目錄解析的。",
           _BOOT_ORDER_REASON + _compose_hint("STATIC_DIR")),
-    _spec("app.host", "ANILA_HOST", SettingClass.B_LOCKED, T_STR, _is_str,
+    _spec("app.host", "ANILA_HOST", SettingClass.B_LOCKED, T_STR, _is_host_token,
           "", True, "部署主機名。csp 本身不消費，只在開機檢查它不是 placeholder。",
           _ENV_ONLY_CHANNEL_REASON + _compose_hint("ANILA_HOST")),
     _spec("app.python_unbuffered", "PYTHONUNBUFFERED", SettingClass.B_LOCKED, T_STR,
-          _is_str, "", True,
+          _one_of("0", "1"), "", True,
           "CPython 的 stdout 緩衝旗標，由直譯器消費，不經應用程式。",
           _INTERPRETER_REASON + _compose_hint("PYTHONUNBUFFERED")),
 
@@ -527,7 +793,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "csp", True, "runtime 使用的 csp_app role 密碼（migration 0014 建 role 時用）。",
           _SECRET_REASON),
     _spec("db.legacy_sqlite_path", "LEGACY_SQLITE_PATH", SettingClass.B_LOCKED, T_STR,
-          _is_str, "", True,
+          _is_existing_file_path, "", True,
           "舊 SQLite 資料檔位置；未設時走程式內建的候選路徑清單。"
           "⚠ 讀取點是 startup_migrations 的 ``os.environ``（不是 Settings 欄位），"
           "時機雖然在覆蓋之後，通道卻接不上。",
@@ -575,10 +841,10 @@ SETTINGS: tuple[SettingSpec, ...] = (
           T_BOOL_PYDANTIC, _is_bool, False, True,
           "卡登為唯一登入路徑（內網正式部署必開）。", _SEC_CARD_REASON),
     _spec("card.initial_owners", "CARD_INITIAL_OWNERS", SettingClass.SEC, T_STR,
-          _is_csv, "", True,
+          _is_initial_owner_csv, "", True,
           "bootstrap owner 的員工編號 CSV；填錯會變成沒有人能核准。", _SEC_CARD_REASON),
     _spec("card.ca_bundle_path", "CARD_CA_BUNDLE_PATH", SettingClass.SEC, T_STR,
-          _is_str, "", True,
+          _is_certificate_bundle_path, "", True,
           "卡片 CA bundle 路徑；空值＝用釘死的那份。⚠ 首次驗章後有行程級快取"
           "（card_auth._ca_anchor_cache），所以改了要重啟。", _SEC_CARD_REASON),
     _spec("card.dev_trust_test_ca", "CARD_DEV_TRUST_TEST_CA", SettingClass.SEC,
@@ -590,14 +856,15 @@ SETTINGS: tuple[SettingSpec, ...] = (
 
     # ── network.* —— 入向白名單與出向 SSRF 閘 ───────────────────────────
     _spec("network.allowed_origins", "ALLOWED_ORIGINS", SettingClass.SEC, T_STR,
-          _is_csv,
+          _is_origin_csv,
           "http://localhost:5173,http://localhost:3001,http://localhost:80,"
           "http://localhost,https://localhost,https://localhost:4443",
           True, "CORS 來源白名單（逗號分隔）。", _SEC_REASON),
-    _spec("network.allowed_hosts", "ALLOWED_HOSTS", SettingClass.SEC, T_STR, _is_csv,
+    _spec("network.allowed_hosts", "ALLOWED_HOSTS", SettingClass.SEC, T_STR,
+          _is_allowed_host_csv,
           "*", True, "入向 Host 標頭白名單；\"*\" ＝關閉檢查。", _SEC_REASON),
     _spec("network.trusted_hosts", "ANILA_TRUSTED_HOSTS", SettingClass.SEC, T_STR,
-          _is_csv, "", True,
+          _is_trusted_host_csv, "", True,
           "出向 SSRF 白名單（逗號分隔）。⚠ 兩個讀取點：開機 backfill 與 url_guard "
           "per-call，取保守值標為需重啟。另有 DB 表 trusted_hosts 做同一件事，"
           "雙重來源的收斂是獨立 follow-up。", _SEC_REASON),
@@ -613,9 +880,11 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("network.allow_private_endpoint", "ANILA_ALLOW_PRIVATE_ENDPOINT",
           SettingClass.SEC, T_BOOL_EQ_1, _is_bool, False, False,
           "放行指向私網位址的出向端點。", _SEC_REASON),
-    _spec("network.environment", "ANILA_ENV", SettingClass.SEC, T_STR, _is_str,
+    _spec("network.environment", "ANILA_ENV", SettingClass.SEC, T_STR,
+          _one_of("production", "prod"),
           "", False, "部署姿態字串（production/prod 視為正式）。", _SEC_REASON),
-    _spec("network.ssl_cert_file", "SSL_CERT_FILE", SettingClass.SEC, T_STR, _is_str,
+    _spec("network.ssl_cert_file", "SSL_CERT_FILE", SettingClass.SEC, T_STR,
+          _is_certificate_bundle_path,
           "", True,
           "出向 TLS 的信任庫檔案。⚠ 它是**取代**整個信任庫而不是疊加，"
           "指到空或壞檔會讓所有出向 https 全掛。", _SEC_REASON),
@@ -660,17 +929,17 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("alerts.smtp_enabled", "ANILA_ALERT_SMTP_ENABLED", SettingClass.B_LOCKED,
           T_BOOL_PYDANTIC, _is_bool, False, True, "是否寄送告警信。", _SMTP_REASON),
     _spec("alerts.smtp_host", "ANILA_ALERT_SMTP_HOST", SettingClass.B_LOCKED, T_STR,
-          _is_str, "", True, "SMTP 主機。", _SMTP_REASON),
+          _is_host_token, "", True, "SMTP 主機。", _SMTP_REASON),
     _spec("alerts.smtp_port", "ANILA_ALERT_SMTP_PORT", SettingClass.B_LOCKED, T_INT,
           _closed_int_range(1, 65535), 587, True, "SMTP 埠。允許 1–65535。", _SMTP_REASON),
     _spec("alerts.smtp_user", "ANILA_ALERT_SMTP_USER", SettingClass.B_LOCKED, T_STR,
-          _is_str, "", True, "SMTP 帳號。", _SMTP_REASON),
+          _is_token, "", True, "SMTP 帳號。", _SMTP_REASON),
     _spec("alerts.smtp_password", "ANILA_ALERT_SMTP_PASSWORD", SettingClass.A, T_STR,
           _is_str, "", True, "SMTP 密碼。", _SECRET_REASON),
     _spec("alerts.smtp_from", "ANILA_ALERT_SMTP_FROM", SettingClass.B_LOCKED, T_STR,
-          _is_str, "", True, "告警信寄件人。", _SMTP_REASON),
+          _is_email_address, "", True, "告警信寄件人。", _SMTP_REASON),
     _spec("alerts.smtp_to", "ANILA_ALERT_SMTP_TO", SettingClass.B_LOCKED, T_STR,
-          _is_str, "", True, "告警信收件人（請用群組信箱，不要個人信箱）。", _SMTP_REASON),
+          _is_email_address, "", True, "告警信收件人（請用群組信箱，不要個人信箱）。", _SMTP_REASON),
     _spec("alerts.smtp_use_tls", "ANILA_ALERT_SMTP_USE_TLS", SettingClass.B_LOCKED,
           T_BOOL_PYDANTIC, _is_bool, True, True, "SMTP 是否走 TLS。", _SMTP_REASON),
     _spec("usage.batch_size", "USAGE_BATCH_SIZE", SettingClass.B_EDIT, T_INT,
@@ -723,14 +992,16 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("storage.ingestion_upload_dir", "INGESTION_UPLOAD_DIR", SettingClass.B_LOCKED,
           T_STR, _is_non_empty_str, "/var/anila/ingestion-uploads", True,
           "文件上傳暫存目錄。",
-          "檔案系統語意；三個讀取點（含模組層）時機不一，執行期改會讓它們對不齊（設計 §3.2）"),
+          "檔案系統語意；三個讀取點（含模組層）時機不一，執行期改會讓它們對不齊（設計 §3.2）。"
+          + _BOOT_SYNC_REASON),
     _spec("queue.redis_url", "REDIS_URL", SettingClass.B_LOCKED, T_STR, _is_redis_url,
           "redis://redis:6379", True,
           "Redis DSN。⚠ 三個讀取點的內建預設不一致，而且**多數是另一個值**："
           "ingestion_queue.py:24 是 redis://redis:6379，"
           "token_revocation_publisher.py:79 與 health_checker.py:634 都是 "
           "redis://redis:6379/0。此處宣告前者（收斂是獨立 follow-up）。",
-          "跨服務基礎設施 DSN，執行期改＝事故製造機（設計 §3.2）"),
+          "跨服務基礎設施 DSN，執行期改＝事故製造機（設計 §3.2）。"
+          + _BOOT_SYNC_REASON),
     # 2026-08-09 最終審查（跨家雙票）：這一顆原本是 B_LOCKED，理由是「import 期就算成
     # 模組常數、而且讀 os.environ」——那個模組常數已經拿掉了。現在由手上有 session 的
     # 呼叫端（``token_revocation.commit_token_revocation``，在 commit 之前）走
@@ -793,11 +1064,12 @@ SETTINGS: tuple[SettingSpec, ...] = (
           "記憶抽取的 HTTP 逾時秒數。允許 1–3600 秒。"),
     _spec("memory.llm_model", "MEMORY_LLM_MODEL", SettingClass.B_LOCKED, T_STR, _is_non_empty_str,
           "gemma4", True, "記憶抽取用的模型名。",
-          "模型名不是數值鈕 —— 換模型牽動 per-model 授權，畫面上補不了（設計 §3.2）"),
+          "模型名不是數值鈕 —— 換模型牽動 per-model 授權，畫面上補不了（設計 §3.2）。"
+          + _BOOT_SYNC_REASON),
 
     # ── agents.* ─────────────────────────────────────────────────────────
     _spec("agents.template_dir", "ANILA_TEMPLATE_DIR", SettingClass.B_LOCKED, T_STR,
-          _is_str, "", True,
+          _is_existing_directory_path, "", True,
           "agent 註冊範本目錄；空值＝用程式推導的 repo 內路徑。"
           "⚠ api/agents/registration.py:106 在 import 期就把它算成模組常數，"
           "而且讀的是 os.environ。",
@@ -811,7 +1083,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
     _spec("ingestion.vision_url", "VISION_URL", SettingClass.B_LOCKED, T_STR, _is_url_or_empty,
           "", False, "OCR 用視覺模型的 base URL。", _OCR_REASON),
     _spec("ingestion.vision_model", "VISION_MODEL", SettingClass.B_LOCKED, T_STR,
-          _is_str, "", False, "OCR 用視覺模型的模型名。", _OCR_REASON),
+          _is_model_name, "", False, "OCR 用視覺模型的模型名。", _OCR_REASON),
     _spec("ingestion.vision_api_key", "VISION_API_KEY", SettingClass.A, T_STR, _is_str,
           "", False, "OCR 用視覺模型的 Bearer key。", _SECRET_REASON),
     _spec("ingestion.vision_verify_ssl", "VISION_VERIFY_SSL", SettingClass.SEC,
@@ -833,7 +1105,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
           _one_of("native", "docling"),
           "native", False, "文件解析器（只能是 native／docling）。", _OCR_REASON),
     _spec("ingestion.docling_ocr_langs", "DOCLING_OCR_LANGS", SettingClass.B_LOCKED, T_STR,
-          _is_csv, "ch_tra,en", False, "docling 的 OCR 語系清單（逗號分隔）。",
+          _is_ocr_languages, "ch_tra,en", False, "docling 的 OCR 語系清單（逗號分隔）。",
           _OCR_REASON),
 
     # ── 已經落地的那一顆：別名，不是複製 ────────────────────────────────

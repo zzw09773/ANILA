@@ -387,6 +387,11 @@ def test_keys_and_env_names_are_unique_and_namespaced():
 
 def test_every_default_passes_its_own_domain_fn():
     for spec in SETTINGS:
+        # 空字串是部分可選 env 的「未設定」sentinel，resolve_setting_without_db
+        # 會直接回傳這個程式預設；寫入端仍須由 domain_fn 拒絕顯式空值，避免
+        # platform_settings 留下一列看似成功、實際上沒有語意的空覆蓋。
+        if spec.value_type.py_type is str and spec.default == "":
+            continue
         assert spec.domain_fn(spec.default) is True, (
             f"{spec.key} 的預設值 {spec.default!r} 過不了自己的值域函式"
         )
@@ -686,6 +691,35 @@ def test_set_setting_records_the_actor(db):
 
 def test_set_setting_accepts_non_secret_classes_and_keeps_the_transaction_open(db):
     """B_LOCKED／SEC 不是拒絕名單；它們仍由各自 domain_fn 把關。"""
+    valid_string_probes = {
+        "app.host": "csp.example.org",
+        "app.python_unbuffered": "1",
+        "db.legacy_sqlite_path": str(pathlib.Path(__file__).resolve()),
+        "card.initial_owners": "1234567,7654321",
+        "card.ca_bundle_path": str(
+            pathlib.Path(__file__).resolve().parents[1]
+            / "app"
+            / "services"
+            / "cspki_ca_bundle.pem"
+        ),
+        "network.allowed_origins": "https://anila.example.org",
+        "network.allowed_hosts": "*.example.org",
+        "network.trusted_hosts": "model.example.org",
+        "network.environment": "production",
+        "network.ssl_cert_file": str(
+            pathlib.Path(__file__).resolve().parents[1]
+            / "app"
+            / "services"
+            / "cspki_ca_bundle.pem"
+        ),
+        "alerts.smtp_host": "smtp.example.org",
+        "alerts.smtp_user": "smtp-user",
+        "alerts.smtp_from": "alerts@example.org",
+        "alerts.smtp_to": "ops@example.org",
+        "agents.template_dir": str(pathlib.Path(__file__).resolve().parents[1]),
+        "ingestion.vision_model": "org/vision-model",
+        "ingestion.docling_ocr_langs": "ch_tra,en",
+    }
     for spec in SETTINGS:
         if spec.setting_class in {SettingClass.A, SettingClass.C}:
             continue
@@ -695,7 +729,8 @@ def test_set_setting_accepts_non_secret_classes_and_keeps_the_transaction_open(d
         elif spec.value_type.py_type is int:
             value = value + 1 if value != 0 else 1
         elif spec.value_type.py_type is str and not spec.domain_fn(value):
-            value = "anila-registry-probe"
+            value = valid_string_probes.get(spec.key, "anila-registry-probe")
+            assert spec.domain_fn(value), f"{spec.key} 缺合法的測試寫入值"
         set_setting(db, spec.key, value)
     assert all(db.get(PlatformSetting, spec.key) is not None for spec in SETTINGS
                if spec.setting_class in {SettingClass.B_LOCKED, SettingClass.SEC})
