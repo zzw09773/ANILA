@@ -513,6 +513,10 @@ test('locked_reason 原樣全文上畫面 —— 降級七顆的 compose 指引�
 
 test('A 類只講「設了沒有」，後端沒講就說沒講', () => {
   assert.equal(isSetLabel({ class: 'A', is_set: true }), '已設定')
+  assert.equal(
+    isSetLabel({ class: 'A', is_set: true, updated_at: '2026-08-10T01:02:03+00:00' }),
+    '已保存，尚未由目前通道套用',
+  )
   assert.equal(isSetLabel({ class: 'A', is_set: false }), '未設定')
   assert.equal(isSetLabel({ class: 'A', is_set: null }), '—')
   assert.equal(new Set([isSetLabel({ is_set: true }), isSetLabel({ is_set: false })]).size, 2)

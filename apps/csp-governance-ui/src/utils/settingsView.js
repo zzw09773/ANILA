@@ -272,7 +272,9 @@ export function countMismatchWarning(overview) {
 
 /** A 類唯一看得到的事實：有沒有人設過。後端沒講（null）就說沒講。 */
 export function isSetLabel(item) {
-  if (item?.is_set === true) return '已設定'
+  if (item?.is_set === true) {
+    return item?.updated_at != null ? '已保存，尚未由目前通道套用' : '已設定'
+  }
   if (item?.is_set === false) return '未設定'
   return '—'
 }
