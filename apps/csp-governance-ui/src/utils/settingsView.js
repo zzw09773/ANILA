@@ -170,7 +170,11 @@ export function rowState(item) {
   if (!item || !VALUE_BEARING.has(item.class)) return null
   if (item.stored != null && item.stored_usable === false) return STATES.unusable
   if (item.pending != null) return STATES.pending
-  if (item.stored != null && ['B_LOCKED', 'SEC'].includes(item.class)) return STATES.staged
+  if (
+    item.stored != null &&
+    ['B_LOCKED', 'SEC'].includes(item.class) &&
+    item.source !== 'db-boot'
+  ) return STATES.staged
   return STATES.effective
 }
 
@@ -273,6 +277,7 @@ export function countMismatchWarning(overview) {
 /** A 類唯一看得到的事實：有沒有人設過。後端沒講（null）就說沒講。 */
 export function isSetLabel(item) {
   if (item?.is_set === true) {
+    if (item?.source === 'db-boot') return '已設定，本次開機已套用'
     return item?.updated_at != null ? '已保存，尚未由目前通道套用' : '已設定'
   }
   if (item?.is_set === false) return '未設定'
@@ -302,8 +307,8 @@ export function filterSections(sections, query) {
  * 人看的，一旦被送回後端就會變成一個真的字串值。
  */
 export function draftValue(item) {
-  // B_LOCKED／SEC 也能保存，但目前 consumer 不由 DB 這條通道套用；保留可讀回的 stored
-  // 才不會 PUT 成功後把輸入框換回舊 effective，下一次保存再覆蓋管理員剛存的值。
+  // B_LOCKED／SEC 可能尚待下一次開機；保留可讀回的 stored 才不會 PUT 成功後把輸入
+  // 框換回舊 effective，下一次保存再覆蓋管理員剛存的值。
   const stored = item?.stored_usable === false ? null : item?.stored
   const value = item?.pending ?? stored ?? item?.effective
   return value === null || value === undefined ? '' : String(value)
@@ -312,13 +317,25 @@ export function draftValue(item) {
 /**
  * 頂部那條大字 banner。
  *
- * ⚠ 只看 `boot_override_load_failed`，**不看 `boot_override_applied_count`**：
+ * ⚠ 失敗看 `boot_override_load_failed`，部分退回看 `boot_override_rejected_keys`，
+ * **不看 `boot_override_applied_count`**：
  * 「快照宣稱套過、行程其實沒套」正是後端 §2 第三種分岔的形狀，那時候
  * applied_count 不是 0，而管理員最需要知道的就是這一次開機的覆蓋沒有生效。
  */
 export function bootOverrideBanner(overview) {
-  if (overview?.boot_override_load_failed !== true) return null
+  const rejected = Array.isArray(overview?.boot_override_rejected_keys)
+    ? overview.boot_override_rejected_keys.filter((key) => typeof key === 'string' && key !== '')
+    : []
+  if (overview?.boot_override_load_failed !== true && rejected.length === 0) return null
   const reason = overview.boot_override_failure_reason
+  if (overview?.boot_override_load_failed !== true) {
+    return {
+      tone: 'warn',
+      title: '這次開機有設定覆蓋未載入',
+      message: `有 ${rejected.length} 顆 DB 設定在開機重新驗證時失敗，已退回 env／compose 或程式預設：${rejected.join('、')}`,
+      reason: typeof reason === 'string' && reason !== '' ? reason : '後端沒有給原因（細節在 csp 的 log 裡）',
+    }
+  }
   return {
     tone: 'danger',
     title: '這次開機沒有載入設定覆蓋',
@@ -333,6 +350,21 @@ export function bootOverrideBanner(overview) {
  * `pending` 有值就是鐵證（這個值還沒生效），`restart_required` 是宣告。
  */
 export function saveNotice(row) {
+  if (row?.pending != null || row?.restart_required === true) {
+    if (isSecretItem(row)) {
+      return {
+        tone: 'warn',
+        message: `已儲存至 DB；祕密值不會回顯，請循部署通道執行 ${RECREATE_COMMAND} 後回到本頁確認「本次開機已套用」或查看警告`,
+      }
+    }
+    if (lockedReasonText(row)) {
+      return {
+        tone: 'warn',
+        message: `已儲存至 DB；重啟後生效：${RECREATE_COMMAND}；回本頁看「來源」與本列提醒確認是否套用`,
+      }
+    }
+    return { tone: 'warn', message: RESTART_HINT }
+  }
   if (isSecretItem(row)) {
     return {
       tone: 'warn',
@@ -344,9 +376,6 @@ export function saveNotice(row) {
       tone: 'warn',
       message: '已儲存至 DB；目前生效值請以「來源」與本列提醒為準',
     }
-  }
-  if (row?.pending != null || row?.restart_required === true) {
-    return { tone: 'warn', message: RESTART_HINT }
   }
   return { tone: 'ok', message: SAVED_NOW_HINT }
 }

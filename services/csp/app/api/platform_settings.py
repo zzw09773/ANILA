@@ -117,7 +117,7 @@ class SettingItem(ApiResponseModel):
     #: 那一列讀得回來嗎。``False`` ＝ 存進去了但解不開／落在值域外，於是它**永遠
     #: 不會**生效。少了這一欄，管理員會盯著一個他以為存好了的值。
     stored_usable: bool
-    #: B-可編輯專屬：存了、但這一次開機還沒套上去的值（＝重啟後才生效）。
+    #: 非 C 類專屬：存了、但這一次開機還沒套上去的值（＝重啟後才生效）。
     pending: Any | None
     source: str
     #: A 類專屬：有沒有人設過（不是「有沒有值」）。其餘類別一律 ``None``。
@@ -133,6 +133,8 @@ class PlatformSettingsOverview(ApiResponseModel):
     boot_override_load_failed: bool
     #: 只放例外的類別名 —— 連線錯誤的訊息會帶著內嵌帳密的 DSN。
     boot_override_failure_reason: str
+    #: DB 列存在但開機重新驗證失敗的 key；原始值不回傳。
+    boot_override_rejected_keys: list[str]
     boot_override_applied_count: int
     items: list[SettingItem]
 
@@ -175,11 +177,12 @@ def _effective_and_source(db: Session, spec: SettingSpec, snapshot) -> tuple[Any
         return resolve_setting(db, spec.key)
 
     if spec.setting_class is SettingClass.A:
-        # 祕密值只作待部署保存，csp 目前的 consumer 仍讀 env／Settings 的開機值；
-        # 所以來源必須走扣掉 DB 的同一條解析鏈，不能把「已存一列」謊報成「本次
-        # 行程已套用」。值本身仍永遠遮罩，只有 is_set 另說明有人存過。
+        # 祕密值仍永遠遮罩；若這次開機已把合法 DB 列同步到 Settings/env，來源
+        # 要如實回報 db-boot，不能因為畫面看不到值就把它說成尚未套用。
         # ``resolve_setting_without_db`` 讀的是 process env；pydantic 的 ``.env``
         # layer 只存在 ``settings`` 單例上，A 類 consumer 仍可能直接讀它。
+        if not snapshot.load_failed and spec.key in snapshot.applied:
+            return None, SOURCE_DB_BOOT
         if (
             spec.env_name is not None
             and spec.env_name in Settings.model_fields
@@ -244,9 +247,10 @@ def _boot_layer_source(spec: SettingSpec, snapshot) -> str:
 def _pending(spec: SettingSpec, stored_value: Any, snapshot) -> Any:
     """存了、但這一次開機還沒套上去的值（＝重啟之後才會生效）。
 
-    只有 B-可編輯有這一態：C 類立刻生效，鎖定類別存了也永遠不會生效。
+    C 類立刻生效；非 C 類只要這次開機尚未套上，就保留待生效值。A 類不回顯值，
+    不建立 pending 欄位。
     """
-    if spec.setting_class is not SettingClass.B_EDIT or stored_value is _NO_VALUE:
+    if spec.setting_class in {SettingClass.C, SettingClass.A} or stored_value is _NO_VALUE:
         return None
     if snapshot.load_failed or spec.key not in snapshot.applied:
         return stored_value
@@ -326,6 +330,7 @@ def read_overview(db: Session = Depends(get_db)) -> PlatformSettingsOverview:
         total=len(items),
         boot_override_load_failed=snapshot.load_failed,
         boot_override_failure_reason=snapshot.failure_reason,
+        boot_override_rejected_keys=sorted(snapshot.rejected),
         boot_override_applied_count=0 if snapshot.load_failed else len(snapshot.applied),
         items=items,
     )

@@ -215,6 +215,7 @@ function overviewFixture(overrides = {}) {
     total: ALL_96.length,
     boot_override_load_failed: false,
     boot_override_failure_reason: '',
+    boot_override_rejected_keys: [],
     boot_override_applied_count: 3,
     items: ALL_96,
     ...overrides,
@@ -408,6 +409,18 @@ test('B_LOCKED／SEC 存了但目前通道不套用時，不可以被講成現�
   assert.notEqual(state.className, 'setting-state--effective')
 })
 
+test('B_LOCKED／SEC 這次開機已套用時，才可以講成現在生效', () => {
+  const state = rowState({
+    ...threeStateRow(),
+    class: 'SEC',
+    pending: null,
+    stored: 'production',
+    effective: 'production',
+    source: 'db-boot',
+  })
+  assert.equal(state.id, 'effective')
+})
+
 test('A 類沒有值，就沒有三態徽章可以掛', () => {
   const secret = ALL_96.find((i) => i.class === 'A')
   assert.equal(rowState(secret), null)
@@ -513,6 +526,7 @@ test('locked_reason 原樣全文上畫面 —— 降級七顆的 compose 指引�
 
 test('A 類只講「設了沒有」，後端沒講就說沒講', () => {
   assert.equal(isSetLabel({ class: 'A', is_set: true }), '已設定')
+  assert.match(isSetLabel({ class: 'A', is_set: true, source: 'db-boot' }), /本次開機已套用/)
   assert.equal(
     isSetLabel({ class: 'A', is_set: true, updated_at: '2026-08-10T01:02:03+00:00' }),
     '已保存，尚未由目前通道套用',
@@ -581,6 +595,18 @@ test('後端沒給原因時說「沒有給原因」，不要自己編一個', ()
   }))
   assert.match(banner.reason, /沒有|未提供/)
   assert.doesNotMatch(banner.reason, /資料庫|連線|逾時/, '後端沒說的原因不可以猜')
+})
+
+test('開機重新驗證退回個別設定時，banner 要列出 key', () => {
+  const banner = bootOverrideBanner(overviewFixture({
+    boot_override_rejected_keys: ['network.ssl_cert_file'],
+    boot_override_failure_reason: '有 1 顆設定覆蓋在開機重新驗證時退回',
+  }))
+  assert.ok(banner)
+  assert.equal(banner.tone, 'warn')
+  assert.match(banner.title, /未載入/)
+  assert.match(banner.message, /network\.ssl_cert_file/)
+  assert.match(banner.reason, /重新驗證/)
 })
 
 test('⚠ 自查：後端說 96 顆而這一頁只收到 90 顆，要講出來', () => {

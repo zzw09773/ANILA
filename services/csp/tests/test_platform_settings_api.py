@@ -102,8 +102,8 @@ def _settings_identity_precondition():
 
 
 @pytest.fixture
-def simulated_boot(monkeypatch):
-    """跑一次「開機」：B 類欄位還原成 env／預設值，再套一次覆蓋。
+def simulated_boot(monkeypatch, request):
+    """跑一次「開機」：非 C 類欄位還原成 env／預設值，再套一次覆蓋。
 
     ⚠ 還原全部交給 ``monkeypatch``（含模組層快照）——``apply_boot_overrides`` 是
     就地 ``setattr`` 全域單例、並整份取代模組層快照的，沒有還原就會把
@@ -111,15 +111,37 @@ def simulated_boot(monkeypatch):
     ``test_settings_boot_override.py:120`` 的同名 fixture。
     """
 
+    env_names = {
+        spec.env_name
+        for spec in SETTINGS
+        if spec.setting_class is not SettingClass.C and spec.env_name is not None
+    }
+    original_env = {name: os.environ.get(name) for name in env_names}
+    baseline_settings = None
+
+    def _restore_env():
+        for name, value in original_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    request.addfinalizer(_restore_env)
+
     def _boot(db):
-        fresh = Settings()
+        nonlocal baseline_settings
+        if baseline_settings is None:
+            baseline_settings = Settings()
         for spec in SETTINGS:
-            if spec.setting_class is not SettingClass.B_EDIT:
+            if spec.setting_class is SettingClass.C:
                 continue
-            if spec.env_name is None or spec.env_name not in Settings.model_fields:
+            if spec.env_name not in Settings.model_fields:
                 continue
             monkeypatch.setattr(
-                settings, spec.env_name, getattr(fresh, spec.env_name), raising=False
+                settings,
+                spec.env_name,
+                getattr(baseline_settings, spec.env_name),
+                raising=False,
             )
         monkeypatch.setattr(
             config_module, "_current_snapshot", config_module._current_snapshot
@@ -1044,7 +1066,15 @@ def test_locked_and_security_classes_are_editable_but_keep_their_reason(
             assert item["locked_reason"]
             if item["class"] == "SEC":
                 assert "platform_settings" in item["locked_reason"]
-                assert "不會自動套用" in item["locked_reason"]
+                assert any(
+                    marker in item["locked_reason"]
+                    for marker in ("開機重新驗證", "其他行程", "開機")
+                )
+            elif item["class"] == "B_LOCKED":
+                assert any(
+                    marker in item["locked_reason"]
+                    for marker in ("開機重新驗證", "其他行程", "import", "os.environ", "SMTP")
+                )
 
 
 def test_secret_writes_require_the_literal_admin_username(
@@ -1161,6 +1191,27 @@ def _probe_value_for(spec):
 
     值域來自 ``domain_fn`` 自己掛的 ``bounds``（Task 1 的形狀），不是手抄的表。
     """
+    path_probe = pathlib.Path(__file__).resolve()
+    csp_dir = path_probe.parents[1]
+    keyed = {
+        "card.ca_bundle_path": str(csp_dir / "app/services/cspki_ca_bundle.pem"),
+        "card.initial_owners": "1234567,7654321",
+        "network.allowed_origins": "https://anila.example.org:4443",
+        "network.allowed_hosts": "*.example.org,anila.example.org:8443",
+        "network.trusted_hosts": "model.example.org",
+        "network.ssl_cert_file": str(csp_dir / "app/services/cspki_ca_bundle.pem"),
+        "db.legacy_sqlite_path": str(path_probe),
+        "agents.template_dir": str(csp_dir),
+        "alerts.smtp_host": "smtp.example.org",
+        "alerts.smtp_user": "smtp-user",
+        "alerts.smtp_from": "alerts@example.org",
+        "alerts.smtp_to": "ops@example.org",
+        "ingestion.vision_model": "org/vision-model",
+        "ingestion.docling_ocr_langs": "ch_tra,en",
+    }
+    if spec.key in keyed:
+        return keyed[spec.key]
+
     bounds = getattr(spec.domain_fn, "bounds", None)
     if bounds is not None:
         low, high = bounds
