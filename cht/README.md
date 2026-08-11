@@ -32,7 +32,7 @@
 
 2026-07-31 之前它是假的：不管給什麼 tbs 都回一份**寫死的** PKCS#7
 （eContent 永遠 `b"TBS"`），所以 nonce 綁定在架構上不可能通過，本機只好把
-`ENABLE_CARD_LOGIN` 關掉，整條登入路徑走不完。
+`ANILA_AUTH_MODE=password`，整條登入路徑走不完。
 
 ## 測試身分（合成，非真人）
 
@@ -67,11 +67,10 @@ CHT_DEV_CA_HOST_DIR=../secrets/dev-card-ca docker compose -p cht-mock up -d --bu
 ```
 CARD_CA_BUNDLE_PATH=/app/secrets/dev-card-ca/dev_ca_bundle.pem
 CARD_DEV_TRUST_TEST_CA=1
-ENABLE_CARD_LOGIN=true
-REQUIRE_CARD_LOGIN_ONLY=false
+ANILA_AUTH_MODE=mixed
 ```
 
-前兩條缺一不可，而且 `REQUIRE_CARD_LOGIN_ONLY` 必須是 false，否則
+前兩條缺一不可，而且 `ANILA_AUTH_MODE` 必須不是 `card-only`，否則
 `card_auth` 會**整包拒收**這份 bundle（fail-closed，不是靜默降級）。
 內網 production 什麼都不用設 —— 不設 `CARD_CA_BUNDLE_PATH` 就是用釘死的
 `cspki_ca_bundle.pem`。

@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 CARD_CHALLENGE_AUDIENCE = "card-challenge"
+CARD_JWT_ALGORITHM = "HS256"
 CHALLENGE_TTL_SECONDS = 120
 
 # Pending users 完成註冊用的 short-lived JWT。比 challenge JWT 久 (使用者
@@ -78,7 +79,7 @@ def issue_card_challenge() -> tuple[str, str, int]:
         "exp": exp,
     }
     challenge_token = jose_jwt.encode(
-        payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM
+        payload, settings.SECRET_KEY, algorithm=CARD_JWT_ALGORITHM
     )
     return challenge_token, nonce, CHALLENGE_TTL_SECONDS
 
@@ -93,7 +94,7 @@ def decode_card_challenge(challenge_token: str) -> str:
         payload = jose_jwt.decode(
             challenge_token,
             settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
+            algorithms=[CARD_JWT_ALGORITHM],
             audience=CARD_CHALLENGE_AUDIENCE,
         )
     except JWTError as exc:
@@ -122,7 +123,7 @@ def issue_registration_token(user_id: int) -> tuple[str, int]:
         "exp": now + timedelta(seconds=REGISTRATION_TTL_SECONDS),
     }
     token = jose_jwt.encode(
-        payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM
+        payload, settings.SECRET_KEY, algorithm=CARD_JWT_ALGORITHM
     )
     return token, REGISTRATION_TTL_SECONDS
 
@@ -137,7 +138,7 @@ def decode_registration_token(token: str) -> int:
         payload = jose_jwt.decode(
             token,
             settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
+            algorithms=[CARD_JWT_ALGORITHM],
             audience=CARD_REGISTRATION_AUDIENCE,
         )
     except JWTError as exc:

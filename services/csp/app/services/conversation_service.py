@@ -14,7 +14,6 @@ from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare, ConversationUserMeta
 from app.models.department import Department
 from app.models.message import Message
-from app.models.platform_setting import get_setting
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier
@@ -145,13 +144,8 @@ def _check_metadata_size(metadata: Optional[dict]) -> None:
 
 
 def _max_siblings(db: Session) -> int:
-    """同一節點下的訊息分支上限（``limits.message_max_siblings``）。
-
-    **每次呼叫都真的解一次**（DB 那一列 → ``ANILA_MESSAGE_MAX_SIBLINGS`` →
-    程式預設 20）。以前讀 ``config.py`` 那個 import 期凍結的 ``settings``：
-    管理員從畫面把上限調高，要等容器 recreate 才算數。
-    """
-    return int(get_setting(db, "limits.message_max_siblings"))
+    """同一節點下的訊息分支固定上限。"""
+    return 20
 
 
 def _require_branchable(conv: Conversation) -> None:
@@ -2003,4 +1997,3 @@ def _check_read_access(db: Session, conv: Conversation, user: User) -> None:
                 "或請擁有者撤銷此分享。"
             ),
         )
-

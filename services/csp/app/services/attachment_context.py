@@ -1,14 +1,11 @@
 """Per-conversation attachment token budget helpers (P1.5).
 
 Budget = int(context_window * limits.attachment_budget_ratio).
-Effective cost of one attachment = int(token_count * limits.attachment_token_safety).
+Effective cost of one attachment = int(token_count * 1.15).
 
-The four knobs below (default_context_window / attachment_budget_ratio /
-attachment_token_safety / attachment_max_stored_tokens) are resolved PER
-REQUEST via ``get_setting`` (platform_settings row -> ANILA_* env -> code
-default) — hence the ``db`` first argument on helpers that used to be pure.
-They used to read the import-frozen ``settings`` object, which meant an
-admin editing them had to wait for a container recreate.
+The attachment budget ratio is resolved per request via ``get_setting``
+(platform_settings row -> ANILA_* env -> code default). The context fallback,
+safety multiplier, and stored-token ceiling are fixed program constants.
 
 Admission is a DERIVED value computed at the moment of use (meter / inject /
 API), never persisted. Among rows with extract_status == 'ok' and a
@@ -18,7 +15,7 @@ is excluded; later smaller rows may still be admitted (existing rule).
 
 extract_status is purely an extraction outcome:
   pending | ok | failed | unsupported | too_large
-(too_large = refused to store text past limits.attachment_max_stored_tokens)
+(too_large = refused to store text past the built-in stored-token ceiling)
 
 DELIBERATE NON-CHANGE: conversation history is NOT subtracted dynamically
 from the attachment budget. The 0.7 ratio exists precisely so that
@@ -41,10 +38,10 @@ from app.models.model_registry import ModelRegistry
 
 
 def get_context_window(db: Session, model_name: str | None) -> int:
-    """Resolve context window: model_registry value when set, else settings default.
+    """Resolve context window: model_registry value when set, else fixed fallback.
 
     When ``model_name`` is None or the model has no ``context_window``, this
-    falls back to ``limits.default_context_window`` (upload before any turn
+    falls back to the built-in context window (upload before any turn
     has chosen a model — that fallback is intentional and explicit).
     """
     if model_name:
@@ -56,7 +53,7 @@ def get_context_window(db: Session, model_name: str | None) -> int:
         if row is not None and row[0] is not None:
             return int(row[0])
     # Explicit fallback: model unknown (pre-turn upload) or registry NULL.
-    return int(get_setting(db, "limits.default_context_window"))
+    return 128_000
 
 
 def attachment_budget_tokens(db: Session, context_window: int) -> int:
@@ -71,14 +68,14 @@ def max_stored_tokens(db: Session) -> int:
     so a budget-derived ceiling would discard text a larger-context model
     could still admit, with re-upload the only recovery. See config.
     """
-    return int(get_setting(db, "limits.attachment_max_stored_tokens"))
+    return 800_000
 
 
 def effective_cost(db: Session, token_count: int | None) -> int:
     """Apply the safety multiplier to a raw estimate."""
     if token_count is None or token_count <= 0:
         return 0
-    return int(token_count * float(get_setting(db, "limits.attachment_token_safety")))
+    return int(token_count * 1.15)
 
 
 class _AdmitRow(Protocol):

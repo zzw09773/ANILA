@@ -479,7 +479,7 @@ def test_the_loss_report_is_loud_in_the_log_too(
 
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert errors, "truncation was not logged at ERROR"
-    assert "PDF_OCR_MAX_PAGES" in errors[0].getMessage()
+    assert "built-in OCR page cap" in errors[0].getMessage()
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -84,12 +84,12 @@ def login(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    # Branch SSO lockdown:``REQUIRE_CARD_LOGIN_ONLY`` 時帳密登入僅保留給
+    # Branch SSO lockdown:``ANILA_AUTH_MODE=card-only`` 時帳密登入僅保留給
     # **owner**(break-glass 管理通道,2026-06-11 拍板)。posture 與
     # ``_reject_when_card_only`` 一致:非 owner 的所有結果 — 帳密錯、待核准、
     # 甚至帳密完全正確 — 一律回與「功能不存在」相同的 404,讓外部探測無法
     # 區分「密碼錯 / 權限不足 / 端點關閉」;只有 owner 完整登入成功會放行。
-    card_only = settings.REQUIRE_CARD_LOGIN_ONLY
+    card_only = settings.ANILA_AUTH_MODE == "card-only"
     ip_address = http_request.client.host if http_request.client else None
 
     if request.auth_source not in (None, "", "local"):
@@ -155,7 +155,7 @@ def login(
             commit=True,
         )
         raise HTTPException(status_code=404)
-    tokens = create_tokens(result)
+    tokens = create_tokens(result, db)
     _stamp_last_login(db, result)
     log_audit_event(
         db,
@@ -167,7 +167,7 @@ def login(
         ip_address=ip_address,
         commit=True,
     )
-    return _finalize_login(response, tokens)
+    return _finalize_login(response, tokens, db)
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -201,11 +201,12 @@ async def refresh(
         )
     payload = decode_token(token)
     user = _load_user_from_payload(payload, db, "refresh")
-    tokens = create_tokens(user)
+    tokens = create_tokens(user, db)
     set_session_cookies(
         response,
         access_token=tokens["access_token"],
         refresh_token=tokens["refresh_token"],
+        db=db,
     )
     return tokens
 
@@ -261,7 +262,7 @@ def change_password(
     # owner 例外對齊)— owner 能登入就必須能輪換密碼。其他帳號的
     # hashed_password 是 unguessable random,本來就提供不出 current_password,
     # 對他們維持 404 姿態。
-    if settings.REQUIRE_CARD_LOGIN_ONLY and current_user.role != "owner":
+    if settings.ANILA_AUTH_MODE == "card-only" and current_user.role != "owner":
         raise HTTPException(status_code=404)
     if not verify_password(request.current_password, current_user.hashed_password):
         raise HTTPException(
@@ -281,4 +282,4 @@ def change_password(
         detail="使用者更新自身密碼",
         commit=True,
     )
-    return {"message": "密碼已更新，請重新登入", **create_tokens(current_user)}
+    return {"message": "密碼已更新，請重新登入", **create_tokens(current_user, db)}

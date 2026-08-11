@@ -78,14 +78,8 @@ SCHEMA_VERSION = 1
 # this hostname, and tests don't need a real connection.
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 
-# ⚠ 同步發布的 Redis 逾時**不再是這裡的模組常數**。它以前是
-# ``float(os.environ.get("TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS", "2.0"))`` —— import
-# 期算一次、直接讀 os.environ、不過登錄表的值域。於是 env 填 999 時，設定頁照登錄表
-# 值域（0.1–60）退回顯示 2.0，而這裡真的用 999 去連 Redis：畫面與實跑分歧，
-# 兩家最終審查各自實測到（final-review-sol.md、primary 的 T5-裁決1）。
-# 現在由**手上有 session 的呼叫端**解析（``token_revocation.commit_token_revocation``）
-# 並以必填關鍵字傳進來 —— 與 Task 3 的 ProxyTuning 同一個形狀：值在還握著連線時解好，
-# 沒有第二份預設值可以漂走。
+# 同步發布的 Redis 逾時由呼叫端以必填關鍵字傳入；這裡不再讀環境變數，
+# 也不保留另一份會與治理頁分歧的預設值。
 
 
 # Module-level singleton for the async Redis client. Cleared by tests

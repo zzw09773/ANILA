@@ -35,7 +35,7 @@
    `FLUX_AGENT_BASE_URL=` 留空(auto_seed 自動跳過,不需本地權重)。**你只需在 .12 簽
    發後填 `MODEL_GATEWAY_API_KEY`**。權重日後到了再開 gemma4/flux 即可,架構不變。
 7. **JWT 簽章金鑰(2026-06-15 live 預演抓到)**:csp 用 RSA 私鑰簽登入 access token
-   並對 anila-studio 等發 JWKS。prod 模式 `ALLOW_AUTO_KEYGEN=false` **不自動生**;
+   並對 anila-studio 等發 JWKS。production runtime **不自動生 key**;
    缺這把 → csp `/.well-known/jwks.json` 回 500、**登入發不了 token、anila-studio
    crash-loop**。**已修**:`intranet-deploy.sh` 步驟 `[4b]` 會用 csp image 跑
    `scripts/generate-jwt-keypair.py` 產 `secrets/jwt-{private,public}.pem`,compose
@@ -56,8 +56,8 @@
 >    否則同仁卡片註冊時「完成註冊」的單位下拉是空的、卡在註冊。先建單位再請大家註冊。
 > 2. **break-glass(讀卡機/HiPKI 掛掉時的後路)**:card-only 模式關掉了帳密登入,若 go-live
 >    當天讀卡機或 HiPKI(`localhost:16888`)故障會**全員進不去**。應急:`.env` 暫設
->    `REQUIRE_CARD_LOGIN_ONLY=false` → `docker compose up -d csp`,用 owner 帳密
->    (admin 密碼)break-glass 進去處理,修好讀卡環境後改回 `true` 再 recreate csp。
+>    `ANILA_AUTH_MODE=password` → `docker compose up -d csp`,用 owner 帳密
+>    (admin 密碼)break-glass 進去處理,修好讀卡環境後改回 `card-only` 再 recreate csp。
 
 ---
 
@@ -128,6 +128,17 @@ WITH_MODELS=1 WITH_WEIGHTS=1 bash infra/deployment/intranet/build-and-export-for
 INTRANET-LOAD.sh            (內網一鍵 import,含 sha256 驗檔 + 權重解壓)
 MANIFEST.txt / CHECKSUMS.sha256
 ```
+
+> **code-server 權限警告**：它掛載整個 repo、可寫入工作樹，並直接掛載
+> `/var/run/docker.sock`；工作樹中未被 `/dev/null` 遮蔽的 `secrets/` 也可被讀取。
+> 因此取得 `CODESERVER_PASSWORD` 等同取得 host-root 等級的維運能力，只准平台管理員
+> 使用，密碼必須放在部署 secret，不能與一般帳號共用。啟用後也要把這個權限事實納入
+> 存取盤點與離職回收流程。
+
+> **首次建置的入口卡片**：`AUTO_REGISTER_LINKS` 已移除，fresh DB 的首頁不會再自動
+> 長出入口卡片；既有資料不會被這次收斂刪除。平台管理員需在 `/platform-links` 手動
+> 建立交付需要的初始入口，建議清單為：`/anila`、`/anilalm`、`/codeserver`、
+> `/n8n`、`/gitlab`，以及內網 MLOps 入口 `https://aiops.ai.ncsist.org.tw:4443/`。
 
 > **權重只能從這裡帶** — 內網無對外下載通道。image 同理 (本地客製 build,
 > registry 拉不到)。
@@ -269,7 +280,7 @@ bash /home/aia/c1147259/intranet-staging/rehearsal-r0.sh \
 ### 1.3 Secret 生成 (建議到內網主機上跑)
 
 ```bash
-echo "CSP_SECRET_KEY=$(openssl rand -hex 32)"
+echo "SECRET_KEY=$(openssl rand -hex 32)"
 echo "CSP_SERVICE_TOKEN=$(openssl rand -hex 32)"   # 平台內部 s2s（若 compose 仍要求）；≠ agent 派工身分
 echo "INTERNAL_PLATFORM_API_KEY=sk-internal-$(openssl rand -hex 24)"
 echo "ADMIN_PASSWORD=$(openssl rand -base64 24)"
@@ -386,8 +397,7 @@ ANILA_HOST=anila.ai.ncsist.org.tw
 # 入向 Host 白名單(≠ 上面那條出向 SSRF)。不填就用這個值,見 §3.1d;
 # 換 IP／FQDN 要跟 nginx 的 $is_anila_host map 一起改,鎖住自己時設 * 自救。
 ALLOWED_HOSTS=localhost,127.0.0.1,csp,10.53.100.15,172.16.120.35,*.ncsist.org.tw
-ENABLE_CARD_LOGIN=true
-REQUIRE_CARD_LOGIN_ONLY=true
+ANILA_AUTH_MODE=card-only
 CARD_INITIAL_OWNERS=1147259       # 你的員工編號;加同事用 CSV
 
 ANILA_REMOTE_MODELS=1             # deploy-prod.sh preflight 改 curl 遠端探測
@@ -795,7 +805,7 @@ docker compose logs csp 2>&1 | grep -E "startup_security|RuntimeError|Refusing"
 |---|---|
 | 沒輸出 | 正常,繼續 |
 | `Refusing to start: ... dev 預設值: SECRET_KEY/ADMIN_PASSWORD/DB_PASSWORD...` | 對應 secret 沒換真值 (§1.3 重生) |
-| `REQUIRE_CARD_LOGIN_ONLY=True 但 ENABLE_CARD_LOGIN=False` | 兩個 flag 要一致 |
+| `ANILA_AUTH_MODE` 不是 `password`、`mixed` 或 `card-only` | 單一登入模式值錯誤 |
 | compose 階段 `required variable XXX is missing` | .env 漏填,csp 根本沒起 |
 
 ### 3.3 健康檢查 + 模型鏈路

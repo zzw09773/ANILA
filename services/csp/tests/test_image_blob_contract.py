@@ -31,6 +31,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.api.ingestion import image_blob
 from app.api.ingestion.image_blob import router as image_blob_router
 from app.main import app
 from app.models.ingestion import IngestionCollection, IngestionDocument
@@ -117,10 +118,10 @@ def bob(db):
 @pytest.fixture
 def alice_image(db, db_engine, alice, tmp_path, monkeypatch) -> tuple[int, Path]:
     """Insert one ingestion_image row owned by alice + write its blob
-    to a temp INGESTION_UPLOAD_DIR. Returns (image_pk, abs_blob_path)."""
+    to a temporary upload root. Returns (image_pk, abs_blob_path)."""
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
-    monkeypatch.setenv("INGESTION_UPLOAD_DIR", str(upload_dir))
+    monkeypatch.setattr(image_blob, "UPLOAD_ROOT", upload_dir)
 
     # Create the table (raw DDL — no model)
     _create_images_table(db_engine)
@@ -187,7 +188,7 @@ def test_image_blob_content_type_tracks_mime(
     """A JPEG-stored row should serve ``image/jpeg`` not image/png."""
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
-    monkeypatch.setenv("INGESTION_UPLOAD_DIR", str(upload_dir))
+    monkeypatch.setattr(image_blob, "UPLOAD_ROOT", upload_dir)
     _create_images_table(db_engine)
 
     coll = IngestionCollection(

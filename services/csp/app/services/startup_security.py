@@ -274,7 +274,7 @@ def assert_card_dev_bypass_not_in_a_real_boot() -> None:
     **「dev-card 模式」不自己定義。** 直接呼叫
     ``card_auth._dev_test_ca_explicitly_allowed()`` —— 那是這棵樹裡唯一一份
     dev 卡登路徑的定義(``CARD_DEV_TRUST_TEST_CA`` 開啟 ∧
-    ``REQUIRE_CARD_LOGIN_ONLY`` 為 False,``platform.yml:150-158`` 是同一句話的
+    ``ANILA_AUTH_MODE`` 不是 ``card-only``,``platform.yml`` 是同一句話的
     部署面說法)。刻意呼叫這個底線開頭的名字而不是包一層公開別名:多一個名字
     就多一個會漂開的定義,而這裡要的正是「只有一個」。
 
@@ -324,26 +324,24 @@ def assert_card_dev_bypass_not_in_a_real_boot() -> None:
         "而簽章與憑證鏈驗證全都會通過,log 上看起來是正常登入。"
         "內網正式部署一律不可設(見 docs/runbooks/intranet-deployment-runbook.md)。"
         "若確實要在本機接舊的固定簽章素材,請一併設 CARD_DEV_TRUST_TEST_CA=1 "
-        "並讓 REQUIRE_CARD_LOGIN_ONLY 為 false —— 那兩個旗標就是 dev-card 模式的定義。"
+        "並讓 ANILA_AUTH_MODE 不是 card-only —— 這是 dev-card 模式的定義。"
     )
 
 
 def assert_intranet_lockdown_consistency() -> None:
-    """Branch ``SSO``:``REQUIRE_CARD_LOGIN_ONLY`` 與其他 auth flag 的相容性。
+    """Branch ``SSO``：檢查單一 auth mode 的合法值與 card-only 政策。
 
     中科院內網 production 政策是「**卡片登入是唯一活路**」 — 本機帳密、
-    OIDC、自助註冊全部禁用。要 enforce 這個政策,必須 ``ENABLE_CARD_LOGIN``
-    同時啟用,否則整個系統會處於「沒人能登入」的 bricked 狀態。
+    OIDC、自助註冊全部禁用。單一 ``ANILA_AUTH_MODE`` 值避免兩個旗標
+    不一致造成「沒人能登入」的 bricked 狀態。
 
     本檢查在 ``lifespan`` 啟動時跑;不通過直接拒絕啟動 — secure by default
     at deployment time,比 runtime check 強。
     """
-    if not settings.REQUIRE_CARD_LOGIN_ONLY:
-        return
-
-    if not settings.ENABLE_CARD_LOGIN:
+    mode = settings.ANILA_AUTH_MODE
+    if mode not in {"password", "mixed", "card-only"}:
         raise RuntimeError(
-            "Refusing to start: REQUIRE_CARD_LOGIN_ONLY=True 但 "
-            "ENABLE_CARD_LOGIN=False — 將無人能登入。請同時啟用 "
-            "ENABLE_CARD_LOGIN=true,或關閉 REQUIRE_CARD_LOGIN_ONLY。"
+            "Refusing to start: ANILA_AUTH_MODE 必須是 password、mixed 或 card-only"
         )
+    if mode != "card-only":
+        return

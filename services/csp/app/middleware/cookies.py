@@ -13,7 +13,7 @@ Three cookies make up the Wave 2 session:
   requests (double-submit pattern, see ``middleware/csrf.py``).
 
 SameSite policy 條件式選擇 (見 ``_cookie_samesite``):
-- **card-only mode** (``REQUIRE_CARD_LOGIN_ONLY=true``,內網 prod):升 ``Strict``。
+- **card-only mode** (``ANILA_AUTH_MODE=card-only``,內網 prod):升 ``Strict``。
   這個模式下沒有 OIDC top-level callback (endpoint 已 lockdown 404),Strict 不
   會 break 任何 flow,反而連 cross-site GET navigation 都不帶 cookie,徹底擋
   掉 CSRF surface。
@@ -27,6 +27,7 @@ from __future__ import annotations
 import secrets
 
 from fastapi import Response
+from sqlalchemy.orm import Session
 
 from app.config import settings
 
@@ -37,22 +38,24 @@ REFRESH_COOKIE_PATH = "/api/auth/refresh"
 
 
 def _cookie_secure() -> bool:
-    """Cookies are Secure (HTTPS-only) unless explicitly opted out via
-    ``COOKIE_SECURE=false`` — needed for the TestClient and for bare
-    local dev loops that have no TLS-terminating reverse proxy."""
-    return bool(settings.COOKIE_SECURE)
+    """All deployed entry points are HTTPS; tests replace this helper."""
+    return True
 
 
 def _cookie_samesite() -> str:
-    """``REQUIRE_CARD_LOGIN_ONLY`` 模式沒有 OIDC top-level callback 需求,
+    """``ANILA_AUTH_MODE=card-only`` 沒有 OIDC top-level callback 需求,
     可升 SameSite=Strict 收緊 CSRF 防線;非 card-only mode (含 OIDC SSO)
     維持 Lax 讓 IdP redirect 能帶回 cookie。
     """
-    return "strict" if settings.REQUIRE_CARD_LOGIN_ONLY else "lax"
+    return "strict" if settings.ANILA_AUTH_MODE == "card-only" else "lax"
 
 
 def set_session_cookies(
-    response: Response, *, access_token: str, refresh_token: str
+    response: Response,
+    *,
+    access_token: str,
+    refresh_token: str,
+    db: Session | None = None,
 ) -> str:
     """Attach access / refresh / csrf cookies to ``response``.
 
@@ -60,8 +63,21 @@ def set_session_cookies(
     in a JSON body when useful (e.g. the SPA's bootstrap path can read
     it synchronously rather than waiting for a second request).
     """
-    access_max_age = int(settings.ACCESS_TOKEN_EXPIRE_MINUTES) * 60
-    refresh_max_age = int(settings.REFRESH_TOKEN_EXPIRE_DAYS) * 86400
+    from app.models.platform_setting import get_setting
+
+    if db is None:
+        from app.database import SessionLocal
+
+        with SessionLocal() as session:
+            access_minutes = int(
+                get_setting(session, "auth.access_token_expire_minutes")
+            )
+            refresh_days = int(get_setting(session, "auth.refresh_token_expire_days"))
+    else:
+        access_minutes = int(get_setting(db, "auth.access_token_expire_minutes"))
+        refresh_days = int(get_setting(db, "auth.refresh_token_expire_days"))
+    access_max_age = access_minutes * 60
+    refresh_max_age = refresh_days * 86400
 
     response.set_cookie(
         ACCESS_COOKIE_NAME,

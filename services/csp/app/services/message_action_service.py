@@ -126,16 +126,8 @@ def _validate_choices(choices: list[ChoiceSpec] | list[dict] | None) -> list[dic
 
 
 def _max_body_chars(db: Session) -> int:
-    """自訂動作 body 的字元上限（``limits.action_max_body_chars``）。
-
-    **唯一的讀取點** —— 擋人的 ``_validate_body`` 與畫面上顯示上限的
-    ``GET /api/message-actions/icons`` 都走這一支。兩邊各讀一次就會有
-    「畫面說 20000、後端其實擋在 5000」那種沒有錯誤訊息的分歧。
-
-    每次呼叫都真的解一次（DB 那一列 → ``ANILA_ACTION_MAX_BODY_CHARS`` →
-    程式預設 20000）。
-    """
-    return int(get_setting(db, "limits.action_max_body_chars"))
+    """自訂動作 body 的固定字元上限。"""
+    return 20_000
 
 
 def _validate_body(db: Session, body: str) -> None:

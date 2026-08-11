@@ -46,11 +46,10 @@ def rs256_keys(tmp_path: Path, monkeypatch):
     priv_path.write_bytes(private_pem)
     pub_path.write_bytes(public_pem)
 
-    from app.config import settings
     from app.utils import security as sec_module
 
-    monkeypatch.setattr(settings, "JWT_PRIVATE_KEY_PATH", str(priv_path))
-    monkeypatch.setattr(settings, "JWT_PUBLIC_KEY_PATH", str(pub_path))
+    monkeypatch.setattr(sec_module, "JWT_PRIVATE_KEY_PATH", str(priv_path))
+    monkeypatch.setattr(sec_module, "JWT_PUBLIC_KEY_PATH", str(pub_path))
     sec_module._load_keys.cache_clear()
     yield private_key
     sec_module._load_keys.cache_clear()

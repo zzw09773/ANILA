@@ -32,7 +32,7 @@ Dev 手動刷卡 (``cht/`` mock 容器) 仍然要靠 ``CARD_DEV_SKIP_NONCE_BINDI
 
 契約
 ====
-- ``settings.ENABLE_CARD_LOGIN=False`` (預設) 時三個 endpoint 都回 404。
+- ``settings.ANILA_AUTH_MODE="password"`` 時三個 endpoint 都回 404。
 - ``GET /card/challenge`` 回 JWT + 明文 nonce。
 - ``POST /card/verify``:驗章通過 → 建 User → 依核准狀態回 200 (含 cookie)
   或 202 (pending,不含 cookie)。
@@ -205,20 +205,20 @@ def _trust_synthetic_pki(card_pki: _Pki, monkeypatch):
 @pytest.fixture
 def card_login_enabled(monkeypatch):
     """開功能旗標,並把測試員甲設為 initial owner → 刷卡直接登入。"""
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "mixed")
     monkeypatch.setattr(settings, "CARD_INITIAL_OWNERS", EMP_ID)
 
 
 @pytest.fixture
 def card_login_disabled(monkeypatch):
     """關閉功能旗標 —— 負向測試必須自己釘 precondition,不可依賴 ambient 預設。"""
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", False)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "password")
 
 
 @pytest.fixture
 def card_login_pending_default(monkeypatch):
     """同上但 ``CARD_INITIAL_OWNERS`` 為空 —— 所有人第一次刷卡都進 pending。"""
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "mixed")
     monkeypatch.setattr(settings, "CARD_INITIAL_OWNERS", "")
 
 

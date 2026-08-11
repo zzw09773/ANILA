@@ -4,11 +4,12 @@ import logging
 from datetime import datetime, timezone
 from app.database import SessionLocal
 from app.models.token_usage import TokenUsage
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 _usage_queue: asyncio.Queue | None = None
+USAGE_BATCH_SIZE = 100
+USAGE_FLUSH_INTERVAL_SECONDS = 5
 
 
 def get_usage_queue() -> asyncio.Queue:
@@ -95,7 +96,7 @@ async def _usage_writer_loop():
             # Wait for data with timeout
             try:
                 item = await asyncio.wait_for(
-                    queue.get(), timeout=settings.USAGE_FLUSH_INTERVAL
+                    queue.get(), timeout=USAGE_FLUSH_INTERVAL_SECONDS
                 )
                 batch.append(item)
             except asyncio.TimeoutError:
@@ -110,7 +111,7 @@ async def _usage_writer_loop():
                     break
 
             # Flush if batch is full or timeout elapsed
-            if len(batch) >= settings.USAGE_BATCH_SIZE or (batch and queue.empty()):
+            if len(batch) >= USAGE_BATCH_SIZE or (batch and queue.empty()):
                 await _flush_batch(batch)
                 batch = []
 

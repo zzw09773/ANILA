@@ -5,7 +5,7 @@ Covers: migration single head + data-migration fidelity (platform_link →
 registered_services with grants intact), the 8-step access algorithm matrix,
 launch happy/deny paths (JWKS-verifiable token, 14 claims, TTL bounds,
 service_launches row + PolicyDecision + audit), audit callback auth + payload
-bounds, the /api/platform-links compat façade, and the config_source seed rework.
+bounds, and the /api/platform-links compat façade.
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task
 from app.services import access_control, agent_credential_service
 from app.services.agent_credential_service import CallerIdentity
-from app.services.auto_seed import sync_env_seeded_services
 from app.services.registry_backfill import backfill_registered_services
 from tests.conftest import login, make_user
 
@@ -122,8 +121,7 @@ class TestDataMigration:
         session.commit()
         return link.id, grant.id
 
-    def test_platform_link_migrates_with_grant_intact(self, db_engine, monkeypatch):
-        monkeypatch.setenv("AUTO_REGISTER_LINKS", "[]")  # ANILA LM not in env → db
+    def test_platform_link_migrates_with_grant_intact(self, db_engine):
         Session = sessionmaker(bind=db_engine, expire_on_commit=False)
         s = Session()
         link_id, grant_id = self._seed_link_and_grant(s)
@@ -141,37 +139,12 @@ class TestDataMigration:
         assert svc.sort_order == 3
         assert svc.required_roles == ["admin"]
         assert svc.allowed_origins == ["https://anila.local"]  # backfilled origin
-        assert svc.config_source == "db"  # not in AUTO_REGISTER_LINKS
+        assert svc.config_source == "db"
         grant = s2.get(ServiceAccessGrant, grant_id)
         assert grant is not None  # grant history survives
         assert grant.service_id == link_id  # backfilled
         assert grant.platform_link_id == link_id
         s2.close()
-
-    def test_env_seeded_detection_and_idempotent(self, db_engine, monkeypatch):
-        import json
-
-        monkeypatch.setenv(
-            "AUTO_REGISTER_LINKS",
-            json.dumps([{"name": "ANILA LM", "url": "x"}]),
-        )
-        Session = sessionmaker(bind=db_engine, expire_on_commit=False)
-        s = Session()
-        self._seed_link_and_grant(s)
-        s.close()
-
-        assert backfill_registered_services(db_engine) == 1
-        # second run is a no-op (idempotent) — no duplicate row
-        assert backfill_registered_services(db_engine) == 0
-
-        s2 = Session()
-        svc = s2.query(RegisteredService).filter_by(name="ANILA LM").one()
-        assert svc.config_source == "env_seeded"
-        assert svc.env_seed_key == "ANILA LM"
-        assert svc.db_editable_fields == ["is_active"]
-        assert svc.last_seeded_at is not None
-        s2.close()
-
 
 # ── access algorithm matrix (doc §12) ───────────────────────────────────────
 
@@ -675,45 +648,6 @@ class TestCompatFacade:
         )
         assert gresp.status_code == 201, gresp.text
         assert gresp.json()["service_id"] == lid
-
-
-# ── seed rework (config_source rules) ───────────────────────────────────────
-
-
-class TestSeedRework:
-    def test_env_seed_keeps_admin_sticky_and_resyncs(self, db):
-        cfg = [{"name": "GitLab", "url": "https://gitlab.local", "is_public": True}]
-        sync_env_seeded_services(db, cfg)
-        db.commit()
-        svc = db.query(RegisteredService).filter_by(name="GitLab").one()
-        assert svc.config_source == "env_seeded"
-
-        # admin edits: deactivate (is_active is admin-sticky) — env changes url.
-        svc.is_active = False
-        db.commit()
-        cfg[0]["url"] = "https://gitlab.local/moved"
-        sync_env_seeded_services(db, cfg)
-        db.commit()
-        db.refresh(svc)
-        assert svc.is_active is False  # admin-sticky field NOT clobbered
-        assert svc.entry_url == "https://gitlab.local/moved"  # env re-synced
-
-    def test_db_service_never_clobbered(self, db):
-        # a UI-authored service sharing the name is left untouched by the seed.
-        _make_service(
-            db,
-            name="GitLab",
-            slug="gitlab-db",
-            entry_url="https://gitlab.db-owned",
-            config_source="db",
-        )
-        sync_env_seeded_services(
-            db, [{"name": "GitLab", "url": "https://gitlab.env"}]
-        )
-        db.commit()
-        svc = db.query(RegisteredService).filter_by(name="GitLab").one()
-        assert svc.config_source == "db"
-        assert svc.entry_url == "https://gitlab.db-owned"  # untouched
 
 
 # ── registry write contract (entry_url; url is not an alias) ───────────────

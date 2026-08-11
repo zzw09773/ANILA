@@ -17,7 +17,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models.attachment import Attachment
 from app.models.conversation import Conversation
 from app.models.message import Message
@@ -222,9 +221,6 @@ def test_06_active_leaf_foreign_conv_404(client: TestClient, db: Session):
 
 
 def test_07_sibling_cap(client: TestClient, db: Session, monkeypatch):
-    # ⚠ 分支上限已改成每請求解一次（DB 那一列 → env → 預設），``settings``
-    # 物件不再是讀取點；照舊 setattr 會靜默失效、測試改用預設值跑而且全綠。
-    monkeypatch.setenv("ANILA_MESSAGE_MAX_SIBLINGS", "20")
     _, h = _auth(client, db, "t07")
     conv = _create_conv(client, h)
     cid = conv["id"]
@@ -907,15 +903,12 @@ def test_q18_branch_does_not_change_prompt_injection(
 ):
     """Injection stays conversation-scoped: one doc body, used_tokens unchanged."""
     from app.api.proxy import _inject_attachments
-    from app.config import settings
+    from app.services import attachment_service as att_svc
     from app.services.attachment_context import (
         effective_cost,
         get_conversation_attachment_usage,
     )
 
-    monkeypatch.setenv("ANILA_DEFAULT_CONTEXT_WINDOW", "1000")
-    monkeypatch.setenv("ANILA_ATTACHMENT_BUDGET_RATIO", "0.5")
-    monkeypatch.setenv("ANILA_ATTACHMENT_TOKEN_SAFETY", "1.15")
 
     user, h = _auth(client, db, "tq18d")
     conv = _create_conv(client, h)
@@ -964,12 +957,11 @@ def test_q18_delete_attachment_unlinks_one_file_no_dangling(
     client: TestClient, db: Session, tmp_path, monkeypatch,
 ):
     """DELETE /api/attachments/{ref} removes exactly one file; no shared-path hazard."""
-    from app.config import settings
     from app.services import attachment_service as att_svc
 
     root = tmp_path / "attachments"
     root.mkdir()
-    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_PATH", str(root))
+    monkeypatch.setattr(att_svc, "ATTACHMENT_STORAGE_ROOT", root)
     monkeypatch.setattr(att_svc, "_storage_root", lambda: root)
 
     user, h = _auth(client, db, "tq18e")
@@ -1206,7 +1198,7 @@ def test_q18_real_upload_branch_keeps_one_row(
 
     root = tmp_path / "attachments"
     root.mkdir()
-    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_PATH", str(root))
+    monkeypatch.setattr(att_svc, "ATTACHMENT_STORAGE_ROOT", root)
     monkeypatch.setattr(att_svc, "_storage_root", lambda: root)
 
     _, h = _auth(client, db, "tq18j")

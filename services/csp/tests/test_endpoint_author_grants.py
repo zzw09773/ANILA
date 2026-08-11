@@ -27,9 +27,8 @@ import dataclasses as _dataclasses
 
 from app.services.proxy.service import ProxyTuning
 
-#: 這一支只想跑一次上游、不想等重試的退避（原本是 monkeypatch
-#: ``settings.PROXY_MAX_RETRIES``，那個讀取點已經不存在了）。逾時／重試四顆現在
-#: 由呼叫端解析後傳進去，所以「跑幾次」在這裡直接寫成 tuning 的一部分。
+#: 這一支只想跑一次上游、不想等重試的退避。重試策略是固定程式常數，
+#: 測試用的 tuning 直接覆蓋為一次。
 _PROXY_TUNING = _dataclasses.replace(
     ProxyTuning.from_registry_defaults(), max_retries=1, retry_base_delay=0.0
 )

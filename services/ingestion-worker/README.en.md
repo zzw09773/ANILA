@@ -97,7 +97,7 @@ No HTTP health route does not mean no health signal. The worker uses **arq's def
 >
 > The decision is pinned by tests (`packages/anila-core/tests/test_pdf_ocr_trigger.py`). But **still no test warns you about the cost when you flip the flag** — that is this paragraph's job.
 >
-> ⚠ **Raising `PDF_OCR_MAX_PAGES` (default 100) is the wrong direction.** It caps two things at once: how many pages get OCR'd, and how long the job runs. Raising it means longer, which makes the 300 s conflict above certain. The value to pick is the one where `ceil(pages ÷ PDF_OCR_CONCURRENCY) × per-page VLM seconds` fits inside 300 s; **working backwards from 1800 s / 100 pages / concurrency 4 gives ~72 s a page, i.e. about 16 pages** (derived, not measured). **A document needing more pages than that should not take this path at all.**
+> ⚠ **Raising the built-in PDF OCR page cap (100) is the wrong direction.** It caps two things at once: how many pages get OCR'd, and how long the job runs. Raising it means longer, which makes the 300 s conflict above certain. The value to pick is the one where `ceil(pages ÷ PDF_OCR_CONCURRENCY) × per-page VLM seconds` fits inside 300 s; **working backwards from 1800 s / 100 pages / concurrency 4 gives ~72 s a page, i.e. about 16 pages** (derived, not measured). **A document needing more pages than that should not take this path at all.**
 >
 > ⚠ **And pages past the cap lose their natively extracted text as well.** On success `content` is *replaced* wholesale, not merged, so a 120-page document (pages 1-100 scanned, 101-120 real text) gets OCR over the first 100 only and **all 1880 characters of the annex are gone**. That used to be one log line. All four losses are now reported in `metadata`, in the same dict as `ocr_used` (`ocr_lossy` + `ocr_losses`), because `ocr_used: True` on its own reads as success:
 >
@@ -219,7 +219,7 @@ In compose (`infra/compose/platform.yml`): build context = repo root; `depends_o
 | `PG_POOL_MIN` / `PG_POOL_MAX` | `1` / `5` | connection pool (also caps concurrency) |
 | `ENABLE_IMAGE_CAPTIONS` | `true` | VLM caption master switch |
 | `VISION_URL` | `""` (compose `http://csp:8000/v1`) | VLM endpoint; empty string disables captioning |
-| `VISION_MODEL` / `VISION_API_KEY` / `VISION_VERIFY_SSL` | `gemma4` / `not-set` / `false` | VLM model / token / TLS verify |
+| `VISION_MODEL` / `VISION_API_KEY` | `gemma4` / `not-set` | VLM model / token |
 | `VISION_CONCURRENCY` / `VISION_TIMEOUT_SECONDS` / `VISION_MAX_IMAGE_BYTES` | `4` / `60.0` / `8 MiB` | parallelism / timeout / skip caption above size |
 | `ENABLE_RELATION_LLM` | `true` | LLM relation-extraction master switch |
 | `RELATION_LLM_URL` | `""` | empty string disables LLM edges |
@@ -227,6 +227,7 @@ In compose (`infra/compose/platform.yml`): build context = repo root; `depends_o
 | `RELATION_LLM_TIMEOUT_SECONDS` / `RELATION_LLM_MAX_CHARS` / `RELATION_LLM_MAX_CANDIDATES` | `120.0` / `12000` / `200` | timeout / input cap / candidate cap |
 | `ENABLE_SIMILARITY_EDGES` | `true` | embedding similarity-edge master switch |
 | `SIMILARITY_TOP_K` / `SIMILARITY_MIN` / `SIMILARITY_MAX_DOCS` | `3` / `0.75` / `500` | K nearest neighbours per doc / cosine floor / skip recompute above N |
+| `DOC_PARSER` / `DOCLING_OCR_LANGS` | `native` / `ch_tra,en` | Docling routing and OCR languages; read directly by anila-core, provided by compose |
 
 > `SECRET_KEY`, `ANILA_ENV`, and `ANILA_ALLOW_*` are consumed by `anila-core` security modules (credential decrypt / SSRF / http-endpoint fail-closed); compose injects them from the environment.
 

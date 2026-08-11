@@ -1115,8 +1115,8 @@ def _log_ocr_losses(name: str, losses: dict[str, Any], page_count: int) -> None:
         logger.error(
             "OCR of %s covered %d of its %d pages — the remaining %d were not "
             "OCR'd AND their extracted text was discarded by the replacement. "
-            "PDF_OCR_MAX_PAGES must be large enough to cover the document AND "
-            "small enough that the job fits the worker's job_timeout; when both "
+            "The built-in OCR page cap must be large enough to cover the document "
+            "AND small enough that the job fits the worker's job_timeout; when both "
             "cannot hold, do not OCR this document.",
             name,
             page_count - losses["pages_not_ocred"],

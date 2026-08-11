@@ -7,8 +7,8 @@
 2026-07-31 之前這支 mock 是假的：``/cht_api/sign`` 只拿 ``tbsPackage`` 檢查
 PIN 是不是 ``123456``，然後回一份**寫死的** PKCS#7，eContent 永遠是 ``b"TBS"``。
 2026-06-12 卡登加上 nonce 綁定（eContent 必須等於本次 challenge 的 nonce）之後，
-這份寫死的簽章**在結構上不可能**通過驗證，於是本機只好把 ``ENABLE_CARD_LOGIN``
-關掉，整條登入路徑在開發機上走不完。
+這份寫死的簽章**在結構上不可能**通過驗證，於是本機只好把 ``ANILA_AUTH_MODE`` 設成
+password，整條登入路徑在開發機上走不完。
 
 現在 mock 誠實了：它有自己的測試 PKI（執行時生成，見 ``cms_sign.py``），
 拿到什麼 tbs 就簽什麼 tbs。因此本機流程會**真的**行使 nonce 綁定、CMS 簽章

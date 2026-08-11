@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,7 +28,6 @@ from app.api.proxy import (
     _require_conversation_access,
     _sse_with_attachment_trace,
 )
-from app.config import settings
 from app.middleware.caller import Caller
 from app.models.attachment import Attachment
 from app.models.conversation import Conversation
@@ -39,6 +39,8 @@ from app.services.attachment_context import (
     get_context_window,
     get_conversation_attachment_usage,
 )
+from app.services import attachment_context as attachment_context_module
+from app.services import attachment_service
 from app.services.attachment_service import (
     TEXT_CLASS_EXTENSIONS,
     delete_attachment,
@@ -63,26 +65,40 @@ def _bypass_dev_secret_gate(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _budget_knobs(monkeypatch):
-    """把四顆預算鈕釘在 **env 那一層**。
+def _budget_knobs(db, monkeypatch):
+    """Use explicit test seams for fixed constants and the retained ratio."""
+    from app.models.platform_setting import set_setting
 
-    ⚠ 這四顆已經改成每請求解一次（``platform_settings`` 那一列 → env → 程式
-    預設），``settings`` 物件不再是它們的讀取點 —— 照舊 ``setattr(settings, ...)``
-    的話這個 fixture 會靜默失效，測試改用 production 預設值跑，而且全綠。
-    env 是回退鏈仍然活著的一層，跨 session（``db`` fixture、TestClient 的
-    override、``SessionLocal``）都作數，所以這裡用它。
-    """
-    monkeypatch.setenv("ANILA_DEFAULT_CONTEXT_WINDOW", str(_TEST_WINDOW))
-    monkeypatch.setenv("ANILA_ATTACHMENT_BUDGET_RATIO", str(_TEST_RATIO))
-    monkeypatch.setenv("ANILA_ATTACHMENT_TOKEN_SAFETY", str(_TEST_SAFETY))
-    monkeypatch.setenv("ANILA_ATTACHMENT_MAX_STORED_TOKENS", str(_TEST_STORE_CAP))
+    set_setting(db, "limits.attachment_budget_ratio", _TEST_RATIO)
+    db.commit()
+
+    real_window = attachment_context_module.get_context_window
+
+    def test_window(current_db, model_name):
+        if model_name in {None, "gpt-test"}:
+            return _TEST_WINDOW
+        return real_window(current_db, model_name)
+
+    monkeypatch.setattr(attachment_context_module, "get_context_window", test_window)
+    monkeypatch.setattr(sys.modules[__name__], "get_context_window", test_window)
+    monkeypatch.setattr(attachment_service, "get_context_window", test_window)
+    monkeypatch.setattr(
+        attachment_context_module,
+        "max_stored_tokens",
+        lambda current_db: _TEST_STORE_CAP,
+    )
+    monkeypatch.setattr(
+        attachment_service,
+        "max_stored_tokens",
+        lambda current_db: _TEST_STORE_CAP,
+    )
 
 
 @pytest.fixture
 def storage_root(tmp_path, monkeypatch):
     root = tmp_path / "attachments"
     root.mkdir()
-    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_PATH", str(root))
+    monkeypatch.setattr(attachment_service, "ATTACHMENT_STORAGE_ROOT", root)
     return root
 
 
@@ -521,11 +537,20 @@ def test_http_text_300kib_uploads_and_classifies_ok(
     """~300 KiB ASCII: old size//2 guard returned 400; now 201 → ok."""
     # Production-like window so 300 KiB ASCII (~76.8k raw, ~88k effective)
     # fits the 89.6k budget (was falsely refused by bytes//2 ≈ 150k).
-    monkeypatch.setenv("ANILA_DEFAULT_CONTEXT_WINDOW", "128000")
-    monkeypatch.setenv("ANILA_ATTACHMENT_BUDGET_RATIO", "0.7")
-    monkeypatch.setenv("ANILA_ATTACHMENT_TOKEN_SAFETY", "1.15")
-    monkeypatch.setenv("ANILA_ATTACHMENT_MAX_STORED_TOKENS", "800000")
+    from app.models.platform_setting import set_setting
 
+    set_setting(db, "limits.attachment_budget_ratio", 0.7)
+    db.commit()
+    monkeypatch.setattr(
+        attachment_context_module,
+        "max_stored_tokens",
+        lambda current_db: 800_000,
+    )
+    monkeypatch.setattr(
+        attachment_service,
+        "max_stored_tokens",
+        lambda current_db: 800_000,
+    )
     user = make_user(db, username="att-300k")
     conv = _make_conv(db, user)
     token = login(client, username="att-300k")

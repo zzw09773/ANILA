@@ -19,7 +19,6 @@ from pathlib import Path
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, TimeoutError as SATimeoutError
 
-from app.config import settings
 from app.database import SessionLocal, engine
 from app.models.alert import Alert
 from app.services.alert_notifier import notify_alert_opened
@@ -475,15 +474,15 @@ class DiskSample:
     total_bytes: int
 
 
+INGESTION_UPLOAD_ROOT = Path("/var/anila/ingestion-uploads")
+ATTACHMENT_STORAGE_ROOT = Path("data/attachments")
+
+
 def disk_paths_to_check() -> list[tuple[str, str]]:
     """Mounts that grow with real data after log rotation landed."""
-    ingestion = os.environ.get(
-        "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads"
-    )
-    attachments = settings.ATTACHMENT_STORAGE_PATH
     candidates = [
-        ("ingestion", ingestion),
-        ("attachments", attachments),
+        ("ingestion", str(INGESTION_UPLOAD_ROOT)),
+        ("attachments", str(ATTACHMENT_STORAGE_ROOT)),
     ]
     found: list[tuple[str, str]] = []
     for label, raw in candidates:
@@ -573,53 +572,12 @@ def evaluate_disk(
 
 # ── Background loop ──────────────────────────────────────────────────────────
 
-#: 這個迴圈能接受的最短週期。**它與登錄表宣告的值域下界必須是同一個數字**
-#: （``settings_registry`` 的 ``alerts.check_interval`` 收 15–86400）；測試比對的是
-#: 這個常數本身，不是原始碼字面。留著是安全帶：值域已經擋在 15 以上，所以它對任何
-#: 從畫面存進來的值都是 no-op。
-ALERT_INTERVAL_FLOOR_SECONDS = 15
-
-#: 登錄表裡的那一顆。名字宣告一次，讓消費端與測試指得到同一個字串。
-ALERT_CHECK_INTERVAL_KEY = "alerts.check_interval"
+ALERT_INTERVAL_SECONDS = 60
 
 
 def resolve_check_interval() -> int:
-    """這一輪要睡多久 —— 走**登錄表的解析鏈**，與設定頁讀的是同一條路。
-
-    ⚠ 這裡以前是 ``max(15, int(getattr(settings, "ALERT_CHECK_INTERVAL", 60)))``，
-    而設定頁顯示的是 ``settings`` 上那個**原值**：env 填 5，畫面說 5、迴圈實際睡 15
-    —— 平台收下了一個它不照辦的值，而且不說。最終審查跨家雙票同判 Important。
-    現在兩邊問同一條鏈（DB → env → 程式預設，值域由登錄表那一筆的 ``domain_fn`` 把關），
-    所以畫面上那個數字就是這個迴圈真的睡的秒數。
-
-    ⚠ **讀不到設定不可以讓告警系統停擺。** 這個迴圈存在的理由正是 DB／磁碟出事的時候
-    還在跑；所以任何例外都退回下一層並留一行 warning，而不是讓迴圈死掉。
-
-    ⚠ **退回的是「同一條鏈扣掉 DB 那一層」（env → 程式預設），不是直接跳到程式預設。**
-    直接跳等於一次跳過兩層：運維人員寫在 compose 裡的值會在 DB 打嗝的那幾分鐘被當成
-    不存在——畫面（走得到 DB）顯示 env 的 37、迴圈卻睡 60，而且沒有錯誤訊息。那正是
-    這個包要消滅的形狀，只是換到故障路徑上發生。共用
-    ``resolve_setting_without_db``，不是在這裡再寫一份回退規則。
-    """
-    from app.models.platform_setting import get_setting, resolve_setting_without_db
-
-    try:
-        db = SessionLocal()
-        try:
-            value = int(get_setting(db, ALERT_CHECK_INTERVAL_KEY))
-        finally:
-            db.close()
-    except Exception:  # noqa: BLE001
-        fallback, source = resolve_setting_without_db(ALERT_CHECK_INTERVAL_KEY)
-        logger.warning(
-            "告警偵測讀不到 %s（DB 那一層），這一輪改用 %s 層的 %s 秒繼續",
-            ALERT_CHECK_INTERVAL_KEY,
-            source,
-            fallback,
-            exc_info=True,
-        )
-        value = int(fallback)
-    return max(ALERT_INTERVAL_FLOOR_SECONDS, value)
+    """告警輪詢是固定的內部背景週期，不是治理頁設定。"""
+    return ALERT_INTERVAL_SECONDS
 
 
 async def _alert_detector_loop() -> None:
@@ -632,7 +590,7 @@ async def _alert_detector_loop() -> None:
             raise
         except Exception:
             logger.exception("alert detector loop iteration failed")
-        # 每一輪重問一次 —— 這一顆現在是 C 類：改完下一輪就生效，不必重啟。
+        # 固定週期避免把背景告警迴圈暴露成治理旋鈕。
         try:
             await asyncio.sleep(resolve_check_interval())
         except asyncio.CancelledError:

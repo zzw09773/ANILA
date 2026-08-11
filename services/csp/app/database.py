@@ -7,7 +7,7 @@ engine = create_engine(
     pool_size=10,
     max_overflow=20,
     pool_pre_ping=True,
-    echo=settings.DEBUG,
+    echo=False,
 )
 
 # expire_on_commit=False: the default True expires every loaded instance on

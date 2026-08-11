@@ -271,7 +271,7 @@ class VisionApiOcrBackend:
         page_count = min(len(doc), self._max_pages)
         if page_count < len(doc):
             logger.warning(
-                "PDF has %d pages but PDF_OCR_MAX_PAGES=%d — truncating",
+                "PDF has %d pages but the built-in OCR page cap is %d — truncating",
                 len(doc), self._max_pages,
             )
         out: list[tuple[int, bytes]] = []
@@ -369,16 +369,13 @@ def build_ocr_backend_from_env() -> Optional[OcrBackend]:
 
     Env:
       PDF_OCR_FALLBACK         = "true" | "false"   (default: false)
-      PDF_OCR_DPI              = page raster DPI    (default: 200)
       PDF_OCR_CONCURRENCY      = parallel page reqs (default: 4)
-      PDF_OCR_MAX_PAGES        = safety cap         (default: 100)
-      PDF_OCR_VISION_PROMPT    = prompt override
       VISION_URL               = base URL of the OpenAI-compatible
                                  vision endpoint (re-used from the
                                  vision provider config)
       VISION_MODEL             = served vision model name
       VISION_API_KEY           = optional bearer token
-      VISION_VERIFY_SSL        = "true" | "false"   (default: true)
+      SSL_CERT_FILE            = optional CA bundle for HTTPS verification
     """
     if os.getenv("PDF_OCR_FALLBACK", "false").lower() != "true":
         return None
@@ -396,9 +393,9 @@ def build_ocr_backend_from_env() -> Optional[OcrBackend]:
         base_url=base_url,
         model=model,
         api_key=os.getenv("VISION_API_KEY", "").strip(),
-        prompt=os.getenv("PDF_OCR_VISION_PROMPT", _DEFAULT_VISION_PROMPT),
-        dpi=int(os.getenv("PDF_OCR_DPI", "200")),
+        prompt=_DEFAULT_VISION_PROMPT,
+        dpi=200,
         concurrency=int(os.getenv("PDF_OCR_CONCURRENCY", "4")),
-        max_pages=int(os.getenv("PDF_OCR_MAX_PAGES", "100")),
-        verify_ssl=os.getenv("VISION_VERIFY_SSL", "true").lower() == "true",
+        max_pages=100,
+        verify_ssl=True,
     )

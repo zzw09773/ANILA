@@ -179,13 +179,14 @@ def format_anila_stream_error(message: str) -> str:
 # 2. ``proxy_stream`` 是 async generator，**在 handler 回傳之後才被抽乾**；那時
 #    request scope 的 session 可能已經關閉。handler 期解析是唯一安全的時點。
 #
-# 所以四顆值在「呼叫端還合法握著連線」的那一刻解一次，凍結成這個物件往下傳。
+# 所以兩顆逾時值在「呼叫端還合法握著連線」的那一刻解一次，凍結成這個物件往下傳；
+# 重試策略是固定的程式常數。
 # 凍結的範圍是**一次出向呼叫**，不是一個行程 —— 下一個請求會再解一次。
 
 
 @dataclass(frozen=True)
 class ProxyTuning:
-    """一次出向呼叫用的逾時與重試。四顆都是 C 類，改完下一個請求生效。"""
+    """一次出向呼叫用的逾時與固定重試策略。"""
 
     llm_timeout: int
     embedding_timeout: int
@@ -206,13 +207,13 @@ class ProxyTuning:
         return cls(
             llm_timeout=int(REGISTRY["proxy.llm_timeout"].default),
             embedding_timeout=int(REGISTRY["proxy.embedding_timeout"].default),
-            max_retries=int(REGISTRY["proxy.max_retries"].default),
-            retry_base_delay=float(REGISTRY["proxy.retry_base_delay"].default),
+            max_retries=3,
+            retry_base_delay=0.5,
         )
 
 
 def resolve_proxy_tuning(db: Session) -> ProxyTuning:
-    """把四顆解成這一次呼叫要用的值（``platform_settings`` → env → 程式預設）。
+    """解析兩顆逾時值（``platform_settings`` → env → 程式預設）。
 
     呼叫端要在**還握著連線的那一刻**呼叫它（例如 ``db.commit()`` 釋放連線之前），
     再把結果傳給 ``proxy_request`` / ``proxy_stream``。
@@ -220,8 +221,8 @@ def resolve_proxy_tuning(db: Session) -> ProxyTuning:
     return ProxyTuning(
         llm_timeout=int(get_setting(db, "proxy.llm_timeout")),
         embedding_timeout=int(get_setting(db, "proxy.embedding_timeout")),
-        max_retries=int(get_setting(db, "proxy.max_retries")),
-        retry_base_delay=float(get_setting(db, "proxy.retry_base_delay")),
+        max_retries=3,
+        retry_base_delay=0.5,
     )
 
 

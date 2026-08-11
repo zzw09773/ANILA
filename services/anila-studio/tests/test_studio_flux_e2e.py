@@ -79,7 +79,6 @@ async def test_stage4_cover_and_content_illustration(monkeypatch, tmp_path):
     monkeypatch.setenv("FLUX_BACKEND_URL", "http://flux2-dev:8000")
     monkeypatch.setenv("FLUX_CACHE_DIR", str(tmp_path / "flux-cache"))
     monkeypatch.setenv("FLUX_MAX_CONCURRENT", "2")
-    monkeypatch.setenv("INGESTION_UPLOAD_DIR", str(tmp_path / "uploads"))
 
     import app.api.studio as studio
     import app.services.studio_render as render_mod
@@ -128,7 +127,6 @@ async def test_stage4_rerun_hits_cache(monkeypatch, tmp_path):
     cache: FLUX is called on the first run only."""
     monkeypatch.setenv("FLUX_BACKEND_URL", "http://flux2-dev:8000")
     monkeypatch.setenv("FLUX_CACHE_DIR", str(tmp_path / "fc"))
-    monkeypatch.setenv("INGESTION_UPLOAD_DIR", str(tmp_path / "u"))
 
     import app.api.studio as studio
     import app.services.studio_render as render_mod
@@ -176,7 +174,6 @@ async def test_stage4_flux_failure_falls_back_silently(monkeypatch, tmp_path):
     no-image layout (image fields dropped); the deck still renders."""
     monkeypatch.setenv("FLUX_BACKEND_URL", "http://flux2-dev:8000")
     monkeypatch.setenv("FLUX_CACHE_DIR", str(tmp_path / "fc"))
-    monkeypatch.setenv("INGESTION_UPLOAD_DIR", str(tmp_path / "u"))
 
     import app.api.studio as studio
     import app.services.studio_render as render_mod

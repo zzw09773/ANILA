@@ -266,7 +266,7 @@ class TestGetAsrPrimary:
         """解不開的 ``api_key_secret_ref`` 也不准變成全域模型金鑰。
 
         這是「沒掛金鑰」以外的另一半,而且是現實會發生的那一半:輪替
-        ``CSP_SECRET_KEY``、或把資料庫還原進另一組金鑰的環境,**每一筆 ref
+        ``SECRET_KEY``、或把資料庫還原進另一組金鑰的環境,**每一筆 ref
         會同時解不開**。``resolve_model_gateway_key`` 對這種情形是 fail-soft
         退回 ``MODEL_GATEWAY_API_KEY`` —— 那把是 LLM gateway 的憑證,送到
         算力中心的辨識端點等於祕密跨了信任邊界,而症狀(每句話 401)跟

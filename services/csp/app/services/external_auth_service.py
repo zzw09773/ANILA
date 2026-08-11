@@ -35,6 +35,8 @@ from app.models.auth_provider import AuthProvider
 from app.models.department import Department
 from app.models.external_identity import ExternalIdentity
 from app.models.user import User
+
+EXTERNAL_STATE_JWT_ALGORITHM = "HS256"
 from app.utils.security import hash_password
 
 
@@ -151,14 +153,14 @@ def issue_external_state(
         payload["nonce"] = nonce
     if code_verifier is not None:
         payload["pkce"] = code_verifier
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=EXTERNAL_STATE_JWT_ALGORITHM)
 
 
 def decode_external_state(state: str) -> dict:
     return jwt.decode(
         state,
         settings.SECRET_KEY,
-        algorithms=[settings.ALGORITHM],
+        algorithms=[EXTERNAL_STATE_JWT_ALGORITHM],
         audience=EXTERNAL_STATE_AUDIENCE,
     )
 

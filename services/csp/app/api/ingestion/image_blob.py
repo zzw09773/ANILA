@@ -18,7 +18,6 @@ and the SQLite test fixture without dragging in a halfvec-typed column.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -41,6 +40,7 @@ router = APIRouter(tags=["Ingestion / Images"])
 # window. Smaller risks too many syscalls; larger forces extra copies
 # inside Starlette's send buffer without latency benefit.
 _STREAM_CHUNK = 64 * 1024
+UPLOAD_ROOT = Path("/var/anila/ingestion-uploads")
 
 
 def _stream_file(path: Path) -> AsyncIterator[bytes]:
@@ -146,16 +146,13 @@ def get_image_blob(
         storage_path = str(row.storage_path)
         mime = str(row.mime) if row.mime else "image/png"
 
-    upload_root = os.environ.get(
-        "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads",
-    )
     # ``storage_path`` is the relative path the worker recorded; join
     # against the configured upload root to obtain the absolute file.
-    abs_path = Path(upload_root) / storage_path
+    abs_path = UPLOAD_ROOT / storage_path
     if not abs_path.is_file():
         logger.warning(
             "Image %s storage_path=%s missing under upload root %s",
-            image_id, storage_path, upload_root,
+            image_id, storage_path, UPLOAD_ROOT,
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

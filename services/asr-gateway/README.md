@@ -62,9 +62,9 @@ server → client(皆 JSON text frame):
 結構逐條移植 anila-studio(RS256 + JWKS 本地驗章、session envelope 檢查、拒絕
 refresh token、fail-closed 撤銷查核)。長連線特有的兩點:
 
-- **cookie 名雙軌**:`COOKIE_SECURE=true` → `__Host-anila_access_token`;
-  `false`(本機 dev)→ `anila_dev_access_token`。瀏覽器的 WebSocket API 不能帶
-  Authorization header → 對瀏覽器 cookie 是唯一路徑,名字錯就是全部 4401。
+- **cookie 名固定**:`anila_access_token`。平台的 CSP 只發這一個 cookie；瀏覽器的
+  WebSocket API 不能帶 Authorization header → 對瀏覽器 cookie 是唯一路徑,名字錯
+  就是全部 4401。
 - **撤銷長連線重查**:握手驗過後,每 `REVOCATION_RECHECK_SECONDS`(預設 30s)
   對 in-memory 撤銷 cache 重查一次;查到 revoked → close 4401。token 過期則
   是明確的接受決策(握手驗一次,session 上限 300s ≪ access token 60 分鐘)。
@@ -158,7 +158,7 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 不是 LLM proxy 那支會 fail-soft 退回全域金鑰的 `resolve_model_gateway_key`。
 兩個理由:
 1. 拿到一把不相干的模型金鑰只會 401,而 401 跟「金鑰設錯」分不出來;
-2. 解不開這件事**很現實** —— 輪替 `CSP_SECRET_KEY`、或把資料庫還原進另一組金鑰的
+2. 解不開這件事**很現實** —— 輪替 `SECRET_KEY`、或把資料庫還原進另一組金鑰的
    環境,每一筆 ref 會同時解不開。那時 fail-soft 等於把 LLM gateway 的憑證交給
    算力中心的辨識端點,跨了信任邊界。
 

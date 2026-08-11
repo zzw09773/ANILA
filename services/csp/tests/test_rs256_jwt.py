@@ -52,11 +52,10 @@ def rs256_keys(tmp_path: Path, monkeypatch) -> tuple[bytes, bytes]:
     priv_path.write_bytes(private_pem)
     pub_path.write_bytes(public_pem)
 
-    from app.config import settings
     from app.utils import security as sec_module
 
-    monkeypatch.setattr(settings, "JWT_PRIVATE_KEY_PATH", str(priv_path))
-    monkeypatch.setattr(settings, "JWT_PUBLIC_KEY_PATH", str(pub_path))
+    monkeypatch.setattr(sec_module, "JWT_PRIVATE_KEY_PATH", str(priv_path))
+    monkeypatch.setattr(sec_module, "JWT_PUBLIC_KEY_PATH", str(pub_path))
     sec_module._load_keys.cache_clear()
     yield private_pem, public_pem
     sec_module._load_keys.cache_clear()
@@ -117,14 +116,25 @@ def test_token_header_contains_kid_and_rs256(rs256_keys):
 
 # ── Failure cases ─────────────────────────────────────────────────────────────
 
-def test_expired_token_rejected(rs256_keys, monkeypatch):
+def test_expired_token_rejected(rs256_keys):
     """A token whose ``exp`` is in the past must verify as None."""
-    from app.utils.security import create_access_token, decode_token
+    from app.utils.security import decode_token, get_private_key
     from app.config import settings
 
-    # Bypass the freezer by signing with a deliberately-stale exp.
-    monkeypatch.setattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", -1)
-    token = create_access_token({"sub": "1"})
+    # Expiry is now resolved from platform_settings at issuance.  This test is
+    # about the verifier's wire contract, so sign an explicitly stale token
+    # instead of mutating the removed import-time Settings field.
+    payload = {
+        "sub": "1",
+        "type": "access",
+        "exp": int((datetime.now(timezone.utc) - timedelta(minutes=1)).timestamp()),
+    }
+    token = jwt.encode(
+        payload,
+        get_private_key(),
+        algorithm="RS256",
+        headers={"kid": settings.JWT_KID, "typ": "JWT"},
+    )
     assert decode_token(token) is None
 
 
