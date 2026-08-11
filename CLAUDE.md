@@ -3,8 +3,12 @@
 > **這是重啟樹**:2026-07-28 平台擁有者決定回到 redesign 收斂點 `a4118a3`(2026-07-03)重新出發。
 > 權威文件就在本樹根目錄:**規格＝`SYSTEM-MAP.md`**(28 題 QA)、**順序＝`PLAN.md`**(到 8 月底上線)、
 > **歷史＝`RESTART-FROM-REDESIGN.md`**(373 commit 履歷＋attic 取回方式)。
-> 📌 **接手先讀 `docs/HANDOFF-2026-08-10.md`**（最新；前一份 `docs/HANDOFF-2026-08-07.md` 仍有效，
-> 院內規章檢索與設定頁的長期照顧事項在那份）；擁有者要看的是 `docs/TOMORROW.md`。
+> 📌 **接手先讀 `docs/HANDOFF-2026-08-11.md`**（最新；`HANDOFF-2026-08-10.md` 與
+> `HANDOFF-2026-08-07.md` 仍有效，兩道交付閘門的來龍去脈與院內規章檢索的長期照顧事項在那兩份）；
+> 擁有者要看的是 `docs/TOMORROW.md`。
+> 🟢 **設定頁只剩 12 顆**（2026-08-11，Q46）。新增設定前先過這一關：
+> **一顆值要留在設定頁，必須答得出：上線之後，誰、在什麼情境、為什麼不能等下一次改版。**
+> 那 84 顆被砍掉的，正是兩個 CRITICAL 的根源——**能從網頁動到的安全開關，就是一個等著被動的安全開關。**
 > 🔴 **凍結前的硬閘，而且是兩道獨立的關**（2026-08-10 實測，兩道都紅過）：
 > ① 雜物掃描（`infra/deployment/scripts/scan-image-artifacts.sh`）**65 筆違規／4 張映像**；
 > ② `docker save` **2/7 張存不出去**（本機 DCS 代理注入，掃描器結構上看不見）。
@@ -68,7 +72,7 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)** 的 NotebookLM 式平台,P
 
 - alembic head = **`r1_0031`**。本機 `-p anila-restart` **15 容器**,五個入口
   (`/`、`/anila/`、`/anilalm/`、`/asr/health`、`/router/health`)都通。
-- 測試:csp **1431 passed / 0 failed**、anila-shell **366 passed**。
+- 測試:csp **2538 passed / 73 skipped**(2026-08-11 連跑三次一致)、anila-shell **366 passed**。
   ⚠ 那個「26 個紅燈」的舊基準是**錯的數字**,2026-07-31 已修好並釘住(見 `services/csp/tests/README.md`)。
 - **7/30–8/01 共合併部署 73 包**。P4 全關、P2 只剩 2.1,P3 除 SMTP 寄送外全關。
 - ⚠ **`.15` 尚未部署過任何一項**。本機是唯一驗證環境,**P5.5 整段未開始**。
