@@ -17,16 +17,16 @@ router = APIRouter(prefix="/api/auth", tags=["認證"])
 
 
 def _require_card_login_enabled() -> None:
-    """Endpoint guard：``ENABLE_CARD_LOGIN`` 未啟用時假裝 endpoint 不存在。
+    """Endpoint guard：auth mode 未啟用卡片登入時假裝 endpoint 不存在。
 
     Pattern 對齊 OIDC：未啟用時回 404 而非 403，避免暴露功能 existence。
     """
-    if not settings.ENABLE_CARD_LOGIN:
+    if settings.ANILA_AUTH_MODE not in {"mixed", "card-only"}:
         raise HTTPException(status_code=404)
 
 
 def _reject_when_card_only() -> None:
-    """Branch SSO lockdown：``REQUIRE_CARD_LOGIN_ONLY`` 時封閉非卡片登入路徑。
+    """Branch SSO lockdown：``ANILA_AUTH_MODE=card-only`` 時封閉非卡片登入路徑。
 
     回 404 而非 403/410，讓非卡片 endpoint 在內網部署「看起來不存在」 —
     跟 ``_require_card_login_enabled`` 對稱，外部探測無法區分「該功能本來
@@ -36,17 +36,18 @@ def _reject_when_card_only() -> None:
     例外**(break-glass 帳密通道,2026-06-11),gate 寫在各自端點內,
     失敗姿態同樣是 404。
     """
-    if settings.REQUIRE_CARD_LOGIN_ONLY:
+    if settings.ANILA_AUTH_MODE == "card-only":
         raise HTTPException(status_code=404)
 
 
-def _finalize_login(response: Response, tokens: dict) -> dict:
+def _finalize_login(response: Response, tokens: dict, db: Session) -> dict:
     """Attach session cookies to the response and surface the CSRF token
     in the JSON body so the SPA can read it even on its first request."""
     csrf = set_session_cookies(
         response,
         access_token=tokens["access_token"],
         refresh_token=tokens["refresh_token"],
+        db=db,
     )
     return {**tokens, "csrf_token": csrf}
 

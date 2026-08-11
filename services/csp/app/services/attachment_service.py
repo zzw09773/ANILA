@@ -17,7 +17,6 @@ from typing import Optional
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session, defer
 
-from app.config import settings
 from app.database import SessionLocal
 from app.models.attachment import Attachment
 from app.models.user import User
@@ -32,6 +31,7 @@ from app.services.proxy import _estimate_token_count
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+ATTACHMENT_STORAGE_ROOT = Path("data/attachments")
 
 # L5: 改用 allow-list — 只允許平台明確支援的文件 / 圖檔型別。其餘一律
 # 拒絕，比 deny-list 更不易因新副檔名漏網。
@@ -83,7 +83,7 @@ ALLOWED_MIME_PREFIXES = (
 
 
 def _storage_root() -> Path:
-    root = Path(settings.ATTACHMENT_STORAGE_PATH)
+    root = ATTACHMENT_STORAGE_ROOT
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -369,7 +369,7 @@ def capacity_for_conversation(
     conversation_id: int,
     model_name: str | None = None,
 ) -> dict:
-    # model_name None → fall back to configured ANILA_DEFAULT_CONTEXT_WINDOW
+    # model_name None → fall back to the built-in context window
     # (client omitted ?model=; same helper as admission — no second budget).
     window = get_context_window(db, model_name)
     return get_conversation_attachment_usage(db, conversation_id, window)

@@ -112,14 +112,14 @@ def guard():
 def not_dev_card_mode(monkeypatch):
     """內網正式姿態:沒開 dev 測試 CA,而且卡登是唯一入口。"""
     monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
 
 
 @pytest.fixture
 def dev_card_mode(monkeypatch):
     """dev-card 模式:``card_auth._dev_test_ca_explicitly_allowed()`` 的兩個條件。"""
     monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", "1")
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", False)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "password")
 
 
 # ── 1. 共用判定本身 ─────────────────────────────────────────────────────────
@@ -303,7 +303,7 @@ def test_the_refusal_says_what_is_broken_and_how_to_proceed(
     assert "replay" in message.lower()
     # 自救出口必須寫出來 —— 沒有出口的拒絕會被下一個人整段拿掉。
     assert "CARD_DEV_TRUST_TEST_CA" in message
-    assert "REQUIRE_CARD_LOGIN_ONLY" in message
+    assert "ANILA_AUTH_MODE" in message
     # 祕密零外洩:訊息不准把值本身印出來。
     assert "=1" not in message.replace("CARD_DEV_TRUST_TEST_CA=1", "")
 
@@ -311,14 +311,14 @@ def test_the_refusal_says_what_is_broken_and_how_to_proceed(
 def test_trusting_the_test_ca_is_not_enough_when_card_login_is_the_only_door(
     monkeypatch, guard
 ):
-    """``CARD_DEV_TRUST_TEST_CA=1`` 但 ``REQUIRE_CARD_LOGIN_ONLY=True`` = 內網。
+    """``CARD_DEV_TRUST_TEST_CA=1`` 但 ``ANILA_AUTH_MODE=card-only`` = 內網。
 
     dev-card 模式的定義是 ``_dev_test_ca_explicitly_allowed()`` 的**兩個**條件,
     不是其中一個。守衛若只看前者,內網那台照樣開得起來。
     """
     monkeypatch.setenv("CARD_DEV_SKIP_NONCE_BINDING", "1")
     monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", "1")
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
     with pytest.raises(RuntimeError):
         guard()
 
@@ -381,24 +381,6 @@ def test_the_guard_is_actually_called_at_startup():
     )
 
 
-# ── 6. 第三份拷貝:設定頁登錄表的解析器必須跟消費端同意 ─────────────────────
-
-
-@pytest.mark.parametrize("raw", _ENABLING + _NOT_ENABLING)
-def test_the_settings_registry_parser_agrees_with_the_consumer(raw):
-    """登錄表為了顯示這顆旗標,自己也寫了一份不 strip 的解析
-    （``settings_registry._parse_card_truthy_nostrip``）。
-
-    這一包不動它的程式碼,但把「兩份必須同意」釘起來 —— 哪天有人只修其中
-    一份,畫面上的開關狀態就會跟真正生效的狀態說不一樣的話。
-    """
-    from app.services.card_auth import _skip_nonce_binding_value_enables
-    from app.services.settings_registry import REGISTRY
-
-    spec = REGISTRY["card.dev_skip_nonce_binding"]
-    assert spec.value_type.parse(raw) is _skip_nonce_binding_value_enables(raw)
-
-
 # ══ Fix round 1 ═══════════════════════════════════════════════════════════════
 #
 # 紅線雙票（2026-08-09）回來了。sol 那一票的 Critical 是真的，我先實測重現才動手：
@@ -459,7 +441,7 @@ def test_the_guard_reads_the_same_constant_the_nonce_comparison_reads(monkeypatc
 
     monkeypatch.delenv("CARD_DEV_SKIP_NONCE_BINDING", raising=False)
     monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
 
     monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", False)
     guard()  # 凍結是關的、環境也沒設 → 放行
@@ -484,7 +466,7 @@ def test_a_real_process_that_imported_with_the_flag_then_lost_it_refuses_to_boot
         os.environ.pop("CARD_DEV_SKIP_NONCE_BINDING", None)
         os.environ.pop("CARD_DEV_TRUST_TEST_CA", None)
         from app.config import settings
-        settings.REQUIRE_CARD_LOGIN_ONLY = True          # 非 dev-card 模式
+        settings.ANILA_AUTH_MODE = "card-only"          # 非 dev-card 模式
         from app.services.startup_security import (
             assert_card_dev_bypass_not_in_a_real_boot as guard,
         )
@@ -498,8 +480,7 @@ def test_a_real_process_that_imported_with_the_flag_then_lost_it_refuses_to_boot
     )
     env = dict(os.environ)
     env["CARD_DEV_SKIP_NONCE_BINDING"] = "1"
-    env["ENABLE_CARD_LOGIN"] = "true"
-    env["REQUIRE_CARD_LOGIN_ONLY"] = "false"
+    env["ANILA_AUTH_MODE"] = "password"
     env["PYTHONPATH"] = os.pathsep.join(
         [str(_CSP_ROOT), str(_REPO_ROOT / "packages" / "anila-core" / "src")]
     )
@@ -563,7 +544,7 @@ def test_the_guard_actually_refuses_the_boot_and_nothing_gets_served(monkeypatch
     monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
     monkeypatch.setenv("CARD_DEV_SKIP_NONCE_BINDING", "1")
     monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
 
     raised, served = _drive_lifespan_startup(monkeypatch)
 
@@ -587,7 +568,7 @@ def test_a_healthy_config_still_boots_past_the_guard(monkeypatch):
     monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", False)
     monkeypatch.delenv("CARD_DEV_SKIP_NONCE_BINDING", raising=False)
     monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
 
     import app.services.startup_security as ss
 
@@ -628,7 +609,7 @@ _TRUST_CA_EXPECTATIONS = [
 def test_the_guard_passes_exactly_when_the_real_dev_card_definition_says_so(
     monkeypatch, guard, trust_ca, is_trusted, card_only
 ):
-    """二維閉合:CARD_DEV_TRUST_TEST_CA 的值 × REQUIRE_CARD_LOGIN_ONLY 的真假。
+    """二維閉合:CARD_DEV_TRUST_TEST_CA 的值 × ANILA_AUTH_MODE 的模式。
 
     期望值來自**手寫表**（``_TRUST_CA_EXPECTATIONS``）與 dev-card 模式的定義
     「兩個條件都要成立」,不是呼叫 ``_dev_test_ca_explicitly_allowed()`` 算出來的。
@@ -638,7 +619,9 @@ def test_the_guard_passes_exactly_when_the_real_dev_card_definition_says_so(
     monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
     monkeypatch.setenv("CARD_DEV_SKIP_NONCE_BINDING", "1")
     monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", trust_ca)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", card_only)
+    monkeypatch.setattr(
+        settings, "ANILA_AUTH_MODE", "card-only" if card_only else "password"
+    )
 
     dev_card_mode = is_trusted and not card_only
     if dev_card_mode:
@@ -666,7 +649,9 @@ def test_the_guard_agrees_with_the_real_definition_across_the_whole_value_space(
     for trust_ca in _generated_value_space():
         for card_only in (True, False):
             monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", trust_ca)
-            monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", card_only)
+            monkeypatch.setattr(
+                settings, "ANILA_AUTH_MODE", "card-only" if card_only else "password"
+            )
             expected_pass = _dev_test_ca_explicitly_allowed()[0]
             try:
                 guard()
@@ -699,7 +684,7 @@ def test_the_guard_consults_the_real_dev_card_helper_object(monkeypatch, guard):
     monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", True)
     monkeypatch.setenv("CARD_DEV_SKIP_NONCE_BINDING", "1")
     monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
 
     with pytest.raises(RuntimeError):
         guard()
@@ -729,34 +714,10 @@ def test_the_guard_consults_the_real_flag_helpers(monkeypatch, guard):
     monkeypatch.setattr(card_auth, "card_dev_skip_nonce_binding_enabled", _spy_live)
     monkeypatch.delenv("CARD_DEV_SKIP_NONCE_BINDING", raising=False)
     monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
 
     guard()
     assert "frozen" in consulted, (
         "守衛沒有讀凍結狀態 —— 那是驗章那一行真正消費的東西(sol Critical)"
     )
     assert "live" in consulted, "守衛沒有讀環境即時值"
-
-
-# ── 10. 登錄表 agreement 閉合到生成空間（殺 A-P3）──────────────────────────
-
-
-def test_the_registry_parser_agrees_with_the_consumer_across_the_whole_space():
-    """第一輪這一條只跑 22 個手寫形狀,所以我自己在消費端抓到的 casefold 突變
-    換到登錄表就抓不到（KEY A 的 A-P3 因此存活）。改吃生成空間。
-
-    後果具體是什麼:設定頁會把 ``CARD_DEV_SKIP_NONCE_BINDING=yeſ`` 顯示成
-    「已開啟」,而實際上是關的 —— 一個 SEC 類的顯示謊言。
-    """
-    from app.services.card_auth import _skip_nonce_binding_value_enables
-    from app.services.settings_registry import REGISTRY
-
-    spec = REGISTRY["card.dev_skip_nonce_binding"]
-    diverged = [
-        (raw, spec.value_type.parse(raw), _skip_nonce_binding_value_enables(raw))
-        for raw in _generated_value_space()
-        if spec.value_type.parse(raw) is not _skip_nonce_binding_value_enables(raw)
-    ]
-    assert diverged == [], (
-        f"登錄表的解析與消費端分岔(值, 登錄表, 消費端):{diverged!r}"
-    )

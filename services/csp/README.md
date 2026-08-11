@@ -87,7 +87,7 @@ auth router 已由單檔拆成套件，各認證形態獨立成子模組，全�
 | `registration_tokens.py` | 一次性註冊 token 面 | 受控自助註冊。 |
 | `revocations.py` | `GET /revocations` | service-token 認證的撤銷冷啟同步（anila-studio 消化）。 |
 
-> 三種登入形態（password / oidc / card）在 redesign 樹中**並存於程式碼**，由設定 / 分支旗標決定啟用（如 `ENABLE_CARD_LOGIN`、SSO provider 是否註冊）。SSO / OIDC provider 的管理 CRUD 在獨立的 `app/api/auth_providers.py`（前綴 `/api/auth-providers`）。
+> 三種登入形態（password / oidc / card）在 redesign 樹中**並存於程式碼**，由單一 `ANILA_AUTH_MODE`（`password` / `mixed` / `card-only`）與 SSO provider 是否註冊決定啟用。SSO / OIDC provider 的管理 CRUD 在獨立的 `app/api/auth_providers.py`（前綴 `/api/auth-providers`）。
 
 ---
 
@@ -192,7 +192,7 @@ docker compose up -d csp                                 # prod（platform.yml�
 
 CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`）。第一次啟動若不存在：`docker network create anila-models-net`。
 
-後端本地（不經容器、需自備 PostgreSQL）：`cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`。關鍵環境變數（`app/config.py` / compose）：`DATABASE_URL`（runtime `csp_app`）、`MIGRATION_DATABASE_URL`（升權）、`SECRET_KEY`、`JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID`、`ADMIN_USERNAME` / `ADMIN_PASSWORD`、`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`、`ANILA_ENV`（部署姿態；自 PLAN.md P0.2 起不再影響 model http 判定）、`ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`、`ENABLE_PUBLIC_SHARE`。詳見 [`.env.example`](./.env.example)。
+後端本地（不經容器、需自備 PostgreSQL）：`cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`。關鍵環境變數（`app/config.py` / compose）：`DATABASE_URL`（runtime `csp_app`）、`MIGRATION_DATABASE_URL`（升權）、`SECRET_KEY`、`JWT_KID`、`ADMIN_PASSWORD`、`ANILA_AUTH_MODE`、`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`、`ANILA_ENV`（部署姿態；自 PLAN.md P0.2 起不再影響 model http 判定）、`ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`、`ENABLE_PUBLIC_SHARE`。JWT PEM 路徑固定為 `secrets/jwt-{private,public}.pem`。詳見 [`.env.example`](./.env.example)。
 
 ---
 

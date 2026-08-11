@@ -6,6 +6,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from app.database import engine, SessionLocal, Base
 from app.models.user import User
+
+ADMIN_USERNAME = "admin"
 from app.models.platform_link import PlatformLink
 from app.utils.security import hash_password
 from app.config import settings
@@ -17,16 +19,16 @@ def init_db():
 
     try:
         # Create admin user if not exists
-        admin = db.query(User).filter(User.username == settings.ADMIN_USERNAME).first()
+        admin = db.query(User).filter(User.username == ADMIN_USERNAME).first()
         if not admin:
             admin = User(
-                username=settings.ADMIN_USERNAME,
+                username=ADMIN_USERNAME,
                 hashed_password=hash_password(settings.ADMIN_PASSWORD),
                 role="admin",
                 is_active=True,
             )
             db.add(admin)
-            print(f"已建立管理員帳號: {settings.ADMIN_USERNAME}")
+            print(f"已建立管理員帳號: {ADMIN_USERNAME}")
         else:
             print("管理員帳號已存在")
 

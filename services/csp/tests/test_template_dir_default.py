@@ -1,7 +1,7 @@
 """The template-download fallback path must point at a directory that exists.
 
-``ANILA_TEMPLATE_DIR`` is set by compose, so a wrong built-in default is
-invisible in the deployed stack and only shows up as a 404 on every
+Compose no longer supplies a template-directory override, so a wrong built-in
+default shows up as a 404 on every
 developer's "download the agent template" click when csp is started any
 other way (bare uvicorn, a demo box). The existing
 ``tests/test_template_download.py`` cannot catch it here: both of its cases
@@ -32,7 +32,7 @@ def test_default_template_dir_exists():
     template_dir = _default_template_dir()
     assert template_dir.is_dir(), (
         f"template fallback {template_dir} does not exist — every "
-        f"/api/agents/template/download would 404 without ANILA_TEMPLATE_DIR"
+        f"/api/agents/template/download would 404 without the built-in fallback"
     )
 
 

@@ -52,7 +52,7 @@ def authenticate_user(db: Session, username: str, password: str) -> User | str |
     return user
 
 
-def create_tokens(user: User) -> dict:
+def create_tokens(user: User, db: Session | None = None) -> dict:
     data = {
         "sub": str(user.id),
         "username": user.username,
@@ -60,8 +60,8 @@ def create_tokens(user: User) -> dict:
         "tv": user.token_version,
     }
     return {
-        "access_token": create_access_token(data),
-        "refresh_token": create_refresh_token(data),
+        "access_token": create_access_token(data, db=db),
+        "refresh_token": create_refresh_token(data, db=db),
         "token_type": "bearer",
     }
 

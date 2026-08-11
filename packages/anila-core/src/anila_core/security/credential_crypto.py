@@ -16,7 +16,7 @@ the new key, so re-saving any decrypted row migrates it to v2 in place.
 Master key derivation:
 
     derived_key = PBKDF2(
-        password = SECRET_KEY (env, accepts SECRET_KEY or CSP_SECRET_KEY),
+    password = SECRET_KEY (env),
         salt     = "agent_llm_credentials_v1",  # legacy name preserved for
                                                   back-compat with v0.7
                                                   encrypted rows
@@ -26,7 +26,7 @@ Master key derivation:
     )
 
 The fixed salt is intentional — same master key on every process
-boot. ``SECRET_KEY`` (or ``CSP_SECRET_KEY``, kept as fallback) is the
+boot. ``SECRET_KEY`` is the
 single source of secrecy; rotating it invalidates every stored
 credential. That's the desired kill-switch property.
 
@@ -79,10 +79,10 @@ _legacy_fallback_count = 0
 
 
 def _derive_key(*, iters: int = _DERIVATION_ITERS) -> bytes:
-    secret = os.environ.get("SECRET_KEY") or os.environ.get("CSP_SECRET_KEY")
+    secret = os.environ.get("SECRET_KEY")
     if not secret:
         raise RuntimeError(
-            "SECRET_KEY (or CSP_SECRET_KEY) env var must be set for "
+            "SECRET_KEY env var must be set for "
             "credential encryption."
         )
     if (
@@ -91,8 +91,8 @@ def _derive_key(*, iters: int = _DERIVATION_ITERS) -> bytes:
     ):
         raise RuntimeError(
             "SECRET_KEY is the dev default. All user_llm_credentials would "
-            "be encrypted with a publicly-known key. Set CSP_SECRET_KEY "
-            "(or SECRET_KEY) to a real production value, or — only for "
+            "be encrypted with a publicly-known key. Set SECRET_KEY "
+            "to a real production value, or — only for "
             "intentional dev work — export ANILA_ALLOW_DEV_SECRET=1."
         )
     kdf = PBKDF2HMAC(

@@ -17,7 +17,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-os.environ["DEBUG"] = "false"
 # Per-session throwaway file DB for ``SessionLocal`` (headers.py 等直接開
 # session、繞過 fixture override 的路徑)。以前釘 ``./.pytest-csp.db``(相對
 # cwd)—— 全套跑過留下 schema 的目錄會綠、乾淨目錄 solo 跑就
@@ -25,17 +24,9 @@ os.environ["DEBUG"] = "false"
 _TEST_DB_DIR = tempfile.mkdtemp(prefix="pytest-csp-")
 _TEST_DB_PATH = Path(_TEST_DB_DIR) / "pytest-csp.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
-os.environ["HEALTH_CHECK_INTERVAL"] = "3600"
-os.environ["ALERT_CHECK_INTERVAL"] = "3600"
-# TestClient uses http://testserver — Secure cookies would be dropped.
-os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("AUTO_REGISTER_MODELS", "")
 os.environ.setdefault("AUTO_REGISTER_AGENTS", "")
 os.environ.setdefault("AUTO_SEED_API_KEYS", "")
-os.environ.setdefault("AUTO_REGISTER_LINKS", "")
-# JWT keys: auto-generate dev RSA pair if missing, so CI / fresh clones
-# don't have to manually run scripts/generate-jwt-keypair.py first.
-os.environ.setdefault("ALLOW_AUTO_KEYGEN", "true")
 # anila-core 的 credential_crypto 直接讀 ``os.environ["SECRET_KEY"]``,沒設就
 # RuntimeError。殼裡 export 過的人看到 test_agent_credentials 全綠、沒 export 的
 # 人看到 12 紅 —— 同一份碼兩種答案。在這裡釘死,讓「跑之前有沒有先設環境變數」
@@ -51,18 +42,14 @@ os.environ.setdefault(
 # 只挑幾個檔跑就整批 error。答案取決於你選了哪些檔,那不是基準線。搬到這裡。
 # ``test_startup_security`` 要測 production 行為時會自己 ``monkeypatch.delenv``。
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
-# ``app.config.Settings`` 的 ``env_file=".env"`` 是相對 cwd 解析的 —— 從 repo
-# 根跑會吃到根目錄 ``.env``(本機 07-31 起 ``ENABLE_CARD_LOGIN=true``),從
-# ``services/csp`` 跑吃不到。硬設(非 setdefault)讓 session 預設與 cwd /
-# 機上 `.env` 無關;要開的測試自己 monkeypatch ``settings.ENABLE_CARD_LOGIN``。
-os.environ["ENABLE_CARD_LOGIN"] = "false"
-# 成對釘死:``startup_security`` 檢查 ``REQUIRE_CARD_LOGIN_ONLY=true`` 而卡登
-# 關閉時會拒絕啟動 —— 只釘一半,repo 根 ``.env`` 翻成 card-only(內網預設姿態)
-# 那天,所有用 ``client`` fixture 的測試會在 setup 整批 error。
-os.environ["REQUIRE_CARD_LOGIN_ONLY"] = "false"
+# ``app.config.Settings`` 的 ``env_file=".env"`` 是相對 cwd 解析的；硬設
+# 單一 auth mode 讓測試不受工作目錄或本機 .env 影響。
+os.environ["ANILA_AUTH_MODE"] = "password"
 
 from app.database import Base, engine as _session_local_engine, get_db
 from app.main import app
+from app.middleware import cookies as cookie_module
+from app.services import ingestion_pool
 from app.models.user import User
 from app.models.model_registry import ModelRegistry
 from app.models.api_key import ApiKey, ApiKeyModelPermission
@@ -74,6 +61,10 @@ from app.utils.security import hash_password
 # 已在,不能等「某個用過 TestClient 的測試碰巧跑過 lifespan create_all」。
 # 必須在 model import(含 ``app.main`` 帶進來的)之後才 create_all。
 Base.metadata.create_all(bind=_session_local_engine)
+
+# TestClient uses http://testserver.  Production cookies remain Secure; this
+# explicit test-harness seam keeps the HTTP fixture able to send them back.
+cookie_module._cookie_secure = lambda: False
 
 
 def _cleanup_test_db_dir() -> None:
@@ -113,9 +104,15 @@ def db(db_engine):
 
 
 @pytest.fixture(scope="function")
-def client(db_engine):
+def client(db_engine, monkeypatch):
     """TestClient with overridden DB dependency."""
     Session = sessionmaker(bind=db_engine, expire_on_commit=False)
+
+    async def _skip_network_ingestion_pool():
+        """Keep unit TestClient startup from dialing the real Postgres host."""
+        return None
+
+    monkeypatch.setattr(ingestion_pool, "open_pool", _skip_network_ingestion_pool)
 
     def override_get_db():
         session = Session()

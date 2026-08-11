@@ -88,8 +88,7 @@ def get_flux_provider() -> "FluxImageProvider | None":
 
     from app.services.flux_image_provider import FluxImageProvider
 
-    # anila-studio 自己的 cache volume — 不借 csp 的 INGESTION_UPLOAD_DIR
-    # (那是 csp 內 ingestion 上傳目錄,anila-studio container 沒掛/沒權限)。
+    # anila-studio 自己的 cache volume；不與 csp 的 ingestion 目錄共用。
     cache_dir = os.environ.get(
         "FLUX_CACHE_DIR", "/var/anila/anila-studio-flux-cache"
     )

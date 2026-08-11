@@ -28,7 +28,6 @@ from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.agent import Agent
-from app.config import settings
 from app.services.alert_service import resolve_alert_by_fingerprint, upsert_alert
 from app.services.proxy.urls import join_upstream_path, strip_trailing_api_version
 
@@ -75,6 +74,7 @@ def normalize_health_status(raw: str | None, *, is_active: bool = True) -> str:
 # something speaks HTTP; they do not prove our key still works
 # (2026-07-31 false green: rotated key stayed green on 401).
 REAL_PROBE_PATHS: tuple[str, ...] = ("/health", "/v1/models")
+HEALTH_CHECK_INTERVAL_SECONDS = 60
 
 # Host-liveness only. Kept so ops can tell "host answers something" from
 # "completely dead", but a `/`-only hit must NOT be reported the same way
@@ -325,7 +325,7 @@ async def _health_check_loop():
         except Exception as e:
             logger.error(f"健康檢查迴圈錯誤: {e}")
 
-        await asyncio.sleep(settings.HEALTH_CHECK_INTERVAL)
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
 
 
 async def _agent_health_check_loop():
@@ -399,7 +399,7 @@ async def _agent_health_check_loop():
         except Exception as exc:
             logger.error("Agent 健康檢查迴圈錯誤: %s", exc)
 
-        await asyncio.sleep(settings.HEALTH_CHECK_INTERVAL)
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
 
 
 # ══════════════════════════════════════════════════════════════════════════

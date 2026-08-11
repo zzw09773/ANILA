@@ -11,7 +11,7 @@
 | Branch | 部署對象 | 認證 | 環境 | 識別特徵 |
 |---|---|---|---|---|
 | `main` | 開發 SSOT(default branch) | 純帳密 | 不指定 | 所有 feature 先進這條,downstream 從這 sync |
-| `prod-intranet-card` | 中科院內網部署 | **SSO + 中科院 PKI 卡** | 內網 | 唯一含 SSO/card auth fork 的 branch;`REQUIRE_CARD_LOGIN_ONLY=true`;nginx Host allowlist + 內網 hardening |
+| `prod-intranet-card` | 中科院內網部署 | **SSO + 中科院 PKI 卡** | 內網 | 唯一含 SSO/card auth fork 的 branch;`ANILA_AUTH_MODE=card-only`;nginx Host allowlist + 內網 hardening |
 | `prod-public-passwd` | 對外網 prod | 純帳密 | 外網 | main + 外網 hardening(rate limit / CSP 嚴一級 / WAF-ready) |
 | `prod-military-passwd` | 國軍交付 prod | 純帳密 | 國軍 | main + military spec(待定;可能含 air-gap config / FLUX 啟用 / 客製分支) |
 | `dev-public` | 對外網 dev | 純帳密 | 外網 | main + dev tooling(codeserver / n8n / gitlab unmuted)+ 寬鬆 hardening |
@@ -97,7 +97,7 @@ git merge origin/main -X theirs   # content conflict 偏向 main
 | `apps/anila-shell/src/login.jsx` | 已刪除(改走 LoginView.vue) | 仍存在 |
 | `apps/anila-shell/src/runtime/auth.jsx` | SSO 流程 | 帳密流程 |
 | `infra/nginx/anila.conf` | Host allowlist + card-verify exact-match location | 寬鬆 server_name |
-| `infra/compose/platform.yml` 內 `ENABLE_CARD_LOGIN=true` / `REQUIRE_CARD_LOGIN_ONLY=true` env | 設值 | 不設或預設 false |
+| `infra/compose/platform.yml` 內 `ANILA_AUTH_MODE=card-only` env | 設值 | 由部署環境明確指定 mode |
 
 ### `prod-public-passwd` / `dev-public` only(外網 hardening,待落實)
 

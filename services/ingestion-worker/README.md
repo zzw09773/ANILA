@@ -97,7 +97,7 @@ Arq 重試 / 逾時策略（`main.py`）：`max_tries=3`、`job_timeout=300`（�
 >
 > 判斷本身有測試守著（`packages/anila-core/tests/test_pdf_ocr_trigger.py`）。但**仍然沒有任何測試會在你把旗標打開的時候提醒你成本**——那是這段文字的工作。
 >
-> ⚠ **`PDF_OCR_MAX_PAGES`（預設 100）調大是錯的方向。** 它同時是兩件事的上限：能 OCR 幾頁，以及這個 job 要跑多久。調大 → 更久 → 更確定撞上上面那個 300 秒衝突。要選的值是「`ceil(頁數 ÷ PDF_OCR_CONCURRENCY) × 單頁 VLM 秒數` 塞得進 300 秒」的值；**拿上面 1800 秒／100 頁／並行 4 反推，單頁約 72 秒，也就是大約 16 頁**（推算值，不是量到的）。**一份文件如果需要比這更多頁，它就不該走這條路。**
+> ⚠ **內建 PDF OCR 頁數上限（100）調大是錯的方向。** 它同時是兩件事的上限：能 OCR 幾頁，以及這個 job 要跑多久。調大 → 更久 → 更確定撞上上面那個 300 秒衝突。要選的值是「`ceil(頁數 ÷ PDF_OCR_CONCURRENCY) × 單頁 VLM 秒數` 塞得進 300 秒」的值；**拿上面 1800 秒／100 頁／並行 4 反推，單頁約 72 秒，也就是大約 16 頁**（推算值，不是量到的）。**一份文件如果需要比這更多頁，它就不該走這條路。**
 >
 > ⚠ **而超出上限的頁，會連它原生抽到的文字一起不見。** OCR 成功時 `content` 是被**整份取代**的，不是合併，所以一份 120 頁（前 100 頁掃描、後 20 頁是真文字）的文件，OCR 只蓋前 100 頁，**後 20 頁那 1880 個字一個都不會留下**。這件事以前只有一行 log。現在四種損失都寫進 `metadata`，而且是跟 `ocr_used` 放在同一個 dict 裡（`ocr_lossy` + `ocr_losses`），因為 `ocr_used: True` 單獨看起來就像成功：
 >
@@ -219,7 +219,7 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 | `PG_POOL_MIN` / `PG_POOL_MAX` | `1` / `5` | 連線池（亦上限並行度） |
 | `ENABLE_IMAGE_CAPTIONS` | `true` | VLM caption 總開關 |
 | `VISION_URL` | `""`（compose `http://csp:8000/v1`） | VLM endpoint；空字串停用 caption |
-| `VISION_MODEL` / `VISION_API_KEY` / `VISION_VERIFY_SSL` | `gemma4` / `not-set` / `false` | VLM 模型 / token / TLS 驗證 |
+| `VISION_MODEL` / `VISION_API_KEY` | `gemma4` / `not-set` | VLM 模型 / token |
 | `VISION_CONCURRENCY` / `VISION_TIMEOUT_SECONDS` / `VISION_MAX_IMAGE_BYTES` | `4` / `60.0` / `8 MiB` | 並行 / 逾時 / 超過跳過 caption |
 | `ENABLE_RELATION_LLM` | `true` | LLM 關係抽取總開關 |
 | `RELATION_LLM_URL` | `""` | 空字串停用 LLM 邊 |
@@ -227,6 +227,7 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 | `RELATION_LLM_TIMEOUT_SECONDS` / `RELATION_LLM_MAX_CHARS` / `RELATION_LLM_MAX_CANDIDATES` | `120.0` / `12000` / `200` | 逾時 / 輸入上限 / 候選上限 |
 | `ENABLE_SIMILARITY_EDGES` | `true` | embedding 相似邊總開關 |
 | `SIMILARITY_TOP_K` / `SIMILARITY_MIN` / `SIMILARITY_MAX_DOCS` | `3` / `0.75` / `500` | 每文件連 K 個近鄰 / cosine 下限 / 超過略過重算 |
+| `DOC_PARSER` / `DOCLING_OCR_LANGS` | `native` / `ch_tra,en` | Docling 路由與 OCR 語系；由 anila-core 直接讀取，compose 負責提供 |
 
 > `SECRET_KEY`、`ANILA_ENV`、`ANILA_ALLOW_*` 由 `anila-core` 安全模組消費（憑證解密 / SSRF / http 端點 fail-closed），compose 由環境注入。
 

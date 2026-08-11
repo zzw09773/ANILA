@@ -172,7 +172,7 @@ docker compose up -d       # = compose.yaml → infra/compose/platform.yml
 docker compose -f compose.dev.yaml up -d   # dev stack（anila-platform-dev，獨立 ports/volumes）
 ```
 
-card 登入需本機 HiPKI 讀卡元件；本地 dev 若無實體卡，可暫不設 `REQUIRE_CARD_LOGIN_ONLY`（保留帳密測試其餘功能），但**勿將該設定推上 prod 環境檔**。
+card 登入需本機 HiPKI 讀卡元件；本地 dev 若無實體卡，將 `ANILA_AUTH_MODE=password`（或 `mixed`）保留帳密流程，但**勿把開發模式推上內網 production 環境檔**。
 
 ### 內網 / prod 部署（走部署腳本，不直接 `docker compose up`）
 
@@ -244,7 +244,8 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 ## 安全設計要點
 
 - **自然人憑證卡真實驗章**：`/api/auth/card/*` 做真實 PKCS#7/CMS 簽章驗證 ＋ CA bundle 鏈驗證 ＋ 撤銷檢查，非比對卡號的假驗證。
-- **登入面收斂**：`REQUIRE_CARD_LOGIN_ONLY=true` 時帳密／OIDC／自助註冊 endpoints 回 404，唯一登入路徑是 PKI 卡；`startup_security` 在 prod 拒絕矛盾／dev 預設設定，container 直接開不起來（fail-fast）。
+- **登入面收斂**：`ANILA_AUTH_MODE=card-only` 時帳密／OIDC／自助註冊 endpoints 回 404，唯一登入路徑是 PKI 卡；`startup_security` 驗證單一模式，container 直接開不起來（fail-fast）。
+- **code-server 是高權限維運面**：它可寫入整個 repo、讀取未遮蔽的 `secrets/`，並掛載 Docker socket；只准平台管理員使用，密碼必須是部署 secret，不可與一般帳號共用。
 - **四級分類單向閂鎖**：等級序 `無機密 < 營業秘密 < 密 < 機密`；CSP ＋ Router ＋ UI 三層鎖 classified，無自動降級路徑，降級採雙人原則（申請人 ≠ 核准人），持久化到 DB。
 - **模型出向預設拒 http**：model endpoint 由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，production 與 dev 同準）；per-model 金鑰僅以 boolean presence 對外，不外洩。
 - **Credential 加密 ＋ SSRF guard**：AES-256-GCM ＋ PBKDF2；SSRF guard 對所有 user-supplied endpoint 把關，loopback / metadata 永不可繞過。

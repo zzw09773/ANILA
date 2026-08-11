@@ -112,7 +112,7 @@ def public_providers(db: Session = Depends(get_db)):
     # Branch SSO：強制卡片登入時，不在 /providers 列出 OIDC providers，
     # 讓 SPA 自然不顯示對應的 tab。已建立的 OIDC provider row 不刪除（admin
     # 切回非鎖死模式時應該還能用）；純粹在邊界 hide 掉。
-    if settings.REQUIRE_CARD_LOGIN_ONLY:
+    if settings.ANILA_AUTH_MODE == "card-only":
         providers = [p for p in providers if p.provider_type != "oidc"]
     return [
         {
@@ -178,7 +178,7 @@ async def oidc_callback(
         # state 內有 PKCE verifier 與 nonce，必須完整傳給 authenticate_oidc_code
         # 才能驗 id_token；任何缺漏由該函式 raise ValueError。
         user = await authenticate_oidc_code(db, provider, code, state_payload)
-        tokens = create_tokens(user)
+        tokens = create_tokens(user, db)
         _stamp_last_login(db, user)
         log_audit_event(
             db,
@@ -199,6 +199,7 @@ async def oidc_callback(
             html,
             access_token=tokens["access_token"],
             refresh_token=tokens["refresh_token"],
+            db=db,
         )
         return html
     except Exception as exc:

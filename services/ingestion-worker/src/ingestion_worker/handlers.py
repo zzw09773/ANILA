@@ -70,7 +70,7 @@ def _get_vision_provider() -> Any | None:
             api_key=settings.vision_api_key,
             model=settings.vision_model,
             timeout=settings.vision_timeout_seconds,
-            verify_ssl=settings.vision_verify_ssl,
+            verify_ssl=True,
             max_image_bytes=settings.vision_max_image_bytes,
         )
     return _vision_provider

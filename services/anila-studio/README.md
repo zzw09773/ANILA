@@ -170,7 +170,7 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 
 ## 部署注意事項
 
-- csp 端 `JWT_PRIVATE_KEY_PATH` 必須存在（csp 部署腳本預生或 Vault 注入）；anila-studio 不需 private key，只需 csp `/.well-known/jwks.json` 可達。
+- csp 端固定使用 `secrets/jwt-private.pem`（由 csp 部署腳本預生或 Vault 注入）；anila-studio 不需 private key，只需 csp `/.well-known/jwks.json` 可達。
 - anila-studio 啟動會 fail-fast 若 csp `/api/auth/revocations` 不可達（撤銷快取 fail-closed）。
 - **`docker restart` 不重載 `.env`/compose；套設定一律 `up -d`。**
 

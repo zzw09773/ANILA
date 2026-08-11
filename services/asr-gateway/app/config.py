@@ -101,13 +101,13 @@ class Settings(BaseSettings):
     REVOCATION_RECONCILE_INTERVAL_SECONDS: int = 5
     INTERNAL_TIMEOUT_CONNECT: float = 3.0
     INTERNAL_TIMEOUT_SECONDS: float = 10.0
-    # ⚠ 這裡刻意**沒有** COOKIE_SECURE / REQUIRE_CARD_LOGIN_ONLY(理由見
+    # ⚠ 這裡刻意**沒有** COOKIE_SECURE / CSP 的 ANILA_AUTH_MODE(理由見
     # app/auth.py 檔頭與 authenticate() 內的註解):
     # - COOKIE_SECURE 以前用來在 `__Host-anila_access_token` 與
     #   `anila_dev_access_token` 之間選 cookie 名,但兩個名字平台上都沒人發。
     #   cookie 名現在是常數 `anila_access_token`(csp 唯一會發的那個)。
-    # - REQUIRE_CARD_LOGIN_ONLY 以前用來要求權杖的 `amr` 含 "sc",而 csp 從不簽
-    #   `amr` → flag 一開連卡登入的人都被拒。「只准卡登入」的執法點在 csp 的
+    # - CSP 的 card-only 模式以前被誤解成要在權杖內附 `amr="sc"`,而 csp 從不簽
+    #   `amr` → 在這裡重複判斷會連卡登入的人都拒絕。「只准卡登入」的執法點在 csp 的
     #   登入端點,不在這裡。
 
     # ── 長連線特有(studio 沒有,因為它是 per-request)──────────────────

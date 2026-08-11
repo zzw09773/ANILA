@@ -17,7 +17,7 @@ class PlatformLink(Base):
     ``models.registered_service.RegisteredService`` (``registered_services``).
 
     The table is KEPT intact for downgrade safety and data-migration source,
-    but is no longer written to: the ``AUTO_REGISTER_LINKS`` seed and the
+    but is no longer written to: the former environment seed and the
     ``/api/platform-links`` compat façade both now read/write
     ``registered_services``. Do not add new columns here — extend
     ``RegisteredService`` instead.

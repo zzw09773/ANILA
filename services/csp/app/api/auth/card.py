@@ -46,7 +46,7 @@ def card_challenge() -> CardChallengeResponse:
          ``tbsPackage.tbs`` 簽章
       3. ``POST /api/auth/card/verify`` 帶 ``{challenge_token, signature, card_serial}``
 
-    Endpoint 在 ``ENABLE_CARD_LOGIN=false`` 時回 404。
+    Endpoint 在 ``ANILA_AUTH_MODE=password`` 時回 404。
     """
     _require_card_login_enabled()
     token, nonce, expires_in = issue_card_challenge()
@@ -165,7 +165,7 @@ def card_verify(
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
 
     # ── Approved: 正常登入流程 ───────────────────────────────────────────
-    tokens = create_tokens(user)
+    tokens = create_tokens(user, db)
     _stamp_last_login(db, user)
     log_audit_event(
         db,
@@ -180,4 +180,4 @@ def card_verify(
         ip_address=ip_address,
         commit=True,
     )
-    return _finalize_login(response, tokens)
+    return _finalize_login(response, tokens, db)

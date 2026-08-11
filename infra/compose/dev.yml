@@ -67,7 +67,7 @@ services:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       MIGRATION_DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
-      SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-prod}
       # Dev 寫死 "1"，不經 ${} 展開——避免被 .env 裡的 ANILA_ALLOW_DEV_SECRET=0
       # 鎖死。startup_security 在 dev 模式下只 log warning 不擋。
       ANILA_ALLOW_DEV_SECRET: "1"
@@ -89,9 +89,9 @@ services:
       # docker service name (single-label), which the URL guard blocks unless
       # trusted (ALLOW_PRIVATE does NOT bypass the single-label check).
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
-      ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
+      ANILA_AUTH_MODE: "${ANILA_AUTH_MODE:-password}"
       # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+
       # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
       # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
@@ -108,20 +108,13 @@ services:
       AUTO_SEED_API_KEYS: >-
         [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-test-dev-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}","gemma4"],"agents":["image-generator"]},
          {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
-      AUTO_REGISTER_LINKS: >-
-        [
-          {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成","sort_order":1,"is_public":false,"required_roles":[]}
-        ]
-      ANILA_TEMPLATE_DIR: /app/anila-template
-      INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
-      ATTACHMENT_STORAGE_PATH: /var/anila/attachments
       # FLUX image-gen for ANILALM studio pptx pipeline — wires
       # studio.image_provider.FluxImageProvider; empty BACKEND_URL
       # would make get_flux_provider() return None (toggle OFF).
       FLUX_BACKEND_URL: ${FLUX_BACKEND_URL:-http://flux2-dev:8000}
       FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
       FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
-      # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
+      # FLUX_CACHE_DIR defaults to the studio-owned flux cache volume.
     volumes:
       - ../../packages/anila-agent:/app/anila-template:ro
       # ⚠️ dev 用獨立 share 目錄，不撞 live stack 的 ./share/
@@ -140,7 +133,7 @@ services:
       # `<dir>:/app/secrets:ro`。**不要**直接掛 live 的 ../../secrets——兩個 stack
       # 共用簽章鑰＝dev 簽的 token 在 live 也有效。
       - ../../share-dev/uploads/ingestion:/var/anila/ingestion-uploads
-      - ../../share-dev/attachments:/var/anila/attachments
+      - ../../share-dev/attachments:/app/data/attachments
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -185,7 +178,7 @@ services:
       EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
       EMBEDDING_DIM: "4000"
       UPLOAD_DIR: /var/anila/ingestion-uploads
-      SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-prod}
       ANILA_ALLOW_DEV_SECRET: "1"
       # Dev-only relax (S-117 URL guard): dev runs every model/agent on
       # docker-internal http endpoints (e.g. http://flux2-dev-agent:8000), so
@@ -198,7 +191,6 @@ services:
       VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
       VISION_MODEL: "${VISION_MODEL:-gemma4}"
       VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
-      VISION_VERIFY_SSL: "${VISION_VERIFY_SSL:-false}"
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
       # LLM relation extraction (document-relations Phase 2 / B). Goes through
@@ -209,6 +201,8 @@ services:
       RELATION_LLM_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
       RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-false}"
       RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
+      DOC_PARSER: "${DOC_PARSER:-native}"
+      DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       # Embedding topic-similarity edges (document-relations / C). Uses the
       # existing document_chunks vectors — no extra model call.
       ENABLE_SIMILARITY_EDGES: "${ENABLE_SIMILARITY_EDGES:-true}"
@@ -321,7 +315,7 @@ services:
 
   # ── ASR gateway (串流語音輸入;dev / 帳密測試環境)──────────────────────
   # 對應 platform.yml 的 asr-gateway,但走 dev 慣例:直接 build、dev 預設 env、
-  # REQUIRE_CARD_LOGIN_ONLY=false(帳密登入,不用卡)。
+  # ANILA_AUTH_MODE=password(帳密登入,不用卡)。
   asr-gateway:
     build:
       # context = repo 根目錄:Dockerfile 要複製 packages/anila-core 的 SSRF
@@ -358,7 +352,6 @@ services:
       JWT_AUDIENCE: "anila-platform"
       JWT_LEEWAY_SECONDS: "60"
       REVOCATION_RECONCILE_INTERVAL_SECONDS: "5"
-      REQUIRE_CARD_LOGIN_ONLY: "false"
       COOKIE_SECURE: "true"
       LOG_LEVEL: INFO
     depends_on:

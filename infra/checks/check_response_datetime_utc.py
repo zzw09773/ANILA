@@ -48,20 +48,14 @@ CSP_ROOT = REPO_ROOT / "services" / "csp"
 ALLOWLIST_PATH = Path(__file__).resolve().parent / "response_datetime_utc_allowlist.json"
 
 _PINNED_ENV: dict[str, str] = {
-    "APP_NAME": "CSP Platform",
-    "APP_VERSION": "1.0.0",
     "DATABASE_URL": "sqlite:///./response-datetime-gate.db",
     "SECRET_KEY": "response-datetime-gate-not-a-real-secret",
     "ANILA_ALLOW_DEV_SECRET": "1",
+    "ANILA_AUTH_MODE": "password",
     "ANILA_DEPLOYMENT_PROFILE": "response-datetime-gate",
-    "SKIP_STARTUP_MIGRATIONS": "true",
-    "DEBUG": "false",
-    "HEALTH_CHECK_INTERVAL": "3600",
     "AUTO_REGISTER_MODELS": "",
     "AUTO_REGISTER_AGENTS": "",
     "AUTO_SEED_API_KEYS": "",
-    "AUTO_REGISTER_LINKS": "",
-    "ALLOW_AUTO_KEYGEN": "true",
 }
 
 
@@ -101,10 +95,6 @@ def _load_app() -> Any:
     for key, value in _PINNED_ENV.items():
         os.environ[key] = value
     sandbox = Path(tempfile.mkdtemp(prefix="anila-response-dt-gate-"))
-    jwt_dir = sandbox / "jwt"
-    jwt_dir.mkdir()
-    os.environ["JWT_PRIVATE_KEY_PATH"] = str(jwt_dir / "jwt-private.pem")
-    os.environ["JWT_PUBLIC_KEY_PATH"] = str(jwt_dir / "jwt-public.pem")
     if str(CSP_ROOT) not in sys.path:
         sys.path.insert(0, str(CSP_ROOT))
     os.chdir(sandbox)

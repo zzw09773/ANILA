@@ -71,7 +71,7 @@ services:
       # 既有 DB 的 role 已存在,改值要自己 ALTER ROLE csp_app PASSWORD。
       # 密碼用 hex 生成 (openssl rand -hex),避免 URL 特殊字元要 escape。
       CSP_APP_DB_PASSWORD: ${CSP_APP_DB_PASSWORD}
-      SECRET_KEY: ${CSP_SECRET_KEY:?CSP_SECRET_KEY must be set (32+ bytes hex)}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set (32+ bytes hex)}
       # auto_seed 初始 admin 帳號密碼。prod 模式 (ANILA_ALLOW_DEV_SECRET=0)
       # 下 startup_security 黑名單擋 changeme/password/admin 與 placeholder,
       # 不傳進容器則 config.py 預設 'changeme' 直接 RuntimeError 拒啟。
@@ -88,6 +88,26 @@ services:
       # (內網 MLSteam agent 用;legacy ANILA_ALLOW_HTTP_ENDPOINT 對 agent 仍可
       # 放行但記 deprecation warning)。
       ANILA_ENV: "${ANILA_ENV:-}"
+
+      # ── 削減之後才需要的 passthrough(Q46)────────────────────────────────
+      # 這十行在的理由,跟本檔 PDF_OCR_FALLBACK 那段註解是同一件事:
+      # **沒有 env_file**,所以 `.env` 裡寫了而這裡沒有對應的一行,值根本到不了
+      # 容器,而畫面與日誌看起來像是設好了。
+      # 削減前它們的通道是設定頁的開機覆蓋(`app.site_url` 曾是頁面可編輯);
+      # Q46 把整套開機覆蓋退役之後,compose 是它們唯一的入口。
+      # ⚠ 預設值刻意與 services/csp/app/config.py 的欄位預設一致 —— 那是兩份
+      #    會漂開的真相,改一邊要改另一邊。不寫預設(`:-`)會把「沒設」變成
+      #    **空字串**,反而蓋掉程式預設(ALLOWED_ORIGINS 會變成沒有任何來源)。
+      SITE_URL: "${SITE_URL:-http://localhost}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443}"
+      ANILA_ALERT_SMTP_ENABLED: "${ANILA_ALERT_SMTP_ENABLED:-false}"
+      ANILA_ALERT_SMTP_HOST: "${ANILA_ALERT_SMTP_HOST:-}"
+      ANILA_ALERT_SMTP_PORT: "${ANILA_ALERT_SMTP_PORT:-587}"
+      ANILA_ALERT_SMTP_USER: "${ANILA_ALERT_SMTP_USER:-}"
+      ANILA_ALERT_SMTP_PASSWORD: "${ANILA_ALERT_SMTP_PASSWORD:-}"
+      ANILA_ALERT_SMTP_FROM: "${ANILA_ALERT_SMTP_FROM:-}"
+      ANILA_ALERT_SMTP_TO: "${ANILA_ALERT_SMTP_TO:-}"
+      ANILA_ALERT_SMTP_USE_TLS: "${ANILA_ALERT_SMTP_USE_TLS:-true}"
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # protocol=triton_grpc 的 cleartext grpc:// 放行旗標(model kind 專用,
       # 與 http 旗標是姊妹分支不共用 allow-list)。grpcs:// 永遠不需要它。
@@ -117,7 +137,6 @@ services:
       # ⚠ 萬用字元只支援 `*.suffix` 一種形狀;寫成 `10.53.*.15` 這類子網樣式
       # csp 會**拒絕啟動**並印出那個 pattern(不會變成開著但每個請求 500)。
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,csp,10.53.100.15,172.16.120.35,*.ncsist.org.tw}"
-      ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
       # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+
@@ -140,8 +159,7 @@ services:
       # 預設值 = 內網 prod (card-only)。dev 降級在 .env 設兩個 false。
       # strict/CA/OCSP 已在 f01288e 移除 — PIN + 卡片簽章由使用者 PC 的
       # HiPKI 元件 (localhost:16888) 處理,backend 只解 PKCS#7 抽 employee_id。
-      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-true}"
-      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
+      ANILA_AUTH_MODE: "${ANILA_AUTH_MODE:-card-only}"
       # CSV 員工編號;列入者首刷直接建 owner + is_approved (bootstrap),其餘
       # 走 pending → admin 核准。缺值 fail-fast;.env.example 的 placeholder
       # 字面由 startup_security 在啟動時擋 (避免 bricked:沒人能 approve)。
@@ -151,7 +169,7 @@ services:
       # (secrets/dev-card-ca/ — secrets/ 下面那條 :ro 掛載已經把它帶進容器):
       #   CARD_CA_BUNDLE_PATH=/app/secrets/dev-card-ca/dev_ca_bundle.pem
       #   CARD_DEV_TRUST_TEST_CA=1
-      # 兩個都要,而且 REQUIRE_CARD_LOGIN_ONLY 必須是 false。誤帶到 production
+      # dev 測試 CA 只允許在 ANILA_AUTH_MODE 不是 card-only 時使用。誤帶到 production
       # 不會靜默降級:card_auth 認得測試 CA 的標記,少任一條件就拒絕載入整包
       # bundle(fail-closed),不是只濾掉那幾張。
       CARD_CA_BUNDLE_PATH: "${CARD_CA_BUNDLE_PATH:-}"
@@ -180,27 +198,6 @@ services:
       # 同步區段或 git history)。
       AUTO_SEED_API_KEYS: >-
         [{"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
-      # is_public / required_roles 互動:
-      #   is_public=false → 走 allowlist (admin 手動授權)
-      #   is_public=true  → required_roles 過得了的人都看得到
-      #   admin 永遠 bypass
-      AUTO_REGISTER_LINKS: >-
-        [
-          {"name":"ANILA","url":"/anila","icon":"message-square","description":"AI 對話入口 — Router 自動分派最合適的 agent 處理查詢","sort_order":1,"is_public":false,"required_roles":[]},
-          {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成（podcast / slides / mind map / quiz / report）","sort_order":2,"is_public":false,"required_roles":[]},
-          {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":3,"is_public":false,"required_roles":["admin"]},
-          {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":4,"is_public":true,"required_roles":["developer"]},
-          {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":5,"is_public":true,"required_roles":["developer"]},
-          {"name":"MLSteam","url":"https://aiops.ai.ncsist.org.tw:4443/","icon":"cpu","description":"MLOps 平台 — agent 訓練與部署","sort_order":6,"is_public":true,"required_roles":["developer"]}
-        ]
-      ANILA_TEMPLATE_DIR: /app/anila-template
-      INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
-      # 對話附件。⚠ 必須是**掛載進來**的路徑:預設值 data/attachments 是容器
-      # 相對路徑,寫在可寫層,每次 up -d --build 重建 csp 就整批消失。
-      # ⚠ 且**不可**放在 share/uploads/ 底下 —— nginx 的 location /uploads/
-      # 無認證直接服務靜態檔 (只有 /uploads/ingestion/ 被 404),附件路徑是
-      # <user_id>/<uuid><ext>,放進去等於全院可直接下載別人的檔案。
-      ATTACHMENT_STORAGE_PATH: /var/anila/attachments
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
       # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
       # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
@@ -231,13 +228,13 @@ services:
       - ../../packages/anila-agent:/app/anila-template:ro
       # 跟 ingestion-worker 共用 inode,不走拷貝。
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
-      # 對話附件 (見上 ATTACHMENT_STORAGE_PATH)。刻意放在 share/uploads/ 之外,
+      # 對話附件。刻意放在 share/uploads/ 之外,
       # 那個目錄整個被 nginx 無認證服務;附件只能走 /api/attachments 授權下載。
-      - ../../share/attachments:/var/anila/attachments
+      - ../../share/attachments:/app/data/attachments
       # 內網模型 https 的內部 CA PEM 放這裡 (見上 SSL_CERT_FILE)。
       - ../../share/pki:/etc/anila/pki:ro
       # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。prod 模式
-      # (ALLOW_AUTO_KEYGEN=false) 不自動生 → 缺這把 csp /.well-known/jwks.json
+      # runtime 不自動生 → 缺這把 csp /.well-known/jwks.json
       # 回 500、登入發不了 token、anila-studio 起不來。由 infra/deployment/intranet/
       # intranet-deploy.sh 的 [4b] 步驟用 csp image 跑 scripts/generate-jwt-keypair.py
       # 產到 repo 根 ./secrets。
@@ -308,7 +305,7 @@ services:
       UPLOAD_DIR: /var/anila/ingestion-uploads
       # judge 路徑要解 AES-encrypted credentials,cipher key 從 SECRET_KEY 派生,
       # **必須**跟 csp 同值,不然每次 judge decrypt 失敗會 silently skip。
-      SECRET_KEY: ${CSP_SECRET_KEY:?CSP_SECRET_KEY must be set (same value as csp)}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set (same value as csp)}
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
@@ -321,7 +318,6 @@ services:
       VISION_MODEL: "${VISION_MODEL:-gemma4}"
       # 對齊 EMBEDDING_API_KEY 的 fail-loud convention — 不留 changeme fallback。
       VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
-      VISION_VERIFY_SSL: "${VISION_VERIFY_SSL:-false}"
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
       # 掃描件 PDF 的 OCR fallback。預設 false —— 這幾行在的理由是「不設定就
@@ -330,11 +326,14 @@ services:
       # ⚠ 開之前讀 services/ingestion-worker/README.md 的〈心跳〉那節:單份
       #    文件解析會跳到 1800 秒等級,而本 worker 宣告的預算是 300 秒
       #    (main.py:71 job_timeout) —— 超出 6 倍,期間其他 ingest 全排隊。
-      # ⚠ MAX_PAGES 不要調大;超過上限的頁連原生抽到的文字都會被取代掉。
+      # ⚠ 內建頁數上限不要在程式裡任意調大;超過上限的頁連原生抽到的文字都會被取代掉。
       PDF_OCR_FALLBACK: "${PDF_OCR_FALLBACK:-false}"
-      PDF_OCR_DPI: "${PDF_OCR_DPI:-200}"
       PDF_OCR_CONCURRENCY: "${PDF_OCR_CONCURRENCY:-4}"
-      PDF_OCR_MAX_PAGES: "${PDF_OCR_MAX_PAGES:-100}"
+      # Docling is an ingestion-worker deployment choice.  The parser and
+      # language list are consumed by anila-core directly, not by CSP's
+      # platform-settings table.
+      DOC_PARSER: "${DOC_PARSER:-native}"
+      DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
@@ -775,7 +774,6 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
       JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
       REVOCATION_RECONCILE_INTERVAL_SECONDS: "${REVOCATION_RECONCILE_INTERVAL_SECONDS:-5}"
-      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
       COOKIE_SECURE: "true"
       LOG_LEVEL: INFO
     depends_on:

@@ -43,7 +43,7 @@ def test_provider_uses_default_cache_dir(monkeypatch):
 
     p = studio.get_flux_provider()
     assert p is not None
-    # Default sits under INGESTION_UPLOAD_DIR
+    # Default uses the studio-owned cache directory.
     assert "flux-cache" in str(p.cache_dir)
 
 

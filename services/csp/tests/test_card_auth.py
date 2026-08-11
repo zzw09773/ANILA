@@ -373,7 +373,7 @@ def test_dev_test_ca_rejected_without_explicit_optin(
     bundle, key, cert = _dev_marked_pki(tmp_path)
     monkeypatch.setenv("CARD_CA_BUNDLE_PATH", str(bundle))
     monkeypatch.delenv("CARD_DEV_TRUST_TEST_CA", raising=False)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", False)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "password")
 
     sig = base64.b64encode(build_pkcs7(b"n1", key, cert)).decode()
     with pytest.raises(card_auth.CardConfigError) as exc:
@@ -385,7 +385,7 @@ def test_dev_test_ca_rejected_without_explicit_optin(
 def test_dev_test_ca_rejected_when_card_login_is_the_only_way_in(
     tmp_path, monkeypatch, _fresh_anchor_cache
 ):
-    """``REQUIRE_CARD_LOGIN_ONLY=True`` = 內網正式部署 → 連開了旗標也不准。
+    """``ANILA_AUTH_MODE=card-only`` = 內網正式部署 → 連開了旗標也不准。
 
     這是「有人把 dev 的 .env 整份帶上內網」那個情境:旗標跟著複製過去了,
     但 card-only 這個 production 特徵擋得住。
@@ -393,12 +393,12 @@ def test_dev_test_ca_rejected_when_card_login_is_the_only_way_in(
     bundle, key, cert = _dev_marked_pki(tmp_path)
     monkeypatch.setenv("CARD_CA_BUNDLE_PATH", str(bundle))
     monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", "1")
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
 
     sig = base64.b64encode(build_pkcs7(b"n1", key, cert)).decode()
     with pytest.raises(card_auth.CardConfigError) as exc:
         verify_pkcs7_signature(sig, b"n1")
-    assert "REQUIRE_CARD_LOGIN_ONLY" in str(exc.value)
+    assert "ANILA_AUTH_MODE=card-only" in str(exc.value)
 
 
 @pytest.mark.unit
@@ -413,7 +413,7 @@ def test_dev_test_ca_accepted_on_a_dev_machine(
     bundle, key, cert = _dev_marked_pki(tmp_path)
     monkeypatch.setenv("CARD_CA_BUNDLE_PATH", str(bundle))
     monkeypatch.setenv("CARD_DEV_TRUST_TEST_CA", "1")
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", False)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "password")
 
     claims = verify_pkcs7_signature(
         base64.b64encode(build_pkcs7(b"the-real-nonce", key, cert)).decode(),

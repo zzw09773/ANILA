@@ -34,7 +34,7 @@ settings the first is by far the more likely, so reporting the batch advice
 for it — or reporting only ``code=DEADLINE_EXCEEDED``, which names the symptom
 and nothing actionable — sends the operator after a problem that is not there.
 
-Above this layer, ``proxy/service.py`` retries ``PROXY_MAX_RETRIES`` (3) times
+Above this layer, ``proxy/service.py`` retries three times
 with exponential backoff, and the backoff ``asyncio.sleep`` releases the
 thread. So one HTTP request is bounded at ``3 × 35 + 0.5 + 1.0`` ≈ 106.5 s
 wall-clock while never holding a shared thread for more than 35 s at a time.

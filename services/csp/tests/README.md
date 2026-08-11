@@ -24,8 +24,8 @@ DB 狀態,再看測試本身。
 
 不需要先 export 任何環境變數,也不需要設 `PYTHONPATH`。`services/csp/pytest.ini`
 把 rootdir 釘在 `services/csp` 並注入 `pythonpath`;`tests/conftest.py` 在 import
-`app.*` 之前把 `SECRET_KEY` / `ANILA_ALLOW_DEV_SECRET` / `ENABLE_CARD_LOGIN` /
-`REQUIRE_CARD_LOGIN_ONLY` / 臨時 `DATABASE_URL` 等變數釘死,這幾個就不依 cwd。
+`app.*` 之前把 `SECRET_KEY` / `ANILA_ALLOW_DEV_SECRET` / `ANILA_AUTH_MODE` /
+臨時 `DATABASE_URL` 等變數釘死,這幾個就不依 cwd。
 ⚠ 其餘 `Settings` 欄位(如 `ADMIN_PASSWORD`、`CARD_INITIAL_OWNERS`、
 `CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`)從 repo 根跑時仍會讀到機上
 `.env`——目前沒有測試依賴它們的 ambient 值,新增依賴前先來這裡補釘。
@@ -114,7 +114,7 @@ README 卻還停在 1471——**差 23,而且沒有任何測試是壞的**。
 2026-08-01 又釘掉兩類 cwd / 磁碟狀態依賴:
 
 1. `Settings(env_file=".env")` 相對 cwd 解析 → 根目錄跑會吃到
-   `ENABLE_CARD_LOGIN=true`;`conftest` 現在硬設 `ENABLE_CARD_LOGIN=false`,
+   `ANILA_AUTH_MODE=mixed`;`conftest` 現在硬設 `ANILA_AUTH_MODE=password`,
    卡登負向測試也自己釘 precondition。
 2. 舊的 `DATABASE_URL=sqlite:///./.pytest-csp.db` 相對 cwd 且跨行程殘留 →
    改成 per-session 臨時檔,並在 import 後對 `SessionLocal` 引擎 `create_all`。

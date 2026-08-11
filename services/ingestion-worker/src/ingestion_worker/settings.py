@@ -170,14 +170,6 @@ class WorkerSettings(BaseSettings):
             "platform API key the embedding path uses by default."
         ),
     )
-    vision_verify_ssl: bool = Field(
-        default=False,
-        description=(
-            "Verify TLS for the VLM endpoint. Defaults False because the "
-            "internal CSP nginx uses a self-signed cert in dev; flip to "
-            "True once a real cert is in place."
-        ),
-    )
     vision_concurrency: int = Field(
         default=4,
         description=(

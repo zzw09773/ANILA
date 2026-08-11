@@ -213,7 +213,7 @@ DEFAULTS="$BUNDLE/intranet-defaults.env"
 if [ -f "$DEFAULTS" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
-      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|GITLAB_ROOT_PASSWORD|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY)
+      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|GITLAB_ROOT_PASSWORD|SECRET_KEY|CSP_SERVICE_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY)
         _v="${_v%\"}"; _v="${_v#\"}"; _v="${_v%\'}"; _v="${_v#\'}"   # 去頭尾引號
         printf -v "$_k" '%s' "$_v" ;;                                # 賦值,非 eval
       *) : ;;
@@ -224,7 +224,7 @@ fi
 
 if [ "$REGEN" = 1 ]; then
   info "  secret:有預設用預設,否則 openssl 隨機生成"
-  set_env CSP_SECRET_KEY            "${CSP_SECRET_KEY:-$(openssl rand -hex 32)}"
+  set_env SECRET_KEY                "${SECRET_KEY:-$(openssl rand -hex 32)}"
   set_env CSP_SERVICE_TOKEN         "${CSP_SERVICE_TOKEN:-$(openssl rand -hex 32)}"
   set_env INTERNAL_PLATFORM_API_KEY "${INTERNAL_PLATFORM_API_KEY:-sk-internal-$(openssl rand -hex 24)}"
   set_env ADMIN_PASSWORD            "${ADMIN_PASSWORD:-$(openssl rand -base64 24)}"
@@ -251,8 +251,7 @@ preserve_flag ANILA_ALLOW_PRIVATE_ENDPOINT \
   "放行 RFC1918 私網 IP 端點(runbook §3.1c 直連 Triton 用);端點都是 FQDN 就該是 0"
 preserve_flag ANILA_ALLOW_GRPC_ENDPOINT \
   "放行 cleartext grpc:// 模型端點(Triton);內網無 TLS 時才需要,有 grpcs:// 請改回 0"
-set_env ENABLE_CARD_LOGIN           true
-set_env REQUIRE_CARD_LOGIN_ONLY     true
+set_env ANILA_AUTH_MODE             card-only
 # 只在 model-ca.pem 真的有憑證時才指過去。ANILA_MODEL_CA_FILE → csp 的 SSL_CERT_FILE,
 # 而 SSL_CERT_FILE 是「取代」整個系統信任庫(非疊加):指到空/壞檔 → csp 所有出向 https
 # 全 CERTIFICATE_VERIFY_FAILED(連 agent 都連不上)。空字串則 fallback 系統 CA,無副作用。
@@ -285,7 +284,7 @@ if [ -n "$MGK" ]; then set_env MODEL_GATEWAY_API_KEY "$MGK"; ok "已設 MODEL_GA
 else warn "MODEL_GATEWAY_API_KEY 留空 — 模型 proxy 暫時打不通。拿到後填進 .env 再 'docker compose up -d csp'"; fi
 
 # 必填齊全檢查
-for k in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
+for k in SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
          CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD CODESERVER_WORKSPACE CARD_INITIAL_OWNERS; do
   [ -n "$(get_env "$k")" ] || die ".env 缺必填值: $k"
 done
@@ -294,7 +293,7 @@ ok ".env 就緒 (strict + 卡片登入 + 模型走 .12 gateway)"
 if [ "$REGEN" = 1 ]; then
   echo
   echo "$(c '1;33' '──── 請把以下 secret 存進密碼管理器(只顯示這一次) ────')"
-  for k in ADMIN_PASSWORD CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \
+  for k in ADMIN_PASSWORD SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \
            CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD; do
     printf '  %-26s %s\n' "$k" "$(get_env "$k")"
   done
@@ -308,7 +307,7 @@ bash "$BUNDLE/INTRANET-LOAD.sh"
 
 # ── 4b. JWT 簽章金鑰 ───────────────────────────────────────────────────────
 # csp 用這把 RSA 私鑰簽登入 access token,並對 anila-studio 等服務發 JWKS 公鑰。
-# prod 模式 ALLOW_AUTO_KEYGEN=false → 不自動生;缺這把:csp /.well-known/jwks.json
+# production 不在 csp runtime 自動生;缺這把:csp /.well-known/jwks.json
 # 回 500、登入發不了 token、anila-studio 啟動 crash-loop。compose 以 :ro 把 ./secrets
 # mount 進 csp:/app/secrets。必須在 [6] up 之前產好。需 csp image(故排在 load 之後)。
 info "[4b/7] JWT 簽章金鑰 (secrets/jwt-private.pem)"

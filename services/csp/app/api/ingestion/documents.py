@@ -49,7 +49,6 @@ from app.models.ingestion import (
     IngestionDocument,
     IngestionJob,
 )
-from app.models.platform_setting import get_setting
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user
@@ -62,7 +61,7 @@ from app.schemas.base import ApiResponseModel
 router = APIRouter(tags=["Ingestion / Documents"])
 
 
-_UPLOAD_DIR = os.environ.get("INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads")
+_UPLOAD_DIR = "/var/anila/ingestion-uploads"
 
 # Sprint 1 hard cap. Larger files are a Sprint 2 concern (chunked upload,
 # resumable, progress) — for now hard-fail with 413.
@@ -87,8 +86,8 @@ def _zip_member_name(db: Session, member: zipfile.ZipInfo) -> str:
     GBK)→ 被 CP437 解成亂碼。偵測到無 UTF-8 旗標時,把字串還原成原始 bytes 再用
     台灣常見編碼重解。單檔上傳沒這問題(檔名來自 multipart,本來就 UTF-8)。
 
-    覆寫碼頁走 ``intl.zip_filename_encoding``(DB 那一列 → ``ANILA_ZIP_FILENAME_ENC``
-    → 程式預設的空字串),**每個成員都重解一次**。一次 zip 上限 200 個成員,而每個
+    覆寫碼頁固定走 cp950 → gbk 的內建序，**每個成員都重解一次**。一次 zip 上限
+    200 個成員,而每個
     成員本來就要落檔＋雜湊＋寫一列,一次主鍵查詢在這裡不是熱點;把它提到迴圈外
     先讀起來反而多一個「讀取時機」要解釋,而那正是本包在消滅的那種形狀。
     """
@@ -104,10 +103,9 @@ def _zip_member_name(db: Session, member: zipfile.ZipInfo) -> str:
     if all(b < 0x80 for b in raw):
         return name
     # 非 UTF-8 旗標 + 含非 ASCII bytes → 多半是本地碼頁存的 CJK 檔名被 zipfile 用
-    # CP437 誤解。台灣內網優先 CP950(Big5 是其子集);可由設定頁的
-    # intl.zip_filename_encoding 覆寫(例如 gbk)。⚠ 啟發式:各 CJK 碼頁 byte 範圍
+    # CP437 誤解。台灣內網固定優先 CP950(Big5 是其子集),再嘗試 GBK。⚠ 啟發式:各 CJK 碼頁 byte 範圍
     # 重疊,"decode 成功" 不保證 100% 正確,但對單一語系內網是合理預設。
-    override = get_setting(db, "intl.zip_filename_encoding")
+    override = ""
     encs = [e for e in (override, "cp950", "gbk") if e]
     for enc in encs:
         try:

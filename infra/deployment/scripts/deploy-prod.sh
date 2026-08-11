@@ -118,9 +118,9 @@ check_docker() {
 }
 
 check_env() {
-  # 必要 env(沒設就停)。CSP_SECRET_KEY / SECRET_KEY 擇一即可
-  # (infra/compose/platform.yml 內 csp service 看的是 CSP_SECRET_KEY)。
-  local required=(CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY)
+  # 必要 env(沒設就停)。compose 與所有 credential consumer 都只接受
+  # SECRET_KEY，避免同一把金鑰有兩個名稱造成漂移。
+  local required=(CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY SECRET_KEY)
   local missing=()
   for v in "${required[@]}"; do
     if [[ -z "${!v:-}" ]]; then
@@ -130,10 +130,6 @@ check_env() {
       missing+=("$v")
     fi
   done
-  # CSP_SECRET_KEY / SECRET_KEY 擇一
-  if [[ -z "${CSP_SECRET_KEY:-}" ]] && [[ -z "${SECRET_KEY:-}" ]]; then
-    missing+=(CSP_SECRET_KEY)
-  fi
   if (( ${#missing[@]} > 0 )); then
     fatal "缺少或 dev 值的必要 env: ${missing[*]}
        export 它們後重跑,或載入你的 prod .env:
@@ -251,7 +247,7 @@ cmd_preflight() {
   log "Pre-flight 全部通過"
 }
 
-# JWT 簽章金鑰：prod 模式 ALLOW_AUTO_KEYGEN=false 不自動生 → 缺這把 csp 的
+# JWT 簽章金鑰：production 不在 csp runtime 自動生 → 缺這把 csp 的
 # /.well-known/jwks.json 回 500、登入發不了 access token、anila-studio crash-loop。
 # compose (infra/compose/platform.yml) 以 ./secrets mount 進 csp /app/secrets；compose up 前確保存在。
 # (一條龍 intranet-deploy.sh 也有同款 [4b] 步驟;走 deploy-prod.sh 這條也補上。)

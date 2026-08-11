@@ -4,114 +4,17 @@ import logging
 import os
 import re
 import hashlib
-from datetime import datetime, timezone
-from urllib.parse import urlparse
-
-from sqlalchemy import or_
 
 from app.config import settings
 from app.database import SessionLocal
 from app.models.agent import Agent, UserAgentPermission
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.model_registry import ModelRegistry
-from app.models.registered_service import RegisteredService
 from app.models.user import User
 from app.utils.security import hash_password
-from app.utils.slug import unique_slug
-
-
-def _origin_of(url: str) -> str | None:
-    """Return ``scheme://host[:port]`` for an entry URL, or None if unparseable.
-    Used to seed a service's ``allowed_origins`` (iframe origin allow-list)."""
-    try:
-        parts = urlparse(url)
-    except ValueError:
-        return None
-    if not parts.scheme or not parts.netloc:
-        return None
-    return f"{parts.scheme}://{parts.netloc}"
 
 logger = logging.getLogger(__name__)
-
-
-def sync_env_seeded_services(db, links_config: list[dict], *, now=None) -> None:
-    """Upsert AUTO_REGISTER_LINKS entries into registered_services under the
-    Slice 7 config_source rules (doc 07 §3/§15.1). Does NOT commit — caller owns
-    the transaction.
-
-    - Only ``config_source="env_seeded"`` rows are ever upserted; a ``db``
-      service is skipped (single source of truth = UI, survives restart).
-    - Within an env_seeded row, fields listed in ``db_editable_fields``
-      (admin-sticky, e.g. ``is_active``) are left untouched; env owns the rest.
-    """
-    if now is None:
-        now = datetime.now(timezone.utc)
-    taken = {row[0] for row in db.query(RegisteredService.slug).all()}
-    for idx, link_data in enumerate(links_config):
-        name = link_data["name"]
-        env_seed_key = link_data.get("env_seed_key") or name
-        # Coerce nullable required_roles → [] (NOT NULL JSONB).
-        required_roles = link_data.get("required_roles") or []
-        is_public = bool(link_data.get("is_public", False))
-        url = link_data["url"]
-        icon = link_data.get("icon", "")
-        description = link_data.get("description", "")
-        sort_order = link_data.get("sort_order", idx + 1)
-
-        existing = (
-            db.query(RegisteredService)
-            .filter(
-                or_(
-                    RegisteredService.env_seed_key == env_seed_key,
-                    RegisteredService.name == name,
-                )
-            )
-            .first()
-        )
-        if existing is None:
-            slug = unique_slug(name, taken, fallback="link")
-            taken.add(slug)
-            origin = _origin_of(url)
-            db.add(RegisteredService(
-                name=name,
-                slug=slug,
-                entry_url=url,
-                icon=icon,
-                description=description,
-                sort_order=sort_order,
-                is_public=is_public,
-                required_roles=required_roles,
-                allowed_origins=[origin] if origin else [],
-                config_source="env_seeded",
-                env_seed_key=env_seed_key,
-                db_editable_fields=["is_active"],
-                last_seeded_at=now,
-            ))
-            logger.info(f"自動註冊服務 (env_seeded): {name}")
-        elif existing.config_source != "env_seeded":
-            # db-authored service: single source of truth = UI; seed skips it.
-            logger.debug("跳過 db 服務 %s(config_source=db,seed 不覆蓋)", name)
-            continue
-        else:
-            # env_seeded: re-sync env-owned fields, skipping admin-sticky ones.
-            editable = set(existing.db_editable_fields or [])
-            changed = False
-            for field, new_value in (
-                ("entry_url", url),
-                ("icon", icon),
-                ("description", description),
-                ("sort_order", sort_order),
-                ("is_public", is_public),
-                ("required_roles", required_roles),
-            ):
-                if field in editable:
-                    continue  # admin-sticky, seed must not clobber
-                if getattr(existing, field) != new_value:
-                    setattr(existing, field, new_value)
-                    changed = True
-            existing.last_seeded_at = now
-            if changed:
-                logger.info(f"同步 env_seeded 服務: {name}")
+ADMIN_USERNAME = "admin"
 
 
 def _parse_model_env_vars() -> list[dict]:
@@ -192,17 +95,17 @@ def auto_seed():
         # means deployments where admin already exists keep their
         # current role; live stack admins stay at admin tier and can
         # be promoted manually if/when needed.
-        admin = db.query(User).filter(User.username == settings.ADMIN_USERNAME).first()
+        admin = db.query(User).filter(User.username == ADMIN_USERNAME).first()
         if not admin:
             admin = User(
-                username=settings.ADMIN_USERNAME,
+                username=ADMIN_USERNAME,
                 hashed_password=hash_password(settings.ADMIN_PASSWORD),
                 role="owner",
                 is_active=True,
             )
             db.add(admin)
             db.flush()
-            logger.info(f"已建立 owner 帳號: {settings.ADMIN_USERNAME}")
+            logger.info(f"已建立 owner 帳號: {ADMIN_USERNAME}")
 
         # 2. Auto-register models
         # Sources: AUTO_REGISTER_MODELS (JSON) + MODEL_*_HOST env vars
@@ -345,7 +248,7 @@ def auto_seed():
                 for item in agents_config:
                     existing = db.query(Agent).filter(Agent.name == item["name"]).first()
 
-                    owner_username = item.get("owner_username", settings.ADMIN_USERNAME)
+                    owner_username = item.get("owner_username", ADMIN_USERNAME)
                     owner = db.query(User).filter(User.username == owner_username).first()
                     if owner is None:
                         logger.warning(f"Agent {item['name']} 的 owner '{owner_username}' 不存在，跳過")
@@ -502,21 +405,6 @@ def auto_seed():
                 logger.error(f"AUTO_SEED_API_KEYS JSON 解析失敗: {e}")
             except Exception as e:
                 logger.error(f"API key 自動初始化失敗: {e}")
-
-        # 5. Auto-register services from AUTO_REGISTER_LINKS env → registered_services
-        # Slice 7 config_source rules (doc 07 §3/§15.1): the seed ONLY touches
-        # config_source="env_seeded" rows. A db-authored service is NEVER
-        # clobbered on restart; and within an env_seeded service the
-        # db_editable_fields whitelist (admin-sticky, e.g. is_active) is left
-        # untouched — env owns everything else. This is what makes admin edits
-        # to db services survive a restart (the old platform_links seed
-        # re-synced env values over admin edits every boot).
-        if settings.AUTO_REGISTER_LINKS:
-            try:
-                links_config = json.loads(settings.AUTO_REGISTER_LINKS)
-                sync_env_seeded_services(db, links_config)
-            except json.JSONDecodeError as e:
-                logger.error(f"AUTO_REGISTER_LINKS JSON 解析失敗: {e}")
 
         db.commit()
     except Exception as e:

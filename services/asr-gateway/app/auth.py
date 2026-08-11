@@ -150,14 +150,14 @@ async def authenticate(token: str) -> CurrentUserIdentity:
     if payload.get("type") != "access":
         raise AuthError("無效的存取權杖")
 
-    # ⚠ 這裡原本有一段 `REQUIRE_CARD_LOGIN_ONLY` → 要求 `amr` 含 "sc" 的檢查,
+    # ⚠ 這裡原本有一段 CSP card-only mode → 要求 `amr` 含 "sc" 的檢查,
     # 已移除。理由不是「放寬」,是那段程式做不到它宣稱的事:
     #
     # - csp 從不簽 `amr`,所以 flag 一開,**連憑證卡登入的人也一律被拒**
     #   (卡登入走同一個 create_tokens)。compose 的預設值正是
-    #   `REQUIRE_CARD_LOGIN_ONLY:-true`,也就是內網 .15 一上線就是全員被擋。
+    #   舊 compose 預設會讓內網一上線就全員被擋。
     # - 「只准卡登入」這件事的執法點在簽發端,不在這裡:csp 的
-    #   `REQUIRE_CARD_LOGIN_ONLY` 會把帳密與 OIDC 登入路徑關掉
+    #   `ANILA_AUTH_MODE=card-only` 會把帳密與 OIDC 登入路徑關掉
     #   (services/csp/app/api/auth/password.py:95、oidc.py:115、_common.py:39)。
     #   csp 處於 card-only 時,它發得出來的權杖本來就只可能來自卡登入。
     #

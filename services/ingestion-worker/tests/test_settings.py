@@ -41,7 +41,6 @@ _ENV_VARS = [
     "VISION_URL",
     "VISION_MODEL",
     "VISION_API_KEY",
-    "VISION_VERIFY_SSL",
     "VISION_CONCURRENCY",
     "VISION_TIMEOUT_SECONDS",
     "VISION_MAX_IMAGE_BYTES",
@@ -136,10 +135,6 @@ def test_vision_api_key_default(clean_env):
     assert _fresh().vision_api_key == "not-set"
 
 
-def test_vision_verify_ssl_default_false(clean_env):
-    assert _fresh().vision_verify_ssl is False
-
-
 def test_vision_concurrency_default(clean_env):
     assert _fresh().vision_concurrency == 4
 
@@ -175,7 +170,6 @@ def test_all_defaults_at_once(clean_env):
         "vision_url": "",
         "vision_model": "gemma4",
         "vision_api_key": "not-set",
-        "vision_verify_ssl": False,
         "vision_concurrency": 4,
         "vision_timeout_seconds": 60.0,
         "vision_max_image_bytes": 8 * 1024 * 1024,
@@ -254,10 +248,8 @@ def test_int_pool_override(clean_env):
 )
 def test_bool_override_parsing(clean_env, raw, expected):
     clean_env.setenv("ENABLE_IMAGE_CAPTIONS", raw)
-    clean_env.setenv("VISION_VERIFY_SSL", raw)
     s = _fresh()
     assert s.enable_image_captions is expected
-    assert s.vision_verify_ssl is expected
 
 
 def test_case_insensitive_env_mapping(clean_env):

@@ -52,7 +52,7 @@ COMPLETE_URL = "/api/auth/card/complete-registration"
 
 @pytest.fixture
 def card_login_on(monkeypatch):
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "mixed")
     monkeypatch.setattr(settings, "CARD_INITIAL_OWNERS", "")
 
 

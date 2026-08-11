@@ -1,8 +1,8 @@
-"""``REQUIRE_CARD_LOGIN_ONLY`` (branch SSO) endpoint-level lockdown tests.
+"""``ANILA_AUTH_MODE`` (branch SSO) endpoint-level lockdown tests.
 
 Pins the contract:
-- 預設 ``REQUIRE_CARD_LOGIN_ONLY=False`` → 既有 endpoint 行為不變。
-- ``REQUIRE_CARD_LOGIN_ONLY=True`` 時：
+- ``ANILA_AUTH_MODE=password`` → 既有帳密 endpoint 行為不變。
+- ``ANILA_AUTH_MODE=card-only`` 時：
   - ``POST /api/auth/login``       → 404;**例外:owner 帳密正確可登入**
     (break-glass,2026-06-11)— 其他所有結果(密碼錯/非 owner 憑證有效/
     待核准)一律 404,姿態不可區分
@@ -11,8 +11,7 @@ Pins the contract:
   - ``GET  /api/auth/oidc/{id}/callback`` → 404
   - ``PUT  /api/auth/password``    → 404;**例外:owner 可輪換密碼**
   - ``GET  /api/auth/providers``   → 不再列出 OIDC providers
-- Startup 一致性：``REQUIRE_CARD_LOGIN_ONLY=True`` 但
-  ``ENABLE_CARD_LOGIN=False`` → ``RuntimeError``。
+- Startup 一致性：未知 ``ANILA_AUTH_MODE`` → ``RuntimeError``。
 """
 from __future__ import annotations
 
@@ -29,8 +28,7 @@ from tests.conftest import make_user
 @pytest.fixture
 def card_only_lockdown(monkeypatch):
     """Toggle the intranet lockdown for this test only."""
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
 
 
 # ── endpoint-level lockdown ────────────────────────────────────────────────────
@@ -183,8 +181,7 @@ def test_change_password_nonowner_returns_404_when_locked_down(
         "/api/auth/login",
         json={"username": "staffer2", "password": "password"},
     ).json()["access_token"]
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
     resp = client.put(
         "/api/auth/password",
         json={"current_password": "password", "new_password": "n3w-Passw0rd!xyz"},
@@ -198,7 +195,7 @@ def test_change_password_nonowner_returns_404_when_locked_down(
 
 def test_local_login_still_works_when_lockdown_off(client: TestClient, db):
     """確保 lockdown 預設 OFF — 不會破壞既有部署。"""
-    # 預設 REQUIRE_CARD_LOGIN_ONLY=False
+    # 預設測試環境是 password mode。
     make_user(db, username="alice2")
     resp = client.post(
         "/api/auth/login",
@@ -211,21 +208,17 @@ def test_local_login_still_works_when_lockdown_off(client: TestClient, db):
 
 
 def test_startup_assertion_passes_when_lockdown_off(monkeypatch):
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", False)
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", False)
-    # 不該 raise — lockdown 沒開時不檢查
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "password")
+    # 不該 raise — password mode 是合法模式
     assert_intranet_lockdown_consistency()
 
 
 def test_startup_assertion_passes_when_both_flags_on(monkeypatch):
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
     assert_intranet_lockdown_consistency()
 
 
-def test_startup_assertion_rejects_inconsistent_config(monkeypatch):
-    """REQUIRE_CARD_LOGIN_ONLY=True 但 ENABLE_CARD_LOGIN=False → bricked。"""
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", False)
-    with pytest.raises(RuntimeError, match="REQUIRE_CARD_LOGIN_ONLY"):
+def test_startup_assertion_rejects_unknown_auth_mode(monkeypatch):
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "unsupported")
+    with pytest.raises(RuntimeError, match="ANILA_AUTH_MODE"):
         assert_intranet_lockdown_consistency()

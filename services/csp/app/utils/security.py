@@ -2,7 +2,7 @@
 
 Sprint 9 / anila-studio extraction: JWT algorithm switched from
 symmetric HS256 to asymmetric RS256. CSP holds the private key (PKCS#8
-PEM at ``settings.JWT_PRIVATE_KEY_PATH``) and signs access/refresh
+PEM at the fixed ``secrets/jwt-private.pem`` path) and signs access/refresh
 tokens; anila-studio (and any future downstream verifier) fetches the
 matching public key from ``GET /.well-known/jwks.json`` and verifies
 locally — no shared secret crosses the trust boundary.
@@ -11,8 +11,8 @@ Cutover notes:
 
 * No HS256 fallback. Existing tokens issued under HS256 are invalidated
   on deploy; users re-authenticate once.
-* ``ALGORITHM`` constant is hard-coded to ``"RS256"``. ``settings.ALGORITHM``
-  is no longer consulted here (kept on Settings for legacy / observability).
+* ``ALGORITHM`` is hard-coded to ``"RS256"``; the JWT wire algorithm is not
+  deployment-configurable.
 * ``settings.SECRET_KEY`` is NOT used for JWT in the RS256 path. It is
   retained only because ``startup_security`` / ``credential_crypto`` /
   audit logging still depend on it for non-JWT purposes.
@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 
 ALGORITHM: str = "RS256"
+JWT_PRIVATE_KEY_PATH = "secrets/jwt-private.pem"
+JWT_PUBLIC_KEY_PATH = "secrets/jwt-public.pem"
 
 
 _BCRYPT_ROUNDS = 12
@@ -96,18 +98,16 @@ def verify_password(plain_password: str, hashed_password: str | None) -> bool:
 # ── Key loading ────────────────────────────────────────────────────────────────
 
 class JwtKeyLoadError(RuntimeError):
-    """Raised at import time when the configured PEM file is missing
-    and ``ALLOW_AUTO_KEYGEN`` is False. Surfaces a clear actionable
-    message so operators know exactly which step they skipped."""
+    """Raised when the provisioned PEM file is missing or unreadable."""
 
 
 def _resolve_key_path(raw: str) -> Path:
-    """Resolve a (possibly relative) configured PEM path.
+    """Resolve a fixed (possibly relative) PEM path.
 
-    Settings ship with relative defaults (``secrets/jwt-private.pem``)
-    so docker mount points stay short and obvious. We resolve against
-    the current working directory at import time — uvicorn and pytest
-    both run from the backend root so this lines up. Absolute paths
+    The fixed relative paths (``secrets/jwt-private.pem`` and
+    ``secrets/jwt-public.pem``) keep docker mount points short and obvious.
+    We resolve against the current working directory at import time — uvicorn
+    and pytest both run from the backend root so this lines up. Absolute paths
     pass through unchanged.
     """
     path = Path(raw)
@@ -119,8 +119,9 @@ def _resolve_key_path(raw: str) -> Path:
 def _auto_generate_keypair(private_path: Path, public_path: Path) -> None:
     """Invoke ``scripts/generate-jwt-keypair.py`` to produce a fresh pair.
 
-    Only reachable when ``settings.ALLOW_AUTO_KEYGEN`` is True (dev /
-    test). The subprocess approach keeps the keygen logic in one place
+    This helper is used only by the pytest harness. Production key material
+    is always provisioned by the deployment script. The subprocess approach
+    keeps the keygen logic in one place
     and avoids importing the script's main() into runtime — the script
     has its own arg parser and exit codes we don't need here.
     """
@@ -167,10 +168,8 @@ def _load_pem(path: Path, *, label: str) -> bytes:
         # The remedy named here has to be one that works *where this error is
         # actually seen*, which is inside the container. Since 2026-08-06 the
         # runtime user is non-root (uid 10001) and ``/app/secrets`` is a
-        # read-only mount, so the old advice ("set ALLOW_AUTO_KEYGEN=true")
-        # dies with PermissionError one line later — a remedy that cannot
-        # work is worse than no remedy, because the operator spends the
-        # outage trying it. Point at the host-side provisioning step instead.
+        # read-only mount, so runtime key generation is not an available
+        # recovery path. Point at the host-side provisioning step instead.
         raise JwtKeyLoadError(
             f"JWT {label} key not found at {path}. "
             "Provision it from the host, then restart this service: "
@@ -179,9 +178,8 @@ def _load_pem(path: Path, *, label: str) -> bytes:
             "intranet-deploy.sh step [4b]; both write into ./secrets as root. "
             "Then run infra/deployment/scripts/fix-runtime-ownership.sh so "
             "the non-root runtime user can read the key. "
-            "ALLOW_AUTO_KEYGEN=true only helps where the process can write "
-            "the key directory itself (local dev / pytest) — it cannot work "
-            "in the container."
+            "Generate the pair with the host-side deployment script; the "
+            "runtime container must not generate keys."
         )
     try:
         return path.read_bytes()
@@ -209,19 +207,18 @@ def _load_pem(path: Path, *, label: str) -> bytes:
 def _load_keys() -> tuple[bytes, bytes]:
     """Read PEM files lazily on first use.
 
-    Lazy load (vs module-import time) lets tests monkeypatch
-    ``settings.JWT_PRIVATE_KEY_PATH`` before the first sign/verify call.
+    Lazy load (vs module-import time) keeps key reads out of module import.
     The ``lru_cache`` ensures we hit the disk exactly once per process.
-    Tests that need to swap keys mid-run call ``_load_keys.cache_clear()``.
+    Tests that need to swap keys mid-run monkeypatch the path constants and
+    call ``_load_keys.cache_clear()``.
     """
-    private_path = _resolve_key_path(settings.JWT_PRIVATE_KEY_PATH)
-    public_path = _resolve_key_path(settings.JWT_PUBLIC_KEY_PATH)
+    private_path = _resolve_key_path(JWT_PRIVATE_KEY_PATH)
+    public_path = _resolve_key_path(JWT_PUBLIC_KEY_PATH)
 
     missing = not (private_path.exists() and public_path.exists())
-    if missing and settings.ALLOW_AUTO_KEYGEN:
+    if missing and "PYTEST_CURRENT_TEST" in os.environ:
         logger.warning(
-            "[security] JWT keypair missing — auto-generating at %s / %s "
-            "(ALLOW_AUTO_KEYGEN=True). Do NOT use this code path in production.",
+            "[security] pytest JWT keypair missing — generating at %s / %s",
             private_path,
             public_path,
         )
@@ -275,10 +272,25 @@ def _jwt_headers() -> dict:
     return {"kid": settings.JWT_KID, "typ": "JWT"}
 
 
-def create_access_token(data: dict) -> str:
+def _setting_at_issuance(db, key: str) -> int:
+    """Resolve a token lifetime at the moment the token is signed."""
+
+    from app.models.platform_setting import get_setting
+
+    if db is not None:
+        return int(get_setting(db, key))
+    # Direct utility callers (mostly tests) use the same resolver rather than
+    # reading the import-time Settings singleton.
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        return int(get_setting(session, key))
+
+
+def create_access_token(data: dict, db=None) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        minutes=_setting_at_issuance(db, "auth.access_token_expire_minutes")
     )
     to_encode.update({"exp": expire, "type": "access"})
     return jwt.encode(
@@ -289,10 +301,10 @@ def create_access_token(data: dict) -> str:
     )
 
 
-def create_refresh_token(data: dict) -> str:
+def create_refresh_token(data: dict, db=None) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(
-        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
+        days=_setting_at_issuance(db, "auth.refresh_token_expire_days")
     )
     to_encode.update({"exp": expire, "type": "refresh"})
     return jwt.encode(

@@ -4,7 +4,6 @@ Split verbatim from the former single-module ``app/api/agents.py``
 (behavior-preserving refactor).
 """
 import io
-import os as _os
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -85,14 +84,12 @@ def _repo_root() -> Path | None:
 
 
 def _default_template_dir() -> Path:
-    """Fallback template location when ``ANILA_TEMPLATE_DIR`` is unset.
+    """Locate the bundled agent template without a runtime path knob.
 
     The tree used to keep the agent template at ``<repo-root>/anila-agent``;
     the §17.1 directory move (b5c5e32e, a pure ``git mv``) relocated it to
-    ``packages/anila-agent`` and this default was not moved with it. Compose
-    hides the breakage because it sets ``ANILA_TEMPLATE_DIR``
-    (infra/compose/platform.yml), so only a csp started another way — bare
-    uvicorn, a demo box — served 404 to every template download.
+    ``packages/anila-agent``. The image mount is fixed at
+    ``/app/anila-template``; a source checkout uses the repository package path.
     """
     root = _repo_root()
     # No repo layout (the csp image): return a path that cannot exist, so the
@@ -100,13 +97,9 @@ def _default_template_dir() -> Path:
     return (root / "packages" / "anila-agent") if root else Path("/nonexistent/anila-agent")
 
 
-# Evaluate the default only when the env knob is absent. Eagerly calling
-# ``_default_template_dir()`` as ``dict.get``'s default would invoke
-# ``_repo_root()`` at import time inside the csp image (no repo layout).
-_env_template_dir = _os.environ.get("ANILA_TEMPLATE_DIR")
-_TEMPLATE_DIR = (
-    Path(_env_template_dir) if _env_template_dir else _default_template_dir()
-)
+_TEMPLATE_DIR = Path("/app/anila-template")
+if not _TEMPLATE_DIR.exists():
+    _TEMPLATE_DIR = _default_template_dir()
 
 # Bundled CSPKI trust anchors (public certs only). Same file card_auth loads
 # as ``_DEFAULT_CA_BUNDLE`` — resolved relative to ``app/services/``, no env knob.

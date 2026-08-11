@@ -97,14 +97,12 @@ def _guard_outbound(url: str) -> None:
 
 # ── Tunables ─────────────────────────────────────────────────────────────────
 #
-# ⚠ 四顆檢索參數（``memory.retrieve_top_k`` / ``memory.retrieve_min_cosine`` /
-# ``memory.max_chunk_chars`` / ``memory.http_timeout``）**曾經是這裡的模組層常數**
-# —— import 期讀一次 env、之後整個行程都用那一份。那正是設定頁要消滅的形狀：
-# 畫面上改得動、後端到重啟前都不會知道。現在四顆都在**用到它的那個函式裡**走
-# ``get_setting(db, key)`` 解析（``platform_settings`` → env → 程式預設），env
-# 一層沒有拿掉，仍然是回退鏈的中間層。**不要把任何一顆搬回模組層。**
+# ⚠ 保留的兩顆檢索參數（``memory.retrieve_top_k`` /
+# ``memory.retrieve_min_cosine``）在**用到它的那個函式裡**走
+# ``get_setting(db, key)`` 解析（``platform_settings`` → env → 程式預設）。
+# 其餘記憶體格式/逾時限制是固定程式常數，不是治理頁控制項。
 #
-# ``MEMORY_LLM_MODEL`` 留在模組層是刻意的：它在登錄表是 B_LOCKED（換模型牽動
+# ``MEMORY_LLM_MODEL`` 留在模組層是刻意的：它是部署事實（換模型牽動
 # per-model 授權，畫面上補不了），本輪不搬。
 
 _LLM_MODEL_NAME = os.environ.get("MEMORY_LLM_MODEL", "gemma4")
@@ -482,7 +480,7 @@ async def build_memory_block(
         block=_format_block(
             facts,
             chunks,
-            max_chunk_chars=int(get_setting(db, "memory.max_chunk_chars")),
+            max_chunk_chars=1200,
         ),
         facts_count=len(facts),
         chunks=chunks,
@@ -533,7 +531,7 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
     # ⚠ 逾時要在 ``commit()`` **之前**解析。那個 commit 是刻意把池化連線還回池子
     # 再走出向 HTTP；commit 之後才查 ``platform_settings`` 會重新 checkout 一條
     # 連線，並且一路握到 LLM 回應為止。
-    http_timeout = float(get_setting(db, "memory.http_timeout"))
+    http_timeout = 30.0
     # Release the pooled connection before the outbound LLM HTTP call.
     db.commit()
     try:

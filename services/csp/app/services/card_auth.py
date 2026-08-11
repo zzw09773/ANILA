@@ -87,7 +87,7 @@ _DEFAULT_CA_BUNDLE = Path(__file__).resolve().parent / "cspki_ca_bundle.pem"
 #   1. ``CARD_CA_BUNDLE_PATH`` 明確指到那份 bundle(預設不設 = 釘死的真 bundle);
 #   2. ``CARD_DEV_TRUST_TEST_CA`` 明確開啟 —— 旗標名字就寫著它在做什麼,
 #      沒有人會「不小心」打出這個變數;
-#   3. ``REQUIRE_CARD_LOGIN_ONLY`` 是 False —— 內網 production 的定義就是
+#   3. ``ANILA_AUTH_MODE`` 不是 ``card-only`` —— 內網 production 的定義就是
 #      「卡登是唯一入口」(compose 預設 true),所以卡登唯一的機器一律拒收。
 #
 # 再加上第 0 道(不靠設定):那份 bundle 與它的私鑰**在 production 上根本不存在**
@@ -111,8 +111,8 @@ def _dev_test_ca_explicitly_allowed() -> tuple[bool, str]:
     # 延遲 import:card_auth 其餘部分是純函式,不依賴 settings。
     from app.config import settings
 
-    if settings.REQUIRE_CARD_LOGIN_ONLY:
-        return False, "REQUIRE_CARD_LOGIN_ONLY=True(卡登唯一入口 = 內網正式部署)"
+    if settings.ANILA_AUTH_MODE == "card-only":
+        return False, "ANILA_AUTH_MODE=card-only(卡登唯一入口 = 內網正式部署)"
     return True, ""
 
 
