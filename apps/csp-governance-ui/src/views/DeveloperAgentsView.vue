@@ -13,7 +13,7 @@
         <TermButton variant="primary" @click="openRegisterModal" label="註冊 Agent" />
       </div>
       <p class="cell-meta page-head__ca-hint">
-        「下載平台 CA」在後端端點就緒後可用；未上線時會顯示錯誤提示，不會假裝下載成功。
+        「下載平台 CA」會呼叫平台端點；若下載失敗，畫面會顯示錯誤提示。
       </p>
     </header>
 
@@ -604,10 +604,16 @@ function resetForm() {
 
 function validateForm() {
   const errors = {}
-  if (!form.value.name.trim()) errors.name = 'agent name required'
-  if (!/^https?:\/\//.test(form.value.endpoint_url.trim())) errors.endpoint_url = 'must be http or https url'
-  if (form.value.description_for_router.trim().length < 24) errors.description_for_router = 'min 24 chars'
-  if (!form.value.base_model_id) errors.base_model_id = 'base model required for usage attribution'
+  if (!form.value.name.trim()) errors.name = '請輸入 Agent 名稱'
+  if (!/^https?:\/\//.test(form.value.endpoint_url.trim())) {
+    errors.endpoint_url = '網址要以 http:// 或 https:// 開頭，例如 http://172.16.120.153:8043'
+  }
+  if (form.value.description_for_router.trim().length < 24) {
+    errors.description_for_router = '請輸入至少 24 個字元的用途說明'
+  }
+  if (!form.value.base_model_id) {
+    errors.base_model_id = '請選擇基礎模型，才能正確歸屬用量'
+  }
   formErrors.value = errors
   return Object.keys(errors).length === 0
 }
@@ -880,7 +886,7 @@ async function handleDownloadTemplate() {
 }
 
 async function handleDownloadPlatformCa() {
-  // Needs GET /api/agents/platform-ca/download (backend package not in W3 scope).
+  // Public CSPKI CA bundle used by agents for JWKS over https.
   try {
     const { data } = await downloadPlatformCa()
     const url = URL.createObjectURL(new Blob([data], { type: 'application/x-pem-file' }))
@@ -894,7 +900,7 @@ async function handleDownloadPlatformCa() {
     const status = e.response?.status
     const detail = e.response?.data?.detail
     if (status === 404) {
-      setFeedback('error', '平台 CA 下載端點尚未上線（需後端提供 GET /api/agents/platform-ca/download）')
+      setFeedback('error', '平台 CA 下載失敗，請稍後再試')
     } else {
       setFeedback('error', detail || '下載平台 CA 失敗')
     }
