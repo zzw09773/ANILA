@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.middleware.cookies import set_session_cookies
 from app.models.user import User
+from app.services.auth_service import TOKEN_LIFETIMES_KEY
 
 
 router = APIRouter(prefix="/api/auth", tags=["認證"])
@@ -43,11 +44,13 @@ def _reject_when_card_only() -> None:
 def _finalize_login(response: Response, tokens: dict, db: Session) -> dict:
     """Attach session cookies to the response and surface the CSRF token
     in the JSON body so the SPA can read it even on its first request."""
+    token_lifetimes = tokens.pop(TOKEN_LIFETIMES_KEY, None)
     csrf = set_session_cookies(
         response,
         access_token=tokens["access_token"],
         refresh_token=tokens["refresh_token"],
         db=db,
+        token_lifetimes=token_lifetimes,
     )
     return {**tokens, "csrf_token": csrf}
 

@@ -27,12 +27,11 @@ from app.services.attachment_context import (
 )
 from app.services.auth_service import is_admin_tier
 from app.services.proxy import _estimate_token_count
+from app.services.storage_paths import ATTACHMENT_STORAGE_ROOT
 
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
-ATTACHMENT_STORAGE_ROOT = Path("data/attachments")
-
 # L5: 改用 allow-list — 只允許平台明確支援的文件 / 圖檔型別。其餘一律
 # 拒絕，比 deny-list 更不易因新副檔名漏網。
 ALLOWED_EXTENSIONS = {

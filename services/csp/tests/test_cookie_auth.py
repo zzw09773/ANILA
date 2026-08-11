@@ -15,12 +15,17 @@ Pins the contract:
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 
+from app.middleware import cookies as cookie_module
 from app.middleware.cookies import (
     ACCESS_COOKIE_NAME,
     CSRF_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
+    set_session_cookies,
 )
+from app.models.platform_setting import PlatformSetting
+from app.services.auth_service import TOKEN_LIFETIMES_KEY, create_tokens
 
 from tests.conftest import make_user
 
@@ -32,6 +37,54 @@ def _login(client: TestClient, username: str, password: str = "password") -> dic
     )
     assert resp.status_code == 200, resp.text
     return resp
+
+
+def test_production_cookie_secure_flag_is_true():
+    """The production helper itself must keep session cookies HTTPS-only."""
+    assert cookie_module._cookie_secure() is True
+
+
+def test_session_cookies_reuse_lifetimes_resolved_for_token_issuance(db):
+    """Cookie Max-Age must not reread a setting changed after signing."""
+    user = make_user(db, username="lifetime-user")
+    db.add_all(
+        [
+            PlatformSetting(
+                key="auth.access_token_expire_minutes", value="7"
+            ),
+            PlatformSetting(key="auth.refresh_token_expire_days", value="2"),
+        ]
+    )
+    db.commit()
+
+    tokens = create_tokens(user, db, include_lifetimes=True)
+    assert tokens[TOKEN_LIFETIMES_KEY] == (7, 2)
+
+    db.get(PlatformSetting, "auth.access_token_expire_minutes").value = "13"
+    db.get(PlatformSetting, "auth.refresh_token_expire_days").value = "30"
+    db.commit()
+
+    response = Response()
+    set_session_cookies(
+        response,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        db=db,
+        token_lifetimes=tokens[TOKEN_LIFETIMES_KEY],
+    )
+    set_cookies = [
+        value.decode("latin-1")
+        for name, value in response.raw_headers
+        if name == b"set-cookie"
+    ]
+    access_cookie = next(
+        cookie for cookie in set_cookies if cookie.startswith(f"{ACCESS_COOKIE_NAME}=")
+    )
+    refresh_cookie = next(
+        cookie for cookie in set_cookies if cookie.startswith(f"{REFRESH_COOKIE_NAME}=")
+    )
+    assert "Max-Age=420" in access_cookie
+    assert "Max-Age=172800" in refresh_cookie
 
 
 def test_login_sets_three_cookies(client: TestClient, db):

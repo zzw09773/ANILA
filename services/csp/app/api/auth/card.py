@@ -165,7 +165,7 @@ def card_verify(
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
 
     # ── Approved: 正常登入流程 ───────────────────────────────────────────
-    tokens = create_tokens(user, db)
+    tokens = create_tokens(user, db, include_lifetimes=True)
     _stamp_last_login(db, user)
     log_audit_event(
         db,

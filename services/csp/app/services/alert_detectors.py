@@ -23,6 +23,10 @@ from app.database import SessionLocal, engine
 from app.models.alert import Alert
 from app.services.alert_notifier import notify_alert_opened
 from app.services.alert_service import resolve_alert_by_fingerprint, upsert_alert
+from app.services.storage_paths import (
+    ATTACHMENT_STORAGE_ROOT,
+    INGESTION_UPLOAD_ROOT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -472,10 +476,6 @@ class DiskSample:
     used_pct: float
     free_bytes: int
     total_bytes: int
-
-
-INGESTION_UPLOAD_ROOT = Path("/var/anila/ingestion-uploads")
-ATTACHMENT_STORAGE_ROOT = Path("data/attachments")
 
 
 def disk_paths_to_check() -> list[tuple[str, str]]:

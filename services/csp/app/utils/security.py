@@ -287,10 +287,27 @@ def _setting_at_issuance(db, key: str) -> int:
         return int(get_setting(session, key))
 
 
-def create_access_token(data: dict, db=None) -> str:
+def resolve_token_lifetimes(db=None) -> tuple[int, int]:
+    """Resolve access minutes and refresh days for one token issuance."""
+    return (
+        _setting_at_issuance(db, "auth.access_token_expire_minutes"),
+        _setting_at_issuance(db, "auth.refresh_token_expire_days"),
+    )
+
+
+def create_access_token(
+    data: dict,
+    db=None,
+    *,
+    lifetime_minutes: int | None = None,
+) -> str:
     to_encode = data.copy()
+    if lifetime_minutes is None:
+        lifetime_minutes = _setting_at_issuance(
+            db, "auth.access_token_expire_minutes"
+        )
     expire = datetime.now(timezone.utc) + timedelta(
-        minutes=_setting_at_issuance(db, "auth.access_token_expire_minutes")
+        minutes=lifetime_minutes
     )
     to_encode.update({"exp": expire, "type": "access"})
     return jwt.encode(
@@ -301,10 +318,19 @@ def create_access_token(data: dict, db=None) -> str:
     )
 
 
-def create_refresh_token(data: dict, db=None) -> str:
+def create_refresh_token(
+    data: dict,
+    db=None,
+    *,
+    lifetime_days: int | None = None,
+) -> str:
     to_encode = data.copy()
+    if lifetime_days is None:
+        lifetime_days = _setting_at_issuance(
+            db, "auth.refresh_token_expire_days"
+        )
     expire = datetime.now(timezone.utc) + timedelta(
-        days=_setting_at_issuance(db, "auth.refresh_token_expire_days")
+        days=lifetime_days
     )
     to_encode.update({"exp": expire, "type": "refresh"})
     return jwt.encode(

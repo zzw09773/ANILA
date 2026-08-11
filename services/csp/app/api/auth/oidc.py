@@ -20,7 +20,7 @@ from app.models.user import User
 from app.schemas.auth_provider import PublicAuthProviderResponse
 from app.services.api_key_service import create_api_key
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import create_tokens
+from app.services.auth_service import TOKEN_LIFETIMES_KEY, create_tokens
 from app.services.external_auth_service import (
     authenticate_oidc_code,
     build_oidc_authorization_url,
@@ -178,7 +178,7 @@ async def oidc_callback(
         # state 內有 PKCE verifier 與 nonce，必須完整傳給 authenticate_oidc_code
         # 才能驗 id_token；任何缺漏由該函式 raise ValueError。
         user = await authenticate_oidc_code(db, provider, code, state_payload)
-        tokens = create_tokens(user, db)
+        tokens = create_tokens(user, db, include_lifetimes=True)
         _stamp_last_login(db, user)
         log_audit_event(
             db,
@@ -195,11 +195,13 @@ async def oidc_callback(
         )
         # Cookies carry the session — SPA reads `anila_csrf` (non-httpOnly)
         # on first render and echoes it on mutating requests.
+        token_lifetimes = tokens.pop(TOKEN_LIFETIMES_KEY, None)
         set_session_cookies(
             html,
             access_token=tokens["access_token"],
             refresh_token=tokens["refresh_token"],
             db=db,
+            token_lifetimes=token_lifetimes,
         )
         return html
     except Exception as exc:

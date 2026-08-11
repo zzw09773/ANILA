@@ -62,11 +62,6 @@ from app.utils.security import hash_password
 # 必須在 model import(含 ``app.main`` 帶進來的)之後才 create_all。
 Base.metadata.create_all(bind=_session_local_engine)
 
-# TestClient uses http://testserver.  Production cookies remain Secure; this
-# explicit test-harness seam keeps the HTTP fixture able to send them back.
-cookie_module._cookie_secure = lambda: False
-
-
 def _cleanup_test_db_dir() -> None:
     shutil.rmtree(_TEST_DB_DIR, ignore_errors=True)
 
@@ -113,6 +108,10 @@ def client(db_engine, monkeypatch):
         return None
 
     monkeypatch.setattr(ingestion_pool, "open_pool", _skip_network_ingestion_pool)
+    # TestClient uses http://testserver. Production cookies remain Secure;
+    # this scoped harness seam keeps only the HTTP fixture able to send them
+    # back without replacing the production helper for every test.
+    monkeypatch.setattr(cookie_module, "_cookie_secure", lambda: False)
 
     def override_get_db():
         session = Session()

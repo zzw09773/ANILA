@@ -67,6 +67,9 @@ services:
       # 的 RLS 失效 (superuser 自動 bypass)。
       DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (csp_app runtime role password)}@csp-db:5432/csp
       MIGRATION_DATABASE_URL: postgresql://csp:${CSP_DB_PASSWORD:?CSP_DB_PASSWORD must be set (same as csp-db POSTGRES_PASSWORD)}@csp-db:5432/csp
+      # CSP and ingestion-worker resolve the shared upload root from one
+      # deployment variable; the volume targets below use it too.
+      UPLOAD_DIR: "${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
       # migration 0014 在 fresh DB 建 csp_app role 時讀這個值當 role 密碼;
       # 既有 DB 的 role 已存在,改值要自己 ALTER ROLE csp_app PASSWORD。
       # 密碼用 hex 生成 (openssl rand -hex),避免 URL 特殊字元要 escape。
@@ -230,7 +233,7 @@ services:
       # 更新走 git subtree pull/push,見 README §"Updating anila-agent"。
       - ../../packages/anila-agent:/app/anila-template:ro
       # 跟 ingestion-worker 共用 inode,不走拷貝。
-      - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
+      - "../../share/uploads/ingestion:${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
       # 對話附件。刻意放在 share/uploads/ 之外,
       # 那個目錄整個被 nginx 無認證服務;附件只能走 /api/attachments 授權下載。
       - ../../share/attachments:/app/data/attachments
@@ -305,7 +308,11 @@ services:
       # 而 runbook 已經在印一條它是其中一項的不變式。
       # 預設值與 WorkerSettings.embedding_timeout_seconds 同為 30。
       EMBEDDING_TIMEOUT_SECONDS: "${EMBEDDING_TIMEOUT_SECONDS:-30}"
-      UPLOAD_DIR: /var/anila/ingestion-uploads
+      # Must match csp's value and the target of both upload mounts.
+      UPLOAD_DIR: "${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
+      # Keep the secure VLM/OCR default (verify=True). This is the CA-bundle
+      # channel for an internal HTTPS endpoint, not a TLS-bypass switch.
+      SSL_CERT_FILE: ${ANILA_MODEL_CA_FILE-}
       # judge 路徑要解 AES-encrypted credentials,cipher key 從 SECRET_KEY 派生,
       # **必須**跟 csp 同值,不然每次 judge decrypt 失敗會 silently skip。
       SECRET_KEY: ${SECRET_KEY:-${CSP_SECRET_KEY:?SECRET_KEY (or legacy CSP_SECRET_KEY) must be set (same value as csp)}}
@@ -339,7 +346,8 @@ services:
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
+      - "../../share/uploads/ingestion:${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
+      - ../../share/pki:/etc/anila/pki:ro
     depends_on:
       csp-db:
         condition: service_healthy
