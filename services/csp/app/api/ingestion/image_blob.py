@@ -30,6 +30,7 @@ from app.api.ingestion.collections import _require_collection_access
 from app.database import get_db
 from app.models.user import User
 from app.services.auth_service import get_current_user
+from app.services.storage_paths import INGESTION_UPLOAD_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ router = APIRouter(tags=["Ingestion / Images"])
 # window. Smaller risks too many syscalls; larger forces extra copies
 # inside Starlette's send buffer without latency benefit.
 _STREAM_CHUNK = 64 * 1024
-UPLOAD_ROOT = Path("/var/anila/ingestion-uploads")
+UPLOAD_ROOT = INGESTION_UPLOAD_ROOT
 
 
 def _stream_file(path: Path) -> AsyncIterator[bytes]:

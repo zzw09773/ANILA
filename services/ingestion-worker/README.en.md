@@ -216,6 +216,7 @@ In compose (`infra/compose/platform.yml`): build context = repo root; `depends_o
 | `EMBEDDING_MODEL` / `EMBEDDING_API_KEY` | `nvidia/NV-embed-V2` / `not-set` | model / Bearer token |
 | `EMBEDDING_DIM` / `EMBEDDING_TIMEOUT_SECONDS` | `4000` / `30.0` | truncation dim (aligned to halfvec(4000)) / timeout |
 | `UPLOAD_DIR` | `/var/anila/ingestion-uploads` | shared upload-blob dir with CSP |
+| `SSL_CERT_FILE` | unset | optional CA bundle for internal HTTPS VLM/OCR; verification remains enabled |
 | `PG_POOL_MIN` / `PG_POOL_MAX` | `1` / `5` | connection pool (also caps concurrency) |
 | `ENABLE_IMAGE_CAPTIONS` | `true` | VLM caption master switch |
 | `VISION_URL` | `""` (compose `http://csp:8000/v1`) | VLM endpoint; empty string disables captioning |

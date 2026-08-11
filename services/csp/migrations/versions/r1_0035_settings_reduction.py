@@ -48,4 +48,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Deleted setting rows have no authoritative value to restore.  Recreating
     # them with guessed defaults would fabricate configuration state.
-    pass
+    raise NotImplementedError(
+        "r1_0035 cannot restore deleted platform setting rows without authoritative values"
+    )

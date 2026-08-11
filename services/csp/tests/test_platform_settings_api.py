@@ -123,7 +123,10 @@ def test_token_lifetime_is_read_at_issuance_and_old_exp_is_embedded(db):
     db.get(PlatformSetting, "auth.access_token_expire_minutes").value = "13"
     db.commit()
     second = jwt.get_unverified_claims(create_access_token({"sub": "1"}, db=db))
-    assert second["exp"] - first["exp"] == 6 * 60
+    # jose serialises datetimes to whole seconds. The two calls can straddle
+    # either edge of a second, so allow that encoding jitter while preserving
+    # the six-minute change: an old-value mutation produces ~0 seconds here.
+    assert 6 * 60 - 1 <= second["exp"] - first["exp"] <= 6 * 60 + 1
     # Verification uses the exp claim already present in first; changing the
     # setting does not rewrite an already-issued token.
     assert first["exp"] < second["exp"]

@@ -15,8 +15,6 @@ class Settings(BaseSettings):
     # SECRET_KEY 在 RS256 cutover 後不再用於 access/refresh JWT 簽發,
     # 但保留供 startup_security guard 與 credential_crypto 等模組使用。
     SECRET_KEY: str = "your-secret-key-change-this-in-production"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     # RS256 asymmetric signing material. Private key is PKCS#8 PEM,
     # public key is SPKI PEM. JWKS endpoint serves the public key under

@@ -56,6 +56,7 @@ def set_session_cookies(
     access_token: str,
     refresh_token: str,
     db: Session | None = None,
+    token_lifetimes: tuple[int, int] | None = None,
 ) -> str:
     """Attach access / refresh / csrf cookies to ``response``.
 
@@ -65,7 +66,9 @@ def set_session_cookies(
     """
     from app.models.platform_setting import get_setting
 
-    if db is None:
+    if token_lifetimes is not None:
+        access_minutes, refresh_days = token_lifetimes
+    elif db is None:
         from app.database import SessionLocal
 
         with SessionLocal() as session:

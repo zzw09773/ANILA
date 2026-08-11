@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import ast
 import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from app.models.platform_setting import PlatformSetting, get_setting, set_setting
 from app.services.settings_registry import (
@@ -72,7 +75,11 @@ REMOVED_ENV_NAMES = {
     "LEGACY_SQLITE_PATH",
     "INGESTION_UPLOAD_DIR",
     "CSP_SECRET_KEY",
+    "COOKIE_SECURE",
+    "STATIC_DIR",
 }
+
+_SETTINGS_REDUCTION_COMMIT = "18916a56"
 
 
 def _python_sources() -> list[Path]:
@@ -126,6 +133,52 @@ def _env_reads(path: Path) -> list[tuple[str, int]]:
     return reads
 
 
+def _uppercase_class_assignments(source: str, class_name: str) -> set[str]:
+    """Generate env-shaped class fields from a historical Settings source."""
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            names: set[str] = set()
+            for statement in node.body:
+                targets: list[ast.expr] = []
+                if isinstance(statement, ast.AnnAssign):
+                    targets.append(statement.target)
+                elif isinstance(statement, ast.Assign):
+                    targets.extend(statement.targets)
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id.isupper():
+                        names.add(target.id)
+            return names
+    raise AssertionError(f"{class_name} class not found")
+
+
+def _removed_config_env_names() -> set[str]:
+    """Generate the removed config-field inventory from the reduction diff.
+
+    The two token-expiry names remain live registry fallbacks even after their
+    boot-snapshot fields are removed, so they are excluded from the retired
+    env inventory rather than being hand-maintained as a special case.
+    """
+    repo = Path(__file__).resolve().parents[3]
+    old_source = subprocess.check_output(
+        [
+            "git",
+            "show",
+            f"{_SETTINGS_REDUCTION_COMMIT}^:services/csp/app/config.py",
+        ],
+        cwd=repo,
+        text=True,
+    )
+    from app.config import Settings
+
+    old_fields = _uppercase_class_assignments(old_source, "Settings")
+    current_fields = set(Settings.model_fields)
+    active_fallbacks = {
+        spec.env_name for spec in SETTINGS if spec.env_name is not None
+    }
+    return old_fields - current_fields - active_fallbacks
+
+
 def test_registry_is_exactly_the_twelve_immediate_settings():
     assert {spec.key for spec in SETTINGS} == KEEP_KEYS
     assert set(REGISTRY) == KEEP_KEYS
@@ -141,6 +194,18 @@ def test_removed_settings_have_no_python_environment_reader():
             if name in REMOVED_ENV_NAMES:
                 violations.append(f"{path}:{lineno}: {name}")
     assert violations == []
+
+
+def test_removed_env_inventory_covers_generated_config_removals():
+    """A newly omitted Settings field cannot evade the retired-name guard."""
+    assert _removed_config_env_names() <= REMOVED_ENV_NAMES
+
+
+def test_settings_reduction_downgrade_refuses_to_fabricate_rows():
+    from migrations.versions import r1_0035_settings_reduction as migration
+
+    with pytest.raises(NotImplementedError, match="cannot restore"):
+        migration.downgrade()
 
 
 def test_db_overrides_env_and_boolean_parser_is_one_contract(db, monkeypatch):

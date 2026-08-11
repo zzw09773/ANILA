@@ -57,11 +57,12 @@ from app.services.ingestion_classification import (
 )
 from app.services.ingestion_queue import enqueue_ingest_document
 from app.schemas.base import ApiResponseModel
+from app.services.storage_paths import INGESTION_UPLOAD_ROOT
 
 router = APIRouter(tags=["Ingestion / Documents"])
 
 
-_UPLOAD_DIR = "/var/anila/ingestion-uploads"
+_UPLOAD_DIR = str(INGESTION_UPLOAD_ROOT)
 
 # Sprint 1 hard cap. Larger files are a Sprint 2 concern (chunked upload,
 # resumable, progress) — for now hard-fail with 413.

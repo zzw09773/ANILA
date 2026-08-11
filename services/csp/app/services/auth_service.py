@@ -16,6 +16,7 @@ from app.utils.security import (
     create_refresh_token,
     decode_token,
     hash_password,
+    resolve_token_lifetimes,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ security = HTTPBearer(auto_error=False)
 
 PENDING_APPROVAL_SENTINEL = "PENDING_APPROVAL"
 LOCAL_PASSWORD_DISABLED_SENTINEL = "LOCAL_PASSWORD_DISABLED"
+TOKEN_LIFETIMES_KEY = "_token_lifetimes"
 
 
 def authenticate_user(db: Session, username: str, password: str) -> User | str | None:
@@ -52,18 +54,33 @@ def authenticate_user(db: Session, username: str, password: str) -> User | str |
     return user
 
 
-def create_tokens(user: User, db: Session | None = None) -> dict:
+def create_tokens(
+    user: User,
+    db: Session | None = None,
+    *,
+    include_lifetimes: bool = False,
+) -> dict:
     data = {
         "sub": str(user.id),
         "username": user.username,
         "role": user.role,
         "tv": user.token_version,
     }
-    return {
-        "access_token": create_access_token(data, db=db),
-        "refresh_token": create_refresh_token(data, db=db),
+    access_minutes, refresh_days = resolve_token_lifetimes(db)
+    tokens = {
+        "access_token": create_access_token(
+            data, db=db, lifetime_minutes=access_minutes
+        ),
+        "refresh_token": create_refresh_token(
+            data, db=db, lifetime_days=refresh_days
+        ),
         "token_type": "bearer",
     }
+    if include_lifetimes:
+        # Internal metadata is consumed before any response model serialises
+        # the token dict; it keeps cookie Max-Age tied to these exact values.
+        tokens[TOKEN_LIFETIMES_KEY] = (access_minutes, refresh_days)
+    return tokens
 
 
 def _load_user_from_payload(payload: dict | None, db: Session, expected_type: str) -> User:

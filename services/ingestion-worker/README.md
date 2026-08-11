@@ -216,6 +216,7 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 | `EMBEDDING_MODEL` / `EMBEDDING_API_KEY` | `nvidia/NV-embed-V2` / `not-set` | 模型 / Bearer token |
 | `EMBEDDING_DIM` / `EMBEDDING_TIMEOUT_SECONDS` | `4000` / `30.0` | 截斷維度（對齊 halfvec(4000)）/ 逾時 |
 | `UPLOAD_DIR` | `/var/anila/ingestion-uploads` | 與 CSP 共用的上傳 blob 目錄 |
+| `SSL_CERT_FILE` | 未設定 | 內部 HTTPS VLM/OCR 的選用 CA bundle；`verify=True` 不因自簽憑證而關閉 |
 | `PG_POOL_MIN` / `PG_POOL_MAX` | `1` / `5` | 連線池（亦上限並行度） |
 | `ENABLE_IMAGE_CAPTIONS` | `true` | VLM caption 總開關 |
 | `VISION_URL` | `""`（compose `http://csp:8000/v1`） | VLM endpoint；空字串停用 caption |

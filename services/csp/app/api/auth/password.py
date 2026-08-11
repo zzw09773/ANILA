@@ -31,6 +31,7 @@ from app.services.auth_service import (
     _load_user_from_payload,
     PENDING_APPROVAL_SENTINEL,
     LOCAL_PASSWORD_DISABLED_SENTINEL,
+    TOKEN_LIFETIMES_KEY,
 )
 from app.utils.security import decode_token, hash_password, verify_password
 
@@ -155,7 +156,7 @@ def login(
             commit=True,
         )
         raise HTTPException(status_code=404)
-    tokens = create_tokens(result, db)
+    tokens = create_tokens(result, db, include_lifetimes=True)
     _stamp_last_login(db, result)
     log_audit_event(
         db,
@@ -201,12 +202,14 @@ async def refresh(
         )
     payload = decode_token(token)
     user = _load_user_from_payload(payload, db, "refresh")
-    tokens = create_tokens(user, db)
+    tokens = create_tokens(user, db, include_lifetimes=True)
+    token_lifetimes = tokens.pop(TOKEN_LIFETIMES_KEY, None)
     set_session_cookies(
         response,
         access_token=tokens["access_token"],
         refresh_token=tokens["refresh_token"],
         db=db,
+        token_lifetimes=token_lifetimes,
     )
     return tokens
 
