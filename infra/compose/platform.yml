@@ -71,7 +71,10 @@ services:
       # 既有 DB 的 role 已存在,改值要自己 ALTER ROLE csp_app PASSWORD。
       # 密碼用 hex 生成 (openssl rand -hex),避免 URL 特殊字元要 escape。
       CSP_APP_DB_PASSWORD: ${CSP_APP_DB_PASSWORD}
-      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set (32+ bytes hex)}
+      # ⚠ 舊部署包用的是 CSP_SECRET_KEY;設定併一(Q46)之後正式名稱是 SECRET_KEY。
+      # 兩個都收 —— 沒有這一行,既有 .env 會在 compose 解析階段就停住,
+      # 而且 credential_crypto 的 cipher key 由它派生:換一把＝既有加密憑證全數失效。
+      SECRET_KEY: ${SECRET_KEY:-${CSP_SECRET_KEY:?SECRET_KEY (or legacy CSP_SECRET_KEY) must be set (32+ bytes hex)}}
       # auto_seed 初始 admin 帳號密碼。prod 模式 (ANILA_ALLOW_DEV_SECRET=0)
       # 下 startup_security 黑名單擋 changeme/password/admin 與 placeholder,
       # 不傳進容器則 config.py 預設 'changeme' 直接 RuntimeError 拒啟。
@@ -305,7 +308,7 @@ services:
       UPLOAD_DIR: /var/anila/ingestion-uploads
       # judge 路徑要解 AES-encrypted credentials,cipher key 從 SECRET_KEY 派生,
       # **必須**跟 csp 同值,不然每次 judge decrypt 失敗會 silently skip。
-      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set (same value as csp)}
+      SECRET_KEY: ${SECRET_KEY:-${CSP_SECRET_KEY:?SECRET_KEY (or legacy CSP_SECRET_KEY) must be set (same value as csp)}}
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
