@@ -25,7 +25,7 @@ export const downloadTemplate = () =>
 
 // P2.1 — public CSPKI CA bundle for JWKS over https (agent-side trust anchor).
 // Backend route required: GET /api/agents/platform-ca/download → application/x-pem-file
-// (serves services/csp/app/services/cspki_ca_bundle.pem). Not implemented in this package.
+// (serves services/csp/app/services/cspki_ca_bundle.pem).
 export const downloadPlatformCa = () =>
   client.get('/api/agents/platform-ca/download', { responseType: 'blob' })
 

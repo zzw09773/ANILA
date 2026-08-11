@@ -150,7 +150,7 @@ describe("五狀態徽章 — 渲染", () => {
       ["searched_miss", REALISTIC.searched_miss, true, false],
       ["search_error", REALISTIC.search_error, true, false],
       ["partial_error", REALISTIC.partial_error, true, true],
-      ["not_searched", { kb_state: "not_searched", kb_hits: [] }, false, false],
+      ["not_searched", { kb_state: "not_searched", kb_hits: [] }, true, false],
       ["欄位缺席", undefined, false, false],
     ];
 
@@ -170,15 +170,15 @@ describe("五狀態徽章 — 渲染", () => {
 
   it("串流中來源抽屜尚未出現,有話可說的狀態仍有 badge", () => {
     const cases = [
-      ["searched_hit", REALISTIC.searched_hit, true],
-      ["searched_miss", REALISTIC.searched_miss, true],
-      ["search_error", REALISTIC.search_error, true],
-      ["partial_error", REALISTIC.partial_error, true],
-      ["not_searched", { kb_state: "not_searched", kb_hits: [] }, false],
-      ["欄位缺席", undefined, false],
+      ["searched_hit", REALISTIC.searched_hit, true, false],
+      ["searched_miss", REALISTIC.searched_miss, true, false],
+      ["search_error", REALISTIC.search_error, true, false],
+      ["partial_error", REALISTIC.partial_error, true, false],
+      ["not_searched", { kb_state: "not_searched", kb_hits: [] }, true, false],
+      ["欄位缺席", undefined, false, false],
     ];
 
-    for (const [name, fragment, wantsBadge] of cases) {
+    for (const [name, fragment, wantsBadge, wantsDrawer] of cases) {
       const { container } = renderBubble(
         assistantMsg(fragment, { streaming: true }),
       );
@@ -186,22 +186,32 @@ describe("五狀態徽章 — 渲染", () => {
         kbMarkers(container).length > 0,
         `${name} 串流中的 badge 表面不符合預期`,
       ).toBe(wantsBadge);
-      expect(container.textContent).not.toContain("查看 ");
+      expect(container.textContent.includes("查看 2 筆來源")).toBe(wantsDrawer);
       cleanup();
     }
   });
 
-  it("not_searched 與欄位缺席都不畫任何 kb 記號(這是決定,不是壞掉)", () => {
-    // 兩種來源在畫面上必須完全一樣安靜:
-    //   * not_searched —— 全院一個庫都沒標記,聊天內容不該因為這個功能改變
-    //   * 欄位缺席 —— 這個功能上線之前存下來的舊訊息
-    for (const fragment of [{ kb_state: "not_searched", kb_hits: [] }, undefined]) {
-      const { container } = renderBubble(assistantMsg(fragment));
-      expect(kbMarkers(container)).toHaveLength(0);
-      // 而且答案本身照常在(安靜 ≠ 把整則訊息吃掉)。
+  it("not_searched 明講未檢索,但不對院規內容下結論", () => {
+    for (const streaming of [false, true]) {
+      const { container } = renderBubble(
+        assistantMsg(
+          { kb_state: "not_searched", kb_hits: [] },
+          { streaming },
+        ),
+      );
+      const badge = container.querySelector('[data-testid="kb-state-not_searched"]');
+      expect(badge, "not_searched 應該顯示徽章").toBeTruthy();
+      expect(badge.textContent).toContain("本次未檢索院內規章");
+      expect(badge.textContent).toContain("模型的一般知識");
+      expect(badge.textContent).not.toMatch(/院規裡(沒有|沒找到)/);
       expect(container.textContent).toContain("以下是回答。");
       cleanup();
     }
+
+    // 欄位缺席仍是上線前的舊訊息:沒有足夠資料宣稱這次做過什麼,所以維持沉默。
+    const { container } = renderBubble(assistantMsg(undefined));
+    expect(kbMarkers(container)).toHaveLength(0);
+    expect(container.textContent).not.toContain("本次未檢索院內規章");
   });
 
   it("舊訊息帶著下游來源、但沒有 kb_state:一樣零個 kb 記號", () => {

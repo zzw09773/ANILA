@@ -310,8 +310,8 @@ export function kbMetaFields(meta) {
   const m = meta && typeof meta === "object" ? meta : {};
   return {
     // 缺席就是缺席:這個功能上線前存下來的訊息沒有這個欄位,而
-    // `undefined` 與 `"not_searched"` 在畫面上一樣安靜(chat.jsx 的
-    // KbStateBadge 只認得四個「查過了」的狀態)。
+    // `undefined` 仍在畫面上保持安靜;明帶的 `"not_searched"` 則由 chat.jsx
+    // 揭露「本次未檢索院內規章」,兩者不可混為一談。
     kbState: typeof m.kb_state === "string" ? m.kb_state : undefined,
     kbHits: Array.isArray(m.kb_hits) ? m.kb_hits : [],
     kbFailedCollections: Array.isArray(m.kb_failed_collections)
