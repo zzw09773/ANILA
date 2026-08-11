@@ -88,6 +88,26 @@ services:
       # (內網 MLSteam agent 用;legacy ANILA_ALLOW_HTTP_ENDPOINT 對 agent 仍可
       # 放行但記 deprecation warning)。
       ANILA_ENV: "${ANILA_ENV:-}"
+
+      # ── 削減之後才需要的 passthrough(Q46)────────────────────────────────
+      # 這十行在的理由,跟本檔 PDF_OCR_FALLBACK 那段註解是同一件事:
+      # **沒有 env_file**,所以 `.env` 裡寫了而這裡沒有對應的一行,值根本到不了
+      # 容器,而畫面與日誌看起來像是設好了。
+      # 削減前它們的通道是設定頁的開機覆蓋(`app.site_url` 曾是頁面可編輯);
+      # Q46 把整套開機覆蓋退役之後,compose 是它們唯一的入口。
+      # ⚠ 預設值刻意與 services/csp/app/config.py 的欄位預設一致 —— 那是兩份
+      #    會漂開的真相,改一邊要改另一邊。不寫預設(`:-`)會把「沒設」變成
+      #    **空字串**,反而蓋掉程式預設(ALLOWED_ORIGINS 會變成沒有任何來源)。
+      SITE_URL: "${SITE_URL:-http://localhost}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443}"
+      ANILA_ALERT_SMTP_ENABLED: "${ANILA_ALERT_SMTP_ENABLED:-false}"
+      ANILA_ALERT_SMTP_HOST: "${ANILA_ALERT_SMTP_HOST:-}"
+      ANILA_ALERT_SMTP_PORT: "${ANILA_ALERT_SMTP_PORT:-587}"
+      ANILA_ALERT_SMTP_USER: "${ANILA_ALERT_SMTP_USER:-}"
+      ANILA_ALERT_SMTP_PASSWORD: "${ANILA_ALERT_SMTP_PASSWORD:-}"
+      ANILA_ALERT_SMTP_FROM: "${ANILA_ALERT_SMTP_FROM:-}"
+      ANILA_ALERT_SMTP_TO: "${ANILA_ALERT_SMTP_TO:-}"
+      ANILA_ALERT_SMTP_USE_TLS: "${ANILA_ALERT_SMTP_USE_TLS:-true}"
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # protocol=triton_grpc 的 cleartext grpc:// 放行旗標(model kind 專用,
       # 與 http 旗標是姊妹分支不共用 allow-list)。grpcs:// 永遠不需要它。
