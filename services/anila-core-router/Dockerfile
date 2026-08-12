@@ -13,10 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Router only needs the runtime foundation (api, registry, tools, providers);
 # RAG-specific deps (pgvector / asyncpg / pymupdf4llm) live in AgenticRAG.
 COPY packages/anila-core/pyproject.toml ./
+COPY services/anila-core-router/requirements.txt ./
 COPY packages/anila-core/src ./src/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir "." && \
-    pip install --no-cache-dir "pydantic-settings>=2.0,<3.0" && \
+    pip install --no-cache-dir -r requirements.txt && \
     rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # ── Runtime stage ──────────────────────────────────────────────────────────────

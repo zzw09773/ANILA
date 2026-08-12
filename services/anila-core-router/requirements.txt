@@ -1,0 +1,2 @@
+# Router 的明示 runtime dependency；Dockerfile 與 platform wheelhouse 共用。
+pydantic-settings>=2.0,<3.0
