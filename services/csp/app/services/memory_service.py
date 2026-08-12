@@ -107,6 +107,10 @@ def _guard_outbound(url: str) -> None:
 
 _LLM_MODEL_NAME = os.environ.get("MEMORY_LLM_MODEL", "gemma4")
 
+# Keep injected user memory within a sane share of internal model context
+# budgets.
+_MEMORY_BLOCK_MAX_CHARS = 4_000
+
 # Don't waste an LLM call on a no-op turn. The extractor is robust to
 # short text but spending a round-trip to confirm "[]" on every "yes"
 # / "ok" reply doubles per-turn cost without value.
@@ -411,44 +415,81 @@ def _format_block(
     傳進來。給它一個預設值就等於把那顆設定又釘回模組層一次 —— 呼叫端漏傳會變成
     靜默用舊值，而不是當場 ``TypeError``。
     """
-    if not facts and not chunks:
-        return None
-
     prefs = [f for f in facts if f.key.startswith("preference.")]
     others = [f for f in facts if not f.key.startswith("preference.")]
 
-    lines: list[str] = ["## 使用者背景與過往脈絡"]
+    # Retrieval already returns chunks by descending similarity. Sort again
+    # with the row id as a tie-breaker so a caller-provided list has the same
+    # deterministic priority contract.
+    ranked_chunks = sorted(chunks, key=lambda c: (-c.cosine, c.id))
 
-    if prefs:
+    def _render(
+        selected_prefs: list[str],
+        selected_others: list[str],
+        selected_chunks: list[RetrievedChunk],
+    ) -> str:
+        lines: list[str] = ["## 使用者背景與過往脈絡"]
+
+        if selected_prefs:
+            lines.append("")
+            lines.append("### 使用者偏好")
+            lines.extend(selected_prefs)
+
+        if selected_others:
+            lines.append("")
+            lines.append("### 已知事實")
+            lines.extend(selected_others)
+
+        if selected_chunks:
+            lines.append("")
+            lines.append("### 過往相關討論")
+            for i, c in enumerate(selected_chunks, start=1):
+                content = c.content
+                if len(content) > max_chunk_chars:
+                    content = content[:max_chunk_chars] + "…"
+                tag = " (加密來源)" if c.is_encrypted else ""
+                lines.append(
+                    f"[{i}] {c.role}{tag} (similarity {c.cosine:.2f}): {content}"
+                )
+
         lines.append("")
-        lines.append("### 使用者偏好")
-        for f in prefs:
-            lines.append(f"- **{f.key}**: {f.value}")
+        lines.append(
+            "以上是平台對使用者的長期記憶，請參考但不要原文照抄；若記憶內容與本次對話矛盾，"
+            "以本次對話為準。"
+        )
+        return "\n".join(lines)
 
-    if others:
-        lines.append("")
-        lines.append("### 已知事實")
-        for f in others:
-            lines.append(f"- **{f.key}**: {f.value}")
+    selected_prefs: list[str] = []
+    selected_others: list[str] = []
+    selected_chunks: list[RetrievedChunk] = []
 
-    if chunks:
-        lines.append("")
-        lines.append("### 過往相關討論")
-        for i, c in enumerate(chunks, start=1):
-            content = c.content
-            if len(content) > max_chunk_chars:
-                content = content[:max_chunk_chars] + "…"
-            tag = " (加密來源)" if c.is_encrypted else ""
-            lines.append(
-                f"[{i}] {c.role}{tag} (similarity {c.cosine:.2f}): {content}"
-            )
+    # Facts are already newest-first at the storage boundary. Preferences are
+    # kept ahead of regular facts, then higher-similarity chunks are considered.
+    # Each candidate is admitted only as a whole rendered item; a rejected item
+    # is skipped so a later smaller item can still fit without truncation.
+    for source, selected in (
+        (
+            (f"- **{f.key}**: {f.value}" for f in prefs),
+            selected_prefs,
+        ),
+        (
+            (f"- **{f.key}**: {f.value}" for f in others),
+            selected_others,
+        ),
+    ):
+        for item in source:
+            selected.append(item)
+            if len(_render(selected_prefs, selected_others, selected_chunks)) > _MEMORY_BLOCK_MAX_CHARS:
+                selected.pop()
 
-    lines.append("")
-    lines.append(
-        "以上是平台對使用者的長期記憶，請參考但不要原文照抄；若記憶內容與本次對話矛盾，"
-        "以本次對話為準。"
-    )
-    return "\n".join(lines)
+    for chunk in ranked_chunks:
+        selected_chunks.append(chunk)
+        if len(_render(selected_prefs, selected_others, selected_chunks)) > _MEMORY_BLOCK_MAX_CHARS:
+            selected_chunks.pop()
+
+    if not (selected_prefs or selected_others or selected_chunks):
+        return None
+    return _render(selected_prefs, selected_others, selected_chunks)
 
 
 async def build_memory_block(
