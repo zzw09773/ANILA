@@ -21,6 +21,8 @@ about agent name hallucination from in-context examples).
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from app.api import proxy
@@ -209,7 +211,7 @@ async def test_inject_memory_prepends_to_existing_system_message(monkeypatch):
 # ── _resolve_extraction_target (fact-extraction model fallback) ───────────────
 
 
-def _add_llm(db, name, url):
+def _add_llm(db, name, url, *, is_active=True):
     from app.models.model_registry import ModelRegistry
 
     db.add(
@@ -218,10 +220,18 @@ def _add_llm(db, name, url):
             display_name=name,
             model_type="llm",
             endpoint_url=url,
-            is_active=True,
+            is_active=is_active,
         )
     )
     db.commit()
+
+
+def test_resolve_endpoint_rejects_inactive_model(db):
+    """An inactive row is not an endpoint resolution result."""
+    _add_llm(db, "disabled-llm", "http://disabled:8000", is_active=False)
+
+    with pytest.raises(RuntimeError, match="row not found"):
+        memory_service._resolve_endpoint(db, "disabled-llm", "llm")
 
 
 def test_resolve_extraction_target_prefers_configured_model(db, monkeypatch):
@@ -245,10 +255,51 @@ def test_resolve_extraction_target_falls_back_to_available_llm(db, monkeypatch):
     assert target == ("openai/gpt-oss-20b", "http://gpt:8000")  # rstripped
 
 
+def test_resolve_extraction_target_falls_back_from_inactive_configured_model(
+    db, monkeypatch, caplog
+):
+    """A deactivated configured LLM is treated like a missing target."""
+    _add_llm(db, "disabled-llm", "http://disabled:8000", is_active=False)
+    _add_llm(db, "active-llm", "http://active:8000")
+    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "disabled-llm")
+
+    with caplog.at_level(logging.WARNING, logger=memory_service.__name__):
+        target = memory_service._resolve_extraction_target(db)
+
+    assert target == ("active-llm", "http://active:8000")
+    assert any(
+        "falling back to 'active-llm'" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_resolve_extraction_target_none_when_no_active_llm(db, monkeypatch):
     """No active LLM at all → None (caller disables extraction, logs)."""
     monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
     assert memory_service._resolve_extraction_target(db) is None
+
+
+@pytest.mark.asyncio
+async def test_extract_facts_skips_http_when_every_llm_is_inactive(
+    db, monkeypatch, caplog
+):
+    """No inactive registry row may leak through to the HTTP call."""
+    _add_llm(db, "disabled-llm", "http://disabled:8000", is_active=False)
+    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "disabled-llm")
+
+    class _NoHTTPClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("inactive model reached the HTTP client")
+
+    monkeypatch.setattr(memory_service.httpx, "AsyncClient", _NoHTTPClient)
+
+    with caplog.at_level(logging.WARNING, logger=memory_service.__name__):
+        assert await memory_service._extract_facts(db, "a sufficiently long turn") == []
+
+    assert any(
+        "no active LLM registered" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_memory_outbound_guard_uses_model_endpoint_kind(monkeypatch):

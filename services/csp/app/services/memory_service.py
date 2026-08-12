@@ -121,16 +121,21 @@ _EXTRACT_MIN_CHARS = 8
 
 
 def _resolve_endpoint(db: Session, model_name: str, model_type: str) -> str:
-    """Return ``endpoint_url`` for the named registry row, or raise.
+    """Return ``endpoint_url`` for the named active registry row, or raise.
 
     Looked up on every call (cached implicitly by SQLAlchemy session
     cache for the duration of a request). Endpoint changes propagate
     on the next chat completion without a restart — same contract as
-    the rest of the proxy layer.
+    the rest of the proxy layer. An inactive row is treated as absent so
+    automatic callers cannot send work to a model an operator deactivated.
     """
     row: ModelRegistry | None = (
         db.query(ModelRegistry)
-        .filter(ModelRegistry.name == model_name, ModelRegistry.model_type == model_type)
+        .filter(
+            ModelRegistry.name == model_name,
+            ModelRegistry.model_type == model_type,
+            ModelRegistry.is_active.is_(True),
+        )
         .first()
     )
     if row is None:

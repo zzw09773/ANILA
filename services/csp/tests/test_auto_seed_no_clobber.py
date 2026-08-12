@@ -26,3 +26,20 @@ def test_seed_still_creates_missing_models():
     assert 'endpoint_url=m["endpoint_url"]' in src, (
         "creation must still take the endpoint from the seed config"
     )
+
+
+def test_skip_reason_tells_deactivated_apart_from_unregistered():
+    """A deactivated model must not be reported as unregistered.
+
+    Before seeding filtered on ``is_active`` a deactivated model resolved
+    normally and never reached the "cannot grant" branch. The filter is what
+    made it reachable, so the message has to say which of the two happened —
+    otherwise the reader hunts a registration problem that does not exist.
+    """
+    inactive = {"switched-off-llm"}
+
+    assert auto_seed.seed_model_skip_reason("switched-off-llm", inactive) == "已停用"
+    assert auto_seed.seed_model_skip_reason("never-registered", inactive) == "未註冊"
+    # Two distinct rows, distinct identifiers: a single-row fixture would pass
+    # even if the function ignored its argument and returned a constant.
+    assert auto_seed.seed_model_skip_reason("another-absent", inactive) == "未註冊"
