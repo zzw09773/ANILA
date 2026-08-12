@@ -972,6 +972,16 @@ def _resolve_agent(db: Session, caller: Caller, agent_name: str) -> Agent | None
     return agent
 
 
+def _target_allows_memory(agent: Agent | None) -> bool:
+    """Allow memory unless the outbound target is a registered agent.
+
+    A resolved ``Agent`` is an outbound registered-agent target and must never
+    receive user memory. Agent-ness is structural; mutable model registry
+    properties are deliberately not part of this privacy decision.
+    """
+    return agent is None
+
+
 @router.get("/v1/agents")
 def list_available_agents(
     caller: Caller = Depends(get_caller),
@@ -1084,21 +1094,28 @@ async def chat_completions(
     conversation_id: str | None = request.headers.get("X-ANILA-Conversation-Id")
     trace_id: str | None = request.headers.get("X-ANILA-Trace-Id")
 
+    # Resolve the outbound target before any memory retrieval. Memory is a
+    # destination policy, not a caller-attribution policy.
+    agent = _resolve_agent(db, caller, model_name)
+    resolved_model: ModelRegistry | None = None
+    if agent is None:
+        resolved_model = _resolve_model(db, caller, model_name)
+
     # ── Memory: read path (sync, ~150ms) ─────────────────────────────────────
-    # Inject the user's long-term memory block into the system prompt
-    # BEFORE forwarding downstream. We need this regardless of agent/model
-    # path so do it once here. The conv_id (if numeric) is excluded from
-    # RAG because the active conversation's history is already in the
-    # messages array — re-injecting would just waste prompt tokens.
+    # The conv_id (if numeric) is excluded from RAG because the active
+    # conversation's history is already in the messages array — re-injecting
+    # would just waste prompt tokens.
     conv_id_int = _coerce_conversation_id(conversation_id)
     if conv_id_int is not None:
         _require_conversation_access(db, caller, conv_id_int)
-    memory_read = await _inject_memory(
-        db,
-        user.id,
-        body,
-        exclude_conversation_id=conv_id_int,
-    )
+    memory_read = None
+    if _target_allows_memory(agent):
+        memory_read = await _inject_memory(
+            db,
+            user.id,
+            body,
+            exclude_conversation_id=conv_id_int,
+        )
     # P1.5: whole-document attachment injection (after memory). Failures are
     # recorded on attach_inject for anila_meta.trace; chat still proceeds.
     attach_inject = _inject_attachments(
@@ -1145,8 +1162,8 @@ async def chat_completions(
                 "memory_service: classification latch failed conv_id=%s",
                 conv_id_int,
             )
-    # Try agent first, fallback to model_registry
-    agent = _resolve_agent(db, caller, model_name)
+    # Try agent first, fallback to the model registry row already resolved
+    # above, before the memory policy was evaluated.
     if agent:
         agent_requires_encryption = bool(getattr(agent, "requires_encryption", False))
         # P3 hook: if any retrieved memory chunk was encrypted at write
@@ -1407,7 +1424,11 @@ async def chat_completions(
                 detail=f"Agent「{agent.name}」呼叫失敗",
             )
 
-    model = _resolve_model(db, caller, model_name)
+    if resolved_model is None:
+        # This is unreachable after the positive target resolution above, but
+        # keep the outbound path fail-closed if that invariant changes.
+        raise HTTPException(status_code=404, detail="模型目標無法解析")
+    model = resolved_model
     # Direct LLM calls (not through an agent) do NOT trigger CSP-side classified
     # latch. Encryption is agent-level policy; the same LLM can back both
     # classified and non-classified agents. Downstream-reported classified=True
