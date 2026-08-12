@@ -188,3 +188,6 @@ docs/audits/*airgap*
 
 # 瀏覽器驗證工具的暫存輸出（截圖等），不進版控
 .playwright-mcp/
+
+# 平台離線 wheelhouse 與 freeze manifest：隨交付包產生，不進 PUBLIC repo。
+infra/deployment/offline/dist/
