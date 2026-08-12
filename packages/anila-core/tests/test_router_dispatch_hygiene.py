@@ -313,6 +313,70 @@ def test_backtick_wrapped_instruction_still_dispatches(db_path, monkeypatch):
     assert seen["agent_id"] == "agent-a"
 
 
+@pytest.mark.parametrize(
+    ("directive", "terminator"),
+    [
+        pytest.param(
+            "DISPATCH:iso42001-probe:陸海空軍懲罰法第 46 條的規定是什麼？",
+            "\n",
+            id="incident-newline",
+        ),
+        pytest.param(
+            "DISPATCH:agent-a:what is article 46",
+            "`",
+            id="ascii-spaces-backtick",
+        ),
+        pytest.param(
+            "DISPATCH:agent-a:what  is  article  46",
+            "\n",
+            id="consecutive-spaces-newline",
+        ),
+    ],
+)
+def test_streaming_dispatch_scans_every_prefix_before_terminator(
+    directive: str, terminator: str
+) -> None:
+    """Every in-flight prefix stays buffered until a real terminator arrives."""
+    query = directive.split(":", 2)[2]
+    stream_text = f"{directive}{terminator}tail"
+    first_dispatch_at: int | None = None
+
+    for i in range(len(stream_text)):
+        parsed = rs._has_dispatch_signal(stream_text[:i], rs._ROUTE_DIRECT)
+        terminator_end = len(directive) + len(terminator)
+        if i < terminator_end:
+            assert parsed is None, (
+                f"prefix {i} dispatched before {terminator!r}: "
+                f"{stream_text[:i]!r}"
+            )
+            continue
+
+        if first_dispatch_at is None:
+            first_dispatch_at = i
+        if parsed is not None:
+            assert parsed[1] == query
+
+    assert first_dispatch_at == terminator_end
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "DISPATCH:iso42001-probe:陸海空軍懲罰法第 46 條的規定是什麼？",
+        "DISPATCH:agent-a:what is article 46",
+        "DISPATCH:agent-a:what  is  article  46",
+    ],
+)
+def test_streaming_dispatch_accepts_eos_as_completion(directive: str) -> None:
+    """A directive that is the final stream line dispatches at EOS."""
+    query = directive.split(":", 2)[2]
+
+    assert rs._has_dispatch_signal(directive, rs._ROUTE_DIRECT) is None
+    parsed = rs._has_dispatch_signal(directive, rs._ROUTE_DIRECT, final=True)
+    assert parsed is not None
+    assert parsed[1] == query
+
+
 # ---------------------------------------------------------------------------
 # FIX 3b — the reasoning field is not a dispatch signal
 # ---------------------------------------------------------------------------

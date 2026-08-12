@@ -495,6 +495,31 @@ def _parse_dispatch_unless_forced(
     return _parse_dispatch(text)
 
 
+def _has_dispatch_signal(
+    text: str,
+    route_signal: str,
+    *,
+    final: bool = False,
+) -> tuple[str, str, int, int] | None:
+    """Return a dispatch only after its line is complete or the stream ends.
+
+    ``_DISPATCH_RE`` intentionally leaves the whitespace before its lookahead
+    terminator outside the match, so ``match.end()`` alone cannot distinguish
+    a query followed by a trailing space from a query followed by a newline or
+    closing backtick.  The final parse is the explicit end-of-stream form of
+    completion and therefore does not need a terminator.
+    """
+    parsed = _parse_dispatch_unless_forced(text, route_signal)
+    if parsed is None or final:
+        return parsed
+
+    _id, _query, _start, end = parsed
+    # A newline or backtick in the suffix proves the terminator actually
+    # arrived; trailing whitespace alone does not.
+    suffix = text[end:]
+    return parsed if any(ch in suffix for ch in "\r\n`") else None
+
+
 # Shown instead of an empty bubble when a forced turn's reply was *nothing but*
 # a stray directive. Silence would be the same "I pressed it and nothing
 # happened" the button exists to cure, and inventing a regulation answer here
@@ -3130,22 +3155,6 @@ async def _router_streaming(
     # (on the dispatch branch this call's output is thrown away).
     downstream_meta: dict[str, Any] | None = None
 
-    def _has_dispatch_signal(text: str, final: bool = False) -> tuple[str, str, int, int] | None:
-        """Parse a dispatch directive, tolerant of in-flight streaming state.
-
-        The non-greedy query regex happily matches at end-of-buffer via ``$``,
-        which in mid-stream would treat a partial tail like
-        ``DISPATCH:<agent>:在`` as "done" and dispatch the single char ``在``.
-        So during streaming (``final=False``) we require the match to end
-        strictly before the current buffer length — meaning a real terminator
-        (newline / backtick) has been seen past the query.
-        """
-        parsed = _parse_dispatch_unless_forced(text, route_signal)
-        if parsed is None or final:
-            return parsed
-        _id, _q, _start, end = parsed
-        return parsed if end < len(text) else None
-
     # ``router_llm_headers`` = the relayed audit headers *plus* the answer-channel
     # marker. Plain ``forwarded_headers`` stays for the recompose call at the end
     # of the dispatch branch, which must not carry the marker.
@@ -3207,7 +3216,7 @@ async def _router_streaming(
             yield _make_event("anila.reasoning", {"delta": piece})
             reasoning_emitted_up_to = len(buf)
 
-        dispatch = _has_dispatch_signal(buf)
+        dispatch = _has_dispatch_signal(buf, route_signal)
         if dispatch is not None:
             state = "dispatching"
             break
@@ -3258,7 +3267,7 @@ async def _router_streaming(
         # Stream finished without ever committing. Use the offline
         # sanitizer one last time — covers short answers that never hit
         # the density threshold mid-stream.
-        final_dispatch = _has_dispatch_signal(buf, final=True)
+        final_dispatch = _has_dispatch_signal(buf, route_signal, final=True)
         if final_dispatch is not None:
             dispatch = final_dispatch
             state = "dispatching"
