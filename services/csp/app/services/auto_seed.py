@@ -79,6 +79,18 @@ def _parse_model_env_vars() -> list[dict]:
     return models
 
 
+def seed_model_skip_reason(model_name: str, inactive_names: set[str]) -> str:
+    """Why a seeded API key could not be granted ``model_name``.
+
+    Seeding only selects active models, so a deactivated one lands in the same
+    "cannot grant" branch as one that was never registered. Saying "未註冊" for
+    both would send the next reader looking for a registration problem that does
+    not exist — this filter is what made the branch reachable, so telling the two
+    apart is part of that change, not an extra.
+    """
+    return "已停用" if model_name in inactive_names else "未註冊"
+
+
 def auto_seed():
     """Run on startup: create admin, auto-register models/agents, seed dev keys."""
     db = SessionLocal()
@@ -194,7 +206,8 @@ def auto_seed():
                     base_model_name = m.get("base_model")
                     if base_model_name:
                         base = db.query(ModelRegistry).filter(
-                            ModelRegistry.name == base_model_name
+                            ModelRegistry.name == base_model_name,
+                            ModelRegistry.is_active.is_(True),
                         ).first()
                         if base:
                             base_model_id = base.id
@@ -258,7 +271,8 @@ def auto_seed():
                     base_model_name = item.get("base_model")
                     if base_model_name:
                         base_model = db.query(ModelRegistry).filter(
-                            ModelRegistry.name == base_model_name
+                            ModelRegistry.name == base_model_name,
+                            ModelRegistry.is_active.is_(True),
                         ).first()
                         if base_model:
                             base_model_id = base_model.id
@@ -313,9 +327,18 @@ def auto_seed():
         if settings.AUTO_SEED_API_KEYS:
             try:
                 keys_config = json.loads(settings.AUTO_SEED_API_KEYS)
+                # Selection is active-only: seeding must not wire a key to a
+                # model an operator switched off. The inactive names are kept
+                # solely so the warning below can say *which* of the two
+                # reasons applied — before this filter existed a deactivated
+                # model resolved fine and never reached that branch, so the
+                # message only has to tell them apart because we changed this.
+                model_rows = db.query(ModelRegistry).all()
                 model_id_by_name = {
-                    model.name: model.id
-                    for model in db.query(ModelRegistry).all()
+                    model.name: model.id for model in model_rows if model.is_active
+                }
+                inactive_model_names = {
+                    model.name for model in model_rows if not model.is_active
                 }
                 agent_id_by_name = {
                     agent.name: agent.id
@@ -381,7 +404,12 @@ def auto_seed():
                     for model_name in item.get("models", []):
                         model_id = model_id_by_name.get(model_name)
                         if model_id is None:
-                            logger.warning(f"Seed API key {username}: model '{model_name}' 未註冊")
+                            reason = seed_model_skip_reason(
+                                model_name, inactive_model_names
+                            )
+                            logger.warning(
+                                f"Seed API key {username}: model '{model_name}' {reason}"
+                            )
                             continue
                         exists = db.query(ApiKeyModelPermission).filter(
                             ApiKeyModelPermission.api_key_id == api_key.id,
