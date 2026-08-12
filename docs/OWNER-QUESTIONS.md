@@ -16,6 +16,13 @@
 > 對兩個服務降版,沒有任何測試紅利。量級=第 6 段補課:五庫釘版、全 Python 映像
 > 重建重測、兩道交付閘門、wheelhouse 重收(收斂後各 manifest 自然趨同,倉結構不變)。
 > **獨立成包,不與缺陷修正包夾帶。**
+>
+> ⚠ **驗收必含一條(2026-08-12 審查方補,已採納)**:六條 CSRF 安全測試的語意綁在
+> starlette 的 `request.url.path` 行為上(`HANDOFF-2026-08-06.md:99`,現靠
+> `anila_core.api.routing.routed_path` 撐著)——starlette 1.3.1→1.6.0 若行為又變,
+> 那六條會**照樣綠但不再測到東西**。升版包必須**對 `routed_path` 下突變**
+> (退回 `request.url.path`),六條 CSRF 測試在新版 starlette 上**必須轉紅**。
+> 綠不算證據,紅才算。CVE 下限無虞(1.6.0>1.3.1,test_dependency_floors 釘 1.3.1)。
 
 **起因**:2026-08-12 wheelhouse 稽核第一次真實跑,攔下五個共用庫在倉裡出現雙版本
 (fastapi、pydantic-settings、redis、starlette、uvicorn);隨後**活體量測**證實那不是
