@@ -85,3 +85,8 @@ class PublicAuthProviderResponse(BaseModel):
     name: str
     provider_type: str
     button_text: str | None = None
+
+
+class PublicAuthProvidersResponse(BaseModel):
+    providers: list[PublicAuthProviderResponse]
+    auth_mode: str

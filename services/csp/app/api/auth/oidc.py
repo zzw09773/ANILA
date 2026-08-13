@@ -17,7 +17,7 @@ from app.models.api_key import ApiKey
 from app.models.auth_provider import AuthProvider
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
-from app.schemas.auth_provider import PublicAuthProviderResponse
+from app.schemas.auth_provider import PublicAuthProvidersResponse
 from app.services.api_key_service import create_api_key
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import TOKEN_LIFETIMES_KEY, create_tokens
@@ -106,7 +106,7 @@ def _build_oidc_callback_html(
     return HTMLResponse(body)
 
 
-@router.get("/providers", response_model=list[PublicAuthProviderResponse])
+@router.get("/providers", response_model=PublicAuthProvidersResponse)
 def public_providers(db: Session = Depends(get_db)):
     providers = list_public_auth_providers(db)
     # Branch SSO：強制卡片登入時，不在 /providers 列出 OIDC providers，
@@ -114,15 +114,18 @@ def public_providers(db: Session = Depends(get_db)):
     # 切回非鎖死模式時應該還能用）；純粹在邊界 hide 掉。
     if settings.ANILA_AUTH_MODE == "card-only":
         providers = [p for p in providers if p.provider_type != "oidc"]
-    return [
-        {
-            "id": provider.id,
-            "name": provider.name,
-            "provider_type": provider.provider_type,
-            "button_text": provider.button_text,
-        }
-        for provider in providers
-    ]
+    return {
+        "providers": [
+            {
+                "id": provider.id,
+                "name": provider.name,
+                "provider_type": provider.provider_type,
+                "button_text": provider.button_text,
+            }
+            for provider in providers
+        ],
+        "auth_mode": settings.ANILA_AUTH_MODE,
+    }
 
 
 @router.get("/oidc/{provider_id}/start")

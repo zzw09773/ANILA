@@ -10,7 +10,7 @@ Pins the contract:
   - ``GET  /api/auth/oidc/{id}/start`` → 404
   - ``GET  /api/auth/oidc/{id}/callback`` → 404
   - ``PUT  /api/auth/password``    → 404;**例外:owner 可輪換密碼**
-  - ``GET  /api/auth/providers``   → 不再列出 OIDC providers
+  - ``GET  /api/auth/providers``   → 回傳 auth_mode，且不再列出 OIDC providers
 - Startup 一致性：未知 ``ANILA_AUTH_MODE`` → ``RuntimeError``。
 """
 from __future__ import annotations
@@ -108,7 +108,9 @@ def test_providers_endpoint_hides_oidc_when_locked_down(
 
     resp = client.get("/api/auth/providers")
     assert resp.status_code == 200
-    names = {p["name"] for p in resp.json()}
+    payload = resp.json()
+    assert payload["auth_mode"] == "card-only"
+    names = {p["name"] for p in payload["providers"]}
     assert "hidden-oidc" not in names
     # 設計演進後 list_public_auth_providers 只回 oidc 型 — card 登入區塊由
     # LoginView 無條件渲染,不靠 provider row 驅動;card-only 下清單應為空。

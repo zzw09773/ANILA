@@ -95,7 +95,7 @@
         </section>
 
         <!-- Secondary: 帳密 + OIDC 收合在「其他登入方式」下,降低視覺權重 --- -->
-        <details class="login__more">
+        <details v-if="showAlternativeLogin" class="login__more">
           <summary class="login__more-summary">其他登入方式</summary>
 
           <div class="login__more-body">
@@ -245,7 +245,7 @@
     </TermModal>
 
     <!-- Register modal ------------------------------------------------- -->
-    <TermModal :visible="showRegisterModal" title="註冊 · 自助" width="480px" @close="closeRegisterModal">
+    <TermModal v-if="showAlternativeLogin" :visible="showRegisterModal" title="註冊 · 自助" width="480px" @close="closeRegisterModal">
       <div v-if="!regSuccess" class="login__reg">
         <TermField label="帳號">
           <input v-model="reg.username" class="term-input" placeholder="e.g. j.smith" autocomplete="username" />
@@ -285,6 +285,11 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import {
+  DEFAULT_LOGIN_AUTH_MODE,
+  loadLoginSurface,
+  shouldRenderAlternativeLogin,
+} from '../utils/loginSurface'
+import {
   cardCompleteRegistration,
   cardListDepartments,
   getOidcStartUrl,
@@ -311,6 +316,13 @@ const route = useRoute()
 const authStore = useAuthStore()
 const { theme, toggleTheme } = useTheme()
 const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
+// providers 失敗／欄位缺席 → **預設隱藏**。**這條不可改成 fail-open：偵測失效時
+// fail-open 不是「功能降級」，是「靜默回歸到 F-1 原缺陷」——失效等於回歸，比失效等於
+// 不可用更難被發現。旁路是純 query 判斷不依賴偵測，owner 救援不受此預設影響。
+const loginAuthMode = ref(DEFAULT_LOGIN_AUTH_MODE)
+const showAlternativeLogin = computed(() =>
+  shouldRenderAlternativeLogin(loginAuthMode.value, route.query),
+)
 
 // branch SSO: 其他 SPA (anila-ui / ANILALM) 在 unauthenticated 時把使用者
 // 送來這裡並夾帶 ?next=<原 URL>。登入成功後跳回去；沒帶 next 就回 dashboard。
@@ -399,12 +411,9 @@ async function fetchPublicBanners() {
 }
 
 async function fetchProviders() {
-  try {
-    const { data } = await listPublicAuthProviders()
-    providers.value = data
-  } catch {
-    providers.value = []
-  }
+  const result = await loadLoginSurface(listPublicAuthProviders)
+  loginAuthMode.value = result.authMode
+  providers.value = result.providers
 }
 
 onMounted(() => {
