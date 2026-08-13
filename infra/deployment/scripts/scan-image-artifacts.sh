@@ -28,10 +28,12 @@
 #     • 二進位金鑰庫的內容(*.pfx/*.p12 是靠檔名擋的,沒有驗內容)
 #
 # 用法:
-#   bash infra/deployment/scripts/scan-image-artifacts.sh <image> [<image> ...]
+#   bash infra/deployment/scripts/scan-image-artifacts.sh <image-or-tar> [<image-or-tar> ...]
+#   輸入若是已存在的檔案路徑就走 tar mode;其他輸入仍是 daemon image reference。
 #   exit 0  = 全部乾淨
-#   exit 1  = 至少一張有違規(逐張列出違規路徑)
-#   exit 2  = 掃描本身失敗(映像不存在 / create / export 失敗 / 檔案清單是空的)
+#   exit 1  = 至少一張有違規(逐張列出違規路徑與 tar layer provenance)
+#   exit 2  = 掃描本身失敗(映像不存在 / create / export 失敗 / tar blob 解碼失敗 /
+#              manifest 引用缺檔 / 檔案清單是空的)
 #   exit 3  = **自我測試沒過** —— 掃描器被改壞了,在掃任何映像之前就停
 #
 # 這支腳本已接進 infra/deployment/intranet/build-and-export-for-intranet.sh
@@ -137,8 +139,6 @@ ALLOWLIST=(
 # ── helpers ─────────────────────────────────────────────────────────────────
 die() { echo "✗ $*" >&2; exit 2; }
 
-command -v docker >/dev/null 2>&1 || die "docker 不在 PATH 上"
-
 CREATED_CONTAINERS=()
 TMP_PATHS=()
 cleanup() {
@@ -218,6 +218,344 @@ content_has_private_key() {
     [ -L "$f" ] && return 1          # symlink 不判定(指向的東西不在映像裡也常見)
     [ -f "$f" ] || return 1          # 目錄 / 抽不出來 → 不判定
     LC_ALL=C grep -qaE "$PRIVATE_KEY_RE" "$f" 2>/dev/null
+}
+
+# ── tar mode helpers ────────────────────────────────────────────────────────
+# buildx type=docker 的 archive 同時有 docker-save manifest.json 與 OCI
+# index/blobs；只有 manifest.json 的 Layers 是檔案系統 layer。不要用 file(1)
+# 猜 layer 的格式：gzip、raw tar、zstd 都直接嘗試並用 tar 驗證結果。
+normalize_layer_path() {
+    local path="$1"
+    while [[ "$path" == ./* ]]; do path="${path#./}"; done
+    printf '%s' "$path"
+}
+
+whiteout_target() {
+    local path="$1" parent basename
+    case "$path" in
+        .wh.*)
+            printf '%s' "${path#.wh.}"
+            ;;
+        */.wh.*)
+            parent="${path%/*}"
+            basename="${path##*/}"
+            printf '%s/%s' "$parent" "${basename#.wh.}"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+decode_layer_blob() {
+    local bundle="$1" member="$2" decoded="$3"
+
+    # 順序是契約：gzip -> raw tar -> zstd。三次都用 tar 驗證完整輸出。
+    if tar -xOf "$bundle" "$member" 2>/dev/null \
+        | gzip -dc 2>/dev/null > "$decoded" \
+        && tar -tf "$decoded" >/dev/null 2>&1; then
+        return 0
+    fi
+    if tar -xOf "$bundle" "$member" > "$decoded" 2>/dev/null \
+        && tar -tf "$decoded" >/dev/null 2>&1; then
+        return 0
+    fi
+    if tar -xOf "$bundle" "$member" 2>/dev/null \
+        | zstd -q -dc 2>/dev/null > "$decoded" \
+        && tar -tf "$decoded" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+parse_manifest_records() {
+    python3 -c '
+import json
+import sys
+
+def fail(message):
+    raise ValueError(message)
+
+def emit(kind, value):
+    if not isinstance(value, str) or "\n" in value or "\t" in value:
+        fail(f"invalid {kind} value")
+    print(f"{kind}\t{value}")
+
+try:
+    document = json.load(sys.stdin)
+    if not isinstance(document, list) or not document:
+        fail("manifest.json must be a non-empty array")
+    for image in document:
+        if not isinstance(image, dict):
+            fail("manifest entry must be an object")
+        tags = image.get("RepoTags", [])
+        if tags is None:
+            tags = []
+        if not isinstance(tags, list):
+            fail("RepoTags must be an array")
+        for tag in tags:
+            emit("TAG", tag)
+        config = image.get("Config", "")
+        if config is None:
+            config = ""
+        if config:
+            emit("CONFIG", config)
+        layers = image.get("Layers")
+        if not isinstance(layers, list):
+            fail("Layers must be an array")
+        for layer in layers:
+            emit("LAYER", layer)
+except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+    print(f"manifest.json parse failed: {error}", file=sys.stderr)
+    sys.exit(1)
+'
+}
+
+scan_tar_image() {
+    local bundle="$1" members_file manifest_member manifest_records
+    local normalized member kind value blob config image_label tags_display metadata
+    local layer_index layer_label layer_member decoded listing raw_path path
+    local deletion_target is_dir i content_paths img_violations
+    local candidates_total landed candidate_index occurrence_dir landed_path extracted
+    local -a missing_samples=()
+
+    [ -f "$bundle" ] || die "tar 不存在或不是 regular file:$bundle"
+
+    members_file="$(mktemp)"
+    TMP_PATHS+=("$members_file")
+    if ! tar -tf "$bundle" > "$members_file" 2>/dev/null; then
+        die "tar 外層 archive 無法列舉:$bundle"
+    fi
+
+    declare -A bundle_member_raw=()
+    while IFS= read -r member; do
+        [ -n "$member" ] || continue
+        normalized="$(normalize_layer_path "$member")"
+        [ -n "$normalized" ] || continue
+        bundle_member_raw["$normalized"]="$member"
+    done < "$members_file"
+
+    if [ -n "${bundle_member_raw[manifest.json]+x}" ]; then
+        manifest_member='manifest.json'
+    else
+        die "$bundle 缺少 manifest.json"
+    fi
+    if ! manifest_records="$(
+        tar -xOf "$bundle" "${bundle_member_raw[$manifest_member]}" 2>/dev/null \
+            | parse_manifest_records
+    )"; then
+        die "$bundle 的 manifest.json 無法解析"
+    fi
+
+    local -a tags=() configs=() layer_blobs=() layer_raw_members=() non_layer_blobs=()
+    local -a oci_metadata_members=()
+    while IFS=$'\t' read -r kind value; do
+        case "$kind" in
+            TAG) tags+=("$value") ;;
+            CONFIG) configs+=("$(normalize_layer_path "$value")") ;;
+            LAYER) layer_blobs+=("$(normalize_layer_path "$value")") ;;
+            *) die "$bundle 的 manifest parser 回傳未知 record:$kind" ;;
+        esac
+    done <<< "$manifest_records"
+
+    [ "${#layer_blobs[@]}" -gt 0 ] || die "$bundle 的 manifest 沒有 layer"
+
+    declare -A layer_referenced=() config_referenced=()
+    for i in "${!layer_blobs[@]}"; do
+        blob="${layer_blobs[$i]}"
+        [ -n "$blob" ] || die "$bundle 的 manifest 含空 layer blob 路徑"
+        [ -n "${bundle_member_raw[$blob]+x}" ] \
+            || die "$bundle 的 manifest 引用缺少 layer blob:$blob"
+        layer_raw_members[$i]="${bundle_member_raw[$blob]}"
+        layer_referenced["$blob"]=1
+    done
+    for config in "${configs[@]}"; do
+        [ -n "$config" ] || die "$bundle 的 manifest 含空 config blob 路徑"
+        [ -n "${bundle_member_raw[$config]+x}" ] \
+            || die "$bundle 的 manifest 引用缺少 config blob:$config"
+        config_referenced["$config"]=1
+    done
+
+    for blob in "${!bundle_member_raw[@]}"; do
+        [[ "$blob" == blobs/* ]] || continue
+        [ "${blob: -1}" = "/" ] && continue
+        [ -n "${layer_referenced[$blob]+x}" ] && continue
+        non_layer_blobs+=("$blob")
+    done
+    if [ "${#non_layer_blobs[@]}" -gt 0 ]; then
+        mapfile -t non_layer_blobs < <(
+            printf '%s\n' "${non_layer_blobs[@]}" | LC_ALL=C sort
+        )
+    fi
+    for metadata in index.json oci-layout; do
+        [ -n "${bundle_member_raw[$metadata]+x}" ] && oci_metadata_members+=("$metadata")
+    done
+
+    image_label="$bundle"
+    [ "${#tags[@]}" -gt 0 ] && [ -n "${tags[0]}" ] && image_label="${tags[0]}"
+    tags_display='(none)'
+    [ "${#tags[@]}" -gt 0 ] && tags_display="${tags[*]}"
+    local layer_count="${#layer_blobs[@]}"
+    echo "  tar manifest RepoTags=$tags_display"
+    echo "  tar layers=$layer_count (ordered manifest Layers)"
+    echo "  tar non-layer blobs=${#non_layer_blobs[@]} (列帳但不做內容掃描):"
+    if [ "${#non_layer_blobs[@]}" -eq 0 ]; then
+        echo "    (none)"
+    else
+        for blob in "${non_layer_blobs[@]}"; do
+            if [ -n "${config_referenced[$blob]+x}" ]; then
+                printf '    - %s [config]\n' "$blob"
+            else
+                printf '    - %s [non-layer]\n' "$blob"
+            fi
+        done
+    fi
+    echo "  tar OCI metadata members=${#oci_metadata_members[@]} (容忍、不做內容掃描):"
+    for metadata in "${oci_metadata_members[@]}"; do
+        printf '    - %s\n' "$metadata"
+    done
+
+    local decoded_dir="$(mktemp -d)"
+    TMP_PATHS+=("$decoded_dir")
+    declare -A unique_paths=()
+    local -a violation_paths=() violation_rules=() violation_layers=()
+    local -a content_violation_paths=() content_violation_verdicts=() content_violation_layers=()
+    local -a deletion_paths=() deletion_layers=()
+    local -a candidate_paths=() candidate_verdicts=() candidate_layers=()
+    local -a candidate_raw_members=() candidate_layer_files=()
+    local total_entries=0 allowed_total=0
+    local -a allow_hits=() allow_sample=()
+    for i in "${!ALLOWLIST[@]}"; do
+        allow_hits[$i]=0
+        allow_sample[$i]=""
+    done
+
+    for layer_index in "${!layer_blobs[@]}"; do
+        blob="${layer_blobs[$layer_index]}"
+        layer_label="layer-$((layer_index + 1)) blob=$blob"
+        layer_member="${layer_raw_members[$layer_index]}"
+        decoded="$decoded_dir/layer-$((layer_index + 1)).tar"
+        if ! decode_layer_blob "$bundle" "$layer_member" "$decoded"; then
+            die "$bundle 的 $layer_label 無法以 gzip、raw tar 或 zstd 解碼"
+        fi
+        listing="$decoded_dir/layer-$((layer_index + 1)).list"
+        if ! tar -tf "$decoded" > "$listing" 2>/dev/null; then
+            die "$bundle 的 $layer_label 解碼後不是可列舉的 tar"
+        fi
+
+        while IFS= read -r raw_path; do
+            [ -n "$raw_path" ] || continue
+            total_entries=$(( total_entries + 1 ))
+            path="$(normalize_layer_path "$raw_path")"
+            [ -n "$path" ] || continue
+            unique_paths["$path"]=1
+
+            if deletion_target="$(whiteout_target "$path")"; then
+                deletion_paths+=("$deletion_target")
+                deletion_layers+=("$layer_label")
+                continue
+            fi
+
+            if [ "${raw_path: -1}" = "/" ]; then is_dir=1; else is_dir=0; fi
+            classify_path "$path"
+            case "$VERDICT" in
+                VIOLATION)
+                    violation_paths+=("$path")
+                    violation_rules+=("$MATCHED_RULE")
+                    violation_layers+=("$layer_label")
+                    ;;
+                ALLOWED)
+                    allow_hits[$ALLOW_IDX]=$(( allow_hits[$ALLOW_IDX] + 1 ))
+                    [ -n "${allow_sample[$ALLOW_IDX]}" ] \
+                        || allow_sample[$ALLOW_IDX]="$path"
+                    allowed_total=$(( allowed_total + 1 ))
+                    ;;
+            esac
+            if [ "$is_dir" -eq 0 ] && needs_content_check "$path" "$VERDICT"; then
+                candidate_paths+=("$path")
+                candidate_verdicts+=("$VERDICT")
+                candidate_layers+=("$layer_label")
+                candidate_raw_members+=("$raw_path")
+                candidate_layer_files+=("$decoded")
+            fi
+        done < "$listing"
+    done
+
+    [ "$layer_count" -gt 0 ] || die "$bundle 沒有 layer"
+    [ "$total_entries" -gt 0 ] || die "$bundle 的 layer entries 為 0——當掃描失敗,不是乾淨"
+    content_paths="${#unique_paths[@]}"
+
+    candidates_total="${#candidate_paths[@]}"
+    landed=0
+    missing_samples=()
+    for candidate_index in "${!candidate_paths[@]}"; do
+        occurrence_dir="$decoded_dir/occurrence-$candidate_index"
+        mkdir -p "$occurrence_dir"
+        landed_path="$(normalize_layer_path "${candidate_raw_members[$candidate_index]}")"
+        extracted=0
+        if tar -xf "${candidate_layer_files[$candidate_index]}" \
+            -C "$occurrence_dir" --no-same-owner --no-same-permissions -- \
+            "${candidate_raw_members[$candidate_index]}" >/dev/null 2>&1; then
+            if [ -e "$occurrence_dir/$landed_path" ] || [ -L "$occurrence_dir/$landed_path" ]; then
+                extracted=1
+            fi
+        fi
+        if [ "$extracted" -eq 1 ]; then
+            landed=$(( landed + 1 ))
+            if content_has_private_key "$occurrence_dir/$landed_path"; then
+                content_violation_paths+=("${candidate_paths[$candidate_index]}")
+                content_violation_verdicts+=("${candidate_verdicts[$candidate_index]}")
+                content_violation_layers+=("${candidate_layers[$candidate_index]}")
+            fi
+        elif [ "${#missing_samples[@]}" -lt 3 ]; then
+            missing_samples+=("${candidate_paths[$candidate_index]}@${candidate_layers[$candidate_index]}")
+        fi
+        rm -rf "$occurrence_dir"
+    done
+    if [ "$landed" -lt "$candidates_total" ]; then
+        die "$bundle 的內容檢查沒做完:點名 $candidates_total 個候選檔,只落地 $landed 個(例:${missing_samples[*]:-?})——抽檔失敗當掃描失敗,不會給乾淨"
+    fi
+
+    echo "  掃了 $total_entries 條 layer entries,跨層 unique content paths $content_paths,讀了 $landed/$candidates_total 個憑證/金鑰候選檔的內容"
+    if [ "${#deletion_paths[@]}" -gt 0 ]; then
+        echo "  whiteout deletion records=${#deletion_paths[@]} (不把 raw .wh.* 當檔案分類):"
+        for i in "${!deletion_paths[@]}"; do
+            printf '    - %s (deleted by %s)\n' "${deletion_paths[$i]}" "${deletion_layers[$i]}"
+        done
+    fi
+    if [ "$allowed_total" -gt 0 ]; then
+        echo "  白名單放行(有看到,但有理由留著)— $allowed_total 筆:"
+        for i in "${!ALLOWLIST[@]}"; do
+            [ "${allow_hits[$i]}" -gt 0 ] || continue
+            printf '    ~ %s  (%d 筆,例:%s)\n' \
+                "${ALLOWLIST[$i]%%|*}" "${allow_hits[$i]}" "${allow_sample[$i]}"
+            printf '        理由:%s\n' "${ALLOWLIST[$i]#*|}"
+        done
+    fi
+
+    img_violations=$(( ${#violation_paths[@]} + ${#content_violation_paths[@]} ))
+    if [ "$img_violations" -eq 0 ]; then
+        echo "  ✓ 乾淨:沒有非預期的執行期產物"
+    else
+        echo "  ✗ 違規 $img_violations 筆:"
+        for i in "${!violation_paths[@]}"; do
+            printf '    [%s] %s  ← introduced by %s\n' \
+                "${violation_rules[$i]}" "${violation_paths[$i]}" "${violation_layers[$i]}"
+        done
+        for i in "${!content_violation_paths[@]}"; do
+            if [ "${content_violation_verdicts[$i]}" = "ALLOWED" ]; then
+                printf '    [%s] %s  ← introduced by %s;檔名被白名單放行,內容出賣了它\n' \
+                    "$CONTENT_RULE_NAME" "${content_violation_paths[$i]}" \
+                    "${content_violation_layers[$i]}"
+            else
+                printf '    [%s] %s  ← introduced by %s\n' "$CONTENT_RULE_NAME" \
+                    "${content_violation_paths[$i]}" "${content_violation_layers[$i]}"
+            fi
+        done
+        TOTAL_VIOLATIONS=$(( TOTAL_VIOLATIONS + img_violations ))
+        DIRTY_IMAGES+=("$image_label")
+    fi
+    echo "  SCAN-SUMMARY image=$image_label paths=$total_entries content_paths=$content_paths violations=$img_violations layers=$layer_count"
 }
 
 # ── 自我測試 ────────────────────────────────────────────────────────────────
@@ -325,6 +663,78 @@ self_test() {
         done
     done
 
+    # ── tar mode fixtures ─────────────────────────────────────────────────
+    # 這裡故意用真實 docker-archive 形狀：manifest.json 指向 gzip layer，
+    # 另放一個含私鑰標頭的 config blob，確認非 layer blob 只列帳、不被內容掃描。
+    local tar_fixture tar_layer_root tar_bundle tar_missing_bundle
+    local tar_records tar_output_file missing_rc tar_summary
+    tar_fixture="$(mktemp -d)"
+    TMP_PATHS+=("$tar_fixture")
+    tar_layer_root="$tar_fixture/layer-root"
+    tar_bundle="$tar_fixture/fixture.tar"
+    tar_missing_bundle="$tar_fixture/missing-layer.tar"
+    mkdir -p "$tar_layer_root/foo" "$tar_fixture/bundle/blobs/sha256"
+    printf 'safe fixture\n' > "$tar_layer_root/safe.txt"
+    printf 'fixture violation\n' > "$tar_layer_root/foo/real.key"
+    : > "$tar_layer_root/foo/.wh.secret.key"
+    tar -cf "$tar_fixture/layer.tar" -C "$tar_layer_root" .
+    gzip -c "$tar_fixture/layer.tar" > "$tar_fixture/bundle/blobs/sha256/self-test-layer"
+    printf '%s\n' '-----BEGIN PRIVATE KEY-----' > \
+        "$tar_fixture/bundle/blobs/sha256/self-test-config"
+    printf '%s\n' \
+        '[{"Config":"blobs/sha256/self-test-config","RepoTags":["scan-self-test:fixture"],"Layers":["blobs/sha256/self-test-layer"]}]' \
+        > "$tar_fixture/bundle/manifest.json"
+    tar -cf "$tar_bundle" -C "$tar_fixture/bundle" \
+        manifest.json blobs/sha256/self-test-config blobs/sha256/self-test-layer
+    tar -cf "$tar_missing_bundle" -C "$tar_fixture/bundle" \
+        manifest.json blobs/sha256/self-test-config
+
+    if ! tar_records="$(parse_manifest_records < "$tar_fixture/bundle/manifest.json")"; then
+        echo "  ✗ self-test: manifest.json fixture 無法解析" >&2
+        failures=$((failures + 1))
+    else
+        if ! grep -Fq $'TAG\tscan-self-test:fixture' <<< "$tar_records" \
+            || ! grep -Fq $'LAYER\tblobs/sha256/self-test-layer' <<< "$tar_records"; then
+            echo "  ✗ self-test: manifest parser 沒有保留 RepoTags/Layers 順序資料" >&2
+            failures=$((failures + 1))
+        fi
+    fi
+
+    tar_output_file="$(mktemp)"
+    TMP_PATHS+=("$tar_output_file")
+    if ( TMP_PATHS=(); trap cleanup EXIT; scan_tar_image "$tar_bundle" > "$tar_output_file" ); then
+        tar_summary="$(grep -F 'SCAN-SUMMARY image=scan-self-test:fixture' "$tar_output_file" || true)"
+        if [ -z "$tar_summary" ] \
+            || [[ "$tar_summary" != *'content_paths='* ]] \
+            || [[ "$tar_summary" != *'violations='* ]] \
+            || [[ "$tar_summary" != *'layers=1'* ]]; then
+            echo "  ✗ self-test: tar summary 沒有 image/content_paths/violations/layers=1" >&2
+            failures=$((failures + 1))
+        fi
+        if ! grep -Fq '[secret-material] foo/real.key  ← introduced by layer-1 blob=blobs/sha256/self-test-layer' "$tar_output_file"; then
+            echo "  ✗ self-test: tar layer 的 real.key 沒有以 secret-material/正確 layer attribution 回報" >&2
+            failures=$((failures + 1))
+        fi
+        if grep -Fq 'self-test-config  ← introduced by' "$tar_output_file"; then
+            echo "  ✗ self-test: config blob 被當成 layer violation 回報" >&2
+            failures=$((failures + 1))
+        fi
+    else
+        echo "  ✗ self-test: synthetic gzip layer tar scan 失敗" >&2
+        failures=$((failures + 1))
+    fi
+
+    if ( TMP_PATHS=(); trap cleanup EXIT; scan_tar_image "$tar_missing_bundle" >/dev/null 2>&1 ); then
+        echo "  ✗ self-test: 缺 layer blob 沒有讓 tar scan 失敗" >&2
+        failures=$((failures + 1))
+    else
+        missing_rc=$?
+        if [ "$missing_rc" -ne 2 ]; then
+            echo "  ✗ self-test: 缺 layer blob 應該 exit 2, 實際 $missing_rc" >&2
+            failures=$((failures + 1))
+        fi
+    fi
+
     if [ "$failures" -gt 0 ]; then
         echo "✗ 自我測試失敗 $failures 項 —— 掃描器已經被改壞了,拒絕繼續。" >&2
         echo "  (這種壞法的症狀是『每張映像都乾淨』,所以寧可停在這裡。)" >&2
@@ -354,11 +764,11 @@ DIRTY_IMAGES=()
 echo "============================================================"
 echo "ANILA — post-build image artifact scan"
 echo "  Images: $*"
-echo "  Method: docker create (never started) + docker export | tar -t"
+echo "  Method: existing tar path → manifest/layer scan; image ref → docker create/export"
 echo "============================================================"
 
 self_test
-echo "  ✓ 自我測試通過(${#SELF_TEST_CASES[@]} 條路徑 fixture + 內容規則 4 項 + ${#ALLOWLIST[@]} 條白名單的形狀)"
+echo "  ✓ 自我測試通過(${#SELF_TEST_CASES[@]} 條路徑 fixture + 內容規則 4 項 + ${#ALLOWLIST[@]} 條白名單的形狀 + tar mode fixtures)"
 
 idx=0
 for img in "$@"; do
@@ -366,6 +776,12 @@ for img in "$@"; do
     echo
     echo "▶ $img"
 
+    if [ -f "$img" ]; then
+        scan_tar_image "$img"
+        continue
+    fi
+
+    command -v docker >/dev/null 2>&1 || die "docker 不在 PATH 上"
     docker image inspect "$img" >/dev/null 2>&1 || die "映像不存在:$img(先 build/pull)"
 
     cname="${CONTAINER_PREFIX}-$$-${idx}"
