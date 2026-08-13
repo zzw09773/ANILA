@@ -134,6 +134,16 @@ ALLOWLIST=(
     '*.env.example|設定**範本**:內容應該是鍵名與說明、不是值,而且它要跟著程式碼出貨才有用。⚠ 代價寫清楚:有人把真值填進範本再提交,這條就會放行它 —— 這是刻意接受的取捨,不是沒想到。'
     '*.env.sample|同上,另一種常見的範本命名。'
     '*.env.template|同上。'
+    'usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key|httpolyglot npm 套件公開測試 fixture,全球同位元組,code-server 基底層自帶、後層已刪、僅存於層位元組'
+    'var/log/bootstrap.log|ubuntu24.04 CUDA 基底自帶開機引導日誌,基底層自帶、後層已刪'
+)
+
+# ── 內容例外白名單 ───────────────────────────────────────────────────────────
+# 格式:<exact-path>|<sha256>|<理由>。path 是 image rootfs 的相對路徑,不准用 glob。
+# 每一筆例外都是一次閘門收窄;雜湊與理由是它的代價;新增條目必須寫明上游公開來源與為何零機密價值 — 給第八筆條目製造摩擦力正是這段註解的目的。
+CONTENT_ALLOWLIST=(
+    # 擷取命令: tar -xOf /tmp/anila-export-buildx-20260813/01-images/anila-codeserver_local.tar.gz blobs/sha256/e44ee3c44d52c8fe0592e5c769e8266191afddebe84bfa722f6e537b0eb9795e | gzip -dc | tar -xOf - -- usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key | sha256sum
+    'usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key|6bf80cc4376ae97a69b2eb95fd3e17df4614bea2fe224e5e707806ed9bf0f2c8|httpolyglot npm 套件公開測試 fixture,全球同位元組,code-server 基底層自帶、後層已刪、僅存於層位元組'
 )
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -167,6 +177,25 @@ is_allowlisted() {
         fi
     done
     ALLOW_IDX=-1
+    return 1
+}
+
+# 內容例外只接受「同一個精確路徑」且「同一個 occurrence 的 bytes 雜湊」;
+# 這裡刻意不用 [[ == ]] 的 glob 右值、endswith 或任何 prefix 比對。
+content_allowlist_match() {
+    local path="$1" file="$2" i entry entry_path entry_hash actual_hash
+    for i in "${!CONTENT_ALLOWLIST[@]}"; do
+        entry="${CONTENT_ALLOWLIST[$i]}"
+        entry_path="${entry%%|*}"
+        [ "$path" = "$entry_path" ] || continue
+        if ! actual_hash="$(sha256sum "$file" 2>/dev/null)"; then
+            return 1
+        fi
+        actual_hash="${actual_hash%% *}"
+        entry_hash="${entry#*|}"
+        entry_hash="${entry_hash%%|*}"
+        [ "$actual_hash" = "$entry_hash" ] && return 0
+    done
     return 1
 }
 
@@ -218,6 +247,16 @@ content_has_private_key() {
     [ -L "$f" ] && return 1          # symlink 不判定(指向的東西不在映像裡也常見)
     [ -f "$f" ] || return 1          # 目錄 / 抽不出來 → 不判定
     LC_ALL=C grep -qaE "$PRIVATE_KEY_RE" "$f" 2>/dev/null
+}
+
+# 回傳 0 = private-key-content 違規;回傳 1 = 沒有私鑰內容或已被內容例外放行。
+private_key_content_violation() {
+    local path="$1" file="$2"
+    content_has_private_key "$file" || return 1
+    if content_allowlist_match "$path" "$file"; then
+        return 1
+    fi
+    return 0
 }
 
 # ── tar mode helpers ────────────────────────────────────────────────────────
@@ -502,7 +541,8 @@ scan_tar_image() {
         fi
         if [ "$extracted" -eq 1 ]; then
             landed=$(( landed + 1 ))
-            if content_has_private_key "$occurrence_dir/$landed_path"; then
+            if private_key_content_violation "${candidate_paths[$candidate_index]}" \
+                "$occurrence_dir/$landed_path"; then
                 content_violation_paths+=("${candidate_paths[$candidate_index]}")
                 content_violation_verdicts+=("${candidate_verdicts[$candidate_index]}")
                 content_violation_layers+=("${candidate_layers[$candidate_index]}")
@@ -595,17 +635,34 @@ SELF_TEST_CASES=(
 )
 
 self_test() {
-    local failures=0 case_line path want_verdict want_rule got_rule
+    local failures=0 case_line path want_verdict want_rule got_rule i
+    local -a active_fixture_results=()
+    local -a content_allowlist_snapshot=("${CONTENT_ALLOWLIST[@]}")
     for case_line in "${SELF_TEST_CASES[@]}"; do
         IFS='|' read -r path want_verdict want_rule <<<"$case_line"
         classify_path "$path"
         got_rule="$MATCHED_RULE"
         [ "$VERDICT" = "VIOLATION" ] || got_rule="-"
+        active_fixture_results+=("$VERDICT|$got_rule")
         if [ "$VERDICT" != "$want_verdict" ] || [ "$got_rule" != "$want_rule" ]; then
             echo "  ✗ self-test: $path → $VERDICT/$got_rule(期望 $want_verdict/$want_rule)" >&2
             failures=$((failures + 1))
         fi
     done
+
+    # 空表不應改變既有 fixture 的分類結果:暫時清空內容例外表再逐筆比對。
+    CONTENT_ALLOWLIST=()
+    for i in "${!SELF_TEST_CASES[@]}"; do
+        IFS='|' read -r path _ _ <<<"${SELF_TEST_CASES[$i]}"
+        classify_path "$path"
+        got_rule="$MATCHED_RULE"
+        [ "$VERDICT" = "VIOLATION" ] || got_rule="-"
+        if [ "$VERDICT|$got_rule" != "${active_fixture_results[$i]}" ]; then
+            echo "  ✗ self-test: CONTENT_ALLOWLIST 清空後 fixture 分類改變:$path → $VERDICT/$got_rule(原為 ${active_fixture_results[$i]})" >&2
+            failures=$((failures + 1))
+        fi
+    done
+    CONTENT_ALLOWLIST=("${content_allowlist_snapshot[@]}")
 
     # 內容規則:私鑰藏在一個**白名單放行**的路徑底下,必須仍然是違規。
     local probe_dir probe_file certifi_path
@@ -632,6 +689,43 @@ self_test() {
         echo "  ✗ self-test: 純憑證檔被誤判成私鑰" >&2
         failures=$((failures + 1))
     fi
+
+    # 內容例外的反向 mutation:非例外路徑與錯誤 bytes 都必須仍然是紅燈,
+    # 只有精確路徑加上精確 occurrence hash 才能讓 private-key-content 變乾淨。
+    local content_exception_path content_only_path content_probe_file wrong_probe_file content_hash
+    local -a mutation_content_allowlist=("${CONTENT_ALLOWLIST[@]}")
+    content_exception_path='usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key'
+    content_only_path='opt/x/content-only.key'
+    content_probe_file="$probe_dir/matching-private-key"
+    wrong_probe_file="$probe_dir/wrong-private-key"
+    printf -- '-----%s %s-----\nmatching fixture\n' "BEGIN" "PRIVATE KEY" > "$content_probe_file"
+    printf -- '-----%s %s-----\nwrong fixture\n' "BEGIN" "PRIVATE KEY" > "$wrong_probe_file"
+    content_hash="$(sha256sum "$content_probe_file")"
+    content_hash="${content_hash%% *}"
+    CONTENT_ALLOWLIST=("$content_exception_path|$content_hash|self-test exact occurrence hash")
+    if private_key_content_violation "$content_exception_path" "$content_probe_file"; then
+        echo "  ✗ self-test: 例外路徑加 matching bytes 應該讓 private-key-content 乾淨" >&2
+        failures=$((failures + 1))
+    fi
+    if ! private_key_content_violation "$content_exception_path" "$wrong_probe_file"; then
+        echo "  ✗ self-test: 例外路徑加 wrong bytes 沒有維持 private-key-content 違規" >&2
+        failures=$((failures + 1))
+    fi
+    if ! private_key_content_violation 'opt/x/non-excepted.key' "$content_probe_file"; then
+        echo "  ✗ self-test: 非例外路徑的私鑰內容沒有維持 private-key-content 違規" >&2
+        failures=$((failures + 1))
+    fi
+    CONTENT_ALLOWLIST=("$content_only_path|$content_hash|self-test dual-table pairing")
+    classify_path "$content_only_path"
+    if [ "$VERDICT" != "VIOLATION" ] || [ "$MATCHED_RULE" != "secret-material" ]; then
+        echo "  ✗ self-test: 只有 CONTENT_ALLOWLIST 沒有 regular ALLOWLIST 時,檔名規則應仍違規" >&2
+        failures=$((failures + 1))
+    fi
+    if private_key_content_violation "$content_only_path" "$content_probe_file"; then
+        echo "  ✗ self-test: dual-table fixture 的 matching bytes 不應再產生內容規則違規" >&2
+        failures=$((failures + 1))
+    fi
+    CONTENT_ALLOWLIST=("${mutation_content_allowlist[@]}")
     rm -rf "$probe_dir"
 
     # ── 白名單自己的形狀也要驗 ────────────────────────────────────────────
@@ -661,6 +755,30 @@ self_test() {
                 failures=$((failures + 1))
             fi
         done
+    done
+
+    # ── 內容白名單自己的形狀也要驗 ────────────────────────────────────────
+    # 內容例外不能藉由 glob、前綴或不完整雜湊把閘門變成永久綠燈。
+    local content_entry content_path content_hash_entry content_reason content_extra pipe_chars
+    for content_entry in "${CONTENT_ALLOWLIST[@]}"; do
+        pipe_chars="${content_entry//[^|]/}"
+        IFS='|' read -r content_path content_hash_entry content_reason content_extra <<<"$content_entry"
+        if [ "${#pipe_chars}" -ne 2 ] || [ -z "$content_path" ] \
+            || [ -z "$content_hash_entry" ] || [ -z "$content_reason" ] \
+            || [ -n "$content_extra" ]; then
+            echo "  ✗ self-test: CONTENT_ALLOWLIST 條目格式不是 path|sha256|reason:$content_entry" >&2
+            failures=$((failures + 1))
+        fi
+        if [[ "$content_path" == /* || "$content_path" == *'*'* \
+            || "$content_path" == *'?'* || "$content_path" == *'['* \
+            || "$content_path" == *']'* ]]; then
+            echo "  ✗ self-test: CONTENT_ALLOWLIST path 必須是無 glob 且不帶 leading slash 的精確路徑:$content_path" >&2
+            failures=$((failures + 1))
+        fi
+        if [[ ! "$content_hash_entry" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+            echo "  ✗ self-test: CONTENT_ALLOWLIST sha256 必須是 64 位 hex:$content_path" >&2
+            failures=$((failures + 1))
+        fi
     done
 
     # ── tar mode fixtures ─────────────────────────────────────────────────
@@ -724,6 +842,23 @@ self_test() {
         failures=$((failures + 1))
     fi
 
+    # tar fixture 也要維持空表不變:若內容例外表沒有條目,既有 layer
+    # 分類與違規輸出必須和原本完全相同。
+    local tar_empty_output_file
+    tar_empty_output_file="$(mktemp)"
+    TMP_PATHS+=("$tar_empty_output_file")
+    CONTENT_ALLOWLIST=()
+    if ( TMP_PATHS=(); trap cleanup EXIT; scan_tar_image "$tar_bundle" > "$tar_empty_output_file" ); then
+        if ! diff -u "$tar_output_file" "$tar_empty_output_file" >/dev/null; then
+            echo "  ✗ self-test: CONTENT_ALLOWLIST 清空後既有 tar fixture 輸出改變" >&2
+            failures=$((failures + 1))
+        fi
+    else
+        echo "  ✗ self-test: CONTENT_ALLOWLIST 清空後 synthetic gzip layer tar scan 失敗" >&2
+        failures=$((failures + 1))
+    fi
+    CONTENT_ALLOWLIST=("${content_allowlist_snapshot[@]}")
+
     if ( TMP_PATHS=(); trap cleanup EXIT; scan_tar_image "$tar_missing_bundle" >/dev/null 2>&1 ); then
         echo "  ✗ self-test: 缺 layer blob 沒有讓 tar scan 失敗" >&2
         failures=$((failures + 1))
@@ -768,7 +903,7 @@ echo "  Method: existing tar path → manifest/layer scan; image ref → docker 
 echo "============================================================"
 
 self_test
-echo "  ✓ 自我測試通過(${#SELF_TEST_CASES[@]} 條路徑 fixture + 內容規則 4 項 + ${#ALLOWLIST[@]} 條白名單的形狀 + tar mode fixtures)"
+echo "  ✓ 自我測試通過(${#SELF_TEST_CASES[@]} 條路徑 fixture + 內容規則 4 項 + ${#ALLOWLIST[@]} 條 regular 白名單與 ${#CONTENT_ALLOWLIST[@]} 條內容白名單的形狀 + tar mode fixtures)"
 
 idx=0
 for img in "$@"; do
@@ -871,7 +1006,7 @@ for img in "$@"; do
             elif [ ${#missing_samples[@]} -lt 3 ]; then
                 missing_samples+=("$path")
             fi
-            if content_has_private_key "$exdir/$path"; then
+            if private_key_content_violation "$path" "$exdir/$path"; then
                 content_violations+=("$path|${CAND_VERDICT[$path]:-?}")
             fi
         done < "$candidates"
