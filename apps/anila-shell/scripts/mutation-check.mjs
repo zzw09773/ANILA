@@ -82,6 +82,7 @@ const NEW_TESTS = [
   "src/__tests__/orchestrator",
   "src/__tests__/transport",
   "src/__tests__/csrfHeaders",
+  "src/__tests__/agentRefreshFeedback",
   // 敏感資訊閘門與模式偏好(`wt/pii-honesty`,2026-08-05)。這一組守的是新加的
   // 那幾個突變 —— 連同它們釘的行為都是本包才長出來的,所以歸「新測試」。
   "src/__tests__/redactionBlockAttribution",
@@ -99,6 +100,7 @@ const PRE_EXISTING_EXCLUDES = [
   "**/orchestrator*.test.jsx",
   "**/transport*.test.*",
   "**/csrfHeaders.test.js",
+  "**/agentRefreshFeedback.test.jsx",
   "**/redactionBlockAttribution.test.jsx",
   "**/redactionModePersistence.test.jsx",
   "**/redactionGateCoverage.test.jsx",
@@ -251,12 +253,32 @@ const MUTATIONS = [
     replace: '    const error = new Error(detail && "Streaming failed");',
   },
   {
-    id: "agent-refresh-failure-claims-success",
+    id: "agent-refresh-failure-feedback-hidden",
     file: "src/app.jsx",
     shape: "訊息被吃掉",
-    intent: "agent 清單刷新失敗卻顯示成功（選單回到 Router 但不告訴使用者）",
-    find: '        setRuntimeError(error.message || "無法載入 agent 清單");',
-    replace: '        setRuntimeError(error.message && "");',
+    intent: "agent reload 失敗不再顯示 inline feedback（選單空白但沒人說為什麼）",
+    find:
+      "        setAgentRefreshFeedback({\n" +
+      "          kind: \"error\",\n" +
+      "          message: `agent 載入失敗：${error.message || \"未知錯誤\"}`,\n" +
+      "        });",
+    replace: "        setAgentRefreshFeedback(null);",
+  },
+  {
+    id: "agent-refresh-failure-claims-success",
+    file: "src/app.jsx",
+    shape: "失敗分支宣稱成功",
+    intent: "agent reload 失敗時仍顯示已更新（使用者被誤導）",
+    find:
+      "        setAgentRefreshFeedback({\n" +
+      "          kind: \"error\",\n" +
+      "          message: `agent 載入失敗：${error.message || \"未知錯誤\"}`,\n" +
+      "        });",
+    replace:
+      "        setAgentRefreshFeedback({\n" +
+      "          kind: \"success\",\n" +
+      "          message: \"agent 已更新\",\n" +
+      "        });",
   },
   {
     id: "edit-history-not-truncated",
