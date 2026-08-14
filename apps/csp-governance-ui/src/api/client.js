@@ -85,7 +85,12 @@ client.interceptors.response.use(
         return client(originalRequest)
       } catch {
         authStore.logout()
-        if (router.currentRoute.value?.path !== '/login') {
+        // During the initial /login navigation, currentRoute can still be the
+        // previous route while /me/refresh fails. Check the browser URL too so
+        // this fallback does not replace /login?show_alternatives=1 with a
+        // bare /login before the login route receives its query.
+        if (router.currentRoute.value?.path !== '/login'
+          && window.location.pathname !== '/login') {
           router.push('/login')
         }
         return Promise.reject(error)
