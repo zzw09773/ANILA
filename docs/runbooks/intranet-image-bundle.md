@@ -23,7 +23,9 @@
 ## 1. 在這台開發機 build 與 export
 
 ```bash
-cd /path/to/ANILA   # 含要部署的 commit;預演用 wt-pack-rehearsal 亦可
+cd /path/to/ANILA   # 從 restart/from-redesign 的 annotated tag export
+# owner verdict (2026-08-14):bundle 的 MANIFEST.txt 會記錄 tag+commit;
+# 內網端不 checkout branch,直接接收 bundle 與配套 repo 內容。
 
 # 若映像尚未對齊目前碼(明天正式攜入前建議重建,會花時間):
 # COMPOSE_PROJECT_NAME=anila-restart \
@@ -63,6 +65,7 @@ bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-i
 | `CHECKSUMS.sha256` | 媒體完整性 |
 | `MANIFEST.txt` | 給 IT 對大小 / digest / 服務對照 |
 | `INTRANET-LOAD.sh` | 內網一鍵 load |
+| `intranet-image-overrides.yml` | 內網 `up` 時將 digest-pinned image 疊成已 load 的 tag-only reference |
 
 另外還要(不在 image bundle 內,但沒有就起不來):
 
@@ -70,7 +73,9 @@ bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-i
 - `secrets/jwt-{private,public}.pem`(缺 → JWKS 500、登入炸)
 - TLS:`server.crt` / `server.key`(或從 `server.pfx` 抽)
 - 模型 CA:`share/pki/model-ca.pem`(可用 repo 內 `cspki_ca_bundle.pem` 那條 CSPKI 鏈)
-- **同一 commit** 的 repo 樹(compose / nginx 設定要跟 image 對得上)
+- 與 bundle 對應的 repo 樹(compose / nginx 設定要跟 image 對得上):由
+  `restart/from-redesign` 的 annotated tag export,`MANIFEST.txt` 記錄 tag+commit;
+  內網端不 checkout branch,只接收 bundle
 
 預演量級(本機 2026-08-02,含 gitlab + asr-decoder,不含模型):大約十 GB 級;
 出發前看 `du -sh` 與 `MANIFEST.txt` 當日數字,USB 預留餘裕。
@@ -116,7 +121,8 @@ cd /path/to/anila-images-export
 bash INTRANET-LOAD.sh
 ```
 
-成功後應用 `*.images.txt` 內每個 tag 都能 `docker image inspect`。
+成功後應用 `*.images.txt` 內每個 image reference 都能驗證;含 `@sha256:` 的 pinned
+reference 會由 loader 以去掉 digest 的 tag-only form inspect,但報告仍保留原始 pinned form。
 
 ⚠ **本機預演時不要對正在跑的 daemon 做會覆蓋/retag 執行中映像的 load**。
 驗 bundle 用 §3 的 archive 巡檢即可;若一定要證明 loadable,load 到暫存 tag
@@ -129,18 +135,21 @@ bash INTRANET-LOAD.sh
 ```bash
 cd /path/to/ANILA   # 內網上的 repo
 
+# 將 bundle 產生的 override 放到 compose.yaml 同一層
+cp /path/to/anila-images-export/intranet-image-overrides.yml .
+
 # 外部 network(模型棧用;gateway-only 審查也常已存在)
 docker network create anila-models-net 2>/dev/null || true
 
 # 有 GPU 的 .15(目標組態)— 含 ASR,不要 asr-cpu overlay
 COMPOSE_PROJECT_NAME=anila-restart \
 docker compose --env-file .env -p anila-restart \
-  -f compose.yaml --profile asr \
+  -f compose.yaml -f intranet-image-overrides.yml --profile asr \
   up -d --no-build
 
 # 若該主機沒有 nvidia container runtime,改用 CPU overlay(審查權宜):
 # docker compose --env-file .env -p anila-restart \
-#   -f compose.yaml -f infra/compose/asr-cpu.yml --profile asr \
+#   -f compose.yaml -f intranet-image-overrides.yml -f infra/compose/asr-cpu.yml --profile asr \
 #   up -d --no-build
 ```
 
@@ -159,7 +168,7 @@ docker compose -p anila-restart exec nginx nginx -s reload
 此時要:
 
 ```bash
-docker compose -p anila-restart up -d --force-recreate nginx
+docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d --force-recreate nginx
 # 然後再確認健康;不要只 reload
 ```
 

@@ -50,6 +50,7 @@
 #     ├── 05-weights-*.tar          (僅 WITH_WEIGHTS=1)
 #     ├── CHECKSUMS.sha256
 #     ├── INTRANET-LOAD.sh
+#     ├── intranet-image-overrides.yml (內網 up 時套用的 tag-only image override)
 #     └── MANIFEST.txt              (檔案大小 + sha256 + 每張 image 的 RepoDigest/Id)
 #
 # 內網端:
@@ -153,6 +154,56 @@ for name in sorted(services):
         img = f"{project}-{name}"
     print(f"{name}\t{img}")
 ')"
+
+tag_only_image_ref() {
+    case "$1" in
+        *@sha256:*) printf '%s\n' "${1%@sha256:*}" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# docker load 只會還原 tag,不會替 image 建立 RepoDigest。內網由 bundle 的
+# CHECKSUMS + MANIFEST 完整性鏈承擔,所以另產一份只在內網 up 時疊加的 override。
+INTRANET_IMAGE_OVERRIDES="$OUTPUT_DIR/intranet-image-overrides.yml"
+SERVICE_IMAGE_MAP="$SERVICE_IMAGE_MAP" python3 - "$INTRANET_IMAGE_OVERRIDES" <<'PY'
+import os
+import sys
+
+output = sys.argv[1]
+pinned = []
+for line in os.environ.get("SERVICE_IMAGE_MAP", "").splitlines():
+    if not line:
+        continue
+    try:
+        service, image = line.split("\t", 1)
+    except ValueError as exc:
+        raise SystemExit(f"service image map 格式錯誤:{line!r}") from exc
+    if "@sha256:" not in image:
+        continue
+    tag_only = image.split("@sha256:", 1)[0]
+    if not tag_only:
+        raise SystemExit(f"digest-pinned image 沒有 tag:{service}:{image}")
+    pinned.append((service, image, tag_only))
+
+with open(output, "w", encoding="utf-8") as handle:
+    handle.write("# 內網專用 image override：只把 compose 中含 @sha256: 的 service image 改成 tag-only。\n")
+    handle.write("# RepoDigests 是 pull 的產物；docker load 不會重建 RepoDigests。\n")
+    handle.write("# 內網完整性由交付包的 sha256 鏈（CHECKSUMS + MANIFEST）承擔。\n")
+    handle.write("# 此檔只在內網 up 時疊加，不改 build host 的 digest pin。\n")
+    handle.write("services:\n")
+    if pinned:
+        for service, _image, tag_only in pinned:
+            handle.write(f"  {service}:\n")
+            handle.write(f"    image: {tag_only}\n")
+    else:
+        handle.write("  {}\n")
+
+for service, image, tag_only in pinned:
+    print(f"  ✓ {service}: {image} → {tag_only}")
+if not pinned:
+    print("  ✓ No digest-pinned service images; wrote empty services override.")
+PY
+echo "  ✓ Intranet image override: $INTRANET_IMAGE_OVERRIDES"
 
 # ── Phase 1: compose Bake → buildx tar(可跳過,可沿用既有 tar)──────────
 echo "▶ [1/5] Deriving Compose Bake definition with docker compose build --print..."
@@ -348,6 +399,7 @@ echo
 echo "▶ [2/5] Ensuring every derived image has a local source..."
 MISSING=()
 for img in "${IMAGES[@]}"; do
+    local_ref="$(tag_only_image_ref "$img")"
     if [ -n "${BUILT_IMAGE_SET[$img]+x}" ]; then
         tar_path="${BUILT_TAR_PATH[$img]:-}"
         if [ -n "$tar_path" ] && [ -s "$tar_path" ]; then
@@ -360,6 +412,10 @@ for img in "${IMAGES[@]}"; do
     fi
     if docker image inspect "$img" >/dev/null 2>&1; then
         echo "  ✓ $img"
+        continue
+    fi
+    if [ "$local_ref" != "$img" ] && docker image inspect "$local_ref" >/dev/null 2>&1; then
+        echo "  ✓ $img (tag-only local source: $local_ref; RepoDigest absent after docker load)"
         continue
     fi
     if [ "$SKIP_PULL" = "1" ]; then
@@ -476,24 +532,9 @@ echo
 # buildx type=docker 已經把 built image 直接寫成 docker-load archive;這一關
 # 故意真的 load 一次,確認 archive 沒截斷、manifest 可被 daemon 接受、而且
 # expected tag 存在。上游 image 不在這裡 load,仍由 Phase 3 的 docker save 交付。
-running_refs_contain() {
-    local refs="$1" expected="$2" ref
-    while IFS= read -r ref; do
-        [ "$ref" = "$expected" ] && return 0
-    done <<< "$refs"
-    return 1
-}
-
 load_verify_one() {
     # $1=image  $2=tar.gz  → 0/1
-    local img="$1" archive="$2" was_present=0 running_before running_after load_err
-    if docker image inspect "$img" >/dev/null 2>&1; then
-        was_present=1
-    fi
-    if ! running_before="$(docker ps --format '{{.Image}}')"; then
-        echo "FAIL (cannot inspect running containers before load)"
-        return 1
-    fi
+    local img="$1" archive="$2" load_err
     if ! load_err="$(gzip -t "$archive" 2>&1)"; then
         echo "FAIL (gzip integrity: ${load_err:-truncated or corrupt archive})"
         return 1
@@ -509,27 +550,7 @@ load_verify_one() {
         echo "FAIL (expected tag missing after docker load: $img)"
         return 1
     fi
-    if [ "$was_present" -eq 1 ]; then
-        echo "OK (tag existed before load; kept, no rmi)"
-        return 0
-    fi
-
-    # Re-check immediately before cleanup. Never remove a tag visible on a
-    # running container, even if the pre-load snapshot was different.
-    if ! running_after="$(docker ps --format '{{.Image}}')"; then
-        echo "FAIL (cannot inspect running containers before cleanup)"
-        return 1
-    fi
-    if running_refs_contain "$running_before" "$img" \
-        || running_refs_contain "$running_after" "$img"; then
-        echo "OK (running container uses tag; kept, no rmi)"
-        return 0
-    fi
-    if ! docker rmi "$img" >/dev/null; then
-        echo "FAIL (loaded tag could not be removed safely: $img)"
-        return 1
-    fi
-    echo "OK (loaded tag verified and removed; absent before load)"
+    echo "OK (loaded tag verified; kept; no Docker cleanup)"
     return 0
 }
 
@@ -568,10 +589,14 @@ mkdir -p "$IMG_DIR"
 # 直接產出。兩條路都維持相同 safe filename / gzip / files.txt contract。
 save_one_image() {
     # $1=image  $2=out.tar.gz  → 0/1
-    local img="$1" out="$2" err raw
+    local img="$1" out="$2" err raw save_ref
+    save_ref="$(tag_only_image_ref "$img")"
+    if [ "$save_ref" = "$img" ] || ! docker image inspect "$save_ref" >/dev/null 2>&1; then
+        save_ref="$img"
+    fi
     err="$(mktemp)"
     raw="$(mktemp --suffix=.tar)"
-    if ! docker save "$img" -o "$raw" 2>"$err"; then
+    if ! docker save "$save_ref" -o "$raw" 2>"$err"; then
         echo "FAIL"
         echo "    $(tr '\n' ' ' <"$err")"
         rm -f "$err" "$raw" "$out"
@@ -753,6 +778,7 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
     echo "Repo:     $REPO_ROOT"
     echo "Branch:   $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'n/a')"
     echo "Commit:   $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo 'n/a')"
+    echo "Ref:      $(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo 'n/a')"
     echo "Project:  $COMPOSE_PROJECT_NAME"
     echo "INCLUDE_ASR: $INCLUDE_ASR"
     echo "Compose:  ${COMPOSE_FILES[*]} ${COMPOSE_PROFILE_ARGS[*]:-}"
@@ -768,7 +794,11 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
                 || die "無法從 built tar 讀取 metadata:$file ($img)"
             IFS=$'\t' read -r id bytes digests <<< "$meta"
         else
-            meta="$(docker image inspect "$img" --format '{{.Id}} {{.Size}} {{json .RepoDigests}}' 2>/dev/null || echo '? ? []')"
+            inspect_ref="$img"
+            if ! meta="$(docker image inspect "$inspect_ref" --format '{{.Id}} {{.Size}} {{json .RepoDigests}}' 2>/dev/null)"; then
+                inspect_ref="$(tag_only_image_ref "$img")"
+                meta="$(docker image inspect "$inspect_ref" --format '{{.Id}} {{.Size}} {{json .RepoDigests}}' 2>/dev/null || echo '? ? []')"
+            fi
             id="$(awk '{print $1}' <<<"$meta")"
             bytes="$(awk '{print $2}' <<<"$meta")"
             digests="$(awk '{$1="";$2=""; sub(/^  /,""); print}' <<<"$meta")"
@@ -801,7 +831,7 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
     echo "── Bundle files ───────────────────────────────────────"
     du -sh "$OUTPUT_DIR" "$IMG_DIR"
     ls -lh "$IMG_DIR"
-    ls -lh "$OUTPUT_DIR"/*.{txt,sha256,sh,tar.gz,tar} 2>/dev/null || true
+    ls -lh "$OUTPUT_DIR"/*.{txt,sha256,sh,yml,tar.gz,tar} 2>/dev/null || true
     echo
     echo "── SHA256 (IT 對檔;機器驗檔用 CHECKSUMS.sha256) ──────"
     cat "$OUTPUT_DIR/CHECKSUMS.sha256"
@@ -815,8 +845,36 @@ cat > "$OUTPUT_DIR/INTRANET-LOAD.sh" <<EOF
 #   1. docker 已裝且能跑 (docker info 不報錯)
 #   2. 同目錄有 01-images/*.tar.gz + CHECKSUMS.sha256 + 01-compose-images.images.txt
 #   3. repo 已在內網機器就緒,且 up 時 -p 與打包時 COMPOSE_PROJECT_NAME 相同
+# 載入的 image tag 會累積在主機上；本 loader 刻意永遠不執行 Docker cleanup。
+# tag verify 的證明邊界：docker image inspect <tag> 只證明 tag 存在，不證明 THIS tar 產生了它；
+# 在 virgin air-gap host 上兩者等價，provenance 仍由 CHECKSUMS 承擔。
 set -euo pipefail
 cd "\$(dirname "\${BASH_SOURCE[0]}")"
+
+# ── Bundle 身分閘:演練包不得不知不覺上正式機 ────────────────────────────
+# MANIFEST 的 Ref 是「演練包 vs 出貨包」的機械判準:乾淨 tag=出貨包;
+# -dirty / <tag>-N-g<hash>(不在 tag 上)/ 裸 commit hash / 缺欄位=演練包。
+if [ ! -f MANIFEST.txt ]; then
+    echo "✗ MANIFEST.txt 不存在 — 無法判定包身分(演練包 vs 出貨包);拒絕 load。" >&2
+    exit 1
+fi
+BUNDLE_REF="\$(sed -n 's/^Ref:[[:space:]]*//p' MANIFEST.txt | head -n 1 || true)"
+REHEARSAL_BUNDLE=1
+case "\$BUNDLE_REF" in
+    v*-dirty ) ;;
+    v*-[0-9]*-g[0-9a-f]* ) ;;   # git describe 的 <tag>-<N>-g<hash> 形;⚠ 別把正式 tag 取成這個形狀
+    v* ) REHEARSAL_BUNDLE=0 ;;
+esac
+if [ "\$REHEARSAL_BUNDLE" = "1" ]; then
+    if [ "\${ALLOW_REHEARSAL_BUNDLE:-0}" = "1" ]; then
+        echo "⚠ 此包 Ref='\$BUNDLE_REF' 不是乾淨 tag(演練包)。ALLOW_REHEARSAL_BUNDLE=1 已明確允許載入。" >&2
+        echo
+    else
+        echo "✗ 此包 Ref='\$BUNDLE_REF' 不是乾淨 tag — 這是演練包,不得部署到正式機。" >&2
+        echo "  出貨包必須從乾淨 tag 重建(打 tag→重建→重出貨)。演練環境要載入,設 ALLOW_REHEARSAL_BUNDLE=1。" >&2
+        exit 1
+    fi
+fi
 
 if [ -f CHECKSUMS.sha256 ]; then
     echo "── Verifying SHA256 checksums ──"
@@ -828,8 +886,14 @@ if [ -f CHECKSUMS.sha256 ]; then
     echo "✓ All checksums verified."
     echo
 else
-    echo "⚠ CHECKSUMS.sha256 不存在 — 略過完整性檢查(不建議在 prod 用)"
-    echo
+    if [ "\${ALLOW_NO_CHECKSUMS:-0}" = "1" ]; then
+        NO_CHECKSUM_PROTECTION=1
+        echo "⚠ CHECKSUMS.sha256 不存在 — 它保護 bundle image/model/weight archives 的 sha256 完整性鏈；ALLOW_NO_CHECKSUMS=1 已明確允許繼續，這次不具備 checksum 保護。" >&2
+        echo
+    else
+        echo "✗ missing CHECKSUMS.sha256 — 它保護 bundle image/model/weight archives 的 sha256 完整性鏈；拒絕 load。若要明確接受無 checksum 保護，請設定 ALLOW_NO_CHECKSUMS=1。" >&2
+        exit 1
+    fi
 fi
 
 echo "── Checking expected per-image tarballs exist ──"
@@ -875,19 +939,35 @@ shopt -s nullglob
 for list in *.images.txt; do
     while IFS= read -r img; do
         [ -z "\$img" ] && continue
-        if docker image inspect "\$img" >/dev/null 2>&1; then
-            echo "  ✓ \$img"
+        verify_img="\$img"
+        case "\$verify_img" in
+            *@sha256:*) verify_img="\${verify_img%@sha256:*}" ;;
+        esac
+        if docker image inspect "\$verify_img" >/dev/null 2>&1; then
+            if [ "\$verify_img" = "\$img" ]; then
+                echo "  ✓ \$img"
+            else
+                echo "  ✓ \$img (tag-only verify: \$verify_img)"
+            fi
         else
-            echo "  ✗ missing after load: \$img"
+            echo "  ✗ missing after load: \$img (verified reference: \$verify_img)"
             exit 1
         fi
     done < "\$list"
 done
 echo
 echo "✓ Load complete."
+# ⚠ 尾端重印:第一行的警告會被上面幾十行 ✓ 洗掉(#16 正是這樣誕生的)。
+if [ "\$REHEARSAL_BUNDLE" = "1" ]; then
+    echo "⚠ 再次提醒:本次載入的是演練包(Ref='\$BUNDLE_REF'),不具備出貨資格。" >&2
+fi
+if [ "\${NO_CHECKSUM_PROTECTION:-0}" = "1" ]; then
+    echo "⚠ 再次提醒:本次載入不具備 checksum 完整性保護(ALLOW_NO_CHECKSUMS=1)——載入內容未經 sha256 驗證。" >&2
+fi
 echo "  下一步見 docs/runbooks/intranet-image-bundle.md"
 echo "  起棧時 -p 必須是: $COMPOSE_PROJECT_NAME"
 echo "  INCLUDE_ASR 打包值: $INCLUDE_ASR → up 時記得 --profile asr(若為 1)"
+echo "  起棧命令: docker compose --env-file .env -p $COMPOSE_PROJECT_NAME -f compose.yaml -f intranet-image-overrides.yml ${COMPOSE_PROFILE_ARGS[*]:-} up -d --no-build"
 EOF
 chmod +x "$OUTPUT_DIR/INTRANET-LOAD.sh"
 
