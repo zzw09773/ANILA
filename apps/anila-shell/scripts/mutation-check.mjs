@@ -92,6 +92,7 @@ const NEW_TESTS = [
   "src/__tests__/settingsPrivacyHonesty",
   // 憑證偵測與四條既有 pattern 的精準度(`wt/credential-detect`,2026-08-06)。
   "src/__tests__/credentialDetect",
+  "src/__tests__/agentReplySignal",
 ];
 // 這個工作包之前就存在的測試(用來量「舊套件漏了什麼」)。
 const PRE_EXISTING_EXCLUDES = [
@@ -107,6 +108,7 @@ const PRE_EXISTING_EXCLUDES = [
   "**/redactionChokePoint.test.jsx",
   "**/settingsPrivacyHonesty.test.jsx",
   "**/credentialDetect.test.jsx",
+  "**/agentReplySignal.test.jsx",
   "**/__tests__/guards/**",
   "**/sourceTextGuardRegistry.test.js",
 ];
@@ -115,6 +117,14 @@ const PRE_EXISTING_EXCLUDES = [
  * @type {{id:string,file:string,find:string,replace:string,intent:string,shape?:string}[]}
  */
 const MUTATIONS = [
+  {
+    id: "agent-short-reply-notice-inverted",
+    file: "src/runtime/agentReplySignal.js",
+    shape: "條件反轉",
+    intent: "觀察到極短 agent 回覆時不再顯示平台觀測提示",
+    find: "  if (observation.short_reply !== true) return null;",
+    replace: "  if (observation.short_reply === true) return null;",
+  },
   {
     id: "history-prior-empty",
     file: "src/app.jsx",

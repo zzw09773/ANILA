@@ -34,6 +34,10 @@ import {
   resolveAgentNameForPersist,
   resolveAnsweringAgentId,
 } from "./runtime/messageMeta.js";
+import {
+  AGENT_REPLY_OBSERVATION_KEY,
+  agentReplyNotice,
+} from "./runtime/agentReplySignal.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { resolveEditResend } from "./runtime/editResend.js";
 import { relativeLabel } from "./runtime/time.js";
@@ -317,6 +321,19 @@ export function kbMetaFields(meta) {
     kbFailedCollections: Array.isArray(m.kb_failed_collections)
       ? m.kb_failed_collections
       : [],
+  };
+}
+
+/**
+ * The registered-agent observation has the same two ingress seams as KB meta:
+ * server-message reload and live SSE.  Unknown or absent observations remain
+ * silent so old messages do not acquire a new claim.
+ */
+export function agentReplyMetaFields(meta) {
+  const m = meta && typeof meta === "object" ? meta : {};
+  return {
+    agentReplyObservation: m[AGENT_REPLY_OBSERVATION_KEY],
+    agentReplyNotice: agentReplyNotice(m),
   };
 }
 
@@ -952,6 +969,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       handoffChain: meta.handoff_chain || [],
       // 重新載入這一縫。同一份定義也要接在 applyMeta(SSE 現場那一縫)上。
       ...kbMetaFields(meta),
+      ...agentReplyMetaFields(meta),
       confidence: meta.confidence,
       classified: meta.classified,
       traceId: msg.trace_id || meta.trace_id,
@@ -1598,6 +1616,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       followUps: meta.follow_ups || [],
       // SSE 現場這一縫。同一份定義也要接在 mapServerMessage(重新載入那一縫)上。
       ...kbMetaFields(meta),
+      ...agentReplyMetaFields(meta),
       latencyMs: meta.latency_ms,
       usage: meta.usage || null,
       classified: meta.classified,

@@ -16,6 +16,7 @@ from app.models.model_registry import ModelRegistry
 from app.models.platform_setting import get_kb_threshold, get_setting
 from app.schemas.contracts.classification import ClassificationLevel
 from app.services import memory_service
+from app.services.agent_reply_signal import attach_agent_reply_observation
 from app.services.institutional_kb import (
     KbResult,
     KbState,
@@ -29,6 +30,8 @@ from app.services.proxy.service import resolve_proxy_tuning
 from app.services.proxy.task_link import begin_task_run, finalize_task_run
 from app.services.proxy.urls import join_upstream_path
 from app.services.proxy_service import (
+    _estimate_token_count,
+    _extract_response_text,
     build_default_anila_meta,
     downstream_identity,
     proxy_request,
@@ -204,6 +207,39 @@ def _extract_assistant_text(payload: dict | None) -> str | None:
         if isinstance(content, str) and content:
             return content
     return None
+
+
+def _annotate_agent_reply_payload(payload: dict, model_name: str) -> dict:
+    """Attach the platform-only completion-length observation to agent meta."""
+    try:
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        reported = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        if (
+            isinstance(reported, int)
+            and not isinstance(reported, bool)
+            and reported >= 0
+        ):
+            completion_tokens = reported
+            usage_source = "reported"
+        else:
+            completion_tokens = _estimate_token_count(
+                model_name,
+                _extract_response_text(payload),
+            )
+            usage_source = "estimated"
+
+        meta = payload.get("anila_meta")
+        if not isinstance(meta, dict):
+            meta = {}
+            payload["anila_meta"] = meta
+        attach_agent_reply_observation(
+            meta,
+            completion_tokens=completion_tokens,
+            usage_source=usage_source,
+        )
+    except Exception:  # pragma: no cover - defensive serving boundary
+        logger.exception("agent reply observation annotation failed")
+    return payload
 
 
 def _extract_latest_user_message(body: dict) -> str | None:
@@ -1361,6 +1397,7 @@ async def chat_completions(
                     )
                 elif agent_requires_encryption and isinstance(existing_meta, dict):
                     existing_meta["classified"] = True
+                _annotate_agent_reply_payload(payload, agent.name)
                 # Memory write (non-streaming agent path)
                 assistant_text = _extract_assistant_text(payload)
                 _schedule_memory_write(
