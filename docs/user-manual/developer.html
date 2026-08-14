@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ANILA 開發者手冊</title>
+<style>
+  /* 氣隙內網：不連任何外部資源。字型只用系統內建。 */
+  :root{
+    --ink:#1c1d20; --ink-2:#4a4d54; --ink-3:#6f737c;
+    --bg:#fbfbfa; --card:#ffffff; --line:#e3e3e0;
+    --accent:#2f5c9e; --warn-bg:#fdf6e3; --warn-line:#d9b45a;
+    --stop-bg:#fdf0ee; --stop-line:#c9705f; --ok-bg:#eef6f1; --ok-line:#5a9b78;
+    --code-bg:#f4f4f2;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#e8e8e6; --ink-2:#b6b8bd; --ink-3:#8b8e95;
+      --bg:#17181a; --card:#1e1f22; --line:#33353a;
+      --accent:#7ba4dc; --warn-bg:#2a2519; --warn-line:#8a7233;
+      --stop-bg:#2b1d1a; --stop-line:#9c5c4e; --ok-bg:#1a2620; --ok-line:#4a7a5f;
+      --code-bg:#26282c;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Noto Sans CJK TC","Microsoft JhengHei","PingFang TC",sans-serif;
+    line-height:1.85; font-size:16px;
+  }
+  .wrap{max-width:52rem; margin:0 auto; padding:2.5rem 1.25rem 6rem}
+  header.top{border-bottom:2px solid var(--line); padding-bottom:1.5rem; margin-bottom:2rem}
+  h1{font-size:1.9rem; margin:0 0 .4rem; letter-spacing:.01em}
+  .sub{color:var(--ink-3); font-size:.95rem; margin:0}
+  h2{
+    font-size:1.35rem; margin:3rem 0 .75rem; padding-top:.5rem;
+    border-top:1px solid var(--line);
+  }
+  h2 .num{color:var(--accent); font-weight:700; margin-inline-end:.5rem}
+  h3{font-size:1.05rem; margin:1.75rem 0 .5rem; color:var(--ink)}
+  p,li{color:var(--ink-2)}
+  strong{color:var(--ink)}
+  a{color:var(--accent)}
+  nav.toc{
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:1.1rem 1.4rem; margin:1.5rem 0 0;
+  }
+  nav.toc h2{border:0; margin:0 0 .5rem; font-size:1rem; padding:0}
+  nav.toc ol{margin:0; padding-inline-start:1.3rem}
+  nav.toc li{margin:.2rem 0}
+  .box{border-radius:8px; padding:.85rem 1.1rem; margin:1.1rem 0; border-inline-start:4px solid}
+  .warn{background:var(--warn-bg); border-color:var(--warn-line)}
+  .stop{background:var(--stop-bg); border-color:var(--stop-line)}
+  .ok{background:var(--ok-bg); border-color:var(--ok-line)}
+  .box p:first-child{margin-top:0} .box p:last-child{margin-bottom:0}
+  table{border-collapse:collapse; width:100%; margin:1.1rem 0; font-size:.94rem}
+  th,td{border:1px solid var(--line); padding:.5rem .7rem; text-align:start; vertical-align:top}
+  th{background:var(--card); color:var(--ink); font-weight:600}
+  code{background:var(--code-bg); padding:.1rem .35rem; border-radius:4px; font-size:.9em}
+  .screen{
+    border:1px dashed var(--line); border-radius:8px; padding:.9rem 1.1rem;
+    background:var(--card); color:var(--ink-3); font-size:.9rem; margin:1rem 0;
+  }
+  .badge{
+    display:inline-block; border-radius:999px; padding:.1rem .6rem;
+    font-size:.85rem; border:1px solid var(--line); background:var(--card); color:var(--ink-2);
+  }
+  .scroll{overflow-x:auto}
+  footer{margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--ink-3); font-size:.9rem}
+  @media print{
+    body{background:#fff; color:#000; font-size:11pt}
+    .wrap{max-width:none; padding:0}
+    h2{page-break-after:avoid} table,.box{page-break-inside:avoid}
+    nav.toc{page-break-after:always}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>ANILA 開發者手冊</h1>
+  <p class="sub">中科院院內 AI 平台 · 給要把 agent 掛上平台的同仁</p>
+</header>
+
+<div class="box stop">
+<p><strong>這份講「規矩與邊界」，不講「怎麼寫程式」。</strong></p>
+<p>實作步驟（範例程式、端點、旗標、註冊表單怎麼填）在<strong>治理中心的「開發者 → 開發指南」那一頁</strong>，
+那裡是<strong>唯一的實作事實來源</strong>，會跟著平台版本走。</p>
+<p>⚠ <strong>請不要把那頁的內容抄到這裡</strong>——兩份平行維護的文件，三個月後一定會互相矛盾，
+而讀的人不知道該信哪一份。這份只放<strong>不隨版本改變的規矩</strong>。</p>
+</div>
+
+<nav class="toc">
+  <h2>目錄</h2>
+  <ol>
+    <li><a href="#d1">三條規矩</a></li>
+    <li><a href="#d2">agent 上線的流程</a></li>
+    <li><a href="#d3">憑證與連線</a></li>
+    <li><a href="#d4">你的 agent 會收到什麼、不會收到什麼</a></li>
+    <li><a href="#d5">常見誤解</a></li>
+  </ol>
+</nav>
+
+<h2 id="d1"><span class="num">1</span>三條規矩</h2>
+
+<div class="box stop">
+<p><strong>規矩一：agent 內部要用模型，必須透過平台。</strong></p>
+<p>不要在你的 agent 裡直連模型端點。用平台發給你的憑證回頭呼叫平台。</p>
+<p><strong>為什麼</strong>：直連的話那些用量發生在平台外面，<strong>平台看不見也記不到</strong>，
+沒有歸屬、沒有稽核。院內的計量與列管就是靠這條成立的。</p>
+</div>
+
+<div class="box warn">
+<p><strong>規矩二：不要為了讓連線成功而關掉憑證驗證。</strong></p>
+<p>如果你的 agent 連平台時遇到憑證錯誤，<strong>正確做法是拿平台的 CA 給它</strong>，
+不是加 <code>verify=False</code>。平台在註冊頁提供 CA 下載與驗證工具，就是為了讓你有正確的路可以走。</p>
+</div>
+
+<div class="box warn">
+<p><strong>規矩三：你的 agent 是使用者資料的出口，請當它是。</strong></p>
+<p>使用者的問題會原樣送到你填的那個網址。<strong>那個網址指到哪裡，是你的責任。</strong></p>
+</div>
+
+<h2 id="d2"><span class="num">2</span>agent 上線的流程</h2>
+
+<ol>
+<li>在治理中心註冊你的 agent（填名稱與端點網址）</li>
+<li><strong>等管理員核准</strong>——核准前只有你自己看得到</li>
+<li>核准後，其他同仁就能在對話裡選用，或由平台自動轉派</li>
+</ol>
+
+<div class="box warn">
+<p><strong>網址要完整，包含通訊協定。</strong> 填 <code>172.16.x.x:8043</code> 會被擋下來，
+要填 <code>http://172.16.x.x:8043</code>。表單會告訴你，但很多人第一次都卡在這裡。</p>
+</div>
+
+<h2 id="d3"><span class="num">3</span>憑證與連線</h2>
+
+<p>平台在 agent 註冊頁提供兩樣東西：</p>
+<ul>
+<li><strong>平台 CA</strong>——讓你的 agent 信任平台的憑證</li>
+<li><strong>驗證工具</strong>——讓你在自己的機器上先確認連得上、驗得過</li>
+</ul>
+
+<div class="box ok">
+<p><strong>先用驗證工具跑一次，再改你的程式。</strong>
+連線問題有一半分不清是「憑證不對」還是「網路不通」，工具會直接告訴你是哪一種。</p>
+</div>
+
+<h2 id="d4"><span class="num">4</span>你的 agent 會收到什麼、不會收到什麼</h2>
+
+<table>
+<tr><th>會收到</th><th>不會收到</th></tr>
+<tr>
+<td>
+  使用者這一輪的問題<br>
+  這個對話裡的附件（使用者刻意附上的）
+</td>
+<td>
+  🔴 <strong>使用者的長期記憶</strong>（偏好、平台歸納的事實、過往對話片段）
+</td>
+</tr>
+</table>
+
+<div class="box ok">
+<p><strong>「不送記憶給外部註冊的 agent」是平台強制的，不是靠你自律。</strong>
+判斷依據是「出向目標是不是註冊的 agent」這個結構事實——
+<strong>畫面上沒有任何開關可以改變它</strong>。</p>
+<p>👉 所以如果你的 agent 需要脈絡，<strong>要自己管理</strong>，不要期待平台幫你帶。</p>
+</div>
+
+<h2 id="d5"><span class="num">5</span>常見誤解</h2>
+
+<table>
+<tr><th>誤解</th><th>實際</th></tr>
+<tr><td>「我的 agent 會自動拿到使用者是誰、哪個單位」</td><td>不會。要什麼脈絡請自己設計，並想清楚該不該拿</td></tr>
+<tr><td>「平台會幫我重試」</td><td>不會。你的端點沒回應就是失敗</td></tr>
+<tr><td>「我回 200 就代表成功」</td><td>⚠ <strong>對呼叫你的人也是這樣。</strong> 如果你要表達「我拒絕這個請求」，
+  請不要用 200＋一段看起來像正常回答的文字——那會被當成答案存起來、顯示給使用者、還算進用量</td></tr>
+<tr><td>「平台會擋掉不該問的東西」</td><td>不要假設。你自己的邊界自己守</td></tr>
+</table>
+
+<footer>
+  <p>ANILA 開發者手冊 · 中科院院內 AI 平台</p>
+  <p>實作步驟請看治理中心的「開發者 → 開發指南」。畫面截圖將於系統就緒後補上。</p>
+</footer>
+
+</div>
+</body>
+</html>

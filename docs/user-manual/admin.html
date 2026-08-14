@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ANILA 管理員手冊</title>
+<style>
+  /* 氣隙內網：不連任何外部資源。字型只用系統內建。 */
+  :root{
+    --ink:#1c1d20; --ink-2:#4a4d54; --ink-3:#6f737c;
+    --bg:#fbfbfa; --card:#ffffff; --line:#e3e3e0;
+    --accent:#2f5c9e; --warn-bg:#fdf6e3; --warn-line:#d9b45a;
+    --stop-bg:#fdf0ee; --stop-line:#c9705f; --ok-bg:#eef6f1; --ok-line:#5a9b78;
+    --code-bg:#f4f4f2;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#e8e8e6; --ink-2:#b6b8bd; --ink-3:#8b8e95;
+      --bg:#17181a; --card:#1e1f22; --line:#33353a;
+      --accent:#7ba4dc; --warn-bg:#2a2519; --warn-line:#8a7233;
+      --stop-bg:#2b1d1a; --stop-line:#9c5c4e; --ok-bg:#1a2620; --ok-line:#4a7a5f;
+      --code-bg:#26282c;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Noto Sans CJK TC","Microsoft JhengHei","PingFang TC",sans-serif;
+    line-height:1.85; font-size:16px;
+  }
+  .wrap{max-width:52rem; margin:0 auto; padding:2.5rem 1.25rem 6rem}
+  header.top{border-bottom:2px solid var(--line); padding-bottom:1.5rem; margin-bottom:2rem}
+  h1{font-size:1.9rem; margin:0 0 .4rem; letter-spacing:.01em}
+  .sub{color:var(--ink-3); font-size:.95rem; margin:0}
+  h2{
+    font-size:1.35rem; margin:3rem 0 .75rem; padding-top:.5rem;
+    border-top:1px solid var(--line);
+  }
+  h2 .num{color:var(--accent); font-weight:700; margin-inline-end:.5rem}
+  h3{font-size:1.05rem; margin:1.75rem 0 .5rem; color:var(--ink)}
+  p,li{color:var(--ink-2)}
+  strong{color:var(--ink)}
+  a{color:var(--accent)}
+  nav.toc{
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:1.1rem 1.4rem; margin:1.5rem 0 0;
+  }
+  nav.toc h2{border:0; margin:0 0 .5rem; font-size:1rem; padding:0}
+  nav.toc ol{margin:0; padding-inline-start:1.3rem}
+  nav.toc li{margin:.2rem 0}
+  .box{border-radius:8px; padding:.85rem 1.1rem; margin:1.1rem 0; border-inline-start:4px solid}
+  .warn{background:var(--warn-bg); border-color:var(--warn-line)}
+  .stop{background:var(--stop-bg); border-color:var(--stop-line)}
+  .ok{background:var(--ok-bg); border-color:var(--ok-line)}
+  .box p:first-child{margin-top:0} .box p:last-child{margin-bottom:0}
+  table{border-collapse:collapse; width:100%; margin:1.1rem 0; font-size:.94rem}
+  th,td{border:1px solid var(--line); padding:.5rem .7rem; text-align:start; vertical-align:top}
+  th{background:var(--card); color:var(--ink); font-weight:600}
+  code{background:var(--code-bg); padding:.1rem .35rem; border-radius:4px; font-size:.9em}
+  .screen{
+    border:1px dashed var(--line); border-radius:8px; padding:.9rem 1.1rem;
+    background:var(--card); color:var(--ink-3); font-size:.9rem; margin:1rem 0;
+  }
+  .badge{
+    display:inline-block; border-radius:999px; padding:.1rem .6rem;
+    font-size:.85rem; border:1px solid var(--line); background:var(--card); color:var(--ink-2);
+  }
+  .scroll{overflow-x:auto}
+  footer{margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--ink-3); font-size:.9rem}
+  @media print{
+    body{background:#fff; color:#000; font-size:11pt}
+    .wrap{max-width:none; padding:0}
+    h2{page-break-after:avoid} table,.box{page-break-inside:avoid}
+    nav.toc{page-break-after:always}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>ANILA 管理員手冊</h1>
+  <p class="sub">中科院院內 AI 平台 · 給平台管理員與單位窗口</p>
+</header>
+
+<div class="box stop">
+<p><strong>這份手冊假設你有治理中心的權限。</strong> 一般同仁請看
+<a href="index.html">使用手冊</a>；掛 agent 的同仁請看開發者手冊。</p>
+</div>
+
+<nav class="toc">
+  <h2>目錄</h2>
+  <ol>
+    <li><a href="#a1">上線第一天：三件必做，順序不能錯</a></li>
+    <li><a href="#a2">單位</a></li>
+    <li><a href="#a3">帳號與核准</a></li>
+    <li><a href="#a4">模型</a></li>
+    <li><a href="#a5">agent 的註冊與核准</a></li>
+    <li><a href="#a6">院內規章知識庫</a></li>
+    <li><a href="#a7">平台設定（只有 12 顆）</a></li>
+    <li><a href="#a8">用量與稽核</a></li>
+    <li><a href="#a9">出事的時候</a></li>
+  </ol>
+</nav>
+
+<h2 id="a1"><span class="num">1</span>上線第一天：三件必做，順序不能錯</h2>
+
+<div class="box stop">
+<p><strong>沒做完這三件，同仁插卡進來會卡住，而且畫面不會告訴他們該找誰。</strong></p>
+<ol>
+<li><strong>建立單位</strong>（見第 2 節）—— <strong>這是最容易漏的一件</strong>。
+   平台一裝好，單位是空的；新人插卡登入後會被要求「選擇所屬單位」，
+   <strong>而下拉選單裡一個選項都沒有</strong>，註冊就此卡住。</li>
+<li><strong>確認第一批管理員進得來</strong>（見第 3 節）。</li>
+<li><strong>確認模型可用</strong>（見第 4 節）——沒有可用模型，登入成功也問不出東西。</li>
+</ol>
+</div>
+
+<h2 id="a2"><span class="num">2</span>單位</h2>
+
+<p>治理中心 → <strong>單位</strong>（departments）。</p>
+
+<p>單位是<strong>帳號的必填欄位</strong>：使用者完成註冊時一定要選一個。
+所以<strong>單位必須先存在</strong>，順序不能反過來。</p>
+
+<div class="box warn">
+<p><strong>建議一開始就把單位建齊</strong>，而不是等人來申請再建。
+一個新人卡在「沒有單位可選」的畫面時，他不會知道是平台還沒設定好，
+只會覺得系統壞了——然後打電話給你。</p>
+</div>
+
+<h2 id="a3"><span class="num">3</span>帳號與核准</h2>
+
+<h3>使用者怎麼進來</h3>
+<ol>
+<li>插自然人憑證卡 → 平台驗章 → 建立一個<strong>待審</strong>帳號</li>
+<li>使用者選擇所屬單位並送出</li>
+<li><strong>管理員核准</strong> → 才能開始使用</li>
+</ol>
+
+<div class="box warn">
+<p><strong>「等待核准」對使用者是完全靜止的畫面。</strong> 他看不到排在第幾個、也收不到通知。
+所以<strong>核准這件事要有人固定看</strong>，尤其是分批放行的那幾週。</p>
+</div>
+
+<h3>權限</h3>
+<p>治理中心 → <strong>使用者</strong>。可以調整角色與核准狀態。</p>
+
+<h2 id="a4"><span class="num">4</span>模型</h2>
+
+<p>治理中心 → <strong>模型</strong>。這裡登記平台可以呼叫的模型端點。</p>
+
+<div class="box ok">
+<p><strong>「停用」現在真的等於「系統不會再用它」。</strong>
+（2026-08-12 修正：先前背景服務仍會呼叫已停用的模型，
+本機因為位址解不到才沒送出去——<strong>那是運氣，不是防護</strong>。現在解析階段就會排除它。）</p>
+</div>
+
+<div class="box warn">
+<p><strong>「內部 / 外部」那個勾選框講的是<em>網路可達性</em>，不是信任等級。</strong>
+它決定 proxy 追蹤畫面要不要顯示端點位址。⚠ 如果你為了連線因素改它，
+<strong>請確認你知道自己在改什麼</strong>——這個欄位在匯入模型時也會被繼承。</p>
+</div>
+
+<h2 id="a5"><span class="num">5</span>agent 的註冊與核准</h2>
+
+<p>同仁可以把自己寫的 agent 掛上平台。流程：他註冊 → <strong>你核准</strong> → 其他人才看得到。</p>
+
+<div class="box stop">
+<p><strong>核准 agent 之前請確認兩件事：</strong></p>
+<ol>
+<li><strong>那個網址指到哪裡。</strong> agent 的端點是<strong>註冊者自己填的</strong>，
+   平台會把使用者的問題送過去。</li>
+<li><strong>它有沒有透過平台呼叫模型。</strong> 院內規矩是 agent 內部要用模型必須經由平台
+   （這樣用量才有歸屬、才有稽核）。</li>
+</ol>
+<p>✅ <strong>使用者的長期記憶不會送給 agent</strong>——這是平台強制的，不是靠註冊者自律。</p>
+</div>
+
+<h2 id="a6"><span class="num">6</span>院內規章知識庫</h2>
+
+<p>治理中心 → <strong>知識庫</strong>。標記為可檢索的規章，會被使用者的提問自動查詢。</p>
+
+<div class="box warn">
+<p><strong>檔名取得好不好，比檔案內容重要</strong>——這句話對管理員更適用，
+因為決定檔名的通常是你。<code>掃描檔.pdf</code> 上架之後就再也找不到了。</p>
+<p>⚠ <strong>純掃描的 PDF 內容不完整</strong>。上架前請確認它真的有文字層，
+否則使用者會查不到你確定寫在裡面的東西。</p>
+</div>
+
+<h2 id="a7"><span class="num">7</span>平台設定（只有 12 顆）</h2>
+
+<p>治理中心 → <strong>平台設定</strong>。<strong>全部改完立刻生效</strong>，沒有「需要重啟」的項目。</p>
+
+<div class="box ok">
+<p><strong>設定頁刻意只有 12 顆。</strong> 2026-08-11 從 96 顆砍到 12 顆，
+因為<strong>能從網頁動到的安全開關，就是一個等著被動的安全開關</strong>——
+那 84 顆被移除的參數正是兩個嚴重漏洞的根源。</p>
+<p>要新增一顆設定前，先答這個問題：<strong>上線之後，誰、在什麼情境、為什麼不能等下一次改版？</strong>
+答不出來就不該是設定。</p>
+</div>
+
+<h3>最常會動的那顆</h3>
+<p><strong>院內規章的檢索門檻</strong>：太高會查不到、太低會撈到不相關的條文。
+⚠ 這個數字<strong>綁在當時使用的嵌入模型上，換模型就要重新量</strong>。</p>
+
+<h2 id="a8"><span class="num">8</span>用量與稽核</h2>
+
+<p>治理中心 → <strong>用量</strong> / <strong>稽核紀錄</strong>。</p>
+
+<div class="box warn">
+<p><strong>目前的用量不是全貌。</strong> 使用者在畫面上聊天（串流）會被完整記錄；
+但<strong>腳本、批次、第三方整合那種非串流呼叫目前不會記到用量</strong>。
+⚠ 所以「帳面上沒有」不等於「沒有人在用」。這是已知待補項。</p>
+</div>
+
+<h2 id="a9"><span class="num">9</span>出事的時候</h2>
+
+<table>
+<tr><th>現象</th><th>先看哪裡</th></tr>
+<tr><td>全站打不開，但容器看起來都正常</td><td>多半是前端代理指到舊位址。重載代理設定；服務重建之後一定要做這一步</td></tr>
+<tr><td>使用者說登入不了</td><td>①卡片與 PIN；②他是不是還沒被核准；③單位是不是還沒建</td></tr>
+<tr><td>問答變慢或失敗</td><td>治理中心 → 模型，看端點是否可達</td></tr>
+<tr><td>使用者說「AI 說我像攻擊者」</td><td>那可能是被呼叫的 agent 自己的拒絕訊息。看該對話的 agent 是哪一個</td></tr>
+<tr><td>畫面一片空白</td><td>網址打錯或舊書籤。目前不會顯示「找不到頁面」，請他從首頁重進</td></tr>
+</table>
+
+<h3>🔑 卡登壞掉、進不去平台的時候（破窗）</h3>
+
+<div class="box stop">
+<p><strong>先確認你真的需要它。</strong> 這條路只給<strong>平台管理員（owner）</strong>，
+而且只在<strong>卡片登入本身失效</strong>時使用——例如憑證鏈換過、CA 過期、讀卡元件掛掉。
+一般的「某個人登不進來」不要用這條，那是核准或單位的問題（見第 3 節）。</p>
+</div>
+
+<p><strong>做法</strong>：在登入頁網址後面加上參數：</p>
+<p><code>https://&lt;平台位址&gt;/login?show_alternatives=1</code></p>
+
+<p>那會讓平時隱藏起來的「其他登入方式」區塊出現，你就能用<strong>帳號密碼</strong>登入。</p>
+
+<div class="box warn">
+<p><strong>那個參數只是把畫面顯示出來，不是鑰匙。</strong>
+知道網址的人並不會因此獲得任何權限——後端仍然只放行 owner 帳號，其他人填了帳密照樣進不去。
+所以它不是祕密，<strong>但也不必主動公告</strong>：平時藏起來是為了讓三千位同仁不要走上一條他們用不了的路。</p>
+</div>
+
+<div class="box warn">
+<p>⚠ <strong>平時那塊是刻意隱藏的。</strong> 如果你在<strong>沒有</strong>加參數的情況下看到它，
+表示這台不是「卡登唯一入口」模式——<strong>那在內網正式部署上是不對的</strong>，請檢查設定。</p>
+</div>
+
+<div class="box stop">
+<p><strong>code-server 的密碼等於平台的最高權限。</strong>
+它掛載的是可寫的整包專案原始碼、未遮蔽的機密目錄，以及 Docker 控制通道。
+<strong>那把密碼只能給平台管理員。</strong></p>
+</div>
+
+<footer>
+  <p>ANILA 管理員手冊 · 中科院院內 AI 平台</p>
+  <p>畫面截圖將於系統就緒後補上。看到與實際不符的地方，請回報。</p>
+</footer>
+
+</div>
+</body>
+</html>
