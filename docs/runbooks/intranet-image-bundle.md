@@ -220,7 +220,11 @@ docker exec "$CSP" python3 -c 'import httpx; r=httpx.get("http://127.0.0.1:8000/
 
 ---
 
-## 8. 本機陷阱:sisidsdaemon 會讓「對正在跑的 image 做 docker save」失敗
+## 8. [已 superseded] 本機陷阱:sisidsdaemon 會讓「對正在跑的 image 做 docker save」失敗
+
+> **Superseded 2026-08-13:** built images 已改由隔離 `docker-container` buildx
+> 直接輸出 tar，並以 tar-mode scan + load-verify 取代本節的 built-image
+> save/preflight/rebuild 路徑；本節以下內容保留為歷史故障紀錄，不是目前操作指示。
 
 症狀:
 

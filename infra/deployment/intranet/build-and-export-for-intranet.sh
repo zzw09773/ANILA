@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # build-and-export-for-intranet.sh
 # ============================================================================
-# 從「有效 compose 組態」衍生要打包的 image 清單 → 確認本機都有 →
-# docker save 成 tar.gz,帶進無外網的內網主機 docker load。
+# 從「有效 compose 組態」衍生要打包的 image 清單 → buildx / docker save
+# 成 tar.gz,帶進無外網的內網主機 docker load。
 #
 # ⚠ 清單不再手寫。新增 compose service 會自動進 bundle;漏包只能發生在
 #   「本機根本沒有那張 image」,那時腳本會大聲失敗而不是靜默略過。
 #
-# ⚠ build 之後、save 之前有一道**建後雜物掃描**([2b/5],
+# ⚠ buildx tar 產出之後有一道**建後雜物掃描**([2b/5],
 #   infra/deployment/scripts/scan-image-artifacts.sh):本專案 build 出來的映像
 #   若烘進私鑰 / 日誌 / secrets/ / 使用者附件 / 測試快取就**中止匯出**。
 #   沒有跳過的旗標 —— 交付品出了門收不回來。修法見中止時印出的自救路徑。
@@ -31,20 +31,13 @@
 #                         例:本機 CPU 語音預演可設
 #                         COMPOSE_EXTRA_FILES=infra/compose/asr-cpu.yml
 #                         (仍不改 image 清單,只影響 config 其他欄位)。
-#   SKIP_BUILD=1          不跑 docker compose build(預演 / 已有映像時用)。
-#                         預設 0=會 build 有效組態裡有 build: 的服務。
+#   SKIP_BUILD=1          不跑 buildx;若 OUTPUT_DIR/01-images/ 已有對應的
+#                         built-image tar.gz 就沿用並記錄,缺任何一張便拒絕匯出。
+#                         預設 0=依 compose build --print 的 Bake targets buildx 直出。
 #   SKIP_PULL=1           不跑 docker pull。缺的上游 image 直接失敗。
 #                         預設 0=對「非本專案 build」的缺圖嘗試 pull。
-#   REBUILD_ON_SAVE_FAIL=1  若 docker save 被本機 IDS 毒到的 overlay 擋下,
-#                         對「有 build: 的服務」立刻 compose build --no-cache
-#                         該服務並馬上再 save(搶在 IDS 再次掃描前)。
-#                         預設 0。不影響上游 image(pg/redis/…);那些 save
-#                         失敗就直接 abort。
-#                         ⚠ 若服務的 image: 寫死共用 tag(如 asr-decoder 的
-#                         anila/asr-decoder:0.1.0、未 overlay 的
-#                         anila-codeserver:local),--no-cache build 會 retag
-#                         正在跑的那張 — 驗證棧不能動時不要開,或先用
-#                         COMPOSE_EXTRA_FILES 把 image 名改到獨立命名空間。
+#   SCAN_SCRIPT           掃描器路徑,預設為 repo 內的 scanner;可在交叉封包
+#                         contract 驗收時指向 scanner 複本。
 #   WITH_MODELS=1         另打包 04-models.tar.gz(數十 GB)。預設 OFF。
 #   WITH_WEIGHTS=1        另打包 05-weights-*.tar(數百 GB)。預設 OFF。
 #   WEIGHTS_LIST / ANILA_HF_DIR  權重清單與來源,見舊註解。
@@ -66,17 +59,20 @@
 set -euo pipefail
 
 OUTPUT_DIR="${1:-/tmp/anila-images-export}"
+OUTPUT_DIR="${OUTPUT_DIR%/}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
-COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila-restart}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila-restart}"
 COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-$REPO_ROOT/.env}"
 INCLUDE_ASR="${INCLUDE_ASR:-1}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_PULL="${SKIP_PULL:-0}"
-REBUILD_ON_SAVE_FAIL="${REBUILD_ON_SAVE_FAIL:-0}"
+BUILDER_NAME="anila-pkg"
+BUILDX_CACHE_DIR="$(dirname "$OUTPUT_DIR")/$(basename "$OUTPUT_DIR").buildx-cache"
 
 cd "$REPO_ROOT"
-mkdir -p "$OUTPUT_DIR"
+IMG_DIR="$OUTPUT_DIR/01-images"
+mkdir -p "$OUTPUT_DIR" "$IMG_DIR"
 
 # ── compose 引數(單一真相來源)──────────────────────────────────────────
 COMPOSE_FILES=(-f compose.yaml)
@@ -107,11 +103,16 @@ echo "  Project:    $COMPOSE_PROJECT_NAME  (-p;内網 up 必須同名)"
 echo "  Env file:   $COMPOSE_ENV_FILE"
 echo "  INCLUDE_ASR:$INCLUDE_ASR  (1 → --profile asr 納入有效組態)"
 echo "  SKIP_BUILD: $SKIP_BUILD   SKIP_PULL: $SKIP_PULL"
-echo "  REBUILD_ON_SAVE_FAIL: $REBUILD_ON_SAVE_FAIL"
+echo "  Buildx:      $BUILDER_NAME  (docker-container)"
+echo "  Buildx cache: $BUILDX_CACHE_DIR"
 echo "============================================================"
 echo
 
-[ -f "$COMPOSE_ENV_FILE" ] || die "COMPOSE_ENV_FILE 不存在:$COMPOSE_ENV_FILE(compose 插值需要它)"
+if [ ! -f "$COMPOSE_ENV_FILE" ]; then
+    echo "✗ COMPOSE_ENV_FILE 不存在:$COMPOSE_ENV_FILE(compose 插值需要它)" >&2
+    echo "  worktree 執行時用 COMPOSE_ENV_FILE=<主樹>/.env 指向主樹的環境檔." >&2
+    exit 1
+fi
 
 # ── Phase 0: 從有效 compose 組態衍生 image 清單 ─────────────────────────
 echo "▶ [0/5] Deriving image list from effective compose config..."
@@ -153,29 +154,212 @@ for name in sorted(services):
     print(f"{name}\t{img}")
 ')"
 
-# ── Phase 1: build(可跳過)─────────────────────────────────────────────
+# ── Phase 1: compose Bake → buildx tar(可跳過,可沿用既有 tar)──────────
+echo "▶ [1/5] Deriving Compose Bake definition with docker compose build --print..."
+BAKE_FILE="$(mktemp --suffix=.json)"
+if ! compose build --print > "$BAKE_FILE"; then
+    rm -f "$BAKE_FILE"
+    die "docker compose build --print 失敗"
+fi
+
+# Compose 的 Bake default group 才是 build 集合;同一 tag(例如
+# codeserver-init/codeserver)只輸出一次。這裡沒有服務名或 image 名清單。
+BAKE_TARGET_MAP_TEXT="$(python3 - "$BAKE_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    document = json.load(handle)
+
+targets = document.get("target") or {}
+default_targets = ((document.get("group") or {}).get("default") or {}).get("targets") or []
+if not default_targets:
+    raise SystemExit("Bake definition 沒有 default targets")
+
+chosen = {}
+for target_name in default_targets:
+    target = targets.get(target_name)
+    if not isinstance(target, dict):
+        raise SystemExit(f"Bake target 不存在:{target_name}")
+    tags = target.get("tags")
+    if not isinstance(tags, list) or len(tags) != 1 or not isinstance(tags[0], str) or not tags[0]:
+        raise SystemExit(f"Bake target 必須有一個 image tag:{target_name}")
+    if "${" in json.dumps(target, ensure_ascii=False):
+        raise SystemExit(f"Bake target 仍有未解析的插值:{target_name}")
+    chosen.setdefault(tags[0], target_name)
+
+for image, target_name in sorted(chosen.items()):
+    print(f"{target_name}\t{image}")
+PY
+)"
+[ -n "$BAKE_TARGET_MAP_TEXT" ] || die "Bake definition 沒有可匯出的 target"
+
+# 這是 build args 的 contract guard:Compose --print 必須把 anilalm / anila-ui
+# 的值寫進 Bake JSON,不能把 ${...} 原樣交給後續 buildx。
+python3 - "$BAKE_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    targets = (json.load(handle).get("target") or {})
+for name in ("anilalm", "anila-ui"):
+    target = targets.get(name)
+    if not isinstance(target, dict) or not isinstance(target.get("args"), dict):
+        raise SystemExit(f"Bake build args 不存在:{name}")
+    if "${" in json.dumps(target["args"], ensure_ascii=False):
+        raise SystemExit(f"Bake build args 尚有未解析插值:{name}")
+    print(f"  ✓ Bake interpolation: {name} args resolved ({', '.join(sorted(target['args']))})")
+PY
+
+mapfile -t BAKE_TARGET_MAP <<< "$BAKE_TARGET_MAP_TEXT"
+BUILT_IMAGES=()
+declare -A BUILT_IMAGE_SET=()
+while IFS=$'\t' read -r target img; do
+    [ -n "$target" ] || continue
+    BUILT_IMAGE_SET["$img"]=1
+    BUILT_IMAGES+=("$img")
+done <<< "$BAKE_TARGET_MAP_TEXT"
+[ ${#BUILT_IMAGES[@]} -gt 0 ] || die "Bake definition 衍生不到 built image"
+
+# 再用有效 Compose JSON 交叉核對 Bake 的 unique tags,避免 Bake 輸出被錯誤
+# 改寫或漏 target 時仍然繼續。兩邊都由 Compose 組態衍生,不是手寫清單。
+EXPECTED_BUILT_IMAGES_TEXT="$(
+    COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" compose config --format json | python3 -c '
+import json, os, sys
+project = os.environ["COMPOSE_PROJECT_NAME"]
+cfg = json.load(sys.stdin)
+images = set()
+for name, svc in (cfg.get("services") or {}).items():
+    if svc.get("build") is not None:
+        images.add(svc.get("image") or f"{project}-{name}")
+print("\n".join(sorted(images)))
+'
+)"
+[ -n "$EXPECTED_BUILT_IMAGES_TEXT" ] || die "有效 Compose 組態沒有 build: image"
+ACTUAL_BUILT_IMAGES_TEXT="$(printf '%s\n' "${BUILT_IMAGES[@]}")"
+if [ "$EXPECTED_BUILT_IMAGES_TEXT" != "$ACTUAL_BUILT_IMAGES_TEXT" ]; then
+    echo "Compose build set:" >&2
+    printf '%s\n' "$EXPECTED_BUILT_IMAGES_TEXT" >&2
+    echo "Bake build set:" >&2
+    printf '%s\n' "$ACTUAL_BUILT_IMAGES_TEXT" >&2
+    die "Compose build set 與 Bake target tags 不一致"
+fi
+for img in "${BUILT_IMAGES[@]}"; do
+    [ -n "${BUILT_IMAGE_SET[$img]+x}" ] || die "內部錯誤: built image set 缺少 $img"
+done
+echo "  ✓ Compose/Bake build set: ${#BUILT_IMAGES[@]} unique image(s)"
+
+declare -A BUILT_TAR_PATH=()
+
+ensure_buildx_builder() {
+    local driver inspect_output
+    if ! docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
+        echo "  → creating builder $BUILDER_NAME (docker-container)"
+        docker buildx create --name "$BUILDER_NAME" --driver docker-container >/dev/null \
+            || die "無法建立 buildx builder:$BUILDER_NAME"
+    fi
+    inspect_output="$(docker buildx inspect "$BUILDER_NAME" 2>/dev/null)"
+    driver="$(awk -F': *' '/^Driver:/ {print $2}' <<< "$inspect_output")"
+    [ "$driver" = "docker-container" ] \
+        || die "builder $BUILDER_NAME 不是 docker-container(driver=$driver),拒絕繼承其他 builder"
+    mkdir -p "$BUILDX_CACHE_DIR"
+    docker buildx inspect --bootstrap "$BUILDER_NAME" >/dev/null \
+        || die "buildx builder bootstrap 失敗:$BUILDER_NAME"
+    echo "  ✓ builder $BUILDER_NAME ready (docker-container; cache=$BUILDX_CACHE_DIR)"
+}
+
+buildx_export_one() {
+    # $1=image  $2=bake-target  $3=out.tar.gz  → 0/1
+    local img="$1" target="$2" out="$3" safe raw compressed
+    safe="$(printf '%s' "$img" | tr '/:' '__')"
+    raw="$IMG_DIR/.${safe}.tar"
+    compressed="$out.tmp.$BASHPID"
+    rm -f "$raw" "$compressed"
+    if ! docker buildx bake \
+        --builder "$BUILDER_NAME" \
+        --file "$BAKE_FILE" \
+        --progress plain \
+        --set "$target.output=type=docker,dest=$raw" \
+        --set "$target.cache-from=type=local,src=$BUILDX_CACHE_DIR" \
+        --set "$target.cache-to=type=local,dest=$BUILDX_CACHE_DIR,mode=max" \
+        "$target"; then
+        rm -f "$raw" "$compressed"
+        return 1
+    fi
+    if [ ! -s "$raw" ] || [ "$(stat -c%s "$raw")" -lt 1024 ]; then
+        echo "FAIL (buildx tar too small)"
+        rm -f "$raw" "$compressed"
+        return 1
+    fi
+    # Layer blobs 已經是壓縮格式;外層 gzip 只為相容既有 bundle / checksum / runbook。
+    if ! gzip -c "$raw" > "$compressed"; then
+        echo "FAIL (gzip)"
+        rm -f "$raw" "$compressed"
+        return 1
+    fi
+    mv -f "$compressed" "$out"
+    rm -f "$raw"
+    return 0
+}
+
 if [ "$SKIP_BUILD" = "1" ]; then
-    echo "▶ [1/5] Build skipped (SKIP_BUILD=1)"
+    echo "  SKIP_BUILD=1: reuse existing built-image tarballs in $IMG_DIR"
+    SKIP_BUILD_MISSING=()
+    for img in "${BUILT_IMAGES[@]}"; do
+        safe="$(printf '%s' "$img" | tr '/:' '__')"
+        out="$IMG_DIR/$safe.tar.gz"
+        if [ -f "$out" ]; then
+            BUILT_TAR_PATH["$img"]="$out"
+            echo "    ✓ reuse $safe.tar.gz ($img)"
+        else
+            echo "    ✗ missing reusable tar: $safe.tar.gz ($img)"
+            SKIP_BUILD_MISSING+=("$img")
+        fi
+    done
+    [ ${#SKIP_BUILD_MISSING[@]} -eq 0 ] \
+        || die "SKIP_BUILD=1 但 01-images/ 缺少 built image tar:${SKIP_BUILD_MISSING[*]}"
 else
-    echo "▶ [1/5] Building services with a build section via docker compose..."
-    # 不列服務名 — compose 自己知道誰有 build:;避免再手寫一份會過期的清單
-    compose build
-    echo "✓ Built."
+    echo "▶ [1/5] Building ${#BUILT_IMAGES[@]} unique image(s) with isolated buildx tar output..."
+    ensure_buildx_builder
+    BUILD_FAIL=()
+    for line in "${BAKE_TARGET_MAP[@]}"; do
+        IFS=$'\t' read -r target img <<< "$line"
+        safe="$(printf '%s' "$img" | tr '/:' '__')"
+        out="$IMG_DIR/$safe.tar.gz"
+        echo -n "  buildx $img (target $target) → 01-images/$safe.tar.gz ... "
+        if buildx_export_one "$img" "$target" "$out"; then
+            BUILT_TAR_PATH["$img"]="$out"
+            echo "OK ($(du -h "$out" | cut -f1))"
+        else
+            echo "FAIL"
+            BUILD_FAIL+=("$img")
+        fi
+    done
+    if [ ${#BUILD_FAIL[@]} -gt 0 ]; then
+        echo "✗ buildx tar export failed for: ${BUILD_FAIL[*]}" >&2
+        rm -f "$BAKE_FILE"
+        exit 1
+    fi
+    echo "✓ Built ${#BUILT_IMAGES[@]} unique image tar(s)."
 fi
 echo
 
-# ── Phase 2: 確認每張 image 都在本機;缺的上游可 pull,否則失敗 ──────────
-echo "▶ [2/5] Ensuring every derived image exists locally..."
+# ── Phase 2: built tar ready;缺的上游 image 可 pull,否則失敗 ──────────
+echo "▶ [2/5] Ensuring every derived image has a local source..."
 MISSING=()
 for img in "${IMAGES[@]}"; do
-    if docker image inspect "$img" >/dev/null 2>&1; then
-        echo "  ✓ $img"
+    if [ -n "${BUILT_IMAGE_SET[$img]+x}" ]; then
+        tar_path="${BUILT_TAR_PATH[$img]:-}"
+        if [ -n "$tar_path" ] && [ -s "$tar_path" ]; then
+            echo "  ✓ $img (buildx tar)"
+        else
+            echo "  ✗ MISSING (buildx tar): $img"
+            MISSING+=("$img")
+        fi
         continue
     fi
-    # 專案 build 出來的 image(前綴 = project name)沒有 registry 可 pull
-    if [[ "$img" == "${COMPOSE_PROJECT_NAME}-"* ]] || [[ "$img" == anila-codeserver:* ]] || [[ "$img" == anila/* ]]; then
-        echo "  ✗ MISSING (local build/tag): $img"
-        MISSING+=("$img")
+    if docker image inspect "$img" >/dev/null 2>&1; then
+        echo "  ✓ $img"
         continue
     fi
     if [ "$SKIP_PULL" = "1" ]; then
@@ -202,7 +386,7 @@ if [ ${#MISSING[@]} -gt 0 ]; then
         echo "    - $img"
     done
     echo
-    echo "  Fix: build/tag them (SKIP_BUILD=0) or pull upstream, then re-run."
+    echo "  Fix: rebuild/reuse built tar (SKIP_BUILD=0/1) or pull upstream, then re-run."
     echo "============================================================"
     exit 1
 fi
@@ -221,26 +405,8 @@ echo
 # etc/ssl/cert.pem(2026-08-06 實測)。把不歸我們管、也修不動的東西擋在閘門上,
 # 只會逼人去亂加白名單或整段跳過,那時這個閘門就等於不存在了。
 echo "▶ [2b/5] Scanning locally built images for baked runtime artifacts..."
-SCAN_SCRIPT="$REPO_ROOT/infra/deployment/scripts/scan-image-artifacts.sh"
+SCAN_SCRIPT="${SCAN_SCRIPT:-$REPO_ROOT/infra/deployment/scripts/scan-image-artifacts.sh}"
 [ -f "$SCAN_SCRIPT" ] || die "找不到掃描腳本:$SCAN_SCRIPT"
-
-mapfile -t BUILT_IMAGES < <(
-    COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" compose config --format json | python3 -c '
-import json, os, sys
-project = os.environ["COMPOSE_PROJECT_NAME"]
-cfg = json.load(sys.stdin)
-out = set()
-for name, svc in (cfg.get("services") or {}).items():
-    if svc.get("build") is None:
-        continue
-    out.add(svc.get("image") or f"{project}-{name}")
-for img in sorted(out):
-    print(img)
-'
-)
-# 衍生不到任何 build 出來的映像 = 上面那段或 compose 組態壞了。靜默略過掃描
-# 正好會在「最需要它」的時候發生,所以這裡硬失敗。
-[ ${#BUILT_IMAGES[@]} -gt 0 ] || die "衍生不到任何有 build: 的服務映像 — 掃描無法進行,拒絕匯出"
 
 # 進 bundle 的貨**全部**要過這一關,不是只有 compose 那批。
 # MODEL_IMAGES 是 WITH_MODELS=1 時 Phase 4 會 save 的六張(其中 embedding-proxy、
@@ -256,16 +422,31 @@ MODEL_IMAGES=(
     anila-flux-agent:latest
 )
 
-SCAN_IMAGES=("${BUILT_IMAGES[@]}")
+SCAN_INPUTS=()
+for img in "${BUILT_IMAGES[@]}"; do
+    SCAN_INPUTS+=("${BUILT_TAR_PATH[$img]}")
+done
 if [ "${WITH_MODELS:-0}" = "1" ]; then
     echo "  (WITH_MODELS=1 → 另外 ${#MODEL_IMAGES[@]} 張 model image 也一起掃;這幾張很大,會花時間)"
-    SCAN_IMAGES+=("${MODEL_IMAGES[@]}")
+    SCAN_INPUTS+=("${MODEL_IMAGES[@]}")
 fi
 
 # 掃描輸出留一份,除了給人看,也用來檢查「有沒有哪張其實一個檔都沒掃到」。
 SCAN_LOG="$(mktemp)"
 SCAN_RC=0
-bash "$SCAN_SCRIPT" "${SCAN_IMAGES[@]}" 2>&1 | tee "$SCAN_LOG" || SCAN_RC=$?
+bash "$SCAN_SCRIPT" "${SCAN_INPUTS[@]}" 2>&1 | tee "$SCAN_LOG" || SCAN_RC=$?
+# 掃描器必須為每個輸入印出完整 SUMMARY。特別要求 content_paths= 這個
+# contract key,否則 scanner 變成只報「✓ 乾淨」的 vacuous-green 也要拒絕。
+SUMMARY_COUNT="$(grep -Ec '^  SCAN-SUMMARY image=.* paths=[0-9]+ content_paths=[0-9]+ violations=[0-9]+( layers=[0-9]+)?$' "$SCAN_LOG" || true)"
+if [ "$SUMMARY_COUNT" -ne "${#SCAN_INPUTS[@]}" ]; then
+    rm -f "$SCAN_LOG"
+    die "scanner 沒有為每個輸入回報含 content_paths= 的 SCAN-SUMMARY($SUMMARY_COUNT/${#SCAN_INPUTS[@]})— 當成掃描失敗,拒絕匯出"
+fi
+TAR_SUMMARY_COUNT="$(grep -Ec '^  SCAN-SUMMARY image=.* paths=[0-9]+ content_paths=[0-9]+ violations=[0-9]+ layers=[0-9]+$' "$SCAN_LOG" || true)"
+if [ "$TAR_SUMMARY_COUNT" -ne "${#BUILT_IMAGES[@]}" ]; then
+    rm -f "$SCAN_LOG"
+    die "built image 沒有全部走 tar-mode SUMMARY($TAR_SUMMARY_COUNT/${#BUILT_IMAGES[@]})— 拒絕匯出"
+fi
 # 掃到 0 個檔**不是乾淨**,是掃描沒真的看到東西。掃描器自己也會擋(exit 2),
 # 這裡再攔一次:閘門不該有「看起來綠的」這種狀態。
 if grep -q 'SCAN-SUMMARY .* content_paths=0 ' "$SCAN_LOG"; then
@@ -291,96 +472,100 @@ elif [ "$SCAN_RC" -ne 0 ]; then
 fi
 echo
 
-# ── Phase 2c: 匯不匯得出去(save-ability)—— 掃描器結構上看不見的那一類 ────
-# 為什麼掃描綠了還要再擋一道:掃描器讀的是 `docker export` 的**攤平**檔案系統,
-# 交付品卻是 `docker save` 的**每一層**。兩者看到的東西不一樣,而且差異不是理論的
-# —— 2026-08-06 實測(alpine:layer A 被本機 IDS 注入且不清、layer B 事後才清):
-#   攤平後乾淨 → 掃描器印「✓ 乾淨」;同一張映像 `docker save` 直接失敗
-#   open …/merged/run/sisidsdaemon.pid: no such file or directory
-# 也就是說**掃描器判乾淨不代表這張映像出得了門**。同一天驗收就是被這個形狀擋下的:
-# 同一份 Dockerfile,一次建置匯得出去、下一次匯不出去。
-#
-# 沒有這道檢查的話,一張匯不出來的映像會一路綠燈走到 Phase 3,在已經寫了好幾 GB
-# 之後才炸 —— 這是最貴的失敗時機:人已經走開了,而 OUTPUT_DIR 裡是半包東西。
-#
-# 只檢 `$BUILT_IMAGES`(compose 裡有 build: 的那批)。範圍邊界寫清楚,不要以為
-# 這一關蓋住全部:
-#   • pull 進來的上游映像(pg/redis/nginx/…)不檢 —— 這個缺陷來自「在這台主機上
-#     跑過 build 容器」,它們沒跑過。真的因別的原因 save 失敗,Phase 3 原本的
-#     處理照舊,這一關是加上去的、不是取代。
-#   • WITH_MODELS=1 的那六張**也不檢**:其中兩張是本機自建的,原則上會中,但它們
-#     動輒數十 GB,為了這一關多讀一遍不划算。它們在 Phase 4 被 save 時一樣會擋。
-#
-# 檢查方式就是真的 save 一次然後丟掉(不落地、不 gzip;gzip 才是貴的那一半)。
-# 代價是把 build 出來的那批多讀一遍;換到的是壞消息出現在**還沒寫任何 bytes 之前**。
-echo "▶ [2c/5] Verifying locally built images can actually be saved..."
-SAVE_UNABLE=()
-for img in "${BUILT_IMAGES[@]}"; do
-    docker image inspect "$img" >/dev/null 2>&1 || continue   # 缺圖已在 Phase 2 擋過
-    echo -n "  save-check $img ... "
-    save_err="$(mktemp)"
-    if docker save "$img" >/dev/null 2>"$save_err"; then
-        echo "OK"
-    else
-        echo "FAIL"
-        echo "    $(tr '\n' ' ' <"$save_err")"
-        SAVE_UNABLE+=("$img")
-    fi
-    rm -f "$save_err"
-done
+# ── Phase 2c: load-verify gate──────────────────────────────────────────
+# buildx type=docker 已經把 built image 直接寫成 docker-load archive;這一關
+# 故意真的 load 一次,確認 archive 沒截斷、manifest 可被 daemon 接受、而且
+# expected tag 存在。上游 image 不在這裡 load,仍由 Phase 3 的 docker save 交付。
+running_refs_contain() {
+    local refs="$1" expected="$2" ref
+    while IFS= read -r ref; do
+        [ "$ref" = "$expected" ] && return 0
+    done <<< "$refs"
+    return 1
+}
 
-if [ ${#SAVE_UNABLE[@]} -gt 0 ]; then
-    if [ "$REBUILD_ON_SAVE_FAIL" = "1" ]; then
-        # 使用者已經明講要自動重建重試,那就把處置交給 Phase 3 原本那條路,
-        # 不要在這裡先斬 —— 否則 REBUILD_ON_SAVE_FAIL 這個逃生口等於被廢掉。
-        echo
-        echo "  ⚠ 上面 ${#SAVE_UNABLE[@]} 張映像現在 save 不出來,但 REBUILD_ON_SAVE_FAIL=1,"
-        echo "    交給 Phase 3 的重建重試處理。"
-    else
-        echo
-        echo "============================================================"
-        echo "✗ REFUSING TO EXPORT — 這些映像掃描是綠的,但 docker save 匯不出去:"
-        for img in "${SAVE_UNABLE[@]}"; do
-            echo "    - $img"
-        done
-        echo
-        echo "  這台主機上最常見的成因:Symantec DCS 代理(sisidsdaemon)在 build"
-        echo "  容器啟動當下注入 /run/sisidsdaemon.pid 與 /var/lib/sdcssagent,"
-        echo "  容器結束後又自己刪掉 pid 檔,layer metadata 留下懸空項目。"
-        echo "  自救路徑(照順序試):"
-        echo "    1. 重 build 那張映像(每次建置各擲一次骰子,重建通常就過了)"
-        echo "    2. 根治:在**產生它的那一個 RUN 自己的結尾**加"
-        echo "       \`rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid\`。"
-        echo "       ⚠ 事後補一層 RUN 清理是**無效**的 —— 攤平後乾淨、掃描器也會"
-        echo "       說乾淨,但早一層已經 commit 進去的懸空項目修不回來。"
-        echo "    3. 棧可以停的話:停棧再匯出(Fix A),或 REBUILD_ON_SAVE_FAIL=1"
-        echo "       走 Phase 3 的自動重建(見 runbook §8)。"
-        echo
-        echo "  停在這裡是刻意的:此刻 $OUTPUT_DIR 還沒被寫進任何一個 bytes。"
-        echo "============================================================"
-        exit 1
+load_verify_one() {
+    # $1=image  $2=tar.gz  → 0/1
+    local img="$1" archive="$2" was_present=0 running_before running_after load_err
+    if docker image inspect "$img" >/dev/null 2>&1; then
+        was_present=1
     fi
+    if ! running_before="$(docker ps --format '{{.Image}}')"; then
+        echo "FAIL (cannot inspect running containers before load)"
+        return 1
+    fi
+    if ! load_err="$(gzip -t "$archive" 2>&1)"; then
+        echo "FAIL (gzip integrity: ${load_err:-truncated or corrupt archive})"
+        return 1
+    fi
+    load_err="$(mktemp)"
+    if ! docker load < "$archive" 2>"$load_err"; then
+        echo "FAIL (docker load: $(tr '\n' ' ' <"$load_err"))"
+        rm -f "$load_err"
+        return 1
+    fi
+    rm -f "$load_err"
+    if ! docker image inspect "$img" >/dev/null 2>&1; then
+        echo "FAIL (expected tag missing after docker load: $img)"
+        return 1
+    fi
+    if [ "$was_present" -eq 1 ]; then
+        echo "OK (tag existed before load; kept, no rmi)"
+        return 0
+    fi
+
+    # Re-check immediately before cleanup. Never remove a tag visible on a
+    # running container, even if the pre-load snapshot was different.
+    if ! running_after="$(docker ps --format '{{.Image}}')"; then
+        echo "FAIL (cannot inspect running containers before cleanup)"
+        return 1
+    fi
+    if running_refs_contain "$running_before" "$img" \
+        || running_refs_contain "$running_after" "$img"; then
+        echo "OK (running container uses tag; kept, no rmi)"
+        return 0
+    fi
+    if ! docker rmi "$img" >/dev/null; then
+        echo "FAIL (loaded tag could not be removed safely: $img)"
+        return 1
+    fi
+    echo "OK (loaded tag verified and removed; absent before load)"
+    return 0
+}
+
+echo "▶ [2c/5] Load-verifying built image tars..."
+LOAD_VERIFY_FAIL=()
+for img in "${BUILT_IMAGES[@]}"; do
+    echo -n "  load-verify $img ← $(basename "${BUILT_TAR_PATH[$img]}") ... "
+    if load_verify_one "$img" "${BUILT_TAR_PATH[$img]}"; then
+        :
+    else
+        LOAD_VERIFY_FAIL+=("$img")
+    fi
+done
+if [ ${#LOAD_VERIFY_FAIL[@]} -gt 0 ]; then
+    echo
+    echo "============================================================"
+    echo "✗ REFUSING TO EXPORT — built tar load-verify failed:"
+    printf '    - %s\n' "${LOAD_VERIFY_FAIL[@]}"
+    echo "  A truncated/corrupt tar or missing expected tag is not deliverable."
+    echo "============================================================"
+    rm -f "$BAKE_FILE"
+    exit 1
 fi
+rm -f "$BAKE_FILE"
+echo "✓ All ${#BUILT_IMAGES[@]} built image tar(s) load-verified."
 echo
 
-# ── Phase 3: 逐張 save(一 image 一檔;點名失敗;可續傳)──────────────────
-echo "▶ [3/5] Saving compose images → 01-images/*.tar.gz ..."
-IMG_DIR="$OUTPUT_DIR/01-images"
+# ── Phase 3: 逐張封裝(一 image 一檔;點名失敗;可續傳)────────────────────
+echo "▶ [3/5] Packaging compose images → 01-images/*.tar.gz ..."
 mkdir -p "$IMG_DIR"
 {
     printf '%s\n' "${IMAGES[@]}"
 } > "$OUTPUT_DIR/01-compose-images.images.txt"
 
-# image → 擁有它的 compose service 名(供 REBUILD_ON_SAVE_FAIL)
-declare -A IMAGE_TO_SERVICE=()
-while IFS=$'\t' read -r svc img; do
-    [ -n "$img" ] || continue
-    # 同一 image 可能被多個 service 共用(codeserver-init/codeserver);留一個即可
-    IMAGE_TO_SERVICE["$img"]="$svc"
-done <<<"$SERVICE_IMAGE_MAP"
-
-# 先 docker save -o 成未壓縮 tar,再 gzip。pipe 拉長 save 時間,本機 IDS
-# 更容易在中途把 overlay 弄壞;分兩步比較搶得過。
+# 只有 upstream image 走 docker save; built image 的 tar 在 Phase 1 已由 buildx
+# 直接產出。兩條路都維持相同 safe filename / gzip / files.txt contract。
 save_one_image() {
     # $1=image  $2=out.tar.gz  → 0/1
     local img="$1" out="$2" err raw
@@ -407,60 +592,33 @@ save_one_image() {
     return 0
 }
 
-SAVE_FAIL=()
+PACKAGING_FAIL=()
 : > "$OUTPUT_DIR/01-compose-images.files.txt"
 for img in "${IMAGES[@]}"; do
     safe="$(printf '%s' "$img" | tr '/:' '__')"
     out="$IMG_DIR/$safe.tar.gz"
-    echo -n "  save $img → 01-images/$safe.tar.gz ... "
-    if save_one_image "$img" "$out"; then
+    if [ -n "${BUILT_IMAGE_SET[$img]+x}" ]; then
+        echo "  buildx tar $img → 01-images/$safe.tar.gz ... OK ($(du -h "$out" | cut -f1))"
         echo "$safe.tar.gz	$img" >> "$OUTPUT_DIR/01-compose-images.files.txt"
         continue
     fi
-
-    if [ "$REBUILD_ON_SAVE_FAIL" != "1" ]; then
-        SAVE_FAIL+=("$img")
-        continue
-    fi
-    svc="${IMAGE_TO_SERVICE[$img]:-}"
-    if [ -z "$svc" ]; then
-        echo "    REBUILD_ON_SAVE_FAIL: no buildable service owns $img — cannot recover"
-        SAVE_FAIL+=("$img")
-        continue
-    fi
-
-    recovered=0
-    for attempt in 1 2 3; do
-        echo "    → REBUILD_ON_SAVE_FAIL attempt $attempt/3: compose build --no-cache $svc"
-        if ! compose build --no-cache "$svc"; then
-            echo "    ✗ rebuild failed for service $svc"
-            continue
-        fi
-        echo -n "    re-save $img ... "
-        if save_one_image "$img" "$out"; then
-            echo "$safe.tar.gz	$img" >> "$OUTPUT_DIR/01-compose-images.files.txt"
-            recovered=1
-            break
-        fi
-    done
-    if [ "$recovered" -ne 1 ]; then
-        SAVE_FAIL+=("$img")
+    echo -n "  docker save $img → 01-images/$safe.tar.gz ... "
+    if save_one_image "$img" "$out"; then
+        echo "$safe.tar.gz	$img" >> "$OUTPUT_DIR/01-compose-images.files.txt"
+    else
+        PACKAGING_FAIL+=("$img")
     fi
 done
 
-if [ ${#SAVE_FAIL[@]} -gt 0 ]; then
+if [ ${#PACKAGING_FAIL[@]} -gt 0 ]; then
     echo
     echo "============================================================"
-    echo "✗ REFUSING TO EXPORT — docker save failed for:"
-    for img in "${SAVE_FAIL[@]}"; do
+    echo "✗ REFUSING TO EXPORT — upstream docker save failed for:"
+    for img in "${PACKAGING_FAIL[@]}"; do
         echo "    - $img"
     done
     echo
-    echo "  Common cause on this host: host IDS (sisidsdaemon) poisons overlay"
-    echo "  merged/ views so docker save fails for affected images."
-    echo "  Fix A (recommended tomorrow): stop the stack, re-run, then up."
-    echo "  Fix B (stack must stay up): REBUILD_ON_SAVE_FAIL=1 with a separate"
-    echo "  COMPOSE_PROJECT_NAME (+ codeserver image overlay); see runbook §8."
+    echo "  Built images already passed buildx tar load-verify; only upstream images use docker save."
     echo "  Do NOT ship a partial bundle."
     echo "============================================================"
     exit 1
@@ -522,6 +680,62 @@ else
 fi
 echo
 
+# built image 的 metadata 必須從它交付的 tar 讀,不能因 load-verify 後 tag 被
+# 保留/移除而回頭依賴 daemon state。LayerSources 有 uncompressed layer size;
+# 沒有時退回 tar member size,仍然是 archive 自身的資料。
+metadata_from_tar() {
+    local archive="$1" expected_image="$2"
+    python3 - "$archive" "$expected_image" <<'PY'
+import gzip
+import json
+import os
+import sys
+import tarfile
+
+archive, expected = sys.argv[1:]
+with tarfile.open(fileobj=gzip.GzipFile(archive, "rb"), mode="r:") as bundle:
+    manifest = json.load(bundle.extractfile(bundle.getmember("manifest.json")))
+    if not isinstance(manifest, list) or not manifest:
+        raise SystemExit("manifest.json must be a non-empty array")
+    records = [entry for entry in manifest if expected in (entry.get("RepoTags") or [])]
+    if not records:
+        if len(manifest) != 1:
+            raise SystemExit(f"tar has no manifest entry for {expected}")
+        records = manifest
+    entry = records[0]
+    config_ref = entry.get("Config")
+    if not isinstance(config_ref, str) or not config_ref:
+        raise SystemExit(f"tar manifest has no Config for {expected}")
+    config_member = bundle.getmember(config_ref)
+    config = json.load(bundle.extractfile(config_member))
+    if not isinstance(config, dict):
+        raise SystemExit(f"config blob is not an object for {expected}")
+
+    config_name = os.path.basename(config_ref)
+    if config_name.endswith(".json"):
+        config_name = config_name[:-5]
+    if not config_name.startswith("sha256:"):
+        config_name = "sha256:" + config_name
+
+    layer_sources = entry.get("LayerSources") or {}
+    size = 0
+    for layer_ref in entry.get("Layers") or []:
+        if not isinstance(layer_ref, str):
+            raise SystemExit(f"invalid layer reference for {expected}")
+        digest = "sha256:" + os.path.basename(layer_ref)
+        source = layer_sources.get(digest) or layer_sources.get(os.path.basename(layer_ref))
+        if isinstance(source, dict) and isinstance(source.get("size"), int):
+            size += source["size"]
+        else:
+            size += bundle.getmember(layer_ref).size
+
+    repo_digests = entry.get("RepoDigests") or []
+    if not isinstance(repo_digests, list):
+        repo_digests = []
+    print(f"{config_name}\t{size}\t{json.dumps(repo_digests, separators=( ',', ':' ))}")
+PY
+}
+
 # ── Phase 5: MANIFEST + INTRANET-LOAD.sh ────────────────────────────────
 echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
 
@@ -549,10 +763,16 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
     echo "── Images in 01-images/*.tar.gz ───────────────────────"
     while IFS=$'\t' read -r file img; do
         [ -n "$img" ] || continue
-        meta="$(docker image inspect "$img" --format '{{.Id}} {{.Size}} {{json .RepoDigests}}' 2>/dev/null || echo '? ? []')"
-        id="$(awk '{print $1}' <<<"$meta")"
-        bytes="$(awk '{print $2}' <<<"$meta")"
-        digests="$(awk '{$1="";$2=""; sub(/^  /,""); print}' <<<"$meta")"
+        if [ -n "${BUILT_IMAGE_SET[$img]+x}" ]; then
+            meta="$(metadata_from_tar "$IMG_DIR/$file" "$img")" \
+                || die "無法從 built tar 讀取 metadata:$file ($img)"
+            IFS=$'\t' read -r id bytes digests <<< "$meta"
+        else
+            meta="$(docker image inspect "$img" --format '{{.Id}} {{.Size}} {{json .RepoDigests}}' 2>/dev/null || echo '? ? []')"
+            id="$(awk '{print $1}' <<<"$meta")"
+            bytes="$(awk '{print $2}' <<<"$meta")"
+            digests="$(awk '{$1="";$2=""; sub(/^  /,""); print}' <<<"$meta")"
+        fi
         hr="$(numfmt --to=iec --suffix=B "$bytes" 2>/dev/null || echo "${bytes}B")"
         fbytes="$(stat -c%s "$IMG_DIR/$file" 2>/dev/null || echo 0)"
         fhr="$(numfmt --to=iec --suffix=B "$fbytes" 2>/dev/null || echo "${fbytes}B")"
