@@ -362,6 +362,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [agents, setAgents] = useState([ROUTER_AGENT]);
   const [selectedAgentId, setSelectedAgentId] = useState(ROUTER_AGENT.id);
   const [loadingAgents, setLoadingAgents] = useState(false);
+  const [agentRefreshFeedback, setAgentRefreshFeedback] = useState(null);
   const [runtimeError, setRuntimeError] = useState("");
   // 上次抓 /v1/agents 的時間戳，給 focus-refresh 用做 15s 節流，
   // 避免使用者頻繁 alt-tab 把 CSP 打爆。CSP 端管理員刪了 agent
@@ -838,6 +839,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   async function refreshAgents() {
     setLoadingAgents(true);
+    setAgentRefreshFeedback({ kind: "loading", message: "正在載入 agent…" });
     setRuntimeError("");
     // 在送出 fetch 的那一刻就標記時間戳 — 即使後續 await 還沒完成，
     // 也能擋掉緊接著的 focus 事件造成的重覆 fetch。
@@ -859,8 +861,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           setSelectedAgentId(ROUTER_AGENT.id);
         }
       });
+      setAgentRefreshFeedback({ kind: "success", message: "agent 已更新" });
     } catch (error) {
       startTransition(() => {
+        setAgentRefreshFeedback({
+          kind: "error",
+          message: `agent 載入失敗：${error.message || "未知錯誤"}`,
+        });
         setRuntimeError(error.message || "無法載入 agent 清單");
         setAgents([ROUTER_AGENT]);
         setSelectedAgentId(ROUTER_AGENT.id);
@@ -2989,6 +2996,20 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           <IconButton title="重新載入 agent" onClick={() => void refreshAgents()} disabled={loadingAgents}>
             <IconRefresh size={14} />
           </IconButton>
+          {agentRefreshFeedback && (
+            <span
+              data-testid="agent-refresh-feedback"
+              role={agentRefreshFeedback.kind === "error" ? "alert" : "status"}
+              aria-live={agentRefreshFeedback.kind === "error" ? "assertive" : "polite"}
+              style={{
+                color: agentRefreshFeedback.kind === "error" ? "var(--danger)" : "var(--fg-muted)",
+                fontSize: 11,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {agentRefreshFeedback.message}
+            </span>
+          )}
 
           <IconButton title="專案入口" onClick={() => setServicesOpen(true)} active={servicesOpen}>
             <IconGrid />
