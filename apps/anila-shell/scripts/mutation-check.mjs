@@ -65,7 +65,7 @@
 //
 // 離開碼:任何一個突變存活(該紅卻沒紅)= 1。
 
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
@@ -146,8 +146,8 @@ const MUTATIONS = [
   {
     id: "update-msg-wipes-list",
     file: "src/app.jsx",
-    shape: "存取器回空值",
-    intent: "訊息更新時把整格對話清空（畫面上的字會消失）",
+    shape: "清單順序被反轉",
+    intent: "訊息更新時把整段對話順序反轉（畫面與歷史順序被打亂）",
     // 用 updateMsg 的函式簽章當錨點 —— 光是那一行賦值在 app.jsx 裡有兩處。
     find:
       "  function updateMsg(convId, msgId, patch) {\n" +
@@ -156,7 +156,7 @@ const MUTATIONS = [
     replace:
       "  function updateMsg(convId, msgId, patch) {\n" +
       "    setMessagesByConv((prev) => {\n" +
-      "      const list = prev[convId] && [];",
+      "      const list = [...(prev[convId] || [])].reverse();",
   },
   {
     id: "conversation-switch-noop",
@@ -251,10 +251,10 @@ const MUTATIONS = [
     replace: '    const error = new Error(detail && "Streaming failed");',
   },
   {
-    id: "agents-load-error-hidden",
+    id: "agent-refresh-failure-claims-success",
     file: "src/app.jsx",
     shape: "訊息被吃掉",
-    intent: "agent 清單載入失敗不再顯示 banner（選單空白但沒人說為什麼）",
+    intent: "agent 清單刷新失敗卻顯示成功（選單回到 Router 但不告訴使用者）",
     find: '        setRuntimeError(error.message || "無法載入 agent 清單");',
     replace: '        setRuntimeError(error.message && "");',
   },
@@ -663,36 +663,194 @@ const MUTATIONS = [
 
 // ---- 執行 ------------------------------------------------------------------
 
-function runVitest(args) {
+// Every test invocation is isolated from the checker: a hung mutation must not
+// make the checker hang forever, and a runaway V8 heap must not take the host
+// down with it. The timeout is deliberately per child, not per mutation, since
+// one mutation runs several independent test groups.
+const CHILD_TIMEOUT_MS = 20_000;
+const CHILD_KILL_GRACE_MS = 1_000;
+const CHILD_MAX_OLD_SPACE_MB = 512;
+
+/** @type {import("node:child_process").ChildProcess | null} */
+let activeChild = null;
+/** @type {"SIGINT" | "SIGTERM" | "SIGHUP" | null} */
+let parentStopSignal = null;
+
+function childEnvironment() {
+  const inheritedNodeOptions = process.env.NODE_OPTIONS?.trim();
+  return {
+    ...process.env,
+    CI: "1",
+    NODE_OPTIONS: [
+      inheritedNodeOptions,
+      `--max-old-space-size=${CHILD_MAX_OLD_SPACE_MB}`,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  };
+}
+
+/** Terminate the complete detached child process group, with a direct fallback. */
+function terminateChild(child, signal) {
+  if (!child?.pid) return;
   try {
-    const out = execFileSync("npx", ["vitest", "run", ...args], {
-      cwd: ROOT,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, CI: "1" },
-    });
-    return { green: true, out };
-  } catch (err) {
-    // 互動式 Ctrl-C 送給整個 process group,`npx vitest` 也會收到 —— 子行程
-    // 被 SIGINT/SIGTERM 打死是我們唯一能即時知道「使用者要停」的可靠訊號
-    // (送給本行程的那一份會被 execFileSync 吃掉,見上面的說明)。
-    // 這時候絕不能把它當成「測試紅了」記進結果,那會變成一個假的「抓到」。
-    if (err.signal === "SIGINT" || err.signal === "SIGTERM") {
-      console.error(`\n測試行程被 ${err.signal} 中止,還原被突變的檔案後離開。`);
-      restoreAll();
-      process.exit(130);
-    }
-    return { green: false, out: `${err.stdout || ""}${err.stderr || ""}` };
+    // `detached: true` gives the test child its own process group, so workers
+    // spawned by npx/vitest cannot survive a timeout or a genuine interrupt.
+    process.kill(-child.pid, signal);
+    return;
+  } catch {
+    // A platform without negative-PID process-group support, or a group that
+    // exited between the check and kill, still gets a best-effort direct kill.
   }
+  try {
+    process.kill(child.pid, signal);
+  } catch (err) {
+    if (err.code !== "ESRCH") {
+      console.error(`無法以 ${signal} 結束測試子行程 ${child.pid}: ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Run one Vitest child without confusing its wait status with a signal sent to
+ * this checker. A child-only signal is returned as a hard-stop result; only a
+ * SIGINT observed by this parent is a genuine user interrupt.
+ */
+function runVitest(args) {
+  if (parentStopSignal) {
+    return Promise.resolve({
+      green: false,
+      out: "",
+      kind: "parent-signal",
+      signal: parentStopSignal,
+    });
+  }
+
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    let timeoutTimer;
+    let killTimer;
+    const child = spawn("npx", ["vitest", "run", ...args], {
+      cwd: ROOT,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: childEnvironment(),
+    });
+
+    activeChild = child;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      clearTimeout(killTimer);
+      if (activeChild === child) activeChild = null;
+      resolve(result);
+    };
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      terminateChild(child, "SIGTERM");
+      killTimer = setTimeout(() => terminateChild(child, "SIGKILL"), CHILD_KILL_GRACE_MS);
+    }, CHILD_TIMEOUT_MS);
+
+    child.once("error", (err) => {
+      finish({
+        green: false,
+        out: `${stdout}${stderr}${err.message}\n`,
+        kind: "spawn-error",
+        error: err,
+      });
+    });
+    child.once("close", (code, signal) => {
+      const out = `${stdout}${stderr}`;
+      if (parentStopSignal) {
+        finish({
+          green: false,
+          out,
+          kind: "parent-signal",
+          signal: parentStopSignal,
+        });
+      } else if (timedOut) {
+        finish({
+          green: false,
+          out,
+          kind: "timeout",
+          signal,
+          timeoutMs: CHILD_TIMEOUT_MS,
+        });
+      } else if (signal) {
+        finish({ green: false, out, kind: "child-signal", signal });
+      } else {
+        finish({
+          green: code === 0,
+          out,
+          kind: code === 0 ? "success" : "test-failure",
+          exitCode: code,
+        });
+      }
+    });
+  });
 }
 
 const runNew = () => runVitest(NEW_TESTS);
 const runPreExisting = () =>
   runVitest(PRE_EXISTING_EXCLUDES.flatMap((e) => ["--exclude", e]));
 
+class GenuineInterrupt extends Error {
+  constructor() {
+    super("the checker received SIGINT");
+    this.name = "GenuineInterrupt";
+  }
+}
+
+class UnexpectedChildStop extends Error {
+  constructor(result) {
+    super(
+      result.kind === "child-signal"
+        ? `the test child was terminated by ${result.signal}`
+        : result.kind === "parent-signal"
+          ? `the parent received ${result.signal}`
+          : `the test child could not start: ${result.error?.message || "unknown spawn error"}`,
+    );
+    this.name = "UnexpectedChildStop";
+    this.result = result;
+  }
+}
+
+function ensureChildDidNotStop(result) {
+  if (result.kind === "parent-signal" && result.signal === "SIGINT") {
+    throw new GenuineInterrupt();
+  }
+  if (
+    result.kind === "parent-signal" ||
+    result.kind === "child-signal" ||
+    result.kind === "spawn-error"
+  ) {
+    throw new UnexpectedChildStop(result);
+  }
+}
+
 function summarise(out) {
-  const m = out.match(/Tests\s+(.+)/);
+  const plain = out.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+  const m = plain.match(/(?:^|\n)\s*Tests\s+(.+)/);
   return m ? m[1].trim() : "（無法解析）";
+}
+
+function testResultLabel(result) {
+  if (result.green) return "綠 ✗（存活）";
+  if (result.kind === "timeout") return `逾時 ✓（${result.timeoutMs}ms 上限）`;
+  return "紅 ✓";
 }
 
 // ---- 中途中止的還原 --------------------------------------------------------
@@ -702,23 +860,10 @@ function summarise(out) {
 // 2e082489 的版本就是這樣:Ctrl-C 之後 app.jsx 停在
 // `messagesByConv[convId] && []`,git status 只說「M app.jsx」。
 //
-// ⚠ 量到的事實(2026-08-05,node v22.23.1):**在 `execFileSync` 阻塞期間送到
-// 本行程的 SIGINT 會被整個吃掉** —— `process.on("SIGINT")` 的處理器完全不會
-// 觸發,而且因為註冊了處理器,連 node 預設的「收到就死」也一併失效。
-// 這個腳本 99% 的時間都卡在 `execFileSync` 裡,所以**光靠訊號處理器等於沒做**。
-// (最小重現:`process.on("SIGINT",…)` + `execFileSync("sleep",["4"])`,
-//  期間 `kill -INT` → 處理器不觸發、離開碼 0。)
-//
-// 所以真正扛住的是另外兩層:
-//
-//   1. **落一份還原日誌**。改壞之前先把原始內容寫到 node_modules/.cache 下,
-//      還原成功才刪掉。下一次啟動看到日誌就先把樹修回去並大聲說出來 ——
-//      連 `kill -9` 都救得回來,因為它不依賴本行程還活著。
-//   2. **看子行程是怎麼死的**。互動式 Ctrl-C 送給的是整個 process group,
-//      `npx vitest` 也會收到;`execFileSync` 因此丟出 `signal === "SIGINT"`。
-//      那是我們唯一能即時、可靠地知道「使用者按了 Ctrl-C」的訊號。
-//
-// 訊號處理器仍然留著,但它只在事件迴圈有空的那些短暫縫隙有用,不是主力。
+// 子行程現在用非同步方式執行,所以本行程能在測試跑著時收到訊號。Ctrl-C
+// 的判斷只看**本行程實際收到的 SIGINT**;子行程的 wait status 不會被當成
+// 使用者意圖。測試子行程另放進自己的 process group,讓 timeout 和 Ctrl-C
+// 都能連同 Vitest workers 一起收乾淨。
 
 /** @type {Map<string, string>} 路徑 → 原始內容 */
 const pendingRestores = new Map();
@@ -774,17 +919,18 @@ function recoverFromJournal() {
 
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
-    if (pendingRestores.size > 0) {
-      console.error(`\n收到 ${signal},還原 ${pendingRestores.size} 個被突變的檔案…`);
-      restoreAll();
+    if (parentStopSignal) return;
+    parentStopSignal = signal;
+    if (activeChild) {
+      terminateChild(activeChild, signal === "SIGINT" ? "SIGINT" : "SIGTERM");
     }
-    process.exit(130);
   });
 }
 // 未捕捉的例外同樣不能把改壞的檔案留在原地。
 process.on("uncaughtException", (err) => {
   restoreAll();
   console.error(err);
+  reportIncomplete("an unexpected checker error");
   process.exit(2);
 });
 
@@ -816,7 +962,19 @@ function applyMutation(mut) {
   };
 }
 
-function main() {
+const mutationProgress = { total: 0, completed: 0 };
+
+function mutationsNotRun() {
+  return Math.max(mutationProgress.total - mutationProgress.completed, 0);
+}
+
+function reportIncomplete(reason) {
+  console.error(
+    `\nMutation check stopped: ${reason}. ${mutationsNotRun()} mutations did not run.`,
+  );
+}
+
+async function main() {
   const argv = process.argv.slice(2);
   // 任何模式(含 --list / --check-anchors)都先修上一輪的殘留 —— 沒有比
   // 「在一個被上一輪改壞的樹上驗錨點」更會誤導人的事。
@@ -861,16 +1019,21 @@ function main() {
     console.error("沒有符合的突變。用 --list 看清單。");
     return 2;
   }
+  mutationProgress.total = selected.length;
+  mutationProgress.completed = 0;
 
   console.log("== 前置:確認未突變時兩組都是綠的 ==");
-  const baseNew = runNew();
+  const baseNew = await runNew();
+  ensureChildDidNotStop(baseNew);
   if (!baseNew.green) {
     console.error("新測試在乾淨狀態下就是紅的，先修好再跑突變檢查。");
     console.error(baseNew.out.slice(-3000));
+    reportIncomplete("the clean new-test baseline failed");
     return 2;
   }
   console.log(`  新行為測試: ${summarise(baseNew.out)}`);
-  const basePre = runPreExisting();
+  const basePre = await runPreExisting();
+  ensureChildDidNotStop(basePre);
   // 這一關就是整份報告裡「既有測試只抓到 N 個」那個數字的全部價值所在。
   // 少了它，一條本來就紅的既有測試會被算成「被這個突變殺掉」，而兩者在
   // 輸出上長得一模一樣。基準線不綠 = 這一輪量不出東西，直接離開。
@@ -881,6 +1044,7 @@ function main() {
         "  先讓既有測試回到綠，再跑突變檢查。",
     );
     console.error(basePre.out.slice(-3000));
+    reportIncomplete("the clean pre-existing-test baseline failed");
     return 2;
   }
   console.log(`  既有測試:   ${summarise(basePre.out)}`);
@@ -892,8 +1056,10 @@ function main() {
     let restore;
     try {
       restore = applyMutation(mut);
-      const rNew = runNew();
-      const rPre = runPreExisting();
+      const rNew = await runNew();
+      ensureChildDidNotStop(rNew);
+      const rPre = await runPreExisting();
+      ensureChildDidNotStop(rPre);
       results.push({
         id: mut.id,
         file: mut.file,
@@ -903,8 +1069,8 @@ function main() {
         caughtByPreExisting: !rPre.green,
       });
       console.log(
-        `新測試 ${!rNew.green ? "紅 ✓" : "綠 ✗（存活）"} / 既有測試 ${
-          !rPre.green ? "紅" : "綠"
+        `新測試 ${testResultLabel(rNew)} / 既有測試 ${
+          rPre.green ? "綠" : rPre.kind === "timeout" ? `逾時（${rPre.timeoutMs}ms 上限）` : "紅"
         }`,
       );
     } finally {
@@ -913,21 +1079,31 @@ function main() {
     // 還原之後兩組都要回到綠。這既是「工作目錄沒被弄髒」的檢查，也是
     // **下一個突變的前置綠燈** —— 每一個突變都從一個已知全綠的狀態出發，
     // 而不是沿用一開始那次基準線的結論。
-    const afterNew = runNew();
+    const afterNew = await runNew();
+    ensureChildDidNotStop(afterNew);
     if (!afterNew.green) {
       console.error(`還原後新測試在 ${mut.id} 仍是紅的 — 工作目錄可能已污染，中止。`);
       console.error(afterNew.out.slice(-3000));
+      reportIncomplete(`the restored new-test check failed after ${mut.id}`);
       return 2;
     }
-    const afterPre = runPreExisting();
+    const afterPre = await runPreExisting();
+    ensureChildDidNotStop(afterPre);
     if (!afterPre.green) {
       console.error(
         `還原後既有測試在 ${mut.id} 仍是紅的 —— 後面每一個突變的「既有測試抓到」` +
           `都會變成假的，中止。`,
       );
       console.error(afterPre.out.slice(-3000));
+      reportIncomplete(`the restored pre-existing-test check failed after ${mut.id}`);
       return 2;
     }
+    mutationProgress.completed += 1;
+  }
+
+  if (results.length !== selected.length || mutationProgress.completed !== selected.length) {
+    reportIncomplete("the mutation loop did not visit every selected mutation");
+    return 2;
   }
 
   console.log("\n== 突變表 ==");
@@ -957,4 +1133,19 @@ function main() {
   return 0;
 }
 
-process.exit(main());
+main()
+  .then((code) => process.exit(code))
+  .catch((err) => {
+    restoreAll();
+    if (err instanceof GenuineInterrupt) {
+      reportIncomplete("genuine SIGINT interrupt");
+      process.exit(130);
+    }
+    if (err instanceof UnexpectedChildStop) {
+      reportIncomplete(err.message);
+      process.exit(1);
+    }
+    console.error(err);
+    reportIncomplete("an unexpected checker error");
+    process.exit(2);
+  });
