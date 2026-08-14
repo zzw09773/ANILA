@@ -935,6 +935,23 @@ export const MessageBubble = ({
                 {msg.incompleteNotice}
               </div>
             )}
+            {!msg.streaming && msg.agentReplyNotice && (
+              <div
+                role="status"
+                data-testid="message-agent-reply-notice"
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  borderRadius: "var(--radius)",
+                  border: "1px dashed var(--warning, var(--muted))",
+                  color: "var(--muted-fg, var(--muted))",
+                  fontSize: 13,
+                  lineHeight: 1.55,
+                }}
+              >
+                {msg.agentReplyNotice}
+              </div>
+            )}
             {!msg.streaming && msg.confidence != null && (
               <div style={{ marginTop: 6 }}>
                 <ConfidenceChip confidence={msg.confidence} />

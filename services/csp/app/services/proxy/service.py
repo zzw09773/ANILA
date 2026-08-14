@@ -19,6 +19,7 @@ from anila_core.security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 
 from app.models.model_registry import ModelRegistry
 from app.models.platform_setting import get_setting
+from app.services.agent_reply_signal import attach_agent_reply_observation
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
     _apply_gateway_auth,
@@ -986,6 +987,7 @@ async def _proxy_stream_impl(
     prompt_text = _serialize_request_for_usage(body)
     completion_parts: list[str] = []
     pending_done_block: str | None = None
+    pending_agent_meta: tuple[str, str | None, str | None] | None = None
 
     try:
         async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
@@ -1025,6 +1027,13 @@ async def _proxy_stream_impl(
                             else:
                                 if event_name == "anila.meta":
                                     meta_seen = True
+                                    if target_agent_id is not None and data:
+                                        # Hold the terminal agent meta until usage
+                                        # aggregation is complete so the observation
+                                        # is attached before the frame reaches callers.
+                                        pending_agent_meta = (block, event_name, data)
+                                        block_lines = []
+                                        continue
                                 if data and event_name in (None, "message"):
                                     try:
                                         chunk = json.loads(data)
@@ -1050,20 +1059,39 @@ async def _proxy_stream_impl(
                     else:
                         if event_name == "anila.meta":
                             meta_seen = True
-                        if data and event_name in (None, "message"):
-                            try:
-                                chunk = json.loads(data)
-                                text = _extract_stream_text(chunk)
-                                if text:
-                                    completion_parts.append(text)
-                                usage = chunk.get("usage") or {}
-                                if usage:
-                                    usage_seen = True
-                                    prompt_tokens = usage.get("prompt_tokens", 0)
-                                    completion_tokens = usage.get("completion_tokens", 0)
-                            except (json.JSONDecodeError, KeyError):
-                                pass
-                        yield _emit(block, event_name, data)
+                            if target_agent_id is not None and data:
+                                pending_agent_meta = (block, event_name, data)
+                                block_lines = []
+                            else:
+                                if data and event_name in (None, "message"):
+                                    try:
+                                        chunk = json.loads(data)
+                                        text = _extract_stream_text(chunk)
+                                        if text:
+                                            completion_parts.append(text)
+                                        usage = chunk.get("usage") or {}
+                                        if usage:
+                                            usage_seen = True
+                                            prompt_tokens = usage.get("prompt_tokens", 0)
+                                            completion_tokens = usage.get("completion_tokens", 0)
+                                    except (json.JSONDecodeError, KeyError):
+                                        pass
+                                yield _emit(block, event_name, data)
+                        else:
+                            if data and event_name in (None, "message"):
+                                try:
+                                    chunk = json.loads(data)
+                                    text = _extract_stream_text(chunk)
+                                    if text:
+                                        completion_parts.append(text)
+                                    usage = chunk.get("usage") or {}
+                                    if usage:
+                                        usage_seen = True
+                                        prompt_tokens = usage.get("prompt_tokens", 0)
+                                        completion_tokens = usage.get("completion_tokens", 0)
+                                except (json.JSONDecodeError, KeyError):
+                                    pass
+                            yield _emit(block, event_name, data)
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="下游請求逾時")
     except httpx.ConnectError:
@@ -1086,24 +1114,49 @@ async def _proxy_stream_impl(
             completion_tokens,
         )
     total_tokens = prompt_tokens + completion_tokens
+    usage_source = "reported" if usage_seen else "estimated"
+    if pending_agent_meta is not None:
+        block, event_name, data = pending_agent_meta
+        try:
+            parsed = json.loads(data) if data else None
+            if isinstance(parsed, dict):
+                attach_agent_reply_observation(
+                    parsed,
+                    completion_tokens=completion_tokens,
+                    usage_source=usage_source,
+                )
+                data = json.dumps(parsed, ensure_ascii=False)
+                block = "event: anila.meta\n" + "data: " + data
+            else:
+                logger.warning("agent anila.meta was not an object; observation omitted")
+        except Exception:  # pragma: no cover - defensive serving boundary
+            logger.exception("agent anila.meta observation rewrite failed")
+        yield _emit(block, event_name, data)
     if not meta_seen:
         # Caller-facing stream meta uses the visibility-gated display form.
         stream_label = model_name or "未知模型"
+        generated_meta = build_default_anila_meta(
+            stream_label,
+            detail=_proxy_detail(
+                stream_label, endpoint_display, stream=True
+            ),
+            latency_ms=duration_ms,
+            classified=requires_encryption,
+            usage={
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            },
+        )
+        if target_agent_id is not None:
+            attach_agent_reply_observation(
+                generated_meta,
+                completion_tokens=completion_tokens,
+                usage_source=usage_source,
+            )
         yield "event: anila.meta\n"
         yield "data: " + json.dumps(
-            build_default_anila_meta(
-                stream_label,
-                detail=_proxy_detail(
-                    stream_label, endpoint_display, stream=True
-                ),
-                latency_ms=duration_ms,
-                classified=requires_encryption,
-                usage={
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": total_tokens,
-                },
-            ),
+            generated_meta,
             ensure_ascii=False,
         ) + "\n\n"
     if pending_done_block:
