@@ -398,7 +398,7 @@ describe.each([
         url: "/v1/chat/completions",
         payload: { model: "demo", messages: [] },
       }),
-    "Streaming failed",
+    "串流失敗（HTTP 503）",
   ],
   [
     "streamSessionAnswer",
@@ -409,7 +409,7 @@ describe.each([
         interruptId: "int-1",
         answer: "答案",
       }),
-    "Resume failed",
+    "續答失敗（HTTP 503）",
   ],
 ])("$0 non-OK response", (_name, invoke, fallback) => {
   it.each([
@@ -423,22 +423,34 @@ describe.each([
       '{"error":"upstream unavailable"}',
       fallback,
     ],
-    ["plain-text body", "Bad gateway", "Bad gateway"],
+    ["plain-text body", "Bad gateway", fallback],
+    ["HTML body", "<html><body>502 Bad Gateway</body></html>", fallback],
     ["empty body", "", fallback],
   ])("uses the safe message for %s", async (_shape, body, expected) => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: false,
       status: 503,
       text: async () => body,
     })));
 
-    const error = await invoke().catch((err) => err);
+    try {
+      const error = await invoke().catch((err) => err);
 
-    expect(error).toMatchObject({ message: expected, status: 503 });
-    if (_shape.startsWith("JSON")) {
-      expect(error.message).not.toBe(body);
-      expect(error.message).not.toContain('\\"');
+      expect(error).toMatchObject({ message: expected, status: 503 });
+      expect(consoleError).toHaveBeenCalledWith(
+        "[ANILA SSE] HTTP 503 response body:",
+        body,
+      );
+      if (body) {
+        expect(error.message).not.toContain(body);
+      }
+      if (_shape === "JSON body with detail") {
+        expect(error.message).not.toContain("\\\"");
+      }
+    } finally {
+      consoleError.mockRestore();
+      vi.unstubAllGlobals();
     }
-    vi.unstubAllGlobals();
   });
 });

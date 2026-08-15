@@ -10,9 +10,9 @@ depends on where you were standing when you ran pytest:
 2. ``main`` reads ``CSP_BASE_URL`` / ``CSP_SERVICE_TOKEN`` at import time.
    They are pinned here so no test depends on the ambient environment.
 
-``TestClient`` is deliberately *not* used as a context manager: the
-startup hook calls out to CSP, which in a test environment means waiting
-for a connect timeout. Nothing under test needs it.
+The synchronous Starlette ``TestClient`` is not used here: this environment's
+portal-backed client does not complete even a minimal ASGI request. The async
+transport exercises the same app without that client-side deadlock.
 """
 
 from __future__ import annotations
@@ -20,8 +20,9 @@ from __future__ import annotations
 import os
 import tempfile
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
+import pytest_asyncio
 
 os.environ.setdefault("CSP_BASE_URL", "http://csp:8000")
 os.environ.setdefault("CSP_SERVICE_TOKEN", "pytest-fixed-not-a-real-token")
@@ -55,6 +56,8 @@ def with_primary(monkeypatch):
     monkeypatch.setattr(router_main, "_ensure_primary", _ensure_primary)
 
 
-@pytest.fixture
-def client() -> TestClient:
-    return TestClient(router_main.app)
+@pytest_asyncio.fixture
+async def client():
+    transport = httpx.ASGITransport(app=router_main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
