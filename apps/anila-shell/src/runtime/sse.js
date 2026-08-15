@@ -29,6 +29,29 @@ export function parseSseEvent(block) {
   return { event, data, raw: block };
 }
 
+async function readErrorMessage(response, fallback) {
+  const body = await response.text();
+  console.error(`[ANILA SSE] HTTP ${response.status} response body:`, body);
+  if (!body) return fallback;
+
+  try {
+    const payload = JSON.parse(body);
+    if (typeof payload?.detail === "string" && payload.detail.trim()) {
+      return payload.detail;
+    }
+    // A JSON error without the API's detail field has no user-facing message.
+    // Keep the existing transport fallback instead of surfacing the envelope.
+    return fallback;
+  } catch {
+    // Non-JSON responses (including proxy HTML) are diagnostic data only.
+    return fallback;
+  }
+}
+
+function statusFallback(label, status) {
+  return `${label}（HTTP ${status}）`;
+}
+
 /**
  * Stream a chat completion and route SSE frames to typed callbacks.
  *
@@ -132,8 +155,9 @@ export async function streamChatCompletion({
   });
 
   if (!response.ok) {
-    const detail = await response.text();
-    const error = new Error(detail || "Streaming failed");
+    const fallback = statusFallback("串流失敗", response.status);
+    const detail = await readErrorMessage(response, fallback);
+    const error = new Error(detail || fallback);
     error.status = response.status;
     throw error;
   }
@@ -417,8 +441,9 @@ export async function streamSessionAnswer({
     body: JSON.stringify({ interrupt_id: interruptId, answer }),
   });
   if (!response.ok) {
-    const detail = await response.text();
-    const error = new Error(detail || "Resume failed");
+    const fallback = statusFallback("續答失敗", response.status);
+    const detail = await readErrorMessage(response, fallback);
+    const error = new Error(detail || fallback);
     error.status = response.status;
     throw error;
   }

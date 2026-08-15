@@ -259,8 +259,14 @@ const MUTATIONS = [
     file: "src/runtime/sse.js",
     shape: "訊息被吃掉",
     intent: "後端說的失敗原因被換成通用字串（使用者不知道發生什麼事）",
-    find: '    const error = new Error(detail || "Streaming failed");',
-    replace: '    const error = new Error(detail && "Streaming failed");',
+    find:
+      '    const fallback = statusFallback("串流失敗", response.status);\n' +
+      "    const detail = await readErrorMessage(response, fallback);\n" +
+      "    const error = new Error(detail || fallback);",
+    replace:
+      '    const fallback = statusFallback("串流失敗", response.status);\n' +
+      "    const detail = await readErrorMessage(response, fallback);\n" +
+      "    const error = new Error(detail && fallback);",
   },
   {
     id: "agent-refresh-failure-feedback-hidden",

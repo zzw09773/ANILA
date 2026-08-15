@@ -20,9 +20,11 @@ Two shapes of test, because neither alone is enough:
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
+import httpx
 from starlette.datastructures import URL
 from starlette.requests import HTTPConnection
+
+import main as router_main
 
 GATED_PATH = "/v1/chat/completions"
 
@@ -31,6 +33,12 @@ GATED_PATH = "/v1/chat/completions"
 POLLUTED_HOSTS = ["x/v1", "x/health", "x/v1/chat", "x/openapi.json"]
 
 BODY = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+ACTIONABLE_DETAIL = (
+    "ANILA Router 無可用主路由模型。"
+    "請管理員前往 CSP Models 頁面指定一個 LLM 為「主路由」。"
+)
+
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
@@ -44,32 +52,55 @@ def url_hides_the_gated_path(monkeypatch):
 
 
 @pytest.mark.parametrize("host", POLLUTED_HOSTS)
-def test_polluted_host_cannot_skip_the_gate(client: TestClient, no_primary, host):
-    resp = client.post(GATED_PATH, headers={"Host": host}, json=BODY)
-    assert resp.status_code == 503, resp.text
-
-
-def test_gate_holds_through_a_library_regression(
-    client: TestClient, no_primary, url_hides_the_gated_path
+async def test_polluted_host_cannot_skip_the_gate(
+    client: httpx.AsyncClient, no_primary, host
 ):
-    resp = client.post(GATED_PATH, json=BODY)
+    resp = await client.post(GATED_PATH, headers={"Host": host}, json=BODY)
     assert resp.status_code == 503, resp.text
 
 
-def test_clean_request_is_gated(client: TestClient, no_primary):
+async def test_gate_holds_through_a_library_regression(
+    client: httpx.AsyncClient, no_primary, url_hides_the_gated_path
+):
+    resp = await client.post(GATED_PATH, json=BODY)
+    assert resp.status_code == 503, resp.text
+
+
+async def test_clean_request_is_gated(client: httpx.AsyncClient, no_primary):
     """Control: the gate really does fire on an ordinary request."""
-    resp = client.post(GATED_PATH, json=BODY)
+    resp = await client.post(GATED_PATH, json=BODY)
     assert resp.status_code == 503, resp.text
-    assert "主路由" in resp.json()["detail"]
+    assert resp.json()["detail"] == ACTIONABLE_DETAIL
 
 
-def test_gate_does_not_fire_when_a_primary_exists(client: TestClient, with_primary):
+async def test_primary_guard_logs_downstream_detail_but_not_to_user(
+    client: httpx.AsyncClient, monkeypatch, caplog
+):
+    downstream_detail = 'CSP 404: {"detail":"尚未指定 ANILA 主路由模型"}'
+
+    async def _ensure_primary():
+        return None, downstream_detail
+
+    monkeypatch.setattr(router_main, "_ensure_primary", _ensure_primary)
+    caplog.set_level("WARNING", logger="anila-router")
+
+    resp = await client.post(GATED_PATH, json=BODY)
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json() == {"detail": ACTIONABLE_DETAIL}
+    assert downstream_detail in caplog.text
+    assert downstream_detail not in resp.json()["detail"]
+
+
+async def test_gate_does_not_fire_when_a_primary_exists(
+    client: httpx.AsyncClient, with_primary
+):
     """Control: the fix must not turn a working Router into a 503 machine."""
-    resp = client.post(GATED_PATH, json=BODY)
+    resp = await client.post(GATED_PATH, json=BODY)
     assert resp.status_code != 503, resp.text
 
 
-def test_health_is_never_gated(client: TestClient, no_primary):
+async def test_health_is_never_gated(client: httpx.AsyncClient, no_primary):
     """Control: only the chat-completions path is gated."""
-    resp = client.get("/health")
+    resp = await client.get("/health")
     assert resp.status_code != 503, resp.text
