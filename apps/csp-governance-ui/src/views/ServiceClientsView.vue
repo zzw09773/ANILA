@@ -139,6 +139,7 @@ import {
 } from '../api/serviceClients'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
+import { formatDate } from '../utils/formatDate'
 
 const { confirm } = useDialog()
 const clients = ref([])
@@ -151,12 +152,6 @@ const createBusy = ref(false)
 
 function setFeedback(type, message) {
   feedback.value = { type, message }
-}
-
-function formatDate(iso) {
-  if (!iso) return '—'
-  try { return new Date(iso).toISOString().replace('T', ' ').slice(0, 19) }
-  catch { return iso }
 }
 
 async function fetchClients() {

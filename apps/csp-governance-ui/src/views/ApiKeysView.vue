@@ -156,6 +156,7 @@ import { listModels } from '../api/models'
 import { getMyAllowedModels } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermConfirm } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
+import { formatDate } from '../utils/formatDate'
 import {
   ALLOW_LIST_UNREAD,
   allowListNotice,
@@ -324,9 +325,6 @@ async function handleRegenerate() {
   }
 }
 
-function formatDate(dateStr) {
-  return new Date(dateStr).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' })
-}
 </script>
 
 <style scoped>

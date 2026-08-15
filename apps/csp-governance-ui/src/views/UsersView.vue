@@ -260,6 +260,7 @@ import { computed, onMounted, ref } from 'vue'
 import client from '../api/client'
 import { listDepartments } from '../api/departments'
 import { departmentOptions, departmentPath, indexById } from '../utils/departmentTree'
+import { formatDate } from '../utils/formatDate'
 import { listModels } from '../api/models'
 import {
   createUser,
@@ -591,10 +592,6 @@ function statusVariant(u) {
 function statusLabel(u) {
   if (!u.is_approved) return '待審核'
   return u.is_active ? '使用中' : '已停用'
-}
-function formatDate(dateStr) {
-  if (!dateStr) return '—'
-  return new Date(dateStr).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' })
 }
 </script>
 
