@@ -92,6 +92,7 @@ import { listDepartments, getDepartmentTree, createDepartment, updateDepartment,
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { departmentOptions, flattenTree, indexById, departmentPath } from '../utils/departmentTree'
+import { formatDate } from '../utils/formatDate'
 
 const { confirm, toast } = useDialog()
 const departments = ref([])
@@ -193,7 +194,6 @@ async function handleReactivate(d) {
   await updateDepartment(d.id, { is_active: true })
   await fetchDepartments()
 }
-function formatDate(s) { return new Date(s).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' }) }
 </script>
 
 <style scoped>

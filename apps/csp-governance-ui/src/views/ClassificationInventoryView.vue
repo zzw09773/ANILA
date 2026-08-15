@@ -63,6 +63,7 @@ import {
   downloadClassificationInventoryCsv,
 } from '../api/classificationInventory'
 import { TermBox, TermButton, TermBadge, TermEmpty } from '../components/cli'
+import { formatDate } from '../utils/formatDate'
 
 // 四級順序(對齊後端 ClassificationLevel 契約宣告順序)。
 const LEVELS = ['無機密', '營業秘密', '密', '機密']
@@ -101,10 +102,6 @@ async function downloadCsv() {
   } finally {
     downloading.value = false
   }
-}
-
-function formatDate(v) {
-  return new Date(v).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
 }
 
 onMounted(fetchInventory)

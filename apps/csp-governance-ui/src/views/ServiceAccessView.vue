@@ -123,6 +123,7 @@ import {
 } from '../utils/anilalmReleaseGate'
 import { TermBadge, TermButton, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
+import { formatDate } from '../utils/formatDate'
 
 const { confirm, toast } = useDialog()
 
@@ -185,8 +186,6 @@ function granterLabel(g) {
   const u = userById.value.get(g.granted_by)
   return u ? u.username : `user#${g.granted_by}`
 }
-function formatDate(s) { return s ? new Date(s).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' }) : '—' }
-
 const filteredUsers = computed(() => {
   const q = grantModalFilter.value.trim().toLowerCase()
   return q ? users.value.filter(u => u.username.toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q)) : users.value

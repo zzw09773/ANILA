@@ -91,7 +91,7 @@
           </div>
           <p class="cutover__last">
             <span class="cutover__k">last seen</span>
-            <span class="cutover__v tnum">{{ legacyTokenStats.last_seen_at ? formatTs(legacyTokenStats.last_seen_at) : 'never (cutover clean)' }}</span>
+            <span class="cutover__v tnum">{{ legacyTokenStats.last_seen_at ? formatDate(legacyTokenStats.last_seen_at) : 'never (cutover clean)' }}</span>
           </p>
           <p v-if="legacyTokenStats.count_30d === 0" class="cutover__hint cutover__hint--ok">
             ✓ 30 天內無 fallback 命中 — 可進入 cutover stage 4（從 .env 拿掉舊版長效服務憑證）
@@ -161,6 +161,7 @@ import { getAlertSummary } from '../api/alerts'
 import { extractError } from '../api/errors'
 import client from '../api/client'
 import { filterPlatformLinksForRelease } from '../utils/anilalmReleaseGate'
+import { formatDate } from '../utils/formatDate'
 import UsageLineChart from '../components/charts/UsageLineChart.vue'
 import PlatformCard from '../components/dashboard/PlatformCard.vue'
 import ServiceHealthCard from '../components/dashboard/ServiceHealthCard.vue'
@@ -241,11 +242,6 @@ const kpiFormat = computed(() => (summaryLoaded.value ? 'compact' : 'raw'))
 function formatNum(n) {
   if (n === null || n === undefined) return '0'
   return Number(n).toLocaleString()
-}
-function formatTs(iso) {
-  if (!iso) return '—'
-  try { return new Date(iso).toISOString().replace('T', ' ').slice(0, 19) }
-  catch { return iso }
 }
 
 /** Failed / not-yet-loaded must not look like a quiet day of zeros. */

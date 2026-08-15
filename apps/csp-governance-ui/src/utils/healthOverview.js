@@ -60,6 +60,11 @@ export function probeReasonLabel(reason) {
 
 /**
  * ISO 時間 → 本地可讀字串。無效／缺值回 '—'（絕不顯示 Invalid Date）。
+ *
+ * 刻意**不**併入 `utils/formatDate.js`：那是給「要顯示給人看的日期」用的
+ * zh-TW 24h 樣式，這是**運維專用的 ISO 形狀**（`YYYY-MM-DD HH:mm:ss`，
+ * 與 /health/overview 後端時間欄位同形、方便管理員對 log 對帳）。
+ * 這裡手動 pad、不走 toLocaleString，**假設瀏覽器時區＝台北（內網環境事實）**。
  * @param {string|null|undefined} iso
  */
 export function formatCheckedAt(iso) {

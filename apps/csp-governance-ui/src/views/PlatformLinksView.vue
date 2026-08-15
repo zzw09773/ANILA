@@ -221,6 +221,7 @@ import {
 } from '../utils/anilalmReleaseGate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
+import { formatDate } from '../utils/formatDate'
 
 const { confirm, toast } = useDialog()
 const links = ref([])
@@ -295,10 +296,6 @@ function toggleRole(role) {
   const idx = form.value.required_roles.indexOf(role)
   if (idx >= 0) form.value.required_roles.splice(idx, 1)
   else form.value.required_roles.push(role)
-}
-
-function formatDate(s) {
-  return s ? new Date(s).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) : '—'
 }
 
 async function fetchLinks() {

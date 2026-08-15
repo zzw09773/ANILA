@@ -116,6 +116,7 @@ import {
   TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal,
 } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
+import { formatDate } from '../utils/formatDate'
 
 const { confirm } = useDialog()
 const authStore = useAuthStore()
@@ -130,15 +131,6 @@ const feedback = reactive({ message: '', type: 'info' })
 function setFeedback(type, message) {
   feedback.type = type
   feedback.message = message
-}
-
-function formatDate(s) {
-  if (!s) return '—'
-  try {
-    return new Date(s).toLocaleString()
-  } catch {
-    return s
-  }
 }
 
 async function fetchHosts() {

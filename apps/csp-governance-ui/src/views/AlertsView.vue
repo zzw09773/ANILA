@@ -91,6 +91,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { acknowledgeAlert, getAlertSummary, listAlerts, resolveAlert } from '../api/alerts'
 import { extractError } from '../api/errors'
 import { ALERT_POLL_INTERVAL_MS, createPoller } from '../utils/polling'
+import { formatDate } from '../utils/formatDate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermDot } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
@@ -142,7 +143,6 @@ function severityStatus(s) {
 function statusVariant(s) {
   return ({ open: 'danger', acknowledged: 'warn', resolved: '' })[s] || ''
 }
-function formatDate(v) { return new Date(v).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' }) }
 </script>
 
 <style scoped>

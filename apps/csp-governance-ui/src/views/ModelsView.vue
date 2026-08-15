@@ -56,7 +56,7 @@
           <tbody>
             <tr v-for="g in endpointAuthors" :key="g.id">
               <td class="cell-strong">{{ g.username || `user#${g.user_id}` }}</td>
-              <td class="cell-meta">{{ formatGrantedAt(g.granted_at) }}</td>
+              <td class="cell-meta">{{ formatDate(g.granted_at) }}</td>
               <td>
                 <button
                   class="term-action term-action--danger"
@@ -575,6 +575,7 @@ import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSt
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'
+import { formatDate } from '../utils/formatDate'
 
 const { confirm, toast } = useDialog()
 const modelsStore = useModelsStore()
@@ -693,15 +694,6 @@ const grantableAuthors = computed(() => {
   const activeIds = new Set(endpointAuthors.value.map(g => g.user_id))
   return authorCandidateUsers.value.filter(u => !activeIds.has(u.id))
 })
-
-function formatGrantedAt(value) {
-  if (!value) return '—'
-  try {
-    return new Date(value).toLocaleString('zh-TW')
-  } catch {
-    return String(value)
-  }
-}
 
 async function loadEndpointAuthorState() {
   try {

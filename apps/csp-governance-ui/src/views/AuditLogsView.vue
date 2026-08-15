@@ -97,6 +97,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { listAuditLogs } from '../api/auditLogs'
+import { formatDate } from '../utils/formatDate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
 
 const logs = ref([])
@@ -119,7 +120,6 @@ async function fetchLogs() {
   }
 }
 onMounted(fetchLogs)
-function formatDate(v) { return new Date(v).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' }) }
 </script>
 
 <style scoped>

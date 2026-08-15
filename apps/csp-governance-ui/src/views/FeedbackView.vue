@@ -130,6 +130,7 @@
 import { ref, onMounted } from 'vue'
 import { listFeedback, exportFeedbackCsv } from '../api/feedback'
 import { extractError } from '../api/errors'
+import { formatDate } from '../utils/formatDate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
 
 const items = ref([])
@@ -206,15 +207,6 @@ async function downloadCsv() {
     pageError.value = await blobError(e, '匯出 CSV 失敗')
   } finally {
     exporting.value = false
-  }
-}
-
-function formatDate(iso) {
-  if (!iso) return '—'
-  try {
-    return new Date(iso).toISOString().replace('T', ' ').slice(0, 19)
-  } catch {
-    return String(iso)
   }
 }
 

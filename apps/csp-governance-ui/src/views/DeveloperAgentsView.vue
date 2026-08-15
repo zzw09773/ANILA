@@ -477,6 +477,7 @@ import {
   APPROVAL_STATUSES, approvalLabel, approvalVariant, isApprovable, isPendingReview,
 } from '../utils/approvalStatus'
 import { formatTestConnectionFacts } from '../utils/testConnectionFacts'
+import { formatDate } from '../utils/formatDate'
 import { listCollections } from '../api/ingestionCollections'
 import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
@@ -912,7 +913,6 @@ function healthVariant(s) {
   if (s === 'unhealthy' || s === 'offline') return 'danger'
   return ''
 }
-function formatDate(s) { return s ? new Date(s).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' }) : '—' }
 function prettyJson(value) { return JSON.stringify(value || {}, null, 2) }
 function buildStatusHistory(agent) {
   const history = [{ label: 'agent registered', timestamp: formatDate(agent.created_at), detail: 'endpoint and description bound to registry' }]
