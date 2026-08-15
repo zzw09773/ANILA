@@ -43,7 +43,7 @@ INCLUDE_ASR="${INCLUDE_ASR:-1}"
 # ASR_OVERLAY= 空字串表示不疊 overlay,由操作者自行承擔組態責任。
 ASR_OVERLAY="${ASR_OVERLAY-infra/compose/asr-cpu.yml}"
 if [ "$INCLUDE_ASR" = "1" ] && [ -n "$ASR_OVERLAY" ] && [ ! -f "$ASR_OVERLAY" ]; then
-  die "ASR overlay file does not exist: $ASR_OVERLAY"
+  die "ASR overlay 檔案不存在: $ASR_OVERLAY"
 fi
 
 # ── .env 存取:腳本眼中的「已設」必須等於 compose 眼中的「已設」 ─────────────
@@ -71,6 +71,11 @@ set_env() {  # set_env KEY VALUE — 去重後 append (literal,不怕特殊字�
   grep -vE "$(_env_key_re "$key")" .env > .env.tmp 2>/dev/null || true
   mv .env.tmp .env
   printf '%s=%s\n' "$key" "$val" >> .env
+}
+secret_set() {  # secret_set KEY VALUE KIND — 寫入成功後報告這一次寫入
+  local key="$1" val="$2" kind="$3"
+  set_env "$key" "$val"
+  info "  secret: $key（$kind）"
 }
 # 回傳 compose 會讀到的那個值:重複鍵取**最後一行**(實測 v2.36.2:FOO=first /
 # FOO=second → second;取第一行會讓腳本看到的值與 stack 實際用的值不同),
@@ -264,6 +269,7 @@ if [ -f "$DEFAULTS" ]; then
   ok "已套用 $DEFAULTS 的預設值(僅限白名單 KEY)"
 fi
 
+NEWLY_GENERATED_KEYS=()
 if [ "$REGEN" = 1 ]; then
   info "  secret:有預設用預設,否則 openssl 隨機生成"
   SECRET_KEY_VALUE="${SECRET_KEY:-${CSP_SECRET_KEY:-$(openssl rand -hex 32)}}"
@@ -285,11 +291,30 @@ else
   SECRET_KEY_VALUE="$(get_env SECRET_KEY)"
   [ -n "$SECRET_KEY_VALUE" ] || SECRET_KEY_VALUE="$(get_env CSP_SECRET_KEY)"
   [ -n "$SECRET_KEY_VALUE" ] || die ".env 缺 SECRET_KEY / CSP_SECRET_KEY"
-  set_env SECRET_KEY     "$SECRET_KEY_VALUE"
-  # 兩行同值是對 compose dotenv 邊角行為的實測防禦,勿刪其一
-  set_env CSP_SECRET_KEY "$SECRET_KEY_VALUE"
-  [ -n "$(get_env ASR_DECODER_TOKEN)" ] \
-    || set_env ASR_DECODER_TOKEN "${ASR_DECODER_TOKEN:-$(openssl rand -hex 32)}"
+  if [ -z "$(get_env SECRET_KEY)" ]; then
+    secret_set SECRET_KEY "$SECRET_KEY_VALUE" "補別名"
+  elif [ -z "$(get_env CSP_SECRET_KEY)" ]; then
+    # 兩行同值是對 compose dotenv 邊角行為的實測防禦,勿刪其一。
+    secret_set SECRET_KEY "$SECRET_KEY_VALUE" "重寫既有行"
+  elif [ "$(get_env CSP_SECRET_KEY)" != "$SECRET_KEY_VALUE" ]; then
+    # SECRET_KEY 是 canonical；既有 alias 若漂移，只修正 alias。
+    secret_set CSP_SECRET_KEY "$SECRET_KEY_VALUE" "重寫既有行"
+  fi
+  if [ -z "$(get_env CSP_SECRET_KEY)" ]; then
+    # 兩行同值是對 compose dotenv 邊角行為的實測防禦,勿刪其一。
+    secret_set CSP_SECRET_KEY "$SECRET_KEY_VALUE" "補別名"
+  fi
+  if [ -z "$(get_env ASR_DECODER_TOKEN)" ]; then
+    if [ -n "${ASR_DECODER_TOKEN:-}" ]; then
+      ASR_DECODER_TOKEN_VALUE="$ASR_DECODER_TOKEN"
+      ASR_DECODER_TOKEN_KIND="補既有值"
+    else
+      ASR_DECODER_TOKEN_VALUE="$(openssl rand -hex 32)"
+      ASR_DECODER_TOKEN_KIND="新生成"
+      NEWLY_GENERATED_KEYS+=(ASR_DECODER_TOKEN)
+    fi
+    secret_set ASR_DECODER_TOKEN "$ASR_DECODER_TOKEN_VALUE" "$ASR_DECODER_TOKEN_KIND"
+  fi
 fi
 
 # 內網 strict 模式 + 卡片登入 + 模型 CA 路徑(每次都確保正確)
@@ -350,6 +375,14 @@ if [ "$REGEN" = 1 ]; then
   echo "$(c '1;33' '──── 請把以下 secret 存進密碼管理器(只顯示這一次) ────')"
   for k in ADMIN_PASSWORD SECRET_KEY CSP_SECRET_KEY CSP_SERVICE_TOKEN ASR_DECODER_TOKEN \
            INTERNAL_PLATFORM_API_KEY CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD; do
+    printf '  %-26s %s\n' "$k" "$(get_env "$k")"
+  done
+  echo "$(c '1;33' '──────────────────────────────────────────────────────')"
+  read -rp "存好了按 Enter 繼續 ... " _
+elif [ "${#NEWLY_GENERATED_KEYS[@]}" -gt 0 ]; then
+  echo
+  echo "$(c '1;33' '──── 本次新生成 secret，請存進密碼管理器(只顯示這一次) ────')"
+  for k in "${NEWLY_GENERATED_KEYS[@]}"; do
     printf '  %-26s %s\n' "$k" "$(get_env "$k")"
   done
   echo "$(c '1;33' '──────────────────────────────────────────────────────')"

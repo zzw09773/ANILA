@@ -73,7 +73,7 @@
 | `偵測到預設 owner ... 確定用這組?` | `CARD_INITIAL_OWNERS` 已由 process env、bundle defaults 或 `.env` 提供 | `N` | 已餵入正確 owner 時答 `y`；不採用該值則答 Enter/N，腳本會再問下一列。 |
 | `CARD_INITIAL_OWNERS — owner 員工編號 ...` | 沒有確認上一列的 owner 預設 | 無 | 輸入包含自己的員編 CSV，例如 `1147259,1234567`；不可留空。 |
 | `MODEL_GATEWAY_API_KEY ... (還沒有就 Enter 跳過)` | owner 設定完成後一律出現 | 空字串（Enter） | 有 `.12` key 就輸入；尚未簽發可按 Enter，之後補入 `.env` 並 recreate csp。 |
-| `存好了按 Enter 繼續 ...` | 本次 `REGEN=1`、secret 已生成／重生 | Enter | 把八個 secret 值存入密碼管理器後按 Enter；保留既有 secret 的重跑不出現。 |
+| `存好了按 Enter 繼續 ...` | 本次 `REGEN=1`，或 preserve 模式本次新生成 secret | Enter | 把畫面列出的 secret 存入密碼管理器後按 Enter；preserve 模式若沒有新生成 secret 則不出現。 |
 
 ### 非互動餵值
 
