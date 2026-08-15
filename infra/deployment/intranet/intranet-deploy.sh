@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # ============================================================================
-# intranet-deploy.sh — 內網一條龍部署 (prod-intranet-card / V1.0.0 卡片登入)
+# intranet-deploy.sh — 內網一條龍部署 (restart/from-redesign annotated-tag bundle / V1.0.0 卡片登入)
 # ----------------------------------------------------------------------------
 # 在內網平台主機 (.15) 上,一支互動式腳本跑完:
 #   [1] TLS 憑證抽取 (從 server.pfx)
 #   [2] 模型 gateway 出向 CA (share/pki/model-ca.pem)
 #   [3] 產 / 更新 .env (自動生 secret + 互動填 gateway key / owner 員工編號)
-#   [4] load image (呼叫 image 包的 INTRANET-LOAD.sh,含 SHA256 驗檔 + re-tag)
+#   [4] load image (呼叫 image 包的 INTRANET-LOAD.sh,含 SHA256 驗檔 + docker load)
 #   [5] 建 docker network
-#   [6] docker compose up -d --no-build
+#   [6] docker compose (bundle image override + 可選 ASR profile) up -d --no-build
 #   [7] 等 healthy + 驗證
 #
-# 用法 (在 prod-intranet-card repo 根目錄):
+# 用法 (在與 image bundle 對應的 annotated-tag repo 根目錄;不要求特定 branch):
 #   bash infra/deployment/intranet/intranet-deploy.sh [IMAGE_BUNDLE_DIR]
 #   IMAGE_BUNDLE_DIR 預設自動找 ./intranet-prod-v1.0.0;找不到會提示輸入。
 #
@@ -33,6 +33,18 @@ asksecret() { local p="$1" a; read -rsp "$(c '1;35' '?') ${p}: " a; echo >&2; pr
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
+
+# 與 build-and-export-for-intranet.sh 對齊:bundle 的 image tag 是以這個 project name
+# 產出的;INCLUDE_ASR=1 才把語音 profile 帶進有效組態。
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila-restart}"
+INCLUDE_ASR="${INCLUDE_ASR:-1}"
+# .15 是 CPU 主機(2× EPYC 9334),所以預設疊 CPU overlay,避免 ASR_DEVICE 落回
+# cuda 造成 decoder crash-loop。GPU 主機請設 ASR_OVERLAY=infra/compose/asr-gpu.yml;
+# ASR_OVERLAY= 空字串表示不疊 overlay,由操作者自行承擔組態責任。
+ASR_OVERLAY="${ASR_OVERLAY-infra/compose/asr-cpu.yml}"
+if [ "$INCLUDE_ASR" = "1" ] && [ -n "$ASR_OVERLAY" ] && [ ! -f "$ASR_OVERLAY" ]; then
+  die "ASR overlay file does not exist: $ASR_OVERLAY"
+fi
 
 # ── .env 存取:腳本眼中的「已設」必須等於 compose 眼中的「已設」 ─────────────
 # 舊版用 `^KEY=` 認鍵,compose 不是這樣解的。實測 v2.36.2,下面每一種寫法
@@ -88,6 +100,31 @@ get_env() {
   printf '%s' "$val"
 }
 
+preflight_share_dirs() {
+  local dir parent owner
+  owner="$(id -u):$(id -g)"
+  for dir in "$@"; do
+    if [ -e "$dir" ]; then
+      if [ ! -d "$dir" ] || [ ! -w "$dir" ] || [ ! -x "$dir" ]; then
+        die "share 目錄不可寫: $dir
+  若它是 root-owned 的空目錄，先執行: rmdir $dir
+  （之後腳本會重新 mkdir，借用 parent 權限）；若不是空目錄，需由管理員 chown -R $owner \"$dir\" 後重跑。"
+      fi
+      continue
+    fi
+
+    parent="$dir"
+    while [ ! -e "$parent" ]; do
+      parent="$(dirname "$parent")"
+    done
+    if [ ! -d "$parent" ] || [ ! -w "$parent" ] || [ ! -x "$parent" ]; then
+      die "share 路徑無法建立: $dir（最近既有 parent $parent 不可寫）
+  請先讓 parent 可寫；若 $parent 是 root-owned 的空目錄，先執行: rmdir $parent
+  （之後腳本會重新 mkdir，借用更上層 parent 權限）；若不是空目錄，需由管理員 chown -R $owner \"$parent\" 後重跑。"
+    fi
+  done
+}
+
 # ── url_guard 的三個 opt-in 旗標:預設 0,但**保留操作者已設的值** ─────────
 # 這三個都是 runbook §3.1b/§3.1c 明文要求現場自己開的。硬寫 0 的版本會讓
 # 「重跑一次部署腳本」把操作者剛剛開起來的東西靜默關掉 —— 症狀只是註冊/健檢
@@ -112,7 +149,7 @@ preserve_flag() {  # preserve_flag KEY 提醒字串
 }
 
 echo "============================================================"
-echo " ANILA 內網一條龍部署 — V1.0.0 (prod-intranet-card / 卡片登入)"
+echo " ANILA 內網一條龍部署 — V1.0.0 (restart/from-redesign annotated-tag bundle / 卡片登入)"
 echo "============================================================"
 
 # ── 0. 前置檢查 ───────────────────────────────────────────────────────────
@@ -121,9 +158,9 @@ command -v docker >/dev/null   || die "找不到 docker"
 command -v openssl >/dev/null  || die "找不到 openssl"
 docker info >/dev/null 2>&1    || die "docker daemon 沒在跑 / 當前使用者無權限"
 [ -f compose.yaml ] && [ -f .env.example ] \
-  || die "請在 prod-intranet-card repo 根目錄執行(找不到 compose.yaml / .env.example)"
+  || die "請在 ANILA repo 根目錄執行(找不到 compose.yaml / .env.example)"
 br="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
-[ "$br" = prod-intranet-card ] || warn "目前 git 分支是 '$br',預期 prod-intranet-card — 確認 checkout 對了"
+[ "$br" = '?' ] || info "目前 git 分支是 '$br';內網交付以 bundle 的 MANIFEST/tag+commit 為準,不要求特定 branch"
 
 BUNDLE="${1:-}"
 if [ -z "$BUNDLE" ]; then
@@ -133,6 +170,8 @@ if [ -z "$BUNDLE" ]; then
 fi
 [ -n "$BUNDLE" ] || BUNDLE="$(ask 'image 包資料夾路徑 (含 INTRANET-LOAD.sh)')"
 [ -f "$BUNDLE/INTRANET-LOAD.sh" ] || die "在 '$BUNDLE' 找不到 INTRANET-LOAD.sh"
+[ -f "$BUNDLE/intranet-image-overrides.yml" ] \
+  || die "image 包缺少 intranet-image-overrides.yml — 舊 bundle 早於 digest fix,請重新匯出 bundle"
 BUNDLE="$(cd "$BUNDLE" && pwd)"
 ok "image 包: $BUNDLE"
 
@@ -170,7 +209,10 @@ openssl x509 -in "$CRT" -noout -subject 2>/dev/null | grep -q 'ai.ncsist.org.tw'
 info "[2/7] 模型 gateway CA (對 https://aiagent2.ai.ncsist.org.tw 的出向 TLS 信任)"
 # share/* 是 nginx(static)、csp + ingestion-worker(uploads)的 bind-mount 來源;
 # 先建好,否則 docker 會以 root 自動建空目錄(權限/擁有者錯亂)。
-mkdir -p share/pki share/static share/uploads/ingestion
+# 這個檢查必須在任何 mkdir/cp 前做:root-owned 空目錄可 rmdir 讓腳本借用 parent
+# 權限重建;已有內容的目錄則需要管理員 chown,不能讓 [2/7] 寫到一半才失敗。
+preflight_share_dirs share/pki share/static share/uploads share/uploads/ingestion share/attachments
+mkdir -p share/pki share/static share/uploads/ingestion share/attachments
 MCA=share/pki/model-ca.pem
 # 內網模型 gateway 走 *.ai.ncsist.org.tw,憑證由中科院 CSPKI 簽發
 # (CSPKI Root CA G1 → 中科院憑證管理中心 G1 → leaf)。中科院整套 PKI 同一條根:
@@ -213,7 +255,7 @@ DEFAULTS="$BUNDLE/intranet-defaults.env"
 if [ -f "$DEFAULTS" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
-      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|GITLAB_ROOT_PASSWORD|SECRET_KEY|CSP_SERVICE_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY)
+      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|GITLAB_ROOT_PASSWORD|SECRET_KEY|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|ASR_DECODER_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY)
         _v="${_v%\"}"; _v="${_v#\"}"; _v="${_v%\'}"; _v="${_v#\'}"   # 去頭尾引號
         printf -v "$_k" '%s' "$_v" ;;                                # 賦值,非 eval
       *) : ;;
@@ -224,8 +266,12 @@ fi
 
 if [ "$REGEN" = 1 ]; then
   info "  secret:有預設用預設,否則 openssl 隨機生成"
-  set_env SECRET_KEY                "${SECRET_KEY:-$(openssl rand -hex 32)}"
+  SECRET_KEY_VALUE="${SECRET_KEY:-${CSP_SECRET_KEY:-$(openssl rand -hex 32)}}"
+  set_env SECRET_KEY                "$SECRET_KEY_VALUE"
+  # 兩行同值是對 compose dotenv 邊角行為的實測防禦,勿刪其一
+  set_env CSP_SECRET_KEY            "$SECRET_KEY_VALUE"
   set_env CSP_SERVICE_TOKEN         "${CSP_SERVICE_TOKEN:-$(openssl rand -hex 32)}"
+  set_env ASR_DECODER_TOKEN         "${ASR_DECODER_TOKEN:-$(openssl rand -hex 32)}"
   set_env INTERNAL_PLATFORM_API_KEY "${INTERNAL_PLATFORM_API_KEY:-sk-internal-$(openssl rand -hex 24)}"
   set_env ADMIN_PASSWORD            "${ADMIN_PASSWORD:-$(openssl rand -base64 24)}"
   set_env CSP_DB_PASSWORD           "${CSP_DB_PASSWORD:-$(openssl rand -hex 32)}"
@@ -235,6 +281,15 @@ if [ "$REGEN" = 1 ]; then
   # REGEN=0(保留現有)時不動,避免 re-run 偷改既有密碼。compose 用 env 帶入,
   # 只在 gitlab 首次 reconfigure 生效。
   [ -n "${GITLAB_ROOT_PASSWORD:-}" ] && set_env GITLAB_ROOT_PASSWORD "$GITLAB_ROOT_PASSWORD"
+else
+  SECRET_KEY_VALUE="$(get_env SECRET_KEY)"
+  [ -n "$SECRET_KEY_VALUE" ] || SECRET_KEY_VALUE="$(get_env CSP_SECRET_KEY)"
+  [ -n "$SECRET_KEY_VALUE" ] || die ".env 缺 SECRET_KEY / CSP_SECRET_KEY"
+  set_env SECRET_KEY     "$SECRET_KEY_VALUE"
+  # 兩行同值是對 compose dotenv 邊角行為的實測防禦,勿刪其一
+  set_env CSP_SECRET_KEY "$SECRET_KEY_VALUE"
+  [ -n "$(get_env ASR_DECODER_TOKEN)" ] \
+    || set_env ASR_DECODER_TOKEN "${ASR_DECODER_TOKEN:-$(openssl rand -hex 32)}"
 fi
 
 # 內網 strict 模式 + 卡片登入 + 模型 CA 路徑(每次都確保正確)
@@ -284,7 +339,7 @@ if [ -n "$MGK" ]; then set_env MODEL_GATEWAY_API_KEY "$MGK"; ok "已設 MODEL_GA
 else warn "MODEL_GATEWAY_API_KEY 留空 — 模型 proxy 暫時打不通。拿到後填進 .env 再 'docker compose up -d csp'"; fi
 
 # 必填齊全檢查
-for k in SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
+for k in SECRET_KEY CSP_SECRET_KEY CSP_SERVICE_TOKEN ASR_DECODER_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
          CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD CODESERVER_WORKSPACE CARD_INITIAL_OWNERS; do
   [ -n "$(get_env "$k")" ] || die ".env 缺必填值: $k"
 done
@@ -293,8 +348,8 @@ ok ".env 就緒 (strict + 卡片登入 + 模型走 .12 gateway)"
 if [ "$REGEN" = 1 ]; then
   echo
   echo "$(c '1;33' '──── 請把以下 secret 存進密碼管理器(只顯示這一次) ────')"
-  for k in ADMIN_PASSWORD SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \
-           CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD; do
+  for k in ADMIN_PASSWORD SECRET_KEY CSP_SECRET_KEY CSP_SERVICE_TOKEN ASR_DECODER_TOKEN \
+           INTERNAL_PLATFORM_API_KEY CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD; do
     printf '  %-26s %s\n' "$k" "$(get_env "$k")"
   done
   echo "$(c '1;33' '──────────────────────────────────────────────────────')"
@@ -302,7 +357,7 @@ if [ "$REGEN" = 1 ]; then
 fi
 
 # ── 4. load image ────────────────────────────────────────────────────────
-info "[4/7] load image (SHA256 驗檔 + re-tag anila-intranet-* → anila-platform-*)"
+info "[4/7] load image (SHA256 驗檔 + docker load;沿用 bundle image tags)"
 bash "$BUNDLE/INTRANET-LOAD.sh"
 
 # ── 4b. JWT 簽章金鑰 ───────────────────────────────────────────────────────
@@ -343,11 +398,25 @@ docker network inspect anila-models-net >/dev/null 2>&1 \
 
 # ── 6. up ────────────────────────────────────────────────────────────────
 info "[6/7] docker compose up -d --no-build"
-docker compose up -d --no-build
+COMPOSE_BASE_ARGS=(-p "$COMPOSE_PROJECT_NAME" -f compose.yaml)
+if [ "$INCLUDE_ASR" = "1" ] && [ -n "$ASR_OVERLAY" ]; then
+  COMPOSE_BASE_ARGS+=(-f "$ASR_OVERLAY")
+fi
+COMPOSE_BASE_ARGS+=(-f "$BUNDLE/intranet-image-overrides.yml")
+COMPOSE_PROFILE_ARGS=()
+if [ "$INCLUDE_ASR" = "1" ]; then
+  COMPOSE_PROFILE_ARGS=(--profile asr)
+fi
+COMPOSE_ARGS=("${COMPOSE_BASE_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}")
+COMPOSE_UP_ARGS=("${COMPOSE_ARGS[@]}" up -d --no-build)
+COMPOSE_CMD_TEXT=""
+printf -v COMPOSE_CMD_TEXT ' %q' "${COMPOSE_UP_ARGS[@]}"
+echo "    docker compose${COMPOSE_CMD_TEXT}"
+docker compose "${COMPOSE_UP_ARGS[@]}"
 
 # ── 7. 驗證 ──────────────────────────────────────────────────────────────
 info "[7/7] 等 csp healthy + 驗證"
-CID="$(docker compose ps -q csp 2>/dev/null || true)"
+CID="$(docker compose "${COMPOSE_ARGS[@]}" ps -q csp 2>/dev/null || true)"
 h='?'
 for _ in $(seq 1 40); do
   h="$(docker inspect "$CID" --format '{{.State.Health.Status}}' 2>/dev/null || echo '?')"

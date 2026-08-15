@@ -55,6 +55,44 @@
 > → load image → JWT 金鑰 → up → 驗證**。重跑安全(偵測既有 .env 預設保留 secret,不重生 DB 密碼)。
 > 底下 §2.2–§2.3 是它每一步的詳解 / 手動備援。
 
+## QUESTION TREE：一條龍腳本的提問樹
+
+`intranet-deploy.sh` 的問題不是固定序列：它會依 repo、bundle、憑證、`share/*` 和 `.env`
+上是否已有產物決定哪些問題出現。不要把一串固定答案直接 pipe 給腳本；先按下面的觸發條件走分支。
+從零演練的 A/B 類清除與作答規則，以 [`first-install-rehearsal.md` §1](./first-install-rehearsal.md)
+為準；尤其 B 類兩題的正確答案都與預設相反。
+
+| 問題 | 觸發條件 | 預設 | 從零／無人值守的正確處理 |
+|---|---|---|---|
+| `image 包資料夾路徑 (含 INTRANET-LOAD.sh)` | 沒有自動找到候選 bundle | 無 | 提供 bundle 絕對路徑；把 bundle 路徑直接當腳本參數可跳過此問。 |
+| `重新從 pfx 抽取?(會覆蓋)` | `infra/nginx/certs/server.crt` 與 `server.key` 都已存在 | `N` | 從零若保留這兩個檔案，答 `y`；若先清掉，問題不出現，直接走下一列。B 類詳見初裝章 §1。 |
+| `server.pfx 路徑` | 上一題選 `y`，或任一 TLS 檔不存在 | 無 | 輸入實際 `server.pfx` 路徑。 |
+| `pfx 密碼 (空就直接 Enter)` | 需要抽取 TLS | 空字串 | 本包的空密碼 pfx 直接按 Enter；有密碼才輸入。 |
+| `model CA PEM 路徑 ...` | `share/pki/model-ca.pem` 不存在，且 repo 內沒有 CSPKI bundle | 空字串 | 正常從零 bundle 有 CSPKI bundle，這題不出現；若真的沒有，輸入 IT 提供的 PEM，或留空並接受後續 TLS warning。 |
+| `保留現有 secret?` | `.env` 已存在 | `Y` | 真正從零沒有 `.env`，這題不出現；若演練保留既有 `.env` 來行使重生路徑，答 `n`。這是 B 類，答案規則見初裝章 §1。 |
+| `偵測到預設 owner ... 確定用這組?` | `CARD_INITIAL_OWNERS` 已由 process env、bundle defaults 或 `.env` 提供 | `N` | 已餵入正確 owner 時答 `y`；不採用該值則答 Enter/N，腳本會再問下一列。 |
+| `CARD_INITIAL_OWNERS — owner 員工編號 ...` | 沒有確認上一列的 owner 預設 | 無 | 輸入包含自己的員編 CSV，例如 `1147259,1234567`；不可留空。 |
+| `MODEL_GATEWAY_API_KEY ... (還沒有就 Enter 跳過)` | owner 設定完成後一律出現 | 空字串（Enter） | 有 `.12` key 就輸入；尚未簽發可按 Enter，之後補入 `.env` 並 recreate csp。 |
+| `存好了按 Enter 繼續 ...` | 本次 `REGEN=1`、secret 已生成／重生 | Enter | 把八個 secret 值存入密碼管理器後按 Enter；保留既有 secret 的重跑不出現。 |
+
+### 非互動餵值
+
+無人值守 runner 應用環境值與 bundle 內的 `intranet-defaults.env` 餵「值」，再依上表只回答實際被觸發的確認題；不要假設每台機器都有相同問題數。腳本直接採用的常用環境值包括：
+
+```bash
+CARD_INITIAL_OWNERS=1147259 \
+COMPOSE_PROJECT_NAME=anila-restart \
+INCLUDE_ASR=1 \
+ASR_OVERLAY=infra/compose/asr-cpu.yml \
+bash infra/deployment/intranet/intranet-deploy.sh /path/to/image-bundle
+```
+
+`COMPOSE_PROJECT_NAME` 預設 `anila-restart`；`INCLUDE_ASR` 預設 `1`，設為 `0` 才不帶 `--profile asr`。
+`ASR_OVERLAY` 預設 `infra/compose/asr-cpu.yml`（.15 是 CPU 主機）；GPU 主機改設
+`ASR_OVERLAY=infra/compose/asr-gpu.yml`。要不疊 overlay，設 `ASR_OVERLAY=`，這代表由操作者自行承擔組態責任；`INCLUDE_ASR=0` 時腳本不採用 overlay。
+bundle 的 `intranet-defaults.env` 可提供 `CARD_INITIAL_OWNERS` 與生成器白名單內的密碼／token 值；
+`CARD_INITIAL_OWNERS=...` 仍會先出現確認題，這是刻意的 owner 安全閘，不應用固定 stdin 順序繞過。
+
 > **部署後兩件營運必做(live 預演 critic 抓到):**
 > 1. **首登 bootstrap**:owner(工號 `1147259`,插卡直接登入)登入後**要先建 department**,
 >    否則同仁卡片註冊時「完成註冊」的單位下拉是空的、卡在註冊。先建單位再請大家註冊。
@@ -268,7 +306,7 @@ python3 infra/deployment/intranet/intranet-quantize-nvfp4.py \
 | 階段 | 內容 | 前置條件 |
 |------|------|----------|
 | **R0** | 5 組權重 pack-chunks + 6 個模型 image → `04-models.tar.gz`(pigz)→ 切塊;全部 unpack 回來 `diff -r` 逐 byte 比對 | 無(純檔案系統+`docker save`,不碰 running stack)|
-| **R1** | `build-and-export-for-intranet.sh` 出 01–03 tar.gz + INTRANET-LOAD.sh | ⚠ build 會重指 `anila-platform-*` tag(與 dev stack 同名)— 排進維護時段;正式包等 codex 複核+commit 後重出 |
+| **R1** | `build-and-export-for-intranet.sh` 出 01–03 tar.gz + INTRANET-LOAD.sh | bundle 以 `COMPOSE_PROJECT_NAME=anila-restart` 產 tag；loader 只做 checksum 驗證與 `docker load`，不 re-tag。起棧要沿用相同 `-p`，並疊 image override。 |
 | **R2** | 空機模擬:停 dev stack → INTRANET-LOAD.sh(sha256+load)→ `ANILA_HF_DIR=<staging>/rehearsal-hf` 起 models stack + `deploy-prod.sh` → §3 驗收清單 → 還原 dev stack(用原本 annotated-tag 工作樹重 build,不 checkout branch) | ⚠ 需重開機修 NVIDIA driver mismatch(host NVML 掛了,新 GPU 容器起不來);維護時段 user 排 |
 
 ```bash
@@ -285,8 +323,11 @@ bash /home/aia/c1147259/intranet-staging/rehearsal-r0.sh \
 ### 1.3 Secret 生成 (建議到內網主機上跑)
 
 ```bash
-echo "SECRET_KEY=$(openssl rand -hex 32)"
+SECRET_KEY="$(openssl rand -hex 32)"
+echo "SECRET_KEY=$SECRET_KEY"
+echo "CSP_SECRET_KEY=$SECRET_KEY"                    # legacy alias,必須與 SECRET_KEY 同值
 echo "CSP_SERVICE_TOKEN=$(openssl rand -hex 32)"   # 平台內部 s2s（若 compose 仍要求）；≠ agent 派工身分
+echo "ASR_DECODER_TOKEN=$(openssl rand -hex 32)"    # asr-gateway ↔ asr-decoder 的共享密鑰
 echo "INTERNAL_PLATFORM_API_KEY=sk-internal-$(openssl rand -hex 24)"
 echo "ADMIN_PASSWORD=$(openssl rand -base64 24)"
 echo "CSP_DB_PASSWORD=$(openssl rand -hex 32)"
@@ -311,7 +352,7 @@ echo "CODESERVER_PASSWORD=$(openssl rand -base64 24)"
    export;`MANIFEST.txt` 記錄 tag+commit)。內網端不 checkout branch,直接接收 bundle。
 2. `/tmp/anila-images-export/` 整個資料夾
 3. `server.pfx` (wildcard 憑證+key;在 My-OpenAI-Frontend repo 的 `nginx/cert/`,內網 .12 上也有同一份)
-4. 7 個 secret (密碼管理器)
+4. 8 個 secret 值 (密碼管理器；`SECRET_KEY` / `CSP_SECRET_KEY` 是同值別名)
 
 ### 2.2 內網主機 (.15) 初始化
 
@@ -337,10 +378,10 @@ echo | openssl s_client -connect 10.53.100.12:443 -servername aiagent2.ai.ncsist
 
 # 3. .env
 cp .env.example .env
-nano .env   # 填 7 個 secret + MODEL_GATEWAY_API_KEY + CARD_INITIAL_OWNERS
+nano .env   # 填 8 個 secret 值 + MODEL_GATEWAY_API_KEY + CARD_INITIAL_OWNERS
             # 並打開 ANILA_MODEL_CA_FILE=/etc/anila/pki/model-ca.pem
 
-# 4. import image (內含 sha256 驗檔 + 提示建 anila-models-net)
+# 4. import image (內含 sha256 驗檔 + docker load;不 re-tag)
 cd /tmp/anila-images-export && bash INTRANET-LOAD.sh
 cp /tmp/anila-images-export/intranet-image-overrides.yml /opt/anila/intranet-image-overrides.yml
 ```
@@ -434,7 +475,10 @@ cd /opt/anila
 set -a; source .env; set +a
 bash infra/deployment/scripts/deploy-prod.sh preflight   # 遠端模型模式:自動建 anila-models-net
                                         # + curl 探測 gateway (帶 Bearer key)
-docker compose -f compose.yaml -f intranet-image-overrides.yml up -d --no-build  # image 已 load,跳過 build
+docker compose -p anila-restart \
+  -f compose.yaml -f infra/compose/asr-cpu.yml -f intranet-image-overrides.yml \
+  --profile asr up -d --no-build  # image 已 load,跳過 build; INCLUDE_ASR=0 時移除 --profile asr
+# .15 是 CPU 主機；GPU 主機把 infra/compose/asr-cpu.yml 換成 infra/compose/asr-gpu.yml。
 ```
 
 ### 3.1b 本機模型要過 url_guard (R2 演練教訓,2026-06-11)
