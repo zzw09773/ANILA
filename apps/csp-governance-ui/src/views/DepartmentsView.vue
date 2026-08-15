@@ -193,7 +193,7 @@ async function handleReactivate(d) {
   await updateDepartment(d.id, { is_active: true })
   await fetchDepartments()
 }
-function formatDate(s) { return new Date(s).toLocaleString('en-GB') }
+function formatDate(s) { return new Date(s).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' }) }
 </script>
 
 <style scoped>

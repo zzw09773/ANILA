@@ -325,7 +325,7 @@ async function handleRegenerate() {
 }
 
 function formatDate(dateStr) {
-  return new Date(dateStr).toLocaleString('en-GB')
+  return new Date(dateStr).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' })
 }
 </script>
 
