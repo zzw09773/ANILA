@@ -306,6 +306,11 @@ else
     # 兩行同值是對 compose dotenv 邊角行為的實測防禦,勿刪其一。
     secret_set CSP_SECRET_KEY "$SECRET_KEY_VALUE" "補別名"
   fi
+  # ⚠ 刻意的不對稱,不要「修」它:preserve 模式下其他必填 secret 缺席一律 die
+  # (使用者答「保留現有」,腳本就不無中生有;停下點名讓人去密碼管理器拿=好的失敗)。
+  # ASR_DECODER_TOKEN 是唯一例外——它是後加的第八把,既有 .env 必缺,不補則所有
+  # 既有部署重跑必死。這是**遷移期權宜**:第一次正式安裝落地後,這段應改回 die。
+  # 把它改成通則(缺了就生)=重開 preserve 模式悄悄生祕密的洞(1061ecc3 剛關的那個)。
   if [ -z "$(get_env ASR_DECODER_TOKEN)" ]; then
     if [ -n "${ASR_DECODER_TOKEN:-}" ]; then
       ASR_DECODER_TOKEN_VALUE="$ASR_DECODER_TOKEN"
