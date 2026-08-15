@@ -119,7 +119,7 @@ async function fetchLogs() {
   }
 }
 onMounted(fetchLogs)
-function formatDate(v) { return new Date(v).toLocaleString('en-GB') }
+function formatDate(v) { return new Date(v).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' }) }
 </script>
 
 <style scoped>

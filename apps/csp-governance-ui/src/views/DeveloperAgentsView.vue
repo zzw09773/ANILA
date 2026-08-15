@@ -912,7 +912,7 @@ function healthVariant(s) {
   if (s === 'unhealthy' || s === 'offline') return 'danger'
   return ''
 }
-function formatDate(s) { return s ? new Date(s).toLocaleString('en-GB') : '—' }
+function formatDate(s) { return s ? new Date(s).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hourCycle: 'h23' }) : '—' }
 function prettyJson(value) { return JSON.stringify(value || {}, null, 2) }
 function buildStatusHistory(agent) {
   const history = [{ label: 'agent registered', timestamp: formatDate(agent.created_at), detail: 'endpoint and description bound to registry' }]

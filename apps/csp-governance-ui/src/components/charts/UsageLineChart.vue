@@ -95,7 +95,9 @@ function renderChart() {
 
   const xData = timestamps.map((ts) => {
     const d = new Date(ts * 1000)
-    return d.toLocaleString('en-GB', {
+    return d.toLocaleString('zh-TW', {
+      timeZone: 'Asia/Taipei',
+      hourCycle: 'h23',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
