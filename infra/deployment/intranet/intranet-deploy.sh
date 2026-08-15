@@ -292,9 +292,11 @@ else
   [ -n "$SECRET_KEY_VALUE" ] || SECRET_KEY_VALUE="$(get_env CSP_SECRET_KEY)"
   [ -n "$SECRET_KEY_VALUE" ] || die ".env 缺 SECRET_KEY / CSP_SECRET_KEY"
   if [ -z "$(get_env SECRET_KEY)" ]; then
-    secret_set SECRET_KEY "$SECRET_KEY_VALUE" "補別名"
+    secret_set SECRET_KEY "$SECRET_KEY_VALUE" "從別名補正名"
   elif [ -z "$(get_env CSP_SECRET_KEY)" ]; then
-    # 兩行同值是對 compose dotenv 邊角行為的實測防禦,勿刪其一。
+    # alias 缺席=這份 .env 多半寫於本腳本改版前,正是 #7 解析謎(值在、compose
+    # 整檔讀不到)的族群——趁補別名的同一輪,順手把 canonical 行重寫成 set_env 的
+    # 正規形。兩名俱在的 .env 已是本腳本寫過的形,所以不再動它:正規化只做這一族。
     secret_set SECRET_KEY "$SECRET_KEY_VALUE" "重寫既有行"
   elif [ "$(get_env CSP_SECRET_KEY)" != "$SECRET_KEY_VALUE" ]; then
     # SECRET_KEY 是 canonical；既有 alias 若漂移，只修正 alias。
