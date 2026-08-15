@@ -337,13 +337,16 @@ async def _gate_on_primary(request: Request, call_next):
     if routed_path(request) == "/v1/chat/completions" and request.method == "POST":
         name, err = await _ensure_primary()
         if not name:
+            logger.warning(
+                "Primary router unavailable; rejecting chat completion: %s",
+                err or "未設定",
+            )
             return JSONResponse(
                 status_code=503,
                 content={
                     "detail": (
                         "ANILA Router 無可用主路由模型。"
                         "請管理員前往 CSP Models 頁面指定一個 LLM 為「主路由」。"
-                        f"（細節：{err or '未設定'}）"
                     )
                 },
             )

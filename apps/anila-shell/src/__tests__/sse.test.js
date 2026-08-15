@@ -3,6 +3,8 @@ import {
   dispatchSseEvent,
   parseSseBlocks,
   parseSseEvent,
+  streamChatCompletion,
+  streamSessionAnswer,
 } from "../runtime/sse.js";
 
 describe("parseSseEvent", () => {
@@ -384,6 +386,59 @@ describe("streamChatCompletion mid-stream anila.error", () => {
     });
     expect(texts.at(-1)).toBe("Hello");
     expect(onError).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe.each([
+  [
+    "streamChatCompletion",
+    () =>
+      streamChatCompletion({
+        url: "/v1/chat/completions",
+        payload: { model: "demo", messages: [] },
+      }),
+    "Streaming failed",
+  ],
+  [
+    "streamSessionAnswer",
+    () =>
+      streamSessionAnswer({
+        routerBaseUrl: "http://router.test",
+        sessionId: "sess-1",
+        interruptId: "int-1",
+        answer: "答案",
+      }),
+    "Resume failed",
+  ],
+])("$0 non-OK response", (_name, invoke, fallback) => {
+  it.each([
+    [
+      "JSON body with detail",
+      '{"detail":"請前往 CSP Models 指定主路由。"}',
+      "請前往 CSP Models 指定主路由。",
+    ],
+    [
+      "JSON body without detail",
+      '{"error":"upstream unavailable"}',
+      fallback,
+    ],
+    ["plain-text body", "Bad gateway", "Bad gateway"],
+    ["empty body", "", fallback],
+  ])("uses the safe message for %s", async (_shape, body, expected) => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      text: async () => body,
+    })));
+
+    const error = await invoke().catch((err) => err);
+
+    expect(error).toMatchObject({ message: expected, status: 503 });
+    if (_shape.startsWith("JSON")) {
+      expect(error.message).not.toBe(body);
+      expect(error.message).not.toContain('\\"');
+    }
     vi.unstubAllGlobals();
   });
 });
