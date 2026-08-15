@@ -388,7 +388,7 @@ WS 的 close code 就是診斷碼(定義見 `services/asr-gateway/README.md`):
 | 4409 | 同一個人開了新連線,舊的被踢 |
 | 4503 | 驗證基礎設施不可用(JWKS/撤銷清單),重登也沒用 |
 
-> 🚨 **2026-07-31 已知阻斷:目前一定會收到 4401。** 見 §7。
+> 若收到 4401,先確認已登入且 cookie 是 `anila_access_token`;其餘見 §7(歷史與契約)。
 
 ---
 
@@ -413,79 +413,72 @@ WS 的 close code 就是診斷碼(定義見 `services/asr-gateway/README.md`):
 
 ---
 
-## 7. 🚨 已知阻斷(2026-07-31):卡登/帳密權杖都過不了 gateway 的驗章
+## 7. 權杖契約(已對齊 anila-studio;原「一律 4401」阻斷已關閉)
 
-**症狀:** 麥克風按鈕會正常出現(`/asr/health` 是 200),但一按下去 WS 立刻以
-**4401** 關閉,前端提示重新登入 —— 重登也沒用。
+**現況(2026-07-31 起,`bd63a48f` 與後續契約測試):** asr-gateway 接受 csp
+`create_tokens()` 實際簽出的 access token,cookie 名與 studio 相同。麥克風按下去
+不應再因「缺 aud / 找錯 cookie」一律 4401。卡登與帳密走同一簽發路徑,行為一致。
 
-**根因:兩個獨立缺陷,都在 `services/asr-gateway/app/auth.py`,不在基礎設施。**
+**曾存在的兩個缺陷**(都在 `services/asr-gateway/app/auth.py`,不在基礎設施;
+已修,留作回歸說明):
 
-1. **Cookie 名稱對不上。**
-   csp 一律簽發名為 `anila_access_token` 的 cookie
+1. **Cookie 名稱對不上(已修)。**
+   csp 一律簽發 `anila_access_token`
    (`services/csp/app/middleware/cookies.py:33`,與 `COOKIE_SECURE` 無關);
-   `anila-studio` 也是讀這個名字(`services/anila-studio/app/auth.py:38`)。
-   但 asr-gateway 在 `COOKIE_SECURE=true` 時去找 `__Host-anila_access_token`
-   (`services/asr-gateway/app/auth.py:36,51`)—— 那個 cookie 從來沒有人簽發過。
-   瀏覽器帶著正確的 cookie 過來,gateway **根本看不到權杖**,close reason 是「未登入」。
-   ⚠ 把 `COOKIE_SECURE` 改成 false 也救不了:那條路走的是 `anila_dev_access_token`,
-   一樣沒人簽發。這不是設定問題,是程式碼問題。
+   `anila-studio` 也只讀這個名字(`services/anila-studio/app/auth.py:38`)。
+   舊 gateway 在 `COOKIE_SECURE=true` 時找 `__Host-anila_access_token`,false 時找
+   `anila_dev_access_token`——兩個名字平台上從來沒人簽發。現在改為只讀
+   `anila_access_token`(`services/asr-gateway/app/auth.py` 的 `ACCESS_COOKIE_NAME`)。
 
-2. **就算讀到權杖,claim 也不夠。**
-   gateway 要求 `exp/iat/iss/aud/jti`,外加 session assurance 的
-   `jti/sid/amr/acr/auth_time`(`auth.py` 的 `_verify_jwt` 與 `_has_valid_session_assurance`)。
-   csp 的 `create_tokens()`(`services/csp/app/services/auth_service.py:55`)只簽
-   `sub / username / role / tv / exp / type`。實測驗章錯誤:
-   `JWTError: missing required key "aud" among claims`。
-   **卡登(`api/auth/card.py:166`)走的是同一個 `create_tokens()`**,所以擁有者用自然人憑證卡
-   登入一樣過不了 —— 這不是「帳密登入才有的問題」。
-   對照組:`anila-studio` 用 `options={"verify_aud": False}` 且不要求 iss/jti,所以它一直是通的。
+2. **Claim / session-assurance 要求對不上(已修)。**
+   舊 gateway 要求 `exp/iat/iss/aud/jti` 與 assurance 的
+   `jti/sid/amr/acr/auth_time`。csp 的 `create_tokens()` 只簽
+   `sub / username / role / tv`,再由 `create_access_token()` 補 `exp` / `type`。
+   實測錯誤曾是 `JWTError: missing required key "aud" among claims`。
+   **卡登也走同一個 `create_tokens()`**,所以不是「只有帳密才壞」。
 
-**簽章本身是好的** —— gateway 從 csp 的 JWKS 取到 `kid=anila-v1` 的公鑰、驗章通過,
-信任錨沒問題。純粹是 claim 契約對不上:gateway 是照一個 csp 還沒實作的 token 格式寫的。
+**簽章本身一直是好的** —— gateway 從 csp JWKS 依 `kid` 取公鑰驗 RS256;信任錨
+未動。修的是「必填一組沒有簽發者會給的 claim」與「讀一個沒人設的 cookie 名」。
 
-**這要由 app code 的負責人修**(基礎設施這邊沒有旋鈕可以繞過,也不該有 —— 繞過就是弱化 JWT 驗證)。
-兩條路二選一:
-- 讓 csp 的 `create_tokens()` 補上 `iss/aud/jti/sid/amr/acr/auth_time`(比較正確,但影響全平台);
-- 或把 asr-gateway 的要求降到與 anila-studio 一致(比較小,但等於承認 assurance 檢查目前是空的)。
+**兩條路與抉擇(誠實紀錄):**
 
-修好之前:語音**不要對擁有者宣布可用**。按得下去但一定失敗,比按鈕不存在更糟。
-要暫時收起按鈕就照 §1 的「關掉語音」。
+| 選項 | 做法 | 為何(不)採 |
+|---|---|---|
+| (A) | 讓 csp `create_tokens()` 平台級補上 iss/aud/jti/sid/amr/acr/auth_time | 語意較完整,但動全平台權杖格式;發佈前夜不做 |
+| (B) **已採** | 把 gateway 要求降到與 anila-studio 一致(`verify_aud=False`,不要求 assurance;仍驗簽章 / kid / 演算法白名單 / exp / `type=access` / `tv` 撤銷) | studio 已對同一 csp 權杖長期可用;範圍小、可驗證 |
 
-**驗證修好了沒** —— 拿一個真的登入權杖打 WS,看 close code 有沒有離開 4401:
+採 (B) 的語意:**gateway 不再宣稱在驗證認證強度** —— 因為簽發端從不給那些
+claim,舊檢查從未對真實權杖執法過,只是 fail-closed 擋住所有人。真要執法強度,
+必須先做 (A),再把 assurance 檢查加回。`tv` 撤銷與 studio 相同:讀 claim `tv`,
+經 Redis deny-list `is_revoked(user_id, token_version)` fail-closed。
+
+**回歸測試:** `services/asr-gateway/tests/test_auth_contract.py`(csp 形狀權杖
+必過;壞簽章 / 過期必拒;cookie 字面值 `anila_access_token`;撤銷邊界)。
+
+**活體抽查**(可選;不要把 token 貼進 log):
 
 ```bash
 # 1) 取一個真的 access token(卡登或帳密皆可),存成 token.txt,不要印出來
-# 2) 直接問 gateway 它自己怎麼看這個權杖 —— 比猜快得多
-docker cp token.txt anila-restart-asr-gateway-1:/tmp/token.txt
-docker exec anila-restart-asr-gateway-1 python3 -c "
-import asyncio
-from jose import jwt
-from app.config import settings as s
-from app.services import jwks_client
-tok=open('/tmp/token.txt').read().strip()
-async def m():
-    pk=await jwks_client.get_public_key(jwt.get_unverified_header(tok)['kid'])
-    p=jwt.decode(tok,pk,algorithms=['RS256'],options={'verify_aud':False})
-    need={'exp','iat','iss','aud','jti','sid','amr','acr','auth_time'}
-    print('claims:',sorted(p)); print('MISSING:',sorted(need-set(p)))
-asyncio.run(m())"
+# 2) 經 nginx 開 WS,應先收到 listening,而非立刻 4401
+#    cookie 名必須是 anila_access_token(與瀏覽器 DevTools Application 一致)
 ```
 
-`MISSING: []` 才代表缺陷 2 修好了。缺陷 1(cookie 名稱)則要看瀏覽器實際送出的
-cookie 名字與 `services/asr-gateway/app/auth.py:36,51` 是否一致。
-兩個都修好之後,按下麥克風應該會依序收到
-`{"type":"status"}` → `{"type":"partial"}`(數次)→ `{"type":"final","text":...}`。
+按下麥克風應依序收到
+`{"type":"status","state":"listening",...}` → `{"type":"partial"}`(數次)→
+`{"type":"final","text":...}`。
 
 ### 已經驗過的部分(不必重驗)
 
-2026-07-31 在本機實測,**認證以下的每一層都是好的**:
+2026-07-31 在本機實測,**認證以下的每一層都是好的**(修復前也成立;阻斷只在
+gateway 驗章契約):
 
 - nginx `/asr/` 路由、TLS、WS upgrade:WS 握手成功(HTTP 101),
-  失敗是發生在握手**之後**的應用層 close,不是路由問題。
+  舊失敗發生在握手**之後**的應用層 close,不是路由問題。
 - gateway → decoder 的網路與 `X-Token` 認證:正確 token 200,錯的/沒帶都 401。
 - decoder 真的會辨識:用 `ffmpeg -f lavfi -i flite=text='...'` 合成一段已知英文語句
   (repo 內沒有音訊 fixture,而這台機器沒有 espeak/pico2wave/flite CLI,
   但 ffmpeg 內建 `flite` filter 可以合成),餵 `POST /transcribe` 得到
   逐字一致的辨識結果。
 
-所以 §7 修好之後,語音應該就會直接會通;不需要再回頭懷疑基礎設施。
+契約對齊後,語音應可端到端使用;若仍 4401,先查 cookie 名與是否已登入,再查
+撤銷清單 / JWKS(4503),不要先懷疑「又缺 aud」。
