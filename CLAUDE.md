@@ -88,7 +88,8 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)** 的 NotebookLM 式平台,P
   `up -d` **必須帶 CPU overlay**,否則 nvidia driver 錯誤會中斷整批啟動:
   `docker compose -p anila-restart -f compose.yaml -f infra/compose/asr-cpu.yml --profile asr up -d`
 - **卡登本機是開的**(mock 讀卡機 + 執行時生成的測試 CA,`secrets/dev-card-ca/`,gitignored)。
-  `.env` 那四個相關變數**內網一個都不能帶過去**。
+  `.env` 的 CARD_* 鍵照**初裝章 §3 替換清單**辦理(`docs/runbooks/first-install-rehearsal.md`):
+  信任測試 CA 類**絕不可帶**;`CARD_INITIAL_OWNERS` **必須帶、換真員編**。
 - **GPU 沒接進 Docker**(`nvidia-container-toolkit` 未裝),語音跑 CPU `small`,中文有同音錯字。
 - **`.well-known` 經 nginx 是 403**——`location ~ /\.` 的隱藏檔規則誤傷,不是政策。P2.1 的前置。
 
