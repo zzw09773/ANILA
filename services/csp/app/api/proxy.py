@@ -24,6 +24,7 @@ from app.services.institutional_kb import (
 )
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
+from app.services.proxy import service as proxy_impl
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.service import resolve_proxy_tuning
@@ -32,6 +33,7 @@ from app.services.proxy.urls import join_upstream_path
 from app.services.proxy_service import (
     _estimate_token_count,
     _extract_response_text,
+    _serialize_request_for_usage,
     build_default_anila_meta,
     downstream_identity,
     proxy_request,
@@ -1357,9 +1359,7 @@ async def chat_completions(
             target, endpoint_kind=ENDPOINT_KIND_AGENT
         )  # call-time SSRF re-validation (TOCTOU defense) — FINAL url
         # P2.1: mint per-dispatch signed identity JWT (no csk- / plaintext
-        # user headers). usage_writer attribution for this branch is still
-        # TODO — non-streaming agent forwards don't currently emit a
-        # token_usage row at all (orthogonal pre-existing gap).
+        # user headers).
         headers = build_agent_headers(
             user_id=user.id,
             department=department_id,
@@ -1398,6 +1398,43 @@ async def chat_completions(
                 elif agent_requires_encryption and isinstance(existing_meta, dict):
                     existing_meta["classified"] = True
                 _annotate_agent_reply_payload(payload, agent.name)
+                usage = payload.get("usage") or {}
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get(
+                    "total_tokens", prompt_tokens + completion_tokens
+                )
+                if not usage:
+                    prompt_tokens = _estimate_token_count(
+                        agent.name, _serialize_request_for_usage(body)
+                    )
+                    completion_tokens = _estimate_token_count(
+                        agent.name, _extract_response_text(payload)
+                    )
+                    total_tokens = prompt_tokens + completion_tokens
+                    logger.warning(
+                        "Agent %s 非串流回應未提供 usage，改用伺服器估算: "
+                        "prompt=%s completion=%s",
+                        agent.name,
+                        prompt_tokens,
+                        completion_tokens,
+                    )
+                if total_tokens > 0:
+                    await proxy_impl.enqueue_usage_task_linked(
+                        api_key_id=caller.api_key_id,
+                        user_id=user.id,
+                        department_id=department_id,
+                        model_id=agent.id,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        request_duration_ms=int((time.time() - started_at) * 1000),
+                        conversation_id=conversation_id,
+                        trace_id=usage_trace_id,
+                        caller_agent_id=agent.id,
+                        task_id=task_ctx.task_id if task_ctx else None,
+                        legacy_runtime_call=task_ctx is None,
+                    )
                 # Memory write (non-streaming agent path)
                 assistant_text = _extract_assistant_text(payload)
                 _schedule_memory_write(
@@ -1407,8 +1444,7 @@ async def chat_completions(
                     assistant_message=assistant_text,
                     is_encrypted=agent_requires_encryption,
                 )
-                # Slice 2b-C: run finished. (This branch still writes no
-                # usage row — orthogonal pre-existing gap, see above.)
+                # Slice 2b-C: run finished.
                 if task_ctx is not None:
                     finalize_task_run(task_ctx.task_run_id, "completed")
                 # 出口 2/4（agent 非串流）。
