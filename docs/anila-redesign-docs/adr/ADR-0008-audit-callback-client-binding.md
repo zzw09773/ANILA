@@ -1,5 +1,7 @@
 # ADR-0008: 稽核回呼(audit-callback)綁定 Service Client,預設拒絕(fail-closed)
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的決策紀錄(ADR),保留決策當時的理由與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > Status: accepted
 > Date: 2026-07-02
 > Deciders: ANILA 平台安全審查(commit security review)

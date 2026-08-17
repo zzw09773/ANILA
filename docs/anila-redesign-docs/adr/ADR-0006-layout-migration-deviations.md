@@ -1,5 +1,7 @@
 # ADR-0006: §17.1 目錄搬遷之現場決策（D1–D6 + ALM 過渡）
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的決策紀錄(ADR),保留決策當時的理由與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > Status: accepted
 > Date: 2026-07-02
 > Deciders: ANILA system owner（佈局策略）＋ Claude（現場 disposition，依偵察證據）

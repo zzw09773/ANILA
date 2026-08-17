@@ -1,5 +1,7 @@
 # ADR-0007: ModelEndpoint.allowed_task_types 暫緩實作
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的決策紀錄(ADR),保留決策當時的理由與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > Status: accepted
 > Date: 2026-07-02
 > Deciders: Claude（現場裁決，依文件衝突原則）；待 user 於 doc 04 修訂時覆核

@@ -10,7 +10,7 @@
 
 **Tech Stack:** Python/FastAPI（CSP `myCSPPlatform/backend`）、anila-core、pytest。
 
-**Spec:** `docs/specs/specs/2026-06-23-router-memory-recomposition-design.md`
+**Spec:** `docs/specs/2026-06-23-router-memory-recomposition-design.md`
 
 **分支：** main 起 → cherry-pick 散 7 分支。本計畫在 main 實作。
 

@@ -1,7 +1,8 @@
 # ANILA 平台
 
 > **內網（air-gapped）NotebookLM 式知識／生產力平台 · 中科院自然人憑證卡登入 · CSP 治理底座。**
-> 分支 `anila-redesign` — §17.1 目錄搬遷 ＋ Slice 0–9 重構的收斂分支。設計權威：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/)（憲法＝[`00-product-constitution.md`](./docs/anila-redesign-docs/00-product-constitution.md)）。
+> 開發線 `restart/from-redesign` — 自 redesign 收斂點重啟。**專案權威＝[`PLAN.md`](./PLAN.md)**（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](./SYSTEM-MAP.md)。
+> 設計沿革（redesign 收斂期的決策紀錄，非現行准入依據）見 [`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/)。
 
 ANILA 是一套部署於**中科院內網（air-gapped，機房無外網）** 的 NotebookLM 式知識／生產力平台。它的北極星是：**以任務為入口，以個人／專案／組織知識與專案入口為來源，以受控的模型／Agent／GUI Service 為能力，以 CSP 治理層（權限、四級分類、引用、full trace、審計）為底座。** 正式使用者透過統一的 **ANILA Shell** 與所有能力互動；登入採**中科院自然人憑證卡（PKI 卡）** 做真實 PKCS#7/CMS 簽章驗證。ANILA 不是聊天機器人、不是入口頁拼盤、也不是 Agent marketplace — 它把「受控 AI 能力」收斂到單一治理底座的內網工作台。air-gap／PKI／機敏分類是它的**安全脈絡**，不是產品目的。
 
@@ -143,7 +144,7 @@ flowchart TB
 
 ## 重構能力總覽（Slice 0–9）
 
-本分支依 [`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/) 契約逐 slice 升級；下表能力皆可於程式碼核對（設計文件為目標規格）。
+下表能力皆可於程式碼核對。契約的收斂過程記錄在 [`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/)（設計沿革）；**現行規格以 [`SYSTEM-MAP.md`](./SYSTEM-MAP.md) 為準**，進度與執行順序見 [`PLAN.md`](./PLAN.md)。
 
 | Slice | 能力 | 落地位置（可核對） | 設計文件 |
 |---|---|---|---|
@@ -227,16 +228,19 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 
 ## 分支模型
 
-**你正在看 `anila-redesign`** — §17.1 目錄搬遷 ＋ Slice 0–9 重構的**收斂分支**，自 `origin/prod-intranet-card`（v1.2.0 系）分出，保留成熟骨架（card SSO / RS256 JWT / JWKS / revocation / CSRF / RLS / SSRF guard / proxy），採用新佈局與 Task／Trace／四級分類／Registry 新契約。
+**你正在看 `restart/from-redesign`** — 2026-07-28 重啟後的**單一開發線**（工作 worktree 分支除外）。它自 redesign 收斂點分出，保留成熟骨架（card SSO / RS256 JWT / JWKS / revocation / CSRF / RLS / SSRF guard / proxy），採用新佈局與 Task／Trace／四級分類／Registry 新契約。
 
-依 [ADR-0006](./docs/anila-redesign-docs/adr/ADR-0006-layout-migration-deviations.md)，本分支與 `main`／7 分支模型的 cherry-pick 互通已**刻意中斷**。`main` 作為 SSOT 的 7 分支部署模型（登入／部署 delta：`main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military` / `trial-military`）**維持不變**，權威細節見 [`AGENTS.md`](./AGENTS.md) §2–3 與 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)。
+🔴 **`main` 作為 SSOT 的 7 分支部署模型已不存在。** 該模型（`main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military` / `trial-military`）已於 2026-07-28 重啟時進 attic；描述它的 [`AGENTS.md`](./AGENTS.md) §2–3 與 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md) **同樣已失效**，兩份皆已標示。在 PLAN 排到之前**不要**重建部署分支。
+
+現行狀態與執行順序見 [`PLAN.md`](./PLAN.md)（專案權威），重啟脈絡與 attic 取回方式見 [`RESTART-FROM-REDESIGN.md`](./RESTART-FROM-REDESIGN.md)。歷史上依 [ADR-0006](./docs/anila-redesign-docs/adr/ADR-0006-layout-migration-deviations.md)，本線與舊 `main` 的 cherry-pick 互通已**刻意中斷**——這是一條全新基線，不是又一條 delta 分支。
 
 ---
 
-## 設計權威與治理
+## 權威文件與治理
 
-- **設計權威**：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/) — 12 份系統設計文件，憲法 [`00-product-constitution.md`](./docs/anila-redesign-docs/00-product-constitution.md) 為唯一准入依據（§5 功能准入合約、§6 凍結清單、§8 ADR）。版本狀態 `architecture-baseline-v0.2`。
-- **繁中語言政策**：唯一介面語言為繁體中文（台灣用語），identifiers 不譯；規範見 [doc 11](./docs/anila-redesign-docs/11-frontend-zh-tw-language-policy.md)，CI 由 `infra/ci/lint-zh-tw.sh` 把關。
+- **專案權威**：[`PLAN.md`](./PLAN.md)（現況與執行順序，2026-08-17 擁有者裁定）；**規格**：[`SYSTEM-MAP.md`](./SYSTEM-MAP.md)（系統應該長什麼樣）。PR 准入檢查對照這兩份，見 [`.github/pull_request_template.md`](./.github/pull_request_template.md)。
+- **設計沿革／收斂紀錄**：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/) — 12 份 redesign 系統設計文件（版本狀態 `architecture-baseline-v0.2`）＋ ADR。**已於 2026-08-17 列為歷史紀錄，不再是准入依據**；保留是因為它記載了各項決策「為什麼這樣定」，程式碼註解亦多處回指。重啟脈絡見 [`RESTART-FROM-REDESIGN.md`](./RESTART-FROM-REDESIGN.md)。
+- **繁中語言政策**：唯一介面語言為繁體中文（台灣用語），identifiers 不譯；由 CI `infra/ci/lint-zh-tw.sh` 把關（此為現行約束），規範沿革見 [doc 11](./docs/anila-redesign-docs/11-frontend-zh-tw-language-policy.md)。
 - **AI 治理（ISO/IEC 42001:2023）**：治理文件集中於 [`docs/governance/`](./docs/governance/)，主索引 [`iso-42001-compliance.md`](./docs/governance/iso-42001-compliance.md)（Clause 4–10 ＋ Annex A：AI 政策、RACI、風險登錄、AIIA、model card、資料治理、事件回應、第三方登錄）。
 
 ---
@@ -288,4 +292,4 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 
 ---
 
-**分支**：`anila-redesign`（§17.1 ＋ Slice 0–9 收斂）· **部署**：`bash infra/deployment/scripts/deploy-prod.sh` · **設計權威**：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/) · **治理**：[`docs/governance/iso-42001-compliance.md`](./docs/governance/iso-42001-compliance.md)
+**開發線**：`restart/from-redesign`（單一線） · **部署**：`bash infra/deployment/scripts/deploy-prod.sh` · **專案權威**：[`PLAN.md`](./PLAN.md) · **規格**：[`SYSTEM-MAP.md`](./SYSTEM-MAP.md) · **設計沿革**：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/) · **治理**：[`docs/governance/iso-42001-compliance.md`](./docs/governance/iso-42001-compliance.md)

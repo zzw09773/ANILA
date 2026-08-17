@@ -1,5 +1,7 @@
 # 00. ANILA Product Constitution
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的設計文件,保留當時的決策與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > Status: draft v0.1  
 > Purpose: 定義 ANILA 新專案不可偏移的產品敘事、入口邊界與防發散規則。  
 > Based on: `prod-intranet-card` 既有系統、v0.2 收斂規劃、使用者已確認決策。  

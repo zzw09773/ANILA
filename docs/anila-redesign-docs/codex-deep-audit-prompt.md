@@ -1,5 +1,7 @@
 # Codex Deep Audit Prompt（Slice 0 交付物）
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的設計文件,保留當時的決策與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > 用途：每個 Slice 完成後，將本 prompt 連同該 Slice 的 diff 範圍交給 Codex 進行深度稽核。
 > 憲法：`docs/anila-redesign-docs/00-product-constitution.md` 是唯一准入依據。
 

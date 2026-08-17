@@ -1,5 +1,7 @@
 # 12. 前端視覺重設計 — 去駭客風・官方藍 institutional console
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的設計文件,保留當時的決策與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > Status: design v1（2026-07-02，Fable 5 設計；實作交 Opus）
 > Scope: CSP 治理中心（apps/csp-governance-ui）主視覺 + 登入頁；ANILA shell 分類浮水印
 > 前置：使用者拍板 ①淺色優先・官方藍 ②卡登卡片 hero

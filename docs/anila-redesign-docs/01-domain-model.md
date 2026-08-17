@@ -1,5 +1,7 @@
 # 01. Domain Model
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的設計文件,保留當時的決策與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > Status: draft v0.1  
 > Purpose: 定義新 ANILA 的核心實體、生命週期與資料擁有權。  
 > Principle: 新專案可以重構 schema，但不應放棄既有成熟概念，如 `model_registry`、`agents`、`token_usage`、`audit_logs`、`platform_links`、`service_access_grants`、ingestion collections、conversation classified latch。  

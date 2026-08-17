@@ -1,6 +1,10 @@
 # PR 收斂檢查（doc 10 §13）
 
-> 憲法：`docs/anila-redesign-docs/00-product-constitution.md`。任一項違反須附 ADR。
+> 准入依據：規格＝`SYSTEM-MAP.md`（系統應該長什麼樣）、現況與執行順序＝`PLAN.md`（專案權威）。任一項違反須附 ADR。
+>
+> ⚠ 2026-08-17 起本清單改對照 `SYSTEM-MAP.md` / `PLAN.md`。原憲法
+> `docs/anila-redesign-docs/00-product-constitution.md` 已列為 redesign 收斂期的**歷史紀錄**，
+> 仍可查閱各項條款的由來，但不再是准入依據。
 
 - [ ] 這個變更屬於：任務中心 / 我的知識庫 / 產出中心 / 專案入口 / 治理中心
 - [ ] 沒有新增未核准一級入口或產品名稱

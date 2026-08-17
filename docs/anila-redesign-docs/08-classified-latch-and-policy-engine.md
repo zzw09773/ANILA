@@ -1,5 +1,7 @@
 # 08. Classified Latch and Policy Engine
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的設計文件,保留當時的決策與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > Status: draft v0.1  
 > Purpose: 將既有 boolean classified latch 升級為中科院五級分類、單向閂鎖、Admin 降級申請與主管批核流程。  
 > Confirmed decisions: 無機密 / 營業秘密 / 機密 / 極機密 / 絕對機密；上鎖後僅 Admin 可降級；需要主管批核。  

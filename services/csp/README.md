@@ -4,7 +4,7 @@
 
 > English version：[`README.en.md`](./README.en.md)
 
-> 🧭 **本檔對齊 redesign 後現況**（`anila-redesign` 分支）：`services/ apps/ packages/ infra/` 四分頂層結構、根目錄 compose shim（`compose.yaml` → `infra/compose/platform.yml`）、部署腳本落在 `infra/deployment/{scripts,intranet}/`，以及與 CSP 相關的 Slice 2–9 能力（Task 主脊椎、Full Trace、四級分類、Agent Registry、Model Gateway、Service Registry、Artifact 契約）。設計權威在 [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)：憲章 [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) 與本服務主文件 [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)。
+> 🧭 **本檔對齊 redesign 後現況**（`anila-redesign` 分支）：`services/ apps/ packages/ infra/` 四分頂層結構、根目錄 compose shim（`compose.yaml` → `infra/compose/platform.yml`）、部署腳本落在 `infra/deployment/{scripts,intranet}/`，以及與 CSP 相關的 Slice 2–9 能力（Task 主脊椎、Full Trace、四級分類、Agent Registry、Model Gateway、Service Registry、Artifact 契約）。設計沿革（收斂紀錄）在 [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)：憲章 [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) 與本服務主文件 [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 
 ---
 
@@ -198,7 +198,7 @@ CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（exte
 
 ## 10. 相關文件
 
-- 設計權威：[`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — 憲章 [`00`](../../docs/anila-redesign-docs/00-product-constitution.md)、CSP 治理控制面 [`03`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)、Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md)、Agent Registry [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、Service Platform [`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md)、分類閂鎖與政策引擎 [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md)、API / 事件契約 [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)、遷移與開發護欄 [`10`](../../docs/anila-redesign-docs/10-migration-and-development-guardrails.md)。
+- 設計沿革（收斂紀錄）：[`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — 憲章 [`00`](../../docs/anila-redesign-docs/00-product-constitution.md)、CSP 治理控制面 [`03`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)、Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md)、Agent Registry [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、Service Platform [`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md)、分類閂鎖與政策引擎 [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md)、API / 事件契約 [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)、遷移與開發護欄 [`10`](../../docs/anila-redesign-docs/10-migration-and-development-guardrails.md)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 - 平台整體：[`../../README.md`](../../README.md)。
 - 模組邊界契約：[`.importlinter`](./.importlinter)（`infra/ci/lint-boundaries.sh`）。
 

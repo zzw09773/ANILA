@@ -172,7 +172,7 @@ endpoint 的人(純 http NodePort),就能冒充任何使用者。
 ⚠ **各所的文件不另開庫,走 agent 建置。** general 庫只放全院通用的。
 
 ⚠ **「一個」是舊規格,2026-08-07 擁有者裁決改為「可標記多個」**
-(設計:`docs/specs/specs/2026-08-07-anila-institutional-kb-design.md` §2 裁決 1)。
+(設計:`docs/specs/2026-08-07-anila-institutional-kb-design.md` §2 裁決 1)。
 規則:標記是 **admin 動作**、翻轉寫稽核帳;**只有密等「無機密」的院內庫可標記**
 (資料庫 CHECK 擋著,升密前必須先取消標記);`origin='anilalm'` 的個人庫**不可標記**
 (⚠ 早期 `origin` 是 NULL 的舊列擋不到,而那些列在 ANILALM 的架上一樣看得到——標之前先確認來源);

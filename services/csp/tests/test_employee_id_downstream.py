@@ -1,7 +1,7 @@
 """員編下傳:單元測試。
 
 鎖住「送訊息時夾帶員編」設計的不變量(spec:
-docs/specs/specs/2026-06-23-employee-id-downstream-design.md):
+docs/specs/2026-06-23-employee-id-downstream-design.md):
 
 - ``downstream_identity``: 卡登 ``username == 員編`` → 回員編;非卡片帳號
   (admin)/空/格式不符 → None(呼叫端據此**省略**身分 header、不偽造,請求照常)。

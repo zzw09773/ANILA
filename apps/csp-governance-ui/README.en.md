@@ -6,7 +6,7 @@
 
 > 🌿 **Branch note**: The governance center exists on every deployment branch (login method varies by branch; `prod-intranet-card` uses the PKI ID card). See the root [`README.md`](../../README.md) and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
 >
-> Design authority: [`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md), [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md), [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md) models, [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) agents, [`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md) services, [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md) classification, [`12`](../../docs/anila-redesign-docs/12-frontend-visual-redesign.md) visual redesign.
+> Design lineage (convergence record): [`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md), [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md), [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md) models, [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) agents, [`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md) services, [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md) classification, [`12`](../../docs/anila-redesign-docs/12-frontend-visual-redesign.md) visual redesign. Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 
 ---
 
@@ -141,7 +141,7 @@ npm run build          # the only frontend gate (this UI has no unit tests)
 
 ## 7. Related docs
 
-- Design authority: [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution 00 / control plane 03 / models 04 / agents 05 / services 07 / classification 08 / language 11 / visual 12)
+- Design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution 00 / control plane 03 / models 04 / agents 05 / services 07 / classification 08 / language 11 / visual 12). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 - Backend: [`../../services/csp/README.md`](../../services/csp/README.md)
 - Adjacent entries: task center [`../anila-shell/README.en.md`](../anila-shell/README.en.md) · knowledge base / output center [`../anilalm/README.en.md`](../anilalm/README.en.md)
 - Platform: [`../../README.md`](../../README.md) · branch policy [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

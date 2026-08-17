@@ -1,5 +1,7 @@
 # ADR-XXXX: <決策標題>
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的決策紀錄(ADR),保留決策當時的理由與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > Status: proposed | accepted | superseded by ADR-YYYY
 > Date: YYYY-MM-DD
 > Deciders: <拍板者>

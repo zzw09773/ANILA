@@ -1,7 +1,7 @@
 """ImagePrimaryFetcher: 60s TTL 快取 + asyncio.Lock 的 image-primary 讀取。
 
 比照 services/anila-core-router/main.py 的 _refresh_primary 結構;
-行為見 docs/specs/specs/2026-07-06-flux-image-primary-design.md
+行為見 docs/specs/2026-07-06-flux-image-primary-design.md
 §3 與錯誤處理表。
 """
 from __future__ import annotations

@@ -178,6 +178,6 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 
 ## 相關文件
 
-- 重構設計權威：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（`00-product-constitution.md` 憲章、`09-api-event-contracts.md` artifact / trace 合約、`02-system-architecture.md` JobStore 失效模型）
+- 重構設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（`00-product-constitution.md` 憲章、`09-api-event-contracts.md` artifact / trace 合約、`02-system-architecture.md` JobStore 失效模型）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 - Studio / FLUX 主規格：[`../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)
 - 平台整體：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

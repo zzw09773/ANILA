@@ -6,7 +6,7 @@
 
 > 🌿 **分支對照**：治理中心存在於各部署分支（登入方式依分支而異；`prod-intranet-card` 走自然人憑證卡）。分支策略見根目錄 [`README.md`](../../README.md) 與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
 >
-> 設計權威：[`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)（憲章）、[`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)（控制面）、[`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md) 模型、[`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) Agent、[`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md) Service、[`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md) 分類、[`12`](../../docs/anila-redesign-docs/12-frontend-visual-redesign.md) 視覺重設計。
+> 設計沿革（收斂紀錄）：[`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)（憲章）、[`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)（控制面）、[`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md) 模型、[`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) Agent、[`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md) Service、[`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md) 分類、[`12`](../../docs/anila-redesign-docs/12-frontend-visual-redesign.md) 視覺重設計。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 
 ---
 
@@ -141,7 +141,7 @@ npm run build          # 唯一前端閘門（本 UI 無單元測試）
 
 ## 7. 相關文件
 
-- 設計權威：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（憲章 00 / 控制面 03 / 模型 04 / Agent 05 / Service 07 / 分類 08 / 語言 11 / 視覺 12）
+- 設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（憲章 00 / 控制面 03 / 模型 04 / Agent 05 / Service 07 / 分類 08 / 語言 11 / 視覺 12）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 - 後端：[`../../services/csp/README.md`](../../services/csp/README.md)
 - 相鄰入口：任務中心 [`../anila-shell/README.md`](../anila-shell/README.md) · 我的知識庫／產出中心 [`../anilalm/README.md`](../anilalm/README.md)
 - 平台整體：[`../../README.md`](../../README.md) · 分支策略 [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

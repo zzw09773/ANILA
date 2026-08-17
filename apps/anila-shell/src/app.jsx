@@ -938,7 +938,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // or admin-set classification. Drives the warning banner copy
       // and the (lighter-weight) lock icon variant on the sidebar.
       classificationInherited: Boolean(serverRow.classification_inherited),
-      // Slice 3c: five-level classification label (added by the multi-level
+      // Slice 3c: four-level classification label (added by the multi-level
       // classification backend). Absent on boolean-only payloads → the level
       // badge simply renders nothing; the boolean latch above is unaffected.
       classificationLevel: serverRow.classification_level,

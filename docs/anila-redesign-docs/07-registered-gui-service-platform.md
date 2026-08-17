@@ -1,5 +1,7 @@
 # 07. Registered GUI Service Platform
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——redesign 收斂期的設計文件,保留當時的決策與依據,不代表現況。專案權威＝`PLAN.md`(現況與執行順序),規格＝`SYSTEM-MAP.md`。
+
 > Status: draft v0.1  
 > Purpose: 定義其他小組具有 GUI 的服務如何註冊為 ANILA「專案入口」。  
 > Decisions: 其他服務支援院內憑證卡 SSO、自己處理自己的資料、允許 iframe、可成為專案入口、有 Admin 權限者可自行上架。  

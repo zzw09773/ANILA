@@ -1010,7 +1010,7 @@ git commit -m "feat(shell): let the reader force a regulation search when the ro
 
 **Files:**（清單在施工中長大了——以下是收案時的完整集合）
 - Modify: `SYSTEM-MAP.md`（§5「general 知識庫**一個**」→ 可標記多個；擁有者 08-07 裁決）
-- Modify: `docs/specs/specs/2026-08-07-anila-institutional-kb-design.md`
+- Modify: `docs/specs/2026-08-07-anila-institutional-kb-design.md`
   （§2 裁決 3「Router 判斷再搜」→ 依 Q39 修訂為「檢索照門檻走，掛在答案通道」，
   註明 OWNER-QUESTIONS Q39 與時序原因；§8 的重查按鈕補一句 Q40：forced 必不派工）
 - Modify: `PLAN.md`（門檻校準加入內網量測清單：對真 `nv-embed` 校準、trace 要看得見段落數）

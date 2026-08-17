@@ -131,7 +131,7 @@ router (:9000)
 ## Related docs
 
 - Platform: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
-- Redesign design authority: constitution [`../../docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) · runtime/registry protocol [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) · API/event contracts (incl. SSE + `/v1/traces`) [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)
+- Redesign design lineage (convergence record): constitution [`../../docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) · runtime/registry protocol [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) · API/event contracts (incl. SSE + `/v1/traces`) [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 - Multi-service integration (incl. Router role): [`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md)
 - Agent framework architecture: [`../../docs/agent-framework/anila-agent-framework-architecture.md`](../../docs/agent-framework/anila-agent-framework-architecture.md)
 - Runtime foundation (SDK): [`../../packages/anila-core/README.md`](../../packages/anila-core/README.md) · CSP: [`../csp/README.md`](../csp/README.md) · Shell: [`../../apps/anila-shell/README.md`](../../apps/anila-shell/README.md)

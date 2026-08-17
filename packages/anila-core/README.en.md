@@ -117,7 +117,7 @@ packages/anila-core/
 
 ## Redesign capability mapping (what anila-core owns)
 
-Most of the platform's Slice 0–9 capabilities live in CSP / the frontends; anila-core provides only the **runtime producer surface**. Design authority is [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution `00`; runtime/registry domain doc `05`; frozen contracts `09`).
+Most of the platform's Slice 0–9 capabilities live in CSP / the frontends; anila-core provides only the **runtime producer surface**. Design lineage (convergence record) is [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution `00`; runtime/registry domain doc `05`; frozen contracts `09`). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 
 | Capability | What anila-core owns | Code / doc |
 |---|---|---|
@@ -242,7 +242,7 @@ Fixed host rules: deny list (loopback / `169.254.169.254` metadata / mDNS), inte
 
 ## Related docs
 
-- Redesign design authority: [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — constitution [`00`](../../docs/anila-redesign-docs/00-product-constitution.md), runtime/registry protocol [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md), API/event contracts [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md), classification latch [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md), Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md)
+- Redesign design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — constitution [`00`](../../docs/anila-redesign-docs/00-product-constitution.md), runtime/registry protocol [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md), API/event contracts [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md), classification latch [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md), Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 - anila-core boundary: [`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md) · runtime design: [`../../docs/anila-core/anila-core-runtime-design.md`](../../docs/anila-core/anila-core-runtime-design.md)
 - Ingestion platform design: [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · Release notes: [`CHANGELOG.md`](./CHANGELOG.md)
 - RAG agent template: [`../anila-agent/README.md`](../anila-agent/README.md) · Router shell: [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)

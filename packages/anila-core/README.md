@@ -117,7 +117,7 @@ packages/anila-core/
 
 ## Redesign 能力對應(anila-core 承擔的部分)
 
-平台的 Slice 0–9 能力多數落在 CSP / 前端;anila-core 只提供其中的 **runtime 生產者面**。設計權威在 [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)(constitution `00`;runtime/registry 領域文件 `05`;凍結線協定 `09`)。
+平台的 Slice 0–9 能力多數落在 CSP / 前端;anila-core 只提供其中的 **runtime 生產者面**。設計沿革（收斂紀錄）在 [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)(constitution `00`;runtime/registry 領域文件 `05`;凍結線協定 `09`)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 
 | 能力 | anila-core 承擔的面向 | 程式碼 / 文件 |
 |---|---|---|
@@ -244,7 +244,7 @@ host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、i
 
 ## 相關文件
 
-- Redesign 設計權威:[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — constitution [`00`](../../docs/anila-redesign-docs/00-product-constitution.md)、runtime/registry 協定 [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、API/事件凍結線 [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)、分類 latch [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md)、Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md)
+- Redesign 設計沿革（收斂紀錄）:[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — constitution [`00`](../../docs/anila-redesign-docs/00-product-constitution.md)、runtime/registry 協定 [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、API/事件凍結線 [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)、分類 latch [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md)、Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 - anila-core 邊界:[`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md) · runtime 設計:[`../../docs/anila-core/anila-core-runtime-design.md`](../../docs/anila-core/anila-core-runtime-design.md)
 - Ingestion 平台設計:[`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · 詳細 release notes:[`CHANGELOG.md`](./CHANGELOG.md)
 - 官方 RAG agent template:[`../anila-agent/README.md`](../anila-agent/README.md) · Router 薄殼:[`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
