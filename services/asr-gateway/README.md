@@ -59,7 +59,7 @@ server → client(皆 JSON text frame):
 
 ## 認證
 
-結構逐條移植 anila-studio(RS256 + JWKS 本地驗章、session envelope 檢查、拒絕
+結構逐條移植 anila-studio(RS256 + JWKS 本地驗章、演算法白名單與 kid 必填、拒絕
 refresh token、fail-closed 撤銷查核)。長連線特有的兩點:
 
 - **cookie 名固定**:`anila_access_token`。平台的 CSP 只發這一個 cookie；瀏覽器的
@@ -68,6 +68,9 @@ refresh token、fail-closed 撤銷查核)。長連線特有的兩點:
 - **撤銷長連線重查**:握手驗過後,每 `REVOCATION_RECHECK_SECONDS`(預設 30s)
   對 in-memory 撤銷 cache 重查一次;查到 revoked → close 4401。token 過期則
   是明確的接受決策(握手驗一次,session 上限 300s ≪ access token 60 分鐘)。
+
+⚠ **session assurance(`sid`/`amr`/`acr`/`auth_time`)刻意不驗** —— csp 從不簽這些 claim,
+驗了就是全院被擋在門外。詳見 `app/auth.py` 檔頭與 `docs/runbooks/asr-voice-input.md` §7。
 
 ⚠ **`app/services/jwks_client.py` 與 `revocation_cache.py` 是 anila-studio 的
 vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,反之亦然 ——

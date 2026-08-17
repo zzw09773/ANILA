@@ -8,7 +8,7 @@
 
 ## 0. 先讀這一段:麥克風按鈕是自己決定要不要出現的
 
-前端**沒有**「有沒有語音」的建置旗標。`apps/anila-shell/src/asr/asrStream.js:418`
+前端**沒有**「有沒有語音」的建置旗標。`apps/anila-shell/src/asr/asrStream.js:442`
 的 `probeAsrAvailable()` 在載入時打一次 `GET /asr/health`:
 
 | `/asr/health` | 前端行為 |
@@ -61,7 +61,7 @@ docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
 **最後那一步不能省。** nginx 的上游位址只在載入設定時解析一次,新起的容器拿到新 IP,
 沒 reload 的話 nginx 會一直打舊 IP → **全站 502 但每個容器都顯示 healthy**。
 這棵樹已經被這件事咬過三次。`infra/deployment/scripts/deploy-prod.sh` 的
-`reload_nginx()`(:281)就是同一個機制。
+`reload_nginx()`(:320)就是同一個機制。
 
 要讓它變成常駐(這樣裸跑 `docker compose up -d` 也會帶上語音),在 `.env` 加:
 
@@ -112,7 +112,7 @@ decoder 的權重**刻意不烘進 image**(換模型尺寸不必重 build,image 
 由 compose 以唯讀 volume 掛進 `/var/anila/asr-models`,預設來源是
 `models/model/asr-models/`(`models/model/*` 已被 `.gitignore`,權重不進 git)。
 
-`ASR_LOCAL_FILES_ONLY=1`(預設)= 禁止任何對 HuggingFace 的出向請求。內網一定要維持 1:
+`ASR_LOCAL_FILES_ONLY=1`(**compose 預設**,`platform.yml:885`;程式預設是 0)= 禁止任何對 HuggingFace 的出向請求。內網一定要維持 1:
 權重缺了要當場 fail loud,而不是卡在 DNS timeout 讓 health 永遠不 ready。
 
 **在有網路的機器上暖快取**(內網請改用離線 bundle):
@@ -177,6 +177,7 @@ docker exec anila-restart-asr-gateway-1 \
 csp_registry_stale)、`decode_credential_source`(env / csp_registry)。
 `reason` 分三種病因:`decoder_unreachable`(連不到)、`decoder_unauthorized`(**金鑰錯**,
 不要去查網路)、`decoder_not_ready`(對方在載模型或被限流)。
+其餘 reason 不是解碼端的問題:`ok`(健康)、`revocation_not_ready`(撤銷清單未同步,見 §5B)、`csp_unreachable` / `csp_stale`(治理中心指派拿不到,gateway 拒用 env 退路)。
 
 ⚠ csp 容器沒裝 `curl`,用上面的 `python3 -c` 版本;`curl` 回空是假陰性。
 
@@ -398,15 +399,16 @@ WS 的 close code 就是診斷碼(定義見 `services/asr-gateway/README.md`):
 
 2026-07-31 對 `services/asr-gateway/app/` 與 `services/asr-decoder/app/` 全樹稽核結果:
 
-- **零檔案寫入** —— 沒有任何 `open()`、`tempfile`、`NamedTemporaryFile`、`aiofiles`、`shutil`。
+- **零檔案落地** —— 沒有任何 `tempfile`、`NamedTemporaryFile`、`aiofiles`、`shutil`;唯一的 `open()` 是 `app/wav.py:41` 的 `wave.open()`,寫入的是記憶體 `io.BytesIO`,不碰磁碟。
 - **零資料庫** —— 兩個服務都沒有 DB 連線(gateway 只用 Redis,而且只是
   **訂閱**撤銷事件 + 定期對帳,不寫任何東西)。
 - **日誌只記 metadata** —— 全部 30 餘處 log 呼叫逐一看過,沒有一處把 `text`
   (逐字稿)或音訊位元組帶進去。decoder 那行刻意只記
   `kind` / `samples` 數量 / `decode_seconds`(`services/asr-decoder/app/main.py:179`),
   上面還留著「辨識內容等同對話內容」的註解。
-- **出向目的地只有三個**,全都不含音訊或逐字稿以外的用途:
-  decoder 的 `/transcribe`、csp 的 JWKS、csp 的撤銷清單。
+- **出向目的地只有四個**,全都不含音訊或逐字稿以外的用途:
+  decoder 的 `/transcribe`(native 探針另打 `/health`)、csp 的 JWKS、csp 的撤銷清單、
+  csp 的 `/api/models/asr-primary`(2026-08-05 起的解碼端指派,`app/decode_endpoint.py:190`)。
 - PCM 只在記憶體流轉:`decode_client.py` 把 samples 轉 bytes 後直接進 HTTP body,不落地。
 
 改動這兩個服務時請維持這條線;要加診斷 log,記得**不要**把 `result["text"]` 印出來。
@@ -424,7 +426,7 @@ WS 的 close code 就是診斷碼(定義見 `services/asr-gateway/README.md`):
 
 1. **Cookie 名稱對不上(已修)。**
    csp 一律簽發 `anila_access_token`
-   (`services/csp/app/middleware/cookies.py:33`,與 `COOKIE_SECURE` 無關);
+   (`services/csp/app/middleware/cookies.py:34`,與 `COOKIE_SECURE` 無關);
    `anila-studio` 也只讀這個名字(`services/anila-studio/app/auth.py:38`)。
    舊 gateway 在 `COOKIE_SECURE=true` 時找 `__Host-anila_access_token`,false 時找
    `anila_dev_access_token`——兩個名字平台上從來沒人簽發。現在改為只讀
