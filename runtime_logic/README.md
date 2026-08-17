@@ -1,5 +1,7 @@
 # runtime_logic — agent runtime 參考原始碼快照
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】——`runtime_logic/` 是 reference-only 參考快照(見 `AGENTS.md` §2),不可當 runtime import 或部署來源。現行狀態與執行順序見 `PLAN.md`。
+
 > Agent runtime 的「設計參考目錄」：收兩份生產級 runtime 的原始碼快照，供 ANILA 對照、借鑑、把好的 design pattern 翻譯成 Python 後納入 `packages/anila-core/` 與 agent template。**這不是執行碼。**
 
 > English mirror：[`README.en.md`](./README.en.md)

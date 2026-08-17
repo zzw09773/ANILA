@@ -1,5 +1,7 @@
 # anila-core 邊界 — Task 3 執行 Spec
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 **Status**: Ready for execution as part of Ingestion Platform Sprint 1
 **Date**: 2026-04-25
 **Parent doc**: [`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md) §12

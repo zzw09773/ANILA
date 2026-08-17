@@ -3,7 +3,7 @@
 > Status: accepted
 > Date: 2026-07-02
 > Deciders: ANILA system owner（佈局策略）＋ Claude（現場 disposition，依偵察證據）
-> Related: doc 10 §17.1、`docs/superpowers/plans/2026-07-02-anila-redesign-master.md`、commit b5c5e32
+> Related: doc 10 §17.1、`docs/specs/plans/2026-07-02-anila-redesign-master.md`、commit b5c5e32
 
 ## 背景
 

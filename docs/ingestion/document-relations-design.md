@@ -1,5 +1,7 @@
 # Document Relations — 跨文件關聯檢索設計（Phase 1: 文件級 + regex 引用抽取）
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > **Status**: design spec v2 — codex review (2026-06-09, AGREE WITH CHANGES) 已吸收，awaiting sign-off
 > **Scope**: ANILA Ingestion / RAG
 > **Read alongside**: [`ingestion-platform-design.md`](./ingestion-platform-design.md)、[`parent-child-rag-design.md`](./parent-child-rag-design.md)

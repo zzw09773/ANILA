@@ -1,5 +1,7 @@
 # ANILA `docs/` 文件索引
 
+> ⚠ 2026-08-17 盤點：**本索引已過期,內容停在 2026-07-02**——其後新增的文件(HANDOFF 系列、`runbooks/`、`designs/`、`specs/`、`ui-sweep/` 等)未列入,且下方「prod 分支／main 分支」的說法源自**已不存在的多分支模型**。現行狀態與執行順序見 `PLAN.md`;目錄結構請以實際檔案樹為準。
+
 > ANILA 平台技術 / 治理文件總入口。實作 source 在 repo 各子專案,本目錄是「為什麼這樣做」的記錄處。
 >
 > ⚠️ **這是 prod 分支(中科院內網部署版)的 docs**,比 main 分支多 `governance/` / `runbooks/` / `branch-sync-backlog.md` 等 prod-only 文件。同步策略見 [`branch-sync-backlog.md`](./branch-sync-backlog.md)。
@@ -42,7 +44,7 @@ docs/
 ├── onyx/                       <-- onyx 應用計畫 / API spec (handover) (2 份)
 ├── briefing/                   <-- 對外簡報 / RFC (1 份)
 ├── changelog/                  <-- 重大變更紀錄 (1 份)
-└── superpowers/                <-- studio-flux / studio-wizard / anila-studio 子計畫
+└── specs/                      <-- studio-flux / studio-wizard / anila-studio 子計畫（原名 superpowers/，2026-08-17 更名）
     ├── studio-flux/            <-- FLUX 圖像生成 Stage 1-4 spec / plans / history
     ├── studio-wizard/          <-- studio 嚮導模式設計
     ├── anila-studio/           <-- anila-studio 抽取決策
@@ -105,9 +107,9 @@ docs/
 
 | 我想知道… | 看這份 |
 |---|---|
-| **anila-studio 為何要從 csp 抽出** | [`superpowers/anila-studio/`](./superpowers/anila-studio/) |
-| **FLUX 圖像生成 4 階段(rewriter / quality gate / deck style / use case routing)** | [`superpowers/studio-flux/`](./superpowers/studio-flux/) |
-| **Studio 嚮導模式(theme override)** | [`superpowers/studio-wizard/`](./superpowers/studio-wizard/) |
+| **anila-studio 為何要從 csp 抽出** | [`specs/anila-studio/`](./specs/anila-studio/) |
+| **FLUX 圖像生成 4 階段(rewriter / quality gate / deck style / use case routing)** | [`specs/studio-flux/`](./specs/studio-flux/) |
+| **Studio 嚮導模式(theme override)** | [`specs/studio-wizard/`](./specs/studio-wizard/) |
 
 ### 其他
 
@@ -125,7 +127,7 @@ docs/
 - 每份文件頂端標 **狀態**(Active / Stable / Deprecated)+ **last updated**
 - 同主題的 sibling docs 用 `**Companion docs**:` 列在頂端
 - 跨 subdir 連結用 `../<subdir>/<file>.md` 相對路徑
-- 重大變更走 PR review;過時文件不直接刪,改放 `superpowers/<topic>/history/` 或加 `[ARCHIVED]` 前綴
+- 重大變更走 PR review;過時文件不直接刪,改放 `specs/<topic>/history/` 或加 `[ARCHIVED]` 前綴
 - **prod-only 文件**(governance / runbooks / branch-sync-backlog)不要 cherry-pick 回 main
 - 文件結構同步策略:main 重組 docs/ 時(例:把根目錄 `.md` 收進 `<topic>/` 子目錄),prod 跟著對齊,以免兩邊路徑漂移後 cross-link 全壞
 

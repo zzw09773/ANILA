@@ -1,5 +1,7 @@
 # openai-agents-python — deep dive for ANILA platform enhancement
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > **Source**: `runtime_logic/openai-agents-python/` (gitignored；本機快照)
 > **Version studied**: src/agents/ 截至 2026-05-02 (RunState schema 1.9)
 > **Status**: 為 anila-core 與 AgenticRAG 兩個 consumer 提供「該讀什麼、該翻什麼介面、該長在哪一層」的對照地圖

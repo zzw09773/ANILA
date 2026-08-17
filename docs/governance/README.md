@@ -1,5 +1,7 @@
 # ANILA Governance(AI 治理文件)
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】——治理設計多已由 `SYSTEM-MAP.md` 收斂。現行狀態與執行順序見 `PLAN.md`。
+
 > ANILA 平台對 **ISO/IEC 42001:2023(AI Management System)** 的合規文件集。
 >
 > **主索引**:[`iso-42001-compliance.md`](./iso-42001-compliance.md) — 條款 vs 實作對照、Annex A 反向 mapping、差距收斂計畫。

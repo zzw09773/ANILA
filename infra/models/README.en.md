@@ -116,6 +116,6 @@ CSP's **Model Gateway (治理中心, [doc 04](../../docs/anila-redesign-docs/04-
 
 ## Related docs
 
-- FLUX services: [`services/flux2-dev`](../../services/flux2-dev/README.en.md), [`services/flux2-dev-agent`](../../services/flux2-dev-agent/README.en.md) · FLUX spec & licensing: [`ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) (§9 licensing landmines: FLUX.2-dev is BFL Non-Commercial, klein-4B is the clean Apache-2.0 alternative)
+- FLUX services: [`services/flux2-dev`](../../services/flux2-dev/README.en.md), [`services/flux2-dev-agent`](../../services/flux2-dev-agent/README.en.md) · FLUX spec & licensing: [`ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md) (§9 licensing landmines: FLUX.2-dev is BFL Non-Commercial, klein-4B is the clean Apache-2.0 alternative)
 - Redesign docs: [`04-model-gateway-design.md`](../../docs/anila-redesign-docs/04-model-gateway-design.md), [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)
 - Deploy scripts: `infra/deployment/intranet/model-serve.sh` (model lifecycle), `infra/deployment/scripts/deploy-prod.sh` (platform lifecycle) · Platform overview: [`../../README.md`](../../README.md)

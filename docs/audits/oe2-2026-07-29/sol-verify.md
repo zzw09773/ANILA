@@ -1,3 +1,5 @@
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——稽核報告,保留當時的判定與依據,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 結論：10 項 CONFIRMED、9 項 PARTIAL、0 項完全 REFUTED。PARTIAL 都是核心缺口存在，但原主張忽略反證或說得過滿。全程唯讀，未修改檔案、未執行 Git 操作。
 
 1. **CONFIRMED** — `rg -ni 'task|任務|狀態機|快照' SYSTEM-MAP.md` 為零；同義詞僅見「派工」於 105/114/138/150/303/396，未定義持久化 Task／狀態機／快照；[SYSTEM-MAP.md:211](/home/c1147259/桌面/ANILA/anila-restart-20260729/ANILA/SYSTEM-MAP.md:211) 確實寫「一張表加幾個索引。不需要 span 樹、parent 關係、trace id。」

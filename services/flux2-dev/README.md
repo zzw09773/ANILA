@@ -51,7 +51,7 @@ Response:
 
 ## `/generate` 合約
 
-依 ANILA Studio FLUX Stage 1（[spec §3.2](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)），`/generate` 回傳 **JSON**（base64 PNG list + audit meta），**非**原始 `image/png` bytes。合約 model-agnostic（flux2-dev 與 klein-4B 通用）。
+依 ANILA Studio FLUX Stage 1（[spec §3.2](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)），`/generate` 回傳 **JSON**（base64 PNG list + audit meta），**非**原始 `image/png` bytes。合約 model-agnostic（flux2-dev 與 klein-4B 通用）。
 
 | 端點 | 方法 | 說明 |
 |------|------|------|
@@ -169,7 +169,7 @@ curl -s localhost:8000/health                       # {"status":"ok"}
 
 ## 授權注意（重要）
 
-依 [spec §9](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)：
+依 [spec §9](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)：
 
 - **`black-forest-labs/FLUX.2-dev` 為 BFL Non-Commercial License**，內部商用屬灰色地帶——上 production 前請法務確認「公司內部工具」是否落在授權範圍。
 - **`FLUX.2-klein-4B` 為 Apache-2.0**，是法律上最乾淨的本地替代（畫質略降、延遲更低）。本服務合約 model-agnostic，換模型不需改 `/generate` 契約。
@@ -179,6 +179,6 @@ curl -s localhost:8000/health                       # {"status":"ok"}
 
 ## 相關文件
 
-- FLUX 規格：[`ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)（§3.2 `/generate` 合約、§9 授權雷區）
+- FLUX 規格：[`ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)（§3.2 `/generate` 合約、§9 授權雷區）
 - agent 包裝層：[`flux2-dev-agent`](../flux2-dev-agent/README.md) · 模型 stack：[`infra/models`](../../infra/models/README.md)
 - 重設計文件：[`05-agent-registry-and-runtime-protocol.md`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、[`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)

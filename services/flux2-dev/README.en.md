@@ -51,7 +51,7 @@ Response:
 
 ## `/generate` contract
 
-Per ANILA Studio FLUX Stage 1 ([spec §3.2](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)), `/generate` returns **JSON** (base64 PNG list + audit meta), **not** raw `image/png` bytes. The contract is model-agnostic (same for flux2-dev and klein-4B).
+Per ANILA Studio FLUX Stage 1 ([spec §3.2](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)), `/generate` returns **JSON** (base64 PNG list + audit meta), **not** raw `image/png` bytes. The contract is model-agnostic (same for flux2-dev and klein-4B).
 
 | Endpoint | Method | Notes |
 |----------|--------|-------|
@@ -168,7 +168,7 @@ Built and served by the `anila-models` model stack (build context `../../service
 
 ## License caveat (important)
 
-Per [spec §9](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md):
+Per [spec §9](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md):
 
 - **`black-forest-labs/FLUX.2-dev` is under the BFL Non-Commercial License**; internal commercial use is a grey area — have legal confirm whether an "internal company tool" falls within scope before going to production.
 - **`FLUX.2-klein-4B` is Apache-2.0**, the cleanest local alternative (slightly lower quality, lower latency). This service's contract is model-agnostic, so swapping models needs no `/generate` change.
@@ -178,6 +178,6 @@ Per [spec §9](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md):
 
 ## Related docs
 
-- FLUX spec: [`ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) (§3.2 `/generate` contract, §9 licensing landmines)
+- FLUX spec: [`ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md) (§3.2 `/generate` contract, §9 licensing landmines)
 - Agent wrapper: [`flux2-dev-agent`](../flux2-dev-agent/README.en.md) · Model stack: [`infra/models`](../../infra/models/README.en.md)
 - Redesign docs: [`05-agent-registry-and-runtime-protocol.md`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md), [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)

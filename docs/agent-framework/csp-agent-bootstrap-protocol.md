@@ -1,5 +1,7 @@
 # ⚠ SUPERSEDED BY P2.1（2026-08-01）— 請先讀本節
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > **本文件下方的 wire protocol（`bsk-`→`csk-` bootstrap、`X-CSP-Service-Token`、
 > 靜態 `CSP_SERVICE_TOKEN`）已由 P2.1 取代，不再是現行上手路徑。**
 >

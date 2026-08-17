@@ -1,7 +1,7 @@
 # 設定總覽頁 — 實作計畫
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development。
-> 規格權威＝`docs/superpowers/specs/2026-08-08-settings-page-design.md`（含 08-08 三項追加裁決）。
+> 規格權威＝`docs/specs/specs/2026-08-08-settings-page-design.md`（含 08-08 三項追加裁決）。
 > 盤點權威＝env 盤點報告（692 行，**不在 repo**；隨 SDD 工作區存放，路徑見帳本首行注記）。
 
 **Goal:** 管理員在治理中心看到 csp 全部 95 顆設定的真相（值、預設、來源、生效條件），
@@ -261,7 +261,7 @@ A（名稱＋`is_set`，永無值）。每列：`effective`／`stored`／`pendin
    - 🆕 A 類的 `updated_at`／`updated_by` 後端仍會回（值本身遮蔽了，metadata 沒有）。
    - 🆕 鎖定區 51 列無分頁／搜尋（可用性，非誠實性；擁有者可裁）。
    - 🆕 `dev.yml:121-123`／`:242` 仍留著已退役的旋鈕（Task 7 範圍外，待掃）。
-3. `docs/superpowers/specs/2026-08-08-settings-page-design.md`：與**實際出貨**對齊
+3. `docs/specs/specs/2026-08-08-settings-page-design.md`：與**實際出貨**對齊
    （分類最終數字 C19／B_EDIT19／B_LOCKED19／SEC25／A13＋別名；B 類機制＝開機覆蓋；
    校準畫面缺口那條沿用既有寫法）。⚠ 原句保留可讀，用「原句…實際出貨…」形。
 4. `docs/OWNER-QUESTIONS.md`：Q41 補一句「已實作，範圍見設計文件」。

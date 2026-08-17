@@ -1,5 +1,7 @@
 # OW-1 Implementation Blueprint — Message History Tree (branching)
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——OW 藍圖,該板已關。現行狀態與執行順序見 `PLAN.md`。
+
 > Authored by feature-dev:code-architect (opus), 2026-07-30. Saved verbatim by commander.
 > Repo: `/home/c1147259/桌面/ANILA/anila-restart-20260729/ANILA`, branch `restart/from-redesign`. Alembic head `r1_0011` → new `r1_0012`.
 > ⚠ Commander correction to §7 sequencing note: OE-4 DOES overlap on `api/conversations.py`, `services/conversation_service.py`, `api/public_share.py` (share gate/read-audit/search-audit sites). WP-A must be dispatched from the post-OE-4-merge HEAD.

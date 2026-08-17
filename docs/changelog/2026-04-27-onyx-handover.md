@@ -1,5 +1,7 @@
 # Onyx Handover — Out of Monorepo
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 **Date:** 2026-04-27
 **Operator:** kunggemini09773
 **Affected refs:** all branches + tags

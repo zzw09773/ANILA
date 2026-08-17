@@ -1,5 +1,7 @@
 # Onyx Target System API Spec
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 **對方業務系統 → ANILA Onyx Agent 接入 API 規格**
 
 | 欄位 | 內容 |

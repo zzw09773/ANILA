@@ -1,5 +1,7 @@
 # ANILA AI 政策(AI Policy)
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】——治理設計多已由 `SYSTEM-MAP.md` 收斂。現行狀態與執行順序見 `PLAN.md`。
+
 > **狀態**:Draft v1(2026-05-16),待平台 leader 簽核。
 >
 > **對應 ISO/IEC 42001:2023**:Clause 5.2 + Annex A.2.2 / A.2.3 / A.6.1.3 / A.9.3

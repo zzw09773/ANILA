@@ -1,5 +1,7 @@
 # ANILA Branch Sync Backlog
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】——**它所追蹤的多分支模型已不存在**。2026-07-28 重啟後專案是單一開發線 `restart/from-redesign`,舊分支模型已進 attic。現行狀態與執行順序見 `PLAN.md`。
+
 兩條長期維護的 branch 之間的同步狀態與待辦清單。每次有 commit 落地,**立刻評估是否要同步另一邊**,並在這份檔記錄。目的是避免兩條線長期漂移後變成完全不同的產品。
 
 > Initial backlog created 2026-05-18,在 prod (中科院) 與 feature/no-sso (國軍交付) 雙線結構正式確立後。

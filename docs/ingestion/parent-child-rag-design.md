@@ -1,5 +1,7 @@
 # Parent-child RAG retrieval — design doc
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > **Status**: review-passed, ready to schedule
 > **Author**: Sprint 8 X follow-up → Sprint 9 X candidate
 > **Last updated**: 2026-05-02

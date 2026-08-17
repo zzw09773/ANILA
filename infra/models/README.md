@@ -115,6 +115,6 @@ CSP 的 **Model Gateway（治理中心，[doc 04](../../docs/anila-redesign-docs
 
 ## 相關文件
 
-- FLUX 服務：[`services/flux2-dev`](../../services/flux2-dev/README.md)、[`services/flux2-dev-agent`](../../services/flux2-dev-agent/README.md) · FLUX 規格與授權：[`ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)（§9 授權雷區：FLUX.2-dev 為 BFL Non-Commercial，klein-4B 為 Apache-2.0 的乾淨替代）
+- FLUX 服務：[`services/flux2-dev`](../../services/flux2-dev/README.md)、[`services/flux2-dev-agent`](../../services/flux2-dev-agent/README.md) · FLUX 規格與授權：[`ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)（§9 授權雷區：FLUX.2-dev 為 BFL Non-Commercial，klein-4B 為 Apache-2.0 的乾淨替代）
 - 重設計文件：[`04-model-gateway-design.md`](../../docs/anila-redesign-docs/04-model-gateway-design.md)、[`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)
 - 部署腳本：`infra/deployment/intranet/model-serve.sh`（模型生命週期）、`infra/deployment/scripts/deploy-prod.sh`（平台生命週期） · 平台整體：[`../../README.md`](../../README.md)

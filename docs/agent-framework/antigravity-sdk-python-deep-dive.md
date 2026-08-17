@@ -1,5 +1,7 @@
 # Google Antigravity SDK (Python) Deep Dive — for `anila-agent` template integration
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > **Status**: 完成深度分析，提供 borrow / skip 決策清單
 > **Date**: 2026-05-26
 > **Analyser**: ANILA 平台 sub-agent runtime 分析師

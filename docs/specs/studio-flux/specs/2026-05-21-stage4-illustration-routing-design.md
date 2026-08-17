@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-21
 **Branch:** feature/studio-flux
-**Spec context:** `docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md` §7（Stage 4 — 全用途上線）
+**Spec context:** `docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md` §7（Stage 4 — 全用途上線）
 **Status:** 設計已核准，待寫實作計畫
 
 ---

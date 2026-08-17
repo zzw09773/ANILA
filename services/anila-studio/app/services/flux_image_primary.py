@@ -1,6 +1,6 @@
 """FLUX image-primary fetcher — 執行期向 csp 拉主圖像模型的端點/model,
 60 秒 TTL 快取,anila-studio 不重啟即可跟著管理員在 ModelsView 的設定換
-FLUX 端點(見 docs/superpowers/specs/2026-07-06-flux-image-primary-design.md
+FLUX 端點(見 docs/specs/specs/2026-07-06-flux-image-primary-design.md
 §4)。
 
 結構完全比照 ``services/anila-core-router/main.py`` 的

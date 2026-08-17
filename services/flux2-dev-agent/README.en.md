@@ -124,6 +124,6 @@ Built and served by the `anila-models` model stack (build context `../../service
 ## Related docs
 
 - Inference backend: [`flux2-dev`](../flux2-dev/README.en.md) · Model stack: [`infra/models`](../../infra/models/README.en.md)
-- FLUX spec: [`ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) (§3.2 `/generate` contract)
+- FLUX spec: [`ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md) (§3.2 `/generate` contract)
 - Router dispatch: [`anila-core-router`](../anila-core-router/README.en.md)
 - Redesign docs: [`05-agent-registry-and-runtime-protocol.md`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md), [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)

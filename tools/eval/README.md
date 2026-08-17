@@ -1,5 +1,7 @@
 # Golden-set 離線評測（prompt 行為迴歸）
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 把提示詞改動變成可量化的 PASS/FAIL。題庫種子來自
 `docs/designs/ncsist-prompt-localization-and-harness.md` §9a 活體發現
 （框架／紀年／要職／引用／良性國防／簡體輸入→繁體輸出）。

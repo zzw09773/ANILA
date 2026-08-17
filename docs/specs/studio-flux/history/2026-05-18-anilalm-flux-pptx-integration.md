@@ -1482,7 +1482,7 @@ a cached image, delete the file under `$FLUX_CACHE_DIR`.
 Edit `docs/planning/branch-sync-backlog.md`. Under "變更紀錄" add a line:
 
 ```markdown
-- **2026-05-18** — Phase 6: ANILALM × FLUX pptx integration plan written (`docs/superpowers/plans/2026-05-18-anilalm-flux-pptx-integration.md`). 10 tasks, ~31 unit tests. Implementation pending.
+- **2026-05-18** — Phase 6: ANILALM × FLUX pptx integration plan written (`docs/specs/plans/2026-05-18-anilalm-flux-pptx-integration.md`). 10 tasks, ~31 unit tests. Implementation pending.
 ```
 
 - [ ] **Step 10.3: Commit**

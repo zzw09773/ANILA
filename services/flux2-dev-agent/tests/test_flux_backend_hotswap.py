@@ -1,5 +1,5 @@
 """Integration coverage for 「執行期向 csp 拉取 FLUX 端點/模型」(見
-docs/superpowers/specs/2026-07-06-flux-image-primary-design.md §3):
+docs/specs/specs/2026-07-06-flux-image-primary-design.md §3):
 
   - csp 有值時優先於 env,且 60 秒內第二次生圖不重打 csp。
   - csp 404 → fallback env,且不炸。

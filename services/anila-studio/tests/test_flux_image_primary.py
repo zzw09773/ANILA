@@ -3,7 +3,7 @@
 比照 services/anila-core-router/main.py 的 ``_refresh_primary`` /
 ``_ensure_primary`` 結構:studio 執行期向 csp 拉 image-primary(admin 在
 ModelsView 標記的主圖像模型),60 秒內不重打 csp;404/連線失敗/401/403
-的行為見 docs/superpowers/specs/2026-07-06-flux-image-primary-design.md
+的行為見 docs/specs/specs/2026-07-06-flux-image-primary-design.md
 的錯誤處理表。
 
 認證沿用 studio 既有的 service-token 機制(``settings.CSP_SERVICE_TOKEN``

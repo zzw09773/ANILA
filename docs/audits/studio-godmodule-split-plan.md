@@ -1,5 +1,7 @@
 # studio.py god-module 拆分計畫 — 2026-06-02
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——稽核報告,保留當時的判定與依據,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 `anila-studio/app/api/studio.py` 原 3102 行。目標:拆成多個 cohesive 模組,
 studio.py 只留 endpoints + `_run_pipeline` 編排(目標 ~300-500 行)。
 

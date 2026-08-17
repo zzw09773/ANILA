@@ -124,6 +124,6 @@ cd services/flux2-dev-agent && ../../.venv/bin/python -m pytest -q
 ## 相關文件
 
 - 推論後端：[`flux2-dev`](../flux2-dev/README.md) · 模型 stack：[`infra/models`](../../infra/models/README.md)
-- FLUX 規格：[`ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)（§3.2 `/generate` 合約）
+- FLUX 規格：[`ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)（§3.2 `/generate` 合約）
 - Router 分派：[`anila-core-router`](../anila-core-router/README.md)
 - 重設計文件：[`05-agent-registry-and-runtime-protocol.md`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、[`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)

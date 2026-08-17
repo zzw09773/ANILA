@@ -1,5 +1,7 @@
 # openai-agents-python — anila-agent template deep dive
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > **目的**：以 `anila-agent` 這個 sub-agent template 的視角,逐 module 對照最新解壓的 openai-agents SDK source,找出 **anila-agent 還沒用、應該借鑑、且工程可行** 的設計 pattern。
 >
 > **Source 位置**：`/home/aia/c1147259/ANILA/anila-agent/templete/openai-agents-python/` (本機,gitignored)

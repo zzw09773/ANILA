@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, pytest + pytest-asyncio。backend venv：`myCSPPlatform/backend/.venv`。
 
-**Spec:** `docs/superpowers/studio-flux/specs/2026-05-21-stage4-illustration-routing-design.md`
+**Spec:** `docs/specs/studio-flux/specs/2026-05-21-stage4-illustration-routing-design.md`
 
 **所有指令於 `myCSPPlatform/backend/` 下執行，python 用 `.venv/bin/python`。git attribution 全域關閉、勿加 Co-Authored-By、勿用 --no-verify。**
 

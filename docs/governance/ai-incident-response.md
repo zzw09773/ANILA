@@ -1,5 +1,7 @@
 # AI 事件回應(Incident Response)
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】——治理設計多已由 `SYSTEM-MAP.md` 收斂。現行狀態與執行順序見 `PLAN.md`。
+
 > **狀態**:Draft v1(2026-05-16)
 >
 > **對應 ISO/IEC 42001:2023**:Clause 10.1(nonconformity & corrective action)+ Annex A.3.3 / A.8.3 / A.8.4

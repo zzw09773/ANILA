@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-21
 **Branch:** feature/studio-flux
-**Spec context:** `docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md` §5（Stage 2 — Quality Gate / Layer C）
+**Spec context:** `docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md` §5（Stage 2 — Quality Gate / Layer C）
 **Status:** 設計已核准，待寫實作計畫
 
 ---

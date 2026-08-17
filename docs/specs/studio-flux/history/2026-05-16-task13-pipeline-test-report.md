@@ -312,7 +312,7 @@ Per-image things to look for:
 - `models/docker-compose.yml` — flux2-dev-agent healthcheck now uses
   urllib instead of curl
 - `share-dev/uploads/flux/quality-test/01_*.png` … `20_*.png` (test artifacts)
-- `docs/superpowers/plans/2026-05-16-task13-pipeline-test-report.md` (this file)
+- `docs/specs/plans/2026-05-16-task13-pipeline-test-report.md` (this file)
 - `/tmp/quality_test.py` (test harness, not committed)
 - `/tmp/quality_test_results.json` (test artifact, not committed)
 

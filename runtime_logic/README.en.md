@@ -1,5 +1,7 @@
 # runtime_logic — agent runtime reference source snapshots
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】——`runtime_logic/` 是 reference-only 參考快照(見 `AGENTS.md` §2),不可當 runtime import 或部署來源。現行狀態與執行順序見 `PLAN.md`。
+
 > The agent runtime "design reference directory": holds source snapshots of two production-grade runtimes for ANILA to study, borrow from, and translate good design patterns into Python for `packages/anila-core/` and the agent template. **This is not executable code.**
 
 > 中文版本：[`README.md`](./README.md)

@@ -5,7 +5,7 @@ generation requests don't stampede CSP.
 Structure mirrors ``services/anila-core-router/main.py``'s
 ``_refresh_primary`` (same TTL-gated refresh, same
 "X-CSP-Service-Token" header). See
-``docs/superpowers/specs/2026-07-06-flux-image-primary-design.md``
+``docs/specs/specs/2026-07-06-flux-image-primary-design.md``
 §3 and its 錯誤處理表 for the exact behaviour this implements:
 
     csp 200             -> cache (endpoint_url, name); authoritative,

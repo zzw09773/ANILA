@@ -121,7 +121,7 @@ OpenAPI 是 backend authoritative source,codegen 結果 check-in 讓 PR diff 看
 
 ## References
 
-- Plan v2 設計文件:`docs/superpowers/anila-studio/plans/2026-05-23-extraction-plan.md`
-- E2E runbook:`docs/superpowers/anila-studio/plans/2026-05-23-e2e-runbook.md`
+- Plan v2 設計文件:`docs/specs/anila-studio/plans/2026-05-23-extraction-plan.md`
+- E2E runbook:`docs/specs/anila-studio/plans/2026-05-23-e2e-runbook.md`
 - Baseline:`anila-studio/MIGRATION_BASELINE.md`
 - anila-studio README:`anila-studio/README.md`

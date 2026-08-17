@@ -1,5 +1,7 @@
 # anila-agent-framework — Porting Decisions
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > **⚠ SUPERSEDED — 2026-05-02 v2**
 > **This doc was the first-draft porting plan**. After review with the team, scope shifted from "selective port of openai-agents-python" to "synthesis of openai-agents + claude-code patterns into a clean-slate design." See **[`anila-agent-framework-architecture.md`](anila-agent-framework-architecture.md)** for the canonical architecture.
 > Keep this doc as **reference material** for what each upstream subsystem does and where to look in the source — useful when implementing each Sprint. The classification table (port-as-is / rewrite / skip) still applies for files we DO use as inspiration; it's just no longer the implementation plan.

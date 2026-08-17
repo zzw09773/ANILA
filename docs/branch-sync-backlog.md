@@ -1,5 +1,7 @@
 # ANILA Branch Sync Backlog
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】——**它所追蹤的多分支模型已不存在**。2026-07-28 重啟後專案是單一開發線 `restart/from-redesign`(工作 worktree 分支除外),舊分支模型已進 attic。現行狀態與執行順序見 `PLAN.md`。
+
 5 條長期維護的 branch 之間的同步狀態與 fork 區策略。**main 為 single source of truth (SSOT)**,其他 4 條 downstream 定期 sync from main。每次 main 有 commit 落地,**立刻評估是否要 sync 進 downstream**,並在這份檔記錄。
 
 > **2026-05-26 重構**:從原本「main + prod」雙線重整為 5 條 branch(3 種 prod × 2 種 dev)。原 `prod` branch 已 rename 為 `prod-intranet-card`(GitHub API rename,PR refs / branch protection 自動跟著走)。Backup tag:[`pre-branch-restructure-2026-05-26`](https://github.com/zzw09773/ANILA/releases/tag/pre-branch-restructure-2026-05-26) 紀錄 rename 前的 prod HEAD。

@@ -1,5 +1,7 @@
 # ANILA Trace Adapters（非 anila-agent runtime 的 Full Trace 範例）
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > **對應設計文件**：`docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md`
 > （§6 Full Trace 協定、§9 Runtime Types）、`06-openwebui-agent-migration.md`
 > （§6 Full Trace Acceptance、§8 Trace Test）、`10-migration-and-development-guardrails.md`

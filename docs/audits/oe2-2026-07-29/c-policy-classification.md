@@ -1,5 +1,7 @@
 # OE-2 Spec-Conformance Audit — Domain C: POLICY / CLASSIFICATION
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——稽核報告,保留當時的判定與依據,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 - **Spec authority**: `/home/c1147259/桌面/ANILA/anila-restart-20260729/ANILA/SYSTEM-MAP.md` (399 lines), read in full.
   Line 4: 「**這份取代先前所有規劃文件的權威地位。** 與其他文件衝突時以本檔為準。」
 - **Code root**: `/home/c1147259/桌面/ANILA/anila-restart-20260729/ANILA/services/csp/`

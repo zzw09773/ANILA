@@ -1,5 +1,7 @@
 # ANILA UI — Trust, Collaboration & Workflow Plan
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——ANILA_UI 世代(2026-04)的殘骸,整個 `scraps/` 已無現行用途。現行狀態與執行順序見 `PLAN.md`。
+
 > 聚焦 runtime 層面（end-user client）的可信度、協作與 workflow 能力。  
 > 控制面（使用者/權限/API Key）仍在 myCSPPlatform，不重做；本計畫只補 runtime 缺失的使用者體驗模組。
 

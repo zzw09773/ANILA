@@ -1,5 +1,7 @@
 # AgenticRAG enhancement plan (anila-core untouched)
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > **Status**: design draft, awaiting review
 > **Date**: 2026-05-02
 > **Constraint**: 整批工作住在 `AgenticRAG/src/agentic_rag/` 子樹內，**不動 `anila-core/`**。換言之：避開所有 deep-dive P0 表上需要 anila-core framework 先就位的 R-side 工作（lifecycle hooks framework、guardrail framework、tracing framework、handoff framework、MCP framework、retry framework）。

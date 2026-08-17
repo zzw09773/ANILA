@@ -1,5 +1,7 @@
 # share/
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 Runtime data for the ANILA nginx container. `/static/*` is served publicly;
 `/uploads/` is allowlisted so only `/uploads/flux/*` is reachable (everything
 else under `/uploads/` returns 404). Both subdirectories are git-ignored —

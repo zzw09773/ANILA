@@ -1,5 +1,7 @@
 # Sprint 7 X — 規劃文件（doc-only）
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】——屬 `anila_plan.md` 世代的早期計畫。現行狀態與執行順序見 `PLAN.md`。
+
 **狀態**：Draft（2026-04-27）。本 sprint **只寫文件**，不動 production
 code。Sprint 6 X 已把資安修補尾巴與 SSO 地基鋪完；7 X 的角色是「在還
 沒上線、尚無大量帳號」的時間點，把後續 SSO 切換、帳號合併、break-glass

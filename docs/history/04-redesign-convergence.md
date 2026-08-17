@@ -1,9 +1,11 @@
 # 時代 D：anila-redesign 收斂（本分支）
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】(專案起源史),不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > 分支：`anila-redesign`（tip `24a0455`，領先 `origin/prod-intranet-card` 共 44 個 commit，尚未 push）
 > 基線：`origin/prod-intranet-card`（v1.2.0 系）
 > 期間：2026-07-02（單日一次性衝刺；範圍內 44 個 commit 日期全為 2026-07-02）
-> 取證基準：git log（`origin/prod-intranet-card..HEAD`）為主，`docs/anila-redesign-docs/`、`docs/superpowers/plans/2026-07-02-anila-redesign-master.md`、`docs/audits/anila-redesign-docs-review-2026-07-02.md` 為輔。
+> 取證基準：git log（`origin/prod-intranet-card..HEAD`）為主，`docs/anila-redesign-docs/`、`docs/specs/plans/2026-07-02-anila-redesign-master.md`、`docs/audits/anila-redesign-docs-review-2026-07-02.md` 為輔。
 
 ## 概述
 

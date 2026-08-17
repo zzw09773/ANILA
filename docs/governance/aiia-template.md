@@ -1,5 +1,7 @@
 # AI System Impact Assessment(AIIA)範本
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】——治理設計多已由 `SYSTEM-MAP.md` 收斂。現行狀態與執行順序見 `PLAN.md`。
+
 > **狀態**:Template v1(2026-05-16)
 >
 > **對應 ISO/IEC 42001:2023**:Clause 6.1.4 + 8.4 + Annex A.5.2 / A.5.3 / A.5.4 / A.5.5 / A.9.2

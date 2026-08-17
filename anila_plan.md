@@ -1,5 +1,7 @@
 # ANILA 平台整合計畫 (v7 — Runtime-first / Router-first)
 
+> ⚠ 2026-08-17 盤點：本檔為【已被取代】的 2026-04 整合計畫願景(v7),保留計畫歷史。**專案權威＝`PLAN.md`**(現況與執行順序)、規格＝`SYSTEM-MAP.md`;新進開發者上手見 `docs/guides/developer-guide.md`。
+
 > ⚠ **2026-08-01 P2.1**：下文若仍描述 `X-CSP-Service-Token`／靜態 service token＋明文
 > `X-ANILA-User-*` 作為 CSP→agent 派工身分，該契約已由 **5 分鐘派工 JWT＋JWKS 驗簽**取代
 > （開發者不領長效 agent 祕密）。本檔保留整合計畫歷史；現行上手見

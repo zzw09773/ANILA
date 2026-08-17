@@ -171,7 +171,7 @@ studio 的 `studio_llm.py` 台灣用語對映表與 OpenCC `s2twp` 詞庫是現�
 - **字型**：三前端皆已是 air-gap system stack、明文註記不載 Google Fonts；anila-ui／ANILALM stack 含 CJK TC 家族；CSP mono stack 缺 CJK 家族。studio 的 infographic renderer 釘選 `Noto Sans CJK TC` 防豆腐字、Docker 內建 `fonts-noto-cjk`。（`ANILALM/_design/prototype.html` 仍連 fonts.googleapis——設計稿殘留，不在建置產物內。）
 - **Backend**：CSP `detail` 約 68% 繁中（auth／proxy／agents 繁中；**ingestion 模組為英文叢**），前端兩條路徑（`readError`／`explainError`）皆原樣透出。Router 使用者可見字串以繁中為主體（友善錯誤 chunk、trace label「Router 分析意圖中／選擇 agent／呼叫 {agent}」、clarify 模板、recompose prompt 全繁中）；**follow-up chips 的 system prompt 是英文、無語言指示**（`prompt_suggestion.py`）。
 - **Studio**：`studio_text_normalizer.py` 以 OpenCC **`s2twp`**（字＋台灣詞轉換）後處理 slides／datatables／mindmaps／infographics（reports 走自家 `_normalize_spec`）；prompt 層明示「台灣繁體中文、用詞也要台灣本土」＋台灣用語對映表。preset 顯示名繁中（「Lightning Talk」除外）。
-- **污染現況**：簡體字元 **0 處**（以嚴選 codepoint 集掃描；粗略掃描會誤判 准／只／休／幕）。大陸用語 7 處（多為輕微：「用戶」2 處其一僅註解、「數據簡報／數據」4 處、「妥善保存」1 處邊界可接受）。「文件 vs 檔案」38:6——與既有收斂計畫（`docs/superpowers/plans/2026-07-01-intranet-card-product-convergence.md`「use 檔案, not 文件」）規模化相違。
+- **污染現況**：簡體字元 **0 處**（以嚴選 codepoint 集掃描；粗略掃描會誤判 准／只／休／幕）。大陸用語 7 處（多為輕微：「用戶」2 處其一僅註解、「數據簡報／數據」4 處、「妥善保存」1 處邊界可接受）。「文件 vs 檔案」38:6——與既有收斂計畫（`docs/specs/plans/2026-07-01-intranet-card-product-convergence.md`「use 檔案, not 文件」）規模化相違。
 - **既有慣例**：唯一成文規則即上述收斂計畫一行；de-facto 術語來源是 studio 的對映表＋OpenCC 詞庫。`AGENTS.md` 的繁中規定僅約束 assistant 回覆，不及 UI 文案。
 
 ---

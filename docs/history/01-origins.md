@@ -1,5 +1,7 @@
 # 時代 A — 前身專案與 ANILA 的誕生（Genesis）
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】(專案起源史),不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 > 系列文件《ANILA 開發史》第 01 篇。涵蓋範圍：兩個公開前身 repo（`myCSPPlatform`、`AgenticRAG`）的完整 commit 歷史，以及它們如何匯流、在 2026-04-17 於單一 monorepo 內誕生為 ANILA。
 > 本篇僅記錄 **前身歷史 + main 的創世（genesis）數個奠基 commit**；`main` 完整平台演進表由「時代 B」續接。
 > 證據優先:以 git 為第一手來源(前身 repo 已 bare clone 至 scratchpad 唯讀分析),輔以各 repo README / pyproject / `anila_plan.md` / 根 `AGENTS.md`。凡屬推斷者均明確標註。

@@ -1,5 +1,7 @@
 # OW-3 Implementation Blueprint — Message-level Custom Action Buttons
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】——OW 藍圖,該板已關。現行狀態與執行順序見 `PLAN.md`。
+
 > Delivered design (scope-reduced 2026-07-30 on `wt/ow3e-drop-exec`): **declarative prompt templates only**. The platform owner withdrew in-process Python execution; buttons open a floating picker and load a preset prompt that the client dispatches through the existing chat path. Create = developer+; update / delete / replace bindings = action author or administrator+; audit export = administrator+ with the same IP/metadata redaction as the platform audit listing (owner sees full rows).
 >
 > Spec basis: `PLAN.md` OW-3 block (owner updates PLAN separately). Depends on OW-1. Alembic head chain: `r1_0012` → `r1_0013` (tables) → `r1_0014` (drop kind/result_mode + delete obsolete exec rows).

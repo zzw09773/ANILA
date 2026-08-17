@@ -1,5 +1,7 @@
 # ANILA Ingestion Platform — Design Doc v0.2
 
+> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+
 **Status**: Draft for review
 **Date**: 2026-04-25 (v0.2)
 **Author**: ANILA 平台團隊
