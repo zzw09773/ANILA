@@ -166,6 +166,11 @@ const routes = [
         component: () => import('../views/EvaluatorView.vue'),
         meta: { requiresDeveloper: true },
       },
+      {
+        path: ':pathMatch(.*)*',
+        name: 'NotFound',
+        component: () => import('../views/NotFoundView.vue'),
+      },
     ],
   },
 ]
