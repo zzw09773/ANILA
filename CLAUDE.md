@@ -82,11 +82,23 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)** 的 NotebookLM 式平台,P
 
 **細節看 `PLAN.md` 的〈現在在哪裡〉、教訓看 `docs/HANDOFF-2026-08-01.md`**——這裡只留每次 session 開頭必須知道的。
 
-- alembic head = **`r1_0031`**。本機 `-p anila-restart` **15 容器**,五個入口
-  (`/`、`/anila/`、`/anilalm/`、`/asr/health`、`/router/health`)都通。
-- 測試(**三個套件,不是兩個**):csp **2538 passed / 73 skipped**(2026-08-11 連跑三次一致)、
-  anila-shell **366 passed**、治理中心 `apps/csp-governance-ui` **139 tests / 138 passed / 1 failed**
-  (2026-08-15 實測,`npm ci` 之後跑 `npm test`)。
+- alembic head = **`r1_0031`**。本機 `-p anila-restart` **15 容器**。入口現況(2026-08-17 實測):
+  `/`、`/anila/`、`/asr/health`、`/router/health` **四個通**;
+  🔴 **`/anilalm/` 回 503 是刻意的發行閘,不是故障**——本版關閉 ANILA LM(`6554fdd9`),
+  nginx `anila.conf:450-467` 註解掉那段 location、回「尚未開放」頁,重開程序見
+  `docs/runbooks/anilalm-release-gate.md`。**容器仍在跑,供內部測試。**
+  ⚠ **舊版這一行寫「五個入口都通」(08-01 寫的,關閉之前)**——2026-08-17 一次重建驗收
+  就因為照抄它而把刻意的閘判成故障。**驗收條件抄自快照時,先確認那一行的日期。**
+- 測試——🔴 **判準是規矩,不是數字**:**三個套件都必須被跑**(csp、anila-shell、
+  治理中心 `apps/csp-governance-ui`),而且**每一條紅都必須有歸屬**(真缺陷／環境／既有,
+  各自指名)。**不要求全綠,要求沒有一條紅是無主的。**
+  ⚠ **數字會漂,規矩不會**——下面的數字是用來**偵測漂移**的,不是用來當通過條件的。
+  **合併會新增測試的包之後,要回來更新它們。**
+  當期數字:csp **2538 passed / 73 skipped**(2026-08-11 連跑三次一致)、
+  anila-shell **366 passed**(08-11)、治理中心 **144 tests / 143 passed / 1 failed**
+  (**2026-08-17 合併兩包後實測**,`npm ci` 之後跑 `npm test`)。
+  📌 **治理中心那個數字三天內就漂了 5 條**(08-15 寫 139/138/1 → 08-17 實測 144/143/1),
+  原因不是筆誤,是**任何新增測試的包都會讓它過期**——這正是判準要放在規矩上的理由。
   🔴 **那 1 條紅是真缺陷,不是雜訊**:`tests/healthOverview.test.mjs:190` 的裸 `data.detail` ratchet,
   指著 `views/DashboardView.vue:254`(`25cdcb4f`,2026-07-31 進來,**紅了 15 天沒人看見**)。**歸 F-9。**
   ⚠ **沒裝 `node_modules` 時會多一條假紅**(`tests/testConnectionFacts.test.mjs` 載不到 `vue`)——那是環境不是缺陷。
