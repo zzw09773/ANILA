@@ -465,6 +465,11 @@ for _ in $(seq 1 40); do
 done
 echo "    csp health: $h"
 [ "$h" = healthy ] || warn "csp 未在預期時間內 healthy — 查 log: docker compose logs csp | tail -80"
+if [ "$h" = healthy ]; then
+  # csp healthy 且 [7/7] 尚未輸出 nginx/完成訊息時提醒，避免被後續輸出淹沒。
+  # 檢查本身永遠回 0，不會把初裝提醒變成部署閘門。
+  bash infra/deployment/scripts/check-departments.sh "${COMPOSE_ARGS[@]}"
+fi
 curl -skf -o /dev/null -w "    nginx https(443): %{http_code}\n" https://localhost/ 2>/dev/null \
   || warn "nginx 443 未回應(可能還在起,稍等再試 curl -sk https://localhost/health)"
 

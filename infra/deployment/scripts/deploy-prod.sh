@@ -285,6 +285,12 @@ fix_runtime_ownership() {
   bash infra/deployment/scripts/fix-runtime-ownership.sh
 }
 
+# 唯讀初裝提醒；必須放在 healthcheck 完成後、nginx/endpoint 輸出前。
+# 它永遠不會改變部署 exit status，也不會把資料庫憑證帶到輸出。
+check_departments() {
+  bash infra/deployment/scripts/check-departments.sh
+}
+
 # ── Subcommand: deploy ─────────────────────────────────────────────────────
 cmd_deploy() {
   cmd_preflight
@@ -411,6 +417,7 @@ cmd_wait_healthy() {
     done
     if (( ${#pending[@]} == 0 )); then
       ok "全部 healthy"
+      check_departments
       return 0
     fi
     log "等待中:${pending[*]}"
