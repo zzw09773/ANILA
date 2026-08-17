@@ -781,11 +781,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       JWT_KID: anila-v1
-      JWT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
-      JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
       JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
       REVOCATION_RECONCILE_INTERVAL_SECONDS: "${REVOCATION_RECONCILE_INTERVAL_SECONDS:-5}"
-      COOKIE_SECURE: "true"
       LOG_LEVEL: INFO
     depends_on:
       csp:

@@ -1,14 +1,20 @@
 """設定收斂的契約測試。
 
 這裡守治理頁仍承諾的十二顆 C 類設定，以及整棵 repo 的 Python env
-reader 不得再讀本輪刪掉的 CSP 設定名。部署檔與腳本的同一份孤兒
-清單則在交付報告中用逐名全樹掃描留證。
+reader 不得再讀本輪刪掉的 CSP 設定名。
+
+⚠ 2026-08-17：**部署檔與腳本這一側現在也由本檔掃描**（`*.yml`／`*.yaml`／
+`*.sh`／`.env.example`），不再只靠交付報告的人工全樹掃描留證。
+舊寫法只看 `*.py`，守的是**消費端**；而 FAKE-CONTROLS #59 那三顆
+asr-gateway 死旋鈕長在**生產端**（compose），所以整整活到凍結前才被
+一次文件逐句稽核偶然撞到。守衛的視野要蓋住它自己宣稱要守的範圍。
 """
 
 from __future__ import annotations
 
 import ast
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -82,6 +88,13 @@ REMOVED_ENV_NAMES = {
 _SETTINGS_REDUCTION_COMMIT = "18916a56"
 
 
+_SKIPPED_DIRS = {".git", "node_modules", "static", "__pycache__"}
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
 def _python_sources() -> list[Path]:
     """Return every Python source file, including non-CSP services.
 
@@ -90,13 +103,58 @@ def _python_sources() -> list[Path]:
     silently reintroducing one of the old names behind CSP's local tests.
     """
 
-    repo = Path(__file__).resolve().parents[3]
-    skipped = {".git", "node_modules", "static", "__pycache__"}
     return [
         path
-        for path in repo.rglob("*.py")
-        if not skipped.intersection(path.parts)
+        for path in _repo_root().rglob("*.py")
+        if not _SKIPPED_DIRS.intersection(path.parts)
     ]
+
+
+# ── 部署端(生產端)掃描 ────────────────────────────────────────────────
+# Python 那側用 AST,分得開「提到名字」與「真的讀取」。yml／sh 只能做文字
+# 比對,而**最常提到已退役名字的地方,正是解釋它為什麼被退役的註解**
+# (`services/asr-gateway/app/config.py:91-106` 現在就是這樣)。
+#
+# 所以這裡一律比對**賦值形狀**,不比對「出現過」——註解行因此自然被排除,
+# 不需要維護任何 allowlist。誤報一次,這道守衛就再也沒有人看了。
+_DEPLOYMENT_GLOBS = ("*.yml", "*.yaml", "*.sh", ".env.example")
+
+
+def _deployment_sources() -> list[Path]:
+    """Deployment-side files that ship inside the delivery bundle.
+
+    ⚠ 只收 `.env.example`(**受追蹤**、隨出貨包走),刻意**不收**裸 `.env`
+    與 `.env.bak*`:那些是 gitignored 的機器本機檔,內容因機器而異,收進來
+    會讓這道守衛在某些開發機上恆紅、在另一些機器上恆綠——不可重現的紅燈
+    等於噪音,而噪音就是這道守衛失效的方式。
+    """
+
+    repo = _repo_root()
+    return [
+        path
+        for pattern in _DEPLOYMENT_GLOBS
+        for path in repo.rglob(pattern)
+        if not _SKIPPED_DIRS.intersection(path.parts)
+    ]
+
+
+def _assignment_pattern(path: Path, name: str) -> str:
+    """賦值形狀:yml `KEY:`、sh `[export ]KEY=`、env 檔 `KEY=`(不容前導空白)。"""
+    if path.name == ".env.example":
+        return rf"^{re.escape(name)}="
+    if path.suffix == ".sh":
+        return rf"^[ \t]*(?:export[ \t]+)?{re.escape(name)}="
+    return rf"^[ \t]*{re.escape(name)}:"
+
+
+def _env_assignments(path: Path) -> list[tuple[str, int]]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    found: list[tuple[str, int]] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for name in REMOVED_ENV_NAMES:
+            if re.match(_assignment_pattern(path, name), line):
+                found.append((name, lineno))
+    return found
 
 
 def _env_reads(path: Path) -> list[tuple[str, int]]:
@@ -194,6 +252,49 @@ def test_removed_settings_have_no_python_environment_reader():
             if name in REMOVED_ENV_NAMES:
                 violations.append(f"{path}:{lineno}: {name}")
     assert violations == []
+
+
+def test_removed_settings_have_no_deployment_declaration():
+    """部署檔不得再宣告已退役的設定名(FAKE-CONTROLS #59 的形狀)。
+
+    「沒人讀」那半本來就有 `test_removed_settings_have_no_python_environment_reader`
+    在看;這一條看的是**沒人宣告**——維運者編輯的是 compose,不會去讀服務的
+    設定模組,所以只寫在消費端的「刻意不收」約定,對生產端等於不存在。
+    """
+    sources = _deployment_sources()
+
+    # 正向錨點:掃到 0 個檔案時,下面那條負向斷言會**恆真**(repo root 算錯、
+    # glob 打錯都會這樣)。先證明我們真的看過這道守衛存在的理由那兩個檔。
+    scanned = {path.name for path in sources}
+    assert {"platform.yml", "dev.yml"} <= scanned, f"deployment scan missed compose: {sorted(scanned)[:20]}"
+    assert len(sources) > 40, f"deployment scan surface implausibly small: {len(sources)}"
+
+    violations: list[str] = []
+    for path in sources:
+        for name, lineno in _env_assignments(path):
+            violations.append(f"{path.relative_to(_repo_root())}:{lineno}: {name}")
+    assert violations == []
+
+
+def test_deployment_scan_ignores_comments_but_catches_assignments(tmp_path):
+    """守衛必須分得開「註解提到」與「真的宣告」,否則它只會製造噪音。
+
+    `services/asr-gateway/app/config.py:91-106` 正是「註解裡出現退役名字」的
+    真實案例;若這裡改成比對「出現過」,那份註解會讓守衛永遠紅。
+    """
+    name = sorted(REMOVED_ENV_NAMES)[0]
+
+    yml = tmp_path / "probe.yml"
+    yml.write_text(f"services:\n  x:\n    environment:\n      # {name}: retired\n", encoding="utf-8")
+    assert _env_assignments(yml) == []
+    yml.write_text(f"services:\n  x:\n    environment:\n      {name}: \"true\"\n", encoding="utf-8")
+    assert _env_assignments(yml) == [(name, 4)]
+
+    sh = tmp_path / "probe.sh"
+    sh.write_text(f"#!/bin/sh\n# export {name}=1\n", encoding="utf-8")
+    assert _env_assignments(sh) == []
+    sh.write_text(f"#!/bin/sh\nexport {name}=1\n", encoding="utf-8")
+    assert _env_assignments(sh) == [(name, 2)]
 
 
 def test_removed_env_inventory_covers_generated_config_removals():
