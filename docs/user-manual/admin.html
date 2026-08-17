@@ -228,9 +228,14 @@
 <h3>🔑 卡登壞掉、進不去平台的時候（破窗）</h3>
 
 <div class="box stop">
-<p><strong>先確認你真的需要它。</strong> 這條路只給<strong>平台管理員（owner）</strong>，
+<p><strong>先確認你真的需要它。</strong> 這條路<strong>只有平台管理員（owner）用得成</strong>，
 而且只在<strong>卡片登入本身失效</strong>時使用——例如憑證鏈換過、CA 過期、讀卡元件掛掉。
 一般的「某個人登不進來」不要用這條，那是核准或單位的問題（見第 3 節）。</p>
+<p>⚠ <strong>用字說明（2026-08-15 更正）</strong>：這裡寫的是「<strong>用得成</strong>」不是「只給」。
+擋住其他人的是<strong>後端</strong>，不是這個畫面——<strong>畫面本身沒有辦法分辨你是誰</strong>
+（登入頁上還沒有人通過認證，沒有身分可判）。
+所以任何知道這個參數的人<strong>都看得到、也送得出</strong>那張表單，
+<strong>只是送出去之後一律進不來</strong>。</p>
 </div>
 
 <p><strong>做法</strong>：在登入頁網址後面加上參數：</p>
