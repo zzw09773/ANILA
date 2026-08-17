@@ -9,11 +9,18 @@
 > 🟢 **設定頁只剩 12 顆**（2026-08-11，Q46）。新增設定前先過這一關：
 > **一顆值要留在設定頁，必須答得出：上線之後，誰、在什麼情境、為什麼不能等下一次改版。**
 > 那 84 顆被砍掉的，正是兩個 CRITICAL 的根源——**能從網頁動到的安全開關，就是一個等著被動的安全開關。**
-> 🔴 **凍結前的硬閘，而且是兩道獨立的關**（2026-08-10 實測，兩道都紅過）：
-> ① 雜物掃描（`infra/deployment/scripts/scan-image-artifacts.sh`）**65 筆違規／4 張映像**；
-> ② `docker save` **2/7 張存不出去**（本機 DCS 代理注入，掃描器結構上看不見）。
-> **`docker build` 成功不等於映像出得了門，而且兩道關互相看不見對方漏掉的東西**——
+> 🔴 **凍結前的硬閘，而且是兩道獨立的關**：① **雜物掃描**（`scan-image-artifacts.sh`）；
+> ② **映像要真的載得回來**才算數。**兩道關互相看不見對方漏掉的東西**——
 > **每次「重建映像」的收貨都要把這兩步都跑一次**。
+> **`docker build` 成功不等於映像出得了門。**
+> ⚠ **2026-08-15 修訂（機制已變，事故仍為真）**：舊版寫的是「`docker save` 2/7 張存不出去」。
+> `6e68f931`（2026-08-14，已在 HEAD 祖先）之後，**本專案自己 build 的映像不再走 `docker save`**：
+> `docker buildx bake --set <target>.output=type=docker,dest=<tar>` **由 builder 直出 tar**，
+> 掃 tar，再**真的 `docker load` 驗回來**（`build-and-export-for-intranet.sh`，五段式 `[1/5]`～`[5/5]`）。
+> **只有上游映像（pg／redis／nginx／gitlab）與選配 model 映像仍走 `docker save`。**
+> 📌 **兩個歷史數字留著，因為它們是真的**：2026-08-10 實測**雜物掃描 65 筆違規／4 張映像**、
+> **`docker save` 2/7 張存不出去**（本機 DCS 代理注入，掃描器結構上看不見）。
+> **過時的是機制描述，不是那次事故**——那次事故正是現在這道「載得回來才算數」的由來。
 > 🔎 **驗收單一定要有這一句**：「去找這一包自己有沒有長出它要消滅的那個形狀」。
 > 2026-08-06 六包，**六包全中**，而且全部是驗收抓的——命中率比逐條檢查驗收條件還高。
 > 🔬 **宣稱「測試過了」之前先跑突變檢查**：`cd apps/anila-shell && node scripts/mutation-check.mjs`。
@@ -72,7 +79,14 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)** 的 NotebookLM 式平台,P
 
 - alembic head = **`r1_0031`**。本機 `-p anila-restart` **15 容器**,五個入口
   (`/`、`/anila/`、`/anilalm/`、`/asr/health`、`/router/health`)都通。
-- 測試:csp **2538 passed / 73 skipped**(2026-08-11 連跑三次一致)、anila-shell **366 passed**。
+- 測試(**三個套件,不是兩個**):csp **2538 passed / 73 skipped**(2026-08-11 連跑三次一致)、
+  anila-shell **366 passed**、治理中心 `apps/csp-governance-ui` **139 tests / 138 passed / 1 failed**
+  (2026-08-15 實測,`npm ci` 之後跑 `npm test`)。
+  🔴 **那 1 條紅是真缺陷,不是雜訊**:`tests/healthOverview.test.mjs:190` 的裸 `data.detail` ratchet,
+  指著 `views/DashboardView.vue:254`(`25cdcb4f`,2026-07-31 進來,**紅了 15 天沒人看見**)。**歸 F-9。**
+  ⚠ **沒裝 `node_modules` 時會多一條假紅**(`tests/testConnectionFacts.test.mjs` 載不到 `vue`)——那是環境不是缺陷。
+  📌 **這一行 2026-08-15 之前只列兩個套件,治理中心從未進基線**——**沒被宣告的套件不會被跑,
+  沒被跑的守衛等於不存在**。F-1 能活兩週,這是第二個原因。
   ⚠ 那個「26 個紅燈」的舊基準是**錯的數字**,2026-07-31 已修好並釘住(見 `services/csp/tests/README.md`)。
 - **7/30–8/01 共合併部署 73 包**。P4 全關、P2 只剩 2.1,P3 除 SMTP 寄送外全關。
 - ⚠ **`.15` 尚未部署過任何一項**。本機是唯一驗證環境,**P5.5 整段未開始**。
@@ -106,6 +120,10 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)** 的 NotebookLM 式平台,P
   guard 會掃 repo 內所有 Dockerfile，只有明列非交付用途的檔案例外。
 - **平行派多包前先分配 migration 編號**,並把檔案集真的列出來對。一晚撞三次(兩次編號、一次同檔)。
 - **驗 API 要看 Content-Type**。SPA catch-all 會回 `200 text/html`,看起來像端點沒有保護。
+  🔴 **而且它會往哪個方向騙你,取決於你的腳本怎麼消費那個 body**(2026-08-15 稽核長實際踩到):
+  拿去 `JSON.parse` 會**當場炸**,你會發現;拿去 `includes('某字串')` 只會**回 false**,
+  於是「這條路由回了 200、但裡面沒有我要的資料」——**一個完全反過來的結論,而且沒有任何錯誤訊息**。
+  **寫驗證腳本時要先斷言 Content-Type,不要靠「剛好用了會爆的解析方式」。**
 - **改 bind-mount 的單一檔案,內容不會進到容器裡**。Docker 用 inode 綁定,而 git 改檔是「建新檔取代」
   (新 inode),容器還抓著舊的那個——**沒有任何錯誤訊息**,只是你的修改沒生效。
   nginx 設定就是這樣掛的(`infra/nginx/anila.conf` → 容器的 `default.conf`),
