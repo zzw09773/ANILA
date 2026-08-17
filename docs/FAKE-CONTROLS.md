@@ -700,7 +700,7 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 | 2 | `ingestion_collections.embedding_model` 的 DB DEFAULT | 同一個拼法,需要 migration | ✅ `r1_0032` **直接拿掉這個預設值**(ORM 本來就沒宣告,每條寫入路徑都給值;沒給值的寫入應該當場失敗而不是靜靜寫錯) |
 | 3 | 建立集合的 payload(`collections.py:127`→`:158`) | `payload.embedding_model` **存進去前沒有任何正規化** | ✅ `collections.py:136` 過 `canonical_embedding_model_name` |
 | 4 | `memory_service.py:323` | 記憶檢索,**仍大小寫敏感** | ⬜ 未動。r1_0032 把 `conversation_memory_chunks.embedding_source_model` 也一起正規化了,**但比較本身仍敏感** |
-| 5 | `platform_embedding.py:149` 的 `count_pending_recompute` | **兩個缺陷在同一支**:大小寫敏感 ＋ 因 RLS 恆回 0(見 #52) | ⬜ 未動,兩個都還在 |
+| 5 | `platform_embedding.py:201` 的 `count_pending_recompute`(⚠ 2026-08-15 更正行號,原記 `:149`) | **兩個缺陷在同一支**:大小寫敏感 ＋ 因 RLS 恆回 0(見 #52) | ⬜ 未動,兩個都還在 |
 | 6 | `r1_0018` 的回填是**歷史資料** | 之後把欄位正規化**不會重寫已經寫進去的列**,要一支資料 migration | ✅ `r1_0032` 改寫四個欄位:collections、document_chunks、ingestion_images、conversation_memory_chunks |
 | 7 | worker 寫 `embedding_source_model` 用的是**註冊表**的名字 | 舊 chunk 帶的是**集合欄位**的名字 → **同一個集合裡兩種拼法天生共存** | 🟡 舊 chunk 已由 r1_0032 對齊;但 worker 的最後手段預設值 `services/ingestion-worker/src/ingestion_worker/settings.py:45` **還是 `nvidia/NV-embed-V2`**,與 csp 這邊不一致(不在該包範圍,見下) |
 | 8 | `model_registry.name` | **沒有唯一性也沒有正規化**——只差大小寫的兩列仍然建得出來,**正是原本那個缺陷的形狀** | ⬜ 未動——**這一條就是「大小寫不敏感比較不能拆」的理由** |
@@ -789,7 +789,8 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 
 - **畫面說**:`GET /api/models/platform-embedding` 回報 `pending_recompute`,
   也就是「換了平台 embedding 模型之後,還有多少東西沒重算」。
-- **實際**:`app/services/platform_embedding.py:121-155` 在一個**沒有設定 RLS 情境**的
+- **實際**:`app/services/platform_embedding.py:201-231`(⚠ **2026-08-15 更正行號**:原記 `:121-155`,
+  程式碼位移後失準;`count_pending_recompute` 現在在 `:201`,缺陷本身未動)在一個**沒有設定 RLS 情境**的
   session 上計數,而 `document_chunks` 與 `ingestion_images` 都是 **FORCE-RLS**,
   runtime 角色 `csp_app` 又**不繞過 RLS**(這是刻意的,見鐵則)。
   於是這兩個數字**恆為 0,與真實積欠量無關**;只有沒開 RLS 的
@@ -820,3 +821,87 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   可以直接打 `csp:8000` 繞過 nginx。
   ⚠ `TrustedHostMiddleware` **沒有註冊**,而且就算註冊,它掛在 `CsrfMiddleware` **內側**,
   補不到這個洞。
+
+---
+
+## 第七輪(2026-08-15)——凍結前巡 compose,asr-gateway 有三顆沒人讀的旋鈕
+
+### #59 asr-gateway 的三顆 JWT／cookie 旋鈕:compose 給了,**沒有任何程式在讀**(裁定拿掉,而且要趕在重建映像之前)
+
+- **維運者看到的**:`infra/compose/platform.yml:784-785`、`:788` 在 **asr-gateway**
+  (區塊起於 `:728`)的 `environment:` 底下列著 `JWT_ISSUER`、`JWT_AUDIENCE`、`COOKIE_SECURE`,
+  前兩顆還吃 `${...}` 覆寫。任何人翻 compose 都會得出「改這裡就會改到 gateway 的
+  驗章與 cookie 行為」的結論——而且這三個名字讀起來全都像安全開關。
+- **實際**:`services/asr-gateway/app/config.py` 的 `Settings` **刻意沒有宣告**這三個欄位。
+  `:91-97` 講 `JWT_ISSUER`／`JWT_AUDIENCE`:csp 從不簽 `iss`／`aud`,把欄位加回去
+  (哪怕只是「有設才驗」)會直接復活 2026-07-31 那次故障——因為 compose 有給值,
+  「有設才驗」在部署環境等於「一律驗」→ 一律 401。
+  `:104-111` 講 `COOKIE_SECURE`:它以前用來在兩個 cookie 名之間二選一,而 cookie 名
+  現在是常數,這顆旋鈕沒有東西可以選。
+  三個名字在 `services/asr-gateway/**` 只出現在上面那兩段註解裡:程式碼零取用、
+  `services/asr-gateway/Dockerfile` 零命中、全樹沒有一處用 `os.environ`／`os.getenv`
+  直接去讀它們。而 **pydantic-settings 不會為多出來的 env var 報錯**
+  (`config.py:96-97` 自己寫了),所以症狀是**完全沉默**:設了、沒報錯、什麼也沒發生。
+- **為什麼算這份清單的東西**:「刻意不收」的理由寫在**消費端**(`config.py` 的註解),
+  而會被誤導的人正在編輯**生產端**(compose)。**改 compose 的維運者不會去讀 gateway 的
+  設定模組**——一個只有消費端知道的約定,對生產端而言就等於不存在。
+  這與 #37 是同一個形狀,差別只在這次是三顆一起。
+
+**裁決(2026-08-15,幕僚長裁定,稽核線同意):把這三個鍵從 asr-gateway 的 env 區塊拿掉。**
+不是「補文件說明它們沒作用」,也不是「兩端各寫一次名字」。
+
+- **判準沿用本檔 `:178-181`**:清尾一律選「拿掉」而不是「接上去」,而且靜默忽略要換成明確拒絕。
+  **同形狀的先例就在 `:186`**——`ENABLE_API_DOCS` 宣告了但沒人讀、維運者會以為自己
+  關掉了 API 文件,當時的處置就是**移除**。
+- ⏰ **時效:必須趕在出貨映像重建之前。** compose 是交付包的一部分——根目錄
+  `compose.yaml` 以 `include:` 引入 `infra/compose/platform.yml`,而
+  `infra/deployment/intranet/intranet-deploy.sh:165-166` 與
+  `infra/deployment/intranet/build-and-export-for-intranet.sh:79` 都是以 `compose.yaml` 起棧。
+  **釋出標籤之後才動,出去的那一包就還是帶著三顆死旋鈕。**
+- **範圍只有 asr-gateway 的 env 區塊**,不要順手動別的服務。
+- **動手的人自己要重新舉證**。要證明的命題是「`services/asr-gateway/` 裡**沒有任何機制**
+  讀得到這三個名字」,不是「`Settings` 沒有宣告它們」——應用程式碼、進入點腳本、
+  `Dockerfile` 都要 grep,並且另外 grep 直接用 `os.environ`／`os.getenv` 的地方。
+  稽核已經跑過一輪、命中零,**但那不免除實作者自己的舉證責任**:
+  本專案的教訓是「搜不到 ≠ 不存在」,舉證責任在提報的那個人身上。
+- 📌 **已經有一道守衛在守這件事的一半,而它漏掉的正好是另一半**:
+  `services/csp/tests/test_settings_registry.py` 的 `REMOVED_ENV_NAMES`(`:42` 起)
+  把 `COOKIE_SECURE` 列為已退役(`:78`),並且**掃全 repo 的 Python 檔**
+  (`_python_sources()` 的 docstring 寫明刻意用 repo 範圍,免得別的服務偷偷復活舊名)
+  斷言沒有任何行程還讀得到它——所以「沒人讀」這半是有機器在看的
+  (三顆裡只有 `COOKIE_SECURE` 在那份清單上)。
+  但那支測試的檔頭 `:1-6` 自己講明:**部署檔與腳本**的同一份孤兒清單
+  「在交付報告中用逐名全樹掃描留證」——**也就是 compose 這一側沒有機器在看**。
+  #59 能活到今天,原因就寫在那句話裡:守衛守的是消費端,而這個缺陷長在生產端。
+- ⚠ **拿掉是為了誠實,不是為了修正**。`config.py:96-97` 明講多帶這幾個 env var
+  不會讓 `Settings` 爆掉,所以這個改動在功能上是零。下一個讀到這裡的人**不要**
+  因此把它當成「沒必要的改動」再加回去:留著的代價是一顆看起來能動、實際動不了的安全開關,
+  而這正是設定頁從 96 顆砍到 12 顆的同一條理由。
+
+**動手前要一併看的一件(觀察,不在上述裁決範圍內)**:`infra/compose/dev.yml:357-358`、
+`:361` 的 asr-gateway 區塊有**一模一樣的三個鍵**。#37 留下的教訓是「退役一個假控制項,
+要把指向它的宣告一起清掉才算退役完,否則它只是換個地方活著」;
+dev.yml 要不要一起清,裁決當下沒有講,由實作包提出來問。
+
+### 🔧 綁在同一輪做的 follow-up:讓守衛覆蓋它自己宣稱要守的範圍(2026-08-15 裁定,稽核線提出)
+
+**改動點只有一行**:`services/csp/tests/test_settings_registry.py:97` 的
+`for path in repo.rglob("*.py")` —— **那一行就是守衛的整個視野**。
+它的檔頭 `:1-6` 自己寫著,**部署檔與腳本**那一側只靠「交付報告的人工全樹掃描」留證。
+🔴 **如果那一行早就含 `*.yml` / `*.sh`,#59 這三顆根本活不到今天**;
+我們是靠一次文件逐句稽核**偶然**撞到的,而 #37 證明同一個形狀已經復發過一次。
+
+⚠ **這不是「把系統變嚴」**。那條教訓管的是**對使用者的限制**;
+這裡是讓一個**已經存在**的守衛,覆蓋它宣稱要守的範圍。不同類。
+
+🔴 **實作必須解掉的陷阱(否則它會變成噪音)**:Python 那側用 AST,分得開「提到名字」與
+「真的讀取」;**yml／sh 只能做文字比對,而最常提到已退役名字的地方,正是解釋它為什麼
+被退役的註解**——`services/asr-gateway/app/config.py:91-106` 現在就是這樣(三顆名字各出現
+兩次,全是註解)。
+👉 **判準要寫成「看起來像賦值」而不是「出現過」**:`^\s*KEY:`(yaml)／
+`^\s*(export )?KEY=`(sh)／`^KEY=`(.env.example)。**註解行天然被排除,不需要 allowlist。**
+⚠ **做成「出現就紅」的話,第一次誤報之後就不會有人再看它**——那是另一種失效:
+**守衛還在,但沒有人相信它。**
+
+📌 **排程:跟上面「拿掉三顆」同一輪做,不要分兩次。**
+**第二件做完,第一件才不會再發生。**
