@@ -29,9 +29,9 @@ def _require_card_login_enabled() -> None:
 def _reject_when_card_only() -> None:
     """Branch SSO lockdown：``ANILA_AUTH_MODE=card-only`` 時封閉非卡片登入路徑。
 
-    回 404 而非 403/410，讓非卡片 endpoint 在內網部署「看起來不存在」 —
-    跟 ``_require_card_login_enabled`` 對稱，外部探測無法區分「該功能本來
-    就沒做」還是「被政策關掉」。
+    回 404 而非 403，避免直接透露政策狀態；但這不等於完整不可區分：
+    不同方法與請求內容仍可產生可觀察差異（例如 GET 的 HTML/JSON、
+    POST 的 405/422/404）。不要據此推論 endpoint 無法被列舉。
 
     註:``/login`` 與 ``PUT /password`` 不走這個 helper — 它們有 **owner
     例外**(break-glass 帳密通道,2026-06-11),gate 寫在各自端點內,
