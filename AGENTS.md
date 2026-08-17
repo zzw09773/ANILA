@@ -1,5 +1,24 @@
 # ANILA 專案級 Codex 指示
 
+> 🔴 **2026-08-17 盤點：本檔的「架構描述」已大幅過時，不可照著辦事。**
+> 下文的**工作慣例**（怎麼讀碼、怎麼驗證、不要擅自 commit）仍然有用；
+> 但凡是描述「這個 repo 長什麼樣」的段落，一律以 `CLAUDE.md` 與 `PLAN.md` 為準。
+>
+> **最明顯的例子就是 §3 分支模型**：本檔寫的是 **`main` 為 SSOT 的七分支模型**
+> （`main` / `dev-public` / `prod-public-passwd` / `dev-military` / `prod-military-passwd` /
+> `prod-intranet-card` / `trial-military`）。**這個模型已經不存在。**
+> 2026-07-28 重啟之後，專案是**單一開發線 `restart/from-redesign`**（工作 worktree 分支除外），
+> 舊的多分支模型已進 attic。跟著 §3 走的 `docs/branch-sync-backlog.md` 同樣已失效。
+>
+> **現行狀態看這兩份**：環境事實與陷阱＝`CLAUDE.md`；現況與執行順序＝`PLAN.md`（專案權威）；
+> 規格＝`SYSTEM-MAP.md`；重啟歷史＝`RESTART-FROM-REDESIGN.md`。
+>
+> ⚠ 另注意：檔頭自稱「最後更新 2026-06-22」，但內文已引用 07-31 之後的產物（如 `r1_0027`）——
+> **檔頭日期與內文並不一致，兩者都不能當作新鮮度的證據。**
+> ⚠ 本檔內文沿用「國軍／軍方」等舊用語；平台擁有者已兩度糾正——**這是中科院（NCSIST）院內平台**。
+>
+> ---
+>
 > 最後更新: 2026-06-22
 >
 > 本檔是 ANILA repo 的專案級工作規範。全域 `AGENTS.md` 仍適用；若與本檔衝突，以本檔為準。回覆一律使用繁體中文與台灣用語。
