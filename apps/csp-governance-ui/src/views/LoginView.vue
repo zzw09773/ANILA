@@ -102,6 +102,9 @@
             <!-- 本地帳密登入 -------------------------------------------- -->
             <div class="login__section">
               <h3 class="login__section-title">帳號密碼登入</h3>
+              <p v-if="showBreakGlassNotice" class="login__msg" role="note">
+                {{ BREAK_GLASS_LOGIN_NOTICE }}
+              </p>
               <form class="login__form" @submit.prevent="handleLogin" autocomplete="on">
                 <TermField label="帳號">
                   <input
@@ -131,7 +134,7 @@
 
                 <div class="login__actions">
                   <TermButton type="submit" variant="primary" :loading="loading" :label="loading ? '驗證中' : '登入'" />
-                  <TermButton variant="ghost" @click="openRegisterModal" label="註冊" />
+                  <TermButton v-if="showSelfRegistration" variant="ghost" @click="openRegisterModal" label="註冊" />
                 </div>
 
                 <p class="login__hint">
@@ -245,7 +248,7 @@
     </TermModal>
 
     <!-- Register modal ------------------------------------------------- -->
-    <TermModal v-if="showAlternativeLogin" :visible="showRegisterModal" title="註冊 · 自助" width="480px" @close="closeRegisterModal">
+    <TermModal v-if="showSelfRegistration" :visible="showRegisterModal" title="註冊 · 自助" width="480px" @close="closeRegisterModal">
       <div v-if="!regSuccess" class="login__reg">
         <TermField label="帳號">
           <input v-model="reg.username" class="term-input" placeholder="e.g. j.smith" autocomplete="username" />
@@ -285,9 +288,13 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import {
+  BREAK_GLASS_LOGIN_NOTICE,
   DEFAULT_LOGIN_AUTH_MODE,
+  getLoginErrorMessage,
   loadLoginSurface,
   shouldRenderAlternativeLogin,
+  shouldRenderSelfRegistration,
+  shouldShowBreakGlassNotice,
 } from '../utils/loginSurface'
 import {
   cardCompleteRegistration,
@@ -322,6 +329,12 @@ const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
 const loginAuthMode = ref(DEFAULT_LOGIN_AUTH_MODE)
 const showAlternativeLogin = computed(() =>
   shouldRenderAlternativeLogin(loginAuthMode.value, route.query),
+)
+const showBreakGlassNotice = computed(() =>
+  shouldShowBreakGlassNotice(loginAuthMode.value, route.query),
+)
+const showSelfRegistration = computed(() =>
+  showAlternativeLogin.value && shouldRenderSelfRegistration(loginAuthMode.value),
 )
 
 // branch SSO: 其他 SPA (anila-ui / ANILALM) 在 unauthenticated 時把使用者
@@ -444,11 +457,15 @@ async function handleLogin() {
     // 一律走 browser reload 讓 nginx 重新決定 routing。
     window.location.assign(resolveNextDestination())
   } catch (e) {
-    const detail = e.response?.data?.detail || '登入失敗 — 請檢查帳號密碼'
-    if (detail.includes('等待核准') || detail.toLowerCase().includes('pending')) {
-      isPending.value = true
+    if (showBreakGlassNotice.value) {
+      error.value = getLoginErrorMessage(e, true)
+    } else {
+      const detail = getLoginErrorMessage(e)
+      if (detail.includes('等待核准') || detail.toLowerCase().includes('pending')) {
+        isPending.value = true
+      }
+      error.value = detail
     }
-    error.value = detail
   } finally {
     loading.value = false
   }
