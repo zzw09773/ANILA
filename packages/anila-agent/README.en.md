@@ -143,7 +143,7 @@ Three wiring pieces — reuse them as-is when you swap in your own tools/retriev
 
 Env: `CSP_SERVICE_TOKEN` (still required for this template's RAG / trace egress; `CSP_SEARCH_TOKEN`
 may override), `ANILA_TRACE_ENDPOINT` (default = `CSP_BASE_URL`), `ANILA_TRACE_ENABLED` (default 1),
-`ANILA_CLASSIFICATION_LEVEL` (five-level classification, carried on run/output spans to satisfy the
+`ANILA_CLASSIFICATION_LEVEL` (four-level classification: `無機密` / `營業秘密` / `密` / `機密`, carried on run/output spans to satisfy the
 classification item of the doc-06 §8 trace-test); `X-ANILA-Task-Id` is also carried on the run span to
 attribute back to a Task in the Task Center.
 

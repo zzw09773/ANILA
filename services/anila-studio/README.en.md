@@ -36,7 +36,7 @@ Service version **`0.1.0`** (`pyproject.toml` / `config.APP_VERSION` / `/health`
 | **Artifact contract + Redis job store** | `job_store.py`: a `PersistedJob` projection is written to Redis (key prefix `anila-studio:jobs:`, 7-day TTL) so a **restarted** studio can still answer status queries for pre-restart jobs; best-effort — a Redis outage degrades to in-memory only and does NOT block startup. `job_reporting.py`: reports to CSP via `POST /v1/artifact-jobs` (create), `PATCH /v1/artifact-jobs/{id}` (terminal / progress), `POST /v1/artifacts` (artifact landed). |
 | **Full Trace spans + `/v1/traces` ingest** | `studio_trace.py`: `producer:"studio"`, one root `studio.job` span + one `studio.stage` span per pipeline step, batched to `POST {csp}/v1/traces/{trace_id}/spans` (≤256 spans/batch). No `trace_id` → the emitter is a full no-op; ship failure is drop-and-log and never breaks generation. |
 | **Task spine (`task_id`)** | The create-job request payload carries `task_id` / `source_snapshot_id` / `trace_id`; `job_lifecycle.py`'s `JobReportContext` threads them through all five pipelines' `*JobUpdater` and passes them on to CSP with the artifact-job / artifact / trace spans. |
-| **Five-level classification (passthrough)** | `classification_level` is carried by `PersistedJob`, returned from `POST /v1/artifacts`, and written into trace span attributes; studio never latches/declassifies, it only inherits and forwards. |
+| **Four-level classification (passthrough)** | `classification_level` (`無機密` / `營業秘密` / `密` / `機密`) is carried by `PersistedJob`, returned from `POST /v1/artifacts`, and written into trace span attributes; studio never latches/declassifies, it only inherits and forwards. |
 | **Model Gateway** | All LLM traffic goes through the CSP `POST /v1/chat/completions` proxy (keeping token billing); studio never talks to a model directly. |
 | **JWKS / revocation auth** | `jwks_client` (fetch csp JWKS + cache) + `revocation_cache` (Redis pub/sub + cold-start, **fail-closed**). |
 
@@ -179,5 +179,5 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 ## Related docs
 
 - Redesign design authority: [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (`00-product-constitution.md`, `09-api-event-contracts.md` artifact / trace contracts, `02-system-architecture.md` JobStore failure model)
-- Studio / FLUX main spec: [`../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)
+- Studio / FLUX main spec: [`../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)
 - Platform overview: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

@@ -123,7 +123,7 @@ Most of the platform's Slice 0–9 capabilities live in CSP / the frontends; ani
 |---|---|---|
 | **Full Trace** (spans + `/v1/traces` ingest) | `anila_trace_sdk` producer: batch-export spans to the CSP endpoint and mirror them into the `anila.spans` SSE event | `tracing/sdk.py`; doc `05` §6 / `09` §10 |
 | **Task spine** (`X-ANILA-Task-Id`) | the runtime reads it via `CallerContext` and threads the task-id through the turn | `api/caller_context.py` |
-| **Five-level classification + one-way latch** | the agent runtime honours the per-turn classified one-way latch (`ctx.classified_latch` → `anila_meta.classified`); `register` carries `--classification-level` (written to `default_classification_level`). **Latch enforcement / declassification authority is CSP** | `context/agent_context.py`; doc `08` |
+| **Four-level classification + one-way latch** | the agent runtime honours the per-turn classified one-way latch (`ctx.classified_latch` → `anila_meta.classified`); `register` carries `--classification-level` (`無機密` / `營業秘密` / `密` / `機密`) (written to `default_classification_level`). **Latch enforcement / declassification authority is CSP** | `context/agent_context.py`; doc `08` |
 | **Agent Registry** (OE-1 three states: registered / approved / disabled) | `register` / `status` CLI submit into the CSP registry; the base model may be given by NAME (`base_model`) and CSP resolves it to an id. **The state machine lives in CSP** | `cli/register_cmd.py`; doc `05` |
 | **Model Gateway** (`ANILA_ENV` http fail-closed) | `url_guard` hard-rejects http for `endpoint_kind='model'` in production (no flag can rescue it). **Per-model keys / 5-state health live in CSP** | `security/url_guard.py`; doc `04` §8 |
 

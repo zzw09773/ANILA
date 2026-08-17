@@ -1,10 +1,10 @@
 # services/csp (CSP — Control & Data Plane)
 
-> ANILA's authoritative core service (formerly `myCSPPlatform`): owns users, API keys, model / agent registration, the Task spine, Full Trace, five-level classification governance, conversations, the knowledge base and audit — and fronts an OpenAI-compatible proxy.
+> ANILA's authoritative core service (formerly `myCSPPlatform`): owns users, API keys, model / agent registration, the Task spine, Full Trace, four-level classification governance, conversations, the knowledge base and audit — and fronts an OpenAI-compatible proxy.
 
 > 繁體中文版：[`README.md`](./README.md)
 
-> 🧭 **This file reflects the post-redesign reality** (`anila-redesign` branch): the four-way top layout `services/ apps/ packages/ infra/`, the root compose shim (`compose.yaml` → `infra/compose/platform.yml`), deploy scripts under `infra/deployment/{scripts,intranet}/`, and the Slice 2–9 capabilities relevant to CSP (Task spine, Full Trace, five-level classification, Agent Registry, Model Gateway, Service Registry, Artifact contract). Design authority lives in [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/): the constitution [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) and this service's domain doc [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md).
+> 🧭 **This file reflects the post-redesign reality** (`anila-redesign` branch): the four-way top layout `services/ apps/ packages/ infra/`, the root compose shim (`compose.yaml` → `infra/compose/platform.yml`), deploy scripts under `infra/deployment/{scripts,intranet}/`, and the Slice 2–9 capabilities relevant to CSP (Task spine, Full Trace, four-level classification, Agent Registry, Model Gateway, Service Registry, Artifact contract). Design authority lives in [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/): the constitution [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) and this service's domain doc [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md).
 
 ---
 
@@ -12,7 +12,7 @@
 
 CSP is ANILA's authoritative store and **dual-plane gateway**: the Router, ingestion-worker, anila-studio and every frontend ask it for identity, API keys, model / agent manifests and usage. It backs the product-facing **Governance Center** (`apps/csp-governance-ui`), **Task Center** (Task spine), **Artifact Center** (Artifact contract) and **Project Entry** (Service Registry / launch gateway).
 
-- **Control Plane — `/api/*`** (RS256 JWT / cookie auth): governance and internal platform traffic. Users, API keys, model / agent registration + approval, tasks, policy decisions, five-level classification governance, conversations / attachments / shares / handoffs, audit, alerts, banners, departments, Service Registry, trusted-hosts, user memory, service tokens / service clients.
+- **Control Plane — `/api/*`** (RS256 JWT / cookie auth): governance and internal platform traffic. Users, API keys, model / agent registration + approval, tasks, policy decisions, four-level classification governance, conversations / attachments / shares / handoffs, audit, alerts, banners, departments, Service Registry, trusted-hosts, user memory, service tokens / service clients.
 - **Data Plane — `/v1/*`, `/v2/*`** (`sk-` API key or cookie / service token): OpenAI-compatible proxy that routes by `model_type` to backend LLM / Embedding / VLM / Agent and writes `token_usage` for billing; it also ingests Full Trace spans (`POST /v1/traces/{trace_id}/spans`).
 
 CSP also hosts the **Ingestion knowledge base** (document → chunk → embedding → pgvector RAG + cross-document relations, pushed via `arq` onto a Redis queue consumed by the standalone [`ingestion-worker`](../ingestion-worker/)) and integrates the extracted [`anila-studio`](../anila-studio/) (slides / reports / image generation); on the CSP side only the contract endpoints and the **durable Artifact job store** remain.
@@ -69,7 +69,7 @@ The redesign carves the four MVP cores into **mutually independent** modules, en
 | Module | Files | Responsibility |
 |--------|-------|----------------|
 | `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun lifecycle (ten-value state machine), the three SourceSnapshot rules, mandatory `trace_id` (doc 01 / doc 03). |
-| `app.modules.policy` | `router.py` · `service.py` | Append-only PolicyDecision record (fail-closed; a deny must carry a reason), ceiling pure functions, and the five-level classification latch core (`apply_classification`, one-way). |
+| `app.modules.policy` | `router.py` · `service.py` | Append-only PolicyDecision record (fail-closed; a deny must carry a reason), ceiling pure functions, and the four-level classification latch core (`apply_classification`, one-way; `無機密 < 營業秘密 < 密 < 機密`). |
 | `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway primitives: `service_launches` rows, launch URLs, RS256 launch token (doc 07 §6). **Zero** policy/task/api coupling — access control is orchestrated by `app.api.services`. |
 | `app.modules.artifacts` | `service.py` | Persistence of the four artifact tables, fail-closed binding, owner-scoped reads. The classification latch and PolicyDecision are done by the orchestrator (`app.api.artifacts`) calling policy. |
 
@@ -132,7 +132,7 @@ The redesign series follows the legacy numeric chain (`r1_0001` revises `0046`),
 |----------|-------|--------------|
 | `r1_0001` | 2a | Task / Trace / Policy six-table foundation: `tasks` · `task_runs` · `source_snapshots` · `citations` · `policy_decisions` · `trace_spans`; `classification_level` defaults to `無機密`. |
 | `r1_0002` | 2b-C | `token_usage` ↔ task link: `task_id` (FK `ON DELETE SET NULL` + partial index) and a `legacy_runtime_call` boolean flag (marks task-less `/v1` chat legacy traffic). |
-| `r1_0003` | 3a | Five-level classification schema upgrade + three governance tables: `classification_events` · `declassification_requests` · `classification_authority_assignments`; adds the four common classification columns to existing resources (conversations / messages / collections / documents …) and backfills (`classified=true → 機密` floor). |
+| `r1_0003` | 3a | Four-level classification schema upgrade (`無機密` / `營業秘密` / `密` / `機密`) + three governance tables: `classification_events` · `declassification_requests` · `classification_authority_assignments`; adds the four common classification columns to existing resources (conversations / messages / collections / documents …) and backfills (`classified=true → 機密` floor; `requires_encryption=true → 密`). |
 | `r1_0004` | 5a | Agent Registry upgrade: `agents.approval_status` grows from three values into a **seven-state machine** (`draft` / `pending_connection_test` / `pending_trace_test` / `pending_security_review` / `approved` / `rejected` / `disabled`), plus manifest / trace-test / runtime columns. |
 | `r1_0005` | 6a | Model Gateway hardening: `model_registry` formalized into `ModelEndpoint` (`protocol` / per-model `api_key_secret_ref` AES-GCM envelope / `classification_ceiling` / `supports_*`); `health_status` collapses to **five states** (`healthy` / `degraded` / `unhealthy` / `unknown` / `disabled`). |
 | `r1_0006` | 7a | Service Registry: `platform_links` additively upgraded into `registered_services` (33 fields, id preserved) + `service_launches` · `service_audit_callbacks` · `service_project_bindings`; `service_access_grants` gains a `service_id` FK. |
