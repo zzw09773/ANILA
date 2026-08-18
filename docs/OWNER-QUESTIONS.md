@@ -55,6 +55,54 @@
 
 ---
 
+## 🟢 Q57 — 小組那台 GPU 主機**沒有對外網路**(2026-08-17 裁決,一句話定了一條工程路線)
+
+**問題**:docling 服務要跑在擁有者小組的 GPU 主機上。**那台有沒有對外網路?**
+
+**擁有者答**:**沒有。**
+
+### 為什麼這一題值錢
+
+稽核在 docling 第四輪審查實跑出來的事實:
+
+```
+$ docker compose -f compose.yaml --profile asr config --images
+  anila/asr-decoder:0.1.0      ← 對照組,在清單裡
+  …11 個平台映像
+  🔴 沒有任何 docling 映像
+```
+
+`build-and-export-for-intranet.sh:93` 只加 `--profile asr`,而 docling 在
+`profiles: ["docling-local"]` 之下 → **那張映像從來沒被 build、沒被 export、
+沒過雜物掃描、沒過 `docker load` 驗回。**
+
+⚠ **README 拿 asr-decoder 當類比是不成立的**——`asr-decoder` 有被打包帶進去
+(`INCLUDE_ASR=1` 預設 ON),docling 沒有。
+
+**那台有沒有網路,決定兩條工程量差很多的路**,所以沒有用猜的:
+
+| 有網路 | **沒有網路(＝實際答案)** |
+|---|---|
+| 現況可行,只要文件明寫「不在 bundle 範圍」 | 🔴 **要加 `WITH_DOCLING_IMAGE=1`,走與其他映像同一套五段式 bake／掃描／`docker load` 驗回** |
+
+### 這個答案的三個後果
+
+1. **docling 映像必須進交付包,而且必須過那兩道硬閘。** 它不是「放在 GPU 主機上自己 build」——
+   **氣隙裡沒有 PyPI,`docker compose --profile docling-local up -d` 會當場死在抓 torch。**
+2. **交付包會變大**(torch＋easyocr＋docling 是好幾 GB)。所以 `WITH_DOCLING_IMAGE` **預設 OFF**,
+   跟 `WITH_DOCLING_WEIGHTS` 同形——**不用這個功能的人不必扛那幾 GB。**
+   📌 ⚠ **要講清楚一件事免得誤會**:「docling 不進平台映像」省下來的是**平台映像**的體積,
+   那是對的、而且仍然成立;**但那幾 GB 沒有消失,只是搬到一張獨立、選配的映像上。**
+3. 🔴 **它仍然不擋 tag,但「不擋」的代價要寫明**:`DOC_PARSER` 預設 native,所以這一版
+   沒帶 docling 映像也出得了門——**但那表示在下一批交付包把映像帶進去之前,
+   `DOC_PARSER=docling` 在內網無法啟用。** 這不是缺陷,是排期的必然結果,
+   稽核已把它寫成 README 的上線閘門。
+
+**待擁有者後續決定(不急)**:docling 要不要**趕上第一批交付包**?
+不趕的話上線時它就是關著的,等下一批。趕的話,那張映像要一起走凍結程序。
+
+---
+
 ## 🟡 Q56 — PUBLIC 歷史裡躺著一把自簽私鑰(2026-08-17 掃出,**不急,但要你點頭才收案**)
 
 **事實**(只看 metadata 與憑證,**沒有讀取、沒有複製、沒有貼出私鑰內容**):
