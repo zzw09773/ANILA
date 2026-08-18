@@ -358,6 +358,31 @@ async def test_proxy_chat_completions_401_raises_unauthorized_no_retry() -> None
 
 
 @respx.mock
+async def test_proxy_chat_completions_object_detail_uses_message_text() -> None:
+    respx.post(f"{BASE}/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "detail": {
+                    "code": "context_overflow",
+                    "message": "內容超過模型可處理的上下文長度",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(CspClientError) as excinfo:
+        await proxy_chat_completions(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "long document"}],
+            bearer=BEARER,
+        )
+
+    assert str(excinfo.value) == "csp returned 400: 內容超過模型可處理的上下文長度"
+    assert "{'code'" not in str(excinfo.value)
+
+
+@respx.mock
 async def test_proxy_chat_completions_optional_fields_omitted_when_none() -> None:
     """temperature / max_tokens / response_format=None should be dropped
     from the request body so we don't override OpenAI defaults."""

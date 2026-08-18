@@ -53,17 +53,44 @@ function tracingHeaders(req: ChatRequest): Record<string, string> {
 }
 
 /**
- * Classify a failed chat response body (HTTP error text OR anila.error
- * SSE message). Gateway (litellm) hard-rejects oversized prompts with
- * ContextWindowExceededError; CSP may surface that text inside
- * `event: anila.error` / `{"message":...}` over HTTP 200.
+ * Classify a failed chat response by the stable backend code. The message is
+ * display-only and must not decide whether retrieval is trimmed and retried.
  */
+export type ChatFailureCode = 'context_overflow'
+
+export class ChatFailureError extends Error {
+  readonly status: number
+  readonly code: string | null
+
+  constructor(status: number, body: string, code: string | null = null) {
+    super(`chat ${status}: ${body}`)
+    this.name = 'ChatFailureError'
+    this.status = status
+    this.code = code
+  }
+}
+
+function readChatFailureCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as {
+      code?: unknown
+      detail?: { code?: unknown }
+      error?: { code?: unknown }
+    }
+    const code = parsed.detail?.code ?? parsed.error?.code ?? parsed.code
+    return typeof code === 'string' ? code : null
+  } catch {
+    return null
+  }
+}
+
 export function classifyChatFailure(
   status: number,
   body: string,
+  code?: string | null,
 ): 'context_overflow' | 'other' {
   void status
-  if (/ContextWindowExceeded|exceeds the available context size|maximum context length/i.test(body)) {
+  if ((code ?? readChatFailureCode(body)) === 'context_overflow') {
     return 'context_overflow'
   }
   return 'other'
@@ -106,10 +133,17 @@ export interface ChatSseState {
   finishReason: string | null
   /** Payload message from a terminal `event: anila.error` frame, if any. */
   anilaErrorMessage: string | null
+  /** Stable semantic code from a terminal `event: anila.error` frame. */
+  anilaErrorCode: string | null
 }
 
 export function createChatSseState(): ChatSseState {
-  return { accumulated: '', finishReason: null, anilaErrorMessage: null }
+  return {
+    accumulated: '',
+    finishReason: null,
+    anilaErrorMessage: null,
+    anilaErrorCode: null,
+  }
 }
 
 /**
@@ -136,10 +170,14 @@ export function reduceChatSseEvent(
     for (const payload of dataLines) {
       if (!payload || payload === '[DONE]') continue
       try {
-        const parsed = JSON.parse(payload) as { message?: unknown }
+        const parsed = JSON.parse(payload) as { message?: unknown; code?: unknown }
         if (typeof parsed.message === 'string') {
           message = parsed.message
-          break
+          return {
+            ...state,
+            anilaErrorMessage: message,
+            anilaErrorCode: typeof parsed.code === 'string' ? parsed.code : null,
+          }
         }
       } catch {
         // Malformed terminal error — keep scanning other data lines.
@@ -181,9 +219,11 @@ export function reduceChatSseEvent(
  */
 export function finaliseChatSse(state: ChatSseState): string {
   if (state.anilaErrorMessage) {
-    // Status is informational; classifyChatFailure keys off the body text.
-    // CSP commits HTTP 200 before emitting event: anila.error.
-    throw new Error(`chat 200: ${state.anilaErrorMessage}`)
+    throw new ChatFailureError(
+      200,
+      JSON.stringify({ message: state.anilaErrorMessage }),
+      state.anilaErrorCode,
+    )
   }
   if (!state.accumulated.trim() && state.finishReason === 'length') {
     throw new Error('EMPTY_LENGTH')
@@ -214,7 +254,8 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
   })
   if (!res.ok) {
     const txt = await res.text().catch(() => '')
-    throw new Error(`chat ${res.status}: ${txt || res.statusText}`)
+    const body = txt || res.statusText
+    throw new ChatFailureError(res.status, body, readChatFailureCode(body))
   }
   const data = (await res.json()) as {
     choices?: { message?: { content?: string } }[]
@@ -256,7 +297,8 @@ export async function chatStream(
   })
   if (!res.ok || !res.body) {
     const txt = await res.text().catch(() => '')
-    throw new Error(`chat ${res.status}: ${txt || res.statusText}`)
+    const body = txt || res.statusText
+    throw new ChatFailureError(res.status, body, readChatFailureCode(body))
   }
 
   const reader = res.body.getReader()

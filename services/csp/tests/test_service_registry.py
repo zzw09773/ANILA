@@ -612,12 +612,14 @@ class TestCompatFacade:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        # response keeps the legacy PlatformLinkResponse shape.
+        # response keeps the legacy fields and adds the stable release marker.
         assert set(body) == {
             "id", "name", "url", "icon", "description", "sort_order",
-            "is_active", "is_public", "required_roles", "created_at",
+            "is_active", "is_public", "required_roles", "release_gate_code",
+            "created_at",
         }
         assert body["url"] == "https://gitlab.local"  # entry_url mirrored to url
+        assert body["release_gate_code"] is None
         # backing row is a RegisteredService authored as config_source=db.
         svc = db.query(RegisteredService).filter_by(name="GitLab").one()
         assert svc.config_source == "db" and svc.entry_url == "https://gitlab.local"

@@ -21,6 +21,7 @@ import {
 } from '../api/conversations'
 import {
   chatStream,
+  ChatFailureError,
   classifyChatFailure,
   isPersistableAssistantText,
   nextTrimHitCount,
@@ -327,6 +328,7 @@ export function WSChat({ flex }: WSChatProps) {
           msg,
           status: m ? Number(m[1]) : 0,
           body: m ? m[2] : msg,
+          code: err instanceof ChatFailureError ? err.code : null,
         }
       }
 
@@ -336,14 +338,14 @@ export function WSChat({ flex }: WSChatProps) {
       try {
         finalText = await runStream(activeHits)
       } catch (streamErr) {
-        const { msg, status, body } = parseChatError(streamErr)
+        const { msg, status, body, code } = parseChatError(streamErr)
         if (msg === 'EMPTY_LENGTH') {
           failChat(
             '模型把生成預算全用在思考上，請重試或縮短問題／降低文件段落數',
           )
           return
         }
-        if (classifyChatFailure(status, body) === 'context_overflow') {
+        if (classifyChatFailure(status, body, code) === 'context_overflow') {
           const keep = nextTrimHitCount(activeHits.length)
           if (keep === null) {
             failChat(
@@ -368,7 +370,7 @@ export function WSChat({ flex }: WSChatProps) {
               )
               return
             }
-            if (classifyChatFailure(retry.status, retry.body) === 'context_overflow') {
+            if (classifyChatFailure(retry.status, retry.body, retry.code) === 'context_overflow') {
               failChat(
                 '上下文超過模型上限，刪減檢索段落後仍失敗。請縮短問題或減少引用的文件段落。',
               )

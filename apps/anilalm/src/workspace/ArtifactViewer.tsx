@@ -24,6 +24,7 @@ import {
   fetchMindmapTree,
   type MindmapTreeSpec,
 } from '../api/studio'
+import { isDownloadWarning, warningPatch } from './artifactWarning'
 
 interface ArtifactViewerProps {
   open: boolean
@@ -146,9 +147,9 @@ function SlidesHeaderActions({ artifact }: { artifact: SlidesArtifact }) {
       onClick={() => {
         void downloadSlidesJobPptx(jobId, artifact.title || '簡報')
           .then(() => {
-            if (artifact.warning?.startsWith('檔案下載失敗')) {
+            if (isDownloadWarning(artifact)) {
               updateArtifact(artifact.collectionId, artifact.id, {
-                warning: null,
+                ...warningPatch({ source: 'none', message: null }),
               })
             }
           })
@@ -156,7 +157,10 @@ function SlidesHeaderActions({ artifact }: { artifact: SlidesArtifact }) {
             const msg =
               err instanceof Error ? err.message : '下載失敗，請稍後再試'
             updateArtifact(artifact.collectionId, artifact.id, {
-              warning: `檔案下載失敗：${msg}`,
+              ...warningPatch({
+                source: 'download',
+                message: `檔案下載失敗：${msg}`,
+              }),
             })
           })
       }}

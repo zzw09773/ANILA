@@ -102,6 +102,21 @@ def test_login_sets_three_cookies(client: TestClient, db):
     assert body["csrf_token"] == cookies[CSRF_COOKIE_NAME].value
 
 
+def test_pending_password_login_returns_stable_error_code(client: TestClient, db):
+    make_user(db, username="pending-login", is_approved=False)
+
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "pending-login", "password": "password"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == {
+        "code": "pending_approval",
+        "message": "等待核准中，請通知 admin",
+    }
+
+
 def test_me_accepts_session_cookie_without_authorization(client: TestClient, db):
     make_user(db, username="bob")
     _login(client, "bob")

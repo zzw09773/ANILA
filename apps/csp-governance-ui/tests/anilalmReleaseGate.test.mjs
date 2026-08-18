@@ -17,17 +17,24 @@ test('release gate flag defaults to hidden for this freeze', () => {
   assert.equal(ANILA_LM_LINK_VISIBLE, false)
 })
 
-test('isAnilaLmPlatformLink matches name and /anilalm url', () => {
-  assert.equal(isAnilaLmPlatformLink({ name: 'ANILA LM', url: '/anilalm' }), true)
-  assert.equal(isAnilaLmPlatformLink({ name: 'other', entry_url: 'https://x/anilalm/' }), true)
+test('isAnilaLmPlatformLink uses the backend code, not mutable prose or URL', () => {
+  assert.equal(
+    isAnilaLmPlatformLink({
+      name: '後端改寫後的服務名稱',
+      url: '/完全不同的入口',
+      release_gate_code: 'anila_lm',
+    }),
+    true,
+  )
+  assert.equal(isAnilaLmPlatformLink({ name: 'ANILA LM', url: '/anilalm' }), false)
   assert.equal(isAnilaLmPlatformLink({ name: 'n8n', url: '/n8n' }), false)
   assert.equal(isAnilaLmPlatformLink(null), false)
 })
 
 test('filterPlatformLinksForRelease drops ANILA LM when gate is closed', () => {
   const links = [
-    { id: 1, name: 'ANILA LM', url: '/anilalm' },
-    { id: 2, name: 'n8n', url: '/n8n' },
+    { id: 1, name: '改過名字', url: '/改過入口', release_gate_code: 'anila_lm' },
+    { id: 2, name: 'n8n', url: '/n8n', release_gate_code: null },
   ]
   const filtered = filterPlatformLinksForRelease(links)
   if (ANILA_LM_LINK_VISIBLE) {
@@ -38,9 +45,9 @@ test('filterPlatformLinksForRelease drops ANILA LM when gate is closed', () => {
 })
 
 test('isReleaseGateClosedFor marks the row instead of hiding it', () => {
-  const link = { id: 1, name: 'ANILA LM', url: '/anilalm' }
+  const link = { id: 1, name: '改過名字', url: '/改過入口', release_gate_code: 'anila_lm' }
   assert.equal(isReleaseGateClosedFor(link), !ANILA_LM_LINK_VISIBLE)
-  assert.equal(isReleaseGateClosedFor({ id: 2, name: 'n8n', url: '/n8n' }), false)
+  assert.equal(isReleaseGateClosedFor({ id: 2, name: 'n8n', url: '/n8n', release_gate_code: null }), false)
   assert.equal(typeof RELEASE_GATE_BADGE, 'string')
   assert.ok(RELEASE_GATE_BADGE.length > 0)
 })

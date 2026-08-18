@@ -43,6 +43,54 @@ from app.services.usage_writer import enqueue_usage
 # routing / filtering / capture behavior is identical after the package split.
 logger = logging.getLogger("app.services.proxy_service")
 
+_CONTEXT_OVERFLOW_UPSTREAM_CODES = frozenset(
+    {
+        "context_length_exceeded",
+        "context_window_exceeded",
+        "contextwindowexceedederror",
+    }
+)
+
+
+def _stable_upstream_error_code(body: object) -> str | None:
+    """Map a known upstream code to the frontend's stable semantic code."""
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return None
+    raw_code = error.get("code") or error.get("type")
+    if not isinstance(raw_code, str):
+        return None
+    return (
+        "context_overflow"
+        if raw_code.strip().lower() in _CONTEXT_OVERFLOW_UPSTREAM_CODES
+        else None
+    )
+
+
+def _sanitised_upstream_error_detail(body: object, status_code: int) -> str | dict:
+    """Preserve display text while exposing only an allow-listed semantic code."""
+    detail: str | dict = f"模型服務拒絕請求 (HTTP {status_code})"
+    if isinstance(body, dict):
+        error = body.get("error")
+        msg = error.get("message") if isinstance(error, dict) else None
+        if isinstance(msg, str) and msg:
+            detail = msg[:300]
+        code = _stable_upstream_error_code(body)
+        if code:
+            detail = {"code": code, "message": detail}
+    return detail
+
+
+def _http_exception_message(detail: object) -> str:
+    if isinstance(detail, dict):
+        message = detail.get("message")
+        if isinstance(message, str) and message:
+            return message
+        return "代理請求失敗"
+    return str(detail)
+
 
 def strip_inline_think_from_chat_result(result: dict | object) -> dict | object:
     """非串流邊界：剝 ``message.content`` 內嵌 ``<think>`` 後再回傳／落庫。
@@ -157,12 +205,15 @@ def stream_failure_user_message(
     return "產生回應時發生錯誤，請稍後再試。"
 
 
-def format_anila_stream_error(message: str) -> str:
+def format_anila_stream_error(message: str, *, code: str | None = None) -> str:
     """Terminal SSE frame carrying a user-visible stream failure."""
+    payload: dict[str, str] = {"message": message}
+    if code:
+        payload["code"] = code
     return (
         "event: anila.error\n"
         + "data: "
-        + json.dumps({"message": message}, ensure_ascii=False)
+        + json.dumps(payload, ensure_ascii=False)
         + "\n\n"
     )
 
@@ -667,18 +718,12 @@ async def _proxy_request_impl(
                     response.status_code,
                     response.text[:500],
                 )
-                detail = f"模型服務拒絕請求 (HTTP {response.status_code})"
+                body: object = None
                 try:
                     body = response.json()
-                    msg = (
-                        body.get("error", {}).get("message")
-                        if isinstance(body, dict)
-                        else None
-                    )
-                    if isinstance(msg, str) and msg:
-                        detail = msg[:300]
                 except Exception:
                     pass
+                detail = _sanitised_upstream_error_detail(body, response.status_code)
                 raise HTTPException(status_code=response.status_code, detail=detail)
 
             # Fallback: upstream returned SSE despite our non-stream request
@@ -905,7 +950,7 @@ async def proxy_request(
                 "failed",
                 error={
                     "code": f"http_{exc.status_code}",
-                    "message": str(exc.detail),
+                    "message": _http_exception_message(exc.detail),
                 },
             )
         raise
@@ -993,8 +1038,16 @@ async def _proxy_stream_impl(
         async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
             async with client.stream("POST", target_url, json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
+                    body: object = None
+                    try:
+                        raw_body = await resp.aread()
+                        body = json.loads(raw_body.decode("utf-8"))
+                    except Exception:
+                        pass
                     raise HTTPException(status_code=resp.status_code,
-                                        detail=f"下游回應錯誤: {resp.status_code}")
+                                        detail=_sanitised_upstream_error_detail(
+                                            body, resp.status_code
+                                        ))
                 def _emit(block: str, event_name: str | None, data: str | None) -> str:
                     """Render a block, upgrading anila.meta.classified if required."""
                     if (
@@ -1277,7 +1330,16 @@ async def proxy_stream(
         # chunk; re-raising here becomes "response already started" and the
         # user sees silence. Emit a terminal SSE error instead.
         status = "failed"
-        error = {"code": f"http_{exc.status_code}", "message": str(exc.detail)}
+        detail_code = (
+            exc.detail.get("code")
+            if isinstance(exc.detail, dict)
+            and isinstance(exc.detail.get("code"), str)
+            else None
+        )
+        error = {
+            "code": detail_code or f"http_{exc.status_code}",
+            "message": _http_exception_message(exc.detail),
+        }
         logger.warning(
             "stream failure model=%s status=%s",
             model_name or "未知模型",
@@ -1291,7 +1353,8 @@ async def proxy_stream(
                 success=False,
             )
         yield format_anila_stream_error(
-            stream_failure_user_message(exc, model_name=model_name)
+            stream_failure_user_message(exc, model_name=model_name),
+            code=detail_code,
         )
     except Exception as exc:
         status = "failed"

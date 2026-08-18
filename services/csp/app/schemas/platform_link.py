@@ -66,6 +66,7 @@ class PlatformLinkResponse(ApiResponseModel):
     is_active: bool
     is_public: bool
     required_roles: list[str]
+    release_gate_code: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -43,6 +43,9 @@ from ._common import (
 )
 
 
+PENDING_APPROVAL_ERROR_CODE = "pending_approval"
+
+
 # Back-compat alias — callers and tests historically imported this name
 # from password.py; the shared implementation lives in
 # ``app.services.token_revocation``.
@@ -122,9 +125,15 @@ def login(
     if result is PENDING_APPROVAL_SENTINEL:
         if card_only:
             raise HTTPException(status_code=404)
+        # Object-shaped detail is used by this pending-login response and by
+        # allow-listed upstream errors on the proxy /v1/chat/completions path;
+        # consumers read detail.message and treat detail.code as metadata.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="等待核准中，請通知 admin",
+            detail={
+                "code": PENDING_APPROVAL_ERROR_CODE,
+                "message": "等待核准中，請通知 admin",
+            },
         )
     if result is LOCAL_PASSWORD_DISABLED_SENTINEL:
         # Sprint 6 X / B2：使用者已切換到 SSO-only，引導改走 OIDC。

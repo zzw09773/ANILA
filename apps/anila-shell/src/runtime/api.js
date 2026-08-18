@@ -117,7 +117,17 @@ async function readError(response) {
   if (contentType.includes("application/json")) {
     try {
       const data = await response.json();
-      return data.detail || JSON.stringify(data);
+      const detail = data?.detail;
+      if (typeof detail === "string" && detail.trim()) return detail;
+      if (
+        detail &&
+        typeof detail === "object" &&
+        typeof detail.message === "string" &&
+        detail.message.trim()
+      ) {
+        return detail.message;
+      }
+      return JSON.stringify(data);
     } catch {
       return response.statusText;
     }

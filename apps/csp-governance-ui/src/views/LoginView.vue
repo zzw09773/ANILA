@@ -290,6 +290,8 @@ import { useAuthStore } from '../stores/auth'
 import {
   BREAK_GLASS_LOGIN_NOTICE,
   DEFAULT_LOGIN_AUTH_MODE,
+  PENDING_APPROVAL_LOGIN_CODE,
+  getLoginErrorCode,
   getLoginErrorMessage,
   loadLoginSurface,
   shouldRenderAlternativeLogin,
@@ -461,7 +463,7 @@ async function handleLogin() {
       error.value = getLoginErrorMessage(e, true)
     } else {
       const detail = getLoginErrorMessage(e)
-      if (detail.includes('等待核准') || detail.toLowerCase().includes('pending')) {
+      if (getLoginErrorCode(e) === PENDING_APPROVAL_LOGIN_CODE) {
         isPending.value = true
       }
       error.value = detail

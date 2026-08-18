@@ -116,7 +116,8 @@ client.interceptors.response.use(
 )
 
 // Pretty-format an axios error for toast messages. CSP backend returns
-// `{detail: "..."}` on errors; fall back to status + message.
+// `{detail: "..."}` or an endpoint-specific detail object on errors;
+// fall back to status + message only when neither has a display message.
 export function explainError(err: unknown): string {
   if (axios.isAxiosError(err)) {
     const detail = (err.response?.data as { detail?: unknown } | undefined)?.detail
@@ -126,6 +127,14 @@ export function explainError(err: unknown): string {
       return detail
         .map((d) => (typeof d === 'string' ? d : (d as { msg?: string }).msg ?? JSON.stringify(d)))
         .join('; ')
+    }
+    if (
+      detail &&
+      typeof detail === 'object' &&
+      typeof (detail as { message?: unknown }).message === 'string'
+    ) {
+      const message = (detail as { message: string }).message.trim()
+      if (message) return message
     }
     if (err.response?.status) return `${err.response.status} ${err.message}`
     return err.message

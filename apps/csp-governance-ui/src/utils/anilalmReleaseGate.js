@@ -10,12 +10,7 @@ export const ANILA_LM_LINK_VISIBLE = false
 /** 辨識平台連結／服務登記裡的 ANILA LM 入口。 */
 export function isAnilaLmPlatformLink(link) {
   if (!link || typeof link !== 'object') return false
-  const name = String(link.name || '').trim().toLowerCase()
-  const url = String(link.url || link.entry_url || '').trim().toLowerCase()
-  if (name === 'anila lm' || name === 'anilalm') return true
-  // /anilalm、/anilalm/、含 query 的深連
-  if (/(?:^|\/)anilalm(?:\/|$|\?)/i.test(url)) return true
-  return false
+  return link.release_gate_code === 'anila_lm'
 }
 
 /**

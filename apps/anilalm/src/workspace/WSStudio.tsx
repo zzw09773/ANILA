@@ -9,6 +9,7 @@ import { ArtifactViewer } from './ArtifactViewer'
 import type { SlidesArtifact, StudioArtifact } from '../types'
 import { findTheme, type ThemeId } from '../studio/themes'
 import { timeAgo } from '../utils/format'
+import { isDownloadWarning, warningPatch } from './artifactWarning'
 import {
   downloadSlidesJobPptx,
   getSlidesJobStatus,
@@ -217,8 +218,10 @@ export function WSStudio() {
     try {
       await downloadSlidesJobPptx(jobId, filenameStem)
       const current = useArtifactStore.getState().get(collectionId, artifactId)
-      if (current?.warning?.startsWith('檔案下載失敗')) {
-        updateArtifact(collectionId, artifactId, { warning: null })
+      if (isDownloadWarning(current)) {
+        updateArtifact(collectionId, artifactId, {
+          ...warningPatch({ source: 'none', message: null }),
+        })
       }
     } catch (downloadErr) {
       const msg =
@@ -226,7 +229,7 @@ export function WSStudio() {
           ? downloadErr.message
           : '下載失敗，請稍後再試'
       updateArtifact(collectionId, artifactId, {
-        warning: `檔案下載失敗：${msg}`,
+        ...warningPatch({ source: 'download', message: `檔案下載失敗：${msg}` }),
       })
     }
   }
@@ -269,7 +272,7 @@ export function WSStudio() {
           if (status.state === 'running' || status.state === 'pending') {
             updateArtifact(collectionId, artifact.id, {
               step: status.step ?? null,
-              warning: null,
+              ...warningPatch({ source: 'none', message: null }),
               ...(status.title ? { title: status.title } : {}),
             })
             return
@@ -282,7 +285,11 @@ export function WSStudio() {
               step: status.step ?? null,
               title: status.title ?? artifact.title,
               // Backend soft warning (e.g. LLM fallback deck) or clear.
-              warning: status.warning ?? null,
+              ...warningPatch(
+                status.warning
+                  ? { source: 'backend', message: status.warning }
+                  : { source: 'none', message: null },
+              ),
             }
             if (status.download_urls) {
               patch.downloadUrls = status.download_urls
@@ -329,7 +336,7 @@ export function WSStudio() {
             updateArtifact(collectionId, artifact.id, {
               state: 'failed',
               step: null,
-              warning: null,
+              ...warningPatch({ source: 'none', message: null }),
               error:
                 status.error ??
                 (status.state === 'cancelled'
@@ -354,7 +361,7 @@ export function WSStudio() {
               state: 'failed',
               step: null,
               error: '連線中斷過久，無法確認鑄造狀態。請重新鑄造。',
-              warning: null,
+              ...warningPatch({ source: 'none', message: null }),
             })
             const timerId = pollersRef.current.get(jobId)
             if (timerId !== undefined) {
@@ -366,7 +373,10 @@ export function WSStudio() {
           }
           if (fails >= POLL_WARN_AFTER) {
             updateArtifact(collectionId, artifact.id, {
-              warning: '連線不穩，仍在重試查詢進度…',
+              ...warningPatch({
+                source: 'poll',
+                message: '連線不穩，仍在重試查詢進度…',
+              }),
             })
           }
         }

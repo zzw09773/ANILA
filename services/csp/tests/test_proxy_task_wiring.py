@@ -28,6 +28,7 @@ import os
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -348,6 +349,55 @@ class TestUserCallerWithTask:
         assert len(runs) == 1
         assert runs[0].status == "failed"
         assert runs[0].error  # structured error payload recorded
+
+
+
+@pytest.mark.asyncio
+async def test_proxy_stream_task_error_stores_object_detail_message(monkeypatch):
+    recorded: list[tuple] = []
+
+    async def raise_object_detail(**_kwargs):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "context_overflow",
+                "message": "內容超過模型可處理的上下文長度",
+            },
+        )
+        yield ""  # pragma: no cover - makes this an async generator
+
+    def capture_finalization(task_run_id, status, *, error=None):
+        recorded.append((task_run_id, status, error))
+
+    monkeypatch.setattr(proxy_impl, "_proxy_stream_impl", raise_object_detail)
+    monkeypatch.setattr(proxy_impl, "finalize_task_run", capture_finalization)
+
+    chunks = []
+    async for chunk in proxy_impl.proxy_stream(
+        target_url="http://mock-llm/v1/chat/completions",
+        api_key_id=1,
+        user_id=2,
+        department_id=None,
+        usage_model_id=3,
+        request_body={"model": "demo"},
+        model_name="demo",
+        task_run_id=99,
+        tuning=_PROXY_TUNING,
+    ):
+        chunks.append(chunk)
+
+    assert recorded == [
+        (
+            99,
+            "failed",
+            {
+                "code": "context_overflow",
+                "message": "內容超過模型可處理的上下文長度",
+            },
+        )
+    ]
+    assert "{'code'" not in recorded[0][2]["message"]
+    assert any("event: anila.error" in chunk for chunk in chunks)
 
 
 # ── Legacy compat: no task header → unchanged + marked ─────────────────────

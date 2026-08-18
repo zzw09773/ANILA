@@ -40,6 +40,7 @@ Response handling notes:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -164,7 +165,15 @@ def _safe_detail(response: httpx.Response) -> str:
     except ValueError:
         return response.text or f"HTTP {response.status_code}"
     if isinstance(payload, dict) and "detail" in payload:
-        return str(payload["detail"])
+        detail = payload["detail"]
+        if isinstance(detail, str):
+            return detail
+        if isinstance(detail, dict):
+            message = detail.get("message")
+            if isinstance(message, str) and message.strip():
+                return message
+            return json.dumps(detail, ensure_ascii=False, sort_keys=True)
+        return str(detail)
     return str(payload)
 
 

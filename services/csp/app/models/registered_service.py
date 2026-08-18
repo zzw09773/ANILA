@@ -143,6 +143,13 @@ class RegisteredService(Base):
         ``PlatformLinkResponse`` façade serialises unchanged."""
         return self.entry_url
 
+    @property
+    def release_gate_code(self) -> str | None:
+        """Stable frontend marker for release-gated services."""
+        from app.services.anilalm_release_gate import is_anila_lm_service
+
+        return "anila_lm" if is_anila_lm_service(self) else None
+
 
 class ServiceProjectBinding(Base):
     """Binds a RegisteredService to a project (doc §13 project-entry).

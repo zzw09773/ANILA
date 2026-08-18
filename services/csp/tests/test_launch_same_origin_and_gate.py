@@ -386,7 +386,9 @@ class TestAnilaLmReleaseGate:
         links = client.get(
             "/api/platform-links?include_inactive=true", headers=headers
         ).json()
-        assert [r["name"] for r in links if r["name"] == "ANILA LM"] == ["ANILA LM"]
+        lm_links = [r for r in links if r["name"] == "ANILA LM"]
+        assert [r["name"] for r in lm_links] == ["ANILA LM"]
+        assert lm_links[0]["release_gate_code"] == "anila_lm"
 
         edited = client.put(
             f"/api/services/{svc.id}",

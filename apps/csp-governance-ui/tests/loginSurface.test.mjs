@@ -5,9 +5,11 @@ import {
   BREAK_GLASS_LOGIN_ERROR,
   BREAK_GLASS_LOGIN_NOTICE,
   DEFAULT_LOGIN_AUTH_MODE,
+  PENDING_APPROVAL_LOGIN_CODE,
   LOGIN_ALTERNATIVES_QUERY,
   LOGIN_ALTERNATIVES_QUERY_VALUE,
   getLoginErrorMessage,
+  getLoginErrorCode,
   getLoginAuthModeFromProviders,
   loadLoginSurface,
   shouldRenderSelfRegistration,
@@ -118,6 +120,24 @@ test('break-glass login errors are the same fixed Traditional Chinese message fo
   assert.deepEqual(new Set(messages), new Set([BREAK_GLASS_LOGIN_ERROR]))
   assert.equal(BREAK_GLASS_LOGIN_ERROR, '登入未成功；此帳號密碼通道僅供平台擁有者使用。')
   assert.match(loginView, /showBreakGlassNotice\.value[\s\S]*getLoginErrorMessage\(e, true\)/)
+})
+
+test('pending approval branch uses the stable code even when backend wording changes', () => {
+  const error = {
+    response: {
+      data: {
+        detail: {
+          code: 'pending_approval',
+          message: '後端改寫後的待核准說明',
+        },
+      },
+    },
+  }
+  assert.equal(getLoginErrorCode(error), 'pending_approval')
+  assert.equal(getLoginErrorMessage(error), '後端改寫後的待核准說明')
+  assert.equal(PENDING_APPROVAL_LOGIN_CODE, 'pending_approval')
+  assert.match(loginView, /getLoginErrorCode\(e\) === PENDING_APPROVAL_LOGIN_CODE/)
+  assert.doesNotMatch(loginView, /detail\.(?:includes|toLowerCase)/)
 })
 
 test('without the query parameter card-only keeps the original hidden alternative branch', () => {

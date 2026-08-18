@@ -19,6 +19,7 @@ from app.services.proxy import service as proxy_impl
 from app.services.proxy.service import (
 
     format_anila_stream_error,
+    _stable_upstream_error_code,
     stream_failure_user_message,
 )
 
@@ -45,11 +46,16 @@ class _FakeStreamResponse:
         *,
         fail_after_lines: int | None = None,
         fail_exc: BaseException | None = None,
+        body: bytes = b"",
     ):
         self._lines = lines
         self.status_code = status_code
         self._fail_after_lines = fail_after_lines
         self._fail_exc = fail_exc or httpx.ReadError("connection reset")
+        self._body = body
+
+    async def aread(self):
+        return self._body
 
     async def __aenter__(self):
         return self
@@ -169,6 +175,31 @@ def test_upstream_http_error_before_body_emits_anila_error(monkeypatch):
     assert "請" in errors[0]["message"]  # plain-language guidance
 
 
+def test_upstream_context_code_survives_stream_error_translation(monkeypatch):
+    chunks = _collect(
+        monkeypatch,
+        _FakeStreamResponse(
+            [],
+            status_code=400,
+            body=json.dumps(
+                {
+                    "error": {
+                        "code": "context_length_exceeded",
+                        "message": "後端改寫後的上下文說明",
+                    }
+                }
+            ).encode(),
+        ),
+    )
+    errors = _error_payloads(chunks)
+    assert errors == [
+        {
+            "message": "「google/gemma4」目前無法完成這次回應，請稍後再試。",
+            "code": "context_overflow",
+        }
+    ]
+
+
 def test_stream_error_message_contains_no_endpoint_address(monkeypatch):
     """Ordinary-user path: error text must not carry host/port/URL."""
     leak = "https://aiagent2.ai.ncsist.org.tw:8443/v1/secret-path"
@@ -215,3 +246,17 @@ def test_format_anila_stream_error_shape():
     assert block.startswith("event: anila.error\n")
     assert '"message"' in block
     assert block.endswith("\n\n")
+
+
+def test_context_overflow_uses_upstream_code_not_display_wording():
+    assert _stable_upstream_error_code(
+        {
+            "error": {
+                "code": "context_length_exceeded",
+                "message": "後端改寫後的上下文說明",
+            }
+        }
+    ) == "context_overflow"
+    assert _stable_upstream_error_code(
+        {"error": {"message": "ContextWindowExceededError: old wording"}}
+    ) is None

@@ -4,6 +4,7 @@ export const DEFAULT_LOGIN_AUTH_MODE = 'card-only'
 export const BREAK_GLASS_LOGIN_NOTICE = '此帳號密碼登入僅供平台擁有者於憑證卡故障時緊急使用。'
 export const BREAK_GLASS_LOGIN_ERROR = '登入未成功；此帳號密碼通道僅供平台擁有者使用。'
 export const DEFAULT_LOGIN_ERROR = '登入失敗 — 請檢查帳號密碼'
+export const PENDING_APPROVAL_LOGIN_CODE = 'pending_approval'
 
 const LOGIN_AUTH_MODES = new Set(['password', 'mixed', 'card-only'])
 
@@ -50,5 +51,17 @@ export function shouldRenderSelfRegistration(authMode) {
 
 export function getLoginErrorMessage(error, isBreakGlass = false) {
   if (isBreakGlass) return BREAK_GLASS_LOGIN_ERROR
-  return error?.response?.data?.detail || DEFAULT_LOGIN_ERROR
+  const detail = error?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object' && typeof detail.message === 'string') {
+    return detail.message
+  }
+  return DEFAULT_LOGIN_ERROR
+}
+
+export function getLoginErrorCode(error) {
+  const detail = error?.response?.data?.detail
+  return detail && typeof detail === 'object' && typeof detail.code === 'string'
+    ? detail.code
+    : null
 }
