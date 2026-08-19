@@ -74,6 +74,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Ingestion / Preview"])
 
 
+def _ingestion_error_status(exc: IngestionError) -> int:
+    """Map an IngestionError to an HTTP status code on the **fault** axis.
+
+    4xx = 用戶端的錯(格式不支援 / 損毀 / 空檔);5xx = 伺服器端的錯(組態、
+    基礎設施、安全)。軸是 ``severity``,不是 ``retryable``——兩者在「誰的錯」
+    上只有一格分歧:E_PARSE_BAD_CONFIG 是維運 .env 打錯字,retryable=False(
+    重試不會把錯的設定變對),但它 100% 是伺服器端故障——回 4xx 會讓以 5xx
+    為準的告警永遠看不到它,而且(更糟)叫一個沒有 .env 的人去修他碰不到的
+    東西。severity=warning 全是「檔案的錯」→4xx;error/critical→5xx。
+    """
+    return 400 if getattr(exc, "severity", "error") == "warning" else 500
+
+
 # ---------------------------------------------------------------------------
 # Tunables
 # ---------------------------------------------------------------------------
@@ -243,7 +256,28 @@ async def preview_chunking(
             file.content_type,
         )
     except IngestionError as exc:
-        raise HTTPException(status_code=400, detail=exc.user_message) from exc
+        # 4xx = 用戶端請求有錯(格式、損毀);5xx = 伺服器端、可重試。遠端
+        # docling 端點故障(RemoteParseError,retryable=True)是基礎設施,若繼續
+        # 回 400,以 4xx/5xx 分流的用戶端重試邏輯會得到相反結論。status code
+        # 要跟 user_message 說同一件事。
+        # user 面回 user_message(通用句);維運線索(details)記 log——不做
+        # 「同一句話」給兩邊。
+        # 分類軸在所有接縫上要同一答案(MEDIUM-1 R7):severity 分級與
+        # attachment_service 一致——warning(使用者的錯,如壞檔是日常,別把它
+        # 灌進 ERROR 稀釋掉維運訊號)記 WARNING;error/critical(我們的錯)才升上去。
+        severity = getattr(exc, "severity", "error") or "error"
+        log_fn = logger.warning if severity == "warning" else logger.error
+        if severity == "critical":
+            log_fn = logger.critical
+        log_fn(
+            "chunking-preview parse failed: %s code=%s details=%s",
+            exc.user_message,
+            getattr(exc, "code", ""),
+            getattr(exc, "details", {}),
+        )
+        raise HTTPException(
+            status_code=_ingestion_error_status(exc), detail=exc.user_message
+        ) from exc
 
     per_strategy: dict[str, StrategyPreviewResult] = {}
     for name in runnable:

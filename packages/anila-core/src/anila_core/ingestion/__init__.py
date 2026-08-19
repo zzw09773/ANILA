@@ -22,6 +22,7 @@ from anila_core.ingestion.errors import (
     EmbedError,
     IngestionError,
     ParseError,
+    RemoteParseError,
     StoreError,
 )
 
@@ -30,5 +31,6 @@ __all__ = [
     "EmbedError",
     "IngestionError",
     "ParseError",
+    "RemoteParseError",
     "StoreError",
 ]

@@ -18,6 +18,9 @@ Job retry policy:
   the document as 'failed' and the retry happens but does the same work
   with the same outcome. A future Sprint will key retries off
   ``IngestionError.retryable`` to skip non-retryable codes entirely.
+  ⚠ ``E_PARSE_REMOTE_DOWN`` 是 E_PARSE_* 前綴的**例外**:遠端 parser 端點
+  (docling) 的故障是基礎設施、retryable=True,**會**受益於重試。未來照這個
+  前綴規則實作重試時,別把它歸進 terminal 列舉。
 - ``job_timeout=300`` — 5 minutes per ingest. A 50 MB PDF with 5k chunks
   through a slow embedding endpoint can comfortably take 2-3 minutes.
 """

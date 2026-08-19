@@ -1,6 +1,6 @@
 """Application factory for anila-core — pure chat / agent runtime.
 
-Sprint 1 boundary cleanup (docs/anila-core/anila-core-boundary.md §2.3) collapsed this
+Sprint 1 boundary cleanup (docs/archive/anila-core/anila-core-boundary.md §2.3) collapsed this
 factory from a "RAG stack" to a chat-only / agent-only runtime. The
 heavy lifting that used to live here — pg_pool init, pgvector schema
 bootstrap, IngestionService composition, NvidiaEmbeddingProvider wiring,

@@ -38,7 +38,13 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from anila_core.ingestion.errors import ParseError
+from anila_core.ingestion.errors import ParseError, RemoteParseError
+
+# RemoteDoclingError 是 docling 客戶端(遠端算力)的傳輸錯誤,與「檔案壞了」是
+# 兩回事,必須在 generic `except Exception → corrupt` 之前被分流。module-level
+# import 它不拉 torch／docling／pymupdf——docling_parser module-level 只 import
+# httpx(base 硬相依)＋一個純 stdlib 的 parser_registry;heavy 全是函式內 lazy。
+from anila_core.ingestion.docling_parser import RemoteDoclingError
 
 
 def extract_text(
@@ -134,6 +140,19 @@ def extract_text(
                     "filename": filename,
                     "ext": suffix,
                     "registry_message": str(e),
+                },
+            ) from e
+        except RemoteDoclingError as e:
+            # 遠端 docling 端點失敗是**基礎設施問題**,不是「檔案壞了」——把它導到
+            # retryable 的 RemoteParseError,訊息指服務,不指文件。這個 except 必須
+            # 排在 generic `except Exception` 之前,否則會被塌進 E_PARSE_CORRUPT。
+            # usersafe 進使用者面字串;e.details(端點/上游片段)進 details = 維運面。
+            raise RemoteParseError.endpoint_unavailable(
+                user_message=e.usersafe,
+                details={
+                    "parser": "docling-remote",
+                    "filename": filename,
+                    **e.details,
                 },
             ) from e
         except Exception as e:  # parser-specific errors

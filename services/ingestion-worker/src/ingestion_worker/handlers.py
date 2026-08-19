@@ -1025,6 +1025,16 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
 
     except IngestionError as err:
         # Persist the structured failure for the dev UI / inspector.
+        # ⚠ MEDIUM-B(R9, 升級):ingestion_jobs 只存 code + user_message,details 的
+        # 具體線索(設定名/端點/上游)沒有欄位可去——worker 是**主要路徑**,不是
+        # 附件/預覽那兩條支線。一人維運的氣隙環境裡,docker logs ingestion-worker
+        # 是唯一「真的跑得動」的那條,所以把 details 記 log 與另兩個接縫對齊;
+        # 不加 ingestion_jobs.extra 欄位(那是 migration,本包沒有,加一欄要重對
+        # 版本號——不值一個 log 字串的代價)。
+        logger.error(
+            "ingest_document failed: %s code=%s details=%s",
+            err.user_message, getattr(err, "code", ""), getattr(err, "details", {}),
+        )
         await _update_document_status(
             pool, document_id, "failed",
             error_message=err.user_message or err.code,

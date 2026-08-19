@@ -1151,6 +1151,8 @@ class IngestionError(Exception):
 | `E_PARSE_CORRUPT` | ParseError | ❌ | warning | 檔案損毀；不重試 |
 | `E_PARSE_TOO_LARGE` | ParseError | ❌ | warning | 超過上限（預設 50 MB / 1000 page）|
 | `E_PARSE_PASSWORD_PROTECTED` | ParseError | ❌ | warning | PDF 受密碼保護 |
+| `E_PARSE_REMOTE_DOWN` | RemoteParseError | ✅ | error | 遠端 docling 端點故障（5xx／timeout／不可達）——**`E_PARSE_*` 前綴唯一的可重試例外**；是基礎設施不是檔案錯，訊息指端點不指文件 |
+| `E_PARSE_BAD_CONFIG` | ParseError | ❌ | error | docling 相關設定值不合法（如 `DOCLING_TIMEOUT_SECONDS` 非數字）；維運 .env 打錯字，不可重試 |
 | `E_CHUNK_INVALID_PARAMS` | ChunkError | ❌ | error | strategy params 不合法（schema validation 失敗）|
 | `E_CHUNK_OOM` | ChunkError | ✅ (smaller batch) | warning | 記憶體不足；自動降低 batch size 重試 |
 | `E_EMBED_TIMEOUT` | EmbedError | ✅ (3x exp backoff) | warning | embedding endpoint 逾時 |

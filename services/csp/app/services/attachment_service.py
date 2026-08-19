@@ -159,7 +159,7 @@ def extract_attachment_text(
             return
 
         try:
-            from anila_core.ingestion.errors import ParseError
+            from anila_core.ingestion.errors import IngestionError
             from anila_core.ingestion.parsers import extract_text
         except ImportError as exc:
             att.extract_status = "failed"
@@ -174,12 +174,49 @@ def extract_attachment_text(
             text, metadata, _images = extract_text(
                 att.filename, content, att.content_type,
             )
-        except ParseError as exc:
+        except IngestionError as exc:
+            # 接 IngestionError 整個分類,不是只接 ParseError:RemoteParseError(
+            # 遠端 docling 端點故障)是 ParseError 的 sibling,不是 subclass——
+            # 只 except ParseError 會讓它掉進下面的 `except Exception` 被標成
+            # 「附件解析失敗:RemoteParseError」並記一整條 traceback,把我們雕的
+            # 「請檢查 DOCLING_URL 是否可達」user_message 整個丟掉。碼的比對在
+            # 下面照常分辨子情況,不因放寬型別而合併。
+            #
+            # ⚠ 本分支是「只有維運能處理」的錯誤在後台被吞掉前的最後一站:此函式
+            # 由 background_tasks 拋出,全樹沒有第二處會記。不是使用者報錯就來的
+            # 地方不能靜默——基礎設施故障(RemoteParseError / E_PG_RLS_VIOLATION)
+            # 必須記 log。等級依 exc.severity,不一律同級;結構化錯誤帶著 code 就
+            # 夠,不記 traceback。
             code = getattr(exc, "code", "") or ""
             user_msg = getattr(exc, "user_message", None) or str(exc)
+            severity = getattr(exc, "severity", "error") or "error"
+            # 維運線索 = details(設定名/端點/上游片段),not user_message。使用者面
+            # 拿通用句子(extract_error),維運面靠 log grep 得到具體變數名。
+            details = getattr(exc, "details", {}) or {}
+            detail_str = f"details={details}" if details else "details={}"
+            if severity == "critical":
+                logger.critical(
+                    "extract_attachment_text: %s id=%s code=%s %s",
+                    user_msg, attachment_id, code, detail_str,
+                )
+            elif severity == "error":
+                logger.error(
+                    "extract_attachment_text: %s id=%s code=%s %s",
+                    user_msg, attachment_id, code, detail_str,
+                )
+            else:
+                logger.warning(
+                    "extract_attachment_text: %s id=%s code=%s %s",
+                    user_msg, attachment_id, code, detail_str,
+                )
             if code == "E_PARSE_FORMAT_UNSUPPORTED":
                 att.extract_status = "unsupported"
             else:
+                # ⚠ E_PARSE_TOO_LARGE(上傳的檔 > 上限)落到 "failed" 是**刻意的**:
+                # 平台既有的 extract_status="too_large" 是「抽出來的**文字**超過儲存
+                # 上限」(attachment_service 上傳路徑的那個),與「上傳的檔太大」是兩件
+                # 事、使用者可見標籤也不同。別看到同名就把它順手改成 "too_large"——
+                # 那會讓使用者看到一句與事實無關的話。
                 att.extract_status = "failed"
             att.extract_error = _truncate_error(user_msg)
             att.token_count = None

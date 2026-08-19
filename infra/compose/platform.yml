@@ -126,7 +126,10 @@ services:
       ANILA_QUERY_EXPANSION: "${ANILA_QUERY_EXPANSION:-1}"
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
+      # ⚠ 尾巴的 `,docling` 在 `:-` 預設值**外側**:operator 設 ANILA_TRUSTED_HOSTS
+      # 會整份替換括號裡的預設清單,但 docling 這個 compose 內部服務名恆在
+      # (它跟 asr-decoder 同定位——平台內服務,不是 operator 會想換掉的模型)。
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal},docling"
       # **入向** Host header allow-list (TrustedHostMiddleware) —— 跟上面那條
       # 出向 SSRF allow-list 是兩回事,別搞混。csp 的 library 預設是 "*"(等於
       # 關著),所以**這一行就是打開它的地方**:沒有它,.env 設 ALLOWED_HOSTS
@@ -228,6 +231,16 @@ services:
       # 幫 csp 補上 VISION_URL/VISION_MODEL,也不會順手把 OCR 開進 request 路徑。
       # 差異寫在 .env.example 與 services/ingestion-worker/README.md。
       PDF_OCR_FALLBACK: "false"
+      # ── 遠端 docling（2026-08-17 擁有者裁決）─────────────────────────
+      # csp 也消費 anila_core 的 parser(附件解析 attachment_service.py:163、
+      # chunking preview.py:68),DOC_PARSER=docling 時走 HTTP 端點。平台映像
+      # 不帶 docling/torch/easyocr,只有 httpx client。未設時 native。
+      DOC_PARSER: "${DOC_PARSER:-native}"
+      DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
+      DOCLING_URL: "${DOCLING_URL:-http://docling:9100}"
+      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-}"
+      DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
+      DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
     volumes:
       # packages/anila-agent subtree (github.com/zzw09773/anila-agent) — 模板下載端用。
       # 更新走 git subtree pull/push,見 README §"Updating anila-agent"。
@@ -257,6 +270,11 @@ services:
     depends_on:
       csp-db:
         condition: service_healthy
+      # 遠端 docling:與 ingestion-worker 同一條 required:false 規則——開
+      # docling-local profile 才等,沒開也不擋 csp 啟動。
+      docling:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 10s
@@ -344,6 +362,27 @@ services:
       # platform-settings table.
       DOC_PARSER: "${DOC_PARSER:-native}"
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
+      # ── 遠端 docling（2026-08-17 擁有者裁決）─────────────────
+      # DOC_PARSER=docling 時,parser 改走 HTTP 端點(remote-compute 同 ASR);
+      # 平台映像不帶 docling/torch/easyocr,只有 httpx client。未設時 native。
+      # ⚠ DOCLING_URL 的單標籤 docker 服務名(docling)被 anila_core guard
+      # 擋,靠下面 ANILA_TRUSTED_HOSTS 點名放行(operator 機制,不關檢查)。
+      DOCLING_URL: "${DOCLING_URL:-http://docling:9100}"
+      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-}"
+      DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
+      DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
+      # 出向 SSRF allow-list:single-label docker 服務名預設被擋,列進這條才
+      # 放行。docling 是 compose 內部服務,尾巴 `,docling` 在 `:-` 外側,
+      # operator 覆寫 ANILA_TRUSTED_HOSTS 時它仍在(與 asr-gateway 的
+      # `,asr-decoder` 同一形狀)。
+      # ⚠ 兩件事留給後人(2026-08-17 稽核紅線判定「未弱化」,但「未弱化」≠「無變化」):
+      #   ① `,docling` 在 `${...:-}` 預設值**外側**——無論 DOC_PARSER 是不是 docling、
+      #      服務有沒有起,這個名字**恆在**允許清單,operator 無法用 .env 移除。
+      #   ② ingestion-worker 原本沒有 ANILA_TRUSTED_HOSTS 這行,現在會**繼承**
+      #      operator 的整份清單,不是只有 docling。兩者與 asr-decoder 先例字面
+      #      一致、guard 本體未動、空元素解析安全,故不弱化——但要知道這是「加寬
+      #      了 ingestion-worker 的 allow-list 來源」,不是零變化。
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-},docling"
       PYTHONUNBUFFERED: "1"
     volumes:
       - "../../share/uploads/ingestion:${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
@@ -355,6 +394,12 @@ services:
         condition: service_healthy
       csp:
         condition: service_healthy
+      # 遠端 docling:有開 docling-local profile 才等;沒開(平台 host 無 docling)
+      # 也不擋整批 up —— 與 asr-decoder 的 `required: false` 同一條規則與
+      # 同一個 Compose v2.36.2 最小重現(見 asr-gateway 區塊那段長註解)。
+      docling:
+        condition: service_healthy
+        required: false
     restart: unless-stopped
     logging: *anila-logging
 
@@ -900,6 +945,53 @@ services:
       # 模型是背景載入的,ready 之前回 503。large-v3 冷啟動是分鐘級,
       # retries × interval 要蓋得住(20 × 30s = 10 分鐘)。
       test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    logging: *anila-logging
+
+  docling:
+    # 遠端 docling 文件解析(2026-08-17 擁有者裁決:GPU 工作一律走上 HTTP 端點,
+    # 不進平台映像)。只有 `--profile docling-local` 才起,與 asr-decoder 的
+    # asr-local 同定位——平台 host(CPU-only)永遠不起它。
+    profiles: ["docling-local"]
+    build:
+      context: ../../services/docling-service
+      dockerfile: Dockerfile
+    image: ${ANILA_IMAGE_DOCLING:-anila/docling-service:0.1.0}
+    expose:
+      - "9100"
+    environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-}
+      TZ: ${TZ:-Asia/Taipei}
+      # 同 asr-decoder:不用 :?。compose 變數插值在解析階段就跑,即使本服務在
+      # profiles 之後根本不會啟動。缺 token 由服務自己 fail-loud
+      # (app/main.py:_require_token)。
+      DOCLING_SERVICE_TOKEN: ${DOCLING_SERVICE_TOKEN:-}
+      DOCLING_ARTIFACTS_DIR: /var/anila/docling-artifacts
+      DOCLING_LOCAL_FILES_ONLY: ${DOCLING_LOCAL_FILES_ONLY:-1}
+      HF_HUB_OFFLINE: ${DOCLING_LOCAL_FILES_ONLY:-1}
+      TRANSFORMERS_OFFLINE: ${DOCLING_LOCAL_FILES_ONLY:-1}
+      # 與平台側(in-process 時代)同名同義。
+      DOCLING_OCR_LANGS: ${DOCLING_OCR_LANGS:-ch_tra,en}
+      DOCLING_TABLE_STRUCTURE: ${DOCLING_TABLE_STRUCTURE:-true}
+      DOCLING_PICTURE_DESCRIPTION: ${DOCLING_PICTURE_DESCRIPTION:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # :ro —— decoder 只讀權重,沒有任何理由寫進去。預設值落在 models/model/
+      # 底下,權重不入 git。
+      - ${DOCLING_MODEL_HOST_DIR:-../../models/model/docling}:/var/anila/docling-artifacts:ro
+    networks:
+      - default
+    # ⚠ GPU 保留(與 asr-decoder 同)搬到 infra/compose/docling-gpu.yml。這裡
+    # 刻意不留空的 deploy: —— 平台主機沒有 nvidia runtime,寫死會讓 `up` 整批
+    # 失敗;要 GPU 的主機自己疊 docling-gpu.yml。
+    healthcheck:
+      # 模型在第一次 parse 時載入(layout + tableformer + EasyOCR,動輒 GB),
+      # ready 之前 /health 回 503。retries × interval 要蓋得住分鐘級冷啟動。
+      test: ["CMD-SHELL", "curl -sf http://localhost:9100/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 20

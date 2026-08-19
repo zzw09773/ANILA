@@ -41,6 +41,8 @@
 #   WITH_MODELS=1         另打包 04-models.tar.gz(數十 GB)。預設 OFF。
 #   WITH_WEIGHTS=1        另打包 05-weights-*.tar(數百 GB)。預設 OFF。
 #   WEIGHTS_LIST / ANILA_HF_DIR  權重清單與來源,見舊註解。
+#   WITH_DOCLING_WEIGHTS=1 另打包 05-weights-docling.tar。預設 OFF。
+#   DOCLING_WEIGHTS_DIR    fetch-docling-weights.sh 產出的來源目錄。
 #
 # 輸出:
 #   $OUTPUT_DIR/
@@ -68,6 +70,8 @@ COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-$REPO_ROOT/.env}"
 INCLUDE_ASR="${INCLUDE_ASR:-1}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_PULL="${SKIP_PULL:-0}"
+WITH_DOCLING_WEIGHTS="${WITH_DOCLING_WEIGHTS:-0}"
+DOCLING_WEIGHTS_DIR="${DOCLING_WEIGHTS_DIR:-}"
 BUILDER_NAME="anila-pkg"
 BUILDX_CACHE_DIR="$(dirname "$OUTPUT_DIR")/$(basename "$OUTPUT_DIR").buildx-cache"
 
@@ -703,6 +707,26 @@ if [ "${WITH_WEIGHTS:-0}" = "1" ]; then
 else
     echo "  • 05-weights-*.tar — skipped (WITH_WEIGHTS=0)"
 fi
+
+if [ "$WITH_DOCLING_WEIGHTS" = "1" ]; then
+    [ -n "$DOCLING_WEIGHTS_DIR" ] \
+        || die "WITH_DOCLING_WEIGHTS=1 requires DOCLING_WEIGHTS_DIR"
+    [ -d "$DOCLING_WEIGHTS_DIR" ] \
+        || die "Docling weights directory does not exist: $DOCLING_WEIGHTS_DIR"
+    [ -s "$DOCLING_WEIGHTS_DIR/DOCLING-WEIGHTS-MANIFEST.txt" ] \
+        || die "Docling weights manifest missing: $DOCLING_WEIGHTS_DIR/DOCLING-WEIGHTS-MANIFEST.txt"
+    docling_weight_file="$(find "$DOCLING_WEIGHTS_DIR" -type f -print -quit)"
+    [ -n "$docling_weight_file" ] \
+        || die "Docling weights directory is empty: $DOCLING_WEIGHTS_DIR"
+    echo "  • 05-weights-docling.tar (來源 $DOCLING_WEIGHTS_DIR)"
+    tar -cf "$OUTPUT_DIR/05-weights-docling.tar" \
+        -C "$DOCLING_WEIGHTS_DIR" .
+    [ -s "$OUTPUT_DIR/05-weights-docling.tar" ] \
+        || die "Docling weights archive is empty"
+    echo "    ✓ Docling artifacts ($(du -sh "$DOCLING_WEIGHTS_DIR" | cut -f1))"
+else
+    echo "  • 05-weights-docling.tar — skipped (WITH_DOCLING_WEIGHTS=0)"
+fi
 echo
 
 # built image 的 metadata 必須從它交付的 tar 讀,不能因 load-verify 後 tag 被
@@ -767,8 +791,20 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
 (
     cd "$OUTPUT_DIR"
     shopt -s nullglob
-    sha256sum 01-images/*.tar.gz 04-models.tar.gz 05-weights-*.tar 2>/dev/null > CHECKSUMS.sha256 \
-        || sha256sum 01-images/*.tar.gz > CHECKSUMS.sha256
+    # 完整性鏈要涵蓋「實際產出的每一個 tar」。字面 04-models.tar.gz 不是 glob,
+    # nullglob 蓋不到它——它是選配,不存在時若直接塞給 sha256sum 會整行失敗。
+    # 舊寫法用 `||` 退到「只算映像」,把 05-weights-*.tar 掉出鏈還回一個綠燈,
+    # 而載入端訊息卻宣稱它們受 CHECKSUMS 保護(=假保護)。所以:只對實際存在
+    # 的檔案算 hex,不退到較弱的命令。
+    CHECKSUM_FILES=()
+    for f in 01-images/*.tar.gz 04-models.tar.gz 05-weights-*.tar; do
+        [ -f "$f" ] && CHECKSUM_FILES+=("$f")
+    done
+    if [ ${#CHECKSUM_FILES[@]} -eq 0 ]; then
+        echo "✗ 沒有可計算 checksum 的交付檔(01-images 至少應有一份)" >&2
+        exit 1
+    fi
+    sha256sum "${CHECKSUM_FILES[@]}" > CHECKSUMS.sha256
 )
 
 {
@@ -922,15 +958,30 @@ fi
 echo
 
 HF_DIR="\${ANILA_HF_DIR:-/home/aia/c1147259/project/Huggingface}"
+DOCLING_TAR="05-weights-docling.tar"
 shopt -s nullglob
 WEIGHT_TARS=(05-weights-*.tar)
 if [ \${#WEIGHT_TARS[@]} -gt 0 ]; then
     echo "── Extracting model weights → \$HF_DIR ──"
     mkdir -p "\$HF_DIR"
     for tar in "\${WEIGHT_TARS[@]}"; do
+        if [ "\$tar" = "\$DOCLING_TAR" ]; then
+            continue
+        fi
         echo "▶ \$tar"
         tar -xf "\$tar" -C "\$HF_DIR"
     done
+    echo
+fi
+
+if [ -f "\$DOCLING_TAR" ]; then
+    echo "⚠ \$DOCLING_TAR 存在 — docling 權重屬於 GPU 主機,**不在本機解開**。"
+    echo "  它仍受 CHECKSUMS.sha256 保護(bundle 完整性鏈)。把它**複製**(不要移動)到"
+    echo "  docling-service 跑的那台 GPU 主機,解到 DOCLING_ARTIFACTS_DIR"
+    echo "  (compose 的 \\\${DOCLING_MODEL_HOST_DIR} 掛載目錄);平台主機不跑 docling,"
+    echo "  不把權重解在這裡。"
+    echo "  ⚠ 用「複製」不是「移動」:本檔名列在 CHECKSUMS.sha256 裡,搬走之後"
+    echo "  再跑一次載入腳本,sha256sum -c 會因為「清單有它、檔案不在」而擋死。"
     echo
 fi
 

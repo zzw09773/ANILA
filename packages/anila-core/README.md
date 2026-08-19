@@ -111,7 +111,7 @@ packages/anila-core/
             └── chunking_plugins/  # base · registry(@register_chunker)· builtins
 ```
 
-> 完整模組責任與邊界見 [`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md)。
+> 完整模組責任與邊界見 [`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md)。
 
 ---
 
@@ -245,7 +245,7 @@ host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、i
 ## 相關文件
 
 - Redesign 設計沿革（收斂紀錄）:[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — constitution [`00`](../../docs/anila-redesign-docs/00-product-constitution.md)、runtime/registry 協定 [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、API/事件凍結線 [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)、分類 latch [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md)、Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
-- anila-core 邊界:[`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md) · runtime 設計:[`../../docs/anila-core/anila-core-runtime-design.md`](../../docs/anila-core/anila-core-runtime-design.md)
+- anila-core 邊界:[`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md) · runtime 設計:[`../../docs/archive/anila-core/anila-core-runtime-design.md`](../../docs/archive/anila-core/anila-core-runtime-design.md)
 - Ingestion 平台設計:[`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · 詳細 release notes:[`CHANGELOG.md`](./CHANGELOG.md)
 - 官方 RAG agent template:[`../anila-agent/README.md`](../anila-agent/README.md) · Router 薄殼:[`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
 - 平台總覽:[`../../README.md`](../../README.md) · 分支策略:[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

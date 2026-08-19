@@ -1,0 +1,40 @@
+# ── docling 的 GPU 覆蓋檔（給「有 nvidia container runtime 直通」的主機）──────
+#
+# 與 asr-gpu.yml 同定位：platform.yml 的 docling service 區塊**刻意不留
+# `deploy:`**，因為平台主機是 CPU-only，沒有 nvidia runtime，寫死 GPU 保留
+# 會讓整批 `up` 直接以
+#     could not select device driver "nvidia" with capabilities: [[gpu]]
+# 失敗，連不碰文件解析的服務都起不來。
+#
+# 想要用 GPU 跑 docling 的主機（通常是擁有者自己的 GPU 資源，照
+# RESTART-FROM-REDESIGN 的部署故事的「模型主機」那台）疊上這份 overlay，
+# GPU 保留才會生效。
+#
+# ⚠ fail-loud 沒有消失，但換了地方（與 asr-gpu.yml 同一句話）：
+#     疊了本檔     → 沒有 nvidia runtime 的機器 `up` 當場失敗，訊息就是
+#                    could not select device driver "nvidia"。
+#     沒疊本檔     → `up` 不會失敗；docling-service 起得來，載模型時才死
+#                    （EasyOCR / layout model 動輒 GB，CPU 上慢到像假可用），
+#                    真正的訊息在容器日誌裡，不在 `up` 的輸出上。
+#   CPU-only 主機不要疊本檔，也不要疊 asr-gpu.yml——那台機器本就該只起
+#   httpx client，GPU 這端交給另一台主機。
+#
+# 用法（注意 -f 的順序，後者覆蓋前者）：
+#   docker compose -p anila-restart \
+#     -f compose.yaml -f infra/compose/docling-gpu.yml \
+#     --profile docling-local up -d
+#
+# 要讓它變成常駐設定，在 .env 加：
+#   COMPOSE_FILE=compose.yaml:infra/compose/docling-gpu.yml
+
+services:
+  docling:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # 釘卡:docling 的 EasyOCR + layout model 與 LLM / ASR 搶同一張
+              # 卡時，推論延遲互相干擾很難 debug。operator 按主機卡號調整。
+              device_ids: ["${DOCLING_GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]

@@ -1547,15 +1547,13 @@ class ParserRegistry:
         if os.getenv("DOC_PARSER", "native").lower() != "docling":
             return None
         if not cls._docling_initialised:
-            try:
-                from .docling_parser import build_docling_parser_from_env
-                cls._docling_parser = build_docling_parser_from_env()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "Docling parser construction failed: %s — falling back to native",
-                    exc,
-                )
-                cls._docling_parser = None
+            from .docling_parser import build_docling_parser_from_env
+            # ⚠ 2026-08-17:失敗不再是「fallback 到 native」。DOC_PARSER=docling
+            # 是擁有者明示的選用──選了它、建構失敗卻靜默退回較差的 native 解析,
+            # 等於拿一個綠燈換一台被關掉的 docling。讓錯誤往上冒,operatator 才會
+            # 看見。RemoteDoclingParser 的建構子刻意不 raise(缺 DOCLING_URL 是延遲
+            # 到 parse() 才驗),所以會走到這裡 raise 的只有壞設定(如過時 timeout)。
+            cls._docling_parser = build_docling_parser_from_env()
             cls._docling_initialised = True
         return cls._docling_parser
 

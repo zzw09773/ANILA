@@ -444,6 +444,52 @@ def test_extraction_failure_named_in_block(db, storage_root, monkeypatch):
     assert "解析失敗" in sys_content
 
 
+def test_remote_parse_error_name_not_traceback_in_attachment(db, storage_root, monkeypatch, caplog):
+    """F1 回歸＋M2/M3:基礎設施故障在附件路徑——使用者面通用、維運面有具體線索。
+
+    - 只 except ParseError 的舊版會讓 RemoteParseError(sibling)掉進
+      `except Exception` → 存進「附件解析失敗:RemoteParseError」+ 一條 traceback。
+    - M2:存進 extract_error(=使用者面)的不得含內部主機名。
+    - M3:log 要拿得到 details(=維運面)。
+    """
+    from anila_core.ingestion.errors import RemoteParseError
+
+    user = make_user(db, username="att-remote")
+    conv = _make_conv(db, user)
+
+    def boom(filename, content, mime_type=None):
+        raise RemoteParseError.endpoint_unavailable(
+            user_message="文件解析服務暫時無法處理,請稍後重試。",
+            details={"endpoint": "http://docling-gpu.internal:9100", "status_code": 503},
+        )
+
+    monkeypatch.setattr("anila_core.ingestion.parsers.extract_text", boom)
+
+    att = _write_and_row(
+        db, user=user, conv=conv, storage_root=storage_root,
+        filename="remote.pdf", content=b"%PDF", content_type="application/pdf",
+    )
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="app.services.attachment_service"):
+        extract_attachment_text(att.id, db=db)
+    db.refresh(att)
+    assert att.extract_status == "failed"
+    # 存進去的 user_message(=使用者面),不是型別名、也不含內部主機名。
+    assert "稍後重試" in att.extract_error
+    assert "RemoteParseError" not in att.extract_error
+    assert "docling-gpu.internal" not in att.extract_error
+    # HIGH-B:基礎設施故障(severity=error)必須在維運看得到的地方留下訊號——
+    # 這函式由 background_tasks 拋出,沒有第二處會記。severity=error → logger.error。
+    # M3:log 要拿得到 details(維運線索),不是只有 user_message 那句話。
+    assert any(
+        rec.levelno >= logging.ERROR and "docling-gpu.internal" in rec.message
+        for rec in caplog.records
+    ), "基礎設施故障沒進 log,或 log 裡拿不到維運線索(details)"
+    # 醫強調 M2:使用者面(extract_error)不該含內部端點;若沒守住,回歸測試要抓。
+    assert "docling-gpu.internal" not in att.extract_error
+
+
 # ── g. Safety multiplier ──────────────────────────────────────────────────
 
 

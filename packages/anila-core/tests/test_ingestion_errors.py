@@ -19,6 +19,7 @@ from anila_core.ingestion.errors import (
     EmbedError,
     IngestionError,
     ParseError,
+    RemoteParseError,
     StoreError,
 )
 
@@ -38,6 +39,20 @@ def test_parse_corrupt_is_terminal() -> None:
     err = ParseError.corrupt(user_message="file is corrupt")
     assert err.retryable is False
     assert err.severity == "warning"
+
+
+def test_remote_parse_down_is_retryable_and_distinct_code() -> None:
+    """遠端 parser 端點失敗 = 基礎設施,不是檔案壞 → 另一個 code,可重試。
+
+    與 ParseError.corrupt(E_PARSE_CORRUPT / retryable=False)必須是兩種不同的
+    code,否則 worker 會把 GPU 主機重開機期間的每份文件都標成使用者檔案損毀。
+    """
+    err = RemoteParseError.endpoint_unavailable(user_message="docling 端點無回應")
+    assert err.code == "E_PARSE_REMOTE_DOWN"
+    assert err.retryable is True
+    assert err.severity == "error"
+    # 不能是 ParseError 的子類——except ParseError 那條舊分支要能把它放過。
+    assert not isinstance(err, ParseError)
 
 
 def test_embed_timeout_is_retryable() -> None:
@@ -100,3 +115,52 @@ def test_chunk_error_subclass_isinstance() -> None:
     assert isinstance(err, IngestionError)
     with pytest.raises(ChunkError):
         raise err
+
+
+def test_severity_axis_contract() -> None:
+    """severity 是 API:填它 = 同時選 HTTP 狀態碼與告警等級(見 errors.py 那欄的 docstring)。
+
+    這張表是**守衛**,不是文件。預期每個 parse 路徑的 factory:
+      warning  = 檔案的錯(使用者能自救)            → 4xx
+      error    = 組態/基礎設施(維運的錯)           → 5xx
+      critical = 安全事件                           → 5xx + 頁級告警
+
+    ⚠ 範圍:只涵蓋 ParseError 與 RemoteParseError——這兩類走 parse 路徑,severity
+    會被 preview.py 拿來決定 HTTP 狀態碼。EmbedError / StoreError / ChunkError
+    走 worker 的 embed/store/chunk 路徑,severity 只進 alert routing、不進 HTTP
+    語意,不在這張「HTTP 語意」對照表的涵蓋範圍內——不是漏掉,是範圍判斷。
+
+    ⚠ 這個範圍不是自明,因此本測試用反射(vars(cls))撈出這兩個類上的全部
+    classmethod factory,與下面的表比對——**新增一顆 factory 沒進表,這條會紅**,
+    不是靠人記得來補。
+    """
+    # (factory 名字 → factory, 期望 severity):每一筆都是 parse 路徑的一顆 code。
+    exposure = {
+        ("ParseError", "format_unsupported"): ("warning", ParseError.format_unsupported),
+        ("ParseError", "corrupt"): ("warning", ParseError.corrupt),
+        ("ParseError", "too_large"): ("warning", ParseError.too_large),
+        ("ParseError", "bad_config"): ("error", ParseError.bad_config),
+        ("RemoteParseError", "endpoint_unavailable"): ("error", RemoteParseError.endpoint_unavailable),
+    }
+    # 反射撈全部 factory,與表比對——宣稱「釘住每一顆」必須是真的,不是手寫清單。
+    discovered = set()
+    for cls_name, cls in (("ParseError", ParseError), ("RemoteParseError", RemoteParseError)):
+        for name, value in vars(cls).items():
+            if isinstance(value, classmethod):
+                discovered.add((cls_name, name))
+    assert discovered == set(exposure), (
+        f"severity 對照表與實際 factory 不同步。表裡有:"
+        f"{sorted(exposure)};實際 factory:{sorted(discovered)}。"
+        "新增 ParseError/RemoteParseError 的子類 factory 時,要在這張表選好它的 severity。"
+    )
+    for (cls_name, _name), (expected_severity, factory) in exposure.items():
+        err = factory(user_message="x")
+        assert err.severity == expected_severity, (
+            f"{err.code} 的 severity 是 {err.severity},預期 {expected_severity}——"
+            "severity 決定它對使用者回 4xx 還是 5xx;改這一格等於改 HTTP 語意。"
+        )
+    # 反向不變式:warning ⇔ 使用者能自救(parse 路徑 → 400);error/critical ⇔ 5xx。
+    for (_cls_name, _name), (expected_severity, factory) in exposure.items():
+        if expected_severity == "warning":
+            err = factory(user_message="x")
+            assert err.retryable is False, f"{err.code} 是檔案的錯,不可重試"

@@ -1,0 +1,80 @@
+# ── docling-service：外部版（獨立 GPU 主機）────────────────────────────
+#
+# 用途：docling 跑在「不是平台主機」的 GPU 機器上（擁有者裁決：所有 GPU 工作
+# 以 HTTP 端點抵達，不在平台進程內跑）。平台的 csp / ingestion-worker 以
+# httpx 打進來（DOCLING_URL=http://<這台>:9100）。
+#
+# 內部版（docling 與平台同機、不開 host port）請用 infra/compose/platform.yml
+# 的 docling 區（profiles: ["docling-local"]）＋ 疊 infra/compose/docling-gpu.yml，
+# 不要用這個檔。
+#
+# ⚠ 安全：這個檔會把 docling 綁上 host port，X-Token（DOCLING_SERVICE_TOKEN）
+#   是唯一的防線。
+#   - DOCLING_SERVICE_TOKEN 必須是長亂數（建議 `openssl rand -hex 32`），絕不進 repo。
+#   - ports 預設綁 0.0.0.0（平台主機在別台，必須能連進來）。務必用防火牆
+#     把來源限縮到平台主機 IP，不要讓整個內網都打得到。
+#   - 純 http 是氣隙內跨主機的現實（同 anila-agent / asr-decoder 外部版）。
+#     平台側 csp 仍會用 SSRF guard 驗 DOCLING_URL；http 位址要過
+#     `ANILA_ALLOW_HTTP_ENDPOINT=1` 這道門（P0.2 拍板的分域旗標）。
+#
+# 部署：
+#   1. 先在有網路的機器跑 infra/deployment/offline/fetch-docling-weights.sh
+#      → 產出權重目錄（含 DOCLING-WEIGHTS-MANIFEST.txt），帶進氣隙、解到這台。
+#   2. cp .env.example .env   # 填 DOCLING_SERVICE_TOKEN / DOCLING_MODEL_HOST_DIR / 卡號
+#   3. docker compose -f docker-compose.standalone.yml -p docling up -d
+#   4. docker compose -f docker-compose.standalone.yml -p docling logs -f
+#
+# 驗證（容器內有 curl）：
+#   curl -sf http://localhost:${DOCLING_PORT:-9100}/health
+#   應回 200 {"status":"ok","model_ready":true}。
+#   ⚠ ready=true 只保證開機檢查兩件事過關：easyocr import 成功、權重目錄非空
+#     （離線模式）。它**不**保證下一次 convert 做得到——2026-08-18 的
+#     InvalidCxxCompiler 就是第一次 convert 才發生、_verify_ready 抓不到。
+#     權重缺席時服務會 exit(1)、重啟策略接手、永不回 ready。
+#
+#   POST 一份真的 PDF：
+#     curl -s -X POST http://localhost:9100/parse \
+#       -H "X-Token: ${DOCLING_SERVICE_TOKEN}" \
+#       -F "file=@/path/to/a.pdf" | head -c 500
+
+services:
+  docling:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${ANILA_IMAGE_DOCLING:-anila/docling-service:0.1.0}
+    ports:
+      # 外部版必須開 host port —— 平台主機在另一台機器。
+      - "${DOCLING_BIND:-0.0.0.0}:${DOCLING_PORT:-9100}:9100"
+    environment:
+      # 同 asr-decoder：用 :? fail-loud。這是外部版，缺 token 就是內網裡一個
+      # 無驗證的文件解析服務。import 期就拒收，容器起不來。
+      DOCLING_SERVICE_TOKEN: ${DOCLING_SERVICE_TOKEN:?DOCLING_SERVICE_TOKEN must be set (openssl rand -hex 32)}
+      DOCLING_ARTIFACTS_DIR: /var/anila/docling-artifacts
+      # air-gap 一定要 1：禁止對 HF / docling CDN 的出向請求，權重缺了就 fail loud。
+      DOCLING_LOCAL_FILES_ONLY: ${DOCLING_LOCAL_FILES_ONLY:-1}
+      # 與平台側（in-process 時代）同名同義。
+      DOCLING_OCR_LANGS: ${DOCLING_OCR_LANGS:-ch_tra,en}
+      DOCLING_TABLE_STRUCTURE: ${DOCLING_TABLE_STRUCTURE:-true}
+      DOCLING_PICTURE_DESCRIPTION: ${DOCLING_PICTURE_DESCRIPTION:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # 權重目錄：fetch-docling-weights.sh 的產出解到 host 的這個路徑再掛進。
+      # :ro —— decoder 只讀權重，沒有任何理由寫進去。
+      - ${DOCLING_MODEL_HOST_DIR:?DOCLING_MODEL_HOST_DIR must be set (dir containing DOCLING-WEIGHTS-MANIFEST.txt)}:/var/anila/docling-artifacts:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # 釘卡：docling 的 EasyOCR + layout model 與 LLM / ASR 搶同一張卡時，
+              # 推論延遲互相干擾很難 debug。operator 按主機卡號調整。
+              device_ids: ["${DOCLING_GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9100/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped

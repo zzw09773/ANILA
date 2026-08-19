@@ -90,7 +90,7 @@ services:
       # flux2-dev-agent added: the image-generator agent + image model use this
       # docker service name (single-label), which the URL guard blocks unless
       # trusted (ALLOW_PRIVATE does NOT bypass the single-label check).
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal},docling"
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
       ANILA_AUTH_MODE: "${ANILA_AUTH_MODE:-password}"
@@ -117,6 +117,17 @@ services:
       FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
       FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
       # FLUX_CACHE_DIR defaults to the studio-owned flux cache volume.
+      # ── 遠端 docling（2026-08-17 擁有者裁決）─────────────────────────
+      # csp 也消費 anila_core 的 parser(附件解析 attachment_service、chunking
+      # preview),DOC_PARSER=docling 時走 HTTP 端點。平台映像不帶 docling/torch/
+      # easyocr,只有 httpx client。未設時 native。dev 之 http 旗標上面已硬寫 1,
+      # 所以 DOCLING_URL 的 http://docling:9100 在 dev 可直接過 guard。
+      DOC_PARSER: "${DOC_PARSER:-native}"
+      DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
+      DOCLING_URL: "${DOCLING_URL:-http://docling:9100}"
+      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-dev-docling-token}"
+      DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
+      DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
     volumes:
       - ../../packages/anila-agent:/app/anila-template:ro
       # ⚠️ dev 用獨立 share 目錄，不撞 live stack 的 ./share/
@@ -141,6 +152,13 @@ services:
     networks:
       - default
       - anila-models-net
+    # ⚠ 刻意不 depends_on docling:dev.yml 是自足檔,不定義 docling 服務本體
+    # (它只在 platform.yml:948,dev 主機 CPU-only 不跑它)。這裡「定義不存在」,
+    # `required: false` 救不了——那顆旗標只解得掉「有定義但不在啟用的 profile 裡」
+    # 這格(platform.yml 的 asr-decoder),解不掉「這組檔案根本沒定義」這格,
+    # 後者照樣硬錯誤 `depends on undefined service`。要不要起 docling 是 dev 的
+    # 環境選擇,不是 csp 的圖譜依賴 —— 與 ASR 先例一致:dev 的 asr-gateway 也不
+    # depends_on asr-decoder,只帶 working default 的 env。
     depends_on:
       csp-db:
         condition: service_healthy
@@ -208,6 +226,14 @@ services:
       RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
       DOC_PARSER: "${DOC_PARSER:-native}"
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
+      # ── 遠端 docling（2026-08-17 擁有者裁決）─────────────────
+      # DOC_PARSER=docling 時,parser 改走 HTTP 端點(remote-compute 同 ASR)。
+      # docling 是 compose 內部服務,單標籤 host 由 ANILA_TRUSTED_HOSTS 點名放行。
+      DOCLING_URL: "${DOCLING_URL:-http://docling:9100}"
+      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-dev-docling-token}"
+      DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
+      DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-},docling"
       # Embedding topic-similarity edges (document-relations / C). Uses the
       # existing document_chunks vectors — no extra model call.
       ENABLE_SIMILARITY_EDGES: "${ENABLE_SIMILARITY_EDGES:-true}"

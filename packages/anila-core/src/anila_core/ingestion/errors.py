@@ -54,6 +54,22 @@ class IngestionError(Exception):
     retryable: bool = False
 
     # Severity for alert routing. ``critical`` events page on-call.
+    # ⚠ 這個欄位已經是 API,不是註解(2026-08-17 八輪審查把它變成三個消費者
+    # 的實際控制輸入)。**填它 = 同時選了兩件事**:
+    #   - HTTP 狀態碼(parse 路徑):services/csp/app/api/ingestion/preview.py:87
+    #       severity=="warning" → 400,否則 500。所以 ParseError.corrupt 之所以
+    #       對使用者回 400,唯一原因是它填了 warning——光看欄位名看不出來。
+    #   - log 等級(兩處):preview.py:269 與
+    #       services/csp/app/services/attachment_service.py:197——
+    #       warning→WARNING、critical→CRITICAL、其餘→ERROR。
+    # 語意(只對 parse 路徑成立,embedding 的 EmbedError 走 worker,不進這條):
+    #   warning   = 檔案的錯(使用者能自救) → 4xx + WARNING
+    #   error     = 組態/基礎設施(維運的錯) → 5xx + ERROR
+    #   critical  = 安全事件(立即告警)     → 5xx + CRITICAL
+    # 新增 ParseError / RemoteParseError 的子類 factory 時,severity 必須在
+    # warning 與 error/critical 之間**有意地**選——不是照「挑 log 等級的直覺」。
+    # 守衛測試 tests/test_ingestion_errors.py::test_severity_axis_contract 釘住
+    # 每一顆 code 的 severity,新增一分類會被迫更新那張表,不是猜。
     severity: str = "error"
 
     # Localised, dev-safe message. Goes straight to dev UI without escaping.
@@ -111,9 +127,63 @@ class ParseError(IngestionError):
             details=details or {},
         )
 
+    @classmethod
+    def bad_config(
+        cls, user_message: str, details: dict[str, Any] | None = None
+    ) -> "ParseError":
+        # 設定值不合法(如 DOCLING_TIMEOUT_SECONDS=abc)。與 corrupt(檔案壞)、
+        # format_unsupported(副檔名)都不同:這是組態錯,訊息要指向那顆變數。
+        # terminal,不重試——重試不會把錯的設定變對。
+        return cls(
+            code="E_PARSE_BAD_CONFIG",
+            retryable=False,
+            severity="error",
+            user_message=user_message,
+            details=details or {},
+        )
+
+    @classmethod
+    def too_large(
+        cls, user_message: str, details: dict[str, Any] | None = None
+    ) -> "ParseError":
+        # 檔案超過上限。是檔案的錯(不重試),但文案跟 corrupt 不同——不能叫
+        # 使用者去猜「純圖片／損毀／密碼保護」。
+        return cls(
+            code="E_PARSE_TOO_LARGE",
+            retryable=False,
+            severity="warning",
+            user_message=user_message,
+            details=details or {},
+        )
+
 
 class ChunkError(IngestionError):
     """Chunking-strategy failures (invalid params, OOM)."""
+
+
+class RemoteParseError(IngestionError):
+    """Remote parser-endpoint failures (service down, timeout, unreachable).
+
+    Deliberately a **sibling** of ``ParseError``, not a subclass: ``ParseError``
+    means "the file itself is wrong" and is never retryable; a remote-compute
+    parser (docling, reached over HTTP like ASR) can be down through no fault
+    of the uploaded file — that is infrastructure, so it must be retryable and
+    its user message must point at the service, not at the document. Collapsing
+    it into ``ParseError.corrupt`` would tell the user "your file is broken"
+    when what is broken is the GPU host.
+    """
+
+    @classmethod
+    def endpoint_unavailable(
+        cls, user_message: str, details: dict[str, Any] | None = None
+    ) -> "RemoteParseError":
+        return cls(
+            code="E_PARSE_REMOTE_DOWN",
+            retryable=True,
+            severity="error",
+            user_message=user_message,
+            details=details or {},
+        )
 
 
 class EmbedError(IngestionError):

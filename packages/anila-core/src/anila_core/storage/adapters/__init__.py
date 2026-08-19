@@ -2,7 +2,7 @@
 
 History:
 
-- v0.5.0 boundary cleanup (docs/anila-core/anila-core-boundary.md §2.3) removed the
+- v0.5.0 boundary cleanup (docs/archive/anila-core/anila-core-boundary.md §2.3) removed the
   RAG-flavour PG adapters: ``PgPool``, ``PgVectorStore``,
   ``PgSessionStore``, ``PgMessageStore``, ``PgRetrievalTraceStore``,
   ``initialize_schema``. They lived under the assumption that anila-core
