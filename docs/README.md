@@ -13,8 +13,18 @@
 ```
 docs/
 ├── README.md                   <-- 本檔(索引)
-├── branch-sync-backlog.md      <-- main ↔ prod 同步策略 + 永久 fork 區清單 (prod-only)
-├── developer-guide.md          <-- 新進開發者入門
+├── branch-sync-backlog.md      <-- main ↔ prod 同步策略 + 永久 fork 區清單 (已失效,見警語)
+│
+├── handoffs/                   <-- session 移交紀錄 (HANDOFF 系列,12 份)
+│
+├── archive/                    <-- 歷史文件,按原目錄名分群
+│   ├── agent-framework/        <-- anila-agent / runtime 架構 (8 份)
+│   ├── agenticrag/             <-- AgenticRAG 解耦 / 增強計畫 (3 份)
+│   ├── anila-core/             <-- anila-core 邊界 / runtime 設計 (2 份)
+│   ├── briefing/               <-- 對外簡報 / RFC (2 份)
+│   ├── changelog/              <-- 重大變更紀錄 (1 份)
+│   ├── history/                <-- 平台沿革 (4 份)
+│   └── planning/               <-- 早期 sprint 計畫 (2 份)
 │
 ├── governance/                 <-- ISO 42001 合規文件 ⭐ (prod-only,10 份)
 │   ├── README.md
@@ -28,22 +38,15 @@ docs/
 │   ├── ai-incident-response.md
 │   └── third-party-ai-register.md
 │
-├── runbooks/                   <-- 操作手冊 (4 份)
+├── runbooks/                   <-- 操作手冊
 │   ├── intranet-deployment-runbook.md   <-- 中科院內網部署手冊
 │   ├── rotate-tls-cert.md
 │   ├── service-token-cutover.md
 │   └── legacy-agent-bootstrap.md
 │
-├── agent-framework/            <-- anila-agent / runtime 架構 (4 份)
-├── anila-core/                 <-- anila-core 邊界 / runtime 設計 (2 份)
-├── agenticrag/                 <-- AgenticRAG 解耦 / 增強計畫 (3 份)
 ├── ingestion/                  <-- ingestion 平台設計 / parent-child RAG (2 份)
 ├── platform/                   <-- 多服務整合 / SSO migration (2 份)
-├── planning/                   <-- 進行中計畫 / sprint roadmap (2 份)
 ├── guides/                     <-- developer guide (1 份)
-├── onyx/                       <-- onyx 應用計畫 / API spec (handover) (2 份)
-├── briefing/                   <-- 對外簡報 / RFC (1 份)
-├── changelog/                  <-- 重大變更紀錄 (1 份)
 └── specs/                      <-- studio-flux / studio-wizard / anila-studio 子計畫（原名 superpowers/，2026-08-17 更名）
     ├── studio-flux/            <-- FLUX 圖像生成 Stage 1-4 spec / plans / history
     ├── studio-wizard/          <-- studio 嚮導模式設計
@@ -51,8 +54,6 @@ docs/
     ├── specs/                  <-- 詳細 spec
     └── plans/                  <-- 階段計畫
 ```
-
----
 
 ## 我要找什麼?
 
@@ -84,12 +85,12 @@ docs/
 
 | 我想知道… | 看這份 |
 |---|---|
-| **`anila-core` 怎麼運作** | [`anila-core/anila-core-runtime-design.md`](./anila-core/anila-core-runtime-design.md) |
-| **`anila-core` 與 csp 的邊界** | [`anila-core/anila-core-boundary.md`](./anila-core/anila-core-boundary.md) |
-| **`anila-agent` template 怎麼設計** | [`agent-framework/anila-agent-framework-architecture.md`](./agent-framework/anila-agent-framework-architecture.md) |
-| **agent runtime 移植決策** | [`agent-framework/anila-agent-framework-porting-decisions.md`](./agent-framework/anila-agent-framework-porting-decisions.md) |
-| **openai-agents runtime 深入** | [`agent-framework/runtime-logic-openai-agents-deep-dive.md`](./agent-framework/runtime-logic-openai-agents-deep-dive.md) |
-| **CSP ↔ Agent bootstrap 協定** | [`agent-framework/csp-agent-bootstrap-protocol.md`](./agent-framework/csp-agent-bootstrap-protocol.md) |
+| **`anila-core` 怎麼運作** | [`anila-core/anila-core-runtime-design.md`](./archive/anila-core/anila-core-runtime-design.md) |
+| **`anila-core` 與 csp 的邊界** | [`anila-core/anila-core-boundary.md`](./archive/anila-core/anila-core-boundary.md) |
+| **`anila-agent` template 怎麼設計** | [`agent-framework/anila-agent-framework-architecture.md`](./archive/agent-framework/anila-agent-framework-architecture.md) |
+| **agent runtime 移植決策** | [`agent-framework/anila-agent-framework-porting-decisions.md`](./archive/agent-framework/anila-agent-framework-porting-decisions.md) |
+| **openai-agents runtime 深入** | [`agent-framework/runtime-logic-openai-agents-deep-dive.md`](./archive/agent-framework/runtime-logic-openai-agents-deep-dive.md) |
+| **CSP ↔ Agent bootstrap 協定** | [`agent-framework/csp-agent-bootstrap-protocol.md`](./archive/agent-framework/csp-agent-bootstrap-protocol.md) |
 | **Ingestion pipeline 設計** | [`ingestion/ingestion-platform-design.md`](./ingestion/ingestion-platform-design.md) |
 | **Parent-child RAG 設計** | [`ingestion/parent-child-rag-design.md`](./ingestion/parent-child-rag-design.md) |
 
@@ -97,11 +98,11 @@ docs/
 
 | 我想知道… | 看這份 |
 |---|---|
-| **目前 sprint 在做什麼** | [`planning/sprint-7x-plan.md`](./planning/sprint-7x-plan.md) |
+| **目前 sprint 在做什麼** | [`planning/sprint-7x-plan.md`](./archive/planning/sprint-7x-plan.md) |
 | **SSO 切換進度** | [`platform/sso-migration.md`](./platform/sso-migration.md) |
 | **GitLab / n8n / ANILA LM 整合** | [`platform/multi-service-integration-plan.md`](./platform/multi-service-integration-plan.md) |
-| **AgenticRAG 解耦 / Phase 1 計畫** | [`agenticrag/agenticrag-decouple-from-anila-core.md`](./agenticrag/agenticrag-decouple-from-anila-core.md) + [`agenticrag/agenticrag-phase1-plan.md`](./agenticrag/agenticrag-phase1-plan.md) |
-| **AgenticRAG 後續增強** | [`agenticrag/agenticrag-enhancement-plan.md`](./agenticrag/agenticrag-enhancement-plan.md) |
+| **AgenticRAG 解耦 / Phase 1 計畫** | [`agenticrag/agenticrag-decouple-from-anila-core.md`](./archive/agenticrag/agenticrag-decouple-from-anila-core.md) + [`agenticrag/agenticrag-phase1-plan.md`](./archive/agenticrag/agenticrag-phase1-plan.md) |
+| **AgenticRAG 後續增強** | [`agenticrag/agenticrag-enhancement-plan.md`](./archive/agenticrag/agenticrag-enhancement-plan.md) |
 
 ### Studio / FLUX
 
@@ -115,10 +116,9 @@ docs/
 
 | 我想知道… | 看這份 |
 |---|---|
-| **Memory 層怎麼設計(route 3)** | [`briefing/anila-memory-layer-rfc.md`](./briefing/anila-memory-layer-rfc.md) |
+| **Memory 層怎麼設計(route 3)** | [`briefing/anila-memory-layer-rfc.md`](./archive/briefing/anila-memory-layer-rfc.md) |
 | **新進開發者要看什麼** | [`guides/`](./guides/) 或根 `docs/developer-guide.md` |
-| **Onyx 為什麼從 monorepo 移出** | [`changelog/2026-04-27-onyx-handover.md`](./changelog/2026-04-27-onyx-handover.md) |
-| **Onyx API spec(handover 給對方團隊)** | [`onyx/onyx-target-system-api-spec.md`](./onyx/onyx-target-system-api-spec.md) |
+| **Onyx 為什麼從 monorepo 移出** | [`changelog/2026-04-27-onyx-handover.md`](./archive/changelog/2026-04-27-onyx-handover.md) |
 
 ---
 

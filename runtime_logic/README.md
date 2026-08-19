@@ -103,8 +103,8 @@
 
 - 平台總覽：[`../README.md`](../README.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
 - Python runtime（移植目的地）：[`../packages/anila-core/README.md`](../packages/anila-core/README.md)
-- `openai-agents-python` 深入分析：[`../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
-- Agent framework 架構與移植決策：[`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)、[`../docs/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/agent-framework/anila-agent-framework-porting-decisions.md)
+- `openai-agents-python` 深入分析：[`../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md)
+- Agent framework 架構與移植決策：[`../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../docs/archive/agent-framework/anila-agent-framework-architecture.md)、[`../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md)
 
 ---
 

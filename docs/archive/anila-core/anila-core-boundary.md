@@ -4,8 +4,8 @@
 
 **Status**: Ready for execution as part of Ingestion Platform Sprint 1
 **Date**: 2026-04-25
-**Parent doc**: [`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md) §12
-**Sibling doc**: [`multi-service-integration-plan.md`](../platform/multi-service-integration-plan.md) — 多服務整合計畫（含 codeserver dev credentials 與 RLS 整合，§5.3 引用本文件）
+**Parent doc**: [`ingestion-platform-design.md`](../../ingestion/ingestion-platform-design.md) §12
+**Sibling doc**: [`multi-service-integration-plan.md`](../../platform/multi-service-integration-plan.md) — 多服務整合計畫（含 codeserver dev credentials 與 RLS 整合，§5.3 引用本文件）
 **Driver**: ANILA Ingestion Platform 中央化需要 anila-core 退回 pure runtime；同時 README 早就標記「Task 3 pending」
 
 ---
@@ -16,7 +16,7 @@
 
 > 現階段 `ingestion/`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}.py`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py` 等仍留在 anila-core tree 裡（透過 `[rag]` extras 啟用）。**下一輪會把這些 RAG-specific 檔案搬回 AgenticRAG template，讓 core 真正成為 pure runtime。**
 
-這個「下一輪」一直沒做。同時 ANILA Ingestion Platform 設計（[`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md)）將會提供中央化的 ingestion 服務，**現在不做 anila-core 瘦身就會出現三套 ingestion**：
+這個「下一輪」一直沒做。同時 ANILA Ingestion Platform 設計（[`ingestion-platform-design.md`](../../ingestion/ingestion-platform-design.md)）將會提供中央化的 ingestion 服務，**現在不做 anila-core 瘦身就會出現三套 ingestion**：
 
 ```
 1. packages/anila-core/ingestion/ (歷史遺物，README 早就要刪)
@@ -272,4 +272,4 @@ Sprint 1 結束時 anila-core 必須符合：
 
 ---
 
-**Last updated**: 2026-04-25 · **Owner**: ANILA 平台團隊 · **Parent**: [`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md) §13
+**Last updated**: 2026-04-25 · **Owner**: ANILA 平台團隊 · **Parent**: [`ingestion-platform-design.md`](../../ingestion/ingestion-platform-design.md) §13

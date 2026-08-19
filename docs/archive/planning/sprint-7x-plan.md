@@ -8,8 +8,8 @@ code。Sprint 6 X 已把資安修補尾巴與 SSO 地基鋪完；7 X 的角色�
 等需要 design 決策的議題定型，等 Sprint 8 X 再依此實作。
 
 **Companion docs**：
-- [`sso-migration.md`](../platform/sso-migration.md) — SSO cutover 三階段 roadmap
-- [`runbooks/rotate-tls-cert.md`](./runbooks/rotate-tls-cert.md) — 私鑰
+- [`sso-migration.md`](../../platform/sso-migration.md) — SSO cutover 三階段 roadmap
+- [`runbooks/rotate-tls-cert.md`](../../runbooks/rotate-tls-cert.md) — 私鑰
   / 憑證輪換（destructive）
 
 ---
@@ -373,7 +373,7 @@ estimate: 0.5 d
 
 只有本 plan + 兩個 follow-up 連結即可：
 
-- `docs/planning/sprint-7x-plan.md`（本檔）
+- `docs/archive/planning/sprint-7x-plan.md`（本檔）
 - `docs/platform/sso-migration.md` 已在 6 X 寫完，§5 表新增 7 X 工作項；
   本 sprint 不動該檔。
 - `docs/runbooks/rotate-tls-cert.md` 已在 6 X 寫完；本 sprint 不動。

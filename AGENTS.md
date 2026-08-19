@@ -173,7 +173,7 @@ Image generation：
 
 - CSP cookie flow：`anila_access_token` httpOnly path `/`、`anila_refresh_token` httpOnly path `/api/auth/refresh`、`anila_csrf` 非 httpOnly path `/`。Cookie-auth mutating request 必須帶 `X-CSRF-Token`；Bearer `Authorization` 路徑才可跳過 CSRF。
 - CSP JWT 已切 RS256；JWKS 在 `/.well-known/jwks.json`。`anila-studio` 只驗 public key，不共享私鑰。
-- Data plane `/v1/*` 接受 `sk-*` API key 或 JWT/cookie。**Agent 派工身分（P2.1）**：平台現簽約 5 分鐘 RS256 JWT（`Authorization: Bearer`；claims=`user_id`/`department`/`agent_id`），agent 以 `/.well-known/jwks.json` 驗簽；開發者不領 `csk-`／`CSP_SERVICE_TOKEN`。Router／worker 等**平台內部** s2s 仍可能使用 service clients（與 agent 派工 JWT 無關）。舊 `bsk-`→`csk-` bootstrap 僅歷史協議，見 `docs/agent-framework/csp-agent-bootstrap-protocol.md` 頂部取代說明。
+- Data plane `/v1/*` 接受 `sk-*` API key 或 JWT/cookie。**Agent 派工身分（P2.1）**：平台現簽約 5 分鐘 RS256 JWT（`Authorization: Bearer`；claims=`user_id`/`department`/`agent_id`），agent 以 `/.well-known/jwks.json` 驗簽；開發者不領 `csk-`／`CSP_SERVICE_TOKEN`。Router／worker 等**平台內部** s2s 仍可能使用 service clients（與 agent 派工 JWT 無關）。舊 `bsk-`→`csk-` bootstrap 僅歷史協議，見 `docs/archive/agent-framework/csp-agent-bootstrap-protocol.md` 頂部取代說明。
 - `apps/anila-shell` 已偏 cookie-only；`apps/anilalm/src/store/auth.ts` 仍有 localStorage token + Bearer 注入，屬安全債，改 auth 時需一併收斂。
 - prod 不可設 `ANILA_ALLOW_DEV_SECRET=1`，不可使用 `dev-secret-key-change-in-prod`, `dev-service-token`, `changeme`, `sk-internal-worker-changeme` 等 fallback。
 - 不得提交 `.env`, `secrets/`, JWT private key, API key, `.pem`, `.key`, 內部憑證私鑰。`services/csp/secrets/.gitignore` 可追蹤，但 key 檔不可追蹤。

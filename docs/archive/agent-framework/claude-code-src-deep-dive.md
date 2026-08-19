@@ -50,7 +50,7 @@ Claude Code 是 Anthropic 官方推出的 **AI coding assistant CLI**。User 在
 | `cli/commands.py`, `cli/app.py` | `src/commands.ts` + `src/commands/*` 的 slash command CLI | 已 port（精簡到 ~10 個 slash command） |
 | `tools/base.py` | `src/Tool.ts` 的 metadata（is_read_only / is_destructive / requires_confirmation） | 已 port（僅一小部分屬性） |
 
-> **重點**：架構文件（`docs/agent-framework/anila-agent-framework-architecture.md`）把這層 harness 整理成「Middleware + StateMachine + Memory + Provider + Action」5 個 primitive，但是目前 `anila_agent/` 實作只走完 Memory + Hook + 基本 Tool wrapper 三條線，**還有大量 Claude Code 的成熟 pattern 沒被 port**。本文就是要 enumerate 這些 missing pieces。
+> **重點**：架構文件（`docs/archive/agent-framework/anila-agent-framework-architecture.md`）把這層 harness 整理成「Middleware + StateMachine + Memory + Provider + Action」5 個 primitive，但是目前 `anila_agent/` 實作只走完 Memory + Hook + 基本 Tool wrapper 三條線，**還有大量 Claude Code 的成熟 pattern 沒被 port**。本文就是要 enumerate 這些 missing pieces。
 
 ---
 

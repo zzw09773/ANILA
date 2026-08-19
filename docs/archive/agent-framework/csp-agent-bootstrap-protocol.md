@@ -344,7 +344,7 @@ func Bootstrap(cspURL string, agentID int, bsk, endpointURL, stateDir string) (s
 
 | 檔 | 內容 | LOC |
 |---|---|---|
-| `docs/agent-framework/csp-agent-bootstrap-protocol.md` | 本檔（凍結 protocol + snippets）| ✅ 已寫 |
+| `docs/archive/agent-framework/csp-agent-bootstrap-protocol.md` | 本檔（凍結 protocol + snippets）| ✅ 已寫 |
 | `services/csp/docs/agent-onboarding.md`（新）| 整理三條入會路徑：(a) AgenticRAG fork (b) 自寫 agent + bsk- (c) 第三方 + static credential | ~150 |
 | `AgenticRAG/docs/CSP_INTEGRATION.md`（更新）| 改寫 fork-template 視角，刪除 anila-core 提及，引用本 protocol 文件 | ~80 |
 
@@ -379,7 +379,7 @@ func Bootstrap(cspURL string, agentID int, bsk, endpointURL, stateDir string) (s
   │  [copy button]                              │
   └─────────────────────────────────────────────┘
 
-  [docs] tab: link to /docs/agent-framework/csp-agent-bootstrap-protocol.md
+  [docs] tab: link to /docs/archive/agent-framework/csp-agent-bootstrap-protocol.md
 ```
 
 **新組件**：
@@ -472,7 +472,7 @@ Path("/var/lib/anila-agent/service_token.json").write_text(...)
 
 ## 驗收條件
 
-- [ ] `docs/agent-framework/csp-agent-bootstrap-protocol.md` 凍結，被 AgenticRAG / anila-core 兩邊 README 引用
+- [ ] `docs/archive/agent-framework/csp-agent-bootstrap-protocol.md` 凍結，被 AgenticRAG / anila-core 兩邊 README 引用
 - [ ] DeveloperAgentsView 發 bsk- 後，admin 看得到一個展開「how to use」面板，含 5 個 tabs（含 docs link）
 - [ ] 每個 snippet 已預填當前 agent 的 agent_id / endpoint_url，可一鍵 copy
 - [ ] static credential 按鈕也有對應 how-to

@@ -1014,9 +1014,9 @@ git commit -m "feat(shell): let the reader force a regulation search when the ro
   （§2 裁決 3「Router 判斷再搜」→ 依 Q39 修訂為「檢索照門檻走，掛在答案通道」，
   註明 OWNER-QUESTIONS Q39 與時序原因；§8 的重查按鈕補一句 Q40：forced 必不派工）
 - Modify: `PLAN.md`（門檻校準加入內網量測清單：對真 `nv-embed` 校準、trace 要看得見段落數）
-- Modify: `docs/HANDOFF-2026-08-07.md`（兩處：§二進度表更新為十任務全關；
+- Modify: `docs/handoffs/HANDOFF-2026-08-07.md`（兩處：§二進度表更新為十任務全關；
   加「本包留下什麼要長期照顧」一節，內容見 Step 3）
-- Modify: `docs/HANDOFF-2026-08-06.md:230`（alembic head 寫 `r1_0032` → 實際 `r1_0034`；
+- Modify: `docs/handoffs/HANDOFF-2026-08-06.md:230`（alembic head 寫 `r1_0032` → 實際 `r1_0034`；
   Task 1 遞延至今）
 
 - [ ] **Step 1: 改 SYSTEM-MAP §5**（規格變更）

@@ -133,7 +133,7 @@ router (:9000)
 - 平台整體:[`../../README.md`](../../README.md) · 分支策略:[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
 - Redesign 設計沿革（收斂紀錄）:constitution [`../../docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) · runtime/registry 協定 [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) · API/事件凍結線(含 SSE + `/v1/traces`)[`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 - 多服務整合計畫(含 Router 角色):[`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md)
-- Agent framework 架構:[`../../docs/agent-framework/anila-agent-framework-architecture.md`](../../docs/agent-framework/anila-agent-framework-architecture.md)
+- Agent framework 架構:[`../../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../../docs/archive/agent-framework/anila-agent-framework-architecture.md)
 - Runtime foundation(SDK):[`../../packages/anila-core/README.md`](../../packages/anila-core/README.md) · CSP:[`../csp/README.md`](../csp/README.md) · Shell:[`../../apps/anila-shell/README.md`](../../apps/anila-shell/README.md)
 
 ---

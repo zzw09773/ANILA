@@ -649,7 +649,7 @@ Dockerfile 不會漏抄。已實測有效(七張映像全部存得出去)。
 文件收尾與最終全分支審查另計),範圍見設計文件**
 `docs/specs/2026-08-08-settings-page-design.md`(數字與機制已與實際出貨對齊);
 操作面見 `docs/runbooks/settings-page.md`;留下要長期照顧的八件事見
-`docs/HANDOFF-2026-08-07.md` §七〈設定頁留下什麼要長期照顧〉。
+`docs/handoffs/HANDOFF-2026-08-07.md` §七〈設定頁留下什麼要長期照顧〉。
 
 ---
 
