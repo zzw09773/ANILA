@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from anila_core.memory.long_term import EMBED_DIM
 
 from app.models.model_registry import ModelRegistry
+from app.services.relation_resolver import scope_collection_rls
 
 logger = logging.getLogger(__name__)
 
@@ -202,34 +203,77 @@ def count_pending_recompute(db: Session, designated_name: str | None) -> dict[st
     """Rows whose source model is not the current designation.
 
     NULL source counts as pending (legacy / pre-migration writes).
+
+    document_chunks and ingestion_images are FORCE-RLS tables. Count them one
+    collection at a time so the runtime role can set the collection GUC that
+    their policies require; the explicit predicate keeps the query correct
+    in SQLite tests and documents the same boundary in SQL.
+
+    Cost measurement (2026-08-17): with 100 collections this performs 303
+    ``Session.execute`` calls (2 fixed calls, 3 per collection: set the scope
+    and count the two FORCE-RLS tables, plus 1 cleanup call). At the expected
+    order of 300 collections that is about 903 database round trips per
+    request. This is intentionally measured rather than hidden behind a cap
+    because truncating the count would make this operational signal incorrect.
     """
     from sqlalchemy import text
 
-    tables = (
-        "conversation_memory_chunks",
-        "document_chunks",
-        "ingestion_images",
-    )
+    memory_table = "conversation_memory_chunks"
+    collection_tables = ("document_chunks", "ingestion_images")
+    pending_predicate = "embedding IS NOT NULL"
+    if designated_name is not None:
+        pending_predicate += (
+            " AND (embedding_source_model IS NULL "
+            "OR embedding_source_model != :name)"
+        )
+
     out: dict[str, int] = {}
-    for table in tables:
-        if designated_name is None:
-            # Everything with an embedding is pending until designation.
-            row = db.execute(
-                text(
-                    f"SELECT COUNT(*) FROM {table} "
-                    f"WHERE embedding IS NOT NULL"
+    memory_params = {"name": designated_name} if designated_name is not None else {}
+    out[memory_table] = int(
+        db.execute(
+            text(
+                f"SELECT COUNT(*) FROM {memory_table} "
+                f"WHERE {pending_predicate}"
+            ),
+            memory_params,
+        ).scalar()
+        or 0
+    )
+
+    for table in collection_tables:
+        out[table] = 0
+
+    try:
+        collection_ids = db.execute(
+            text("SELECT id FROM ingestion_collections ORDER BY id")
+        ).scalars().all()
+        for collection_id in collection_ids:
+            scope_collection_rls(db, int(collection_id))
+            params = {"collection_id": int(collection_id)}
+            if designated_name is not None:
+                params["name"] = designated_name
+            for table in collection_tables:
+                row = db.execute(
+                    text(
+                        f"SELECT COUNT(*) FROM {table} "
+                        f"WHERE collection_id = :collection_id "
+                        f"AND {pending_predicate}"
+                    ),
+                    params,
+                ).scalar()
+                out[table] += int(row or 0)
+    finally:
+        bind = db.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            try:
+                db.execute(
+                    text("SELECT set_config('anila.collection_id', '', true)")
                 )
-            ).scalar()
-        else:
-            row = db.execute(
-                text(
-                    f"SELECT COUNT(*) FROM {table} "
-                    f"WHERE embedding IS NOT NULL "
-                    f"AND (embedding_source_model IS NULL "
-                    f"     OR embedding_source_model != :name)"
-                ),
-                {"name": designated_name},
-            ).scalar()
-        out[table] = int(row or 0)
-    out["total"] = sum(out[t] for t in tables)
+            except Exception:
+                # Tests run on SQLite; this PostgreSQL transaction-aborted
+                # cleanup failure cannot be reproduced in the test database.
+                # Best-effort cleanup must never mask the original exception.
+                pass
+
+    out["total"] = out[memory_table] + sum(out[t] for t in collection_tables)
     return out

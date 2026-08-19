@@ -343,6 +343,8 @@ export function WSSidebar() {
               status === 'queued' ||
               status === 'running'
             const isFailed = status === 'failed'
+            const failureReason =
+              d.jobSnapshot?.error_message ?? d.doc.error_message
             const pct = d.jobSnapshot?.progress_pct ?? 0
             return (
               <div
@@ -425,7 +427,22 @@ export function WSSidebar() {
                         {pct > 0 && pct < 100 ? ` ${pct.toFixed(0)}%` : ''}
                       </span>
                     )}
-                    {isFailed && <span style={{ color: t.danger }}>失敗</span>}
+                    {isFailed && (
+                      <span
+                        style={{
+                          color: t.danger,
+                          display: 'inline-block',
+                          maxWidth: 180,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          verticalAlign: 'bottom',
+                        }}
+                        title={failureReason ?? undefined}
+                      >
+                        {'失敗'}{failureReason ? '：' + failureReason : ''}
+                      </span>
+                    )}
                     {status === 'indexed' && (
                       <span style={{ color: t.success }}>
                         ✓ {d.doc.chunk_count ?? 0} 段

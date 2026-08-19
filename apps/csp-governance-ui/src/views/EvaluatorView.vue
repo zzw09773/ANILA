@@ -90,7 +90,10 @@
           </p>
           <div v-if="loadingCredentials" class="loading">載入憑證中…</div>
           <div v-else>
-            <div v-if="credentials.length === 0" class="cell-meta" style="margin-bottom: var(--gap-2);">
+            <div v-if="credentialLoadError" class="feedback is-err" :title="credentialLoadError">
+              ! LLM 憑證讀取失敗，無法確認是否已註冊。
+            </div>
+            <div v-else-if="credentials.length === 0" class="cell-meta" style="margin-bottom: var(--gap-2);">
               尚未註冊 LLM 憑證 — 於下方新增或略過。
             </div>
             <TermField v-else label="評審憑證">
@@ -274,6 +277,7 @@ const submitError = ref('')
 
 const credentials = ref([])
 const loadingCredentials = ref(false)
+const credentialLoadError = ref('')
 const selectedCredentialLabel = computed(() => {
   const c = credentials.value.find(x => x.id === form.value.judge_credential_id)
   return c ? `${c.name} · ${c.model_name}` : ''
@@ -342,12 +346,17 @@ function addQuery() { form.value.queries.push({ query: '', expected_doc_id: 0 })
 onMounted(async () => {
   loadingDocs.value = true
   loadingCredentials.value = true
+  credentialLoadError.value = ''
   try {
+    const credentialsPromise = listLlmCredentials().catch((e) => {
+      credentialLoadError.value = e.response?.data?.detail || e.message || '讀取失敗'
+      return { data: [] }
+    })
     const [coll, docs, list, creds] = await Promise.all([
       getCollection(collectionId.value),
       listDocuments(collectionId.value),
       listEvalRuns({ collection_id: collectionId.value }),
-      listLlmCredentials().catch(() => ({ data: [] })),
+      credentialsPromise,
     ])
     collection.value = coll.data
     documents.value = docs.data

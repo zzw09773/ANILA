@@ -50,6 +50,11 @@ def db():
     from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
     meta = MetaData()
+    Table(
+        "ingestion_collections",
+        meta,
+        Column("id", Integer, primary_key=True),
+    )
     for name in (
         "conversation_memory_chunks",
         "document_chunks",
@@ -59,6 +64,7 @@ def db():
             name,
             meta,
             Column("id", Integer, primary_key=True),
+            Column("collection_id", Integer),
             Column("embedding", Text),
             Column("embedding_source_model", String(200)),
             Column("embedding_native_dim", Integer),
@@ -166,6 +172,11 @@ def test_pending_recompute_counts_non_designated_rows(db):
     """
     db.execute(
         __import__("sqlalchemy").text(
+            "INSERT INTO ingestion_collections (id) VALUES (1), (2)"
+        )
+    )
+    db.execute(
+        __import__("sqlalchemy").text(
             "INSERT INTO conversation_memory_chunks "
             "(embedding, embedding_source_model) VALUES "
             "('x', 'nvidia/nv-embed-v2'), "
@@ -176,16 +187,16 @@ def test_pending_recompute_counts_non_designated_rows(db):
     db.execute(
         __import__("sqlalchemy").text(
             "INSERT INTO document_chunks "
-            "(embedding, embedding_source_model) VALUES "
-            "('x', 'nvidia/nv-embed-v2'), "
-            "('x', 'old/model')"
+            "(collection_id, embedding, embedding_source_model) VALUES "
+            "(1, 'x', 'nvidia/nv-embed-v2'), "
+            "(2, 'x', 'old/model')"
         )
     )
     db.execute(
         __import__("sqlalchemy").text(
             "INSERT INTO ingestion_images "
-            "(embedding, embedding_source_model) VALUES "
-            "('x', NULL)"
+            "(collection_id, embedding, embedding_source_model) VALUES "
+            "(2, 'x', NULL)"
         )
     )
     db.commit()
@@ -195,6 +206,119 @@ def test_pending_recompute_counts_non_designated_rows(db):
     assert counts["document_chunks"] == 1
     assert counts["ingestion_images"] == 1
     assert counts["total"] == 4
+
+
+class _RlsAwareSession:
+    """Small DB double that models FORCE-RLS visibility by collection GUC."""
+
+    _rows = {
+        7: {"document_chunks": 2, "ingestion_images": 0},
+        9: {"document_chunks": 0, "ingestion_images": 3},
+    }
+
+    def __init__(self, rows=None):
+        self.rows = self._rows if rows is None else rows
+        self.collection_scope = None
+        self.execute_calls = 0
+
+    def get_bind(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    def execute(self, statement, params=None):
+        self.execute_calls += 1
+        sql = str(statement)
+        if "FROM ingestion_collections" in sql:
+            return _ScalarRows(sorted(self.rows))
+        if "set_config('anila.collection_id'" in sql:
+            self.collection_scope = (
+                int(params["cid"])
+                if params and "cid" in params
+                else None
+            )
+            return _ScalarRows([])
+        if "FROM conversation_memory_chunks" in sql:
+            return _ScalarRows([], scalar=1)
+        for table in ("document_chunks", "ingestion_images"):
+            if "FROM " + table in sql:
+                visible = self.rows.get(self.collection_scope, {}).get(table, 0)
+                return _ScalarRows([], scalar=visible)
+        raise AssertionError("unexpected SQL: " + sql)
+
+
+class _ScalarRows:
+    def __init__(self, rows, scalar=None):
+        self._rows = rows
+        self._scalar = scalar
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+    def scalar(self):
+        return self._scalar
+
+
+def test_pending_recompute_sets_each_collection_scope_before_counting():
+    """FORCE-RLS rows must be counted, not silently reported as zero.
+
+    Mutant: omit scope_collection_rls — both scoped table counts become zero
+    in this RLS-aware double while the test still exercises values.
+    """
+    session = _RlsAwareSession()
+    counts = count_pending_recompute(session, "new/embedder")
+    assert counts == {
+        "conversation_memory_chunks": 1,
+        "document_chunks": 2,
+        "ingestion_images": 3,
+        "total": 6,
+    }
+    assert session.collection_scope is None
+
+
+def test_pending_recompute_round_trip_cost_at_100_collections():
+    """Keep the measured N+1 cost visible while the count remains exact."""
+    session = _RlsAwareSession(
+        {
+            collection_id: {"document_chunks": 0, "ingestion_images": 0}
+            for collection_id in range(1, 101)
+        }
+    )
+
+    count_pending_recompute(session, "new/embedder")
+
+    # 1 memory count + 1 collection list + (1 scope + 2 counts) * 100 + 1 cleanup.
+    assert session.execute_calls == 303
+
+
+class _OriginalAndCleanupFailSession(_RlsAwareSession):
+    """DB double for the exception-preservation control-flow guard."""
+
+    def execute(self, statement, params=None):
+        sql = str(statement)
+        if "set_config('anila.collection_id'" in sql:
+            if params and "cid" in params:
+                return super().execute(statement, params)
+            raise RuntimeError("cleanup failed")
+        if "FROM document_chunks" in sql:
+            raise RuntimeError("original query failed")
+        return super().execute(statement, params)
+
+
+def test_pending_recompute_preserves_original_error_if_cleanup_fails():
+    """Best-effort PostgreSQL cleanup must not replace the query error.
+
+    The double reports a PostgreSQL dialect only to enter the cleanup branch;
+    it is not a PostgreSQL transaction. Tests run on SQLite, so the real
+    transaction-aborted cleanup failure cannot be reproduced here. This guard
+    proves only that the cleanup exception is swallowed instead of shadowing
+    the original exception.
+    """
+    with pytest.raises(RuntimeError, match="original query failed"):
+        count_pending_recompute(_OriginalAndCleanupFailSession(), "new/embedder")
 
 
 def test_memory_retrieve_sql_filters_by_source_model():

@@ -574,11 +574,12 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   設下去會**永遠濾掉每一段落**,而且看起來完全合理。
 - 現行程式沒有任何門檻高於 0.3,**風險全在它教會下一個維護者什麼**。
 
-### #48 評測頁:憑證讀取失敗會偽裝成「尚未註冊」(低)
+### #48 評測頁:憑證讀取失敗會偽裝成「尚未註冊」(低) ✅ 已修
 
 `EvaluatorView.vue:350` 的 `.catch(() => ({ data: [] }))` 讓讀取失敗長得像「尚未註冊 LLM 憑證」,
 操作者於是略過評審直接送出評測。**減輕因素**:覆核面板 `:158` 仍誠實顯示「已停用」,
-所以被誤導的是**原因**不是**結果**——與治理權限那次靜默全撤不同量級。**未修**,值得順手併包。
+所以被誤導的是**原因**不是**結果**——與治理權限那次靜默全撤不同量級。**已修**。
+失敗時現在顯示固定的繁中句子，後端 `detail` 只進 `title`，不取代使用者可見文字。
 
 ### #49 零 chunk 的文件仍標成 `indexed`(低,未修)
 
@@ -751,7 +752,7 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   (使用者沒有表達過「請下標題」的意圖,不構成假控制項)。
   anilalm 工作區**完全沒有** LLM 標題,只截前 60 字。
 
-### #55 匯入失敗的原因**存了但前端一次都沒畫**
+### #55 匯入失敗的原因**存了但前端一次都沒畫** ✅ 已修
 
 - **畫面說**:側欄只顯示紅色的「失敗」兩個字。
 - **實際**:後端**有存** `error_message`,而且訊息是準確的
@@ -766,6 +767,7 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   症狀只發生在**沒有文字圖層的 PDF／掃描檔**。
 - **修法方向**:把已存在的 `error_message` 畫進失敗列。不動匯入邏輯、不加啟發式。
   ⚠ **不要**為此引入表格結構解析那類重依賴——那正對著「越複雜就被放棄」那條教訓。
+  目前保留錯誤原因作為 `title`，內聯文字以 ellipsis 限寬，避免 unbounded `Text` 撐破側欄。
 
 ### #53 「哪一則回答變成沒有依據」沒有人記(座標已定,待排小包)
 
@@ -785,12 +787,12 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 - 📌 **這一條記在這裡本身就是教訓**:驗收指出這組座標原本只活在交接報告裡,
   全樹 grep 零命中。**查得到 ≠ 有人會發現**,對日誌是這樣,對座標也是這樣。
 
-### #52 「待重算筆數」**結構性地永遠是 0** —— 一個有自信的零 🔴
+### #52 「待重算筆數」**結構性地永遠是 0** —— 一個有自信的零 🔴 ✅ 已修
 
 - **畫面說**:`GET /api/models/platform-embedding` 回報 `pending_recompute`,
   也就是「換了平台 embedding 模型之後,還有多少東西沒重算」。
 - **實際**:`app/services/platform_embedding.py:201-231`(⚠ **2026-08-15 更正行號**:原記 `:121-155`,
-  程式碼位移後失準;`count_pending_recompute` 現在在 `:201`,缺陷本身未動)在一個**沒有設定 RLS 情境**的
+  程式碼位移後失準;`count_pending_recompute` 現在在 `:201`,缺陷本身已修)在一個**沒有設定 RLS 情境**的
   session 上計數,而 `document_chunks` 與 `ingestion_images` 都是 **FORCE-RLS**,
   runtime 角色 `csp_app` 又**不繞過 RLS**(這是刻意的,見鐵則)。
   於是這兩個數字**恆為 0,與真實積欠量無關**;只有沒開 RLS 的
@@ -801,8 +803,12 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   維運者換完模型看到「待重算 0」,會直接認為換模型沒有代價。
 - 📌 **這一條是索引錯配那包挖出來的,而且它拒絕把這個數字接進自己的新畫面**——
   理由是「那會在一個專門為了誠實而做的功能上,送出一個謊」。**這個判斷是對的。**
-- **未修**:`platform_embedding.py` 不在該包範圍內,而且 `health_overview.py` 可能也在消費它,
-  要一起看。
+- **已修**:`platform_embedding.py` 已逐一設定 collection RLS scope，並在函式結束時清空
+  `anila.collection_id`；`health_overview.py` 未消費這個數字，要一起看。
+- **成本決策（量測）**:保留逐 collection 的精確計數，不加 cap/cache 或權限限制。
+  以 100 collections 的測試 double 實測 **303 次 `Session.execute`**（固定 2 次 + 每庫
+  scope 1 次與兩張 FORCE-RLS 表各 1 次 + 清理 1 次）；若是 300 collections，按同一公式約 **903 次**。
+  這個數字與量測條件也寫在 `count_pending_recompute` docstring，後續若要改成本邊界可從此基準重驗。
 
 ### #51 CSRF 豁免清單看的是**攻擊者可控的路徑**(第 4 段要修) 🔴
 
