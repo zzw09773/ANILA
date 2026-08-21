@@ -46,7 +46,7 @@ ANILA
 
 | 類別 | 內容 |
 |---|---|
-| 框架 / 路由 | **React 18.3.1** · `react-router` 7.18.0 |
+| 框架 / 路由 | **React 18.3.1** · `react-router` 7.18.2（`>=7.18.2 <8`） |
 | 建置 | **Vite 6.3.5**（`@vitejs/plugin-react` 4.4.1） |
 | Markdown / 數學 / 高亮 | `react-markdown` 9 + `remark-gfm` 4 / `remark-math` 6 + `rehype-katex` 7 + `rehype-highlight` 7 + `katex` 0.16 + `highlight.js` 11 |
 | 圖表 | **`mermaid` 11.15.0** |

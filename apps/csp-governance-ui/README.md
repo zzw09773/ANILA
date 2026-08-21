@@ -69,7 +69,7 @@
 | 類別 | 內容 |
 |---|---|
 | 框架 / 路由 / 狀態 | **Vue 3.5.13** · `vue-router` 4.5.0 · `pinia` 2.3.0 |
-| 圖表 | `echarts` 5.5.1 + `vue-echarts` 7.0.3；關聯圖 `cytoscape` 3.34.0 |
+| 圖表 | `echarts` 5.6.0（`>=5.6.0 <6`）+ `vue-echarts` 7.0.3（`>=7.0.3 <8`）；關聯圖 `cytoscape` 3.34.0 |
 | HTTP | `axios` 1.7.9 |
 | 樣式 | `tailwindcss` 3.4.17 + `postcss` + `autoprefixer`（build 期）；設計 token 走 `src/assets/styles/tokens.css` |
 | Build | **Vite 6.0.5**（`@vitejs/plugin-vue` 5.2.1） |
