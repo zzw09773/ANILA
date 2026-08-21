@@ -54,6 +54,14 @@
 > ⚠ 這四件全部是「定版本」,照本段開頭的順序鐵律,**做完才輪到第 5 段凍結**。
 > **✅ 2026-08-10 四件全數關板**(細節見 `docs/handoffs/HANDOFF-2026-08-10.md`)。
 > ✅ **2026-08-21 四顆範圍已定**：① react-router 已在 v7，釘 `>=7.18.2 <8`（6→7 是 `c0877c05`，不再遷移）；② echarts 留 5.x `>=5.6.0 <6`＋`vue-echarts >=7.0.3 <8`（v6＋vue-echarts 8 是凍結後遷移，XSS `GHSA-fgmj-fm8m-jvvx` 本輪接受）；③ js-yaml 用 npm `overrides` 釘傳遞的 `4.3.0`（修在 4.3.1，本機無該版 tarball）；④ csp 顯式 `pytest==8.4.2`（`CVE-2025-71176` 修在 9.0.3，要 pytest-asyncio ≥1.3，凍結後再跳）。
+> ⚠ **凍結後遷移的規格寫死在這裡（不倚賴家目錄報告）**：echarts 6 配 zrender 6，
+> 活圖只有 `UsageLineChart.vue` 一張（core＋LineChart＋五個 components＋CanvasRenderer），
+> 6.x 有元件 import／預設主題 breaking、XSS 修在 6.1.0 tooltip；vue-echarts 8.1.0（peer echarts 6）
+> **本 app 根本沒 import**，遷移時一併決定刪或升。驗證面：Dashboard/Usage 空態、tooltip、
+> resize、深淺主題＋tooltip XSS 迴歸。pytest 9.0.3 要 pytest-asyncio ≥1.3 同跳。
+> 🔴 **凍結前硬項：`packages/anila-core/uv.lock` 必須重產**——它現在鎖 pytest 9.0.3 且
+> specifier `>=8.0` 無上限，與 pyproject `<9.0` 不相容；照這份 lock 建 wheelhouse
+> 會在同一個氣隙包裡裝進兩個 pytest 大版本（csp=8.4.2、core=9.0.3）。
 >
 > 🆕 **擁有者 08-08 裁定(Q41):設定總覽頁提前到打包之前**,與第 6 段並行、
 > 先於 5/7/8/9(**已完成並合併 `7f0809f4`**)。理由:設定頁決定打包進去的值哪些能在氣隙內從畫面修正而有效——

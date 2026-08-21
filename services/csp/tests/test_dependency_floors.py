@@ -15,6 +15,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # These floors are deliberately documented beside their manifest entries.  The
 # test keeps the reason here as well so a future failure explains the contract,
 # rather than merely reporting that a number changed.
+# ⚠ 涵蓋聲明：FLOOR_RULES 是手寫清單、只管 Python 下限。2026-08-21 釘的四顆
+# （react-router／echarts／js-yaml override／pytest==8.4.2）**不在本守衛涵蓋內**——
+# 有人拔掉 package.json 的上限，這裡不會紅。這份清單不會自己長大。
 FLOOR_RULES = (
     (
         "packages/anila-core/pyproject.toml",
