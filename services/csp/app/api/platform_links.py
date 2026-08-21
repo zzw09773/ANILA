@@ -19,6 +19,7 @@ from app.schemas.platform_link import (
     PlatformLinkResponse,
     PlatformLinkUpdate,
 )
+from app.schemas.service_icon import ALLOWED_SERVICE_ICONS
 from app.services import anilalm_release_gate as release_gate
 from app.services.access_control import accessible_links_for
 from app.services.audit_service import log_audit_event
@@ -26,6 +27,14 @@ from app.services.auth_service import get_current_user, is_admin_tier, require_a
 from app.utils.slug import unique_slug
 
 router = APIRouter(prefix="/api/platform-links", tags=["平台連結"])
+
+
+@router.get("/icons")
+def list_icons(_: User = Depends(require_admin)):
+    """Icon allow-list for the governance picker. Static path must stay
+    ahead of ``/{link_id}`` so ``icons`` is never captured as an id.
+    """
+    return {"icons": sorted(ALLOWED_SERVICE_ICONS)}
 
 
 def _taken_slugs(db: Session) -> set[str]:

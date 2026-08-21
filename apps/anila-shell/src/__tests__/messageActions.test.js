@@ -94,6 +94,17 @@ describe("resolveActionIcon fallback", () => {
       React.createElement(resolveActionIcon("no-such-key"), { size: 14 }),
     ).not.toThrow();
   });
+
+  // Prototype-chain names are truthy under `map[key] || fallback` and make
+  // React throw ("Element type is invalid") at render time.
+  it.each(["constructor", "valueOf", "__proto__", "hasOwnProperty", "definitely-not-a-real-icon", "", null])(
+    "hostile or empty icon %p resolves to fallback and renders without throwing",
+    (key) => {
+      const Comp = resolveActionIcon(key);
+      expect(Comp).toBe(IconSpark);
+      expect(() => render(React.createElement(Comp, { size: 14 }))).not.toThrow();
+    },
+  );
 });
 
 function renderAssistant({

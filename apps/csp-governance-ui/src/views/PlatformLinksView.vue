@@ -81,8 +81,11 @@
           <input v-model="form.url" class="term-input" placeholder="https://…" :disabled="locked('entry_url')" />
         </TermField>
         <div class="form-row-2">
-          <TermField label="圖示" hint="workflow · git · notebook · chat · monitor · database · api · docs · cpu">
-            <input v-model="form.icon" class="term-input" placeholder="workflow" :disabled="locked('icon')" />
+          <TermField label="圖示" hint="清單來自伺服器 GET /api/platform-links/icons">
+            <select v-model="form.icon" class="term-select" :disabled="locked('icon')">
+              <option value="">— 無圖示 —</option>
+              <option v-for="ic in iconOptions" :key="ic" :value="ic">{{ ic }}</option>
+            </select>
           </TermField>
           <TermField label="排序">
             <input v-model.number="form.sort_order" type="number" class="term-input" :disabled="locked('sort_order')" />
@@ -205,7 +208,7 @@
 import { ref, computed, onMounted } from 'vue'
 import {
   listPlatformLinks, createPlatformLink, updatePlatformLink,
-  deactivatePlatformLink, purgePlatformLink,
+  deactivatePlatformLink, purgePlatformLink, listPlatformLinkIcons,
 } from '../api/platformLinks'
 import {
   listServices, createService, updateService,
@@ -247,6 +250,14 @@ function emptyForm() {
   }
 }
 const form = ref(emptyForm())
+const icons = ref([])
+
+const iconOptions = computed(() => {
+  const list = [...icons.value]
+  const current = form.value.icon
+  if (current && !list.includes(current)) list.push(current)
+  return list
+})
 
 const availableRoles = ['admin', 'developer', 'user']
 
@@ -336,9 +347,25 @@ async function fetchUsers() {
   }
 }
 
+async function fetchIcons() {
+  try {
+    const { data } = await listPlatformLinkIcons()
+    if (Array.isArray(data)) {
+      icons.value = data
+    } else if (data && typeof data === 'object' && Array.isArray(data.icons)) {
+      icons.value = data.icons
+    } else {
+      icons.value = []
+    }
+  } catch {
+    icons.value = []
+  }
+}
+
 onMounted(() => {
   fetchLinks()
   fetchUsers()
+  fetchIcons()
 })
 
 function openCreateModal() {
@@ -384,6 +411,18 @@ async function loadAuditCallbacks(id) {
   }
 }
 
+function apiDetail(err, fallback = '操作失敗') {
+  const detail = err?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d) => (typeof d === 'string' ? d : d?.msg || JSON.stringify(d)))
+      .join('；')
+  }
+  if (detail && typeof detail === 'object' && detail.message) return detail.message
+  return err?.message || fallback
+}
+
 function buildPayload() {
   // registry 契約用 entry_url；legacy platform_links 相容面用 url。
   // 混用會讓 Pydantic 默默丟掉網址（更新）或 422（建立）。
@@ -419,7 +458,7 @@ async function handleSubmit() {
     showModal.value = false
     await fetchLinks()
   } catch (e) {
-    toast(e.response?.data?.detail || '儲存失敗', { tone: 'error' })
+    toast(apiDetail(e, '儲存失敗'), { tone: 'error' })
   }
 }
 
@@ -429,7 +468,7 @@ async function handleDeactivate(link) {
     await (registryMode.value ? deactivateService(link.id) : deactivatePlatformLink(link.id))
     await fetchLinks()
   } catch (e) {
-    toast(e.response?.data?.detail || '停用失敗', { tone: 'error' })
+    toast(apiDetail(e, '停用失敗'), { tone: 'error' })
   }
 }
 
@@ -440,7 +479,7 @@ async function handleReactivate(link) {
       : updatePlatformLink(link.id, { is_active: true }))
     await fetchLinks()
   } catch (e) {
-    toast(e.response?.data?.detail || '啟用失敗', { tone: 'error' })
+    toast(apiDetail(e, '啟用失敗'), { tone: 'error' })
   }
 }
 
@@ -457,7 +496,7 @@ async function handlePurge(link) {
     await (registryMode.value ? purgeService(link.id) : purgePlatformLink(link.id))
     await fetchLinks()
   } catch (e) {
-    toast(e.response?.data?.detail || '刪除失敗', { tone: 'error' })
+    toast(apiDetail(e, '刪除失敗'), { tone: 'error' })
   }
 }
 </script>

@@ -93,6 +93,8 @@ const NEW_TESTS = [
   // 憑證偵測與四條既有 pattern 的精準度(`wt/credential-detect`,2026-08-06)。
   "src/__tests__/credentialDetect",
   "src/__tests__/agentReplySignal",
+  // Homepage service-card icon rendering (icon-picker package).
+  "src/__tests__/serviceCardIcon",
 ];
 // 這個工作包之前就存在的測試(用來量「舊套件漏了什麼」)。
 const PRE_EXISTING_EXCLUDES = [
@@ -109,6 +111,7 @@ const PRE_EXISTING_EXCLUDES = [
   "**/settingsPrivacyHonesty.test.jsx",
   "**/credentialDetect.test.jsx",
   "**/agentReplySignal.test.jsx",
+  "**/serviceCardIcon.test.jsx",
   "**/__tests__/guards/**",
   "**/sourceTextGuardRegistry.test.js",
 ];
@@ -687,6 +690,15 @@ const MUTATIONS = [
     intent: "草稿裡只有金鑰時提示列說「這則不會送出」，而它送得出去",
     find: '  const willBlock = mode === "block" && blockingHits(hits).length > 0;',
     replace: '  const willBlock = mode === "block" && hits.length > 0;',
+  },
+
+  {
+    id: "service-card-icon-not-rendered",
+    file: "src/services.jsx",
+    shape: "刪掉渲染（靜默 no-op）",
+    intent: "治理中心選的圖示不再畫在服務卡片上（假控制項回流）",
+    find: "<ServiceIcon size={18} />",
+    replace: "",
   },
 
   {

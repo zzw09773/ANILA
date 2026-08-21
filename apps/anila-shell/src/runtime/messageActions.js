@@ -48,7 +48,7 @@ const ACTION_ICONS = {
 
 /** Resolve an icon component; unknown keys → ACTION_ICON_FALLBACK (never throws). */
 export function resolveActionIcon(key) {
-  return ACTION_ICONS[key] || ACTION_ICON_FALLBACK;
+  return typeof key === "string" && Object.hasOwn(ACTION_ICONS, key) ? ACTION_ICONS[key] : ACTION_ICON_FALLBACK;
 }
 
 export async function listVisibleActions(authRequest) {
