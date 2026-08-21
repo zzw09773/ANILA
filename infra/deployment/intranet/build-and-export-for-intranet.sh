@@ -34,6 +34,14 @@
 #   SKIP_BUILD=1          不跑 buildx;若 OUTPUT_DIR/01-images/ 已有對應的
 #                         built-image tar.gz 就沿用並記錄,缺任何一張便拒絕匯出。
 #                         預設 0=依 compose build --print 的 Bake targets buildx 直出。
+#                         對 WITH_DOCLING_IMAGE=1 同一語意:缺 docling tar 就死,
+#                         不會改去 build 一張 10GB 的映像。
+#                         ⚠ 重用 OUTPUT_DIR 時**不刪**上一輪的檔(刪掉操作者
+#                         手上 5.8G 比缺陷危險)。改由 assert_checksum_matches_declared
+#                         fail-loud:checksum glob 撿到的每一個檔必須能追溯到
+#                         「這一次執行宣告要產出的東西」;意外檔點名後死亡。
+#                         MANIFEST / INTRANET-LOAD 的旗標與來歷陳述只讀這次的
+#                         旗標,不讀檔案在不在。
 #   SKIP_PULL=1           不跑 docker pull。缺的上游 image 直接失敗。
 #                         預設 0=對「非本專案 build」的缺圖嘗試 pull。
 #   SCAN_SCRIPT           掃描器路徑,預設為 repo 內的 scanner;可在交叉封包
@@ -43,6 +51,19 @@
 #   WEIGHTS_LIST / ANILA_HF_DIR  權重清單與來源,見舊註解。
 #   WITH_DOCLING_WEIGHTS=1 另打包 05-weights-docling.tar。預設 OFF。
 #   DOCLING_WEIGHTS_DIR    fetch-docling-weights.sh 產出的來源目錄。
+#   WITH_DOCLING_IMAGE=1   把 docling 映像走完與其他 built image 相同的
+#                         五段式（buildx bake 直出 tar → 掃 tar → 真的
+#                         docker load 驗回）。預設 OFF。
+#                         ⚠ 不把 --profile docling-local 加進平台有效組態
+#                         （COMPOSE_PROFILE_ARGS）——那個 profile 是「平台
+#                         主機永遠不起它」的機制；打包只另跑一次 bake
+#                         print 抽 docling target。
+#                         開啟時 GPU 主機四件套必須齊：映像 tar、權重 tar、
+#                         docker-compose.standalone.yml、.env.example
+#                         （後兩件 + README 收成 06-docling-gpu-host.tar）。
+#                         因此 WITH_DOCLING_IMAGE=1 會一併把
+#                         WITH_DOCLING_WEIGHTS 設成 1，並要求
+#                         DOCLING_WEIGHTS_DIR。
 #
 # 輸出:
 #   $OUTPUT_DIR/
@@ -50,6 +71,8 @@
 #     ├── 01-compose-images.images.txt
 #     ├── 04-models.tar.gz          (僅 WITH_MODELS=1)
 #     ├── 05-weights-*.tar          (僅 WITH_WEIGHTS=1)
+#     ├── 05-weights-docling.tar    (僅 WITH_DOCLING_WEIGHTS=1；IMAGE=1 時必有)
+#     ├── 06-docling-gpu-host.tar   (僅 WITH_DOCLING_IMAGE=1)
 #     ├── CHECKSUMS.sha256
 #     ├── INTRANET-LOAD.sh
 #     ├── intranet-image-overrides.yml (內網 up 時套用的 tag-only image override)
@@ -72,6 +95,9 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_PULL="${SKIP_PULL:-0}"
 WITH_DOCLING_WEIGHTS="${WITH_DOCLING_WEIGHTS:-0}"
 DOCLING_WEIGHTS_DIR="${DOCLING_WEIGHTS_DIR:-}"
+WITH_DOCLING_IMAGE="${WITH_DOCLING_IMAGE:-0}"
+DOCLING_BAKE_FILE=""
+DOCLING_IMAGE=""
 BUILDER_NAME="anila-pkg"
 BUILDX_CACHE_DIR="$(dirname "$OUTPUT_DIR")/$(basename "$OUTPUT_DIR").buildx-cache"
 
@@ -100,6 +126,13 @@ compose() {
 
 die() { echo "✗ $*" >&2; exit 1; }
 
+if [ "$WITH_DOCLING_IMAGE" = "1" ]; then
+    # GPU 主機四件套：映像 + 權重 + standalone yml + .env.example。
+    WITH_DOCLING_WEIGHTS=1
+    [ -n "$DOCLING_WEIGHTS_DIR" ] \
+        || die "WITH_DOCLING_IMAGE=1 requires DOCLING_WEIGHTS_DIR (GPU-host four-piece set: image tar + weights tar + docker-compose.standalone.yml + .env.example)"
+fi
+
 echo "============================================================"
 echo "ANILA — Build & Export for Intranet"
 echo "  Repo:       $REPO_ROOT"
@@ -107,6 +140,8 @@ echo "  Output:     $OUTPUT_DIR"
 echo "  Project:    $COMPOSE_PROJECT_NAME  (-p;内網 up 必須同名)"
 echo "  Env file:   $COMPOSE_ENV_FILE"
 echo "  INCLUDE_ASR:$INCLUDE_ASR  (1 → --profile asr 納入有效組態)"
+echo "  WITH_DOCLING_IMAGE:$WITH_DOCLING_IMAGE  (1 → bake docling through five-stage; platform profile unchanged)"
+echo "  WITH_DOCLING_WEIGHTS:$WITH_DOCLING_WEIGHTS"
 echo "  SKIP_BUILD: $SKIP_BUILD   SKIP_PULL: $SKIP_PULL"
 echo "  Buildx:      $BUILDER_NAME  (docker-container)"
 echo "  Buildx cache: $BUILDX_CACHE_DIR"
@@ -324,15 +359,15 @@ ensure_buildx_builder() {
 }
 
 buildx_export_one() {
-    # $1=image  $2=bake-target  $3=out.tar.gz  → 0/1
-    local img="$1" target="$2" out="$3" safe raw compressed
+    # $1=image  $2=bake-target  $3=out.tar.gz  [$4=bake-file] → 0/1
+    local img="$1" target="$2" out="$3" bake_file="${4:-$BAKE_FILE}" safe raw compressed
     safe="$(printf '%s' "$img" | tr '/:' '__')"
     raw="$IMG_DIR/.${safe}.tar"
     compressed="$out.tmp.$BASHPID"
     rm -f "$raw" "$compressed"
     if ! docker buildx bake \
         --builder "$BUILDER_NAME" \
-        --file "$BAKE_FILE" \
+        --file "$bake_file" \
         --progress plain \
         --set "$target.output=type=docker,dest=$raw" \
         --set "$target.cache-from=type=local,src=$BUILDX_CACHE_DIR" \
@@ -452,6 +487,81 @@ if [ ${#MISSING[@]} -gt 0 ]; then
 fi
 echo "✓ All ${#IMAGES[@]} images present."
 echo
+
+# ── Docling image (optional): same five-stage path, not in platform profile ──
+# WITH_DOCLING_IMAGE=1 才 bake。故意不把 docling 加進 IMAGES /
+# COMPOSE_PROFILE_ARGS / intranet-image-overrides：那些會變成平台主機
+# up 的有效組態。映像 tar 仍寫進 01-images/（checksum glob 會涵蓋），
+# 但不寫進 01-compose-images.files.txt，所以 INTRANET-LOAD.sh 不會在
+# 平台主機 docker load 它。
+if [ "$WITH_DOCLING_IMAGE" = "1" ]; then
+    echo "▶ [1/5] Deriving docling Bake target (bake-only --profile docling-local; platform COMPOSE_PROFILE_ARGS unchanged)..."
+    DOCLING_BAKE_FILE="$(mktemp --suffix=.json)"
+    if ! docker compose --env-file "$COMPOSE_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" \
+        "${COMPOSE_FILES[@]}" --profile docling-local build --print > "$DOCLING_BAKE_FILE"; then
+        rm -f "$DOCLING_BAKE_FILE"
+        die "docling docker compose build --print 失敗"
+    fi
+    DOCLING_TARGET_LINE="$(python3 - "$DOCLING_BAKE_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    document = json.load(handle)
+targets = document.get("target") or {}
+found = []
+for name, target in targets.items():
+    if not isinstance(target, dict):
+        continue
+    tags = target.get("tags") or []
+    tagged = any("docling-service" in str(tag) for tag in tags)
+    if name == "docling" or tagged:
+        if not isinstance(tags, list) or len(tags) != 1 or not isinstance(tags[0], str) or not tags[0]:
+            raise SystemExit(f"docling bake target 必須有一個 image tag:{name}")
+        if "${" in json.dumps(target, ensure_ascii=False):
+            raise SystemExit(f"docling bake target 仍有未解析的插值:{name}")
+        found.append((name, tags[0]))
+if len(found) != 1:
+    raise SystemExit(f"expected exactly one docling bake target, got {found!r}")
+print(f"{found[0][0]}\t{found[0][1]}")
+PY
+)"
+    [ -n "$DOCLING_TARGET_LINE" ] || die "Bake definition 沒有 docling target"
+    IFS=$'\t' read -r DOCLING_TARGET DOCLING_IMAGE <<< "$DOCLING_TARGET_LINE"
+    [ -n "$DOCLING_TARGET" ] && [ -n "$DOCLING_IMAGE" ] \
+        || die "無法解析 docling bake target"
+    echo "  ✓ docling bake target: $DOCLING_TARGET → $DOCLING_IMAGE"
+
+    docling_safe="$(printf '%s' "$DOCLING_IMAGE" | tr '/:' '__')"
+    docling_out="$IMG_DIR/$docling_safe.tar.gz"
+    if [ "$SKIP_BUILD" = "1" ]; then
+        [ -f "$docling_out" ] \
+            || die "SKIP_BUILD=1 但 01-images/ 缺少 docling image tar:$docling_safe.tar.gz ($DOCLING_IMAGE)"
+        echo "  SKIP_BUILD=1: reuse existing $docling_safe.tar.gz ($DOCLING_IMAGE)"
+        BUILT_TAR_PATH["$DOCLING_IMAGE"]="$docling_out"
+    else
+        echo "▶ [1/5] Building docling with isolated buildx tar output..."
+        ensure_buildx_builder
+        echo -n "  buildx $DOCLING_IMAGE (target $DOCLING_TARGET) → 01-images/$docling_safe.tar.gz ... "
+        if buildx_export_one "$DOCLING_IMAGE" "$DOCLING_TARGET" "$docling_out" "$DOCLING_BAKE_FILE"; then
+            BUILT_TAR_PATH["$DOCLING_IMAGE"]="$docling_out"
+            echo "OK ($(du -h "$docling_out" | cut -f1))"
+        else
+            echo "FAIL"
+            rm -f "$DOCLING_BAKE_FILE"
+            die "buildx tar export failed for docling:$DOCLING_IMAGE"
+        fi
+    fi
+    [ -s "${BUILT_TAR_PATH[$DOCLING_IMAGE]}" ] \
+        || die "docling buildx tar missing:$docling_out"
+    BUILT_IMAGE_SET["$DOCLING_IMAGE"]=1
+    BUILT_IMAGES+=("$DOCLING_IMAGE")
+    printf '%s\t%s\n' "$docling_safe.tar.gz" "$DOCLING_IMAGE" \
+        > "$OUTPUT_DIR/06-docling-image.files.txt"
+    printf '%s\n' "$DOCLING_IMAGE" > "$OUTPUT_DIR/06-docling-image.images.txt"
+    echo "  ✓ docling tar queued for scan + load-verify (not added to platform image list)"
+    echo
+fi
 
 # ── Phase 2b: 建後雜物掃描(髒映像不准變成交付品)────────────────────────
 # 2026-08-06 驗收在 08-03 那包交付的 csp 映像裡撈出測試用 RSA 私鑰與 25MB 開發期
@@ -575,10 +685,10 @@ if [ ${#LOAD_VERIFY_FAIL[@]} -gt 0 ]; then
     printf '    - %s\n' "${LOAD_VERIFY_FAIL[@]}"
     echo "  A truncated/corrupt tar or missing expected tag is not deliverable."
     echo "============================================================"
-    rm -f "$BAKE_FILE"
+    rm -f "$BAKE_FILE" ${DOCLING_BAKE_FILE:+"$DOCLING_BAKE_FILE"}
     exit 1
 fi
-rm -f "$BAKE_FILE"
+rm -f "$BAKE_FILE" ${DOCLING_BAKE_FILE:+"$DOCLING_BAKE_FILE"}
 echo "✓ All ${#BUILT_IMAGES[@]} built image tar(s) load-verified."
 echo
 
@@ -708,6 +818,33 @@ else
     echo "  • 05-weights-*.tar — skipped (WITH_WEIGHTS=0)"
 fi
 
+# GPU-host four-piece tar. Tests parse AND execute this function (same
+# principle as test_dockerfile_cmd.py reading the Dockerfile CMD).
+pack_docling_gpu_host_tar() {
+    echo "  • 06-docling-gpu-host.tar (standalone yml + .env.example + README)"
+    local docling_src="$REPO_ROOT/services/docling-service"
+    local gpu_host_dir="$OUTPUT_DIR/06-docling-gpu-host"
+    local gpu_file
+    mkdir -p "$gpu_host_dir"
+    for gpu_file in docker-compose.standalone.yml .env.example README.md; do
+        [ -f "$docling_src/$gpu_file" ] \
+            || die "GPU-host four-piece source missing:$docling_src/$gpu_file"
+        cp "$docling_src/$gpu_file" "$gpu_host_dir/$gpu_file"
+    done
+    tar -cf "$OUTPUT_DIR/06-docling-gpu-host.tar" \
+        -C "$gpu_host_dir" \
+        docker-compose.standalone.yml .env.example README.md
+    [ -s "$OUTPUT_DIR/06-docling-gpu-host.tar" ] \
+        || die "06-docling-gpu-host.tar is empty"
+    [ -f "$OUTPUT_DIR/05-weights-docling.tar" ] \
+        || die "WITH_DOCLING_IMAGE=1 missing 05-weights-docling.tar (four-piece set)"
+    [ -n "${DOCLING_IMAGE:-}" ] && [ -f "$OUTPUT_DIR/06-docling-image.files.txt" ] \
+        || die "WITH_DOCLING_IMAGE=1 missing docling image pointer"
+    # Staging dir is not a checksummed artifact; drop it so the tar is the only copy.
+    rm -rf "$gpu_host_dir"
+    echo "    ✓ GPU-host four-piece: image tar + 05-weights-docling.tar + standalone yml + .env.example"
+}
+
 if [ "$WITH_DOCLING_WEIGHTS" = "1" ]; then
     [ -n "$DOCLING_WEIGHTS_DIR" ] \
         || die "WITH_DOCLING_WEIGHTS=1 requires DOCLING_WEIGHTS_DIR"
@@ -726,6 +863,12 @@ if [ "$WITH_DOCLING_WEIGHTS" = "1" ]; then
     echo "    ✓ Docling artifacts ($(du -sh "$DOCLING_WEIGHTS_DIR" | cut -f1))"
 else
     echo "  • 05-weights-docling.tar — skipped (WITH_DOCLING_WEIGHTS=0)"
+fi
+
+if [ "$WITH_DOCLING_IMAGE" = "1" ]; then
+    pack_docling_gpu_host_tar
+else
+    echo "  • 06-docling-gpu-host.tar — skipped (WITH_DOCLING_IMAGE=0)"
 fi
 echo
 
@@ -785,21 +928,141 @@ with tarfile.open(fileobj=gzip.GzipFile(archive, "rb"), mode="r:") as bundle:
 PY
 }
 
+# Collect checksum inputs. cwd must be OUTPUT_DIR.
+# Tests parse AND execute this function (same principle as
+# test_dockerfile_cmd.py reading the Dockerfile CMD). Do not rewrite the
+# glob in tests — the glob list here is the single source.
+bundle_checksum_files() {
+    shopt -s nullglob
+    local f
+    for f in 01-images/*.tar.gz 04-models.tar.gz 05-weights-*.tar 06-docling-gpu-host.tar; do
+        if [ -f "$f" ]; then
+            printf '%s\n' "$f"
+        fi
+    done
+    return 0
+}
+
+# Files THIS run declared it would produce. Same cwd as bundle_checksum_files.
+# Source of truth: this run's flags + pointer files this run wrote.
+# Tests parse AND execute this function.
+bundle_declared_checksum_files() {
+    local file img w
+    if [ -f 01-compose-images.files.txt ]; then
+        while IFS=$'\t' read -r file img; do
+            [ -n "$file" ] || continue
+            printf '%s\n' "01-images/$file"
+        done < 01-compose-images.files.txt
+    fi
+    if [ "${WITH_MODELS:-0}" = "1" ]; then
+        printf '%s\n' "04-models.tar.gz"
+    fi
+    if [ "${WITH_WEIGHTS:-0}" = "1" ]; then
+        for w in ${WEIGHTS_LIST:-}; do
+            printf '%s\n' "05-weights-${w}.tar"
+        done
+    fi
+    if [ "${WITH_DOCLING_WEIGHTS:-0}" = "1" ]; then
+        printf '%s\n' "05-weights-docling.tar"
+    fi
+    if [ "${WITH_DOCLING_IMAGE:-0}" = "1" ]; then
+        printf '%s\n' "06-docling-gpu-host.tar"
+        if [ -f 06-docling-image.files.txt ]; then
+            while IFS=$'\t' read -r file img; do
+                [ -n "$file" ] || continue
+                printf '%s\n' "01-images/$file"
+            done < 06-docling-image.files.txt
+        fi
+    fi
+}
+
+# Every file the checksum glob picks up must be traceable to something
+# THIS run declared it would produce. Unexpected file → die, naming it.
+# Declared file the glob missed → die (produced tar silently off the chain).
+# Tests parse AND execute this function. MANIFEST / loader provenance
+# statements use the same WITH_DOCLING_* flags this predicate reads.
+# Does not delete leftovers.
+assert_checksum_matches_declared() {
+    local f leftover
+    local -a actual declared unexpected missing stale
+    local -A actual_set declared_set
+    mapfile -t actual < <(bundle_checksum_files)
+    mapfile -t declared < <(bundle_declared_checksum_files)
+    actual_set=()
+    declared_set=()
+    unexpected=()
+    missing=()
+    stale=()
+    for f in "${actual[@]}"; do
+        [ -n "$f" ] || continue
+        actual_set["$f"]=1
+    done
+    for f in "${declared[@]}"; do
+        [ -n "$f" ] || continue
+        declared_set["$f"]=1
+    done
+    for f in "${actual[@]}"; do
+        [ -n "$f" ] || continue
+        if [ -z "${declared_set[$f]+x}" ]; then
+            unexpected+=("$f")
+        fi
+    done
+    for f in "${declared[@]}"; do
+        [ -n "$f" ] || continue
+        if [ -z "${actual_set[$f]+x}" ]; then
+            missing+=("$f")
+        fi
+    done
+    if [ ${#unexpected[@]} -gt 0 ]; then
+        echo "✗ checksum glob picked up file(s) this run did not declare (WITH_DOCLING_IMAGE=${WITH_DOCLING_IMAGE:-0} WITH_DOCLING_WEIGHTS=${WITH_DOCLING_WEIGHTS:-0} WITH_MODELS=${WITH_MODELS:-0} WITH_WEIGHTS=${WITH_WEIGHTS:-0}):" >&2
+        printf '    %s\n' "${unexpected[@]}" >&2
+        echo "  Leftovers from a previous run, or a tar that landed outside this run's output. Remove them yourself or re-run with the matching flag. This script will not delete them." >&2
+        exit 1
+    fi
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "✗ this run declared file(s) that the checksum glob did not pick up:" >&2
+        printf '    %s\n' "${missing[@]}" >&2
+        echo "  A produced tar that is not in CHECKSUMS.sha256 would pass sha256sum -c on the receiving end while silently omitting the file. Fix the write path or the glob in bundle_checksum_files." >&2
+        exit 1
+    fi
+    # Pointer / staging leftovers are not in the checksum glob but still travel
+    # with the bundle. Fail-loud; do not delete.
+    if [ "${WITH_DOCLING_IMAGE:-0}" != "1" ]; then
+        for leftover in 06-docling-image.files.txt 06-docling-image.images.txt 06-docling-gpu-host; do
+            if [ -e "$leftover" ]; then
+                stale+=("$leftover")
+            fi
+        done
+        if [ ${#stale[@]} -gt 0 ]; then
+            echo "✗ WITH_DOCLING_IMAGE=${WITH_DOCLING_IMAGE:-0} but leftover 06-docling-* still in OUTPUT_DIR:" >&2
+            printf '    %s\n' "${stale[@]}" >&2
+            echo "  Remove them yourself or re-run with WITH_DOCLING_IMAGE=1. This script will not delete them." >&2
+            exit 1
+        fi
+    else
+        if [ -e 06-docling-gpu-host ]; then
+            echo "✗ staging dir 06-docling-gpu-host/ is not a checksummed artifact; pack_docling_gpu_host_tar must remove it after writing the tar." >&2
+            exit 1
+        fi
+        if [ ! -f 06-docling-image.files.txt ]; then
+            echo "✗ WITH_DOCLING_IMAGE=1 declared a docling image but 06-docling-image.files.txt is missing." >&2
+            exit 1
+        fi
+    fi
+}
+
 # ── Phase 5: MANIFEST + INTRANET-LOAD.sh ────────────────────────────────
 echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
 
 (
     cd "$OUTPUT_DIR"
-    shopt -s nullglob
     # 完整性鏈要涵蓋「實際產出的每一個 tar」。字面 04-models.tar.gz 不是 glob,
     # nullglob 蓋不到它——它是選配,不存在時若直接塞給 sha256sum 會整行失敗。
     # 舊寫法用 `||` 退到「只算映像」,把 05-weights-*.tar 掉出鏈還回一個綠燈,
     # 而載入端訊息卻宣稱它們受 CHECKSUMS 保護(=假保護)。所以:只對實際存在
     # 的檔案算 hex,不退到較弱的命令。
-    CHECKSUM_FILES=()
-    for f in 01-images/*.tar.gz 04-models.tar.gz 05-weights-*.tar; do
-        [ -f "$f" ] && CHECKSUM_FILES+=("$f")
-    done
+    assert_checksum_matches_declared
+    mapfile -t CHECKSUM_FILES < <(bundle_checksum_files)
     if [ ${#CHECKSUM_FILES[@]} -eq 0 ]; then
         echo "✗ 沒有可計算 checksum 的交付檔(01-images 至少應有一份)" >&2
         exit 1
@@ -817,6 +1080,8 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
     echo "Ref:      $(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo 'n/a')"
     echo "Project:  $COMPOSE_PROJECT_NAME"
     echo "INCLUDE_ASR: $INCLUDE_ASR"
+    echo "WITH_DOCLING_IMAGE: $WITH_DOCLING_IMAGE"
+    echo "WITH_DOCLING_WEIGHTS: $WITH_DOCLING_WEIGHTS"
     echo "Compose:  ${COMPOSE_FILES[*]} ${COMPOSE_PROFILE_ARGS[*]:-}"
     echo
     echo "── Service → image (from compose config) ──────────────"
@@ -862,6 +1127,23 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
             echo "    Size:    $hr ($bytes bytes)"
             echo "    Digests: $digests"
         done < "$OUTPUT_DIR/04-models.images.txt"
+    fi
+    if [ "$WITH_DOCLING_IMAGE" = "1" ]; then
+        echo
+        echo "── Docling image (GPU host; not loaded on platform) ──"
+        while IFS=$'\t' read -r file img; do
+            [ -n "$img" ] || continue
+            echo "  $img"
+            echo "    Archive: 01-images/$file"
+            echo "    Load on the GPU host, not on the platform host."
+        done < "$OUTPUT_DIR/06-docling-image.files.txt"
+        echo
+        echo "── GPU-host four-piece set (WITH_DOCLING_IMAGE=$WITH_DOCLING_IMAGE) ────"
+        echo "  1. image tar: 01-images/ (see 06-docling-image.files.txt)"
+        echo "  2. weights tar: 05-weights-docling.tar (copy, do not move)"
+        echo "  3. docker-compose.standalone.yml (inside 06-docling-gpu-host.tar)"
+        echo "  4. .env.example (inside 06-docling-gpu-host.tar)"
+        echo "  README.md travels in the same tar. Platform up must NOT add --profile docling-local."
     fi
     echo
     echo "── Bundle files ───────────────────────────────────────"
@@ -974,20 +1256,51 @@ if [ \${#WEIGHT_TARS[@]} -gt 0 ]; then
     echo
 fi
 
-if [ -f "\$DOCLING_TAR" ]; then
-    echo "⚠ \$DOCLING_TAR 存在 — docling 權重屬於 GPU 主機,**不在本機解開**。"
+EOF
+
+# Provenance claims in the generated loader come from THIS run's flags
+# (same source of truth as assert_checksum_matches_declared), not from
+# leftover files that happen to exist at load time.
+if [ "$WITH_DOCLING_WEIGHTS" = "1" ]; then
+    cat >> "$OUTPUT_DIR/INTRANET-LOAD.sh" <<'DOCLING_WEIGHTS_LOAD'
+if [ -f "$DOCLING_TAR" ]; then
+    echo "⚠ $DOCLING_TAR 存在 — docling 權重屬於 GPU 主機,**不在本機解開**。"
     echo "  它仍受 CHECKSUMS.sha256 保護(bundle 完整性鏈)。把它**複製**(不要移動)到"
     echo "  docling-service 跑的那台 GPU 主機,解到 DOCLING_ARTIFACTS_DIR"
-    echo "  (compose 的 \\\${DOCLING_MODEL_HOST_DIR} 掛載目錄);平台主機不跑 docling,"
+    echo "  (compose 的 \${DOCLING_MODEL_HOST_DIR} 掛載目錄);平台主機不跑 docling,"
     echo "  不把權重解在這裡。"
     echo "  ⚠ 用「複製」不是「移動」:本檔名列在 CHECKSUMS.sha256 裡,搬走之後"
     echo "  再跑一次載入腳本,sha256sum -c 會因為「清單有它、檔案不在」而擋死。"
     echo
 fi
+DOCLING_WEIGHTS_LOAD
+fi
 
+if [ "$WITH_DOCLING_IMAGE" = "1" ]; then
+    {
+        echo 'echo "⚠ docling 映像與 GPU 主機四件套屬於 GPU 主機,**不在本機 docker load / 解開**。"'
+        echo 'echo "  平台主機 up **不要**加 --profile docling-local。"'
+        echo 'echo "  把下列檔案**複製**(不要移動)到 GPU 主機："'
+        while IFS=$'\t' read -r file img; do
+            [ -n "$file" ] || continue
+            printf 'echo "    - 01-images/%s  (%s)  → 在 GPU 主機 gunzip -c … | docker load"\n' "$file" "$img"
+        done < "$OUTPUT_DIR/06-docling-image.files.txt"
+        echo 'echo "    - 05-weights-docling.tar  → 解到 DOCLING_MODEL_HOST_DIR"'
+        echo 'echo "    - 06-docling-gpu-host.tar  → 含 docker-compose.standalone.yml、.env.example、README.md"'
+        echo 'echo'
+    } >> "$OUTPUT_DIR/INTRANET-LOAD.sh"
+fi
+
+cat >> "$OUTPUT_DIR/INTRANET-LOAD.sh" <<EOF
 echo "── Verifying loaded tags (from *.images.txt) ──"
 shopt -s nullglob
 for list in *.images.txt; do
+    case "\$list" in
+        06-docling-image.images.txt)
+            echo "  skip \$list (GPU-host image; not loaded on this platform host)"
+            continue
+            ;;
+    esac
     while IFS= read -r img; do
         [ -z "\$img" ] && continue
         verify_img="\$img"
@@ -1018,6 +1331,7 @@ fi
 echo "  下一步見 docs/runbooks/intranet-image-bundle.md"
 echo "  起棧時 -p 必須是: $COMPOSE_PROJECT_NAME"
 echo "  INCLUDE_ASR 打包值: $INCLUDE_ASR → up 時記得 --profile asr(若為 1)"
+echo "  WITH_DOCLING_IMAGE 打包值: $WITH_DOCLING_IMAGE → 平台 up **不要**加 --profile docling-local"
 echo "  起棧命令: docker compose --env-file .env -p $COMPOSE_PROJECT_NAME -f compose.yaml -f intranet-image-overrides.yml ${COMPOSE_PROFILE_ARGS[*]:-} up -d --no-build"
 EOF
 chmod +x "$OUTPUT_DIR/INTRANET-LOAD.sh"
