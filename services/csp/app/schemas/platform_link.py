@@ -1,6 +1,7 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 from app.schemas.base import ApiResponseModel
+from app.schemas.service_icon import validate_service_icon
 
 # Roles defined on User.role today: 'owner' / 'admin' / 'user' / 'developer'.
 # Tier order (high → low): owner > admin > developer ≈ user. ``owner`` is
@@ -39,6 +40,11 @@ class PlatformLinkCreate(BaseModel):
     def _check_required_roles(cls, v: list[str]) -> list[str]:
         return _validate_required_roles(v) or []
 
+    @field_validator("icon")
+    @classmethod
+    def _check_icon(cls, v: str | None) -> str | None:
+        return validate_service_icon(v)
+
 
 class PlatformLinkUpdate(BaseModel):
     name: str | None = None
@@ -54,6 +60,11 @@ class PlatformLinkUpdate(BaseModel):
     @classmethod
     def _check_required_roles(cls, v: list[str] | None) -> list[str] | None:
         return _validate_required_roles(v)
+
+    @field_validator("icon")
+    @classmethod
+    def _check_icon(cls, v: str | None) -> str | None:
+        return validate_service_icon(v)
 
 
 class PlatformLinkResponse(ApiResponseModel):

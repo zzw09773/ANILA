@@ -17,12 +17,57 @@
 import React, { useCallback, useEffect, useState } from "react";
 
 import { authRequest } from "./runtime/api.js";
-import { IconExternal, IconGrid, IconShield, IconX } from "./icons.jsx";
+import {
+  IconBook,
+  IconExternal,
+  IconFile,
+  IconFolder,
+  IconGauge,
+  IconGrid,
+  IconLink,
+  IconMessage,
+  IconNodes,
+  IconRoute,
+  IconShield,
+  IconSpark,
+  IconTerminal,
+  IconX,
+} from "./icons.jsx";
 import {
   launchFailureNotice,
   newTabOpenedNotice,
   sameOriginOpenedInNewTabNotice,
 } from "./uxCopy.js";
+
+/**
+ * Fallback icon for unknown `service.icon` keys.
+ * Lookups must never throw — governance may add keys before the SPA ships them.
+ */
+const SERVICE_ICON_FALLBACK = IconSpark;
+
+/** Server allow-list keys → SPA icon components (see schemas.service_icon.ALLOWED_SERVICE_ICONS). */
+const SERVICE_ICONS = {
+  workflow: IconRoute,
+  git: IconNodes,
+  notebook: IconBook,
+  chat: IconMessage,
+  monitor: IconGauge,
+  database: IconFolder,
+  api: IconLink,
+  docs: IconFile,
+  cpu: IconTerminal,
+};
+
+/** Resolve an icon component; unknown keys → SERVICE_ICON_FALLBACK (never throws). */
+function resolveServiceIcon(key) {
+  // Own-enumerable string keys only. A plain `map[key] || fallback` is truthy for
+  // prototype names (constructor / valueOf / __proto__ / …) and React then throws
+  // "Element type is invalid" — anila-shell has no ErrorBoundary.
+  if (typeof key !== "string" || !Object.hasOwn(SERVICE_ICONS, key)) {
+    return SERVICE_ICON_FALLBACK;
+  }
+  return SERVICE_ICONS[key];
+}
 
 // ---- 純資料層（供單元測試共用） --------------------------------------------
 
@@ -101,7 +146,7 @@ export function isSameOriginUrl(url) {
 // ---- UI 層 ------------------------------------------------------------------
 
 function ServiceCard({ service, onLaunch }) {
-  const glyph = (service.name || "?").slice(0, 1).toUpperCase();
+  const ServiceIcon = resolveServiceIcon(service.icon);
   const modeLabel = service.launchMode === "iframe" ? "內嵌" : "新分頁";
   return (
     <button
@@ -121,12 +166,14 @@ function ServiceCard({ service, onLaunch }) {
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.transform = ""; }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{
+        <div
+          data-service-icon={service.icon || ""}
+          style={{
           width: 34, height: 34, borderRadius: "var(--radius)",
           background: "var(--bg-subtle)", border: "1px solid var(--border)",
           display: "inline-flex", alignItems: "center", justifyContent: "center",
-          fontWeight: 600, fontFamily: "var(--font-mono)", color: "var(--fg-muted)",
-        }}>{glyph}</div>
+          color: "var(--fg-muted)",
+        }}><ServiceIcon size={18} /></div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{service.name}</div>
         </div>

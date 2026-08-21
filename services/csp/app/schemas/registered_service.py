@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.contracts.classification import ClassificationLevel
 from app.schemas.platform_link import _validate_required_roles
+from app.schemas.service_icon import validate_service_icon
 from app.schemas.base import ApiResponseModel
 
 
@@ -90,6 +91,11 @@ class RegisteredServiceCreate(BaseModel):
     def _roles(cls, v: list[str]) -> list[str]:
         return _validate_required_roles(v) or []
 
+    @field_validator("icon")
+    @classmethod
+    def _icon(cls, v: str | None) -> str | None:
+        return validate_service_icon(v)
+
     @field_validator("data_ingress")
     @classmethod
     def _ingress(cls, v: list[str]) -> list[str]:
@@ -146,6 +152,11 @@ class RegisteredServiceUpdate(BaseModel):
     @classmethod
     def _roles(cls, v: list[str] | None) -> list[str] | None:
         return _validate_required_roles(v)
+
+    @field_validator("icon")
+    @classmethod
+    def _icon(cls, v: str | None) -> str | None:
+        return validate_service_icon(v)
 
 
 class RegisteredServiceResponse(ApiResponseModel):
