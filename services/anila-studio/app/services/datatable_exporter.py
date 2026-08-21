@@ -35,6 +35,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from app.schemas.datatable import DataColumn, DataRow, DatatableSpec
+from app.services.csv_formula import csv_formula_safe
 
 
 logger = logging.getLogger(__name__)
@@ -200,14 +201,18 @@ def _stringify_cell_csv(value: Any) -> str:
       double-guard so a raw spec passed in tests still does the right thing)
     - other → str(value); float repr handles big numbers fine.
 
-    No escaping done here — `csv.writer` with `QUOTE_MINIMAL` handles quoting
-    when the value contains a comma, newline, or double-quote.
+    ``csv.writer`` with ``QUOTE_MINIMAL`` handles quoting when the value
+    contains a comma, newline, or double-quote. That is field-boundary
+    quoting, **not** formula neutralization. Values that start with the
+    spreadsheet trigger set are prefixed by ``csv_formula_safe`` here.
     """
     if value is None:
         return ""
     if isinstance(value, bool):
-        return "是" if value else "否"
-    return str(value)
+        return csv_formula_safe("是" if value else "否")
+    if isinstance(value, (int, float)):
+        return str(value)
+    return csv_formula_safe(str(value))
 
 
 def to_csv(spec: DatatableSpec) -> str:
@@ -234,7 +239,7 @@ def to_csv(spec: DatatableSpec) -> str:
         quoting=csv.QUOTE_MINIMAL,
         lineterminator="\r\n",
     )
-    writer.writerow([col.label for col in spec.columns])
+    writer.writerow([csv_formula_safe(col.label) for col in spec.columns])
     for row in spec.rows:
         writer.writerow(
             [_stringify_cell_csv(row.cells.get(col.key)) for col in spec.columns]
@@ -321,6 +326,21 @@ def _coerce_cell_value(value: Any, dtype: str) -> Any:
     return value
 
 
+def _xlsx_store_value(value: Any) -> Any:
+    """Store ``value`` without letting openpyxl treat a string as a formula.
+
+    Numbers and dates pass through so number_format still applies. Strings
+    (including coerced bool labels) go through ``csv_formula_safe``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return csv_formula_safe("是" if value else "否")
+    if isinstance(value, (int, float, date, datetime)):
+        return value
+    return csv_formula_safe(value)
+
+
 def _number_format_for(dtype: str) -> str | None:
     """Map our dtype enum to an openpyxl number_format string."""
     if dtype == "number":
@@ -401,7 +421,9 @@ def to_xlsx(spec: DatatableSpec, dest_path: Path) -> None:
     cur_row = 1  # 1-indexed in openpyxl
 
     # Title row — merged across all columns, bold.
-    title_cell = ws.cell(row=cur_row, column=1, value=spec.title)
+    title_cell = ws.cell(
+        row=cur_row, column=1, value=csv_formula_safe(spec.title),
+    )
     title_cell.font = Font(bold=True, size=14)
     title_cell.alignment = Alignment(horizontal="left", vertical="center")
     if n_cols > 1:
@@ -413,7 +435,9 @@ def to_xlsx(spec: DatatableSpec, dest_path: Path) -> None:
 
     # Subtitle (optional).
     if spec.subtitle:
-        sub_cell = ws.cell(row=cur_row, column=1, value=spec.subtitle)
+        sub_cell = ws.cell(
+            row=cur_row, column=1, value=csv_formula_safe(spec.subtitle),
+        )
         sub_cell.font = Font(size=10, color="6B7280", italic=False)
         sub_cell.alignment = Alignment(horizontal="left", vertical="center")
         if n_cols > 1:
@@ -430,7 +454,9 @@ def to_xlsx(spec: DatatableSpec, dest_path: Path) -> None:
     )
     header_font = Font(bold=True, color="1F2937")
     for col_idx, col in enumerate(spec.columns, start=1):
-        cell = ws.cell(row=header_row_idx, column=col_idx, value=col.label)
+        cell = ws.cell(
+            row=header_row_idx, column=col_idx, value=csv_formula_safe(col.label),
+        )
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = _alignment_for(col.align)
@@ -441,9 +467,10 @@ def to_xlsx(spec: DatatableSpec, dest_path: Path) -> None:
         for col_idx, col in enumerate(spec.columns, start=1):
             raw = row.cells.get(col.key)
             coerced = _coerce_cell_value(raw, col.dtype)
-            cell = ws.cell(row=cur_row, column=col_idx, value=coerced)
+            stored = _xlsx_store_value(coerced)
+            cell = ws.cell(row=cur_row, column=col_idx, value=stored)
             fmt = _number_format_for(col.dtype)
-            if fmt is not None and isinstance(coerced, (int, float, date, datetime)):
+            if fmt is not None and isinstance(stored, (int, float, date, datetime)):
                 cell.number_format = fmt
             cell.alignment = _alignment_for(col.align)
         cur_row += 1
@@ -451,7 +478,9 @@ def to_xlsx(spec: DatatableSpec, dest_path: Path) -> None:
     # Notes (skip 1 blank row, then italic 10pt). 2 rows below as spec says.
     if spec.notes:
         notes_row = cur_row + 1  # +1 makes "兩列" 在表下方
-        notes_cell = ws.cell(row=notes_row, column=1, value=spec.notes)
+        notes_cell = ws.cell(
+            row=notes_row, column=1, value=csv_formula_safe(spec.notes),
+        )
         notes_cell.font = Font(italic=True, size=10, color="4B5563")
         notes_cell.alignment = Alignment(
             horizontal="left", vertical="top", wrap_text=True,

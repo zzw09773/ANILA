@@ -12,7 +12,7 @@ import io
 from pathlib import Path
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from app.schemas.datatable import (
     DataColumn,
@@ -20,6 +20,7 @@ from app.schemas.datatable import (
     DatatablePreset,
     DatatableSpec,
 )
+from app.services.csv_formula import FORMULA_TRIGGER_PREFIXES
 from app.services.datatable_exporter import to_csv, to_html, to_xlsx
 
 
@@ -409,3 +410,120 @@ def test_xlsx_round_trip_preserves_cjk(tmp_path: Path, cjk_spec):
     # Row 2 metric — embedded quotes preserved verbatim through xlsx
     # storage (Excel uses its own xml escape, but the round-trip is clean).
     assert ws.cell(row=5, column=1).value == '營收 (含 "雜項", NT$)'
+
+
+# ── formula injection (site 5) ─────────────────────────────────────────────
+
+
+def _formula_spec(**overrides) -> DatatableSpec:
+    data = dict(
+        title="Safe title",
+        subtitle="Safe subtitle",
+        preset=DatatablePreset.KEY_FIGURES,
+        columns=[
+            DataColumn(key="a", label="=1+1"),
+            DataColumn(key="b", label="乙", dtype="number"),
+        ],
+        rows=[DataRow(cells={"a": "plain", "b": 1})],
+        notes="Safe notes",
+    )
+    data.update(overrides)
+    return DatatableSpec(**data)
+
+
+def _csv_rows(out: str) -> list[list[str]]:
+    assert out[:1] == "\ufeff"
+    return list(csv.reader(io.StringIO(out[1:])))
+
+
+@pytest.mark.parametrize("prefix", FORMULA_TRIGGER_PREFIXES)
+def test_csv_cell_first_char_is_apostrophe_for_each_trigger(prefix: str):
+    payload = f"{prefix}1+1"
+    spec = _formula_spec(rows=[DataRow(cells={"a": payload, "b": 1})])
+    cell = _csv_rows(to_csv(spec))[1][0]
+    assert cell[:1] == "'"
+    assert cell[1:] == payload
+
+
+@pytest.mark.parametrize("prefix", FORMULA_TRIGGER_PREFIXES)
+def test_xlsx_data_cell_is_not_formula_type(tmp_path: Path, prefix: str):
+    """XLSX assertion is data_type != 'f', not 'starts with apostrophe'."""
+    payload = f"{prefix}1+1"
+    spec = _formula_spec(rows=[DataRow(cells={"a": payload, "b": 1})])
+    dest = tmp_path / "cell.xlsx"
+    to_xlsx(spec, dest)
+    ws = load_workbook(str(dest)).active
+    # title row 1, subtitle 2, header 3, data 4
+    cell = ws.cell(row=4, column=1)
+    assert cell.data_type != "f"
+    assert cell.value == "'" + payload
+
+
+def test_openpyxl_stores_unprefixed_equals_as_formula(tmp_path: Path):
+    """Platform evidence this package relies on: '=1+1' is a real formula."""
+    wb = Workbook()
+    wb.active["A1"] = "=1+1"
+    dest = tmp_path / "raw.xlsx"
+    wb.save(str(dest))
+    cell = load_workbook(str(dest)).active["A1"]
+    assert cell.data_type == "f"
+
+
+def test_xlsx_title_subtitle_notes_are_not_formula_type(tmp_path: Path):
+    """CSV omits title/subtitle/notes; copying CSV cases would miss these."""
+    spec = _formula_spec(
+        title="=1+1",
+        subtitle="+HYPERLINK(\"http://x\")",
+        notes="@cmd|'/c calc'!A0",
+        rows=[DataRow(cells={"a": "plain", "b": 2})],
+    )
+    dest = tmp_path / "meta.xlsx"
+    to_xlsx(spec, dest)
+    ws = load_workbook(str(dest)).active
+    title = ws["A1"]
+    subtitle = ws["A2"]
+    notes = None
+    for r in range(5, 12):
+        value = ws.cell(row=r, column=1).value
+        if isinstance(value, str) and "cmd" in value:
+            notes = ws.cell(row=r, column=1)
+            break
+    assert notes is not None, "notes cell not found"
+    assert title.data_type != "f"
+    assert subtitle.data_type != "f"
+    assert notes.data_type != "f"
+    assert title.value[:1] == "'"
+    assert subtitle.value[:1] == "'"
+    assert notes.value[:1] == "'"
+
+
+def test_xlsx_numeric_cells_stay_numeric_not_prefixed_text(
+    tmp_path: Path, cjk_spec: DatatableSpec
+):
+    dest = tmp_path / "nums.xlsx"
+    to_xlsx(cjk_spec, dest)
+    ws = load_workbook(str(dest)).active
+    cell = ws.cell(row=4, column=2)
+    assert cell.value == 12345
+    assert cell.data_type != "f"
+
+
+def test_csv_header_label_is_neutralized():
+    """Removing csv_formula_safe around col.label in to_csv must turn this red."""
+    spec = _formula_spec()
+    header = _csv_rows(to_csv(spec))[0]
+    assert header[0][:1] == "'"
+    assert header[0][1:] == "=1+1"
+    assert header[1] == "乙"
+
+
+def test_xlsx_header_label_is_not_formula_type(tmp_path: Path):
+    """Removing csv_formula_safe around col.label in to_xlsx must turn this red."""
+    spec = _formula_spec()
+    dest = tmp_path / "hdr.xlsx"
+    to_xlsx(spec, dest)
+    # title row 1, subtitle 2, header 3
+    cell = load_workbook(str(dest)).active.cell(row=3, column=1)
+    assert cell.data_type != "f"
+    assert cell.value == "'=1+1"
+

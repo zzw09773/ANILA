@@ -218,7 +218,12 @@ def _build_inventory(db: Session) -> dict:
 
 
 def _to_csv(inventory: dict) -> str:
-    """展平成 CSV;首列 BOM 供 Excel 正確以 UTF-8 開啟。"""
+    """展平成 CSV;首列 BOM 供 Excel 正確以 UTF-8 開啟。
+
+    CSV_FORMULA_INJECTION_CLOSED_DOMAIN: 此處未中性化。目前安全的理由是
+    **值域封閉**（``_RESOURCES`` 常數＋整數計數），**不是因為有守衛**。
+    若之後有任何請求方可控的值進到這張表，必須改走中性化。
+    """
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["資源類型", *_LEVELS, "已閂鎖", "不一致", "總計"])

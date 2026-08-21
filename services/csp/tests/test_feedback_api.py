@@ -14,10 +14,11 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app.api.admin import feedback as feedback_api
-from app.api.admin.feedback import FEEDBACK_ITEM_KEYS
+from app.api.admin.feedback import FEEDBACK_ITEM_KEYS, FeedbackItem
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.services.auth_service import create_tokens
+from app.utils.csv_formula import FORMULA_TRIGGER_PREFIXES
 from tests.conftest import make_user
 
 FEEDBACK_URL = "/api/admin/feedback"
@@ -75,15 +76,18 @@ def _seed_rated_message(
     return msg
 
 
-def _csv_rows(resp) -> list[list[str]]:
-    """Decode the export body into rows, BOM stripped.
+def _rows_from_csv_text(text: str) -> list[list[str]]:
+    """Decode a CSV body into rows, BOM stripped.
 
     Goes through ``csv.reader`` rather than ``splitlines`` on purpose — a
     留言 may contain a newline, and counting lines would then over-report.
     """
-    text = resp.text
     assert text.startswith("﻿"), "少了 BOM,Excel 會把繁體中文開成亂碼"
     return list(csv.reader(io.StringIO(text[1:])))
+
+
+def _csv_rows(resp) -> list[list[str]]:
+    return _rows_from_csv_text(resp.text)
 
 
 def test_feedback_requires_authentication(client):
@@ -352,3 +356,88 @@ def test_feedback_csv_rejects_non_admin(client, db: Session, role: str):
     assert json_resp.status_code == 403
     assert csv_resp.status_code == json_resp.status_code
     assert "text/csv" not in csv_resp.headers["content-type"]
+
+
+# ── CSV formula injection (site 2) ─────────────────────────────────────────
+
+
+_COMMENT_COL = 2
+_REASONS_COL = 3
+_HTTP_COMMENT_TRIGGERS = ("=", "+", "-", "@")
+
+
+def _comment_item(payload: str) -> FeedbackItem:
+    return FeedbackItem(
+        message_id=1,
+        conversation_id=1,
+        rating="down",
+        comment=payload,
+        reasons=[],
+        classification_level="無機密",
+        message_created_at=datetime.now(timezone.utc),
+    )
+
+
+@pytest.mark.parametrize("prefix", FORMULA_TRIGGER_PREFIXES)
+def test_items_to_csv_neutralizes_comment_for_each_trigger(prefix: str):
+    """Producer-level lock. Ingest ``.strip()`` eats leading ``\\t``/``\\r``
+    before export, so the six-char set is asserted here on ``_items_to_csv``.
+    """
+    payload = f"{prefix}1+1"
+    text = feedback_api._items_to_csv([_comment_item(payload)])
+    cell = _rows_from_csv_text(text)[1][_COMMENT_COL]
+    assert cell[:1] == "'"
+    assert cell[1:] == payload
+
+
+@pytest.mark.parametrize("prefix", _HTTP_COMMENT_TRIGGERS)
+def test_feedback_csv_neutralizes_comment_formula_prefix(
+    client, db: Session, prefix: str
+):
+    """HTTP path for the triggers that survive metadata ``strip()``."""
+    tag = prefix.encode("unicode_escape").decode("ascii")
+    admin = make_user(db, username=f"fb-inj-c-admin-{tag}", role="admin")
+    owner = make_user(db, username=f"fb-inj-c-u-{tag}", role="user")
+    payload = f"{prefix}1+1"
+    _seed_rated_message(db, owner=owner, comment=payload, reasons=None)
+
+    resp = client.get(
+        FEEDBACK_URL, headers=_bearer(admin), params={"format": "csv"}
+    )
+    assert resp.status_code == 200, resp.text
+    cell = _csv_rows(resp)[1][_COMMENT_COL]
+    assert cell[:1] == "'"
+    assert cell[1:] == payload
+
+
+@pytest.mark.parametrize("prefix", FORMULA_TRIGGER_PREFIXES)
+def test_feedback_csv_neutralizes_reasons_first_element(
+    client, db: Session, prefix: str
+):
+    """``reasons[0]`` is a separate branch from ``comment`` (join, not str()).
+
+    The original finding named only ``comment``. After join, only the first
+    element's first character sits at the start of the cell.
+    """
+    tag = prefix.encode("unicode_escape").decode("ascii")
+    admin = make_user(db, username=f"fb-inj-r-admin-{tag}", role="admin")
+    owner = make_user(db, username=f"fb-inj-r-u-{tag}", role="user")
+    first = f"{prefix}HYPERLINK(\"http://x\")"
+    _seed_rated_message(
+        db,
+        owner=owner,
+        comment="safe comment",
+        reasons=[first, "not-at-cell-start"],
+    )
+
+    resp = client.get(
+        FEEDBACK_URL, headers=_bearer(admin), params={"format": "csv"}
+    )
+    assert resp.status_code == 200, resp.text
+    rows = _csv_rows(resp)
+    comment_cell = rows[1][_COMMENT_COL]
+    reasons_cell = rows[1][_REASONS_COL]
+    assert comment_cell == "safe comment"
+    assert reasons_cell[:1] == "'"
+    assert reasons_cell[1:].startswith(first)
+    assert "not-at-cell-start" in reasons_cell
