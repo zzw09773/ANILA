@@ -23,9 +23,21 @@ _EXPORT_COLUMNS = (
 
 
 def _csv_safe(value) -> str:
-    """試算表公式注入防護:``=``/``+``/``-``/``@`` 開頭的欄位前面加單引號。"""
+    """試算表公式注入防護:``=``/``+``/``-``/``@`` 開頭的欄位前面加單引號。
+
+    不含 ``\\t`` / ``\\r``。行為由測試鎖在這四個字元；其他匯出站點走
+    ``app.utils.csv_formula.csv_formula_safe``（OWASP 六字元閉集）。
+    """
     text = "" if value is None else str(value)
     return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
+def _one_physical_line(value) -> str:
+    """Export-time only: collapse CR/LF so a stored field cannot split rows.
+
+    Does not change registration or username charset.
+    """
+    return ("" if value is None else str(value)).replace("\r", "").replace("\n", "")
 
 
 @router.get("", response_model=list[AuditLogResponse])
@@ -75,7 +87,7 @@ def export_audit_logs(
     header_lines = [
         "# ANILA 稽核匯出（append-only 稽核帳）",
         f"# 匯出時間(UTC): {now}",
-        f"# 匯出者: {admin.username}",
+        f"# 匯出者: {_csv_safe(_one_physical_line(admin.username))}",
         f"# 稽核鏈鏈頭: {anchor.chain_head}",
     ]
     if anchor.anchored:
@@ -97,7 +109,7 @@ def export_audit_logs(
         "仍可改寫最後一個檢查點之後的資料（≤24h 盲區），此為單機拓撲的極限。",
     ]
     for line in header_lines:
-        buf.write(line + "\n")
+        buf.write(_one_physical_line(line) + "\n")
 
     writer = csv.writer(buf)
     writer.writerow(_EXPORT_COLUMNS)

@@ -8,6 +8,7 @@ from app.models.token_usage import TokenUsage
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.services.department_tree import get_descendant_ids
+from app.utils.csv_formula import csv_formula_safe
 from app.utils.time_helpers import get_time_range
 
 
@@ -487,10 +488,10 @@ def export_usage_csv(
         writer.writerow(
             [
                 _to_tpe_iso(row.request_timestamp),
-                row.username,
-                row.department_name or "",
-                row.model_name,
-                row.model_type,
+                csv_formula_safe(row.username),
+                csv_formula_safe(row.department_name or ""),
+                csv_formula_safe(row.model_name),
+                csv_formula_safe(row.model_type),
                 row.prompt_tokens,
                 row.completion_tokens,
                 row.total_tokens,

@@ -49,6 +49,7 @@ from app.models.message import Message
 from app.models.user import User
 from app.services.auth_service import require_admin
 from app.schemas.base import ApiResponseModel
+from app.utils.csv_formula import csv_formula_safe
 
 router = APIRouter(prefix="/api/admin/feedback", tags=["使用者回饋"])
 
@@ -198,6 +199,10 @@ def _items_to_csv(items: list[FeedbackItem]) -> str:
     欄位只從 :class:`FeedbackItem`(= 白名單)取。白名單裡若出現 ``_CSV_COLUMNS``
     沒宣告的鍵,會以原鍵名補在最後一欄 —— 這是刻意的絆線:任何人放寬白名單,
     這裡會立刻長出一欄而被測試打紅,而不是讓 CSV 與 JSON 悄悄分歧。
+
+    那條絆線守的是**欄位一致性**（CSV 與 JSON 會不會長出不同的鍵），
+    **不涵蓋值的中性化**。公式注射的守衛在 ``csv_formula_safe``（寫入
+    每一格之前），不是這段白名單。
     """
     declared = {key for key, _ in _CSV_COLUMNS}
     extra = [key for key in sorted(FEEDBACK_ITEM_KEYS) if key not in declared]
@@ -208,7 +213,12 @@ def _items_to_csv(items: list[FeedbackItem]) -> str:
     writer.writerow([header for _, header in columns])
     for item in items:
         data = item.model_dump()
-        writer.writerow([_csv_value(key, data.get(key)) for key, _ in columns])
+        writer.writerow(
+            [
+                csv_formula_safe(_csv_value(key, data.get(key)))
+                for key, _ in columns
+            ]
+        )
     return "﻿" + buffer.getvalue()
 
 
