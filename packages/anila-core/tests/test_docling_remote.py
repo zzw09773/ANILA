@@ -25,6 +25,7 @@ from anila_core.ingestion.docling_parser import (
     DOCLING_SUPPORTED_EXTS,
     RemoteDoclingError,
     RemoteDoclingParser,
+    _normalize_title,
     build_docling_parser_from_env,
 )
 from anila_core.ingestion.errors import ParseError
@@ -337,6 +338,40 @@ def test_supported_exts_unchanged():
     assert DOCLING_SUPPORTED_EXTS == frozenset(
         {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm", ".md"}
     )
+
+
+def test_normalize_title_strips_control_chars_and_caps():
+    # client 側鏡射 service 端邊界:title 由 uploader 控制,控制字元/超長
+    # 字串不假設遠端清乾淨(2026-08-20 revision)。
+    assert _normalize_title("clean") == "clean"
+    assert _normalize_title("a\r\nb\tc") == "abc"
+    assert _normalize_title("a\x7fb") == "ab"
+    assert _normalize_title("  padded \t") == "padded"
+    assert len(_normalize_title("x" * 300)) == 255
+    assert _normalize_title(None) == ""
+    assert _normalize_title(123) == ""
+
+
+def test_reconstruct_normalizes_title_from_payload(tmp_path, monkeypatch):
+    """client 補強:即使遠端回來的 title 帶控制字元/超長,_reconstruct 仍守
+    下游(不假設遠端一定清乾淨——另一版 service 或少跑一層時,這裡照樣守)。
+    """
+    _allow_http(monkeypatch)
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "docling")
+    path = _write_pdf(tmp_path)
+    parser = RemoteDoclingParser(base_url=DOCLING_URL, token=TOKEN)
+    payload = _ok_payload()
+    payload["title"] = "a\r\nb\t" + "x" * 300
+    with respx.mock:
+        respx.post("http://docling:9100/parse").mock(
+            return_value=httpx.Response(200, json=payload)
+        )
+        result = parser.parse(str(path))
+    assert result.metadata["title"] == "ab" + "x" * 253
+    assert len(result.metadata["title"]) == 255
+    assert "\r" not in result.metadata["title"]
+    assert "\n" not in result.metadata["title"]
+    assert "\t" not in result.metadata["title"]
 
 
 # ── 6. client reuse (LOW #1):一個 parser 一個 client,不每份文件重交握 ──────

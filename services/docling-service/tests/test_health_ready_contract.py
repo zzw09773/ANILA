@@ -8,12 +8,36 @@ FakeConverter 覆寫 load/convert 所以 _cache 永遠空——這些不變式�
 """
 from __future__ import annotations
 
+import importlib
+import importlib.util
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
 from app.model import DoclingConverter, _CacheEntry
+
+
+def _require_easyocr() -> None:
+    """三狀態判型:easyocr 沒裝 → skip;裝了但原生函式庫壞 → RED;裝了且好 → 走真路。
+
+    easyocr 的 python 套件可進發行,真正容易在部署時壞掉的是它的 native
+    函式庫(libxcb.so.1 / libGL / libglib)——那些在 ``import easyocr`` 才炸。
+    pytest.importorskip 會把任何 ImportError 都當「模組不存在」skip 掉,於是
+    「裝了 easyocr 但 native lib 遺失」被吞成「沒裝」——那正是 08-17
+    「422 parse failed: ImportError」的事故狀態,也是 _verify_ready 這個守衛
+    存在的目的(開機時抓出來,而不是第一次 convert 才死)。
+
+    所以分兩步,不執行模組判存在、真要 import 了才執行:
+    1. find_spec("easyocr") is None → 真沒裝 → skip。
+    2. 有 spec → 真的 ``import easyocr``(production 的 _verify_ready 用完全
+       同一句):native lib 錯在此 raise → 不 skip,讓測試紅
+       (installed-but-broken 是缺陷,不是環境)。
+    """
+    if importlib.util.find_spec("easyocr") is None:
+        pytest.skip("easyocr not installed")
+    import easyocr  # noqa: F401  # native lib 遺失在此 raise → RED,不 skip
 
 
 class _FlakyConverter(DoclingConverter):
@@ -29,7 +53,7 @@ class _FlakyConverter(DoclingConverter):
     def is_ready(self, ocr_langs, table_structure, picture_description) -> bool:
         return True
 
-    def convert(self, file_path, *, ocr_langs, table_structure, picture_description):
+    def convert(self, file_path, *, ocr_langs, table_structure, picture_description, original_name=None):
         # fake 永遠轉不動;失敗歸 5xx/init 或 422/convert 由 main 依
         # has_completed_conversion 的 key 決定。
         raise RuntimeError("model not loaded")
@@ -55,28 +79,60 @@ _DEFAULT_ARGS = (["ch_tra", "en"], True, False)
 
 # ── HIGH-A:health 不假綠 ────────────────────────────────────────────────────
 
+def test_require_easyocr_red_when_installed_but_broken(monkeypatch) -> None:
+    """installed-but-broken → RED 不 skip(2026-08-20 revision① 的 INVARIANT)。
+
+    pytest.importorskip 會把「裝了 easyocr 但 native lib(libxcb/libGL)遺失」
+    的 ImportError 吞成「沒裝」skip 掉——那正是 08-17「422 parse failed:
+    ImportError」的事故狀態。_require_easyocr 用 find_spec 判 installed、
+    真有 spec 才 import,所以「spec 存在但 import 炸」必須往上游 raise(測試
+    紅),不能吞成 skip。
+    """
+    # 模擬「套件進得了發行」(spec 非 None);本機是未安裝,真 import 一定炸。
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: object()
+    )
+    with pytest.raises(ImportError):
+        _require_easyocr()
+
+
+def test_require_easyocr_skips_when_absent(monkeypatch) -> None:
+    """absent → skip(不是紅):沒裝 easyocr 的開發機照樣 skip,不因缺套件假紅。"""
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: None
+    )
+    with pytest.raises(pytest.skip.Exception):
+        _require_easyocr()
+
+
 def test_verify_ready_rejects_empty_artifacts_dir(tmp_path) -> None:
-    """local_files_only + 權重目錄非空 → RuntimeError(不該標 ready)。"""
+    """local_files_only + 權重目錄空 → RuntimeError(不該標 ready)。
+
+    _verify_ready 先 import easyocr 再查權重目錄;沒裝 easyocr 的機器上若不
+    skip,這裡會先在 import 就 raise(訊息是「easyocr import failed」不是
+    「empty or missing」)→ 必紅且紅得像「空目錄守衛壞了」的真缺陷,實際只是
+    環境缺套件。_require_easyocr 讓缺席＝skip,裝了 easyocr 但 native lib
+    壞掉＝RED(不是 skip,那正是守衛存在的目的),裝了且好才走真的斷言。
+    """
+    _require_easyocr()
     converter = DoclingConverter(artifacts_dir=str(tmp_path), local_files_only=True)
     with pytest.raises(RuntimeError, match="empty or missing"):
         converter._verify_ready()
 
 
 def test_verify_ready_ok_when_artifacts_nonempty(tmp_path) -> None:
-    """權重目錄裡有東西 → 不做空目錄假綠。(easyocr import 在裝了 docling 的
-    主機上會真的走,這裡只驗空目錄那條;無 docling 的環境 import 會 raise,
-    但那正是本機(platform)的特性,由 18 條既有測試的 conftest 繞過。)
+    """權重目錄非空 + easyocr importable → _verify_ready 不該拋。
+
+    舊寫法用 try/except 只斷言「若拋,不是 empty or missing」——在無 easyocr
+    的機器上 import 就 raise(不是 empty or missing→斷言過)、裝了 easyocr 的
+    機器上直接不拋(斷言沒走到)→ 兩條路都恆綠。那是「負向斷言沒有正向錨點」的
+    恆綠(2026-08-19 批五)。改成正向:import easyocr 成功、目錄非空 → 直接呼叫
+    不拋;真的拋了 = 紅。installed-but-broken 由 _require_easyocr 保留成 RED。
     """
+    _require_easyocr()
     (tmp_path / "some-weight").write_text("x")
     converter = DoclingConverter(artifacts_dir=str(tmp_path), local_files_only=True)
-    # 本機無 easyocr/docling,import easyocr 會 raise RuntimeError——那證明
-    # _verify_ready 真的會把「import 不到」當失敗,不是只在空目錄才擋。
-    # 這裡用 local_files_only=True + 非空目錄,驗「不因空目錄」這半條(另一半
-    # easyocr import 在映像端到端驗)。只要不拋"empty or missing"就是過。
-    try:
-        converter._verify_ready()
-    except RuntimeError as exc:
-        assert "empty or missing" not in str(exc)
+    converter._verify_ready()  # 不拋 = 過;拋 = 紅
 
 
 # ── HIGH-B:init 失敗 5xx vs 文件轉不動 422 ─────────────────────────────────

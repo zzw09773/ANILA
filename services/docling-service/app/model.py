@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import math
 import os
 import re
 import threading
@@ -155,8 +156,15 @@ class DoclingConverter:
         ocr_langs: list[str],
         table_structure: bool,
         picture_description: bool,
+        original_name: str | None = None,
     ) -> dict:
-        """回 wire contract 的 dict(markdown/title/page_count/ocr_applied/images)。"""
+        """回 wire contract 的 dict(markdown/title/page_count/ocr_applied/images)。
+
+        ``original_name`` = 呼叫端手上的原始檔名。docling 的 document.title 對
+        PDF 幾乎不會設（除非 PDF outline 有 Title），fallback 原本是
+        ``Path(file_path).stem`` = 服務端暫存檔名（如 tmp2duc_n2r），既垃圾又是
+        「洩內部暫存名」的形狀。改收原始檔名當 fallback：有意義、且不洩內部名。
+        """
         key = self._key(ocr_langs, table_structure, picture_description)
         with self._lock:
             entry = self._cache.get(key)
@@ -180,9 +188,12 @@ class DoclingConverter:
             self._cache[key].ready = True
             self._cache[key].converted_once = True
 
+        # title 的 fallback 優先原始檔名(呼叫端手上),掉到 Path(file_path).stem
+        # 只是「連原始名都沒傳」時的保底,不再是常態。
+        fallback = original_name or Path(file_path).stem
         return {
             "markdown": markdown,
-            "title": _safe_title(document, fallback=Path(file_path).stem),
+            "title": _safe_title(document, fallback=fallback),
             "page_count": _safe_page_count(document),
             "ocr_applied": _safe_ocr_flag(result),
             "images": images,
@@ -331,11 +342,50 @@ def _picture_caption(picture: Any, document: Any) -> str:
     return ""
 
 
+_TITLE_MAX_CHARS = 255
+# C0(0x00–0x1F)加 DEL(0x7F):title 回給下游後會落 metadata、進 UI、`logs` 等,
+# 控制字元若不剝,一回傳就可能污染窗格/專案標題/日誌。全部 C0 一起剝(不只是
+# \r\n\t)是最不帶漏的邊界。
+_TITLE_CONTROL_TRANS = str.maketrans(
+    "", "", "".join(chr(c) for c in range(32)) + chr(127)
+)
+
+
+def _normalize_title(raw: str) -> str:
+    """wire 的 title 單一常化:非 str→"",剝 C0+DEL 控制字元,剝兩端空白,
+    再 cap 到 255 字元。
+
+    title 由 uploader 控制(``main.py`` 用 ``file.filename``),無長度/字元集
+    約束時,一個長檔名或塞了控制字元的檔名會原封進回傳。這層是服務的邊界
+    (與 client 端 ``anila-core`` 鏡射同源);保證連帶的字串會爽明在
+    ``main.py`` 的 wire contract docstring 裡。
+
+    不做事:**試算表公式中性化(=/+/-/@/\t/\r)不做**——title 進匯出時,
+    匯出器必須自己過 ``csv_formula_safe``(F2 的 helper),這裡不替它擋。
+    Unicode 正規化(NFC/NFKD)也不做。這裡只做「進回傳前一定成立的」邊界。
+    """
+    if not isinstance(raw, str):
+        return ""
+    clean = raw.translate(_TITLE_CONTROL_TRANS).strip()
+    return clean[:_TITLE_MAX_CHARS]
+
+
 def _safe_title(document: Any, fallback: str) -> str:
-    title = getattr(document, "title", None) or getattr(document, "name", None)
+    # 優先:呼叫端手上真正的原始檔名(fallback)。docling 對 PDF 幾乎不設
+    # document.title(實測 None),但會把 document.name 填成 input stem(如它自己
+    # 抽的 'L312' / 服務端暫存名)——那不是「有意義的標題」,是 docling 的內部
+    # input 名。所以 fallback 優先;只有 docling 真的給出 document.title 才用。
+    # (格式若是 DOCX 等、docling 從文件元資料讀出真標題時,document.title 才有值,
+    # 那比檔名更有義 → 那時 title 優先。)
+    title = getattr(document, "title", None)
     if isinstance(title, str) and title.strip():
-        return title.strip()
-    return fallback
+        return _normalize_title(title)
+    if isinstance(fallback, str) and fallback.strip():
+        return _normalize_title(fallback)
+    name = getattr(document, "name", None)
+    if isinstance(name, str) and name.strip():
+        return _normalize_title(name)
+    return ""
 
 
 def _safe_page_count(document: Any) -> int | None:
@@ -349,9 +399,30 @@ def _safe_page_count(document: Any) -> int | None:
 
 
 def _safe_ocr_flag(result: Any) -> bool:
-    timings = getattr(result, "timings", None) or {}
-    if isinstance(timings, dict):
-        for key in timings:
-            if "ocr" in str(key).lower():
+    """OCR 有沒有真的跑過（非「OCR 被開啟/啟用」）。
+
+    舊寫法掃 ``result.timings`` 找 "ocr" 鍵——但 docling 只在
+    ``settings.debug.profile_pipeline_timings`` 開著時才把 timing 寫進
+    ``timings``（profiling.py:49），而本服務不開 profiling → ``timings`` 恆空
+    → 恆 false。那是「OCR 有啟用但零實據」的假判準，抄進新碼的既有缺陷
+    （2026-08-19 稽核 v14）。
+
+    決定性判準改看 ``result.confidence.pages[*].ocr_score``：
+    docling 的 :func:`BaseOcrModel.post_process_cells` 只在**真的產出 from_ocr
+    cell** 時才把該頁的 ocr_score 從預設 np.nan 設成 float 均值
+    （base_ocr_model.py:268-272）；OCR 矩形為空（有文字層的 PDF）時它維持 np.nan。
+    所以「有任何一頁 ocr_score 非 NaN」=「OCR 真跑過」。
+    實測（docling 2.120.3，本機 CPU，關 profiling）：點陣化純圖片 PDF → 1 頁
+    ocr_score=0.733；L312（有文字層）→ 7 頁全 NaN。與下游
+    chunking_plugins/builtins.py:580 的「OCR 過 → 頁碼不可信」消費者對齊。
+    """
+    confidence = getattr(result, "confidence", None)
+    pages = getattr(confidence, "pages", None) or {}
+    if isinstance(pages, dict):
+        for score in pages.values():
+            ocr_score = getattr(score, "ocr_score", None)
+            if isinstance(ocr_score, float) and not (
+                hasattr(math, "isnan") and math.isnan(ocr_score)
+            ):
                 return True
     return False

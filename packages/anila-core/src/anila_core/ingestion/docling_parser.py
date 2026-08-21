@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import math
 import os
 import re
 from pathlib import Path
@@ -259,11 +260,46 @@ def _picture_caption(picture: Any, document: Any) -> str:
     return ""
 
 
+_TITLE_MAX_CHARS = 255
+# C0(0x00–0x1F)加 DEL(0x7F):title 回給下游後會落 metadata、進 UI、日誌等,
+# 控制字元若不剝,一回傳就可能污染窗格/專案標題/日誌。全部 C0 一起剝(不只是
+# \r\n\t)是最不帶漏的邊界。與 docling-service 端同源同形。
+_TITLE_CONTROL_TRANS = str.maketrans(
+    "", "", "".join(chr(c) for c in range(32)) + chr(127)
+)
+
+
+def _normalize_title(raw: str) -> str:
+    """wire 的 title 單一常化:非 str→"",剝 C0+DEL 控制字元,剝兩端空白,
+    再 cap 到 255 字元。
+
+    這層在 client 側鏡射 docling-service 的邊界——不假設遠端一定清乾淨
+    (防禦性:上游若是另一版 service 或少跑了一層,這裡仍守住下游不拿到
+    控制字元/超長字串)。
+
+    不做事:Unicode 正常化(NFC/NFKD)不做——檔名正規化屬 exporter 領域,
+    F2 會做;這裡只做「進回傳前一定成立的」邊界。
+    """
+    if not isinstance(raw, str):
+        return ""
+    clean = raw.translate(_TITLE_CONTROL_TRANS).strip()
+    return clean[:_TITLE_MAX_CHARS]
+
+
 def _safe_title(document: Any, fallback: str) -> str:
-    title = getattr(document, "title", None) or getattr(document, "name", None)
+    # 與 services/docling-service/app/model.py 的 _safe_title 同源同形(wire
+    # 雙側一次改齊,批次①)。prefer real document.title(不設才常有);docling
+    # 幾乎不設 title、卻把 document.name 填成 input stem(如暫存名)——
+    # 所以 fallback(原始檔名)要優先於 name,不是排在 name 之後。
+    title = getattr(document, "title", None)
     if isinstance(title, str) and title.strip():
-        return title.strip()
-    return fallback
+        return _normalize_title(title)
+    if isinstance(fallback, str) and fallback.strip():
+        return _normalize_title(fallback)
+    name = getattr(document, "name", None)
+    if isinstance(name, str) and name.strip():
+        return _normalize_title(name)
+    return _normalize_title(fallback)
 
 
 def _safe_page_count(document: Any) -> int:
@@ -277,11 +313,20 @@ def _safe_page_count(document: Any) -> int:
 
 
 def _safe_ocr_flag(result: Any) -> bool:
-    """Best-effort detection that OCR fired during conversion."""
-    timings = getattr(result, "timings", None) or {}
-    if isinstance(timings, dict):
-        for key in timings:
-            if "ocr" in str(key).lower():
+    """OCR 有沒有真的跑過（非「OCR 被啟用」）。
+
+    與 services/docling-service/app/model.py 的 _safe_ocr_flag 同源同形
+    （鏡射修的缺陷,wire 雙側一次改齊）。舊寫法掃 timings 找 "ocr" 鍵,但
+    docling 不開 profiling 時 timings 恆空。決定性判準:confidence.pages[*]
+    的 ocr_score 只在「OCR 真產生 cell」時才被設(post_process_cells),否則
+    維持預設 np.nan。任一頁非 NaN = OCR 真跑。
+    """
+    confidence = getattr(result, "confidence", None)
+    pages = getattr(confidence, "pages", None) or {}
+    if isinstance(pages, dict):
+        for page_score in pages.values():
+            score = getattr(page_score, "ocr_score", None)
+            if isinstance(score, float) and not math.isnan(score):
                 return True
     return False
 
@@ -296,6 +341,9 @@ def _safe_ocr_flag(result: Any) -> bool:
 #   200 -> {"markdown", "title", "page_count", "ocr_applied",
 #           "images": [{"id","page","caption","png_b64"}]}
 #   The response maps 1:1 onto ParsedDocument / ImageRef below.
+#   title is normalized on BOTH sides (see _normalize_title): ≤255 chars,
+#   no C0(0x00-0x1F)/DEL(0x7F) control chars, stripped; "" when not a str.
+#   NOT guaranteed: spreadsheet formula neutralisation (=/+/-/@/\t/\r) — exporters must call csv_formula_safe. Also not guaranteed: Unicode normalization (NFC/NFKD).
 
 # 預設 OCR 語言(與 in-process 版一致)。語意是「文件的語言」,由呼叫端
 # DOCLING_OCR_LANGS 覆寫。
@@ -602,7 +650,9 @@ class RemoteDoclingParser:
                 },
             )
         markdown = payload.get("markdown") or ""
-        title = payload.get("title")
+        # 鏡射 service 端的邊界:不假設遠端一定清乾淨(另一版 service 或少跑
+        # 一層時,這裡仍守下游不拿到控制字元/超長字串)。
+        title = _normalize_title(payload.get("title"))
         page_count = payload.get("page_count")
         ocr_applied = bool(payload.get("ocr_applied"))
         images: dict[str, ImageRef] = {}

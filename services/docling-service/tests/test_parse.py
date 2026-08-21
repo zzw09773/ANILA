@@ -29,11 +29,13 @@ class FakeConverter(DoclingConverter):
     def is_ready(self, ocr_langs, table_structure, picture_description) -> bool:
         return self._ready
 
-    def convert(self, file_path, *, ocr_langs, table_structure, picture_description) -> dict:
+    def convert(self, file_path, *, ocr_langs, table_structure, picture_description, original_name=None) -> dict:
         self.last = (ocr_langs, table_structure, picture_description)
+        # 批次①:title fallback 優先用呼叫端傳來的原始檔名(不再回暫存名)。
+        title = original_name or "fake"
         return {
             "markdown": "# fake doc",
-            "title": "fake",
+            "title": title,
             "page_count": 1,
             "ocr_applied": False,
             "images": [],

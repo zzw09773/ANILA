@@ -41,3 +41,9 @@ packages/anila-agent/offline/wheelhouse
 **/*.tar
 **/__pycache__
 **/.env
+
+# 安全掃描工具會在 repo 根產出弱點報告目錄(如 CLAUDE-SECURITY-*)。現存的
+# Dockerfile COPY 夠窄(只 COPY services/*/app、指定檔)擋住它是巧合、不是設計。
+# 這一行是縱深:哪天某個 COPY 放寬到 context 根,掃描報告不會被一起烤進出貨映像
+# (內含尚未修補的弱點位置,屆時等於把弱點地圖發出去)。
+CLAUDE-SECURITY-*

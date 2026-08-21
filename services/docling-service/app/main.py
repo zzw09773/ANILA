@@ -12,6 +12,11 @@
         200: {"markdown","title","page_count","ocr_applied",
               "images":[{"id","page","caption","png_b64"}]}
 
+        title 保證:**最多 255 字元**、**不含 C0(0x00–0x1F)與 DEL(0x7F)
+        控制字元**、兩端已剝空白;非 str 時回 ""。**不保證**:已做 Unicode 正規化
+        (NFC/NFKD 屬 exporter 領域,F2 會做);title 取自 uploader 控制的原始
+        檔名(file.filename)、先於 document.title/name,故可能與文件內真標題不同。
+
     GET /health
         200 {"status":"ok","model_ready":bool}
         503 同上但 model_ready=false
@@ -253,6 +258,7 @@ def _register_routes(app: FastAPI) -> None:
                     ocr_langs=langs,
                     table_structure=ts,
                     picture_description=pd,
+                    original_name=file.filename,
                 )
             except Exception as exc:
                 # HIGH-B(R9):分開「pipeline 初始化失敗」與「這一份文件轉不動」。
