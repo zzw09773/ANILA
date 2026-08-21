@@ -2,7 +2,7 @@
 
 從對話 transcript 抽出值得長期記住的事實，存進 memdir。**存檔前去敏**：剝除
 service token / X-ANILA-User-* 身分 / csk-/sk- token / Bearer JWT，避免祕密或 PII
-落地到長期儲存（air-gap/軍用強化）。
+落地到長期儲存（air-gap/中科院內網強化）。
 
 這是抽取「引擎」；是否在端末自動觸發由操作者決定（例如以 triggers 在 turn_end 註冊，
 gated by ANILA_AUTO_MEMORY=1）——預設不自動跑（多一次 LLM 呼叫）。抽取器以注入方式

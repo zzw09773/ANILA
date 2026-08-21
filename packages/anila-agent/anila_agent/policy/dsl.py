@@ -6,7 +6,7 @@
     Wildcard Deny > Wildcard Ask > Wildcard Allow > default
 
 桶內第一個匹配（pattern 命中且 predicate 為真）者勝。**預設 deny**（反轉 Antigravity
-的開放預設）——未匹配的工具呼叫一律拒絕，符合軍用/air-gap 強化姿態。
+的開放預設）——未匹配的工具呼叫一律拒絕，符合中科院內網/air-gap 強化姿態。
 
 enforcement 餵進單一 SDK tool-input-guardrail（見 policy.guardrail），而非自製 hook runner。
 工具能力（read_only/write/admin）來自 tools.capabilities 能力表。

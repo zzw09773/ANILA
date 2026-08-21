@@ -51,7 +51,7 @@ class MemdirRuntime:
         fail-closed：抽取器失敗或無可抽 → 回 []，絕不丟例外、不弄壞既有記憶。
         寫入時 store.write 會自動重建索引。回傳寫入的 memory name 清單。
         去敏在 extract_memories 內完成（剝 csk-/sk-/JWT/X-ANILA-User-*/email），
-        故祕密與 PII 不會落地到長期儲存（air-gap / 軍用要求）。
+        故祕密與 PII 不會落地到長期儲存（air-gap / 中科院內網要求）。
         """
         if self.extractor is None:
             return []

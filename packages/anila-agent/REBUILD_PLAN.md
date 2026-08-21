@@ -58,7 +58,7 @@
 |---|------|------|------|
 | 範圍 | **完整移植版** | 全差異化一次做齊（skills loader、/deep-research、cost 貨幣層、output styles、triggers、Postgres Session） | user 指定 |
 | 多代理拓撲 | **單一 cited agent 預設 + `/deep-research` opt-in** | 預設最省 token 最好 reason；多代理 pipeline 當可選 slash command 示範 | 實測友善 |
-| 工具政策 | **deny-all 預設 + 明列 allow read-only** | 反轉 Antigravity 開放預設；軍用/air-gap 未匹配呼叫一律拒絕 | 強化姿態 |
+| 工具政策 | **deny-all 預設 + 明列 allow read-only** | 反轉 Antigravity 開放預設；中科院內網/air-gap 未匹配呼叫一律拒絕 | 強化姿態 |
 | 選擇器模型 | **hybrid：NV-embed 粗篩 + gpt-oss-20b 精選**（見 §3） | 內網 live 實測定案 | 實測 |
 | Provider 預設 | direct `AsyncOpenAI` + `OpenAIChatCompletionsModel`（baked） | air-gap 答案明確，無重依賴 | — |
 | **預設 LLM** | **gpt-oss-20b**（生成 + 結構化側查詢）；gemma4 為未來長 context 選項 | 內網現只有 gpt-oss + nv-embed，gemma 未到；且 gpt-oss 結構化輸出最可靠 | 內網現況 |
