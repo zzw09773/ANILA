@@ -52,7 +52,7 @@ _IMAGE_PLACEHOLDER_RE = re.compile(r"\[\[IMAGE:[^\]\n]*\]\]")
 
 # Per-page furniture is the second half of the same problem, one level up.
 # The absolute floor alone is cleared by anything the document stamps on
-# every page: this is a military intranet, so every page of every real
+# every page: this is the NCSIST air-gapped intranet, so every page of every real
 # document carries a classification marking ("CONFIDENTIAL - NCSIST
 # Internal Use Only - Page", 45 characters), and page numbers and document
 # ids stack on top of it. Chasing that with a bigger character constant is

@@ -69,7 +69,7 @@ def _blind_image_ids(text: str) -> str:
 
 
 # Per-page furniture actually seen on documents this platform ingests.  The
-# first one is not hypothetical: on a military intranet every page of every
+# first one is not hypothetical: on the NCSIST air-gapped intranet every page of every
 # document carries a classification marking.
 STAMP_CLASSIFICATION = "CONFIDENTIAL - NCSIST Internal Use Only - Page"
 STAMP_PAGINATION = "Page 1 of 250 | Doc No. A-1234-56"

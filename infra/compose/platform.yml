@@ -667,7 +667,7 @@ services:
       # codeserver = 內網維護 ANILA 平台用 → 掛整個 repo 源碼
       # (CODESERVER_WORKSPACE 預設 '../..' = repo root,見 .env.example)。
       # repo 根有機密(.env 的 JWT/DB 密碼、server.key 的 TLS 私鑰),用 /dev/null
-      # 把這兩個遮蔽掉,避免拿到 codeserver 密碼的人讀到(軍方 air-gap 防護)。
+      # 把這兩個遮蔽掉,避免拿到 codeserver 密碼的人讀到(中科院內網 air-gap 防護)。
       # 其餘(server.crt、CA bundle、share/pki)是公開資料,可見無妨。
       # ⚠ 改了 CODESERVER_WORKSPACE 就要相應調整 / 移除下面兩條遮蔽。
       - ${CODESERVER_WORKSPACE:-../..}:/home/coder/workspace

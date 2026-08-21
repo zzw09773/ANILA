@@ -22,8 +22,8 @@ import type { SlidesArtifact, StudioArtifact } from '../types'
 
 export interface FormatSpec {
   // 製作台支援的 artifact kind。原本含 podcast / video / flashcards / quiz
-  // 等 9 種,但內部部署場景(國軍 / 中科院)不需要那 4 種(air-gapped 音/影
-  // 模型無解、軍方考核 SOP 不交給 AI、抽認卡是消費級個人學習文化),
+  // 等 9 種,但內部部署場景(中科院內網)不需要那 4 種(air-gapped 音/影
+  // 模型無解、內網考核 SOP 不交給 AI、抽認卡是消費級個人學習文化),
   // 已從製作台移除。
   k: 'report' | 'slides' | 'mindmap' | 'infographic' | 'datatable'
   l: string

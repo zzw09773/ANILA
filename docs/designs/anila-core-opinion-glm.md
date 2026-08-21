@@ -45,14 +45,14 @@
 
 **OPT-1(共用 httpx pool):正確、低風險、值得。** `http_pool.py:48-62` 的 create-once race 註解誠實說明不是 thread-safe,對單 event-loop FastAPI 沒問題。一個 nit:`reset_http_client` 不 await aclose,prod 中若被呼叫會洩連線——但它只在 `create_router_app`(prod 一次)被叫,OK。
 
-**OPT-3(JWT fingerprint cache):這是唯一有真正 invalidation 故事的一項,報告低估了它。** 報告說「revoked token 最多在 Router 內多活 30s」。正確,但對**軍方平台**,30s 的 post-revoke 存取窗口是實實在在的。Cache key 是 `sha256(token)`(`router_server.py` diff 中的 `_jwt_cache_get`),所以**新** token(post-bump)拿新 entry,沒問題;問題在**舊** token:Router 會在 user 被停用後繼續用 cached 的 `/me` identity 服務最多 30s。
+**OPT-3(JWT fingerprint cache):這是唯一有真正 invalidation 故事的一項,報告低估了它。** 報告說「revoked token 最多在 Router 內多活 30s」。正確,但對**中科院內網平台**,30s 的 post-revoke 存取窗口是實實在在的。Cache key 是 `sha256(token)`(`router_server.py` diff 中的 `_jwt_cache_get`),所以**新** token(post-bump)拿新 entry,沒問題;問題在**舊** token:Router 會在 user 被停用後繼續用 cached 的 `/me` identity 服務最多 30s。
 
 可選的緩解:
 - 縮短 TTL 到 5s——成本是更多 `/me` 呼叫,但對 40 則對話仍是 ~8x 降幅(40→8)。
 - 訂閱 CSP 既有的 revocation cache(Redis)——但那是 operational complexity,正是 owner 不要的。
 - 折中:cache 同時存 `token_version`,hit 時做一次便宜的 version-only 查詢——但那還是 CSP RTT,抵銷 cache,不值得。
 
-**我的建議:30s 對軍方平台太長。設 `ANILA_JWT_OWNER_CACHE_TTL=5`。** 5s 的窗口跟 CSP 自己驗 JWT 的 latency budget 同數量級,而 8x 降幅幾乎全保留。在 env var 描述裡寫明這個 tradeoff。`clear_jwt_owner_cache` 是手動逃生口——maintainer 停用 user 後若要立即生效,重啟 router 或等 TTL。這對單一操作者可接受,但**要寫進 runbook**,不能埋在 code comment 裡。
+**我的建議:30s 對中科院內網平台太長。設 `ANILA_JWT_OWNER_CACHE_TTL=5`。** 5s 的窗口跟 CSP 自己驗 JWT 的 latency budget 同數量級,而 8x 降幅幾乎全保留。在 env var 描述裡寫明這個 tradeoff。`clear_jwt_owner_cache` 是手動逃生口——maintainer 停用 user 後若要立即生效,重啟 router 或等 TTL。這對單一操作者可接受,但**要寫進 runbook**,不能埋在 code comment 裡。
 
 **OPT-4(preflight 平行化):正確、安全。** 安全順序保留(`ensure_session_owner` 仍在 `gather` 之後,`router_server.py:771-786`)。唯一微妙處:`registry.ensure_fresh` 現在在 `session_factory` 設定時也跑(`else` 分支)——是測試行為變更,報告說測試通過,假定 OK。
 

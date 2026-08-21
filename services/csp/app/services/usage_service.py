@@ -11,7 +11,7 @@ from app.services.department_tree import get_descendant_ids
 from app.utils.time_helpers import get_time_range
 
 
-# 台北 = UTC+8。csp 部署在台灣 / 國軍 / 中科院,使用者在報表期望看
+# 台北 = UTC+8。csp 部署在台灣的中科院(NCSIST)內網,使用者在報表期望看
 # UTC+8 顯示;DB 內 request_timestamp 是 UTC(server_default=now() AT TIME
 # ZONE 'UTC')。在這層做轉換,而不是在前端 — 因為 CSV 是直接下載給 Excel
 # / 第三方工具用,沒前端 JS 處理機會。
