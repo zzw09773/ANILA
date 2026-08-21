@@ -17,6 +17,7 @@
 | ASR profile | **打包進去**(`INCLUDE_ASR=1`,預設) | 審查棧含語音;`asr-gateway` + `asr-decoder`(`anila/asr-decoder:0.1.0`)必須在 bundle。 |
 | `asr-cpu.yml` | **打包不帶**;起棧視 GPU | overlay 只改 device/env,不改 image 名。`.15` 有 GPU → 不要加;無 GPU 才加(見 §5)。 |
 | 模型 / 權重 | **不帶**(`WITH_MODELS` / `WITH_WEIGHTS` 不設) | 走 `.12` gateway;權重數十到數百 GB,審查不需要。 |
+| docling 映像 | **不帶**(`WITH_DOCLING_IMAGE=0`,預設) | torch＋easyocr＋docling 數 GB。GPU 主機四件套（映像 tar + 權重 tar + `docker-compose.standalone.yml` + `.env.example`）要進包時才設 `WITH_DOCLING_IMAGE=1`（會一併要求 `DOCLING_WEIGHTS_DIR`）。**不要**把 `--profile docling-local` 加進平台 `up`。 |
 
 ---
 
@@ -40,6 +41,17 @@ INCLUDE_ASR=1 \
 SKIP_BUILD=1 \
 SKIP_PULL=1 \
 bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-images-export
+
+# 若要把 docling 映像走完五段式並帶上 GPU 主機四件套（預設不帶）:
+# ⚠ 沒設 SKIP_BUILD=1 會連平台映像一起重建。平台 tar 已在、且 01-images/
+#   已有對應 docling tar 時可加 SKIP_BUILD=1 SKIP_PULL=1；缺 docling tar
+#   時 SKIP_BUILD=1 會 fail-loud，不會靜默 build 10GB。
+# WITH_DOCLING_IMAGE=1 \
+# DOCLING_WEIGHTS_DIR=/path/to/fetch-docling-weights-output \
+# COMPOSE_PROJECT_NAME=anila-restart \
+# COMPOSE_ENV_FILE=.env \
+# INCLUDE_ASR=1 \
+# bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-images-export
 ```
 
 腳本會:
@@ -142,6 +154,7 @@ cp /path/to/anila-images-export/intranet-image-overrides.yml .
 docker network create anila-models-net 2>/dev/null || true
 
 # 有 GPU 的 .15(目標組態)— 含 ASR,不要 asr-cpu overlay
+# ⚠ 不要加 --profile docling-local：平台主機是 CPU-only，docling 在獨立 GPU 主機。
 COMPOSE_PROJECT_NAME=anila-restart \
 docker compose --env-file .env -p anila-restart \
   -f compose.yaml -f intranet-image-overrides.yml --profile asr \
@@ -152,6 +165,11 @@ docker compose --env-file .env -p anila-restart \
 #   -f compose.yaml -f intranet-image-overrides.yml -f infra/compose/asr-cpu.yml --profile asr \
 #   up -d --no-build
 ```
+
+`INTRANET-LOAD.sh` 若看到 `06-docling-gpu-host.tar` / `06-docling-image.files.txt`，
+**不會**在平台主機 `docker load` docling 映像，也不解開權重。把四件套複製到 GPU
+主機再 load／解／`docker compose -f docker-compose.standalone.yml`。步驟見
+`services/docling-service/README.md`。
 
 ### 起棧後必做:reload nginx
 
