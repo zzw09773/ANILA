@@ -69,7 +69,7 @@ Routes are two-tier: `/login` (public) and `/` (`AppLayout`, `requiresAuth`) wit
 | Area | Detail |
 |---|---|
 | Framework / router / state | **Vue 3.5.13** · `vue-router` 4.5.0 · `pinia` 2.3.0 |
-| Charts | `echarts` 5.5.1 + `vue-echarts` 7.0.3; relation graph `cytoscape` 3.34.0 |
+| Charts | `echarts` 5.6.0 (`>=5.6.0 <6`) + `vue-echarts` 7.0.3 (`>=7.0.3 <8`); relation graph `cytoscape` 3.34.0 |
 | HTTP | `axios` 1.7.9 |
 | Styling | `tailwindcss` 3.4.17 + `postcss` + `autoprefixer` (build-time); design tokens via `src/assets/styles/tokens.css` |
 | Build | **Vite 6.0.5** (`@vitejs/plugin-vue` 5.2.1) |

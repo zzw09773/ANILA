@@ -46,7 +46,7 @@ The shell **holds no business logic or models**. It handles session guarding, co
 
 | Area | Detail |
 |---|---|
-| Framework / router | **React 18.3.1** · `react-router` 7.18.0 |
+| Framework / router | **React 18.3.1** · `react-router` 7.18.2 (`>=7.18.2 <8`) |
 | Build | **Vite 6.3.5** (`@vitejs/plugin-react` 4.4.1) |
 | Markdown / math / highlight | `react-markdown` 9 + `remark-gfm`/`remark-math` + `rehype-katex`/`rehype-highlight` + `katex` + `highlight.js` |
 | Diagrams | **`mermaid` 11.15.0** |
