@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
@@ -16,6 +16,12 @@ import { Spinner } from '../components/Spinner'
 import { formatBytes, shortName, timeAgo } from '../utils/format'
 import { INGESTION_FILE_ACCEPT } from '../utils/ingestionFileAccept'
 import { loginHref } from '../appOrigins'
+import {
+  isIndexedSource,
+  notebookSourceCounts,
+  selectedIndexedDocuments,
+  sourceCountLabel,
+} from './notebookSources'
 
 const STATUS_LABELS: Record<string, string> = {
   pending: '排隊中',
@@ -32,6 +38,9 @@ export function WSSidebar() {
   const navigate = useNavigate()
   const collection = useWorkspaceStore((s) => s.collection)
   const docs = useWorkspaceStore((s) => s.docs)
+  const selectedSourceIds = useWorkspaceStore((s) => s.selectedSourceIds)
+  const focusSourceId = useWorkspaceStore((s) => s.focusSourceId)
+  const toggleSource = useWorkspaceStore((s) => s.toggleSource)
   const conversations = useWorkspaceStore((s) => s.conversations)
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId)
   const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId)
@@ -146,6 +155,16 @@ export function WSSidebar() {
       setErr(explainError(err))
     }
   }
+
+  const { total, indexedCount } = notebookSourceCounts(docs)
+  const selectedIndexed = selectedIndexedDocuments(docs, selectedSourceIds)
+  const docRowRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+
+  useEffect(() => {
+    if (focusSourceId == null) return
+    const row = docRowRefs.current.get(focusSourceId)
+    row?.scrollIntoView({ block: 'nearest' })
+  }, [focusSourceId])
 
   // Manual refresh is exposed via the "+" button which calls onNewConv —
   // a fresh listConversations would just re-fetch what the parent already
@@ -278,7 +297,10 @@ export function WSSidebar() {
           >
             來源
           </div>
-          <span style={{ fontSize: 11, color: t.textSubtle }}>{docs.length}</span>
+          <span style={{ fontSize: 11, color: t.textSubtle }}>
+            {sourceCountLabel(indexedCount, total)}
+            {indexedCount > 0 ? ` · 已選 ${selectedIndexed.length}` : ''}
+          </span>
         </div>
         <input
           ref={fileRef}
@@ -351,12 +373,19 @@ export function WSSidebar() {
               status === 'queued' ||
               status === 'running'
             const isFailed = status === 'failed'
+            const isIndexed = isIndexedSource(d.doc)
+            const isSelected = selectedIndexed.some((doc) => doc.id === d.doc.id)
+            const isFocused = focusSourceId === d.doc.id
             const failureReason =
               d.jobSnapshot?.error_message ?? d.doc.error_message
             const pct = d.jobSnapshot?.progress_pct ?? 0
             return (
               <div
                 key={d.doc.id}
+                ref={(el) => {
+                  if (el) docRowRefs.current.set(d.doc.id, el)
+                  else docRowRefs.current.delete(d.doc.id)
+                }}
                 className="anila-doc-row"
                 style={{
                   padding: '9px 10px',
@@ -364,31 +393,48 @@ export function WSSidebar() {
                   display: 'flex',
                   alignItems: 'center',
                   gap: 9,
-                  background: 'transparent',
-                  border: '1px solid transparent',
-                  cursor: 'default',
+                  background: isFocused ? t.accentSoft : 'transparent',
+                  border: `1px solid ${isFocused ? t.accentBorder : 'transparent'}`,
+                  cursor: isIndexed ? 'pointer' : 'default',
                   position: 'relative',
                 }}
+                onClick={() => {
+                  if (isIndexed) toggleSource(d.doc.id)
+                }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = t.surface2
+                  if (!isFocused) e.currentTarget.style.background = t.surface2
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.background = isFocused ? t.accentSoft : 'transparent'
                 }}
               >
-                <div
-                  style={{
-                    width: 26,
-                    height: 26,
-                    borderRadius: 6,
-                    background: t.chipBg,
-                    display: 'grid',
-                    placeItems: 'center',
-                    flexShrink: 0,
-                  }}
-                >
-                  <Icon name="file" size={13} stroke={t.textMuted} />
-                </div>
+                {isIndexed ? (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: 4,
+                      border: `1.5px solid ${isSelected ? t.accent : t.borderStrong}`,
+                      background: isSelected ? t.accent : 'transparent',
+                      flexShrink: 0,
+                    }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: 26,
+                      height: 26,
+                      borderRadius: 6,
+                      background: t.chipBg,
+                      display: 'grid',
+                      placeItems: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Icon name="file" size={13} stroke={t.textMuted} />
+                  </div>
+                )}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div
                     style={{
@@ -451,7 +497,7 @@ export function WSSidebar() {
                         {'失敗'}{failureReason ? '：' + failureReason : ''}
                       </span>
                     )}
-                    {status === 'indexed' && (
+                    {isIndexed && (
                       <span style={{ color: t.success }}>
                         ✓ {d.doc.chunk_count ?? 0} 段
                       </span>

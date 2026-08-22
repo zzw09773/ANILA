@@ -43,6 +43,7 @@ import {
 import { explainError } from '../api/client'
 import type { Message } from '../types'
 import { appendTranscript, useAsrInput } from '../asr/useAsrInput'
+import { notebookSourceCounts, sourceCountLabel } from './notebookSources'
 
 const FOLLOWUP_SUGGESTIONS = [
   '幫我整理這份文件的核心論點',
@@ -1085,9 +1086,12 @@ function CitationStrip({ citations }: { citations: Citation[] }) {
 function ChatEmptyState({ onSuggest }: { onSuggest: (s: string) => void }) {
   const { t } = useTheme()
   const collection = useWorkspaceStore((s) => s.collection)
-  const indexedCount = useWorkspaceStore((s) =>
-    s.docs.filter((d) => d.doc.status === 'indexed').length,
-  )
+  const sourceLabel = useWorkspaceStore((s) => {
+    const { indexedCount, total } = notebookSourceCounts(s.docs)
+    return indexedCount > 0
+      ? `${sourceCountLabel(indexedCount, total)} 份來源，問什麼都可以`
+      : '上傳文件後問題會更具體；現在也可以直接聊'
+  })
   return (
     <div
       style={{
@@ -1116,9 +1120,7 @@ function ChatEmptyState({ onSuggest }: { onSuggest: (s: string) => void }) {
           {collection?.name ?? '新對話'}
         </div>
         <div style={{ fontSize: 13, color: t.textMuted }}>
-          {indexedCount > 0
-            ? `已索引 ${indexedCount} 份文件，問什麼都可以`
-            : '上傳文件後問題會更具體；現在也可以直接聊'}
+          {sourceLabel}
         </div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%', maxWidth: 480 }}>

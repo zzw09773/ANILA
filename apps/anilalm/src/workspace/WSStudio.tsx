@@ -6,10 +6,21 @@ import { Icon } from '../components/Icon'
 import { Spinner } from '../components/Spinner'
 import { CommandModal, type FormatSpec } from './CommandModal'
 import { ArtifactViewer } from './ArtifactViewer'
-import type { SlidesArtifact, StudioArtifact } from '../types'
+import type { Collection, IngestionDocument, SlidesArtifact, StudioArtifact } from '../types'
 import { findTheme, type ThemeId } from '../studio/themes'
 import { timeAgo } from '../utils/format'
 import { isDownloadWarning, warningPatch } from './artifactWarning'
+import { explainError } from '../api/client'
+import {
+  SLIDE_DETAILED,
+  SLIDE_SPOKEN,
+  generateBlockReason,
+  notebookSourceCounts,
+  selectedIndexedDocuments,
+  sourceCountLabel,
+  startNotebookSlides,
+  type SlideDeckStyle,
+} from './notebookSources'
 import {
   downloadSlidesJobPptx,
   getSlidesJobStatus,
@@ -167,6 +178,8 @@ const POLL_FAIL_AFTER = 30
 export function WSStudio() {
   const { t } = useTheme()
   const collection = useWorkspaceStore((s) => s.collection)
+  const docs = useWorkspaceStore((s) => s.docs)
+  const selectedSourceIds = useWorkspaceStore((s) => s.selectedSourceIds)
   const setStudioOpen = useWorkspaceStore((s) => s.setStudioOpen)
   // Subscribe to the WHOLE byCollection map (its reference only changes
   // when the artifact store's `add` / `remove` / `clear` actions write a
@@ -535,9 +548,17 @@ export function WSStudio() {
           ))}
         </div>
 
+        {filter !== 'doc' && collection && (
+          <SlidesQuickStart
+            collection={collection}
+            docs={docs}
+            selectedSourceIds={selectedSourceIds}
+          />
+        )}
+
         {/* Format list */}
         <div style={{ padding: '0 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {filtered.map((f) => (
+          {filtered.filter((f) => f.k !== 'slides').map((f) => (
             <button
               key={f.k}
               onClick={() => setModalFormat(f)}
@@ -976,5 +997,119 @@ export function WSStudio() {
         onClose={() => setViewing(null)}
       />
     </aside>
+  )
+}
+
+const AUDIENCES = ['院內同仁', '主管', '對外'] as const
+
+function SlidesQuickStart({
+  collection,
+  docs,
+  selectedSourceIds,
+}: {
+  collection: Collection
+  docs: { doc: IngestionDocument }[]
+  selectedSourceIds: number[] | null
+}) {
+  const { t } = useTheme()
+  const [audience, setAudience] = useState<(typeof AUDIENCES)[number]>('院內同仁')
+  const [busy, setBusy] = useState<SlideDeckStyle | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const { total, indexedCount } = notebookSourceCounts(docs)
+  const selected = selectedIndexedDocuments(docs, selectedSourceIds)
+  const blockedReason = generateBlockReason(indexedCount, selected.length)
+  const blocked = blockedReason !== null
+
+  const start = async (style: SlideDeckStyle) => {
+    if (blocked || busy) return
+    setBusy(style)
+    setErr(null)
+    try {
+      await startNotebookSlides({
+        collection,
+        sources: selected,
+        style,
+        audience,
+      })
+    } catch (e) {
+      setErr(explainError(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div style={{ padding: '4px 14px 12px' }}>
+      <div
+        className="yuan-card"
+        style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}
+      >
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: t.text }}>簡報</div>
+          <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 3 }}>
+            {blocked
+              ? blockedReason
+              : `${sourceCountLabel(indexedCount, total)} · 使用左側已選 ${selected.length} 份`}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {AUDIENCES.map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setAudience(item)}
+              style={{
+                padding: '4px 8px',
+                borderRadius: 8,
+                border: `1px solid ${audience === item ? t.accentBorder : t.border}`,
+                background: audience === item ? t.accentSoft : t.surface2,
+                color: t.text,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                fontSize: 11.5,
+              }}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {(
+            [
+              [SLIDE_DETAILED, '完整論證'],
+              [SLIDE_SPOKEN, '口講短頁'],
+            ] as const
+          ).map(([style, hint]) => (
+            <button
+              key={style}
+              type="button"
+              disabled={blocked || busy !== null}
+              title={blocked ? blockedReason : hint}
+              onClick={() => void start(style)}
+              style={{
+                flex: 1,
+                padding: '8px 10px',
+                borderRadius: 8,
+                border: 'none',
+                background: t.accent,
+                color: '#fff',
+                cursor: blocked || busy ? 'not-allowed' : 'pointer',
+                fontFamily: 'inherit',
+                fontSize: 12.5,
+                fontWeight: 500,
+                opacity: blocked || busy ? 0.55 : 1,
+              }}
+            >
+              {busy === style ? '製作中…' : style}
+            </button>
+          ))}
+        </div>
+        {err && (
+          <div role="alert" style={{ fontSize: 12, color: t.danger }}>
+            {err}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }

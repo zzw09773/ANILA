@@ -20,6 +20,10 @@ interface WorkspaceState {
   // 跨面板「代發問題」橋接:心智圖節點點擊等來源把問題放進來,
   // WSChat 的 effect 撿走後送出並清空。null = 沒有待送問題。
   pendingAsk: string | null
+  /** null = 使用本筆記本全部已索引來源。 */
+  selectedSourceIds: number[] | null
+  /** 簡報 cite 點回左側來源列。 */
+  focusSourceId: number | null
 
   setCollection: (c: Collection | null) => void
   setDocs: (docs: DocWithJob[]) => void
@@ -37,6 +41,8 @@ interface WorkspaceState {
   setStudioOpen: (v: boolean) => void
 
   setPendingAsk: (q: string | null) => void
+  toggleSource: (id: number) => void
+  setFocusSourceId: (id: number | null) => void
 
   reset: () => void
 }
@@ -48,6 +54,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   activeConversationId: null,
   studioOpen: true,
   pendingAsk: null,
+  selectedSourceIds: null,
+  focusSourceId: null,
 
   setCollection: (c) => set({ collection: c }),
 
@@ -77,7 +85,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     })),
 
   removeDoc: (docId) =>
-    set((s) => ({ docs: s.docs.filter((d) => d.doc.id !== docId) })),
+    set((s) => ({
+      docs: s.docs.filter((d) => d.doc.id !== docId),
+      selectedSourceIds: s.selectedSourceIds
+        ? s.selectedSourceIds.filter((id) => id !== docId)
+        : null,
+      focusSourceId: s.focusSourceId === docId ? null : s.focusSourceId,
+    })),
 
   setConversations: (cs) => set({ conversations: cs }),
 
@@ -103,6 +117,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
   setPendingAsk: (q) => set({ pendingAsk: q }),
 
+  toggleSource: (id) =>
+    set((s) => {
+      const indexed = s.docs
+        .filter((d) => d.doc.status === 'indexed')
+        .map((d) => d.doc.id)
+      const current = s.selectedSourceIds ?? indexed
+      const next = current.includes(id)
+        ? current.filter((x) => x !== id)
+        : [...current, id]
+      return { selectedSourceIds: next }
+    }),
+
+  setFocusSourceId: (id) => set({ focusSourceId: id }),
+
   reset: () =>
     set({
       collection: null,
@@ -111,5 +139,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       activeConversationId: null,
       studioOpen: true,
       pendingAsk: null,
+      selectedSourceIds: null,
+      focusSourceId: null,
     }),
 }))

@@ -480,6 +480,7 @@ function sourcesForSlide(slide: SlidePreview, sources: SlideSource[]): SlideSour
 function SlidesViewer({ artifact }: { artifact: SlidesArtifact }) {
   const { t } = useTheme()
   const updateArtifact = useArtifactStore((s) => s.update)
+  const setFocusSourceId = useWorkspaceStore((s) => s.setFocusSourceId)
   const [idx, setIdx] = useState(0)
   const [openCite, setOpenCite] = useState<number | null>(null)
   const [regenBusy, setRegenBusy] = useState(false)
@@ -684,7 +685,10 @@ function SlidesViewer({ artifact }: { artifact: SlidesArtifact }) {
                 <button
                   key={`${c.index}-${c.chunk_id}`}
                   type="button"
-                  onClick={() => setOpenCite(isOpen ? null : c.index)}
+                  onClick={() => {
+                    setOpenCite(isOpen ? null : c.index)
+                    if (c.document_id) setFocusSourceId(c.document_id)
+                  }}
                   style={{
                     padding: '8px 11px',
                     borderRadius: 8,

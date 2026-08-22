@@ -25,7 +25,9 @@ const artifact = {
 let currentArtifact = { ...artifact }
 const artifactState = { byCollection: { 1: [currentArtifact] } }
 const workspaceState = {
-  collection: { id: 1 },
+  collection: { id: 1, name: '測試筆記本' },
+  docs: [],
+  selectedSourceIds: null,
   setStudioOpen: vi.fn(),
 }
 
