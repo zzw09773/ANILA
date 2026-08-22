@@ -244,6 +244,11 @@ class DoclingConverter:
             do_ocr=True,
             do_table_structure=table_structure,
             do_picture_description=picture_description,
+            # 2026-08-21 HIGH：遠端化掉的一格功能。docling 只有此旗標為真才把點陣
+            # 圖填進 picture.image；否則 _picture_to_png 對每張都拿到 None →
+            # _collect_pictures 回空 → /parse images:[]。與 do_picture_description
+            # 完全無關：那是「生不生圖說」，這顆是「擷不擷圖位元」。
+            generate_picture_images=True,
             # local_files_only → EasyOCR 不准自動下載。artifacts_path 存在時 docling
             # 已會 auto-off,但那是「副作用」不是「宣稱」——明示在選項上,宣稱與
             # 行為才一致(見 apply_offline_environment 的實測)。

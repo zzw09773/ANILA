@@ -106,6 +106,11 @@ class DoclingParser:
             do_ocr=True,
             do_table_structure=self._do_table_structure,
             do_picture_description=self._enable_pic_desc,
+            # 2026-08-21 HIGH（seam rule 與遠端同修）：缺此旗標 docling 不填
+            # picture.image → _collect_pictures 回空。與 do_picture_description
+            # 無關：那是「生不生圖說」，這顆是「擷不擷圖位元」。舊資料對照組的圖
+            # 是程序內版本早年開過圖時入的庫，非本段無中生有。
+            generate_picture_images=True,
             ocr_options=EasyOcrOptions(lang=self._ocr_languages),
         )
         if self._enable_pic_desc:

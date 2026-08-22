@@ -117,6 +117,24 @@ def test_build_wires_local_files_only_into_easyocr(monkeypatch) -> None:
     assert captured["easyocr_kwargs"]["download_enabled"] is False
 
 
+def test_build_enables_picture_image_extraction(monkeypatch) -> None:
+    """2026-08-21 HIGH：沒開 generate_picture_images=True，docling 不填
+    picture.image → /parse 回 images:[]（遠端化掉的一格功能）。
+
+    拿掉這個旗標，這條測試就會紅（captured kwargs 缺這個鍵或非 True）。
+    與 do_picture_description 無關：那是「生不生圖說」。
+    """
+    captured: dict = {}
+    _install_fake_docling(monkeypatch, captured)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "0")
+
+    converter = DoclingConverter(local_files_only=True)
+    converter._build(["ch_tra", "en"], table_structure=True, picture_description=False)
+
+    assert captured["pipeline_kwargs"]["generate_picture_images"] is True
+
+
 def test_build_wires_online_files_only_into_easyocr(monkeypatch) -> None:
     """=0 時 EasyOCR 端要真的開下載(download_enabled=True)。"""
     captured: dict = {}
