@@ -58,6 +58,33 @@ _COLLECTION_ORIGINS = frozenset({"csp", "anilalm"})
 # 四級的儲存拼法只有契約層說了算(SYSTEM-MAP §8)。
 _UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.to_storage()
 
+
+def _refuse_classification_for_anilalm(origin: str | None, level: ClassificationLevel) -> None:
+    """ANILALM 不用密等設計（擁有者 2026-08-21 裁決，Q59）——個人知識庫資源不取得任何密等分類。
+
+    「不用密等的設計」不是「不會到達某個等級」，是「這個介面裡沒有密等這個概念」
+    （擁有者兩度重申；幕僚長 2026-08-22 就此裁：**全擋，含營業秘密**）。
+    所以 營業秘密／密／機密 全數拒絕，只有 無機密（地板 rank 0、所有資源的預設
+    起始值）放行。「取得密等分類」＝高於無機密。
+
+    擋在寫入端入口而不是 ``apply_classification`` 核心——核心是四級單向閂鎖的
+    **唯一**入口，也是 ANILA 靠它級聯 document／落閂密等的那一半；把 anilalm
+    例外塞進核心會讓 ANILA 每一次升密都多走一條 origin 分支，而且降密流程／
+    稽核都吃不到這條鮮為人知的例外。分區例外屬於「產品面」層，不屬於「閂鎖」層。
+    擋點只有「把 collection 推到有密等」的寫入端：建立、升密。
+    （conversation 那條路在 conversation_service.classify_conversation，見該處。）
+    """
+    if origin == "anilalm" and level > ClassificationLevel.UNCLASSIFIED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "個人知識庫（ANILALM）不使用密等，不能設定任何密等分類"
+                "（含營業秘密）。ANILALM 是個人筆記的空間，不會有受控內容；"
+                "若這批資料確實是院級受控資料，請在治理中心（CSP）另建一個"
+                "知識庫，再於該庫設定密等。"
+            ),
+        )
+
 # Task 1 那道 CHECK 的名字(ORM ``__table_args__`` ＋ migration r1_0033 同名
 # 雙宣告)。撞到它時要把驅動層訊息翻成人話,所以這裡認名字;改名會讓
 # ``test_raising_classification_while_marked_says_what_to_do`` 立刻紅,
@@ -297,6 +324,11 @@ def create_collection(
             detail="origin 必須是 'csp' 或 'anilalm'",
         )
 
+    # ANILALM 不用密等（Q59）：個人知識庫不取得密等。擋在寫入前。
+    # ⚠ 正確性命門，非早閘：建庫直接寫 ORM 列、不經 apply_classification 核心，
+    #   正確性不由核心補——刪掉會紅（Reviewer 實測 2 failed），不可刪。
+    _refuse_classification_for_anilalm(origin, level)
+
     coll = IngestionCollection(
         name=payload.name,
         description=payload.description,
@@ -498,6 +530,13 @@ def raise_collection_classification(
     # rejects the four-value violation with 422 before the route body runs,
     # so no defensive re-parse of ``payload`` is needed here.
     target = ClassificationLevel.from_storage(payload.classification_level)
+    # ANILALM 不用密等（Q59）：這支路由是「把庫推到密以上」的第二條路。
+    # origin 是列值不是 payload，所以不是拼錯 product surface——任何人
+    # （含 admin）用這支把 anilalm 庫升到「密」以上都必須明確失敗。
+    # ⚠ 這裡是效能／訊息用的早閘：正確性由 apply_classification 核心保證，
+    #   刪掉不紅（Reviewer 實測仍綠）。好處＝更早 403、也省掉「綁定 agent 檢查」
+    #   與文件級聯的掃描——**未量測，「省一次級聯掃描」是理論，不是量到的數字。**
+    _refuse_classification_for_anilalm(getattr(coll, "origin", None), target)
 
     stored_previous = getattr(coll, "classification_level", None) or "無機密"
     try:

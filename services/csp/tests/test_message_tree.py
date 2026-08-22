@@ -466,6 +466,50 @@ def test_15_anilalm_branch_blocked_plain_append_ok(client: TestClient, db: Sessi
     assert r4.status_code == 409
 
 
+def test_15b_anilalm_conversation_classify_rejected(client: TestClient, db: Session):
+    """Q59（2026-08-21）：anilalm 對話不用密等——手動 classify 必須明確失敗。
+
+    與 collection 升密擋線同不變式（seam rule 一次封兩種資源）。origin 是
+    列值不靠 payload，所以不是拼錯 product surface：擁有者對自己
+    origin='anilalm' 的對話打 /classify → 403，且 conversation 密等保持無機密。
+    """
+    from app.models.ingestion import IngestionCollection
+
+    user, h = _auth(client, db, "t15b")
+    coll = IngestionCollection(
+        name="t15b-kb",
+        created_by=user.id,
+        embedding_model="nv-embed",
+        embedding_dim=4000,
+        chunking_config={},
+    )
+    db.add(coll)
+    db.commit()
+    db.refresh(coll)
+    conv = _create_conv(
+        client, h, origin="anilalm", collection_id=coll.id, title="lm-cls",
+    )
+    cid = conv["id"]
+
+    r = client.post(f"/api/conversations/{cid}/classify", headers=h)
+    assert r.status_code == 403, r.text
+
+    row = db.get(Conversation, cid)
+    db.refresh(row)
+    assert row.classification_level == "無機密"
+    assert row.classified is False
+
+
+def test_15c_non_anilalm_conversation_classify_still_works(client: TestClient, db: Session):
+    """反向回歸：ANILA（origin 非 anilalm）對話手動 classify 仍成功。"""
+    _, h = _auth(client, db, "t15c")
+    conv = _create_conv(client, h)
+    cid = conv["id"]
+    r = client.post(f"/api/conversations/{cid}/classify", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["classification_level"] == "密"
+
+
 # ── 16. Foreign conv 403; admin-tier allowed ──────────────────────────────────
 
 

@@ -265,3 +265,153 @@ class TestRaiseCollectionClassification:
         assert ok.status_code == 200, ok.text
         assert ok.json()["name"] == "patch-no-cls-renamed"
         assert ok.json()["classification_level"] == "無機密"
+
+
+class TestAnilalmNoClassification:
+    """Q59（2026-08-21 擁有者裁決）：ANILALM 不用密等設計。
+
+    主判準不是「測試綠」:把一份「密」塞進 origin='anilalm' 的資源,它會不會紅。
+    - 建立 collection 帶密等 → 403(擋在寫入前,不落地任何列)。
+    - 事後升密 collection → 403(擋住)。
+    - 反向回歸:csp 的 collection 升密仍成功(這道擋線只擋 ANILALM)。
+
+    幕僚長 2026-08-22 裁:「全擋,含營業秘密」——不變式是「anilalm 資源不取得
+    任何密等分類」,不是「不 VIOLATE 某個門檻」。故 營業秘密 一併擋。
+    """
+
+    def test_create_anilalm_collection_with_level_is_refused(self, client, db):
+        user = make_user(db, username="anilalm_create_cls", role="developer")
+        token = login(client, "anilalm_create_cls")
+        h = _auth(token)
+
+        refused = client.post(
+            "/api/ingestion/collections",
+            headers=h,
+            json={
+                "name": "anilalm-secret-kb",
+                "chunking_config": {"strategy": "fixed", "params": {"size": 256}},
+                "classification_level": "密",
+                "origin": "anilalm",
+            },
+        )
+        assert refused.status_code == 403, refused.text
+        assert "ANILALM" in refused.text or "個人知識庫" in refused.text
+
+        # 擋在寫入前 → 沒有任何列落地。
+        assert (
+            db.query(IngestionCollection)
+            .filter(IngestionCollection.name == "anilalm-secret-kb")
+            .count()
+            == 0
+        )
+
+    def test_create_anilalm_collection_with_trade_secret_is_refused(self, client, db):
+        """全擋:營業秘密（rank 1）也是一個密等，anilalm 不取得 → 403。
+
+        幕僚長 2026-08-22 裁「全擋,含營業秘密」。若回頭放行營業秘密，
+        這條測試要一併調整（它釘死的是「any level > 無機密 → 403」）。
+        """
+        user = make_user(db, username="anilalm_create_ts", role="developer")
+        token = login(client, "anilalm_create_ts")
+        h = _auth(token)
+
+        refused = client.post(
+            "/api/ingestion/collections",
+            headers=h,
+            json={
+                "name": "anilalm-ts-kb",
+                "chunking_config": {"strategy": "fixed", "params": {"size": 256}},
+                "classification_level": "營業秘密",
+                "origin": "anilalm",
+            },
+        )
+        assert refused.status_code == 403, refused.text
+        assert (
+            db.query(IngestionCollection)
+            .filter(IngestionCollection.name == "anilalm-ts-kb")
+            .count()
+            == 0
+        )
+
+    def test_raise_anilalm_collection_rejected(self, client, db):
+        """派工單主工作:非 admin 擁有者把自己 origin='anilalm' 的庫升到「密」→ 必須失敗。"""
+        user = make_user(db, username="anilalm_raise_cls", role="user")
+        token = login(client, "anilalm_raise_cls")
+        h = _auth(token)
+
+        # 建一個無機密、origin=anilalm 的庫（建立端只擋密等，無機密給進）。
+        created = client.post(
+            "/api/ingestion/collections",
+            headers=h,
+            json={
+                "name": "anilalm-raise-kb",
+                "chunking_config": {"strategy": "fixed", "params": {"size": 256}},
+                "classification_level": "無機密",
+                "origin": "anilalm",
+            },
+        )
+        assert created.status_code == 201, created.text
+        cid = created.json()["id"]
+
+        raised = client.post(
+            f"/api/ingestion/collections/{cid}/classification",
+            headers=h,
+            json={"classification_level": "密"},
+        )
+        assert raised.status_code == 403, raised.text
+
+        # 沒變更:庫仍無機密。
+        row = db.get(IngestionCollection, cid)
+        assert row.classification_level == "無機密"
+
+    def test_admin_raise_anilalm_also_rejected(self, client, db):
+        """這道擋線是產品面不變式,不是權限:admin 也必須失敗(資源永不取得密等)。"""
+        admin = make_user(db, username="anilalm_raise_admin", role="admin")
+        user = make_user(db, username="anilalm_raise_admin_owner", role="user")
+        token_owner = login(client, "anilalm_raise_admin_owner")
+        token_admin = login(client, "anilalm_raise_admin")
+
+        created = client.post(
+            "/api/ingestion/collections",
+            headers=_auth(token_owner),
+            json={
+                "name": "anilalm-adminkb",
+                "chunking_config": {"strategy": "fixed", "params": {"size": 256}},
+                "classification_level": "無機密",
+                "origin": "anilalm",
+            },
+        )
+        assert created.status_code == 201, created.text
+        cid = created.json()["id"]
+
+        raised = client.post(
+            f"/api/ingestion/collections/{cid}/classification",
+            headers=_auth(token_admin),
+            json={"classification_level": "機密"},
+        )
+        assert raised.status_code == 403, raised.text
+        row = db.get(IngestionCollection, cid)
+        assert row.classification_level == "無機密"
+
+    def test_csp_collection_raise_still_works(self, client, db):
+        """反向回歸:origin≠anilalm 的升等仍成功——這道擋線只擋 ANILALM。"""
+        user = make_user(db, username="csp_raise_keeps_working", role="developer")
+        token = login(client, "csp_raise_keeps_working")
+        h = _auth(token)
+
+        created = client.post(
+            "/api/ingestion/collections",
+            headers=h,
+            json=_create_payload("csp-keep-kb", level="無機密"),
+        )
+        assert created.status_code == 201, created.text
+        cid = created.json()["id"]
+
+        raised = client.post(
+            f"/api/ingestion/collections/{cid}/classification",
+            headers=h,
+            json={"classification_level": "密"},
+        )
+        assert raised.status_code == 200, raised.text
+        assert raised.json()["classification_level"] == "密"
+        assert raised.json()["origin"] == "csp"

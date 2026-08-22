@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.artifact import Artifact, ExportRecord
@@ -346,6 +347,33 @@ def apply_classification(
         row = _resolve_resource(
             db, resource_type, resource_id, for_update=True
         )
+
+        # ── ANILALM 不用密等（Q59；閘下移核心）──────────────────────────────
+        # 不變式：``origin='anilalm'`` 的資源，**任何路徑**都不得取得高於
+        # 無機密的等級。把關點在此（四級單向閂鎖的唯一入口）而不是 API 層：
+        # conversation 的 agent_policy／memory_inherited 等 latch 直接呼叫
+        # 核心、不經 API 端點，只擋 API 會漏它們（2026-08-22 Reviewer 靠
+        # 窮舉找到第 5、6 條，且手寫清單同樣地靠窮舉才找得到——所以把關點
+        # 要涵蓋「未來新寫的呼叫點」，只能放在核心）。``origin`` 欄位只有兩
+        # 個分類資源模型有（IngestionCollection、Conversation）；document／
+        # task／message 無此欄，``getattr`` 回 None → 不擋（它們的密等由
+        # 上游 collection／conversation 級聯，那一層已被本閘封住）。
+        # 全擋含營業秘密：任何一個「密等分類」的等級都是 > 無機密。
+        if getattr(row, "origin", None) == "anilalm" and target > ClassificationLevel.UNCLASSIFIED:
+            # FOR UPDATE 已取列鎖；raise 由下方 ``except Exception: db.rollback()``
+            # 收尾，鎖不會陪著交易活到呼叫端。不要在此自行 commit——commit 會
+            # 讓「半個交易」看起來完成。raise 前不寫任何東西（資源欄位原封不動）。
+            # 資源指名：依型別給出路（conversation→另建對話；collection→另建庫）。
+            _resEsc = "對話" if resource_type == "conversation" else "知識庫"
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"個人知識庫（ANILALM）的{_resEsc}不使用密等，不能取得任何"
+                    f"密等分類（含營業秘密）。ANILALM 是個人筆記的空間，不會有"
+                    f"受控內容；若這批內容確實受控，請在治理中心（CSP）另建一個"
+                    f"{_resEsc}，再於 CSP 側設定密等。"
+                ),
+            )
 
         current = ClassificationLevel.from_storage(row.classification_level)
         effective = ClassificationLevel.max_of([current, target])

@@ -1510,6 +1510,22 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
     from app.schemas.contracts.classification import ClassificationLevel
 
     conv = get_conversation(db, conv_id, user)
+    # ANILALM 不用密等（Q59）：個人知識庫的對話與其庫同源，不取得密等。
+    # 這支是「把對話推到密」的寫入點，origin 是列值不靠 payload，必須在
+    # 寫入前擋下——與 collection 的升密／建立擋線同不變式（seam rule，
+    # 一次實作把兩種資源一起封住）。
+    # ⚠ 這裡是效能／訊息用的早閘：正確性由 apply_classification 核心保證，
+    #   刪掉不紅（Reviewer 實測 9 passed 一條都沒紅）。好處＝更早 403 且
+    #   拿到更貼近「對話」的文案；**未量測，效能好處未量化。**
+    if getattr(conv, "origin", None) == "anilalm":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "個人知識庫（ANILALM）的對話不使用密等，不能標為機敏。"
+                "ANILALM 是個人筆記的空間，不會有受控內容；若這批內容確實"
+                "受控，請在治理中心（CSP）另建對話。"
+            ),
+        )
     # Idempotency on the level (OE-4): boolean is display-only; already at
     # RESTRICTED+ means the manual classify floor is already applied.
     level = ClassificationLevel.from_storage(conv.classification_level)
