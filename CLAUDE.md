@@ -192,7 +192,8 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)的 AI 工作平台／AI Oper
 ① **下限像 OpenWebUI**——`docker` 部署好、模型接上去,**最低限度就能用**;
 ② **上限是治理**——計量、部門、分類、稽核、agent 註冊。**CSP 不是附掛的後台,它是「這東西為什麼是平台而不是工具」的理由。**
 (⚠ 用語:擁有者已兩度糾正「不要再寫軍方」——這是中科院內部用的平台。)**開發線仍只有一條:`restart/from-redesign`**(工作 worktree 分支除外);舊 4 分支模型已進 attic,**不要**在 PLAN 排到之前重建部署分支。
-⚠ **但遠端不只一條 ref**(2026-08-22 起):`origin/restart/from-redesign` 停在 `a6090694`,而**擁有者要求另推的快照分支 `origin/restart/from-redesign-20260822` = `dca11560`,才是當日工作的內容**。
+⚠ **但遠端不只一條 ref**(2026-08-22 起):`origin/restart/from-redesign` 停在舊點,而**擁有者要求另推的快照分支 `origin/restart/from-redesign-20260822` 帶的是 8/22 當日的工作內容**。
+📌 **這裡刻意不釘 SHA**:第一版寫了建立時的 `dca11560`,**而修這一行的那個 commit 一推上去就把它推走了**——**一份文件釘住它自己所在分支的 SHA,在被提交的那一刻就過期,寫的人不可能事先知道自己的 SHA。**與檔頭「寫『最新』就是寫一個保證會過期的宣稱」同病。**要當下的值請 `git ls-remote origin`。**
 **在哪一條上開工看的是本地 `restart/from-redesign`,不是遠端最新的那條 ref**——快照分支是給人看的,不是開發線。Repo 是 **PUBLIC** → 祕密零外洩。目標:**8 月底全院上線**(PLAN.md),一人維運。
 
 ---
