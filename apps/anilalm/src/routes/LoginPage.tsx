@@ -6,7 +6,7 @@ import { explainError } from '../api/client'
 
 // Terminal / CLI aesthetic — direct port of the LoginTerminal variant in
 // _design/prototype.html. The UX rationale (and why we kept it instead of
-// a split-panel hero): ANILA LM is targeting research/dev users who live
+// a split-panel hero): this unused page targeted research/dev users who live
 // in terminals, and the mono layout doubles as a soft brand cue ("this is
 // a power tool, not a consumer chat-bot").
 //

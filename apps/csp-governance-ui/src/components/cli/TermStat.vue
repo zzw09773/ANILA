@@ -47,8 +47,10 @@ const formatted = computed(() => {
 
 <style scoped>
 .term-stat {
-  background: var(--c-surface-1);
-  border: var(--border-w) solid var(--c-border);
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-top: var(--yuan-line) solid var(--ink);
+  border-radius: var(--radius);
   padding: var(--gap-3) var(--gap-4);
   display: flex;
   flex-direction: column;
@@ -84,7 +86,7 @@ const formatted = computed(() => {
 .term-stat__delta.is-up { color: var(--c-ok); }
 .term-stat__delta.is-down { color: var(--c-danger); }
 
-.term-stat--accent { border-left: 3px solid var(--c-accent); }
+.term-stat--accent { border-left: 3px solid var(--ink); }
 .term-stat--warn   { border-left: 3px solid var(--c-warn); }
 .term-stat--danger { border-left: 3px solid var(--c-danger); }
 </style>

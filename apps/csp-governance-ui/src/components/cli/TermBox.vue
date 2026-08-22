@@ -34,8 +34,10 @@ defineProps({
 
 <style scoped>
 .term-box {
-  background: var(--c-surface-1);
-  border: var(--border-w) solid var(--c-border);
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-top: var(--yuan-line) solid var(--ink);
+  border-radius: var(--radius);
   display: flex;
   flex-direction: column;
   overflow-x: auto;

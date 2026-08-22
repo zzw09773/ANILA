@@ -122,15 +122,12 @@ import {
   IconGrid,
   IconHistory,
   IconLock,
-  IconMoon,
   IconNodes,
   IconRefresh,
   IconSettings,
   IconShare,
   IconShield,
   IconSpark,
-  IconGift,
-  IconSun,
   IconTrash,
   IconUser,
 } from "./icons.jsx";
@@ -155,6 +152,7 @@ import { originHref } from "./shellNav.jsx";
 import { classifiedShareDenial, handoffNotice } from "./uxCopy.js";
 import { ArtifactPanel } from "./artifact.jsx";
 import { ArtifactPreviewProvider } from "./artifactContext.jsx";
+import { AnilaTopBar } from "./AnilaTopBar.jsx";
 
 // ---- Router pseudo-agent ----------------------------------------------------
 const ROUTER_AGENT = Object.freeze({
@@ -2843,7 +2841,13 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
   // ---- render: classified watermark + top bar + messages + composer ----
   return (
     <ArtifactPreviewProvider onOpen={onOpenArtifact}>
-    <div style={{ display: "flex", height: "100dvh", background: "var(--bg)", position: "relative" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100dvh", background: "var(--canvas)", position: "relative" }}>
+      <AnilaTopBar
+        user={user}
+        onLogout={logoutAndRedirect}
+        onOpenSettings={() => { setSettingsTab("general"); setSettingsOpen(true); }}
+      />
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
       {showForensicWatermark && (
         <ConfidentialWatermark
           level={pageWatermarkLevel}
@@ -3046,23 +3050,6 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
           <IconButton title="設定" onClick={() => { setSettingsTab("general"); setSettingsOpen(true); }}>
             <IconSettings />
           </IconButton>
-          <IconButton
-            title={tweaks.dark ? "切換淺色" : "切換深色"}
-            onClick={() => setTweaks({ ...tweaks, dark: !tweaks.dark })}
-          >
-            {tweaks.dark ? <IconSun /> : <IconMoon />}
-          </IconButton>
-          <span style={{ position: "relative", display: "inline-flex" }}>
-            <IconButton title="新功能" onClick={() => { setChangelogOpen(true); try { localStorage.setItem("anila-changelog-seen", CHANGELOG_VERSION); } catch {} setChangelogUnseen(false); }}>
-              <IconGift />
-            </IconButton>
-            {changelogUnseen && (
-              <span style={{
-                position: "absolute", top: 4, right: 4, width: 7, height: 7,
-                borderRadius: "50%", background: "var(--accent)", pointerEvents: "none",
-              }} />
-            )}
-          </span>
         </div>
 
         {runtimeError && (
@@ -3279,6 +3266,7 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
         request={authRequest}
         toast={toast}
       />
+      </div>
     </div>
     </ArtifactPreviewProvider>
   );
@@ -3294,14 +3282,13 @@ function EmptyState({ onPick, loading, onOpenServices, hasHelpers }) {
   ];
   return (
     <div style={{ padding: "48px 12px 24px", textAlign: "center" }}>
-      <AnilaGlyph size={40} />
-      <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>
+      <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2, color: "var(--ink)" }}>
         早安，開始今天的工作
       </div>
       {!loading && !hasHelpers ? (
-        <div style={{ marginTop: 28, maxWidth: 420, marginLeft: "auto", marginRight: "auto", textAlign: "left" }}>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>還沒有可用的幫手</div>
-          <p style={{ margin: "8px 0 0", color: "var(--fg-muted)", fontSize: 13, lineHeight: 1.6 }}>
+        <div className="yuan-card" style={{ marginTop: 28, maxWidth: 420, marginLeft: "auto", marginRight: "auto", textAlign: "left", padding: 20 }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: "var(--ink)" }}>還沒有可用的幫手</div>
+          <p style={{ margin: "8px 0 0", color: "var(--mute)", fontSize: 13, lineHeight: 1.6 }}>
             目前沒有可請的幫手。需要的話，請聯絡系統管理員。
           </p>
         </div>
@@ -3322,27 +3309,14 @@ function EmptyState({ onPick, loading, onOpenServices, hasHelpers }) {
         {prompts.map((s, i) => {
           const isPrimary = s.primary === true;
           return (
-            <button key={i} onClick={() => onPick(s.q)} style={{
+            <button key={i} onClick={() => onPick(s.q)} className="yuan-card" style={{
               gridColumn: isPrimary ? "1 / -1" : undefined,
               padding: isPrimary ? "16px 18px" : "12px 14px",
-              background: isPrimary ? "var(--accent-soft, var(--bg-elev))" : "var(--bg-elev)",
-              border: "1px solid " + (isPrimary ? "var(--accent, var(--border-strong))" : "var(--border)"),
-              borderRadius: "var(--radius)",
+              background: "var(--paper)",
               cursor: "pointer", textAlign: "left",
-              transition: "all .12s",
               fontFamily: "inherit",
-              color: "var(--fg)",
-            }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = "var(--border-strong)";
-                e.currentTarget.style.transform = "translateY(-1px)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = isPrimary
-                  ? "var(--accent, var(--border-strong))"
-                  : "var(--border)";
-                e.currentTarget.style.transform = "";
-              }}>
+              color: "var(--ink)",
+            }}>
               <div style={{
                 fontSize: isPrimary ? 15 : 13,
                 fontWeight: 600,
@@ -3369,9 +3343,10 @@ function EmptyState({ onPick, loading, onOpenServices, hasHelpers }) {
           const style = {
             display: "block",
             padding: "12px 14px",
-            background: "var(--bg-elev)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
+            background: "var(--paper)",
+            border: "1px solid var(--hairline)",
+            borderTop: "3px solid var(--ink)",
+            borderRadius: 8,
             color: "inherit",
             textDecoration: "none",
             cursor: "pointer",

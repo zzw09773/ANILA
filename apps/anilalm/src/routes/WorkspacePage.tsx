@@ -12,6 +12,9 @@ import { WSSidebar } from '../workspace/WSSidebar'
 import { WSChat } from '../workspace/WSChat'
 import { WSStudio } from '../workspace/WSStudio'
 import { useJobStream } from '../workspace/useJobStream'
+import { ProductHeader } from '../components/ProductHeader'
+import { useAuthStore } from '../store/auth'
+import { loginHref } from '../appOrigins'
 
 export function WorkspacePage() {
   const { collectionId, conversationId } = useParams<{
@@ -27,6 +30,8 @@ export function WorkspacePage() {
   const reset = useWorkspaceStore((s) => s.reset)
   const upsertDoc = useWorkspaceStore((s) => s.upsertDoc)
   const studioOpen = useWorkspaceStore((s) => s.studioOpen)
+  const user = useAuthStore((s) => s.user)
+  const logout = useAuthStore((s) => s.logout)
 
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
@@ -260,10 +265,18 @@ export function WorkspacePage() {
         background: t.bg,
         color: t.text,
         display: 'flex',
+        flexDirection: 'column',
         overflow: 'hidden',
         position: 'relative',
       }}
     >
+      <ProductHeader
+        user={user}
+        onLogout={() => {
+          void logout().then(() => window.location.replace(loginHref()))
+        }}
+      />
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
       {collectionDenied && (
         <div
           role="status"
@@ -290,7 +303,7 @@ export function WorkspacePage() {
       <WSChat flex={studioOpen ? 1.4 : 1} />
       {/* Keep WSStudio mounted while closed so in-flight job pollers
           keep running. Unmounting used to freeze pending artifacts at
-          "鑄造中" until the user reopened the panel. */}
+          製作中 until the user reopened the panel. */}
       <div
         style={{
           display: studioOpen ? 'contents' : 'none',
@@ -298,6 +311,7 @@ export function WorkspacePage() {
         aria-hidden={!studioOpen}
       >
         <WSStudio />
+      </div>
       </div>
     </div>
   )

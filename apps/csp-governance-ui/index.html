@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ANILA · 系統管理</title>
+    <title>ANILA · 院內 AI 工作平台</title>
     <!-- No Google Fonts preconnect: the air-gapped intranet's nginx CSP
          (font-src/style-src 'self') blocks fonts.googleapis/gstatic, so these
          preconnects were dead DNS lookups. --font-mono falls back to the OS
@@ -18,9 +18,7 @@
       (function () {
         try {
           var stored = window.localStorage.getItem('anila.theme');
-          var theme = stored === 'light' || stored === 'dark'
-            ? stored
-            : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+          var theme = stored === 'dark' ? 'dark' : 'light';
           document.documentElement.setAttribute('data-theme', theme);
         } catch (_) {
           // localStorage may be blocked — fall back to default attribute on <html>.

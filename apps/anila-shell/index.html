@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>ANILA · 工作臺</title>
+<title>ANILA · 院內 AI 工作平台</title>
 <!-- Fonts intentionally NOT loaded from Google CDN — outer nginx ships a
      strict CSP (`style-src 'self' 'unsafe-inline'; font-src 'self' data:`)
      that forbids external stylesheet sources, and on-prem deploys may be
@@ -28,61 +28,12 @@
 
 <style>
   :root {
-    /* Six named tokens — apps/DESIGN.md */
-    --ink:           #1b2230;
-    --paper:         #f7f8fa;
-    --card:          #ffffff;
-    --line:          #dfe3ea;
-    --official:      #2b4c7e;
-    --danger:        #b03636;
-
-    --bg:            var(--paper);
-    --bg-elev:       var(--card);
-    --bg-subtle:     #eef1f5;
-    --fg:            var(--ink);
-    --fg-muted:      #48505f;
-    /* WCAG AA: darkened so subtle/status text clears 4.5:1 on --bg*. */
-    --fg-subtle:     #686f7e;
-    --border:        var(--line);
-    --border-strong: #c3cad6;
-    --accent:        var(--official);
-    --accent-fg:     #ffffff;
-    --accent-soft:   rgba(43, 76, 126, 0.08);
-    --warn:          #9a6619;
-    --success:       #2c7a54;
-
-    --radius-sm: 4px;
-    --radius:    6px;
-    --radius-lg: 10px;
-
-    /* System font stacks: Latin handles via -apple-system / Segoe UI / system-ui;
-       Traditional Chinese falls through to whatever the OS ships (PingFang TC
-       / Microsoft JhengHei / Noto Sans CJK TC). No webfont download needed. */
-    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei",
-      "PingFang TC", "Noto Sans CJK TC", system-ui, sans-serif;
-    --font-mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
-
+    /* Named colors live in apps/shared/tokens.css. App-only leftovers: */
+    --warn: #9a6619;
+    --radius-lg: 8px;
+    --font-sans: var(--font-body);
+    --font-mono: var(--font-tabular);
     --density: 16px;
-  }
-
-  [data-theme="dark"] {
-    --bg:            #161a22;
-    --bg-elev:       #1c212b;
-    --bg-subtle:     #232936;
-    --fg:            #dbe1ec;
-    --fg-muted:      #9aa3b4;
-    /* WCAG AA: lighten subtle; dark accent/danger from light fail on dark bg,
-       so override status colours here. Accent fill uses dark --accent-fg
-       (white-on-light-teal cannot clear AA on this near-black bg). */
-    --fg-subtle:     #828a98;
-    --border:        #2a303c;
-    --border-strong: #3a4353;
-    --accent:        #6f8fc2;
-    --accent-fg:     #10131a;
-    --accent-soft:   rgba(111, 143, 194, 0.12);
-    --danger:        #d67a82;
-    --warn:          #d6a95f;
-    --success:       #6bbf8f;
   }
 
   * { box-sizing: border-box; }

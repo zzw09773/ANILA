@@ -14,7 +14,7 @@ import { Icon } from '../components/Icon'
 import { Field } from '../components/Field'
 import { Spinner } from '../components/Spinner'
 import { Modal } from '../components/Modal'
-import { ProductHeader } from '../components/ProductHeader'
+import { ProductHeader, WorkbenchRail } from '../components/ProductHeader'
 import { accentForId, shortName, timeAgo } from '../utils/format'
 import { loginHref } from '../appOrigins'
 
@@ -143,8 +143,8 @@ export function DashboardPage() {
         user={user}
         onLogout={() => void handleLogout()}
       />
-
-      {/* Main */}
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+      <WorkbenchRail active="knowledge" />
       <main style={{ flex: 1, padding: '40px 64px', overflow: 'auto' }}>
         <div
           style={{
@@ -384,6 +384,7 @@ export function DashboardPage() {
           </div>
         )}
       </main>
+      </div>
 
       <CreateCollectionModal
         open={createOpen}

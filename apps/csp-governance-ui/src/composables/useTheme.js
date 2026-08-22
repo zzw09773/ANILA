@@ -6,9 +6,6 @@ function readInitial() {
   if (typeof window === 'undefined') return 'light'
   const stored = window.localStorage?.getItem(STORAGE_KEY)
   if (stored === 'dark' || stored === 'light') return stored
-  // Light-first (institutional default, matches tokens.css :root = light).
-  // Only honour a dark OS preference. Mirror the inline pre-mount script.
-  if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark'
   return 'light'
 }
 

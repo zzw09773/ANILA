@@ -10,7 +10,6 @@ import { useNavigate } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { Icon } from '../components/Icon'
-import { ThemeSwitch } from '../components/ThemeSwitch'
 import { Spinner } from '../components/Spinner'
 import { MarkdownPreview } from '../components/MarkdownPreview'
 import {
@@ -573,7 +572,6 @@ export function WSChat({ flex }: WSChatProps) {
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <ThemeSwitch />
           {activeConversationId != null && (
             <button
               type="button"

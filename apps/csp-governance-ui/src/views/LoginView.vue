@@ -1,13 +1,7 @@
 <template>
   <div class="login">
-    <!-- Slim top bar — brand mark + theme toggle only (terminal path chrome
-         removed per redesign §3.2). ------------------------------------- -->
     <header class="login__topbar">
-      <TermLogo :size="14" subtitle="工作臺" />
-      <span class="login__topbar-spacer" />
-      <button class="login__theme" type="button" @click="toggleTheme" :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`">
-        {{ theme === 'dark' ? '◐ 深色' : '◑ 淺色' }}
-      </button>
+      <TermLogo />
     </header>
 
     <main class="login__main">
@@ -315,7 +309,6 @@ import {
   CardNotInsertedError,
   detectCard,
 } from '../api/caAuth'
-import { useTheme } from '../composables/useTheme'
 import { postLoginDestination } from '../utils/postLoginDestination'
 import TermLogo from '../components/cli/TermLogo.vue'
 import TermButton from '../components/cli/TermButton.vue'
@@ -325,8 +318,6 @@ import TermModal from '../components/cli/TermModal.vue'
 
 const route = useRoute()
 const authStore = useAuthStore()
-const { theme, toggleTheme } = useTheme()
-const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
 // providers 失敗／欄位缺席 → **預設隱藏**。**這條不可改成 fail-open：偵測失效時
 // fail-open 不是「功能降級」，是「靜默回歸到 F-1 原缺陷」——失效等於回歸，比失效等於
 // 不可用更難被發現。旁路是純 query 判斷不依賴偵測，owner 救援不受此預設影響。
@@ -607,25 +598,11 @@ async function handleRegister() {
 .login__topbar {
   display: flex;
   align-items: center;
-  gap: var(--gap-3);
+  height: var(--shell-topbar-h);
   padding: 0 var(--gap-4);
-  background: var(--c-surface-2);
-  border-bottom: var(--border-w) solid var(--c-border);
-  font-size: var(--t-xs);
-  color: var(--c-fg-2);
+  background: var(--paper);
+  border-bottom: 1px solid var(--hairline);
 }
-.login__topbar-spacer { flex: 1; }
-.login__theme {
-  background: transparent;
-  border: var(--border-w) solid var(--c-border);
-  color: var(--c-fg-2);
-  height: 22px;
-  padding: 0 8px;
-  border-radius: var(--r-soft);
-  font-size: var(--t-2xs);
-  cursor: pointer;
-}
-.login__theme:hover { color: var(--c-accent); border-color: var(--c-accent); }
 
 .login__main {
   display: flex;
@@ -651,11 +628,11 @@ async function handleRegister() {
   text-align: center;
 }
 .login__title {
-  font-family: var(--font-sans);
+  font-family: var(--font-wordmark);
   font-size: var(--t-3xl);
   font-weight: 600;
-  color: var(--c-fg-1);
-  letter-spacing: var(--tracking-tight);
+  color: var(--ink);
+  letter-spacing: 0.04em;
   margin: 0;
 }
 .login__subtitle {
@@ -671,10 +648,10 @@ async function handleRegister() {
 
 /* Card login = primary hero card ------------------------------------------ */
 .login__card {
-  background: var(--c-surface-1);
-  border: var(--border-w) solid var(--c-border);
-  border-top: var(--border-w-strong) solid var(--c-accent);
-  border-radius: var(--r-md);
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-top: var(--yuan-line) solid var(--ink);
+  border-radius: var(--radius);
   padding: var(--gap-6);
   display: flex;
   flex-direction: column;

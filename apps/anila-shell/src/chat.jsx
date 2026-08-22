@@ -539,7 +539,7 @@ export const MessageBubble = ({
             padding: "12px 16px",
             // Uniform corner radius — Claude.ai-style flat rounded
             // rectangle, no pointed tail.
-            borderRadius: 14,
+            borderRadius: 8,
             fontSize: 15, lineHeight: 1.65,
             whiteSpace: "pre-wrap",
             color: "var(--fg)",
@@ -2021,12 +2021,13 @@ export const Composer = ({
         const files = Array.from(e.dataTransfer?.files || []);
         if (files.length) onFiles(files);
       }}
+      className="yuan-card"
       style={{
         position: "relative",
-        background: "var(--bg-elev)",
-        border: "1px solid " + (dragOver ? "var(--accent)" : "var(--border-strong)"),
-        borderRadius: "var(--radius-lg)",
-        boxShadow: "0 2px 8px -4px oklch(0.10 0 0 / 0.08)",
+        background: "var(--paper)",
+        border: "1px solid " + (dragOver ? "var(--signal)" : "var(--hairline)"),
+        borderTop: "3px solid var(--ink)",
+        borderRadius: 8,
       }}>
       {dragOver && (
         <div style={{
@@ -2535,8 +2536,6 @@ export const Sidebar = ({
         display: "flex", flexDirection: "column", alignItems: "center",
         padding: "12px 0", gap: 6,
       }}>
-        <div style={{ padding: 6 }}><AnilaGlyph size={22} /></div>
-        <Divider />
         <IconButton onClick={onToggleCollapsed} title="展開側邊"><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話"><IconPlus /></IconButton>
         <IconButton onClick={onOpenAgentBrowser} title="助手"><IconGrid /></IconButton>
@@ -2556,13 +2555,8 @@ export const Sidebar = ({
       background: "var(--bg-subtle)",
       display: "flex", flexDirection: "column",
     }}>
-      <div style={{ padding: "14px 14px 10px", display: "flex", alignItems: "center", gap: 8 }}>
-        <AnilaGlyph size={20} />
-        <div>
-          <div style={{ fontWeight: 600, fontSize: 14, letterSpacing: 0.2 }}>ANILA</div>
-          <div style={{ fontSize: 11, color: "var(--fg-muted)", fontWeight: 500 }}>工作臺</div>
-        </div>
-        <div style={{ flex: 1 }} />
+      <div style={{ padding: "10px 14px 6px", display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ flex: 1, fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>工作臺</div>
         <IconButton onClick={onToggleCollapsed} title="收合側邊"><IconPanelR /></IconButton>
       </div>
 

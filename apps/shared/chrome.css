@@ -1,0 +1,177 @@
+/* Shared desk chrome — lockup, top bar, 院線卡. Import after tokens.css. */
+
+.anila-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  text-decoration: none;
+  min-width: 0;
+}
+.anila-lockup__mark {
+  width: 3px;
+  height: 18px;
+  background: var(--ink);
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.anila-lockup__word {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  line-height: 1.15;
+}
+.anila-lockup__brand {
+  font-family: var(--font-wordmark);
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+.anila-lockup__sep {
+  color: var(--mute);
+  font-weight: 400;
+}
+.anila-lockup__line {
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.anila-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 16px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink);
+  gap: 16px;
+  flex-shrink: 0;
+}
+.anila-topbar__account {
+  position: relative;
+  flex-shrink: 0;
+}
+.anila-topbar__who {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.anila-topbar__who:hover,
+.anila-topbar__who[aria-expanded="true"] {
+  border-color: var(--signal);
+  color: var(--signal);
+}
+.anila-topbar__menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 200px;
+  padding: 6px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-top: var(--yuan-line) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px -12px rgba(27, 58, 107, 0.28);
+  z-index: 40;
+}
+.anila-topbar__menu a,
+.anila-topbar__menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.anila-topbar__menu a:hover,
+.anila-topbar__menu button:hover {
+  background: var(--accent-soft);
+  color: var(--signal);
+}
+.anila-topbar__ver {
+  display: block;
+  padding: 8px 10px 4px;
+  color: var(--mute);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-tabular);
+}
+
+/* Signature: 院線卡 — white paper, 3px ink top, 1px hairline, radius 8. */
+.yuan-card {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-top: var(--yuan-line) solid var(--ink);
+  border-radius: var(--radius);
+}
+
+.anila-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 10px;
+}
+.anila-rail__item {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  width: 100%;
+  text-align: left;
+}
+.anila-rail__item:hover {
+  background: var(--paper);
+  border-color: var(--hairline);
+}
+.anila-rail__item[aria-current="page"] {
+  color: var(--signal);
+  background: var(--accent-soft);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+h1, .page-title, .anila-title {
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-weight: 600;
+}
+body {
+  font-family: var(--font-body);
+  font-weight: 400;
+}
+.tnum, .anila-meta {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-tabular);
+}

@@ -1,41 +1,12 @@
 <template>
-  <header class="topbar">
-    <div class="topbar__left">
-      <TermLogo :size="16" subtitle="系統管理" />
-      <span class="topbar__path">
-        <span class="topbar__path-segment">{{ currentSegment }}</span>
-      </span>
-    </div>
-
-    <div class="topbar__right">
-      <button
-        class="topbar__theme"
-        type="button"
-        :aria-label="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`"
-        :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`"
-        @click="toggleTheme"
-      >
-        <span class="topbar__theme-icon">{{ theme === 'dark' ? '◐' : '◑' }}</span>
-        <span class="topbar__theme-label">{{ theme === 'dark' ? '深色' : '淺色' }}</span>
-      </button>
-
-      <span class="topbar__user">
-        <span class="topbar__user-name">{{ authStore.user?.username || '未登入' }}</span>
-        <span class="topbar__user-role" :class="`is-${authStore.user?.role || 'user'}`">
-          {{ roleLabel }}
-        </span>
-      </span>
-
-      <button class="topbar__action" type="button" @click="showChangePwModal = true">
-        變更密碼
-      </button>
-      <button class="topbar__action topbar__action--danger" type="button" @click="handleLogout">
-        登出
-      </button>
-    </div>
+  <header class="anila-topbar">
+    <TermLogo />
+    <AnilaAccountMenu
+      @change-password="showChangePwModal = true"
+      @logout="handleLogout"
+    />
   </header>
 
-  <!-- Change-password modal — terminal style ----------------------------- -->
   <TermModal :visible="showChangePwModal" title="變更密碼" width="440px" @close="closeChangePw">
     <div class="pw-grid">
       <TermField label="目前密碼">
@@ -78,62 +49,17 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { changePassword } from '../../api/auth'
-import { useTheme } from '../../composables/useTheme'
 import TermLogo from '../cli/TermLogo.vue'
 import TermModal from '../cli/TermModal.vue'
 import TermField from '../cli/TermField.vue'
 import TermButton from '../cli/TermButton.vue'
+import AnilaAccountMenu from './AnilaAccountMenu.vue'
 import { extractError } from '../../api/errors'
 import { loginHref } from '../../utils/appOrigins'
 
-const route = useRoute()
 const authStore = useAuthStore()
-const { theme, toggleTheme } = useTheme()
-
-const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
-
-const segmentMap = {
-  '/keys': 'API 金鑰',
-  '/models': '模型',
-  '/usage': '用量',
-  '/users': '使用者',
-  '/departments': '部門',
-  '/alerts': '警報',
-  '/feedback': '使用者回饋',
-  '/audit': '稽核紀錄',
-  '/audit-logs': '稽核紀錄',
-  '/banners': '公告橫幅',
-  '/platform-settings': '平台設定',
-  '/platform-links': '平台連結',
-  '/service-access': '服務存取',
-  '/developer/guide': '開發指南',
-  '/developer/agents': '助手',
-  '/knowledge-collections': '知識庫',
-  '/message-actions': '自訂動作',
-  '/classification-inventory': '分類盤點',
-  '/service-clients': '服務客戶端',
-  '/trusted-hosts': '信任主機',
-  '/forbidden': '這頁你看不到',
-}
-const currentSegment = computed(() => {
-  if (route.path === '/') return authStore.isRegularUser ? '工作臺' : '總覽'
-  if (segmentMap[route.path]) return segmentMap[route.path]
-  if (route.path.startsWith('/knowledge-collections/')) {
-    return route.path.endsWith('/evaluator') ? '知識庫評估' : '知識庫內容'
-  }
-  return route.meta?.title || '系統管理'
-})
-
-const ROLE_LABEL = {
-  owner: '擁有者',
-  admin: '管理員',
-  developer: '開發者',
-  user: '使用者',
-}
-const roleLabel = computed(() => ROLE_LABEL[authStore.user?.role] || '')
 
 const showChangePwModal = ref(false)
 const pw = ref({ current: '', new: '', confirm: '' })
@@ -188,119 +114,6 @@ async function handleLogout() {
 </script>
 
 <style scoped>
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: var(--shell-topbar-h);
-  padding: 0 var(--gap-3);
-  background: var(--c-surface-2);
-  border-bottom: 0;
-  font-size: var(--t-xs);
-  color: var(--c-fg-2);
-  gap: var(--gap-3);
-}
-
-.topbar__left,
-.topbar__right {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-3);
-  min-width: 0;
-}
-
-.topbar__rule {
-  color: var(--c-border-strong);
-  font-size: var(--t-base);
-  user-select: none;
-}
-
-.topbar__path {
-  display: inline-flex;
-  align-items: center;
-  font-family: var(--font-sans);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.topbar__path-segment {
-  color: var(--c-accent);
-  margin-left: 2px;
-  font-weight: 500;
-}
-
-.topbar__hints {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--gap-3);
-  margin-right: var(--gap-2);
-}
-.topbar__hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--c-fg-3);
-  font-size: var(--t-2xs);
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-
-.topbar__theme {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: transparent;
-  border: var(--border-w) solid var(--c-border);
-  color: var(--c-fg-2);
-  height: 22px;
-  padding: 0 8px;
-  border-radius: var(--r-soft);
-  font-size: var(--t-2xs);
-  letter-spacing: 0.02em;
-  text-transform: none;
-  cursor: pointer;
-  transition: color var(--motion-fast), border-color var(--motion-fast), background-color var(--motion-fast);
-}
-.topbar__theme:hover {
-  color: var(--c-accent);
-  border-color: var(--c-accent);
-  background: var(--c-accent-soft);
-}
-.topbar__theme-icon { font-size: var(--t-sm); }
-
-.topbar__user {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  font-size: var(--t-xs);
-}
-.topbar__user-name { color: var(--c-fg-1); font-weight: 500; }
-.topbar__user-role {
-  color: var(--c-fg-3);
-  font-size: var(--t-2xs);
-  letter-spacing: 0;
-  text-transform: none;
-}
-.topbar__user-role.is-owner     { color: var(--c-danger); font-weight: 600; }
-.topbar__user-role.is-admin     { color: var(--c-warn); }
-.topbar__user-role.is-developer { color: var(--c-info); }
-.topbar__user-role.is-user      { color: var(--c-fg-3); }
-
-.topbar__action {
-  background: transparent;
-  border: 0;
-  color: var(--c-fg-3);
-  font-family: inherit;
-  font-size: var(--t-xs);
-  cursor: pointer;
-  padding: 0;
-  letter-spacing: 0;
-  transition: color var(--motion-fast);
-}
-.topbar__action:hover { color: var(--c-accent); }
-.topbar__action--danger:hover { color: var(--c-danger); }
-
-/* Password modal styles ----------------------------------------------- */
 .pw-grid {
   display: flex;
   flex-direction: column;

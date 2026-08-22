@@ -104,16 +104,10 @@ describe("ShellNav", () => {
     expect(text).not.toMatch(/\bCSP\b/);
   });
 
-  it("hides 系統管理 for a non-admin user", () => {
-    render(<ShellNav user={{ role: "user" }} />);
-    expect(screen.queryByText("系統管理")).toBeNull();
-  });
-
-  it("shows 系統管理 for an admin and links it to the configured governance origin", () => {
+  it("does not put 系統管理 on the regular rail", () => {
     render(<ShellNav user={{ role: "admin" }} />);
-    const gov = screen.getByText("系統管理").closest("a");
-    expect(gov).toBeTruthy();
-    expect(gov.getAttribute("href")).toBe(`${GOV_ORIGIN}/`);
+    expect(screen.queryByText("系統管理")).toBeNull();
+    expect(screen.queryByText("治理中心")).toBeNull();
   });
 
   it("points 我的知識庫 and 製作 at distinct pages", () => {
@@ -140,12 +134,24 @@ describe("ShellNav", () => {
     expect(onTaskCenter).toHaveBeenCalledTimes(1);
   });
 
-  it("renders an icon-only collapsed rail that still gates governance", () => {
+  it("renders a collapsed rail without 系統管理", () => {
     render(<ShellNav collapsed user={{ role: "user" }} />);
-    // 折疊時以 aria-label 提供無障礙名稱。
     expect(screen.getByLabelText("工作臺")).toBeTruthy();
     expect(screen.getByLabelText("製作")).toBeTruthy();
     expect(screen.getByLabelText("專案入口")).toBeTruthy();
     expect(screen.queryByLabelText("系統管理")).toBeNull();
+  });
+});
+
+describe("AccountMenu", () => {
+  it("puts 系統管理 in the account menu for admin only", async () => {
+    const { AccountMenu } = await import("../AccountMenu.jsx");
+    const { rerender } = render(<AccountMenu user={{ username: "ada", role: "admin" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "ada" }));
+    const gov = screen.getByText("系統管理").closest("a");
+    expect(gov.getAttribute("href")).toBe(`${GOV_ORIGIN}/`);
+    rerender(<AccountMenu user={{ username: "lin", role: "user" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "lin" }));
+    expect(screen.queryByText("系統管理")).toBeNull();
   });
 });

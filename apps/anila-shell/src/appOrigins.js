@@ -80,3 +80,7 @@ export function governanceHref(path = '/') {
 export function knowledgeHref(path = '/') {
   return appHref('knowledge', path)
 }
+
+export function shellWorkbenchHref() {
+  return appHref('shell', '/app')
+}

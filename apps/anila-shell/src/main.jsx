@@ -14,6 +14,8 @@ import {
   Routes,
 } from "react-router";
 
+import "../../shared/tokens.css";
+import "../../shared/chrome.css";
 import App from "./app.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";
 import { ConfirmProvider } from "./confirm.jsx";

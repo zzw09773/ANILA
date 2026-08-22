@@ -4,7 +4,7 @@ import { listCollections } from '../api/collections'
 import { explainError } from '../api/client'
 import { loginHref } from '../appOrigins'
 import { Icon } from '../components/Icon'
-import { ProductHeader } from '../components/ProductHeader'
+import { ProductHeader, WorkbenchRail } from '../components/ProductHeader'
 import { Spinner } from '../components/Spinner'
 import { useAuthStore } from '../store/auth'
 import { useTheme } from '../theme/ThemeContext'
@@ -56,7 +56,8 @@ export function OutputCenterPage() {
         user={user}
         onLogout={() => void handleLogout()}
       />
-
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+      <WorkbenchRail active="outputs" />
       <main style={{ flex: 1, padding: '40px 64px', overflow: 'auto' }}>
         <div style={{ maxWidth: 1040, margin: '0 auto' }}>
           <p style={{ margin: '0 0 8px', color: t.accent, fontSize: 12, fontWeight: 600 }}>
@@ -198,6 +199,7 @@ export function OutputCenterPage() {
           )}
         </div>
       </main>
+      </div>
     </div>
   )
 }

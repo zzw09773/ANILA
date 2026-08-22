@@ -18,6 +18,13 @@ defineProps({
 </script>
 
 <style scoped>
+.term-empty {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-top: var(--yuan-line) solid var(--ink);
+  border-radius: var(--radius);
+  padding: var(--gap-4);
+}
 .term-empty__title {
   margin: 0 0 var(--gap-1);
   color: var(--c-fg-1);

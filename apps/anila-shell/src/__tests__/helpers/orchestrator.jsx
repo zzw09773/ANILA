@@ -77,7 +77,7 @@ export async function mountOrchestrator({ backend, ...backendOptions } = {}) {
 
 /** 在 composer 打字並按送出。 */
 export async function sendText(text) {
-  const box = screen.getByPlaceholderText(/問 ANILA 任何事情/);
+  const box = screen.getByPlaceholderText(/用文字或語音提問|問 ANILA/);
   await act(async () => {
     fireEvent.change(box, { target: { value: text } });
   });
@@ -145,7 +145,7 @@ export async function editUserMessage(nextText, nth) {
   // 編輯框是唯一一個「不是 composer」的 textarea(composer 靠 placeholder 認)。
   const editBox = await waitFor(() => {
     const box = [...document.querySelectorAll("textarea")].find(
-      (t) => !/問 ANILA 任何事情/.test(t.placeholder || ""),
+      (t) => !/用文字或語音提問|問 ANILA/.test(t.placeholder || ""),
     );
     expect(box).toBeTruthy();
     return box;

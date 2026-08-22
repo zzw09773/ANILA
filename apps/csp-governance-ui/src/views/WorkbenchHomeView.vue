@@ -37,9 +37,9 @@ const entries = workbenchEntries()
 .workbench__title {
   margin: 0;
   font-size: var(--t-3xl);
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: var(--tracking-tight);
-  color: var(--c-fg-1);
+  color: var(--ink);
 }
 .workbench__lead {
   margin: var(--gap-3) 0 0;
@@ -65,13 +65,12 @@ const entries = workbenchEntries()
   gap: var(--gap-2);
   min-height: 148px;
   padding: var(--gap-5);
-  background: var(--c-surface-1);
-  border: var(--border-w) solid var(--c-border);
-  border-radius: var(--r-lg);
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-top: var(--yuan-line) solid var(--ink);
+  border-radius: var(--radius);
   text-decoration: none;
   color: inherit;
-  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04);
-  transition: border-color var(--motion), box-shadow var(--motion);
 }
 .workbench__card:hover {
   border-color: var(--c-accent);

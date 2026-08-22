@@ -239,15 +239,15 @@
     background: transparent !important;
   }
   .term-btn--primary {
-    background: var(--c-accent);
-    border-color: var(--c-accent);
-    color: var(--c-accent-fg);
+    background: var(--ink);
+    border-color: var(--ink);
+    color: #ffffff;
     font-weight: 600;
   }
   .term-btn--primary:hover {
-    background: var(--c-accent-strong);
-    border-color: var(--c-accent-strong);
-    color: var(--c-accent-fg);
+    background: var(--signal);
+    border-color: var(--signal);
+    color: #ffffff;
   }
   .term-btn--danger {
     border-color: var(--c-danger);
@@ -364,7 +364,7 @@
     box-shadow: 0 0 0 1px var(--c-bg);
     flex-shrink: 0;
   }
-  .term-dot--ok      { background: var(--c-ok);     box-shadow: 0 0 6px var(--c-ok); }
+  .term-dot--ok      { background: var(--steady); }
   .term-dot--warn    { background: var(--c-warn);   box-shadow: 0 0 6px var(--c-warn); }
   .term-dot--danger  { background: var(--c-danger); box-shadow: 0 0 6px var(--c-danger); }
   .term-dot--info    { background: var(--c-info); }

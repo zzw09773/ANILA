@@ -38,7 +38,7 @@ describe("敏感資訊模式:使用者選的保護不會被重新整理吃掉", 
   });
 
   const typeDraft = async (text = DRAFT) => {
-    const box = screen.getByPlaceholderText(/問 ANILA 任何事情/);
+    const box = screen.getByPlaceholderText(/用文字或語音提問|問 ANILA/);
     await act(async () => {
       fireEvent.change(box, { target: { value: text } });
     });

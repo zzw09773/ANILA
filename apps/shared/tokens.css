@@ -1,16 +1,63 @@
-/* ANILA named tokens — source: apps/DESIGN.md. Six names only. */
+/* ANILA named tokens — source: apps/DESIGN.md.
+   Three Vite apps import this file. Do not invent a second palette. */
 :root {
-  --ink: #1b2230;
-  --paper: #f7f8fa;
-  --card: #ffffff;
-  --line: #dfe3ea;
-  --official: #2b4c7e;
+  --ink: #1b3a6b;
+  --signal: #1a5bb8;
+  --canvas: #f2f5f9;
+  --paper: #ffffff;
+  --mute: #5a6b7c;
+  --hairline: #d7e0ea;
+  --steady: #1f7a5c;
+  --signal-40: #9bb8dc;
   --danger: #b03636;
 
-  --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei",
-    "PingFang TC", "Noto Sans CJK TC", system-ui, sans-serif;
+  --font-display: "Noto Sans TC", "Noto Sans CJK TC", "Microsoft JhengHei",
+    "PingFang TC", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-body: var(--font-display);
   --font-tabular: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-wordmark: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+
+  --radius-sm: 6px;
+  --radius: 8px;
+  --yuan-line: 3px;
+
+  --motion: 160ms;
+  --motion-fast: 90ms;
+}
+
+/* Compat aliases — existing screens keep working while they migrate. */
+:root {
+  --official: var(--ink);
+  --card: var(--paper);
+  --line: var(--hairline);
+  --bg: var(--canvas);
+  --bg-elev: var(--paper);
+  --bg-subtle: #e8eef5;
+  --fg: var(--ink);
+  --fg-muted: var(--mute);
+  --fg-subtle: var(--mute);
+  --border: var(--hairline);
+  --border-strong: #c3d0dd;
+  --accent: var(--signal);
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(26, 91, 184, 0.08);
+  --success: var(--steady);
+}
+
+/* Dark later, if ever: still ink / canvas. Never purple-black or neon. */
+[data-theme="dark"] {
+  --ink: #8fb4de;
+  --signal: #5b8fd4;
+  --canvas: #142033;
+  --paper: #1b2b40;
+  --mute: #8a9aab;
+  --hairline: #2c3d52;
+  --steady: #3d9a78;
+  --signal-40: #4a6f99;
+  --danger: #d67a82;
+  --bg-subtle: #1a2838;
+  --border-strong: #3a5168;
+  --accent-soft: rgba(91, 143, 212, 0.14);
 }
 
 @media (prefers-reduced-motion: reduce) {

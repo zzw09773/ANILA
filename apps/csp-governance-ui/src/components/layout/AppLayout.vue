@@ -9,23 +9,21 @@
         </router-view>
       </main>
     </div>
-    <AppStatusBar />
   </div>
 </template>
 
 <script setup>
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
-import AppStatusBar from './AppStatusBar.vue'
 </script>
 
 <style scoped>
 .shell {
   display: grid;
-  grid-template-rows: var(--shell-topbar-h) 1fr var(--shell-statusbar-h);
+  grid-template-rows: var(--shell-topbar-h) 1fr;
   height: 100dvh;
-  background: var(--c-bg);
-  color: var(--c-fg-1);
+  background: var(--canvas);
+  color: var(--ink);
 }
 
 .shell__body {

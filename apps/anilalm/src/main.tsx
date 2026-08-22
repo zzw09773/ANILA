@@ -1,5 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import '../../shared/tokens.css'
+import '../../shared/chrome.css'
 import { App } from './App'
 import './store/auth' // side-effect: bind auth adapter to axios client
 
