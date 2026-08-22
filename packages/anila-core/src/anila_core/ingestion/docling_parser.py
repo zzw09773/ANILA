@@ -48,6 +48,47 @@ from .errors import ParseError
 
 logger = logging.getLogger(__name__)
 
+# Docling's markdown export leaves this HTML comment at each figure.
+# One replacement per comment, in document order. Leftover images
+# (or leftover comments) must not drop a figure — extras append.
+_DOCLING_IMAGE_COMMENT = re.compile(r"<!--\s*image\s*-->", re.IGNORECASE)
+
+
+def _place_image_placeholders(markdown: str, image_ids: list[str]) -> str:
+    """Put ``[[IMAGE:id]]`` on each ``<!-- image -->``, leftovers at the end."""
+    if not image_ids:
+        return _DOCLING_IMAGE_COMMENT.sub("", markdown).strip()
+
+    ids = list(image_ids)
+    used = 0
+
+    def _one(_match: re.Match[str]) -> str:
+        nonlocal used
+        if used >= len(ids):
+            return ""
+        token = f"[[IMAGE:{ids[used]}]]"
+        used += 1
+        return token
+
+    content = _DOCLING_IMAGE_COMMENT.sub(_one, markdown)
+    leftover = ids[used:]
+    marker_count = len(_DOCLING_IMAGE_COMMENT.findall(markdown))
+    if leftover:
+        logger.warning(
+            "docling remote: %d image(s) and %d <!-- image --> marker(s); "
+            "appending %d leftover placeholder(s) at end of document",
+            len(ids), marker_count, len(leftover),
+        )
+        extra = "\n\n".join(f"[[IMAGE:{img_id}]]" for img_id in leftover)
+        content = f"{content.rstrip()}\n\n{extra}"
+    elif marker_count > len(ids):
+        logger.warning(
+            "docling remote: %d <!-- image --> marker(s) and %d image(s); "
+            "unused markers dropped",
+            marker_count, len(ids),
+        )
+    return content.strip()
+
 
 # ──────────────────────────────────────────────────────────────────────
 # DoclingParser
@@ -687,15 +728,14 @@ class RemoteDoclingParser:
                 caption=str(caption),
             )
 
-        # 與 in-process 版對齊:markdown 尾串 image placeholder(parser_registry 會
-        # 解析 [[IMAGE:id]] 再切塊)。
-        if images:
-            placeholders = "\n\n".join(
-                f"[[IMAGE:{img_id}]]" for img_id in images
-            )
-            content = f"{markdown}\n\n{placeholders}".strip()
-        else:
-            content = markdown.strip() if isinstance(markdown, str) else ""
+        # Docling leaves ``<!-- image -->`` where each figure sat. Replace
+        # those in order so [[IMAGE:id]] lands in the section the chunker
+        # will keep — appending every token at the tail put all image_pks
+        # on the last leaf (live: doc 58, 14 figures → last chunk only).
+        content = _place_image_placeholders(
+            markdown.strip() if isinstance(markdown, str) else "",
+            list(images),
+        )
 
         captions = {
             img_id: ref.caption for img_id, ref in images.items() if ref.caption

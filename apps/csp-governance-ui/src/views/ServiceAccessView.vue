@@ -118,6 +118,7 @@ import { listPlatformLinks } from '../api/platformLinks'
 import { listGrants, createGrant, revokeGrant } from '../api/serviceAccessGrants'
 import { listUsers } from '../api/users'
 import { listDepartments } from '../api/departments'
+import { extractError } from '../api/errors'
 import {
   isReleaseGateClosedFor, RELEASE_GATE_BADGE, RELEASE_GATE_HINT,
 } from '../utils/anilalmReleaseGate'
@@ -160,7 +161,7 @@ async function loadAll() {
     users.value = u.data || []
     departments.value = d.data || []
   } catch (e) {
-    pageError.value = e.response?.data?.detail || e.message || '載入失敗'
+    pageError.value = extractError(e, e.message || '載入失敗')
   } finally { loading.value = false }
 }
 onMounted(loadAll)
@@ -220,13 +221,13 @@ async function submitGrant() {
     closeGrantModal()
     await loadAll()
   } catch (e) {
-    grantModalError.value = e.response?.data?.detail || '授權失敗'
+    grantModalError.value = extractError(e, '授權失敗')
   } finally { grantModalSubmitting.value = false }
 }
 async function handleRevoke(g) {
   if (!(await confirm({ message: `撤銷 ${targetLabel(g)} 的授權？`, danger: true }))) return
   try { await revokeGrant(g.id); await loadAll() }
-  catch (e) { toast(e.response?.data?.detail || '撤銷失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '撤銷失敗'), { tone: 'error' }) }
 }
 </script>
 

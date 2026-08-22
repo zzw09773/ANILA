@@ -251,6 +251,7 @@ import { createEvalRun, listEvalRuns } from '../api/ingestionEvalRuns'
 import { createLlmCredential, deleteLlmCredential, listLlmCredentials } from '../api/ingestionLlmCredentials'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
+import { extractError } from '../api/errors'
 
 const { confirm } = useDialog()
 const route = useRoute()
@@ -312,7 +313,7 @@ async function onCreateCredential() {
     form.value.judge_credential_id = data.id
     cancelCredentialForm()
   } catch (e) {
-    credentialError.value = e.response?.data?.detail || e.message
+    credentialError.value = extractError(e, e.message)
   } finally { creatingCredential.value = false }
 }
 async function onDeleteCredential(id) {
@@ -322,7 +323,7 @@ async function onDeleteCredential(id) {
     await deleteLlmCredential(id)
     credentials.value = credentials.value.filter(c => c.id !== id)
     if (form.value.judge_credential_id === id) form.value.judge_credential_id = null
-  } catch (e) { credentialError.value = e.response?.data?.detail || e.message }
+  } catch (e) { credentialError.value = extractError(e, e.message) }
   finally { deletingCredentialId.value = null }
 }
 
@@ -349,7 +350,7 @@ onMounted(async () => {
   credentialLoadError.value = ''
   try {
     const credentialsPromise = listLlmCredentials().catch((e) => {
-      credentialLoadError.value = e.response?.data?.detail || e.message || '讀取失敗'
+      credentialLoadError.value = extractError(e, e.message || '讀取失敗')
       return { data: [] }
     })
     const [coll, docs, list, creds] = await Promise.all([
@@ -406,7 +407,7 @@ async function submit() {
       strategies_tried: [], judge_credential_id: null, judge_top_k: 5,
     }
     pickedStrategies.value = []
-  } catch (e) { submitError.value = e.response?.data?.detail || e.message }
+  } catch (e) { submitError.value = extractError(e, e.message) }
   finally { submitting.value = false }
 }
 

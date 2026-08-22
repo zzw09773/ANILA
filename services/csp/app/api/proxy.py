@@ -729,6 +729,7 @@ def _kb_meta_fragment(result: KbResult) -> dict:
                 "title": hit.filename,
                 "score": hit.score,
                 "snippet": hit.content[:_KB_SNIPPET_CHARS],
+                **({"image_pks": list(hit.image_pks)} if hit.image_pks else {}),
             }
             for idx, hit in enumerate(result.hits, start=1)
         ]

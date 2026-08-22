@@ -28,10 +28,12 @@ test('圖示清單來自伺服器 GET /api/platform-links/icons', () => {
   assert.match(view, /listPlatformLinkIcons/)
 })
 
-test('儲存失敗 toast 走 apiDetail，不把 FastAPI 422 陣列顯示成 [object Object]', () => {
+test('儲存失敗 toast 走 extractError，不把 FastAPI 422 陣列顯示成 [object Object]', () => {
+  // R4-1：本地 apiDetail 已併回 extractError（那支 apiDetail 對 422 陣列用
+  // JSON.stringify 把原始 pydantic JSON 上畫面，正是要防的那類）。
   const src = readView()
-  assert.match(src, /function apiDetail\(/)
-  assert.match(src, /toast\(apiDetail\(e, '儲存失敗'\)/)
+  assert.match(src, /toast\(extractError\(e, '儲存失敗'\)/)
+  assert.doesNotMatch(src, /function apiDetail\(/)
   assert.doesNotMatch(src, /toast\(e\.response\?\.data\?\.detail \|\| '儲存失敗'/)
 })
 

@@ -3,7 +3,7 @@
     <!-- Slim top bar — brand mark + theme toggle only (terminal path chrome
          removed per redesign §3.2). ------------------------------------- -->
     <header class="login__topbar">
-      <TermLogo :size="14" />
+      <TermLogo :size="14" subtitle="院內 AI 工作平台" />
       <span class="login__topbar-spacer" />
       <button class="login__theme" type="button" @click="toggleTheme" :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`">
         {{ theme === 'dark' ? '◐' : '◑' }} {{ theme }}
@@ -287,6 +287,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { extractError } from '../api/errors'
 import {
   BREAK_GLASS_LOGIN_NOTICE,
   DEFAULT_LOGIN_AUTH_MODE,
@@ -536,7 +537,7 @@ async function handleCardLogin() {
       }
     }
   } catch (e) {
-    cardError.value = e.response?.data?.detail || e.message || '憑證卡登入失敗'
+    cardError.value = extractError(e, e.message || '憑證卡登入失敗')
   } finally {
     cardLoading.value = false
   }
@@ -562,7 +563,7 @@ async function handleSubmitRegistration() {
       message: data.message,
     }
   } catch (e) {
-    pendingError.value = e.response?.data?.detail || e.message || '註冊失敗'
+    pendingError.value = extractError(e, e.message || '註冊失敗')
   } finally {
     pendingSubmitting.value = false
   }
@@ -585,7 +586,7 @@ async function handleOidcLogin(provider) {
     const { data } = await getOidcStartUrl(provider.id, '/')
     window.location.href = data.authorization_url
   } catch (e) {
-    error.value = e.response?.data?.detail || '無法啟動 SSO 流程'
+    error.value = extractError(e, '無法啟動 SSO 流程')
     oidcLoadingId.value = null
   }
 }
@@ -607,8 +608,7 @@ async function handleRegister() {
     const { data } = await registerApi(reg.value.username, reg.value.email, reg.value.password)
     regSuccess.value = data.message || 'registered — pending approval'
   } catch (e) {
-    const detail = e.response?.data?.detail
-    regError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || '註冊失敗')
+    regError.value = extractError(e, '註冊失敗')
   } finally {
     registering.value = false
   }

@@ -1,7 +1,7 @@
 <template>
   <header class="topbar">
     <div class="topbar__left">
-      <TermLogo :size="14" />
+      <TermLogo :size="14" subtitle="治理中心" />
       <span class="topbar__rule">│</span>
       <span class="topbar__path">
         <span class="topbar__path-segment">{{ currentSegment }}</span>
@@ -93,6 +93,7 @@ import TermKbd from '../cli/TermKbd.vue'
 import TermModal from '../cli/TermModal.vue'
 import TermField from '../cli/TermField.vue'
 import TermButton from '../cli/TermButton.vue'
+import { extractError } from '../../api/errors'
 
 const route = useRoute()
 const router = useRouter()
@@ -167,8 +168,7 @@ async function handleChangePassword() {
       router.push('/login')
     }, 1500)
   } catch (e) {
-    const detail = e.response?.data?.detail
-    pwError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || '更新失敗')
+    pwError.value = extractError(e, '更新失敗')
   } finally {
     saving.value = false
   }

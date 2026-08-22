@@ -93,6 +93,7 @@ import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from 
 import { useDialog } from '../composables/useDialog'
 import { departmentOptions, flattenTree, indexById, departmentPath } from '../utils/departmentTree'
 import { formatDate } from '../utils/formatDate'
+import { extractError } from '../api/errors'
 
 const { confirm, toast } = useDialog()
 const departments = ref([])
@@ -182,7 +183,7 @@ async function handleSubmit() {
     showModal.value = false
     await fetchDepartments()
   } catch (e) {
-    toast(e.response?.data?.detail || '操作失敗', { tone: 'error' })
+    toast(extractError(e, '操作失敗'), { tone: 'error' })
   } finally { saving.value = false }
 }
 async function handleDeactivate(d) {

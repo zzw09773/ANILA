@@ -262,6 +262,7 @@ import { listDepartments } from '../api/departments'
 import { departmentOptions, departmentPath, indexById } from '../utils/departmentTree'
 import { formatDate } from '../utils/formatDate'
 import { listModels } from '../api/models'
+import { extractError } from '../api/errors'
 import {
   createUser,
   deactivateUser,
@@ -345,7 +346,7 @@ function setFeedback(type, message) {
 async function fetchUsers() {
   loading.value = true
   try { const { data } = await listUsers(); users.value = data }
-  catch (e) { setFeedback('error', e.response?.data?.detail || '載入使用者失敗') }
+  catch (e) { setFeedback('error', extractError(e, '載入使用者失敗')) }
   finally { loading.value = false }
 }
 
@@ -383,7 +384,7 @@ async function handleSubmit() {
     }
     showModal.value = false
     await fetchUsers()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || '操作失敗') }
+  } catch (e) { setFeedback('error', extractError(e, '操作失敗')) }
 }
 
 async function openAllowedModelsModal(user) {
@@ -412,7 +413,7 @@ async function handleSaveAllowedModels() {
     showAllowedModelsModal.value = false
     setFeedback('success', r.data?.message || '允許清單已更新')
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '更新允許清單失敗')
+    setFeedback('error', extractError(e, '更新允許清單失敗'))
   } finally { savingModels.value = false }
 }
 
@@ -438,7 +439,7 @@ async function handleSaveAllowedAgents() {
     showAllowedAgentsModal.value = false
     setFeedback('success', r.data?.message || 'Agent 允許清單已更新')
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '更新 Agent 失敗')
+    setFeedback('error', extractError(e, '更新 Agent 失敗'))
   } finally { savingAgents.value = false }
 }
 
@@ -449,7 +450,7 @@ async function handleResetPassword() {
     showResetModal.value = false
     setFeedback('success', `已重設「${resetTarget.value.username}」的密碼`)
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '重設失敗')
+    setFeedback('error', extractError(e, '重設失敗'))
   }
 }
 
@@ -458,7 +459,7 @@ async function handleApprove(user) {
     await client.post(`/api/users/${user.id}/approve`)
     setFeedback('success', `已核准「${user.username}」`)
     await fetchUsers()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || '核准失敗') }
+  } catch (e) { setFeedback('error', extractError(e, '核准失敗')) }
 }
 async function handleDeactivate(user) {
   if (!window.confirm(`停用「${user.username}」？`)) return
@@ -466,7 +467,7 @@ async function handleDeactivate(user) {
     await deactivateUser(user.id)
     setFeedback('success', `已停用「${user.username}」`)
     await fetchUsers()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || '停用失敗') }
+  } catch (e) { setFeedback('error', extractError(e, '停用失敗')) }
 }
 
 // branch SSO: 重新啟用之前被 deactivate 的使用者。
@@ -480,7 +481,7 @@ async function handleActivate(user) {
     setFeedback('success', `已啟用「${user.username}」`)
     await fetchUsers()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '啟用失敗')
+    setFeedback('error', extractError(e, '啟用失敗'))
   }
 }
 
@@ -524,7 +525,7 @@ async function handleHardDelete() {
     closeHardDeleteModal()
     await fetchUsers()
   } catch (e) {
-    hardDeleteError.value = e.response?.data?.detail || '永久刪除失敗'
+    hardDeleteError.value = extractError(e, '永久刪除失敗')
   } finally {
     hardDeleting.value = false
   }
@@ -536,7 +537,7 @@ async function handleToggleSsoOnly(user, disable) {
     await updateUser(user.id, { local_password_disabled: disable })
     setFeedback('success', disable ? `「${user.username}」現在僅限 SSO` : `已為「${user.username}」解鎖本地密碼`)
     await fetchUsers()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || `${action}失敗`) }
+  } catch (e) { setFeedback('error', extractError(e, `${action}失敗`)) }
 }
 
 function toggleUserSelection(id, on) {

@@ -99,6 +99,7 @@ import { ref, onMounted } from 'vue'
 import { listAuditLogs } from '../api/auditLogs'
 import { formatDate } from '../utils/formatDate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
+import { extractError } from '../api/errors'
 
 const logs = ref([])
 const pageError = ref('')
@@ -116,7 +117,7 @@ async function fetchLogs() {
     })
     logs.value = data
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '載入稽核紀錄失敗'
+    pageError.value = extractError(e, '載入稽核紀錄失敗')
   }
 }
 onMounted(fetchLogs)

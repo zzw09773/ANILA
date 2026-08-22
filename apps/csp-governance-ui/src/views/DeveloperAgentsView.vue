@@ -468,6 +468,7 @@ def employee_count(department: str) -&gt; int:
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
+import { extractError } from '../api/errors'
 import {
   approveAgent, deleteAgent, downloadPlatformCa, downloadTemplate, getAgent, listMyAgents,
   registerAgent, rejectAgent, setAgentClassification,
@@ -622,7 +623,7 @@ function validateForm() {
 async function fetchAgents() {
   loading.value = true
   try { const { data } = await listMyAgents(); agents.value = data }
-  catch (e) { setFeedback('error', e.response?.data?.detail || '載入 Agent 失敗') }
+  catch (e) { setFeedback('error', extractError(e, '載入 Agent 失敗')) }
   finally { loading.value = false }
 }
 async function fetchAvailableModels() {
@@ -686,7 +687,7 @@ async function handleRegister() {
     setFeedback('success', 'Agent 已註冊 · 待管理員指派使用者後即可使用（無需保管任何祕密）')
     finishRegister()
     await fetchAgents()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'register failed') }
+  } catch (e) { setFeedback('error', extractError(e, 'register failed')) }
   finally { registering.value = false }
 }
 
@@ -738,7 +739,7 @@ async function handleUpdateAgent() {
     if (detailAgent.value && detailAgent.value.id === data.id) detailAgent.value = data
     setFeedback('success', `已更新「${data.name}」`)
     closeEditModal()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'update failed') }
+  } catch (e) { setFeedback('error', extractError(e, 'update failed')) }
   finally { editing.value = false }
 }
 
@@ -749,7 +750,7 @@ async function handleApprove(agent) {
     await fetchAgents()
     syncDetailFromList(agent.id)
   }
-  catch (e) { setFeedback('error', e.response?.data?.detail || '核准失敗') }
+  catch (e) { setFeedback('error', extractError(e, '核准失敗')) }
 }
 
 // 核准／駁回後把最新狀態同步回開啟中的 detail modal（若操作對象就是它）。
@@ -802,7 +803,7 @@ async function handleSetClassification(agent, level) {
     }
     setFeedback('success', `已將「${agent.name}」預設分類等級設為「${applied}」`)
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || '分類等級更新失敗')
+    setFeedback('error', extractError(e, '分類等級更新失敗'))
   } finally {
     classificationBusyId.value = null
   }
@@ -817,7 +818,7 @@ async function handleHealthCheck(agent) {
     if (idx >= 0) agents.value[idx] = { ...agents.value[idx], health_status: data.status }
     setFeedback(data.status === 'healthy' ? 'success' : 'error',
       `「${agent.name}」健康：${data.status}${data.detail ? ` — ${data.detail}` : ''}`)
-  } catch (e) { setFeedback('error', e.response?.data?.detail || `「${agent.name}」健康探測失敗`) }
+  } catch (e) { setFeedback('error', extractError(e, `「${agent.name}」健康探測失敗`)) }
   finally { healthCheckingId.value = null }
 }
 
@@ -841,9 +842,7 @@ async function handleTestConnection(agent) {
   } catch (e) {
     if (detailAgent.value?.id !== probeId) return
     testConnectionResult.value = null
-    const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string' ? detail : (detail?.message || '測試連線失敗')
-    toast(msg, { tone: 'error' })
+    toast(extractError(e, '測試連線失敗'), { tone: 'error' })
   } finally {
     if (testingConnectionId.value === probeId) testingConnectionId.value = null
   }
@@ -858,7 +857,7 @@ async function handleDeleteAgent(agent) {
     agents.value = agents.value.filter(a => a.id !== agent.id)
     if (detailAgent.value && detailAgent.value.id === agent.id) { showDetailModal.value = false; detailAgent.value = null }
     setFeedback('success', `已刪除「${agent.name}」`)
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'delete failed') }
+  } catch (e) { setFeedback('error', extractError(e, 'delete failed')) }
   finally { deletingId.value = null }
 }
 
@@ -870,7 +869,7 @@ async function handleReject() {
     closeRejectModal()
     await fetchAgents()
     syncDetailFromList(rejectedId)
-  } catch (e) { setFeedback('error', e.response?.data?.detail || '駁回失敗') }
+  } catch (e) { setFeedback('error', extractError(e, '駁回失敗')) }
 }
 
 async function handleDownloadTemplate() {
@@ -883,7 +882,7 @@ async function handleDownloadTemplate() {
     link.click()
     URL.revokeObjectURL(url)
     setFeedback('success', '樣板已下載')
-  } catch (e) { setFeedback('error', e.response?.data?.detail || '下載失敗') }
+  } catch (e) { setFeedback('error', extractError(e, '下載失敗')) }
 }
 
 async function handleDownloadPlatformCa() {
@@ -899,11 +898,10 @@ async function handleDownloadPlatformCa() {
     setFeedback('success', '平台 CA 已下載')
   } catch (e) {
     const status = e.response?.status
-    const detail = e.response?.data?.detail
     if (status === 404) {
       setFeedback('error', '平台 CA 下載失敗，請稍後再試')
     } else {
-      setFeedback('error', detail || '下載平台 CA 失敗')
+      setFeedback('error', extractError(e, '下載平台 CA 失敗'))
     }
   }
 }

@@ -206,6 +206,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import {
   listPlatformLinks, createPlatformLink, updatePlatformLink,
   deactivatePlatformLink, purgePlatformLink, listPlatformLinkIcons,
@@ -334,7 +335,7 @@ async function fetchLinks() {
     links.value = (Array.isArray(data) ? data : (data?.services || data?.data || []))
       .map(normalizeService)
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '載入服務清單失敗'
+    pageError.value = extractError(e, '載入服務清單失敗')
   }
 }
 
@@ -411,18 +412,6 @@ async function loadAuditCallbacks(id) {
   }
 }
 
-function apiDetail(err, fallback = '操作失敗') {
-  const detail = err?.response?.data?.detail
-  if (typeof detail === 'string') return detail
-  if (Array.isArray(detail)) {
-    return detail
-      .map((d) => (typeof d === 'string' ? d : d?.msg || JSON.stringify(d)))
-      .join('；')
-  }
-  if (detail && typeof detail === 'object' && detail.message) return detail.message
-  return err?.message || fallback
-}
-
 function buildPayload() {
   // registry 契約用 entry_url；legacy platform_links 相容面用 url。
   // 混用會讓 Pydantic 默默丟掉網址（更新）或 422（建立）。
@@ -458,7 +447,7 @@ async function handleSubmit() {
     showModal.value = false
     await fetchLinks()
   } catch (e) {
-    toast(apiDetail(e, '儲存失敗'), { tone: 'error' })
+    toast(extractError(e, '儲存失敗'), { tone: 'error' })
   }
 }
 
@@ -468,7 +457,7 @@ async function handleDeactivate(link) {
     await (registryMode.value ? deactivateService(link.id) : deactivatePlatformLink(link.id))
     await fetchLinks()
   } catch (e) {
-    toast(apiDetail(e, '停用失敗'), { tone: 'error' })
+    toast(extractError(e, '停用失敗'), { tone: 'error' })
   }
 }
 
@@ -479,7 +468,7 @@ async function handleReactivate(link) {
       : updatePlatformLink(link.id, { is_active: true }))
     await fetchLinks()
   } catch (e) {
-    toast(apiDetail(e, '啟用失敗'), { tone: 'error' })
+    toast(extractError(e, '啟用失敗'), { tone: 'error' })
   }
 }
 
@@ -496,7 +485,7 @@ async function handlePurge(link) {
     await (registryMode.value ? purgeService(link.id) : purgePlatformLink(link.id))
     await fetchLinks()
   } catch (e) {
-    toast(apiDetail(e, '刪除失敗'), { tone: 'error' })
+    toast(extractError(e, '刪除失敗'), { tone: 'error' })
   }
 }
 </script>

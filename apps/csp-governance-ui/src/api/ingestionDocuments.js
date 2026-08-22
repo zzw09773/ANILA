@@ -84,7 +84,9 @@ export const documentBlobUrl = (documentId) =>
 /**
  * Vector-debug for a single chunk — opt-in payload (~30 bytes).
  * Returns ``{ chunk_id, dim, norm }`` with the full embedding never
- * leaving the server.
+ * leaving the server. ``note`` is optional: heading 區塊本來就不嵌入向量,
+ * 後端回 200 + ``{ dim: 0, norm: null, note: "heading 層級不嵌入向量" }``
+ * ——那是「本來就沒有」，不是錯誤。
  */
 export const getChunkEmbeddingDebug = (documentId, chunkId) =>
   client.get(`/api/ingestion/documents/${documentId}/chunks/${chunkId}/embedding-debug`)

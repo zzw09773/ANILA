@@ -157,6 +157,7 @@ import { getMyAllowedModels } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermConfirm } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { formatDate } from '../utils/formatDate'
+import { extractError } from '../api/errors'
 import {
   ALLOW_LIST_UNREAD,
   allowListNotice,
@@ -270,7 +271,7 @@ async function handleCreate() {
     hasCopied.value = false
     newKey.value = { name: '', model_ids: [], expires_at: '' }
   } catch (e) {
-    toast(e.response?.data?.detail || '建立失敗', { tone: 'error' })
+    toast(extractError(e, '建立失敗'), { tone: 'error' })
   } finally {
     creating.value = false
   }
@@ -319,7 +320,7 @@ async function handleRegenerate() {
     copied.value = false
     hasCopied.value = false
   } catch (e) {
-    toast(e.response?.data?.detail || '重新產生失敗', { tone: 'error' })
+    toast(extractError(e, '重新產生失敗'), { tone: 'error' })
   } finally {
     regenerateTarget.value = null
   }

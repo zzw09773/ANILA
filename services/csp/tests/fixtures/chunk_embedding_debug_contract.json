@@ -1,0 +1,15 @@
+{
+  "heading": {
+    "chunk_id": 61,
+    "dim": 0,
+    "norm": null,
+    "note": "heading 層級不嵌入向量"
+  },
+  "leaf": {
+    "chunk_id": 14,
+    "dim": 2,
+    "norm": 5.0,
+    "note": null
+  },
+  "required_keys": ["chunk_id", "dim", "norm", "note"]
+}

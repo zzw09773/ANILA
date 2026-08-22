@@ -81,6 +81,7 @@
    cht mock 讀卡機的正確起法（#12）。
 7. **驗證**：C 類斷言過、三個入口綠、owner API 路徑實跑
    （`login → CSRF → set-router-primary`，這就是初裝第五件）。
+   ⚠ `/anilalm/` 回 503「尚未開放」是刻意的發行閘、不是故障——見 `anilalm-release-gate.md`，別當故障去修。
 
 ### 1.3 第一次以人的身分走進去
 

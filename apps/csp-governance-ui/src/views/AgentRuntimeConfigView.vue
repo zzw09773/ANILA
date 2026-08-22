@@ -190,6 +190,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { extractError } from '../api/errors'
 import {
   getAgent,
   getAgentRuntimeConfig,
@@ -227,7 +228,7 @@ async function loadFunctions() {
     const { data } = await listAgentFunctions(agentId.value)
     functions.value = Array.isArray(data) ? data : []
   } catch (e) {
-    fnError.value = e?.response?.data?.detail || '載入功能失敗'
+    fnError.value = extractError(e, '載入功能失敗')
   }
 }
 
@@ -253,7 +254,7 @@ async function handleAddFunction() {
     newFn.value = { kind: newFn.value.kind, label: '', body: '', autosend: false }
     await loadFunctions()
   } catch (e) {
-    fnError.value = e?.response?.data?.detail || '新增失敗'
+    fnError.value = extractError(e, '新增失敗')
   } finally {
     fnBusy.value = false
   }
@@ -268,7 +269,7 @@ async function handleDeleteFunction(f) {
     await deleteAgentFunction(agentId.value, f.id)
     await loadFunctions()
   } catch (e) {
-    fnError.value = e?.response?.data?.detail || '刪除失敗'
+    fnError.value = extractError(e, '刪除失敗')
   } finally {
     fnBusy.value = false
   }
@@ -367,7 +368,7 @@ async function load() {
     agent.value = agentRow.data
     loadFromConfig(cfgResp.data?.runtime_config ?? null)
   } catch (e) {
-    feedback.value = { type: 'error', message: `載入失敗：${e.response?.data?.detail || e.message}` }
+    feedback.value = { type: 'error', message: `載入失敗：${extractError(e, e.message)}` }
   } finally {
     loading.value = false
   }

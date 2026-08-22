@@ -362,6 +362,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { extractError } from '../api/errors'
 import {
   listMessageActions,
   listActionIcons,
@@ -460,37 +461,23 @@ function setFeedback(type, message) {
   feedback.message = message
 }
 
-function apiDetail(err) {
-  const detail = err?.response?.data?.detail
-  if (typeof detail === 'string') return detail
-  if (Array.isArray(detail)) {
-    return detail
-      .map((d) => (typeof d === 'string' ? d : d?.msg || JSON.stringify(d)))
-      .join('；')
-  }
-  if (detail && typeof detail === 'object' && detail.message) return detail.message
-  return err?.message || '操作失敗'
-}
-
-async function blobApiDetail(err) {
+// 匯出端點 responseType 是 blob：失敗時 body 是 blob 包 JSON（含 detail）。
+// extractError 不會讀 blob,所以這裡只拆出「那層 payload」再回喂 extractError,
+// 讓 422 陣列／物件／字串三種形狀都走同一套收斂,而不是本地的 JSON.stringify。
+async function blobApiDetail(err, fallback = '操作失敗') {
   const data = err?.response?.data
   if (data instanceof Blob) {
     try {
       const text = await data.text()
       const parsed = JSON.parse(text)
-      const detail = parsed?.detail
-      if (typeof detail === 'string') return detail
-      if (Array.isArray(detail)) {
-        return detail
-          .map((d) => (typeof d === 'string' ? d : d?.msg || JSON.stringify(d)))
-          .join('；')
+      if (parsed && typeof parsed === 'object' && 'detail' in parsed) {
+        return extractError({ response: { data: parsed } }, fallback)
       }
-      if (detail && typeof detail === 'object' && detail.message) return detail.message
     } catch {
-      // fall through to shared extractor
+      // 不是 JSON 的 blob（例如把 ndjson 成功 body 當錯）→ 落到下方共用收斂器。
     }
   }
-  return apiDetail(err)
+  return extractError(err, fallback)
 }
 
 function roleLabel(role) {
@@ -579,7 +566,7 @@ async function fetchActions() {
     const { data } = await listMessageActions()
     actions.value = Array.isArray(data) ? data : []
   } catch (e) {
-    setFeedback('danger', apiDetail(e) || '載入自訂動作失敗')
+    setFeedback('danger', extractError(e, '載入自訂動作失敗'))
   }
 }
 
@@ -603,7 +590,7 @@ async function fetchIcons() {
       icons.value = []
     }
   } catch (e) {
-    setFeedback('danger', apiDetail(e) || '載入圖示清單失敗')
+    setFeedback('danger', extractError(e, '載入圖示清單失敗'))
   }
 }
 
@@ -730,7 +717,7 @@ async function handleSubmitEditor() {
     showEditor.value = false
     await fetchActions()
   } catch (e) {
-    editorError.value = apiDetail(e)
+    editorError.value = extractError(e)
   } finally {
     submitting.value = false
   }
@@ -750,7 +737,7 @@ async function handleDelete(action) {
     setFeedback('ok', `已刪除「${action.name}」`)
     await fetchActions()
   } catch (e) {
-    setFeedback('danger', apiDetail(e))
+    setFeedback('danger', extractError(e))
   } finally {
     busyId.value = null
   }
@@ -782,7 +769,7 @@ async function openBindingsModal(action) {
     if (seq !== bindingsLoadSeq.value) return
     bindingsLoadFailed.value = true
     bindingsLoaded.value = false
-    bindingsError.value = apiDetail(e)
+    bindingsError.value = extractError(e)
   } finally {
     if (seq === bindingsLoadSeq.value) {
       bindingsLoading.value = false
@@ -859,7 +846,7 @@ async function handleReplaceBindings() {
     setFeedback('ok', `已整組替換「${bindingsTarget.value.name}」的綁定`)
     showBindings.value = false
   } catch (e) {
-    bindingsError.value = apiDetail(e)
+    bindingsError.value = extractError(e)
   } finally {
     bindingsSubmitting.value = false
   }

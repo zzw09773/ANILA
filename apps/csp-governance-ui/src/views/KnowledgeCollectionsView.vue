@@ -132,6 +132,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { listCollections, createCollection, updateCollection, deleteCollection } from '../api/ingestionCollections'
+import { extractError } from '../api/errors'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
@@ -201,7 +202,7 @@ async function loadCollections() {
     const { data } = await listCollections(params)
     collections.value = data
   } catch (e) {
-    error.value = `載入知識庫失敗：${e.response?.data?.detail || e.message}`
+    error.value = `載入知識庫失敗：${extractError(e, e.message)}`
   } finally { loadingCollections.value = false }
 }
 
@@ -217,6 +218,13 @@ function openCreateModal() {
 
 async function submitCreate() {
   formError.value = ''
+  // DK-1：空白名稱只該得到「請輸入名稱」，不是後端原始 pydantic JSON。
+  // 部門對話框（DepartmentsView）早就用 disabled 按鈕處理同一件事，
+  // 這裡在建庫這一格補上同款前置——欄位錯不該打到後端。
+  if (!form.value.name) {
+    formError.value = '請輸入名稱'
+    return
+  }
   submitting.value = true
   const s = form.value.strategy
   let params
@@ -243,17 +251,18 @@ async function submitCreate() {
     creating.value = false
     await loadCollections()
   } catch (e) {
-    formError.value = e.response?.data?.detail || e.message
+    // DK-1 同族清掃：建庫失敗不放裸 detail（array/object 會變 [object Object] 或原始 JSON）。
+    formError.value = extractError(e, '建立失敗')
   } finally { submitting.value = false }
 }
 
 async function archiveCollection(c) {
   try { await updateCollection(c.id, { status: 'archived' }); await loadCollections() }
-  catch (e) { error.value = `封存失敗：${e.response?.data?.detail || e.message}` }
+  catch (e) { error.value = `封存失敗：${extractError(e, e.message)}` }
 }
 async function restoreCollection(c) {
   try { await updateCollection(c.id, { status: 'active' }); await loadCollections() }
-  catch (e) { error.value = `還原失敗：${e.response?.data?.detail || e.message}` }
+  catch (e) { error.value = `還原失敗：${extractError(e, e.message)}` }
 }
 const markStates = computed(() => {
   const map = {}
@@ -311,7 +320,7 @@ async function toggleAnilaSearchable(c) {
   } catch (e) {
     // 後端的拒絕訊息裡寫著一條走得通的路(降密流程／另建一個庫／請管理員代標),
     // 原樣呈現,不要改寫成「操作失敗」。
-    markErrors.value[c.id] = '標記失敗：' + (e.response?.data?.detail || e.message)
+    markErrors.value[c.id] = '標記失敗：' + extractError(e, e.message)
   } finally {
     markingId.value = null
   }
@@ -320,7 +329,7 @@ async function toggleAnilaSearchable(c) {
 async function confirmDelete(c) {
   if (!(await confirm({ message: `刪除「${c.name}」？CASCADE 會移除 ${c.document_count} 份文件與 ${c.chunk_count} 個區塊。`, danger: true }))) return
   try { await deleteCollection(c.id); await loadCollections() }
-  catch (e) { error.value = `刪除失敗：${e.response?.data?.detail || e.message}` }
+  catch (e) { error.value = `刪除失敗：${extractError(e, e.message)}` }
 }
 
 function humanBytes(n) {

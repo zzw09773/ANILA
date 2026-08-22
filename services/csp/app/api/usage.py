@@ -149,6 +149,7 @@ def usage_chart(
 @router.get("/top-models", response_model=list[TopModelUsage])
 def top_models(
     limit: int = Query(10, ge=1, le=50),
+    range: str = Query("30d", regex="^(4h|12h|24h|7d|30d)$"),
     model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
     department_id: int | None = None,
     current_user: User = Depends(get_current_user),
@@ -164,12 +165,14 @@ def top_models(
         user_id=user_id,
         department_id=department_id,
         scope_ids=scope_ids,
+        range_key=range,
     )
 
 
 @router.get("/top-users", response_model=list[TopUserUsage])
 def top_users(
     limit: int = Query(10, ge=1, le=50),
+    range: str = Query("30d", regex="^(4h|12h|24h|7d|30d)$"),
     model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
     department_id: int | None = None,
     current_user: User = Depends(get_current_user),
@@ -194,18 +197,21 @@ def top_users(
             model_type=model_type,
             department_id=department_id,
             scope_ids=scope_ids,
+            range_key=range,
         )
     return get_top_users(
         db,
         limit=limit,
         model_type=model_type,
         department_id=department_id,
+        range_key=range,
     )
 
 
 @router.get("/top-departments", response_model=list[TopDepartmentUsage])
 def top_departments(
     limit: int = Query(10, ge=1, le=50),
+    range: str = Query("30d", regex="^(4h|12h|24h|7d|30d)$"),
     model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
     department_id: int | None = None,
     current_user: User = Depends(get_current_user),
@@ -229,12 +235,14 @@ def top_departments(
             model_type=model_type,
             department_id=department_id,
             scope_ids=scope_ids,
+            range_key=range,
         )
     return get_top_departments(
         db,
         limit=limit,
         model_type=model_type,
         department_id=department_id,
+        range_key=range,
     )
 
 

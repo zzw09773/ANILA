@@ -251,13 +251,6 @@ function kpiValue(n) {
   return n
 }
 
-function errDetail(e) {
-  const d = e?.response?.data?.detail
-  if (typeof d === 'string' && d.trim()) return d
-  if (e?.message) return e.message
-  return '未知錯誤'
-}
-
 const scopeLabel = computed(() => {
   if (authStore.isAdmin) return 'full · governance'
   if (authStore.isDeveloper) return 'agents · collections · self'
@@ -285,7 +278,7 @@ async function fetchAdminWidgets() {
   } catch (e) {
     legacyTokenStats.value = null
     topAgents.value = []
-    legacyTokenError.value = `舊版 token 統計載入失敗：${errDetail(e)}`
+    legacyTokenError.value = `舊版 token 統計載入失敗：${extractError(e, '未知錯誤')}`
   } finally {
     legacyTokenLoading.value = false
     legacyTokenTried.value = true
@@ -318,7 +311,7 @@ async function refresh() {
     } catch (e) {
       summaryLoaded.value = false
       chartData.value = null
-      loadError.value = `儀表板用量載入失敗:${errDetail(e)}`
+      loadError.value = `儀表板用量載入失敗：${extractError(e)}`
     }
 
     try {
@@ -328,7 +321,7 @@ async function refresh() {
     } catch (e) {
       platformLinks.value = []
       if (!loadError.value) {
-        loadError.value = `平台連結載入失敗:${errDetail(e)}`
+        loadError.value = `平台連結載入失敗：${extractError(e)}`
       }
     }
 

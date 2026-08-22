@@ -88,6 +88,7 @@ import { computed, ref } from 'vue'
 import { TermBox, TermButton } from '../cli'
 import { downloadAnilaVerify } from '../../api/agents'
 import { buildVerifySnippets } from './verifySnippets.js'
+import { extractError } from '../../api/errors'
 
 const props = defineProps({
   cspUrl: { type: String, default: '' },
@@ -136,7 +137,7 @@ async function downloadVerify() {
       dlMsg.value =
         'anila_verify.py 下載端點尚未上線（需後端提供 GET /api/agents/anila-verify/download）'
     } else {
-      dlMsg.value = e.response?.data?.detail || '下載 anila_verify.py 失敗'
+      dlMsg.value = extractError(e, '下載 anila_verify.py 失敗')
     }
   }
 }

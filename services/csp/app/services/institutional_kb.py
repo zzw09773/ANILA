@@ -56,6 +56,26 @@ _TOP_K = 8
 _UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.to_storage()
 
 
+def _image_pks_from_metadata(metadata: object) -> list[int]:
+    """Pull integer ``ingestion_images.id`` values off chunk metadata.
+
+    Anything that is not a list of ints is dropped — a polluted or
+    pre-feature metadata blob must not become a URL or a 500.
+    """
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("image_pks")
+    if not isinstance(raw, list):
+        return []
+    out: list[int] = []
+    for item in raw:
+        if isinstance(item, bool) or not isinstance(item, int):
+            continue
+        if item > 0:
+            out.append(item)
+    return out
+
+
 class KbState(str, Enum):
     SEARCHED_HIT = "searched_hit"
     SEARCHED_MISS = "searched_miss"
@@ -71,6 +91,10 @@ class KbHit:
     filename: str
     content: str
     score: float
+    # ``ingestion_images.id`` PKs stamped on the cited chunk. Empty when
+    # the chunk has no figure, or the document was indexed before this
+    # field existed (those stay empty until re-ingest — not a migration).
+    image_pks: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -212,6 +236,9 @@ async def retrieve_institutional(
                 filename=allowed[hit.chunk.document_id],
                 content=hit.chunk.content,
                 score=hit.score,
+                image_pks=_image_pks_from_metadata(
+                    getattr(hit.chunk, "metadata", None)
+                ),
             )
             for hit in raw
             if hit.chunk.document_id in allowed

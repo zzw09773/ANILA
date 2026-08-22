@@ -293,13 +293,20 @@ def _system_text(body: dict) -> str:
     return "\n".join(p.get("text", "") for p in content)
 
 
-def _hit(n: int, *, collection_id: int = 1, score: float | None = None) -> KbHit:
+def _hit(
+    n: int,
+    *,
+    collection_id: int = 1,
+    score: float | None = None,
+    image_pks: list[int] | None = None,
+) -> KbHit:
     return KbHit(
         collection_id=collection_id,
         document_id=100 + n,
         filename=f"規章-{n}.pdf",
         content=f"第 {n} 段規章內容：出差搭乘高鐵以標準車廂為原則。",
         score=0.9 - n * 0.1 if score is None else score,
+        image_pks=list(image_pks or []),
     )
 
 
@@ -503,6 +510,26 @@ def test_hit_injects_numbered_passages_matching_citations(
     assert citations[0]["title"] == _hit(1).filename
     assert citations[1]["title"] == _hit(2).filename
     assert citations[0]["id"] != citations[1]["id"]
+
+
+def test_hit_with_image_pks_lands_on_citations_without_urls(
+    client, db, actor, model_target, kb
+):
+    """Figure ids ride the existing citation object — not a parallel channel,
+    and not a URL in the embed/snippet text."""
+    kb.result = KbResult(
+        state=KbState.SEARCHED_HIT,
+        hits=[_hit(1, image_pks=[42]), _hit(2)],
+    )
+    resp = _chat(client, actor, target=model_target.name, route="direct")
+    citations = resp.json()["anila_meta"]["citations"]
+    assert citations[0]["image_pks"] == [42]
+    assert "image_pks" not in citations[1]
+    snippet = citations[0]["snippet"]
+    assert "http://" not in snippet
+    assert "https://" not in snippet
+    assert "/api/ingestion" not in snippet
+    assert "![" not in snippet
 
 
 def test_two_chunks_of_the_same_document_get_distinct_citation_ids(

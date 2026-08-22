@@ -263,6 +263,34 @@ load 得回來的映像仍可能夾帶祕密。**每次「重建映像」的收�
 
 ## 3. 🟡 不擋 tag，上線後處理（每一項都有處理時點，不是「低優先」）
 
+### 🆕🟡 活體 PG 測試的鑑別力綁在 DSN 角色上,而預設值站在錯的那一邊(2026-08-22,審查長)
+
+**現場**(F-1 那包):把 `handlers.py:343` 生產必須的 `SET LOCAL anila.collection_id` 拿掉之後——
+```
+DSN 用 csp     (bypassrls;repo 既有範例 test_agent_collection_bindings_pg.py:33 示範的就是它) → 3 passed 🔴
+DSN 用 csp_app (settings.py:29 明寫生產必須用它)                                              → 2 failed ✅
+```
+🔴 **同一組測試、同一個突變,只因為 DSN 填了哪個角色,鑑別力就在滿分與零分之間切換,
+而測試對這件事完全沒有意見。** ⚠ **照文件範例跑,就是照盲的那條路跑。**
+
+**母集合已量(幕僚長 2026-08-22)**:
+```
+/usr/bin/grep -rln "ANILA_TEST_PG_DSN\|TEST_PG_DSN" --include=*.py services packages | wc -l  → 14 支
+```
+**其中已經處理角色的 3 支**(**可直接抄的現成解**):
+- `services/csp/tests/test_audit_ledger_pg.py:127` —— 連上後 `SET ROLE csp_app`(並註明 SET ROLE 是 session 級)
+- `services/csp/tests/test_source_model_coverage_pg.py:203` —— **`test_runs_as_a_non_bypassrls_role`**(斷言式)
+- `packages/anila-core/tests/integration/test_g2_rls_bypass.py:46` —— 斷言 `csp_app` 沒有 BYPASSRLS
+
+⚠ **其餘 11 支未見角色處置。不要把 11 當成「11 支失明」**——
+**其中不依賴 RLS 的那些不受影響,而哪些依賴、哪些不依賴,我沒有逐一判定。**
+👉 **這條的工作是「逐一判定那 11 支有沒有依賴 RLS,依賴的補上角色處置」**,不是「把 11 支全改」。
+
+**處理時點**:不擋 tag。**但任何人下次動到活體 PG 測試時要先看這一條**——
+**因為新寫的那支會照既有範例抄,而既有範例示範的正是盲的那條路。**
+🔴 **判準不是「測試綠」,是「把它依賴的那行 RLS 設定拿掉,它會不會紅」。**
+⚠ **不要用 skip 迴避**——**skip 正是那支死錨點藏了一整天的機制。**
+
 ### 🆕 mermaid 的 `strict` 已實測有效,但版本一動就沒有人知道要重驗(2026-08-21,審查長裁定)
 
 **已關的那格**:`securityLevel:"strict"` **在真瀏覽器實測有效**(資安官,真 Chromium ＋ 真 mermaid 11.16.1,

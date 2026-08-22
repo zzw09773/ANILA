@@ -168,20 +168,26 @@ def _mixed_collection(db, level: str) -> IngestionCollection:
 
 
 class _StubChunk:
-    def __init__(self, document_id: int, content: str):
+    def __init__(self, document_id: int, content: str, metadata: dict | None = None):
         self.id = document_id * 100
         self.document_id = document_id
         self.chunk_key = f"chunk:{document_id}"
         self.content = content
-        self.metadata: dict = {}
+        self.metadata: dict = metadata if metadata is not None else {}
         self.parent_chunk_id = None
         self.chunk_type = "leaf"
         self.chunk_level = 0
 
 
 class _StubHit:
-    def __init__(self, document_id: int, score: float, content: str = "第三條 申誡三次視同記過一次。"):
-        self.chunk = _StubChunk(document_id, content)
+    def __init__(
+        self,
+        document_id: int,
+        score: float,
+        content: str = "第三條 申誡三次視同記過一次。",
+        metadata: dict | None = None,
+    ):
+        self.chunk = _StubChunk(document_id, content, metadata)
         self.score = score
         self.parent_content = None
 
@@ -279,6 +285,30 @@ async def test_inactive_marked_collection_is_not_searched(db, user, backend):
 
     assert result.state is KbState.NOT_SEARCHED
     assert backend.constructed == []
+
+
+@pytest.mark.asyncio
+async def test_image_pks_on_chunk_metadata_reach_kb_hit(
+    db, user, one_marked_collection, backend
+):
+    """Cited figures ride chunk metadata through retrieve — not the embed text."""
+    coll = one_marked_collection
+    doc_id = coll._doc_ids[0]
+    backend.hits[coll.id] = [
+        _StubHit(
+            doc_id,
+            0.91,
+            content="見 [圖片描述：轉換區示意圖] 如圖。",
+            metadata={"image_pks": [42], "strategy": "hierarchical"},
+        )
+    ]
+
+    result = await retrieve_institutional(db, user, "轉換區", threshold=0.0)
+
+    assert result.state is KbState.SEARCHED_HIT
+    assert result.hits[0].image_pks == [42]
+    assert "http" not in result.hits[0].content
+    assert "/api/" not in result.hits[0].content
 
 
 # ── 文件密等 ────────────────────────────────────────────────────────────────

@@ -97,6 +97,7 @@ const NEW_TESTS = [
   "src/__tests__/serviceCardIcon",
   // Cited RAG answers must keep markdown (owner 2026-08-21 screen).
   "src/__tests__/markdownCitations",
+  "src/__tests__/citedFigures",
 ];
 // 這個工作包之前就存在的測試(用來量「舊套件漏了什麼」)。
 const PRE_EXISTING_EXCLUDES = [
@@ -115,6 +116,7 @@ const PRE_EXISTING_EXCLUDES = [
   "**/agentReplySignal.test.jsx",
   "**/serviceCardIcon.test.jsx",
   "**/markdownCitations.test.jsx",
+  "**/citedFigures.test.jsx",
   "**/__tests__/guards/**",
   "**/sourceTextGuardRegistry.test.js",
 ];
@@ -729,6 +731,14 @@ const MUTATIONS = [
       "                  citations={msg.citations}\n" +
       "                  onOpenCitation={onOpenCitation}\n" +
       "                />",
+  },
+  {
+    id: "cited-figure-drops-image-pks",
+    file: "src/markdown.jsx",
+    shape: "條件永遠假（識別字全留）",
+    intent: "被引用段落有圖時不再把 blob URL 畫出來",
+    find: "    if (citationFigurePks(citation).length > 0) {",
+    replace: "    if (citationFigurePks(citation).length < 0) {",
   },
 ];
 

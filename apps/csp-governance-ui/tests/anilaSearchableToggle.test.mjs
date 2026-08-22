@@ -20,6 +20,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { extractError } from '../src/api/errors.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '../../..')
@@ -143,6 +144,7 @@ function buildToggle({ updateCollection, isAdmin = true }) {
   const markingId = { value: null }
   const deps = {
     anilaMarkState,
+    extractError,
     isAdmin: { value: isAdmin },
     markErrors,
     markingId,

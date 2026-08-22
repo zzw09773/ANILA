@@ -306,8 +306,9 @@ def get_top_models(
     user_id: int | None = None,
     department_id: int | None = None,
     scope_ids: list[int] | None = None,
+    range_key: str = "30d",
 ) -> list[dict]:
-    start_time, _ = get_time_range("30d")
+    start_time, _ = get_time_range(range_key)
     query = db.query(
         TokenUsage.model_id,
         func.sum(TokenUsage.total_tokens).label("total_tokens"),
@@ -349,8 +350,9 @@ def get_top_users(
     model_type: str | None = None,
     department_id: int | None = None,
     scope_ids: list[int] | None = None,
+    range_key: str = "30d",
 ) -> list[dict]:
-    start_time, _ = get_time_range("30d")
+    start_time, _ = get_time_range(range_key)
     query = db.query(
         TokenUsage.user_id,
         func.sum(TokenUsage.total_tokens).label("total_tokens"),
@@ -389,13 +391,14 @@ def get_top_departments(
     model_type: str | None = None,
     department_id: int | None = None,
     scope_ids: list[int] | None = None,
+    range_key: str = "30d",
 ) -> list[dict]:
     """Direct-attribution ranking per department (not subtree rollup).
 
     Subtree rollup is obtained via the ``department_id`` filter path
     (``_department_scope_ids`` / ``_apply_usage_filters``).
     """
-    start_time, _ = get_time_range("30d")
+    start_time, _ = get_time_range(range_key)
     query = db.query(
         TokenUsage.department_id,
         func.sum(TokenUsage.total_tokens).label("total_tokens"),

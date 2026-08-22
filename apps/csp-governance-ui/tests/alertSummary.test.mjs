@@ -65,6 +65,20 @@ test('只有待處理(無高嚴重度)→ warn,仍與平時不同', () => {
   assert.match(alertSummaryHeadline(summary), /2 個告警待處理/)
 })
 
+test('R2-1:high_count 是 open-only,文字必須講「未處理」不講「未解決」', () => {
+  // 3 open + 2 acknowledged 的高嚴重度 → 卡片講「3 個未處理」,
+  // 不得講「3 個未解決」(未解決其實是 5,數字會在自己的句裡少報)。
+  const summary = {
+    open_count: 3,
+    acknowledged_count: 2,
+    resolved_count: 12,
+    high_count: 3,
+  }
+  const headline = alertSummaryHeadline(summary)
+  assert.match(headline, /3 個高嚴重度告警未處理/)
+  assert.ok(!headline.includes('未解決'), `文字不可再講「未解決」:${headline}`)
+})
+
 test('壞形狀 / 缺欄位的摘要不得讓 NaN 上畫面', () => {
   for (const raw of [null, undefined, {}, { high_count: 'x' }, { open_count: -3 }]) {
     const s = normalizeAlertSummary(raw)
@@ -189,15 +203,5 @@ test('AlertsView 有 30s 輪詢,而且元件銷毀時 stop', () => {
   )
 })
 
-test('新增檔案不得引入裸 data.detail 插值(沿用 W2-12 的 ratchet 紀律)', () => {
-  for (const relative of [
-    'views/AlertsView.vue',
-    'components/dashboard/AlertSummaryCard.vue',
-    'utils/alertSummary.js',
-    'utils/polling.js',
-  ]) {
-    const source = stripComments(readSource(relative))
-    const hits = source.match(/response\??\.data\??\.detail/g) || []
-    assert.equal(hits.length, 0, `${relative} 有裸 data.detail 插值`)
-  }
-})
+// 裸 data.detail ratchet 已上移到 tests/bareDetailRatchet.test.mjs（R2-3）：
+// 母集合＝src/** 全部 .vue/.js 依形狀窮舉，不再各檔手寫一份四檔清單。

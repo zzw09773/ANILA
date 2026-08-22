@@ -182,6 +182,25 @@ def test_image_blob_200_streams_bytes(
     assert resp.headers["content-type"] != "application/json"
 
 
+def test_image_blob_200_with_access_cookie_only(
+    client: TestClient, db, alice, alice_image,
+):
+    """``<img src>`` cannot set Authorization. Cookie-only GET must still
+    authenticate — CSRF skips safe methods, so the session cookie is enough."""
+    from app.middleware.cookies import ACCESS_COOKIE_NAME
+
+    image_pk, blob_path = alice_image
+    expected = blob_path.read_bytes()
+    token = create_tokens(alice)["access_token"]
+    resp = client.get(
+        f"/api/ingestion/images/{image_pk}/blob",
+        cookies={ACCESS_COOKIE_NAME: token},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.content == expected
+    assert resp.headers["content-type"].startswith("image/png")
+
+
 def test_image_blob_content_type_tracks_mime(
     client: TestClient, db, alice, db_engine, tmp_path, monkeypatch,
 ):

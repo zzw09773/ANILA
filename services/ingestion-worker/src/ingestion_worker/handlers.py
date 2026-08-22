@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -182,7 +183,7 @@ async def _persist_images(
     images: dict[str, Any],
     embedder: Any,
     billing_user_id: int | None,
-) -> int:
+) -> dict[str, int]:
     """Write every captioned image to disk + DB so Studio can later
     surface them via vector search.
 
@@ -192,13 +193,16 @@ async def _persist_images(
       1. Bytes flushed to ``<UPLOAD_DIR>/anila-images/<doc_id>/<image_id>.<ext>``
          where the extension comes from ``ref.mime`` (image/png → .png).
       2. A row inserted into ``ingestion_images`` with the caption + a
-         caption embedding for vector search. ``ON CONFLICT DO NOTHING``
+         caption embedding for vector search. ``ON CONFLICT`` updates
          on (document_id, image_id) so re-ingesting the same document
-         doesn't duplicate rows; the worker's existing chunk-level
-         delete-and-reinsert dance handles the cleanup of stale rows
-         (see migration 0025: FK to documents is ON DELETE CASCADE so
-         worker's existing ``DELETE FROM ingestion_documents`` already
-         takes care of the orphan case).
+         doesn't duplicate rows. Embedding + provenance use
+         ``COALESCE(EXCLUDED.*, existing)`` so a re-import whose
+         embedder is down cannot NULL a vector that was already good.
+         The worker's existing chunk-level delete-and-reinsert dance
+         handles the cleanup of stale rows (see migration 0025: FK to
+         documents is ON DELETE CASCADE so worker's existing
+         ``DELETE FROM ingestion_documents`` already takes care of the
+         orphan case).
 
     Why batch the embedding into a single call: ``Embedder.embed`` is
     HTTP-backed; one call with N captions is much cheaper than N calls
@@ -206,11 +210,13 @@ async def _persist_images(
     (the function as a whole still continues on failure — caption
     embedding is best-effort).
 
-    Returns the count of images successfully persisted (for log
-    correlation).
+    Returns ``{parser_image_id: ingestion_images.id}`` for every row that
+    actually landed. Callers stamp those PKs onto chunk metadata — the
+    blob endpoint addresses rows by BIGSERIAL PK, not the per-document
+    TEXT id. Empty dict on every early-exit / total-failure path.
     """
     if not images:
-        return 0
+        return {}
     upload_dir = settings.upload_dir
     images_root = os.path.join(upload_dir, "anila-images", str(document_id))
     try:
@@ -222,7 +228,7 @@ async def _persist_images(
         logger.error(
             "Failed to mkdir %s for image persistence: %s", images_root, e,
         )
-        return 0
+        return {}
 
     # Build the to-be-inserted rows AND collect captions for batch embed.
     rows: list[dict[str, Any]] = []
@@ -268,6 +274,7 @@ async def _persist_images(
             page = getattr(ref, "page", None)
             alt_text = getattr(ref, "alt_text", "") or None
             rows.append({
+                "parser_id": str(img_id),
                 "image_id": safe_img_id,
                 "page": page,
                 "storage_path": rel_path,
@@ -284,7 +291,7 @@ async def _persist_images(
             )
 
     if not rows:
-        return 0
+        return {}
 
     # Embed the captions in as few roundtrips as the batch size allows
     # (``Embedder.embed`` splits at ``EMBEDDING_BATCH_SIZE``, so an
@@ -299,14 +306,16 @@ async def _persist_images(
         if len(embeddings) != len(rows):
             logger.warning(
                 "Caption embedding count mismatch (got %d, expected %d); "
-                "persisting without embeddings.",
+                "continuing; existing embeddings are kept on conflict, "
+                "new rows land without one.",
                 len(embeddings), len(rows),
             )
             embeddings = None
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "Caption batch embedding failed for doc %s: %s — "
-            "persisting rows without embeddings.",
+            "continuing; existing embeddings are kept on conflict, "
+            "new rows land without one.",
             document_id, e,
         )
 
@@ -324,7 +333,7 @@ async def _persist_images(
     source_model = getattr(embedder, "model_name", None)
     native_dim = getattr(embedder, "native_dim", None)
 
-    inserted = 0
+    pk_by_parser_id: dict[str, int] = {}
     # Outer transaction so the SET LOCAL GUC takes effect (SET LOCAL is
     # txn-scoped) and is confined to this acquire — it never leaks to the next
     # pooled user. ingestion_images is FORCE-RLS (migration 0037): the INSERT
@@ -342,7 +351,7 @@ async def _persist_images(
                 # than aborting the whole batch (preserves the prior best-effort
                 # continue-on-error behaviour now that we're inside a txn).
                 async with conn.transaction():
-                    await conn.execute(
+                    row_pk = await conn.fetchval(
                         """
                         INSERT INTO ingestion_images
                             (collection_id, document_id, image_id, page,
@@ -354,17 +363,25 @@ async def _persist_images(
                            SET caption     = EXCLUDED.caption,
                                storage_path= EXCLUDED.storage_path,
                                bytes_size  = EXCLUDED.bytes_size,
-                               embedding   = EXCLUDED.embedding,
-                               embedding_source_model = EXCLUDED.embedding_source_model,
-                               embedding_native_dim   = EXCLUDED.embedding_native_dim,
+                               -- Re-import must not worsen an existing vector:
+                               -- a dead embedder binds NULL here; keep the row's.
+                               embedding   = COALESCE(EXCLUDED.embedding, ingestion_images.embedding),
+                               embedding_source_model = COALESCE(
+                                   EXCLUDED.embedding_source_model,
+                                   ingestion_images.embedding_source_model),
+                               embedding_native_dim   = COALESCE(
+                                   EXCLUDED.embedding_native_dim,
+                                   ingestion_images.embedding_native_dim),
                                updated_at  = CURRENT_TIMESTAMP
+                        RETURNING id
                         """,
                         collection_id, document_id, row["image_id"], row["page"],
                         row["storage_path"], row["mime"], row["alt_text"],
                         row["caption"], row["bytes_size"], emb_value,
                         source_model, native_dim,
                     )
-                inserted += 1
+                if row_pk is not None:
+                    pk_by_parser_id[row["parser_id"]] = int(row_pk)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "Failed to insert image row %s for doc %s: %s",
@@ -372,9 +389,9 @@ async def _persist_images(
                 )
     logger.info(
         "Persisted %d/%d images for doc %s (with embedding=%s)",
-        inserted, len(rows), document_id, embeddings is not None,
+        len(pk_by_parser_id), len(rows), document_id, embeddings is not None,
     )
-    return inserted
+    return pk_by_parser_id
 
 
 async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
@@ -501,6 +518,48 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
         cursor = end + 2
 
     return "".join(out_chunks)
+
+
+def _attach_image_pks_to_chunks(
+    chunks: list[Any],
+    images: dict[str, Any],
+    pk_by_parser_id: dict[str, int],
+) -> list[Any]:
+    """Stamp ``ingestion_images.id`` onto each chunk that contains that figure.
+
+    Embed ``content`` is left untouched — captions stay searchable text;
+    URLs / ``![]()`` never enter the index. Matching is by the caption
+    block we just wrote (``[圖片描述：…]``) or a leftover ``[[IMAGE:id]]``
+    token when captioning was skipped. Chunks without a figure keep their
+    original metadata.
+    """
+    if not chunks or not pk_by_parser_id:
+        return chunks
+
+    out: list[Any] = []
+    for ch in chunks:
+        content = getattr(ch, "content", "") or ""
+        pks: list[int] = []
+        seen: set[int] = set()
+        for parser_id, pk in pk_by_parser_id.items():
+            if pk in seen:
+                continue
+            ref = images.get(parser_id)
+            cap = (getattr(ref, "caption", "") or "").strip() if ref is not None else ""
+            hit = f"[[IMAGE:{parser_id}]]" in content
+            if cap and f"[圖片描述：{cap}]" in content:
+                hit = True
+            if not hit:
+                continue
+            pks.append(int(pk))
+            seen.add(pk)
+        if not pks:
+            out.append(ch)
+            continue
+        meta = dict(getattr(ch, "metadata", None) or {})
+        meta["image_pks"] = pks
+        out.append(replace(ch, metadata=meta))
+    return out
 
 
 async def _load_document_meta(
@@ -744,6 +803,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         # descriptions BEFORE chunking, so charts/diagrams become
         # searchable text instead of opaque tokens. No-op if disabled
         # or no images. See _caption_images_into for the full contract.
+        image_pks: dict[str, int] = {}
         if images:
             await _update_job(
                 pool, arq_job_id,
@@ -757,7 +817,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             # into `text` from step 1a, so retrieval over chunks still
             # works. Only the image-as-image use case is degraded.
             try:
-                await _persist_images(
+                image_pks = await _persist_images(
                     pool, collection_id, document_id, images,
                     embedder, billing_user_id,
                 )
@@ -768,6 +828,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                     "will be empty for this document.",
                     document_id, e,
                 )
+                image_pks = {}
 
         # 2. Chunk — bounded by document size. Also synchronous and also on the
         # poll loop, but two orders of magnitude cheaper than the parse above
@@ -804,6 +865,8 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             else:
                 params["_embeddings"] = []
         chunks = chunker.chunk(text, parse_meta, params)
+        if image_pks:
+            chunks = _attach_image_pks_to_chunks(chunks, images, image_pks)
         if not chunks:
             # A document with zero chunks has nothing in the vector index
             # and can never be retrieved, so reporting it as 'indexed' told

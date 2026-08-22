@@ -35,7 +35,7 @@ export function normalizeAlertSummary(raw) {
   }
 }
 
-/** 高嚴重度（high / critical 且未解決）> 0 = 要人現在看。 */
+/** 高嚴重度（high / critical 且未處理(open)）> 0 = 要人現在看。 */
 export function isAlertSummaryUrgent(raw) {
   return normalizeAlertSummary(raw).high_count > 0
 }
@@ -55,7 +55,10 @@ export function alertSummaryTone(raw) {
 export function alertSummaryHeadline(raw) {
   const s = normalizeAlertSummary(raw)
   if (s.high_count > 0) {
-    return `${s.high_count} 個高嚴重度告警未解決 — 請立即處理`
+    // high_count 已窄化成 open-only（DK-4：已確認＝已靜音，不算「待立即處理」）。
+    // 文字必須講「未處理」而不是「未解決」——否則 3 open＋2 acknowledged 時
+    // 卡片會寫「3 個未解決」但實際未解決是 5（數字與句子不等寬）。
+    return `${s.high_count} 個高嚴重度告警未處理 — 請立即處理`
   }
   if (s.open_count > 0) {
     return `${s.open_count} 個告警待處理`

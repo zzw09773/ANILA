@@ -187,15 +187,6 @@ test('健康總覽 API 呼叫端不得傳任何參數(探測目標不可由前�
   )
 })
 
-test('新增檔案不得引入裸 data.detail 插值(沿用 W2-12 的 ratchet 紀律)', () => {
-  for (const relative of [
-    'views/DashboardView.vue',
-    'components/dashboard/ServiceHealthCard.vue',
-    'utils/healthOverview.js',
-    'api/health.js',
-  ]) {
-    const source = stripComments(readSource(relative))
-    const hits = source.match(/response\??\.data\??\.detail/g) || []
-    assert.equal(hits.length, 0, `${relative} 有裸 data.detail 插值`)
-  }
-})
+// 裸 data.detail ratchet 已上移到 tests/bareDetailRatchet.test.mjs：
+// 母集合不再是四檔手寫清單，而是 src/** 全部 .vue/.js 依形狀窮舉（R2-3）。
+// 這裡不再保留一份手寫清單的複本——手寫清單會漏，而漏掉的那格正是 Review 記帳的盲區。

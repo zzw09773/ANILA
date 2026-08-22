@@ -209,11 +209,14 @@ done
 
 預期大致:
 
+> 🔴 **`/anilalm/` 回 503「尚未開放」是刻意的發行閘,不是故障**——本版關閉 ANILA LM。
+> 不要為了它去動 nginx;重開程序與原因見 [`anilalm-release-gate.md`](./anilalm-release-gate.md)。
+
 | 路徑 | status | content-type 方向 |
 |---|---|---|
 | `/` | 200 | HTML(治理中心) |
 | `/anila/` | 200 | HTML(shell) |
-| `/anilalm/` | 200 | HTML |
+| `/anilalm/` | **503** | HTML（「尚未開放」）— **刻意的發行閘,不是故障**；見 `anilalm-release-gate.md` |
 | `/asr/health` | 200 | **JSON**(不是 text/html) |
 | `/router/health` | 200 | **JSON**(不是 text/html) |
 

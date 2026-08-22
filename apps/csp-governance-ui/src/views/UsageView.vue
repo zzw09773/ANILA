@@ -66,7 +66,7 @@
 
     <!-- Top tables ----------------------------------------------------- -->
     <div class="tops" :class="{ 'tops--admin': authStore.isAdmin }">
-      <TermBox title="熱門 · 模型 · 30d" pad="none" flush>
+      <TermBox :title="`熱門 · 模型 · ${rangeLabel}`" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr><th>模型</th><th style="width: 90px">類型</th><th class="num" style="width: 110px">Token</th><th class="num" style="width: 110px">請求數</th></tr>
@@ -85,7 +85,7 @@
         </table>
       </TermBox>
 
-      <TermBox v-if="authStore.isAdmin" title="熱門 · 部門 · 30d" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin" :title="`熱門 · 部門 · ${rangeLabel}`" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr><th>部門</th><th class="num" style="width: 110px">Token</th><th class="num" style="width: 110px">請求數</th></tr>
@@ -103,7 +103,7 @@
         </table>
       </TermBox>
 
-      <TermBox v-if="authStore.isAdmin" title="熱門 · 使用者 · 30d" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin" :title="`熱門 · 使用者 · ${rangeLabel}`" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr><th>使用者</th><th class="num" style="width: 110px">Token</th><th class="num" style="width: 110px">請求數</th></tr>
@@ -122,7 +122,7 @@
       </TermBox>
 
       <!-- Sprint 8 X / Phase G — caller attribution rollups (admin) -->
-      <TermBox v-if="authStore.isAdmin" title="熱門 · Agent · 30d" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin" :title="`熱門 · Agent · ${phaseGRangeLabel}`" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr>
@@ -147,7 +147,7 @@
         </table>
       </TermBox>
 
-      <TermBox v-if="authStore.isAdmin" title="依 · 基礎模型 · 30d" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin" :title="`依 · 基礎模型 · ${phaseGRangeLabel}`" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr>
@@ -192,12 +192,26 @@ const authStore = useAuthStore()
 const topAgents = ref([])
 const byBaseModel = ref([])
 
+// 視窗 → 天數。Phase G 端點（top-agents／by-base-model）吃 days 不是 range 參數；
+// days=1 是 4h/12h/24h 的最小可表示天數（endpoint ge=1）。
+function rangeToDays(range) {
+  return ({ '4h': 1, '12h': 1, '24h': 1, '7d': 7, '30d': 30 })[range] || 30
+}
+
+// G-2：Phase G 兩個面板的**標題窗必須等於資料窗**。那兩支端點吃 days，
+// 4h/12h 都會被夾成 24 小時——標題不能繼續寫「4h」，否則標題與資料不等寬。
+// 誠實標明最小窗是 24h（後端補 hours 參數是更長的路，見 R2-2 裁定）。
+const phaseGRangeLabel = computed(() => ({
+  '4h': '24h', '12h': '24h', '24h': '24h', '7d': '7d', '30d': '30d',
+})[selectedRange.value] || selectedRange.value)
+
 async function fetchPhaseGRollups() {
   if (!authStore.isAdmin) return
+  const days = rangeToDays(selectedRange.value)
   try {
     const [{ data: a }, { data: b }] = await Promise.all([
-      client.get('/api/usage/top-agents', { params: { days: 30, limit: 10 } }),
-      client.get('/api/usage/by-base-model', { params: { days: 30 } }),
+      client.get('/api/usage/top-agents', { params: { days, limit: 10 } }),
+      client.get('/api/usage/by-base-model', { params: { days } }),
     ])
     topAgents.value = Array.isArray(a) ? a : []
     byBaseModel.value = Array.isArray(b) ? b : []
@@ -243,6 +257,10 @@ function buildUsageParams() {
 }
 function buildRankingParams() {
   return {
+    // DK-2：排行面板的視窗必須跟 KPI 同一段。後端 get_top_* 原先寫死 30d，
+    // 改由 range 參數驅動（get_time_range 同一張 RANGE_CONFIG 對照），
+    // 否則「本週用量」會被答成 30 天數字卻不標明。
+    range: selectedRange.value,
     model_type: selectedModelType.value || undefined,
     department_id: authStore.isAdmin ? (selectedDepartment.value || undefined) : undefined,
   }

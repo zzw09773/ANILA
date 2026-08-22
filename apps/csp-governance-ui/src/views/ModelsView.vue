@@ -571,6 +571,7 @@ import {
   revokeEndpointAuthor,
 } from '../api/models'
 import { listUsers } from '../api/users'
+import { extractError, getRawDetail } from '../api/errors'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
@@ -713,8 +714,7 @@ async function loadEndpointAuthorState() {
       u => (u.role === 'developer' || u.role === 'admin') && u.is_active !== false,
     )
   } catch (e) {
-    const detail = e.response?.data?.detail
-    toast(typeof detail === 'string' ? detail : '無法載入端點位址授權清單', { tone: 'error' })
+    toast(extractError(e, '無法載入端點位址授權清單'), { tone: 'error' })
   }
 }
 
@@ -727,8 +727,7 @@ async function handleGrantAuthor() {
     toast('已授予端點位址設定權限', { tone: 'success' })
     await loadEndpointAuthorState()
   } catch (e) {
-    const detail = e.response?.data?.detail
-    toast(typeof detail === 'string' ? detail : '授予失敗', { tone: 'error' })
+    toast(extractError(e, '授予失敗'), { tone: 'error' })
   } finally {
     granting.value = false
   }
@@ -747,8 +746,7 @@ async function handleRevokeAuthor(grant) {
     toast('已撤銷端點位址設定權限', { tone: 'success' })
     await loadEndpointAuthorState()
   } catch (e) {
-    const detail = e.response?.data?.detail
-    toast(typeof detail === 'string' ? detail : '撤銷失敗', { tone: 'error' })
+    toast(extractError(e, '撤銷失敗'), { tone: 'error' })
   } finally {
     revokingId.value = null
   }
@@ -799,11 +797,7 @@ async function handleImport() {
       { tone: (data.skipped || data.truncated) ? 'warn' : 'success' },
     )
   } catch (e) {
-    const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string'
-      ? detail
-      : (detail?.message || '整批帶入失敗')
-    toast(msg, { tone: 'error' })
+    toast(extractError(e, '整批帶入失敗'), { tone: 'error' })
   } finally {
     importing.value = false
   }
@@ -831,11 +825,7 @@ async function handleActivateCreated() {
       { tone: 'success' },
     )
   } catch (e) {
-    const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string'
-      ? detail
-      : (detail?.message || '整批啟用失敗')
-    toast(msg, { tone: 'error' })
+    toast(extractError(e, '整批啟用失敗'), { tone: 'error' })
   } finally {
     activatingCreated.value = false
   }
@@ -932,7 +922,7 @@ async function handleSubmit() {
     }
     showModal.value = false
   } catch (e) {
-    const detail = e.response?.data?.detail
+    const detail = getRawDetail(e)
     // Typed 400 with code "untrusted_host" → show confirm modal so the
     // owner can promote the host to trusted_hosts and retry without
     // leaving this page. Plain-string detail (loopback / metadata /
@@ -989,9 +979,7 @@ async function confirmTrustAndRetry() {
     untrustedHostPrompt.value = null
     showModal.value = false
   } catch (e) {
-    const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string' ? detail : (detail?.message || '重試失敗')
-    toast(msg, { tone: 'error' })
+    toast(extractError(e, '重試失敗'), { tone: 'error' })
   }
 }
 
@@ -1021,9 +1009,7 @@ async function handleTest(model) {
     const latencyTxt = latency != null ? `（${latency} ms）` : ''
     toast(`測試連線 → ${healthLabel(status)}${latencyTxt}`, { tone: ok ? 'success' : 'error' })
   } catch (e) {
-    const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string' ? detail : (detail?.message || '測試連線失敗')
-    toast(msg, { tone: 'error' })
+    toast(extractError(e, '測試連線失敗'), { tone: 'error' })
   } finally {
     testingId.value = null
   }
@@ -1032,27 +1018,27 @@ async function handleTest(model) {
 async function handleSetPrimary(id) {
   settingPrimaryId.value = id
   try { await modelsStore.setPrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || '設定主要失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '設定主要失敗'), { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
 async function handleUnsetPrimary(id) {
   if (!(await confirm({ message: '取消主要？在你指定新的主要模型前，ANILA Router 將沒有主要 LLM。', confirmText: '取消主要', danger: true }))) return
   settingPrimaryId.value = id
   try { await modelsStore.unsetPrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || '取消主要失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '取消主要失敗'), { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
 async function handleSetImagePrimary(id) {
   settingImagePrimaryId.value = id
   try { await modelsStore.setImagePrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || '設定主圖像模型失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '設定主圖像模型失敗'), { tone: 'error' }) }
   finally { settingImagePrimaryId.value = null }
 }
 async function handleUnsetImagePrimary(id) {
   if (!(await confirm({ message: '取消主圖像模型？在你指定新的主圖像模型前，flux2-dev-agent / anila-studio 將 fallback 使用環境變數設定的端點。', confirmText: '取消主圖像', danger: true }))) return
   settingImagePrimaryId.value = id
   try { await modelsStore.unsetImagePrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || '取消主圖像模型失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '取消主圖像模型失敗'), { tone: 'error' }) }
   finally { settingImagePrimaryId.value = null }
 }
 async function handleSetAsrPrimary(id) {
@@ -1060,14 +1046,14 @@ async function handleSetAsrPrimary(id) {
   try {
     await modelsStore.setAsrPrimary(id)
     toast('已設為主語音辨識。新主機須部署相同 ASR_DECODER_TOKEN；位址請為 decoder 根路徑（非 /v1）。', { tone: 'ok' })
-  } catch (e) { toast(e.response?.data?.detail || '設定主語音辨識失敗', { tone: 'error' }) }
+  } catch (e) { toast(extractError(e, '設定主語音辨識失敗'), { tone: 'error' }) }
   finally { settingAsrPrimaryId.value = null }
 }
 async function handleUnsetAsrPrimary(id) {
   if (!(await confirm({ message: '取消主語音辨識？在你指定新的主語音模型前，asr-gateway 將改用環境變數 ASR_DECODE_URL。共享密鑰 ASR_DECODER_TOKEN 仍只在環境變數，不會寫進模型登錄。', confirmText: '取消主語音', danger: true }))) return
   settingAsrPrimaryId.value = id
   try { await modelsStore.unsetAsrPrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || '取消主語音辨識失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '取消主語音辨識失敗'), { tone: 'error' }) }
   finally { settingAsrPrimaryId.value = null }
 }
 function platformEmbedTitle(model) {
@@ -1095,7 +1081,7 @@ async function handleSetPlatformEmbed(id) {
     const notice = designationToast(data)
     if (notice) toast(notice.message, { tone: notice.tone, duration: notice.duration })
   } catch (e) {
-    toast(e.response?.data?.detail || '設定主 embedding 失敗', { tone: 'error' })
+    toast(extractError(e, '設定主 embedding 失敗'), { tone: 'error' })
   } finally {
     settingEmbedId.value = null
   }
@@ -1108,7 +1094,7 @@ async function handleUnsetPlatformEmbed(id) {
   }))) return
   settingEmbedId.value = id
   try { await modelsStore.unsetPlatformEmbed(id) }
-  catch (e) { toast(e.response?.data?.detail || '取消主 embedding 失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '取消主 embedding 失敗'), { tone: 'error' }) }
   finally { settingEmbedId.value = null }
 }
 async function handleDeactivate(id) {
@@ -1118,14 +1104,14 @@ async function handleDeactivate(id) {
 }
 async function handleActivate(id) {
   try { await modelsStore.activate(id) }
-  catch (e) { toast(e.response?.data?.detail || '啟用失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '啟用失敗'), { tone: 'error' }) }
 }
 async function handlePurge(model) {
   if (!model || purgingId.value === model.id) return
   if (!(await confirm({ message: `永久刪除「${model.display_name}」？不可復原。若有用量紀錄或其他模型引用則會被拒絕。`, confirmText: '永久刪除', danger: true }))) return
   purgingId.value = model.id
   try { await modelsStore.purge(model.id) }
-  catch (e) { toast(e.response?.data?.detail || '清除失敗', { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '清除失敗'), { tone: 'error' }) }
   finally { purgingId.value = null }
 }
 </script>

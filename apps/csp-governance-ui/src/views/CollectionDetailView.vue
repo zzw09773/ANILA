@@ -149,12 +149,16 @@
                 </dl>
               </details>
               <div v-if="showVectorDebug" class="vec">
-                <button v-if="!vecDebug[c.id]" class="term-btn term-btn--xs" :disabled="vecLoading[c.id]" @click="loadVectorDebug(c.id)">
+                <div v-if="vecError[c.id]" class="vec__err">! {{ vecError[c.id] }}</div>
+                <button v-if="!vecDebug[c.id] && !vecError[c.id]" class="term-btn term-btn--xs" :disabled="vecLoading[c.id]" @click="loadVectorDebug(c.id)">
                   [ {{ vecLoading[c.id] ? '載入中…' : '載入向量維度 + 範數' }} ]
                 </button>
-                <div v-else class="vec__stats">
+                <div v-else-if="vecDebug[c.id]?.note" class="vec__stats">
+                  <span class="cell-meta">{{ vecDebug[c.id].note }}</span>
+                </div>
+                <div v-else-if="vecDebug[c.id]" class="vec__stats">
                   <span><b>dim</b> {{ vecDebug[c.id].dim }}</span>
-                  <span><b>L2 norm</b> {{ vecDebug[c.id].norm.toFixed(4) }}</span>
+                  <span><b>L2 norm</b> {{ vecDebug[c.id].norm == null ? '—' : vecDebug[c.id].norm.toFixed(4) }}</span>
                   <span class="cell-meta">（完整向量保存在伺服器端）</span>
                 </div>
               </div>
@@ -251,6 +255,7 @@ import { getCollection, raiseCollectionClassification } from '../api/ingestionCo
 import { listDocuments, uploadDocument, uploadZip, listDocumentChunks, documentBlobUrl, getChunkEmbeddingDebug, reprocessDocument } from '../api/ingestionDocuments'
 import { listRelations, createRelation, deleteRelation, reresolveRelations } from '../api/ingestionRelations'
 import { streamJob } from '../api/ingestionJobs'
+import { extractError } from '../api/errors'
 import { TermBox, TermButton, TermBadge, TermEmpty, TermModal } from '../components/cli'
 import RelationGraph from '../components/RelationGraph.vue'
 import {
@@ -297,6 +302,7 @@ watch(raisableLevels, (levels) => {
 const showVectorDebug = ref(false)
 const vecDebug = ref({})
 const vecLoading = ref({})
+const vecError = ref({})
 
 // ── Cross-document relations ───────────────────────────────────────────────
 const RELATION_TYPES = ['based_on', 'amends', 'supersedes', 'cites', 'supplements', 'relates']
@@ -322,7 +328,7 @@ async function loadAll() {
     const { data } = await getCollection(collectionId.value)
     collection.value = data
   } catch (e) {
-    loadError.value = `載入知識庫失敗：${e.response?.data?.detail || e.message}`
+    loadError.value = `載入知識庫失敗：${extractError(e, e.message)}`
     return
   }
   await loadDocs()
@@ -393,7 +399,7 @@ async function loadChunks(docId) {
     chunks.value = data
   } catch (e) {
     chunks.value = []
-    loadError.value = `載入區塊失敗：${e.response?.data?.detail || e.message}`
+    loadError.value = `載入區塊失敗：${extractError(e, e.message)}`
   } finally { loadingChunks.value = false }
 }
 
@@ -414,7 +420,7 @@ async function doUploadMany(files) {
     for (const file of files) {
       progress.value = 0
       try { await uploadDocument(collectionId.value, file, p => { progress.value = p }) }
-      catch (e) { errs.push(`${file.name}: ${e.response?.data?.detail || e.message}`) }
+      catch (e) { errs.push(`${file.name}: ${extractError(e, e.message)}`) }
     }
     if (errs.length) uploadError.value = errs.join('\n')
     await loadDocs()
@@ -426,7 +432,7 @@ async function doZipUpload(file) {
     const { data } = await uploadZip(collectionId.value, file, { preserveFolderStructure: preserveFolderStructure.value }, p => { progress.value = p })
     zipResult.value = data
     await loadDocs()
-  } catch (e) { uploadError.value = e.response?.data?.detail || e.message }
+  } catch (e) { uploadError.value = extractError(e, e.message) }
   finally { uploading.value = false; progress.value = 0 }
 }
 // 重新嵌入失敗的文件:呼叫後端 re-enqueue,成功後刷新清單(狀態回 pending → processing)。
@@ -434,7 +440,7 @@ async function doReprocess(d) {
   if (reprocessingId.value) return
   reprocessingId.value = d.id
   try { await reprocessDocument(d.id); await loadDocs() }
-  catch (e) { uploadError.value = e.response?.data?.detail || e.message }
+  catch (e) { uploadError.value = extractError(e, e.message) }
   finally { reprocessingId.value = null }
 }
 
@@ -452,8 +458,7 @@ async function doRaiseClassification() {
     raiseMsg.value = `已升密至「${data.classification_level}」`
     await loadDocs()
   } catch (e) {
-    const detail = e.response?.data?.detail
-    raiseError.value = typeof detail === 'string' ? detail : (detail?.msg || e.message)
+    raiseError.value = extractError(e, e.message)
   } finally {
     raising.value = false
   }
@@ -466,7 +471,7 @@ async function loadRelations() {
     const { data } = await listRelations(collectionId.value)
     relations.value = data
   } catch (e) {
-    relError.value = `載入關聯失敗：${e.response?.data?.detail || e.message}`
+    relError.value = `載入關聯失敗：${extractError(e, e.message)}`
   } finally { loadingRels.value = false }
 }
 
@@ -486,7 +491,7 @@ async function doCreateRelation() {
     newRel.value = { src_document_id: 0, relation_type: 'cites', dst_document_id: 0, target_ref: '', evidence: '' }
     await loadRelations()
   } catch (e) {
-    relError.value = e.response?.data?.detail || e.message
+    relError.value = extractError(e, e.message)
   } finally { creating.value = false }
 }
 
@@ -496,7 +501,7 @@ async function doDeleteRelation(r) {
     await deleteRelation(r.id, collectionId.value)
     await loadRelations()
   } catch (e) {
-    relError.value = e.response?.data?.detail || e.message
+    relError.value = extractError(e, e.message)
   } finally { deletingId.value = null }
 }
 
@@ -507,18 +512,21 @@ async function doReresolve() {
     relMsg.value = `已對帳 · ${data.resolved} 已解析 · ${data.unresolved} 未解析 · ${data.ambiguous} 模糊 · 已排入重新抽取`
     await loadRelations()
   } catch (e) {
-    relError.value = e.response?.data?.detail || e.message
+    relError.value = extractError(e, e.message)
   } finally { reresolving.value = false }
 }
 
 async function loadVectorDebug(chunkId) {
   if (!selectedDoc.value) return
   vecLoading.value = { ...vecLoading.value, [chunkId]: true }
+  vecError.value = { ...vecError.value, [chunkId]: '' }
   try {
     const { data } = await getChunkEmbeddingDebug(selectedDoc.value.id, chunkId)
     vecDebug.value = { ...vecDebug.value, [chunkId]: data }
   } catch (e) {
-    uploadError.value = `向量除錯失敗：${e.response?.data?.detail || e.message}`
+    // 錯誤只顯示在該 chunk 旁，不進上傳區的 uploadError banner——
+    // 向量除錯失敗不代表上傳壞了，放錯位置會讓管理員誤讀成「上傳失敗」。
+    vecError.value = { ...vecError.value, [chunkId]: `向量除錯失敗：${extractError(e, '向量除錯失敗')}` }
   } finally {
     vecLoading.value = { ...vecLoading.value, [chunkId]: false }
   }
@@ -648,6 +656,7 @@ function zipBadgeVariant(s) {
 }
 .vec__stats { display: flex; gap: var(--gap-3); flex-wrap: wrap; font-size: var(--t-xs); color: var(--c-fg-2); }
 .vec__stats b { color: var(--c-fg-3); font-weight: 500; margin-right: 4px; }
+.vec__err { font-size: var(--t-xs); color: var(--c-danger); }
 
 /* Relations */
 .rel-bar { display: flex; align-items: center; gap: var(--gap-2); flex-wrap: wrap; margin-bottom: var(--gap-3); }

@@ -252,6 +252,9 @@ anila-studio 進 crash-loop。⚠ **不是「起不來」，是「起來了但�
 因為**本機連不到 `.12` 的模型 gateway**。`.15` 上這一格應該要是綠的，
 **如果不是，先查的是 `extra_hosts` 與 `MODEL_GATEWAY_API_KEY`，不是平台**。
 
+📌 另一件順帶：入口 `/anilalm/` 回 503「尚未開放」是**刻意的發行閘、不是故障**，
+**不要為它動 nginx**——重開程序見 `anilalm-release-gate.md`。
+
 ---
 
 ## 2.6 ⚠ 從零組態下，本機**沒有任何一條卡登路徑**（演練者必讀）
@@ -300,6 +303,7 @@ PIN 也收，但簽章送出後回：
 | `CARD_INITIAL_OWNERS` | 測試員編 | **擁有者的真實員編**（填錯＝沒有人能核准，平台自鎖） |
 | `ENABLE_CARD_LOGIN` / `REQUIRE_CARD_LOGIN_ONLY` | 本機為了測試而開 | 內網值照 runbook §2.3 |
 | `MODEL_GATEWAY_API_KEY` | 本機值 | `.12` 上重新簽發（runbook §2.2b C） |
+| `ANILA_MODEL_CA_FILE` | 佔位（`.env.example` 第 264 行，`<容器內路徑…>`）或本機值（或未設） | 換成**真 CSPKI bundle** 的容器內路徑（`share/pki/model-ca.pem`）。**是「取代」整個信任庫不是疊加**，指錯＝csp 出向 https 全掛（§2.4） |
 | 七把 secret | 本機值 | **全部重新產生**，不沿用 |
 
 📌 文件漂移（follow-up）：`CLAUDE.md` 寫「卡登那**四個**變數一個都不能帶過去」，

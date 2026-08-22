@@ -84,9 +84,12 @@ def summarize_alerts(db: Session) -> dict:
         .all()
     )
     counts = {status: count for status, count in rows}
+    # 只有「未處理」(open) 的高嚴重度才算「待立即處理」。
+    # 已確認 (acknowledged)＝使用者已接手靜音，不該再被首頁逼著「立即處理」——
+    # DK-4 那 2 筆已確認的陳年模型離線告警正是被算進「請立即處理」的元兇。
     high_count = (
         db.query(func.count(Alert.id))
-        .filter(Alert.status != "resolved", Alert.severity.in_(["high", "critical"]))
+        .filter(Alert.status == "open", Alert.severity.in_(["high", "critical"]))
         .scalar()
     )
     return {

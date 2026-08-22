@@ -106,6 +106,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import {
   listTrustedHosts,
   createTrustedHost,
@@ -138,7 +139,7 @@ async function fetchHosts() {
     const { data } = await listTrustedHosts()
     hosts.value = data
   } catch (e) {
-    setFeedback('danger', e.response?.data?.detail || '載入信任主機失敗')
+    setFeedback('danger', extractError(e, '載入信任主機失敗'))
   }
 }
 
@@ -160,9 +161,7 @@ async function handleSubmit() {
     setFeedback('ok', `已新增「${form.host.trim()}」`)
     await fetchHosts()
   } catch (e) {
-    const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string' ? detail : (detail?.message || '新增失敗')
-    setFeedback('danger', msg)
+    setFeedback('danger', extractError(e, '新增失敗'))
   } finally {
     submitting.value = false
   }
@@ -176,7 +175,7 @@ async function handleDelete(host) {
     setFeedback('ok', `已移除「${host.host}」`)
     await fetchHosts()
   } catch (e) {
-    setFeedback('danger', e.response?.data?.detail || '移除失敗')
+    setFeedback('danger', extractError(e, '移除失敗'))
   } finally {
     busyId.value = null
   }

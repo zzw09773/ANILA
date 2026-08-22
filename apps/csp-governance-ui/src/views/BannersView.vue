@@ -77,6 +77,7 @@ import { ref, onMounted } from 'vue'
 import { listBanners, createBanner, updateBanner, deleteBanner } from '../api/banners'
 import { TermBox, TermButton, TermBadge, TermField } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
+import { extractError } from '../api/errors'
 
 const { confirm } = useDialog()
 const banners = ref([])
@@ -90,7 +91,7 @@ async function load() {
     const { data } = await listBanners()
     banners.value = Array.isArray(data) ? data : []
   } catch (e) {
-    error.value = e?.response?.data?.detail || '載入公告失敗'
+    error.value = extractError(e, '載入公告失敗')
   }
 }
 
@@ -110,7 +111,7 @@ async function handleCreate() {
     form.value = { level: 'info', content: '', is_active: true, show_on_login: false }
     await load()
   } catch (e) {
-    error.value = e?.response?.data?.detail || '張貼失敗'
+    error.value = extractError(e, '張貼失敗')
   } finally {
     busy.value = false
   }
@@ -122,7 +123,7 @@ async function toggleActive(b) {
     await updateBanner(b.id, { is_active: !b.is_active })
     await load()
   } catch (e) {
-    error.value = e?.response?.data?.detail || '更新失敗'
+    error.value = extractError(e, '更新失敗')
   } finally {
     busy.value = false
   }
@@ -144,7 +145,7 @@ async function toggleShowOnLogin(b) {
     await updateBanner(b.id, { show_on_login: !b.show_on_login })
     await load()
   } catch (e) {
-    error.value = e?.response?.data?.detail || '更新失敗'
+    error.value = extractError(e, '更新失敗')
   } finally {
     busy.value = false
   }
@@ -158,7 +159,7 @@ async function handleDelete(b) {
     await deleteBanner(b.id)
     await load()
   } catch (e) {
-    error.value = e?.response?.data?.detail || '刪除失敗'
+    error.value = extractError(e, '刪除失敗')
   } finally {
     busy.value = false
   }

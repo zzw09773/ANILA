@@ -928,11 +928,38 @@ class ChunkEmbeddingDebug(BaseModel):
     Useful to confirm chunks were actually embedded (norm ≈ 1 means
     L2-normalised; embedding pipelines that drop normalisation surface
     here as norm ≠ 1).
+
+    Heading-level chunks are stored without a vector. Those must still
+    serialize (not 500); ``note`` tells the inspector why dim is 0.
     """
 
     chunk_id: int
     dim: int
-    norm: float
+    norm: float | None
+    note: str | None = None
+
+
+HEADING_NO_EMBEDDING_NOTE = "heading 層級不嵌入向量"
+
+
+def _embedding_debug_from_value(chunk_id: int, emb) -> ChunkEmbeddingDebug:
+    """Summarize a stored embedding. ``emb is None`` is a heading, not a crash."""
+    if emb is None:
+        return ChunkEmbeddingDebug(
+            chunk_id=chunk_id,
+            dim=0,
+            norm=None,
+            note=HEADING_NO_EMBEDDING_NOTE,
+        )
+    import math
+
+    components = list(emb.to_list()) if hasattr(emb, "to_list") else list(emb)
+    norm = math.sqrt(sum(c * c for c in components)) if components else 0.0
+    return ChunkEmbeddingDebug(
+        chunk_id=chunk_id,
+        dim=len(components),
+        norm=norm,
+    )
 
 
 @router.get(
@@ -1019,8 +1046,6 @@ async def get_chunk_embedding_debug(
     server-side. Used behind the inspector's "Show vector debug"
     toggle so the page render isn't paying for it by default.
     """
-    import math
-
     from app.services.ingestion_pool import get_pool
 
     doc = (
@@ -1054,16 +1079,7 @@ async def get_chunk_embedding_debug(
     if row is None:
         raise HTTPException(status_code=404, detail="Chunk not found")
 
-    emb = row["embedding"]
-    # ``HalfVector`` from pgvector exposes ``.to_list()``; raw lists
-    # iterate directly. Both shapes appear depending on codec version.
-    components = list(emb.to_list()) if hasattr(emb, "to_list") else list(emb)
-    norm = math.sqrt(sum(c * c for c in components)) if components else 0.0
-    return ChunkEmbeddingDebug(
-        chunk_id=int(row["id"]),
-        dim=len(components),
-        norm=norm,
-    )
+    return _embedding_debug_from_value(int(row["id"]), row["embedding"])
 
 
 @router.get("/api/ingestion/documents/{document_id}/blob")

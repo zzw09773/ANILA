@@ -7,20 +7,31 @@ Scope (deliberately narrow — no DB/redis/arq infra stood up):
                                  fast paths; we never construct a real VisionProvider).
   * ``_caption_images_into``  — async placeholder rewrite, exercised with the vision
                                  provider monkeypatched to a fake (no network).
-  * ``_persist_images``       — only the no-images / mkdir-fail early returns, which
-                                 need no DB or embedder.
+  * ``_persist_images``       — the no-images / mkdir-fail early returns (no DB),
+                                 plus the re-import embedding invariant (Postgres
+                                 only; skipped unless ``ANILA_TEST_PG_DSN``).
+  * ``_attach_image_pks_to_chunks`` — stamps ``ingestion_images.id`` onto chunk
+                                 metadata without touching embed text.
 
 ``_is_uniform_color`` is intentionally NOT tested here — tests/test_uniform_color.py
 already owns it.
 
-Skipped (noted in the StructuredOutput 'notes'): the ``ingest_document`` job
-pipeline and the full insert path of ``_persist_images`` — both require a live
-PgPool / asyncpg connection + an Embedder HTTP endpoint, which can't be stood up
-deterministically as a pure unit test.
+The ``ingest_document`` job pipeline is still out of scope. The insert /
+``ON CONFLICT`` path of ``_persist_images`` covers two directions of the
+same invariant: a dead embedder must not wipe an existing embedding, and
+a live embedder must replace it. Engine behaviour (Postgres
+``ON CONFLICT`` / ``halfvec``) is skipped unless ``ANILA_TEST_PG_DSN``;
+SQLite cannot stand in for it. The no-DB half pins COALESCE argument
+order so ``COALESCE(existing, EXCLUDED)`` cannot pass as "keeps".
 """
 from __future__ import annotations
 
 import io
+import os
+import re
+import sys
+import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 from PIL import Image
@@ -263,17 +274,482 @@ async def test_caption_into_unknown_id_keeps_placeholder(monkeypatch):
 # ── _persist_images (infra-free early returns only) ───────────────────────────
 
 
-async def test_persist_images_no_images_returns_zero():
+async def test_persist_images_no_images_returns_empty_map():
     # Empty dict short-circuits before any pool / fs access.
-    assert await handlers._persist_images(None, 1, 1, {}, None, None) == 0
+    assert await handlers._persist_images(None, 1, 1, {}, None, None) == {}
 
 
-async def test_persist_images_mkdir_failure_returns_zero(monkeypatch):
-    # If the images dir can't be created, persistence bails with 0 and never
+async def test_persist_images_mkdir_failure_returns_empty_map(monkeypatch):
+    # If the images dir can't be created, persistence bails with {} and never
     # touches the (None) pool — exercises the OSError guard.
     def _boom(*_a, **_k):
         raise OSError("read-only fs")
 
     monkeypatch.setattr(handlers.os, "makedirs", _boom)
     images = {"img1": _FakeRef(_gradient_png())}
-    assert await handlers._persist_images(None, 1, 42, images, None, None) == 0
+    assert await handlers._persist_images(None, 1, 42, images, None, None) == {}
+
+
+class _RecordingConn:
+    """Records SQL. Does not execute it — engine behaviour is the PG test."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield
+
+    async def execute(self, sql: str, *args):
+        self.statements.append(sql)
+
+    async def fetchval(self, sql: str, *args):
+        self.statements.append(sql)
+        return 77
+
+
+class _RecordingPool:
+    def __init__(self) -> None:
+        self.conn = _RecordingConn()
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self.conn
+
+
+def _conflict_assignment(sql: str, column: str) -> str:
+    body = re.search(r"DO UPDATE\s+SET\s+(.*?)\s+RETURNING", sql, re.S | re.I)
+    assert body, f"no DO UPDATE SET in:\n{sql}"
+    text = re.sub(r"--[^\n]*", " ", body.group(1))
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    if buf:
+        parts.append("".join(buf))
+    for part in parts:
+        left, sep, right = part.partition("=")
+        if sep and left.strip() == column:
+            return " ".join(right.split())
+    raise AssertionError(f"{column} missing from DO UPDATE SET:\n{sql}")
+
+
+# EXCLUDED first: a NULL incoming value keeps the row; a real incoming
+# value replaces it. The swapped form keeps the row forever.
+_COALESCE_EXCLUDED_FIRST = re.compile(
+    r"^COALESCE\(\s*EXCLUDED\.(?P<col>\w+)\s*,\s*ingestion_images\.(?P=col)\s*\)$"
+)
+
+
+def _assert_excluded_first_coalesce(rhs: str, column: str) -> None:
+    assert _COALESCE_EXCLUDED_FIRST.match(rhs), (
+        f"{column} must be COALESCE(EXCLUDED.{column}, ingestion_images.{column}); "
+        f"got {rhs!r} — swapped args freeze the first vector forever"
+    )
+
+
+def test_coalesce_order_guard_rejects_swapped_and_bare_excluded():
+    """The order regex is this file's only no-DB detector for the freeze mutant."""
+    ok = "COALESCE(EXCLUDED.embedding, ingestion_images.embedding)"
+    _assert_excluded_first_coalesce(ok, "embedding")
+    with pytest.raises(AssertionError, match="swapped"):
+        _assert_excluded_first_coalesce(
+            "COALESCE(ingestion_images.embedding, EXCLUDED.embedding)",
+            "embedding",
+        )
+    with pytest.raises(AssertionError, match="swapped"):
+        _assert_excluded_first_coalesce("EXCLUDED.embedding", "embedding")
+
+
+class _DeadEmbedder:
+    """Embedder object is present; the HTTP call is not.
+
+    Matches the production ``except Exception`` path in ``_persist_images``
+    (embedder unavailable / batch failed) — ``embeddings`` becomes None and
+    the upsert still runs. Deliberately has no ``model_name`` / ``native_dim``
+    so EXCLUDED provenance is also NULL: the same shape as the vector.
+    """
+
+    async def embed(self, texts, *, user_id=None):
+        raise RuntimeError("embedder unavailable")
+
+
+class _LiveEmbedder:
+    """Returns a canned vector and advertises provenance — the replace half."""
+
+    def __init__(
+        self,
+        vec: list[float],
+        *,
+        model_name: str = "replacement/embedder",
+        native_dim: int = 2048,
+    ) -> None:
+        self._vec = vec
+        self.model_name = model_name
+        self.native_dim = native_dim
+
+    async def embed(self, texts, *, user_id=None):
+        return [list(self._vec) for _ in texts]
+
+
+def _halfvec_floats(value) -> list[float]:
+    if value is None:
+        return []
+    if hasattr(value, "to_list"):
+        return [float(x) for x in value.to_list()]
+    raise TypeError(f"expected HalfVector with to_list(), got {type(value)!r}")
+
+
+def _assert_halfvec_close(got, expected, *, atol: float = 2e-3) -> None:
+    got_f = _halfvec_floats(got)
+    assert len(got_f) == len(expected)
+    worst = max(abs(a - b) for a, b in zip(got_f, expected))
+    assert worst <= atol, f"halfvec drifted {worst} (atol={atol})"
+
+
+async def test_reimport_sql_keeps_existing_embedding_when_excluded_is_null(
+    tmp_path, monkeypatch,
+):
+    """Dead embedder still upserts — but the SET must not clobber a live vector.
+
+    This is the no-DB half of F-1. It fails on the unfixed assignment
+    ``embedding = EXCLUDED.embedding`` (and the two provenance twins)
+    **and** on swapped COALESCE args (``COALESCE(existing, EXCLUDED)``),
+    which would freeze the first vector forever. It does **not** prove
+    the engine keeps or replaces the bytes; those are the two PG tests.
+
+    Mutant: drop COALESCE, or swap its two arguments → red.
+    """
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    pool = _RecordingPool()
+    ref = _FakeRef(_gradient_png())
+    ref.caption = "reimport caption, embedder down"
+    pks = await handlers._persist_images(
+        pool, 7, 42, {"fig-keep": ref}, _DeadEmbedder(), None,
+    )
+    assert pks == {"fig-keep": 77}
+
+    upserts = [s for s in pool.conn.statements if "ON CONFLICT" in s]
+    assert len(upserts) == 1, pool.conn.statements
+    sql = upserts[0]
+    for column in (
+        "embedding", "embedding_source_model", "embedding_native_dim",
+    ):
+        _assert_excluded_first_coalesce(
+            _conflict_assignment(sql, column), column,
+        )
+
+
+_PG_DSN = os.environ.get("ANILA_TEST_PG_DSN")
+# Without this DSN the two live tests skip. Directions ② (drop COALESCE)
+# and ③ (swap COALESCE args) then go red only via the *text* guard
+# (``test_reimport_sql_…`` / ``_assert_excluded_first_coalesce``) — the
+# behavioural pair is gated. "It went red once with a DSN" is not the
+# default path. Run this file with ANILA_TEST_PG_DSN set.
+_SEED_VEC = [0.11, 0.22, 0.33, 0.44] + [0.01] * 3996
+_NEW_VEC = [0.91, 0.82, 0.73, 0.64] + [0.02] * 3996
+
+
+class _CspAppPool:
+    """Same physical DSN, production role.
+
+    The documented live-PG DSN is often the bypassrls ``csp`` user. Under
+    that role, dropping ``SET LOCAL anila.collection_id`` is invisible —
+    FORCE RLS never applies. Production uses ``csp_app`` (NOBYPASSRLS).
+    Seed / cleanup stay on the login role so CASCADE and leftover counts
+    are not tautological.
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    def acquire(self):
+        return _CspAppAcquire(self._inner.acquire())
+
+
+class _CspAppAcquire:
+    def __init__(self, inner_cm) -> None:
+        self._inner_cm = inner_cm
+        self._conn = None
+
+    async def __aenter__(self):
+        self._conn = await self._inner_cm.__aenter__()
+        try:
+            await self._conn.execute("SET ROLE csp_app")
+            role = await self._conn.fetchval("SELECT current_user")
+            bypass = await self._conn.fetchval(
+                "SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user"
+            )
+            assert role == "csp_app" and bypass is False, (
+                f"persist must run as NOBYPASSRLS csp_app; got {role!r} "
+                f"bypassrls={bypass!r}"
+            )
+            return self._conn
+        except BaseException:
+            await self._inner_cm.__aexit__(*sys.exc_info())
+            raise
+
+    async def __aexit__(self, *exc):
+        try:
+            await self._conn.execute("RESET ROLE")
+        finally:
+            return await self._inner_cm.__aexit__(*exc)
+
+
+async def _seed_image_row(pool, marker: str, image_id: str):
+    from pgvector import HalfVector
+
+    async with pool.acquire() as conn:
+        collection_id = await conn.fetchval(
+            "INSERT INTO ingestion_collections "
+            "(name, embedding_model, created_by) "
+            "VALUES ($1, $2, $3) RETURNING id",
+            marker, "nvidia/nv-embed-v2", 1,
+        )
+        document_id = await conn.fetchval(
+            "INSERT INTO ingestion_documents "
+            "(collection_id, filename, sha256) "
+            "VALUES ($1, $2, $3) RETURNING id",
+            collection_id, f"{marker}.pdf", "ab" * 32,
+        )
+        async with conn.transaction():
+            await conn.execute(
+                f"SET LOCAL anila.collection_id = {int(collection_id)}"
+            )
+            seeded_pk = await conn.fetchval(
+                """
+                INSERT INTO ingestion_images
+                    (collection_id, document_id, image_id, storage_path,
+                     mime, caption, bytes_size, embedding,
+                     embedding_source_model, embedding_native_dim)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                RETURNING id
+                """,
+                collection_id, document_id, image_id,
+                f"anila-images/{document_id}/{image_id}.png",
+                "image/png", "original caption", 99,
+                HalfVector(_SEED_VEC), "nvidia/nv-embed-v2", 4096,
+            )
+    return collection_id, document_id, seeded_pk
+
+
+async def _fetch_embedding_row(pool, collection_id: int, pk: int):
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            f"SET LOCAL anila.collection_id = {int(collection_id)}"
+        )
+        return await conn.fetchrow(
+            """
+            SELECT embedding, embedding_source_model, embedding_native_dim
+              FROM ingestion_images WHERE id = $1
+            """,
+            pk,
+        )
+
+
+async def _assert_no_f1_residue(pool, marker: str) -> None:
+    """Leftover of this run must be 0; the same query must also see live data.
+
+    ``ingestion_images`` is FORCE RLS. A count of 0 with no GUC, on a
+    NOBYPASSRLS role, is tautological. The positive anchor is therefore
+    ``count(*) FROM ingestion_images`` — not ``users`` (that table has
+    no RLS, so it would bless a 0 that the images table itself hid).
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              (SELECT count(*) FROM ingestion_collections
+                WHERE name = $1) AS leftover_collections,
+              (SELECT count(*) FROM ingestion_documents
+                WHERE filename = $2) AS leftover_documents,
+              (SELECT count(*) FROM ingestion_images i
+                 JOIN ingestion_documents d ON d.id = i.document_id
+                WHERE d.filename = $2) AS leftover_images,
+              (SELECT count(*) FROM ingestion_images) AS visible_images
+            """,
+            marker, f"{marker}.pdf",
+        )
+    assert row["visible_images"] > 0, (
+        "leftover-0 is untrusted: this connection cannot see "
+        "ingestion_images rows (FORCE RLS / wrong role?)"
+    )
+    assert row["leftover_collections"] == 0, row
+    assert row["leftover_documents"] == 0, row
+    assert row["leftover_images"] == 0, row
+
+
+@pytest.mark.skipif(
+    not _PG_DSN,
+    reason="ANILA_TEST_PG_DSN not set — ON CONFLICT / halfvec is Postgres-only",
+)
+async def test_reimport_without_embedder_keeps_existing_embedding(tmp_path, monkeypatch):
+    """embedder 不可用時重匯入一次，既有 embedding 必須還在.
+
+    Not "the upsert runs". HalfVector is not iterable and halfvec is
+    float16 — compare via ``to_list()`` + tolerance, or this stays red
+    even when the fix is correct.
+
+    Mutant: bare ``embedding = EXCLUDED.embedding`` → NULL → red at
+    ``embedding is not None``.
+    """
+    from anila_core.storage.adapters.pg_pool import PgPool
+
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    image_id = "fig-keep"
+    marker = f"_f1_reimport_{uuid.uuid4().hex[:12]}"
+    pool = PgPool(_PG_DSN, min_size=1, max_size=1)
+    await pool.open()
+    collection_id = None
+    try:
+        collection_id, document_id, seeded_pk = await _seed_image_row(
+            pool, marker, image_id,
+        )
+        ref = _FakeRef(_gradient_png())
+        ref.caption = "reimport caption, embedder down"
+        pks = await handlers._persist_images(
+            _CspAppPool(pool), collection_id, document_id,
+            {image_id: ref}, _DeadEmbedder(), None,
+        )
+        assert pks.get(image_id) == seeded_pk
+        kept = await _fetch_embedding_row(pool, collection_id, seeded_pk)
+        assert kept is not None
+        assert kept["embedding"] is not None, (
+            "re-import with a dead embedder wiped the existing embedding"
+        )
+        _assert_halfvec_close(kept["embedding"], _SEED_VEC)
+        assert kept["embedding_source_model"] == "nvidia/nv-embed-v2"
+        assert kept["embedding_native_dim"] == 4096
+    finally:
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM ingestion_collections WHERE name = $1",
+                    marker,
+                )
+            await _assert_no_f1_residue(pool, marker)
+        finally:
+            await pool.close()
+
+
+@pytest.mark.skipif(
+    not _PG_DSN,
+    reason="ANILA_TEST_PG_DSN not set — ON CONFLICT / halfvec is Postgres-only",
+)
+async def test_reimport_with_embedder_replaces_existing_embedding(tmp_path, monkeypatch):
+    """embedder 正常時重匯入一次，向量必須真的被換掉.
+
+    Swapping COALESCE args (``COALESCE(existing, EXCLUDED)``) freezes the
+    first vector forever. Caption / path / size still update, no log, no
+    red — unless this direction exists.
+
+    Mutant: swapped COALESCE → this stays on ``_SEED_VEC`` → red.
+    Dropped COALESCE + dead embedder is the other test; this one is the
+    replace half.
+    """
+    from anila_core.storage.adapters.pg_pool import PgPool
+
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    image_id = "fig-replace"
+    marker = f"_f1_reimport_{uuid.uuid4().hex[:12]}"
+    pool = PgPool(_PG_DSN, min_size=1, max_size=1)
+    await pool.open()
+    try:
+        collection_id, document_id, seeded_pk = await _seed_image_row(
+            pool, marker, image_id,
+        )
+        ref = _FakeRef(_gradient_png())
+        ref.caption = "reimport caption, embedder live"
+        pks = await handlers._persist_images(
+            _CspAppPool(pool), collection_id, document_id,
+            {image_id: ref}, _LiveEmbedder(_NEW_VEC), None,
+        )
+        assert pks.get(image_id) == seeded_pk
+        got = await _fetch_embedding_row(pool, collection_id, seeded_pk)
+        assert got is not None
+        assert got["embedding"] is not None
+        _assert_halfvec_close(got["embedding"], _NEW_VEC)
+        seed_f = _halfvec_floats(got["embedding"])
+        assert max(abs(a - b) for a, b in zip(seed_f, _SEED_VEC)) > 0.5, (
+            "vector still matches the first insert — COALESCE args swapped?"
+        )
+        assert got["embedding_source_model"] == "replacement/embedder"
+        assert got["embedding_native_dim"] == 2048
+    finally:
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM ingestion_collections WHERE name = $1",
+                    marker,
+                )
+            await _assert_no_f1_residue(pool, marker)
+        finally:
+            await pool.close()
+
+
+async def test_caption_into_embed_text_has_no_url_or_image_markup(monkeypatch):
+    """Embed text keeps the caption and must not grow a URL or markdown image."""
+    vision = _FakeVision("轉換區示意圖，左進右出。")
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda: vision)
+    images = {"fig1": _FakeRef(_gradient_png())}
+    out = await handlers._caption_images_into(
+        "見 [[IMAGE:fig1]] 如圖。", images,
+    )
+    assert "[圖片描述：轉換區示意圖，左進右出。]" in out
+    assert "[[IMAGE:" not in out
+    assert "http://" not in out
+    assert "https://" not in out
+    assert "/api/ingestion" not in out
+    assert "![" not in out
+    assert "](" not in out
+
+
+def test_attach_image_pks_puts_pk_on_metadata_not_in_content():
+    from anila_core.ingestion.chunking_plugins.base import ChunkResult
+
+    content = "見 [圖片描述：轉換區示意圖，左進右出。] 如圖。"
+    chunk = ChunkResult(
+        content=content,
+        chunk_key="doc/leaf-1",
+        token_count=12,
+        metadata={"strategy": "hierarchical", "chunk_type": "leaf"},
+    )
+    ref = _FakeRef(_gradient_png())
+    ref.caption = "轉換區示意圖，左進右出。"
+    out = handlers._attach_image_pks_to_chunks(
+        [chunk], {"fig1": ref}, {"fig1": 42},
+    )
+    assert len(out) == 1
+    assert out[0].content == content
+    assert "http" not in out[0].content
+    assert "/api/" not in out[0].content
+    assert "![" not in out[0].content
+    assert out[0].metadata["image_pks"] == [42]
+    assert out[0].metadata["strategy"] == "hierarchical"
+
+
+def test_attach_image_pks_skips_chunks_without_figures():
+    from anila_core.ingestion.chunking_plugins.base import ChunkResult
+
+    chunk = ChunkResult(
+        content="這段只有文字，沒有圖。",
+        chunk_key="doc/leaf-2",
+        token_count=8,
+        metadata={"chunk_type": "leaf"},
+    )
+    ref = _FakeRef(_gradient_png())
+    ref.caption = "轉換區示意圖"
+    out = handlers._attach_image_pks_to_chunks(
+        [chunk], {"fig1": ref}, {"fig1": 7},
+    )
+    assert out[0].content == chunk.content
+    assert "image_pks" not in out[0].metadata

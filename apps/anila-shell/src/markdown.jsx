@@ -397,9 +397,26 @@ function Table({ children, ...props }) {
   );
 }
 
+// Fit the painted box to the viewport while keeping the native ratio.
+// Exported so the resize-deformation guard can call the same numbers
+// the lightbox uses — a second copy would drift.
+export function fitLightboxBox(nw, nh, vw, vh) {
+  if (!nw || !nh || !vw || !vh) return null;
+  const maxW = vw * 0.92;
+  const maxH = vh * 0.92;
+  const capped = Math.min(maxW / nw, maxH / nh);
+  return {
+    width: Math.round(nw * capped),
+    height: Math.round(nh * capped),
+  };
+}
+
 // Lightbox: full-screen overlay 顯示放大的圖片。點背景 / 按 Esc / 點 ✕ 關閉。
 // 用 createPortal 跳出 markdown 容器,避免父層 transform/overflow 影響 fixed 定位。
 function ImageLightbox({ src, alt, onClose }) {
+  const imgRef = useRef(null);
+  const [box, setBox] = useState(null);
+
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") onClose();
@@ -413,6 +430,20 @@ function ImageLightbox({ src, alt, onClose }) {
       document.body.style.overflow = prevOverflow;
     };
   }, [onClose]);
+
+  useEffect(() => {
+    function apply() {
+      const el = imgRef.current;
+      if (!el) return;
+      const next = fitLightboxBox(
+        el.naturalWidth, el.naturalHeight,
+        window.innerWidth, window.innerHeight,
+      );
+      if (next) setBox(next);
+    }
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+  }, []);
 
   return createPortal(
     <div
@@ -457,15 +488,30 @@ function ImageLightbox({ src, alt, onClose }) {
         ×
       </button>
       <img
+        ref={imgRef}
         src={src}
         alt={alt || ""}
+        onLoad={(e) => {
+          const next = fitLightboxBox(
+            e.currentTarget.naturalWidth, e.currentTarget.naturalHeight,
+            window.innerWidth, window.innerHeight,
+          );
+          if (next) setBox(next);
+        }}
         onClick={(e) => e.stopPropagation()}
         style={{
+          // Before onLoad, width/height stay auto. max-* then scales a
+          // replaced element proportionally (Reviewer measured 6000×1500
+          // at 760×900 → 699×175, AR 4.000). After onLoad the pixel box
+          // takes over; resize recomputes it. No object-fit:contain.
+          width: box ? `${box.width}px` : "auto",
+          height: box ? `${box.height}px` : "auto",
           maxWidth: "92vw",
           maxHeight: "92vh",
-          objectFit: "contain",
           borderRadius: 8,
           boxShadow: "0 12px 40px rgba(0,0,0,0.6)",
+          // Clicking the figure does not close (save-as / inspect).
+          // zoom-out here would promise a shrink that never happens.
           cursor: "default",
         }}
       />
@@ -505,6 +551,24 @@ function MarkdownImage({ node, src, alt, ...rest }) {
 // map — mermaid / artifact tests keep calling <MarkdownView text={…} />.
 const CitationContext = React.createContext({ citations: null, onOpen: null });
 
+function citationFigurePks(citation) {
+  const raw = citation && citation.image_pks;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((n) => Number.isInteger(n) && n > 0);
+}
+
+function CitationFigures({ citation }) {
+  const pks = citationFigurePks(citation);
+  if (pks.length === 0) return null;
+  return pks.map((pk) => (
+    <MarkdownImage
+      key={`fig-${pk}`}
+      src={`/api/ingestion/images/${pk}/blob`}
+      alt={citation.title || "引用段落的圖"}
+    />
+  ));
+}
+
 function splitTextWithCitations(text, citations, onOpen, keyPrefix) {
   if (!text) return [];
   if (!citations || citations.length === 0) return [text];
@@ -522,14 +586,23 @@ function splitTextWithCitations(text, citations, onOpen, keyPrefix) {
         </React.Fragment>,
       );
     }
+    const citation = citations[n - 1];
     parts.push(
       <CitationInline
         key={`${keyPrefix}c${key++}`}
         n={n}
-        citation={citations[n - 1]}
+        citation={citation}
         onOpen={onOpen}
       />,
     );
+    if (citationFigurePks(citation).length > 0) {
+      parts.push(
+        <CitationFigures
+          key={`${keyPrefix}f${key++}`}
+          citation={citation}
+        />,
+      );
+    }
     last = m.index + m[0].length;
   }
   if (last < text.length) {

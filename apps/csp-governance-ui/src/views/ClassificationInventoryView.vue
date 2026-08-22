@@ -58,6 +58,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { extractError } from '../api/errors'
 import {
   getClassificationInventory,
   downloadClassificationInventoryCsv,
@@ -80,7 +81,7 @@ async function fetchInventory() {
     resources.value = data.resources || []
     generatedAt.value = data.generated_at || ''
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '載入分類盤點失敗'
+    pageError.value = extractError(e, '載入分類盤點失敗')
   }
 }
 
@@ -98,7 +99,7 @@ async function downloadCsv() {
     a.remove()
     URL.revokeObjectURL(url)
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '下載 CSV 失敗'
+    pageError.value = extractError(e, '下載 CSV 失敗')
   } finally {
     downloading.value = false
   }
