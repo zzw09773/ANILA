@@ -165,22 +165,24 @@ const ROUTER_AGENT = Object.freeze({
   requiresEncryption: false,
 });
 
-// Default starter — a single card that asks the Router itself to
-// introduce ANILA AND list every agent available to this user. The
-// Router already has the agent manifest in its system prompt so it can
-// produce an accurate, up-to-date answer on first ask, and the user
-// sees their real option set instead of hand-curated marketing cards.
-function buildStarterPrompts(agents) {
-  const real = (agents || []).filter((a) => a.id !== ROUTER_AGENT.id);
-  const countLine = real.length > 0
-    ? `你目前可以使用 ${real.length} 個助手`
-    : "目前還沒有可用的助手";
+// First-screen starters name the work, not the platform or the agent list.
+function buildStarterPrompts() {
   return [
     {
-      title: "ANILA 可以做什麼？",
-      sub: `${countLine}，點一下讓 ANILA 介紹平台與各助手的能力`,
-      q: "請介紹 ANILA 這個平台能做什麼，並列出我目前可用的每一個助手與它們各自能解決的問題。",
+      title: "請假或差勤怎麼規定",
+      sub: "查人事規範，回答會盡量附出處",
+      q: "請假或差勤有哪些規定？請引用院內規範並指出出處。",
       primary: true,
+    },
+    {
+      title: "採購要準備什麼",
+      sub: "查採購流程與應備文件",
+      q: "辦理採購要準備哪些文件、流程是什麼？請引用院內規範並指出出處。",
+    },
+    {
+      title: "總務報修或財產",
+      sub: "查總務作業怎麼走",
+      q: "總務報修或財產相關作業怎麼辦理？請引用院內規範並指出出處。",
     },
   ];
 }
@@ -3109,10 +3111,9 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
                   }}>
                     {currentMsgs.length === 0 ? (
                       <EmptyState
-                        agent={activeAgent}
-                        agents={agents}
                         loading={loadingAgents}
                         onPick={(q) => sendMessage(q, [], {})}
+                        onOpenServices={() => setServicesOpen(true)}
                       />
                     ) : (
                       currentMsgs.map((m) => (
@@ -3144,8 +3145,8 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
                   <div style={{ maxWidth: 760, margin: "0 auto" }}>
                     {tweaks.agentSwitcherPosition === "bottom" && (
                       <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center" }}>
-                        <span style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
-                          target:
+                        <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
+                          交給
                         </span>
                         <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
                         {activeEncryptionRequired && (
@@ -3178,11 +3179,11 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
                       onStop={() =>
                         stopStreaming(selectedConvId, { cancelQueued: true })
                       }
-                      placeholder="問 ANILA 任何事情，或用 @agent 指定 agent · Shift+Enter 換行"
+                      placeholder="用文字或語音提問，例如請假規定、採購流程 · Shift+Enter 換行"
                       footer={
                         selectedAgentId === ROUTER_AGENT.id
-                          ? "ANILA 會幫你找合適的助手"
-                          : `已指定助手 · ${activeAgent.name}`
+                          ? "回答會盡量附上出處"
+                          : `已指定 · ${activeAgent.name}`
                       }
                       onUpload={(file) =>
                         apiUploadAttachment(multipartRequest, file, {
@@ -3197,18 +3198,8 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
                     <div style={{
                       marginTop: 6, fontSize: 11,
                       color: "var(--fg-subtle)", textAlign: "center",
-                      fontFamily: "var(--font-mono)",
                     }}>
-                      ANILA {activeAgent?.id === ROUTER_AGENT.id
-                        ? "會幫你找合適的助手"
-                        : `→ ${activeAgent?.name}`}
-                      {" · 所有呼叫經 CSP · "}
-                      <span
-                        style={{ color: "var(--fg-muted)" }}
-                        title="本系統由大型語言模型(LLM)驅動,輸出內容可能包含錯誤或偏誤,僅供參考、不可作為唯一決策依據。完整 AI 政策見 docs/governance/ai-policy.md。"
-                      >
-                        AI 系統 · 內容僅供參考
-                      </span>
+                      內容僅供參考，重要規定請核對原文
                     </div>
                   </div>
                 </div>
@@ -3293,24 +3284,27 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
 }
 
 // ---- Empty state -----------------------------------------------------------
-function EmptyState({ agent, agents, onPick, loading }) {
-  const prompts = buildStarterPrompts(agents);
+function EmptyState({ onPick, loading, onOpenServices }) {
+  const prompts = buildStarterPrompts();
+  const nextActions = [
+    { id: "knowledge", label: "我的知識庫", hint: "把規定與資料放進來", href: originHref("/anilalm") },
+    { id: "outputs", label: "產出中心", hint: "做成報告或簡報", href: originHref("/anilalm/outputs") },
+    { id: "projects", label: "專案入口", hint: "打開院內作業系統", onClick: onOpenServices },
+  ];
   return (
-    <div style={{ padding: "64px 12px 32px", textAlign: "center" }}>
+    <div style={{ padding: "48px 12px 24px", textAlign: "center" }}>
       <AnilaGlyph size={40} />
       <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>
-        你今天想問 ANILA 什麼？
+        今天要查什麼、問什麼、做完什麼？
       </div>
       <div style={{ marginTop: 6, color: "var(--fg-muted)", fontSize: 13 }}>
         {loading
-          ? "agent 清單載入中…"
-          : agent?.id === ROUTER_AGENT.id
-            ? "輸入問題，ANILA 會幫你找合適的助手；也可以用 @名稱 直接指定"
-            : `當前 agent: ${agent?.name}`}
+          ? "準備中…"
+          : "人事、採購、總務規範都可以問。回答會盡量附出處。"}
       </div>
       <div style={{
         marginTop: 36, display: "grid",
-        gridTemplateColumns: prompts.length === 1 ? "1fr" : "1fr 1fr",
+        gridTemplateColumns: "1fr 1fr",
         gap: 10,
         maxWidth: 560, margin: "36px auto 0", textAlign: "left",
       }}>
@@ -3318,6 +3312,7 @@ function EmptyState({ agent, agents, onPick, loading }) {
           const isPrimary = s.primary === true;
           return (
             <button key={i} onClick={() => onPick(s.q)} style={{
+              gridColumn: isPrimary ? "1 / -1" : undefined,
               padding: isPrimary ? "16px 18px" : "12px 14px",
               background: isPrimary ? "var(--accent-soft, var(--bg-elev))" : "var(--bg-elev)",
               border: "1px solid " + (isPrimary ? "var(--accent, var(--border-strong))" : "var(--border)"),
@@ -3347,6 +3342,42 @@ function EmptyState({ agent, agents, onPick, loading }) {
           );
         })}
       </div>
+      <ul style={{
+        listStyle: "none", margin: "28px auto 0", padding: 0,
+        display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8,
+        maxWidth: 560, textAlign: "left",
+      }}>
+        {nextActions.map((item) => {
+          const body = (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{item.label}</div>
+              <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4 }}>{item.hint}</div>
+            </>
+          );
+          const style = {
+            display: "block",
+            padding: "12px 14px",
+            background: "var(--bg-elev)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            color: "inherit",
+            textDecoration: "none",
+            cursor: "pointer",
+            font: "inherit",
+            width: "100%",
+            textAlign: "left",
+          };
+          return (
+            <li key={item.id}>
+              {item.href ? (
+                <a href={item.href} style={style}>{body}</a>
+              ) : (
+                <button type="button" onClick={item.onClick} style={style}>{body}</button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -3716,10 +3747,10 @@ function SettingsModal({
             <div style={{ fontSize: 13, lineHeight: 1.7 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
                 <AnilaGlyph size={24} />
-                <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA 任務中心</div>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA 營運工作臺</div>
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-                院內 AI 工作臺
+                院內營運工作臺
               </div>
             </div>
           )}

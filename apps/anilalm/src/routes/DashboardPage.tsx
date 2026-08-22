@@ -169,7 +169,7 @@ export function DashboardPage() {
               我的知識庫
             </div>
             <h1 style={{ fontSize: 32, fontWeight: 600, letterSpacing: -0.8, margin: 0 }}>
-              整理你的知識資料
+              把常用規定與資料放進來
             </h1>
             <p style={{ color: t.textMuted, fontSize: 14, margin: '6px 0 0' }}>
               {collections.length} 個 · 共{' '}

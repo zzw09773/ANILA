@@ -2236,7 +2236,7 @@ export const Composer = ({
               onFiles(files);
             }
           }}
-          placeholder={placeholder || "問 ANILA 任何事情 — 用 @agent 指定 agent · Shift+Enter 換行 · 可直接貼上截圖"}
+          placeholder={placeholder || "用文字或語音提問，例如請假規定、採購流程 · Shift+Enter 換行"}
           rows={1}
           style={{
             width: "100%",
@@ -2539,7 +2539,7 @@ export const Sidebar = ({
         <Divider />
         <IconButton onClick={onToggleCollapsed} title="展開側邊"><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話"><IconPlus /></IconButton>
-        <IconButton onClick={onOpenAgentBrowser} title="Agents"><IconGrid /></IconButton>
+        <IconButton onClick={onOpenAgentBrowser} title="助手"><IconGrid /></IconButton>
         <Divider />
         {/* ANILA Shell 四大入口 + admin-gated 治理中心（含 專案入口）。 */}
         <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
@@ -2558,7 +2558,10 @@ export const Sidebar = ({
     }}>
       <div style={{ padding: "14px 14px 10px", display: "flex", alignItems: "center", gap: 8 }}>
         <AnilaGlyph size={20} />
-        <div style={{ fontWeight: 600, fontSize: 14, letterSpacing: 0.2 }}>ANILA</div>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14, letterSpacing: 0.2 }}>ANILA</div>
+          <div style={{ fontSize: 11, color: "var(--fg-muted)", fontWeight: 500 }}>營運工作臺</div>
+        </div>
         <div style={{ flex: 1 }} />
         <IconButton onClick={onToggleCollapsed} title="收合側邊"><IconPanelR /></IconButton>
       </div>
@@ -2586,8 +2589,8 @@ export const Sidebar = ({
 
       <div style={{ padding: "0 10px", display: "flex", gap: 2, marginBottom: 8 }}>
         {[
-          { id: "chats", label: "對話", icon: <IconMessage size={13} /> },
-          { id: "agents", label: "Agents", icon: <IconGrid size={13} /> },
+          { id: "chats", label: "進行中", icon: <IconMessage size={13} /> },
+          { id: "agents", label: "助手", icon: <IconGrid size={13} /> },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
             flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5,

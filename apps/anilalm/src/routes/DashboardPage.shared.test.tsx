@@ -131,7 +131,7 @@ describe('Dashboard shared-with-me list (recipient B)', () => {
     expect(section.textContent).toContain('飛彈庫的分享對話')
     expect(section.textContent).toContain('無知識庫的分享對話')
     expect(section.textContent).not.toContain('我自己庫裡的對話')
-    expect(screen.getByText('整理你的知識資料')).toBeTruthy()
+    expect(screen.getByText('把常用規定與資料放進來')).toBeTruthy()
     expect(screen.getByText('我自己的知識庫')).toBeTruthy()
 
     const convGets = vi

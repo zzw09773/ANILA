@@ -67,7 +67,10 @@ export function ProductHeader({
           >
             <span style={{ width: 10, height: 10, background: '#fff', borderRadius: 2 }} />
           </span>
-          <strong style={{ fontSize: 15, letterSpacing: 0.4 }}>ANILA</strong>
+          <span>
+            <strong style={{ fontSize: 15, letterSpacing: 0.4, display: 'block' }}>ANILA</strong>
+            <span style={{ fontSize: 11, color: t.textMuted, fontWeight: 500 }}>營運工作臺</span>
+          </span>
         </a>
         <nav
           aria-label="ANILA 主導覽"

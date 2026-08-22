@@ -3,7 +3,7 @@
     <!-- Slim top bar — brand mark + theme toggle only (terminal path chrome
          removed per redesign §3.2). ------------------------------------- -->
     <header class="login__topbar">
-      <TermLogo :size="14" subtitle="院內 AI 工作臺" />
+      <TermLogo :size="14" subtitle="院內營運工作臺" />
       <span class="login__topbar-spacer" />
       <button class="login__theme" type="button" @click="toggleTheme" :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`">
         {{ theme === 'dark' ? '◐ 深色' : '◑ 淺色' }}
@@ -16,6 +16,7 @@
         <header class="login__hero">
           <h1 class="login__title">ANILA</h1>
           <p class="login__subtitle">請插入自然人憑證卡登入</p>
+          <p class="login__purpose">營運工作臺 · 查規範、問流程、產出文件</p>
         </header>
 
         <!-- Card login = primary hero card ------------------------------- -->
@@ -661,6 +662,11 @@ async function handleRegister() {
   font-size: var(--t-sm);
   color: var(--c-fg-3);
   margin: 0;
+}
+.login__purpose {
+  font-size: var(--t-xs);
+  color: var(--c-fg-2);
+  margin: var(--gap-2) 0 0;
 }
 
 /* Card login = primary hero card ------------------------------------------ */

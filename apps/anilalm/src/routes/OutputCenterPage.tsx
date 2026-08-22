@@ -63,10 +63,10 @@ export function OutputCenterPage() {
             產出中心
           </p>
           <h1 style={{ margin: 0, fontSize: 32, fontWeight: 650, letterSpacing: -0.7 }}>
-            從知識庫製作成果
+            把查到的內容做成文件
           </h1>
           <p style={{ margin: '8px 0 30px', color: t.textMuted, fontSize: 14, lineHeight: 1.7 }}>
-            選擇已有索引資料的知識庫，製作報告、簡報、心智圖、資訊圖或資料表。
+            選擇已有資料的知識庫，做成報告或簡報，帶著出處一起帶走。
           </p>
 
           {error && (
