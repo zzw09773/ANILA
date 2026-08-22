@@ -8,7 +8,7 @@
       :aria-label="label"
       @click="toggle"
     >
-      更多
+      ⋯
     </button>
     <ul
       v-if="open"
@@ -92,6 +92,7 @@ defineExpose({ close: () => { open.value = false } })
   top: auto;
   bottom: calc(100% + 4px);
 }
+.overflow__menu :deep(a),
 .overflow__menu :deep(button) {
   display: block;
   width: 100%;
@@ -104,7 +105,9 @@ defineExpose({ close: () => { open.value = false } })
   font: inherit;
   font-size: var(--t-sm);
   cursor: pointer;
+  text-decoration: none;
 }
+.overflow__menu :deep(a:hover),
 .overflow__menu :deep(button:hover) {
   background: var(--c-accent-soft);
   color: var(--c-accent-strong);

@@ -126,9 +126,9 @@ export const RoutingTrace = ({ trace, stage, routedAgent, done }) => {
         color: "var(--fg-muted)", textAlign: "left",
       }}>
         <IconRoute size={13} />
-        <span style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>routing trace</span>
+        <span style={{ fontWeight: 500 }}>轉送過程</span>
         <span style={{ flex: 1, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
-          {done ? `${trace.length} steps · completed` : trace[stage] ? trace[stage].label : "queued"}
+          {done ? `${trace.length} 步 · 已完成` : trace[stage] ? trace[stage].label : "排隊中"}
         </span>
         {routedAgent && <AgentPill agent={routedAgent} size="sm" />}
         {!forceOpen && (isOpen ? <IconChevUp size={14} /> : <IconChevDown size={14} />)}

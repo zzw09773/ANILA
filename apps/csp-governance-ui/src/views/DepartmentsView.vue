@@ -45,17 +45,21 @@
             <td class="cell-meta tnum">{{ formatDate(row.created_at) }}</td>
             <td>
               <div class="row-actions">
-                <button v-if="row.is_active" class="term-action" @click="openCreateModal(row)">新增下層</button>
-                <span v-if="row.is_active" class="row-actions__sep">·</span>
                 <button class="term-action" @click="openEditModal(row)">編輯</button>
-                <span class="row-actions__sep">·</span>
-                <button v-if="row.is_active" class="term-action term-action--danger" @click="handleDeactivate(row)">停用</button>
-                <button v-else class="term-action" @click="handleReactivate(row)">重新啟用</button>
+                <OverflowMenu :label="`對 ${row.name} 的其他操作`">
+                  <li v-if="row.is_active" role="none">
+                    <button type="button" role="menuitem" @click="openCreateModal(row)">新增下層</button>
+                  </li>
+                  <li role="none">
+                    <button v-if="row.is_active" type="button" role="menuitem" class="is-danger" @click="handleDeactivate(row)">停用</button>
+                    <button v-else type="button" role="menuitem" @click="handleReactivate(row)">重新啟用</button>
+                  </li>
+                </OverflowMenu>
               </div>
             </td>
           </tr>
           <tr v-if="departments.length === 0">
-            <td colspan="6"><TermEmpty message="尚無部門" /></td>
+            <td colspan="6"><TermEmpty title="還沒有部門" next="請先新增一個單位。" /></td>
           </tr>
         </tbody>
       </table>
@@ -90,6 +94,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { listDepartments, getDepartmentTree, createDepartment, updateDepartment, deactivateDepartment } from '../api/departments'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
+import OverflowMenu from '../components/cli/OverflowMenu.vue'
 import { useDialog } from '../composables/useDialog'
 import { departmentOptions, flattenTree, indexById, departmentPath } from '../utils/departmentTree'
 import { formatDate } from '../utils/formatDate'

@@ -131,8 +131,6 @@ onUnmounted(() => {
   background: var(--c-surface-2);
   border-bottom: var(--border-w) solid var(--c-border);
   font-size: var(--t-xs);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
   color: var(--c-fg-1);
 }
 .term-modal__corner {

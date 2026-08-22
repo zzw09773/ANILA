@@ -134,7 +134,10 @@ def employee_count(department: str) -&gt; int:
     <TermBox :title="`Agent · ${filteredAgents.length}/${agents.length}`" pad="none" flush>
       <div v-if="loading" class="loading">載入 Agent 中…</div>
       <div v-else-if="filteredAgents.length === 0" style="padding: var(--gap-6);">
-        <TermEmpty :message="agents.length === 0 ? '尚無 Agent · 下載樣板開始' : '無符合篩選的 Agent'" />
+        <TermEmpty
+          :title="agents.length === 0 ? '還沒有 Agent' : '沒有符合篩選的 Agent'"
+          :next="agents.length === 0 ? '請先下載樣板，再註冊一個 Agent。' : '請改篩選條件，或清空篩選再看一次。'"
+        />
       </div>
       <table v-else class="term-table">
         <thead>
@@ -173,28 +176,44 @@ def employee_count(department: str) -&gt; int:
             <td>
               <div class="row-actions">
                 <button class="term-action" @click="openDetailModal(agent)">詳情</button>
-                <span class="row-actions__sep">·</span>
-                <button v-if="canEditAgent(agent)" class="term-action" @click="openEditModal(agent)">編輯</button>
-                <span v-if="canEditAgent(agent) && authStore.isAdmin" class="row-actions__sep">·</span>
-                <button v-if="authStore.isAdmin" class="term-action" :disabled="healthCheckingId === agent.id" @click="handleHealthCheck(agent)">
-                  {{ healthCheckingId === agent.id ? '探測中…' : '探測' }}
-                </button>
-                <template v-if="authStore.isAdmin && isPendingReview(agent.approval_status)">
-                  <span class="row-actions__sep">·</span>
-                  <button
-                    class="term-action"
-                    :disabled="!isApprovable(agent.approval_status)"
-                    @click="handleApprove(agent)"
-                  >核准</button>
-                  <span class="row-actions__sep">·</span>
-                  <button class="term-action term-action--danger" @click="openRejectModal(agent)">停用</button>
-                </template>
-                <template v-if="authStore.isAdmin">
-                  <span class="row-actions__sep">·</span>
-                  <button class="term-action term-action--danger" :disabled="deletingId === agent.id" @click="handleDeleteAgent(agent)">
-                    {{ deletingId === agent.id ? '刪除中…' : '刪除' }}
-                  </button>
-                </template>
+                <OverflowMenu
+                  v-if="canEditAgent(agent) || authStore.isAdmin"
+                  :label="`對 ${agent.name} 的其他操作`"
+                >
+                  <li v-if="canEditAgent(agent)" role="none">
+                    <button type="button" role="menuitem" @click="openEditModal(agent)">編輯</button>
+                  </li>
+                  <li v-if="authStore.isAdmin" role="none">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      :disabled="healthCheckingId === agent.id"
+                      @click="handleHealthCheck(agent)"
+                    >{{ healthCheckingId === agent.id ? '探測中…' : '探測' }}</button>
+                  </li>
+                  <template v-if="authStore.isAdmin && isPendingReview(agent.approval_status)">
+                    <li role="none">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        :disabled="!isApprovable(agent.approval_status)"
+                        @click="handleApprove(agent)"
+                      >核准</button>
+                    </li>
+                    <li role="none">
+                      <button type="button" role="menuitem" class="is-danger" @click="openRejectModal(agent)">停用</button>
+                    </li>
+                  </template>
+                  <li v-if="authStore.isAdmin" role="none">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      class="is-danger"
+                      :disabled="deletingId === agent.id"
+                      @click="handleDeleteAgent(agent)"
+                    >{{ deletingId === agent.id ? '刪除中…' : '刪除' }}</button>
+                  </li>
+                </OverflowMenu>
               </div>
             </td>
           </tr>
@@ -482,6 +501,7 @@ import { formatDate } from '../utils/formatDate'
 import { listCollections } from '../api/ingestionCollections'
 import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
+import OverflowMenu from '../components/cli/OverflowMenu.vue'
 import { useDialog } from '../composables/useDialog'
 import AgentGuardPanel from '../components/agents/AgentGuardPanel.vue'
 
@@ -1014,7 +1034,7 @@ function buildStatusHistory(agent) {
   padding: 1px 6px;
 }
 
-.row-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: var(--t-xs); }
+.row-actions { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 8px; font-size: var(--t-xs); }
 .row-actions__sep { color: var(--c-border-strong); }
 
 .loading { padding: var(--gap-6); text-align: center; color: var(--c-fg-3); font-size: var(--t-sm); }
@@ -1060,7 +1080,7 @@ function buildStatusHistory(agent) {
   display: grid; grid-template-columns: 110px 1fr; gap: 4px var(--gap-3); margin: 0;
   font-size: var(--t-sm);
 }
-.detail__list dt { color: var(--c-fg-3); font-size: var(--t-2xs); text-transform: uppercase; letter-spacing: var(--tracking-caps); }
+.detail__list dt { color: var(--c-fg-3); font-size: var(--t-2xs); font-weight: 600; }
 .detail__list dd { margin: 0; color: var(--c-fg-1); }
 .detail__list code { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--c-fg-2); }
 .detail__desc { color: var(--c-fg-2); white-space: pre-wrap; font-size: var(--t-sm); margin: 0; }
@@ -1077,8 +1097,7 @@ function buildStatusHistory(agent) {
 }
 .probe-facts__row { display: contents; }
 .probe-facts__row dt {
-  color: var(--c-fg-3); font-size: var(--t-2xs);
-  text-transform: uppercase; letter-spacing: var(--tracking-caps);
+  color: var(--c-fg-3); font-size: var(--t-2xs); font-weight: 600;
 }
 .probe-facts__row dd { margin: 0; color: var(--c-fg-1); }
 .probe-facts__val.is-ok { color: var(--c-ok); }

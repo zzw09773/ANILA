@@ -52,12 +52,12 @@ defineProps({
   gap: 6px;
   color: var(--c-fg-1);
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-tight);
   font-size: var(--t-md);
   line-height: 1;
 }
 .term-logo__brand {
-  letter-spacing: 0.14em;
+  letter-spacing: 0.02em;
 }
 .term-logo__sep {
   color: var(--c-fg-3);
@@ -65,7 +65,7 @@ defineProps({
 .term-logo__sub {
   color: var(--c-fg-2);
   font-size: var(--t-xs);
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   font-weight: 500;
 }
 </style>

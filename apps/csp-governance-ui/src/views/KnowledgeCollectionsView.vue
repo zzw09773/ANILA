@@ -33,7 +33,7 @@
     <div v-else-if="loadingCollections" class="loading">載入知識庫中…</div>
 
     <div v-if="collections.length === 0 && !loadingCollections && !error" class="term-box" style="padding: var(--gap-6);">
-      <TermEmpty message="尚無知識庫 · 點選「新增知識庫」建立" />
+      <TermEmpty title="還沒有知識庫" next="請先新增知識庫，再上傳資料。" />
     </div>
 
     <div v-if="collections.length > 0" class="grid">
@@ -64,24 +64,28 @@
         </div>
 
         <footer class="cc__foot">
-          <router-link :to="{ name: 'CollectionDetail', params: { id: c.id } }" class="term-action">→ 檢視器</router-link>
-          <span class="cc__sep">·</span>
-          <router-link :to="{ name: 'Evaluator', params: { id: c.id } }" class="term-action">→ 評測器</router-link>
-          <span class="cc__sep">·</span>
-          <button v-if="c.status === 'active'" class="term-action" @click="archiveCollection(c)">封存</button>
-          <button v-else class="term-action" @click="restoreCollection(c)">還原</button>
-          <span class="cc__sep">·</span>
-          <!-- 標記不可用時停用但不藏起來：藏掉的控制項讓管理員以為這個功能不存在，
-               而他其實只差一個降密流程／一句「請管理員代標」。原因用文字寫出來，
-               不是只掛 :title —— 滑鼠不停在上面的人永遠看不到 tooltip。 -->
-          <button
-            class="term-action"
-            :disabled="!markStates[c.id].allowed || markingId === c.id"
-            :title="markStates[c.id].reason"
-            @click="toggleAnilaSearchable(c)"
-          >{{ c.anila_searchable ? '取消 ANILA 檢索標記' : '標記為 ANILA 可檢索' }}</button>
-          <span class="cc__sep">·</span>
-          <button class="term-action term-action--danger" @click="confirmDelete(c)">刪除</button>
+          <router-link :to="{ name: 'CollectionDetail', params: { id: c.id } }" class="term-action">開啟</router-link>
+          <OverflowMenu :label="`對 ${c.name} 的其他操作`">
+            <li role="none">
+              <router-link :to="{ name: 'Evaluator', params: { id: c.id } }" role="menuitem">評測</router-link>
+            </li>
+            <li role="none">
+              <button v-if="c.status === 'active'" type="button" role="menuitem" @click="archiveCollection(c)">封存</button>
+              <button v-else type="button" role="menuitem" @click="restoreCollection(c)">還原</button>
+            </li>
+            <li role="none">
+              <button
+                type="button"
+                role="menuitem"
+                :disabled="!markStates[c.id].allowed || markingId === c.id"
+                :title="markStates[c.id].reason"
+                @click="toggleAnilaSearchable(c)"
+              >{{ c.anila_searchable ? '取消檢索標記' : '標記為可檢索' }}</button>
+            </li>
+            <li role="none">
+              <button type="button" role="menuitem" class="is-danger" @click="confirmDelete(c)">刪除</button>
+            </li>
+          </OverflowMenu>
           <p v-if="markStates[c.id].reason" class="cc__foot-note cell-meta">{{ markStates[c.id].reason }}</p>
           <p v-if="markErrors[c.id]" class="cc__foot-note feedback is-err">{{ markErrors[c.id] }}</p>
         </footer>
@@ -134,6 +138,7 @@ import { useAuthStore } from '../stores/auth'
 import { listCollections, createCollection, updateCollection, deleteCollection } from '../api/ingestionCollections'
 import { extractError } from '../api/errors'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
+import OverflowMenu from '../components/cli/OverflowMenu.vue'
 import { useDialog } from '../composables/useDialog'
 
 const { confirm } = useDialog()

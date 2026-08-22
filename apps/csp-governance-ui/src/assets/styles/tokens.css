@@ -1,11 +1,8 @@
 /* =========================================================================
-   ANILA · CSP 治理中心 design tokens — 「官方藍」institutional console
-   - 淺色優先(default = light);深色主題保留但重調為柔和藍灰(非碳黑+霓虹綠)
-   - 由 <html> 的 [data-theme="light"|"dark"] 切換;未指定則 :root = 淺色
-   - 視覺語言:去終端機/駭客風,改中性專業;sans 為主、等寬只用於 ID/數字/代碼
-   - 所有 view 樣式一律吃這些變數(view 內禁 raw hex)
-   - Fable 5 重設計(2026-07-02):替換原 carbon+mint-green 終端美學
+   ANILA tokens — aliases onto the six named colors in apps/DESIGN.md
+   ink / paper / card / line / official / danger. Do not invent a second palette.
    ========================================================================= */
+@import "../../../../shared/tokens.css";
 
 :root {
   /* Type ---------------------------------------------------------------- */
@@ -13,11 +10,8 @@
      系統字型堆疊(中科院多為 Windows → Segoe UI / 微軟正黑),不下載任何 webfont。
      --font-sans 為介面主字型(內文/標籤/標題);--font-mono 只保留給 ID、token、
      時間戳、數值欄、代碼片段等真正需要等寬對齊的場景。 */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei",
-    "PingFang TC", "Noto Sans TC", "Source Han Sans TC", "Helvetica Neue", Arial,
-    "Apple Color Emoji", sans-serif;
-  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono",
-    "IBM Plex Mono", "Roboto Mono", "Menlo", "Consolas", monospace;
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-tabular);
   /* 表格/數據一律等寬數字對齊(sans 也吃);連字關閉避免介面誤合字。 */
   --font-feat: "tnum" on, "calt" off, "liga" off;
 
@@ -85,26 +79,26 @@
 :root,
 [data-theme="light"] {
   /* Surfaces */
-  --c-bg:        #f7f8fa;
-  --c-surface-1: #ffffff;
+  --c-bg:        var(--paper);
+  --c-surface-1: var(--card);
   --c-surface-2: #eef1f5;
   --c-surface-3: #e2e7ee;
   --c-overlay:   rgba(17, 24, 39, 0.45);
 
   /* Strokes */
-  --c-border:        #dfe3ea;
+  --c-border:        var(--line);
   --c-border-strong: #c3cad6;
   --c-border-accent: #b9c8dd;
   --c-divider:       #e9ecf1;
 
   /* Foreground — 冷調 slate 灰,近墨主色（WCAG AA：fg-3／mute 略加深） */
-  --c-fg-1: #1b2230;
+  --c-fg-1: var(--ink);
   --c-fg-2: #48505f;
   --c-fg-3: #686f7e;
   --c-fg-mute: #6a7280;
 
   /* Accent — 官方 slate-blue */
-  --c-accent:        #2b4c7e;
+  --c-accent:        var(--official);
   --c-accent-strong: #1f3a63;
   --c-accent-soft:   rgba(43, 76, 126, 0.08);
   --c-accent-fg:     #ffffff;
@@ -114,7 +108,7 @@
   --c-info-soft: rgba(43, 108, 176, 0.08);
   --c-warn:    #9a6619;
   --c-warn-soft: rgba(154, 102, 25, 0.10);
-  --c-danger:  #b03636;
+  --c-danger:  var(--danger);
   --c-danger-soft: rgba(176, 54, 54, 0.09);
   --c-ok:      #2c7a54;
   --c-ok-soft: rgba(44, 122, 84, 0.09);
@@ -128,7 +122,7 @@
 
   /* Selection / focus */
   --c-selection-bg: rgba(43, 76, 126, 0.14);
-  --c-focus-ring:   #2b4c7e;
+  --c-focus-ring:   var(--official);
   --c-row-hover:    #eef1f5;
 
   /* Chart palette — 分類用，**相鄰兩色必須分得開**。

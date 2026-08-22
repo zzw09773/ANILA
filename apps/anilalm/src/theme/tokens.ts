@@ -1,6 +1,15 @@
-// Theme tokens — direct port of the prototype's design language.
-// Two themes: dark (default) and light. All colors live here so screens
-// only consume tokens, never literal hex values.
+// Theme tokens — aliases onto apps/DESIGN.md (ink / paper / card / line /
+// official / danger). Light is the product default. Screens consume these
+// names, never a second palette.
+
+export const NAMED = {
+  ink: '#1B2230',
+  paper: '#F7F8FA',
+  card: '#FFFFFF',
+  line: '#DFE3EA',
+  official: '#2B4C7E',
+  danger: '#B03636',
+} as const
 
 export interface ThemeTokens {
   bg: string
@@ -45,22 +54,22 @@ export const TOKENS: Record<ThemeName, ThemeTokens> = {
     chipBg: '#232936',
   },
   light: {
-    bg: '#F7F8FA',
-    surface: '#FFFFFF',
+    bg: NAMED.paper,
+    surface: NAMED.card,
     surface2: '#EEF1F5',
-    elevated: '#FFFFFF',
-    border: '#DFE3EA',
+    elevated: NAMED.card,
+    border: NAMED.line,
     borderStrong: '#C3CAD6',
-    text: '#1B2230',
+    text: NAMED.ink,
     textMuted: '#48505F',
     textSubtle: '#686F7E',
-    accent: '#2B4C7E',
+    accent: NAMED.official,
     accentHover: '#1F3A63',
     accentSoft: 'rgba(43,76,126,0.08)',
     accentBorder: 'rgba(43,76,126,0.28)',
     success: '#2C7A54',
     warning: '#9A6619',
-    danger: '#B03636',
+    danger: NAMED.danger,
     chipBg: '#EEF1F5',
   },
 }

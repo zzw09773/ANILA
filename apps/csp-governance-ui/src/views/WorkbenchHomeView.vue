@@ -1,7 +1,6 @@
 <template>
   <div class="workbench">
     <header class="workbench__hero">
-      <p class="workbench__kicker">ANILA</p>
       <h1 class="workbench__title">院內 AI 工作臺</h1>
       <p class="workbench__lead">
         從這裡進入日常工作。系統管理是進階管理畫面，不是一般使用者的入口。
@@ -34,13 +33,6 @@ const entries = workbenchEntries()
   flex-direction: column;
   gap: var(--gap-8);
   padding: var(--gap-4) 0 var(--gap-10);
-}
-.workbench__kicker {
-  margin: 0 0 var(--gap-2);
-  color: var(--c-accent);
-  font-size: var(--t-xs);
-  font-weight: 600;
-  letter-spacing: 0.16em;
 }
 .workbench__title {
   margin: 0;

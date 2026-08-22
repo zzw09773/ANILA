@@ -28,19 +28,26 @@
 
 <style>
   :root {
-    --bg:            #f7f8fa;
-    --bg-elev:       #ffffff;
+    /* Six named tokens — apps/DESIGN.md */
+    --ink:           #1b2230;
+    --paper:         #f7f8fa;
+    --card:          #ffffff;
+    --line:          #dfe3ea;
+    --official:      #2b4c7e;
+    --danger:        #b03636;
+
+    --bg:            var(--paper);
+    --bg-elev:       var(--card);
     --bg-subtle:     #eef1f5;
-    --fg:            #1b2230;
+    --fg:            var(--ink);
     --fg-muted:      #48505f;
     /* WCAG AA: darkened so subtle/status text clears 4.5:1 on --bg*. */
     --fg-subtle:     #686f7e;
-    --border:        #dfe3ea;
+    --border:        var(--line);
     --border-strong: #c3cad6;
-    --accent:        #2b4c7e;
+    --accent:        var(--official);
     --accent-fg:     #ffffff;
     --accent-soft:   rgba(43, 76, 126, 0.08);
-    --danger:        #b03636;
     --warn:          #9a6619;
     --success:       #2c7a54;
 

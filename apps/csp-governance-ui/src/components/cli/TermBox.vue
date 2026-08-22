@@ -38,6 +38,7 @@ defineProps({
   border: var(--border-w) solid var(--c-border);
   display: flex;
   flex-direction: column;
+  overflow-x: auto;
 }
 .term-box--inset {
   background: var(--c-bg);
@@ -60,8 +61,6 @@ defineProps({
 }
 .term-box__title {
   font-size: var(--t-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
   color: var(--c-fg-1);
   font-weight: 600;
 }

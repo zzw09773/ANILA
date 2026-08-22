@@ -49,7 +49,7 @@
         <tbody>
           <tr v-if="!actions.length">
             <td colspan="6">
-              <TermEmpty message="尚無自訂動作 — 開發者以上可在此建立提示詞模板動作" />
+              <TermEmpty title="還沒有自訂動作" next="開發者以上可在此建立提示詞模板動作。" />
             </td>
           </tr>
           <tr v-for="a in actions" :key="a.id">
@@ -77,16 +77,20 @@
               <div class="row-actions">
                 <template v-if="canMutateAction(a)">
                   <button class="term-action" @click="openEditModal(a)">編輯</button>
-                  <span class="row-actions__sep">·</span>
-                  <button class="term-action" @click="openBindingsModal(a)">綁定</button>
-                  <span class="row-actions__sep">·</span>
-                  <button
-                    class="term-action term-action--danger"
-                    :disabled="busyId === a.id"
-                    @click="handleDelete(a)"
-                  >
-                    {{ busyId === a.id ? '…' : '刪除' }}
-                  </button>
+                  <OverflowMenu :label="`對 ${a.name} 的其他操作`">
+                    <li role="none">
+                      <button type="button" role="menuitem" @click="openBindingsModal(a)">綁定</button>
+                    </li>
+                    <li role="none">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        class="is-danger"
+                        :disabled="busyId === a.id"
+                        @click="handleDelete(a)"
+                      >{{ busyId === a.id ? '刪除中…' : '刪除' }}</button>
+                    </li>
+                  </OverflowMenu>
                 </template>
                 <span v-else class="cell-meta">僅檢視</span>
               </div>
@@ -378,6 +382,7 @@ import { listUsers } from '../api/users'
 import {
   TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal,
 } from '../components/cli'
+import OverflowMenu from '../components/cli/OverflowMenu.vue'
 import { useDialog } from '../composables/useDialog'
 import { useAuthStore } from '../stores/auth'
 
@@ -937,12 +942,12 @@ onMounted(async () => {
 
 .row-actions { display: flex; align-items: center; gap: var(--gap-2); flex-wrap: wrap; }
 .row-actions__sep { color: var(--c-fg-mute); }
+td .row-actions { flex-wrap: nowrap; }
 
-.data-table { width: 100%; border-collapse: collapse; }
+.data-table { width: 100%; min-width: 640px; border-collapse: collapse; }
 .data-table th, .data-table td { padding: 8px 12px; text-align: left; vertical-align: top; }
 .data-table th {
-  color: var(--c-fg-3); font-weight: 400; font-size: var(--t-2xs);
-  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--c-fg-3); font-weight: 600; font-size: var(--t-2xs);
 }
 .data-table tr:not(:last-child) td { border-bottom: var(--border-w) solid var(--c-border); }
 

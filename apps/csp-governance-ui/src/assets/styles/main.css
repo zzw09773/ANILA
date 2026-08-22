@@ -74,8 +74,17 @@
   }
 
   :focus-visible {
-    outline: 1px solid var(--c-focus-ring);
-    outline-offset: 1px;
+    outline: 2px solid var(--c-focus-ring);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   /* Heading defaults — sans (institutional), suppress browser bold to control weight */
@@ -131,8 +140,7 @@
   /* Small caps section / column label ------------------------------- */
   .term-label {
     font-size: var(--t-2xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-caps);
+    font-weight: 600;
     color: var(--c-fg-3);
   }
 
@@ -155,8 +163,7 @@
   }
   .term-field > label {
     font-size: var(--t-2xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-caps);
+    font-weight: 600;
     color: var(--c-fg-3);
   }
 
@@ -283,15 +290,14 @@
   /* Tables — dense, gridded -------------------------------------------- */
   .term-table {
     width: 100%;
+    min-width: 640px;
     border-collapse: collapse;
     font-size: var(--t-base);
   }
   .term-table thead th {
     text-align: left;
-    font-weight: 500;
+    font-weight: 600;
     font-size: var(--t-2xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-caps);
     color: var(--c-fg-3);
     padding: var(--gap-2) var(--gap-3);
     border-bottom: var(--border-w) solid var(--c-border);
@@ -326,8 +332,7 @@
     padding: 0 6px;
     height: 18px;
     font-size: var(--t-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-weight: 600;
     border: var(--border-w) solid var(--c-border-strong);
     color: var(--c-fg-2);
     background: transparent;
@@ -392,8 +397,6 @@
   }
   .term-section__title {
     font-size: var(--t-xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-caps);
     color: var(--c-fg-2);
     font-weight: 600;
   }

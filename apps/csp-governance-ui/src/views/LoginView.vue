@@ -622,8 +622,6 @@ async function handleRegister() {
   padding: 0 8px;
   border-radius: var(--r-soft);
   font-size: var(--t-2xs);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   cursor: pointer;
 }
 .login__theme:hover { color: var(--c-accent); border-color: var(--c-accent); }
@@ -767,8 +765,6 @@ async function handleRegister() {
 }
 .login__section-title {
   font-size: var(--t-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
   color: var(--c-fg-3);
   font-weight: 600;
   margin: 0;

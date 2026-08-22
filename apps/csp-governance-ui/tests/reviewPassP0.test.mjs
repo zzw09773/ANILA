@@ -63,6 +63,42 @@ test('logout clears local state before the network and then hard-replaces /login
   assert.match(header, /window\.location\.replace\(loginHref\(\)\)/)
 })
 
+test('shared design plan pins six official-blue tokens and four workbench entries', () => {
+  const plan = readFileSync(new URL('../../DESIGN.md', import.meta.url), 'utf8')
+  const tokens = source('assets/styles/tokens.css')
+  assert.match(plan, /#2B4C7E/)
+  assert.match(plan, /#F7F8FA/)
+  assert.match(plan, /任務中心/)
+  assert.match(plan, /我的知識庫/)
+  assert.match(plan, /產出中心/)
+  assert.match(plan, /專案入口/)
+  assert.match(tokens, /--official/)
+  assert.match(tokens, /shared\/tokens\.css/)
+})
+
+test('admin tables put extra actions in an overflow, not a wrapping stack', () => {
+  const models = source('views/ModelsView.vue')
+  const collections = source('views/KnowledgeCollectionsView.vue')
+  const agents = source('views/DeveloperAgentsView.vue')
+  const links = source('views/PlatformLinksView.vue')
+  const actions = source('views/MessageActionsView.vue')
+  for (const src of [models, collections, agents, links, actions]) {
+    assert.match(src, /<OverflowMenu/)
+  }
+  for (const src of [models, agents, links, actions]) {
+    assert.match(src, /flex-wrap: nowrap/)
+  }
+})
+
+test('shared chrome labels are sentence case, not uppercase tracking', () => {
+  const section = source('components/cli/TermSection.vue')
+  const stat = source('components/cli/TermStat.vue')
+  const modal = source('components/cli/TermModal.vue')
+  assert.doesNotMatch(section, /text-transform:\s*uppercase/)
+  assert.doesNotMatch(stat, /text-transform:\s*uppercase/)
+  assert.doesNotMatch(modal, /text-transform:\s*uppercase/)
+})
+
 test('user-facing copy uses 工作臺 / 系統管理, not leftover admin chrome', () => {
   const workbench = source('views/WorkbenchHomeView.vue')
   const header = source('components/layout/AppHeader.vue')

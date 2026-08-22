@@ -178,118 +178,73 @@
               </span>
               <span v-if="!model.is_router_primary && !model.is_image_primary && !model.is_asr_primary && !model.is_platform_embedding" class="cell-meta">—</span>
             </td>
-            <td v-if="authStore.isAdmin || canSetEndpointAddress">
+            <td v-if="authStore.isAdmin || canSetEndpointAddress" class="actions-cell">
               <div class="row-actions">
                 <button class="term-action" @click="openEditModal(model)">編輯</button>
-                <template v-if="authStore.isAdmin">
-                  <span class="row-actions__sep">·</span>
-                  <button class="term-action" @click="handleHealthCheck(model.id)">探測</button>
-                  <span class="row-actions__sep">·</span>
-                  <button
-                    class="term-action"
-                    :disabled="testingId === model.id"
-                    title="主動探測此端點連線並回報五態健康與延遲"
-                    @click="handleTest(model)"
-                  >{{ testingId === model.id ? '測試中…' : '測試連線' }}</button>
-                  <span v-if="model.model_type === 'llm' && !model.is_router_primary" class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.model_type === 'llm' && !model.is_router_primary"
-                    class="term-action"
-                    :disabled="!model.is_active || settingPrimaryId === model.id"
-                    @click="handleSetPrimary(model.id)"
-                  >
-                    {{ settingPrimaryId === model.id ? '設定中…' : '設為主要' }}
-                  </button>
-                  <span v-else-if="model.is_router_primary" class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.is_router_primary"
-                    class="term-action"
-                    :disabled="settingPrimaryId === model.id"
-                    @click="handleUnsetPrimary(model.id)"
-                  >
-                    取消主要
-                  </button>
-                  <span v-if="model.model_type === 'image' && !model.is_image_primary" class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.model_type === 'image' && !model.is_image_primary"
-                    class="term-action"
-                    :disabled="!model.is_active || settingImagePrimaryId === model.id"
-                    @click="handleSetImagePrimary(model.id)"
-                  >
-                    {{ settingImagePrimaryId === model.id ? '設定中…' : '設為主圖像模型' }}
-                  </button>
-                  <span v-else-if="model.is_image_primary" class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.is_image_primary"
-                    class="term-action"
-                    :disabled="settingImagePrimaryId === model.id"
-                    @click="handleUnsetImagePrimary(model.id)"
-                  >
-                    取消主圖像
-                  </button>
-                  <span v-if="model.model_type === 'asr' && !model.is_asr_primary" class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.model_type === 'asr' && !model.is_asr_primary"
-                    class="term-action"
-                    :disabled="!model.is_active || settingAsrPrimaryId === model.id"
-                    @click="handleSetAsrPrimary(model.id)"
-                  >
-                    {{ settingAsrPrimaryId === model.id ? '設定中…' : '設為主語音辨識' }}
-                  </button>
-                  <span v-else-if="model.is_asr_primary" class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.is_asr_primary"
-                    class="term-action"
-                    :disabled="settingAsrPrimaryId === model.id"
-                    @click="handleUnsetAsrPrimary(model.id)"
-                  >
-                    取消主語音
-                  </button>
-                  <span v-if="model.model_type === 'embedding' && !model.is_platform_embedding" class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.model_type === 'embedding' && !model.is_platform_embedding"
-                    class="term-action"
-                    :disabled="!model.is_active || settingEmbedId === model.id"
-                    @click="handleSetPlatformEmbed(model.id)"
-                  >
-                    {{ settingEmbedId === model.id ? '設定中…' : '設為主 embedding' }}
-                  </button>
-                  <span v-else-if="model.is_platform_embedding" class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.is_platform_embedding"
-                    class="term-action"
-                    :disabled="settingEmbedId === model.id"
-                    @click="handleUnsetPlatformEmbed(model.id)"
-                  >
-                    取消主 embedding
-                  </button>
-                  <span class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.is_active"
-                    class="term-action"
-                    @click="handleDeactivate(model.id)"
-                  >停用</button>
-                  <button
-                    v-else
-                    class="term-action"
-                    @click="handleActivate(model.id)"
-                  >啟用</button>
-                  <span v-if="authStore.isOwner" class="row-actions__sep">·</span>
-                  <button
-                    v-if="authStore.isOwner"
-                    class="term-action term-action--danger"
-                    :disabled="purgingId === model.id"
-                    :title="'hard-delete this row · irreversible · owner-only'"
-                    @click="handlePurge(model)"
-                  >
-                    {{ purgingId === model.id ? '清除中…' : '清除' }}
-                  </button>
-                </template>
+                <OverflowMenu v-if="authStore.isAdmin" :label="`對 ${model.name} 的其他操作`">
+                  <li role="none"><button type="button" role="menuitem" @click="handleHealthCheck(model.id)">探測</button></li>
+                  <li role="none">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      :disabled="testingId === model.id"
+                      @click="handleTest(model)"
+                    >{{ testingId === model.id ? '測試中…' : '測試連線' }}</button>
+                  </li>
+                  <li v-if="model.model_type === 'llm' && !model.is_router_primary" role="none">
+                    <button type="button" role="menuitem" :disabled="!model.is_active || settingPrimaryId === model.id" @click="handleSetPrimary(model.id)">
+                      {{ settingPrimaryId === model.id ? '設定中…' : '設為主要' }}
+                    </button>
+                  </li>
+                  <li v-else-if="model.is_router_primary" role="none">
+                    <button type="button" role="menuitem" :disabled="settingPrimaryId === model.id" @click="handleUnsetPrimary(model.id)">取消主要</button>
+                  </li>
+                  <li v-if="model.model_type === 'image' && !model.is_image_primary" role="none">
+                    <button type="button" role="menuitem" :disabled="!model.is_active || settingImagePrimaryId === model.id" @click="handleSetImagePrimary(model.id)">
+                      {{ settingImagePrimaryId === model.id ? '設定中…' : '設為主圖像模型' }}
+                    </button>
+                  </li>
+                  <li v-else-if="model.is_image_primary" role="none">
+                    <button type="button" role="menuitem" :disabled="settingImagePrimaryId === model.id" @click="handleUnsetImagePrimary(model.id)">取消主圖像</button>
+                  </li>
+                  <li v-if="model.model_type === 'asr' && !model.is_asr_primary" role="none">
+                    <button type="button" role="menuitem" :disabled="!model.is_active || settingAsrPrimaryId === model.id" @click="handleSetAsrPrimary(model.id)">
+                      {{ settingAsrPrimaryId === model.id ? '設定中…' : '設為主語音辨識' }}
+                    </button>
+                  </li>
+                  <li v-else-if="model.is_asr_primary" role="none">
+                    <button type="button" role="menuitem" :disabled="settingAsrPrimaryId === model.id" @click="handleUnsetAsrPrimary(model.id)">取消主語音</button>
+                  </li>
+                  <li v-if="model.model_type === 'embedding' && !model.is_platform_embedding" role="none">
+                    <button type="button" role="menuitem" :disabled="!model.is_active || settingEmbedId === model.id" @click="handleSetPlatformEmbed(model.id)">
+                      {{ settingEmbedId === model.id ? '設定中…' : '設為主 embedding' }}
+                    </button>
+                  </li>
+                  <li v-else-if="model.is_platform_embedding" role="none">
+                    <button type="button" role="menuitem" :disabled="settingEmbedId === model.id" @click="handleUnsetPlatformEmbed(model.id)">取消主 embedding</button>
+                  </li>
+                  <li role="none">
+                    <button v-if="model.is_active" type="button" role="menuitem" class="is-danger" @click="handleDeactivate(model.id)">停用</button>
+                    <button v-else type="button" role="menuitem" @click="handleActivate(model.id)">啟用</button>
+                  </li>
+                  <li v-if="authStore.isOwner" role="none">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      class="is-danger"
+                      :disabled="purgingId === model.id"
+                      title="永久刪除此列，無法復原"
+                      @click="handlePurge(model)"
+                    >{{ purgingId === model.id ? '清除中…' : '清除' }}</button>
+                  </li>
+                </OverflowMenu>
               </div>
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
-            <td :colspan="(authStore.isAdmin || canSetEndpointAddress) ? 9 : 8"><TermEmpty message="尚未註冊模型 · 註冊後即可啟用 /v1/* 代理" /></td>
+            <td :colspan="(authStore.isAdmin || canSetEndpointAddress) ? 9 : 8">
+              <TermEmpty title="還沒有模型" next="請先新增模型，才能讓提問與製作出走。" />
+            </td>
           </tr>
         </tbody>
       </table>
@@ -573,6 +528,7 @@ import {
 import { listUsers } from '../api/users'
 import { extractError, getRawDetail } from '../api/errors'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
+import OverflowMenu from '../components/cli/OverflowMenu.vue'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'
@@ -1238,7 +1194,8 @@ async function handlePurge(model) {
   background: transparent;
 }
 
-.row-actions { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-xs); flex-wrap: wrap; }
+.actions-cell { white-space: nowrap; vertical-align: middle; min-width: 96px; }
+.row-actions { display: inline-flex; align-items: center; gap: 8px; font-size: var(--t-xs); flex-wrap: nowrap; }
 .row-actions__sep { color: var(--c-border-strong); }
 
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }

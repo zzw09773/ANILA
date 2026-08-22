@@ -7,7 +7,7 @@
   <div class="term-field" :class="{ 'term-field--invalid': !!error }">
     <label v-if="label" class="term-field__label">
       <span>{{ label }}</span>
-      <span v-if="optional" class="term-field__optional">optional</span>
+      <span v-if="optional" class="term-field__optional">選填</span>
     </label>
     <div class="term-field__control">
       <slot />
@@ -37,13 +37,11 @@ defineProps({
   align-items: center;
   justify-content: space-between;
   font-size: var(--t-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  font-weight: 600;
   color: var(--c-fg-3);
 }
 .term-field__optional {
-  text-transform: none;
-  letter-spacing: 0.05em;
+  font-weight: 400;
   font-size: var(--t-2xs);
   color: var(--c-fg-mute);
 }

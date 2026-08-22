@@ -53,16 +53,20 @@
             <td>
               <div class="row-actions">
                 <button class="term-action" @click="openEditModal(link)">編輯</button>
-                <span class="row-actions__sep">·</span>
-                <button v-if="link.is_active" class="term-action term-action--danger" @click="handleDeactivate(link)">停用</button>
-                <button v-else class="term-action" @click="handleReactivate(link)">啟用</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action term-action--danger" @click="handlePurge(link)" title="完全刪除,不可復原">刪除</button>
+                <OverflowMenu :label="`對 ${link.name} 的其他操作`">
+                  <li role="none">
+                    <button v-if="link.is_active" type="button" role="menuitem" class="is-danger" @click="handleDeactivate(link)">停用</button>
+                    <button v-else type="button" role="menuitem" @click="handleReactivate(link)">啟用</button>
+                  </li>
+                  <li role="none">
+                    <button type="button" role="menuitem" class="is-danger" @click="handlePurge(link)">刪除</button>
+                  </li>
+                </OverflowMenu>
               </div>
             </td>
           </tr>
           <tr v-if="links.length === 0">
-            <td colspan="5"><TermEmpty message="尚無註冊服務 · 新增一個以在儀表板顯示外部工具入口" /></td>
+            <td colspan="5"><TermEmpty title="還沒有註冊服務" next="請先新增一個，儀表板才會出現外部工具入口。" /></td>
           </tr>
         </tbody>
       </table>
@@ -224,6 +228,7 @@ import {
   isReleaseGateClosedFor, RELEASE_GATE_BADGE, RELEASE_GATE_HINT,
 } from '../utils/anilalmReleaseGate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
+import OverflowMenu from '../components/cli/OverflowMenu.vue'
 import { useDialog } from '../composables/useDialog'
 import { formatDate } from '../utils/formatDate'
 
@@ -527,7 +532,7 @@ async function handlePurge(link) {
   display: inline-flex;
   align-items: center;
 }
-.row-actions { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-xs); }
+.row-actions { display: inline-flex; gap: 8px; align-items: center; flex-wrap: nowrap; font-size: var(--t-xs); }
 .row-actions__sep { color: var(--c-border-strong); }
 
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
