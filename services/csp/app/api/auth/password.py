@@ -229,22 +229,14 @@ async def refresh(
     return tokens
 
 
-def _user_for_logout(http_request: Request, db: Session) -> User | None:
-    """Identify the session owner even when the access cookie is stale.
-
-    The refresh cookie is Path-scoped to ``/api/auth/refresh`` and is
-    not sent here. A still-valid or expired access cookie is enough to
-    bump ``token_version`` so a leftover refresh JWT cannot mint again.
-    """
-    try:
-        return get_current_user(http_request, None, db)
-    except HTTPException:
-        pass
-    token = http_request.cookies.get(ACCESS_COOKIE_NAME)
+def _user_from_cookie_token(
+    token: str | None, db: Session, expected_type: str
+) -> User | None:
+    """Identify a user from a signature-valid cookie JWT, ignoring exp."""
     if not token:
         return None
     payload = decode_token_allow_expired(token)
-    if not payload or payload.get("type") != "access":
+    if not payload or payload.get("type") != expected_type:
         return None
     user_id = payload.get("sub")
     if not user_id:
@@ -262,22 +254,36 @@ def _user_for_logout(http_request: Request, db: Session) -> User | None:
     return user
 
 
-@router.post("/logout")
-def logout(
+def _user_for_logout(http_request: Request, db: Session) -> User | None:
+    """Identify the session owner from access or refresh cookies.
+
+    ``anila_refresh_token`` is Path-scoped to ``/api/auth/refresh`` and
+    is not sent to ``POST /logout``. ``POST /api/auth/refresh/logout``
+    is the request that still receives it.
+    """
+    try:
+        return get_current_user(http_request, None, db)
+    except HTTPException:
+        pass
+    return _user_from_cookie_token(
+        http_request.cookies.get(ACCESS_COOKIE_NAME), db, "access"
+    ) or _user_from_cookie_token(
+        http_request.cookies.get(REFRESH_COOKIE_NAME), db, "refresh"
+    )
+
+
+def _finish_logout(
     http_request: Request,
     response: Response,
-    db: Session = Depends(get_db),
-):
-    """Clear session cookies and bump the user's token_version.
+    db: Session,
+    current_user: User | None,
+) -> dict:
+    """Bump ``token_version`` when we can, and always expire cookies.
 
-    Bumping ``token_version`` invalidates any outstanding JWTs the user
-    already issued — so logout is effective even if an attacker copied
-    the access token before logout. Cookie removal handles the active
-    browser tab; token_version handles everything else. Cookies are
-    always expired, even when the user cannot be identified.
+    Set-Cookie expire through a Vite proxy may not drop the browser
+    cookies. ``token_version`` is what stops leftover cookies from
+    authenticating ``GET /me`` or ``POST /refresh``.
     """
-    current_user = _user_for_logout(http_request, db)
-
     if current_user is not None:
         current_user.token_version = (current_user.token_version or 0) + 1
         _commit_token_revocation(db, current_user)
@@ -294,6 +300,43 @@ def logout(
 
     clear_session_cookies(response)
     return {"message": "已登出"}
+
+
+@router.post("/refresh/logout")
+def logout_via_refresh(
+    http_request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Revoke the session using the path-scoped refresh cookie.
+
+    ``POST /logout`` never receives ``anila_refresh_token``. A later
+    ``POST /refresh`` from the workbench remount would mint a new
+    access token from that leftover cookie. This path is under
+    ``/api/auth/refresh`` so the browser still sends it.
+    """
+    return _finish_logout(
+        http_request, response, db, _user_for_logout(http_request, db)
+    )
+
+
+@router.post("/logout")
+def logout(
+    http_request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Clear session cookies and bump the user's token_version.
+
+    Bumping ``token_version`` invalidates any outstanding JWTs the user
+    already issued — so logout is effective even if an attacker copied
+    the access token before logout. Cookie removal handles the active
+    browser tab; token_version handles everything else. Cookies are
+    always expired, even when the user cannot be identified.
+    """
+    return _finish_logout(
+        http_request, response, db, _user_for_logout(http_request, db)
+    )
 
 
 def _stamp_private_identity_headers(response: Response) -> None:

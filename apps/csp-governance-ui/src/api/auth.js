@@ -20,7 +20,10 @@ export const getMe = () =>
   })
 
 export const logout = () =>
-  client.post('/api/auth/logout', {}, { timeout: 4000 })
+  Promise.allSettled([
+    client.post('/api/auth/refresh/logout', {}, { timeout: 4000 }),
+    client.post('/api/auth/logout', {}, { timeout: 4000 }),
+  ])
 
 export const changePassword = (current_password, new_password) =>
   client.put('/api/auth/password', { current_password, new_password })

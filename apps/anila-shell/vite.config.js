@@ -7,6 +7,17 @@ import react from "@vitejs/plugin-react";
 const rawBase = process.env.BASE_PATH || "/";
 const base = (rawBase.startsWith("/") ? rawBase : `/${rawBase}`).replace(/\/?$/, "/");
 
+// http-proxy can collapse multiple Set-Cookie into one comma-joined
+// header. Logout then fails to expire anila_* cookies. Keep the array.
+function preserveSetCookieHeaders(proxy) {
+  proxy.on("proxyRes", (proxyRes) => {
+    const cookies = proxyRes.headers["set-cookie"];
+    if (Array.isArray(cookies) && cookies.length > 1) {
+      proxyRes.headers["set-cookie"] = cookies;
+    }
+  });
+}
+
 export default defineConfig({
   base,
   plugins: [react()],
@@ -17,7 +28,11 @@ export default defineConfig({
     port: 5175,
     strictPort: true,
     proxy: {
-      "^/api(?:/|$)": { target: "http://localhost:8000", changeOrigin: true },
+      "^/api(?:/|$)": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+        configure: preserveSetCookieHeaders,
+      },
       "/v1": { target: "http://localhost:8000", changeOrigin: true },
       "/v2": { target: "http://localhost:8000", changeOrigin: true },
     },

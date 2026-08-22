@@ -49,6 +49,13 @@ _EXEMPT_PREFIXES: tuple[str, ...] = (
     "/api/auth/register",
     "/api/auth/providers",
     "/api/auth/oidc/",  # includes /start and /callback
+    # Logout is idempotent session-end. A Vite proxy can drop expire
+    # Set-Cookie and also drop ``anila_csrf`` while leaving access /
+    # refresh alive. Requiring CSRF then 403s the only request that
+    # can bump ``token_version``. Forcing re-login is the worst a
+    # cross-site POST can do here.
+    "/api/auth/logout",
+    "/api/auth/refresh/logout",
     "/health",
     "/docs",
     "/openapi.json",

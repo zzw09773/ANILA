@@ -334,12 +334,62 @@ def test_logout_bumps_token_version_when_access_cookie_is_expired(
     assert refreshed.status_code != 200
 
 
+def test_refresh_logout_revokes_leftover_cookies_after_proxy_drop(
+    client: TestClient, db
+):
+    """Leftover cookies must not authenticate after 登出.
+
+    a76cbcbd only expired cookies on POST /logout. The refresh cookie is
+    Path=/api/auth/refresh so that request never saw it, and a Vite proxy
+    can drop the expire Set-Cookie headers. Restoring the pre-logout
+    cookies simulates both. POST /api/auth/refresh/logout is the path
+    that still receives the refresh cookie and must bump token_version
+    so GET /me and POST /refresh stay 401.
+    """
+    user = make_user(db, username="leftover")
+    _login(client, "leftover")
+    access = client.cookies.get(ACCESS_COOKIE_NAME)
+    refresh = client.cookies.get(REFRESH_COOKIE_NAME)
+    assert access and refresh
+    prior_tv = user.token_version or 0
+
+    resp = client.post("/api/auth/refresh/logout")
+    assert resp.status_code == 200, resp.text
+
+    client.cookies.set(ACCESS_COOKIE_NAME, access, path="/")
+    assert client.get("/api/auth/me").status_code == 401
+
+    # Shell remount path: leftover refresh, no access. CSRF is skipped
+    # when the access cookie is gone — this must still be 401, not a
+    # newly minted session.
+    client.cookies.clear()
+    client.cookies.set(REFRESH_COOKIE_NAME, refresh, path="/api/auth/refresh")
+    assert client.post("/api/auth/refresh").status_code == 401
+    db.refresh(user)
+    assert user.token_version == prior_tv + 1
+
+
+def test_logout_without_csrf_still_revokes(client: TestClient, db):
+    """A dropped csrf cookie must not leave a live access JWT."""
+    user = make_user(db, username="no-csrf-logout")
+    _login(client, "no-csrf-logout")
+    access = client.cookies.get(ACCESS_COOKIE_NAME)
+    prior_tv = user.token_version or 0
+
+    resp = client.post("/api/auth/logout")
+    assert resp.status_code == 200, resp.text
+    client.cookies.set(ACCESS_COOKIE_NAME, access, path="/")
+    assert client.get("/api/auth/me").status_code == 401
+    db.refresh(user)
+    assert user.token_version == prior_tv + 1
+
+
 def test_csrf_required_on_mutating_cookie_request(client: TestClient, db):
     make_user(db, username="erin")
     _login(client, "erin")
 
-    # Missing X-CSRF-Token → 403
-    resp = client.post("/api/auth/logout")
+    # Missing X-CSRF-Token → 403. Logout is exempt; rotation is not.
+    resp = client.post("/api/auth/refresh")
     assert resp.status_code == 403, resp.text
     assert "CSRF" in resp.json()["detail"]
 

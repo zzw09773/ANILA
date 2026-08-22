@@ -29,6 +29,36 @@ import { loginHref } from "../appOrigins.js";
 
 const AuthContext = createContext(null);
 
+// sessionStorage is origin-scoped to :5175. After 登出 a remount of /app
+// must not call refreshJwt() — that is how a leftover
+// Path=/api/auth/refresh cookie reminted the session. A later interactive
+// login lands on /app with a live GET /me and clears the guard.
+export const LOGOUT_GUARD_KEY = "anila.loggedOut";
+
+function readLogoutGuard() {
+  try {
+    return sessionStorage.getItem(LOGOUT_GUARD_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeLogoutGuard() {
+  try {
+    sessionStorage.setItem(LOGOUT_GUARD_KEY, "1");
+  } catch {
+    // Private mode can throw; server-side revoke still has to carry this.
+  }
+}
+
+function clearLogoutGuard() {
+  try {
+    sessionStorage.removeItem(LOGOUT_GUARD_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
@@ -40,21 +70,28 @@ export function AuthProvider({ children }) {
     const epoch = sessionEpochRef.current;
 
     async function bootstrap() {
+      const loggedOut = readLogoutGuard();
       try {
         const me = await authRequest("/api/auth/me");
         if (!active || epoch !== sessionEpochRef.current) return;
+        clearLogoutGuard();
         setUser(me);
       } catch {
-        // Not logged in, or access token expired. Try a refresh once
-        // (the refresh cookie may still be valid) and re-probe.
-        try {
-          await refreshJwt();
-          if (!active || epoch !== sessionEpochRef.current) return;
-          const me = await authRequest("/api/auth/me");
-          if (!active || epoch !== sessionEpochRef.current) return;
-          setUser(me);
-        } catch {
+        // Not logged in, or access token expired. A leftover refresh
+        // cookie must not remint after 登出. Interactive login still
+        // works: GET /me is 200 and the guard is cleared above.
+        if (loggedOut) {
           if (active && epoch === sessionEpochRef.current) setUser(null);
+        } else {
+          try {
+            await refreshJwt();
+            if (!active || epoch !== sessionEpochRef.current) return;
+            const me = await authRequest("/api/auth/me");
+            if (!active || epoch !== sessionEpochRef.current) return;
+            setUser(me);
+          } catch {
+            if (active && epoch === sessionEpochRef.current) setUser(null);
+          }
         }
       } finally {
         if (active && epoch === sessionEpochRef.current) setAuthReady(true);
@@ -73,8 +110,18 @@ export function AuthProvider({ children }) {
     setLoggingOut(true);
     setUser(null);
     setAuthReady(true);
+    writeLogoutGuard();
     try {
-      await authRequest("/api/auth/logout", { method: "POST" });
+      // /refresh/logout is the request that still carries
+      // Path=/api/auth/refresh. /logout expires Path=/ cookies and
+      // bumps token_version from the access cookie.
+      await Promise.allSettled([
+        authRequest("/api/auth/refresh/logout", {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+        authRequest("/api/auth/logout", { method: "POST" }),
+      ]);
     } catch {
       // Local identity is already gone; cookies may still exist if the
       // network failed. The hard-nav in useLogoutRedirect still leaves

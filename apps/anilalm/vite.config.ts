@@ -29,7 +29,23 @@ export default defineConfig(({ mode }) => {
       // gets forwarded to csp).
       proxy: {
         '/api/studio': { target: anilaStudio, changeOrigin: true },
-        '^/api(?:/|$)': { target: cspBackend, changeOrigin: true },
+        '^/api(?:/|$)': {
+          target: cspBackend,
+          changeOrigin: true,
+          configure(proxy: {
+            on(
+              event: string,
+              cb: (proxyRes: { headers: Record<string, unknown> }) => void,
+            ): void
+          }) {
+            proxy.on('proxyRes', (proxyRes) => {
+              const cookies = proxyRes.headers['set-cookie']
+              if (Array.isArray(cookies) && cookies.length > 1) {
+                proxyRes.headers['set-cookie'] = cookies
+              }
+            })
+          },
+        },
         '/v1': { target: cspBackend, changeOrigin: true },
         '/v2': { target: cspBackend, changeOrigin: true },
       },

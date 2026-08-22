@@ -41,6 +41,7 @@ const NO_RETRY_PATHS = [
   '/api/auth/refresh',
   '/api/auth/login',
   '/api/auth/logout',
+  '/api/auth/refresh/logout',
   '/api/auth/card/verify',
 ]
 

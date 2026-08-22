@@ -210,6 +210,10 @@ _OPAQUE = "<opaque-mount>"
 EXPECTED_EXEMPT_MUTATING_ROUTES = {
     ("POST", "/api/auth/login"),
     ("POST", "/api/auth/register"),
+    # Logout CSRF only forces re-login. Exempt so a dropped csrf cookie
+    # cannot block the token_version bump that kills leftover refresh.
+    ("POST", "/api/auth/logout"),
+    ("POST", "/api/auth/refresh/logout"),
 }
 
 

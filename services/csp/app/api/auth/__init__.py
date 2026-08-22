@@ -114,6 +114,7 @@ from .password import (  # noqa: F401
     get_me,
     login,
     logout,
+    logout_via_refresh,
     refresh,
     register,
 )

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { loginHref } from "../appOrigins.js";
-import { AuthProvider, useLogoutRedirect } from "../runtime/auth.jsx";
+import { AuthProvider, LOGOUT_GUARD_KEY, useLogoutRedirect } from "../runtime/auth.jsx";
 import { RequireAuth } from "../runtime/requireAuth.jsx";
 
 const USER = { id: 1, username: "alice", role: "user" };
@@ -62,6 +62,7 @@ describe("shell logout", () => {
       vi.fn(async (url) => {
         const path = String(url);
         if (path.includes("/api/auth/me")) return jsonOk(USER);
+        if (path.includes("/api/auth/refresh/logout")) return jsonOk({ ok: true });
         if (path.includes("/api/auth/logout")) {
           await new Promise((resolve) => {
             resolveLogout = resolve;
@@ -86,6 +87,7 @@ describe("shell logout", () => {
     });
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    sessionStorage.removeItem(LOGOUT_GUARD_KEY);
   });
 
   it("clears the workbench, waits for logout, then hard-replaces /login without next", async () => {
@@ -108,5 +110,51 @@ describe("shell logout", () => {
     });
     expect(replace).toHaveBeenCalledWith(`${loginHref()}?logout=1`);
     expect(replace.mock.calls[0][0]).not.toMatch(/next=/);
+    expect(sessionStorage.getItem(LOGOUT_GUARD_KEY)).toBe("1");
+  });
+
+  it("does not remint from a leftover refresh cookie after logout remounts /app", async () => {
+    sessionStorage.setItem(LOGOUT_GUARD_KEY, "1");
+    const fetchMock = vi.fn(async (url) => {
+      const path = String(url);
+      if (path.includes("/api/auth/refresh") && !path.includes("/logout")) {
+        return jsonOk({ access_token: "new" });
+      }
+      return {
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        headers: new Headers({ "content-type": "text/plain" }),
+        text: async () => "HTTP 401",
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <AuthProvider>
+        <LogoutHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("前往登入頁…")).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(([url]) => {
+        const path = String(url);
+        return path.includes("/api/auth/refresh") && !path.includes("/logout");
+      }),
+    ).toBe(false);
+  });
+
+  it("still hydrates after a later interactive login even if the logout guard is set", async () => {
+    sessionStorage.setItem(LOGOUT_GUARD_KEY, "1");
+
+    render(
+      <AuthProvider>
+        <LogoutHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("工作臺")).toBeTruthy();
+    expect(sessionStorage.getItem(LOGOUT_GUARD_KEY)).toBeNull();
   });
 });

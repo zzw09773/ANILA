@@ -16,4 +16,7 @@ export const refreshToken = (refresh_token?: string | null) =>
 export const getMe = () => client.get<UserMe>('/api/auth/me')
 
 export const logoutApi = () =>
-  client.post('/api/auth/logout', {}, { timeout: 4000 })
+  Promise.allSettled([
+    client.post('/api/auth/refresh/logout', {}, { timeout: 4000 }),
+    client.post('/api/auth/logout', {}, { timeout: 4000 }),
+  ])

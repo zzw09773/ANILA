@@ -81,6 +81,16 @@ test('bare /login 401 does not refresh a leftover session into /app', () => {
   assert.match(client, /function onLoginSurface/)
 })
 
+test('governance logout also POSTs /api/auth/refresh/logout so the refresh cookie is revoked', () => {
+  const authApi = source('api/auth.js')
+  const logoutAt = authApi.indexOf('export const logout')
+  const refreshLogoutAt = authApi.indexOf('/api/auth/refresh/logout', logoutAt)
+  const logoutAtCall = authApi.indexOf('/api/auth/logout', logoutAt)
+  assert.ok(logoutAt > 0)
+  assert.ok(refreshLogoutAt > logoutAt)
+  assert.ok(logoutAtCall > refreshLogoutAt)
+})
+
 test('developer session hydrate refuses a weaker /me and does not cache GET /me', () => {
   const store = source('stores/auth.js')
   const authApi = source('api/auth.js')

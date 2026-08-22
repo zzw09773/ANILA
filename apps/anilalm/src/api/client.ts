@@ -87,7 +87,12 @@ interface RetriableConfig extends InternalAxiosRequestConfig {
 // Paths that MUST NOT trigger a refresh on 401, otherwise we'd recurse
 // (the refresh endpoint itself uses this same client). Login/logout 401s
 // are also user-facing failures that the UI should show verbatim.
-const NO_REFRESH_PATHS = ['/api/auth/refresh', '/api/auth/login', '/api/auth/logout']
+const NO_REFRESH_PATHS = [
+  '/api/auth/refresh',
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/auth/refresh/logout',
+]
 
 client.interceptors.response.use(
   (response) => response,

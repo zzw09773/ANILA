@@ -15,9 +15,18 @@ describe("shell logout source guard", () => {
     expect(auth.indexOf("setUser(null)", logoutAt)).toBeGreaterThan(
       auth.indexOf("setLoggingOut(true)", logoutAt),
     );
+    expect(auth.indexOf('authRequest("/api/auth/refresh/logout"', logoutAt)).toBeGreaterThan(
+      auth.indexOf("setUser(null)", logoutAt),
+    );
     expect(auth.indexOf('authRequest("/api/auth/logout"', logoutAt)).toBeGreaterThan(
       auth.indexOf("setUser(null)", logoutAt),
     );
+    expect(auth).toMatch(/LOGOUT_GUARD_KEY/);
+    const bootstrapAt = auth.indexOf("async function bootstrap");
+    const loggedOutAt = auth.indexOf("if (loggedOut)", bootstrapAt);
+    const refreshAt = auth.indexOf("await refreshJwt()", bootstrapAt);
+    expect(loggedOutAt).toBeGreaterThan(bootstrapAt);
+    expect(refreshAt).toBeGreaterThan(loggedOutAt);
     expect(auth).toMatch(/location\.replace\(`\$\{loginHref\(\)\}\?logout=1`\)/);
     expect(auth).not.toMatch(/loginHref\(window\.location/);
     expect(gate).toMatch(/loggingOut/);
