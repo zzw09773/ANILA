@@ -76,7 +76,6 @@ import {
   ConfidenceChip,
   FollowUpSuggestions,
   RedactionHint,
-  renderTextWithCitations,
 } from "./trust.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
@@ -859,14 +858,16 @@ export const MessageBubble = ({
                 color: "var(--fg)",
               }}
             >
-              {msg.citations && msg.citations.length > 0 ? (
-                // Plain-text + citation links need pre-wrap so the author's
-                // newlines survive; markdown renders block elements itself.
-                <div style={{ whiteSpace: "pre-wrap" }}>
-                  {renderTextWithCitations(displayBody, msg.citations, onOpenCitation)}
-                </div>
-              ) : displayBody ? (
-                <MarkdownView text={displayBody} />
+              {displayBody ? (
+                // Citations used to take the plain-text branch, so RAG
+                // answers (which always have citations) never got markdown.
+                // Markdown itself handles block newlines; [n] chips are
+                // substituted on text nodes inside MarkdownView.
+                <MarkdownView
+                  text={displayBody}
+                  citations={msg.citations}
+                  onOpenCitation={onOpenCitation}
+                />
               ) : null}
               {msg.streaming && msg.text && (
                 <span style={{

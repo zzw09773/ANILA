@@ -95,6 +95,8 @@ const NEW_TESTS = [
   "src/__tests__/agentReplySignal",
   // Homepage service-card icon rendering (icon-picker package).
   "src/__tests__/serviceCardIcon",
+  // Cited RAG answers must keep markdown (owner 2026-08-21 screen).
+  "src/__tests__/markdownCitations",
 ];
 // 這個工作包之前就存在的測試(用來量「舊套件漏了什麼」)。
 const PRE_EXISTING_EXCLUDES = [
@@ -112,6 +114,7 @@ const PRE_EXISTING_EXCLUDES = [
   "**/credentialDetect.test.jsx",
   "**/agentReplySignal.test.jsx",
   "**/serviceCardIcon.test.jsx",
+  "**/markdownCitations.test.jsx",
   "**/__tests__/guards/**",
   "**/sourceTextGuardRegistry.test.js",
 ];
@@ -708,6 +711,24 @@ const MUTATIONS = [
     intent: "對比模式的輸入框收不到模式，退回預設 warn（block 在對比模式裡靜默失效）",
     find: "          redactionMode={redactionMode}",
     replace: "          redactionMode={undefined}",
+  },
+  {
+    id: "cited-answer-skips-markdown",
+    file: "src/chat.jsx",
+    shape: "刪掉賦值（識別字全留）",
+    intent: "有引用的回答不再走 MarkdownView（RAG 主線變回字面 **粗體**）",
+    find:
+      "                <MarkdownView\n" +
+      "                  text={displayBody}\n" +
+      "                  citations={msg.citations}\n" +
+      "                  onOpenCitation={onOpenCitation}\n" +
+      "                />",
+    replace:
+      "                <MarkdownView\n" +
+      "                  text={displayBody && ''}\n" +
+      "                  citations={msg.citations}\n" +
+      "                  onOpenCitation={onOpenCitation}\n" +
+      "                />",
   },
 ];
 

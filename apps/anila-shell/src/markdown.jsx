@@ -14,6 +14,7 @@ import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
 import { useArtifactPreview } from "./artifactContext.jsx";
 import { detectArtifactKind } from "./runtime/artifactDetect.js";
+import { CitationInline } from "./trust.jsx";
 
 function preprocessLatex(text) {
   if (!text) return "";
@@ -498,6 +499,63 @@ function MarkdownImage({ node, src, alt, ...rest }) {
   );
 }
 
+// Citation chips live inside markdown text nodes so RAG answers can be
+// both formatted and cited. Code / inline-code are left alone so `[1]`
+// in a fence stays a literal. Context rather than a rebuilt `components`
+// map — mermaid / artifact tests keep calling <MarkdownView text={…} />.
+const CitationContext = React.createContext({ citations: null, onOpen: null });
+
+function splitTextWithCitations(text, citations, onOpen, keyPrefix) {
+  if (!text) return [];
+  if (!citations || citations.length === 0) return [text];
+  const re = /\[(\d+)\]/g;
+  const parts = [];
+  let last = 0;
+  let m;
+  let key = 0;
+  while ((m = re.exec(text)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (m.index > last) {
+      parts.push(
+        <React.Fragment key={`${keyPrefix}t${key++}`}>
+          {text.slice(last, m.index)}
+        </React.Fragment>,
+      );
+    }
+    parts.push(
+      <CitationInline
+        key={`${keyPrefix}c${key++}`}
+        n={n}
+        citation={citations[n - 1]}
+        onOpen={onOpen}
+      />,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    parts.push(
+      <React.Fragment key={`${keyPrefix}t${key++}`}>
+        {text.slice(last)}
+      </React.Fragment>,
+    );
+  }
+  return parts;
+}
+
+function Cited({ children }) {
+  const { citations, onOpen } = React.useContext(CitationContext);
+  if (!citations || citations.length === 0) return children;
+  const out = [];
+  React.Children.forEach(children, (child, idx) => {
+    if (typeof child === "string") {
+      out.push(...splitTextWithCitations(child, citations, onOpen, `c${idx}-`));
+    } else {
+      out.push(child);
+    }
+  });
+  return out;
+}
+
 // Component overrides for react-markdown.
 //
 // Block-level margin/spacing lives in the global `.anila-msg-body …` rules
@@ -507,16 +565,21 @@ function MarkdownImage({ node, src, alt, ...rest }) {
 // h4 renderer keeps an inline rule because it needs a muted color that
 // doesn't exist as a standalone CSS class.
 const components = {
-  p: ({ node, ...props }) => <p {...props} />,
+  p: ({ node, children, ...props }) => <p {...props}><Cited>{children}</Cited></p>,
   ul: ({ node, ordered, ...props }) => <ul {...props} />,
   ol: ({ node, ordered, ...props }) => <ol {...props} />,
-  li: ({ node, ordered, ...props }) => <li {...props} />,
-  h1: ({ node, ...props }) => <h1 {...props} />,
-  h2: ({ node, ...props }) => <h2 {...props} />,
-  h3: ({ node, ...props }) => <h3 {...props} />,
-  h4: ({ node, ...props }) => (
-    <h4 style={{ fontSize: 13, fontWeight: 600, margin: "10px 0 4px", color: "var(--fg-muted)" }} {...props} />
+  li: ({ node, ordered, children, ...props }) => <li {...props}><Cited>{children}</Cited></li>,
+  h1: ({ node, children, ...props }) => <h1 {...props}><Cited>{children}</Cited></h1>,
+  h2: ({ node, children, ...props }) => <h2 {...props}><Cited>{children}</Cited></h2>,
+  h3: ({ node, children, ...props }) => <h3 {...props}><Cited>{children}</Cited></h3>,
+  h4: ({ node, children, ...props }) => (
+    <h4 style={{ fontSize: 13, fontWeight: 600, margin: "10px 0 4px", color: "var(--fg-muted)" }} {...props}>
+      <Cited>{children}</Cited>
+    </h4>
   ),
+  strong: ({ node, children, ...props }) => <strong {...props}><Cited>{children}</Cited></strong>,
+  em: ({ node, children, ...props }) => <em {...props}><Cited>{children}</Cited></em>,
+  del: ({ node, children, ...props }) => <del {...props}><Cited>{children}</Cited></del>,
   code: ({ node, inline, className, children, ...props }) => {
     if (inline) {
       return (
@@ -556,7 +619,7 @@ const components = {
     />
   ),
   table: Table,
-  th: ({ node, ...props }) => (
+  th: ({ node, children, ...props }) => (
     <th
       style={{
         border: "1px solid var(--border)",
@@ -566,13 +629,19 @@ const components = {
         textAlign: "left",
       }}
       {...props}
-    />
+    >
+      <Cited>{children}</Cited>
+    </th>
   ),
-  td: ({ node, ...props }) => (
-    <td style={{ border: "1px solid var(--border)", padding: "5px 10px" }} {...props} />
+  td: ({ node, children, ...props }) => (
+    <td style={{ border: "1px solid var(--border)", padding: "5px 10px" }} {...props}>
+      <Cited>{children}</Cited>
+    </td>
   ),
-  a: ({ node, ...props }) => (
-    <a style={{ color: "var(--accent)" }} target="_blank" rel="noopener noreferrer" {...props} />
+  a: ({ node, children, ...props }) => (
+    <a style={{ color: "var(--accent)" }} target="_blank" rel="noopener noreferrer" {...props}>
+      <Cited>{children}</Cited>
+    </a>
   ),
   // 生成的圖片(image-generator agent 回傳的 markdown `![](data:image/...)`
   // / 上傳預覽 / 其他 image)在訊息區塊中央顯示,點擊放大檢視。
@@ -592,16 +661,22 @@ const rehypePlugins = [
 ];
 const remarkPlugins = [remarkGfm, remarkMath];
 
-export function MarkdownView({ text }) {
+export function MarkdownView({ text, citations, onOpenCitation }) {
+  const citationValue = React.useMemo(
+    () => ({ citations: citations || null, onOpen: onOpenCitation || null }),
+    [citations, onOpenCitation],
+  );
   return (
-    <div className="anila-markdown">
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
-        components={components}
-      >
-        {preprocessLatex(text || "")}
-      </ReactMarkdown>
-    </div>
+    <CitationContext.Provider value={citationValue}>
+      <div className="anila-markdown">
+        <ReactMarkdown
+          remarkPlugins={remarkPlugins}
+          rehypePlugins={rehypePlugins}
+          components={components}
+        >
+          {preprocessLatex(text || "")}
+        </ReactMarkdown>
+      </div>
+    </CitationContext.Provider>
   );
 }
