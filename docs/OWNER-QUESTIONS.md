@@ -4,10 +4,66 @@
 > 並在該處註明假設。擁有者一次處理完之後,回頭改的成本才是真實成本。
 >
 > 每一條都寫:**問題／為什麼需要你決定／我目前用什麼假設在做／改變主意的成本**。
+>
+> 🔴 **判讀規則(以此為準,不要靠順序或數字)**:
+> ① **順序不代表狀態。** 「未答的排在最前面」這條慣例已作廢——實際順序是「未答→已裁→已裁→未答…」交錯;
+>   **半活的慣例比死掉的慣例危險,因為它還會被相信。以標記為準,不要以位置為準。**
+> ② **標記判讀**:`✅`／`🟢`／`🟡` = 已裁決;`🗄` = 已答的原始題目(保留脈絡),**不計入未答**;
+>   `❌` = 查錯作廢;**無標記 = 未答**。
+> ③ **數字會過期,以檔內標記為準。** 題目新增／結案都會讓「還有幾題未答」漂移,
+>   任何一處寫死的數字(例:`CLAUDE.md`)都只是最近一次快照,別拿它當現況。
 
 ---
 
-## Q55 — codeserver 的 docker.sock 要成為「具名的已接受風險」(2026-08-20,審查長要求)
+## 🟢 Q61 — 圖片要不要「看懂」＋存 image URL:**平台早就有,而且預設開**(2026-08-22)
+
+> 🔴 **本條 2026-08-22 當天重寫過一次。我第一版的答案是錯的。**
+> 第一版寫「沒有視覺模型、模型寫死成 Granite、權重沒帶進氣隙」——
+> **那些描述的是 docling 內建的 `do_picture_description`,而平台根本不走那條路。**
+> **平台有自己的 VLM 步驟,呼叫自己的模型端點。** 錯的原因:我只查了 docling 那一側就下結論,
+> 沒有往上游查 ingestion-worker。**與〔前半是量出來的、後半是想出來的〕同族。**
+
+**擁有者的問題(第二次講清楚後的版本)**:建知識庫時總是需要 VLM;不是要每個知識庫選一顆,
+是**要有一個設定,讓建立時能對圖片產生描述、並且存下 image URL**。
+
+**答案:兩半都已經做好了,而且不需要新的權重。**
+
+**① 圖片描述——`services/ingestion-worker/.../settings.py:124-190`**
+- `enable_image_captions` **預設 `True`**;compose `ENABLE_IMAGE_CAPTIONS: ${…:-true}`
+  (`infra/compose/platform.yml:344`、`dev.yml:213`)。
+- `vision_model` **預設就是 `gemma4`**;`VISION_MODEL: ${VISION_MODEL:-gemma4}`(`platform.yml:346`)。
+- `vision_url` **預設指向 CSP 自己的 `/v1`**(`http://csp:8000/v1`,`platform.yml:345`)
+  ——**所以用量跟 embedding 一樣被計量,走同一條內部 API key**。
+- 機制:PDF 解析器留下 `[[IMAGE:<id>]]` 佔位,worker **在切塊之前**逐張呼叫 VLM,
+  **把佔位換成 caption 文字**——所以圖表內容會進入檢索。並行度／逾時／單張上限都有旗標。
+- 兩個開關**必須同時成立**;任一關閉 → 跳過並留一行 info log 說明原因,佔位退化成 `[image]`。
+
+**② image URL——已經有端點**
+`GET /api/ingestion/images/{image_id}/blob`(`services/csp/app/api/ingestion/image_blob.py:66`),
+另有 `POST /api/ingestion/collections/{id}/images/search`(`api/ingestion/search.py:872`)。
+
+**③ 為什麼建 collection 的畫面上看不到**:**它是平台級設定,不是每庫設定**——
+這與擁有者自己那條規矩一致(**一顆值要留在設定頁,必須答得出誰、在什麼情境、為什麼不能等下一次改版**),
+**而且少一個等著被動的開關。** ✅ **擁有者本人也說「不是說要每個知識庫一個」——方向一致。**
+
+**🔴 ④ 那為什麼實際上沒有圖說?因為斷在最上游那一格,而它今天才修好。**
+遠端化之後 docling **沒有開 `generate_picture_images`**,所以 `/parse` 回 `images: []`
+——**VLM 步驟拿不到任何圖可以描述,整條鏈在最前面就空了。**
+今天的 docling 圖片包補上那個旗標(兩處一次改齊,service 側有守衛、容器 POST 實測 0→14 張)。
+⚠ **但那個修法還沒上 GPU 主機**:交付物在 `~/anila-deliverables/gpu-host-handoff/`
+(6.0G tar ＋ 給 operator 的白話 README),**等擁有者轉交**。
+👉 **所以現在的正確狀態是:功能齊備、預設開啟、缺的是把今天那包搬上 GPU 主機。**
+
+**還需要裁決的只剩兩件小的**:
+① **`do_picture_description`(docling 內建那條)要不要一併關死?** 現在是 `DOCLING_PICTURE_DESCRIPTION` 預設 `false`
+且**離線權重包沒帶 Granite**(`fetch-docling-weights.sh:77-92` 只抓 layout/tableformer/EasyOCR)
+——**打開它在氣隙內會壞,而它是一顆外面動得到的旗標。** 建議寫成具名限制或直接拿掉那顆旗標。
+⚠ **[UNVERIFIED] 打開後是大聲失敗還是安靜不產圖說,我沒有量。** 要驗需在 GPU 主機上打開跑一份有圖的 PDF。
+② **前端要不要把圖顯示出來**(有 blob 端點不等於畫面上看得到)——**這一格我沒查,標為未查。**
+
+---
+
+## Q60 — codeserver 的 docker.sock 要成為「具名的已接受風險」(2026-08-20,審查長要求)
 
 **問題**:`infra/compose/platform.yml` 把 `docker.sock` 掛給 codeserver → **持那組共用密碼的人
 等於 host root**;`/codeserver` 從內網大門可達、無 rate limit、無 SSO。這是你先前接受過的取捨,
@@ -24,6 +80,183 @@
 
 **改變主意的成本**:低——若你改為要求緩解(加 SSO/rate limit/獨立密碼),開一包實作即可,
 但那是新工作不是本條;本條只要求「被接受的事實有名字」。
+
+## ✅ Q59 — ANILALM **不使用密等設計**(2026-08-21 擁有者裁決,兩度重申)
+
+**問題**:浮水印門檻只看「對話密等」、不看「目前開著的知識庫」——
+進「密」知識庫用未分級 agent 開新對話就不印,而側欄正顯示該庫文件
+(範本 `apps/anila-shell/src/app.jsx:2827-2843` 同形)。門檻該看哪一個?
+
+**✅ 擁有者裁決(原話,兩度重申):**
+「個人知識庫應該不會有密的」「**ANILALM 結構上不可能出現密**」
+「**我再說一次,ANILALM 不用密等的設計**」。
+
+🔴 **裁決的範圍比「拿掉浮水印」大**:**ANILALM 的設計裡沒有「密等」這個概念。**
+浮水印只是它的一個後果——**門檻要看對話還是看知識庫,這個問題本身不成立,因為兩邊都不該有密等。**
+
+⚠ **幕僚長曾就此提出疑慮(「查證顯示擋不住」),擁有者重申裁決。依規矩:重申即決定,照辦。**
+**而查證的價值不在推翻裁決,在於指出「要讓這句話為真,還缺什麼」**——見〈落差〉。
+
+### 落差:三條路裡有兩條平台已經擋住,第三條沒有
+
+**幕僚長複驗(不是採信 Reviewer 的轉述)**:
+- **① 記憶召回落閂:平台已擋。** `services/csp/app/api/proxy.py:267-292`
+  `_memory_confined_to_conversation`——`origin=='anilalm'` 的對話**只從自己召回**,
+  不吃 ANILA 的跨對話長期記憶。註解直接引擁有者 2026-07-30 的規則
+  (PLAN §4.4/4.5:「ANILALM 的『同一 session』＝同一個對話框」)。
+  📌 **Reviewer 的報告找到了落閂那一行,漏了旁邊這道圍欄**——**這是本日第三次「二手宣稱要自己再跑一次」。**
+- 🔴 **② agent 政策落閂:2026-08-22 更正——原本寫「不會發生」,那句話的依據是錯的。**
+  ~~ANILALM 沒有任何介面帶 `agent_id`,永遠是 null~~ **前半屬實,但後半的推論不成立:proxy 根本不讀
+  `conversation.agent_id`。** agent 是**從請求的 model 名解出來的**
+  (`proxy.py:1137 _resolve_agent(db, caller, model_name)` → `:994 filter(Agent.name == agent_name, approved)`),
+  而那個 latch 呼叫點自己的註解寫著:「**conversation.agent_id stays NULL (router)** but the row's
+  classified flag must record the encrypted turn」——**`agent_id` 是 null 正是它設計要處理的情況,
+  不是它不會發生的理由。**
+  📌 **本機母集合實查**:`agents` 表唯一一顆 approved 是 `iso42001-probe`,
+  **`requires_encryption=t` 會讓 `_agent_policy_level` floor 到 RESTRICTED(密)**。
+  ✅ **但實際觸發條件是部署參數,目前不成立**(幕僚長 2026-08-22 實測):
+  ANILALM 的 model **烘在建置期**——`infra/compose/{dev,platform}.yml` 的
+  `VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}`,`.env` 無覆寫;
+  UI **沒有模型選單**,唯一呼叫點是 `WSChat.tsx:339 model: DEFAULT_MODEL`。
+  🔴 **所以正確狀態是:不是「不會發生」,也不是「正在發生」,是「一個部署參數之遙」**
+  ——把 `ANILALM_DEFAULT_CHAT_MODEL` 設成某顆 agent 的名字,它就會發生,**而那是外面動得到的開關**。
+- **🔴 ③ 使用者把自己的知識庫升密:擋不住。** `raise_collection_classification` 的唯一權限閘是
+  `_require_collection_access`＝「admin **或** `created_by` 擁有者」——**不是 admin-only**。
+  ANILALM 介面上沒有按鈕,**但 API 打得到**(Reviewer 服務層實測,savepoint→ROLLBACK 零寫入:
+  非 admin 使用者把自己 `origin='anilalm'` 的庫升到「密」**成功**)。
+
+👉 **所以「不用密等」目前是設計意圖,第③條讓它在程式上還不是事實。** 處置見〈執行〉。
+📌 **實數**:`origin='anilalm'` 的 collections 0 筆、conversations 0 筆——
+**空集合同時支持「擋住了」與「只是沒人用過」,不能拿它當任何一邊的證據。**
+
+**幕僚長採納的理由(不是照辦,是同意)**:
+🔴 **一個永遠不會觸發的浮水印,比沒有浮水印更糟**——**它會讓後面的人以為 ANILALM 有這道保護。**
+(同族:`docs/FAKE-CONTROLS.md` 那 30 項、以及本檔多次出現的「宣稱守住比沒守住貴」。)
+
+**⚠ 附帶條件(幕僚長提出,不是擁有者的話)**:
+**「結構上不可能出現密」現在是一句宣稱,不是一道守衛。**
+拿掉浮水印之後,**若哪天那句話不再成立,沒有任何東西會發現**——
+浮水印早就不在了,而當初拿掉它的理由沒有被寫成任何會變紅的東西。
+👉 **處置:把那句話變成守衛**(位置待 Reviewer 的事實查證指出強制點在哪一行),
+判準照本專案慣例:**不是「測試綠」,是「把一份密塞進 ANILALM,它會不會紅」。**
+📌 若查證結果是**擋不住**(只是目前沒人這樣用)→ **本裁決的前提不成立,必須回頭讓擁有者重決**
+(同 Q58 的教訓:前提錯了,結論就會錯,而結論看起來一樣可信)。
+
+**執行面(重要,成本比想像低)**:
+**ANILALM 的浮水印是「未合併的新增工作」,不是既有功能**
+(`PLAN.md` 完成度表 P4:「4.2 浮水印只在中介面,anilalm／治理中心未覆蓋」)。
+所以「拿掉」＝**那一包不合併**,並把已經寫進主樹的接線拆掉:
+`WorkspacePage.tsx:13-16/193-200/287-290+` 與 `types.ts` 全部 6 行
+(逐行歸屬表:`~/anila-deliverables/MERGE-SPLIT-WorkspacePage-20260821.md`)。
+**未追蹤的 `ConfidentialWatermark.{tsx,test.tsx}` 直接不進樹。**
+📌 **連帶失效**:審查長對 W-1 要求的那一行註記(`classified` 的正確性由 `policy/service.py:254` 維持)
+**隨浮水印一起消失**——那一行是為浮水印的輸入而寫的。**若日後浮水印回來,那一行要跟著回來。**
+
+### 🔔 具名的已接受後果(2026-08-21 審查長讀新碼時查出;幕僚長複驗成立)
+
+**`origin` 是客戶端可設的**——`ConversationCreate.origin`(`services/csp/app/api/conversations.py:34`,
+自由字串 max 32)、collection 建立走 `payload.origin`(`api/ingestion/collections.py:320-324`,
+限 `csp`/`anilalm`)。
+👉 **所以有人可以把自己的資源標成 `origin='anilalm'`,讓它變成任何人(含 admin)都無法分類。**
+
+**審查長裁定:不是本單引入的缺陷,是這個設計的必然後果**——
+**方向是「該受控的東西沒被標成受控」,不是「有人取得了不該有的存取」**;
+而且那段錯誤訊息自己承認並給了出路(「請在治理中心另建一個知識庫」)。
+🔴 **所以它是已知的治理缺口,不是授權弱化。目前靠「有人注意到」。**
+⚠ **記成具名條目的理由**:**否則下一個發現它的人會把它當新缺陷重報。**
+
+**改變主意的成本**:低——那一包完整存在於未提交的工作樹與審查報告裡
+(`~/anila-deliverables/anilalm-review-20260821.md`、`anilalm-watermark-report.md`、渲染截圖),
+要回來時照歸屬表接回去即可。
+
+---
+
+## ✅ Q58 — 分享功能是假的,收件者讀不到(2026-08-21,**兩次裁決;現行＝修好它**)
+
+> 🔴 **這一條被裁決過兩次,第二次推翻第一次,原因是第一次的前提錯了。**
+> **①「先關入口,上線後補」——在「後端能力不存在」的前提下做的。**
+> **② 更正前提後「現在修,讓 ANILALM 也能用」——後端能力存在且實測可用(見下方〈實測〉)。**
+> **現行決定是②。** 第一次的裁決保留在這裡不是歷史癖好:
+> **它是「前提錯了,結論就會錯,而結論看起來一樣可信」的現場紀錄。**
+
+**問題**:ANILALM 的分享功能建得起來、列得出來、撤得掉,**而收件者讀不到**。
+⚠ **以下這段是第一次裁決當時的認知,其中「根因」那句已被實測推翻**(更正見本條〈前提更正〉與〈實測〉)——
+**保留原文是為了讓「當時憑什麼那樣判」看得見,不是因為它還成立。**
+~~根因是~~**當時認為的根因**是**跨使用者的 collection 授權平台從來沒有**——
+`services/csp/app/api/ingestion/collections.py:90-118` `_require_collection_access`
+非 admin 必須是 `created_by`,否則 403;同檔 `:389-392` 連 `owned_only=false` 都要 admin。
+**後端註解自己標著這個洞**:「Future Sprint may add a `collection_access_grants` table
+for sharing across users」。前端兩段跟著失效:`routes/DashboardPage.tsx:52` `owned_only:true`、
+`routes/WorkspacePage.tsx:59-66` 的 `Promise.all` 一 reject 整包不渲染。
+
+⚠ **這不是那一包寫壞了**。前端做完了,而它依賴的後端能力不存在。
+**severity 以功能計＝CRITICAL,以 diff 品質計＝無缺陷**——兩者要分開講。
+(來歷:sol 票提出,Reviewer 前後端逐段查證成立,`~/anila-deliverables/anilalm-review-20260821.md` §6.1。)
+
+**✅ 第一次裁決(前提有誤,已被推翻):先關入口,上線後補後端授權。**
+三選一(補後端 M 級要新表＋migration／先關入口／限縮)中選第二項。
+派工單 `~/anila-deliverables/queued-fix-share-close-entrance.md`(已執行:入口關閉、繞道詞彙表已交)。
+
+**✅✅ 第二次裁決(現行,更正前提後):現在修,讓 ANILALM 也能用。**
+派工單 `~/anila-deliverables/queued-fix-anilalm-shared-conversation-path.md`
+(作者 code-grok,收貨 Reviewer,關案審查長)。
+**不變式**:收件者能在 ANILALM 打開分享給他的對話,**且不需要對該知識庫有存取權**。
+🔴 **明確禁掉的路**:讓 `_require_collection_access` 認 conversation share
+＝**放寬授權,屬安全紅線域**,本單不走;要走得先過〔擋之前先問威脅在不在〕四問並由擁有者拍板。
+**上一單關掉的入口,本單修好後要開回來。**
+
+
+🔴🔴 **2026-08-21 前提更正（審查長，全文 `~/anila-deliverables/RULING-6.1-premise-correction-審查長.md`；幕僚長已複驗碼面）**：
+**上面那句「跨使用者的授權平台從來沒有」把兩件事併成了一件,而只有其中一件是真的。**
+- **跨使用者「對話」分享:存在而且是通的。** `conversation_service.py` `get_conversation(..., for_write=False)`
+  走 `_check_read_access`,docstring 明寫「also allows an active named share targeting the caller (P4.3 read path)」;
+  `list_conversations` 也把「被分享給我的」算進去。**建得起來、收件者列得到、讀得到、撤得掉。**
+- **跨使用者「collection(知識庫)」存取:不存在。** 後端那句 `collection_access_grants` 的 Future Sprint
+  註解講的是**這一件**,先前被讀成了「分享整件事還沒做」。
+
+👉 **症狀仍然是真的,成因不同**:ANILALM 把「開對話」綁死在「開 collection」上——
+網址是 collection 中心的(`/workspace/{collectionId}`),而 `WorkspacePage.tsx:59-66` 的
+`Promise.all([getCollection, listDocuments, listConversations])` 對收件者前兩個 403、**一 reject 整頁不渲染**。
+> **收件者手上有一張有效的對話門票,卻沒有一扇不需要 collection 的門可以進。**
+
+⚠ **這改變了擁有者當初評估的成本**:他被告知「後端能力不存在」,
+**更正後是「能力存在且可用,缺的是 ANILALM 一條不經 collection 的開啟路徑」**——
+**關入口關掉的不是半成品,是後端已經做完的功能。** 審查長不主張改決定,但已請幕僚長代轉,
+**讓擁有者在正確前提下重做一次評估**(2026-08-21 已代轉)。
+📌 **既有分享紀錄不要刪**——它們現在是**有效的**,收件者在主介面 anila-shell 那邊本來就打得開(待 Reviewer 以 B 身分實測確認)。
+
+📏 **2026-08-21 實測(Reviewer,活體 DB,savepoint 內建 share 後 ROLLBACK,零寫入;報告
+`~/anila-deliverables/share-recipient-factfind-20260821.md`)**:
+- **anila-shell 的分享對收件者成立**——分享前以 B 身分 `get_conversation(read)` 拒絕、`list` 0 筆;
+  分享後**允許、list 1 筆**、寫入仍拒絕。⚠ **服務層驗證,非瀏覽器端到端**
+  (card-only 下一般帳號登入 404,無法用兩個帳號跑真瀏覽器)。
+- **結構性證據**:86 則對話 `collection_id` **全部 NULL** → collection 授權對 shell 那條路
+  **在結構上就不適用**,不是剛好沒擋到。
+- **實數**:`conversation_shares` **0 筆**、`origin='anilalm'` 的對話 **0 筆**。
+  👉 **沒有任何既有分享紀錄要處置**;⚠ 反過來也要說清楚:shell 的分享是**已出貨的程式碼**,
+  **不是已被使用的功能**——不能因為沒人用過就關它,也不該宣稱它經過實戰驗證。
+- 🔴 **端點絕不能關**(`/api/conversations/{id}/shares`)——shell 是活的消費者。
+  審查長已**撤回**原條件①(「API 一起關」)。
+
+**記帳(這一格是刻意延後,不是修好)**:
+- **現在的狀態**:分享入口對使用者不可見;跨使用者知識庫授權**不存在**。
+- **上線後要補**:`collection_access_grants` 表＋migration＋`_require_collection_access`
+  長出那一格,前端兩處(`owned_only`、`Promise.all` 的失敗處理)一併回來。
+- **不補的後果**:ANILALM 只能單人使用自己的知識庫,跨人協作在產品上不成立。
+📌 這條的先例是 G9 明文延後(`PLAN.md` 完成度表)——**記為「規格與 v1 的已知落差」,
+不是「規格承諾、產品做不到」。**
+
+**✅ 結果(2026-08-21)**:第二次裁決的修正單已落地並由 Reviewer 出票「可合併」——
+ANILALM 現在有一條不經知識庫的開啟路徑,收件者在儀表板「分享給我的對話」區看得到、點得開、
+讀得到,知識庫仍 403 且畫面誠實告知,寫入仍拒絕;**紅線 `_require_collection_access` 一個字未動**。
+守衛 `apps/anilalm/src/routes/DashboardPage.shared.test.tsx` 已補
+(把 `collection_id` 加回去會紅在「看不到那個區塊」)。**關案待審查長。**
+📅 **部署日補驗**:`.15` 上、非 card-only 環境可用時補一次雙帳號真瀏覽器實測(見殘項清單同條)。
+
+**改變主意的成本**:中——入口是關掉不是刪掉,後端補上之後開回來即可;
+但若上線後才決定「這一版就要有」,那是一包新實作＋雙票審查,擋的是那時候的行程不是現在的。
+
+---
 
 ## Q54 — 要出貨的這一套相依套件,沒有人拿漏洞資料庫比對過(2026-08-15)
 
@@ -899,7 +1132,7 @@ fable5 實測(代理模型,排序方向可信、絕對值待 P5.5 對真端點�
 
 ### (原文保留,下方是當初開題時的敘述)
 
-## Q32 — PII「遮罩」要不要真的在送出前替換掉原文(2026-08-05)
+## 🗄 Q32 原始題目(已答,保留脈絡)
 
 **問題**:使用者在聊天框打了身分證號,畫面上會變成 `A12****789`,可以選三種模式:
 阻擋／警告／遮罩。**遮罩模式只遮你自己螢幕上的顯示**——送出的內容、存進資料庫的內容,
@@ -1769,7 +2002,7 @@ kimi 另建議砍掉 OPT-2(在 SSRF guard 裡加狀態只換 0.02ms,不值得)�
 
 ---
 
-## Q10 — ~~治理中心不在本機這套裡~~ **這條是我查錯,已作廢**(2026-07-31)
+## ❌ Q10 — ~~治理中心不在本機這套裡~~ **這條是我查錯,已作廢**(2026-07-31)
 
 **原本寫的結論是錯的。** 治理中心**有**在部署,而且一直都在:
 `infra/docker/csp.Dockerfile` 是多階段 build——第一階段用 node 建 `apps/csp-governance-ui`,

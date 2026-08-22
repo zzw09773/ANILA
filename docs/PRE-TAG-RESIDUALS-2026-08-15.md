@@ -263,6 +263,203 @@ load 得回來的映像仍可能夾帶祕密。**每次「重建映像」的收�
 
 ## 3. 🟡 不擋 tag，上線後處理（每一項都有處理時點，不是「低優先」）
 
+### 🆕 mermaid 的 `strict` 已實測有效,但版本一動就沒有人知道要重驗(2026-08-21,審查長裁定)
+
+**已關的那格**:`securityLevel:"strict"` **在真瀏覽器實測有效**(資安官,真 Chromium ＋ 真 mermaid 11.16.1,
+五種敵意圖表,SVG 真的插進活的 DOM 等 800ms)。**而且說得出它做了什麼**:`<script>` 整個移除、
+`onerror` 被剝掉但 `<img>` 殼留著、`javascript:` href 完全不存在、`window.__pwned` 空。
+
+🔴 **殘餘**:`apps/anila-shell/package.json` 用 `"mermaid": "^11.16.1"`(caret)。
+映像走 `npm ci`(讀鎖檔)所以 build 時惰性,**但兩個 Dockerfile 的註解自己寫著
+「改 `package.json` 之後要在 host 端跑一次 `npm install` 更新鎖檔再 build」**
+(`infra/docker/csp.Dockerfile:15`、`apps/anilalm/Dockerfile:31`)。
+👉 **所以觸發條件不是「有人刻意升 mermaid」,是「有人動了那個 app 的任何一個相依」**——**那不是罕見事件。**
+
+**審查長裁定的處置(三項)**:
+- **① 鎖精確版本:必做。** 理由不是「鎖住比較安全」,**是它改變預設結果**——
+  鎖死之後要移動 mermaid **必須編輯那個字串,一個刻意的動作,而且出現在 diff 裡**。
+  📌 與角括號佔位同形:**讓「不小心」那條路不存在。**
+- **② 真瀏覽器行為測試:不要做成測試。** 它證明得了行為,**但本專案沒有 CI,
+  一個需要真瀏覽器的測試等於一個「要有人記得跑」的程序。**
+- **🔴 ③ 版本漂移守衛(審查長補的,兩人都沒提)**:一條測試讀 `package-lock.json` 的 mermaid 版本,
+  斷言它等於碼裡記錄的「**最後一次真瀏覽器驗過 strict 的版本**」常數(含日期);不相等 → 紅,
+  **訊息指名要重跑那個實測**。**在對的時刻紅(版本移動那一次)、零瀏覽器成本、
+  它不取代②,它是②的觸發器**——把「要有人記得」換成「不重驗就紅」。
+  ⚠ **這是「守衛守得住『值被改』、守不住『值的意義被改』」的處置:
+  既然守不住意義,就守住『意義可能已經變了』的那個時刻。**
+
+🔒 **自動重開條件(兩半,審查長明訂)**:
+> **① 守衛被移除 → 重開;② 常數被更新而沒有附上新的實測紀錄 → 重開。**
+🔴 **第二半特別重要:最省事的「修法」就是把常數改成新版本讓測試變綠——那正好是這條守衛要擋的動作。**
+
+### 🆕🔴 wheelhouse 凍結之前要加一道:映像實裝版本 vs wheelhouse manifest 的比對(2026-08-22,審查長提出)
+
+**問題**:**同一份 requirements 被解析兩次,在不同時間、不同容器裡。**
+```
+映像:       Dockerfile `pip install -r requirements.txt`(build 時有網路)        ← 解析事件 #1
+wheelhouse: build-platform-wheelhouse.sh 在另一個容器內 resolve 同一份 requirements ← 解析事件 #2
+```
+而 wheelhouse 的用途是**對已出貨映像做 overlay patch**——**把它的 manifest 當 pip 的 `-c` 約束層**
+(`infra/deployment/offline/README.md:73` 明寫:省略 `-c` 會讓 pip 拿同一 house 內別的服務版本當候選)。
+🔴 **所以只要兩次解析的結果不同,套用 overlay 就會悄悄改掉映像裡執行中的版本。**
+
+**釘死程度已量**:`services/csp/requirements.txt` **19/19 全釘死** ✅;
+`services/anila-core-router/requirements.txt` **`pydantic-settings>=2.0,<3.0` 是範圍** 🔴。
+
+**❗為什麼這件事的優先序不是低**:`PLAN.md:40` 自己寫著
+> 「進氣隙前必須。**沒有它,內網之後任何套件問題都動不了。**」
+
+**——overlay patch 不是備而不用,它是氣隙內唯一的 Python 相依修補手段。**
+
+📌 **同 class 的漂移在這棵樹上發生過**:docling 映像最後拿到 `torch 2.13.0+cu130` 而 base 是 CUDA 12.6,
+**沒有人發現,直到有人進映像裡量。**
+
+👉 **處置(幕僚長 2026-08-22 裁定,加進第 5 段的驗收)**:
+**wheelhouse 凍結之前,對每一張出貨映像跑一次 `pip freeze`,與 wheelhouse 對應的 `dist/<abi>/<service>.freeze.txt` 相減。**
+- **有差 → overlay 會改動執行中的版本**:那件事要嘛被接受並落檔(具名已接受風險),要嘛在凍結前修掉。
+- **時機理由**:**凍完再問就要重跑整包**(PLAN 第 6 段移到第 5 段之前,正是同一條理由)。
+
+### 🔧 插入點與更便宜的做法（幕僚長 2026-08-22 查證後修正原處置）
+
+**審查長問「第 5 段的步驟有沒有空隙可以插這道檢查」——有，而且不必新增程序。**
+README 的驗收本來就是四步（`infra/deployment/offline/README.md`）：
+```
+### 1. 收集兩套 ABI
+### 2. 在乾淨、版本相符容器按 service manifest 做安裝驗證   ← 在 python:3.13-slim 裡裝，不是服務映像
+### 3. 兩套 ABI 各做一次 --network=none overlay patch drill  ← 已經會用出貨映像重建一張 patched image
+### 4. 任何 rebuilt image 都要過兩道交付閘門
+```
+
+🔴 **而查完之後，缺口比原本描述的更精確**：
+- **第 2 步在 `python:3.13-slim` 裡驗**——**它證明 wheelhouse 內部裝得起來，從沒碰過出貨環境。**
+- **第 3 步只驗「被 patch 的那一顆版本變了、服務起得來」**（`README:203`）
+  ——**它不驗其他相依有沒有被順手改掉。**
+👉 **所以兩步都不覆蓋這一格，而第 3 步是天然的插入點：它已經在用出貨映像重建 patched image。**
+
+**🔴 兩道檢查都要，它們回答的不是同一個問題（審查長 2026-08-22 更正幕僚長的「取代」）**：
+
+| 檢查 | 回答的問題 | 性質 |
+|---|---|---|
+| **A. drill 的 before/after `pip freeze` 相減** | **「這一次 patch 有沒有造成傷害？」** | 量後果、**抽樣** |
+| **B. 每張映像 `pip freeze` vs `<service>.freeze.txt`** | **「約束層跟映像是不是對齊的？」** | 量狀態、**覆蓋** |
+
+🔴 **A 乾淨不代表 B 對齊**，理由在 pip 的行為：
+> **`--constraint` 只作用在 pip「決定要安裝」的套件上。已經滿足的相依不會被重裝。**
+> **所以一個窄的 patch 可能什麼都不移動——即使 manifest 與映像在二十個套件上不一致。**
+👉 **後果**：**drill 全綠，而約束層仍然分歧，等真正需要 patch 一顆牽連較廣的套件那天才爆
+——而那一天在氣隙裡，沒有人有第二次機會。**
+
+**B 的成本近乎零**：**凍結前每張映像跑一次 `pip freeze` 與對應 freeze 檔相減，一張映像一條指令，只跑一次。**
+**有差就落檔（分成版本漂移／環境差異兩類），不必當場修。**
+
+**A 的做法（加進第 3 步）**：
+> **在第 3 步的 drill 裡，對「patch 前的出貨映像」與「patch 後的 image」各跑一次 `pip freeze`，相減。**
+> **除了刻意要換的那一顆之外，任何移動 = manifest 蓋掉了映像自己的解析結果。**
+
+**為什麼這個版本更好**：它**直接量到後果**（overlay 實際改了什麼），而不是量兩份清單的差異再推論後果；
+**而且它加在一個已經存在、已經會重建映像的步驟上**，不是新增程序。
+
+**⏱ 時機（審查長）**：**不是「第 5 段之前」，是「第 5 段裡面、重產之後、凍結之前」。**
+🔴 **理由：現在跑，量到的是一個即將被取代的產物**——第 5 段會重產 wheelhouse，
+**拿今天的 wheelhouse 對今天的映像比，結論對出貨的那一份不成立。**
+
+### 🔴 差異有兩個來源，不是一個（審查長 2026-08-22 補查）
+
+```
+build-platform-wheelhouse.sh:183   collect_abi cp313 python:3.13-slim
+```
+**wheelhouse 是在 stock `python:3.13-slim` 裡解析的，不是在出貨的服務映像裡。**
+- **時間**：兩次解析發生在不同時刻
+- 🔴 **環境**：stock slim vs 各服務自己的 base——**任何隨環境而變的東西**
+  （platform wheel、環境標記、系統函式庫影響的 marker）**都可能分歧，而且不必等版本漂移就會分歧。**
+
+⚠ **所以那道相減大概會長出一串差異，不要當成「壞了」**：
+**先分清哪些是版本漂移、哪些是環境差異——兩者的處置不同。**
+
+📌 **一個結構性選項，值得估一次成本但不主張**：`collect_abi()` 已經吃一個 image 參數，
+**若傳出貨的服務映像而不是 stock slim，解析就發生在目標環境裡，兩邊由構造上一致。**
+⚠ **但 wheelhouse 是 per-ABI 共用不是 per-service**，改成在各服務映像裡解析等於改變它的結構
+（README `:73` 那個 constraints layer 的設計正是為了處理「同一 house 內多服務」）。
+**偵測（`pip freeze` 相減）仍然是眼下正確的動作。**
+
+⚠ **未驗,明列(審查長標的,不要當成已查)**:
+① **遞移相依有沒有釘**(她只看了直接相依);
+② **是不是已經有別的步驟在做這道比對**(她只查過 `audit-wheelhouse.py`——那支稽核的是 wheelhouse 自己的
+內部一致性並產 manifest,**不是拿去跟映像比對**)。
+**②要在派這道檢查之前先查,否則可能重做一件已經有人做的事。**
+
+### 🆕🔴 ANILALM 的跨使用者分享:對話分享是通的,缺的是 ANILALM 一條不經知識庫的開啟路徑(2026-08-21,Q58 第二次裁決)
+
+> ⚠ **本條 2026-08-21 當天改寫過一次。** 原標題寫「入口關掉了,能力從來沒有」——**那是錯的**,
+> 錯在把「跨使用者**對話**分享」與「跨使用者**知識庫**存取」併成一件。
+> **前者存在且實測可用,後者不存在。** 詳見 Q58。
+
+**處理時點:修正單交付並由審查長關案之前。** 不擋 tag。
+
+✅ **2026-08-21 修正單已落地,Reviewer 出票「可合併」**
+(`~/anila-deliverables/anilalm-shared-path-review-20260821.md`,**關案待審查長**)。
+量測(服務層,savepoint→ROLLBACK,零寫入,用真實形狀的資料):
+B 的儀表板分享前 0 筆、分享後 1 筆且含本則;B 讀知識庫 403(橫幅那句話有背後機制);
+B 讀對話允許、寫入仍拒絕;A 讀自己的不受影響。紅線 `_require_collection_access` **diff 0 行**。
+
+🔒 **關閉依據與自動重開條件(審查長關案時要一併寫進關閉紀錄)**:
+**本條的關閉依據是守衛 `apps/anilalm/src/routes/DashboardPage.shared.test.tsx`
+——把 `collection_id` 加回 `listSharedConversations` 會讓它紅在「使用者看不到那個區塊」
+(行為級斷言,不是字串比對)。**
+🔴 **若該守衛被移除或繞過,本條殘項自動重開。**
+⚠ 沒有這一句的話,下一個人只會看到「已關閉」,**看不到它是靠什麼關的**。
+
+📅 **部署日檢查項(不是合併前阻擋項)**:
+**`.15` 部署後、非 card-only 環境可用時,補一次雙帳號真瀏覽器實測**
+(A 分享 → B 清單看得到 → 點得開 → 知識庫真的不可讀 → 送出被擋為唯讀)。
+理由:上述四件已用更靠近機制的量測證明,**但真瀏覽器還能證明一件量測證明不了的事**——
+這些單元串起來不會被別的東西擋住(路由 basename、cookie/session、CSP、樣式蓋住按鈕之類)。
+📌 與卡登那題同一種處置:**證不了的那一格不擋合併,但要有一個確定的補驗時點。**
+
+🔔 **原具名觸發條件(2026-08-21 審查長要求,不靠人記得;修正單已落地,本條已不再適用,保留供追溯)**:
+**若 `~/anila-deliverables/queued-fix-anilalm-shared-conversation-path.md` 那張修正單被取消、
+無限延期、或跨過上線日仍未落地 → 當下就要把這條寫進 `docs/FAKE-CONTROLS.md`。**
+⚠ 判準不是「等修好再看」(要有人回頭看),是**「修沒落地就要寫」(有一個確定的時點)**。
+現在不寫的理由只有一個:這條 finding 活在審查報告與派工單裡,**沒落檔的損失是零**;
+而修成功之後它的寫法會從「假控制項」變成「一段已關閉的歷史」,兩者內容不同。
+
+**現在的狀態**:分享功能的使用者入口關閉;**跨使用者的 collection 授權後端不存在**。
+`services/csp/app/api/ingestion/collections.py:90-118` `_require_collection_access`
+非 admin 必須是 `created_by`;同檔 `:389-392` 連 `owned_only=false` 都要 admin。
+後端註解自己標著:「Future Sprint may add a `collection_access_grants` table for sharing across users」。
+
+
+🔴🔴 **2026-08-21 前提更正（審查長，全文 `~/anila-deliverables/RULING-6.1-premise-correction-審查長.md`；幕僚長已複驗碼面）**：
+**上面那句「跨使用者的授權平台從來沒有」把兩件事併成了一件,而只有其中一件是真的。**
+- **跨使用者「對話」分享:存在而且是通的。** `conversation_service.py` `get_conversation(..., for_write=False)`
+  走 `_check_read_access`,docstring 明寫「also allows an active named share targeting the caller (P4.3 read path)」;
+  `list_conversations` 也把「被分享給我的」算進去。**建得起來、收件者列得到、讀得到、撤得掉。**
+- **跨使用者「collection(知識庫)」存取:不存在。** 後端那句 `collection_access_grants` 的 Future Sprint
+  註解講的是**這一件**,先前被讀成了「分享整件事還沒做」。
+
+👉 **症狀仍然是真的,成因不同**:ANILALM 把「開對話」綁死在「開 collection」上——
+網址是 collection 中心的(`/workspace/{collectionId}`),而 `WorkspacePage.tsx:59-66` 的
+`Promise.all([getCollection, listDocuments, listConversations])` 對收件者前兩個 403、**一 reject 整頁不渲染**。
+> **收件者手上有一張有效的對話門票,卻沒有一扇不需要 collection 的門可以進。**
+
+⚠ **這改變了擁有者當初評估的成本**:他被告知「後端能力不存在」,
+**更正後是「能力存在且可用,缺的是 ANILALM 一條不經 collection 的開啟路徑」**——
+**關入口關掉的不是半成品,是後端已經做完的功能。** 審查長不主張改決定,但已請幕僚長代轉,
+**讓擁有者在正確前提下重做一次評估**(2026-08-21 已代轉)。
+📌 **既有分享紀錄不要刪**——它們現在是**有效的**,收件者在主介面 anila-shell 那邊本來就打得開(待 Reviewer 以 B 身分實測確認)。
+
+**上線後要補的**:`collection_access_grants` 表＋migration＋`_require_collection_access`
+長出那一格,前端兩處一併回來(`routes/DashboardPage.tsx:52` 的 `owned_only:true`、
+`routes/WorkspacePage.tsx:59-66` 的 `Promise.all` 一 reject 整包不渲染)。
+
+**不補的後果**:ANILALM 只能單人使用自己的知識庫,**跨人協作在產品上不成立**。
+
+🔴 **這一條為什麼值得寫在這裡,而不是只留在 Q58**:它被發現的方式是
+**「A 對 B 做某件事」的功能,只驗 A 那一側會全綠而功能是壞的**——
+用擁有者的 token 打完 create/list/revoke 全過,而收件者讀不到。
+👉 **下次驗任何「A 對 B」的功能,驗收必須包含以 B 的身分確認結果。**
+📌 同族於 docling 那條「八輪審查敵不過一次 `docker run`」,這裡是**所有測試敵不過一次換帳號登入**。
+
 ### 🆕🔴 這棵樹上至少有兩條長期紅著的 ratchet——而長期紅的守衛等於沒有守衛
 
 **處理時點：下一次動到它們守的那個面之前。** 不擋 tag，但**它們現在提供的保護是零**。

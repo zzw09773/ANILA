@@ -19,7 +19,7 @@
 3. **打包前你要交代的那件事**——打包鏈仍凍著等它。
 4. **ANILALM 上不上**：兩個 must-fix（浮水印移植 S／分享功能 M）排不排進實作線。
 5. **帳號名要不要加字元集限制**（F2 殘題；會影響既有帳號，「加限制前先問擋掉誰」）。
-5b. **Q55 簽收**（OWNER-QUESTIONS 最上面）：codeserver 的 docker.sock＝host root 這件事，
+5b. **Q60 簽收**（OWNER-QUESTIONS 最上面）：codeserver 的 docker.sock＝host root 這件事，
    審查長要求從「只有 compose 註解知道」變成「具名的已接受風險」——你簽個名就好，
    要素本來就能從公開 compose 讀出，不新增攻擊面；要改成緩解再另開包。
 6. **icon 為空的服務卡**：預設圖示（現況）還是服務名首字母？既有 NULL 列部署當天會變臉。
