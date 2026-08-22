@@ -147,7 +147,6 @@ import {
 } from "./trust.jsx";
 import { ParallelCompareView } from "./multiagent.jsx";
 import { HandoffMenu, ShareDialog } from "./collab.jsx";
-import { TweaksPanel } from "./tweaks.jsx";
 import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
 import { ServicesPanel } from "./services.jsx";
@@ -174,13 +173,13 @@ const ROUTER_AGENT = Object.freeze({
 function buildStarterPrompts(agents) {
   const real = (agents || []).filter((a) => a.id !== ROUTER_AGENT.id);
   const countLine = real.length > 0
-    ? `你目前可以使用 ${real.length} 個 agent`
-    : "平台目前尚未註冊 agent";
+    ? `你目前可以使用 ${real.length} 個助手`
+    : "目前還沒有可用的助手";
   return [
     {
       title: "ANILA 可以做什麼？",
       sub: `${countLine}，點一下讓 ANILA 介紹平台與各助手的能力`,
-      q: "請介紹 ANILA 這個平台能做什麼，並列出我目前可用的每一個 agent 與它們各自能解決的問題。",
+      q: "請介紹 ANILA 這個平台能做什麼，並列出我目前可用的每一個助手與它們各自能解決的問題。",
       primary: true,
     },
   ];
@@ -340,7 +339,8 @@ export function agentReplyMetaFields(meta) {
 function applyTweaks(t) {
   const r = document.documentElement;
   r.setAttribute("data-theme", t.dark ? "dark" : "light");
-  if (t.accent) r.style.setProperty("--accent", t.accent);
+  // Official blue is a product token, not a per-user control.
+  r.style.removeProperty("--accent");
   if (t.density) r.style.setProperty("--density", `${t.density}px`);
   if (t.sansFamily) {
     r.style.setProperty(
@@ -360,7 +360,7 @@ function applyTweaks(t) {
 // Exported so tests can mount the real send path. The behavioural suite for
 // reserve-then-stream drives THIS component — a previous round's tests only
 // grepped the source text and stayed green while the fix was deleted.
-export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
+export function ChatRuntime({ user, tweaks, setTweaks }) {
   // Sprint 7 X follow-up：SPA 完全不持有 API Key，認證統一走 httpOnly
   // session cookie + double-submit CSRF（見 runtime/sse.js）。原本為了
   // 過渡保留的 apiKey / apiKeyStatus / updateApiKey stub 已移除，避免
@@ -427,6 +427,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [servicesOpen, setServicesOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [folder, setFolder] = useState("all");
+
+  // Cross-app「專案入口」deep link. Keep the service drawer as the owner of
+  // this experience while making the fourth product entry directly findable.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("panel") === "services") setServicesOpen(true);
+  }, []);
 
   // 敏感資訊模式(提醒／阻擋)。使用者自己在提示列選的偏好,跟資料夾
   // 共用 users.ui_settings 這個 per-user blob。
@@ -738,7 +745,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             keepalive: true,
           });
         } catch {
-          // 卸載途中不做任何補救 —— 見上面的註解。
+          // 頁面關閉途中不做任何補救 —— 見上面的註解。
         }
       }
     }
@@ -3043,9 +3050,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           >
             {tweaks.dark ? <IconSun /> : <IconMoon />}
           </IconButton>
-          <IconButton title="Tweaks" onClick={() => setTweaksOpen((o) => !o)} active={tweaksOpen}>
-            <IconSpark />
-          </IconButton>
           <span style={{ position: "relative", display: "inline-flex" }}>
             <IconButton title="新功能" onClick={() => { setChangelogOpen(true); try { localStorage.setItem("anila-changelog-seen", CHANGELOG_VERSION); } catch {} setChangelogUnseen(false); }}>
               <IconGift />
@@ -3245,13 +3249,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       />
 
       <ChangelogModal open={changelogOpen} onClose={() => setChangelogOpen(false)} />
-
-      <TweaksPanel
-        open={tweaksOpen}
-        onClose={() => setTweaksOpen(false)}
-        tweaks={tweaks}
-        setTweaks={setTweaks}
-      />
 
       <ShareDialog
         open={shareOpen}
@@ -3601,7 +3598,7 @@ function MemoryTab({ authRequest }) {
 
       <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.6 }}>
         清空後立即生效；下次對話起，平台會重新從新對話內容重新學習。
-        若需暫時停用記憶整合，請聯絡管理員（runtime feature flag 由運維端控制）。
+        若需暫時停用記憶整合，請聯絡管理員。
       </div>
     </div>
   );
@@ -3613,7 +3610,7 @@ function SettingsModal({
   redactionMode, onChangeRedactionMode,
 }) {
   return (
-    <Modal open={open} onClose={onClose} title="設定" subtitle="runtime 偏好與帳號" width={680}>
+    <Modal open={open} onClose={onClose} title="設定" subtitle="個人偏好與帳號" width={680}>
       <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 20 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           {[
@@ -3639,10 +3636,10 @@ function SettingsModal({
           {tab === "general" && (
             <div style={{ display: "grid", gap: 12 }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>預設 agent</div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>預設助手</div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 4 }}>
-                  目前由 /v1/agents 動態載入，共 {Math.max(agents.length - 1, 0)} 個可用 agent。
-                  切換預設 agent 請從主介面的 agent selector 進行。
+                  目前共 {Math.max(agents.length - 1, 0)} 位可用助手。
+                  請從主畫面切換預設助手。
                 </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
@@ -3710,7 +3707,7 @@ function SettingsModal({
             <div style={{ fontSize: 13 }}>
               <div style={{ marginBottom: 4 }}><b>{user?.username}</b></div>
               <div style={{ color: "var(--fg-muted)", fontSize: 12 }}>
-                role: {user?.role || "user"}
+                {{ owner: "擁有者", admin: "管理員", developer: "開發者", user: "使用者" }[user?.role] || "使用者"}
               </div>
             </div>
           )}
@@ -3719,10 +3716,10 @@ function SettingsModal({
             <div style={{ fontSize: 13, lineHeight: 1.7 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
                 <AnilaGlyph size={24} />
-                <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA Runtime Client</div>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA 任務中心</div>
               </div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-muted)" }}>
-                v0.2.0 · trust + multi-agent + collab
+              <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+                院內 AI 工作臺
               </div>
             </div>
           )}
@@ -3736,7 +3733,7 @@ function SettingsModal({
 
 // ---- Root App (protected) --------------------------------------------------
 const DEFAULT_TWEAKS = {
-  accent: "#0b7285",
+  accent: "#2b4c7e",
   dark: false,
   density: 18,
   sansFamily: "Noto Sans TC",
@@ -3754,7 +3751,6 @@ function resolveInitialTweaks() {
 export default function App() {
   const { user } = useAuth();
   const [tweaks, setTweaks] = useState(resolveInitialTweaks);
-  const [tweaksOpen, setTweaksOpen] = useState(false);
 
   useEffect(() => {
     applyTweaks(tweaks);
@@ -3763,27 +3759,11 @@ export default function App() {
     }
   }, [tweaks]);
 
-  useEffect(() => {
-    const onMessage = (e) => {
-      if (e.data?.type === "__activate_edit_mode") setTweaksOpen(true);
-      if (e.data?.type === "__deactivate_edit_mode") setTweaksOpen(false);
-    };
-    window.addEventListener("message", onMessage);
-    try {
-      window.parent?.postMessage({ type: "__edit_mode_available" }, "*");
-    } catch {
-      // ignore — not embedded
-    }
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
-
   return (
     <ChatRuntime
       user={user}
       tweaks={tweaks}
       setTweaks={setTweaks}
-      tweaksOpen={tweaksOpen}
-      setTweaksOpen={setTweaksOpen}
     />
   );
 }

@@ -346,10 +346,10 @@ def _make_anilalm(db, **kw) -> RegisteredService:
 
 
 class TestAnilaLmReleaseGate:
-    def test_gate_is_closed_in_this_release(self):
-        assert release_gate.ANILA_LM_RELEASED is False
+    def test_gate_is_open_in_this_release(self):
+        assert release_gate.ANILA_LM_RELEASED is True
 
-    def test_absent_from_user_facing_service_list(self, client, db):
+    def test_present_in_user_facing_service_list(self, client, db):
         headers = _headers(client, db, username="erin")
         _make_anilalm(db)
         _make_service(
@@ -358,24 +358,22 @@ class TestAnilaLmReleaseGate:
         rows = client.get("/api/services", headers=headers).json()
         names = [r["name"] for r in rows]
         assert "ANILA" in names
-        assert "ANILA LM" not in names
+        assert "ANILA LM" in names
 
-    def test_absent_from_platform_links(self, client, db):
+    def test_present_in_platform_links(self, client, db):
         headers = _headers(client, db, username="frank")
         _make_anilalm(db)
         rows = client.get("/api/platform-links", headers=headers).json()
-        assert [r for r in rows if r["name"] == "ANILA LM"] == []
+        assert [r["name"] for r in rows if r["name"] == "ANILA LM"] == ["ANILA LM"]
 
-    def test_absent_from_admins_default_list_too(self, client, db):
-        """admin 在 shell 也是使用者;預設清單就是使用者面,不能對 admin 破例。"""
+    def test_admin_default_list_includes_anila_lm(self, client, db):
         headers = _headers(client, db, username="root", role="admin")
         _make_anilalm(db)
         rows = client.get("/api/services", headers=headers).json()
-        assert [r for r in rows if r["name"] == "ANILA LM"] == []
+        assert [r["name"] for r in rows if r["name"] == "ANILA LM"] == ["ANILA LM"]
 
     def test_admin_can_still_see_and_manage_the_registration(self, client, db):
-        """閘門關的是「可用」,不是「可管理」——管理清單必須看得到,
-        而且編輯 / 停用真的打得進去。"""
+        """閘門開著時管理清單與 CRUD 仍正常。"""
         headers = _headers(client, db, username="root", role="admin")
         svc = _make_anilalm(db)
 
@@ -401,31 +399,28 @@ class TestAnilaLmReleaseGate:
         disabled = client.delete(f"/api/services/{svc.id}", headers=headers)
         assert disabled.status_code == 200, disabled.text
 
-    def test_launch_refused_while_gate_is_closed(self, client, db):
-        """⚠ 這條不靠 is_active —— 全新資料庫的種子會把它建成啟用。"""
+    def test_launch_allowed_while_gate_is_open(self, client, db):
         headers = _headers(client, db, username="gail")
         svc = _make_anilalm(db)
         assert svc.is_active is True
         resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
-        assert resp.status_code == 503, resp.text
-        assert resp.json()["detail"] == release_gate.GATED_LAUNCH_DETAIL
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["launch_url"].startswith("/anilalm?launch_token=")
 
-    def test_launch_refused_for_admin_too(self, client, db):
+    def test_launch_allowed_for_admin_too(self, client, db):
         headers = _headers(client, db, username="root", role="admin")
         svc = _make_anilalm(db)
         resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
-        assert resp.status_code == 503, resp.text
+        assert resp.status_code == 200, resp.text
 
-    def test_gate_reopens_cleanly(self, client, db, monkeypatch):
-        """把旗標翻成 True 就整組回來 —— 重開不必考古。"""
-        monkeypatch.setattr(release_gate, "ANILA_LM_RELEASED", True)
+    def test_gate_can_be_closed_again(self, client, db, monkeypatch):
+        monkeypatch.setattr(release_gate, "ANILA_LM_RELEASED", False)
         headers = _headers(client, db, username="hank")
         svc = _make_anilalm(db)
         rows = client.get("/api/services", headers=headers).json()
-        assert [r["name"] for r in rows if r["name"] == "ANILA LM"] == ["ANILA LM"]
+        assert [r for r in rows if r["name"] == "ANILA LM"] == []
         resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["launch_url"].startswith("/anilalm?launch_token=")
+        assert resp.status_code == 503, resp.text
 
 
 class TestReleaseGateMatcher:

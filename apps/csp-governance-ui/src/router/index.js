@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { postLoginDestination } from '../utils/postLoginDestination'
 
 const routes = [
   {
@@ -15,13 +16,19 @@ const routes = [
     children: [
       {
         path: '',
-        name: 'Dashboard',
-        component: () => import('../views/DashboardView.vue'),
+        name: 'Home',
+        component: () => import('../views/HomeGateView.vue'),
       },
       {
-        path: 'api-keys',
+        path: 'keys',
         name: 'ApiKeys',
         component: () => import('../views/ApiKeysView.vue'),
+      },
+      {
+        // Compatibility only. The actual page is /keys so it cannot collide
+        // with an unprefixed fixture/API path.
+        path: 'api-keys',
+        redirect: { name: 'ApiKeys' },
       },
       {
         path: 'models',
@@ -37,134 +44,125 @@ const routes = [
         path: 'users',
         name: 'Users',
         component: () => import('../views/UsersView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
       {
         path: 'departments',
         name: 'Departments',
         component: () => import('../views/DepartmentsView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
       {
         path: 'alerts',
         name: 'Alerts',
         component: () => import('../views/AlertsView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
       {
         path: 'feedback',
         name: 'Feedback',
         component: () => import('../views/FeedbackView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
       {
         path: 'banners',
         name: 'Banners',
         component: () => import('../views/BannersView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
-      // 平台設定總覽 —— 96 顆設定四區三態。讀寫同一道 admin 門
-      // (後端 router 級 Depends(require_admin))，所以這裡照 /users 的形狀。
       {
         path: 'platform-settings',
         name: 'PlatformSettings',
         component: () => import('../views/SettingsOverviewView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
+      },
+      {
+        path: 'audit',
+        name: 'AuditLogs',
+        component: () => import('../views/AuditLogsView.vue'),
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
       {
         path: 'audit-logs',
-        name: 'AuditLogs',
-        component: () => import('../views/AuditLogsView.vue'),
-        meta: { requiresAdmin: true },
+        redirect: { name: 'AuditLogs' },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
-      // doc 08 §15 — 機敏分類盤點(Classification Inventory Before Cutover)。
       {
         path: 'classification-inventory',
         name: 'ClassificationInventory',
         component: () => import('../views/ClassificationInventoryView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
       {
         path: 'platform-links',
         name: 'PlatformLinks',
         component: () => import('../views/PlatformLinksView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
       {
         path: 'service-access',
         name: 'ServiceAccess',
         component: () => import('../views/ServiceAccessView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
       {
         path: 'developer/agents',
         name: 'DeveloperAgents',
         component: () => import('../views/DeveloperAgentsView.vue'),
-        meta: { requiresDeveloper: true },
+        meta: { requiresDeveloper: true, requiredRole: 'developer' },
       },
-      // v0.1 framework rollout — dedicated dev walkthrough page.
-      // Linked from DeveloperAgentsView guide block.
       {
         path: 'developer/guide',
         name: 'DeveloperGuide',
         component: () => import('../views/DeveloperGuideView.vue'),
-        meta: { requiresDeveloper: true },
+        meta: { requiresDeveloper: true, requiredRole: 'developer' },
       },
-      // Sprint 8 X / Phase E — service_clients (Router / worker / admin tool)
-      // service-token management. Admin-only.
       {
         path: 'service-clients',
         name: 'ServiceClients',
         component: () => import('../views/ServiceClientsView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
-      // Phase 2 模型 stack 解耦 — SSRF guard allow-list (DB-driven 取代 env)。
-      // admin-tier 都看得到 (列表可見性 = 透明度),mutation 走 owner-only
-      // (RequireOwner) — UI 端只給 owner 看 +/remove 按鈕,後端 enforce。
       {
         path: 'trusted-hosts',
         name: 'TrustedHosts',
         component: () => import('../views/TrustedHostsView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresAdmin: true, requiredRole: 'admin' },
       },
-      // OW-3 — message-level custom actions authoring console.
-      // Create = developer+; update/delete/bindings = author or admin-tier;
-      // export = admin+ (redacted for non-owner). Route stays developer-tier.
       {
         path: 'message-actions',
         name: 'MessageActions',
         component: () => import('../views/MessageActionsView.vue'),
-        meta: { requiresDeveloper: true },
+        meta: { requiresDeveloper: true, requiredRole: 'developer' },
       },
-      // Phase 2 Sprint 2 / Chunk H — Knowledge Collections inspector.
-      // Developer-tier (any user with UserAgentPermission, plus admins).
       {
         path: 'knowledge-collections',
         name: 'KnowledgeCollections',
         component: () => import('../views/KnowledgeCollectionsView.vue'),
-        meta: { requiresDeveloper: true },
+        meta: { requiresDeveloper: true, requiredRole: 'developer' },
       },
-      // Sprint 8 X / chunking-preview Phase 3 — interactive strategy
-      // comparison wizard. Users land here from KnowledgeCollections
-      // "+ compare strategies first" CTA.
       {
         path: 'knowledge-collections/preview',
         name: 'ChunkingPreview',
         component: () => import('../views/ChunkingPreviewView.vue'),
-        meta: { requiresDeveloper: true },
+        meta: { requiresDeveloper: true, requiredRole: 'developer' },
       },
       {
         path: 'knowledge-collections/:id',
         name: 'CollectionDetail',
         component: () => import('../views/CollectionDetailView.vue'),
-        meta: { requiresDeveloper: true },
+        meta: { requiresDeveloper: true, requiredRole: 'developer' },
       },
       {
-        // Sprint 3 Chunk N — Chunking Evaluator wizard + results.
         path: 'knowledge-collections/:id/evaluator',
         name: 'Evaluator',
         component: () => import('../views/EvaluatorView.vue'),
-        meta: { requiresDeveloper: true },
+        meta: { requiresDeveloper: true, requiredRole: 'developer' },
+      },
+      {
+        path: 'forbidden',
+        name: 'Forbidden',
+        component: () => import('../views/ForbiddenView.vue'),
       },
       {
         path: ':pathMatch(.*)*',
@@ -183,27 +181,51 @@ const router = createRouter({
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
 
-  // Cookie 流程下，第一次進站只有 cookie，user 物件需先從 /me 取回。
-  // 等 store 完成初始 fetchUser() 才能正確判斷 isAuthenticated。
   if (!authStore.initialized) {
     await authStore.fetchUser()
   }
 
   if (to.meta.requiresAuth !== false && !authStore.isAuthenticated) {
-    next('/login')
-  } else if (to.meta.requiresAdmin && !authStore.isAdmin) {
-    // ``isAdmin`` is admin-OR-owner (tier check). Don't compare role
-    // strings here — owner is admin's superset and must keep access.
-    next('/')
-  } else if (to.meta.requiresOwner && !authStore.isOwner) {
-    next('/')
-  } else if (to.meta.requiresDeveloper && !authStore.isDeveloper) {
-    next('/')
-  } else if (to.path === '/login' && authStore.isAuthenticated) {
-    next('/')
-  } else {
-    next()
+    const nextHref = typeof window !== 'undefined'
+      ? `${window.location.origin}${to.fullPath}`
+      : to.fullPath
+    next({ path: '/login', query: { next: nextHref } })
+    return
   }
+
+  if (to.path === '/login' && authStore.isAuthenticated) {
+    // Hard navigation — dest may be another SPA on the same host.
+    window.location.replace(postLoginDestination(authStore.user, to.query.next))
+    next(false)
+    return
+  }
+
+  if (to.meta.requiresAdmin && !authStore.isAdmin) {
+    next({
+      name: 'Forbidden',
+      query: { required: to.meta.requiredRole || 'admin', from: to.fullPath },
+      replace: true,
+    })
+    return
+  }
+  if (to.meta.requiresOwner && !authStore.isOwner) {
+    next({
+      name: 'Forbidden',
+      query: { required: 'owner', from: to.fullPath },
+      replace: true,
+    })
+    return
+  }
+  if (to.meta.requiresDeveloper && !authStore.isDeveloper) {
+    next({
+      name: 'Forbidden',
+      query: { required: to.meta.requiredRole || 'developer', from: to.fullPath },
+      replace: true,
+    })
+    return
+  }
+
+  next()
 })
 
 export default router

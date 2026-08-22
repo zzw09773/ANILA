@@ -22,7 +22,7 @@
     <TermBox
       v-if="authStore.isOwner"
       title="端點位址設定授權"
-      hint="僅擁有者與下列獲授權者可登錄／變更／看見模型端點位址"
+      hint="僅擁有者與下列獲授權者可註冊／變更／看見模型端點位址"
     >
       <div class="author-grant">
         <div class="author-grant__form">
@@ -342,8 +342,8 @@
         </TermField>
         <p v-if="form.model_type === 'asr'" class="field-note">
           asr-gateway 會呼叫 <code>{此位址}/transcribe</code>，請填 decoder 根位址（例如
-          <code>http://asr-decoder:9000</code>），不要加 <code>/v1</code>（模型登錄慣例的
-          <code>/v1</code> 在這裡會變成 404）。共享密鑰 <code>ASR_DECODER_TOKEN</code> 不進本登錄；
+          <code>http://asr-decoder:9000</code>），不要加 <code>/v1</code>（模型註冊慣例的
+          <code>/v1</code> 在這裡會變成 404）。共享密鑰 <code>ASR_DECODER_TOKEN</code> 不進本註冊表；
           換到新的 GPU 主機時，該主機必須以相同 token 部署，否則每句都會 401。
         </p>
         <TermField
@@ -451,7 +451,7 @@
     >
       <div class="form-grid">
         <p class="import-hint">
-          從已註冊端點拉取上游 <code>/models</code> 清單並寫入登錄表。
+          從已註冊端點拉取上游 <code>/models</code> 清單並寫入註冊表。
           已存在的名稱不會覆寫管理員設定；格式錯誤的項目會略過並附原因。
           新帶入列只繼承端點層級欄位（含分類上限），context window 與能力旗標維持保守預設，並維持停用待檢視後啟用。
           相同端點會合併為一個選項（位址本身仍僅擁有者可見）。
@@ -873,7 +873,7 @@ const endpointUrlHint = computed(() => {
     return 'decoder 根位址（呼叫 {base}/transcribe）；勿加 /v1'
   }
   if (addressOnlyEditor.value) return '獲授權開發者僅可變更端點位址'
-  return '登錄／變更端點位址需擁有者或獲授權開發者身分'
+  return '註冊／變更端點位址需擁有者或獲授權開發者身分'
 })
 const endpointUrlPlaceholder = computed(() => {
   if (endpointFieldLocked.value) return '— 無權設定位址 —'
@@ -1050,7 +1050,7 @@ async function handleSetAsrPrimary(id) {
   finally { settingAsrPrimaryId.value = null }
 }
 async function handleUnsetAsrPrimary(id) {
-  if (!(await confirm({ message: '取消主語音辨識？在你指定新的主語音模型前，asr-gateway 將改用環境變數 ASR_DECODE_URL。共享密鑰 ASR_DECODER_TOKEN 仍只在環境變數，不會寫進模型登錄。', confirmText: '取消主語音', danger: true }))) return
+  if (!(await confirm({ message: '取消主語音辨識？在你指定新的主語音模型前，asr-gateway 將改用環境變數 ASR_DECODE_URL。共享密鑰 ASR_DECODER_TOKEN 仍只在環境變數，不會寫進模型註冊表。', confirmText: '取消主語音', danger: true }))) return
   settingAsrPrimaryId.value = id
   try { await modelsStore.unsetAsrPrimary(id) }
   catch (e) { toast(extractError(e, '取消主語音辨識失敗'), { tone: 'error' }) }

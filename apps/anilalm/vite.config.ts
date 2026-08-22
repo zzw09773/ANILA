@@ -22,14 +22,14 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     server: {
       port: 5174,
-      strictPort: false,
+      strictPort: true,
       // Order matters: Vite's http-proxy walks the proxy table in
       // insertion order, so the more specific `/api/studio` must come
       // before the generic `/api` catch-all (otherwise studio traffic
       // gets forwarded to csp).
       proxy: {
         '/api/studio': { target: anilaStudio, changeOrigin: true },
-        '/api': { target: cspBackend, changeOrigin: true },
+        '^/api(?:/|$)': { target: cspBackend, changeOrigin: true },
         '/v1': { target: cspBackend, changeOrigin: true },
         '/v2': { target: cspBackend, changeOrigin: true },
       },

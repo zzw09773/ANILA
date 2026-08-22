@@ -65,7 +65,7 @@ defineProps({
 .term-logo__sub {
   color: var(--c-fg-2);
   font-size: var(--t-xs);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 500;
 }
 </style>

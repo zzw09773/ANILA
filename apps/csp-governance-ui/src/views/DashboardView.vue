@@ -5,10 +5,7 @@
         <h1 class="page__title">儀表板</h1>
       </div>
       <div class="page__head-meta">
-        <span class="term-label">window</span>
         <span class="page__head-val">近 24 小時</span>
-        <span class="term-label">refreshed</span>
-        <span class="page__head-val tnum">{{ refreshedLabel }}</span>
         <TermButton size="xs" variant="ghost" :loading="loading" @click="refresh" label="重新整理" />
       </div>
     </header>
@@ -33,32 +30,13 @@
       </TermBox>
 
       <TermBox title="快速操作" pad="md">
-        <ul class="ops">
-          <li class="ops__row">
-            <span class="ops__k">role</span>
-            <span class="ops__v">{{ authStore.user?.role || 'user' }}</span>
-          </li>
-          <li class="ops__row">
-            <span class="ops__k">scope</span>
-            <span class="ops__v">{{ scopeLabel }}</span>
-          </li>
-          <li class="ops__row">
-            <span class="ops__k">data plane</span>
-            <span class="ops__v ops__v--accent">/v1/* &nbsp;·&nbsp; /v2/embeddings</span>
-          </li>
-          <li class="ops__row">
-            <span class="ops__k">control plane</span>
-            <span class="ops__v ops__v--accent">/api/*</span>
-          </li>
-        </ul>
-        <hr class="ops__rule" />
         <div class="ops__quick">
-          <router-link to="/api-keys" class="ops__link">→ 建立 API 金鑰</router-link>
-          <router-link to="/models" class="ops__link">→ 檢視模型</router-link>
-          <router-link to="/usage" class="ops__link">→ 用量分析</router-link>
-          <router-link v-if="authStore.isDeveloper" to="/developer/agents" class="ops__link">→ 註冊 Agent</router-link>
-          <router-link v-if="authStore.isAdmin" to="/audit-logs" class="ops__link">→ 稽核紀錄</router-link>
-          <router-link v-if="authStore.isAdmin" to="/feedback" class="ops__link">→ 使用者回饋</router-link>
+          <router-link to="/keys" class="ops__link">建立 API 金鑰</router-link>
+          <router-link to="/models" class="ops__link">檢視模型</router-link>
+          <router-link to="/usage" class="ops__link">用量分析</router-link>
+          <router-link v-if="authStore.isDeveloper" to="/developer/agents" class="ops__link">註冊 Agent</router-link>
+          <router-link v-if="authStore.isAdmin" to="/audit" class="ops__link">稽核紀錄</router-link>
+          <router-link v-if="authStore.isAdmin" to="/feedback" class="ops__link">使用者回饋</router-link>
         </div>
       </TermBox>
     </section>
@@ -176,7 +154,6 @@ const authStore = useAuthStore()
 const summary = ref(null)
 const chartData = ref(null)
 const platformLinks = ref([])
-const refreshedAt = ref(null)
 const loading = ref(false)
 const loadError = ref('')
 const summaryLoaded = ref(false)
@@ -251,19 +228,6 @@ function kpiValue(n) {
   return n
 }
 
-const scopeLabel = computed(() => {
-  if (authStore.isAdmin) return 'full · governance'
-  if (authStore.isDeveloper) return 'agents · collections · self'
-  return 'self · keys · usage'
-})
-
-const refreshedLabel = computed(() => {
-  if (!refreshedAt.value) return '—'
-  const d = refreshedAt.value
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-})
-
 async function fetchAdminWidgets() {
   if (!authStore.isAdmin) return
   legacyTokenLoading.value = true
@@ -326,7 +290,6 @@ async function refresh() {
     }
 
     await Promise.all([admin, health, alerts])
-    if (usageOk) refreshedAt.value = new Date()
   } finally {
     loading.value = false
   }

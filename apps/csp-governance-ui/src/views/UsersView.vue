@@ -76,7 +76,7 @@
             <th style="width: 100px">狀態</th>
             <th style="width: 14%">上次登入</th>
             <th style="width: 12%">建立時間</th>
-            <th>操作</th>
+            <th style="width: 140px">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -88,32 +88,58 @@
             </td>
             <td class="cell-meta">{{ user.email || '—' }}</td>
             <td class="cell-meta">{{ departmentLabel(user) }}</td>
-            <td><TermBadge :variant="roleVariant(user.role)">{{ user.role }}</TermBadge></td>
+            <td><TermBadge :variant="roleVariant(user.role)">{{ roleLabel(user.role) }}</TermBadge></td>
             <td>
               <TermBadge :variant="statusVariant(user)" dot>{{ statusLabel(user) }}</TermBadge>
             </td>
             <td class="cell-meta tnum">{{ user.last_login_at ? formatDate(user.last_login_at) : '從未' }}</td>
             <td class="cell-meta tnum">{{ formatDate(user.created_at) }}</td>
-            <td>
+            <td class="actions-cell">
               <div class="row-actions">
                 <button v-if="!user.is_approved" class="term-action" @click="handleApprove(user)">核准</button>
-                <span v-if="!user.is_approved" class="row-actions__sep">·</span>
                 <button class="term-action" @click="openEditModal(user)">編輯</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action" @click="openAllowedModelsModal(user)">模型</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action" @click="openAllowedAgentsModal(user)">Agent</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action" @click="openResetPasswordModal(user)">重設密碼</button>
-                <span class="row-actions__sep">·</span>
-                <button v-if="!user.local_password_disabled" class="term-action" @click="handleToggleSsoOnly(user, true)" title="拒絕本地密碼 — 僅 SSO">僅 SSO</button>
-                <button v-else class="term-action" @click="handleToggleSsoOnly(user, false)">解鎖密碼</button>
-                <span v-if="user.is_active && user.is_approved" class="row-actions__sep">·</span>
-                <button v-if="user.is_active && user.is_approved" class="term-action term-action--danger" @click="handleDeactivate(user)">停用</button>
-                <span v-if="!user.is_active" class="row-actions__sep">·</span>
-                <button v-if="!user.is_active" class="term-action" @click="handleActivate(user)" title="重新啟用已停用的使用者">啟用</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action term-action--danger" @click="openHardDeleteModal(user)" title="永久刪除使用者（不可復原）">刪除</button>
+                <OverflowMenu :label="`對 ${user.username} 的其他操作`">
+                  <li role="none"><button type="button" role="menuitem" @click="openAllowedModelsModal(user)">可用模型</button></li>
+                  <li role="none"><button type="button" role="menuitem" @click="openAllowedAgentsModal(user)">可用助手</button></li>
+                  <li role="none"><button type="button" role="menuitem" @click="openResetPasswordModal(user)">重設密碼</button></li>
+                  <li role="none">
+                    <button
+                      v-if="!user.local_password_disabled"
+                      type="button"
+                      role="menuitem"
+                      @click="handleToggleSsoOnly(user, true)"
+                    >改為僅 SSO</button>
+                    <button
+                      v-else
+                      type="button"
+                      role="menuitem"
+                      @click="handleToggleSsoOnly(user, false)"
+                    >解鎖密碼</button>
+                  </li>
+                  <li v-if="user.is_active && user.is_approved" role="none">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      class="is-danger"
+                      :disabled="isSelf(user)"
+                      :title="isSelf(user) ? '不能停用自己目前登入的帳號' : ''"
+                      @click="handleDeactivate(user)"
+                    >停用</button>
+                  </li>
+                  <li v-if="!user.is_active" role="none">
+                    <button type="button" role="menuitem" @click="handleActivate(user)">啟用</button>
+                  </li>
+                  <li role="none">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      class="is-danger"
+                      :disabled="isSelf(user)"
+                      :title="isSelf(user) ? '不能刪除自己目前登入的帳號' : ''"
+                      @click="openHardDeleteModal(user)"
+                    >永久刪除</button>
+                  </li>
+                </OverflowMenu>
               </div>
             </td>
           </tr>
@@ -134,7 +160,7 @@
         </div>
         <p style="font-size: var(--t-xs); color: var(--c-fg-2); line-height: 1.55;">
           將永久刪除使用者 <strong>{{ hardDeleteTarget.username }}</strong>
-          ({{ hardDeleteTarget.role }})。
+          （{{ roleLabel(hardDeleteTarget.role) }}）。
         </p>
         <ul style="font-size: var(--t-2xs); color: var(--c-fg-3); padding-left: 18px; margin: 0;">
           <li>該使用者的 API keys 跟對話歷史會一起刪除</li>
@@ -276,9 +302,14 @@ import {
   updateUserAllowedModels,
 } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
+import OverflowMenu from '../components/cli/OverflowMenu.vue'
 import { useAuthStore } from '../stores/auth'
 
 const authStore = useAuthStore()
+
+function isSelf(user) {
+  return Boolean(authStore.user && user && user.id === authStore.user.id)
+}
 
 const users = ref([])
 const departments = ref([])
@@ -462,6 +493,10 @@ async function handleApprove(user) {
   } catch (e) { setFeedback('error', extractError(e, '核准失敗')) }
 }
 async function handleDeactivate(user) {
+  if (isSelf(user)) {
+    setFeedback('error', '不能停用自己目前登入的帳號')
+    return
+  }
   if (!window.confirm(`停用「${user.username}」？`)) return
   try {
     await deactivateUser(user.id)
@@ -498,6 +533,10 @@ const hardDeleteConfirmed = computed(
 )
 
 function openHardDeleteModal(user) {
+  if (isSelf(user)) {
+    setFeedback('error', '不能刪除自己目前登入的帳號')
+    return
+  }
   hardDeleteTarget.value = user
   hardDeleteConfirm.value = ''
   hardDeleteError.value = ''
@@ -562,8 +601,14 @@ async function handleBulkApprove() {
   await fetchUsers()
 }
 async function handleBulkDeactivate() {
-  const targets = users.value.filter(u => selectedUserIds.value.includes(u.id) && u.is_active && u.is_approved)
-  if (!targets.length) { setFeedback('error', '所選中沒有使用中的使用者'); return }
+  const selfId = authStore.user?.id
+  const targets = users.value.filter(u =>
+    selectedUserIds.value.includes(u.id)
+    && u.is_active
+    && u.is_approved
+    && u.id !== selfId,
+  )
+  if (!targets.length) { setFeedback('error', '所選中沒有可停用的使用者（自己的帳號已排除）'); return }
   if (!window.confirm(`停用 ${targets.length} 位使用者？`)) return
   for (const u of targets) await deactivateUser(u.id)
   selectedUserIds.value = []
@@ -577,13 +622,19 @@ function roleVariant(role) {
   if (role === 'developer') return 'info'
   return ''
 }
+function roleLabel(role) {
+  if (role === 'owner') return '擁有者'
+  if (role === 'admin') return '管理員'
+  if (role === 'developer') return '開發者'
+  return '一般使用者'
+}
 function elevatedRole(role) {
   return role === 'admin' || role === 'owner'
 }
 function roleHelp(role) {
-  if (role === 'owner') return 'owner 是平台營運者 — 獨占掌控認證提供者、hard-purge、原始稽核欄位，以及 admin/owner 角色管理。'
-  if (role === 'admin') return 'admin 可管理使用者、模型、稽核、計費與用量。無法建立/降級 admin 或變更平台層級設定。'
-  if (role === 'developer') return 'developer 可註冊 Agent 並下載樣板。'
+  if (role === 'owner') return '擁有者是平台營運者，可管理登入方式、原始稽核欄位與高權限角色。'
+  if (role === 'admin') return '管理員可管理使用者、模型、稽核與用量；不能指派或移除擁有者。'
+  if (role === 'developer') return '開發者可註冊 Agent 並下載接入樣板。'
   return ''
 }
 function statusVariant(u) {
@@ -636,8 +687,10 @@ function statusLabel(u) {
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
 
-.row-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: var(--t-xs); }
+.term-table { min-width: 1120px; }
+.row-actions { display: inline-flex; align-items: center; gap: 8px; font-size: var(--t-xs); flex-wrap: nowrap; }
 .row-actions__sep { color: var(--c-border-strong); }
+.actions-cell { white-space: nowrap; vertical-align: middle; min-width: 140px; }
 
 .loading { padding: var(--gap-6); text-align: center; color: var(--c-fg-3); font-size: var(--t-sm); }
 

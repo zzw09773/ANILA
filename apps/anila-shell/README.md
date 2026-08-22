@@ -87,7 +87,7 @@ apps/anila-shell/
 ```bash
 cd apps/anila-shell
 cp .env.example .env.local      # CSP / Router 非 localhost 時才需編輯
-npm install && npm run dev      # Vite dev server :5173
+npm install && npm run dev      # Vite dev server :5175
 ```
 
 ### 容器（monorepo compose）

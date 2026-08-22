@@ -3,9 +3,9 @@
     <header class="page-head">
       <div>
         <h1 class="page-head__title">稽核紀錄</h1>
-        <p class="page-head__sub">最近 {{ filters.limit }} 筆 · 治理軌跡 · 管理員寫入操作</p>
+        <p class="page-head__sub">治理軌跡 · 管理員寫入操作 · 可依時間篩選並翻頁</p>
       </div>
-      <span class="cell-meta">{{ logs.length }} 筆</span>
+      <span class="cell-meta">{{ total }} 筆中的第 {{ rangeStart }}–{{ rangeEnd }} 筆</span>
     </header>
 
     <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
@@ -41,7 +41,13 @@
             <option value="failure">失敗</option>
           </select>
         </TermField>
-        <TermField label="筆數">
+        <TermField label="開始時間">
+          <input v-model="filters.since" type="datetime-local" class="term-input" />
+        </TermField>
+        <TermField label="結束時間">
+          <input v-model="filters.until" type="datetime-local" class="term-input" />
+        </TermField>
+        <TermField label="每頁筆數">
           <select v-model.number="filters.limit" class="term-select">
             <option :value="50">50</option>
             <option :value="100">100</option>
@@ -50,7 +56,7 @@
           </select>
         </TermField>
         <div class="filters__cta">
-          <TermButton @click="fetchLogs" label="查詢" />
+          <TermButton @click="searchFromStart" label="查詢" />
         </div>
       </div>
     </TermBox>
@@ -90,36 +96,81 @@
           </tr>
         </tbody>
       </table>
+      <div v-if="total > filters.limit" class="pager">
+        <TermButton size="xs" :disabled="filters.offset <= 0" label="上一頁" @click="prevPage" />
+        <span class="cell-meta">第 {{ pageNumber }} 頁</span>
+        <TermButton size="xs" :disabled="!hasNext" label="下一頁" @click="nextPage" />
+      </div>
     </TermBox>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { listAuditLogs } from '../api/auditLogs'
 import { formatDate } from '../utils/formatDate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
 import { extractError } from '../api/errors'
 
 const logs = ref([])
+const total = ref(0)
 const pageError = ref('')
-const filters = ref({ actor_username: '', action: '', resource_type: '', status: '', limit: 100 })
+const filters = ref({
+  actor_username: '',
+  action: '',
+  resource_type: '',
+  status: '',
+  since: '',
+  until: '',
+  limit: 100,
+  offset: 0,
+})
+
+const rangeStart = computed(() => (total.value === 0 ? 0 : filters.value.offset + 1))
+const rangeEnd = computed(() => Math.min(filters.value.offset + logs.value.length, total.value))
+const pageNumber = computed(() => Math.floor(filters.value.offset / filters.value.limit) + 1)
+const hasNext = computed(() => filters.value.offset + logs.value.length < total.value)
+
+function taipeiIso(value) {
+  if (!value) return undefined
+  const withSeconds = value.length === 16 ? `${value}:00` : value
+  return new Date(`${withSeconds}+08:00`).toISOString()
+}
 
 async function fetchLogs() {
   pageError.value = ''
   try {
-    const { data } = await listAuditLogs({
+    const { data, headers } = await listAuditLogs({
       actor_username: filters.value.actor_username || undefined,
       action: filters.value.action || undefined,
       resource_type: filters.value.resource_type || undefined,
       status: filters.value.status || undefined,
+      since: taipeiIso(filters.value.since),
+      until: taipeiIso(filters.value.until),
       limit: filters.value.limit,
+      offset: filters.value.offset,
     })
     logs.value = data
+    const headerTotal = headers?.['x-total-count'] || headers?.['X-Total-Count']
+    total.value = headerTotal != null ? Number(headerTotal) : data.length
   } catch (e) {
     pageError.value = extractError(e, '載入稽核紀錄失敗')
   }
 }
+
+function searchFromStart() {
+  filters.value.offset = 0
+  return fetchLogs()
+}
+function nextPage() {
+  filters.value.offset += filters.value.limit
+  return fetchLogs()
+}
+function prevPage() {
+  filters.value.offset = Math.max(0, filters.value.offset - filters.value.limit)
+  return fetchLogs()
+}
+
 onMounted(fetchLogs)
 </script>
 
@@ -132,10 +183,18 @@ onMounted(fetchLogs)
 .feedback { font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
 .feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
 
-.filters { display: grid; grid-template-columns: 1fr 1fr 1fr 0.8fr 0.6fr auto; gap: var(--gap-3); align-items: end; }
+.filters { display: grid; grid-template-columns: 1fr 1fr 1fr 0.8fr 0.6fr 1fr 1fr 0.6fr auto; gap: var(--gap-3); align-items: end; }
 .filters__cta { padding-bottom: 1px; }
-@media (max-width: 1100px) { .filters { grid-template-columns: 1fr 1fr 1fr; } }
+@media (max-width: 1400px) { .filters { grid-template-columns: 1fr 1fr 1fr 1fr; } }
 @media (max-width: 700px)  { .filters { grid-template-columns: 1fr 1fr; } }
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--gap-3);
+  padding: var(--gap-3);
+  border-top: var(--border-w) solid var(--c-border);
+}
 
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }

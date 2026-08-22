@@ -30,7 +30,7 @@ defineProps({
   type: { type: String, default: 'button' },
   disabled: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
-  bracketed: { type: Boolean, default: true },
+  bracketed: { type: Boolean, default: false },
   label: { type: String, default: '' },
 })
 defineEmits(['click'])

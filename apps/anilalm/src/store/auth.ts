@@ -20,7 +20,7 @@ interface AuthState {
   login: (username: string, password: string) => Promise<void>
   refresh: () => Promise<string | null>
   fetchMe: () => Promise<void>
-  logout: () => void
+  logout: () => Promise<void>
   hydrate: () => Promise<void>
 }
 
@@ -29,6 +29,10 @@ interface AuthState {
 if (typeof localStorage !== 'undefined') {
   wipeAuthStorage(localStorage)
 }
+
+let profileInFlight: Promise<void> | null = null
+let refreshInFlight: Promise<string | null> | null = null
+let authEpoch = 0
 
 export const useAuthStore = create<AuthState>()((set, get) => ({
   accessToken: null,
@@ -60,34 +64,52 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   },
 
   refresh: async () => {
+    if (refreshInFlight) return refreshInFlight
     // Cookie-first: CSP accepts anila_refresh_token on /api/auth/refresh
     // even when the JSON body has no refresh_token (see password.py).
     // After a reload the in-memory copy is gone; the httpOnly cookie is not.
     const rt = get().refreshToken
-    try {
-      const { data } = await refreshApi(rt)
-      set({ accessToken: data.access_token, refreshToken: data.refresh_token })
-      return data.access_token
-    } catch {
-      set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
-      return null
-    }
+    const epoch = authEpoch
+    refreshInFlight = (async () => {
+      try {
+        const { data } = await refreshApi(rt)
+        if (epoch === authEpoch) {
+          set({ accessToken: data.access_token, refreshToken: data.refresh_token })
+        }
+        return data.access_token
+      } catch {
+        if (epoch === authEpoch) {
+          set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
+        }
+        return null
+      } finally {
+        refreshInFlight = null
+      }
+    })()
+    return refreshInFlight
   },
 
   fetchMe: async () => {
-    try {
-      const { data } = await getMe()
-      set({ user: data, status: 'authed' })
-    } catch {
-      set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
-    }
+    if (profileInFlight) return profileInFlight
+    const epoch = ++authEpoch
+    profileInFlight = (async () => {
+      try {
+        const { data } = await getMe()
+        if (epoch === authEpoch) set({ user: data, status: 'authed' })
+      } catch {
+        if (epoch === authEpoch) {
+          set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
+        }
+      } finally {
+        profileInFlight = null
+      }
+    })()
+    return profileInFlight
   },
 
-  logout: () => {
-    // Fire-and-forget: server-side logout is best-effort. The local
-    // state reset is the source of truth — even if the network call
-    // fails the user is signed out from the client's POV.
-    void logoutApi().catch(() => undefined)
+  logout: async () => {
+    authEpoch += 1
+    profileInFlight = null
     set({
       accessToken: null,
       refreshToken: null,
@@ -95,6 +117,11 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       status: 'unauth',
       error: null,
     })
+    try {
+      await logoutApi()
+    } catch {
+      // The local state is already clean; the login surface remains usable.
+    }
   },
 
   hydrate: async () => {

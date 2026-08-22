@@ -1,24 +1,18 @@
 <template>
   <aside class="sidenav">
-    <nav class="sidenav__nav" aria-label="primary">
-      <template v-for="(group, gIdx) in menuGroups" :key="group.label">
+    <nav class="sidenav__nav" aria-label="主要選單">
+      <template v-for="group in menuGroups" :key="group.label">
         <div v-if="group.items.length" class="sidenav__group">
-          <div class="sidenav__group-label">
-            <span class="sidenav__group-glyph">{{ String(gIdx + 1).padStart(2, '0') }}</span>
-            <span>{{ group.label }}</span>
-            <span class="sidenav__group-count">{{ group.items.length }}</span>
-          </div>
+          <div class="sidenav__group-label">{{ group.label }}</div>
           <ul class="sidenav__list">
-            <li v-for="(item, iIdx) in group.items" :key="item.path">
+            <li v-for="item in group.items" :key="item.path">
               <router-link
                 :to="item.path"
                 class="sidenav__item"
                 :class="{ 'is-active': isActive(item.path) }"
               >
                 <span class="sidenav__rail" aria-hidden="true" />
-                <span class="sidenav__index">{{ String(iIdx + 1).padStart(2, '0') }}</span>
                 <span class="sidenav__label">{{ item.label }}</span>
-                <span v-if="item.badge" class="sidenav__badge">{{ item.badge }}</span>
               </router-link>
             </li>
           </ul>
@@ -27,15 +21,10 @@
     </nav>
 
     <div class="sidenav__foot">
+      <a class="sidenav__workbench" :href="workbenchHref">任務中心</a>
       <div class="sidenav__foot-row">
-        <span class="term-label">session</span>
-        <span class="sidenav__foot-val">
-          {{ authStore.user?.username || 'guest' }}
-        </span>
-      </div>
-      <div class="sidenav__foot-row sidenav__foot-row--mute">
-        <span class="term-label">scope</span>
-        <span class="sidenav__foot-val sidenav__foot-val--mute">{{ scopeLabel }}</span>
+        <span>{{ authStore.user?.username || '未登入' }}</span>
+        <span class="sidenav__foot-val">{{ roleLabel }}</span>
       </div>
     </div>
   </aside>
@@ -45,17 +34,34 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { shellWorkbenchHref } from '../../utils/appOrigins'
 
 const route = useRoute()
 const authStore = useAuthStore()
+const workbenchHref = shellWorkbenchHref()
+
+const ROLE_LABEL = {
+  owner: '擁有者',
+  admin: '管理員',
+  developer: '開發者',
+  user: '使用者',
+}
+const roleLabel = computed(() => ROLE_LABEL[authStore.user?.role] || '')
 
 const menuGroups = computed(() => {
+  if (authStore.isRegularUser) {
+    return [{
+      label: '工作臺',
+      items: [{ path: '/', label: '四個入口' }],
+    }]
+  }
+
   const groups = [
     {
-      label: '主要',
+      label: '概況',
       items: [
-        { path: '/', label: '儀表板' },
-        { path: '/api-keys', label: 'API 金鑰' },
+        { path: '/', label: '總覽' },
+        { path: '/keys', label: 'API 金鑰' },
         { path: '/models', label: '模型' },
         { path: '/usage', label: '用量' },
       ],
@@ -64,10 +70,10 @@ const menuGroups = computed(() => {
 
   if (authStore.isDeveloper) {
     groups.push({
-      label: '開發者',
+      label: '開發',
       items: [
         { path: '/developer/guide', label: '開發指南' },
-        { path: '/developer/agents', label: 'Agent' },
+        { path: '/developer/agents', label: '助手' },
         { path: '/knowledge-collections', label: '知識庫' },
         { path: '/message-actions', label: '自訂動作' },
       ],
@@ -75,23 +81,37 @@ const menuGroups = computed(() => {
   }
 
   if (authStore.isAdmin) {
-    const adminItems = [
-      { path: '/users', label: '使用者' },
-      { path: '/departments', label: '部門' },
-      { path: '/alerts', label: '警報' },
-      { path: '/feedback', label: '使用者回饋' },
-      { path: '/banners', label: '公告橫幅' },
-      { path: '/audit-logs', label: '稽核紀錄' },
-      { path: '/classification-inventory', label: '分類盤點' },
-      { path: '/platform-links', label: '平台連結' },
-      { path: '/service-access', label: '服務存取' },
-      { path: '/service-clients', label: '服務客戶端' },
-      { path: '/trusted-hosts', label: '信任主機' },
-      { path: '/platform-settings', label: '平台設定' },
-    ]
     groups.push({
-      label: '管理',
-      items: adminItems,
+      label: '身分',
+      items: [
+        { path: '/users', label: '使用者' },
+        { path: '/departments', label: '部門' },
+      ],
+    })
+    groups.push({
+      label: '營運',
+      items: [
+        { path: '/alerts', label: '警報' },
+        { path: '/banners', label: '公告橫幅' },
+        { path: '/platform-settings', label: '平台設定' },
+        { path: '/trusted-hosts', label: '信任主機' },
+        { path: '/service-clients', label: '服務客戶端' },
+      ],
+    })
+    groups.push({
+      label: '合規',
+      items: [
+        { path: '/audit', label: '稽核紀錄' },
+        { path: '/classification-inventory', label: '分類盤點' },
+        { path: '/feedback', label: '使用者回饋' },
+      ],
+    })
+    groups.push({
+      label: '服務',
+      items: [
+        { path: '/platform-links', label: '平台連結' },
+        { path: '/service-access', label: '服務存取' },
+      ],
     })
   }
 
@@ -105,12 +125,6 @@ function isActive(path) {
   }
   return route.path === path
 }
-
-const scopeLabel = computed(() => {
-  if (authStore.isAdmin) return 'full · governance'
-  if (authStore.isDeveloper) return 'agents · collections'
-  return 'self · keys · usage'
-})
 </script>
 
 <style scoped>
@@ -136,41 +150,24 @@ const scopeLabel = computed(() => {
 }
 
 .sidenav__group-label {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-2);
   padding: 0 var(--gap-4);
   margin-bottom: var(--gap-2);
-  font-size: var(--t-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  font-size: var(--t-xs);
+  font-weight: 600;
   color: var(--c-fg-3);
-}
-.sidenav__group-glyph {
-  color: var(--c-fg-mute);
-  font-weight: 500;
-}
-.sidenav__group-count {
-  margin-left: auto;
-  color: var(--c-fg-mute);
-  font-size: var(--t-2xs);
-  letter-spacing: 0;
 }
 
 .sidenav__list { list-style: none; padding: 0; margin: 0; }
 
 .sidenav__item {
   position: relative;
-  display: grid;
-  grid-template-columns: 16px 1fr auto;
+  display: flex;
   align-items: center;
-  gap: var(--gap-2);
   padding: 0 var(--gap-4);
-  height: 26px;
+  height: 32px;
   color: var(--c-fg-2);
   font-size: var(--t-sm);
   text-decoration: none;
-  letter-spacing: 0.02em;
   transition: color var(--motion-fast), background-color var(--motion-fast);
 }
 .sidenav__item:hover {
@@ -181,6 +178,7 @@ const scopeLabel = computed(() => {
 .sidenav__item.is-active {
   color: var(--c-accent-strong);
   background: var(--c-accent-soft);
+  font-weight: 600;
 }
 .sidenav__rail {
   position: absolute;
@@ -194,24 +192,10 @@ const scopeLabel = computed(() => {
   background: var(--c-accent);
 }
 
-.sidenav__index {
-  color: var(--c-fg-mute);
-  font-size: var(--t-2xs);
-  letter-spacing: 0;
-  font-variant-numeric: tabular-nums;
-}
-.sidenav__item.is-active .sidenav__index {
-  color: var(--c-accent);
-}
 .sidenav__label {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.sidenav__badge {
-  font-size: var(--t-2xs);
-  color: var(--c-fg-3);
-  letter-spacing: 0.05em;
 }
 
 .sidenav__foot {
@@ -219,18 +203,23 @@ const scopeLabel = computed(() => {
   padding: var(--gap-3) var(--gap-4);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   background: var(--c-surface-1);
 }
+.sidenav__workbench {
+  color: var(--c-accent);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  text-decoration: none;
+}
+.sidenav__workbench:hover { text-decoration: underline; }
 .sidenav__foot-row {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  gap: var(--gap-2);
   font-size: var(--t-xs);
+  color: var(--c-fg-2);
 }
-.sidenav__foot-val {
-  color: var(--c-fg-1);
-  letter-spacing: 0.02em;
-}
-.sidenav__foot-val--mute { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.sidenav__foot-val { color: var(--c-fg-3); }
 </style>

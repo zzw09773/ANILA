@@ -13,8 +13,8 @@ const {
   RELEASE_GATE_BADGE,
 } = await import('../src/utils/anilalmReleaseGate.js')
 
-test('release gate flag defaults to hidden for this freeze', () => {
-  assert.equal(ANILA_LM_LINK_VISIBLE, false)
+test('knowledge and output workspace is visible in this release', () => {
+  assert.equal(ANILA_LM_LINK_VISIBLE, true)
 })
 
 test('isAnilaLmPlatformLink uses the backend code, not mutable prose or URL', () => {
@@ -31,20 +31,16 @@ test('isAnilaLmPlatformLink uses the backend code, not mutable prose or URL', ()
   assert.equal(isAnilaLmPlatformLink(null), false)
 })
 
-test('filterPlatformLinksForRelease drops ANILA LM when gate is closed', () => {
+test('filterPlatformLinksForRelease keeps ANILA LM when gate is open', () => {
   const links = [
     { id: 1, name: '改過名字', url: '/改過入口', release_gate_code: 'anila_lm' },
     { id: 2, name: 'n8n', url: '/n8n', release_gate_code: null },
   ]
   const filtered = filterPlatformLinksForRelease(links)
-  if (ANILA_LM_LINK_VISIBLE) {
-    assert.equal(filtered.length, 2)
-  } else {
-    assert.deepEqual(filtered.map((l) => l.name), ['n8n'])
-  }
+  assert.equal(filtered.length, 2)
 })
 
-test('isReleaseGateClosedFor marks the row instead of hiding it', () => {
+test('isReleaseGateClosedFor does not mark the open row', () => {
   const link = { id: 1, name: '改過名字', url: '/改過入口', release_gate_code: 'anila_lm' }
   assert.equal(isReleaseGateClosedFor(link), !ANILA_LM_LINK_VISIBLE)
   assert.equal(isReleaseGateClosedFor({ id: 2, name: 'n8n', url: '/n8n', release_gate_code: null }), false)
@@ -76,7 +72,7 @@ test('使用者面（儀表板）過濾，管理面（服務登記／服務存�
   }
 })
 
-test('沒有任何一頁硬編可點的 /anilalm 導覽', () => {
+test('治理中心由服務登記提供入口，不硬編部署位址', () => {
   for (const rel of [
     '../src/views/DashboardView.vue',
     '../src/views/PlatformLinksView.vue',
@@ -92,7 +88,7 @@ test('沒有任何一頁硬編可點的 /anilalm 導覽', () => {
     assert.doesNotMatch(
       code,
       /href\s*=\s*['"][^'"]*\/anilalm/,
-      `${rel} must not hard-code an /anilalm href while the gate is closed`,
+      `${rel} must obtain the knowledge-workspace URL from service registration`,
     )
   }
 })

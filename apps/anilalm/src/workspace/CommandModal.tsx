@@ -56,7 +56,7 @@ const PRESETS: Record<string, Preset[]> = {
   ],
   slides: [
     { l: '經典報告結構', d: '封面 → 大綱 → 內容 → 結論 · 12-15 張', tag: '推薦' },
-    { l: 'Lightning Talk', d: '5 張投影片濃縮版' },
+    { l: '閃電簡報', d: '5 張投影片濃縮版' },
     { l: '教學投影片', d: '概念 + 範例 + 練習' },
   ],
   mindmap: [
@@ -67,7 +67,7 @@ const PRESETS: Record<string, Preset[]> = {
   ],
   infographic: [
     { l: '任務 Dashboard', d: '關鍵指標 + 進度 + 比較', tag: '推薦' },
-    { l: '數據簡報', d: '從文件抽具體數字 + chart' },
+    { l: '資料簡報', d: '從資料中擷取具體數字與圖表' },
     { l: '比較矩陣', d: '並排對照 X vs Y 的特徵' },
     { l: '時間軸總覽', d: '從早到晚事件列表 + 視覺強調' },
   ],
@@ -97,7 +97,7 @@ const PRESET_ENUM_MAP: Record<string, Record<string, string>> = {
   infographic: {
     '任務 Dashboard': 'mission_dashboard',
     任務Dashboard: 'mission_dashboard',
-    數據簡報: 'stats_brief',
+    資料簡報: 'stats_brief',
     比較矩陣: 'comparison_matrix',
     時間軸總覽: 'timeline_overview',
   },
@@ -181,6 +181,10 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
 
   const submit = async () => {
     if (!format || !collection || !isSupported) return
+    if (indexedDocs.length === 0) {
+      setErr('這個知識庫目前沒有已完成索引的資料，請先上傳資料並等待索引完成。')
+      return
+    }
     setBusy(true)
     setErr(null)
     try {
@@ -265,7 +269,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
           // will fill these in as soon as the LLM finishes step 4-5.
           // Use a placeholder so the timeline card has something to
           // render until then.
-          title: '鑄造中…',
+          title: '產出中…',
           preset: presetName,
           slides: [],
           sourceCount: indexedDocs.length,
@@ -676,7 +680,12 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
               {step === extraStep && (
                 <button
                   onClick={() => void submit()}
-                  disabled={busy}
+                  disabled={busy || indexedDocs.length === 0}
+                  title={
+                    indexedDocs.length === 0
+                      ? '請先上傳資料並等待索引完成'
+                      : ''
+                  }
                   style={{
                     padding: '7px 16px',
                     borderRadius: 8,
@@ -685,17 +694,21 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                     color: '#fff',
                     fontSize: 12.5,
                     fontWeight: 500,
-                    cursor: busy ? 'wait' : 'pointer',
+                    cursor: busy
+                      ? 'wait'
+                      : indexedDocs.length === 0
+                        ? 'not-allowed'
+                        : 'pointer',
                     fontFamily: 'inherit',
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: 6,
                     boxShadow: `0 4px 14px -4px ${t.accent}`,
-                    opacity: busy ? 0.7 : 1,
+                    opacity: busy || indexedDocs.length === 0 ? 0.55 : 1,
                   }}
                 >
                   {busy ? <Spinner size={11} color="#fff" /> : <Icon name="sparkle" size={11} stroke="#fff" />}
-                  {busy ? '生成中...' : '開始鑄造'}
+                  {busy ? '製作中…' : '開始製作'}
                 </button>
               )}
             </div>

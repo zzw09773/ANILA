@@ -37,7 +37,7 @@ const PRESET_ENUM: Record<string, Record<string, string>> = {
   infographic: {
     '任務 Dashboard': 'mission_dashboard',
     任務Dashboard: 'mission_dashboard',
-    數據簡報: 'stats_brief',
+    資料簡報: 'stats_brief',
     比較矩陣: 'comparison_matrix',
     時間軸總覽: 'timeline_overview',
   },
@@ -262,7 +262,7 @@ export interface GenerateSlidesInput {
 
 const SLIDE_COUNT_HINT: Record<string, string> = {
   '經典報告結構': '12-15 張投影片，封面 → 大綱 → 主體 → 結論。',
-  'Lightning Talk': '5 張投影片，重點濃縮、視覺優先。',
+  '閃電簡報': '5 張投影片，重點濃縮、視覺優先。',
   '教學投影片': '8-12 張，每張一個概念 + 範例。',
 }
 

@@ -1,22 +1,21 @@
-# ANILA LM 暫時關閉閘門 — 重開手順
+# 我的知識庫／產出中心發布閘門
 
-> 本 release（高層預覽）ANILA LM **尚未就緒**，對外的門暫時關上。
-> `anilalm` 容器**繼續跑**（compose 不動、不 stop），只關入口。
-> 重開不必考古：改三個旗標／一段 nginx，再 rebuild + recreate。
+> 2026-08-22 review-pass：這兩個使用者入口已開放。四個開關目前皆為
+> **open / true**；本文件保留關閉與重開方法，供日後維護時使用。
 
 ## 為什麼是 503
 
 對外 `/anilalm/` 回 **503 + 短 zh-TW 維護頁**，不用 404。
 404 會讓好奇的人以為「功能不存在」；503 表示「尚未開放」。
 
-## 四個開關（全部打開才算重開）
+## 四個開關（目前全部開啟）
 
-| # | 表面 | 檔案 | 現況（關閉） | 重開改成 |
+| # | 表面 | 檔案 | 目前值 | 關閉時改成 |
 |---|---|---|---|---|
-| 1 | nginx 對外路徑 | `infra/nginx/anila.conf` | `ANILA_LM_NGINX_GATE = closed`：`location ~* ^/anilalm` → 503 | 刪掉兩個 server block（443／4443）裡的 `~* ^/anilalm` 503 區塊，還原檔內註解的 `location = /anilalm` + `location /anilalm` proxy_pass 對 |
-| 2 | ANILA shell 導覽 | `apps/anila-shell/src/anilalmReleaseGate.js` | `ANILA_LM_ENTRY_ENABLED = false`（列還在，標「即將推出」、不可點） | `ANILA_LM_ENTRY_ENABLED = true` |
-| 3 | 治理中心儀表板卡片 | `apps/csp-governance-ui/src/utils/anilalmReleaseGate.js` | `ANILA_LM_LINK_VISIBLE = false`（儀表板「平台 · 外部工具」不渲染；**服務登記／服務存取照列，只標「未開放」**） | `ANILA_LM_LINK_VISIBLE = true` |
-| 4 | **API 回應本身** | `services/csp/app/services/anilalm_release_gate.py` | `ANILA_LM_RELEASED = False`：`GET /api/services`、`/api/platform-links` 的**使用者面**清單不列 ANILA LM；`POST /api/services/{id}/launch` 回 503 | `ANILA_LM_RELEASED = True` |
+| 1 | nginx 對外路徑 | `infra/nginx/anila.conf` | `/anilalm/` 代理至 `anilalm:80` | 以 503 維護頁取代 canonical proxy |
+| 2 | ANILA shell 導覽 | `apps/anila-shell/src/anilalmReleaseGate.js` | `ANILA_LM_ENTRY_ENABLED = true` | `false` |
+| 3 | 系統管理的服務卡片 | `apps/csp-governance-ui/src/utils/anilalmReleaseGate.js` | `ANILA_LM_LINK_VISIBLE = true` | `false` |
+| 4 | **API 回應本身** | `services/csp/app/services/anilalm_release_gate.py` | `ANILA_LM_RELEASED = True` | `False` |
 
 ### 為什麼需要第 4 道（2026-08-02 補上）
 

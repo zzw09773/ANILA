@@ -5,10 +5,7 @@ import React from "react";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 
-import {
-  ANILA_LM_COMING_SOON_LABEL,
-  ANILA_LM_ENTRY_ENABLED,
-} from "../anilalmReleaseGate.js";
+import { ANILA_LM_ENTRY_ENABLED } from "../anilalmReleaseGate.js";
 import {
   ShellNav,
   canSeeGovernance,
@@ -16,8 +13,8 @@ import {
   buildShellEntries,
 } from "../shellNav.jsx";
 
-// jsdom 預設 origin。
-const ORIGIN = window.location.origin;
+const GOV_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5173`;
+const KNOWLEDGE_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5174`;
 
 // ---------------------------------------------------------------------
 // 純函式：治理中心角色閘門
@@ -49,8 +46,8 @@ describe("canSeeGovernance", () => {
 
 describe("originHref", () => {
   it("prefixes the current origin, not the shell /anila/ base", () => {
-    expect(originHref("/anilalm")).toBe(`${ORIGIN}/anilalm`);
-    expect(originHref("/")).toBe(`${ORIGIN}/`);
+    expect(originHref("/anilalm")).toBe(`${KNOWLEDGE_ORIGIN}/`);
+    expect(originHref("/")).toBe(`${GOV_ORIGIN}/`);
   });
 });
 
@@ -60,28 +57,25 @@ describe("buildShellEntries", () => {
     expect(entries.map((e) => e.label)).toEqual([
       "任務中心",
       "我的知識庫",
+      "產出中心",
       "專案入口",
     ]);
   });
 
-  // 「產出中心」與「我的知識庫」曾是逐字相同的 /anilalm 連結：兩個標籤指到
-  // 同一頁，使用者只會以為自己點錯。同一個 href 不得出現兩次。
+  // 產出中心有自己的 /outputs 頁，不可和知識庫指向同一個 URL。
   it("never ships two entries pointing at the same destination", () => {
     const hrefs = buildShellEntries({}).map((e) => e.href).filter(Boolean);
     expect(new Set(hrefs).size).toBe(hrefs.length);
   });
 
-  it("gates 我的知識庫 behind ANILA_LM_ENTRY_ENABLED (Coming Soon when closed)", () => {
+  it("opens 我的知識庫 in this release", () => {
+    expect(ANILA_LM_ENTRY_ENABLED).toBe(true);
     const knowledge = buildShellEntries({}).find((e) => e.id === "knowledge");
     expect(knowledge).toBeTruthy();
-    if (ANILA_LM_ENTRY_ENABLED) {
-      expect(knowledge.href).toBe(`${ORIGIN}/anilalm`);
-      expect(knowledge.disabled).toBeFalsy();
-    } else {
-      expect(knowledge.disabled).toBe(true);
-      expect(knowledge.href).toBeUndefined();
-      expect(knowledge.badge).toBe(ANILA_LM_COMING_SOON_LABEL);
-    }
+    expect(knowledge.href).toBe(`${KNOWLEDGE_ORIGIN}/`);
+    expect(knowledge.disabled).toBeFalsy();
+    const outputs = buildShellEntries({}).find((e) => e.id === "outputs");
+    expect(outputs.href).toBe(`${KNOWLEDGE_ORIGIN}/outputs`);
   });
 });
 
@@ -94,12 +88,8 @@ describe("ShellNav", () => {
     render(<ShellNav user={{ role: "user" }} />);
     expect(screen.getByText("任務中心")).toBeTruthy();
     expect(screen.getByText("我的知識庫")).toBeTruthy();
+    expect(screen.getByText("產出中心")).toBeTruthy();
     expect(screen.getByText("專案入口")).toBeTruthy();
-  });
-
-  it("no longer renders the duplicate 產出中心 entry", () => {
-    render(<ShellNav user={{ role: "user" }} />);
-    expect(screen.queryByText("產出中心")).toBeNull();
   });
 
   it("does not surface ANILALM / Studio / CSP tech brand names", () => {
@@ -110,38 +100,24 @@ describe("ShellNav", () => {
     expect(text).not.toMatch(/\bCSP\b/);
   });
 
-  it("hides 治理中心 for a non-admin user", () => {
+  it("hides 系統管理 for a non-admin user", () => {
     render(<ShellNav user={{ role: "user" }} />);
-    expect(screen.queryByText("治理中心")).toBeNull();
+    expect(screen.queryByText("系統管理")).toBeNull();
   });
 
-  it("shows 治理中心 for an admin and links it to the origin root", () => {
+  it("shows 系統管理 for an admin and links it to the configured governance origin", () => {
     render(<ShellNav user={{ role: "admin" }} />);
-    const gov = screen.getByText("治理中心").closest("a");
+    const gov = screen.getByText("系統管理").closest("a");
     expect(gov).toBeTruthy();
-    expect(gov.getAttribute("href")).toBe(`${ORIGIN}/`);
+    expect(gov.getAttribute("href")).toBe(`${GOV_ORIGIN}/`);
   });
 
-  it("shows 我的知識庫 as disabled Coming Soon when the release gate is closed", () => {
-    if (ANILA_LM_ENTRY_ENABLED) return; // gate open → this assertion does not apply
+  it("points 我的知識庫 and 產出中心 at distinct pages", () => {
     render(<ShellNav user={{ role: "user" }} />);
-    expect(screen.getByText("我的知識庫")).toBeTruthy();
-    expect(screen.getByText(ANILA_LM_COMING_SOON_LABEL)).toBeTruthy();
-    const row = screen.getByText("我的知識庫").closest("[data-nav-disabled='knowledge']");
-    expect(row).toBeTruthy();
-    expect(row.getAttribute("aria-disabled")).toBe("true");
-    expect(screen.getByText("我的知識庫").closest("a")).toBeNull();
-  });
-
-  it("points 我的知識庫 at /anilalm only when the release gate is open", () => {
-    render(<ShellNav user={{ role: "user" }} />);
-    const link = screen.getByText("我的知識庫").closest("a");
-    if (ANILA_LM_ENTRY_ENABLED) {
-      expect(link).toBeTruthy();
-      expect(link.getAttribute("href")).toBe(`${ORIGIN}/anilalm`);
-    } else {
-      expect(link).toBeNull();
-    }
+    const knowledge = screen.getByText("我的知識庫").closest("a");
+    const outputs = screen.getByText("產出中心").closest("a");
+    expect(knowledge.getAttribute("href")).toBe(`${KNOWLEDGE_ORIGIN}/`);
+    expect(outputs.getAttribute("href")).toBe(`${KNOWLEDGE_ORIGIN}/outputs`);
   });
 
   it("opens the ServicesPanel via onOpenServices when 專案入口 is clicked", () => {
@@ -164,7 +140,8 @@ describe("ShellNav", () => {
     render(<ShellNav collapsed user={{ role: "user" }} />);
     // 折疊時以 aria-label 提供無障礙名稱。
     expect(screen.getByLabelText("任務中心")).toBeTruthy();
+    expect(screen.getByLabelText("產出中心")).toBeTruthy();
     expect(screen.getByLabelText("專案入口")).toBeTruthy();
-    expect(screen.queryByLabelText("治理中心")).toBeNull();
+    expect(screen.queryByLabelText("系統管理")).toBeNull();
   });
 });

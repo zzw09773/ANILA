@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Outlet } from 'react-router'
 import { useAuthStore } from '../store/auth'
+import { loginHref } from '../appOrigins'
 
 // branch SSO：ANILALM 不再持有自己的登入頁；唯一登入入口是 myCSPPlatform
 // CSP 平台 (路徑 /login)。Unauthenticated 時用 window.location.assign 跳出
@@ -17,12 +18,7 @@ export function ProtectedRoute() {
   // cookie,store 的 accessToken 為 null,但 fetchMe 會把 status 設 'authed'。
   useEffect(() => {
     if (status !== 'unauth') return
-    // absolute URL with current port — ANILALM 可能跑在 4443，LoginView 在
-    // 443；next 帶完整 URL (含 port)，登入完才能跨 port 跳回 ANILALM。
-    const currentHref = window.location.href
-    const loginOrigin = `${window.location.protocol}//${window.location.hostname}`
-    const target = `${loginOrigin}/login?next=${encodeURIComponent(currentHref)}`
-    window.location.assign(target)
+    window.location.replace(loginHref(window.location.href))
   }, [status])
 
   if (status === 'authed') return <Outlet />

@@ -5,6 +5,7 @@ import { useAuthStore } from './store/auth'
 // branch SSO: LoginPage 留檔但不再 mount route — 唯一登入頁是 myCSPPlatform
 // CSP 平台 (路徑 /login)，ProtectedRoute 在 unauthenticated 時 redirect 過去。
 import { DashboardPage } from './routes/DashboardPage'
+import { OutputCenterPage } from './routes/OutputCenterPage'
 import { WorkspacePage } from './routes/WorkspacePage'
 import { ProtectedRoute } from './routes/ProtectedRoute'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -19,6 +20,7 @@ function AppRoutes() {
     <Routes>
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/outputs" element={<OutputCenterPage />} />
         <Route path="/c/:collectionId" element={<WorkspacePage />} />
         <Route path="/c/:collectionId/conv/:conversationId" element={<WorkspacePage />} />
         <Route path="/conv/:conversationId" element={<WorkspacePage />} />

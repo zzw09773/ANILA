@@ -2,21 +2,24 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { login as loginApi, refreshTokenApi, getMe, logout as logoutApi } from '../api/auth'
 import { loginWithCard as runCardLogin } from '../api/caAuth'
+import { loginHref } from '../utils/appOrigins'
 
-// Sprint 5 X / H5: cookie-only auth store. Tokens 不再進 localStorage —
-// 認證狀態由 backend 設的 httpOnly cookie 決定，前端只記住目前登入的
-// User 物件（用 /api/auth/me 重新確認）。瀏覽器重啟後第一次讀 user 會
-// 觸發 /me；若 cookie 失效就回登入頁。
+// Cookie-only auth store. Tokens stay in httpOnly cookies; the SPA only
+// remembers the current User from GET /api/auth/me.
+//
+// Session restore is single-flight + epoch-guarded: two overlapping /me
+// calls (store bootstrap vs router guard vs 401 retry) used to race, and
+// the loser could overwrite a good user with null — testers saw the role
+// flip between developer / user / admin on refresh.
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
   const initialized = ref(false)
 
+  let fetchEpoch = 0
+  let fetchInFlight = null
+  let refreshInFlight = null
+
   const isAuthenticated = computed(() => !!user.value)
-  // Tier hierarchy (high → low): owner > admin > developer ≈ user.
-  // ``isAdmin`` is admin-OR-above (matches backend's ``require_admin``,
-  // which accepts both 'admin' and 'owner'). Owner-only UI gates on
-  // ``isOwner`` directly — e.g. revealing model endpoint URLs / raw
-  // audit log fields, or the auth-provider config form.
   const isOwner = computed(() => user.value?.role === 'owner')
   const isAdmin = computed(() =>
     user.value?.role === 'admin' || user.value?.role === 'owner',
@@ -26,56 +29,78 @@ export const useAuthStore = defineStore('auth', () => {
     || user.value?.role === 'admin'
     || user.value?.role === 'owner',
   )
+  const isRegularUser = computed(() =>
+    !!user.value && !isDeveloper.value,
+  )
 
   async function login(username, password, extra = {}) {
-    // 後端 set cookies；body 仍帶 token 是給 SDK 用的，SPA 不再儲存。
     await loginApi(username, password, extra)
-    await fetchUser()
+    await fetchUser({ force: true })
   }
 
-  // branch SSO: 中科院憑證卡登入。
-  // challenge → popup sign (中華電信本機元件) → verify (cookies 由 backend 種)。
-  // 回傳 ``runCardLogin`` 的 result：
-  //   { status: 'ok' } → 已登入，caller 應 fetchUser + redirect
-  //   { status: 'pending_registration', registration_token, ... } → 顯示填單位表單
-  //   { status: 'pending_approval', ... } → 顯示等待核准訊息
-  // 任一階段密碼學失敗 (PIN 錯、簽章錯) 仍然 throw，callsite UI 負責 catch。
   async function loginWithCard({ pin, componentOrigin } = {}) {
     const result = await runCardLogin({ pin, componentOrigin })
     if (result.status === 'ok') {
-      await fetchUser()
+      await fetchUser({ force: true })
     }
     return result
   }
 
   async function refreshToken() {
-    // 後端從 anila_refresh_token cookie 取 token；不需傳 body。
-    await refreshTokenApi()
+    if (refreshInFlight) return refreshInFlight
+    refreshInFlight = refreshTokenApi()
+      .finally(() => {
+        refreshInFlight = null
+      })
+    return refreshInFlight
   }
 
-  async function fetchUser() {
+  async function fetchUser(options = {}) {
+    const force = Boolean(options.force)
+    if (fetchInFlight && !force) return fetchInFlight
+
+    const epoch = ++fetchEpoch
+    const pending = (async () => {
+      try {
+        const { data } = await getMe()
+        if (epoch !== fetchEpoch) return
+        user.value = data
+      } catch {
+        if (epoch !== fetchEpoch) return
+        user.value = null
+      } finally {
+        if (epoch === fetchEpoch) {
+          initialized.value = true
+        }
+      }
+    })()
+
+    fetchInFlight = pending
     try {
-      const { data } = await getMe()
-      user.value = data
-    } catch {
-      user.value = null
+      await pending
     } finally {
-      initialized.value = true
+      if (fetchInFlight === pending) fetchInFlight = null
     }
   }
 
   async function logout() {
+    fetchEpoch += 1
+    fetchInFlight = null
+    // Clear what the user can see before waiting on the network. The server
+    // call below invalidates httpOnly cookies; the immediate local reset keeps
+    // metrics and privileged chrome from surviving during a slow request.
+    user.value = null
+    initialized.value = true
     try {
       await logoutApi()
     } catch {
-      // 後端 logout 失敗也要清前端狀態，避免使用者卡在 ghost session。
+      // Backend logout failure must not leave a ghost session on screen.
     }
-    user.value = null
   }
 
-  // 在第一次取用 store 時嘗試載入 /me：cookie 還在 → 自動還原 user；
-  // 不在 → user 為 null，路由守衛會把使用者送去 /login。
-  fetchUser()
+  function hardRedirectToLogin() {
+    window.location.replace(loginHref())
+  }
 
   return {
     user,
@@ -84,10 +109,12 @@ export const useAuthStore = defineStore('auth', () => {
     isOwner,
     isAdmin,
     isDeveloper,
+    isRegularUser,
     login,
     loginWithCard,
     refreshToken,
     fetchUser,
     logout,
+    hardRedirectToLogin,
   }
 })

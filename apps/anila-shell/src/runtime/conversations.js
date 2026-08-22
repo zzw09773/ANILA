@@ -255,7 +255,7 @@ export function updateMessage(authRequest, convId, messageId, patch) {
     method: "PUT",
     body: JSON.stringify(body),
   };
-  // 視窗卸載途中送出的「標記為中斷」需要 keepalive,否則瀏覽器會直接
+  // 視窗關閉途中送出的「標記為中斷」需要 keepalive,否則瀏覽器會直接
   // 取消這個請求。一般呼叫不帶。
   if (patch.keepalive) options.keepalive = true;
   return authRequest(`/api/conversations/${convId}/messages/${messageId}`, options);

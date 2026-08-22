@@ -1,11 +1,10 @@
 /**
- * ANILA LM 暫時關閉閘門（本 release 給高層預覽用）。
+ * 我的知識庫／產出中心發布閘門。
  *
- * 重開：把 ANILA_LM_LINK_VISIBLE 改成 true，並依
- * docs/runbooks/anilalm-release-gate.md 一併打開 nginx / shell。
- * 治理中心採「不顯示」而非停用列 — 管理員不該看到一扇關著的門。
+ * 2026-08-22 review-pass 起開啟；關閉／重開程序見
+ * docs/runbooks/anilalm-release-gate.md。
  */
-export const ANILA_LM_LINK_VISIBLE = false
+export const ANILA_LM_LINK_VISIBLE = true
 
 /** 辨識平台連結／服務登記裡的 ANILA LM 入口。 */
 export function isAnilaLmPlatformLink(link) {

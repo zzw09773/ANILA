@@ -17,8 +17,8 @@ interface ThemeContextValue {
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
-  theme: 'dark',
-  t: TOKENS.dark,
+  theme: 'light',
+  t: TOKENS.light,
   toggle: () => {},
   setTheme: () => {},
 })
@@ -26,9 +26,9 @@ const ThemeContext = createContext<ThemeContextValue>({
 const STORAGE_KEY = 'anilalm:theme'
 
 const loadStoredTheme = (): ThemeName => {
-  if (typeof window === 'undefined') return 'dark'
+  if (typeof window === 'undefined') return 'light'
   const v = window.localStorage.getItem(STORAGE_KEY)
-  return v === 'light' || v === 'dark' ? v : 'dark'
+  return v === 'light' || v === 'dark' ? v : 'light'
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

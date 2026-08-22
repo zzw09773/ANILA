@@ -4,8 +4,7 @@
       <div>
         <h1 class="page-head__title">分類盤點</h1>
         <p class="page-head__sub">
-          切換四級分類前的資源盤點快照。「不一致」= 舊 latch 為真但等級仍低於「密」,
-          backfill 完成後應為 0。
+          列出各資源目前的分類等級。若「不一致」不是 0，代表舊密等標記與現行等級不符，請匯出清單交由權責人處理。
         </p>
       </div>
       <span class="cell-meta" v-if="generatedAt">產生於 {{ formatDate(generatedAt) }}</span>
@@ -19,13 +18,18 @@
       <span class="cell-meta">{{ resources.length }} 個資源類型</span>
     </div>
 
+    <p v-if="inconsistentTotal" class="feedback is-warn">
+      有 {{ inconsistentTotal }} 筆舊密等標記與現行等級不符。請先匯出清單，
+      由密等權責人確認資料歸屬後再處理，系統不會自行變更密等。
+    </p>
+
     <TermBox title="盤點" pad="none" flush>
       <table class="term-table">
         <thead>
           <tr>
             <th>資源類型</th>
             <th v-for="level in LEVELS" :key="level" class="num">{{ level }}</th>
-            <th class="num">已閂鎖</th>
+            <th class="num">已鎖定</th>
             <th class="num">不一致</th>
             <th class="num">總計</th>
           </tr>
@@ -57,7 +61,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { extractError } from '../api/errors'
 import {
   getClassificationInventory,
@@ -73,6 +77,9 @@ const resources = ref([])
 const generatedAt = ref('')
 const pageError = ref('')
 const downloading = ref(false)
+const inconsistentTotal = computed(() =>
+  resources.value.reduce((sum, row) => sum + (row.inconsistent || 0), 0),
+)
 
 async function fetchInventory() {
   pageError.value = ''
@@ -116,6 +123,7 @@ onMounted(fetchInventory)
 
 .feedback { font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
 .feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+.feedback.is-warn { color: var(--c-warn); border-color: var(--c-warn); background: var(--c-warn-soft); }
 
 .toolbar { display: flex; align-items: center; gap: var(--gap-3); flex-wrap: wrap; }
 

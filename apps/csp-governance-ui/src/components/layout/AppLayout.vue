@@ -4,10 +4,8 @@
     <div class="shell__body">
       <AppSidebar />
       <main class="shell__main">
-        <router-view v-slot="{ Component }">
-          <transition name="shell-page" mode="out-in">
-            <component :is="Component" />
-          </transition>
+        <router-view v-slot="{ Component, route: viewRoute }">
+          <component :is="Component" :key="viewRoute.fullPath" />
         </router-view>
       </main>
     </div>
@@ -53,12 +51,4 @@ import AppStatusBar from './AppStatusBar.vue'
   }
 }
 
-.shell-page-enter-active,
-.shell-page-leave-active {
-  transition: opacity var(--motion) var(--easing);
-}
-.shell-page-enter-from,
-.shell-page-leave-to {
-  opacity: 0;
-}
 </style>

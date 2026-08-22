@@ -11,11 +11,12 @@ import { listSharedConversations } from '../api/conversations'
 import { explainError } from '../api/client'
 import type { Collection, Conversation } from '../types'
 import { Icon } from '../components/Icon'
-import { ThemeSwitch } from '../components/ThemeSwitch'
 import { Field } from '../components/Field'
 import { Spinner } from '../components/Spinner'
 import { Modal } from '../components/Modal'
+import { ProductHeader } from '../components/ProductHeader'
 import { accentForId, shortName, timeAgo } from '../utils/format'
+import { loginHref } from '../appOrigins'
 
 const PINNED_KEY = 'anilalm:pinnedCollectionIds'
 
@@ -47,6 +48,11 @@ export function DashboardPage() {
   const [pinned, setPinned] = useState<Set<number>>(() => loadPinned())
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<number | null>(null)
+
+  const handleLogout = async () => {
+    await logout()
+    window.location.replace(loginHref())
+  }
 
   const reload = useCallback(async () => {
     setErr(null)
@@ -132,96 +138,11 @@ export function DashboardPage() {
         flexDirection: 'column',
       }}
     >
-      {/* Topbar */}
-      <header
-        style={{
-          height: 60,
-          padding: '0 32px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          borderBottom: `1px solid ${t.border}`,
-          background: t.surface,
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 7,
-              background: t.accent,
-              display: 'grid',
-              placeItems: 'center',
-              color: '#fff',
-            }}
-          >
-            <Icon name="book" size={16} stroke="#fff" />
-          </div>
-          <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: -0.2 }}>ANILA LM</div>
-          <div
-            style={{
-              marginLeft: 8,
-              padding: '2px 8px',
-              fontSize: 11,
-              fontWeight: 500,
-              color: t.textMuted,
-              border: `1px solid ${t.border}`,
-              borderRadius: 999,
-            }}
-          >
-            v0.1.0
-          </div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <ThemeSwitch />
-          <button
-            onClick={() => logout()}
-            title="登出"
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              border: `1px solid ${t.border}`,
-              background: t.surface,
-              display: 'grid',
-              placeItems: 'center',
-              cursor: 'pointer',
-            }}
-          >
-            <Icon name="logout" size={15} stroke={t.textMuted} />
-          </button>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '5px 10px 5px 5px',
-              background: t.surface2,
-              border: `1px solid ${t.border}`,
-              borderRadius: 999,
-            }}
-          >
-            <div
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: '50%',
-                background: t.accent,
-                color: '#fff',
-                display: 'grid',
-                placeItems: 'center',
-                fontSize: 11,
-                fontWeight: 600,
-              }}
-            >
-              {(user?.username ?? '?').slice(0, 1).toUpperCase()}
-            </div>
-            <span style={{ fontSize: 12, color: t.text }}>{user?.username ?? '訪客'}</span>
-          </div>
-        </div>
-      </header>
+      <ProductHeader
+        active="knowledge"
+        user={user}
+        onLogout={() => void handleLogout()}
+      />
 
       {/* Main */}
       <main style={{ flex: 1, padding: '40px 64px', overflow: 'auto' }}>
@@ -239,21 +160,20 @@ export function DashboardPage() {
             <div
               style={{
                 fontSize: 12,
-                fontWeight: 500,
+                fontWeight: 600,
                 color: t.accent,
                 marginBottom: 8,
-                textTransform: 'uppercase',
-                letterSpacing: 1,
+                letterSpacing: 0.2,
               }}
             >
-              Workspace
+              我的知識庫
             </div>
             <h1 style={{ fontSize: 32, fontWeight: 600, letterSpacing: -0.8, margin: 0 }}>
-              你的知識庫
+              整理你的知識資料
             </h1>
             <p style={{ color: t.textMuted, fontSize: 14, margin: '6px 0 0' }}>
               {collections.length} 個 · 共{' '}
-              {collections.reduce((acc, c) => acc + c.document_count, 0)} 份文件
+              {collections.reduce((acc, c) => acc + c.document_count, 0)} 份資料
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -348,7 +268,7 @@ export function DashboardPage() {
                   <div style={{ fontSize: 14, fontWeight: 500 }}>{c.title}</div>
                   <div style={{ fontSize: 12, color: t.textMuted, marginTop: 4 }}>
                     {c.collection_id != null
-                      ? '唯讀分享 · 不含該知識庫的文件'
+                      ? '唯讀分享 · 不含該知識庫的資料'
                       : '唯讀分享'}
                   </div>
                 </button>
@@ -448,7 +368,7 @@ export function DashboardPage() {
                 <Icon name="plus" size={20} stroke={t.accent} />
               </div>
               <div style={{ fontWeight: 500, color: t.text, fontSize: 14 }}>新建知識庫</div>
-              <div style={{ fontSize: 12 }}>從上傳文件或網頁開始</div>
+              <div style={{ fontSize: 12 }}>從上傳檔案或網頁開始</div>
             </button>
 
             {filtered.map((c) => (
@@ -482,7 +402,7 @@ export function DashboardPage() {
             刪除這個知識庫？
           </div>
           <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5, marginBottom: 18 }}>
-            所有文件與向量都會跟著被清掉,無法復原。
+            所有資料與索引都會一起刪除，無法復原。
           </div>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
             <button

@@ -2,7 +2,7 @@ import csv
 import io
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -42,11 +42,15 @@ def _one_physical_line(value) -> str:
 
 @router.get("", response_model=list[AuditLogResponse])
 def list_audit_logs(
+    response: Response,
     action: str | None = None,
     resource_type: str | None = None,
     actor_username: str | None = None,
-    status: str | None = Query(None, regex="^(success|failure)$"),
+    status: str | None = Query(None, pattern="^(success|failure)$"),
+    since: datetime | None = Query(None, description="起始時間（含）"),
+    until: datetime | None = Query(None, description="結束時間（含）"),
     limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -59,9 +63,15 @@ def list_audit_logs(
         query = query.filter(AuditLog.actor_username == actor_username)
     if status:
         query = query.filter(AuditLog.status == status)
+    if since is not None:
+        query = query.filter(AuditLog.created_at >= since)
+    if until is not None:
+        query = query.filter(AuditLog.created_at <= until)
+    total = query.count()
+    response.headers["X-Total-Count"] = str(total)
     return [
         serialize_audit_log(log, caller=admin, db=db)
-        for log in query.limit(limit).all()
+        for log in query.offset(offset).limit(limit).all()
     ]
 
 

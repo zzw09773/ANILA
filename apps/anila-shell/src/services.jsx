@@ -366,7 +366,7 @@ export function ServicesPanel({ open, onClose, request = authRequest, toast }) {
           <div>
             <div style={{ fontSize: 15, fontWeight: 600 }}>專案入口</div>
             <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 2 }}>
-              由平台治理中心註冊、依你的權限開放的服務
+              由系統管理註冊、依你的權限開放的服務
             </div>
           </div>
           <div style={{ flex: 1 }} />

@@ -1,15 +1,6 @@
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
-import router from '../router'
-
-// Sprint 5 X / H5: 全面改走 backend 既有的 httpOnly cookie 流程，停止把
-// access / refresh token 寫進 localStorage（XSS 即洩漏的 7 天 refresh
-// token）。後端在 /api/auth/login + /refresh + OIDC callback 都已 set
-// `anila_access_token` (httpOnly) / `anila_refresh_token` (httpOnly,
-// path=/api/auth/refresh) / `anila_csrf` (non-httpOnly, double-submit
-// CSRF) 三個 cookie；前端只要：
-//   1. 開啟 withCredentials 讓瀏覽器自動帶 cookie
-//   2. mutating request 從 anila_csrf cookie 讀值並 echo 到 X-CSRF-Token
+import { loginHref } from '../utils/appOrigins'
 
 const CSRF_COOKIE_NAME = 'anila_csrf'
 const CSRF_HEADER_NAME = 'X-CSRF-Token'
@@ -32,13 +23,9 @@ const client = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  // 讓瀏覽器在 same-origin / 已設 Access-Control-Allow-Credentials 的
-  // 跨來源請求中自動帶 cookie。後端 ALLOWED_ORIGINS 已限制可用來源。
   withCredentials: true,
 })
 
-// Request interceptor: 不再附 Authorization header（cookie 自動帶）；
-// 對 mutating 請求補 CSRF header。
 client.interceptors.request.use((config) => {
   const method = (config.method || 'get').toUpperCase()
   if (!SAFE_METHODS.has(method)) {
@@ -50,22 +37,17 @@ client.interceptors.request.use((config) => {
   return config
 })
 
-// Response interceptor: 401 → 嘗試 refresh（cookie 流程不需要 body 傳
-// refresh_token，後端會從 anila_refresh_token cookie 讀）。
-//
-// 三條「不 retry」白名單避免 infinite loop / 不必要的 redirect：
-//   - /api/auth/refresh 本身 401：cookie 已死，重試只會再 401，每次新
-//     request 都是新 config object，``_retry`` flag 跨不過去。會造成無限
-//     遞迴直到後端 rate-limit 回 503。直接 reject 讓 caller 處理。
-//   - /api/auth/login / /card/verify 401：是「credential 錯」，refresh
-//     沒意義。
-//   - 已在 /login 頁：再 router.push('/login') 也沒影響，但會觸發
-//     redundant navigation lifecycle，浪費。
 const NO_RETRY_PATHS = [
   '/api/auth/refresh',
   '/api/auth/login',
+  '/api/auth/logout',
   '/api/auth/card/verify',
 ]
+
+function onLoginSurface() {
+  return window.location.pathname === '/login'
+    || window.location.pathname.endsWith('/login')
+}
 
 client.interceptors.response.use(
   (response) => response,
@@ -84,14 +66,9 @@ client.interceptors.response.use(
         await authStore.refreshToken()
         return client(originalRequest)
       } catch {
-        authStore.logout()
-        // During the initial /login navigation, currentRoute can still be the
-        // previous route while /me/refresh fails. Check the browser URL too so
-        // this fallback does not replace /login?show_alternatives=1 with a
-        // bare /login before the login route receives its query.
-        if (router.currentRoute.value?.path !== '/login'
-          && window.location.pathname !== '/login') {
-          router.push('/login')
+        await authStore.logout()
+        if (!onLoginSurface()) {
+          window.location.replace(loginHref())
         }
         return Promise.reject(error)
       }

@@ -15,6 +15,7 @@ import { Modal } from '../components/Modal'
 import { Spinner } from '../components/Spinner'
 import { formatBytes, shortName, timeAgo } from '../utils/format'
 import { INGESTION_FILE_ACCEPT } from '../utils/ingestionFileAccept'
+import { loginHref } from '../appOrigins'
 
 const STATUS_LABELS: Record<string, string> = {
   pending: '排隊中',
@@ -52,6 +53,11 @@ export function WSSidebar() {
     { id: number; filename: string } | null
   >(null)
   const [pendingDeleteConv, setPendingDeleteConv] = useState<number | null>(null)
+
+  const handleLogout = async () => {
+    await logout()
+    window.location.replace(loginHref())
+  }
 
   const onPickFiles = () => fileRef.current?.click()
 
@@ -170,7 +176,7 @@ export function WSSidebar() {
         >
           <button
             onClick={() => navigate('/')}
-            title="回到 Dashboard"
+            title="回到我的知識庫"
             style={{
               width: 28,
               height: 28,
@@ -189,12 +195,12 @@ export function WSSidebar() {
               width: 26,
               height: 26,
               borderRadius: 7,
-              background: '#7C7BFF22',
+              background: t.accentSoft,
               display: 'grid',
               placeItems: 'center',
             }}
           >
-            <Icon name="folder" size={14} stroke="#7C7BFF" />
+            <Icon name="folder" size={14} stroke={t.accent} />
           </div>
           <div
             style={{
@@ -308,7 +314,7 @@ export function WSSidebar() {
             </>
           ) : (
             <>
-              <Icon name="upload" size={13} stroke={t.textMuted} /> 上傳文件
+              <Icon name="upload" size={13} stroke={t.textMuted} /> 上傳檔案
             </>
           )}
         </button>
@@ -331,8 +337,8 @@ export function WSSidebar() {
               }}
             >
               {collection
-                ? '還沒有文件 · 從上方上傳'
-                : '沒有這個知識庫的存取權，文件不會出現'}
+                ? '還沒有資料，請從上方上傳'
+                : '你沒有這個知識庫的存取權，因此不會顯示資料'}
             </div>
           )}
           {docs.map((d) => {
@@ -457,7 +463,7 @@ export function WSSidebar() {
                     e.stopPropagation()
                     setPendingDeleteDoc({ id: d.doc.id, filename: d.doc.filename })
                   }}
-                  title="刪除文件"
+                  title="刪除檔案"
                   // Hidden by default, revealed on row hover via the
                   // ``.anila-doc-row:hover button`` CSS rule injected in
                   // index.html (or here via inline style on parent's
@@ -654,10 +660,10 @@ export function WSSidebar() {
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 500 }}>{user?.username ?? '訪客'}</div>
-          <div style={{ fontSize: 10.5, color: t.textSubtle }}>{user?.role ?? ''}</div>
+          <div style={{ fontSize: 10.5, color: t.textSubtle }}>我的知識庫</div>
         </div>
         <button
-          onClick={() => logout()}
+          onClick={() => void handleLogout()}
           title="登出"
           style={{
             width: 28,
@@ -678,12 +684,12 @@ export function WSSidebar() {
       <Modal
         open={pendingDeleteDoc !== null}
         onClose={() => setPendingDeleteDoc(null)}
-        ariaLabel="刪除文件確認"
+        ariaLabel="刪除檔案確認"
         width={400}
       >
         <div style={{ padding: 22 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: t.text, marginBottom: 8 }}>
-            刪除這份文件？
+            刪除這份檔案？
           </div>
           <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5, marginBottom: 18 }}>
             「{pendingDeleteDoc?.filename}」的 chunks 跟向量會一起被清掉,無法復原。

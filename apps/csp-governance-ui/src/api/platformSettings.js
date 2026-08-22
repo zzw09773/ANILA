@@ -9,6 +9,6 @@ export const getPlatformSettingsOverview = () =>
 // 單顆寫入。回應**就是**那一顆的整列（含改完之後的 effective），
 // 所以呼叫端拿回應整列取代，不要自己拼一列出來。
 //
-// ⚠ 送的是使用者原原本本打的那個字串；解析與值域由後端登錄表負責。
+// ⚠ 送的是使用者原原本本打的那個字串；解析與值域由後端註冊表負責。
 export const updatePlatformSetting = (key, value) =>
   client.put(`/api/platform-settings/${encodeURIComponent(key)}`, { value })

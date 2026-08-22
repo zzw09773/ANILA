@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>ANILA</title>
+<title>ANILA · 任務中心</title>
 <!-- Fonts intentionally NOT loaded from Google CDN — outer nginx ships a
      strict CSP (`style-src 'self' 'unsafe-inline'; font-src 'self' data:`)
      that forbids external stylesheet sources, and on-prem deploys may be
@@ -16,7 +16,7 @@
 <script>
   // ---- Tweak defaults (host may rewrite this block) ----
   window.ANILA_TWEAKS = /*EDITMODE-BEGIN*/{
-    "accent": "#a05a2c",
+    "accent": "#2b4c7e",
     "dark": false,
     "density": 18,
     "sansFamily": "Noto Sans TC",
@@ -28,21 +28,21 @@
 
 <style>
   :root {
-    --bg:            oklch(0.985 0.002 90);
-    --bg-elev:       oklch(1 0 0);
-    --bg-subtle:     oklch(0.965 0.003 90);
-    --fg:            oklch(0.18 0.005 270);
-    --fg-muted:      oklch(0.48 0.005 270);
+    --bg:            #f7f8fa;
+    --bg-elev:       #ffffff;
+    --bg-subtle:     #eef1f5;
+    --fg:            #1b2230;
+    --fg-muted:      #48505f;
     /* WCAG AA: darkened so subtle/status text clears 4.5:1 on --bg*. */
-    --fg-subtle:     oklch(0.54 0.005 270);
-    --border:        oklch(0.91 0.004 270);
-    --border-strong: oklch(0.85 0.005 270);
-    --accent:        #0b7285;
+    --fg-subtle:     #686f7e;
+    --border:        #dfe3ea;
+    --border-strong: #c3cad6;
+    --accent:        #2b4c7e;
     --accent-fg:     #ffffff;
-    --accent-soft:   oklch(0.95 0.02 200);
-    --danger:        oklch(0.55 0.18 25);
-    --warn:          oklch(0.55 0.14 75);
-    --success:       oklch(0.54 0.10 150);
+    --accent-soft:   rgba(43, 76, 126, 0.08);
+    --danger:        #b03636;
+    --warn:          #9a6619;
+    --success:       #2c7a54;
 
     --radius-sm: 4px;
     --radius:    6px;
@@ -59,23 +59,23 @@
   }
 
   [data-theme="dark"] {
-    --bg:            oklch(0.16 0.004 270);
-    --bg-elev:       oklch(0.20 0.004 270);
-    --bg-subtle:     oklch(0.22 0.004 270);
-    --fg:            oklch(0.96 0.003 90);
-    --fg-muted:      oklch(0.72 0.005 270);
+    --bg:            #161a22;
+    --bg-elev:       #1c212b;
+    --bg-subtle:     #232936;
+    --fg:            #dbe1ec;
+    --fg-muted:      #9aa3b4;
     /* WCAG AA: lighten subtle; dark accent/danger from light fail on dark bg,
        so override status colours here. Accent fill uses dark --accent-fg
        (white-on-light-teal cannot clear AA on this near-black bg). */
-    --fg-subtle:     oklch(0.62 0.005 270);
-    --border:        oklch(0.28 0.005 270);
-    --border-strong: oklch(0.36 0.005 270);
-    --accent:        oklch(0.62 0.09 200);
-    --accent-fg:     #0a1214;
-    --accent-soft:   oklch(0.30 0.04 200);
-    --danger:        oklch(0.65 0.16 25);
-    --warn:          oklch(0.78 0.12 75);
-    --success:       oklch(0.72 0.10 150);
+    --fg-subtle:     #828a98;
+    --border:        #2a303c;
+    --border-strong: #3a4353;
+    --accent:        #6f8fc2;
+    --accent-fg:     #10131a;
+    --accent-soft:   rgba(111, 143, 194, 0.12);
+    --danger:        #d67a82;
+    --warn:          #d6a95f;
+    --success:       #6bbf8f;
   }
 
   * { box-sizing: border-box; }

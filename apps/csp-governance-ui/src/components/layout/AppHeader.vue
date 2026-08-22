@@ -1,17 +1,13 @@
 <template>
   <header class="topbar">
     <div class="topbar__left">
-      <TermLogo :size="14" subtitle="治理中心" />
-      <span class="topbar__rule">│</span>
+      <TermLogo :size="16" subtitle="系統管理" />
       <span class="topbar__path">
         <span class="topbar__path-segment">{{ currentSegment }}</span>
       </span>
     </div>
 
     <div class="topbar__right">
-      <span class="topbar__hints">
-        <span class="topbar__hint"><TermKbd>?</TermKbd> 快速鍵</span>
-      </span>
       <button
         class="topbar__theme"
         type="button"
@@ -20,15 +16,13 @@
         @click="toggleTheme"
       >
         <span class="topbar__theme-icon">{{ theme === 'dark' ? '◐' : '◑' }}</span>
-        <span class="topbar__theme-label">{{ theme }}</span>
+        <span class="topbar__theme-label">{{ theme === 'dark' ? '深色' : '淺色' }}</span>
       </button>
 
-      <span class="topbar__rule">│</span>
-
       <span class="topbar__user">
-        <span class="topbar__user-name">{{ authStore.user?.username || 'guest' }}</span>
+        <span class="topbar__user-name">{{ authStore.user?.username || '未登入' }}</span>
         <span class="topbar__user-role" :class="`is-${authStore.user?.role || 'user'}`">
-          @{{ authStore.user?.role || 'guest' }}
+          {{ roleLabel }}
         </span>
       </span>
 
@@ -84,49 +78,62 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { changePassword } from '../../api/auth'
 import { useTheme } from '../../composables/useTheme'
 import TermLogo from '../cli/TermLogo.vue'
-import TermKbd from '../cli/TermKbd.vue'
 import TermModal from '../cli/TermModal.vue'
 import TermField from '../cli/TermField.vue'
 import TermButton from '../cli/TermButton.vue'
 import { extractError } from '../../api/errors'
+import { loginHref } from '../../utils/appOrigins'
 
 const route = useRoute()
-const router = useRouter()
 const authStore = useAuthStore()
 const { theme, toggleTheme } = useTheme()
 
 const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
 
 const segmentMap = {
-  '/': '/dashboard',
-  '/api-keys': '/api-keys',
-  '/models': '/models',
-  '/usage': '/usage',
-  '/users': '/admin/users',
-  '/departments': '/admin/departments',
-  '/alerts': '/admin/alerts',
-  '/feedback': '/admin/feedback',
-  '/audit-logs': '/admin/audit',
-  '/platform-links': '/admin/platform-links',
-  '/service-access': '/admin/service-access',
-  '/developer/guide': '/dev/guide',
-  '/developer/agents': '/dev/agents',
-  '/knowledge-collections': '/dev/collections',
+  '/keys': 'API 金鑰',
+  '/models': '模型',
+  '/usage': '用量',
+  '/users': '使用者',
+  '/departments': '部門',
+  '/alerts': '警報',
+  '/feedback': '使用者回饋',
+  '/audit': '稽核紀錄',
+  '/audit-logs': '稽核紀錄',
+  '/banners': '公告橫幅',
+  '/platform-settings': '平台設定',
+  '/platform-links': '平台連結',
+  '/service-access': '服務存取',
+  '/developer/guide': '開發指南',
+  '/developer/agents': '助手',
+  '/knowledge-collections': '知識庫',
+  '/message-actions': '自訂動作',
+  '/classification-inventory': '分類盤點',
+  '/service-clients': '服務客戶端',
+  '/trusted-hosts': '信任主機',
+  '/forbidden': '沒有權限',
 }
 const currentSegment = computed(() => {
+  if (route.path === '/') return authStore.isRegularUser ? '工作臺' : '總覽'
   if (segmentMap[route.path]) return segmentMap[route.path]
   if (route.path.startsWith('/knowledge-collections/')) {
-    return route.path.endsWith('/evaluator')
-      ? '/dev/collections/evaluator'
-      : '/dev/collections/detail'
+    return route.path.endsWith('/evaluator') ? '知識庫評估' : '知識庫內容'
   }
-  return route.path
+  return route.meta?.title || '系統管理'
 })
+
+const ROLE_LABEL = {
+  owner: '擁有者',
+  admin: '管理員',
+  developer: '開發者',
+  user: '使用者',
+}
+const roleLabel = computed(() => ROLE_LABEL[authStore.user?.role] || '')
 
 const showChangePwModal = ref(false)
 const pw = ref({ current: '', new: '', confirm: '' })
@@ -163,9 +170,9 @@ async function handleChangePassword() {
   try {
     await changePassword(pw.value.current, pw.value.new)
     pwSuccess.value = '密碼已更新 — 需重新登入'
-    setTimeout(() => {
-      authStore.logout()
-      router.push('/login')
+    setTimeout(async () => {
+      await authStore.logout()
+      window.location.replace(loginHref())
     }, 1500)
   } catch (e) {
     pwError.value = extractError(e, '更新失敗')
@@ -174,9 +181,9 @@ async function handleChangePassword() {
   }
 }
 
-function handleLogout() {
-  authStore.logout()
-  router.push('/login')
+async function handleLogout() {
+  await authStore.logout()
+  window.location.replace(loginHref())
 }
 </script>
 
@@ -211,7 +218,7 @@ function handleLogout() {
 .topbar__path {
   display: inline-flex;
   align-items: center;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -249,8 +256,8 @@ function handleLogout() {
   padding: 0 8px;
   border-radius: var(--r-soft);
   font-size: var(--t-2xs);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-transform: none;
   cursor: pointer;
   transition: color var(--motion-fast), border-color var(--motion-fast), background-color var(--motion-fast);
 }
@@ -271,8 +278,8 @@ function handleLogout() {
 .topbar__user-role {
   color: var(--c-fg-3);
   font-size: var(--t-2xs);
-  letter-spacing: 0.05em;
-  text-transform: lowercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 .topbar__user-role.is-owner     { color: var(--c-danger); font-weight: 600; }
 .topbar__user-role.is-admin     { color: var(--c-warn); }
@@ -287,8 +294,7 @@ function handleLogout() {
   font-size: var(--t-xs);
   cursor: pointer;
   padding: 0;
-  letter-spacing: 0.05em;
-  text-transform: lowercase;
+  letter-spacing: 0;
   transition: color var(--motion-fast);
 }
 .topbar__action:hover { color: var(--c-accent); }

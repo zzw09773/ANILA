@@ -7,6 +7,7 @@ import {
   readCsrfCookie,
   refreshJwt,
 } from "./api.js";
+import { loginHref } from "../appOrigins.js";
 
 // Wave 2: the SPA holds no tokens — JWT access/refresh live in httpOnly
 // cookies set by POST /api/auth/login. The only piece of auth state kept
@@ -54,14 +55,18 @@ export function AuthProvider({ children }) {
   }, []);
 
   async function logout() {
-    // Best-effort server-side invalidation. If it fails (network), we still
-    // drop local state so the UI immediately reflects the signed-out view.
+    // Drop privileged UI immediately, then invalidate the httpOnly cookies.
+    // Bound the wait so a broken network cannot strand the user on metrics.
+    setUser(null);
     try {
-      await authRequest("/api/auth/logout", { method: "POST" });
+      const request = authRequest("/api/auth/logout", { method: "POST" });
+      await Promise.race([
+        request,
+        new Promise((resolve) => window.setTimeout(resolve, 4000)),
+      ]);
     } catch {
       // swallow — see comment above
     }
-    setUser(null);
   }
 
   const isAuthenticated = user !== null;
@@ -100,10 +105,6 @@ export function useLogoutRedirect() {
   const { logout } = useAuth();
   return async () => {
     await logout();
-    // /login 是 myCSPPlatform 的 LoginView,不在本 SPA 路由表內 — 必須整頁
-    // 跳轉(同 main.jsx RequireAuth 的做法)。原本的 navigate("/login") 只會
-    // 在 SPA 內導去不存在的路由;basename=/anila 之後更會變 /anila/login。
-    const loginOrigin = `${window.location.protocol}//${window.location.hostname}`;
-    window.location.assign(`${loginOrigin}/login`);
+    window.location.replace(loginHref());
   };
 }

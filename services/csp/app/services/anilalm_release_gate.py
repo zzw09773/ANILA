@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""ANILA LM 暫時關閉閘門 —— 後端(API payload)這一面。
+"""我的知識庫／產出中心發布閘門 —— 後端(API payload)這一面。
 
 同一個閘門前端已經有兩份旗標:
 
   * ``apps/anila-shell/src/anilalmReleaseGate.js``       (shell 左側導覽)
   * ``apps/csp-governance-ui/src/utils/anilalmReleaseGate.js`` (治理中心儀表板)
 
-再加上 ``infra/nginx/anila.conf`` 的 ``~* ^/anilalm`` 503。三者擋的都是
-「瀏覽得到的門」,擋不到 **API 回應本身把 ANILA LM 列成一個可用服務** ——
+再加上 ``infra/nginx/anila.conf`` 的 canonical proxy。關閉時三者擋的都是
+「瀏覽得到的門」,仍擋不到 **API 回應本身把 ANILA LM 列成一個可用服務** ——
 shell 的「專案入口」抽屜就是照 ``GET /api/services`` 畫的,而任何人只要知道
 service id 就能打 ``POST /api/services/{id}/launch``。這份就是補那一面,
 不是第二套機制:旗標語意、命名、比對規則都與前端兩份對齊。
@@ -29,7 +29,8 @@ import re
 from typing import Any, Iterable
 
 # 與前端 ANILA_LM_ENTRY_ENABLED / ANILA_LM_LINK_VISIBLE 同語意的第四個開關。
-ANILA_LM_RELEASED = False
+# 2026-08-22 review-pass 起四面皆開啟。
+ANILA_LM_RELEASED = True
 
 # 與 anilalmReleaseGate.js 的 isAnilaLmPlatformLink 對齊的比對規則。
 _NAME_MATCHES = frozenset({"anila lm", "anilalm"})

@@ -2,31 +2,15 @@
   <footer class="statusbar">
     <span class="statusbar__cell">
       <TermDot :status="apiStatus" />
-      <span>api</span>
-      <span class="statusbar__val">{{ apiLabel }}</span>
+      <span>{{ apiLabel }}</span>
     </span>
-    <span class="statusbar__sep">│</span>
+    <span class="statusbar__sep" aria-hidden="true">·</span>
     <span class="statusbar__cell">
-      <span class="term-label">role</span>
-      <span class="statusbar__val">{{ authStore.user?.role || 'guest' }}</span>
-    </span>
-    <span class="statusbar__sep">│</span>
-    <span class="statusbar__cell">
-      <span class="term-label">path</span>
-      <span class="statusbar__val">{{ route.path }}</span>
+      <span>{{ pageLabel }}</span>
     </span>
 
     <span class="statusbar__spacer" />
 
-    <span class="statusbar__cell statusbar__cell--mute">
-      <span>theme:</span>
-      <span class="statusbar__val">{{ theme }}</span>
-    </span>
-    <span class="statusbar__sep">│</span>
-    <span class="statusbar__cell statusbar__cell--mute">
-      <span>build {{ buildId }}</span>
-    </span>
-    <span class="statusbar__sep">│</span>
     <span class="statusbar__cell statusbar__cell--mute tnum">
       {{ now }}
     </span>
@@ -37,22 +21,33 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { useTheme } from '../../composables/useTheme'
 import TermDot from '../cli/TermDot.vue'
 import client from '../../api/client'
 
 const route = useRoute()
 const authStore = useAuthStore()
-const { theme } = useTheme()
 
-// Live API health probe — pings /health every 30s. Status: ok | warn | danger.
 const apiStatus = ref('idle')
 const apiLatency = ref(null)
 const apiLabel = computed(() => {
-  if (apiStatus.value === 'ok') return `online · ${apiLatency.value}ms`
-  if (apiStatus.value === 'warn') return 'degraded'
-  if (apiStatus.value === 'danger') return 'offline'
-  return 'probing'
+  if (apiStatus.value === 'ok') return `服務正常 · ${apiLatency.value} 毫秒`
+  if (apiStatus.value === 'warn') return '服務較慢'
+  if (apiStatus.value === 'danger') return '服務中斷'
+  return '連線確認中'
+})
+
+const PAGE_LABEL = {
+  '/keys': 'API 金鑰',
+  '/models': '模型',
+  '/usage': '用量',
+  '/users': '使用者',
+  '/audit': '稽核紀錄',
+  '/developer/agents': '助手',
+  '/forbidden': '沒有權限',
+}
+const pageLabel = computed(() => {
+  if (route.path === '/') return authStore.isRegularUser ? '工作臺' : '總覽'
+  return PAGE_LABEL[route.path] || route.meta?.title || route.path.replace(/^\//, '') || '總覽'
 })
 
 let pollHandle = null
@@ -69,21 +64,16 @@ async function probeApi() {
   }
 }
 
-// Wall clock — UTC offset shown to anchor distributed-team review.
 const now = ref('')
 function refreshClock() {
-  const d = new Date()
-  const pad = (n) => String(n).padStart(2, '0')
-  now.value = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  now.value = new Date().toLocaleTimeString('zh-TW', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Taipei',
+  })
 }
-
-const buildId = computed(() => {
-  // Vite injects timestamps via import.meta.env in production; in dev fall back
-  // to a stable short hash of today's date so the bar isn't blank.
-  const env = import.meta.env
-  if (env?.VITE_BUILD_ID) return env.VITE_BUILD_ID
-  return env?.MODE === 'development' ? 'dev' : 'snapshot'
-})
 
 let clockHandle = null
 onMounted(() => {
@@ -109,7 +99,6 @@ onUnmounted(() => {
   border-top: var(--border-w) solid var(--c-border);
   font-size: var(--t-2xs);
   color: var(--c-fg-3);
-  letter-spacing: 0.05em;
   white-space: nowrap;
   overflow-x: auto;
 }
@@ -121,10 +110,6 @@ onUnmounted(() => {
   gap: 6px;
 }
 .statusbar__cell--mute { color: var(--c-fg-mute); }
-.statusbar__val {
-  color: var(--c-fg-1);
-  letter-spacing: 0.04em;
-}
 .statusbar__sep {
   color: var(--c-border-strong);
 }

@@ -2970,7 +2970,9 @@ export const Sidebar = ({
             }}>{(user?.username || "?").slice(0, 2).toUpperCase()}</div>
             <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
               <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.username}</div>
-              <div style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>runtime · {user?.role || "user"}</div>
+              <div style={{ fontSize: 10, color: "var(--fg-subtle)" }}>
+                {{ owner: "擁有者", admin: "管理員", developer: "開發者", user: "使用者" }[user?.role] || "使用者"}
+              </div>
             </div>
             <IconChevDown size={13} style={{ color: "var(--fg-muted)" }} />
           </button>

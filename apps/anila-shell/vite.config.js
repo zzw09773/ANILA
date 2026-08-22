@@ -14,8 +14,10 @@ export default defineConfig({
   // 代理到本機 CSP／mock 後端，做到同源請求（cookie + CSRF 自動帶）。
   // 慣例對齊 csp-governance-ui/vite.config.js。僅影響 `vite dev`，不進 build。
   server: {
+    port: 5175,
+    strictPort: true,
     proxy: {
-      "/api": { target: "http://localhost:8000", changeOrigin: true },
+      "^/api(?:/|$)": { target: "http://localhost:8000", changeOrigin: true },
       "/v1": { target: "http://localhost:8000", changeOrigin: true },
       "/v2": { target: "http://localhost:8000", changeOrigin: true },
     },

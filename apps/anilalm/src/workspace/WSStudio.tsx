@@ -360,7 +360,7 @@ export function WSStudio() {
             updateArtifact(collectionId, artifact.id, {
               state: 'failed',
               step: null,
-              error: '連線中斷過久，無法確認鑄造狀態。請重新鑄造。',
+              error: '連線中斷過久，無法確認產出狀態。請重新製作。',
               ...warningPatch({ source: 'none', message: null }),
             })
             const timerId = pollersRef.current.get(jobId)
@@ -462,7 +462,7 @@ export function WSStudio() {
           >
             <Icon name="sparkle" size={12} stroke={t.accent} />
           </div>
-          <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: -0.1 }}>製作台</div>
+          <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: -0.1 }}>產出中心</div>
           <span
             style={{
               fontSize: 10.5,
@@ -706,7 +706,7 @@ export function WSStudio() {
                       ? a.warning
                       : stepLabel(a.step ?? null)
                   } else if (isFailed) {
-                    meta = a.error || '鑄造失敗'
+                    meta = a.error || '產出失敗'
                   } else if (a.warning) {
                     meta = a.warning
                   } else if (a.kind === 'slides') {
@@ -821,7 +821,7 @@ export function WSStudio() {
                               }}
                             >
                               <Spinner size={9} color={t.accent} />
-                              鑄造中
+                              產出中
                             </span>
                           )}
                           {isPending && a.jobId && (

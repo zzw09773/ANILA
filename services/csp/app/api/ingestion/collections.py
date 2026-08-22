@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import NoReturn, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -271,6 +271,20 @@ def _abort_raise_rolled_back(
     ) from exc
 
 
+def _live_document_count(db: Session, collection_id: int) -> int:
+    return (
+        db.query(func.count(IngestionDocument.id))
+        .filter(IngestionDocument.collection_id == collection_id)
+        .scalar()
+        or 0
+    )
+
+
+def _collection_response(db: Session, coll: IngestionCollection) -> CollectionResponse:
+    payload = CollectionResponse.model_validate(coll)
+    return payload.model_copy(update={"document_count": _live_document_count(db, coll.id)})
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -371,7 +385,7 @@ def create_collection(
             "classification_level": level.to_storage(),
         },
     )
-    return CollectionResponse.model_validate(coll)
+    return _collection_response(db, coll)
 
 
 @router.get(
@@ -459,7 +473,7 @@ def list_collections(
             )
         )
     rows = q.order_by(IngestionCollection.id).all()
-    return [CollectionResponse.model_validate(r) for r in rows]
+    return [_collection_response(db, r) for r in rows]
 
 
 @router.get(
@@ -472,7 +486,7 @@ def get_collection(
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
     coll = _require_collection_access(db, current_user, collection_id)
-    return CollectionResponse.model_validate(coll)
+    return _collection_response(db, coll)
 
 
 @router.post(
@@ -688,7 +702,7 @@ def raise_collection_classification(
         _abort_raise_rolled_back(exc, collection_id, previous, target)
 
     db.refresh(coll)
-    return CollectionResponse.model_validate(coll)
+    return _collection_response(db, coll)
 
 
 @router.patch(
@@ -740,7 +754,7 @@ def update_collection(
         changed["status"] = payload.status
 
     if not changed:
-        return CollectionResponse.model_validate(coll)
+        return _collection_response(db, coll)
 
     coll.updated_at = datetime.now(timezone.utc)
     try:
@@ -781,7 +795,7 @@ def update_collection(
                 "embedding_model": coll.embedding_model,
             },
         )
-    return CollectionResponse.model_validate(coll)
+    return _collection_response(db, coll)
 
 
 @router.delete(

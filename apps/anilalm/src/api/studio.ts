@@ -146,7 +146,7 @@ async function readJsonOrThrow(
 ): Promise<components['schemas']['JobStatus']> {
   if (!res.ok) {
     const txt = await res.text().catch(() => '')
-    throw new Error(`Studio ${op} ${res.status}: ${txt || res.statusText}`)
+    throw new Error(`產出服務${op}失敗（${res.status}）：${txt || res.statusText}`)
   }
   return (await res.json()) as components['schemas']['JobStatus']
 }
@@ -174,7 +174,7 @@ export async function createSlidesJob(
     },
     body: JSON.stringify(body),
   })
-  return toJobStatus(await readJsonOrThrow(res, 'createJob'))
+  return toJobStatus(await readJsonOrThrow(res, '建立工作'))
 }
 
 /**
@@ -205,12 +205,12 @@ export async function getSlidesJobStatus(
       slide_count: null,
       defects: [],
       qa_passes: 0,
-      error: '伺服器找不到這個鑄造任務（可能因服務重啟遺失），請重新鑄造。',
+      error: '伺服器找不到這個產出工作（可能因服務重啟遺失），請重新製作。',
       created_at: new Date(0).toISOString(),
       updated_at: new Date().toISOString(),
     }
   }
-  return toJobStatus(await readJsonOrThrow(res, 'getStatus'))
+  return toJobStatus(await readJsonOrThrow(res, '查詢進度'))
 }
 
 /**
@@ -231,7 +231,7 @@ export async function downloadSlidesJobPptx(
   )
   if (!res.ok) {
     const txt = await res.text().catch(() => '')
-    throw new Error(`Studio download ${res.status}: ${txt || res.statusText}`)
+    throw new Error(`下載產出失敗（${res.status}）：${txt || res.statusText}`)
   }
   const blob = await res.blob()
   if (blob.type && blob.type !== PPTX_MIME) {
@@ -266,7 +266,7 @@ export async function cancelSlidesJob(jobId: string): Promise<void> {
   )
   if (!res.ok && res.status !== 404) {
     const txt = await res.text().catch(() => '')
-    throw new Error(`Studio cancel ${res.status}: ${txt || res.statusText}`)
+    throw new Error(`取消產出失敗（${res.status}）：${txt || res.statusText}`)
   }
 }
 

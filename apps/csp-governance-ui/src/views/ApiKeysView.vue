@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-head__title">API 金鑰</h1>
         <p class="page-head__sub">
-          資料層 <code class="page-head__code">/v1/*</code> 使用的 OpenAI 相容 bearer 金鑰
+          發給應用程式呼叫模型服務的金鑰。請妥善保管，遺失需重新核發。
         </p>
       </div>
       <TermButton variant="primary" @click="showCreateModal = true" label="建立金鑰" />
@@ -105,10 +105,9 @@
         <TermButton variant="ghost" @click="showCreateModal = false" label="取消" />
         <TermButton
           variant="primary"
-          :disabled="!canCreate"
+          :disabled="creating"
           :loading="creating"
           :label="creating ? '建立中' : '建立'"
-          :title="!canCreate ? createDisabledReason : ''"
           @click="handleCreate"
         />
       </template>
@@ -240,7 +239,11 @@ const createDisabledReason = computed(() => {
 })
 
 onMounted(async () => {
-  await keysStore.fetchKeys()
+  try {
+    await keysStore.fetchKeys()
+  } catch (e) {
+    toast(extractError(e, '載入金鑰失敗'), { tone: 'error' })
+  }
   allModelsResult.value = await loadAllowList(listModels)
   if (allModelsResult.value.loadFailed) {
     toast(allModelsNotice.value, { tone: 'error' })
@@ -254,7 +257,10 @@ onMounted(async () => {
 })
 
 async function handleCreate() {
-  if (!canCreate.value) return
+  if (!canCreate.value) {
+    toast(createDisabledReason.value || '目前無法建立金鑰', { tone: 'error' })
+    return
+  }
   creating.value = true
   try {
     const payload = {
@@ -303,7 +309,12 @@ function closeKeyModal() {
 
 function confirmRevoke(key) { revokeTarget.value = key; showRevokeConfirm.value = true }
 async function handleRevoke() {
-  if (revokeTarget.value) await keysStore.revoke(revokeTarget.value.id)
+  if (!revokeTarget.value) return
+  try {
+    await keysStore.revoke(revokeTarget.value.id)
+  } catch (e) {
+    toast(extractError(e, '撤銷失敗'), { tone: 'error' })
+  }
   showRevokeConfirm.value = false
   revokeTarget.value = null
 }

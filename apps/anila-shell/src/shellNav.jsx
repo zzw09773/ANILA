@@ -1,8 +1,7 @@
 // ANILA Shell 主導覽（Slice 9a）— doc 00 §2 唯一產品入口 + doc 10 §11 Shell IA。
 //
-// 一般使用者只看到 ANILA 的三個入口：任務中心 / 我的知識庫 / 專案入口。
-// （原本另有「產出中心」，但它與「我的知識庫」是同一個 /anilalm 連結，
-//   兩個標籤指同一頁只會讓人以為點錯；產出中心這個產品概念仍在 anilalm 裡。）
+// 一般使用者看到 ANILA 的四個入口：任務中心 / 我的知識庫 / 產出中心 /
+// 專案入口。知識庫與產出中心同屬一個 SPA，但有不同的可導覽頁面。
 // 治理中心（CSP 控制面）不是一般使用者的日常入口，只對 owner / admin /
 // developer 顯示（doc 00 §2）。標籤一律用產品語彙，不得暴露 ANILALM /
 // Studio / CSP 等技術品牌名。
@@ -21,8 +20,10 @@ import {
   IconBook,
   IconGrid,
   IconMessage,
+  IconSpark,
   IconShield,
 } from "./icons.jsx";
+import { appHref, governanceHref, knowledgeHref } from "./appOrigins.js";
 
 // doc 00 §2：治理中心 = Admin / Developer / Service Admin 控制面，非一般入口。
 // 對應 CSP UserRole：owner / admin / developer 可見；user / system 或未知一律隱藏。
@@ -46,9 +47,11 @@ export function canSeeGovernance(user) {
  * @returns {string}
  */
 export function originHref(path) {
-  const origin =
-    (typeof window !== "undefined" && window.location && window.location.origin) || "";
-  return `${origin}${path}`;
+  if (path === "/") return governanceHref("/");
+  if (path.startsWith("/anilalm")) {
+    return knowledgeHref(path.slice("/anilalm".length) || "/");
+  }
+  return appHref("shell", path);
 }
 
 /**
@@ -57,7 +60,7 @@ export function originHref(path) {
  */
 export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
   const knowledge = ANILA_LM_ENTRY_ENABLED
-    ? { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: originHref("/anilalm") }
+    ? { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: knowledgeHref("/") }
     : {
         id: "knowledge",
         label: "我的知識庫",
@@ -67,11 +70,17 @@ export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
       };
 
   return [
-    // 任務中心 = 現有聊天工作區（預設視圖，chat 即任務工作台）。
+    // 任務中心 = 現有聊天工作區（預設視圖，chat 即任務工作臺）。
     { id: "tasks", label: "任務中心", Icon: IconMessage, current: true, onClick: onTaskCenter },
     // 我的知識庫 = 同源知識 SPA（也承載 Studio / 產出）。
-    // 本 release 關閉：保留列、停用、標「即將推出」。重開改 anilalmReleaseGate.js。
     knowledge,
+    // 產出中心有自己的 /outputs 頁，不再與知識庫入口指向同一頁。
+    {
+      id: "outputs",
+      label: "產出中心",
+      Icon: IconSpark,
+      href: knowledgeHref("/outputs"),
+    },
     // 專案入口 = ServicesPanel（Registry 服務卡片）。
     { id: "projects", label: "專案入口", Icon: IconGrid, onClick: onOpenServices },
   ];
@@ -79,7 +88,12 @@ export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
 
 // 治理中心入口（僅 admin 面向）——連到同源 CSP 治理 UI（origin 根路徑）。
 function governanceEntry() {
-  return { id: "governance", label: "治理中心", Icon: IconShield, href: originHref("/") };
+  return {
+    id: "governance",
+    label: "系統管理",
+    Icon: IconShield,
+    href: governanceHref("/"),
+  };
 }
 
 const rowBase = {

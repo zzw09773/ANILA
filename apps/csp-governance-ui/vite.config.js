@@ -1,11 +1,15 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+// Frontend routes must not share exact paths with unprefixed APIs.
+// Only /api, /v1, /v2 are proxied; /keys is the SPA page (not /api-keys).
 export default defineConfig({
   plugins: [vue()],
   server: {
+    port: 5173,
+    strictPort: true,
     proxy: {
-      '/api': {
+      '^/api(?:/|$)': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },

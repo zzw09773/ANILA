@@ -3,10 +3,10 @@
     <!-- Slim top bar — brand mark + theme toggle only (terminal path chrome
          removed per redesign §3.2). ------------------------------------- -->
     <header class="login__topbar">
-      <TermLogo :size="14" subtitle="院內 AI 工作平台" />
+      <TermLogo :size="14" subtitle="院內 AI 工作臺" />
       <span class="login__topbar-spacer" />
       <button class="login__theme" type="button" @click="toggleTheme" :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`">
-        {{ theme === 'dark' ? '◐' : '◑' }} {{ theme }}
+        {{ theme === 'dark' ? '◐ 深色' : '◑ 淺色' }}
       </button>
     </header>
 
@@ -27,7 +27,7 @@
           <form class="login__form" @submit.prevent="handleCardLogin" autocomplete="off">
             <p v-if="!detectedCard" class="login__card-lead">請插入自然人憑證卡</p>
             <p class="login__card-note">
-              並確認本機元件運作中（<span style="font-family: var(--font-mono, monospace);">{{ cardComponentOrigin }}</span>）。
+              並確認本機讀卡元件運作中。
             </p>
 
             <!-- Step 1: 偵測卡片 — 在輸入 PIN 前讓使用者確認自己的卡片 -->
@@ -51,7 +51,7 @@
                   </span>
                 </div>
                 <div style="font-size: var(--t-2xs); color: var(--c-fg-3);">
-                  {{ detectedCard.email || '（無 email）' }} · card #{{ detectedCard.cardSN || 'n/a' }}
+                  {{ detectedCard.email || '（未提供電子郵件）' }} · 卡片序號 {{ detectedCard.cardSN || '未提供' }}
                 </div>
               </div>
               <button
@@ -196,14 +196,14 @@
               </span>
             </div>
             <div style="font-size: var(--t-2xs); color: var(--c-fg-3);">
-              {{ pending.email || '（無 email）' }}
+              {{ pending.email || '（未提供電子郵件）' }}
             </div>
           </div>
         </div>
         <p style="font-size: var(--t-xs); color: var(--c-fg-2); margin: 8px 0;">
           {{ pending.message }}
         </p>
-        <TermField label="department · 單位">
+        <TermField label="單位">
           <select v-model="pendingDeptId" class="term-input">
             <option :value="null" disabled>請選擇單位</option>
             <option v-for="dept in pendingDepartments" :key="dept.id" :value="dept.id">
@@ -251,9 +251,9 @@
     <TermModal v-if="showSelfRegistration" :visible="showRegisterModal" title="註冊 · 自助" width="480px" @close="closeRegisterModal">
       <div v-if="!regSuccess" class="login__reg">
         <TermField label="帳號">
-          <input v-model="reg.username" class="term-input" placeholder="e.g. j.smith" autocomplete="username" />
+          <input v-model="reg.username" class="term-input" placeholder="例如：j.smith" autocomplete="username" />
         </TermField>
-        <TermField label="email">
+        <TermField label="電子郵件">
           <input v-model="reg.email" type="email" class="term-input" placeholder="user@corp.example" autocomplete="email" />
         </TermField>
         <TermField label="密碼" hint="8 字元以上 · 大寫 · 小寫 · 符號">
@@ -285,7 +285,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { extractError } from '../api/errors'
 import {
@@ -315,13 +315,13 @@ import {
   detectCard,
 } from '../api/caAuth'
 import { useTheme } from '../composables/useTheme'
+import { postLoginDestination } from '../utils/postLoginDestination'
 import TermLogo from '../components/cli/TermLogo.vue'
 import TermButton from '../components/cli/TermButton.vue'
 import TermField from '../components/cli/TermField.vue'
 import TermKbd from '../components/cli/TermKbd.vue'
 import TermModal from '../components/cli/TermModal.vue'
 
-const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const { theme, toggleTheme } = useTheme()
@@ -340,29 +340,19 @@ const showSelfRegistration = computed(() =>
   showAlternativeLogin.value && shouldRenderSelfRegistration(loginAuthMode.value),
 )
 
-// branch SSO: 其他 SPA (anila-ui / ANILALM) 在 unauthenticated 時把使用者
-// 送來這裡並夾帶 ?next=<原 URL>。登入成功後跳回去；沒帶 next 就回 dashboard。
-//
-// 接受兩種 next 形式：
-//   1. 相對路徑（以 / 開頭、不含 //） — 例：/dashboard
-//   2. 同 hostname 的 absolute URL — 例：https://172.16.120.35:4443/app/...
-//      （4443 port 的 anila-ui 跨 port 跳回時必要）
-// 拒絕跨 hostname、javascript:、//evil.com 等 open-redirect 攻擊向量。
 function resolveNextDestination() {
-  const candidate = route.query.next
-  if (typeof candidate !== 'string' || !candidate) return '/'
+  return postLoginDestination(authStore.user, route.query.next)
+}
 
-  // 嘗試當 absolute URL parse；同 hostname 才接受
+function oidcNextPath(dest) {
+  if (typeof dest !== 'string' || !dest) return '/'
   try {
-    const url = new URL(candidate)
-    if (url.hostname === window.location.hostname && (url.protocol === 'https:' || url.protocol === 'http:')) {
-      return url.toString()
-    }
-    return '/'
+    const url = new URL(dest, window.location.origin)
+    const path = `${url.pathname}${url.search}` || '/'
+    if (path === '/app' || path.startsWith('/app/')) return `/anila${path}`
+    return path
   } catch {
-    // 不是 absolute URL — 走相對路徑驗證
-    if (!candidate.startsWith('/') || candidate.startsWith('//')) return '/'
-    return candidate
+    return dest.startsWith('/') ? dest : '/'
   }
 }
 
@@ -453,11 +443,6 @@ async function handleLogin() {
   loading.value = true
   try {
     await authStore.login(username.value, password.value, { auth_source: 'local' })
-    // 統一用 full page navigation：next 可能是 /app, /anilalm/, / 任一個，
-    // 而 4443 / 443 port 的 nginx 對 / 的 catch-all 不一定是 myCSPPlatform Vue
-    // (4443 port 是 anila-ui)。client-side router.push 只會留在當前 SPA，
-    // 反而導致 user 期望「進 ANILA UI」結果停在 myCSPPlatform dashboard。
-    // 一律走 browser reload 讓 nginx 重新決定 routing。
     window.location.assign(resolveNextDestination())
   } catch (e) {
     if (showBreakGlassNotice.value) {
@@ -516,11 +501,6 @@ async function handleCardLogin() {
     const result = await authStore.loginWithCard({ pin: cardPin.value })
 
     if (result.status === 'ok') {
-      // 統一用 full page navigation：next 可能是 /app, /anilalm/, / 任一個，
-      // 而 4443 / 443 port 的 nginx 對 / 的 catch-all 不一定是 myCSPPlatform Vue
-      // (4443 port 是 anila-ui)。client-side router.push 只會留在當前 SPA，
-      // 反而導致 user 期望「進 ANILA UI」結果停在 myCSPPlatform dashboard。
-      // 一律走 browser reload 讓 nginx 重新決定 routing。
       window.location.assign(resolveNextDestination())
       return
     }
@@ -583,7 +563,7 @@ async function handleOidcLogin(provider) {
   isPending.value = false
   oidcLoadingId.value = provider.id
   try {
-    const { data } = await getOidcStartUrl(provider.id, '/')
+    const { data } = await getOidcStartUrl(provider.id, oidcNextPath(resolveNextDestination()))
     window.location.href = data.authorization_url
   } catch (e) {
     error.value = extractError(e, '無法啟動 SSO 流程')
@@ -606,7 +586,7 @@ async function handleRegister() {
   registering.value = true
   try {
     const { data } = await registerApi(reg.value.username, reg.value.email, reg.value.password)
-    regSuccess.value = data.message || 'registered — pending approval'
+    regSuccess.value = data.message || '註冊完成，等待管理員核准'
   } catch (e) {
     regError.value = extractError(e, '註冊失敗')
   } finally {
