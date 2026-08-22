@@ -453,6 +453,8 @@ def build_regenerate_slide_prompt(
             "The very first character MUST be \"{\". The last MUST be \"}\".",
             "Do NOT wrap in ```json. Use straight double quotes only.",
             "Required fields: title, bullets (1-6), speaker_notes, layout_kind.",
+            "Return ONE slide object. Do NOT return a slides array or a full deck.",
+            "title 必須與原文不同，並以「（重做）」結尾。",
             "bullets 可在末尾用 (參 [N]) 標註來源。",
             "使用台灣繁體中文。不可使用 placeholder。",
             NATIONAL_TERMINOLOGY,

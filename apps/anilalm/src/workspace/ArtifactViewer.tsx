@@ -30,6 +30,7 @@ import {
   type MindmapTreeSpec,
 } from '../api/studio'
 import { isDownloadWarning, warningPatch } from './artifactWarning'
+import { slidesAfterRegenerate } from './slideRedo'
 
 interface ArtifactViewerProps {
   open: boolean
@@ -525,11 +526,22 @@ function SlidesViewer({ artifact }: { artifact: SlidesArtifact }) {
     setRegenBusy(true)
     setRegenErr(null)
     try {
-      const status = await regenerateSlide(artifact.jobId, idx + 1)
+      const status = await regenerateSlide(
+        artifact.jobId,
+        idx + 1,
+        '只重寫目前這一頁。不要輸出整份簡報。標題請以（重做）結尾。',
+      )
+      if (status.job_id && status.job_id !== artifact.jobId) {
+        throw new Error('重做這一頁不應另開新的簡報工作。')
+      }
+      const slides = slidesAfterRegenerate(artifact.slides, status, idx)
       updateArtifact(artifact.collectionId, artifact.id, {
-        title: status.title ?? artifact.title,
-        slides: slidesFromJobSpec(status.spec),
-        sources: status.sources ?? artifact.sources,
+        title: artifact.title,
+        slides,
+        sources:
+          status.sources && status.sources.length > 0
+            ? status.sources
+            : artifact.sources,
       })
     } catch (err) {
       setRegenErr(err instanceof Error ? err.message : '重做失敗，請稍後再試')
@@ -632,7 +644,11 @@ function SlidesViewer({ artifact }: { artifact: SlidesArtifact }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <button
             type="button"
-            onClick={() => void onRegen()}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              void onRegen()
+            }}
             disabled={regenBusy}
             style={{
               padding: '7px 12px',

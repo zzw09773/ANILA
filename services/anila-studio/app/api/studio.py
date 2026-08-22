@@ -1059,6 +1059,50 @@ async def get_slides_job_pptx(
     )
 
 
+REDO_TITLE_SUFFIX = "（重做）"
+
+
+def _coerce_regenerated_slide_dict(
+    parsed: object,
+    *,
+    current: Slide,
+    slide_index: int,
+) -> dict:
+    """LLM sometimes emits a full deck. Keep only the rewritten page."""
+    if not isinstance(parsed, dict):
+        raise ValueError("regenerate 未回傳物件")
+    slides = parsed.get("slides")
+    if isinstance(slides, list) and slides:
+        objects = [s for s in slides if isinstance(s, dict)]
+        if not objects:
+            raise ValueError("regenerate 的 slides 不是物件")
+        if len(objects) == 1:
+            parsed = objects[0]
+        else:
+            current_title = current.title.removesuffix(REDO_TITLE_SUFFIX)
+            titled = next(
+                (
+                    s for s in objects
+                    if str(s.get("title") or "").removesuffix(REDO_TITLE_SUFFIX)
+                    == current_title
+                ),
+                None,
+            )
+            if titled is not None:
+                parsed = titled
+            elif 0 <= slide_index < len(objects):
+                parsed = objects[slide_index]
+            else:
+                parsed = objects[0]
+    parsed.setdefault("title", current.title)
+    parsed.setdefault("bullets", current.bullets)
+    title = str(parsed.get("title") or current.title)
+    if not title.endswith(REDO_TITLE_SUFFIX):
+        base = title.removesuffix(REDO_TITLE_SUFFIX).rstrip() or current.title
+        parsed["title"] = f"{base}{REDO_TITLE_SUFFIX}"[:200]
+    return parsed
+
+
 @router.post(
     "/slides/jobs/{job_id}/slides/{slide_number}/regenerate",
     response_model=JobStatus,
@@ -1129,15 +1173,14 @@ async def regenerate_slides_job_slide(
     try:
         extracted = _extract_json_object(raw)
         parsed = _loads_lenient(extracted)
-        if not isinstance(parsed, dict):
-            raise ValueError("regenerate 未回傳物件")
-        parsed.setdefault("title", current.title)
-        parsed.setdefault("bullets", current.bullets)
+        slide_in = _coerce_regenerated_slide_dict(
+            parsed, current=current, slide_index=idx,
+        )
         parsed = _saturate_spec_dict(
-            {"title": spec.title, "slides": [parsed]},
+            {"title": spec.title, "slides": [slide_in]},
             chunk_filenames=[c.get("filename") for c in chunks if c.get("filename")],
         )
-        slide_dict = parsed["slides"][0] if isinstance(parsed, dict) else parsed
+        slide_dict = parsed["slides"][0] if isinstance(parsed, dict) else slide_in
         new_slide = Slide.model_validate(slide_dict)
     except (ValidationError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(
@@ -1164,13 +1207,11 @@ async def regenerate_slides_job_slide(
         for im in rec.source_images
         if im.get("image_id")
     }
-    deck_base_seed = int(
-        hashlib.sha256(job_id.encode()).hexdigest()[:8], 16
-    )
-    flux_llm = _StudioLLMAdapter(bearer, SLIDES_LLM_MODEL)
+    # Re-pack this job's PPTX only. Do not start a new deck job or
+    # re-run FLUX for every page — that looked like a brand-new 簡報.
     pptx_bytes, _pptx_path = await _render_pptx(
         next_spec, images_lookup, bearer=bearer,
-        deck_base_seed=deck_base_seed, llm=flux_llm,
+        deck_base_seed=None, llm=None,
     )
     updated = await jobs.update_done_spec(
         job_id, spec=next_spec, pptx_bytes=pptx_bytes,

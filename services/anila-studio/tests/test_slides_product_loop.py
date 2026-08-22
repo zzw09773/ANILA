@@ -324,7 +324,7 @@ async def test_regenerate_replaces_one_slide(monkeypatch) -> None:
 
     async def fake_render_pptx(next_spec, images_lookup, **kwargs):
         assert next_spec.slides[0].title == "封面"
-        assert next_spec.slides[1].title == "新結論"
+        assert next_spec.slides[1].title == "新結論（重做）"
         return b"PK-new", None
 
     monkeypatch.setattr(studio_mod, "get_collection", fake_get_collection)
@@ -350,5 +350,135 @@ async def test_regenerate_replaces_one_slide(monkeypatch) -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["spec"]["slides"][0]["title"] == "封面"
-    assert body["spec"]["slides"][1]["title"] == "新結論"
+    assert body["spec"]["slides"][1]["title"] == "新結論（重做）"
     assert 1 in body["spec"]["slides"][1]["citation_refs"]
+    assert body["job_id"] == rec.job_id
+
+
+@pytest.mark.asyncio
+async def test_regenerate_keeps_one_slide_when_llm_returns_a_deck(
+    monkeypatch,
+) -> None:
+    from app.api import studio as studio_mod
+    from app.auth import CurrentUserIdentity
+    from app.clients.csp_client import CollectionMeta
+    from app.schemas.studio import SlidesSpec
+    from app.services import studio_job_service as job_mod
+
+    identity = CurrentUserIdentity(
+        id=7, username="bob", role="user", token_version=0,
+    )
+    spec = SlidesSpec.model_validate(
+        {
+            "title": "測試簡報",
+            "theme": "corporate_navy",
+            "slides": [
+                {"title": "封面", "bullets": ["舊封面"]},
+                {"title": "審查摘要", "bullets": ["舊摘要"]},
+                {"title": "結論", "bullets": ["舊結論"]},
+            ],
+        }
+    )
+
+    async def runner(updater):
+        await updater.mark_done(
+            spec=spec, pptx_bytes=b"PK-old", defects=[], qa_passes=0,
+            source_chunks=[],
+        )
+
+    job_mod._reset_for_tests()
+    rec = await job_mod.create_job(
+        user_id=identity.id, collection_id=1, runner=runner, report_ctx=None,
+    )
+    await job_mod.get_job(rec.job_id).task
+
+    async def fake_get_collection(collection_id, *, bearer):
+        return CollectionMeta(
+            id=collection_id, name="庫", embedding_model="dummy",
+            embedding_dim=8, status="active", created_by=1,
+        )
+
+    async def fake_call_llm_chat(bearer, model, messages, **kwargs):
+        return (
+            '{"title":"全新簡報","slides":['
+            '{"title":"新封面","bullets":["不該整份重做"]},'
+            '{"title":"審查摘要","bullets":["新論點 (參 [1])"]},'
+            '{"title":"新結論","bullets":["也不該換"]}'
+            ']}'
+        )
+
+    async def fake_render_pptx(next_spec, images_lookup, **kwargs):
+        assert kwargs.get("llm") is None
+        assert kwargs.get("deck_base_seed") is None
+        assert next_spec.slides[0].title == "封面"
+        assert next_spec.slides[1].title == "審查摘要（重做）"
+        assert next_spec.slides[1].bullets[0].startswith("新論點")
+        assert next_spec.slides[2].title == "結論"
+        return b"PK-new", None
+
+    monkeypatch.setattr(studio_mod, "get_collection", fake_get_collection)
+    monkeypatch.setattr(studio_mod, "_call_llm_chat", fake_call_llm_chat)
+    monkeypatch.setattr(studio_mod, "_render_pptx", fake_render_pptx)
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from app.auth import get_bearer_token, get_current_user_identity
+
+    app = FastAPI()
+    app.include_router(studio_mod.router)
+    app.dependency_overrides[get_current_user_identity] = lambda: identity
+    app.dependency_overrides[get_bearer_token] = lambda: "t"
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            f"/api/studio/slides/jobs/{rec.job_id}/slides/2/regenerate",
+            json={},
+        )
+    job_mod._reset_for_tests()
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["job_id"] == rec.job_id
+    assert [s["title"] for s in body["spec"]["slides"]] == [
+        "封面",
+        "審查摘要（重做）",
+        "結論",
+    ]
+
+
+def test_coerce_regenerated_slide_dict_marks_title() -> None:
+    from app.api.studio import _coerce_regenerated_slide_dict
+    from app.schemas.studio import Slide
+
+    current = Slide.model_validate({"title": "審查摘要", "bullets": ["舊"]})
+    one = _coerce_regenerated_slide_dict(
+        {"title": "審查摘要", "bullets": ["新"]},
+        current=current,
+        slide_index=1,
+    )
+    assert one["title"] == "審查摘要（重做）"
+    deck = _coerce_regenerated_slide_dict(
+        {
+            "title": "全新簡報",
+            "slides": [
+                {"title": "A", "bullets": ["x"]},
+                {"title": "審查摘要", "bullets": ["改寫"]},
+            ],
+        },
+        current=current,
+        slide_index=1,
+    )
+    assert deck["title"] == "審查摘要（重做）"
+    assert deck["bullets"] == ["改寫"]
+    rewritten_first = _coerce_regenerated_slide_dict(
+        {
+            "title": "全新簡報",
+            "slides": [
+                {"title": "審查摘要", "bullets": ["改寫放在第一頁"]},
+                {"title": "其他", "bullets": ["不是這一頁"]},
+            ],
+        },
+        current=current,
+        slide_index=1,
+    )
+    assert rewritten_first["bullets"] == ["改寫放在第一頁"]
