@@ -21,6 +21,7 @@ function AppRoutes() {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/c/:collectionId" element={<WorkspacePage />} />
         <Route path="/c/:collectionId/conv/:conversationId" element={<WorkspacePage />} />
+        <Route path="/conv/:conversationId" element={<WorkspacePage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

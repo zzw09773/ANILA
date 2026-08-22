@@ -25,11 +25,20 @@ import { UNGROUNDED_NOTICE } from './retrieval'
 
 vi.mock('../api/search', () => ({ searchCollection: vi.fn() }))
 
-vi.mock('../api/conversations', () => ({
+vi.mock('../api/conversations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/conversations')>()),
   appendMessage: vi.fn(),
   createConversation: vi.fn(),
   getConversation: vi.fn(),
   updateConversationTitle: vi.fn(),
+  listConversations: vi.fn(async () => ({ data: [] })),
+  listShares: vi.fn(async () => ({ data: [] })),
+  createShare: vi.fn(),
+  revokeShare: vi.fn(),
+  listHandoffs: vi.fn(async () => ({ data: [] })),
+  createHandoff: vi.fn(),
+  acceptHandoff: vi.fn(),
+  rejectHandoff: vi.fn(),
 }))
 
 vi.mock('../api/chat', async (importOriginal) => ({

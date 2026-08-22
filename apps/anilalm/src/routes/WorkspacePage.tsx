@@ -4,8 +4,8 @@ import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { getCollection } from '../api/collections'
 import { listDocuments, getDocument } from '../api/documents'
-import { listConversations } from '../api/conversations'
-import { explainError } from '../api/client'
+import { getConversation, listConversations } from '../api/conversations'
+import { explainError, httpStatus } from '../api/client'
 import { Spinner } from '../components/Spinner'
 import { Icon } from '../components/Icon'
 import { WSSidebar } from '../workspace/WSSidebar'
@@ -30,12 +30,20 @@ export function WorkspacePage() {
 
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
+  const [collectionDenied, setCollectionDenied] = useState<string | null>(null)
 
   // Bootstrap: collection + docs + conversations. Re-runs whenever the
   // user navigates to a different collection.
+  //
+  // Conversation share and collection access are separate gates. A
+  // recipient with a valid named share must still be able to open the
+  // thread when getCollection/listDocuments 403 — Promise.all used to
+  // blank the whole page on the first reject (owner 2026-08-21).
   useEffect(() => {
     const idNum = Number(collectionId)
-    if (!Number.isFinite(idNum)) {
+    const convNum = conversationId ? Number(conversationId) : NaN
+    const hasConv = Number.isFinite(convNum)
+    if (!Number.isFinite(idNum) && !hasConv) {
       setErr('無效的知識庫 ID')
       setLoading(false)
       return
@@ -43,28 +51,80 @@ export function WorkspacePage() {
     let cancelled = false
     setLoading(true)
     setErr(null)
+    setCollectionDenied(null)
     reset()
 
     void (async () => {
       try {
-        const [collRes, docsRes, convRes] = await Promise.all([
-          getCollection(idNum),
-          listDocuments(idNum, { limit: 200, offset: 0 }),
-          // Always pass the collection id so the sidebar can't see other
-          // knowledge bases' conversations — the schema-level fix lives in
-          // migration 0024 / api/conversations.ts.
-          listConversations(idNum),
+        const collP = Number.isFinite(idNum)
+          ? getCollection(idNum).then(
+              (res) => ({ ok: true as const, res }),
+              (e: unknown) => ({ ok: false as const, e }),
+            )
+          : Promise.resolve({ ok: false as const, e: new Error('無知識庫') })
+        const docsP = Number.isFinite(idNum)
+          ? listDocuments(idNum, { limit: 200, offset: 0 }).then(
+              (res) => ({ ok: true as const, res }),
+              (e: unknown) => ({ ok: false as const, e }),
+            )
+          : Promise.resolve({ ok: false as const, e: new Error('無知識庫') })
+        const listP = Number.isFinite(idNum)
+          ? listConversations(idNum).then(
+              (res) => ({ ok: true as const, res }),
+              (e: unknown) => ({ ok: false as const, e }),
+            )
+          : Promise.resolve({ ok: false as const, e: new Error('無知識庫') })
+        const sharedP = hasConv
+          ? getConversation(convNum).then(
+              (res) => ({ ok: true as const, res }),
+              (e: unknown) => ({ ok: false as const, e }),
+            )
+          : Promise.resolve({ ok: false as const, e: null })
+
+        const [coll, docs, listed, shared] = await Promise.all([
+          collP,
+          docsP,
+          listP,
+          sharedP,
         ])
         if (cancelled) return
-        setCollection(collRes.data)
-        setDocs(
-          docsRes.data.map((d) => ({
-            doc: d,
-            jobId: undefined,
-            jobSnapshot: undefined,
-          })),
-        )
-        setConversations(convRes.data)
+
+        if (coll.ok) {
+          setCollection(coll.res.data)
+        } else if (httpStatus(coll.e) === 403) {
+          setCollectionDenied(
+            '沒有這個知識庫的存取權。分享只開這則對話，文件清單不會出現。',
+          )
+        } else if (!hasConv) {
+          setErr(explainError(coll.e))
+          return
+        }
+
+        if (docs.ok) {
+          setDocs(
+            docs.res.data.map((d) => ({
+              doc: d,
+              jobId: undefined,
+              jobSnapshot: undefined,
+            })),
+          )
+        } else {
+          setDocs([])
+        }
+
+        const fromList = listed.ok && Array.isArray(listed.res.data) ? listed.res.data : []
+        if (shared.ok) {
+          const row = shared.res.data
+          const without = fromList.filter((c) => c.id !== row.id)
+          setConversations([row, ...without])
+        } else if (fromList.length > 0) {
+          setConversations(fromList)
+        } else if (hasConv) {
+          setErr(explainError(shared.e ?? new Error('找不到這則對話')))
+          return
+        } else {
+          setConversations([])
+        }
       } catch (e) {
         if (!cancelled) setErr(explainError(e))
       } finally {
@@ -75,7 +135,14 @@ export function WorkspacePage() {
     return () => {
       cancelled = true
     }
-  }, [collectionId, reset, setCollection, setConversations, setDocs])
+  }, [
+    collectionId,
+    conversationId,
+    reset,
+    setCollection,
+    setConversations,
+    setDocs,
+  ])
 
   // Polling fallback for docs stuck in a non-terminal status with no job
   // stream. Live progress normally rides useJobStream's SSE, but a doc loaded
@@ -194,8 +261,31 @@ export function WorkspacePage() {
         color: t.text,
         display: 'flex',
         overflow: 'hidden',
+        position: 'relative',
       }}
     >
+      {collectionDenied && (
+        <div
+          role="status"
+          style={{
+            position: 'absolute',
+            top: 8,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 20,
+            maxWidth: 520,
+            padding: '8px 12px',
+            borderRadius: 8,
+            background: t.surface,
+            border: `1px solid ${t.border}`,
+            color: t.textMuted,
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}
+        >
+          {collectionDenied}
+        </div>
+      )}
       <WSSidebar />
       <WSChat flex={studioOpen ? 1.4 : 1} />
       {/* Keep WSStudio mounted while closed so in-flight job pollers

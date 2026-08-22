@@ -330,7 +330,9 @@ export function WSSidebar() {
                 color: t.textSubtle,
               }}
             >
-              還沒有文件 · 從上方上傳
+              {collection
+                ? '還沒有文件 · 從上方上傳'
+                : '沒有這個知識庫的存取權，文件不會出現'}
             </div>
           )}
           {docs.map((d) => {

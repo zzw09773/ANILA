@@ -7,8 +7,9 @@ import {
   deleteCollection,
   listCollections,
 } from '../api/collections'
+import { listSharedConversations } from '../api/conversations'
 import { explainError } from '../api/client'
-import type { Collection } from '../types'
+import type { Collection, Conversation } from '../types'
 import { Icon } from '../components/Icon'
 import { ThemeSwitch } from '../components/ThemeSwitch'
 import { Field } from '../components/Field'
@@ -39,6 +40,7 @@ export function DashboardPage() {
   const logout = useAuthStore((s) => s.logout)
 
   const [collections, setCollections] = useState<Collection[]>([])
+  const [sharedConversations, setSharedConversations] = useState<Conversation[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -49,8 +51,18 @@ export function DashboardPage() {
   const reload = useCallback(async () => {
     setErr(null)
     try {
-      const { data } = await listCollections({ owned_only: true, include_archived: false })
+      const [{ data }, shared] = await Promise.all([
+        listCollections({ owned_only: true, include_archived: false }),
+        listSharedConversations().then(
+          (res) => res.data,
+          () => [] as Conversation[],
+        ),
+      ])
       setCollections(data)
+      const ownedIds = new Set(data.map((c) => c.id))
+      setSharedConversations(
+        shared.filter((c) => c.collection_id == null || !ownedIds.has(c.collection_id)),
+      )
     } catch (e) {
       setErr(explainError(e))
     } finally {
@@ -296,6 +308,54 @@ export function DashboardPage() {
             </button>
           </div>
         </div>
+
+        {sharedConversations.length > 0 && (
+          <section style={{ marginBottom: 36 }} aria-label="分享給我的對話">
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: t.textMuted,
+                marginBottom: 12,
+                letterSpacing: 0.4,
+              }}
+            >
+              分享給我的對話
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {sharedConversations.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() =>
+                    navigate(
+                      c.collection_id != null
+                        ? `/c/${c.collection_id}/conv/${c.id}`
+                        : `/conv/${c.id}`,
+                    )
+                  }
+                  style={{
+                    textAlign: 'left',
+                    padding: '12px 14px',
+                    borderRadius: 10,
+                    border: `1px solid ${t.border}`,
+                    background: t.surface,
+                    color: t.text,
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{c.title}</div>
+                  <div style={{ fontSize: 12, color: t.textMuted, marginTop: 4 }}>
+                    {c.collection_id != null
+                      ? '唯讀分享 · 不含該知識庫的文件'
+                      : '唯讀分享'}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
 
         {err && (
           <div

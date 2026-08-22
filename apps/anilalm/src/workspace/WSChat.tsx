@@ -16,9 +16,15 @@ import { MarkdownPreview } from '../components/MarkdownPreview'
 import {
   appendMessage,
   createConversation,
+  createShare,
   getConversation,
+  listConversations,
+  listShares,
+  revokeShare,
   updateConversationTitle,
 } from '../api/conversations'
+import { ShareDialog } from '../components/ShareDialog'
+import { HandoffInbox } from '../components/HandoffInbox'
 import {
   chatStream,
   ChatFailureError,
@@ -87,6 +93,7 @@ export function WSChat({ flex }: WSChatProps) {
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId)
   const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId)
   const upsertConversation = useWorkspaceStore((s) => s.upsertConversation)
+  const setConversations = useWorkspaceStore((s) => s.setConversations)
   const studioOpen = useWorkspaceStore((s) => s.studioOpen)
   const toggleStudio = useWorkspaceStore((s) => s.toggleStudio)
   const pendingAsk = useWorkspaceStore((s) => s.pendingAsk)
@@ -96,6 +103,7 @@ export function WSChat({ flex }: WSChatProps) {
   const [composer, setComposer] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [shareOpen, setShareOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -165,6 +173,37 @@ export function WSChat({ flex }: WSChatProps) {
     return stored?.title ?? '新對話'
   }, [activeConversationId, conversations])
 
+  const handleCreateShare = useCallback(
+    async (payload: Parameters<typeof createShare>[1]) => {
+      if (activeConversationId == null) {
+        throw new Error('尚未建立後端對話 — 請先送出第一則訊息。')
+      }
+      await createShare(activeConversationId, payload)
+    },
+    [activeConversationId],
+  )
+
+  const handleListShares = useCallback(async () => {
+    if (activeConversationId == null) return []
+    const { data } = await listShares(activeConversationId)
+    return Array.isArray(data) ? data : []
+  }, [activeConversationId])
+
+  const handleRevokeShare = useCallback(
+    async (shareId: number) => {
+      if (activeConversationId == null) return
+      await revokeShare(activeConversationId, shareId)
+    },
+    [activeConversationId],
+  )
+
+  const handleHandoffReload = useCallback(() => {
+    if (!collection) return
+    void listConversations(collection.id)
+      .then((res) => setConversations(res.data))
+      .catch((e) => setErr(explainError(e)))
+  }, [collection, setConversations])
+
   /**
    * Prompt context for this turn. The prompt itself (four modes: no
    * indexed docs / retrieval failed / zero hits / hits) lives in
@@ -182,7 +221,11 @@ export function WSChat({ flex }: WSChatProps) {
   // 不經 composer state — 避免 setState 後同 tick 讀不到的競態。
   const send = useCallback(async (textOverride?: string) => {
     const text = (textOverride ?? composer).trim()
-    if (!text || busy || !collection) return
+    if (!text || busy) return
+    if (!collection) {
+      setErr('這則對話是唯讀分享，不能在這裡繼續提問。')
+      return
+    }
 
     if (!DEFAULT_MODEL) {
       setErr('聊天模型未設定（VITE_DEFAULT_CHAT_MODEL）——請通知管理者在部署設定指定模型名稱。')
@@ -531,6 +574,30 @@ export function WSChat({ flex }: WSChatProps) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <ThemeSwitch />
+          {activeConversationId != null && (
+            <button
+              type="button"
+              onClick={() => setShareOpen(true)}
+              title="分享對話"
+              style={{
+                height: 32,
+                padding: '0 12px',
+                borderRadius: 8,
+                background: t.surface,
+                color: t.text,
+                fontSize: 12,
+                fontWeight: 500,
+                border: `1px solid ${t.border}`,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontFamily: 'inherit',
+              }}
+            >
+              分享
+            </button>
+          )}
           <button
             onClick={toggleStudio}
             title={studioOpen ? '收起 Studio' : '展開 Studio'}
@@ -553,6 +620,18 @@ export function WSChat({ flex }: WSChatProps) {
           </button>
         </div>
       </div>
+
+      <HandoffInbox onReload={handleHandoffReload} />
+
+      <ShareDialog
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        conversationTitle={conversationTitle}
+        conversationId={activeConversationId}
+        onCreateShare={handleCreateShare}
+        onListShares={handleListShares}
+        onRevokeShare={handleRevokeShare}
+      />
 
       {/* Messages */}
       <div

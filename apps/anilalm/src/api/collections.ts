@@ -25,7 +25,6 @@ export interface CreateCollectionPayload {
   chunking_config: ChunkingConfig
   embedding_model?: string
   embedding_dim?: number
-  classification_level?: string
 }
 
 export const createCollection = (payload: CreateCollectionPayload) =>
