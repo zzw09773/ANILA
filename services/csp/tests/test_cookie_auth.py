@@ -14,7 +14,11 @@ Pins the contract:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from starlette.responses import Response
 
 from app.middleware import cookies as cookie_module
@@ -25,6 +29,7 @@ from app.middleware.cookies import (
     set_session_cookies,
 )
 from app.models.platform_setting import PlatformSetting
+from app.schemas.user import UserResponse
 from app.services.auth_service import TOKEN_LIFETIMES_KEY, create_tokens
 
 from tests.conftest import make_user
@@ -125,6 +130,58 @@ def test_me_accepts_session_cookie_without_authorization(client: TestClient, db)
     resp = client.get("/api/auth/me")
     assert resp.status_code == 200, resp.text
     assert resp.json()["username"] == "bob"
+
+
+def test_user_response_does_not_invent_role_user():
+    created = datetime.now(timezone.utc)
+    profile = UserResponse(
+        id=7,
+        username="dev.lin",
+        role="developer",
+        is_active=True,
+        created_at=created,
+    )
+    assert profile.role == "developer"
+    with pytest.raises(ValidationError):
+        UserResponse(
+            id=7,
+            username="dev.lin",
+            is_active=True,
+            created_at=created,
+        )
+
+
+def test_developer_me_keeps_role_after_refresh_and_is_not_cacheable(
+    client: TestClient, db
+):
+    """A developer cookie must not hydrate as role=user after reload.
+
+    /me is cookie-keyed. A cached regular-user 200, or UserBase's
+    default role="user", is how testers saw developer chrome collapse
+    to 工作臺 on F5 while the first landing still looked right.
+    """
+    make_user(db, username="dev.lin", role="developer")
+    _login(client, "dev.lin")
+
+    me = client.get("/api/auth/me")
+    assert me.status_code == 200, me.text
+    body = me.json()
+    assert body["username"] == "dev.lin"
+    assert body["role"] == "developer"
+    cache_control = me.headers.get("cache-control", "").lower()
+    assert "no-store" in cache_control
+    assert "cookie" in me.headers.get("vary", "").lower()
+
+    rotated = client.post(
+        "/api/auth/refresh",
+        headers={"X-CSRF-Token": client.cookies.get(CSRF_COOKIE_NAME)},
+    )
+    assert rotated.status_code == 200, rotated.text
+
+    again = client.get("/api/auth/me")
+    assert again.status_code == 200, again.text
+    assert again.json()["username"] == "dev.lin"
+    assert again.json()["role"] == "developer"
 
 
 def test_refresh_via_cookie_rotates_tokens(client: TestClient, db):

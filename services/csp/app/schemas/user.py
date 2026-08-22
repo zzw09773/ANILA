@@ -35,6 +35,10 @@ class UserUpdate(BaseModel):
 
 class UserResponse(ApiResponseModel, UserBase):
     id: int
+    # UserBase defaults role to "user" for create forms. /me must not
+    # invent that default when the ORM field is missing — a developer
+    # cookie would hydrate as a regular user after reload.
+    role: UserRole
     department_id: int | None = None
     department_name: str | None = None
     is_active: bool

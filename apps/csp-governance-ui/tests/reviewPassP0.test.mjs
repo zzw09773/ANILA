@@ -68,6 +68,18 @@ test('login ?logout=1 stays on the form instead of bouncing a warm cookie to /ap
   assert.ok(bounceAt > logoutCallAt)
 })
 
+test('developer session hydrate refuses a weaker /me and does not cache GET /me', () => {
+  const store = source('stores/auth.js')
+  const authApi = source('api/auth.js')
+  const profile = source('utils/sessionProfile.js')
+  assert.match(store, /normalizeSessionProfile/)
+  assert.match(store, /shouldApplySessionProfile/)
+  assert.match(profile, /access_token/)
+  assert.match(profile, /roleRank\(incoming\.role\) >= roleRank\(current\.role\)/)
+  assert.match(authApi, /no-store/)
+  assert.match(authApi, /params:\s*\{\s*_: Date\.now\(\)\s*\}/)
+})
+
 test('logout clears local state before the network and then hard-replaces /login', () => {
   const store = source('stores/auth.js')
   const header = source('components/layout/AppHeader.vue')

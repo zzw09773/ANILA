@@ -9,7 +9,15 @@ export const refreshTokenApi = () =>
   client.post('/api/auth/refresh', {})
 
 export const getMe = () =>
-  client.get('/api/auth/me')
+  client.get('/api/auth/me', {
+    headers: {
+      'Cache-Control': 'no-store, no-cache',
+      Pragma: 'no-cache',
+    },
+    // Previous regular-user GET /me can sit in the browser disk cache
+    // without Vary: Cookie. A unique query makes F5 hit the live cookie.
+    params: { _: Date.now() },
+  })
 
 export const logout = () =>
   client.post('/api/auth/logout', {}, { timeout: 4000 })

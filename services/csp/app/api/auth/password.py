@@ -259,8 +259,21 @@ def logout(
     return {"message": "已登出"}
 
 
+def _stamp_private_identity_headers(response: Response) -> None:
+    """GET /me is cookie-keyed. Without no-store + Vary, a prior
+    regular-user 200 can be replayed onto a developer session on refresh.
+    """
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Vary"] = "Cookie"
+
+
 @router.get("/me", response_model=UserResponse)
-def get_me(current_user: User = Depends(get_current_user)):
+def get_me(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+):
+    _stamp_private_identity_headers(response)
     return current_user
 
 

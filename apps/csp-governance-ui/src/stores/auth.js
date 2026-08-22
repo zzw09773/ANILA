@@ -3,6 +3,10 @@ import { ref, computed } from 'vue'
 import { login as loginApi, refreshTokenApi, getMe, logout as logoutApi } from '../api/auth'
 import { loginWithCard as runCardLogin } from '../api/caAuth'
 import { loginHref } from '../utils/appOrigins'
+import {
+  normalizeSessionProfile,
+  shouldApplySessionProfile,
+} from '../utils/sessionProfile'
 
 // Cookie-only auth store. Tokens stay in httpOnly cookies; the SPA only
 // remembers the current User from GET /api/auth/me.
@@ -11,6 +15,10 @@ import { loginHref } from '../utils/appOrigins'
 // calls (store bootstrap vs router guard vs 401 retry) used to race, and
 // the loser could overwrite a good user with null — testers saw the role
 // flip between developer / user / admin on refresh.
+//
+// A later /me must not invent role=user (TokenResponse / missing role)
+// or downgrade the same id. logout() still bumps the epoch so a late
+// /me cannot restore anyone after 登出.
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
   const initialized = ref(false)
@@ -64,7 +72,13 @@ export const useAuthStore = defineStore('auth', () => {
       try {
         const { data } = await getMe()
         if (epoch !== fetchEpoch) return
-        user.value = data
+        const profile = normalizeSessionProfile(data)
+        if (!profile) {
+          if (force || !user.value) user.value = null
+          return
+        }
+        if (!shouldApplySessionProfile(user.value, profile)) return
+        user.value = profile
       } catch {
         if (epoch !== fetchEpoch) return
         user.value = null
