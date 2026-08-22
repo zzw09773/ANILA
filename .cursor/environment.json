@@ -1,0 +1,17 @@
+{
+  "name": "ANILA monorepo",
+  "user": "ubuntu",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "csp-backend",
+      "command": "cd services/csp && source ../../.venv/bin/activate && ANILA_ALLOW_DEV_SECRET=1 ANILA_ENV=development ANILA_DEPLOYMENT_PROFILE=development ALLOW_AUTO_KEYGEN=true COOKIE_SECURE=false DATABASE_URL=postgresql://csp:csp_password@localhost:5432/csp uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    },
+    {
+      "name": "governance-ui",
+      "command": "cd apps/csp-governance-ui && npm run dev -- --host 0.0.0.0 --port 5173"
+    }
+  ],
+  "ports": [8000, 5173]
+}
