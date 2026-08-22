@@ -43,6 +43,7 @@ const KNOWN_SOURCE_TEXT_GUARDS = [
   "dupReplyReconcile.test.js",
   "editResend.test.js",
   "guards/headerLinesPresent.test.js",
+  "guards/logoutRedirect.test.js",
   "mermaidVersionGuard.test.js",
   "uxCopy.test.jsx",
 ];

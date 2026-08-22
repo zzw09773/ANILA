@@ -193,11 +193,23 @@ router.beforeEach(async (to, from, next) => {
     return
   }
 
-  if (to.path === '/login' && authStore.isAuthenticated) {
-    // Hard navigation — dest may be another SPA on the same host.
-    window.location.replace(postLoginDestination(authStore.user, to.query.next))
-    next(false)
-    return
+  if (to.path === '/login') {
+    // Shell / other SPAs land here after 登出. If the cookie is still warm
+    // (logout POST raced or timed out), do not bounce a regular user back
+    // to /app — clear the session and stay on the login form.
+    if (to.query.logout === '1') {
+      if (authStore.isAuthenticated) {
+        await authStore.logout()
+      }
+      next()
+      return
+    }
+    if (authStore.isAuthenticated) {
+      // Hard navigation — dest may be another SPA on the same host.
+      window.location.replace(postLoginDestination(authStore.user, to.query.next))
+      next(false)
+      return
+    }
   }
 
   if (to.meta.requiresAdmin && !authStore.isAdmin) {

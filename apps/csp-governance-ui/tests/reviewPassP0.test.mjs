@@ -58,6 +58,16 @@ test('forbidden pages explain the required role instead of redirecting home', ()
   assert.doesNotMatch(forbidden, /前往任務中心/)
 })
 
+test('login ?logout=1 stays on the form instead of bouncing a warm cookie to /app', () => {
+  const router = source('router/index.js')
+  const logoutQueryAt = router.indexOf("to.query.logout === '1'")
+  const logoutCallAt = router.indexOf('await authStore.logout()', logoutQueryAt)
+  const bounceAt = router.indexOf('postLoginDestination', logoutQueryAt)
+  assert.ok(logoutQueryAt > 0)
+  assert.ok(logoutCallAt > logoutQueryAt)
+  assert.ok(bounceAt > logoutCallAt)
+})
+
 test('logout clears local state before the network and then hard-replaces /login', () => {
   const store = source('stores/auth.js')
   const header = source('components/layout/AppHeader.vue')

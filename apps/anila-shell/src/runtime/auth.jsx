@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   authRequest,
@@ -24,27 +32,32 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const sessionEpochRef = useRef(0);
 
   useEffect(() => {
     let active = true;
+    const epoch = sessionEpochRef.current;
 
     async function bootstrap() {
       try {
         const me = await authRequest("/api/auth/me");
-        if (!active) return;
+        if (!active || epoch !== sessionEpochRef.current) return;
         setUser(me);
       } catch {
         // Not logged in, or access token expired. Try a refresh once
         // (the refresh cookie may still be valid) and re-probe.
         try {
           await refreshJwt();
+          if (!active || epoch !== sessionEpochRef.current) return;
           const me = await authRequest("/api/auth/me");
-          if (active) setUser(me);
+          if (!active || epoch !== sessionEpochRef.current) return;
+          setUser(me);
         } catch {
-          if (active) setUser(null);
+          if (active && epoch === sessionEpochRef.current) setUser(null);
         }
       } finally {
-        if (active) setAuthReady(true);
+        if (active && epoch === sessionEpochRef.current) setAuthReady(true);
       }
     }
 
@@ -54,27 +67,28 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  async function logout() {
-    // Drop privileged UI immediately, then invalidate the httpOnly cookies.
-    // Bound the wait so a broken network cannot strand the user on metrics.
+  const logout = useCallback(async () => {
+    // Invalidate in-flight /me so a late bootstrap cannot restore the name.
+    sessionEpochRef.current += 1;
+    setLoggingOut(true);
     setUser(null);
+    setAuthReady(true);
     try {
-      const request = authRequest("/api/auth/logout", { method: "POST" });
-      await Promise.race([
-        request,
-        new Promise((resolve) => window.setTimeout(resolve, 4000)),
-      ]);
+      await authRequest("/api/auth/logout", { method: "POST" });
     } catch {
-      // swallow — see comment above
+      // Local identity is already gone; cookies may still exist if the
+      // network failed. The hard-nav in useLogoutRedirect still leaves
+      // the workbench so a stale chrome cannot remount here.
     }
-  }
+  }, []);
 
-  const isAuthenticated = user !== null;
+  const isAuthenticated = user !== null && !loggingOut;
 
   const value = useMemo(
     () => ({
       user,
       authReady,
+      loggingOut,
       isAuthenticated,
       logout,
       // Callsites that previously relied on authRequest/authMultipart
@@ -87,7 +101,7 @@ export function AuthProvider({ children }) {
       // requests (none in the core flow, but keeps the surface parametric).
       getCsrfToken: readCsrfCookie,
     }),
-    [user, authReady, isAuthenticated],
+    [user, authReady, loggingOut, isAuthenticated, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -104,7 +118,12 @@ export function useAuth() {
 export function useLogoutRedirect() {
   const { logout } = useAuth();
   return async () => {
-    await logout();
-    window.location.replace(loginHref());
+    await Promise.race([
+      logout(),
+      new Promise((resolve) => window.setTimeout(resolve, 4000)),
+    ]);
+    // Never pass next=. `logout=1` tells the login app not to treat a
+    // still-warm cookie as a signed-in visit (regular-user fallback is /app).
+    window.location.replace(`${loginHref()}?logout=1`);
   };
 }

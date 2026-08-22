@@ -17,40 +17,9 @@ import {
 import "../../shared/tokens.css";
 import "../../shared/chrome.css";
 import App from "./app.jsx";
-import { AuthProvider, useAuth } from "./runtime/auth.jsx";
+import { AuthProvider } from "./runtime/auth.jsx";
+import { RequireAuth } from "./runtime/requireAuth.jsx";
 import { ConfirmProvider } from "./confirm.jsx";
-import { loginHref } from "./appOrigins.js";
-
-function BootScreen({ label = "載入中…" }) {
-  return (
-    <div className="boot-screen" role="status" aria-live="polite">
-      <span style={{ opacity: 0.75 }}>{label}</span>
-    </div>
-  );
-}
-
-function RequireAuth({ children }) {
-  const { authReady, isAuthenticated } = useAuth();
-
-  if (!authReady) {
-    return <BootScreen label="正在恢復工作階段…" />;
-  }
-
-  if (!isAuthenticated) {
-    // Full-page navigation 跳到 CSP 平台 login，並夾帶 next 讓登入後跳回。
-    // 用 useEffect 而非渲染期直接執行，避免 React commit phase 副作用警告。
-    return <RedirectToCspLogin />;
-  }
-
-  return children;
-}
-
-function RedirectToCspLogin() {
-  React.useEffect(() => {
-    window.location.replace(loginHref(window.location.href));
-  }, []);
-  return <BootScreen label="前往登入頁…" />;
-}
 
 function RootRoutes() {
   return (
