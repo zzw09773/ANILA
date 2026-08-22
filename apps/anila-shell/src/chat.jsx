@@ -2560,7 +2560,7 @@ export const Sidebar = ({
         <AnilaGlyph size={20} />
         <div>
           <div style={{ fontWeight: 600, fontSize: 14, letterSpacing: 0.2 }}>ANILA</div>
-          <div style={{ fontSize: 11, color: "var(--fg-muted)", fontWeight: 500 }}>營運工作臺</div>
+          <div style={{ fontSize: 11, color: "var(--fg-muted)", fontWeight: 500 }}>工作臺</div>
         </div>
         <div style={{ flex: 1 }} />
         <IconButton onClick={onToggleCollapsed} title="收合側邊"><IconPanelR /></IconButton>
@@ -2925,8 +2925,17 @@ export const Sidebar = ({
         </>
       ) : (
         <div style={{ flex: 1, overflowY: "auto", padding: "4px 10px 10px" }}>
-          <div style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", padding: "6px 4px", letterSpacing: 0.4 }}>
-            你可用的 AGENTS ({agents.length})
+          {agents.filter((a) => a.id !== "anila-router").length === 0 ? (
+            <div style={{ padding: "18px 10px" }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>還沒有可用的幫手</div>
+              <p style={{ margin: "8px 0 0", color: "var(--fg-muted)", fontSize: 12, lineHeight: 1.6 }}>
+                目前沒有可請的幫手。需要的話，請聯絡系統管理員。
+              </p>
+            </div>
+          ) : (
+          <>
+          <div style={{ fontSize: 12, color: "var(--fg-muted)", padding: "6px 4px" }}>
+            可請的幫手
           </div>
           {agents.map((a) => (
             <div key={a.id} style={{
@@ -2952,6 +2961,8 @@ export const Sidebar = ({
               </div>
             </div>
           ))}
+          </>
+          )}
         </div>
       )}
 

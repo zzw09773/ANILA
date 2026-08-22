@@ -2,19 +2,18 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <h1 class="page-head__title">沒有權限</h1>
-        <p class="page-head__sub">這頁面需要較高的管理身分，目前的帳號看不見內容。</p>
+        <h1 class="page-head__title">這頁你看不到</h1>
+        <p class="page-head__sub">請回工作臺，或請管理員開權限。</p>
       </div>
     </header>
 
     <div class="card">
       <p class="card__lead">
-        {{ explanation }}
+        這頁你看不到。請回工作臺，或請管理員開權限。
       </p>
       <p v-if="fromPath" class="card__meta">嘗試開啟：{{ fromPath }}</p>
       <div class="card__actions">
-        <router-link to="/" class="term-btn term-btn--primary">返回首頁</router-link>
-        <a class="term-btn" :href="workbenchHref">前往任務中心</a>
+        <a class="term-btn term-btn--primary" :href="workbenchHref">回工作臺</a>
       </div>
     </div>
   </div>
@@ -27,17 +26,6 @@ import { shellWorkbenchHref } from '../utils/appOrigins'
 
 const route = useRoute()
 const workbenchHref = shellWorkbenchHref()
-
-const ROLE_LABEL = {
-  admin: '管理員',
-  owner: '擁有者',
-  developer: '開發者',
-}
-
-const explanation = computed(() => {
-  const required = ROLE_LABEL[route.query.required] || '管理員或開發者'
-  return `此功能僅供「${required}」使用。若你需要這項工作，請向單位管理員申請對應身分。`
-})
 
 const fromPath = computed(() => {
   const value = route.query.from

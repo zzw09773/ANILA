@@ -60,7 +60,7 @@ export function OutputCenterPage() {
       <main style={{ flex: 1, padding: '40px 64px', overflow: 'auto' }}>
         <div style={{ maxWidth: 1040, margin: '0 auto' }}>
           <p style={{ margin: '0 0 8px', color: t.accent, fontSize: 12, fontWeight: 600 }}>
-            產出中心
+            製作
           </p>
           <h1 style={{ margin: 0, fontSize: 32, fontWeight: 650, letterSpacing: -0.7 }}>
             把查到的內容做成文件

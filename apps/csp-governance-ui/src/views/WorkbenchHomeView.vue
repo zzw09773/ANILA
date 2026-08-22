@@ -1,9 +1,9 @@
 <template>
   <div class="workbench">
     <header class="workbench__hero">
-      <h1 class="workbench__title">院內營運工作臺</h1>
+      <h1 class="workbench__title">早安，開始今天的工作</h1>
       <p class="workbench__lead">
-        查人事、採購、總務規範，或把結果做成文件。不必先知道模型或助手是什麼。
+        查人事、採購、總務規範，或把結果做成文件。不必先知道模型或幫手是什麼。
       </p>
     </header>
 

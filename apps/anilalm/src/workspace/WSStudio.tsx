@@ -462,7 +462,7 @@ export function WSStudio() {
           >
             <Icon name="sparkle" size={12} stroke={t.accent} />
           </div>
-          <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: -0.1 }}>產出中心</div>
+          <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: -0.1 }}>製作</div>
           <span
             style={{
               fontSize: 10.5,
@@ -650,7 +650,7 @@ export function WSStudio() {
                 textAlign: 'center',
               }}
             >
-              還沒有產出 · 從上方選一個格式開始
+              還沒有產出。從製作開始。
             </div>
           ) : (
             <div style={{ position: 'relative', paddingLeft: 14 }}>

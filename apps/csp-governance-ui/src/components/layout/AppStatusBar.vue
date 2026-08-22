@@ -43,7 +43,7 @@ const PAGE_LABEL = {
   '/users': '使用者',
   '/audit': '稽核紀錄',
   '/developer/agents': '助手',
-  '/forbidden': '沒有權限',
+  '/forbidden': '這頁你看不到',
 }
 const pageLabel = computed(() => {
   if (route.path === '/') return authStore.isRegularUser ? '工作臺' : '總覽'

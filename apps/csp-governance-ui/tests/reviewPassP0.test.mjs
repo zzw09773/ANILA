@@ -26,7 +26,7 @@ test('the regular-user workbench exposes four distinct entries', () => {
   const entries = workbenchEntries()
   assert.deepEqual(
     entries.map((entry) => entry.label),
-    ['任務中心', '我的知識庫', '產出中心', '專案入口'],
+    ['工作臺', '我的知識庫', '製作', '專案入口'],
   )
   assert.equal(new Set(entries.map((entry) => entry.href)).size, entries.length)
 })
@@ -48,9 +48,13 @@ test('governance routes use a route-keyed view and reserve /keys for the SPA', (
 
 test('forbidden pages explain the required role instead of redirecting home', () => {
   const router = source('router/index.js')
+  const forbidden = source('views/ForbiddenView.vue')
   assert.match(router, /name:\s*'Forbidden'/)
   assert.match(router, /required:\s*to\.meta\.requiredRole/)
   assert.doesNotMatch(router, /requiresAdmin[\s\S]{0,120}next\(['"]\/['"]\)/)
+  assert.match(forbidden, /這頁你看不到。請回工作臺，或請管理員開權限。/)
+  assert.match(forbidden, /回工作臺/)
+  assert.doesNotMatch(forbidden, /前往任務中心/)
 })
 
 test('logout clears local state before the network and then hard-replaces /login', () => {
@@ -68,12 +72,13 @@ test('shared design plan pins six official-blue tokens and four workbench entrie
   const tokens = source('assets/styles/tokens.css')
   assert.match(plan, /#2B4C7E/)
   assert.match(plan, /#F7F8FA/)
-  assert.match(plan, /營運工作臺/)
+  assert.match(plan, /工作臺/)
   assert.match(plan, /Open WebUI/)
-  assert.match(plan, /任務中心/)
+  assert.match(plan, /製作/)
   assert.match(plan, /我的知識庫/)
-  assert.match(plan, /產出中心/)
   assert.match(plan, /專案入口/)
+  assert.doesNotMatch(plan, /產出中心/)
+  assert.doesNotMatch(plan, /即將推出/)
   assert.match(tokens, /--official/)
   assert.match(tokens, /shared\/tokens\.css/)
 })
@@ -107,13 +112,15 @@ test('user-facing copy uses 工作臺 / 系統管理, not leftover admin chrome'
   const sidebar = source('components/layout/AppSidebar.vue')
   const login = source('views/LoginView.vue')
   const entries = source('utils/postLoginDestination.js')
-  assert.match(workbench, /院內營運工作臺/)
+  assert.match(workbench, /早安，開始今天的工作/)
   assert.match(workbench, /人事、採購、總務/)
   assert.match(entries, /人事、採購、總務/)
   assert.match(header, /subtitle="系統管理"/)
   assert.match(sidebar, /label: '工作臺'/)
-  assert.match(login, /院內營運工作臺/)
-  assert.match(login, /查規範、問流程、產出文件/)
+  assert.match(login, /subtitle="工作臺"/)
+  assert.match(login, /查規範、問流程、做成文件/)
+  assert.doesNotMatch(workbench, /任務中心/)
+  assert.doesNotMatch(login, /治理中心/)
   assert.doesNotMatch(login, /cardComponentOrigin \}\}/)
   assert.doesNotMatch(workbench, /DATA PLANE/)
   assert.doesNotMatch(login, /DATA PLANE/)

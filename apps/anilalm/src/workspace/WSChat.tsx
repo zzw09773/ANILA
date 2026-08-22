@@ -600,7 +600,7 @@ export function WSChat({ flex }: WSChatProps) {
           )}
           <button
             onClick={toggleStudio}
-            title={studioOpen ? '收起產出中心' : '展開產出中心'}
+            title={studioOpen ? '收起製作' : '展開製作'}
             style={{
               height: 32,
               padding: '0 12px',
@@ -616,7 +616,7 @@ export function WSChat({ flex }: WSChatProps) {
               gap: 6,
             }}
           >
-            <Icon name="layers" size={13} stroke={studioOpen ? '#fff' : t.text} /> 產出中心
+            <Icon name="layers" size={13} stroke={studioOpen ? '#fff' : t.text} /> 製作
           </button>
         </div>
       </div>

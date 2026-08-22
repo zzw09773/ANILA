@@ -6,15 +6,16 @@ function source(relative) {
   return readFileSync(new URL(relative, import.meta.url), 'utf8')
 }
 
-test('產出中心 has a distinct route and navigation entry', () => {
+test('製作 has a distinct route and navigation entry', () => {
   const app = source('./App.tsx')
   const header = source('./components/ProductHeader.tsx')
   assert.match(app, /path="\/outputs"/)
-  assert.match(header, /label:\s*'產出中心'/)
+  assert.match(header, /label:\s*'製作'/)
   assert.match(header, /knowledgeHref\('\/outputs'\)/)
+  assert.doesNotMatch(header, /產出中心/)
 })
 
-test('產出中心 does not invent a locally cached output count', () => {
+test('製作 does not invent a locally cached output count', () => {
   const page = source('./routes/OutputCenterPage.tsx')
   assert.doesNotMatch(page, /outputCount/)
   assert.doesNotMatch(page, /目前共保留/)

@@ -23,9 +23,9 @@ export function ProductHeader({
 }) {
   const { t } = useTheme()
   const entries = [
-    { id: 'tasks', label: '任務中心', href: shellWorkbenchHref() },
+    { id: 'tasks', label: '工作臺', href: shellWorkbenchHref() },
     { id: 'knowledge', label: '我的知識庫', href: knowledgeHref('/') },
-    { id: 'outputs', label: '產出中心', href: knowledgeHref('/outputs') },
+    { id: 'outputs', label: '製作', href: knowledgeHref('/outputs') },
     { id: 'projects', label: '專案入口', href: `${shellWorkbenchHref()}?panel=services` },
   ] as const
 
@@ -69,7 +69,7 @@ export function ProductHeader({
           </span>
           <span>
             <strong style={{ fontSize: 15, letterSpacing: 0.4, display: 'block' }}>ANILA</strong>
-            <span style={{ fontSize: 11, color: t.textMuted, fontWeight: 500 }}>營運工作臺</span>
+            <span style={{ fontSize: 11, color: t.textMuted, fontWeight: 500 }}>工作臺</span>
           </span>
         </a>
         <nav

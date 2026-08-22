@@ -36,7 +36,9 @@ def test_router_templates_format_safe_and_localized():
     assert "DISPATCH:" in router
 
     assert plain.startswith(COMMON_PREAMBLE)
-    assert "目前沒有已註冊的 agent" in plain
+    assert "目前沒有可請的幫手" in plain
+    assert "平台目前尚未註冊 agent" not in plain
+    assert "目前沒有已註冊的 agent" not in plain
     assert "繁體中文" in plain
     assert "【平台身分】" in plain
     assert "第一個字元" in plain

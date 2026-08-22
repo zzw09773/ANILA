@@ -116,7 +116,7 @@ const segmentMap = {
   '/classification-inventory': '分類盤點',
   '/service-clients': '服務客戶端',
   '/trusted-hosts': '信任主機',
-  '/forbidden': '沒有權限',
+  '/forbidden': '這頁你看不到',
 }
 const currentSegment = computed(() => {
   if (route.path === '/') return authStore.isRegularUser ? '工作臺' : '總覽'

@@ -55,9 +55,9 @@ describe("buildShellEntries", () => {
   it("returns the user entries in constitution order", () => {
     const entries = buildShellEntries({});
     expect(entries.map((e) => e.label)).toEqual([
-      "任務中心",
+      "工作臺",
       "我的知識庫",
-      "產出中心",
+      "製作",
       "專案入口",
     ]);
   });
@@ -86,10 +86,14 @@ describe("buildShellEntries", () => {
 describe("ShellNav", () => {
   it("renders the user entries", () => {
     render(<ShellNav user={{ role: "user" }} />);
-    expect(screen.getByText("任務中心")).toBeTruthy();
+    expect(screen.getByText("工作臺")).toBeTruthy();
     expect(screen.getByText("我的知識庫")).toBeTruthy();
-    expect(screen.getByText("產出中心")).toBeTruthy();
+    expect(screen.getByText("製作")).toBeTruthy();
     expect(screen.getByText("專案入口")).toBeTruthy();
+    expect(screen.queryByText("即將推出")).toBeNull();
+    expect(screen.queryByText("任務中心")).toBeNull();
+    expect(screen.queryByText("產出中心")).toBeNull();
+    expect(screen.queryByText("治理中心")).toBeNull();
   });
 
   it("does not surface ANILALM / Studio / CSP tech brand names", () => {
@@ -112,10 +116,10 @@ describe("ShellNav", () => {
     expect(gov.getAttribute("href")).toBe(`${GOV_ORIGIN}/`);
   });
 
-  it("points 我的知識庫 and 產出中心 at distinct pages", () => {
+  it("points 我的知識庫 and 製作 at distinct pages", () => {
     render(<ShellNav user={{ role: "user" }} />);
     const knowledge = screen.getByText("我的知識庫").closest("a");
-    const outputs = screen.getByText("產出中心").closest("a");
+    const outputs = screen.getByText("製作").closest("a");
     expect(knowledge.getAttribute("href")).toBe(`${KNOWLEDGE_ORIGIN}/`);
     expect(outputs.getAttribute("href")).toBe(`${KNOWLEDGE_ORIGIN}/outputs`);
   });
@@ -127,10 +131,10 @@ describe("ShellNav", () => {
     expect(onOpenServices).toHaveBeenCalledTimes(1);
   });
 
-  it("marks 任務中心 as the current entry and invokes onTaskCenter", () => {
+  it("marks 工作臺 as the current entry and invokes onTaskCenter", () => {
     const onTaskCenter = vi.fn();
     render(<ShellNav user={{ role: "user" }} onTaskCenter={onTaskCenter} />);
-    const tasks = screen.getByText("任務中心").closest("button");
+    const tasks = screen.getByText("工作臺").closest("button");
     expect(tasks.getAttribute("aria-current")).toBe("page");
     fireEvent.click(tasks);
     expect(onTaskCenter).toHaveBeenCalledTimes(1);
@@ -139,8 +143,8 @@ describe("ShellNav", () => {
   it("renders an icon-only collapsed rail that still gates governance", () => {
     render(<ShellNav collapsed user={{ role: "user" }} />);
     // 折疊時以 aria-label 提供無障礙名稱。
-    expect(screen.getByLabelText("任務中心")).toBeTruthy();
-    expect(screen.getByLabelText("產出中心")).toBeTruthy();
+    expect(screen.getByLabelText("工作臺")).toBeTruthy();
+    expect(screen.getByLabelText("製作")).toBeTruthy();
     expect(screen.getByLabelText("專案入口")).toBeTruthy();
     expect(screen.queryByLabelText("系統管理")).toBeNull();
   });

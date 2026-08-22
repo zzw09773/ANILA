@@ -12,10 +12,7 @@
 
 import React from "react";
 
-import {
-  ANILA_LM_COMING_SOON_LABEL,
-  ANILA_LM_ENTRY_ENABLED,
-} from "./anilalmReleaseGate.js";
+import { ANILA_LM_ENTRY_ENABLED } from "./anilalmReleaseGate.js";
 import {
   IconBook,
   IconGrid,
@@ -59,31 +56,19 @@ export function originHref(path) {
  * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void }} handlers
  */
 export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
-  const knowledge = ANILA_LM_ENTRY_ENABLED
-    ? { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: knowledgeHref("/") }
-    : {
-        id: "knowledge",
-        label: "我的知識庫",
-        Icon: IconBook,
-        disabled: true,
-        badge: ANILA_LM_COMING_SOON_LABEL,
-      };
-
-  return [
-    // 任務中心 = 現有聊天工作區（預設視圖，chat 即任務工作臺）。
-    { id: "tasks", label: "任務中心", Icon: IconMessage, current: true, onClick: onTaskCenter },
-    // 我的知識庫 = 同源知識 SPA（也承載 Studio / 產出）。
-    knowledge,
-    // 產出中心有自己的 /outputs 頁，不再與知識庫入口指向同一頁。
-    {
-      id: "outputs",
-      label: "產出中心",
-      Icon: IconSpark,
-      href: knowledgeHref("/outputs"),
-    },
-    // 專案入口 = ServicesPanel（Registry 服務卡片）。
+  const entries = [
+    { id: "tasks", label: "工作臺", Icon: IconMessage, current: true, onClick: onTaskCenter },
     { id: "projects", label: "專案入口", Icon: IconGrid, onClick: onOpenServices },
   ];
+  if (ANILA_LM_ENTRY_ENABLED) {
+    entries.splice(
+      1,
+      0,
+      { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: knowledgeHref("/") },
+      { id: "outputs", label: "製作", Icon: IconSpark, href: knowledgeHref("/outputs") },
+    );
+  }
+  return entries;
 }
 
 // 治理中心入口（僅 admin 面向）——連到同源 CSP 治理 UI（origin 根路徑）。

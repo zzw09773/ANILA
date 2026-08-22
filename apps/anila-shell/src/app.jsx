@@ -3112,6 +3112,7 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
                     {currentMsgs.length === 0 ? (
                       <EmptyState
                         loading={loadingAgents}
+                        hasHelpers={directAgents.length > 0}
                         onPick={(q) => sendMessage(q, [], {})}
                         onOpenServices={() => setServicesOpen(true)}
                       />
@@ -3284,24 +3285,34 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
 }
 
 // ---- Empty state -----------------------------------------------------------
-function EmptyState({ onPick, loading, onOpenServices }) {
+function EmptyState({ onPick, loading, onOpenServices, hasHelpers }) {
   const prompts = buildStarterPrompts();
   const nextActions = [
     { id: "knowledge", label: "我的知識庫", hint: "把規定與資料放進來", href: originHref("/anilalm") },
-    { id: "outputs", label: "產出中心", hint: "做成報告或簡報", href: originHref("/anilalm/outputs") },
+    { id: "outputs", label: "製作", hint: "做成報告或簡報", href: originHref("/anilalm/outputs") },
     { id: "projects", label: "專案入口", hint: "打開院內作業系統", onClick: onOpenServices },
   ];
   return (
     <div style={{ padding: "48px 12px 24px", textAlign: "center" }}>
       <AnilaGlyph size={40} />
       <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>
-        今天要查什麼、問什麼、做完什麼？
+        早安，開始今天的工作
       </div>
+      {!loading && !hasHelpers ? (
+        <div style={{ marginTop: 28, maxWidth: 420, marginLeft: "auto", marginRight: "auto", textAlign: "left" }}>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>還沒有可用的幫手</div>
+          <p style={{ margin: "8px 0 0", color: "var(--fg-muted)", fontSize: 13, lineHeight: 1.6 }}>
+            目前沒有可請的幫手。需要的話，請聯絡系統管理員。
+          </p>
+        </div>
+      ) : (
       <div style={{ marginTop: 6, color: "var(--fg-muted)", fontSize: 13 }}>
         {loading
           ? "準備中…"
           : "人事、採購、總務規範都可以問。回答會盡量附出處。"}
       </div>
+      )}
+      {hasHelpers && (
       <div style={{
         marginTop: 36, display: "grid",
         gridTemplateColumns: "1fr 1fr",
@@ -3342,6 +3353,7 @@ function EmptyState({ onPick, loading, onOpenServices }) {
           );
         })}
       </div>
+      )}
       <ul style={{
         listStyle: "none", margin: "28px auto 0", padding: 0,
         display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8,
@@ -3747,10 +3759,10 @@ function SettingsModal({
             <div style={{ fontSize: 13, lineHeight: 1.7 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
                 <AnilaGlyph size={24} />
-                <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA 營運工作臺</div>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA 工作臺</div>
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-                院內營運工作臺
+                工作臺
               </div>
             </div>
           )}

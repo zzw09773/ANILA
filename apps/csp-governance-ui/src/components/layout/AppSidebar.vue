@@ -21,7 +21,7 @@
     </nav>
 
     <div class="sidenav__foot">
-      <a class="sidenav__workbench" :href="workbenchHref">任務中心</a>
+      <a class="sidenav__workbench" :href="workbenchHref">工作臺</a>
       <div class="sidenav__foot-row">
         <span>{{ authStore.user?.username || '未登入' }}</span>
         <span class="sidenav__foot-val">{{ roleLabel }}</span>
@@ -52,7 +52,7 @@ const menuGroups = computed(() => {
   if (authStore.isRegularUser) {
     return [{
       label: '工作臺',
-      items: [{ path: '/', label: '四個入口' }],
+      items: [{ path: '/', label: '工作臺' }],
     }]
   }
 

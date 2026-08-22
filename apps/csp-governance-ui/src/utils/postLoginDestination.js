@@ -27,7 +27,7 @@ export function workbenchEntries() {
   return [
     {
       id: 'tasks',
-      label: '任務中心',
+      label: '工作臺',
       description: '用文字或語音查人事、採購、總務規範，立刻得到指引。',
       href: shellWorkbenchHref(),
     },
@@ -39,7 +39,7 @@ export function workbenchEntries() {
     },
     {
       id: 'outputs',
-      label: '產出中心',
+      label: '製作',
       description: '把查到的內容做成報告或簡報，帶著出處一起帶走。',
       href: knowledgeHref('/outputs'),
     },

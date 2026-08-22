@@ -185,7 +185,8 @@ def test_zero_agents_prompt_has_no_dispatch_instructions(db_path, monkeypatch):
     # …but the platform's own voice survives: no leaked analysis, truthful
     # "no agents" answer, personalization.
     assert "個人化" in system
-    assert "目前沒有已註冊的 agent" in system
+    assert "目前沒有可請的幫手" in system
+    assert "目前沒有已註冊的 agent" not in system
 
 
 def test_registering_an_agent_routes_on_the_very_next_request(db_path, monkeypatch):
