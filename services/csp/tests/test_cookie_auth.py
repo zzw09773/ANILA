@@ -26,13 +26,37 @@ from app.middleware.cookies import (
     ACCESS_COOKIE_NAME,
     CSRF_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
+    REFRESH_COOKIE_PATH,
+    clear_session_cookies,
     set_session_cookies,
 )
 from app.models.platform_setting import PlatformSetting
 from app.schemas.user import UserResponse
 from app.services.auth_service import TOKEN_LIFETIMES_KEY, create_tokens
+from app.utils.security import create_access_token
 
 from tests.conftest import make_user
+
+
+def _set_cookie_headers(response) -> list[str]:
+    return [
+        value.decode("latin-1")
+        for name, value in response.raw_headers
+        if name == b"set-cookie"
+    ]
+
+
+def _cookie_attr(header: str, attr: str) -> str | None:
+    prefix = f"{attr}="
+    for part in header.split(";"):
+        trimmed = part.strip()
+        if trimmed.lower().startswith(prefix.lower()):
+            return trimmed.split("=", 1)[1]
+    return None
+
+
+def _cookie_flags(header: str) -> set[str]:
+    return {part.strip() for part in header.split(";") if "=" not in part}
 
 
 def _login(client: TestClient, username: str, password: str = "password") -> dict:
@@ -206,6 +230,42 @@ def test_refresh_via_cookie_rotates_tokens(client: TestClient, db):
     assert client.cookies.get(ACCESS_COOKIE_NAME)
 
 
+def test_clear_session_cookies_matches_secure_httponly_and_refresh_path():
+    """Browsers keep a Secure refresh cookie if logout expires it without Secure."""
+    response = Response()
+    clear_session_cookies(response)
+    headers = _set_cookie_headers(response)
+
+    refresh = [
+        header
+        for header in headers
+        if header.startswith(f"{REFRESH_COOKIE_NAME}=")
+        and _cookie_attr(header, "Path") == REFRESH_COOKIE_PATH
+        and "Secure" in _cookie_flags(header)
+        and "HttpOnly" in _cookie_flags(header)
+    ]
+    access = [
+        header
+        for header in headers
+        if header.startswith(f"{ACCESS_COOKIE_NAME}=")
+        and _cookie_attr(header, "Path") == "/"
+        and "Secure" in _cookie_flags(header)
+        and "HttpOnly" in _cookie_flags(header)
+    ]
+    csrf = [
+        header
+        for header in headers
+        if header.startswith(f"{CSRF_COOKIE_NAME}=")
+        and _cookie_attr(header, "Path") == "/"
+        and "Secure" in _cookie_flags(header)
+    ]
+    assert refresh, headers
+    assert access, headers
+    assert csrf, headers
+    assert all("Max-Age=0" in header for header in refresh)
+    assert all("Max-Age=0" in header for header in access)
+
+
 def test_logout_clears_cookies_and_bumps_token_version(client: TestClient, db):
     user = make_user(db, username="dave")
     _login(client, "dave")
@@ -217,14 +277,61 @@ def test_logout_clears_cookies_and_bumps_token_version(client: TestClient, db):
     )
     assert resp.status_code == 200
 
+    set_cookies = resp.headers.get_list("set-cookie")
+    refresh_expired = [
+        header
+        for header in set_cookies
+        if header.startswith(f"{REFRESH_COOKIE_NAME}=")
+        and _cookie_attr(header, "Path") == REFRESH_COOKIE_PATH
+    ]
+    assert refresh_expired, set_cookies
+    assert any("Max-Age=0" in header for header in refresh_expired)
+    assert any("HttpOnly" in header for header in refresh_expired)
+
     # Post-logout the session cookie should not work any more.
     probe = client.get("/api/auth/me")
     # Either 401 (cookies cleared) or 401 (token_version mismatch) —
     # both surface as 401.
     assert probe.status_code == 401
 
+    # A leftover refresh cookie used to resurrect the session on bare /login.
+    assert client.post("/api/auth/refresh").status_code == 401
+
     db.refresh(user)
     assert user.token_version == prior_tv + 1
+
+
+def test_logout_bumps_token_version_when_access_cookie_is_expired(
+    client: TestClient, db
+):
+    user = make_user(db, username="stale-access")
+    _login(client, "stale-access")
+    prior_tv = user.token_version or 0
+    expired = create_access_token(
+        {
+            "sub": str(user.id),
+            "username": user.username,
+            "role": user.role,
+            "tv": user.token_version or 0,
+        },
+        lifetime_minutes=-1,
+    )
+    client.cookies.set(ACCESS_COOKIE_NAME, expired)
+
+    resp = client.post(
+        "/api/auth/logout",
+        headers={"X-CSRF-Token": client.cookies.get(CSRF_COOKIE_NAME)},
+    )
+    assert resp.status_code == 200
+    db.refresh(user)
+    assert user.token_version == prior_tv + 1
+    assert client.get("/api/auth/me").status_code == 401
+    # Access leftover in the TestClient jar can trip CSRF (403). Either
+    # way refresh must not mint a new session after the version bump.
+    csrf = client.cookies.get(CSRF_COOKIE_NAME)
+    headers = {"X-CSRF-Token": csrf} if csrf else {}
+    refreshed = client.post("/api/auth/refresh", headers=headers)
+    assert refreshed.status_code != 200
 
 
 def test_csrf_required_on_mutating_cookie_request(client: TestClient, db):

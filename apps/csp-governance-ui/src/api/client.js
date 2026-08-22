@@ -59,6 +59,13 @@ client.interceptors.response.use(
     const skipRetry = NO_RETRY_PATHS.some((p) => url.includes(p))
 
     if (error.response?.status === 401 && !skipRetry && !originalRequest._retry) {
+      // /login must not mint a new access token from a leftover refresh
+      // cookie. POST /logout expires those cookies; this is the belt if
+      // one still arrives. A later visit to bare /login then stays on
+      // the form instead of bouncing to /app.
+      if (onLoginSurface()) {
+        return Promise.reject(error)
+      }
       originalRequest._retry = true
       const authStore = useAuthStore()
 

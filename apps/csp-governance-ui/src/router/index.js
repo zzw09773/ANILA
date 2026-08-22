@@ -194,9 +194,9 @@ router.beforeEach(async (to, from, next) => {
   }
 
   if (to.path === '/login') {
-    // Shell / other SPAs land here after 登出. If the cookie is still warm
-    // (logout POST raced or timed out), do not bounce a regular user back
-    // to /app — clear the session and stay on the login form.
+    // Shell / other SPAs land here after 登出. POST /logout expires every
+    // auth cookie; `logout=1` is the belt if a race left a warm session.
+    // Do not bounce a regular user back to /app — stay on the form.
     if (to.query.logout === '1') {
       if (authStore.isAuthenticated) {
         await authStore.logout()

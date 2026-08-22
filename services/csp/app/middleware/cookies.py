@@ -114,11 +114,50 @@ def set_session_cookies(
     return csrf_token
 
 
+# Paths a leftover cookie may still be bound to after older builds.
+# Logout must expire every one; Chromium will not drop a cookie whose
+# Path / Secure flags do not match the Set-Cookie that created it.
+_COOKIE_CLEAR_PATHS = {
+    ACCESS_COOKIE_NAME: ("/", "/api", "/api/auth"),
+    REFRESH_COOKIE_NAME: (REFRESH_COOKIE_PATH, "/api/auth", "/api", "/"),
+    CSRF_COOKIE_NAME: ("/", "/api", "/api/auth"),
+}
+
+
+def _expire_cookie(
+    response: Response,
+    name: str,
+    *,
+    path: str,
+    httponly: bool,
+    secure: bool,
+) -> None:
+    response.delete_cookie(
+        name,
+        path=path,
+        secure=secure,
+        httponly=httponly,
+        samesite=_cookie_samesite(),
+    )
+
+
 def clear_session_cookies(response: Response) -> None:
-    """Remove all session cookies — used on logout and on refresh failure."""
-    for name, path in (
-        (ACCESS_COOKIE_NAME, "/"),
-        (REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH),
-        (CSRF_COOKIE_NAME, "/"),
-    ):
-        response.delete_cookie(name, path=path)
+    """Expire every auth cookie the login app can still see.
+
+    ``delete_cookie`` defaults (Secure=False, HttpOnly=False) do **not**
+    remove cookies that were set with ``Secure`` / ``HttpOnly``. After
+    登出 the refresh cookie then survives on ``/api/auth/refresh`` and a
+    later visit to bare ``/login`` mints a new access token.
+    """
+    secure = _cookie_secure()
+    for name, paths in _COOKIE_CLEAR_PATHS.items():
+        httponly = name != CSRF_COOKIE_NAME
+        for path in paths:
+            _expire_cookie(
+                response, name, path=path, httponly=httponly, secure=secure
+            )
+            # Older builds may have set the same name without Secure.
+            if secure:
+                _expire_cookie(
+                    response, name, path=path, httponly=httponly, secure=False
+                )

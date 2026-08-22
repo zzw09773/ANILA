@@ -68,6 +68,19 @@ test('login ?logout=1 stays on the form instead of bouncing a warm cookie to /ap
   assert.ok(bounceAt > logoutCallAt)
 })
 
+test('bare /login 401 does not refresh a leftover session into /app', () => {
+  const client = source('api/client.js')
+  const handlerAt = client.indexOf('async (error)')
+  const loginGuardAt = client.indexOf('onLoginSurface()', handlerAt)
+  const rejectAt = client.indexOf('return Promise.reject(error)', loginGuardAt)
+  const refreshAt = client.indexOf('refreshToken()', handlerAt)
+  assert.ok(handlerAt > 0)
+  assert.ok(loginGuardAt > handlerAt)
+  assert.ok(rejectAt > loginGuardAt)
+  assert.ok(refreshAt > rejectAt)
+  assert.match(client, /function onLoginSurface/)
+})
+
 test('developer session hydrate refuses a weaker /me and does not cache GET /me', () => {
   const store = source('stores/auth.js')
   const authApi = source('api/auth.js')

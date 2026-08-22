@@ -343,7 +343,7 @@ def create_refresh_token(
 
 # ── Token verification ────────────────────────────────────────────────────────
 
-def decode_token(token: str) -> dict | None:
+def _decode_token(token: str, *, verify_exp: bool = True) -> dict | None:
     """Verify ``token`` and return its claims, or None on any failure.
 
     Defence-in-depth:
@@ -356,6 +356,10 @@ def decode_token(token: str) -> dict | None:
        any key material is touched (algorithm-confusion defence).
     3. Any ``JWTError`` (expired, bad signature, claim mismatch, …)
        returns None — callers raise the user-facing 401 themselves.
+
+    ``verify_exp=False`` is only for logout: a stale access cookie must
+    still identify the user so ``token_version`` can bump. Signature,
+    ``kid``, and algorithm checks stay on.
     """
     try:
         header = jwt.get_unverified_header(token)
@@ -370,9 +374,20 @@ def decode_token(token: str) -> dict | None:
             token,
             public_key,
             algorithms=[ALGORITHM],
+            options={"verify_exp": verify_exp},
         )
     except JWTError:
         return None
+
+
+def decode_token(token: str) -> dict | None:
+    """Verify ``token`` and return its claims, or None on any failure."""
+    return _decode_token(token, verify_exp=True)
+
+
+def decode_token_allow_expired(token: str) -> dict | None:
+    """Same as ``decode_token`` but ignores ``exp``. Logout-only."""
+    return _decode_token(token, verify_exp=False)
 
 
 def verify_token(token: str) -> dict | None:
@@ -393,6 +408,7 @@ __all__ = [
     "create_access_token",
     "create_refresh_token",
     "decode_token",
+    "decode_token_allow_expired",
     "get_kid",
     "get_private_key",
     "get_public_key",

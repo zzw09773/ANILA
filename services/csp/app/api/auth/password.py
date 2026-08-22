@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.middleware.cookies import (
+    ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
     clear_session_cookies,
     set_session_cookies,
@@ -33,7 +34,12 @@ from app.services.auth_service import (
     LOCAL_PASSWORD_DISABLED_SENTINEL,
     TOKEN_LIFETIMES_KEY,
 )
-from app.utils.security import decode_token, hash_password, verify_password
+from app.utils.security import (
+    decode_token,
+    decode_token_allow_expired,
+    hash_password,
+    verify_password,
+)
 
 from ._common import (
     _finalize_login,
@@ -223,6 +229,39 @@ async def refresh(
     return tokens
 
 
+def _user_for_logout(http_request: Request, db: Session) -> User | None:
+    """Identify the session owner even when the access cookie is stale.
+
+    The refresh cookie is Path-scoped to ``/api/auth/refresh`` and is
+    not sent here. A still-valid or expired access cookie is enough to
+    bump ``token_version`` so a leftover refresh JWT cannot mint again.
+    """
+    try:
+        return get_current_user(http_request, None, db)
+    except HTTPException:
+        pass
+    token = http_request.cookies.get(ACCESS_COOKIE_NAME)
+    if not token:
+        return None
+    payload = decode_token_allow_expired(token)
+    if not payload or payload.get("type") != "access":
+        return None
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+    try:
+        user = db.query(User).filter(User.id == int(user_id)).first()
+    except (TypeError, ValueError):
+        return None
+    if not user or not user.is_active:
+        return None
+    # Same generation as the leftover cookies only. An older stolen
+    # access JWT must not bump a newer live session.
+    if payload.get("tv", 0) != user.token_version:
+        return None
+    return user
+
+
 @router.post("/logout")
 def logout(
     http_request: Request,
@@ -234,12 +273,10 @@ def logout(
     Bumping ``token_version`` invalidates any outstanding JWTs the user
     already issued — so logout is effective even if an attacker copied
     the access token before logout. Cookie removal handles the active
-    browser tab; token_version handles everything else.
+    browser tab; token_version handles everything else. Cookies are
+    always expired, even when the user cannot be identified.
     """
-    try:
-        current_user = get_current_user(http_request, None, db)
-    except HTTPException:
-        current_user = None
+    current_user = _user_for_logout(http_request, db)
 
     if current_user is not None:
         current_user.token_version = (current_user.token_version or 0) + 1
