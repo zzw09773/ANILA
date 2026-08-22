@@ -55,9 +55,8 @@ const PRESETS: Record<string, Preset[]> = {
     { l: '對外溝通文件', d: '客觀中立、適合分享給非技術讀者' },
   ],
   slides: [
-    { l: '經典報告結構', d: '封面 → 大綱 → 內容 → 結論 · 12-15 張', tag: '推薦' },
-    { l: '閃電簡報', d: '5 張投影片濃縮版' },
-    { l: '教學投影片', d: '概念 + 範例 + 練習' },
+    { l: '詳細簡報', d: '完整論證、分頁講清楚 · 12-15 張', tag: '推薦' },
+    { l: '口講用短頁', d: '一頁一句，適合口講（TED 節奏）· 5 張' },
   ],
   mindmap: [
     { l: '概念樹', d: '從根概念展開子概念與相關項目', tag: '推薦' },
@@ -113,6 +112,9 @@ export function presetEnumFor(kind: string, label: string): string {
   return PRESET_ENUM_MAP[kind]?.[label] ?? label
 }
 
+const AUDIENCES = ['院內同仁', '主管', '對外'] as const
+const NO_INDEXED = '先上傳或等索引完成'
+
 export function CommandModal({ open, onClose, onGenerated, format }: CommandModalProps) {
   const { t } = useTheme()
   const collection = useWorkspaceStore((s) => s.collection)
@@ -123,6 +125,8 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
   const [selected, setSelected] = useState(0)
   const [themeId, setThemeId] = useState<ThemeId>('auto')
   const [extra, setExtra] = useState('')
+  const [selectedDocIds, setSelectedDocIds] = useState<number[]>([])
+  const [audience, setAudience] = useState<(typeof AUDIENCES)[number]>('院內同仁')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   // Wizard (Phase B) vs picker (Phase A) for the theme step. Default to
@@ -135,6 +139,14 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
   useEffect(() => {
     localStorage.setItem('studio.theme-mode', mode)
   }, [mode])
+
+  useEffect(() => {
+    if (!open) return
+    setSelectedDocIds(
+      docs.filter((d) => d.doc.status === 'indexed').map((d) => d.doc.id),
+    )
+    setAudience('院內同仁')
+  }, [open, format?.k, docs])
 
   const presets = format ? PRESETS[format.k] ?? [] : []
   // 5 種 artifact 都已實作(report v2 backend + slides + mindmap + infographic + datatable)
@@ -152,6 +164,8 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
     setSelected(0)
     setThemeId('auto')
     setExtra('')
+    setSelectedDocIds(indexedDocs.map((d) => d.id))
+    setAudience('院內同仁')
     setErr(null)
   }
 
@@ -181,8 +195,11 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
 
   const submit = async () => {
     if (!format || !collection || !isSupported) return
-    if (indexedDocs.length === 0) {
-      setErr('這個知識庫目前沒有已完成索引的資料，請先上傳資料並等待索引完成。')
+    const picked = isSlides
+      ? indexedDocs.filter((d) => selectedDocIds.includes(d.id))
+      : indexedDocs
+    if (picked.length === 0) {
+      setErr(NO_INDEXED)
       return
     }
     setBusy(true)
@@ -255,6 +272,8 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
           collectionId: collection.id,
           preset: presetName,
           extraInstructions: extra.trim() || undefined,
+          documentIds: picked.map((d) => d.id),
+          audience,
           themeOverride: themeId === 'auto' ? undefined : themeId,
           binding: binding ?? undefined,
         })
@@ -272,7 +291,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
           title: '產出中…',
           preset: presetName,
           slides: [],
-          sourceCount: indexedDocs.length,
+          sourceCount: picked.length,
           createdAt: new Date().toISOString(),
           state: 'pending',
           jobId: job.job_id,
@@ -530,8 +549,75 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                 marginBottom: 10,
               }}
             >
-              {isSlides ? '03' : '02'} · 補充指示（可略過）
+              {isSlides ? '03' : '02'} · {isSlides ? '來源、聽眾與補充指示' : '補充指示（可略過）'}
             </div>
+            {isSlides && (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: t.text, marginBottom: 8 }}>
+                  要用哪些來源
+                </div>
+                {indexedDocs.length === 0 ? (
+                  <div className="yuan-card" style={{ padding: 14, fontSize: 13, color: t.textMuted }}>
+                    {NO_INDEXED}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {indexedDocs.map((doc) => {
+                      const on = selectedDocIds.includes(doc.id)
+                      return (
+                        <button
+                          key={doc.id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedDocIds((prev) =>
+                              on ? prev.filter((id) => id !== doc.id) : [...prev, doc.id],
+                            )
+                          }
+                          style={{
+                            textAlign: 'left',
+                            padding: '8px 12px',
+                            borderRadius: 8,
+                            border: `1px solid ${on ? t.accentBorder : t.border}`,
+                            background: on ? t.accentSoft : t.surface2,
+                            color: t.text,
+                            cursor: 'pointer',
+                            fontFamily: 'inherit',
+                            fontSize: 12.5,
+                          }}
+                        >
+                          {on ? '已選 · ' : ''}
+                          {doc.filename}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+                <div style={{ fontSize: 12, fontWeight: 600, color: t.text, margin: '14px 0 8px' }}>
+                  聽眾
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+                  {AUDIENCES.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => setAudience(item)}
+                      style={{
+                        padding: '5px 10px',
+                        borderRadius: 8,
+                        border: `1px solid ${audience === item ? t.accentBorder : t.border}`,
+                        background: audience === item ? t.accentSoft : t.surface2,
+                        color: t.text,
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                        fontSize: 12,
+                      }}
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <textarea
               value={extra}
               onChange={(e) => setExtra(e.target.value)}
@@ -578,9 +664,11 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                   已選擇：{presets[selected]?.l ?? '—'}
                 </div>
                 <div style={{ color: t.textMuted }}>
-                  {indexedDocs.length} 份已索引文件
+                  {isSlides
+                    ? `${selectedDocIds.length} 份已選來源 · ${audience}`
+                    : `${indexedDocs.length} 份已索引文件`}
                   {format?.k === 'slides'
-                    ? ' · 簡報走後端 pipeline（檢索 → LLM → 渲染 → 視覺檢查），需 60-120 秒'
+                    ? ' · 簡報在背景製作，完成後可預覽、重做單頁、下載可編輯 PPTX'
                     : ' · 預估 30-90 秒'}
                 </div>
               </div>
@@ -680,10 +768,14 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
               {step === extraStep && (
                 <button
                   onClick={() => void submit()}
-                  disabled={busy || indexedDocs.length === 0}
+                  disabled={
+                    busy ||
+                    indexedDocs.length === 0 ||
+                    (isSlides && selectedDocIds.length === 0)
+                  }
                   title={
-                    indexedDocs.length === 0
-                      ? '請先上傳資料並等待索引完成'
+                    indexedDocs.length === 0 || (isSlides && selectedDocIds.length === 0)
+                      ? NO_INDEXED
                       : ''
                   }
                   style={{
@@ -696,7 +788,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                     fontWeight: 500,
                     cursor: busy
                       ? 'wait'
-                      : indexedDocs.length === 0
+                      : indexedDocs.length === 0 || (isSlides && selectedDocIds.length === 0)
                         ? 'not-allowed'
                         : 'pointer',
                     fontFamily: 'inherit',
@@ -704,7 +796,12 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                     alignItems: 'center',
                     gap: 6,
                     boxShadow: `0 4px 14px -4px ${t.accent}`,
-                    opacity: busy || indexedDocs.length === 0 ? 0.55 : 1,
+                    opacity:
+                      busy ||
+                      indexedDocs.length === 0 ||
+                      (isSlides && selectedDocIds.length === 0)
+                        ? 0.55
+                        : 1,
                   }}
                 >
                   {busy ? <Spinner size={11} color="#fff" /> : <Icon name="sparkle" size={11} stroke="#fff" />}

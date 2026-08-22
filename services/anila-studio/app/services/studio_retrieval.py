@@ -27,6 +27,7 @@ async def retrieve_chunks(
     bearer: str,
     collection_id: int,
     seed_query: str,
+    document_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Top-K relevant chunks for the seed_query, fetched via csp HTTP.
 
@@ -59,6 +60,7 @@ async def retrieve_chunks(
         seed_query,
         top_k=STUDIO_TOP_K,
         min_score=STUDIO_MIN_SCORE,
+        document_ids=document_ids,
         bearer=bearer,
     )
     return _build_chunk_dicts(hits)
@@ -78,8 +80,11 @@ def _build_chunk_dicts(hits: list["ChunkHit"]) -> list[dict[str, Any]]:
         {
             "filename": h.filename or "<unknown>",
             "chunk_key": h.chunk_key,
+            "chunk_id": h.chunk_id,
+            "document_id": h.document_id,
             "content": h.content[:STUDIO_CONTENT_LIMIT_CHARS],
             "score": float(h.score),
+            "page": (h.metadata or {}).get("page"),
         }
         for h in hits
     ]

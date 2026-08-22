@@ -192,12 +192,31 @@ export interface ReportArtifact extends ArtifactBase {
   referencesCount?: number
 }
 
+export interface SlideSource {
+  index: number
+  document_id?: number | null
+  document_name: string
+  chunk_id: string
+  snippet: string
+  page?: number | null
+}
+
+export interface SlidePreview {
+  title: string
+  bullets: string[]
+  speakerNotes?: string
+  citationRefs?: number[]
+  chunkId?: string
+}
+
 export interface SlidesArtifact extends ArtifactBase {
   kind: 'slides'
   /** Theme ID used; undefined when auto. For sidebar display + retry. */
   theme?: string
   /** May be empty while pending; fills in once the job completes. */
-  slides: { title: string; bullets: string[]; speakerNotes?: string }[]
+  slides: SlidePreview[]
+  /** Retrieved chunks for per-slide source open. */
+  sources?: SlideSource[]
   /** Populated once vision QA finishes. */
   defects?: { slide_index: number; severity: string; summary: string }[]
   qaPasses?: number

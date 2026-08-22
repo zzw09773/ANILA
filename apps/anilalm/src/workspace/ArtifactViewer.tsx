@@ -12,6 +12,8 @@ import type {
   InfographicArtifact,
   MindmapArtifact,
   ReportArtifact,
+  SlidePreview,
+  SlideSource,
   SlidesArtifact,
   StudioArtifact,
 } from '../types'
@@ -22,6 +24,9 @@ import {
   downloadDatatableArtifact,
   downloadSlidesJobPptx,
   fetchMindmapTree,
+  getSlidesJobStatus,
+  regenerateSlide,
+  slidesFromJobSpec,
   type MindmapTreeSpec,
 } from '../api/studio'
 import { isDownloadWarning, warningPatch } from './artifactWarning'
@@ -45,9 +50,13 @@ const KIND_META: Record<
 
 export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps) {
   const { t } = useTheme()
-  if (!artifact) return null
+  const live = useArtifactStore((s) => {
+    if (!artifact) return null
+    return s.get(artifact.collectionId, artifact.id) ?? artifact
+  })
+  if (!artifact || !live) return null
 
-  const meta = KIND_META[artifact.kind]
+  const meta = KIND_META[live.kind]
 
   return (
     // 心智圖是橫向樹,給寬一點的畫布
@@ -84,20 +93,20 @@ export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps)
               textOverflow: 'ellipsis',
             }}
           >
-            {artifact.title}
+            {live.title}
           </div>
           <div style={{ fontSize: 11, color: t.textSubtle }}>
-            {meta.label} · {artifact.preset} · {artifact.sourceCount} 份來源
+            {meta.label} · {live.preset} · {live.sourceCount} 份來源
           </div>
         </div>
-        <ArtifactHeaderActions artifact={artifact} />
+        <ArtifactHeaderActions artifact={live} />
         <button onClick={onClose} style={iconBtnStyle(t)} title="關閉">
           <Icon name="x" size={13} stroke={t.textMuted} />
         </button>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: 22 }}>
-        <ArtifactBody artifact={artifact} onClose={onClose} />
+        <ArtifactBody artifact={live} onClose={onClose} />
       </div>
     </Modal>
   )
@@ -289,7 +298,7 @@ function ArtifactBody({
     case 'report':
       return <ReportBody artifact={artifact} />
     case 'slides':
-      return <SlidesViewer slides={(artifact as SlidesArtifact).slides} />
+      return <SlidesViewer artifact={artifact as SlidesArtifact} />
     case 'mindmap':
       return <MindmapBody artifact={artifact} onClose={onClose} />
     case 'infographic':
@@ -454,37 +463,97 @@ function downloadAs(filename: string, content: string, mime: string) {
   URL.revokeObjectURL(url)
 }
 
-interface Slide {
-  title: string
-  bullets: string[]
-  speakerNotes?: string
+function sourcesForSlide(slide: SlidePreview, sources: SlideSource[]): SlideSource[] {
+  if (!sources.length) return []
+  const refs = slide.citationRefs ?? []
+  const picked = refs
+    .map((n) => sources.find((s) => s.index === n))
+    .filter((s): s is SlideSource => Boolean(s))
+  if (picked.length) return picked
+  if (slide.chunkId) {
+    const hit = sources.find((s) => s.chunk_id === slide.chunkId)
+    if (hit) return [hit]
+  }
+  return []
 }
 
-function SlidesViewer({ slides }: { slides: Slide[] }) {
+function SlidesViewer({ artifact }: { artifact: SlidesArtifact }) {
   const { t } = useTheme()
+  const updateArtifact = useArtifactStore((s) => s.update)
   const [idx, setIdx] = useState(0)
+  const [openCite, setOpenCite] = useState<number | null>(null)
+  const [regenBusy, setRegenBusy] = useState(false)
+  const [regenErr, setRegenErr] = useState<string | null>(null)
+  const slides = artifact.slides
   const slide = slides[idx]
-  if (!slide) return null
+  const sources = artifact.sources ?? []
+
+  useEffect(() => {
+    if (!artifact.jobId || artifact.slides.length > 0) return
+    let alive = true
+    void getSlidesJobStatus(artifact.jobId).then((status) => {
+      if (!alive || !status.spec?.slides?.length) return
+      updateArtifact(artifact.collectionId, artifact.id, {
+        title: status.title ?? artifact.title,
+        slides: slidesFromJobSpec(status.spec),
+        sources: status.sources ?? [],
+      })
+    })
+    return () => {
+      alive = false
+    }
+  }, [artifact.jobId, artifact.slides.length, artifact.collectionId, artifact.id, artifact.title, updateArtifact])
+
+  if (!slide) {
+    return (
+      <div className="yuan-card" style={{ padding: 28, textAlign: 'center' }}>
+        <div style={{ fontSize: 14, color: t.text }}>還沒有可預覽的頁面</div>
+        <div style={{ fontSize: 12, marginTop: 6, color: t.textMuted }}>
+          {artifact.jobId
+            ? '可從右上角下載可編輯 PPTX，或等製作完成後再打開。'
+            : '這份舊產出沒有頁面資料。'}
+        </div>
+      </div>
+    )
+  }
+
+  const supporting = sourcesForSlide(slide, sources)
+
+  const onRegen = async () => {
+    if (!artifact.jobId || regenBusy) return
+    setRegenBusy(true)
+    setRegenErr(null)
+    try {
+      const status = await regenerateSlide(artifact.jobId, idx + 1)
+      updateArtifact(artifact.collectionId, artifact.id, {
+        title: status.title ?? artifact.title,
+        slides: slidesFromJobSpec(status.spec),
+        sources: status.sources ?? artifact.sources,
+      })
+    } catch (err) {
+      setRegenErr(err instanceof Error ? err.message : '重做失敗，請稍後再試')
+    } finally {
+      setRegenBusy(false)
+    }
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div
+        className="yuan-card"
         style={{
           aspectRatio: '16 / 9',
-          background: t.surface2,
-          border: `1px solid ${t.border}`,
-          borderRadius: 14,
-          padding: 36,
+          padding: 32,
           display: 'flex',
           flexDirection: 'column',
-          gap: 18,
+          gap: 16,
         }}
       >
         <div
           style={{
-            fontSize: 24,
+            fontSize: 22,
             fontWeight: 600,
-            letterSpacing: -0.4,
+            letterSpacing: -0.3,
             color: t.text,
           }}
         >
@@ -504,10 +573,14 @@ function SlidesViewer({ slides }: { slides: Slide[] }) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          gap: 8,
         }}
       >
         <button
-          onClick={() => setIdx((i) => Math.max(0, i - 1))}
+          onClick={() => {
+            setIdx((i) => Math.max(0, i - 1))
+            setOpenCite(null)
+          }}
           disabled={idx === 0}
           style={{
             padding: '6px 12px',
@@ -530,7 +603,10 @@ function SlidesViewer({ slides }: { slides: Slide[] }) {
           {idx + 1} / {slides.length}
         </div>
         <button
-          onClick={() => setIdx((i) => Math.min(slides.length - 1, i + 1))}
+          onClick={() => {
+            setIdx((i) => Math.min(slides.length - 1, i + 1))
+            setOpenCite(null)
+          }}
           disabled={idx === slides.length - 1}
           style={{
             padding: '6px 12px',
@@ -551,13 +627,139 @@ function SlidesViewer({ slides }: { slides: Slide[] }) {
         </button>
       </div>
 
+      {artifact.jobId && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            type="button"
+            onClick={() => void onRegen()}
+            disabled={regenBusy}
+            style={{
+              padding: '7px 12px',
+              borderRadius: 8,
+              border: `1px solid ${t.border}`,
+              background: t.surface,
+              color: t.text,
+              cursor: regenBusy ? 'wait' : 'pointer',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            {regenBusy ? <Spinner size={11} /> : <Icon name="sparkle" size={12} stroke={t.accent} />}
+            {regenBusy ? '重做這一頁…' : '重做這一頁'}
+          </button>
+          <span style={{ fontSize: 11.5, color: t.textSubtle }}>
+            只重做目前這頁，不會重做整份簡報。下載仍是可編輯 PPTX。
+          </span>
+        </div>
+      )}
+      {regenErr && (
+        <div role="alert" style={{ fontSize: 12.5, color: t.danger }}>
+          {regenErr}
+        </div>
+      )}
+
+      {supporting.length === 0 && sources.length > 0 && (
+        <div style={{ fontSize: 12, color: t.textSubtle }}>這一頁沒有對到段落</div>
+      )}
+      {supporting.length > 0 && (
+        <div>
+          <div
+            style={{
+              fontSize: 11,
+              color: t.textSubtle,
+              marginBottom: 6,
+              fontWeight: 500,
+              letterSpacing: 0.4,
+            }}
+          >
+            本頁來源 · {supporting.length}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {supporting.map((c) => {
+              const isOpen = openCite === c.index
+              return (
+                <button
+                  key={`${c.index}-${c.chunk_id}`}
+                  type="button"
+                  onClick={() => setOpenCite(isOpen ? null : c.index)}
+                  style={{
+                    padding: '8px 11px',
+                    borderRadius: 8,
+                    background: isOpen ? t.accentSoft : t.surface,
+                    border: `1px solid ${isOpen ? t.accentBorder : t.border}`,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    gap: 8,
+                    alignItems: 'flex-start',
+                    fontFamily: 'inherit',
+                    textAlign: 'left',
+                    minWidth: 220,
+                    maxWidth: 360,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: 5,
+                      background: t.accentSoft,
+                      color: t.accent,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      display: 'grid',
+                      placeItems: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {c.index}
+                  </span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 500,
+                        color: t.text,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {c.document_name || '來源'}
+                    </div>
+                    {isOpen && (
+                      <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.55, marginTop: 6 }}>
+                        {c.snippet}
+                      </div>
+                    )}
+                    {!isOpen && (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: t.textSubtle,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        點擊看段落
+                      </div>
+                    )}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {slide.speakerNotes && (
         <div
+          className="yuan-card"
           style={{
             padding: 14,
-            borderRadius: 10,
-            background: t.surface2,
-            border: `1px solid ${t.border}`,
             fontSize: 12.5,
             color: t.textMuted,
             lineHeight: 1.6,
@@ -567,7 +769,6 @@ function SlidesViewer({ slides }: { slides: Slide[] }) {
             style={{
               fontSize: 10.5,
               fontWeight: 600,
-              textTransform: 'uppercase',
               letterSpacing: 1,
               marginBottom: 6,
               color: t.textSubtle,

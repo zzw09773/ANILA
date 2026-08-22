@@ -266,6 +266,13 @@ class Slide(BaseModel):
     # contracts are designed to avoid.
     image_gen_meta: dict | None = Field(default=None)
 
+    # Product loop: per-slide source cites so the in-app preview can open
+    # the supporting chunk (NotebookLM slides often have none). 1-based
+    # indexes into JobStatus.sources. Optional — old decks / fallback
+    # templates stay valid without them.
+    citation_refs: list[int] = Field(default_factory=list, max_length=12)
+    chunk_id: str | None = Field(default=None, max_length=128)
+
     @field_validator("title", "speaker_notes")
     @classmethod
     def _strip_whitespace(cls, v: str | None) -> str | None:
@@ -474,6 +481,11 @@ class GenerateSpecRequest(BaseModel):
             "Must be one of THEMES; invalid values rejected by Literal."
         ),
     )
+    # Product loop: restrict RAG to the documents the user picked, and
+    # name the audience so the LLM can change density / tone. Both
+    # optional — omitting them keeps the old "whole collection" path.
+    document_ids: list[int] | None = Field(default=None, max_length=200)
+    audience: str | None = Field(default=None, max_length=80)
 
 
 class VisualDefect(BaseModel):
@@ -538,6 +550,28 @@ JOB_STEP_RENDERING = "rendering"
 JOB_STEP_QA = "qa"
 JOB_STEP_FIXING = "fixing"
 JOB_STEP_DONE = "done"
+JOB_STEP_REGENERATING = "regenerating"
+
+# User-facing generate gate. Zero indexed / zero retrieved sources
+# block the job instead of shipping an ungrounded deck.
+NO_INDEXED_SOURCES = "先上傳或等索引完成"
+
+
+class SlideSource(BaseModel):
+    """One retrieved chunk the in-app deck preview can open."""
+
+    index: int = Field(..., ge=1)
+    document_id: int | None = None
+    document_name: str = ""
+    chunk_id: str = ""
+    snippet: str = ""
+    page: int | None = None
+
+
+class RegenerateSlideRequest(BaseModel):
+    """Input to ``POST /slides/jobs/{id}/slides/{n}/regenerate``."""
+
+    extra_instructions: str | None = Field(default=None, max_length=1000)
 
 
 class JobStatus(BaseModel):
@@ -571,6 +605,9 @@ class JobStatus(BaseModel):
     # artifact is registered on CSP (POST /v1/artifacts). Absent until then.
     artifact_id: str | None = None
     classification_level: str | None = None
+    # In-app deck preview + per-slide source open. Populated on done.
+    spec: SlidesSpec | None = None
+    sources: list[SlideSource] = Field(default_factory=list)
     # ISO 8601 timestamps so the UI can show "鑄造中 1m 30s" style age.
     created_at: str
     updated_at: str

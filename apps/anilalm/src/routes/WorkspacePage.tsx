@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { getCollection } from '../api/collections'
@@ -30,6 +30,8 @@ export function WorkspacePage() {
   const reset = useWorkspaceStore((s) => s.reset)
   const upsertDoc = useWorkspaceStore((s) => s.upsertDoc)
   const studioOpen = useWorkspaceStore((s) => s.studioOpen)
+  const setStudioOpen = useWorkspaceStore((s) => s.setStudioOpen)
+  const [searchParams] = useSearchParams()
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
 
@@ -180,6 +182,10 @@ export function WorkspacePage() {
     const cid = conversationId ? Number(conversationId) : null
     setActiveConversationId(Number.isFinite(cid) ? cid : null)
   }, [conversationId, setActiveConversationId])
+
+  useEffect(() => {
+    if (searchParams.get('studio') === '1') setStudioOpen(true)
+  }, [searchParams, setStudioOpen])
 
   // SSE subscription for jobs in flight.
   useJobStream()

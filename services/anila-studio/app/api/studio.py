@@ -82,8 +82,10 @@ from app.schemas.studio import (
     JOB_STEP_REBALANCING,
     JOB_STEP_RENDERING,
     JOB_STEP_RETRIEVING,
+    NO_INDEXED_SOURCES,
     GenerateSpecRequest,
     JobStatus,
+    RegenerateSlideRequest,
     Slide,
     SlidesSpec,
     VisualDefect,
@@ -111,6 +113,7 @@ from app.services.studio_layout import (
 from app.services.studio_llm import (
     StudioLLMAdapter as _StudioLLMAdapter,
     build_generation_prompt as _build_generation_prompt,
+    build_regenerate_slide_prompt as _build_regenerate_slide_prompt,
     call_llm_chat as _call_llm_chat,
 )
 from app.services.studio_render import (
@@ -171,6 +174,73 @@ FALLBACK_DECK_WARNING = (
 # ── Step 5+6: generate + validate (with one correction pass) ─────────────
 
 
+_CITE_NUM_RE = re.compile(r"\[(\d+)\]")
+
+
+def _extract_citation_refs(*texts: str | None) -> list[int]:
+    refs: list[int] = []
+    seen: set[int] = set()
+    for text in texts:
+        if not text:
+            continue
+        for match in _CITE_NUM_RE.finditer(text):
+            num = int(match.group(1))
+            if num not in seen:
+                seen.add(num)
+                refs.append(num)
+    return refs
+
+
+def _attach_citation_refs(
+    spec: SlidesSpec,
+    chunks: list[dict[str, Any]],
+    refs_by_slide: list[list[int]],
+) -> SlidesSpec:
+    """Stamp citation_refs / chunk_id after the LLM pass (and after strip)."""
+    n = len(chunks)
+    slides: list[Slide] = []
+    for i, slide in enumerate(spec.slides):
+        raw_refs = refs_by_slide[i] if i < len(refs_by_slide) else []
+        refs = [r for r in raw_refs if 1 <= r <= n]
+        chunk_id = None
+        if refs:
+            hit = chunks[refs[0] - 1]
+            chunk_id = str(hit.get("chunk_key") or hit.get("chunk_id") or "") or None
+        slides.append(
+            slide.model_copy(update={"citation_refs": refs, "chunk_id": chunk_id})
+        )
+    return spec.model_copy(update={"slides": slides})
+
+
+def _slide_cite_texts(slide: Slide) -> list[str | None]:
+    texts: list[str | None] = [slide.title, slide.speaker_notes, *slide.bullets]
+    if slide.quote is not None:
+        texts.extend([slide.quote.text, slide.quote.attribution])
+    if slide.stat is not None:
+        texts.extend([slide.stat.label, slide.stat.supporting])
+    if slide.columns:
+        for column in slide.columns:
+            texts.append(column.heading)
+            texts.extend(column.bullets)
+    if slide.icon_rows:
+        for row in slide.icon_rows:
+            texts.extend([row.heading, row.description])
+    return texts
+
+
+def _refs_from_spec(spec: SlidesSpec) -> list[list[int]]:
+    return [_extract_citation_refs(*_slide_cite_texts(slide)) for slide in spec.slides]
+
+
+def _merge_refs(old: list[list[int]], new: list[list[int]]) -> list[list[int]]:
+    merged: list[list[int]] = []
+    for i in range(max(len(old), len(new))):
+        nxt = new[i] if i < len(new) else []
+        prev = old[i] if i < len(old) else []
+        merged.append(nxt or prev)
+    return merged
+
+
 async def _generate_validated_spec(
     bearer: str,
     collection_name: str,
@@ -180,6 +250,7 @@ async def _generate_validated_spec(
     images: list[dict[str, Any]] | None = None,
     *,
     retrieval_failed: bool,
+    audience: str | None = None,
 ) -> tuple[SlidesSpec, bool]:
     """LLM → JSON → SlidesSpec, retrying once on validation failure.
 
@@ -196,6 +267,7 @@ async def _generate_validated_spec(
     system, user_msg = _build_generation_prompt(
         collection_name, preset, extra_instructions, chunks, images=images,
         retrieval_failed=retrieval_failed,
+        audience=audience,
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
@@ -491,7 +563,7 @@ def _build_fallback_spec(
                 layout_kind="standard",
                 title="建議下一步",
                 bullets=[
-                    "重新點擊「開始鑄造」再試一次（多數情況下重試即可成功）",
+                    "重新點擊「開始製作」再試一次（多數情況下重試即可成功）",
                     "若連續失敗，請在補充指示中寫得更具體（主題、目標讀者、長度）",
                     "或調整風格 preset（例如改用「重點摘要」這種較短的格式）",
                 ],
@@ -570,6 +642,7 @@ async def _run_pipeline(
     await updater.set(step=JOB_STEP_RETRIEVING)
     seed_query = " · ".join(
         [coll.name, payload.preset]
+        + ([payload.audience.strip()] if payload.audience else [])
         + (
             [payload.extra_instructions.strip()]
             if payload.extra_instructions
@@ -586,11 +659,12 @@ async def _run_pipeline(
         try:
             chunks = await _retrieve_chunks(
                 bearer, payload.collection_id, seed_query,
+                document_ids=payload.document_ids,
             )
             if not chunks:
                 logger.warning(
                     "Studio retrieval returned 0 hits: collection=%s(id=%s) "
-                    "seed_query=%r — deck will be generated without context.",
+                    "seed_query=%r — generate will be blocked.",
                     coll.name, payload.collection_id, seed_query[:80],
                 )
         except HTTPException:
@@ -628,6 +702,12 @@ async def _run_pipeline(
                 e,
             )
 
+    # Product loop: the user picked zero sources. An empty RAG hit
+    # list is different — that still ships with the "未檢索到" prompt.
+    if payload.document_ids is not None and len(payload.document_ids) == 0:
+        await updater.set(state="failed", step="failed", error=NO_INDEXED_SOURCES)
+        return
+
     # Build the lookup the renderer-side hydration needs. Keyed by
     # image_id so `Slide.image_ref` resolves in O(1) without re-
     # querying the DB during render. Only images actually surfaced
@@ -647,7 +727,10 @@ async def _run_pipeline(
         chunks,
         images=images,
         retrieval_failed=retrieval_failed,
+        audience=payload.audience,
     )
+    # Capture (參 [N]) before normalize_spec strips them from bullets.
+    pending_refs = _refs_from_spec(spec)
     # ── Step 6.5: zh-CN → zh-TW post-processing ──
     # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
     # 33-39 行有量化證據). The system prompt fights this with an explicit
@@ -704,11 +787,13 @@ async def _run_pipeline(
                 # 才能 render,否則先前的 strip_latex / s2twp / 引用清理
                 # 全部白做(production 觀察到 $\nightarrow$ 8 處殘留即此因)。
                 spec = normalize_spec(spec)
+                pending_refs = _merge_refs(pending_refs, _refs_from_spec(spec))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Rebalance failed: %s — proceeding with original spec",
                     exc,
                 )
+    spec = _attach_citation_refs(spec, chunks, pending_refs)
 
     # ── Stage 3: infer the deck's visual house style from its content,
     # once per deck, so every slide shares one visual language. Only when
@@ -767,6 +852,8 @@ async def _run_pipeline(
             await updater.set(step=JOB_STEP_FIXING)
             try:
                 spec = await _fix_spec_with_defects(bearer, spec, critical)
+                pending_refs = _merge_refs(pending_refs, _refs_from_spec(spec))
+                spec = _attach_citation_refs(spec, chunks, pending_refs)
             except (ValueError, ValidationError, json.JSONDecodeError) as e:
                 logger.warning("Studio defect-fix LLM call failed: %s", e)
                 final_defects = defects
@@ -801,6 +888,8 @@ async def _run_pipeline(
         defects=final_defects,
         qa_passes=qa_passes,
         warning=("\n".join(degradations) or None),
+        source_chunks=chunks,
+        source_images=images,
     )
 
 
@@ -829,6 +918,11 @@ async def create_slides_job(
     # csp_client.get_collection raises CspForbiddenError / CspNotFoundError
     # which propagate to HTTP 403 / 404 (mapped by FastAPI exception
     # handlers on the anila-studio side).
+    if payload.document_ids is not None and len(payload.document_ids) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=NO_INDEXED_SOURCES,
+        )
     try:
         await get_collection(payload.collection_id, bearer=bearer)
     except CspNotFoundError as exc:
@@ -963,6 +1057,129 @@ async def get_slides_job_pptx(
             "Content-Length": str(len(pptx_bytes)),
         },
     )
+
+
+@router.post(
+    "/slides/jobs/{job_id}/slides/{slide_number}/regenerate",
+    response_model=JobStatus,
+)
+async def regenerate_slides_job_slide(
+    job_id: str,
+    slide_number: int,
+    payload: RegenerateSlideRequest,
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+    bearer: str = Depends(get_bearer_token),
+) -> JobStatus:
+    """Rewrite one slide and re-render the editable PPTX. The rest stay."""
+    rec = jobs.get_user_job(job_id, identity.id)
+    if rec is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",
+        )
+    if rec.spec is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="這份產出沒有可重做的頁面資料。",
+        )
+    if rec.state != "done":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job not ready (state={rec.state}).",
+        )
+    if slide_number < 1 or slide_number > len(rec.spec.slides):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="slide_number 超出範圍。",
+        )
+
+    chunks = list(rec.source_chunks)
+
+    try:
+        coll = await get_collection(rec.collection_id, bearer=bearer)
+        collection_name = coll.name
+    except CspNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CspForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except CspUnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except (CspServerError, CspClientError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    spec = rec.spec
+    idx = slide_number - 1
+    current = spec.slides[idx]
+    neighbor_titles = [
+        s.title for i, s in enumerate(spec.slides) if i != idx
+    ]
+    system, user_msg = _build_regenerate_slide_prompt(
+        collection_name,
+        spec.title,
+        slide_number,
+        current.model_dump(mode="json"),
+        neighbor_titles,
+        chunks,
+        payload.extra_instructions,
+    )
+    raw = await _call_llm_chat(
+        bearer, SLIDES_LLM_MODEL,
+        [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
+        temperature=0.3,
+    )
+    try:
+        extracted = _extract_json_object(raw)
+        parsed = _loads_lenient(extracted)
+        if not isinstance(parsed, dict):
+            raise ValueError("regenerate 未回傳物件")
+        parsed.setdefault("title", current.title)
+        parsed.setdefault("bullets", current.bullets)
+        parsed = _saturate_spec_dict(
+            {"title": spec.title, "slides": [parsed]},
+            chunk_filenames=[c.get("filename") for c in chunks if c.get("filename")],
+        )
+        slide_dict = parsed["slides"][0] if isinstance(parsed, dict) else parsed
+        new_slide = Slide.model_validate(slide_dict)
+    except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"無法重做這一頁：{str(exc)[:240]}",
+        ) from exc
+
+    refs = _extract_citation_refs(*new_slide.bullets, new_slide.speaker_notes)
+    new_slide = _attach_citation_refs(
+        SlidesSpec(title=spec.title, slides=[new_slide], theme=spec.theme),
+        chunks,
+        [refs],
+    ).slides[0]
+    new_slide = normalize_spec(
+        SlidesSpec(title=spec.title, slides=[new_slide], theme=spec.theme)
+    ).slides[0]
+
+    slides = list(spec.slides)
+    slides[idx] = new_slide
+    next_spec = spec.model_copy(update={"slides": slides})
+
+    images_lookup = {
+        str(im.get("image_id")): im
+        for im in rec.source_images
+        if im.get("image_id")
+    }
+    deck_base_seed = int(
+        hashlib.sha256(job_id.encode()).hexdigest()[:8], 16
+    )
+    flux_llm = _StudioLLMAdapter(bearer, SLIDES_LLM_MODEL)
+    pptx_bytes, _pptx_path = await _render_pptx(
+        next_spec, images_lookup, bearer=bearer,
+        deck_base_seed=deck_base_seed, llm=flux_llm,
+    )
+    updated = await jobs.update_done_spec(
+        job_id, spec=next_spec, pptx_bytes=pptx_bytes,
+    )
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",
+        )
+    return updated.to_status()
 
 
 @router.delete("/slides/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

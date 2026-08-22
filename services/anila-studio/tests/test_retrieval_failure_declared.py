@@ -110,7 +110,9 @@ def _patch_slides(monkeypatch, *, chunks_result, captured):
     async def fake_get_collection(collection_id, *, bearer):
         return _collection(collection_id)
 
-    async def fake_retrieve_chunks(bearer, collection_id, seed_query):
+    async def fake_retrieve_chunks(
+        bearer, collection_id, seed_query, document_ids=None,
+    ):
         if isinstance(chunks_result, BaseException):
             raise chunks_result
         return chunks_result
@@ -164,7 +166,7 @@ async def _run_slides_job(monkeypatch, *, chunks_result):
     )
     await job_mod.get_job(rec.job_id).task
     status = job_mod.get_job(rec.job_id).to_status()
-    user_prompt = captured[0][1]["content"]
+    user_prompt = captured[0][1]["content"] if captured else None
     job_mod._reset_for_tests()
     return status, user_prompt
 
@@ -190,8 +192,36 @@ async def test_slides_zero_hits_keeps_the_true_copy(monkeypatch, artifacts_dir):
 
     assert status.state == "done"
     assert status.warning is None
+    assert prompt is not None
     assert "本次未檢索到相關段落" in prompt
     assert "檢索**失敗**" not in prompt
+
+
+async def test_slides_empty_document_ids_blocks(monkeypatch, artifacts_dir):
+    from app.api import studio as studio_mod
+    from app.services import studio_job_service as job_mod
+
+    captured: list[list[dict]] = []
+    _patch_slides(monkeypatch, chunks_result=[], captured=captured)
+    job_mod._reset_for_tests()
+    payload = GenerateSpecRequest(
+        collection_id=1, preset="詳細簡報", document_ids=[],
+    )
+
+    async def runner(updater):
+        await studio_mod._run_pipeline(
+            identity=_IDENTITY, bearer="t", payload=payload, updater=updater,
+        )
+
+    rec = await job_mod.create_job(
+        user_id=_IDENTITY.id, collection_id=1, runner=runner, report_ctx=None,
+    )
+    await job_mod.get_job(rec.job_id).task
+    status = job_mod.get_job(rec.job_id).to_status()
+    job_mod._reset_for_tests()
+    assert status.state == "failed"
+    assert status.error == "先上傳或等索引完成"
+    assert captured == []
 
 
 async def test_slides_hits_produce_no_warning(monkeypatch, artifacts_dir):

@@ -13,6 +13,7 @@ import { isDownloadWarning, warningPatch } from './artifactWarning'
 import {
   downloadSlidesJobPptx,
   getSlidesJobStatus,
+  slidesFromJobSpec,
   getReportJobStatus,
   getMindmapJobStatus,
   getInfographicJobStatus,
@@ -35,6 +36,8 @@ type GenericJobStatus = {
   /** Soft warning that coexists with done (e.g. LLM fallback deck). */
   warning?: string | null
   download_urls?: Record<string, string> | null
+  spec?: { title?: string; slides?: Array<{ title: string; bullets: string[]; speaker_notes?: string | null; citation_refs?: number[]; chunk_id?: string | null }> } | null
+  sources?: SlidesArtifact['sources']
   // 各 kind 特有的 metadata
   defects?: unknown
   qa_passes?: number | null
@@ -297,6 +300,8 @@ export function WSStudio() {
             if (kind === 'slides') {
               patch.defects = status.defects
               patch.qaPasses = status.qa_passes
+              patch.slides = slidesFromJobSpec(status.spec)
+              if (status.sources) patch.sources = status.sources
             } else if (kind === 'report') {
               patch.sectionsCount = status.sections_count
               patch.referencesCount = status.references_count
@@ -317,17 +322,10 @@ export function WSStudio() {
               pollersRef.current.delete(jobId)
             }
             pollFailRef.current.delete(jobId)
-            // Slides 是「單一 .pptx 檔」── 自動觸發 download(維持原行為);
-            // 其他 4 種有多格式可下載,使用者在 ArtifactViewer 內選擇,
-            // 不自動下載。失敗不再吞進 console — 寫進 artifact.warning。
-            if (kind === 'slides' && !downloadedRef.current.has(jobId)) {
-              downloadedRef.current.add(jobId)
-              await downloadSlidesVisible(
-                collectionId,
-                artifact.id,
-                jobId,
-                status.title ?? '簡報',
-              )
+            // 簡報先開預覽，不自動下載。PPTX 仍由檢視器／列上的按鈕匯出。
+            if (kind === 'slides') {
+              const ready = useArtifactStore.getState().get(collectionId, artifact.id)
+              if (ready) setViewing(ready)
             }
             return
           }
@@ -640,11 +638,9 @@ export function WSStudio() {
 
           {artifacts.length === 0 ? (
             <div
+              className="yuan-card"
               style={{
                 padding: 18,
-                borderRadius: 10,
-                background: t.surface2,
-                border: `1px dashed ${t.border}`,
                 fontSize: 11.5,
                 color: t.textSubtle,
                 textAlign: 'center',
@@ -690,9 +686,8 @@ export function WSStudio() {
                   const state = a.state ?? 'done'
                   const isPending = state === 'pending'
                   const isFailed = state === 'failed'
-                  // Slides: the binary is the artifact — click downloads
-                  // .pptx. Other kinds open ArtifactViewer for multi-format
-                  // download / interactive preview. Failed rows stay inert.
+                  // Done rows open ArtifactViewer (slides now have an
+                  // in-app deck preview). Failed rows stay inert.
                   const isClickable = !isPending && !isFailed
                   // While pending, the slide_count is 0 and markdown
                   // length is 0 (slides array is empty) — show the
@@ -710,10 +705,9 @@ export function WSStudio() {
                   } else if (a.warning) {
                     meta = a.warning
                   } else if (a.kind === 'slides') {
-                    // Slides binary is the canonical artifact; we don't
-                    // store per-slide JSON in the timeline, so even
-                    // though `slides.length` is 0 the file is real.
-                    meta = '已完成 · 點擊下載 .pptx'
+                    meta = a.slides.length
+                      ? `已完成 · ${a.slides.length} 頁 · 點擊預覽`
+                      : '已完成 · 點擊預覽'
                   } else if (a.kind === 'report') {
                     // Legacy v1 stored full markdown; v2 (backend job)
                     // lands `downloadUrls` instead. Show length when
@@ -750,18 +744,6 @@ export function WSStudio() {
                       <div
                         onClick={() => {
                           if (!isClickable || !collection) return
-                          if (a.kind === 'slides' && a.jobId) {
-                            // Don't open the empty slides viewer —
-                            // re-trigger the .pptx download and surface
-                            // any failure on the row itself.
-                            void downloadSlidesVisible(
-                              collection.id,
-                              a.id,
-                              a.jobId,
-                              a.title || '簡報',
-                            )
-                            return
-                          }
                           setViewing(a)
                         }}
                         style={{
@@ -984,10 +966,6 @@ export function WSStudio() {
         format={modalFormat}
         onClose={() => setModalFormat(null)}
         onGenerated={(a) => {
-          // Slides have no in-browser preview (binary .pptx only) —
-          // opening ArtifactViewer would show an empty deck. The
-          // poller already triggers the download; just leave the row
-          // visible in the timeline.
           if (a.kind === 'slides') return
           setViewing(a)
         }}

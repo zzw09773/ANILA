@@ -2,6 +2,7 @@ import { useAuthStore } from '../store/auth'
 import { STUDIO_BASE_URL } from './client'
 import type { TaskBinding } from './tasks'
 import type { components } from './studio-types.gen'
+import type { SlidePreview, SlideSource } from '../types'
 
 // Slice 8b: optional CSP task binding threaded into every studio job body.
 // The generated schema now carries the matching optional fields, so these
@@ -67,12 +68,23 @@ export type VisualDefect = components['schemas']['VisualDefect']
  *      `default_factory=list`). Callers iterating `status.defects.map(...)`
  *      should not have to null-check.
  */
+export type JobSpecSlide = {
+  title: string
+  bullets: string[]
+  speaker_notes?: string | null
+  citation_refs?: number[]
+  chunk_id?: string | null
+}
+
 export type JobStatus = Omit<
   components['schemas']['JobStatus'],
   'state' | 'defects'
 > & {
   state: JobState
   defects: VisualDefect[]
+  warning?: string | null
+  spec?: { title?: string; slides?: JobSpecSlide[] } | null
+  sources?: SlideSource[] | null
 }
 
 export type GenerateSpecRequest = components['schemas']['GenerateSpecRequest']
@@ -81,6 +93,8 @@ export interface CreateSlidesJobInput {
   collectionId: number
   preset: string
   extraInstructions?: string
+  documentIds?: number[]
+  audience?: string
   /** Skip RAG retrieval; let the LLM free-write. */
   skipRetrieval?: boolean
   /**
@@ -159,12 +173,17 @@ async function readJsonOrThrow(
 export async function createSlidesJob(
   input: CreateSlidesJobInput,
 ): Promise<JobStatus> {
-  const body: GenerateSpecRequest = {
+  const body: GenerateSpecRequest & {
+    document_ids?: number[]
+    audience?: string
+  } = {
     collection_id: input.collectionId,
     preset: input.preset,
     extra_instructions: input.extraInstructions,
     skip_retrieval: input.skipRetrieval ?? false,
     theme_override: input.themeOverride, // undefined → JSON omits the key
+    document_ids: input.documentIds,
+    audience: input.audience,
     ...bindingFields(input.binding),
   }
   const res = await studioFetch(studioUrl('/api/studio/slides/jobs'), {
@@ -293,6 +312,8 @@ export function stepLabel(step: string | null): string {
       return '調整版型'
     case 'done':
       return '完成'
+    case 'regenerating':
+      return '重做這一頁'
     // ── 4 種新 artifact 的 step ──
     case 'outlining':
       return '生成大綱'
@@ -629,3 +650,39 @@ export const downloadDatatableArtifact = (
   fmt: 'html' | 'csv' | 'xlsx',
   filenameStem: string,
 ) => _downloadArtifact('datatables', jobId, fmt, filenameStem)
+
+export function slidesFromJobSpec(
+  spec: JobStatus['spec'] | null | undefined,
+): SlidePreview[] {
+  return (spec?.slides ?? []).map((slide) => ({
+    title: slide.title,
+    bullets: slide.bullets,
+    speakerNotes: slide.speaker_notes ?? undefined,
+    citationRefs: slide.citation_refs ?? [],
+    chunkId: slide.chunk_id ?? undefined,
+  }))
+}
+
+/**
+ * Rewrite one slide of a finished deck. The rest of the spec stays;
+ * the server re-renders a real editable PPTX.
+ */
+export async function regenerateSlide(
+  jobId: string,
+  slideNumber: number,
+  extraInstructions?: string,
+): Promise<JobStatus> {
+  const res = await studioFetch(
+    studioUrl(
+      `/api/studio/slides/jobs/${encodeURIComponent(jobId)}/slides/${slideNumber}/regenerate`,
+    ),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        extra_instructions: extraInstructions,
+      }),
+    },
+  )
+  return toJobStatus(await readJsonOrThrow(res, '重做投影片'))
+}

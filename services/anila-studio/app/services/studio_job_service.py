@@ -42,6 +42,7 @@ from app.schemas.studio import (
     JOB_STEP_DONE,
     JOB_STEP_QUEUED,
     JobStatus,
+    SlideSource,
     SlidesSpec,
     VisualDefect,
 )
@@ -88,6 +89,12 @@ class JobRecord:
     updated_at: datetime
     # Soft warning that coexists with done (e.g. LLM fallback deck).
     warning: str | None = None
+    # In-app deck preview. None until the LLM spec is validated.
+    spec: SlidesSpec | None = None
+    # Retrieved chunks kept so per-slide regenerate / source-open work
+    # without re-running RAG. Empty tuple until retrieval finishes.
+    source_chunks: tuple[dict[str, Any], ...] = ()
+    source_images: tuple[dict[str, Any], ...] = ()
     # Slice 8b: control-plane passthrough, back-filled after the produced
     # artifact is registered on CSP. None until then.
     artifact_id: str | None = None
@@ -111,9 +118,41 @@ class JobRecord:
             warning=self.warning,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
+            spec=self.spec,
+            sources=_sources_from_chunks(self.source_chunks),
             created_at=self.created_at.isoformat(),
             updated_at=self.updated_at.isoformat(),
         )
+
+
+def _sources_from_chunks(
+    chunks: tuple[dict[str, Any], ...],
+) -> list[SlideSource]:
+    sources: list[SlideSource] = []
+    for i, chunk in enumerate(chunks, start=1):
+        page = chunk.get("page")
+        try:
+            page_i = int(page) if page is not None else None
+        except (TypeError, ValueError):
+            page_i = None
+        doc_id = chunk.get("document_id")
+        try:
+            doc_i = int(doc_id) if doc_id is not None else None
+        except (TypeError, ValueError):
+            doc_i = None
+        sources.append(
+            SlideSource(
+                index=i,
+                document_id=doc_i,
+                document_name=str(chunk.get("filename") or ""),
+                chunk_id=str(
+                    chunk.get("chunk_key") or chunk.get("chunk_id") or ""
+                ),
+                snippet=str(chunk.get("content") or "")[:400],
+                page=page_i,
+            )
+        )
+    return sources
 
 
 # Single process-wide registry. Module-level so all imports share it.
@@ -307,6 +346,9 @@ class JobUpdater:
         warning: str | None = None,
         artifact_id: str | None = None,
         classification_level: str | None = None,
+        spec: SlidesSpec | None = None,
+        source_chunks: list[dict[str, Any]] | None = None,
+        source_images: list[dict[str, Any]] | None = None,
     ) -> None:
         """Patch fields on the current JobRecord. Only specified fields
         are updated; pass None (the default) to leave a field as-is.
@@ -346,6 +388,12 @@ class JobUpdater:
                 patch["artifact_id"] = artifact_id
             if classification_level is not None:
                 patch["classification_level"] = classification_level
+            if spec is not None:
+                patch["spec"] = spec
+            if source_chunks is not None:
+                patch["source_chunks"] = tuple(source_chunks)
+            if source_images is not None:
+                patch["source_images"] = tuple(source_images)
             new_record = replace(current, **patch)
             _jobs[self._job_id] = new_record
         # Cross-cutting persistence + reporting outside the lock (network I/O
@@ -360,6 +408,8 @@ class JobUpdater:
         defects: list[VisualDefect],
         qa_passes: int,
         warning: str | None = None,
+        source_chunks: list[dict[str, Any]] | None = None,
+        source_images: list[dict[str, Any]] | None = None,
     ) -> None:
         """Convenience: write the terminal "done" state in one call."""
         await self.set(
@@ -371,7 +421,34 @@ class JobUpdater:
             qa_passes=qa_passes,
             pptx_bytes=pptx_bytes,
             warning=warning,
+            spec=spec,
+            source_chunks=source_chunks,
+            source_images=source_images,
         )
+
+
+async def update_done_spec(
+    job_id: str,
+    *,
+    spec: SlidesSpec,
+    pptx_bytes: bytes,
+) -> JobRecord | None:
+    """Replace the spec + pptx on a finished job after per-slide regenerate."""
+    async with _lock:
+        current = _jobs.get(job_id)
+        if current is None:
+            return None
+        updated = replace(
+            current,
+            spec=spec,
+            pptx_bytes=pptx_bytes,
+            title=spec.title,
+            slide_count=len(spec.slides),
+            updated_at=_now(),
+        )
+        _jobs[job_id] = updated
+    await job_lifecycle.on_transition(updated, None, None)
+    return updated
 
 
 def _reset_for_tests() -> None:

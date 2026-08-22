@@ -51,8 +51,11 @@ logger = logging.getLogger(__name__)
 # below: a 5-slide Lightning Talk shouldn't be forced to insert a
 # mid-deck section break.
 _PRESET_COUNT: dict[str, tuple[str, int]] = {
+    "詳細簡報":         ("12-15 張投影片，完整論證、分頁講清楚", 12),
+    "口講用短頁":       ("5 張投影片，一頁一句，適合口講", 5),
     "經典報告結構":     ("12-15 張投影片", 12),
     "Lightning Talk":   ("5 張投影片，重點濃縮、視覺優先", 5),
+    "閃電簡報":         ("5 張投影片，重點濃縮、視覺優先", 5),
     "教學投影片":       ("8-12 張投影片", 8),
 }
 
@@ -71,6 +74,7 @@ def build_generation_prompt(
     images: list[dict[str, Any]] | None = None,
     *,
     retrieval_failed: bool,
+    audience: str | None = None,
 ) -> tuple[str, str]:
     """Compose (system, user) prompts for the slide-deck LLM call.
 
@@ -417,10 +421,67 @@ def build_generation_prompt(
             parts.append(f"  caption: {cap}")
         parts.append("")
 
+    if audience:
+        parts.append("")
+        parts.append(f"聽眾：{audience}。請依此調整用語密度與專業程度。")
     if extra_instructions:
         parts.append("")
         parts.append(f"使用者補充指示：\n{extra_instructions}")
 
+    return system, "\n".join(parts)
+
+
+def build_regenerate_slide_prompt(
+    collection_name: str,
+    spec_title: str,
+    slide_number: int,
+    current: dict[str, Any],
+    neighbor_titles: list[str],
+    chunks: list[dict[str, Any]],
+    extra_instructions: str | None,
+    audience: str | None = None,
+) -> tuple[str, str]:
+    """Compose (system, user) prompts for replacing one slide.
+
+    Output is a single Slide JSON object, not a full deck — so the
+    rest of the deck stays put.
+    """
+    system = "\n".join(
+        [
+            "You are a JSON-only slide rewriter. Output is parsed",
+            "by a strict JSON parser, NOT by a human.",
+            "The very first character MUST be \"{\". The last MUST be \"}\".",
+            "Do NOT wrap in ```json. Use straight double quotes only.",
+            "Required fields: title, bullets (1-6), speaker_notes, layout_kind.",
+            "bullets 可在末尾用 (參 [N]) 標註來源。",
+            "使用台灣繁體中文。不可使用 placeholder。",
+            NATIONAL_TERMINOLOGY,
+            ERA_RULES,
+        ]
+    )
+    parts = [
+        f"知識庫名稱：{collection_name}",
+        f"簡報標題：{spec_title}",
+        f"請重寫第 {slide_number} 張投影片，不要改其他頁。",
+        f"鄰近頁標題：{' / '.join(neighbor_titles) or '（無）'}",
+        "",
+        "目前這張：",
+        json.dumps(current, ensure_ascii=False, indent=2),
+    ]
+    if chunks:
+        parts.append("")
+        parts.append("可用來源段落：")
+        for i, c in enumerate(chunks, start=1):
+            parts.append(
+                f"[{i}] 來源：{c.get('filename', '<unknown>')}"
+                f"（chunk {c.get('chunk_key', '')}）"
+            )
+            parts.append(str(c.get("content") or ""))
+            parts.append("")
+    if audience:
+        parts.append(f"聽眾：{audience}")
+    if extra_instructions:
+        parts.append(f"使用者補充指示：\n{extra_instructions}")
     return system, "\n".join(parts)
 
 

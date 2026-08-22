@@ -105,11 +105,9 @@ export function OutputCenterPage() {
             </div>
           ) : collections.length === 0 ? (
             <div
+              className="yuan-card"
               style={{
                 padding: 36,
-                background: t.surface,
-                border: `1px solid ${t.border}`,
-                borderRadius: 10,
                 textAlign: 'center',
               }}
             >
@@ -141,15 +139,13 @@ export function OutputCenterPage() {
               }}
             >
               {collections.map((collection) => {
-                const hasDocuments = collection.document_count > 0
+                const ready = collection.chunk_count > 0
                 return (
                   <article
                     key={collection.id}
+                    className="yuan-card"
                     style={{
                       padding: 20,
-                      background: t.surface,
-                      border: `1px solid ${t.border}`,
-                      borderRadius: 10,
                       display: 'flex',
                       flexDirection: 'column',
                       gap: 12,
@@ -173,24 +169,27 @@ export function OutputCenterPage() {
                       </h2>
                       <p style={{ margin: '5px 0 0', color: t.textMuted, fontSize: 12 }}>
                         {collection.document_count} 份資料
+                        {collection.document_count > 0 && collection.chunk_count === 0
+                          ? ' · 索引尚未完成'
+                          : ''}
                       </p>
                     </div>
                     <button
                       type="button"
-                      disabled={!hasDocuments}
-                      title={!hasDocuments ? '這個知識庫目前沒有資料，請先上傳並完成索引' : ''}
+                      disabled={!ready}
+                      title={!ready ? '先上傳或等索引完成' : ''}
                       onClick={() => navigate(`/c/${collection.id}?studio=1`)}
                       style={{
                         marginTop: 'auto',
                         padding: '8px 12px',
                         borderRadius: 7,
-                        border: `1px solid ${hasDocuments ? t.accent : t.border}`,
-                        background: hasDocuments ? t.accent : t.surface2,
-                        color: hasDocuments ? '#fff' : t.textSubtle,
-                        cursor: hasDocuments ? 'pointer' : 'not-allowed',
+                        border: `1px solid ${ready ? t.accent : t.border}`,
+                        background: ready ? t.accent : t.surface2,
+                        color: ready ? '#fff' : t.textSubtle,
+                        cursor: ready ? 'pointer' : 'not-allowed',
                       }}
                     >
-                      {hasDocuments ? '開啟產出工具' : '請先加入資料'}
+                      {ready ? '從製作開始' : '先上傳或等索引完成'}
                     </button>
                   </article>
                 )

@@ -23,9 +23,31 @@ test('製作 does not invent a locally cached output count', () => {
 
 test('產出 cannot start with zero indexed documents', () => {
   const modal = source('./workspace/CommandModal.tsx')
-  assert.match(modal, /if \(indexedDocs\.length === 0\)/)
-  assert.match(modal, /disabled=\{busy \|\| indexedDocs\.length === 0\}/)
-  assert.match(modal, /請先上傳資料並等待索引完成/)
+  const page = source('./routes/OutputCenterPage.tsx')
+  const studio = source('./workspace/WSStudio.tsx')
+  assert.match(modal, /先上傳或等索引完成/)
+  assert.match(modal, /詳細簡報/)
+  assert.match(modal, /口講用短頁/)
+  assert.match(modal, /documentIds: picked\.map/)
+  assert.match(page, /chunk_count > 0/)
+  assert.match(page, /先上傳或等索引完成/)
+  assert.match(page, /從製作開始/)
+  assert.match(studio, /還沒有產出。從製作開始。/)
+  assert.doesNotMatch(studio, /自動觸發 download/)
+})
+
+test('簡報 preview can regenerate one slide and open the source chunk', () => {
+  const viewer = source('./workspace/ArtifactViewer.tsx')
+  const api = source('./api/studio.ts')
+  const workspace = source('./routes/WorkspacePage.tsx')
+  assert.match(viewer, /重做這一頁/)
+  assert.match(viewer, /本頁來源/)
+  assert.match(viewer, /regenerateSlide/)
+  assert.match(viewer, /這一頁沒有對到段落/)
+  assert.doesNotMatch(viewer, /sources\.slice\(0, 3\)/)
+  assert.match(api, /slides\/\$\{slideNumber\}\/regenerate/)
+  assert.match(api, /document_ids: input.documentIds/)
+  assert.match(workspace, /searchParams.get\('studio'\) === '1'/)
 })
 
 test('logout clears the knowledge workspace and hard-redirects to configured login', () => {
