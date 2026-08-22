@@ -191,7 +191,9 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)的 AI 工作平台／AI Oper
 📌 **兩個並存的目標,缺一個都不是 ANILA**(擁有者原話):
 ① **下限像 OpenWebUI**——`docker` 部署好、模型接上去,**最低限度就能用**;
 ② **上限是治理**——計量、部門、分類、稽核、agent 註冊。**CSP 不是附掛的後台,它是「這東西為什麼是平台而不是工具」的理由。**
-(⚠ 用語:擁有者已兩度糾正「不要再寫軍方」——這是中科院內部用的平台。)目前**單一開發線 `restart/from-redesign`**(工作 worktree 分支除外);舊 4 分支模型已進 attic,**不要**在 PLAN 排到之前重建部署分支。Repo 是 **PUBLIC** → 祕密零外洩。目標:**8 月底全院上線**(PLAN.md),一人維運。
+(⚠ 用語:擁有者已兩度糾正「不要再寫軍方」——這是中科院內部用的平台。)**開發線仍只有一條:`restart/from-redesign`**(工作 worktree 分支除外);舊 4 分支模型已進 attic,**不要**在 PLAN 排到之前重建部署分支。
+⚠ **但遠端不只一條 ref**(2026-08-22 起):`origin/restart/from-redesign` 停在 `a6090694`,而**擁有者要求另推的快照分支 `origin/restart/from-redesign-20260822` = `dca11560`,才是當日工作的內容**。
+**在哪一條上開工看的是本地 `restart/from-redesign`,不是遠端最新的那條 ref**——快照分支是給人看的,不是開發線。Repo 是 **PUBLIC** → 祕密零外洩。目標:**8 月底全院上線**(PLAN.md),一人維運。
 
 ---
 
