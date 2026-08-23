@@ -66,6 +66,12 @@ test('簡報 preview can regenerate one slide and open the source chunk', () => 
   assert.match(workspace, /searchParams.get\('studio'\) === '1'/)
 })
 
+test('詳細簡報 can expand leftover sources; 口講 stays five pages', () => {
+  const api = source('./api/studio.ts')
+  assert.match(api, /case 'expanding'/)
+  assert.match(api, /補齊來源/)
+})
+
 test('slide preview paints layout kinds instead of only a bullet list', () => {
   const viewer = source('./workspace/ArtifactViewer.tsx')
   const stage = source('./workspace/SlideStage.tsx')

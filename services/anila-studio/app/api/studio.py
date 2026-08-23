@@ -76,6 +76,7 @@ from app.clients.csp_client import (
     get_collection,
 )
 from app.schemas.studio import (
+    JOB_STEP_EXPANDING,
     JOB_STEP_FIXING,
     JOB_STEP_GENERATING,
     JOB_STEP_QA,
@@ -103,6 +104,10 @@ from app.services.studio_config import (
     SLIDES_LLM_MODEL,
     VISION_LLM_MODEL,
     VISUAL_QA_PASSES,
+)
+from app.services.studio_expand import (
+    expand_undercovered_deck as _expand_undercovered_deck,
+    should_expand_deck as _should_expand_deck,
 )
 from app.services.studio_layout import (
     _apply_theme_title_override,
@@ -793,6 +798,32 @@ async def _run_pipeline(
                     exc,
                 )
     spec = _attach_citation_refs(spec, chunks, pending_refs)
+
+    # ── Step 6.8: coverage expand ──
+    # 12 is a floor. If leftover indexed chunks still hold claims and
+    # this is 詳細簡報 / 經典報告, insert real pages. 口講用短頁 is
+    # never padded. Failure keeps the original spec.
+    if not used_fallback:
+        try:
+            if _should_expand_deck(payload.preset, spec, chunks):
+                await updater.set(step=JOB_STEP_EXPANDING)
+                expanded = await _expand_undercovered_deck(
+                    spec, chunks, payload.preset, bearer=bearer,
+                )
+                if len(expanded.slides) > len(spec.slides):
+                    spec = normalize_spec(expanded)
+                    pending_refs = _merge_refs(
+                        pending_refs, _refs_from_spec(spec),
+                    )
+                    spec = _attach_citation_refs(spec, chunks, pending_refs)
+                    await updater.set(
+                        title=spec.title, slide_count=len(spec.slides),
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Expand failed: %s — proceeding with original spec",
+                exc,
+            )
 
     # ── Stage 3: infer the deck's visual house style from its content,
     # once per deck, so every slide shares one visual language. Only when

@@ -321,6 +321,8 @@ export function stepLabel(step: string | null): string {
       return '修正瑕疵'
     case 'rebalancing':
       return '調整版型'
+    case 'expanding':
+      return '補齊來源'
     case 'done':
       return '完成'
     case 'regenerating':

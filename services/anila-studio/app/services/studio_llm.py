@@ -51,13 +51,20 @@ logger = logging.getLogger(__name__)
 # below: a 5-slide Lightning Talk shouldn't be forced to insert a
 # mid-deck section break.
 _PRESET_COUNT: dict[str, tuple[str, int]] = {
-    "詳細簡報":         ("12-15 張投影片，完整論證、分頁講清楚", 12),
+    "詳細簡報":         ("12-15 張是下限帶，來源還有沒講完的主張就繼續加頁，最多 30 張", 12),
     "口講用短頁":       ("5 張投影片，一頁一句，適合口講", 5),
-    "經典報告結構":     ("12-15 張投影片", 12),
+    "經典報告結構":     ("12-15 張是下限帶，來源還有沒講完的主張就繼續加頁，最多 30 張", 12),
     "Lightning Talk":   ("5 張投影片，重點濃縮、視覺優先", 5),
     "閃電簡報":         ("5 張投影片，重點濃縮、視覺優先", 5),
     "教學投影片":       ("8-12 張投影片", 8),
 }
+
+# Long-form decks that must keep adding pages while sources are leftover.
+# 口講用短頁 stays at 5 and is never in this set.
+_EXPANDABLE_PRESETS = frozenset({
+    "詳細簡報",
+    "經典報告結構",
+})
 
 
 def _count_hint(preset: str) -> tuple[str, int]:
@@ -115,6 +122,9 @@ def _preset_quality_rules(preset: str, *, slide_count: int | None = None) -> str
             "- layout_kind 只在內容需要時用；選了就要把對應欄位填滿。缺欄位就改 standard。",
             "- 禁止抄提示裡的範例當內容（47%、95%、重要突破、CT350）。",
             "- 可見主張都要 cite，用 (參 [N])。禁止 ROLE、SCOPE、agent 行話。",
+            "- 12 張是下限不是停點。走到 12-15 後，來源還有沒被 (參 [N]) 講到的",
+            "  主張、數字、章節就繼續加頁，最多 30。達到 12 就停 = 不合格。",
+            "- 不要為了湊數加空頁或重複標題。",
         ]
     )
 
@@ -296,9 +306,16 @@ def build_generation_prompt(
             quality_block,
             "",
             "── 最重要的硬規則（違反 = deck 不合格） ──",
-            f"**規則 0 / 投影片數量**：本次 preset 要求 **{count_hint}**。"
-            f"少於 {min_slides} 張視為違反規則，請務必達到下限；"
-            f"上限可彈性放寬以容納所有重點。",
+            (
+                f"**規則 0 / 投影片數量**：{min_slides} 張是下限不是目標。"
+                f"本次 preset：**{count_hint}**。"
+                f"少於 {min_slides} 張不合格；走到 12-15 後來源還有沒被 "
+                f"(參 [N]) 講到的主張／數字／章節就繼續加頁，最多 30。"
+                "達到 12 張就停 = 不合格。不要為了湊數加空頁。"
+            ) if not short_talk else (
+                f"**規則 0 / 投影片數量**：本次 preset 要求 **{count_hint}**。"
+                f"剛好 {min_slides} 張，不要再加頁。"
+            ),
             "**規則 1 / 第一張投影片必須是 section_break**：以簡報主題作為 title，",
             "  bullets 第 0 條寫一句副標說明。這是整份 deck 的封面，沒有它整份簡報",
             "  讀起來像流水帳。**不要把第一張做成 standard layout**，直接 layout_kind",
@@ -574,6 +591,54 @@ def build_regenerate_slide_prompt(
         parts.append(f"聽眾：{audience}")
     if extra_instructions:
         parts.append(f"使用者補充指示：\n{extra_instructions}")
+    return system, "\n".join(parts)
+
+
+def build_expand_slides_prompt(
+    spec_title: str,
+    existing_titles: list[str],
+    uncovered: list[dict[str, Any]],
+    add_count: int,
+    room: int,
+) -> tuple[str, str]:
+    """Ask the model for NEW slides that cover leftover indexed sources.
+
+    Output is ``{"slides": [...]}`` only — never a replacement deck.
+    """
+    quality_block = _preset_quality_rules("詳細簡報")
+    system = "\n".join(
+        [
+            "You are a JSON-only slide expander. Output is parsed",
+            "by a strict JSON parser, NOT by a human.",
+            "The very first character MUST be \"{\". The last MUST be \"}\".",
+            "Do NOT wrap in ```json. Use straight double quotes only.",
+            "Return ONLY {\"slides\": [ ...new slide objects... ]}.",
+            "Do NOT return a full deck. Do NOT rewrite existing pages.",
+            "Required per slide: title, bullets, speaker_notes, layout_kind.",
+            "title 必須是一句主張，不可跟現有標題重複，禁止「簡報標題」。",
+            "每頁一個主張、2-4 個短句。禁止空頁、禁止填料、禁止重複論點。",
+            "每一張都要 cite 未覆蓋來源，bullet 或 notes 末用 (參 [N])。",
+            "N 必須是下方未覆蓋清單裡的編號。",
+            "使用台灣繁體中文、人話。禁止 ROLE／SCOPE／agent 行話。",
+            quality_block,
+            NATIONAL_TERMINOLOGY,
+            ERA_RULES,
+        ]
+    )
+    parts = [
+        f"簡報標題：{spec_title}",
+        f"請新寫 {add_count} 張投影片（可 1-{room} 張，夠覆蓋即可，不要硬湊）。",
+        "現有標題（不可重複）：",
+        " / ".join(existing_titles) or "（無）",
+        "",
+        "尚未被這份簡報引用的來源：",
+    ]
+    for item in uncovered:
+        parts.append(
+            f"[{item['index']}] 來源：{item.get('filename', '<unknown>')}"
+        )
+        parts.append(str(item.get("content") or ""))
+        parts.append("")
     return system, "\n".join(parts)
 
 

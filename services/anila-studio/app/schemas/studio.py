@@ -546,6 +546,7 @@ JOB_STEP_GENERATING = "generating"
 # stat_callout for numeric content. Skipped (transparent to UI) when no
 # hard violations fire.
 JOB_STEP_REBALANCING = "rebalancing"
+JOB_STEP_EXPANDING = "expanding"
 JOB_STEP_RENDERING = "rendering"
 JOB_STEP_QA = "qa"
 JOB_STEP_FIXING = "fixing"

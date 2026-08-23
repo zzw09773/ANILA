@@ -17,6 +17,9 @@ def test_deck_mode_presets_map_to_counts() -> None:
     assert _count_hint("閃電簡報")[1] == 5
     assert _count_hint("Lightning Talk")[1] == 5
     assert "一頁一句" in _count_hint("口講用短頁")[0]
+    assert "下限" in _count_hint("詳細簡報")[0]
+    assert "最多 30" in _count_hint("詳細簡報")[0]
+    assert "下限" in _count_hint("經典報告結構")[0]
 
 
 def test_generate_request_accepts_sources_and_audience() -> None:
@@ -69,6 +72,10 @@ def test_spoken_prompt_is_sparser_than_full_brief() -> None:
     assert "47%" in spoken  # named only as a banned filler example
     assert "禁止抄提示裡的範例當內容" in spoken
     assert "禁止抄提示裡的範例當內容" in full
+    assert "12 張是下限不是停點" in full
+    assert "達到 12 就停 = 不合格" in full
+    assert "不要再加頁" in spoken
+    assert "12 張是下限不是停點" not in spoken
 
 
 def test_regenerate_prompt_keeps_one_slide_and_claim_title() -> None:
@@ -253,6 +260,197 @@ async def test_pipeline_attaches_sources_and_cites(monkeypatch) -> None:
     assert 1 in status.spec.slides[0].citation_refs
     assert status.spec.slides[0].chunk_id == "c-0001"
     assert NO_INDEXED_SOURCES not in (status.error or "")
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_expanded_slides_on_spec(monkeypatch) -> None:
+    """Under-covered 詳細簡報 pages must land on spec (preview + PPTX)."""
+    from app.api import studio as studio_mod
+    from app.auth import CurrentUserIdentity
+    from app.clients.csp_client import CollectionMeta
+    from app.schemas.studio import Slide
+    from app.services import studio_job_service as job_mod
+
+    identity = CurrentUserIdentity(
+        id=7, username="bob", role="user", token_version=0,
+    )
+    long = "這段來源還有獨立主張與數字 18%，夠長才會算未覆蓋，不要跟封面混在一頁。"
+
+    async def fake_get_collection(collection_id, *, bearer):
+        return CollectionMeta(
+            id=collection_id, name="庫", embedding_model="dummy",
+            embedding_dim=8, status="active", created_by=1,
+        )
+
+    async def fake_retrieve_chunks(
+        bearer, collection_id, seed_query, document_ids=None,
+    ):
+        return [
+            {
+                "filename": "a.pdf", "chunk_key": "c-0001",
+                "chunk_id": 1, "document_id": 11,
+                "content": long + " 已引用", "score": 0.9,
+            },
+            {
+                "filename": "b.pdf", "chunk_key": "c-0002",
+                "chunk_id": 2, "document_id": 12,
+                "content": long + " 方法段", "score": 0.85,
+            },
+            {
+                "filename": "c.pdf", "chunk_key": "c-0003",
+                "chunk_id": 3, "document_id": 13,
+                "content": long + " 限制段", "score": 0.8,
+            },
+        ]
+
+    async def fake_retrieve_images(*args, **kwargs):
+        return []
+
+    async def fake_call_llm_chat(bearer, model, messages, **kwargs):
+        return (
+            '{"title":"測試簡報","theme":"corporate_navy","slides":['
+            '{"title":"封面主張","bullets":["重點 (參 [1])"],'
+            '"speaker_notes":"見 [1]"},'
+            '{"title":"收束","bullets":["下一步"],"speaker_notes":"無"}]}'
+        )
+
+    async def fake_expand(spec, chunks, preset, *, bearer):
+        extra = Slide(
+            title="方法其實分兩路",
+            bullets=["左路對影像 (參 [2])"],
+            speaker_notes="補來源二。",
+            citation_refs=[2],
+        )
+        slides = list(spec.slides[:-1]) + [extra] + [spec.slides[-1]]
+        return spec.model_copy(update={"slides": slides})
+
+    rendered: dict = {}
+
+    async def fake_render_pptx(spec, images_lookup, **kwargs):
+        rendered["count"] = len(spec.slides)
+        rendered["titles"] = [s.title for s in spec.slides]
+        return b"PK-fake-pptx", None
+
+    async def fake_active_provider():
+        return None
+
+    async def fake_rebalance(spec_dict, violations, chunks_text, *, bearer):
+        return spec_dict
+
+    monkeypatch.setattr(studio_mod, "get_collection", fake_get_collection)
+    monkeypatch.setattr(studio_mod, "_retrieve_chunks", fake_retrieve_chunks)
+    monkeypatch.setattr(studio_mod, "_retrieve_images", fake_retrieve_images)
+    monkeypatch.setattr(studio_mod, "_call_llm_chat", fake_call_llm_chat)
+    monkeypatch.setattr(studio_mod, "_expand_undercovered_deck", fake_expand)
+    monkeypatch.setattr(studio_mod, "_render_pptx", fake_render_pptx)
+    monkeypatch.setattr(studio_mod, "get_active_flux_provider", fake_active_provider)
+    monkeypatch.setattr(studio_mod, "_rebalance_layouts", fake_rebalance)
+
+    job_mod._reset_for_tests()
+    payload = GenerateSpecRequest(
+        collection_id=1, preset="詳細簡報", document_ids=[11, 12, 13],
+    )
+
+    async def runner(updater):
+        await studio_mod._run_pipeline(
+            identity=identity, bearer="t", payload=payload, updater=updater,
+        )
+
+    rec = await job_mod.create_job(
+        user_id=identity.id, collection_id=1, runner=runner, report_ctx=None,
+    )
+    await job_mod.get_job(rec.job_id).task
+    status = job_mod.get_job(rec.job_id).to_status()
+    job_mod._reset_for_tests()
+
+    assert status.state == "done"
+    assert status.spec is not None
+    assert len(status.spec.slides) == 3
+    assert status.spec.slides[1].title == "方法其實分兩路"
+    assert rendered["count"] == 3
+    assert "方法其實分兩路" in rendered["titles"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_does_not_expand_spoken_deck(monkeypatch) -> None:
+    from app.api import studio as studio_mod
+    from app.auth import CurrentUserIdentity
+    from app.clients.csp_client import CollectionMeta
+    from app.services import studio_job_service as job_mod
+
+    identity = CurrentUserIdentity(
+        id=7, username="bob", role="user", token_version=0,
+    )
+    long = "這段來源還有獨立主張與數字 18%，夠長才會算未覆蓋，不要跟封面混在一頁。"
+    expanded = {"called": False}
+
+    async def fake_get_collection(collection_id, *, bearer):
+        return CollectionMeta(
+            id=collection_id, name="庫", embedding_model="dummy",
+            embedding_dim=8, status="active", created_by=1,
+        )
+
+    async def fake_retrieve_chunks(*args, **kwargs):
+        return [
+            {
+                "filename": f"{i}.pdf", "chunk_key": f"c-{i}",
+                "content": long, "score": 0.8,
+            }
+            for i in range(1, 7)
+        ]
+
+    async def fake_retrieve_images(*args, **kwargs):
+        return []
+
+    async def fake_call_llm_chat(bearer, model, messages, **kwargs):
+        slides = ",".join(
+            f'{{"title":"主張{i}","bullets":["一句"],"speaker_notes":"講"}}'
+            for i in range(5)
+        )
+        return '{"title":"短講","theme":"corporate_navy","slides":[' + slides + "]}"
+
+    async def fake_expand(spec, chunks, preset, *, bearer):
+        expanded["called"] = True
+        return spec
+
+    async def fake_render_pptx(spec, images_lookup, **kwargs):
+        return b"PK-fake-pptx", None
+
+    async def fake_active_provider():
+        return None
+
+    async def fake_rebalance(spec_dict, violations, chunks_text, *, bearer):
+        return spec_dict
+
+    monkeypatch.setattr(studio_mod, "get_collection", fake_get_collection)
+    monkeypatch.setattr(studio_mod, "_retrieve_chunks", fake_retrieve_chunks)
+    monkeypatch.setattr(studio_mod, "_retrieve_images", fake_retrieve_images)
+    monkeypatch.setattr(studio_mod, "_call_llm_chat", fake_call_llm_chat)
+    monkeypatch.setattr(studio_mod, "_expand_undercovered_deck", fake_expand)
+    monkeypatch.setattr(studio_mod, "_render_pptx", fake_render_pptx)
+    monkeypatch.setattr(studio_mod, "get_active_flux_provider", fake_active_provider)
+    monkeypatch.setattr(studio_mod, "_rebalance_layouts", fake_rebalance)
+
+    job_mod._reset_for_tests()
+    payload = GenerateSpecRequest(
+        collection_id=1, preset="口講用短頁", document_ids=[11],
+    )
+
+    async def runner(updater):
+        await studio_mod._run_pipeline(
+            identity=identity, bearer="t", payload=payload, updater=updater,
+        )
+
+    rec = await job_mod.create_job(
+        user_id=identity.id, collection_id=1, runner=runner, report_ctx=None,
+    )
+    await job_mod.get_job(rec.job_id).task
+    status = job_mod.get_job(rec.job_id).to_status()
+    job_mod._reset_for_tests()
+
+    assert expanded["called"] is False
+    assert status.spec is not None
+    assert len(status.spec.slides) == 5
 
 
 @pytest.mark.asyncio
