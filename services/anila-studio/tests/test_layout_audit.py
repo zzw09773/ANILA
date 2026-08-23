@@ -52,13 +52,25 @@ def test_v1_standard_over_60pct():
 def test_v2_missing_stat_for_numeric_content():
     spec = SlidesSpec(**{
         "title": "T", "subtitle": "S",
-        "slides": [_slide("slide")],
+        "slides": [_slide(f"slide-{i}") for i in range(8)],
         "palette": "navy_amber",
     })
     chunks = "model achieved 95% accuracy on F1-score N=2400"
     violations = _audit_layout_distribution(spec, chunks_text=chunks)
     hard_v2 = [v for v in violations if v.kind == "V2"]
     assert len(hard_v2) == 1
+
+
+def test_short_talk_skips_v1_and_v2():
+    """A 5-page 口講 deck must stay sparse — no forced layout mix / stat."""
+    spec = SlidesSpec(**{
+        "title": "T", "subtitle": "S",
+        "slides": [_slide(f"claim-{i}") for i in range(5)],
+        "palette": "navy_amber",
+    })
+    chunks = "model achieved 95% accuracy on F1-score N=2400"
+    violations = _audit_layout_distribution(spec, chunks_text=chunks)
+    assert not any(v.kind in ("V1", "V2") for v in violations)
 
 
 def test_v2_not_flagged_if_stat_present():

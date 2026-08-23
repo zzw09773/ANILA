@@ -201,12 +201,52 @@ export interface SlideSource {
   page?: number | null
 }
 
+export type SlideLayoutKind =
+  | 'standard'
+  | 'section_break'
+  | 'stat_callout'
+  | 'quote'
+  | 'two_column'
+  | 'icon_rows'
+  | 'image_focus'
+  | string
+
+export interface SlideStat {
+  value?: string
+  label?: string
+  supporting?: string
+  baseline?: string
+  baselineLabel?: string
+}
+
+export interface SlideQuote {
+  text?: string
+  attribution?: string
+}
+
+export interface SlideColumn {
+  heading?: string
+  bullets?: string[]
+}
+
+export interface SlideIconRow {
+  concept?: string
+  heading?: string
+  description?: string
+}
+
 export interface SlidePreview {
   title: string
   bullets: string[]
   speakerNotes?: string
   citationRefs?: number[]
   chunkId?: string
+  /** Renderer layout. Preview and PPTX must paint the same kind. */
+  layoutKind?: SlideLayoutKind
+  stat?: SlideStat
+  quote?: SlideQuote
+  columns?: SlideColumn[]
+  iconRows?: SlideIconRow[]
 }
 
 export interface SlidesArtifact extends ArtifactBase {

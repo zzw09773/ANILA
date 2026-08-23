@@ -31,6 +31,7 @@ import {
 } from '../api/studio'
 import { isDownloadWarning, warningPatch } from './artifactWarning'
 import { slidesAfterRegenerate } from './slideRedo'
+import { SlideStage } from './SlideStage'
 
 interface ArtifactViewerProps {
   open: boolean
@@ -560,25 +561,10 @@ function SlidesViewer({ artifact }: { artifact: SlidesArtifact }) {
           display: 'flex',
           flexDirection: 'column',
           gap: 16,
+          overflow: 'hidden',
         }}
       >
-        <div
-          style={{
-            fontSize: 22,
-            fontWeight: 600,
-            letterSpacing: -0.3,
-            color: t.text,
-          }}
-        >
-          {slide.title}
-        </div>
-        <ul style={{ paddingLeft: 22, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {slide.bullets.map((b, i) => (
-            <li key={i} style={{ fontSize: 15, lineHeight: 1.55, color: t.text }}>
-              {b}
-            </li>
-          ))}
-        </ul>
+        <SlideStage slide={slide} t={t} />
       </div>
 
       <div

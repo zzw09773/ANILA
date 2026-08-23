@@ -158,12 +158,33 @@ async def test_rebalance_respects_max_changes(mock_call):
 async def test_rebalance_logs_warning_when_v1_still_violated(mock_call, caplog):
     """If LLM's changes don't fix V1, log warning and continue (don't 502)."""
     # Return zero changes — V1 (100% standard) will remain after the pass.
+    # Use a long-form deck; 口講用短頁 (≤6 pages) no longer audits V1.
     mock_call.return_value = {"changes": []}
+    spec_dict = {
+        "title": "T",
+        "slides": [
+            {
+                "title": f"三大 slide {i}",
+                "bullets": ["a", "b", "c"],
+                "layout_kind": "standard",
+            }
+            for i in range(8)
+        ],
+        "palette": "navy_amber",
+    }
+    violations = [
+        LayoutViolation(
+            kind="V1",
+            severity="hard",
+            slide_indices=list(range(8)),
+            detail="standard 100%",
+        )
+    ]
 
-    with caplog.at_level(logging.WARNING, logger="app.api.studio"):
+    with caplog.at_level(logging.WARNING, logger="app.services.studio_layout"):
         result = await _rebalance_layouts(
-            _baseline_spec_dict(),
-            _baseline_violations(),
+            spec_dict,
+            violations,
             chunks_text="",
             bearer="test-bearer",
         )

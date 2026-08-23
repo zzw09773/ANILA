@@ -4,7 +4,11 @@ from __future__ import annotations
 import pytest
 
 from app.schemas.studio import GenerateSpecRequest, NO_INDEXED_SOURCES, Slide
-from app.services.studio_llm import _count_hint, build_generation_prompt
+from app.services.studio_llm import (
+    _count_hint,
+    build_generation_prompt,
+    build_regenerate_slide_prompt,
+)
 
 
 def test_deck_mode_presets_map_to_counts() -> None:
@@ -37,6 +41,68 @@ def test_prompt_includes_audience_and_spoken_count() -> None:
     )
     assert "5 張投影片" in system
     assert "聽眾：院內同仁" in user
+
+
+def test_spoken_prompt_is_sparser_than_full_brief() -> None:
+    spoken, _ = build_generation_prompt(
+        "測試庫",
+        "口講用短頁",
+        None,
+        [{"filename": "a.pdf", "chunk_key": "c1", "content": "內容", "score": 0.9}],
+        retrieval_failed=False,
+    )
+    full, _ = build_generation_prompt(
+        "測試庫",
+        "詳細簡報",
+        None,
+        [{"filename": "a.pdf", "chunk_key": "c1", "content": "內容", "score": 0.9}],
+        retrieval_failed=False,
+    )
+    assert "每張 3-6 個 bullet" not in spoken
+    assert "每張 3-6 個 bullet" not in full
+    assert "每頁最多 2 個短句" in spoken
+    assert "禁止寫 3-6 個 bullet" in spoken
+    assert "口講不強制 layout 配比" in spoken
+    assert "每頁 2-4 個短句" in full
+    assert "完整論證" in full
+    assert "簡報標題" in spoken and "簡報標題" in full
+    assert "47%" in spoken  # named only as a banned filler example
+    assert "禁止抄提示裡的範例當內容" in spoken
+    assert "禁止抄提示裡的範例當內容" in full
+
+
+def test_regenerate_prompt_keeps_one_slide_and_claim_title() -> None:
+    system, user = build_regenerate_slide_prompt(
+        "測試庫",
+        "院內簡報",
+        2,
+        {"title": "舊標題", "bullets": ["舊點"], "layout_kind": "standard"},
+        ["封面", "收束"],
+        [{"filename": "a.pdf", "chunk_key": "c1", "content": "內容"}],
+        None,
+    )
+    assert "Return ONE slide object" in system
+    assert "（重做）" in system
+    assert "簡報標題" in system
+    assert "每頁最多 2 個短句" in system  # 3-page deck → short-talk density
+    assert "請重寫第 2 張投影片" in user
+    assert "不要改其他頁" in user
+
+
+def test_regenerate_prompt_uses_full_brief_density_on_long_decks() -> None:
+    neighbors = [f"頁{i}" for i in range(11)]
+    system, _user = build_regenerate_slide_prompt(
+        "測試庫",
+        "院內簡報",
+        4,
+        {"title": "舊標題", "bullets": ["舊點"], "layout_kind": "standard"},
+        neighbors,
+        [],
+        None,
+    )
+    assert "Return ONE slide object" in system
+    assert "每頁 2-4 個短句" in system
+    assert "每頁最多 2 個短句" not in system
 
 
 def test_slide_keeps_citation_refs() -> None:

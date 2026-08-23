@@ -62,7 +62,19 @@ test('簡報 preview can regenerate one slide and open the source chunk', () => 
   assert.match(redo, /（重做）/)
   assert.match(api, /slides\/\$\{slideNumber\}\/regenerate/)
   assert.match(api, /document_ids: input.documentIds/)
+  assert.match(api, /layout_kind/)
   assert.match(workspace, /searchParams.get\('studio'\) === '1'/)
+})
+
+test('slide preview paints layout kinds instead of only a bullet list', () => {
+  const viewer = source('./workspace/ArtifactViewer.tsx')
+  const stage = source('./workspace/SlideStage.tsx')
+  const resolve = source('./workspace/slideStage.ts')
+  assert.match(viewer, /SlideStage/)
+  assert.match(stage, /section_break/)
+  assert.match(stage, /stat_callout/)
+  assert.match(stage, /two_column/)
+  assert.match(resolve, /resolveSlideStage/)
 })
 
 test('logout clears the knowledge workspace and hard-redirects to configured login', () => {

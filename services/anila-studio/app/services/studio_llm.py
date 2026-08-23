@@ -66,6 +66,59 @@ def _count_hint(preset: str) -> tuple[str, int]:
     return _PRESET_COUNT.get(preset.strip(), ("8-12 張投影片", 8))
 
 
+# Presets that must stay sparse and speakable. The generation prompt
+# used to say「一頁一句」and then「每張 3-6 個 bullet」in the same
+# breath — the model copied the denser rule. Keep this set in sync
+# with the frontend 口講用短頁 picker.
+_SHORT_TALK_PRESETS = frozenset({
+    "口講用短頁",
+    "Lightning Talk",
+    "閃電簡報",
+})
+
+
+def _is_short_talk(preset: str, *, slide_count: int | None = None) -> bool:
+    """口講用短頁 / Lightning — 5 pages, one claim each."""
+    name = preset.strip()
+    if name in _SHORT_TALK_PRESETS:
+        return True
+    if _count_hint(name)[1] <= 5:
+        return True
+    return slide_count is not None and slide_count <= 6
+
+
+def _preset_quality_rules(preset: str, *, slide_count: int | None = None) -> str:
+    """Density + claim-title rules that override older 3-6-bullet lines."""
+    if _is_short_talk(preset, slide_count=slide_count):
+        return "\n".join(
+            [
+                "── 本次是口講用短頁（這一段壓過下方任何「3-6 個 bullet」舊句）──",
+                "- 整份只要 5 頁：封面 → 一句背景 → 兩個主張 → 收束。不要再加頁填版。",
+                "- 標題是講得出來的一句主張。禁止「簡報標題」、主題標籤、ROLE／SCOPE。",
+                "- 每頁最多 2 個短句（最好 1 個）。禁止寫 3-6 個 bullet。",
+                "- speaker_notes 是上台會講的 1-2 句人話，不是把畫面文字再念一次。",
+                "- 不要為了花俏硬塞 layout。封面用 section_break；其餘多數用 standard。",
+                "  只有真的有一個關鍵數字才用 stat_callout，真的有引言才 quote，",
+                "  真的有對照才 two_column。缺欄位就不要選那個 kind。",
+                "- 禁止抄提示裡的範例當內容（47%、95%、重要突破、CT350）。",
+                "- 可見主張都要對到來源，bullet 或 notes 末用 (參 [N])。",
+                "- 用語是台灣繁體、人話。禁止 ROLE、SCOPE、agent、pipeline、工具稱呼。",
+            ]
+        )
+    return "\n".join(
+        [
+            "── 本次是詳細簡報（完整論證，不是條列牆）──",
+            "- 敘事弧：封面 → 背景 → 幾個論點 → 收束。一頁只講一個主張。",
+            "- 標題是結論句，禁止「簡報標題」或主題標籤。",
+            "- 每頁 2-4 個短句。禁止牆文，禁止為了湊數寫到 6 條。",
+            "- speaker_notes 是人會講的 2-3 句，不是條列複誦。",
+            "- layout_kind 只在內容需要時用；選了就要把對應欄位填滿。缺欄位就改 standard。",
+            "- 禁止抄提示裡的範例當內容（47%、95%、重要突破、CT350）。",
+            "- 可見主張都要 cite，用 (參 [N])。禁止 ROLE、SCOPE、agent 行話。",
+        ]
+    )
+
+
 def build_generation_prompt(
     collection_name: str,
     preset: str,
@@ -103,6 +156,8 @@ def build_generation_prompt(
     if the layout-specific fields don't pan out.
     """
     count_hint, min_slides = _count_hint(preset)
+    short_talk = _is_short_talk(preset)
+    quality_block = _preset_quality_rules(preset)
     system = "\n".join(
         [
             "You are a JSON-only slide-deck generator. Output is parsed",
@@ -145,7 +200,7 @@ def build_generation_prompt(
             '（舊欄位名 palette 仍接受但已 deprecated，請用 theme。）',
             "",
             "── 每張投影片欄位 ──",
-            'Required: title, bullets (1-6 items), speaker_notes',
+            'Required: title, bullets, speaker_notes',
             'Required: layout_kind — 從以下挑一個：',
             '  "standard"          一般內容頁（最常用，沒事就用這個）',
             '  "section_break"     章節過渡頁；title 是章節名，bullets 用 1-2 句副標',
@@ -238,6 +293,8 @@ def build_generation_prompt(
             "5. **承諾或從簡**（commit fully or keep simple）：要花俏就整份花俏；",
             "   要簡潔就整份簡潔。一張花俏配一張無聊是最差的配對。",
             "",
+            quality_block,
+            "",
             "── 最重要的硬規則（違反 = deck 不合格） ──",
             f"**規則 0 / 投影片數量**：本次 preset 要求 **{count_hint}**。"
             f"少於 {min_slides} 張視為違反規則，請務必達到下限；"
@@ -254,26 +311,46 @@ def build_generation_prompt(
                 "**規則 2 / Lightning Talk 不需中段 section_break**：5 張的短簡報"
                 "已被首張封面 + 內容流自然分節，不要硬塞額外 section_break。"
             ),
-            "**規則 3 / standard 不可超過 60%**：技術內容穿插 icon_rows，"
-            "章節穿插 section_break，數字穿插 stat_callout。",
-            "**規則 4 / 數據必須有 stat_callout 至少 1 張**：若下方 chunks 出現",
-            "  **任何百分比、實驗數值、KPI、提升幅度、F1/Recall/Accuracy 數字、",
-            "  樣本數 N=...、誤差降幅** 之類，**必須**挑最關鍵的那一個做 stat_callout，",
-            "  把該數字大字呈現。例：「MAPE 降低 88.73%」、「F1-score 0.92」、",
-            "  「N=10,000」。**沒有 stat_callout 的數據型 deck = 視覺陽春**。",
-            "**規則 5 / 對照型內容必須 two_column**：若內容有「A vs B」",
-            "  （例：原始 vs 融合、本研究 vs 既有方法、有無 data augmentation、",
-            "  Cross-machine 之間比較），用 1 張 two_column 拆成兩欄。",
-            "**規則 6 / 若可用圖清單非空，必須至少 1 張 image_focus**：把「相關性",
-            "  最高的那張」做 image_focus（layout_kind='image_focus' + 設 image_ref）。",
-            "  論文 / 技術文件的圖（架構圖、實驗結果圖）幾乎都比文字描述更有說服力。",
-            "  **後備規則 / 即時生成（Studio Fix 2 拆兩種）**：若「可用圖」清單為空、",
-            "  或全部都不夠相關，但該 slide 主題明顯需要視覺輔助，依內容選一種模式：",
-            "    (A) 情境插畫、無文字 → image_kind='illustration' + image_prompt",
-            "        （英文 50-500 字，主體/場景/構圖/風格），走 FLUX。",
-            "    (B) 含 label 的圖示（架構/流程/ER）→ image_kind='diagram' + diagram_dot",
-            "        （Graphviz DOT，最多 3000 字），走 graphviz。**FLUX 畫不出可讀文字**。",
-            "  **每張 slide 只能設 image_ref / illustration / diagram 其一，三者互斥**。",
+            (
+                "**規則 3 / standard 不可超過 60%**：技術內容穿插 icon_rows，"
+                "章節穿插 section_break，數字穿插 stat_callout。"
+            ) if not short_talk else (
+                "**規則 3 / 口講不強制 layout 配比**：standard 可以超過 60%。"
+                "不要為了達標硬塞 icon_rows 或 stat。"
+            ),
+            (
+                "**規則 4 / 資料必須有 stat_callout 至少 1 張**：若下方 chunks 出現"
+                "  **任何百分比、實驗數值、KPI、提升幅度、F1/Recall/Accuracy 數字、"
+                "  樣本數 N=...、誤差降幅** 之類，**必須**挑最關鍵的那一個做 stat_callout，"
+                "  把該數字大字呈現。例：「MAPE 降低 88.73%」、「F1-score 0.92」、"
+                "  「N=10,000」。**沒有 stat_callout 的資料型 deck = 視覺陽春**。"
+            ) if not short_talk else (
+                "**規則 4 / 口講不強制 stat_callout**：chunks 有數字也不要硬塞一張"
+                "大數字頁，除非那就是這頁唯一主張。"
+            ),
+            (
+                "**規則 5 / 對照型內容必須 two_column**：若內容有「A vs B」"
+                "  （例：原始 vs 融合、本研究 vs 既有方法、有無 data augmentation、"
+                "  Cross-machine 之間比較），用 1 張 two_column 拆成兩欄。"
+            ) if not short_talk else (
+                "**規則 5 / 口講不強制 two_column**：真的有一句對照再拆兩欄，"
+                "否則用一句話講完。"
+            ),
+            (
+                "**規則 6 / 若可用圖清單非空，必須至少 1 張 image_focus**：把「相關性"
+                "  最高的那張」做 image_focus（layout_kind='image_focus' + 設 image_ref）。"
+                "  論文 / 技術文件的圖（架構圖、實驗結果圖）幾乎都比文字描述更有說服力。"
+                "  **後備規則 / 即時生成（Studio Fix 2 拆兩種）**：若「可用圖」清單為空、"
+                "  或全部都不夠相關，但該 slide 主題明顯需要視覺輔助，依內容選一種模式："
+                "    (A) 情境插畫、無文字 → image_kind='illustration' + image_prompt"
+                "        （英文 50-500 字，主體/場景/構圖/風格），走 FLUX。"
+                "    (B) 含 label 的圖示（架構/流程/ER）→ image_kind='diagram' + diagram_dot"
+                "        （Graphviz DOT，最多 3000 字），走 graphviz。**FLUX 畫不出可讀文字**。"
+                "  **每張 slide 只能設 image_ref / illustration / diagram 其一，三者互斥**。"
+            ) if not short_talk else (
+                "**規則 6 / 口講不強制插圖**：有圖也不要為了填版做成 image_focus，"
+                "除非那張圖就是這頁唯一主張。"
+            ),
             "",
             "── 引用「圖片描述」段落（這是 deck 變具體的關鍵） ──",
             "下方檢索段落中可能含「圖片描述：...」的段落 — 那是文件原圖的",
@@ -285,8 +362,16 @@ def build_generation_prompt(
             "── 整體內容規則 ──",
             "- 使用**台灣繁體中文**（不只字符繁體、用詞也要台灣本土）。",
             f"- 投影片數量：{count_hint}（首張固定為 section_break，規則 1）。",
-            "- 每張 3-6 個 bullet（layout 不需要 bullet 也要填 1-2 句保險用）。",
-            "- speaker_notes 寫 2-4 句講者口述稿。",
+            (
+                "- 每張最多 2 個短句（最好 1 個）。禁止 3-6 個 bullet。"
+                if short_talk
+                else "- 每張 2-4 個短句。禁止牆文，禁止為了湊數寫到 6 條。"
+            ),
+            (
+                "- speaker_notes 寫 1-2 句上台會講的人話。"
+                if short_talk
+                else "- speaker_notes 寫 2-3 句講者口述稿，像人會講的話。"
+            ),
             "- standard slide 的 title 不可重複（section_break 例外、可重複）。",
             "",
             NATIONAL_TERMINOLOGY,
@@ -446,17 +531,22 @@ def build_regenerate_slide_prompt(
     Output is a single Slide JSON object, not a full deck — so the
     rest of the deck stays put.
     """
+    deck_len = len(neighbor_titles) + 1
+    quality_block = _preset_quality_rules("", slide_count=deck_len)
     system = "\n".join(
         [
             "You are a JSON-only slide rewriter. Output is parsed",
             "by a strict JSON parser, NOT by a human.",
             "The very first character MUST be \"{\". The last MUST be \"}\".",
             "Do NOT wrap in ```json. Use straight double quotes only.",
-            "Required fields: title, bullets (1-6), speaker_notes, layout_kind.",
+            "Required fields: title, bullets, speaker_notes, layout_kind.",
             "Return ONE slide object. Do NOT return a slides array or a full deck.",
-            "title 必須與原文不同，並以「（重做）」結尾。",
+            "title 必須是一句主張（不是「簡報標題」），與原文不同，並以「（重做）」結尾。",
+            "選了非 standard 的 layout_kind 就要把對應欄位填滿；缺欄位就改 standard。",
+            "禁止 ROLE／SCOPE／agent 行話。禁止抄 47%、重要突破 這類範例填料。",
             "bullets 可在末尾用 (參 [N]) 標註來源。",
-            "使用台灣繁體中文。不可使用 placeholder。",
+            "使用台灣繁體中文、人話。不可使用 placeholder。",
+            quality_block,
             NATIONAL_TERMINOLOGY,
             ERA_RULES,
         ]

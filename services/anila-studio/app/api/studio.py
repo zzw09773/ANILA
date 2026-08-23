@@ -413,8 +413,7 @@ def _saturate_spec_dict(
                 if len(str(supporting)) < 20:
                     title = slide.get("title", "<untitled>")
                     placeholder = (
-                        f"來源:{fallback_source}（系統補填：LLM 未提供足夠脈絡，"
-                        f"請參考原文件取得 baseline、樣本數與實驗條件）"
+                        f"來源：{fallback_source}，請對照原文件核對數字與條件。"
                     )
                     stat["supporting"] = placeholder
                     logger.warning(

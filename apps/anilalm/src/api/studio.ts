@@ -74,6 +74,17 @@ export type JobSpecSlide = {
   speaker_notes?: string | null
   citation_refs?: number[]
   chunk_id?: string | null
+  layout_kind?: string | null
+  stat?: {
+    value?: string
+    label?: string
+    supporting?: string
+    baseline?: string
+    baseline_label?: string
+  } | null
+  quote?: { text?: string; attribution?: string } | null
+  columns?: { heading?: string; bullets?: string[] }[] | null
+  icon_rows?: { concept?: string; heading?: string; description?: string }[] | null
 }
 
 export type JobStatus = Omit<
@@ -660,6 +671,28 @@ export function slidesFromJobSpec(
     speakerNotes: slide.speaker_notes ?? undefined,
     citationRefs: slide.citation_refs ?? [],
     chunkId: slide.chunk_id ?? undefined,
+    layoutKind: slide.layout_kind ?? undefined,
+    stat: slide.stat
+      ? {
+          value: slide.stat.value,
+          label: slide.stat.label,
+          supporting: slide.stat.supporting,
+          baseline: slide.stat.baseline,
+          baselineLabel: slide.stat.baseline_label,
+        }
+      : undefined,
+    quote: slide.quote
+      ? { text: slide.quote.text, attribution: slide.quote.attribution }
+      : undefined,
+    columns: slide.columns?.map((col) => ({
+      heading: col.heading,
+      bullets: col.bullets ?? [],
+    })),
+    iconRows: slide.icon_rows?.map((row) => ({
+      concept: row.concept,
+      heading: row.heading,
+      description: row.description,
+    })),
   }))
 }
 

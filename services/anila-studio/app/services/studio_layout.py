@@ -230,10 +230,14 @@ def _audit_layout_distribution(
     if n == 0:
         return violations
 
+    # 口講用短頁 is 5 pages on purpose. Forcing 40% fancy layouts or a
+    # mandatory stat restuffs it into the same bullet-soup as 詳細簡報.
+    long_form = n > 6
+
     # ── V1: standard layout proportion ──
     standard_count = sum(1 for s in slides if s.layout_kind == "standard")
     standard_ratio = standard_count / n
-    if standard_ratio > LAYOUT_STANDARD_MAX_RATIO:
+    if long_form and standard_ratio > LAYOUT_STANDARD_MAX_RATIO:
         violations.append(
             LayoutViolation(
                 kind="V1",
@@ -251,14 +255,19 @@ def _audit_layout_distribution(
 
     # ── V2: numeric content without stat_callout ──
     has_stat = any(s.layout_kind == "stat_callout" for s in slides)
-    if not has_stat and chunks_text and _NUMERIC_CONTENT_RE.search(chunks_text):
+    if (
+        long_form
+        and not has_stat
+        and chunks_text
+        and _NUMERIC_CONTENT_RE.search(chunks_text)
+    ):
         violations.append(
             LayoutViolation(
                 kind="V2",
                 severity="hard",
                 slide_indices=[],  # no specific candidate; LLM picks
                 detail=(
-                    "Chunks 含關鍵數據（百分比/F1/N=…）但 spec 沒有任何 "
+                    "Chunks 含關鍵資料（百分比/F1/N=…）但 spec 沒有任何 "
                     "stat_callout 投影片"
                 ),
             )
