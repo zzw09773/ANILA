@@ -1,5 +1,5 @@
-// ANILA Shell 主導覽（Slice 9a）— 四大入口渲染、治理中心角色閘門、
-// 外部同源連結（origin 絕對路徑）、專案入口開啟 ServicesPanel。
+// ANILA 主導覽 — 對話窗 rail、治理中心角色閘門、
+// origin 絕對路徑、專案入口開啟 ServicesPanel。
 
 import React from "react";
 import { describe, it, expect, vi } from "vitest";
@@ -52,30 +52,19 @@ describe("originHref", () => {
 });
 
 describe("buildShellEntries", () => {
-  it("returns the user entries in constitution order", () => {
+  it("keeps ANILA as a conversation window, not an ANILALM umbrella", () => {
     const entries = buildShellEntries({});
     expect(entries.map((e) => e.label)).toEqual([
       "工作臺",
-      "我的知識庫",
-      "製作",
       "專案入口",
     ]);
+    expect(entries.some((e) => e.id === "knowledge" || e.id === "outputs")).toBe(false);
+    expect(ANILA_LM_ENTRY_ENABLED).toBe(true);
   });
 
-  // 產出中心有自己的 /outputs 頁，不可和知識庫指向同一個 URL。
   it("never ships two entries pointing at the same destination", () => {
     const hrefs = buildShellEntries({}).map((e) => e.href).filter(Boolean);
     expect(new Set(hrefs).size).toBe(hrefs.length);
-  });
-
-  it("opens 我的知識庫 in this release", () => {
-    expect(ANILA_LM_ENTRY_ENABLED).toBe(true);
-    const knowledge = buildShellEntries({}).find((e) => e.id === "knowledge");
-    expect(knowledge).toBeTruthy();
-    expect(knowledge.href).toBe(`${KNOWLEDGE_ORIGIN}/`);
-    expect(knowledge.disabled).toBeFalsy();
-    const outputs = buildShellEntries({}).find((e) => e.id === "outputs");
-    expect(outputs.href).toBe(`${KNOWLEDGE_ORIGIN}/outputs`);
   });
 });
 
@@ -87,9 +76,9 @@ describe("ShellNav", () => {
   it("renders the user entries", () => {
     render(<ShellNav user={{ role: "user" }} />);
     expect(screen.getByText("工作臺")).toBeTruthy();
-    expect(screen.getByText("我的知識庫")).toBeTruthy();
-    expect(screen.getByText("製作")).toBeTruthy();
     expect(screen.getByText("專案入口")).toBeTruthy();
+    expect(screen.queryByText("我的知識庫")).toBeNull();
+    expect(screen.queryByText("製作")).toBeNull();
     expect(screen.queryByText("即將推出")).toBeNull();
     expect(screen.queryByText("任務中心")).toBeNull();
     expect(screen.queryByText("產出中心")).toBeNull();
@@ -110,12 +99,10 @@ describe("ShellNav", () => {
     expect(screen.queryByText("治理中心")).toBeNull();
   });
 
-  it("points 我的知識庫 and 製作 at distinct pages", () => {
+  it("does not treat 我的知識庫 or 製作 as ANILA nav", () => {
     render(<ShellNav user={{ role: "user" }} />);
-    const knowledge = screen.getByText("我的知識庫").closest("a");
-    const outputs = screen.getByText("製作").closest("a");
-    expect(knowledge.getAttribute("href")).toBe(`${KNOWLEDGE_ORIGIN}/`);
-    expect(outputs.getAttribute("href")).toBe(`${KNOWLEDGE_ORIGIN}/outputs`);
+    expect(screen.queryByText("我的知識庫")).toBeNull();
+    expect(screen.queryByText("製作")).toBeNull();
   });
 
   it("opens the ServicesPanel via onOpenServices when 專案入口 is clicked", () => {
@@ -137,8 +124,9 @@ describe("ShellNav", () => {
   it("renders a collapsed rail without 系統管理", () => {
     render(<ShellNav collapsed user={{ role: "user" }} />);
     expect(screen.getByLabelText("工作臺")).toBeTruthy();
-    expect(screen.getByLabelText("製作")).toBeTruthy();
     expect(screen.getByLabelText("專案入口")).toBeTruthy();
+    expect(screen.queryByLabelText("製作")).toBeNull();
+    expect(screen.queryByLabelText("我的知識庫")).toBeNull();
     expect(screen.queryByLabelText("系統管理")).toBeNull();
   });
 });
@@ -150,8 +138,19 @@ describe("AccountMenu", () => {
     fireEvent.click(screen.getByRole("button", { name: "ada" }));
     const gov = screen.getByText("系統管理").closest("a");
     expect(gov.getAttribute("href")).toBe(`${GOV_ORIGIN}/`);
+    expect(screen.getByText("個人知識庫").closest("a").getAttribute("href")).toBe(`${KNOWLEDGE_ORIGIN}/`);
     rerender(<AccountMenu user={{ username: "lin", role: "user" }} />);
     fireEvent.click(screen.getByRole("button", { name: "lin" }));
     expect(screen.queryByText("系統管理")).toBeNull();
+  });
+
+  it("offers one outbound jump to the ANILALM site, not ANILA nav items", async () => {
+    const { AccountMenu } = await import("../AccountMenu.jsx");
+    render(<AccountMenu user={{ username: "lin", role: "user" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "lin" }));
+    const jump = screen.getByText("個人知識庫").closest("a");
+    expect(jump.getAttribute("href")).toBe(`${KNOWLEDGE_ORIGIN}/`);
+    expect(screen.queryByText("我的知識庫")).toBeNull();
+    expect(screen.queryByText("製作")).toBeNull();
   });
 });

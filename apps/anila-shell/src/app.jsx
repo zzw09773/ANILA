@@ -127,7 +127,6 @@ import {
   IconSettings,
   IconShare,
   IconShield,
-  IconSpark,
   IconTrash,
   IconUser,
 } from "./icons.jsx";
@@ -147,8 +146,6 @@ import { HandoffMenu, ShareDialog } from "./collab.jsx";
 import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
 import { ServicesPanel } from "./services.jsx";
-import { ANILA_LM_ENTRY_ENABLED } from "./anilalmReleaseGate.js";
-import { originHref } from "./shellNav.jsx";
 import { classifiedShareDenial, handoffNotice } from "./uxCopy.js";
 import { ArtifactPanel } from "./artifact.jsx";
 import { ArtifactPreviewProvider } from "./artifactContext.jsx";
@@ -2962,24 +2959,6 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
                   {WATERMARK_DISCLAIMER}
                 </span>
               )}
-              {/* Slice 9a — Task result 可轉 artifact（doc 10 §11）：對話已建立
-                  Task 時，提供薄連結深連到知識 SPA 的 Studio 面，帶 taskId
-                  query 讓 ALM 承接；不在 shell 內另建 Studio 啟動器。
-                  本 release ANILA LM 關閉時一併隱藏（同一旗標 anilalmReleaseGate）。 */}
-              {ANILA_LM_ENTRY_ENABLED && selectedConv?.taskId != null && (
-                <a
-                  href={originHref(`/anilalm?taskId=${encodeURIComponent(selectedConv.taskId)}`)}
-                  title="將此任務結果轉為產出（Studio / artifact）"
-                  style={{
-                    display: "inline-flex", alignItems: "center", gap: 5,
-                    padding: "4px 10px", fontSize: 12, fontWeight: 500,
-                    background: "var(--bg-elev)", border: "1px solid var(--border)",
-                    borderRadius: "var(--radius)", color: "var(--fg)", textDecoration: "none",
-                  }}
-                >
-                  <IconSpark size={13} /> 產出
-                </a>
-              )}
               <Dropdown align="right" width={260} trigger={() => (
                 <IconButton title="交給其他助手"><IconNodes size={14} /></IconButton>
               )}>
@@ -3276,8 +3255,6 @@ export function ChatRuntime({ user, tweaks, setTweaks }) {
 function EmptyState({ onPick, loading, onOpenServices, hasHelpers }) {
   const prompts = buildStarterPrompts();
   const nextActions = [
-    { id: "knowledge", label: "我的知識庫", hint: "把規定與資料放進來", href: originHref("/anilalm") },
-    { id: "outputs", label: "製作", hint: "做成報告或簡報", href: originHref("/anilalm/outputs") },
     { id: "projects", label: "專案入口", hint: "打開院內作業系統", onClick: onOpenServices },
   ];
   return (
@@ -3330,7 +3307,7 @@ function EmptyState({ onPick, loading, onOpenServices, hasHelpers }) {
       )}
       <ul style={{
         listStyle: "none", margin: "28px auto 0", padding: 0,
-        display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8,
+        display: "grid", gridTemplateColumns: "1fr", gap: 8,
         maxWidth: 560, textAlign: "left",
       }}>
         {nextActions.map((item) => {

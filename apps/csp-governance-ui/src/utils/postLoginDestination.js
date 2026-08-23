@@ -1,6 +1,5 @@
 import {
   governanceHref,
-  knowledgeHref,
   safeNextDestination,
   shellWorkbenchHref,
 } from './appOrigins.js'
@@ -30,18 +29,6 @@ export function workbenchEntries() {
       label: '工作臺',
       description: '用文字或語音查人事、採購、總務規範，立刻得到指引。',
       href: shellWorkbenchHref(),
-    },
-    {
-      id: 'knowledge',
-      label: '我的知識庫',
-      description: '把常用規定與資料放進來，之後提問才能引用出處。',
-      href: knowledgeHref('/'),
-    },
-    {
-      id: 'outputs',
-      label: '製作',
-      description: '把查到的內容做成報告或簡報，帶著出處一起帶走。',
-      href: knowledgeHref('/outputs'),
     },
     {
       id: 'projects',

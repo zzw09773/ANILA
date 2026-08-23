@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 
 import { ANILA_VERSION, isGovernanceRole } from "../../shared/product.js";
-import { governanceHref } from "./appOrigins.js";
+import { ANILA_LM_ENTRY_ENABLED } from "./anilalmReleaseGate.js";
+import { governanceHref, knowledgeHref } from "./appOrigins.js";
 
 export function AccountMenu({ user, onLogout, onOpenSettings }) {
   const [open, setOpen] = useState(false);
@@ -29,6 +30,11 @@ export function AccountMenu({ user, onLogout, onOpenSettings }) {
       {open ? (
         <div className="anila-topbar__menu" role="menu">
           <span className="anila-topbar__ver">版本 {ANILA_VERSION}</span>
+          {ANILA_LM_ENTRY_ENABLED ? (
+            <a href={knowledgeHref("/")} role="menuitem" onClick={() => setOpen(false)}>
+              個人知識庫
+            </a>
+          ) : null}
           {isGovernanceRole(user?.role) ? (
             <a href={governanceHref("/")} role="menuitem" onClick={() => setOpen(false)}>
               系統管理

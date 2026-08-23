@@ -3,7 +3,6 @@
 import React from "react";
 
 import { isGovernanceRole } from "../../shared/product.js";
-import { ANILA_LM_ENTRY_ENABLED } from "./anilalmReleaseGate.js";
 import { appHref, knowledgeHref } from "./appOrigins.js";
 
 /**
@@ -21,23 +20,14 @@ export function originHref(path) {
 }
 
 /**
- * 使用者入口。標籤跟 編：工作臺／我的知識庫／製作／專案入口。
+ * ANILA 是對話視窗。我的知識庫／製作只在 ANILALM，不進這條 rail。
  * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void }} handlers
  */
 export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
-  const entries = [
+  return [
     { id: "tasks", label: "工作臺", current: true, onClick: onTaskCenter },
     { id: "projects", label: "專案入口", onClick: onOpenServices },
   ];
-  if (ANILA_LM_ENTRY_ENABLED) {
-    entries.splice(
-      1,
-      0,
-      { id: "knowledge", label: "我的知識庫", href: knowledgeHref("/") },
-      { id: "outputs", label: "製作", href: knowledgeHref("/outputs") },
-    );
-  }
-  return entries;
 }
 
 function NavRow({ entry, collapsed }) {
@@ -81,7 +71,7 @@ function NavRow({ entry, collapsed }) {
 }
 
 /**
- * 左側四個等重入口。系統管理不在這裡。
+ * 左側 ANILA 入口。系統管理不在這裡。
  */
 export function ShellNav({ collapsed = false, onTaskCenter, onOpenServices }) {
   const entries = buildShellEntries({ onTaskCenter, onOpenServices });

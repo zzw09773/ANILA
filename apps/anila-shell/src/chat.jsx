@@ -79,6 +79,8 @@ import {
 } from "./trust.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
+import { ANILA_LM_ENTRY_ENABLED } from "./anilalmReleaseGate.js";
+import { knowledgeHref } from "./appOrigins.js";
 import { ShellNav } from "./shellNav.jsx";
 
 // ---- Trace Row + Routing Trace ----
@@ -2540,7 +2542,7 @@ export const Sidebar = ({
         <IconButton onClick={onNewChat} title="新對話"><IconPlus /></IconButton>
         <IconButton onClick={onOpenAgentBrowser} title="助手"><IconGrid /></IconButton>
         <Divider />
-        {/* ANILA Shell 四大入口 + admin-gated 治理中心（含 專案入口）。 */}
+        {/* ANILA 對話窗：工作臺／專案入口。知識庫與製作用帳號選單跳出。 */}
         <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
         <div style={{ flex: 1 }} />
         <IconButton onClick={onOpenSettings} title="設定"><IconSettings /></IconButton>
@@ -2576,8 +2578,7 @@ export const Sidebar = ({
         </button>
       </div>
 
-      {/* ANILA Shell 主導覽：任務中心 / 我的知識庫 / 專案入口
-          （+ admin 才顯示的 治理中心）。doc 00 §2 唯一產品入口 / doc 10 §11。 */}
+      {/* ANILA 主導覽：工作臺與專案入口。我的知識庫／製作不在這條 rail。 */}
       <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
       <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />
 
@@ -2988,6 +2989,17 @@ export const Sidebar = ({
           {(close) => (
             <div>
               <MenuItem leftIcon={<IconExternal size={14} />} onClick={() => { onOpenServices?.(); close(); }}>專案入口</MenuItem>
+              {ANILA_LM_ENTRY_ENABLED ? (
+                <MenuItem
+                  leftIcon={<IconBook size={14} />}
+                  onClick={() => {
+                    window.location.assign(knowledgeHref("/"));
+                    close();
+                  }}
+                >
+                  個人知識庫
+                </MenuItem>
+              ) : null}
               <MenuItem leftIcon={<IconSettings size={14} />} onClick={() => { onOpenSettings(); close(); }}>設定</MenuItem>
               {/* Sprint 7 X follow-up：API Key menu item 已移除（cookie 流程後 dead code）。 */}
               <Divider />

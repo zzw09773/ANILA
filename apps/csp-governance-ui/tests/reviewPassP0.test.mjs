@@ -22,13 +22,14 @@ test('regular users land in the task workbench; governance roles stay in system 
   assert.equal(isGovernanceRole('developer'), true)
 })
 
-test('the regular-user workbench exposes four distinct entries', () => {
+test('the regular-user workbench is ANILA conversation + 專案入口, not ANILALM', () => {
   const entries = workbenchEntries()
   assert.deepEqual(
     entries.map((entry) => entry.label),
-    ['工作臺', '我的知識庫', '製作', '專案入口'],
+    ['工作臺', '專案入口'],
   )
   assert.equal(new Set(entries.map((entry) => entry.href)).size, entries.length)
+  assert.ok(!entries.some((entry) => entry.label === '我的知識庫' || entry.label === '製作'))
 })
 
 test('governance routes use a route-keyed view and reserve /keys for the SPA', () => {
