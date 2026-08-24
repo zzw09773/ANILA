@@ -117,6 +117,28 @@
         <TermField :label="tokenLabel" :hint="tokenHint">
           <input v-model.number="form.maxTokens" type="number" class="term-input" min="64" max="8192" />
         </TermField>
+        <TermField
+          label="圖說"
+          hint="上線後純文字庫與簡報／掃描檔的需求不同；模型欄是抽換偵測——哪天換掉 gemma，要立刻看得出這個庫當初選了哪顆。"
+        >
+          <select v-model="form.captionMode" class="term-select">
+            <option value="platform">跟隨平台（現況）</option>
+            <option value="on">要做圖說</option>
+            <option value="off">不要圖說</option>
+          </select>
+        </TermField>
+        <TermField
+          v-if="form.captionMode === 'on'"
+          label="圖說模型"
+          hint="清單是全部已登錄模型，沒有視覺能力過濾。留空＝跟隨平台 VISION_MODEL。"
+        >
+          <select v-model="form.caption_model" class="term-select">
+            <option value="">跟隨平台 VISION_MODEL</option>
+            <option v-for="m in modelOptions" :key="m.name" :value="m.name">
+              {{ m.display_name || m.name }}（{{ m.model_type }}）
+            </option>
+          </select>
+        </TermField>
         <div v-if="formError" class="feedback is-err">! {{ formError }}</div>
       </div>
       <template #footer>
@@ -132,6 +154,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { listCollections, createCollection, updateCollection, deleteCollection } from '../api/ingestionCollections'
+import { listModels } from '../api/models'
 import { extractError } from '../api/errors'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -164,7 +187,10 @@ const markingId = ref(null)
 const form = ref({
   name: '', description: '', strategy: 'hierarchical', maxTokens: 256,
   classification_level: '無機密',
+  captionMode: 'platform',
+  caption_model: '',
 })
+const modelOptions = ref([])
 
 const tokenLabel = computed(() => ({
   fixed: '大小（tokens）',
@@ -182,6 +208,7 @@ const tokenHint = computed(() => ({
 
 onMounted(() => {
   loadCollections()
+  loadModels()
   // Sprint 8 X / chunking-preview Phase 3 — escape hatch from the
   // wizard. Wizard step 1 has a "skip preview · quick create" link
   // pointing at /knowledge-collections?quick=1; landing here with
@@ -206,14 +233,26 @@ async function loadCollections() {
   } finally { loadingCollections.value = false }
 }
 
+async function loadModels() {
+  try {
+    const { data } = await listModels()
+    modelOptions.value = Array.isArray(data) ? data : []
+  } catch {
+    modelOptions.value = []
+  }
+}
+
 function openCreateModal() {
   formError.value = ''
   // 256 matches HierarchicalChunker's post-Sprint-9-X default leaf budget.
   form.value = {
     name: '', description: '', strategy: 'hierarchical', maxTokens: 256,
     classification_level: '無機密',
+    captionMode: 'platform',
+    caption_model: '',
   }
   creating.value = true
+  if (!modelOptions.value.length) loadModels()
 }
 
 async function submitCreate() {
@@ -242,11 +281,19 @@ async function submitCreate() {
     overlap_tokens: Math.max(16, Math.floor(form.value.maxTokens / 16)),
   }
   try {
+    const caption_enabled =
+      form.value.captionMode === 'on' ? true
+        : form.value.captionMode === 'off' ? false
+          : null
     await createCollection({
       name: form.value.name,
       description: form.value.description || null,
       chunking_config: { strategy: s, params },
       classification_level: form.value.classification_level || '無機密',
+      caption_enabled,
+      caption_model: caption_enabled === true
+        ? (form.value.caption_model || null)
+        : null,
     })
     creating.value = false
     await loadCollections()

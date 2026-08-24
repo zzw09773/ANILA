@@ -93,6 +93,13 @@ describe("cited figures appear next to the citation chip", () => {
     );
   });
 
+  // ⚠ 邊界：以下這幾格只斷言 style **字串**。
+  // 元素盒與繪製區是否貼齊、暗底是否可點、右鍵是不是 IMG ——
+  // **jsdom 量不到（無版面引擎，getBoundingClientRect() 全回 0），這裡一格都沒有守。**
+  // 那一半在 `infra/checks/run-all.sh geometry`（Check 4，真瀏覽器）。
+  // 🔴 不要把下面的 maxWidth／objectFit 斷言讀成「幾何行為由本檔守著」——
+  // V-2（1535px 吞點擊死區）、R-1（右鍵另存被封）、A6-1（onLoad 前溢出 7.9 倍）
+  // 三條全部通過了這裡的字串斷言，是真瀏覽器量出來才發現的。
   it("lightbox upscales a naturally small figure instead of only capping it", () => {
     // Defect: maxWidth/maxHeight alone never enlarge. A ~500px extraction
     // opened at the same size as the inline preview. width:min(92vw,…)

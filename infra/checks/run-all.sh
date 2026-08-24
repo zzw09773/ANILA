@@ -5,6 +5,7 @@
 #   infra/checks/run-all.sh orm      # 僅 ORM↔PG
 #   infra/checks/run-all.sh contrast # 僅對比色
 #   infra/checks/run-all.sh zh       # 僅簡體／大陸用語
+#   infra/checks/run-all.sh geometry # 僅燈箱／圖片幾何（需系統瀏覽器）
 #
 # Exit: 0 全過；3 有發現；1 檢查壞了；2 用法錯。
 set -uo pipefail
@@ -30,6 +31,14 @@ run_orm() {
   local dsn
   if ! dsn="$("$CHECKS/prepare_scratch_db.sh" --prepare)"; then
     echo "ORM: BROKEN（scratch DB / alembic）"
+    # 跑不起來就要自己說出缺什麼——否則使用者拿到 traceback 而沒有下一步，
+    # 而一條長期報 BROKEN 的檢查會訓練大家忽略摘要（比休眠更糟）。
+    echo "  需要一台 throwaway Postgres 在 ${SCRATCH_HOST:-127.0.0.1}:${SCRATCH_PORT:-55441}"
+    echo "  （帳密預設 postgres/x，可用 SCRATCH_* 覆寫）。起一台："
+    echo "    docker run -d --rm --name anila-scratch-pg -p 127.0.0.1:55441:5432 \\"
+    echo "      -e POSTGRES_PASSWORD=x -e POSTGRES_USER=postgres pgvector/pgvector:pg16"
+    echo "  ⚠ 映像必須帶 pgvector —— 純 postgres 映像會在 CREATE EXTENSION vector 失敗。"
+    echo "  用完： docker rm -f anila-scratch-pg"
     return 1
   fi
   local rc=0
@@ -59,24 +68,35 @@ run_zh() {
   return "$rc"
 }
 
+run_geometry() {
+  echo "======== Check 4 · 燈箱幾何 ========"
+  # jsdom 量不到版面：盒與繪製區貼不貼齊、暗底點不點得到、右鍵是不是圖。
+  # 找不到系統瀏覽器時本檢查回 BROKEN(1)，不回 PASS。
+  python3 "$CHECKS/check_lightbox_geometry.py"
+}
+
 rc_orm=0
 rc_contrast=0
 rc_zh=0
+rc_geometry=0
 ran_orm=0
 ran_contrast=0
 ran_zh=0
+ran_geometry=0
 
 case "$which_run" in
   all)
-    ran_orm=1; ran_contrast=1; ran_zh=1
+    ran_orm=1; ran_contrast=1; ran_zh=1; ran_geometry=1
     run_orm || rc_orm=$?
     run_contrast || rc_contrast=$?
     run_zh || rc_zh=$?
+    run_geometry || rc_geometry=$?
     ;;
   orm) ran_orm=1; run_orm || rc_orm=$? ;;
   contrast) ran_contrast=1; run_contrast || rc_contrast=$? ;;
   zh) ran_zh=1; run_zh || rc_zh=$? ;;
-  *) echo "未知檢查: $which_run（orm|contrast|zh|all）" >&2; exit 2 ;;
+  geometry) ran_geometry=1; run_geometry || rc_geometry=$? ;;
+  *) echo "未知檢查: $which_run（orm|contrast|zh|geometry|all）" >&2; exit 2 ;;
 esac
 
 echo
@@ -97,5 +117,6 @@ print_one() {
 print_one "ORM↔PG" "$rc_orm" "$ran_orm"
 print_one "contrast" "$rc_contrast" "$ran_contrast"
 print_one "zh-TW" "$rc_zh" "$ran_zh"
+print_one "幾何" "$rc_geometry" "$ran_geometry"
 
 exit "$worst"

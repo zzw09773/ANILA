@@ -132,6 +132,22 @@ describe("串流請求的 header", () => {
     expect(calls[0].options.credentials).toBe("include");
   });
 
+  it("cookie 被 percent-encode 時，header 要是解碼後的值（值錯＝每次送出都 403）", async () => {
+    // 「有掛但值錯」那半。cookie 值 percent-encode（含 %XX 但無分號，regex
+    // 照樣中）時，decodeURIComponent 若不發生，header 會是原樣 `%E8%AD%89…`，
+    // 伺服器兩邊對不起 CSRF 雙送値 → 照樣 403。ASCII 那條（上面 toBe(CSRF)）
+    // decode 掉不掉結果一樣，所以照綠——補這條才看得見「值錯」是否被抓。
+    setCookie("%E8%AD%89%E6%93%9A");
+    const { calls, fake } = captureFetch();
+    globalThis.fetch = fake;
+    await streamChatCompletion({
+      url: "http://csp.test/v1/chat/completions",
+      payload: { model: "m", messages: [] },
+    });
+    expect(calls[0].options.headers["X-CSRF-Token"]).toBe("證據");
+    expect(calls[0].options.headers["X-CSRF-Token"]).not.toBe("%E8%AD%89%E6%93%9A");
+  });
+
   it("帶上 X-ANILA-Conversation-Id —— 少了它機敏 latch 靜悄悄地 no-op", async () => {
     const { calls, fake } = captureFetch();
     globalThis.fetch = fake;

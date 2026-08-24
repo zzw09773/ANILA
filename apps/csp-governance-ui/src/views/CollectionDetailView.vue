@@ -10,6 +10,7 @@
         <p v-if="collection" class="page-head__sub">
           {{ collection.embedding_model }} · {{ collection.embedding_dim }}-d ·
           策略 <code>{{ collection.chunking_config.strategy }}</code>
+          · 圖說 {{ captionIntentLabel }}
         </p>
       </div>
     </header>
@@ -102,6 +103,7 @@
               <TermBadge :variant="docVariant(d.status)" dot>{{ d.status }}</TermBadge>
             </div>
             <div class="cell-meta tnum">{{ humanBytes(d.bytes) }} · {{ d.chunk_count }} 個區塊 · sha {{ d.sha256.slice(0, 8) }}…</div>
+            <div v-if="d.latest_job_progress_message" class="cell-meta">{{ d.latest_job_progress_message }}</div>
             <div v-if="d.error_message" class="doc__err">! {{ d.error_message }}</div>
             <button
               v-if="d.status === 'failed'"
@@ -298,6 +300,16 @@ const raisableLevels = computed(() => {
 watch(raisableLevels, (levels) => {
   raiseTarget.value = levels[0] || ''
 }, { immediate: true })
+
+const captionIntentLabel = computed(() => {
+  const c = collection.value
+  if (!c) return '—'
+  if (c.caption_enabled === true) {
+    return c.caption_model ? `要 · ${c.caption_model}` : '要 · 跟隨平台模型'
+  }
+  if (c.caption_enabled === false) return '不要'
+  return '跟隨平台'
+})
 
 const showVectorDebug = ref(false)
 const vecDebug = ref({})

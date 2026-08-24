@@ -189,6 +189,7 @@ class DocumentResponse(ApiResponseModel):
     # 有效密等（max(文件, 知識庫)）；由 _document_response 填入，
     # 不要直接從 ORM 欄位投影，以免讀到未級聯的較低值。
     classification_level: str = "無機密"
+    latest_job_progress_message: str | None = None
 
 
 class DocumentDetailResponse(DocumentResponse):
@@ -762,7 +763,25 @@ def list_documents(
         .offset(offset)
         .all()
     )
-    return [_document_response(db, r, collection=coll) for r in rows]
+    payloads = [_document_response(db, r, collection=coll) for r in rows]
+    if rows:
+        latest_by_doc: dict[int, str | None] = {}
+        for did, msg, _jid in (
+            db.query(
+                IngestionJob.document_id,
+                IngestionJob.progress_message,
+                IngestionJob.id,
+            )
+            .filter(IngestionJob.document_id.in_([r.id for r in rows]))
+            .order_by(IngestionJob.id.desc())
+            .all()
+        ):
+            if did not in latest_by_doc:
+                latest_by_doc[did] = msg
+        for payload in payloads:
+            if payload.id in latest_by_doc:
+                payload.latest_job_progress_message = latest_by_doc[payload.id]
+    return payloads
 
 
 @router.get(
@@ -803,6 +822,7 @@ def get_document(
         payload.latest_job_id = latest_job.id
         payload.latest_job_status = latest_job.status
         payload.latest_job_error_code = latest_job.error_code
+        payload.latest_job_progress_message = latest_job.progress_message
         payload.arq_job_id = latest_job.arq_job_id
     return payload
 

@@ -31,6 +31,8 @@ export const getCollection = (collectionId) =>
  *   embedding_model?: string,
  *   embedding_dim?: number,
  *   classification_level?: string,
+ *   caption_enabled?: boolean | null,
+ *   caption_model?: string | null,
  * }} payload
  */
 export const createCollection = (payload) =>

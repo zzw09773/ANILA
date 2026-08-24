@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.api.agents._common import effective_agent_policy_level
 from app.database import get_db
 from app.models.ingestion import IngestionCollection, IngestionDocument
+from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.modules.policy import apply_classification
 from app.schemas.contracts.classification import ClassificationLevel
@@ -53,6 +54,33 @@ logger = logging.getLogger(__name__)
 # Allowed product-surface tags (migration r1_0029 CHECK). Same vocabulary
 # as conversations' ANILALM tag; CSP governance uses ``csp``.
 _COLLECTION_ORIGINS = frozenset({"csp", "anilalm"})
+
+
+def _normalized_caption_model(db: Session, name: str | None) -> str | None:
+    """Validate a caption-model *intent* against the registry.
+
+    No vision-capability filter exists (model_type='vlm' is a label, not
+    a guarantee). Any registered name is accepted. Unknown names 422 —
+    validation lives here, not a DB CHECK, so a new model does not need
+    a migration. Empty / omitted → NULL = follow VISION_MODEL.
+    """
+    if name is None:
+        return None
+    cleaned = name.strip()
+    if not cleaned:
+        return None
+    exists = (
+        db.query(ModelRegistry.id).filter(ModelRegistry.name == cleaned).first()
+    )
+    if exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"caption_model「{cleaned}」不在模型清單。"
+                "請先到「模型」頁登錄，或留空以跟隨平台 VISION_MODEL。"
+            ),
+        )
+    return cleaned
 
 # 唯一「可以被 ANILA 檢索」的密等。取自 enum,不是抄一份字串常數——
 # 四級的儲存拼法只有契約層說了算(SYSTEM-MAP §8)。
@@ -329,6 +357,8 @@ def create_collection(
     #   正確性不由核心補——刪掉會紅（Reviewer 實測 2 failed），不可刪。
     _refuse_classification_for_anilalm(origin, level)
 
+    caption_model = _normalized_caption_model(db, payload.caption_model)
+
     coll = IngestionCollection(
         name=payload.name,
         description=payload.description,
@@ -342,6 +372,8 @@ def create_collection(
         created_by=current_user.id,
         origin=origin,
         classification_level=level.to_storage(),
+        caption_enabled=payload.caption_enabled,
+        caption_model=caption_model,
     )
     db.add(coll)
     try:
@@ -369,6 +401,8 @@ def create_collection(
             "created_by": current_user.id,
             "origin": origin,
             "classification_level": level.to_storage(),
+            "caption_enabled": payload.caption_enabled,
+            "caption_model": caption_model,
         },
     )
     return CollectionResponse.model_validate(coll)
@@ -738,6 +772,12 @@ def update_collection(
     if payload.status is not None:
         coll.status = payload.status
         changed["status"] = payload.status
+    if "caption_enabled" in payload.model_fields_set:
+        coll.caption_enabled = payload.caption_enabled
+        changed["caption_enabled"] = payload.caption_enabled
+    if "caption_model" in payload.model_fields_set:
+        coll.caption_model = _normalized_caption_model(db, payload.caption_model)
+        changed["caption_model"] = coll.caption_model
 
     if not changed:
         return CollectionResponse.model_validate(coll)

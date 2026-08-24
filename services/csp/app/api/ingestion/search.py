@@ -314,6 +314,7 @@ class ImageHitOut(BaseModel):
     storage_path: str
     mime: str
     caption: str | None
+    caption_source_model: str | None = None
     filename: str
     score: float = Field(..., description="cosine similarity in [0, 1]; higher = closer")
 
@@ -962,6 +963,7 @@ async def search_collection_images(
                     i.storage_path,
                     i.mime,
                     i.caption,
+                    i.caption_source_model,
                     d.filename,
                     (i.embedding <=> $2) AS dist
                 FROM ingestion_images i
@@ -986,6 +988,7 @@ async def search_collection_images(
                     i.storage_path,
                     i.mime,
                     i.caption,
+                    i.caption_source_model,
                     d.filename,
                     (i.embedding <=> $2) AS dist
                 FROM ingestion_images i
@@ -1015,6 +1018,7 @@ async def search_collection_images(
                 storage_path=str(r["storage_path"]),
                 mime=str(r["mime"]),
                 caption=(r["caption"] or None),
+                caption_source_model=(r.get("caption_source_model") or None),
                 filename=str(r["filename"]),
                 score=float(1.0 - r["dist"]),
             )

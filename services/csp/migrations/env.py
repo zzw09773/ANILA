@@ -17,6 +17,13 @@ from sqlalchemy import engine_from_config, pool
 # Make sure the app package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+# Detect-and-explain (not silent path-fix): borrowed venvs ship old-tree
+# anila-core that imports anila_security. Fail before any revision so the
+# operator sees the cause, not a 0027 ModuleNotFoundError.
+from app.alembic_path_guard import refuse_foreign_anila_core
+
+refuse_foreign_anila_core()
+
 from app.config import settings
 from app.database import Base
 

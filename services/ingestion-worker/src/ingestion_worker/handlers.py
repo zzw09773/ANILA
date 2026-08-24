@@ -41,40 +41,73 @@ logger = logging.getLogger(__name__)
 # ── VLM caption injection ────────────────────────────────────────────
 #
 # Built lazily on first use so import-time has no network dependency.
-# A single VisionProvider is reused across documents; httpx connection
-# pooling keeps this efficient even on image-heavy queues.
+# Cached per model name so collection.caption_model cannot leak onto
+# the next document (a single global would stamp the wrong fact).
+_vision_providers: dict[str, Any] = {}
+# Back-compat alias: existing tests assign ``handlers._vision_provider``.
 _vision_provider: Any | None = None
 
 
-def _get_vision_provider() -> Any | None:
-    """Return a cached VisionProvider, or None if VLM caption is off.
+def _empty_caption_stats(
+    *, image_count: int, attempted: int = 0, required: bool = False,
+) -> dict[str, int]:
+    return {
+        "image_count": image_count,
+        "attempted": attempted,
+        "succeeded": 0,
+        "failed": 0,
+        "required": 1 if required else 0,
+    }
 
-    Returns None when:
-      * ``settings.enable_image_captions`` is False, OR
-      * ``settings.vision_url`` is empty (deployment doesn't have a VLM).
 
-    Either case is a "captioning skipped" fast path — callers should
-    treat None as "no captioning available, leave placeholders alone".
+def _resolve_caption_intent(
+    collection_enabled: Any,
+    collection_model: Any,
+) -> tuple[bool, str | None]:
+    """Intent vs platform default.
+
+    NULL collection columns follow ``enable_image_captions`` / ``VISION_MODEL``.
+    A False collection flag wins over a True platform flag (plain-text KB).
+    A True collection flag still needs ``vision_url`` at runtime.
+    """
+    if collection_enabled is None:
+        want = bool(settings.enable_image_captions)
+    else:
+        want = bool(collection_enabled)
+    model = (collection_model or "").strip() or settings.vision_model
+    return want, model
+
+
+def _get_vision_provider(model: str | None = None) -> Any | None:
+    """Return a cached VisionProvider for ``model``, or None if no VLM URL.
+
+    On/off is decided by ``_resolve_caption_intent`` (collection NULL
+    follows ``enable_image_captions``). This factory only answers
+    "can we reach a VLM?". Empty ``vision_url`` → None.
     """
     global _vision_provider
-    if not settings.enable_image_captions:
-        return None
     if not settings.vision_url:
         return None
-    if _vision_provider is None:
-        # Lazy import keeps the rag-extra dep optional at module load
-        # — the worker boots fine even if vision isn't configured.
-        from anila_core.providers.vision import VisionProvider
+    chosen = (model or settings.vision_model or "").strip() or settings.vision_model
+    cached = _vision_providers.get(chosen)
+    if cached is not None:
+        return cached
+    if _vision_provider is not None and not _vision_providers:
+        # Test / leftover single-slot cache.
+        return _vision_provider
+    from anila_core.providers.vision import VisionProvider
 
-        _vision_provider = VisionProvider(
-            base_url=settings.vision_url,
-            api_key=settings.vision_api_key,
-            model=settings.vision_model,
-            timeout=settings.vision_timeout_seconds,
-            verify_ssl=True,
-            max_image_bytes=settings.vision_max_image_bytes,
-        )
-    return _vision_provider
+    provider = VisionProvider(
+        base_url=settings.vision_url,
+        api_key=settings.vision_api_key,
+        model=chosen,
+        timeout=settings.vision_timeout_seconds,
+        verify_ssl=True,
+        max_image_bytes=settings.vision_max_image_bytes,
+    )
+    _vision_providers[chosen] = provider
+    _vision_provider = provider
+    return provider
 
 
 # Reasoning-preamble patterns gemma4 likes to emit even when the prompt
@@ -271,6 +304,9 @@ async def _persist_images(
                 pass
 
             caption = getattr(ref, "caption", "") or ""
+            caption_source = getattr(ref, "caption_source_model", None) or None
+            if caption_source:
+                caption_source = str(caption_source)
             page = getattr(ref, "page", None)
             alt_text = getattr(ref, "alt_text", "") or None
             rows.append({
@@ -281,6 +317,7 @@ async def _persist_images(
                 "mime": mime,
                 "alt_text": alt_text,
                 "caption": caption,
+                "caption_source_model": caption_source,
                 "bytes_size": len(image_bytes),
             })
             captions_to_embed.append(caption or alt_text or "image")
@@ -357,8 +394,9 @@ async def _persist_images(
                             (collection_id, document_id, image_id, page,
                              storage_path, mime, alt_text, caption,
                              bytes_size, embedding,
-                             embedding_source_model, embedding_native_dim)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                             embedding_source_model, embedding_native_dim,
+                             caption_source_model)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                         ON CONFLICT (document_id, image_id) DO UPDATE
                            SET caption     = EXCLUDED.caption,
                                storage_path= EXCLUDED.storage_path,
@@ -372,13 +410,16 @@ async def _persist_images(
                                embedding_native_dim   = COALESCE(
                                    EXCLUDED.embedding_native_dim,
                                    ingestion_images.embedding_native_dim),
+                               caption_source_model = COALESCE(
+                                   EXCLUDED.caption_source_model,
+                                   ingestion_images.caption_source_model),
                                updated_at  = CURRENT_TIMESTAMP
                         RETURNING id
                         """,
                         collection_id, document_id, row["image_id"], row["page"],
                         row["storage_path"], row["mime"], row["alt_text"],
                         row["caption"], row["bytes_size"], emb_value,
-                        source_model, native_dim,
+                        source_model, native_dim, row["caption_source_model"],
                     )
                 if row_pk is not None:
                     pk_by_parser_id[row["parser_id"]] = int(row_pk)
@@ -394,9 +435,32 @@ async def _persist_images(
     return pk_by_parser_id
 
 
-async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
+def format_caption_progress(stats: dict[str, int]) -> str:
+    """User-visible line: ``0 張圖`` ≠ ``3 張圖、0 張成功``.
+
+    ``image_count`` is figures in the document (the denominator the
+    owner can check against the PDF). ``succeeded`` is captions that
+    actually landed. All-fail must not look like a plain success.
+    """
+    n = int(stats.get("image_count") or 0)
+    ok = int(stats.get("succeeded") or 0)
+    required = bool(stats.get("required"))
+    if n == 0:
+        return "0 張圖"
+    if not required:
+        return f"{n} 張圖（未做圖說）"
+    return f"{n} 張圖、{ok} 張成功"
+
+
+async def _caption_images_into(
+    text: str,
+    images: dict[str, Any],
+    *,
+    model: str | None = None,
+    enabled: bool = True,
+) -> tuple[str, dict[str, int]]:
     """Replace every ``[[IMAGE:<id>]]`` placeholder in ``text`` with a
-    VLM-generated caption.
+    VLM-generated caption. Returns ``(rewritten_text, caption_stats)``.
 
     Behaviour:
       * No-op when there's no configured vision provider, no images, or
@@ -408,6 +472,8 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
         placeholder is replaced with a neutral ``[image]`` so chunking
         proceeds. Only logs at warning level; an operator can correlate
         with the VLM endpoint's logs if a pattern appears.
+      * Stats always carry ``image_count`` (figures in the file) so
+        "0 張圖" and "N 張圖、0 張成功" cannot collapse.
 
     Replacement format embeds the caption in a sentinel-flanked block so
     the chunker (and any future debugger) can tell "this came from VLM"
@@ -416,9 +482,18 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
     Curly Chinese brackets are deliberately NOT used — kept ASCII-safe
     so the OpenCC-style normalization passes downstream don't fight it.
     """
+    n_images = len(images or {})
+    empty = _empty_caption_stats(image_count=n_images, required=False)
     if not images or "[[IMAGE:" not in text:
-        return text
-    vision = _get_vision_provider()
+        return text, empty
+    if not enabled:
+        logger.info(
+            "Image captioning skipped (collection/platform off) — %d image(s) "
+            "left as placeholders.",
+            n_images,
+        )
+        return text, empty
+    vision = _get_vision_provider(model)
     if vision is None:
         # Configured-off path. The chunker's existing fallback turns
         # remaining placeholders into ``[image]`` tokens, so retrieval
@@ -427,13 +502,15 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
             "Image captioning skipped (enable=%s url_set=%s) — %d image(s) "
             "left as placeholders.",
             settings.enable_image_captions, bool(settings.vision_url),
-            len(images),
+            n_images,
         )
-        return text
+        return text, _empty_caption_stats(image_count=n_images, required=True)
 
     semaphore = asyncio.Semaphore(max(1, settings.vision_concurrency))
 
-    async def _caption_one(image_id: str, ref: Any) -> tuple[str, str]:
+    fact_model = getattr(vision, "model", None) or model
+
+    async def _caption_one(image_id: str, ref: Any) -> tuple[str, str, bool]:
         # Skip oversized images at the application layer — VisionProvider
         # raises on max_image_bytes too but that surfaces as a generic
         # error log; a structured fallback caption is friendlier.
@@ -444,7 +521,7 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
                 "Image %s skipped: %d bytes > limit %d",
                 image_id, size, settings.vision_max_image_bytes,
             )
-            return image_id, ""
+            return image_id, "", False
         # Skip uniform-color images (PDF background fills, decorative
         # solid bands). They get captioned as "一張純藍色的圖片" by the VLM,
         # then persisted, then pollute RAG citations. Drop here so we
@@ -460,7 +537,7 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
                 ref.caption = ""
             except Exception:
                 pass
-            return image_id, ""
+            return image_id, "", False
         try:
             async with semaphore:
                 caption = await vision.describe_image(
@@ -471,24 +548,32 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
             # Stash on the ref so the caller can persist (B.2/B.3) without
             # threading the captions dict through another layer. Existing
             # ImageRef has a `caption` slot expressly for this hand-off.
+            # caption_source_model is *fact*: only set when a caption
+            # actually landed. A failed call must not pretend this model
+            # produced anything.
             try:
                 ref.caption = cleaned
+                if cleaned:
+                    ref.caption_source_model = fact_model
             except Exception:
                 pass  # ImageRef should always be writable; defensive only
-            return image_id, cleaned
+            return image_id, cleaned, True
         except Exception as e:  # noqa: BLE001 — best-effort; fall back gracefully
             logger.warning(
                 "VLM caption failed for image %s (%s); using fallback marker.",
                 image_id, type(e).__name__,
             )
-            return image_id, ""
+            return image_id, "", True
 
     results = await asyncio.gather(
         *(_caption_one(img_id, ref) for img_id, ref in images.items()),
         return_exceptions=False,
     )
 
-    captions: dict[str, str] = {img_id: cap for img_id, cap in results}
+    captions: dict[str, str] = {img_id: cap for img_id, cap, _tried in results}
+    attempted = sum(1 for _i, _c, tried in results if tried)
+    succeeded = sum(1 for _i, cap, tried in results if tried and cap)
+    failed = attempted - succeeded
     out_chunks: list[str] = []
     cursor = 0
     needle = "[[IMAGE:"
@@ -517,7 +602,14 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
             out_chunks.append(text[i : end + 2])
         cursor = end + 2
 
-    return "".join(out_chunks)
+    stats = {
+        "image_count": n_images,
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+        "required": 1,
+    }
+    return "".join(out_chunks), stats
 
 
 def _attach_image_pks_to_chunks(
@@ -579,7 +671,9 @@ async def _load_document_meta(
                d.storage_path  AS storage_path,
                d.uploaded_by   AS uploaded_by,
                c.chunking_config AS chunking_config,
-               c.created_by    AS owner_user_id
+               c.created_by    AS owner_user_id,
+               c.caption_enabled AS caption_enabled,
+               c.caption_model   AS caption_model
           FROM ingestion_documents d
           JOIN ingestion_collections c ON c.id = d.collection_id
          WHERE d.id = $1
@@ -804,13 +898,19 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         # searchable text instead of opaque tokens. No-op if disabled
         # or no images. See _caption_images_into for the full contract.
         image_pks: dict[str, int] = {}
+        want_captions, caption_model = _resolve_caption_intent(
+            meta.get("caption_enabled"), meta.get("caption_model"),
+        )
+        caption_stats = _empty_caption_stats(image_count=len(images or {}))
         if images:
             await _update_job(
                 pool, arq_job_id,
                 progress_pct=22,
                 progress_message=f"captioning {len(images)} image(s)",
             )
-            text = await _caption_images_into(text, images)
+            text, caption_stats = await _caption_images_into(
+                text, images, model=caption_model, enabled=want_captions,
+            )
             # 1b. Persist captioned images to disk + DB so Studio can
             # vector-search over them (Phase 5). Best-effort: a failure
             # here doesn't fail ingest — the captions are already inlined
@@ -1073,7 +1173,8 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             pool, arq_job_id, status="succeeded", succeeded=True,
             progress_pct=100,
             progress_message=(
-                f"{len(leaves)} leaves + {len(parents)} parents indexed"
+                f"{len(leaves)} leaves + {len(parents)} parents indexed · "
+                f"{format_caption_progress(caption_stats)}"
             ),
         )
 
@@ -1084,6 +1185,10 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             "elapsed_seconds": (
                 datetime.now(timezone.utc) - started_at
             ).total_seconds(),
+            "image_count": caption_stats["image_count"],
+            "caption_succeeded": caption_stats["succeeded"],
+            "caption_attempted": caption_stats["attempted"],
+            "caption_summary": format_caption_progress(caption_stats),
         }
 
     except IngestionError as err:

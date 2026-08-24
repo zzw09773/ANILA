@@ -224,6 +224,28 @@
         <TermField :label="tokenLabel" :hint="tokenHint">
           <input v-model.number="commitForm.maxTokens" type="number" class="term-input" min="64" max="8192" />
         </TermField>
+        <TermField
+          label="圖說"
+          hint="上線後純文字庫與簡報／掃描檔的需求不同；模型欄是抽換偵測——哪天換掉 gemma，要立刻看得出這個庫當初選了哪顆。"
+        >
+          <select v-model="commitForm.captionMode" class="term-select">
+            <option value="platform">跟隨平台（現況）</option>
+            <option value="on">要做圖說</option>
+            <option value="off">不要圖說</option>
+          </select>
+        </TermField>
+        <TermField
+          v-if="commitForm.captionMode === 'on'"
+          label="圖說模型"
+          hint="清單是全部已登錄模型，沒有視覺能力過濾。留空＝跟隨平台 VISION_MODEL。"
+        >
+          <select v-model="commitForm.caption_model" class="term-select">
+            <option value="">跟隨平台 VISION_MODEL</option>
+            <option v-for="m in modelOptions" :key="m.name" :value="m.name">
+              {{ m.display_name || m.name }}（{{ m.model_type }}）
+            </option>
+          </select>
+        </TermField>
         <p class="cell-meta">
           ⓘ 建立完 collection 後再上傳檔案才會真的索引。本次預覽用的檔案 <strong>不會</strong> 自動進入 collection。
         </p>
@@ -243,6 +265,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { listStrategies, previewChunking } from '../api/chunkingPreview'
 import { createCollection } from '../api/ingestionCollections'
+import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermModal, TermStat } from '../components/cli'
 import { INGESTION_FILE_ACCEPT } from '../utils/ingestionFileAccept'
 import { extractError } from '../api/errors'
@@ -263,7 +286,9 @@ const chosen = ref(null)
 const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
 const commitForm = ref({
   name: '', description: '', maxTokens: 1024, classification_level: '無機密',
+  captionMode: 'platform', caption_model: '',
 })
+const modelOptions = ref([])
 const commitError = ref('')
 const committing = ref(false)
 
@@ -401,6 +426,12 @@ onMounted(async () => {
   } catch (e) {
     error.value = `載入策略目錄失敗：${extractError(e, e.message)}`
   }
+  try {
+    const { data } = await listModels()
+    modelOptions.value = Array.isArray(data) ? data : []
+  } catch {
+    modelOptions.value = []
+  }
 })
 
 function reset() {
@@ -444,6 +475,8 @@ function pickStrategy(entry) {
     description: '',
     maxTokens: defaultTokenForStrategy(entry),
     classification_level: '無機密',
+    captionMode: 'platform',
+    caption_model: '',
   }
   commitError.value = ''
 }
@@ -491,11 +524,19 @@ async function commitCreate() {
   }
 
   try {
+    const caption_enabled =
+      commitForm.value.captionMode === 'on' ? true
+        : commitForm.value.captionMode === 'off' ? false
+          : null
     const { data } = await createCollection({
       name: commitForm.value.name,
       description: commitForm.value.description || null,
       chunking_config: { strategy: s, params },
       classification_level: commitForm.value.classification_level || '無機密',
+      caption_enabled,
+      caption_model: caption_enabled === true
+        ? (commitForm.value.caption_model || null)
+        : null,
     })
     // Drop user back onto the new collection's detail page so they
     // can upload the real corpus there.

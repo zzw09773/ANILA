@@ -135,6 +135,12 @@ class IngestionCollection(Base):
     anila_searchable = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Caption *intent* (r1_0036). NULL = follow platform
+    # ``enable_image_captions`` / ``VISION_MODEL``. Not a gate: no CHECK,
+    # no server_default — a NOT NULL default would freeze existing
+    # collections so a later platform change would not apply.
+    caption_enabled = Column(Boolean, nullable=True)
+    caption_model = Column(String(200), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)

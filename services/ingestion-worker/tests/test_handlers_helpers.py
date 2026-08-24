@@ -52,6 +52,7 @@ class _FakeRef:
         self.image_bytes = image_bytes
         self.mime = mime
         self.caption = ""
+        self.caption_source_model = None
 
 
 class _FakeVision:
@@ -60,6 +61,7 @@ class _FakeVision:
 
     def __init__(self, caption: str = "A bar chart of quarterly sales.") -> None:
         self._caption = caption
+        self.model = "fake-vision"
         self.calls: list[tuple[bytes, str]] = []
 
     async def describe_image(self, image_bytes: bytes, mime: str = "image/png") -> str:
@@ -90,12 +92,14 @@ def reset_vision_cache():
     """Ensure the module-level lazy cache + relevant settings are restored
     after a test mutates them, so tests stay isolated."""
     prev_provider = handlers._vision_provider
+    prev_providers = dict(handlers._vision_providers)
     prev_enable = settings.enable_image_captions
     prev_url = settings.vision_url
     try:
         yield
     finally:
         handlers._vision_provider = prev_provider
+        handlers._vision_providers = prev_providers
         settings.enable_image_captions = prev_enable
         settings.vision_url = prev_url
 
@@ -156,11 +160,26 @@ def test_clean_caption_keeps_bullets_when_thats_all_there_is():
 # ── _get_vision_provider ──────────────────────────────────────────────────────
 
 
-def test_get_vision_provider_none_when_disabled(reset_vision_cache):
-    handlers._vision_provider = None
+def test_resolve_caption_intent_null_follows_platform(reset_vision_cache):
     settings.enable_image_captions = False
-    settings.vision_url = "https://vlm.example.test"
-    assert handlers._get_vision_provider() is None
+    settings.vision_model = "gemma4"
+    want, model = handlers._resolve_caption_intent(None, None)
+    assert want is False
+    assert model == "gemma4"
+    settings.enable_image_captions = True
+    want, model = handlers._resolve_caption_intent(None, None)
+    assert want is True
+
+
+def test_resolve_caption_intent_collection_overrides_platform(reset_vision_cache):
+    settings.enable_image_captions = True
+    settings.vision_model = "gemma4"
+    want, model = handlers._resolve_caption_intent(False, "other-vlm")
+    assert want is False
+    assert model == "other-vlm"
+    settings.enable_image_captions = False
+    want, _model = handlers._resolve_caption_intent(True, None)
+    assert want is True
 
 
 def test_get_vision_provider_none_when_url_empty(reset_vision_cache):
@@ -185,31 +204,39 @@ def test_get_vision_provider_returns_cached_instance(reset_vision_cache):
 
 async def test_caption_into_no_images_returns_text_unchanged():
     text = "some prose with no placeholder"
-    assert await handlers._caption_images_into(text, {}) == text
+    out, stats = await handlers._caption_images_into(text, {})
+    assert out == text
+    assert stats["image_count"] == 0
+    assert stats["succeeded"] == 0
 
 
 async def test_caption_into_no_placeholder_returns_text_unchanged():
     images = {"a": _FakeRef(_gradient_png())}
     text = "prose without any IMAGE token"
-    assert await handlers._caption_images_into(text, images) == text
+    out, stats = await handlers._caption_images_into(text, images)
+    assert out == text
 
 
 async def test_caption_into_provider_off_keeps_placeholder(monkeypatch):
     # _get_vision_provider returns None -> the placeholder is left intact for
     # the chunker's downstream IMAGE-leaf fallback.
-    monkeypatch.setattr(handlers, "_get_vision_provider", lambda: None)
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: None)
     images = {"img1": _FakeRef(_gradient_png())}
     text = "before [[IMAGE:img1]] after"
-    assert await handlers._caption_images_into(text, images) == text
+    out, stats = await handlers._caption_images_into(text, images)
+    assert out == text
 
 
 async def test_caption_into_replaces_placeholder_with_caption(monkeypatch):
     vision = _FakeVision("A bar chart of quarterly sales.")
-    monkeypatch.setattr(handlers, "_get_vision_provider", lambda: vision)
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
     ref = _FakeRef(_gradient_png())
     images = {"img1": ref}
-    out = await handlers._caption_images_into("before [[IMAGE:img1]] after", images)
+    out, stats = await handlers._caption_images_into("before [[IMAGE:img1]] after", images)
     assert out == "before [圖片描述：A bar chart of quarterly sales.] after"
+    assert stats["image_count"] == 1
+    assert stats["succeeded"] == 1
+    assert stats["required"] == 1
     # The cleaned caption is stashed back on the ref for downstream persistence.
     assert ref.caption == "A bar chart of quarterly sales."
     assert len(vision.calls) == 1
@@ -219,10 +246,10 @@ async def test_caption_into_uniform_image_skipped_keeps_placeholder(monkeypatch)
     # Uniform-color image (PDF background fill) -> no VLM call, empty caption,
     # placeholder is preserved verbatim.
     vision = _FakeVision()
-    monkeypatch.setattr(handlers, "_get_vision_provider", lambda: vision)
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
     ref = _FakeRef(_solid_png((26, 54, 93)))
     images = {"u": ref}
-    out = await handlers._caption_images_into("x [[IMAGE:u]] y", images)
+    out, _stats = await handlers._caption_images_into("x [[IMAGE:u]] y", images)
     assert out == "x [[IMAGE:u]] y"
     assert vision.calls == []  # short-circuited before the VLM call
     assert ref.caption == ""
@@ -230,12 +257,12 @@ async def test_caption_into_uniform_image_skipped_keeps_placeholder(monkeypatch)
 
 async def test_caption_into_oversized_image_skipped(monkeypatch):
     vision = _FakeVision()
-    monkeypatch.setattr(handlers, "_get_vision_provider", lambda: vision)
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
     # Force the size limit below our image size so the oversize branch fires.
     monkeypatch.setattr(settings, "vision_max_image_bytes", 1)
     ref = _FakeRef(_gradient_png())
     images = {"big": ref}
-    out = await handlers._caption_images_into("a [[IMAGE:big]] b", images)
+    out, _stats = await handlers._caption_images_into("a [[IMAGE:big]] b", images)
     assert out == "a [[IMAGE:big]] b"
     assert vision.calls == []
 
@@ -245,29 +272,39 @@ async def test_caption_into_vlm_failure_keeps_placeholder(monkeypatch):
         async def describe_image(self, image_bytes, mime="image/png"):
             raise RuntimeError("vlm down")
 
-    monkeypatch.setattr(handlers, "_get_vision_provider", lambda: _BoomVision())
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: _BoomVision())
     images = {"img1": _FakeRef(_gradient_png())}
     text = "p [[IMAGE:img1]] q"
     # A single failed caption must NOT raise — the placeholder survives.
-    assert await handlers._caption_images_into(text, images) == text
+    out, stats = await handlers._caption_images_into(text, images)
+    assert out == text
+    assert stats["image_count"] == 1
+    assert stats["succeeded"] == 0
+    assert stats["attempted"] == 1
+    assert handlers.format_caption_progress(stats) == "1 張圖、0 張成功"
+    assert handlers.format_caption_progress({"image_count": 0, "succeeded": 0}) == "0 張圖"
+    assert handlers.format_caption_progress(
+        {"image_count": 3, "succeeded": 0, "required": 0}
+    ) == "3 張圖（未做圖說）"
 
 
 async def test_caption_into_malformed_placeholder_left_as_is(monkeypatch):
     # Unterminated "[[IMAGE:" (no closing "]]") -> scanning stops, tail kept,
     # no infinite loop.
-    monkeypatch.setattr(handlers, "_get_vision_provider", lambda: _FakeVision())
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: _FakeVision())
     images = {"img1": _FakeRef(_gradient_png())}
     text = "head [[IMAGE:img1 tail-with-no-close"
-    assert await handlers._caption_images_into(text, images) == text
+    out, stats = await handlers._caption_images_into(text, images)
+    assert out == text
 
 
 async def test_caption_into_unknown_id_keeps_placeholder(monkeypatch):
     # Placeholder id not present in the images dict -> captions.get returns "",
     # so the original token shape is preserved.
-    monkeypatch.setattr(handlers, "_get_vision_provider", lambda: _FakeVision())
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: _FakeVision())
     images = {"known": _FakeRef(_gradient_png())}
     text = "a [[IMAGE:unknown]] b"
-    out = await handlers._caption_images_into(text, images)
+    out, _stats = await handlers._caption_images_into(text, images)
     assert out == "a [[IMAGE:unknown]] b"
 
 
@@ -443,6 +480,7 @@ async def test_reimport_sql_keeps_existing_embedding_when_excluded_is_null(
     sql = upserts[0]
     for column in (
         "embedding", "embedding_source_model", "embedding_native_dim",
+        "caption_source_model",
     ):
         _assert_excluded_first_coalesce(
             _conflict_assignment(sql, column), column,
@@ -699,9 +737,9 @@ async def test_reimport_with_embedder_replaces_existing_embedding(tmp_path, monk
 async def test_caption_into_embed_text_has_no_url_or_image_markup(monkeypatch):
     """Embed text keeps the caption and must not grow a URL or markdown image."""
     vision = _FakeVision("轉換區示意圖，左進右出。")
-    monkeypatch.setattr(handlers, "_get_vision_provider", lambda: vision)
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
     images = {"fig1": _FakeRef(_gradient_png())}
-    out = await handlers._caption_images_into(
+    out, _stats = await handlers._caption_images_into(
         "見 [[IMAGE:fig1]] 如圖。", images,
     )
     assert "[圖片描述：轉換區示意圖，左進右出。]" in out

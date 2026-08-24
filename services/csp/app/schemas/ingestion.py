@@ -98,6 +98,21 @@ class CollectionCreate(BaseModel):
             "NULL = legacy dual-surface visibility."
         ),
     )
+    caption_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Whether this collection should caption figures. "
+            "NULL = follow the platform enable_image_captions flag."
+        ),
+    )
+    caption_model: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Intended VLM name. NULL = follow VISION_MODEL. "
+            "Validated against model_registry in the API, not a DB CHECK."
+        ),
+    )
 
     @field_validator("classification_level")
     @classmethod
@@ -149,6 +164,15 @@ class CollectionUpdate(BaseModel):
             "沒有密等文件）。關閉（false）不受那四道限制——每一則拒絕訊息"
             "叫人去做的正是這個動作，把它擋住等於把出口封死。"
         ),
+    )
+    caption_enabled: bool | None = Field(
+        default=None,
+        description="圖說意圖。NULL 表示不再覆寫、改回跟平台旗標。",
+    )
+    caption_model: str | None = Field(
+        default=None,
+        max_length=200,
+        description="圖說模型意圖。空字串視為 NULL。",
     )
 
     @field_validator("classification_level")
@@ -217,6 +241,8 @@ class CollectionResponse(ApiResponseModel):
     # 標記後端真的收到了嗎——沒有這個欄位，一次成功的 PATCH 就只是「回了 200，
     # 畫面什麼也沒變」，正是本專案盤點過的靜默成功形狀。
     anila_searchable: bool = False
+    caption_enabled: bool | None = None
+    caption_model: str | None = None
     created_at: datetime
     updated_at: datetime
 

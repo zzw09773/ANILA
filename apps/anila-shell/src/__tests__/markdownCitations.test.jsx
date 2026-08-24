@@ -108,6 +108,68 @@ describe("cited RAG answers render markdown AND citation chips together", () => 
   });
 });
 
+const TWO_CITATIONS = [
+  {
+    id: "kb:7:21:1",
+    title: "人事管理規則.pdf",
+    snippet: "第三條 差勤一律採線上簽核。",
+  },
+  {
+    id: "kb:7:90:3",
+    title: "差旅報支要點.pdf",
+    snippet: "差旅支出一律事前申請。",
+  },
+];
+
+describe("multiple citations keep their own mapping and body order", () => {
+  // cited-answer-skips-markdown 只證得了「全壞」（markdown 整個被換成空字串）
+  // 會被發現。這裡補它的「壞一半」：渲染照跑、chip 照畫，但 [2] 開成 [1] 的
+  // 來源（對映錯）或正文順序被打亂——都長得「看起來能用」。
+  it("[2] 開第 2 個來源，不塌回第 1 個（對映壞一半）", () => {
+    const onOpenCitation = vi.fn();
+    const { container } = render(
+      <MessageBubble
+        msg={assistantMsg("差勤[1]，差旅[2]照章辦理", {
+          citations: TWO_CITATIONS,
+        })}
+        agents={[]}
+        conversationId={1}
+        onOpenCitation={onOpenCitation}
+      />,
+    );
+    const body = container.querySelector(".anila-msg-body");
+    const chip1 = inlineChip(body, 1);
+    const chip2 = inlineChip(body, 2);
+    expect(chip1, "chip [1]").toBeTruthy();
+    expect(chip2, "chip [2]").toBeTruthy();
+
+    fireEvent.click(chip1);
+    fireEvent.click(chip2);
+    expect(onOpenCitation.mock.calls[0][0]).toMatchObject({ id: "kb:7:21:1" });
+    expect(onOpenCitation.mock.calls[1][0]).toMatchObject({ id: "kb:7:90:3" });
+  });
+
+  it("正文順序不被打亂（[2] 那段一直在 [1] 那段之後）", () => {
+    const { container } = render(
+      <MessageBubble
+        msg={assistantMsg("差勤[1]，差旅[2]照章辦理", {
+          citations: TWO_CITATIONS,
+        })}
+        agents={[]}
+        conversationId={1}
+        onOpenCitation={vi.fn()}
+      />,
+    );
+    const text = container.querySelector(".anila-msg-body").textContent;
+    // 順序是用來抓「渲染了但內容錯」那半。chip 自己的文字就是「[1]」，
+    // 所以不能拿 textContent 去斷言「[1] 不存在」——要去比的是正文 CJK
+    // 片段的相對位置：倒序或 off-by-one 都會讓差旅跑到差勤前面。
+    expect(text.indexOf("差勤")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("差旅")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("差勤")).toBeLessThan(text.indexOf("差旅"));
+  });
+});
+
 describe("MarkdownView itself substitutes [n] inside markdown text nodes", () => {
   it("does not rewrite markers inside fenced code", () => {
     const onOpen = vi.fn();
