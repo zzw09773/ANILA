@@ -288,6 +288,40 @@ async def test_caption_into_vlm_failure_keeps_placeholder(monkeypatch):
     ) == "3 張圖（未做圖說）"
 
 
+async def test_repetitive_caption_is_not_success_and_stays_out_of_text(monkeypatch):
+    """A non-empty loop must not increment succeeded or enter chunk text.
+
+    Unfixed: succeeded = bool(cap) counted 601-char $\\text{}$ as success.
+    """
+    loop = "文字內容 (OCR)：** " + "$\\text{}" * 80
+    vision = _FakeVision(loop)
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ref = _FakeRef(_gradient_png())
+    images = {"junk": ref}
+    out, stats = await handlers._caption_images_into("see [[IMAGE:junk]] here", images)
+    assert "[[IMAGE:junk]]" in out
+    assert "圖片描述" not in out
+    assert "$\\text{}" not in out
+    assert stats["attempted"] == 1
+    assert stats["succeeded"] == 0
+    assert ref.caption == ""
+
+
+async def test_coherent_truncated_caption_counts_and_is_marked(monkeypatch):
+    body = (
+        "圖片內容如下：左上角有一個圓形圖示，內有文字 4/26 Sun。"
+        "中間是賽道示意圖，右側有海拔曲線。"
+    ) * 6
+    vision = _FakeVision(body)
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ref = _FakeRef(_gradient_png())
+    images = {"ok": ref}
+    out, stats = await handlers._caption_images_into("see [[IMAGE:ok]] here", images)
+    assert "圖片描述" in out
+    assert stats["succeeded"] == 1
+    assert "4/26" in (ref.caption or "")
+
+
 async def test_caption_into_malformed_placeholder_left_as_is(monkeypatch):
     # Unterminated "[[IMAGE:" (no closing "]]") -> scanning stops, tail kept,
     # no infinite loop.

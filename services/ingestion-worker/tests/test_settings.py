@@ -168,7 +168,7 @@ def test_all_defaults_at_once(clean_env):
         "pg_pool_max": 5,
         "enable_image_captions": True,
         "vision_url": "",
-        "vision_model": "gemma4",
+        "vision_model": "gemma26-nothink",
         "vision_api_key": "not-set",
         "vision_concurrency": 4,
         "vision_timeout_seconds": 60.0,

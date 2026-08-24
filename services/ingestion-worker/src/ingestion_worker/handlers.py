@@ -545,6 +545,24 @@ async def _caption_images_into(
                     mime=getattr(ref, "mime", None) or "image/png",
                 )
             cleaned = _clean_caption(caption)
+            from anila_core.providers.caption_quality import (
+                classify_caption,
+                mark_truncated,
+            )
+
+            kind = classify_caption(cleaned)
+            if kind == "repetitive":
+                logger.warning(
+                    "VLM caption for image %s discarded as repetitive loop",
+                    image_id,
+                )
+                try:
+                    ref.caption = ""
+                except Exception:
+                    pass
+                return image_id, "", True
+            if kind == "truncated":
+                cleaned = mark_truncated(cleaned)
             # Stash on the ref so the caller can persist (B.2/B.3) without
             # threading the captions dict through another layer. Existing
             # ImageRef has a `caption` slot expressly for this hand-off.
@@ -572,7 +590,13 @@ async def _caption_images_into(
 
     captions: dict[str, str] = {img_id: cap for img_id, cap, _tried in results}
     attempted = sum(1 for _i, _c, tried in results if tried)
-    succeeded = sum(1 for _i, cap, tried in results if tried and cap)
+    from anila_core.providers.caption_quality import is_repetitive_caption
+
+    succeeded = sum(
+        1
+        for _i, cap, tried in results
+        if tried and cap and not is_repetitive_caption(cap)
+    )
     failed = attempted - succeeded
     out_chunks: list[str] = []
     cursor = 0

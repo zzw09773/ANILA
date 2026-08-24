@@ -26,12 +26,20 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+# The previous "same language as any text in the image" rule is
+# reasonable when document language == label language. Institute
+# manuals routinely mix Chinese prose with English diagram labels
+# (Transition Area, SWIM / START TIME). Following the labels then
+# produced English captions that Chinese queries cannot retrieve.
+# "verbatim OCR" on a figure with no text, plus greedy decoding,
+# looped into $\text{}\text{}$ until max_tokens. Neither is the
+# model disobeying — the rule misfit this corpus.
 _DEFAULT_PROMPT = (
-    "Describe this image in concise, factual terms so it can be indexed for "
-    "search. Include any visible text verbatim (OCR), diagrams, tables, "
-    "charts, or symbols. Do not add interpretation or opinion. "
-    "Respond in the same language as any text that appears in the image; "
-    "otherwise respond in Traditional Chinese."
+    "用繁體中文、簡潔、可被檢索的句子描述這張圖。"
+    "圖中若有原文術語、路牌、標題，原樣保留（例如 Transition Area），"
+    "不要翻譯掉。"
+    "沒有可見文字就不要臆造 OCR，也不要輸出 LaTeX 或 HTML。"
+    "看不清楚就寫「模糊無法辨識」，不要填空。"
 )
 
 
@@ -107,6 +115,8 @@ class VisionProvider:
             ],
             "max_tokens": max_tokens,
             "temperature": 0.0,
+            "repetition_penalty": 1.15,
+            "stop": ["\\text{}\\text{}", "</sub></sub></sub>"],
             "stream": False,
         }
 
@@ -127,14 +137,31 @@ class VisionProvider:
             return ""
 
         try:
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
             if isinstance(content, list):
                 parts = [p.get("text", "") for p in content if p.get("type") == "text"]
                 content = "".join(parts)
-            return (content or "").strip()
+            text = (content or "").strip()
         except (KeyError, IndexError, TypeError) as exc:
             logger.warning("VLM response has unexpected shape: %s", exc)
             return ""
+        from anila_core.providers.caption_quality import (
+            classify_caption,
+            finish_reason_hit_limit,
+            mark_truncated,
+        )
+
+        kind = classify_caption(
+            text,
+            hit_token_limit=finish_reason_hit_limit(choice.get("finish_reason")),
+        )
+        if kind == "repetitive":
+            logger.warning("VLM caption discarded as repetitive loop")
+            return ""
+        if kind == "truncated":
+            return mark_truncated(text)
+        return text
 
 
 def _to_data_uri(image_bytes: bytes, mime: str) -> str:
