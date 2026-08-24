@@ -74,6 +74,46 @@ class TestAgentPermissionService:
             is False
         )
 
+    def test_system_role_reaches_any_active_model_without_a_list(self, db: Session):
+        """ingestion-worker is system; the create-KB picker is the catalogue.
+
+        A hand-maintained allow-list cannot grow with that menu. Unregistered
+        and inactive stay refused at the proxy (404 / 400), not here.
+        """
+        worker = make_user(db, username="ingestion-worker-perm", role="system")
+        model = make_model(db, name="any-registered-vlm")
+        key = make_api_key(db, worker)
+        assert (
+            check_model_permission(
+                db, user=worker, api_key_id=key.id, model_id=model.id
+            )
+            is True
+        )
+
+    def test_ordinary_user_key_still_needs_a_row(self, db: Session):
+        user = make_user(db, username="u_not_system")
+        model = make_model(db, name="restricted-vlm")
+        key = make_api_key(db, user)
+        assert (
+            check_model_permission(
+                db, user=user, api_key_id=key.id, model_id=model.id
+            )
+            is False
+        )
+
+    def test_system_role_does_not_open_inactive_model(self, db: Session):
+        worker = make_user(db, username="ingestion-worker-inactive", role="system")
+        model = make_model(db, name="retired-vlm")
+        model.is_active = False
+        db.commit()
+        key = make_api_key(db, worker)
+        assert (
+            check_model_permission(
+                db, user=worker, api_key_id=key.id, model_id=model.id
+            )
+            is False
+        )
+
 
 class TestV1AgentsDataPlane:
     """Test GET /v1/agents returns only approved agents the API key owner can use."""

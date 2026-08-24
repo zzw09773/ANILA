@@ -194,7 +194,7 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)的 AI 工作平台／AI Oper
 (⚠ 用語:擁有者已兩度糾正「不要再寫軍方」——這是中科院內部用的平台。)**開發線仍只有一條:`restart/from-redesign`**(工作 worktree 分支除外);舊 4 分支模型已進 attic,**不要**在 PLAN 排到之前重建部署分支。
 ⚠ **但遠端不只一條 ref**(2026-08-22 起):`origin/restart/from-redesign` 停在舊點,而**擁有者要求另推的快照分支 `origin/restart/from-redesign-20260822` 帶的是 8/22 當日的工作內容**。
 📌 **這裡刻意不釘 SHA**:第一版寫了建立時的 `dca11560`,**而修這一行的那個 commit 一推上去就把它推走了**——**一份文件釘住它自己所在分支的 SHA,在被提交的那一刻就過期,寫的人不可能事先知道自己的 SHA。**與檔頭「寫『最新』就是寫一個保證會過期的宣稱」同病。**要當下的值請 `git ls-remote origin`。**
-**在哪一條上開工看的是本地 `restart/from-redesign`,不是遠端最新的那條 ref**——快照分支是給人看的,不是開發線。Repo 是 **PUBLIC** → 祕密零外洩。目標:**8 月底全院上線**(PLAN.md),一人維運。
+**在哪一條上開工看的是本地 `restart/from-redesign`,不是遠端最新的那條 ref**——快照分支是給人看的,不是開發線。Repo **2026-08-24 起為 PRIVATE**(擁有者當日改的;`gh repo view --json visibility` 可核)——**但祕密零外洩照舊**:`.env`/`*.pem`/`*.key`/`secrets/` 一律不進追蹤。⚠ **private 停止的是未來的曝光,不收回 2026-04-17～08-24 那段公開期**(期間的 clone／快取不會因為改 private 而消失;實測有利的一格:fork 數 0、無外部貢獻者)。目標:**8 月底全院上線**(PLAN.md),一人維運。
 
 ---
 
@@ -289,7 +289,7 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)的 AI 工作平台／AI Oper
   於是用 `grep "^## Q"` 數就把它們算成未答。**數的是標記,而答案在內文。**
   已補上標記;判讀規則見該檔檔頭。
   規則:遇到需要裁決的事**不停下來等**,記進去、用最保守假設繼續、註明假設。
-- **氣隙防護盤點報告在 `~/anila-private-audits/`,刻意不在 repo**(寫了尚未修補的弱點位置,repo 是 PUBLIC)。
+- **氣隙防護盤點報告在 `~/anila-private-audits/`,刻意不在 repo**(寫了尚未修補的弱點位置)。⚠ **repo 改 private 之後這條仍然成立**——理由從「任何人看得到」變成「弱點清單不該跟著程式碼一起流通」。
 - 其他文件:`docs/FAKE-CONTROLS.md`(30 項)、`docs/UX-IDEAS.md`、`docs/designs/`、
   `docs/TOMORROW.md`(給擁有者的清單)。
 
@@ -346,7 +346,7 @@ ANILA = 中科院(NCSIST)**院內內網(air-gapped)的 AI 工作平台／AI Oper
 
 ## 5. 鐵則
 
-- **祕密零外洩**(PUBLIC repo):`.env`/`*.pem`/`*.key`/`secrets/` 不進追蹤;容器掛載不看 gitignore,新增 RW 掛載要想清楚。
+- **祕密零外洩**(repo 2026-08-24 起 private,**這條不因此放寬**):`.env`/`*.pem`/`*.key`/`secrets/` 不進追蹤;容器掛載不看 gitignore,新增 RW 掛載要想清楚。**private 只是少一層讀者,不是一層防護。**
 - **端到端驗證用對方法**:別只看 status code(SPA catch-all 回 200 text/html → 驗 Content-Type);取資料走正式 API＋auth,不直連 DB。
 - **別腦補成 bug**:功能按 spec ≠ bug;先客觀呈現,讓 user 判斷。
 - 前端驗 `npm run build`(非只 tsc);後端 pytest(本樹尚無 venv,暫借舊樹 `services/csp/.venv` 的直譯器＋`PYTHONPATH=packages/*/src`,建好自己的 venv 後改用)。

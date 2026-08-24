@@ -126,6 +126,14 @@ def check_model_permission(
         return True
     if is_admin_tier(user):
         return True
+    # System accounts (ingestion-worker) must reach every registered,
+    # active model. The create-collection UI lets an operator pick any
+    # name; a hand-maintained allow-list cannot grow with that menu and
+    # turns the picker into a trap (403 on ingest). Unregistered → 404
+    # and inactive → 400 stay in the proxy. Usage is still attributed
+    # to this user_id.
+    if getattr(user, "role", None) == "system":
+        return True
 
     if api_key_id is not None:
         perm = (

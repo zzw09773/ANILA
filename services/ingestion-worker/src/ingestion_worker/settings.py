@@ -160,7 +160,7 @@ class WorkerSettings(BaseSettings):
         ),
     )
     vision_model: str = Field(
-        default="gemma4",
+        default="gemma26-nothink",
         description="VLM identifier passed in the chat-completions body.",
     )
     vision_api_key: str = Field(

@@ -202,11 +202,14 @@ services:
       AUTO_REGISTER_AGENTS: >-
         [{"name":"image-generator","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。","health_status":"healthy","approval_status":"approved"}]
       # AUTO_SEED_API_KEYS: prod initial 模式只 seed ingestion-worker (系統內部
-      # 必需,讓 worker 能呼叫 csp /v1/embeddings)。smoke-user 是 e2e 測試用的
-      # 帳號,prod 不需要,已移除。要恢復就把舊 entry 加回來 (參考 .env.dev.local
-      # 同步區段或 git history)。
+      # 必需,讓 worker 能呼叫 csp /v1/embeddings 與 /v1/chat/completions)。
+      # smoke-user 是 e2e 測試用的帳號,prod 不需要,已移除。要恢復就把舊 entry
+      # 加回來 (參考 .env.dev.local 同步區段或 git history)。
+      # models 必須同時列 embedding 與 VISION_MODEL——同一把 INTERNAL_PLATFORM_API_KEY
+      # 打圖說時要 gemma4,只授權 embedding 會 403,匯入卻回「N 張圖、0 張成功」。
+      # 不要改成「全部模型」;auto_seed 對既有 key 只補列上的權限、不刪舊的。
       AUTO_SEED_API_KEYS: >-
-        [{"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
+        [{"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","${VISION_MODEL:-gemma26-nothink}"]}]
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
       # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
       # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
@@ -343,7 +346,7 @@ services:
       # 才不會 chart/diagram 變成 [image] token 消失。走 csp /v1 proxy 為了計量。
       ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"
       VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
-      VISION_MODEL: "${VISION_MODEL:-gemma4}"
+      VISION_MODEL: "${VISION_MODEL:-gemma26-nothink}"
       # 對齊 EMBEDDING_API_KEY 的 fail-loud convention — 不留 changeme fallback。
       VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"

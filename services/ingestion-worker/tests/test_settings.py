@@ -128,7 +128,7 @@ def test_vision_url_default_empty(clean_env):
 
 
 def test_vision_model_default(clean_env):
-    assert _fresh().vision_model == "gemma4"
+    assert _fresh().vision_model == "gemma26-nothink"
 
 
 def test_vision_api_key_default(clean_env):
