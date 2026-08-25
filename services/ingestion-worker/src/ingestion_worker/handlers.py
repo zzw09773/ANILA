@@ -159,7 +159,17 @@ def _clean_caption(raw: str) -> str:
     s = _re.sub(r"^[\*\-\s]+", "", s)
     s = _re.sub(r"\s+", " ", s).strip()
     if len(s) > _CAPTION_MAX_CHARS:
-        s = s[:_CAPTION_MAX_CHARS].rstrip() + "…"
+        # Same mark as the VLM finish_reason=length path. Completeness
+        # is decided here because this is the last cut — classify_caption
+        # upstream cannot see this ceiling. One mark: the reader needs
+        # "incomplete", not which layer cut it.
+        from anila_core.providers.caption_quality import mark_truncated
+
+        s = mark_truncated(s[:_CAPTION_MAX_CHARS].rstrip())
+        logger.info(
+            "caption truncated by worker_char_ceiling at %d chars",
+            _CAPTION_MAX_CHARS,
+        )
     return s
 
 

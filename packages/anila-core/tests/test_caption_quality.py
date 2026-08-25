@@ -31,6 +31,13 @@ def test_truncated_mark_is_visible_and_idempotent():
     assert mark_truncated(marked) == marked
 
 
+def test_our_ceiling_mark_is_truncated_not_ok():
+    body = "圖片內容如下：左上角有一個圓形圖示，內有文字 4/26 Sun。" * 20
+    marked = mark_truncated(body[:600])
+    assert classify_caption(marked) == "truncated"
+    assert classify_caption(body[:600]) == "ok"
+
+
 def test_honest_unreadable_is_ok():
     text = "這張圖片非常模糊，無法辨識其中的任何文字、圖表、符號或具體內容。"
     assert classify_caption(text) == "ok"

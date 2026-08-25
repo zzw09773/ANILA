@@ -52,10 +52,16 @@ def is_repetitive_caption(text: str) -> bool:
 
 
 def classify_caption(text: str, *, hit_token_limit: bool = False) -> CaptionKind:
-    """repetitive | truncated | ok. Length never decides by itself."""
+    """repetitive | truncated | ok. Length never decides by itself.
+
+    Completeness is whoever last cut the text: the VLM (finish_reason)
+    or our own char ceiling. Both leave ``_TRUNCATION_MARK``. Seeing
+    that mark is enough — the reader needs "this is incomplete", not
+    which layer cut it.
+    """
     if is_repetitive_caption(text):
         return "repetitive"
-    if hit_token_limit:
+    if hit_token_limit or (text or "").endswith(_TRUNCATION_MARK):
         return "truncated"
     return "ok"
 

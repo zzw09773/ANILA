@@ -160,6 +160,7 @@ class VisionProvider:
             logger.warning("VLM caption discarded as repetitive loop")
             return ""
         if kind == "truncated":
+            logger.info("caption truncated by vlm_token_limit")
             return mark_truncated(text)
         return text
 

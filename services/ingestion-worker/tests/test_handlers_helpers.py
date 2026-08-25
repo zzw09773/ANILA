@@ -143,11 +143,29 @@ def test_clean_caption_collapses_whitespace_and_strips_leading_markers():
 
 
 def test_clean_caption_truncates_overlong_to_max_plus_ellipsis():
-    out = _clean_caption("a" * 700)
-    # Body is truncated to _CAPTION_MAX_CHARS and an ellipsis is appended.
-    assert out.endswith("…")
-    assert len(out) == _CAPTION_MAX_CHARS + 1
-    assert out[:-1] == "a" * _CAPTION_MAX_CHARS
+    from anila_core.providers.caption_quality import (
+        _TRUNCATION_MARK,
+        classify_caption,
+    )
+
+    body = "圖片內容如下：左上角有一個圓形圖示，內有文字 4/26 Sun。" * 40
+    out = _clean_caption(body)
+    # Our ceiling is a cut. Completeness is declared here, with the
+    # same mark as finish_reason=length — not a bare "…" that looks
+    # like the model's own ellipsis.
+    assert out.endswith(_TRUNCATION_MARK)
+    assert classify_caption(out) == "truncated"
+    assert len(out) > _CAPTION_MAX_CHARS
+    assert "4/26" in out
+
+
+def test_clean_caption_logs_worker_ceiling_not_vlm_limit(caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="ingestion_worker.handlers"):
+        _clean_caption("b" * 900)
+    assert "worker_char_ceiling" in caplog.text
+    assert "vlm_token_limit" not in caplog.text
 
 
 def test_clean_caption_keeps_bullets_when_thats_all_there_is():
