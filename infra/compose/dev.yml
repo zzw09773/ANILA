@@ -73,6 +73,8 @@ services:
       # Dev 寫死 "1"，不經 ${} 展開——避免被 .env 裡的 ANILA_ALLOW_DEV_SECRET=0
       # 鎖死。startup_security 在 dev 模式下只 log warning 不擋。
       ANILA_ALLOW_DEV_SECRET: "1"
+      # 啟動時拒絕自動 alembic upgrade。預設 0＝仍遷移。沒有這一行,.env 寫了到不了容器。
+      ANILA_SKIP_STARTUP_MIGRATIONS: "${ANILA_SKIP_STARTUP_MIGRATIONS:-0}"
       # Dev-only relax (S-117 URL guard): dev runs every model/agent on
       # docker-internal http endpoints (e.g. http://flux2-dev-agent:8000), so
       # register + health-check would otherwise fail "scheme must be https".

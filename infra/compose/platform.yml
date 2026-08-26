@@ -85,6 +85,10 @@ services:
       # startup_security 對 dev 預設值的拒絕開關。Prod 必須是 0 / unset。
       # 預設改成 0 (不再 fallback 1) — 缺 .env 時直接 enforce prod 模式。
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
+      # 啟動時拒絕自動 alembic upgrade（空庫也走 alembic；失敗不 create_all）。
+      # 預設 0＝仍遷移。每一次 up -d / recreate 都會跑 upgrade。
+      # 要起服務但不遷移時設 1。沒有這一行,.env 寫了到不了容器。
+      ANILA_SKIP_STARTUP_MIGRATIONS: "${ANILA_SKIP_STARTUP_MIGRATIONS:-0}"
       # url_guard 兩個 SSRF opt-in。loopback / link-local / cloud
       # metadata / docker service name 永遠擋,不受 flag 影響。Prod 不要 set。
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
