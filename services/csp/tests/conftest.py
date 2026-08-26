@@ -24,6 +24,10 @@ from sqlalchemy.pool import StaticPool
 _TEST_DB_DIR = tempfile.mkdtemp(prefix="pytest-csp-")
 _TEST_DB_PATH = Path(_TEST_DB_DIR) / "pytest-csp.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
+# Lifespan / alembic read MIGRATION_DATABASE_URL. A developer shell that
+# exported the live DSN (127.0.0.1:5433) must not leak into every TestClient
+# file — this is the common pytest entry, not a per-file autouse.
+os.environ.pop("MIGRATION_DATABASE_URL", None)
 os.environ.setdefault("AUTO_REGISTER_MODELS", "")
 os.environ.setdefault("AUTO_REGISTER_AGENTS", "")
 os.environ.setdefault("AUTO_SEED_API_KEYS", "")

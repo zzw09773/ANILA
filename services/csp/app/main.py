@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
@@ -10,6 +11,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse
+from sqlalchemy import create_engine, inspect as sa_inspect, text
 from app.config import settings
 from app.database import engine, Base
 from app.api.router import api_router
@@ -26,17 +28,180 @@ APP_NAME = "ANILA"
 APP_VERSION = "1.0.0"
 STATIC_DIR = Path(__file__).parent / "static"
 
-def _run_alembic_upgrade() -> None:
-    """Run `alembic upgrade head` programmatically at startup."""
+# Operator opt-out of boot-time schema changes. Default (unset / any other
+# value) is to migrate. Truthy literals are strip+lower of 1/true/yes only.
+SKIP_STARTUP_MIGRATIONS_ENV = "ANILA_SKIP_STARTUP_MIGRATIONS"
+_SKIP_STARTUP_MIGRATIONS_TRUTHY = frozenset({"1", "true", "yes"})
+# Dedicated, grep-able prefix. Do not mix the X → Y announcement into
+# generic alembic / uvicorn lines.
+STARTUP_MIGRATION_TAG = "STARTUP MIGRATION"
+
+
+class StartupMigrationError(RuntimeError):
+    """Non-empty database could not be migrated; the process must not serve."""
+
+
+def _alembic_paths() -> tuple[Path, Path]:
+    root = Path(__file__).parent.parent
+    return root / "migrations", root / "alembic.ini"
+
+
+def _alembic_config():
     from alembic.config import Config
-    from alembic import command
 
-    migrations_dir = Path(__file__).parent.parent / "migrations"
-    alembic_ini = Path(__file__).parent.parent / "alembic.ini"
-
+    migrations_dir, alembic_ini = _alembic_paths()
     cfg = Config(str(alembic_ini))
     cfg.set_main_option("script_location", str(migrations_dir))
-    command.upgrade(cfg, "head")
+    return cfg
+
+
+def _run_alembic_upgrade() -> None:
+    """Run `alembic upgrade head` programmatically at startup.
+
+    Alembic itself reads ``MIGRATION_DATABASE_URL`` in ``migrations/env.py``
+    (superuser ``csp``). Do not point this at the runtime ``csp_app`` engine:
+    a fresh volume has no ``csp_app`` role until revision 0014.
+    """
+    from alembic import command
+
+    command.upgrade(_alembic_config(), "head")
+
+
+def _alembic_available() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("alembic") is not None
+
+
+def _alembic_head_revision() -> str:
+    from alembic.script import ScriptDirectory
+
+    heads = ScriptDirectory.from_config(_alembic_config()).get_heads()
+    if len(heads) != 1:
+        raise StartupMigrationError(f"alembic head is not unique: {heads!r}")
+    return heads[0]
+
+
+def _startup_migrations_refused() -> bool:
+    raw = os.environ.get(SKIP_STARTUP_MIGRATIONS_ENV, "")
+    return raw.strip().lower() in _SKIP_STARTUP_MIGRATIONS_TRUTHY
+
+
+def _is_sqlite_pytest_host(bind) -> bool:
+    """Sqlite under pytest must not run the Postgres-only alembic chain.
+
+    The test runner is the signal, not whether the alembic package is
+    installed (requirements pin alembic; the image has it). Production
+    uvicorn does not set PYTEST_CURRENT_TEST and does not import pytest.
+    Dialect alone is not enough: a sqlite DATABASE_URL in production
+    must still fail closed, not skip upgrade.
+    """
+    if bind.dialect.name != "sqlite":
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    return "pytest" in sys.modules
+
+
+def _database_is_empty(bind) -> bool:
+    return not sa_inspect(bind).get_table_names()
+
+
+def _migration_database_url() -> str:
+    """Same URL alembic uses — never the runtime csp_app DSN by preference."""
+    return (os.environ.get("MIGRATION_DATABASE_URL") or "").strip() or settings.DATABASE_URL
+
+
+def _current_schema_revision() -> str | None:
+    """Read ``alembic_version`` on the migration URL, not runtime ``engine``.
+
+    Inspect errors (empty volume, unreachable) become ``None`` so we still
+    attempt ``upgrade head``; they must not fail the boot before alembic.
+    """
+    url = _migration_database_url()
+    inspect_engine = create_engine(url)
+    try:
+        names = sa_inspect(inspect_engine).get_table_names()
+        if "alembic_version" not in names:
+            return None
+        with inspect_engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).fetchall()
+        if not rows:
+            return None
+        return ",".join(sorted({row[0] for row in rows}))
+    except Exception:
+        return None
+    finally:
+        inspect_engine.dispose()
+
+
+def _apply_startup_schema(bind=None) -> None:
+    """Bring schema to alembic head.
+
+    Postgres (empty included) always ``upgrade head`` via
+    ``MIGRATION_DATABASE_URL``. Never inspect or ``create_all`` on the
+    runtime ``csp_app`` engine before that.
+
+    Sqlite under pytest never runs that chain (PG-only DDL). That hatch
+    is keyed off the test runner, not off alembic being absent.
+    ``create_all`` is only that hatch, and only when the sqlite file is
+    empty.
+
+    Upgrade failure is fatal — never ``create_all``.
+    ``ANILA_SKIP_STARTUP_MIGRATIONS=1|true|yes`` refuses the action.
+    """
+    log = logging.getLogger("csp.startup_migration")
+    if bind is None:
+        bind = engine
+
+    if _startup_migrations_refused():
+        raw = os.environ.get(SKIP_STARTUP_MIGRATIONS_ENV, "")
+        log.warning(
+            "%s refused by %s=%r (starting without migrating)",
+            STARTUP_MIGRATION_TAG,
+            SKIP_STARTUP_MIGRATIONS_ENV,
+            raw,
+        )
+        return
+
+    if _is_sqlite_pytest_host(bind):
+        if _database_is_empty(bind):
+            log.warning(
+                "%s sqlite pytest host — create_all, not alembic upgrade",
+                STARTUP_MIGRATION_TAG,
+            )
+            Base.metadata.create_all(bind=bind)
+        else:
+            log.warning(
+                "%s sqlite pytest host — not running alembic upgrade",
+                STARTUP_MIGRATION_TAG,
+            )
+        return
+
+    if not _alembic_available():
+        raise StartupMigrationError(
+            "alembic is not installed; refusing to start "
+            "(create_all is not a production bootstrap)"
+        )
+
+    # Alembic path. Do not call _database_is_empty(runtime engine): a
+    # fresh volume has POSTGRES_USER=csp only; csp_app is created in 0014.
+    current = _current_schema_revision() or "unversioned"
+    head = "head"
+    try:
+        head = _alembic_head_revision()
+        # WARNING so the line survives alembic.ini fileConfig (root → WARN)
+        # and stays grep-able instead of mixing into generic alembic logs.
+        log.warning("%s 即將 %s → %s", STARTUP_MIGRATION_TAG, current, head)
+        _run_alembic_upgrade()
+    except StartupMigrationError:
+        raise
+    except Exception as exc:
+        raise StartupMigrationError(
+            f"alembic upgrade failed ({current} → {head}): {exc}"
+        ) from exc
 
 
 def setup_logging():
@@ -111,15 +276,13 @@ async def lifespan(app: FastAPI):
     # 模式裡。這一顆以前沒有任何程式層攔截，加上去就靜默生效。
     assert_card_dev_bypass_not_in_a_real_boot()
 
-    # Run Alembic migrations to bring schema to head.
-    # Falls back to create_all if Alembic config is not found (e.g. in tests).
-    try:
-        _run_alembic_upgrade()
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "Alembic upgrade failed, falling back to create_all: %s", exc
-        )
-        Base.metadata.create_all(bind=engine)
+    # Empty Postgres also runs alembic (MIGRATION_DATABASE_URL / superuser).
+    # Sqlite pytest host never runs that chain (PG-only DDL), whether or
+    # not the alembic package is installed.
+    # ANILA_SKIP_STARTUP_MIGRATIONS refuses the whole action.
+    # Upgrade failure is fatal: create_all cannot add columns, /health
+    # would still return 200.
+    _apply_startup_schema()
 
     # Round 5 補:alembic.ini 的 [loggers] section 在 _run_alembic_upgrade
     # 內部觸發 logging.fileConfig(),把 setup_logging 加的
@@ -136,9 +299,16 @@ async def lifespan(app: FastAPI):
     # this line, so it has to be emitted where logging works.
     log_host_allowlist_state(_allowed_hosts)
 
-    # Startup backfills (safe to re-run, idempotent).
-    from app.services.startup_migrations import run_startup_migrations
-    run_startup_migrations()
+    # Startup backfills (safe to re-run, idempotent). Same refuse flag:
+    # "start without migrating" includes these ADD COLUMN backfills.
+    if _startup_migrations_refused():
+        logging.getLogger("csp.startup_migration").warning(
+            "%s skipping run_startup_migrations backfills",
+            STARTUP_MIGRATION_TAG,
+        )
+    else:
+        from app.services.startup_migrations import run_startup_migrations
+        run_startup_migrations()
 
     # P2.7: the audit tables must not be owned by (or writable by) the runtime
     # role. Checked after migrations so a fresh DB has already been locked

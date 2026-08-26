@@ -174,7 +174,7 @@ cd services/csp && python -m pytest -q   # or from here; both MUST agree
 
 - **`r1_` namespace**: redesign migrations use the `r1_` prefix and chain linearly after the legacy numeric series (`r1_0001` has `Revises: 0046`). When adding a module / table, update the `.importlinter` contract and `app/schemas/contracts/` in lockstep.
 - **`MIGRATION_DATABASE_URL` (escalated, alembic-only)**: migrations need a superuser-class connection (`0014` runs `CREATE EXTENSION` / `CREATE ROLE csp_app`). The runtime `DATABASE_URL` points at the non-privileged `csp_app` (so RLS fires); `MIGRATION_DATABASE_URL` is alembic's escalated stand-in, falling back to `DATABASE_URL` when unset (`migrations/env.py`). Compose splits the two: runtime `csp_app:...`, migration `csp:...`.
-- **Auto-upgrade on boot**: the `app/main.py` lifespan runs `alembic upgrade head` programmatically via `command.upgrade(cfg, "head")` (falling back to `create_all` only on failure).
+- **Auto-upgrade on boot**: the `app/main.py` lifespan runs `alembic upgrade head` programmatically via `command.upgrade(cfg, "head")`. Empty databases also go through alembic (`MIGRATION_DATABASE_URL` / superuser); failure refuses to start — there is no `create_all` fallback. `ANILA_SKIP_STARTUP_MIGRATIONS=1` (compose default `0`) starts the service without migrating.
 
 ---
 

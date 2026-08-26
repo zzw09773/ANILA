@@ -174,7 +174,7 @@ cd services/csp && python -m pytest -q   # 或從這裡；兩者結果必須一�
 
 - **`r1_` 命名空間**：redesign migration 以 `r1_` 前綴、線性接在 legacy 數字鏈之後（`r1_0001` `Revises: 0046`）。新增 module / 表時同步補 `.importlinter` 契約與 `app/schemas/contracts/`。
 - **`MIGRATION_DATABASE_URL`（升權，僅 alembic 讀）**：migration 需 superuser 級連線（`0014` 要 `CREATE EXTENSION` / `CREATE ROLE csp_app`）。runtime `DATABASE_URL` 指非特權 `csp_app`（RLS 才會 fire）；`MIGRATION_DATABASE_URL` 是 alembic 專用的升權替身，未設時退回 `DATABASE_URL`（`migrations/env.py`）。compose 兩者拆開：runtime `csp_app:...`、migration `csp:...`。
-- **啟動自動升級**：`app/main.py` lifespan 以 `command.upgrade(cfg, "head")` 程式化跑 `alembic upgrade head`（失敗才 fallback `create_all`）。
+- **啟動自動升級**：`app/main.py` lifespan 以 `command.upgrade(cfg, "head")` 程式化跑 `alembic upgrade head`。空庫也走 alembic（`MIGRATION_DATABASE_URL`／superuser）；失敗則拒絕啟動，不再 fallback `create_all`。`ANILA_SKIP_STARTUP_MIGRATIONS=1`（compose 預設 `0`）＝起服務但不遷移。
 
 ---
 

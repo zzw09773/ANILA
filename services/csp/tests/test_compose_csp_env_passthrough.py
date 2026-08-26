@@ -49,6 +49,9 @@ _OPERATOR_KNOBS = [
     # 所以少了 compose 這一行,Host 檢查永遠是關的,而 `.env` 裡躺著一份
     # 看起來已經生效的名單。少了它沒有 400、沒有錯誤,只是保護不存在。
     "ALLOWED_HOSTS",
+    # 啟動時拒絕 alembic upgrade。沒有這一行,.env 設 1 到不了容器,
+    # 每一次 up -d 仍會對活庫跑 migration。
+    "ANILA_SKIP_STARTUP_MIGRATIONS",
 ]
 
 
@@ -100,6 +103,18 @@ def test_operator_knob_reaches_the_csp_container(csp_environment, key):
         f"{key} 沒有列在 platform.yml 的 csp environment —— "
         f".env 設了也不會進到容器,而文件叫操作者去設它"
     )
+
+
+def test_skip_startup_migrations_defaults_to_off(csp_environment):
+    """Unset / empty .env must still migrate. ``:-1`` here would invert ⑤."""
+    value = str(csp_environment["ANILA_SKIP_STARTUP_MIGRATIONS"])
+    assert value == "${ANILA_SKIP_STARTUP_MIGRATIONS:-0}"
+
+
+def test_dev_yml_passes_the_same_skip_flag():
+    """dev stack is a second operator entrance; same interpolation as prod."""
+    dev = (_REPO_ROOT / "infra" / "compose" / "dev.yml").read_text(encoding="utf-8")
+    assert 'ANILA_SKIP_STARTUP_MIGRATIONS: "${ANILA_SKIP_STARTUP_MIGRATIONS:-0}"' in dev
 
 
 @pytest.mark.parametrize("key", _OPERATOR_KNOBS)
