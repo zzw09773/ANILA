@@ -843,3 +843,355 @@ def test_attach_image_pks_skips_chunks_without_figures():
     )
     assert out[0].content == chunk.content
     assert "image_pks" not in out[0].metadata
+
+
+# ── caption reuse (re-import, cost-only) ─────────────────────────────────────
+
+
+class _SeqVision:
+    """Returns a queued caption per call. Records how many times it fired."""
+
+    def __init__(self, captions: list[str], model: str = "fake-vision") -> None:
+        self._captions = list(captions)
+        self.model = model
+        self.calls: list[tuple[bytes, str]] = []
+
+    async def describe_image(self, image_bytes: bytes, mime: str = "image/png") -> str:
+        self.calls.append((image_bytes, mime))
+        return self._captions[len(self.calls) - 1]
+
+
+def _matching_provenance(model: str = "fake-vision") -> str:
+    return handlers._caption_provenance(model, handlers.caption_generator_id())
+
+
+def test_provenance_roundtrip_and_legacy_model_only():
+    gid = "deadbeefcafebabe"
+    assert handlers._split_caption_provenance(
+        handlers._caption_provenance("gemma26-nothink", gid)
+    ) == ("gemma26-nothink", gid)
+    # Legacy rows wrote the bare model name. Missing generator id must
+    # not count as a match — that is the 601/601/601 trap.
+    assert handlers._split_caption_provenance("gemma26-nothink") == (
+        "gemma26-nothink",
+        "",
+    )
+    assert handlers._split_caption_provenance("") == ("", "")
+
+
+def test_caption_generator_id_tracks_pipeline_constants(monkeypatch):
+    """``_CAPTION_MAX_CHARS`` is on the listed blob — changing it moves gid."""
+    before = handlers.caption_generator_id()
+    monkeypatch.setattr(handlers, "_CAPTION_MAX_CHARS", 120)
+    after = handlers.caption_generator_id()
+    assert before != after
+    assert len(before) == 16
+    assert before.isalnum()
+
+
+def test_caption_generator_id_tracks_thought_preamble_regex(monkeypatch):
+    """The preamble regex is on the blob as pattern+flags, not a name.
+
+    Reviewer 2026-08-26: swapping ``_THOUGHT_PREAMBLE_RE`` used to
+    leave gid ``6704a76cb37a9fd1`` still. One character of the
+    pattern must move the id.
+    """
+    before = handlers.caption_generator_id()
+    monkeypatch.setattr(
+        handlers,
+        "_THOUGHT_PREAMBLE_RE",
+        handlers._re.compile(r"^\s*thought\s*\n", handlers._re.IGNORECASE),
+    )
+    after = handlers.caption_generator_id()
+    assert before != after
+    assert len(after) == 16
+
+
+def test_caption_generator_id_tracks_think_block_regex(monkeypatch):
+    before = handlers.caption_generator_id()
+    monkeypatch.setattr(
+        handlers,
+        "_THINK_BLOCK_RE",
+        handlers._re.compile(r"<think>.*?</think>", handlers._re.DOTALL),
+    )
+    after = handlers.caption_generator_id()
+    assert before != after
+
+
+def test_caption_generator_id_failure_returns_empty(monkeypatch):
+    def _boom() -> str:
+        raise ImportError("vision missing")
+
+    monkeypatch.setattr(handlers, "_caption_generator_id_compute", _boom)
+    assert handlers.caption_generator_id() == ""
+
+
+async def test_reimport_reuses_when_model_and_generator_match(monkeypatch):
+    vision = _FakeVision("should-not-be-called")
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ref = _FakeRef(_gradient_png())
+    images = {"img1": ref}
+    reused = {
+        "img1": {
+            "caption": "already described last import",
+            "source_model": _matching_provenance(),
+        }
+    }
+    out, stats = await handlers._caption_images_into(
+        "before [[IMAGE:img1]] after",
+        images,
+        reused_captions=reused,
+    )
+    assert vision.calls == []
+    assert stats["reused"] == 1
+    assert stats["attempted"] == 0
+    assert stats["succeeded"] == 1
+    assert out == "before [圖片描述：already described last import] after"
+    assert ref.caption == "already described last import"
+    assert ref.caption_source_model == _matching_provenance()
+
+
+async def test_model_swap_bypasses_reuse(monkeypatch):
+    vision = _FakeVision("new model caption")
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ref = _FakeRef(_gradient_png())
+    reused = {
+        "img1": {
+            "caption": "old model caption",
+            "source_model": handlers._caption_provenance(
+                "other-vlm", handlers.caption_generator_id()
+            ),
+        }
+    }
+    out, stats = await handlers._caption_images_into(
+        "x [[IMAGE:img1]] y",
+        {"img1": ref},
+        reused_captions=reused,
+    )
+    assert len(vision.calls) == 1
+    assert stats["reused"] == 0
+    assert "new model caption" in out
+    assert "old model caption" not in out
+
+
+async def test_generator_id_change_bypasses_reuse(monkeypatch):
+    vision = _FakeVision("regenerated after pipeline change")
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ref = _FakeRef(_gradient_png())
+    reused = {
+        "img1": {
+            "caption": "caption from the previous pipeline",
+            "source_model": handlers._caption_provenance("fake-vision", "oldpipeline0001"),
+        }
+    }
+    out, stats = await handlers._caption_images_into(
+        "x [[IMAGE:img1]] y",
+        {"img1": ref},
+        reused_captions=reused,
+    )
+    assert len(vision.calls) == 1
+    assert stats["reused"] == 0
+    assert "regenerated after pipeline change" in out
+    assert "previous pipeline" not in out
+
+
+async def test_legacy_model_only_provenance_does_not_reuse(monkeypatch):
+    """Rows written before generator id existed: model name matches, still re-describe."""
+    vision = _FakeVision("fresh after hygiene")
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ref = _FakeRef(_gradient_png())
+    reused = {
+        "img1": {
+            "caption": "x" * 601,
+            "source_model": "fake-vision",
+        }
+    }
+    out, stats = await handlers._caption_images_into(
+        "x [[IMAGE:img1]] y",
+        {"img1": ref},
+        reused_captions=reused,
+    )
+    assert len(vision.calls) == 1
+    assert stats["reused"] == 0
+    assert "fresh after hygiene" in out
+
+
+async def test_reimport_after_generator_change_shifts_601_distribution(monkeypatch):
+    """2026-08-24 evidence: 601 601 601 → 137 174 300 after a generator change.
+
+    If reuse keyed only on the VLM name, this test would keep the 601s
+    and the hygiene fix would look like it did nothing.
+    """
+    def _pad(label: str, n: int) -> str:
+        # Unique 4-digit ticks so is_repetitive_caption stays false.
+        body = "".join(f"{i:04d}." for i in range(400))
+        out = (label + body)[:n]
+        assert len(out) == n
+        return out
+
+    old = [_pad("舊601甲", 601), _pad("舊601乙", 601), _pad("舊601丙", 601)]
+    new = [_pad("新短甲", 137), _pad("新短乙", 174), _pad("新短丙", 300)]
+    assert [len(s) for s in old] == [601, 601, 601]
+    assert [len(s) for s in new] == [137, 174, 300]
+
+    vision = _SeqVision(new)
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ids = ("a", "b", "c")
+    images = {k: _FakeRef(_gradient_png()) for k in ids}
+    # Same model, stale generator — the shape a hygiene/prompt fix has
+    # on disk the moment it lands.
+    reused = {
+        k: {
+            "caption": old[i],
+            "source_model": handlers._caption_provenance("fake-vision", "pre-hygiene-v0"),
+        }
+        for i, k in enumerate(ids)
+    }
+    text = " ".join(f"[[IMAGE:{k}]]" for k in ids)
+    out, stats = await handlers._caption_images_into(
+        text, images, reused_captions=reused,
+    )
+    assert len(vision.calls) == 3
+    assert stats["reused"] == 0
+    lengths = [len(images[k].caption) for k in ids]
+    assert lengths == [137, 174, 300]
+    assert lengths != [601, 601, 601]
+    for cap in new:
+        assert cap in out
+
+
+async def test_partial_reuse_only_calls_vlm_for_missing(monkeypatch):
+    vision = _FakeVision("brand new caption")
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    kept = _FakeRef(_gradient_png())
+    missing = _FakeRef(_gradient_png())
+    images = {"kept": kept, "miss": missing}
+    reused = {
+        "kept": {
+            "caption": "kept from last import",
+            "source_model": _matching_provenance(),
+        }
+    }
+    out, stats = await handlers._caption_images_into(
+        "[[IMAGE:kept]] then [[IMAGE:miss]]",
+        images,
+        reused_captions=reused,
+    )
+    assert len(vision.calls) == 1
+    assert stats["reused"] == 1
+    assert stats["succeeded"] == 2
+    assert "kept from last import" in out
+    assert "brand new caption" in out
+
+
+async def test_gid_compute_failure_skips_reuse_and_does_not_raise(monkeypatch):
+    """F-2: ImportError computing gid must re-describe, not crash ingest."""
+    def _boom() -> str:
+        raise ImportError("vision missing")
+
+    monkeypatch.setattr(handlers, "_caption_generator_id_compute", _boom)
+    vision = _FakeVision("fresh after gid failure")
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ref = _FakeRef(_gradient_png())
+    reused = {
+        "img1": {
+            "caption": "would have been reused",
+            "source_model": handlers._caption_provenance(
+                "fake-vision", "deadbeefcafebabe"
+            ),
+        }
+    }
+    out, stats = await handlers._caption_images_into(
+        "x [[IMAGE:img1]] y",
+        {"img1": ref},
+        reused_captions=reused,
+    )
+    assert len(vision.calls) == 1
+    assert stats["reused"] == 0
+    assert "fresh after gid failure" in out
+    assert "would have been reused" not in out
+
+
+async def test_empty_persisted_caption_is_not_reused(monkeypatch):
+    vision = _FakeVision("filled in this time")
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ref = _FakeRef(_gradient_png())
+    reused = {
+        "img1": {
+            "caption": "   ",
+            "source_model": _matching_provenance(),
+        }
+    }
+    out, stats = await handlers._caption_images_into(
+        "x [[IMAGE:img1]] y",
+        {"img1": ref},
+        reused_captions=reused,
+    )
+    assert len(vision.calls) == 1
+    assert stats["reused"] == 0
+    assert "filled in this time" in out
+
+
+async def test_fresh_caption_writes_model_and_generator_provenance(monkeypatch):
+    vision = _FakeVision("A bar chart of quarterly sales.")
+    monkeypatch.setattr(handlers, "_get_vision_provider", lambda model=None: vision)
+    ref = _FakeRef(_gradient_png())
+    await handlers._caption_images_into(
+        "before [[IMAGE:img1]] after", {"img1": ref},
+    )
+    model, gid = handlers._split_caption_provenance(ref.caption_source_model)
+    assert model == "fake-vision"
+    assert gid == handlers.caption_generator_id()
+
+
+class _FetchConn:
+    def __init__(self, rows):
+        self.rows = rows
+        self.statements: list[str] = []
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield
+
+    async def execute(self, sql: str, *args):
+        self.statements.append(sql)
+
+    async def fetch(self, sql: str, *args):
+        self.statements.append(sql)
+        return self.rows
+
+
+class _FetchPool:
+    def __init__(self, rows):
+        self.conn = _FetchConn(rows)
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self.conn
+
+
+async def test_load_existing_captions_maps_safe_id_back_and_sets_guc():
+    rows = [
+        {
+            "image_id": "img_1",
+            "caption": "kept",
+            "caption_source_model": "gemma26-nothink@abc",
+        }
+    ]
+    pool = _FetchPool(rows)
+    out = await handlers._load_existing_captions(pool, 9, 44, ["img_1"])
+    assert out == {
+        "img_1": {"caption": "kept", "source_model": "gemma26-nothink@abc"}
+    }
+    guc = " ".join(pool.conn.statements)
+    assert "anila.collection_id = 9" in guc
+
+
+async def test_load_existing_captions_failure_is_empty_not_raised():
+    class _Boom:
+        @asynccontextmanager
+        async def acquire(self):
+            raise RuntimeError("db down")
+            yield  # pragma: no cover
+
+    assert await handlers._load_existing_captions(_Boom(), 1, 2, ["x"]) == {}

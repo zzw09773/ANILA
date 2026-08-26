@@ -56,6 +56,7 @@ def _empty_caption_stats(
         "attempted": attempted,
         "succeeded": 0,
         "failed": 0,
+        "reused": 0,
         "required": 1 if required else 0,
     }
 
@@ -129,6 +130,122 @@ _THOUGHT_PREAMBLE_RE = _re.compile(
 # meta-commentary rather than image content; truncating keeps chunks
 # focused and embedding cost bounded.
 _CAPTION_MAX_CHARS = 600
+
+# Provenance separator in caption_source_model: "{model}@{generator_id}".
+# Generator id is hex; rsplit keeps a model name that itself contains @.
+_CAPTION_PROVENANCE_SEP = "@"
+
+
+def _safe_image_id(image_id: str) -> str:
+    """Same sanitiser persist and reuse-load must share, or the lookup misses."""
+    return "".join(
+        c if c.isalnum() or c in "-_" else "_" for c in str(image_id)
+    )[:64]
+
+
+def _fn_fingerprint(fn: Any) -> str:
+    """Source if we have it; bytecode otherwise. Either one moves when the
+    function's behaviour moves."""
+    import inspect
+
+    try:
+        src = inspect.getsource(fn)
+        if src:
+            return src
+    except (OSError, TypeError):
+        pass
+    code = getattr(fn, "__code__", None)
+    if code is not None:
+        return f"{fn.__module__}.{fn.__qualname__}:{code.co_code.hex()}"
+    return f"{getattr(fn, '__module__', '?')}.{getattr(fn, '__qualname__', fn)}"
+
+
+def _re_fingerprint(compiled: Any) -> str:
+    """The compiled pattern and flags, not the variable name.
+
+    ``_clean_caption``'s source only names ``_THINK_BLOCK_RE`` /
+    ``_THOUGHT_PREAMBLE_RE``. Changing the regex would otherwise
+    leave the generator id still.
+    """
+    return (
+        f"{getattr(compiled, 'pattern', '')}\n"
+        f"flags={int(getattr(compiled, 'flags', 0))}"
+    )
+
+
+def _caption_generator_id_compute() -> str:
+    """Hash the listed inputs. Empty string is not a valid id.
+
+    Blob (only these; not every path that can change a caption):
+      * ``_CAPTION_MAX_CHARS``
+      * ``_THINK_BLOCK_RE`` / ``_THOUGHT_PREAMBLE_RE`` pattern+flags
+      * source of ``_clean_caption``
+      * source of ``classify_caption`` / ``is_repetitive_caption`` /
+        ``mark_truncated``
+      * ``_DEFAULT_PROMPT``
+      * source of ``VisionProvider.describe_image``
+    Not in the blob: ``_is_uniform_color``, vision callees beyond
+    ``describe_image``.
+    """
+    import hashlib
+
+    from anila_core.providers.caption_quality import (
+        classify_caption,
+        is_repetitive_caption,
+        mark_truncated,
+    )
+    from anila_core.providers.vision import VisionProvider, _DEFAULT_PROMPT
+
+    blob = "\n".join(
+        [
+            f"max_chars={_CAPTION_MAX_CHARS}",
+            _re_fingerprint(_THINK_BLOCK_RE),
+            _re_fingerprint(_THOUGHT_PREAMBLE_RE),
+            _fn_fingerprint(_clean_caption),
+            _fn_fingerprint(classify_caption),
+            _fn_fingerprint(is_repetitive_caption),
+            _fn_fingerprint(mark_truncated),
+            _DEFAULT_PROMPT,
+            _fn_fingerprint(VisionProvider.describe_image),
+        ]
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def caption_generator_id() -> str:
+    """Reuse key half. Empty means "do not reuse this ingest".
+
+    Import / inspect failure must not raise into ingest — an empty
+    id fails the match (``prev_gid and prev_gid == fact_gid``).
+    """
+    try:
+        return _caption_generator_id_compute()
+    except Exception:
+        logger.warning(
+            "caption_generator_id failed; reuse disabled this ingest",
+            exc_info=True,
+        )
+        return ""
+
+
+def _caption_provenance(model: str | None, generator_id: str) -> str:
+    model_s = (model or "").strip()
+    gid = (generator_id or "").strip()
+    if not model_s:
+        return gid
+    if not gid:
+        return model_s
+    return f"{model_s}{_CAPTION_PROVENANCE_SEP}{gid}"
+
+
+def _split_caption_provenance(stored: str | None) -> tuple[str, str]:
+    s = (stored or "").strip()
+    if not s:
+        return "", ""
+    if _CAPTION_PROVENANCE_SEP in s:
+        model, gid = s.rsplit(_CAPTION_PROVENANCE_SEP, 1)
+        return model.strip(), gid.strip()
+    return s, ""
 
 
 def _clean_caption(raw: str) -> str:
@@ -283,9 +400,7 @@ async def _persist_images(
             # Sanitise image_id for the filename (parser uses UUID-ish so
             # this is paranoia, but cheap insurance against future ID
             # shapes that could include path separators).
-            safe_img_id = "".join(
-                c if c.isalnum() or c in "-_" else "_" for c in str(img_id)
-            )[:64]
+            safe_img_id = _safe_image_id(img_id)
             rel_path = os.path.join(
                 "anila-images", str(document_id), f"{safe_img_id}{ext}",
             )
@@ -445,6 +560,55 @@ async def _persist_images(
     return pk_by_parser_id
 
 
+async def _load_existing_captions(
+    pool: Any,
+    collection_id: int,
+    document_id: int,
+    parser_image_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Read each parser image's already-persisted caption (if any) for reuse.
+
+    ``ingestion_images`` is FORCE RLS (0037): the USING expr only admits rows
+    whose collection matches ``anila.collection_id``. So this sets the SAME
+    real collection GUC ``_persist_images`` uses (a literal 0 would admit
+    nothing), inside the same ``conn.transaction()`` to shrink the
+    ``SET LOCAL`` to this one acquire.
+
+    The read is fire-and-forget by the caller (``reused_captions`` may be
+    empty) so an early failure here never marks the document failed — the
+    fallback is simply "no caption to reuse, caption everything from
+    scratch".
+    """
+    if not parser_image_ids:
+        return {}
+    safe_ids = [_safe_image_id(i) for i in parser_image_ids]
+    safe_to_parser: dict[str, str] = {}
+    for pid in parser_image_ids:
+        safe_to_parser.setdefault(_safe_image_id(pid), str(pid))
+    sql = """
+        SELECT image_id, caption, caption_source_model
+          FROM ingestion_images
+         WHERE document_id = $1
+           AND image_id = ANY($2::text[])
+    """
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                f"SET LOCAL anila.collection_id = {int(collection_id)}"
+            )
+            rows = await conn.fetch(sql, document_id, safe_ids)
+    except Exception:
+        # Best-effort read. Never shadow the ingest itself.
+        return {}
+    return {
+        safe_to_parser.get(r["image_id"], r["image_id"]): {
+            "caption": r["caption"] or "",
+            "source_model": r["caption_source_model"],
+        }
+        for r in rows
+    }
+
+
 def format_caption_progress(stats: dict[str, int]) -> str:
     """User-visible line: ``0 張圖`` ≠ ``3 張圖、0 張成功``.
 
@@ -468,6 +632,8 @@ async def _caption_images_into(
     *,
     model: str | None = None,
     enabled: bool = True,
+    reuse: bool = True,
+    reused_captions: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, int]]:
     """Replace every ``[[IMAGE:<id>]]`` placeholder in ``text`` with a
     VLM-generated caption. Returns ``(rewritten_text, caption_stats)``.
@@ -491,7 +657,19 @@ async def _caption_images_into(
       ``[圖片描述: <caption>]``
     Curly Chinese brackets are deliberately NOT used — kept ASCII-safe
     so the OpenCC-style normalization passes downstream don't fight it.
+
+    Reuse (LOW, cost-only): take a persisted caption instead of a
+    VLM call only when the VLM name and ``caption_generator_id()``
+    both still match. The id hashes the list in
+    ``_caption_generator_id_compute`` (max chars, the two think /
+    preamble regexes, ``_clean_caption``, the three quality
+    functions, the default prompt, ``describe_image``). It does
+    not hash everything that can change a caption. A missing id
+    (compute failed, or a legacy model-only row) does not match,
+    so this ingest re-describes.
     """
+    if reused_captions is None:
+        reused_captions = {}
     n_images = len(images or {})
     empty = _empty_caption_stats(image_count=n_images, required=False)
     if not images or "[[IMAGE:" not in text:
@@ -519,6 +697,45 @@ async def _caption_images_into(
     semaphore = asyncio.Semaphore(max(1, settings.vision_concurrency))
 
     fact_model = getattr(vision, "model", None) or model
+    fact_gid = caption_generator_id()
+    fact_prov = _caption_provenance(fact_model, fact_gid)
+
+    # Partition before firing a single VLM call. Reuse only when the
+    # persisted provenance still names THIS model AND THIS generator.
+    # Model-only legacy rows (no generator id) do not match — otherwise
+    # a generator change would keep the old 601/601/601 captions and
+    # its own re-import acceptance would lie.
+    reused: dict[str, str] = {}
+    to_caption: dict[str, Any] = {}
+    if reuse:
+        for img_id, ref in images.items():
+            prev = reused_captions.get(img_id)
+            prev_cap = (prev.get("caption") or "").strip() if prev else ""
+            prev_model, prev_gid = _split_caption_provenance(
+                (prev.get("source_model") or "") if prev else ""
+            )
+            if (
+                prev_cap
+                and fact_gid
+                and prev_model == (fact_model or "").strip()
+                and prev_gid
+                and prev_gid == fact_gid
+            ):
+                reused[img_id] = prev_cap
+                # Stash so _persist_images re-upserts the SAME caption
+                # rather than wiping the row with "" (which re-use would
+                # otherwise silently do to the source it just read).
+                try:
+                    ref.caption = prev_cap
+                    ref.caption_source_model = _caption_provenance(
+                        prev_model, prev_gid
+                    )
+                except Exception:
+                    pass
+            else:
+                to_caption[img_id] = ref
+    else:
+        to_caption = dict(images)
 
     async def _caption_one(image_id: str, ref: Any) -> tuple[str, str, bool]:
         # Skip oversized images at the application layer — VisionProvider
@@ -582,7 +799,7 @@ async def _caption_images_into(
             try:
                 ref.caption = cleaned
                 if cleaned:
-                    ref.caption_source_model = fact_model
+                    ref.caption_source_model = fact_prov
             except Exception:
                 pass  # ImageRef should always be writable; defensive only
             return image_id, cleaned, True
@@ -594,20 +811,24 @@ async def _caption_images_into(
             return image_id, "", True
 
     results = await asyncio.gather(
-        *(_caption_one(img_id, ref) for img_id, ref in images.items()),
+        *(_caption_one(img_id, ref) for img_id, ref in to_caption.items()),
         return_exceptions=False,
     )
 
     captions: dict[str, str] = {img_id: cap for img_id, cap, _tried in results}
+    captions.update(reused)
     attempted = sum(1 for _i, _c, tried in results if tried)
     from anila_core.providers.caption_quality import is_repetitive_caption
 
-    succeeded = sum(
+    succeeded_new = sum(
         1
         for _i, cap, tried in results
         if tried and cap and not is_repetitive_caption(cap)
     )
-    failed = attempted - succeeded
+    succeeded = succeeded_new + sum(
+        1 for cap in reused.values() if cap and not is_repetitive_caption(cap)
+    )
+    failed = attempted - succeeded_new
     out_chunks: list[str] = []
     cursor = 0
     needle = "[[IMAGE:"
@@ -641,6 +862,7 @@ async def _caption_images_into(
         "attempted": attempted,
         "succeeded": succeeded,
         "failed": failed,
+        "reused": len(reused),
         "required": 1,
     }
     return "".join(out_chunks), stats
@@ -942,8 +1164,28 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 progress_pct=22,
                 progress_message=f"captioning {len(images)} image(s)",
             )
+            # LOW, cost-only: reuse a persisted caption only when
+            # (model, generator id) still match. The id is the listed
+            # blob in ``_caption_generator_id_compute``, not "any
+            # change that would change output". Compute failure →
+            # empty id → no reuse. Empty load → caption everything.
+            reused_captions: dict[str, dict[str, Any]] = {}
+            try:
+                reused_captions = await _load_existing_captions(
+                    pool, collection_id, document_id, list(images.keys()),
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Existing-caption load failed for doc %s: %s — "
+                    "finishing with a full re-describe.",
+                    document_id, type(e).__name__,
+                )
+                reused_captions = {}
             text, caption_stats = await _caption_images_into(
-                text, images, model=caption_model, enabled=want_captions,
+                text, images,
+                model=caption_model,
+                enabled=want_captions,
+                reused_captions=reused_captions,
             )
             # 1b. Persist captioned images to disk + DB so Studio can
             # vector-search over them (Phase 5). Best-effort: a failure
