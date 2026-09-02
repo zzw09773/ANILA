@@ -2921,9 +2921,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           {tweaks.agentSwitcherPosition === "top" && !compareMode ? (
             <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
           ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14, minWidth: 0 }}>
               {selectedConv?.classified && <IconLock size={14} style={{ color: "var(--danger)" }} />}
-              <span>
+              <span
+                style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                title={compareMode ? undefined : selectedConv?.title || undefined}
+              >
                 {compareMode
                   ? "比較模式"
                   : selectedConv?.title || "新對話"}
