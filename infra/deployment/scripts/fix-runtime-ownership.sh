@@ -52,7 +52,7 @@
 #
 # 用法:
 #   bash infra/deployment/scripts/fix-runtime-ownership.sh [CSP_IMAGE]
-#   CSP_IMAGE 預設 anila-platform-csp:latest(compose project name=anila-platform
+#   CSP_IMAGE 預設 ${COMPOSE_PROJECT_NAME:-anila-restart}-csp:latest(跟著 compose project name
 #   → 映像名 <project>-<service>;intranet-deploy.sh 的 [4b] 用的也是這個名字。
 #   設了 COMPOSE_PROJECT_NAME 這個預設就不對,要自己把映像名當參數傳進來)。
 #   這支只借它當「有 chown/chmod 的 root 容器」,不跑裡面的任何應用程式碼。
@@ -66,7 +66,7 @@ set -euo pipefail
 ANILA_RUNTIME_UID=10001
 ANILA_RUNTIME_GID=10001
 
-CSP_IMAGE="${1:-anila-platform-csp:latest}"
+CSP_IMAGE="${1:-${COMPOSE_PROJECT_NAME:-anila-restart}-csp:latest}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"

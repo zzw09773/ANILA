@@ -414,7 +414,9 @@ else
   # (FAKE-CONTROLS #50),而 $PWD/secrets 這個 bind mount 屬於 host 帳號 →
   # 不搶回 root 的話,這一步會在寫檔時 PermissionError,整個部署卡在這裡。
   # 產出來的私鑰是 root:root 0600;下一步 [4c] 再把 group 開給 runtime user。
-  docker run --rm --user 0:0 -v "$PWD/secrets:/out" --entrypoint python anila-platform-csp:latest \
+  # image 名跟著 compose project 走(bundle 就是用這個 -p 打的);寫死另一個
+  # project 的名字會在乾淨機器上 pull 失敗、整個部署死在這一步(2026-09-02 演練實撞)。
+  docker run --rm --user 0:0 -v "$PWD/secrets:/out" --entrypoint python "${COMPOSE_PROJECT_NAME:-anila-restart}-csp:latest" \
     /app/scripts/generate-jwt-keypair.py --output-dir /out \
     && ok "已產生 JWT keypair (RSA-2048 / RS256 / PKCS#8)" \
     || die "JWT keypair 產生失敗 (csp image 在? scripts/generate-jwt-keypair.py 在?)"
@@ -426,7 +428,7 @@ fi
 # —— 一條龍部署最不該留的那種。冪等,重跑安全。理由與細節在腳本檔頭。
 # 排在 [4b] 之後(私鑰要先存在)、[2] 放 model CA 之後、[6] up 之前。
 info "[4c/7] bind mount 所有權對齊 (share/uploads/ingestion、share/attachments、share/pki、secrets)"
-bash infra/deployment/scripts/fix-runtime-ownership.sh \
+bash infra/deployment/scripts/fix-runtime-ownership.sh "${COMPOSE_PROJECT_NAME:-anila-restart}-csp:latest" \
   && ok "所有權已對齊 runtime uid 10001" \
   || die "所有權對齊失敗 — 沒有這一步 csp 會 healthy 但上傳與登入都壞掉,不要跳過"
 
