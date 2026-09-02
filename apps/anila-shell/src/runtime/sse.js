@@ -260,7 +260,13 @@ export function dispatchSseEvent(event, callbacks) {
 
   // Named anila.* events (server-sent metadata channels).
   if (event.event === "anila.trace") {
-    safeJsonInvoke(event.data, callbacks.onTrace, "anila.trace");
+    // 每一步收到的時間戳：時間軸靠它算「各步耗時」與「用時 N 秒」。伺服器沒帶時間，
+    // 這裡是唯一一個所有串流路徑都會經過的地方。
+    safeJsonInvoke(
+      event.data,
+      callbacks.onTrace && ((step) => callbacks.onTrace({ at: Date.now(), ...(step || {}) })),
+      "anila.trace",
+    );
     return;
   }
   if (event.event === "anila.meta") {

@@ -144,28 +144,86 @@ export const RoutingTrace = ({ trace, stage, routedAgent, done }) => {
   );
 };
 
-/** Claude.ai-style compact reasoning summary.
+/** 每一步的狀態時間軸（2026-09-02：擁有者要「思考中、每一步的狀態」更漂亮）。
  *
- * Collapses the previous stack (ANILA brand header + RoutingTrace card +
- * separate thinking <details>) into a single ghost row that says e.g.
- * "已完成 4 步分析 · 637 字思考". Click to expand and see both the trace
- * timeline and the reasoning text. When closed, it fades into the page
- * so the answer body is visually dominant — matching ChatGPT and
- * Claude.ai's "minimal chrome" language.
+ * 串流中：已收到的步驟依序列出——完成的打勾、進行中那一步有脈動的點＋
+ * 微光文字，並用 aria-current="step" 標記；整個列表是 live region。
+ * 完成後：收成一行「N 步分析 · 用時 X 秒」，展開看每一步與各步耗時。
+ * 形狀參考 Claude.ai／ChatGPT 的「Thought for Ns」與 Perplexity 的 Pro
+ * Search 步驟列——但只取「一條安靜的直線＋一個會動的點」，不做卡片。
  */
-export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, stageLabel }) => {
+const fmtSeconds = (ms) => (ms < 0 || !Number.isFinite(ms) ? null : `${(ms / 1000).toFixed(1)} 秒`);
+
+export const StepTimeline = ({ trace, streaming, finishedAt }) => {
+  const steps = Array.isArray(trace) ? trace : [];
+  const lastIdx = steps.length - 1;
+  return (
+    <ol
+      className="anila-steps"
+      data-testid="anila-steps"
+      aria-live={streaming ? "polite" : undefined}
+      aria-busy={streaming ? "true" : undefined}
+    >
+      {steps.map((ev, i) => {
+        const active = streaming && i === lastIdx;
+        const state = active ? "active" : "done";
+        // 各步耗時：這一步的 at → 下一步的 at（最後一步 → finishedAt）。
+        const next = i < lastIdx ? steps[i + 1]?.at : finishedAt;
+        const dur = typeof ev?.at === "number" && typeof next === "number" ? fmtSeconds(next - ev.at) : null;
+        return (
+          <li
+            key={i}
+            className={`anila-step anila-step--${state}`}
+            data-step={i}
+            data-state={state}
+            aria-current={active ? "step" : undefined}
+          >
+            <span className="anila-step__marker" aria-hidden="true">
+              {active ? <span className="anila-step__pulse" /> : <IconCheck size={9} />}
+            </span>
+            <span className="anila-step__body">
+              <span className={`anila-step__label${active ? " anila-step__label--shimmer" : ""}`}>
+                {ev?.label || "…"}
+              </span>
+              {ev?.detail ? <span className="anila-step__detail">{ev.detail}</span> : null}
+            </span>
+            {!active && dur ? <span className="anila-step__time">{dur}</span> : null}
+          </li>
+        );
+      })}
+      {streaming && steps.length === 0 && (
+        <li className="anila-step anila-step--active" data-step="0" data-state="active" aria-current="step">
+          <span className="anila-step__marker" aria-hidden="true"><span className="anila-step__pulse" /></span>
+          <span className="anila-step__body"><span className="anila-step__label anila-step__label--shimmer">思考中</span></span>
+        </li>
+      )}
+    </ol>
+  );
+};
+
+export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, stageLabel, finishedAt }) => {
   const [open, setOpen] = useState(false);
   const hasTrace = Array.isArray(trace) && trace.length > 0;
   const hasReasoning = typeof reasoning === "string" && reasoning.length > 0;
   if (!streaming && !hasTrace && !hasReasoning) return null;
 
-  const summaryParts = [];
+  // 串流中：時間軸直接攤開，這就是「AI 正在做什麼」的畫面。
   if (streaming) {
-    summaryParts.push(stageLabel ? `${stageLabel}…` : "思考中…");
-  } else {
-    if (hasTrace) summaryParts.push(`${trace.length} 步分析`);
-    if (hasReasoning) summaryParts.push(`${reasoning.length} 字思考`);
+    return (
+      <div className="anila-reasoning anila-reasoning--live" style={{ marginBottom: 10 }}>
+        <StepTimeline trace={trace} streaming finishedAt={finishedAt} />
+      </div>
+    );
   }
+
+  const firstAt = hasTrace ? trace[0]?.at : null;
+  const lastAt = hasTrace ? trace[trace.length - 1]?.at : null;
+  const endAt = typeof finishedAt === "number" ? finishedAt : lastAt;
+  const total = typeof firstAt === "number" && typeof endAt === "number" ? fmtSeconds(endAt - firstAt) : null;
+  const summaryParts = [];
+  if (hasTrace) summaryParts.push(`${trace.length} 步分析`);
+  if (total) summaryParts.push(`用時 ${total}`);
+  if (hasReasoning) summaryParts.push(`${reasoning.length} 字思考`);
   const summary = summaryParts.join(" · ") || "已完成";
 
   return (
@@ -173,6 +231,7 @@ export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, sta
       <button
         onClick={() => setOpen((o) => !o)}
         className="anila-reasoning-toggle"
+        aria-expanded={open}
         style={{
           display: "inline-flex", alignItems: "center", gap: 6,
           padding: "2px 8px 2px 4px", margin: "0 0 0 -4px",
@@ -185,12 +244,10 @@ export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, sta
           borderRadius: 6,
         }}
       >
-        {streaming
-          ? <span className="anila-reasoning-spinner" />
-          : <IconChevRight size={11} style={{
-              transform: open ? "rotate(90deg)" : "none",
-              transition: "transform 120ms ease",
-            }} />}
+        <IconChevRight size={11} style={{
+          transform: open ? "rotate(90deg)" : "none",
+          transition: "transform 120ms ease",
+        }} />
         <IconSpark size={11} style={{ opacity: 0.7 }} />
         <span style={{ lineHeight: 1.4 }}>{summary}</span>
         {routedAgent && routedAgent.id !== "anila-router" && (
@@ -198,30 +255,12 @@ export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, sta
         )}
       </button>
       {open && (hasTrace || hasReasoning) && (
-        <div
-          style={{
-            margin: "6px 0 2px 14px",
-            padding: "8px 12px",
-            borderLeft: "2px solid var(--border)",
-            color: "var(--fg-muted)",
-            fontSize: 12,
-          }}
-        >
-          {hasTrace && (
-            <div style={{ marginBottom: hasReasoning ? 8 : 0 }}>
-              {trace.map((ev, i) => (
-                <TraceRow
-                  key={i}
-                  event={ev}
-                  active={false}
-                  done={true}
-                />
-              ))}
-            </div>
-          )}
+        <div className="anila-reasoning__body">
+          {hasTrace && <StepTimeline trace={trace} streaming={false} finishedAt={finishedAt} />}
           {hasReasoning && (
             <div
               style={{
+                marginTop: hasTrace ? 8 : 0,
                 whiteSpace: "pre-wrap",
                 fontFamily: "var(--font-mono)",
                 fontSize: 11.5,
@@ -850,6 +889,7 @@ export const MessageBubble = ({
               routedAgent={routedAgent}
               streaming={msg.streaming}
               stageLabel={msg.stageLabel}
+              finishedAt={msg.finishedAt}
             />
             <div
               className="anila-msg-body"

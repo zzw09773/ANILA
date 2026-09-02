@@ -102,7 +102,9 @@ describe("dispatchSseEvent", () => {
       { event: "anila.trace", data: '{"kind":"thinking"}', raw: "" },
       { onTrace, accumulator: makeAccumulator() },
     );
-    expect(onTrace).toHaveBeenCalledWith({ kind: "thinking" });
+    // 2026-09-02：dispatch 會把收到的時間戳 `at` 蓋上去（時間軸算各步耗時用）。
+    expect(onTrace).toHaveBeenCalledWith(expect.objectContaining({ kind: "thinking" }));
+    expect(typeof onTrace.mock.calls[0][0].at).toBe("number");
   });
 
   it("routes anila.meta to onMeta", () => {

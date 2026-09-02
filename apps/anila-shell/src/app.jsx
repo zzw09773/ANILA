@@ -1487,7 +1487,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               updateMsg(convId, assistantId, { text: acc });
             },
             onFinishReason: (reason) => {
-              updateMsg(convId, assistantId, { finishReason: reason });
+              updateMsg(convId, assistantId, { finishReason: reason, finishedAt: Date.now() });
             },
             onTrace: (step) => {
               accumulatedTrace.push(step);
@@ -1910,7 +1910,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             updateMsg(convId, assistantId, { text: acc });
           },
           onFinishReason: (reason) => {
-            updateMsg(convId, assistantId, { finishReason: reason });
+            updateMsg(convId, assistantId, { finishReason: reason, finishedAt: Date.now() });
           },
           onTrace: (step) => {
             accumulatedTrace.push(step);
@@ -2214,7 +2214,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           combined = existing + joiner + acc;
           updateMsg(convId, assistantMsg.id, { text: combined });
         },
-        onFinishReason: (reason) => updateMsg(convId, assistantMsg.id, { finishReason: reason }),
+        onFinishReason: (reason) => updateMsg(convId, assistantMsg.id, { finishReason: reason, finishedAt: Date.now() }),
       });
     } catch (err) {
       setRuntimeError(err?.message || "續寫失敗");
