@@ -27,7 +27,7 @@ test('card-only without the bypass does not render alternative login', () => {
     ),
     false,
   )
-  assert.match(loginView, /<details v-if="showAlternativeLogin" class="login__more">/)
+  assert.match(loginView, /<details v-if="showAlternativeLogin"[^>]*class="login__more"/)
   assert.match(loginView, /<TermModal v-if="showSelfRegistration" :visible="showRegisterModal"/)
 })
 
@@ -144,5 +144,33 @@ test('without the query parameter card-only keeps the original hidden alternativ
   assert.equal(shouldShowBreakGlassNotice('card-only', {}), false)
   assert.equal(shouldRenderSelfRegistration('card-only'), false)
   assert.equal(shouldRenderAlternativeLogin('card-only', {}), false)
-  assert.match(loginView, /<details v-if="showAlternativeLogin" class="login__more">/)
+  assert.match(loginView, /<details v-if="showAlternativeLogin"[^>]*class="login__more"/)
+})
+
+// 2026-09-02：這台要給外網用、走帳密登入。password 模式下登入頁不能再以
+// 「請插入自然人憑證卡」開場、把帳密表單收在「其他登入方式」裡——沒有讀卡機的人
+// 第一眼就卡住。password 模式：帳密表單是主角、憑證卡區塊整個不畫、hero 副標改字。
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { shouldRenderCardLogin, isPasswordPrimary, loginHeroSubtitle } from '../src/utils/loginSurface.js'
+
+test('password 模式：不畫憑證卡區塊、帳密表單是主角、副標講帳密', () => {
+  assert.equal(shouldRenderCardLogin('password'), false)
+  assert.equal(isPasswordPrimary('password'), true)
+  assert.equal(loginHeroSubtitle('password'), '請以帳號密碼登入')
+})
+
+test('mixed / card-only：憑證卡區塊照畫、副標照舊', () => {
+  for (const mode of ['mixed', 'card-only']) {
+    assert.equal(shouldRenderCardLogin(mode), true, mode)
+    assert.equal(isPasswordPrimary(mode), false, mode)
+    assert.equal(loginHeroSubtitle(mode), '請插入自然人憑證卡登入', mode)
+  }
+})
+
+test('LoginView 把三個判斷接上了（v-if 憑證卡區塊、details 預設展開、副標綁定）', () => {
+  const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../src/views/LoginView.vue'), 'utf8')
+  assert.match(src, /v-if="showCardLogin"/u)
+  assert.match(src, /:open="passwordPrimary"/u)
+  assert.match(src, /\{\{ heroSubtitle \}\}/u)
 })

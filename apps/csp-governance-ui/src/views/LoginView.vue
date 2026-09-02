@@ -15,13 +15,13 @@
         <!-- Page hero title ---------------------------------------------- -->
         <header class="login__hero">
           <h1 class="login__title">ANILA</h1>
-          <p class="login__subtitle">請插入自然人憑證卡登入</p>
+          <p class="login__subtitle">{{ heroSubtitle }}</p>
         </header>
 
         <!-- Card login = primary hero card ------------------------------- -->
         <!-- 卡登流程邏輯逐字保留:handleDetectCard / detectedCard /
              cardComponentOrigin / cardPin / handleCardLogin。只改版型。 -->
-        <section class="login__card">
+        <section v-if="showCardLogin" class="login__card">
           <h2 class="login__card-title">自然人憑證卡登入</h2>
 
           <form class="login__form" @submit.prevent="handleCardLogin" autocomplete="off">
@@ -95,7 +95,7 @@
         </section>
 
         <!-- Secondary: 帳密 + OIDC 收合在「其他登入方式」下,降低視覺權重 --- -->
-        <details v-if="showAlternativeLogin" class="login__more">
+        <details v-if="showAlternativeLogin" :open="passwordPrimary" class="login__more" :class="{ 'login__more--primary': passwordPrimary }">
           <summary class="login__more-summary">其他登入方式</summary>
 
           <div class="login__more-body">
@@ -298,6 +298,9 @@ import {
   shouldRenderAlternativeLogin,
   shouldRenderSelfRegistration,
   shouldShowBreakGlassNotice,
+  shouldRenderCardLogin,
+  isPasswordPrimary,
+  loginHeroSubtitle,
 } from '../utils/loginSurface'
 import {
   cardCompleteRegistration,
@@ -330,6 +333,11 @@ const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
 // fail-open 不是「功能降級」，是「靜默回歸到 F-1 原缺陷」——失效等於回歸，比失效等於
 // 不可用更難被發現。旁路是純 query 判斷不依賴偵測，owner 救援不受此預設影響。
 const loginAuthMode = ref(DEFAULT_LOGIN_AUTH_MODE)
+// password 模式：憑證卡區塊不畫、帳密表單直接展開（外網／無讀卡機的部署）。
+const showCardLogin = computed(() => shouldRenderCardLogin(loginAuthMode.value))
+const passwordPrimary = computed(() => isPasswordPrimary(loginAuthMode.value))
+const heroSubtitle = computed(() => loginHeroSubtitle(loginAuthMode.value))
+
 const showAlternativeLogin = computed(() =>
   shouldRenderAlternativeLogin(loginAuthMode.value, route.query),
 )
@@ -872,4 +880,8 @@ async function handleRegister() {
   flex-direction: column;
   gap: var(--gap-3);
 }
+
+/* password 模式：帳密表單是主角——收合列變成區塊標題，不再像註腳 */
+.login__more--primary > .login__more-summary { font-size: var(--t-md); color: var(--c-fg-1); font-weight: 600; cursor: default; list-style: none; }
+.login__more--primary > .login__more-summary::-webkit-details-marker { display: none; }
 </style>

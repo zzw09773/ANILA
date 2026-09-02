@@ -65,3 +65,16 @@ export function getLoginErrorCode(error) {
     ? detail.code
     : null
 }
+
+// 2026-09-02：password 模式（外網／沒有讀卡機的部署）——帳密表單是主角，憑證卡區塊不畫。
+export function shouldRenderCardLogin(authMode) {
+  return authMode !== 'password'
+}
+
+export function isPasswordPrimary(authMode) {
+  return authMode === 'password'
+}
+
+export function loginHeroSubtitle(authMode) {
+  return authMode === 'password' ? '請以帳號密碼登入' : '請插入自然人憑證卡登入'
+}
