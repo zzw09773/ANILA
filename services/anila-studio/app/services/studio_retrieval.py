@@ -27,6 +27,8 @@ async def retrieve_chunks(
     bearer: str,
     collection_id: int,
     seed_query: str,
+    *,
+    top_k: int = STUDIO_TOP_K,
 ) -> list[dict[str, Any]]:
     """Top-K relevant chunks for the seed_query, fetched via csp HTTP.
 
@@ -57,7 +59,7 @@ async def retrieve_chunks(
     hits = await search_chunks(
         collection_id,
         seed_query,
-        top_k=STUDIO_TOP_K,
+        top_k=top_k,
         min_score=STUDIO_MIN_SCORE,
         bearer=bearer,
     )

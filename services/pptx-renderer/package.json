@@ -12,6 +12,6 @@
     "sharp": "^0.35.3"
   },
   "scripts": {
-    "test": "for t in tests/test_geometry_golden.js tests/test_two_column_markers.js tests/test_containment_not_overlap.js; do node $t || exit 1; done"
+    "test": "for t in tests/test_geometry_golden.js tests/test_two_column_markers.js tests/test_containment_not_overlap.js tests/test_icon_concepts.js tests/test_new_layouts.js; do node $t || exit 1; done"
   }
 }

@@ -119,6 +119,12 @@ LAYOUT_KINDS: tuple[str, ...] = (
     # point at an ingestion_images row; renderer falls back to
     # `standard` if image_ref is missing or unresolvable.
     "image_focus",
+    # 2026-09-02 batch 3 — what a regulations / administrative deck really
+    # needs: numbered steps for 流程, a native editable table for 對照, and a
+    # closing sources list the PIPELINE writes from the retrieved chunks.
+    "process",
+    "table",
+    "sources",
 )
 
 
@@ -197,6 +203,28 @@ class IconRow(BaseModel):
     description: str = Field(..., min_length=1, max_length=200)
 
 
+class Step(BaseModel):
+    """One step of a process layout (numbered left→right by the renderer)."""
+
+    heading: str = Field(..., min_length=1, max_length=80)
+    description: str = Field(default="", max_length=200)
+
+
+class TableSpec(BaseModel):
+    """A native pptx table: 2-5 columns, 1-10 rows. Cells are plain strings;
+    the renderer pads/truncates rows to the column count."""
+
+    columns: list[str] = Field(..., min_length=2, max_length=5)
+    rows: list[list[str]] = Field(..., min_length=1, max_length=10)
+
+
+class SourceItem(BaseModel):
+    """One line of the closing 資料來源 slide (filename + which chunks)."""
+
+    label: str = Field(..., min_length=1, max_length=160)
+    note: str | None = Field(default=None, max_length=200)
+
+
 class Slide(BaseModel):
     """One slide — title, bullets, optional speaker notes, optional layout payloads."""
 
@@ -215,6 +243,10 @@ class Slide(BaseModel):
     quote: Quote | None = None
     columns: list[Column] | None = Field(default=None, max_length=3)
     icon_rows: list[IconRow] | None = Field(default=None, max_length=6)
+    # batch 3 payloads
+    steps: list[Step] | None = Field(default=None, min_length=2, max_length=6)
+    table: TableSpec | None = None
+    sources: list[SourceItem] | None = Field(default=None, max_length=14)
     # Phase 5: opaque ID into ingestion_images that the LLM picks from
     # the "可用圖" prompt list. The renderer-side path resolves it to
     # actual image bytes; if unresolvable we fall back to `standard`.

@@ -96,12 +96,17 @@ from app.services.llm_json import (
 )
 from app.services.retrieval_status import RETRIEVAL_FAILED_WARNING
 from app.services.studio_config import (
+    OUTLINE_MAX_TOKENS,
+    PER_SLIDE_TOP_K,
     RENDERER_BASE_URL,
     SCHEMA_CORRECTION_PASSES,
     SLIDES_LLM_MODEL,
+    TWO_PASS_CHUNK_CAP,
+    TWO_PASS_ENABLED,
     VISION_LLM_MODEL,
     VISUAL_QA_PASSES,
 )
+from app.services import studio_outline as _outline
 from app.services.studio_layout import (
     _apply_theme_title_override,
     _audit_layout_distribution,
@@ -126,6 +131,7 @@ from app.services.studio_retrieval import (
     retrieve_chunks as _retrieve_chunks,
     retrieve_images as _retrieve_images,
 )
+from app.services.studio_sources import append_sources_slide
 from app.services.studio_text_normalizer import normalize_spec
 from app.services.studio_vision_qa import (
     fix_spec_with_defects as _fix_spec_with_defects,
@@ -187,8 +193,13 @@ async def _generate_validated_spec(
     *,
     retrieval_failed: bool,
     illustrations_enabled: bool = True,
+    two_pass: dict[str, Any] | None = None,
 ) -> tuple[SlidesSpec, bool]:
     """LLM → JSON → SlidesSpec, retrying once on validation failure.
+
+    ``two_pass={"collection_id": ...}`` turns on outline → per-slide
+    retrieval → content (``studio_outline``). Any failure in the outline
+    step falls back to the legacy single call, so the deck always ships.
 
     Returns (spec, fallback_used). When fallback_used=True, the spec is
     a synthetic safety-net deck explaining the failure to the user; the
@@ -205,6 +216,17 @@ async def _generate_validated_spec(
         retrieval_failed=retrieval_failed,
         illustrations_enabled=illustrations_enabled,
     )
+    if two_pass and chunks:
+        planned = await _plan_two_pass(
+            bearer, collection_name, preset, extra_instructions, chunks,
+            collection_id=int(two_pass["collection_id"]),
+        )
+        if planned is not None:
+            outline, chunks, per_slide = planned
+            system = system + _outline.TWO_PASS_SYSTEM_ADDENDUM
+            user_msg = _outline.build_content_user_prompt(
+                collection_name, preset, extra_instructions, outline, chunks, per_slide,
+            )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -288,6 +310,47 @@ async def _generate_validated_spec(
         last_raw[:500].replace("\n", "⏎"),
     )
     return _build_fallback_spec(collection_name, preset, str(last_err)[:300]), True
+
+
+async def _plan_two_pass(
+    bearer: str,
+    collection_name: str,
+    preset: str,
+    extra_instructions: str | None,
+    seed_chunks: list[dict[str, Any]],
+    *,
+    collection_id: int,
+) -> tuple["_outline.Outline", list[dict[str, Any]], list[list[int]]] | None:
+    """Outline call + per-slide retrieval. None on any failure (caller falls
+    back to the single-pass prompt); never raises."""
+    from app.services.studio_llm import _count_hint
+
+    count_hint, min_slides = _count_hint(preset)
+    o_system, o_user = _outline.build_outline_prompt(
+        collection_name, preset, extra_instructions, seed_chunks,
+        count_hint=count_hint, min_slides=min_slides,
+    )
+    try:
+        raw = await _call_llm_chat(
+            bearer, SLIDES_LLM_MODEL,
+            [{"role": "system", "content": o_system}, {"role": "user", "content": o_user}],
+            temperature=0.3, max_tokens=OUTLINE_MAX_TOKENS,
+        )
+        outline = _outline.parse_outline(raw)
+    except HTTPException:
+        raise  # auth / model errors are real errors, not "no outline"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("two-pass: outline unusable (%s) — single-pass fallback", exc)
+        return None
+    chunks, per_slide = await _outline.gather_slide_chunks(
+        bearer, collection_id, outline, seed_chunks,
+        retrieve=_retrieve_chunks, per_slide_k=PER_SLIDE_TOP_K, cap=TWO_PASS_CHUNK_CAP,
+    )
+    logger.info(
+        "two-pass: outline %d sections / %d slides; %d chunks after per-slide retrieval (seed %d)",
+        len(outline.sections), len(outline.all_slides()), len(chunks), len(seed_chunks),
+    )
+    return outline, chunks, per_slide
 
 
 def _saturate_spec_dict(
@@ -660,6 +723,11 @@ async def _run_pipeline(
         images=images,
         retrieval_failed=retrieval_failed,
         illustrations_enabled=illustrations_enabled,
+        two_pass=(
+            {"collection_id": payload.collection_id}
+            if TWO_PASS_ENABLED and chunks and not payload.skip_retrieval
+            else None
+        ),
     )
     # ── Step 6.5: zh-CN → zh-TW post-processing ──
     # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
@@ -722,6 +790,13 @@ async def _run_pipeline(
                     "Rebalance failed: %s — proceeding with original spec",
                     exc,
                 )
+
+    # ── Step 6.8: closing 資料來源 page, written by us from the chunks we
+    # actually retrieved (never by the model). Appended after rebalance so
+    # the audit never sees it and the fix pass never rewrites it.
+    if not used_fallback and chunks:
+        spec = append_sources_slide(spec, chunks)
+        await updater.set(slide_count=len(spec.slides))
 
     # ── Stage 3: infer the deck's visual house style from its content,
     # once per deck, so every slide shares one visual language. Only when

@@ -49,7 +49,10 @@ from app.schemas.studio import (
     Quote,
     Slide,
     SlidesSpec,
+    SourceItem,
     Stat,
+    Step,
+    TableSpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -329,6 +332,22 @@ def _normalize_slide(slide: Slide) -> Slide:
             )
             for ir in slide.icon_rows
         ]
+
+    if slide.steps is not None:
+        patch["steps"] = [
+            Step(heading=_convert(st.heading) or "", description=_convert(st.description) or "")
+            for st in slide.steps
+        ]
+
+    if slide.table is not None:
+        patch["table"] = TableSpec(
+            columns=[_convert(c) or "" for c in slide.table.columns],
+            rows=[[_convert(cell) or "" for cell in row] for row in slide.table.rows],
+        )
+
+    if slide.sources is not None:
+        # label 是檔名，不轉；note 是我們自己寫的，也不轉。
+        patch["sources"] = list(slide.sources)
 
     return slide.model_copy(update=patch)
 

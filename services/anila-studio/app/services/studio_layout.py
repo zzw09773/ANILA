@@ -513,13 +513,17 @@ def _build_rebalance_prompt(
         "規則：\n"
         f"1. 最多輸出 {LAYOUT_REBALANCE_MAX_CHANGES} 個 change，挑最關鍵的。\n"
         "2. new_layout_kind 只能是：standard / section_break / "
-        "stat_callout / quote / two_column / icon_rows。\n"
+        "stat_callout / quote / two_column / icon_rows / process / table。\n"
         "3. 改成 icon_rows 時，new_payload 必須含 `icon_rows` 欄位，"
         "至少 3 列、每列 {concept, heading, description}。\n"
         "4. 改成 stat_callout 時，new_payload 必須含 `stat` 欄位，"
         "{value, label, supporting(≥20字)}。\n"
         "5. 改成 two_column 時，new_payload 必須含 `columns` 欄位，"
         "2 個 column、每個至少 3 個 bullet。\n"
+        "5a. 內容是「先…再…最後」的步驟時改成 process，new_payload 含 `steps`："
+        "2-6 個 {heading, description}。\n"
+        "5b. 內容是「A 有什麼、B 有什麼」的對照時改成 table，new_payload 含 `table`："
+        "{columns: [2-5 欄], rows: [[…], …]}。\n"
         "6. 若違規 detail 含 `image_focus_disguise`（layout_kind=image_focus 但"
         "沒有 image_ref/diagram_dot 的偽裝）：必改成 icon_rows，把 bullets 轉成"
         " 3-4 列 {concept, heading, description}（concept 用英文），同時"
@@ -601,6 +605,9 @@ _LAYOUT_PAYLOAD_FIELDS = {
     "two_column": "columns",
     "icon_rows": "icon_rows",
     "image_focus": None,
+    "process": "steps",
+    "table": "table",
+    "sources": "sources",
 }
 
 
@@ -649,7 +656,7 @@ def _apply_rebalance_change(
     # Clear all layout-specific payload keys then set the new one. Keeping
     # leftovers around is harmless (Pydantic ignores them on the wrong
     # layout_kind) but makes the spec dict ambiguous to inspect.
-    for field_name in ("stat", "quote", "columns", "icon_rows"):
+    for field_name in ("stat", "quote", "columns", "icon_rows", "steps", "table", "sources"):
         target.pop(field_name, None)
 
     payload_field = _LAYOUT_PAYLOAD_FIELDS[new_layout]

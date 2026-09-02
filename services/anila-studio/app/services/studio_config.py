@@ -39,6 +39,14 @@ STUDIO_TOP_K = 20
 STUDIO_MIN_SCORE = 0.25
 STUDIO_CONTENT_LIMIT_CHARS = 1500
 
+# ── Two-pass generation (2026-09-02) ─────────────────────────────────────
+# Outline first, then one retrieval per slide, then content. Off → the
+# legacy single call. Env-overridable so a deployment can compare.
+TWO_PASS_ENABLED = (os.environ.get("ANILA_STUDIO_TWO_PASS") or "1").strip().lower() not in ("0", "false", "no")
+OUTLINE_MAX_TOKENS = 2048
+PER_SLIDE_TOP_K = 4
+TWO_PASS_CHUNK_CAP = 36
+
 # ── Pipeline retries ──────────────────────────────────────────────────────
 # How many times to retry on Pydantic validation failure. One re-roll is
 # usually enough; if the LLM emits two malformed responses in a row, the

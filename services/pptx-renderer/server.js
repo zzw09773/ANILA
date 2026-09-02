@@ -1256,6 +1256,134 @@ function renderImageFocus(pres, s, theme) {
 }
 
 /**
+ * Process — 2-6 numbered steps left→right (one row up to 4, two rows for
+ * 5-6). The deterministic answer to "流程圖" slides: no diagram engine, no
+ * model-written DOT, always legible. Falls back to standard without steps.
+ */
+function renderProcess(pres, s, theme) {
+  const p = theme.palette
+  const steps = Array.isArray(s.steps) ? s.steps.filter((st) => st && (st.heading || st.description)).slice(0, 6) : []
+  if (steps.length < 2) return renderStandard(pres, s, theme)
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title, theme)
+  const perRow = steps.length <= 4 ? steps.length : Math.ceil(steps.length / 2)
+  const rows = steps.length <= 4 ? 1 : 2
+  const LEFT = 0.6, RIGHT = 12.73, TOP = 1.3, BOTTOM = 6.9
+  const gap = 0.35
+  const colW = (RIGHT - LEFT - gap * (perRow - 1)) / perRow
+  const rowH = (BOTTOM - TOP - (rows - 1) * 0.3) / rows
+  const circle = 0.7
+  steps.forEach((st, i) => {
+    const r = Math.floor(i / perRow)
+    const c = i % perRow
+    const x = LEFT + c * (colW + gap)
+    const y = TOP + r * (rowH + 0.3)
+    // connector to the next step in the same row
+    if (c < perRow - 1 && i < steps.length - 1) {
+      slide.addShape('line', {
+        x: x + colW, y: y + circle / 2, w: gap, h: 0,
+        line: { color: p.accent, width: 2, endArrowType: 'triangle' },
+      })
+    }
+    slide.addShape('ellipse', {
+      x, y, w: circle, h: circle,
+      fill: { color: p.accent }, line: { type: 'none' },
+    })
+    slide.addText(String(i + 1), {
+      x, y, w: circle, h: circle,
+      fontSize: 22, bold: true, color: 'FFFFFF',
+      align: 'center', valign: 'middle', fontFace: FONT_FACE, margin: 0,
+    })
+    slide.addText(String(st.heading || ''), {
+      x, y: y + circle + 0.15, w: colW, h: 0.6,
+      fontSize: perRow <= 3 ? 20 : 17, bold: true, color: p.ink,
+      align: 'left', valign: 'top', fontFace: FONT_FACE, margin: 0,
+    })
+    slide.addText(String(st.description || ''), {
+      x, y: y + circle + 0.8, w: colW, h: rowH - circle - 0.9,
+      fontSize: perRow <= 3 ? 15 : 13, color: p.muted,
+      align: 'left', valign: 'top', fontFace: FONT_FACE, margin: 0,
+    })
+  })
+  if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+  return slide
+}
+
+/**
+ * Table — a native, editable pptx table. Header row in the theme bar
+ * colour, body rows alternating. Up to 5 columns × 10 rows; font size
+ * scales with row count. Falls back to standard without columns/rows.
+ */
+function renderTable(pres, s, theme) {
+  const p = theme.palette
+  const t = s.table || {}
+  const columns = Array.isArray(t.columns) ? t.columns.slice(0, 5).map(String) : []
+  const body = Array.isArray(t.rows) ? t.rows.filter(Array.isArray).slice(0, 10) : []
+  if (columns.length < 2 || body.length < 1) return renderStandard(pres, s, theme)
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title, theme)
+  const fontSize = body.length <= 5 ? 16 : body.length <= 8 ? 14 : 12
+  const header = columns.map((c) => ({
+    text: c,
+    options: { bold: true, color: p.barText === 'FFFFFF' ? 'FFFFFF' : p.ink, fill: { color: p.bar }, align: 'left', valign: 'middle' },
+  }))
+  const rows = body.map((r, i) => columns.map((_, ci) => ({
+    text: String(r[ci] ?? ''),
+    options: { color: p.ink, fill: { color: i % 2 === 0 ? 'FFFFFF' : 'F3F4F6' }, align: 'left', valign: 'middle' },
+  })))
+  const W = 12.33
+  const firstW = Math.min(3.2, W / columns.length)
+  const restW = (W - firstW) / (columns.length - 1)
+  // Rows stretch to use the body (up to 1" each) so a four-row table does
+  // not sit as a strip under the title; h is passed explicitly because
+  // pptxgenjs otherwise writes a 1" frame extent regardless of rows.
+  const rowH = Math.min(1.0, 5.6 / (rows.length + 1))
+  slide.addTable([header, ...rows], {
+    x: 0.5, y: 1.2, w: W, h: rowH * (rows.length + 1),
+    colW: [firstW, ...Array(columns.length - 1).fill(restW)],
+    fontSize, fontFace: FONT_FACE, color: p.ink,
+    border: { type: 'solid', pt: 0.75, color: 'D1D5DB' },
+    rowH,
+    margin: 0.08,
+    autoPage: false,
+  })
+  if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+  return slide
+}
+
+/**
+ * Sources — closing slide listing the documents the deck drew on. Written
+ * by the pipeline (not the model) from the retrieved chunks, so it is the
+ * one slide whose facts are guaranteed. Two columns past six entries.
+ */
+function renderSources(pres, s, theme) {
+  const p = theme.palette
+  const items = Array.isArray(s.sources) ? s.sources.filter((it) => it && it.label).slice(0, 14) : []
+  if (items.length === 0) return renderStandard(pres, s, theme)
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title || '資料來源', theme)
+  const twoCols = items.length > 6
+  const perCol = twoCols ? Math.ceil(items.length / 2) : items.length
+  const colW = twoCols ? 5.9 : 12.3
+  const lineH = Math.min(0.62, 5.4 / perCol)
+  items.forEach((it, i) => {
+    const col = twoCols ? Math.floor(i / perCol) : 0
+    const row = twoCols ? i % perCol : i
+    const x = 0.5 + col * (colW + 0.5)
+    const y = 1.25 + row * lineH
+    slide.addText([
+      { text: String(it.label), options: { bold: true, color: p.ink, fontSize: 14 } },
+      ...(it.note ? [{ text: `　${String(it.note)}`, options: { color: p.muted, fontSize: 12 } }] : []),
+    ], { x, y, w: colW, h: lineH, fontFace: FONT_FACE, valign: 'middle', margin: 0 })
+  })
+  slide.addText('內容由 ANILA 依上列文件自動整理；條號與數字請以原文為準。', {
+    x: 0.5, y: 6.75, w: 12.3, h: 0.4, fontSize: 11, color: p.muted, italic: true, fontFace: FONT_FACE, margin: 0,
+  })
+  if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+  return slide
+}
+
+/**
  * Dispatcher — picks the renderer based on slide.layout_kind. Unknown
  * kinds fall back to `renderStandard`. Async so callers can `await` it
  * uniformly even though only icon_rows is actually async.
@@ -1269,6 +1397,9 @@ async function renderSlideByKind(pres, s, theme) {
     case 'two_column':    return renderTwoColumn(pres, s, theme)
     case 'icon_rows':     return await renderIconRows(pres, s, theme)
     case 'image_focus':   return renderImageFocus(pres, s, theme)
+    case 'process':       return renderProcess(pres, s, theme)
+    case 'table':         return renderTable(pres, s, theme)
+    case 'sources':       return renderSources(pres, s, theme)
     default:              return renderStandard(pres, s, theme)
   }
 }
@@ -1413,6 +1544,13 @@ function effectiveKind(s) {
     case 'two_column': return (Array.isArray(s.columns) && s.columns.length >= 2) ? 'two_column' : 'standard'
     case 'icon_rows': return (Array.isArray(s.icon_rows) && s.icon_rows.length > 0) ? 'icon_rows' : 'standard'
     case 'image_focus': return (s.image_data && typeof s.image_data === 'string') ? 'image_focus' : 'standard'
+    case 'process': return (Array.isArray(s.steps) && s.steps.filter((st) => st && (st.heading || st.description)).length >= 2) ? 'process' : 'standard'
+    case 'table': {
+      const t = s.table || {}
+      const ok = Array.isArray(t.columns) && t.columns.length >= 2 && Array.isArray(t.rows) && t.rows.filter(Array.isArray).length >= 1
+      return ok ? 'table' : 'standard'
+    }
+    case 'sources': return (Array.isArray(s.sources) && s.sources.some((it) => it && it.label)) ? 'sources' : 'standard'
     default: return 'standard'
   }
 }
@@ -1601,13 +1739,31 @@ function extractShapesFromSlideXml(xml) {
     const wInch = Number(ext[1]) / EMU_PER_INCH
     const hInch = Number(ext[2]) / EMU_PER_INCH
     let textLen = 0
-    const textRegex = /<a:t[^>]*>([\s\S]*?)<\/a:t>/g
+    const textRegex = /<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g
     let t
     while ((t = textRegex.exec(block)) !== null) {
       textLen += t[1].length
     }
     const isSlideNum = /type="slidenum"/.test(block)
     shapes.push({ x: xInch, y: yInch, w: wInch, h: hInch, textLen, isSlideNum })
+  }
+  // Tables / charts live in graphicFrames, not p:sp — count their extent
+  // as covered area or every table slide reads as empty.
+  const frameRegex = /<p:graphicFrame\b[\s\S]*?<\/p:graphicFrame>/g
+  while ((m = frameRegex.exec(xml)) !== null) {
+    const block = m[0]
+    const off = block.match(/<a:off\s+x="(-?\d+)"\s+y="(-?\d+)"\s*\/>/)
+    const ext = block.match(/<a:ext\s+cx="(\d+)"\s+cy="(\d+)"\s*\/>/)
+    if (!off || !ext) continue
+    let textLen = 0
+    const textRegex = /<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g
+    let t
+    while ((t = textRegex.exec(block)) !== null) textLen += t[1].length
+    shapes.push({
+      x: Number(off[1]) / EMU_PER_INCH, y: Number(off[2]) / EMU_PER_INCH,
+      w: Number(ext[1]) / EMU_PER_INCH, h: Number(ext[2]) / EMU_PER_INCH,
+      textLen, isFrame: true,
+    })
   }
   const picRegex = /<p:pic\b[\s\S]*?<\/p:pic>/g
   while ((m = picRegex.exec(xml)) !== null) {
@@ -1684,7 +1840,7 @@ function findLargestEmptyRegion(shapes) {
 // Kinds whose body is expected to fill the slide. Everything else (cover,
 // section_break, stat_callout, quote) is sparse BY DESIGN and must not be
 // judged on whitespace — a big number on an empty page is the point.
-const WHITESPACE_JUDGED_KINDS = new Set(['standard', 'two_column', 'icon_rows', 'image_focus'])
+const WHITESPACE_JUDGED_KINDS = new Set(['standard', 'two_column', 'icon_rows', 'image_focus', 'process', 'table'])
 
 // One shape drawn inside another (an icon glyph inside its circle, a scrim
 // over a hero image) is containment, not an overlap defect.
@@ -1776,7 +1932,7 @@ function analyseSlide(shapes, kind) {
     }
   }
   for (const s of shapes) {
-    if (s.textLen === 0) continue
+    if (s.textLen === 0 || s.isFrame) continue
     const area = Math.max(0.01, s.w * s.h)
     const density = s.textLen / area
     if (density > TEXT_DENSITY_WARN) {
