@@ -238,22 +238,25 @@ INCLUDE_ASR: 1</code></pre>
 </div>
 
 <h2 id="s4"><span class="num">4</span>主機需求</h2>
+<p>下表是<strong>開發機實測環境</strong>（本手冊的截圖與演練都在這台做），內網主機以此為下限對照。沒有量到的格子寫「未量測」，不寫估計值。</p>
 <table>
-<tr><th>項目</th><th>需求</th></tr>
-<tr><td>作業系統</td><td>Linux（Ubuntu 22.04 以上實測）</td></tr>
-<tr><td>Docker</td><td>Docker Engine 24 以上、Docker Compose v2.20 以上（指令是 <code>docker compose</code>，不是 <code>docker-compose</code>）</td></tr>
-<tr><td>CPU／記憶體</td><td>8 核、32 GB 起；本機語音解碼開著時再多 8 GB</td></tr>
-<tr><td>磁碟</td><td>載入映像約 20 GB，加資料庫與上傳檔案的成長空間；建議 200 GB 起，資料放獨立分割區方便備份</td></tr>
-<tr><td>GPU</td><td>不需要。平台主機不跑模型；本機語音解碼用 CPU 版（<code>infra/compose/asr-cpu.yml</code>）</td></tr>
-<tr><td>網路</td><td>能連到模型主機的 443；內網 DNS 能解析平台網域與模型主機網域；防火牆只開 443 入向</td></tr>
-<tr><td>時間</td><td>NTP 同步。卡片簽章與登入權杖都看時間，時鐘偏差超過幾分鐘登入會失敗</td></tr>
+<tr><th>項目</th><th>開發機實測</th><th>說明</th></tr>
+<tr><td>作業系統</td><td>Ubuntu 22.04.5 LTS</td><td>其他 Linux 只要 Docker 跑得起來即可，未在別的發行版驗證</td></tr>
+<tr><td>Docker Engine</td><td>28.2.2</td><td>指令是 <code>docker compose</code>（v2），不是舊的 <code>docker-compose</code></td></tr>
+<tr><td>Docker Compose</td><td>2.36.2</td><td>載入腳本與 compose 檔都以 v2 語法寫；2.36 的網路所有權語意已實測</td></tr>
+<tr><td>CPU</td><td>24 核</td><td>平台本身負載很輕；本機語音解碼（CPU 版）是最吃 CPU 的元件</td></tr>
+<tr><td>記憶體</td><td>62 GB</td><td>全棧含語音在開發機上實際佔用未量測；不開語音時明顯更少</td></tr>
+<tr><td>磁碟</td><td>映像 70 GB（含開發用映像）、資料卷 48 GB、容器 3 GB</td><td>出貨包載入後的映像約 20 GB；資料卷隨對話與上傳檔案成長，資料放獨立分割區方便備份</td></tr>
+<tr><td>GPU</td><td>無</td><td>平台主機不跑模型；本機語音解碼用 CPU 版 overlay（<code>infra/compose/asr-cpu.yml</code>）</td></tr>
+<tr><td>網路</td><td>—</td><td>能連到模型主機的 443；內網 DNS 能解析平台網域與模型主機網域；防火牆只開 443 入向</td></tr>
+<tr><td>時間</td><td>—</td><td>NTP 同步。卡片簽章與登入權杖都看時間，時鐘偏差大登入會失敗</td></tr>
 </table>
 
 <h2 id="s5"><span class="num">5</span>安裝：一條龍腳本</h2>
 <p>在 repo 根目錄執行安裝腳本，把出貨包路徑當參數：</p>
 <pre><code>cd /opt/anila            # repo 解壓處
 bash infra/deployment/intranet/intranet-deploy.sh /path/to/anila-images-export-v1.0.1</code></pre>
-<p>腳本依序做八步，每步開頭印 <code>[n/7]</code>：</p>
+<p>腳本的每一步開頭都印 <code>[n/7]</code>：</p>
 <table>
 <tr><th>步</th><th>做什麼</th><th>你要做的</th></tr>
 <tr><td>[0/7] 前置檢查</td><td>確認在 repo 根目錄、docker 可用、找到出貨包</td><td>—</td></tr>
@@ -302,7 +305,7 @@ bash infra/deployment/intranet/intranet-deploy.sh /path/to/anila-images-export-v
 <pre><code>H=https://anila.ai.ncsist.org.tw
 curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' $H/            # 200 text/html   治理中心
 curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' $H/anila/      # 200 text/html   對話介面
-curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' $H/api/health  # 200 application/json
+curl -sk $H/health                                                        # {"status":"healthy",...}
 curl -sk -o /dev/null -w '%{http_code}\n' $H/anilalm/                    # 503  刻意關閉，正常
 curl -sk $H/.well-known/jwks.json | head -c 80                            # 要有 "keys"，回 500 = JWT 金鑰沒產</code></pre>
 <h3>6.3 治理中心</h3>
@@ -323,9 +326,13 @@ curl -sk $H/.well-known/jwks.json | head -c 80                            # 要�
 
 <h3>7.3 JWT 簽章金鑰</h3>
 <p>腳本 [4b/7] 已做。漏掉的症狀是「起來了但登入炸」：<code>/.well-known/jwks.json</code> 回 500，登入發不出權杖，anila-studio 反覆重啟。手動補：</p>
-<pre><code>docker run --rm --user 0:0 -v "$PWD/secrets:/app/secrets" anila-restart-csp:latest \
-  python scripts/generate-jwt-keypair.py
-docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp</code></pre>
+<pre><code># 跟安裝腳本 [4b/7] 一模一樣的指令；--user 0:0 是必要的（secrets/ 屬於主機帳號，容器預設 uid 10001 寫不進去）
+mkdir -p secrets
+docker run --rm --user 0:0 -v "$PWD/secrets:/out" --entrypoint python anila-restart-csp:latest \
+  /app/scripts/generate-jwt-keypair.py --output-dir /out
+# 然後重跑腳本讓 [4c/7] 對齊所有權，或手動 chgrp 後：
+docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp
+docker exec anila-nginx nginx -s reload</code></pre>
 
 <h3>7.4 CSPKI 憑證清單</h3>
 <table>
