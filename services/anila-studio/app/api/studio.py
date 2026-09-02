@@ -112,6 +112,7 @@ from app.services.studio_layout import (
     _audit_layout_distribution,
     _rebalance_layouts,
     _should_rebalance,
+    convert_arrow_bullets_to_process,
     drop_redundant_section_breaks,
 )
 from app.services.studio_llm import (
@@ -735,6 +736,7 @@ async def _run_pipeline(
     # is noise (two-pass models do this) — drop it.
     if not used_fallback:
         spec = drop_redundant_section_breaks(spec)
+        spec = convert_arrow_bullets_to_process(spec)
     # ── Step 6.4: per-slide provenance footers from the [N] references the
     # model wrote — has to happen before normalize_spec strips them.
     if chunks:

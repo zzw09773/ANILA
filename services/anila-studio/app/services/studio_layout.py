@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from app.schemas.studio import SlidesSpec
+from app.schemas.studio import SlidesSpec, Step
 from app.services.llm_json import (
     extract_json_object as _extract_json_object,
     loads_lenient as _loads_lenient,
@@ -121,6 +121,44 @@ _THEME_TITLE_OVERRIDES: list[tuple[re.Pattern[str], str]] = [
         re.IGNORECASE,
     ), "executive_brief"),
 ]
+
+
+_ARROW_SPLIT_RE = re.compile(r"\s*(?:→|->|➜|⇒)\s*")
+_MARKER_RE = re.compile(r"^[●◦▪○◯■▫・]\s*")
+
+
+def convert_arrow_bullets_to_process(spec: SlidesSpec) -> SlidesSpec:
+    """A standard slide whose bullets are really one「A → B → C」chain gets the
+    process layout deterministically (the live deck wrote 申訴 flows as arrow
+    bullets under a heading instead of using process).
+
+    Rule: collect the bullets that contain ≥2 arrows; if together they yield
+    2-6 steps and no other substantive bullet remains (a heading-only
+    bullet that repeats the title is ignored), convert."""
+    out = []
+    changed = False
+    for s in spec.slides:
+        if s.layout_kind != "standard":
+            out.append(s); continue
+        steps: list[str] = []
+        others: list[str] = []
+        for b in s.bullets:
+            text = _MARKER_RE.sub("", str(b)).strip()
+            parts = [p.strip() for p in _ARROW_SPLIT_RE.split(text) if p.strip()]
+            if len(parts) >= 3:
+                steps.extend(parts)
+            elif text and text != (s.title or "").strip():
+                others.append(text)
+        if 2 <= len(steps) <= 6 and not others:
+            out.append(s.model_copy(update={
+                "layout_kind": "process",
+                "steps": [Step(heading=p[:80], description="") for p in steps],
+            }))
+            changed = True
+            logger.info("arrow bullets → process on '%s' (%d steps)", s.title, len(steps))
+        else:
+            out.append(s)
+    return spec.model_copy(update={"slides": out}) if changed else spec
 
 
 def drop_redundant_section_breaks(spec: SlidesSpec) -> SlidesSpec:
@@ -287,6 +325,19 @@ def _audit_layout_distribution(
                 ),
             )
         )
+
+    # ── V5 (hard): hollow standard slide — one bullet on an otherwise empty
+    # page. Reads as a placeholder; the rebalance pass may rewrite it.
+    for i, s in enumerate(slides):
+        if s.layout_kind == "standard" and len(s.bullets) <= 1 and i > 0:
+            violations.append(
+                LayoutViolation(
+                    kind="V5_HOLLOW",
+                    severity="hard",
+                    slide_indices=[i],
+                    detail=f"slide #{i}「{s.title}」只有 {len(s.bullets)} 條 bullet，整頁空心",
+                )
+            )
 
     # ── V3: consecutive standard runs ──
     run_start: int | None = None
@@ -485,6 +536,12 @@ def _select_rebalance_candidates(
     seen: set[int] = set()
     ordered: list[int] = []
     for v in violations:
+        if v.kind == "V5_HOLLOW":
+            for idx in v.slide_indices:
+                if idx not in seen:
+                    seen.add(idx)
+                    ordered.append(idx)
+    for v in violations:
         if v.kind == "V4_CONTENT":
             for idx in v.slide_indices:
                 if idx not in seen:
@@ -552,7 +609,10 @@ def _build_rebalance_prompt(
         "沒有 image_ref/diagram_dot 的偽裝）：必改成 icon_rows，把 bullets 轉成"
         " 3-4 列 {concept, heading, description}（concept 用英文），同時"
         "清掉 image_kind/image_ref/image_prompt/diagram_dot，保留 speaker_notes。\n"
-        "7. 不要改的投影片直接不要出現在 changes 陣列。\n\n"
+        "7. 不要改的投影片直接不要出現在 changes 陣列。\n"
+        "8. 違規 kind 是 V5_HOLLOW 的空心頁（整頁只有一條 bullet）例外：這一頁**可以補寫**內容——"
+        "依「原始素材摘要」把它改成 process（steps 2-6 步）、icon_rows（3-4 列）或 table，"
+        "或在 new_payload 給 `bullets`（3-5 條具體內容）留在 standard。其他頁仍然不准動文字。\n\n"
         "輸出第一字 {、最後字 }、不可前言、不可代碼塊。"
     )
     # Trim chunks_text — we only need the LLM to see roughly what data is
@@ -676,6 +736,11 @@ def _apply_rebalance_change(
     target = slides[idx]
     old_layout = target.get("layout_kind", "standard")
     target["layout_kind"] = new_layout
+    # Hollow-slide rewrite (rule 8): a bullets list in the payload replaces
+    # the placeholder bullet. Only accepted when it actually adds content.
+    new_bullets = new_payload.get("bullets") if isinstance(new_payload, dict) else None
+    if isinstance(new_bullets, list) and len([b for b in new_bullets if str(b).strip()]) >= 2:
+        target["bullets"] = [str(b).strip() for b in new_bullets if str(b).strip()][:8]
 
     # Clear all layout-specific payload keys then set the new one. Keeping
     # leftovers around is harmless (Pydantic ignores them on the wrong
