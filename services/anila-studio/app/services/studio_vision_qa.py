@@ -189,6 +189,9 @@ class DefectReport(list):
     """
 
     vision_skipped: str | None = None
+    # The per-slide PNGs the pass looked at (rendered order) — kept so the
+    # pipeline can persist them as previews instead of throwing them away.
+    screenshots: list[bytes] | None = None
 
 
 def to_spec_indices(
@@ -249,6 +252,7 @@ async def visual_qa(
         }
 
     pngs = await _capture_screenshots(pptx_path)
+    report.screenshots = list(pngs)
     if not pngs:
         report.extend(geom_defects)
         report.vision_skipped = "渲染器沒有回傳投影片截圖"

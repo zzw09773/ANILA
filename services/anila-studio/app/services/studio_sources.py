@@ -5,11 +5,78 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.schemas.studio import Slide, SlidesSpec, SourceItem
 
 SOURCES_TITLE = "資料來源"
+
+_REF_GROUP_RE = re.compile(r"[\[【]\s*(\d+(?:\s*[,，、]\s*\d+)*)\s*[\]】]")
+_MAX_NAMED = 3
+
+
+def _cited_numbers(texts: list[str]) -> list[int]:
+    seen: list[int] = []
+    for t in texts:
+        for group in _REF_GROUP_RE.findall(t or ""):
+            for n in re.split(r"[,，、]", group):
+                try:
+                    v = int(n.strip())
+                except ValueError:
+                    continue
+                if v not in seen:
+                    seen.append(v)
+    return seen
+
+
+def _slide_texts(slide: Slide) -> list[str]:
+    out: list[str] = [slide.title, *slide.bullets]
+    if slide.stat:
+        out += [slide.stat.label, slide.stat.supporting]
+    if slide.quote:
+        out += [slide.quote.text, slide.quote.attribution or ""]
+    if slide.columns:
+        for c in slide.columns:
+            out += [c.heading, *c.bullets]
+    if slide.icon_rows:
+        for r in slide.icon_rows:
+            out += [r.heading, r.description]
+    if slide.steps:
+        for st in slide.steps:
+            out += [st.heading, st.description]
+    if slide.table:
+        out += [*slide.table.columns, *[cell for row in slide.table.rows for cell in row]]
+    return [t for t in out if t]
+
+
+def attach_source_lines(spec: SlidesSpec, chunks: list[dict[str, Any]]) -> SlidesSpec:
+    """Fill ``Slide.source_line`` from the ``[N]`` references on each content
+    slide. Must run BEFORE ``normalize_spec`` (which strips the references).
+    Out-of-range numbers are ignored; more than three files collapse to
+    「等 N 份文件」so the footer stays one line."""
+    if not chunks:
+        return spec
+    slides: list[Slide] = []
+    for slide in spec.slides:
+        if slide.layout_kind in ("section_break", "sources"):
+            slides.append(slide)
+            continue
+        names: list[str] = []
+        for n in _cited_numbers(_slide_texts(slide)):
+            if 1 <= n <= len(chunks):
+                name = str(chunks[n - 1].get("filename") or "").strip()
+                if name and name not in names:
+                    names.append(name)
+        if not names:
+            slides.append(slide)
+            continue
+        if len(names) > _MAX_NAMED:
+            line = "資料來源：" + "、".join(names[:_MAX_NAMED - 1]) + f" 等 {len(names)} 份文件"
+        else:
+            line = "資料來源：" + "、".join(names)
+        slides.append(slide.model_copy(update={"source_line": line[:160]}))
+    return spec.model_copy(update={"slides": slides})
 
 
 def append_sources_slide(spec: SlidesSpec, chunks: list[dict[str, Any]]) -> SlidesSpec:

@@ -247,6 +247,11 @@ class Slide(BaseModel):
     steps: list[Step] | None = Field(default=None, min_length=2, max_length=6)
     table: TableSpec | None = None
     sources: list[SourceItem] | None = Field(default=None, max_length=14)
+    # Per-slide provenance footer ("資料來源：軍人懲罰法.pdf"), derived by the
+    # pipeline from the [N] references the model wrote before those are
+    # stripped from the visible text. The renderer prints it at the foot of
+    # every content slide.
+    source_line: str | None = Field(default=None, max_length=160)
     # Phase 5: opaque ID into ingestion_images that the LLM picks from
     # the "可用圖" prompt list. The renderer-side path resolves it to
     # actual image bytes; if unresolvable we fall back to `standard`.

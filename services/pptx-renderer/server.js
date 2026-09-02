@@ -1389,6 +1389,27 @@ function renderSources(pres, s, theme) {
  * uniformly even though only icon_rows is actually async.
  */
 async function renderSlideByKind(pres, s, theme) {
+  const slide = await renderSlideByKindInner(pres, s, theme)
+  const kind = effectiveKind(s)
+  if (slide && kind !== 'section_break' && kind !== 'sources') applySourceFooter(slide, s, theme)
+  return slide
+}
+
+/**
+ * Provenance footer — the pipeline fills Slide.source_line from the [N]
+ * references on that slide. Small, muted, left of the page number.
+ */
+function applySourceFooter(slide, s, theme) {
+  const line = typeof s.source_line === 'string' ? s.source_line.trim() : ''
+  if (!line) return
+  slide.addText(line, {
+    x: 0.5, y: 7.05, w: 11.8, h: 0.3,
+    fontSize: 10, color: theme.palette.muted, fontFace: FONT_FACE,
+    align: 'left', valign: 'middle', margin: 0,
+  })
+}
+
+async function renderSlideByKindInner(pres, s, theme) {
   const kind = String(s.layout_kind || 'standard')
   switch (kind) {
     case 'section_break': return renderSectionBreak(pres, s, theme)

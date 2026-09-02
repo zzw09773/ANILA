@@ -131,7 +131,8 @@ from app.services.studio_retrieval import (
     retrieve_chunks as _retrieve_chunks,
     retrieve_images as _retrieve_images,
 )
-from app.services.studio_sources import append_sources_slide
+from app.services.studio_sources import append_sources_slide, attach_source_lines
+from app.services import studio_previews
 from app.services.studio_text_normalizer import normalize_spec
 from app.services.studio_vision_qa import (
     fix_spec_with_defects as _fix_spec_with_defects,
@@ -729,6 +730,10 @@ async def _run_pipeline(
             else None
         ),
     )
+    # ── Step 6.4: per-slide provenance footers from the [N] references the
+    # model wrote — has to happen before normalize_spec strips them.
+    if chunks:
+        spec = attach_source_lines(spec, chunks)
     # ── Step 6.5: zh-CN → zh-TW post-processing ──
     # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
     # 33-39 行有量化證據). The system prompt fights this with an explicit
@@ -839,6 +844,7 @@ async def _run_pipeline(
     qa_passes = 0
     fix_failed = False
     vision_skipped = False
+    last_screenshots: list[bytes] | None = None
     if pptx_path and not used_fallback:
         for _ in range(VISUAL_QA_PASSES + 1):
             qa_passes += 1
@@ -857,6 +863,8 @@ async def _run_pipeline(
             )
             if getattr(raw_defects, "vision_skipped", None):
                 vision_skipped = True
+            if getattr(raw_defects, "screenshots", None):
+                last_screenshots = list(raw_defects.screenshots)
             defects = _to_spec_indices(list(raw_defects), cover_prepended=cover_prepended)
             critical = [d for d in defects if d.severity == "critical"]
             if not critical or qa_passes > VISUAL_QA_PASSES:
@@ -909,6 +917,10 @@ async def _run_pipeline(
         qa_passes=qa_passes,
         warning=("\n".join(degradations) or None),
     )
+    # Previews: the screenshots of the deck we are shipping (the fix pass
+    # re-QAs after re-rendering, so the last set matches pptx_bytes).
+    if last_screenshots and not fix_failed:
+        studio_previews.persist_previews(updater.job_id, last_screenshots)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────
@@ -1082,6 +1094,55 @@ def _pptx_response(pptx_bytes: bytes, title: str | None) -> StreamingResponse:
             "Content-Length": str(len(pptx_bytes)),
         },
     )
+
+
+async def _readable_done_job(job_id: str, identity: CurrentUserIdentity) -> tuple[str | None, bytes | None]:
+    """(title, pptx_bytes) for a finished job the caller owns — from memory or
+    the durable record + artifacts volume. 404 for unknown / not yours /
+    not finished (one code, so ownership never leaks)."""
+    rec = jobs.get_user_job(job_id, identity.id)
+    if rec is not None:
+        if rec.state != "done":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not finished.")
+        return rec.title, rec.pptx_bytes or jobs.load_persisted_pptx(job_id)
+    persisted = await job_lifecycle.read_status(job_id, identity.id)
+    if persisted is None or persisted.get("state") != "done":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+    return persisted.get("title"), jobs.load_persisted_pptx(job_id)
+
+
+@router.get("/slides/jobs/{job_id}/preview")
+async def list_slide_previews(
+    job_id: str,
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+) -> dict[str, Any]:
+    """Per-slide PNG previews of a finished deck (generated on first request
+    when the QA pass did not leave any behind)."""
+    title, pptx_bytes = await _readable_done_job(job_id, identity)
+    count = await studio_previews.ensure_previews(job_id, pptx_bytes)
+    return {
+        "job_id": job_id,
+        "title": title,
+        "count": count,
+        "slides": [
+            {"index": i, "url": f"/api/studio/slides/jobs/{job_id}/preview/{i}"}
+            for i in range(count)
+        ],
+    }
+
+
+@router.get("/slides/jobs/{job_id}/preview/{index}", response_class=Response)
+async def get_slide_preview(
+    job_id: str,
+    index: int,
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+) -> Response:
+    _, pptx_bytes = await _readable_done_job(job_id, identity)
+    await studio_previews.ensure_previews(job_id, pptx_bytes)
+    png = studio_previews.load_preview(job_id, index) if index >= 0 else None
+    if png is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such slide preview.")
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
 
 @router.delete("/slides/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
