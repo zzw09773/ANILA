@@ -88,7 +88,7 @@
             </td>
             <td class="cell-meta">{{ user.email || '—' }}</td>
             <td class="cell-meta">{{ departmentLabel(user) }}</td>
-            <td><TermBadge :variant="roleVariant(user.role)">{{ user.role }}</TermBadge></td>
+            <td><TermBadge :variant="roleVariant(user.role)">{{ roleLabel(user.role) }}</TermBadge></td>
             <td>
               <TermBadge :variant="statusVariant(user)" dot>{{ statusLabel(user) }}</TermBadge>
             </td>
@@ -256,6 +256,7 @@
 </template>
 
 <script setup>
+import { roleLabel } from '../utils/roleLabel'
 import { computed, onMounted, ref } from 'vue'
 import client from '../api/client'
 import { listDepartments } from '../api/departments'

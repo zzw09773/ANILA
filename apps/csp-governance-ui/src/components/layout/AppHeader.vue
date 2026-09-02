@@ -1,16 +1,16 @@
 <template>
+  <!-- 刊頭（2026-09-02 行政風改版）：深藍橫幅、明體站名、目前頁面用中文，
+       不再顯示路徑／@角色／快速鍵提示——長官看的是「這是哪裡、我是誰」。 -->
   <header class="topbar">
     <div class="topbar__left">
-      <TermLogo :size="14" subtitle="治理中心" />
-      <span class="topbar__rule">│</span>
-      <span class="topbar__path">
-        <span class="topbar__path-segment">{{ currentSegment }}</span>
-      </span>
+      <TermLogo :size="18" subtitle="治理中心" />
+      <span class="topbar__crumb" aria-current="page">{{ currentPageLabel }}</span>
     </div>
 
     <div class="topbar__right">
-      <span class="topbar__hints">
-        <span class="topbar__hint"><TermKbd>?</TermKbd> 快速鍵</span>
+      <span class="topbar__user">
+        <span class="topbar__user-name">{{ authStore.user?.username || '訪客' }}</span>
+        <span class="topbar__user-role">{{ roleLabel(authStore.user?.role) }}</span>
       </span>
       <button
         class="topbar__theme"
@@ -19,23 +19,12 @@
         :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`"
         @click="toggleTheme"
       >
-        <span class="topbar__theme-icon">{{ theme === 'dark' ? '◐' : '◑' }}</span>
-        <span class="topbar__theme-label">{{ theme }}</span>
+        {{ theme === 'dark' ? '淺色' : '深色' }}
       </button>
-
-      <span class="topbar__rule">│</span>
-
-      <span class="topbar__user">
-        <span class="topbar__user-name">{{ authStore.user?.username || 'guest' }}</span>
-        <span class="topbar__user-role" :class="`is-${authStore.user?.role || 'user'}`">
-          @{{ authStore.user?.role || 'guest' }}
-        </span>
-      </span>
-
       <button class="topbar__action" type="button" @click="showChangePwModal = true">
         變更密碼
       </button>
-      <button class="topbar__action topbar__action--danger" type="button" @click="handleLogout">
+      <button class="topbar__action" type="button" @click="handleLogout">
         登出
       </button>
     </div>
@@ -86,10 +75,10 @@
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { roleLabel } from '../../utils/roleLabel'
 import { changePassword } from '../../api/auth'
 import { useTheme } from '../../composables/useTheme'
 import TermLogo from '../cli/TermLogo.vue'
-import TermKbd from '../cli/TermKbd.vue'
 import TermModal from '../cli/TermModal.vue'
 import TermField from '../cli/TermField.vue'
 import TermButton from '../cli/TermButton.vue'
@@ -126,6 +115,22 @@ const currentSegment = computed(() => {
       : '/dev/collections/detail'
   }
   return route.path
+})
+
+// 目前頁面的中文名（跟側欄同一份對照），刊頭顯示這個而不是 URL 片段。
+const PAGE_LABELS = {
+  '/': '儀表板', '/api-keys': 'API 金鑰', '/models': '模型', '/usage': '用量',
+  '/developer/guide': '開發指南', '/developer/agents': 'Agent', '/knowledge-collections': '知識庫',
+  '/message-actions': '自訂動作', '/users': '使用者', '/departments': '部門', '/alerts': '警報',
+  '/feedback': '使用者回饋', '/banners': '公告橫幅', '/audit-logs': '稽核紀錄',
+  '/classification-inventory': '分類盤點', '/platform-links': '平台連結', '/service-access': '服務存取',
+  '/service-clients': '服務客戶端', '/trusted-hosts': '信任主機', '/platform-settings': '平台設定',
+}
+const currentPageLabel = computed(() => {
+  const path = route.path
+  if (PAGE_LABELS[path]) return PAGE_LABELS[path]
+  const hit = Object.keys(PAGE_LABELS).find((k) => k !== '/' && path.startsWith(k))
+  return hit ? PAGE_LABELS[hit] : currentSegment.value
 })
 
 const showChangePwModal = ref(false)
@@ -186,115 +191,65 @@ function handleLogout() {
   align-items: center;
   justify-content: space-between;
   height: var(--shell-topbar-h);
-  padding: 0 var(--gap-3);
-  background: var(--c-surface-2);
+  padding: 0 var(--gap-5);
+  background: var(--c-accent-strong);
+  color: #ffffff;
   border-bottom: 0;
-  font-size: var(--t-xs);
-  color: var(--c-fg-2);
-  gap: var(--gap-3);
+  font-size: var(--t-sm);
+  gap: var(--gap-4);
 }
-
 .topbar__left,
 .topbar__right {
   display: flex;
   align-items: center;
-  gap: var(--gap-3);
+  gap: var(--gap-4);
   min-width: 0;
 }
-
-.topbar__rule {
-  color: var(--c-border-strong);
-  font-size: var(--t-base);
-  user-select: none;
-}
-
-.topbar__path {
-  display: inline-flex;
-  align-items: center;
-  font-family: var(--font-mono);
+.topbar__left :deep(.term-logo) { color: #ffffff; }
+.topbar__left :deep(.term-logo__word),
+.topbar__left :deep(.term-logo__sub),
+.topbar__left :deep(.term-logo__sep) { color: #ffffff; }
+.topbar__crumb {
+  padding-left: var(--gap-4);
+  border-left: 1px solid rgba(255, 255, 255, 0.28);
+  font-size: var(--t-md);
+  color: rgba(255, 255, 255, 0.92);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.topbar__path-segment {
-  color: var(--c-accent);
-  margin-left: 2px;
-  font-weight: 500;
-}
-
-.topbar__hints {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--gap-3);
-  margin-right: var(--gap-2);
-}
-.topbar__hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--c-fg-3);
-  font-size: var(--t-2xs);
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-
-.topbar__theme {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: transparent;
-  border: var(--border-w) solid var(--c-border);
-  color: var(--c-fg-2);
-  height: 22px;
-  padding: 0 8px;
-  border-radius: var(--r-soft);
-  font-size: var(--t-2xs);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: color var(--motion-fast), border-color var(--motion-fast), background-color var(--motion-fast);
-}
-.topbar__theme:hover {
-  color: var(--c-accent);
-  border-color: var(--c-accent);
-  background: var(--c-accent-soft);
-}
-.topbar__theme-icon { font-size: var(--t-sm); }
-
 .topbar__user {
   display: inline-flex;
   align-items: baseline;
-  gap: 4px;
-  font-size: var(--t-xs);
+  gap: var(--gap-2);
+  color: #ffffff;
 }
-.topbar__user-name { color: var(--c-fg-1); font-weight: 500; }
+.topbar__user-name { font-weight: 600; }
 .topbar__user-role {
-  color: var(--c-fg-3);
-  font-size: var(--t-2xs);
-  letter-spacing: 0.05em;
-  text-transform: lowercase;
+  font-size: var(--t-xs);
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
 }
-.topbar__user-role.is-owner     { color: var(--c-danger); font-weight: 600; }
-.topbar__user-role.is-admin     { color: var(--c-warn); }
-.topbar__user-role.is-developer { color: var(--c-info); }
-.topbar__user-role.is-user      { color: var(--c-fg-3); }
-
+.topbar__theme,
 .topbar__action {
   background: transparent;
-  border: 0;
-  color: var(--c-fg-3);
-  font-family: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #ffffff;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-md);
   font-size: var(--t-xs);
   cursor: pointer;
-  padding: 0;
-  letter-spacing: 0.05em;
-  text-transform: lowercase;
-  transition: color var(--motion-fast);
+  transition: background-color var(--motion-fast), border-color var(--motion-fast);
 }
-.topbar__action:hover { color: var(--c-accent); }
-.topbar__action--danger:hover { color: var(--c-danger); }
+.topbar__theme:hover,
+.topbar__action:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.6);
+}
 
-/* Password modal styles ----------------------------------------------- */
 .pw-grid {
   display: flex;
   flex-direction: column;

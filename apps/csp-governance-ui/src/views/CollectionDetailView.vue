@@ -241,7 +241,7 @@
                 class="term-btn term-btn--xs"
                 :disabled="deletingId === r.id"
                 @click="doDeleteRelation(r)"
-              >[ 刪除 ]</button>
+              >刪除</button>
             </td>
           </tr>
         </tbody>

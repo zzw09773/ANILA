@@ -1,22 +1,19 @@
 <template>
   <aside class="sidenav">
     <nav class="sidenav__nav" aria-label="primary">
-      <template v-for="(group, gIdx) in menuGroups" :key="group.label">
+      <template v-for="group in menuGroups" :key="group.label">
         <div v-if="group.items.length" class="sidenav__group">
           <div class="sidenav__group-label">
-            <span class="sidenav__group-glyph">{{ String(gIdx + 1).padStart(2, '0') }}</span>
             <span>{{ group.label }}</span>
-            <span class="sidenav__group-count">{{ group.items.length }}</span>
           </div>
           <ul class="sidenav__list">
-            <li v-for="(item, iIdx) in group.items" :key="item.path">
+            <li v-for="item in group.items" :key="item.path">
               <router-link
                 :to="item.path"
                 class="sidenav__item"
                 :class="{ 'is-active': isActive(item.path) }"
               >
                 <span class="sidenav__rail" aria-hidden="true" />
-                <span class="sidenav__index">{{ String(iIdx + 1).padStart(2, '0') }}</span>
                 <span class="sidenav__label">{{ item.label }}</span>
                 <span v-if="item.badge" class="sidenav__badge">{{ item.badge }}</span>
               </router-link>
@@ -28,13 +25,13 @@
 
     <div class="sidenav__foot">
       <div class="sidenav__foot-row">
-        <span class="term-label">session</span>
+        <span class="term-label">登入身分</span>
         <span class="sidenav__foot-val">
-          {{ authStore.user?.username || 'guest' }}
+          {{ authStore.user?.username || '訪客' }}
         </span>
       </div>
       <div class="sidenav__foot-row sidenav__foot-row--mute">
-        <span class="term-label">scope</span>
+        <span class="term-label">權限範圍</span>
         <span class="sidenav__foot-val sidenav__foot-val--mute">{{ scopeLabel }}</span>
       </div>
     </div>
@@ -107,9 +104,9 @@ function isActive(path) {
 }
 
 const scopeLabel = computed(() => {
-  if (authStore.isAdmin) return 'full · governance'
-  if (authStore.isDeveloper) return 'agents · collections'
-  return 'self · keys · usage'
+  if (authStore.isAdmin) return '全部功能'
+  if (authStore.isDeveloper) return 'Agent 與知識庫'
+  return '個人金鑰與用量'
 })
 </script>
 
@@ -141,20 +138,9 @@ const scopeLabel = computed(() => {
   gap: var(--gap-2);
   padding: 0 var(--gap-4);
   margin-bottom: var(--gap-2);
-  font-size: var(--t-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  font-size: var(--t-xs);
+  font-weight: 600;
   color: var(--c-fg-3);
-}
-.sidenav__group-glyph {
-  color: var(--c-fg-mute);
-  font-weight: 500;
-}
-.sidenav__group-count {
-  margin-left: auto;
-  color: var(--c-fg-mute);
-  font-size: var(--t-2xs);
-  letter-spacing: 0;
 }
 
 .sidenav__list { list-style: none; padding: 0; margin: 0; }
@@ -162,15 +148,14 @@ const scopeLabel = computed(() => {
 .sidenav__item {
   position: relative;
   display: grid;
-  grid-template-columns: 16px 1fr auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: var(--gap-2);
-  padding: 0 var(--gap-4);
-  height: 26px;
+  padding: 0 var(--gap-5);
+  height: 36px;
   color: var(--c-fg-2);
-  font-size: var(--t-sm);
+  font-size: var(--t-base);
   text-decoration: none;
-  letter-spacing: 0.02em;
   transition: color var(--motion-fast), background-color var(--motion-fast);
 }
 .sidenav__item:hover {
@@ -187,21 +172,14 @@ const scopeLabel = computed(() => {
   left: 0;
   top: 0;
   bottom: 0;
-  width: 2px;
+  width: 3px;
   background: transparent;
 }
 .sidenav__item.is-active .sidenav__rail {
   background: var(--c-accent);
 }
-
-.sidenav__index {
-  color: var(--c-fg-mute);
-  font-size: var(--t-2xs);
-  letter-spacing: 0;
-  font-variant-numeric: tabular-nums;
-}
-.sidenav__item.is-active .sidenav__index {
-  color: var(--c-accent);
+.sidenav__item.is-active .sidenav__label {
+  font-weight: 600;
 }
 .sidenav__label {
   white-space: nowrap;

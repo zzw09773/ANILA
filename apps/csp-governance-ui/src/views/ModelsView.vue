@@ -34,7 +34,7 @@
                 :key="u.id"
                 :value="u.id"
               >
-                {{ u.username }}（{{ u.role }}）
+                {{ u.username }}（{{ roleLabel(u.role) }}）
               </option>
             </select>
           </TermField>
@@ -561,6 +561,7 @@
 </template>
 
 <script setup>
+import { roleLabel } from '../utils/roleLabel'
 import { ref, computed, onMounted } from 'vue'
 import { useModelsStore } from '../stores/models'
 import { useAuthStore } from '../stores/auth'

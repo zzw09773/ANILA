@@ -138,7 +138,7 @@
                 </div>
 
                 <p class="login__hint">
-                  <TermKbd>↵</TermKbd> 送出 · <TermKbd>Tab</TermKbd> 切換欄位 · <TermKbd>1</TermKbd>–<TermKbd>9</TermKbd> 單一登入提供者
+                  <TermKbd>Enter</TermKbd> 送出 · <TermKbd>Tab</TermKbd> 切換欄位
                 </p>
               </form>
             </div>

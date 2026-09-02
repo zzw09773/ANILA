@@ -37,8 +37,7 @@ defineProps({
   align-items: center;
   justify-content: space-between;
   font-size: var(--t-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: 0;
   color: var(--c-fg-3);
 }
 .term-field__optional {

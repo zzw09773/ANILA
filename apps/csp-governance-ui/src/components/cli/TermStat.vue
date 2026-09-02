@@ -62,8 +62,7 @@ const formatted = computed(() => {
 }
 .term-stat__label {
   font-size: var(--t-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: 0;
   color: var(--c-fg-3);
 }
 .term-stat__hint {

@@ -59,9 +59,10 @@ defineProps({
   flex-shrink: 0;
 }
 .term-box__title {
-  font-size: var(--t-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--c-fg-1);
+  letter-spacing: 0;
   color: var(--c-fg-1);
   font-weight: 600;
 }

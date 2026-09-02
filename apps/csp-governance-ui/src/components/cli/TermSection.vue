@@ -31,8 +31,7 @@ defineProps({
 }
 .term-section__title {
   font-size: var(--t-xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: 0;
   color: var(--c-fg-2);
   font-weight: 600;
 }

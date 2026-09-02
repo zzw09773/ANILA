@@ -5,9 +5,9 @@
         <h1 class="page__title">儀表板</h1>
       </div>
       <div class="page__head-meta">
-        <span class="term-label">window</span>
+        <span class="term-label">區間</span>
         <span class="page__head-val">近 24 小時</span>
-        <span class="term-label">refreshed</span>
+        <span class="term-label">更新於</span>
         <span class="page__head-val tnum">{{ refreshedLabel }}</span>
         <TermButton size="xs" variant="ghost" :loading="loading" @click="refresh" label="重新整理" />
       </div>
@@ -35,19 +35,19 @@
       <TermBox title="快速操作" pad="md">
         <ul class="ops">
           <li class="ops__row">
-            <span class="ops__k">role</span>
-            <span class="ops__v">{{ authStore.user?.role || 'user' }}</span>
+            <span class="ops__k">角色</span>
+            <span class="ops__v">{{ roleLabel(authStore.user?.role) }}</span>
           </li>
           <li class="ops__row">
-            <span class="ops__k">scope</span>
+            <span class="ops__k">權限範圍</span>
             <span class="ops__v">{{ scopeLabel }}</span>
           </li>
           <li class="ops__row">
-            <span class="ops__k">data plane</span>
+            <span class="ops__k">資料介面</span>
             <span class="ops__v ops__v--accent">/v1/* &nbsp;·&nbsp; /v2/embeddings</span>
           </li>
           <li class="ops__row">
-            <span class="ops__k">control plane</span>
+            <span class="ops__k">控制介面</span>
             <span class="ops__v ops__v--accent">/api/*</span>
           </li>
         </ul>
@@ -152,6 +152,7 @@
 </template>
 
 <script setup>
+import { roleLabel } from '../utils/roleLabel'
 import { ref, computed, onMounted } from 'vue'
 import { useUsageStore } from '../stores/usage'
 import { useAuthStore } from '../stores/auth'
@@ -252,9 +253,9 @@ function kpiValue(n) {
 }
 
 const scopeLabel = computed(() => {
-  if (authStore.isAdmin) return 'full · governance'
-  if (authStore.isDeveloper) return 'agents · collections · self'
-  return 'self · keys · usage'
+  if (authStore.isAdmin) return '全部功能'
+  if (authStore.isDeveloper) return 'Agent 與知識庫'
+  return '個人金鑰與用量'
 })
 
 const refreshedLabel = computed(() => {

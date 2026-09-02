@@ -2,31 +2,14 @@
   <footer class="statusbar">
     <span class="statusbar__cell">
       <TermDot :status="apiStatus" />
-      <span>api</span>
-      <span class="statusbar__val">{{ apiLabel }}</span>
-    </span>
-    <span class="statusbar__sep">│</span>
-    <span class="statusbar__cell">
-      <span class="term-label">role</span>
-      <span class="statusbar__val">{{ authStore.user?.role || 'guest' }}</span>
-    </span>
-    <span class="statusbar__sep">│</span>
-    <span class="statusbar__cell">
-      <span class="term-label">path</span>
-      <span class="statusbar__val">{{ route.path }}</span>
+      <span>{{ apiSentence }}</span>
     </span>
 
     <span class="statusbar__spacer" />
 
     <span class="statusbar__cell statusbar__cell--mute">
-      <span>theme:</span>
-      <span class="statusbar__val">{{ theme }}</span>
+      <span>版本 {{ buildId }}</span>
     </span>
-    <span class="statusbar__sep">│</span>
-    <span class="statusbar__cell statusbar__cell--mute">
-      <span>build {{ buildId }}</span>
-    </span>
-    <span class="statusbar__sep">│</span>
     <span class="statusbar__cell statusbar__cell--mute tnum">
       {{ now }}
     </span>
@@ -53,6 +36,16 @@ const apiLabel = computed(() => {
   if (apiStatus.value === 'warn') return 'degraded'
   if (apiStatus.value === 'danger') return 'offline'
   return 'probing'
+})
+
+// 一句話講連線狀態，不是「api online · 40ms」那種儀表板碎片。
+const apiSentence = computed(() => {
+  const label = String(apiLabel.value || '')
+  const ms = label.match(/(\d+\s*ms)/)?.[1]
+  if (apiStatus.value === 'ok') return ms ? `系統連線正常，回應 ${ms}` : '系統連線正常'
+  if (apiStatus.value === 'warn') return '系統回應變慢'
+  if (apiStatus.value === 'danger') return '系統連線中斷'
+  return '正在確認連線'
 })
 
 let pollHandle = null
@@ -109,7 +102,6 @@ onUnmounted(() => {
   border-top: var(--border-w) solid var(--c-border);
   font-size: var(--t-2xs);
   color: var(--c-fg-3);
-  letter-spacing: 0.05em;
   white-space: nowrap;
   overflow-x: auto;
 }

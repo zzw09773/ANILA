@@ -14,12 +14,10 @@
     ]"
     @click="$emit('click', $event)"
   >
-    <span v-if="bracketed" aria-hidden="true" class="term-btn__bracket">[</span>
     <span class="term-btn__label">
       <slot>{{ label }}</slot>
       <span v-if="loading" class="term-btn__dots" aria-hidden="true">…</span>
     </span>
-    <span v-if="bracketed" aria-hidden="true" class="term-btn__bracket">]</span>
   </button>
 </template>
 
@@ -30,7 +28,8 @@ defineProps({
   type: { type: String, default: 'button' },
   disabled: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
-  bracketed: { type: Boolean, default: true },
+  // 2026-09-02 行政風：括號不再渲染；prop 留著讓既有呼叫端不必改。
+  bracketed: { type: Boolean, default: false },
   label: { type: String, default: '' },
 })
 defineEmits(['click'])

@@ -52,7 +52,7 @@
   *::-webkit-scrollbar-thumb {
     background: var(--c-border);
     border: 2px solid var(--c-bg);
-    border-radius: 0;
+    border-radius: 999px;
   }
   *::-webkit-scrollbar-thumb:hover {
     background: var(--c-border-strong);
@@ -130,22 +130,15 @@
 
   /* Small caps section / column label ------------------------------- */
   .term-label {
-    font-size: var(--t-2xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-caps);
+    font-size: var(--t-xs);
     color: var(--c-fg-3);
   }
 
-  /* Bracketed text — `[ value ]` */
-  .term-bracket::before { content: "["; color: var(--c-fg-3); margin-right: 4px; }
-  .term-bracket::after  { content: "]"; color: var(--c-fg-3); margin-left: 4px; }
-
-  /* Prompt prefix — `>` `$` `λ` */
-  .term-prompt::before {
-    content: "> ";
-    color: var(--c-accent);
-    font-weight: 500;
-  }
+  /* 2026-09-02 行政風：括號／提示符／游標三個終端機記號一律不再渲染。
+     class 留著讓既有 view 不必改；它們現在只是普通文字。 */
+  .term-bracket::before,
+  .term-bracket::after,
+  .term-prompt::before { content: none; }
 
   /* Field group ------------------------------------------------------- */
   .term-field {
@@ -154,10 +147,9 @@
     gap: var(--gap-1);
   }
   .term-field > label {
-    font-size: var(--t-2xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-caps);
-    color: var(--c-fg-3);
+    font-size: var(--t-xs);
+    color: var(--c-fg-2);
+    font-weight: 500;
   }
 
   .term-input,
@@ -201,19 +193,21 @@
     cursor: not-allowed;
   }
 
-  /* Buttons — bracketed `[ Submit ]` */
+  /* Buttons — 一般行政系統的按鈕：實心主按鈕、描邊次按鈕，沒有括號 */
   .term-btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: var(--gap-2);
     height: var(--input-h);
-    padding: 0 var(--gap-3);
-    background: transparent;
+    padding: 0 var(--gap-4);
+    background: var(--c-surface-1);
     border: var(--border-w) solid var(--c-border-strong);
-    border-radius: var(--r-soft);
+    border-radius: var(--r-md);
     color: var(--c-fg-1);
     font-family: var(--font-sans);
-    font-size: var(--t-sm);
+    font-size: var(--t-base);
+    font-weight: 500;
     cursor: pointer;
     transition: background-color var(--motion-fast) var(--easing),
                 color var(--motion-fast) var(--easing),
@@ -236,6 +230,7 @@
     border-color: var(--c-accent);
     color: var(--c-accent-fg);
     font-weight: 600;
+    box-shadow: 0 1px 2px rgba(17, 24, 39, 0.12);
   }
   .term-btn--primary:hover {
     background: var(--c-accent-strong);
@@ -260,7 +255,7 @@
     color: var(--c-fg-1);
   }
   .term-btn--xs {
-    height: 22px;
+    height: 26px;
     padding: 0 var(--gap-2);
     font-size: var(--t-xs);
   }
@@ -288,11 +283,9 @@
   }
   .term-table thead th {
     text-align: left;
-    font-weight: 500;
-    font-size: var(--t-2xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-caps);
-    color: var(--c-fg-3);
+    font-weight: 600;
+    font-size: var(--t-xs);
+    color: var(--c-fg-2);
     padding: var(--gap-2) var(--gap-3);
     border-bottom: var(--border-w) solid var(--c-border);
     background: var(--c-surface-2);
@@ -323,15 +316,13 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 0 6px;
-    height: 18px;
-    font-size: var(--t-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    padding: 0 8px;
+    height: 20px;
+    font-size: var(--t-xs);
     border: var(--border-w) solid var(--c-border-strong);
     color: var(--c-fg-2);
     background: transparent;
-    border-radius: var(--r-soft);
+    border-radius: var(--r-pill);
     line-height: 1;
     white-space: nowrap;
   }
@@ -359,9 +350,9 @@
     box-shadow: 0 0 0 1px var(--c-bg);
     flex-shrink: 0;
   }
-  .term-dot--ok      { background: var(--c-ok);     box-shadow: 0 0 6px var(--c-ok); }
-  .term-dot--warn    { background: var(--c-warn);   box-shadow: 0 0 6px var(--c-warn); }
-  .term-dot--danger  { background: var(--c-danger); box-shadow: 0 0 6px var(--c-danger); }
+  .term-dot--ok      { background: var(--c-ok); }
+  .term-dot--warn    { background: var(--c-warn); }
+  .term-dot--danger  { background: var(--c-danger); }
   .term-dot--info    { background: var(--c-info); }
   .term-dot--idle    { background: var(--c-fg-mute); }
 
@@ -377,11 +368,11 @@
     border: var(--border-w) solid var(--c-border);
     border-bottom-width: 2px;
     border-radius: var(--r-soft);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     line-height: 1;
   }
 
-  /* Section header bar — `┌─ TITLE ─────────…` */
+  /* Section header bar */
   .term-section {
     display: flex;
     align-items: center;
@@ -391,10 +382,8 @@
     margin-bottom: var(--gap-3);
   }
   .term-section__title {
-    font-size: var(--t-xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-caps);
-    color: var(--c-fg-2);
+    font-size: var(--t-base);
+    color: var(--c-fg-1);
     font-weight: 600;
   }
   .term-section__rule {
@@ -411,20 +400,8 @@
     font-size: var(--t-sm);
   }
 
-  /* Caret blink — for headline use only */
-  .term-caret {
-    display: inline-block;
-    width: 0.5em;
-    height: 1em;
-    background: var(--c-accent);
-    margin-left: 0.15em;
-    vertical-align: -0.12em;
-    animation: term-blink 1s steps(2, jump-none) infinite;
-  }
-  @keyframes term-blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0; }
-  }
+  /* 閃爍游標已移除（行政風）；class 保留為 no-op。 */
+  .term-caret { display: none; }
 }
 
 /* Util — tabular numerals (use sparingly to avoid breaking copy text) */
@@ -447,7 +424,14 @@
    Views only declare color/size on `.cell-meta`, so this sets font-family
    without fighting their scoped rules. */
 .cell-meta {
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 頁面主標題：明體、稍大，公文抬頭感（只此一處用 display 字型） */
+.page-head__title,
+.page-title {
+  font-family: var(--font-display);
+  font-weight: 700;
 }
 
 /* Respect reduced-motion requests (vestibular safety / a11y). The TUI uses
@@ -466,3 +450,10 @@
 .error-panel { border-left: 2px solid var(--c-danger, #c33); padding: 12px 16px; display: grid; gap: 8px; justify-items: start; }
 .error-panel__msg { margin: 0; color: var(--c-fg-1, inherit); }
 .error-panel__btn { font: inherit; padding: 4px 10px; cursor: pointer; }
+
+/* 2026-09-02 行政風：view 內殘留的小型大寫標籤一律回到正常大小寫。
+   19 處散在 8 個 view 的 scoped CSS 裡，這裡一條全域規則收掉，不逐檔改。 */
+.term-label, .page__head-key, .ops__k, dt, th, .cell-label, [class$="__label"], [class$="__k"] {
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}

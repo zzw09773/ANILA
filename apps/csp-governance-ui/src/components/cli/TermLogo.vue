@@ -49,23 +49,22 @@ defineProps({
 .term-logo__word {
   display: inline-flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 8px;
   color: var(--c-fg-1);
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  font-size: var(--t-md);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--t-lg);
   line-height: 1;
 }
 .term-logo__brand {
-  letter-spacing: 0.14em;
+  letter-spacing: 0.08em;
 }
 .term-logo__sep {
-  color: var(--c-fg-3);
+  display: none;
 }
 .term-logo__sub {
   color: var(--c-fg-2);
-  font-size: var(--t-xs);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  font-size: var(--t-md);
+  letter-spacing: 0.04em;
 }
 </style>
