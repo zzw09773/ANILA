@@ -38,8 +38,8 @@ fast 熱機約 0.8s、品質不輸；思考版卻可能燒 400–1300 reasoning 
 |---|---|---|
 | `ANILA_MODEL_ANALYSIS` | 跑 anila-core 路由契約的服務（接線後：`anila-core-router`／csp 內嵌呼叫端；寫在根 `.env` 並傳到該容器） | `rag_qa`／`chat` 等 analysis class |
 | `ANILA_MODEL_FAST` | 同上 | `chips`／`title`／`json_gen` 等 fast class |
-| `ANILA_STUDIO_SLIDES_MODEL` | `anila-studio` | 投影片主 LLM（analysis；預設 `gemma4`） |
-| `ANILA_STUDIO_VISION_MODEL` | `anila-studio` | Vision／VLM gate（analysis；預設 `gemma4`） |
+| `ANILA_STUDIO_SLIDES_MODEL` | `anila-studio` | 投影片主 LLM 的**備援**（預設 `gemma4`）。2026-09-02 起首選是模型頁的「設為主簡報」旋鈕（`is_slides_primary`，studio 每 60 秒問一次 `GET /api/models/slides-primary`），沒設旋鈕才用這個變數 |
+| `ANILA_STUDIO_VISION_MODEL` | `anila-studio` | Vision／VLM gate 的備援（預設 `gemma4`）；有旋鈕時視覺檢查也用旋鈕那顆 |
 
 > 🔴 **`ANILA_MODEL_FAST` 與 `ANILA_MODEL_ANALYSIS` 目前沒有任何程式在讀（2026-08-05 查證）。**
 > 設下去**不會有任何效果**,不會報錯,也不會有任何訊號告訴你它沒生效。
@@ -107,7 +107,7 @@ ANILA_STUDIO_VISION_MODEL: ${ANILA_STUDIO_VISION_MODEL:-gemma4}
 
 | 呼叫端 | 狀態 | 檔案指標 |
 |---|---|---|
-| Studio 投影片／Vision 模型常數 | **程式碼側已完成**；compose environment 傳遞待接（依 §2 範例加入 `anila-studio` 區塊後才生效；未設＝`gemma4`） | `services/anila-studio/app/services/studio_config.py`（`SLIDES_LLM_MODEL`／`VISION_LLM_MODEL`） |
+| Studio 投影片／Vision 模型 | **已接**（2026-09-02）：compose 傳遞 `ANILA_STUDIO_*_MODEL`；執行期先問 csp 的主簡報旋鈕（`studio_model_primary.py`），env 只是備援 | `services/anila-studio/app/services/studio_model_primary.py`、`studio_config.py` |
 | 任務→class 契約＋`resolve_model` | **已完成**（函式庫；呼叫端尚未全接） | `packages/anila-core/src/anila_core/prompts/model_routing.py` |
 | 追問 chips hook | **待接**（合併時） | 接線位置待定——尋找建立 QueryEngine 並呼叫 `add_post_turn_hook(...)` 的 composition root；hook 本體在 `post_turn/prompt_suggestion.py`。接線時把 `model=` 改走 `resolve_model("chips", default=...)` |
 | 對話標題產生器 | **待接**（合併時） | `apps/anila-shell/src/app.jsx`（`generateConversationTitle`，約 :1013；目前 `model: effectiveTarget`） |
