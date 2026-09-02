@@ -243,6 +243,7 @@ def _build_response(
         "is_router_primary": bool(model.is_router_primary),
         "is_image_primary": bool(getattr(model, "is_image_primary", False)),
         "is_asr_primary": bool(getattr(model, "is_asr_primary", False)),
+        "is_slides_primary": bool(getattr(model, "is_slides_primary", False)),
         "is_platform_embedding": bool(
             getattr(model, "is_platform_embedding", False)
         ),
@@ -1201,6 +1202,125 @@ def unset_router_primary(
         resource_type="model",
         resource_id=model.id,
         detail=f"取消 ANILA 主路由模型: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model, caller=admin, db=db)
+
+
+# ── 主簡報模型（slides-primary）— 2026-09-02，比照 image-primary 三件組 ──────
+
+
+@router.get("/slides-primary")
+def get_slides_primary(
+    request: Request,
+    db: Session = Depends(get_db),
+    x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+):
+    """Return the LLM designated for slide-deck generation (anila-studio).
+
+    anila-studio polls this with its service token (60 s TTL) so an admin
+    can switch the deck model from the Models page without a restart. Same
+    admission rules and endpoint-address visibility as ``/image-primary``;
+    never returns a key.
+    """
+    is_svc = False
+    caller: User | None = None
+    if x_csp_service_token:
+        identity = verify_service_token(request, db, x_csp_service_token)
+        require_admitted_service_principal(
+            identity,
+            db=db,
+            allowed_kinds=("service_client",),
+            allowed_client_types=None,
+            allow_legacy_env=True,
+            endpoint="GET /api/models/slides-primary",
+        )
+        is_svc = True
+    else:
+        caller = get_current_user(request, credentials, db)
+    model = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_slides_primary.is_(True))
+        .first()
+    )
+    if not model:
+        raise HTTPException(status_code=404, detail="尚未指定主簡報模型")
+    if not model.is_active:
+        raise HTTPException(status_code=409, detail="已指定的主簡報模型已被停用")
+    return {
+        "id": model.id,
+        "name": model.name,
+        "display_name": model.display_name,
+        "model_type": model.model_type,
+        "endpoint_url": visible_endpoint_url(
+            model.endpoint_url,
+            is_internal=bool(getattr(model, "is_internal", False)),
+            db=db,
+            caller=caller,
+            is_service_token=is_svc,
+        ),
+        "api_version": model.api_version,
+        "health_status": model.health_status,
+    }
+
+
+@router.post("/{model_id}/set-slides-primary", response_model=ModelResponse)
+def set_slides_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Mark an LLM as the slide-deck (Studio) model, clearing any previous one."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if model.model_type != "llm":
+        raise HTTPException(status_code=400, detail="僅 llm 類型可設為主簡報模型")
+    if not model.is_active:
+        raise HTTPException(status_code=400, detail="已停用的模型不能設為主簡報模型")
+    (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_slides_primary.is_(True), ModelRegistry.id != model_id)
+        .update({"is_slides_primary": False}, synchronize_session=False)
+    )
+    model.is_slides_primary = True
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="set_slides_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"設為主簡報模型: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model, caller=admin, db=db)
+
+
+@router.post("/{model_id}/unset-slides-primary", response_model=ModelResponse)
+def unset_slides_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Remove the slide-deck model designation (idempotent)."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if not model.is_slides_primary:
+        return _build_response(model, caller=admin, db=db)
+    model.is_slides_primary = False
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="unset_slides_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"取消主簡報模型: {model.display_name}",
         commit=True,
     )
     return _build_response(model, caller=admin, db=db)

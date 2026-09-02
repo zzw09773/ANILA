@@ -35,6 +35,13 @@ export const setRouterPrimary = (id) =>
 export const unsetRouterPrimary = (id) =>
   client.post(`/api/models/${id}/unset-router-primary`)
 
+// 主簡報模型（slides-primary）— anila-studio 寫簡報用的 LLM，比照 router-primary。
+export const setSlidesPrimary = (id) =>
+  client.post(`/api/models/${id}/set-slides-primary`)
+
+export const unsetSlidesPrimary = (id) =>
+  client.post(`/api/models/${id}/unset-slides-primary`)
+
 // FLUX 主圖像模型（image-primary）— 完全比照 router-primary 三件組寫法。
 export const setImagePrimary = (id) =>
   client.post(`/api/models/${id}/set-image-primary`)

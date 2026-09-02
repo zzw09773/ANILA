@@ -945,7 +945,19 @@ async def get_slides_job_pptx(
     """
     rec = jobs.get_user_job(job_id, identity.id)
     if rec is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+        # Studio restarted (or the job aged out of memory): the durable
+        # status record still knows the owner and the outcome, and the deck
+        # itself was written to the artifacts volume when the job finished.
+        persisted = await job_lifecycle.read_status(job_id, identity.id)
+        if persisted is None or persisted.get("state") != "done":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+        disk_bytes = jobs.load_persisted_pptx(job_id)
+        if disk_bytes is None:
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="這份簡報已不在伺服器上（超過保存期限），請重新產生。",
+            )
+        return _pptx_response(disk_bytes, persisted.get("title"))
     if rec.state in ("pending", "running"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -963,20 +975,20 @@ async def get_slides_job_pptx(
             detail="Job marked done but pptx bytes are missing.",
         )
 
-    # RFC 5987 percent-encoded filename for CJK titles. Same trick as the
-    # old sync endpoint — keeps the .pptx download header USASCII-safe
-    # while modern browsers honour the filename* parameter for the real
-    # CJK title. Header buffer is no longer a concern (we don't ship
-    # defects[] in headers anymore — the GET /status JSON has them).
+    return _pptx_response(rec.pptx_bytes, rec.title)
+
+
+def _pptx_response(pptx_bytes: bytes, title: str | None) -> StreamingResponse:
+    # RFC 5987 percent-encoded filename for CJK titles — keeps the .pptx
+    # download header USASCII-safe while modern browsers honour the
+    # filename* parameter for the real CJK title.
     from urllib.parse import quote
 
-    raw_title = (rec.title or "presentation").replace('"', "")[:80]
+    raw_title = (title or "presentation").replace('"', "")[:80]
     encoded_title = quote(raw_title, safe="")
     ascii_title = (
         raw_title.encode("ascii", "ignore").decode("ascii").strip() or "presentation"
     )
-
-    pptx_bytes = rec.pptx_bytes  # local alias so the closure doesn't read state.
 
     async def _stream() -> Any:
         yield pptx_bytes

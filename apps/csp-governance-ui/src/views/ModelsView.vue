@@ -170,13 +170,20 @@
                 ★ 主語音
               </span>
               <span
+                v-if="model.is_slides_primary"
+                class="primary-pill"
+                title="anila-studio 以此模型產生簡報並做視覺檢查"
+              >
+                ★ 主簡報
+              </span>
+              <span
                 v-if="model.is_platform_embedding"
                 class="primary-pill primary-pill--embed"
                 :title="platformEmbedTitle(model)"
               >
                 ★ 主 embedding
               </span>
-              <span v-if="!model.is_router_primary && !model.is_image_primary && !model.is_asr_primary && !model.is_platform_embedding" class="cell-meta">—</span>
+              <span v-if="!model.is_router_primary && !model.is_image_primary && !model.is_asr_primary && !model.is_slides_primary && !model.is_platform_embedding" class="cell-meta">—</span>
             </td>
             <td v-if="authStore.isAdmin || canSetEndpointAddress">
               <div class="row-actions">
@@ -208,6 +215,25 @@
                     @click="handleUnsetPrimary(model.id)"
                   >
                     取消主要
+                  </button>
+                  <span v-if="model.model_type === 'llm' && !model.is_slides_primary" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.model_type === 'llm' && !model.is_slides_primary"
+                    class="term-action"
+                    :disabled="!model.is_active || settingSlidesPrimaryId === model.id"
+                    title="簡報製作（Studio）用這顆模型寫內容與做視覺檢查；建議選不思考（nothink）的版本"
+                    @click="handleSetSlidesPrimary(model.id)"
+                  >
+                    {{ settingSlidesPrimaryId === model.id ? '設定中…' : '設為主簡報' }}
+                  </button>
+                  <span v-else-if="model.is_slides_primary" class="row-actions__sep">·</span>
+                  <button
+                    v-if="model.is_slides_primary"
+                    class="term-action"
+                    :disabled="settingSlidesPrimaryId === model.id"
+                    @click="handleUnsetSlidesPrimary(model.id)"
+                  >
+                    取消主簡報
                   </button>
                   <span v-if="model.model_type === 'image' && !model.is_image_primary" class="row-actions__sep">·</span>
                   <button
@@ -587,6 +613,7 @@ const editingId = ref(null)
 const purgingId = ref(null)
 const settingPrimaryId = ref(null)
 const settingImagePrimaryId = ref(null)
+const settingSlidesPrimaryId = ref(null)
 const settingAsrPrimaryId = ref(null)
 const settingEmbedId = ref(null)
 // P4.6 — 整批帶入 modal 狀態
@@ -1034,6 +1061,18 @@ async function handleSetImagePrimary(id) {
   try { await modelsStore.setImagePrimary(id) }
   catch (e) { toast(extractError(e, '設定主圖像模型失敗'), { tone: 'error' }) }
   finally { settingImagePrimaryId.value = null }
+}
+async function handleSetSlidesPrimary(id) {
+  settingSlidesPrimaryId.value = id
+  try { await modelsStore.setSlidesPrimary(id) }
+  catch (e) { toast(extractError(e, '設定主簡報模型失敗'), { tone: 'error' }) }
+  finally { settingSlidesPrimaryId.value = null }
+}
+async function handleUnsetSlidesPrimary(id) {
+  settingSlidesPrimaryId.value = id
+  try { await modelsStore.unsetSlidesPrimary(id) }
+  catch (e) { toast(extractError(e, '取消主簡報模型失敗'), { tone: 'error' }) }
+  finally { settingSlidesPrimaryId.value = null }
 }
 async function handleUnsetImagePrimary(id) {
   if (!(await confirm({ message: '取消主圖像模型？在你指定新的主圖像模型前，flux2-dev-agent / anila-studio 將 fallback 使用環境變數設定的端點。', confirmText: '取消主圖像', danger: true }))) return

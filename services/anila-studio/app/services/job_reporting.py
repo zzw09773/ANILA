@@ -100,29 +100,50 @@ async def _send(
     return None
 
 
+def _as_int(value: str | int | None) -> int | None:
+    """csp's artifact contract types task_id / source_snapshot_id as int; ALM
+    threads them through studio as strings. Numeric strings are converted,
+    anything else is dropped (sending it produced a 422 and lost the whole
+    report — observed on every live job on 2026-09-02)."""
+    if value is None:
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
 async def report_job_created(
     *,
     bearer: str | None,
     job_id: str,
     artifact_type: str,
     status: str,
-    requester: str | None = None,
+    requester_user_id: int | None = None,
+    employee_id: str | None = None,
     task_id: str | None = None,
     source_snapshot_id: str | None = None,
     trace_id: str | None = None,
 ) -> None:
-    """POST /v1/artifact-jobs — register the job on the control plane."""
+    """POST /v1/artifact-jobs — register the job on the control plane.
+
+    csp resolves the job owner from ``requester_user_id`` (or ``employee_id``
+    for card users); the old ``requester`` username field was unknown to it
+    and every create was rejected with 422.
+    """
     body: dict[str, Any] = {
         "job_id": job_id,
         "artifact_type": artifact_type,
         "status": status,
     }
-    if requester is not None:
-        body["requester"] = requester
-    if task_id is not None:
-        body["task_id"] = task_id
-    if source_snapshot_id is not None:
-        body["source_snapshot_id"] = source_snapshot_id
+    if requester_user_id is not None:
+        body["requester_user_id"] = int(requester_user_id)
+    if employee_id:
+        body["employee_id"] = employee_id
+    if _as_int(task_id) is not None:
+        body["task_id"] = _as_int(task_id)
+    if _as_int(source_snapshot_id) is not None:
+        body["source_snapshot_id"] = _as_int(source_snapshot_id)
     if trace_id is not None:
         body["trace_id"] = trace_id
     url = f"{settings.CSP_BASE_URL}/v1/artifact-jobs"
@@ -184,10 +205,10 @@ async def register_artifact(
     }
     if job_id is not None:
         body["job_id"] = job_id
-    if task_id is not None:
-        body["task_id"] = task_id
-    if source_snapshot_id is not None:
-        body["source_snapshot_id"] = source_snapshot_id
+    if _as_int(task_id) is not None:
+        body["task_id"] = _as_int(task_id)
+    if _as_int(source_snapshot_id) is not None:
+        body["source_snapshot_id"] = _as_int(source_snapshot_id)
     if content_hash is not None:
         body["content_hash"] = content_hash
     if classification_level is not None:

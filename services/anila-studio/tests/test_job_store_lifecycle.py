@@ -91,8 +91,8 @@ def _persisted(job_id: str = "j1", **over: Any) -> PersistedJob:
         state="done",
         status_view={"job_id": job_id, "state": "done"},
         collection_id=5,
-        task_id="task_1",
-        source_snapshot_id="snap_2",
+        task_id="17",
+        source_snapshot_id="23",
         trace_id="trace_9",
         requester="EMP42",
     )
@@ -272,8 +272,8 @@ def _make_ctx(*, trace_id: str | None = None) -> JobReportContext:
         bearer="BEARER-XYZ",
         collection_id=5,
         requester="EMP42",
-        task_id="task_1",
-        source_snapshot_id="snap_2",
+        task_id="17",
+        source_snapshot_id="23",
         trace_id=trace_id,
         describe=_slides_describe,
         emitter=StudioTraceEmitter(trace_id=trace_id, endpoint=_CSP, bearer="BEARER-XYZ"),
@@ -312,9 +312,14 @@ async def test_csp_reporting_full_cycle(reporting_on, respx_mock):
     create_body = json.loads(created.calls.last.request.content)
     assert create_body["job_id"] == "j1"
     assert create_body["artifact_type"] == "slides"
-    assert create_body["task_id"] == "task_1"
-    assert create_body["source_snapshot_id"] == "snap_2"
-    assert create_body["requester"] == "EMP42"
+    # csp's artifact contract: ids are ints, the owner is requester_user_id
+    # (+ employee_id for card users). The old string/username body was
+    # rejected 422 on every live job (2026-09-02).
+    assert create_body["task_id"] == 17
+    assert create_body["source_snapshot_id"] == 23
+    assert create_body["requester_user_id"] == 7
+    assert create_body["employee_id"] == "EMP42"
+    assert "requester" not in create_body
     assert created.calls.last.request.headers["Authorization"] == "Bearer BEARER-XYZ"
 
     # POST /v1/artifacts — storage_ref + content_hash + passthrough.
@@ -322,8 +327,8 @@ async def test_csp_reporting_full_cycle(reporting_on, respx_mock):
     reg_body = json.loads(registered.calls.last.request.content)
     assert reg_body["artifact_type"] == "slides"
     assert reg_body["storage_ref"].endswith("/pptx")
-    assert reg_body["task_id"] == "task_1"
-    assert reg_body["source_snapshot_id"] == "snap_2"
+    assert reg_body["task_id"] == 17
+    assert reg_body["source_snapshot_id"] == 23
     assert reg_body["content_hash"] == hashlib.sha256(_PPTX).hexdigest()
 
     # PATCH /v1/artifact-jobs/{id} — terminal status mapped + artifact_id.

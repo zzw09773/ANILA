@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from pathlib import Path
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -45,6 +46,7 @@ from app.schemas.studio import (
     SlidesSpec,
     VisualDefect,
 )
+from app.config import settings
 from app.services import job_lifecycle
 from app.services.job_lifecycle import ArtifactInfo, JobReportContext
 
@@ -362,6 +364,7 @@ class JobUpdater:
         warning: str | None = None,
     ) -> None:
         """Convenience: write the terminal "done" state in one call."""
+        persist_pptx(self._job_id, pptx_bytes)
         await self.set(
             state="done",
             step=JOB_STEP_DONE,
@@ -372,6 +375,36 @@ class JobUpdater:
             pptx_bytes=pptx_bytes,
             warning=warning,
         )
+
+
+def pptx_disk_path(job_id: str) -> Path:
+    """Where a finished deck lives on the artifacts volume.
+
+    2026-09-02: decks used to exist only in this process's memory (1 h, 8 per
+    user), so a studio restart turned every "done" job into a 404 download.
+    ``ARTIFACTS_DIR`` is the volume the other four pipelines already write to.
+    """
+    return Path(settings.ARTIFACTS_DIR) / "slides" / f"{job_id}.pptx"
+
+
+def persist_pptx(job_id: str, pptx_bytes: bytes) -> Path | None:
+    """Best-effort write; a full/readonly volume must not fail the job."""
+    path = pptx_disk_path(job_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(pptx_bytes)
+        return path
+    except OSError as exc:
+        logger.warning("could not persist %s to %s: %s", job_id, path, exc)
+        return None
+
+
+def load_persisted_pptx(job_id: str) -> bytes | None:
+    path = pptx_disk_path(job_id)
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
 
 
 def _reset_for_tests() -> None:

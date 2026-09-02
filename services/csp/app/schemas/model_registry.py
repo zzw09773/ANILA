@@ -158,6 +158,7 @@ class ModelResponse(ApiResponseModel):
     is_router_primary: bool = False
     is_image_primary: bool = False
     is_asr_primary: bool = False
+    is_slides_primary: bool = False
     is_platform_embedding: bool = False
     embedding_native_dim: int | None = None
     health_status: str

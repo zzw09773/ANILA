@@ -39,6 +39,7 @@ from app.generated_preamble import ERA_RULES, NATIONAL_TERMINOLOGY
 from app.services.llm_json import extract_json_object
 from app.services.retrieval_status import RETRIEVAL_FAILED_PROMPT_NOTE
 from app.services.studio_config import SLIDES_LLM_MODEL, VISION_LLM_MODEL
+from app.services.studio_model_primary import resolve_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,9 @@ def build_generation_prompt(
             "                  alert iteration decision monitoring",
             "[outcome 結果]    improvement reduction breakthrough limitation",
             "                  cost_saving risk",
+            "[law 法規/行政]   law regulation procedure process court appeal penalty",
+            "                  record announcement payroll organization personnel",
+            "                  approval rights identity timeline plan goal report archive",
             "",
             "icon 規則：",
             "- **先選 domain，再從 domain 內挑 concept**：技術內容（ML/工業）",
@@ -485,6 +489,8 @@ async def call_llm_chat(
         ``CspClientError`` subclass (token expired, no access, model
         not registered).
     """
+    # 主簡報模型旋鈕：呼叫端沒特別指定（傳的是預設名）就用 csp 指定的那顆。
+    model_name = await resolve_model_name(model_name, SLIDES_LLM_MODEL)
     try:
         response = await proxy_chat_completions(
             model=model_name,

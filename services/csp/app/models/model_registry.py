@@ -30,6 +30,9 @@ class ModelRegistry(Base):
     # Partial unique index enforces at most one. Shared decoder token stays
     # in the gateway/decoder environment — never on this row.
     is_asr_primary = Column(Boolean, nullable=False, default=False)
+    # 主簡報模型：anila-studio 寫簡報與做視覺 QA 用的 LLM，由管理員在模型頁指定。
+    # 同一時間最多一筆為 true（partial unique index，見 r1_0037）。
+    is_slides_primary = Column(Boolean, nullable=False, default=False)
     # P4.8: at most one designated platform embedding model (partial unique
     # index). embedding_native_dim is measured by calling the model at
     # designation time — never a configured guess.
