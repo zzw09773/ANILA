@@ -26,9 +26,9 @@
   body{
     margin:0; background:var(--bg); color:var(--ink);
     font-family:"Noto Sans CJK TC","Microsoft JhengHei","PingFang TC",sans-serif;
-    line-height:1.85; font-size:16px;
+    line-height:1.85; font-size:16px; counter-reset:fig;
   }
-  .wrap{max-width:52rem; margin:0 auto; padding:2.5rem 1.25rem 6rem}
+  .wrap{max-width:58rem; margin:0 auto; padding:2.5rem 1.25rem 6rem}
   header.top{border-bottom:2px solid var(--line); padding-bottom:1.5rem; margin-bottom:2rem}
   h1{font-size:1.9rem; margin:0 0 .4rem; letter-spacing:.01em}
   .sub{color:var(--ink-3); font-size:.95rem; margin:0}
@@ -46,8 +46,8 @@
     padding:1.1rem 1.4rem; margin:1.5rem 0 0;
   }
   nav.toc h2{border:0; margin:0 0 .5rem; font-size:1rem; padding:0}
-  nav.toc ol{margin:0; padding-inline-start:1.3rem}
-  nav.toc li{margin:.2rem 0}
+  nav.toc ol{margin:0; padding-inline-start:1.3rem; columns:2; column-gap:2rem}
+  nav.toc li{margin:.2rem 0; break-inside:avoid}
   .box{border-radius:8px; padding:.85rem 1.1rem; margin:1.1rem 0; border-inline-start:4px solid}
   .warn{background:var(--warn-bg); border-color:var(--warn-line)}
   .stop{background:var(--stop-bg); border-color:var(--stop-line)}
@@ -57,6 +57,9 @@
   th,td{border:1px solid var(--line); padding:.5rem .7rem; text-align:start; vertical-align:top}
   th{background:var(--card); color:var(--ink); font-weight:600}
   code{background:var(--code-bg); padding:.1rem .35rem; border-radius:4px; font-size:.9em}
+  pre{background:var(--code-bg); padding:.9rem 1.1rem; border-radius:8px; overflow-x:auto; font-size:.88em; line-height:1.6}
+  pre code{background:none; padding:0}
+  kbd{border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:0 .4rem; font-size:.85em; background:var(--card)}
   .screen{
     border:1px dashed var(--line); border-radius:8px; padding:.9rem 1.1rem;
     background:var(--card); color:var(--ink-3); font-size:.9rem; margin:1rem 0;
@@ -66,217 +69,267 @@
     font-size:.85rem; border:1px solid var(--line); background:var(--card); color:var(--ink-2);
   }
   .scroll{overflow-x:auto}
+  /* 圖：一律不超出欄寬；每張有編號與說明 */
+  figure{margin:1.2rem 0; counter-increment:fig}
+  figure img{display:block; max-width:100%; height:auto; border:1px solid var(--line); border-radius:8px; background:#fff}
+  figure.narrow img{max-width:340px}
+  figcaption{color:var(--ink-3); font-size:.88rem; margin-top:.45rem}
+  figcaption::before{content:"圖 " counter(fig) "　"; color:var(--accent); font-weight:600}
   footer{margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--ink-3); font-size:.9rem}
   @media print{
     body{background:#fff; color:#000; font-size:11pt}
     .wrap{max-width:none; padding:0}
-    h2{page-break-after:avoid} table,.box{page-break-inside:avoid}
+    h2{page-break-after:avoid} table,.box,figure{page-break-inside:avoid}
     nav.toc{page-break-after:always}
+    figure img{border-color:#999}
   }
 </style>
 </head>
 <body>
 <div class="wrap">
-
 <header class="top">
   <h1>ANILA 使用手冊</h1>
-  <p class="sub">中科院院內 AI 平台 · 給第一次使用的同仁</p>
+  <p class="sub">給院內同仁 · 平台版本 v1.0.1 · 2026-09-02</p>
 </header>
 
-<p>這份手冊<strong>不需要從頭讀完</strong>。第 1、2 節看完就能開始用；其餘的等你遇到再回來查。</p>
-
 <nav class="toc">
-  <h2>目錄</h2>
-  <ol>
-    <li><a href="#s1">ANILA 是什麼、不是什麼</a></li>
-    <li><a href="#s2">登入與第一次對話</a></li>
-    <li><a href="#s3">院內規章：什麼時候平台會去查</a></li>
-    <li><a href="#s4">上傳檔案與知識庫</a></li>
-    <li><a href="#s5">平台記得你什麼</a></li>
-    <li><a href="#s6">換一個助手、比較兩個答案</a></li>
-    <li><a href="#s7">專案入口</a></li>
-    <li><a href="#s8">設定</a></li>
-    <li><a href="#s9">遇到狀況怎麼辦</a></li>
-    <li><a href="#s10">平台不會做的事</a></li>
-  </ol>
+<h2>目錄</h2>
+<ol>
+  <li><a href="#s1">ANILA 是什麼、不是什麼</a></li>
+  <li><a href="#s2">登入：插卡、輸入 PIN</a></li>
+  <li><a href="#s3">第一次登入：註冊、等核准</a></li>
+  <li><a href="#s4">畫面導覽</a></li>
+  <li><a href="#s5">問第一個問題</a></li>
+  <li><a href="#s6">送出後畫面在做什麼</a></li>
+  <li><a href="#s7">院內規章：什麼時候平台會去查</a></li>
+  <li><a href="#s8">答案下方的按鈕</a></li>
+  <li><a href="#s9">改問題、重問、換答案</a></li>
+  <li><a href="#s10">上傳檔案</a></li>
+  <li><a href="#s11">指定助手、交給其他助手</a></li>
+  <li><a href="#s12">管理你的對話</a></li>
+  <li><a href="#s13">分享對話</a></li>
+  <li><a href="#s14">平台記得你什麼</a></li>
+  <li><a href="#s15">專案入口</a></li>
+  <li><a href="#s16">設定</a></li>
+  <li><a href="#s17">公告</a></li>
+  <li><a href="#s18">遇到狀況怎麼辦</a></li>
+  <li><a href="#s19">平台不會做的事</a></li>
+</ol>
 </nav>
 
 <h2 id="s1"><span class="num">1</span>ANILA 是什麼、不是什麼</h2>
-
-<p>ANILA 是院內自己的 AI 對話平台。你可以拿它問問題、整理文件、查院內規章、產生草稿。</p>
-
-<p><strong>它跑在院內網路裡</strong>——你的問題和上傳的檔案<strong>不會離開院內</strong>，
-平台也連不到外面的網際網路。</p>
-
-<div class="box warn">
-<p><strong>它是助手，不是權威。</strong> AI 會產生看起來很有把握、但其實錯誤的內容。
-凡是要當成依據的事情——法規條號、金額、日期、人名——<strong>請回到原始文件核對</strong>。
-平台在引用院內規章時會附上來源，就是為了讓你能核對。</p>
-</div>
-
-<h2 id="s2"><span class="num">2</span>登入與第一次對話</h2>
-
-<h3>登入</h3>
-<p>登入需要本機已裝<strong>讀卡元件</strong>（中華電信本機元件，位址 <code>http://localhost:16888</code>）。
-內網配發的電腦預設已裝好；若畫面顯示「尚未安裝」，表示元件沒裝或沒起——聯絡資訊室。</p>
-
-<p>用你的<strong>自然人憑證卡</strong>登入：插卡 → 開啟平台網址 → 按「偵測憑證卡」→ 畫面顯示你的姓名與員工編號 → 輸入 PIN 碼 → 「簽章送出」。
-不需要另外記帳號密碼。</p>
-<p><img src="img/login.png" alt="登入頁：主按鈕是「偵測憑證卡」"></p>
-
-<h3>第一次登入：先註冊、等核准</h3>
-<p>第一次刷卡，平台會跳出「<strong>註冊 · 完成資料</strong>」：<strong>選你所屬的單位</strong>，按送出。
-接著會看到「<strong>已註冊 · 等待核准</strong>」——這時<strong>不用再做任何事</strong>，管理員核准後直接再刷卡就能進來。
-等候期間要查進度，找貴單位窗口或平台管理員。</p>
-<p><img src="img/register.png" alt="註冊：選擇所屬單位"> <img src="img/pending.png" alt="已註冊，等待核准"></p>
-<div class="box">
-<p>下拉選單裡<strong>沒有任何單位</strong>可選？那是平台還沒把單位建好，不是你的問題——請管理員先建單位（管理員手冊第 1 節）。</p>
-</div>
-
-<div class="box warn">
-<p><strong>卡片請隨手拔。</strong> 卡片留在讀卡機上等於帳號留在登入狀態，
-別人坐下就能以你的身分使用，而所有使用紀錄都會記在你名下。</p>
-</div>
-
-<h3>問第一個問題</h3>
-<p>在下方輸入框打字、按 Enter 送出。就這樣。</p>
-
-<div class="screen">畫面說明：左側是你的對話清單，中間是對話內容，右上角是工具列（專案入口、設定等）。把滑鼠停在工具列的圖示上會顯示它的名稱。視窗太窄時左側清單會自動收起，按左上角的「展開側邊」再打開。</div>
-<p><img src="img/shell-first.png" alt="第一次打開 ANILA：空的對話畫面與輸入框"></p>
-
-<h3>送出後畫面在做什麼</h3>
-<p>按下 Enter 之後，答案上方會逐步列出平台正在做的事（例如「分析意圖」「檢索院內規章」「組合回答」），做完的打勾、進行中的那一步會閃。
-答完後這些會收成一行「<strong>N 步分析 · 用時 X 秒</strong>」，點開可以看每一步花了多久。
-看到「檢索院內規章」這一步，代表答案有查過規章；沒有這一步就是模型自己回答（見第 3 節）。</p>
-<p><img src="img/thinking-steps.png" alt="答案上方展開的步驟清單：每一步的名稱、內容與耗時"></p>
-
-<h3>幾個立刻有用的小動作</h3>
-<table>
-<tr><th>你想做的事</th><th>怎麼做</th></tr>
-<tr><td>換行不送出</td><td><code>Shift</code> + <code>Enter</code></td></tr>
-<tr><td>重問一次（答案不理想）</td><td>答案下方的「重新產生」</td></tr>
-<tr><td>改自己剛才的問題</td><td>在你的訊息上點編輯，改完重送——原本那版會保留，可以左右切換比較</td></tr>
-<tr><td>開新主題</td><td>左上「新對話」。<strong>不同主題請開不同對話</strong>，答案會比較準</td></tr>
-</table>
-
-<h2 id="s3"><span class="num">3</span>院內規章：什麼時候平台會去查</h2>
-<p>平台查過規章時，答案下方會出現「<strong>查看 N 筆來源</strong>」；點開會列出每一筆的<strong>檔名、相似度與條文摘錄</strong>，請回到那裡核對。
-答案上方若寫「<strong>本次未檢索院內規章，以下為模型的一般知識</strong>」，表示這一題平台沒有去查——那段回答<strong>不能當依據</strong>。</p>
-<p><img src="img/sources.png" alt="來源面板：檔名、相似度、條文摘錄"></p>
-
-<p>平台有一個<strong>院內規章知識庫</strong>。當你的問題像是在問規章，它會先去查，
-再根據查到的條文回答，並在答案下方列出<strong>來源</strong>。</p>
-
-<div class="box ok">
-<p><strong>看到「查看來源」就代表這個答案有依據。</strong> 點開可以看到它引用了哪幾份文件、哪幾條。
-<strong>要當依據的時候，請點開核對。</strong></p>
-</div>
-
-<h3>如果平台沒有查，它會講</h3>
-<p>不是每個問題都會觸發規章檢索。當平台<strong>沒有</strong>去查的時候，答案上方會出現一句：</p>
-<p><span class="badge">本次未檢索院內規章，以下為模型的一般知識</span></p>
-
-<div class="box warn">
-<p><strong>看到這句話，就表示這個答案沒有院內規章當依據</strong>，是 AI 依照它自己的訓練知識回答的。
-問題如果跟院內規定有關，<strong>請不要直接採用</strong>。</p>
-<p>⚠ 這句話只描述「平台做了什麼」，<strong>不代表院規裡沒有這條規定</strong>——
-可能只是這次沒有查，或是那份規章還沒有上架。</p>
-</div>
-
-<h3>查了但沒找到</h3>
-<p>平台查了、但沒有找到夠相關的條文時，也會明講。這種時候換個問法常常有用：
-把口語換成規章裡會出現的詞（例如把「請假」換成「差勤」）。</p>
-
-<h2 id="s4"><span class="num">4</span>上傳檔案與知識庫</h2>
-
-<p>你可以把檔案附在對話裡問它，也可以放進知識庫長期使用。</p>
-
-<div class="box warn">
-<p><strong>檔名取得好不好，比檔案內容重要。</strong></p>
-<p>平台是靠檔名幫你找檔案的。<code>簽呈.pdf</code>、<code>掃描檔.pdf</code>、<code>新增資料夾.docx</code>
-這種名字，過三個月連你自己都找不到。
-請用<strong>看得出是什麼的名字</strong>，例如 <code>差勤管理辦法-1140301修正.pdf</code>。</p>
-</div>
-
-<h3>掃描檔（圖片轉成的 PDF）</h3>
-<p>純掃描的 PDF 裡面<strong>沒有文字</strong>，只有圖。平台會盡量辨識，
-但辨識結果不一定完整。<strong>如果查不到你確定寫在裡面的內容，多半是這個原因。</strong></p>
-
-<h2 id="s5"><span class="num">5</span>平台記得你什麼</h2>
-
-<p>為了讓對話更順，平台會記住一些關於你的長期資訊（例如你的單位、你偏好的回答方式），
-在後續對話裡自動帶入。</p>
-
-<h3>你可以自己看、自己刪</h3>
-<p><strong>設定 → 記憶</strong>。裡面分兩塊：平台歸納出的「事實」，以及過往對話片段。
-兩邊都可以逐筆刪除，也可以整批清空。</p>
-
-<div class="box ok">
-<p><strong>記憶不會離開平台。</strong> 當你使用同仁自行掛上來的助手（agent）時，
-<strong>平台不會把你的記憶送給它</strong>——那些助手是由開發者自己指定連到哪裡的，
-所以你的長期記憶只在平台自己的模型裡使用。</p>
-</div>
-
-<h2 id="s6"><span class="num">6</span>換一個助手、比較兩個答案</h2>
-
-<p>平台上除了一般對話，還有同仁掛上來的<strong>專門助手</strong>（例如專門查某類法規的）。</p>
-
-<table>
-<tr><th>功能</th><th>用途</th></tr>
-<tr><td><strong>交給其他助手</strong></td><td>把目前這個問題轉給另一個助手回答</td></tr>
-<tr><td><strong>比較模式</strong></td><td>同一個問題同時問兩個助手，左右並排看答案</td></tr>
-</table>
-
-<p>不確定哪個助手適合時，直接問就好——平台會自己判斷要不要轉給專門的助手。</p>
-
-<h2 id="s7"><span class="num">7</span>專案入口</h2>
-
-<p>工具列的<strong>專案入口</strong>會列出院內其他可用的系統。
-這裡只是入口，點了會開新分頁，各系統有自己的權限。</p>
-
-<h2 id="s8"><span class="num">8</span>設定</h2>
-
-<p>設定分成五個分頁：<strong>一般</strong>、<strong>隱私 / 信任</strong>、<strong>記憶</strong>、
-<strong>帳號</strong>、<strong>關於</strong>。</p>
-
-<p>大部分人只會用到兩個：<strong>記憶</strong>（看和刪，見第 5 節）與 <strong>帳號</strong>（確認自己的身分與單位）。</p>
-
-<h2 id="s9"><span class="num">9</span>遇到狀況怎麼辦</h2>
-
-<table>
-<tr><th>狀況</th><th>可能原因與處理</th></tr>
-<tr><td>答案答非所問</td><td>先試「重新產生」。如果問題裡有條號、日期這類關鍵數字，<strong>換個寫法再問一次</strong>（例如「第46條」不加空格）</td></tr>
-<tr><td>查不到我確定有的規章</td><td>①換成規章裡的正式用詞；②確認那份規章已經上架；③看答案上方有沒有「本次未檢索院內規章」</td></tr>
-<tr><td>上傳的檔案問不出內容</td><td>多半是掃描檔（見第 4 節）</td></tr>
-<tr><td>畫面卡住或空白</td><td>重新整理頁面。對話內容都存在伺服器，不會因為重整而消失</td></tr>
-<tr><td>登入失敗</td><td>確認卡片插好、PIN 沒鎖。連續輸錯會鎖卡，需要重新申請。若畫面顯示「尚未安裝中華電信本機元件」，是讀卡元件沒裝或沒起——聯絡資訊室</td></tr>
-</table>
-
-<div class="box warn">
-<p><strong>回報問題時請附上這三樣</strong>：你問了什麼、你預期什麼、畫面上出現什麼。
-只說「壞掉了」很難查——平台每天有很多人在用，同一個畫面在不同人身上可能完全不同。</p>
-</div>
-
-<h2 id="s10"><span class="num">10</span>平台不會做的事</h2>
-
+<p>ANILA 是院內自建的 AI 工作平台。你用自然語言問它問題，它會回答、整理、摘要、翻譯、幫你讀檔案；
+問到院內規章時，它會先去查平台上的規章知識庫，再依條文回答，並列出來源。</p>
+<p>它跟外面的 ChatGPT 最大的差別有三個：</p>
 <ul>
-<li><strong>不會連到外面的網際網路。</strong> 它查不到今天的新聞、匯率、外部網站。</li>
-<li><strong>不會替你做決定。</strong> 產生的內容一律要由你判斷後才使用。</li>
-<li><strong>不保證正確。</strong> 尤其是條號、金額、日期、人名——請核對來源。</li>
-<li><strong>不會把你的資料送出院外。</strong></li>
+  <li><strong>資料不出院。</strong> 平台與模型都在院內機房，你貼進去的內容不會傳到院外。</li>
+  <li><strong>用自然人憑證卡登入。</strong> 沒有帳號密碼要記，也沒有人能冒用你的身分。</li>
+  <li><strong>答案有依據。</strong> 查過規章的答案會附「查看 N 筆來源」，你可以點開核對。</li>
+</ul>
+<div class="box warn">
+<p><strong>它不是權威。</strong> 條號、日期、金額、人名這類東西，一律回到來源或原始文件核對後再用。
+產生的內容只能當草稿，最後判斷的是你。</p>
+</div>
+
+<h2 id="s2"><span class="num">2</span>登入：插卡、輸入 PIN</h2>
+<p>登入需要三樣東西：<strong>自然人憑證卡</strong>、<strong>讀卡機</strong>、電腦上已安裝的<strong>中華電信讀卡元件</strong>（本機元件，位址 <code>http://localhost:16888</code>）。
+內網配發的電腦預設已裝好元件；若畫面顯示「尚未安裝」或「本機元件未運作」，聯絡資訊室，不是你的操作問題。</p>
+<ol>
+  <li>插卡，開啟平台網址。畫面上只有一顆按鈕：<strong>偵測憑證卡</strong>。</li>
+  <li>按下去，畫面會顯示卡片上的<strong>姓名與員工編號</strong>。看一眼是不是你。</li>
+  <li>輸入 6 位數 <strong>PIN 碼</strong>，按 <kbd>Enter</kbd> 或「簽章送出」。</li>
+</ol>
+<figure><img src="img/login-card.png" alt="登入頁：只有一顆「偵測憑證卡」按鈕"><figcaption>登入頁。沒有帳號密碼欄位，這是正常的。</figcaption></figure>
+<figure><img src="img/login-card-detected.png" alt="偵測到卡片後顯示姓名、員工編號，下方是 PIN 欄位"><figcaption>偵測到卡片：確認姓名與員工編號，再輸入 PIN。畫面上的「測試人員」是示範用的假卡，你會看到自己的名字。</figcaption></figure>
+<div class="box warn">
+<p><strong>PIN 連續輸錯會鎖卡</strong>，鎖卡要重新申請憑證，很麻煩。不確定時先停下來，不要一直試。</p>
+<p><strong>卡片請隨手拔。</strong> 卡片留在讀卡機上等於帳號留在登入狀態，別人坐下就能以你的身分使用，而所有使用紀錄都會記在你名下。</p>
+</div>
+
+<h2 id="s3"><span class="num">3</span>第一次登入：註冊、等核准</h2>
+<p>第一次刷卡，平台會跳出「<strong>註冊 · 完成資料</strong>」，只要你做一件事：<strong>選你所屬的單位</strong>，按送出。</p>
+<figure><img src="img/register-modal.png" alt="註冊視窗：顯示卡片上的姓名與員編，要求選擇所屬單位"><figcaption>第一次刷卡的註冊視窗。姓名與員編來自卡片，不用打；只要選單位。</figcaption></figure>
+<p>送出後會看到「<strong>已註冊 · 等待核准</strong>」。這時<strong>不用再做任何事</strong>：管理員核准後，你直接再刷一次卡就能進來。等候期間要查進度，找貴單位窗口或平台管理員。</p>
+<figure><img src="img/register-pending.png" alt="已註冊，等待核准的畫面"><figcaption>等待核准。這個畫面不會自己更新，核准後重新刷卡即可。</figcaption></figure>
+<div class="box">
+<p>下拉選單裡<strong>沒有任何單位</strong>可選？那是平台還沒把單位建好，不是你的問題。請管理員先建單位（管理員手冊第 3 節）。</p>
+</div>
+
+<h2 id="s4"><span class="num">4</span>畫面導覽</h2>
+<figure><img src="img/shell-home.png" alt="登入後的主畫面：左側對話清單，中間輸入框，右上工具列，最上方公告"><figcaption>登入後的主畫面。最上方藍色一條是公告（有公告才會出現）。</figcaption></figure>
+<table>
+<tr><th>位置</th><th>是什麼</th></tr>
+<tr><td>左上「新對話」</td><td>開一個新主題。<strong>不同主題請開不同對話</strong>，答案會比較準。快捷鍵 <kbd>⌘K</kbd>／<kbd>Ctrl K</kbd>。</td></tr>
+<tr><td>左側「任務中心／專案入口」</td><td>任務中心：你交辦給助手的長時間工作。專案入口：院內其他系統的連結（第 15 節）。</td></tr>
+<tr><td>左側「對話／Agents」</td><td>對話：你的對話清單，可搜尋、加星、分資料夾。Agents：平台上可用的助手清單。</td></tr>
+<tr><td>中間輸入框</td><td>打字、<kbd>Enter</kbd> 送出、<kbd>Shift</kbd>+<kbd>Enter</kbd> 換行。左下迴紋針是附檔，@ 是指定助手。</td></tr>
+<tr><td>輸入框上方「target」</td><td>這個問題要交給哪個助手。預設「ANILA 自動選助手」，平台自己判斷。</td></tr>
+<tr><td>右上工具列</td><td>由左到右：更多（交給其他助手）、分享、來源側欄、重新載入助手清單、專案入口、設定、深淺色、外觀微調、新功能。把滑鼠停在圖示上會顯示名稱。</td></tr>
+<tr><td>左下你的名字</td><td>目前登入的身分與角色。點開可以登出。</td></tr>
+</table>
+<figure class="narrow"><img src="img/shell-narrow.png" alt="視窗很窄時，左側清單自動收起，只剩圖示"><figcaption>視窗太窄（例如半個螢幕）時，左側清單自動收成一排圖示；按左上角的圖示可以展開。</figcaption></figure>
+
+<h2 id="s5"><span class="num">5</span>問第一個問題</h2>
+<p>在下方輸入框打字、按 <kbd>Enter</kbd>。就這樣。</p>
+<p>問得好的三個習慣：</p>
+<ul>
+  <li><strong>一個對話一個主題。</strong> 平台會參考同一個對話裡前面的內容；主題混在一起，答案就會混在一起。</li>
+  <li><strong>用規章裡的詞。</strong> 問「差勤」會比問「上班打卡」查得到東西；問「第 46 條」不要加空格。</li>
+  <li><strong>說清楚你要什麼形式。</strong> 「列成表格」「三點以內」「用公文語氣」都有用。</li>
 </ul>
 
+<h2 id="s6"><span class="num">6</span>送出後畫面在做什麼</h2>
+<p>按下 <kbd>Enter</kbd> 之後，答案上方會<strong>逐步列出平台正在做的事</strong>：分析你的問題、檢索院內規章、同步助手清單、組合回答……做完的打勾，進行中的那一步會閃。</p>
+<figure><img src="img/shell-steps-live.png" alt="回答中：步驟清單一條一條出現，最後一條進行中"><figcaption>回答中。每一步後面有它做了什麼、花了多久。</figcaption></figure>
+<p>答完之後，這些步驟會收成一行「<strong>N 步分析 · 用時 X 秒</strong>」。點那一行可以展開再看一次。</p>
+<figure><img src="img/shell-steps-expanded.png" alt="答完後展開步驟清單：每一步打勾，右側顯示耗時"><figcaption>答完後點「N 步分析」展開。看到「檢索院內規章」這一步，代表這個答案有查過規章。</figcaption></figure>
+<p>答案太長想中途停下來：輸入框右邊的送出鍵在回答期間會變成<strong>停止</strong>，按它就停。</p>
+
+<h2 id="s7"><span class="num">7</span>院內規章：什麼時候平台會去查</h2>
+<p>平台有一個院內規章知識庫。當你的問題像是在問規章，它會先去查，再根據查到的條文回答，並在答案下方放一顆「<strong>查看 N 筆來源</strong>」。答案裡的 <code>[1]</code>、<code>[8]</code> 就是對應第幾筆來源。</p>
+<figure><img src="img/shell-answer.png" alt="答案：分點條列，每一點後面有 [1]、[8] 這種來源編號，最下面是「查看 8 筆來源」"><figcaption>查過規章的答案：條列後面帶來源編號，最下方有「查看 8 筆來源」。</figcaption></figure>
+<p>點「查看 N 筆來源」，右側會打開<strong>來源側欄</strong>：每一筆列出檔名、相似度、條文摘錄。<strong>要當依據的時候，請回到這裡核對。</strong></p>
+<figure><img src="img/shell-sources.png" alt="右側來源側欄：每筆來源的檔名、相似度百分比與條文摘錄"><figcaption>來源側欄。百分比是相似度，不是正確率；高低只代表「跟你的問題有多像」。</figcaption></figure>
+
+<h3>如果平台沒有查，它會講</h3>
+<p>不是每個問題都會觸發規章檢索。當平台沒有去查的時候，答案上方會出現一句：</p>
+<div class="box stop"><p>本次未檢索院內規章，以下為模型的一般知識</p></div>
+<p>看到這句話，就表示這個答案<strong>沒有院內規章當依據</strong>，是 AI 依照它自己的訓練知識回答的。問題如果跟院內規定有關，請不要直接採用。</p>
+<p>這句話只描述「平台做了什麼」，不代表院規裡沒有這條規定——可能只是這次沒有查，或是那份規章還沒有上架。</p>
+
+<h3>查了但沒找到</h3>
+<p>平台查了、但沒有找到夠相關的條文時，也會明講（例如「目前提供的院內規章檢索結果中，並沒有關於○○的資訊」）。這種時候換個問法常常有用：把口語換成規章裡會出現的詞（「請假」換成「差勤」、「被罰」換成「懲罰」）。</p>
+
+<h2 id="s8"><span class="num">8</span>答案下方的按鈕</h2>
+<p>把滑鼠移到答案上，下方會出現一排小按鈕。</p>
+<figure><img src="img/shell-message-actions.png" alt="答案下方的四顆按鈕：複製、重新產生、有用、沒用；右側是這次回答的追蹤編號與耗時"><figcaption>答案下方：複製、重新產生、標記為有用（拇指向上）、標記為沒用（拇指向下）。右邊灰字是這次回答的追蹤編號，回報問題時附上它。</figcaption></figure>
+<table>
+<tr><th>按鈕</th><th>做什麼</th></tr>
+<tr><td>複製</td><td>把整段答案複製到剪貼簿（純文字）。</td></tr>
+<tr><td>重新產生</td><td>同一個問題再回答一次。新舊兩版都會留著，可以左右切換比較（第 9 節）。</td></tr>
+<tr><td>拇指向上／向下</td><td>告訴平台這個答案好或不好。按下拇指向下會再問你原因，寫一句就好。<strong>這些回饋管理員看得到</strong>，是平台改善的主要依據。</td></tr>
+</table>
+
+<h2 id="s9"><span class="num">9</span>改問題、重問、換答案</h2>
+<p>把滑鼠移到<strong>你自己的訊息</strong>上，會出現「編輯」。改完重送，原本那版會保留，訊息旁邊出現「2 / 2」這種計數，用左右箭頭切換不同版本比較。</p>
+<figure><img src="img/shell-edit-hover.png" alt="滑鼠停在自己的訊息上時出現編輯按鈕"><figcaption>編輯自己的問題。改完重送不會蓋掉舊的，兩版都在。</figcaption></figure>
+<table>
+<tr><th>你想做的事</th><th>怎麼做</th></tr>
+<tr><td>換行不送出</td><td><kbd>Shift</kbd>+<kbd>Enter</kbd></td></tr>
+<tr><td>重問一次（答案不理想）</td><td>答案下方的「重新產生」</td></tr>
+<tr><td>改自己剛才的問題</td><td>你的訊息上點「編輯」，改完重送</td></tr>
+<tr><td>看上一版答案</td><td>訊息旁的「1 / 2」左右箭頭</td></tr>
+<tr><td>刪掉某一版</td><td>該版本旁的垃圾桶（只刪那一個分支）</td></tr>
+<tr><td>中途停止</td><td>輸入框右側的停止鍵</td></tr>
+</table>
+
+<h2 id="s10"><span class="num">10</span>上傳檔案</h2>
+<p>輸入框左下角的迴紋針可以附檔：圖片、PDF、文字檔、程式碼。附上後直接問「幫我摘要」「第三段在講什麼」。</p>
+<figure><img src="img/attach.png" alt="輸入框上方顯示已附加的檔案"><figcaption>附上檔案後，檔名會出現在輸入框上方；送出時一起送。</figcaption></figure>
+<div class="box warn">
+<p><strong>掃描檔（圖片轉成的 PDF）</strong>裡面沒有文字，只有圖。平台會盡量辨識，但不一定完整；如果問不出你確定寫在裡面的內容，多半是這個原因。</p>
+<p><strong>檔名取得好不好，比檔案內容重要。</strong> <code>簽呈.pdf</code>、<code>掃描檔.pdf</code> 這種名字，過三個月連你自己都找不到。請用看得出是什麼的名字，例如 <code>差勤管理辦法-1140301修正.pdf</code>。</p>
+</div>
+<p>「我的知識庫」（左側）目前標示「即將推出」：個人長期知識庫還沒開放，現階段檔案是附在單一對話裡使用。院內規章那種全院共用的知識庫由管理員上架。</p>
+
+<h2 id="s11"><span class="num">11</span>指定助手、交給其他助手</h2>
+<p>平台上除了一般對話，還有同仁掛上來的<strong>專門助手（agent）</strong>，例如專門查某類法規的。不確定哪個助手適合時，直接問就好：平台會自己判斷要不要轉給專門的助手。</p>
+<figure><img src="img/shell-agent-picker.png" alt="輸入框上方的 target 選單展開，列出可用助手"><figcaption>輸入框上方的「target」選單：列出你目前可以用的助手。預設是「ANILA 自動選助手」。</figcaption></figure>
+<table>
+<tr><th>功能</th><th>怎麼做</th></tr>
+<tr><td>指定某個助手回答</td><td>「target」選單選它；或在輸入框打 <code>@</code> 加助手名稱。</td></tr>
+<tr><td>把目前的問題轉給另一個助手</td><td>右上工具列「更多」→「交給其他助手」。</td></tr>
+<tr><td>比較兩個助手的答案</td><td>右上工具列的「比較模式」，同一個問題同時問兩個助手，左右並排看。要有兩個以上助手可用才會亮。</td></tr>
+</table>
+<figure><img src="img/shell-handoff.png" alt="右上「更多」選單展開，只有一項「交給其他助手」"><figcaption>「更多」選單裡的「交給其他助手」。</figcaption></figure>
+<div class="box ok">
+<p>你的長期記憶（第 14 節）<strong>不會送給任何助手</strong>。這是平台強制的，不是靠助手的作者自律。</p>
+</div>
+
+<h2 id="s12"><span class="num">12</span>管理你的對話</h2>
+<p>左側清單依時間分「今天／更早」。每一筆右邊有兩個小圖示：<strong>標籤／資料夾</strong>與<strong>更多</strong>。</p>
+<figure><img src="img/shell-conversation-menu.png" alt="對話清單某一筆的「更多」選單：重新命名、匯出 Markdown、匯出 JSON、刪除對話"><figcaption>「更多」選單：重新命名、匯出（Markdown 或 JSON）、刪除。</figcaption></figure>
+<figure><img src="img/shell-search.png" alt="左側搜尋框輸入「請假」後清單只剩符合的對話"><figcaption>搜尋框：找標題或內容。支援 <code>tag:hr</code> 這種寫法搜某個標籤，也認同義詞（打「特休」也找得到「休假」）。</figcaption></figure>
+<ul>
+  <li><strong>已加星</strong>：把常用的對話加星，清單上方「已加星」只看這些。</li>
+  <li><strong>資料夾</strong>：「新增」建資料夾，把對話拖進去或用標籤圖示指定。</li>
+  <li><strong>刪除</strong>是真的刪，平台不會替你留備份。要留紀錄先匯出。</li>
+</ul>
+
+<h2 id="s13"><span class="num">13</span>分享對話</h2>
+<p>右上工具列的「分享」可以把這個對話給同仁看，或整個交給同仁接手。</p>
+<figure><img src="img/shell-share.png" alt="分享對話視窗：唯讀分享或交給同事接手、指定人或指定單位、過期時間"><figcaption>分享對話。上方選「唯讀分享」或「交給同事接手」，中間選給誰，下方選多久失效。</figcaption></figure>
+<table>
+<tr><th>選項</th><th>意思</th></tr>
+<tr><td>唯讀分享</td><td>對方可以看，不能改。你隨時可以撤銷；撤銷後對方無法再開，但已經看過的內容收不回來。</td></tr>
+<tr><td>交給同事接手</td><td>對方接手後可以繼續問；適合交接。</td></tr>
+<tr><td>指定人／指定單位</td><td>填對方帳號，或選一個單位（含下屬單位）。對方要登入才看得到，沒有匿名連結。</td></tr>
+<tr><td>過期時間</td><td>1 小時、24 小時、7 天或不過期。預設 24 小時。</td></tr>
+</table>
+<div class="box warn">
+<p>分享會留稽核紀錄。<strong>營業秘密以上的對話</strong>分享會被記錄；<strong>密／機密</strong>等級的對話不能分享，按鈕會是灰的。對話的等級由平台依助手的預設分類決定，你自己改不了。</p>
+</div>
+
+<h2 id="s14"><span class="num">14</span>平台記得你什麼</h2>
+<p>為了讓對話更順，平台會記住一些關於你的長期資訊（例如你的單位、你偏好的回答方式），在後續對話裡自動帶入。</p>
+<figure><img src="img/shell-settings-2.png" alt="設定 → 記憶：已記住的事實與對話片段索引，各有清空全部"><figcaption>設定 → 記憶。上面是平台歸納出的「事實」，下面是過往對話片段；兩邊都可以逐筆刪或整批清空。</figcaption></figure>
+<ul>
+  <li><strong>你可以自己看、自己刪。</strong> 清空後立即生效。</li>
+  <li><strong>記憶不會離開平台。</strong> 使用同仁自行掛上來的助手時，平台不會把你的記憶送給它。</li>
+  <li>所有資料只屬於你個人，不與其他使用者共享。</li>
+</ul>
+
+<h2 id="s15"><span class="num">15</span>專案入口</h2>
+<p>工具列或左側的「專案入口」會列出院內其他可用的系統。這裡只是入口，點了會開新分頁；各系統有自己的權限，看不到的表示沒有開放給你。</p>
+<figure><img src="img/shell-entries.png" alt="專案入口：卡片式列出可用系統，每張卡有「新分頁」按鈕"><figcaption>專案入口。按 <kbd>Esc</kbd> 或右上的 × 關閉。</figcaption></figure>
+
+<h2 id="s16"><span class="num">16</span>設定</h2>
+<p>右上齒輪。設定分成五頁，大部分人只會用到「記憶」與「帳號」。</p>
+<table>
+<tr><th>頁</th><th>裡面有什麼</th></tr>
+<tr><td>一般</td><td>預設助手是誰、列管等級怎麼決定。只是說明，沒有可以改的東西。</td></tr>
+<tr><td>隱私／信任</td><td>「敏感資訊處理」：送出前若偵測到像身分證、電話、金鑰的字樣，要<strong>提醒（warn）</strong>還是<strong>擋下（block）</strong>。預設提醒。這是你自己的偏好，換電腦登入也會保留。</td></tr>
+<tr><td>記憶</td><td>第 14 節。</td></tr>
+<tr><td>帳號</td><td>你的帳號、角色。確認自己的身分用。</td></tr>
+<tr><td>關於</td><td>平台版本。回報問題時附上。</td></tr>
+</table>
+<figure><img src="img/shell-settings-1.png" alt="設定 → 隱私／信任：敏感資訊處理 warn 或 block、列管對話說明"><figcaption>設定 → 隱私／信任。</figcaption></figure>
+<figure><img src="img/shell-settings-4.png" alt="設定 → 關於：ANILA Runtime Client v1.0.1"><figcaption>設定 → 關於：這裡的版本號就是回報問題時要附的。</figcaption></figure>
+
+<h2 id="s17"><span class="num">17</span>公告</h2>
+<p>管理員發布的公告會出現在畫面最上方（第 4 節的圖有一條）。右邊的 × 關掉這一條，下一則新公告會再出現。重要公告也會顯示在登入頁。</p>
+
+<h2 id="s18"><span class="num">18</span>遇到狀況怎麼辦</h2>
+<table>
+<tr><th>狀況</th><th>可能原因與處理</th></tr>
+<tr><td>答案答非所問</td><td>先試「重新產生」。問題裡有條號、日期這類關鍵數字的，換個寫法再問一次（例如「第46條」不加空格）。</td></tr>
+<tr><td>查不到我確定有的規章</td><td>① 換成規章裡的正式用詞；② 確認那份規章已經上架（問管理員）；③ 看答案上方有沒有「本次未檢索院內規章」。</td></tr>
+<tr><td>上傳的檔案問不出內容</td><td>多半是掃描檔（第 10 節）。</td></tr>
+<tr><td>答案說「僅提供○○服務，無法回答」</td><td>那是某個專門助手的拒答，不是平台壞了。把「target」改回「ANILA 自動選助手」再問一次。</td></tr>
+<tr><td>畫面卡住或空白</td><td>重新整理頁面（<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>）。對話內容都存在伺服器，不會因為重整而消失。平台剛更新版本時尤其會這樣。</td></tr>
+<tr><td>登入失敗</td><td>確認卡片插好、PIN 沒鎖。畫面顯示「尚未安裝中華電信本機元件」是讀卡元件沒裝或沒起，聯絡資訊室。</td></tr>
+<tr><td>刷卡後說「等待核准」</td><td>你的帳號還沒被核准，或已被停用。找貴單位窗口或平台管理員。</td></tr>
+<tr><td>看到「暫時維護中」</td><td>那個系統目前關閉，不是故障。等公告。</td></tr>
+</table>
+<div class="box">
+<p><strong>回報問題時請附上三樣：</strong>你問了什麼、你預期什麼、畫面上出現什麼。再加上答案下方灰字的追蹤編號（<code>trace-…</code>）更好。只說「壞掉了」很難查——同一個畫面在不同人身上可能完全不同。</p>
+</div>
+
+<h2 id="s19"><span class="num">19</span>平台不會做的事</h2>
+<ul>
+  <li><strong>不會連到外面的網際網路。</strong> 它查不到今天的新聞、匯率、外部網站。</li>
+  <li><strong>不會替你做決定。</strong> 產生的內容一律要由你判斷後才使用。</li>
+  <li><strong>不保證正確。</strong> 尤其是條號、金額、日期、人名，請核對來源。</li>
+  <li><strong>不會把你的資料送出院外。</strong></li>
+</ul>
 <div class="box stop">
-<p><strong>請不要把你自己也不確定能不能給 AI 看的東西貼進來。</strong>
-平台在院內、資料不外流，但「誰能看到什麼」仍然依照你原本的權限與密等規定。
-不確定的時候，先問你的主管或業務單位。</p>
+<p>請不要把你自己也不確定能不能給 AI 看的東西貼進來。平台在院內、資料不外流，但「誰能看到什麼」仍然依照你原本的權限與密等規定。不確定的時候，先問你的主管或業務單位。</p>
 </div>
 
 <footer>
-  <p>ANILA 使用手冊 · 中科院院內 AI 平台</p>
-  <p>這份手冊會隨平台更新。看到與實際畫面不符的地方，請回報。</p>
+  ANILA 使用手冊 · 中科院院內 AI 平台 · v1.0.1 · 2026-09-02<br>
+  截圖為示範環境，帳號與對話內容皆為測試資料；你看到的畫面會是你自己的名字與對話。
 </footer>
-
 </div>
 </body>
 </html>

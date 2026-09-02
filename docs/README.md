@@ -2,6 +2,11 @@
 
 > ⚠ 2026-08-17 盤點：**本索引已過期,內容停在 2026-07-02**——其後新增的文件(HANDOFF 系列、`runbooks/`、`designs/`、`specs/`、`ui-sweep/` 等)未列入,且下方「prod 分支／main 分支」的說法源自**已不存在的多分支模型**。現行狀態與執行順序見 `PLAN.md`;目錄結構請以實際檔案樹為準。
 
+
+> 📘 **手冊（2026-09-02，v1.0.1，附截圖）**：
+> [使用者手冊](./user-manual/index.html) · [管理員手冊](./user-manual/admin.html) · [部署手冊](./user-manual/deploy.html)。
+> 用瀏覽器開；氣隙內網可直接列印。
+
 > ANILA 平台技術 / 治理文件總入口。實作 source 在 repo 各子專案,本目錄是「為什麼這樣做」的記錄處。
 >
 > ⚠️ **這是 prod 分支(中科院內網部署版)的 docs**,比 main 分支多 `governance/` / `runbooks/` / `branch-sync-backlog.md` 等 prod-only 文件。同步策略見 [`branch-sync-backlog.md`](./branch-sync-backlog.md)。

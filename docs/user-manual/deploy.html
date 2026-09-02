@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ANILA 部署手冊</title>
+<style>
+  /* 氣隙內網：不連任何外部資源。字型只用系統內建。 */
+  :root{
+    --ink:#1c1d20; --ink-2:#4a4d54; --ink-3:#6f737c;
+    --bg:#fbfbfa; --card:#ffffff; --line:#e3e3e0;
+    --accent:#2f5c9e; --warn-bg:#fdf6e3; --warn-line:#d9b45a;
+    --stop-bg:#fdf0ee; --stop-line:#c9705f; --ok-bg:#eef6f1; --ok-line:#5a9b78;
+    --code-bg:#f4f4f2;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#e8e8e6; --ink-2:#b6b8bd; --ink-3:#8b8e95;
+      --bg:#17181a; --card:#1e1f22; --line:#33353a;
+      --accent:#7ba4dc; --warn-bg:#2a2519; --warn-line:#8a7233;
+      --stop-bg:#2b1d1a; --stop-line:#9c5c4e; --ok-bg:#1a2620; --ok-line:#4a7a5f;
+      --code-bg:#26282c;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Noto Sans CJK TC","Microsoft JhengHei","PingFang TC",sans-serif;
+    line-height:1.85; font-size:16px; counter-reset:fig;
+  }
+  .wrap{max-width:58rem; margin:0 auto; padding:2.5rem 1.25rem 6rem}
+  header.top{border-bottom:2px solid var(--line); padding-bottom:1.5rem; margin-bottom:2rem}
+  h1{font-size:1.9rem; margin:0 0 .4rem; letter-spacing:.01em}
+  .sub{color:var(--ink-3); font-size:.95rem; margin:0}
+  h2{
+    font-size:1.35rem; margin:3rem 0 .75rem; padding-top:.5rem;
+    border-top:1px solid var(--line);
+  }
+  h2 .num{color:var(--accent); font-weight:700; margin-inline-end:.5rem}
+  h3{font-size:1.05rem; margin:1.75rem 0 .5rem; color:var(--ink)}
+  p,li{color:var(--ink-2)}
+  strong{color:var(--ink)}
+  a{color:var(--accent)}
+  nav.toc{
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:1.1rem 1.4rem; margin:1.5rem 0 0;
+  }
+  nav.toc h2{border:0; margin:0 0 .5rem; font-size:1rem; padding:0}
+  nav.toc ol{margin:0; padding-inline-start:1.3rem; columns:2; column-gap:2rem}
+  nav.toc li{margin:.2rem 0; break-inside:avoid}
+  .box{border-radius:8px; padding:.85rem 1.1rem; margin:1.1rem 0; border-inline-start:4px solid}
+  .warn{background:var(--warn-bg); border-color:var(--warn-line)}
+  .stop{background:var(--stop-bg); border-color:var(--stop-line)}
+  .ok{background:var(--ok-bg); border-color:var(--ok-line)}
+  .box p:first-child{margin-top:0} .box p:last-child{margin-bottom:0}
+  table{border-collapse:collapse; width:100%; margin:1.1rem 0; font-size:.94rem}
+  th,td{border:1px solid var(--line); padding:.5rem .7rem; text-align:start; vertical-align:top}
+  th{background:var(--card); color:var(--ink); font-weight:600}
+  code{background:var(--code-bg); padding:.1rem .35rem; border-radius:4px; font-size:.9em}
+  pre{background:var(--code-bg); padding:.9rem 1.1rem; border-radius:8px; overflow-x:auto; font-size:.88em; line-height:1.6}
+  pre code{background:none; padding:0}
+  kbd{border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:0 .4rem; font-size:.85em; background:var(--card)}
+  .screen{
+    border:1px dashed var(--line); border-radius:8px; padding:.9rem 1.1rem;
+    background:var(--card); color:var(--ink-3); font-size:.9rem; margin:1rem 0;
+  }
+  .badge{
+    display:inline-block; border-radius:999px; padding:.1rem .6rem;
+    font-size:.85rem; border:1px solid var(--line); background:var(--card); color:var(--ink-2);
+  }
+  .scroll{overflow-x:auto}
+  /* 圖：一律不超出欄寬；每張有編號與說明 */
+  figure{margin:1.2rem 0; counter-increment:fig}
+  figure img{display:block; max-width:100%; height:auto; border:1px solid var(--line); border-radius:8px; background:#fff}
+  figure.narrow img{max-width:340px}
+  figcaption{color:var(--ink-3); font-size:.88rem; margin-top:.45rem}
+  figcaption::before{content:"圖 " counter(fig) "　"; color:var(--accent); font-weight:600}
+  footer{margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--ink-3); font-size:.9rem}
+  @media print{
+    body{background:#fff; color:#000; font-size:11pt}
+    .wrap{max-width:none; padding:0}
+    h2{page-break-after:avoid} table,.box,figure{page-break-inside:avoid}
+    nav.toc{page-break-after:always}
+    figure img{border-color:#999}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <h1>ANILA 部署手冊</h1>
+  <p class="sub">給內網平台主機的安裝與維運人員 · 平台版本 v1.0.1 · 2026-09-02</p>
+</header>
+
+<nav class="toc">
+<h2>目錄</h2>
+<ol>
+  <li><a href="#s0">這份手冊的範圍</a></li>
+  <li><a href="#s1">架構：一頁懂</a></li>
+  <li><a href="#s2">出貨包裡有什麼、怎麼分辨演練包</a></li>
+  <li><a href="#s3">帶進內網的清單</a></li>
+  <li><a href="#s4">主機需求</a></li>
+  <li><a href="#s5">安裝：一條龍腳本</a></li>
+  <li><a href="#s6">首次啟動後的驗證</a></li>
+  <li><a href="#s7">初裝六件（腳本不會替你做的）</a></li>
+  <li><a href="#s8">端到端驗收</a></li>
+  <li><a href="#s9">更新到新版本</a></li>
+  <li><a href="#s10">日常維運</a></li>
+  <li><a href="#s11">語音輸入：本機或外部解碼端</a></li>
+  <li><a href="#s12">卡登壞掉時的後路（破窗）</a></li>
+  <li><a href="#s13">疑難排解</a></li>
+  <li><a href="#s14">進一步的文件</a></li>
+</ol>
+</nav>
+
+<h2 id="s0"><span class="num">0</span>這份手冊的範圍</h2>
+<p>本手冊寫的是<strong>把 ANILA v1.0.1 出貨包裝上內網平台主機、驗證、之後維運</strong>的完整流程。它假設：</p>
+<ul>
+  <li>平台主機在氣隙內網，沒有網際網路；所有東西用出貨包帶進去。</li>
+  <li>登入方式是<strong>自然人憑證卡（card-only）</strong>，同仁沒有帳號密碼。</li>
+  <li>模型在另一台模型主機（aiagent2 gateway），平台透過 https 呼叫；平台主機本身不跑模型。</li>
+  <li>操作者會用 Linux 終端機與 Docker，但不需要懂平台內部。</li>
+</ul>
+<p>需要更深的細節（每一步的手動備援、歷史教訓）時，看第 14 節列的 runbook；本手冊是主線，runbook 是附錄。</p>
+<div class="box"><p><strong>版本規則</strong>：這條線從 2026-09-02 起以 <code>v1.0.0</code> 重新起算，之後修 bug 升 patch（v1.0.1）、加功能升 minor（v1.1.0）。舊線（2026-07 以前）的 v1.x／v2.x 全部是 legacy，號碼比較大不代表比較新，<strong>不要拿舊線的東西回來用</strong>。</p></div>
+
+<h2 id="s1"><span class="num">1</span>架構：一頁懂</h2>
+<figure>
+<svg viewBox="0 0 900 430" width="100%" role="img" aria-label="架構圖：員工電腦、平台主機、模型主機三欄" style="font-family:'Noto Sans CJK TC','Microsoft JhengHei',sans-serif;font-size:13px">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6f737c"/></marker></defs>
+  <!-- columns -->
+  <rect x="10" y="10" width="230" height="410" rx="10" fill="#f4f4f2" stroke="#e3e3e0"/>
+  <rect x="270" y="10" width="380" height="410" rx="10" fill="#eef3fa" stroke="#c9d6ea"/>
+  <rect x="680" y="10" width="210" height="410" rx="10" fill="#f4f4f2" stroke="#e3e3e0"/>
+  <text x="125" y="34" text-anchor="middle" font-weight="700" fill="#1c1d20">員工電腦</text>
+  <text x="460" y="34" text-anchor="middle" font-weight="700" fill="#1c1d20">平台主機（本手冊安裝的）</text>
+  <text x="785" y="34" text-anchor="middle" font-weight="700" fill="#1c1d20">模型主機（aiagent2）</text>
+  <!-- employee -->
+  <rect x="30" y="55" width="190" height="44" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="125" y="82" text-anchor="middle" fill="#1c1d20">自然人憑證卡 + 讀卡機</text>
+  <rect x="30" y="115" width="190" height="44" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="125" y="135" text-anchor="middle" fill="#1c1d20">中華電信讀卡元件</text><text x="125" y="151" text-anchor="middle" fill="#6f737c" font-size="11">localhost:16888</text>
+  <rect x="30" y="175" width="190" height="44" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="125" y="202" text-anchor="middle" fill="#1c1d20">瀏覽器</text>
+  <line x1="125" y1="99" x2="125" y2="115" stroke="#6f737c" marker-end="url(#ar)"/>
+  <line x1="125" y1="159" x2="125" y2="175" stroke="#6f737c" marker-end="url(#ar)"/>
+  <!-- platform -->
+  <rect x="290" y="55" width="340" height="40" rx="6" fill="#fff" stroke="#2f5c9e"/><text x="460" y="80" text-anchor="middle" fill="#1c1d20">nginx :443（TLS、路徑分流、公告閘）</text>
+  <rect x="290" y="115" width="160" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="370" y="138" text-anchor="middle" fill="#1c1d20">csp（控制平面）</text><text x="370" y="156" text-anchor="middle" fill="#6f737c" font-size="11">卡登驗章、治理中心、/api /v1</text>
+  <rect x="470" y="115" width="160" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="550" y="138" text-anchor="middle" fill="#1c1d20">anila-ui + router</text><text x="550" y="156" text-anchor="middle" fill="#6f737c" font-size="11">對話介面、派工、規章檢索</text>
+  <rect x="290" y="195" width="160" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="370" y="218" text-anchor="middle" fill="#1c1d20">postgres + redis</text><text x="370" y="236" text-anchor="middle" fill="#6f737c" font-size="11">帳號、對話、向量、佇列</text>
+  <rect x="470" y="195" width="160" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="550" y="218" text-anchor="middle" fill="#1c1d20">ingestion-worker</text><text x="550" y="236" text-anchor="middle" fill="#6f737c" font-size="11">文件解析、切塊、嵌入</text>
+  <rect x="290" y="275" width="160" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="370" y="298" text-anchor="middle" fill="#1c1d20">anila-studio + pptx</text><text x="370" y="316" text-anchor="middle" fill="#6f737c" font-size="11">簡報產生與渲染</text>
+  <rect x="470" y="275" width="160" height="60" rx="6" fill="#fff" stroke="#c9cbd0" stroke-dasharray="4 3"/><text x="550" y="298" text-anchor="middle" fill="#1c1d20">asr-gateway (+decoder)</text><text x="550" y="316" text-anchor="middle" fill="#6f737c" font-size="11">語音輸入，選配</text>
+  <rect x="290" y="355" width="340" height="44" rx="6" fill="#fff" stroke="#c9cbd0" stroke-dasharray="4 3"/><text x="460" y="374" text-anchor="middle" fill="#1c1d20">codeserver · n8n · gitlab · anilalm</text><text x="460" y="391" text-anchor="middle" fill="#6f737c" font-size="11">附屬服務；預設關閉或維護中</text>
+  <line x1="460" y1="95" x2="460" y2="115" stroke="#6f737c" marker-end="url(#ar)"/>
+  <line x1="370" y1="175" x2="370" y2="195" stroke="#6f737c" marker-end="url(#ar)"/>
+  <line x1="550" y1="175" x2="550" y2="195" stroke="#6f737c" marker-end="url(#ar)"/>
+  <!-- model host -->
+  <rect x="700" y="55" width="170" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="785" y="78" text-anchor="middle" fill="#1c1d20">模型 gateway :443</text><text x="785" y="96" text-anchor="middle" fill="#6f737c" font-size="11">https · Bearer 金鑰</text>
+  <rect x="700" y="135" width="170" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="785" y="158" text-anchor="middle" fill="#1c1d20">LLM（gpt-oss-20b）</text><text x="785" y="176" text-anchor="middle" fill="#6f737c" font-size="11">回答</text>
+  <rect x="700" y="215" width="170" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="785" y="238" text-anchor="middle" fill="#1c1d20">嵌入（nv-embed-v2）</text><text x="785" y="256" text-anchor="middle" fill="#6f737c" font-size="11">規章檢索</text>
+  <rect x="700" y="295" width="170" height="60" rx="6" fill="#fff" stroke="#c9cbd0" stroke-dasharray="4 3"/><text x="785" y="318" text-anchor="middle" fill="#1c1d20">docling · 語音解碼</text><text x="785" y="336" text-anchor="middle" fill="#6f737c" font-size="11">選配</text>
+  <line x1="785" y1="115" x2="785" y2="135" stroke="#6f737c" marker-end="url(#ar)"/>
+  <!-- arrows across -->
+  <line x1="220" y1="197" x2="290" y2="77" stroke="#2f5c9e" stroke-width="1.5" marker-end="url(#ar)"/><text x="262" y="128" fill="#2f5c9e" font-size="11">https</text>
+  <line x1="630" y1="145" x2="700" y2="85" stroke="#2f5c9e" stroke-width="1.5" marker-end="url(#ar)"/><text x="638" y="105" fill="#2f5c9e" font-size="11">https + 金鑰</text>
+</svg>
+<figcaption>三台角色。平台主機只信任兩樣東西：同仁卡片的簽章（驗到院內 CSPKI CA），與模型主機的 TLS 憑證（同一套 CSPKI CA）。</figcaption>
+</figure>
+<table>
+<tr><th>元件</th><th>容器</th><th>做什麼</th><th>沒有它會怎樣</th></tr>
+<tr><td>反向代理</td><td>nginx</td><td>唯一對外的 443；TLS、路徑分流（<code>/</code> 治理中心、<code>/anila/</code> 對話介面、<code>/api</code>、<code>/v1</code>）、關閉中的入口回「暫時維護中」。</td><td>全站打不開。</td></tr>
+<tr><td>控制平面</td><td>csp</td><td>卡登驗章、帳號、單位、模型登記、稽核、治理中心網頁、資料面代理。</td><td>登入與治理全停。</td></tr>
+<tr><td>資料庫</td><td>csp-db（pgvector）</td><td>所有資料，含規章向量。</td><td>全停。<strong>唯一要備份的東西。</strong></td></tr>
+<tr><td>佇列與快取</td><td>redis</td><td>文件匯入佇列、撤銷清單。</td><td>上傳不處理、登出不生效。</td></tr>
+<tr><td>對話介面</td><td>anila-ui</td><td>同仁看到的畫面（靜態檔）。</td><td><code>/anila/</code> 空白。</td></tr>
+<tr><td>對話路由</td><td>router</td><td>分析問題、決定要不要查規章、派給哪個 agent、組合回答。</td><td>問問題回 503。</td></tr>
+<tr><td>文件匯入</td><td>ingestion-worker</td><td>解析上傳的文件、切塊、算向量。</td><td>知識庫文件卡在處理中。</td></tr>
+<tr><td>簡報</td><td>anila-studio、pptx-renderer</td><td>由對話產生簡報。</td><td>只影響簡報功能。</td></tr>
+<tr><td>語音（選配）</td><td>asr-gateway、asr-decoder</td><td>麥克風輸入轉文字。gateway 一定在平台主機；decoder 可本機或外部（第 11 節）。</td><td>麥克風按鈕不出現。</td></tr>
+<tr><td>附屬（預設關）</td><td>codeserver、n8n、gitlab、anilalm</td><td>開發與自動化工具、ANILA LM。nginx 預設回 404 或「暫時維護中」。</td><td>無影響。</td></tr>
+</table>
+
+<h2 id="s2"><span class="num">2</span>出貨包裡有什麼、怎麼分辨演練包</h2>
+<p>出貨包是一個資料夾，由開發機從<strong>乾淨的 git tag</strong>建出來：</p>
+<pre><code>anila-images-export-v1.0.1/
+├── MANIFEST.txt                  ← 身分：Ref、commit、建置時間、含不含 ASR
+├── CHECKSUMS.sha256              ← 每個映像檔的雜湊
+├── INTRANET-LOAD.sh              ← 載入腳本（三道閘）
+├── intranet-image-overrides.yml  ← 讓 compose 用載入的映像而不是 build
+├── 01-compose-images.images.txt  ← 映像清單
+├── 01-compose-images.files.txt
+└── 01-images/                    ← 15 個 .tar.gz，約 6 GB
+    ├── anila-restart-csp.tar.gz
+    ├── anila-restart-anila-ui.tar.gz
+    ├── anila-restart-router.tar.gz
+    ├── anila-restart-ingestion-worker.tar.gz
+    ├── anila-restart-anila-studio.tar.gz
+    ├── anila-restart-pptx-renderer.tar.gz
+    ├── anila-restart-asr-gateway.tar.gz
+    ├── anila_asr-decoder_0.1.0.tar.gz
+    ├── anila-restart-anilalm.tar.gz
+    ├── anila-codeserver_local.tar.gz
+    ├── nginx_1.30.4-alpine@sha256_….tar.gz
+    ├── pgvector_pgvector_pg16.tar.gz
+    ├── redis_7-alpine.tar.gz
+    ├── n8nio_n8n_1.98.2.tar.gz
+    └── gitlab_gitlab-ce_19.2.1-ce.0@sha256_….tar.gz</code></pre>
+<p>出貨包<strong>只有映像</strong>。設定（<code>.env</code>）、憑證、密碼都是在內網主機上由安裝腳本產生的，不在包裡，也不該在包裡。程式碼與文件（含本手冊）由對應版本的 repo 帶進去。</p>
+<h3>Ref 判準：演練包與出貨包長得一模一樣</h3>
+<p>唯一的差別在 <code>MANIFEST.txt</code> 的 <code>Ref</code> 欄位：</p>
+<table>
+<tr><th><code>Ref</code> 長什麼樣</th><th>是什麼</th><th>載入腳本的行為</th></tr>
+<tr><td><code>v1.0.1</code>（乾淨 tag）</td><td>出貨包</td><td>照常載入</td></tr>
+<tr><td><code>v1.0.1-3-gabcdef0</code>、<code>…-dirty</code>、裸 hash</td><td><strong>演練包</strong>（tag 之後又改過的樹）</td><td><strong>拒絕</strong>，除非設 <code>ALLOW_REHEARSAL_BUNDLE=1</code>（只准在演練環境）</td></tr>
+</table>
+<pre><code>$ head -8 MANIFEST.txt
+ANILA Platform — Intranet Image Bundle
+Built at: 2026-09-02T14:59:42+08:00
+Branch:   main
+Commit:   a433883b
+Ref:      v1.0.1          ← 收到包先看這一行
+Project:  anila-restart
+INCLUDE_ASR: 1</code></pre>
+<p>載入腳本的三道閘：① <code>Ref</code> 是乾淨 tag；② <code>CHECKSUMS.sha256</code> 全部相符；③ 每個映像 <code>docker load</code> 成功且 tag 與清單一致。任何一道紅就停，不會載進一半。</p>
+
+<h2 id="s3"><span class="num">3</span>帶進內網的清單</h2>
+<table>
+<tr><th>要帶</th><th>從哪來</th><th>用在哪</th></tr>
+<tr><td>出貨包資料夾（整個）</td><td>開發機 <code>build-and-export</code></td><td>第 5 節載入</td></tr>
+<tr><td>對應版本的 repo（程式碼與文件）</td><td>同一個 tag 的 checkout 或壓縮檔</td><td>compose 檔、nginx 設定、安裝腳本、本手冊都在裡面</td></tr>
+<tr><td><code>server.pfx</code>（平台網域的 wildcard 憑證＋私鑰）</td><td>IT／憑證管理單位</td><td>nginx 的 https</td></tr>
+<tr><td>模型 gateway 的 API 金鑰</td><td>在模型主機上簽發</td><td><code>.env</code> 的 <code>MODEL_GATEWAY_API_KEY</code></td></tr>
+<tr><td>擁有者的員工編號</td><td>擁有者本人</td><td><code>CARD_INITIAL_OWNERS</code>；這個員編刷卡直接是擁有者</td></tr>
+<tr><td>正式單位清單</td><td>人事</td><td>第 7 節第一件</td></tr>
+<tr><td>密碼管理器</td><td>—</td><td>安裝腳本產生的 8 把密鑰要存進去</td></tr>
+</table>
+<div class="box stop">
+<p><strong>絕不帶進內網：</strong>開發機的 <code>.env</code>、<code>secrets/</code> 目錄、<code>secrets/dev-card-ca/</code>（假卡的測試 CA）、任何 <code>CARD_*</code> 的本機值。帶進去的話，平台會信任假卡，或者用開發機的密碼跑正式環境。</p>
+</div>
+
+<h2 id="s4"><span class="num">4</span>主機需求</h2>
+<table>
+<tr><th>項目</th><th>需求</th></tr>
+<tr><td>作業系統</td><td>Linux（Ubuntu 22.04 以上實測）</td></tr>
+<tr><td>Docker</td><td>Docker Engine 24 以上、Docker Compose v2.20 以上（指令是 <code>docker compose</code>，不是 <code>docker-compose</code>）</td></tr>
+<tr><td>CPU／記憶體</td><td>8 核、32 GB 起；本機語音解碼開著時再多 8 GB</td></tr>
+<tr><td>磁碟</td><td>載入映像約 20 GB，加資料庫與上傳檔案的成長空間；建議 200 GB 起，資料放獨立分割區方便備份</td></tr>
+<tr><td>GPU</td><td>不需要。平台主機不跑模型；本機語音解碼用 CPU 版（<code>infra/compose/asr-cpu.yml</code>）</td></tr>
+<tr><td>網路</td><td>能連到模型主機的 443；內網 DNS 能解析平台網域與模型主機網域；防火牆只開 443 入向</td></tr>
+<tr><td>時間</td><td>NTP 同步。卡片簽章與登入權杖都看時間，時鐘偏差超過幾分鐘登入會失敗</td></tr>
+</table>
+
+<h2 id="s5"><span class="num">5</span>安裝：一條龍腳本</h2>
+<p>在 repo 根目錄執行安裝腳本，把出貨包路徑當參數：</p>
+<pre><code>cd /opt/anila            # repo 解壓處
+bash infra/deployment/intranet/intranet-deploy.sh /path/to/anila-images-export-v1.0.1</code></pre>
+<p>腳本依序做八步，每步開頭印 <code>[n/7]</code>：</p>
+<table>
+<tr><th>步</th><th>做什麼</th><th>你要做的</th></tr>
+<tr><td>[0/7] 前置檢查</td><td>確認在 repo 根目錄、docker 可用、找到出貨包</td><td>—</td></tr>
+<tr><td>[1/7] TLS 憑證</td><td>從 <code>server.pfx</code> 抽出憑證與私鑰到 <code>infra/nginx/certs/</code></td><td>回答 pfx 路徑與密碼（空密碼直接 Enter）</td></tr>
+<tr><td>[2/7] 模型 gateway CA</td><td>把 repo 內建的 CSPKI CA bundle 放到 <code>share/pki/model-ca.pem</code>，供 csp 驗模型主機的 https</td><td>通常不用回答；沒有內建 bundle 時才會問 PEM 路徑</td></tr>
+<tr><td>[3/7] 產生 .env</td><td>從 <code>.env.example</code> 產 <code>.env</code>：自動生 8 把密鑰、寫死 <code>ANILA_AUTH_MODE=card-only</code>、問擁有者員編與 gateway 金鑰</td><td>回答員編、貼金鑰；<strong>把畫面列出的密鑰存進密碼管理器再按 Enter</strong></td></tr>
+<tr><td>[4/7] 載入映像</td><td>執行 <code>INTRANET-LOAD.sh</code>：三道閘＋<code>docker load</code></td><td>看它全綠</td></tr>
+<tr><td>[4b/7] JWT 簽章金鑰</td><td>產 <code>secrets/jwt-private.pem</code>／<code>jwt-public.pem</code>。<strong>一定在起棧之前</strong></td><td>—</td></tr>
+<tr><td>[4c/7] 目錄所有權</td><td>把 <code>share/</code>、<code>secrets/</code> 的擁有者對齊容器帳號</td><td>—</td></tr>
+<tr><td>[5/7] docker network</td><td>建 <code>anila-models-net</code></td><td>—</td></tr>
+<tr><td>[6/7] 起棧</td><td><code>docker compose -p anila-restart … up -d --no-build</code>，含語音 profile</td><td>—</td></tr>
+<tr><td>[7/7] 等 csp healthy＋驗證</td><td>探五個入口、印健康摘要</td><td>看第 6 節</td></tr>
+</table>
+<h3>腳本會問的問題</h3>
+<p>問題不是固定序列：它依主機上已經有什麼決定要不要問。<strong>不要把一串固定答案 pipe 給它。</strong></p>
+<table>
+<tr><th>問題</th><th>什麼時候出現</th><th>怎麼答</th></tr>
+<tr><td><code>image 包資料夾路徑</code></td><td>沒把路徑當參數</td><td>出貨包絕對路徑</td></tr>
+<tr><td><code>重新從 pfx 抽取?(會覆蓋)</code></td><td>憑證檔已存在（重跑時）</td><td>首次安裝不出現；換憑證答 <code>y</code></td></tr>
+<tr><td><code>server.pfx 路徑</code>／<code>pfx 密碼</code></td><td>需要抽憑證</td><td>路徑；空密碼直接 Enter</td></tr>
+<tr><td><code>保留現有 secret?</code></td><td><code>.env</code> 已存在（重跑時）</td><td><strong>答 <code>Y</code></strong>。答 n 會重生資料庫密碼，既有資料庫就連不上</td></tr>
+<tr><td><code>偵測到預設 owner … 確定用這組?</code></td><td>環境或 <code>.env</code> 已有員編</td><td>對就 <code>y</code>，不對就 Enter 讓它再問</td></tr>
+<tr><td><code>CARD_INITIAL_OWNERS — owner 員工編號</code></td><td>上一題沒確認</td><td>擁有者員編，多人用逗號；<strong>不可留空</strong></td></tr>
+<tr><td><code>MODEL_GATEWAY_API_KEY</code></td><td>一律出現</td><td>貼金鑰；還沒簽發可 Enter 跳過，之後補進 <code>.env</code> 並重建 csp</td></tr>
+<tr><td><code>存好了按 Enter 繼續</code></td><td>本次有新產生密鑰</td><td>存進密碼管理器後 Enter</td></tr>
+</table>
+<h3>無人值守</h3>
+<pre><code>CARD_INITIAL_OWNERS=1147259 \
+COMPOSE_PROJECT_NAME=anila-restart \
+INCLUDE_ASR=1 \
+ASR_OVERLAY=infra/compose/asr-cpu.yml \
+bash infra/deployment/intranet/intranet-deploy.sh /path/to/anila-images-export-v1.0.1</code></pre>
+<ul>
+  <li><code>COMPOSE_PROJECT_NAME</code> 一律 <code>anila-restart</code>：出貨包的映像名綁這個專案名，改了會找不到映像。</li>
+  <li><code>INCLUDE_ASR=0</code> 不起語音；GPU 主機把 overlay 換成 <code>asr-gpu.yml</code>。</li>
+  <li>擁有者員編那題仍會出現確認，這是刻意的安全閘。</li>
+</ul>
+
+<h2 id="s6"><span class="num">6</span>首次啟動後的驗證</h2>
+<h3>6.1 容器</h3>
+<pre><code>docker compose -p anila-restart ps
+# 期望：csp / csp-db / redis / nginx / router / anila-ui / ingestion-worker /
+#       anila-studio / pptx-renderer 全部 healthy 或 running；
+#       asr-gateway / asr-decoder（有開語音時）healthy</code></pre>
+<h3>6.2 五個入口（看 Content-Type，不要只看 200）</h3>
+<pre><code>H=https://anila.ai.ncsist.org.tw
+curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' $H/            # 200 text/html   治理中心
+curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' $H/anila/      # 200 text/html   對話介面
+curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' $H/api/health  # 200 application/json
+curl -sk -o /dev/null -w '%{http_code}\n' $H/anilalm/                    # 503  刻意關閉，正常
+curl -sk $H/.well-known/jwks.json | head -c 80                            # 要有 "keys"，回 500 = JWT 金鑰沒產</code></pre>
+<h3>6.3 治理中心</h3>
+<p>用擁有者的卡刷進治理中心（網址根目錄）。<strong>不應有任何憑證警告</strong>；有＝憑證沒換到 wildcard 或 DNS 沒生效。</p>
+<figure><img src="img/login-card.png" alt="登入頁只有偵測憑證卡一顆按鈕"><figcaption>正式姿態的登入頁：只有卡片登入。<strong>如果看得到帳號密碼欄位，這台不是 card-only</strong>，回頭查 <code>.env</code>。</figcaption></figure>
+<figure><img src="img/gov-dashboard.png" alt="儀表板服務健康全綠"><figcaption>儀表板 → 服務健康：八個都要綠。</figcaption></figure>
+<div class="box warn"><p><strong>在內網主機上，模型的健康燈應該是綠的</strong>；不是綠的先查 <code>MODEL_GATEWAY_API_KEY</code>、模型主機 DNS 與 <code>share/pki/model-ca.pem</code>，不是平台本身。（開發機上這一格必然紅，因為連不到模型主機。）</p></div>
+
+<h2 id="s7"><span class="num">7</span>初裝六件（腳本不會替你做的）</h2>
+<p>前五件的共同點：<strong>漏掉不會有錯誤訊息</strong>，症狀出現在同仁開始用的那一刻。第六件會報錯，但錯在第一個問題。</p>
+
+<h3>7.1 建立單位</h3>
+<p>擁有者刷卡進治理中心 → 部門 → 新增。擁有者進場不需要單位存在，所以這個順序才通。</p>
+<figure><img src="img/gov-departments.png" alt="部門頁已建三個單位"><figcaption>建好單位之前，不要請同仁刷卡。</figcaption></figure>
+
+<h3>7.2 擁有者密碼（破窗用）</h3>
+<p><code>.env</code> 的 <code>ADMIN_PASSWORD</code> <strong>只在擁有者帳號被建立的那一次被消費</strong>。帳號建好之後再改 <code>.env</code>，資料庫裡的密碼不會變，而且沒有任何錯誤訊息。要換密碼用治理中心 → 使用者 → 重設密碼。首次安裝時 <code>.env</code> 裡的值就是能登入的密碼，請存進密碼管理器。</p>
+
+<h3>7.3 JWT 簽章金鑰</h3>
+<p>腳本 [4b/7] 已做。漏掉的症狀是「起來了但登入炸」：<code>/.well-known/jwks.json</code> 回 500，登入發不出權杖，anila-studio 反覆重啟。手動補：</p>
+<pre><code>docker run --rm --user 0:0 -v "$PWD/secrets:/app/secrets" anila-restart-csp:latest \
+  python scripts/generate-jwt-keypair.py
+docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp</code></pre>
+
+<h3>7.4 CSPKI 憑證清單</h3>
+<table>
+<tr><th>檔案</th><th>來源</th><th>去處</th><th>驗證</th></tr>
+<tr><td><code>server.pfx</code></td><td>IT</td><td><code>infra/nginx/certs/server.{crt,key}</code></td><td><code>openssl x509 -in server.crt -noout -subject -dates</code> → CN 是 <code>*.ai.ncsist.org.tw</code></td></tr>
+<tr><td>CSPKI CA bundle</td><td>repo 內建</td><td><code>share/pki/model-ca.pem</code></td><td><code>echo | openssl s_client -connect &lt;模型主機&gt;:443 -CAfile share/pki/model-ca.pem 2&gt;/dev/null | grep 'verify return code'</code> → <code>0 (ok)</code></td></tr>
+<tr><td><code>secrets/dev-card-ca/</code></td><td>開發機</td><td><strong>不進內網</strong></td><td>內網主機上不該有這個目錄</td></tr>
+</table>
+<p><code>ANILA_MODEL_CA_FILE</code> 是「取代」整個信任庫，不是疊加：指到空檔或壞檔，csp 所有出向 https 全掛。先在主機上驗到 <code>verify return code: 0</code> 再交給容器。</p>
+
+<h3>7.5 指定主路由模型</h3>
+<p>治理中心 → 模型，找一顆 LLM 按「設為主要」。腳本會把模型登記進來，但<strong>不會</strong>選主路由；沒有它，第一個問題就回「ANILA Router 無可用主路由模型」。</p>
+<figure><img src="img/gov-models.png" alt="模型頁，操作欄有設為主要"><figcaption>模型頁。「Router」欄要有一列標「主路由」、一列標「主 embedding」。</figcaption></figure>
+
+<h3>7.6 規章知識庫標成「ANILA 可檢索」</h3>
+<p>治理中心 → 知識庫 → 該知識庫的開關。新建的知識庫預設沒有標；沒標的話規章問答整個不存在，畫面看起來正常，模型憑印象編條號。</p>
+<figure><img src="img/gov-knowledge-collections.png" alt="知識庫列表與 ANILA 可檢索開關"><figcaption>知識庫列表。上架規章文件後，記得開這個開關。</figcaption></figure>
+
+<h2 id="s8"><span class="num">8</span>端到端驗收</h2>
+<p>六件做完，用一張<strong>真的卡</strong>（不是擁有者）走一遍，每格留下產物（截圖或回應碼），不要只打勾：</p>
+<table>
+<tr><th>#</th><th>做什麼</th><th>判準</th></tr>
+<tr><td>1</td><td>同仁刷卡 → 註冊選單位 → 等待核准</td><td>治理中心 → 使用者「待審核」變 1</td></tr>
+<tr><td>2</td><td>管理員核准 → 同仁再刷卡</td><td>進到 <code>/anila/</code>，左下顯示他的名字</td></tr>
+<tr><td>3</td><td>問一題規章問題</td><td>答案上方有步驟清單，下方有「查看 N 筆來源」，來源側欄有檔名</td></tr>
+<tr><td>4</td><td>問一題非規章問題</td><td>答案上方寫「本次未檢索院內規章」</td></tr>
+<tr><td>5</td><td>上傳一份 PDF 到知識庫</td><td>狀態變 indexed；問它的內容答得出來</td></tr>
+<tr><td>6</td><td>治理中心 → 用量</td><td>剛才的請求有記到</td></tr>
+<tr><td>7</td><td>破窗（第 12 節）</td><td><code>/login?show_alternatives=1</code> 出現帳密欄位，擁有者<strong>真的登得進去</strong>；記下登入後右上的角色</td></tr>
+<tr><td>8</td><td>拔卡、關瀏覽器、重開</td><td>要重新刷卡才能進</td></tr>
+</table>
+<div class="box"><p>第 3、4 項在同一個對話裡問，最能看出平台「查了」和「沒查」的差別。</p></div>
+
+<h2 id="s9"><span class="num">9</span>更新到新版本</h2>
+<p>每次更新都是一個新的出貨包（新的 tag）。流程：</p>
+<pre><code>cd /opt/anila
+# 0. 備份資料庫（第 10 節）
+# 1. 換 repo 到新版本（解壓或 checkout 新 tag）；.env、secrets/、share/、infra/nginx/certs/ 都不在 repo 裡，不會被蓋掉
+# 2. 載入新映像（三道閘）
+cd /path/to/anila-images-export-vX.Y.Z && bash INTRANET-LOAD.sh && cd /opt/anila
+cp /path/to/anila-images-export-vX.Y.Z/intranet-image-overrides.yml ./intranet-image-overrides.yml
+# 3. 重建容器（資料庫遷移在 csp 啟動時自動跑；遷不過 csp 會拒絕啟動，不會半套）
+docker compose -p anila-restart -f compose.yaml -f infra/compose/asr-cpu.yml -f intranet-image-overrides.yml \
+  --profile asr up -d --no-build
+# 4. 重載反向代理（容器換了 IP，nginx 只在載入設定時解析一次）
+docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
+# 5. 第 6 節的驗證再跑一次</code></pre>
+<div class="box warn">
+<p><strong>更新後請同仁硬重新整理（Ctrl+Shift+R）。</strong> 還開著的舊分頁點下一頁時會去抓已經不存在的舊檔案，症狀是點了沒反應或畫面空白。發一則公告最省事（治理中心 → 公告橫幅）。</p>
+<p><strong>只重建單一服務時也要重載 nginx。</strong> 例如 <code>up -d csp</code> 之後全站 502、但 <code>docker compose ps</code> 每個都綠，就是這個。</p>
+<p><strong>改了 <code>infra/nginx/anila.conf</code> 要 <code>up -d --force-recreate nginx</code></strong>，不是 restart：那個檔是單檔掛載，編輯器換了 inode 之後容器仍抓舊檔，沒有任何錯誤。</p>
+</div>
+
+<h2 id="s10"><span class="num">10</span>日常維運</h2>
+<h3>10.1 備份與還原</h3>
+<p>只有資料庫需要備份（上傳的原始檔在 <code>share/uploads/</code>，一起備更保險）。排程每晚：</p>
+<pre><code>ANILA_DB_CONTAINER=anila-restart-csp-db-1 ANILA_BACKUP_DIR=/var/backups/anila \
+  bash infra/deployment/scripts/backup-csp-db.sh</code></pre>
+<p>還原先在丟棄用的 Postgres 演練，核對列數，再談切回；還原前要先建 <code>csp_app</code> 角色，否則權限設定會靜默失敗。完整手順：<code>docs/runbooks/csp-db-backup-restore.md</code>。</p>
+<h3>10.2 憑證輪替</h3>
+<p>wildcard 憑證到期換發後，重跑安裝腳本的 [1/7]（會問「重新從 pfx 抽取」答 y），然後 <code>docker compose -p anila-restart restart nginx</code>。CSPKI CA 換代時更新 <code>share/pki/model-ca.pem</code> 並 restart csp。憑證是目錄掛載，restart 就讀得到。</p>
+<h3>10.3 停棧與起棧</h3>
+<pre><code># 全停（含語音 profile；不帶 --profile asr 會留下 asr 兩個容器）
+docker compose -p anila-restart -f compose.yaml -f infra/compose/asr-cpu.yml -f intranet-image-overrides.yml --profile asr down
+# 全起
+docker compose -p anila-restart -f compose.yaml -f infra/compose/asr-cpu.yml -f intranet-image-overrides.yml --profile asr up -d --no-build
+docker exec anila-nginx nginx -s reload</code></pre>
+<p><code>down -v</code> 會<strong>刪掉資料庫</strong>。日常永遠不要帶 <code>-v</code>。</p>
+<h3>10.4 模型金鑰輪替、加擁有者</h3>
+<ul>
+  <li>金鑰：模型主機重簽 → 改 <code>.env</code> 的 <code>MODEL_GATEWAY_API_KEY</code> → <code>up -d csp</code> → reload nginx。</li>
+  <li>加擁有者：治理中心 → 使用者 → 編輯角色（既有帳號）；或改 <code>CARD_INITIAL_OWNERS</code>（只對之後第一次刷卡的人生效）。</li>
+</ul>
+<h3>10.5 附屬入口</h3>
+<p>nginx 對 <code>/codeserver</code>、<code>/n8n</code>、<code>/gitlab/</code> 預設回 404，<code>/anilalm/</code> 回「暫時維護中」（503）。這些是刻意的發行閘，<strong>不是故障，不要為它們動 nginx</strong>。要開放時照 <code>docs/runbooks/anilalm-release-gate.md</code>。</p>
+<h3>10.6 每天看一眼</h3>
+<ul>
+  <li>儀表板 → 服務健康全綠、告警為 0。</li>
+  <li>使用者 → 待審核有沒有人在等。</li>
+  <li>使用者回饋 → 昨天的差評。</li>
+  <li>磁碟剩餘空間。</li>
+</ul>
+
+<h2 id="s11"><span class="num">11</span>語音輸入：本機或外部解碼端</h2>
+<p>瀏覽器的麥克風按鈕只會打平台主機的 <code>/asr/</code>，nginx 轉給本機的 <code>asr-gateway</code>。解碼（語音轉文字）可以在本機容器做，也可以交給外部主機；<strong>外部解碼端取代的是 decoder，不是 gateway</strong>，gateway 一定要在平台主機上跑。</p>
+<table>
+<tr><th>模式</th><th>起法</th><th><code>.env</code></th></tr>
+<tr><td>本機解碼（出貨預設）</td><td><code>--profile asr up -d</code></td><td><code>ASR_DECODE_URL=http://asr-decoder:9000</code>、<code>ASR_DECODE_PROTOCOL=native</code>、<code>ANILA_ALLOW_HTTP_ENDPOINT=1</code>、<code>ANILA_TRUSTED_HOSTS</code> 含 <code>asr-decoder</code></td></tr>
+<tr><td>外部解碼</td><td><code>--profile asr-remote up -d</code>（只起 gateway）</td><td><code>ASR_DECODE_URL=</code> 外部位址；<code>ANILA_TRUSTED_HOSTS</code> 加該主機；協定依對方（<code>native</code> 或 <code>openai</code>）</td></tr>
+<tr><td>不要語音</td><td><code>INCLUDE_ASR=0</code>，不帶 profile</td><td>—</td></tr>
+</table>
+<pre><code># 驗證 gateway 看到的解碼端
+docker exec anila-restart-asr-gateway-1 python3 -c \
+  "import httpx,json;print(json.dumps(httpx.get('http://localhost:8200/asr/health').json(),ensure_ascii=False,indent=2))"
+# reason: ok = 健康；decoder_unreachable = 連不到；decoder_unauthorized = 金鑰錯（不要去查網路）</code></pre>
+<p>協定填錯的症狀是「麥克風看起來正常，每句話都失敗」；位址被出向檢查擋下的症狀是 gateway 開不了機，日誌有 <code>ASR_DECODE_URL 未通過出向檢查(reason)</code>。細節與 reason 對照：<code>docs/runbooks/asr-voice-input.md</code>。</p>
+
+<h2 id="s12"><span class="num">12</span>卡登壞掉時的後路（破窗）</h2>
+<p>card-only 模式關掉了帳密登入。如果讀卡元件或 CSPKI 出問題，所有人進不來，包括你。兩條路：</p>
+<ol>
+  <li><strong>畫面上的破窗</strong>：<code>https://&lt;平台&gt;/login?show_alternatives=1</code>，用擁有者帳密登入。後端只放行擁有者，其他人填了照樣進不來。</li>
+  <li><strong>暫時切成帳密模式</strong>（讀卡環境整個掛掉時）：<code>.env</code> 改 <code>ANILA_AUTH_MODE=password</code> → <code>up -d csp</code> → reload nginx → 處理完改回 <code>card-only</code> 再做一次。</li>
+</ol>
+<figure><img src="img/login-break-glass.png" alt="加參數後的登入頁多出帳號密碼區塊，附僅供擁有者緊急使用的提示"><figcaption>破窗畫面。驗收時要真的登進去一次（第 8 節第 7 項），不是看到欄位就算。</figcaption></figure>
+
+<h2 id="s13"><span class="num">13</span>疑難排解</h2>
+<table>
+<tr><th>症狀</th><th>原因</th><th>處理</th></tr>
+<tr><td>全站 502，容器都綠</td><td>nginx 拿著舊的容器 IP</td><td><code>docker exec anila-nginx nginx -s reload</code></td></tr>
+<tr><td>csp 反覆重啟，日誌有 alembic</td><td>資料庫遷移失敗</td><td>csp 刻意拒絕半套啟動。看日誌那一條 migration，多半是資料庫版本超前或權限；還原備份再試</td></tr>
+<tr><td>登入頁看得到帳密欄位</td><td><code>ANILA_AUTH_MODE</code> 不是 card-only</td><td>改 <code>.env</code> → <code>up -d csp</code> → reload</td></tr>
+<tr><td>刷卡後「簽章驗證失敗」</td><td>卡片憑證鏈不在 CSPKI bundle 內，或時鐘偏差</td><td>確認是院內配發的卡；<code>date</code> 對時；假卡在正式機必然失敗，那是對的</td></tr>
+<tr><td>登入成功但立刻被登出，jwks 回 500</td><td>JWT 金鑰沒產</td><td>第 7.3 節</td></tr>
+<tr><td>第一個問題回「無可用主路由模型」</td><td>沒設主路由</td><td>第 7.5 節</td></tr>
+<tr><td>模型健康燈紅</td><td>金鑰、DNS、CA 三選一</td><td><code>docker exec anila-restart-csp-1 printenv MODEL_GATEWAY_API_KEY | wc -c</code>（不能是 1）；<code>getent hosts &lt;模型主機&gt;</code>；第 7.4 節的 openssl 驗證</td></tr>
+<tr><td>規章問答不查規章</td><td>知識庫沒標可搜尋，或沒有主 embedding</td><td>第 7.6 節；模型頁要有一列「主 embedding」</td></tr>
+<tr><td>上傳的文件一直「處理中」</td><td>ingestion-worker 或 redis 掛了、嵌入模型連不上</td><td><code>docker logs anila-restart-ingestion-worker-1 --tail 50</code></td></tr>
+<tr><td>改了 <code>.env</code> 沒生效</td><td>用了 <code>restart</code></td><td><code>restart</code> 不重讀 <code>.env</code>；要 <code>up -d &lt;服務&gt;</code>。確認：<code>docker exec &lt;容器&gt; printenv 變數名</code>，沒輸出就是沒進去</td></tr>
+<tr><td>登入頁沒有憑證警告但同仁說有</td><td>同仁用 IP 或別的網域開</td><td>公告用正式網域；<code>ALLOWED_HOSTS</code> 與 nginx 的主機名清單要一起改</td></tr>
+<tr><td><code>down</code> 之後還剩 asr 兩個容器</td><td>沒帶 <code>--profile asr</code></td><td>第 10.3 節</td></tr>
+<tr><td>載入腳本說「這是演練包」</td><td>包的 <code>Ref</code> 不是乾淨 tag</td><td>不要繞過。回開發機從乾淨 tag 重建出貨包</td></tr>
+</table>
+
+<h2 id="s14"><span class="num">14</span>進一步的文件</h2>
+<table>
+<tr><th>文件</th><th>內容</th></tr>
+<tr><td><code>docs/runbooks/intranet-deployment-runbook.md</code></td><td>每一步的手動備援、模型主機端的金鑰簽發、本機模型混合模式、Triton gRPC 嵌入</td></tr>
+<tr><td><code>docs/runbooks/intranet-deployment-tutorial.md</code></td><td>演練實跡、出貨日程序、只能在內網驗的四項</td></tr>
+<tr><td><code>docs/runbooks/first-install-rehearsal.md</code></td><td>初裝六件的完整說明與「從零」會被繞過的五類地方</td></tr>
+<tr><td><code>docs/runbooks/intranet-image-bundle.md</code></td><td>出貨包怎麼建、怎麼驗媒體、載入時的陷阱</td></tr>
+<tr><td><code>docs/runbooks/csp-db-backup-restore.md</code></td><td>備份排程、保留策略、還原演練</td></tr>
+<tr><td><code>docs/runbooks/asr-voice-input.md</code></td><td>語音輸入的本機／外部解碼端、出向檢查 reason 對照</td></tr>
+<tr><td><code>docs/runbooks/anilalm-release-gate.md</code></td><td>ANILA LM 入口的開關程序</td></tr>
+<tr><td><code>docs/runbooks/rotate-tls-cert.md</code></td><td>憑證輪替</td></tr>
+<tr><td><code>docs/VERSIONING.md</code></td><td>版本規則</td></tr>
+<tr><td><code>docs/user-manual/admin.html</code>、<code>index.html</code></td><td>管理員手冊、使用者手冊</td></tr>
+</table>
+
+<footer>
+  ANILA 部署手冊 · 中科院院內 AI 平台 · v1.0.1 · 2026-09-02<br>
+  截圖為開發機示範環境；內網主機上的網域、單位與帳號會不同。
+</footer>
+
+</div>
+</body>
+</html>

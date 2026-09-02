@@ -26,9 +26,9 @@
   body{
     margin:0; background:var(--bg); color:var(--ink);
     font-family:"Noto Sans CJK TC","Microsoft JhengHei","PingFang TC",sans-serif;
-    line-height:1.85; font-size:16px;
+    line-height:1.85; font-size:16px; counter-reset:fig;
   }
-  .wrap{max-width:52rem; margin:0 auto; padding:2.5rem 1.25rem 6rem}
+  .wrap{max-width:58rem; margin:0 auto; padding:2.5rem 1.25rem 6rem}
   header.top{border-bottom:2px solid var(--line); padding-bottom:1.5rem; margin-bottom:2rem}
   h1{font-size:1.9rem; margin:0 0 .4rem; letter-spacing:.01em}
   .sub{color:var(--ink-3); font-size:.95rem; margin:0}
@@ -46,8 +46,8 @@
     padding:1.1rem 1.4rem; margin:1.5rem 0 0;
   }
   nav.toc h2{border:0; margin:0 0 .5rem; font-size:1rem; padding:0}
-  nav.toc ol{margin:0; padding-inline-start:1.3rem}
-  nav.toc li{margin:.2rem 0}
+  nav.toc ol{margin:0; padding-inline-start:1.3rem; columns:2; column-gap:2rem}
+  nav.toc li{margin:.2rem 0; break-inside:avoid}
   .box{border-radius:8px; padding:.85rem 1.1rem; margin:1.1rem 0; border-inline-start:4px solid}
   .warn{background:var(--warn-bg); border-color:var(--warn-line)}
   .stop{background:var(--stop-bg); border-color:var(--stop-line)}
@@ -57,6 +57,9 @@
   th,td{border:1px solid var(--line); padding:.5rem .7rem; text-align:start; vertical-align:top}
   th{background:var(--card); color:var(--ink); font-weight:600}
   code{background:var(--code-bg); padding:.1rem .35rem; border-radius:4px; font-size:.9em}
+  pre{background:var(--code-bg); padding:.9rem 1.1rem; border-radius:8px; overflow-x:auto; font-size:.88em; line-height:1.6}
+  pre code{background:none; padding:0}
+  kbd{border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:0 .4rem; font-size:.85em; background:var(--card)}
   .screen{
     border:1px dashed var(--line); border-radius:8px; padding:.9rem 1.1rem;
     background:var(--card); color:var(--ink-3); font-size:.9rem; margin:1rem 0;
@@ -66,207 +69,250 @@
     font-size:.85rem; border:1px solid var(--line); background:var(--card); color:var(--ink-2);
   }
   .scroll{overflow-x:auto}
+  /* 圖：一律不超出欄寬；每張有編號與說明 */
+  figure{margin:1.2rem 0; counter-increment:fig}
+  figure img{display:block; max-width:100%; height:auto; border:1px solid var(--line); border-radius:8px; background:#fff}
+  figure.narrow img{max-width:340px}
+  figcaption{color:var(--ink-3); font-size:.88rem; margin-top:.45rem}
+  figcaption::before{content:"圖 " counter(fig) "　"; color:var(--accent); font-weight:600}
   footer{margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--ink-3); font-size:.9rem}
   @media print{
     body{background:#fff; color:#000; font-size:11pt}
     .wrap{max-width:none; padding:0}
-    h2{page-break-after:avoid} table,.box{page-break-inside:avoid}
+    h2{page-break-after:avoid} table,.box,figure{page-break-inside:avoid}
     nav.toc{page-break-after:always}
+    figure img{border-color:#999}
   }
 </style>
 </head>
 <body>
 <div class="wrap">
-
 <header class="top">
   <h1>ANILA 管理員手冊</h1>
-  <p class="sub">中科院院內 AI 平台 · 給平台管理員與單位窗口</p>
+  <p class="sub">給平台管理員（擁有者／管理員角色） · 平台版本 v1.0.1 · 2026-09-02</p>
 </header>
 
-<div class="box stop">
-<p><strong>這份手冊假設你有治理中心的權限。</strong> 一般同仁請看
-<a href="index.html">使用手冊</a>；掛 agent 的同仁請看開發者手冊。</p>
-</div>
-
 <nav class="toc">
-  <h2>目錄</h2>
-  <ol>
-    <li><a href="#a1">上線第一天：三件必做，順序不能錯</a></li>
-    <li><a href="#a2">單位</a></li>
-    <li><a href="#a3">帳號與核准</a></li>
-    <li><a href="#a4">模型</a></li>
-    <li><a href="#a5">agent 的註冊與核准</a></li>
-    <li><a href="#a6">院內規章知識庫</a></li>
-    <li><a href="#a7">平台設定（只有 15 顆）</a></li>
-    <li><a href="#a8">用量與稽核</a></li>
-    <li><a href="#a9">出事的時候</a></li>
-  </ol>
+<h2>目錄</h2>
+<ol>
+  <li><a href="#s1">上線第一天：六件必做，順序不能錯</a></li>
+  <li><a href="#s2">治理中心怎麼進、怎麼看</a></li>
+  <li><a href="#s3">單位</a></li>
+  <li><a href="#s4">帳號與核准</a></li>
+  <li><a href="#s5">模型與主路由</a></li>
+  <li><a href="#s6">院內規章知識庫</a></li>
+  <li><a href="#s7">Agent（同仁掛上來的助手）</a></li>
+  <li><a href="#s8">自訂動作</a></li>
+  <li><a href="#s9">平台設定（只有 15 顆）</a></li>
+  <li><a href="#s10">公告橫幅</a></li>
+  <li><a href="#s11">用量、稽核紀錄、警報</a></li>
+  <li><a href="#s12">使用者回饋</a></li>
+  <li><a href="#s13">分類盤點</a></li>
+  <li><a href="#s14">平台連結與服務存取</a></li>
+  <li><a href="#s15">API 金鑰、服務客戶端、信任主機</a></li>
+  <li><a href="#s16">出事的時候</a></li>
+  <li><a href="#s17">卡登壞掉時的後路（破窗）</a></li>
+</ol>
 </nav>
 
-<h2 id="a1"><span class="num">1</span>上線第一天：三件必做，順序不能錯</h2>
-
-<div class="box stop">
-<p><strong>沒做完這三件，同仁插卡進來會卡住，而且畫面不會告訴他們該找誰。</strong></p>
-<ol>
-<li><strong>建立單位</strong>（見第 2 節）—— <strong>這是最容易漏的一件</strong>。
-   平台一裝好，單位是空的；新人插卡登入後會被要求「選擇所屬單位」，
-   <strong>而下拉選單裡一個選項都沒有</strong>，註冊就此卡住。</li>
-<li><strong>確認第一批管理員進得來</strong>（見第 3 節）。</li>
-<li><strong>確認模型可用</strong>（見第 4 節）——沒有可用模型，登入成功也問不出東西。</li>
-<li><strong>指定一個 LLM 為「主路由」</strong>（治理中心 → 模型 → 該列的「設為主要」）——沒有主路由，第一個問題就回「無可用主路由模型」。模型主機下架了那個模型也會變成這樣：症狀是回答「LLM 暫時無法回應」。</li>
-<li><strong>把規章知識庫標成「ANILA 可搜尋」</strong>（治理中心 → 知識庫 → 該知識庫的開關）——<strong>沒標的話，規章問答整個不存在</strong>，而且畫面看起來正常：答案上方只會寫「本次未檢索院內規章，以下為模型的一般知識」，然後模型會憑印象編條號。2026-09-02 走查實撞。</li>
-</ol>
-</div>
-
-<h2 id="a2"><span class="num">2</span>單位</h2>
-
-<p>治理中心 → <strong>單位</strong>（departments）。</p>
-
-<p>單位是<strong>帳號的必填欄位</strong>：使用者完成註冊時一定要選一個。
-所以<strong>單位必須先存在</strong>，順序不能反過來。</p>
-
-<div class="box warn">
-<p><strong>建議一開始就把單位建齊</strong>，而不是等人來申請再建。
-一個新人卡在「沒有單位可選」的畫面時，他不會知道是平台還沒設定好，
-只會覺得系統壞了——然後打電話給你。</p>
-</div>
-
-<h2 id="a3"><span class="num">3</span>帳號與核准</h2>
-
-<h3>使用者怎麼進來</h3>
-<ol>
-<li>插自然人憑證卡 → 平台驗章 → 建立一個<strong>待審</strong>帳號</li>
-<li>使用者選擇所屬單位並送出</li>
-<li><strong>管理員核准</strong> → 才能開始使用</li>
-</ol>
-
-<div class="box warn">
-<p><strong>「等待核准」對使用者是完全靜止的畫面。</strong> 他看不到排在第幾個、也收不到通知。
-所以<strong>核准這件事要有人固定看</strong>，尤其是分批放行的那幾週。</p>
-</div>
-
-<h3>權限</h3>
-<p>治理中心 → <strong>使用者</strong>。可以調整角色與核准狀態。</p>
-
-<h2 id="a4"><span class="num">4</span>模型</h2>
-
-<p>治理中心 → <strong>模型</strong>。這裡登記平台可以呼叫的模型端點。</p>
-
-<div class="box ok">
-<p><strong>「停用」現在真的等於「系統不會再用它」。</strong>
-（2026-08-12 修正：先前背景服務仍會呼叫已停用的模型，
-本機因為位址解不到才沒送出去——<strong>那是運氣，不是防護</strong>。現在解析階段就會排除它。）</p>
-</div>
-
-<div class="box warn">
-<p><strong>「內部 / 外部」那個勾選框講的是<em>網路可達性</em>，不是信任等級。</strong>
-它決定 proxy 追蹤畫面要不要顯示端點位址。⚠ 如果你為了連線因素改它，
-<strong>請確認你知道自己在改什麼</strong>——這個欄位在匯入模型時也會被繼承。</p>
-</div>
-
-<h2 id="a5"><span class="num">5</span>agent 的註冊與核准</h2>
-
-<p>同仁可以把自己寫的 agent 掛上平台。流程：他註冊 → <strong>你核准</strong> → 其他人才看得到。</p>
-
-<div class="box stop">
-<p><strong>核准 agent 之前請確認兩件事：</strong></p>
-<ol>
-<li><strong>那個網址指到哪裡。</strong> agent 的端點是<strong>註冊者自己填的</strong>，
-   平台會把使用者的問題送過去。</li>
-<li><strong>它有沒有透過平台呼叫模型。</strong> 院內規矩是 agent 內部要用模型必須經由平台
-   （這樣用量才有歸屬、才有稽核）。</li>
-</ol>
-<p>✅ <strong>使用者的長期記憶不會送給 agent</strong>——這是平台強制的，不是靠註冊者自律。</p>
-</div>
-
-<h2 id="a6"><span class="num">6</span>院內規章知識庫</h2>
-
-<p>治理中心 → <strong>知識庫</strong>。<strong>只有標了「ANILA 可搜尋」的知識庫</strong>會被使用者的提問自動查詢；新建的知識庫預設<strong>沒有</strong>標。標之前平台會檢查該知識庫的密等（有密等的不能對全院開放搜尋）。</p>
-
-<div class="box warn">
-<p><strong>檔名取得好不好，比檔案內容重要</strong>——這句話對管理員更適用，
-因為決定檔名的通常是你。<code>掃描檔.pdf</code> 上架之後就再也找不到了。</p>
-<p>⚠ <strong>純掃描的 PDF 內容不完整</strong>。上架前請確認它真的有文字層，
-否則使用者會查不到你確定寫在裡面的東西。</p>
-</div>
-
-<h2 id="a7"><span class="num">7</span>平台設定（只有 15 顆）</h2>
-
-<p>治理中心 → <strong>平台設定</strong>。<strong>全部改完立刻生效</strong>，沒有「需要重啟」的項目。</p>
-
-<div class="box ok">
-<p><strong>設定頁刻意只有 15 顆。</strong> 2026-08-11 從 96 顆砍到 12 顆（2026-09-02 加上 Router 的三份提示詞，成為 15 顆），
-因為<strong>能從網頁動到的安全開關，就是一個等著被動的安全開關</strong>——
-那 84 顆被移除的參數正是兩個嚴重漏洞的根源。</p>
-<p>要新增一顆設定前，先答這個問題：<strong>上線之後，誰、在什麼情境、為什麼不能等下一次改版？</strong>
-答不出來就不該是設定。</p>
-</div>
-
-<h3>最常會動的那顆</h3>
-<p><strong>院內規章的檢索門檻</strong>：太高會查不到、太低會撈到不相關的條文。
-⚠ 這個數字<strong>綁在當時使用的嵌入模型上，換模型就要重新量</strong>。</p>
-<p><strong>Router 的三份提示詞</strong>（派工模板／直答模板／強制自答模板）也在這一頁，直接改全文、按儲存，Router 在 <strong>30 秒內</strong>套用，不用重建。
-改壞了按「重設為出貨預設」。派工模板必須保留 <code>{agent_list}</code> 這個佔位，否則存不進去。每一次修改都留稽核紀錄（含改前全文）。</p>
-
-<h2 id="a8"><span class="num">8</span>用量與稽核</h2>
-
-<p>治理中心 → <strong>用量</strong> / <strong>稽核紀錄</strong>。</p>
-
-<div class="box warn">
-<p><strong>目前的用量不是全貌。</strong> 使用者在畫面上聊天（串流）會被完整記錄；
-但<strong>腳本、批次、第三方整合那種非串流呼叫目前不會記到用量</strong>。
-⚠ 所以「帳面上沒有」不等於「沒有人在用」。這是已知待補項。</p>
-</div>
-
-<h2 id="a9"><span class="num">9</span>出事的時候</h2>
-
+<h2 id="s1"><span class="num">1</span>上線第一天：六件必做，順序不能錯</h2>
+<p>平台裝好、所有容器都綠，<strong>不代表同仁進得來、問得出東西</strong>。下面六件漏掉任何一件，症狀都出現在「同仁開始用」那一刻，而且畫面不會告訴他們該找誰。</p>
 <table>
-<tr><th>現象</th><th>先看哪裡</th></tr>
-<tr><td>全站打不開，但容器看起來都正常</td><td>多半是前端代理指到舊位址。重載代理設定；服務重建之後一定要做這一步</td></tr>
-<tr><td>使用者說登入不了</td><td>①卡片與 PIN；②本機讀卡元件裝了沒、起了沒（畫面「尚未安裝中華電信本機元件」＝元件問題，內網電腦預設已裝，未裝聯絡資訊室）；③他是不是還沒被核准；④單位是不是還沒建</td></tr>
-<tr><td>問答變慢或失敗</td><td>治理中心 → 模型，看端點是否可達</td></tr>
-<tr><td>使用者說「AI 說我像攻擊者」</td><td>那可能是被呼叫的 agent 自己的拒絕訊息。看該對話的 agent 是哪一個</td></tr>
-<tr><td>畫面一片空白</td><td>網址打錯或舊書籤。目前不會顯示「找不到頁面」，請他從首頁重進</td></tr>
+<tr><th>#</th><th>做什麼</th><th>在哪裡</th><th>漏掉的症狀</th></tr>
+<tr><td>1</td><td><strong>建立單位</strong></td><td>治理中心 → 部門（第 3 節）</td><td>同仁刷卡後要選單位，下拉是空的，全部卡在註冊。</td></tr>
+<tr><td>2</td><td><strong>確認自己進得來</strong></td><td>刷卡登入；擁有者員編在部署時已設定</td><td>沒有人能核准任何人。</td></tr>
+<tr><td>3</td><td><strong>確認模型可用</strong></td><td>治理中心 → 模型（第 5 節）</td><td>登入成功但問不出東西。</td></tr>
+<tr><td>4</td><td><strong>指定一顆 LLM 為主路由</strong></td><td>模型 → 該列「設為主要」</td><td>第一個問題就回「無可用主路由模型」。</td></tr>
+<tr><td>5</td><td><strong>把規章知識庫標成「ANILA 可檢索」</strong></td><td>治理中心 → 知識庫（第 6 節）</td><td>規章問答整個不存在，畫面看起來正常，模型憑印象編條號。</td></tr>
+<tr><td>6</td><td><strong>安排一個人固定看「待審核」</strong></td><td>治理中心 → 使用者（第 4 節）</td><td>同仁註冊後靜止在「等待核准」，收不到任何通知。</td></tr>
+</table>
+<div class="box warn"><p>順序是 1 → 2 → 3 → 4 → 5，然後才請同仁開始刷卡。擁有者進場不需要單位存在，所以先進來再建單位是通的；反過來就卡住。</p></div>
+
+<h2 id="s2"><span class="num">2</span>治理中心怎麼進、怎麼看</h2>
+<p>治理中心是平台的管理介面，網址是平台根目錄（同仁的對話介面在 <code>/anila/</code>）。只有管理員與擁有者角色看得到；一般同仁登入後會被導到對話介面。</p>
+<figure><img src="img/gov-dashboard.png" alt="治理中心儀表板：上方四個指標，中間用量圖與快速操作，下方服務健康與告警"><figcaption>儀表板。下方「服務健康」是每天先看的地方：八個服務都要綠。</figcaption></figure>
+<table>
+<tr><th>區塊</th><th>看什麼</th></tr>
+<tr><td>上方四格</td><td>近 24 小時請求數、token、使用中的模型與金鑰。剛上線都是 0，正常。</td></tr>
+<tr><td>用量圖</td><td>依模型分的請求量。第一筆請求後才有線。</td></tr>
+<tr><td>服務健康</td><td>控制平面、資料庫、佇列、反向代理、對話路由、文件匯入、簡報產生、簡報渲染。任何一個紅，先看第 16 節。</td></tr>
+<tr><td>告警</td><td>待處理的告警數。點「前往警報中心」處理。</td></tr>
+<tr><td>右上「深色／淺色」</td><td>只影響你自己的畫面。</td></tr>
+</table>
+<p>左側選單分三組：<strong>主要</strong>（儀表板、API 金鑰、模型、用量）、<strong>開發者</strong>（開發指南、Agent、知識庫、自訂動作）、<strong>管理</strong>（使用者、部門、警報、回饋、公告、稽核、盤點、平台連結、服務存取、服務客戶端、信任主機、平台設定）。</p>
+
+<h2 id="s3"><span class="num">3</span>單位</h2>
+<p>治理中心 → 部門。單位是帳號的必填欄位：同仁完成註冊時一定要選一個，所以<strong>單位必須先存在</strong>。建議一開始就把單位建齊，而不是等人來申請再建。</p>
+<figure><img src="img/gov-departments.png" alt="部門頁：三個最上層單位，每列有新增下層、編輯、停用"><figcaption>部門頁。可以建多層（最多 3 層，平台設定可調）。</figcaption></figure>
+<figure><img src="img/gov-form-department.png" alt="新增部門表單：名稱、隸屬於、描述"><figcaption>「新增最上層部門」表單。要建下層單位，用該列的「新增下層」。</figcaption></figure>
+<ul>
+  <li><strong>停用</strong>不會刪資料：該單位的人仍在，只是新人選不到它。</li>
+  <li>單位名稱直接顯示給同仁選，用正式名稱。</li>
+</ul>
+
+<h2 id="s4"><span class="num">4</span>帳號與核准</h2>
+<h3>同仁怎麼進來</h3>
+<ol>
+  <li>插自然人憑證卡 → 平台驗章 → 建立一個<strong>待審核</strong>帳號</li>
+  <li>同仁選擇所屬單位並送出</li>
+  <li>管理員核准 → 同仁再刷一次卡就能使用</li>
+</ol>
+<div class="box warn"><p>「等待核准」對同仁是完全靜止的畫面。他看不到排在第幾個、也收不到通知。所以核准這件事要有人固定看，尤其是分批放行的那幾週。</p></div>
+<figure><img src="img/gov-users-pending.png" alt="使用者頁：待審核 1，該列狀態「待審核」，操作第一項是「核准」"><figcaption>有人註冊後，上方「待審核」計數變 1，該列狀態是「待審核」，操作最前面多一個「核准」。</figcaption></figure>
+<figure><img src="img/gov-users.png" alt="核准後的使用者頁：待審核 0，該列狀態使用中"><figcaption>核准後：狀態變「使用中」，同仁下次刷卡直接進來。</figcaption></figure>
+<h3>每一列的操作</h3>
+<table>
+<tr><th>操作</th><th>做什麼</th></tr>
+<tr><td>核准</td><td>只在待審核帳號出現。核准後立即生效。</td></tr>
+<tr><td>編輯</td><td>改角色（使用者／開發者／管理員／擁有者）、單位、顯示名稱。</td></tr>
+<tr><td>模型／Agent</td><td>這個人可以用哪些模型、哪些 agent（允許清單）。空白＝全部可用。</td></tr>
+<tr><td>重設密碼</td><td>只對帳密帳號有意義（例如破窗用的擁有者帳號）。卡登同仁不需要密碼。</td></tr>
+<tr><td>僅 SSO</td><td>鎖住帳密登入，只能用卡或 SSO。</td></tr>
+<tr><td>停用</td><td>離職或調離時用。帳號與紀錄都留著，只是進不來。</td></tr>
+<tr><td>刪除</td><td>真的刪。稽核紀錄會留，但帳號與偏好不會。一般用停用就好。</td></tr>
+</table>
+<figure><img src="img/gov-form-user.png" alt="新增使用者表單"><figcaption>「新增使用者」：手動建立帳密帳號，用於服務帳號或破窗，同仁不需要。</figcaption></figure>
+<h3>角色</h3>
+<table>
+<tr><th>角色</th><th>能做什麼</th></tr>
+<tr><td>使用者</td><td>用對話介面。看不到治理中心。</td></tr>
+<tr><td>開發者</td><td>加上：註冊 agent、建知識庫、看開發指南。</td></tr>
+<tr><td>管理員</td><td>加上：核准帳號、單位、模型、公告、稽核。</td></tr>
+<tr><td>擁有者</td><td>全部，包含平台設定、信任主機、服務客戶端、指派誰能改模型端點。</td></tr>
 </table>
 
-<h3>🔑 卡登壞掉、進不去平台的時候（破窗）</h3>
+<h2 id="s5"><span class="num">5</span>模型與主路由</h2>
+<p>治理中心 → 模型。這裡登記平台可以呼叫的模型端點：LLM、嵌入（embedding）、視覺、語音等。</p>
+<figure><img src="img/gov-models.png" alt="模型頁：上方端點位址設定授權，中間健康統計，下方已註冊模型列表，每列有編輯、探測、測試連線、設為主要、停用"><figcaption>模型頁。每列的「Router」欄顯示它是不是主路由或主嵌入模型；「設為主要」就在操作裡。</figcaption></figure>
+<div class="box stop"><p><strong>主路由一定要指定。</strong> 部署腳本會把模型登記進來，但<strong>不會</strong>幫你選主路由。沒有主路由，同仁的第一個問題就回「ANILA Router 無可用主路由模型」。找一顆 LLM，按該列的「設為主要」。模型主機下架了那顆模型也會變成這樣，症狀是回答「LLM 暫時無法回應」。</p></div>
+<table>
+<tr><th>操作</th><th>做什麼</th></tr>
+<tr><td>探測／測試連線</td><td>立刻打一次端點看通不通。平常每 60 秒自動檢查一次。</td></tr>
+<tr><td>設為主要</td><td>LLM 設為主路由；嵌入模型設為主嵌入（規章檢索用它）。</td></tr>
+<tr><td>停用</td><td>「停用」真的等於「系統不會再用它」，包含背景服務。</td></tr>
+<tr><td>清除</td><td>從登記中移除。</td></tr>
+</table>
+<figure><img src="img/gov-form-model.png" alt="註冊模型表單：模型 ID、顯示名稱、類型、路徑前綴、端點 URL、內部、協定、分類上限、金鑰、描述"><figcaption>「註冊模型」表單。</figcaption></figure>
+<ul>
+  <li><strong>模型 ID</strong> 要跟模型主機上的名稱一字不差（含大小寫），這是最常填錯的欄位。</li>
+  <li><strong>「內部」勾選框</strong>講的是網路可達性，不是信任等級；它決定追蹤畫面要不要顯示端點位址。</li>
+  <li><strong>分類上限</strong>：這顆模型最高可以處理到哪個密等。留空＝無上限。</li>
+  <li><strong>端點位址誰能改</strong>：預設只有擁有者。頁面最上方的「端點位址設定授權」可以指派特定開發者或管理員。</li>
+  <li>端點位址會經過出向檢查：私網 IP 或單一名稱的主機要先加進「信任主機」（第 15 節），否則登記時被拒。</li>
+</ul>
 
-<div class="box stop">
-<p><strong>先確認你真的需要它。</strong> 這條路<strong>只有平台管理員（owner）用得成</strong>，
-而且只在<strong>卡片登入本身失效</strong>時使用——例如憑證鏈換過、CA 過期、讀卡元件掛掉。
-一般的「某個人登不進來」不要用這條，那是核准或單位的問題（見第 3 節）。</p>
-<p>⚠ <strong>用字說明（2026-08-15 更正）</strong>：這裡寫的是「<strong>用得成</strong>」不是「只給」。
-擋住其他人的是<strong>後端</strong>，不是這個畫面——<strong>畫面本身沒有辦法分辨你是誰</strong>
-（登入頁上還沒有人通過認證，沒有身分可判）。
-所以任何知道這個參數的人<strong>都看得到、也送得出</strong>那張表單，
-<strong>只是送出去之後一律進不來</strong>。</p>
-</div>
+<h2 id="s6"><span class="num">6</span>院內規章知識庫</h2>
+<p>治理中心 → 知識庫。全院共用的知識庫在這裡建、在這裡上架文件。</p>
+<figure><img src="img/gov-knowledge-collections.png" alt="知識庫列表：每個知識庫顯示文件數、密等、ANILA 可檢索開關"><figcaption>知識庫列表。「ANILA 可檢索」是那顆最重要的開關。</figcaption></figure>
+<div class="box stop"><p><strong>只有標了「ANILA 可檢索」的知識庫會被同仁的提問自動查詢；新建的知識庫預設沒有標。</strong> 沒標的時候，規章問答整個不存在，而且畫面看起來正常：答案上方只會寫「本次未檢索院內規章」，然後模型憑印象編條號。標之前平台會檢查該知識庫的密等，有密等的不能對全院開放搜尋。</p></div>
+<figure><img src="img/gov-knowledge-collections-2.png" alt="知識庫明細：密等區塊、上傳匯入、文件列表與檢視器"><figcaption>知識庫明細：上方改密等（只能往上），中間上傳，下方文件列表。每份文件旁的「indexed」表示已可被檢索。</figcaption></figure>
+<ul>
+  <li><strong>上傳</strong>：單檔或 zip 多檔，每檔 50 MB 內。上傳後背景處理，狀態從處理中變 indexed 才查得到。</li>
+  <li><strong>掃描檔</strong>（純圖片 PDF）內容不完整，上架前確認有文字層。</li>
+  <li><strong>檔名</strong>會直接顯示在同仁的來源清單裡。<code>掃描檔.pdf</code> 上架之後就再也找不到了；用 <code>差勤管理辦法-1140301修正.pdf</code> 這種名字。</li>
+  <li><strong>密等只能升不能降</strong>。建立時想清楚。</li>
+  <li>文件之間的關聯（母法、施行細則、修正）平台會自動抓，也可以手動加。</li>
+</ul>
 
-<p><strong>做法</strong>：在登入頁網址後面加上參數：</p>
-<p><code>https://&lt;平台位址&gt;/login?show_alternatives=1</code></p>
+<h2 id="s7"><span class="num">7</span>Agent（同仁掛上來的助手）</h2>
+<p>治理中心 → Agent。同仁可以把自己寫的 agent 掛上平台：他註冊 → 你核准 → 其他人才看得到。</p>
+<figure><img src="img/gov-developer-agents.png" alt="Agent 頁：已註冊的 agent 列表，狀態與操作"><figcaption>Agent 列表。待核准的會標出來。</figcaption></figure>
+<figure><img src="img/gov-form-agent.png" alt="註冊 Agent 表單"><figcaption>「註冊 Agent」表單：名稱、端點、說明、預設分類等級。</figcaption></figure>
+<p>核准前確認兩件事：</p>
+<ol>
+  <li><strong>那個網址指到哪裡。</strong> agent 的端點是註冊者自己填的，平台會把使用者的問題送過去。</li>
+  <li><strong>它有沒有透過平台呼叫模型。</strong> 院內規矩是 agent 內部要用模型必須經由平台（用量才有歸屬、才有稽核）。</li>
+</ol>
+<div class="box ok"><p>使用者的長期記憶不會送給 agent，這是平台強制的。agent 的預設分類等級會決定使用它的對話被列管到哪一級，等級只升不降。</p></div>
+<p>「開發指南」頁是給要寫 agent 的同仁看的說明，內容由平台內建，不用維護。</p>
 
-<p>那會讓平時隱藏起來的「其他登入方式」區塊出現，你就能用<strong>帳號密碼</strong>登入。</p>
+<h2 id="s8"><span class="num">8</span>自訂動作</h2>
+<p>治理中心 → 自訂動作。這裡定義同仁在答案下方可以按的額外動作（例如「翻成英文」「改成公文語氣」），本質是一段固定的提示詞。</p>
+<figure><img src="img/gov-message-actions.png" alt="自訂動作頁"><figcaption>自訂動作列表。每個動作有名稱、提示詞、啟用開關。</figcaption></figure>
+<p>每個使用者每分鐘可觸發的次數有上限（平台設定 <code>limits.action_invoke_per_min</code>，預設 20）。</p>
 
-<div class="box warn">
-<p><strong>那個參數只是把畫面顯示出來，不是鑰匙。</strong>
-知道網址的人並不會因此獲得任何權限——後端仍然只放行 owner 帳號，其他人填了帳密照樣進不去。
-所以它不是祕密，<strong>但也不必主動公告</strong>：平時藏起來是為了讓三千位同仁不要走上一條他們用不了的路。</p>
-</div>
+<h2 id="s9"><span class="num">9</span>平台設定（只有 15 顆）</h2>
+<p>治理中心 → 平台設定。全部改完立刻生效，沒有「需要重啟」的項目。</p>
+<figure><img src="img/gov-platform-settings.png" alt="平台設定頁：每顆設定顯示現在生效值、DB 存值、來源，右側可改"><figcaption>平台設定。每一列看得到「現在生效」「DB 存值」「來源」三個值，三者不一致時就知道是哪裡蓋掉了。</figcaption></figure>
+<div class="box"><p><strong>設定頁刻意只有 15 顆。</strong> 能從網頁動到的安全開關，就是一個等著被動的安全開關。要新增一顆設定前先答這個問題：上線之後，誰、在什麼情境、為什麼不能等下一次改版？答不出來就不該是設定。</p></div>
+<table>
+<tr><th>設定</th><th>意思</th><th>什麼時候動</th></tr>
+<tr><td>院內規章檢索門檻</td><td>相似度低於這個值的條文不採用。太高查不到、太低撈到不相關。</td><td>換嵌入模型後要重新量。這是最常動的一顆。</td></tr>
+<tr><td>記憶檢索門檻／筆數</td><td>長期記憶帶進對話的門檻與上限。</td><td>同仁反映「它一直提到不相關的舊事」時調高門檻。</td></tr>
+<tr><td>模型／嵌入呼叫逾時</td><td>等模型多久算失敗。</td><td>模型主機慢的時候。</td></tr>
+<tr><td>登入有效時間、換發天數</td><td>登入多久要重新刷卡。</td><td>資安要求變更時。只影響下一次登入。</td></tr>
+<tr><td>單位最大層數</td><td>部門樹可以幾層。</td><td>組織需要更多層時。</td></tr>
+<tr><td>自訂動作每分鐘上限</td><td>第 8 節。</td><td>被濫用時。</td></tr>
+<tr><td>附件占用比例</td><td>附件最多吃掉多少模型上下文。</td><td>同仁附大檔常失敗時調高。</td></tr>
+<tr><td>簡繁正規化、查詢擴展</td><td>把模型輸出的簡體轉繁體；問句自動加同義詞。</td><td>幾乎不用動。</td></tr>
+<tr><td>Router 的三份提示詞</td><td>派工模板／直答模板／強制自答模板的全文。</td><td>要改平台「說話方式」時。改壞了按「重設為出貨預設」。派工模板必須保留 <code>{agent_list}</code>。</td></tr>
+</table>
+<p>每一次修改都留稽核紀錄（含改前全文）。</p>
 
-<div class="box warn">
-<p>⚠ <strong>平時那塊是刻意隱藏的。</strong> 如果你在<strong>沒有</strong>加參數的情況下看到它，
-表示這台不是「卡登唯一入口」模式——<strong>那在內網正式部署上是不對的</strong>，請檢查設定。</p>
-</div>
+<h2 id="s10"><span class="num">10</span>公告橫幅</h2>
+<p>治理中心 → 公告橫幅。張貼維護、資安、規範公告，顯示在所有同仁的對話介面頂部；勾「同時顯示在登入頁」的話，還沒登入也看得到。</p>
+<figure><img src="img/gov-banners.png" alt="公告橫幅頁：上方張貼表單，下方現有公告列表"><figcaption>公告橫幅。純文字，不會執行任何程式碼。</figcaption></figure>
+<ul>
+  <li><strong>等級</strong>影響顏色：一般／注意／重要。</li>
+  <li>同仁關掉一則後，那一則不會再出現；新的一則會。</li>
+  <li>過期的公告記得停用或刪除，橫幅一直掛著大家就不看了。</li>
+</ul>
 
-<div class="box stop">
-<p><strong>code-server 的密碼等於平台的最高權限。</strong>
-它掛載的是可寫的整包專案原始碼、未遮蔽的機密目錄，以及 Docker 控制通道。
-<strong>那把密碼只能給平台管理員。</strong></p>
-</div>
+<h2 id="s11"><span class="num">11</span>用量、稽核紀錄、警報</h2>
+<figure><img src="img/gov-usage.png" alt="用量頁：依模型、依使用者的請求與 token 統計"><figcaption>用量。依模型、依 agent、依時間看請求數與 token。</figcaption></figure>
+<div class="box warn"><p><strong>目前的用量不是全貌。</strong> 同仁在畫面上聊天（串流）會被完整記錄；但腳本、批次、第三方整合那種非串流呼叫目前不會記到用量。「帳面上沒有」不等於「沒有人在用」。這是已知待補項。</p></div>
+<figure><img src="img/gov-audit-logs.png" alt="稽核紀錄頁：篩選區與紀錄表，每筆有時間、操作者、動作、資源、結果、明細"><figcaption>稽核紀錄。管理員的每一個寫入操作、每一次登入、每一次分享都在這裡；可依操作者、動作、資源篩選。</figcaption></figure>
+<figure><img src="img/gov-alerts.png" alt="警報頁：告警列表與確認、解決"><figcaption>警報。服務不健康、模型連不上、異常用量都會在這裡出現；處理完按「解決」。</figcaption></figure>
+
+<h2 id="s12"><span class="num">12</span>使用者回饋</h2>
+<p>治理中心 → 使用者回饋。同仁按的拇指向上／向下與留言都在這裡，<strong>預設差評優先</strong>。每天早上掃一遍差評與留言，是知道平台哪裡答不好的最快方法。</p>
+<figure><img src="img/gov-feedback.png" alt="使用者回饋頁：差評、好評、有留言計數，篩選與列表"><figcaption>使用者回饋。可依 agent、模型、天數篩選；「匯出 CSV」匯出目前篩選結果。列表不含對話正文，要看正文從「對話」欄進去（會留稽核）。</figcaption></figure>
+
+<h2 id="s13"><span class="num">13</span>分類盤點</h2>
+<p>治理中心 → 分類盤點。各類資料目前的分類等級統計：對話、訊息、知識庫、知識文件、Agent、模型、任務、來源快照各有多少筆在哪個等級。</p>
+<figure><img src="img/gov-classification-inventory.png" alt="分類盤點表：資源類型 × 四個等級 × 已閂鎖 × 不一致 × 總計"><figcaption>分類盤點。「不一致」欄應為 0；有數字的列會標紅。</figcaption></figure>
+<p>「下載 CSV」給稽核用。</p>
+
+<h2 id="s14"><span class="num">14</span>平台連結與服務存取</h2>
+<p>治理中心 → 平台連結：登記給同仁使用的服務入口，就是同仁畫面上「專案入口」裡的那些卡片。每項服務可設角色門檻、授權名單、開啟方式（新分頁或內嵌）、分類上限與服務管理員。</p>
+<figure><img src="img/gov-platform-links.png" alt="平台連結頁：六個服務，各有網址、註冊資訊、狀態、編輯停用刪除"><figcaption>平台連結。「停用」的服務同仁看不到；例如目前 ANILA LM 是停用的。</figcaption></figure>
+<figure><img src="img/gov-form-platform-link.png" alt="新增服務表單"><figcaption>「新增服務」表單。</figcaption></figure>
+<p>治理中心 → 服務存取：逐一授權哪些使用者或單位可以進入各項服務。角色門檻「開放」的服務不用在這裡授權。</p>
+<figure><img src="img/gov-service-access.png" alt="服務存取頁：每個服務一張卡，顯示角色門檻與有效授權數，右側 + 新增授權"><figcaption>服務存取。</figcaption></figure>
+
+<h2 id="s15"><span class="num">15</span>API 金鑰、服務客戶端、信任主機</h2>
+<p>這三頁是給整合與維運用的，一般管理不會天天動。</p>
+<figure><img src="img/gov-api-keys.png" alt="API 金鑰頁"><figcaption>API 金鑰：給程式呼叫平台資料面（<code>/v1/*</code>）用的金鑰。金鑰只在建立當下顯示一次。</figcaption></figure>
+<figure><img src="img/gov-service-clients.png" alt="服務客戶端頁：平台內部服務的身分憑證"><figcaption>服務客戶端：平台內部服務（對話路由、文件匯入工作者、管理工具）彼此驗證用的長效憑證。輪替與吊銷在這裡。</figcaption></figure>
+<figure><img src="img/gov-trusted-hosts.png" alt="信任主機頁：允許平台對外連線的主機清單"><figcaption>信任主機：允許平台對外連線的主機清單。登記模型、Agent、憑證時，位址若是私網 IP 或單一名稱，要先列在這裡。僅擁有者可改，每次新增或移除都寫稽核。</figcaption></figure>
+
+<h2 id="s16"><span class="num">16</span>出事的時候</h2>
+<table>
+<tr><th>現象</th><th>先看哪裡</th></tr>
+<tr><td>全站打不開，但容器看起來都正常</td><td>多半是反向代理指到舊位址。重載代理設定（部署手冊第 9 節）；服務重建之後一定要做這一步。</td></tr>
+<tr><td>同仁說登入不了</td><td>① 卡片與 PIN；② 本機讀卡元件裝了沒、起了沒（畫面「尚未安裝中華電信本機元件」＝元件問題）；③ 他是不是還沒被核准；④ 單位是不是還沒建。</td></tr>
+<tr><td>問答變慢或失敗</td><td>治理中心 → 模型，看端點是否健康；儀表板 → 服務健康。</td></tr>
+<tr><td>第一個問題就回「無可用主路由模型」</td><td>第 5 節，設主路由。</td></tr>
+<tr><td>規章問答不查規章</td><td>第 6 節，「ANILA 可檢索」沒開。</td></tr>
+<tr><td>同仁說「AI 說它只回答某類問題」</td><td>那是被呼叫的 agent 自己的拒絕訊息。看該對話的 agent 是哪一個。</td></tr>
+<tr><td>畫面一片空白</td><td>請同仁硬重新整理（Ctrl+Shift+R）。平台剛更新版本後，還開著的舊分頁點下去會這樣。</td></tr>
+<tr><td>看到「暫時維護中」</td><td>那個入口目前是刻意關閉的，不是故障。</td></tr>
+</table>
+<div class="box stop"><p><strong>code-server 的密碼等於平台的最高權限。</strong> 它掛載的是可寫的整包專案原始碼、未遮蔽的機密目錄，以及 Docker 控制通道。那把密碼只能給平台管理員。</p></div>
+
+<h2 id="s17"><span class="num">17</span>卡登壞掉時的後路（破窗）</h2>
+<p><strong>先確認你真的需要它。</strong> 這條路只有平台擁有者用得成，而且只在卡片登入本身失效時使用：憑證鏈換過、CA 過期、讀卡元件掛掉。一般的「某個人登不進來」不要用這條，那是核准或單位的問題（第 4 節）。</p>
+<p>做法：在登入頁網址後面加上參數 <code>?show_alternatives=1</code>，平時隱藏的「其他登入方式」區塊會出現，用擁有者帳號密碼登入。</p>
+<figure><img src="img/login-break-glass.png" alt="加上參數後的登入頁：卡片區塊下方多出「其他登入方式 · 帳號密碼登入」，有一行提示僅供擁有者緊急使用"><figcaption>破窗：<code>/login?show_alternatives=1</code>。黃框那句提示會明講這條只給擁有者。</figcaption></figure>
+<ul>
+  <li>那個參數只是把畫面顯示出來，不是鑰匙。後端仍然只放行擁有者帳號，其他人填了帳密照樣進不來。所以它不是祕密，但也不必公告。</li>
+  <li>擁有者的密碼在部署當天由腳本產生並要求存入密碼管理器。<strong>部署後改 <code>.env</code> 裡的密碼不會改到資料庫</strong>，要改密碼用治理中心 → 使用者 → 重設密碼。</li>
+  <li><strong>平時那塊是刻意隱藏的。</strong> 如果你在沒有加參數的情況下看到帳號密碼欄位，表示這台不是「卡登唯一入口」模式，那在正式部署上是不對的，請檢查部署設定。</li>
+</ul>
 
 <footer>
-  <p>ANILA 管理員手冊 · 中科院院內 AI 平台</p>
-  <p>畫面截圖將於系統就緒後補上。看到與實際不符的地方，請回報。</p>
+  ANILA 管理員手冊 · 中科院院內 AI 平台 · v1.0.1 · 2026-09-02<br>
+  截圖為示範環境；治理中心可切換深色，手冊一律用淺色截圖。
 </footer>
 
 </div>
