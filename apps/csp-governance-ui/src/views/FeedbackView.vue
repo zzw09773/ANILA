@@ -11,7 +11,7 @@
         <TermBadge variant="danger" dot>差評 · {{ summary.down }}</TermBadge>
         <TermBadge variant="ok" dot>好評 · {{ summary.up }}</TermBadge>
         <TermBadge dot>有留言 · {{ summary.with_comment }}</TermBadge>
-        <TermBadge variant="warn" dot title="回覆看起來像拒答（安全拒答或助手表示超出範圍）的則數；只計數，不會擋回覆">疑似拒答 · {{ summary.refusal_suspected ?? 0 }}</TermBadge>
+        <TermBadge variant="warn" dot title="時間窗內回覆看起來像拒答（安全拒答或助手表示超出範圍）的則數，跟著 agent／模型篩選但不看評分；只計數，不會擋回覆">疑似拒答 · {{ summary.refusal_suspected ?? 0 }}</TermBadge>
       </div>
     </header>
 

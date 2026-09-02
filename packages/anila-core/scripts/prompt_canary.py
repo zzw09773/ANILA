@@ -17,6 +17,11 @@ switching models, and on the first day on the intranet.
 Usage:
   python prompt_canary.py --base https://172.16.120.153 --key csk-... [--insecure] [--out report.md]
 Exit code 1 when any check fails. Keys never go to stdout.
+
+⚠ Use a *plain-user* key for the seed run: an admin key sees every agent and the
+Router dispatches to them, so the run measures the agents instead of the
+employee route (the 2026-09-02 first run dispatched three questions that way).
+Revoke the key after the run.
 """
 
 from __future__ import annotations

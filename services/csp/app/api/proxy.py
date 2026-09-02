@@ -679,7 +679,7 @@ def _build_kb_block(result: KbResult) -> str | None:
 
 # 規章段落之後再提醒一次語言（harness §6-4）：長 context 下小模型會忘記前導
 # 開頭的語言規則，這一行是最便宜的修法。它永遠是 system 訊息的最後一行。
-KB_LANGUAGE_REMINDER = "以上段落之後，請一律以繁體中文（台灣用語）回答。"
+KB_LANGUAGE_REMINDER = "請一律以繁體中文（台灣用語）回答。"
 
 
 def _inject_kb_block(body: dict, block: str) -> None:

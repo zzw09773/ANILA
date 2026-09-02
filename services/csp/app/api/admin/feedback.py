@@ -132,17 +132,22 @@ class FeedbackListResponse(BaseModel):
     items: list[FeedbackItem]
 
 
-def _count_refusals(db, since: datetime) -> int:
-    """時間窗內被標 ``refusal_suspected`` 的 assistant 訊息數。
+def _count_refusals(db, since: datetime, *, agent_name: str | None = None, model_name: str | None = None) -> int:
+    """時間窗內被標 ``refusal_suspected`` 的 assistant 訊息數，跟列表一樣吃
+    agent／模型篩選（評分篩選不套用：拒答很少被按拇指，套了就永遠是 0）。
     JSON 欄位跨 SQLite／Postgres 用 Python 端過濾（窗內 assistant 訊息量在
     試營運規模是數百筆等級；跟留言篩選同一個取捨）。"""
-    rows = (
+    q = (
         db.query(Message.metadata_)
         .filter(Message.role == "assistant")
         .filter(Message.created_at >= since)
         .filter(Message.metadata_.isnot(None))
-        .all()
     )
+    if agent_name:
+        q = q.filter(Message.agent_name == agent_name)
+    if model_name:
+        q = q.filter(Message.model_name == model_name)
+    rows = q.all()
     return sum(1 for (meta,) in rows if isinstance(meta, dict) and meta.get("refusal_suspected") is True)
 
 
@@ -348,6 +353,6 @@ def list_feedback(
         up=sum(1 for i in items if i.rating == "up"),
         down=sum(1 for i in items if i.rating == "down"),
         with_comment=sum(1 for i in items if i.comment or i.reasons),
-        refusal_suspected=_count_refusals(db, since),
+        refusal_suspected=_count_refusals(db, since, agent_name=agent_name, model_name=model_name),
     )
     return FeedbackListResponse(summary=summary, items=items)
