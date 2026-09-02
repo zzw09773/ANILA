@@ -96,12 +96,12 @@
 
         <!-- Secondary: 帳密 + OIDC 收合在「其他登入方式」下,降低視覺權重 --- -->
         <details v-if="showAlternativeLogin" :open="passwordPrimary" class="login__more" :class="{ 'login__more--primary': passwordPrimary }">
-          <summary class="login__more-summary">其他登入方式</summary>
+          <summary class="login__more-summary">{{ passwordPrimary ? '帳號密碼登入' : '其他登入方式' }}</summary>
 
           <div class="login__more-body">
             <!-- 本地帳密登入 -------------------------------------------- -->
             <div class="login__section">
-              <h3 class="login__section-title">帳號密碼登入</h3>
+              <h3 v-if="!passwordPrimary" class="login__section-title">帳號密碼登入</h3>
               <p v-if="showBreakGlassNotice" class="login__msg" role="note">
                 {{ BREAK_GLASS_LOGIN_NOTICE }}
               </p>

@@ -173,4 +173,5 @@ test('LoginView 把三個判斷接上了（v-if 憑證卡區塊、details 預設
   assert.match(src, /v-if="showCardLogin"/u)
   assert.match(src, /:open="passwordPrimary"/u)
   assert.match(src, /\{\{ heroSubtitle \}\}/u)
+  assert.match(src, /passwordPrimary \? '帳號密碼登入' : '其他登入方式'/u)
 })
