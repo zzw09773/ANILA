@@ -984,10 +984,13 @@ function renderTwoColumn(pres, s, theme) {
     })
     const bullets = Array.isArray(col.bullets) ? col.bullets : []
     slide.addText(
-      bullets.map((b) => ({
-        text: String(b),
-        options: { bullet: { code: '25CF' }, color: p.ink },
-      })),
+      bullets.map((b) => {
+        const parsed = parseBulletHierarchy(b)
+        return {
+          text: parsed.text,
+          options: { bullet: { code: parsed.code }, indentLevel: parsed.indent, color: p.ink },
+        }
+      }),
       {
         x: x + 0.1, y: 2.0, w: COL_WIDTH - 0.1, h: 4.8,
         fontSize: 18, color: p.ink, fontFace: FONT_FACE,
@@ -1234,10 +1237,13 @@ function renderImageFocus(pres, s, theme) {
     const fontSize = n <= 3 ? 22 : (n <= 5 ? 20 : 18)
     const paraSpaceAfter = n <= 3 ? 18 : (n <= 5 ? 14 : 10)
     slide.addText(
-      bullets.map((b) => ({
-        text: String(b),
-        options: { bullet: { code: '25CF' }, color: p.ink },
-      })),
+      bullets.map((b) => {
+        const parsed = parseBulletHierarchy(b)
+        return {
+          text: parsed.text,
+          options: { bullet: { code: parsed.code }, indentLevel: parsed.indent, color: p.ink },
+        }
+      }),
       {
         x: TEXT_X, y: IMG_Y, w: TEXT_W, h: IMG_H,
         fontSize, color: p.ink, fontFace: FONT_FACE,
@@ -1267,6 +1273,150 @@ async function renderSlideByKind(pres, s, theme) {
   }
 }
 
+/**
+ * Render a spec to a .pptx buffer (no HTTP). Returns
+ *   { buffer, coverPrepended, kinds }
+ * where `kinds` lists every rendered slide's layout kind in order — with a
+ * synthetic 'cover' first when the renderer prepended its own title slide —
+ * so QA callers can index defects back to the spec and judge each slide by
+ * what it is (a cover is sparse by design; a bullet page is not).
+ */
+async function renderSpec(spec) {
+  if (!spec || typeof spec !== 'object') throw new Error('missing spec')
+  if (!Array.isArray(spec.slides) || spec.slides.length === 0) {
+    throw new Error('spec.slides must be non-empty array')
+  }
+  if (spec.slides.length > MAX_SLIDES) {
+    const err = new Error(`spec.slides exceeds cap of ${MAX_SLIDES}`)
+    err.status = 413
+    throw err
+  }
+
+  // Round 3 Patch M: theme is the new identity unit, palette is legacy.
+  // Resolution priority: spec.theme → legacy spec.palette → default.
+  let themeName = 'corporate_navy'
+  if (spec.theme && THEMES[spec.theme]) {
+    themeName = spec.theme
+  } else if (spec.palette && LEGACY_PALETTE_TO_THEME[spec.palette]) {
+    themeName = LEGACY_PALETTE_TO_THEME[spec.palette]
+  }
+  const theme = getTheme(themeName)
+  const p = theme.palette
+
+  const pres = new PptxGenJS()
+  pres.layout = 'LAYOUT_WIDE' // 13.33 × 7.5 inch (16:9)
+  pres.author = 'ANILA LM'
+  pres.title = String(spec.title || 'Untitled')
+
+  // Master shared by all non-section_break layouts. Section breaks
+  // skip the master and draw their own full-bleed background, so the
+  // bar isn't inherited there.
+  pres.defineSlideMaster({
+    title: 'ANILA_BASE',
+    background: { color: p.bg },
+    objects: [
+      // Top header bar (height 0.8) — large enough for a 26-pt title
+      // to sit centred vertically without crowding descenders.
+      { rect: { x: 0, y: 0, w: '100%', h: 0.8, fill: { color: p.bar } } },
+      // Thin accent strip immediately below the bar — single visual
+      // motif we repeat across the deck.
+      { rect: { x: 0, y: 0.8, w: '100%', h: 0.04, fill: { color: p.accent } } },
+    ],
+    // Explicit w: pptxgenjs defaults to 0.875" which at x=12.5 overflows the
+    // 13.333" slide and made every content slide a false 'critical overflow'.
+    slideNumber: { x: 12.5, y: 7.1, w: 0.7, h: 0.3, fontSize: 10, color: p.muted, fontFace: FONT_FACE },
+  })
+
+  const kinds = []
+  // ── Cover slide (always first, distinct from section_break) ──
+  // If spec.slides[0].layout_kind === 'section_break' the LLM is signalling
+  // "my first slide is the cover" — renderSectionBreak handles it and we
+  // skip the auto-generated cover.
+  const coverPrepended = spec.slides[0]?.layout_kind !== 'section_break'
+  if (coverPrepended) {
+    kinds.push('cover')
+    const titleSlide = pres.addSlide({ masterName: 'ANILA_BASE' })
+    const heroData = spec.slides[0]?.image_data
+    const hasHero =
+      typeof heroData === 'string' &&
+      heroData.startsWith('data:image/') &&
+      spec.slides[0]?.image_gen_meta?.use_case === 'cover_hero'
+    if (hasHero) {
+      titleSlide.addImage({
+        data: heroData,
+        x: 0, y: 0, w: 13.33, h: 7.5,
+        sizing: { type: 'cover', w: 13.33, h: 7.5 },
+      })
+      titleSlide.addShape('rect', {
+        x: 0, y: 0, w: 13.33, h: 7.5,
+        fill: { color: '000000', transparency: 58 },
+        line: { type: 'none' },
+      })
+      for (const band of GRADIENT_BANDS) {
+        titleSlide.addShape('rect', {
+          x: 0, y: band.y, w: 13.33, h: band.h,
+          fill: { color: '000000', transparency: band.transparency },
+          line: { type: 'none' },
+        })
+      }
+    }
+    const coverTitleColor = hasHero ? 'FFFFFF' : p.titleText
+    const coverMutedColor = hasHero ? 'F0F0F0' : p.muted
+    const coverFootColor = hasHero ? 'F0F0F0' : '1A1A1A'
+
+    titleSlide.addShape('rect', {
+      x: 0.6, y: 2.0, w: 0.14, h: 3.5,
+      fill: { color: p.accent },
+      line: { type: 'none' },
+    })
+    titleSlide.addText(String(spec.title), {
+      x: 1.0, y: 2.1, w: 11.7, h: 1.8,
+      fontSize: 50, bold: true, color: coverTitleColor,
+      align: 'left', valign: 'middle', fontFace: FONT_FACE,
+    })
+    if (spec.slides.length > 1) {
+      titleSlide.addText(`共 ${spec.slides.length} 張投影片`, {
+        x: 1.0, y: 4.0, w: 11.7, h: 0.5,
+        fontSize: 16, color: coverMutedColor,
+        align: 'left', fontFace: FONT_FACE,
+      })
+    }
+    titleSlide.addText('ANILA LM · 自動生成', {
+      x: 1.0, y: 4.7, w: 11.7, h: 0.4,
+      fontSize: 14, color: coverFootColor, italic: false,
+      align: 'left', fontFace: FONT_FACE,
+    })
+  }
+
+  // Body slides via the layout dispatcher. Sequential await keeps
+  // pptxgenjs's internal slide ordering deterministic.
+  for (const s of spec.slides) {
+    kinds.push(effectiveKind(s))
+    await renderSlideByKind(pres, s, theme)
+  }
+
+  const buffer = await pres.write({ outputType: 'nodebuffer' })
+  return { buffer, coverPrepended, kinds }
+}
+
+/**
+ * The kind a slide actually renders as — per-kind renderers fall back to
+ * `standard` when their payload is missing, and QA must judge the slide by
+ * what was drawn, not by what the LLM asked for.
+ */
+function effectiveKind(s) {
+  const kind = String(s.layout_kind || 'standard')
+  switch (kind) {
+    case 'section_break': return 'section_break'
+    case 'stat_callout': return (s.stat && s.stat.value && s.stat.label) ? 'stat_callout' : 'standard'
+    case 'quote': return (s.quote && s.quote.text) ? 'quote' : 'standard'
+    case 'two_column': return (Array.isArray(s.columns) && s.columns.length >= 2) ? 'two_column' : 'standard'
+    case 'icon_rows': return (Array.isArray(s.icon_rows) && s.icon_rows.length > 0) ? 'icon_rows' : 'standard'
+    case 'image_focus': return (s.image_data && typeof s.image_data === 'string') ? 'image_focus' : 'standard'
+    default: return 'standard'
+  }
+}
+
 app.post('/render', async (req, res) => {
   try {
     const spec = req.body?.spec
@@ -1277,147 +1427,15 @@ app.post('/render', async (req, res) => {
       return res.status(400).json({ error: 'spec.slides must be non-empty array' })
     }
     if (spec.slides.length > MAX_SLIDES) {
-      return res.status(413).json({
-        error: `spec.slides exceeds cap of ${MAX_SLIDES}`,
-      })
+      return res.status(413).json({ error: `spec.slides exceeds cap of ${MAX_SLIDES}` })
     }
 
-    // Round 3 Patch M: theme is the new identity unit, palette is legacy.
-    // CSP-layer schema validator (_resolve_theme_from_palette) translates
-    // palette → theme before sending to renderer, so we should see
-    // `spec.theme` for jobs post-Patch L. Direct renderer callers (tests,
-    // ops scripts) may still send `spec.palette` — we map those via
-    // LEGACY_PALETTE_TO_THEME so they keep working.
-    //
-    // Resolution priority: spec.theme → legacy spec.palette → default.
-    let themeName = 'corporate_navy'
-    if (spec.theme && THEMES[spec.theme]) {
-      themeName = spec.theme
-    } else if (spec.palette && LEGACY_PALETTE_TO_THEME[spec.palette]) {
-      themeName = LEGACY_PALETTE_TO_THEME[spec.palette]
-    }
-    const theme = getTheme(themeName)
-    // `p` alias for legacy code paths within this handler (master
-    // definition, cover slide) that still reference palette role slots.
-    const p = theme.palette
+    const { buffer, coverPrepended, kinds } = await renderSpec(spec)
 
-    const pres = new PptxGenJS()
-    pres.layout = 'LAYOUT_WIDE' // 13.33 × 7.5 inch (16:9)
-    pres.author = 'ANILA LM'
-    pres.title = String(spec.title || 'Untitled')
-
-    // Master shared by all non-section_break layouts. Section breaks
-    // skip the master and draw their own full-bleed background, so the
-    // bar isn't inherited there.
-    pres.defineSlideMaster({
-      title: 'ANILA_BASE',
-      background: { color: p.bg },
-      objects: [
-        // Top header bar (height 0.8) — large enough for a 26-pt title
-        // to sit centred vertically without crowding descenders.
-        {
-          rect: {
-            x: 0, y: 0, w: '100%', h: 0.8,
-            fill: { color: p.bar },
-          },
-        },
-        // Thin accent strip immediately below the bar — single visual
-        // motif we repeat across the deck (also appears as the column
-        // dividers in two_column and the icon backplate ring).
-        {
-          rect: {
-            x: 0, y: 0.8, w: '100%', h: 0.04,
-            fill: { color: p.accent },
-          },
-        },
-      ],
-      slideNumber: { x: 12.5, y: 7.1, fontSize: 10, color: p.muted, fontFace: FONT_FACE },
-    })
-
-    // ── Cover slide (always first, distinct from section_break) ──
-    //
-    // We always prepend a cover. If spec.slides[0].layout_kind ===
-    // 'section_break' the LLM is signalling "I want my first slide to
-    // be the cover" — in that case we let renderSectionBreak handle it
-    // and skip the auto-generated cover, otherwise we'd have two
-    // section-break-looking slides back to back.
-    const firstIsCover = spec.slides[0]?.layout_kind === 'section_break'
-    if (!firstIsCover) {
-      const titleSlide = pres.addSlide({ masterName: 'ANILA_BASE' })
-
-      // FLUX cover hero: the backend hydrates a 16:9 COVER_HERO image into
-      // spec.slides[0].image_data. Promote it to a full-bleed background ONLY
-      // when it is an actual cover hero (image_gen_meta.use_case === 'cover_hero')
-      // — a curated image_ref or a Graphviz diagram that happens to sit on the
-      // first slide also sets image_data but must NOT become the title bg.
-      // Layered scrim (same as renderSectionBreak) keeps the title legible over
-      // arbitrary imagery; fall back to the plain text cover when absent.
-      const heroData = spec.slides[0]?.image_data
-      const hasHero =
-        typeof heroData === 'string' &&
-        heroData.startsWith('data:image/') &&
-        spec.slides[0]?.image_gen_meta?.use_case === 'cover_hero'
-      if (hasHero) {
-        titleSlide.addImage({
-          data: heroData,
-          x: 0, y: 0, w: 13.33, h: 7.5,
-          sizing: { type: 'cover', w: 13.33, h: 7.5 },
-        })
-        titleSlide.addShape('rect', {
-          x: 0, y: 0, w: 13.33, h: 7.5,
-          fill: { color: '000000', transparency: 58 },
-          line: { type: 'none' },
-        })
-        for (const band of GRADIENT_BANDS) {
-          titleSlide.addShape('rect', {
-            x: 0, y: band.y, w: 13.33, h: band.h,
-            fill: { color: '000000', transparency: band.transparency },
-            line: { type: 'none' },
-          })
-        }
-      }
-      const coverTitleColor = hasHero ? 'FFFFFF' : p.titleText
-      const coverMutedColor = hasHero ? 'F0F0F0' : p.muted
-      const coverFootColor = hasHero ? 'F0F0F0' : '1A1A1A'
-
-      titleSlide.addShape('rect', {
-        x: 0.6, y: 2.0, w: 0.14, h: 3.5,
-        fill: { color: p.accent },
-        line: { type: 'none' },
-      })
-      titleSlide.addText(String(spec.title), {
-        x: 1.0, y: 2.1, w: 11.7, h: 1.8,
-        fontSize: 50, bold: true, color: coverTitleColor,
-        align: 'left', valign: 'middle', fontFace: FONT_FACE,
-      })
-      if (spec.slides.length > 1) {
-        titleSlide.addText(`共 ${spec.slides.length} 張投影片`, {
-          x: 1.0, y: 4.0, w: 11.7, h: 0.5,
-          fontSize: 16, color: coverMutedColor,
-          align: 'left', fontFace: FONT_FACE,
-        })
-      }
-      titleSlide.addText('ANILA LM · 自動生成', {
-        x: 1.0, y: 4.7, w: 11.7, h: 0.4,
-        fontSize: 14, color: coverFootColor, italic: false,
-        align: 'left', fontFace: FONT_FACE,
-      })
-    }
-
-    // Body slides via the layout dispatcher. Sequential await keeps
-    // pptxgenjs's internal slide ordering deterministic (Promise.all
-    // would race on shared internal state).
-    for (const s of spec.slides) {
-      await renderSlideByKind(pres, s, theme)
-    }
-
-    const jobId = `${Date.now().toString(36)}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}`
+    const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     const outPath = path.join(TMP_ROOT, `${jobId}.pptx`)
-    await pres.writeFile({ fileName: outPath })
+    fs.writeFileSync(outPath, buffer)
 
-    const buf = fs.readFileSync(outPath)
     res
       .status(200)
       .set({
@@ -1425,11 +1443,15 @@ app.post('/render', async (req, res) => {
           'application/vnd.openxmlformats-officedocument.presentationml.presentation',
         'X-Pptx-Job-Id': jobId,
         'X-Pptx-Path': outPath,
+        // QA alignment: whether slide 0 is a renderer-made cover, and the
+        // rendered kind of every slide (cover first when prepended).
+        'X-Pptx-Cover-Prepended': coverPrepended ? '1' : '0',
+        'X-Pptx-Slide-Kinds': kinds.join(','),
       })
-      .send(buf)
+      .send(buffer)
   } catch (err) {
     console.error('[render] error:', err)
-    res.status(500).json({ error: String(err && err.message) || 'render failed' })
+    res.status(err && err.status === 413 ? 413 : 500).json({ error: String(err && err.message) || 'render failed' })
   }
 })
 
@@ -1584,7 +1606,8 @@ function extractShapesFromSlideXml(xml) {
     while ((t = textRegex.exec(block)) !== null) {
       textLen += t[1].length
     }
-    shapes.push({ x: xInch, y: yInch, w: wInch, h: hInch, textLen })
+    const isSlideNum = /type="slidenum"/.test(block)
+    shapes.push({ x: xInch, y: yInch, w: wInch, h: hInch, textLen, isSlideNum })
   }
   const picRegex = /<p:pic\b[\s\S]*?<\/p:pic>/g
   while ((m = picRegex.exec(xml)) !== null) {
@@ -1658,9 +1681,23 @@ function findLargestEmptyRegion(shapes) {
   return maxRegion
 }
 
-function analyseSlide(shapes) {
+// Kinds whose body is expected to fill the slide. Everything else (cover,
+// section_break, stat_callout, quote) is sparse BY DESIGN and must not be
+// judged on whitespace — a big number on an empty page is the point.
+const WHITESPACE_JUDGED_KINDS = new Set(['standard', 'two_column', 'icon_rows', 'image_focus'])
+
+// One shape drawn inside another (an icon glyph inside its circle, a scrim
+// over a hero image) is containment, not an overlap defect.
+function isContainment(a, b, ix1, iy1, ix2, iy2) {
+  const inter = (ix2 - ix1) * (iy2 - iy1)
+  const smaller = Math.min(a.w * a.h, b.w * b.h)
+  return smaller > 0 && inter >= smaller * 0.9
+}
+
+function analyseSlide(shapes, kind) {
   const defects = []
-  const largestEmptyCells = findLargestEmptyRegion(shapes)
+  const judgeWhitespace = kind === undefined || WHITESPACE_JUDGED_KINDS.has(String(kind))
+  const largestEmptyCells = judgeWhitespace ? findLargestEmptyRegion(shapes) : 0
   if (largestEmptyCells >= MAX_EMPTY_CELLS_CRIT) {
     defects.push({
       severity: 'critical',
@@ -1685,7 +1722,7 @@ function analyseSlide(shapes) {
     }
   }
   const clampedCover = Math.min(coveredArea, SLIDE_AREA_INCH)
-  const wsRatio = (SLIDE_AREA_INCH - clampedCover) / SLIDE_AREA_INCH
+  const wsRatio = judgeWhitespace ? (SLIDE_AREA_INCH - clampedCover) / SLIDE_AREA_INCH : 0
   if (wsRatio > WHITESPACE_RATIO_CRIT) {
     defects.push({
       severity: 'critical',
@@ -1700,6 +1737,7 @@ function analyseSlide(shapes) {
     })
   }
   for (const s of shapes) {
+    if (s.isSlideNum) continue // master placeholder, not content
     const right = s.x + s.w
     const bottom = s.y + s.h
     if (right > SLIDE_W_INCH + 0.01) {
@@ -1724,9 +1762,10 @@ function analyseSlide(shapes) {
       const iy1 = Math.max(a.y, b.y)
       const ix2 = Math.min(a.x + a.w, b.x + b.w)
       const iy2 = Math.min(a.y + a.h, b.y + b.h)
+      if (a.isSlideNum || b.isSlideNum) continue
       if (ix2 > ix1 && iy2 > iy1) {
         const area = (ix2 - ix1) * (iy2 - iy1)
-        if (area > OVERLAP_MIN_SQ_INCH) {
+        if (area > OVERLAP_MIN_SQ_INCH && !isContainment(a, b, ix1, iy1, ix2, iy2)) {
           defects.push({
             severity: 'warning',
             kind: 'overlap',
@@ -1753,10 +1792,14 @@ function analyseSlide(shapes) {
 
 app.post('/qa-geometric', async (req, res) => {
   try {
-    const { pptxBase64 } = req.body || {}
+    const { pptxBase64, kinds } = req.body || {}
     if (typeof pptxBase64 !== 'string' || pptxBase64.length === 0) {
       return res.status(400).json({ error: 'pptxBase64 required' })
     }
+    // Optional: rendered kind per slide (same order as the deck, cover first
+    // when the renderer prepended one) so sparse-by-design pages aren't
+    // judged on whitespace. Missing/short → legacy behaviour (judge all).
+    const kindList = Array.isArray(kinds) ? kinds.map(String) : []
     let zip
     try {
       zip = await JSZip.loadAsync(Buffer.from(pptxBase64, 'base64'))
@@ -1783,7 +1826,7 @@ app.post('/qa-geometric', async (req, res) => {
         continue
       }
       const shapes = extractShapesFromSlideXml(xml)
-      const slideDefects = analyseSlide(shapes)
+      const slideDefects = analyseSlide(shapes, kindList[i])
       for (const d of slideDefects) {
         defects.push({ slide_index: i, ...d })
       }
@@ -1797,6 +1840,22 @@ app.post('/qa-geometric', async (req, res) => {
   }
 })
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[pptx-renderer] listening on :${PORT}`)
-})
+if (require.main === module) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[pptx-renderer] listening on :${PORT}`)
+  })
+}
+
+// Exported for tests (node tests/*.js) — nothing listens on require.
+module.exports = {
+  app,
+  renderSpec,
+  effectiveKind,
+  analyseSlide,
+  extractShapesFromSlideXml,
+  findLargestEmptyRegion,
+  parseBulletHierarchy,
+  pickSectionTitleFont,
+  THEMES,
+  WHITESPACE_JUDGED_KINDS,
+}

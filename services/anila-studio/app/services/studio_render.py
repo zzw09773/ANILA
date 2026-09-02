@@ -575,6 +575,28 @@ async def _hydrate_images(
     return spec_dict
 
 
+class RenderOutput(tuple):
+    """``(pptx_bytes, pptx_path)`` that still unpacks as a 2-tuple, plus the
+    QA alignment facts the renderer reports in headers:
+
+    * ``kinds`` — rendered kind per slide in deck order (``cover`` first when
+      the renderer prepended its own title slide);
+    * ``cover_prepended`` — whether rendered index 0 is that synthetic cover.
+
+    Kept as a tuple subclass so every existing ``bytes, path = await
+    _render_pptx(...)`` call (and test fake) keeps working unchanged.
+    """
+
+    kinds: list[str]
+    cover_prepended: bool
+
+    def __new__(cls, pptx_bytes: bytes, pptx_path: str, *, kinds: list[str] | None = None, cover_prepended: bool = False):
+        self = super().__new__(cls, (pptx_bytes, pptx_path))
+        self.kinds = list(kinds or [])
+        self.cover_prepended = bool(cover_prepended)
+        return self
+
+
 async def _render_pptx(
     spec: SlidesSpec,
     images_lookup: dict[str, dict[str, Any]] | None = None,
@@ -583,7 +605,7 @@ async def _render_pptx(
     deck_base_seed: int | None = None,
     llm: "_StudioLLMAdapter | None" = None,
     deck_style: "StyleDescriptor | None" = None,
-) -> tuple[bytes, str]:
+) -> "RenderOutput":
     """POST spec → renderer → (pptx bytes, server-side path).
 
     Returns the path so /screenshots can refer to it without us having to
@@ -647,4 +669,7 @@ async def _render_pptx(
             detail=f"pptx-renderer /render returned {r.status_code}: {r.text[:300]}",
         )
     pptx_path = r.headers.get("X-Pptx-Path", "")
-    return r.content, pptx_path
+    kinds_header = r.headers.get("X-Pptx-Slide-Kinds", "")
+    kinds = [k for k in kinds_header.split(",") if k] if kinds_header else []
+    cover_prepended = r.headers.get("X-Pptx-Cover-Prepended", "0") == "1"
+    return RenderOutput(r.content, pptx_path, kinds=kinds, cover_prepended=cover_prepended)

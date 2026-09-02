@@ -49,6 +49,11 @@ SCHEMA_CORRECTION_PASSES = 1
 # tend to produce diminishing returns and eat seconds of wall-clock.
 VISUAL_QA_PASSES = 1
 
+# Output budget for the defect-fix call (it re-emits the whole SlidesSpec).
+# A 15-slide spec is ~6k tokens; without a cap a thinking-mode model ran
+# 336 s on 2026-09-02 and the job died at the 300 s transport timeout.
+FIX_MAX_TOKENS = 8192
+
 # ── Services / models ─────────────────────────────────────────────────────
 # Renderer service — same docker network, same compose stack.
 RENDERER_BASE_URL = "http://pptx-renderer:7100"

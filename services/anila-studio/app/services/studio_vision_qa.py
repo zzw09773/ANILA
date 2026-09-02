@@ -31,6 +31,7 @@ from app.services.llm_json import (
     loads_lenient as _loads_lenient,
 )
 from app.services.studio_config import (
+    FIX_MAX_TOKENS,
     RENDERER_BASE_URL,
     SLIDES_LLM_MODEL,
     VISION_LLM_MODEL,
@@ -179,13 +180,50 @@ def _merge_defects(
     return out
 
 
+class DefectReport(list):
+    """``list[VisualDefect]`` plus what the QA pass could NOT do.
+
+    ``vision_skipped`` is a human-readable reason when the vision model did
+    not inspect the slides (e.g. it rejects image input); the pipeline turns
+    it into a JobStatus warning instead of failing the job.
+    """
+
+    vision_skipped: str | None = None
+
+
+def to_spec_indices(
+    defects: list[VisualDefect], *, cover_prepended: bool,
+) -> list[VisualDefect]:
+    """Map renderer slide indices back onto ``spec.slides`` indices.
+
+    The renderer prepends its own cover when ``spec.slides[0]`` is not a
+    ``section_break``; screenshots and geometric QA index the rendered deck,
+    while the fix prompt and JobStatus talk about spec slides. When a cover
+    was prepended, rendered 0 has no spec counterpart (its defects are
+    dropped — the cover is the renderer's, not the model's) and every other
+    index shifts down by one.
+    """
+    if not cover_prepended:
+        return list(defects)
+    out: list[VisualDefect] = []
+    for d in defects:
+        if d.slide_index == 0:
+            continue
+        out.append(d.model_copy(update={"slide_index": d.slide_index - 1}))
+    return out
+
+
 async def visual_qa(
     bearer: str,
     pptx_path: str,
     *,
     pptx_bytes: bytes | None = None,
-) -> list[VisualDefect]:
+    kinds: list[str] | None = None,
+) -> DefectReport:
     """Run geometric + vision QA on every slide of a rendered .pptx.
+
+    Indices in the returned defects are RENDERED indices; the caller maps
+    them with :func:`to_spec_indices`.
 
     Geometric QA runs first. If it flags `critical` defects on a slide,
     we still run vision QA on the *other* slides (cheaper to short-circuit
@@ -196,10 +234,11 @@ async def visual_qa(
     # straight from the renderer; if we weren't handed them, skip it.
     geom_defects: list[VisualDefect] = []
     critical_slides: set[int] = set()
+    report = DefectReport()
     if pptx_bytes:
         try:
             raw = await run_geometric_qa(
-                pptx_bytes, renderer_url=RENDERER_BASE_URL,
+                pptx_bytes, renderer_url=RENDERER_BASE_URL, kinds=kinds,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("Geometric QA raised unexpectedly: %s", e)
@@ -211,7 +250,9 @@ async def visual_qa(
 
     pngs = await _capture_screenshots(pptx_path)
     if not pngs:
-        return geom_defects
+        report.extend(geom_defects)
+        report.vision_skipped = "渲染器沒有回傳投影片截圖"
+        return report
 
     # Sequential per-slide: gemma4 backend is single-tenant; concurrent
     # requests can starve each other on the GPU. Cap parallelism at 2 to
@@ -219,12 +260,27 @@ async def visual_qa(
     # geometric QA already marked critical — the fix-pass will handle
     # them and burning vision tokens on a known-broken slide is wasteful.
     semaphore = asyncio.Semaphore(2)
+    skipped_reason: list[str] = []
 
     async def _one(idx: int, b: bytes) -> list[VisualDefect]:
         if idx in critical_slides:
             return []
+        if skipped_reason:
+            return []  # the model already told us it will not look at images
         async with semaphore:
-            return await _inspect_slide_visually(bearer, idx, b)
+            try:
+                return await _inspect_slide_visually(bearer, idx, b)
+            except HTTPException as exc:
+                # The vision model rejected the call (no image support,
+                # gateway error…). Vision QA is best-effort: keep the
+                # geometric findings, tell the caller, do not fail the job.
+                if not skipped_reason:
+                    skipped_reason.append(str(exc.detail)[:160])
+                    logger.warning(
+                        "Vision QA unavailable (slide %d): %s — skipping the "
+                        "vision pass for this deck.", idx, exc.detail,
+                    )
+                return []
 
     results = await asyncio.gather(
         *(_one(i, b) for i, b in enumerate(pngs)),
@@ -233,7 +289,10 @@ async def visual_qa(
     vision_flat: list[VisualDefect] = []
     for r in results:
         vision_flat.extend(r)
-    return _merge_defects(geom_defects, vision_flat)
+    report.extend(_merge_defects(geom_defects, vision_flat))
+    if skipped_reason:
+        report.vision_skipped = skipped_reason[0]
+    return report
 
 
 async def fix_spec_with_defects(
@@ -270,6 +329,7 @@ async def fix_spec_with_defects(
     ]
     raw = await _call_llm_chat(
         bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
+        max_tokens=FIX_MAX_TOKENS,
     )
     extracted = _extract_json_object(raw)
     return SlidesSpec.model_validate(_loads_lenient(extracted))

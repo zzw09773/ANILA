@@ -156,6 +156,13 @@ _CITATION_RE = re.compile(
     r"\s*[\)）]\s*$",
 )
 
+# 2026-09-02 活體：模型實際寫的是裸的 `[8]`、`[5, 10]`、`【6】`，不是 prompt
+# 教的「(參 [N])」，六成投影片帶著編號上台。結尾的整組數字括號一律移除；
+# 句中的「如 [5] 所述」不動（那是文字的一部分，不是尾註）。
+_BARE_CITATION_RE = re.compile(
+    r"\s*[\[【]\s*\d+(?:\s*[,，、]\s*\d+)*\s*[\]】]\s*$",
+)
+
 
 def strip_inline_citations(text: str | None) -> str | None:
     """Remove RAG citation markers (e.g. '(參 [5])') from end of text.
@@ -167,8 +174,9 @@ def strip_inline_citations(text: str | None) -> str | None:
     if not text:
         return text
     text = str(text)
-    for _ in range(3):
+    for _ in range(6):
         new = _CITATION_RE.sub("", text).rstrip()
+        new = _BARE_CITATION_RE.sub("", new).rstrip()
         if new == text:
             break
         text = new
@@ -204,7 +212,41 @@ def strip_latex(text: str | None) -> str | None:
 # Cache so repeated normalize() calls share one warm instance per process.
 @lru_cache(maxsize=1)
 def _get_converter() -> OpenCC:
-    return OpenCC("s2twp")
+    # 2026-09-02：從 s2twp 改成 s2tw。s2twp 的「台灣用詞」替換表把法規／行政
+    # 文本裡的本義詞改壞：「程序保障」→「程式保障」、「共同項目」→「共同專案」、
+    # 「文件」→「檔案」、「質量」→「品質」。字形轉換保留，用詞只換下面這張
+    # 沒有歧義的技術詞表。
+    return OpenCC("s2tw")
+
+
+# 只收「在任何脈絡都不會是本義」的大陸技術用詞。有法律／行政本義的一律不收：
+# 程序、項目、文件、質量、支持、應用、單位、水平、對象。
+_TAIWAN_TERMS: tuple[tuple[str, str], ...] = (
+    ("視頻", "影片"),
+    ("軟件", "軟體"),
+    ("硬件", "硬體"),
+    ("網絡", "網路"),
+    ("激光", "雷射"),
+    ("信息", "資訊"),
+    ("鼠標", "滑鼠"),
+    ("屏幕", "螢幕"),
+    ("分辨率", "解析度"),
+    ("打印", "列印"),
+    ("登錄", "登入"),
+    ("默認", "預設"),
+    ("內存", "記憶體"),
+    ("服務器", "伺服器"),
+    ("數據庫", "資料庫"),
+    ("優化", "最佳化"),
+    ("智能", "智慧"),
+)
+
+
+def _apply_taiwan_terms(text: str) -> str:
+    for cn, tw in _TAIWAN_TERMS:
+        if cn in text:
+            text = text.replace(cn, tw)
+    return text
 
 
 def _convert(text: str | None, keep_citations: bool = False) -> str | None:
@@ -233,7 +275,7 @@ def _convert(text: str | None, keep_citations: bool = False) -> str | None:
     text = strip_latex(text)  # Round 3 Patch I: $\rightarrow$ → →
     converter = _get_converter()
     converted = converter.convert(text)
-    return converted
+    return _apply_taiwan_terms(converted)
 
 
 def _normalize_slide(slide: Slide) -> Slide:

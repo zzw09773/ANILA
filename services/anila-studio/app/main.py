@@ -36,6 +36,30 @@ from app.services.job_store import get_job_store
 logger = logging.getLogger(__name__)
 
 
+def configure_logging(level_name: str | None = None) -> int:
+    """Apply ``settings.LOG_LEVEL`` to the root logger once.
+
+    Until 2026-09-02 nothing ever called ``basicConfig``, so every
+    ``logger.info`` in the pipeline (layout audit, rebalance, s2tw diffs,
+    ``[H-DIAG]``) was silently dropped and ``LOG_LEVEL`` did nothing.
+    uvicorn installs its own handlers for its own loggers; we only touch the
+    root so those are not doubled.
+    """
+    name = (level_name or settings.LOG_LEVEL or "INFO").upper()
+    level = getattr(logging, name, logging.INFO)
+    root = logging.getLogger()
+    if not root.handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+    root.setLevel(level)
+    return level
+
+
+configure_logging()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start + stop the cross-service auth deps.

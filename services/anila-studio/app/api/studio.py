@@ -129,6 +129,7 @@ from app.services.studio_retrieval import (
 from app.services.studio_text_normalizer import normalize_spec
 from app.services.studio_vision_qa import (
     fix_spec_with_defects as _fix_spec_with_defects,
+    to_spec_indices as _to_spec_indices,
     visual_qa as _visual_qa,
 )
 
@@ -141,6 +142,11 @@ logger = logging.getLogger(__name__)
 FALLBACK_DECK_WARNING = (
     "模型無法產出合法簡報結構，已改為說明卡。請重試或精簡補充指示。"
 )
+# The fix-and-rerender pass failed (LLM timeout / bad JSON): the deck the
+# user gets is the one rendered BEFORE the fix, with the defects listed.
+FIX_FAILED_WARNING = "視覺修正這一步沒有完成，交付的是修正前的版本；缺陷清單仍附上。"
+# The vision model would not inspect the slides; only geometric QA ran.
+VISION_SKIPPED_WARNING = "視覺檢查未執行（模型不接受圖片輸入），只做了版面幾何檢查。"
 
 
 # ── Tunables → moved to app/services/studio_config.py (god-module split) ─────
@@ -180,6 +186,7 @@ async def _generate_validated_spec(
     images: list[dict[str, Any]] | None = None,
     *,
     retrieval_failed: bool,
+    illustrations_enabled: bool = True,
 ) -> tuple[SlidesSpec, bool]:
     """LLM → JSON → SlidesSpec, retrying once on validation failure.
 
@@ -196,6 +203,7 @@ async def _generate_validated_spec(
     system, user_msg = _build_generation_prompt(
         collection_name, preset, extra_instructions, chunks, images=images,
         retrieval_failed=retrieval_failed,
+        illustrations_enabled=illustrations_enabled,
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
@@ -638,6 +646,10 @@ async def _run_pipeline(
     }
 
     # ── Steps 4-6: LLM → JSON → SlidesSpec ──
+    # Only teach the model about generated illustrations when a FLUX
+    # provider is actually resolvable here; otherwise hydration would drop
+    # every image_prompt it writes and leave hollow one-line slides behind.
+    illustrations_enabled = await get_active_flux_provider() is not None
     await updater.set(step=JOB_STEP_GENERATING)
     spec, used_fallback = await _generate_validated_spec(
         bearer,
@@ -647,6 +659,7 @@ async def _run_pipeline(
         chunks,
         images=images,
         retrieval_failed=retrieval_failed,
+        illustrations_enabled=illustrations_enabled,
     )
     # ── Step 6.5: zh-CN → zh-TW post-processing ──
     # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
@@ -734,11 +747,12 @@ async def _run_pipeline(
 
     # ── Step 7: render ──
     await updater.set(step=JOB_STEP_RENDERING)
-    pptx_bytes, pptx_path = await _render_pptx(
+    render_out = await _render_pptx(
         spec, images_lookup, bearer=bearer,
         deck_base_seed=deck_base_seed, llm=flux_llm,
         deck_style=deck_style,
     )
+    pptx_bytes, pptx_path = render_out
 
     # ── Step 8: vision QA + (optional) one fix-and-rerender ──
     # Skip vision QA entirely when serving the fallback deck. The
@@ -748,6 +762,8 @@ async def _run_pipeline(
     # already-broken LLM again. Better to ship the fallback as-is.
     final_defects: list[VisualDefect] = []
     qa_passes = 0
+    fix_failed = False
+    vision_skipped = False
     if pptx_path and not used_fallback:
         for _ in range(VISUAL_QA_PASSES + 1):
             qa_passes += 1
@@ -755,32 +771,46 @@ async def _run_pipeline(
                 step=JOB_STEP_QA,
                 qa_passes=qa_passes,
             )
-            defects = await _visual_qa(
+            # The renderer reports each slide's rendered kind and whether it
+            # prepended a cover; defects come back in RENDERED indices and are
+            # mapped onto spec indices before anyone (fix prompt, UI) sees them.
+            render_kinds = list(getattr(render_out, "kinds", None) or [])
+            cover_prepended = bool(getattr(render_out, "cover_prepended", False))
+            raw_defects = await _visual_qa(
                 bearer, pptx_path, pptx_bytes=pptx_bytes,
+                **({"kinds": render_kinds} if render_kinds else {}),
             )
+            if getattr(raw_defects, "vision_skipped", None):
+                vision_skipped = True
+            defects = _to_spec_indices(list(raw_defects), cover_prepended=cover_prepended)
             critical = [d for d in defects if d.severity == "critical"]
             if not critical or qa_passes > VISUAL_QA_PASSES:
                 final_defects = defects
                 break
             # Critical defects exist AND we still have a fix budget —
-            # ask the LLM to revise, re-render, re-QA.
+            # ask the LLM to revise, re-render, re-QA. Any failure here
+            # (timeout, bad JSON, csp error) keeps the deck we already
+            # rendered: the fix is an improvement pass, not a gate.
             await updater.set(step=JOB_STEP_FIXING)
             try:
-                spec = await _fix_spec_with_defects(bearer, spec, critical)
-            except (ValueError, ValidationError, json.JSONDecodeError) as e:
-                logger.warning("Studio defect-fix LLM call failed: %s", e)
+                fixed = await _fix_spec_with_defects(bearer, spec, critical)
+                await updater.set(
+                    step=JOB_STEP_RENDERING,
+                    title=fixed.title,
+                    slide_count=len(fixed.slides),
+                )
+                render_out = await _render_pptx(
+                    fixed, images_lookup, bearer=bearer,
+                    deck_base_seed=deck_base_seed, llm=flux_llm,
+                    deck_style=deck_style,
+                )
+            except Exception as e:  # noqa: BLE001 — never lose a rendered deck
+                logger.warning("Studio defect-fix pass failed, shipping the pre-fix deck: %s", e)
+                fix_failed = True
                 final_defects = defects
                 break
-            await updater.set(
-                step=JOB_STEP_RENDERING,
-                title=spec.title,
-                slide_count=len(spec.slides),
-            )
-            pptx_bytes, pptx_path = await _render_pptx(
-                spec, images_lookup, bearer=bearer,
-                deck_base_seed=deck_base_seed, llm=flux_llm,
-                deck_style=deck_style,
-            )
+            spec = fixed
+            pptx_bytes, pptx_path = render_out
 
     # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
     # Fallback deck / failed retrieval are still a downloadable .pptx (so
@@ -792,6 +822,8 @@ async def _run_pipeline(
         for note, fired in (
             (RETRIEVAL_FAILED_WARNING, retrieval_failed),
             (FALLBACK_DECK_WARNING, used_fallback),
+            (FIX_FAILED_WARNING, fix_failed),
+            (VISION_SKIPPED_WARNING, vision_skipped),
         )
         if fired
     ]

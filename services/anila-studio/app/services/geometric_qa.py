@@ -28,15 +28,23 @@ async def run_geometric_qa(
     *,
     renderer_url: str | None = None,
     timeout: float = 30.0,
+    kinds: list[str] | None = None,
 ) -> list[GeometricDefect]:
     """POST pptx to renderer /qa-geometric, return parsed defect list.
+
+    ``kinds`` is the rendered kind of every slide in deck order (``cover``
+    first when the renderer prepended one). The renderer uses it to skip the
+    whitespace rule on pages that are sparse by design (cover, section_break,
+    stat_callout, quote); without it every cover was a "critical whitespace".
 
     On any error (renderer down, timeout, malformed response), return
     empty list — geometric QA is best-effort; the vision QA layer
     will still cover. Logs the failure.
     """
     url = renderer_url or os.environ.get("RENDERER_BASE_URL", "http://pptx-renderer:7100")
-    payload = {"pptxBase64": base64.b64encode(pptx_bytes).decode("ascii")}
+    payload: dict[str, Any] = {"pptxBase64": base64.b64encode(pptx_bytes).decode("ascii")}
+    if kinds:
+        payload["kinds"] = list(kinds)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(f"{url.rstrip('/')}/qa-geometric", json=payload)

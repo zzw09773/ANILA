@@ -333,7 +333,10 @@ def _audit_layout_distribution(
             is_disguise = True
         else:
             continue
-        if len(s.bullets) < 3:
+        # A disguise slide is a hollow shell no matter how few bullets it
+        # has — the 2026-09-02 deck's one-bullet "流程圖" page sailed through
+        # here because of the 3-bullet gate.
+        if len(s.bullets) < 3 and not is_disguise:
             continue
         title_low = s.title.lower()
         matched_kw = next(
