@@ -609,7 +609,8 @@ def test_hits_ride_the_system_message_only(
 def test_existing_system_prompt_is_kept(
     client, db, actor, model_target, kb
 ):
-    """注入是 prepend（照 ``_inject_memory`` 樣板），不是覆蓋。"""
+    """注入是 append（照 ``_inject_memory`` 樣板），不是覆蓋，也不再 prepend：
+    呼叫端的靜態前導必須留在最前面（harness §6-1，2026-09-02）。"""
     kb.result = KbResult(state=KbState.SEARCHED_HIT, hits=[_hit(1), _hit(2)])
     _chat(
         client,
@@ -620,7 +621,9 @@ def test_existing_system_prompt_is_kept(
     )
     system = _system_text(_FakeClient.last_body)
     assert "原本的系統提示" in system
-    assert system.index(_hit(1).content) < system.index("原本的系統提示")
+    assert system.startswith("原本的系統提示")
+    assert system.index("原本的系統提示") < system.index(_hit(1).content)
+    assert system.rstrip().endswith(proxy_api.KB_LANGUAGE_REMINDER)
 
 
 # ── 5. 失敗不擋回答 ─────────────────────────────────────────────────────────

@@ -299,7 +299,12 @@ async def _inject_memory(
     *,
     exclude_conversation_id: int | None,
 ) -> memory_service.MemoryReadResult | None:
-    """Mutate ``body`` in-place to prepend a memory block to system msg.
+    """Mutate ``body`` in-place to append a memory block to the system msg.
+
+    2026-09-02 (harness §6-1): the block goes *after* the caller's system text,
+    never before it — the Router's system prompt starts with the static common
+    preamble, and keeping that prefix byte-identical across requests is what
+    lets the model server's prefix cache hit.
 
     Returns the read result (so the caller can inspect
     ``encryption_inherited``) or None when there's no user message to
@@ -328,20 +333,20 @@ async def _inject_memory(
         return result
 
     messages = list(body.get("messages") or [])
-    # Find a leading system message to prepend the memory block to.
+    # Find a leading system message to append the memory block to.
     # Some clients send the system role as messages[0]; if there isn't
     # one, we insert a fresh system message at index 0 so the memory
     # block always lands BEFORE the assistant sees user content.
     if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
         existing = messages[0].get("content") or ""
         if isinstance(existing, str):
-            messages[0] = {**messages[0], "content": f"{result.block}\n\n{existing}"}
+            messages[0] = {**messages[0], "content": f"{existing}\n\n{result.block}" if existing else result.block}
         else:
             # Multimodal system content — push memory as a sibling text
-            # part rather than touching the existing parts list.
+            # part after the existing parts rather than touching them.
             messages[0] = {
                 **messages[0],
-                "content": [{"type": "text", "text": result.block}, *list(existing)],
+                "content": [*list(existing), {"type": "text", "text": result.block}],
             }
     else:
         messages.insert(0, {"role": "system", "content": result.block})
@@ -672,29 +677,36 @@ def _build_kb_block(result: KbResult) -> str | None:
     return "\n\n".join(parts)
 
 
-def _inject_kb_block(body: dict, block: str) -> None:
-    """Mutate ``body`` in-place to prepend the regulation block to system msg.
+# 規章段落之後再提醒一次語言（harness §6-4）：長 context 下小模型會忘記前導
+# 開頭的語言規則，這一行是最便宜的修法。它永遠是 system 訊息的最後一行。
+KB_LANGUAGE_REMINDER = "以上段落之後，請一律以繁體中文（台灣用語）回答。"
 
-    照 ``_inject_memory`` 的樣板：有 system 訊息就 prepend，沒有就在 index 0
-    插一則。**只動 messages[0]**——見本節開頭的來源可分辨性說明。
+
+def _inject_kb_block(body: dict, block: str) -> None:
+    """Mutate ``body`` in-place to append the regulation block to the system msg.
+
+    照 ``_inject_memory`` 的樣板：有 system 訊息就 **append**，沒有就在 index 0
+    插一則；區塊之後補一行語言提醒。**只動 messages[0]**。
+    2026-09-02 之前是 prepend，把 Router 的靜態前導推到中段（見 harness §6-1）。
     """
+    tail = f"{block}\n\n{KB_LANGUAGE_REMINDER}"
     messages = list(body.get("messages") or [])
     if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
         existing = messages[0].get("content") or ""
         if isinstance(existing, str):
             messages[0] = {
                 **messages[0],
-                "content": f"{block}\n\n{existing}" if existing else block,
+                "content": f"{existing}\n\n{tail}" if existing else tail,
             }
         else:
             # Multimodal system content — 規章段落當成一個並列的 text part，
-            # 不去動既有的 parts。
+            # 接在既有 parts 之後，不去動它們。
             messages[0] = {
                 **messages[0],
-                "content": [{"type": "text", "text": block}, *list(existing)],
+                "content": [*list(existing), {"type": "text", "text": tail}],
             }
     else:
-        messages.insert(0, {"role": "system", "content": block})
+        messages.insert(0, {"role": "system", "content": tail})
     body["messages"] = messages
 
 

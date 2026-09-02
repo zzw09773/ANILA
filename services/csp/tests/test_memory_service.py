@@ -171,11 +171,11 @@ def test_memory_read_result_encryption_inherited_property():
 
 
 @pytest.mark.asyncio
-async def test_inject_memory_prepends_to_existing_system_message(monkeypatch):
+async def test_inject_memory_appends_to_existing_system_message(monkeypatch):
     """When the client already sends a system message, the memory
-    block prepends to its content — it doesn't replace it. Replacing
-    would silently drop client-side instructions like the ZHTW
-    directive we ship from ANILALM.
+    block is appended after its content — it doesn't replace it, and
+    (2026-09-02, harness §6-1) it no longer goes in front of it: the
+    caller's static preamble must stay the byte-identical prefix.
 
     Patches ``build_memory_block`` so no DB is needed — the test is
     about the proxy-side message-array merge logic.
@@ -202,8 +202,8 @@ async def test_inject_memory_prepends_to_existing_system_message(monkeypatch):
     )
     assert result is not None
     assert body["messages"][0]["role"] == "system"
-    assert body["messages"][0]["content"].startswith("MEMORY_BLOCK_SENTINEL")
-    assert "client-side rules go here" in body["messages"][0]["content"]
+    assert body["messages"][0]["content"].startswith("client-side rules go here")
+    assert body["messages"][0]["content"].endswith("MEMORY_BLOCK_SENTINEL")
     # User message untouched.
     assert body["messages"][1] == {"role": "user", "content": "hello"}
 
