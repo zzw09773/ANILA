@@ -2,8 +2,9 @@
 
 設計依據：``docs/designs/ncsist-prompt-localization-and-harness.md`` §6-5、§9b。
 
-**目前已接線**：僅 ``chips``（``PromptSuggestion`` 經 ``get_sampling("chips")``
-讀 temperature／max_tokens）。
+**已接線**：``router``（2026-09-02，`api/router_server.py` 送上游的每一通
+主模型呼叫都帶這一列；呼叫端請求本身有帶 temperature／max_tokens 時以呼叫端為準）、
+``chips``（``PromptSuggestion``）。
 
 **建議值（尚未接線）**：``rag_qa``／``chat``／``json_gen``／``title``——表內數字
 供後續入口收斂時對齊；改它們**不會**改變今日執行行為。§9b 實測：gemma4
@@ -24,6 +25,10 @@ class SamplingDefaults:
 
 
 TASK_SAMPLING: dict[str, SamplingDefaults] = {
+    # Router 每一通主模型呼叫（分派判斷、直答、改寫）。Router 分不出這一回合是
+    # 規章問答還是閒聊，取兩者之間；max_tokens 取 rag_qa 的地板——思考變體單題
+    # reasoning 就會燒掉 1,000+ tokens（§9b-2 實測），給少了正文會是空的。
+    "router": SamplingDefaults(temperature=0.3, max_tokens=4096),  # 已接線
     "rag_qa": SamplingDefaults(temperature=0.2, max_tokens=4096),  # 建議值（尚未接線）
     "chat": SamplingDefaults(temperature=0.4, max_tokens=2048),  # 建議值（尚未接線）
     "chips": SamplingDefaults(temperature=0.4, max_tokens=1024),  # 已接線

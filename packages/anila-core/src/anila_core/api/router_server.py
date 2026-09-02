@@ -12,6 +12,7 @@ All LLM/agent calls go through myCSPPlatform — never to upstream directly.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -40,6 +41,7 @@ from ..memory.contract import (
 from ..memory.short_term import Session, SqliteSession, new_session_id
 from ..models.message import UserMessage
 from ..prompts import COMMON_PREAMBLE, IDENTITY
+from ..prompts.sampling import get_sampling
 from . import router_prompts
 from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
 from ..tools.dispatch_tool import dispatch_to_agent_response
@@ -1095,6 +1097,7 @@ def create_router_app(
     async def chat_completions(request: Request) -> StreamingResponse | JSONResponse:
         caller_api_key = _extract_bearer_api_key(request)
         body: dict = await request.json()
+        REQUEST_SAMPLING.set(sampling_overrides_from_body(body) if isinstance(body, dict) else {})
         messages: list[dict] = body.get("messages", [])
         stream: bool = body.get("stream", False)
 
@@ -1883,6 +1886,7 @@ def create_router_app(
         """
         caller_api_key = _extract_bearer_api_key(request)
         body: dict = await request.json()
+        REQUEST_SAMPLING.set(sampling_overrides_from_body(body) if isinstance(body, dict) else {})
 
         if "interrupt_id" not in body or "answer" not in body:
             raise HTTPException(
@@ -2576,11 +2580,50 @@ async def _recompose_reply(
     return result["content"], "applied"
 
 
+# ---------------------------------------------------------------------------
+# Sampling parameters (harness §6-5) and the empty-reply rule (§9b-2)
+# ---------------------------------------------------------------------------
+# Every upstream call carries temperature / max_tokens from the ``router`` row
+# of the sampling table; a caller that sends its own values on the inbound
+# /v1/chat/completions wins. The overrides travel in a ContextVar so the two
+# call helpers keep their signature (many test fakes pin it).
+REQUEST_SAMPLING: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "anila_router_request_sampling", default=None
+)
+_EMPTY_LENGTH_ERROR = "LLM 回覆為空（finish_reason=length：輸出額度被思考用完，已重試一次）"
+
+
+def sampling_overrides_from_body(body: Mapping[str, Any]) -> dict[str, Any]:
+    """Pick the caller-supplied sampling fields worth honouring; drop garbage."""
+    out: dict[str, Any] = {}
+    temp = body.get("temperature")
+    if isinstance(temp, (int, float)) and not isinstance(temp, bool) and 0 <= float(temp) <= 2:
+        out["temperature"] = float(temp)
+    mt = body.get("max_tokens")
+    if isinstance(mt, int) and not isinstance(mt, bool) and mt > 0:
+        out["max_tokens"] = mt
+    return out
+
+
+def _sampling_payload(*, max_tokens_override: int | None = None) -> dict[str, Any]:
+    base = get_sampling("router")
+    params: dict[str, Any] = {"temperature": base.temperature, "max_tokens": base.max_tokens}
+    params.update(REQUEST_SAMPLING.get() or {})
+    if max_tokens_override is not None:
+        params["max_tokens"] = max_tokens_override
+    return params
+
+
+def _finish_reason_of(choice: Mapping[str, Any]) -> str:
+    return str(choice.get("finish_reason") or "")
+
+
 async def _call_llm_non_stream(
     caller_api_key: str,
     messages: list[dict],
     *,
     forwarded_headers: dict[str, str] | None = None,
+    _retry_max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Call main LLM through CSP without SSE and return content + metadata.
 
@@ -2600,6 +2643,7 @@ async def _call_llm_non_stream(
         "model": current_router_model(),
         "messages": messages,
         "stream": False,
+        **_sampling_payload(max_tokens_override=_retry_max_tokens),
     }
     headers = {
         "Authorization": f"Bearer {caller_api_key}",
@@ -2622,7 +2666,21 @@ async def _call_llm_non_stream(
         )
         response.raise_for_status()
         data = response.json()
-        message = data["choices"][0]["message"]
+        choice = data["choices"][0]
+        message = choice["message"]
+        # Empty-reply rule (§9b-2): the budget went to reasoning and nothing
+        # reached the answer. Retry once with a doubled budget; a second blank
+        # is an error, never a silent "".
+        if _finish_reason_of(choice) == "length" and not (message.get("content") or "").strip():
+            if _retry_max_tokens is None:
+                logger.warning("LLM reply empty with finish_reason=length; retrying with doubled max_tokens")
+                return await _call_llm_non_stream(
+                    caller_api_key,
+                    messages,
+                    forwarded_headers=forwarded_headers,
+                    _retry_max_tokens=int(payload["max_tokens"]) * 2,
+                )
+            return {"content": "", "reasoning": None, "anila_meta": data.get("anila_meta"), "raw": data, "error": _EMPTY_LENGTH_ERROR}
         # Reasoning models (TensorRT-LLM / vLLM / Ollama with gpt-oss, Qwen-R,
         # DeepSeek-R1, ...) surface chain-of-thought as a separate field so the
         # final ``content`` stays clean. Normalize the two common spellings
@@ -2726,6 +2784,7 @@ async def _stream_llm_sse(
     messages: list[dict],
     *,
     forwarded_headers: dict[str, str] | None = None,
+    _retry_max_tokens: int | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Open an SSE stream to the primary LLM via CSP, yielding delta events.
 
@@ -2753,6 +2812,7 @@ async def _stream_llm_sse(
         "model": current_router_model(),
         "messages": messages,
         "stream": True,
+        **_sampling_payload(max_tokens_override=_retry_max_tokens),
     }
     headers = {
         "Authorization": f"Bearer {caller_api_key}",
@@ -2781,6 +2841,8 @@ async def _stream_llm_sse(
             # data line is consumed, so a named event can never colour the
             # unnamed frame that follows it.
             event_name: str | None = None
+            saw_content = False
+            finish_reason = ""
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line:
@@ -2793,6 +2855,22 @@ async def _stream_llm_sse(
                     continue
                 data_str = line[6:]
                 if data_str == "[DONE]":
+                    # Empty-reply rule (§9b-2), streaming flavour: nothing reached
+                    # the answer and the stream was cut by the budget → retry once
+                    # with a doubled budget; a second blank is an error event.
+                    if finish_reason == "length" and not saw_content:
+                        if _retry_max_tokens is None:
+                            logger.warning("LLM stream empty with finish_reason=length; retrying with doubled max_tokens")
+                            async for ev in _stream_llm_sse(
+                                caller_api_key,
+                                messages,
+                                forwarded_headers=forwarded_headers,
+                                _retry_max_tokens=int(payload["max_tokens"]) * 2,
+                            ):
+                                yield ev
+                            return
+                        yield {"type": "error", "error": _EMPTY_LENGTH_ERROR, "detail": "finish_reason=length, empty content"}
+                        return
                     yield {"type": "done"}
                     return
                 try:
@@ -2811,14 +2889,18 @@ async def _stream_llm_sse(
                 if isinstance(chunk, dict) and isinstance(chunk.get("anila_meta"), dict):
                     yield {"type": "meta", "anila_meta": chunk["anila_meta"]}
                 try:
-                    delta = chunk["choices"][0].get("delta", {}) or {}
+                    first_choice = chunk["choices"][0]
+                    delta = first_choice.get("delta", {}) or {}
                 except (KeyError, IndexError, TypeError):
                     continue
+                if isinstance(first_choice, dict) and first_choice.get("finish_reason"):
+                    finish_reason = str(first_choice["finish_reason"])
                 reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
                 if isinstance(reasoning_piece, str) and reasoning_piece:
                     yield {"type": "reasoning", "content": reasoning_piece}
                 content_piece = delta.get("content")
                 if isinstance(content_piece, str) and content_piece:
+                    saw_content = True
                     yield {"type": "delta", "content": content_piece}
     except httpx.RequestError as exc:
         yield {"type": "error", "error": f"LLM connection: {type(exc).__name__}", "detail": str(exc)}
