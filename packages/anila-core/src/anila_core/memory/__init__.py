@@ -25,76 +25,61 @@ which now resolve through shims under their old names. New code
 should import from the canonical sub-package.
 """
 
-# Submodule namespaces (preferred for new code)
-from . import short_term, long_term
+# 2026-09-02: lazy (PEP 562). The Router needs ``memory.short_term`` and
+# ``memory.contract`` only; the eager re-exports used to load the filesystem
+# long-term backend (extractor / consolidator / selector) into every process.
+from __future__ import annotations
 
-# ── Short-term re-exports (legacy compat + convenience) ───────────────────────
-from .short_term import (
-    InterruptRecord,
-    MemorySession,
-    Session,
-    SqliteSession,
-    close_all_connections,
-    new_interrupt_id,
-    new_session_id,
-)
+import importlib
 
-# ── Long-term re-exports — canonical user-tenant API ──────────────────────────
-from .long_term import (
-    DEFAULT_EMBED_MODEL,
-    EMBED_DIM,
-    EMBED_NATIVE_DIM,
-    EXTRACTION_SYSTEM_PROMPT,
-    MemoryAdapter,
-    MemoryReadResult,
-    RetrievedChunk,
-    UserFactDTO,
-    format_transcript_for_extraction,
-    parse_extraction_response,
-    truncate_embedding,
-)
+_SUBMODULES = ("short_term", "long_term", "contract")
+_LAZY: dict[str, str] = {
+    # short_term
+    "InterruptRecord": ".short_term",
+    "MemorySession": ".short_term",
+    "Session": ".short_term",
+    "SqliteSession": ".short_term",
+    "close_all_connections": ".short_term",
+    "new_interrupt_id": ".short_term",
+    "new_session_id": ".short_term",
+    # long_term
+    "DEFAULT_EMBED_MODEL": ".long_term",
+    "EMBED_DIM": ".long_term",
+    "EMBED_NATIVE_DIM": ".long_term",
+    "EXTRACTION_SYSTEM_PROMPT": ".long_term",
+    "MemoryAdapter": ".long_term",
+    "MemoryReadResult": ".long_term",
+    "RetrievedChunk": ".long_term",
+    "UserFactDTO": ".long_term",
+    "format_transcript_for_extraction": ".long_term",
+    "parse_extraction_response": ".long_term",
+    "truncate_embedding": ".long_term",
+    # long_term filesystem backend
+    "ConsolidationService": ".long_term.backends.filesystem",
+    "ENTRYPOINT_NAME": ".long_term.backends.filesystem",
+    "MAX_ENTRYPOINT_LINES": ".long_term.backends.filesystem",
+    "MemdirManager": ".long_term.backends.filesystem",
+    "MemoryExtractor": ".long_term.backends.filesystem",
+    "ModelBasedRelevanceSelector": ".long_term.backends.filesystem",
+    "RelevantMemory": ".long_term.backends.filesystem",
+}
 
-# ── Long-term re-exports — legacy memdir family (filesystem backend) ──────────
-from .long_term.backends.filesystem import (
-    ConsolidationService,
-    ENTRYPOINT_NAME,
-    MAX_ENTRYPOINT_LINES,
-    MemdirManager,
-    MemoryExtractor,
-    ModelBasedRelevanceSelector,
-    RelevantMemory,
-)
+__all__ = list(_SUBMODULES) + sorted(_LAZY)
 
-__all__ = [
-    # Submodule namespaces
-    "short_term",
-    "long_term",
-    # Short-term (Session Protocol + adapters)
-    "InterruptRecord",
-    "MemorySession",
-    "Session",
-    "SqliteSession",
-    "close_all_connections",
-    "new_interrupt_id",
-    "new_session_id",
-    # Long-term — user-tenant canonical API
-    "DEFAULT_EMBED_MODEL",
-    "EMBED_DIM",
-    "EMBED_NATIVE_DIM",
-    "EXTRACTION_SYSTEM_PROMPT",
-    "MemoryAdapter",
-    "MemoryReadResult",
-    "RetrievedChunk",
-    "UserFactDTO",
-    "format_transcript_for_extraction",
-    "parse_extraction_response",
-    "truncate_embedding",
-    # Long-term — filesystem (legacy memdir) backend
-    "ConsolidationService",
-    "ENTRYPOINT_NAME",
-    "MAX_ENTRYPOINT_LINES",
-    "MemdirManager",
-    "MemoryExtractor",
-    "ModelBasedRelevanceSelector",
-    "RelevantMemory",
-]
+
+def __getattr__(name: str):
+    if name in _SUBMODULES:
+        module = importlib.import_module(f".{name}", __name__)
+        globals()[name] = module
+        return module
+    try:
+        modname = _LAZY[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(importlib.import_module(modname, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY) | set(_SUBMODULES))

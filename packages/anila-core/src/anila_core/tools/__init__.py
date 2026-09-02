@@ -22,56 +22,53 @@ What still lives in this package:
 - ``plan_mode``: Sprint 9 — propose-then-execute (enter / exit).
 """
 
+# 2026-09-02: lazy (PEP 562). The Router imports ``tools.dispatch_tool`` and
+# nothing else from here; eager re-exports used to drag shell / files /
+# apply_patch / plan_mode / todo_write / ask_user (~1,800 lines, incl. a
+# subprocess tool) into the Router process. Names resolve on first access.
 from __future__ import annotations
 
-from .agent_as_tool import make_agent_tool
-from .apply_patch import (
-    PatchApplyError,
-    PatchParseError,
-    apply_patch as apply_patch_fn,
-    apply_patch_tool,
-    parse_patch,
-)
-from .ask_user import ask_user_tool
-from .files import (
-    all_file_tools,
-    file_edit_tool,
-    file_read_tool,
-    file_write_tool,
-    glob_tool,
-    grep_tool,
-)
-from .plan_mode import (
-    enter_plan_mode_tool,
-    exit_plan_mode_tool,
-    is_plan_mode_active,
-)
-from .shell import all_shell_tools, exec_bash_tool, exec_python_tool
-from .todo_write import TodoValidationError, todo_write_tool
+import importlib
 
-__all__ = [
-    "ask_user_tool",
-    "enter_plan_mode_tool",
-    "exit_plan_mode_tool",
-    "is_plan_mode_active",
-    "make_agent_tool",
-    "todo_write_tool",
-    "TodoValidationError",
-    # Sprint 12 PR 2 — file tools (workspace-scoped)
-    "file_read_tool",
-    "file_write_tool",
-    "file_edit_tool",
-    "glob_tool",
-    "grep_tool",
-    "all_file_tools",
-    # Sprint 12 PR 3 — shell tools (workspace-scoped)
-    "exec_bash_tool",
-    "exec_python_tool",
-    "all_shell_tools",
-    # Sprint 12 PR 4 — apply_patch (workspace-scoped, V4A envelope)
-    "apply_patch_tool",
-    "apply_patch_fn",
-    "parse_patch",
-    "PatchParseError",
-    "PatchApplyError",
-]
+_LAZY: dict[str, str] = {
+    "make_agent_tool": ".agent_as_tool",
+    "PatchApplyError": ".apply_patch",
+    "PatchParseError": ".apply_patch",
+    "apply_patch_fn": ".apply_patch",
+    "apply_patch_tool": ".apply_patch",
+    "parse_patch": ".apply_patch",
+    "ask_user_tool": ".ask_user",
+    "all_file_tools": ".files",
+    "file_edit_tool": ".files",
+    "file_read_tool": ".files",
+    "file_write_tool": ".files",
+    "glob_tool": ".files",
+    "grep_tool": ".files",
+    "enter_plan_mode_tool": ".plan_mode",
+    "exit_plan_mode_tool": ".plan_mode",
+    "is_plan_mode_active": ".plan_mode",
+    "all_shell_tools": ".shell",
+    "exec_bash_tool": ".shell",
+    "exec_python_tool": ".shell",
+    "TodoValidationError": ".todo_write",
+    "todo_write_tool": ".todo_write",
+}
+# ``apply_patch`` the function was re-exported under the alias below.
+_ALIASES: dict[str, str] = {"apply_patch_fn": "apply_patch"}
+
+__all__ = sorted(_LAZY)
+
+
+def __getattr__(name: str):
+    try:
+        modname = _LAZY[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    module = importlib.import_module(modname, __name__)
+    value = getattr(module, _ALIASES.get(name, name))
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY))
