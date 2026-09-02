@@ -154,10 +154,10 @@ def test_legacy_thumb_only_rows_appear_on_governance_and_csv(client, db: Session
     assert text.startswith("﻿")
     rows = list(csv.reader(io.StringIO(text[1:])))
     assert rows[0][0] == "評分"
-    assert rows[0][1] == "分數(讚6-10／爛1-5)"
+    assert rows[0][1] == "分數（好評 6–10／差評 1–5）"
     data = [r for r in rows[1:] if r[-1] == str(msg.id)]
     assert data, "舊列沒進 CSV"
-    assert data[0][0] == "爛"
+    assert data[0][0] == "差評"
     assert data[0][1] == ""
 
 

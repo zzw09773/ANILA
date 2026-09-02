@@ -85,7 +85,7 @@ _TPE_TZ = timezone(timedelta(hours=8))
 _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("rating", "評分"),
     # 兩個五分尺,不是一條十分尺 —— 表頭寫清楚,免得 Excel 裡被當成絕對分。
-    ("rating_score", "分數(讚6-10／爛1-5)"),
+    ("rating_score", "分數（好評 6–10／差評 1–5）"),
     ("comment", "留言"),
     ("reasons", "原因"),
     ("agent_name", "Agent"),
@@ -97,7 +97,7 @@ _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("message_id", "訊息 ID"),
 )
 
-_RATING_LABELS = {"down": "爛", "up": "讚"}
+_RATING_LABELS = {"down": "差評", "up": "好評"}
 
 
 class FeedbackItem(ApiResponseModel):
@@ -122,11 +122,28 @@ class FeedbackSummary(BaseModel):
     up: int
     down: int
     with_comment: int
+    # 拒答監測（harness §6-9）：同一時間窗內被標 ``refusal_suspected`` 的
+    # assistant 訊息數——不限有沒有評分，因為拒答很少被按拇指。
+    refusal_suspected: int = 0
 
 
 class FeedbackListResponse(BaseModel):
     summary: FeedbackSummary
     items: list[FeedbackItem]
+
+
+def _count_refusals(db, since: datetime) -> int:
+    """時間窗內被標 ``refusal_suspected`` 的 assistant 訊息數。
+    JSON 欄位跨 SQLite／Postgres 用 Python 端過濾（窗內 assistant 訊息量在
+    試營運規模是數百筆等級；跟留言篩選同一個取捨）。"""
+    rows = (
+        db.query(Message.metadata_)
+        .filter(Message.role == "assistant")
+        .filter(Message.created_at >= since)
+        .filter(Message.metadata_.isnot(None))
+        .all()
+    )
+    return sum(1 for (meta,) in rows if isinstance(meta, dict) and meta.get("refusal_suspected") is True)
 
 
 def _feedback_from_metadata(meta: dict | None) -> tuple[str | None, list[str]]:
@@ -331,5 +348,6 @@ def list_feedback(
         up=sum(1 for i in items if i.rating == "up"),
         down=sum(1 for i in items if i.rating == "down"),
         with_comment=sum(1 for i in items if i.comment or i.reasons),
+        refusal_suspected=_count_refusals(db, since),
     )
     return FeedbackListResponse(summary=summary, items=items)

@@ -191,7 +191,7 @@ def test_feedback_response_fields_are_exactly_the_whitelist(client, db: Session)
     body = client.get(FEEDBACK_URL, headers=_bearer(admin)).json()
 
     assert set(body.keys()) == {"summary", "items"}
-    assert set(body["summary"].keys()) == {"total", "up", "down", "with_comment"}
+    assert set(body["summary"].keys()) == {"total", "up", "down", "with_comment", "refusal_suspected"}
     for item in body["items"]:
         assert set(item.keys()) == FEEDBACK_ITEM_KEYS
         assert "content" not in item
@@ -221,8 +221,8 @@ def test_feedback_csv_export_is_really_csv(client, db: Session):
     assert disposition.endswith(".csv")
 
     rows = _csv_rows(resp)
-    assert rows[0][:4] == ["評分", "分數(讚6-10／爛1-5)", "留言", "原因"]
-    assert rows[1][0] == "爛"
+    assert rows[0][:4] == ["評分", "分數（好評 6–10／差評 1–5）", "留言", "原因"]
+    assert rows[1][0] == "差評"
     assert rows[1][1] == ""  # 舊列沒有細分分數
     assert rows[1][2] == "太慢了"
 
@@ -277,7 +277,7 @@ def test_feedback_csv_honours_the_filters(client, db: Session):
     data_rows = _csv_rows(csv_resp)[1:]
     assert len(json_items) == 2
     assert len(data_rows) == len(json_items)
-    assert all(row[4] == "agent-a" and row[0] == "爛" for row in data_rows)
+    assert all(row[4] == "agent-a" and row[0] == "差評" for row in data_rows)
     # 被篩掉的那列真的不在檔案裡
     assert "agent-b" not in csv_resp.text
 

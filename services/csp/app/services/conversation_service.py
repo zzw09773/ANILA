@@ -733,6 +733,19 @@ def delete_conversation(db: Session, conv_id: int, user: User) -> None:
 
 # ── Message persistence ───────────────────────────────────────────────────────
 
+def _with_refusal_flag(role: str, content: Optional[str], metadata: Optional[dict]) -> Optional[dict]:
+    """拒答監測（harness §6-9）：assistant 內容看起來像拒答就在 metadata 標
+    ``refusal_suspected``。只量測、不改內容、不擋——治理中心回饋頁讀這個計數。
+    非 assistant、或不像拒答：原樣回傳（不動既有 metadata）。"""
+    if role != "assistant" or not content:
+        return metadata
+    from app.services.refusal_detector import looks_like_refusal
+
+    if not looks_like_refusal(content):
+        return metadata
+    return {**(metadata or {}), "refusal_suspected": True}
+
+
 def append_message(
     db: Session,
     conv_id: int,
@@ -769,6 +782,7 @@ def append_message(
     _enforce_sibling_cap(db, conv.id, resolved_parent)
     # §6-3：assistant 落庫前靜默 s2twp＋域內用語；user 原文不動（fail-open）
     content, zh_changed = zh_normalize_service.prepare_message_content(db, role, content)
+    metadata = _with_refusal_flag(role, content, metadata)
     msg = Message(
         conversation_id=conv.id,
         parent_id=resolved_parent,
@@ -1345,6 +1359,9 @@ def update_message_content(
     if metadata is not None:
         _check_metadata_size(metadata)
         msg.metadata_ = _normalize_stream_envelope(metadata, msg.metadata_)
+    if content is not None:
+        # 串流完成後的 finalize 走這裡：內容定稿才知道像不像拒答。
+        msg.metadata_ = _with_refusal_flag(msg.role, content, msg.metadata_)
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(msg)
