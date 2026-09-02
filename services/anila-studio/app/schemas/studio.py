@@ -344,6 +344,25 @@ class Slide(BaseModel):
         return cleaned
 
     @model_validator(mode="after")
+    def _demote_layout_without_payload(self) -> Self:
+        """A layout_kind that names a payload the slide does not carry renders
+        as ``standard`` anyway (renderer fallback). Say so in the spec, so the
+        audit / rebalance see the hollow bullet page instead of a phantom
+        table (live run 7: 「詳見下表」 with no table)."""
+        needs = {
+            "stat_callout": self.stat is not None,
+            "quote": self.quote is not None,
+            "two_column": bool(self.columns) and len(self.columns) >= 2,
+            "icon_rows": bool(self.icon_rows),
+            "process": bool(self.steps),
+            "table": self.table is not None,
+            "sources": bool(self.sources),
+        }
+        if self.layout_kind in needs and not needs[self.layout_kind]:
+            self.layout_kind = "standard"
+        return self
+
+    @model_validator(mode="after")
     def _check_image_kind_consistency(self) -> Self:
         """Studio Fix 2 (2026-05-18): enforce illustration/diagram split.
 

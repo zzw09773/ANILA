@@ -47,3 +47,16 @@ def test_rebalance_prompt_lets_the_model_fill_hollow_slides():
     system, user = _build_rebalance_prompt(spec_dict, v, "素材：申訴應於三十日內提出；管轄機關十日內處理。", [1])
     assert "V5_HOLLOW" in user
     assert "空心" in system and "可以補寫" in system
+
+
+def test_layout_without_its_payload_is_demoted_to_standard_so_the_audit_sees_it():
+    # 第七次活體：模型寫 layout_kind="table" 卻沒給 table，渲染器退回 standard 印一條
+    # 「詳見下表」，稽核卻因為 layout_kind 不是 standard 而放過它。
+    s = _spec({"title": "依身分區分之懲罰種類", "layout_kind": "table", "bullets": ["依身分不同，詳見下表。"]})
+    assert s.slides[1].layout_kind == "standard"
+    p = _spec({"title": "流程", "layout_kind": "process", "bullets": ["x"]})
+    assert p.slides[1].layout_kind == "standard"
+    ok = _spec({"title": "表", "layout_kind": "table", "bullets": ["x"], "table": {"columns": ["a", "b"], "rows": [["1", "2"]]}})
+    assert ok.slides[1].layout_kind == "table"
+    from app.services.studio_layout import _audit_layout_distribution
+    assert any(v.kind == "V5_HOLLOW" for v in _audit_layout_distribution(s, chunks_text=""))
