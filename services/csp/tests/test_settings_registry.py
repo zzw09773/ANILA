@@ -1,6 +1,6 @@
 """設定收斂的契約測試。
 
-這裡守治理頁仍承諾的十二顆 C 類設定，以及整棵 repo 的 Python env
+這裡守治理頁仍承諾的十五顆 C 類設定，以及整棵 repo 的 Python env
 reader 不得再讀本輪刪掉的 CSP 設定名。
 
 ⚠ 2026-08-17：**部署檔與腳本這一側現在也由本檔掃描**（`*.yml`／`*.yaml`／
@@ -43,6 +43,10 @@ KEEP_KEYS = {
     "limits.attachment_budget_ratio",
     "intl.zh_normalize",
     "intl.query_expansion",
+    # Router 三份 system prompt（擁有者 2026-08-22 裁定，2026-09-02 落地）
+    "router.prompt.system",
+    "router.prompt.plain",
+    "router.prompt.forced",
 }
 
 REMOVED_ENV_NAMES = {
@@ -237,7 +241,7 @@ def _removed_config_env_names() -> set[str]:
     return old_fields - current_fields - active_fallbacks
 
 
-def test_registry_is_exactly_the_twelve_immediate_settings():
+def test_registry_is_exactly_the_fifteen_immediate_settings():
     assert {spec.key for spec in SETTINGS} == KEEP_KEYS
     assert set(REGISTRY) == KEEP_KEYS
     assert all(spec.setting_class is SettingClass.C for spec in SETTINGS)

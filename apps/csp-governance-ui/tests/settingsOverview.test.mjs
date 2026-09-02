@@ -12,6 +12,9 @@ import {
   draftValue,
   formatSettingValue,
   groupIntoSections,
+  isAtDefault,
+  isTextSetting,
+  textPreview,
   overviewState,
   replaceRow,
   saveNotice,
@@ -44,6 +47,10 @@ const EXPECTED = [
   ['limits.attachment_budget_ratio', 'ANILA_ATTACHMENT_BUDGET_RATIO'],
   ['intl.zh_normalize', 'ANILA_ZH_NORMALIZE'],
   ['intl.query_expansion', 'ANILA_QUERY_EXPANSION'],
+  // Router 三份 system prompt（擁有者 2026-08-22 裁定進治理中心，2026-09-02 落地）
+  ['router.prompt.system', null],
+  ['router.prompt.plain', null],
+  ['router.prompt.forced', null],
 ]
 
 function row(key, index = 0, overrides = {}) {
@@ -65,15 +72,20 @@ function row(key, index = 0, overrides = {}) {
   }
 }
 
-test('registry and UI contract contain exactly the twelve C settings', () => {
-  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 12)
+test('registry and UI contract contain exactly the fifteen C settings', () => {
+  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 15)
   assert.equal(SECTION_DEFS.length, 1)
   assert.deepEqual(SECTION_DEFS[0].classes, ['C'])
   assert.equal(SECTION_DEFS[0].editable, true)
   for (const [key, env] of EXPECTED) {
-    const keyPattern = key === 'institutional_kb.score_threshold'
-      ? /KB_THRESHOLD_KEY/u
-      : new RegExp(key.replaceAll('.', '\\.'), 'u')
+    // keys that the registry spells as a constant, not a literal
+    const CONSTANT_KEYS = {
+      'institutional_kb.score_threshold': /KB_THRESHOLD_KEY/u,
+      'router.prompt.system': /_router_prompts\.KEY_SYSTEM/u,
+      'router.prompt.plain': /_router_prompts\.KEY_PLAIN/u,
+      'router.prompt.forced': /_router_prompts\.KEY_FORCED/u,
+    }
+    const keyPattern = CONSTANT_KEYS[key] ?? new RegExp(key.replaceAll('.', '\\.'), 'u')
     assert.match(registrySource, keyPattern)
     if (env) assert.match(registrySource, new RegExp(`"${env}"`, 'u'))
   }
@@ -122,4 +134,22 @@ test('Vue view has no obsolete regions or deferred-application vocabulary', () =
   for (const token of ['boot_override', 'pending', 'restart', 'locked_reason', 'readonly', 'B_EDIT', 'B_LOCKED']) {
     assert.equal(viewSource.toLowerCase().includes(token.toLowerCase()), false, `stale UI token: ${token}`)
   }
+})
+
+test('text settings (router prompts) get a preview cell, a textarea and a reset-to-default', () => {
+  const long = 'A'.repeat(200) + '\n' + 'B'.repeat(10)
+  const item = row('router.prompt.plain', 0, { value_type: 'text', default: long, effective: long, stored: null, source: 'default' })
+  assert.equal(isTextSetting(item), true)
+  assert.equal(isTextSetting(row('proxy.llm_timeout')), false)
+  const effective = valueCells(item).find((cell) => cell.field === 'effective')
+  assert.ok(effective.text.endsWith('（共 211 字）'), effective.text)
+  assert.ok(effective.text.length < 200, 'preview must be truncated, not the whole prompt')
+  assert.equal(textPreview(null), '—')
+  assert.equal(isAtDefault(item), true)
+  assert.equal(isAtDefault({ ...item, effective: 'edited' }), false)
+  // the view wires the pieces: textarea for text settings, one reset button, the 30-second promise
+  assert.match(viewSource, /<textarea[\s\S]*v-model="drafts\[item\.key\]"/u)
+  assert.match(viewSource, /重設為出貨預設/u)
+  assert.match(viewSource, /30 秒內/u)
+  assert.match(viewSource, /handleResetToDefault/u)
 })

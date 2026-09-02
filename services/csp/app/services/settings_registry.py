@@ -2,7 +2,7 @@
 """治理頁唯一的即時設定登錄表。
 
 本輪設定收斂後，這裡只宣告真正能在請求期間被消費、而且改完下一個
-請求就生效的十二顆 C 類設定。部署事實、秘密與程式常數不再假裝是
+請求就生效的十五顆 C 類設定。部署事實、秘密與程式常數不再假裝是
 平台設定，也不再由治理頁承諾「重啟後會生效」。
 """
 
@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
+
+from anila_core.api import router_prompts as _router_prompts
 
 from app.models.platform_setting import (
     KB_THRESHOLD_DEFAULT,
@@ -71,6 +73,18 @@ def _format_flag(value: bool) -> str:
 T_INT = SettingType("int", int, _parse_int, _format_int)
 T_FLOAT = SettingType("float", float, _parse_float, _format_float)
 T_BOOL_NE_0 = SettingType("bool(!= '0')", bool, _parse_flag_ne_0, _format_flag)
+# 多行文字（system prompt）。存取都是原樣字串；值域由各顆的 domain_fn 把關。
+T_TEXT = SettingType("text", str, str, str)
+
+
+def _non_blank_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _formattable_system_prompt(value: Any) -> bool:
+    """Router 派工模板每次請求都 ``.format(agent_list=…)``：沒有佔位或多了別的
+    大括號，router 端會逐請求炸掉。寫入端就擋。"""
+    return _non_blank_text(value) and _router_prompts.system_template_is_formattable(value)
 
 
 def _closed_int_range(low: int, high: int) -> Callable[[Any], bool]:
@@ -225,6 +239,30 @@ SETTINGS: tuple[SettingSpec, ...] = (
         _is_bool,
         True,
         "檢索前做同義詞查詢擴展。",
+    ),
+    _spec(
+        _router_prompts.KEY_SYSTEM,
+        None,
+        T_TEXT,
+        _formattable_system_prompt,
+        _router_prompts.DEFAULT_ROUTER_SYSTEM,
+        "Router 派工模板（有已註冊 agent 時的 system prompt）。誰改＝平台管理員；情境＝營運期調整回答口氣／派工準則；為何不能等改版＝prompt 調優是高頻營運動作（擁有者 2026-08-22 裁定）。儲存後 router 在 30 秒內生效（不需重建、不需 recreate）。「重設為出貨預設」＝把出貨全文存回去。必須保留 {agent_list} 佔位，且不得有其他大括號。",
+    ),
+    _spec(
+        _router_prompts.KEY_PLAIN,
+        None,
+        T_TEXT,
+        _non_blank_text,
+        _router_prompts.DEFAULT_PLAIN_ASSISTANT,
+        "Router 直答模板（沒有任何 agent 時的 system prompt）。誰改＝平台管理員；情境＝營運期調整回答口氣／派工準則；為何不能等改版＝prompt 調優是高頻營運動作（擁有者 2026-08-22 裁定）。儲存後 router 在 30 秒內生效（不需重建、不需 recreate）。「重設為出貨預設」＝把出貨全文存回去。",
+    ),
+    _spec(
+        _router_prompts.KEY_FORCED,
+        None,
+        T_TEXT,
+        _non_blank_text,
+        _router_prompts.DEFAULT_FORCED_ANSWER,
+        "Router 強制自答模板（使用者要求「你自己依院內規章回答」時的 system prompt）。誰改＝平台管理員；情境＝營運期調整回答口氣／派工準則；為何不能等改版＝prompt 調優是高頻營運動作（擁有者 2026-08-22 裁定）。儲存後 router 在 30 秒內生效（不需重建、不需 recreate）。「重設為出貨預設」＝把出貨全文存回去。",
     ),
 )
 

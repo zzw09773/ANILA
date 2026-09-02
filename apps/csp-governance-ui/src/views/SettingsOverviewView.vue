@@ -1,10 +1,10 @@
-<!-- 平台設定總覽：十二顆 C 類設定，儲存後下一個請求生效。 -->
+<!-- 平台設定總覽：C 類設定，儲存後下一個請求生效（Router 的三份 prompt 30 秒內生效）。 -->
 <template>
   <div class="page">
     <header class="page-head">
       <div>
         <h1 class="page-head__title">平台設定</h1>
-        <p class="page-head__sub">管理仍屬於平台行為的十二顆即時設定。</p>
+        <p class="page-head__sub">管理仍屬於平台行為的即時設定。</p>
       </div>
       <TermButton variant="ghost" :loading="loading" label="重新載入" @click="load" />
     </header>
@@ -54,7 +54,31 @@
                 </dl>
               </td>
               <td>
-                <div v-if="canEdit(item)" class="setting-editor">
+                <div v-if="canEdit(item) && isTextSetting(item)" class="setting-editor setting-editor--text">
+                  <textarea
+                    v-model="drafts[item.key]"
+                    class="term-input setting-textarea"
+                    rows="12"
+                    spellcheck="false"
+                    :aria-label="`${item.key} 的全文`"
+                  ></textarea>
+                  <div class="setting-editor__actions">
+                    <TermButton
+                      variant="primary"
+                      :loading="!!saving[item.key]"
+                      label="儲存"
+                      @click="handleSave(item)"
+                    />
+                    <TermButton
+                      variant="ghost"
+                      :disabled="isAtDefault(item) || !!saving[item.key]"
+                      label="重設為出貨預設"
+                      @click="handleResetToDefault(item)"
+                    />
+                  </div>
+                  <p class="cell-meta">儲存後 Router 在 30 秒內套用，不需重建。</p>
+                </div>
+                <div v-else-if="canEdit(item)" class="setting-editor">
                   <input
                     v-model="drafts[item.key]"
                     class="term-input"
@@ -93,6 +117,8 @@ import {
   draftValue,
   extractDetail,
   groupIntoSections,
+  isAtDefault,
+  isTextSetting,
   overviewState,
   overviewStateMessage,
   replaceRow,
@@ -136,6 +162,12 @@ async function load() {
 
 onMounted(load)
 
+async function handleResetToDefault(item) {
+  // 「重設」就是把出貨全文存回去：走同一條 PUT，同一筆稽核。
+  drafts.value[item.key] = item.default
+  await handleSave(item)
+}
+
 async function handleSave(item) {
   saving.value[item.key] = true
   try {
@@ -173,6 +205,9 @@ async function handleSave(item) {
 .setting-cell--source dd { color: var(--c-fg-3); }
 .setting-editor { display: flex; gap: 6px; align-items: center; }
 .setting-editor .term-input { flex: 1; min-width: 0; }
+.setting-editor--text { flex-direction: column; align-items: stretch; }
+.setting-textarea { width: 100%; font-family: var(--font-mono, monospace); font-size: var(--t-xs); line-height: 1.5; resize: vertical; white-space: pre; }
+.setting-editor__actions { display: flex; gap: 6px; align-items: center; }
 .setting-notice { font-size: var(--t-2xs); margin-top: 4px; overflow-wrap: anywhere; }
 .setting-notice--ok { color: var(--c-fg-2); }
 .setting-error { font-size: var(--t-2xs); margin-top: 4px; color: var(--c-danger); overflow-wrap: anywhere; }

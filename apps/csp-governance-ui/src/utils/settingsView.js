@@ -1,4 +1,4 @@
-// 平台設定總覽的純函式。後端現在只回十二顆 C 類設定：每顆可編輯，
+// 平台設定總覽的純函式。後端只回 C 類設定（目前十五顆）：每顆可編輯，
 // 儲存後下一個請求直接讀到新值；這裡不再推導 boot、restart 或唯讀區。
 
 export const UNKNOWN_SECTION_ID = 'unknown-class'
@@ -79,13 +79,13 @@ export function valueCells(item) {
     {
       field: 'effective',
       label: '現在生效',
-      text: formatSettingValue(item.effective),
+      text: isTextSetting(item) ? textPreview(item.effective) : formatSettingValue(item.effective),
       className: 'setting-cell--effective',
     },
     {
       field: 'stored',
       label: 'DB 存值',
-      text: formatSettingValue(item.stored),
+      text: isTextSetting(item) ? textPreview(item.stored) : formatSettingValue(item.stored),
       className: item.stored_usable === false ? 'setting-cell--unusable' : 'setting-cell--stored',
     },
     {
@@ -100,6 +100,24 @@ export function valueCells(item) {
 export function draftValue(item) {
   const value = item?.effective
   return value === null || value === undefined ? '' : String(value)
+}
+
+/** 多行文字設定（Router 的 system prompt）：用 textarea 編輯、可一鍵重設為出貨預設。 */
+export function isTextSetting(item) {
+  return item?.value_type === 'text'
+}
+
+/** 長文字在表格裡只給前幾行預覽＋字數；全文在編輯框。 */
+export function textPreview(value, maxChars = 120) {
+  if (typeof value !== 'string') return formatSettingValue(value)
+  const oneLine = value.replace(/\s+/g, ' ').trim()
+  const head = oneLine.length > maxChars ? `${oneLine.slice(0, maxChars)}…` : oneLine
+  return `${head}（共 ${value.length} 字）`
+}
+
+/** 目前生效值是不是就是出貨預設（決定「重設為出貨預設」要不要能按）。 */
+export function isAtDefault(item) {
+  return typeof item?.default === 'string' && item.effective === item.default
 }
 
 export function countMismatchWarning(overview) {
