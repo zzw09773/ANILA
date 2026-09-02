@@ -43,6 +43,7 @@ backends serve different tenancy models — see
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Any, Iterable, Optional
 
@@ -268,6 +269,21 @@ async def _embed(
     )
 
 
+def _vector_is_finite(vec: Iterable[float]) -> bool:
+    """True when the vector is non-empty and every component is finite.
+
+    2026-09-02 OOBE walk: the embedder returned an all-NaN query vector once.
+    pgvector rejects it (``NaN not allowed in halfvec``) — and because the
+    check happened *inside* the request's transaction, the abort took the
+    next statement of the same turn (attachment loading) down with it, and
+    the user got a confident "the attachment has no text". Memory is
+    best-effort; a bad vector must degrade to "no memory", never poison the
+    turn.
+    """
+    values = list(vec)
+    return bool(values) and all(math.isfinite(float(x)) for x in values)
+
+
 def _vec_to_pg_literal(vec: Iterable[float]) -> str:
     """Format a Python float list as the bracketed text pgvector accepts."""
     return "[" + ",".join(f"{v:.6f}" for v in vec) + "]"
@@ -326,6 +342,13 @@ async def retrieve_relevant_chunks(
     except Exception:
         logger.exception("memory_service: embed failed during retrieve")
         return []
+    if not _vector_is_finite(embedding):
+        logger.warning(
+            "memory_service: %s returned a non-finite (NaN/inf) query vector; "
+            "skipping memory retrieval for this turn",
+            source_model,
+        )
+        return []
 
     vec_literal = _vec_to_pg_literal(embedding)
 
@@ -347,17 +370,26 @@ async def retrieve_relevant_chunks(
         LIMIT :k
         """
     )
-    rows = db.execute(
-        sql,
-        {
-            "vec": vec_literal,
-            "user_id": user_id,
-            "source_model": source_model,
-            "only_conv": only_conversation_id,
-            "exclude_conv": exclude_conversation_id,
-            "k": k,
-        },
-    ).fetchall()
+    # Run the vector search in its own SAVEPOINT. Memory is best-effort: if
+    # PostgreSQL rejects the statement, only this savepoint rolls back and the
+    # caller's transaction stays usable — the attachment loading that follows
+    # in the same turn must not fail with InFailedSqlTransaction (2026-09-02).
+    try:
+        with db.begin_nested():
+            rows = db.execute(
+                sql,
+                {
+                    "vec": vec_literal,
+                    "user_id": user_id,
+                    "source_model": source_model,
+                    "only_conv": only_conversation_id,
+                    "exclude_conv": exclude_conversation_id,
+                    "k": k,
+                },
+            ).fetchall()
+    except Exception:  # noqa: BLE001 — degrade to "no memory", never poison the turn
+        logger.exception("memory_service: retrieval query failed; continuing without memory")
+        return []
 
     hits: list[RetrievedChunk] = []
     for r in rows:
@@ -663,6 +695,13 @@ async def _write_chunk(
         user_id=user_id,
         embedding_input_role="document",
     )
+    if not _vector_is_finite(embedding):
+        logger.warning(
+            "memory_service: %s returned a non-finite (NaN/inf) vector; "
+            "chunk not persisted (memory is best-effort, the turn continues)",
+            source_model,
+        )
+        return
     _insert_chunk(
         db,
         user_id=user_id,
