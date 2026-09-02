@@ -1541,8 +1541,11 @@ class ParserRegistry:
         """Return the cached Docling parser, or None when DOC_PARSER!=docling.
 
         The env var is consulted on every call (cheap) so switching it off
-        immediately takes effect, but the heavy DoclingParser instance is
-        constructed at most once per process.
+        immediately takes effect, but the parser instance is constructed at
+        most once per process. Since docling went remote (2026-08) that
+        instance is a ``RemoteDoclingParser`` (an HTTP client) or ``None`` —
+        the in-process ``DoclingParser`` class is reference-only and is never
+        built here.
         """
         if os.getenv("DOC_PARSER", "native").lower() != "docling":
             return None

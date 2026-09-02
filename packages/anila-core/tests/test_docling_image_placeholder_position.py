@@ -149,34 +149,37 @@ def test_image_token_lands_in_the_section_chunk_not_the_last_leaf(
     assert "[[IMAGE:swim]]" not in last.content or "水域" in last.content
 
 
-def test_more_markers_than_images_leaves_unused_comment_gone(tmp_path, monkeypatch):
+def test_more_markers_than_images_without_ordinals_degrades_to_the_tail(tmp_path, monkeypatch):
+    """2026-09-02 (P-1 ruling): counts disagree and ``only`` carries no ordinal,
+    so no marker can be justified for it. The old expectation (first marker
+    wins) was exactly the silent shift P-1 is about. Degrade: markers gone,
+    figure appended at the end. Ordinal-carrying ids are covered in
+    ``test_docling_image_skipped_middle.py``."""
     parsed = _parse(
         tmp_path, monkeypatch, _TWO_SECTION,
         [_img("only", 1)],
     )
     assert parsed.content.count("[[IMAGE:only]]") == 1
     assert "<!-- image -->" not in parsed.content
-    assert parsed.content.index("[[IMAGE:only]]") < parsed.content.index("# 選手標記")
+    assert parsed.content.index("[[IMAGE:only]]") > parsed.content.index("號碼布縫在左側。")
 
 
 def test_more_images_than_markers_appends_leftovers_and_logs(
-    tmp_path, monkeypatch, caplog,
+    tmp_path, monkeypatch, caplog
 ):
-    markdown = "# 游泳賽段\n\n<!-- image -->\n\n# 選手標記\n\n無圖。\n"
-    with caplog.at_level(logging.WARNING, logger="anila_core.ingestion.docling_parser"):
+    """2026-09-02 (P-1 ruling): one marker, two ordinal-less images — the
+    mapping is not established, so *neither* is placed by guess; both are
+    appended and the log says why. Before: ``placed`` took the marker."""
+    one_marker = "# 游泳賽段\n\n<!-- image -->\n\n請注意泳道標記。\n"
+    with caplog.at_level(logging.WARNING):
         parsed = _parse(
-            tmp_path, monkeypatch, markdown,
+            tmp_path, monkeypatch, one_marker,
             [_img("placed", 1), _img("extra", 2)],
         )
     assert "<!-- image -->" not in parsed.content
-    swim, _, tail = parsed.content.partition("# 選手標記")
-    assert "[[IMAGE:placed]]" in swim
-    assert "[[IMAGE:extra]]" in tail
-    assert "[[IMAGE:extra]]" not in swim
-    assert any(
-        "image" in r.getMessage().lower() and "marker" in r.getMessage().lower()
-        for r in caplog.records
-    ), [r.getMessage() for r in caplog.records]
+    tail = parsed.content[parsed.content.index("請注意泳道標記。") :]
+    assert "[[IMAGE:placed]]" in tail and "[[IMAGE:extra]]" in tail
+    assert any("not established" in r.getMessage() for r in caplog.records)
 
 
 def test_zero_markers_zero_images_is_unchanged(tmp_path, monkeypatch):

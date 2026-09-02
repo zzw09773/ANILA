@@ -54,39 +54,97 @@ logger = logging.getLogger(__name__)
 _DOCLING_IMAGE_COMMENT = re.compile(r"<!--\s*image\s*-->", re.IGNORECASE)
 
 
+_IMAGE_ORDINAL_RE = re.compile(r"img_(\d+)")
+
+
+def _image_ordinal(img_id: str) -> int | None:
+    """The service numbers pictures ``img_0001``… in *document* order, after its
+    own skip paths — so a skipped picture shows up as a gap in the ordinals."""
+    match = _IMAGE_ORDINAL_RE.fullmatch(img_id)
+    return int(match.group(1)) if match else None
+
+
 def _place_image_placeholders(markdown: str, image_ids: list[str]) -> str:
-    """Put ``[[IMAGE:id]]`` on each ``<!-- image -->``, leftovers at the end."""
+    """Put ``[[IMAGE:id]]`` on the ``<!-- image -->`` each figure came from.
+
+    Three regimes, decided by ``marker_count`` vs ``len(image_ids)``:
+
+    * equal — the N-th marker is the N-th image (document order both sides);
+    * unequal, but every id carries a usable ordinal (``img_NNNN`` within
+      ``1..marker_count``, strictly increasing) — map by ordinal, so a picture
+      the service skipped leaves *its own* marker empty instead of shifting
+      every later figure one section up (P-1, a confident wrong placement);
+    * unequal and the ids cannot justify positions — **do not guess**: strip
+      the markers and append every placeholder at the end (figures stay
+      retrievable, sections stay honest), and say so in the log.
+
+    Invariant (queued-fix-image-position-mapping-gaps): when the counts
+    disagree, positional mapping is not established and this function must
+    not silently claim it is.
+    """
     if not image_ids:
         return _DOCLING_IMAGE_COMMENT.sub("", markdown).strip()
 
     ids = list(image_ids)
-    used = 0
-
-    def _one(_match: re.Match[str]) -> str:
-        nonlocal used
-        if used >= len(ids):
-            return ""
-        token = f"[[IMAGE:{ids[used]}]]"
-        used += 1
-        return token
-
-    content = _DOCLING_IMAGE_COMMENT.sub(_one, markdown)
-    leftover = ids[used:]
     marker_count = len(_DOCLING_IMAGE_COMMENT.findall(markdown))
-    if leftover:
-        logger.warning(
-            "docling remote: %d image(s) and %d <!-- image --> marker(s); "
-            "appending %d leftover placeholder(s) at end of document",
-            len(ids), marker_count, len(leftover),
+
+    # Which id (if any) goes on marker k (1-based)?
+    by_marker: dict[int, str] | None
+    if marker_count == len(ids):
+        by_marker = {k + 1: img_id for k, img_id in enumerate(ids)}
+    else:
+        ordinals = [_image_ordinal(img_id) for img_id in ids]
+        usable = (
+            marker_count > 0
+            and all(o is not None and 1 <= o <= marker_count for o in ordinals)
+            and all(a < b for a, b in zip(ordinals, ordinals[1:]))
         )
+        if usable:
+            by_marker = {o: img_id for o, img_id in zip(ordinals, ids)}
+            logger.warning(
+                "docling remote: %d <!-- image --> marker(s) but %d image(s); "
+                "mapped by the service's ordinals, marker(s) %s left empty "
+                "(the service skipped those pictures)",
+                marker_count, len(ids),
+                sorted(set(range(1, marker_count + 1)) - set(by_marker)),
+            )
+        else:
+            by_marker = None
+            logger.warning(
+                "docling remote: %d <!-- image --> marker(s) vs %d image(s) and the "
+                "ids carry no usable ordinals: position mapping not established; "
+                "markers stripped, all %d placeholder(s) appended at end of document",
+                marker_count, len(ids), len(ids),
+            )
+
+    if by_marker is None:
+        content = _DOCLING_IMAGE_COMMENT.sub("", markdown)
+        placed: set[str] = set()
+    else:
+        seen = 0
+        placed = set()
+
+        def _one(_match: re.Match[str]) -> str:
+            nonlocal seen
+            seen += 1
+            img_id = by_marker.get(seen)
+            if img_id is None:
+                return ""
+            placed.add(img_id)
+            return f"[[IMAGE:{img_id}]]"
+
+        content = _DOCLING_IMAGE_COMMENT.sub(_one, markdown)
+
+    leftover = [img_id for img_id in ids if img_id not in placed]
+    if leftover:
+        if by_marker is not None:
+            logger.warning(
+                "docling remote: %d image(s) and %d <!-- image --> marker(s); "
+                "appending %d leftover placeholder(s) at end of document",
+                len(ids), marker_count, len(leftover),
+            )
         extra = "\n\n".join(f"[[IMAGE:{img_id}]]" for img_id in leftover)
         content = f"{content.rstrip()}\n\n{extra}"
-    elif marker_count > len(ids):
-        logger.warning(
-            "docling remote: %d <!-- image --> marker(s) and %d image(s); "
-            "unused markers dropped",
-            marker_count, len(ids),
-        )
     return content.strip()
 
 
@@ -102,7 +160,13 @@ DOCLING_SUPPORTED_EXTS: frozenset[str] = frozenset(
 
 
 class DoclingParser:
-    """Layout-aware parser backed by Docling.
+    """Layout-aware parser backed by an in-process Docling.
+
+    ⚠ 參考用，全樹無建構點（D-1，審查長 2026-08-21 裁定標記）：
+    ``build_docling_parser_from_env()`` 只回 ``RemoteDoclingParser`` 或 ``None``，
+    平台一律 CPU、docling 走遠端 GPU 服務。活路是下面的 ``RemoteDoclingParser``；
+    這個類別留著是給讀 docling API 形狀的人看的，**不要為它加測試**（那會把死路
+    認證成活路），要改行為去改 Remote 那邊。
 
     Constructed once and reused — the underlying ``DocumentConverter``
     is itself lazy: it only loads model weights on the first call to
@@ -196,6 +260,9 @@ class DoclingParser:
         content = _safe_export_markdown(document)
         images, captions = _collect_pictures(document)
         if images:
+            # P-3：這裡仍是舊行為（全部串在尾端、不清 <!-- image --> 註解）。
+            # 不可達（見類別 docstring），刻意不改；活路的對映在
+            # ``_place_image_placeholders``（RemoteDoclingParser._reconstruct 用它）。
             placeholders = "\n\n".join(f"[[IMAGE:{img_id}]]" for img_id in images)
             content = f"{content}\n\n{placeholders}".strip()
 
