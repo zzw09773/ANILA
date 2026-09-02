@@ -1,0 +1,9 @@
+# 版本定義（2026-09-02 擁有者裁定）
+
+- **v1.0.0 ＝ 這條線（restart/from-redesign）2026-09-02 收工的狀態**，也是 `main` 的新起點。
+  上線交付包必須從乾淨 tag 建：`MANIFEST.txt` 的 `Ref` 要是 `v1.0.0` 這種形狀，
+  `INTRANET-LOAD.sh` 才會當出貨包載入；`v1.0.0-3-gabcdef0` 或 `-dirty` 都是演練包，會拒載。
+- **舊線是 legacy**：2026-07-28 以前的 `main`（tag `attic/2026-07-28/main`、分支 `legacy/main-2026-07-28`）
+  與舊 tag `v2.0.0`、`v2.0.1`（改名 `legacy/v2.0.0`、`legacy/v2.0.1`）。號碼比 v1.0.0 大是歷史，
+  不代表比較新；**不要拿 legacy 線的東西回來合**。
+- 之後照語意版本：修 bug 升 patch（v1.0.1）、加功能升 minor（v1.1.0）；每次出貨都打 tag 再建包。
