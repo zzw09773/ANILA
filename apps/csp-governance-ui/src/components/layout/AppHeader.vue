@@ -192,8 +192,8 @@ function handleLogout() {
   justify-content: space-between;
   height: var(--shell-topbar-h);
   padding: 0 var(--gap-5);
-  background: var(--c-accent-strong);
-  color: #ffffff;
+  background: var(--c-masthead);
+  color: var(--c-masthead-fg);
   border-bottom: 0;
   font-size: var(--t-sm);
   gap: var(--gap-4);
@@ -205,15 +205,15 @@ function handleLogout() {
   gap: var(--gap-4);
   min-width: 0;
 }
-.topbar__left :deep(.term-logo) { color: #ffffff; }
+.topbar__left :deep(.term-logo) { color: var(--c-masthead-fg); }
 .topbar__left :deep(.term-logo__word),
 .topbar__left :deep(.term-logo__sub),
-.topbar__left :deep(.term-logo__sep) { color: #ffffff; }
+.topbar__left :deep(.term-logo__sep) { color: var(--c-masthead-fg); }
 .topbar__crumb {
   padding-left: var(--gap-4);
-  border-left: 1px solid rgba(255, 255, 255, 0.28);
+  border-left: 1px solid color-mix(in oklab, var(--c-masthead-fg) 28%, transparent);
   font-size: var(--t-md);
-  color: rgba(255, 255, 255, 0.92);
+  color: color-mix(in oklab, var(--c-masthead-fg) 92%, transparent);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -222,21 +222,21 @@ function handleLogout() {
   display: inline-flex;
   align-items: baseline;
   gap: var(--gap-2);
-  color: #ffffff;
+  color: var(--c-masthead-fg);
 }
 .topbar__user-name { font-weight: 600; }
 .topbar__user-role {
   font-size: var(--t-xs);
   padding: 1px 8px;
   border-radius: var(--r-pill);
-  background: rgba(255, 255, 255, 0.16);
-  color: #ffffff;
+  background: color-mix(in oklab, var(--c-masthead-fg) 16%, transparent);
+  color: var(--c-masthead-fg);
 }
 .topbar__theme,
 .topbar__action {
   background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  color: #ffffff;
+  border: 1px solid color-mix(in oklab, var(--c-masthead-fg) 35%, transparent);
+  color: var(--c-masthead-fg);
   height: 28px;
   padding: 0 10px;
   border-radius: var(--r-md);
@@ -246,8 +246,8 @@ function handleLogout() {
 }
 .topbar__theme:hover,
 .topbar__action:hover {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.6);
+  background: color-mix(in oklab, var(--c-masthead-fg) 14%, transparent);
+  border-color: color-mix(in oklab, var(--c-masthead-fg) 60%, transparent);
 }
 
 .pw-grid {

@@ -112,6 +112,9 @@
   --c-accent-strong: #1f3a63;
   --c-accent-soft:   rgba(43, 76, 126, 0.08);
   --c-accent-fg:     #ffffff;
+  /* 刊頭（治理中心橫幅）：深藍底、白字；深色主題另訂，不跟 accent 走（accent 在深色是調亮的） */
+  --c-masthead:      #1f3a63;
+  --c-masthead-fg:   #ffffff;
 
   /* Status — 去飽和、institutional（WCAG AA：warn／ok 略加深） */
   --c-info:    #2b6cb0;
@@ -185,6 +188,8 @@
   --c-accent-strong: #8aa5d1;
   --c-accent-soft:   rgba(111, 143, 194, 0.12);
   --c-accent-fg:     #10131a;
+  --c-masthead:      #101a2b;
+  --c-masthead-fg:   #e6edf7;
 
   /* Status */
   --c-info:    #6c99d6;
@@ -243,6 +248,8 @@
     --c-accent-strong: #8aa5d1;
     --c-accent-soft:   rgba(111, 143, 194, 0.12);
     --c-accent-fg:     #10131a;
+    --c-masthead:      #101a2b;
+    --c-masthead-fg:   #e6edf7;
     --c-info:    #6c99d6;
     --c-info-soft: rgba(108, 153, 214, 0.12);
     --c-warn:    #d6a95f;
