@@ -113,8 +113,15 @@ async def probe_model_health_detailed(
     protocol: str | None = None,
     model_name: str | None = None,
     skip_validate: bool = False,
+    api_key: str | None = None,
 ) -> tuple[str, int]:
     """Active probe → ``(five_state_status, latency_ms)`` (health probe only).
+
+    ``api_key``: the model's own gateway credential (resolved by the caller,
+    never read from env here). When given it rides the REAL probe paths as a
+    Bearer — a gateway that guards even ``/health`` (LiteLLM, 2026-09-02) can
+    then answer 2xx and be reported ``healthy``; a rotated key still yields
+    401 → ``unknown``, never green. The weak ``/`` probe stays anonymous.
 
     - ``protocol=triton_grpc``: Triton ``ModelReady`` / ``ServerLive`` /
       ``grpc.health.v1`` (never httpx GETs against a gRPC port).
@@ -165,6 +172,14 @@ async def probe_model_health_detailed(
 
     real_urls = [_probe_url(endpoint_url, path) for path in REAL_PROBE_PATHS]
     weak_urls = [_probe_url(endpoint_url, path) for path in WEAK_PROBE_PATHS]
+    real_kwargs: dict = {}
+    key = (str(api_key).strip() if api_key else "")
+    if key and all("!" <= ch <= "~" for ch in key):
+        real_kwargs["headers"] = {"Authorization": f"Bearer {key}"}
+    elif key:
+        # Not a bearer token (whitespace / non-ASCII — a pasted file name,
+        # 2026-09-02). Probe anonymously rather than crash inside httpx.
+        logger.warning("model gateway key is not a usable bearer token; probing anonymously")
 
     saw_timeout = False
     saw_weak = False
@@ -173,7 +188,7 @@ async def probe_model_health_detailed(
         async with httpx.AsyncClient(timeout=10) as client:
             for url in real_urls:
                 try:
-                    resp = await client.get(url)
+                    resp = await client.get(url, **real_kwargs)
                     if _real_probe_hit(resp.status_code):
                         return HEALTH_HEALTHY, _elapsed_ms()
                     if _auth_rejected(resp.status_code):
@@ -214,6 +229,7 @@ async def check_model_health(
     endpoint_kind: str | None = None,
     protocol: str | None = None,
     model_name: str | None = None,
+    api_key: str | None = None,
 ) -> str:
     """Check a single model/agent endpoint. Returns a five-state status
     ('healthy' / 'degraded' / 'unhealthy')."""
@@ -222,8 +238,28 @@ async def check_model_health(
         endpoint_kind=endpoint_kind,
         protocol=protocol,
         model_name=model_name,
+        api_key=api_key,
     )
     return status
+
+
+def _model_probe_targets(db) -> list[dict]:
+    """Snapshot of active models for the background loop, key resolved here
+    (inside the DB session) so the probe itself never touches the row."""
+    from app.services.proxy.headers import resolve_model_gateway_key
+
+    return [
+        {
+            "model_id": m.id,
+            "endpoint_url": m.endpoint_url,
+            "name": m.name,
+            "display_name": m.display_name,
+            "prev_status": m.health_status,
+            "protocol": m.protocol or "openai_compatible",
+            "api_key": resolve_model_gateway_key(m),
+        }
+        for m in db.query(ModelRegistry).filter(ModelRegistry.is_active.is_(True)).all()
+    ]
 
 
 async def _health_check_loop():
@@ -232,41 +268,24 @@ async def _health_check_loop():
         try:
             db = SessionLocal()
             try:
-                targets = [
-                    (
-                        m.id,
-                        m.endpoint_url,
-                        m.name,
-                        m.display_name,
-                        m.health_status,
-                        m.protocol or "openai_compatible",
-                    )
-                    for m in (
-                        db.query(ModelRegistry)
-                        .filter(ModelRegistry.is_active.is_(True))
-                        .all()
-                    )
-                ]
+                targets = _model_probe_targets(db)
                 # Release the pooled connection before outbound probes (10s each).
                 db.commit()
             finally:
                 db.close()
 
             results = []
-            for (
-                model_id,
-                endpoint_url,
-                name,
-                display_name,
-                prev_status,
-                protocol,
-            ) in targets:
+            for t in targets:
+                model_id, endpoint_url, name, display_name, prev_status = (
+                    t["model_id"], t["endpoint_url"], t["name"], t["display_name"], t["prev_status"],
+                )
                 status = await check_model_health(
                     model_id,
                     endpoint_url,
                     endpoint_kind="model",
-                    protocol=protocol,
+                    protocol=t["protocol"],
                     model_name=name,
+                    api_key=t["api_key"],
                 )
                 results.append(
                     (model_id, endpoint_url, name, display_name, prev_status, status)

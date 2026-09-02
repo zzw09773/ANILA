@@ -41,6 +41,21 @@ def _validate_protocol(value: str | None) -> str | None:
     return value
 
 
+def _validate_gateway_key(v: str | None) -> str | None:
+    """A per-model gateway key is a bearer token: printable ASCII, no
+    whitespace. 2026-09-02 live: a screenshot file name was pasted and saved
+    as the key; the gateway then rejected every call and the health probe
+    crashed on the non-ASCII header. Refuse it at the door instead."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return ""
+    if any(ch < "!" or ch > "~" for ch in v):
+        raise ValueError("金鑰含空白或非 ASCII 字元（例如中文），看起來不是金鑰本身；請確認貼上的內容")
+    return v
+
+
 class ModelCreate(BaseModel):
     name: str
     display_name: str
@@ -69,6 +84,11 @@ class ModelCreate(BaseModel):
     # ``api_key_secret_ref`` on create; NEVER returned. Omit to use the
     # global MODEL_GATEWAY_API_KEY fallback.
     api_key: str | None = None
+
+    @field_validator("api_key")
+    @classmethod
+    def _gateway_key(cls, v: str | None) -> str | None:
+        return _validate_gateway_key(v)
 
     @field_validator("classification_ceiling")
     @classmethod
@@ -105,6 +125,11 @@ class ModelUpdate(BaseModel):
     supports_tools: bool | None = None
     # Write-only: re-encrypt the per-model gateway key. Never returned.
     api_key: str | None = None
+
+    @field_validator("api_key")
+    @classmethod
+    def _gateway_key(cls, v: str | None) -> str | None:
+        return _validate_gateway_key(v)
 
     @field_validator("classification_ceiling")
     @classmethod

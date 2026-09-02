@@ -2118,11 +2118,14 @@ async def _probe_and_persist(model: ModelRegistry, admin: User, db: Session, ip:
     model_name = model.name
     # Release pooled connection before the outbound probe (≤10s).
     db.commit()
+    # The model's own gateway key rides the probe (LiteLLM guards /health too).
+    probe_key = resolve_model_gateway_key(model)
     status, latency_ms = await probe_model_health_detailed(
         endpoint_url,
         endpoint_kind=ENDPOINT_KIND_MODEL,
         protocol=protocol,
         model_name=model_name,
+        api_key=probe_key,
     )
     checked_at = datetime.now(timezone.utc)
     model.health_status = status
