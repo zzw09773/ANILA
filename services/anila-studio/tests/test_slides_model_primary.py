@@ -64,3 +64,12 @@ async def test_cached_within_ttl_and_survives_connection_error():
     smp._expire_for_tests()
     route.mock(side_effect=httpx.ConnectError("boom"))
     assert await smp.get_slides_primary() == "gemma26-nothink"  # last good value kept
+
+
+@respx.mock
+async def test_studio_calls_are_tagged_as_studio_for_usage_accounting():
+    """用量頁要分得出「簡報製作」：每通 LLM 呼叫帶 X-ANILA-Request-Source: studio。"""
+    respx.get(f"{BASE}/api/models/slides-primary").mock(return_value=httpx.Response(404, json={}))
+    route = respx.post(f"{BASE}/v1/chat/completions").mock(return_value=_chat_ok(SLIDES_LLM_MODEL))
+    await call_llm_chat("t", SLIDES_LLM_MODEL, [{"role": "user", "content": "hi"}])
+    assert route.calls[0].request.headers.get("X-ANILA-Request-Source") == "studio"

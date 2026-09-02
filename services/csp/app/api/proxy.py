@@ -1638,6 +1638,7 @@ async def chat_completions(
             is_internal=bool(getattr(model, "is_internal", False)),
         ),
         tuning=tuning,
+        usage_source=request.headers.get("X-ANILA-Request-Source"),
     )
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(

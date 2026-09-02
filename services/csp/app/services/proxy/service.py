@@ -341,6 +341,7 @@ async def _proxy_triton_embedding(
     request_type: str,
     tuning: ProxyTuning,
     record_usage: bool = True,
+    usage_source: Optional[str] = None,
 ) -> dict:
     """Triton/KServe gRPC embedding path — never through join_upstream_path."""
     from app.services.triton_grpc import TritonEmbedError, embed_texts
@@ -572,6 +573,7 @@ async def _proxy_request_impl(
     endpoint_display: Optional[str] = None,
     embedding_input_role: Optional[str] = None,
     record_usage: bool = True,
+    usage_source: Optional[str] = None,
     *,
     tuning: ProxyTuning,
 ) -> dict:
@@ -590,10 +592,12 @@ async def _proxy_request_impl(
     wrapper.
     """
     timeout = _get_timeout(model.model_type, tuning)
+    # ``usage_source`` comes from the X-ANILA-Request-Source header: anila-studio
+    # sends "studio" so the usage dashboard can split 簡報製作 from chat.
     request_type = (
         "embedding"
         if "embedding" in endpoint_path or model.model_type == "embedding"
-        else "chat"
+        else ("studio" if usage_source == "studio" else "chat")
     )
 
     protocol = (getattr(model, "protocol", None) or "openai_compatible").strip()
@@ -902,6 +906,7 @@ async def proxy_request(
     endpoint_display: Optional[str] = None,
     embedding_input_role: Optional[str] = None,
     record_usage: bool = True,
+    usage_source: Optional[str] = None,
     *,
     tuning: ProxyTuning,
 ) -> dict:
@@ -941,6 +946,7 @@ async def proxy_request(
             endpoint_display=endpoint_display,
             embedding_input_role=embedding_input_role,
             record_usage=record_usage,
+            usage_source=usage_source,
             tuning=tuning,
         )
     except HTTPException as exc:

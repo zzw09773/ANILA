@@ -172,9 +172,29 @@ def get_usage_summary(
     )
     active_keys = active_keys_q.scalar() or 0
 
+    # Studio (簡報製作等產出) calls carry request_type='studio' — surfaced
+    # on their own so the dashboard can answer「做簡報用掉多少」, and kept
+    # out of the web-UI bucket they used to hide in (2026-09-02).
+    studio_q = db.query(
+        func.count(TokenUsage.id).label("n"),
+        func.coalesce(func.sum(TokenUsage.total_tokens), 0).label("tokens"),
+    ).filter(
+        TokenUsage.request_timestamp >= start_time,
+        TokenUsage.request_type == "studio",
+    )
+    studio_q = _apply_usage_filters(
+        studio_q,
+        db,
+        model_id=model_id,
+        user_id=user_id,
+        model_type=model_type,
+        scope_ids=resolved_scope,
+    )
+    studio_row = studio_q.first()
     web_ui_req_q = db.query(func.count(TokenUsage.id)).filter(
         TokenUsage.request_timestamp >= start_time,
         TokenUsage.api_key_id.is_(None),
+        TokenUsage.request_type != "studio",
     )
     web_ui_req_q = _apply_usage_filters(
         web_ui_req_q,
@@ -194,6 +214,8 @@ def get_usage_summary(
         "active_models": int(active_models),
         "active_api_keys": int(active_keys),
         "web_ui_requests": int(web_ui_requests),
+        "studio_requests": int(studio_row.n or 0) if studio_row else 0,
+        "studio_tokens": int(studio_row.tokens or 0) if studio_row else 0,
     }
 
 

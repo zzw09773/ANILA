@@ -207,6 +207,7 @@ async def _request(
     stream: bool = False,
     timeout_override: httpx.Timeout | None = None,
     max_attempts_override: int | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> httpx.Response:
     """Issue an HTTP request with retry on 5xx and transport errors.
 
@@ -231,6 +232,8 @@ async def _request(
     (no retry, fail-fast).
     """
     headers = _auth_headers(bearer)
+    if extra_headers:
+        headers.update(extra_headers)
     timeout = timeout_override if timeout_override is not None else _default_timeout()
     max_attempts = max_attempts_override if max_attempts_override is not None else _MAX_ATTEMPTS
 
@@ -508,6 +511,8 @@ async def proxy_chat_completions(
         url,
         bearer=bearer,
         json_body=body,
+        # 用量頁要分得出「簡報製作」：csp 把這個來源記到 token_usage.request_type。
+        extra_headers={"X-ANILA-Request-Source": "studio"},
         timeout_override=_llm_timeout(),
         # ReadTimeout 不會自己好,retry 4 次只是把總等待時間從 300s 變
         # 1200s 然後一樣失敗。LLM 路徑單次嘗試,失敗就 fail-fast(caller
