@@ -14,6 +14,7 @@ import {
   Routes,
 } from "react-router";
 
+import { ErrorBoundary } from "./ErrorBoundary.jsx";
 import App from "./app.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";
 import { ConfirmProvider } from "./confirm.jsx";
@@ -84,14 +85,18 @@ if (!container) {
 // 同 ANILALM App.tsx 的慣例。
 const ROUTER_BASENAME = import.meta.env.BASE_URL.replace(/\/$/, "") || undefined;
 
+// 最外層的錯誤網子：render 期例外變成可讀的錯誤區塊，不是白畫面
+// （finding-no-error-boundary-20260820）。放在 Router 之外，路由本身炸了也接得到。
 ReactDOM.createRoot(container).render(
   <React.StrictMode>
-    <BrowserRouter basename={ROUTER_BASENAME}>
-      <AuthProvider>
-        <ConfirmProvider>
-          <RootRoutes />
-        </ConfirmProvider>
-      </AuthProvider>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter basename={ROUTER_BASENAME}>
+        <AuthProvider>
+          <ConfirmProvider>
+            <RootRoutes />
+          </ConfirmProvider>
+        </AuthProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   </React.StrictMode>,
 );

@@ -79,6 +79,8 @@ const ROOT = process.cwd();
 // 就會顯示成「既有測試也抓到了」,而那個數字整份報告只有一個用途:量**舊套件**
 // 漏了什麼。今天早上才寫的守衛不是舊套件。所以歸到這一桶。
 const NEW_TESTS = [
+  // 根部錯誤網子（finding-no-error-boundary-20260820，2026-09-02 落地）。
+  "src/__tests__/errorBoundary",
   "src/__tests__/orchestrator",
   "src/__tests__/transport",
   "src/__tests__/csrfHeaders",
@@ -125,6 +127,14 @@ const PRE_EXISTING_EXCLUDES = [
  * @type {{id:string,file:string,find:string,replace:string,intent:string,shape?:string}[]}
  */
 const MUTATIONS = [
+  {
+    id: "error-boundary-fallback-dropped",
+    file: "src/ErrorBoundary.jsx",
+    intent:
+      "拿掉 fallback 渲染：render 期例外回到白畫面。errorBoundary.test.jsx 的①（可讀訊息＋負向斷言）必紅。",
+    find: "    if (this.state.failedAt) {",
+    replace: "    if (this.state.failedAt && false) {",
+  },
   {
     id: "agent-short-reply-notice-inverted",
     file: "src/runtime/agentReplySignal.js",

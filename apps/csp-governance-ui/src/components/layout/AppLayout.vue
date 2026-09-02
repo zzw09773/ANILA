@@ -6,7 +6,10 @@
       <main class="shell__main">
         <router-view v-slot="{ Component }">
           <transition name="shell-page" mode="out-in">
-            <component :is="Component" />
+            <!-- 面板層錯誤網子：view 在 render/setup 期炸了，這裡出現可讀錯誤區塊，不是空白。 -->
+            <ErrorPanel :key="$route.fullPath">
+              <component :is="Component" />
+            </ErrorPanel>
           </transition>
         </router-view>
       </main>
@@ -19,6 +22,7 @@
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
 import AppStatusBar from './AppStatusBar.vue'
+import { ErrorPanel } from '../errorPanel.js'
 </script>
 
 <style scoped>

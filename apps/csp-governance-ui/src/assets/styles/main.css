@@ -461,3 +461,8 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* 錯誤網子（components/errorPanel.js）：可讀訊息＋時間戳，沒有內部細節 */
+.error-panel { border-left: 2px solid var(--c-danger, #c33); padding: 12px 16px; display: grid; gap: 8px; justify-items: start; }
+.error-panel__msg { margin: 0; color: var(--c-fg-1, inherit); }
+.error-panel__btn { font: inherit; padding: 4px 10px; cursor: pointer; }
