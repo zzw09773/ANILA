@@ -180,7 +180,13 @@ def world(pg_engine, monkeypatch):
         )
     db.commit()
 
-    async def _fake_embed(_db, _text):
+    async def _fake_embed(_db, _text, **_kwargs):
+        # ``_embed`` grew keyword-only ``user_id`` / ``department_id`` /
+        # ``embedding_input_role`` (usage attribution). A stub with the old
+        # two-positional signature raises TypeError, memory_service logs
+        # "embed failed during retrieve" and returns [] — and every scope
+        # assertion below then fails for a reason that has nothing to do
+        # with scope. Accept the keywords; the tests only care about the axis.
         return _axis(0), _MODEL, 4096
 
     monkeypatch.setattr(memory_service, "_embed", _fake_embed)
