@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-title">服務客戶端</h1>
         <p class="page-subtitle">
-          Router / worker / admin-tool 的平台內部 s2s 身分。每一列 = 一條長效服務客戶端憑證（與 agent 派工 JWT 無關）。
+          平台內部服務（對話路由、文件匯入工作者、管理工具）彼此驗證用的身分。每一列是一組長效憑證，與 agent 派工權杖無關。
         </p>
       </div>
     </header>

@@ -2,7 +2,7 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <h1 class="page-head__title">公告 banner</h1>
+        <h1 class="page-head__title">公告橫幅</h1>
         <p class="page-head__sub">
           張貼維護 / 資安 / 規範公告 — 顯示在所有使用者的 ANILA 對話介面頂部。純文字，不執行程式碼。
         </p>
@@ -25,7 +25,7 @@
           <input type="checkbox" v-model="form.is_active" />
         </TermField>
       </div>
-      <TermField label="content（公告內容）">
+      <TermField label="公告內容">
         <textarea v-model="form.content" class="term-textarea" rows="3" maxlength="2000"
           placeholder="系統將於今晚 22:00–23:00 進行維護，期間服務暫停。"></textarea>
       </TermField>

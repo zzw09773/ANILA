@@ -4,9 +4,8 @@
       <div>
         <h1 class="page-title">信任主機</h1>
         <p class="page-subtitle">
-          SSRF guard allow-list — 列上的 hostname 在 model / agent / credential
-          註冊時可繞過 single-label / internal-zone 阻擋。Owner-only,
-          每次新增 / 移除都會寫 audit log。
+          允許平台對外連線的主機清單。列在這裡的主機名稱，在登記模型、Agent、憑證時
+          不會被內網位址防護擋下。僅擁有者可以修改，每次新增或移除都會寫入稽核紀錄。
         </p>
       </div>
     </header>

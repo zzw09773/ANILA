@@ -4,8 +4,8 @@
       <div>
         <h1 class="page-head__title">分類盤點</h1>
         <p class="page-head__sub">
-          切換四級分類前的資源盤點快照。「不一致」= 舊 latch 為真但等級仍低於「密」,
-          backfill 完成後應為 0。
+          各類資料目前的分類等級統計。「不一致」＝舊版鎖定旗標為真、但等級仍低於「密」的筆數，
+          資料補齊後應為 0。
         </p>
       </div>
       <span class="cell-meta" v-if="generatedAt">產生於 {{ formatDate(generatedAt) }}</span>
@@ -36,7 +36,7 @@
             :key="row.resource_type"
             :class="{ 'is-inconsistent': row.inconsistent > 0 }"
           >
-            <td class="cell-strong">{{ row.resource_type }}</td>
+            <td class="cell-strong">{{ RESOURCE_LABELS[row.resource_type] ?? row.resource_type }}<span class="cell-meta cell-raw">{{ row.resource_type }}</span></td>
             <td v-for="level in LEVELS" :key="level" class="num tnum">
               {{ row.levels?.[level] ?? 0 }}
             </td>
@@ -67,6 +67,18 @@ import { TermBox, TermButton, TermBadge, TermEmpty } from '../components/cli'
 import { formatDate } from '../utils/formatDate'
 
 // 四級順序(對齊後端 ClassificationLevel 契約宣告順序)。
+// 長官看的是資料類別，不是資料表名；表名留在小字，維運對帳用。
+const RESOURCE_LABELS = {
+  conversations: '對話',
+  messages: '訊息',
+  ingestion_collections: '知識庫',
+  ingestion_documents: '知識文件',
+  agents: 'Agent',
+  model_registry: '模型登記',
+  tasks: '任務',
+  source_snapshots: '來源快照',
+}
+
 const LEVELS = ['無機密', '營業秘密', '密', '機密']
 
 const resources = ref([])
@@ -127,4 +139,5 @@ onMounted(fetchInventory)
 /* 不一致列以警示色標示(inconsistent > 0)。 */
 .is-inconsistent { background: var(--c-danger-soft); }
 .is-inconsistent .cell-strong { color: var(--c-danger); }
+.cell-raw { display: block; font-family: var(--font-mono); font-size: var(--t-2xs, 11px); }
 </style>

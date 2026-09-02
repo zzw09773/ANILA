@@ -3,7 +3,7 @@
     <header class="page-head">
       <div>
         <h1 class="page-head__title">服務存取</h1>
-        <p class="page-head__sub">platform_links 的個別使用者 / 部門授權 · multi-service-integration §7.5.3</p>
+        <p class="page-head__sub">逐一授權哪些使用者或部門可以進入各項服務 · 依服務列出目前有效的授權</p>
       </div>
     </header>
 

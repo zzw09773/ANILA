@@ -4,12 +4,12 @@
       <div>
         <h1 class="page-head__title">使用者回饋</h1>
         <p class="page-head__sub">
-          早上掃差評與留言 · 讚 6–10／爛 1–5 兩把尺 · 依 agent / 模型 / 時間篩 · 不含對話正文
+          差評與留言優先 · 評分 6–10 為好評、1–5 為差評 · 可依 agent / 模型 / 時間篩選 · 不含對話正文
         </p>
       </div>
       <div class="page-head__chips">
-        <TermBadge variant="danger" dot>爛 · {{ summary.down }}</TermBadge>
-        <TermBadge variant="ok" dot>讚 · {{ summary.up }}</TermBadge>
+        <TermBadge variant="danger" dot>差評 · {{ summary.down }}</TermBadge>
+        <TermBadge variant="ok" dot>好評 · {{ summary.up }}</TermBadge>
         <TermBadge dot>有留言 · {{ summary.with_comment }}</TermBadge>
       </div>
     </header>
@@ -20,8 +20,8 @@
       <div class="filters">
         <TermField label="評分">
           <select v-model="filters.rating" @change="fetchData" class="term-select">
-            <option value="down">爛</option>
-            <option value="up">讚</option>
+            <option value="down">差評</option>
+            <option value="up">好評</option>
             <option value="">全部</option>
           </select>
         </TermField>
@@ -78,7 +78,7 @@
         <thead>
           <tr>
             <th style="width: 72px">評分</th>
-            <th style="width: 110px">分數(讚6-10／爛1-5)</th>
+            <th style="width: 110px">分數（好評 6–10／差評 1–5）</th>
             <th>留言 / 原因</th>
             <th style="width: 18%">Agent · 模型</th>
             <th style="width: 100px">密等</th>
@@ -90,7 +90,7 @@
           <tr v-for="row in items" :key="row.message_id">
             <td>
               <TermBadge :variant="row.rating === 'down' ? 'danger' : 'ok'" dot>
-                {{ row.rating === 'down' ? '爛' : '讚' }}
+                {{ row.rating === 'down' ? '差評' : '好評' }}
               </TermBadge>
             </td>
             <td class="cell-meta tnum">

@@ -2,9 +2,9 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <h1 class="page-head__title">服務登記</h1>
+        <h1 class="page-head__title">平台連結</h1>
         <p class="page-head__sub">
-          註冊 GUI 服務 · 每服務角色閘門 + 授權白名單 · 啟動模式 / 分類上限 / 服務管理員委派
+          登記給同仁使用的服務入口 · 每項服務可設角色門檻、授權名單、開啟方式、分類上限與服務管理員
           <span v-if="!registryMode" class="compat-note">· 相容模式（platform_links）</span>
         </p>
       </div>
