@@ -536,6 +536,10 @@ services:
       # 每個 job 落地 {job_id}.{html,pdf,docx,svg,csv,xlsx}, 24h 後 prune。
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
+      # Studio 投影片／Vision 模型名（docs/runbooks/model-variants.md §2 待接項）：
+      # 未設就是程式預設 gemma4；這台開發機登記的是 gemma26，要在 .env 指定。
+      ANILA_STUDIO_SLIDES_MODEL: ${ANILA_STUDIO_SLIDES_MODEL:-gemma4}
+      ANILA_STUDIO_VISION_MODEL: ${ANILA_STUDIO_VISION_MODEL:-gemma4}
       JWT_KID: anila-v1
       LOG_LEVEL: INFO
     depends_on:
