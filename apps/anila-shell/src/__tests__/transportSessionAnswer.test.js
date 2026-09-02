@@ -78,6 +78,31 @@ describe("streamSessionAnswer — 送出去之前", () => {
     vi.unstubAllGlobals();
   });
 
+  it("cookie 被 percent-encode 時，header 要是解碼後的值（有掛但值錯＝每次續答都 403）", async () => {
+    // Reviewer 2026-08-24 MEDIUM：sse.js 裡這個形狀有兩份（headerLinesPresent
+    // 守衛數的就是這個 2）。streamChatCompletion 那份在 csrfHeaders.test.js
+    // 有「值錯才紅」的斷言；這份以前只有「有掛」——把 decodeURIComponent
+    // 拿掉，709 條全綠。這一條就是補那個洞：拿掉 :431 的 decode 必須紅。
+    Object.defineProperty(document, "cookie", {
+      configurable: true,
+      get: () => "anila_csrf=%E8%AD%89%E6%93%9A",
+    });
+    const { calls, fake } = captureFetch();
+    vi.stubGlobal("fetch", fake);
+
+    await streamSessionAnswer({
+      routerBaseUrl: "http://router.test",
+      sessionId: "sess-1",
+      interruptId: "int-1",
+      answer: "使用者的回覆",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].options.headers["X-CSRF-Token"]).toBe("證據");
+    expect(calls[0].options.headers["X-CSRF-Token"]).not.toBe("%E8%AD%89%E6%93%9A");
+    vi.unstubAllGlobals();
+  });
+
   it("session id 進 URL(而且做過編碼),中斷 id 與答案進 body", async () => {
     const { calls, fake } = captureFetch();
     vi.stubGlobal("fetch", fake);
