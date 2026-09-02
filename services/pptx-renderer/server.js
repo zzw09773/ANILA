@@ -552,9 +552,13 @@ function pickSectionTitleFont(title) {
  */
 function renderSectionBreak(pres, s, theme) {
   const p = theme.palette // Round 3 Patch M: legacy shim
-  const bullets = Array.isArray(s.bullets) ? s.bullets : []
+  const rawBullets = Array.isArray(s.bullets) ? s.bullets : []
   const titleStr = String(s.title || '')
   const titleFont = pickSectionTitleFont(titleStr)
+  // Subtitle = bullets[0] unless it merely repeats the title (two-pass
+  // models write "● 章節名" as the first bullet of a 章節頁).
+  const firstText = rawBullets.length ? parseBulletHierarchy(rawBullets[0]).text.trim() : ''
+  const bullets = firstText && firstText !== titleStr.trim() ? [firstText] : []
 
   // FLUX cover hero: when the backend hydrated a hero image into this
   // slide (the cover is commonly marked layout_kind="section_break", so

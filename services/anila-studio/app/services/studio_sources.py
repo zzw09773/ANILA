@@ -14,6 +14,24 @@ SOURCES_TITLE = "資料來源"
 
 _REF_GROUP_RE = re.compile(r"[\[【]\s*(\d+(?:\s*[,，、]\s*\d+)*)\s*[\]】]")
 _MAX_NAMED = 3
+_ARTICLE_RE = re.compile(r"第[-\s]*(\d+)[-\s]*條")
+
+
+def _describe_chunks(keys: list[str]) -> str | None:
+    """Chunk keys like ``leaf-00002-第-3-條`` become 「第 3 條」; anything else
+    stays a short 「段落 …」 list. Readers care about articles, not keys."""
+    articles: list[str] = []
+    for k in keys:
+        m = _ARTICLE_RE.search(k)
+        if m:
+            label = f"第 {m.group(1)} 條"
+            if label not in articles:
+                articles.append(label)
+    if articles:
+        return "、".join(articles[:10])
+    if keys:
+        return ("段落 " + "、".join(keys[:8]))[:200]
+    return None
 
 
 def _cited_numbers(texts: list[str]) -> list[int]:
@@ -98,7 +116,7 @@ def append_sources_slide(spec: SlidesSpec, chunks: list[dict[str, Any]]) -> Slid
     if not by_file:
         return spec
     items = [
-        SourceItem(label=name[:160], note=("段落 " + "、".join(keys[:8]))[:200] if keys else None)
+        SourceItem(label=name[:160], note=_describe_chunks(keys))
         for name, keys in list(by_file.items())[:14]
     ]
     closing = Slide(

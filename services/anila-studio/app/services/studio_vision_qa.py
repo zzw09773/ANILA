@@ -20,11 +20,14 @@ import asyncio
 import base64
 import json
 import logging
+import re
 
 import httpx
 from fastapi import HTTPException
 
-from app.schemas.studio import SlidesSpec, VisualDefect
+from pydantic import ValidationError
+
+from app.schemas.studio import Slide, SlidesSpec, VisualDefect
 from app.services.geometric_qa import GeometricDefect, run_geometric_qa
 from app.services.llm_json import (
     extract_json_object as _extract_json_object,
@@ -39,6 +42,40 @@ from app.services.studio_config import (
 from app.services.studio_llm import call_llm_chat as _call_llm_chat
 
 logger = logging.getLogger(__name__)
+
+
+VISION_SYSTEM_PROMPT = (
+    "你是簡報視覺品質檢查員。輸入是一張投影片的截圖，請只回 JSON："
+    '{"defects": [{"severity": "critical|warning|info", "summary": "..."}]}。'
+    "若沒有任何問題，回 {\"defects\": []}。"
+    "critical 等級保留給「使用者一眼會發現的嚴重問題」："
+    "文字溢出版面、文字與圖形重疊、低對比導致看不見、缺少必要內容。"
+    "warning 用於可改善但不影響理解的問題。"
+    "版面固定會有兩個小元素，**不是缺陷，不要回報**："
+    "右下角的小數字是頁碼；左下角灰色小字「資料來源：…」是來源腳註。"
+    "截圖解析度低，角落的小字可能看起來像亂碼，那是頁碼，不要當成不明字元回報。"
+    "回應必須是、且只能是一個 JSON 物件，第一個字元 {、最後一個字元 }，"
+    "不要 ```json 包裹，不要 thought/reasoning 前言。"
+)
+
+# Vision-model complaints that the live runs showed are the page number /
+# footer misread at 96 dpi ("右下角出現不明亂碼字元「唓」"). Never critical.
+_KNOWN_FALSE_POSITIVE_RE = re.compile(r"右下角|左下角|頁碼|亂碼|不明字元|不明的?字|不明符號")
+_REAL_PROBLEM_RE = re.compile(r"溢出|超出|overflow|重疊|看不見|遮住")
+
+
+def demote_known_false_positives(defects: list[VisualDefect]) -> list[VisualDefect]:
+    out: list[VisualDefect] = []
+    for d in defects:
+        if (
+            d.severity != "info"
+            and _KNOWN_FALSE_POSITIVE_RE.search(d.summary)
+            and not _REAL_PROBLEM_RE.search(d.summary)
+        ):
+            out.append(d.model_copy(update={"severity": "info"}))
+        else:
+            out.append(d)
+    return out
 
 
 async def _capture_screenshots(pptx_path: str) -> list[bytes]:
@@ -77,19 +114,8 @@ async def _inspect_slide_visually(
     b64 = base64.b64encode(png_bytes).decode("ascii")
     data_url = f"data:image/png;base64,{b64}"
 
-    system_prompt = (
-        "你是簡報視覺品質檢查員。輸入是一張投影片的截圖，請只回 JSON："
-        '{"defects": [{"severity": "critical|warning|info", "summary": "..."}]}。'
-        "若沒有任何問題，回 {\"defects\": []}。"
-        "critical 等級保留給「使用者一眼會發現的嚴重問題」："
-        "文字溢出版面、文字與圖形重疊、低對比導致看不見、缺少必要內容。"
-        "warning 用於可改善但不影響理解的問題。"
-        "回應必須是、且只能是一個 JSON 物件，第一個字元 {、最後一個字元 }，"
-        "不要 ```json 包裹，不要 thought/reasoning 前言。"
-    )
-
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": VISION_SYSTEM_PROMPT},
         {
             "role": "user",
             "content": [
@@ -222,11 +248,14 @@ async def visual_qa(
     *,
     pptx_bytes: bytes | None = None,
     kinds: list[str] | None = None,
+    only_slides: set[int] | None = None,
 ) -> DefectReport:
     """Run geometric + vision QA on every slide of a rendered .pptx.
 
     Indices in the returned defects are RENDERED indices; the caller maps
-    them with :func:`to_spec_indices`.
+    them with :func:`to_spec_indices`. ``only_slides`` (rendered indices)
+    restricts the vision pass — the re-check after a fix only needs to look
+    at the slides that were flagged, not the whole deck again.
 
     Geometric QA runs first. If it flags `critical` defects on a slide,
     we still run vision QA on the *other* slides (cheaper to short-circuit
@@ -269,6 +298,8 @@ async def visual_qa(
     async def _one(idx: int, b: bytes) -> list[VisualDefect]:
         if idx in critical_slides:
             return []
+        if only_slides is not None and idx not in only_slides:
+            return []
         if skipped_reason:
             return []  # the model already told us it will not look at images
         async with semaphore:
@@ -293,6 +324,7 @@ async def visual_qa(
     vision_flat: list[VisualDefect] = []
     for r in results:
         vision_flat.extend(r)
+    vision_flat = demote_known_false_positives(vision_flat)
     report.extend(_merge_defects(geom_defects, vision_flat))
     if skipped_reason:
         report.vision_skipped = skipped_reason[0]
@@ -304,36 +336,63 @@ async def fix_spec_with_defects(
     current_spec: SlidesSpec,
     defects: list[VisualDefect],
 ) -> SlidesSpec:
-    """Ask the LLM to revise the spec given a list of visual defects."""
+    """Ask the LLM to revise ONLY the flagged slides.
 
-    defect_summary = "\n".join(
-        f"- 投影片 #{d.slide_index + 1}（{d.severity}）：{d.summary}"
-        for d in defects
+    The old pass sent the whole spec and asked for the whole spec back; on
+    the 2026-09-02 live run the model "fixed" one overflow by rewriting
+    every slide into bullet lists (tables, stat callouts and processes all
+    gone). Now the model sees just the flagged slides and returns
+    ``{"changes": [{"slide_index", "slide"}]}``; everything else is kept
+    byte-for-byte. Raises ``ValueError`` / ``ValidationError`` when nothing
+    usable comes back, so the caller ships the pre-fix deck.
+    """
+    flagged = sorted({d.slide_index for d in defects if 0 <= d.slide_index < len(current_spec.slides)})
+    if not flagged:
+        raise ValueError("no defect points at an existing slide")
+    defect_lines = "\n".join(
+        f"- 投影片 #{d.slide_index}（{d.severity}）：{d.summary}"
+        for d in defects if d.slide_index in flagged
+    )
+    slides_json = json.dumps(
+        [{"slide_index": i, "slide": current_spec.slides[i].model_dump(mode="json", exclude_none=True)} for i in flagged],
+        ensure_ascii=False, indent=2,
     )
     system = (
-        "你是 ANILA LM 的簡報修訂助手。輸入是一份既有的 SlidesSpec JSON 和"
-        "視覺檢查發現的缺陷清單。請輸出修正後的完整 SlidesSpec JSON。"
-        "規則同生成階段：第一字 {、最後字 }、不可前言、不可代碼塊。"
-        "修正策略："
-        "1) 文字溢出 → 拆兩張或縮短 bullet。"
-        "2) bullet 過多 → 砍到 ≤6。"
-        "3) 重複 title → 重命名。"
-        "4) placeholder 文字 → 用實際內容取代或刪除。"
-        "保留沒問題的投影片不要動。"
+        "你是 ANILA LM 的簡報修訂助手。輸入是幾張被視覺檢查點名的投影片（JSON）與各自的缺陷。"
+        "只修這幾張、只回這幾張；**不要改 layout_kind、不要改版型 payload 的結構**，"
+        "只調整文字：縮短 bullet、拆句、刪重複、換掉 placeholder。"
+        '輸出格式：{"changes": [{"slide_index": <原本的 slide_index>, "slide": {...完整的那一張...}}]}。'
+        "修不了的頁就不要放進 changes。第一字 {、最後字 }、不可前言、不可代碼塊。"
     )
-    user_msg = (
-        "現有 SlidesSpec：\n"
-        f"{current_spec.model_dump_json(indent=2)}\n\n"
-        f"缺陷清單：\n{defect_summary}"
-    )
-
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user_msg},
-    ]
+    user_msg = f"被點名的投影片：\n{slides_json}\n\n缺陷：\n{defect_lines}"
     raw = await _call_llm_chat(
-        bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
-        max_tokens=FIX_MAX_TOKENS,
+        bearer, SLIDES_LLM_MODEL,
+        [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
+        temperature=0.2, max_tokens=FIX_MAX_TOKENS,
     )
-    extracted = _extract_json_object(raw)
-    return SlidesSpec.model_validate(_loads_lenient(extracted))
+    parsed = _loads_lenient(_extract_json_object(raw))
+    changes = parsed.get("changes") if isinstance(parsed, dict) else None
+    if not isinstance(changes, list):
+        raise ValueError("fix response has no changes list")
+    new_slides = list(current_spec.slides)
+    applied = 0
+    for ch in changes:
+        if not isinstance(ch, dict):
+            continue
+        try:
+            idx = int(ch.get("slide_index"))
+        except (TypeError, ValueError):
+            continue
+        if idx not in flagged or not isinstance(ch.get("slide"), dict):
+            continue
+        try:
+            new_slides[idx] = Slide.model_validate(ch["slide"])
+        except ValidationError as exc:
+            logger.warning("fix: change for slide %d rejected: %s", idx, str(exc)[:200])
+            continue
+        applied += 1
+    if applied == 0:
+        raise ValueError("fix response changed nothing usable")
+    return SlidesSpec.model_validate(
+        {**current_spec.model_dump(mode="json"), "slides": [s.model_dump(mode="json") for s in new_slides]}
+    )

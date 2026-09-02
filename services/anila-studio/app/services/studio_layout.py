@@ -123,6 +123,30 @@ _THEME_TITLE_OVERRIDES: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+def drop_redundant_section_breaks(spec: SlidesSpec) -> SlidesSpec:
+    """A section_break immediately followed by a content slide with the same
+    title is the model mistaking "章節頁" for "每張前面加一頁" — the live
+    two-pass deck had 「依身分區分之懲罰種類」twice in a row. Drop the break;
+    the cover (index 0) is never touched."""
+    slides = spec.slides
+    keep = []
+    for i, s in enumerate(slides):
+        nxt = slides[i + 1] if i + 1 < len(slides) else None
+        if (
+            i > 0
+            and s.layout_kind == "section_break"
+            and nxt is not None
+            and nxt.layout_kind != "section_break"
+            and (nxt.title or "").strip() == (s.title or "").strip()
+        ):
+            logger.info("dropping redundant section_break before '%s'", s.title)
+            continue
+        keep.append(s)
+    if len(keep) == len(slides):
+        return spec
+    return spec.model_copy(update={"slides": keep})
+
+
 def _apply_theme_title_override(spec: SlidesSpec) -> SlidesSpec:
     """Deterministic title-keyword override for theme selection.
 

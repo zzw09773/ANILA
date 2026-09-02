@@ -112,6 +112,7 @@ from app.services.studio_layout import (
     _audit_layout_distribution,
     _rebalance_layouts,
     _should_rebalance,
+    drop_redundant_section_breaks,
 )
 from app.services.studio_llm import (
     StudioLLMAdapter as _StudioLLMAdapter,
@@ -730,6 +731,10 @@ async def _run_pipeline(
             else None
         ),
     )
+    # ── Step 6.3: a section_break that only repeats the next slide's title
+    # is noise (two-pass models do this) — drop it.
+    if not used_fallback:
+        spec = drop_redundant_section_breaks(spec)
     # ── Step 6.4: per-slide provenance footers from the [N] references the
     # model wrote — has to happen before normalize_spec strips them.
     if chunks:
@@ -845,6 +850,7 @@ async def _run_pipeline(
     fix_failed = False
     vision_skipped = False
     last_screenshots: list[bytes] | None = None
+    recheck: set[int] | None = None  # rendered indices to re-inspect after a fix
     if pptx_path and not used_fallback:
         for _ in range(VISUAL_QA_PASSES + 1):
             qa_passes += 1
@@ -860,6 +866,7 @@ async def _run_pipeline(
             raw_defects = await _visual_qa(
                 bearer, pptx_path, pptx_bytes=pptx_bytes,
                 **({"kinds": render_kinds} if render_kinds else {}),
+                **({"only_slides": recheck} if recheck is not None else {}),
             )
             if getattr(raw_defects, "vision_skipped", None):
                 vision_skipped = True
@@ -870,6 +877,9 @@ async def _run_pipeline(
             if not critical or qa_passes > VISUAL_QA_PASSES:
                 final_defects = defects
                 break
+            # After the fix only the flagged slides get the vision pass again
+            # (geometric QA still covers the whole deck).
+            recheck = {d.slide_index + (1 if cover_prepended else 0) for d in critical}
             # Critical defects exist AND we still have a fix budget —
             # ask the LLM to revise, re-render, re-QA. Any failure here
             # (timeout, bad JSON, csp error) keeps the deck we already
