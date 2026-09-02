@@ -30,13 +30,19 @@ export const ErrorPanel = defineComponent({
     const reload = () => {
       if (typeof window !== 'undefined') window.location.reload()
     }
+    // 單一子節點時直接回傳它（不是包一層陣列）：AppLayout 用 <transition mode="out-in">
+    // 包這個面板，Fragment 根節點不會跑 leave hook，換頁後畫面會永遠停在空白佔位。
+    const passthrough = () => {
+      const nodes = slots.default?.()
+      return Array.isArray(nodes) && nodes.length === 1 ? nodes[0] : nodes
+    }
     return () =>
       failedAt.value
         ? h('div', { role: 'alert', class: 'error-panel' }, [
             h('p', { class: 'error-panel__msg' }, describeErrorForOperator(null, failedAt.value)),
             h('button', { type: 'button', class: 'error-panel__btn', onClick: reload }, '重新整理'),
           ])
-        : slots.default?.()
+        : passthrough()
   },
 })
 
