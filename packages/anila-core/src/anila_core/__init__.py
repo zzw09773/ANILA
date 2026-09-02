@@ -18,8 +18,6 @@ Two pillars
      - memory/             extract / select / consolidate (Memdir)
      - compact/            micro / auto / sliding window / session memory
      - models/             pydantic message / tool / agent / memory dtos
-     - cli/                ``anila-core init / register / status /
-                            agent bootstrap`` developer CLI
      - config.py           pydantic-settings entry
 
 2. **Shared infrastructure** — primitives that don't belong to a single

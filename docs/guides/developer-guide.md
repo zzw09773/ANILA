@@ -254,23 +254,14 @@ API 另接受 `capabilities`（JSON dict 自由 metadata）與 `input_schema`（
 ## 7. 進階：tool-driven / multi-turn agent
 
 如果你的 agent 需要 LLM 自己決定何時檢索、呼叫哪個 tool，不要停在 OpenAI-compat
-pre-process 注入層，改用 `anila_core.engine.query_engine.QueryEngine`：
+pre-process 注入層——在 anila-agent 樣板裡用它自己的 `agentic_rag.tools`
+（`VectorSearchTool` / `KeywordSearchTool` / `ReadDocumentTool` 的正式實作在那裡，
+**不在** `anila_core.tools`；anila-core 自 Sprint 1 起就是 RAG-agnostic）。
 
-```python
-from anila_core.engine.query_engine import QueryEngine, QueryConfig
-from anila_core.tools import VectorSearchTool, KeywordSearchTool, ReadDocumentTool
-
-engine = QueryEngine(QueryConfig(
-    model=MODEL,
-    allowed_tools=[
-        VectorSearchTool(_pool),
-        KeywordSearchTool(_pool),
-        ReadDocumentTool(_pool),
-    ],
-))
-async for event in engine.run_turn(messages):
-    ...
-```
+`anila_core.engine.query_engine.QueryEngine` 仍可 import，但平台上沒有任何服務用它
+（Router 是手寫派工器，2026-09-02 量測）；要用它自建 turn loop 的話，入口是
+`await engine.run(messages, on_stream_delta=...)`（沒有 `run_stream()`），
+範例見 `packages/anila-core/e2e_smoke.py`。
 
 Output 面向 Router 的格式一樣是 OpenAI-compat SSE，tool call 的中間狀態走
 `delta.reasoning_content`。

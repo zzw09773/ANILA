@@ -83,14 +83,10 @@ dev = [
     "pyyaml>=6.0,<6.1",
 ]
 
-[project.scripts]
-anila-core = "anila_core.cli.main:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/anila_core"]
 
 [tool.hatch.build.targets.wheel.shared-data]
-"src/anila_core/cli/templates" = "anila_core/cli/templates"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

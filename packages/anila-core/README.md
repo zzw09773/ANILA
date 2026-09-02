@@ -17,8 +17,8 @@
 
 平台各角色與 anila-core 的關係:
 
-- **Router 部署**([`anila-core-router`](../../services/anila-core-router/)):直接 `import` Pillar 1 + Pillar 2。
-- **Agent 開發者**:`anila-core init` 產生 non-RAG starter,或 `pip install "anila-core[rag]"` 並 fork [`anila-agent`](../anila-agent/) 作為官方 RAG agent starter template。`[rag]` extra 提供文件解析的重量級套件。
+- **Router 部署**([`anila-core-router`](../../services/anila-core-router/)):`api/router_server.py` 是一個手寫的派工器,實際只用到 `prompts`、`registry.remote_agent_manifest`、`tools.dispatch_tool`、`memory.short_term`、`api/session_owner`、`api/events`、`http_pool` 與 Pillar 2。**它不建在 QueryEngine／Coordinator 上**(2026-09-02 量測:Router 程序載入的模組集合裡沒有 `engine.*`)。
+- **Agent 開發者**:fork [`anila-agent`](../anila-agent/)(官方 RAG agent starter template,治理中心「開發指南」教的就是這條)。`anila-core init` CLI 已於 2026-09-02 移除(無任何流程使用)。Pillar 1 的 QueryEngine／tools／workspace 仍可 import,但平台本身沒有任何服務用它們——是否保留為 SDK 待擁有者裁決。
 - **ingestion-worker**(Arq 非同步 pipeline):只消費 Pillar 2(`chunking_plugins`、`IngestionError`、`pg_pool`、`pgvector_store`、`credential_crypto`),不碰 Pillar 1。
 
 > **Redesign 後倉庫佈局(§17.1)**:monorepo 採 `services/`(可部署服務,含 `csp` / `anila-core-router`)、`apps/`(前端)、`packages/`(可 import 的套件,本 SDK 在此)、`infra/`(compose / 部署腳本 / nginx / models)四分層。根目錄 [`compose.yaml`](../../compose.yaml) 是 shim → `include: infra/compose/platform.yml`;部署腳本在 `infra/deployment/{scripts,intranet}/`。repo 根定位見 [`../../README.md`](../../README.md)。
@@ -50,12 +50,6 @@
 - **`[rag]`** — 文件解析重量級堆疊:`pymupdf4llm` / `pymupdf` / `python-docx` / `odfpy` / `striprtf` / `Pillow`。重量級 parser / vision 實作落在 `anila_core.ingestion.parser_registry` 與 `anila_core.providers.vision`;`anila-agent/` 是純 starter template(無 production code 依賴)。
 - **`[dev]`** — `pytest` / `pytest-asyncio` / `pytest-cov` / `respx` / `ruff` / `mypy`。
 
-### Console script
-
-```
-anila-core = anila_core.cli.main:main   # init / register / status / agent bootstrap（legacy；已被 P2.1 派工 JWT 取代）
-```
-
 ---
 
 ## 目錄結構
@@ -78,7 +72,6 @@ packages/anila-core/
     ├── api/                  # server / router_server(create_router_app)+ events
     │   ├── session_owner.py · caller_context.py   # resume session→agent 表 + CallerContext(讀 X-ANILA-Task-Id)
     │   └── middleware/
-    │       ├── auth.py            # LEGACY：CSP service-token + rotating token（舊路徑；新 agent 勿用）
     │       ├── dispatch_auth.py   # P2.1 派工 JWT 中介層（JWKS 驗簽、fail-closed）
     │       ├── dispatch_jwt.py    # P2.1 JWT parse／verify helpers
     │       └── jwks_client.py     # P2.1 JWKS 抓取／快取
@@ -94,7 +87,6 @@ packages/anila-core/
     │                         # + memdir · consolidation · relevance_selector · user
     ├── compact/              # micro / auto / session_memory / sliding_window
     ├── context/              # AgentContext(turn-scope contextvars,含 classified_latch)
-    ├── post_turn/            # prompt_suggestion(follow-up chips)
     ├── tracing/              # span · tracer · processor · hooks
     │                         #   + sdk（anila_trace_sdk:TraceExporter / TraceSession / ExportingProcessor / SPAN_TYPES)
     ├── workspace/            # capability-scoped sandbox(workspace + caps + safe_path)
@@ -192,32 +184,10 @@ Tracing 是 **additive 且 fail-open**:`ANILA_TRACE_ENDPOINT` 未設 → 整條 
 
 程式面三件:`TraceExporter`(執行緒安全、批次、bounded queue、drop-and-log)、`TraceSession`(per-`trace_id` span factory,`span()` / `async_span()` context manager 自動計時 / 標 ok/error / auto-parent)、`ExportingProcessor`(把 in-tree `Tracer`/`Span` 橋接到 exporter,`SpanKind` → doc `05` §6 的 span-type)。皆從 `anila_core.tracing` 匯出。
 
-### Scaffold 新 agent + 註冊
+### 新 agent 從哪裡開始
 
-```bash
-anila-core init my-agent      # 用 cli/templates/agent-template 產生 non-RAG starter
-anila-core register \
-  --csp http://localhost:8000 --endpoint http://your-host:9100 \
-  --base-model gemma4 \
-  --runtime-type anila_agent --classification-level 機密 \
-  --version 1.0.0
-```
-
-`register` 讀 `anila.yaml`、以 JWT 登入 CSP 後 `POST /api/agents/register`。旗標皆 override manifest、對閉集驗證:
-
-| 旗標 | 說明 |
-|---|---|
-| `--base-model` | **必填(或寫在 `anila.yaml` 的 `base_model`)**:底層模型「名稱」。CSP 端把名稱解析成 id,開發者不必先去治理中心抄一個數字 |
-| `--base-model-id` | 只有在兩個模型顯示名稱撞名時才需要:直接指定數字 id |
-| `--runtime-type` | 5 值(doc `05` §3):`anila_agent` / `langchain` / `openwebui_pipe_compatible` / `openai_compatible_agent` / `custom_http` |
-| `--classification-level` | 四級(SYSTEM-MAP §8):`無機密` / `營業秘密` / `密` / `機密`。寫入 `default_classification_level` |
-| `--version` | agent 版本字串(如 `1.0.0`) |
-
-> `--draft`(shadow 註冊)與 `--classification-ceiling` 已移除。OE-1 之後 `approval_status`
-> 只有 registered / approved / disabled 三態,沒有 draft;agent 端也沒有分類上限,真正會寫入並
-> enforce 的是 `default_classification_level`。這兩個旗標以前都只是把欄位送出去被伺服器丟掉。
-
----
+`anila-core init` 與 `anila-core register` 已移除(2026-09-02)。新 agent 一律 fork
+[`anila-agent`](../anila-agent/),註冊走治理中心 → Agent → 註冊 Agent(或 `POST /api/agents/register`)。
 
 ## 安全:outbound URL guard(SSRF)
 
@@ -235,7 +205,7 @@ host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、i
 
 | 消費者 | 使用範圍 | 取得什麼 |
 |--------|----------|----------|
-| **anila-core-router** | Pillar 1 + Pillar 2 | `create_router_app()`、QueryEngine、Coordinator、`RemoteAgentRegistry`、派工 JWT／JWKS middleware、trace SDK |
+| **anila-core-router** | Pillar 1 的一小部分 + Pillar 2 | `create_router_app()`、`RemoteAgentRegistry`、`dispatch_tool`、`memory.short_term`、prompts(共同前導＋三份模板＋取樣表)、派工 JWT／JWKS middleware、trace SDK(預設關)。**不用** QueryEngine／Coordinator |
 | **anila-agent template**(fork 起點) | Pillar 1 + Pillar 2 + `[rag]` | 完整 runtime + 文件解析 / vision provider |
 | **ingestion-worker**(Arq + Redis) | 僅 Pillar 2 | `chunking_plugins`、`IngestionError`、`pg_pool`、`CollectionScopedPgVectorStore`、`credential_crypto` |
 | **services/csp**(CSP backend) | Pillar 2(部分) | `credential_crypto`(加密 `user_llm_credentials`)、`url_guard`(SSRF)等共用 primitives |

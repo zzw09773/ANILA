@@ -7,7 +7,6 @@ import logging
 import pytest
 
 from anila_core.models.message import AssistantMessage, UserMessage
-from anila_core.post_turn.prompt_suggestion import PromptSuggestion
 from anila_core.prompts.sampling import TASK_SAMPLING, get_sampling
 from anila_core.providers.guards import bumped_max_tokens, is_empty_length_failure
 from anila_core.providers.mock import MockProvider, ScriptedResponse
@@ -91,77 +90,3 @@ def test_sampling_docstring_marks_unwired_tasks() -> None:
     assert "已接線" in doc
     assert "尚未接線" in doc
     assert "chips" in doc
-
-
-# ---------------------------------------------------------------------------
-# chips empty-reply retry (prompt_suggestion) — invariant 3
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_chips_retries_once_only_on_empty_length() -> None:
-    provider = MockProvider(
-        [
-            ScriptedResponse(text="", finish_reason="length"),
-            ScriptedResponse(
-                text='["這個方法的誤差來源是什麼？", "有沒有對應的測試數據？", "這個結論適用於哪些條件？"]',
-                finish_reason="end_turn",
-            ),
-        ]
-    )
-    suggester = PromptSuggestion(provider=provider, model="m", max_tokens=1024)
-    suggestions = await suggester._suggest(
-        [UserMessage(content="hi"), AssistantMessage(content="hello")]
-    )
-
-    assert suggestions == [
-        "這個方法的誤差來源是什麼？",
-        "有沒有對應的測試數據？",
-        "這個結論適用於哪些條件？",
-    ]
-    assert provider.call_count == 2
-    assert provider.requests[0].max_tokens == 1024
-    assert provider.requests[1].max_tokens == 2048
-
-
-@pytest.mark.asyncio
-async def test_chips_empty_end_turn_does_not_retry() -> None:
-    """Invariant 3: empty + non-length finish_reason → no retry, return []."""
-    provider = MockProvider(
-        [ScriptedResponse(text="", finish_reason="end_turn")]
-    )
-    suggester = PromptSuggestion(provider=provider, model="m", max_tokens=1024)
-    suggestions = await suggester._suggest(
-        [UserMessage(content="hi"), AssistantMessage(content="hello")]
-    )
-
-    assert suggestions == []
-    assert provider.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_chips_empty_length_twice_returns_empty_and_warns(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    provider = MockProvider(
-        [
-            ScriptedResponse(text="   ", finish_reason="length"),
-            ScriptedResponse(text="\n", finish_reason="length"),
-        ]
-    )
-    suggester = PromptSuggestion(provider=provider, model="m", max_tokens=512)
-    with caplog.at_level(logging.WARNING):
-        suggestions = await suggester._suggest(
-            [UserMessage(content="hi"), AssistantMessage(content="hello")]
-        )
-
-    assert suggestions == []
-    assert provider.call_count == 2
-    assert provider.requests[1].max_tokens == 1024
-    assert any("chips" in r.message and "空" in r.message for r in caplog.records)
-
-
-def test_prompt_suggestion_default_max_tokens_from_sampling_table() -> None:
-    provider = MockProvider([])
-    suggester = PromptSuggestion(provider=provider, model="m")
-    assert suggester._max_tokens == get_sampling("chips").max_tokens

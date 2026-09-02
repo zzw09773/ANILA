@@ -42,6 +42,7 @@ from ..memory.short_term import Session, SqliteSession, new_session_id
 from ..models.message import UserMessage
 from ..prompts import COMMON_PREAMBLE, IDENTITY
 from ..prompts.sampling import get_sampling
+from ..providers.guards import bumped_max_tokens, is_empty_length_failure
 from . import router_prompts
 from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
 from ..tools.dispatch_tool import dispatch_to_agent_response
@@ -2614,10 +2615,6 @@ def _sampling_payload(*, max_tokens_override: int | None = None) -> dict[str, An
     return params
 
 
-def _finish_reason_of(choice: Mapping[str, Any]) -> str:
-    return str(choice.get("finish_reason") or "")
-
-
 async def _call_llm_non_stream(
     caller_api_key: str,
     messages: list[dict],
@@ -2671,14 +2668,14 @@ async def _call_llm_non_stream(
         # Empty-reply rule (§9b-2): the budget went to reasoning and nothing
         # reached the answer. Retry once with a doubled budget; a second blank
         # is an error, never a silent "".
-        if _finish_reason_of(choice) == "length" and not (message.get("content") or "").strip():
+        if is_empty_length_failure(choice.get("finish_reason"), message.get("content")):
             if _retry_max_tokens is None:
                 logger.warning("LLM reply empty with finish_reason=length; retrying with doubled max_tokens")
                 return await _call_llm_non_stream(
                     caller_api_key,
                     messages,
                     forwarded_headers=forwarded_headers,
-                    _retry_max_tokens=int(payload["max_tokens"]) * 2,
+                    _retry_max_tokens=bumped_max_tokens(int(payload["max_tokens"])),
                 )
             return {"content": "", "reasoning": None, "anila_meta": data.get("anila_meta"), "raw": data, "error": _EMPTY_LENGTH_ERROR}
         # Reasoning models (TensorRT-LLM / vLLM / Ollama with gpt-oss, Qwen-R,
@@ -2858,14 +2855,14 @@ async def _stream_llm_sse(
                     # Empty-reply rule (§9b-2), streaming flavour: nothing reached
                     # the answer and the stream was cut by the budget → retry once
                     # with a doubled budget; a second blank is an error event.
-                    if finish_reason == "length" and not saw_content:
+                    if is_empty_length_failure(finish_reason, "x" if saw_content else ""):
                         if _retry_max_tokens is None:
                             logger.warning("LLM stream empty with finish_reason=length; retrying with doubled max_tokens")
                             async for ev in _stream_llm_sse(
                                 caller_api_key,
                                 messages,
                                 forwarded_headers=forwarded_headers,
-                                _retry_max_tokens=int(payload["max_tokens"]) * 2,
+                                _retry_max_tokens=bumped_max_tokens(int(payload["max_tokens"])),
                             ):
                                 yield ev
                             return

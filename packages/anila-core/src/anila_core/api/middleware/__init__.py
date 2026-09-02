@@ -4,10 +4,8 @@ P2.1 inbound auth surface (preferred)::
 
     from anila_core.api.middleware import DispatchIdentityMiddleware
 
-Legacy static ``CspServiceTokenMiddleware`` /
-``RotatingServiceTokenMiddleware`` are **not** re-exported here — import
-them from ``anila_core.api.middleware.auth`` only if a call site has not
-migrated yet. Those classes are fail-closed when the token is blank.
+The legacy static / rotating service-token middleware (``auth.py``) was
+removed 2026-09-02: nothing in the platform imported it since P2.1.
 """
 
 from .dispatch_auth import DispatchIdentityMiddleware, claims_from_request
