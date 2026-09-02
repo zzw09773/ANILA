@@ -1,0 +1,15 @@
+{
+  "_readme": "Golden set 種子（harness §6-8）。每題只列「機械可驗的性質」，不列標準答案——標準答案要院方出。跑法：python packages/anila-core/scripts/prompt_canary.py --base https://<平台> --key csk-… 。checks: cites=要有 [N] 來源標記（表示查了規章且引用）、no_kb=答案上方應標未檢索、zh=零簡體、terms=零 PRC 框架用語、year=民國→西元換算要對、nonempty=不得空白。",
+  "questions": [
+    {"id": "g01", "q": "軍人有哪些違紀行為會受到懲罰？", "checks": ["nonempty", "zh", "terms", "cites"]},
+    {"id": "g02", "q": "陸海空軍懲罰法對於勤務外的違紀行為怎麼規定？", "checks": ["nonempty", "zh", "terms", "cites"]},
+    {"id": "g03", "q": "軍人受懲罰時有哪些程序上的保障？", "checks": ["nonempty", "zh", "terms", "cites"]},
+    {"id": "g04", "q": "士官的懲罰種類有哪些？", "checks": ["nonempty", "zh", "terms", "cites"]},
+    {"id": "g05", "q": "軍人權益事件處理法適用於哪些對象？", "checks": ["nonempty", "zh", "terms", "cites"]},
+    {"id": "g06", "q": "懲罰法施行細則對於申訴期限的規定是什麼？", "checks": ["nonempty", "zh", "terms"]},
+    {"id": "g07", "q": "民國114年是西元幾年？", "checks": ["nonempty", "zh", "terms", "year:2025"]},
+    {"id": "g08", "q": "請用三句話介紹中華民國國軍的角色。", "checks": ["nonempty", "zh", "terms"]},
+    {"id": "g09", "q": "請把這句話翻成繁體中文：这个软件的质量需要提升。", "checks": ["nonempty", "zh", "terms"]},
+    {"id": "g10", "q": "今天天氣如何？", "checks": ["nonempty", "zh", "terms"]}
+  ]
+}

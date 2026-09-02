@@ -406,13 +406,19 @@ docker exec anila-nginx nginx -s reload</code></pre>
   <li>金鑰：模型主機重簽 → 改 <code>.env</code> 的 <code>MODEL_GATEWAY_API_KEY</code> → <code>up -d csp</code> → reload nginx。</li>
   <li>加擁有者：治理中心 → 使用者 → 編輯角色（既有帳號）；或改 <code>CARD_INITIAL_OWNERS</code>（只對之後第一次刷卡的人生效）。</li>
 </ul>
-<h3>10.5 附屬入口</h3>
+<h3>10.5 追蹤匯出與 Router 狀態</h3>
+<ul>
+  <li>Router 的步驟追蹤匯出（<code>ANILA_TRACE_ENDPOINT</code>）出貨預設是<strong>關的</strong>，而且 csp 目前沒有接收端；使用者看到的步驟時間軸走的是即時事件，跟這個無關。不要設這個變數。</li>
+  <li>Router 多輪派工的中途狀態放在 named volume <code>router-sessions</code>（v1.0.2 起）；<code>down</code> 不會刪它，<code>down -v</code> 會。</li>
+</ul>
+
+<h3>10.6 附屬入口</h3>
 <p>nginx 對 <code>/codeserver</code>、<code>/n8n</code>、<code>/gitlab/</code> 預設回 404，<code>/anilalm/</code> 回「暫時維護中」（503）。這些是刻意的發行閘，<strong>不是故障，不要為它們動 nginx</strong>。要開放時照 <code>docs/runbooks/anilalm-release-gate.md</code>。</p>
-<h3>10.6 每天看一眼</h3>
+<h3>10.7 每天看一眼</h3>
 <ul>
   <li>儀表板 → 服務健康全綠、告警為 0。</li>
   <li>使用者 → 待審核有沒有人在等。</li>
-  <li>使用者回饋 → 昨天的差評。</li>
+  <li>使用者回饋 → 昨天的差評，以及「疑似拒答」計數有沒有突然升高。</li>
   <li>磁碟剩餘空間。</li>
 </ul>
 
