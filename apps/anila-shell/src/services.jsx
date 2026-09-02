@@ -283,6 +283,17 @@ export function ServicesPanel({ open, onClose, request = authRequest, toast }) {
     void load();
   }, [open, load]);
 
+  // 抽屜開著時 Escape 關閉——跟設定、分享、附件檢視一樣；aria-modal 的對話框不吃
+  // Escape，鍵盤使用者只能用滑鼠找右上角的叉（逐頁走查 2026-09-02）。
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose?.();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   // 失敗一律同時走兩個出口:抽屜頂端的 role="alert"(留在畫面上、可以再讀一次)

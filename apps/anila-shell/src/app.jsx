@@ -3620,7 +3620,7 @@ function MemoryTab({ authRequest }) {
 
       <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.6 }}>
         清空後立即生效；下次對話起，平台會重新從新對話內容重新學習。
-        若需暫時停用記憶整合，請聯絡管理員（runtime feature flag 由運維端控制）。
+        若需暫時停用記憶整合，請聯絡管理員。
       </div>
     </div>
   );
@@ -3741,7 +3741,7 @@ function SettingsModal({
                 <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA Runtime Client</div>
               </div>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-muted)" }}>
-                v0.2.0 · trust + multi-agent + collab
+                v{typeof __ANILA_VERSION__ !== "undefined" ? __ANILA_VERSION__ : "dev"} · ANILA 對話介面
               </div>
             </div>
           )}
