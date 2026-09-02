@@ -161,6 +161,30 @@ def convert_arrow_bullets_to_process(spec: SlidesSpec) -> SlidesSpec:
     return spec.model_copy(update={"slides": out}) if changed else spec
 
 
+def split_dense_slides(spec: SlidesSpec, *, max_bullets: int = 5) -> SlidesSpec:
+    """不密密麻麻：a standard slide with more than ``max_bullets`` bullets is
+    split into two halves; the second is titled「…（續）」and carries no
+    key_message (the first keeps it)."""
+    out = []
+    changed = False
+    for s in spec.slides:
+        if s.layout_kind != "standard" or len(s.bullets) <= max_bullets:
+            out.append(s)
+            continue
+        half = (len(s.bullets) + 1) // 2
+        first = s.model_copy(update={"bullets": s.bullets[:half]})
+        second = s.model_copy(update={
+            "bullets": s.bullets[half:],
+            "title": f"{s.title}（續）",
+            "key_message": None,
+            "speaker_notes": None,
+        })
+        out.extend([first, second])
+        changed = True
+        logger.info("split dense slide '%s' (%d bullets)", s.title, len(s.bullets))
+    return spec.model_copy(update={"slides": out}) if changed else spec
+
+
 def drop_redundant_section_breaks(spec: SlidesSpec) -> SlidesSpec:
     """A section_break immediately followed by a content slide with the same
     title is the model mistaking "章節頁" for "每張前面加一頁" — the live
@@ -692,6 +716,8 @@ _LAYOUT_PAYLOAD_FIELDS = {
     "process": "steps",
     "table": "table",
     "sources": "sources",
+    "figure": "figure",
+    "agenda": "agenda",
 }
 
 
@@ -745,7 +771,7 @@ def _apply_rebalance_change(
     # Clear all layout-specific payload keys then set the new one. Keeping
     # leftovers around is harmless (Pydantic ignores them on the wrong
     # layout_kind) but makes the spec dict ambiguous to inspect.
-    for field_name in ("stat", "quote", "columns", "icon_rows", "steps", "table", "sources"):
+    for field_name in ("stat", "quote", "columns", "icon_rows", "steps", "table", "sources", "figure", "agenda"):
         target.pop(field_name, None)
 
     payload_field = _LAYOUT_PAYLOAD_FIELDS[new_layout]

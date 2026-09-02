@@ -29,6 +29,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
 const { renderIconPng } = require('./icons.js')
+const sharp = require('sharp')
 
 const PORT = Number(process.env.PORT || 7100)
 const TMP_ROOT = process.env.PPTX_TMP_DIR || '/tmp/pptx-out'
@@ -263,6 +264,37 @@ const THEMES = {
     density: 'spacious',
   },
 
+  // 正式行政（2026-09-02）：給長官看的簡報。白底、深藍字、暗金細線；封面與章節頁
+  // 是雙色（左深藍面板＋章節編號），每頁底部一句結論列與來源腳註。
+  official: {
+    id: 'official',
+    palette: {
+      bar: '1E2761', accent: 'B8922E',
+      titleText: '1E2761', barText: 'FFFFFF',
+      ink: '1F2937', muted: '6B7280', bg: 'FFFFFF',
+      panel: 'F3F4F6',
+    },
+    fonts: {
+      title: 'Noto Sans CJK TC',
+      body: 'Noto Sans CJK TC',
+      titleWeight: 'bold',
+      titleSize: { content: 26, section: 40, cover: 40 },
+      bodySize: { default: 18, dense: 16, spacious: 20 },
+    },
+    chrome: {
+      titleBar: 'underline_navy',
+      sectionBreak: 'two_tone',
+      accentMotif: 'gold_rule',
+    },
+    iconTreatment: {
+      style: 'outline_circle',
+      circleSize: 0.8,
+      iconSize: 0.4,
+      strokeWidth: 2,
+    },
+    density: 'comfortable',
+  },
+
   startup_pitch: {
     id: 'startup_pitch',
     palette: {
@@ -368,6 +400,29 @@ function applyTitleBar(slide, title, theme) {
         color: p.titleText,
         align: 'left', valign: 'middle',
         fontFace: fonts.title, margin: 0,
+      })
+      break
+    }
+    case 'underline_navy': {
+      // Official: navy title, a short dark-gold rule beneath, a hairline
+      // across. Reads as a government briefing header, not a web banner.
+      slide.addShape('rect', {
+        x: 0.5, y: 0.42, w: 0.12, h: 0.42,
+        fill: { color: p.bar }, line: { type: 'none' },
+      })
+      slide.addText(titleStr, {
+        x: 0.75, y: 0.3, w: 12.0, h: 0.65,
+        fontSize: fonts.titleSize.content, bold: true,
+        color: p.titleText, fontFace: fonts.title,
+        align: 'left', valign: 'middle', margin: 0,
+      })
+      slide.addShape('line', {
+        x: 0.5, y: 1.05, w: 12.33, h: 0,
+        line: { color: 'D1D5DB', width: 0.5 },
+      })
+      slide.addShape('line', {
+        x: 0.5, y: 1.05, w: 1.6, h: 0,
+        line: { color: p.accent, width: 2.5 },
       })
       break
     }
@@ -491,12 +546,13 @@ function renderStandard(pres, s, theme) {
   const bullets = Array.isArray(s.bullets) ? s.bullets : []
   const n = bullets.length
   let bodyFontSize, bodyValign, bodyY, bodyH, paraSpaceAfter
+  const bottom = bodyBottom(s)
   if (n <= 3) {
-    bodyFontSize = 28; bodyValign = 'middle'; bodyY = 1.2; bodyH = 5.7; paraSpaceAfter = 22
+    bodyFontSize = 28; bodyValign = 'middle'; bodyY = 1.2; bodyH = bottom - 1.2; paraSpaceAfter = 22
   } else if (n <= 5) {
-    bodyFontSize = 24; bodyValign = 'top'; bodyY = 1.2; bodyH = 5.7; paraSpaceAfter = 16
+    bodyFontSize = 24; bodyValign = 'top'; bodyY = 1.2; bodyH = bottom - 1.2; paraSpaceAfter = 16
   } else {
-    bodyFontSize = 20; bodyValign = 'top'; bodyY = 1.1; bodyH = 5.8; paraSpaceAfter = 10
+    bodyFontSize = 20; bodyValign = 'top'; bodyY = 1.1; bodyH = bottom - 1.1; paraSpaceAfter = 10
   }
   slide.addText(
     bullets.map((b) => {
@@ -611,6 +667,57 @@ function renderSectionBreak(pres, s, theme) {
 
   // No master — full-bleed colour fill regardless of variant.
   const slide = pres.addSlide()
+
+  if (theme.chrome.sectionBreak === 'two_tone') {
+    // Official: cover (first slide) = navy left panel with the deck title;
+    // later section pages = navy panel with the chapter number, title on
+    // the white right side. sectionCounter is kept on pres.
+    const isCover = pres.slides.length === 1
+    pres._anilaSection = (pres._anilaSection || 0) + (isCover ? 0 : 1)
+    slide.background = { color: p.bg }
+    slide.addShape('rect', { x: 0, y: 0, w: 5.2, h: 7.5, fill: { color: p.bar }, line: { type: 'none' } })
+    slide.addShape('rect', { x: 5.2, y: 0, w: 0.08, h: 7.5, fill: { color: p.accent }, line: { type: 'none' } })
+    if (isCover) {
+      slide.addText(titleStr, {
+        x: 0.6, y: 2.2, w: 4.3, h: 3.0, fontSize: pickSectionTitleFont(titleStr) > 44 ? 40 : 34, bold: true,
+        color: 'FFFFFF', align: 'left', valign: 'middle', fontFace: theme.fonts.title, margin: 0,
+      })
+      if (bullets[0]) {
+        slide.addText(String(bullets[0]), {
+          x: 5.9, y: 2.6, w: 6.9, h: 1.2, fontSize: 22, color: p.titleText,
+          align: 'left', valign: 'middle', fontFace: theme.fonts.body, margin: 0,
+        })
+      }
+      const today = new Date()
+      const dateStr = `${today.getFullYear() - 1911} 年 ${today.getMonth() + 1} 月 ${today.getDate()} 日`
+      slide.addText(`ANILA 依院內文件整理 · ${dateStr}`, {
+        x: 5.9, y: 4.0, w: 6.9, h: 0.5, fontSize: 14, color: p.muted,
+        align: 'left', fontFace: theme.fonts.body, margin: 0,
+      })
+    } else {
+      const num = String(pres._anilaSection).padStart(2, '0')
+      slide.addText(num, {
+        x: 0.6, y: 2.0, w: 4.3, h: 2.2, fontSize: 96, bold: true, color: p.accent,
+        align: 'left', valign: 'middle', fontFace: theme.fonts.title, margin: 0,
+      })
+      slide.addText('章', {
+        x: 0.65, y: 4.2, w: 4.3, h: 0.6, fontSize: 18, color: 'FFFFFF',
+        align: 'left', fontFace: theme.fonts.body, margin: 0,
+      })
+      slide.addText(titleStr, {
+        x: 5.9, y: 2.3, w: 6.9, h: 1.8, fontSize: Math.min(40, titleFont), bold: true, color: p.titleText,
+        align: 'left', valign: 'middle', fontFace: theme.fonts.title, margin: 0,
+      })
+      if (bullets[0]) {
+        slide.addText(String(bullets[0]), {
+          x: 5.9, y: 4.2, w: 6.9, h: 0.8, fontSize: 18, color: p.muted,
+          align: 'left', valign: 'top', fontFace: theme.fonts.body, margin: 0,
+        })
+      }
+    }
+    if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+    return slide
+  }
 
   // Patch N.1/N.2: branch on theme.chrome.sectionBreak.
   //
@@ -896,7 +1003,7 @@ function renderStatCallout(pres, s, theme) {
   // Footer takeaway — bullets[0] (if any) as a small muted line near
   // the bottom. Common pattern: "因此 X 可以做 Y" so the slide ends
   // with a "so what" instead of raw figures.
-  if (bullets[0]) {
+  if (bullets[0] && !s.key_message) {
     slide.addText(String(bullets[0]), {
       x: 0.5, y: 6.5, w: 12.3, h: 0.5,
       fontSize: 14, color: p.muted, italic: true,
@@ -996,7 +1103,7 @@ function renderTwoColumn(pres, s, theme) {
         }
       }),
       {
-        x: x + 0.1, y: 2.0, w: COL_WIDTH - 0.1, h: 4.8,
+        x: x + 0.1, y: 2.0, w: COL_WIDTH - 0.1, h: bodyBottom(s) - 2.1,
         fontSize: 18, color: p.ink, fontFace: FONT_FACE,
         paraSpaceAfter: 12, valign: 'top',
       },
@@ -1008,7 +1115,7 @@ function renderTwoColumn(pres, s, theme) {
     // reads as a soft baseline, not a strong divider.
     if (bullets.length <= 3) {
       slide.addShape('rect', {
-        x, y: 6.85, w: COL_WIDTH, h: 0.015,
+        x, y: bodyBottom(s) - 0.05, w: COL_WIDTH, h: 0.015,
         fill: { color: p.muted }, line: { type: 'none' },
       })
     }
@@ -1039,7 +1146,7 @@ async function renderIconRows(pres, s, theme) {
   // among the rows with a small gap between rows. Icon size scales
   // inverse to row count so 3 rows feel deliberate and 5 rows still fit.
   const TOP = 1.1
-  const BOTTOM = 6.9
+  const BOTTOM = bodyBottom(s)
   const GAP = 0.2
   const rowH = (BOTTOM - TOP - GAP * (rows.length - 1)) / rows.length
   // Icon goes in a square box at the row's left; description text uses
@@ -1221,7 +1328,7 @@ function renderImageFocus(pres, s, theme) {
   const IMG_X = 0.5
   const IMG_Y = 1.1
   const IMG_W = 5.95
-  const IMG_H = 5.7
+  const IMG_H = bodyBottom(s) - 1.2
   slide.addImage({
     data: s.image_data,
     x: IMG_X, y: IMG_Y, w: IMG_W, h: IMG_H,
@@ -1272,7 +1379,7 @@ function renderProcess(pres, s, theme) {
   applyTitleBar(slide, s.title, theme)
   const perRow = steps.length <= 4 ? steps.length : Math.ceil(steps.length / 2)
   const rows = steps.length <= 4 ? 1 : 2
-  const LEFT = 0.6, RIGHT = 12.73, TOP = 1.3, BOTTOM = 6.9
+  const LEFT = 0.6, RIGHT = 12.73, TOP = 1.3, BOTTOM = bodyBottom(s)
   const gap = 0.35
   const colW = (RIGHT - LEFT - gap * (perRow - 1)) / perRow
   const rowH = (BOTTOM - TOP - (rows - 1) * 0.3) / rows
@@ -1341,7 +1448,7 @@ function renderTable(pres, s, theme) {
   // Rows stretch to use the body (up to 1" each) so a four-row table does
   // not sit as a strip under the title; h is passed explicitly because
   // pptxgenjs otherwise writes a 1" frame extent regardless of rows.
-  const rowH = Math.min(1.0, 5.6 / (rows.length + 1))
+  const rowH = Math.min(1.0, (bodyBottom(s) - 1.3) / (rows.length + 1))
   slide.addTable([header, ...rows], {
     x: 0.5, y: 1.2, w: W, h: rowH * (rows.length + 1),
     colW: [firstW, ...Array(columns.length - 1).fill(restW)],
@@ -1388,15 +1495,205 @@ function renderSources(pres, s, theme) {
 }
 
 /**
+ * Agenda — numbered section list, built by the pipeline from the outline.
+ */
+function renderAgenda(pres, s, theme) {
+  const p = theme.palette
+  const items = Array.isArray(s.agenda) ? s.agenda.filter(Boolean).slice(0, 8).map(String) : []
+  if (items.length === 0) return renderStandard(pres, s, theme)
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title || '目錄', theme)
+  const top = 1.5
+  const lineH = Math.min(0.85, 5.0 / items.length)
+  items.forEach((label, i) => {
+    const y = top + i * lineH
+    slide.addText(String(i + 1).padStart(2, '0'), {
+      x: 1.0, y, w: 1.0, h: lineH, fontSize: 28, bold: true, color: p.accent,
+      align: 'left', valign: 'middle', fontFace: FONT_FACE, margin: 0,
+    })
+    slide.addText(label, {
+      x: 2.1, y, w: 10.0, h: lineH, fontSize: 24, color: p.ink,
+      align: 'left', valign: 'middle', fontFace: FONT_FACE, margin: 0,
+    })
+    slide.addShape('line', { x: 2.1, y: y + lineH - 0.05, w: 10.0, h: 0, line: { color: 'E5E7EB', width: 0.5 } })
+  })
+  if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+  return slide
+}
+
+// ── Figures: deterministic SVG recipes + model-drawn SVG, rasterised ──
+function figurePayloadOk(f) {
+  if (!f || typeof f !== 'object') return false
+  if (f.kind === 'svg') return typeof f.svg === 'string' && /<svg[\s>]/i.test(f.svg)
+  if (f.kind === 'timeline' || f.kind === 'org') {
+    return Array.isArray(f.items) && f.items.filter((it) => it && it.label).length >= 2
+  }
+  return false
+}
+
+function esc(t) {
+  return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function timelineSvg(items, p) {
+  const n = items.length
+  const W = 1200, H = 420
+  const x0 = 90, x1 = W - 90
+  const step = n > 1 ? (x1 - x0) / (n - 1) : 0
+  const parts = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">`,
+    `<line x1="${x0}" y1="210" x2="${x1}" y2="210" stroke="#${p.bar}" stroke-width="6" stroke-linecap="round"/>`]
+  items.forEach((it, i) => {
+    const x = x0 + i * step
+    parts.push(`<circle cx="${x}" cy="210" r="22" fill="#${p.accent}" stroke="#ffffff" stroke-width="6"/>`)
+    parts.push(`<text x="${x}" y="150" font-family="Noto Sans CJK TC" font-size="30" font-weight="bold" fill="#${p.ink}" text-anchor="middle">${esc(it.label)}</text>`)
+    if (it.note) parts.push(`<text x="${x}" y="290" font-family="Noto Sans CJK TC" font-size="24" fill="#${p.muted}" text-anchor="middle">${esc(it.note)}</text>`)
+  })
+  parts.push('</svg>')
+  return parts.join('')
+}
+
+function orgSvg(items, p) {
+  const byLabel = new Map(items.map((it) => [String(it.label), it]))
+  const level = (it, depth = 0) => {
+    const parent = it.parent && byLabel.get(String(it.parent))
+    return parent && depth < 6 ? level(parent, depth + 1) + 1 : 0
+  }
+  const levels = new Map()
+  items.forEach((it) => { const l = level(it); if (!levels.has(l)) levels.set(l, []); levels.get(l).push(it) })
+  const depth = levels.size
+  const W = 1200, H = 675, boxW = 260, boxH = 76
+  const rowH = depth > 1 ? (H - 120) / (depth - 1) : 0
+  const pos = new Map()
+  const parts = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">`]
+  for (let l = 0; l < depth; l++) {
+    const row = levels.get(l) || []
+    const gap = W / (row.length + 1)
+    row.forEach((it, i) => {
+      const cx = gap * (i + 1), cy = 60 + l * rowH + boxH / 2
+      pos.set(String(it.label), { cx, cy })
+    })
+  }
+  items.forEach((it) => {
+    const me = pos.get(String(it.label)); const pa = it.parent && pos.get(String(it.parent))
+    if (me && pa) parts.push(`<path d="M${pa.cx} ${pa.cy + boxH / 2} L${pa.cx} ${(pa.cy + me.cy) / 2} L${me.cx} ${(pa.cy + me.cy) / 2} L${me.cx} ${me.cy - boxH / 2}" fill="none" stroke="#${p.muted}" stroke-width="3"/>`)
+  })
+  items.forEach((it) => {
+    const me = pos.get(String(it.label)); if (!me) return
+    const top = !it.parent || !byLabel.has(String(it.parent))
+    parts.push(`<rect x="${me.cx - boxW / 2}" y="${me.cy - boxH / 2}" width="${boxW}" height="${boxH}" rx="10" fill="#${top ? p.bar : 'FFFFFF'}" stroke="#${p.bar}" stroke-width="3"/>`)
+    parts.push(`<text x="${me.cx}" y="${me.cy + 10}" font-family="Noto Sans CJK TC" font-size="28" font-weight="bold" fill="#${top ? 'FFFFFF' : p.ink}" text-anchor="middle">${esc(it.label)}</text>`)
+  })
+  parts.push('</svg>')
+  return parts.join('')
+}
+
+// Defence in depth: the studio sanitises model SVG first; this strips the
+// same things again so a direct caller cannot smuggle scripts or fetches.
+function sanitizeSvgBasic(svg) {
+  let out = String(svg)
+  out = out.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '')
+  out = out.replace(/<(image|iframe|use)\b[^>]*\/>/gi, '').replace(/<(image|iframe|use)\b[\s\S]*?<\/\1>/gi, '')
+  out = out.replace(/\son[a-z]+="[^"]*"/gi, '').replace(/\son[a-z]+='[^']*'/gi, '')
+  out = out.replace(/(xlink:)?href="(https?:|javascript:)[^"]*"/gi, '')
+  if (!/viewBox=/i.test(out)) out = out.replace(/<svg\b/i, '<svg viewBox="0 0 1200 675"')
+  return out
+}
+
+async function figureToPng(f, theme) {
+  const p = theme.palette
+  let svg
+  if (f.kind === 'timeline') svg = timelineSvg(f.items.filter((it) => it && it.label), p)
+  else if (f.kind === 'org') svg = orgSvg(f.items.filter((it) => it && it.label), p)
+  else svg = sanitizeSvgBasic(f.svg)
+  try {
+    return await sharp(Buffer.from(svg), { density: 192 }).png().toBuffer()
+  } catch (e) {
+    console.warn(`[figure] rasterise failed (${f.kind}): ${e.message}`)
+    return null
+  }
+}
+
+/**
+ * Figure — a picture the pipeline can trust: timeline / org chart drawn
+ * here from data, or a model-written SVG (sanitised) for architecture and
+ * relationship diagrams. Full width when the slide has no real bullets,
+ * otherwise figure left, bullets right.
+ */
+async function renderFigure(pres, s, theme) {
+  const p = theme.palette
+  if (!figurePayloadOk(s.figure)) return renderStandard(pres, s, theme)
+  const png = await figureToPng(s.figure, theme)
+  if (!png) return renderStandard(pres, s, theme)
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title, theme)
+  const bullets = (Array.isArray(s.bullets) ? s.bullets : []).map((b) => parseBulletHierarchy(b).text).filter((t) => t && t.length > 1)
+  const withText = bullets.length >= 2
+  const IMG_X = 0.5, IMG_Y = 1.25
+  const IMG_W = withText ? 7.4 : 12.33
+  const IMG_H = bodyBottom(s) - IMG_Y - 0.1
+  slide.addImage({ data: `data:image/png;base64,${png.toString('base64')}`, x: IMG_X, y: IMG_Y, w: IMG_W, h: IMG_H, sizing: { type: 'contain', w: IMG_W, h: IMG_H } })
+  if (withText) {
+    const TEXT_X = IMG_X + IMG_W + 0.4
+    slide.addText(
+      bullets.map((t) => ({ text: t, options: { bullet: { code: '25CF' }, color: p.ink } })),
+      { x: TEXT_X, y: IMG_Y, w: 13.33 - TEXT_X - 0.5, h: IMG_H, fontSize: bullets.length <= 3 ? 20 : 17, color: p.ink, fontFace: FONT_FACE, paraSpaceAfter: 12, valign: 'top' },
+    )
+  }
+  if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+  return slide
+}
+
+/**
  * Dispatcher — picks the renderer based on slide.layout_kind. Unknown
  * kinds fall back to `renderStandard`. Async so callers can `await` it
  * uniformly even though only icon_rows is actually async.
  */
+// Content-area bottom when a slide carries a key_message band (the band
+// sits at BAND_Y and the source footer below it).
+const BAND_Y = 6.45
+const BAND_H = 0.5
+function bodyBottom(s) { return s && s.key_message ? BAND_Y - 0.1 : 6.9 }
+
 async function renderSlideByKind(pres, s, theme) {
   const slide = await renderSlideByKindInner(pres, s, theme)
   const kind = effectiveKind(s)
-  if (slide && kind !== 'section_break' && kind !== 'sources') applySourceFooter(slide, s, theme)
+  const isChrome = kind === 'section_break' || kind === 'sources' || kind === 'agenda'
+  if (slide && !isChrome) {
+    applyKeyMessage(slide, s, theme)
+    applySourceFooter(slide, s, theme)
+  }
+  if (slide && kind !== 'section_break' && theme.chrome.titleBar !== 'filled') {
+    // Non-master themes draw their own page number (the master only exists
+    // for the filled title bar).
+    slide.addText(String(pres.slides.length), {
+      x: 12.5, y: 7.1, w: 0.7, h: 0.3, fontSize: 10, color: theme.palette.muted,
+      fontFace: FONT_FACE, align: 'right', valign: 'middle', margin: 0,
+    })
+  }
   return slide
+}
+
+/**
+ * 言之有物：one sentence the slide exists to say, in a band above the
+ * footer. Filled by the model (key_message) per slide.
+ */
+function applyKeyMessage(slide, s, theme) {
+  const msg = typeof s.key_message === 'string' ? s.key_message.trim() : ''
+  if (!msg) return
+  const p = theme.palette
+  slide.addShape('rect', {
+    x: 0.5, y: BAND_Y, w: 12.33, h: BAND_H,
+    fill: { color: p.panel || 'F3F4F6' }, line: { type: 'none' },
+  })
+  slide.addShape('rect', {
+    x: 0.5, y: BAND_Y, w: 0.1, h: BAND_H,
+    fill: { color: p.accent }, line: { type: 'none' },
+  })
+  slide.addText(msg, {
+    x: 0.75, y: BAND_Y, w: 11.9, h: BAND_H,
+    fontSize: 15, bold: true, color: p.titleText, fontFace: FONT_FACE,
+    align: 'left', valign: 'middle', margin: 0,
+  })
 }
 
 /**
@@ -1425,6 +1722,8 @@ async function renderSlideByKindInner(pres, s, theme) {
     case 'process':       return renderProcess(pres, s, theme)
     case 'table':         return renderTable(pres, s, theme)
     case 'sources':       return renderSources(pres, s, theme)
+    case 'figure':        return await renderFigure(pres, s, theme)
+    case 'agenda':        return renderAgenda(pres, s, theme)
     default:              return renderStandard(pres, s, theme)
   }
 }
@@ -1576,6 +1875,8 @@ function effectiveKind(s) {
       return ok ? 'table' : 'standard'
     }
     case 'sources': return (Array.isArray(s.sources) && s.sources.some((it) => it && it.label)) ? 'sources' : 'standard'
+    case 'figure': return figurePayloadOk(s.figure) ? 'figure' : 'standard'
+    case 'agenda': return (Array.isArray(s.agenda) && s.agenda.filter(Boolean).length >= 1) ? 'agenda' : 'standard'
     default: return 'standard'
   }
 }
@@ -1865,7 +2166,7 @@ function findLargestEmptyRegion(shapes) {
 // Kinds whose body is expected to fill the slide. Everything else (cover,
 // section_break, stat_callout, quote) is sparse BY DESIGN and must not be
 // judged on whitespace — a big number on an empty page is the point.
-const WHITESPACE_JUDGED_KINDS = new Set(['standard', 'two_column', 'icon_rows', 'image_focus', 'process', 'table'])
+const WHITESPACE_JUDGED_KINDS = new Set(['standard', 'two_column', 'icon_rows', 'image_focus', 'process', 'table', 'figure'])
 
 // One shape drawn inside another (an icon glyph inside its circle, a scrim
 // over a hero image) is containment, not an overlap defect.

@@ -24,6 +24,7 @@ from app.services.llm_json import extract_json_object, loads_lenient
 
 EVIDENCE_KINDS: tuple[str, ...] = (
     "number", "comparison", "process", "list", "definition", "quote", "table",
+    "timeline", "org", "diagram",
 )
 
 # 證據型態 → 版型（給第二通的硬規則；模型仍可在同族內微調）
@@ -35,6 +36,9 @@ EVIDENCE_TO_LAYOUT: dict[str, str] = {
     "list": "icon_rows 或 standard（3-5 個並列要點用 icon_rows）",
     "definition": "standard（條文原文放 bullets，條號放 title）",
     "quote": "quote",
+    "timeline": "figure（kind=timeline）",
+    "org": "figure（kind=org）",
+    "diagram": "figure（kind=svg，自己畫）",
 }
 
 
@@ -94,6 +98,10 @@ def build_outline_prompt(
         "    list        3-5 個並列要點",
         "    definition  一條定義或條文原文",
         "    quote       一句值得整頁引用的話",
+        "    timeline    期限、時序（送達 → 30 日 → 20 日）",
+        "    org         機關層級、隸屬關係",
+        "    diagram     架構、關係圖（模型自己畫 SVG）",
+        "- 一份簡報至少 2 張是 timeline / org / diagram / process / table，不要全部 list。",
         "- query 要具體到能在文件裡命中：寫條文用語與名詞，不寫「介紹」「說明」這種空詞。",
         "- 不要寫封面、目錄、結語、資料來源這種投影片（系統會加）。",
         "- 使用台灣繁體中文。",
@@ -212,7 +220,9 @@ TWO_PASS_SYSTEM_ADDENDUM = "\n".join([
     "- 投影片順序、標題、數量照大綱；每個章節開頭加一張 section_break（title=章節名）；",
     "  第一張仍是整份簡報的封面 section_break（規則 1）。",
     "- 每張的版型由大綱的「證據」決定：number→stat_callout、table→table、comparison→two_column、",
-    "  process→process、quote→quote、list→icon_rows（3-5 點）或 standard、definition→standard。",
+    "  process→process、quote→quote、list→icon_rows（3-5 點）或 standard、definition→standard、",
+    "  timeline→figure(timeline)、org→figure(org)、diagram→figure(svg)。",
+    "- 每張都要有 key_message（≤ 40 字的結論）；3-4 條 bullet、每條 ≤ 35 字。",
     "- 每張只用自己的「可用段落」寫；沒有專屬段落才用整體段落。內容要具體到條號、期限、",
     "  對象；不要把同一段話換句話說塞到好幾張。",
     "- 不要自己寫「資料來源」頁，系統會加。",

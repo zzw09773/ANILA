@@ -114,6 +114,7 @@ from app.services.studio_layout import (
     _should_rebalance,
     convert_arrow_bullets_to_process,
     drop_redundant_section_breaks,
+    split_dense_slides,
 )
 from app.services.studio_llm import (
     StudioLLMAdapter as _StudioLLMAdapter,
@@ -133,7 +134,12 @@ from app.services.studio_retrieval import (
     retrieve_chunks as _retrieve_chunks,
     retrieve_images as _retrieve_images,
 )
-from app.services.studio_sources import append_sources_slide, attach_source_lines
+from app.services.studio_sources import (
+    append_sources_slide,
+    attach_source_lines,
+    insert_agenda_slide,
+    sanitize_figures,
+)
 from app.services import studio_previews
 from app.services.studio_text_normalizer import normalize_spec
 from app.services.studio_vision_qa import (
@@ -226,6 +232,7 @@ async def _generate_validated_spec(
         )
         if planned is not None:
             outline, chunks, per_slide = planned
+            two_pass["outline"] = outline  # the pipeline builds the agenda page from it
             system = system + _outline.TWO_PASS_SYSTEM_ADDENDUM
             user_msg = _outline.build_content_user_prompt(
                 collection_name, preset, extra_instructions, outline, chunks, per_slide,
@@ -717,6 +724,11 @@ async def _run_pipeline(
     # every image_prompt it writes and leave hollow one-line slides behind.
     illustrations_enabled = await get_active_flux_provider() is not None
     await updater.set(step=JOB_STEP_GENERATING)
+    two_pass_ctx: dict[str, Any] = (
+        {"collection_id": payload.collection_id}
+        if TWO_PASS_ENABLED and chunks and not payload.skip_retrieval
+        else {}
+    )
     spec, used_fallback = await _generate_validated_spec(
         bearer,
         coll.name,
@@ -726,17 +738,17 @@ async def _run_pipeline(
         images=images,
         retrieval_failed=retrieval_failed,
         illustrations_enabled=illustrations_enabled,
-        two_pass=(
-            {"collection_id": payload.collection_id}
-            if TWO_PASS_ENABLED and chunks and not payload.skip_retrieval
-            else None
-        ),
+        two_pass=two_pass_ctx or None,
     )
     # ── Step 6.3: a section_break that only repeats the next slide's title
     # is noise (two-pass models do this) — drop it.
     if not used_fallback:
+        spec = sanitize_figures(spec)
         spec = drop_redundant_section_breaks(spec)
         spec = convert_arrow_bullets_to_process(spec)
+        spec = split_dense_slides(spec)
+        if two_pass_ctx.get("outline") is not None:
+            spec = insert_agenda_slide(spec, two_pass_ctx["outline"])
     # ── Step 6.4: per-slide provenance footers from the [N] references the
     # model wrote — has to happen before normalize_spec strips them.
     if chunks:

@@ -90,6 +90,7 @@ PALETTES: tuple[str, ...] = (
 # set palette but not theme will resolve to the equivalent theme via
 # _PALETTE_TO_THEME below.
 THEMES: tuple[str, ...] = (
+    "official",
     "corporate_navy",
     "academic_paper",
     "warm_journal",
@@ -125,6 +126,9 @@ LAYOUT_KINDS: tuple[str, ...] = (
     "process",
     "table",
     "sources",
+    # 言之有物（2026-09-02）：圖（timeline / org 由渲染器畫，svg 由模型畫）與目錄頁
+    "figure",
+    "agenda",
 )
 
 
@@ -225,6 +229,30 @@ class SourceItem(BaseModel):
     note: str | None = Field(default=None, max_length=200)
 
 
+class FigureItem(BaseModel):
+    label: str = Field(..., min_length=1, max_length=40)
+    note: str | None = Field(default=None, max_length=60)
+    parent: str | None = Field(default=None, max_length=40)  # org charts
+
+
+class Figure(BaseModel):
+    """A picture: ``timeline`` / ``org`` are drawn by the renderer from
+    ``items``; ``svg`` is model-written vector art (sanitised before render)."""
+
+    kind: Literal["timeline", "org", "svg"]
+    items: list[FigureItem] | None = Field(default=None, max_length=10)
+    svg: str | None = Field(default=None, max_length=30_000)
+
+    @model_validator(mode="after")
+    def _payload_matches_kind(self) -> Self:
+        if self.kind in ("timeline", "org"):
+            if not self.items or len(self.items) < 2:
+                raise ValueError(f"figure kind={self.kind} 需要至少 2 個 items")
+        elif not self.svg or "<svg" not in self.svg[:2000].lower():
+            raise ValueError("figure kind=svg 需要 svg 內容")
+        return self
+
+
 class Slide(BaseModel):
     """One slide — title, bullets, optional speaker notes, optional layout payloads."""
 
@@ -252,6 +280,10 @@ class Slide(BaseModel):
     # stripped from the visible text. The renderer prints it at the foot of
     # every content slide.
     source_line: str | None = Field(default=None, max_length=160)
+    # 言之有物：the one sentence this slide exists to say (band above the footer).
+    key_message: str | None = Field(default=None, max_length=80)
+    figure: Figure | None = None
+    agenda: list[str] | None = Field(default=None, max_length=10)
     # Phase 5: opaque ID into ingestion_images that the LLM picks from
     # the "可用圖" prompt list. The renderer-side path resolves it to
     # actual image bytes; if unresolvable we fall back to `standard`.
@@ -303,7 +335,7 @@ class Slide(BaseModel):
     # contracts are designed to avoid.
     image_gen_meta: dict | None = Field(default=None)
 
-    @field_validator("title", "speaker_notes")
+    @field_validator("title", "speaker_notes", "key_message")
     @classmethod
     def _strip_whitespace(cls, v: str | None) -> str | None:
         if v is None:
@@ -357,6 +389,8 @@ class Slide(BaseModel):
             "process": bool(self.steps),
             "table": self.table is not None,
             "sources": bool(self.sources),
+            "figure": self.figure is not None,
+            "agenda": bool(self.agenda),
         }
         if self.layout_kind in needs and not needs[self.layout_kind]:
             self.layout_kind = "standard"
@@ -422,6 +456,7 @@ class SlidesSpec(BaseModel):
     # If None, resolves from the legacy `palette` field at validation time
     # via `_resolve_theme_from_palette`.
     theme: Literal[
+        "official",
         "corporate_navy",
         "academic_paper",
         "warm_journal",
@@ -517,6 +552,7 @@ class GenerateSpecRequest(BaseModel):
     # invalid values out at request time (422), instead of silently
     # being ignored mid-pipeline.
     theme_override: Literal[
+        "official",
         "corporate_navy",
         "academic_paper",
         "warm_journal",

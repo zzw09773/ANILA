@@ -45,6 +45,8 @@ from opencc import OpenCC
 
 from app.schemas.studio import (
     Column,
+    Figure,
+    FigureItem,
     IconRow,
     Quote,
     Slide,
@@ -296,7 +298,24 @@ def _normalize_slide(slide: Slide) -> Slide:
         # (the LLM populates these with chunk references); only visible slide
         # text gets citations stripped.
         "speaker_notes": _convert(slide.speaker_notes, keep_citations=True),
+        "key_message": _convert(slide.key_message),
     }
+
+    if slide.figure is not None:
+        if slide.figure.items is not None:
+            patch["figure"] = Figure(
+                kind=slide.figure.kind,
+                items=[
+                    FigureItem(label=_convert(it.label) or "", note=_convert(it.note), parent=_convert(it.parent))
+                    for it in slide.figure.items
+                ],
+                svg=slide.figure.svg,
+            )
+        else:
+            patch["figure"] = slide.figure
+
+    if slide.agenda is not None:
+        patch["agenda"] = [_convert(a) or "" for a in slide.agenda]
 
     if slide.stat is not None:
         patch["stat"] = Stat(

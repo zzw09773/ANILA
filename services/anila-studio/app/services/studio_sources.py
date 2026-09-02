@@ -50,6 +50,11 @@ def _cited_numbers(texts: list[str]) -> list[int]:
 
 def _slide_texts(slide: Slide) -> list[str]:
     out: list[str] = [slide.title, *slide.bullets]
+    if slide.key_message:
+        out.append(slide.key_message)
+    if slide.figure and slide.figure.items:
+        for it in slide.figure.items:
+            out += [it.label, it.note or ""]
     if slide.stat:
         out += [slide.stat.label, slide.stat.supporting]
     if slide.quote:
@@ -66,6 +71,36 @@ def _slide_texts(slide: Slide) -> list[str]:
     if slide.table:
         out += [*slide.table.columns, *[cell for row in slide.table.rows for cell in row]]
     return [t for t in out if t]
+
+
+def insert_agenda_slide(spec: SlidesSpec, outline: Any) -> SlidesSpec:
+    """目錄頁 right after the cover, from the outline's section headings."""
+    headings = [str(sec.heading).strip() for sec in getattr(outline, "sections", []) if str(sec.heading).strip()]
+    if len(headings) < 2 or not spec.slides:
+        return spec
+    if len(spec.slides) > 1 and spec.slides[1].layout_kind == "agenda":
+        return spec
+    agenda = Slide(title="目錄", layout_kind="agenda", bullets=["本簡報章節"], agenda=headings[:10])
+    return spec.model_copy(update={"slides": [spec.slides[0], agenda, *spec.slides[1:]]})
+
+
+def sanitize_figures(spec: SlidesSpec) -> SlidesSpec:
+    """Model-drawn SVG is cleaned; an SVG that does not survive drops the
+    figure (the slide falls back to standard)."""
+    from app.services.studio_svg import sanitize_svg
+    out = []
+    changed = False
+    for s in spec.slides:
+        if s.figure is not None and s.figure.kind == "svg":
+            clean = sanitize_svg(s.figure.svg)
+            if clean is None:
+                out.append(s.model_copy(update={"figure": None, "layout_kind": "standard"}))
+            else:
+                out.append(s.model_copy(update={"figure": s.figure.model_copy(update={"svg": clean})}))
+            changed = True
+        else:
+            out.append(s)
+    return spec.model_copy(update={"slides": out}) if changed else spec
 
 
 def attach_source_lines(spec: SlidesSpec, chunks: list[dict[str, Any]]) -> SlidesSpec:
