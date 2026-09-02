@@ -30,6 +30,8 @@ from jose import jwt as jose_jwt
 from jose.exceptions import JWTError
 from sqlalchemy.orm import Session
 
+from anila_core.security import UnsafeEndpointError, validate_outbound_url
+
 from app.config import settings
 from app.models.auth_provider import AuthProvider
 from app.models.department import Department
@@ -397,11 +399,15 @@ async def _fetch_jwks(
         issuer = (provider.oidc_issuer_url or "").rstrip("/")
         if not issuer:
             raise ValueError("OIDC Provider 缺 issuer_url，無法取得 JWKS")
+        _require_safe_idp_url(issuer, "issuer")
         discovery = await client.get(f"{issuer}/.well-known/openid-configuration")
         discovery.raise_for_status()
         jwks_uri = discovery.json().get("jwks_uri")
         if not jwks_uri:
             raise ValueError("IdP discovery 缺 jwks_uri")
+    # 信任錨：jwks_uri 決定平台信哪把金鑰。不管它來自 metadata 還是這裡的
+    # 補打 discovery，GET 之前一律過同一道守衛。
+    _require_safe_idp_url(jwks_uri, "jwks_uri")
     resp = await client.get(jwks_uri)
     resp.raise_for_status()
     return resp.json().get("keys", []) or []
@@ -418,12 +424,60 @@ def _select_jwk(keys: list[dict], *, kid: str | None, alg: str) -> dict | None:
     return candidates[0] if candidates else None
 
 
+_IDP_URL_FIELDS = (
+    "authorization_endpoint",
+    "token_endpoint",
+    "userinfo_endpoint",
+    "jwks_uri",
+)
+
+
+def _require_safe_idp_url(url, field: str) -> str:
+    """Every URL the IdP flow will talk to passes here, whatever its origin.
+
+    Two checks, deliberately independent of each other and of the env flags:
+
+    1. ``https://`` is mandatory. ``ANILA_ALLOW_HTTP_ENDPOINT`` relaxes model /
+       agent endpoints; it does **not** relax the IdP. ``token_endpoint``
+       receives ``client_secret`` + ``code`` + ``code_verifier`` and
+       ``jwks_uri`` decides which keys sign a valid ``id_token`` — a plaintext
+       hop on either is a credential leak or a forged login, not a dev
+       convenience.
+    2. :func:`validate_outbound_url` (same guard as model / agent / ingestion
+       endpoint rows): loopback, link-local, metadata, internal zones,
+       single-label names, RFC 1918 unless ``ANILA_ALLOW_PRIVATE_ENDPOINT`` /
+       ``ANILA_TRUSTED_HOSTS`` says so. An on-prem IdP lives under the same
+       regime the model endpoints already do.
+
+    Raises ``ValueError`` naming ``field`` so the callback's audit row says
+    which URL was refused.
+    """
+    if not url or not isinstance(url, str):
+        raise ValueError(f"OIDC {field} 缺少或不是字串")
+    if not url.lower().startswith("https://"):
+        raise ValueError(
+            f"OIDC {field} 必須是 https://（收到 {url!r}）。"
+            "IdP 端點不受 ANILA_ALLOW_HTTP_ENDPOINT 放寬。"
+        )
+    try:
+        validate_outbound_url(url)
+    except UnsafeEndpointError as exc:
+        raise ValueError(f"OIDC {field} 被出向守衛拒絕：{exc}") from exc
+    return url
+
+
 async def _resolve_oidc_metadata(provider: AuthProvider) -> dict:
     """Resolve the IdP endpoint URLs.
 
     Sprint 6 X / A6: 也回傳 ``issuer`` 與 ``jwks_uri``，給 id_token 驗證用。
     若 admin 已手填 authz / token / userinfo 三個 endpoint，仍會 fallback
     discovery 來取 jwks_uri；jwks 是 _verify_id_token 不可或缺的依賴。
+
+    🔴 安全不變式（2026-08-24 HIGH finding）：**回傳前，四個 URL 一律過
+    :func:`_require_safe_idp_url`**——不分它是 admin 手填（DB 列沒有自己的
+    validator）還是 discovery 回答的。能回答 discovery 的人，一次拿到
+    ``client_secret``＋``code``＋``code_verifier``（token_endpoint）與
+    「平台信哪把金鑰」（jwks_uri）；只守 jwks_uri 是假修。
     """
     explicit = {
         "authorization_endpoint": provider.oidc_authorization_endpoint,
@@ -436,34 +490,46 @@ async def _resolve_oidc_metadata(provider: AuthProvider) -> dict:
         raise ValueError(
             "OIDC Provider 缺少 issuer_url；id_token 驗簽需要 JWKS，無法降級。"
         )
-
-    if all(explicit.values()) and issuer:
-        # 全填寫，但仍打 discovery 取 jwks_uri（OIDC discovery 是 IdP 的標準
-        # 介面，不應該另外要 admin 在 UI 上多填一個 jwks_uri 欄位）。
-        async with httpx.AsyncClient(timeout=15) as client:
-            disc = await client.get(f"{issuer}/.well-known/openid-configuration")
-            disc.raise_for_status()
-            discovered = disc.json()
-        return {
-            **explicit,
-            "issuer": issuer,
-            "jwks_uri": discovered.get("jwks_uri"),
-        }
-
     if not issuer:
         raise ValueError("OIDC Provider 缺少 issuer_url")
+
+    # issuer 先驗再打：discovery 那一趟本身就是一次出向請求，而且它的回答
+    # 決定接下來四個 URL。issuer 是 http:// 的話，連 MITM 都不必——能回答
+    # DNS／ARP 的人就能接管整條登入鏈。
+    _require_safe_idp_url(issuer, "issuer")
     discovery_url = f"{issuer}/.well-known/openid-configuration"
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.get(discovery_url)
         response.raise_for_status()
         discovered = response.json()
-    return {
-        "authorization_endpoint": discovered["authorization_endpoint"],
-        "token_endpoint": discovered["token_endpoint"],
-        "userinfo_endpoint": discovered["userinfo_endpoint"],
-        "issuer": discovered.get("issuer", issuer),
-        "jwks_uri": discovered.get("jwks_uri"),
-    }
+
+    if all(explicit.values()):
+        # 三個 endpoint 全由 admin 手填，但仍打 discovery 取 jwks_uri：
+        # ① OIDC discovery 是 IdP 的標準介面，不另外要 admin 在 UI 多填一個
+        #    jwks_uri 欄位（可用性那一半）；
+        # ② 但這表示「平台信哪把金鑰」由 discovery 的回答者決定（安全那一半）
+        #    ——所以拿到的 jwks_uri 跟手填的三個一樣，下面一律過守衛。
+        metadata = {
+            **explicit,
+            "issuer": issuer,
+            "jwks_uri": discovered.get("jwks_uri"),
+        }
+    else:
+        metadata = {
+            "authorization_endpoint": discovered.get("authorization_endpoint"),
+            "token_endpoint": discovered.get("token_endpoint"),
+            "userinfo_endpoint": discovered.get("userinfo_endpoint"),
+            "issuer": discovered.get("issuer", issuer),
+            "jwks_uri": discovered.get("jwks_uri"),
+        }
+
+    for field in _IDP_URL_FIELDS:
+        if field == "jwks_uri" and metadata[field] is None:
+            # 缺 jwks_uri 不是「被下毒」：_fetch_jwks 會補打一次 discovery，
+            # 補到的那個 URL 在那邊過同一道守衛。
+            continue
+        _require_safe_idp_url(metadata[field], field)
+    return metadata
 
 
 def _provision_external_user(
