@@ -426,6 +426,22 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 專案入口（Service Platform）overlay。
   const [servicesOpen, setServicesOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  // 窄視窗（≤900px）自動收合側欄，視窗變寬再展開；使用者手動切換照常。
+  // 沒有這條時，400px 寬的視窗會被 272px 的側欄吃掉，主欄擠成直排字
+  // （UI 評估 2026-09-02 第 1 件）。jsdom 沒有 matchMedia → 維持展開。
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const mql = window.matchMedia("(max-width: 900px)");
+    if (!mql) return undefined;
+    const apply = (e) => setCollapsed(Boolean(e.matches));
+    apply(mql);
+    if (typeof mql.addEventListener === "function") mql.addEventListener("change", apply);
+    else if (typeof mql.addListener === "function") mql.addListener(apply);
+    return () => {
+      if (typeof mql.removeEventListener === "function") mql.removeEventListener("change", apply);
+      else if (typeof mql.removeListener === "function") mql.removeListener(apply);
+    };
+  }, []);
   const [folder, setFolder] = useState("all");
 
   // 敏感資訊模式(提醒／阻擋)。使用者自己在提示列選的偏好,跟資料夾
