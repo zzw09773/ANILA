@@ -47,7 +47,10 @@ services:
       ASR_DEVICE: cpu
       # CPU 上 int8 是唯一划算的選擇:float16 在 CPU 沒有硬體支援,
       # CTranslate2 會退回 float32,慢一大截。
-      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-int8}
+      # CPU 上 float16 一定失敗(ctranslate2 直接拒絕),而 .env.example 出貨值是
+      # float16(給 GPU 主機的)。這個覆蓋檔的存在理由就是 CPU 主機,所以這裡**寫死**
+      # int8,不讓 .env 的 GPU 值漏進來——2026-09-02 從零演練 asr-decoder crash-loop 的根因。
+      ASR_COMPUTE_TYPE: int8
       ASR_MODEL_SIZE: ${ASR_MODEL_SIZE:-small}
       # 0 = 交給 CTranslate2 自己決定。要跟平台其他服務搶 CPU 時才調小。
       ASR_CPU_THREADS: ${ASR_CPU_THREADS:-0}

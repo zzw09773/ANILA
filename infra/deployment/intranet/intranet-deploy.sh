@@ -283,10 +283,13 @@ if [ "$REGEN" = 1 ]; then
   set_env CSP_DB_PASSWORD           "${CSP_DB_PASSWORD:-$(openssl rand -hex 32)}"
   set_env CSP_APP_DB_PASSWORD       "${CSP_APP_DB_PASSWORD:-$(openssl rand -hex 32)}"
   set_env CODESERVER_PASSWORD       "${CODESERVER_PASSWORD:-$(openssl rand -base64 24)}"
+  # gitlab 的 initial_root_password 最短 8 字元;不生成的話 gitlab 在乾淨主機上
+  # 會 crash-loop(2026-09-02 演練實撞)。跟其他 secret 一樣:有提供用提供,否則隨機。
+  set_env GITLAB_ROOT_PASSWORD       "${GITLAB_ROOT_PASSWORD:-$(openssl rand -base64 24)}"
   # gitlab root 初始密碼:與其他 secret 同 parity — 只在 REGEN(全新/重生)寫;
   # REGEN=0(保留現有)時不動,避免 re-run 偷改既有密碼。compose 用 env 帶入,
   # 只在 gitlab 首次 reconfigure 生效。
-  [ -n "${GITLAB_ROOT_PASSWORD:-}" ] && set_env GITLAB_ROOT_PASSWORD "$GITLAB_ROOT_PASSWORD"
+  : # GITLAB_ROOT_PASSWORD 已在上面與其他 secret 一起處理(提供或隨機生成)
 else
   SECRET_KEY_VALUE="$(get_env SECRET_KEY)"
   [ -n "$SECRET_KEY_VALUE" ] || SECRET_KEY_VALUE="$(get_env CSP_SECRET_KEY)"
