@@ -13,6 +13,7 @@ from app.schemas.audit_log import AuditLogResponse
 from app.services import audit_ledger
 from app.services.audit_service import serialize_audit_log
 from app.services.auth_service import require_admin
+from app.utils.csv_formula import csv_formula_safe
 
 router = APIRouter(prefix="/api/audit-logs", tags=["審計日誌"])
 
@@ -23,13 +24,34 @@ _EXPORT_COLUMNS = (
 
 
 def _csv_safe(value) -> str:
-    """試算表公式注入防護:``=``/``+``/``-``/``@`` 開頭的欄位前面加單引號。
+    """試算表公式注入防護：OWASP 六字元閉集 ``= + - @ \\t \\r`` 開頭加單引號。
 
-    不含 ``\\t`` / ``\\r``。行為由測試鎖在這四個字元；其他匯出站點走
-    ``app.utils.csv_formula.csv_formula_safe``（OWASP 六字元閉集）。
+    2026-09-02 起委派給 ``app.utils.csv_formula.csv_formula_safe``；之前這裡
+    只有四字元（缺 ``\\t``／``\\r``），而且有一支測試把它鎖在四個——
+    那支守衛擋的是「把安全控制補強」，站錯邊，已一併改掉。
+    名字留著：``test_csv_formula_safe.py`` 的產出點掃描認 ``_csv_safe``。
     """
-    text = "" if value is None else str(value)
-    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+    return csv_formula_safe(value)
+
+
+_COMMENT_UNSAFE = str.maketrans({c: "_" for c in ',;"\t'})
+
+
+def _comment_cell(value) -> str:
+    """Header comment lines are written with ``buf.write``, not ``csv.writer``,
+    so they are never quoted. A ``,`` ``;`` tab or ``"`` inside an
+    interpolated value therefore has CSV meaning: it opens a second cell
+    (where first-character neutralisation never looks) or a quoted field
+    that swallows the column header and every row after it — measured under
+    LibreOffice default import, which also treats ``;`` and tab as
+    separators. Replace them with ``_`` before interpolating; then the line
+    is one cell whatever the value contains.
+
+    ``\\r``／``\\n`` are handled by :func:`_one_physical_line`.
+    Export-time only — registration and username charset are unchanged
+    (that is an owner decision, TOMORROW.md item 5).
+    """
+    return _one_physical_line(value).translate(_COMMENT_UNSAFE)
 
 
 def _one_physical_line(value) -> str:
@@ -87,7 +109,7 @@ def export_audit_logs(
     header_lines = [
         "# ANILA 稽核匯出（append-only 稽核帳）",
         f"# 匯出時間(UTC): {now}",
-        f"# 匯出者: {_csv_safe(_one_physical_line(admin.username))}",
+        f"# 匯出者: {_csv_safe(_comment_cell(admin.username))}",
         f"# 稽核鏈鏈頭: {anchor.chain_head}",
     ]
     if anchor.anchored:

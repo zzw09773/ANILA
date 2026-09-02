@@ -1,7 +1,10 @@
 """Site 1 — audit CSV export already has ``_csv_safe``; lock it with tests.
 
-Behaviour of ``_csv_safe`` is not expanded here (4-char historical set).
-Removing the call around ``writer.writerow`` must turn these tests red.
+2026-09-02: ``_csv_safe`` now delegates to the OWASP six-character closed set
+(``= + - @ \\t \\r``). The earlier version of this file pinned the historical
+four and would have gone red on the *strengthening* — a guard standing on the
+wrong side. Removing the call around ``writer.writerow`` must turn these
+tests red; so must dropping ``\\t`` or ``\\r`` from the set.
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ from app.models.audit_log import AuditLog
 from tests.conftest import login, make_user
 
 
-_SITE1_TRIGGERS = ("=", "+", "-", "@")
+_SITE1_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
 
 
 def _export_rows(client) -> list[list[str]]:
@@ -28,8 +31,11 @@ def _export_rows(client) -> list[list[str]]:
     assert resp.headers["content-type"].startswith("text/csv")
     text = resp.text
     assert text[:1] == "\ufeff"
-    body_lines = [ln for ln in text[1:].splitlines() if not ln.startswith("#")]
-    return list(csv.reader(io.StringIO("\n".join(body_lines))))
+    # Parse the whole body with csv.reader, then drop comment rows. Splitting
+    # on lines first would cut a cell containing ``\r`` in half before the
+    # reader ever sees it.
+    rows = list(csv.reader(io.StringIO(text[1:])))
+    return [r for r in rows if not (r and r[0].startswith("#"))]
 
 
 def _detail_cell(rows: list[list[str]]) -> str:
