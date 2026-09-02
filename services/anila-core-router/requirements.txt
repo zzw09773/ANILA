@@ -1,2 +1,5 @@
 # Router 的明示 runtime dependency；Dockerfile 與 platform wheelhouse 共用。
-pydantic-settings>=2.0,<3.0
+# 釘死對齊出貨映像實裝版本(2026-08-26 實測 anila-restart-router:latest = 2.15.0)。
+# 原先 `>=2.0,<3.0` 是唯一範圍 specifier:映像建置與 wheelhouse 收集兩次解析
+# 可能拿到不同版本,overlay patch 就會悄悄改掉映像裡執行中的版本。
+pydantic-settings==2.15.0
