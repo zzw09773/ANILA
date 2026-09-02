@@ -34,7 +34,11 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 COPY services/anila-core-router/main.py ./
 
-RUN useradd -m -u 1000 anila \
+# /app/.anila 是 router session SQLite 的家（compose 掛 named volume）。目錄要在
+# image 裡先建好並歸 anila，named volume 第一次建立時才會繼承這個所有權，否則
+# volume 是 root 的、router 寫不進去（uid 1000）。
+RUN mkdir -p /app/.anila \
+    && useradd -m -u 1000 anila \
     && chown -R anila:anila /app \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
