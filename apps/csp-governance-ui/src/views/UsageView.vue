@@ -55,8 +55,17 @@
     <!-- Summary + chart ----------------------------------------------- -->
     <TermBox :title="`吞吐 · ${rangeLabel}`" pad="md" hint="下界＝視窗內第一筆請求">
       <div class="kpi-row">
-        <TermStat :label="`${rangeLabel} · 請求數`" :value="usageStore.summary?.total_requests || 0" tone="accent" />
-        <TermStat :label="`${rangeLabel} · Token`" :value="usageStore.summary?.total_tokens || 0" />
+        <TermStat :label="`${rangeLabel} · 請求數`" :value="usageStore.summary?.total_requests || 0" tone="accent">
+          <template #foot>
+            對話介面 {{ formatNum(usageStore.summary?.web_ui_requests || 0) }}
+            · 簡報製作 {{ formatNum(usageStore.summary?.studio_requests || 0) }}
+          </template>
+        </TermStat>
+        <TermStat :label="`${rangeLabel} · Token`" :value="usageStore.summary?.total_tokens || 0">
+          <template #foot>
+            簡報製作 {{ formatNum(usageStore.summary?.studio_tokens || 0) }}
+          </template>
+        </TermStat>
         <TermStat :label="`${rangeLabel} · 使用中金鑰`" :value="usageStore.summary?.active_api_keys || 0" />
       </div>
       <div class="chart-wrap">

@@ -12,6 +12,9 @@ class UsageSummary(BaseModel):
     # JWT-attributed requests (SPA / browser sessions). Counted separately
     # because these rows have api_key_id IS NULL and won't inflate active_api_keys.
     web_ui_requests: int = 0
+    # Studio (簡報／報告等產出) — tagged request_type='studio', kept out of web_ui.
+    studio_requests: int = 0
+    studio_tokens: int = 0
 
 
 class ChartDataSeries(BaseModel):
