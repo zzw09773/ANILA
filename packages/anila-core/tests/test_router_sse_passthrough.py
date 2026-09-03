@@ -377,3 +377,20 @@ async def test_data_with_optional_space_after_colon() -> None:
     events = await _collect("a", "q")
     deltas = [e["content"] for e in events if e["type"] == "content"]
     assert deltas == ["a", "b"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_agent_sse_forwards_conversation_id() -> None:
+    route = respx.post(CSP_URL).mock(return_value=_sse_response("data: [DONE]\n\n"))
+    events: list[dict] = []
+    async for ev in _stream_agent_sse(
+        "a",
+        "q",
+        "k",
+        forwarded_headers={"X-ANILA-Conversation-Id": "7"},
+    ):
+        events.append(ev)
+    assert events == [{"type": "done"}]
+    assert route.calls.last.request.headers.get("x-anila-conversation-id") == "7"
+    assert route.calls.last.request.headers.get("authorization") == "Bearer k"

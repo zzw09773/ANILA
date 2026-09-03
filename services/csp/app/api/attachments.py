@@ -14,11 +14,14 @@ from app.middleware.caller import Caller
 from app.models.attachment import Attachment
 from app.models.user import User
 from app.schemas.attachment import (
+    AttachmentBindOut,
+    AttachmentBindRequest,
     AttachmentOut,
     ConversationAttachmentsOut,
     ConversationCapacity,
 )
 from app.services.attachment_service import (
+    bind_attachments,
     capacity_for_conversation,
     delete_attachment,
     extract_attachment_text,
@@ -146,6 +149,40 @@ async def upload(
         )
     # Fresh upload is still pending → not admitted yet.
     return _attachment_out(att, capacity=capacity, budget_admitted=False)
+
+
+@router.post("/bind", response_model=AttachmentBindOut)
+def bind(
+    body: AttachmentBindRequest,
+    model: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Attach orphan (or already-this-conversation) files to a conversation.
+
+    Must be declared before ``/{reference_id}`` so ``bind`` is not captured
+    as a download id. Write access reuses the chat-path predicate.
+    """
+    from app.api.proxy import _require_conversation_access
+
+    _require_conversation_access(
+        db, Caller(user=current_user, api_key_id=None), body.conversation_id,
+    )
+    rows = bind_attachments(
+        db, current_user, body.conversation_id, body.reference_ids,
+    )
+    capacity = capacity_for_conversation(
+        db, body.conversation_id, model_name=model,
+    )
+    admitted = _admitted_set(capacity)
+    return AttachmentBindOut(
+        conversation_id=body.conversation_id,
+        attachments=[
+            _attachment_out(a, budget_admitted=a.id in admitted)
+            for a in rows
+        ],
+        conversation_capacity=_capacity_model(capacity),
+    )
 
 
 @router.get("/{reference_id}")

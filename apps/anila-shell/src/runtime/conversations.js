@@ -331,6 +331,17 @@ export function uploadAttachment(multipartRequest, file, { conversationId, messa
   return multipartRequest("/api/attachments", form);
 }
 
+/** POST /api/attachments/bind — attach orphans (or already-this-conv files) to a conversation. */
+export function bindAttachments(authRequest, { conversationId, referenceIds }) {
+  return authRequest("/api/attachments/bind", {
+    method: "POST",
+    body: JSON.stringify({
+      conversation_id: conversationId,
+      reference_ids: referenceIds,
+    }),
+  });
+}
+
 /** GET /api/attachments/{reference_id}/meta — includes extract_status. */
 export function getAttachmentMeta(authRequest, referenceId) {
   return authRequest(

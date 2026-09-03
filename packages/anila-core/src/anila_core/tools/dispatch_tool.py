@@ -53,6 +53,7 @@ async def dispatch_to_agent(
     context_messages: Optional[list[dict[str, Any]]] = None,
     session_id: Optional[str] = None,
     handoff_meta: Optional[dict[str, Any]] = None,
+    forwarded_headers: Optional[dict[str, str]] = None,
 ) -> str:
     """Call a registered agent through CSP and return the full response text.
 
@@ -73,6 +74,7 @@ async def dispatch_to_agent(
         context_messages=context_messages,
         session_id=session_id,
         handoff_meta=handoff_meta,
+        forwarded_headers=forwarded_headers,
     )
     content = response["content"]
     return str(content) if content is not None else ""
@@ -90,6 +92,7 @@ async def dispatch_to_agent_response(
     context_messages: Optional[list[dict[str, Any]]] = None,
     session_id: Optional[str] = None,
     handoff_meta: Optional[dict[str, Any]] = None,
+    forwarded_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Call a registered agent through CSP and return content + metadata.
 
@@ -110,6 +113,11 @@ async def dispatch_to_agent_response(
         "Authorization": f"Bearer {csp_api_key}",
         "Content-Type": "application/json",
     }
+    if forwarded_headers:
+        for k, v in forwarded_headers.items():
+            if k.lower() in ("authorization", "content-type"):
+                continue
+            headers[k] = v
     url = f"{csp_base_url.rstrip('/')}/v1/chat/completions"
 
     # OPT-1: shared client (was ``async with httpx.AsyncClient(timeout=…)``).
@@ -135,6 +143,7 @@ async def dispatch_for_handoff(
     stream: bool = False,
     system_prompt: Optional[str] = None,
     timeout: float = 120.0,
+    forwarded_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Dispatch a :class:`HandoffRequest` to its target agent.
 
@@ -161,6 +170,7 @@ async def dispatch_for_handoff(
         context_messages=request.context_messages or None,
         session_id=session_id,
         handoff_meta=handoff_meta,
+        forwarded_headers=forwarded_headers,
     )
 
 

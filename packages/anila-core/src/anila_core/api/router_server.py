@@ -1479,7 +1479,11 @@ def create_router_app(
                 aggregated = ""
 
                 async for event in _stream_agent_sse(
-                    agent_id, query, caller_api_key, session_id=session_id
+                    agent_id,
+                    query,
+                    caller_api_key,
+                    session_id=session_id,
+                    forwarded_headers=anila_headers,
                 ):
                     kind = event.get("type")
                     if kind == "content":
@@ -1593,6 +1597,7 @@ def create_router_app(
             caller_api_key,
             stream=False,
             session_id=session_id,
+            forwarded_headers=anila_headers,
         )
         if trace_session is not None and _downstream_span is not None:
             if agent_response["error"]:
@@ -1656,6 +1661,7 @@ def create_router_app(
                 session_id=session_id,
                 router_reasoning=router_reasoning,
                 pin_owner=_pin_owner_cb,
+                forwarded_headers=anila_headers,
             )
             if final_text is not None:
                 # Router LLM produced a final synthesis without further
@@ -2223,6 +2229,7 @@ async def _router_streaming_multi_turn(
     agent_response = await _dispatch_safe(
         agent_id, query, caller_api_key,
         stream=False, session_id=session_id,
+        forwarded_headers=forwarded_headers,
     )
     if agent_response["error"]:
         err_step = _make_trace_step(
@@ -2262,6 +2269,7 @@ async def _router_streaming_multi_turn(
         session_id=session_id,
         router_reasoning=router_reasoning,
         pin_owner=pin_owner,
+        forwarded_headers=forwarded_headers,
     )
 
     # Emit any new trace steps the loop appended (we already emitted
@@ -2361,6 +2369,7 @@ async def _multi_turn_dispatch(
     session_id: str,
     router_reasoning: str,
     pin_owner: PinOwnerFn = None,
+    forwarded_headers: dict[str, str] | None = None,
 ) -> tuple[
     dict[str, Any],
     str,
@@ -2515,6 +2524,7 @@ async def _multi_turn_dispatch(
             caller_api_key,
             stream=False,
             session_id=session_id,
+            forwarded_headers=forwarded_headers,
         )
         if agent_response["error"]:
             base_trace.append(
@@ -2783,6 +2793,7 @@ async def _dispatch_safe(
     *,
     stream: bool = False,
     session_id: str | None = None,
+    forwarded_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Call the dispatched agent through CSP; never raises.
 
@@ -2802,6 +2813,7 @@ async def _dispatch_safe(
             csp_api_key=caller_api_key,
             stream=stream,
             session_id=session_id,
+            forwarded_headers=forwarded_headers,
         )
         result["error"] = None
         return result
@@ -3065,6 +3077,7 @@ async def _stream_agent_sse(
     caller_api_key: str,
     *,
     session_id: str | None = None,
+    forwarded_headers: dict[str, str] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Open an SSE connection to the dispatched agent via CSP and yield parsed events.
 
@@ -3104,6 +3117,11 @@ async def _stream_agent_sse(
         "Authorization": f"Bearer {caller_api_key}",
         "Content-Type": "application/json",
     }
+    if forwarded_headers:
+        for k, v in forwarded_headers.items():
+            if k.lower() in ("authorization", "content-type"):
+                continue
+            headers[k] = v
     url = f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions"
 
     def _classify_and_yield(
@@ -3569,7 +3587,11 @@ async def _router_streaming(
     aggregated_parts: list[str] = []
     agent_stream_completed = False
     async for event in _stream_agent_sse(
-        agent_id, query, caller_api_key, session_id=session_id
+        agent_id,
+        query,
+        caller_api_key,
+        session_id=session_id,
+        forwarded_headers=forwarded_headers,
     ):
         kind = event.get("type")
         if kind == "content":

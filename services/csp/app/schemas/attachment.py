@@ -51,3 +51,16 @@ class AttachmentOut(ApiResponseModel):
 class ConversationAttachmentsOut(BaseModel):
     attachments: list[AttachmentOut]
     conversation_capacity: ConversationCapacity
+
+
+class AttachmentBindRequest(BaseModel):
+    """Bind caller-owned orphan attachments onto a conversation they can write."""
+
+    conversation_id: int = Field(..., gt=0)
+    reference_ids: list[str] = Field(..., min_length=1, max_length=100)
+
+
+class AttachmentBindOut(BaseModel):
+    conversation_id: int
+    attachments: list[AttachmentOut]
+    conversation_capacity: ConversationCapacity
