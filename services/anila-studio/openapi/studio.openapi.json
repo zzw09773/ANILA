@@ -293,6 +293,159 @@
         }
       }
     },
+    "/api/studio/slides/jobs/{job_id}/preview": {
+      "get": {
+        "tags": [
+          "Studio / Slides"
+        ],
+        "summary": "List Slide Previews",
+        "description": "Per-slide PNG previews of a finished deck (generated on first request\nwhen the QA pass did not leave any behind).",
+        "operationId": "list_slide_previews_api_studio_slides_jobs__job_id__preview_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "anila_access_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Anila Access Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Slide Previews Api Studio Slides Jobs  Job Id  Preview Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/studio/slides/jobs/{job_id}/preview/{index}": {
+      "get": {
+        "tags": [
+          "Studio / Slides"
+        ],
+        "summary": "Get Slide Preview",
+        "operationId": "get_slide_preview_api_studio_slides_jobs__job_id__preview__index__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Index"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "anila_access_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Anila Access Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/reports/jobs": {
       "post": {
         "tags": [
@@ -1600,6 +1753,17 @@
             ],
             "title": "Error"
           },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning"
+          },
           "download_urls": {
             "anyOf": [
               {
@@ -2153,6 +2317,7 @@
               {
                 "type": "string",
                 "enum": [
+                  "official",
                   "corporate_navy",
                   "academic_paper",
                   "warm_journal",
@@ -2259,6 +2424,17 @@
               }
             ],
             "title": "Error"
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning"
           },
           "download_urls": {
             "anyOf": [
@@ -2394,6 +2570,17 @@
               }
             ],
             "title": "Error"
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning"
           },
           "artifact_id": {
             "anyOf": [

@@ -80,6 +80,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/studio/slides/jobs/{job_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Slide Previews
+         * @description Per-slide PNG previews of a finished deck (generated on first request
+         *     when the QA pass did not leave any behind).
+         */
+        get: operations["list_slide_previews_api_studio_slides_jobs__job_id__preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/studio/slides/jobs/{job_id}/preview/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Slide Preview */
+        get: operations["get_slide_preview_api_studio_slides_jobs__job_id__preview__index__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/reports/jobs": {
         parameters: {
             query?: never;
@@ -446,6 +484,8 @@ export interface components {
             column_count?: number | null;
             /** Error */
             error?: string | null;
+            /** Warning */
+            warning?: string | null;
             /** Download Urls */
             download_urls?: {
                 [key: string]: string;
@@ -633,7 +673,7 @@ export interface components {
              * Theme Override
              * @description If set, bypasses LLM theme selection and forces this theme. Useful when the user knows the audience better than the LLM. Must be one of THEMES; invalid values rejected by Literal.
              */
-            theme_override?: ("corporate_navy" | "academic_paper" | "warm_journal" | "executive_brief" | "startup_pitch") | null;
+            theme_override?: ("official" | "corporate_navy" | "academic_paper" | "warm_journal" | "executive_brief" | "startup_pitch") | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -661,6 +701,8 @@ export interface components {
             chart_count?: number | null;
             /** Error */
             error?: string | null;
+            /** Warning */
+            warning?: string | null;
             /** Download Urls */
             download_urls?: {
                 [key: string]: string;
@@ -714,6 +756,8 @@ export interface components {
             qa_passes: number;
             /** Error */
             error?: string | null;
+            /** Warning */
+            warning?: string | null;
             /** Artifact Id */
             artifact_id?: string | null;
             /** Classification Level */
@@ -1007,6 +1051,77 @@ export interface operations {
                 content: {
                     "application/vnd.openxmlformats-officedocument.presentationml.presentation": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_slide_previews_api_studio_slides_jobs__job_id__preview_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: {
+                anila_access_token?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_slide_preview_api_studio_slides_jobs__job_id__preview__index__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                job_id: string;
+                index: number;
+            };
+            cookie?: {
+                anila_access_token?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
