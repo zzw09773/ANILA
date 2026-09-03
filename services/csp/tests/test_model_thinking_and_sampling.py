@@ -2,7 +2,7 @@
 """Per-model thinking_effort + sampling overrides (r1_0038).
 
 Schema rejects bad enums / out-of-range numbers with Traditional Chinese
-errors. Proxy merge: caller wins; ``off`` disables thinking kwargs;
+errors. Proxy merge: caller wins; ``none`` disables thinking kwargs;
 NULL leaves the body alone.
 """
 from __future__ import annotations
@@ -57,14 +57,15 @@ def _model(**kwargs) -> SimpleNamespace:
 
 
 @pytest.mark.parametrize("schema_cls", [ModelCreate, ModelUpdate])
-@pytest.mark.parametrize("level", ["off", "low", "medium", "high", "xhigh", "max", "default"])
+@pytest.mark.parametrize("level", ["none", "low", "medium", "high", "xhigh", "max", "off", "default"])
 def test_thinking_effort_accepts_known_levels(schema_cls, level):
     payload = (
         _create(thinking_effort=level)
         if schema_cls is ModelCreate
         else ModelUpdate(thinking_effort=level)
     )
-    assert payload.thinking_effort == level
+    expected = "none" if level in {"off", "default"} else level
+    assert payload.thinking_effort == expected
 
 
 @pytest.mark.parametrize("schema_cls", [ModelCreate, ModelUpdate])
@@ -84,7 +85,7 @@ def test_thinking_effort_rejects_unknown(schema_cls):
             _create(thinking_effort="turbo")
         else:
             ModelUpdate(thinking_effort="turbo")
-    assert "思考深度" in str(exc.value)
+    assert "thinking_effort" in str(exc.value)
 
 
 @pytest.mark.parametrize("schema_cls", [ModelCreate, ModelUpdate])
@@ -150,23 +151,23 @@ def test_default_thinking_does_not_add_knobs():
     assert "chat_template_kwargs" not in out
 
 
-def test_off_disables_thinking_kwargs():
+def test_none_disables_thinking_kwargs():
     body = {"messages": [{"role": "user", "content": "hi"}]}
-    out = apply_model_sampling_overrides(body, _model(thinking_effort="off"))
+    out = apply_model_sampling_overrides(body, _model(thinking_effort="none"))
     assert out["chat_template_kwargs"] == {"enable_thinking": False}
     assert "enable_thinking" not in out
     assert "reasoning_effort" not in out
 
 
-def test_off_merges_into_existing_chat_template_kwargs():
+def test_none_merges_into_existing_chat_template_kwargs():
     body = {"chat_template_kwargs": {"foo": 1}}
-    out = apply_model_sampling_overrides(body, _model(thinking_effort="off"))
+    out = apply_model_sampling_overrides(body, _model(thinking_effort="none"))
     assert out["chat_template_kwargs"] == {"foo": 1, "enable_thinking": False}
 
 
 def test_caller_enable_thinking_wins_inside_kwargs():
     body = {"chat_template_kwargs": {"enable_thinking": True}}
-    out = apply_model_sampling_overrides(body, _model(thinking_effort="off"))
+    out = apply_model_sampling_overrides(body, _model(thinking_effort="none"))
     assert out["chat_template_kwargs"] == {"enable_thinking": True}
 
 
@@ -206,14 +207,14 @@ def test_sampling_caller_wins():
 
 def test_does_not_mutate_inbound_body():
     body = {"temperature": 0.2}
-    apply_model_sampling_overrides(body, _model(temperature=0.9, thinking_effort="off"))
+    apply_model_sampling_overrides(body, _model(temperature=0.9, thinking_effort="none"))
     assert body == {"temperature": 0.2}
 
 
 def test_skips_embedding_and_agent_rows():
     body = {"input": "hi"}
     out = apply_model_sampling_overrides(
-        body, _model(model_type="embedding", temperature=0.6, thinking_effort="off")
+        body, _model(model_type="embedding", temperature=0.6, thinking_effort="none")
     )
     assert out == body
 
@@ -252,14 +253,14 @@ def test_build_response_includes_override_fields():
         api_key_secret_ref=None,
         created_at=None,
         updated_at=None,
-        thinking_effort="off",
+        thinking_effort="none",
         temperature=0.6,
         top_p=0.95,
         presence_penalty=1.5,
         max_tokens=2048,
     )
     data = _build_response(row, caller=SimpleNamespace(role="admin"))
-    assert data["thinking_effort"] == "off"
+    assert data["thinking_effort"] == "none"
     assert data["temperature"] == 0.6
     assert data["top_p"] == 0.95
     assert data["presence_penalty"] == 1.5
@@ -276,7 +277,7 @@ def test_put_rejects_bad_thinking_effort(client, db):
         headers=headers,
     )
     assert resp.status_code == 422
-    assert "思考深度" in resp.text
+    assert "thinking_effort" in resp.text
 
 
 def test_put_and_list_round_trip_overrides(client, db):
@@ -296,14 +297,14 @@ def test_put_and_list_round_trip_overrides(client, db):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["thinking_effort"] == "off"
+    assert body["thinking_effort"] == "none"
     assert body["temperature"] == 0.6
     assert body["top_p"] == 0.95
     assert body["presence_penalty"] == 1.5
     assert body["max_tokens"] == 2048
     listed = client.get("/api/models", headers=headers).json()
     row = next(r for r in listed if r["id"] == model.id)
-    assert row["thinking_effort"] == "off"
+    assert row["thinking_effort"] == "none"
 
 
 def test_router_primary_includes_override_fields(client, db):

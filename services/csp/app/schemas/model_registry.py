@@ -41,8 +41,10 @@ def _validate_protocol(value: str | None) -> str | None:
     return value
 
 
+# Stored / API values (UI shows NONE for none). ``off`` / ``default`` accepted
+# as aliases then normalised — older rows and drafts stay readable.
 THINKING_EFFORT_VALUES = frozenset(
-    {"default", "off", "low", "medium", "high", "xhigh", "max"}
+    {"none", "low", "medium", "high", "xhigh", "max", "off", "default"}
 )
 
 
@@ -59,12 +61,14 @@ def _validate_thinking_effort(value) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError("思考深度須為字串")
+        raise ValueError("thinking_effort 須為字串")
     value = value.strip().lower()
     if value not in THINKING_EFFORT_VALUES:
         raise ValueError(
-            "思考深度僅接受 default、off、low、medium、high、xhigh、max，或留空使用上游預設"
+            "thinking_effort 僅接受 NONE、low、medium、high、xhigh、max（或 none／off）"
         )
+    if value in {"off", "default"}:
+        return "none"
     return value
 
 

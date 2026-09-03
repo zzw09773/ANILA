@@ -466,16 +466,15 @@
         >
           <p class="form-section__title">推理設定</p>
           <p class="field-note">
+            thinking_effort：NONE／low／medium／high／xhigh／max（與後端字串一致）。
             思考模型請搭配較高溫度（約 0.6／0.95／1.5），避免低溫造成重複迴圈。
-            留空＝沿用上游預設。
           </p>
-          <TermField label="思考" hint="關閉＝chat_template_kwargs.enable_thinking=false">
+          <TermField label="thinking_effort" hint="送到上游的等級字串；NONE＝關閉思考">
             <select v-model="form.thinking_effort" class="term-select">
-              <option :value="null">模型預設</option>
-              <option value="off">關閉</option>
-              <option value="low">低</option>
-              <option value="medium">中</option>
-              <option value="high">高</option>
+              <option value="none">NONE</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
               <option value="xhigh">xhigh</option>
               <option value="max">max</option>
             </select>
@@ -740,12 +739,17 @@ function classificationCeilingLabel(c) {
   return c || '無上限'
 }
 const THINKING_EFFORT_LABELS = {
-  off: '關閉', low: '低', medium: '中', high: '高', xhigh: 'xhigh', max: 'max',
+  none: 'NONE', off: 'NONE', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max',
 }
 function thinkingEffortChip(value) {
   if (!value || value === 'default') return null
-  const label = THINKING_EFFORT_LABELS[value]
-  return label ? `思考：${label}` : null
+  const label = THINKING_EFFORT_LABELS[value] || value
+  return `thinking: ${label}`
+}
+function normalizeThinkingEffort(value) {
+  if (!value || value === 'default') return 'none'
+  if (value === 'off') return 'none'
+  return value
 }
 function parseOptionalNumber(raw) {
   if (raw === '' || raw == null) return null
@@ -774,7 +778,7 @@ const defaultForm = () => ({
   // Slice 6b — model gateway governance。protocol 預設 openai_compatible;
   // classification_ceiling null = 無上限;api_key 為 write-only（留空不覆蓋）。
   protocol: 'openai_compatible', classification_ceiling: null, api_key: '',
-  thinking_effort: null, temperature: null, top_p: null,
+  thinking_effort: 'none', temperature: null, top_p: null,
   presence_penalty: null, max_tokens: null,
 })
 const form = ref(defaultForm())
@@ -979,7 +983,7 @@ function openEditModal(model) {
     protocol: model.protocol || 'openai_compatible',
     classification_ceiling: model.classification_ceiling ?? null,
     api_key: '',
-    thinking_effort: model.thinking_effort ?? null,
+    thinking_effort: normalizeThinkingEffort(model.thinking_effort),
     temperature: model.temperature ?? null,
     top_p: model.top_p ?? null,
     presence_penalty: model.presence_penalty ?? null,

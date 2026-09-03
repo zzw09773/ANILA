@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 THINKING_LEVELS = frozenset(
-    {"default", "off", "low", "medium", "high", "xhigh", "max"}
+    {"none", "off", "default", "low", "medium", "high", "xhigh", "max"}
 )
 SAMPLING_KEYS = ("temperature", "top_p", "presence_penalty", "max_tokens")
 
@@ -74,7 +74,7 @@ def _apply_thinking_effort(body: dict[str, Any], model: Any) -> None:
     if not level or level == "default":
         return
 
-    if level == "off":
+    if level in {"none", "off"}:
         _set_chat_template_thinking(body, False)
         # o-style: caller already sent reasoning_effort → leave it.
         # model name suggests o-style and no key → omit (do not add
