@@ -125,6 +125,10 @@
                   {{ model.has_api_key ? '已設定模型金鑰' : '使用全域金鑰' }}
                 </span>
                 <span v-else class="cap-key cap-key--global">不使用金鑰</span>
+                <span
+                  v-if="thinkingEffortChip(model.thinking_effort)"
+                  class="cap-key think-chip"
+                >{{ thinkingEffortChip(model.thinking_effort) }}</span>
               </div>
             </td>
             <td><TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge></td>
@@ -456,6 +460,78 @@
             </option>
           </select>
         </TermField>
+        <div
+          v-if="(form.model_type === 'llm' || form.model_type === 'vlm') && !addressOnlyEditor"
+          class="form-section"
+        >
+          <p class="form-section__title">推理設定</p>
+          <p class="field-note">
+            思考模型請搭配較高溫度（約 0.6／0.95／1.5），避免低溫造成重複迴圈。
+            留空＝沿用上游預設。
+          </p>
+          <TermField label="思考" hint="關閉＝chat_template_kwargs.enable_thinking=false">
+            <select v-model="form.thinking_effort" class="term-select">
+              <option :value="null">模型預設</option>
+              <option value="off">關閉</option>
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+          </TermField>
+          <div class="form-row-2">
+            <TermField label="temperature" optional hint="0–2 · 留空＝上游預設">
+              <input
+                :value="form.temperature ?? ''"
+                type="number"
+                step="0.05"
+                min="0"
+                max="2"
+                class="term-input"
+                placeholder="上游預設"
+                @input="form.temperature = parseOptionalNumber($event.target.value)"
+              />
+            </TermField>
+            <TermField label="top_p" optional hint="0–1 · 留空＝上游預設">
+              <input
+                :value="form.top_p ?? ''"
+                type="number"
+                step="0.05"
+                min="0"
+                max="1"
+                class="term-input"
+                placeholder="上游預設"
+                @input="form.top_p = parseOptionalNumber($event.target.value)"
+              />
+            </TermField>
+          </div>
+          <div class="form-row-2">
+            <TermField label="presence_penalty" optional hint="-2–2 · 留空＝上游預設">
+              <input
+                :value="form.presence_penalty ?? ''"
+                type="number"
+                step="0.1"
+                min="-2"
+                max="2"
+                class="term-input"
+                placeholder="上游預設"
+                @input="form.presence_penalty = parseOptionalNumber($event.target.value)"
+              />
+            </TermField>
+            <TermField label="max_tokens" optional hint="大於 0 · 留空＝上游預設">
+              <input
+                :value="form.max_tokens ?? ''"
+                type="number"
+                step="1"
+                min="1"
+                class="term-input"
+                placeholder="上游預設"
+                @input="form.max_tokens = parseOptionalInteger($event.target.value)"
+              />
+            </TermField>
+          </div>
+        </div>
       </div>
       <template #footer>
         <TermButton variant="ghost" @click="showModal = false" label="取消" />
@@ -663,6 +739,25 @@ function protocolLabel(p) {
 function classificationCeilingLabel(c) {
   return c || '無上限'
 }
+const THINKING_EFFORT_LABELS = {
+  off: '關閉', low: '低', medium: '中', high: '高', xhigh: 'xhigh', max: 'max',
+}
+function thinkingEffortChip(value) {
+  if (!value || value === 'default') return null
+  const label = THINKING_EFFORT_LABELS[value]
+  return label ? `思考：${label}` : null
+}
+function parseOptionalNumber(raw) {
+  if (raw === '' || raw == null) return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+function parseOptionalInteger(raw) {
+  const n = parseOptionalNumber(raw)
+  if (n == null) return null
+  const i = Math.trunc(n)
+  return i > 0 ? i : null
+}
 function capabilityChips(model) {
   return Object.entries(CAPABILITY_LABELS)
     .filter(([key]) => model[key])
@@ -679,6 +774,8 @@ const defaultForm = () => ({
   // Slice 6b — model gateway governance。protocol 預設 openai_compatible;
   // classification_ceiling null = 無上限;api_key 為 write-only（留空不覆蓋）。
   protocol: 'openai_compatible', classification_ceiling: null, api_key: '',
+  thinking_effort: null, temperature: null, top_p: null,
+  presence_penalty: null, max_tokens: null,
 })
 const form = ref(defaultForm())
 
@@ -882,6 +979,11 @@ function openEditModal(model) {
     protocol: model.protocol || 'openai_compatible',
     classification_ceiling: model.classification_ceiling ?? null,
     api_key: '',
+    thinking_effort: model.thinking_effort ?? null,
+    temperature: model.temperature ?? null,
+    top_p: model.top_p ?? null,
+    presence_penalty: model.presence_penalty ?? null,
+    max_tokens: model.max_tokens ?? null,
   }
   showModal.value = true
 }
@@ -936,6 +1038,11 @@ function buildModelPayload() {
   // openai_compatible 下打了字再切協定 —— 值還留在 form 裡。不丟掉的話
   // 就是「存了一把永遠不會被用到的金鑰」,比不顯示欄位更誤導。
   if (payload.protocol === 'triton_grpc') delete payload.api_key
+  for (const key of ['thinking_effort', 'temperature', 'top_p', 'presence_penalty', 'max_tokens']) {
+    if (payload[key] === '' || payload[key] === undefined || Number.isNaN(payload[key])) {
+      payload[key] = null
+    }
+  }
   return payload
 }
 
@@ -1283,4 +1390,18 @@ async function handlePurge(model) {
 
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
 .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-3); }
+.form-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+  padding-top: var(--gap-2);
+  border-top: var(--border-w) solid var(--c-border);
+}
+.form-section__title {
+  margin: 0;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--c-fg-1);
+}
+.think-chip { color: var(--c-fg-2); }
 </style>

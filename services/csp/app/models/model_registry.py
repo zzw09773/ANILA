@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -63,6 +63,13 @@ class ModelRegistry(Base):
     is_internal = Column(Boolean, nullable=False, default=False)
     description = Column(Text, nullable=True)
     context_window = Column(Integer, nullable=True)
+    # Per-model thinking / sampling (r1_0038). NULL = upstream / platform default.
+    # thinking_effort: off | low | medium | high | xhigh | max | default
+    thinking_effort = Column(String(20), nullable=True)
+    temperature = Column(Float, nullable=True)
+    top_p = Column(Float, nullable=True)
+    presence_penalty = Column(Float, nullable=True)
+    max_tokens = Column(Integer, nullable=True)
 
     # Slice 6a (doc 04 §2): owner department（SET NULL）。
     owner_department_id = Column(

@@ -2631,6 +2631,20 @@ def sampling_overrides_from_body(body: Mapping[str, Any]) -> dict[str, Any]:
     mt = body.get("max_tokens")
     if isinstance(mt, int) and not isinstance(mt, bool) and mt > 0:
         out["max_tokens"] = mt
+    top_p = body.get("top_p")
+    if (
+        isinstance(top_p, (int, float))
+        and not isinstance(top_p, bool)
+        and 0 <= float(top_p) <= 1
+    ):
+        out["top_p"] = float(top_p)
+    presence = body.get("presence_penalty")
+    if (
+        isinstance(presence, (int, float))
+        and not isinstance(presence, bool)
+        and -2 <= float(presence) <= 2
+    ):
+        out["presence_penalty"] = float(presence)
     return out
 
 

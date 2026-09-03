@@ -140,6 +140,13 @@ def test_sampling_overrides_ignore_garbage():
     assert rs.sampling_overrides_from_body({"temperature": "hot", "max_tokens": -5}) == {}
     assert rs.sampling_overrides_from_body({"temperature": 2.5}) == {}
     assert rs.sampling_overrides_from_body({"max_tokens": 300}) == {"max_tokens": 300}
+    assert rs.sampling_overrides_from_body({"top_p": 1.5, "presence_penalty": 9}) == {}
+
+
+def test_sampling_overrides_forward_top_p_and_presence_penalty():
+    assert rs.sampling_overrides_from_body(
+        {"top_p": 0.95, "presence_penalty": 1.5, "temperature": 0.6}
+    ) == {"top_p": 0.95, "presence_penalty": 1.5, "temperature": 0.6}
 
 
 def test_non_stream_empty_length_reply_is_retried_with_doubled_budget(monkeypatch):

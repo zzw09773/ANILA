@@ -20,6 +20,7 @@ from anila_core.security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 from app.models.model_registry import ModelRegistry
 from app.models.platform_setting import get_setting
 from app.services.agent_reply_signal import attach_agent_reply_observation
+from app.services.proxy.sampling import apply_model_sampling_overrides
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
     _apply_gateway_auth,
@@ -592,6 +593,7 @@ async def _proxy_request_impl(
     wrapper.
     """
     timeout = _get_timeout(model.model_type, tuning)
+    request_body = apply_model_sampling_overrides(request_body, model)
     # ``usage_source`` comes from the X-ANILA-Request-Source header: anila-studio
     # sends "studio" so the usage dashboard can split 簡報製作 from chat.
     request_type = (
@@ -988,6 +990,7 @@ async def _proxy_stream_impl(
     endpoint_display: Optional[str] = None,
     *,
     tuning: ProxyTuning,
+    model: ModelRegistry | None = None,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -1027,6 +1030,8 @@ async def _proxy_stream_impl(
     # None → _apply_gateway_auth 退回全域 env(既有行為)。
     if target_agent_id is None:
         _apply_gateway_auth(headers, gateway_api_key)
+    if model is not None:
+        request_body = apply_model_sampling_overrides(request_body, model)
     # Force stream_options so the downstream sends usage in last chunk
     body = {**request_body, "stream": True,
             "stream_options": {"include_usage": True}}
@@ -1282,6 +1287,7 @@ async def proxy_stream(
     endpoint_display: Optional[str] = None,
     *,
     tuning: ProxyTuning,
+    model: ModelRegistry | None = None,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -1317,6 +1323,7 @@ async def proxy_stream(
             gateway_api_key=gateway_api_key,
             endpoint_display=endpoint_display,
             tuning=tuning,
+            model=model,
         ):
             yield chunk
         _note_proxy_outcome(

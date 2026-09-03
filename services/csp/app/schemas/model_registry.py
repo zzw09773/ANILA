@@ -41,6 +41,58 @@ def _validate_protocol(value: str | None) -> str | None:
     return value
 
 
+THINKING_EFFORT_VALUES = frozenset(
+    {"default", "off", "low", "medium", "high", "xhigh", "max"}
+)
+
+
+def _empty_to_none(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _validate_thinking_effort(value) -> str | None:
+    value = _empty_to_none(value)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("思考深度須為字串")
+    value = value.strip().lower()
+    if value not in THINKING_EFFORT_VALUES:
+        raise ValueError(
+            "思考深度僅接受 default、off、low、medium、high、xhigh、max，或留空使用上游預設"
+        )
+    return value
+
+
+def _validate_optional_float(value, *, lo: float, hi: float, name: str) -> float | None:
+    value = _empty_to_none(value)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} 須為數字")
+    number = float(value)
+    if not (lo <= number <= hi):
+        raise ValueError(f"{name} 須介於 {lo:g} 與 {hi:g} 之間")
+    return number
+
+
+def _validate_optional_max_tokens(value) -> int | None:
+    value = _empty_to_none(value)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("max_tokens 須為大於 0 的整數")
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError("max_tokens 須為大於 0 的整數")
+    return value
+
+
 def _validate_gateway_key(v: str | None) -> str | None:
     """A per-model gateway key is a bearer token: printable ASCII, no
     whitespace. 2026-09-02 live: a screenshot file name was pasted and saved
@@ -84,6 +136,12 @@ class ModelCreate(BaseModel):
     # ``api_key_secret_ref`` on create; NEVER returned. Omit to use the
     # global MODEL_GATEWAY_API_KEY fallback.
     api_key: str | None = None
+    # r1_0038: NULL / empty = 上游預設。思考模型建議搭配 ~0.6 / 0.95 / 1.5。
+    thinking_effort: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    presence_penalty: float | None = None
+    max_tokens: int | None = None
 
     @field_validator("api_key")
     @classmethod
@@ -105,6 +163,31 @@ class ModelCreate(BaseModel):
     def _protocol(cls, v: str) -> str:
         return _validate_protocol(v)  # type: ignore[return-value]
 
+    @field_validator("thinking_effort", mode="before")
+    @classmethod
+    def _thinking(cls, v):
+        return _validate_thinking_effort(v)
+
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def _temperature(cls, v):
+        return _validate_optional_float(v, lo=0, hi=2, name="temperature")
+
+    @field_validator("top_p", mode="before")
+    @classmethod
+    def _top_p(cls, v):
+        return _validate_optional_float(v, lo=0, hi=1, name="top_p")
+
+    @field_validator("presence_penalty", mode="before")
+    @classmethod
+    def _presence_penalty(cls, v):
+        return _validate_optional_float(v, lo=-2, hi=2, name="presence_penalty")
+
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def _max_tokens(cls, v):
+        return _validate_optional_max_tokens(v)
+
 
 class ModelUpdate(BaseModel):
     display_name: str | None = None
@@ -125,6 +208,11 @@ class ModelUpdate(BaseModel):
     supports_tools: bool | None = None
     # Write-only: re-encrypt the per-model gateway key. Never returned.
     api_key: str | None = None
+    thinking_effort: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    presence_penalty: float | None = None
+    max_tokens: int | None = None
 
     @field_validator("api_key")
     @classmethod
@@ -145,6 +233,31 @@ class ModelUpdate(BaseModel):
     @classmethod
     def _protocol(cls, v: str | None) -> str | None:
         return _validate_protocol(v)
+
+    @field_validator("thinking_effort", mode="before")
+    @classmethod
+    def _thinking(cls, v):
+        return _validate_thinking_effort(v)
+
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def _temperature(cls, v):
+        return _validate_optional_float(v, lo=0, hi=2, name="temperature")
+
+    @field_validator("top_p", mode="before")
+    @classmethod
+    def _top_p(cls, v):
+        return _validate_optional_float(v, lo=0, hi=1, name="top_p")
+
+    @field_validator("presence_penalty", mode="before")
+    @classmethod
+    def _presence_penalty(cls, v):
+        return _validate_optional_float(v, lo=-2, hi=2, name="presence_penalty")
+
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def _max_tokens(cls, v):
+        return _validate_optional_max_tokens(v)
 
 
 class ModelResponse(ApiResponseModel):
@@ -178,6 +291,11 @@ class ModelResponse(ApiResponseModel):
     # doc 04 §3: only the presence of a per-model key is exposed — never the
     # ciphertext / secret ref, and never the plaintext.
     has_api_key: bool = False
+    thinking_effort: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    presence_penalty: float | None = None
+    max_tokens: int | None = None
     created_at: datetime
     updated_at: datetime
 

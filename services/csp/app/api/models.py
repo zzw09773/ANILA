@@ -269,6 +269,11 @@ def _build_response(
         "supports_json_schema": bool(getattr(model, "supports_json_schema", False)),
         "supports_tools": bool(getattr(model, "supports_tools", False)),
         "has_api_key": bool(getattr(model, "api_key_secret_ref", None)),
+        "thinking_effort": getattr(model, "thinking_effort", None),
+        "temperature": getattr(model, "temperature", None),
+        "top_p": getattr(model, "top_p", None),
+        "presence_penalty": getattr(model, "presence_penalty", None),
+        "max_tokens": getattr(model, "max_tokens", None),
         "created_at": model.created_at,
         "updated_at": model.updated_at,
     }
@@ -1140,6 +1145,11 @@ def get_router_primary(
         "endpoint_url": model.endpoint_url,
         "api_version": model.api_version,
         "health_status": model.health_status,
+        "thinking_effort": getattr(model, "thinking_effort", None),
+        "temperature": getattr(model, "temperature", None),
+        "top_p": getattr(model, "top_p", None),
+        "presence_penalty": getattr(model, "presence_penalty", None),
+        "max_tokens": getattr(model, "max_tokens", None),
     }
 
 

@@ -1596,6 +1596,7 @@ async def chat_completions(
                 is_internal=bool(getattr(model, "is_internal", False)),
             ),
             tuning=tuning,
+            model=model,
         )
         teed = _tee_stream_capture_assistant(
             upstream,
