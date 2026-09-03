@@ -549,7 +549,11 @@ function MarkdownImage({ node, src, alt, ...rest }) {
 // both formatted and cited. Code / inline-code are left alone so `[1]`
 // in a fence stays a literal. Context rather than a rebuilt `components`
 // map — mermaid / artifact tests keep calling <MarkdownView text={…} />.
-const CitationContext = React.createContext({ citations: null, onOpen: null });
+const CitationContext = React.createContext({
+  citations: null,
+  onOpen: null,
+  shownFigures: null,
+});
 
 function citationFigurePks(citation) {
   const raw = citation && citation.image_pks;
@@ -557,8 +561,21 @@ function citationFigurePks(citation) {
   return raw.filter((n) => Number.isInteger(n) && n > 0);
 }
 
-function CitationFigures({ citation }) {
-  const pks = citationFigurePks(citation);
+// First occurrence of `${citationIndex}:${pk}` in this MarkdownView wins.
+// The same ownerId may re-claim (React Strict Mode double-invokes render);
+// a different chip cannot.
+function claimFigureOnce(shownFigures, figureKey, ownerId) {
+  if (!shownFigures) return true;
+  const existing = shownFigures.get(figureKey);
+  if (existing === undefined) {
+    shownFigures.set(figureKey, ownerId);
+    return true;
+  }
+  return existing === ownerId;
+}
+
+function CitationFigures({ citation, pks: pksOverride }) {
+  const pks = pksOverride ?? citationFigurePks(citation);
   if (pks.length === 0) return null;
   return pks.map((pk) => (
     <MarkdownImage
@@ -569,7 +586,7 @@ function CitationFigures({ citation }) {
   ));
 }
 
-function splitTextWithCitations(text, citations, onOpen, keyPrefix) {
+function splitTextWithCitations(text, citations, onOpen, keyPrefix, shownFigures) {
   if (!text) return [];
   if (!citations || citations.length === 0) return [text];
   const re = /\[(\d+)\]/g;
@@ -595,13 +612,24 @@ function splitTextWithCitations(text, citations, onOpen, keyPrefix) {
         onOpen={onOpen}
       />,
     );
-    if (citationFigurePks(citation).length > 0) {
-      parts.push(
-        <CitationFigures
-          key={`${keyPrefix}f${key++}`}
-          citation={citation}
-        />,
+    const pks = citationFigurePks(citation);
+    if (pks.length > 0) {
+      // Stable across Strict Mode remounts (unlike useId). Distinct
+      // [N] matches in the same node differ by m.index; distinct
+      // markdown blocks differ by `text`.
+      const ownerId = `${text}\0${keyPrefix}${m.index}:${n}`;
+      const newPks = pks.filter((pk) =>
+        claimFigureOnce(shownFigures, `${n}:${pk}`, ownerId),
       );
+      if (newPks.length > 0) {
+        parts.push(
+          <CitationFigures
+            key={`${keyPrefix}f${key++}`}
+            citation={citation}
+            pks={newPks}
+          />,
+        );
+      }
     }
     last = m.index + m[0].length;
   }
@@ -616,12 +644,16 @@ function splitTextWithCitations(text, citations, onOpen, keyPrefix) {
 }
 
 function Cited({ children }) {
-  const { citations, onOpen } = React.useContext(CitationContext);
+  const { citations, onOpen, shownFigures } = React.useContext(CitationContext);
   if (!citations || citations.length === 0) return children;
   const out = [];
   React.Children.forEach(children, (child, idx) => {
     if (typeof child === "string") {
-      out.push(...splitTextWithCitations(child, citations, onOpen, `c${idx}-`));
+      out.push(
+        ...splitTextWithCitations(
+          child, citations, onOpen, `c${idx}-`, shownFigures,
+        ),
+      );
     } else {
       out.push(child);
     }
@@ -735,8 +767,16 @@ const rehypePlugins = [
 const remarkPlugins = [remarkGfm, remarkMath];
 
 export function MarkdownView({ text, citations, onOpenCitation }) {
+  const shownFiguresRef = useRef(new Map());
+  // Each MarkdownView render re-assigns first-wins; Strict Mode's second
+  // invoke of the same Cited re-claims via ownerId and still renders once.
+  shownFiguresRef.current.clear();
   const citationValue = React.useMemo(
-    () => ({ citations: citations || null, onOpen: onOpenCitation || null }),
+    () => ({
+      citations: citations || null,
+      onOpen: onOpenCitation || null,
+      shownFigures: shownFiguresRef.current,
+    }),
     [citations, onOpenCitation],
   );
   return (

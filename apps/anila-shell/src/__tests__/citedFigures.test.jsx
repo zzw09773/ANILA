@@ -216,6 +216,84 @@ describe("cited figures appear next to the citation chip", () => {
     expect(body.querySelectorAll("img")).toHaveLength(0);
   });
 
+  it("renders a cited figure only once when the same chip repeats", () => {
+    const citations = [
+      { id: "kb:1", title: "other.pdf", snippet: "x" },
+      {
+        id: "kb:2",
+        title: "強制裝備.pdf",
+        snippet: "圖 2",
+        image_pks: [315],
+      },
+    ];
+    const { container } = render(
+      <React.StrictMode>
+        <MarkdownView
+          text={"強制裝備[2]。安全救助[2]。"}
+          citations={citations}
+          onOpenCitation={vi.fn()}
+        />
+      </React.StrictMode>,
+    );
+    const chips = [...container.querySelectorAll("button")].filter(
+      (b) => b.textContent === "[2]",
+    );
+    expect(chips).toHaveLength(2);
+    const imgs = figureImgs(container);
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0].getAttribute("src")).toBe("/api/ingestion/images/315/blob");
+  });
+
+  it("dedupes the same cited figure across multiple markdown blocks", () => {
+    const citations = [
+      { id: "kb:1", title: "other.pdf", snippet: "x" },
+      {
+        id: "kb:2",
+        title: "強制裝備.pdf",
+        snippet: "圖 2",
+        image_pks: [315],
+      },
+    ];
+    const { container } = render(
+      <React.StrictMode>
+        <MarkdownView
+          text={"強制裝備[2]。\n\n安全救助[2]。"}
+          citations={citations}
+          onOpenCitation={vi.fn()}
+        />
+      </React.StrictMode>,
+    );
+    const chips = [...container.querySelectorAll("button")].filter(
+      (b) => b.textContent === "[2]",
+    );
+    expect(chips).toHaveLength(2);
+    const imgs = figureImgs(container);
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0].getAttribute("src")).toBe("/api/ingestion/images/315/blob");
+  });
+
+  it("still renders one figure per distinct citation image", () => {
+    const citations = [
+      { id: "kb:1", title: "甲.pdf", snippet: "x", image_pks: [10] },
+      { id: "kb:2", title: "乙.pdf", snippet: "y", image_pks: [315] },
+    ];
+    const { container } = render(
+      <MarkdownView
+        text={"甲[1]與乙[2]。"}
+        citations={citations}
+        onOpenCitation={vi.fn()}
+      />,
+    );
+    const imgs = figureImgs(container);
+    expect(imgs).toHaveLength(2);
+    expect(imgs.map((img) => img.getAttribute("src"))).toEqual([
+      "/api/ingestion/images/10/blob",
+      "/api/ingestion/images/315/blob",
+    ]);
+    expect(inlineChip(container, 1)).toBeTruthy();
+    expect(inlineChip(container, 2)).toBeTruthy();
+  });
+
   it("a data URI on the citation object is not used as the image src", () => {
     const { container } = render(
       <MarkdownView
