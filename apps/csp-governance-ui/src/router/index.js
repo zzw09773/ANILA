@@ -160,13 +160,6 @@ const routes = [
         meta: { requiresDeveloper: true },
       },
       {
-        // Sprint 3 Chunk N — Chunking Evaluator wizard + results.
-        path: 'knowledge-collections/:id/evaluator',
-        name: 'Evaluator',
-        component: () => import('../views/EvaluatorView.vue'),
-        meta: { requiresDeveloper: true },
-      },
-      {
         path: ':pathMatch(.*)*',
         name: 'NotFound',
         component: () => import('../views/NotFoundView.vue'),

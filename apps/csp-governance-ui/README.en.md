@@ -20,7 +20,7 @@ Governance Center (CSP)
 ├── Model governance (Model Gateway)
 ├── Agent Registry (approval)
 ├── Service Registry (GUI service registration + launch)
-├── Knowledge governance (collections / chunking / evaluator)
+├── Knowledge governance (collections / chunking)
 ├── Classification & one-way latch
 └── Trace / Audit / Usage
 ```
@@ -57,7 +57,7 @@ Routes are two-tier: `/login` (public) and `/` (`AppLayout`, `requiresAuth`) wit
 | Agent Registry | `DeveloperAgentsView` (`developer/agents`, developer) + `DeveloperGuideView`, `AgentRuntimeConfigView` | **seven-state approval** (`utils/approvalStatus.js`: draft / pending_connection_test / pending_trace_test / pending_security_review / approved / rejected / disabled) + **trace-test gate** (`isApprovable` requires `trace_test_passed_at`; not passed → not approvable, backend returns 409) + test-connection probe. doc 05 |
 | Service Registry | `PlatformLinksView` (`platform-links`), `ServiceAccessView`, `ServiceClientsView` | registered GUI services (`utils/serviceRegistry.js`: `launch_mode` new_tab/iframe, `config_source` env_seeded/db field locking, `classification_ceiling` four-level: 無機密 / 營業秘密 / 密 / 機密); service-token management. doc 07 |
 | Classification | `ClassificationInventoryView` (`classification-inventory`, admin) | pre-cutover classification inventory (doc 08 §15) |
-| Knowledge governance | `KnowledgeCollectionsView`, `ChunkingPreviewView`, `CollectionDetailView`, `EvaluatorView` (developer) | collection inspector, chunking-strategy comparison wizard, evaluator; relation graph via `components/RelationGraph.vue` (cytoscape) |
+| Knowledge governance | `KnowledgeCollectionsView`, `ChunkingPreviewView`, `CollectionDetailView` (developer) | collection inspector, chunking-strategy comparison wizard; relation graph via `components/RelationGraph.vue` (cytoscape) |
 | Identity / departments | `UsersView`, `DepartmentsView` (admin) | users, departments, roles |
 | Audit / usage | `AuditLogsView`, `UsageView` | audit; usage charted with echarts (`charts/UsageLineChart.vue`, `TimeRangeSelector.vue`) |
 | Platform misc | `ApiKeysView`, `AlertsView`, `BannersView` (admin), `TrustedHostsView` (admin, SSRF allow-list) | keys, alerts, banners, SSRF trusted-host list |

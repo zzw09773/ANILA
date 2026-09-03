@@ -66,8 +66,6 @@
         <footer class="cc__foot">
           <router-link :to="{ name: 'CollectionDetail', params: { id: c.id } }" class="term-action">→ 檢視器</router-link>
           <span class="cc__sep">·</span>
-          <router-link :to="{ name: 'Evaluator', params: { id: c.id } }" class="term-action">→ 評測器</router-link>
-          <span class="cc__sep">·</span>
           <button v-if="c.status === 'active'" class="term-action" @click="archiveCollection(c)">封存</button>
           <button v-else class="term-action" @click="restoreCollection(c)">還原</button>
           <span class="cc__sep">·</span>

@@ -109,11 +109,7 @@ const segmentMap = {
 }
 const currentSegment = computed(() => {
   if (segmentMap[route.path]) return segmentMap[route.path]
-  if (route.path.startsWith('/knowledge-collections/')) {
-    return route.path.endsWith('/evaluator')
-      ? '/dev/collections/evaluator'
-      : '/dev/collections/detail'
-  }
+  if (route.path.startsWith('/knowledge-collections/')) return '/dev/collections/detail'
   return route.path
 })
 

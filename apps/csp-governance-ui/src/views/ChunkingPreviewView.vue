@@ -148,8 +148,7 @@
               <strong>仍可選用：</strong>按
               <code>↓ use this strategy</code>
               直接以此策略建立 collection — ingestion-worker 端有 embedding 預算，會在
-              非同步 ingest 流程中正確執行。要看實際分塊品質可以在
-              <em>Chunking Evaluator</em> 跑（worker 後台跑、可比較指標）。
+              非同步 ingest 流程中正確執行。
             </p>
           </template>
           <template v-else>
