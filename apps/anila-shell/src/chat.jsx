@@ -23,8 +23,8 @@ import {
   MenuItem,
 } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
+import { AnilaLogoImg } from "./AnilaBrand.jsx";
 import {
-  AnilaGlyph,
   IconAt,
   IconBook,
   IconChevDown,
@@ -1546,7 +1546,7 @@ export const AgentSelector = ({ agents, value, onChange }) => {
         cursor: "pointer",
         color: "var(--fg)",
       }}>
-        <AnilaGlyph size={14} />
+        <AnilaLogoImg variant="mark" height={14} />
         <span style={{ fontWeight: 500, fontSize: 13 }}>{selected.name}</span>
         <span style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
           {selected.id === "anila-router" ? "auto" : selected.short || selected.id}
@@ -1570,7 +1570,7 @@ export const AgentSelector = ({ agents, value, onChange }) => {
               active={a.id === value}
               onClick={() => { onChange(a.id); close(); }}
               leftIcon={a.id === "anila-router"
-                ? <AnilaGlyph size={14} />
+                ? <AnilaLogoImg variant="mark" height={14} />
                 : <div style={{ width: 14, height: 14, border: "1px solid var(--border-strong)", borderRadius: 3 }} />}
               rightIcon={a.id === value ? <IconCheck size={14} style={{ color: "var(--accent)" }} /> : null}
             >
@@ -2575,7 +2575,7 @@ export const Sidebar = ({
         display: "flex", flexDirection: "column", alignItems: "center",
         padding: "12px 0", gap: 6,
       }}>
-        <div style={{ padding: 6 }}><AnilaGlyph size={22} /></div>
+        <div style={{ padding: 6 }}><AnilaLogoImg variant="logo" height={28} /></div>
         <Divider />
         <IconButton onClick={onToggleCollapsed} title="展開側邊"><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話"><IconPlus /></IconButton>
@@ -2597,8 +2597,7 @@ export const Sidebar = ({
       display: "flex", flexDirection: "column",
     }}>
       <div style={{ padding: "14px 14px 10px", display: "flex", alignItems: "center", gap: 8 }}>
-        <AnilaGlyph size={20} />
-        <div style={{ fontWeight: 600, fontSize: 14, letterSpacing: 0.2 }}>ANILA</div>
+        <AnilaLogoImg variant="logo" height={32} />
         <div style={{ flex: 1 }} />
         <IconButton onClick={onToggleCollapsed} title="收合側邊"><IconPanelR /></IconButton>
       </div>
@@ -2973,7 +2972,7 @@ export const Sidebar = ({
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {a.id === "anila-router"
-                  ? <AnilaGlyph size={14} />
+                  ? <AnilaLogoImg variant="mark" height={14} />
                   : <div style={{ width: 12, height: 12, border: "1px solid var(--border-strong)", borderRadius: 2 }} />}
                 <div style={{ fontSize: 13, fontWeight: 500 }}>{a.name}</div>
                 {a.requiresEncryption && (

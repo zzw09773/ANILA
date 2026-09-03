@@ -14,7 +14,18 @@
       <section class="login__panel">
         <!-- Page hero title ---------------------------------------------- -->
         <header class="login__hero">
-          <h1 class="login__title">ANILA</h1>
+          <video
+            class="login__brand-video"
+            :src="brandVideoSrc"
+            :poster="brandLogoSrc"
+            autoplay
+            muted
+            playsinline
+            preload="auto"
+            disablePictureInPicture
+            aria-label="ANILA"
+            @loadedmetadata="silenceBrandVideo"
+          />
           <p class="login__subtitle">{{ heroSubtitle }}</p>
         </header>
 
@@ -318,6 +329,7 @@ import {
   detectCard,
 } from '../api/caAuth'
 import { useTheme } from '../composables/useTheme'
+import { ANILA_LOGO_MP4, ANILA_LOGO_PNG } from '../brandAssets.js'
 import TermLogo from '../components/cli/TermLogo.vue'
 import TermButton from '../components/cli/TermButton.vue'
 import TermField from '../components/cli/TermField.vue'
@@ -337,6 +349,15 @@ const loginAuthMode = ref(DEFAULT_LOGIN_AUTH_MODE)
 const showCardLogin = computed(() => shouldRenderCardLogin(loginAuthMode.value))
 const passwordPrimary = computed(() => isPasswordPrimary(loginAuthMode.value))
 const heroSubtitle = computed(() => loginHeroSubtitle(loginAuthMode.value))
+const brandLogoSrc = ANILA_LOGO_PNG
+const brandVideoSrc = ANILA_LOGO_MP4
+function silenceBrandVideo(event) {
+  const el = event?.target
+  if (!el) return
+  el.muted = true
+  el.defaultMuted = true
+  el.volume = 0
+}
 
 const showAlternativeLogin = computed(() =>
   shouldRenderAlternativeLogin(loginAuthMode.value, route.query),
@@ -689,13 +710,19 @@ async function handleRegister() {
   gap: var(--gap-2);
   text-align: center;
 }
-.login__title {
-  font-family: var(--font-sans);
-  font-size: var(--t-3xl);
-  font-weight: 600;
-  color: var(--c-fg-1);
-  letter-spacing: var(--tracking-tight);
-  margin: 0;
+.login__brand-video {
+  width: 160px;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+  background: transparent;
+}
+:global([data-theme="dark"]) .login .login__brand-video,
+:global([data-theme="dark"]) .login :deep(.term-logo__mark) {
+  background: #f7f8fa;
+  border-radius: 8px;
+  padding: 6px;
+  box-sizing: content-box;
 }
 .login__subtitle {
   font-size: var(--t-sm);

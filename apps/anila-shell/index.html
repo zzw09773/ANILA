@@ -213,6 +213,15 @@
 
   @keyframes anila-blink { 50% { opacity: 0; } }
 
+  /* 品牌 PNG 是深藍透明底；深色主題墊一塊淺底才看得見。 */
+  [data-theme="dark"] .anila-brand-img,
+  [data-theme="dark"] .anila-brand-video {
+    background: #f7f8fa;
+    border-radius: 8px;
+    padding: 4px 6px;
+    box-sizing: content-box;
+  }
+
   /* 思考步驟時間軸（2026-09-02）：一條安靜的直線、完成打勾、進行中的點會呼吸、
      進行中的字有一道微光掃過。減少動態偏好時全部靜止。 */
   .anila-steps {

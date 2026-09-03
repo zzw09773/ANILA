@@ -116,8 +116,8 @@ import {
   Dropdown,
 } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
+import { AnilaLogoImg, AnilaLogoVideo } from "./AnilaBrand.jsx";
 import {
-  AnilaGlyph,
   IconColumns,
   IconGrid,
   IconHistory,
@@ -3315,11 +3315,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 }
 
 // ---- Empty state -----------------------------------------------------------
-function EmptyState({ agent, agents, onPick, loading }) {
+export function EmptyState({ agent, agents, onPick, loading }) {
   const prompts = buildStarterPrompts(agents);
   return (
     <div style={{ padding: "64px 12px 32px", textAlign: "center" }}>
-      <AnilaGlyph size={40} />
+      <AnilaLogoVideo width={140} />
       <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>
         你今天想問 ANILA 什麼？
       </div>
@@ -3640,7 +3640,7 @@ function SettingsModal({
             { id: "privacy", label: "隱私 / 信任", icon: <IconShield   size={13} /> },
             { id: "memory",  label: "記憶",        icon: <IconHistory  size={13} /> },
             { id: "account", label: "帳號",        icon: <IconUser     size={13} /> },
-            { id: "about",   label: "關於",        icon: <AnilaGlyph   size={13} /> },
+            { id: "about",   label: "關於",        icon: <AnilaLogoImg variant="mark" height={13} /> },
           ].map((t) => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
               display: "flex", alignItems: "center", gap: 8,
@@ -3737,7 +3737,7 @@ function SettingsModal({
           {tab === "about" && (
             <div style={{ fontSize: 13, lineHeight: 1.7 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                <AnilaGlyph size={24} />
+                <AnilaLogoImg variant="logo" height={32} />
                 <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA Runtime Client</div>
               </div>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-muted)" }}>

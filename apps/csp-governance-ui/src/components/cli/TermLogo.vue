@@ -1,39 +1,38 @@
 <!--
-  ANILA wordmark — terminal-cursor square + plain monospace wordmark.
-  Single SVG glyph (no external asset) so it inherits theme colors and stays
-  crisp at every size. Pass `compact` for sidebar collapsed state.
+  ANILA wordmark — static PNG mark (compact) or mark + subtitle (expanded).
+  Assets live in public/brand; navy-on-transparent, so masthead/dark surfaces
+  put a light plate behind the img (see AppHeader / LoginView).
 -->
 <template>
   <span class="term-logo" :class="{ 'term-logo--compact': compact }">
-    <svg
+    <img
       class="term-logo__mark"
-      :width="size"
-      :height="size"
-      viewBox="0 0 16 16"
-      role="img"
-      aria-label="ANILA"
-    >
-      <!-- Outer frame -->
-      <rect x="0.5" y="0.5" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1" />
-      <!-- Inset solid block (cursor) -->
-      <rect x="3.5" y="3.5" width="9" height="9" fill="currentColor" />
-      <!-- Notch — gives it character beyond a generic square -->
-      <rect x="9.5" y="3.5" width="3" height="3" fill="var(--c-bg)" />
-    </svg>
+      :src="compact ? markSrc : logoSrc"
+      alt="ANILA"
+      :style="{ height: imgHeight + 'px' }"
+      draggable="false"
+    />
     <span v-if="!compact" class="term-logo__word">
-      <span class="term-logo__brand">ANILA</span>
-      <span class="term-logo__sep">·</span>
       <span class="term-logo__sub">{{ subtitle }}</span>
     </span>
   </span>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+import { ANILA_LOGO_PNG, ANILA_MARK_PNG } from '../../brandAssets.js'
+
+const props = defineProps({
   compact: { type: Boolean, default: false },
   size: { type: Number, default: 16 },
   subtitle: { type: String, default: 'CSP' },
 })
+
+const markSrc = ANILA_MARK_PNG
+const logoSrc = ANILA_LOGO_PNG
+const imgHeight = computed(() => (
+  props.compact ? Math.max(props.size, 16) : Math.min(36, Math.max(28, props.size * 2))
+))
 </script>
 
 <style scoped>
@@ -45,6 +44,9 @@ defineProps({
 }
 .term-logo__mark {
   flex-shrink: 0;
+  display: block;
+  width: auto;
+  object-fit: contain;
 }
 .term-logo__word {
   display: inline-flex;
@@ -55,12 +57,6 @@ defineProps({
   font-weight: 700;
   font-size: var(--t-lg);
   line-height: 1;
-}
-.term-logo__brand {
-  letter-spacing: 0.08em;
-}
-.term-logo__sep {
-  display: none;
 }
 .term-logo__sub {
   color: var(--c-fg-2);
