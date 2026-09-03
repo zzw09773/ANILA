@@ -13,7 +13,10 @@ Invariants:
      wins over the table;
   3. non-stream: ``finish_reason=length`` with empty content → one retry with a
      doubled ``max_tokens``; still empty → ``error`` set (never a silent "");
-  4. stream: same rule — an empty ``length``-terminated stream is retried once.
+  4. stream: same rule — an empty ``length``-terminated stream is retried once;
+  5. whichever of those two the Router filled in from the table is listed in
+     ``anila_sampling_defaults`` so the CSP proxy can let the per-model
+     governance knobs override them (a caller value is never listed).
 """
 
 from __future__ import annotations
@@ -147,6 +150,45 @@ def test_sampling_overrides_forward_top_p_and_presence_penalty():
     assert rs.sampling_overrides_from_body(
         {"top_p": 0.95, "presence_penalty": 1.5, "temperature": 0.6}
     ) == {"top_p": 0.95, "presence_penalty": 1.5, "temperature": 0.6}
+
+
+def test_router_defaults_are_flagged_for_the_csp_proxy():
+    params = rs._sampling_payload()
+    assert params["temperature"] == ROUTER.temperature
+    assert params["max_tokens"] == ROUTER.max_tokens
+    assert params[rs.SAMPLING_DEFAULTS_MARKER] == ["temperature", "max_tokens"]
+
+
+def test_caller_temperature_leaves_only_max_tokens_flagged():
+    token = rs.REQUEST_SAMPLING.set(rs.sampling_overrides_from_body({"temperature": 0.7}))
+    try:
+        params = rs._sampling_payload()
+    finally:
+        rs.REQUEST_SAMPLING.reset(token)
+    assert params["temperature"] == 0.7
+    assert params["max_tokens"] == ROUTER.max_tokens
+    assert params[rs.SAMPLING_DEFAULTS_MARKER] == ["max_tokens"]
+
+
+def test_caller_supplying_both_sends_no_marker():
+    token = rs.REQUEST_SAMPLING.set(
+        rs.sampling_overrides_from_body({"temperature": 0.7, "max_tokens": 512})
+    )
+    try:
+        params = rs._sampling_payload()
+    finally:
+        rs.REQUEST_SAMPLING.reset(token)
+    assert params["temperature"] == 0.7
+    assert params["max_tokens"] == 512
+    assert rs.SAMPLING_DEFAULTS_MARKER not in params
+
+
+def test_length_retry_bump_is_not_a_router_default():
+    """The doubled budget is a deliberate Router decision, so the per-model
+    max_tokens must not be allowed to undo it."""
+    params = rs._sampling_payload(max_tokens_override=8192)
+    assert params["max_tokens"] == 8192
+    assert params[rs.SAMPLING_DEFAULTS_MARKER] == ["temperature"]
 
 
 def test_non_stream_empty_length_reply_is_retried_with_doubled_budget(monkeypatch):

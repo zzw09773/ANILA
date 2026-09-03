@@ -144,7 +144,7 @@ def test_create_model_encrypts_write_only_api_key(db):
         endpoint_url="https://api.example.com/v1", api_key="sk-write-only",
         classification_ceiling="機密",
     )
-    resp = models_api.create_model(req, owner, db)
+    resp = asyncio.run(models_api.create_model(req, owner, db))
     assert resp["has_api_key"] is True
     assert resp["classification_ceiling"] == "機密"
     assert resp["protocol"] == "openai_compatible"

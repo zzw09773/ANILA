@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import asyncio
 import json
 import logging
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import httpx
@@ -63,6 +64,7 @@ from app.services.service_token_envelope import (
     decode_service_token_envelope,
     encode_service_token_envelope,
 )
+from app.services.thinking_probe import PROBEABLE_LEVELS, probe_thinking_effort
 
 logger = logging.getLogger(__name__)
 
@@ -313,8 +315,43 @@ def list_models(
     ]
 
 
+async def _run_thinking_probe(
+    *,
+    probe_target,
+    level: str | None,
+    model_type: str | None,
+    protocol: str | None,
+) -> dict | None:
+    """Ask the endpoint once whether it accepts ``level`` (r1_0039).
+
+    Returns the ``thinking_probe`` block to attach to the response, or
+    ``None`` when the combination is not worth probing (NONE / NULL sends no
+    ``reasoning_effort`` at all; non-LLM and triton_grpc rows never carry
+    one). An explicit upstream rejection becomes a 422 so the level cannot
+    be written — a saved level the endpoint refuses turns every later chat
+    call into a 400 that the console has no way to explain.
+
+    Everything else is advisory: an unreachable endpoint must not stop an
+    administrator from registering a model that is merely down right now.
+    """
+    if not level or level not in PROBEABLE_LEVELS:
+        return None
+    if model_type not in ("llm", "vlm") or (protocol or "openai_compatible") != "openai_compatible":
+        return None
+    result = await probe_thinking_effort(probe_target, level)
+    if result.status == "rejected":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"模型端點不接受 thinking_effort={level}，未儲存。上游回覆："
+                + (result.detail or "（未提供支援等級清單）")
+            ),
+        )
+    return {"status": result.status, "detail": result.detail}
+
+
 @router.post("", response_model=ModelResponse)
-def create_model(
+async def create_model(
     request: ModelCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -357,6 +394,16 @@ def create_model(
     model.created_by_user_id = current_user.id
     if api_key:
         model.api_key_secret_ref = encode_service_token_envelope(api_key)
+
+    # Probe before the row exists in the session: a rejected level raises
+    # 422 here and nothing was added.
+    thinking_probe = await _run_thinking_probe(
+        probe_target=model,
+        level=model.thinking_effort,
+        model_type=model.model_type,
+        protocol=protocol,
+    )
+
     db.add(model)
     db.commit()
     db.refresh(model)
@@ -369,7 +416,10 @@ def create_model(
         detail=f"建立模型「{model.display_name}」",
         commit=True,
     )
-    return _build_response(model, caller=current_user, db=db)
+    response = _build_response(model, caller=current_user, db=db)
+    if thinking_probe is not None:
+        response["thinking_probe"] = thinking_probe
+    return response
 
 
 def _upstream_models_url(endpoint_url: str) -> str:
@@ -2001,7 +2051,7 @@ def get_model(
 
 
 @router.put("/{model_id}", response_model=ModelResponse)
-def update_model(
+async def update_model(
     model_id: int,
     request: ModelUpdate,
     current_user: User = Depends(get_current_user),
@@ -2087,6 +2137,33 @@ def update_model(
         if base.id == model_id:
             raise HTTPException(status_code=400, detail="不能將自己設為底層模型")
 
+    # r1_0039: only a *changed* level is probed — re-saving an unrelated
+    # field must not fire an outbound call. Probe a shim built from the
+    # values about to be written rather than the row itself, so a 422 leaves
+    # the session clean (``get_db`` closes without rolling back).
+    thinking_probe = None
+    if (
+        "thinking_effort" in update_data
+        and update_data["thinking_effort"] != model.thinking_effort
+    ):
+        pending_key = update_data.get("api_key")
+        thinking_probe = await _run_thinking_probe(
+            probe_target=SimpleNamespace(
+                id=model.id,
+                name=model.name,
+                endpoint_url=effective_url,
+                api_version=update_data.get("api_version") or model.api_version,
+                api_key_secret_ref=(
+                    encode_service_token_envelope(str(pending_key).strip())
+                    if pending_key is not None and str(pending_key).strip()
+                    else model.api_key_secret_ref
+                ),
+            ),
+            level=update_data["thinking_effort"],
+            model_type=update_data.get("model_type") or model.model_type,
+            protocol=effective_protocol,
+        )
+
     # Slice 6a (doc 04 §3): api_key is write-only. When supplied non-empty,
     # re-encrypt into api_key_secret_ref; it is never assigned as a column.
     api_key = update_data.pop("api_key", None)
@@ -2107,7 +2184,10 @@ def update_model(
         detail=f"更新模型「{model.display_name}」",
         commit=True,
     )
-    return _build_response(model, caller=current_user, db=db)
+    response = _build_response(model, caller=current_user, db=db)
+    if thinking_probe is not None:
+        response["thinking_probe"] = thinking_probe
+    return response
 
 
 @router.delete("/{model_id}")

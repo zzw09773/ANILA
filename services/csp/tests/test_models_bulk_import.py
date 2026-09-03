@@ -906,15 +906,17 @@ def test_list_models_no_group_key_undesignated_still_redacted(db, monkeypatch):
 
     admin = make_user(db, "admin_oracle", role="admin")
     with pytest.raises(HTTPException) as exc:
-        models_api.create_model(
-            ModelCreate(
-                name="oracle-probe",
-                display_name="Oracle Probe",
-                model_type="llm",
-                endpoint_url=secret,
-            ),
-            admin,
-            db,
+        _run(
+            models_api.create_model(
+                ModelCreate(
+                    name="oracle-probe",
+                    display_name="Oracle Probe",
+                    model_type="llm",
+                    endpoint_url=secret,
+                ),
+                admin,
+                db,
+            )
         )
     assert exc.value.status_code == 403
     assert "端點位址設定權限" in str(exc.value.detail)

@@ -264,6 +264,17 @@ class ModelUpdate(BaseModel):
         return _validate_optional_max_tokens(v)
 
 
+class ThinkingProbeResult(BaseModel):
+    """Outcome of the save-time ``reasoning_effort`` probe (r1_0039).
+
+    ``rejected`` never reaches a client — the write path turns it into a
+    422 — so in practice this carries ``ok`` or ``unreachable``.
+    """
+
+    status: Literal["ok", "unreachable", "rejected"]
+    detail: str | None = None
+
+
 class ModelResponse(ApiResponseModel):
     id: int
     name: str
@@ -300,6 +311,9 @@ class ModelResponse(ApiResponseModel):
     top_p: float | None = None
     presence_penalty: float | None = None
     max_tokens: int | None = None
+    # Present only on create / update, and only when a thinking level was
+    # actually probed. list / get never probe, so they leave it null.
+    thinking_probe: ThinkingProbeResult | None = None
     created_at: datetime
     updated_at: datetime
 

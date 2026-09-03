@@ -466,10 +466,13 @@
         >
           <p class="form-section__title">推理設定</p>
           <p class="field-note">
-            thinking_effort：NONE／low／medium／high／xhigh／max（與後端字串一致）。
             思考模型請搭配較高溫度（約 0.6／0.95／1.5），避免低溫造成重複迴圈。
+            留空＝沿用上游預設。
           </p>
-          <TermField label="thinking_effort" hint="送到上游的等級字串；NONE＝關閉思考">
+          <TermField
+            label="thinking_effort"
+            hint="原字串送上游 reasoning_effort；NONE＝enable_thinking=false。各後端支援的等級不同（院內 Qwen vLLM：low／medium／xhigh，預設 xhigh，不收 high／max；gemma 一律忽略）。儲存時會向模型探測一次，被拒絕的等級存不進去。"
+          >
             <select v-model="form.thinking_effort" class="term-select">
               <option value="none">NONE</option>
               <option value="low">low</option>
@@ -1050,14 +1053,22 @@ function buildModelPayload() {
   return payload
 }
 
+// 儲存時後端會向端點探測一次 thinking_effort。被拒絕的等級是 422（走既有
+// 錯誤顯示路徑），這裡只處理「探不到」：等級照存，但沒人驗證過。
+function noticeThinkingProbe(saved) {
+  if (saved?.thinking_probe?.status !== 'unreachable') return
+  const why = saved.thinking_probe.detail ? `（${saved.thinking_probe.detail}）` : ''
+  toast(`模型目前連不上，thinking_effort 未經探測${why}`, { tone: 'warn' })
+}
+
 async function handleSubmit() {
   try {
     const payload = buildModelPayload()
     if (editingId.value) {
       const { name, ...updateData } = payload
-      await modelsStore.update(editingId.value, updateData)
+      noticeThinkingProbe(await modelsStore.update(editingId.value, updateData))
     } else {
-      await modelsStore.create(payload)
+      noticeThinkingProbe(await modelsStore.create(payload))
     }
     showModal.value = false
   } catch (e) {
@@ -1111,9 +1122,9 @@ async function confirmTrustAndRetry() {
     const { retryPayload, retryMode, retryId } = prompt
     if (retryMode === 'update') {
       const { name, ...updateData } = retryPayload
-      await modelsStore.update(retryId, updateData)
+      noticeThinkingProbe(await modelsStore.update(retryId, updateData))
     } else {
-      await modelsStore.create(retryPayload)
+      noticeThinkingProbe(await modelsStore.create(retryPayload))
     }
     untrustedHostPrompt.value = null
     showModal.value = false

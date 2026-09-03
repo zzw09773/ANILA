@@ -3,10 +3,33 @@
 Caller-supplied keys win (same rule as router ``REQUEST_SAMPLING``).
 ``thinking_effort`` of NULL / ``default`` leaves vendor knobs alone.
 
-This fleet's Qwen / vLLM+litellm path documents thinking via
-``chat_template_kwargs.enable_thinking`` (see
-``infra/models/docker-compose.yml`` ``--default-chat-template-kwargs``).
-We do not invent a top-level ``enable_thinking`` key.
+A level sends BOTH vendor knobs, because this fleet's two backends read
+different ones (2026-09-03, measured against the live endpoints):
+
+* Qwen behind litellm (``…:4000/v1`` → hosted_vllm) honours top-level
+  ``reasoning_effort`` and accepts ONLY ``low`` / ``medium`` / ``xhigh``
+  (its default), plus ``none``; ``high`` / ``max`` / ``minimal`` come back
+  400. Reasoning tokens measured: xhigh 1005, medium 153, low 104, none 0.
+* gemma on bare vLLM ignores ``reasoning_effort`` completely — it swallows
+  even a bogus value, and ``none`` does not stop it thinking — and reads
+  only ``chat_template_kwargs.enable_thinking``.
+
+So a level sets ``enable_thinking=true`` AND sends the level verbatim as
+``reasoning_effort``. Two rules follow from the measurements above: the
+level is never remapped (an earlier version clamped xhigh/max to ``high``,
+which is precisely the value Qwen rejects), and the model NAME is never
+consulted (it cannot tell these two backends apart — the old o1/o3/gpt-5
+sniff meant Qwen silently ran at its xhigh default no matter what the
+console showed). Which levels an endpoint actually accepts is settled by
+the save-time probe in ``app/services/thinking_probe.py``.
+
+``none`` / ``off`` sets ``enable_thinking=false`` and sends NO
+``reasoning_effort``: gemma ignores it anyway, and Qwen is already
+silenced by the chat-template kwarg.
+
+We do not invent a top-level ``enable_thinking`` key — the kwargs form is
+what ``infra/models/docker-compose.yml`` documents
+(``--default-chat-template-kwargs``).
 
 Thinking models that loop ("OK I'll stop") typically need ~0.6 / 0.95 /
 1.5 on temperature / top_p / presence_penalty — set those columns rather
@@ -22,34 +45,17 @@ THINKING_LEVELS = frozenset(
 )
 SAMPLING_KEYS = ("temperature", "top_p", "presence_penalty", "max_tokens")
 
-# OpenAI public ``reasoning_effort`` is low/medium/high. Repo has no
-# ``xhigh`` string, so xhigh/max clamp to high.
-_REASONING_EFFORT_MAP = {
-    "low": "low",
-    "medium": "medium",
-    "high": "high",
-    "xhigh": "high",
-    "max": "high",
-}
+# The Router always sends temperature / max_tokens (its ``router`` sampling
+# row). It flags which of those are its own defaults in this body-only
+# marker so the model_registry knobs can still win over them; a real
+# caller value (no marker entry) keeps winning. Never forwarded upstream.
+SAMPLING_DEFAULTS_MARKER = "anila_sampling_defaults"
+
+# Levels that turn thinking ON; each is sent verbatim as
+# ``reasoning_effort``. No remap table — see the module docstring.
+THINKING_ON_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 _SKIP_MODEL_TYPES = frozenset({"agent", "embedding", "image", "asr"})
-
-
-def _looks_like_openai_reasoning_model(
-    model_name: str | None, body: Mapping[str, Any]
-) -> bool:
-    if "reasoning_effort" in body:
-        return True
-    name = (model_name or "").lower()
-    tokens = name.replace("/", "-").replace("_", "-").split("-")
-    if any(
-        t in {"o1", "o3", "o4"} or t.startswith(("o1", "o3", "o4"))
-        for t in tokens
-    ):
-        return True
-    if "gpt-5" in name:
-        return True
-    return False
 
 
 def _set_chat_template_thinking(body: dict[str, Any], enabled: bool) -> None:
@@ -76,18 +82,14 @@ def _apply_thinking_effort(body: dict[str, Any], model: Any) -> None:
 
     if level in {"none", "off"}:
         _set_chat_template_thinking(body, False)
-        # o-style: caller already sent reasoning_effort → leave it.
-        # model name suggests o-style and no key → omit (do not add
-        # "low", which would turn thinking back on).
         return
 
-    if level not in _REASONING_EFFORT_MAP:
+    if level not in THINKING_ON_LEVELS:
         return
 
     _set_chat_template_thinking(body, True)
-    if _looks_like_openai_reasoning_model(getattr(model, "name", None), body):
-        if "reasoning_effort" not in body:
-            body["reasoning_effort"] = _REASONING_EFFORT_MAP[level]
+    if "reasoning_effort" not in body:
+        body["reasoning_effort"] = level
 
 
 def apply_model_sampling_overrides(
@@ -100,13 +102,19 @@ def apply_model_sampling_overrides(
     ``enable_thinking`` already inside ``chat_template_kwargs``.
     """
     body = dict(request_body)
+    marker = body.pop(SAMPLING_DEFAULTS_MARKER, None)
+    soft_keys = (
+        {k for k in marker if isinstance(k, str)}
+        if isinstance(marker, (list, tuple))
+        else set()
+    )
     model_type = getattr(model, "model_type", None) or ""
     protocol = (getattr(model, "protocol", None) or "openai_compatible").strip()
     if protocol == "triton_grpc" or model_type in _SKIP_MODEL_TYPES:
         return body
 
     for key in SAMPLING_KEYS:
-        if key in body:
+        if key in body and key not in soft_keys:
             continue
         value = getattr(model, key, None)
         if value is not None:

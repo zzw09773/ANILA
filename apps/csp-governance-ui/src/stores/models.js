@@ -25,14 +25,18 @@ export const useModelsStore = defineStore('models', () => {
     }
   }
 
+  // 回傳寫入後的模型列：thinking_probe 只在 create/update 出現（列表不探測），
+  // 呼叫端要靠它判斷「等級沒探到」。
   async function create(payload) {
-    await createModel(payload)
+    const { data } = await createModel(payload)
     await fetchModels()
+    return data
   }
 
   async function update(id, payload) {
-    await updateModel(id, payload)
+    const { data } = await updateModel(id, payload)
     await fetchModels()
+    return data
   }
 
   async function remove(id) {

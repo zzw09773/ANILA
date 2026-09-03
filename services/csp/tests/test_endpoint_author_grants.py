@@ -353,53 +353,63 @@ def test_me_endpoint_reflects_designation(client: TestClient, db: Session):
 
 
 def test_service_helpers_gate_create_and_update(db: Session):
+    import asyncio
+
     owner = make_user(db, "ea_svc_owner", role="owner")
     admin = make_user(db, "ea_svc_admin", role="admin")
     dev = make_user(db, "ea_svc_dev", role="developer")
     ea_svc.assign(db, user=dev, granted_by=owner)
 
-    ok = models_api.create_model(
-        ModelCreate(
-            name="ea-svc-ok",
-            display_name="OK",
-            model_type="llm",
-            endpoint_url="https://gateway.example.com/v1",
-        ),
-        dev,
-        db,
+    ok = asyncio.run(
+        models_api.create_model(
+            ModelCreate(
+                name="ea-svc-ok",
+                display_name="OK",
+                model_type="llm",
+                endpoint_url="https://gateway.example.com/v1",
+            ),
+            dev,
+            db,
+        )
     )
     assert ok["name"] == "ea-svc-ok"
 
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        models_api.create_model(
-            ModelCreate(
-                name="ea-svc-no",
-                display_name="No",
-                model_type="llm",
-                endpoint_url="https://gateway.example.com/v1",
-            ),
-            admin,
-            db,
+        asyncio.run(
+            models_api.create_model(
+                ModelCreate(
+                    name="ea-svc-no",
+                    display_name="No",
+                    model_type="llm",
+                    endpoint_url="https://gateway.example.com/v1",
+                ),
+                admin,
+                db,
+            )
         )
     assert exc.value.status_code == 403
 
     model = make_model(db, name="ea-svc-upd")
     with pytest.raises(HTTPException) as exc2:
-        models_api.update_model(
-            model.id,
-            ModelUpdate(endpoint_url="https://other.example.com/v1"),
-            admin,
-            db,
+        asyncio.run(
+            models_api.update_model(
+                model.id,
+                ModelUpdate(endpoint_url="https://other.example.com/v1"),
+                admin,
+                db,
+            )
         )
     assert exc2.value.status_code == 403
 
-    updated = models_api.update_model(
-        model.id,
-        ModelUpdate(endpoint_url="https://other.example.com/v1"),
-        owner,
-        db,
+    updated = asyncio.run(
+        models_api.update_model(
+            model.id,
+            ModelUpdate(endpoint_url="https://other.example.com/v1"),
+            owner,
+            db,
+        )
     )
     assert "other.example.com" in updated["endpoint_url"]
     row = db.query(ModelRegistry).filter(ModelRegistry.id == model.id).one()

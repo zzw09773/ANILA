@@ -2648,12 +2648,28 @@ def sampling_overrides_from_body(body: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+# The ``router`` row's temperature / max_tokens ride on every upstream call,
+# which would otherwise shadow the governance UI's per-model knobs: the CSP
+# proxy lets caller keys win, so the model_registry columns never applied on
+# this path. Naming them in this body-only marker tells the proxy to pop it
+# (never forwarded upstream) and let model_registry override just those keys;
+# a genuine caller value is absent from the list and keeps winning. Must stay
+# in step with ``services/csp/app/services/proxy/sampling.py``.
+SAMPLING_DEFAULTS_MARKER = "anila_sampling_defaults"
+
+
 def _sampling_payload(*, max_tokens_override: int | None = None) -> dict[str, Any]:
     base = get_sampling("router")
     params: dict[str, Any] = {"temperature": base.temperature, "max_tokens": base.max_tokens}
-    params.update(REQUEST_SAMPLING.get() or {})
+    caller = REQUEST_SAMPLING.get() or {}
+    params.update(caller)
+    defaults = [k for k in ("temperature", "max_tokens") if k not in caller]
     if max_tokens_override is not None:
+        # A length-retry bump is the Router's deliberate choice, not a default.
         params["max_tokens"] = max_tokens_override
+        defaults = [k for k in defaults if k != "max_tokens"]
+    if defaults:
+        params[SAMPLING_DEFAULTS_MARKER] = defaults
     return params
 
 
