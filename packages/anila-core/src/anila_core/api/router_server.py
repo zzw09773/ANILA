@@ -1222,14 +1222,15 @@ def create_router_app(
         # one (OpenWebUI, LangChain) had automatic dispatch silently switched
         # off — invisible here only because the ANILA SPA sends none.
         #
-        # Ordering — ours first, the caller's keeps its original position behind
-        # it. Reason: CSP's proxy prepends the "### 使用者偏好" memory block to
-        # ``messages[0]`` only when that message is a system message
-        # (services/csp/app/api/proxy.py:259, :359). Index 0 is exactly where our
-        # prompt sat when no caller system message existed, so personalization
-        # keeps landing on the prompt whose rule 4/6 documents it, instead of
-        # being grafted onto a third party's prompt that never asked for it.
-        routing_messages = [{"role": "system", "content": system_prompt}] + messages
+        # Strict vLLM (Qwen via litellm) rejects a second ``system`` at index
+        # > 0 (HTTP 400 "System message must be at the beginning"). Fold every
+        # consecutive leading caller system into ours so the outbound list has
+        # exactly one leading system. CSP's proxy still prepends
+        # "### 使用者偏好" onto ``messages[0]`` when that message is system
+        # (services/csp/app/api/proxy.py:259, :359); after the merge, index 0
+        # remains our (merged) system message, so personalization still lands
+        # on the prompt whose rule 4/6 documents it.
+        routing_messages = _merge_routing_messages(system_prompt, messages)
 
         started_at = time.time()
 
@@ -2040,6 +2041,33 @@ def create_router_app(
         )
 
     return app
+
+
+def _merge_routing_messages(
+    system_prompt: str, messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Build routing messages with exactly one leading system message.
+
+    Starts with ``system_prompt``. Consecutive leading caller ``system``
+    messages are appended to that same message (blank-line separator); the
+    remaining non-system-prefix messages keep their order. Does not invent
+    a second system message at index > 0.
+    """
+    inbound = messages if isinstance(messages, list) else []
+    parts: list[str] = []
+    prompt = system_prompt if isinstance(system_prompt, str) else str(system_prompt)
+    if prompt:
+        parts.append(prompt)
+    rest_start = 0
+    for i, msg in enumerate(inbound):
+        if not isinstance(msg, dict) or msg.get("role") != "system":
+            rest_start = i
+            break
+        chunk = _flatten_openai_content(msg.get("content"))
+        if chunk:
+            parts.append(chunk)
+        rest_start = i + 1
+    return [{"role": "system", "content": "\n\n".join(parts)}, *inbound[rest_start:]]
 
 
 def _flatten_last_user_query(messages: list[dict[str, Any]]) -> str:
