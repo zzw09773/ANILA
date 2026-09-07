@@ -39,7 +39,11 @@
 
 ---
 
-## 1. 打開語音
+## 1. 打開語音(開機後第二步)
+
+平台預設不起 ASR。`INCLUDE_ASR` 預設 `0`,`COMPOSE_PROFILES` 也不該預設 `asr`。
+沒開時麥克風不出現,這是正常,不是壞掉。
+內網打包／一條龍部署的對照見 `docs/runbooks/intranet-image-bundle.md` §5.1。
 
 前置:權重要先在本機(見 §3);GPU 直通要能用(見 §4)。
 

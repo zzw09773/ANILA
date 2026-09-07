@@ -90,7 +90,7 @@ docker compose -f docker-compose.standalone.yml -p docling up -d
 - `DOCLING_OCR_LANGS`／`DOCLING_TABLE_STRUCTURE`／`DOCLING_PICTURE_DESCRIPTION`
   與平台側（in-process 時代）同名同義。
 
-> 🔴 **上線閘門**：以下條件**全部**滿足，才可把平台側 `DOC_PARSER` 設成
+> 🔴 **上線閘門**（開機後第二步，不是平台 `up` 的一部分）：以下條件**全部**滿足，才可把平台側 `DOC_PARSER` 設成
 > `docling`。任一條沒滿足：維持 `DOC_PARSER=native`。
 >
 > 1. 打包時 `WITH_DOCLING_IMAGE=1`，且 docling 映像已走完五段式（buildx bake

@@ -22,9 +22,12 @@
 #                         內網 up 時必須用同一個 -p,否則找不到 image。
 #   COMPOSE_ENV_FILE      給 compose 插值用的 env 檔。預設 $REPO_ROOT/.env。
 #                         worktree 預演可指到主樹 .env(只讀插值,不寫入)。
-#   INCLUDE_ASR=1         預設 ON。把 --profile asr 算進有效組態,bundle 會含
-#                         asr-gateway / asr-decoder。高階審查與本機驗證棧都
-#                         開了語音;關掉才設 INCLUDE_ASR=0。
+#   INCLUDE_ASR=1         預設 OFF。設 1 才把 --profile asr 算進有效組態,
+#                         bundle 才含 asr-gateway / asr-decoder。平台開機
+#                         預設沒語音(麥克風要 /asr/health 200 才出現);
+#                         開語音是開機後第二步,見 intranet-image-bundle.md
+#                         §5.1。若預知之後要開、不想再跑一趟打包,打包時才
+#                         設 1(只帶映像);部署腳本預設仍是 0。
 #                         註:asr-cpu.yml 只改 deploy/device,不改 image 名,
 #                         打包不必帶;內網 .15 有 GPU 時用平台預設即可。
 #   COMPOSE_EXTRA_FILES   額外 -f 檔(空白分隔),接在 compose.yaml 後面。
@@ -90,7 +93,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila-restart}"
 COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-$REPO_ROOT/.env}"
-INCLUDE_ASR="${INCLUDE_ASR:-1}"
+INCLUDE_ASR="${INCLUDE_ASR:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_PULL="${SKIP_PULL:-0}"
 WITH_DOCLING_WEIGHTS="${WITH_DOCLING_WEIGHTS:-0}"
@@ -139,7 +142,7 @@ echo "  Repo:       $REPO_ROOT"
 echo "  Output:     $OUTPUT_DIR"
 echo "  Project:    $COMPOSE_PROJECT_NAME  (-p;内網 up 必須同名)"
 echo "  Env file:   $COMPOSE_ENV_FILE"
-echo "  INCLUDE_ASR:$INCLUDE_ASR  (1 → --profile asr 納入有效組態)"
+echo "  INCLUDE_ASR:$INCLUDE_ASR  (0=預設不帶語音映像;1 → --profile asr 納入有效組態)"
 echo "  WITH_DOCLING_IMAGE:$WITH_DOCLING_IMAGE  (1 → bake docling through five-stage; platform profile unchanged)"
 echo "  WITH_DOCLING_WEIGHTS:$WITH_DOCLING_WEIGHTS"
 echo "  SKIP_BUILD: $SKIP_BUILD   SKIP_PULL: $SKIP_PULL"
@@ -1330,7 +1333,7 @@ if [ "\${NO_CHECKSUM_PROTECTION:-0}" = "1" ]; then
 fi
 echo "  下一步見 docs/runbooks/intranet-image-bundle.md"
 echo "  起棧時 -p 必須是: $COMPOSE_PROJECT_NAME"
-echo "  INCLUDE_ASR 打包值: $INCLUDE_ASR → up 時記得 --profile asr(若為 1)"
+echo "  INCLUDE_ASR 打包值: $INCLUDE_ASR → 預設不開語音;要開才 --profile asr(且映像須已在包內)"
 echo "  WITH_DOCLING_IMAGE 打包值: $WITH_DOCLING_IMAGE → 平台 up **不要**加 --profile docling-local"
 echo "  起棧命令: docker compose --env-file .env -p $COMPOSE_PROJECT_NAME -f compose.yaml -f intranet-image-overrides.yml ${COMPOSE_PROFILE_ARGS[*]:-} up -d --no-build"
 EOF

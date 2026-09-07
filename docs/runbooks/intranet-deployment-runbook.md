@@ -82,14 +82,14 @@
 ```bash
 CARD_INITIAL_OWNERS=1147259 \
 COMPOSE_PROJECT_NAME=anila-restart \
-INCLUDE_ASR=1 \
-ASR_OVERLAY=infra/compose/asr-cpu.yml \
 bash infra/deployment/intranet/intranet-deploy.sh /path/to/image-bundle
 ```
 
-`COMPOSE_PROJECT_NAME` 預設 `anila-restart`；`INCLUDE_ASR` 預設 `1`，設為 `0` 才不帶 `--profile asr`。
-`ASR_OVERLAY` 預設 `infra/compose/asr-cpu.yml`（.15 是 CPU 主機）；GPU 主機改設
-`ASR_OVERLAY=infra/compose/asr-gpu.yml`。要不疊 overlay，設 `ASR_OVERLAY=`，這代表由操作者自行承擔組態責任；`INCLUDE_ASR=0` 時腳本不採用 overlay。
+`COMPOSE_PROJECT_NAME` 預設 `anila-restart`；`INCLUDE_ASR` 預設 `0`（平台開機沒語音）。
+要開語音是開機後第二步,見 [`intranet-image-bundle.md` §5.1](./intranet-image-bundle.md)。那時才設
+`INCLUDE_ASR=1`,並帶 `ASR_OVERLAY`(`.15` CPU 主機預設 `infra/compose/asr-cpu.yml`;
+GPU 主機改 `infra/compose/asr-gpu.yml`;空字串表示不疊 overlay,由操作者自行承擔組態責任)。
+`INCLUDE_ASR=0` 時腳本不採用 overlay。
 bundle 的 `intranet-defaults.env` 可提供 `CARD_INITIAL_OWNERS` 與生成器白名單內的密碼／token 值；
 `CARD_INITIAL_OWNERS=...` 仍會先出現確認題，這是刻意的 owner 安全閘，不應用固定 stdin 順序繞過。
 
@@ -486,9 +486,8 @@ set -a; source .env; set +a
 bash infra/deployment/scripts/deploy-prod.sh preflight   # 遠端模型模式:自動建 anila-models-net
                                         # + curl 探測 gateway (帶 Bearer key)
 docker compose -p anila-restart \
-  -f compose.yaml -f infra/compose/asr-cpu.yml -f intranet-image-overrides.yml \
-  --profile asr up -d --no-build  # image 已 load,跳過 build; INCLUDE_ASR=0 時移除 --profile asr
-# .15 是 CPU 主機；GPU 主機把 infra/compose/asr-cpu.yml 換成 infra/compose/asr-gpu.yml。
+  -f compose.yaml -f intranet-image-overrides.yml \
+  up -d --no-build  # image 已 load,跳過 build。語音是開機後第二步,見 intranet-image-bundle.md §5.1
 ```
 
 ### 3.1b 本機模型要過 url_guard (R2 演練教訓,2026-06-11)

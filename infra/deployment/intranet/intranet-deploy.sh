@@ -35,12 +35,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
 # 與 build-and-export-for-intranet.sh 對齊:bundle 的 image tag 是以這個 project name
-# 產出的;INCLUDE_ASR=1 才把語音 profile 帶進有效組態。
+# 產出的。INCLUDE_ASR 預設 0——平台開機沒語音;要開是開機後第二步
+# (docs/runbooks/intranet-image-bundle.md §5.1)。設 1 才帶 --profile asr。
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila-restart}"
-INCLUDE_ASR="${INCLUDE_ASR:-1}"
+INCLUDE_ASR="${INCLUDE_ASR:-0}"
 # .15 是 CPU 主機(2× EPYC 9334),所以預設疊 CPU overlay,避免 ASR_DEVICE 落回
 # cuda 造成 decoder crash-loop。GPU 主機請設 ASR_OVERLAY=infra/compose/asr-gpu.yml;
 # ASR_OVERLAY= 空字串表示不疊 overlay,由操作者自行承擔組態責任。
+# overlay 只在 INCLUDE_ASR=1 時用得到。
 ASR_OVERLAY="${ASR_OVERLAY-infra/compose/asr-cpu.yml}"
 if [ "$INCLUDE_ASR" = "1" ] && [ -n "$ASR_OVERLAY" ] && [ ! -f "$ASR_OVERLAY" ]; then
   die "ASR overlay 檔案不存在: $ASR_OVERLAY"
@@ -483,6 +485,7 @@ echo "============================================================"
 ok "內網部署完成"
 echo "  • 登入:員工從瀏覽器插卡 + HiPKI(localhost:16888)走卡片登入"
 echo "  • 日常:infra/deployment/scripts/deploy-prod.sh {status | logs <svc> | restart | down}"
+echo "  • 語音／docling 預設沒開(麥克風不出現、匯入走 native)。要開是開機後第二步,見 docs/runbooks/intranet-image-bundle.md §5.1"
 [ -z "${MGK:-}" ] && echo "  • $(c '1;33' '待辦'):MODEL_GATEWAY_API_KEY 拿到後填 .env → docker compose up -d csp"
 echo "  • DNS:確認 anila.ai.ncsist.org.tw → 本機、aiagent2.ai.ncsist.org.tw → .12"
 echo "============================================================"

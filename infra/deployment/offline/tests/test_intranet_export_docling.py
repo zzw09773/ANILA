@@ -163,6 +163,11 @@ class IntranetExportDoclingTests(unittest.TestCase):
     def test_default_with_docling_image_is_off(self) -> None:
         self.assertIn('WITH_DOCLING_IMAGE="${WITH_DOCLING_IMAGE:-0}"', _script_text())
 
+    def test_default_include_asr_is_off(self) -> None:
+        self.assertIn('INCLUDE_ASR="${INCLUDE_ASR:-0}"', _script_text())
+        deploy = REPO_ROOT / "infra/deployment/intranet/intranet-deploy.sh"
+        self.assertIn('INCLUDE_ASR="${INCLUDE_ASR:-0}"', deploy.read_text(encoding="utf-8"))
+
     def test_platform_profile_args_stay_asr_only(self) -> None:
         text = _script_text()
         match = re.search(
@@ -294,10 +299,17 @@ class IntranetExportDoclingTests(unittest.TestCase):
         text = RUNBOOK.read_text(encoding="utf-8")
         self.assertIn("WITH_DOCLING_IMAGE=0", text)
         self.assertIn("不要加 --profile docling-local", text)
+        self.assertIn("INCLUDE_ASR=0", text)
+        self.assertIn("開機後第二步", text)
         self.assertIn(
-            "-f compose.yaml -f intranet-image-overrides.yml --profile asr",
+            "intranet-image-overrides.yml -f infra/compose/asr-cpu.yml --profile asr",
             text,
         )
+        default_up = (
+            "-f compose.yaml -f intranet-image-overrides.yml \\\n"
+            "  up -d --no-build"
+        )
+        self.assertIn(default_up, text)
 
     def test_intranet_load_skips_docling_images_txt_on_platform(self) -> None:
         text = _script_text()

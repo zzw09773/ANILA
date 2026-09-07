@@ -14,7 +14,7 @@
 | 項目 | 本樹預演選擇 | 理由 |
 |---|---|---|
 | `COMPOSE_PROJECT_NAME` | 明天正式包:`anila-restart`(先停棧再 save)。預演若不能停棧:見 §8 的 `anila-pack-rehearsal`。 | build 出的 tag 前綴 = project 名。內網 `up` 的 `-p` **必須與 bundle 內 tag 一致**,否則會找錯 image。 |
-| ASR profile | **打包進去**(`INCLUDE_ASR=1`,預設) | 審查棧含語音;`asr-gateway` + `asr-decoder`(`anila/asr-decoder:0.1.0`)必須在 bundle。 |
+| ASR profile | **預設不帶**(`INCLUDE_ASR=0`) | 平台開機沒語音。麥克風要 `/asr/health` 200 才出現。要開是開機後第二步(§5.1)。若預知之後要開、不想再跑一趟打包,打包時才設 `INCLUDE_ASR=1`(只帶映像;部署仍預設 0)。 |
 | `asr-cpu.yml` | **打包不帶**;起棧視 GPU | overlay 只改 device/env,不改 image 名。`.15` 有 GPU → 不要加;無 GPU 才加(見 §5)。 |
 | 模型 / 權重 | **不帶**(`WITH_MODELS` / `WITH_WEIGHTS` 不設) | 走 `.12` gateway;權重數十到數百 GB,審查不需要。 |
 | docling 映像 | **不帶**(`WITH_DOCLING_IMAGE=0`,預設) | torch＋easyocr＋docling 數 GB。GPU 主機四件套（映像 tar + 權重 tar + `docker-compose.standalone.yml` + `.env.example`）要進包時才設 `WITH_DOCLING_IMAGE=1`（會一併要求 `DOCLING_WEIGHTS_DIR`）。**不要**把 `--profile docling-local` 加進平台 `up`。 |
@@ -31,16 +31,20 @@ cd /path/to/ANILA   # 從 restart/from-redesign 的 annotated tag export
 # 若映像尚未對齊目前碼(明天正式攜入前建議重建,會花時間):
 # COMPOSE_PROJECT_NAME=anila-restart \
 # COMPOSE_ENV_FILE=.env \
-# INCLUDE_ASR=1 \
 # bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-images-export
 
 # 映像已存在、只想重包(本預演路徑):
 COMPOSE_PROJECT_NAME=anila-restart \
 COMPOSE_ENV_FILE=.env \
-INCLUDE_ASR=1 \
 SKIP_BUILD=1 \
 SKIP_PULL=1 \
 bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-images-export
+
+# 預知之後要開語音、這次就把映像帶上 USB(部署仍預設不起 ASR):
+# INCLUDE_ASR=1 \
+# COMPOSE_PROJECT_NAME=anila-restart \
+# COMPOSE_ENV_FILE=.env \
+# bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-images-export
 
 # 若要把 docling 映像走完五段式並帶上 GPU 主機四件套（預設不帶）:
 # ⚠ 沒設 SKIP_BUILD=1 會連平台映像一起重建。平台 tar 已在、且 01-images/
@@ -50,7 +54,6 @@ bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-i
 # DOCLING_WEIGHTS_DIR=/path/to/fetch-docling-weights-output \
 # COMPOSE_PROJECT_NAME=anila-restart \
 # COMPOSE_ENV_FILE=.env \
-# INCLUDE_ASR=1 \
 # bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-images-export
 ```
 
@@ -71,7 +74,7 @@ bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-i
 
 | 檔案 | 用途 |
 |---|---|
-| `01-images/*.tar.gz` | 有效 compose(含 ASR)每一張 image 一檔 |
+| `01-images/*.tar.gz` | 有效 compose 每一張 image 一檔(`INCLUDE_ASR=1` 才含語音) |
 | `01-compose-images.images.txt` | 應有的 tag 清單 |
 | `01-compose-images.files.txt` | 檔名 ↔ tag 對照(LOAD 腳本用) |
 | `CHECKSUMS.sha256` | 媒體完整性 |
@@ -153,23 +156,43 @@ cp /path/to/anila-images-export/intranet-image-overrides.yml .
 # 外部 network(模型棧用;gateway-only 審查也常已存在)
 docker network create anila-models-net 2>/dev/null || true
 
-# 有 GPU 的 .15(目標組態)— 含 ASR,不要 asr-cpu overlay
+# 平台本體。不要加 --profile asr。
 # ⚠ 不要加 --profile docling-local：平台主機是 CPU-only，docling 在獨立 GPU 主機。
+# 語音與 docling 是開機後第二步(§5.1),預設沒功能才不會靜默失敗。
 COMPOSE_PROJECT_NAME=anila-restart \
 docker compose --env-file .env -p anila-restart \
-  -f compose.yaml -f intranet-image-overrides.yml --profile asr \
+  -f compose.yaml -f intranet-image-overrides.yml \
   up -d --no-build
-
-# 若該主機沒有 nvidia container runtime,改用 CPU overlay(審查權宜):
-# docker compose --env-file .env -p anila-restart \
-#   -f compose.yaml -f intranet-image-overrides.yml -f infra/compose/asr-cpu.yml --profile asr \
-#   up -d --no-build
 ```
 
 `INTRANET-LOAD.sh` 若看到 `06-docling-gpu-host.tar` / `06-docling-image.files.txt`，
 **不會**在平台主機 `docker load` docling 映像，也不解開權重。把四件套複製到 GPU
 主機再 load／解／`docker compose -f docker-compose.standalone.yml`。步驟見
 `services/docling-service/README.md`。
+
+### 5.1 開機後第二步:語音 / docling
+
+預設沒這兩樣。殼上麥克風不畫、匯入走 native parser。缺 GPU／權重／端點時不要先起服務。
+
+**語音**(解碼端與權重已就緒之後):
+
+```bash
+# 映像不在包內時,先回有外網的機器 INCLUDE_ASR=1 重包並 load。
+INCLUDE_ASR=1 ASR_OVERLAY=infra/compose/asr-cpu.yml \
+  bash infra/deployment/intranet/intranet-deploy.sh /path/to/image-bundle
+# 或手動(映像已 load):
+# docker compose --env-file .env -p anila-restart \
+#   -f compose.yaml -f intranet-image-overrides.yml -f infra/compose/asr-cpu.yml --profile asr \
+#   up -d --no-build
+# GPU 主機把 asr-cpu.yml 換成 asr-gpu.yml,或拿掉 overlay。
+docker compose -p anila-restart exec nginx nginx -s reload
+```
+
+細節與 token、協定選錯會拒開機:`docs/runbooks/asr-voice-input.md`。
+
+**docling**:平台側維持 `DOC_PARSER=native`,直到 GPU 主機四件套全綠。
+**不要**在平台 `up` 加 `--profile docling-local`。閘門與步驟:
+`services/docling-service/README.md`。連不上不准靜默退回 native。
 
 ### 起棧後必做:reload nginx
 
@@ -205,6 +228,7 @@ for p in / /anila/ /anilalm/ /asr/health /router/health; do
   printf '%-16s ' "$p"
   curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' "https://localhost$p"
 done
+# 預設 /asr/health 不是 200(語音沒開)。做完 §5.1 才應是 200 JSON。
 ```
 
 預期大致:
@@ -217,7 +241,7 @@ done
 | `/` | 200 | HTML(治理中心) |
 | `/anila/` | 200 | HTML(shell) |
 | `/anilalm/` | **503** | HTML（「尚未開放」）— **刻意的發行閘,不是故障**；見 `anilalm-release-gate.md` |
-| `/asr/health` | 200 | **JSON**(不是 text/html) |
+| `/asr/health` | **502 / 非 200**(預設) | 語音沒開。§5.1 之後才應是 **200 JSON** |
 | `/router/health` | 200 | **JSON**(不是 text/html) |
 
 ### 6.2 csp 內部探測 — 容器沒有 `curl`
@@ -303,7 +327,7 @@ SKIP_BUILD=1 SKIP_PULL=1 REBUILD_ON_SAVE_FAIL=1 \
 ## 9. 預演驗收時做過什麼(給交接)
 
 - 腳本改為自 `docker compose config --images` 衍生清單;`COMPOSE_PROJECT_NAME` 參數化。
-- `INCLUDE_ASR=1` 預設;缺圖 / save 失敗都 fail-loud 並點名。
+- 當時 `INCLUDE_ASR=1` 預設(v1.2.1 起改為 0,見 §0 / §5.1);缺圖 / save 失敗都 fail-loud 並點名。
 - 對執行中的 `anila-restart-*` 直接 save 時,studio / ingestion-worker / asr-gateway / codeserver 被本機 sisidsdaemon 擋下 → 改以 `anila-pack-rehearsal` project + codeserver image overlay 產出完整 bundle(證明腳本與媒體流程;內網起棧 `-p` 要與 bundle 內 tag 前綴一致,或明天停棧後用 `anila-restart` 重包)。
 - Bundle 以 archive 內 `manifest.json` 的 `RepoTags` 驗齊服務 image,並 `bash -n INTRANET-LOAD.sh`。
 - **沒有**對本機 daemon `docker load` 回寫執行中 tag。
