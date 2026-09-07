@@ -130,10 +130,10 @@ services:
       ANILA_QUERY_EXPANSION: "${ANILA_QUERY_EXPANSION:-1}"
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
-      # ⚠ 尾巴的 `,docling` 在 `:-` 預設值**外側**:operator 設 ANILA_TRUSTED_HOSTS
-      # 會整份替換括號裡的預設清單,但 docling 這個 compose 內部服務名恆在
-      # (它跟 asr-decoder 同定位——平台內服務,不是 operator 會想換掉的模型)。
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal},docling"
+      # ⚠ 尾巴的 `,docling,router` 在 `:-` 預設值**外側**:operator 設
+      # ANILA_TRUSTED_HOSTS 會整份替換括號裡的預設清單,但這兩個 compose
+      # 內部服務名恆在（平台內服務,不是 operator 會想換掉的模型）。
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal},docling,router"
       # **入向** Host header allow-list (TrustedHostMiddleware) —— 跟上面那條
       # 出向 SSRF allow-list 是兩回事,別搞混。csp 的 library 預設是 "*"(等於
       # 關著),所以**這一行就是打開它的地方**:沒有它,.env 設 ALLOWED_HOSTS

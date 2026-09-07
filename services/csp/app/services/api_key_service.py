@@ -124,6 +124,11 @@ def check_model_permission(
         return False
     if getattr(model, "is_router_primary", False):
         return True
+    # Platform chat entry: every signed-in user may target it. Same
+    # reason router-primary is open — this is the default shell target,
+    # not an extra LLM an admin has to grant.
+    if model.name == "anila-router":
+        return True
     if is_admin_tier(user):
         return True
     # System accounts (ingestion-worker) must reach every registered,

@@ -15,6 +15,11 @@ from app.utils.security import hash_password
 
 logger = logging.getLogger(__name__)
 ADMIN_USERNAME = "admin"
+# Shell default target. Not a GPU model — CSP proxies this name to the
+# router service. Seeded on every boot so enable never depends on a
+# manual Models page row (the 404 is ``模型 'anila-router' 未註冊``).
+PLATFORM_ROUTER_NAME = "anila-router"
+PLATFORM_ROUTER_ENDPOINT = "http://router:9000"
 
 
 def _parse_model_env_vars() -> list[dict]:
@@ -77,6 +82,55 @@ def _parse_model_env_vars() -> list[dict]:
         logger.info(f"從環境變數解析模型: MODEL_{model_key}_* -> {name}")
 
     return models
+
+
+def _platform_router_endpoint() -> str:
+    return (os.environ.get("ANILA_ROUTER_INTERNAL_URL") or "").strip() or PLATFORM_ROUTER_ENDPOINT
+
+
+def ensure_platform_router_model(db) -> ModelRegistry:
+    """Create or reactivate the ``anila-router`` catalog row.
+
+    Env creates the row once. A later admin edit of ``endpoint_url`` is
+    kept (OE-2 B3). Deactivating or clearing ``is_internal`` is not kept
+    — this name is the platform chat entry, not an optional LLM.
+    """
+    existing = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.name == PLATFORM_ROUTER_NAME)
+        .first()
+    )
+    if existing is None:
+        row = ModelRegistry(
+            name=PLATFORM_ROUTER_NAME,
+            display_name="ANILA 自動選助手",
+            model_type="llm",
+            endpoint_url=_platform_router_endpoint(),
+            api_version="v1",
+            description="Platform router alias. Requests go to the router service.",
+            is_active=True,
+            is_internal=True,
+            is_router_primary=False,
+        )
+        db.add(row)
+        db.flush()
+        logger.info(
+            "自動註冊平台入口模型: %s -> %s",
+            PLATFORM_ROUTER_NAME,
+            row.endpoint_url,
+        )
+        return row
+    restored = False
+    if not existing.is_active:
+        existing.is_active = True
+        restored = True
+    if not existing.is_internal:
+        existing.is_internal = True
+        restored = True
+    if restored:
+        logger.info("平台入口模型 %s 已恢復為啟用", PLATFORM_ROUTER_NAME)
+    db.flush()
+    return existing
 
 
 def seed_model_skip_reason(model_name: str, inactive_names: set[str]) -> str:
@@ -433,6 +487,11 @@ def auto_seed():
                 logger.error(f"AUTO_SEED_API_KEYS JSON 解析失敗: {e}")
             except Exception as e:
                 logger.error(f"API key 自動初始化失敗: {e}")
+
+        # Always, even when AUTO_REGISTER_MODELS is empty or failed to parse.
+        # The shell default target is this name; missing row = every first
+        # chat 404s with 「模型 'anila-router' 未註冊」.
+        ensure_platform_router_model(db)
 
         db.commit()
     except Exception as e:
