@@ -42,7 +42,7 @@ export function AnilaLogoImg({
 }
 
 export function AnilaLogoVideo({
-  width = 140,
+  width = 180,
   poster = ANILA_LOGO_PNG,
   className = "",
   style,
@@ -55,28 +55,33 @@ export function AnilaLogoVideo({
     el.volume = 0;
   };
   return (
-    <video
-      src={ANILA_LOGO_MP4}
-      poster={poster}
-      autoPlay
-      muted
-      playsInline
-      loop={false}
-      preload="auto"
-      controls={false}
-      disablePictureInPicture
-      aria-label="ANILA"
-      className={["anila-brand-video", className].filter(Boolean).join(" ")}
-      ref={silence}
-      onLoadedMetadata={(e) => silence(e.currentTarget)}
-      style={{
-        display: "block",
-        width,
-        height: "auto",
-        margin: "0 auto",
-        ...style,
-      }}
-      {...rest}
-    />
+    <div
+      className="anila-brand-video-wrap"
+      style={{ width, height: width }}
+    >
+      <video
+        src={ANILA_LOGO_MP4}
+        poster={poster}
+        autoPlay
+        muted
+        playsInline
+        loop
+        preload="auto"
+        controls={false}
+        disablePictureInPicture
+        aria-label="ANILA"
+        className={["anila-brand-video", className].filter(Boolean).join(" ")}
+        ref={silence}
+        onLoadedMetadata={(e) => silence(e.currentTarget)}
+        style={{
+          display: "block",
+          width: "100%",
+          height: "auto",
+          background: "transparent",
+          ...style,
+        }}
+        {...rest}
+      />
+    </div>
   );
 }

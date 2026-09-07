@@ -213,13 +213,33 @@
 
   @keyframes anila-blink { 50% { opacity: 0; } }
 
-  /* 品牌 PNG 是深藍透明底；深色主題墊一塊淺底才看得見。 */
-  [data-theme="dark"] .anila-brand-img,
+  /* 品牌影片畫布有大片白邊，線稿只佔中間；wrap 裁切並放大，讓線寬夠看得見。
+     scale 必須讓右側圓點尾巴進框（2.05 會切尾）。亮色 multiply 去白底；
+     暗色反相成白線後 screen 溶黑底。不要墊淺色方塊。 */
+  .anila-brand-video-wrap {
+    margin: 0 auto;
+    overflow: hidden;
+    line-height: 0;
+    mix-blend-mode: multiply;
+    background: transparent;
+  }
+  .anila-brand-video {
+    display: block;
+    width: 100%;
+    height: auto;
+    transform: scale(1.78);
+    transform-origin: 51% 49%;
+    background: transparent;
+  }
+  [data-theme="dark"] .anila-brand-img {
+    filter: brightness(0) invert(1);
+  }
+  [data-theme="dark"] .anila-brand-video-wrap {
+    mix-blend-mode: screen;
+  }
   [data-theme="dark"] .anila-brand-video {
-    background: #f7f8fa;
-    border-radius: 8px;
-    padding: 4px 6px;
-    box-sizing: content-box;
+    filter: invert(1) grayscale(1) contrast(1.6);
+    background: transparent;
   }
 
   /* 思考步驟時間軸（2026-09-02）：一條安靜的直線、完成打勾、進行中的點會呼吸、

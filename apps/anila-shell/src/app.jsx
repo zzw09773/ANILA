@@ -124,7 +124,6 @@ import {
   IconLock,
   IconMoon,
   IconNodes,
-  IconRefresh,
   IconSettings,
   IconShare,
   IconShield,
@@ -397,7 +396,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [agents, setAgents] = useState([ROUTER_AGENT]);
   const [selectedAgentId, setSelectedAgentId] = useState(ROUTER_AGENT.id);
   const [loadingAgents, setLoadingAgents] = useState(false);
-  const [agentRefreshFeedback, setAgentRefreshFeedback] = useState(null);
   const [runtimeError, setRuntimeError] = useState("");
   // 上次抓 /v1/agents 的時間戳，給 focus-refresh 用做 15s 節流，
   // 避免使用者頻繁 alt-tab 把 CSP 打爆。CSP 端管理員刪了 agent
@@ -893,7 +891,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   async function refreshAgents() {
     setLoadingAgents(true);
-    setAgentRefreshFeedback({ kind: "loading", message: "正在載入 agent…" });
     setRuntimeError("");
     // 在送出 fetch 的那一刻就標記時間戳 — 即使後續 await 還沒完成，
     // 也能擋掉緊接著的 focus 事件造成的重覆 fetch。
@@ -915,13 +912,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           setSelectedAgentId(ROUTER_AGENT.id);
         }
       });
-      setAgentRefreshFeedback({ kind: "success", message: "agent 已更新" });
     } catch (error) {
       startTransition(() => {
-        setAgentRefreshFeedback({
-          kind: "error",
-          message: `agent 載入失敗：${error.message || "未知錯誤"}`,
-        });
         setRuntimeError(error.message || "無法載入 agent 清單");
         setAgents([ROUTER_AGENT]);
         setSelectedAgentId(ROUTER_AGENT.id);
@@ -2948,7 +2940,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           setSettingsTab(tab || "general");
           setSettingsOpen(true);
         }}
-        onOpenAgentBrowser={() => {}}
         onOpenServices={() => setServicesOpen(true)}
         onTaskCenter={() => setServicesOpen(false)}
         collapsed={collapsed}
@@ -3084,24 +3075,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               流程，使用者沒有也不該管理 key；SDK 使用者仍可從 control
               plane 取得 sk-* 並用 Authorization header 呼叫。 */}
 
-          <IconButton title="重新載入 agent" onClick={() => void refreshAgents()} disabled={loadingAgents}>
-            <IconRefresh size={14} />
-          </IconButton>
-          {agentRefreshFeedback && (
-            <span
-              data-testid="agent-refresh-feedback"
-              role={agentRefreshFeedback.kind === "error" ? "alert" : "status"}
-              aria-live={agentRefreshFeedback.kind === "error" ? "assertive" : "polite"}
-              style={{
-                color: agentRefreshFeedback.kind === "error" ? "var(--danger)" : "var(--fg-muted)",
-                fontSize: 11,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {agentRefreshFeedback.message}
-            </span>
-          )}
-
           <IconButton title="設定" onClick={() => { setSettingsTab("general"); setSettingsOpen(true); }}>
             <IconSettings />
           </IconButton>
@@ -3110,9 +3083,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             onClick={() => setTweaks({ ...tweaks, dark: !tweaks.dark })}
           >
             {tweaks.dark ? <IconSun /> : <IconMoon />}
-          </IconButton>
-          <IconButton title="Tweaks" onClick={() => setTweaksOpen((o) => !o)} active={tweaksOpen}>
-            <IconSpark />
           </IconButton>
           <span style={{ position: "relative", display: "inline-flex" }}>
             <IconButton title="新功能" onClick={() => { setChangelogOpen(true); try { localStorage.setItem("anila-changelog-seen", CHANGELOG_VERSION); } catch {} setChangelogUnseen(false); }}>
@@ -3377,7 +3347,7 @@ export function EmptyState({ agent, agents, onPick, loading }) {
   const prompts = buildStarterPrompts(agents);
   return (
     <div style={{ padding: "64px 12px 32px", textAlign: "center" }}>
-      <AnilaLogoVideo width={140} />
+      <AnilaLogoVideo width={180} />
       <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>
         你今天想問 ANILA 什麼？
       </div>

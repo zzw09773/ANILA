@@ -36,12 +36,10 @@ import {
   IconExternal,
   IconFile,
   IconFolder,
-  IconGrid,
   IconImage,
   IconInbox,
   IconLock,
   IconLogout,
-  IconMessage,
   IconMore,
   IconPanelR,
   IconPaperclip,
@@ -1599,6 +1597,9 @@ export const AgentSelector = ({ agents, value, onChange }) => {
 // 行高寫成整數像素(不是 1.55 這種倍率):自動長高要落在整行邊界,倍率算出來的
 // 21.7px 會讓每一行都帶零頭,捲到最後又切在字中間。
 export const COMPOSER_LINE_HEIGHT = 22;
+// 空框也要撐滿外層圓角卡片（扣掉底部工具列）。1 行 22px 會讓輸入區只剩頂端一條,
+// 點白框中間對不到 textarea。
+export const COMPOSER_MIN_ROWS = 4;
 // 超過幾行才開始捲動。用「行」不用像素:8 × 22 = 176px,約等於原本的 200px 上限,
 // 但保證上限剛好切在行與行之間。
 export const COMPOSER_MAX_ROWS = 8;
@@ -1793,11 +1794,12 @@ export const Composer = ({
     const el = taRef.current;
     if (!el) return;
     const line = parseFloat(getComputedStyle(el).lineHeight) || COMPOSER_LINE_HEIGHT;
+    const min = line * COMPOSER_MIN_ROWS;
     const max = line * COMPOSER_MAX_ROWS;
     el.style.height = "auto";
     // 子像素會讓 scrollHeight 落在兩行之間 —— 進位到整行,否則上限那一行
-    // 還是會被切一半。
-    const wanted = Math.ceil(el.scrollHeight / line) * line;
+    // 還是會被切一半。空框仍撐到最小行數,跟外層卡片同高。
+    const wanted = Math.max(min, Math.ceil(el.scrollHeight / line) * line);
     el.style.height = Math.min(wanted, max) + "px";
     el.style.overflowY = wanted > max ? "auto" : "hidden";
   }, []);
@@ -2063,6 +2065,8 @@ export const Composer = ({
       }}
       style={{
         position: "relative",
+        display: "flex",
+        flexDirection: "column",
         background: "var(--bg-elev)",
         border: "1px solid " + (dragOver ? "var(--accent)" : "var(--border-strong)"),
         borderRadius: "var(--radius-lg)",
@@ -2233,7 +2237,12 @@ export const Composer = ({
       {/* 垂直內距放在這層,textarea 自己的垂直內距是 0 —— textarea 的內距屬於
           捲動區,捲到底時上方那條內距會露出上一行的下半截字。移出來以後捲動
           一定停在行與行之間。 */}
-      <div style={{ padding: `12px 0 6px` }}>
+      <div style={{
+        padding: `12px 0 6px`,
+        flex: 1,
+        display: "flex",
+        minHeight: COMPOSER_MIN_ROWS * COMPOSER_LINE_HEIGHT,
+      }}>
         <textarea
           ref={taRef}
           value={text}
@@ -2277,14 +2286,17 @@ export const Composer = ({
             }
           }}
           placeholder={placeholder || "問 ANILA 任何事情 — 用 @agent 指定 agent · Shift+Enter 換行 · 可直接貼上截圖"}
-          rows={1}
+          rows={COMPOSER_MIN_ROWS}
           style={{
             width: "100%",
+            flex: 1,
+            minHeight: COMPOSER_MIN_ROWS * COMPOSER_LINE_HEIGHT,
             background: "transparent", border: "none", outline: "none", resize: "none",
             padding: "0 14px",
             fontSize: 14, lineHeight: `${COMPOSER_LINE_HEIGHT}px`, color: "var(--fg)",
             fontFamily: "inherit",
             display: "block",
+            boxSizing: "content-box",
           }}
         />
       </div>
@@ -2496,7 +2508,6 @@ export const Sidebar = ({
   onSelectConv,
   onNewChat,
   agents,
-  onOpenAgentBrowser,
   onOpenServices,
   onTaskCenter,
   user,
@@ -2516,7 +2527,6 @@ export const Sidebar = ({
   onExportConv,
 }) => {
   const confirm = useConfirm();
-  const [tab, setTab] = useState("chats");
   const [query, setQuery] = useState("");
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -2572,11 +2582,10 @@ export const Sidebar = ({
         display: "flex", flexDirection: "column", alignItems: "center",
         padding: "12px 0", gap: 6,
       }}>
-        <div style={{ padding: 6 }}><AnilaLogoImg variant="logo" height={28} /></div>
+        <div style={{ padding: 6 }}><AnilaLogoImg variant="mark" height={24} /></div>
         <Divider />
         <IconButton onClick={onToggleCollapsed} title="展開側邊"><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話"><IconPlus /></IconButton>
-        <IconButton onClick={onOpenAgentBrowser} title="Agents"><IconGrid /></IconButton>
         <Divider />
         {/* ANILA Shell 四大入口 + admin-gated 治理中心（含 專案入口）。 */}
         <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
@@ -2594,7 +2603,14 @@ export const Sidebar = ({
       display: "flex", flexDirection: "column",
     }}>
       <div style={{ padding: "14px 14px 10px", display: "flex", alignItems: "center", gap: 8 }}>
-        <AnilaLogoImg variant="logo" height={32} />
+        <AnilaLogoImg variant="mark" height={28} />
+        <span style={{
+          fontSize: 15,
+          fontWeight: 700,
+          letterSpacing: "0.18em",
+          color: "var(--fg)",
+          lineHeight: 1,
+        }}>ANILA</span>
         <div style={{ flex: 1 }} />
         <IconButton onClick={onToggleCollapsed} title="收合側邊"><IconPanelR /></IconButton>
       </div>
@@ -2620,25 +2636,18 @@ export const Sidebar = ({
       <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
       <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />
 
-      <div style={{ padding: "0 10px", display: "flex", gap: 2, marginBottom: 8 }}>
-        {[
-          { id: "chats", label: "對話", icon: <IconMessage size={13} /> },
-          { id: "agents", label: "Agents", icon: <IconGrid size={13} /> },
-        ].map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
-            flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5,
-            padding: "5px 8px", fontSize: 12, fontWeight: 500,
-            background: tab === t.id ? "var(--bg-elev)" : "transparent",
-            border: "1px solid " + (tab === t.id ? "var(--border)" : "transparent"),
-            borderRadius: "var(--radius)",
-            color: tab === t.id ? "var(--fg)" : "var(--fg-muted)",
-            cursor: "pointer",
-          }}>{t.icon}{t.label}</button>
-        ))}
+      <div style={{
+        padding: "2px 14px 8px",
+        fontSize: 11,
+        fontWeight: 600,
+        color: "var(--fg-muted)",
+        fontFamily: "var(--font-mono)",
+        letterSpacing: 0.4,
+      }}>
+        對話
       </div>
 
-      {tab === "chats" ? (
-        <>
+      <>
           <div style={{ padding: "0 10px 8px", display: "flex", flexWrap: "wrap", gap: 4 }}>
             {folders.map((f) => {
               const active = folder === f.id;
@@ -2956,37 +2965,6 @@ export const Sidebar = ({
             })()}
           </div>
         </>
-      ) : (
-        <div style={{ flex: 1, overflowY: "auto", padding: "4px 10px 10px" }}>
-          <div style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", padding: "6px 4px", letterSpacing: 0.4 }}>
-            你可用的 AGENTS ({agents.length})
-          </div>
-          {agents.map((a) => (
-            <div key={a.id} style={{
-              padding: "9px 10px", marginBottom: 4,
-              background: "var(--bg-elev)", border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {a.id === "anila-router"
-                  ? <AnilaLogoImg variant="mark" height={14} />
-                  : <div style={{ width: 12, height: 12, border: "1px solid var(--border-strong)", borderRadius: 2 }} />}
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{a.name}</div>
-                {a.requiresEncryption && (
-                  <span title="列管模型" style={{ color: "var(--danger)", display: "inline-flex" }}>
-                    <IconLock size={11} />
-                  </span>
-                )}
-                <div style={{ flex: 1 }} />
-                <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--fg-subtle)" }}>{a.short || a.id}</span>
-              </div>
-              <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 4, lineHeight: 1.5 }}>
-                {a.description}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
       <div style={{ borderTop: "1px solid var(--border)", padding: 8 }}>
         <Dropdown align="left" width={220} trigger={() => (

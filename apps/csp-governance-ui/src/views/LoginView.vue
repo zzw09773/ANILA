@@ -14,18 +14,21 @@
       <section class="login__panel">
         <!-- Page hero title ---------------------------------------------- -->
         <header class="login__hero">
-          <video
-            class="login__brand-video"
-            :src="brandVideoSrc"
-            :poster="brandLogoSrc"
-            autoplay
-            muted
-            playsinline
-            preload="auto"
-            disablePictureInPicture
-            aria-label="ANILA"
-            @loadedmetadata="silenceBrandVideo"
-          />
+          <div class="login__brand-video-wrap">
+            <video
+              class="login__brand-video"
+              :src="brandVideoSrc"
+              :poster="brandLogoSrc"
+              autoplay
+              muted
+              loop
+              playsinline
+              preload="auto"
+              disablePictureInPicture
+              aria-label="ANILA"
+              @loadedmetadata="silenceBrandVideo"
+            />
+          </div>
           <p class="login__subtitle">{{ heroSubtitle }}</p>
         </header>
 
@@ -712,19 +715,34 @@ async function handleRegister() {
   gap: var(--gap-2);
   text-align: center;
 }
-.login__brand-video {
-  width: 160px;
-  height: auto;
-  display: block;
+.login__brand-video-wrap {
+  width: 180px;
+  height: 180px;
   margin: 0 auto;
+  overflow: hidden;
+  line-height: 0;
+  mix-blend-mode: multiply;
   background: transparent;
 }
-:global([data-theme="dark"]) .login .login__brand-video,
+.login__brand-video {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: transparent;
+  transform: scale(1.78);
+  transform-origin: 51% 49%;
+}
+:global([data-theme="dark"]) .login .login__brand-video-wrap {
+  mix-blend-mode: screen;
+}
+:global([data-theme="dark"]) .login .login__brand-video {
+  filter: invert(1) grayscale(1) contrast(1.6);
+  background: transparent;
+}
 :global([data-theme="dark"]) .login :deep(.term-logo__mark) {
-  background: #f7f8fa;
-  border-radius: 8px;
-  padding: 6px;
-  box-sizing: content-box;
+  background: transparent;
+  padding: 0;
+  filter: brightness(0) invert(1);
 }
 .login__subtitle {
   font-size: var(--t-sm);

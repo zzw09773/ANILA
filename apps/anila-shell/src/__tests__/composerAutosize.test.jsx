@@ -13,7 +13,7 @@ import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 
-import { Composer, COMPOSER_LINE_HEIGHT, COMPOSER_MAX_ROWS } from "../chat.jsx";
+import { Composer, COMPOSER_LINE_HEIGHT, COMPOSER_MIN_ROWS, COMPOSER_MAX_ROWS } from "../chat.jsx";
 import { ConfirmProvider } from "../confirm.jsx";
 
 const CHARS_PER_LINE = 20;
@@ -57,15 +57,24 @@ beforeEach(() => {
 });
 
 describe("Composer 自動長高", () => {
-  it("打字打到第三行,框就長到三行高", () => {
+  it("空框與短字都撐在最小行數,跟外層卡片同高", () => {
     const { ta } = renderComposer();
     fakeLayout(ta);
 
     fireEvent.change(ta, { target: { value: "短" } });
-    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT);
+    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * COMPOSER_MIN_ROWS);
 
     fireEvent.change(ta, { target: { value: "字".repeat(CHARS_PER_LINE * 3) } });
-    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * 3);
+    // 三行仍低於最小高度,不要縮回去。
+    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * COMPOSER_MIN_ROWS);
+  });
+
+  it("打字超過最小行數,框就跟行數一起長", () => {
+    const { ta } = renderComposer();
+    fakeLayout(ta);
+
+    fireEvent.change(ta, { target: { value: "字".repeat(CHARS_PER_LINE * 5) } });
+    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * 5);
   });
 
   // 這是擁有者真正踩到的那一條:文字不是打進來的。
@@ -76,9 +85,9 @@ describe("Composer 自動長高", () => {
     const { ta, rerender } = renderComposer({ conversationId: 1 });
     fakeLayout(ta);
 
-    // 先讓框停在一行高(對話 1 的草稿是空的)。
+    // 先讓框停在最小高度(對話 1 的草稿是空的)。
     fireEvent.change(ta, { target: { value: "短" } });
-    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT);
+    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * COMPOSER_MIN_ROWS);
 
     // 切到對話 2 → 草稿被塞進 state,完全沒有 onChange 事件。
     act(() => { rerender({ conversationId: 2 }); });
@@ -100,10 +109,10 @@ describe("Composer 自動長高", () => {
     fireEvent.click(screen.getByRole("button", { name: /範本/ }));
 
     expect(ta.value).toBe(body);
-    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * 3);
+    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * COMPOSER_MIN_ROWS);
   });
 
-  it("送出以後縮回一行", () => {
+  it("送出以後縮回最小高度", () => {
     const onSend = vi.fn();
     const { ta } = renderComposer({ onSend });
     fakeLayout(ta);
@@ -115,7 +124,7 @@ describe("Composer 自動長高", () => {
 
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(ta.value).toBe("");
-    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT);
+    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * COMPOSER_MIN_ROWS);
   });
 });
 
@@ -142,16 +151,24 @@ describe("Composer 高度上限", () => {
     expect(ta.style.overflowY).toBe("hidden");
   });
 
+  it("內容不到最小行數時也不出現捲軸", () => {
+    const { ta } = renderComposer();
+    fakeLayout(ta);
+    fireEvent.change(ta, { target: { value: "短" } });
+    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * COMPOSER_MIN_ROWS);
+    expect(ta.style.overflowY).toBe("hidden");
+  });
+
   it("內容高度帶零頭時進位到整行,不留半行", () => {
     const { ta } = renderComposer();
-    // bleed:模擬子像素/邊框讓 scrollHeight 落在兩行之間(2 行 + 3px)。
+    // bleed:模擬子像素/邊框讓 scrollHeight 落在兩行之間(5 行 + 3px)。
     fakeLayout(ta, { bleed: 3 });
 
-    fireEvent.change(ta, { target: { value: "字".repeat(CHARS_PER_LINE * 2) } });
+    fireEvent.change(ta, { target: { value: "字".repeat(CHARS_PER_LINE * 5) } });
 
     const h = heightPx(ta);
     expect(h % COMPOSER_LINE_HEIGHT).toBe(0);
-    expect(h).toBe(COMPOSER_LINE_HEIGHT * 3);
+    expect(h).toBe(COMPOSER_LINE_HEIGHT * 6);
     expect(h).toBeGreaterThanOrEqual(ta.scrollHeight);
   });
 });

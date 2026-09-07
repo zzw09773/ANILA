@@ -37,7 +37,9 @@ describe("AnilaBrand helpers", () => {
     expect(video.muted).toBe(true);
     expect(video.autoplay).toBe(true);
     expect(video.hasAttribute("controls")).toBe(false);
-    expect(video.loop).toBe(false);
+    expect(video.loop).toBe(true);
+    // mix-blend-mode 由 CSS 管：暗色才能覆寫 multiply，不要寫死在 inline。
+    expect(video.style.mixBlendMode).toBe("");
   });
 });
 
@@ -55,6 +57,7 @@ describe("EmptyState brand hero", () => {
     expect(video?.getAttribute("src")).toContain("brand/anila-logo.mp4");
     expect(video?.getAttribute("aria-label")).toBe("ANILA");
     expect(video?.muted).toBe(true);
+    expect(video?.loop).toBe(true);
   });
 });
 
@@ -66,7 +69,6 @@ describe("Sidebar brand", () => {
     onSelectConv: noop,
     onNewChat: noop,
     agents: [],
-    onOpenAgentBrowser: noop,
     onOpenServices: noop,
     onTaskCenter: noop,
     user: { username: "tester", role: "user" },
@@ -79,14 +81,15 @@ describe("Sidebar brand", () => {
     folders: DEFAULT_FOLDERS,
   };
 
-  it("expanded sidebar shows the static full logo", () => {
+  it("expanded sidebar shows the mark plus ANILA word to the right", () => {
     render(
       <ConfirmProvider>
         <Sidebar {...props} />
       </ConfirmProvider>,
     );
     const img = screen.getByRole("img", { name: "ANILA" });
-    expect(img.getAttribute("src")).toContain("brand/anila-logo.png");
+    expect(img.getAttribute("src")).toContain("brand/anila-mark.png");
+    expect(screen.getByText("ANILA")).toBeTruthy();
   });
 
   it("collapsed sidebar still uses a brand png", () => {
@@ -96,6 +99,16 @@ describe("Sidebar brand", () => {
       </ConfirmProvider>,
     );
     const img = screen.getByRole("img", { name: "ANILA" });
-    expect(img.getAttribute("src")).toContain("brand/anila-");
+    expect(img.getAttribute("src")).toContain("brand/anila-mark.png");
+  });
+
+  it("keeps the 對話 list and does not render an Agents tab", () => {
+    render(
+      <ConfirmProvider>
+        <Sidebar {...props} />
+      </ConfirmProvider>,
+    );
+    expect(screen.getByText("對話")).toBeTruthy();
+    expect(screen.queryByText("Agents")).toBeNull();
   });
 });

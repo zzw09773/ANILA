@@ -89,21 +89,35 @@ describe("buildShellEntries", () => {
 // 元件：ShellNav 渲染 + 閘門 + 連結 + 專案入口
 // ---------------------------------------------------------------------
 
+function openNav(user, extra = {}) {
+  const utils = render(<ShellNav user={user} {...extra} />);
+  fireEvent.click(screen.getByRole("button", { name: "平台入口" }));
+  return utils;
+}
+
 describe("ShellNav", () => {
-  it("renders the user entries", () => {
+  it("hides the entries until the drawer is opened", () => {
     render(<ShellNav user={{ role: "user" }} />);
+    expect(screen.getByRole("button", { name: "平台入口" })).toBeTruthy();
+    expect(screen.queryByText("任務中心")).toBeNull();
+    expect(screen.queryByText("我的知識庫")).toBeNull();
+    expect(screen.queryByText("專案入口")).toBeNull();
+  });
+
+  it("renders the user entries inside the modal", () => {
+    openNav({ role: "user" });
     expect(screen.getByText("任務中心")).toBeTruthy();
     expect(screen.getByText("我的知識庫")).toBeTruthy();
     expect(screen.getByText("專案入口")).toBeTruthy();
   });
 
   it("no longer renders the duplicate 產出中心 entry", () => {
-    render(<ShellNav user={{ role: "user" }} />);
+    openNav({ role: "user" });
     expect(screen.queryByText("產出中心")).toBeNull();
   });
 
   it("does not surface ANILALM / Studio / CSP tech brand names", () => {
-    const { container } = render(<ShellNav user={{ role: "owner" }} />);
+    const { container } = openNav({ role: "owner" });
     const text = container.textContent || "";
     expect(text).not.toMatch(/ANILALM/i);
     expect(text).not.toMatch(/Studio/i);
@@ -111,12 +125,12 @@ describe("ShellNav", () => {
   });
 
   it("hides 治理中心 for a non-admin user", () => {
-    render(<ShellNav user={{ role: "user" }} />);
+    openNav({ role: "user" });
     expect(screen.queryByText("治理中心")).toBeNull();
   });
 
   it("shows 治理中心 for an admin and links it to the origin root", () => {
-    render(<ShellNav user={{ role: "admin" }} />);
+    openNav({ role: "admin" });
     const gov = screen.getByText("治理中心").closest("a");
     expect(gov).toBeTruthy();
     expect(gov.getAttribute("href")).toBe(`${ORIGIN}/`);
@@ -124,7 +138,7 @@ describe("ShellNav", () => {
 
   it("shows 我的知識庫 as disabled Coming Soon when the release gate is closed", () => {
     if (ANILA_LM_ENTRY_ENABLED) return; // gate open → this assertion does not apply
-    render(<ShellNav user={{ role: "user" }} />);
+    openNav({ role: "user" });
     expect(screen.getByText("我的知識庫")).toBeTruthy();
     expect(screen.getByText(ANILA_LM_COMING_SOON_LABEL)).toBeTruthy();
     const row = screen.getByText("我的知識庫").closest("[data-nav-disabled='knowledge']");
@@ -134,7 +148,7 @@ describe("ShellNav", () => {
   });
 
   it("points 我的知識庫 at /anilalm only when the release gate is open", () => {
-    render(<ShellNav user={{ role: "user" }} />);
+    openNav({ role: "user" });
     const link = screen.getByText("我的知識庫").closest("a");
     if (ANILA_LM_ENTRY_ENABLED) {
       expect(link).toBeTruthy();
@@ -146,14 +160,14 @@ describe("ShellNav", () => {
 
   it("opens the ServicesPanel via onOpenServices when 專案入口 is clicked", () => {
     const onOpenServices = vi.fn();
-    render(<ShellNav user={{ role: "user" }} onOpenServices={onOpenServices} />);
+    openNav({ role: "user" }, { onOpenServices });
     fireEvent.click(screen.getByText("專案入口"));
     expect(onOpenServices).toHaveBeenCalledTimes(1);
   });
 
   it("marks 任務中心 as the current entry and invokes onTaskCenter", () => {
     const onTaskCenter = vi.fn();
-    render(<ShellNav user={{ role: "user" }} onTaskCenter={onTaskCenter} />);
+    openNav({ role: "user" }, { onTaskCenter });
     const tasks = screen.getByText("任務中心").closest("button");
     expect(tasks.getAttribute("aria-current")).toBe("page");
     fireEvent.click(tasks);
@@ -162,9 +176,9 @@ describe("ShellNav", () => {
 
   it("renders an icon-only collapsed rail that still gates governance", () => {
     render(<ShellNav collapsed user={{ role: "user" }} />);
-    // 折疊時以 aria-label 提供無障礙名稱。
-    expect(screen.getByLabelText("任務中心")).toBeTruthy();
-    expect(screen.getByLabelText("專案入口")).toBeTruthy();
-    expect(screen.queryByLabelText("治理中心")).toBeNull();
+    fireEvent.click(screen.getByLabelText("平台入口"));
+    expect(screen.getByText("任務中心")).toBeTruthy();
+    expect(screen.getByText("專案入口")).toBeTruthy();
+    expect(screen.queryByText("治理中心")).toBeNull();
   });
 });

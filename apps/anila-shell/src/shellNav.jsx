@@ -11,17 +11,19 @@
 // / = 治理中心）以 origin 絕對路徑連結，不可相對於 shell 的 /anila/ base；
 // 因同屬單一 SSO origin，於同一分頁開啟即可共用登入 cookie。
 
-import React from "react";
+import React, { useState } from "react";
 
 import {
   ANILA_LM_COMING_SOON_LABEL,
   ANILA_LM_ENTRY_ENABLED,
 } from "./anilalmReleaseGate.js";
+import { Modal } from "./components.jsx";
 import {
   IconBook,
   IconGrid,
   IconMessage,
   IconShield,
+  IconSpark,
 } from "./icons.jsx";
 
 // doc 00 §2：治理中心 = Admin / Developer / Service Admin 控制面，非一般入口。
@@ -201,7 +203,8 @@ function NavRow({ entry, collapsed }) {
 }
 
 /**
- * ANILA Shell 主導覽群組：四大使用者入口 + admin-gated 治理中心。
+ * ANILA Shell 主導覽：側欄只留一顆「平台入口」，點開後用彈窗列出
+ * 任務中心 / 知識庫 / 專案入口（+ admin 的治理中心）。
  * @param {{
  *   user?: { role?: string } | null,
  *   collapsed?: boolean,
@@ -210,23 +213,74 @@ function NavRow({ entry, collapsed }) {
  * }} props
  */
 export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices }) {
-  const entries = buildShellEntries({ onTaskCenter, onOpenServices });
+  const [open, setOpen] = useState(false);
+  const closeThen = (fn) => () => {
+    setOpen(false);
+    fn?.();
+  };
+  const entries = buildShellEntries({
+    onTaskCenter: closeThen(onTaskCenter),
+    onOpenServices: closeThen(onOpenServices),
+  });
   if (canSeeGovernance(user)) {
     entries.push(governanceEntry());
   }
 
-  return (
-    <nav
-      aria-label="ANILA 主導覽"
-      style={
-        collapsed
-          ? { display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }
-          : { display: "flex", flexDirection: "column", gap: 2, padding: "0 10px 8px" }
+  const triggerStyle = collapsed
+    ? {
+        ...rowBase,
+        width: 36,
+        height: 36,
+        padding: 0,
+        justifyContent: "center",
+        color: "var(--fg-muted)",
       }
-    >
-      {entries.map((entry) => (
-        <NavRow key={entry.id} entry={entry} collapsed={collapsed} />
-      ))}
-    </nav>
+    : { ...rowBase, color: "var(--fg)" };
+
+  return (
+    <>
+      <nav
+        aria-label="ANILA 主導覽"
+        style={
+          collapsed
+            ? { display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }
+            : { display: "flex", flexDirection: "column", gap: 2, padding: "0 10px 8px" }
+        }
+      >
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-label="平台入口"
+          title="平台入口"
+          onClick={() => setOpen(true)}
+          style={triggerStyle}
+          onMouseEnter={hoverOn}
+          onMouseLeave={hoverOff}
+        >
+          {collapsed ? (
+            <IconSpark size={18} />
+          ) : (
+            <>
+              <IconSpark size={15} style={{ color: "var(--fg-muted)", flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0 }}>平台入口</span>
+            </>
+          )}
+        </button>
+      </nav>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title="平台入口"
+        subtitle="任務、知識庫與專案"
+        width={360}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "-8px 0" }}>
+          {entries.map((entry) => (
+            <NavRow key={entry.id} entry={entry} />
+          ))}
+        </div>
+      </Modal>
+    </>
   );
 }
