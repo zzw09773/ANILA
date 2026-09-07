@@ -268,6 +268,34 @@
     height: 100dvh; color: var(--fg-muted);
     font-family: var(--font-mono); font-size: 13px;
   }
+
+  /* 窄視窗：audit 列與 composer 提示不得把按鈕擠出畫面 */
+  .anila-audit-watermark {
+    max-width: 100%;
+  }
+  .anila-audit-watermark > span {
+    min-width: 0;
+  }
+  .composer-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px 8px;
+    flex-wrap: wrap;
+  }
+  .composer-enter-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--fg-subtle);
+    flex-shrink: 0;
+  }
+  @media (max-width: 520px) {
+    .composer-enter-hint { display: none; }
+    .composer-toolbar { gap: 2px; }
+  }
+  .anila-md-table { max-width: 100%; }
 </style>
 </head>
 <body>

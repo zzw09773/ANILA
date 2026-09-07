@@ -317,9 +317,11 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, 
   return (
     <button
       onClick={copy}
+      className="anila-audit-watermark"
       title="點擊複製完整 audit 資訊"
       style={{
-        display: "inline-flex", alignItems: "center", gap: 8,
+        display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+        maxWidth: "100%",
         marginTop: 6, padding: "2px 0",
         background: "transparent", border: "none",
         fontFamily: "var(--font-mono)", fontSize: 10,

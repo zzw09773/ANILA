@@ -380,7 +380,7 @@ function Table({ children, ...props }) {
     return lines.join("\n");
   };
   return (
-    <div style={{ position: "relative", overflowX: "auto", margin: "8px 0" }}>
+    <div className="anila-md-table" style={{ position: "relative", overflowX: "auto", margin: "8px 0", maxWidth: "100%" }}>
       <CopyButton getText={toMarkdown} />
       <table
         ref={ref}

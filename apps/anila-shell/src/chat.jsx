@@ -2311,10 +2311,7 @@ export const Composer = ({
         </div>
       )}
 
-      <div style={{
-        display: "flex", alignItems: "center", gap: 4,
-        padding: "6px 8px 8px",
-      }}>
+      <div className="composer-toolbar">
         <label>
           <input type="file" multiple hidden onChange={(e) => onFiles(e.target.files)}
             accept={COMPOSER_FILE_ACCEPT} />
@@ -2422,7 +2419,7 @@ export const Composer = ({
           {footer && <span style={{ marginLeft: 6, color: "var(--fg-subtle)" }}>· {footer}</span>}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
+        <div className="composer-enter-hint">
           <Kbd>Enter</Kbd> <span>{streaming ? "產生中" : "送出"}</span>
           {asr.state === "recording" && <span style={{ color: "var(--danger)" }}>· 辨識中…</span>}
           {asr.state === "listening" && <span>· 聆聽中…</span>}

@@ -119,7 +119,6 @@ import { useConfirm, useToast } from "./confirm.jsx";
 import {
   AnilaGlyph,
   IconColumns,
-  IconGrid,
   IconHistory,
   IconLock,
   IconMoon,
@@ -3048,10 +3047,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               {agentRefreshFeedback.message}
             </span>
           )}
-
-          <IconButton title="專案入口" onClick={() => setServicesOpen(true)} active={servicesOpen}>
-            <IconGrid />
-          </IconButton>
 
           <IconButton title="設定" onClick={() => { setSettingsTab("general"); setSettingsOpen(true); }}>
             <IconSettings />

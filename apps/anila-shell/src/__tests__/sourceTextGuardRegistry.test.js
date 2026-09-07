@@ -40,9 +40,10 @@ const MARKER = "@source-text-guard";
  */
 const KNOWN_SOURCE_TEXT_GUARDS = [
   "composerFileAccept.test.js",
-  "guards/aboutVersion.test.js",
   "dupReplyReconcile.test.js",
   "editResend.test.js",
+  "guards/aboutVersion.test.js",
+  "guards/composerNarrowHint.test.js",
   "guards/headerLinesPresent.test.js",
   "mermaidVersionGuard.test.js",
   "uxCopy.test.jsx",
