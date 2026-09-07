@@ -22,7 +22,7 @@ from __future__ import annotations
 import enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.contracts.classification import ClassificationLevel
 
@@ -91,6 +91,82 @@ class TraceCallbackMode(str, enum.Enum):
     POST = "post"
 
 
+# ── description_for_router 契約（API／schema 邊界；不攔直接寫 DB）──────────────
+
+# 與 anila-core RemoteAgentManifest.to_tool_description 截斷上限對齊；
+# core 不得 import csp，兩邊各自宣告同一數字。
+DESCRIPTION_FOR_ROUTER_MAX_CHARS = 200
+
+DESCRIPTION_FOR_ROUTER_EXAMPLE = (
+    "檢索並解釋中華民國法律條文與院內規章；適用法規查詢、條文解釋。"
+)
+
+_DESCRIPTION_FOR_ROUTER_HINT = (
+    f"正確寫法例如：「{DESCRIPTION_FOR_ROUTER_EXAMPLE}」"
+)
+
+# 開頭黑名單：整份 system prompt 常見起句。不要用寬鬆模糊比對，以免誤傷能力描述。
+_DESCRIPTION_BLEED_PREFIXES: tuple[str, ...] = ("你是",)
+
+# 子字串黑名單：指令 bleed／服務範圍拒絕句。勿加入「法律」「檢索」等正常能力詞。
+_DESCRIPTION_BLEED_SUBSTRINGS: tuple[str, ...] = (
+    "本系統僅",
+    "無法回答與",
+    "僅提供法律",
+    "不在本系統",
+    "服務範圍",
+    "【核心原則】",
+    "【範圍判斷",
+    "DISPATCH:",
+)
+
+
+def validate_description_for_router(
+    value: str | None,
+    *,
+    allow_unset: bool = False,
+    allow_empty: bool = False,
+) -> str | None:
+    """驗證 Router 用的一行能力描述。
+
+    ``allow_unset``：``None`` 表示更新時不改此欄，直接放行。
+    ``allow_empty``：空字串視為未填（manifest 選填）；register／update 若送了值則不可空。
+    不做「至少 N 字」下限——既有測試與短句能力描述必須通過。
+    """
+    if value is None:
+        if allow_unset:
+            return None
+        raise ValueError(
+            f"description_for_router 不可省略。{_DESCRIPTION_FOR_ROUTER_HINT}"
+        )
+    stripped = value.strip()
+    if not stripped:
+        if allow_empty:
+            return ""
+        raise ValueError(
+            f"description_for_router 不可為空白。{_DESCRIPTION_FOR_ROUTER_HINT}"
+        )
+    if "\n" in stripped or "\r" in stripped:
+        raise ValueError(
+            "description_for_router 必須為單行，不可含換行。"
+            f"{_DESCRIPTION_FOR_ROUTER_HINT}"
+        )
+    if len(stripped) > DESCRIPTION_FOR_ROUTER_MAX_CHARS:
+        raise ValueError(
+            f"description_for_router 最多 {DESCRIPTION_FOR_ROUTER_MAX_CHARS} 字元。"
+            f"{_DESCRIPTION_FOR_ROUTER_HINT}"
+        )
+    if any(stripped.startswith(prefix) for prefix in _DESCRIPTION_BLEED_PREFIXES) or any(
+        needle in stripped for needle in _DESCRIPTION_BLEED_SUBSTRINGS
+    ):
+        raise ValueError(
+            "description_for_router 不可貼上 system prompt 或指令全文，"
+            "請改寫成一行能力描述。"
+            f"{_DESCRIPTION_FOR_ROUTER_HINT}"
+        )
+    return stripped
+
+
 # ── Manifest 契約(選填自我描述;不再驅動核准)──────────────────────────────────
 
 
@@ -137,3 +213,10 @@ class AgentManifest(BaseModel):
     capabilities: ManifestCapabilities = Field(default_factory=ManifestCapabilities)
     trace: ManifestTrace = Field(default_factory=ManifestTrace)
     classification: ManifestClassification
+
+    @field_validator("description_for_router")
+    @classmethod
+    def _check_description_for_router(cls, value: str) -> str:
+        # 有填才驗；預設空字串維持選填。
+        checked = validate_description_for_router(value, allow_empty=True)
+        return checked if checked is not None else ""

@@ -54,6 +54,24 @@ def test_router_templates_format_safe_and_localized():
     assert "維持原回覆語言，除非" not in recompose
 
 
+def test_direct_answer_rule_forbids_agent_scope_bleed_and_states_positive_range():
+    router = _ROUTER_SYSTEM_TEMPLATE
+    plain = _PLAIN_ASSISTANT_TEMPLATE
+    assert "直接回答時不得提及任何 agent 的名稱、專責領域、模組或服務範圍" in router
+    assert "本系統／本平台僅提供…" in router
+    assert "不在服務範圍" in router
+    assert "無法就…進一步協助" in router
+    assert "agent 清單只用來決定是否派工，不是你的能力邊界。" in router
+    assert "ANILA 直接回答的範圍包含院內人員的一般研究、技術與文件問題" in router
+    assert "解讀使用者附上的檔案" in router
+    assert "只要你能回答，就直接回答。" in router
+    assert "ANILA 直接回答的範圍包含院內人員的一般研究、技術與文件問題" in plain
+    assert "只要你能回答，就直接回答。" in plain
+    assert "只要你能回答，就直接回答。" not in COMMON_PREAMBLE
+    assert "直接回答時不得提及任何 agent 的名稱" not in COMMON_PREAMBLE
+    assert "不是你的能力邊界" not in COMMON_PREAMBLE
+
+
 def test_router_prompt_task_text_has_no_simplified_characters():
     # 前導本身另有守護；這裡釘任務段＋組合結果也不引入簡體。
     for text in (

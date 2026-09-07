@@ -865,3 +865,15 @@ def test_a_clean_hit_does_not_claim_the_basis_is_incomplete(
     assert "查詢失敗" in proxy_api._KB_PARTIAL_NOTICE
     assert "全部的依據" not in system
     assert "查詢失敗" not in system
+
+
+def test_hit_instruction_ignores_unrelated_passages_and_is_not_regulation_only(
+    client, db, actor, model_target, kb
+):
+    """直答命中的段落可能是泛用文件，無關就忽略；不要預設等於院內規章庫。"""
+    kb.result = KbResult(state=KbState.SEARCHED_HIT, hits=[_hit(1)])
+    _chat(client, actor, target=model_target.name, route="direct")
+    system = _system_text(_FakeClient.last_body)
+    assert "若段落與使用者問題無關，直接忽略，不要引用也不要提及" in system
+    assert "平台已標記可搜的知識庫" in system
+    assert "院內已標記的規章知識庫" not in system

@@ -21,6 +21,26 @@ logger = logging.getLogger(__name__)
 # LRU so the bound does not grow with JWT rotations / uptime.
 _DEFAULT_MAX_ENTRIES = 4096
 
+# 與 CSP ``DESCRIPTION_FOR_ROUTER_MAX_CHARS`` 對齊；本套件不得 import csp。
+DESCRIPTION_FOR_ROUTER_MAX_CHARS = 200
+_DESCRIPTION_TRUNCATE_MARK = "…"
+
+
+def collapse_description_for_router(text: str) -> str:
+    """Fold whitespace so a pasted prompt cannot stay multi-line in the list."""
+    return " ".join((text or "").split())
+
+
+def truncate_description_for_router(
+    text: str, *, max_chars: int = DESCRIPTION_FOR_ROUTER_MAX_CHARS
+) -> str:
+    """Keep at most ``max_chars`` Python characters; overflow gets an ellipsis."""
+    if max_chars < 1:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + _DESCRIPTION_TRUNCATE_MARK
+
 
 @dataclass
 class RemoteAgentManifest:
@@ -36,7 +56,10 @@ class RemoteAgentManifest:
 
     def to_tool_description(self) -> str:
         """Short description the Router LLM uses when choosing agents."""
-        return f"{self.name} ({self.agent_id}): {self.description_for_router}"
+        desc = truncate_description_for_router(
+            collapse_description_for_router(self.description_for_router)
+        )
+        return f"{self.name} ({self.agent_id}): {desc}"
 
 
 class RemoteAgentRegistry:

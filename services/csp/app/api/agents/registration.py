@@ -12,7 +12,7 @@ import anila_core
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agent
@@ -40,6 +40,7 @@ from app.schemas.contracts.agents import (
     REGISTER_DEFAULT_APPROVAL,
     ApprovalStatus,
     RuntimeType,
+    validate_description_for_router,
 )
 from app.schemas.contracts.classification import ClassificationLevel
 from app.services.agent_collection_bindings import (
@@ -234,6 +235,14 @@ class AgentRegisterRequest(BaseModel):
     # derived (level >= 密). Unknown values → 422 via ClassificationLevel.
     default_classification_level: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
 
+    @field_validator("description_for_router")
+    @classmethod
+    def _check_description_for_router(cls, value: str) -> str:
+        checked = validate_description_for_router(value)
+        if checked is None:
+            raise ValueError("description_for_router 不可省略。")
+        return checked
+
     @model_validator(mode="before")
     @classmethod
     def _reject_dead_controls(cls, data: object) -> object:
@@ -359,6 +368,12 @@ class AgentUpdateRequest(BaseModel):
     # Omit both to leave bindings unchanged. Empty list clears all bindings.
     collection_ids: list[int] | None = None
     collection_id: int | None = None
+
+    @field_validator("description_for_router")
+    @classmethod
+    def _check_description_for_router(cls, value: str | None) -> str | None:
+        # None ＝ 不改此欄；送了空字串則 422。
+        return validate_description_for_router(value, allow_unset=True)
 
     @model_validator(mode="before")
     @classmethod

@@ -219,9 +219,10 @@ def employee_count(department: str) -&gt; int:
         <TermField label="端點 URL" :error="formErrors.endpoint_url">
           <input v-model="form.endpoint_url" class="term-input" placeholder="http://host:port" />
         </TermField>
-        <TermField label="router 說明" hint="≥ 24 字 · 用白話描述此 agent 解決什麼" :error="formErrors.description_for_router">
-          <textarea v-model="form.description_for_router" rows="3" class="term-textarea" />
+        <TermField label="router 說明" hint="一行能力描述，最多 200 字；不要貼 system prompt" :error="formErrors.description_for_router">
+          <textarea v-model="form.description_for_router" rows="2" maxlength="200" class="term-textarea" />
         </TermField>
+        <p class="cell-meta">{{ routerDescriptionPreview(form.name, form.name, form.description_for_router) }}</p>
         <div class="form-row-2">
           <TermField label="API 版本">
             <input v-model="form.api_version" class="term-input" placeholder="v1" />
@@ -288,9 +289,10 @@ def employee_count(department: str) -&gt; int:
         <TermField label="端點 URL">
           <input v-model="editForm.endpoint_url" class="term-input" />
         </TermField>
-        <TermField label="router 說明" hint="router 依此派送 — 請精確">
-          <textarea v-model="editForm.description_for_router" rows="4" class="term-textarea" />
+        <TermField label="router 說明" hint="一行能力描述，最多 200 字；不要貼 system prompt">
+          <textarea v-model="editForm.description_for_router" rows="2" maxlength="200" class="term-textarea" />
         </TermField>
+        <p class="cell-meta">{{ routerDescriptionPreview(editTarget.name, editTarget.id, editForm.description_for_router) }}</p>
         <div class="form-row-2">
           <TermField label="API 版本">
             <input v-model="editForm.api_version" class="term-input" />
@@ -384,6 +386,7 @@ def employee_count(department: str) -&gt; int:
 
         <TermSection title="router 說明" />
         <p class="detail__desc">{{ detailAgent.description_for_router || '—' }}</p>
+        <p class="cell-meta">{{ routerDescriptionPreview(detailAgent.name, detailAgent.id, detailAgent.description_for_router) }}</p>
 
         <!-- OE-1 — 核准不需診斷。「測試連線」已接 POST …/test-connection（派工 JWT）；
              核准仍不依賴探測結果。 -->
@@ -570,6 +573,25 @@ function ownerDisplay(agent) {
   if (!agent) return '—'
   if (agent.owner_username) return `${agent.owner_username}${agent.owner_user_id ? ` (#${agent.owner_user_id})` : ''}`
   return agent.owner_user_id ? `#${agent.owner_user_id}` : '—'
+}
+
+const ROUTER_DESC_MAX_CHARS = 200
+
+function collapseRouterDescription(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim()
+}
+
+function routerDescriptionPreview(name, idOrName, description) {
+  const n = (name || '').trim() || '（未填名稱）'
+  const idPart = (idOrName != null && String(idOrName).trim() !== '')
+    ? String(idOrName).trim()
+    : n
+  let desc = collapseRouterDescription(description)
+  if (desc.length > ROUTER_DESC_MAX_CHARS) {
+    desc = `${desc.slice(0, ROUTER_DESC_MAX_CHARS)}…`
+  }
+  if (!desc) desc = '（尚未填寫）'
+  return `Router 會看到：${n} (${idPart}): ${desc}`
 }
 
 const filteredAgents = computed(() => {
