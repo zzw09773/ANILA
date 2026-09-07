@@ -17,6 +17,7 @@
   body,
   #app {
     height: 100%;
+    overflow: hidden;
     background: var(--c-bg);
     color: var(--c-fg-1);
   }
@@ -126,6 +127,8 @@
     align-items: center;
     padding: 0 var(--gap-3);
     gap: var(--gap-4);
+    overflow: hidden;
+    box-sizing: border-box;
   }
 
   /* Small caps section / column label ------------------------------- */
@@ -209,6 +212,8 @@
     font-size: var(--t-base);
     font-weight: 500;
     cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
     transition: background-color var(--motion-fast) var(--easing),
                 color var(--motion-fast) var(--easing),
                 border-color var(--motion-fast) var(--easing);
@@ -278,6 +283,7 @@
   /* Tables — dense, gridded -------------------------------------------- */
   .term-table {
     width: 100%;
+    min-width: 36rem;
     border-collapse: collapse;
     font-size: var(--t-base);
   }
@@ -310,6 +316,22 @@
     text-align: right;
   }
   .term-table .dim { color: var(--c-fg-3); }
+  .term-table th:last-child,
+  .term-table td:last-child {
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    background: var(--c-surface-1);
+    box-shadow: -8px 0 8px -8px rgba(17, 24, 39, 0.18);
+    white-space: nowrap;
+  }
+  .term-table thead th:last-child {
+    background: var(--c-surface-2);
+    z-index: 2;
+  }
+  .term-table tbody tr:hover td:last-child {
+    background: var(--c-row-hover);
+  }
 
   /* Badge / tag chip -------------------------------------------------- */
   .term-badge {

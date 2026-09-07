@@ -349,15 +349,16 @@ function formatNum(n) {
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
-.page-head__actions { display: flex; align-items: center; gap: var(--gap-2); }
+.page-head__actions { display: flex; align-items: center; gap: var(--gap-2); flex-wrap: wrap; }
 
 .filters {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--gap-3);
 }
-@media (max-width: 1100px) { .filters { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 700px)  { .filters { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 1100px) { .filters { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 700px)  { .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px)  { .filters { grid-template-columns: 1fr; } }
 
 .kpi-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap-3); }
 @media (max-width: 700px) { .kpi-row { grid-template-columns: 1fr; } }

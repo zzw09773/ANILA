@@ -1,5 +1,10 @@
 <template>
-  <aside class="sidenav">
+  <aside
+    id="gov-sidenav"
+    class="sidenav"
+    :class="{ 'is-open': open }"
+    :aria-hidden="narrow && !open"
+  >
     <nav class="sidenav__nav" aria-label="primary">
       <template v-for="group in menuGroups" :key="group.label">
         <div v-if="group.items.length" class="sidenav__group">
@@ -12,6 +17,7 @@
                 :to="item.path"
                 class="sidenav__item"
                 :class="{ 'is-active': isActive(item.path) }"
+                @click="nav.close()"
               >
                 <span class="sidenav__rail" aria-hidden="true" />
                 <span class="sidenav__label">{{ item.label }}</span>
@@ -42,9 +48,12 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { useShellNav } from '../../composables/useShellNav.js'
 
 const route = useRoute()
 const authStore = useAuthStore()
+const nav = useShellNav()
+const { open, narrow } = nav
 
 const menuGroups = computed(() => {
   const groups = [
@@ -117,7 +126,9 @@ const scopeLabel = computed(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  height: 100%;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
 }
 
 .sidenav__nav {
@@ -193,6 +204,7 @@ const scopeLabel = computed(() => {
 }
 
 .sidenav__foot {
+  flex-shrink: 0;
   border-top: var(--border-w) solid var(--c-border);
   padding: var(--gap-3) var(--gap-4);
   display: flex;

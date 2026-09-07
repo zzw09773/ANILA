@@ -84,8 +84,8 @@ defineProps({
   flex-shrink: 0;
 }
 
-.term-box__body--flush { padding: 0 !important; }
-.term-box--pad-none > .term-box__body { padding: 0; }
+.term-box__body--flush { padding: 0 !important; overflow-x: auto; min-width: 0; }
+.term-box--pad-none > .term-box__body { padding: 0; overflow-x: auto; min-width: 0; }
 .term-box--pad-sm   > .term-box__body { padding: var(--gap-2) var(--gap-3); }
 .term-box--pad-md   > .term-box__body { padding: var(--gap-4); }
 .term-box--pad-lg   > .term-box__body { padding: var(--gap-6); }

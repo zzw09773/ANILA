@@ -93,7 +93,9 @@ onUnmounted(() => {
 
 <style scoped>
 .statusbar {
+  box-sizing: border-box;
   height: var(--shell-statusbar-h);
+  min-height: var(--shell-statusbar-h);
   display: flex;
   align-items: center;
   gap: var(--gap-3);
@@ -101,11 +103,14 @@ onUnmounted(() => {
   background: var(--c-surface-2);
   border-top: var(--border-w) solid var(--c-border);
   font-size: var(--t-2xs);
+  line-height: var(--lh-tight);
   color: var(--c-fg-3);
   white-space: nowrap;
-  overflow-x: auto;
+  overflow: hidden;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
-.statusbar::-webkit-scrollbar { display: none; }
 
 .statusbar__cell {
   display: inline-flex;

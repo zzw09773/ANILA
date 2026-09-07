@@ -3,7 +3,19 @@
        不再顯示路徑／@角色／快速鍵提示——長官看的是「這是哪裡、我是誰」。 -->
   <header class="topbar">
     <div class="topbar__left">
-      <TermLogo :size="18" subtitle="治理中心" />
+      <button
+        class="topbar__menu"
+        type="button"
+        :aria-expanded="open"
+        aria-controls="gov-sidenav"
+        :aria-label="open ? '關閉選單' : '開啟選單'"
+        @click="toggle()"
+      >
+        <span class="topbar__menu-icon" aria-hidden="true">
+          <span /><span /><span />
+        </span>
+      </button>
+      <TermLogo :size="18" :compact="narrow" subtitle="治理中心" />
       <span class="topbar__crumb" aria-current="page">{{ currentPageLabel }}</span>
     </div>
 
@@ -21,12 +33,30 @@
       >
         {{ theme === 'dark' ? '淺色' : '深色' }}
       </button>
-      <button class="topbar__action" type="button" @click="showChangePwModal = true">
-        變更密碼
-      </button>
-      <button class="topbar__action" type="button" @click="handleLogout">
-        登出
-      </button>
+      <template v-if="!compact">
+        <button class="topbar__action" type="button" @click="showChangePwModal = true">
+          變更密碼
+        </button>
+        <button class="topbar__action" type="button" @click="handleLogout">
+          登出
+        </button>
+      </template>
+      <div v-else class="topbar__more">
+        <button
+          class="topbar__action"
+          type="button"
+          aria-haspopup="menu"
+          :aria-expanded="accountOpen"
+          aria-label="帳號選單"
+          @click="accountOpen = !accountOpen"
+        >
+          帳號
+        </button>
+        <div v-if="accountOpen" class="topbar__more-menu" role="menu">
+          <button type="button" role="menuitem" @click="openChangePwFromMenu">變更密碼</button>
+          <button type="button" role="menuitem" @click="handleLogout">登出</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -72,12 +102,13 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { roleLabel } from '../../utils/roleLabel'
 import { changePassword } from '../../api/auth'
 import { useTheme } from '../../composables/useTheme'
+import { useShellNav } from '../../composables/useShellNav.js'
 import TermLogo from '../cli/TermLogo.vue'
 import TermModal from '../cli/TermModal.vue'
 import TermField from '../cli/TermField.vue'
@@ -88,6 +119,15 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const { theme, toggleTheme } = useTheme()
+const nav = useShellNav()
+const { open, narrow, compact, toggle } = nav
+const accountOpen = ref(false)
+watch(compact, (c) => { if (!c) accountOpen.value = false })
+
+function openChangePwFromMenu() {
+  accountOpen.value = false
+  showChangePwModal.value = true
+}
 
 const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
 
@@ -193,6 +233,7 @@ function handleLogout() {
   border-bottom: 0;
   font-size: var(--t-sm);
   gap: var(--gap-4);
+  min-width: 0;
 }
 .topbar__left,
 .topbar__right {
@@ -201,6 +242,59 @@ function handleLogout() {
   gap: var(--gap-4);
   min-width: 0;
 }
+.topbar__menu {
+  display: none;
+  flex-shrink: 0;
+  width: 32px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid color-mix(in oklab, var(--c-masthead-fg) 35%, transparent);
+  border-radius: var(--r-md);
+  color: var(--c-masthead-fg);
+  cursor: pointer;
+}
+.topbar__menu-icon {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  width: 14px;
+  margin: 0 auto;
+}
+.topbar__menu-icon span {
+  display: block;
+  height: 1.5px;
+  background: currentColor;
+  border-radius: 1px;
+}
+.topbar__more { position: relative; flex-shrink: 0; }
+.topbar__more-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 50;
+  min-width: 8rem;
+  padding: 4px;
+  background: var(--c-surface-1);
+  color: var(--c-fg-1);
+  border: var(--border-w) solid var(--c-border);
+  border-radius: var(--r-md);
+  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.18);
+}
+.topbar__more-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-soft);
+  color: var(--c-fg-1);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.topbar__more-menu button:hover { background: var(--c-surface-2); }
 .topbar__left :deep(.term-logo) { color: var(--c-masthead-fg); }
 .topbar__left :deep(.term-logo__word),
 .topbar__left :deep(.term-logo__sub),
@@ -219,6 +313,8 @@ function handleLogout() {
   align-items: baseline;
   gap: var(--gap-2);
   color: var(--c-masthead-fg);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .topbar__user-name { font-weight: 600; }
 .topbar__user-role {
@@ -238,6 +334,8 @@ function handleLogout() {
   border-radius: var(--r-md);
   font-size: var(--t-xs);
   cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
   transition: background-color var(--motion-fast), border-color var(--motion-fast);
 }
 .topbar__theme:hover,
@@ -267,4 +365,12 @@ function handleLogout() {
 }
 .pw-msg--err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
 .pw-msg--ok  { color: var(--c-ok);     border-color: var(--c-ok);     background: var(--c-ok-soft); }
+
+@media (max-width: 900px) {
+  .topbar { gap: var(--gap-2); padding: 0 var(--gap-3); }
+  .topbar__left, .topbar__right { gap: var(--gap-2); }
+  .topbar__menu { display: inline-flex; align-items: center; justify-content: center; }
+  .topbar__user { display: none; }
+  .topbar__crumb { min-width: 0; }
+}
 </style>

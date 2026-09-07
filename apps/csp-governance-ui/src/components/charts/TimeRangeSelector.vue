@@ -32,6 +32,7 @@ const options = [
 <style scoped>
 .trange {
   display: inline-flex;
+  flex-wrap: wrap;
   border: var(--border-w) solid var(--c-border-strong);
   border-radius: var(--r-soft);
   background: var(--c-surface-1);
@@ -48,6 +49,8 @@ const options = [
   letter-spacing: 0.04em;
   cursor: pointer;
   border-right: var(--border-w) solid var(--c-border);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .trange__opt:last-child { border-right: 0; }
 .trange__opt:hover { color: var(--c-fg-1); background: var(--c-surface-2); }

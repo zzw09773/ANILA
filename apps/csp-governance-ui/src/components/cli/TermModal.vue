@@ -122,6 +122,9 @@ onUnmounted(() => {
   flex-direction: column;
   max-height: calc(100dvh - var(--gap-12));
 }
+@media (max-width: 520px) {
+  .term-modal { padding: var(--gap-3); }
+}
 
 .term-modal__head {
   display: flex;

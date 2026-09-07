@@ -663,6 +663,8 @@ async function handleRegister() {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .login__theme:hover { color: var(--c-accent); border-color: var(--c-accent); }
 
@@ -741,6 +743,7 @@ async function handleRegister() {
 }
 .login__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--gap-2);
   margin-top: var(--gap-1);
 }
@@ -884,4 +887,10 @@ async function handleRegister() {
 /* password 模式：帳密表單是主角——收合列變成區塊標題，不再像註腳 */
 .login__more--primary > .login__more-summary { font-size: var(--t-md); color: var(--c-fg-1); font-weight: 600; cursor: default; list-style: none; }
 .login__more--primary > .login__more-summary::-webkit-details-marker { display: none; }
+
+@media (max-width: 520px) {
+  .login__main { padding: var(--gap-4); }
+  .login__topbar :deep(.term-logo__sub) { display: none; }
+  .login__rules { grid-template-columns: 1fr; }
+}
 </style>
