@@ -69,6 +69,7 @@ import {
   listShares as apiListShares,
   revokeShare as apiRevokeShare,
   uploadAttachment as apiUploadAttachment,
+  bindAttachments as apiBindAttachments,
   getAttachmentMeta as apiGetAttachmentMeta,
   createHandoff as apiCreateHandoff,
   listAgentFunctions as apiListAgentFunctions,
@@ -116,8 +117,8 @@ import {
   Dropdown,
 } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
+import { AnilaLogoImg, AnilaLogoVideo } from "./AnilaBrand.jsx";
 import {
-  AnilaGlyph,
   IconColumns,
   IconHistory,
   IconLock,
@@ -265,6 +266,24 @@ function makeConversationTitle(text) {
   return t.length > 28 ? `${t.slice(0, 28)}…` : t;
 }
 
+/** reference_id values from composer chips (or AttachmentOut-shaped rows). */
+function attachmentBindIds(attachments) {
+  const ids = [];
+  const seen = new Set();
+  for (const a of attachments || []) {
+    if (!a || typeof a !== "object") continue;
+    const rid = a.referenceId || a.reference_id;
+    const fallback = typeof a.id === "string" ? a.id : null;
+    const value = typeof rid === "string" && rid.trim() ? rid.trim() : fallback;
+    if (typeof value !== "string" || !value.trim()) continue;
+    const key = value.trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    ids.push(key);
+  }
+  return ids;
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -406,6 +425,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // this client is their only author, so hydrating them can only lose the
   // turn currently being sent — see the hydrate effect below.
   const locallyCreatedConvIdsRef = useRef(new Set());
+  // Parallel composer uploads on a new chat share one in-flight create so
+  // two files do not mint two conversations (and re-orphan one of them).
+  const creatingConversationRef = useRef(null);
 
 
   // --- compare mode ---
@@ -1154,38 +1176,49 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       agents.find((a) => a.id === effectiveAgentId)?.name || effectiveAgentId;
 
     if (!selectedConvId) {
-      let convId;
-      let serverRow = null;
-      try {
-        serverRow = await apiCreateConversation(authRequest, {
-          title: makeConversationTitle(text),
-          agentId: typeof effectiveAgentId === "number" ? effectiveAgentId : null,
-        });
-        convId = serverRow.id;
-        locallyCreatedConvIdsRef.current.add(convId);
-      } catch (error) {
-        convId = makeId("cv-local");
-        setRuntimeError(error.message || "對話儲存失敗（離線模式）");
+      if (creatingConversationRef.current) {
+        return creatingConversationRef.current;
       }
-      setConversations((prev) => [
-        {
-          id: convId,
-          title: serverRow?.title || makeConversationTitle(text),
-          ts: relativeLabel(),
-          updatedLabel: relativeLabel(),
-          agent: effectiveAgentId,
-          agentId: effectiveAgentId,
-          agentName,
-          folder: "all",
-          tags: encryption ? ["classified"] : [],
-          starred: false,
-          classified: Boolean(serverRow?.classified) || encryption,
-          updatedAt: serverRow?.updated_at || nowIso(),
-        },
-        ...prev,
-      ]);
-      setSelectedConvId(convId);
-      return convId;
+      const pending = (async () => {
+        let convId;
+        let serverRow = null;
+        try {
+          serverRow = await apiCreateConversation(authRequest, {
+            title: makeConversationTitle(text),
+            agentId: typeof effectiveAgentId === "number" ? effectiveAgentId : null,
+          });
+          convId = serverRow.id;
+          locallyCreatedConvIdsRef.current.add(convId);
+        } catch (error) {
+          convId = makeId("cv-local");
+          setRuntimeError(error.message || "對話儲存失敗（離線模式）");
+        }
+        setConversations((prev) => [
+          {
+            id: convId,
+            title: serverRow?.title || makeConversationTitle(text),
+            ts: relativeLabel(),
+            updatedLabel: relativeLabel(),
+            agent: effectiveAgentId,
+            agentId: effectiveAgentId,
+            agentName,
+            folder: "all",
+            tags: encryption ? ["classified"] : [],
+            starred: false,
+            classified: Boolean(serverRow?.classified) || encryption,
+            updatedAt: serverRow?.updated_at || nowIso(),
+          },
+          ...prev,
+        ]);
+        setSelectedConvId(convId);
+        return convId;
+      })();
+      creatingConversationRef.current = pending;
+      try {
+        return await pending;
+      } finally {
+        creatingConversationRef.current = null;
+      }
     }
 
     setConversations((prev) =>
@@ -1699,6 +1732,27 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const effectiveTarget = explicitAgents[0] || selectedAgentId;
     const convId = await ensureConversation(text, effectiveTarget);
     updateConversationAgent(convId, effectiveTarget);
+
+    const bindIds = attachmentBindIds(attachments);
+    if (bindIds.length > 0) {
+      if (typeof convId !== "number") {
+        const msg = "附件無法綁定到對話，請重新上傳後再送出";
+        setRuntimeError(msg);
+        toast(msg, { tone: "error" });
+        return;
+      }
+      try {
+        await apiBindAttachments(authRequest, {
+          conversationId: convId,
+          referenceIds: bindIds,
+        });
+      } catch (err) {
+        const msg = err.message || "附件無法綁定到對話";
+        setRuntimeError(msg);
+        toast(msg, { tone: "error" });
+        return;
+      }
+    }
 
     // Slice 2b-D 最小 Task 流(doc 00 §3:提出任務→建立 Task→派發):對話
     // 還沒綁 Task 時先建立一個(標題 = 首句前段),成功後快取到 conversation
@@ -3194,12 +3248,21 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                           ? "ANILA 會幫你找合適的助手"
                           : `已指定助手 · ${activeAgent.name}`
                       }
-                      onUpload={(file) =>
-                        apiUploadAttachment(multipartRequest, file, {
-                          conversationId:
-                            typeof selectedConvId === "number" ? selectedConvId : undefined,
-                        })
-                      }
+                      onUpload={async (file) => {
+                        let convId = selectedConvId;
+                        if (typeof convId !== "number") {
+                          convId = await ensureConversation(
+                            (file && file.name) || "新對話",
+                            selectedAgentId,
+                          );
+                        }
+                        if (typeof convId !== "number") {
+                          throw new Error("無法建立對話，附件未上傳");
+                        }
+                        return apiUploadAttachment(multipartRequest, file, {
+                          conversationId: convId,
+                        });
+                      }}
                       onFetchAttachmentMeta={(referenceId) =>
                         apiGetAttachmentMeta(authRequest, referenceId)
                       }
@@ -3310,11 +3373,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 }
 
 // ---- Empty state -----------------------------------------------------------
-function EmptyState({ agent, agents, onPick, loading }) {
+export function EmptyState({ agent, agents, onPick, loading }) {
   const prompts = buildStarterPrompts(agents);
   return (
     <div style={{ padding: "64px 12px 32px", textAlign: "center" }}>
-      <AnilaGlyph size={40} />
+      <AnilaLogoVideo width={140} />
       <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>
         你今天想問 ANILA 什麼？
       </div>
@@ -3635,7 +3698,7 @@ function SettingsModal({
             { id: "privacy", label: "隱私 / 信任", icon: <IconShield   size={13} /> },
             { id: "memory",  label: "記憶",        icon: <IconHistory  size={13} /> },
             { id: "account", label: "帳號",        icon: <IconUser     size={13} /> },
-            { id: "about",   label: "關於",        icon: <AnilaGlyph   size={13} /> },
+            { id: "about",   label: "關於",        icon: <AnilaLogoImg variant="mark" height={13} /> },
           ].map((t) => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
               display: "flex", alignItems: "center", gap: 8,
@@ -3732,7 +3795,7 @@ function SettingsModal({
           {tab === "about" && (
             <div style={{ fontSize: 13, lineHeight: 1.7 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                <AnilaGlyph size={24} />
+                <AnilaLogoImg variant="logo" height={32} />
                 <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA Runtime Client</div>
               </div>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-muted)" }}>

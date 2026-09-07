@@ -384,6 +384,67 @@ def get_attachment(db: Session, reference_id: str, user: User) -> tuple[Attachme
     return att, full_path
 
 
+def bind_attachments(
+    db: Session,
+    user: User,
+    conversation_id: int,
+    reference_ids: list[str],
+) -> list[Attachment]:
+    """Bind the caller's orphan attachments to ``conversation_id``.
+
+    Preconditions (enforced by the API layer): caller may write the target
+    conversation. This function then enforces:
+
+    * only the uploader may bind the row (admin-tier cannot steal)
+    * ``conversation_id IS NULL`` → set to the target
+    * already the same conversation → no-op (idempotent)
+    * already bound to a *different* conversation → 409
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for raw in reference_ids:
+        rid = (raw or "").strip()
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        ordered.append(rid)
+    if not ordered:
+        raise HTTPException(status_code=400, detail="reference_ids 不可為空")
+
+    rows = (
+        db.query(Attachment)
+        .options(defer(Attachment.extracted_text))
+        .filter(Attachment.reference_id.in_(ordered))
+        .all()
+    )
+    by_ref = {att.reference_id: att for att in rows}
+
+    accepted: list[Attachment] = []
+    for rid in ordered:
+        att = by_ref.get(rid)
+        if att is None:
+            raise HTTPException(status_code=404, detail="找不到此附件")
+        if att.uploaded_by != user.id:
+            raise HTTPException(status_code=403, detail="無權存取此附件")
+        if (
+            att.conversation_id is not None
+            and att.conversation_id != conversation_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="此附件已綁定其他對話",
+            )
+        accepted.append(att)
+
+    for att in accepted:
+        if att.conversation_id is None:
+            att.conversation_id = conversation_id
+    db.commit()
+    for att in accepted:
+        db.refresh(att)
+    return accepted
+
+
 def delete_attachment(db: Session, reference_id: str, user: User) -> Optional[int]:
     """Delete attachment; return conversation_id (if any) for capacity response.
 

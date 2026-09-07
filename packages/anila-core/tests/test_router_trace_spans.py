@@ -109,7 +109,7 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
         yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
         yield {"type": "done"}
 
-    async def fake_stream_agent(agent_id, query, api_key, *, session_id=None):
+    async def fake_stream_agent(agent_id, query, api_key, *, session_id=None, forwarded_headers=None):
         yield {"type": "content", "content": "hi from agent"}
         yield {"type": "done"}
 
@@ -167,7 +167,7 @@ def test_streaming_dispatch_emits_no_spans_when_unconfigured(
         yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
         yield {"type": "done"}
 
-    async def fake_stream_agent(agent_id, query, api_key, *, session_id=None):
+    async def fake_stream_agent(agent_id, query, api_key, *, session_id=None, forwarded_headers=None):
         yield {"type": "content", "content": "hi"}
         yield {"type": "done"}
 

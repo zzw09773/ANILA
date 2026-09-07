@@ -327,6 +327,8 @@ export function createFakeBackend(options = {}) {
   const activeLeafByConv = new Map();
   let nextConvId = 100;
   let nextMsgId = 1000;
+  let nextAttSeq = 0;
+  const attachmentsByRef = new Map();
 
   for (const row of initialConversations) {
     convs.set(row.id, { ...row });
@@ -744,6 +746,86 @@ export function createFakeBackend(options = {}) {
       return jsonResponse([]);
     }
     if (path.startsWith("/api/conversations/search")) return jsonResponse([]);
+
+    // ---- Attachments (upload / bind / meta) --------------------------------
+    if (path === "/api/attachments" && method === "POST") {
+      const form = init.body;
+      let conversationId = null;
+      let filename = "upload";
+      let contentType = "application/octet-stream";
+      let size = 0;
+      if (typeof FormData !== "undefined" && form instanceof FormData) {
+        const convRaw = form.get("conversation_id");
+        if (convRaw != null && convRaw !== "") {
+          conversationId = Number(convRaw);
+        }
+        const file = form.get("file");
+        if (file && typeof file === "object") {
+          filename = file.name || filename;
+          contentType = file.type || contentType;
+          size = file.size || 0;
+        }
+      }
+      if (
+        conversationId != null
+        && Number.isInteger(conversationId)
+        && !convs.has(conversationId)
+      ) {
+        return errorResponse(404, "Conversation not found");
+      }
+      const ref = `att-ref-${++nextAttSeq}`;
+      const row = {
+        reference_id: ref,
+        filename,
+        content_type: contentType,
+        size_bytes: size,
+        conversation_id: Number.isInteger(conversationId) ? conversationId : null,
+        message_id: null,
+        created_at: new Date().toISOString(),
+        extract_status: "ok",
+        token_count: 1,
+        extract_error: null,
+        budget_admitted: true,
+      };
+      attachmentsByRef.set(ref, row);
+      return jsonResponse(row, 201);
+    }
+    if (path === "/api/attachments/bind" && method === "POST") {
+      const convId = body?.conversation_id;
+      const refs = Array.isArray(body?.reference_ids) ? body.reference_ids : [];
+      if (!Number.isInteger(convId) || !convs.has(convId)) {
+        return errorResponse(404, "Conversation not found");
+      }
+      const bound = [];
+      for (const rid of refs) {
+        const row = attachmentsByRef.get(rid);
+        if (!row) return errorResponse(404, "找不到此附件");
+        if (row.conversation_id == null) {
+          row.conversation_id = convId;
+        } else if (row.conversation_id !== convId) {
+          return errorResponse(409, "此附件已綁定其他對話");
+        }
+        bound.push({ ...row });
+      }
+      return jsonResponse({
+        conversation_id: convId,
+        attachments: bound,
+        conversation_capacity: {
+          used_tokens: 0,
+          budget_tokens: 500,
+          remaining_tokens: 500,
+          over_budget_tokens: 0,
+          percent: 0,
+          attachment_count: bound.length,
+        },
+      });
+    }
+    const attMetaMatch = path.match(/^\/api\/attachments\/([^/]+)\/meta$/);
+    if (attMetaMatch && method === "GET") {
+      const row = attachmentsByRef.get(decodeURIComponent(attMetaMatch[1]));
+      if (!row) return errorResponse(404, "找不到此附件");
+      return jsonResponse(row);
+    }
 
     return undefined;
   }

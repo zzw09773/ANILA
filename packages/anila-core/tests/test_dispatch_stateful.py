@@ -252,3 +252,37 @@ async def test_authorization_header_passed_through() -> None:
     )
     auth = route.calls.last.request.headers.get("authorization")
     assert auth == "Bearer sk-secret-123"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_forwarded_headers_include_conversation_id() -> None:
+    route = respx.post(CSP_URL).mock(
+        return_value=httpx.Response(200, json=_agent_response())
+    )
+    await dispatch_to_agent_response(
+        agent_id="agent-x",
+        query="x",
+        csp_base_url=CSP_BASE,
+        csp_api_key="sk-test",
+        forwarded_headers={"X-ANILA-Conversation-Id": "42"},
+    )
+    req = route.calls.last.request
+    assert req.headers.get("x-anila-conversation-id") == "42"
+    assert req.headers.get("authorization") == "Bearer sk-test"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_forwarded_headers_cannot_override_authorization() -> None:
+    route = respx.post(CSP_URL).mock(
+        return_value=httpx.Response(200, json=_agent_response())
+    )
+    await dispatch_to_agent_response(
+        agent_id="agent-x",
+        query="x",
+        csp_base_url=CSP_BASE,
+        csp_api_key="sk-real",
+        forwarded_headers={"Authorization": "Bearer sk-forged"},
+    )
+    assert route.calls.last.request.headers.get("authorization") == "Bearer sk-real"

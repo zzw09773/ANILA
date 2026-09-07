@@ -534,3 +534,75 @@ def test_streaming_dispatch_names_the_answering_agent(db_path) -> None:
     assert metas, body
     assert metas[-1]["answering_agent_id"] == "agent-a"
     assert metas[-1]["handoff_chain"][0]["output_summary"] == "dispatch to agent-a"
+
+
+def test_non_streaming_dispatch_forwards_conversation_id(db_path, monkeypatch):
+    captured: list = []
+    _install_registry(monkeypatch, [[_manifest()]])
+    _install_fake_llm(monkeypatch, ["DISPATCH:agent-a:查一下"], captured)
+    seen: dict = {}
+
+    async def fake_dispatch(**kwargs):
+        seen["forwarded_headers"] = kwargs.get("forwarded_headers")
+        return {"content": "agent answered", "anila_meta": None, "raw": None}
+
+    monkeypatch.setattr(rs, "dispatch_to_agent_response", fake_dispatch)
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer sk-test",
+            "X-ANILA-Conversation-Id": "42",
+        },
+        json={"messages": [{"role": "user", "content": "查一下"}], "stream": False},
+    )
+    assert resp.status_code == 200, resp.text
+    headers = seen.get("forwarded_headers") or {}
+    lowered = {str(k).lower(): v for k, v in headers.items()}
+    assert lowered.get("x-anila-conversation-id") == "42"
+
+
+@respx.mock
+def test_streaming_dispatch_sends_conversation_id(db_path) -> None:
+    respx.get(CSP_AGENTS_URL).mock(
+        return_value=httpx.Response(200, json=_agents_payload(_manifest()))
+    )
+
+    def sse(body: str) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=body.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    dispatch_headers: list[dict] = []
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("model") == "agent-a":
+            dispatch_headers.append(dict(request.headers))
+            return sse(
+                'data: {"choices":[{"delta":{"content":"agent answered"}}]}\n\n'
+                "data: [DONE]\n\n"
+            )
+        return sse(
+            'data: {"choices":[{"delta":{"content":"DISPATCH:agent-a:查一下\\n"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+    respx.post(CSP_URL).mock(side_effect=capture)
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer sk-test",
+            "X-ANILA-Conversation-Id": "99",
+        },
+        json={"messages": [{"role": "user", "content": "查一下"}], "stream": True},
+    ) as response:
+        "".join(response.iter_text())
+
+    assert dispatch_headers, "dispatch request never reached CSP"
+    lowered = {str(k).lower(): v for k, v in dispatch_headers[0].items()}
+    assert lowered.get("x-anila-conversation-id") == "99"

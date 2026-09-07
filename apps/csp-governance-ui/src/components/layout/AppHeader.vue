@@ -299,6 +299,13 @@ function handleLogout() {
 .topbar__left :deep(.term-logo__word),
 .topbar__left :deep(.term-logo__sub),
 .topbar__left :deep(.term-logo__sep) { color: var(--c-masthead-fg); }
+/* 全標是深藍透明 PNG，刊頭本身也是深藍 — 墊一塊淺底才看得見。 */
+.topbar__left :deep(.term-logo__mark) {
+  background: #ffffff;
+  border-radius: 6px;
+  padding: 3px 5px;
+  box-sizing: content-box;
+}
 .topbar__crumb {
   padding-left: var(--gap-4);
   border-left: 1px solid color-mix(in oklab, var(--c-masthead-fg) 28%, transparent);
