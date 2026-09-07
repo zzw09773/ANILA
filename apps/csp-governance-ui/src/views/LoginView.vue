@@ -732,14 +732,16 @@ async function handleRegister() {
   transform: scale(1.78);
   transform-origin: 51% 49%;
 }
-:global([data-theme="dark"]) .login .login__brand-video-wrap {
+/* 深色濾鏡必須掛在 logo／影片上。把 data-theme 整段設成 global
+   會編成裸選擇器，filter 套到 html，登入頁整頁變白。 */
+:root[data-theme="dark"] .login__brand-video-wrap {
   mix-blend-mode: screen;
 }
-:global([data-theme="dark"]) .login .login__brand-video {
+:root[data-theme="dark"] .login__brand-video {
   filter: invert(1) grayscale(1) contrast(1.6);
   background: transparent;
 }
-:global([data-theme="dark"]) .login :deep(.term-logo__mark) {
+:root[data-theme="dark"] :deep(.term-logo__mark) {
   background: transparent;
   padding: 0;
   filter: brightness(0) invert(1);

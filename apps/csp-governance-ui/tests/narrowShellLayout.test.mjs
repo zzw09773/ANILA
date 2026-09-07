@@ -66,3 +66,10 @@ test('middle pane cannot paint over the status bar', () => {
   assert.match(sidebar, /min-height:\s*0/)
   assert.doesNotMatch(sidebar, /height:\s*100%/)
 })
+
+test('login dark-theme brand filters stay on the logo, not html', () => {
+  const login = readFileSync(resolve(ROOT, 'src/views/LoginView.vue'), 'utf8')
+  assert.doesNotMatch(login, /:global\(\[data-theme/)
+  assert.match(login, /:root\[data-theme="dark"\] \.login__brand-video-wrap/)
+  assert.match(login, /:root\[data-theme="dark"\] \.login__brand-video/)
+})
