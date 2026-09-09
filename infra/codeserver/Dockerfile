@@ -21,7 +21,7 @@ RUN su coder -c "code-server --install-extension ms-azuretools.vscode-docker && 
  && rm -f /usr/local/lib/node_modules/code-server/npm-shrinkwrap.json /usr/local/lib/node_modules/code-server/lib/vscode/npm-shrinkwrap.json /usr/local/lib/node_modules/code-server/lib/vscode/extensions/npm-shrinkwrap.json \
  && rm -rf /usr/local/lib/node_modules/code-server/lib/vscode/node_modules/@github /usr/local/lib/node_modules/code-server/lib/vscode/node_modules/@microsoft \
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
-ENV LANG=en_US.UTF-8 ENTRYPOINTD=/entrypoint.d USER=coder
+ENV LANG=en_US.UTF-8 ENTRYPOINTD=/entrypoint.d USER=coder HOME=/home/coder
 WORKDIR /home/coder
 EXPOSE 8080
 USER 1000

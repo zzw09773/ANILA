@@ -679,6 +679,8 @@ services:
         condition: service_completed_successfully
     environment:
       TZ: Asia/Taipei
+      HOME: /home/coder
+      USER: coder
       # startup_security 拒絕 dev 預設 `changeme-codeserver`,prod 必設真值。
       PASSWORD: ${CODESERVER_PASSWORD:?CODESERVER_PASSWORD must be set}
     volumes:
