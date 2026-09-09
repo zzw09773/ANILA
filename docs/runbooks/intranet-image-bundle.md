@@ -5,7 +5,7 @@
 >
 > 配套腳本:[`infra/deployment/intranet/build-and-export-for-intranet.sh`](../../infra/deployment/intranet/build-and-export-for-intranet.sh)
 > 較舊的六月版全流程仍在 [`intranet-deployment-runbook.md`](./intranet-deployment-runbook.md),
-> 與重啟樹現行 `-p anila-restart` / ASR profile **不一致處以本檔為準**。
+> 與現行正式 `-p anila` / ASR profile **不一致處以本檔為準**。本機開發棧若仍叫 `anila-restart`，那是歷史 project 名，不是出貨包前綴。
 
 ---
 
@@ -13,7 +13,7 @@
 
 | 項目 | 本樹預演選擇 | 理由 |
 |---|---|---|
-| `COMPOSE_PROJECT_NAME` | 明天正式包:`anila-restart`(先停棧再 save)。預演若不能停棧:見 §8 的 `anila-pack-rehearsal`。 | build 出的 tag 前綴 = project 名。內網 `up` 的 `-p` **必須與 bundle 內 tag 一致**,否則會找錯 image。 |
+| `COMPOSE_PROJECT_NAME` | 正式包:`anila`。本機若不能停 `anila-restart` 活體棧:打包時另設 project 名並 overlay `codeserver` image,見 §8。 | build 出的 tag 前綴 = project 名。內網 `up` 的 `-p` **必須與 bundle 內 tag 一致**,否則會找錯 image。 |
 | ASR profile | **預設不帶**(`INCLUDE_ASR=0`) | 平台開機沒語音。麥克風要 `/asr/health` 200 才出現。要開是開機後第二步(§5.1)。若預知之後要開、不想再跑一趟打包,打包時才設 `INCLUDE_ASR=1`(只帶映像;部署仍預設 0)。 |
 | `asr-cpu.yml` | **打包不帶**;起棧視 GPU | overlay 只改 device/env,不改 image 名。`.15` 有 GPU → 不要加;無 GPU 才加(見 §5)。 |
 | 模型 / 權重 | **不帶**(`WITH_MODELS` / `WITH_WEIGHTS` 不設) | 走 `.12` gateway;權重數十到數百 GB,審查不需要。 |
@@ -29,12 +29,12 @@ cd /path/to/ANILA   # 從 restart/from-redesign 的 annotated tag export
 # 內網端不 checkout branch,直接接收 bundle 與配套 repo 內容。
 
 # 若映像尚未對齊目前碼(明天正式攜入前建議重建,會花時間):
-# COMPOSE_PROJECT_NAME=anila-restart \
+# COMPOSE_PROJECT_NAME=anila \
 # COMPOSE_ENV_FILE=.env \
 # bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-images-export
 
 # 映像已存在、只想重包(本預演路徑):
-COMPOSE_PROJECT_NAME=anila-restart \
+COMPOSE_PROJECT_NAME=anila \
 COMPOSE_ENV_FILE=.env \
 SKIP_BUILD=1 \
 SKIP_PULL=1 \
