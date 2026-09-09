@@ -1,14 +1,13 @@
-FROM python:3.13-slim AS base
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378becba5b3e06cb0f3a7f012a610e87e8d767a090ea3f740d AS base
 # Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
 
 # System binaries the runtime needs:
 # - graphviz (subprocess `dot -Tpng/svg`): diagram_renderer + mindmap_renderer
 # - pandoc: HTML → DOCX for report artifacts (pypandoc shells out to it)
-# - playwright chromium dependencies: libs the headless browser needs at run-time
-#   for HTML → PDF rendering (NSS, X-something, fonts, etc.)
 # - fonts-noto-cjk: CJK glyph coverage for matplotlib chart labels +
 #   PDF render output (報告 / 資訊圖表 內文常含 CJK)
 # - curl + ca-certificates: health probe + TLS to csp
+# Chromium and its OS libs come from the Playwright base image.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       graphviz \
@@ -17,10 +16,6 @@ RUN apt-get update \
       wget \
       ca-certificates \
       fonts-noto-cjk \
-      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
-      libxkbcommon0 libatspi2.0-0 libx11-6 libxcomposite1 libxdamage1 \
-      libxext6 libxfixes3 libxrandr2 libgbm1 libcairo2 libpango-1.0-0 \
-      libasound2 libdrm2 libxshmfence1 \
       fontconfig \
  && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
@@ -50,8 +45,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     # Playwright 預設裝 chromium 在 $HOME/.cache/ms-playwright,但 Dockerfile
     # build 階段是 root,runtime 切 USER anila 後找 /home/anila/.cache 找不到。
-    # 改用 system-wide path,build 時 download,runtime 任何 user 都讀同一份。
-    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+    # Playwright official image keeps browsers in /ms-playwright.
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
@@ -65,13 +60,6 @@ COPY pyproject.toml ./
 COPY app/ ./app/
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir . && \
-    # Playwright chromium binary 必須在 pip 之後另外裝。
-    # --with-deps 已在 apt 階段裝完(slim image 沒帶);這裡只下 chromium。
-    # PLAYWRIGHT_BROWSERS_PATH 已設 /opt/playwright-browsers,install 會
-    # 把 binary + symlinks 放這裡,任何 user 跑 process 都讀同一份。
-    mkdir -p /opt/playwright-browsers && \
-    playwright install chromium && \
-    chmod -R a+rX /opt/playwright-browsers && \
     rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Run as non-root for defence-in-depth
