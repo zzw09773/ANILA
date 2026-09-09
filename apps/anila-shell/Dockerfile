@@ -32,7 +32,7 @@ RUN npm run build \
 # nginx(infra/compose/platform.yml)同一個 image:
 #   docker buildx imagetools inspect nginx:1.30.4-alpine
 # ⚠ 換版本時 tag 與 digest 要一起換 —— 不一致時實際拉的是 digest。
-FROM nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46 AS runtime
+FROM nginx:stable-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c AS runtime
 
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
