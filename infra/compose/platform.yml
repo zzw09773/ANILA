@@ -28,9 +28,12 @@ services:
 
   # ── PostgreSQL ──────────────────────────────────────────────────────────
   csp-db:
-    # pgvector 是 postgres:16 的 superset,migration 0014 (ingestion) 需要
-    # vector extension。換回 upstream postgres 會破 ingestion stack。
-    image: pgvector/pgvector:pg16
+    # Self-built pgvector 0.8.1 on postgres:16-alpine. Isolated tag
+    # anila-pgvector:local must not overwrite live pgvector/pgvector:pg16.
+    build:
+      context: ../..
+      dockerfile: infra/docker/pgvector.Dockerfile
+    image: anila-pgvector:local
     environment:
       POSTGRES_USER: csp
       # 只在 volume 首次初始化時生效;既有 csp-pgdata volume 改這個值不會
@@ -712,9 +715,13 @@ services:
   #     self-signed CA,**不要**全域關 TLS 驗證 (歷史教訓)。
   #   - Code Node 模組白名單寫死,避免變成任意 require() 的 RCE 平台。
   n8n:
-    # CVE pass 2026-09-09: 1.98.2 → 2.38.1. Breaking 1.x→2.x. Trivy still
-    # reports Alpine openssh CRITICAL and several npm HIGHs; not a clean ship.
-    image: n8nio/n8n:2.38.1@sha256:9f21fbf422982bbdddc31085c180bef82d59cc608ba16dfec4fc48611d0b51b8
+    # CVE pass 2026-09-09: rebase n8n 2.38.1 onto Alpine 3.24 and overlay
+    # patched nested npm packages. Breaking 1.x→2.x. Isolated tag is
+    # anila-n8n:local so the live anila-restart stack is not retagged.
+    build:
+      context: ../..
+      dockerfile: infra/docker/n8n.Dockerfile
+    image: anila-n8n:local
     # 用 image 內建 'node' user (UID 1000),不要 override user — n8n 首次
     # 開機 HOME 對不上會 mkdir /.n8n EACCES。
     environment:

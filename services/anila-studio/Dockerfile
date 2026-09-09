@@ -9,6 +9,7 @@ FROM mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378b
 # - curl + ca-certificates: health probe + TLS to csp
 # Chromium and its OS libs come from the Playwright base image.
 RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
       graphviz \
       pandoc \
@@ -17,6 +18,8 @@ RUN apt-get update \
       ca-certificates \
       fonts-noto-cjk \
       fontconfig \
+ && apt-get purge -y gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-0 \
+ && apt-get autoremove -y --purge \
  && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Noto Sans CJK TC 獨立 single-face OTF。
@@ -58,8 +61,9 @@ WORKDIR /app
 # `.[dev]`.
 COPY pyproject.toml ./
 COPY app/ ./app/
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir . && \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip --break-system-packages && \
+    pip install --break-system-packages . && \
     rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Run as non-root for defence-in-depth
@@ -72,6 +76,10 @@ RUN useradd --create-home --uid 10001 anila \
  # owner 對齊(named volume 在 first mount 時會 inherit dir owner)。
  && mkdir -p /var/anila/anila-studio-artifacts \
  && chown anila:anila /var/anila/anila-studio-artifacts \
+ && pip uninstall -y --break-system-packages ecdsa pip \
+ && rm -rf /usr/local/lib/python3.13/site-packages/pip /usr/lib/python3*/dist-packages/pip \
+ && rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/bin/pip /usr/bin/pip3 \
+ && rm -rf /root/.cache \
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
 

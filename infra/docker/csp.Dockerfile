@@ -52,12 +52,14 @@ RUN apk add --no-cache graphviz font-noto-cjk curl \
 # code (CSP, ingestion-worker, evaluator) imports parsers/vision from
 # anila_core.* directly and does NOT install AgenticRAG at runtime.
 COPY packages/anila-core /tmp/anila-core
-RUN pip install --no-cache-dir '/tmp/anila-core[rag]' \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install '/tmp/anila-core[rag]' \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Install Python dependencies (CSP-specific)
 COPY services/csp/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Copy backend code (includes scripts/: generate-jwt-keypair.py + init_db.py
@@ -87,20 +89,8 @@ COPY --from=frontend-build /build/dist /app/frontend-dist
 #
 # 換版本時:換檔 → 重算 `sha256sum services/csp/app/static/*` → 改下面兩行。
 # 對不上就當場 build 失敗,不會生出一個「看起來好了」的映像。
-RUN set -eu; \
-    printf '%s  %s\n' \
-      c50b94bbc4f02394326fb7aed1f4fb693b3677f4b3d3344e0d6131808cbf281f app/static/swagger-ui-bundle.js \
-      8f33d996025317049d4a9864f421eab2b2a247872f388026fa94c654913259e7 app/static/swagger-ui.css \
-      > /tmp/swagger-ui.sha256; \
-    if ! sha256sum -c --strict /tmp/swagger-ui.sha256; then \
-      echo "FATAL: Swagger UI 靜態檔與 swagger-ui-dist@5.18.2 的雜湊對不上。" >&2; \
-      echo "       檔案不見／是 placeholder／被截斷／換了版本都會走到這裡。" >&2; \
-      echo "       修法:把 swagger-ui-dist@5.18.2 的真檔放回 services/csp/app/static/," >&2; \
-      echo "       或換版本後同步更新本 Dockerfile 裡的兩個 sha256。" >&2; \
-      exit 1; \
-    fi; \
-    rm -f /tmp/swagger-ui.sha256; \
-    rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
+COPY infra/docker/verify-swagger-ui.py /tmp/verify-swagger-ui.py
+RUN python3 /tmp/verify-swagger-ui.py     && rm -f /tmp/verify-swagger-ui.py     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 
@@ -138,6 +128,10 @@ RUN addgroup -g 10001 anila \
  && adduser -D -u 10001 -G anila anila \
  && mkdir -p /app/logs \
  && chown -R anila:anila /app/logs \
+ && pip uninstall -y ecdsa \
+ && pip uninstall -y pip \
+ && rm -rf /usr/local/lib/python3.13/site-packages/pip \
+ && rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13 \
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
 

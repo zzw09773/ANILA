@@ -48,7 +48,7 @@ FROM nginx:stable-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417
 
 USER root
 RUN apk update && apk upgrade --no-cache libuuid \
-    && rm -rf /var/cache/apk/*
+    && rm -rf /var/cache/apk/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html

@@ -18,7 +18,7 @@ FROM python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=0
 
 WORKDIR /app
 
@@ -34,11 +34,13 @@ RUN apk add --no-cache antiword \
 # Install in dependency order. anila-core changes less often than
 # worker code, so its layer stays cached on most rebuilds.
 COPY packages/anila-core /tmp/anila-core
-RUN pip install '/tmp/anila-core[rag]' \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install '/tmp/anila-core[rag]' \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 COPY services/ingestion-worker /tmp/ingestion-worker
-RUN pip install /tmp/ingestion-worker \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install /tmp/ingestion-worker \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Default upload dir — overridden by env / volume mount in compose.
@@ -60,6 +62,9 @@ VOLUME ["/var/anila/ingestion-uploads"]
 RUN addgroup -g 10001 anila \
  && adduser -D -u 10001 -G anila anila \
  && chown anila:anila /var/anila/ingestion-uploads \
+ && pip uninstall -y pip \
+ && rm -rf /usr/local/lib/python3.13/site-packages/pip \
+ && rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13 \
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
 
