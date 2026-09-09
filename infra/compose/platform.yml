@@ -454,8 +454,11 @@ services:
     # ⚠ 換版本時 tag 與 digest 要一起換 —— 兩者不一致時實際拉的是 digest,
     #   tag 只剩註解作用。
     # 2026-09-09: 1.30.4 alpine digest from nginx:stable-alpine (newer build).
-    # Trivy still reports HIGH libuuid (fix 2.42.3-r0 not in this image).
-    image: nginx:stable-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
+    # Rebuilds with libuuid 2.42.3. Do not use the stock tag on a host that
+    # still runs anila-nginx from nginx:1.30.4-alpine without recreating it.
+    build:
+      context: ../..
+      dockerfile: infra/docker/nginx.Dockerfile
     container_name: anila-nginx
     ports:
       - "${NGINX_HTTP_PORT:-80}:80"
@@ -746,6 +749,9 @@ services:
   # 首次開機 reconfigure ~5-10 分鐘,start_period 600s 是必要的。
   # Initial root password 來自 GITLAB_ROOT_PASSWORD（.env / bundle 的 intranet-defaults.env），不是容器檔案；需要時從該來源取得並在登入後輪換。
   gitlab:
+    # Out of default ship: omnibus image still has hundreds of Trivy C/H.
+    # Enable with COMPOSE_PROFILES=ops. Default intranet export omits it.
+    profiles: ["ops"]
     # CVE pass 2026-09-09: 19.2.1 → 19.3.1. Omnibus image still has hundreds of Trivy C/H.
     image: gitlab/gitlab-ce:19.3.1-ce.0@sha256:f63df4c43029fe91db370609c0b40a1e3585cebd06e3e9637d93a9a3030eb86e
     hostname: gitlab.anila.internal

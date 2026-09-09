@@ -1,13 +1,12 @@
 # Build context: ANILA repo root  (docker-compose sets context: .)
 # Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
 # ── Build stage ───────────────────────────────────────────────────────────────
-FROM python:3.13-slim AS builder
+FROM python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a AS builder
 
 WORKDIR /build
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
+RUN apk add --no-cache gcc musl-dev \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Install anila-core SDK (pure runtime — no RAG extras).
 # Router only needs the runtime foundation (api, registry, tools, providers);
@@ -21,12 +20,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
     rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # ── Runtime stage ──────────────────────────────────────────────────────────────
-FROM python:3.13-slim AS runtime
+FROM python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a AS runtime
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
+RUN apk add --no-cache curl \
+    && apk upgrade --no-cache libuuid \
+    && pip install --no-cache-dir --upgrade 'setuptools>=78.1.1' 'msgpack>=1.2.1' \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 COPY --from=builder /usr/local/lib/python3.13/site-packages \
                     /usr/local/lib/python3.13/site-packages
@@ -38,7 +39,7 @@ COPY services/anila-core-router/main.py ./
 # image 裡先建好並歸 anila，named volume 第一次建立時才會繼承這個所有權，否則
 # volume 是 root 的、router 寫不進去（uid 1000）。
 RUN mkdir -p /app/.anila \
-    && useradd -m -u 1000 anila \
+    && adduser -D -u 1000 anila \
     && chown -R anila:anila /app \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila

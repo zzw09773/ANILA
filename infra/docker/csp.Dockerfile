@@ -17,7 +17,7 @@ COPY apps/csp-governance-ui/ ./
 RUN npm run build && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Stage 2: Production
-FROM python:3.13-slim
+FROM python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a
 WORKDIR /app
 
 # graphviz + fonts-noto-cjk: Studio Fix 2 (2026-05-18). CSP shells out
@@ -35,11 +35,10 @@ WORKDIR /app
 # curl: deploy-prod.sh cmd_verify runs `docker compose exec -T csp curl`
 # against http://localhost:8000/health. F6 now fail-closes on a missing
 # probe binary; studio already ships curl, CSP did not.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    graphviz \
-    fonts-noto-cjk \
-    curl \
-    && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
+RUN apk add --no-cache graphviz font-noto-cjk curl \
+    && apk upgrade --no-cache libuuid \
+    && pip install --no-cache-dir --upgrade 'setuptools>=78.1.1' 'msgpack>=1.2.1' \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Install anila-core first (changes less often than backend code, so
 # layer caching survives most builds). The package brings asyncpg +
@@ -135,8 +134,8 @@ ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 # **容器直接起不來**(2026-08-06 驗收實測)。根因由 .dockerignore 的 `**/logs/` 擋掉,
 # 這裡是第二道:即使哪天 context 又漏進什麼,服務仍然起得來。
 # 目錄照理是空的,`-R` 的成本是零。
-RUN groupadd --gid 10001 anila \
- && useradd --create-home --uid 10001 --gid 10001 anila \
+RUN addgroup -g 10001 anila \
+ && adduser -D -u 10001 -G anila anila \
  && mkdir -p /app/logs \
  && chown -R anila:anila /app/logs \
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid

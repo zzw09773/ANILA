@@ -46,6 +46,10 @@ RUN npm run build \
 # ⚠ 換版本時 tag 與 digest 要一起換 —— 不一致時實際拉的是 digest。
 FROM nginx:stable-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c AS runtime
 
+USER root
+RUN apk update && apk upgrade --no-cache libuuid \
+    && rm -rf /var/cache/apk/*
+
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
 

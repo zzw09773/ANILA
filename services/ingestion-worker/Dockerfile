@@ -14,7 +14,7 @@
 # imports parsers/vision from ``anila_core.*`` directly.
 # Build-layer DCS cleanup; rationale and same-RUN rule: services/asr-decoder/Dockerfile.
 
-FROM python:3.13-slim
+FROM python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -26,9 +26,10 @@ WORKDIR /app
 #   - antiword: legacy .doc (binary Word) → text, used by anila_core's
 #     DocParser. Without it, .doc uploads fail at parse time with
 #     "antiword is required for .doc parsing".
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends antiword \
-    && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
+RUN apk add --no-cache antiword \
+    && apk upgrade --no-cache libuuid \
+    && pip install --no-cache-dir --upgrade 'setuptools>=78.1.1' 'msgpack>=1.2.1' \
+    && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Install in dependency order. anila-core changes less often than
 # worker code, so its layer stays cached on most rebuilds.
@@ -56,8 +57,8 @@ VOLUME ["/var/anila/ingestion-uploads"]
 # chown 這個目錄有兩個作用:(a) 沒掛 bind mount 時 VOLUME 產生的匿名 volume
 # 會繼承映像裡的所有權,不會又變回 root:root;(b) 掛了 bind mount 時 host
 # 端所有權蓋過映像 —— 那條路徑由上面那支部署腳本負責。
-RUN groupadd --gid 10001 anila \
- && useradd --create-home --uid 10001 --gid 10001 anila \
+RUN addgroup -g 10001 anila \
+ && adduser -D -u 10001 -G anila anila \
  && chown anila:anila /var/anila/ingestion-uploads \
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
