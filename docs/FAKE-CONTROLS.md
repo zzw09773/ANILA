@@ -405,7 +405,7 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
 
 ## 第五輪(2026-08-05)——專案入口磁貼的驗收帶出來的
 
-### #38 ✅ 空的 `allowed_origins` 不是「不准」,是「全部都准」——launch token 直接送出去 🔴
+### #38 ✅ 空的 `allowed_origins` 不是「不准」,是「全部都准」——launch token 直接送出去 ✅ 已修(2026-09-08)
 
 - **畫面說**:治理中心的服務登記有一格 `allowed_origins`(iframe 來源允許清單)。
   管理員留白 → 直覺是「我沒有授權任何外部來源」。
@@ -433,6 +433,8 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   要分域:同源(`_SAME_ORIGIN`)空清單放行,跨主機空清單則 fail closed。
   ⚠ 這會讓**現存**的、留白的跨主機登記全部停掉,是個 breaking change,
   要先盤點資料庫裡有幾筆、並且給管理員一條看得懂的錯誤訊息。
+
+- **現在讓它正確的那一行**(2026-09-08):`services/csp/app/api/services.py` `_validate_entry_url_origins` — 跨主機空／過濾後空的 `allowed_origins` 在簽發 launch token 與寫 `service_launches` 之前回 400（`跨主機服務必須設定 allowed_origins`）。同源相對路徑空名單仍放行。建立／更新在 `entry_url` 或 `allowed_origins` 變更時用合併後狀態做同一道驗證；存量列不自動回填，launch 時大聲失敗。
 
 ### #39 設定壞掉的服務,對沒有授權的人回 400 而不是 404
 

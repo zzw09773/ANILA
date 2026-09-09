@@ -7,3 +7,4 @@
   與舊 tag `v1.0.0`（2026-06-14 內網版）、`v1.1.0`、`v1.2.0`、`v2.0.0`、`v2.0.1`（全部改名為 `legacy/<原名>`）。
   舊線也有一個 v1.0.0，號碼相同或比較大都是歷史，不代表比較新；**不要拿 legacy 線的東西回來合**。
 - 之後照語意版本：修 bug 升 patch（v1.0.1）、加功能升 minor（v1.1.0）；每次出貨都打 tag 再建包。
+- **v1.2.2**（2026-09-09）：A01 空 `allowed_origins` fail-closed、F6 deploy verify 失敗傳播、CSP 映像補 curl。正式 image bundle 的 compose project 是 `anila`，不再用 `anila-restart`。

@@ -32,9 +32,13 @@ WORKDIR /app
 # "fixed the file nobody builds" mistake cannot recur. **This** file is
 # the CSP image; compose points here via
 # `dockerfile: infra/docker/csp.Dockerfile`.
+# curl: deploy-prod.sh cmd_verify runs `docker compose exec -T csp curl`
+# against http://localhost:8000/health. F6 now fail-closes on a missing
+# probe binary; studio already ships curl, CSP did not.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     graphviz \
     fonts-noto-cjk \
+    curl \
     && rm -rf /var/lib/apt/lists/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Install anila-core first (changes less often than backend code, so

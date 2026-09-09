@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from app.models.registered_service import RegisteredService
+from app.models.service_launch import ServiceLaunch
 from app.services import anilalm_release_gate as release_gate
 from tests.conftest import login, make_user
 
@@ -38,6 +39,17 @@ def _bypass_dev_secret_gate(monkeypatch):
 
 
 def _make_service(db, *, name, slug, entry_url, **kw) -> RegisteredService:
+    if "allowed_origins" not in kw:
+        parsed = urlparse(entry_url)
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        else:
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                host = (parsed.hostname or "").lower()
+                port_s = f":{port}" if port is not None else ""
+                kw["allowed_origins"] = [f"{parsed.scheme}://{host}{port_s}"]
     svc = RegisteredService(name=name, slug=slug, entry_url=entry_url, **kw)
     db.add(svc)
     db.commit()
@@ -271,6 +283,124 @@ class TestCrossHostAllowlistUnchanged:
         resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
         assert resp.status_code == 400, resp.text
         assert resp.json()["detail"] == "服務 entry_url origin 不在 allowed_origins"
+
+
+# ── 2b. 跨主機空名單 fail-closed（A01 / FAKE-CONTROLS #38） ─────────────────
+
+
+class TestCrossHostEmptyAllowlistFailClosed:
+    """Absolute external URL + empty/filtered-empty origins must not mint a token.
+
+    These tests hit the live ``_validate_entry_url_origins`` path through the
+    launch/create/update APIs — they must not stub the validator.
+    """
+
+    def _launch_count(self, db, service_id: int) -> int:
+        return (
+            db.query(ServiceLaunch).filter(ServiceLaunch.service_id == service_id).count()
+        )
+
+    @pytest.mark.parametrize(
+        "origins",
+        [[], [""], None],
+        ids=["empty", "blank-str", "null"],
+    )
+    def test_launch_rejects_empty_allowlist_before_token(self, client, db, origins):
+        headers = _headers(client, db)
+        svc = _make_service(
+            db,
+            name="空名單外站",
+            slug=f"empty-origins-{id(origins)}",
+            entry_url="https://attacker.example/steal",
+            allowed_origins=origins,
+            is_public=True,
+        )
+        before = self._launch_count(db, svc.id)
+        resp = client.post(
+            f"/api/services/{svc.slug}/launch", json={}, headers=headers
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"] == "跨主機服務必須設定 allowed_origins"
+        assert "launch_token" not in resp.json()
+        assert self._launch_count(db, svc.id) == before
+
+    def test_relative_empty_allowlist_still_launches(self, client, db):
+        headers = _headers(client, db)
+        svc = _make_service(
+            db,
+            name="ANILA",
+            slug="anila-empty-origins",
+            entry_url="/anila",
+            allowed_origins=[],
+            is_public=True,
+        )
+        resp = client.post(
+            f"/api/services/{svc.slug}/launch", json={}, headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["launch_url"].startswith("/anila?launch_token=")
+
+    def test_create_rejects_cross_host_empty_allowlist(self, client, db):
+        headers = _headers(client, db, username="root", role="admin")
+        resp = client.post(
+            "/api/services",
+            json={
+                "name": "attacker-svc",
+                "slug": "attacker-svc",
+                "entry_url": "https://attacker.example/steal",
+                "allowed_origins": [],
+                "is_public": True,
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 400, resp.text
+        assert db.query(RegisteredService).filter_by(slug="attacker-svc").first() is None
+
+    def test_update_rejects_merged_cross_host_empty_allowlist(self, client, db):
+        headers = _headers(client, db, username="root", role="admin")
+        svc = _make_service(
+            db,
+            name="safe",
+            slug="safe-svc",
+            entry_url="https://aiops.example.org:4443/",
+            allowed_origins=["https://aiops.example.org:4443"],
+            is_public=True,
+        )
+        resp = client.put(
+            f"/api/services/{svc.slug}",
+            json={"allowed_origins": []},
+            headers=headers,
+        )
+        assert resp.status_code == 400, resp.text
+        db.refresh(svc)
+        assert svc.allowed_origins == ["https://aiops.example.org:4443"]
+
+    def test_update_other_fields_on_legacy_invalid_row_does_not_auto_trust(
+        self, client, db
+    ):
+        headers = _headers(client, db, username="root", role="admin")
+        svc = _make_service(
+            db,
+            name="legacy-hole",
+            slug="legacy-hole",
+            entry_url="https://attacker.example/steal",
+            allowed_origins=[],
+            is_public=True,
+        )
+        resp = client.put(
+            f"/api/services/{svc.slug}",
+            json={"name": "legacy-renamed"},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        db.refresh(svc)
+        assert svc.name == "legacy-renamed"
+        assert svc.allowed_origins == []
+        launch = client.post(
+            f"/api/services/{svc.slug}/launch", json={}, headers=headers
+        )
+        assert launch.status_code == 400, launch.text
+        assert db.query(ServiceLaunch).filter_by(service_id=svc.id).count() == 0
 
 
 # ── 3. 停用的服務不可啟動 ────────────────────────────────────────────────────

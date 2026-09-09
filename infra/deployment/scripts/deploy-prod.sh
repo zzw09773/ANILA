@@ -431,27 +431,32 @@ cmd_wait_healthy() {
 cmd_verify() {
   section "Endpoint smoke test"
   # 試 nginx → csp /health
+  local bad=0
   local nginx_health
   nginx_health=$(curl -sk -o /dev/null -w "%{http_code}" \
-    --max-time 5 https://localhost/health 2>&1 || echo "fail")
+    --max-time 5 https://localhost/health 2>/dev/null || true)
+  nginx_health="${nginx_health:-fail}"
   if [[ "$nginx_health" == "200" ]]; then
     ok "https://localhost/health → 200"
   else
     warn "https://localhost/health → $nginx_health (TLS cert 可能要重簽,bash infra/deployment/scripts/reissue-tls-cert.sh)"
+    bad=1
   fi
 
   # 試 csp directly (cluster-internal,從 nginx container 出)
-  if docker compose exec -T csp curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+  if docker compose exec -T csp curl -sf --max-time 5 http://localhost:8000/health >/dev/null 2>&1; then
     ok "csp /health (internal) → 200"
   else
     warn "csp /health (internal) 失敗"
+    bad=1
   fi
 
   # 試 anila-studio
-  if docker compose exec -T anila-studio curl -sf http://localhost:8100/health >/dev/null 2>&1; then
+  if docker compose exec -T anila-studio curl -sf --max-time 5 http://localhost:8100/health >/dev/null 2>&1; then
     ok "anila-studio /health (internal) → 200"
   else
     warn "anila-studio /health (internal) 失敗"
+    bad=1
   fi
 
   # 試 /api/auth/revocations(anila-studio 的 cold-start dep)
@@ -459,12 +464,19 @@ cmd_verify() {
   revoke_check=$(docker compose exec -T anila-studio sh -c \
     "curl -sf -H 'X-CSP-Service-Token: '\$CSP_SERVICE_TOKEN \
      http://csp:8000/api/auth/revocations?since=2026-01-01T00:00:00Z \
-     -o /dev/null -w '%{http_code}'" 2>&1 || echo "fail")
+     --max-time 5 -o /dev/null -w '%{http_code}'" 2>/dev/null || true)
+  revoke_check="${revoke_check:-fail}"
   if [[ "$revoke_check" == "200" ]]; then
     ok "csp /api/auth/revocations → 200 (anila-studio cold-start 通了)"
   else
     warn "csp /api/auth/revocations → $revoke_check"
+    bad=1
   fi
+  if (( bad != 0 )); then
+    err "endpoint smoke test 未通過"
+    return 1
+  fi
+  return 0
 }
 
 # ── 顯示說明 ──────────────────────────────────────────────────────────────

@@ -45,12 +45,25 @@ def _bypass_dev_secret_gate(monkeypatch):
 
 
 def _make_service(db, *, name="材料分析", slug="material-analysis", **kw) -> RegisteredService:
+    from urllib.parse import urlparse
+
     svc = RegisteredService(
         name=name,
         slug=slug,
         entry_url=kw.pop("entry_url", "https://material.local/app"),
         **kw,
     )
+    if "allowed_origins" not in kw:
+        parsed = urlparse(svc.entry_url)
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        else:
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                host = (parsed.hostname or "").lower()
+                port_s = f":{port}" if port is not None else ""
+                svc.allowed_origins = [f"{parsed.scheme}://{host}{port_s}"]
     db.add(svc)
     db.commit()
     db.refresh(svc)
@@ -565,6 +578,7 @@ class TestAuditCallbackBindingGovernance:
         resp = client.post(
             "/api/services",
             json={"name": "bound-svc", "entry_url": "https://b.local",
+                  "allowed_origins": ["https://b.local"],
                   "service_client_id": sc.id},
             headers=headers,
         )
@@ -663,7 +677,8 @@ class TestRegistryWriteContract:
         headers = _auth_headers(client, db, username="root", role="admin")
         resp = client.post(
             "/api/services",
-            json={"name": "Studio", "entry_url": "https://studio.local/app"},
+            json={"name": "Studio", "entry_url": "https://studio.local/app",
+                  "allowed_origins": ["https://studio.local"]},
             headers=headers,
         )
         assert resp.status_code == 201, resp.text
@@ -686,7 +701,8 @@ class TestRegistryWriteContract:
         svc = _make_service(db, entry_url="https://old.local")
         resp = client.put(
             f"/api/services/{svc.slug}",
-            json={"entry_url": "https://new.local/path"},
+            json={"entry_url": "https://new.local/path",
+                  "allowed_origins": ["https://new.local"]},
             headers=headers,
         )
         assert resp.status_code == 200, resp.text

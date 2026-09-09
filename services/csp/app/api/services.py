@@ -159,35 +159,59 @@ def _url_origin(raw_url: str) -> str:
     return f"{parsed.scheme}://{host.lower()}{port}"
 
 
-def _validate_launch_entry_url(service: RegisteredService) -> str:
-    """Fail closed before appending a launch token to service.entry_url.
+def _filter_allowed_origins(raw: list[str] | None) -> set[str]:
+    """Drop blank entries; remaining candidates must be parseable origins."""
+    allowed: set[str] = set()
+    for candidate in raw or []:
+        if not candidate:
+            continue
+        allowed.add(_url_origin(candidate))
+    return allowed
 
-    回傳「要拿去組 launch URL 的那個 entry URL」(已正規化),讓驗過的字串與
-    發出去的字串是同一個 —— 否則正規化本身就是一個 TOCTOU 縫。
 
-    同源相對路徑(``/anila``)視為本 origin:token 不離開本站,跨主機白名單
-    在這裡沒有可保護的東西,所以 ``allowed_origins`` 空的時候直接放行 ——
-    這正是 auto_seed 對相對路徑產生 ``allowed_origins=[]`` 的原因(見
-    ``app/services/auto_seed.py`` 的 ``_origin_of``)。
-    反之,若管理員替一個同源服務填了 ``allowed_origins``,那組設定自相矛盾,
-    照舊 fail closed 擋下來(大聲拒絕,不靜默忽略)。
+def _validate_entry_url_origins(
+    entry_url: str, allowed_origins: list[str] | None
+) -> str:
+    """Return the normalised entry URL, or raise 400.
+
+    Same-origin relative paths (``/anila``) may have an empty allow-list:
+    the launch token never leaves this origin. Cross-host http(s) URLs
+    require a non-empty allow-list that contains the entry origin — an
+    empty or filtered-empty list is fail-closed, not "allow all".
     """
-    entry_url = _normalise_entry_url(service.entry_url)
+    entry_url = _normalise_entry_url(entry_url)
     if _is_same_origin_path(entry_url):
         origin = _SAME_ORIGIN
     else:
         origin = _url_origin(entry_url)
-    allowed = {
-        _url_origin(candidate)
-        for candidate in (service.allowed_origins or [])
-        if candidate
-    }
-    if allowed and origin not in allowed:
+    allowed = _filter_allowed_origins(allowed_origins)
+    if origin == _SAME_ORIGIN:
+        if allowed and origin not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail="服務 entry_url origin 不在 allowed_origins",
+            )
+        return entry_url
+    if not allowed:
+        raise HTTPException(
+            status_code=400,
+            detail="跨主機服務必須設定 allowed_origins",
+        )
+    if origin not in allowed:
         raise HTTPException(
             status_code=400,
             detail="服務 entry_url origin 不在 allowed_origins",
         )
     return entry_url
+
+
+def _validate_launch_entry_url(service: RegisteredService) -> str:
+    """Fail closed before appending a launch token to service.entry_url.
+
+    回傳「要拿去組 launch URL 的那個 entry URL」(已正規化),讓驗過的字串與
+    發出去的字串是同一個 —— 否則正規化本身就是一個 TOCTOU 縫。
+    """
+    return _validate_entry_url_origins(service.entry_url, service.allowed_origins)
 
 
 def _validate_source_snapshot_access(
@@ -265,6 +289,9 @@ def create_service(
             detail="healthcheck_url 已退場:平台不會探測此欄位,請勿再傳送",
         )
     ceiling = data.get("classification_ceiling")
+    _validate_entry_url_origins(
+        data["entry_url"], data.get("allowed_origins") or []
+    )
     service = RegisteredService(
         name=data["name"],
         slug=slug,
@@ -366,6 +393,18 @@ def update_service(
                 status_code=403,
                 detail=f"該服務管理員僅可編輯 {sorted(allowed)};不可改 {blocked}",
             )
+    if "entry_url" in update_data or "allowed_origins" in update_data:
+        merged_entry = (
+            update_data["entry_url"]
+            if "entry_url" in update_data
+            else service.entry_url
+        )
+        merged_origins = (
+            update_data["allowed_origins"]
+            if "allowed_origins" in update_data
+            else (service.allowed_origins or [])
+        )
+        _validate_entry_url_origins(merged_entry, merged_origins or [])
     for field, value in update_data.items():
         if field == "classification_ceiling" and hasattr(value, "value"):
             value = value.value

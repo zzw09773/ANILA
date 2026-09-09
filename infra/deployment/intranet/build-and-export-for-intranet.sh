@@ -18,7 +18,7 @@
 #
 # 環境變數:
 #   COMPOSE_PROJECT_NAME  compose project(-p)。決定 build 出來的 image 前綴
-#                         (例如 anila-restart-csp)。預設 anila-restart。
+#                         (例如 anila-csp)。預設 anila。
 #                         內網 up 時必須用同一個 -p,否則找不到 image。
 #   COMPOSE_ENV_FILE      給 compose 插值用的 env 檔。預設 $REPO_ROOT/.env。
 #                         worktree 預演可指到主樹 .env(只讀插值,不寫入)。
@@ -91,7 +91,7 @@ OUTPUT_DIR="${1:-/tmp/anila-images-export}"
 OUTPUT_DIR="${OUTPUT_DIR%/}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila-restart}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila}"
 COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-$REPO_ROOT/.env}"
 INCLUDE_ASR="${INCLUDE_ASR:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
