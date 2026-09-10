@@ -6,8 +6,8 @@
 # Prod initial mode 切換 (branch SSO):
 #   - 所有 secret env var 預設改成 ``${VAR:?must be set}``,缺 .env 直接 fail。
 #   - ANILA_ALLOW_DEV_SECRET 預設 0,任何 dev 預設值會被 startup_security 擋下。
-#   - codeserver / n8n / gitlab:內網維護/自動化/合規(ISO 42001)都需要,均已啟用
-#     (nginx route 2026-06-11 解凍);codeserver 掛 repo root 維護平台(機密已遮蔽)。
+#   - codeserver:內網維護,掛 repo root(機密已遮蔽)。nginx /codeserver 不解凍 SSO。
+#   - n8n / gitlab:COMPOSE_PROFILES=ops。預設出貨不啟 n8n,避免 /n8n 無 SSO 首登接管。
 # Dev 切換回去:把 .env 還原成 .env.dev.local 內容即可,所有 dev opt-in flag
 # 都被 .env 那邊重新賦值,compose 不再提供「dev 預設值」這個安全網。
 
@@ -136,7 +136,7 @@ services:
       # ⚠ 尾巴的 `,docling,router` 在 `:-` 預設值**外側**:operator 設
       # ANILA_TRUSTED_HOSTS 會整份替換括號裡的預設清單,但這兩個 compose
       # 內部服務名恆在（平台內服務,不是 operator 會想換掉的模型）。
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal},docling,router"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent},docling,router"
       # **入向** Host header allow-list (TrustedHostMiddleware) —— 跟上面那條
       # 出向 SSRF allow-list 是兩回事,別搞混。csp 的 library 預設是 "*"(等於
       # 關著),所以**這一行就是打開它的地方**:沒有它,.env 設 ALLOWED_HOSTS
@@ -717,9 +717,13 @@ services:
   #     self-signed CA,**不要**全域關 TLS 驗證 (歷史教訓)。
   #   - Code Node 模組白名單寫死,避免變成任意 require() 的 RCE 平台。
   n8n:
+    # Out of default ship: /n8n has no CSP/card SSO. Enable with
+    # COMPOSE_PROFILES=ops (same gate as GitLab). nginx location stays
+    # and 502s when the container is down.
+    profiles: ["ops"]
     # CVE pass 2026-09-09: rebase n8n 2.38.1 onto Alpine 3.24 and overlay
     # patched nested npm packages. Breaking 1.x→2.x. Isolated tag is
-    # anila-n8n:local so the live anila-restart stack is not retagged.
+    # anila-n8n:local so the live anila stack is not retagged.
     build:
       context: ../..
       dockerfile: infra/docker/n8n.Dockerfile

@@ -151,3 +151,24 @@ def test_agent_flag_does_not_leak_to_model(monkeypatch):
     monkeypatch.setenv(_HTTP_AGENT, "1")
     with pytest.raises(UnsafeEndpointError):
         validate_outbound_url(_PUBLIC, endpoint_kind=ENDPOINT_KIND_MODEL)
+
+
+def test_host_docker_internal_is_structural_deny_for_all_kinds(monkeypatch):
+    from anila_core.security.url_guard import (
+        ENDPOINT_KIND_AGENT,
+        ENDPOINT_KIND_GENERIC,
+        ENDPOINT_KIND_MODEL,
+        UnsafeEndpointError,
+        validate_outbound_url,
+    )
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_AGENT_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "host.docker.internal")
+    for kind in (ENDPOINT_KIND_GENERIC, ENDPOINT_KIND_MODEL, ENDPOINT_KIND_AGENT):
+        with pytest.raises(UnsafeEndpointError) as exc:
+            validate_outbound_url(
+                "https://host.docker.internal:9/v1", endpoint_kind=kind
+            )
+        assert exc.value.reason == "deny_host"
+        assert exc.value.fixable_by_trust_host is False

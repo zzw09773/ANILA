@@ -29,15 +29,16 @@ Policy (current):
   deployments into accepting them — agents on internal LAN are a
   legitimate first-class case for this platform.
 - Hostname literals matching the deny list (localhost, 169.254.169.254,
-  *.internal, *.local) are blocked even before DNS resolution and are
-  NOT affected by either flag.
+  ``host.docker.internal`` / ``*.docker.internal``) are blocked even
+  before DNS resolution and are NOT affected by trusted-hosts or flags.
+  Generic ``*.internal`` / ``*.local`` stay admin-fixable via the allow-list.
 - ``ANILA_TRUSTED_HOSTS`` (comma-separated) is an explicit allow-list of
-  hostnames whose host checks (deny list, internal-zone suffixes,
-  single-label, private/loopback IP rules, DNS resolution) are skipped.
-  Scheme validation still applies. Use case: docker service names in
-  cross-stack networks (e.g. ``gemma4`` in ``anila-models-net``) where
-  the platform deliberately calls inference servers via internal DNS.
-  Only admins editing compose env can grow this list — not user-facing.
+  hostnames that may skip name-shape checks (single-label docker DNS,
+  generic internal-zone suffixes) and RFC1918 DNS answers. Scheme
+  validation, loopback / metadata / link-local / host-gateway names
+  still fail closed. Use case: docker service names in cross-stack
+  networks (e.g. ``gemma4`` in ``anila-models-net``). Only admins
+  editing compose env or the trusted-hosts UI can grow this list.
 
 The DNS check is best-effort and runs synchronously — endpoint URLs are
 registered rarely (once per BYO LLM key), not per-request, so the
@@ -245,6 +246,7 @@ _DENY_HOSTS = frozenset({
     "169.254.169.254",  # cloud metadata
     "metadata.google.internal",
     "metadata",
+    "host.docker.internal",  # Docker host gateway; never user-supplied
 })
 
 # Suffixes that signal docker / k8s / mDNS internal-only zones.
@@ -413,6 +415,15 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
         raise UnsafeEndpointError(
             f"endpoint_url host {host!r} is on the deny list "
             f"(loopback / metadata / mDNS)",
+            host=host,
+            reason=REASON_DENY_HOST,
+        )
+    if host.endswith(".docker.internal"):
+        # host.docker.internal and any subdomain. Structural: the
+        # trusted-hosts UI must not reopen the Docker host gateway.
+        raise UnsafeEndpointError(
+            f"endpoint_url host {host!r} is the Docker host gateway "
+            f"and cannot be allow-listed",
             host=host,
             reason=REASON_DENY_HOST,
         )

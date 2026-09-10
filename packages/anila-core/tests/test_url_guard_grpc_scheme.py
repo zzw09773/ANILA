@@ -123,6 +123,7 @@ _STRUCTURALLY_UNSAFE_HOSTS = [
     ("169.254.169.254:80", "雲端 metadata"),
     ("metadata.google.internal:9001", "GCP metadata 名稱"),
     ("metadata:9001", "metadata 短名"),
+    ("host.docker.internal:9001", "Docker host gateway"),
     ("169.254.10.5:9001", "link-local"),
     ("224.0.0.1:9001", "multicast"),
     ("0.0.0.0:9001", "unspecified"),

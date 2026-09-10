@@ -61,7 +61,10 @@ def test_register_allows_trusted_docker_service_name(monkeypatch):
     _enforce_endpoint_url("http://gemma4:8000/v1")
     _enforce_endpoint_url("http://gpt-oss-20b:8000/v1")
     _enforce_endpoint_url("http://nv-embed-proxy:8000/v1")
-    _enforce_endpoint_url("http://host.docker.internal:7011/v1")
+    # host.docker.internal is structural deny even when listed.
+    with pytest.raises(HTTPException) as exc:
+        _enforce_endpoint_url("http://host.docker.internal:7011/v1")
+    assert exc.value.status_code == 400
 
 
 # ── RFC 1918 仍受 ALLOW_PRIVATE_ENDPOINT 管 (沒動到既有合約) ─────────────────────
@@ -144,3 +147,16 @@ def test_metadata_address_NOT_fixable(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         _enforce_endpoint_url("http://169.254.169.254/latest/")
     assert isinstance(exc.value.detail, str)
+
+
+def test_register_blocks_host_docker_internal_even_when_trusted(monkeypatch):
+    """Docker host gateway is never user-addressable, even via trusted hosts."""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "host.docker.internal")
+    with pytest.raises(HTTPException) as exc:
+        _enforce_endpoint_url("https://host.docker.internal:7011/v1")
+    assert exc.value.status_code == 400
+    with pytest.raises(HTTPException) as exc:
+        _enforce_endpoint_url("https://foo.docker.internal/v1")
+    assert exc.value.status_code == 400
