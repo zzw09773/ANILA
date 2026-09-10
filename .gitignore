@@ -51,6 +51,9 @@ node_modules/
 # 的安裝),那是檔案不是目錄,會漏網——2026-07-30 真的被 commit 進來過一次。
 node_modules
 dist/
+# Exception: patched image-size parsers must ship (no upstream >2.0.2).
+!services/pptx-renderer/vendor/image-size/dist/
+!services/pptx-renderer/vendor/image-size/dist/**
 build/
 .next/
 out/

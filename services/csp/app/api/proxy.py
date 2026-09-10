@@ -1071,7 +1071,11 @@ def list_available_agents(
             "object": "agent",
             "name": a.name,
             "description_for_router": a.description_for_router,
-            "endpoint_url": a.endpoint_url,
+            # Same visibility predicate as /api/models. Router dispatch does
+            # not call this URL (it proxies through CSP); the SPA must not
+            # receive a docker-internal agent address just because the user
+            # has UserAgentPermission.
+            "endpoint_url": _endpoint_display_for(db, user, a.endpoint_url),
             "capabilities": a.capabilities or {},
             "input_schema": a.input_schema,
             "requires_encryption": bool(getattr(a, "requires_encryption", False)),

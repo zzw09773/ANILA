@@ -32,10 +32,11 @@ WORKDIR /app
 
 # Copy vendored deps + the rest of the skill. 
 COPY package.json package-lock.json ./
+COPY vendor ./vendor
 COPY scripts/patch-image-size-cve.js ./scripts/patch-image-size-cve.js
 RUN npm ci --omit=dev \
- && node scripts/patch-image-size-cve.js \
- && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm /var/lib/sdcssagent /run/sisidsdaemon.pid
+&& node scripts/patch-image-size-cve.js \
+&& rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm /var/lib/sdcssagent /run/sisidsdaemon.pid
 COPY server.js ./
 # icons.js is the Phase 3 concept→Heroicons resolver. Required by
 # server.js at startup; missing it manifests as MODULE_NOT_FOUND.

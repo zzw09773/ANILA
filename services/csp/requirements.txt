@@ -68,6 +68,7 @@ respx==0.22.0
 # 凍結本輪釘現行 major：顯式寫出 pytest，避免只靠外掛傳遞、wheelhouse 對不到帳。
 # pytest 9 + pytest-asyncio 1.3 是凍結後遷移；規格寫在 PLAN.md 第 5 段的「凍結後遷移」段。
 pytest==8.4.2
+# 正式映像在 csp.Dockerfile 末端 pip uninstall pytest，CVE-2025-71176 不進出貨層；wheelhouse 仍保留此列對帳。
 pytest-asyncio==0.24.0
 
 # Triton/KServe gRPC embedding（protocol=triton_grpc）。air-gap 友善：

@@ -129,6 +129,7 @@ RUN addgroup -g 10001 anila \
  && mkdir -p /app/logs \
  && chown -R anila:anila /app/logs \
  && pip uninstall -y ecdsa \
+ && pip uninstall -y pytest pytest-asyncio \
  && pip uninstall -y pip \
  && rm -rf /usr/local/lib/python3.13/site-packages/pip \
  && rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13 \

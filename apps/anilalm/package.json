@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "ANILA LM — knowledge-base SPA for myCSPPlatform.",
+  "description": "ANILA LM \u2014 knowledge-base SPA for myCSPPlatform.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -35,6 +35,6 @@
     "vitest": "^3.1.3"
   },
   "overrides": {
-    "js-yaml": "4.3.0"
+    "js-yaml": "4.3.2"
   }
 }

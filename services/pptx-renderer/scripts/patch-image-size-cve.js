@@ -31,6 +31,17 @@ function walk(dir, acc) {
 }
 
 const files = walk(path.join(root, 'dist'), [])
+const pkgPath = path.join(root, 'package.json')
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+const already = files.some((file) =>
+  fs.readFileSync(file, 'utf8').includes('if (imageHeader[1] <= 0) break')
+)
+if (already) {
+  pkg.version = '2.0.3-anila.1'
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
+  console.log('already patched; version', pkg.version)
+  process.exit(0)
+}
 let changed = 0
 for (const file of files) {
   let text = fs.readFileSync(file, 'utf8')
@@ -41,9 +52,6 @@ for (const file of files) {
     changed += 1
   }
 }
-
-const pkgPath = path.join(root, 'package.json')
-const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
 pkg.version = '2.0.3-anila.1'
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 if (changed < 1) {

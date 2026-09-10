@@ -21,6 +21,7 @@ from app.models.agent import Agent, UserAgentPermission
 from app.models.token_usage import TokenUsage
 from app.services.auth_service import create_tokens
 from app.services.usage_service import get_usage_summary
+from app.services.endpoint_author_service import ENDPOINT_REDACTED
 
 from tests.conftest import make_agent, make_api_key, make_model, make_user
 
@@ -45,6 +46,19 @@ def test_v1_agents_via_jwt_returns_permitted_agents(client: TestClient, db: Sess
     assert resp.status_code == 200, resp.text
     names = {a["id"] for a in resp.json()["data"]}
     assert "spa-agent" in names
+    row = next(a for a in resp.json()["data"] if a["id"] == "spa-agent")
+    assert row["endpoint_url"] == ENDPOINT_REDACTED
+
+
+def test_v1_agents_shows_endpoint_url_to_owner(client: TestClient, db: Session):
+    owner = make_user(db, username="spa_owner", role="owner")
+    dev = make_user(db, username="spa_owner_dev", role="developer")
+    ag = make_agent(db, dev, name="owner-visible-agent", approval_status="approved")
+
+    resp = client.get("/v1/agents", headers=_bearer(_jwt_access(owner)))
+    assert resp.status_code == 200, resp.text
+    row = next(a for a in resp.json()["data"] if a["id"] == "owner-visible-agent")
+    assert row["endpoint_url"] == ag.endpoint_url
 
 
 def test_v1_agents_via_jwt_excludes_unapproved(client: TestClient, db: Session):
@@ -127,6 +141,8 @@ def test_api_key_path_still_works_regression(client: TestClient, db: Session):
     assert resp.status_code == 200
     names = {a["id"] for a in resp.json()["data"]}
     assert "sdk-agent" in names
+    row = next(a for a in resp.json()["data"] if a["id"] == "sdk-agent")
+    assert row["endpoint_url"] == ENDPOINT_REDACTED
 
 
 def test_usage_summary_counts_web_ui_bucket(db: Session):

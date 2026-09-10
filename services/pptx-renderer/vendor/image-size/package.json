@@ -1,0 +1,78 @@
+{
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./fromFile": {
+      "import": {
+        "types": "./dist/fromFile.d.ts",
+        "default": "./dist/fromFile.mjs"
+      },
+      "require": {
+        "types": "./dist/fromFile.d.ts",
+        "default": "./dist/fromFile.cjs"
+      }
+    },
+    "./types/*": {
+      "import": {
+        "types": "./dist/types/*.d.ts",
+        "default": "./dist/types/*.mjs"
+      },
+      "require": {
+        "types": "./dist/types/*.d.ts",
+        "default": "./dist/types/*.cjs"
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/image-size/image-size.git"
+  },
+  "main": "./dist/index.cjs",
+  "version": "2.0.3-anila.1",
+  "name": "image-size",
+  "files": [
+    "dist",
+    "bin/image-size.js"
+  ],
+  "license": "MIT",
+  "types": "./dist/index.d.ts",
+  "bin": "bin/image-size.js",
+  "description": "get dimensions of any image file",
+  "module": "./dist/index.mjs",
+  "author": "netroy <aditya@netroy.in> (http://netroy.in/)",
+  "keywords": [
+    "image",
+    "size",
+    "dimensions",
+    "resolution",
+    "width",
+    "height",
+    "avif",
+    "bmp",
+    "cur",
+    "gif",
+    "heic",
+    "heif",
+    "icns",
+    "ico",
+    "jpeg",
+    "jxl",
+    "png",
+    "psd",
+    "svg",
+    "tga",
+    "tiff",
+    "webp"
+  ],
+  "engines": {
+    "node": ">=16.x"
+  }
+}
