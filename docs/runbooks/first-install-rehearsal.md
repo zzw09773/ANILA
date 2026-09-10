@@ -139,7 +139,7 @@ alembic 同理。
 
 ```bash
 # 1. 平台停止並清 volume（資料歸零）
-docker compose -p anila-restart down -v
+docker compose -p "${COMPOSE_PROJECT_NAME:-anila}" down -v
 
 # 2. A 類產物（先備份，見下）
 rm -f secrets/jwt-private.pem secrets/jwt-public.pem
