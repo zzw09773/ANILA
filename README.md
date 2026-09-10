@@ -1,7 +1,7 @@
 # ANILA 平台
 
 > **內網（air-gapped）NotebookLM 式知識／生產力平台 · 中科院自然人憑證卡登入 · CSP 治理底座。**
-> 開發線 `restart/from-redesign` — 自 redesign 收斂點重啟。**專案權威＝[`PLAN.md`](./PLAN.md)**（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](./SYSTEM-MAP.md)。
+> 開發線 `main`（自 2026-07-28 redesign 收斂點重啟）。**專案權威＝[`PLAN.md`](./PLAN.md)**（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](./SYSTEM-MAP.md)。
 > 設計沿革（redesign 收斂期的決策紀錄，非現行准入依據）見 [`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/)。
 
 ANILA 是一套部署於**中科院內網（air-gapped，機房無外網）** 的 NotebookLM 式知識／生產力平台。它的北極星是：**以任務為入口，以個人／專案／組織知識與專案入口為來源，以受控的模型／Agent／GUI Service 為能力，以 CSP 治理層（權限、四級分類、引用、full trace、審計）為底座。** 正式使用者透過統一的 **ANILA Shell** 與所有能力互動；登入採**中科院自然人憑證卡（PKI 卡）** 做真實 PKCS#7/CMS 簽章驗證。ANILA 不是聊天機器人、不是入口頁拼盤、也不是 Agent marketplace — 它把「受控 AI 能力」收斂到單一治理底座的內網工作台。air-gap／PKI／機敏分類是它的**安全脈絡**，不是產品目的。
@@ -204,6 +204,16 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 
 ---
 
+## 預設出貨姿態（進內網前）
+
+這是**尚未打包進 `.15`** 的出貨樹應長成的樣子。打包／打 tag 是後續步驟，不在這份 README 當完成條件。
+
+- Compose 專案名跟 `.env` 的 `COMPOSE_PROJECT_NAME`（Lab 常用 `anila`）。不要再用 `anila-restart` 當出貨 project。
+- **預設不起** GitLab、n8n：兩者都是 `COMPOSE_PROFILES=ops`。nginx `/gitlab/`、`/n8n` 在容器沒起時會 502。要自動化／合規再顯式開 ops。
+- **code-server 預設開**：密碼 + 掛 `docker.sock`，不走卡片 SSO；這是擁有者接受的維運面，不是一般使用者入口。
+- 使用者提供的模型／agent／憑證 URL：**禁止** `host.docker.internal`。LAN embedding 用明確 IP/FQDN（例如 Triton gRPC `9001`，不要把 ASR `9000` 當成 embedding）。
+- 內網 production 卡登：**不要設** `CARD_CA_BUNDLE_PATH`；用映像內 `cspki_ca_bundle.pem`。Lab 的 `secrets/dev-card-ca/` 是 mock，絕不可帶進 `.15`。
+
 ## 測試矩陣
 
 各子專案獨立測試入口（新路徑）。CI 另跑兩道 lint gate。高價值可重用測試清單見 [doc 10 §17.2](./docs/anila-redesign-docs/10-migration-and-development-guardrails.md)。
@@ -228,9 +238,9 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 
 ## 分支模型
 
-**你正在看 `restart/from-redesign`** — 2026-07-28 重啟後的**單一開發線**（工作 worktree 分支除外）。它自 redesign 收斂點分出，保留成熟骨架（card SSO / RS256 JWT / JWKS / revocation / CSRF / RLS / SSRF guard / proxy），採用新佈局與 Task／Trace／四級分類／Registry 新契約。
+**你正在看 `main`** — 2026-07-28 重啟後的**單一開發線**（工作 worktree 分支除外；歷史名 `restart/from-redesign`）。它自 redesign 收斂點分出，保留成熟骨架（card SSO / RS256 JWT / JWKS / revocation / CSRF / RLS / SSRF guard / proxy），採用新佈局與 Task／Trace／四級分類／Registry 新契約。
 
-🔴 **`main` 作為 SSOT 的 7 分支部署模型已不存在。** 該模型（`main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military` / `trial-military`）已於 2026-07-28 重啟時進 attic；描述它的 [`AGENTS.md`](./AGENTS.md) §2–3 與 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md) **同樣已失效**，兩份皆已標示。在 PLAN 排到之前**不要**重建部署分支。
+🔴 **`main` 作為 SSOT 的 7 分支部署模型已不存在。** 該模型（`main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military` / `trial-military`）已於 2026-07-28 重啟時進 attic；描述它的 [`AGENTS.md`](./AGENTS.md) §2–3 （現行單一 `main`；舊七分支模型已失效，見根目錄 README） **同樣已失效**，兩份皆已標示。在 PLAN 排到之前**不要**重建部署分支。
 
 現行狀態與執行順序見 [`PLAN.md`](./PLAN.md)（專案權威），重啟脈絡與 attic 取回方式見 [`RESTART-FROM-REDESIGN.md`](./RESTART-FROM-REDESIGN.md)。歷史上依 [ADR-0006](./docs/anila-redesign-docs/adr/ADR-0006-layout-migration-deviations.md)，本線與舊 `main` 的 cherry-pick 互通已**刻意中斷**——這是一條全新基線，不是又一條 delta 分支。
 
@@ -247,8 +257,8 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 
 ## 安全設計要點
 
-- **自然人憑證卡真實驗章**：`/api/auth/card/*` 做真實 PKCS#7/CMS 簽章驗證 ＋ CA bundle 鏈驗證 ＋ 撤銷檢查，非比對卡號的假驗證。
-- **登入面收斂**：`ANILA_AUTH_MODE=card-only` 時帳密／OIDC／自助註冊 endpoints 回 404，唯一登入路徑是 PKI 卡；`startup_security` 驗證單一模式，container 直接開不起來（fail-fast）。
+- **自然人憑證卡真實驗章**：`/api/auth/card/*` 做真實 PKCS#7/CMS 簽章驗證 ＋ 釘死 CSPKI CA 鏈驗證 ＋ nonce 綁定，非比對卡號的假驗證。氣隙下不做 CRL/OCSP；離職靠收卡 + `User.is_active`。`host.docker.internal` / `*.docker.internal` 是 SSRF 結構性拒絕，trusted-hosts 解不開。
+- **登入面收斂**：`ANILA_AUTH_MODE=card-only` 時帳密／OIDC／自助註冊 endpoints 回 404（owner 帳密 break-glass 除外），唯一日常登入路徑是 PKI 卡。compose 預設 card-only；`startup_security` 只擋未知 enum，不會因為 password/mixed 而拒開容器。
 - **code-server 是高權限維運面**：它可寫入整個 repo、讀取未遮蔽的 `secrets/`，並掛載 Docker socket；只准平台管理員使用，密碼必須是部署 secret，不可與一般帳號共用。
 - **四級分類單向閂鎖**：等級序 `無機密 < 營業秘密 < 密 < 機密`；CSP ＋ Router ＋ UI 三層鎖 classified，無自動降級路徑，降級採雙人原則（申請人 ≠ 核准人），持久化到 DB。
 - **模型出向預設拒 http**：model endpoint 由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，production 與 dev 同準）；per-model 金鑰僅以 boolean presence 對外，不外洩。

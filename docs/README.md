@@ -9,7 +9,7 @@
 
 > ANILA 平台技術 / 治理文件總入口。實作 source 在 repo 各子專案,本目錄是「為什麼這樣做」的記錄處。
 >
-> ⚠️ **這是 prod 分支(中科院內網部署版)的 docs**,比 main 分支多 `governance/` / `runbooks/` / `branch-sync-backlog.md` 等 prod-only 文件。同步策略見 [`branch-sync-backlog.md`](./branch-sync-backlog.md)。
+> ⚠️ 現行開發線是單一 `main`。`governance/` 與 `runbooks/` 在這棵樹上。[`branch-sync-backlog.md`](./branch-sync-backlog.md) 描述的七分支同步**已失效**，只當歷史。
 
 ---
 
@@ -67,7 +67,7 @@ docs/
 | 我想知道… | 看這份 |
 |---|---|
 | **內網部署怎麼跑** | [`runbooks/intranet-deployment-runbook.md`](./runbooks/intranet-deployment-runbook.md) + `infra/deployment/scripts/deploy-prod.sh` |
-| **main → prod 同步策略 / 永久 fork 區清單** | [`branch-sync-backlog.md`](./branch-sync-backlog.md) ⭐ |
+| **（已失效）舊七分支同步策略** | [`branch-sync-backlog.md`](./branch-sync-backlog.md) |
 | **TLS 私鑰怎麼輪換** | [`runbooks/rotate-tls-cert.md`](./runbooks/rotate-tls-cert.md) |
 | **Service token 怎麼 cutover** | [`runbooks/service-token-cutover.md`](./runbooks/service-token-cutover.md) |
 | **legacy agent bootstrap 流程** | [`runbooks/legacy-agent-bootstrap.md`](./runbooks/legacy-agent-bootstrap.md) |
@@ -133,7 +133,7 @@ docs/
 - 同主題的 sibling docs 用 `**Companion docs**:` 列在頂端
 - 跨 subdir 連結用 `../<subdir>/<file>.md` 相對路徑
 - 重大變更走 PR review;過時文件不直接刪,改放 `specs/<topic>/history/` 或加 `[ARCHIVED]` 前綴
-- **prod-only 文件**(governance / runbooks / branch-sync-backlog)不要 cherry-pick 回 main
+- 不要依 `branch-sync-backlog.md` 重建部署分支；現行 SSOT 是 `main`
 - 文件結構同步策略:main 重組 docs/ 時(例:把根目錄 `.md` 收進 `<topic>/` 子目錄),prod 跟著對齊,以免兩邊路徑漂移後 cross-link 全壞
 
 ---

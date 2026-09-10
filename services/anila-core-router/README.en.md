@@ -4,7 +4,7 @@
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: This service exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../../README.md) and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This service exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired).
 
 ---
 
@@ -130,7 +130,7 @@ router (:9000)
 
 ## Related docs
 
-- Platform: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
 - Redesign design lineage (convergence record): constitution [`../../docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) · runtime/registry protocol [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) · API/event contracts (incl. SSE + `/v1/traces`) [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 - Multi-service integration (incl. Router role): [`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md)
 - Agent framework architecture: [`../../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../../docs/archive/agent-framework/anila-agent-framework-architecture.md)

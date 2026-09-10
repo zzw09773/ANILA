@@ -4,7 +4,7 @@
 
 > English mirror：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本服務跨 ANILA 部署分支內容一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**：本服務跨 ANILA 部署分支內容一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表（現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
 
 ---
 
@@ -113,4 +113,4 @@ curl http://localhost:7100/health   # → ok
 - `SKILL.md` / `pptxgenjs.md` / `editing.md`：產生與編修 `.pptx` 的技術參考。
 - 上游引擎：[`../anila-studio/README.md`](../anila-studio/README.md)
 - 重構設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（`00-product-constitution.md` 憲章）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
-- 平台整體：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）

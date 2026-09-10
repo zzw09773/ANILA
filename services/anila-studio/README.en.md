@@ -4,7 +4,7 @@
 
 > 中文版本：[README.md](README.md)
 
-> 🌿 **Branch note**: This service exists on most deployment branches; the slim `trial-military` build does not include it. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This service exists on most deployment branches; the slim `trial-military` build does not include it. See the root [`README.md`](../../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
 
 ---
 
@@ -180,4 +180,4 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 
 - Redesign design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (`00-product-constitution.md`, `09-api-event-contracts.md` artifact / trace contracts, `02-system-architecture.md` JobStore failure model). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 - Studio / FLUX main spec: [`../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)
-- Platform overview: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- Platform overview: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)

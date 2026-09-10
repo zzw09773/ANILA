@@ -4,7 +4,7 @@
 
 > 中文為主版；English mirror：[`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
-> 🌿 **分支對照**：`infra/models/`（前身 `models/`，§17.1 重組後遷入 `infra/`）存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**：`infra/models/`（前身 `models/`，§17.1 重組後遷入 `infra/`）存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表（現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
 
 ---
 

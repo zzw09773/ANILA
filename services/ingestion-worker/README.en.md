@@ -4,7 +4,7 @@
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This worker exists on every ANILA deployment branch with identical content. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This worker exists on every ANILA deployment branch with identical content. See the root [`README.md`](../../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
 
 ---
 
@@ -212,7 +212,7 @@ In compose (`infra/compose/platform.yml`): build context = repo root; `depends_o
 |------|------|------|
 | `DATABASE_URL` | `postgresql://csp_app:csp@csp-db:5432/csp` | asyncpg DSN; **must** be the `csp_app` role (RLS-bound, non-superuser) |
 | `REDIS_URL` | `redis://redis:6379` | Arq queue backend |
-| `EMBEDDING_BASE_URL` | `http://host.docker.internal:7011/v1` (compose `http://csp:8000/v1`) | embedding endpoint |
+| `EMBEDDING_BASE_URL` | `http://csp:8000/v1` (compose default; `host.docker.internal` is a structural url_guard deny) | embedding endpoint |
 | `EMBEDDING_MODEL` / `EMBEDDING_API_KEY` | `nvidia/NV-embed-V2` / `not-set` | model / Bearer token |
 | `EMBEDDING_DIM` / `EMBEDDING_TIMEOUT_SECONDS` | `4000` / `30.0` | truncation dim (aligned to halfvec(4000)) / timeout |
 | `UPLOAD_DIR` | `/var/anila/ingestion-uploads` | shared upload-blob dir with CSP |
@@ -252,4 +252,4 @@ In compose (`infra/compose/platform.yml`): build context = repo root; `depends_o
 - [`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
 - [`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md)
 - Redesign design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (`00-product-constitution.md`, `02-system-architecture.md`). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
-- Platform overview: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- Platform overview: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)

@@ -4,7 +4,7 @@
 
 > English mirror：[`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
-> 🌿 **分支對照**:本 SDK 存在於所有 ANILA 部署分支,內容跨分支一致(runtime 基座不隨部署情境而異)。新功能一律先進 `main`,再 sync 進 downstream。分支策略見根目錄 [`README.md`](../../README.md) 與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**:本 SDK 存在於所有 ANILA 部署分支,內容跨分支一致(runtime 基座不隨部署情境而異)。新功能一律先進 `main`,再 sync 進 downstream。分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
 
 ---
 
@@ -197,7 +197,7 @@ Tracing 是 **additive 且 fail-open**:`ANILA_TRACE_ENDPOINT` 未設 → 整條 
 - **`agent`** — http 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` 放行(內網 MLSteam 純 http NodePort agent);legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 deprecated fallback。
 - **`generic`**(預設)— 既有全域語意,`ANILA_ALLOW_HTTP_ENDPOINT` 放行;既有呼叫端零行為變更。
 
-host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、internal-zone 尾綴(`.internal` / `.local` / `.svc` …)、always-unsafe IP(loopback / link-local / multicast / reserved,硬拒)、RFC 1918 私網(`ANILA_ALLOW_PRIVATE_ENDPOINT=1` 才放行)、single-label 主機名一律拒。`ANILA_TRUSTED_HOSTS`(env)∪ DB-backed provider 是 admin allow-list,可略過 host 檢查(scheme 仍驗)。錯誤以 `UnsafeEndpointError`(帶 `reason` / `fixable_by_trust_host`)拋出。
+host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、internal-zone 尾綴(`.internal` / `.local` / `.svc` …)、always-unsafe IP(loopback / link-local / multicast / reserved,硬拒)、RFC 1918 私網(`ANILA_ALLOW_PRIVATE_ENDPOINT=1` 才放行)、single-label 主機名一律拒。`ANILA_TRUSTED_HOSTS`(env)∪ DB-backed provider 是 admin allow-list,可略過**名稱形態**檢查（單標籤 docker DNS、一般 internal-zone）與 RFC1918 DNS 答案；scheme、loopback / metadata / link-local / `host.docker.internal` 仍硬拒。錯誤以 `UnsafeEndpointError`(帶 `reason` / `fixable_by_trust_host`)拋出。
 
 ---
 

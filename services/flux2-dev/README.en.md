@@ -4,7 +4,7 @@
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: This service is built and served by the `anila-models` model stack (see [`infra/models/`](../../infra/models/README.en.md)) and exists on the ANILA deployment branches that use that stack. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This service is built and served by the `anila-models` model stack (see [`infra/models/`](../../infra/models/README.en.md)) and exists on the ANILA deployment branches that use that stack. See the root [`README.md`](../../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
 
 ---
 

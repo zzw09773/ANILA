@@ -4,7 +4,7 @@
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: `infra/models/` (formerly `models/`, moved under `infra/` in the §17.1 reorg) exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: `infra/models/` (formerly `models/`, moved under `infra/` in the §17.1 reorg) exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
 
 ---
 

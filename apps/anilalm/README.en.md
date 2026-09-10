@@ -4,7 +4,7 @@
 
 > 繁體中文原文: [`README.md`](./README.md)
 
-> 🌿 **Branch note**: This subproject exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`; the slim **`trial-military`** build does **not** include it. See the root [`README.md`](../../README.md) and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This subproject exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`; the slim **`trial-military`** build does **not** include it. See the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired).
 >
 > Design lineage (convergence record): [`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md), [`01-domain-model.md`](../../docs/anila-redesign-docs/01-domain-model.md) (Task domain), [`09-api-event-contracts.md`](../../docs/anila-redesign-docs/09-api-event-contracts.md) (Task / artifact contracts). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 
@@ -131,7 +131,7 @@ npm run build          # tsc -b && vite build (the real gate; not tsc alone)
 - Design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution 00 / domain 01 / contracts 09). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 - Backend services: CSP [`../../services/csp/README.md`](../../services/csp/README.md) · Studio [`../../services/anila-studio/README.md`](../../services/anila-studio/README.md) · Renderer [`../../services/pptx-renderer/`](../../services/pptx-renderer/)
 - Adjacent entries: task center [`../anila-shell/README.en.md`](../anila-shell/README.en.md) · governance [`../csp-governance-ui/README.en.md`](../csp-governance-ui/README.en.md)
-- Platform: [`../../README.md`](../../README.md) · branch policy [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
 
 ---
 

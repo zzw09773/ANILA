@@ -4,7 +4,7 @@
 
 > English mirror: [`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本子專案存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`；**`trial-military` 精簡版不含本子專案**。分支策略見根目錄 [`README.md`](../../README.md) 與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**：本子專案存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`；**`trial-military` 精簡版不含本子專案**。分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
 >
 > 設計沿革（收斂紀錄）：[`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)（憲章）、[`01-domain-model.md`](../../docs/anila-redesign-docs/01-domain-model.md)（Task 網域）、[`09-api-event-contracts.md`](../../docs/anila-redesign-docs/09-api-event-contracts.md)（Task / artifact 契約）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 
@@ -131,7 +131,7 @@ npm run build          # tsc -b && vite build（正式驗證用；非只 tsc）
 - 設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（憲章 00 / 網域 01 / 契約 09）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 - 後端服務：CSP [`../../services/csp/README.md`](../../services/csp/README.md) · Studio [`../../services/anila-studio/README.md`](../../services/anila-studio/README.md) · Renderer [`../../services/pptx-renderer/`](../../services/pptx-renderer/)
 - 相鄰入口：任務中心 [`../anila-shell/README.md`](../anila-shell/README.md) · 治理中心 [`../csp-governance-ui/README.md`](../csp-governance-ui/README.md)
-- 平台整體：[`../../README.md`](../../README.md) · 分支策略 [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）
 
 ---
 

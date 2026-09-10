@@ -6,7 +6,7 @@
 
 > English mirror：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本目錄存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`。**`trial-military` 精簡版不含本目錄**。分支策略見根目錄 [`README.md`](../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**：本目錄存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`。**`trial-military` 精簡版不含本目錄**。分支策略見根目錄 [`README.md`](../README.md) 的分支對照表（現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
 
 ---
 
@@ -101,7 +101,7 @@
 
 ## 相關文件
 
-- 平台總覽：[`../README.md`](../README.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- 平台總覽：[`../README.md`](../README.md) · 現行 `main`（舊七分支模型已失效）
 - Python runtime（移植目的地）：[`../packages/anila-core/README.md`](../packages/anila-core/README.md)
 - `openai-agents-python` 深入分析：[`../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md)
 - Agent framework 架構與移植決策：[`../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../docs/archive/agent-framework/anila-agent-framework-architecture.md)、[`../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md)

@@ -4,7 +4,7 @@
 
 > English mirror：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本 worker 存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**：本 worker 存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表（現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
 
 ---
 
@@ -212,7 +212,7 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 |------|------|------|
 | `DATABASE_URL` | `postgresql://csp_app:csp@csp-db:5432/csp` | asyncpg DSN，**必須**用 `csp_app` 角色（受 RLS，非 superuser） |
 | `REDIS_URL` | `redis://redis:6379` | Arq 佇列後端 |
-| `EMBEDDING_BASE_URL` | `http://host.docker.internal:7011/v1`（compose `http://csp:8000/v1`） | embedding endpoint |
+| `EMBEDDING_BASE_URL` | `http://csp:8000/v1`（compose 預設；`host.docker.internal` 已被 url_guard 結構性拒絕） | embedding endpoint |
 | `EMBEDDING_MODEL` / `EMBEDDING_API_KEY` | `nvidia/NV-embed-V2` / `not-set` | 模型 / Bearer token |
 | `EMBEDDING_DIM` / `EMBEDDING_TIMEOUT_SECONDS` | `4000` / `30.0` | 截斷維度（對齊 halfvec(4000)）/ 逾時 |
 | `UPLOAD_DIR` | `/var/anila/ingestion-uploads` | 與 CSP 共用的上傳 blob 目錄 |
@@ -252,4 +252,4 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 - [`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
 - [`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md)
 - 重構設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（`00-product-constitution.md` 憲章、`02-system-architecture.md` 系統架構）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
-- 平台整體：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）

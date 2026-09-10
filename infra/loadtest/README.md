@@ -1,7 +1,7 @@
 # ANILA load test (k6) — pool-fix concurrency probe
 
 Reclaimed from attic W2-8 (`infra/loadtest/`, `docs/planning/load-baseline.md`),
-adapted 2026-07-31 for the redesign stack on `anila-restart`.
+adapted 2026-07-31 for the redesign stack on the running `anila` compose project.
 
 > Numbers are **relative / regression** measurements against a **stubbed**
 > embedder. They are not a production capacity commitment for 3000 users.
@@ -10,7 +10,7 @@ adapted 2026-07-31 for the redesign stack on `anila-restart`.
 
 | Attic (2026-07) | This package |
 |---|---|
-| Isolated `anila-loadtest` compose stack | Drives the running `anila-restart` stack (owner-approved); throwaway stub only |
+| Isolated `anila-loadtest` compose stack | Drives the running `anila` compose project (owner-approved); throwaway stub only |
 | Real external gateway + Triton embed | Local OpenAI-compatible **stub** (`stub/`) with configurable `EMBED_DELAY_MS` |
 | Primary probe: RAG chat SSE (`profile2`) | Primary probe: `POST /api/ingestion/collections/{id}/search` (`profile-search.js`) — exact `_embed_query` path of tonight's pool fix |
 | Rewrote catalogue embed endpoint | Registers dedicated `loadtest-embed-stub` + `set-platform-embedding` (AUTO_REGISTER overwrites `nvidia/nv-embed-v2` on every CSP start) |

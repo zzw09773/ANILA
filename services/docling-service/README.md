@@ -42,7 +42,7 @@ docling 是 GPU 主機上的 HTTP 端點，不是平台映像。有兩種跑法�
 要 GPU 的主機再疊 `infra/compose/docling-gpu.yml`：
 
 ```bash
-docker compose -p anila-restart \
+docker compose -p anila \
   -f compose.yaml -f infra/compose/docling-gpu.yml \
   --profile docling-local up -d
 ```

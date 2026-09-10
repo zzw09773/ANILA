@@ -6,7 +6,7 @@
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This directory exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`. **The `trial-military` slim build does not include it.** See the root [`README.md`](../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This directory exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`. **The `trial-military` slim build does not include it.** See the root [`README.md`](../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
 
 ---
 
@@ -101,7 +101,7 @@ The two references cover two dimensions:
 
 ## Related docs
 
-- Platform: [`../README.md`](../README.md) · Branch strategy: [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- Platform: [`../README.md`](../README.md) · current `main` (old seven-branch model retired)
 - Python runtime (porting destination): [`../packages/anila-core/README.md`](../packages/anila-core/README.md)
 - `openai-agents-python` deep-dive: [`../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md)
 - Agent framework architecture & porting decisions: [`../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../docs/archive/agent-framework/anila-agent-framework-architecture.md), [`../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md)

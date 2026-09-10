@@ -4,7 +4,7 @@
 
 > 繁體中文原文: [`README.md`](./README.md)
 
-> 🌿 **Branch note**: This UI exists on every ANILA deployment branch; see the root [`README.md`](../../README.md) and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md) for branch policy. **Login is unified into the governance console** — this shell no longer owns a login page (see "No login page" below).
+> 🌿 **Branch note**: This UI exists on every ANILA deployment branch; see the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired) for branch policy. **Login is unified into the governance console** — this shell no longer owns a login page (see "No login page" below).
 >
 > Design lineage (convergence record): [`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md), [`10-migration-and-development-guardrails.md`](../../docs/anila-redesign-docs/10-migration-and-development-guardrails.md) (§11 Shell IA), [`12-frontend-visual-redesign.md`](../../docs/anila-redesign-docs/12-frontend-visual-redesign.md) (classification watermark). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 
@@ -125,7 +125,7 @@ Endpoints actually called (from `src/runtime/*.js` and components): `/api/tasks`
 
 ## 7. Related docs
 
-- Platform: [`../../README.md`](../../README.md) · branch policy [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
 - Design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution 00 / IA 10 / visual 12 / contracts 09). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
 - Adjacent entries: knowledge base / output center [`../anilalm/README.en.md`](../anilalm/README.en.md) · governance [`../csp-governance-ui/README.en.md`](../csp-governance-ui/README.en.md)
 - Backend: [`../../services/csp/README.md`](../../services/csp/README.md) · Router [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)

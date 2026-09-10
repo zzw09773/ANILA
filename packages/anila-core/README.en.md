@@ -4,7 +4,7 @@
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: This SDK exists on every ANILA deployment branch and is identical across branches (the runtime base does not vary by deployment context). New features always land in `main` first, then sync downstream. See the root [`README.md`](../../README.md) and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This SDK exists on every ANILA deployment branch and is identical across branches (the runtime base does not vary by deployment context). New features always land in `main` first, then sync downstream. See the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired).
 
 ---
 
@@ -225,7 +225,7 @@ anila-core register \
 - **`agent`** — http is allowed via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` (for on-prem MLSteam plain-http NodePort agents); legacy `ANILA_ALLOW_HTTP_ENDPOINT` remains a deprecated fallback.
 - **`generic`** (default) — original global semantics; `ANILA_ALLOW_HTTP_ENDPOINT` relaxes it; existing callers are unaffected.
 
-Fixed host rules: deny list (loopback / `169.254.169.254` metadata / mDNS), internal-zone suffixes (`.internal` / `.local` / `.svc` …), always-unsafe IPs (loopback / link-local / multicast / reserved — hard reject), RFC 1918 private ranges (allowed only under `ANILA_ALLOW_PRIVATE_ENDPOINT=1`), single-label hostnames rejected. `ANILA_TRUSTED_HOSTS` (env) ∪ DB-backed providers form an admin allow-list that bypasses host checks (scheme is still validated). Failures raise `UnsafeEndpointError` (with `reason` / `fixable_by_trust_host`).
+Fixed host rules: deny list (loopback / `169.254.169.254` metadata / mDNS), internal-zone suffixes (`.internal` / `.local` / `.svc` …), always-unsafe IPs (loopback / link-local / multicast / reserved — hard reject), RFC 1918 private ranges (allowed only under `ANILA_ALLOW_PRIVATE_ENDPOINT=1`), single-label hostnames rejected. `ANILA_TRUSTED_HOSTS` (env) ∪ DB-backed providers form an admin allow-list that may skip name-shape checks (single-label docker DNS, generic internal-zone suffixes) and RFC1918 DNS answers; scheme, loopback / metadata / link-local / `host.docker.internal` still fail closed. Failures raise `UnsafeEndpointError` (with `reason` / `fixable_by_trust_host`).
 
 ---
 
@@ -246,6 +246,6 @@ Fixed host rules: deny list (loopback / `169.254.169.254` metadata / mDNS), inte
 - anila-core boundary: [`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md) · runtime design: [`../../docs/archive/anila-core/anila-core-runtime-design.md`](../../docs/archive/anila-core/anila-core-runtime-design.md)
 - Ingestion platform design: [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · Release notes: [`CHANGELOG.md`](./CHANGELOG.md)
 - RAG agent template: [`../anila-agent/README.md`](../anila-agent/README.md) · Router shell: [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
-- Platform: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
 
 > Version authority is `pyproject.toml` (v0.14.0); the latest `CHANGELOG.md` entry is v0.13.0. ⚠️ Known code inconsistency (not a README issue): `src/anila_core/__init__.py` still hard-codes `__version__ = "0.7.0"`, so reading `anila_core.__version__` programmatically returns the stale value.

@@ -19,7 +19,7 @@
 > doc00 治理中心標 admin-facing、doc02/10 MVP module boundary 決策（Task/Policy/Launch 先在 CSP 內）。
 > 另新增 doc11：前端全繁體中文（台灣用語）語言政策（✅ 已拍板：唯一介面語言；含術語表、豁免清單、CI lint、P1–P5 遷移序；現況實測：ANILA_UI 76%／ANILALM 70% 繁中、CSP 治理中心 77% 英文為最大改造面）。
 
-> 取證基準：現況（Repo evidence）以 `origin/prod-intranet-card`（v1.2.0 系）為準；本機工作樹與其分歧時以 origin 為準。目標設計與現況相左時，一律以目標為準，現況段落僅作遷移起點對照。
+> 取證基準：現況以現行 `main` 工作樹為準。`origin/prod-intranet-card`（歷史 v1.2.0 卡登線）只作沿革對照，不是出貨 SSOT。目標設計與現況相左時，一律以目標為準，現況段落僅作遷移起點對照。
 
 ## 複核狀態（2026-07-02）
 

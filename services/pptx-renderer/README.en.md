@@ -4,7 +4,7 @@
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This service is content-identical across ANILA deployment branches. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This service is content-identical across ANILA deployment branches. See the root [`README.md`](../../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
 
 ---
 
@@ -113,4 +113,4 @@ curl http://localhost:7100/health   # → ok
 - `SKILL.md` / `pptxgenjs.md` / `editing.md`: technical reference for generating and editing `.pptx`.
 - Upstream engine: [`../anila-studio/README.en.md`](../anila-studio/README.en.md)
 - Redesign design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (`00-product-constitution.md`). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
-- Platform overview: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- Platform overview: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)

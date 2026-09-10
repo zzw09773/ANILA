@@ -32,7 +32,7 @@ share/
 
 - `static/` is `:ro` mounted into nginx — files are read-only at runtime.
   Drop new templates / icons in via `cp` from the host shell.
-- `uploads/` is `:rw` mounted — n8n / other services can write here. Don't
+- `uploads/` is `:rw` mounted — services that are actually running can write here. n8n is **not** in the default ship (`COMPOSE_PROFILES=ops`). Don't
   put anything you can't afford to lose; back up out-of-band.
 
 nginx (`infra/nginx/anila.conf`) serves these: `/static/` uses `try_files =404`
