@@ -86,6 +86,7 @@ from app.services.studio_text_normalizer import (
     strip_inline_citations,
     strip_latex,
 )
+from app.services.llm_json import extract_json_object, loads_lenient
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +95,12 @@ logger = logging.getLogger(__name__)
 
 
 # Default model. The csp proxy resolves the model name against its
-# registry; gemma4 is the production CJK-capable model. Same default as
-# slides pipeline.
-DEFAULT_LLM_MODEL = "gemma4"
+# registry. Same default as slides: env ANILA_STUDIO_SLIDES_MODEL, then
+# the Models page 主簡報 knob via resolve_model_name.
+from app.services.studio_config import SLIDES_LLM_MODEL
+from app.services.studio_model_primary import resolve_model_name
+
+DEFAULT_LLM_MODEL = SLIDES_LLM_MODEL
 
 
 # How many chunks of chunk-content to expose to the outline prompt. Each
@@ -179,15 +183,15 @@ _JSON_RE = re.compile(r"\{[\s\S]*\}")
 def _extract_json(text: str) -> dict[str, Any]:
     """Pull the first JSON object out of a possibly-noisy LLM reply.
 
-    gemma4 sometimes emits a preamble ("好的，以下是...") before the
-    actual JSON. We pluck the largest top-level brace pair. If the result
-    doesn't parse, we let JSONDecodeError surface so the caller can retry
-    or fall back.
+    Thinking models (Qwen / gemma) often wrap the answer in ``<think>`` or
+    put example JSON in the preamble. Use the shared last-balanced-object
+    extractor plus the single-quote repair, same as the slides pipeline.
     """
-    m = _JSON_RE.search(text)
-    if not m:
-        raise json.JSONDecodeError("no JSON object in LLM output", text, 0)
-    return json.loads(m.group(0))
+    blob = extract_json_object(text)
+    obj = loads_lenient(blob)
+    if not isinstance(obj, dict):
+        raise ValueError("outline JSON is not an object")
+    return obj
 
 
 def _safe_truncate(text: str, limit: int) -> str:
@@ -302,30 +306,51 @@ async def _llm_outline(
     ]
 
     response = await proxy_chat_completions(
-        model=DEFAULT_LLM_MODEL,
+        model=await resolve_model_name(DEFAULT_LLM_MODEL, SLIDES_LLM_MODEL),
         messages=messages,
         temperature=0.4,
-        max_tokens=2000,
+        max_tokens=4000,
         response_format={"type": "json_object"},
         bearer=bearer,
     )
-    content = _extract_choice_content(response)
-    return _extract_json(content)
+    try:
+        return _extract_json(_extract_choice_content(response))
+    except (json.JSONDecodeError, ValueError):
+        # Qwen/thinking often leaves ``content`` empty under json_object, or
+        # emits almost-JSON. One retry without the format constraint.
+        response = await proxy_chat_completions(
+            model=await resolve_model_name(DEFAULT_LLM_MODEL, SLIDES_LLM_MODEL),
+            messages=messages,
+            temperature=0.2,
+            max_tokens=4000,
+            bearer=bearer,
+        )
+        return _extract_json(_extract_choice_content(response))
 
 
 def _extract_choice_content(response: dict[str, Any]) -> str:
     """Pull the first choice's message content from an OpenAI-shaped reply.
 
-    Defensive: csp's proxy normalises this but we keep the lookup tight
-    so a malformed upstream surfaces as a clear KeyError instead of a
-    confusing AttributeError downstream.
+    Thinking gateways may put the answer in ``reasoning_content`` /
+    ``reasoning`` with empty ``content``. Concatenate whatever text the
+    choice actually carried so outline JSON can still be sliced out.
     """
     choices = response.get("choices") or []
     if not choices:
         raise ValueError("LLM response has no choices")
     message = choices[0].get("message") or {}
-    content = message.get("content")
-    if not isinstance(content, str) or not content.strip():
+    parts: list[str] = []
+    for key in ("content", "reasoning_content", "reasoning"):
+        val = message.get(key)
+        if isinstance(val, str) and val.strip():
+            parts.append(val)
+    choice = choices[0]
+    for key in ("reasoning_content", "reasoning"):
+        val = choice.get(key)
+        if isinstance(val, str) and val.strip():
+            parts.append(val)
+    content = "\n".join(parts).strip()
+    if not content:
         raise ValueError("LLM response choice has no content")
     return content
 
@@ -396,7 +421,7 @@ Section 標題：{heading}
     ]
 
     response = await proxy_chat_completions(
-        model=DEFAULT_LLM_MODEL,
+        model=await resolve_model_name(DEFAULT_LLM_MODEL, SLIDES_LLM_MODEL),
         messages=messages,
         temperature=0.5,
         max_tokens=1500,

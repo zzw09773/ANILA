@@ -92,7 +92,10 @@ router = APIRouter(prefix="/api/infographics", tags=["Studio / Infographic"])
 
 # Default LLM same as slide pipeline — single deployed model, no per-feature
 # fan-out. Could be made overridable later.
-INFOGRAPHIC_LLM_MODEL = "gemma4"
+from app.services.studio_config import SLIDES_LLM_MODEL
+from app.services.studio_model_primary import resolve_model_name
+
+INFOGRAPHIC_LLM_MODEL = SLIDES_LLM_MODEL
 
 # Bounded so a single chunk-pull doesn't blow the prompt context. Each
 # chunk ~800 chars → top_k=12 ≈ 9.6 KB context; well within gemma4 256K.
@@ -276,7 +279,7 @@ async def _call_llm_chat(
     """
     try:
         response = await proxy_chat_completions(
-            model=INFOGRAPHIC_LLM_MODEL,
+            model=await resolve_model_name(INFOGRAPHIC_LLM_MODEL, SLIDES_LLM_MODEL),
             messages=messages,
             temperature=temperature,
             bearer=bearer,

@@ -88,7 +88,10 @@ router = APIRouter(prefix="/api/datatables", tags=["datatables"])
 # ── Tunables ──────────────────────────────────────────────────────────────
 
 
-DATATABLE_LLM_MODEL = "gemma4"
+from app.services.studio_config import SLIDES_LLM_MODEL
+from app.services.studio_model_primary import resolve_model_name
+
+DATATABLE_LLM_MODEL = SLIDES_LLM_MODEL
 # Same retrieval threshold as slides — chunks below this score are usually
 # unrelated and just dilute the prompt budget.
 MIN_SCORE = 0.0
@@ -270,7 +273,7 @@ async def _call_llm(
     """
     try:
         response = await proxy_chat_completions(
-            model=DATATABLE_LLM_MODEL,
+            model=await resolve_model_name(DATATABLE_LLM_MODEL, SLIDES_LLM_MODEL),
             messages=messages,
             temperature=temperature,
             bearer=bearer,
