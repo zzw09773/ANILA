@@ -38,7 +38,7 @@
 | 4 | **安全** | CSRF 繞過＋starlette 1.3.1 ✅ 08-06;csp／ingestion-worker／pptx-renderer 非 root 化＋所有權對齊腳本＋`.dockerignore` 整類修正 ✅ 08-06 晚(三輪實作、三輪驗收) | ✅ 08-06 |
 | 6 | **檢視套件是否為穩定版** | 不只看有沒有 CVE,要看版本本身穩不穩(**移到 5 之前**,見下)。9 條 BUMP `b5a519cd`;Q42 四件全數關板:python 3.13 `61053045`、gitlab 19.2.1 `0dba473d`、passlib 退役 `30c41da9`、依賴上限＋下限守衛 `7e7878bb`;另加 mermaid 主題 `d653408a`、npm 範圍內安全修復 `a5040f11`。**七張映像重建通過** | ✅ 08-10 |
 | 5 | **wheelhouse** | 進氣隙前必須。沒有它,內網之後任何套件問題都動不了。**前置已全數關板**(第 6 段定版 ＋ 兩道匯出閘門 08-10 轉綠)。**✅ 2026-09-02 交件**:六份 freeze 零 docling/easyocr/torch、audit 雙 PASS、離線安裝演練六服務 pip check 全 OK、overlay 演練 diff 只有目標套件;閘②(映像 vs manifest)依擁有者裁定推遲到第 8 段重建後複驗。報告 `~/anila-deliverables/STAGE5-WHEELHOUSE-REPORT-20260902.md` | ✅ 09-02 |
-| 7 | **重掃、重打包** | P2.6 全項重掃(Q22 已裁決不縮範圍)＋ trivy 掃 OS 層。⚠ **2026-08-17 時序修正(擁有者)**:掃描要在**最後打包進去之前**做——必須對「即將打 tag 的那棵樹」掃,提早掃＝掃到一套之後會變的版本＝等於沒掃。⚠ **迴圈風險**:掃出東西→釘版本→樹變了→掃描作廢→重掃。**排程要預留一次重掃**,不是一次性動作 | ⬜ |
+| 7 | **重掃、重打包** | P2.6 全項重掃(Q22 已裁決不縮範圍)＋ trivy 掃 OS 層。⚠ **2026-08-17 時序修正(擁有者)**:掃描要在**最後打包進去之前**做——必須對「即將打 tag 的那棵樹」掃,提早掃＝掃到一套之後會變的版本＝等於沒掃。⚠ **迴圈風險**:掃出東西→釘版本→樹變了→掃描作廢→重掃。**排程要預留一次重掃**,不是一次性動作。<br>**2026-09-10**:源碼已對 `d742b368` 重掃（先修 2 HIGH 再掃）。**尚未打 tag、尚未重打包**（擁有者：進內網前先不打包）。 | 🟡 源碼重掃完成 / 未打包 |
 | 8 | **部署包＋部署文件** | 重建映像、重跑一次全新安裝驗證。**✅ 2026-09-02**:交付包 `~/anila-images-export-20260902`(Ref `v2.0.1-722-gbafb6577`,10 張映像雜物掃描全乾淨、load 驗回全過);從零預演練照 `first-install-rehearsal.md` 跑 5 次,前 4 次各撞一件並修進樹(share/ root 殘留→runbook;演練包守衛→runbook;部署腳本寫死舊 project 映像名 `56d126a2`;gitlab 密碼未生成＋CPU 上 float16 `3cae38de`),第 5 次 16 容器全 healthy、migration 從 unversioned 跑到 r1_0036、五入口正常。⚠ 演練包 Ref 非乾淨 tag,**出貨前要打 tag 重建**;真卡＋CSPKI 只能在 .15 驗 | ✅ 09-02 |
 | 9 | **使用者操作手冊(HTML)** | P5.1,三千人用。擁有者指定 HTML | ⬜ |
 
@@ -295,7 +295,7 @@ core-opt 是照擁有者條件先修掉兩個壞預設,再過一輪跨家審查(
 | 2.3 | 關掉 `/router/docs`、`/redoc`、`/openapi.json` 等匿名可讀面 | A05 | ✅ 2026-07-30,對外實測 404 |
 | 2.4 | **存取控制逐條複驗**:每個 by-id 端點都確認「這個人有沒有權限碰這一筆」 | A01 | ✅ 2026-07-31 `1a8633c`,166 個可定址面逐條複驗,關掉 4 個授權破口＋3 群列舉洩漏 |
 | 2.5 | 相依套件掃一次,把有已知漏洞的版本升掉 | A06 | ✅ 2026-07-30 `cf288cf` |
-| 2.6 | 跑一次源碼掃描,把高風險項清掉 | 全部 | ⚠ **仍未關**。08-01 已重跑並重建清單(報告在 repo 外的 `~/anila-private-audits/p26-source-scan-2026-08-01.md`,因為本 repo 是 PUBLIC):**Python 面 HIGH 0／MEDIUM 2**,兩條都是「程式碼沒做到自己宣稱的事」,已排包修。<br>**不能就此宣告關閉,理由是涵蓋率不是 findings**:本機無 bandit/semgrep/pip-audit 且不能裝,只用 ruff 的 `S` 規則掃 Python;**JS/Vue 230 檔、shell 31 個、Dockerfile 21 個、nginx 設定、全部相依套件 CVE 通通沒掃**。把這樣登記成「掃描完成」正是本專案最在意的假完成。<br>關閉條件寫在報告末節。舊報告 `p26-source-scan-2026-07-31.md` 確認從未落地,不再尋找 |
+| 2.6 | 跑一次源碼掃描,把高風險項清掉 | 全部 | ⚠ **仍未關(不得有 OWASP 高風險才能關)**。**2026-09-10** 對 `52216df2` Codex Security Standard 掃出 2 HIGH：`host.docker.internal` 預設進 trusted-hosts；預設出貨 n8n 無 CSP/card SSO。已修進 `e542a698`（結構性 deny `*.docker.internal`；n8n=`COMPOSE_PROFILES=ops`）。README 出貨姿態 `d742b368`。**重掃目標 SHA = `d742b368`**（scan `66834dd7`）。先前 HIGH 的修補已在樹上；剩餘 cookie `Path=/` 同源、FLUX 未認證靜態圖、`GET /v1/agents` 洩 endpoint_url 為 medium/low，不關 2.6。pip-audit/bandit/semgrep 仍未成套。08-01 舊報告作廢。**Trivy**（docker export + rootfs）對 Lab 現跑 11 張映像 CRITICAL/HIGH=0（含重建後的 csp/ingestion-worker）。 |
 | 2.7 | **稽核帳防竄改**(OE-2 缺口 G2) | A09 | ✅ 2026-07-31 `r1_0027`,日級雜湊鏈＋擁有權收回,維運者每月 0 分鐘 |
 
 ⚠ **2.7 比原本想的難。** `0014` 把 public schema 所有表的**擁有權**轉給執行帳號 `csp_app`,
