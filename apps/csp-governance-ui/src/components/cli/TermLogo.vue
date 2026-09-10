@@ -7,7 +7,7 @@
   <span class="term-logo" :class="{ 'term-logo--compact': compact }">
     <img
       class="term-logo__mark"
-      :src="compact ? markSrc : logoSrc"
+      :src="markSrc"
       alt="ANILA"
       :style="{ height: imgHeight + 'px' }"
       draggable="false"
@@ -20,7 +20,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { ANILA_LOGO_PNG, ANILA_MARK_PNG } from '../../brandAssets.js'
+import { ANILA_MARK_PNG } from '../../brandAssets.js'
 
 const props = defineProps({
   compact: { type: Boolean, default: false },
@@ -29,9 +29,9 @@ const props = defineProps({
 })
 
 const markSrc = ANILA_MARK_PNG
-const logoSrc = ANILA_LOGO_PNG
 const imgHeight = computed(() => (
-  props.compact ? Math.max(props.size, 16) : Math.min(36, Math.max(28, props.size * 2))
+  // anila-logo.png is a 1408² pad; visible mountain ~17%. Use cropped mark.
+  props.compact ? Math.max(props.size, 22) : Math.max(32, Math.min(40, props.size + 18))
 ))
 </script>
 

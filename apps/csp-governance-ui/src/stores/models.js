@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
-  listModels, createModel, updateModel, deleteModel, activateModel, purgeModel, triggerHealthCheck,
+  listModels, createModel, updateModel, deleteModel, activateModel, purgeModel,
   setRouterPrimary, unsetRouterPrimary, setImagePrimary as setImagePrimaryApi,
   unsetImagePrimary as unsetImagePrimaryApi,
   setSlidesPrimary as setSlidesPrimaryApi, unsetSlidesPrimary as unsetSlidesPrimaryApi,
@@ -52,12 +52,6 @@ export const useModelsStore = defineStore('models', () => {
   async function purge(id) {
     await purgeModel(id)
     await fetchModels()
-  }
-
-  async function checkHealth(id) {
-    const { data } = await triggerHealthCheck(id)
-    await fetchModels()
-    return data
   }
 
   // Slice 6b — 主動探測。回傳 { health_status, latency_ms }，並 refetch
@@ -135,7 +129,7 @@ export const useModelsStore = defineStore('models', () => {
   }
 
   return {
-    models, loading, fetchModels, create, update, remove, activate, purge, checkHealth, test,
+    models, loading, fetchModels, create, update, remove, activate, purge, test,
     setPrimary, unsetPrimary, setImagePrimary, setSlidesPrimary, unsetSlidesPrimary, unsetImagePrimary,
     setAsrPrimary, unsetAsrPrimary,
     setPlatformEmbed, unsetPlatformEmbed,

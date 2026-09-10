@@ -194,8 +194,6 @@
                 <button class="term-action" @click="openEditModal(model)">編輯</button>
                 <template v-if="authStore.isAdmin">
                   <span class="row-actions__sep">·</span>
-                  <button class="term-action" @click="handleHealthCheck(model.id)">探測</button>
-                  <span class="row-actions__sep">·</span>
                   <button
                     class="term-action"
                     :disabled="testingId === model.id"
@@ -1135,11 +1133,6 @@ async function confirmTrustAndRetry() {
 
 function cancelTrustPrompt() {
   untrustedHostPrompt.value = null
-}
-
-async function handleHealthCheck(id) {
-  const result = await modelsStore.checkHealth(id)
-  toast(`健康探測 → ${result.status}\n${result.detail}`, { tone: result.status === 'healthy' ? 'success' : 'error' })
 }
 
 // Slice 6b — 主動探測連線。POST /test → 五態 + 延遲。防禦性讀取欄位
