@@ -1,0 +1,12 @@
+{
+  "name": "@microsoft/mxc-sdk",
+  "version": "0.0.0-anila-stub",
+  "description": "CVE-free no-op stub; telemetry/MXC packages were stripped from the image.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./bundle/ms.core.min.js": "./index.js",
+    "./bundle/ms.post.min.js": "./index.js"
+  }
+}
