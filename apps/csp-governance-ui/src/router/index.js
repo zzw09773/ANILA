@@ -29,6 +29,12 @@ const routes = [
         component: () => import('../views/ModelsView.vue'),
       },
       {
+        path: 'model-access-groups',
+        name: 'ModelAccessGroups',
+        component: () => import('../views/ModelAccessGroupsView.vue'),
+        meta: { requiresAdmin: true },
+      },
+      {
         path: 'usage',
         name: 'Usage',
         component: () => import('../views/UsageView.vue'),

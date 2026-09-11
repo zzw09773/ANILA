@@ -199,6 +199,7 @@ class ModelUpdate(BaseModel):
     endpoint_url: str | None = None
     api_version: Literal["v1", "v2"] | None = None
     is_active: bool | None = None
+    router_enabled: bool | None = None
     description: str | None = None
     context_window: int | None = None
     base_model_id: int | None = None
@@ -284,6 +285,7 @@ class ModelResponse(ApiResponseModel):
     api_version: str
     is_active: bool
     is_router_primary: bool = False
+    router_enabled: bool = False
     is_image_primary: bool = False
     is_asr_primary: bool = False
     is_slides_primary: bool = False

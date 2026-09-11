@@ -87,3 +87,27 @@ export const grantEndpointAuthor = (userId) =>
 
 export const revokeEndpointAuthor = (grantId) =>
   client.delete(`/api/endpoint-authors/${grantId}`)
+
+export const listRouterGrants = (id) =>
+  client.get(`/api/models/${id}/router-grants`)
+
+export const replaceRouterGrants = (id, grants) =>
+  client.put(`/api/models/${id}/router-grants`, { grants })
+
+export const setCampusRouterDefault = (modelId) =>
+  client.put('/api/router-models/default', { model_id: modelId })
+
+export const listModelAccessGroups = () =>
+  client.get('/api/model-access-groups')
+
+export const createModelAccessGroup = (data) =>
+  client.post('/api/model-access-groups', data)
+
+export const updateModelAccessGroup = (id, data) =>
+  client.put(`/api/model-access-groups/${id}`, data)
+
+export const deleteModelAccessGroup = (id) =>
+  client.delete(`/api/model-access-groups/${id}`)
+
+export const replaceModelAccessGroupMembers = (id, userIds) =>
+  client.put(`/api/model-access-groups/${id}/members`, { user_ids: userIds })

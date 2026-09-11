@@ -243,6 +243,7 @@ def _build_response(
         "api_version": model.api_version,
         "is_active": model.is_active,
         "is_router_primary": bool(model.is_router_primary),
+        "router_enabled": bool(getattr(model, "router_enabled", False)),
         "is_image_primary": bool(getattr(model, "is_image_primary", False)),
         "is_asr_primary": bool(getattr(model, "is_asr_primary", False)),
         "is_slides_primary": bool(getattr(model, "is_slides_primary", False)),
@@ -1213,12 +1214,13 @@ def set_router_primary(
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
-    if model.model_type != "llm":
-        raise HTTPException(status_code=400, detail="僅 LLM 類型可設為 ANILA 主路由模型")
-    if not model.is_active:
-        raise HTTPException(status_code=400, detail="已停用的模型不能設為主路由模型")
+    from app.services.router_model_policy import RouterModelPolicyError, require_campus_default_eligible
+    try:
+        require_campus_default_eligible(db, model)
+    except RouterModelPolicyError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-    # Clear previous primary first to avoid violating the partial unique index.
+    # Clear previous primary only after eligibility is proven, same transaction.
     (
         db.query(ModelRegistry)
         .filter(ModelRegistry.is_router_primary.is_(True), ModelRegistry.id != model_id)

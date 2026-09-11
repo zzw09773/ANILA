@@ -988,13 +988,108 @@ async def _tee_stream_capture_assistant(
 router = APIRouter(tags=["API 代理"])
 
 
-def _resolve_model(db: Session, caller: Caller, model_name: str) -> ModelRegistry:
+
+def _caller_authorization(request: Request) -> str:
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth:
+        return auth
+    from app.middleware.cookies import ACCESS_COOKIE_NAME
+    token = request.cookies.get(ACCESS_COOKIE_NAME)
+    if token:
+        return f"Bearer {token}"
+    raise HTTPException(status_code=401, detail="缺少認證資訊，無法轉送 Router")
+
+
+def _assert_fixed_router_endpoint(model: ModelRegistry) -> None:
+    from urllib.parse import urlparse
+    from app.services.auto_seed import PLATFORM_ROUTER_NAME, _platform_router_endpoint
+    if model.name != PLATFORM_ROUTER_NAME:
+        return
+    expected = _platform_router_endpoint().rstrip("/")
+    actual = (model.endpoint_url or "").rstrip("/")
+    if urlparse(actual).netloc != urlparse(expected).netloc:
+        raise HTTPException(
+            status_code=403,
+            detail="平台入口位址不符合部署設定，拒絕轉送呼叫者憑證",
+        )
+
+
+def _prepare_platform_router_forward(
+    db: Session,
+    request: Request,
+    caller: Caller,
+    body: dict,
+    model: ModelRegistry,
+    conv_id_int: int | None,
+) -> tuple[str | None, dict, str, str]:
+    """Return (caller_authorization, extra_headers, usage_kind, gateway_api_key)."""
+    from app.services.auto_seed import PLATFORM_ROUTER_NAME
+    from app.services.router_model_policy import RouterModelPolicyError, resolve_router_model
+
+    if model.name != PLATFORM_ROUTER_NAME:
+        return None, {}, "inference", resolve_model_gateway_key(model)
+    _assert_fixed_router_endpoint(model)
+    requested = body.pop("router_model", None)
+    if isinstance(requested, str):
+        requested = requested.strip() or None
+    conv_model_id = None
+    conv_version = 0
+    if conv_id_int is not None:
+        conv = db.get(Conversation, conv_id_int)
+        if conv is not None:
+            conv_model_id = getattr(conv, "router_model_id", None)
+            conv_version = int(getattr(conv, "router_selection_version", 0) or 0)
+    try:
+        selection = resolve_router_model(
+            db,
+            caller.user,
+            requested_name=requested,
+            conversation_model_id=conv_model_id,
+            selection_version=conv_version,
+            api_key_id=caller.api_key_id,
+        )
+    except RouterModelPolicyError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    if conv_id_int is not None:
+        conv = db.get(Conversation, conv_id_int)
+        if conv is not None and getattr(conv, "router_model_id", None) is None:
+            conv.router_model_id = selection.model_id
+            conv.router_selection_version = max(conv_version, 1)
+            db.commit()
+    return (
+        _caller_authorization(request),
+        {"X-ANILA-Router-Model": selection.model_name},
+        "router_transport",
+        "",
+    )
+
+
+def _resolve_model(
+    db: Session,
+    caller: Caller,
+    model_name: str,
+    request: Request | None = None,
+) -> ModelRegistry:
     """Resolve model name to registry entry and check caller permissions."""
     model = db.query(ModelRegistry).filter(ModelRegistry.name == model_name).first()
     if not model:
         raise HTTPException(status_code=404, detail=f"模型 '{model_name}' 未註冊")
     if not model.is_active:
         raise HTTPException(status_code=400, detail=f"模型 '{model_name}' 已停用")
+    # Route marks a Router-originated *base LLM* call. The platform entry
+    # anila-router also carries Route for KB forced-research; that is not
+    # a base-LLM selection and must not be eligibility-checked as one.
+    from app.services.router_model_policy import PLATFORM_ROUTER_NAME, user_can_use_router_model
+    router_base_call = bool(
+        request is not None
+        and request.headers.get(_ROUTE_HEADER)
+        and model.name != PLATFORM_ROUTER_NAME
+    )
+    if router_base_call and not user_can_use_router_model(db, caller.user, model):
+        raise HTTPException(
+            status_code=403,
+            detail=f"無權使用 Router 基礎模型 '{model_name}'",
+        )
     if not check_model_permission(
         db, user=caller.user, api_key_id=caller.api_key_id, model_id=model.id
     ):
@@ -1155,7 +1250,7 @@ async def chat_completions(
     agent = _resolve_agent(db, caller, model_name)
     resolved_model: ModelRegistry | None = None
     if agent is None:
-        resolved_model = _resolve_model(db, caller, model_name)
+        resolved_model = _resolve_model(db, caller, model_name, request)
 
     # ── Memory: read path (sync, ~150ms) ─────────────────────────────────────
     # The conv_id (if numeric) is excluded from RAG because the active
@@ -1568,6 +1663,11 @@ async def chat_completions(
     usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
     # 同上：串流在 handler 回傳之後才抽乾，值必須在這裡解。
     tuning = resolve_proxy_tuning(db)
+    caller_authorization, router_extra_headers, usage_kind, gateway_api_key = (
+        _prepare_platform_router_forward(
+            db, request, caller, body, model, conv_id_int
+        )
+    )
     if stream:
         chat_path = (
             "/v2/chat/completions"
@@ -1592,8 +1692,11 @@ async def chat_completions(
             task_trace_id=task_ctx.trace_id if task_ctx else None,
             task_run_id=task_ctx.task_run_id if task_ctx else None,
             legacy_runtime_call=task_ctx is None,
-            # Slice 6a: per-model gateway key (secret ref first, env fallback).
-            gateway_api_key=resolve_model_gateway_key(model),
+            gateway_api_key=gateway_api_key,
+            caller_authorization=caller_authorization,
+            extra_headers=router_extra_headers,
+            usage_kind=usage_kind,
+            model_name_snapshot=model.name,
             endpoint_display=_endpoint_display_for(
                 db,
                 user,
@@ -1645,6 +1748,10 @@ async def chat_completions(
         ),
         tuning=tuning,
         usage_source=request.headers.get("X-ANILA-Request-Source"),
+        caller_authorization=caller_authorization,
+        extra_headers=router_extra_headers,
+        usage_kind=usage_kind,
+        model_name_snapshot=model.name,
     )
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
@@ -1801,7 +1908,7 @@ async def embeddings_v1(
 
     input_type = _pop_input_type(body)
 
-    model = _resolve_model(db, caller, model_name)
+    model = _resolve_model(db, caller, model_name, request)
     return await proxy_request(
         model=model,
         api_key_id=caller.api_key_id,
@@ -1836,7 +1943,7 @@ async def embeddings_v2(
 
     input_type = _pop_input_type(body)
 
-    model = _resolve_model(db, caller, model_name)
+    model = _resolve_model(db, caller, model_name, request)
     return await proxy_request(
         model=model,
         api_key_id=caller.api_key_id,

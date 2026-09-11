@@ -6,6 +6,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import update
 from sqlalchemy.orm import Session, object_session
 
 from app.api.auth import get_current_user
@@ -28,6 +29,7 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 class ConversationCreate(BaseModel):
     title: str = Field("新對話", max_length=255)
     agent_id: Optional[int] = None
+    router_model_id: Optional[int] = None
     # Free-form tag for the calling frontend. None / '' is treated as
     # "unspecified". ANILALM sends 'anilalm', ANILA UI sends 'anila-ui'.
     # Future apps can pick any short identifier; see migration 0023.
@@ -152,6 +154,9 @@ class ConversationOut(ApiResponseModel):
     # Surfaced so the frontend can confirm scoping (e.g. ANILALM never
     # accepts a row whose collection_id != current workspace id).
     collection_id: Optional[int] = None
+    router_model_id: Optional[int] = None
+    router_model_name: Optional[str] = None
+    router_selection_version: int = 0
     classified: bool
     classified_at: Optional[datetime]
     # P3: TRUE when ``classified`` was set by the platform's memory
@@ -348,6 +353,15 @@ def _enrich_out(
 ) -> dict:
     data = ConversationOut.model_validate(conv).model_dump()
     data.update(svc.meta_view(conv, meta))
+    model = getattr(conv, "router_model", None)
+    if model is None and getattr(conv, "router_model_id", None):
+        from app.models.model_registry import ModelRegistry
+        session = object_session(conv)
+        if session is not None:
+            model = session.get(ModelRegistry, conv.router_model_id)
+    data["router_model_id"] = getattr(conv, "router_model_id", None)
+    data["router_model_name"] = getattr(model, "name", None) if model is not None else None
+    data["router_selection_version"] = int(getattr(conv, "router_selection_version", 0) or 0)
     return data
 
 
@@ -469,6 +483,20 @@ def create_conversation(
     if body.collection_id is not None:
         from app.api.ingestion.collections import _require_collection_access
         _require_collection_access(db, current_user, body.collection_id)
+    from app.services.router_model_policy import RouterModelPolicyError, resolve_router_model
+    selection = None
+    try:
+        selection = resolve_router_model(
+            db,
+            current_user,
+            requested_name=None,
+            conversation_model_id=body.router_model_id,
+        )
+    except RouterModelPolicyError as exc:
+        if body.router_model_id is not None:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        # No explicit choice and no usable default: still create, selection stays null.
+        selection = None
     conv = svc.create_conversation(
         db,
         current_user.id,
@@ -476,7 +504,51 @@ def create_conversation(
         agent_id=body.agent_id,
         origin=origin,
         collection_id=body.collection_id,
+        router_model_id=selection.model_id if selection else None,
+        router_selection_version=1 if selection else 0,
     )
+    return _conversation_out(db, current_user, conv)
+
+
+class RouterModelChoiceIn(BaseModel):
+    router_model_id: int
+    expected_version: int = 0
+
+
+@router.put("/{conv_id}/router-model", response_model=ConversationOut)
+def set_conversation_router_model(
+    conv_id: int,
+    body: RouterModelChoiceIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="對話不存在")
+    from app.services.router_model_policy import RouterModelPolicyError, resolve_router_model
+    try:
+        selection = resolve_router_model(
+            db, current_user, conversation_model_id=body.router_model_id
+        )
+    except RouterModelPolicyError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    result = db.execute(
+        update(Conversation)
+        .where(
+            Conversation.id == conv_id,
+            Conversation.user_id == current_user.id,
+            Conversation.router_selection_version == body.expected_version,
+        )
+        .values(
+            router_model_id=selection.model_id,
+            router_selection_version=body.expected_version + 1,
+        )
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="模型選擇版本衝突，請重新整理")
+    db.commit()
+    conv = db.get(Conversation, conv_id)
     return _conversation_out(db, current_user, conv)
 
 

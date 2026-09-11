@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Index
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Index, text
 from app.database import Base
 
 
@@ -62,6 +62,11 @@ class TokenUsage(Base):
     legacy_runtime_call = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    invocation_id = Column(String(64), nullable=True)
+    usage_kind = Column(String(32), nullable=False, default="inference", server_default="inference")
+    token_source = Column(String(20), nullable=False, default="unknown", server_default="unknown")
+    outcome = Column(String(20), nullable=False, default="success", server_default="success")
+    model_name_snapshot = Column(String(200), nullable=True)
 
     __table_args__ = (
         Index("idx_usage_user_time", "user_id", "request_timestamp"),
@@ -88,5 +93,12 @@ class TokenUsage(Base):
             "ix_token_usage_task_id",
             "task_id",
             postgresql_where=task_id.isnot(None),
+        ),
+        Index(
+            "uq_token_usage_invocation_id",
+            "invocation_id",
+            unique=True,
+            postgresql_where=text("invocation_id IS NOT NULL"),
+            sqlite_where=text("invocation_id IS NOT NULL"),
         ),
     )

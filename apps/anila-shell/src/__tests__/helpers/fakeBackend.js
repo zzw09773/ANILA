@@ -494,6 +494,15 @@ export function createFakeBackend(options = {}) {
 
     // ---- 資料面 ----
     if (path === "/v1/agents") return jsonResponse({ data: agents });
+    if (path === "/api/router-models" && method === "GET") {
+      return jsonResponse({
+        models: [
+          { id: 3, name: "glm-example", display_name: "GLM", health_status: "healthy" },
+          { id: 4, name: "qwen-example", display_name: "Qwen", health_status: "healthy" },
+        ],
+        default_model_id: 3,
+      });
+    }
 
     if (path === "/v1/chat/completions" && method === "POST") {
       // `X-ANILA-Conversation-Id` 是伺服器唯一知道「這一輪屬於哪個對話」的
@@ -551,6 +560,7 @@ export function createFakeBackend(options = {}) {
     }
     if (path === "/api/conversations" && method === "POST") {
       const id = ++nextConvId;
+      const requested = body?.router_model_id ?? 3;
       const row = {
         id,
         title: body?.title || "新對話",
@@ -561,6 +571,9 @@ export function createFakeBackend(options = {}) {
         folder: "all",
         origin: body?.origin,
         active_leaf_message_id: null,
+        router_model_id: requested,
+        router_model_name: requested === 4 ? "qwen-example" : "glm-example",
+        router_selection_version: 1,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -571,6 +584,19 @@ export function createFakeBackend(options = {}) {
       return jsonResponse(row, 201);
     }
 
+    if (path.includes("/router-model") && method === "PUT") {
+      const convId = Number(path.split("/")[3]);
+      const row = convs.get(convId);
+      if (!row) return errorResponse(404, "找不到對話");
+      const expected = Number(body?.expected_version ?? 0);
+      if (Number(row.router_selection_version || 0) !== expected) {
+        return errorResponse(409, "模型選擇版本衝突，請重新整理");
+      }
+      const nextId = body?.router_model_id;
+      const updated = { ...row, router_model_id: nextId, router_model_name: nextId === 4 ? "qwen-example" : "glm-example", router_selection_version: expected + 1 };
+      convs.set(convId, updated);
+      return jsonResponse(updated);
+    }
     const convMatch = path.match(/^\/api\/conversations\/(\d+)$/);
     if (convMatch) {
       const convId = Number(convMatch[1]);

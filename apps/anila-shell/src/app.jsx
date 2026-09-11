@@ -50,6 +50,8 @@ import {
 } from "./runtime/memory.js";
 import {
   listConversations as apiListConversations,
+  listRouterModels as apiListRouterModels,
+  setConversationRouterModel as apiSetConversationRouterModel,
   createConversation as apiCreateConversation,
   adoptConversation as apiAdoptConversation,
   getConversation as apiGetConversation,
@@ -103,6 +105,7 @@ import {
   streamStateNotice,
 } from "./runtime/reservedTurn.js";
 
+import RouterModelPicker from "./components/RouterModelPicker.jsx";
 import {
   AgentSelector,
   Composer,
@@ -395,6 +398,50 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // --- agents / conversations / messages ---
   const [agents, setAgents] = useState([ROUTER_AGENT]);
   const [selectedAgentId, setSelectedAgentId] = useState(ROUTER_AGENT.id);
+  const [routerModels, setRouterModels] = useState([]);
+  const [routerDefaultId, setRouterDefaultId] = useState(null);
+  const [selectedRouterModelId, setSelectedRouterModelId] = useState(null);
+  const [routerModelError, setRouterModelError] = useState("");
+  const [routerPickerLocked, setRouterPickerLocked] = useState(false);
+  const [conversations, setConversations] = useState([]);
+  const [selectedConvId, setSelectedConvId] = useState(null);
+
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiListRouterModels(authRequest);
+        if (cancelled) return;
+        const models = data?.models || [];
+        setRouterModels(models);
+        setRouterDefaultId(data?.default_model_id ?? null);
+        setSelectedRouterModelId((current) => {
+          if (current && models.some((m) => m.id === current)) return current;
+          return data?.default_model_id ?? models[0]?.id ?? null;
+        });
+        setRouterModelError("");
+      } catch (err) {
+        if (!cancelled) setRouterModelError(err?.message || "無法載入對話模型");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthenticated, authRequest]);
+
+  useEffect(() => {
+    if (!selectedConvId) return;
+    const conv = conversations.find((c) => c.id === selectedConvId);
+    if (!conv) return;
+    if (typeof conv.routerModelId === "number") {
+      setSelectedRouterModelId(conv.routerModelId);
+      setRouterModelError("");
+    }
+  }, [selectedConvId, conversations]);
+
+  const selectedRouterModelName = useMemo(() => {
+    const row = routerModels.find((m) => m.id === selectedRouterModelId);
+    return row?.name || null;
+  }, [routerModels, selectedRouterModelId]);
   const [loadingAgents, setLoadingAgents] = useState(false);
   const [runtimeError, setRuntimeError] = useState("");
   // 上次抓 /v1/agents 的時間戳，給 focus-refresh 用做 15s 節流，
@@ -403,7 +450,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 會自動重抓清單。
   const lastAgentsRefreshAtRef = useRef(0);
 
-  const [conversations, setConversations] = useState([]);
   const [messagesByConvState, setMessagesByConvState] = useState({});
   // 串流階段是「之後」才跑的,它要的是即時的訊息清單。讀 render 當下捕捉到
   // 的 state 一定是舊的 —— 上一次嘗試就是在這裡把排隊的每一輪都送成零上下文,
@@ -418,7 +464,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       return next;
     });
   }, []);
-  const [selectedConvId, setSelectedConvId] = useState(null);
   // Conversations this tab created itself. They start empty on the server and
   // this client is their only author, so hydrating them can only lose the
   // turn currently being sent — see the hydrate effect below.
@@ -977,6 +1022,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // 除錯時唯一看得到的伺服器指標;動它不會改變任何畫面,所以也不值得測。
       activeLeafMessageId: serverRow.active_leaf_message_id ?? null,
       updatedAt: serverRow.updated_at || serverRow.created_at || nowIso(),
+      routerModelId: serverRow.router_model_id ?? null,
+      routerModelName: serverRow.router_model_name ?? null,
+      routerSelectionVersion: serverRow.router_selection_version ?? 0,
     };
   }
 
@@ -1178,6 +1226,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           serverRow = await apiCreateConversation(authRequest, {
             title: makeConversationTitle(text),
             agentId: typeof effectiveAgentId === "number" ? effectiveAgentId : null,
+            routerModelId: typeof selectedRouterModelId === "number" ? selectedRouterModelId : null,
           });
           convId = serverRow.id;
           locallyCreatedConvIdsRef.current.add(convId);
@@ -1199,6 +1248,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             starred: false,
             classified: Boolean(serverRow?.classified) || encryption,
             updatedAt: serverRow?.updated_at || nowIso(),
+            routerModelId: serverRow?.router_model_id ?? selectedRouterModelId ?? null,
+            routerModelName: serverRow?.router_model_name ?? selectedRouterModelName ?? null,
+            routerSelectionVersion: serverRow?.router_selection_version ?? 0,
           },
           ...prev,
         ]);
@@ -1338,6 +1390,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         },
         body: JSON.stringify({
           model: effectiveTarget,
+      ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
           stream: false,
           messages: [
             { role: "system", content: systemPrompt },
@@ -1468,6 +1521,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
     // 預留列一存在就登記:關視窗/重整時要誠實收尾成 interrupted,
     // 否則它會永遠停在 reserved(誰都寫不進去,也沒有回收程序)。
+    setRouterPickerLocked(true);
     inFlightStreamsRef.current.set(assistantId, {
       convId,
       messageId: reserved.id,
@@ -1480,6 +1534,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const historyPrior = existing.slice(0, idx);
     const payload = {
       model: effectiveTarget,
+      ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
       messages: buildMessageHistory(historyPrior, trimmed, userMsg.attachments || []),
     };
 
@@ -1498,6 +1553,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         // 排隊期間使用者按了「停止產生」—— 串流不開始,但預留列必須誠實收尾。
         streamState = STREAM_STATE.STOPPED;
         inFlightStreamsRef.current.delete(assistantId);
+        if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
       } else {
         try {
           await streamWithAbort(convId, {
@@ -1558,6 +1614,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         } finally {
           userStoppedRef.current.delete(convId);
           inFlightStreamsRef.current.delete(assistantId);
+        if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
         }
       }
 
@@ -1877,7 +1934,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // 插話送出的第二輪會在這裡排隊等第一輪跑完,那段期間它的預留列
       // 已經在伺服器上了 —— 這時重整或關視窗,如果沒登記,那一列就會
       // 永遠停在 reserved:誰都寫不進去(沒有權杖),也沒有任何清理程序。
-      inFlightStreamsRef.current.set(assistantId, {
+      setRouterPickerLocked(true);
+    inFlightStreamsRef.current.set(assistantId, {
         convId,
         messageId: reserved.id,
         writer,
@@ -1902,6 +1960,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         // 但它的預留列已經在伺服器上了 —— 必須誠實收尾成 stopped,
         // 否則它會永遠停在 reserved(誰都寫不進去,也沒有回收程序)。
         inFlightStreamsRef.current.delete(assistantId);
+        if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
         updateMsg(convId, assistantId, {
           streaming: false,
           streamState: STREAM_STATE.STOPPED,
@@ -1931,6 +1990,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       );
       const payload = {
         model: effectiveTarget,
+      ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
         messages: buildMessageHistory(priorForHistory, text, attachments),
       };
 
@@ -2005,6 +2065,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       } finally {
         userStoppedRef.current.delete(convId);
         inFlightStreamsRef.current.delete(assistantId);
+        if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
       }
 
       const notice = streamStateNotice(streamState, Boolean(finalText));
@@ -2140,6 +2201,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       conversationId: convId,
       messageId: msg.dbId,
       model: effectiveTarget,
+      ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
       branchMessage: apiBranchMessage,
       refreshActivePath,
       onRestore: restorePreAction,
@@ -2234,6 +2296,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // 截斷訊息(已非 streaming)當 assistant role 帶上。
     const payload = {
       model: effectiveTarget,
+      ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
       messages: buildMessageHistory(
         msgs.slice(0, idx + 1),
         "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。",
@@ -2348,6 +2411,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       : prevUser.text;
     const payload = {
       model: effectiveTarget,
+      ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
       messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || []),
     };
 
@@ -2963,7 +3027,55 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           background: "var(--bg)",
         }}>
           {tweaks.agentSwitcherPosition === "top" && !compareMode ? (
+            <>
             <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
+            {selectedAgentId === ROUTER_AGENT.id ? (
+              <RouterModelPicker
+                models={routerModels}
+                selectedId={selectedRouterModelId}
+                defaultModelId={routerDefaultId}
+                error={routerModelError}
+                disabled={routerPickerLocked}
+                onChange={async (id) => {
+                  const previous = selectedRouterModelId;
+                  setSelectedRouterModelId(id);
+                  setRouterModelError("");
+                  const convId = selectedConvId;
+                  const conv = conversations.find((c) => c.id === convId);
+                  if (typeof convId === "number" && conv) {
+                    try {
+                      const saved = await apiSetConversationRouterModel(authRequest, convId, {
+                        routerModelId: id,
+                        expectedVersion: conv.routerSelectionVersion || 0,
+                      });
+                      setConversations((prev) => prev.map((row) => row.id === convId ? {
+                        ...row,
+                        routerModelId: saved.router_model_id,
+                        routerModelName: saved.router_model_name,
+                        routerSelectionVersion: saved.router_selection_version,
+                      } : row));
+                      if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
+                    } catch (err) {
+                      setSelectedRouterModelId(previous);
+                      setRouterModelError(err?.message || "無法保存對話模型");
+                      try {
+                        const fresh = await apiGetConversation(authRequest, convId);
+                        setConversations((prev) => prev.map((row) => row.id === convId ? {
+                          ...row,
+                          routerModelId: fresh.router_model_id,
+                          routerModelName: fresh.router_model_name,
+                          routerSelectionVersion: fresh.router_selection_version,
+                        } : row));
+                        if (selectedConvId === convId && typeof fresh.router_model_id === "number") {
+                          setSelectedRouterModelId(fresh.router_model_id);
+                        }
+                      } catch (_) { /* keep previous picker */ }
+                    }
+                  }
+                }}
+              />
+            ) : null}
+            </>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14, minWidth: 0 }}>
               {selectedConv?.classified && <IconLock size={14} style={{ color: "var(--danger)" }} />}
@@ -3181,7 +3293,55 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                         <span style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
                           target:
                         </span>
-                        <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
+                        <>
+            <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
+            {selectedAgentId === ROUTER_AGENT.id ? (
+              <RouterModelPicker
+                models={routerModels}
+                selectedId={selectedRouterModelId}
+                defaultModelId={routerDefaultId}
+                error={routerModelError}
+                disabled={routerPickerLocked}
+                onChange={async (id) => {
+                  const previous = selectedRouterModelId;
+                  setSelectedRouterModelId(id);
+                  setRouterModelError("");
+                  const convId = selectedConvId;
+                  const conv = conversations.find((c) => c.id === convId);
+                  if (typeof convId === "number" && conv) {
+                    try {
+                      const saved = await apiSetConversationRouterModel(authRequest, convId, {
+                        routerModelId: id,
+                        expectedVersion: conv.routerSelectionVersion || 0,
+                      });
+                      setConversations((prev) => prev.map((row) => row.id === convId ? {
+                        ...row,
+                        routerModelId: saved.router_model_id,
+                        routerModelName: saved.router_model_name,
+                        routerSelectionVersion: saved.router_selection_version,
+                      } : row));
+                      if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
+                    } catch (err) {
+                      setSelectedRouterModelId(previous);
+                      setRouterModelError(err?.message || "無法保存對話模型");
+                      try {
+                        const fresh = await apiGetConversation(authRequest, convId);
+                        setConversations((prev) => prev.map((row) => row.id === convId ? {
+                          ...row,
+                          routerModelId: fresh.router_model_id,
+                          routerModelName: fresh.router_model_name,
+                          routerSelectionVersion: fresh.router_selection_version,
+                        } : row));
+                        if (selectedConvId === convId && typeof fresh.router_model_id === "number") {
+                          setSelectedRouterModelId(fresh.router_model_id);
+                        }
+                      } catch (_) { /* keep previous picker */ }
+                    }
+                  }
+                }}
+              />
+            ) : null}
+            </>
                         {activeEncryptionRequired && (
                           <span title="此 agent 為列管模型（受控存取）" style={{
                             display: "inline-flex", alignItems: "center", gap: 3,

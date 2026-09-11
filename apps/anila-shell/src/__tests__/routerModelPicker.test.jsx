@@ -1,0 +1,48 @@
+import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import RouterModelPicker from "../components/RouterModelPicker.jsx";
+
+const MODELS = [
+  { id: 3, name: "glm-example", display_name: "GLM", health_status: "healthy" },
+  { id: 4, name: "qwen-example", display_name: "Qwen", health_status: "degraded" },
+];
+
+describe("RouterModelPicker", () => {
+  it("lists granted models and keeps anila-router out of the menu", () => {
+    render(
+      <RouterModelPicker
+        models={MODELS}
+        selectedId={3}
+        defaultModelId={3}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByText(/GLM（全院預設）/)).toBeTruthy();
+    expect(screen.getByText(/Qwen · degraded/)).toBeTruthy();
+    expect(screen.queryByText(/anila-router/)).toBeNull();
+    expect(screen.queryByText(/ANILA 自動選助手/)).toBeNull();
+  });
+
+  it("saves a new selection", () => {
+    const onChange = vi.fn();
+    render(
+      <RouterModelPicker models={MODELS} selectedId={3} defaultModelId={3} onChange={onChange} />,
+    );
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "4" } });
+    expect(onChange).toHaveBeenCalledWith(4);
+  });
+
+  it("locks during send and shows reselect error", () => {
+    render(
+      <RouterModelPicker
+        models={MODELS}
+        selectedId={3}
+        disabled
+        error="沒有此 Router 模型的使用權限，請重新選擇"
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByRole("combobox")).toBeDisabled();
+    expect(screen.getByText(/請重新選擇/)).toBeTruthy();
+  });
+});

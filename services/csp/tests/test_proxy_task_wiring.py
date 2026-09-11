@@ -1,3 +1,4 @@
+from app.models.router_model_grant import RouterModelGrant
 """Slice 2b-C — task_id wiring through the CSP data plane (/v1/chat/completions).
 
 Locks the doc-04/05 contract:
@@ -461,7 +462,8 @@ class TestTaskAccessControl:
         user = make_user(db, username="acl_plain")
         other = make_user(db, username="acl_other")
         model = make_model(db, name="acl-llm2")
-        model.is_router_primary = True
+        model.router_enabled = True
+        db.add(RouterModelGrant(model_id=model.id, scope_type="all"))
         db.commit()
         foreign_task = _make_task(db, other)
         _patch_post_client(monkeypatch)

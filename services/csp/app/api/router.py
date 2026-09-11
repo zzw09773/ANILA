@@ -7,6 +7,7 @@ from app.api.api_keys import router as api_keys_router
 from app.api.alerts import router as alerts_router
 from app.api.audit_logs import router as audit_logs_router
 from app.api.models import router as models_router
+from app.api.router_models import router as router_models_router
 from app.api.usage import router as usage_router
 from app.api.users import router as users_router
 from app.api.unit_admins import router as unit_admins_router
@@ -47,6 +48,7 @@ api_router.include_router(api_keys_router)
 api_router.include_router(alerts_router)
 api_router.include_router(audit_logs_router)
 api_router.include_router(models_router)
+api_router.include_router(router_models_router)
 api_router.include_router(usage_router)
 api_router.include_router(users_router)
 api_router.include_router(unit_admins_router)

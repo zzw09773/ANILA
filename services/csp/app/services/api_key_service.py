@@ -102,9 +102,8 @@ def check_model_permission(
 ) -> bool:
     """Check caller permission to use a model.
 
-    Admin-designated "router primary" models are open to every active user,
-    so both auth paths (JWT and API key) accept them without a per-row
-    permission entry. For all other models:
+    Campus default (is_router_primary) is not a permission grant.
+    anila-router remains the open platform chat entry. For all other models:
 
     - API key path (``api_key_id`` given): require an ``ApiKeyModelPermission``
       row for that key. This preserves the existing per-key scoping.
@@ -122,11 +121,8 @@ def check_model_permission(
     )
     if model is None:
         return False
-    if getattr(model, "is_router_primary", False):
-        return True
-    # Platform chat entry: every signed-in user may target it. Same
-    # reason router-primary is open — this is the default shell target,
-    # not an extra LLM an admin has to grant.
+    # Platform chat entry: every signed-in user may target it. This is the
+    # default shell target, not an extra LLM an admin has to grant.
     if model.name == "anila-router":
         return True
     if is_admin_tier(user):
@@ -139,6 +135,12 @@ def check_model_permission(
     # to this user_id.
     if getattr(user, "role", None) == "system":
         return True
+    if bool(getattr(model, "router_enabled", False)):
+        from app.services.router_model_policy import user_can_use_router_model
+        if not user_can_use_router_model(db, user, model):
+            return False
+        if api_key_id is None:
+            return True
 
     if api_key_id is not None:
         perm = (

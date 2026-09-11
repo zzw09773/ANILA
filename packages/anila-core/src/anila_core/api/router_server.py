@@ -921,8 +921,61 @@ def reset_router_model_cache() -> None:
         _router_model_state.update({"name": None, "source": "env", "at": 0.0})
 
 
+
+async def _csp_resolve_router_model(
+    request: Request,
+    caller_api_key: str,
+    body: dict | None,
+) -> str:
+    """Ask CSP to resolve/authorize the Router base LLM. Never trust the caller flag."""
+    requested = None
+    if isinstance(body, dict):
+        requested = body.get("router_model")
+    header_val = request.headers.get("X-ANILA-Router-Model")
+    if isinstance(header_val, str) and header_val.strip():
+        requested = header_val.strip()
+    if isinstance(requested, str):
+        requested = requested.strip() or None
+    if requested == "anila-router":
+        requested = None
+    conv_raw = request.headers.get("X-ANILA-Conversation-Id")
+    conv_id = None
+    if conv_raw and str(conv_raw).isdigit():
+        conv_id = int(conv_raw)
+    headers = {"Content-Type": "application/json"}
+    if caller_api_key:
+        headers["Authorization"] = f"Bearer {caller_api_key}"
+    cookie = request.headers.get("cookie") or request.headers.get("Cookie")
+    if cookie:
+        headers["Cookie"] = cookie
+    client = get_http_client()
+    response = await client.post(
+        f"{settings.csp_base_url.rstrip('/')}/api/router-models/resolve",
+        json={"router_model": requested, "conversation_id": conv_id},
+        headers=headers,
+        timeout=5.0,
+    )
+    if response.status_code >= 400:
+        detail = None
+        try:
+            payload = response.json()
+            detail = payload.get("detail") if isinstance(payload, dict) else payload
+        except Exception:
+            detail = response.text[:200] if response.text else None
+        raise HTTPException(status_code=response.status_code, detail=detail or "無法解析對話模型")
+    name = (response.json() or {}).get("name")
+    if not name:
+        raise HTTPException(status_code=409, detail="請重新選擇對話模型")
+    return name
+
 def current_router_model() -> str:
-    """Model id for the routing / recompose LLM calls."""
+    """Model id for the routing / recompose LLM calls.
+
+    Per-request selection wins. Never mutate shared settings.model.
+    """
+    selected = REQUEST_ROUTER_MODEL.get()
+    if selected:
+        return selected
     with _router_model_lock:
         return _router_model_state["name"] or settings.model
 
@@ -1099,6 +1152,10 @@ def create_router_app(
         caller_api_key = _extract_bearer_api_key(request)
         body: dict = await request.json()
         REQUEST_SAMPLING.set(sampling_overrides_from_body(body) if isinstance(body, dict) else {})
+        selected_model = await _csp_resolve_router_model(request, caller_api_key, body)
+        REQUEST_ROUTER_MODEL.set(selected_model)
+        if isinstance(body, dict):
+            body.pop("router_model", None)
         messages: list[dict] = body.get("messages", [])
         stream: bool = body.get("stream", False)
 
@@ -2628,6 +2685,9 @@ async def _recompose_reply(
 # call helpers keep their signature (many test fakes pin it).
 REQUEST_SAMPLING: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "anila_router_request_sampling", default=None
+)
+REQUEST_ROUTER_MODEL: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "anila_router_request_model", default=None
 )
 _EMPTY_LENGTH_ERROR = "LLM 回覆為空（finish_reason=length：輸出額度被思考用完，已重試一次）"
 

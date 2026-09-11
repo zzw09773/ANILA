@@ -227,12 +227,8 @@ _primary_lock = asyncio.Lock()
 
 
 def _apply_primary(name: str) -> None:
-    """Patch anila_core.config.settings.model so router_server picks it up."""
-    try:
-        settings.model = name
-    except Exception:
-        # pydantic frozen or validation quirk — force through __setattr__.
-        object.__setattr__(settings, "model", name)
+    """Record the campus default for fallback only. Never mutate shared settings.model."""
+    _primary_state["name"] = name
 
 
 async def _refresh_primary() -> None:
@@ -326,6 +322,31 @@ async def _bootstrap() -> None:
         await _refresh_primary()
 
 
+async def _request_has_explicit_router_selection(request: Request) -> bool:
+    header = (request.headers.get("X-ANILA-Router-Model") or "").strip()
+    if header and header != "anila-router":
+        return True
+    conv = (request.headers.get("X-ANILA-Conversation-Id") or "").strip()
+    if conv:
+        return True
+    try:
+        raw = await request.body()
+    except Exception:
+        return False
+    if not raw:
+        return False
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    body_model = parsed.get("router_model")
+    if isinstance(body_model, str):
+        body_model = body_model.strip()
+    return bool(body_model) and body_model != "anila-router"
+
+
 @app.middleware("http")
 async def _gate_on_primary(request: Request, call_next):
     # Only gate the chat completions path; leave /health and /v1/models alone.
@@ -335,6 +356,8 @@ async def _gate_on_primary(request: Request, call_next):
     # comparison miss and the request goes through ungated while the router
     # still dispatches it to the chat completions endpoint.
     if routed_path(request) == "/v1/chat/completions" and request.method == "POST":
+        if await _request_has_explicit_router_selection(request):
+            return await call_next(request)
         name, err = await _ensure_primary()
         if not name:
             logger.warning(

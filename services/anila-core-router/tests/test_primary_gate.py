@@ -104,3 +104,45 @@ async def test_health_is_never_gated(client: httpx.AsyncClient, no_primary):
     """Control: only the chat-completions path is gated."""
     resp = await client.get("/health")
     assert resp.status_code != 503, resp.text
+
+
+async def test_explicit_router_model_skips_missing_primary_gate(
+    client: httpx.AsyncClient, no_primary,
+):
+    resp = await client.post(
+        GATED_PATH,
+        headers={"X-ANILA-Router-Model": "glm-example"},
+        json=BODY,
+    )
+    assert resp.status_code != 503, resp.text
+
+
+async def test_body_router_model_skips_missing_primary_gate(
+    client: httpx.AsyncClient, no_primary,
+):
+    resp = await client.post(
+        GATED_PATH,
+        json={**BODY, "router_model": "glm-example"},
+    )
+    assert resp.status_code != 503, resp.text
+
+
+async def test_conversation_header_skips_missing_primary_gate(
+    client: httpx.AsyncClient, no_primary,
+):
+    resp = await client.post(
+        GATED_PATH,
+        headers={"X-ANILA-Conversation-Id": "12"},
+        json=BODY,
+    )
+    assert resp.status_code != 503, resp.text
+
+
+async def test_anila_router_body_model_does_not_count_as_selection(
+    client: httpx.AsyncClient, no_primary,
+):
+    resp = await client.post(
+        GATED_PATH,
+        json={**BODY, "router_model": "anila-router"},
+    )
+    assert resp.status_code == 503, resp.text

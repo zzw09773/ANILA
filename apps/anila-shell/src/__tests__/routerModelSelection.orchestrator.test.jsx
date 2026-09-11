@@ -1,0 +1,67 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { cleanup } from "@testing-library/react";
+import {
+  mountOrchestrator,
+  sendText,
+  waitForAnswer,
+  waitForIdle,
+  screen,
+  waitFor,
+  act,
+  fireEvent,
+} from "./helpers/orchestrator.jsx";
+
+beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe("ChatRuntime router model selection", () => {
+  it("renders ChatRuntime after login without TDZ crash", async () => {
+    await mountOrchestrator();
+    expect(screen.getByLabelText("送出")).toBeTruthy();
+    expect(screen.getByLabelText("對話模型")).toBeTruthy();
+  });
+
+  it("creates a conversation with the non-default picker model", async () => {
+    const { backend } = await mountOrchestrator();
+    backend.enqueueAnswer("ok");
+    const picker = screen.getByLabelText("對話模型");
+    await act(async () => {
+      fireEvent.change(picker, { target: { value: "4" } });
+    });
+    await sendText("選 Qwen");
+    await waitForAnswer("ok");
+    await waitForIdle();
+    const id = backend.conversationIds().at(-1);
+    const row = backend.storedConversation(id);
+    expect(row.router_model_id).toBe(4);
+    expect(row.router_selection_version).toBeGreaterThanOrEqual(1);
+  });
+
+  it("saves two picker switches and restores after 409", async () => {
+    const { backend } = await mountOrchestrator();
+    backend.enqueueAnswer("a");
+    await sendText("先建對話");
+    await waitForAnswer("a");
+    await waitForIdle();
+    const id = backend.conversationIds().at(-1);
+    const picker = screen.getByLabelText("對話模型");
+    await act(async () => { fireEvent.change(picker, { target: { value: "4" } }); });
+    await waitFor(() => expect(backend.storedConversation(id).router_model_id).toBe(4));
+    await act(async () => { fireEvent.change(picker, { target: { value: "3" } }); });
+    await waitFor(() => expect(backend.storedConversation(id).router_model_id).toBe(3));
+    const v = backend.storedConversation(id).router_selection_version;
+    const putsBefore = backend.requestsFor("/router-model", "PUT").length;
+    backend.route("PUT", /router-model$/, (req, { errorResponse }) => errorResponse(409, "模型選擇版本衝突，請重新整理"), { once: true });
+    await act(async () => { fireEvent.change(picker, { target: { value: "4" } }); });
+    await waitFor(() => expect(backend.requestsFor("/router-model", "PUT").length).toBeGreaterThan(putsBefore));
+    expect(backend.storedConversation(id).router_selection_version).toBe(v);
+    expect(backend.storedConversation(id).router_model_id).toBe(3);
+  });
+});

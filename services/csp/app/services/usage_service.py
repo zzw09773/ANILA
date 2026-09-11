@@ -103,6 +103,11 @@ def _apply_usage_filters(
     if model_type:
         model_ids = _get_model_ids_by_type(db, model_type)
         query = query.filter(TokenUsage.model_id.in_(model_ids))
+    # Transport hops are diagnostic only and must not inflate inference totals.
+    if hasattr(TokenUsage, "usage_kind"):
+        query = query.filter(
+            (TokenUsage.usage_kind.is_(None)) | (TokenUsage.usage_kind != "router_transport")
+        )
     return query
 
 

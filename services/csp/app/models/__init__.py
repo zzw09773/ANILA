@@ -48,7 +48,9 @@ from app.models.ingestion import (
 )
 from app.models.message import Message
 from app.models.message_action import MessageAction, MessageActionBinding
+from app.models.model_access_group import ModelAccessGroup, ModelAccessGroupMember
 from app.models.model_registry import ModelRegistry
+from app.models.router_model_grant import RouterModelGrant
 from app.models.platform_link import PlatformLink
 from app.models.platform_setting import PlatformSetting
 from app.models.policy_decision import PolicyDecision
@@ -106,11 +108,14 @@ __all__ = [
     "Message",
     "MessageAction",
     "MessageActionBinding",
+    "ModelAccessGroup",
+    "ModelAccessGroupMember",
     "ModelRegistry",
     "PlatformLink",
     "PlatformSetting",
     "PolicyDecision",
     "RegisteredService",
+    "RouterModelGrant",
     "ServiceAccessGrant",
     "ServiceAuditCallback",
     "ServiceClient",

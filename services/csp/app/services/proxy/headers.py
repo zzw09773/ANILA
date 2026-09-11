@@ -155,6 +155,9 @@ def build_model_gateway_headers(user_identity: Optional[str]) -> dict:
 def resolve_model_gateway_key(model) -> Optional[str]:
     """Resolve the outbound gateway bearer key for a model call (Slice 6a).
 
+    The platform entry ``anila-router`` never inherits MODEL_GATEWAY_API_KEY.
+    Callers must forward the verified JWT / CSP sk- instead.
+
     doc 04 §3 New rule: per-model ``api_key_secret_ref`` takes precedence;
     the global ``MODEL_GATEWAY_API_KEY`` env stays as the MVP fallback. The
     secret ref is an ``enc::v1::`` AES-GCM envelope (the exact same crypto as
@@ -165,6 +168,8 @@ def resolve_model_gateway_key(model) -> Optional[str]:
     Returns ``None`` when neither source yields a key (bare same-host vLLM
     with no gateway — behaviour unchanged: no Authorization header injected).
     """
+    if getattr(model, "name", None) == "anila-router":
+        return ""
     ref = getattr(model, "api_key_secret_ref", None)
     if ref:
         try:

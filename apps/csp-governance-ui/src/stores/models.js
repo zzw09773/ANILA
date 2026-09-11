@@ -9,6 +9,7 @@ import {
   setPlatformEmbedding, unsetPlatformEmbedding,
   testModelConnection, importModelsFromEndpoint,
   activateCreatedFromImport,
+  replaceRouterGrants, setCampusRouterDefault,
 } from '../api/models'
 
 export const useModelsStore = defineStore('models', () => {
@@ -63,7 +64,13 @@ export const useModelsStore = defineStore('models', () => {
   }
 
   async function setPrimary(id) {
-    await setRouterPrimary(id)
+    await setCampusRouterDefault(id)
+    await fetchModels()
+  }
+
+  async function enableRouterCampus(id) {
+    await updateModel(id, { router_enabled: true })
+    await replaceRouterGrants(id, [{ scope_type: 'all' }])
     await fetchModels()
   }
 
@@ -130,7 +137,7 @@ export const useModelsStore = defineStore('models', () => {
 
   return {
     models, loading, fetchModels, create, update, remove, activate, purge, test,
-    setPrimary, unsetPrimary, setImagePrimary, setSlidesPrimary, unsetSlidesPrimary, unsetImagePrimary,
+    setPrimary, enableRouterCampus, unsetPrimary, setImagePrimary, setSlidesPrimary, unsetSlidesPrimary, unsetImagePrimary,
     setAsrPrimary, unsetAsrPrimary,
     setPlatformEmbed, unsetPlatformEmbed,
     importFromEndpoint, activateCreated,

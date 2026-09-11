@@ -156,8 +156,14 @@
               </TermBadge>
             </td>
             <td>
-              <span v-if="model.is_router_primary" class="primary-pill" title="ANILA Router uses this as primary LLM">
-                ★ 主要
+              <span v-if="model.name === 'anila-router'" class="primary-pill" title="平台聊天入口，不是可選基礎模型">
+                平台入口
+              </span>
+              <span v-if="model.router_enabled && model.name !== 'anila-router'" class="primary-pill" title="可用於 Router 對話模型">
+                Router
+              </span>
+              <span v-if="model.is_router_primary" class="primary-pill" title="全院 Router 預設基礎模型">
+                ★ 全院預設
               </span>
               <span
                 v-if="model.is_image_primary"
@@ -200,14 +206,14 @@
                     title="主動探測此端點連線並回報五態健康與延遲"
                     @click="handleTest(model)"
                   >{{ testingId === model.id ? '測試中…' : '測試連線' }}</button>
-                  <span v-if="model.model_type === 'llm' && !model.is_router_primary" class="row-actions__sep">·</span>
+                  <span v-if="model.model_type === 'llm' && model.name !== 'anila-router' && !model.is_router_primary" class="row-actions__sep">·</span>
                   <button
-                    v-if="model.model_type === 'llm' && !model.is_router_primary"
+                    v-if="model.model_type === 'llm' && model.name !== 'anila-router' && !model.is_router_primary"
                     class="term-action"
                     :disabled="!model.is_active || settingPrimaryId === model.id"
                     @click="handleSetPrimary(model.id)"
                   >
-                    {{ settingPrimaryId === model.id ? '設定中…' : '設為主要' }}
+                    {{ settingPrimaryId === model.id ? '設定中…' : '設為全院預設' }}
                   </button>
                   <span v-else-if="model.is_router_primary" class="row-actions__sep">·</span>
                   <button
@@ -418,8 +424,11 @@
           call credentials 或 metadata —— 留著這個欄位就是「打了字、跳成功、
           什麼也沒送出去」的假控制項(docs/FAKE-CONTROLS.md)。
         -->
+        <p v-if="form.name === 'anila-router'" class="field-note">
+          這是平台入口「ANILA 自動選助手」，不必另設金鑰；Router 轉送呼叫者 JWT／CSP sk-。
+        </p>
         <TermField
-          v-if="form.protocol !== 'triton_grpc'"
+          v-if="form.protocol !== 'triton_grpc' && form.name !== 'anila-router'"
           label="模型金鑰 · api key"
           optional
           hint="僅寫入,不會回顯;留空=沿用現值或全域金鑰"
@@ -433,6 +442,27 @@
             :disabled="addressOnlyEditor"
           />
         </TermField>
+        <TermField v-if="form.name !== 'anila-router' && (form.model_type === 'llm' || form.model_type === 'vlm')" label="可用於 Router">
+          <label class="term-check"><input type="checkbox" v-model="form.router_enabled" :disabled="addressOnlyEditor" /> 開放給對話模型選單</label>
+        </TermField>
+        <div v-if="form.name !== 'anila-router' && (form.model_type === 'llm' || form.model_type === 'vlm') && form.router_enabled" class="grant-editor">
+          <p class="field-note">Router 授權對象（全院／部門／群組／個別到期）。儲存模型時一併寫入。</p>
+          <div v-for="(g, idx) in routerGrants" :key="idx" class="grant-row">
+            <select v-model="g.scope_type" class="term-select" :disabled="addressOnlyEditor">
+              <option value="all">全院</option>
+              <option value="department">部門</option>
+              <option value="group">群組</option>
+              <option value="user">個別</option>
+            </select>
+            <input v-if="g.scope_type === 'department'" v-model.number="g.department_id" class="term-input" placeholder="部門 ID" />
+            <label v-if="g.scope_type === 'department'" class="term-check"><input type="checkbox" v-model="g.include_descendants" /> 含子部門</label>
+            <input v-if="g.scope_type === 'group'" v-model.number="g.group_id" class="term-input" placeholder="群組 ID" />
+            <input v-if="g.scope_type === 'user'" v-model.number="g.user_id" class="term-input" placeholder="使用者 ID" />
+            <input v-if="g.scope_type === 'user'" v-model="g.expires_at" class="term-input" placeholder="到期 ISO8601（可空）" />
+            <button type="button" class="term-action" :disabled="addressOnlyEditor" @click="routerGrants.splice(idx,1)">移除</button>
+          </div>
+          <button type="button" class="term-action" :disabled="addressOnlyEditor" @click="addRouterGrant">新增授權</button>
+        </div>
         <TermField label="描述" optional>
           <textarea
             v-model="form.description"
@@ -672,9 +702,12 @@ import {
   listEndpointAuthors,
   grantEndpointAuthor,
   revokeEndpointAuthor,
+  listRouterGrants,
+  replaceRouterGrants,
 } from '../api/models'
 import { listUsers } from '../api/users'
 import { extractError, getRawDetail } from '../api/errors'
+import { grantsLoadResult, canReplaceRouterGrants } from '../utils/routerGrantsLoad.js'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
@@ -779,10 +812,24 @@ const defaultForm = () => ({
   // Slice 6b — model gateway governance。protocol 預設 openai_compatible;
   // classification_ceiling null = 無上限;api_key 為 write-only（留空不覆蓋）。
   protocol: 'openai_compatible', classification_ceiling: null, api_key: '',
+  router_enabled: false,
   thinking_effort: 'none', temperature: null, top_p: null,
   presence_penalty: null, max_tokens: null,
 })
 const form = ref(defaultForm())
+const routerGrants = ref([])
+const grantsLoadState = ref("ready")
+function serializeRouterGrants() {
+  return routerGrants.value.map((g) => ({
+    scope_type: g.scope_type,
+    department_id: g.scope_type === "department" ? Number(g.department_id) || null : null,
+    group_id: g.scope_type === "group" ? Number(g.group_id) || null : null,
+    user_id: g.scope_type === "user" ? Number(g.user_id) || null : null,
+    include_descendants: !!g.include_descendants,
+    expires_at: g.expires_at || null,
+  })).filter((g) => g.scope_type === "all" || g.department_id || g.group_id || g.user_id)
+}
+function addRouterGrant() { routerGrants.value.push({ scope_type: "all", department_id: null, group_id: null, user_id: null, include_descendants: false, expires_at: null }) }
 
 const baseModelOptions = computed(() =>
   modelsStore.models.filter(m =>
@@ -892,7 +939,7 @@ onMounted(() => {
   loadEndpointAuthorState()
 })
 
-function openCreateModal() { editingId.value = null; form.value = defaultForm(); showModal.value = true }
+function openCreateModal() { editingId.value = null; form.value = defaultForm(); routerGrants.value = []; grantsLoadState.value = "ready"; showModal.value = true }
 function openImportModal() {
   importSourceId.value = null
   importResult.value = null
@@ -960,7 +1007,7 @@ async function handleActivateCreated() {
     activatingCreated.value = false
   }
 }
-function openEditModal(model) {
+async function openEditModal(model) {
   editingId.value = model.id
   // Drop the sentinel before populating the form — otherwise saving
   // would PUT the literal "<owner-only>" string back to backend and
@@ -984,11 +1031,24 @@ function openEditModal(model) {
     protocol: model.protocol || 'openai_compatible',
     classification_ceiling: model.classification_ceiling ?? null,
     api_key: '',
+    router_enabled: !!model.router_enabled,
     thinking_effort: normalizeThinkingEffort(model.thinking_effort),
     temperature: model.temperature ?? null,
     top_p: model.top_p ?? null,
     presence_penalty: model.presence_penalty ?? null,
     max_tokens: model.max_tokens ?? null,
+  }
+  routerGrants.value = []
+  grantsLoadState.value = 'pending'
+  try {
+    const { data } = await listRouterGrants(model.id)
+    const loaded = grantsLoadResult(true, data)
+    grantsLoadState.value = loaded.state
+    routerGrants.value = loaded.grants.map((g) => ({ scope_type: g.scope_type, department_id: g.department_id, group_id: g.group_id, user_id: g.user_id, include_descendants: !!g.include_descendants, expires_at: g.expires_at || null }))
+  } catch (e) {
+    const loaded = grantsLoadResult(false, [])
+    grantsLoadState.value = loaded.state
+    toast(extractError(e, '授權清單載入失敗，儲存時不會覆蓋授權'), { tone: 'error' })
   }
   showModal.value = true
 }
@@ -1065,8 +1125,17 @@ async function handleSubmit() {
     if (editingId.value) {
       const { name, ...updateData } = payload
       noticeThinkingProbe(await modelsStore.update(editingId.value, updateData))
+      if (updateData.router_enabled) {
+        if (!canReplaceRouterGrants(grantsLoadState.value)) {
+          toast('授權清單未成功載入，已保存模型但未變更授權', { tone: 'warn' })
+        } else {
+          await replaceRouterGrants(editingId.value, serializeRouterGrants())
+        }
+      }
     } else {
-      noticeThinkingProbe(await modelsStore.create(payload))
+      const created = await modelsStore.create(payload)
+      noticeThinkingProbe(created)
+      if (payload.router_enabled && created && created.id) await replaceRouterGrants(created.id, serializeRouterGrants())
     }
     showModal.value = false
   } catch (e) {

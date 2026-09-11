@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
+from sqlalchemy.exc import IntegrityError
 from app.database import SessionLocal
 from app.models.token_usage import TokenUsage
 
@@ -33,6 +34,11 @@ async def enqueue_usage(
     request_type: str = "chat",
     caller_agent_id: int | None = None,
     caller_client_id: int | None = None,
+    invocation_id: str | None = None,
+    usage_kind: str = "inference",
+    token_source: str = "unknown",
+    outcome: str = "success",
+    model_name_snapshot: str | None = None,
 ):
     """Push usage data into the async queue (non-blocking).
 
@@ -67,7 +73,17 @@ async def enqueue_usage(
         "request_type": request_type,
         "caller_agent_id": caller_agent_id,
         "caller_client_id": caller_client_id,
+        "invocation_id": invocation_id,
+        "usage_kind": usage_kind,
+        "token_source": token_source,
+        "outcome": outcome,
+        "model_name_snapshot": model_name_snapshot,
     })
+
+
+def _is_invocation_conflict(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "invocation_id" in msg or "uq_token_usage_invocation_id" in msg
 
 
 async def _flush_batch(batch: list[dict]):
@@ -79,9 +95,29 @@ async def _flush_batch(batch: list[dict]):
         db.bulk_insert_mappings(TokenUsage, batch)
         db.commit()
         logger.info(f"已寫入 {len(batch)} 筆用量記錄")
+        return
     except Exception as e:
         db.rollback()
-        logger.error(f"寫入用量記錄失敗: {e}")
+        if not _is_invocation_conflict(e):
+            logger.error(f"寫入用量記錄失敗: {e}")
+            return
+        written = 0
+        skipped = 0
+        for item in batch:
+            try:
+                db.add(TokenUsage(**{k: v for k, v in item.items() if hasattr(TokenUsage, k)}))
+                db.commit()
+                written += 1
+            except IntegrityError as row_exc:
+                db.rollback()
+                if _is_invocation_conflict(row_exc):
+                    skipped += 1
+                    continue
+                logger.error(f"寫入用量記錄失敗: {row_exc}")
+            except Exception as row_exc:
+                db.rollback()
+                logger.error(f"寫入用量記錄失敗: {row_exc}")
+        logger.info(f"用量批次含重複 invocation_id：寫入 {written} 筆、略過 {skipped} 筆")
     finally:
         db.close()
 

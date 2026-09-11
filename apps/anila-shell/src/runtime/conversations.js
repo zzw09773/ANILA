@@ -25,14 +25,16 @@ export function listConversations(authRequest, { allOrigins = false } = {}) {
   return authRequest(`/api/conversations${qs}`, { method: "GET" });
 }
 
-export function createConversation(authRequest, { title, agentId } = {}) {
+export function createConversation(authRequest, { title, agentId, routerModelId } = {}) {
+  const body = {
+    title: title || "新對話",
+    agent_id: typeof agentId === "number" ? agentId : null,
+    origin: ANILA_UI_ORIGIN,
+  };
+  if (typeof routerModelId === "number") body.router_model_id = routerModelId;
   return authRequest("/api/conversations", {
     method: "POST",
-    body: JSON.stringify({
-      title: title || "新對話",
-      agent_id: typeof agentId === "number" ? agentId : null,
-      origin: ANILA_UI_ORIGIN,
-    }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -488,4 +490,18 @@ export function searchConversations(authRequest, q, { limit = 30 } = {}) {
 // Admin announcement banners shown at the top of the chat UI.
 export function listActiveBanners(authRequest) {
   return authRequest("/api/banners/active", { method: "GET" });
+}
+
+export function listRouterModels(authRequest) {
+  return authRequest("/api/router-models", { method: "GET" });
+}
+
+export function setConversationRouterModel(authRequest, convId, { routerModelId, expectedVersion } = {}) {
+  return authRequest(`/api/conversations/${convId}/router-model`, {
+    method: "PUT",
+    body: JSON.stringify({
+      router_model_id: routerModelId,
+      expected_version: expectedVersion ?? 0,
+    }),
+  });
 }

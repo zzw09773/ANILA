@@ -26,6 +26,11 @@ async def enqueue_usage_task_linked(
     caller_client_id: int | None = None,
     task_id: int | None = None,
     legacy_runtime_call: bool = False,
+    invocation_id: str | None = None,
+    usage_kind: str = "inference",
+    token_source: str = "unknown",
+    outcome: str = "success",
+    model_name_snapshot: str | None = None,
 ):
     """Task-aware variant of ``usage_writer.enqueue_usage`` (Slice 2b-C).
 
@@ -60,6 +65,11 @@ async def enqueue_usage_task_linked(
         "caller_client_id": caller_client_id,
         "task_id": task_id,
         "legacy_runtime_call": bool(legacy_runtime_call),
+        "invocation_id": invocation_id,
+        "usage_kind": usage_kind,
+        "token_source": token_source,
+        "outcome": outcome,
+        "model_name_snapshot": model_name_snapshot,
     })
 
 def _flatten_content(content) -> str:

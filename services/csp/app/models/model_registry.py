@@ -21,6 +21,8 @@ class ModelRegistry(Base):
     )
     is_active = Column(Boolean, default=True)
     is_router_primary = Column(Boolean, nullable=False, default=False)
+    # Distinct from is_router_primary (campus default only).
+    router_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
     # Slice 8b (doc 2026-07-06-flux-image-primary-design.md §1): mirrors
     # is_router_primary for flux2-dev-agent / anila-studio's primary image
     # model (partial unique index in migration r1_0022).

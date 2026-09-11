@@ -63,6 +63,7 @@ const menuGroups = computed(() => {
         { path: '/', label: '儀表板' },
         { path: '/api-keys', label: 'API 金鑰' },
         { path: '/models', label: '模型' },
+        { path: '/model-access-groups', label: 'Router 群組' },
         { path: '/usage', label: '用量' },
       ],
     },

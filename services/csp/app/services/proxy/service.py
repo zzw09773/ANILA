@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
@@ -343,10 +344,16 @@ async def _proxy_triton_embedding(
     tuning: ProxyTuning,
     record_usage: bool = True,
     usage_source: Optional[str] = None,
+    usage_kind: str = "inference",
+    invocation_id: Optional[str] = None,
+    model_name_snapshot: Optional[str] = None,
+    token_source: str = "estimated",
 ) -> dict:
     """Triton/KServe gRPC embedding path — never through join_upstream_path."""
     from app.services.triton_grpc import TritonEmbedError, embed_texts
 
+    invocation_id = invocation_id or uuid.uuid4().hex
+    model_name_snapshot = model_name_snapshot or model.name
     if request_type != "embedding" and model.model_type != "embedding":
         raise HTTPException(
             status_code=400,
@@ -423,6 +430,10 @@ async def _proxy_triton_embedding(
                         caller_client_id=caller_client_id,
                         task_id=task_id,
                         legacy_runtime_call=legacy_runtime_call,
+                        usage_kind=usage_kind,
+                        invocation_id=invocation_id,
+                        model_name_snapshot=model_name_snapshot,
+                        token_source=token_source,
                     )
                 else:
                     await enqueue_usage(
@@ -439,6 +450,10 @@ async def _proxy_triton_embedding(
                         request_type=request_type,
                         caller_agent_id=caller_agent_id,
                         caller_client_id=caller_client_id,
+                        usage_kind=usage_kind,
+                        invocation_id=invocation_id,
+                        model_name_snapshot=model_name_snapshot,
+                        token_source=token_source,
                     )
             _note_proxy_outcome(
                 model_id=model.id,
@@ -577,6 +592,11 @@ async def _proxy_request_impl(
     usage_source: Optional[str] = None,
     *,
     tuning: ProxyTuning,
+    caller_authorization: Optional[str] = None,
+    extra_headers: Optional[dict] = None,
+    usage_kind: str = "inference",
+    invocation_id: Optional[str] = None,
+    model_name_snapshot: Optional[str] = None,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -593,6 +613,8 @@ async def _proxy_request_impl(
     wrapper.
     """
     timeout = _get_timeout(model.model_type, tuning)
+    invocation_id = invocation_id or uuid.uuid4().hex
+    model_name_snapshot = model_name_snapshot or getattr(model, "name", None)
     request_body = apply_model_sampling_overrides(request_body, model)
     # ``usage_source`` comes from the X-ANILA-Request-Source header: anila-studio
     # sends "studio" so the usage dashboard can split 簡報製作 from chat.
@@ -624,6 +646,10 @@ async def _proxy_request_impl(
             request_type=request_type,
             tuning=tuning,
             record_usage=record_usage,
+            usage_kind=usage_kind,
+            invocation_id=invocation_id or uuid.uuid4().hex,
+            model_name_snapshot=model_name_snapshot or model.name,
+            token_source="estimated",
         )
 
     # Registry rows store bare host or ``.../v1``; join_upstream_path is
@@ -678,8 +704,15 @@ async def _proxy_request_impl(
         req_headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 呼叫;agent dispatch (model_type='agent') 不帶。
     # Slice 6a: per-model api_key_secret_ref 優先,退回全域 env(MVP fallback)。
-    if model.model_type != "agent":
+    if caller_authorization:
+        req_headers["Authorization"] = caller_authorization
+    elif model.model_type != "agent":
         _apply_gateway_auth(req_headers, resolve_model_gateway_key(model))
+    if extra_headers:
+        for key, value in extra_headers.items():
+            if key.lower() in ("authorization", "content-type"):
+                continue
+            req_headers[key] = value
 
     for attempt in range(tuning.max_retries):
         try:
@@ -777,6 +810,7 @@ async def _proxy_request_impl(
                 # requires encryption, even if the downstream omitted the flag.
                 existing_meta["classified"] = True
 
+            token_source = "reported" if usage else "estimated"
             # Enqueue usage record (non-blocking).
             # Sprint 5 / Chunk W: ``request_type`` flows from the
             # endpoint-path classification at the top of this function so
@@ -802,6 +836,10 @@ async def _proxy_request_impl(
                         caller_client_id=caller_client_id,
                         task_id=task_id,
                         legacy_runtime_call=legacy_runtime_call,
+                        usage_kind=usage_kind,
+                        invocation_id=invocation_id,
+                        model_name_snapshot=model_name_snapshot,
+                        token_source=token_source,
                     )
                 else:
                     await enqueue_usage(
@@ -818,6 +856,10 @@ async def _proxy_request_impl(
                         request_type=request_type,
                         caller_agent_id=caller_agent_id,
                         caller_client_id=caller_client_id,
+                        usage_kind=usage_kind,
+                        invocation_id=invocation_id,
+                        model_name_snapshot=model_name_snapshot,
+                        token_source=token_source,
                     )
 
             # 量測／衛生：usage 入帳後、回傳前剝內嵌 think（不影響 metering）。
@@ -911,6 +953,11 @@ async def proxy_request(
     usage_source: Optional[str] = None,
     *,
     tuning: ProxyTuning,
+    caller_authorization: Optional[str] = None,
+    extra_headers: Optional[dict] = None,
+    usage_kind: str = "inference",
+    invocation_id: Optional[str] = None,
+    model_name_snapshot: Optional[str] = None,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -950,6 +997,11 @@ async def proxy_request(
             record_usage=record_usage,
             usage_source=usage_source,
             tuning=tuning,
+            caller_authorization=caller_authorization,
+            extra_headers=extra_headers,
+            usage_kind=usage_kind,
+            invocation_id=invocation_id,
+            model_name_snapshot=model_name_snapshot,
         )
     except HTTPException as exc:
         if task_run_id is not None:
@@ -991,6 +1043,11 @@ async def _proxy_stream_impl(
     *,
     tuning: ProxyTuning,
     model: ModelRegistry | None = None,
+    caller_authorization: Optional[str] = None,
+    extra_headers: Optional[dict] = None,
+    usage_kind: str = "inference",
+    invocation_id: Optional[str] = None,
+    model_name_snapshot: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -1003,6 +1060,7 @@ async def _proxy_stream_impl(
     gateway) and into the usage row; ``legacy_runtime_call`` marks task-less
     /v1 chat traffic. Run finalization lives in the ``proxy_stream`` wrapper.
     """
+    invocation_id = invocation_id or uuid.uuid4().hex
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
     _guard_outbound(
         target_url,
@@ -1028,8 +1086,15 @@ async def _proxy_stream_impl(
     # gateway key 只給 model 串流;agent 串流 (target_agent_id 非 None) 不帶。
     # Slice 6a: 呼叫端已解析 per-model key(proxy.py 傳入 gateway_api_key);
     # None → _apply_gateway_auth 退回全域 env(既有行為)。
-    if target_agent_id is None:
+    if caller_authorization:
+        headers["Authorization"] = caller_authorization
+    elif target_agent_id is None:
         _apply_gateway_auth(headers, gateway_api_key)
+    if extra_headers:
+        for key, value in extra_headers.items():
+            if key.lower() in ("authorization", "content-type"):
+                continue
+            headers[key] = value
     if model is not None:
         request_body = apply_model_sampling_overrides(request_body, model)
     # Force stream_options so the downstream sends usage in last chunk
@@ -1245,6 +1310,10 @@ async def _proxy_stream_impl(
                 caller_client_id=caller_client_id,
                 task_id=task_id,
                 legacy_runtime_call=legacy_runtime_call,
+                usage_kind=usage_kind,
+                invocation_id=invocation_id,
+                model_name_snapshot=model_name_snapshot,
+                token_source=usage_source,
             )
         else:
             await enqueue_usage(
@@ -1260,6 +1329,10 @@ async def _proxy_stream_impl(
                 trace_id=trace_id,
                 caller_agent_id=caller_agent_id,
                 caller_client_id=caller_client_id,
+                usage_kind=usage_kind,
+                invocation_id=invocation_id,
+                model_name_snapshot=model_name_snapshot,
+                token_source=usage_source,
             )
 
 
@@ -1288,6 +1361,11 @@ async def proxy_stream(
     *,
     tuning: ProxyTuning,
     model: ModelRegistry | None = None,
+    caller_authorization: Optional[str] = None,
+    extra_headers: Optional[dict] = None,
+    usage_kind: str = "inference",
+    invocation_id: Optional[str] = None,
+    model_name_snapshot: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -1324,6 +1402,11 @@ async def proxy_stream(
             endpoint_display=endpoint_display,
             tuning=tuning,
             model=model,
+            caller_authorization=caller_authorization,
+            extra_headers=extra_headers,
+            usage_kind=usage_kind,
+            invocation_id=invocation_id,
+            model_name_snapshot=model_name_snapshot,
         ):
             yield chunk
         _note_proxy_outcome(

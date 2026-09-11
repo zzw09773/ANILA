@@ -291,6 +291,8 @@ def create_conversation(
     agent_id: Optional[int] = None,
     origin: Optional[str] = None,
     collection_id: Optional[int] = None,
+    router_model_id: Optional[int] = None,
+    router_selection_version: int = 0,
 ) -> Conversation:
     """Create a conversation row.
 
@@ -306,6 +308,8 @@ def create_conversation(
         agent_id=agent_id,
         origin=origin,
         collection_id=collection_id,
+        router_model_id=router_model_id,
+        router_selection_version=router_selection_version,
     )
     db.add(conv)
     db.commit()

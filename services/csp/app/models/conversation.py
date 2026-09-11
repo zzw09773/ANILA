@@ -70,6 +70,14 @@ class Conversation(Base):
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
+    router_model_id = Column(
+        Integer,
+        ForeignKey("model_registry.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    router_selection_version = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
