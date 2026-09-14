@@ -1,27 +1,25 @@
 <!-- 平台設定總覽：C 類設定，儲存後下一個請求生效（Router 的三份 prompt 30 秒內生效）。 -->
 <template>
   <div class="page">
-    <header class="page-head">
-      <div>
-        <h1 class="page-head__title">平台設定</h1>
-        <p class="page-head__sub">管理仍屬於平台行為的即時設定。</p>
-      </div>
-      <TermButton variant="ghost" :loading="loading" label="重新載入" @click="load" />
-    </header>
+    <PageHead title="平台設定" subtitle="依用途分組。每項旁邊寫生效時機。">
+      <template #actions>
+        <TermButton variant="ghost" :loading="loading" label="重新載入" @click="load" />
+      </template>
+    </PageHead>
 
     <p v-if="countWarning" class="settings-count-warning">{{ countWarning }}</p>
 
-    <TermBox v-if="state === 'failed'" title="讀不到設定總覽" class="settings-load-error">
-      <p class="settings-load-error__msg">{{ overviewStateMessage('failed') }}</p>
-      <p class="settings-load-error__detail">{{ loadError }}</p>
-      <TermButton variant="primary" label="重試" @click="load" />
-    </TermBox>
-    <TermBox v-else-if="state === 'loading'">
-      <p class="cell-meta">{{ overviewStateMessage('loading') }}</p>
-    </TermBox>
-    <TermEmpty v-else-if="state === 'empty'" :message="overviewStateMessage('empty')" />
-
-    <div v-else data-region="editable" class="settings-region">
+    <PageState
+      :loading="state === 'loading'"
+      :error="state === 'failed' ? (loadError || overviewStateMessage('failed')) : ''"
+      :empty="state === 'empty'"
+      :empty-title="overviewStateMessage('empty')"
+      loading-label="正在讀取設定…"
+    >
+      <template #retry>
+        <TermButton variant="primary" label="重試" @click="load" />
+      </template>
+    <div data-region="editable" class="settings-region">
       <TermBox
         v-for="section in sections"
         :key="section.id"
@@ -41,9 +39,9 @@
           <tbody>
             <tr v-for="item in section.items" :key="item.key">
               <td>
-                <div class="cell-strong">{{ item.key }}</div>
-                <div class="cell-meta">{{ item.description }}</div>
-                <div class="cell-meta">{{ item.env_name || '只住在 DB' }} · {{ item.value_type }}</div>
+                <div class="cell-strong">{{ item.description || item.key }}</div>
+                <div class="cell-meta">{{ item.key }}</div>
+                <div class="cell-meta">{{ applyWhenLabel(item) }}</div>
               </td>
               <td>
                 <dl class="setting-cells">
@@ -76,14 +74,27 @@
                       @click="handleResetToDefault(item)"
                     />
                   </div>
-                  <p class="cell-meta">儲存後 Router 在 30 秒內套用，不需重建。</p>
+                  <p class="cell-meta">{{ applyWhenLabel(item) }}</p>
+                </div>
+                <div v-else-if="canEdit(item) && isBoolSetting(item)" class="setting-editor">
+                  <label class="setting-switch">
+                    <input
+                      type="checkbox"
+                      :checked="drafts[item.key] === 'true' || drafts[item.key] === true"
+                      :aria-label="item.description || item.key"
+                      @change="onBoolDraft(item, $event)"
+                    />
+                    {{ isDraftOn(item) ? '開啟' : '關閉' }}
+                  </label>
+                  <TermButton variant="primary" :loading="!!saving[item.key]" label="儲存" @click="handleSave(item)" />
                 </div>
                 <div v-else-if="canEdit(item)" class="setting-editor">
                   <input
                     v-model="drafts[item.key]"
                     class="term-input"
-                    :aria-label="`${item.key} 的新值`"
+                    :aria-label="item.key + ' 的新值'"
                   />
+                  <span v-if="settingUnit(item)" class="cell-meta">{{ settingUnit(item) }}</span>
                   <TermButton
                     variant="primary"
                     :loading="!!saving[item.key]"
@@ -104,13 +115,14 @@
         </table>
       </TermBox>
     </div>
+    </PageState>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { getPlatformSettingsOverview, updatePlatformSetting } from '../api/platformSettings'
-import { TermBox, TermButton, TermEmpty } from '../components/cli'
+import { TermBox, TermButton, TermEmpty, PageHead, PageState } from '../components/cli'
 import {
   canEdit,
   countMismatchWarning,
@@ -118,8 +130,11 @@ import {
   extractDetail,
   groupIntoSections,
   isAtDefault,
+  applyWhenLabel,
+  isBoolSetting,
   isTextSetting,
   overviewState,
+  settingUnit,
   overviewStateMessage,
   replaceRow,
   saveNotice,
@@ -139,6 +154,14 @@ const saving = ref({})
 const state = computed(() => overviewState({ loaded: loaded.value, error: loadError.value, items: items.value }))
 const sections = computed(() => groupIntoSections(items.value))
 const countWarning = computed(() => countMismatchWarning(overview.value))
+
+function isDraftOn(item) {
+  const v = drafts.value[item.key]
+  return v === true || v === 'true'
+}
+function onBoolDraft(item, event) {
+  drafts.value[item.key] = event.target.checked ? 'true' : 'false'
+}
 
 async function load() {
   loading.value = true

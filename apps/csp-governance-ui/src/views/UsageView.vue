@@ -66,7 +66,7 @@
             簡報製作 {{ formatNum(usageStore.summary?.studio_tokens || 0) }}
           </template>
         </TermStat>
-        <TermStat :label="`${rangeLabel} · 使用中金鑰`" :value="usageStore.summary?.active_api_keys || 0" />
+        <TermStat :label="`${rangeLabel} · 區間內有呼叫的金鑰`" :value="usageStore.summary?.active_api_keys || 0" />
       </div>
       <div class="chart-wrap">
         <UsageLineChart :chart-data="usageStore.chartData" :height="380" />

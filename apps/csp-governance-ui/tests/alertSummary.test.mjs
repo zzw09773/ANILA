@@ -65,6 +65,13 @@ test('只有待處理(無高嚴重度)→ warn,仍與平時不同', () => {
   assert.match(alertSummaryHeadline(summary), /2 個告警待處理/)
 })
 
+
+test('已確認尚未解決不得畫成 ok 綠點', () => {
+  const summary = { open_count: 0, acknowledged_count: 1, resolved_count: 4, high_count: 0 }
+  assert.equal(alertSummaryTone(summary), 'warn')
+  assert.match(alertSummaryHeadline(summary), /已確認、尚未解決/)
+})
+
 test('R2-1:high_count 是 open-only,文字必須講「未處理」不講「未解決」', () => {
   // 3 open + 2 acknowledged 的高嚴重度 → 卡片講「3 個未處理」,
   // 不得講「3 個未解決」(未解決其實是 5,數字會在自己的句裡少報)。

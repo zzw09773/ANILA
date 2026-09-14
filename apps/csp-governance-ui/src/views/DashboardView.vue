@@ -1,29 +1,35 @@
 <template>
   <div class="page">
-    <header class="page__head">
-      <div>
-        <h1 class="page__title">儀表板</h1>
-      </div>
-      <div class="page__head-meta">
-        <span class="term-label">區間</span>
-        <span class="page__head-val">近 24 小時</span>
-        <span class="term-label">更新於</span>
-        <span class="page__head-val tnum">{{ refreshedLabel }}</span>
+    <PageHead title="儀表板" subtitle="先處理需要注意的事，再看近 24 小時用量。">
+      <template #actions>
+        <span class="page-head__meta">近 24 小時 · 更新於 {{ refreshedLabel }}</span>
         <TermButton size="xs" variant="ghost" :loading="loading" @click="refresh" label="重新整理" />
-      </div>
-    </header>
+      </template>
+    </PageHead>
 
     <div v-if="loadError" class="feedback is-err">
       ! {{ loadError }}
       <button type="button" class="err-retry" @click="refresh">重試</button>
     </div>
 
+    <!-- P3.3 / P3.4 companion — 服務健康總覽 + 告警摘要（admin only） ---- -->
+    <section v-if="authStore.isAdmin" class="dash-grid">
+      <ServiceHealthCard
+        :overview="healthOverview"
+        :loading="healthLoading"
+        :page-error="healthError"
+        @refresh="fetchHealthOverview"
+      />
+      <AlertSummaryCard :raw="alertSummary" :page-error="alertError" />
+    </section>
+
+
     <!-- KPI strip ------------------------------------------------------- -->
     <section class="kpi-grid">
       <TermStat label="24h · 請求數" :value="kpiValue(summary?.total_requests)" :format="kpiFormat" tone="accent" />
       <TermStat label="24h · Token"   :value="kpiValue(summary?.total_tokens)" :format="kpiFormat" />
-      <TermStat label="使用中 · 模型" :value="kpiValue(summary?.active_models)" :format="kpiFormat" hint="已健康檢查" />
-      <TermStat label="使用中 · 金鑰"  :value="kpiValue(summary?.active_api_keys)" :format="kpiFormat" />
+      <TermStat label="健康模型" :value="kpiValue(summary?.active_models)" :format="kpiFormat" hint="通過健康檢查的模型數" />
+      <TermStat label="近 24h 有呼叫的金鑰"  :value="kpiValue(summary?.active_api_keys)" :format="kpiFormat" hint="區間內實際發出請求的金鑰" />
     </section>
 
     <!-- Chart + side meta ---------------------------------------------- -->
@@ -42,14 +48,6 @@
             <span class="ops__k">權限範圍</span>
             <span class="ops__v">{{ scopeLabel }}</span>
           </li>
-          <li class="ops__row">
-            <span class="ops__k">資料介面</span>
-            <span class="ops__v ops__v--accent">/v1/* &nbsp;·&nbsp; /v2/embeddings</span>
-          </li>
-          <li class="ops__row">
-            <span class="ops__k">控制介面</span>
-            <span class="ops__v ops__v--accent">/api/*</span>
-          </li>
         </ul>
         <hr class="ops__rule" />
         <div class="ops__quick">
@@ -63,41 +61,30 @@
       </TermBox>
     </section>
 
-    <!-- P3.3 / P3.4 companion — 服務健康總覽 + 告警摘要（admin only） ---- -->
-    <section v-if="authStore.isAdmin" class="dash-grid">
-      <ServiceHealthCard
-        :overview="healthOverview"
-        :loading="healthLoading"
-        :page-error="healthError"
-        @refresh="fetchHealthOverview"
-      />
-      <AlertSummaryCard :raw="alertSummary" :page-error="alertError" />
-    </section>
-
     <!-- Sprint 8 X / Phase H — admin observability strip ---------------- -->
     <section v-if="authStore.isAdmin" class="dash-grid">
       <!-- legacy-token cutover progress widget -->
       <TermBox
-        title="汰換 · 舊版長效服務憑證"
+        title="舊版服務憑證"
         :hint="legacyTokenHint"
         :tone="legacyTokenStats?.count_24h ? 'warn' : ''"
         pad="md"
       >
         <div v-if="legacyTokenStats" class="cutover">
           <div class="cutover__stats">
-            <TermStat label="24h · hits" :value="legacyTokenStats.count_24h" :tone="legacyTokenStats.count_24h ? 'warn' : 'ok'" />
-            <TermStat label="7d · hits"  :value="legacyTokenStats.count_7d" />
-            <TermStat label="30d · hits" :value="legacyTokenStats.count_30d" />
+            <TermStat label="近 24 小時命中" :value="legacyTokenStats.count_24h" :tone="legacyTokenStats.count_24h ? 'warn' : 'ok'" />
+            <TermStat label="近 7 天命中"  :value="legacyTokenStats.count_7d" />
+            <TermStat label="近 30 天命中" :value="legacyTokenStats.count_30d" />
           </div>
           <p class="cutover__last">
-            <span class="cutover__k">last seen</span>
+            <span class="cutover__k">最近出現</span>
             <span class="cutover__v tnum">{{ legacyTokenStats.last_seen_at ? formatDate(legacyTokenStats.last_seen_at) : 'never (cutover clean)' }}</span>
           </p>
           <p v-if="legacyTokenStats.count_30d === 0" class="cutover__hint cutover__hint--ok">
-            ✓ 30 天內無 fallback 命中 — 可進入 cutover stage 4（從 .env 拿掉舊版長效服務憑證）
+            ✓ 30 天內沒有舊版憑證命中，可安排從環境設定移除舊憑證。
           </p>
           <p v-else class="cutover__hint cutover__hint--warn">
-            仍有 agent / Router 走 legacy env-var fallback — 請至 audit log 查 ip_address 找出未 cutover 主機。
+            仍有服務使用舊版環境變數憑證。請到稽核紀錄依來源位址找出尚未更換的主機。
           </p>
         </div>
         <div v-else-if="legacyTokenLoading || !legacyTokenTried" class="cutover-state">
@@ -110,7 +97,7 @@
       </TermBox>
 
       <!-- top-5 agents over the last 30 days -->
-      <TermBox title="熱門 · Agent · 30d" hint="依呼叫端歸屬 token 用量" pad="none" flush>
+      <TermBox title="熱門助手 · 30 天" hint="依呼叫端歸屬的用量" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr>
@@ -171,6 +158,7 @@ import TermBox from '../components/cli/TermBox.vue'
 import TermStat from '../components/cli/TermStat.vue'
 import TermEmpty from '../components/cli/TermEmpty.vue'
 import TermButton from '../components/cli/TermButton.vue'
+import PageHead from '../components/cli/PageHead.vue'
 
 const usageStore = useUsageStore()
 const authStore = useAuthStore()

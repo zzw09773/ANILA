@@ -156,7 +156,7 @@ const currentSegment = computed(() => {
 
 // 目前頁面的中文名（跟側欄同一份對照），刊頭顯示這個而不是 URL 片段。
 const PAGE_LABELS = {
-  '/': '儀表板', '/api-keys': 'API 金鑰', '/models': '模型', '/usage': '用量',
+  '/': '儀表板', '/api-keys': 'API 金鑰', '/models': '模型', '/model-access-groups': '群組', '/usage': '用量',
   '/developer/guide': '開發指南', '/developer/agents': 'Agent', '/knowledge-collections': '知識庫',
   '/message-actions': '自訂動作', '/users': '使用者', '/departments': '部門', '/alerts': '警報',
   '/feedback': '使用者回饋', '/banners': '公告橫幅', '/audit-logs': '稽核紀錄',

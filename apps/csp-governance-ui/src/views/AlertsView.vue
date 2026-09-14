@@ -67,7 +67,7 @@
               <div class="cell-strong">{{ alert.category }}</div>
               <div class="cell-meta">{{ alert.source_type || '—' }} / {{ alert.source_id || '—' }}</div>
             </td>
-            <td><TermBadge :variant="statusVariant(alert.status)" dot>{{ alert.status }}</TermBadge></td>
+            <td><TermBadge :variant="statusVariant(alert.status)" dot>{{ ({ open: '待處理', acknowledged: '已確認', resolved: '已解決' })[alert.status] || alert.status }}</TermBadge></td>
             <td class="cell-meta tnum">{{ formatDate(alert.last_seen_at) }}</td>
             <td>
               <div class="row-actions">

@@ -1594,7 +1594,7 @@ export const AgentSelector = ({ agents, value, onChange }) => {
       {(close) => (
         <div>
           <div style={{ padding: "6px 10px 8px", fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", letterSpacing: 0.4 }}>
-            AVAILABLE AGENTS
+            可選助手
           </div>
           {agents.map((a) => (
             <MenuItem
@@ -2320,7 +2320,7 @@ export const Composer = ({
               onFiles(files);
             }
           }}
-          placeholder={placeholder || "問 ANILA 任何事情 — 用 @agent 指定 agent · Shift+Enter 換行 · 可直接貼上截圖"}
+          placeholder={placeholder || "傳訊息給 ANILA，Shift+Enter 換行"}
           rows={COMPOSER_MIN_ROWS}
           style={{
             width: "100%",
@@ -2462,15 +2462,17 @@ export const Composer = ({
 
         <div style={{ flex: 1, fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", paddingLeft: 6 }}>
           {text.length > 0 && `${text.length} 字`}
-          {piiHits.length > 0 && <span style={{ color: "var(--warn)", marginLeft: 6 }}>· {piiHits.length} PII</span>}
+          {piiHits.length > 0 && <span style={{ color: "var(--warn)", marginLeft: 6 }}>· 可能含個資 × {piiHits.length}</span>}
           {footer && <span style={{ marginLeft: 6, color: "var(--fg-subtle)" }}>· {footer}</span>}
         </div>
 
+        {(streaming || asr.state === "recording" || asr.state === "listening") && (
         <div className="composer-enter-hint">
-          <Kbd>Enter</Kbd> <span>{streaming ? "產生中" : "送出"}</span>
-          {asr.state === "recording" && <span style={{ color: "var(--danger)" }}>· 辨識中…</span>}
-          {asr.state === "listening" && <span>· 聆聽中…</span>}
+          {streaming && <span>產生中</span>}
+          {asr.state === "recording" && <span style={{ color: "var(--danger)" }}>辨識中…</span>}
+          {asr.state === "listening" && <span>聆聽中…</span>}
         </div>
+        )}
 
         {/* 語音輸入。ASR 沒部署就不渲染(probe /asr/health;gateway 是
             profile-gated,沒開時 nginx 打不到 → probe 失敗)。不用 build-time
@@ -2679,7 +2681,7 @@ export const Sidebar = ({
         </button>
       </div>
 
-      {/* ANILA Shell 主導覽：任務中心 / 我的知識庫 / 專案入口
+      {/* ANILA Shell 主導覽：對話 / 我的知識庫 / 專案入口
           （+ admin 才顯示的 治理中心）。doc 00 §2 唯一產品入口 / doc 10 §11。 */}
       <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
       <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />

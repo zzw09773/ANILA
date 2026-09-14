@@ -5,17 +5,27 @@ export const UNKNOWN_SECTION_ID = 'unknown-class'
 
 export const SECTION_DEFS = [
   {
-    id: 'apply-now',
+    id: 'models',
     classes: ['C'],
-    title: '改完立刻生效',
-    hint: '每一次請求都重新讀 DB，按下儲存後下一個請求就是新值。',
+    title: '模型與檢索',
+    hint: '模型逾時、檢索門檻與 Router 說明。每項的生效時機寫在該列。',
+    editable: true,
+  },
+  {
+    id: 'account',
+    classes: ['C'],
+    title: '帳號',
+    hint: '登入權杖與部門層級。權杖類設定在下次簽發時才套用。',
+    editable: true,
+  },
+  {
+    id: 'conversation',
+    classes: ['C'],
+    title: '對話行為',
+    hint: '附件預算與動作頻率等對話期間限制。',
     editable: true,
   },
 ]
-
-const SECTION_BY_CLASS = new Map(
-  SECTION_DEFS.flatMap((section) => section.classes.map((cls) => [cls, section.id])),
-)
 
 const UNKNOWN_SECTION = {
   id: UNKNOWN_SECTION_ID,
@@ -26,7 +36,11 @@ const UNKNOWN_SECTION = {
 }
 
 export function sectionIdFor(item) {
-  return SECTION_BY_CLASS.get(item?.class) ?? UNKNOWN_SECTION_ID
+  if (!item || item.class !== 'C') return UNKNOWN_SECTION_ID
+  const k = item.key || ''
+  if (k.startsWith('auth.') || k === 'limits.department_max_depth') return 'account'
+  if (k.startsWith('limits.')) return 'conversation'
+  return 'models'
 }
 
 export function groupIntoSections(items) {
@@ -157,4 +171,26 @@ export function replaceRow(rows, replacement) {
 
 export function saveNotice() {
   return { tone: 'ok', message: '已儲存，下一個請求就生效' }
+}
+export function isBoolSetting(item) {
+  return item?.value_type === 'bool' || item?.value_type === 'boolean' || typeof item?.effective === 'boolean'
+}
+
+export function settingUnit(item) {
+  const k = item?.key || ''
+  if (k.endsWith('_timeout')) return '秒'
+  if (k.includes('expire_minutes')) return '分鐘'
+  if (k.includes('expire_days')) return '天'
+  if (k.includes('top_k')) return '筆'
+  if (k.includes('max_depth')) return '層'
+  if (k.includes('per_min')) return '次／分'
+  if (k.includes('ratio')) return '比例'
+  return ''
+}
+
+export function applyWhenLabel(item) {
+  const k = item?.key || ''
+  if (k.startsWith('router.prompt.')) return '儲存後 Router 約 30 秒內套用'
+  if (k.startsWith('auth.')) return '下次簽發權杖時生效'
+  return '儲存後下一個請求生效'
 }

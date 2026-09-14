@@ -315,10 +315,10 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, 
   };
 
   return (
-    <button
+    <details style={{ marginTop: 6 }}><summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>回覆詳情</summary><button
       onClick={copy}
       className="anila-audit-watermark"
-      title="點擊複製完整 audit 資訊"
+      title="複製追蹤資訊"
       style={{
         display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap",
         maxWidth: "100%",
@@ -335,9 +335,9 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, 
       {latencyMs != null && <><span>{latencyMs}ms</span><span style={{ opacity: 0.5 }}>·</span></>}
       {tokenTotal > 0 && <><span title={`prompt ${usage.prompt_tokens || 0} · completion ${usage.completion_tokens || 0}`}>{tokenTotal} tokens</span><span style={{ opacity: 0.5 }}>·</span></>}
       <span style={{ color: copied ? "var(--success)" : "var(--fg-subtle)" }}>
-        {copied ? "✓ copied" : "copy"}
+        {copied ? "已複製" : "複製"}
       </span>
-    </button>
+    </button></details>
   );
 };
 

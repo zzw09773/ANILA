@@ -58,7 +58,7 @@ describe("buildShellEntries", () => {
   it("returns the user entries in constitution order", () => {
     const entries = buildShellEntries({});
     expect(entries.map((e) => e.label)).toEqual([
-      "任務中心",
+      "對話",
       "我的知識庫",
       "專案入口",
     ]);
@@ -99,14 +99,14 @@ describe("ShellNav", () => {
   it("hides the entries until the drawer is opened", () => {
     render(<ShellNav user={{ role: "user" }} />);
     expect(screen.getByRole("button", { name: "平台入口" })).toBeTruthy();
-    expect(screen.queryByText("任務中心")).toBeNull();
+    expect(screen.queryByText("對話")).toBeNull();
     expect(screen.queryByText("我的知識庫")).toBeNull();
     expect(screen.queryByText("專案入口")).toBeNull();
   });
 
   it("renders the user entries inside the modal", () => {
     openNav({ role: "user" });
-    expect(screen.getByText("任務中心")).toBeTruthy();
+    expect(screen.getByText("對話")).toBeTruthy();
     expect(screen.getByText("我的知識庫")).toBeTruthy();
     expect(screen.getByText("專案入口")).toBeTruthy();
   });
@@ -165,10 +165,10 @@ describe("ShellNav", () => {
     expect(onOpenServices).toHaveBeenCalledTimes(1);
   });
 
-  it("marks 任務中心 as the current entry and invokes onTaskCenter", () => {
+  it("marks 對話 as the current entry and invokes onTaskCenter", () => {
     const onTaskCenter = vi.fn();
     openNav({ role: "user" }, { onTaskCenter });
-    const tasks = screen.getByText("任務中心").closest("button");
+    const tasks = screen.getByText("對話").closest("button");
     expect(tasks.getAttribute("aria-current")).toBe("page");
     fireEvent.click(tasks);
     expect(onTaskCenter).toHaveBeenCalledTimes(1);
@@ -177,7 +177,7 @@ describe("ShellNav", () => {
   it("renders an icon-only collapsed rail that still gates governance", () => {
     render(<ShellNav collapsed user={{ role: "user" }} />);
     fireEvent.click(screen.getByLabelText("平台入口"));
-    expect(screen.getByText("任務中心")).toBeTruthy();
+    expect(screen.getByText("對話")).toBeTruthy();
     expect(screen.getByText("專案入口")).toBeTruthy();
     expect(screen.queryByText("治理中心")).toBeNull();
   });

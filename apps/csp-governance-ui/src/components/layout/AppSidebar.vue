@@ -63,7 +63,6 @@ const menuGroups = computed(() => {
         { path: '/', label: '儀表板' },
         { path: '/api-keys', label: 'API 金鑰' },
         { path: '/models', label: '模型' },
-        { path: '/model-access-groups', label: 'Router 群組' },
         { path: '/usage', label: '用量' },
       ],
     },
@@ -82,9 +81,15 @@ const menuGroups = computed(() => {
   }
 
   if (authStore.isAdmin) {
+    groups.push({
+      label: '人員與單位',
+      items: [
+        { path: '/users', label: '使用者' },
+        { path: '/departments', label: '部門' },
+        { path: '/model-access-groups', label: '群組' },
+      ],
+    })
     const adminItems = [
-      { path: '/users', label: '使用者' },
-      { path: '/departments', label: '部門' },
       { path: '/alerts', label: '警報' },
       { path: '/feedback', label: '使用者回饋' },
       { path: '/banners', label: '公告橫幅' },

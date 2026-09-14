@@ -1,13 +1,7 @@
 <template>
   <div class="page">
-    <header class="page-head">
-      <div>
-        <h1 class="page-head__title">模型</h1>
-        <p class="page-head__sub">
-          llm · vlm · embedding · agent · image · asr — 經 /v1/* 代理的已註冊端點
-        </p>
-      </div>
-      <div class="page-head__actions" v-if="authStore.isAdmin || canSetEndpointAddress">
+    <PageHead title="模型" subtitle="已開放對話選單的模型，在「對話選單」欄可設定可使用對象。">
+      <template #actions>
         <TermButton v-if="authStore.isAdmin" variant="ghost" @click="openImportModal" label="整批帶入" />
         <TermButton
           v-if="canSetEndpointAddress"
@@ -15,8 +9,8 @@
           @click="openCreateModal"
           label="註冊模型"
         />
-      </div>
-    </header>
+      </template>
+    </PageHead>
 
     <!-- P4.6b — 擁有者指派可設定／看見端點位址的開發者或管理員 -->
     <TermBox
@@ -27,23 +21,25 @@
       <div class="author-grant">
         <div class="author-grant__form">
           <TermField label="指派對象" hint="從開發者或管理員帳號中選擇；撤銷立即生效">
-            <select v-model="grantUserId" class="term-select">
-              <option :value="null">— 請選擇 —</option>
-              <option
-                v-for="u in grantableAuthors"
-                :key="u.id"
-                :value="u.id"
-              >
-                {{ u.username }}（{{ roleLabel(u.role) }}）
-              </option>
-            </select>
+            <div class="author-grant__row">
+              <select v-model="grantUserId" class="term-select">
+                <option :value="null">— 請選擇 —</option>
+                <option
+                  v-for="u in grantableAuthors"
+                  :key="u.id"
+                  :value="u.id"
+                >
+                  {{ u.username }}（{{ roleLabel(u.role) }}）
+                </option>
+              </select>
+              <TermButton
+                variant="primary"
+                :disabled="!grantUserId || granting"
+                :label="granting ? '指派中…' : '授予'"
+                @click="handleGrantAuthor"
+              />
+            </div>
           </TermField>
-          <TermButton
-            variant="primary"
-            :disabled="!grantUserId || granting"
-            :label="granting ? '指派中…' : '授予'"
-            @click="handleGrantAuthor"
-          />
         </div>
         <table v-if="endpointAuthors.length" class="term-table author-grant__table">
           <thead>
@@ -91,7 +87,7 @@
             <th>端點</th>
             <th style="width: 80px">API</th>
             <th style="width: 80px">啟用</th>
-            <th style="width: 110px">Router</th>
+            <th style="width: 148px">對話選單</th>
             <th v-if="authStore.isAdmin || canSetEndpointAddress" style="width: 26%">操作</th>
           </tr>
         </thead>
@@ -180,7 +176,7 @@
                 ★ 主語音
               </span>
               <span
-                v-if="model.is_slides_primary"
+                v-if="model.is_slides_primary && model.name !== 'anila-router'"
                 class="primary-pill"
                 title="anila-studio 以此模型產生簡報並做視覺檢查"
               >
@@ -194,19 +190,32 @@
                 ★ 主 embedding
               </span>
               <span v-if="!model.is_router_primary && !model.is_image_primary && !model.is_asr_primary && !model.is_slides_primary && !model.is_platform_embedding" class="cell-meta">—</span>
+              <div v-if="canEditAudience(model)" class="audience-link">
+                <button type="button" class="term-action" @click="openEditModal(model, { focusGrants: true })">可使用對象</button>
+              </div>
             </td>
             <td v-if="authStore.isAdmin || canSetEndpointAddress">
-              <div class="row-actions">
+              <RowActions>
                 <button class="term-action" @click="openEditModal(model)">編輯</button>
                 <template v-if="authStore.isAdmin">
-                  <span class="row-actions__sep">·</span>
                   <button
                     class="term-action"
                     :disabled="testingId === model.id"
                     title="主動探測此端點連線並回報五態健康與延遲"
                     @click="handleTest(model)"
                   >{{ testingId === model.id ? '測試中…' : '測試連線' }}</button>
-                  <span v-if="model.model_type === 'llm' && model.name !== 'anila-router' && !model.is_router_primary" class="row-actions__sep">·</span>
+                </template>
+                <button
+                  v-if="authStore.isAdmin && model.is_active"
+                  class="term-action"
+                  @click="handleDeactivate(model.id)"
+                >停用</button>
+                <button
+                  v-else-if="authStore.isAdmin && !model.is_active"
+                  class="term-action"
+                  @click="handleActivate(model.id)"
+                >啟用</button>
+                <template #more v-if="hasMoreActions(model)">
                   <button
                     v-if="model.model_type === 'llm' && model.name !== 'anila-router' && !model.is_router_primary"
                     class="term-action"
@@ -215,18 +224,16 @@
                   >
                     {{ settingPrimaryId === model.id ? '設定中…' : '設為全院預設' }}
                   </button>
-                  <span v-else-if="model.is_router_primary" class="row-actions__sep">·</span>
                   <button
                     v-if="model.is_router_primary"
                     class="term-action"
                     :disabled="settingPrimaryId === model.id"
                     @click="handleUnsetPrimary(model.id)"
                   >
-                    取消主要
+                    取消全院預設
                   </button>
-                  <span v-if="model.model_type === 'llm' && !model.is_slides_primary" class="row-actions__sep">·</span>
                   <button
-                    v-if="model.model_type === 'llm' && !model.is_slides_primary"
+                    v-if="model.model_type === 'llm' && model.name !== 'anila-router' && !model.is_slides_primary"
                     class="term-action"
                     :disabled="!model.is_active || settingSlidesPrimaryId === model.id"
                     title="簡報製作（Studio）用這顆模型寫內容與做視覺檢查；建議選不思考（nothink）的版本"
@@ -234,16 +241,14 @@
                   >
                     {{ settingSlidesPrimaryId === model.id ? '設定中…' : '設為主簡報' }}
                   </button>
-                  <span v-else-if="model.is_slides_primary" class="row-actions__sep">·</span>
                   <button
-                    v-if="model.is_slides_primary"
+                    v-if="model.is_slides_primary && model.name !== 'anila-router'"
                     class="term-action"
                     :disabled="settingSlidesPrimaryId === model.id"
                     @click="handleUnsetSlidesPrimary(model.id)"
                   >
                     取消主簡報
                   </button>
-                  <span v-if="model.model_type === 'image' && !model.is_image_primary" class="row-actions__sep">·</span>
                   <button
                     v-if="model.model_type === 'image' && !model.is_image_primary"
                     class="term-action"
@@ -252,7 +257,6 @@
                   >
                     {{ settingImagePrimaryId === model.id ? '設定中…' : '設為主圖像模型' }}
                   </button>
-                  <span v-else-if="model.is_image_primary" class="row-actions__sep">·</span>
                   <button
                     v-if="model.is_image_primary"
                     class="term-action"
@@ -261,7 +265,6 @@
                   >
                     取消主圖像
                   </button>
-                  <span v-if="model.model_type === 'asr' && !model.is_asr_primary" class="row-actions__sep">·</span>
                   <button
                     v-if="model.model_type === 'asr' && !model.is_asr_primary"
                     class="term-action"
@@ -270,7 +273,6 @@
                   >
                     {{ settingAsrPrimaryId === model.id ? '設定中…' : '設為主語音辨識' }}
                   </button>
-                  <span v-else-if="model.is_asr_primary" class="row-actions__sep">·</span>
                   <button
                     v-if="model.is_asr_primary"
                     class="term-action"
@@ -279,7 +281,6 @@
                   >
                     取消主語音
                   </button>
-                  <span v-if="model.model_type === 'embedding' && !model.is_platform_embedding" class="row-actions__sep">·</span>
                   <button
                     v-if="model.model_type === 'embedding' && !model.is_platform_embedding"
                     class="term-action"
@@ -288,7 +289,6 @@
                   >
                     {{ settingEmbedId === model.id ? '設定中…' : '設為主 embedding' }}
                   </button>
-                  <span v-else-if="model.is_platform_embedding" class="row-actions__sep">·</span>
                   <button
                     v-if="model.is_platform_embedding"
                     class="term-action"
@@ -297,18 +297,6 @@
                   >
                     取消主 embedding
                   </button>
-                  <span class="row-actions__sep">·</span>
-                  <button
-                    v-if="model.is_active"
-                    class="term-action"
-                    @click="handleDeactivate(model.id)"
-                  >停用</button>
-                  <button
-                    v-else
-                    class="term-action"
-                    @click="handleActivate(model.id)"
-                  >啟用</button>
-                  <span v-if="authStore.isOwner" class="row-actions__sep">·</span>
                   <button
                     v-if="authStore.isOwner"
                     class="term-action term-action--danger"
@@ -316,10 +304,10 @@
                     :title="'hard-delete this row · irreversible · owner-only'"
                     @click="handlePurge(model)"
                   >
-                    {{ purgingId === model.id ? '清除中…' : '清除' }}
+                    {{ purgingId === model.id ? '清除中…' : '刪除模型登錄' }}
                   </button>
                 </template>
-              </div>
+              </RowActions>
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
@@ -445,23 +433,31 @@
         <TermField v-if="form.name !== 'anila-router' && (form.model_type === 'llm' || form.model_type === 'vlm')" label="可用於 Router">
           <label class="term-check"><input type="checkbox" v-model="form.router_enabled" :disabled="addressOnlyEditor" /> 開放給對話模型選單</label>
         </TermField>
-        <div v-if="form.name !== 'anila-router' && (form.model_type === 'llm' || form.model_type === 'vlm') && form.router_enabled" class="grant-editor">
-          <p class="field-note">Router 授權對象（全院／部門／群組／個別到期）。儲存模型時一併寫入。</p>
+        <div id="model-grant-editor" v-if="form.name !== 'anila-router' && (form.model_type === 'llm' || form.model_type === 'vlm') && form.router_enabled" class="grant-editor">
+          <p class="field-note">可使用對象（全院／部門／群組／個人）。儲存模型時一併寫入。</p>
           <div v-for="(g, idx) in routerGrants" :key="idx" class="grant-row">
             <select v-model="g.scope_type" class="term-select" :disabled="addressOnlyEditor">
               <option value="all">全院</option>
               <option value="department">部門</option>
               <option value="group">群組</option>
-              <option value="user">個別</option>
+              <option value="user">個人</option>
             </select>
-            <input v-if="g.scope_type === 'department'" v-model.number="g.department_id" class="term-input" placeholder="部門 ID" />
-            <label v-if="g.scope_type === 'department'" class="term-check"><input type="checkbox" v-model="g.include_descendants" /> 含子部門</label>
-            <input v-if="g.scope_type === 'group'" v-model.number="g.group_id" class="term-input" placeholder="群組 ID" />
-            <input v-if="g.scope_type === 'user'" v-model.number="g.user_id" class="term-input" placeholder="使用者 ID" />
-            <input v-if="g.scope_type === 'user'" v-model="g.expires_at" class="term-input" placeholder="到期 ISO8601（可空）" />
+            <select v-if="g.scope_type === 'department'" v-model.number="g.department_id" class="term-select" :disabled="addressOnlyEditor">
+              <option :value="null">選擇部門</option>
+              <option v-for="d in departmentChoices" :key="d.id" :value="d.id">{{ d.label }}</option>
+            </select>
+            <label v-if="g.scope_type === 'department'" class="term-check"><input type="checkbox" v-model="g.include_descendants" :disabled="addressOnlyEditor" /> 含子部門</label>
+            <select v-if="g.scope_type === 'group'" v-model.number="g.group_id" class="term-select" :disabled="addressOnlyEditor">
+              <option :value="null">選擇群組</option>
+              <option v-for="grp in accessGroups" :key="grp.id" :value="grp.id">{{ grp.name }}</option>
+            </select>
+            <div v-if="g.scope_type === 'user'" class="grant-user">
+              <span v-if="g.username || g.user_id" class="cell-strong">{{ g.username || ('#' + g.user_id) }}</span>
+              <UserSearchField :disabled="addressOnlyEditor" placeholder="搜尋帳號後點選" @select="u => pickGrantUser(g, u)" />
+            </div>
             <button type="button" class="term-action" :disabled="addressOnlyEditor" @click="routerGrants.splice(idx,1)">移除</button>
           </div>
-          <button type="button" class="term-action" :disabled="addressOnlyEditor" @click="addRouterGrant">新增授權</button>
+          <button type="button" class="term-action" :disabled="addressOnlyEditor" @click="addRouterGrant">新增對象</button>
         </div>
         <TermField label="描述" optional>
           <textarea
@@ -694,7 +690,7 @@
 
 <script setup>
 import { roleLabel } from '../utils/roleLabel'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useModelsStore } from '../stores/models'
 import { useAuthStore } from '../stores/auth'
 import {
@@ -704,11 +700,14 @@ import {
   revokeEndpointAuthor,
   listRouterGrants,
   replaceRouterGrants,
+  listModelAccessGroups,
 } from '../api/models'
 import { listUsers } from '../api/users'
+import { listDepartments } from '../api/departments'
+import { departmentOptions } from '../utils/departmentTree'
 import { extractError, getRawDetail } from '../api/errors'
 import { grantsLoadResult, canReplaceRouterGrants } from '../utils/routerGrantsLoad.js'
-import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, PageHead, RowActions, UserSearchField } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'
@@ -819,6 +818,9 @@ const defaultForm = () => ({
 const form = ref(defaultForm())
 const routerGrants = ref([])
 const grantsLoadState = ref("ready")
+const departments = ref([])
+const accessGroups = ref([])
+const departmentChoices = computed(() => departmentOptions(departments.value))
 function serializeRouterGrants() {
   return routerGrants.value.map((g) => ({
     scope_type: g.scope_type,
@@ -830,6 +832,22 @@ function serializeRouterGrants() {
   })).filter((g) => g.scope_type === "all" || g.department_id || g.group_id || g.user_id)
 }
 function addRouterGrant() { routerGrants.value.push({ scope_type: "all", department_id: null, group_id: null, user_id: null, include_descendants: false, expires_at: null }) }
+
+async function loadAudienceOptions() {
+  try {
+    const [deptRes, groupRes] = await Promise.all([listDepartments(), listModelAccessGroups()])
+    departments.value = deptRes.data || []
+    accessGroups.value = groupRes.data || []
+  } catch {
+    departments.value = []
+    accessGroups.value = []
+  }
+}
+
+function pickGrantUser(g, user) {
+  g.user_id = user.id
+  g.username = user.username
+}
 
 const baseModelOptions = computed(() =>
   modelsStore.models.filter(m =>
@@ -937,6 +955,7 @@ const unhealthyCount = computed(() => modelsStore.models.filter(m => normalizeHe
 onMounted(() => {
   modelsStore.fetchModels()
   loadEndpointAuthorState()
+  loadAudienceOptions()
 })
 
 function openCreateModal() { editingId.value = null; form.value = defaultForm(); routerGrants.value = []; grantsLoadState.value = "ready"; showModal.value = true }
@@ -1007,7 +1026,7 @@ async function handleActivateCreated() {
     activatingCreated.value = false
   }
 }
-async function openEditModal(model) {
+async function openEditModal(model, opts = {}) {
   editingId.value = model.id
   // Drop the sentinel before populating the form — otherwise saving
   // would PUT the literal "<owner-only>" string back to backend and
@@ -1044,13 +1063,35 @@ async function openEditModal(model) {
     const { data } = await listRouterGrants(model.id)
     const loaded = grantsLoadResult(true, data)
     grantsLoadState.value = loaded.state
-    routerGrants.value = loaded.grants.map((g) => ({ scope_type: g.scope_type, department_id: g.department_id, group_id: g.group_id, user_id: g.user_id, include_descendants: !!g.include_descendants, expires_at: g.expires_at || null }))
+    routerGrants.value = loaded.grants.map((g) => ({
+      scope_type: g.scope_type,
+      department_id: g.department_id,
+      group_id: g.group_id,
+      user_id: g.user_id,
+      include_descendants: !!g.include_descendants,
+      expires_at: g.expires_at || null,
+      username: g.username || '',
+    }))
   } catch (e) {
     const loaded = grantsLoadResult(false, [])
     grantsLoadState.value = loaded.state
     toast(extractError(e, '授權清單載入失敗，儲存時不會覆蓋授權'), { tone: 'error' })
   }
   showModal.value = true
+  if (opts.focusGrants) {
+    await nextTick()
+    document.getElementById("model-grant-editor")?.scrollIntoView({ block: "center" })
+  }
+}
+
+function canEditAudience(model) {
+  return authStore.isAdmin && model.router_enabled && model.name !== "anila-router" && (model.model_type === "llm" || model.model_type === "vlm")
+}
+
+function hasMoreActions(model) {
+  if (!authStore.isAdmin) return false
+  if (model.name === "anila-router") return authStore.isOwner
+  return true
 }
 
 // P4.6b: 新建一律需可設定位址；編輯時無權者不得送出／改寫 endpoint_url。
@@ -1234,10 +1275,10 @@ async function handleSetPrimary(id) {
   finally { settingPrimaryId.value = null }
 }
 async function handleUnsetPrimary(id) {
-  if (!(await confirm({ message: '取消主要？在你指定新的主要模型前，ANILA Router 將沒有主要 LLM。', confirmText: '取消主要', danger: true }))) return
+  if (!(await confirm({ message: '取消全院預設？在你指定新的主要模型前，ANILA Router 將沒有主要 LLM。', confirmText: '取消全院預設', danger: true }))) return
   settingPrimaryId.value = id
   try { await modelsStore.unsetPrimary(id) }
-  catch (e) { toast(extractError(e, '取消主要失敗'), { tone: 'error' }) }
+  catch (e) { toast(extractError(e, '取消全院預設失敗'), { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
 async function handleSetImagePrimary(id) {
@@ -1350,9 +1391,25 @@ async function handlePurge(model) {
 
 .author-grant { display: flex; flex-direction: column; gap: var(--gap-3); padding: var(--gap-3); }
 .author-grant__form {
-  display: flex; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap;
+  max-width: 36rem;
 }
-.author-grant__form .term-field { flex: 1; min-width: 220px; }
+.author-grant__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.author-grant__row .term-select { flex: 1; min-width: 0; }
+.author-grant__row :deep(.term-btn) { flex-shrink: 0; min-width: 4.5rem; }
+.author-grant__row :deep(.term-btn:disabled) {
+  background: var(--c-accent) !important;
+  border-color: var(--c-accent);
+  color: var(--c-accent-fg);
+  opacity: 0.55;
+}
+.author-grant :deep(.term-empty) {
+  text-align: left;
+  padding: 8px 0 0;
+}
 .author-grant__table { margin-top: var(--gap-2); }
 
 .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap-3); }
@@ -1462,6 +1519,13 @@ async function handlePurge(model) {
   background: transparent;
 }
 
+.audience-link {
+  margin-top: 6px;
+}
+.audience-link .term-action {
+  font-weight: 600;
+}
+
 .row-actions { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-xs); flex-wrap: wrap; }
 .row-actions__sep { color: var(--c-border-strong); }
 
@@ -1481,4 +1545,12 @@ async function handlePurge(model) {
   color: var(--c-fg-1);
 }
 .think-chip { color: var(--c-fg-2); }
+.grant-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+}
+.grant-user { display: flex; flex-direction: column; gap: 4px; min-width: 14rem; }
 </style>

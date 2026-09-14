@@ -50,6 +50,7 @@ class DirectoryEntry(BaseModel):
 def search_directory(
     q: str = Query("", max_length=100, description="帳號關鍵字；留空回前幾筆"),
     limit: int = Query(_DEFAULT_LIMIT, ge=1, le=_MAX_LIMIT),
+    include_self: bool = Query(False, description="管理端挑人時可包含自己"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[DirectoryEntry]:
@@ -64,9 +65,10 @@ def search_directory(
         .filter(
             User.is_active.is_(True),
             User.is_approved.is_(True),
-            User.id != current_user.id,
         )
     )
+    if not include_self:
+        rows = rows.filter(User.id != current_user.id)
     keyword = q.strip()
     if keyword:
         rows = rows.filter(User.username.ilike(f"%{keyword}%"))

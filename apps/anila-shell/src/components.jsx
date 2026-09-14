@@ -269,7 +269,7 @@ export const Modal = ({ open, onClose, title, subtitle, children, width = 480 })
             <div style={{ fontSize: 15, fontWeight: 600 }}>{title}</div>
             {subtitle && <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 2 }}>{subtitle}</div>}
           </div>
-          <IconButton onClick={onClose}><IconX/></IconButton>
+          <IconButton onClick={onClose} title="關閉"><IconX/></IconButton>
         </div>
         <div style={{ padding: 20 }}>{children}</div>
       </div>

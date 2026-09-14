@@ -31,6 +31,8 @@
             <option value="user">一般使用者</option>
             <option value="developer">開發者</option>
             <option value="admin">管理員</option>
+            <option value="owner">擁有者</option>
+            <option value="system">系統</option>
           </select>
         </TermField>
         <TermField label="狀態">
@@ -68,7 +70,7 @@
       <table v-else class="term-table">
         <thead>
           <tr>
-            <th style="width: 32px"><input type="checkbox" :checked="allVisibleSelected" @change="toggleSelectAll($event.target.checked)" /></th>
+            <th style="width: 32px"><input type="checkbox" :checked="allVisibleSelected" @change="toggleSelectAll($event.target.checked)" aria-label="選取本頁全部使用者" /></th>
             <th>使用者名稱</th>
             <th>email</th>
             <th style="width: 14%">部門</th>
@@ -81,7 +83,7 @@
         </thead>
         <tbody>
           <tr v-for="user in filteredUsers" :key="user.id">
-            <td><input type="checkbox" :checked="selectedUserIds.includes(user.id)" @change="toggleUserSelection(user.id, $event.target.checked)" /></td>
+            <td><input type="checkbox" :checked="selectedUserIds.includes(user.id)" @change="toggleUserSelection(user.id, $event.target.checked)" :aria-label="'選取 ' + user.username" /></td>
             <td>
               <div class="cell-strong">{{ user.username }}</div>
               <div class="cell-meta">id #{{ user.id }}</div>
@@ -95,26 +97,21 @@
             <td class="cell-meta tnum">{{ user.last_login_at ? formatDate(user.last_login_at) : '從未' }}</td>
             <td class="cell-meta tnum">{{ formatDate(user.created_at) }}</td>
             <td>
-              <div class="row-actions">
+              <RowActions>
                 <button v-if="!user.is_approved" class="term-action" @click="handleApprove(user)">核准</button>
-                <span v-if="!user.is_approved" class="row-actions__sep">·</span>
                 <button class="term-action" @click="openEditModal(user)">編輯</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action" @click="openAllowedModelsModal(user)">模型</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action" @click="openAllowedAgentsModal(user)">Agent</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action" @click="openResetPasswordModal(user)">重設密碼</button>
-                <span class="row-actions__sep">·</span>
-                <button v-if="!user.local_password_disabled" class="term-action" @click="handleToggleSsoOnly(user, true)" title="拒絕本地密碼 — 僅 SSO">僅 SSO</button>
-                <button v-else class="term-action" @click="handleToggleSsoOnly(user, false)">解鎖密碼</button>
-                <span v-if="user.is_active && user.is_approved" class="row-actions__sep">·</span>
+                <button class="term-action" @click="openRouterModelsModal(user)">對話可用模型</button>
                 <button v-if="user.is_active && user.is_approved" class="term-action term-action--danger" @click="handleDeactivate(user)">停用</button>
-                <span v-if="!user.is_active" class="row-actions__sep">·</span>
-                <button v-if="!user.is_active" class="term-action" @click="handleActivate(user)" title="重新啟用已停用的使用者">啟用</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action term-action--danger" @click="openHardDeleteModal(user)" title="永久刪除使用者（不可復原）">刪除</button>
-              </div>
+                <button v-if="!user.is_active" class="term-action" @click="handleActivate(user)">啟用</button>
+                <template #more>
+                  <button class="term-action" @click="openAllowedModelsModal(user)">API 金鑰可用模型</button>
+                  <button class="term-action" @click="openAllowedAgentsModal(user)">Agent</button>
+                  <button class="term-action" @click="openResetPasswordModal(user)">重設密碼</button>
+                  <button v-if="!user.local_password_disabled" class="term-action" @click="handleToggleSsoOnly(user, true)">改為僅限 SSO 登入</button>
+                  <button v-else class="term-action" @click="handleToggleSsoOnly(user, false)">解鎖密碼</button>
+                  <button class="term-action term-action--danger" @click="openHardDeleteModal(user)">刪除</button>
+                </template>
+              </RowActions>
             </td>
           </tr>
         </tbody>
@@ -207,8 +204,22 @@
     </TermModal>
 
     <!-- Allowed models modal ----------------------------------------- -->
-    <TermModal :visible="showAllowedModelsModal" :title="`允許模型 · ${allowedModelsTarget?.username || ''}`" width="480px" @close="showAllowedModelsModal = false">
-      <p class="cell-meta">變更會套用到該使用者現有的 API 金鑰。</p>
+    <TermModal :visible="showRouterModelsModal" :title="`對話可用模型 · ${routerModelsTarget?.username || ''}`" width="520px" @close="showRouterModelsModal = false">
+      <p class="cell-meta">這是聊天時能選的模型。要改誰能選，請到模型頁的「可使用對象」。這裡只能看，不能改。</p>
+      <p v-if="routerModelsLoading" class="cell-meta">載入中…</p>
+      <p v-else-if="!routerModels.length" class="cell-meta">目前沒有可選的對話模型。</p>
+      <ul v-else class="router-models">
+        <li v-for="m in routerModels" :key="m.id">
+          <strong>{{ m.display_name }}</strong>
+          <span class="cell-meta">{{ sourceLabel(m.grant_sources) }}</span>
+        </li>
+      </ul>
+      <template #footer>
+        <TermButton variant="ghost" @click="showRouterModelsModal = false" label="關閉" />
+      </template>
+    </TermModal>
+    <TermModal :visible="showAllowedModelsModal" :title="`API 金鑰可用模型 · ${allowedModelsTarget?.username || ''}`" width="480px" @close="showAllowedModelsModal = false">
+      <p class="cell-meta">這只影響他申請的 API 金鑰能呼叫哪些模型，不會改聊天選單。</p>
       <div class="check-list term-box term-box--inset" style="padding: 8px 12px; margin-top: 12px; max-height: 300px; overflow:auto;">
         <label v-for="model in allModels" :key="model.id" class="check-list__row">
           <input type="checkbox" :value="model.id" v-model="selectedModelIds" />
@@ -275,8 +286,9 @@ import {
   updateUser,
   updateUserAllowedAgents,
   updateUserAllowedModels,
+  getUserRouterModels,
 } from '../api/users'
-import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, RowActions } from '../components/cli'
 import { useAuthStore } from '../stores/auth'
 
 const authStore = useAuthStore()
@@ -300,6 +312,29 @@ const showAllowedModelsModal = ref(false)
 const allowedModelsTarget = ref(null)
 const selectedModelIds = ref([])
 const savingModels = ref(false)
+const showRouterModelsModal = ref(false)
+const routerModelsTarget = ref(null)
+const routerModels = ref([])
+const routerModelsLoading = ref(false)
+const SOURCE_LABEL = { all: '全院', department: '部門', group: '群組', user: '個人' }
+function sourceLabel(sources) {
+  const names = [...new Set(sources || [])].map((s) => SOURCE_LABEL[s] || s)
+  return names.length ? names.join('、') : '—'
+}
+async function openRouterModelsModal(user) {
+  routerModelsTarget.value = user
+  routerModels.value = []
+  routerModelsLoading.value = true
+  showRouterModelsModal.value = true
+  try {
+    const { data } = await getUserRouterModels(user.id)
+    routerModels.value = data || []
+  } catch (e) {
+    feedback.value = { type: 'error', message: extractError(e, '讀取對話模型失敗') }
+  } finally {
+    routerModelsLoading.value = false
+  }
+}
 const showAllowedAgentsModal = ref(false)
 const allowedAgentsTarget = ref(null)
 const selectedAgentIds = ref([])

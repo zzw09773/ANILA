@@ -1,13 +1,10 @@
 <template>
   <div class="page">
-    <header class="page-header">
-      <div>
-        <h1 class="page-title">服務客戶端</h1>
-        <p class="page-subtitle">
-          平台內部服務（對話路由、文件匯入工作者、管理工具）彼此驗證用的身分。每一列是一組長效憑證，與 agent 派工權杖無關。
-        </p>
-      </div>
-    </header>
+    <PageHead title="服務客戶端" subtitle="平台內部服務彼此驗證用的身分，與助手派工權杖無關。">
+      <template #actions>
+        <TermButton variant="primary" @click="openCreateModal" label="建立客戶端" />
+      </template>
+    </PageHead>
 
     <TermBox v-if="feedback.message" :tone="feedback.type" dismissible @dismiss="feedback.message = ''">
       {{ feedback.message }}
@@ -36,7 +33,7 @@
         <tbody>
           <tr v-if="!clients.length">
             <td colspan="8">
-              <TermEmpty message="尚無服務客戶端" />
+              <TermEmpty message="尚未建立服務客戶端。下一步：建立第一個客戶端。" />
             </td>
           </tr>
           <tr v-for="c in clients" :key="c.id" :class="{ 'is-revoked': !c.is_active }">
@@ -138,7 +135,7 @@ import {
   revokeServiceClient,
   rotateServiceClient,
 } from '../api/serviceClients'
-import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, PageHead } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { formatDate } from '../utils/formatDate'
 

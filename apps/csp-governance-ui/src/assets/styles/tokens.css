@@ -89,10 +89,11 @@
 :root,
 [data-theme="light"] {
   /* Surfaces */
-  --c-bg:        #f7f8fa;
+  --c-bg:        #f4f6f9;
   --c-surface-1: #ffffff;
   --c-surface-2: #eef1f5;
   --c-surface-3: #e2e7ee;
+  --c-elev:      #ffffff;
   --c-overlay:   rgba(17, 24, 39, 0.45);
 
   /* Strokes */
@@ -165,10 +166,11 @@
    ──────────────────────────────────────────────────────────────────────── */
 [data-theme="dark"] {
   /* Surfaces */
-  --c-bg:        #161a22;
+  --c-bg:        #12151c;
   --c-surface-1: #1c212b;
   --c-surface-2: #232936;
   --c-surface-3: #2b3240;
+  --c-elev:      #252b36;
   --c-overlay:   rgba(10, 13, 18, 0.62);
 
   /* Strokes */

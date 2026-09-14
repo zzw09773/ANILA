@@ -11,20 +11,23 @@
 <template>
   <TermBox title="告警" :hint="hint" pad="md">
     <div v-if="pageError" class="alert-sum__err">! {{ pageError }}</div>
+    <div v-else-if="raw == null" class="alert-sum__head">載入告警摘要中…</div>
 
+    <template v-else>
     <div class="alert-sum__head" :class="[`is-${tone}`, { 'is-urgent': urgent }]">
       <TermDot :status="tone" :title="headline" />
       <span class="alert-sum__headline">{{ headline }}</span>
     </div>
 
     <div class="alert-sum__stats">
-      <TermStat label="高嚴重度" :value="summary.high_count" :tone="urgent ? 'danger' : 'default'" format="int" />
+      <TermStat label="未處理高嚴重度" :value="summary.high_count" :tone="urgent ? 'danger' : 'default'" format="int" />
       <TermStat label="待處理" :value="summary.open_count" :tone="summary.open_count ? 'warn' : 'default'" format="int" />
       <TermStat label="已確認" :value="summary.acknowledged_count" format="int" />
       <TermStat label="已解決" :value="summary.resolved_count" format="int" />
     </div>
 
     <router-link to="/alerts" class="alert-sum__link">→ 前往警報中心</router-link>
+    </template>
   </TermBox>
 </template>
 

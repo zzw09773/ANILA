@@ -14,7 +14,7 @@
       <ol class="tldr">
         <li>MLSteam 用樣板 image 建 Lab，掛載 <code>anila</code> 源碼資料夾到 workspace，<code>cp .env.example .env</code></li>
         <li><code>.env</code> 設模型：<code>ANILA_BASE_URL</code>＝<strong>CSP 平台真實 URL</strong>（非 docker 內部名）、<code>ANILA_MODEL</code>＝CSP 複製的 model 名、<code>ANILA_API_KEY</code>＝CSP 核發的 key</li>
-        <li>用下方 <a href="#generator">🛠 產生器</a> 產 system prompt → 取代 <code>prompts/system.md</code></li>
+        <li>用下方 <a href="#generator">🛠 產生器</a> 產 system prompt → 取代套件內 <code>anila_agent/prompts/system.md</code>（相對於 anila-agent 套件根目錄）</li>
         <li>MLSteam 設 port forwarding → 到 <router-link to="/developer/agents">/developer/agents</router-link> 註冊（endpoint 用 forward 後位址、填 <code>http://</code>），system prompt 貼到 description</li>
         <li>若 https：用 Agent 頁「下載平台 CA」取 PEM（端點未上線會提示）→ 設 <code>CSP_BASE_URL</code>／<code>ANILA_CA_FILE</code>（無長效祕密）→ <code>python app.py</code></li>
       </ol>
@@ -94,8 +94,8 @@
         <li><strong>建 .env</strong>：<code>cp .env.example .env</code>。</li>
         <li><strong>模型端點</strong>：<code>ANILA_BASE_URL</code> 改成 <strong>CSP 平台真實 URL</strong>（<code>https://&lt;csp-host&gt;/v1</code>，例 <code>https://172.16.120.35/v1</code>）。<strong>不是</strong> <code>http://gpt-oss-20b:8000</code> 那種 docker 內部名 —— MLSteam 連不到。</li>
         <li><strong>模型名</strong>：到 CSP 平台複製 model name → 取代 <code>ANILA_MODEL</code>（例 <code>openai/gpt-oss-20b</code>）。</li>
-        <li><strong>模型 key</strong>：在 CSP 核發一把 API key → 取代 <code>ANILA_API_KEY</code>（agent 用它打 CSP 的 <code>/v1</code>）。CSP 自簽 https → 加 <code>ANILA_SSL_VERIFY=0</code>。</li>
-        <li><strong>system prompt</strong>：用上方 <a href="#generator">🛠 產生器</a>（選 collection + 寫構想）產一份 → 取代 anila-agent 的 <code>anila_agent/prompts/system.md</code>。</li>
+        <li><strong>模型 key</strong>：在 CSP 核發一把 API key → 取代 <code>ANILA_API_KEY</code>（agent 用它打 CSP 的 <code>/v1</code>）。正式連線請下載平台 CA，設 <code>ANILA_CA_FILE</code>；不要同時關掉憑證驗證。</li>
+        <li><strong>system prompt</strong>：用上方 <a href="#generator">🛠 產生器</a>（選 collection + 寫構想）產一份 → 寫入套件根目錄的 <code>anila_agent/prompts/system.md</code>。</li>
         <li><strong>port forwarding</strong>：MLSteam 設 port forwarding 把 agent 的 <code>:8200</code> 對外 → 到 <router-link to="/developer/agents">/developer/agents</router-link> 用 forward 後的位址註冊。<strong>endpoint 填 <code>http://</code>（agent 跑純 http；填 https 會 SSL WRONG_VERSION_NUMBER）。</strong></li>
         <li><strong>description</strong>：把 system prompt（或其摘要）貼到註冊的 <code>description</code> —— <strong>router 靠它判斷要不要把對話派給這支 agent</strong>。</li>
         <li><strong>非祕密設定</strong>：在 <code>.env</code> 填 <code>CSP_BASE_URL</code>、<code>ANILA_CA_FILE</code>（用 Agent 頁「下載平台 CA」嘗試取得 PEM；端點未上線會提示）、選填 <code>ANILA_COLLECTION_ID</code>。<strong>不必領取任何長效祕密</strong>——平台派工時會現簽 5 分鐘 JWT；驗簽請接 <code>anila_verify.py</code> 或確認樣板 zip 實際是否已含驗簽。</li>
@@ -110,7 +110,7 @@
 ANILA_BASE_URL=https://&lt;csp-host&gt;/v1      # 例 https://172.16.120.35/v1
 ANILA_MODEL=openai/gpt-oss-20b            # 從 CSP 平台複製
 ANILA_API_KEY=&lt;CSP 核發的 API key&gt;       # 僅供 agent 打平台 /v1 模型；非派工身分
-ANILA_SSL_VERIFY=0                        # 開發期捷徑；正式請用 ANILA_CA_FILE
+# ANILA_SSL_VERIFY=0                     # 僅開發機捷徑，正式環境不要設
 
 # ── 平台位址 + CA（步驟 10；無長效派工祕密）──
 CSP_BASE_URL=https://&lt;csp-host&gt;

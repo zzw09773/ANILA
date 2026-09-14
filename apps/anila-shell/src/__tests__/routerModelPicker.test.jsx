@@ -17,7 +17,7 @@ describe("RouterModelPicker", () => {
         onChange={() => {}}
       />,
     );
-    fireEvent.click(screen.getByLabelText("對話模型"));
+    fireEvent.click(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選"));
     expect(screen.getAllByText("GLM").length).toBeGreaterThan(0);
     expect(screen.getByText("全院預設")).toBeTruthy();
     expect(screen.getByText("Qwen")).toBeTruthy();
@@ -31,7 +31,7 @@ describe("RouterModelPicker", () => {
     render(
       <RouterModelPicker models={MODELS} selectedId={3} defaultModelId={3} onChange={onChange} />,
     );
-    fireEvent.click(screen.getByLabelText("對話模型"));
+    fireEvent.click(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選"));
     fireEvent.click(screen.getByText("Qwen"));
     expect(onChange).toHaveBeenCalledWith(4);
   });
@@ -46,7 +46,7 @@ describe("RouterModelPicker", () => {
         onChange={() => {}}
       />,
     );
-    expect(screen.getByLabelText("對話模型")).toBeDisabled();
+    expect(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選")).toBeDisabled();
     expect(screen.getByText(/請重新選擇/)).toBeTruthy();
   });
 });

@@ -1,21 +1,12 @@
 <template>
   <div class="page">
-    <header class="page-head">
-      <div>
-        <h1 class="page-head__title">Agent</h1>
-        <p class="page-head__sub">
-          {{ authStore.isAdmin ? '審查並治理每個已註冊的 Agent' : '管理你的 Agent · 下載樣板 · 上線到 router' }}
-        </p>
-      </div>
-      <div class="page-head__actions">
+    <PageHead title="助手" :subtitle="authStore.isAdmin ? '審查並治理已註冊的助手' : '管理你的助手、下載樣板，再上線到自動選路'">
+      <template #actions>
         <TermButton @click="handleDownloadTemplate" label="下載樣板" />
         <TermButton @click="handleDownloadPlatformCa" label="下載平台 CA" />
-        <TermButton variant="primary" @click="openRegisterModal" label="註冊 Agent" />
-      </div>
-      <p class="cell-meta page-head__ca-hint">
-        「下載平台 CA」會呼叫平台端點；若下載失敗，畫面會顯示錯誤提示。
-      </p>
-    </header>
+        <TermButton variant="primary" @click="openRegisterModal" label="註冊助手" />
+      </template>
+    </PageHead>
 
     <div v-if="feedback.message" class="feedback" :class="feedback.type === 'error' ? 'is-err' : 'is-ok'">
       <span>{{ feedback.type === 'error' ? '!' : '✓' }}</span>
@@ -484,7 +475,7 @@ import { formatTestConnectionFacts } from '../utils/testConnectionFacts'
 import { formatDate } from '../utils/formatDate'
 import { listCollections } from '../api/ingestionCollections'
 import { listModels } from '../api/models'
-import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection, PageHead } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import AgentGuardPanel from '../components/agents/AgentGuardPanel.vue'
 

@@ -74,7 +74,7 @@
       <p v-if="exportNote" class="filters__note filters__note--ok">{{ exportNote }}</p>
     </TermBox>
 
-    <TermBox :title="`回饋 · ${items.length}`" pad="none" flush hint="正文請走對話讀取路徑(會落稽核)">
+    <TermBox :title="`回饋 · ${items.length}`" pad="none" flush hint="對話正文請到對話端開啟該對話（會留下稽核）。此頁只列出評分與留言。">
       <table class="term-table">
         <thead>
           <tr>
@@ -114,7 +114,7 @@
               </TermBadge>
             </td>
             <td class="cell-meta tnum">{{ formatDate(row.message_created_at) }}</td>
-            <td class="cell-meta tnum">#{{ row.conversation_id }} / msg {{ row.message_id }}</td>
+            <td class="cell-meta">在對話端開啟對話 #{{ row.conversation_id }}（訊息 {{ row.message_id }}）</td>
           </tr>
           <tr v-if="items.length === 0">
             <td colspan="7">

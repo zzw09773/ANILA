@@ -111,3 +111,9 @@ export const deleteModelAccessGroup = (id) =>
 
 export const replaceModelAccessGroupMembers = (id, userIds) =>
   client.put(`/api/model-access-groups/${id}/members`, { user_ids: userIds })
+
+export const listModelAccessGroupMembers = (id) =>
+  client.get(`/api/model-access-groups/${id}/members`)
+
+export const listModelAccessGroupModels = (id) =>
+  client.get(`/api/model-access-groups/${id}/models`)

@@ -175,7 +175,7 @@
       v-if="collection"
       :title="`relations · ${relations.length}`"
       pad="md"
-      hint="cross-document links · 母法 / 補充 / 修正 / 引用 · rule=auto, manual=human"
+      hint="文件之間的引用、補充或修正關係"
     >
       <div class="rel-bar">
         <div class="rel-toggle">
@@ -193,28 +193,28 @@
 
       <!-- manual add -->
       <form class="rel-add" @submit.prevent="doCreateRelation">
-        <select v-model.number="newRel.src_document_id" required class="rel-input">
+        <label class="rel-field"><span class="rel-field__lab">來源文件</span><select v-model.number="newRel.src_document_id" required class="rel-input" aria-label="來源文件">
           <option :value="0" disabled>來源文件…</option>
           <option v-for="d in documents" :key="`s${d.id}`" :value="d.id">{{ d.title || d.filename }}</option>
         </select>
-        <select v-model="newRel.relation_type" class="rel-input rel-input--type">
+        </label><label class="rel-field"><span class="rel-field__lab">關係</span><select v-model="newRel.relation_type" class="rel-input rel-input--type" aria-label="關係">
           <option v-for="t in RELATION_TYPES" :key="t" :value="t">{{ t }}</option>
         </select>
-        <select v-model.number="newRel.dst_document_id" class="rel-input">
+        </label><label class="rel-field"><span class="rel-field__lab">目標文件</span><select v-model.number="newRel.dst_document_id" class="rel-input" aria-label="目標文件">
           <option :value="0">目標文件…（或輸入名稱 →）</option>
           <option v-for="d in documents" :key="`d${d.id}`" :value="d.id">{{ d.title || d.filename }}</option>
         </select>
-        <input
+        </label><input
           v-model.trim="newRel.target_ref"
           class="rel-input"
-          placeholder="…或輸入目標名稱"
+          aria-label="目標名稱" placeholder="…或輸入目標名稱"
           :disabled="!!newRel.dst_document_id"
         />
         <TermButton type="submit" variant="primary" :disabled="creating || !newRel.src_document_id" label="+ 新增" />
       </form>
       <div v-if="relError" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ relError }}</div>
 
-      <div v-if="loadingRels" class="loading">loading…</div>
+      <div v-if="loadingRels" class="loading">載入關聯中…</div>
       <TermEmpty v-else-if="relations.length === 0" message="尚無關聯 · 上傳有連結的文件或於上方新增" />
       <RelationGraph v-else-if="relView === 'graph'" :relations="relations" :documents="documents" />
       <table v-else class="rel-table">
@@ -546,7 +546,7 @@ async function loadVectorDebug(chunkId) {
 
 function blobUrl(id) { return documentBlobUrl(id) }
 function humanBytes(n) {
-  if (!n) return '0'
+  if (n == null || n === '' || Number(n) === 0) return '—'
   const units = ['B', 'KB', 'MB', 'GB']
   let v = Number(n), u = 0
   while (v >= 1024 && u < units.length - 1) { v /= 1024; u += 1 }

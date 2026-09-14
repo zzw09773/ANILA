@@ -49,7 +49,7 @@ export default function RouterModelPicker({
     <div className="router-model-picker" ref={rootRef} style={{ position: "relative", display: "inline-block" }}>
       <button
         type="button"
-        aria-label="對話模型"
+        aria-label="此則對話使用的模型，僅自動選助手時可選"
         aria-haspopup="listbox"
         aria-expanded={open}
         disabled={locked}

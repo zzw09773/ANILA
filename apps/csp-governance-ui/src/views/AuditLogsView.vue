@@ -79,7 +79,7 @@
               <div>{{ log.resource_type }}</div>
               <div class="cell-meta">{{ log.resource_id || '—' }}</div>
             </td>
-            <td><TermBadge :variant="log.status === 'success' ? 'ok' : 'danger'" dot>{{ log.status }}</TermBadge></td>
+            <td><TermBadge :variant="log.status === 'success' ? 'ok' : 'danger'" dot>{{ log.status === 'success' ? '成功' : log.status }}</TermBadge></td>
             <td>
               <div class="cell-detail">{{ log.detail || '—' }}</div>
               <pre v-if="log.metadata" class="meta-block">{{ JSON.stringify(log.metadata, null, 2) }}</pre>

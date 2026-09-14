@@ -74,9 +74,9 @@ function row(key, index = 0, overrides = {}) {
 
 test('registry and UI contract contain exactly the fifteen C settings', () => {
   assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 15)
-  assert.equal(SECTION_DEFS.length, 1)
-  assert.deepEqual(SECTION_DEFS[0].classes, ['C'])
-  assert.equal(SECTION_DEFS[0].editable, true)
+  assert.equal(SECTION_DEFS.length, 3)
+  assert.ok(SECTION_DEFS.every((s) => s.classes.includes('C')))
+  assert.ok(SECTION_DEFS.every((s) => s.editable === true))
   for (const [key, env] of EXPECTED) {
     // keys that the registry spells as a constant, not a literal
     const CONSTANT_KEYS = {
@@ -94,9 +94,10 @@ test('registry and UI contract contain exactly the fifteen C settings', () => {
 test('all rows stay in one editable section and no row is silently dropped', () => {
   const rows = EXPECTED.map(([key], index) => row(key, index))
   const sections = groupIntoSections(rows)
-  assert.deepEqual(sections.map((section) => section.id), ['apply-now'])
-  assert.deepEqual(sections[0].items.map((item) => item.key), EXPECTED.map(([key]) => key))
-  assert.equal(sectionIdFor(rows[0]), 'apply-now')
+  assert.deepEqual(sections.map((section) => section.id), ['models', 'account', 'conversation'])
+  const shown = sections.flatMap((section) => section.items.map((item) => item.key))
+  assert.deepEqual(shown.sort(), EXPECTED.map(([key]) => key).sort())
+  assert.equal(sectionIdFor(rows[0]), 'models')
   assert.equal(canEdit(rows[0]), true)
 })
 
@@ -150,6 +151,6 @@ test('text settings (router prompts) get a preview cell, a textarea and a reset-
   // the view wires the pieces: textarea for text settings, one reset button, the 30-second promise
   assert.match(viewSource, /<textarea[\s\S]*v-model="drafts\[item\.key\]"/u)
   assert.match(viewSource, /重設為出貨預設/u)
-  assert.match(viewSource, /30 秒內/u)
+  assert.match(readFileSync(resolve(HERE, '../src/utils/settingsView.js'), 'utf8'), /30 秒內/u)
   assert.match(viewSource, /handleResetToDefault/u)
 })

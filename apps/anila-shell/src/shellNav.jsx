@@ -1,6 +1,6 @@
 // ANILA Shell 主導覽（Slice 9a）— doc 00 §2 唯一產品入口 + doc 10 §11 Shell IA。
 //
-// 一般使用者只看到 ANILA 的三個入口：任務中心 / 我的知識庫 / 專案入口。
+// 一般使用者只看到 ANILA 的三個入口：對話 / 我的知識庫 / 專案入口。
 // （原本另有「產出中心」，但它與「我的知識庫」是同一個 /anilalm 連結，
 //   兩個標籤指同一頁只會讓人以為點錯；產出中心這個產品概念仍在 anilalm 裡。）
 // 治理中心（CSP 控制面）不是一般使用者的日常入口，只對 owner / admin /
@@ -70,7 +70,7 @@ export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
 
   return [
     // 任務中心 = 現有聊天工作區（預設視圖，chat 即任務工作台）。
-    { id: "tasks", label: "任務中心", Icon: IconMessage, current: true, onClick: onTaskCenter },
+    { id: "tasks", label: "對話", Icon: IconMessage, current: true, onClick: onTaskCenter },
     // 我的知識庫 = 同源知識 SPA（也承載 Studio / 產出）。
     // 本 release 關閉：保留列、停用、標「即將推出」。重開改 anilalmReleaseGate.js。
     knowledge,
@@ -204,7 +204,7 @@ function NavRow({ entry, collapsed }) {
 
 /**
  * ANILA Shell 主導覽：側欄只留一顆「平台入口」，點開後用彈窗列出
- * 任務中心 / 知識庫 / 專案入口（+ admin 的治理中心）。
+ * 對話 / 知識庫 / 專案入口（+ admin 的治理中心）。
  * @param {{
  *   user?: { role?: string } | null,
  *   collapsed?: boolean,
@@ -272,7 +272,7 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
         open={open}
         onClose={() => setOpen(false)}
         title="平台入口"
-        subtitle="任務、知識庫與專案"
+        subtitle="對話、知識庫與專案"
         width={360}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "-8px 0" }}>

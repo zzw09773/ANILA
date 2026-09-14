@@ -54,7 +54,7 @@
             </td>
           </tr>
           <tr v-if="keysStore.keys.length === 0">
-            <td colspan="7"><TermEmpty message="尚無 API 金鑰 · 點選「建立金鑰」新增" /></td>
+            <td colspan="7"><TermEmpty v-if="keysStore.loading" message="載入金鑰中…" /><TermEmpty v-else message="尚未建立金鑰。下一步：建立第一把金鑰。" /></td>
           </tr>
         </tbody>
       </table>

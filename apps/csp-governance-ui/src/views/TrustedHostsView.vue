@@ -1,13 +1,10 @@
 <template>
   <div class="page">
-    <header class="page-header">
-      <div>
-        <h1 class="page-title">信任主機</h1>
-        <p class="page-subtitle">
-          允許平台對外連線的主機清單。列在這裡的主機名稱，在登記模型、Agent、憑證時不會被內網位址防護擋下。僅擁有者可以修改，每次新增或移除都會寫入稽核紀錄。
-        </p>
-      </div>
-    </header>
+    <PageHead title="信任主機" subtitle="允許平台對外連線的主機。僅擁有者可改，每次變更都會留下稽核。">
+      <template #actions>
+        <TermButton v-if="authStore.isOwner" variant="primary" @click="openCreateModal" label="新增主機" />
+      </template>
+    </PageHead>
 
     <TermBox v-if="feedback.message" :tone="feedback.type" dismissible @dismiss="feedback.message = ''">
       {{ feedback.message }}
@@ -111,9 +108,7 @@ import {
   deleteTrustedHost,
 } from '../api/trustedHosts'
 import { useAuthStore } from '../stores/auth'
-import {
-  TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal,
-} from '../components/cli'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, PageHead } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { formatDate } from '../utils/formatDate'
 

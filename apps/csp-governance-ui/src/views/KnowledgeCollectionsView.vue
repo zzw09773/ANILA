@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-head__title">知識庫</h1>
         <p class="page-head__sub">
-          第一級 RAG 儲存 · agent 後端以 <code>RAG_COLLECTION_ID=&lt;id&gt;</code> 掛載
+          文件、區塊與檢索設定。
         </p>
       </div>
       <!-- Sprint 8 X / chunking-preview Phase 3 — preview-then-pick
@@ -41,7 +41,7 @@
         <header class="cc__head">
           <div class="cc__title">
             <span class="cc__name">{{ c.name }}</span>
-            <TermBadge :variant="c.status === 'active' ? 'ok' : ''">{{ c.status }}</TermBadge>
+            <TermBadge :variant="c.status === 'active' ? 'ok' : ''">{{ c.status === 'active' ? '使用中' : (c.status === 'archived' ? '已封存' : c.status) }}</TermBadge>
             <TermBadge v-if="c.anila_searchable" variant="ok">ANILA 可檢索</TermBadge>
           </div>
           <div class="cc__id tnum">id #{{ c.id }}</div>
@@ -378,7 +378,7 @@ async function confirmDelete(c) {
 }
 
 function humanBytes(n) {
-  if (!n) return '0'
+  if (n == null || n === '' || Number(n) === 0) return '—'
   const units = ['B', 'KB', 'MB', 'GB']
   let v = Number(n), u = 0
   while (v >= 1024 && u < units.length - 1) { v /= 1024; u += 1 }

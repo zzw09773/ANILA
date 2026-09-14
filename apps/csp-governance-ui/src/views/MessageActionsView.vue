@@ -1,14 +1,6 @@
 <template>
   <div class="page">
-    <header class="page-header">
-      <div>
-        <h1 class="page-title">自訂動作</h1>
-        <p class="page-subtitle">
-          訊息列自訂按鈕的撰寫主控台（OW-3）。建立＝開發者以上；更新／刪除／綁定替換＝作者本人或管理員以上；稽核匯出＝管理員以上（非擁有者匯出會遮罩位址與 metadata）。
-          畫面閘門只是便利，真正邊界在伺服器。零綁定＝無人可見（fail-closed）。動作本體為提示詞模板。
-        </p>
-      </div>
-    </header>
+    <PageHead title="自訂動作" subtitle="訊息列上的自訂按鈕。沒有綁定對象就不會出現。真正權限由伺服器決定。" />
 
     <div
       v-if="feedback.message"
@@ -375,9 +367,7 @@ import {
 } from '../api/messageActions'
 import { listDepartments } from '../api/departments'
 import { listUsers } from '../api/users'
-import {
-  TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal,
-} from '../components/cli'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, PageHead } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { useAuthStore } from '../stores/auth'
 

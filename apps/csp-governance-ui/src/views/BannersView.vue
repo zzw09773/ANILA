@@ -1,13 +1,6 @@
 <template>
   <div class="page">
-    <header class="page-head">
-      <div>
-        <h1 class="page-head__title">公告橫幅</h1>
-        <p class="page-head__sub">
-          張貼維護 / 資安 / 規範公告 — 顯示在所有使用者的 ANILA 對話介面頂部。純文字，不執行程式碼。
-        </p>
-      </div>
-    </header>
+    <PageHead title="公告橫幅" subtitle="張貼給對話介面頂部的維護或規範公告。純文字，不會執行程式碼。" />
 
     <div v-if="error" class="feedback is-err"><span>!</span><span>{{ error }}</span></div>
 
@@ -15,10 +8,10 @@
       <div class="grid2">
         <TermField label="等級">
           <select v-model="form.level" class="term-input">
-            <option value="info">info（一般）</option>
-            <option value="warning">warning（注意）</option>
-            <option value="error">error（重要）</option>
-            <option value="success">success（成功）</option>
+            <option value="info">一般</option>
+            <option value="warning">注意</option>
+            <option value="error">重要</option>
+            <option value="success">成功</option>
           </select>
         </TermField>
         <TermField label="啟用">
@@ -75,7 +68,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { listBanners, createBanner, updateBanner, deleteBanner } from '../api/banners'
-import { TermBox, TermButton, TermBadge, TermField } from '../components/cli'
+import { TermBox, TermButton, TermBadge, TermField, PageHead } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { extractError } from '../api/errors'
 

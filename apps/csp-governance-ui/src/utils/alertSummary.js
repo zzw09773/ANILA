@@ -48,6 +48,7 @@ export function alertSummaryTone(raw) {
   const s = normalizeAlertSummary(raw)
   if (s.high_count > 0) return 'danger'
   if (s.open_count > 0) return 'warn'
+  if (s.acknowledged_count > 0) return 'warn'
   return 'ok'
 }
 

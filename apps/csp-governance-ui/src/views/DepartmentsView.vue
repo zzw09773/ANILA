@@ -14,7 +14,7 @@
           <tr>
             <th>名稱</th>
             <th>描述</th>
-            <th style="width: 14%">使用者</th>
+            <th style="width: 14%">使用者（直屬／含下層）</th>
             <th style="width: 100px">狀態</th>
             <th style="width: 14%">建立時間</th>
             <th style="width: 18%">操作</th>
@@ -39,7 +39,7 @@
             <td class="cell-meta">{{ row.description || '—' }}</td>
             <td class="tnum">
               <span class="cell-strong">{{ row.active_user_count }}</span>
-              <span class="cell-meta"> / {{ row.user_count }}</span>
+              <span class="cell-meta"> 直屬／{{ row.user_count }} 含下層</span>
             </td>
             <td><TermBadge :variant="row.is_active ? 'ok' : 'danger'" dot>{{ row.is_active ? '使用中' : '已停用' }}</TermBadge></td>
             <td class="cell-meta tnum">{{ formatDate(row.created_at) }}</td>

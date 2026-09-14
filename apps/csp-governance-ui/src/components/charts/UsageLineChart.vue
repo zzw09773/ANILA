@@ -115,7 +115,7 @@ function renderChart() {
       borderColor: p.border,
       borderWidth: 1,
       textStyle: { color: p.fg1, fontFamily: p.mono, fontSize: 11 },
-      extraCssText: 'border-radius: 6px; box-shadow: none;',
+      extraCssText: 'border-radius: 6px; box-shadow: none;', valueFormatter: (v) => (v == null ? '—' : Number(v).toLocaleString('zh-TW') + ' 請求'),
       axisPointer: { lineStyle: { color: p.axis, type: 'dashed' } },
     },
     legend: {
@@ -139,11 +139,13 @@ function renderChart() {
       data: xData,
       axisLine: { lineStyle: { color: p.axis } },
       axisTick: { lineStyle: { color: p.axis } },
-      axisLabel: { fontSize: 10, color: p.fg3, rotate: 30, margin: 12, fontFamily: p.mono },
+      axisLabel: { fontSize: 11, color: p.fg3, rotate: 0, hideOverlap: true, margin: 10, fontFamily: p.mono },
       splitLine: { show: false },
     },
     yAxis: {
       type: 'value',
+      name: '請求',
+      nameTextStyle: { fontSize: 11, color: p.fg3, fontFamily: p.mono },
       axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: {

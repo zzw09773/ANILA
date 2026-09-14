@@ -47,6 +47,9 @@ class RouterGrantIn(BaseModel):
 class RouterGrantOut(RouterGrantIn):
     id: int
     model_id: int
+    department_name: Optional[str] = None
+    group_name: Optional[str] = None
+    username: Optional[str] = None
 
 
 class RouterGrantsReplaceIn(BaseModel):
@@ -68,3 +71,21 @@ class ModelAccessGroupOut(BaseModel):
 class ModelAccessGroupMembersIn(BaseModel):
     user_ids: list[int] = Field(default_factory=list)
 
+
+class GroupMemberOut(BaseModel):
+    id: int
+    username: str
+    department: Optional[str] = None
+
+
+class GroupLinkedModelOut(BaseModel):
+    id: int
+    name: str
+    display_name: str
+
+
+class UserRouterModelOut(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    grant_sources: list[str] = Field(default_factory=list)

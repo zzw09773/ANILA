@@ -140,9 +140,9 @@ describe("設定 → 隱私 / 信任:敏感資訊處理的說明", () => {
   it("要有一組永遠到得了的模式開關,而且真的改得動", async () => {
     await openPrivacyBlurb();
 
-    const blockBtn = screen.getByText("block");
+    const blockBtn = screen.getByText("偵測個資時阻止送出");
     expect(blockBtn).toBeTruthy();
-    expect(screen.getByText("warn")).toBeTruthy();
+    expect(screen.getByText("偵測個資時提醒")).toBeTruthy();
     // 模式只有兩個 —— 曾經有第三個(只改畫面顯示、不影響送出的那個),
     // 它已經被拿掉了,這裡不可以又冒出一顆按鈕來。
     expect(
@@ -151,10 +151,10 @@ describe("設定 → 隱私 / 信任:敏感資訊處理的說明", () => {
 
     // 預設是 warn;按下 block 之後,按鈕要真的變成選中狀態。
     expect(blockBtn.getAttribute("aria-pressed")).toBe("false");
-    expect(screen.getByText("warn").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("偵測個資時提醒").getAttribute("aria-pressed")).toBe("true");
     await act(async () => {
       fireEvent.click(blockBtn);
     });
-    expect(screen.getByText("block").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("偵測個資時阻止送出").getAttribute("aria-pressed")).toBe("true");
   });
 });

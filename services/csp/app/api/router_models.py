@@ -17,6 +17,9 @@ from app.schemas.router_model import (
     ModelAccessGroupIn,
     ModelAccessGroupMembersIn,
     ModelAccessGroupOut,
+    GroupLinkedModelOut,
+    GroupMemberOut,
+    UserRouterModelOut,
     RouterGrantIn,
     RouterGrantOut,
     RouterGrantsReplaceIn,
@@ -161,6 +164,35 @@ def set_campus_default(
     return {"id": model.id, "name": model.name, "is_router_primary": True}
 
 
+
+def _grant_out(db: Session, row: RouterModelGrant) -> RouterGrantOut:
+    department_name = None
+    group_name = None
+    username = None
+    if row.department_id:
+        dept = db.get(Department, row.department_id)
+        department_name = dept.name if dept else None
+    if row.group_id:
+        group = db.get(ModelAccessGroup, row.group_id)
+        group_name = group.name if group else None
+    if row.user_id:
+        user = db.get(User, row.user_id)
+        username = user.username if user else None
+    return RouterGrantOut(
+        id=row.id,
+        model_id=row.model_id,
+        scope_type=row.scope_type,
+        department_id=row.department_id,
+        group_id=row.group_id,
+        user_id=row.user_id,
+        include_descendants=bool(row.include_descendants),
+        expires_at=row.expires_at,
+        department_name=department_name,
+        group_name=group_name,
+        username=username,
+    )
+
+
 @router.get("/api/models/{model_id}/router-grants", response_model=list[RouterGrantOut])
 def get_router_grants(
     model_id: int,
@@ -177,16 +209,7 @@ def get_router_grants(
         .all()
     )
     return [
-        RouterGrantOut(
-            id=r.id,
-            model_id=r.model_id,
-            scope_type=r.scope_type,
-            department_id=r.department_id,
-            group_id=r.group_id,
-            user_id=r.user_id,
-            include_descendants=bool(r.include_descendants),
-            expires_at=r.expires_at,
-        )
+        _grant_out(db, r)
         for r in rows
     ]
 
@@ -256,16 +279,7 @@ def replace_router_grants(
         commit=True,
     )
     return [
-        RouterGrantOut(
-            id=r.id,
-            model_id=r.model_id,
-            scope_type=r.scope_type,
-            department_id=r.department_id,
-            group_id=r.group_id,
-            user_id=r.user_id,
-            include_descendants=bool(r.include_descendants),
-            expires_at=r.expires_at,
-        )
+        _grant_out(db, r)
         for r in created
     ]
 
@@ -391,3 +405,67 @@ def replace_access_group_members(
         commit=True,
     )
     return {"group_id": group_id, "user_ids": unique_ids}
+
+
+@router.get("/api/model-access-groups/{group_id}/members", response_model=list[GroupMemberOut])
+def list_access_group_members(
+    group_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    group = db.get(ModelAccessGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="群組不存在")
+    rows = (
+        db.query(User.id, User.username, Department.name)
+        .join(ModelAccessGroupMember, ModelAccessGroupMember.user_id == User.id)
+        .outerjoin(Department, User.department_id == Department.id)
+        .filter(ModelAccessGroupMember.group_id == group_id)
+        .order_by(User.username.asc())
+        .all()
+    )
+    return [GroupMemberOut(id=row[0], username=row[1], department=row[2]) for row in rows]
+
+
+@router.get("/api/model-access-groups/{group_id}/models", response_model=list[GroupLinkedModelOut])
+def list_access_group_models(
+    group_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    group = db.get(ModelAccessGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="群組不存在")
+    rows = (
+        db.query(ModelRegistry)
+        .join(RouterModelGrant, RouterModelGrant.model_id == ModelRegistry.id)
+        .filter(RouterModelGrant.group_id == group_id, RouterModelGrant.scope_type == "group")
+        .order_by(ModelRegistry.display_name.asc())
+        .all()
+    )
+    return [
+        GroupLinkedModelOut(id=m.id, name=m.name, display_name=m.display_name)
+        for m in rows
+    ]
+
+
+@router.get("/api/users/{user_id}/router-models", response_model=list[UserRouterModelOut])
+def list_user_router_models(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="使用者不存在")
+    models = list_router_models_for_user(db, user)
+    return [
+        UserRouterModelOut(
+            id=m.id,
+            name=m.name,
+            display_name=m.display_name,
+            grant_sources=grant_sources_for_user(db, user, m),
+        )
+        for m in models
+    ]
+

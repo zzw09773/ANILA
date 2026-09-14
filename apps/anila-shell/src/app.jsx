@@ -3034,8 +3034,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         }}>
           {tweaks.agentSwitcherPosition === "top" && !compareMode ? (
             <>
-            <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>助手</span>
+              <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
+            </div>
             {selectedAgentId === ROUTER_AGENT.id ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>模型</span>
               <RouterModelPicker
                 models={routerModels}
                 selectedId={selectedRouterModelId}
@@ -3080,6 +3085,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   }
                 }}
               />
+              </div>
             ) : null}
             </>
           ) : (
@@ -3303,8 +3309,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                     {tweaks.agentSwitcherPosition === "bottom" && (
                       <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                         <>
-            <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>助手</span>
+              <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
+            </div>
             {selectedAgentId === ROUTER_AGENT.id ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>模型</span>
               <RouterModelPicker
                 models={routerModels}
                 selectedId={selectedRouterModelId}
@@ -3349,6 +3360,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   }
                 }}
               />
+              </div>
             ) : null}
             </>
                         {activeEncryptionRequired && (
@@ -3381,7 +3393,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                       onStop={() =>
                         stopStreaming(selectedConvId, { cancelQueued: true })
                       }
-                      placeholder="問 ANILA 任何事情，或用 @agent 指定 agent · Shift+Enter 換行"
+                      placeholder="傳訊息給 ANILA，Shift+Enter 換行"
                       footer={
                         selectedAgentId === ROUTER_AGENT.id
                           ? "ANILA 會幫你找合適的助手"
@@ -3829,9 +3841,9 @@ function SettingsModal({
   redactionMode, onChangeRedactionMode,
 }) {
   return (
-    <Modal open={open} onClose={onClose} title="設定" subtitle="runtime 偏好與帳號" width={680}>
-      <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 20 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+    <Modal open={open} onClose={onClose} title="設定" subtitle="顯示、隱私與帳號" width={680}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingBottom: 8, borderBottom: "1px solid var(--border)" }}>
           {[
             { id: "general", label: "一般",       icon: <IconSettings size={13} /> },
             { id: "privacy", label: "隱私 / 信任", icon: <IconShield   size={13} /> },
@@ -3855,10 +3867,10 @@ function SettingsModal({
           {tab === "general" && (
             <div style={{ display: "grid", gap: 12 }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>預設 agent</div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>預設助手</div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 4 }}>
-                  目前由 /v1/agents 動態載入，共 {Math.max(agents.length - 1, 0)} 個可用 agent。
-                  切換預設 agent 請從主介面的 agent selector 進行。
+                  目前由 /v1/agents 動態載入，共 {Math.max(agents.length - 1, 0)} 個可用助手。
+                  切換預設助手 請從主介面的 agent selector 進行。
                 </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
@@ -3898,14 +3910,14 @@ function SettingsModal({
                         border: "1px solid " + (redactionMode === m ? "var(--border-strong)" : "var(--border)"),
                         borderRadius: 4, cursor: "pointer", color: "var(--fg)",
                       }}
-                    >{m}</button>
+                    >{m === "warn" ? "偵測個資時提醒" : "偵測個資時阻止送出"}</button>
                   ))}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.6, marginTop: 6 }}>
                   偵測只認得它知道的那幾種形狀（身分證、電話、Email、信用卡、
                   API 金鑰、權杖、私密金鑰、密碼），認不出來的不代表沒有，認出來的也可能認錯。
-                  warn＝送出前提醒你，照樣送出；block＝偵測到個資時不送出。
-                  金鑰、權杖、密碼這類憑證一律只提醒，不會擋你送出——貼一段程式碼被擋住，比漏提醒更糟。
+                  「偵測個資時提醒」會先告訴你再照樣送出；「偵測個資時阻止送出」只攔個資。
+                  金鑰、權杖、密碼仍只提醒、不會擋送出。
                 </div>
               </div>
               <div>
@@ -3926,7 +3938,7 @@ function SettingsModal({
             <div style={{ fontSize: 13 }}>
               <div style={{ marginBottom: 4 }}><b>{user?.username}</b></div>
               <div style={{ color: "var(--fg-muted)", fontSize: 12 }}>
-                role: {user?.role || "user"}
+                角色：{user?.role || "user"}
               </div>
             </div>
           )}

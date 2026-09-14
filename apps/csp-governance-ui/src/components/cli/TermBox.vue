@@ -49,7 +49,7 @@ defineProps({
   gap: var(--gap-2);
   padding: var(--gap-2) var(--gap-3);
   border-bottom: var(--border-w) solid var(--c-border);
-  background: var(--c-surface-2);
+  background: transparent;
   min-height: 30px;
 }
 .term-box__legend {
@@ -72,10 +72,7 @@ defineProps({
   letter-spacing: 0.05em;
 }
 .term-box__rule {
-  flex: 1;
-  height: 1px;
-  background: var(--c-border);
-  align-self: center;
+  display: none;
 }
 .term-box__trailing {
   display: inline-flex;

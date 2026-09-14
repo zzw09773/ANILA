@@ -1,15 +1,10 @@
 <template>
   <div class="page">
-    <header class="page-head">
-      <div>
-        <h1 class="page-head__title">平台連結</h1>
-        <p class="page-head__sub">
-          登記給同仁使用的服務入口 · 每項服務可設角色門檻、授權名單、開啟方式、分類上限與服務管理員
-          <span v-if="!registryMode" class="compat-note">· 相容模式（platform_links）</span>
-        </p>
-      </div>
-      <TermButton variant="primary" @click="openCreateModal" label="新增服務" />
-    </header>
+    <PageHead title="平台連結" subtitle="登記給同仁使用的服務入口，可設角色門檻與授權名單。">
+      <template #actions>
+        <TermButton variant="primary" @click="openCreateModal" label="新增服務" />
+      </template>
+    </PageHead>
 
     <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
 
@@ -223,7 +218,7 @@ import {
 import {
   isReleaseGateClosedFor, RELEASE_GATE_BADGE, RELEASE_GATE_HINT,
 } from '../utils/anilalmReleaseGate'
-import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection, PageHead } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { formatDate } from '../utils/formatDate'
 
