@@ -8,7 +8,7 @@
         @click="close()"
       />
       <AppSidebar />
-      <main class="shell__main">
+      <main id="gov-main" class="shell__main" tabindex="-1">
         <router-view v-slot="{ Component }">
           <transition name="shell-page" mode="out-in">
             <!-- 面板層錯誤網子：view 在 render/setup 期炸了，這裡出現可讀錯誤區塊，不是空白。 -->
@@ -39,6 +39,7 @@ watch(() => route.fullPath, () => close())
 
 <style scoped>
 .shell {
+  position: relative;
   display: grid;
   grid-template-rows: var(--shell-topbar-h) minmax(0, 1fr) var(--shell-statusbar-h);
   height: 100%;

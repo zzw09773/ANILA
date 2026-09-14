@@ -35,6 +35,7 @@ function savePinned(s: Set<number>) {
 
 export function DashboardPage() {
   const { t } = useTheme()
+  useEffect(() => { document.title = '知識庫 · ANILA LM' }, [])
   const navigate = useNavigate()
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
@@ -130,13 +131,17 @@ export function DashboardPage() {
         color: t.text,
         display: 'flex',
         flexDirection: 'column',
+        position: 'relative',
       }}
     >
+      <a className="skip-link" href="#anilalm-main">
+        跳到主要內容
+      </a>
       {/* Topbar */}
       <header
         style={{
           height: 60,
-          padding: '0 32px',
+          padding: '0 clamp(16px, 6vw, 32px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -177,8 +182,10 @@ export function DashboardPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <ThemeSwitch />
           <button
+            type="button"
             onClick={() => logout()}
             title="登出"
+            aria-label="登出"
             style={{
               width: 32,
               height: 32,
@@ -224,7 +231,7 @@ export function DashboardPage() {
       </header>
 
       {/* Main */}
-      <main style={{ flex: 1, padding: '40px 64px', overflow: 'auto' }}>
+      <main id="anilalm-main" tabIndex={-1} style={{ flex: 1, padding: '40px clamp(16px, 6vw, 64px)', overflow: 'auto' }}>
         <div
           style={{
             display: 'flex',
@@ -246,7 +253,7 @@ export function DashboardPage() {
                 letterSpacing: 1,
               }}
             >
-              Workspace
+              工作區
             </div>
             <h1 style={{ fontSize: 32, fontWeight: 600, letterSpacing: -0.8, margin: 0 }}>
               你的知識庫
@@ -257,7 +264,7 @@ export function DashboardPage() {
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <div
+            <label
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -267,14 +274,17 @@ export function DashboardPage() {
                 background: t.surface,
                 border: `1px solid ${t.border}`,
                 borderRadius: 10,
-                minWidth: 240,
+                minWidth: 0,
+                width: 'min(100%, 280px)',
               }}
             >
+              <span className="visually-hidden">搜尋知識庫</span>
               <Icon name="search" size={15} stroke={t.textMuted} />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="搜尋知識庫..."
+                aria-label="搜尋知識庫"
                 style={{
                   flex: 1,
                   background: 'transparent',
@@ -283,9 +293,10 @@ export function DashboardPage() {
                   color: t.text,
                   fontSize: 13,
                   fontFamily: 'inherit',
+                  minWidth: 0,
                 }}
               />
-            </div>
+            </label>
             <button
               onClick={() => setCreateOpen(true)}
               style={{
@@ -413,7 +424,7 @@ export function DashboardPage() {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))',
               gap: 16,
             }}
           >
@@ -580,9 +591,12 @@ function CollectionCard({ c, pinned, onOpen, onTogglePin, onDelete }: Collection
                 onTogglePin()
               }}
               title={pinned ? '取消釘選' : '釘選到頂端'}
+              aria-label={pinned ? '取消釘選' : '釘選到頂端'}
+              aria-pressed={pinned}
+              type="button"
               style={{
-                width: 26,
-                height: 26,
+                width: 32,
+                height: 32,
                 borderRadius: 6,
                 border: 'none',
                 background: 'transparent',
@@ -590,8 +604,6 @@ function CollectionCard({ c, pinned, onOpen, onTogglePin, onDelete }: Collection
                 display: 'grid',
                 placeItems: 'center',
                 color: pinned ? t.accent : t.textMuted,
-                opacity: hover || pinned ? 1 : 0,
-                transition: 'opacity 120ms',
               }}
             >
               <Icon name="pin" size={14} stroke={pinned ? t.accent : t.textMuted} />
@@ -602,9 +614,11 @@ function CollectionCard({ c, pinned, onOpen, onTogglePin, onDelete }: Collection
                 onDelete()
               }}
               title="刪除"
+              aria-label="刪除知識庫"
+              type="button"
               style={{
-                width: 26,
-                height: 26,
+                width: 32,
+                height: 32,
                 borderRadius: 6,
                 border: 'none',
                 background: 'transparent',
@@ -612,8 +626,6 @@ function CollectionCard({ c, pinned, onOpen, onTogglePin, onDelete }: Collection
                 display: 'grid',
                 placeItems: 'center',
                 color: t.textMuted,
-                opacity: hover ? 1 : 0,
-                transition: 'opacity 120ms',
               }}
             >
               <Icon name="trash" size={14} stroke={t.textMuted} />
@@ -722,8 +734,8 @@ function CreateCollectionModal({ open, onClose, onCreated }: CreateModalProps) {
         >
           <div
             style={{
-              width: 26,
-              height: 26,
+              width: 32,
+              height: 32,
               borderRadius: 7,
               background: t.accentSoft,
               border: `1px solid ${t.accentBorder}`,

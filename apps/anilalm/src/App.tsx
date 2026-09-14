@@ -7,6 +7,7 @@ import { useAuthStore } from './store/auth'
 import { DashboardPage } from './routes/DashboardPage'
 import { WorkspacePage } from './routes/WorkspacePage'
 import { ProtectedRoute } from './routes/ProtectedRoute'
+import { NotFoundPage } from './routes/NotFoundPage'
 import { ErrorBoundary } from './components/ErrorBoundary'
 
 function AppRoutes() {
@@ -23,7 +24,7 @@ function AppRoutes() {
         <Route path="/c/:collectionId/conv/:conversationId" element={<WorkspacePage />} />
         <Route path="/conv/:conversationId" element={<WorkspacePage />} />
       </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<NotFoundPage />} />
     </Routes>
   )
 }

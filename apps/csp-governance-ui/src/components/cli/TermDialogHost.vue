@@ -94,8 +94,9 @@ function onEnter() {
   font-size: var(--t-base);
   padding: var(--gap-2) var(--gap-3);
 }
-.term-confirm__input:focus {
-  outline: none;
+.term-confirm__input:focus-visible {
+  outline: 2px solid var(--c-focus-ring);
+  outline-offset: 2px;
   border-color: var(--c-border-accent);
 }
 

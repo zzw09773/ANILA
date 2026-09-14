@@ -3,14 +3,21 @@
     <!-- Slim top bar — brand mark + theme toggle only (terminal path chrome
          removed per redesign §3.2). ------------------------------------- -->
     <header class="login__topbar">
+      <a class="skip-link" href="#login-main">跳到登入表單</a>
       <TermLogo :size="14" subtitle="院內 AI 工作平台" />
       <span class="login__topbar-spacer" />
-      <button class="login__theme" type="button" @click="toggleTheme" :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`">
-        {{ theme === 'dark' ? '◐' : '◑' }} {{ theme }}
+      <button
+        class="login__theme"
+        type="button"
+        @click="toggleTheme"
+        :aria-label="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`"
+        :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`"
+      >
+        {{ theme === 'dark' ? '◐ 深色' : '◑ 淺色' }}
       </button>
     </header>
 
-    <main class="login__main">
+    <main id="login-main" class="login__main" tabindex="-1">
       <section class="login__panel">
         <!-- Page hero title ---------------------------------------------- -->
         <header class="login__hero">
@@ -70,9 +77,10 @@
               </div>
               <button
                 type="button"
-                style="background: transparent; border: 0; color: var(--c-fg-3); cursor: pointer; font-size: var(--t-2xs);"
+                class="login__card-reset"
                 @click="resetDetectedCard"
                 title="重新偵測"
+                aria-label="重新偵測"
               >×</button>
             </div>
 
@@ -475,6 +483,7 @@ async function fetchProviders() {
 }
 
 onMounted(() => {
+  document.title = '登入 · ANILA 治理中心'
   fetchProviders()
   fetchPublicBanners()
   document.addEventListener('keydown', handleHotkey)
@@ -659,6 +668,7 @@ async function handleRegister() {
 
 <style scoped>
 .login {
+  position: relative;
   min-height: 100dvh;
   background: var(--c-bg);
   display: grid;
@@ -680,12 +690,11 @@ async function handleRegister() {
   background: transparent;
   border: var(--border-w) solid var(--c-border);
   color: var(--c-fg-2);
-  height: 22px;
-  padding: 0 8px;
+  min-height: 32px;
+  padding: 0 10px;
   border-radius: var(--r-soft);
-  font-size: var(--t-2xs);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--t-sm);
+  letter-spacing: 0.04em;
   cursor: pointer;
   flex-shrink: 0;
   white-space: nowrap;
@@ -714,6 +723,16 @@ async function handleRegister() {
   align-items: center;
   gap: var(--gap-2);
   text-align: center;
+}
+.login__card-reset {
+  background: transparent;
+  border: 0;
+  color: var(--c-fg-3);
+  cursor: pointer;
+  min-width: 32px;
+  min-height: 32px;
+  font-size: var(--t-md);
+  line-height: 1;
 }
 .login__brand-video-wrap {
   width: 180px;

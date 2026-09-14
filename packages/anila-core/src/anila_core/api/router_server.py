@@ -1300,15 +1300,10 @@ def create_router_app(
 
         base_trace = [
             _make_trace_step(
-                "thinking",
-                "Router 分析意圖中",
-                f"解析 query: {_flatten_last_user_query(messages)}",
-            ),
-            _make_trace_step(
                 "registry",
-                "同步 agent 清單",
+                "思考中…",
                 (
-                    f"已載入 {len(agents)} 個可用 agent"
+                    ""
                     if not registry_error
                     else f"registry refresh 失敗：{registry_error}"
                 ),

@@ -315,23 +315,28 @@ def list_feedback(
     """
     since = datetime.now(timezone.utc) - timedelta(days=days)
 
-    q = (
+    base = (
         db.query(Message, Conversation, User.username)
         .join(Conversation, Conversation.id == Message.conversation_id)
         .outerjoin(User, User.id == Conversation.user_id)
         .filter(Message.rating.isnot(None))
         .filter(Message.created_at >= since)
-        .order_by(Message.created_at.desc())
     )
+    if agent_name:
+        base = base.filter(Message.agent_name == agent_name)
+    if model_name:
+        base = base.filter(Message.model_name == model_name)
+
+    q = base.order_by(Message.created_at.desc())
     if rating:
         q = q.filter(Message.rating == rating)
-    if agent_name:
-        q = q.filter(Message.agent_name == agent_name)
-    if model_name:
-        q = q.filter(Message.model_name == model_name)
 
     if format == "csv":
         return _export_csv(q, only_with_comment=only_with_comment)
+
+    # 頂部好評／差評看同一時間窗與 agent／模型篩選，不受「目前只看差評」影響。
+    window_up = base.filter(Message.rating == "up").count()
+    window_down = base.filter(Message.rating == "down").count()
 
     # Pull a bit more than limit when filtering comments in Python — feedback
     # lives in JSON metadata and SQLite/Postgres JSON path differs; keep the
@@ -349,9 +354,9 @@ def list_feedback(
             break
 
     summary = FeedbackSummary(
-        total=len(items),
-        up=sum(1 for i in items if i.rating == "up"),
-        down=sum(1 for i in items if i.rating == "down"),
+        total=window_up + window_down,
+        up=window_up,
+        down=window_down,
         with_comment=sum(1 for i in items if i.comment or i.reasons),
         refusal_suspected=_count_refusals(db, since, agent_name=agent_name, model_name=model_name),
     )

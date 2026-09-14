@@ -2,6 +2,7 @@
   <!-- 刊頭（2026-09-02 行政風改版）：深藍橫幅、明體站名、目前頁面用中文，
        不再顯示路徑／@角色／快速鍵提示——長官看的是「這是哪裡、我是誰」。 -->
   <header class="topbar">
+    <a class="skip-link" href="#gov-main">跳到主要內容</a>
     <div class="topbar__left">
       <button
         class="topbar__menu"
@@ -159,7 +160,7 @@ const PAGE_LABELS = {
   '/developer/guide': '開發指南', '/developer/agents': 'Agent', '/knowledge-collections': '知識庫',
   '/message-actions': '自訂動作', '/users': '使用者', '/departments': '部門', '/alerts': '警報',
   '/feedback': '使用者回饋', '/banners': '公告橫幅', '/audit-logs': '稽核紀錄',
-  '/classification-inventory': '分類盤點', '/platform-links': '平台連結', '/service-access': '服務存取',
+  '/platform-links': '平台連結', '/service-access': '服務存取',
   '/service-clients': '服務客戶端', '/trusted-hosts': '信任主機', '/platform-settings': '平台設定',
 }
 const currentPageLabel = computed(() => {
@@ -168,6 +169,10 @@ const currentPageLabel = computed(() => {
   const hit = Object.keys(PAGE_LABELS).find((k) => k !== '/' && path.startsWith(k))
   return hit ? PAGE_LABELS[hit] : currentSegment.value
 })
+watch(currentPageLabel, (label) => {
+  document.title = `${label} · ANILA 治理中心`
+}, { immediate: true })
+
 
 const showChangePwModal = ref(false)
 const pw = ref({ current: '', new: '', confirm: '' })

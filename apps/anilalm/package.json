@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "ANILA LM \u2014 knowledge-base SPA for myCSPPlatform.",
+  "description": "ANILA LM — knowledge-base SPA for myCSPPlatform.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -21,6 +21,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router": ">=7.18.2 <8",
+    "thinking-orbs": "^0.3.1",
     "zustand": "^5.0.2"
   },
   "devDependencies": {

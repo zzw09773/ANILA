@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" sizes="64x64" href="./favicon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+
     <title>ANILA LM</title>
     <style>
       html,
@@ -45,8 +49,40 @@
          :focus-visible fires on keyboard nav only — mouse aesthetics intact. */
       :focus-visible {
         outline: 2px solid #6361e0 !important;
-        outline-offset: 1px;
+        outline-offset: 2px;
         border-radius: 4px;
+      }
+      .skip-link {
+        position: absolute;
+        inset-inline-start: -999px;
+        top: 8px;
+        z-index: 80;
+        padding: 8px 12px;
+        background: #fff;
+        color: #1a1a1a;
+        border: 1px solid #d4d2cb;
+        border-radius: 8px;
+        font-size: 14px;
+        text-decoration: none;
+      }
+      .skip-link:focus,
+      .skip-link:focus-visible {
+        inset-inline-start: 16px;
+      }
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      #anilalm-main,
+      #anilalm-workspace {
+        scroll-margin-top: 80px;
       }
       @keyframes pulse {
         0%, 100% { opacity: 1; }

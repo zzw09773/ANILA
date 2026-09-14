@@ -31,6 +31,11 @@ export function WorkspacePage() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
   const [collectionDenied, setCollectionDenied] = useState<string | null>(null)
+  const collection = useWorkspaceStore((s) => s.collection)
+  useEffect(() => {
+    const name = collection?.name ? String(collection.name) : '工作區'
+    document.title = `${name} · ANILA LM`
+  }, [collection?.name])
 
   // Bootstrap: collection + docs + conversations. Re-runs whenever the
   // user navigates to a different collection.
@@ -246,7 +251,7 @@ export function WorkspacePage() {
               fontFamily: 'inherit',
             }}
           >
-            回到 Dashboard
+            回到知識庫首頁
           </button>
         </div>
       </div>
@@ -264,6 +269,9 @@ export function WorkspacePage() {
         position: 'relative',
       }}
     >
+      <a className="skip-link" href="#anilalm-workspace">
+        跳到主要內容
+      </a>
       {collectionDenied && (
         <div
           role="status"

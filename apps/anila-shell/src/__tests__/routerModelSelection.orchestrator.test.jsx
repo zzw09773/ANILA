@@ -21,6 +21,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+async function chooseRouterModel(name) {
+  const trigger = await screen.findByLabelText("對話模型");
+  await waitFor(() => expect(trigger).not.toBeDisabled());
+  fireEvent.click(trigger);
+  const option = await screen.findAllByText(name);
+  const target = option.find((el) => {
+    const btn = el.closest("button");
+    return btn && btn.getAttribute("aria-label") !== "對話模型";
+  });
+  fireEvent.click(target.closest("button"));
+}
+
 describe("ChatRuntime router model selection", () => {
   it("renders ChatRuntime after login without TDZ crash", async () => {
     await mountOrchestrator();
@@ -31,10 +43,7 @@ describe("ChatRuntime router model selection", () => {
   it("creates a conversation with the non-default picker model", async () => {
     const { backend } = await mountOrchestrator();
     backend.enqueueAnswer("ok");
-    const picker = screen.getByLabelText("對話模型");
-    await act(async () => {
-      fireEvent.change(picker, { target: { value: "4" } });
-    });
+    await chooseRouterModel("Qwen");
     await sendText("選 Qwen");
     await waitForAnswer("ok");
     await waitForIdle();
@@ -51,15 +60,14 @@ describe("ChatRuntime router model selection", () => {
     await waitForAnswer("a");
     await waitForIdle();
     const id = backend.conversationIds().at(-1);
-    const picker = screen.getByLabelText("對話模型");
-    await act(async () => { fireEvent.change(picker, { target: { value: "4" } }); });
+    await chooseRouterModel("Qwen");
     await waitFor(() => expect(backend.storedConversation(id).router_model_id).toBe(4));
-    await act(async () => { fireEvent.change(picker, { target: { value: "3" } }); });
+    await chooseRouterModel("GLM");
     await waitFor(() => expect(backend.storedConversation(id).router_model_id).toBe(3));
     const v = backend.storedConversation(id).router_selection_version;
     const putsBefore = backend.requestsFor("/router-model", "PUT").length;
     backend.route("PUT", /router-model$/, (req, { errorResponse }) => errorResponse(409, "模型選擇版本衝突，請重新整理"), { once: true });
-    await act(async () => { fireEvent.change(picker, { target: { value: "4" } }); });
+    await chooseRouterModel("Qwen");
     await waitFor(() => expect(backend.requestsFor("/router-model", "PUT").length).toBeGreaterThan(putsBefore));
     expect(backend.storedConversation(id).router_selection_version).toBe(v);
     expect(backend.storedConversation(id).router_model_id).toBe(3);

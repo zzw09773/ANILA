@@ -99,7 +99,7 @@ describe("Sidebar brand", () => {
       </ConfirmProvider>,
     );
     const img = screen.getByRole("img", { name: "ANILA" });
-    expect(img.getAttribute("src")).toContain("brand/anila-mark.png");
+    expect(img.getAttribute("src")).toContain("brand/anila-logo.png");
   });
 
   it("keeps the 對話 list and does not render an Agents tab", () => {

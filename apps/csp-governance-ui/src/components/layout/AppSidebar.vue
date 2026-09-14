@@ -5,7 +5,7 @@
     :class="{ 'is-open': open }"
     :aria-hidden="narrow && !open"
   >
-    <nav class="sidenav__nav" aria-label="primary">
+    <nav class="sidenav__nav" aria-label="主要導覽">
       <template v-for="group in menuGroups" :key="group.label">
         <div v-if="group.items.length" class="sidenav__group">
           <div class="sidenav__group-label">
@@ -89,7 +89,6 @@ const menuGroups = computed(() => {
       { path: '/feedback', label: '使用者回饋' },
       { path: '/banners', label: '公告橫幅' },
       { path: '/audit-logs', label: '稽核紀錄' },
-      { path: '/classification-inventory', label: '分類盤點' },
       { path: '/platform-links', label: '平台連結' },
       { path: '/service-access', label: '服務存取' },
       { path: '/service-clients', label: '服務客戶端' },

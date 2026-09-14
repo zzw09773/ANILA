@@ -17,8 +17,11 @@ describe("RouterModelPicker", () => {
         onChange={() => {}}
       />,
     );
-    expect(screen.getByText(/GLM（全院預設）/)).toBeTruthy();
-    expect(screen.getByText(/Qwen · degraded/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("對話模型"));
+    expect(screen.getAllByText("GLM").length).toBeGreaterThan(0);
+    expect(screen.getByText("全院預設")).toBeTruthy();
+    expect(screen.getByText("Qwen")).toBeTruthy();
+    expect(screen.getByText("不穩")).toBeTruthy();
     expect(screen.queryByText(/anila-router/)).toBeNull();
     expect(screen.queryByText(/ANILA 自動選助手/)).toBeNull();
   });
@@ -28,7 +31,8 @@ describe("RouterModelPicker", () => {
     render(
       <RouterModelPicker models={MODELS} selectedId={3} defaultModelId={3} onChange={onChange} />,
     );
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "4" } });
+    fireEvent.click(screen.getByLabelText("對話模型"));
+    fireEvent.click(screen.getByText("Qwen"));
     expect(onChange).toHaveBeenCalledWith(4);
   });
 
@@ -42,7 +46,7 @@ describe("RouterModelPicker", () => {
         onChange={() => {}}
       />,
     );
-    expect(screen.getByRole("combobox")).toBeDisabled();
+    expect(screen.getByLabelText("對話模型")).toBeDisabled();
     expect(screen.getByText(/請重新選擇/)).toBeTruthy();
   });
 });

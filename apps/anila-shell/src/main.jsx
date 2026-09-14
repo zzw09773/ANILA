@@ -16,6 +16,7 @@ import {
 
 import { ErrorBoundary } from "./ErrorBoundary.jsx";
 import App from "./app.jsx";
+import NotFound from "./NotFound.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";
 import { ConfirmProvider } from "./confirm.jsx";
 
@@ -62,6 +63,7 @@ function RedirectToCspLogin() {
 function RootRoutes() {
   return (
     <Routes>
+      <Route path="/" element={<Navigate to="/app" replace />} />
       <Route
         path="/app/*"
         element={
@@ -70,7 +72,7 @@ function RootRoutes() {
           </RequireAuth>
         }
       />
-      <Route path="*" element={<Navigate to="/app" replace />} />
+      <Route path="*" element={<NotFound />} />
     </Routes>
   );
 }

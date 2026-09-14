@@ -5,8 +5,8 @@ export function ThemeSwitch() {
   const { theme, toggle, t } = useTheme()
   return (
     <button
+      type="button"
       onClick={toggle}
-      aria-label="Toggle theme"
       style={{
         display: 'inline-flex',
         alignItems: 'center',

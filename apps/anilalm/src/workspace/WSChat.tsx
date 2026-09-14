@@ -12,6 +12,7 @@ import { useWorkspaceStore } from '../store/workspace'
 import { Icon } from '../components/Icon'
 import { ThemeSwitch } from '../components/ThemeSwitch'
 import { Spinner } from '../components/Spinner'
+import { ThinkingStatus } from '../components/ThinkingStatus'
 import { MarkdownPreview } from '../components/MarkdownPreview'
 import {
   appendMessage,
@@ -524,6 +525,8 @@ export function WSChat({ flex }: WSChatProps) {
 
   return (
     <main
+      id="anilalm-workspace"
+      tabIndex={-1}
       style={{
         flex,
         height: '100%',
@@ -531,6 +534,7 @@ export function WSChat({ flex }: WSChatProps) {
         flexDirection: 'column',
         background: t.bg,
         minWidth: 0,
+        scrollMarginTop: 80,
       }}
     >
       {/* Header */}
@@ -952,8 +956,8 @@ export function ChatBubble({ row }: { row: ChatRow }) {
           </div>
         )}
         {row.streaming && row.content === '' ? (
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: t.textMuted }}>
-            <Spinner size={12} /> 檢索 + 思考中...
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', color: t.textMuted }}>
+            <ThinkingStatus state="searching" size={20} label="檢索 + 思考中..." />
           </div>
         ) : (
           <MarkdownPreview

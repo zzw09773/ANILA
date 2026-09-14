@@ -830,6 +830,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     () => conversations.find((c) => c.id === selectedConvId) || null,
     [conversations, selectedConvId],
   );
+  useEffect(() => {
+    const page = selectedConv?.title ? String(selectedConv.title) : "新對話";
+    document.title = `${page} · ANILA`;
+    return () => { document.title = "ANILA"; };
+  }, [selectedConv?.title]);
   const currentMsgs = selectedConvId ? messagesByConv[selectedConvId] || [] : [];
   const isClassified = Boolean(selectedConv?.classified);
   const isClassificationInherited = Boolean(selectedConv?.classificationInherited);
@@ -2960,6 +2965,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   return (
     <ArtifactPreviewProvider onOpen={onOpenArtifact}>
     <div style={{ display: "flex", height: "100dvh", background: "var(--bg)", position: "relative" }}>
+      <a className="skip-link" href="#shell-main">跳到主要內容</a>
       {showForensicWatermark && (
         <ConfidentialWatermark
           level={pageWatermarkLevel}
@@ -3230,7 +3236,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         )}
 
         <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <div id="shell-main" tabIndex={-1} style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, scrollMarginTop: 80 }}>
             {compareMode ? (
               <ParallelCompareView
                 agents={directAgents}
@@ -3248,10 +3254,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               />
             ) : (
               <>
-                <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", background: "var(--bg)" }}>
+                <div ref={scrollRef} style={{
+                  flex: 1, overflowY: "auto", background: "var(--bg)",
+                  display: "flex", flexDirection: "column",
+                }}>
                   <div style={{
-                    maxWidth: 760, margin: "0 auto",
+                    maxWidth: 760, margin: "0 auto", width: "100%",
                     padding: `calc(var(--density) * 1.2) var(--density)`,
+                    ...(currentMsgs.length === 0
+                      ? { flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }
+                      : {}),
                   }}>
                     {currentMsgs.length === 0 ? (
                       <EmptyState
@@ -3289,10 +3301,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 <div style={{ padding: "0 var(--density) var(--density)", background: "var(--bg)" }}>
                   <div style={{ maxWidth: 760, margin: "0 auto" }}>
                     {tweaks.agentSwitcherPosition === "bottom" && (
-                      <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center" }}>
-                        <span style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
-                          target:
-                        </span>
+                      <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                         <>
             <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
             {selectedAgentId === ROUTER_AGENT.id ? (
@@ -3506,7 +3515,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 export function EmptyState({ agent, agents, onPick, loading }) {
   const prompts = buildStarterPrompts(agents);
   return (
-    <div style={{ padding: "64px 12px 32px", textAlign: "center" }}>
+    <div style={{ padding: "48px 12px 24px", textAlign: "center" }}>
       <AnilaLogoVideo width={180} />
       <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>
         你今天想問 ANILA 什麼？
@@ -3516,11 +3525,11 @@ export function EmptyState({ agent, agents, onPick, loading }) {
           ? "agent 清單載入中…"
           : agent?.id === ROUTER_AGENT.id
             ? "輸入問題，ANILA 會幫你找合適的助手；也可以用 @名稱 直接指定"
-            : `當前 agent: ${agent?.name}`}
+            : `當前助手： ${agent?.name}`}
       </div>
       <div style={{
         marginTop: 36, display: "grid",
-        gridTemplateColumns: prompts.length === 1 ? "1fr" : "1fr 1fr",
+        gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))",
         gap: 10,
         maxWidth: 560, margin: "36px auto 0", textAlign: "left",
       }}>

@@ -56,3 +56,35 @@ describe("思考中的步驟時間軸", () => {
     expect(container.firstChild).toBeNull();
   });
 });
+
+describe("瞬間完成的 Router 步驟", () => {
+  const instant = [
+    { kind: "thinking", label: "Router 分析意圖中", detail: "解析 query: 宇宙的歷史", status: "ok", at: t0 },
+    { kind: "registry", label: "同步 agent 清單", detail: "已載入 0 個可用 agent", status: "ok", at: t0 },
+  ];
+
+  it("完成後不列出 0 秒的 Router 步驟，也不顯示 0.0 秒", () => {
+    render(<ReasoningSummary trace={instant} reasoning={null} streaming={false} finishedAt={t0 + 13100} />);
+    const toggle = screen.getByRole("button", { name: /1 步分析/ });
+    expect(toggle.textContent).toMatch(/用時 13\.1 秒/);
+    expect(toggle.textContent).not.toMatch(/2 步分析/);
+    fireEvent.click(toggle);
+    const list = screen.getByTestId("anila-steps");
+    expect(list.querySelectorAll("[data-step]").length).toBe(1);
+    expect(screen.getByText("思考中…")).toBeTruthy();
+    expect(screen.queryByText("Router 分析意圖中")).toBeNull();
+    expect(screen.queryByText(/已載入 0 個可用 agent/)).toBeNull();
+    expect(list.textContent).toMatch(/13\.1 秒/);
+    expect(list.textContent).not.toMatch(/0\.0 秒/);
+  });
+
+  it("串流中只留下進行中的思考步驟", () => {
+    render(<ReasoningSummary trace={instant} reasoning={null} streaming />);
+    const list = screen.getByTestId("anila-steps");
+    const items = list.querySelectorAll("[data-step]");
+    expect(items.length).toBe(1);
+    expect(items[0].getAttribute("data-state")).toBe("active");
+    expect(screen.getByText("思考中…")).toBeTruthy();
+    expect(screen.queryByText("Router 分析意圖中")).toBeNull();
+  });
+});

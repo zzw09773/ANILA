@@ -83,12 +83,10 @@ const routes = [
         component: () => import('../views/AuditLogsView.vue'),
         meta: { requiresAdmin: true },
       },
-      // doc 08 §15 — 機敏分類盤點(Classification Inventory Before Cutover)。
+      // 分類盤點頁已下線（擁有者 2026-09-14：治理中心不需要此盤點）。舊網址改回儀表板。
       {
         path: 'classification-inventory',
-        name: 'ClassificationInventory',
-        component: () => import('../views/ClassificationInventoryView.vue'),
-        meta: { requiresAdmin: true },
+        redirect: '/',
       },
       {
         path: 'platform-links',

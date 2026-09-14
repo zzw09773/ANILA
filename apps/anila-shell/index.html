@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" sizes="64x64" href="./favicon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+
 <title>ANILA</title>
 <!-- Fonts intentionally NOT loaded from Google CDN — outer nginx ships a
      strict CSP (`style-src 'self' 'unsafe-inline'; font-src 'self' data:`)
@@ -102,9 +106,26 @@
      standard escape hatch to win over those inline outline:none values. */
   :focus-visible {
     outline: 2px solid var(--accent) !important;
-    outline-offset: 1px;
+    outline-offset: 2px;
     border-radius: var(--radius-sm);
   }
+  .skip-link {
+    position: absolute;
+    inset-inline-start: -999px;
+    top: 8px;
+    z-index: 300;
+    padding: 8px 12px;
+    background: var(--bg-elev);
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    font-size: 14px;
+  }
+  .skip-link:focus,
+  .skip-link:focus-visible {
+    inset-inline-start: 16px;
+  }
+  #shell-main { scroll-margin-top: 80px; }
   /* Respect reduced-motion requests (vestibular safety / a11y). */
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
@@ -254,7 +275,7 @@
     align-items: baseline; column-gap: 10px; padding: 3px 0 7px;
   }
   .anila-step::before {
-    content: ""; position: absolute; left: 7px; top: 16px; bottom: -2px; width: 1px;
+    content: ""; position: absolute; left: 11px; top: 22px; bottom: -2px; width: 1px;
     background: var(--border);
   }
   .anila-step:last-child::before { display: none; }
@@ -265,7 +286,9 @@
     border: 1px solid color-mix(in oklab, var(--success) 45%, var(--border));
     align-self: start; margin-top: 1px;
   }
-  .anila-step--active .anila-step__marker { border-color: var(--accent); }
+  .anila-step--active .anila-step__marker {
+    width: 22px; height: 22px; border: none; background: transparent; overflow: visible;
+  }
   .anila-step__pulse {
     width: 7px; height: 7px; border-radius: 999px; background: var(--accent);
     animation: anila-step-pulse 1.4s ease-in-out infinite;

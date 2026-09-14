@@ -42,7 +42,6 @@ export function Field({
           border: `1px solid ${t.border}`,
           color: t.text,
           fontSize: 14,
-          outline: 'none',
           fontFamily: 'inherit',
         }}
       />

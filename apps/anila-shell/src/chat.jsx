@@ -23,7 +23,8 @@ import {
   MenuItem,
 } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
-import { AnilaLogoImg } from "./AnilaBrand.jsx";
+import { AnilaLogoImg } from "./AnilaBrand.jsx"
+import { ThinkingStatus, orbStateFromLabel } from "./ThinkingStatus.jsx";
 import {
   IconAt,
   IconBook,
@@ -150,10 +151,39 @@ export const RoutingTrace = ({ trace, stage, routedAgent, done }) => {
  * 形狀參考 Claude.ai／ChatGPT 的「Thought for Ns」與 Perplexity 的 Pro
  * Search 步驟列——但只取「一條安靜的直線＋一個會動的點」，不做卡片。
  */
-const fmtSeconds = (ms) => (ms < 0 || !Number.isFinite(ms) ? null : `${(ms / 1000).toFixed(1)} 秒`);
+const TRACE_INSTANT_MS = 50;
+const fmtSeconds = (ms) => {
+  if (!Number.isFinite(ms) || ms < TRACE_INSTANT_MS) return null;
+  return `${(ms / 1000).toFixed(1)} 秒`;
+};
+const displayTraceLabel = (label) => (label === "同步 agent 清單" ? "思考中…" : label);
+
+const displayTraceDetail = (label, detail) => {
+  if (!detail) return "";
+  if (displayTraceLabel(label) === "思考中…" && /^已載入\s*\d+\s*個可用 agent/.test(detail)) return "";
+  return detail;
+};
+
+const stepDurationMs = (steps, index, finishedAt) => {
+  const ev = steps[index];
+  const next = index < steps.length - 1 ? steps[index + 1]?.at : finishedAt;
+  if (typeof ev?.at === "number" && typeof next === "number") return next - ev.at;
+  return null;
+};
+
+/** 完成且耗時趨近 0 的步驟（Router 進場那一格）不佔時間軸。進行中的最後一步仍留下。 */
+export const visibleTraceSteps = (trace, { streaming = false, finishedAt } = {}) => {
+  const steps = Array.isArray(trace) ? trace : [];
+  return steps.filter((_, i) => {
+    if (streaming && i === steps.length - 1) return true;
+    const dur = stepDurationMs(steps, i, finishedAt);
+    if (dur == null) return true;
+    return dur >= TRACE_INSTANT_MS;
+  });
+};
 
 export const StepTimeline = ({ trace, streaming, finishedAt }) => {
-  const steps = Array.isArray(trace) ? trace : [];
+  const steps = visibleTraceSteps(trace, { streaming, finishedAt });
   const lastIdx = steps.length - 1;
   return (
     <ol
@@ -168,6 +198,7 @@ export const StepTimeline = ({ trace, streaming, finishedAt }) => {
         // 各步耗時：這一步的 at → 下一步的 at（最後一步 → finishedAt）。
         const next = i < lastIdx ? steps[i + 1]?.at : finishedAt;
         const dur = typeof ev?.at === "number" && typeof next === "number" ? fmtSeconds(next - ev.at) : null;
+        const detail = displayTraceDetail(ev?.label, ev?.detail);
         return (
           <li
             key={i}
@@ -177,13 +208,15 @@ export const StepTimeline = ({ trace, streaming, finishedAt }) => {
             aria-current={active ? "step" : undefined}
           >
             <span className="anila-step__marker" aria-hidden="true">
-              {active ? <span className="anila-step__pulse" /> : <IconCheck size={9} />}
+              {active
+                ? <ThinkingStatus state={orbStateFromLabel(ev?.label)} size={20} label="" />
+                : <IconCheck size={9} />}
             </span>
             <span className="anila-step__body">
               <span className={`anila-step__label${active ? " anila-step__label--shimmer" : ""}`}>
-                {ev?.label || "…"}
+                {displayTraceLabel(ev?.label) || "…"}
               </span>
-              {ev?.detail ? <span className="anila-step__detail">{ev.detail}</span> : null}
+              {detail ? <span className="anila-step__detail">{detail}</span> : null}
             </span>
             {!active && dur ? <span className="anila-step__time">{dur}</span> : null}
           </li>
@@ -191,7 +224,7 @@ export const StepTimeline = ({ trace, streaming, finishedAt }) => {
       })}
       {streaming && steps.length === 0 && (
         <li className="anila-step anila-step--active" data-step="0" data-state="active" aria-current="step">
-          <span className="anila-step__marker" aria-hidden="true"><span className="anila-step__pulse" /></span>
+          <span className="anila-step__marker" aria-hidden="true"><ThinkingStatus state="working" size={20} label="" /></span>
           <span className="anila-step__body"><span className="anila-step__label anila-step__label--shimmer">思考中</span></span>
         </li>
       )}
@@ -219,7 +252,8 @@ export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, sta
   const endAt = typeof finishedAt === "number" ? finishedAt : lastAt;
   const total = typeof firstAt === "number" && typeof endAt === "number" ? fmtSeconds(endAt - firstAt) : null;
   const summaryParts = [];
-  if (hasTrace) summaryParts.push(`${trace.length} 步分析`);
+  const visible = visibleTraceSteps(trace, { streaming: false, finishedAt: endAt });
+  if (visible.length) summaryParts.push(`${visible.length} 步分析`);
   if (total) summaryParts.push(`用時 ${total}`);
   if (hasReasoning) summaryParts.push(`${reasoning.length} 字思考`);
   const summary = summaryParts.join(" · ") || "已完成";
@@ -2245,6 +2279,7 @@ export const Composer = ({
       }}>
         <textarea
           ref={taRef}
+          aria-label="訊息"
           value={text}
           onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart || 0); }}
           onKeyUp={updateCaret}
@@ -2575,22 +2610,35 @@ export const Sidebar = ({
   });
 
   if (collapsed) {
+    const railBtn = { width: 36, height: 36 };
     return (
       <div style={{
-        width: 52, borderRight: "1px solid var(--border)",
+        width: 56, flexShrink: 0,
+        borderRight: "1px solid var(--border)",
         background: "var(--bg-subtle)",
         display: "flex", flexDirection: "column", alignItems: "center",
-        padding: "12px 0", gap: 6,
+        padding: "10px 0 12px", gap: 4,
       }}>
-        <div style={{ padding: 6 }}><AnilaLogoImg variant="mark" height={24} /></div>
-        <Divider />
-        <IconButton onClick={onToggleCollapsed} title="展開側邊"><IconChevRight /></IconButton>
-        <IconButton onClick={onNewChat} title="新對話"><IconPlus /></IconButton>
-        <Divider />
-        {/* ANILA Shell 四大入口 + admin-gated 治理中心（含 專案入口）。 */}
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          title="展開側邊"
+          aria-label="展開側邊"
+          style={{
+            width: 36, height: 36, padding: 0,
+            display: "grid", placeItems: "center",
+            background: "transparent", border: "none", cursor: "pointer",
+            borderRadius: "var(--radius)",
+          }}
+        >
+          <AnilaLogoImg variant="logo" width={28} height={28} />
+        </button>
+        <IconButton onClick={onToggleCollapsed} title="展開側邊" style={railBtn}><IconChevRight /></IconButton>
+        <IconButton onClick={onNewChat} title="新對話" style={railBtn}><IconPlus /></IconButton>
+        <div style={{ width: 20, height: 1, background: "var(--border)", margin: "4px 0" }} />
         <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
         <div style={{ flex: 1 }} />
-        <IconButton onClick={onOpenSettings} title="設定"><IconSettings /></IconButton>
+        <IconButton onClick={onOpenSettings} title="設定" style={railBtn}><IconSettings /></IconButton>
       </div>
     );
   }
@@ -2789,6 +2837,7 @@ export const Sidebar = ({
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Escape" && query) { e.preventDefault(); setQuery(""); } }}
                 placeholder="搜尋… (tag:hr 特休 / 支援同義詞)"
+                aria-label="搜尋對話"
                 style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 12, color: "var(--fg)" }}
               />
               {query && (
@@ -2796,6 +2845,7 @@ export const Sidebar = ({
                   type="button"
                   onClick={() => setQuery("")}
                   title="清除搜尋 (Esc)"
+                  aria-label="清除搜尋"
                   style={{
                     display: "inline-flex", alignItems: "center", justifyContent: "center",
                     width: 16, height: 16,

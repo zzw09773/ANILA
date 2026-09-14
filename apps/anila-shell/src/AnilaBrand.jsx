@@ -57,7 +57,7 @@ export function AnilaLogoVideo({
   return (
     <div
       className="anila-brand-video-wrap"
-      style={{ width, height: width }}
+      style={{ width, height: width, margin: "0 auto" }}
     >
       <video
         src={ANILA_LOGO_MP4}

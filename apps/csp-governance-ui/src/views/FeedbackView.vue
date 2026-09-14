@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-head__title">使用者回饋</h1>
         <p class="page-head__sub">
-          差評與留言優先 · 評分 6–10 為好評、1–5 為差評 · 可依 agent / 模型 / 時間篩選 · 不含對話正文
+          正讚與倒讚都會進這份清單 · 評分 6–10 為好評、1–5 為差評 · 可依評分 / agent / 模型 / 時間篩選 · 不含對話正文
         </p>
       </div>
       <div class="page-head__chips">
@@ -17,13 +17,13 @@
 
     <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
 
-    <TermBox title="篩選" pad="sm" hint="預設近 7 天 · 差評優先可改">
+    <TermBox title="篩選" pad="sm" hint="預設近 7 天 · 好評與差評都列出">
       <div class="filters">
         <TermField label="評分">
           <select v-model="filters.rating" @change="fetchData" class="term-select">
-            <option value="down">差評</option>
-            <option value="up">好評</option>
             <option value="">全部</option>
+            <option value="up">好評</option>
+            <option value="down">差評</option>
           </select>
         </TermField>
         <TermField label="天數">
@@ -140,7 +140,7 @@ const pageError = ref('')
 const exporting = ref(false)
 const exportNote = ref('')
 const filters = ref({
-  rating: 'down',
+  rating: '',
   days: 7,
   agent_name: '',
   model_name: '',

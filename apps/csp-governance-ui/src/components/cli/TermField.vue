@@ -4,17 +4,17 @@
   itself (passed via default slot — usually <input class="term-input">).
 -->
 <template>
-  <div class="term-field" :class="{ 'term-field--invalid': !!error }">
-    <label v-if="label" class="term-field__label">
+  <label class="term-field" :class="{ 'term-field--invalid': !!error }">
+    <span v-if="label" class="term-field__label">
       <span>{{ label }}</span>
-      <span v-if="optional" class="term-field__optional">optional</span>
-    </label>
-    <div class="term-field__control">
+      <span v-if="optional" class="term-field__optional">選填</span>
+    </span>
+    <span class="term-field__control">
       <slot />
-    </div>
-    <p v-if="error" class="term-field__error">! {{ error }}</p>
-    <p v-else-if="hint" class="term-field__hint">{{ hint }}</p>
-  </div>
+    </span>
+    <span v-if="error" class="term-field__error">! {{ error }}</span>
+    <span v-else-if="hint" class="term-field__hint">{{ hint }}</span>
+  </label>
 </template>
 
 <script setup>

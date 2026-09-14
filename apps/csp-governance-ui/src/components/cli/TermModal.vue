@@ -14,7 +14,7 @@
             <span class="term-modal__corner">┌</span>
             <span class="term-modal__title">{{ title }}</span>
             <span class="term-modal__rule" />
-            <button v-if="dismissible" class="term-modal__close" @click="$emit('close')" aria-label="close">×</button>
+            <button v-if="dismissible" type="button" class="term-modal__close" @click="$emit('close')" aria-label="關閉">×</button>
           </header>
           <div class="term-modal__body" :class="{ 'term-modal__body--flush': flush }">
             <slot />
@@ -159,7 +159,8 @@ onUnmounted(() => {
   line-height: 1;
   cursor: pointer;
   padding: 0 6px;
-  height: 22px;
+  min-width: 32px;
+  min-height: 32px;
 }
 .term-modal__close:hover { color: var(--c-fg-1); }
 

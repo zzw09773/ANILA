@@ -75,8 +75,8 @@
   }
 
   :focus-visible {
-    outline: 1px solid var(--c-focus-ring);
-    outline-offset: 1px;
+    outline: 2px solid var(--c-focus-ring);
+    outline-offset: 2px;
   }
 
   /* Heading defaults — sans (institutional), suppress browser bold to control weight */
@@ -180,12 +180,12 @@
   .term-textarea:hover {
     border-color: var(--c-border-strong);
   }
-  .term-input:focus,
-  .term-select:focus,
-  .term-textarea:focus {
-    outline: none;
+  .term-input:focus-visible,
+  .term-select:focus-visible,
+  .term-textarea:focus-visible {
+    outline: 2px solid var(--c-focus-ring);
+    outline-offset: 2px;
     border-color: var(--c-accent);
-    box-shadow: 0 0 0 1px var(--c-accent) inset;
   }
   .term-input:disabled,
   .term-select:disabled,
@@ -459,6 +459,28 @@
 /* Respect reduced-motion requests (vestibular safety / a11y). The TUI uses
    the term-blink caret + a few transitions; near-eliminate them on request.
    Outside @layer so it isn't reordered; !important wins regardless. */
+/* Skip link: first focusable control, visually hidden until focused. */
+.skip-link {
+  position: absolute;
+  inset-inline-start: -999px;
+  top: 8px;
+  z-index: 80;
+  padding: 8px 12px;
+  background: var(--c-surface-1);
+  color: var(--c-fg-1);
+  border: var(--border-w) solid var(--c-border-strong);
+  border-radius: var(--r-soft);
+  font-size: var(--t-sm);
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+  inset-inline-start: 16px;
+}
+#gov-main,
+#login-main {
+  scroll-margin-top: 80px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
