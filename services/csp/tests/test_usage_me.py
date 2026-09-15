@@ -82,7 +82,8 @@ def test_usage_me_is_self_only(client, db: Session):
     assert by_model["me-model-b"]["requests"] == 1
     assert by_model["me-model-b"]["prompt_tokens"] == 3
 
-    by_kind = {item["request_type"]: item for item in body["by_kind"]}
+    assert all("kind" in item and "request_type" not in item for item in body["by_kind"])
+    by_kind = {item["kind"]: item for item in body["by_kind"]}
     assert by_kind["chat"]["requests"] == 2
     assert by_kind["embedding"]["requests"] == 1
     assert by_kind["embedding"]["prompt_tokens"] == 5

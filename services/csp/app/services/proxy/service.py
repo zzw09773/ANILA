@@ -43,6 +43,7 @@ from app.services.proxy.usage import (
     _extract_response_text,
     _extract_stream_reasoning,
     _extract_stream_text,
+    _merge_usage_maps,
     _serialize_request_for_usage,
     enqueue_usage_task_linked,
     resolve_reasoning_tokens,
@@ -1235,13 +1236,12 @@ async def _proxy_stream_impl(
     start_time = time.time()
     prompt_tokens = completion_tokens = 0
     usage_seen = False
-    meta_seen = False
     last_usage: dict = {}
     prompt_text = _serialize_request_for_usage(body)
     completion_parts: list[str] = []
     reasoning_parts: list[str] = []
     pending_done_block: str | None = None
-    pending_agent_meta: tuple[str, str | None, str | None] | None = None
+    pending_named_meta: dict | None = None
 
     try:
         async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
@@ -1257,6 +1257,26 @@ async def _proxy_stream_impl(
                                         detail=_sanitised_upstream_error_detail(
                                             body, resp.status_code
                                         ))
+                def _hold_named_meta(data: str | None) -> bool:
+                    """Hold a named anila.meta object until usage is complete.
+
+                    Returns True when the frame was absorbed (do not yield yet).
+                    """
+                    nonlocal pending_named_meta
+                    if not data:
+                        return False
+                    try:
+                        parsed = json.loads(data)
+                    except (json.JSONDecodeError, TypeError):
+                        return False
+                    if not isinstance(parsed, dict):
+                        return False
+                    if pending_named_meta is None:
+                        pending_named_meta = dict(parsed)
+                    else:
+                        pending_named_meta.update(parsed)
+                    return True
+
                 def _ingest_stream_payload(data: str | None, event_name: str | None) -> None:
                     nonlocal prompt_tokens, completion_tokens, usage_seen, last_usage
                     if not data or event_name not in (None, "message"):
@@ -1274,9 +1294,11 @@ async def _proxy_stream_impl(
                     usage = chunk.get("usage") or {}
                     if usage:
                         usage_seen = True
-                        last_usage = usage
-                        prompt_tokens = usage.get("prompt_tokens", 0)
-                        completion_tokens = usage.get("completion_tokens", 0)
+                        last_usage = _merge_usage_maps(last_usage, usage)
+                        if usage.get("prompt_tokens") is not None:
+                            prompt_tokens = usage["prompt_tokens"]
+                        if usage.get("completion_tokens") is not None:
+                            completion_tokens = usage["completion_tokens"]
 
                 def _emit(block: str, event_name: str | None, data: str | None) -> str:
                     """Render a block, upgrading anila.meta.classified if required."""
@@ -1317,16 +1339,9 @@ async def _proxy_stream_impl(
                             event_name, data = _parse_sse_block(block)
                             if data == "[DONE]":
                                 pending_done_block = block + "\n\n"
+                            elif event_name == "anila.meta" and _hold_named_meta(data):
+                                pass
                             else:
-                                if event_name == "anila.meta":
-                                    meta_seen = True
-                                    if target_agent_id is not None and data:
-                                        # Hold the terminal agent meta until usage
-                                        # aggregation is complete so the observation
-                                        # is attached before the frame reaches callers.
-                                        pending_agent_meta = (block, event_name, data)
-                                        block_lines = []
-                                        continue
                                 _ingest_stream_payload(data, event_name)
                                 yield _emit(block, event_name, data)
                             block_lines = []
@@ -1337,18 +1352,11 @@ async def _proxy_stream_impl(
                     event_name, data = _parse_sse_block(block)
                     if data == "[DONE]":
                         pending_done_block = block + "\n\n"
+                    elif event_name == "anila.meta" and _hold_named_meta(data):
+                        pass
                     else:
-                        if event_name == "anila.meta":
-                            meta_seen = True
-                            if target_agent_id is not None and data:
-                                pending_agent_meta = (block, event_name, data)
-                                block_lines = []
-                            else:
-                                _ingest_stream_payload(data, event_name)
-                                yield _emit(block, event_name, data)
-                        else:
-                            _ingest_stream_payload(data, event_name)
-                            yield _emit(block, event_name, data)
+                        _ingest_stream_payload(data, event_name)
+                        yield _emit(block, event_name, data)
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="下游請求逾時")
     except httpx.ConnectError:
@@ -1384,32 +1392,30 @@ async def _proxy_stream_impl(
         reasoning_tokens,
         reasoning_source,
     )
-    if pending_agent_meta is not None:
-        block, event_name, data = pending_agent_meta
-        try:
-            parsed = json.loads(data) if data else None
-            if isinstance(parsed, dict):
-                _stamp_usage_and_thinking(
-                    parsed,
-                    usage=usage_for_meta,
-                    thinking_applied=thinking_applied,
-                )
+    if pending_named_meta is not None:
+        terminal_meta = pending_named_meta
+        if requires_encryption:
+            terminal_meta["classified"] = True
+        if model is not None and is_thinking_locked(model):
+            terminal_meta["thinking_locked"] = True
+        _stamp_usage_and_thinking(
+            terminal_meta,
+            usage=usage_for_meta,
+            thinking_applied=thinking_applied,
+        )
+        if target_agent_id is not None:
+            try:
                 attach_agent_reply_observation(
-                    parsed,
+                    terminal_meta,
                     completion_tokens=completion_tokens,
                     usage_source=usage_source,
                 )
-                data = json.dumps(parsed, ensure_ascii=False)
-                block = "event: anila.meta\n" + "data: " + data
-            else:
-                logger.warning("agent anila.meta was not an object; observation omitted")
-        except Exception:  # pragma: no cover - defensive serving boundary
-            logger.exception("agent anila.meta observation rewrite failed")
-        yield _emit(block, event_name, data)
-    if not meta_seen:
+            except Exception:  # pragma: no cover - defensive serving boundary
+                logger.exception("agent anila.meta observation rewrite failed")
+    else:
         # Caller-facing stream meta uses the visibility-gated display form.
         stream_label = model_name or "未知模型"
-        generated_meta = build_default_anila_meta(
+        terminal_meta = build_default_anila_meta(
             stream_label,
             detail=_proxy_detail(
                 stream_label, endpoint_display, stream=True
@@ -1422,15 +1428,16 @@ async def _proxy_stream_impl(
         )
         if target_agent_id is not None:
             attach_agent_reply_observation(
-                generated_meta,
+                terminal_meta,
                 completion_tokens=completion_tokens,
                 usage_source=usage_source,
             )
-        yield "event: anila.meta\n"
-        yield "data: " + json.dumps(
-            generated_meta,
-            ensure_ascii=False,
-        ) + "\n\n"
+    yield "event: anila.meta\n"
+    yield "data: " + json.dumps(
+        terminal_meta,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ) + "\n\n"
     if pending_done_block:
         yield pending_done_block
     if total_tokens > 0:

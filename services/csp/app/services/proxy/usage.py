@@ -195,6 +195,24 @@ def _extract_stream_text(chunk: dict) -> str:
     return "".join(parts)
 
 
+def _merge_usage_maps(current: dict, incoming: dict) -> dict:
+    """Merge usage objects key-by-key; later None does not erase earlier values."""
+    merged = dict(current)
+    for key, value in incoming.items():
+        if value is None:
+            continue
+        if key == "completion_tokens_details" and isinstance(value, dict):
+            prior = merged.get(key)
+            details = dict(prior) if isinstance(prior, dict) else {}
+            for detail_key, detail_value in value.items():
+                if detail_value is not None:
+                    details[detail_key] = detail_value
+            merged[key] = details
+            continue
+        merged[key] = value
+    return merged
+
+
 def _reported_reasoning_tokens(usage) -> int | None:
     """Read OpenAI nested or vLLM/litellm top-level reasoning token counts."""
     if not isinstance(usage, dict) or not usage:

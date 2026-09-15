@@ -786,7 +786,7 @@ def get_caller_usage(db: Session, *, user_id: int, range_key: str) -> dict:
         kind_entry = by_kind.setdefault(
             kind,
             {
-                "request_type": kind,
+                "kind": kind,
                 "requests": 0,
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
@@ -823,7 +823,7 @@ def get_caller_usage(db: Session, *, user_id: int, range_key: str) -> dict:
         "total_tokens": prompt + completion,
         "by_model": sorted(by_model.values(), key=lambda item: item["model_id"]),
         "by_day": [by_day[key] for key in sorted(by_day)],
-        "by_kind": sorted(by_kind.values(), key=lambda item: item["request_type"]),
+        "by_kind": sorted(by_kind.values(), key=lambda item: item["kind"]),
     }
 
 

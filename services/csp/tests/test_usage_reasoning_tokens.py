@@ -283,6 +283,7 @@ def test_nonstream_missing_reasoning_is_none(client, db, db_engine, monkeypatch)
     assert resp.status_code == 200, resp.text
     meta = resp.json()["anila_meta"]
     assert meta["usage"]["reasoning_tokens"] is None
+    assert meta["usage"]["reasoning_tokens_source"] is None
     from app.models.user import User
 
     owner = db.query(User).filter(User.username == "reason-ns-none").one()
@@ -377,3 +378,129 @@ def test_describe_thinking_applied_does_not_change_apply_body():
     assert out["reasoning_effort"] == "xhigh"
     assert ANILA_THINKING_TIER_KEY not in out
     assert "messages" in out
+
+
+def test_reasoning_tokens_source_null_only_when_tokens_missing():
+    from app.services.proxy.usage import resolve_reasoning_tokens
+
+    assert resolve_reasoning_tokens({"reasoning_tokens": 3}) == (3, "reported")
+    assert resolve_reasoning_tokens(
+        {"completion_tokens_details": {"reasoning_tokens": 8}}
+    ) == (8, "reported")
+    estimated_n, estimated_src = resolve_reasoning_tokens(
+        {}, reasoning_text="abcd efgh ijkl", model_name=None
+    )
+    assert estimated_n is not None
+    assert estimated_src == "estimated"
+    assert resolve_reasoning_tokens({}, reasoning_text="") == (None, None)
+    assert resolve_reasoning_tokens(None) == (None, None)
+
+
+def _run_proxy_stream(monkeypatch, lines: list[str]) -> tuple[str, list[dict]]:
+    from app.services import proxy_service
+    from app.services.proxy.service import ProxyTuning
+
+    recorded: list[dict] = []
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _ConfigurableUpstream(*args, **kwargs),
+    )
+    _ConfigurableUpstream.stream_lines = lines
+    _ConfigurableUpstream.last_body = None
+
+    async def fake_enqueue(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", fake_enqueue)
+    monkeypatch.setattr(proxy_impl, "enqueue_usage_task_linked", fake_enqueue)
+
+    async def run():
+        chunks = []
+        async for chunk in proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={
+                "model": "google/gemma4",
+                "messages": [{"role": "user", "content": "Say hello"}],
+                "stream": True,
+            },
+            model_name="google/gemma4",
+            tuning=ProxyTuning.from_registry_defaults(),
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    joined = "".join(asyncio.run(run()))
+    return joined, recorded
+
+
+def _all_sse_metas(text: str) -> list[dict]:
+    frames: list[dict] = []
+    for raw_block in text.split("\n\n"):
+        event = None
+        data = None
+        for line in raw_block.splitlines():
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data = line.split(":", 1)[1].strip()
+        if event == "anila.meta" and data and data != "[DONE]":
+            frames.append(json.loads(data))
+    return frames
+
+
+def test_stream_holds_named_meta_until_usage_merges_reasoning(monkeypatch):
+    joined, recorded = _run_proxy_stream(
+        monkeypatch,
+        [
+            'data: {"choices":[{"index":0,"delta":{"content":"answer"},'
+            '"finish_reason":null}]}',
+            "",
+            "event: anila.meta",
+            'data: {"kb_hits":[{"id":1,"title":"reg"}],"kb_state":"searched_hit"}',
+            "",
+            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+            '"usage":{"prompt_tokens":11,"completion_tokens":7,'
+            '"reasoning_tokens":1234}}',
+            "",
+            "data: [DONE]",
+            "",
+        ],
+    )
+    metas = _all_sse_metas(joined)
+    assert len(metas) == 1
+    assert metas[0]["kb_hits"] == [{"id": 1, "title": "reg"}]
+    assert metas[0]["kb_state"] == "searched_hit"
+    assert metas[0]["usage"]["reasoning_tokens"] == 1234
+    assert metas[0]["usage"]["reasoning_tokens_source"] == "reported"
+    assert joined.index("anila.meta") < joined.index("[DONE]")
+    assert recorded[0]["reasoning_tokens"] == 1234
+
+
+def test_stream_merges_usage_chunks_without_dropping_reasoning(monkeypatch):
+    joined, recorded = _run_proxy_stream(
+        monkeypatch,
+        [
+            'data: {"choices":[{"index":0,"delta":{"content":"Hi"},'
+            '"finish_reason":null}],"usage":{"prompt_tokens":5,'
+            '"completion_tokens":1,"reasoning_tokens":1234}}',
+            "",
+            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+            '"usage":{"prompt_tokens":11,"completion_tokens":7}}',
+            "",
+            "data: [DONE]",
+            "",
+        ],
+    )
+    metas = _all_sse_metas(joined)
+    assert metas[-1]["usage"]["reasoning_tokens"] == 1234
+    assert metas[-1]["usage"]["reasoning_tokens_source"] == "reported"
+    assert recorded[0]["prompt_tokens"] == 11
+    assert recorded[0]["completion_tokens"] == 7
+    assert recorded[0]["reasoning_tokens"] == 1234
