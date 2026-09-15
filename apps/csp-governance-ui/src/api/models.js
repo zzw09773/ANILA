@@ -2,7 +2,7 @@ import client from './client'
 
 /**
  * ModelResponse 新增欄位（CSP 同步實作）：
- * - thinking_levels_supported: string[] | null  // null＝未探測
+ * - thinking_levels_supported: string[] | null  // null／[]＝未探測
  * - thinking_user_selectable: boolean
  * PUT /api/models/{id} 接受 thinking_user_selectable。
  */

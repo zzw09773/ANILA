@@ -72,11 +72,12 @@ test('剛好 4 個不折疊', () => {
   assert.equal(view.overflow, 0)
 })
 
-test('空陣列是已探測、不是未探測', () => {
-  const view = thinkingLevelsView([])
-  assert.equal(view.status, 'probed')
-  assert.deepEqual(view.visible, [])
-  assert.equal(view.overflow, 0)
+test('空陣列與 null 一樣顯示為未探測', () => {
+  assert.deepEqual(thinkingLevelsView([]), {
+    status: 'unprobed',
+    visible: [],
+    overflow: 0,
+  })
 })
 
 // ── 下拉標「（端點不接受）」────────────────────────────────────────────────
@@ -92,6 +93,7 @@ test('已探測時，不在支援集的選項標「（端點不接受）」但�
 test('未探測時下拉不加「端點不接受」', () => {
   assert.equal(thinkingEffortOptionLabel('high', null), 'high')
   assert.equal(thinkingEffortOptionLabel('max', undefined), 'max')
+  assert.equal(thinkingEffortOptionLabel('high', []), 'high')
 })
 
 // ── 開關送出 ──────────────────────────────────────────────────────────────

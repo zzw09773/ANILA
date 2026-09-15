@@ -1,7 +1,7 @@
 // 思考等級探測結果的顯示與寫回欄位。
 //
 // 後端契約（CSP ModelResponse）：
-//   thinking_levels_supported: string[] | null  // null＝未探測
+//   thinking_levels_supported: string[] | null  // null／[]＝未探測
 //   thinking_user_selectable: boolean           // 預設 true
 // 探測由後端在新增／整批帶入／改端點時自動跑；前端只顯示，並提供維運重探。
 
@@ -27,11 +27,20 @@ export function formatThinkingLevel(level) {
 }
 
 /**
+ * 後端永不回 []（可達必含 none，全部不可達存 NULL）。
+ * 此處與 anila-shell `runtime/thinkingTier.js` 同義：null 與 [] 都當未探測。
+ * @param {string[]|null|undefined} supported
+ */
+export function isThinkingLevelsUnprobed(supported) {
+  return supported == null || (Array.isArray(supported) && supported.length === 0)
+}
+
+/**
  * @param {string[]|null|undefined} supported
  * @returns {{ status: 'unprobed'|'probed', visible: string[], overflow: number }}
  */
 export function thinkingLevelsView(supported) {
-  if (supported == null) {
+  if (isThinkingLevelsUnprobed(supported)) {
     return { status: 'unprobed', visible: [], overflow: 0 }
   }
   const list = Array.isArray(supported) ? supported : []
@@ -43,7 +52,7 @@ export function thinkingLevelsView(supported) {
 /** 下拉標籤：已探測但不在支援集的選項標「（端點不接受）」，仍可選。 */
 export function thinkingEffortOptionLabel(value, supported) {
   const base = EFFORT_LABEL[value] || value
-  if (supported == null) return base
+  if (isThinkingLevelsUnprobed(supported)) return base
   const accepted = new Set(Array.isArray(supported) ? supported : [])
   const key = value === 'off' ? 'none' : value
   if (!accepted.has(key) && !(key === 'none' && accepted.has('off'))) {

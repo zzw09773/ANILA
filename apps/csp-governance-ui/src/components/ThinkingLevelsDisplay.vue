@@ -1,5 +1,6 @@
 <!--
-  模型思考等級探測結果：null＝灰標「未探測」；有值則以小 chip 列出，
+  模型思考等級探測結果：null 與 [] 皆灰標「未探測」（後端永不回 []；
+  與 anila-shell runtime/thinkingTier.js 同義）；有值則以小 chip 列出，
   none 顯示為「關」，超過 4 個折成 +N。
 -->
 <template>

@@ -743,6 +743,7 @@ import { designationConfirm, designationToast } from '../utils/platformEmbedding
 import { formatDate } from '../utils/formatDate'
 import {
   THINKING_EFFORT_OPTIONS,
+  isThinkingLevelsUnprobed,
   thinkingEffortOptionLabel,
   thinkingUserSelectableFromModel,
   withThinkingWriteFields,
@@ -1219,7 +1220,7 @@ async function handleProbeThinking() {
   try {
     const data = await modelsStore.probeThinking(editingId.value)
     applyThinkingProbeResult(data)
-    if (data?.thinking_levels_supported == null) {
+    if (isThinkingLevelsUnprobed(data?.thinking_levels_supported)) {
       toast('已重跑探測，此端點仍無法取得支援等級', { tone: 'warn' })
     } else {
       toast('已更新支援等級', { tone: 'success' })
