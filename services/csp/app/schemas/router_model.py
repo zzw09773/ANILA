@@ -13,6 +13,9 @@ class RouterModelOut(BaseModel):
     display_name: str
     health_status: str = "unknown"
     grant_sources: list[str] = []
+    thinking_effort: str | None = None
+    thinking_levels_supported: list[str] | None = None
+    thinking_user_selectable: bool = True
 
 
 class RouterModelListOut(BaseModel):

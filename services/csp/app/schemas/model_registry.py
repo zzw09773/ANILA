@@ -214,6 +214,7 @@ class ModelUpdate(BaseModel):
     # Write-only: re-encrypt the per-model gateway key. Never returned.
     api_key: str | None = None
     thinking_effort: str | None = None
+    thinking_user_selectable: bool | None = None
     temperature: float | None = None
     top_p: float | None = None
     presence_penalty: float | None = None
@@ -272,7 +273,7 @@ class ThinkingProbeResult(BaseModel):
     422 — so in practice this carries ``ok`` or ``unreachable``.
     """
 
-    status: Literal["ok", "unreachable", "rejected"]
+    status: Literal["ok", "unreachable", "rejected", "unprobed"]
     detail: str | None = None
 
 
@@ -309,6 +310,8 @@ class ModelResponse(ApiResponseModel):
     # ciphertext / secret ref, and never the plaintext.
     has_api_key: bool = False
     thinking_effort: str | None = None
+    thinking_levels_supported: list[str] | None = None
+    thinking_user_selectable: bool = True
     temperature: float | None = None
     top_p: float | None = None
     presence_penalty: float | None = None

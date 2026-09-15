@@ -82,6 +82,13 @@ def list_router_models(
                     m.health_status, is_active=bool(m.is_active)
                 ),
                 grant_sources=grant_sources_for_user(db, caller.user, m),
+                thinking_effort=getattr(m, "thinking_effort", None),
+                thinking_levels_supported=getattr(
+                    m, "thinking_levels_supported", None
+                ),
+                thinking_user_selectable=bool(
+                    getattr(m, "thinking_user_selectable", True)
+                ),
             )
             for m in models
         ],

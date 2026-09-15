@@ -28,10 +28,11 @@ routing table, which must not reach a browser.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 import httpx
 from anila_core.security import (
@@ -46,6 +47,10 @@ from app.services.proxy.urls import join_upstream_path
 logger = logging.getLogger(__name__)
 
 PROBE_TIMEOUT_S = 20.0
+# Whole-model budget for discover_thinking_levels (all probeable levels).
+DISCOVER_TIMEOUT_S = 20.0
+# Canonical order written to thinking_levels_supported.
+DISCOVERED_LEVEL_ORDER = ("none", "low", "medium", "high", "xhigh", "max")
 
 # Levels that actually put ``reasoning_effort`` on the wire (mirrors
 # ``proxy.sampling.THINKING_ON_LEVELS``); ``none`` / NULL send nothing to
@@ -79,6 +84,18 @@ _LEAKS_ADDRESS_RE = re.compile(r"https?://|\b\d{1,3}(?:\.\d{1,3}){3}\b")
 class ProbeResult:
     status: ProbeStatus
     detail: str | None = None
+
+
+@dataclass(frozen=True)
+class DiscoverResult:
+    """Supported vendor levels, or ``None`` when the endpoint was unprobed.
+
+    ``levels`` is ``None`` when every probeable level was unreachable (or
+    the whole gather timed out). ``none`` is always included when any
+    level was reachable — it is never sent on the wire.
+    """
+
+    levels: list[str] | None
 
 
 def _extract_upstream_sentence(body_text: str) -> str | None:
@@ -156,3 +173,53 @@ async def probe_thinking_effort(model_like: Any, level: str) -> ProbeResult:
     if 200 <= resp.status_code < 300:
         return ProbeResult("ok")
     return ProbeResult("unreachable", f"上游回 HTTP {resp.status_code}")
+
+
+def _discoverable(model_like: Any) -> bool:
+    model_type = getattr(model_like, "model_type", None)
+    protocol = (getattr(model_like, "protocol", None) or "openai_compatible").strip()
+    return model_type in ("llm", "vlm") and protocol == "openai_compatible"
+
+
+async def discover_thinking_levels(
+    model_like: Any,
+    *,
+    probe_fn: Callable[[Any, str], Awaitable[ProbeResult]] | None = None,
+) -> DiscoverResult:
+    """Probe ``low/medium/high/xhigh/max`` in parallel; always add ``none``.
+
+    2xx levels join the supported set. ``rejected`` is omitted. When every
+    probeable level is ``unreachable`` (or the 20s budget expires) the
+    result is ``None`` so the caller stores NULL.
+    """
+    if not _discoverable(model_like):
+        return DiscoverResult(None)
+
+    probe = probe_fn or probe_thinking_effort
+
+    async def _one(level: str) -> tuple[str, ProbeResult]:
+        return level, await probe(model_like, level)
+
+    try:
+        pairs = await asyncio.wait_for(
+            asyncio.gather(*(_one(level) for level in sorted(PROBEABLE_LEVELS))),
+            timeout=DISCOVER_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("thinking discover timed out after %.1fs", DISCOVER_TIMEOUT_S)
+        return DiscoverResult(None)
+
+    accepted: set[str] = set()
+    any_reachable = False
+    for level, result in pairs:
+        if result.status == "ok":
+            accepted.add(level)
+            any_reachable = True
+        elif result.status == "rejected":
+            any_reachable = True
+
+    if not any_reachable:
+        return DiscoverResult(None)
+
+    accepted.add("none")
+    return DiscoverResult([lv for lv in DISCOVERED_LEVEL_ORDER if lv in accepted])

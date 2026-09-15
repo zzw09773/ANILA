@@ -64,7 +64,11 @@ from app.services.service_token_envelope import (
     decode_service_token_envelope,
     encode_service_token_envelope,
 )
-from app.services.thinking_probe import PROBEABLE_LEVELS, probe_thinking_effort
+from app.services.thinking_probe import (
+    PROBEABLE_LEVELS,
+    discover_thinking_levels,
+    probe_thinking_effort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +277,10 @@ def _build_response(
         "supports_tools": bool(getattr(model, "supports_tools", False)),
         "has_api_key": bool(getattr(model, "api_key_secret_ref", None)),
         "thinking_effort": getattr(model, "thinking_effort", None),
+        "thinking_levels_supported": getattr(model, "thinking_levels_supported", None),
+        "thinking_user_selectable": bool(
+            getattr(model, "thinking_user_selectable", True)
+        ),
         "temperature": getattr(model, "temperature", None),
         "top_p": getattr(model, "top_p", None),
         "presence_penalty": getattr(model, "presence_penalty", None),
@@ -351,6 +359,20 @@ async def _run_thinking_probe(
     return {"status": result.status, "detail": result.detail}
 
 
+async def _discover_levels_for_row(model_like) -> list[str] | None:
+    """Register-time / remediating discover. Failure is NULL, never 422."""
+    result = await discover_thinking_levels(
+        model_like, probe_fn=probe_thinking_effort
+    )
+    return result.levels
+
+
+def _thinking_probe_from_discover(levels: list[str] | None) -> dict | None:
+    if levels is None:
+        return {"status": "unprobed", "detail": "端點未回應，支援等級未寫入"}
+    return None
+
+
 @router.post("", response_model=ModelResponse)
 async def create_model(
     request: ModelCreate,
@@ -404,6 +426,7 @@ async def create_model(
         model_type=model.model_type,
         protocol=protocol,
     )
+    model.thinking_levels_supported = await _discover_levels_for_row(model)
 
     db.add(model)
     db.commit()
@@ -913,6 +936,28 @@ def _apply_bulk_import_entries(
     return created_entries, unchanged, skipped, missing, truncated
 
 
+async def _discover_bulk_created(db: Session, created_names: list[str]) -> None:
+    """Probe newly imported llm/vlm rows in parallel. Timeouts leave NULL."""
+    if not created_names:
+        return
+    rows = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.name.in_(created_names))
+        .all()
+    )
+    if not rows:
+        return
+
+    async def _one(row: ModelRegistry) -> tuple[int, list[str] | None]:
+        return row.id, await _discover_levels_for_row(row)
+
+    pairs = await asyncio.gather(*(_one(row) for row in rows))
+    by_id = {model_id: levels for model_id, levels in pairs}
+    for row in rows:
+        row.thinking_levels_supported = by_id.get(row.id)
+    db.commit()
+
+
 def _audit_name_sample(names: list[str]) -> list[str]:
     return names[:_BULK_IMPORT_AUDIT_NAME_SAMPLE]
 
@@ -995,6 +1040,7 @@ async def import_models_from_endpoint(
         entries=entries,
     )
     db.commit()
+    await _discover_bulk_created(db, [e.name for e in created_entries])
 
     created_names = [e.name for e in created_entries]
     # Response redacts via the single visibility predicate. Audit ``detail``
@@ -2144,28 +2190,44 @@ async def update_model(
     # field must not fire an outbound call. Probe a shim built from the
     # values about to be written rather than the row itself, so a 422 leaves
     # the session clean (``get_db`` closes without rolling back).
+    pending_key = update_data.get("api_key")
+    probe_target = SimpleNamespace(
+        id=model.id,
+        name=model.name,
+        model_type=update_data.get("model_type") or model.model_type,
+        protocol=effective_protocol,
+        endpoint_url=effective_url,
+        api_version=update_data.get("api_version") or model.api_version,
+        api_key_secret_ref=(
+            encode_service_token_envelope(str(pending_key).strip())
+            if pending_key is not None and str(pending_key).strip()
+            else model.api_key_secret_ref
+        ),
+    )
     thinking_probe = None
     if (
         "thinking_effort" in update_data
         and update_data["thinking_effort"] != model.thinking_effort
     ):
-        pending_key = update_data.get("api_key")
         thinking_probe = await _run_thinking_probe(
-            probe_target=SimpleNamespace(
-                id=model.id,
-                name=model.name,
-                endpoint_url=effective_url,
-                api_version=update_data.get("api_version") or model.api_version,
-                api_key_secret_ref=(
-                    encode_service_token_envelope(str(pending_key).strip())
-                    if pending_key is not None and str(pending_key).strip()
-                    else model.api_key_secret_ref
-                ),
-            ),
+            probe_target=probe_target,
             level=update_data["thinking_effort"],
-            model_type=update_data.get("model_type") or model.model_type,
+            model_type=probe_target.model_type,
             protocol=effective_protocol,
         )
+
+    rediscover = (
+        (
+            "endpoint_url" in update_data
+            and update_data["endpoint_url"] != model.endpoint_url
+        )
+        or (
+            "api_version" in update_data
+            and (update_data["api_version"] or "v1")
+            != (model.api_version or "v1")
+        )
+        or (pending_key is not None and str(pending_key).strip() != "")
+    )
 
     # Slice 6a (doc 04 §3): api_key is write-only. When supplied non-empty,
     # re-encrypt into api_key_secret_ref; it is never assigned as a column.
@@ -2175,6 +2237,11 @@ async def update_model(
 
     for field, value in update_data.items():
         setattr(model, field, value)
+
+    if rediscover:
+        model.thinking_levels_supported = await _discover_levels_for_row(
+            probe_target
+        )
 
     db.commit()
     db.refresh(model)
@@ -2407,6 +2474,28 @@ async def test_model(
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
     return await _probe_and_persist(model, admin, db, _client_ip(request))
+
+
+@router.post("/{model_id}/probe-thinking", response_model=ModelResponse)
+async def remediating_probe_thinking(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Re-run discover_thinking_levels and persist the supported set."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    levels = await _discover_levels_for_row(model)
+    model.thinking_levels_supported = levels
+    db.commit()
+    db.refresh(model)
+    response = _build_response(model, caller=admin, db=db)
+    if levels is None:
+        response["thinking_probe"] = _thinking_probe_from_discover(levels)
+    else:
+        response["thinking_probe"] = {"status": "ok", "detail": None}
+    return response
 
 
 @router.post("/{model_id}/health-check")

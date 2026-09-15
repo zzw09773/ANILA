@@ -78,6 +78,9 @@ class Conversation(Base):
     router_selection_version = Column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # User-facing thinking picker (default|off|standard|deep). NULL = default.
+    # Shares router_selection_version as the optimistic-lock counter.
+    thinking_tier = Column(String(16), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
