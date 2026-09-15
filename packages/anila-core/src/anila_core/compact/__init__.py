@@ -17,6 +17,12 @@ from .openai_history import (
 )
 from .sliding_window import SLIDING_WINDOW_SUMMARY, sliding_window_compact
 from .session_memory import SessionMemoryConfig, SessionMemoryService
+from .strip_images import (
+    IMAGE_MAX_TOKENS,
+    IMAGE_MIN_TOKENS,
+    strip_images_messages,
+    strip_images_openai,
+)
 
 __all__ = [
     "micro_compact_messages",
@@ -36,4 +42,8 @@ __all__ = [
     "estimate_openai_tokens",
     "is_prompt_too_long",
     "sliding_window_openai",
+    "IMAGE_MAX_TOKENS",
+    "IMAGE_MIN_TOKENS",
+    "strip_images_messages",
+    "strip_images_openai",
 ]

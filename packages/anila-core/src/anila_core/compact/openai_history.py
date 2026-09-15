@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from .auto_compact import get_auto_compact_threshold, should_compact
 from .sliding_window import SLIDING_WINDOW_SUMMARY
+from .strip_images import estimate_openai_tokens_with_images, strip_images_openai
 
 HISTORY_SUMMARY_PREFIX = "[歷史摘要]"
 
@@ -22,7 +23,7 @@ Summarizer = Callable[[list[dict[str, Any]]], Awaitable[str | None]]
 class CompactResult:
     messages: list[dict[str, Any]]
     compacted: bool
-    method: str  # "none" | "summary" | "sliding_window"
+    method: str  # "none" | "strip_images" | "summary" | "sliding_window"
     tokens_before: int
     tokens_after: int
 
@@ -50,14 +51,7 @@ def flatten_openai_content(value: Any) -> str:
 
 
 def estimate_openai_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
-    total = 0
-    for msg in messages:
-        total += len(flatten_openai_content(msg.get("content")))
-        if isinstance(msg, Mapping):
-            reasoning = msg.get("reasoning") or msg.get("reasoning_content")
-            if isinstance(reasoning, str):
-                total += len(reasoning)
-    return int((total / 4) * (4 / 3))
+    return estimate_openai_tokens_with_images(messages)
 
 
 def is_prompt_too_long(status_code: int | None, body: str | None) -> bool:
@@ -187,20 +181,35 @@ async def auto_compact_openai_messages(
     keep_recent_turns: int = 4,
     force: bool = False,
 ) -> CompactResult:
-    """Summarize or truncate when the history is at the compact threshold."""
+    """Strip old images, then summarize or truncate at the compact threshold."""
     tokens_before = estimate_openai_tokens(messages)
+    keep_n = max(1, keep_recent_turns)
+    stripped, tokens_saved = strip_images_openai(messages, keep_recent_turns=keep_n)
+    tokens_stripped = estimate_openai_tokens(stripped)
+
     if not force and not should_compact(context_window, tokens_before, max_output_tokens=max_output_tokens):
         return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
 
+    if (
+        tokens_saved > 0
+        and not force
+        and not should_compact(context_window, tokens_stripped, max_output_tokens=max_output_tokens)
+    ):
+        return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
+
+    working = stripped if tokens_saved > 0 else [dict(m) for m in messages]
     threshold = get_auto_compact_threshold(context_window, max_output_tokens)
-    system, turns = _split_turns(messages)
+    system, turns = _split_turns(working)
     if len(turns) <= 1:
+        if tokens_saved > 0:
+            return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
         return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
 
-    keep_n = max(1, keep_recent_turns)
     recent = _flatten_turns(turns[-keep_n:]) if len(turns) > keep_n else _flatten_turns(turns[-1:])
     old = _flatten_turns(turns[:-keep_n] if len(turns) > keep_n else turns[:-1])
     if not old:
+        if tokens_saved > 0:
+            return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
         return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
 
     if summarizer is not None:
@@ -226,8 +235,10 @@ async def auto_compact_openai_messages(
         after = estimate_openai_tokens(compacted)
         return CompactResult(compacted, True, "sliding_window", tokens_before, after)
 
-    compacted, _ = sliding_window_openai(messages, threshold, keep_recent_turns=keep_n)
+    compacted, _ = sliding_window_openai(working, threshold, keep_recent_turns=keep_n)
     after = estimate_openai_tokens(compacted)
-    if compacted == messages or after >= tokens_before:
+    if after >= tokens_before:
+        if tokens_saved > 0:
+            return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
         return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
     return CompactResult(compacted, True, "sliding_window", tokens_before, after)

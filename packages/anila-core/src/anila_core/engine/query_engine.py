@@ -45,6 +45,7 @@ from .budget_tracker import BudgetTracker, ContinueDecision, check_token_budget
 from .handoff import RunHandoff
 from ..compact.auto_compact import get_auto_compact_threshold, rough_token_count, should_compact
 from ..compact.sliding_window import sliding_window_compact
+from ..compact.strip_images import strip_images_messages
 from .lifecycle import RunHooks, _safe_call
 
 logger = logging.getLogger(__name__)
@@ -303,12 +304,34 @@ class QueryEngine:
             max_output_tokens=self._config.max_tokens,
         ):
             return history, None
+        # Same window as sliding_window_compact's default keep_recent_turns=4.
+        keep_recent_turns = 4
+        stripped, saved = strip_images_messages(
+            history, keep_recent_turns=keep_recent_turns
+        )
+        tokens_stripped = rough_token_count(stripped)
+        if saved and not should_compact(
+            self._config.context_window,
+            tokens_stripped,
+            max_output_tokens=self._config.max_tokens,
+        ):
+            logger.info("QueryEngine auto-compact stripped ~%s image tokens", saved)
+            return stripped, "compacted"
+        working = stripped if saved else history
         budget = get_auto_compact_threshold(
             self._config.context_window,
             self._config.max_tokens,
         )
-        compacted, dropped = sliding_window_compact(history, budget)
+        compacted, dropped = sliding_window_compact(
+            working,
+            budget,
+            token_estimator=rough_token_count,
+            keep_recent_turns=keep_recent_turns,
+        )
         if not dropped:
+            if saved:
+                logger.info("QueryEngine auto-compact stripped ~%s image tokens", saved)
+                return stripped, "compacted"
             return history, None
         logger.info("QueryEngine auto-compact dropped ~%s tokens", dropped)
         return compacted, "compacted"

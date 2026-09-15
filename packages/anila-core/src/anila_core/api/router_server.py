@@ -47,6 +47,7 @@ from ..compact.openai_history import (
     format_transcript,
     is_prompt_too_long,
 )
+from ..compact.strip_images import strip_images_openai
 from ..prompts.sampling import get_sampling
 from ..providers.guards import bumped_max_tokens, is_empty_length_failure
 from . import router_prompts
@@ -2222,11 +2223,21 @@ async def _auto_compact_routing_messages(
         result.tokens_before,
         result.tokens_after,
     )
+    label = "已省略較早的圖片" if result.method == "strip_images" else "對話已自動摘要"
     return result.messages, _make_trace_step(
         "compact",
-        "對話已自動摘要",
+        label,
         f"{result.method} {result.tokens_before}→{result.tokens_after} tokens",
     )
+
+
+def _compact_retry_stage(already: int | bool) -> int:
+    """Normalize the PTL retry flag to 0 / 1 / 2 (at most two retries)."""
+    if already is True:
+        return 1
+    if already is False or already is None:
+        return 0
+    return max(0, int(already))
 
 
 async def _messages_after_prompt_too_long(
@@ -2234,10 +2245,20 @@ async def _messages_after_prompt_too_long(
     body: str,
     messages: list[dict[str, Any]],
     *,
-    already: bool,
+    already: int | bool,
 ) -> list[dict[str, Any]] | None:
-    if already or not is_prompt_too_long(status_code, body):
+    if not is_prompt_too_long(status_code, body):
         return None
+    stage = _compact_retry_stage(already)
+    # 0 = first PTL (strip only if that saves tokens); 1 = hard-cut;
+    # 2+ = give up. Two stages, two retries max.
+    if stage >= 2:
+        return None
+    if stage == 0:
+        stripped, saved = strip_images_openai(messages, keep_recent_turns=2)
+        if saved > 0:
+            logger.info("Router PTL retry after strip-images (%s tokens saved)", saved)
+            return stripped
     result = await auto_compact_openai_messages(
         messages,
         context_window=current_router_context_window(),
@@ -2939,7 +2960,7 @@ async def _call_llm_non_stream(
     forwarded_headers: dict[str, str] | None = None,
     _retry_max_tokens: int | None = None,
     _auto_continue_left: int | None = None,
-    _compact_retry: bool = False,
+    _compact_retry: int | bool = 0,
 ) -> dict[str, Any]:
     """Call main LLM through CSP without SSE and return content + metadata.
 
@@ -3055,11 +3076,12 @@ async def _call_llm_non_stream(
             result["raw"] = more.get("raw") or result["raw"]
         return result
     except httpx.HTTPStatusError as exc:
+        stage = _compact_retry_stage(_compact_retry)
         retried = await _messages_after_prompt_too_long(
             exc.response.status_code,
             exc.response.text,
             messages,
-            already=_compact_retry,
+            already=stage,
         )
         if retried is not None:
             return await _call_llm_non_stream(
@@ -3068,7 +3090,7 @@ async def _call_llm_non_stream(
                 forwarded_headers=forwarded_headers,
                 _retry_max_tokens=_retry_max_tokens,
                 _auto_continue_left=_auto_continue_left,
-                _compact_retry=True,
+                _compact_retry=stage + 1,
             )
         err = f"LLM upstream HTTP {exc.response.status_code}"
         logger.error("%s — body=%s", err, exc.response.text[:300])
@@ -3179,7 +3201,7 @@ async def _stream_llm_sse(
     forwarded_headers: dict[str, str] | None = None,
     _retry_max_tokens: int | None = None,
     _auto_continue_left: int | None = None,
-    _compact_retry: bool = False,
+    _compact_retry: int | bool = 0,
 ) -> AsyncIterator[dict[str, Any]]:
     """Open an SSE stream to the primary LLM via CSP, yielding delta events.
 
@@ -3229,11 +3251,12 @@ async def _stream_llm_sse(
             if resp.status_code >= 400:
                 body = await resp.aread()
                 detail = body.decode("utf-8", errors="replace")
+                stage = _compact_retry_stage(_compact_retry)
                 retried = await _messages_after_prompt_too_long(
                     resp.status_code,
                     detail,
                     messages,
-                    already=_compact_retry,
+                    already=stage,
                 )
                 if retried is not None:
                     async for ev in _stream_llm_sse(
@@ -3242,7 +3265,7 @@ async def _stream_llm_sse(
                         forwarded_headers=forwarded_headers,
                         _retry_max_tokens=_retry_max_tokens,
                         _auto_continue_left=_auto_continue_left,
-                        _compact_retry=True,
+                        _compact_retry=stage + 1,
                     ):
                         yield ev
                     return
