@@ -55,7 +55,89 @@ SAMPLING_DEFAULTS_MARKER = "anila_sampling_defaults"
 # ``reasoning_effort``. No remap table — see the module docstring.
 THINKING_ON_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
+# Conversation / per-turn picker values. Stored as tiers, mapped here.
+THINKING_TIERS = frozenset({"default", "off", "standard", "deep"})
+ANILA_THINKING_TIER_KEY = "anila_thinking_tier"
+_STANDARD_PREFERENCE = ("medium", "low", "high")
+_DEEP_PREFERENCE = ("max", "xhigh", "high", "medium", "low")
+
 _SKIP_MODEL_TYPES = frozenset({"agent", "embedding", "image", "asr"})
+
+
+def _normalize_thinking_tier(tier: Any) -> str | None:
+    if tier is None:
+        return None
+    value = str(tier).strip().lower()
+    if not value or value == "default":
+        return None
+    return value
+
+
+def _supported_level_set(supported: Any) -> set[str] | None:
+    if supported is None:
+        return None
+    if isinstance(supported, str):
+        return {supported.strip().lower()} if supported.strip() else set()
+    try:
+        return {str(item).strip().lower() for item in supported if str(item).strip()}
+    except TypeError:
+        return None
+
+
+def resolve_thinking_level(
+    tier: Any,
+    supported: Any,
+    model_default: Any,
+) -> tuple[str | None, bool]:
+    """Map a user picker tier onto ``(reasoning_effort or None, enable_thinking)``.
+
+    ``default`` / ``None`` is a no-op: the caller falls back to
+    ``_apply_thinking_effort``. ``model_default`` is accepted for the
+    documented signature; default-tier mapping does not use it.
+    """
+    del model_default  # default / None never remaps through this table
+    normalized = _normalize_thinking_tier(tier)
+    if normalized is None:
+        return (None, False)
+    if normalized == "off":
+        return (None, False)
+
+    levels = _supported_level_set(supported)
+    only_none = levels is not None and (not levels or levels <= {"none"})
+
+    if normalized == "standard":
+        if levels is None or only_none:
+            return (None, True)
+        for candidate in _STANDARD_PREFERENCE:
+            if candidate in levels:
+                return (candidate, True)
+        return (None, True)
+
+    if normalized == "deep":
+        if levels is None:
+            return (None, True)
+        for candidate in _DEEP_PREFERENCE:
+            if candidate in levels:
+                return (candidate, True)
+        return (None, True)
+
+    return (None, False)
+
+
+def is_thinking_locked(model: Any) -> bool:
+    return getattr(model, "thinking_user_selectable", True) is False
+
+
+def stamp_thinking_locked(meta: dict[str, Any] | None, model: Any) -> None:
+    if isinstance(meta, dict) and is_thinking_locked(model):
+        meta["thinking_locked"] = True
+
+
+def _caller_supplied_thinking(body: Mapping[str, Any]) -> bool:
+    if "reasoning_effort" in body:
+        return True
+    kwargs = body.get("chat_template_kwargs")
+    return isinstance(kwargs, dict) and "enable_thinking" in kwargs
 
 
 def _set_chat_template_thinking(body: dict[str, Any], enabled: bool) -> None:
@@ -93,16 +175,30 @@ def _apply_thinking_effort(body: dict[str, Any], model: Any) -> None:
 
 
 def apply_model_sampling_overrides(
-    request_body: Mapping[str, Any], model: Any
+    request_body: Mapping[str, Any],
+    model: Any,
+    *,
+    thinking_tier: Any = None,
 ) -> dict[str, Any]:
     """Return a shallow copy of ``request_body`` with per-model defaults.
 
     Sampling keys are filled only when absent from the caller body.
     ``thinking_effort`` adds vendor knobs; it never overwrites a caller
     ``enable_thinking`` already inside ``chat_template_kwargs``.
+
+    Thinking-tier priority:
+
+    1. Caller already sent ``reasoning_effort`` or ``enable_thinking``
+    2. Body ``anila_thinking_tier`` (always popped; never forwarded)
+    3. ``thinking_tier`` from the conversation row (non-default)
+    4. Model row ``thinking_effort`` (current ``_apply_thinking_effort``)
+
+    ``thinking_user_selectable=False`` ignores 2 and 3.
     """
     body = dict(request_body)
     marker = body.pop(SAMPLING_DEFAULTS_MARKER, None)
+    body.pop(ANILA_THINKING_TIER_KEY, None)
+    body_tier = request_body.get(ANILA_THINKING_TIER_KEY)
     soft_keys = (
         {k for k in marker if isinstance(k, str)}
         if isinstance(marker, (list, tuple))
@@ -119,6 +215,23 @@ def apply_model_sampling_overrides(
         value = getattr(model, key, None)
         if value is not None:
             body[key] = value
+
+    if _caller_supplied_thinking(body) or is_thinking_locked(model):
+        _apply_thinking_effort(body, model)
+        return body
+
+    effective = body_tier if body_tier is not None else thinking_tier
+    normalized = _normalize_thinking_tier(effective)
+    if normalized in {"off", "standard", "deep"}:
+        level, enable = resolve_thinking_level(
+            effective,
+            getattr(model, "thinking_levels_supported", None),
+            getattr(model, "thinking_effort", None),
+        )
+        _set_chat_template_thinking(body, enable)
+        if level is not None:
+            body["reasoning_effort"] = level
+        return body
 
     _apply_thinking_effort(body, model)
     return body

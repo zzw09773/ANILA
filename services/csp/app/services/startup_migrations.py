@@ -133,6 +133,35 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         postgres_ddl="ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
         generic_ddl="ALTER TABLE model_registry ADD COLUMN updated_at TIMESTAMP",
     )
+    _ensure_column(
+        bind, "model_registry", "thinking_levels_supported",
+        postgres_ddl=(
+            "ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS "
+            "thinking_levels_supported JSONB NULL"
+        ),
+        generic_ddl="ALTER TABLE model_registry ADD COLUMN thinking_levels_supported JSON",
+    )
+    _ensure_column(
+        bind, "model_registry", "thinking_user_selectable",
+        postgres_ddl=(
+            "ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS "
+            "thinking_user_selectable BOOLEAN NOT NULL DEFAULT TRUE"
+        ),
+        generic_ddl=(
+            "ALTER TABLE model_registry ADD COLUMN thinking_user_selectable "
+            "BOOLEAN NOT NULL DEFAULT 1"
+        ),
+    )
+
+    # --- conversations ---------------------------------------------------
+    _ensure_column(
+        bind, "conversations", "thinking_tier",
+        postgres_ddl=(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS "
+            "thinking_tier VARCHAR(16) NULL"
+        ),
+        generic_ddl="ALTER TABLE conversations ADD COLUMN thinking_tier VARCHAR(16)",
+    )
 
     # --- token_usage -----------------------------------------------------
     _ensure_column(

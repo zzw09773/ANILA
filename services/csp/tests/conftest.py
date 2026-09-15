@@ -73,8 +73,35 @@ def _cleanup_test_db_dir() -> None:
 atexit.register(_cleanup_test_db_dir)
 
 
+def pytest_configure(config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "thinking_discover: exercise real discover_thinking_levels (no autouse stub)",
+    )
+
+
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
     _cleanup_test_db_dir()
+
+
+@pytest.fixture(autouse=True)
+def _stub_thinking_discover_unless_marked(monkeypatch, request):
+    """Keep register/import tests from opening outbound thinking probes.
+
+    Production still calls ``discover_thinking_levels``. Tests that need
+    the real function opt in with ``@pytest.mark.thinking_discover``.
+    """
+    if request.node.get_closest_marker("thinking_discover"):
+        return
+
+    async def _unprobed(model_like, *args, **kwargs):
+        from app.services.thinking_probe import DiscoverResult
+        return DiscoverResult(None)
+
+    monkeypatch.setattr(
+        "app.api.models.discover_thinking_levels",
+        _unprobed,
+    )
 
 
 TEST_DB_URL = "sqlite://"

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -157,6 +157,7 @@ class ConversationOut(ApiResponseModel):
     router_model_id: Optional[int] = None
     router_model_name: Optional[str] = None
     router_selection_version: int = 0
+    thinking_tier: Optional[str] = None
     classified: bool
     classified_at: Optional[datetime]
     # P3: TRUE when ``classified`` was set by the platform's memory
@@ -362,6 +363,7 @@ def _enrich_out(
     data["router_model_id"] = getattr(conv, "router_model_id", None)
     data["router_model_name"] = getattr(model, "name", None) if model is not None else None
     data["router_selection_version"] = int(getattr(conv, "router_selection_version", 0) or 0)
+    data["thinking_tier"] = getattr(conv, "thinking_tier", None)
     return data
 
 
@@ -547,6 +549,44 @@ def set_conversation_router_model(
     if result.rowcount != 1:
         db.rollback()
         raise HTTPException(status_code=409, detail="模型選擇版本衝突，請重新整理")
+    db.commit()
+    conv = db.get(Conversation, conv_id)
+    return _conversation_out(db, current_user, conv)
+
+
+class ConversationThinkingIn(BaseModel):
+    thinking_tier: Literal["default", "off", "standard", "deep"]
+    expected_version: int
+
+
+@router.put("/{conv_id}/thinking", response_model=ConversationOut)
+def set_conversation_thinking(
+    conv_id: int,
+    body: ConversationThinkingIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="對話不存在")
+    result = db.execute(
+        update(Conversation)
+        .where(
+            Conversation.id == conv_id,
+            Conversation.user_id == current_user.id,
+            Conversation.router_selection_version == body.expected_version,
+        )
+        .values(
+            thinking_tier=body.thinking_tier,
+            router_selection_version=body.expected_version + 1,
+        )
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        current = db.get(Conversation, conv_id)
+        if current is None or current.user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="對話不存在")
+        raise HTTPException(status_code=409, detail="思考檔位版本衝突，請重新整理")
     db.commit()
     conv = db.get(Conversation, conv_id)
     return _conversation_out(db, current_user, conv)

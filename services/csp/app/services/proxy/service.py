@@ -21,7 +21,11 @@ from anila_core.security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 from app.models.model_registry import ModelRegistry
 from app.models.platform_setting import get_setting
 from app.services.agent_reply_signal import attach_agent_reply_observation
-from app.services.proxy.sampling import apply_model_sampling_overrides
+from app.services.proxy.sampling import (
+    apply_model_sampling_overrides,
+    is_thinking_locked,
+    stamp_thinking_locked,
+)
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
     _apply_gateway_auth,
@@ -517,6 +521,44 @@ async def _proxy_triton_embedding(
     )
 
 
+def _conversation_thinking_tier(
+    conversation_id: Optional[str],
+    *,
+    caller_user_id: int | None,
+) -> str | None:
+    """Load ``conversations.thinking_tier`` for the already-parsed header id.
+
+    Only the conversation owner's row is used (``conv.user_id ==
+    caller_user_id``). A missing caller id, missing row, or owner mismatch
+    returns None so a leaked / spoofed ``X-ANILA-Conversation-Id`` cannot
+    apply another user's picker setting. ``proxy.py`` already 404s foreign
+    ids for non-admin callers; this second check still runs because
+    admin-tier may pass that gate.
+
+    Short-lived ``SessionLocal`` so this module does not hold the request
+    session across outbound HTTP. Missing / non-numeric ids return None.
+    """
+    if conversation_id is None or caller_user_id is None:
+        return None
+    raw = str(conversation_id).strip()
+    if not raw.isdigit():
+        return None
+    from app.database import SessionLocal
+    from app.models.conversation import Conversation
+
+    db = SessionLocal()
+    try:
+        row = db.get(Conversation, int(raw))
+        if row is None or row.user_id != caller_user_id:
+            return None
+        return getattr(row, "thinking_tier", None)
+    except Exception:
+        logger.exception("failed to load conversation thinking_tier")
+        return None
+    finally:
+        db.close()
+
+
 def build_default_anila_meta(
     source_name: str,
     *,
@@ -524,6 +566,7 @@ def build_default_anila_meta(
     latency_ms: int | None = None,
     classified: bool = False,
     usage: dict | None = None,
+    thinking_locked: bool = False,
 ) -> dict:
     """Build an anila_meta skeleton used when the downstream omits one.
 
@@ -533,7 +576,7 @@ def build_default_anila_meta(
     ``anila.meta`` are authoritative; this default only fills the baseline
     when nothing is emitted.
     """
-    return {
+    meta = {
         "trace_id": f"trace-{int(time.time() * 1000)}",
         "trace": [
             {
@@ -566,6 +609,9 @@ def build_default_anila_meta(
         # (None) when unknown; the client only renders when present.
         "usage": usage,
     }
+    if thinking_locked:
+        meta["thinking_locked"] = True
+    return meta
 
 
 async def _proxy_request_impl(
@@ -615,7 +661,13 @@ async def _proxy_request_impl(
     timeout = _get_timeout(model.model_type, tuning)
     invocation_id = invocation_id or uuid.uuid4().hex
     model_name_snapshot = model_name_snapshot or getattr(model, "name", None)
-    request_body = apply_model_sampling_overrides(request_body, model)
+    request_body = apply_model_sampling_overrides(
+        request_body,
+        model,
+        thinking_tier=_conversation_thinking_tier(
+            conversation_id, caller_user_id=user_id
+        ),
+    )
     # ``usage_source`` comes from the X-ANILA-Request-Source header: anila-studio
     # sends "studio" so the usage dashboard can split 簡報製作 from chat.
     request_type = (
@@ -804,11 +856,14 @@ async def _proxy_request_impl(
                     detail=_proxy_detail(model.name, endpoint_display),
                     latency_ms=duration_ms,
                     classified=requires_encryption,
+                    thinking_locked=is_thinking_locked(model),
                 )
-            elif requires_encryption and isinstance(existing_meta, dict):
-                # One-way latch: upgrade to classified when the resolved model
-                # requires encryption, even if the downstream omitted the flag.
-                existing_meta["classified"] = True
+            elif isinstance(existing_meta, dict):
+                if requires_encryption:
+                    # One-way latch: upgrade to classified when the resolved model
+                    # requires encryption, even if the downstream omitted the flag.
+                    existing_meta["classified"] = True
+                stamp_thinking_locked(existing_meta, model)
 
             token_source = "reported" if usage else "estimated"
             # Enqueue usage record (non-blocking).
@@ -1096,7 +1151,13 @@ async def _proxy_stream_impl(
                 continue
             headers[key] = value
     if model is not None:
-        request_body = apply_model_sampling_overrides(request_body, model)
+        request_body = apply_model_sampling_overrides(
+            request_body,
+            model,
+            thinking_tier=_conversation_thinking_tier(
+                conversation_id, caller_user_id=user_id
+            ),
+        )
     # Force stream_options so the downstream sends usage in last chunk
     body = {**request_body, "stream": True,
             "stream_options": {"include_usage": True}}
@@ -1126,21 +1187,28 @@ async def _proxy_stream_impl(
                                         ))
                 def _emit(block: str, event_name: str | None, data: str | None) -> str:
                     """Render a block, upgrading anila.meta.classified if required."""
-                    if (
-                        event_name == "anila.meta"
-                        and data
-                        and requires_encryption
-                    ):
+                    if event_name == "anila.meta" and data:
                         try:
                             parsed = json.loads(data)
-                            if isinstance(parsed, dict) and not parsed.get("classified"):
-                                parsed["classified"] = True
-                                return (
-                                    "event: anila.meta\n"
-                                    + "data: "
-                                    + json.dumps(parsed, ensure_ascii=False)
-                                    + "\n\n"
-                                )
+                            if isinstance(parsed, dict):
+                                changed = False
+                                if requires_encryption and not parsed.get("classified"):
+                                    parsed["classified"] = True
+                                    changed = True
+                                if (
+                                    model is not None
+                                    and is_thinking_locked(model)
+                                    and not parsed.get("thinking_locked")
+                                ):
+                                    parsed["thinking_locked"] = True
+                                    changed = True
+                                if changed:
+                                    return (
+                                        "event: anila.meta\n"
+                                        + "data: "
+                                        + json.dumps(parsed, ensure_ascii=False)
+                                        + "\n\n"
+                                    )
                         except (json.JSONDecodeError, TypeError):
                             pass
                     return block + "\n\n"
@@ -1276,6 +1344,7 @@ async def _proxy_stream_impl(
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
             },
+            thinking_locked=is_thinking_locked(model) if model is not None else False,
         )
         if target_agent_id is not None:
             attach_agent_reply_observation(

@@ -1,7 +1,12 @@
 from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.types import JSON
 from app.database import Base
+
+# Postgres → JSONB; SQLite create_all (pytest) → plain JSON.
+_JSON_LIST = JSON().with_variant(JSONB(), "postgresql")
 
 
 class ModelRegistry(Base):
@@ -68,6 +73,13 @@ class ModelRegistry(Base):
     # Per-model thinking / sampling (r1_0038). NULL = upstream / platform default.
     # thinking_effort: off | low | medium | high | xhigh | max | default
     thinking_effort = Column(String(20), nullable=True)
+    # Probed vendor levels this endpoint accepts, e.g. ["none","low","medium","xhigh"].
+    # NULL = not probed (register-time discover failed or never ran).
+    thinking_levels_supported = Column(_JSON_LIST, nullable=True)
+    # Admin lock: when False, conversation / per-turn tiers are ignored.
+    thinking_user_selectable = Column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
     temperature = Column(Float, nullable=True)
     top_p = Column(Float, nullable=True)
     presence_penalty = Column(Float, nullable=True)
