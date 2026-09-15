@@ -216,7 +216,7 @@ class TestOpenaiHistoryCompact:
             {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("A" * 80)}},
         ]}]
         huge = [{"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("B" * 80_000)}},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("B" * 8_200)}},
         ]}]
         tiny_tokens = estimate_openai_tokens(tiny)
         huge_tokens = estimate_openai_tokens(huge)
@@ -267,10 +267,45 @@ class TestOpenaiHistoryCompact:
         assert result.method == "strip_images"
         assert called is False
         assert any("圖片已省略" in str(m.get("content")) for m in result.messages)
-        last_user = next(m for m in reversed(result.messages) if m.get("role") == "user")
+        users = [m for m in result.messages if m.get("role") == "user"]
+        # keep_recent_turns=2: u2 (second-newest) and u3 keep images; u0/u1 stripped.
+        assert "圖片已省略" in str(users[0].get("content"))
         assert any(
             isinstance(p, dict) and p.get("type") == "image_url"
-            for p in last_user["content"]
+            for p in users[-2]["content"]
+        )
+        assert any(
+            isinstance(p, dict) and p.get("type") == "image_url"
+            for p in users[-1]["content"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_auto_compact_keep_recent_turns_one_strips_second_newest(self) -> None:
+        big = "E" * 6000
+        messages = [{"role": "system", "content": "sys"}]
+        for i in range(4):
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"u{i} shot"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{big}"}},
+                ],
+            })
+            messages.append({"role": "assistant", "content": f"a{i}"})
+
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=5_000,
+            max_output_tokens=256,
+            summarizer=None,
+            keep_recent_turns=1,
+        )
+        assert result.method == "strip_images"
+        users = [m for m in result.messages if m.get("role") == "user"]
+        assert "圖片已省略" in str(users[-2].get("content"))
+        assert any(
+            isinstance(p, dict) and p.get("type") == "image_url"
+            for p in users[-1]["content"]
         )
 
     @pytest.mark.asyncio

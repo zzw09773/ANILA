@@ -2255,7 +2255,7 @@ async def _messages_after_prompt_too_long(
     if stage >= 2:
         return None
     if stage == 0:
-        stripped, saved = strip_images_openai(messages, keep_recent_turns=1)
+        stripped, saved = strip_images_openai(messages, keep_recent_turns=2)
         if saved > 0:
             logger.info("Router PTL retry after strip-images (%s tokens saved)", saved)
             return stripped

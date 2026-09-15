@@ -183,7 +183,8 @@ async def auto_compact_openai_messages(
 ) -> CompactResult:
     """Strip old images, then summarize or truncate at the compact threshold."""
     tokens_before = estimate_openai_tokens(messages)
-    stripped, tokens_saved = strip_images_openai(messages, keep_recent_turns=1)
+    keep_n = max(1, keep_recent_turns)
+    stripped, tokens_saved = strip_images_openai(messages, keep_recent_turns=keep_n)
     tokens_stripped = estimate_openai_tokens(stripped)
 
     if not force and not should_compact(context_window, tokens_before, max_output_tokens=max_output_tokens):
@@ -204,7 +205,6 @@ async def auto_compact_openai_messages(
             return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
         return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
 
-    keep_n = max(1, keep_recent_turns)
     recent = _flatten_turns(turns[-keep_n:]) if len(turns) > keep_n else _flatten_turns(turns[-1:])
     old = _flatten_turns(turns[:-keep_n] if len(turns) > keep_n else turns[:-1])
     if not old:

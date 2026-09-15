@@ -304,7 +304,11 @@ class QueryEngine:
             max_output_tokens=self._config.max_tokens,
         ):
             return history, None
-        stripped, saved = strip_images_messages(history, keep_recent_turns=1)
+        # Same window as sliding_window_compact's default keep_recent_turns=4.
+        keep_recent_turns = 4
+        stripped, saved = strip_images_messages(
+            history, keep_recent_turns=keep_recent_turns
+        )
         tokens_stripped = rough_token_count(stripped)
         if saved and not should_compact(
             self._config.context_window,
@@ -319,7 +323,10 @@ class QueryEngine:
             self._config.max_tokens,
         )
         compacted, dropped = sliding_window_compact(
-            working, budget, token_estimator=rough_token_count
+            working,
+            budget,
+            token_estimator=rough_token_count,
+            keep_recent_turns=keep_recent_turns,
         )
         if not dropped:
             if saved:

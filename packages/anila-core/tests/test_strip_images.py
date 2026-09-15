@@ -8,7 +8,7 @@ from anila_core.compact.strip_images import (
     strip_images_messages,
     strip_images_openai,
 )
-from anila_core.models.message import UserMessage
+from anila_core.models.message import AssistantMessage, UserMessage
 
 
 def _png_data_url(payload: str) -> str:
@@ -142,3 +142,76 @@ def test_strip_images_messages_tool_result_and_image_block() -> None:
     tool = next(b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result")
     assert "data:image" not in str(tool.get("content"))
     assert "圖片已省略" in str(tool.get("content"))
+
+
+def _four_image_turns_openai(payload: str = "P" * 3000) -> list[dict]:
+    out: list[dict] = []
+    for i in range(4):
+        out.append(_image_user(f"u{i}", payload))
+        out.append({"role": "assistant", "content": f"a{i}"})
+    return out
+
+
+def _four_image_turns_messages(payload: str = "P" * 3000) -> list:
+    out = []
+    for i in range(4):
+        out.append(
+            UserMessage(
+                content=[
+                    {"type": "text", "text": f"u{i}"},
+                    {"type": "image_url", "image_url": {"url": _png_data_url(payload)}},
+                ]
+            )
+        )
+        out.append(AssistantMessage(content=f"a{i}", tool_calls=[]))
+    return out
+
+
+def _user_has_image_url(content) -> bool:
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(p, dict) and p.get("type") == "image_url" for p in content)
+
+
+def _user_has_placeholder(content) -> bool:
+    return "圖片已省略" in str(content)
+
+
+def test_keep_recent_turns_two_keeps_second_newest_openai() -> None:
+    messages = _four_image_turns_openai()
+    out, saved = strip_images_openai(messages, keep_recent_turns=2)
+    assert saved > 0
+    users = [m for m in out if m.get("role") == "user"]
+    assert _user_has_placeholder(users[0]["content"])
+    assert _user_has_placeholder(users[1]["content"])
+    assert _user_has_image_url(users[2]["content"])
+    assert _user_has_image_url(users[3]["content"])
+
+
+def test_keep_recent_turns_one_keeps_only_last_openai() -> None:
+    messages = _four_image_turns_openai()
+    out, saved = strip_images_openai(messages, keep_recent_turns=1)
+    assert saved > 0
+    users = [m for m in out if m.get("role") == "user"]
+    assert all(_user_has_placeholder(u["content"]) for u in users[:-1])
+    assert _user_has_image_url(users[-1]["content"])
+
+
+def test_keep_recent_turns_two_keeps_second_newest_messages() -> None:
+    messages = _four_image_turns_messages()
+    out, saved = strip_images_messages(messages, keep_recent_turns=2)
+    assert saved > 0
+    users = [m for m in out if isinstance(m, UserMessage)]
+    assert _user_has_placeholder(users[0].content)
+    assert _user_has_placeholder(users[1].content)
+    assert _user_has_image_url(users[2].content)
+    assert _user_has_image_url(users[3].content)
+
+
+def test_keep_recent_turns_one_keeps_only_last_messages() -> None:
+    messages = _four_image_turns_messages()
+    out, saved = strip_images_messages(messages, keep_recent_turns=1)
+    assert saved > 0
+    users = [m for m in out if isinstance(m, UserMessage)]
+    assert all(_user_has_placeholder(u.content) for u in users[:-1])
+    assert _user_has_image_url(users[-1].content)

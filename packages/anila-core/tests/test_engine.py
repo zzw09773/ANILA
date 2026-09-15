@@ -182,9 +182,10 @@ class TestQueryEngineBasicTurn:
         engine, provider = make_engine([ScriptedResponse(text="ok")])
         engine._config.context_window = 4_000
         engine._config.max_tokens = 200
-        big = "H" * 5000
+        # Six min-clamped images: 6×800 over threshold, keep-4 leaves 4×800 under.
+        big = "H" * 2800
         history: list = []
-        for i in range(5):
+        for i in range(6):
             history.append(
                 UserMessage(
                     content=[
@@ -216,6 +217,44 @@ class TestQueryEngineBasicTurn:
         assert any(
             isinstance(b, dict) and b.get("type") == "image_url"
             for b in last_user.content
+        )
+        # Default keep_recent_turns=4: second-newest user (u4 of u0–u5) keeps its image.
+        users = [m for m in first if isinstance(m, UserMessage)]
+        assert any(
+            isinstance(b, dict) and b.get("type") == "image_url"
+            for b in users[-2].content
+        )
+
+    @pytest.mark.asyncio
+    async def test_pre_process_keep_recent_turns_matches_sliding_window(self) -> None:
+        engine, _provider = make_engine([ScriptedResponse(text="ok")])
+        engine._config.context_window = 4_000
+        engine._config.max_tokens = 200
+        big = "K" * 2800
+        history: list = []
+        for i in range(6):
+            history.append(
+                UserMessage(
+                    content=[
+                        {"type": "text", "text": f"u{i} look"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{big}"},
+                        },
+                    ]
+                )
+            )
+            history.append(AssistantMessage(content=f"a{i}", tool_calls=[]))
+        compacted, marker = await engine._pre_process(history)
+        assert marker == "compacted"
+        users = [m for m in compacted if isinstance(m, UserMessage)]
+        assert "圖片已省略" in str(users[0].content)
+        assert "圖片已省略" in str(users[1].content)
+        assert any(
+            isinstance(b, dict) and b.get("type") == "image_url" for b in users[2].content
+        )
+        assert any(
+            isinstance(b, dict) and b.get("type") == "image_url" for b in users[-1].content
         )
 
     @pytest.mark.asyncio

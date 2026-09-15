@@ -182,11 +182,16 @@ def test_ptl_first_retry_strips_images_only(monkeypatch):
     assert len(client.posts) == 2
     second = client.posts[1]["messages"]
     blob = _payload_blob(second)
-    assert "data:image" not in blob
-    assert "圖片已省略" in blob
+    # PTL strip follows keep_recent_turns=2: oldest images gone, second-newest kept.
+    u0 = next(m for m in second if "u0" in str(m.get("content")))
+    u5 = next(m for m in second if "u5" in str(m.get("content")))
+    assert "圖片已省略" in str(u0.get("content"))
+    assert "data:image" not in str(u0.get("content"))
+    assert "data:image" in str(u5.get("content"))
     assert not any(SLIDING_WINDOW_SUMMARY in str(m.get("content")) for m in second)
     assert any("u0" in str(m.get("content")) for m in second)
     assert second[-1]["content"] == "最新一問"
+    assert "圖片已省略" in blob
 
 
 def test_ptl_second_retry_hard_trims_after_strip(monkeypatch):
@@ -197,7 +202,10 @@ def test_ptl_second_retry_hard_trims_after_strip(monkeypatch):
     assert result["content"] == "硬截了"
     assert result.get("error") is None
     assert len(client.posts) == 3
-    assert "data:image" not in _payload_blob(client.posts[1]["messages"])
+    first_retry = client.posts[1]["messages"]
+    u0 = next(m for m in first_retry if "u0" in str(m.get("content")))
+    assert "data:image" not in str(u0.get("content"))
+    assert "圖片已省略" in str(u0.get("content"))
     third = client.posts[2]["messages"]
     assert any(SLIDING_WINDOW_SUMMARY in str(m.get("content")) for m in third)
     assert third[-1]["content"] == "最新一問"
