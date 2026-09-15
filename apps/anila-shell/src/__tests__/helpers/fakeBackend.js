@@ -266,6 +266,27 @@ function streamResponse(stream, { sessionId = null } = {}) {
   };
 }
 
+export const DEFAULT_ROUTER_MODELS = [
+  {
+    id: 3,
+    name: "glm-example",
+    display_name: "GLM",
+    health_status: "healthy",
+    thinking_effort: "max",
+    thinking_levels_supported: ["none", "low", "medium", "high", "xhigh", "max"],
+    thinking_user_selectable: true,
+  },
+  {
+    id: 4,
+    name: "qwen-example",
+    display_name: "Qwen",
+    health_status: "healthy",
+    thinking_effort: "medium",
+    thinking_levels_supported: ["none", "low", "medium", "xhigh"],
+    thinking_user_selectable: true,
+  },
+];
+
 export const DEFAULT_AGENTS = [
   {
     id: "demo-agent",
@@ -284,6 +305,8 @@ export const DEFAULT_AGENTS = [
  * @param {object} [options]
  * @param {Array}  [options.agents]        `/v1/agents` 回的 agent 列
  * @param {Array}  [options.conversations] 初始對話列(server row 形狀)
+ * @param {Array}  [options.routerModels]  `/api/router-models` 回的模型列
+ * @param {number} [options.defaultRouterModelId]
  * @param {object} [options.user]          `/api/auth/me` 回的使用者
  * @param {boolean} [options.enforceCsrf]  是否強制 double-submit CSRF(預設 true)
  */
@@ -291,6 +314,8 @@ export function createFakeBackend(options = {}) {
   const {
     agents = DEFAULT_AGENTS,
     conversations: initialConversations = [],
+    routerModels: initialRouterModels = DEFAULT_ROUTER_MODELS,
+    defaultRouterModelId = 3,
     user = { id: 1, username: "tester", display_name: "測試使用者" },
     // 預設就強制 —— 「假後端比真後端寬鬆」正是讓 transport 層的壞掉
     // 全程隱形的原因。要關掉必須在測試裡明說,而且要寫清楚為什麼。
@@ -325,6 +350,7 @@ export function createFakeBackend(options = {}) {
   const convs = new Map();
   const msgsByConv = new Map();
   const activeLeafByConv = new Map();
+  const routerModels = initialRouterModels.map((row) => ({ ...row }));
   let nextConvId = 100;
   let nextMsgId = 1000;
   let nextAttSeq = 0;
@@ -496,11 +522,8 @@ export function createFakeBackend(options = {}) {
     if (path === "/v1/agents") return jsonResponse({ data: agents });
     if (path === "/api/router-models" && method === "GET") {
       return jsonResponse({
-        models: [
-          { id: 3, name: "glm-example", display_name: "GLM", health_status: "healthy" },
-          { id: 4, name: "qwen-example", display_name: "Qwen", health_status: "healthy" },
-        ],
-        default_model_id: 3,
+        models: routerModels,
+        default_model_id: defaultRouterModelId,
       });
     }
 
@@ -574,6 +597,8 @@ export function createFakeBackend(options = {}) {
         router_model_id: requested,
         router_model_name: requested === 4 ? "qwen-example" : "glm-example",
         router_selection_version: 1,
+        // 建立端點沒有 thinking_tier；即使客戶端誤帶也忽略。
+        thinking_tier: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -594,6 +619,22 @@ export function createFakeBackend(options = {}) {
       }
       const nextId = body?.router_model_id;
       const updated = { ...row, router_model_id: nextId, router_model_name: nextId === 4 ? "qwen-example" : "glm-example", router_selection_version: expected + 1 };
+      convs.set(convId, updated);
+      return jsonResponse(updated);
+    }
+    if (path.includes("/thinking") && method === "PUT") {
+      const convId = Number(path.split("/")[3]);
+      const row = convs.get(convId);
+      if (!row) return errorResponse(404, "找不到對話");
+      const expected = Number(body?.expected_version ?? 0);
+      if (Number(row.router_selection_version || 0) !== expected) {
+        return errorResponse(409, "思考程度版本衝突，請重新整理");
+      }
+      const updated = {
+        ...row,
+        thinking_tier: body?.thinking_tier ?? null,
+        router_selection_version: expected + 1,
+      };
       convs.set(convId, updated);
       return jsonResponse(updated);
     }

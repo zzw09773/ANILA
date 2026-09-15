@@ -52,6 +52,7 @@ import {
   listConversations as apiListConversations,
   listRouterModels as apiListRouterModels,
   setConversationRouterModel as apiSetConversationRouterModel,
+  setConversationThinking as apiSetConversationThinking,
   createConversation as apiCreateConversation,
   adoptConversation as apiAdoptConversation,
   getConversation as apiGetConversation,
@@ -107,6 +108,13 @@ import {
 } from "./runtime/reservedTurn.js";
 
 import RouterModelPicker from "./components/RouterModelPicker.jsx";
+import ThinkingPicker from "./components/ThinkingPicker.jsx";
+import {
+  conversationSelectionFromServer,
+  normalizeThinkingTier,
+  persistThinkingTierPreference,
+  readStoredThinkingTier,
+} from "./runtime/thinkingTier.js";
 import {
   AgentSelector,
   Composer,
@@ -404,6 +412,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [selectedRouterModelId, setSelectedRouterModelId] = useState(null);
   const [routerModelError, setRouterModelError] = useState("");
   const [routerPickerLocked, setRouterPickerLocked] = useState(false);
+  const [thinkingTier, setThinkingTier] = useState(() => readStoredThinkingTier());
+  const [thinkingError, setThinkingError] = useState("");
+  const [deepThinkNext, setDeepThinkNext] = useState(false);
+  const deepThinkNextRef = useRef(false);
   const [conversations, setConversations] = useState([]);
   const [selectedConvId, setSelectedConvId] = useState(null);
 
@@ -430,19 +442,27 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }, [isAuthenticated, authRequest]);
 
   useEffect(() => {
-    if (!selectedConvId) return;
+    if (!selectedConvId) {
+      setThinkingTier(readStoredThinkingTier());
+      return;
+    }
     const conv = conversations.find((c) => c.id === selectedConvId);
     if (!conv) return;
     if (typeof conv.routerModelId === "number") {
       setSelectedRouterModelId(conv.routerModelId);
       setRouterModelError("");
     }
+    setThinkingTier(normalizeThinkingTier(conv.thinkingTier));
   }, [selectedConvId, conversations]);
 
   const selectedRouterModelName = useMemo(() => {
     const row = routerModels.find((m) => m.id === selectedRouterModelId);
     return row?.name || null;
   }, [routerModels, selectedRouterModelId]);
+  const selectedThinkingModel = useMemo(
+    () => routerModels.find((m) => m.id === selectedRouterModelId) || null,
+    [routerModels, selectedRouterModelId],
+  );
   const [loadingAgents, setLoadingAgents] = useState(false);
   const [runtimeError, setRuntimeError] = useState("");
   // 上次抓 /v1/agents 的時間戳，給 focus-refresh 用做 15s 節流，
@@ -1031,6 +1051,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       routerModelId: serverRow.router_model_id ?? null,
       routerModelName: serverRow.router_model_name ?? null,
       routerSelectionVersion: serverRow.router_selection_version ?? 0,
+      thinkingTier: normalizeThinkingTier(serverRow.thinking_tier),
     };
   }
 
@@ -1061,6 +1082,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       rating: msg.rating || null,
       ratingScore: typeof msg.rating_score === "number" ? msg.rating_score : null,
       reasoning: meta.reasoning || null,
+      thinkingLocked: meta.thinking_locked === true,
       // OW-3: action:NAME attribution (second channel alongside metadata.action).
       agentName: msg.agent_name || null,
       // OW-3 provenance (metadata.action) — quiet action-name attribution.
@@ -1236,6 +1258,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           });
           convId = serverRow.id;
           locallyCreatedConvIdsRef.current.add(convId);
+          const desiredTier = normalizeThinkingTier(thinkingTier);
+          if (desiredTier !== "default") {
+            try {
+              serverRow = await apiSetConversationThinking(authRequest, convId, {
+                thinkingTier: desiredTier,
+                expectedVersion: serverRow.router_selection_version ?? 0,
+              });
+            } catch (err) {
+              setThinkingError(err?.message || "無法保存思考程度");
+            }
+          }
         } catch (error) {
           convId = makeId("cv-local");
           setRuntimeError(error.message || "對話儲存失敗（離線模式）");
@@ -1257,6 +1290,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             routerModelId: serverRow?.router_model_id ?? selectedRouterModelId ?? null,
             routerModelName: serverRow?.router_model_name ?? selectedRouterModelName ?? null,
             routerSelectionVersion: serverRow?.router_selection_version ?? 0,
+            thinkingTier: normalizeThinkingTier(serverRow?.thinking_tier ?? thinkingTier),
           },
           ...prev,
         ]);
@@ -1729,6 +1763,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       usage: meta.usage || null,
       classified: meta.classified,
       reasoning: meta.reasoning || null,
+      thinkingLocked: meta.thinking_locked === true,
       // Display-only, but it was showing the wrong agent name on every
       // routed answer: BOTH ends of handoff_chain read "anila-router" on the
       // router path, so `.at(-1)` never named the agent that answered.
@@ -1766,6 +1801,53 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         );
       });
     }
+  }
+
+  function applySelectionFromServer(convId, serverRow) {
+    const patch = conversationSelectionFromServer(serverRow);
+    setConversations((prev) => prev.map((row) => (
+      row.id === convId ? { ...row, ...patch } : row
+    )));
+    if (selectedConvId === convId) {
+      if (typeof patch.routerModelId === "number") {
+        setSelectedRouterModelId(patch.routerModelId);
+      }
+      setThinkingTier(patch.thinkingTier);
+    }
+  }
+
+  async function persistThinkingTier(nextTier) {
+    const previous = thinkingTier;
+    const normalized = normalizeThinkingTier(nextTier);
+    setThinkingTier(normalized);
+    setThinkingError("");
+    const convId = selectedConvId;
+    const conv = conversations.find((c) => c.id === convId);
+    if (typeof convId !== "number" || !conv) {
+      persistThinkingTierPreference(normalized);
+      return;
+    }
+    try {
+      const saved = await apiSetConversationThinking(authRequest, convId, {
+        thinkingTier: normalized,
+        expectedVersion: conv.routerSelectionVersion || 0,
+      });
+      applySelectionFromServer(convId, saved);
+      persistThinkingTierPreference(normalizeThinkingTier(saved.thinking_tier));
+    } catch (err) {
+      setThinkingTier(previous);
+      setThinkingError(err?.message || "無法保存思考程度");
+      try {
+        const fresh = await apiGetConversation(authRequest, convId);
+        applySelectionFromServer(convId, fresh);
+      } catch (_) { /* keep previous picker */ }
+    }
+  }
+
+  function setDeepThinkNextFlag(value) {
+    const next = Boolean(value);
+    deepThinkNextRef.current = next;
+    setDeepThinkNext(next);
   }
 
   // ---- send single ----
@@ -1999,9 +2081,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         messagesRef.current[convId] || [],
         userMsg.id,
       );
+      const oneShotDeep = deepThinkNextRef.current;
+      if (oneShotDeep) {
+        deepThinkNextRef.current = false;
+        setDeepThinkNext(false);
+      }
       const payload = {
         model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
+        ...(oneShotDeep && effectiveTarget === ROUTER_AGENT.id ? { anila_thinking_tier: "deep" } : {}),
         messages: buildMessageHistory(priorForHistory, text, attachments),
       };
 
@@ -3050,6 +3138,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
             </div>
             {selectedAgentId === ROUTER_AGENT.id ? (
+              <>
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>模型</span>
               <RouterModelPicker
@@ -3072,9 +3161,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                       });
                       setConversations((prev) => prev.map((row) => row.id === convId ? {
                         ...row,
-                        routerModelId: saved.router_model_id,
-                        routerModelName: saved.router_model_name,
-                        routerSelectionVersion: saved.router_selection_version,
+                        ...conversationSelectionFromServer(saved),
                       } : row));
                       if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
                     } catch (err) {
@@ -3082,21 +3169,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                       setRouterModelError(err?.message || "無法保存對話模型");
                       try {
                         const fresh = await apiGetConversation(authRequest, convId);
-                        setConversations((prev) => prev.map((row) => row.id === convId ? {
-                          ...row,
-                          routerModelId: fresh.router_model_id,
-                          routerModelName: fresh.router_model_name,
-                          routerSelectionVersion: fresh.router_selection_version,
-                        } : row));
-                        if (selectedConvId === convId && typeof fresh.router_model_id === "number") {
-                          setSelectedRouterModelId(fresh.router_model_id);
-                        }
+                        applySelectionFromServer(convId, fresh);
                       } catch (_) { /* keep previous picker */ }
                     }
                   }
                 }}
               />
               </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>思考</span>
+              <ThinkingPicker
+                value={thinkingTier}
+                model={selectedThinkingModel}
+                error={thinkingError}
+                disabled={routerPickerLocked}
+                onChange={persistThinkingTier}
+              />
+              </div>
+              </>
             ) : null}
             </>
           ) : (
@@ -3325,6 +3415,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
             </div>
             {selectedAgentId === ROUTER_AGENT.id ? (
+              <>
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>模型</span>
               <RouterModelPicker
@@ -3347,9 +3438,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                       });
                       setConversations((prev) => prev.map((row) => row.id === convId ? {
                         ...row,
-                        routerModelId: saved.router_model_id,
-                        routerModelName: saved.router_model_name,
-                        routerSelectionVersion: saved.router_selection_version,
+                        ...conversationSelectionFromServer(saved),
                       } : row));
                       if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
                     } catch (err) {
@@ -3357,21 +3446,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                       setRouterModelError(err?.message || "無法保存對話模型");
                       try {
                         const fresh = await apiGetConversation(authRequest, convId);
-                        setConversations((prev) => prev.map((row) => row.id === convId ? {
-                          ...row,
-                          routerModelId: fresh.router_model_id,
-                          routerModelName: fresh.router_model_name,
-                          routerSelectionVersion: fresh.router_selection_version,
-                        } : row));
-                        if (selectedConvId === convId && typeof fresh.router_model_id === "number") {
-                          setSelectedRouterModelId(fresh.router_model_id);
-                        }
+                        applySelectionFromServer(convId, fresh);
                       } catch (_) { /* keep previous picker */ }
                     }
                   }
                 }}
               />
               </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>思考</span>
+              <ThinkingPicker
+                value={thinkingTier}
+                model={selectedThinkingModel}
+                error={thinkingError}
+                disabled={routerPickerLocked}
+                onChange={persistThinkingTier}
+              />
+              </div>
+              </>
             ) : null}
             </>
                         {activeEncryptionRequired && (
@@ -3396,6 +3488,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                       onChangeRedactionMode={setRedactionMode}
                       conversationId={selectedConvId}
                       presetPrompts={presetPrompts}
+                      deepThinkNext={deepThinkNext}
+                      onDeepThinkNextChange={setDeepThinkNextFlag}
                       streaming={currentMsgs.some((m) => m.streaming)}
                       // 「停止產生」= 這個對話現在不要再產生了,包含還在排隊、
                       // 串流尚未開始的那幾輪。只 abort 當下註冊的那一個

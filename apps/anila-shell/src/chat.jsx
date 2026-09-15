@@ -232,11 +232,18 @@ export const StepTimeline = ({ trace, streaming, finishedAt }) => {
   );
 };
 
-export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, stageLabel, finishedAt }) => {
+export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, stageLabel, finishedAt, thinkingLocked = false }) => {
   const [open, setOpen] = useState(false);
   const hasTrace = Array.isArray(trace) && trace.length > 0;
   const hasReasoning = typeof reasoning === "string" && reasoning.length > 0;
-  if (!streaming && !hasTrace && !hasReasoning) return null;
+  if (!streaming && !hasTrace && !hasReasoning && !thinkingLocked) return null;
+  if (!streaming && !hasTrace && !hasReasoning && thinkingLocked) {
+    return (
+      <div className="anila-reasoning" style={{ marginBottom: 10, fontSize: 12, color: "var(--fg-subtle)" }}>
+        思考程度由管理員鎖定
+      </div>
+    );
+  }
 
   // 串流中：時間軸直接攤開，這就是「AI 正在做什麼」的畫面。
   if (streaming) {
@@ -256,6 +263,7 @@ export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, sta
   if (visible.length) summaryParts.push(`${visible.length} 步分析`);
   if (total) summaryParts.push(`用時 ${total}`);
   if (hasReasoning) summaryParts.push(`${reasoning.length} 字思考`);
+  if (thinkingLocked) summaryParts.push("思考程度由管理員鎖定");
   const summary = summaryParts.join(" · ") || "已完成";
 
   return (
@@ -922,6 +930,7 @@ export const MessageBubble = ({
               streaming={msg.streaming}
               stageLabel={msg.stageLabel}
               finishedAt={msg.finishedAt}
+              thinkingLocked={msg.thinkingLocked}
             />
             <div
               className="anila-msg-body"
@@ -1690,16 +1699,39 @@ export const Composer = ({
   conversationId,
   // Per-agent preset prompts(開發者在 CSP 設計):點清單把提示詞填入輸入框。
   presetPrompts = [],
+  deepThinkNext = false,
+  onDeepThinkNextChange,
 }) => {
   const toast = useToast();
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [sendMenuOpen, setSendMenuOpen] = useState(false);
+  const sendWrapRef = useRef(null);
+  const longPressTimerRef = useRef(null);
+  const longPressFiredRef = useRef(false);
   useEffect(() => {
     if (!promptsOpen) return;
     const close = () => setPromptsOpen(false);
     const t = setTimeout(() => document.addEventListener("click", close), 0);
     return () => { clearTimeout(t); document.removeEventListener("click", close); };
   }, [promptsOpen]);
+  useEffect(() => {
+    if (!sendMenuOpen) return undefined;
+    const onDoc = (event) => {
+      if (sendWrapRef.current && !sendWrapRef.current.contains(event.target)) {
+        setSendMenuOpen(false);
+      }
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") setSendMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [sendMenuOpen]);
   const draftKey = conversationId != null ? `anila-draft:${conversationId}` : null;
   const [text, setText] = useState(() => {
     if (draftKey && typeof sessionStorage !== "undefined") {
@@ -2500,6 +2532,28 @@ export const Composer = ({
           </button>
         )}
 
+        {typeof onDeepThinkNextChange === "function" && !streaming ? (
+          <button
+            type="button"
+            aria-label="這一題深入想"
+            aria-pressed={deepThinkNext}
+            title={deepThinkNext ? "下一則會用深入思考（再按一次取消）" : "下一則用深入思考，不改對話檔位"}
+            onClick={() => onDeepThinkNextChange(!deepThinkNext)}
+            style={{
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              width: 32, height: 32,
+              background: deepThinkNext ? "var(--accent-soft)" : "var(--bg-subtle)",
+              color: deepThinkNext ? "var(--accent)" : "var(--fg-subtle)",
+              border: "1px solid " + (deepThinkNext ? "var(--accent)" : "transparent"),
+              borderRadius: "var(--radius)",
+              cursor: "pointer",
+              marginLeft: 4,
+            }}
+          >
+            <IconSpark size={15} />
+          </button>
+        ) : null}
+
         {streaming ? (
           <button
             onClick={() => onStop?.()}
@@ -2516,8 +2570,34 @@ export const Composer = ({
             <IconStop size={15} />
           </button>
         ) : (
+          <span ref={sendWrapRef} style={{ position: "relative", display: "inline-flex" }}>
           <button
-            onClick={submit}
+            onClick={(event) => {
+              if (longPressFiredRef.current) {
+                event.preventDefault();
+                longPressFiredRef.current = false;
+                return;
+              }
+              submit();
+            }}
+            onContextMenu={(event) => {
+              if (typeof onDeepThinkNextChange !== "function") return;
+              event.preventDefault();
+              setSendMenuOpen(true);
+            }}
+            onPointerDown={(event) => {
+              if (typeof onDeepThinkNextChange !== "function") return;
+              if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+              longPressFiredRef.current = false;
+              window.clearTimeout(longPressTimerRef.current);
+              longPressTimerRef.current = window.setTimeout(() => {
+                longPressFiredRef.current = true;
+                setSendMenuOpen(true);
+              }, 500);
+            }}
+            onPointerUp={() => window.clearTimeout(longPressTimerRef.current)}
+            onPointerCancel={() => window.clearTimeout(longPressTimerRef.current)}
+            onPointerLeave={() => window.clearTimeout(longPressTimerRef.current)}
             aria-label="送出"
             disabled={disabled || (!text.trim() && atts.length === 0)}
             style={{
@@ -2532,6 +2612,33 @@ export const Composer = ({
           >
             <IconSend size={15} />
           </button>
+          {sendMenuOpen && typeof onDeepThinkNextChange === "function" ? (
+            <div
+              role="menu"
+              style={{
+                position: "absolute",
+                right: 0,
+                bottom: "calc(100% + 6px)",
+                zIndex: 80,
+                minWidth: 168,
+                background: "var(--bg-elev)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                boxShadow: "0 12px 32px -8px oklch(0.10 0 0 / 0.18)",
+                padding: 4,
+              }}
+            >
+              <MenuItem
+                onClick={() => {
+                  onDeepThinkNextChange(true);
+                  setSendMenuOpen(false);
+                }}
+              >
+                這一題深入想
+              </MenuItem>
+            </div>
+          ) : null}
+          </span>
         )}
       </div>
     </div>

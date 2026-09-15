@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import {
   mountOrchestrator,
-  sendText,
   waitForAnswer,
   waitForIdle,
   screen,
@@ -10,6 +9,16 @@ import {
   act,
   fireEvent,
 } from "./helpers/orchestrator.jsx";
+
+async function sendText(text) {
+  const box = screen.getByPlaceholderText(/傳訊息給 ANILA/);
+  await act(async () => {
+    fireEvent.change(box, { target: { value: text } });
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("送出"));
+  });
+}
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -22,13 +31,13 @@ afterEach(() => {
 });
 
 async function chooseRouterModel(name) {
-  const trigger = await screen.findByLabelText("對話模型");
+  const trigger = await screen.findByLabelText("此則對話使用的模型，僅自動選助手時可選");
   await waitFor(() => expect(trigger).not.toBeDisabled());
   fireEvent.click(trigger);
   const option = await screen.findAllByText(name);
   const target = option.find((el) => {
     const btn = el.closest("button");
-    return btn && btn.getAttribute("aria-label") !== "對話模型";
+    return btn && btn.getAttribute("aria-label") !== "此則對話使用的模型，僅自動選助手時可選";
   });
   fireEvent.click(target.closest("button"));
 }
@@ -37,7 +46,7 @@ describe("ChatRuntime router model selection", () => {
   it("renders ChatRuntime after login without TDZ crash", async () => {
     await mountOrchestrator();
     expect(screen.getByLabelText("送出")).toBeTruthy();
-    expect(screen.getByLabelText("對話模型")).toBeTruthy();
+    expect(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選")).toBeTruthy();
   });
 
   it("creates a conversation with the non-default picker model", async () => {
