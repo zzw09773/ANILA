@@ -82,6 +82,7 @@
           <tr>
             <th style="width: 96px">健康</th>
             <th>名稱</th>
+            <th style="width: 148px">支援等級</th>
             <th style="width: 100px">類型</th>
             <th style="width: 92px">分類上限</th>
             <th>端點</th>
@@ -126,6 +127,9 @@
                   class="cap-key think-chip"
                 >{{ thinkingEffortChip(model.thinking_effort) }}</span>
               </div>
+            </td>
+            <td>
+              <ThinkingLevelsDisplay :levels="model.thinking_levels_supported" />
             </td>
             <td><TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge></td>
             <td>
@@ -311,7 +315,7 @@
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
-            <td :colspan="(authStore.isAdmin || canSetEndpointAddress) ? 9 : 8"><TermEmpty message="尚未註冊模型 · 註冊後即可啟用 /v1/* 代理" /></td>
+            <td :colspan="tableColspan"><TermEmpty message="尚未註冊模型 · 註冊後即可啟用 /v1/* 代理" /></td>
           </tr>
         </tbody>
       </table>
@@ -498,13 +502,37 @@
             hint="原字串送上游 reasoning_effort；NONE＝enable_thinking=false。各後端支援的等級不同（院內 Qwen vLLM：low／medium／xhigh，預設 xhigh，不收 high／max；gemma 一律忽略）。儲存時會向模型探測一次，被拒絕的等級存不進去。"
           >
             <select v-model="form.thinking_effort" class="term-select">
-              <option value="none">NONE</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
-              <option value="max">max</option>
+              <option
+                v-for="opt in THINKING_EFFORT_OPTIONS"
+                :key="opt.value"
+                :value="opt.value"
+              >{{ thinkingEffortOptionLabel(opt.value, form.thinking_levels_supported) }}</option>
             </select>
+          </TermField>
+          <TermField
+            label="支援等級"
+            hint="新增、整批帶入或改端點時會自動探測。端點升級後可手動重跑。"
+          >
+            <div class="thinking-levels-row">
+              <ThinkingLevelsDisplay :levels="form.thinking_levels_supported" />
+              <TermButton
+                v-if="editingId && authStore.isAdmin"
+                variant="ghost"
+                size="xs"
+                :disabled="probingThinking"
+                :label="probingThinking ? '探測中…' : '重新探測'"
+                @click="handleProbeThinking"
+              />
+            </div>
+          </TermField>
+          <TermField
+            label="允許使用者自選思考程度"
+            hint="關閉後，ANILA 對話中的思考選單對此模型鎖定，改用上方的預設思考程度。"
+          >
+            <label class="term-check">
+              <input type="checkbox" v-model="form.thinking_user_selectable" />
+              允許使用者自選思考程度
+            </label>
           </TermField>
           <div class="form-row-2">
             <TermField label="temperature" optional hint="0–2 · 留空＝上游預設">
@@ -708,10 +736,18 @@ import { departmentOptions } from '../utils/departmentTree'
 import { extractError, getRawDetail } from '../api/errors'
 import { grantsLoadResult, canReplaceRouterGrants } from '../utils/routerGrantsLoad.js'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, PageHead, RowActions, UserSearchField } from '../components/cli'
+import ThinkingLevelsDisplay from '../components/ThinkingLevelsDisplay.vue'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'
 import { formatDate } from '../utils/formatDate'
+import {
+  THINKING_EFFORT_OPTIONS,
+  isThinkingLevelsUnprobed,
+  thinkingEffortOptionLabel,
+  thinkingUserSelectableFromModel,
+  withThinkingWriteFields,
+} from '../utils/thinkingLevels'
 
 const { confirm, toast } = useDialog()
 const modelsStore = useModelsStore()
@@ -742,6 +778,7 @@ const revokingId = ref(null)
 // health_status 反映）。
 const testingId = ref(null)
 const testResults = ref({})
+const probingThinking = ref(false)
 
 // doc 04 §2 protocol 列舉。openai_compatible = HTTP OpenAI shape；
 // triton_grpc = Triton/KServe gRPC（端點填 grpc://host:port）。custom_adapter 已退場。
@@ -812,7 +849,9 @@ const defaultForm = () => ({
   // classification_ceiling null = 無上限;api_key 為 write-only（留空不覆蓋）。
   protocol: 'openai_compatible', classification_ceiling: null, api_key: '',
   router_enabled: false,
-  thinking_effort: 'none', temperature: null, top_p: null,
+  thinking_effort: 'none', thinking_levels_supported: null,
+  thinking_user_selectable: true,
+  temperature: null, top_p: null,
   presence_penalty: null, max_tokens: null,
 })
 const form = ref(defaultForm())
@@ -951,6 +990,7 @@ async function handleRevokeAuthor(grant) {
 const healthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'healthy').length)
 const degradedCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'degraded').length)
 const unhealthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'unhealthy').length)
+const tableColspan = computed(() => (authStore.isAdmin || canSetEndpointAddress.value) ? 10 : 9)
 
 onMounted(() => {
   modelsStore.fetchModels()
@@ -1052,6 +1092,10 @@ async function openEditModal(model, opts = {}) {
     api_key: '',
     router_enabled: !!model.router_enabled,
     thinking_effort: normalizeThinkingEffort(model.thinking_effort),
+    thinking_levels_supported: Array.isArray(model.thinking_levels_supported)
+      ? model.thinking_levels_supported
+      : null,
+    thinking_user_selectable: thinkingUserSelectableFromModel(model),
     temperature: model.temperature ?? null,
     top_p: model.top_p ?? null,
     presence_penalty: model.presence_penalty ?? null,
@@ -1132,7 +1176,7 @@ function buildModelPayload() {
   if (addressOnlyEditor.value) {
     return { endpoint_url: form.value.endpoint_url }
   }
-  const payload = { ...form.value }
+  const payload = withThinkingWriteFields({ ...form.value }, form.value)
   if (payload.model_type !== 'agent') payload.base_model_id = null
   // Don't ship endpoint_url back when the field was locked (admin editing a
   // row whose URL they couldn't see). Backend would accept the empty string
@@ -1158,6 +1202,34 @@ function noticeThinkingProbe(saved) {
   if (saved?.thinking_probe?.status !== 'unreachable') return
   const why = saved.thinking_probe.detail ? `（${saved.thinking_probe.detail}）` : ''
   toast(`模型目前連不上，thinking_effort 未經探測${why}`, { tone: 'warn' })
+}
+
+function applyThinkingProbeResult(saved) {
+  if (!saved) return
+  form.value.thinking_levels_supported = Array.isArray(saved.thinking_levels_supported)
+    ? saved.thinking_levels_supported
+    : null
+  if (typeof saved.thinking_user_selectable === 'boolean') {
+    form.value.thinking_user_selectable = saved.thinking_user_selectable
+  }
+}
+
+async function handleProbeThinking() {
+  if (!editingId.value || probingThinking.value) return
+  probingThinking.value = true
+  try {
+    const data = await modelsStore.probeThinking(editingId.value)
+    applyThinkingProbeResult(data)
+    if (isThinkingLevelsUnprobed(data?.thinking_levels_supported)) {
+      toast('已重跑探測，此端點仍無法取得支援等級', { tone: 'warn' })
+    } else {
+      toast('已更新支援等級', { tone: 'success' })
+    }
+  } catch (e) {
+    toast(extractError(e, '重新探測失敗'), { tone: 'error' })
+  } finally {
+    probingThinking.value = false
+  }
 }
 
 async function handleSubmit() {
@@ -1545,6 +1617,12 @@ async function handlePurge(model) {
   color: var(--c-fg-1);
 }
 .think-chip { color: var(--c-fg-2); }
+.thinking-levels-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .grant-row {
   display: flex;
   flex-wrap: wrap;

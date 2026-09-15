@@ -7,7 +7,8 @@ import {
   setSlidesPrimary as setSlidesPrimaryApi, unsetSlidesPrimary as unsetSlidesPrimaryApi,
   setAsrPrimary as setAsrPrimaryApi, unsetAsrPrimary as unsetAsrPrimaryApi,
   setPlatformEmbedding, unsetPlatformEmbedding,
-  testModelConnection, importModelsFromEndpoint,
+  testModelConnection, probeThinking as probeThinkingApi,
+  importModelsFromEndpoint,
   activateCreatedFromImport,
   replaceRouterGrants, setCampusRouterDefault,
 } from '../api/models'
@@ -59,6 +60,12 @@ export const useModelsStore = defineStore('models', () => {
   // 讓列表的五態 badge 反映最新結果。
   async function test(id) {
     const { data } = await testModelConnection(id)
+    await fetchModels()
+    return data
+  }
+
+  async function probeThinking(id) {
+    const { data } = await probeThinkingApi(id)
     await fetchModels()
     return data
   }
@@ -137,6 +144,7 @@ export const useModelsStore = defineStore('models', () => {
 
   return {
     models, loading, fetchModels, create, update, remove, activate, purge, test,
+    probeThinking,
     setPrimary, enableRouterCampus, unsetPrimary, setImagePrimary, setSlidesPrimary, unsetSlidesPrimary, unsetImagePrimary,
     setAsrPrimary, unsetAsrPrimary,
     setPlatformEmbed, unsetPlatformEmbed,

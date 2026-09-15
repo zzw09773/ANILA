@@ -1,5 +1,12 @@
 import client from './client'
 
+/**
+ * ModelResponse 新增欄位（CSP 同步實作）：
+ * - thinking_levels_supported: string[] | null  // null／[]＝未探測
+ * - thinking_user_selectable: boolean
+ * PUT /api/models/{id} 接受 thinking_user_selectable。
+ */
+
 export const listModels = () =>
   client.get('/api/models')
 
@@ -25,6 +32,12 @@ export const getModelHealth = (id) =>
 
 export const testModelConnection = (id) =>
   client.post(`/api/models/${id}/test`)
+
+// 維運補救：重跑思考等級探測。回更新後的 ModelResponse
+//（含 thinking_levels_supported、thinking_user_selectable）。
+// 新增／整批帶入／改端點時後端會自動探測，前端不必在那些流程呼叫。
+export const probeThinking = (id) =>
+  client.post(`/api/models/${id}/probe-thinking`)
 
 export const setRouterPrimary = (id) =>
   client.post(`/api/models/${id}/set-router-primary`)
