@@ -178,6 +178,47 @@ class TestQueryEngineBasicTurn:
         assert len(provider.requests[0].messages) < len(history)
 
     @pytest.mark.asyncio
+    async def test_long_history_with_images_strips_old_placeholders(self) -> None:
+        engine, provider = make_engine([ScriptedResponse(text="ok")])
+        engine._config.context_window = 4_000
+        engine._config.max_tokens = 200
+        big = "H" * 5000
+        history: list = []
+        for i in range(5):
+            history.append(
+                UserMessage(
+                    content=[
+                        {"type": "text", "text": f"u{i} look"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{big}"},
+                        },
+                    ]
+                )
+            )
+            history.append(AssistantMessage(content=f"a{i}", tool_calls=[]))
+        result = await engine.run(history)
+        assert result.was_compacted
+        first = provider.requests[0].messages
+        old_user = first[0]
+        assert isinstance(old_user, UserMessage)
+        assert isinstance(old_user.content, list)
+        assert any(
+            isinstance(b, dict) and b.get("type") == "text" and "圖片已省略" in str(b.get("text"))
+            for b in old_user.content
+        )
+        assert not any(
+            isinstance(b, dict) and b.get("type") == "image_url" and "data:image" in str(b)
+            for b in old_user.content
+        )
+        last_user = next(m for m in reversed(first) if isinstance(m, UserMessage))
+        assert isinstance(last_user.content, list)
+        assert any(
+            isinstance(b, dict) and b.get("type") == "image_url"
+            for b in last_user.content
+        )
+
+    @pytest.mark.asyncio
     async def test_usage_accumulated(self) -> None:
         from anila_core.models.message import Usage
         script = [

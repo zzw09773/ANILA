@@ -19,6 +19,7 @@ from anila_core.compact.openai_history import (
     is_prompt_too_long,
     sliding_window_openai,
 )
+from anila_core.compact.strip_images import IMAGE_MAX_TOKENS, IMAGE_MIN_TOKENS
 from anila_core.compact.sliding_window import SLIDING_WINDOW_SUMMARY
 from anila_core.compact.micro_compact import (
     COMPACTABLE_TOOLS,
@@ -209,6 +210,98 @@ class TestOpenaiHistoryCompact:
         assert HISTORY_SUMMARY_PREFIX in result.messages[1]["content"]
         assert "太陽系" in result.messages[1]["content"]
         assert result.messages[-1]["content"].startswith("a7")
+
+    def test_estimate_counts_each_image_in_800_2000(self) -> None:
+        tiny = [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("A" * 80)}},
+        ]}]
+        huge = [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("B" * 80_000)}},
+        ]}]
+        tiny_tokens = estimate_openai_tokens(tiny)
+        huge_tokens = estimate_openai_tokens(huge)
+        assert IMAGE_MIN_TOKENS <= tiny_tokens <= IMAGE_MAX_TOKENS
+        assert IMAGE_MIN_TOKENS <= huge_tokens <= IMAGE_MAX_TOKENS
+        assert tiny_tokens == IMAGE_MIN_TOKENS
+        assert huge_tokens == IMAGE_MAX_TOKENS
+
+        two = [
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("C" * 200)}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("D" * 200)}},
+            ]},
+        ]
+        assert estimate_openai_tokens(two) == IMAGE_MIN_TOKENS * 2
+
+    @pytest.mark.asyncio
+    async def test_auto_compact_strip_images_skips_summarizer(self) -> None:
+        big = "E" * 6000
+        messages = [{"role": "system", "content": "sys"}]
+        for i in range(4):
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"u{i} shot"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{big}"}},
+                ],
+            })
+            messages.append({"role": "assistant", "content": f"a{i}"})
+
+        called = False
+
+        async def summarize(_old):
+            nonlocal called
+            called = True
+            return "should not run"
+
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=5_000,
+            max_output_tokens=256,
+            summarizer=summarize,
+            keep_recent_turns=2,
+        )
+        assert result.compacted
+        assert result.method == "strip_images"
+        assert called is False
+        assert any("圖片已省略" in str(m.get("content")) for m in result.messages)
+        last_user = next(m for m in reversed(result.messages) if m.get("role") == "user")
+        assert any(
+            isinstance(p, dict) and p.get("type") == "image_url"
+            for p in last_user["content"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_auto_compact_still_summarizes_when_strip_is_not_enough(self) -> None:
+        messages = _long_chat(8, size=600)
+        messages[1] = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": messages[1]["content"]},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("F" * 4000)}},
+            ],
+        }
+        called = False
+
+        async def summarize(old):
+            nonlocal called
+            called = True
+            assert any("u0" in str(m.get("content")) for m in old)
+            return "先前在討論太陽系頁面"
+
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=2_400,
+            max_output_tokens=256,
+            summarizer=summarize,
+            keep_recent_turns=2,
+        )
+        assert called is True
+        assert result.compacted
+        assert result.method == "summary"
+        assert HISTORY_SUMMARY_PREFIX in result.messages[1]["content"]
 
     @pytest.mark.asyncio
     async def test_force_drops_old_turns_even_on_huge_window(self) -> None:

@@ -144,6 +144,74 @@ def test_prompt_too_long_retries_after_hard_trim(monkeypatch):
     assert second[-1]["content"] == "最新一問"
 
 
+def _ptl_resp() -> _Resp:
+    return _Resp(
+        {"error": {"code": "context_length_exceeded"}},
+        status=400,
+        text='{"error":{"code":"context_length_exceeded"}}',
+    )
+
+
+def _messages_with_old_images(turns: int = 6, size: int = 80) -> list[dict]:
+    big = "G" * 4000
+    out: list[dict] = [{"role": "system", "content": "router"}]
+    for i in range(turns):
+        out.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"u{i} " + ("問" * size)},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{big}"}},
+            ],
+        })
+        out.append({"role": "assistant", "content": f"a{i} " + ("答" * size)})
+    out.append({"role": "user", "content": "最新一問"})
+    return out
+
+
+def _payload_blob(messages: list[dict]) -> str:
+    return json.dumps(messages, ensure_ascii=False)
+
+
+def test_ptl_first_retry_strips_images_only(monkeypatch):
+    monkeypatch.setattr(rs, "current_router_context_window", lambda: 1_000_000)
+    client = _Client(answers=[_ptl_resp(), _reply("剝過圖")])
+    monkeypatch.setattr(rs, "get_http_client", lambda: client)
+    result = asyncio.run(rs._call_llm_non_stream("sk", _messages_with_old_images()))
+    assert result["content"] == "剝過圖"
+    assert result.get("error") is None
+    assert len(client.posts) == 2
+    second = client.posts[1]["messages"]
+    blob = _payload_blob(second)
+    assert "data:image" not in blob
+    assert "圖片已省略" in blob
+    assert not any(SLIDING_WINDOW_SUMMARY in str(m.get("content")) for m in second)
+    assert any("u0" in str(m.get("content")) for m in second)
+    assert second[-1]["content"] == "最新一問"
+
+
+def test_ptl_second_retry_hard_trims_after_strip(monkeypatch):
+    monkeypatch.setattr(rs, "current_router_context_window", lambda: 1_000_000)
+    client = _Client(answers=[_ptl_resp(), _ptl_resp(), _reply("硬截了")])
+    monkeypatch.setattr(rs, "get_http_client", lambda: client)
+    result = asyncio.run(rs._call_llm_non_stream("sk", _messages_with_old_images()))
+    assert result["content"] == "硬截了"
+    assert result.get("error") is None
+    assert len(client.posts) == 3
+    assert "data:image" not in _payload_blob(client.posts[1]["messages"])
+    third = client.posts[2]["messages"]
+    assert any(SLIDING_WINDOW_SUMMARY in str(m.get("content")) for m in third)
+    assert third[-1]["content"] == "最新一問"
+
+
+def test_ptl_third_overflow_does_not_retry(monkeypatch):
+    monkeypatch.setattr(rs, "current_router_context_window", lambda: 1_000_000)
+    client = _Client(answers=[_ptl_resp(), _ptl_resp(), _ptl_resp()])
+    monkeypatch.setattr(rs, "get_http_client", lambda: client)
+    result = asyncio.run(rs._call_llm_non_stream("sk", _messages_with_old_images()))
+    assert result.get("error")
+    assert len(client.posts) == 3
+
+
 def test_stream_prompt_too_long_retries(monkeypatch):
     monkeypatch.setattr(rs, "current_router_context_window", lambda: 1_000_000)
     client = _Client(

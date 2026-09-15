@@ -12,6 +12,7 @@ When current_tokens >= threshold, compaction should be triggered.
 from __future__ import annotations
 
 from ..models.message import AssistantMessage, Message, UserMessage
+from .strip_images import estimate_message_tokens_with_images
 
 
 # Reserve this many tokens for the compaction summary output.
@@ -30,38 +31,30 @@ ERROR_THRESHOLD_BUFFER_TOKENS = 20_000
 
 
 def rough_token_count(messages: list[Message]) -> int:
-    """Rough token estimation: sum of all text content lengths / 4.
+    """Rough token estimation: text chars/4 plus clamped image tokens.
 
-    Pads by 4/3 to be conservative (we are approximating).
+    Pads text by 4/3 to be conservative. ``data:`` / ``image_url`` parts
+    use the 800–2000 clamp in :mod:`strip_images` so a screenshot cannot
+    be estimated as 0.
     """
-    total = 0
+    text_and_images = estimate_message_tokens_with_images(messages)
+    extra = 0
     for msg in messages:
         content = None
         if isinstance(msg, (UserMessage, AssistantMessage)):
             content = msg.content
-
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "text":
-                    total += len(block.get("text", ""))
-                elif block.get("type") == "tool_result":
-                    c = block.get("content", "")
-                    if isinstance(c, str):
-                        total += len(c)
-                elif block.get("type") == "tool_use":
-                    import json
-                    total += len(block.get("name", ""))
-                    try:
-                        total += len(json.dumps(block.get("input", {})))
-                    except (TypeError, ValueError):
-                        pass
-
-    # ~4 chars per token, pad by 4/3
-    return int((total / 4) * (4 / 3))
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            import json
+            extra += len(block.get("name", ""))
+            try:
+                extra += len(json.dumps(block.get("input", {})))
+            except (TypeError, ValueError):
+                pass
+    return text_and_images + int((extra / 4) * (4 / 3)) if extra else text_and_images
 
 
 def _clamped_reserve_and_buffer(
