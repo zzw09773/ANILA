@@ -505,3 +505,13 @@ export function setConversationRouterModel(authRequest, convId, { routerModelId,
     }),
   });
 }
+
+export function setConversationThinking(authRequest, convId, { thinkingTier, expectedVersion } = {}) {
+  return authRequest(`/api/conversations/${convId}/thinking`, {
+    method: "PUT",
+    body: JSON.stringify({
+      thinking_tier: thinkingTier,
+      expected_version: expectedVersion ?? 0,
+    }),
+  });
+}
