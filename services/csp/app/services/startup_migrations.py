@@ -188,6 +188,11 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         postgres_ddl="ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS request_duration_ms INTEGER NULL",
         generic_ddl="ALTER TABLE token_usage ADD COLUMN request_duration_ms INTEGER",
     )
+    _ensure_column(
+        bind, "token_usage", "reasoning_tokens",
+        postgres_ddl="ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS reasoning_tokens INTEGER NULL",
+        generic_ddl="ALTER TABLE token_usage ADD COLUMN reasoning_tokens INTEGER",
+    )
 
     # --- token_usage indexes (must come after request_timestamp exists) --
     for index_ddl in (

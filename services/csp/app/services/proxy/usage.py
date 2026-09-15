@@ -31,6 +31,7 @@ async def enqueue_usage_task_linked(
     token_source: str = "unknown",
     outcome: str = "success",
     model_name_snapshot: str | None = None,
+    reasoning_tokens: int | None = None,
 ):
     """Task-aware variant of ``usage_writer.enqueue_usage`` (Slice 2b-C).
 
@@ -70,6 +71,7 @@ async def enqueue_usage_task_linked(
         "token_source": token_source,
         "outcome": outcome,
         "model_name_snapshot": model_name_snapshot,
+        "reasoning_tokens": reasoning_tokens,
     })
 
 def _flatten_content(content) -> str:
@@ -191,6 +193,80 @@ def _extract_stream_text(chunk: dict) -> str:
                 if fn.get("arguments"):
                     parts.append(str(fn["arguments"]))
     return "".join(parts)
+
+
+def _reported_reasoning_tokens(usage) -> int | None:
+    """Read OpenAI nested or vLLM/litellm top-level reasoning token counts."""
+    if not isinstance(usage, dict) or not usage:
+        return None
+    details = usage.get("completion_tokens_details")
+    if isinstance(details, dict) and details.get("reasoning_tokens") is not None:
+        try:
+            return int(details["reasoning_tokens"])
+        except (TypeError, ValueError):
+            pass
+    if usage.get("reasoning_tokens") is not None:
+        try:
+            return int(usage["reasoning_tokens"])
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _extract_reasoning_text(result: dict) -> str:
+    """Collect ``reasoning`` / ``reasoning_content`` from a non-stream result."""
+    texts: list[str] = []
+    for choice in result.get("choices", []) or []:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message") or {}
+        if not isinstance(message, dict):
+            continue
+        for key in ("reasoning_content", "reasoning"):
+            value = message.get(key)
+            if value:
+                texts.append(str(value))
+    return "\n".join(texts)
+
+
+def _extract_stream_reasoning(chunk: dict) -> str:
+    """Collect reasoning deltas from a streaming chunk."""
+    parts: list[str] = []
+    choices = chunk.get("choices")
+    if not isinstance(choices, list):
+        choice = chunk.get("choice")
+        if isinstance(choice, list):
+            choices = choice
+        elif isinstance(choice, dict):
+            choices = [choice]
+        else:
+            choices = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        for key in ("reasoning_content", "reasoning"):
+            value = delta.get(key) or message.get(key)
+            if value:
+                parts.append(str(value))
+    return "".join(parts)
+
+
+def resolve_reasoning_tokens(
+    usage: dict | None,
+    *,
+    reasoning_text: str = "",
+    model_name: str | None = None,
+) -> tuple[int | None, str | None]:
+    """Return ``(reasoning_tokens, source)`` — source is reported/estimated/None."""
+    reported = _reported_reasoning_tokens(usage)
+    if reported is not None:
+        return reported, "reported"
+    text = reasoning_text or ""
+    if not text.strip():
+        return None, None
+    return _estimate_token_count(model_name, text), "estimated"
 
 
 def _estimate_token_count(model_name: str | None, text: str) -> int:

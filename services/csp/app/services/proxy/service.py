@@ -23,6 +23,7 @@ from app.models.platform_setting import get_setting
 from app.services.agent_reply_signal import attach_agent_reply_observation
 from app.services.proxy.sampling import (
     apply_model_sampling_overrides,
+    describe_thinking_applied,
     is_thinking_locked,
     stamp_thinking_locked,
 )
@@ -38,10 +39,13 @@ from app.services.proxy.task_link import finalize_task_run
 from app.services.proxy.urls import join_upstream_path, strip_trailing_api_version
 from app.services.proxy.usage import (
     _estimate_token_count,
+    _extract_reasoning_text,
     _extract_response_text,
+    _extract_stream_reasoning,
     _extract_stream_text,
     _serialize_request_for_usage,
     enqueue_usage_task_linked,
+    resolve_reasoning_tokens,
 )
 from app.services.usage_writer import enqueue_usage
 
@@ -559,6 +563,39 @@ def _conversation_thinking_tier(
         db.close()
 
 
+def _usage_for_meta(
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    reasoning_tokens: int | None,
+    reasoning_source: str | None,
+) -> dict:
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "reasoning_tokens_source": reasoning_source,
+    }
+
+
+def _stamp_usage_and_thinking(
+    meta: dict,
+    *,
+    usage: dict,
+    thinking_applied: dict | None,
+) -> None:
+    prior = meta.get("usage")
+    if isinstance(prior, dict):
+        merged = dict(prior)
+        merged.update(usage)
+        meta["usage"] = merged
+    else:
+        meta["usage"] = usage
+    if thinking_applied is not None:
+        meta["thinking_applied"] = thinking_applied
+
+
 def build_default_anila_meta(
     source_name: str,
     *,
@@ -567,6 +604,7 @@ def build_default_anila_meta(
     classified: bool = False,
     usage: dict | None = None,
     thinking_locked: bool = False,
+    thinking_applied: dict | None = None,
 ) -> dict:
     """Build an anila_meta skeleton used when the downstream omits one.
 
@@ -611,6 +649,8 @@ def build_default_anila_meta(
     }
     if thinking_locked:
         meta["thinking_locked"] = True
+    if thinking_applied is not None:
+        meta["thinking_applied"] = thinking_applied
     return meta
 
 
@@ -661,12 +701,16 @@ async def _proxy_request_impl(
     timeout = _get_timeout(model.model_type, tuning)
     invocation_id = invocation_id or uuid.uuid4().hex
     model_name_snapshot = model_name_snapshot or getattr(model, "name", None)
+    conv_tier = _conversation_thinking_tier(
+        conversation_id, caller_user_id=user_id
+    )
+    thinking_applied = describe_thinking_applied(
+        request_body, model, thinking_tier=conv_tier
+    )
     request_body = apply_model_sampling_overrides(
         request_body,
         model,
-        thinking_tier=_conversation_thinking_tier(
-            conversation_id, caller_user_id=user_id
-        ),
+        thinking_tier=conv_tier,
     )
     # ``usage_source`` comes from the X-ANILA-Request-Source header: anila-studio
     # sends "studio" so the usage dashboard can split 簡報製作 from chat.
@@ -847,6 +891,18 @@ async def _proxy_request_impl(
                     prompt_tokens,
                     completion_tokens,
                 )
+            reasoning_tokens, reasoning_source = resolve_reasoning_tokens(
+                usage if usage else None,
+                reasoning_text=_extract_reasoning_text(result),
+                model_name=model.name,
+            )
+            usage_for_meta = _usage_for_meta(
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                reasoning_tokens,
+                reasoning_source,
+            )
             existing_meta = result.get("anila_meta")
             if not existing_meta:
                 # Caller-facing detail uses the visibility-gated display
@@ -856,7 +912,9 @@ async def _proxy_request_impl(
                     detail=_proxy_detail(model.name, endpoint_display),
                     latency_ms=duration_ms,
                     classified=requires_encryption,
+                    usage=usage_for_meta,
                     thinking_locked=is_thinking_locked(model),
+                    thinking_applied=thinking_applied,
                 )
             elif isinstance(existing_meta, dict):
                 if requires_encryption:
@@ -864,6 +922,11 @@ async def _proxy_request_impl(
                     # requires encryption, even if the downstream omitted the flag.
                     existing_meta["classified"] = True
                 stamp_thinking_locked(existing_meta, model)
+                _stamp_usage_and_thinking(
+                    existing_meta,
+                    usage=usage_for_meta,
+                    thinking_applied=thinking_applied,
+                )
 
             token_source = "reported" if usage else "estimated"
             # Enqueue usage record (non-blocking).
@@ -895,6 +958,7 @@ async def _proxy_request_impl(
                         invocation_id=invocation_id,
                         model_name_snapshot=model_name_snapshot,
                         token_source=token_source,
+                        reasoning_tokens=reasoning_tokens,
                     )
                 else:
                     await enqueue_usage(
@@ -915,6 +979,7 @@ async def _proxy_request_impl(
                         invocation_id=invocation_id,
                         model_name_snapshot=model_name_snapshot,
                         token_source=token_source,
+                        reasoning_tokens=reasoning_tokens,
                     )
 
             # 量測／衛生：usage 入帳後、回傳前剝內嵌 think（不影響 metering）。
@@ -1150,13 +1215,18 @@ async def _proxy_stream_impl(
             if key.lower() in ("authorization", "content-type"):
                 continue
             headers[key] = value
+    thinking_applied = None
     if model is not None:
+        conv_tier = _conversation_thinking_tier(
+            conversation_id, caller_user_id=user_id
+        )
+        thinking_applied = describe_thinking_applied(
+            request_body, model, thinking_tier=conv_tier
+        )
         request_body = apply_model_sampling_overrides(
             request_body,
             model,
-            thinking_tier=_conversation_thinking_tier(
-                conversation_id, caller_user_id=user_id
-            ),
+            thinking_tier=conv_tier,
         )
     # Force stream_options so the downstream sends usage in last chunk
     body = {**request_body, "stream": True,
@@ -1166,8 +1236,10 @@ async def _proxy_stream_impl(
     prompt_tokens = completion_tokens = 0
     usage_seen = False
     meta_seen = False
+    last_usage: dict = {}
     prompt_text = _serialize_request_for_usage(body)
     completion_parts: list[str] = []
+    reasoning_parts: list[str] = []
     pending_done_block: str | None = None
     pending_agent_meta: tuple[str, str | None, str | None] | None = None
 
@@ -1185,6 +1257,27 @@ async def _proxy_stream_impl(
                                         detail=_sanitised_upstream_error_detail(
                                             body, resp.status_code
                                         ))
+                def _ingest_stream_payload(data: str | None, event_name: str | None) -> None:
+                    nonlocal prompt_tokens, completion_tokens, usage_seen, last_usage
+                    if not data or event_name not in (None, "message"):
+                        return
+                    try:
+                        chunk = json.loads(data)
+                    except (json.JSONDecodeError, TypeError, KeyError):
+                        return
+                    text = _extract_stream_text(chunk)
+                    if text:
+                        completion_parts.append(text)
+                    reason = _extract_stream_reasoning(chunk)
+                    if reason:
+                        reasoning_parts.append(reason)
+                    usage = chunk.get("usage") or {}
+                    if usage:
+                        usage_seen = True
+                        last_usage = usage
+                        prompt_tokens = usage.get("prompt_tokens", 0)
+                        completion_tokens = usage.get("completion_tokens", 0)
+
                 def _emit(block: str, event_name: str | None, data: str | None) -> str:
                     """Render a block, upgrading anila.meta.classified if required."""
                     if event_name == "anila.meta" and data:
@@ -1201,6 +1294,9 @@ async def _proxy_stream_impl(
                                     and not parsed.get("thinking_locked")
                                 ):
                                     parsed["thinking_locked"] = True
+                                    changed = True
+                                if thinking_applied is not None and "thinking_applied" not in parsed:
+                                    parsed["thinking_applied"] = thinking_applied
                                     changed = True
                                 if changed:
                                     return (
@@ -1231,19 +1327,7 @@ async def _proxy_stream_impl(
                                         pending_agent_meta = (block, event_name, data)
                                         block_lines = []
                                         continue
-                                if data and event_name in (None, "message"):
-                                    try:
-                                        chunk = json.loads(data)
-                                        text = _extract_stream_text(chunk)
-                                        if text:
-                                            completion_parts.append(text)
-                                        usage = chunk.get("usage") or {}
-                                        if usage:
-                                            usage_seen = True
-                                            prompt_tokens = usage.get("prompt_tokens", 0)
-                                            completion_tokens = usage.get("completion_tokens", 0)
-                                    except (json.JSONDecodeError, KeyError):
-                                        pass
+                                _ingest_stream_payload(data, event_name)
                                 yield _emit(block, event_name, data)
                             block_lines = []
                         continue
@@ -1260,34 +1344,10 @@ async def _proxy_stream_impl(
                                 pending_agent_meta = (block, event_name, data)
                                 block_lines = []
                             else:
-                                if data and event_name in (None, "message"):
-                                    try:
-                                        chunk = json.loads(data)
-                                        text = _extract_stream_text(chunk)
-                                        if text:
-                                            completion_parts.append(text)
-                                        usage = chunk.get("usage") or {}
-                                        if usage:
-                                            usage_seen = True
-                                            prompt_tokens = usage.get("prompt_tokens", 0)
-                                            completion_tokens = usage.get("completion_tokens", 0)
-                                    except (json.JSONDecodeError, KeyError):
-                                        pass
+                                _ingest_stream_payload(data, event_name)
                                 yield _emit(block, event_name, data)
                         else:
-                            if data and event_name in (None, "message"):
-                                try:
-                                    chunk = json.loads(data)
-                                    text = _extract_stream_text(chunk)
-                                    if text:
-                                        completion_parts.append(text)
-                                    usage = chunk.get("usage") or {}
-                                    if usage:
-                                        usage_seen = True
-                                        prompt_tokens = usage.get("prompt_tokens", 0)
-                                        completion_tokens = usage.get("completion_tokens", 0)
-                                except (json.JSONDecodeError, KeyError):
-                                    pass
+                            _ingest_stream_payload(data, event_name)
                             yield _emit(block, event_name, data)
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="下游請求逾時")
@@ -1312,11 +1372,28 @@ async def _proxy_stream_impl(
         )
     total_tokens = prompt_tokens + completion_tokens
     usage_source = "reported" if usage_seen else "estimated"
+    reasoning_tokens, reasoning_source = resolve_reasoning_tokens(
+        last_usage if usage_seen else None,
+        reasoning_text="".join(reasoning_parts),
+        model_name=model_name,
+    )
+    usage_for_meta = _usage_for_meta(
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        reasoning_tokens,
+        reasoning_source,
+    )
     if pending_agent_meta is not None:
         block, event_name, data = pending_agent_meta
         try:
             parsed = json.loads(data) if data else None
             if isinstance(parsed, dict):
+                _stamp_usage_and_thinking(
+                    parsed,
+                    usage=usage_for_meta,
+                    thinking_applied=thinking_applied,
+                )
                 attach_agent_reply_observation(
                     parsed,
                     completion_tokens=completion_tokens,
@@ -1339,12 +1416,9 @@ async def _proxy_stream_impl(
             ),
             latency_ms=duration_ms,
             classified=requires_encryption,
-            usage={
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-            },
+            usage=usage_for_meta,
             thinking_locked=is_thinking_locked(model) if model is not None else False,
+            thinking_applied=thinking_applied,
         )
         if target_agent_id is not None:
             attach_agent_reply_observation(
@@ -1383,6 +1457,7 @@ async def _proxy_stream_impl(
                 invocation_id=invocation_id,
                 model_name_snapshot=model_name_snapshot,
                 token_source=usage_source,
+                reasoning_tokens=reasoning_tokens,
             )
         else:
             await enqueue_usage(
@@ -1402,6 +1477,7 @@ async def _proxy_stream_impl(
                 invocation_id=invocation_id,
                 model_name_snapshot=model_name_snapshot,
                 token_source=usage_source,
+                reasoning_tokens=reasoning_tokens,
             )
 
 

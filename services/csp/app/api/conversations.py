@@ -19,6 +19,7 @@ from app.models.user import User
 from app.services import conversation_service as svc
 from app.services import message_tree as mtree
 from app.services.auth_service import is_admin_tier
+from app.services.usage_service import get_conversation_usage
 from app.schemas.base import ApiResponseModel
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -590,6 +591,21 @@ def set_conversation_thinking(
     db.commit()
     conv = db.get(Conversation, conv_id)
     return _conversation_out(db, current_user, conv)
+
+
+@router.get("/{conv_id}/usage")
+def conversation_usage(
+    conv_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Owner-only conversation token totals. Others get 404."""
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="對話不存在")
+    return get_conversation_usage(
+        db, user_id=current_user.id, conversation_id=str(conv_id)
+    )
 
 
 class AdoptCompareRequest(BaseModel):

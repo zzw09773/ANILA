@@ -39,6 +39,7 @@ async def enqueue_usage(
     token_source: str = "unknown",
     outcome: str = "success",
     model_name_snapshot: str | None = None,
+    reasoning_tokens: int | None = None,
 ):
     """Push usage data into the async queue (non-blocking).
 
@@ -78,6 +79,7 @@ async def enqueue_usage(
         "token_source": token_source,
         "outcome": outcome,
         "model_name_snapshot": model_name_snapshot,
+        "reasoning_tokens": reasoning_tokens,
     })
 
 

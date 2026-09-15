@@ -19,6 +19,7 @@ from app.services.usage_service import (
     _to_tpe_iso,
     export_usage_csv,
     get_agent_usage,
+    get_caller_usage,
     get_chart_data,
     get_top_agents,
     get_top_departments,
@@ -72,6 +73,16 @@ def _require_admin_or_unit_admin(
     if scope is not None:
         return sorted(scope)
     raise HTTPException(status_code=403, detail="需要管理員權限")
+
+
+@router.get("/me")
+def usage_me(
+    range: str = Query("24h", pattern="^(24h|7d|30d)$"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Caller's own usage. Cookie or Bearer; GET so CSRF does not apply."""
+    return get_caller_usage(db, user_id=current_user.id, range_key=range)
 
 
 @router.get("/summary", response_model=UsageSummary)
