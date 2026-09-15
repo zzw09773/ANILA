@@ -173,9 +173,9 @@ model_registry.thinking_user_selectable   BOOLEAN NOT NULL DEFAULT TRUE
 | 期 | 內容 | 依賴 | 估工 |
 |---|---|---|---|
 | **A** | §2 思考選單全套（migration、CSP 對映、註冊時自動探測、Router 透傳、shell picker、9 條驗收） | 無 | ✅ 2026-09-15 合入 main（四分支：csp `3b0c0c96`、router `2e01dfa2`、gov-ui `3f9364fa`、shell `1909f851`；獨立審查通過）。待活體驗收 §2.5。合併後補：Router recompose 排除改 opt-in 參數；Shell「重試」是否帶單則覆寫待拍板 |
-| **B** | 思考／正文 token 帶到 `anila.meta`；折疊列顯示；用量頁若無則先做每對話小計 | A | 1–2 天 |
-| **C** | Compact boundary 寫回對話（`messages` 加一則 `role=system, kind=compact_summary`，前端重送時從 boundary 之後開始）；手動「整理對話」按鈕接 `force=True` | — | 2 天 |
-| **D** | `stripImagesFromMessages`：compact 前先把 data URL／base64 換成佈位；PTL 重試順序改為「剝圖→摘要→硬截」 | C | 1 天 |
+| **B** | 思考／正文 token 帶到 `anila.meta`；折疊列顯示；用量頁若無則先做每對話小計 | A | ✅ 2026-09-15 合入 main（csp `b5f22b85`、shell `c9297cd0`）。契約定案：`token_usage.reasoning_tokens`（r1_0041）；`anila_meta.usage.reasoning_tokens` + `reasoning_tokens_source: reported\|estimated\|null`（null 僅當 tokens 為 null）；`anila_meta.thinking_applied{tier,level,source}`；串流所有 named `anila.meta` 暫存到 usage 收齊後合成一則終端 meta，`usage_complete: bool`（中斷 flush 為 false，關閉路徑不 yield）；agent 中斷 `usage_source="unavailable"`；`GET /api/usage/me`（`by_kind[].kind`）、`GET /api/conversations/{id}/usage`（僅擁有者）；shell「我的用量」為平台入口 Modal，總數＝prompt+completion，思考另計 |
+| **C** | Compact boundary 寫回對話（`messages` 加一則 `role=system, kind=compact_summary`，前端重送時從 boundary 之後開始）；手動「整理對話」按鈕接 `force=True` | D | 2 天 |
+| **D** | `stripImagesFromMessages`：compact 前先把 data URL／base64 換成佈位；PTL 重試順序改為「剝圖→摘要→硬截」 | — | ✅ 2026-09-15 合入 main（`2f094f35`）。剝圖保留回合數跟隨呼叫端 `keep_recent_turns`（回合前 4、PTL 2）；每張 data URL 圖估 800–2000 tokens；PTL 最多兩次重試 |
 | **E** | 產物下載成檔；React/JSX 產物 vendor（React UMD＋Babel standalone 放 `public/vendor/`，`artifactVendor.js` 加改寫規則） | — | 1–2 天 |
 | **F** | 使用者可寫的「回覆偏好」頁＋「我的記憶」管理頁（列、刪、來源對話）；活體驗每輪萃取有沒有跑 | 先驗現況 | 3 天 |
 | **G** | 精準計數：模型端 `/tokenize` 或 tiktoken 近似；compact 門檻改用真值 | — | 1 天 |
