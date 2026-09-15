@@ -43,6 +43,8 @@ from .approvals import (
 )
 from .budget_tracker import BudgetTracker, ContinueDecision, check_token_budget
 from .handoff import RunHandoff
+from ..compact.auto_compact import get_auto_compact_threshold, rough_token_count, should_compact
+from ..compact.sliding_window import sliding_window_compact
 from .lifecycle import RunHooks, _safe_call
 
 logger = logging.getLogger(__name__)
@@ -131,6 +133,7 @@ class QueryEngine:
         total_usage = Usage()
         turn_count = 0
         stop_reason = "completed"
+        was_compacted = False
 
         # Sprint 11 PR 1: lifecycle hook firing point. Fires once per run()
         # entry; on_agent_start fires once per agent activation (which for
@@ -150,6 +153,8 @@ class QueryEngine:
 
             # Stage 1: pre_process
             history, budget_message = await self._pre_process(history)
+            if budget_message == "compacted":
+                was_compacted = True
 
             # Stage 2: api_call
             assistant_msg, usage, finish_reason = await self._api_call(
@@ -260,6 +265,7 @@ class QueryEngine:
             total_usage=total_usage,
             turn_count=turn_count,
             finish_reason=stop_reason,
+            was_compacted=was_compacted,
             stop_reason=stop_reason,
         )
 
@@ -286,12 +292,26 @@ class QueryEngine:
         """Stage 1: prepare the history for the upcoming API call.
 
         Sprint 1 boundary cleanup removed the RagPreprocessor injection
-        path — the new model is tool-driven (the LLM decides when to
-        search via registered tools). This stage is now a passthrough,
-        kept as a hook for future preprocessing concerns (token budget
-        gates, redaction, etc).
+        path. This stage now runs auto-compact: when the history sits at
+        the context threshold, older turns are sliding-windowed so the
+        upcoming API call still fits.
         """
-        return history, None
+        tokens = rough_token_count(history)
+        if not should_compact(
+            self._config.context_window,
+            tokens,
+            max_output_tokens=self._config.max_tokens,
+        ):
+            return history, None
+        budget = get_auto_compact_threshold(
+            self._config.context_window,
+            self._config.max_tokens,
+        )
+        compacted, dropped = sliding_window_compact(history, budget)
+        if not dropped:
+            return history, None
+        logger.info("QueryEngine auto-compact dropped ~%s tokens", dropped)
+        return compacted, "compacted"
 
     async def _api_call(
         self,

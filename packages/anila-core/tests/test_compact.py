@@ -12,6 +12,14 @@ from anila_core.compact.auto_compact import (
     get_auto_compact_threshold,
     should_compact,
 )
+from anila_core.compact.openai_history import (
+    HISTORY_SUMMARY_PREFIX,
+    auto_compact_openai_messages,
+    estimate_openai_tokens,
+    is_prompt_too_long,
+    sliding_window_openai,
+)
+from anila_core.compact.sliding_window import SLIDING_WINDOW_SUMMARY
 from anila_core.compact.micro_compact import (
     COMPACTABLE_TOOLS,
     TIME_BASED_MC_CLEARED_MESSAGE,
@@ -145,6 +153,77 @@ class TestAutoCompact:
         result = should_compact(context_window, 85_000, max_output_tokens=5_000)
         # threshold = 100000 - 5000 - 13000 = 82000; 85000 >= 82000 -> True
         assert result
+
+    def test_small_window_threshold_stays_positive(self) -> None:
+        threshold = get_auto_compact_threshold(8_192, max_output_tokens=32_768)
+        assert 1 <= threshold < 8_192
+        assert not should_compact(8_192, 100, max_output_tokens=32_768)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-history compact (Router path)
+# ---------------------------------------------------------------------------
+
+def _long_chat(turns: int, size: int = 800) -> list[dict]:
+    out = [{"role": "system", "content": "you are anila"}]
+    for i in range(turns):
+        out.append({"role": "user", "content": f"u{i} " + ("問" * size)})
+        out.append({"role": "assistant", "content": f"a{i} " + ("答" * size)})
+    return out
+
+
+class TestOpenaiHistoryCompact:
+    def test_estimate_and_sliding_window_keep_tail(self) -> None:
+        messages = _long_chat(6, size=400)
+        before = estimate_openai_tokens(messages)
+        compacted, dropped = sliding_window_openai(messages, max_tokens=before // 3, keep_recent_turns=2)
+        assert dropped > 0
+        assert compacted[0]["role"] == "system"
+        assert any(SLIDING_WINDOW_SUMMARY in str(m.get("content")) for m in compacted)
+        assert compacted[-1]["content"].startswith("a5")
+        assert not any(str(m.get("content", "")).startswith("u0") for m in compacted)
+
+    def test_prompt_too_long_detector(self) -> None:
+        assert is_prompt_too_long(400, '{"error":{"code":"context_length_exceeded"}}')
+        assert is_prompt_too_long(413, "prompt is too long")
+        assert not is_prompt_too_long(400, "invalid json")
+        assert not is_prompt_too_long(500, "context_length_exceeded")
+
+    @pytest.mark.asyncio
+    async def test_auto_compact_uses_summarizer_then_keeps_recent(self) -> None:
+        messages = _long_chat(8, size=600)
+
+        async def summarize(old):
+            assert any("u0" in str(m.get("content")) for m in old)
+            return "先前在討論太陽系頁面"
+
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=2_400,
+            max_output_tokens=256,
+            summarizer=summarize,
+            keep_recent_turns=2,
+        )
+        assert result.compacted
+        assert result.method == "summary"
+        assert HISTORY_SUMMARY_PREFIX in result.messages[1]["content"]
+        assert "太陽系" in result.messages[1]["content"]
+        assert result.messages[-1]["content"].startswith("a7")
+
+    @pytest.mark.asyncio
+    async def test_force_drops_old_turns_even_on_huge_window(self) -> None:
+        messages = _long_chat(5, size=80)
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=1_000_000,
+            max_output_tokens=32_768,
+            summarizer=None,
+            keep_recent_turns=2,
+            force=True,
+        )
+        assert result.compacted
+        assert result.method == "sliding_window"
+        assert not any(str(m.get("content", "")).startswith("u0") for m in result.messages)
 
 
 # ---------------------------------------------------------------------------

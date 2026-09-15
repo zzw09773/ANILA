@@ -10,7 +10,7 @@ from anila_core.engine.budget_tracker import (
     check_token_budget,
 )
 from anila_core.engine.query_engine import QueryConfig, QueryEngine
-from anila_core.models.message import UserMessage
+from anila_core.models.message import AssistantMessage, UserMessage
 from anila_core.models.tool import ToolDefinition
 from anila_core.providers.mock import MockProvider, ScriptedResponse, ScriptedToolCall
 from anila_core.router.tool_router import ToolRegistry
@@ -163,6 +163,19 @@ class TestQueryEngineBasicTurn:
         result = await engine.run([UserMessage(content="start")])
         assert result.turn_count <= 3
         assert result.stop_reason == "max_turns"
+
+    @pytest.mark.asyncio
+    async def test_long_history_is_auto_compacted(self) -> None:
+        engine, provider = make_engine([ScriptedResponse(text="ok")])
+        engine._config.context_window = 2_000
+        engine._config.max_tokens = 200
+        history: list = []
+        for i in range(16):
+            history.append(UserMessage(content=f"u{i} " + ("問" * 180)))
+            history.append(AssistantMessage(content=f"a{i} " + ("答" * 180), tool_calls=[]))
+        result = await engine.run(history)
+        assert result.was_compacted
+        assert len(provider.requests[0].messages) < len(history)
 
     @pytest.mark.asyncio
     async def test_usage_accumulated(self) -> None:

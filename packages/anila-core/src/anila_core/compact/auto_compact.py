@@ -21,6 +21,9 @@ MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 # Additional buffer between threshold and effective context window.
 AUTOCOMPACT_BUFFER_TOKENS = 13_000
 
+# model_registry.context_window 為空時與 CSP 附件預算同一後援。
+FALLBACK_CONTEXT_WINDOW = 128_000
+
 # Warning thresholds
 WARNING_THRESHOLD_BUFFER_TOKENS = 20_000
 ERROR_THRESHOLD_BUFFER_TOKENS = 20_000
@@ -61,13 +64,25 @@ def rough_token_count(messages: list[Message]) -> int:
     return int((total / 4) * (4 / 3))
 
 
+def _clamped_reserve_and_buffer(
+    context_window: int,
+    max_output_tokens: int,
+) -> tuple[int, int]:
+    """Keep reserve+buffer from swallowing small context windows."""
+    window = max(int(context_window), 1)
+    reserve = min(int(max_output_tokens), MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+    reserve = min(reserve, max(1, window // 4))
+    buffer = min(AUTOCOMPACT_BUFFER_TOKENS, max(1, window // 8))
+    return reserve, buffer
+
+
 def get_effective_context_window(
     context_window: int,
     max_output_tokens: int = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
 ) -> int:
     """Return context window minus reserved output space."""
-    reserve = min(max_output_tokens, MAX_OUTPUT_TOKENS_FOR_SUMMARY)
-    return context_window - reserve
+    reserve, _ = _clamped_reserve_and_buffer(context_window, max_output_tokens)
+    return max(1, int(context_window) - reserve)
 
 
 def get_auto_compact_threshold(
@@ -75,8 +90,8 @@ def get_auto_compact_threshold(
     max_output_tokens: int = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
 ) -> int:
     """Return the token count at which autocompaction should trigger."""
-    effective = get_effective_context_window(context_window, max_output_tokens)
-    return effective - AUTOCOMPACT_BUFFER_TOKENS
+    reserve, buffer = _clamped_reserve_and_buffer(context_window, max_output_tokens)
+    return max(1, int(context_window) - reserve - buffer)
 
 
 def should_compact(
