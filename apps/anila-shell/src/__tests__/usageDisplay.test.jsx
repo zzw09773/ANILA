@@ -21,7 +21,7 @@ const SAMPLE_7D = {
   prompt_tokens: 1000,
   completion_tokens: 2000,
   reasoning_tokens: 345,
-  total_tokens: 3345,
+  total_tokens: 3000,
   by_model: [
     {
       model_id: 3,
@@ -33,12 +33,24 @@ const SAMPLE_7D = {
     },
   ],
   by_day: [
-    { date: "2026-09-14", prompt_tokens: 400, completion_tokens: 800, reasoning_tokens: 100 },
-    { date: "2026-09-15", prompt_tokens: 600, completion_tokens: 1200, reasoning_tokens: 245 },
+    {
+      date: "2026-09-14",
+      prompt_tokens: 400,
+      completion_tokens: 800,
+      reasoning_tokens: 100,
+      total_tokens: 1200,
+    },
+    {
+      date: "2026-09-15",
+      prompt_tokens: 600,
+      completion_tokens: 1200,
+      reasoning_tokens: 245,
+      total_tokens: 1800,
+    },
   ],
   by_kind: [
-    { kind: "chat", requests: 10, total_tokens: 3000 },
-    { kind: "title", requests: 2, total_tokens: 345 },
+    { kind: "chat", requests: 10, total_tokens: 2700 },
+    { kind: "title", requests: 2, total_tokens: 300 },
   ],
 };
 
@@ -48,7 +60,7 @@ const SAMPLE_30D = {
   prompt_tokens: 5000,
   completion_tokens: 8000,
   reasoning_tokens: 900,
-  total_tokens: 13900,
+  total_tokens: 13000,
   by_model: [
     {
       model_id: 3,
@@ -60,9 +72,15 @@ const SAMPLE_30D = {
     },
   ],
   by_day: [
-    { date: "2026-09-01", prompt_tokens: 2000, completion_tokens: 3000, reasoning_tokens: 400 },
+    {
+      date: "2026-09-01",
+      prompt_tokens: 2000,
+      completion_tokens: 3000,
+      reasoning_tokens: 400,
+      total_tokens: 5000,
+    },
   ],
-  by_kind: [{ kind: "chat", requests: 40, total_tokens: 13900 }],
+  by_kind: [{ kind: "chat", requests: 40, total_tokens: 13000 }],
 };
 
 const CONV_A = {
@@ -132,6 +150,20 @@ describe("回覆列思考 tokens", () => {
     );
     expect(screen.getByText(/思考約/)).toBeTruthy();
     expect(screen.getByText(/1234 tokens/)).toBeTruthy();
+  });
+
+  it("source=null 且無 reasoning_tokens 時退回字數，不顯示約", () => {
+    render(
+      <ReasoningSummary
+        trace={[]}
+        reasoning={REASONING}
+        streaming={false}
+        usage={{ reasoning_tokens: null, reasoning_tokens_source: null }}
+      />,
+    );
+    expect(screen.getByText(/4 字思考/)).toBeTruthy();
+    expect(screen.queryByText(/約/)).toBeNull();
+    expect(screen.queryByText(/tokens/)).toBeNull();
   });
 
   it("沒有 reasoning_tokens 時退回字數", () => {
@@ -217,7 +249,17 @@ describe("我的用量頁", () => {
     });
     expect(screen.getByTestId("usage-metric-prompt_tokens").textContent).toContain("1000");
     expect(screen.getByTestId("usage-metric-completion_tokens").textContent).toContain("2000");
+    expect(screen.getByTestId("usage-metric-total_tokens").textContent).toContain("3000");
+    expect(screen.getByTestId("usage-metric-total_tokens").textContent).not.toContain("3345");
     expect(screen.getByTestId("usage-metric-reasoning_tokens").textContent).toContain("345");
+    expect(screen.getByText("思考 tokens 另計，不含在總數")).toBeTruthy();
+    const firstDay = document.querySelector("[data-day-total]");
+    expect(firstDay.getAttribute("data-day-total")).toBe("1200");
+    expect(firstDay.getAttribute("data-day-reasoning")).toBe("100");
+    expect(firstDay.getAttribute("title")).toMatch(/總數 1200/);
+    expect(firstDay.getAttribute("title")).not.toMatch(/總數 1300/);
+    expect(screen.getByText("chat")).toBeTruthy();
+    expect(screen.getByText("2700")).toBeTruthy();
     expect(backend.requestsFor("/api/usage/me", "GET").at(-1).query).toContain("range=7d");
 
     fireEvent.click(screen.getByRole("button", { name: "30d" }));
@@ -264,7 +306,7 @@ describe("對話小計", () => {
           prompt_tokens: 100,
           completion_tokens: 200,
           reasoning_tokens: 50,
-          total_tokens: 350,
+          total_tokens: 300,
         },
         202: {
           conversation_id: 202,
@@ -272,7 +314,7 @@ describe("對話小計", () => {
           prompt_tokens: 10,
           completion_tokens: 20,
           reasoning_tokens: 5,
-          total_tokens: 35,
+          total_tokens: 30,
         },
       },
     });
@@ -281,7 +323,7 @@ describe("對話小計", () => {
     await waitFor(
       () => {
         expect(backend.requestsFor("/api/conversations/201/usage", "GET").length).toBeGreaterThan(0);
-        expect(screen.getByText(/本對話 350 tokens/)).toBeTruthy();
+        expect(screen.getByText(/本對話 300 tokens/)).toBeTruthy();
       },
       { timeout: 2500 },
     );
@@ -290,12 +332,12 @@ describe("對話小計", () => {
     await waitFor(
       () => {
         expect(backend.requestsFor("/api/conversations/202/usage", "GET").length).toBeGreaterThan(0);
-        expect(screen.getByText(/本對話 35 tokens/)).toBeTruthy();
+        expect(screen.getByText(/本對話 30 tokens/)).toBeTruthy();
       },
       { timeout: 2500 },
     );
 
-    fireEvent.click(screen.getByText(/本對話 35 tokens/));
+    fireEvent.click(screen.getByText(/本對話 30 tokens/));
     expect(screen.getByText(/輸入 10/)).toBeTruthy();
     expect(screen.getByText(/輸出 20/)).toBeTruthy();
     expect(screen.getByText(/思考 5/)).toBeTruthy();

@@ -29,6 +29,12 @@ export function thinkingAppliedFoldSuffix(applied) {
   return applied?.source === "turn" ? `${label}（僅此題）` : label;
 }
 
+/** 正文總數：API total_tokens，或 prompt + completion。不含思考。 */
+export function usageBodyTokens(row) {
+  if (typeof row?.total_tokens === "number") return row.total_tokens;
+  return (row?.prompt_tokens || 0) + (row?.completion_tokens || 0);
+}
+
 export function isUsageEmpty(data) {
   if (!data) return true;
   const noRows =

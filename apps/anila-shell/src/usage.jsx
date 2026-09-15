@@ -6,11 +6,12 @@ import {
   DEFAULT_USAGE_RANGE,
   USAGE_RANGES,
   isUsageEmpty,
+  usageBodyTokens,
 } from "./runtime/usageDisplay.js";
 
 export function ConversationUsageChip({ usage }) {
   if (!usage) return null;
-  const total = Number(usage.total_tokens) || 0;
+  const total = usageBodyTokens(usage);
   return (
     <details
       data-conversation-usage=""
@@ -68,32 +69,53 @@ function MetricCard({ id, label, value }) {
 function DayBars({ days }) {
   const rows = Array.isArray(days) ? days : [];
   if (!rows.length) return null;
-  const totals = rows.map(
-    (d) => (d.prompt_tokens || 0) + (d.completion_tokens || 0) + (d.reasoning_tokens || 0),
-  );
-  const max = Math.max(1, ...totals);
+  const totals = rows.map((d) => usageBodyTokens(d));
+  const reasonings = rows.map((d) => d.reasoning_tokens || 0);
+  const max = Math.max(1, ...totals, ...reasonings);
   return (
     <div>
       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>依日</div>
       <div
         role="img"
         aria-label="依日用量"
-        style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 96 }}
+        style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 96 }}
       >
         {rows.map((d, i) => {
           const total = totals[i];
-          const h = Math.max(2, Math.round((total / max) * 80));
+          const reasoning = reasonings[i];
+          const totalH = Math.max(2, Math.round((total / max) * 80));
+          const reasonH = reasoning > 0 ? Math.max(2, Math.round((reasoning / max) * 80)) : 0;
           return (
-            <div key={d.date || i} style={{ flex: 1, minWidth: 16, textAlign: "center" }}>
+            <div key={d.date || i} style={{ flex: 1, minWidth: 28, textAlign: "center" }}>
               <div
-                title={`${d.date}：${total} tokens`}
-                style={{
-                  height: h,
-                  background: "var(--accent)",
-                  borderRadius: 3,
-                  opacity: 0.85,
-                }}
-              />
+                style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", gap: 3, height: 80 }}
+                title={`${d.date}：總數 ${total} · 思考 ${reasoning}（另計）`}
+                data-day-total={total}
+                data-day-reasoning={reasoning}
+              >
+                <div
+                  aria-hidden="true"
+                  style={{
+                    width: 8,
+                    height: totalH,
+                    background: "var(--accent)",
+                    borderRadius: 2,
+                    opacity: 0.9,
+                  }}
+                />
+                {reasonH ? (
+                  <div
+                    aria-hidden="true"
+                    style={{
+                      width: 8,
+                      height: reasonH,
+                      background: "var(--fg-muted)",
+                      borderRadius: 2,
+                      opacity: 0.55,
+                    }}
+                  />
+                ) : null}
+              </div>
               <div
                 style={{
                   marginTop: 4,
@@ -110,6 +132,9 @@ function DayBars({ days }) {
             </div>
           );
         })}
+      </div>
+      <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 8 }}>
+        思考 tokens 另計，不含在總數
       </div>
     </div>
   );
@@ -222,7 +247,14 @@ export function UsagePage({ open, onClose, request }) {
               <MetricCard id="requests" label="請求數" value={data.requests} />
               <MetricCard id="prompt_tokens" label="輸入 tokens" value={data.prompt_tokens} />
               <MetricCard id="completion_tokens" label="輸出 tokens" value={data.completion_tokens} />
-              <MetricCard id="reasoning_tokens" label="思考 tokens" value={data.reasoning_tokens} />
+              <MetricCard id="total_tokens" label="總數" value={usageBodyTokens(data)} />
+            </div>
+            <div
+              data-testid="usage-metric-reasoning_tokens"
+              data-usage-metric="reasoning_tokens"
+              style={{ fontSize: 12, color: "var(--fg-muted)" }}
+            >
+              思考 tokens {data.reasoning_tokens ?? 0}（另計，不含在總數）
             </div>
 
             {isUsageEmpty(data) ? (
