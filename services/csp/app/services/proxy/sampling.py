@@ -174,6 +174,83 @@ def _apply_thinking_effort(body: dict[str, Any], model: Any) -> None:
         body["reasoning_effort"] = level
 
 
+def _thinking_applied_source(
+    request_body: Mapping[str, Any],
+    model: Any,
+    thinking_tier: Any,
+) -> str:
+    model_type = getattr(model, "model_type", None) or ""
+    protocol = (getattr(model, "protocol", None) or "openai_compatible").strip()
+    if protocol == "triton_grpc" or model_type in _SKIP_MODEL_TYPES:
+        return "model"
+    if _caller_supplied_thinking(request_body):
+        return "caller"
+    if is_thinking_locked(model):
+        return "model"
+    body_tier = request_body.get(ANILA_THINKING_TIER_KEY)
+    if _normalize_thinking_tier(body_tier) in {"off", "standard", "deep"}:
+        return "turn"
+    if _normalize_thinking_tier(thinking_tier) in {"off", "standard", "deep"}:
+        return "conversation"
+    return "model"
+
+
+def _thinking_applied_tier(
+    request_body: Mapping[str, Any],
+    model: Any,
+    thinking_tier: Any,
+) -> str:
+    model_type = getattr(model, "model_type", None) or ""
+    protocol = (getattr(model, "protocol", None) or "openai_compatible").strip()
+    if protocol == "triton_grpc" or model_type in _SKIP_MODEL_TYPES:
+        return "default"
+    if _caller_supplied_thinking(request_body) or is_thinking_locked(model):
+        return "default"
+    body_tier = request_body.get(ANILA_THINKING_TIER_KEY)
+    normalized_body = _normalize_thinking_tier(body_tier)
+    if normalized_body in {"off", "standard", "deep"}:
+        return normalized_body
+    normalized_conv = _normalize_thinking_tier(thinking_tier)
+    if normalized_conv in {"off", "standard", "deep"}:
+        return normalized_conv
+    return "default"
+
+
+def _thinking_level_from_body(body: Mapping[str, Any]) -> str | None:
+    if "reasoning_effort" in body:
+        raw = body.get("reasoning_effort")
+        if raw is None:
+            return None
+        value = str(raw).strip().lower()
+        return value or None
+    kwargs = body.get("chat_template_kwargs")
+    if isinstance(kwargs, dict) and "enable_thinking" in kwargs:
+        return "none" if not kwargs.get("enable_thinking") else None
+    return None
+
+
+def describe_thinking_applied(
+    request_body: Mapping[str, Any],
+    model: Any,
+    *,
+    thinking_tier: Any = None,
+) -> dict[str, Any]:
+    """Describe the thinking decision ``apply_model_sampling_overrides`` takes.
+
+    Sister of ``apply_model_sampling_overrides``: same inputs, no mutation of
+    ``request_body``, and the apply function's return value stays a body dict.
+    ``level`` is read from the body apply would send upstream.
+    """
+    applied = apply_model_sampling_overrides(
+        request_body, model, thinking_tier=thinking_tier
+    )
+    return {
+        "tier": _thinking_applied_tier(request_body, model, thinking_tier),
+        "level": _thinking_level_from_body(applied),
+        "source": _thinking_applied_source(request_body, model, thinking_tier),
+    }
+
+
 def apply_model_sampling_overrides(
     request_body: Mapping[str, Any],
     model: Any,

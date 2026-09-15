@@ -212,6 +212,20 @@ def test_non_streaming_agent_payload_hook_records_reported_and_estimated_observa
     assert "short_reply" not in results[1]
 
 
+def test_unavailable_usage_source_never_claims_short_reply():
+    """串流中斷、上游沒給 usage：長度量不到，就不下短回覆的判斷。"""
+    metadata = attach_agent_reply_observation(
+        {},
+        completion_tokens=0,
+        usage_source="unavailable",
+    )
+
+    assert metadata[AGENT_REPLY_OBSERVATION_KEY] == {
+        "completion_tokens": 0,
+        "usage_source": "unavailable",
+    }
+
+
 def test_observation_failure_drops_flag_without_raising(caplog):
     metadata = {
         AGENT_REPLY_OBSERVATION_KEY: {

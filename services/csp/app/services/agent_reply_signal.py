@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 AGENT_REPLY_OBSERVATION_KEY = "agent_reply_observation"
 AGENT_REPLY_SHORT_FLAG = "short_reply"
-UsageSource = Literal["reported", "estimated"]
+UsageSource = Literal["reported", "estimated", "unavailable"]
 
 # Calibration recorded in docs/HANDOFF-2026-08-11.md §八: interception 121;
 # model refusals 129 and 138; normal replies 219 and 365. 160 is conservative
@@ -23,7 +23,10 @@ UsageSource = Literal["reported", "estimated"]
 # convergence against the real reply distribution.
 AGENT_SHORT_REPLY_TOKENS = 160
 
-_USAGE_SOURCES = frozenset({"reported", "estimated"})
+_USAGE_SOURCES = frozenset({"reported", "estimated", "unavailable"})
+# ``unavailable`` 出現在串流中斷、上游沒給 usage 又不該估算的時候。此時
+# ``completion_tokens`` 只是佔位,量不到長度就不下短回覆的判斷。
+_UNMEASURED_USAGE_SOURCE = "unavailable"
 
 
 def build_agent_reply_observation(
@@ -41,13 +44,18 @@ def build_agent_reply_observation(
         if completion_tokens < 0:
             raise ValueError("completion_tokens must be non-negative")
         if usage_source not in _USAGE_SOURCES:
-            raise ValueError("usage_source must be reported or estimated")
+            raise ValueError(
+                "usage_source must be reported, estimated or unavailable"
+            )
 
         observation: dict[str, int | str | bool] = {
             "completion_tokens": completion_tokens,
             "usage_source": usage_source,
         }
-        if completion_tokens <= AGENT_SHORT_REPLY_TOKENS:
+        if (
+            usage_source != _UNMEASURED_USAGE_SOURCE
+            and completion_tokens <= AGENT_SHORT_REPLY_TOKENS
+        ):
             observation[AGENT_REPLY_SHORT_FLAG] = True
         return observation
     except Exception:  # pragma: no cover - defensive serving boundary

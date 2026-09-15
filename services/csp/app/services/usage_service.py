@@ -731,3 +731,122 @@ def get_usage_by_client(db: Session, *, days: int = 30) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def _caller_usage_rows(db: Session, *, user_id: int, start_time: datetime):
+    query = db.query(TokenUsage).filter(
+        TokenUsage.user_id == user_id,
+        TokenUsage.request_timestamp >= start_time,
+    )
+    if hasattr(TokenUsage, "usage_kind"):
+        query = query.filter(
+            (TokenUsage.usage_kind.is_(None)) | (TokenUsage.usage_kind != "router_transport")
+        )
+    return query.all()
+
+
+def _sum_reasoning(rows) -> int:
+    return sum(int(row.reasoning_tokens or 0) for row in rows)
+
+
+def get_caller_usage(db: Session, *, user_id: int, range_key: str) -> dict:
+    """Self-scoped usage for the signed-in caller (no other users, no api keys)."""
+    start_time, _ = get_time_range(range_key)
+    rows = _caller_usage_rows(db, user_id=user_id, start_time=start_time)
+    names = {
+        model.id: (model.display_name or model.name)
+        for model in db.query(ModelRegistry).all()
+    }
+    by_model: dict[int, dict] = {}
+    by_kind: dict[str, dict] = {}
+    by_day: dict[str, dict] = {}
+    prompt = completion = 0
+    for row in rows:
+        prompt += int(row.prompt_tokens or 0)
+        completion += int(row.completion_tokens or 0)
+        model_entry = by_model.setdefault(
+            row.model_id,
+            {
+                "model_id": row.model_id,
+                "model_name": names.get(row.model_id)
+                or row.model_name_snapshot
+                or str(row.model_id),
+                "requests": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+        )
+        model_entry["requests"] += 1
+        model_entry["prompt_tokens"] += int(row.prompt_tokens or 0)
+        model_entry["completion_tokens"] += int(row.completion_tokens or 0)
+        model_entry["reasoning_tokens"] += int(row.reasoning_tokens or 0)
+
+        kind = row.request_type or "chat"
+        kind_entry = by_kind.setdefault(
+            kind,
+            {
+                "kind": kind,
+                "requests": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        kind_entry["requests"] += 1
+        kind_entry["prompt_tokens"] += int(row.prompt_tokens or 0)
+        kind_entry["completion_tokens"] += int(row.completion_tokens or 0)
+        kind_entry["reasoning_tokens"] += int(row.reasoning_tokens or 0)
+        kind_entry["total_tokens"] += int(row.total_tokens or 0)
+
+        day = _to_tpe_iso(row.request_timestamp)[:10]
+        day_entry = by_day.setdefault(
+            day,
+            {
+                "date": day,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+        )
+        day_entry["prompt_tokens"] += int(row.prompt_tokens or 0)
+        day_entry["completion_tokens"] += int(row.completion_tokens or 0)
+        day_entry["reasoning_tokens"] += int(row.reasoning_tokens or 0)
+
+    return {
+        "range": range_key,
+        "requests": len(rows),
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "reasoning_tokens": _sum_reasoning(rows),
+        "total_tokens": prompt + completion,
+        "by_model": sorted(by_model.values(), key=lambda item: item["model_id"]),
+        "by_day": [by_day[key] for key in sorted(by_day)],
+        "by_kind": sorted(by_kind.values(), key=lambda item: item["kind"]),
+    }
+
+
+def get_conversation_usage(
+    db: Session, *, user_id: int, conversation_id: str
+) -> dict:
+    """Owner-only conversation totals. ``conversation_id`` compared as string."""
+    query = db.query(TokenUsage).filter(
+        TokenUsage.user_id == user_id,
+        TokenUsage.conversation_id == str(conversation_id),
+    )
+    if hasattr(TokenUsage, "usage_kind"):
+        query = query.filter(
+            (TokenUsage.usage_kind.is_(None)) | (TokenUsage.usage_kind != "router_transport")
+        )
+    rows = query.all()
+    prompt = sum(int(row.prompt_tokens or 0) for row in rows)
+    completion = sum(int(row.completion_tokens or 0) for row in rows)
+    return {
+        "conversation_id": str(conversation_id),
+        "requests": len(rows),
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "reasoning_tokens": _sum_reasoning(rows),
+        "total_tokens": prompt + completion,
+    }
