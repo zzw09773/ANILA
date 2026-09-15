@@ -104,7 +104,7 @@ def test_routing_compact_summarizes_before_main_call(monkeypatch):
     client = _Client(answers=[_reply("好")])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
 
-    compacted, step = asyncio.run(
+    compacted, step, _event = asyncio.run(
         rs._auto_compact_routing_messages(
             _long_messages(),
             caller_api_key="sk",

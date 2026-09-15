@@ -26,6 +26,8 @@ class CompactResult:
     method: str  # "none" | "strip_images" | "summary" | "sliding_window"
     tokens_before: int
     tokens_after: int
+    summary: str | None = None
+    recent_count: int = 0
 
 
 def flatten_openai_content(value: Any) -> str:
@@ -111,6 +113,21 @@ def _flatten_turns(turns: Sequence[Sequence[dict[str, Any]]]) -> list[dict[str, 
     for turn in turns:
         out.extend(turn)
     return out
+
+
+def _is_compact_placeholder(msg: Mapping[str, Any]) -> bool:
+    text = flatten_openai_content(msg.get("content")).lstrip()
+    return text.startswith(HISTORY_SUMMARY_PREFIX) or text.startswith(SLIDING_WINDOW_SUMMARY)
+
+
+def _recent_count_from_compacted(
+    compacted: Sequence[Mapping[str, Any]],
+    system_len: int,
+) -> int:
+    tail = list(compacted[system_len:])
+    if tail and _is_compact_placeholder(tail[0]):
+        return max(0, len(tail) - 1)
+    return len(tail)
 
 
 def sliding_window_openai(
@@ -218,8 +235,9 @@ async def auto_compact_openai_messages(
         except Exception:
             summary = None
         if isinstance(summary, str) and summary.strip():
+            summary_text = summary.strip()
             compacted = system + [
-                {"role": "user", "content": f"{HISTORY_SUMMARY_PREFIX}\n{summary.strip()}"}
+                {"role": "user", "content": f"{HISTORY_SUMMARY_PREFIX}\n{summary_text}"}
             ] + recent
             after = estimate_openai_tokens(compacted)
             if after <= tokens_before:
@@ -228,12 +246,27 @@ async def auto_compact_openai_messages(
                         compacted, threshold, keep_recent_turns=max(1, keep_recent_turns - 1)
                     )
                     after = estimate_openai_tokens(compacted)
-                return CompactResult(compacted, True, "summary", tokens_before, after)
+                return CompactResult(
+                    compacted,
+                    True,
+                    "summary",
+                    tokens_before,
+                    after,
+                    summary=summary_text,
+                    recent_count=len(recent),
+                )
 
     if force:
         compacted = system + [{"role": "user", "content": SLIDING_WINDOW_SUMMARY}] + recent
         after = estimate_openai_tokens(compacted)
-        return CompactResult(compacted, True, "sliding_window", tokens_before, after)
+        return CompactResult(
+            compacted,
+            True,
+            "sliding_window",
+            tokens_before,
+            after,
+            recent_count=len(recent),
+        )
 
     compacted, _ = sliding_window_openai(working, threshold, keep_recent_turns=keep_n)
     after = estimate_openai_tokens(compacted)
@@ -241,4 +274,11 @@ async def auto_compact_openai_messages(
         if tokens_saved > 0:
             return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
         return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
-    return CompactResult(compacted, True, "sliding_window", tokens_before, after)
+    return CompactResult(
+        compacted,
+        True,
+        "sliding_window",
+        tokens_before,
+        after,
+        recent_count=_recent_count_from_compacted(compacted, len(system)),
+    )

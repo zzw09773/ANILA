@@ -279,7 +279,7 @@ def test_compact_summary_payload_omits_thinking_tier(monkeypatch):
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
     token = _with_tier("deep")
     try:
-        compacted, step = asyncio.run(
+        compacted, step, _event = asyncio.run(
             rs._auto_compact_routing_messages(
                 _long_messages(),
                 caller_api_key="sk",
