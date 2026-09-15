@@ -322,6 +322,8 @@ export function createFakeBackend(options = {}) {
     enforceCsrf = true,
     // users.ui_settings 的初始值。真後端存的是 per-user blob,PUT 整包覆蓋。
     uiSettings: initialUiSettings = {},
+    myUsageByRange: initialMyUsageByRange = {},
+    conversationUsageById: initialConversationUsage = {},
   } = options;
 
   /**
@@ -330,6 +332,35 @@ export function createFakeBackend(options = {}) {
    * 就把另一個 key 洗掉」這種錯在測試裡會永遠看不到。
    */
   let uiSettings = { ...initialUiSettings };
+  const myUsageByRange = { ...initialMyUsageByRange };
+  const conversationUsageById = new Map(
+    Object.entries(initialConversationUsage).map(([id, row]) => [Number(id), row]),
+  );
+
+  function emptyMyUsage(range) {
+    return {
+      range,
+      requests: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      reasoning_tokens: 0,
+      total_tokens: 0,
+      by_model: [],
+      by_day: [],
+      by_kind: [],
+    };
+  }
+
+  function emptyConversationUsage(convId) {
+    return {
+      conversation_id: convId,
+      requests: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      reasoning_tokens: 0,
+      total_tokens: 0,
+    };
+  }
 
   /** 每一個真的打出去的請求。 */
   const requests = [];
@@ -512,7 +543,7 @@ export function createFakeBackend(options = {}) {
   }
 
   // 預設路由表。回傳 undefined = 沒接住。
-  function defaultRoute({ method, path, body, init }) {
+  function defaultRoute({ method, path, query, body, init }) {
     // ---- 認證 ----
     if (path === "/api/auth/me") return jsonResponse(user);
     if (path === "/api/auth/refresh") return jsonResponse({ ok: true });
@@ -577,6 +608,10 @@ export function createFakeBackend(options = {}) {
     }
     if (/^\/api\/agents\/[^/]+\/functions$/.test(path)) return jsonResponse([]);
     if (path === "/api/handoffs") return jsonResponse([]);
+    if (path === "/api/usage/me" && method === "GET") {
+      const range = new URLSearchParams(query).get("range") || "7d";
+      return jsonResponse(myUsageByRange[range] || emptyMyUsage(range));
+    }
 
     if (path === "/api/conversations" && method === "GET") {
       return jsonResponse([...convs.values()]);
@@ -621,6 +656,12 @@ export function createFakeBackend(options = {}) {
       const updated = { ...row, router_model_id: nextId, router_model_name: nextId === 4 ? "qwen-example" : "glm-example", router_selection_version: expected + 1 };
       convs.set(convId, updated);
       return jsonResponse(updated);
+    }
+    const convUsageMatch = path.match(/^\/api\/conversations\/(\d+)\/usage$/);
+    if (convUsageMatch && method === "GET") {
+      const convId = Number(convUsageMatch[1]);
+      if (!convs.has(convId)) return errorResponse(404, "找不到對話");
+      return jsonResponse(conversationUsageById.get(convId) || emptyConversationUsage(convId));
     }
     if (path.includes("/thinking") && method === "PUT") {
       const convId = Number(path.split("/")[3]);

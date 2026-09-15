@@ -80,7 +80,10 @@ import {
   putUiSettings,
   searchConversations,
   listActiveBanners as apiListActiveBanners,
+  getConversationUsage as apiGetConversationUsage,
 } from "./runtime/conversations.js";
+import { CONV_USAGE_DEBOUNCE_MS } from "./runtime/usageDisplay.js";
+import { ConversationUsageChip, UsagePage } from "./usage.jsx";
 import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
 import {
   applyServerPath,
@@ -510,6 +513,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [shareOpen, setShareOpen] = useState(false);
   // 專案入口（Service Platform）overlay。
   const [servicesOpen, setServicesOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [convUsage, setConvUsage] = useState(null);
+  const [convUsageTick, setConvUsageTick] = useState(0);
   const [collapsed, setCollapsed] = useState(false);
   // 窄視窗（≤900px）自動收合側欄，視窗變寬再展開；使用者手動切換照常。
   // 沒有這條時，400px 寬的視窗會被 272px 的側欄吃掉，主欄擠成直排字
@@ -1083,6 +1089,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       ratingScore: typeof msg.rating_score === "number" ? msg.rating_score : null,
       reasoning: meta.reasoning || null,
       thinkingLocked: meta.thinking_locked === true,
+      usage: meta.usage || null,
+      thinkingApplied: meta.thinking_applied || null,
       // OW-3: action:NAME attribution (second channel alongside metadata.action).
       agentName: msg.agent_name || null,
       // OW-3 provenance (metadata.action) — quiet action-name attribution.
@@ -1231,6 +1239,28 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedConvId]);
+
+  useEffect(() => {
+    if (typeof selectedConvId !== "number") {
+      setConvUsage(null);
+      return undefined;
+    }
+    setConvUsage(null);
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      apiGetConversationUsage(authRequest, selectedConvId)
+        .then((row) => {
+          if (!cancelled) setConvUsage(row);
+        })
+        .catch(() => {
+          if (!cancelled) setConvUsage(null);
+        });
+    }, CONV_USAGE_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [selectedConvId, authRequest, convUsageTick]);
 
   // ---- conversation helpers (classification is one-way latch) ----
   // Returns the backend integer conversation id. Creates a new row on the
@@ -1764,6 +1794,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       classified: meta.classified,
       reasoning: meta.reasoning || null,
       thinkingLocked: meta.thinking_locked === true,
+      thinkingApplied: meta.thinking_applied || null,
       // Display-only, but it was showing the wrong agent name on every
       // routed answer: BOTH ends of handoff_chain read "anila-router" on the
       // router path, so `.at(-1)` never named the agent that answered.
@@ -1771,6 +1802,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       stageLabel: meta.trace?.at?.(-1)?.label,
       conversationId: convId,
     });
+    if (typeof convId === "number") {
+      setConvUsageTick((n) => n + 1);
+    }
 
     // Classification latch — one-way. See runtime/classified.js.
     //
@@ -3109,8 +3143,19 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           setSettingsTab(tab || "general");
           setSettingsOpen(true);
         }}
-        onOpenServices={() => setServicesOpen(true)}
-        onTaskCenter={() => setServicesOpen(false)}
+        onOpenServices={() => {
+          setUsageOpen(false);
+          setServicesOpen(true);
+        }}
+        onOpenUsage={() => {
+          setServicesOpen(false);
+          setUsageOpen(true);
+        }}
+        onTaskCenter={() => {
+          setServicesOpen(false);
+          setUsageOpen(false);
+        }}
+        currentNavId={usageOpen ? "usage" : "tasks"}
         collapsed={collapsed}
         onToggleCollapsed={() => setCollapsed((c) => !c)}
         folder={folder}
@@ -3207,6 +3252,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
           {selectedConv && !compareMode && (
             <>
+              {typeof selectedConvId === "number" && convUsage ? (
+                <ConversationUsageChip usage={convUsage} />
+              ) : null}
               {selectedConv.classified && (
                 <span
                   title="此對話已鎖為列管（由後端依 agent 預設分類等級強制啟用）。"
@@ -3622,6 +3670,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         onClose={() => setServicesOpen(false)}
         request={authRequest}
         toast={toast}
+      />
+
+      <UsagePage
+        open={usageOpen}
+        onClose={() => setUsageOpen(false)}
+        request={authRequest}
       />
     </div>
     </ArtifactPreviewProvider>

@@ -20,6 +20,7 @@ import {
 import { Modal } from "./components.jsx";
 import {
   IconBook,
+  IconGauge,
   IconGrid,
   IconMessage,
   IconShield,
@@ -55,9 +56,9 @@ export function originHref(path) {
 
 /**
  * 使用者入口（doc 00 §2 / doc 10 §11 順序）。
- * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void }} handlers
+ * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void, onOpenUsage?: () => void, currentId?: string }} handlers
  */
-export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
+export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, currentId = "tasks" } = {}) {
   const knowledge = ANILA_LM_ENTRY_ENABLED
     ? { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: originHref("/anilalm") }
     : {
@@ -70,12 +71,13 @@ export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
 
   return [
     // 任務中心 = 現有聊天工作區（預設視圖，chat 即任務工作台）。
-    { id: "tasks", label: "對話", Icon: IconMessage, current: true, onClick: onTaskCenter },
+    { id: "tasks", label: "對話", Icon: IconMessage, current: currentId === "tasks", onClick: onTaskCenter },
     // 我的知識庫 = 同源知識 SPA（也承載 Studio / 產出）。
     // 本 release 關閉：保留列、停用、標「即將推出」。重開改 anilalmReleaseGate.js。
     knowledge,
     // 專案入口 = ServicesPanel（Registry 服務卡片）。
-    { id: "projects", label: "專案入口", Icon: IconGrid, onClick: onOpenServices },
+    { id: "projects", label: "專案入口", Icon: IconGrid, current: currentId === "projects", onClick: onOpenServices },
+    { id: "usage", label: "用量", Icon: IconGauge, current: currentId === "usage", onClick: onOpenUsage },
   ];
 }
 
@@ -210,9 +212,11 @@ function NavRow({ entry, collapsed }) {
  *   collapsed?: boolean,
  *   onTaskCenter?: () => void,
  *   onOpenServices?: () => void,
+ *   onOpenUsage?: () => void,
+ *   currentId?: string,
  * }} props
  */
-export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices }) {
+export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices, onOpenUsage, currentId = "tasks" }) {
   const [open, setOpen] = useState(false);
   const closeThen = (fn) => () => {
     setOpen(false);
@@ -221,6 +225,8 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
   const entries = buildShellEntries({
     onTaskCenter: closeThen(onTaskCenter),
     onOpenServices: closeThen(onOpenServices),
+    onOpenUsage: closeThen(onOpenUsage),
+    currentId,
   });
   if (canSeeGovernance(user)) {
     entries.push(governanceEntry());
@@ -272,7 +278,7 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
         open={open}
         onClose={() => setOpen(false)}
         title="平台入口"
-        subtitle="對話、知識庫與專案"
+        subtitle="對話、知識庫、專案與用量"
         width={360}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "-8px 0" }}>
