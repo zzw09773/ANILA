@@ -586,12 +586,7 @@ def set_conversation_thinking(
         current = db.get(Conversation, conv_id)
         if current is None or current.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="對話不存在")
-        raise HTTPException(
-            status_code=409,
-            detail=_conversation_out(db, current_user, current).model_dump(
-                mode="json"
-            ),
-        )
+        raise HTTPException(status_code=409, detail="思考檔位版本衝突，請重新整理")
     db.commit()
     conv = db.get(Conversation, conv_id)
     return _conversation_out(db, current_user, conv)

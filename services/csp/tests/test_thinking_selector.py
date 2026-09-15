@@ -11,13 +11,15 @@ os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import httpx
 import pytest
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.api import models as models_api
+from app.api import proxy as proxy_api
 from app.models.model_registry import ModelRegistry
 from app.models.router_model_grant import RouterModelGrant
 from app.schemas.model_registry import ModelUpdate
 from app.services import thinking_probe
+from app.services.proxy import service as proxy_impl
 from app.services.proxy.sampling import (
     ANILA_THINKING_TIER_KEY,
     apply_model_sampling_overrides,
@@ -468,9 +470,7 @@ def test_put_thinking_version_conflict_409_returns_current(client, db):
         },
     )
     assert stale.status_code == 409, stale.text
-    detail = stale.json()["detail"]
-    assert detail["thinking_tier"] == "standard"
-    assert detail["router_selection_version"] == first.json()["router_selection_version"]
+    assert stale.json()["detail"] == "思考檔位版本衝突，請重新整理"
 
 
 def test_put_thinking_illegal_value_422(client, db):
@@ -560,3 +560,300 @@ def test_model_update_accepts_thinking_user_selectable(client, db):
     assert resp.json()["thinking_user_selectable"] is False
     payload = ModelUpdate(thinking_user_selectable=False)
     assert payload.thinking_user_selectable is False
+
+
+# ── header → conversation.thinking_tier → outbound body ─────────────────────
+
+
+class _ChatPostResponse:
+    status_code = 200
+    headers = {"content-type": "application/json"}
+
+    def __init__(self):
+        self.text = json.dumps(
+            {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "answer"}}
+                ],
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 2,
+                    "total_tokens": 4,
+                },
+            }
+        )
+
+    def json(self):
+        return json.loads(self.text)
+
+    def raise_for_status(self):
+        return None
+
+
+class _ChatStreamResponse:
+    status_code = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def aiter_lines(self):
+        yield (
+            'data: {"choices":[{"index":0,"delta":{"content":"answer"},'
+            '"finish_reason":"stop"}],"usage":{"prompt_tokens":2,'
+            '"completion_tokens":2,"total_tokens":4}}'
+        )
+        yield ""
+        yield "data: [DONE]"
+        yield ""
+
+
+class _CapturingUpstream:
+    last_body: dict | None = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, headers=None):
+        type(self).last_body = json
+        return _ChatPostResponse()
+
+    def stream(self, method, url, json=None, headers=None):
+        type(self).last_body = json
+        return _ChatStreamResponse()
+
+
+def _wire_proxy_to_test_db(monkeypatch, db_engine) -> None:
+    """Same trick as usage-writer tests: SessionLocal must share db_engine.
+
+    ``_conversation_thinking_tier`` imports ``SessionLocal`` inside the
+    function, so the patch target is ``app.database.SessionLocal``.
+    """
+    monkeypatch.setattr(
+        "app.database.SessionLocal",
+        sessionmaker(bind=db_engine, expire_on_commit=False),
+    )
+    _CapturingUpstream.last_body = None
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    monkeypatch.setattr(
+        proxy_impl.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _CapturingUpstream(*args, **kwargs),
+    )
+
+    async def _no_usage(**kwargs):
+        return None
+
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", _no_usage)
+    monkeypatch.setattr(proxy_impl, "enqueue_usage_task_linked", _no_usage)
+    monkeypatch.setattr(proxy_api, "_schedule_memory_write", lambda **kwargs: None)
+
+
+def _open_deep_conversation(client, db, username: str, *, model_name: str, **fields):
+    make_user(db, username=username)
+    model = _open_router_llm(db, model_name, primary=True, **fields)
+    token = login(client, username)
+    headers = {"Authorization": f"Bearer {token}"}
+    created = client.post(
+        "/api/conversations",
+        headers=headers,
+        json={"title": "t", "origin": "anila-ui"},
+    )
+    assert created.status_code == 201, created.text
+    conv = created.json()
+    put = client.put(
+        f"/api/conversations/{conv['id']}/thinking",
+        headers=headers,
+        json={
+            "thinking_tier": "deep",
+            "expected_version": conv["router_selection_version"],
+        },
+    )
+    assert put.status_code == 200, put.text
+    return model, headers, put.json()
+
+
+def _chat(client, headers, *, model: str, conv_id, stream: bool = False, **extra):
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": stream,
+        **extra,
+    }
+    return client.post(
+        "/v1/chat/completions",
+        headers={
+            **headers,
+            "X-ANILA-Conversation-Id": str(conv_id),
+        },
+        json=body,
+    )
+
+
+def test_header_conversation_deep_maps_to_xhigh_nonstream(client, db, db_engine, monkeypatch):
+    _wire_proxy_to_test_db(monkeypatch, db_engine)
+    model, headers, conv = _open_deep_conversation(
+        client,
+        db,
+        "think-e2e-deep",
+        model_name="glm-e2e-deep",
+        thinking_levels_supported=QWEN_LIKE,
+        thinking_effort=None,
+    )
+    resp = _chat(client, headers, model=model.name, conv_id=conv["id"], stream=False)
+    assert resp.status_code == 200, resp.text
+    outbound = _CapturingUpstream.last_body
+    assert outbound is not None
+    assert outbound["reasoning_effort"] == "xhigh"
+    assert outbound.get("chat_template_kwargs", {}).get("enable_thinking") is True
+    assert ANILA_THINKING_TIER_KEY not in outbound
+    assert "thinking_tier" not in outbound
+
+
+def test_header_conversation_deep_none_only_model_stream(client, db, db_engine, monkeypatch):
+    _wire_proxy_to_test_db(monkeypatch, db_engine)
+    _, headers, conv = _open_deep_conversation(
+        client,
+        db,
+        "think-e2e-none",
+        model_name="glm-e2e-primary",
+        thinking_levels_supported=QWEN_LIKE,
+        thinking_effort=None,
+    )
+    none_only = _open_router_llm(
+        db,
+        "glm-e2e-none-only",
+        thinking_levels_supported=NONE_ONLY,
+        thinking_effort=None,
+    )
+    resp = _chat(client, headers, model=none_only.name, conv_id=conv["id"], stream=True)
+    assert resp.status_code == 200, resp.text
+    assert resp.text
+    outbound = _CapturingUpstream.last_body
+    assert outbound is not None
+    assert "reasoning_effort" not in outbound
+    assert outbound.get("chat_template_kwargs", {}).get("enable_thinking") is True
+    assert ANILA_THINKING_TIER_KEY not in outbound
+    assert "thinking_tier" not in outbound
+
+
+def test_header_conversation_deep_caller_reasoning_effort_none_wins(
+    client, db, db_engine, monkeypatch
+):
+    _wire_proxy_to_test_db(monkeypatch, db_engine)
+    model, headers, conv = _open_deep_conversation(
+        client,
+        db,
+        "think-e2e-compact",
+        model_name="glm-e2e-compact",
+        thinking_levels_supported=QWEN_LIKE,
+        thinking_effort=None,
+    )
+    resp = _chat(
+        client,
+        headers,
+        model=model.name,
+        conv_id=conv["id"],
+        stream=False,
+        reasoning_effort="none",
+    )
+    assert resp.status_code == 200, resp.text
+    outbound = _CapturingUpstream.last_body
+    assert outbound is not None
+    assert outbound["reasoning_effort"] == "none"
+    assert ANILA_THINKING_TIER_KEY not in outbound
+    assert "thinking_tier" not in outbound
+
+
+def test_header_conversation_foreign_owner_ignored(client, db, db_engine, monkeypatch):
+    _wire_proxy_to_test_db(monkeypatch, db_engine)
+    model, _owner_headers, conv = _open_deep_conversation(
+        client,
+        db,
+        "think-e2e-owner",
+        model_name="glm-e2e-owner",
+        thinking_levels_supported=QWEN_LIKE,
+        thinking_effort=None,
+    )
+    make_user(db, username="think-e2e-admin", role="admin")
+    admin_headers = {"Authorization": f"Bearer {login(client, 'think-e2e-admin')}"}
+    resp = _chat(
+        client, admin_headers, model=model.name, conv_id=conv["id"], stream=False
+    )
+    assert resp.status_code == 200, resp.text
+    outbound = _CapturingUpstream.last_body
+    assert outbound is not None
+    assert outbound.get("reasoning_effort") != "xhigh"
+    assert "reasoning_effort" not in outbound
+
+
+# ── POST /api/models/{id}/probe-thinking ────────────────────────────────────
+
+
+@pytest.mark.thinking_discover
+def test_probe_thinking_admin_writes_supported_set(client, db, monkeypatch):
+    _install_level_client(monkeypatch, _qwen_reject_high_max)
+    model = make_model(db, name="probe-ok")
+    make_user(db, username="admin-probe-ok", role="admin")
+    headers = {"Authorization": f"Bearer {login(client, 'admin-probe-ok')}"}
+    resp = client.post(f"/api/models/{model.id}/probe-thinking", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == model.id
+    assert body["name"] == "probe-ok"
+    assert body["thinking_levels_supported"] == QWEN_LIKE
+    assert body["thinking_probe"]["status"] == "ok"
+    db.refresh(model)
+    assert model.thinking_levels_supported == QWEN_LIKE
+
+
+def test_probe_thinking_non_admin_403(client, db):
+    model = make_model(db, name="probe-forbidden")
+    make_user(db, username="user-probe-no")
+    headers = {"Authorization": f"Bearer {login(client, 'user-probe-no')}"}
+    resp = client.post(f"/api/models/{model.id}/probe-thinking", headers=headers)
+    assert resp.status_code == 403
+
+
+@pytest.mark.thinking_discover
+def test_probe_thinking_all_unreachable_unprobed(client, db, monkeypatch):
+    monkeypatch.setattr(thinking_probe, "DISCOVER_TIMEOUT_S", 0.05)
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            await asyncio.sleep(1)
+            return _ProbeResp(200, "{}")
+
+    monkeypatch.setattr(thinking_probe.httpx, "AsyncClient", _Client)
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    model = make_model(db, name="probe-unreach")
+    model.thinking_levels_supported = QWEN_LIKE
+    db.commit()
+    make_user(db, username="admin-probe-unreach", role="admin")
+    headers = {"Authorization": f"Bearer {login(client, 'admin-probe-unreach')}"}
+    resp = client.post(f"/api/models/{model.id}/probe-thinking", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["thinking_levels_supported"] is None
+    assert body["thinking_probe"]["status"] == "unprobed"
+    db.refresh(model)
+    assert model.thinking_levels_supported is None

@@ -521,13 +521,24 @@ async def _proxy_triton_embedding(
     )
 
 
-def _conversation_thinking_tier(conversation_id: Optional[str]) -> str | None:
+def _conversation_thinking_tier(
+    conversation_id: Optional[str],
+    *,
+    caller_user_id: int | None,
+) -> str | None:
     """Load ``conversations.thinking_tier`` for the already-parsed header id.
+
+    Only the conversation owner's row is used (``conv.user_id ==
+    caller_user_id``). A missing caller id, missing row, or owner mismatch
+    returns None so a leaked / spoofed ``X-ANILA-Conversation-Id`` cannot
+    apply another user's picker setting. ``proxy.py`` already 404s foreign
+    ids for non-admin callers; this second check still runs because
+    admin-tier may pass that gate.
 
     Short-lived ``SessionLocal`` so this module does not hold the request
     session across outbound HTTP. Missing / non-numeric ids return None.
     """
-    if conversation_id is None:
+    if conversation_id is None or caller_user_id is None:
         return None
     raw = str(conversation_id).strip()
     if not raw.isdigit():
@@ -538,7 +549,7 @@ def _conversation_thinking_tier(conversation_id: Optional[str]) -> str | None:
     db = SessionLocal()
     try:
         row = db.get(Conversation, int(raw))
-        if row is None:
+        if row is None or row.user_id != caller_user_id:
             return None
         return getattr(row, "thinking_tier", None)
     except Exception:
@@ -653,7 +664,9 @@ async def _proxy_request_impl(
     request_body = apply_model_sampling_overrides(
         request_body,
         model,
-        thinking_tier=_conversation_thinking_tier(conversation_id),
+        thinking_tier=_conversation_thinking_tier(
+            conversation_id, caller_user_id=user_id
+        ),
     )
     # ``usage_source`` comes from the X-ANILA-Request-Source header: anila-studio
     # sends "studio" so the usage dashboard can split 簡報製作 from chat.
@@ -1141,7 +1154,9 @@ async def _proxy_stream_impl(
         request_body = apply_model_sampling_overrides(
             request_body,
             model,
-            thinking_tier=_conversation_thinking_tier(conversation_id),
+            thinking_tier=_conversation_thinking_tier(
+                conversation_id, caller_user_id=user_id
+            ),
         )
     # Force stream_options so the downstream sends usage in last chunk
     body = {**request_body, "stream": True,
