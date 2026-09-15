@@ -1,18 +1,41 @@
-// 右側靜態產物預覽面板（類 claude.ai artifacts）。
-// HTML／SVG → sandboxed iframe（無 allow-same-origin、無 allow-scripts）。
+// 右側產物預覽面板（類 claude.ai artifacts）。
+// HTML → 同源 artifact-frame.html + postMessage（無 allow-same-origin）。
+// SVG → srcdoc、不放行 script。
 // Markdown → 既有 MarkdownView（react-markdown，不執行 raw HTML script）。
 // 密等：沿用對話的 watermarkLevel / classifiedCopyDenial，不另設門檻。
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { IconButton } from "./components.jsx";
 import { IconX } from "./icons.jsx";
 import { MarkdownView } from "./markdown.jsx";
 import {
-  ARTIFACT_IFRAME_SANDBOX,
-  buildArtifactSrcDoc,
+  ARTIFACT_FRAME_HTML_TYPE,
+  ARTIFACT_FRAME_READY_TYPE,
+  buildArtifactFrameProps,
+  isIncompleteArtifactHtml,
 } from "./runtime/artifactDetect.js";
+import { artifactStillNeedsCdn, localizeArtifactHtml } from "./runtime/artifactVendor.js";
 import { ClassificationWatermark, watermarkLevel } from "./trust.jsx";
 import { classifiedCopyDenial } from "./uxCopy.js";
+
+const PANEL_MIN = 280;
+const PANEL_DEFAULT = 420;
+const PANEL_WIDTH_KEY = "anila.artifactPanelWidth";
+
+function readPanelWidth() {
+  try {
+    const n = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+    if (Number.isFinite(n) && n >= PANEL_MIN) return n;
+  } catch {
+    /* ignore */
+  }
+  return PANEL_DEFAULT;
+}
+
+export function clampPanelWidth(w) {
+  const max = Math.min(typeof window !== "undefined" ? window.innerWidth * 0.72 : 960, 1100);
+  return Math.max(PANEL_MIN, Math.min(max, w));
+}
 
 // Provider 在 artifactContext.jsx，避免與 markdown.jsx 循環依賴。
 export { ArtifactPreviewProvider, useArtifactPreview } from "./artifactContext.jsx";
@@ -39,11 +62,51 @@ export function ArtifactPanel({
 }) {
   const [mode, setMode] = useState("preview"); // 'preview' | 'source'
   const [copied, setCopied] = useState(false);
+  const [width, setWidth] = useState(readPanelWidth);
+  const [frameSource, setFrameSource] = useState(artifact?.source ?? "");
+  const widthRef = useRef(width);
+  const draggingRef = useRef(false);
+  widthRef.current = width;
 
   useEffect(() => {
     setMode("preview");
     setCopied(false);
-  }, [artifact?.source, artifact?.kind]);
+  }, [artifact?.kind]);
+
+  useEffect(() => {
+    const src = artifact?.source ?? "";
+    const t = setTimeout(() => setFrameSource(src), frameSource ? 400 : 0);
+    return () => clearTimeout(t);
+  }, [artifact?.source]); // eslint-disable-line react-hooks/exhaustive-deps — debounce only
+
+  const persistWidth = useCallback(() => {
+    try {
+      localStorage.setItem(PANEL_WIDTH_KEY, String(widthRef.current));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const onResizePointerDown = useCallback((e) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  const onResizePointerMove = useCallback((e) => {
+    if (!draggingRef.current) return;
+    if (!Number.isFinite(e.clientX)) return;
+    setWidth(clampPanelWidth(window.innerWidth - e.clientX));
+  }, []);
+
+  const onResizePointerUp = useCallback(() => {
+    draggingRef.current = false;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    persistWidth();
+  }, [persistWidth]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -89,7 +152,7 @@ export function ArtifactPanel({
       data-classification-level={classificationLevel || ""}
       aria-label="產物預覽"
       style={{
-        width: 420,
+        width,
         flexShrink: 0,
         borderLeft: "1px solid var(--border)",
         background: "var(--bg-subtle)",
@@ -100,6 +163,25 @@ export function ArtifactPanel({
         minWidth: 0,
       }}
     >
+      <div
+        data-testid="artifact-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="調整預覽寬度"
+        onPointerDown={onResizePointerDown}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={onResizePointerUp}
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 8,
+          marginLeft: -4,
+          cursor: "col-resize",
+          zIndex: 3,
+        }}
+      />
       {watermark && <ClassificationWatermark level={watermark} />}
 
       <div
@@ -204,23 +286,113 @@ export function ArtifactPanel({
             <MarkdownView text={source} />
           </div>
         ) : (
-          <iframe
-            data-testid="artifact-iframe"
-            title="產物預覽"
-            sandbox={ARTIFACT_IFRAME_SANDBOX}
-            srcDoc={buildArtifactSrcDoc(kind, source)}
-            style={{
-              width: "100%",
-              height: "100%",
-              minHeight: 320,
-              border: "none",
-              background: "#fff",
-              display: "block",
-            }}
-          />
+          <>
+            {kind === "html" && isIncompleteArtifactHtml(source) ? (
+              <div
+                data-testid="artifact-incomplete"
+                style={{
+                  position: "absolute",
+                  top: 10,
+                  left: 10,
+                  right: 10,
+                  zIndex: 2,
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  color: "#dce8ff",
+                  background: "rgba(20,28,48,.92)",
+                  border: "1px solid rgba(140,170,220,.35)",
+                  borderRadius: 8,
+                }}
+              >
+                這份 HTML 還沒寫完（腳本或 &lt;/html&gt; 被截斷）。畫面裡的「載入中」是頁面自己的，不是預覽壞掉。請用「繼續產生」把程式補完。
+              </div>
+            ) : null}
+            {kind === "html" && artifactStillNeedsCdn(localizeArtifactHtml(source)) ? (
+              <div
+                data-testid="artifact-cdn-blocked"
+                style={{
+                  position: "absolute",
+                  top: isIncompleteArtifactHtml(source) ? 72 : 10,
+                  left: 10,
+                  right: 10,
+                  zIndex: 2,
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  color: "#ffe8c8",
+                  background: "rgba(48,32,12,.92)",
+                  border: "1px solid rgba(220,170,100,.4)",
+                  borderRadius: 8,
+                }}
+              >
+                此頁還引用外網腳本（CDN）。隔離內網載不進來；Three.js 已改走本院同源檔，其他函式庫需改成本機路徑。
+              </div>
+            ) : null}
+            <ArtifactFrame kind={kind} source={frameSource || source} />
+          </>
         )}
       </div>
     </aside>
+  );
+}
+
+function ArtifactFrame({ kind, source }) {
+  const frame = buildArtifactFrameProps(kind, source);
+  const ref = useRef(null);
+  const html = frame.html;
+
+  useEffect(() => {
+    if (!html) return;
+    const node = ref.current;
+    if (!node) return;
+    const send = () => {
+      node.contentWindow?.postMessage({ type: ARTIFACT_FRAME_HTML_TYPE, html }, "*");
+    };
+    const onReady = (event) => {
+      if (event.source !== node.contentWindow) return;
+      if (event.data?.type !== ARTIFACT_FRAME_READY_TYPE) return;
+      send();
+    };
+    window.addEventListener("message", onReady);
+    node.addEventListener("load", send);
+    send();
+    return () => {
+      window.removeEventListener("message", onReady);
+      node.removeEventListener("load", send);
+    };
+  }, [html]);
+
+  const style = {
+    width: "100%",
+    height: "100%",
+    minHeight: 320,
+    border: "none",
+    background: "#111",
+    display: "block",
+  };
+
+  if (frame.srcDoc) {
+    return (
+      <iframe
+        data-testid="artifact-iframe"
+        title="產物預覽"
+        sandbox={frame.sandbox}
+        srcDoc={frame.srcDoc}
+        style={style}
+      />
+    );
+  }
+
+  return (
+    <iframe
+      ref={ref}
+      data-testid="artifact-iframe"
+      title="產物預覽"
+      sandbox={frame.sandbox}
+      src={frame.src}
+      style={style}
+    />
   );
 }
 

@@ -286,6 +286,15 @@ function CodeBlock({ node, children, ...props }) {
   const source = hastText(codeNode) || "";
   const artifactKind = detectArtifactKind(lang, source);
   const canPreview = Boolean(artifactKind && preview?.openArtifact);
+  useEffect(() => {
+    const cur = preview?.current;
+    if (!canPreview || !cur || !artifactKind) return;
+    if (cur.kind !== artifactKind) return;
+    if (source === cur.source) return;
+    if (cur.source && source.startsWith(cur.source)) {
+      preview.openArtifact({ kind: artifactKind, source, language: lang });
+    }
+  }, [source, artifactKind, lang, canPreview, preview]);
   return (
     <div style={{ position: "relative", margin: "8px 0" }}>
       {lang && (
@@ -338,7 +347,12 @@ function CodeBlock({ node, children, ...props }) {
       <CopyButton getText={() => ref.current?.innerText || ""} />
       <pre
         ref={ref}
+        data-testid="md-code-pre"
         {...props}
+        onWheel={(e) => {
+          const el = e.currentTarget;
+          if (el.scrollHeight > el.clientHeight + 1) e.stopPropagation();
+        }}
         style={{
           background: "var(--bg-subtle)",
           border: "1px solid var(--border)",
@@ -346,7 +360,9 @@ function CodeBlock({ node, children, ...props }) {
           padding: "10px 12px",
           paddingTop: lang ? 28 : 10,
           paddingRight: canPreview ? 118 : 56,
-          overflowX: "auto",
+          overflow: "auto",
+          maxHeight: "min(60vh, 520px)",
+          overscrollBehavior: "contain",
           fontSize: 12.5,
           lineHeight: 1.55,
           margin: 0,

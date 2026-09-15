@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>ANILA 產物預覽</title>
+  <style>
+    html, body, #v { margin: 0; height: 100%; background: #111; }
+    #v { border: 0; width: 100%; display: block; }
+  </style>
+</head>
+<body>
+  <iframe id="v" title="產物預覽" sandbox="allow-scripts allow-pointer-lock"></iframe>
+  <script>
+    (function () {
+      var view = document.getElementById("v");
+      function apply(html) {
+        if (typeof html !== "string") return;
+        view.srcdoc = html;
+      }
+      window.addEventListener("message", function (event) {
+        if (event.source !== window.parent) return;
+        var data = event.data;
+        if (!data || data.type !== "anila-artifact-html") return;
+        apply(data.html);
+      });
+      window.parent.postMessage({ type: "anila-artifact-ready" }, "*");
+    })();
+  </script>
+</body>
+</html>

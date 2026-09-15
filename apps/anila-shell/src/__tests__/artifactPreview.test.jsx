@@ -5,10 +5,15 @@ import React from "react";
 
 import {
   ARTIFACT_IFRAME_SANDBOX,
+  ARTIFACT_IFRAME_SANDBOX_HTML,
+  artifactFrameSrc,
+  buildArtifactFrameProps,
   buildArtifactSrcDoc,
   detectArtifactKind,
+  isIncompleteArtifactHtml,
 } from "../runtime/artifactDetect.js";
-import { ArtifactPanel } from "../artifact.jsx";
+import { artifactStillNeedsCdn, localizeArtifactHtml } from "../runtime/artifactVendor.js";
+import { ArtifactPanel, clampPanelWidth } from "../artifact.jsx";
 import { ArtifactPreviewProvider } from "../artifactContext.jsx";
 import { MarkdownView } from "../markdown.jsx";
 import { classifiedCopyDenial } from "../uxCopy.js";
@@ -30,6 +35,58 @@ fetch("/", { credentials: "include" });
 </script>
 <p>hostile</p>
 </body></html>`;
+
+describe("buildArtifactFrameProps", () => {
+  it("puts HTML on the same-origin preview shell, not a data URL", () => {
+    const frame = buildArtifactFrameProps("html", HOSTILE_HTML);
+    expect(frame.sandbox).toBe(ARTIFACT_IFRAME_SANDBOX_HTML);
+    expect(frame.src).toBe(artifactFrameSrc());
+    expect(frame.src).toMatch(/artifact-frame\.html$/);
+    expect(frame.src).not.toMatch(/^data:/);
+    expect(frame.srcDoc).toBeUndefined();
+    expect(frame.html).toContain("<script>");
+  });
+
+  it("rewrites Three.js CDN and same-folder filenames to the intranet vendor", () => {
+    const html = `<!DOCTYPE html><html><head></head><body>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</body></html>`;
+    const out = localizeArtifactHtml(html, { baseUrl: "/anila/" });
+    expect(out).toContain("/anila/vendor/three/r128/three.min.js");
+    expect(out).toContain("/anila/vendor/three/r128/OrbitControls.js");
+    expect(out).not.toMatch(/cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net/);
+    expect(artifactStillNeedsCdn(out)).toBe(false);
+
+    const relative = localizeArtifactHtml(
+      `<script src="three.min.js"></script><script src="./OrbitControls.js"></script>`,
+      { baseUrl: "/anila/" },
+    );
+    expect(relative).toContain('src="/anila/vendor/three/r128/three.min.js"');
+    expect(relative).toContain('src="/anila/vendor/three/r128/OrbitControls.js"');
+
+    const frame = buildArtifactFrameProps("html", html);
+    expect(frame.html).toContain("/vendor/three/r128/three.min.js");
+    expect(frame.html).not.toContain("cdnjs.cloudflare.com");
+  });
+
+  it("still flags leftover non-Three CDNs after localize", () => {
+    const html = `<!DOCTYPE html><html><script src="https://cdn.jsdelivr.net/npm/chart.js"></script></html>`;
+    expect(artifactStillNeedsCdn(localizeArtifactHtml(html, { baseUrl: "/anila/" }))).toBe(true);
+  });
+
+  it("flags truncated HTML that never closed its script or html tags", () => {
+    expect(isIncompleteArtifactHtml("<!DOCTYPE html><html><script>function animate(){")).toBe(true);
+    expect(isIncompleteArtifactHtml(HOSTILE_HTML)).toBe(false);
+  });
+
+  it("keeps SVG on srcdoc with no scripts", () => {
+    const frame = buildArtifactFrameProps("svg", DONUT_SVG);
+    expect(frame.sandbox).toBe(ARTIFACT_IFRAME_SANDBOX);
+    expect(frame.srcDoc).toContain("<svg");
+    expect(frame.src).toBeUndefined();
+  });
+});
 
 describe("detectArtifactKind — SVG fenced as xml（擁有者實例）", () => {
   it("detects SVG content labelled xml and marks it previewable as svg", () => {
@@ -54,7 +111,7 @@ describe("detectArtifactKind — SVG fenced as xml（擁有者實例）", () => 
 });
 
 describe("ArtifactPanel sandbox — 惡意文件碰不到父頁", () => {
-  it("renders iframe sandbox without allow-same-origin or allow-scripts", () => {
+  it("runs HTML scripts in a unique origin without allow-same-origin", () => {
     const { container } = render(
       <ArtifactPanel
         artifact={{ kind: "html", source: HOSTILE_HTML }}
@@ -64,15 +121,27 @@ describe("ArtifactPanel sandbox — 惡意文件碰不到父頁", () => {
     );
     const iframe = container.querySelector('[data-testid="artifact-iframe"]');
     expect(iframe).toBeTruthy();
-    // 斷言實際渲染出的屬性，不是註解裡的意圖。
     const sandbox = iframe.getAttribute("sandbox");
-    expect(sandbox).toBe(ARTIFACT_IFRAME_SANDBOX);
-    expect(sandbox).toBe("");
+    expect(sandbox).toBe(ARTIFACT_IFRAME_SANDBOX_HTML);
+    expect(sandbox).toMatch(/allow-scripts/);
     expect(sandbox).not.toMatch(/allow-same-origin/);
-    expect(sandbox).not.toMatch(/allow-scripts/);
-    // srcdoc 有裝進惡意內容——隔離靠 sandbox，不是靠刪 script。
-    expect(iframe.getAttribute("srcdoc")).toContain("<script>");
-    expect(iframe.getAttribute("srcdoc")).toContain("window.parent.document.cookie");
+    const src = iframe.getAttribute("src") || "";
+    expect(src).toMatch(/artifact-frame\.html$/);
+    expect(src).not.toMatch(/^data:/);
+    expect(iframe.getAttribute("srcdoc")).toBeNull();
+  });
+
+  it("keeps SVG on a scriptless srcdoc frame", () => {
+    const { container } = render(
+      <ArtifactPanel
+        artifact={{ kind: "svg", source: DONUT_SVG }}
+        classified={false}
+        onClose={() => {}}
+      />,
+    );
+    const iframe = container.querySelector('[data-testid="artifact-iframe"]');
+    expect(iframe.getAttribute("sandbox")).toBe(ARTIFACT_IFRAME_SANDBOX);
+    expect(iframe.getAttribute("srcdoc")).toContain("<svg");
   });
 
   it("buildArtifactSrcDoc keeps SVG inside an HTML shell for srcdoc", () => {
@@ -142,6 +211,49 @@ describe("ArtifactPanel source ↔ preview toggle", () => {
     expect(screen.queryByTestId("artifact-source")).toBeNull();
   });
 
+  it("exposes a drag handle and a width clamp so the panel is not a fixed 420px", () => {
+    render(
+      <ArtifactPanel
+        artifact={{ kind: "html", source: "<!DOCTYPE html><html><body>x</body></html>" }}
+        onClose={() => {}}
+      />,
+    );
+    const handle = screen.getByTestId("artifact-resize-handle");
+    expect(handle).toBeTruthy();
+    expect(handle.getAttribute("role")).toBe("separator");
+    expect(screen.getByTestId("artifact-panel").style.width).toBeTruthy();
+    const inner = window.innerWidth;
+    expect(clampPanelWidth(inner - 400)).toBeGreaterThan(420);
+    expect(clampPanelWidth(100)).toBe(280);
+  });
+
+  it("warns when HTML still points at a non-Three CDN after localize", () => {
+    render(
+      <ArtifactPanel
+        artifact={{
+          kind: "html",
+          source: "<!DOCTYPE html><html><script src=\"https://cdn.jsdelivr.net/npm/chart.js\"></script></html>",
+        }}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("artifact-cdn-blocked")).toBeTruthy();
+  });
+
+  it("does not warn after Three.js CDN is rewritten to the vendor", () => {
+    render(
+      <ArtifactPanel
+        artifact={{
+          kind: "html",
+          source:
+            "<!DOCTYPE html><html><script src=\"https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js\"></script></html>",
+        }}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId("artifact-cdn-blocked")).toBeNull();
+  });
+
   it("closes from the header control", () => {
     let closed = false;
     render(
@@ -170,6 +282,18 @@ describe("CodeBlock preview affordance — 使用者選擇才開", () => {
     expect(opened).toHaveLength(1);
     expect(opened[0].kind).toBe("svg");
     expect(opened[0].source).toContain("<svg");
+  });
+
+  it("gives long code its own scroll box so the conversation can scroll separately", () => {
+    render(
+      <ArtifactPreviewProvider onOpen={() => {}}>
+        <MarkdownView text={"```html\n<!DOCTYPE html><html><body>x</body></html>\n```"} />
+      </ArtifactPreviewProvider>,
+    );
+    const pre = screen.getByTestId("md-code-pre");
+    expect(pre.style.maxHeight).toMatch(/60vh/);
+    expect(pre.style.overflow).toBe("auto");
+    expect(pre.style.overscrollBehavior).toBe("contain");
   });
 
   it("does not show 預覽 for ordinary python", () => {

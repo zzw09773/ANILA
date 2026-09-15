@@ -4,10 +4,17 @@ import React, { createContext, useContext, useMemo } from "react";
 const ArtifactPreviewContext = createContext(null);
 
 /**
- * @param {{ children: React.ReactNode, onOpen: (artifact: {kind:string, source:string, language?:string}) => void }} props
+ * @param {{
+ *   children: React.ReactNode,
+ *   onOpen: (artifact: {kind:string, source:string, language?:string}) => void,
+ *   artifact?: {kind:string, source:string, language?:string} | null,
+ * }} props
  */
-export function ArtifactPreviewProvider({ children, onOpen }) {
-  const value = useMemo(() => ({ openArtifact: onOpen }), [onOpen]);
+export function ArtifactPreviewProvider({ children, onOpen, artifact = null }) {
+  const value = useMemo(
+    () => ({ openArtifact: onOpen, current: artifact }),
+    [onOpen, artifact],
+  );
   return (
     <ArtifactPreviewContext.Provider value={value}>
       {children}
@@ -15,7 +22,7 @@ export function ArtifactPreviewProvider({ children, onOpen }) {
   );
 }
 
-/** @returns {{ openArtifact: (a: {kind:string, source:string, language?:string}) => void } | null} */
+/** @returns {{ openArtifact: Function, current: object|null } | null} */
 export function useArtifactPreview() {
   return useContext(ArtifactPreviewContext);
 }

@@ -1,7 +1,10 @@
 // 靜態產物偵測：從 fenced code block 的語言標籤＋內容嗅探，判斷能否在右側
 // 預覽面板開啟。擁有者實例：甜甜圈 SVG 被標成 ```xml```——只看語言標籤會漏掉。
 //
-// 回傳 kind：'svg' | 'html' | 'markdown' | null。不改寫內容、不自動開啟面板。
+// 回傳 kind：'svg' | 'html' | 'markdown' | null。不自動開啟面板。
+// HTML 預覽會改寫 Three.js CDN／相對路徑到同源 vendor（見 artifactVendor.js）。
+
+import { localizeArtifactHtml } from "./artifactVendor.js";
 
 const SVG_LANGS = new Set(["svg"]);
 const HTML_LANGS = new Set(["html", "htm"]);
@@ -65,20 +68,67 @@ export function buildArtifactSrcDoc(kind, source) {
       "</body></html>"
     );
   }
-  // html：完整文件原樣；片段則包一層殼。
-  if (/^\s*<!DOCTYPE\s+html\b/i.test(body) || /^\s*<html[\s>/]/i.test(body)) {
-    return body;
-  }
-  return (
-    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>" +
-    body +
-    "</body></html>"
-  );
+  // html：完整文件原樣；片段則包一層殼。預覽前改寫到同源 Three.js。
+  const raw =
+    /^\s*<!DOCTYPE\s+html\b/i.test(body) || /^\s*<html[\s>/]/i.test(body)
+      ? body
+      : "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>" +
+        body +
+        "</body></html>";
+  return localizeArtifactHtml(raw);
 }
 
 /**
- * iframe sandbox 設定。空字串＝不放行任何能力（無 script、無 same-origin、
- * 無表單、無 top-navigation…）。靜態預覽夠用；惡意文件的 script 不會執行，
- * 也拿不到父頁 cookie／DOM，更不能發帶憑證的同源請求。
+ * iframe sandbox。
+ *
+ * 靜態 SVG：空字串＝不放行任何能力。
+ * HTML：``allow-scripts`` 但不給 ``allow-same-origin``。外層載入同源
+ * ``artifact-frame.html``（該檔 CSP 含 ``'self'``，供同源 vendor 腳本）；
+ * 真正的產物用 postMessage 寫進內層 srcdoc。data: URL 會被父頁
+ * ``default-src 'self'`` 當成 frame-src 擋掉，所以不能再用。
  */
-export const ARTIFACT_IFRAME_SANDBOX = "";
+export const ARTIFACT_IFRAME_SANDBOX_STATIC = "";
+export const ARTIFACT_IFRAME_SANDBOX_HTML = "allow-scripts allow-pointer-lock";
+export const ARTIFACT_IFRAME_SANDBOX = ARTIFACT_IFRAME_SANDBOX_STATIC;
+export const ARTIFACT_FRAME_HTML_TYPE = "anila-artifact-html";
+export const ARTIFACT_FRAME_READY_TYPE = "anila-artifact-ready";
+
+/** 模型常把長 HTML 截在 </script>／</html> 之前，頁面自己的「載入中」就會永遠停住。 */
+export function isIncompleteArtifactHtml(source) {
+  const text = typeof source === "string" ? source : "";
+  if (!text.trim()) return false;
+  const open = (text.match(/<script\b/gi) || []).length;
+  const close = (text.match(/<\/script>/gi) || []).length;
+  if (open > close) return true;
+  if (/<!DOCTYPE\s+html/i.test(text) && !/<\/html>/i.test(text)) return true;
+  return false;
+}
+
+export function artifactFrameSrc() {
+  const base =
+    (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.BASE_URL) ||
+    "/";
+  return String(base).endsWith("/")
+    ? `${base}artifact-frame.html`
+    : `${base}/artifact-frame.html`;
+}
+
+/**
+ * @param {'svg'|'html'} kind
+ * @param {string} source
+ * @returns {{ sandbox: string, src?: string, srcDoc?: string, html?: string }}
+ */
+export function buildArtifactFrameProps(kind, source) {
+  const html = buildArtifactSrcDoc(kind, source);
+  if (kind === "html") {
+    return {
+      sandbox: ARTIFACT_IFRAME_SANDBOX_HTML,
+      src: artifactFrameSrc(),
+      html,
+    };
+  }
+  return {
+    sandbox: ARTIFACT_IFRAME_SANDBOX_STATIC,
+    srcDoc: html,
+  };
+}
