@@ -1182,10 +1182,14 @@ def create_router_app(
         caller_api_key = _extract_bearer_api_key(request)
         body: dict = await request.json()
         REQUEST_SAMPLING.set(sampling_overrides_from_body(body) if isinstance(body, dict) else {})
+        REQUEST_THINKING_TIER.set(
+            thinking_tier_from_body(body) if isinstance(body, dict) else None
+        )
         selected_model = await _csp_resolve_router_model(request, caller_api_key, body)
         REQUEST_ROUTER_MODEL.set(selected_model)
         if isinstance(body, dict):
             body.pop("router_model", None)
+            body.pop("anila_thinking_tier", None)
         messages: list[dict] = body.get("messages", [])
         stream: bool = body.get("stream", False)
 
@@ -2809,19 +2813,26 @@ async def _recompose_reply(
         {"role": "system", "content": _RECOMPOSE_SYSTEM_PROMPT},
         {"role": "user", "content": wrapped},
     ]
+    # Recompose is a style rewrite, not the user's turn. Clear the per-turn
+    # thinking override so ``_call_llm_non_stream`` / ``_sampling_payload``
+    # cannot leak ``anila_thinking_tier`` onto this call.
+    token = REQUEST_THINKING_TIER.set(None)
     try:
-        result = await asyncio.wait_for(
-            _call_llm_non_stream(
-                caller_api_key, messages, forwarded_headers=forwarded_headers
-            ),
-            timeout=RECOMPOSE_TIMEOUT_S,
-        )
-    except Exception:  # noqa: BLE001 — fail-safe to original on timeout / any failure
-        logger.exception("recompose: LLM call failed; returning original reply")
-        return agent_reply, "fallback"
-    if result.get("error") or not (result.get("content") or "").strip():
-        return agent_reply, "fallback"
-    return result["content"], "applied"
+        try:
+            result = await asyncio.wait_for(
+                _call_llm_non_stream(
+                    caller_api_key, messages, forwarded_headers=forwarded_headers
+                ),
+                timeout=RECOMPOSE_TIMEOUT_S,
+            )
+        except Exception:  # noqa: BLE001 — fail-safe to original on timeout / any failure
+            logger.exception("recompose: LLM call failed; returning original reply")
+            return agent_reply, "fallback"
+        if result.get("error") or not (result.get("content") or "").strip():
+            return agent_reply, "fallback"
+        return result["content"], "applied"
+    finally:
+        REQUEST_THINKING_TIER.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -2837,6 +2848,10 @@ REQUEST_SAMPLING: contextvars.ContextVar[dict[str, Any] | None] = contextvars.Co
 REQUEST_ROUTER_MODEL: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "anila_router_request_model", default=None
 )
+REQUEST_THINKING_TIER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "anila_router_request_thinking_tier", default=None
+)
+THINKING_TIERS = frozenset({"default", "off", "standard", "deep"})
 _EMPTY_LENGTH_ERROR = "LLM 回覆為空（finish_reason=length：輸出額度被思考用完，已重試一次）"
 _OUTAGE_FALLBACK = "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）"
 _LENGTH_FALLBACK = "（輸出額度不足，思考或正文被截斷。已產生的內容保留；可按「繼續產生」。）"
@@ -2877,6 +2892,17 @@ def sampling_overrides_from_body(body: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def thinking_tier_from_body(body: Mapping[str, Any]) -> str | None:
+    """Return a canonical per-turn thinking tier, or None to ignore the field."""
+    raw = body.get("anila_thinking_tier")
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().lower()
+    if value in THINKING_TIERS:
+        return value
+    return None
+
+
 # The ``router`` row's temperature / max_tokens ride on every upstream call,
 # which would otherwise shadow the governance UI's per-model knobs: the CSP
 # proxy lets caller keys win, so the model_registry columns never applied on
@@ -2899,6 +2925,10 @@ def _sampling_payload(*, max_tokens_override: int | None = None) -> dict[str, An
         defaults = [k for k in defaults if k != "max_tokens"]
     if defaults:
         params[SAMPLING_DEFAULTS_MARKER] = defaults
+    # Not a sampling default: CSP maps this one-turn override and pops it.
+    tier = REQUEST_THINKING_TIER.get()
+    if isinstance(tier, str) and tier in THINKING_TIERS:
+        params["anila_thinking_tier"] = tier
     return params
 
 

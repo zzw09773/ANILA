@@ -45,6 +45,20 @@ def _disable_recompose(monkeypatch):
     monkeypatch.setattr(rs, "_recompose_reply", _passthrough)
 
 
+@pytest.fixture(autouse=True)
+def _stub_router_model_resolve(monkeypatch):
+    """These cases do not exercise per-request model resolve; skip the CSP hop.
+
+    Returning None leaves ``current_router_model`` on the cached primary / env
+    value so FIX 5 (router-primary honour) still observes ``refresh_router_model``.
+    """
+
+    async def _no_per_request_model(request, caller_api_key, body):
+        return None
+
+    monkeypatch.setattr(rs, "_csp_resolve_router_model", _no_per_request_model)
+
+
 @pytest_asyncio.fixture
 async def db_path(tmp_path: Path):
     db = tmp_path / "router-hygiene.db"
@@ -241,10 +255,11 @@ def test_caller_system_message_still_gets_routing_instructions(db_path, monkeypa
     )
 
     sent = captured[0]
-    # Routing prompt present AND the caller's system message preserved.
+    # Routing prompt present AND the caller's system message preserved
+    # (folded into the leading Router system, not a second system turn).
     assert "DISPATCH" in sent[0]["content"]
     assert sent[0]["role"] == "system"
-    assert {"role": "system", "content": "You are a pirate."} in sent
+    assert "You are a pirate." in sent[0]["content"]
     # …and dispatch actually happened.
     assert response.json()["choices"][0]["message"]["content"] == "agent answered"
 
