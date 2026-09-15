@@ -61,6 +61,7 @@ describe("buildShellEntries", () => {
       "對話",
       "我的知識庫",
       "專案入口",
+      "用量",
     ]);
   });
 
@@ -102,6 +103,7 @@ describe("ShellNav", () => {
     expect(screen.queryByText("對話")).toBeNull();
     expect(screen.queryByText("我的知識庫")).toBeNull();
     expect(screen.queryByText("專案入口")).toBeNull();
+    expect(screen.queryByText("用量")).toBeNull();
   });
 
   it("renders the user entries inside the modal", () => {
@@ -109,6 +111,7 @@ describe("ShellNav", () => {
     expect(screen.getByText("對話")).toBeTruthy();
     expect(screen.getByText("我的知識庫")).toBeTruthy();
     expect(screen.getByText("專案入口")).toBeTruthy();
+    expect(screen.getByText("用量")).toBeTruthy();
   });
 
   it("no longer renders the duplicate 產出中心 entry", () => {
@@ -163,6 +166,13 @@ describe("ShellNav", () => {
     openNav({ role: "user" }, { onOpenServices });
     fireEvent.click(screen.getByText("專案入口"));
     expect(onOpenServices).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens 我的用量 via onOpenUsage when 用量 is clicked", () => {
+    const onOpenUsage = vi.fn();
+    openNav({ role: "user" }, { onOpenUsage });
+    fireEvent.click(screen.getByText("用量"));
+    expect(onOpenUsage).toHaveBeenCalledTimes(1);
   });
 
   it("marks 對話 as the current entry and invokes onTaskCenter", () => {

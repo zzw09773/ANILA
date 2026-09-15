@@ -515,3 +515,16 @@ export function setConversationThinking(authRequest, convId, { thinkingTier, exp
     }),
   });
 }
+
+const USAGE_RANGES = new Set(["24h", "7d", "30d"]);
+
+export function getMyUsage(authRequest, range) {
+  const resolved = USAGE_RANGES.has(range) ? range : "7d";
+  return authRequest(`/api/usage/me?range=${encodeURIComponent(resolved)}`, {
+    method: "GET",
+  });
+}
+
+export function getConversationUsage(authRequest, convId) {
+  return authRequest(`/api/conversations/${convId}/usage`, { method: "GET" });
+}

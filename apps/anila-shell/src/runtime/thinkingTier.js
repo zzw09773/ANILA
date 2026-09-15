@@ -44,6 +44,16 @@ export function thinkingPickerOptions(levelsSupported) {
   ];
 }
 
+/** 回覆列檔位文案：關閉／標準／深入。default 不標。 */
+export function thinkingAppliedTierLabel(tier) {
+  const normalized = normalizeThinkingTier(tier);
+  if (normalized === "default") return null;
+  const match = thinkingPickerOptions(["none", "low", "medium", "xhigh"]).find(
+    (opt) => opt.tier === normalized,
+  );
+  return match?.label || null;
+}
+
 export function thinkingTriggerLabel(tier, levelsSupported) {
   const normalized = normalizeThinkingTier(tier);
   if (

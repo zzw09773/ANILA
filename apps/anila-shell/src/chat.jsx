@@ -79,6 +79,10 @@ import {
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
 import { ShellNav } from "./shellNav.jsx";
+import {
+  reasoningFoldLabel,
+  thinkingAppliedFoldSuffix,
+} from "./runtime/usageDisplay.js";
 
 // ---- Trace Row + Routing Trace ----
 export const TraceRow = ({ event, active, done }) => (
@@ -232,12 +236,25 @@ export const StepTimeline = ({ trace, streaming, finishedAt }) => {
   );
 };
 
-export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, stageLabel, finishedAt, thinkingLocked = false }) => {
+export const ReasoningSummary = ({
+  trace,
+  reasoning,
+  routedAgent,
+  streaming,
+  stageLabel,
+  finishedAt,
+  thinkingLocked = false,
+  usage = null,
+  thinkingApplied = null,
+}) => {
   const [open, setOpen] = useState(false);
   const hasTrace = Array.isArray(trace) && trace.length > 0;
   const hasReasoning = typeof reasoning === "string" && reasoning.length > 0;
-  if (!streaming && !hasTrace && !hasReasoning && !thinkingLocked) return null;
-  if (!streaming && !hasTrace && !hasReasoning && thinkingLocked) {
+  const tokenLabel = reasoningFoldLabel(usage, reasoning);
+  const appliedLabel = thinkingAppliedFoldSuffix(thinkingApplied);
+  const hasUsageReasoning = typeof usage?.reasoning_tokens === "number";
+  if (!streaming && !hasTrace && !hasReasoning && !thinkingLocked && !hasUsageReasoning && !appliedLabel) return null;
+  if (!streaming && !hasTrace && !hasReasoning && thinkingLocked && !hasUsageReasoning && !appliedLabel) {
     return (
       <div className="anila-reasoning" style={{ marginBottom: 10, fontSize: 12, color: "var(--fg-subtle)" }}>
         思考程度由管理員鎖定
@@ -262,7 +279,8 @@ export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, sta
   const visible = visibleTraceSteps(trace, { streaming: false, finishedAt: endAt });
   if (visible.length) summaryParts.push(`${visible.length} 步分析`);
   if (total) summaryParts.push(`用時 ${total}`);
-  if (hasReasoning) summaryParts.push(`${reasoning.length} 字思考`);
+  if (tokenLabel) summaryParts.push(tokenLabel);
+  if (appliedLabel) summaryParts.push(appliedLabel);
   if (thinkingLocked) summaryParts.push("思考程度由管理員鎖定");
   const summary = summaryParts.join(" · ") || "已完成";
 
@@ -931,6 +949,8 @@ export const MessageBubble = ({
               stageLabel={msg.stageLabel}
               finishedAt={msg.finishedAt}
               thinkingLocked={msg.thinkingLocked}
+              usage={msg.usage}
+              thinkingApplied={msg.thinkingApplied}
             />
             <div
               className="anila-msg-body"
@@ -2653,6 +2673,8 @@ export const Sidebar = ({
   onNewChat,
   agents,
   onOpenServices,
+  onOpenUsage,
+  currentNavId,
   onTaskCenter,
   user,
   onLogout,
@@ -2745,7 +2767,7 @@ export const Sidebar = ({
         <IconButton onClick={onToggleCollapsed} title="展開側邊" style={railBtn}><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話" style={railBtn}><IconPlus /></IconButton>
         <div style={{ width: 20, height: 1, background: "var(--border)", margin: "4px 0" }} />
-        <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
+        <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} currentId={currentNavId} />
         <div style={{ flex: 1 }} />
         <IconButton onClick={onOpenSettings} title="設定" style={railBtn}><IconSettings /></IconButton>
       </div>
@@ -2790,7 +2812,7 @@ export const Sidebar = ({
 
       {/* ANILA Shell 主導覽：對話 / 我的知識庫 / 專案入口
           （+ admin 才顯示的 治理中心）。doc 00 §2 唯一產品入口 / doc 10 §11。 */}
-      <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
+      <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} currentId={currentNavId} />
       <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />
 
       <div style={{

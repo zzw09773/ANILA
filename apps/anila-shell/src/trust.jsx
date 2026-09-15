@@ -4,6 +4,7 @@ import { IconBook, IconX, IconExternal, IconShield, IconGauge, IconLock } from "
 import { IconButton } from "./components.jsx";
 import { blockingHits, summarizePIIHits } from "./data.jsx";
 import { classificationLevelBadge } from "./runtime/classified.js";
+import { usageTokenTooltip } from "./runtime/usageDisplay.js";
 
 // ---- Inline citation [N] ----
 export const CitationInline = ({ n, citation, onOpen }) => (
@@ -333,7 +334,7 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, 
       <span style={{ opacity: 0.5 }}>·</span>
       {conversationId && <><span>conv: {String(conversationId).slice(0, 10)}</span><span style={{ opacity: 0.5 }}>·</span></>}
       {latencyMs != null && <><span>{latencyMs}ms</span><span style={{ opacity: 0.5 }}>·</span></>}
-      {tokenTotal > 0 && <><span title={`prompt ${usage.prompt_tokens || 0} · completion ${usage.completion_tokens || 0}`}>{tokenTotal} tokens</span><span style={{ opacity: 0.5 }}>·</span></>}
+      {tokenTotal > 0 && <><span title={usageTokenTooltip(usage)}>{tokenTotal} tokens</span><span style={{ opacity: 0.5 }}>·</span></>}
       <span style={{ color: copied ? "var(--success)" : "var(--fg-subtle)" }}>
         {copied ? "已複製" : "複製"}
       </span>
