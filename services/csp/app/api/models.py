@@ -1201,6 +1201,7 @@ def get_router_primary(
         "top_p": getattr(model, "top_p", None),
         "presence_penalty": getattr(model, "presence_penalty", None),
         "max_tokens": getattr(model, "max_tokens", None),
+        "context_window": getattr(model, "context_window", None),
     }
 
 

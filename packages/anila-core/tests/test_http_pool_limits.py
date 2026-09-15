@@ -61,6 +61,9 @@ def test_pool_defaults_cannot_manufacture_a_pool_timeout() -> None:
     assert http_pool._timeout().pool is None, (
         "a pool-acquire deadline is only meaningful behind a finite cap"
     )
+    assert http_pool._timeout().read >= 300, (
+        "read timeout must outlast a thinking-model pause; 120s aborted healthy streams"
+    )
 
 
 def test_pool_limits_are_env_overridable(monkeypatch) -> None:

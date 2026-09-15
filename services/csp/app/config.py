@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # Proxy Timeouts (seconds)
     EMBEDDING_TIMEOUT: int = 30
-    LLM_TIMEOUT: int = 120
+    LLM_TIMEOUT: int = 300
 
     # 出向模型 gateway 的 API key (選配,預設空 = 不注入,行為不變)。
     # 內網拓撲下模型不直連 — 走 10.53.100.12 My-OpenAI-Frontend 的

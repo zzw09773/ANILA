@@ -173,8 +173,8 @@ SETTINGS: tuple[SettingSpec, ...] = (
         "LLM_TIMEOUT",
         T_INT,
         _closed_int_range(1, 3600),
-        120,
-        "LLM 呼叫逾時秒數。允許 1–3600 秒。",
+        300,
+        "LLM 呼叫逾時秒數。允許 1–3600 秒。思考型模型常超過 120 秒才開始輸出。",
     ),
     _spec(
         "proxy.embedding_timeout",

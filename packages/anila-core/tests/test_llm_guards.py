@@ -56,8 +56,11 @@ def test_bumped_max_tokens_respects_cap() -> None:
 
 def test_bumped_max_tokens_never_lowers_above_cap() -> None:
     """Invariant 5: bumped_max_tokens(x) >= x for all x >= 0; x > cap case."""
-    assert bumped_max_tokens(10000) == 10000
-    assert bumped_max_tokens(10000) >= 10000
+    assert bumped_max_tokens(10000) == 20000
+    assert bumped_max_tokens(20000) == 32768
+    assert bumped_max_tokens(32768) == 32768
+    assert bumped_max_tokens(40000) == 40000
+    assert bumped_max_tokens(40000) >= 40000
     assert bumped_max_tokens(9000, cap=8192) == 9000
     assert bumped_max_tokens(0) == 1
     assert bumped_max_tokens(1) == 2

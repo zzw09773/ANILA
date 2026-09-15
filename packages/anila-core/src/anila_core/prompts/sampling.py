@@ -25,10 +25,10 @@ class SamplingDefaults:
 
 
 TASK_SAMPLING: dict[str, SamplingDefaults] = {
-    # Router 每一通主模型呼叫（分派判斷、直答、改寫）。Router 分不出這一回合是
-    # 規章問答還是閒聊，取兩者之間；max_tokens 取 rag_qa 的地板——思考變體單題
-    # reasoning 就會燒掉 1,000+ tokens（§9b-2 實測），給少了正文會是空的。
-    "router": SamplingDefaults(temperature=0.3, max_tokens=4096),  # 已接線
+    # Router 每一通主模型呼叫（分派判斷、直答、改寫）。使用者看不到 max_tokens；
+    # 4096 會被思考變體先燒光，長 HTML 寫到一半就 length。預設對齊
+    # LENGTH_RETRY_CAP，治理中心模型列仍可覆寫。
+    "router": SamplingDefaults(temperature=0.3, max_tokens=32768),  # 已接線
     "rag_qa": SamplingDefaults(temperature=0.2, max_tokens=4096),  # 建議值（尚未接線）
     "chat": SamplingDefaults(temperature=0.4, max_tokens=2048),  # 建議值（尚未接線）
     "chips": SamplingDefaults(temperature=0.4, max_tokens=1024),  # 已接線

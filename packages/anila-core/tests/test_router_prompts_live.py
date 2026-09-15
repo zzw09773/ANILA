@@ -72,7 +72,7 @@ async def test_refresh_adopts_csp_values():
     assert prompts[rp.KEY_FORCED] == "custom forced"
     assert rs.router_prompts_source() == "csp"
     # and the prompt builders read the live values, not module constants
-    assert rs._build_system_prompt([]) == "custom plain"
+    assert rs._build_system_prompt([]) == rp.with_intranet_html_hint("custom plain")
     assert rs._forced_answer_prompt() == "custom forced"
 
 

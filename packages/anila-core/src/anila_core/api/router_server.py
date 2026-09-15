@@ -41,6 +41,12 @@ from ..memory.contract import (
 from ..memory.short_term import Session, SqliteSession, new_session_id
 from ..models.message import UserMessage
 from ..prompts import COMMON_PREAMBLE, IDENTITY
+from ..compact.auto_compact import FALLBACK_CONTEXT_WINDOW
+from ..compact.openai_history import (
+    auto_compact_openai_messages,
+    format_transcript,
+    is_prompt_too_long,
+)
 from ..prompts.sampling import get_sampling
 from ..providers.guards import bumped_max_tokens, is_empty_length_failure
 from . import router_prompts
@@ -272,8 +278,10 @@ def _build_system_prompt(agents: list[RemoteAgentManifest]) -> str:
     """
     prompts = current_router_prompts()
     if not agents:
-        return prompts[router_prompts.KEY_PLAIN]
-    return prompts[router_prompts.KEY_SYSTEM].format(agent_list=_build_agent_list(agents))
+        return router_prompts.with_intranet_html_hint(prompts[router_prompts.KEY_PLAIN])
+    return router_prompts.with_intranet_html_hint(
+        prompts[router_prompts.KEY_SYSTEM].format(agent_list=_build_agent_list(agents))
+    )
 
 
 # Matches the last "DISPATCH:<agent>:<query>" occurrence anywhere in the text,
@@ -911,14 +919,21 @@ async def _resolve_session_owner_hash(caller_api_key: str) -> str:
 # switch require a restart nobody would remember. Falls back to the env var on
 # 404 / 409 / any error, so the worst case is exactly today's behaviour.
 _ROUTER_MODEL_TTL_S = float(os.environ.get("ANILA_ROUTER_MODEL_TTL", "60"))
-_router_model_state: dict[str, Any] = {"name": None, "source": "env", "at": 0.0}
+_router_model_state: dict[str, Any] = {
+    "name": None,
+    "source": "env",
+    "at": 0.0,
+    "context_window": None,
+}
 _router_model_lock = threading.Lock()
 
 
 def reset_router_model_cache() -> None:
     """Forget the resolved router model. Test-only / ops escape hatch."""
     with _router_model_lock:
-        _router_model_state.update({"name": None, "source": "env", "at": 0.0})
+        _router_model_state.update(
+            {"name": None, "source": "env", "at": 0.0, "context_window": None}
+        )
 
 
 
@@ -980,6 +995,15 @@ def current_router_model() -> str:
         return _router_model_state["name"] or settings.model
 
 
+def current_router_context_window() -> int:
+    """Input window used for auto-compact. Registry NULL → 128k fallback."""
+    with _router_model_lock:
+        raw = _router_model_state.get("context_window")
+    if isinstance(raw, int) and raw > 0:
+        return raw
+    return FALLBACK_CONTEXT_WINDOW
+
+
 def router_model_source() -> str:
     """``"csp_registry"`` or ``"env"`` — where ``current_router_model`` came from."""
     with _router_model_lock:
@@ -1004,6 +1028,7 @@ async def refresh_router_model() -> None:
             return
         _router_model_state["at"] = now
     name: str | None = None
+    context_window: int | None = None
     try:
         client = get_http_client()
         response = await client.get(
@@ -1012,7 +1037,11 @@ async def refresh_router_model() -> None:
             timeout=5.0,
         )
         if response.status_code == 200:
-            name = (response.json() or {}).get("name") or None
+            payload = response.json() or {}
+            name = payload.get("name") or None
+            raw_cw = payload.get("context_window")
+            if isinstance(raw_cw, int) and raw_cw > 0:
+                context_window = raw_cw
         elif response.status_code in (404, 409):
             # No primary designated, or it was disabled — an operator state,
             # not an outage. Log once per TTL so /health isn't the only clue.
@@ -1031,6 +1060,7 @@ async def refresh_router_model() -> None:
     with _router_model_lock:
         _router_model_state["name"] = name
         _router_model_state["source"] = "csp_registry" if name else "env"
+        _router_model_state["context_window"] = context_window
 
 
 def create_router_app(
@@ -1310,6 +1340,13 @@ def create_router_app(
                 status="error" if registry_error else "ok",
             ),
         ]
+        routing_messages, compact_step = await _auto_compact_routing_messages(
+            routing_messages,
+            caller_api_key=caller_api_key,
+            forwarded_headers=router_llm_headers,
+        )
+        if compact_step:
+            base_trace.append(compact_step)
 
         # Plan C: when the caller wants streaming, tail-buffer the LLM and
         # commit to either dispatch or direct-answer mid-stream. Direct
@@ -1390,16 +1427,17 @@ def create_router_app(
             forwarded_headers=router_llm_headers,
         )
         if llm_response["error"]:
+            length_budget = _is_length_budget_error(llm_response["error"])
             base_trace.append(
                 _make_trace_step(
                     "direct",
-                    "LLM 無法回應",
+                    "輸出被截斷" if length_budget else "LLM 無法回應",
                     llm_response["error"],
                     status="error",
                 )
             )
             fallback_content = (
-                "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）"
+                _LENGTH_FALLBACK if length_budget else _OUTAGE_FALLBACK
             )
             anila_meta = _merge_anila_meta(
                 base_trace,
@@ -2101,6 +2139,115 @@ def create_router_app(
     return app
 
 
+_COMPACT_SUMMARY_PROMPT = (
+    "你是對話摘要器。用繁體中文濃縮以下較早的對話，保留使用者目標、專有名詞、"
+    "路徑、數字、未完成的約定與已做成的決定。不要評論、不要開場白。"
+)
+
+
+async def _summarize_for_compact(
+    caller_api_key: str,
+    old_messages: list[dict[str, Any]],
+    forwarded_headers: dict[str, str] | None,
+) -> str | None:
+    transcript = format_transcript(old_messages)
+    if not transcript.strip():
+        return None
+    payload = {
+        "model": current_router_model(),
+        "messages": [
+            {"role": "system", "content": _COMPACT_SUMMARY_PROMPT},
+            {"role": "user", "content": transcript},
+        ],
+        "stream": False,
+        "temperature": 0.2,
+        "max_tokens": 2048,
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    headers = {
+        "Authorization": f"Bearer {caller_api_key}",
+        "Content-Type": "application/json",
+    }
+    if forwarded_headers:
+        for k, v in forwarded_headers.items():
+            if k.lower() in ("authorization", "content-type"):
+                continue
+            headers[k] = v
+    try:
+        client = get_http_client()
+        response = await client.post(
+            f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+        response.raise_for_status()
+        choice = response.json()["choices"][0]
+        content = (choice.get("message") or {}).get("content") or ""
+        text = content.strip() if isinstance(content, str) else ""
+        return text or None
+    except Exception:
+        logger.warning("auto-compact summarizer failed; falling back to sliding window")
+        return None
+
+
+async def _auto_compact_routing_messages(
+    messages: list[dict[str, Any]],
+    *,
+    caller_api_key: str,
+    forwarded_headers: dict[str, str] | None,
+    force: bool = False,
+    keep_recent_turns: int = 4,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    async def _summarize(old: list[dict[str, Any]]) -> str | None:
+        return await _summarize_for_compact(caller_api_key, old, forwarded_headers)
+
+    result = await auto_compact_openai_messages(
+        messages,
+        context_window=current_router_context_window(),
+        max_output_tokens=get_sampling("router").max_tokens,
+        summarizer=None if force else _summarize,
+        keep_recent_turns=keep_recent_turns,
+        force=force,
+    )
+    if not result.compacted:
+        return messages, None
+    logger.info(
+        "Router auto-compact %s %s→%s tokens",
+        result.method,
+        result.tokens_before,
+        result.tokens_after,
+    )
+    return result.messages, _make_trace_step(
+        "compact",
+        "對話已自動摘要",
+        f"{result.method} {result.tokens_before}→{result.tokens_after} tokens",
+    )
+
+
+async def _messages_after_prompt_too_long(
+    status_code: int,
+    body: str,
+    messages: list[dict[str, Any]],
+    *,
+    already: bool,
+) -> list[dict[str, Any]] | None:
+    if already or not is_prompt_too_long(status_code, body):
+        return None
+    result = await auto_compact_openai_messages(
+        messages,
+        context_window=current_router_context_window(),
+        max_output_tokens=get_sampling("router").max_tokens,
+        summarizer=None,
+        keep_recent_turns=2,
+        force=True,
+    )
+    if not result.compacted:
+        return None
+    logger.info("Router PTL retry after auto-compact (%s→%s)", result.tokens_before, result.tokens_after)
+    return result.messages
+
+
 def _merge_routing_messages(
     system_prompt: str, messages: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -2188,12 +2335,18 @@ async def _router_streaming_multi_turn(
         caller_api_key, routing_messages, forwarded_headers=router_llm_headers
     )
     if llm_response["error"]:
+        length_budget = _is_length_budget_error(llm_response["error"])
         err_step = _make_trace_step(
-            "direct", "LLM 無法回應", llm_response["error"], status="error",
+            "direct",
+            "輸出被截斷" if length_budget else "LLM 無法回應",
+            llm_response["error"],
+            status="error",
         )
         yield _make_event("anila.trace", err_step)
         fallback = (
-            "（LLM 暫時無法回應，請稍後再試。）"
+            _LENGTH_FALLBACK
+            if length_budget
+            else "（LLM 暫時無法回應，請稍後再試。）"
         )
         async for chunk in _emit_soft_chunks(fallback):
             yield chunk
@@ -2202,7 +2355,7 @@ async def _router_streaming_multi_turn(
             latency_ms=int((time.time() - started_at) * 1000),
         )
         yield _make_event("anila.meta", {**anila_meta, "trace": []})
-        yield _make_chunk("", "anila-router", finish="stop")
+        yield _make_chunk("", "anila-router", finish="length" if length_budget else "stop")
         yield "data: [DONE]\n\n"
         return
 
@@ -2685,6 +2838,17 @@ REQUEST_ROUTER_MODEL: contextvars.ContextVar[str | None] = contextvars.ContextVa
     "anila_router_request_model", default=None
 )
 _EMPTY_LENGTH_ERROR = "LLM 回覆為空（finish_reason=length：輸出額度被思考用完，已重試一次）"
+_OUTAGE_FALLBACK = "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）"
+_LENGTH_FALLBACK = "（輸出額度不足，思考或正文被截斷。已產生的內容保留；可按「繼續產生」。）"
+# After a partial ``length`` reply, keep writing in the same turn instead of
+# asking the user to click Continue. Empty-content length still uses the
+# doubled-max_tokens retry above — that is a different failure.
+LENGTH_AUTO_CONTINUE_ROUNDS = 3
+_CONTINUE_PROMPT = "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。"
+
+
+def _is_length_budget_error(err: object) -> bool:
+    return isinstance(err, str) and "finish_reason=length" in err
 
 
 def sampling_overrides_from_body(body: Mapping[str, Any]) -> dict[str, Any]:
@@ -2744,6 +2908,8 @@ async def _call_llm_non_stream(
     *,
     forwarded_headers: dict[str, str] | None = None,
     _retry_max_tokens: int | None = None,
+    _auto_continue_left: int | None = None,
+    _compact_retry: bool = False,
 ) -> dict[str, Any]:
     """Call main LLM through CSP without SSE and return content + metadata.
 
@@ -2820,14 +2986,60 @@ async def _call_llm_non_stream(
             clean_content, merged_reasoning = raw_content, reasoning
         else:
             clean_content, merged_reasoning = _sanitize_leaked_thought(raw_content, reasoning)
-        return {
+        result = {
             "content": clean_content,
             "reasoning": merged_reasoning or None,
             "anila_meta": data.get("anila_meta"),
             "raw": data,
             "error": None,
         }
+        remaining = (
+            LENGTH_AUTO_CONTINUE_ROUNDS if _auto_continue_left is None else _auto_continue_left
+        )
+        if (
+            str(choice.get("finish_reason") or "") == "length"
+            and result["content"]
+            and remaining > 0
+        ):
+            logger.info("LLM reply truncated; auto-continuing (%s left)", remaining)
+            more = await _call_llm_non_stream(
+                caller_api_key,
+                list(messages)
+                + [
+                    {"role": "assistant", "content": result["content"]},
+                    {"role": "user", "content": _CONTINUE_PROMPT},
+                ],
+                forwarded_headers=forwarded_headers,
+                _auto_continue_left=remaining - 1,
+            )
+            extra = (more.get("content") or "").strip()
+            if extra:
+                joiner = "" if result["content"].endswith(("\n", " ", "\t")) else "\n"
+                result["content"] = result["content"] + joiner + extra
+            extra_reason = more.get("reasoning")
+            if extra_reason:
+                prior = result["reasoning"] or ""
+                result["reasoning"] = (prior + "\n\n" + extra_reason).strip() if prior else extra_reason
+            if more.get("anila_meta"):
+                result["anila_meta"] = more["anila_meta"]
+            result["raw"] = more.get("raw") or result["raw"]
+        return result
     except httpx.HTTPStatusError as exc:
+        retried = await _messages_after_prompt_too_long(
+            exc.response.status_code,
+            exc.response.text,
+            messages,
+            already=_compact_retry,
+        )
+        if retried is not None:
+            return await _call_llm_non_stream(
+                caller_api_key,
+                retried,
+                forwarded_headers=forwarded_headers,
+                _retry_max_tokens=_retry_max_tokens,
+                _auto_continue_left=_auto_continue_left,
+                _compact_retry=True,
+            )
         err = f"LLM upstream HTTP {exc.response.status_code}"
         logger.error("%s — body=%s", err, exc.response.text[:300])
         return {"content": "", "reasoning": None, "anila_meta": None, "raw": None, "error": err}
@@ -2901,12 +3113,43 @@ async def _dispatch_safe(
         }
 
 
+async def _auto_continue_stream(
+    caller_api_key: str,
+    messages: list[dict],
+    *,
+    forwarded_headers: dict[str, str] | None,
+    finish_reason: str,
+    saw_content: bool,
+    accumulated: list[str],
+    remaining: int,
+) -> AsyncIterator[dict[str, Any]]:
+    """Resume a partial ``length`` stream, or emit the terminal done event."""
+    if finish_reason == "length" and saw_content and remaining > 0:
+        full = "".join(accumulated)
+        logger.info("LLM stream truncated; auto-continuing (%s left)", remaining)
+        async for ev in _stream_llm_sse(
+            caller_api_key,
+            list(messages)
+            + [
+                {"role": "assistant", "content": full},
+                {"role": "user", "content": _CONTINUE_PROMPT},
+            ],
+            forwarded_headers=forwarded_headers,
+            _auto_continue_left=remaining - 1,
+        ):
+            yield ev
+        return
+    yield {"type": "done", "finish_reason": finish_reason or "stop"}
+
+
 async def _stream_llm_sse(
     caller_api_key: str,
     messages: list[dict],
     *,
     forwarded_headers: dict[str, str] | None = None,
     _retry_max_tokens: int | None = None,
+    _auto_continue_left: int | None = None,
+    _compact_retry: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """Open an SSE stream to the primary LLM via CSP, yielding delta events.
 
@@ -2946,16 +3189,37 @@ async def _stream_llm_sse(
                 continue
             headers[k] = v
     url = f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions"
+    remaining = (
+        LENGTH_AUTO_CONTINUE_ROUNDS if _auto_continue_left is None else _auto_continue_left
+    )
     try:
         # OPT-1: shared client
         client = get_http_client()
         async with client.stream("POST", url, json=payload, headers=headers) as resp:
             if resp.status_code >= 400:
                 body = await resp.aread()
+                detail = body.decode("utf-8", errors="replace")
+                retried = await _messages_after_prompt_too_long(
+                    resp.status_code,
+                    detail,
+                    messages,
+                    already=_compact_retry,
+                )
+                if retried is not None:
+                    async for ev in _stream_llm_sse(
+                        caller_api_key,
+                        retried,
+                        forwarded_headers=forwarded_headers,
+                        _retry_max_tokens=_retry_max_tokens,
+                        _auto_continue_left=_auto_continue_left,
+                        _compact_retry=True,
+                    ):
+                        yield ev
+                    return
                 yield {
                     "type": "error",
                     "error": f"LLM HTTP {resp.status_code}",
-                    "detail": body.decode("utf-8", errors="replace")[:300],
+                    "detail": detail[:300],
                 }
                 return
             # Name of the ``event:`` line of the frame currently being read.
@@ -2965,6 +3229,7 @@ async def _stream_llm_sse(
             event_name: str | None = None
             saw_content = False
             finish_reason = ""
+            accumulated: list[str] = []
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line:
@@ -2993,7 +3258,16 @@ async def _stream_llm_sse(
                             return
                         yield {"type": "error", "error": _EMPTY_LENGTH_ERROR, "detail": "finish_reason=length, empty content"}
                         return
-                    yield {"type": "done"}
+                    async for ev in _auto_continue_stream(
+                        caller_api_key,
+                        messages,
+                        forwarded_headers=forwarded_headers,
+                        finish_reason=finish_reason,
+                        saw_content=saw_content,
+                        accumulated=accumulated,
+                        remaining=remaining,
+                    ):
+                        yield ev
                     return
                 try:
                     chunk = json.loads(data_str)
@@ -3023,7 +3297,32 @@ async def _stream_llm_sse(
                 content_piece = delta.get("content")
                 if isinstance(content_piece, str) and content_piece:
                     saw_content = True
+                    accumulated.append(content_piece)
                     yield {"type": "delta", "content": content_piece}
+            # Upstream closed the SSE without a [DONE] frame.
+            if is_empty_length_failure(finish_reason, "x" if saw_content else ""):
+                if _retry_max_tokens is None:
+                    logger.warning("LLM stream empty with finish_reason=length; retrying with doubled max_tokens")
+                    async for ev in _stream_llm_sse(
+                        caller_api_key,
+                        messages,
+                        forwarded_headers=forwarded_headers,
+                        _retry_max_tokens=bumped_max_tokens(int(payload["max_tokens"])),
+                    ):
+                        yield ev
+                    return
+                yield {"type": "error", "error": _EMPTY_LENGTH_ERROR, "detail": "finish_reason=length, empty content"}
+                return
+            async for ev in _auto_continue_stream(
+                caller_api_key,
+                messages,
+                forwarded_headers=forwarded_headers,
+                finish_reason=finish_reason,
+                saw_content=saw_content,
+                accumulated=accumulated,
+                remaining=remaining,
+            ):
+                yield ev
     except httpx.RequestError as exc:
         yield {"type": "error", "error": f"LLM connection: {type(exc).__name__}", "detail": str(exc)}
     except Exception as exc:
@@ -3369,6 +3668,7 @@ async def _router_streaming(
     # from the final anila.meta event, so over-emission here is benign.
     thought_confirmed = False
     reasoning_emitted_up_to = 0
+    stream_finish = "stop"
     # CSP's own ``anila_meta`` for this call — where ``kb_state`` / ``kb_hits``
     # / ``citations`` arrive when institutional-regulation retrieval ran. Held
     # until the direct-answer exits below, which are the only places it belongs
@@ -3388,14 +3688,43 @@ async def _router_streaming(
         kind = ev.get("type")
         if kind == "error":
             err = ev.get("error", "LLM error")
+            length_budget = _is_length_budget_error(err)
+            if state == "detecting" and buf.strip() and not _THOUGHT_PREFIX_RE.match(buf):
+                yield _make_chunk(buf, "anila-router")
+                answer_emitted_up_to = len(buf)
+                state = "answering"
+            already = answer_emitted_up_to > 0
+            if already or length_budget:
+                # Token budget / mid-stream drop: the model is fine. Keep
+                # whatever already reached the caller and offer Continue.
+                # Never append the outage sentence onto a half-written page.
+                yield _make_event(
+                    "anila.trace",
+                    _make_trace_step(
+                        "direct",
+                        "輸出被截斷" if length_budget else "輸出未完成",
+                        err,
+                        status="error",
+                    ),
+                )
+                if not already:
+                    yield _make_chunk(_LENGTH_FALLBACK, "anila-router")
+                anila_meta = _merge_anila_meta(
+                    base_trace,
+                    downstream_meta,
+                    latency_ms=int((time.time() - started_at) * 1000),
+                )
+                if upstream_reasoning:
+                    anila_meta["reasoning"] = upstream_reasoning
+                yield _make_event("anila.meta", {**anila_meta, "trace": []})
+                yield _make_chunk("", "anila-router", finish="length")
+                yield "data: [DONE]\n\n"
+                return
             yield _make_event(
                 "anila.trace",
                 _make_trace_step("direct", "LLM 無法回應", err, status="error"),
             )
-            yield _make_chunk(
-                "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）",
-                "anila-router",
-            )
+            yield _make_chunk(_OUTAGE_FALLBACK, "anila-router")
             yield _make_event("anila.meta", {"trace": [], "reasoning": None})
             yield _make_chunk("", "anila-router", finish="stop")
             yield "data: [DONE]\n\n"
@@ -3411,6 +3740,7 @@ async def _router_streaming(
             downstream_meta = ev["anila_meta"]
             continue
         if kind == "done":
+            stream_finish = str(ev.get("finish_reason") or "stop")
             break
         if kind != "delta":
             continue
@@ -3523,7 +3853,9 @@ async def _router_streaming(
                 anila_meta["reasoning"] = merged_reasoning
             anila_meta_evt = {**anila_meta, "trace": []}
             yield _make_event("anila.meta", anila_meta_evt)
-            yield _make_chunk("", "anila-router", finish="stop")
+            yield _make_chunk(
+                "", "anila-router", finish="length" if stream_finish == "length" else "stop"
+            )
             yield "data: [DONE]\n\n"
             return
 
@@ -3555,7 +3887,9 @@ async def _router_streaming(
             anila_meta["reasoning"] = reasoning_text
         anila_meta_evt = {**anila_meta, "trace": []}
         yield _make_event("anila.meta", anila_meta_evt)
-        yield _make_chunk("", "anila-router", finish="stop")
+        yield _make_chunk(
+            "", "anila-router", finish="length" if stream_finish == "length" else "stop"
+        )
         yield "data: [DONE]\n\n"
         return
 

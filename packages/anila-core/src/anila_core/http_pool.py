@@ -12,13 +12,13 @@ Independently revertable: delete this module and restore
 ``async with httpx.AsyncClient(...)`` at each call site (search
 ``OPT-1``).
 
-Timeouts keep the historical 120 s overall read budget but split out a
-short connect budget (OPT-6 lives here too — same revert path, or set
-``ANILA_HTTP_CONNECT_TIMEOUT`` back implicitly by reverting). Connect
-failures surface faster; successful calls are unaffected.
+Read budget used to be 120 s. Thinking models (GLM Flash etc.) routinely
+think silently for longer than that, after which Router aborted a healthy
+upstream and the UI said the LLM was down. Default now matches nginx
+``/v1`` / ``/router`` (300 s). Connect failures still surface quickly.
 
 Environment knobs (all optional, all with pre-branch-safe defaults):
-``ANILA_HTTP_CONNECT_TIMEOUT`` (3), ``ANILA_HTTP_READ_TIMEOUT`` (120),
+``ANILA_HTTP_CONNECT_TIMEOUT`` (3), ``ANILA_HTTP_READ_TIMEOUT`` (300),
 ``ANILA_HTTP_MAX_CONNECTIONS`` (0 = uncapped, see ``_max_connections``),
 ``ANILA_HTTP_POOL_TIMEOUT`` (only meaningful with a finite cap),
 ``ANILA_HTTP_MAX_KEEPALIVE`` (20).
@@ -113,10 +113,10 @@ def _limits() -> httpx.Limits:
 
 def _timeout() -> httpx.Timeout:
     # Historical default was a flat 120.0 (connect+read+write+pool).
-    # Keep read at 120 so long generations still complete; fail connect
-    # quickly so a dead upstream does not sit on the event loop.
+    # Read is per-chunk inactivity: a thinking model that emits nothing
+    # for >120 s used to die mid-thought. 300 s matches nginx /v1.
     connect = float(os.environ.get("ANILA_HTTP_CONNECT_TIMEOUT", "3.0"))
-    read = float(os.environ.get("ANILA_HTTP_READ_TIMEOUT", "120.0"))
+    read = float(os.environ.get("ANILA_HTTP_READ_TIMEOUT", "300.0"))
     return httpx.Timeout(
         connect=connect, read=read, write=60.0, pool=_pool_timeout()
     )

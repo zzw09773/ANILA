@@ -17,7 +17,12 @@ def is_empty_length_failure(
     return not (content or "").strip()
 
 
-def bumped_max_tokens(current: int, *, cap: int = 8192) -> int:
+# Thinking models + a long HTML/code page routinely exceed 8k. The empty-length
+# retry used to clamp here and then tell the UI the LLM was down.
+LENGTH_RETRY_CAP = 32768
+
+
+def bumped_max_tokens(current: int, *, cap: int = LENGTH_RETRY_CAP) -> int:
     """Double ``current``, never lowering below ``current``.
 
     When ``current`` already exceeds ``cap``, return ``current`` unchanged

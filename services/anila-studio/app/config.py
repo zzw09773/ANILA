@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     # generation prompts can hit 10K+ input tokens (RAG chunks + spec
     # schema + hierarchy bullet examples + theme rules) and emit 2-5K
     # output tokens. Observed gemma4 wall-clock: 60-240s per call.
-    # csp itself defaults LLM_TIMEOUT=120 internally — production stack
+    # csp itself defaults LLM_TIMEOUT=300 internally — production stack
     # must override that env to ≥300 alongside this setting.
     INTERNAL_LLM_TIMEOUT_SECONDS: float = 300.0
 

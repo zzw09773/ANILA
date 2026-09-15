@@ -144,6 +144,23 @@ DEFAULT_FORCED_ANSWER = COMMON_PREAMBLE + """
 
 
 
+# 隔離內網不能連 CDN。附加在 Router 系統提示（含治理中心覆寫後），
+# 避免模型寫出「請自行下載 three.min.js」這種院內跑不起來的頁。
+INTRANET_HTML_HINT = (
+    "\n\n【HTML 網頁】本系統在隔離內網。Three.js r128 與 OrbitControls 已放在"
+    "同源 /anila/vendor/three/r128/three.min.js 與 OrbitControls.js。"
+    "寫完整可執行的 HTML 時必須用這兩個路徑，禁止 cdnjs／jsDelivr／unpkg，"
+    "也不要寫「請自行下載」的離線提醒。"
+)
+
+
+def with_intranet_html_hint(prompt: str) -> str:
+    text = prompt if isinstance(prompt, str) else str(prompt)
+    if "/anila/vendor/three/r128/" in text:
+        return text
+    return text + INTRANET_HTML_HINT
+
+
 DEFAULTS: dict[str, str] = {
     KEY_SYSTEM: DEFAULT_ROUTER_SYSTEM,
     KEY_PLAIN: DEFAULT_PLAIN_ASSISTANT,

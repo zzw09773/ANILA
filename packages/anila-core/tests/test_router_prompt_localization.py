@@ -4,6 +4,7 @@
 不碰路由控制流（OWNER-QUESTIONS Q7 凍結）。
 """
 
+from anila_core.api.router_prompts import INTRANET_HTML_HINT
 from anila_core.api.router_server import (
     _PLAIN_ASSISTANT_TEMPLATE,
     _RECOMPOSE_SYSTEM_PROMPT,
@@ -78,6 +79,7 @@ def test_router_prompt_task_text_has_no_simplified_characters():
         _ROUTER_SYSTEM_TEMPLATE,
         _PLAIN_ASSISTANT_TEMPLATE,
         _RECOMPOSE_SYSTEM_PROMPT,
+        INTRANET_HTML_HINT,
     ):
         hits = sorted({ch for ch in text if ch in _SIMPLIFIED_ONLY})
         assert not hits, f"Router prompt 含簡體字：{hits}"

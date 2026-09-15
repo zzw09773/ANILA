@@ -434,6 +434,7 @@ def test_router_primary_includes_override_fields(client, db):
     assert body["top_p"] == 0.95
     assert body["presence_penalty"] == 1.5
     assert body["max_tokens"] == 4096
+    assert "context_window" in body
 
 
 # ── save-time probe: does the endpoint accept this level? ────────────────────
