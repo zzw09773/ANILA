@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String,
-    UniqueConstraint, text,
+    Text, UniqueConstraint, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -81,6 +81,20 @@ class Conversation(Base):
     # User-facing thinking picker (default|off|standard|deep). NULL = default.
     # Shares router_selection_version as the optimistic-lock counter.
     thinking_tier = Column(String(16), nullable=True)
+    # Latest compact snapshot only (no stack). Boundary is the last message
+    # included in the summary. use_alter: conversations ↔ messages cycle.
+    compact_summary = Column(Text, nullable=True)
+    compact_boundary_message_id = Column(
+        Integer,
+        ForeignKey(
+            "messages.id",
+            ondelete="SET NULL",
+            name="fk_conversations_compact_boundary_message_id",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+    compact_updated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

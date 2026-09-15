@@ -162,6 +162,33 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         ),
         generic_ddl="ALTER TABLE conversations ADD COLUMN thinking_tier VARCHAR(16)",
     )
+    _ensure_column(
+        bind, "conversations", "compact_summary",
+        postgres_ddl=(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS "
+            "compact_summary TEXT NULL"
+        ),
+        generic_ddl="ALTER TABLE conversations ADD COLUMN compact_summary TEXT",
+    )
+    _ensure_column(
+        bind, "conversations", "compact_boundary_message_id",
+        postgres_ddl=(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS "
+            "compact_boundary_message_id INTEGER "
+            "REFERENCES messages(id) ON DELETE SET NULL"
+        ),
+        generic_ddl=(
+            "ALTER TABLE conversations ADD COLUMN compact_boundary_message_id INTEGER"
+        ),
+    )
+    _ensure_column(
+        bind, "conversations", "compact_updated_at",
+        postgres_ddl=(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS "
+            "compact_updated_at TIMESTAMPTZ NULL"
+        ),
+        generic_ddl="ALTER TABLE conversations ADD COLUMN compact_updated_at TIMESTAMP",
+    )
 
     # --- token_usage -----------------------------------------------------
     _ensure_column(
