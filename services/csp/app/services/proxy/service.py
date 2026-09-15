@@ -1242,202 +1242,272 @@ async def _proxy_stream_impl(
     reasoning_parts: list[str] = []
     pending_done_block: str | None = None
     pending_named_meta: dict | None = None
+    terminal_meta_emitted = False
+    leaving_with_generator_exit = False
+    stream_aborted = False
 
-    try:
-        async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
-            async with client.stream("POST", target_url, json=body, headers=headers) as resp:
-                if resp.status_code >= 400:
-                    body: object = None
-                    try:
-                        raw_body = await resp.aread()
-                        body = json.loads(raw_body.decode("utf-8"))
-                    except Exception:
-                        pass
-                    raise HTTPException(status_code=resp.status_code,
-                                        detail=_sanitised_upstream_error_detail(
-                                            body, resp.status_code
-                                        ))
-                def _hold_named_meta(data: str | None) -> bool:
-                    """Hold a named anila.meta object until usage is complete.
+    def _hold_named_meta(data: str | None) -> bool:
+        """Hold a named anila.meta object until usage is complete.
 
-                    Returns True when the frame was absorbed (do not yield yet).
-                    """
-                    nonlocal pending_named_meta
-                    if not data:
-                        return False
-                    try:
-                        parsed = json.loads(data)
-                    except (json.JSONDecodeError, TypeError):
-                        return False
-                    if not isinstance(parsed, dict):
-                        return False
-                    if pending_named_meta is None:
-                        pending_named_meta = dict(parsed)
-                    else:
-                        pending_named_meta.update(parsed)
-                    return True
+        Returns True when the frame was absorbed (do not yield yet).
+        """
+        nonlocal pending_named_meta
+        if not data:
+            return False
+        try:
+            parsed = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        if pending_named_meta is None:
+            pending_named_meta = dict(parsed)
+        else:
+            pending_named_meta.update(parsed)
+        return True
 
-                def _ingest_stream_payload(data: str | None, event_name: str | None) -> None:
-                    nonlocal prompt_tokens, completion_tokens, usage_seen, last_usage
-                    if not data or event_name not in (None, "message"):
-                        return
-                    try:
-                        chunk = json.loads(data)
-                    except (json.JSONDecodeError, TypeError, KeyError):
-                        return
-                    text = _extract_stream_text(chunk)
-                    if text:
-                        completion_parts.append(text)
-                    reason = _extract_stream_reasoning(chunk)
-                    if reason:
-                        reasoning_parts.append(reason)
-                    usage = chunk.get("usage") or {}
-                    if usage:
-                        usage_seen = True
-                        last_usage = _merge_usage_maps(last_usage, usage)
-                        if usage.get("prompt_tokens") is not None:
-                            prompt_tokens = usage["prompt_tokens"]
-                        if usage.get("completion_tokens") is not None:
-                            completion_tokens = usage["completion_tokens"]
+    def _ingest_stream_payload(data: str | None, event_name: str | None) -> None:
+        nonlocal prompt_tokens, completion_tokens, usage_seen, last_usage
+        if not data or event_name not in (None, "message"):
+            return
+        try:
+            chunk = json.loads(data)
+        except (json.JSONDecodeError, TypeError, KeyError):
+            return
+        text = _extract_stream_text(chunk)
+        if text:
+            completion_parts.append(text)
+        reason = _extract_stream_reasoning(chunk)
+        if reason:
+            reasoning_parts.append(reason)
+        usage = chunk.get("usage") or {}
+        if usage:
+            usage_seen = True
+            last_usage = _merge_usage_maps(last_usage, usage)
+            if usage.get("prompt_tokens") is not None:
+                prompt_tokens = usage["prompt_tokens"]
+            if usage.get("completion_tokens") is not None:
+                completion_tokens = usage["completion_tokens"]
 
-                def _emit(block: str, event_name: str | None, data: str | None) -> str:
-                    """Render a block, upgrading anila.meta.classified if required."""
-                    if event_name == "anila.meta" and data:
-                        try:
-                            parsed = json.loads(data)
-                            if isinstance(parsed, dict):
-                                changed = False
-                                if requires_encryption and not parsed.get("classified"):
-                                    parsed["classified"] = True
-                                    changed = True
-                                if (
-                                    model is not None
-                                    and is_thinking_locked(model)
-                                    and not parsed.get("thinking_locked")
-                                ):
-                                    parsed["thinking_locked"] = True
-                                    changed = True
-                                if thinking_applied is not None and "thinking_applied" not in parsed:
-                                    parsed["thinking_applied"] = thinking_applied
-                                    changed = True
-                                if changed:
-                                    return (
-                                        "event: anila.meta\n"
-                                        + "data: "
-                                        + json.dumps(parsed, ensure_ascii=False)
-                                        + "\n\n"
-                                    )
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    return block + "\n\n"
-
-                block_lines: list[str] = []
-                async for line in resp.aiter_lines():
-                    if line == "":
-                        if block_lines:
-                            block = "\n".join(block_lines)
-                            event_name, data = _parse_sse_block(block)
-                            if data == "[DONE]":
-                                pending_done_block = block + "\n\n"
-                            elif event_name == "anila.meta" and _hold_named_meta(data):
-                                pass
-                            else:
-                                _ingest_stream_payload(data, event_name)
-                                yield _emit(block, event_name, data)
-                            block_lines = []
-                        continue
-                    block_lines.append(line)
-                if block_lines:
-                    block = "\n".join(block_lines)
-                    event_name, data = _parse_sse_block(block)
-                    if data == "[DONE]":
-                        pending_done_block = block + "\n\n"
-                    elif event_name == "anila.meta" and _hold_named_meta(data):
-                        pass
-                    else:
-                        _ingest_stream_payload(data, event_name)
-                        yield _emit(block, event_name, data)
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="下游請求逾時")
-    except httpx.ConnectError:
-        # Identify by registered model name; endpoint_display is gated.
-        label = model_name or "未知模型"
-        logger.warning("串流連線失敗 model=%s url=%s", label, target_url)
-        raise HTTPException(
-            status_code=502,
-            detail=_proxy_connect_failure(label, endpoint_display),
-        )
-
-    duration_ms = int((time.time() - start_time) * 1000)
-    if not usage_seen:
-        prompt_tokens = _estimate_token_count(model_name, prompt_text)
-        completion_tokens = _estimate_token_count(model_name, "".join(completion_parts))
-        logger.warning(
-            "串流回應未提供 usage，改用伺服端估算 %s: prompt=%s completion=%s",
-            model_name or "未知模型",
-            prompt_tokens,
-            completion_tokens,
-        )
-    total_tokens = prompt_tokens + completion_tokens
-    usage_source = "reported" if usage_seen else "estimated"
-    reasoning_tokens, reasoning_source = resolve_reasoning_tokens(
-        last_usage if usage_seen else None,
-        reasoning_text="".join(reasoning_parts),
-        model_name=model_name,
-    )
-    usage_for_meta = _usage_for_meta(
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-        reasoning_tokens,
-        reasoning_source,
-    )
-    if pending_named_meta is not None:
-        terminal_meta = pending_named_meta
-        if requires_encryption:
-            terminal_meta["classified"] = True
-        if model is not None and is_thinking_locked(model):
-            terminal_meta["thinking_locked"] = True
-        _stamp_usage_and_thinking(
-            terminal_meta,
-            usage=usage_for_meta,
-            thinking_applied=thinking_applied,
-        )
-        if target_agent_id is not None:
+    def _emit(block: str, event_name: str | None, data: str | None) -> str:
+        """Render a block, upgrading anila.meta.classified if required."""
+        if event_name == "anila.meta" and data:
             try:
+                parsed = json.loads(data)
+                if isinstance(parsed, dict):
+                    changed = False
+                    if requires_encryption and not parsed.get("classified"):
+                        parsed["classified"] = True
+                        changed = True
+                    if (
+                        model is not None
+                        and is_thinking_locked(model)
+                        and not parsed.get("thinking_locked")
+                    ):
+                        parsed["thinking_locked"] = True
+                        changed = True
+                    if thinking_applied is not None and "thinking_applied" not in parsed:
+                        parsed["thinking_applied"] = thinking_applied
+                        changed = True
+                    if changed:
+                        return (
+                            "event: anila.meta\n"
+                            + "data: "
+                            + json.dumps(parsed, ensure_ascii=False)
+                            + "\n\n"
+                        )
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return block + "\n\n"
+
+    def _resolve_collected_usage(*, estimate_if_missing: bool):
+        local_prompt = prompt_tokens
+        local_completion = completion_tokens
+        if estimate_if_missing and not usage_seen:
+            local_prompt = _estimate_token_count(model_name, prompt_text)
+            local_completion = _estimate_token_count(
+                model_name, "".join(completion_parts)
+            )
+            logger.warning(
+                "串流回應未提供 usage，改用伺服端估算 %s: prompt=%s completion=%s",
+                model_name or "未知模型",
+                local_prompt,
+                local_completion,
+            )
+        total = local_prompt + local_completion
+        usage_source = "reported" if usage_seen else "estimated"
+        reasoning_tokens, reasoning_source = resolve_reasoning_tokens(
+            last_usage if usage_seen else None,
+            reasoning_text="".join(reasoning_parts),
+            model_name=model_name,
+        )
+        return (
+            local_prompt,
+            local_completion,
+            total,
+            usage_source,
+            reasoning_tokens,
+            reasoning_source,
+        )
+
+    def _compose_terminal_meta(*, usage_complete: bool) -> dict | None:
+        if not usage_complete and pending_named_meta is None:
+            return None
+        duration_ms = int((time.time() - start_time) * 1000)
+        (
+            local_prompt,
+            local_completion,
+            _total,
+            usage_source,
+            reasoning_tokens,
+            reasoning_source,
+        ) = _resolve_collected_usage(estimate_if_missing=usage_complete)
+        usage_for_meta = _usage_for_meta(
+            local_prompt,
+            local_completion,
+            local_prompt + local_completion,
+            reasoning_tokens,
+            reasoning_source,
+        )
+        if pending_named_meta is not None:
+            terminal_meta = pending_named_meta
+            if requires_encryption:
+                terminal_meta["classified"] = True
+            if model is not None and is_thinking_locked(model):
+                terminal_meta["thinking_locked"] = True
+            _stamp_usage_and_thinking(
+                terminal_meta,
+                usage=usage_for_meta,
+                thinking_applied=thinking_applied,
+            )
+            if target_agent_id is not None:
+                try:
+                    attach_agent_reply_observation(
+                        terminal_meta,
+                        completion_tokens=local_completion,
+                        usage_source=usage_source,
+                    )
+                except Exception:  # pragma: no cover - defensive serving boundary
+                    logger.exception("agent anila.meta observation rewrite failed")
+        else:
+            stream_label = model_name or "未知模型"
+            terminal_meta = build_default_anila_meta(
+                stream_label,
+                detail=_proxy_detail(
+                    stream_label, endpoint_display, stream=True
+                ),
+                latency_ms=duration_ms,
+                classified=requires_encryption,
+                usage=usage_for_meta,
+                thinking_locked=is_thinking_locked(model) if model is not None else False,
+                thinking_applied=thinking_applied,
+            )
+            if target_agent_id is not None:
                 attach_agent_reply_observation(
                     terminal_meta,
-                    completion_tokens=completion_tokens,
+                    completion_tokens=local_completion,
                     usage_source=usage_source,
                 )
-            except Exception:  # pragma: no cover - defensive serving boundary
-                logger.exception("agent anila.meta observation rewrite failed")
-    else:
-        # Caller-facing stream meta uses the visibility-gated display form.
-        stream_label = model_name or "未知模型"
-        terminal_meta = build_default_anila_meta(
-            stream_label,
-            detail=_proxy_detail(
-                stream_label, endpoint_display, stream=True
-            ),
-            latency_ms=duration_ms,
-            classified=requires_encryption,
-            usage=usage_for_meta,
-            thinking_locked=is_thinking_locked(model) if model is not None else False,
-            thinking_applied=thinking_applied,
+        terminal_meta["usage_complete"] = usage_complete
+        return terminal_meta
+
+    def _render_terminal_meta(meta: dict) -> str:
+        return (
+            "event: anila.meta\n"
+            + "data: "
+            + json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
+            + "\n\n"
         )
-        if target_agent_id is not None:
-            attach_agent_reply_observation(
-                terminal_meta,
-                completion_tokens=completion_tokens,
-                usage_source=usage_source,
+
+    try:
+        try:
+            async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
+                async with client.stream("POST", target_url, json=body, headers=headers) as resp:
+                    if resp.status_code >= 400:
+                        err_body: object = None
+                        try:
+                            raw_body = await resp.aread()
+                            err_body = json.loads(raw_body.decode("utf-8"))
+                        except Exception:
+                            pass
+                        raise HTTPException(status_code=resp.status_code,
+                                            detail=_sanitised_upstream_error_detail(
+                                                err_body, resp.status_code
+                                            ))
+                    block_lines: list[str] = []
+                    async for line in resp.aiter_lines():
+                        if line == "":
+                            if block_lines:
+                                block = "\n".join(block_lines)
+                                event_name, data = _parse_sse_block(block)
+                                if data == "[DONE]":
+                                    pending_done_block = block + "\n\n"
+                                elif event_name == "anila.meta" and _hold_named_meta(data):
+                                    pass
+                                else:
+                                    _ingest_stream_payload(data, event_name)
+                                    yield _emit(block, event_name, data)
+                                block_lines = []
+                            continue
+                        block_lines.append(line)
+                    if block_lines:
+                        block = "\n".join(block_lines)
+                        event_name, data = _parse_sse_block(block)
+                        if data == "[DONE]":
+                            pending_done_block = block + "\n\n"
+                        elif event_name == "anila.meta" and _hold_named_meta(data):
+                            pass
+                        else:
+                            _ingest_stream_payload(data, event_name)
+                            yield _emit(block, event_name, data)
+        except httpx.TimeoutException:
+            stream_aborted = True
+            raise HTTPException(status_code=504, detail="下游請求逾時")
+        except httpx.ConnectError:
+            # Identify by registered model name; endpoint_display is gated.
+            label = model_name or "未知模型"
+            logger.warning("串流連線失敗 model=%s url=%s", label, target_url)
+            stream_aborted = True
+            raise HTTPException(
+                status_code=502,
+                detail=_proxy_connect_failure(label, endpoint_display),
             )
-    yield "event: anila.meta\n"
-    yield "data: " + json.dumps(
-        terminal_meta,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ) + "\n\n"
+        except asyncio.CancelledError:
+            stream_aborted = True
+            raise
+        except GeneratorExit:
+            leaving_with_generator_exit = True
+            raise
+        except BaseException:
+            stream_aborted = True
+            raise
+    finally:
+        if (
+            stream_aborted
+            and not terminal_meta_emitted
+            and pending_named_meta is not None
+            and not leaving_with_generator_exit
+        ):
+            interrupt_meta = _compose_terminal_meta(usage_complete=False)
+            if interrupt_meta is not None:
+                yield _render_terminal_meta(interrupt_meta)
+                terminal_meta_emitted = True
+
+    if terminal_meta_emitted:
+        return
+
+    duration_ms = int((time.time() - start_time) * 1000)
+    terminal_meta = _compose_terminal_meta(usage_complete=True)
+    if terminal_meta is None:
+        return
+    yield _render_terminal_meta(terminal_meta)
+    terminal_meta_emitted = True
+    usage_payload = terminal_meta.get("usage") or {}
+    prompt_tokens = int(usage_payload.get("prompt_tokens") or 0)
+    completion_tokens = int(usage_payload.get("completion_tokens") or 0)
+    total_tokens = int(usage_payload.get("total_tokens") or 0)
+    reasoning_tokens = usage_payload.get("reasoning_tokens")
+    usage_source = "reported" if usage_seen else "estimated"
     if pending_done_block:
         yield pending_done_block
     if total_tokens > 0:

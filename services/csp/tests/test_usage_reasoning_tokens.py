@@ -6,6 +6,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -43,8 +44,9 @@ class _PayloadResponse:
 class _StreamResponse:
     status_code = 200
 
-    def __init__(self, lines: list[str]):
+    def __init__(self, lines: list[str], fail_exc: BaseException | None = None):
         self._lines = lines
+        self._fail_exc = fail_exc
 
     async def __aenter__(self):
         return self
@@ -55,12 +57,15 @@ class _StreamResponse:
     async def aiter_lines(self):
         for line in self._lines:
             yield line
+        if self._fail_exc is not None:
+            raise self._fail_exc
 
 
 class _ConfigurableUpstream:
     last_body: dict | None = None
     payload: dict | None = None
     stream_lines: list[str] | None = None
+    stream_fail_exc: BaseException | None = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -77,7 +82,10 @@ class _ConfigurableUpstream:
 
     def stream(self, method, url, json=None, headers=None):
         type(self).last_body = json
-        return _StreamResponse(list(type(self).stream_lines or []))
+        return _StreamResponse(
+            list(type(self).stream_lines or []),
+            fail_exc=type(self).stream_fail_exc,
+        )
 
 
 def _wire_usage_proxy(monkeypatch, db_engine, *, payload=None, stream_lines=None):
@@ -94,6 +102,7 @@ def _wire_usage_proxy(monkeypatch, db_engine, *, payload=None, stream_lines=None
     _ConfigurableUpstream.last_body = None
     _ConfigurableUpstream.payload = payload
     _ConfigurableUpstream.stream_lines = stream_lines
+    _ConfigurableUpstream.stream_fail_exc = None
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
     monkeypatch.setattr(
@@ -396,7 +405,12 @@ def test_reasoning_tokens_source_null_only_when_tokens_missing():
     assert resolve_reasoning_tokens(None) == (None, None)
 
 
-def _run_proxy_stream(monkeypatch, lines: list[str]) -> tuple[str, list[dict]]:
+def _run_proxy_stream(
+    monkeypatch,
+    lines: list[str],
+    *,
+    fail_exc: BaseException | None = None,
+) -> tuple[str, list[dict]]:
     from app.services import proxy_service
     from app.services.proxy.service import ProxyTuning
 
@@ -409,6 +423,7 @@ def _run_proxy_stream(monkeypatch, lines: list[str]) -> tuple[str, list[dict]]:
         lambda *args, **kwargs: _ConfigurableUpstream(*args, **kwargs),
     )
     _ConfigurableUpstream.stream_lines = lines
+    _ConfigurableUpstream.stream_fail_exc = fail_exc
     _ConfigurableUpstream.last_body = None
 
     async def fake_enqueue(**kwargs):
@@ -479,6 +494,7 @@ def test_stream_holds_named_meta_until_usage_merges_reasoning(monkeypatch):
     assert metas[0]["kb_state"] == "searched_hit"
     assert metas[0]["usage"]["reasoning_tokens"] == 1234
     assert metas[0]["usage"]["reasoning_tokens_source"] == "reported"
+    assert metas[0]["usage_complete"] is True
     assert joined.index("anila.meta") < joined.index("[DONE]")
     assert recorded[0]["reasoning_tokens"] == 1234
 
@@ -501,6 +517,111 @@ def test_stream_merges_usage_chunks_without_dropping_reasoning(monkeypatch):
     metas = _all_sse_metas(joined)
     assert metas[-1]["usage"]["reasoning_tokens"] == 1234
     assert metas[-1]["usage"]["reasoning_tokens_source"] == "reported"
+    assert metas[-1]["usage_complete"] is True
     assert recorded[0]["prompt_tokens"] == 11
     assert recorded[0]["completion_tokens"] == 7
     assert recorded[0]["reasoning_tokens"] == 1234
+
+
+def _named_sse_events(text: str) -> list[str]:
+    names: list[str] = []
+    for raw_block in text.split("\n\n"):
+        event = None
+        for line in raw_block.splitlines():
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+                break
+        if event:
+            names.append(event)
+    return names
+
+
+def test_stream_flushes_held_meta_before_timeout_error(monkeypatch):
+    joined, recorded = _run_proxy_stream(
+        monkeypatch,
+        [
+            'data: {"choices":[{"index":0,"delta":{"content":"partial"},'
+            '"finish_reason":null}]}',
+            "",
+            "event: anila.meta",
+            'data: {"kb_hits":[{"id":1,"title":"reg"}],"citations":[{"id":"c1"}]}',
+            "",
+        ],
+        fail_exc=httpx.ReadTimeout("upstream stalled"),
+    )
+    metas = _all_sse_metas(joined)
+    assert len(metas) == 1
+    assert metas[0]["kb_hits"] == [{"id": 1, "title": "reg"}]
+    assert metas[0]["citations"] == [{"id": "c1"}]
+    assert metas[0]["usage_complete"] is False
+    events = _named_sse_events(joined)
+    assert events.index("anila.meta") < events.index("anila.error")
+    assert recorded == []
+
+
+def test_stream_interrupt_flush_keeps_partial_reasoning_tokens(monkeypatch):
+    joined, _recorded = _run_proxy_stream(
+        monkeypatch,
+        [
+            "event: anila.meta",
+            'data: {"kb_hits":[{"id":9}]}',
+            "",
+            'data: {"choices":[{"index":0,"delta":{},"finish_reason":null}],'
+            '"usage":{"prompt_tokens":11,"completion_tokens":7,'
+            '"reasoning_tokens":1234}}',
+            "",
+        ],
+        fail_exc=httpx.ReadTimeout("cut after usage"),
+    )
+    metas = _all_sse_metas(joined)
+    assert metas[0]["usage"]["reasoning_tokens"] == 1234
+    assert metas[0]["usage"]["reasoning_tokens_source"] == "reported"
+    assert metas[0]["usage_complete"] is False
+    assert metas[0]["kb_hits"] == [{"id": 9}]
+
+
+def test_stream_normal_complete_emits_one_meta_usage_complete_true(monkeypatch):
+    joined, _recorded = _run_proxy_stream(
+        monkeypatch,
+        [
+            'data: {"choices":[{"index":0,"delta":{"content":"ok"},'
+            '"finish_reason":"stop"}],"usage":{"prompt_tokens":2,'
+            '"completion_tokens":1}}',
+            "",
+            "data: [DONE]",
+            "",
+        ],
+    )
+    metas = _all_sse_metas(joined)
+    assert len(metas) == 1
+    assert metas[0]["usage_complete"] is True
+    assert "event: anila.error" not in joined
+
+
+def test_stream_interrupt_without_named_meta_emits_only_error(monkeypatch):
+    joined, recorded = _run_proxy_stream(
+        monkeypatch,
+        [
+            'data: {"choices":[{"index":0,"delta":{"content":"Hel"},'
+            '"finish_reason":null}]}',
+            "",
+        ],
+        fail_exc=httpx.ReadTimeout("no meta yet"),
+    )
+    assert _all_sse_metas(joined) == []
+    assert "event: anila.error" in joined
+    assert "event: anila.meta" not in joined
+    assert recorded == []
+
+
+def test_stream_cancelled_after_named_meta_is_reraised(monkeypatch):
+    with pytest.raises(asyncio.CancelledError):
+        _run_proxy_stream(
+            monkeypatch,
+            [
+                "event: anila.meta",
+                'data: {"kb_hits":[{"id":1}]}',
+                "",
+            ],
+            fail_exc=asyncio.CancelledError(),
+        )
