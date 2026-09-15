@@ -115,7 +115,9 @@ model_registry.thinking_user_selectable   BOOLEAN NOT NULL DEFAULT TRUE
 
 **CSP**
 
-- `PUT /api/conversations/{id}/thinking` `{tier, expected_version}`：擁有者本人、CSRF、樂觀鎖沿用 `router_selection_version`（同一把版本號，避免兩個欄位各自鎖）。
+- `PUT /api/conversations/{id}/thinking` `{thinking_tier, expected_version}`：擁有者本人、CSRF、樂觀鎖沿用 `router_selection_version`（同一把版本號，避免兩個欄位各自鎖）；版本不符 409，detail 為純字串（與 `/router-model` 一致）。
+- ⚠ 不變式：`thinking_levels_supported` 後端**永不回 `[]`**（可達必含 `none`，全不可達存 NULL）；shell 與治理中心一律把 `null` 與 `[]` 都當「未探測」。
+- proxy 依 `X-ANILA-Conversation-Id` 撈對話檔位時**比對擁有者**（`conv.user_id == caller`），不符回 None——admin 能過 access gate，不能借別人對話的檔位。
 - `GET /api/router-models` 每列多回 `thinking_levels_supported`、`thinking_user_selectable`、`thinking_effort`（模型預設）。
 - **支援等級在註冊模型時自動探測引入**，不另設按鈕、不靠 admin 記得去按：
   - 觸發點：`POST /api/models`（單筆新增）、`/v1/models` 整批帶入（`bulk import`）、以及 `PUT /api/models/{id}` 改到 `endpoint_url`／`api_version`／`api_key` 時。三條路徑都收斂到同一個 `discover_thinking_levels(model_like)`。
@@ -170,7 +172,7 @@ model_registry.thinking_user_selectable   BOOLEAN NOT NULL DEFAULT TRUE
 
 | 期 | 內容 | 依賴 | 估工 |
 |---|---|---|---|
-| **A** | §2 思考選單全套（migration、CSP 對映、註冊時自動探測、Router 透傳、shell picker、9 條驗收） | 無 | 3–4 天 |
+| **A** | §2 思考選單全套（migration、CSP 對映、註冊時自動探測、Router 透傳、shell picker、9 條驗收） | 無 | ✅ 2026-09-15 合入 main（四分支：csp `3b0c0c96`、router `2e01dfa2`、gov-ui `3f9364fa`、shell `1909f851`；獨立審查通過）。待活體驗收 §2.5。合併後補：Router recompose 排除改 opt-in 參數；Shell「重試」是否帶單則覆寫待拍板 |
 | **B** | 思考／正文 token 帶到 `anila.meta`；折疊列顯示；用量頁若無則先做每對話小計 | A | 1–2 天 |
 | **C** | Compact boundary 寫回對話（`messages` 加一則 `role=system, kind=compact_summary`，前端重送時從 boundary 之後開始）；手動「整理對話」按鈕接 `force=True` | — | 2 天 |
 | **D** | `stripImagesFromMessages`：compact 前先把 data URL／base64 換成佈位；PTL 重試順序改為「剝圖→摘要→硬截」 | C | 1 天 |
