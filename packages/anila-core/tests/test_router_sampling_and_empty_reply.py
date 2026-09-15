@@ -163,6 +163,9 @@ def test_router_defaults_are_flagged_for_the_csp_proxy():
     assert params["temperature"] == ROUTER.temperature
     assert params["max_tokens"] == ROUTER.max_tokens
     assert params[rs.SAMPLING_DEFAULTS_MARKER] == ["temperature", "max_tokens"]
+    # Per-turn thinking tier is not a sampling default; CSP maps it separately.
+    assert "anila_thinking_tier" not in params
+    assert "anila_thinking_tier" not in params[rs.SAMPLING_DEFAULTS_MARKER]
 
 
 def test_caller_temperature_leaves_only_max_tokens_flagged():
