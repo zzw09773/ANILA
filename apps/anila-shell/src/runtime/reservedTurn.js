@@ -51,6 +51,12 @@ export const STREAM_STATE = {
  * @param {string|null|undefined} state
  * @param {boolean} hasContent 這一列有沒有留下任何文字
  */
+/** Router used to paint token-budget exhaustion as "LLM 無法回應". */
+export function isLengthBudgetError(error) {
+  const msg = typeof error?.message === "string" ? error.message : String(error || "");
+  return msg.includes("finish_reason=length") || msg.includes("輸出額度被思考用完");
+}
+
 export function streamStateNotice(state, hasContent = true) {
   if (state === null || state === undefined) return null;
   switch (state) {

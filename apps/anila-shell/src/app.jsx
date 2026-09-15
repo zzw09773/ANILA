@@ -103,6 +103,7 @@ import {
   persistTurnHead,
   readStreamState,
   streamStateNotice,
+  isLengthBudgetError,
 } from "./runtime/reservedTurn.js";
 
 import RouterModelPicker from "./components/RouterModelPicker.jsx";
@@ -1623,14 +1624,19 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         }
       }
 
+      const lengthBudget = streamState === STREAM_STATE.FAILED && isLengthBudgetError(streamError);
+      if (lengthBudget) streamState = STREAM_STATE.COMPLETE;
       updateMsg(convId, assistantId, {
         streaming: false,
         streamState,
-        incompleteNotice: streamStateNotice(streamState, Boolean(finalText)),
+        incompleteNotice: lengthBudget
+          ? "輸出額度不足，思考或正文被截斷。已產生的內容保留。"
+          : streamStateNotice(streamState, Boolean(finalText)),
         error:
-          streamState === STREAM_STATE.FAILED
+          !lengthBudget && streamState === STREAM_STATE.FAILED
             ? streamError?.message || "產生回應時發生錯誤，請稍後再試。"
             : null,
+        ...(lengthBudget ? { finishReason: "length" } : {}),
       });
 
       // 內容寫回預留的那一列(不是 append 一則新的)。狀態必須誠實。
@@ -2073,15 +2079,20 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
       }
 
-      const notice = streamStateNotice(streamState, Boolean(finalText));
+      const lengthBudget = streamState === STREAM_STATE.FAILED && isLengthBudgetError(streamError);
+      if (lengthBudget) streamState = STREAM_STATE.COMPLETE;
+      const notice = lengthBudget
+        ? "輸出額度不足，思考或正文被截斷。已產生的內容保留。"
+        : streamStateNotice(streamState, Boolean(finalText));
       updateMsg(convId, assistantId, {
         streaming: false,
         streamState,
         incompleteNotice: notice,
         error:
-          streamState === STREAM_STATE.FAILED
+          !lengthBudget && streamState === STREAM_STATE.FAILED
             ? streamError?.message || "產生回應時發生錯誤，請稍後再試。"
             : null,
+        ...(lengthBudget ? { finishReason: "length" } : {}),
       });
 
       if (!persistable || reservedId == null) return;
@@ -2963,7 +2974,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   // ---- render: classified watermark + top bar + messages + composer ----
   return (
-    <ArtifactPreviewProvider onOpen={onOpenArtifact}>
+    <ArtifactPreviewProvider artifact={artifact} onOpen={onOpenArtifact}>
     <div style={{ display: "flex", height: "100dvh", background: "var(--bg)", position: "relative" }}>
       <a className="skip-link" href="#shell-main">跳到主要內容</a>
       {showForensicWatermark && (
