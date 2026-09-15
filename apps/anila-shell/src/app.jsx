@@ -81,7 +81,20 @@ import {
   searchConversations,
   listActiveBanners as apiListActiveBanners,
   getConversationUsage as apiGetConversationUsage,
+  setConversationCompact as apiSetConversationCompact,
+  clearConversationCompact as apiClearConversationCompact,
+  requestConversationCompact as apiRequestConversationCompact,
 } from "./runtime/conversations.js";
+import {
+  COMPACT_SUMMARY_PREFIX,
+  compactBoundaryOnPath,
+  compactFieldsFromServer,
+  compactStateFromConv,
+  keptMessageCount,
+  resolveBoundaryDbId,
+  resolveKeptBoundary,
+} from "./runtime/compact.js";
+import { CompactBoundaryBanner } from "./compactBoundary.jsx";
 import { CONV_USAGE_DEBOUNCE_MS } from "./runtime/usageDisplay.js";
 import { ConversationUsageChip, UsagePage } from "./usage.jsx";
 import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
@@ -237,17 +250,41 @@ function outgoingUserText(payload) {
   return "";
 }
 
-function buildMessageHistory(priorMsgs, currentText, currentAttachments) {
+function buildMessageHistory(priorMsgs, currentText, currentAttachments, options = null) {
   const out = [];
+  const sources = [];
   for (const m of priorMsgs || []) {
     if (!m || m.streaming) continue;
     if (m.role === "user") {
       out.push({ role: "user", content: buildUserContent(m.text || "", m.attachments || []) });
+      sources.push(m);
     } else if (m.role === "assistant" && m.text) {
       out.push({ role: "assistant", content: m.text });
+      sources.push(m);
     }
   }
-  out.push({ role: "user", content: buildUserContent(currentText, currentAttachments) });
+  if (currentText !== null && currentText !== undefined) {
+    out.push({ role: "user", content: buildUserContent(currentText, currentAttachments) });
+    sources.push(options?.currentUserMsg || null);
+  }
+  const compact = options?.compact;
+  const boundaryId = compact?.boundaryMessageId;
+  if (
+    compact?.summary
+    && boundaryId != null
+    && sources.some((m) => m && m.dbId === boundaryId)
+  ) {
+    const idx = sources.findIndex((m) => m && m.dbId === boundaryId);
+    const kept = out.slice(idx);
+    const keptSources = sources.slice(idx);
+    const messages = [
+      { role: "system", content: `${COMPACT_SUMMARY_PREFIX}${compact.summary}` },
+      ...kept,
+    ];
+    options?.onBuilt?.({ messages, sources: keptSources });
+    return messages;
+  }
+  options?.onBuilt?.({ messages: out, sources });
   return out;
 }
 
@@ -480,6 +517,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 而 442 個測試沒有一個抓得到。鏡像寫在 updater 裡面(不是 useEffect),
   // 所以它與 state 完全同步,不會落後一個 commit。
   const messagesRef = useRef({});
+  const conversationsRef = useRef([]);
+  conversationsRef.current = conversations;
+  const lastHistoryRef = useRef(new Map());
+  const pendingCompactRef = useRef(new Map());
+  const compactAppliedRef = useRef(new Set());
+  const [compacting, setCompacting] = useState(false);
   const messagesByConv = messagesByConvState;
   const setMessagesByConv = useCallback((update) => {
     setMessagesByConvState((prev) => {
@@ -765,6 +808,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         taskId: taskIdForConv(convId),
         ...opts,
         signal: controller.signal,
+        onCompact: (payload) => {
+          handleIncomingCompact(convId, payload, opts.payload);
+          opts.onCompact?.(payload);
+        },
+        onMeta: (meta) => {
+          if (meta?.compact) handleIncomingCompact(convId, meta.compact, opts.payload);
+          opts.onMeta?.(meta);
+        },
       });
     } finally {
       streamAbortRef.current.delete(convId);
@@ -1058,6 +1109,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       routerModelName: serverRow.router_model_name ?? null,
       routerSelectionVersion: serverRow.router_selection_version ?? 0,
       thinkingTier: normalizeThinkingTier(serverRow.thinking_tier),
+      ...compactFieldsFromServer({
+        compact_summary: serverRow.compact_summary ?? null,
+        compact_boundary_message_id: serverRow.compact_boundary_message_id ?? null,
+        compact_updated_at: serverRow.compact_updated_at ?? null,
+      }),
     };
   }
 
@@ -1127,8 +1183,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       [convId]: applyServerPath(prev[convId] || [], mapped, convId),
     }));
     if (detail.active_leaf_message_id !== undefined) {
-      updateConv(convId, { activeLeafMessageId: detail.active_leaf_message_id });
+      updateConv(convId, {
+        activeLeafMessageId: detail.active_leaf_message_id,
+        ...compactFieldsFromServer(detail),
+      });
+    } else {
+      updateConv(convId, compactFieldsFromServer(detail));
     }
+    flushPendingCompact(convId);
   }
 
   // Fetch the user's conversations on login and whenever JWT changes. Messages
@@ -1226,7 +1288,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         if (detail.active_leaf_message_id !== undefined) {
           updateConv(selectedConvId, {
             activeLeafMessageId: detail.active_leaf_message_id,
+            ...compactFieldsFromServer(detail),
           });
+        } else {
+          updateConv(selectedConvId, compactFieldsFromServer(detail));
         }
       } catch (error) {
         if (active) {
@@ -1321,6 +1386,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             routerModelName: serverRow?.router_model_name ?? selectedRouterModelName ?? null,
             routerSelectionVersion: serverRow?.router_selection_version ?? 0,
             thinkingTier: normalizeThinkingTier(serverRow?.thinking_tier ?? thinkingTier),
+            ...compactFieldsFromServer(serverRow),
           },
           ...prev,
         ]);
@@ -1362,6 +1428,122 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     setConversations((cs) =>
       cs.map((c) => (c.id === id ? { ...c, ...patch } : c)),
     );
+  }
+
+  function historyOptions(convId, currentUserMsg) {
+    const conv = conversationsRef.current.find((c) => c.id === convId);
+    return {
+      compact: compactStateFromConv(conv),
+      currentUserMsg,
+      onBuilt: (built) => {
+        if (convId != null) lastHistoryRef.current.set(convId, built);
+      },
+    };
+  }
+
+  async function persistConversationCompact(convId, summary, boundaryMsg) {
+    if (typeof convId !== "number" || !summary) return;
+    const path = messagesRef.current[convId] || [];
+    const dbId = resolveBoundaryDbId(boundaryMsg, path);
+    if (typeof dbId !== "number") {
+      pendingCompactRef.current.set(convId, {
+        summary,
+        clientId: boundaryMsg?.id ?? null,
+      });
+      return;
+    }
+    pendingCompactRef.current.delete(convId);
+    try {
+      const saved = await apiSetConversationCompact(authRequest, convId, {
+        summary,
+        boundaryMessageId: dbId,
+      });
+      updateConv(convId, compactFieldsFromServer(saved));
+    } catch (err) {
+      setRuntimeError(err?.message || "無法保存對話摘要");
+    }
+  }
+
+  function flushPendingCompact(convId) {
+    const pending = pendingCompactRef.current.get(convId);
+    if (!pending) return;
+    const path = messagesRef.current[convId] || [];
+    const hinted = pending.clientId
+      ? path.find((m) => m.id === pending.clientId)
+      : null;
+    const dbId = resolveBoundaryDbId(hinted, path);
+    if (typeof dbId !== "number") return;
+    pendingCompactRef.current.delete(convId);
+    persistConversationCompact(convId, pending.summary, { dbId, id: pending.clientId });
+  }
+
+  function handleIncomingCompact(convId, compact, fallbackPayload) {
+    if (!compact || compact.method !== "summary" || !compact.summary) return;
+    const key = `${convId}:${compact.kept_from_index}:${compact.summary}`;
+    if (compactAppliedRef.current.has(key)) return;
+    compactAppliedRef.current.add(key);
+    const stored = lastHistoryRef.current.get(convId);
+    const payloadMessages = stored?.messages || fallbackPayload?.messages || [];
+    const sources = stored?.sources || [];
+    const boundaryMsg = resolveKeptBoundary(
+      payloadMessages,
+      compact.kept_from_index,
+      sources,
+    );
+    return persistConversationCompact(convId, compact.summary, boundaryMsg);
+  }
+
+  async function restoreFullContext() {
+    if (typeof selectedConvId !== "number") return;
+    const ok = await confirm({
+      title: "還原完整上下文",
+      message: "之後送出會把整段對話再給模型看，不再只用摘要。確定還原？",
+      confirmText: "還原",
+    });
+    if (!ok) return;
+    try {
+      const saved = await apiClearConversationCompact(authRequest, selectedConvId);
+      updateConv(selectedConvId, compactFieldsFromServer({
+        compact_summary: saved?.compact_summary ?? null,
+        compact_boundary_message_id: saved?.compact_boundary_message_id ?? null,
+        compact_updated_at: saved?.compact_updated_at ?? null,
+      }));
+    } catch (err) {
+      setRuntimeError(err?.message || "無法還原完整上下文");
+    }
+  }
+
+  async function handleCompactConversation() {
+    if (typeof selectedConvId !== "number") return;
+    const liveMsgs = messagesRef.current[selectedConvId] || currentMsgs;
+    if (liveMsgs.some((m) => m.streaming) || compacting) return;
+    setCompacting(true);
+    try {
+      const messages = buildMessageHistory(
+        liveMsgs,
+        null,
+        [],
+        historyOptions(selectedConvId, null),
+      );
+      const result = await apiRequestConversationCompact(authRequest, {
+        messages,
+        routerModel: selectedAgentId === ROUTER_AGENT.id ? selectedRouterModelName : undefined,
+        convId: selectedConvId,
+      });
+      if (result?.method === "none") {
+        toast("對話還不夠長，不需要整理");
+        return;
+      }
+      if (result?.method === "summary") {
+        await handleIncomingCompact(selectedConvId, result, { messages });
+        const n = keptMessageCount(messages.length, result.kept_from_index);
+        toast(`已整理，模型現在只看摘要與最近 ${n} 則`);
+      }
+    } catch (err) {
+      setRuntimeError(err?.message || "整理對話失敗");
+    } finally {
+      setCompacting(false);
+    }
   }
 
   // Persist star / folder / user-tags (same optimistic+rollback pattern as rename).
@@ -1605,7 +1787,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const payload = {
       model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
-      messages: buildMessageHistory(historyPrior, trimmed, userMsg.attachments || []),
+      messages: buildMessageHistory(historyPrior, trimmed, userMsg.attachments || [], historyOptions(convId, newUserMsg)),
     };
 
     await chainTurnStream(convId, async () => {
@@ -1838,7 +2020,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }
 
   function applySelectionFromServer(convId, serverRow) {
-    const patch = conversationSelectionFromServer(serverRow);
+    const patch = {
+      ...conversationSelectionFromServer(serverRow),
+      ...compactFieldsFromServer(serverRow),
+    };
     setConversations((prev) => prev.map((row) => (
       row.id === convId ? { ...row, ...patch } : row
     )));
@@ -2124,7 +2309,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
         ...(oneShotDeep && effectiveTarget === ROUTER_AGENT.id ? { anila_thinking_tier: "deep" } : {}),
-        messages: buildMessageHistory(priorForHistory, text, attachments),
+        messages: buildMessageHistory(priorForHistory, text, attachments, historyOptions(convId, userMsg)),
       };
 
       // trace / reasoning 用純區域變數累積,不受 React stale-closure 影響。
@@ -2246,6 +2431,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         setRuntimeError(persisted.error?.message || "對話訊息儲存失敗");
         updateMsg(convId, assistantId, { persistError: persisted.notice });
       }
+      flushPendingCompact(convId);
 
       updateConv(convId, { updatedAt: nowIso() });
 
@@ -2439,20 +2625,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         msgs.slice(0, idx + 1),
         "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。",
         [],
+        historyOptions(convId, null),
       ),
     };
     updateMsg(convId, assistantMsg.id, { streaming: true, finishReason: null });
     let appended = "";
     let combined = existing;
     try {
-      const controller = new AbortController();
-      streamAbortRef.current.set(convId, controller);
-      await streamChatCompletion({
+      await streamWithAbort(convId, {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
-        taskId: taskIdForConv(convId),
-        signal: controller.signal,
         onText: (acc) => {
           appended = acc;
           // 接在原文後(若原文未以空白結尾補一個空格,避免黏字)。
@@ -2465,7 +2648,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     } catch (err) {
       setRuntimeError(err?.message || "續寫失敗");
     } finally {
-      streamAbortRef.current.delete(convId);
       updateMsg(convId, assistantMsg.id, { streaming: false });
     }
 
@@ -2550,7 +2732,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const payload = {
       model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
-      messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || []),
+      messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || [], historyOptions(convId, prevUser)),
     };
 
     // Capture pre-regenerate list so a stream failure can restore the
@@ -3255,6 +3437,31 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               {typeof selectedConvId === "number" && convUsage ? (
                 <ConversationUsageChip usage={convUsage} />
               ) : null}
+              <button
+                type="button"
+                aria-label="整理對話"
+                title="整理對話"
+                disabled={
+                  compacting
+                  || typeof selectedConvId !== "number"
+                  || currentMsgs.some((m) => m.streaming)
+                }
+                onClick={handleCompactConversation}
+                style={{
+                  fontSize: 11,
+                  color: "var(--fg-muted)",
+                  background: "var(--bg-elev)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 999,
+                  padding: "3px 9px",
+                  cursor: currentMsgs.some((m) => m.streaming) || compacting
+                    ? "not-allowed"
+                    : "pointer",
+                  opacity: currentMsgs.some((m) => m.streaming) || compacting ? 0.45 : 1,
+                }}
+              >
+                整理對話
+              </button>
               {selectedConv.classified && (
                 <span
                   title="此對話已鎖為列管（由後端依 agent 預設分類等級強制啟用）。"
@@ -3429,25 +3636,34 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                       />
                     ) : (
                       currentMsgs.map((m) => (
-                        <MessageBubble
-                          key={m.id}
-                          msg={m}
-                          agents={agents}
-                          conversationId={selectedConvId}
-                          classified={isClassified}
-                          classificationLevel={selectedConv?.classificationLevel}
-                          onRegenerate={regenerateMessage}
-                          onRate={handleRate}
-                          onEditUser={handleEditUser}
-                          onSwitchBranch={switchBranch}
-                          onDeleteBranch={deleteBranch}
-                          onOpenCitation={onOpenCitation}
-                          onPickFollowUp={(q) => sendMessage(q, [], {})}
-                          messageActions={customActions}
-                          onAction={runMessageAction}
-                          onContinue={continueMessage}
-                          conversationStreaming={currentMsgs.some((x) => x.streaming)}
-                        />
+                        <React.Fragment key={m.id}>
+                          {selectedConv?.compactSummary
+                            && compactBoundaryOnPath(currentMsgs, selectedConv.compactBoundaryMessageId)
+                            && m.dbId === selectedConv.compactBoundaryMessageId ? (
+                            <CompactBoundaryBanner
+                              summary={selectedConv.compactSummary}
+                              onRestore={restoreFullContext}
+                            />
+                          ) : null}
+                          <MessageBubble
+                            msg={m}
+                            agents={agents}
+                            conversationId={selectedConvId}
+                            classified={isClassified}
+                            classificationLevel={selectedConv?.classificationLevel}
+                            onRegenerate={regenerateMessage}
+                            onRate={handleRate}
+                            onEditUser={handleEditUser}
+                            onSwitchBranch={switchBranch}
+                            onDeleteBranch={deleteBranch}
+                            onOpenCitation={onOpenCitation}
+                            onPickFollowUp={(q) => sendMessage(q, [], {})}
+                            messageActions={customActions}
+                            onAction={runMessageAction}
+                            onContinue={continueMessage}
+                            conversationStreaming={currentMsgs.some((x) => x.streaming)}
+                          />
+                        </React.Fragment>
                       ))
                     )}
                   </div>
