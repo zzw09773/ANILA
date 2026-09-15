@@ -551,11 +551,12 @@ def test_stream_flushes_held_meta_before_timeout_error(monkeypatch):
     )
     metas = _all_sse_metas(joined)
     assert len(metas) == 1
+    assert joined.count("event: anila.meta") == 1
     assert metas[0]["kb_hits"] == [{"id": 1, "title": "reg"}]
     assert metas[0]["citations"] == [{"id": "c1"}]
     assert metas[0]["usage_complete"] is False
     events = _named_sse_events(joined)
-    assert events.index("anila.meta") < events.index("anila.error")
+    assert events == ["anila.meta", "anila.error"]
     assert recorded == []
 
 
@@ -574,10 +575,13 @@ def test_stream_interrupt_flush_keeps_partial_reasoning_tokens(monkeypatch):
         fail_exc=httpx.ReadTimeout("cut after usage"),
     )
     metas = _all_sse_metas(joined)
+    assert len(metas) == 1
+    assert joined.count("event: anila.meta") == 1
     assert metas[0]["usage"]["reasoning_tokens"] == 1234
     assert metas[0]["usage"]["reasoning_tokens_source"] == "reported"
     assert metas[0]["usage_complete"] is False
     assert metas[0]["kb_hits"] == [{"id": 9}]
+    assert _named_sse_events(joined) == ["anila.meta", "anila.error"]
 
 
 def test_stream_normal_complete_emits_one_meta_usage_complete_true(monkeypatch):
@@ -625,3 +629,346 @@ def test_stream_cancelled_after_named_meta_is_reraised(monkeypatch):
             ],
             fail_exc=asyncio.CancelledError(),
         )
+
+
+# ---------------------------------------------------------------------------
+# 消費端收掉串流(client disconnect / task cancel)時的關閉路徑。
+#
+# 這裡的不變量是「關閉中不 yield」：暫存的 named meta 在關閉路徑上只能丟，
+# 因為在 ``GeneratorExit`` 期間 yield 會變成 ``RuntimeError: async generator
+# ignored GeneratorExit``，而在 cancel 期間 yield 會把取消吞掉。
+# ---------------------------------------------------------------------------
+
+#: named meta 先到（被暫存）、內容後到（會送給消費端）—— 關閉時手上一定有暫存 meta。
+_HELD_META_THEN_CONTENT = [
+    "event: anila.meta",
+    'data: {"kb_hits":[{"id":1,"title":"reg"}]}',
+    "",
+    'data: {"choices":[{"index":0,"delta":{"content":"partial"},'
+    '"finish_reason":null}]}',
+    "",
+    'data: {"choices":[{"index":0,"delta":{"content":"more"},'
+    '"finish_reason":null}]}',
+    "",
+]
+
+
+class _TeardownAwareStream:
+    """上游串流，收尾會 await（因此可被取消），也可以指定收尾自己丟錯。
+
+    真實 transport 的 ``__aexit__`` 兩者都會發生，而兩者都會把正在傳播的
+    ``GeneratorExit`` 換成別的例外 —— 那正是第二版修補漏掉的那條路。
+    """
+
+    status_code = 200
+
+    def __init__(self, lines: list[str], *, exit_exc: BaseException | None):
+        self._lines = lines
+        self._exit_exc = exit_exc
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        if self._exit_exc is not None:
+            # 在任何 await 之前丟：即使正在取消中，也一定換掉傳播中的例外。
+            raise self._exit_exc
+        await asyncio.sleep(0.02)
+        return False
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _TeardownAwareUpstream:
+    lines: list[str] = []
+    exit_exc: BaseException | None = None
+    park_forever: bool = False
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def stream(self, method, url, json=None, headers=None):
+        lines = list(type(self).lines)
+        if type(self).park_forever:
+            return _ParkedStream(lines, exit_exc=type(self).exit_exc)
+        return _TeardownAwareStream(lines, exit_exc=type(self).exit_exc)
+
+
+class _ParkedStream(_TeardownAwareStream):
+    """送完既有行數就停在 await 上，讓測試能在「正在等上游」時取消。"""
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+        await asyncio.sleep(30)
+        yield "data: [DONE]"
+        yield ""
+
+
+def _wire_teardown_upstream(
+    monkeypatch,
+    *,
+    lines: list[str],
+    exit_exc: BaseException | None = None,
+    park_forever: bool = False,
+):
+    from app.services import proxy_service
+
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    _TeardownAwareUpstream.lines = lines
+    _TeardownAwareUpstream.exit_exc = exit_exc
+    _TeardownAwareUpstream.park_forever = park_forever
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _TeardownAwareUpstream(*args, **kwargs),
+    )
+
+    async def fake_enqueue(**kwargs):
+        return None
+
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", fake_enqueue)
+    monkeypatch.setattr(proxy_impl, "enqueue_usage_task_linked", fake_enqueue)
+
+
+def _spy_on_stream_impl(monkeypatch) -> list:
+    """收集 ``proxy_stream`` 內部建立的 ``_proxy_stream_impl`` generator。
+
+    內層的關閉在生產環境是由 event loop 的 asyncgen finalizer 代跑的，測試要
+    能直接對它施壓才能把競態釘死。
+    """
+    created: list = []
+    real_impl = proxy_impl._proxy_stream_impl
+
+    def spy(**kwargs):
+        agen = real_impl(**kwargs)
+        created.append(agen)
+        return agen
+
+    monkeypatch.setattr(proxy_impl, "_proxy_stream_impl", spy)
+    return created
+
+
+def _open_proxy_stream(**overrides):
+    from app.services import proxy_service
+    from app.services.proxy.service import ProxyTuning
+
+    kwargs = {
+        "target_url": "http://mock-llm/v1/chat/completions",
+        "api_key_id": 1,
+        "user_id": 2,
+        "department_id": None,
+        "usage_model_id": 3,
+        "request_body": {
+            "model": "google/gemma4",
+            "messages": [{"role": "user", "content": "Say hello"}],
+            "stream": True,
+        },
+        "model_name": "google/gemma4",
+        "tuning": ProxyTuning.from_registry_defaults(),
+    }
+    kwargs.update(overrides)
+    return proxy_service.proxy_stream(**kwargs)
+
+
+def _trap_loop_errors(errors: list[dict]) -> None:
+    asyncio.get_running_loop().set_exception_handler(
+        lambda _loop, context: errors.append(context)
+    )
+
+
+def _loop_error_text(errors: list[dict]) -> str:
+    return " | ".join(
+        f"{ctx.get('message')}: {ctx.get('exception')!r}" for ctx in errors
+    )
+
+
+def test_public_stream_aclose_after_named_meta_does_not_ignore_generator_exit(
+    monkeypatch,
+):
+    _wire_teardown_upstream(monkeypatch, lines=_HELD_META_THEN_CONTENT)
+    errors: list[dict] = []
+
+    async def run():
+        _trap_loop_errors(errors)
+        agen = _open_proxy_stream()
+        seen = [await agen.__anext__()]
+        await agen.aclose()
+        with pytest.raises(StopAsyncIteration):
+            await agen.__anext__()
+        # 讓 event loop 的 asyncgen finalizer 把內層 generator 收完。
+        await asyncio.sleep(0.05)
+        return seen
+
+    seen = asyncio.run(run())
+    assert "partial" in seen[0]
+    # 暫存的 named meta 沒有收件人：關閉路徑不補送，也不准炸。
+    assert _all_sse_metas("".join(seen)) == []
+    assert errors == [], _loop_error_text(errors)
+
+
+def test_stream_close_cancelled_mid_cleanup_does_not_ignore_generator_exit(
+    monkeypatch,
+):
+    """關閉中的上游收尾被取消 —— ``GeneratorExit`` 會被 ``CancelledError`` 換掉。"""
+    _wire_teardown_upstream(monkeypatch, lines=_HELD_META_THEN_CONTENT)
+    created = _spy_on_stream_impl(monkeypatch)
+    errors: list[dict] = []
+
+    async def run():
+        _trap_loop_errors(errors)
+        agen = _open_proxy_stream()
+        await agen.__anext__()
+        inner = created[0]
+        closing = asyncio.ensure_future(inner.aclose())
+        await asyncio.sleep(0)
+        closing.cancel()
+        outcome = await asyncio.gather(closing, return_exceptions=True)
+        await agen.aclose()
+        await asyncio.sleep(0.05)
+        return outcome[0]
+
+    outcome = asyncio.run(run())
+    assert isinstance(outcome, asyncio.CancelledError)
+    assert not isinstance(outcome, RuntimeError)
+    assert errors == [], _loop_error_text(errors)
+
+
+def test_stream_close_with_failing_cleanup_does_not_ignore_generator_exit(
+    monkeypatch,
+):
+    """關閉中的上游收尾自己丟錯 —— 換掉 ``GeneratorExit`` 的是普通 ``Exception``。"""
+    _wire_teardown_upstream(
+        monkeypatch,
+        lines=_HELD_META_THEN_CONTENT,
+        exit_exc=httpx.ReadError("teardown failed"),
+    )
+    created = _spy_on_stream_impl(monkeypatch)
+    errors: list[dict] = []
+
+    async def run():
+        _trap_loop_errors(errors)
+        agen = _open_proxy_stream()
+        await agen.__anext__()
+        inner = created[0]
+        outcome = await asyncio.gather(inner.aclose(), return_exceptions=True)
+        await agen.aclose()
+        await asyncio.sleep(0.05)
+        return outcome[0]
+
+    outcome = asyncio.run(run())
+    assert isinstance(outcome, httpx.ReadError)
+    assert errors == [], _loop_error_text(errors)
+
+
+def test_public_stream_task_cancel_after_named_meta_propagates_cancel(monkeypatch):
+    _wire_teardown_upstream(
+        monkeypatch,
+        lines=_HELD_META_THEN_CONTENT,
+        park_forever=True,
+    )
+    errors: list[dict] = []
+
+    async def run():
+        _trap_loop_errors(errors)
+        agen = _open_proxy_stream()
+        seen = [await agen.__anext__(), await agen.__anext__()]
+        pending = asyncio.ensure_future(agen.__anext__())
+        await asyncio.sleep(0)
+        pending.cancel()
+        outcome = await asyncio.gather(pending, return_exceptions=True)
+        await asyncio.sleep(0.05)
+        return seen, pending.cancelled(), outcome[0]
+
+    seen, cancelled, outcome = asyncio.run(run())
+    assert isinstance(outcome, asyncio.CancelledError)
+    assert cancelled is True
+    # 取消之後不得多出任何 event —— 尤其不准把暫存 meta 當成 ``__anext__`` 的結果。
+    assert _all_sse_metas("".join(seen)) == []
+    assert _named_sse_events("".join(seen)) == []
+    assert errors == [], _loop_error_text(errors)
+
+
+def test_public_stream_task_cancel_with_failing_cleanup_emits_nothing(monkeypatch):
+    """取消 + 收尾丟錯：外層拿到的是被換掉的例外，同樣不准 yield。
+
+    這條打的是公開 ``proxy_stream``：內層照規矩把替身例外往上丟之後，外層的
+    ``except`` 只要 yield ``anila.error``，就等於把取消吞成一個正常事件。
+    """
+    _wire_teardown_upstream(
+        monkeypatch,
+        lines=_HELD_META_THEN_CONTENT,
+        exit_exc=httpx.ReadError("teardown failed"),
+        park_forever=True,
+    )
+    errors: list[dict] = []
+
+    async def run():
+        _trap_loop_errors(errors)
+        agen = _open_proxy_stream()
+        seen = [await agen.__anext__(), await agen.__anext__()]
+        pending = asyncio.ensure_future(agen.__anext__())
+        await asyncio.sleep(0)
+        pending.cancel()
+        outcome = await asyncio.gather(pending, return_exceptions=True)
+        await asyncio.sleep(0.05)
+        return seen, outcome[0]
+
+    seen, outcome = asyncio.run(run())
+    assert isinstance(outcome, BaseException), f"取消被吞成事件: {outcome!r}"
+    assert not isinstance(outcome, RuntimeError)
+    assert _named_sse_events("".join(seen)) == []
+    assert errors == [], _loop_error_text(errors)
+
+
+def test_agent_stream_interrupt_without_usage_has_no_short_reply(monkeypatch):
+    from app.services import proxy_service
+    from app.services.agent_reply_signal import (
+        AGENT_REPLY_OBSERVATION_KEY,
+        AGENT_REPLY_SHORT_FLAG,
+    )
+
+    monkeypatch.setattr(proxy_impl, "_guard_outbound", lambda *a, **k: None)
+    monkeypatch.setattr(proxy_impl, "build_agent_headers", lambda **_k: {})
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _ConfigurableUpstream(*args, **kwargs),
+    )
+    _ConfigurableUpstream.stream_lines = [
+        "event: anila.meta",
+        'data: {"trace_id":"agent-trace","kb_hits":[{"id":3}]}',
+        "",
+    ]
+    _ConfigurableUpstream.stream_fail_exc = httpx.ReadTimeout("agent stalled")
+
+    async def run():
+        chunks = []
+        async for chunk in _open_proxy_stream(
+            target_url="http://agent/v1/chat/completions",
+            model_name="registered-agent",
+            target_agent_id=7,
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    joined = "".join(asyncio.run(run()))
+    metas = _all_sse_metas(joined)
+    assert len(metas) == 1
+    assert metas[0]["usage_complete"] is False
+    assert metas[0]["kb_hits"] == [{"id": 3}]
+    observation = metas[0][AGENT_REPLY_OBSERVATION_KEY]
+    # 量不到長度就不下短回覆判斷：前端只認 reported/estimated，會直接忽略。
+    assert observation["usage_source"] == "unavailable"
+    assert observation["usage_source"] != "estimated"
+    assert AGENT_REPLY_SHORT_FLAG not in observation
+    assert _named_sse_events(joined) == ["anila.meta", "anila.error"]

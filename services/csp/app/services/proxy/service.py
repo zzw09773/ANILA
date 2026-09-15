@@ -1140,6 +1140,25 @@ async def proxy_request(
     return result
 
 
+def _in_consumer_teardown(exc: BaseException) -> bool:
+    """True when ``exc`` surfaced while the consumer was closing us down.
+
+    ``GeneratorExit`` / ``CancelledError`` get replaced by whatever the
+    upstream teardown raises on the way out — an ``__aexit__`` that awaits is
+    cancellable, and a failing one raises its own error — so the type alone
+    does not say whether we are still allowed to yield. The replaced
+    exception keeps the original in ``__context__``, which is what this walks.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, (GeneratorExit, asyncio.CancelledError)):
+            return True
+        seen.add(id(current))
+        current = current.__context__
+    return False
+
+
 async def _proxy_stream_impl(
     target_url: str,
     api_key_id: int,
@@ -1243,8 +1262,8 @@ async def _proxy_stream_impl(
     pending_done_block: str | None = None
     pending_named_meta: dict | None = None
     terminal_meta_emitted = False
-    leaving_with_generator_exit = False
-    stream_aborted = False
+    # 中斷時要 flush 的失敗:在 except 分支記下來,離開 try 之後才 yield。
+    pending_failure: BaseException | None = None
 
     def _hold_named_meta(data: str | None) -> bool:
         """Hold a named anila.meta object until usage is complete.
@@ -1335,7 +1354,14 @@ async def _proxy_stream_impl(
                 local_completion,
             )
         total = local_prompt + local_completion
-        usage_source = "reported" if usage_seen else "estimated"
+        if usage_seen:
+            usage_source = "reported"
+        elif estimate_if_missing:
+            usage_source = "estimated"
+        else:
+            # 中斷路徑:沒有上游 usage、也沒有估算,不能謊稱 estimated ——
+            # 否則下游會把 completion_tokens=0 當成真的短回覆。
+            usage_source = "unavailable"
         reasoning_tokens, reasoning_source = resolve_reasoning_tokens(
             last_usage if usage_seen else None,
             reasoning_text="".join(reasoning_parts),
@@ -1419,79 +1445,88 @@ async def _proxy_stream_impl(
             + "\n\n"
         )
 
+    # 這段的鐵則:``finally`` 不 yield,關閉路徑(``GeneratorExit`` /
+    # ``CancelledError``)也不 yield —— 關閉中 yield 會變成
+    # ``RuntimeError: async generator ignored GeneratorExit``,把單純的
+    # client disconnect 升級成串流炸掉。要補送的終端 meta 一律記進
+    # ``pending_failure``,等離開 try/except 之後再送。
     try:
-        try:
-            async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
-                async with client.stream("POST", target_url, json=body, headers=headers) as resp:
-                    if resp.status_code >= 400:
-                        err_body: object = None
-                        try:
-                            raw_body = await resp.aread()
-                            err_body = json.loads(raw_body.decode("utf-8"))
-                        except Exception:
-                            pass
-                        raise HTTPException(status_code=resp.status_code,
-                                            detail=_sanitised_upstream_error_detail(
-                                                err_body, resp.status_code
-                                            ))
-                    block_lines: list[str] = []
-                    async for line in resp.aiter_lines():
-                        if line == "":
-                            if block_lines:
-                                block = "\n".join(block_lines)
-                                event_name, data = _parse_sse_block(block)
-                                if data == "[DONE]":
-                                    pending_done_block = block + "\n\n"
-                                elif event_name == "anila.meta" and _hold_named_meta(data):
-                                    pass
-                                else:
-                                    _ingest_stream_payload(data, event_name)
-                                    yield _emit(block, event_name, data)
-                                block_lines = []
-                            continue
-                        block_lines.append(line)
-                    if block_lines:
-                        block = "\n".join(block_lines)
-                        event_name, data = _parse_sse_block(block)
-                        if data == "[DONE]":
-                            pending_done_block = block + "\n\n"
-                        elif event_name == "anila.meta" and _hold_named_meta(data):
-                            pass
-                        else:
-                            _ingest_stream_payload(data, event_name)
-                            yield _emit(block, event_name, data)
-        except httpx.TimeoutException:
-            stream_aborted = True
-            raise HTTPException(status_code=504, detail="下游請求逾時")
-        except httpx.ConnectError:
-            # Identify by registered model name; endpoint_display is gated.
-            label = model_name or "未知模型"
-            logger.warning("串流連線失敗 model=%s url=%s", label, target_url)
-            stream_aborted = True
-            raise HTTPException(
-                status_code=502,
-                detail=_proxy_connect_failure(label, endpoint_display),
-            )
-        except asyncio.CancelledError:
-            stream_aborted = True
+        async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
+            async with client.stream("POST", target_url, json=body, headers=headers) as resp:
+                if resp.status_code >= 400:
+                    err_body: object = None
+                    try:
+                        raw_body = await resp.aread()
+                        err_body = json.loads(raw_body.decode("utf-8"))
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=resp.status_code,
+                                        detail=_sanitised_upstream_error_detail(
+                                            err_body, resp.status_code
+                                        ))
+                block_lines: list[str] = []
+                async for line in resp.aiter_lines():
+                    if line == "":
+                        if block_lines:
+                            block = "\n".join(block_lines)
+                            event_name, data = _parse_sse_block(block)
+                            if data == "[DONE]":
+                                pending_done_block = block + "\n\n"
+                            elif event_name == "anila.meta" and _hold_named_meta(data):
+                                pass
+                            else:
+                                _ingest_stream_payload(data, event_name)
+                                yield _emit(block, event_name, data)
+                            block_lines = []
+                        continue
+                    block_lines.append(line)
+                if block_lines:
+                    block = "\n".join(block_lines)
+                    event_name, data = _parse_sse_block(block)
+                    if data == "[DONE]":
+                        pending_done_block = block + "\n\n"
+                    elif event_name == "anila.meta" and _hold_named_meta(data):
+                        pass
+                    else:
+                        _ingest_stream_payload(data, event_name)
+                        yield _emit(block, event_name, data)
+    except (GeneratorExit, asyncio.CancelledError):
+        # 消費端正在收掉這條 generator:同步 re-raise,不 yield 任何東西。
+        # 暫存的 named meta 已經沒有收件人,直接丟。
+        raise
+    except httpx.TimeoutException as exc:
+        if _in_consumer_teardown(exc):
             raise
-        except GeneratorExit:
-            leaving_with_generator_exit = True
+        pending_failure = HTTPException(status_code=504, detail="下游請求逾時")
+    except httpx.ConnectError as exc:
+        if _in_consumer_teardown(exc):
             raise
-        except BaseException:
-            stream_aborted = True
+        # Identify by registered model name; endpoint_display is gated.
+        label = model_name or "未知模型"
+        logger.warning("串流連線失敗 model=%s url=%s", label, target_url)
+        pending_failure = HTTPException(
+            status_code=502,
+            detail=_proxy_connect_failure(label, endpoint_display),
+        )
+    except httpx.HTTPError as exc:
+        if _in_consumer_teardown(exc):
             raise
-    finally:
-        if (
-            stream_aborted
-            and not terminal_meta_emitted
-            and pending_named_meta is not None
-            and not leaving_with_generator_exit
-        ):
-            interrupt_meta = _compose_terminal_meta(usage_complete=False)
-            if interrupt_meta is not None:
-                yield _render_terminal_meta(interrupt_meta)
-                terminal_meta_emitted = True
+        pending_failure = exc
+    except Exception as exc:
+        # 上游 4xx/5xx 的 HTTPException、解析錯等;此時多半還沒有暫存 meta,
+        # ``_compose_terminal_meta`` 會回 None,行為與原本一致。
+        if _in_consumer_teardown(exc):
+            raise
+        pending_failure = exc
+
+    if pending_failure is not None:
+        # 已離開 except:這裡的 yield 不在關閉路徑上,可以安全補送終端 meta,
+        # 再讓既有機制(``proxy_stream``)把 ``anila.error`` 接在後面。
+        interrupt_meta = _compose_terminal_meta(usage_complete=False)
+        if interrupt_meta is not None:
+            yield _render_terminal_meta(interrupt_meta)
+            terminal_meta_emitted = True
+        raise pending_failure
 
     if terminal_meta_emitted:
         return
@@ -1658,6 +1693,11 @@ async def proxy_stream(
             "code": detail_code or f"http_{exc.status_code}",
             "message": _http_exception_message(exc.detail),
         }
+        if _in_consumer_teardown(exc):
+            # 上游收尾把 GeneratorExit/CancelledError 換成了這個例外 —— 消費端
+            # 已經在收線,yield 會把取消吞掉,也不該記成 gateway 連續失敗。
+            error = {"code": "stream_aborted", "message": type(exc).__name__}
+            raise
         logger.warning(
             "stream failure model=%s status=%s",
             model_name or "未知模型",
@@ -1677,6 +1717,9 @@ async def proxy_stream(
     except Exception as exc:
         status = "failed"
         error = {"code": "stream_error", "message": type(exc).__name__}
+        if _in_consumer_teardown(exc):
+            error["code"] = "stream_aborted"
+            raise
         logger.exception(
             "stream failure model=%s", model_name or "未知模型"
         )
