@@ -1,7 +1,17 @@
 /** Decide whether a fenced artifact should replace the open preview. */
 
-import { artifactKindFromLang, detectArtifactKind } from "./artifactDetect.js";
+import {
+  artifactKindFromLang,
+  detectArtifactKind,
+  isNextArtifactFenceLang,
+} from "./artifactDetect.js";
 import { STREAM_STATE } from "./reservedTurn.js";
+
+function conversationMatches(ticket, conversationId) {
+  if (ticket?.conversationId == null || ticket.conversationId === "") return true;
+  if (conversationId == null || conversationId === "") return true;
+  return String(ticket.conversationId) === String(conversationId);
+}
 
 /**
  * @param {{
@@ -19,8 +29,9 @@ export function canConsumeRevisionTurn(input = {}) {
 
 /**
  * @param {{
- *   ticket?: { messageId?: string, kind?: string } | null,
+ *   ticket?: { messageId?: string, kind?: string, conversationId?: string|number } | null,
  *   fenceMessageId?: string | null,
+ *   conversationId?: string | number | null,
  *   streaming?: boolean,
  *   streamState?: string | null,
  *   finishReason?: string | null,
@@ -37,6 +48,9 @@ export function shouldApplyArtifactFence(input) {
   if (current.kind !== artifactKind) return { apply: false, consume: false };
   const ticket = input?.ticket;
   if (ticket?.kind && ticket.kind !== artifactKind) {
+    return { apply: false, consume: false };
+  }
+  if (!conversationMatches(ticket, input?.conversationId)) {
     return { apply: false, consume: false };
   }
   const next = String(input?.source ?? "");
@@ -84,6 +98,13 @@ function stripTrailingNewline(text) {
   return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
+function openingAllowsGreedy(open, text, ticketKind) {
+  if (artifactKindFromLang(open.lang) === ticketKind) return true;
+  if (open.lang) return false;
+  const peek = text.slice(open.bodyStart);
+  return detectArtifactKind(ticketKind, peek) === ticketKind;
+}
+
 function collectOpenings(text) {
   const openings = [];
   for (let i = 0; i < text.length; i += 1) {
@@ -116,13 +137,14 @@ function closeFence(text, open, greedy) {
       continue;
     }
     if (rest && m >= open.n) {
-      const innerKind = artifactKindFromLang(rest.split(/\s+/)[0] || "");
+      const innerLang = rest.split(/\s+/)[0] || "";
       // Same-or-higher artifact fence = next product, not this closer.
+      // xml／xhtml count too: models often tag SVG that way.
       // Unclosed first fence must not borrow a later closer (standard
       // would otherwise swallow prose + the sibling). Nested shorter
       // fences (m < open.n, e.g. ```js / ```svg inside ````markdown)
       // stay inside the body.
-      if (innerKind) {
+      if (isNextArtifactFenceLang(innerLang)) {
         if (greedy && lastCloser >= 0) break;
         return null;
       }
@@ -151,7 +173,7 @@ export function extractRevisionCandidate(text, ticketKind) {
     if (standard != null) {
       candidates.push({ language: open.lang, source: standard });
     }
-    if (artifactKindFromLang(open.lang) === ticketKind) {
+    if (openingAllowsGreedy(open, raw, ticketKind)) {
       const greedy = closeFence(raw, open, true);
       if (greedy != null) {
         candidates.push({ language: open.lang, source: greedy });
@@ -160,7 +182,8 @@ export function extractRevisionCandidate(text, ticketKind) {
   }
   const matching = [];
   for (const c of candidates) {
-    const kind = detectArtifactKind(c.language, c.source) || artifactKindFromLang(c.language);
+    const kind = detectArtifactKind(c.language || ticketKind, c.source)
+      || artifactKindFromLang(c.language);
     if (kind === ticketKind) matching.push({ ...c, kind });
   }
   if (!matching.length) return null;

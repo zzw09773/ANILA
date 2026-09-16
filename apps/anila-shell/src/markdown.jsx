@@ -300,6 +300,7 @@ function CodeBlock({ node, children, ...props }) {
     const decision = shouldApplyArtifactFence({
       ticket: preview.pendingRevision,
       fenceMessageId: messageCtx?.messageId ?? null,
+      conversationId: messageCtx?.conversationId ?? null,
       streaming: Boolean(messageCtx?.streaming),
       streamState: messageCtx?.streamState,
       finishReason: messageCtx?.finishReason,
@@ -802,6 +803,7 @@ export function MarkdownView({
   citations,
   onOpenCitation,
   messageId = null,
+  conversationId = null,
   streaming = false,
   streamState = null,
   finishReason = null,
@@ -822,16 +824,24 @@ export function MarkdownView({
   const messageValue = React.useMemo(
     () => ({
       messageId: messageId ?? null,
+      conversationId: conversationId ?? null,
       streaming: Boolean(streaming),
       streamState: streamState ?? null,
       finishReason: finishReason ?? null,
     }),
-    [messageId, streaming, streamState, finishReason],
+    [messageId, conversationId, streaming, streamState, finishReason],
   );
   useEffect(() => {
     const ticket = preview?.pendingRevision;
     if (!ticket?.messageId || !messageId) return;
     if (ticket.messageId !== messageId) return;
+    if (
+      ticket.conversationId != null && ticket.conversationId !== ""
+      && conversationId != null && conversationId !== ""
+      && String(ticket.conversationId) !== String(conversationId)
+    ) {
+      return;
+    }
     if (streaming) return;
     if (!canConsumeRevisionTurn({ streaming: false, streamState, finishReason })) {
       preview.settleRevision?.(messageId);
@@ -842,6 +852,7 @@ export function MarkdownView({
       messageId,
       kind: ticket.kind,
       source: picked.source,
+      conversationId,
     })) {
       preview.openArtifact({
         kind: ticket.kind,
@@ -850,7 +861,7 @@ export function MarkdownView({
       });
     }
     preview.settleRevision?.(messageId);
-  }, [text, messageId, streaming, streamState, finishReason, preview]);
+  }, [text, messageId, conversationId, streaming, streamState, finishReason, preview]);
   return (
     <MarkdownMessageContext.Provider value={messageValue}>
       <CitationContext.Provider value={citationValue}>

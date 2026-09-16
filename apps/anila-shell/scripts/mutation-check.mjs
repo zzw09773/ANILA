@@ -704,12 +704,22 @@ const MUTATIONS = [
       "                  text={displayBody}\n" +
       "                  citations={msg.citations}\n" +
       "                  onOpenCitation={onOpenCitation}\n" +
+      "                  messageId={msg.id}\n" +
+      "                  conversationId={msg.conversationId ?? conversationId}\n" +
+      "                  streaming={Boolean(msg.streaming)}\n" +
+      "                  streamState={msg.streamState ?? null}\n" +
+      "                  finishReason={msg.finishReason ?? null}\n" +
       "                />",
     replace:
       "                <MarkdownView\n" +
       "                  text={displayBody && ''}\n" +
       "                  citations={msg.citations}\n" +
       "                  onOpenCitation={onOpenCitation}\n" +
+      "                  messageId={msg.id}\n" +
+      "                  conversationId={msg.conversationId ?? conversationId}\n" +
+      "                  streaming={Boolean(msg.streaming)}\n" +
+      "                  streamState={msg.streamState ?? null}\n" +
+      "                  finishReason={msg.finishReason ?? null}\n" +
       "                />",
   },
   {
