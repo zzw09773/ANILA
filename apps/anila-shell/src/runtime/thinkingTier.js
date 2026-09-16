@@ -44,6 +44,11 @@ export function thinkingPickerOptions(levelsSupported) {
   ];
 }
 
+/** 這一題深入想寫在回覆 meta 上時，重試要重放同一則覆寫。 */
+export function shouldReplayOneShotDeep(thinkingApplied) {
+  return thinkingApplied?.source === "turn" && thinkingApplied?.tier === "deep";
+}
+
 /** 回覆列檔位文案：關閉／標準／深入。default 不標。 */
 export function thinkingAppliedTierLabel(tier) {
   const normalized = normalizeThinkingTier(tier);

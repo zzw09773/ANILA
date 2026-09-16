@@ -127,6 +127,7 @@ import {
   normalizeThinkingTier,
   persistThinkingTierPreference,
   readStoredThinkingTier,
+  shouldReplayOneShotDeep,
 } from "./runtime/thinkingTier.js";
 import {
   AgentSelector,
@@ -2071,7 +2072,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       classified: meta.classified,
       reasoning: meta.reasoning || null,
       thinkingLocked: meta.thinking_locked === true,
-      thinkingApplied: meta.thinking_applied || null,
+      ...(meta.thinking_applied ? { thinkingApplied: meta.thinking_applied } : {}),
       // Display-only, but it was showing the wrong agent name on every
       // routed answer: BOTH ends of handoff_chain read "anila-router" on the
       // router path, so `.at(-1)` never named the agent that answered.
@@ -2166,6 +2167,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     setDeepThinkNext(next);
   }
 
+  function consumeOneShotDeep() {
+    if (!deepThinkNextRef.current) return false;
+    deepThinkNextRef.current = false;
+    setDeepThinkNext(false);
+    return true;
+  }
+
   // ---- send single ----
   async function sendMessage(text, attachments = [], meta = {}) {
     if (!isAuthenticated) {
@@ -2227,6 +2235,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       }
     }
 
+    const oneShotDeep = consumeOneShotDeep();
     const userMsg = {
       id: makeId("u"),
       role: "user",
@@ -2249,6 +2258,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       conversationId: convId,
       createdAt: nowIso(),
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+      thinkingApplied: oneShotDeep ? { tier: "deep", source: "turn" } : null,
     };
     setMessagesByConv((prev) => ({
       ...prev,
@@ -2423,11 +2433,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         messagesRef.current[convId] || [],
         userMsg.id,
       );
-      const oneShotDeep = deepThinkNextRef.current;
-      if (oneShotDeep) {
-        deepThinkNextRef.current = false;
-        setDeepThinkNext(false);
-      }
       const payload = {
         model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
@@ -2863,9 +2868,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const steeredUserText = steer
       ? `${prevUser.text}\n\n（重新回答時請依此調整：${steer}）`
       : prevUser.text;
+    const oneShotDeep = consumeOneShotDeep() || shouldReplayOneShotDeep(assistantMsg.thinkingApplied);
     const payload = {
       model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
+      ...(oneShotDeep && effectiveTarget === ROUTER_AGENT.id ? { anila_thinking_tier: "deep" } : {}),
       messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || [], historyOptions(convId, prevUser)),
     };
 
@@ -2892,6 +2899,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           conversationId: convId,
           createdAt: nowIso(),
           timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+          thinkingApplied: oneShotDeep ? { tier: "deep", source: "turn" } : null,
         },
       ],
     }));

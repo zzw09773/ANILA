@@ -4,7 +4,8 @@ Contract (blueprint §2.3 Router):
   * caller body may send ``anila_thinking_tier`` = default|off|standard|deep
     (case-insensitive, trimmed). Other values are ignored.
   * Router forwards the canonical value on primary-model calls only
-    (non-stream, stream, and same-turn auto-continue).
+    (non-stream, stream, and same-turn auto-continue). Those helpers
+    opt in via ``apply_thinking_tier=True``; default is off.
   * Compact summarizer, agent dispatch, and recompose must not see the key.
   * ``anila_sampling_defaults`` never lists it.
   * Upstream ``anila_meta.thinking_locked`` survives merge.
@@ -193,10 +194,11 @@ def test_thinking_tier_from_body_ignores_illegal_values(raw):
     assert rs.thinking_tier_from_body({"anila_thinking_tier": raw}) is None
 
 
-def test_sampling_payload_forwards_thinking_tier_but_not_as_a_default():
+def test_sampling_payload_omits_thinking_tier_unless_opted_in():
     token = _with_tier("deep")
     try:
-        params = rs._sampling_payload()
+        assert "anila_thinking_tier" not in rs._sampling_payload()
+        params = rs._sampling_payload(apply_thinking_tier=True)
     finally:
         rs.REQUEST_THINKING_TIER.reset(token)
     assert params["anila_thinking_tier"] == "deep"
@@ -205,6 +207,7 @@ def test_sampling_payload_forwards_thinking_tier_but_not_as_a_default():
 
 def test_sampling_payload_omits_thinking_tier_when_unset():
     assert "anila_thinking_tier" not in rs._sampling_payload()
+    assert "anila_thinking_tier" not in rs._sampling_payload(apply_thinking_tier=True)
 
 
 def test_non_stream_primary_payload_carries_thinking_tier(monkeypatch):
@@ -212,7 +215,13 @@ def test_non_stream_primary_payload_carries_thinking_tier(monkeypatch):
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
     token = _with_tier("deep")
     try:
-        result = asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
+        result = asyncio.run(
+            rs._call_llm_non_stream(
+                "sk",
+                [{"role": "user", "content": "q"}],
+                apply_thinking_tier=True,
+            )
+        )
     finally:
         rs.REQUEST_THINKING_TIER.reset(token)
     assert result["content"] == "答"
@@ -224,7 +233,11 @@ def test_stream_primary_payload_carries_thinking_tier(monkeypatch):
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
 
     async def run():
-        return [ev async for ev in rs._stream_llm_sse("sk", [{"role": "user", "content": "q"}])]
+        return [ev async for ev in rs._stream_llm_sse(
+            "sk",
+            [{"role": "user", "content": "q"}],
+            apply_thinking_tier=True,
+        )]
 
     token = _with_tier("deep")
     try:
@@ -235,12 +248,33 @@ def test_stream_primary_payload_carries_thinking_tier(monkeypatch):
     assert client.streams[0]["anila_thinking_tier"] == "deep"
 
 
+def test_non_stream_omits_thinking_tier_unless_opted_in(monkeypatch):
+    client = _Client(answers=[_reply("答"), _reply("答")])
+    monkeypatch.setattr(rs, "get_http_client", lambda: client)
+    token = _with_tier("deep")
+    try:
+        asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
+        asyncio.run(rs._call_llm_non_stream(
+            "sk",
+            [{"role": "user", "content": "q"}],
+            apply_thinking_tier=True,
+        ))
+    finally:
+        rs.REQUEST_THINKING_TIER.reset(token)
+    assert "anila_thinking_tier" not in client.posts[0]
+    assert client.posts[1]["anila_thinking_tier"] == "deep"
+
+
 def test_non_stream_auto_continue_keeps_thinking_tier(monkeypatch):
     client = _Client(answers=[_reply("<html>", "length"), _reply("</html>", "stop")])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
     token = _with_tier("deep")
     try:
-        asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
+        asyncio.run(rs._call_llm_non_stream(
+            "sk",
+            [{"role": "user", "content": "q"}],
+            apply_thinking_tier=True,
+        ))
     finally:
         rs.REQUEST_THINKING_TIER.reset(token)
     assert len(client.posts) == 2
@@ -258,7 +292,11 @@ def test_stream_auto_continue_keeps_thinking_tier(monkeypatch):
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
 
     async def run():
-        return [ev async for ev in rs._stream_llm_sse("sk", [{"role": "user", "content": "q"}])]
+        return [ev async for ev in rs._stream_llm_sse(
+            "sk",
+            [{"role": "user", "content": "q"}],
+            apply_thinking_tier=True,
+        )]
 
     token = _with_tier("deep")
     try:

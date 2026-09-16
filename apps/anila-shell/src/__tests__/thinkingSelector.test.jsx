@@ -4,6 +4,7 @@ import ThinkingPicker from "../components/ThinkingPicker.jsx";
 import { ReasoningSummary } from "../chat.jsx";
 import {
   conversationSelectionFromServer,
+  shouldReplayOneShotDeep,
   thinkingPickerMode,
   thinkingPickerOptions,
   thinkingTriggerLabel,
@@ -13,6 +14,7 @@ import {
   waitForAnswer,
   waitForIdle,
   selectConversation,
+  clickRegenerate,
   screen,
   waitFor,
   fireEvent,
@@ -62,6 +64,13 @@ const GRADED_MODEL = {
 };
 
 describe("thinkingPicker 檔位對映", () => {
+  it("只重放 source=turn 的深入覆寫", () => {
+    expect(shouldReplayOneShotDeep({ source: "turn", tier: "deep" })).toBe(true);
+    expect(shouldReplayOneShotDeep({ source: "conversation", tier: "deep" })).toBe(false);
+    expect(shouldReplayOneShotDeep({ source: "turn", tier: "standard" })).toBe(false);
+    expect(shouldReplayOneShotDeep(null)).toBe(false);
+  });
+
   it("未探測只留依模型預設可選", () => {
     expect(thinkingPickerMode(null)).toBe("unprobed");
     const options = thinkingPickerOptions(null);
@@ -256,6 +265,21 @@ describe("ChatRuntime 思考選單", () => {
     await waitForAnswer("第二次");
     await waitForIdle();
     expect(backend.chatPayloads[1].anila_thinking_tier).toBeUndefined();
+  });
+
+  it("重試會重放這一題深入想", async () => {
+    const { backend } = await mountOrchestrator();
+    backend.enqueueAnswer("第一次").enqueueAnswer("重試回答");
+    fireEvent.click(screen.getByLabelText("這一題深入想"));
+    await sendComposer("請深入想");
+    await waitForAnswer("第一次");
+    await waitForIdle();
+    expect(backend.chatPayloads[0].anila_thinking_tier).toBe("deep");
+
+    await clickRegenerate();
+    await waitForAnswer("重試回答");
+    await waitForIdle();
+    expect(backend.chatPayloads.at(-1).anila_thinking_tier).toBe("deep");
   });
 
   it("切換對話時選單跟著對話列 thinking_tier", async () => {
