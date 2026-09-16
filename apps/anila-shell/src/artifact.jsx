@@ -14,6 +14,7 @@ import {
   buildArtifactFrameProps,
   isIncompleteArtifactHtml,
 } from "./runtime/artifactDetect.js";
+import { downloadArtifactSource } from "./runtime/artifactDownload.js";
 import { artifactStillNeedsCdn, localizeArtifactHtml } from "./runtime/artifactVendor.js";
 import { ClassificationWatermark, watermarkLevel } from "./trust.jsx";
 import { classifiedCopyDenial } from "./uxCopy.js";
@@ -44,11 +45,12 @@ const KIND_LABEL = {
   svg: "SVG",
   html: "HTML",
   markdown: "Markdown",
+  jsx: "React",
 };
 
 /**
  * @param {{
- *   artifact: { kind: 'svg'|'html'|'markdown', source: string, language?: string },
+ *   artifact: { kind: 'svg'|'html'|'markdown'|'jsx', source: string, language?: string },
  *   classified?: boolean,
  *   classificationLevel?: string,
  *   onClose: () => void,
@@ -120,6 +122,11 @@ export function ArtifactPanel({
   const canCopy = !classified;
   const kind = artifact?.kind;
   const source = artifact?.source ?? "";
+
+  const downloadSource = useCallback(() => {
+    if (!canCopy) return;
+    downloadArtifactSource(source, kind);
+  }, [canCopy, source, kind]);
 
   const copySource = useCallback(() => {
     if (!canCopy) return;
@@ -242,25 +249,47 @@ export function ArtifactPanel({
         </ModeTab>
         <div style={{ flex: 1 }} />
         {canCopy ? (
-          <button
-            type="button"
-            data-testid="artifact-copy"
-            onClick={copySource}
-            title={copied ? "已複製" : "複製原始碼"}
-            style={tabBtnStyle(false)}
-          >
-            {copied ? "已複製" : "複製"}
-          </button>
+          <>
+            <button
+              type="button"
+              data-testid="artifact-download"
+              onClick={downloadSource}
+              title="下載檔案"
+              style={tabBtnStyle(false)}
+            >
+              下載
+            </button>
+            <button
+              type="button"
+              data-testid="artifact-copy"
+              onClick={copySource}
+              title={copied ? "已複製" : "複製原始碼"}
+              style={tabBtnStyle(false)}
+            >
+              {copied ? "已複製" : "複製"}
+            </button>
+          </>
         ) : (
-          <button
-            type="button"
-            data-testid="artifact-copy-denied"
-            disabled
-            title={classifiedCopyDenial(classificationLevel)}
-            style={{ ...tabBtnStyle(false), opacity: 0.4, cursor: "not-allowed" }}
-          >
-            複製
-          </button>
+          <>
+            <button
+              type="button"
+              data-testid="artifact-download-denied"
+              disabled
+              title={classifiedCopyDenial(classificationLevel)}
+              style={{ ...tabBtnStyle(false), opacity: 0.4, cursor: "not-allowed" }}
+            >
+              下載
+            </button>
+            <button
+              type="button"
+              data-testid="artifact-copy-denied"
+              disabled
+              title={classifiedCopyDenial(classificationLevel)}
+              style={{ ...tabBtnStyle(false), opacity: 0.4, cursor: "not-allowed" }}
+            >
+              複製
+            </button>
+          </>
         )}
       </div>
 
@@ -308,7 +337,7 @@ export function ArtifactPanel({
                 這份 HTML 還沒寫完（腳本或 &lt;/html&gt; 被截斷）。畫面裡的「載入中」是頁面自己的，不是預覽壞掉。請用「繼續產生」把程式補完。
               </div>
             ) : null}
-            {kind === "html" && artifactStillNeedsCdn(localizeArtifactHtml(source)) ? (
+            {(kind === "html" || kind === "jsx") && artifactStillNeedsCdn(localizeArtifactHtml(source)) ? (
               <div
                 data-testid="artifact-cdn-blocked"
                 style={{
@@ -326,7 +355,7 @@ export function ArtifactPanel({
                   borderRadius: 8,
                 }}
               >
-                此頁還引用外網腳本（CDN）。隔離內網載不進來；Three.js 已改走本院同源檔，其他函式庫需改成本機路徑。
+                此頁還引用外網腳本（CDN）。隔離內網載不進來；Three.js／React／Babel 已改走本院同源檔，其他函式庫需改成本機路徑。
               </div>
             ) : null}
             <ArtifactFrame kind={kind} source={frameSource || source} />

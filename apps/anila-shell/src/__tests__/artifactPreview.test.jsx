@@ -11,7 +11,13 @@ import {
   buildArtifactSrcDoc,
   detectArtifactKind,
   isIncompleteArtifactHtml,
+  wrapJsxAsHtml,
 } from "../runtime/artifactDetect.js";
+import {
+  artifactDownloadFilename,
+  artifactDownloadSpec,
+  downloadArtifactSource,
+} from "../runtime/artifactDownload.js";
 import { artifactStillNeedsCdn, localizeArtifactHtml } from "../runtime/artifactVendor.js";
 import { ArtifactPanel, clampPanelWidth } from "../artifact.jsx";
 import { ArtifactPreviewProvider } from "../artifactContext.jsx";
@@ -70,6 +76,27 @@ describe("buildArtifactFrameProps", () => {
     expect(frame.html).not.toContain("cdnjs.cloudflare.com");
   });
 
+  it("rewrites React and Babel CDN and same-folder filenames to the intranet vendor", () => {
+    const html = `<!DOCTYPE html><html><head></head><body>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.10/babel.min.js"></script>
+</body></html>`;
+    const out = localizeArtifactHtml(html, { baseUrl: "/anila/" });
+    expect(out).toContain("/anila/vendor/react/18.3.1/react.production.min.js");
+    expect(out).toContain("/anila/vendor/react/18.3.1/react-dom.production.min.js");
+    expect(out).toContain("/anila/vendor/babel/7.26.10/babel.min.js");
+    expect(out).not.toMatch(/unpkg\.com|cdn\.jsdelivr\.net/);
+    expect(artifactStillNeedsCdn(out)).toBe(false);
+
+    const relative = localizeArtifactHtml(
+      `<script src="react.production.min.js"></script><script src="./babel.min.js"></script>`,
+      { baseUrl: "/anila/" },
+    );
+    expect(relative).toContain('src="/anila/vendor/react/18.3.1/react.production.min.js"');
+    expect(relative).toContain('src="/anila/vendor/babel/7.26.10/babel.min.js"');
+  });
+
   it("still flags leftover non-Three CDNs after localize", () => {
     const html = `<!DOCTYPE html><html><script src="https://cdn.jsdelivr.net/npm/chart.js"></script></html>`;
     expect(artifactStillNeedsCdn(localizeArtifactHtml(html, { baseUrl: "/anila/" }))).toBe(true);
@@ -107,6 +134,58 @@ describe("detectArtifactKind — SVG fenced as xml（擁有者實例）", () => 
   it("does not offer preview for unrelated code", () => {
     expect(detectArtifactKind("python", "print('hi')")).toBeNull();
     expect(detectArtifactKind("xml", "<note><to>A</to></note>")).toBeNull();
+  });
+
+  it("detects JSX fences and React components as jsx", () => {
+    const app = `function App() {\n  return (\n    <h1>太陽系</h1>\n  );\n}`;
+    expect(detectArtifactKind("jsx", app)).toBe("jsx");
+    expect(detectArtifactKind("react", app)).toBe("jsx");
+    expect(detectArtifactKind("", `import React from "react";\n${app}`)).toBe("jsx");
+  });
+});
+
+describe("wrapJsxAsHtml — 內網 React／Babel 殼", () => {
+  it("wraps a bare App component onto vendor scripts and mounts App", () => {
+    const html = wrapJsxAsHtml("function App() { return <h1>hi</h1>; }", { baseUrl: "/anila/" });
+    expect(html).toContain("/anila/vendor/react/18.3.1/react.production.min.js");
+    expect(html).toContain("/anila/vendor/react/18.3.1/react-dom.production.min.js");
+    expect(html).toContain("/anila/vendor/babel/7.26.10/babel.min.js");
+    expect(html).toContain('type="text/babel"');
+    expect(html).toContain("function App()");
+    expect(html).toContain("ReactDOM.createRoot");
+    expect(html).not.toMatch(/unpkg\.com|cdn\.jsdelivr\.net/);
+  });
+
+  it("includes the typescript preset so typed tsx does not fail to transpile", () => {
+    const src = `function App(props: { n: number }) { return <h1>{props.n}</h1>; }`;
+    expect(detectArtifactKind("tsx", src)).toBe("jsx");
+    const html = wrapJsxAsHtml(src, { baseUrl: "/anila/" });
+    expect(html).toContain('data-presets="react,typescript"');
+    expect(html).toContain("props: { n: number }");
+    expect(html).toContain("/anila/vendor/babel/7.26.10/babel.min.js");
+  });
+
+  it("does not add a second mount when the source already calls ReactDOM", () => {
+    const src = `function App(){return <p/>}\nReactDOM.createRoot(document.getElementById("root")).render(<App/>);`;
+    const html = wrapJsxAsHtml(src, { baseUrl: "/anila/" });
+    expect(html.match(/ReactDOM\.createRoot/g) || []).toHaveLength(1);
+  });
+
+  it("puts JSX on the same-origin preview shell", () => {
+    const frame = buildArtifactFrameProps("jsx", "function App(){return <h1>hi</h1>;}");
+    expect(frame.sandbox).toBe(ARTIFACT_IFRAME_SANDBOX_HTML);
+    expect(frame.src).toMatch(/artifact-frame\.html$/);
+    expect(frame.html).toContain("react.production.min.js");
+  });
+});
+
+describe("artifact download spec", () => {
+  it("maps kinds to the file extensions in the plan", () => {
+    expect(artifactDownloadSpec("html")).toEqual({ ext: "html", mime: "text/html" });
+    expect(artifactDownloadSpec("svg")).toEqual({ ext: "svg", mime: "image/svg+xml" });
+    expect(artifactDownloadSpec("markdown")).toEqual({ ext: "md", mime: "text/markdown" });
+    expect(artifactDownloadSpec("jsx")).toEqual({ ext: "jsx", mime: "text/javascript" });
+    expect(artifactDownloadFilename("svg")).toBe("anila-artifact.svg");
   });
 });
 
@@ -171,6 +250,10 @@ describe("ArtifactPanel classification — 與訊息同一套門檻", () => {
       expect(denied).toBeDisabled();
       expect(denied.getAttribute("title")).toBe(classifiedCopyDenial(level));
       expect(screen.queryByTestId("artifact-copy")).toBeNull();
+      const downloadDenied = screen.getByTestId("artifact-download-denied");
+      expect(downloadDenied).toBeDisabled();
+      expect(downloadDenied.getAttribute("title")).toBe(classifiedCopyDenial(level));
+      expect(screen.queryByTestId("artifact-download")).toBeNull();
       cleanup();
     }
   });
@@ -185,7 +268,9 @@ describe("ArtifactPanel classification — 與訊息同一套門檻", () => {
       />,
     );
     expect(screen.getByTestId("artifact-copy")).toBeTruthy();
+    expect(screen.getByTestId("artifact-download")).toBeTruthy();
     expect(screen.queryByTestId("artifact-copy-denied")).toBeNull();
+    expect(screen.queryByTestId("artifact-download-denied")).toBeNull();
     expect(screen.queryByTestId("artifact-panel").querySelector("[data-classification]")).toBeNull();
   });
 });
@@ -238,6 +323,37 @@ describe("ArtifactPanel source ↔ preview toggle", () => {
       />,
     );
     expect(screen.getByTestId("artifact-cdn-blocked")).toBeTruthy();
+  });
+
+  it("downloads the source as a named file", () => {
+    const clicks = [];
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    const origClick = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = () => "blob:anila-test";
+    URL.revokeObjectURL = () => {};
+    HTMLAnchorElement.prototype.click = function click() {
+      clicks.push({ download: this.download, href: this.href });
+    };
+    try {
+      render(
+        <ArtifactPanel
+          artifact={{ kind: "svg", source: DONUT_SVG }}
+          classified={false}
+          onClose={() => {}}
+        />,
+      );
+      fireEvent.click(screen.getByTestId("artifact-download"));
+      expect(clicks).toHaveLength(1);
+      expect(clicks[0].download).toBe("anila-artifact.svg");
+      const result = downloadArtifactSource("# hi", "markdown");
+      expect(result).toEqual({ filename: "anila-artifact.md", mime: "text/markdown" });
+      expect(clicks[1].download).toBe("anila-artifact.md");
+    } finally {
+      URL.createObjectURL = origCreate;
+      URL.revokeObjectURL = origRevoke;
+      HTMLAnchorElement.prototype.click = origClick;
+    }
   });
 
   it("does not warn after Three.js CDN is rewritten to the vendor", () => {
@@ -294,6 +410,20 @@ describe("CodeBlock preview affordance — 使用者選擇才開", () => {
     expect(pre.style.maxHeight).toMatch(/60vh/);
     expect(pre.style.overflow).toBe("auto");
     expect(pre.style.overscrollBehavior).toBe("contain");
+  });
+
+  it("shows 預覽 on a jsx-fenced React component", () => {
+    const opened = [];
+    const md = "```jsx\nfunction App() {\n  return (\n    <h1>太陽系</h1>\n  );\n}\n```";
+    render(
+      <ArtifactPreviewProvider onOpen={(a) => opened.push(a)}>
+        <MarkdownView text={md} />
+      </ArtifactPreviewProvider>,
+    );
+    fireEvent.click(screen.getByTestId("artifact-preview-btn"));
+    expect(opened).toHaveLength(1);
+    expect(opened[0].kind).toBe("jsx");
+    expect(opened[0].source).toContain("function App");
   });
 
   it("does not show 預覽 for ordinary python", () => {
