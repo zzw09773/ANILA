@@ -3,7 +3,7 @@
 // LLMs commonly emit LaTeX in the `\[ ... \]` / `\( ... \)` escape form rather
 // than the `$$ ... $$` / `$ ... $` dollar form that `remark-math` expects.
 // We rewrite the escape form to dollars before the markdown parser runs.
-import React, { useEffect, useRef, useState } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -14,7 +14,14 @@ import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
 import { useArtifactPreview } from "./artifactContext.jsx";
 import { detectArtifactKind } from "./runtime/artifactDetect.js";
+import {
+  canConsumeRevisionTurn,
+  extractRevisionCandidate,
+  shouldApplyArtifactFence,
+} from "./runtime/artifactRevision.js";
 import { CitationInline } from "./trust.jsx";
+
+const MarkdownMessageContext = createContext(null);
 
 function preprocessLatex(text) {
   if (!text) return "";
@@ -273,6 +280,7 @@ function MermaidDiagram({ source }) {
 function CodeBlock({ node, children, ...props }) {
   const ref = useRef(null);
   const preview = useArtifactPreview();
+  const messageCtx = useContext(MarkdownMessageContext);
   const codeNode = node?.children?.find((c) => c.tagName === "code");
   const classes = codeNode?.properties?.className || [];
   const langClass = Array.isArray(classes)
@@ -289,12 +297,19 @@ function CodeBlock({ node, children, ...props }) {
   useEffect(() => {
     const cur = preview?.current;
     if (!canPreview || !cur || !artifactKind) return;
-    if (cur.kind !== artifactKind) return;
-    if (source === cur.source) return;
-    if (cur.source && source.startsWith(cur.source)) {
-      preview.openArtifact({ kind: artifactKind, source, language: lang });
-    }
-  }, [source, artifactKind, lang, canPreview, preview]);
+    const decision = shouldApplyArtifactFence({
+      ticket: preview.pendingRevision,
+      fenceMessageId: messageCtx?.messageId ?? null,
+      streaming: Boolean(messageCtx?.streaming),
+      streamState: messageCtx?.streamState,
+      finishReason: messageCtx?.finishReason,
+      artifactKind,
+      source,
+      current: cur,
+    });
+    if (!decision.apply || decision.consume) return;
+    preview.openArtifact({ kind: artifactKind, source, language: lang });
+  }, [source, artifactKind, lang, canPreview, preview, messageCtx]);
   return (
     <div style={{ position: "relative", margin: "8px 0" }}>
       {lang && (
@@ -782,7 +797,16 @@ const rehypePlugins = [
 ];
 const remarkPlugins = [remarkGfm, remarkMath];
 
-export function MarkdownView({ text, citations, onOpenCitation }) {
+export function MarkdownView({
+  text,
+  citations,
+  onOpenCitation,
+  messageId = null,
+  streaming = false,
+  streamState = null,
+  finishReason = null,
+}) {
+  const preview = useArtifactPreview();
   const shownFiguresRef = useRef(new Map());
   // Each MarkdownView render re-assigns first-wins; Strict Mode's second
   // invoke of the same Cited re-claims via ownerId and still renders once.
@@ -795,17 +819,51 @@ export function MarkdownView({ text, citations, onOpenCitation }) {
     }),
     [citations, onOpenCitation],
   );
+  const messageValue = React.useMemo(
+    () => ({
+      messageId: messageId ?? null,
+      streaming: Boolean(streaming),
+      streamState: streamState ?? null,
+      finishReason: finishReason ?? null,
+    }),
+    [messageId, streaming, streamState, finishReason],
+  );
+  useEffect(() => {
+    const ticket = preview?.pendingRevision;
+    if (!ticket?.messageId || !messageId) return;
+    if (ticket.messageId !== messageId) return;
+    if (streaming) return;
+    if (!canConsumeRevisionTurn({ streaming: false, streamState, finishReason })) {
+      preview.settleRevision?.(messageId);
+      return;
+    }
+    const picked = extractRevisionCandidate(text, ticket.kind);
+    if (picked && preview.consumeRevision?.({
+      messageId,
+      kind: ticket.kind,
+      source: picked.source,
+    })) {
+      preview.openArtifact({
+        kind: ticket.kind,
+        source: picked.source,
+        language: picked.language || ticket.kind,
+      });
+    }
+    preview.settleRevision?.(messageId);
+  }, [text, messageId, streaming, streamState, finishReason, preview]);
   return (
-    <CitationContext.Provider value={citationValue}>
-      <div className="anila-markdown">
-        <ReactMarkdown
-          remarkPlugins={remarkPlugins}
-          rehypePlugins={rehypePlugins}
-          components={components}
-        >
-          {preprocessLatex(text || "")}
-        </ReactMarkdown>
-      </div>
-    </CitationContext.Provider>
+    <MarkdownMessageContext.Provider value={messageValue}>
+      <CitationContext.Provider value={citationValue}>
+        <div className="anila-markdown">
+          <ReactMarkdown
+            remarkPlugins={remarkPlugins}
+            rehypePlugins={rehypePlugins}
+            components={components}
+          >
+            {preprocessLatex(text || "")}
+          </ReactMarkdown>
+        </div>
+      </CitationContext.Provider>
+    </MarkdownMessageContext.Provider>
   );
 }

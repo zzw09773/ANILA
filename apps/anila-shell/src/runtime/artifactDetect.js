@@ -17,6 +17,16 @@ const JSX_LANGS = new Set(["jsx", "tsx", "react"]);
 // xml／xhtml 常被模型拿來標 SVG；內容才是裁決。
 const XMLISH_LANGS = new Set(["xml", "xhtml"]);
 
+/** Map a fence language tag to an artifact kind without sniffing the body. */
+export function artifactKindFromLang(lang) {
+  const tag = typeof lang === "string" ? lang.trim().toLowerCase() : "";
+  if (SVG_LANGS.has(tag)) return "svg";
+  if (HTML_LANGS.has(tag)) return "html";
+  if (JSX_LANGS.has(tag)) return "jsx";
+  if (MD_LANGS.has(tag)) return "markdown";
+  return null;
+}
+
 /**
  * @param {string} [lang] fence 語言標籤（可空）
  * @param {string} [source] 區塊原文
