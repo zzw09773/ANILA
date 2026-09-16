@@ -179,7 +179,7 @@ model_registry.thinking_user_selectable   BOOLEAN NOT NULL DEFAULT TRUE
 | **E** | 產物下載成檔；React/JSX 產物 vendor（React UMD＋Babel standalone 放 `public/vendor/`，`artifactVendor.js` 加改寫規則） | — | 1–2 天 |
 | **F** | 使用者可寫的「回覆偏好」頁＋「我的記憶」管理頁（列、刪、來源對話）；活體驗每輪萃取有沒有跑 | 先驗現況 | 3 天 |
 | **G** | 精準計數：模型端 `/tokenize` 或 tiktoken 近似；compact 門檻改用真值 | — | 1 天 |
-| 🔵 | Projects、產物版本歷史（v1／v2） | 擁有者拍板 | 另開藍圖 |
+| 🔵 | Projects、產物版本歷史（v1／v2） | 擁有者拍板 | 另開藍圖。局部修訂 ✅ 2026-09-16 合入 main（shell `b8e430d7`；獨立審查 r5 PASS；不做 v1／v2） |
 
 建議順序 **A → B → C → D**，因為 A 是使用者點名要的，B 讓 A 的效果看得見，C／D 是這週 compact 的收尾。E 便宜可插隊。
 
