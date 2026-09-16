@@ -14,13 +14,14 @@ export default function RouterModelPicker({
   defaultModelId,
   disabled = false,
   error = "",
+  fallbackName = "",
   onChange,
 }) {
   const options = Array.isArray(models) ? models : [];
   const selected = options.find((model) => model.id === selectedId) || null;
   const selectedName = selected
     ? (selected.display_name || selected.name)
-    : (options.length === 0 ? "沒有可用模型" : "選擇模型");
+    : (fallbackName || (options.length === 0 ? "沒有可用模型" : "選擇模型"));
   const locked = disabled || options.length === 0;
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);

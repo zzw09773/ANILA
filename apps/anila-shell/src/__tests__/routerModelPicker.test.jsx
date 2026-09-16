@@ -36,6 +36,21 @@ describe("RouterModelPicker", () => {
     expect(onChange).toHaveBeenCalledWith(4);
   });
 
+  it("keeps the conversation model name when the list has not loaded", () => {
+    render(
+      <RouterModelPicker
+        models={[]}
+        selectedId={5}
+        fallbackName="Qwen 3.8 Flash"
+        onChange={() => {}}
+      />,
+    );
+    const trigger = screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選");
+    expect(trigger).toBeDisabled();
+    expect(trigger).toHaveTextContent("Qwen 3.8 Flash");
+    expect(screen.queryByText("沒有可用模型")).toBeNull();
+  });
+
   it("locks during send and shows reselect error", () => {
     render(
       <RouterModelPicker

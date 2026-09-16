@@ -3,6 +3,7 @@ import { cleanup, render } from "@testing-library/react";
 import ThinkingPicker from "../components/ThinkingPicker.jsx";
 import { ReasoningSummary } from "../chat.jsx";
 import {
+  conversationSelectionFromServer,
   thinkingPickerMode,
   thinkingPickerOptions,
   thinkingTriggerLabel,
@@ -76,6 +77,24 @@ describe("thinkingPicker 檔位對映", () => {
       "開啟",
     ]);
     expect(thinkingTriggerLabel("deep", ["none", "xhigh"])).toBe("開啟");
+  });
+});
+
+describe("conversationSelectionFromServer", () => {
+  it("does not invent thinkingTier when the save payload omitted it", () => {
+    const patch = conversationSelectionFromServer({
+      router_model_id: 5,
+      router_model_name: "Qwen 3.8 Flash",
+      router_selection_version: 3,
+    });
+    expect(patch.routerModelId).toBe(5);
+    expect(patch.routerModelName).toBe("Qwen 3.8 Flash");
+    expect(patch).not.toHaveProperty("thinkingTier");
+  });
+
+  it("still reads an explicit thinking_tier including null", () => {
+    expect(conversationSelectionFromServer({ thinking_tier: "off" }).thinkingTier).toBe("off");
+    expect(conversationSelectionFromServer({ thinking_tier: null }).thinkingTier).toBe("default");
   });
 });
 

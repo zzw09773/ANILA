@@ -481,12 +481,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [conversations, setConversations] = useState([]);
   const [selectedConvId, setSelectedConvId] = useState(null);
 
+  const authRequestRef = useRef(authRequest);
+  authRequestRef.current = authRequest;
+
   useEffect(() => {
     if (!isAuthenticated) return undefined;
     let cancelled = false;
     (async () => {
       try {
-        const data = await apiListRouterModels(authRequest);
+        const data = await apiListRouterModels(authRequestRef.current);
         if (cancelled) return;
         const models = data?.models || [];
         setRouterModels(models);
@@ -501,7 +504,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       }
     })();
     return () => { cancelled = true; };
-  }, [isAuthenticated, authRequest]);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (!selectedConvId) {
@@ -512,7 +515,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     if (!conv) return;
     if (typeof conv.routerModelId === "number") {
       setSelectedRouterModelId(conv.routerModelId);
-      setRouterModelError("");
     }
     setThinkingTier(normalizeThinkingTier(conv.thinkingTier));
   }, [selectedConvId, conversations]);
@@ -2124,7 +2126,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       if (typeof patch.routerModelId === "number") {
         setSelectedRouterModelId(patch.routerModelId);
       }
-      setThinkingTier(patch.thinkingTier);
+      if (patch.thinkingTier !== undefined) {
+        setThinkingTier(patch.thinkingTier);
+      }
     }
   }
 
@@ -3537,6 +3541,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 models={routerModels}
                 selectedId={selectedRouterModelId}
                 defaultModelId={routerDefaultId}
+                fallbackName={selectedConv?.routerModelName || ""}
                 error={routerModelError}
                 disabled={routerPickerLocked}
                 onChange={async (id) => {
@@ -3851,6 +3856,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 models={routerModels}
                 selectedId={selectedRouterModelId}
                 defaultModelId={routerDefaultId}
+                fallbackName={selectedConv?.routerModelName || ""}
                 error={routerModelError}
                 disabled={routerPickerLocked}
                 onChange={async (id) => {

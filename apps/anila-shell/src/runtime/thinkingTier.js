@@ -93,10 +93,15 @@ export function persistThinkingTierPreference(tier) {
 }
 
 export function conversationSelectionFromServer(serverRow) {
-  return {
+  const next = {
     routerModelId: serverRow?.router_model_id ?? null,
     routerModelName: serverRow?.router_model_name ?? null,
     routerSelectionVersion: serverRow?.router_selection_version ?? 0,
-    thinkingTier: normalizeThinkingTier(serverRow?.thinking_tier),
   };
+  // PUT /router-model 只回模型三欄。缺 thinking_tier 時不可寫成 default，
+  // 否則換模型會把對話檔位蓋掉，選單像被重設。
+  if (serverRow && Object.prototype.hasOwnProperty.call(serverRow, "thinking_tier")) {
+    next.thinkingTier = normalizeThinkingTier(serverRow.thinking_tier);
+  }
+  return next;
 }
