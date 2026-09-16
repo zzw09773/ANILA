@@ -80,20 +80,21 @@ def _is_system(msg: Mapping[str, Any]) -> bool:
     return msg.get("role") == "system"
 
 
-def _is_history_summary_message(msg: Mapping[str, Any]) -> bool:
-    text = flatten_openai_content(msg.get("content")).lstrip()
-    return text.startswith(HISTORY_SUMMARY_PREFIX)
+def _is_identity_protected(
+    msg: Mapping[str, Any],
+    protected: Sequence[Mapping[str, Any]],
+) -> bool:
+    return any(msg is item for item in protected)
 
 
-def _is_system_like(msg: Mapping[str, Any]) -> bool:
-    """Keep real system prompts and leading ``[歷史摘要]`` user rows.
-
-    Aligns with ``sliding_window._is_system_like``: a user message whose
-    content starts with ``[歷史摘要]`` is prefix, not a droppable turn.
-    """
-    if _is_system(msg):
-        return True
-    return msg.get("role") == "user" and _is_history_summary_message(msg)
+def _retain_or_copy(
+    msg: dict[str, Any],
+    protected: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Keep Router-produced summary dicts by identity; copy everything else."""
+    if _is_identity_protected(msg, protected):
+        return msg
+    return dict(msg)
 
 
 def _is_tool_result(msg: Mapping[str, Any]) -> bool:
@@ -103,21 +104,35 @@ def _is_tool_result(msg: Mapping[str, Any]) -> bool:
     return any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
 
 
-def _leading_prefix_len(messages: Sequence[Mapping[str, Any]]) -> int:
-    """How many leading system-like rows (system + consecutive history summaries)."""
+def _leading_system_len(messages: Sequence[Mapping[str, Any]]) -> int:
     for i, msg in enumerate(messages):
-        if not _is_system_like(msg):
+        if not _is_system(msg):
             return i
     return len(messages)
 
 
-def _split_turns(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
-    cut = _leading_prefix_len(messages)
-    system = [dict(m) for m in messages[:cut]]
+def _leading_prefix_len(
+    messages: Sequence[Mapping[str, Any]],
+    protected: Sequence[Mapping[str, Any]] = (),
+) -> int:
+    """Leading ``role=system`` rows plus identity-tracked protected objects."""
+    for i, msg in enumerate(messages):
+        if _is_system(msg) or _is_identity_protected(msg, protected):
+            continue
+        return i
+    return len(messages)
+
+
+def _split_turns(
+    messages: list[dict[str, Any]],
+    protected: Sequence[Mapping[str, Any]] = (),
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
+    cut = _leading_prefix_len(messages, protected)
+    system = [_retain_or_copy(m, protected) for m in messages[:cut]]
     convo: list[dict[str, Any]] = []
     for msg in messages[cut:]:
-        if _is_system(msg):
-            system.append(dict(msg))
+        if _is_system(msg) or _is_identity_protected(msg, protected):
+            system.append(_retain_or_copy(msg, protected))
         else:
             convo.append(dict(msg))
 
@@ -140,25 +155,25 @@ def _flatten_turns(turns: Sequence[Sequence[dict[str, Any]]]) -> list[dict[str, 
     return out
 
 
-def _recent_count_from_final(messages: Sequence[Mapping[str, Any]]) -> int:
-    """Count rows after the leading system-like prefix (mid-chat summaries stay)."""
-    return max(0, len(messages) - _leading_prefix_len(messages))
-
-
-def _prefix_keeps_summary(
+def _summary_in_final(
     messages: Sequence[Mapping[str, Any]],
     summary_message: Mapping[str, Any] | None,
 ) -> bool:
-    if summary_message is None:
-        return False
-    prefix = messages[:_leading_prefix_len(messages)]
-    expected_role = summary_message.get("role")
-    expected_content = summary_message.get("content")
-    return any(
-        m is summary_message
-        or (m.get("role") == expected_role and m.get("content") == expected_content)
-        for m in prefix
-    )
+    return summary_message is not None and any(m is summary_message for m in messages)
+
+
+def _is_sliding_marker(msg: Mapping[str, Any]) -> bool:
+    return msg.get("role") == "user" and msg.get("content") == SLIDING_WINDOW_SUMMARY
+
+
+def _recent_count_from_final(
+    messages: Sequence[Mapping[str, Any]],
+    summary_message: Mapping[str, Any] | None = None,
+) -> int:
+    """Inbound conversation rows left after compact (not system / summary / marker)."""
+    extra = 1 if _summary_in_final(messages, summary_message) else 0
+    markers = sum(1 for m in messages if _is_sliding_marker(m))
+    return max(0, len(messages) - _leading_system_len(messages) - extra - markers)
 
 
 def _result_from_outbound(
@@ -170,7 +185,7 @@ def _result_from_outbound(
     summary_message: Mapping[str, Any] | None = None,
 ) -> CompactResult:
     """Bind method/summary/recent_count to the messages actually returned."""
-    kept = bool(summary_text) and _prefix_keeps_summary(messages, summary_message)
+    kept = _summary_in_final(messages, summary_message)
     return CompactResult(
         messages,
         True,
@@ -178,7 +193,7 @@ def _result_from_outbound(
         tokens_before,
         tokens_after,
         summary=summary_text if kept else None,
-        recent_count=_recent_count_from_final(messages),
+        recent_count=_recent_count_from_final(messages, summary_message),
     )
 
 
@@ -187,17 +202,18 @@ def sliding_window_openai(
     max_tokens: int,
     *,
     keep_recent_turns: int = 4,
+    protected: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[list[dict[str, Any]], int]:
-    """Hard-truncate older turns; keep the leading system message."""
+    """Hard-truncate older turns; keep leading systems and ``protected`` objects."""
     if not messages:
         return [], 0
     tokens_before = estimate_openai_tokens(messages)
     if tokens_before <= max_tokens:
-        return [dict(m) for m in messages], 0
+        return [_retain_or_copy(m, protected) for m in messages], 0
 
-    system, turns = _split_turns(messages)
+    system, turns = _split_turns(messages, protected)
     if not turns:
-        return [dict(m) for m in messages], 0
+        return [_retain_or_copy(m, protected) for m in messages], 0
 
     min_keep = max(1, keep_recent_turns)
     kept = turns[-min_keep:] if len(turns) > min_keep else list(turns)
@@ -213,8 +229,8 @@ def sliding_window_openai(
     dropped = len(_flatten_turns(turns)) - len(kept_messages)
     if dropped <= 0:
         result = system + kept_messages
-    elif any(_is_history_summary_message(m) for m in system):
-        # A real summary is already in the prefix; don't insert a second marker.
+    elif any(_is_identity_protected(m, protected) for m in system):
+        # A Router-produced summary is already in the prefix; don't add a marker.
         result = system + kept_messages
     else:
         result = system + [{"role": "user", "content": SLIDING_WINDOW_SUMMARY}] + kept_messages
@@ -345,7 +361,10 @@ async def auto_compact_openai_messages(
             if after <= tokens_before:
                 if not force and after > threshold:
                     compacted, _ = sliding_window_openai(
-                        compacted, threshold, keep_recent_turns=max(1, keep_recent_turns - 1)
+                        compacted,
+                        threshold,
+                        keep_recent_turns=max(1, keep_recent_turns - 1),
+                        protected=(summary_msg,),
                     )
                     after = estimate_openai_tokens(compacted)
                 return _result_from_outbound(

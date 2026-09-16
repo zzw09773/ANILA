@@ -14,7 +14,6 @@ from anila_core.compact.auto_compact import (
 )
 from anila_core.compact.openai_history import (
     HISTORY_SUMMARY_PREFIX,
-    _leading_prefix_len,
     auto_compact_openai_messages,
     estimate_openai_tokens,
     is_prompt_too_long,
@@ -175,7 +174,11 @@ def _long_chat(turns: int, size: int = 800) -> list[dict]:
 
 
 def _long_chat_with_mid_history_prefix(turns: int = 8, size: int = 600) -> list[dict]:
-    """Turn 6 (1-based) is a real user line that starts with ``[歷史摘要]``."""
+    """Turn 6 (1-based) is a real user line that starts with ``[歷史摘要]``.
+
+    Same shape as the Router event fixture: 8 complete turns plus a newest
+    user question (18 inbound rows; the fake-prefix user sits at index 11).
+    """
     out = [{"role": "system", "content": "you are anila"}]
     for i in range(turns):
         if i == 5:
@@ -186,6 +189,7 @@ def _long_chat_with_mid_history_prefix(turns: int = 8, size: int = 600) -> list[
         else:
             out.append({"role": "user", "content": f"u{i} " + ("問" * size)})
         out.append({"role": "assistant", "content": f"a{i} " + ("答" * size)})
+    out.append({"role": "user", "content": "最新一問"})
     return out
 
 
@@ -392,7 +396,12 @@ class TestOpenaiHistoryCompact:
         summary_prefix = HISTORY_SUMMARY_PREFIX + "\n"
         assert result.messages[1]["content"].startswith(summary_prefix)
         assert result.summary == result.messages[1]["content"][len(summary_prefix) :]
-        expected_recent = len(result.messages) - _leading_prefix_len(result.messages)
+        leading_systems = 0
+        for msg in result.messages:
+            if msg.get("role") != "system":
+                break
+            leading_systems += 1
+        expected_recent = len(result.messages) - leading_systems - 1
         assert result.recent_count == expected_recent
         assert result.recent_count > 0
         assert not any(
@@ -434,11 +443,23 @@ class TestOpenaiHistoryCompact:
         assert result.method == "sliding_window"
         assert result.summary is None
         assert any("使用者真的輸入" in str(m.get("content")) for m in result.messages)
-        fake_idx = next(
-            i for i, m in enumerate(messages) if "使用者真的輸入" in str(m.get("content"))
+        # sliding 會把還塞得進門檻的舊回合加回來。此例 outbound =
+        # [system, SLIDING_WINDOW_SUMMARY, u4, a4, turn6_user, a5, u6, a6, u7, a7, 最新一問]
+        # recent_count = 11 - 1 system - 0 summary - 1 marker = 9
+        # kept_from_index = 18 - 9 = 9 → inbound[9] = u4
+        first_kept = next(
+            m
+            for m in result.messages
+            if m.get("role") != "system"
+            and SLIDING_WINDOW_SUMMARY not in str(m.get("content") or "")
         )
-        kept_from_index = len(messages) - result.recent_count
-        assert 0 <= kept_from_index < fake_idx
+        kept_from_index = next(
+            i
+            for i, inbound in enumerate(messages)
+            if inbound.get("role") == first_kept.get("role")
+            and inbound.get("content") == first_kept.get("content")
+        )
+        assert len(messages) - result.recent_count == kept_from_index
         assert messages[kept_from_index]["role"] in {"user", "assistant"}
 
     @pytest.mark.asyncio
@@ -455,10 +476,41 @@ class TestOpenaiHistoryCompact:
             summarizer=summarize,
             keep_recent_turns=4,
         )
+        # inbound: system + 8*(user,assistant) + 最新一問 = 18；第 6 回合 user 在 11。
+        # keep_recent_turns=4 → outbound =
+        #   [system, 產生摘要, turn6_user, a5, u6, a6, u7, a7, 最新一問]（9 則）
+        # recent_count = 9 - 1 system - 1 summary = 7
+        # （該 user + assistant + 後 3 回合 5 則 = 7）
+        # kept_from_index = 18 - 7 = 11
         assert result.method == "summary"
         assert result.summary == "濃縮過的太陽系討論"
         assert "使用者真的輸入" not in (result.summary or "")
-        assert any("使用者真的輸入" in str(m.get("content")) for m in result.messages)
+        assert result.recent_count == 7
+        kept_from_index = len(messages) - result.recent_count
+        assert kept_from_index == 11
+        assert messages[kept_from_index]["role"] == "user"
+        assert "使用者真的輸入" in str(messages[kept_from_index].get("content"))
+        assert any(
+            m.get("content") == messages[kept_from_index]["content"]
+            for m in result.messages
+        )
+
+    def test_sliding_window_keeps_protected_summary_identity(self) -> None:
+        summary = {"role": "user", "content": f"{HISTORY_SUMMARY_PREFIX}\nkeep-me"}
+        messages: list[dict] = [{"role": "system", "content": "sys"}, summary]
+        for i in range(8):
+            messages.append({"role": "user", "content": f"u{i} " + ("問" * 400)})
+            messages.append({"role": "assistant", "content": f"a{i} " + ("答" * 400)})
+        before = estimate_openai_tokens(messages)
+        out, dropped = sliding_window_openai(
+            messages,
+            max_tokens=max(80, before // 4),
+            keep_recent_turns=2,
+            protected=(summary,),
+        )
+        assert dropped > 0
+        assert any(m is summary for m in out)
+        assert not any(SLIDING_WINDOW_SUMMARY in str(m.get("content")) for m in out)
 
 
 # ---------------------------------------------------------------------------

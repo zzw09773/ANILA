@@ -21,6 +21,7 @@ from anila_core.compact.openai_history import (
     _split_turns,
     auto_compact_openai_messages,
 )
+from anila_core.compact.sliding_window import SLIDING_WINDOW_SUMMARY
 from anila_core.config import settings
 from anila_core.memory import close_all_connections
 from anila_core.registry.remote_agent_manifest import RemoteAgentRegistry
@@ -417,6 +418,17 @@ def test_prior_summary_stops_before_user_prefs_heading():
     assert "喜歡簡短" not in prior
 
 
+def test_prior_summary_keeps_decision_heading():
+    system = (
+        router_prompts.DEFAULT_PLAIN_ASSISTANT
+        + "\n\n[歷史摘要]\n先前摘要\n\n### 決定事項\n採用方案 A"
+    )
+    prior = rs._extract_prior_history_summary([{"role": "system", "content": system}])
+    assert prior == "先前摘要\n\n### 決定事項\n採用方案 A"
+    assert "決定事項" in prior
+    assert "採用方案 A" in prior
+
+
 def test_mid_turn_history_prefix_event_is_sliding_window(monkeypatch):
     monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
 
@@ -425,7 +437,7 @@ def test_mid_turn_history_prefix_event_is_sliding_window(monkeypatch):
 
     monkeypatch.setattr(rs, "_summarize_for_compact", fake_summary)
     messages = _long_messages_with_mid_history_prefix()
-    _compacted, step, event = asyncio.run(
+    compacted, step, event = asyncio.run(
         rs._auto_compact_routing_messages(
             messages,
             caller_api_key="sk",
@@ -437,10 +449,23 @@ def test_mid_turn_history_prefix_event_is_sliding_window(monkeypatch):
     assert event is not None
     assert event["method"] == "sliding_window"
     assert event["summary"] is None
-    fake_idx = next(
-        i for i, m in enumerate(messages) if "使用者真的輸入" in str(m.get("content"))
+    # sliding 會把還塞得進門檻的舊回合加回來。此例 outbound =
+    # [system, SLIDING_WINDOW_SUMMARY, u4, a4, turn6_user, a5, u6, a6, u7, a7, 最新一問]
+    # recent_count = 11 - 1 system - 0 summary - 1 marker = 9
+    # kept_from_index = 18 - 9 = 9 → inbound[9] = u4
+    first_kept = next(
+        m
+        for m in compacted
+        if m.get("role") != "system"
+        and SLIDING_WINDOW_SUMMARY not in str(m.get("content") or "")
     )
-    assert 0 <= event["kept_from_index"] < fake_idx
+    expected_idx = next(
+        i
+        for i, inbound in enumerate(messages)
+        if inbound.get("role") == first_kept.get("role")
+        and inbound.get("content") == first_kept.get("content")
+    )
+    assert event["kept_from_index"] == expected_idx
     assert messages[event["kept_from_index"]]["role"] in {"user", "assistant"}
 
 
@@ -452,7 +477,7 @@ def test_mid_turn_history_prefix_does_not_steal_event_summary(monkeypatch):
 
     monkeypatch.setattr(rs, "_summarize_for_compact", fake_summary)
     messages = _long_messages_with_mid_history_prefix()
-    _compacted, step, event = asyncio.run(
+    compacted, step, event = asyncio.run(
         rs._auto_compact_routing_messages(
             messages,
             caller_api_key="sk",
@@ -460,11 +485,24 @@ def test_mid_turn_history_prefix_does_not_steal_event_summary(monkeypatch):
             inbound_message_count=len(messages),
         )
     )
+    # inbound: system + 8*(user,assistant) + 最新一問 = 18；第 6 回合 user 在 11。
+    # keep_recent_turns=4 → outbound =
+    #   [system, 產生摘要, turn6_user, a5, u6, a6, u7, a7, 最新一問]（9 則）
+    # recent_count = 9 - 1 system - 1 summary = 7
+    # （該 user + assistant + 後 3 回合 5 則 = 7）
+    # kept_from_index = 18 - 7 = 11
     assert step is not None
     assert event is not None
     assert event["method"] == "summary"
     assert event["summary"] == "濃縮過的太陽系討論"
     assert "使用者真的輸入" not in (event["summary"] or "")
+    assert len(messages) == 18
+    assert event["kept_from_index"] == 11
+    assert messages[11]["role"] == "user"
+    assert "使用者真的輸入" in str(messages[11].get("content"))
+    assert compacted[1]["content"].startswith(HISTORY_SUMMARY_PREFIX)
+    assert "濃縮過的太陽系討論" in compacted[1]["content"]
+    assert "使用者真的輸入" in str(compacted[2].get("content"))
 
 
 def test_oversized_summary_event_kept_from_index_points_at_outbound(monkeypatch):
@@ -490,12 +528,12 @@ def test_oversized_summary_event_kept_from_index_points_at_outbound(monkeypatch)
     summary_prefix = HISTORY_SUMMARY_PREFIX + "\n"
     assert compacted[1]["content"].startswith(summary_prefix)
     assert event["summary"] == compacted[1]["content"][len(summary_prefix) :]
-    expected_recent = sum(
-        1
-        for m in compacted
-        if m.get("role") != "system"
-        and not str(m.get("content") or "").lstrip().startswith(HISTORY_SUMMARY_PREFIX)
-    )
+    leading_systems = 0
+    for msg in compacted:
+        if msg.get("role") != "system":
+            break
+        leading_systems += 1
+    expected_recent = len(compacted) - leading_systems - 1
     assert event["kept_from_index"] == len(messages) - expected_recent
     kept = messages[event["kept_from_index"]]
     assert any(

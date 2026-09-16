@@ -718,7 +718,7 @@ def _attach_compact_event(
 
 
 _PRIOR_HISTORY_SUMMARY_RE = re.compile(
-    rf"{re.escape(HISTORY_SUMMARY_PREFIX)}\n(.*?)(?=\n\n【|\n\n你是|\n\n### |$)",
+    rf"{re.escape(HISTORY_SUMMARY_PREFIX)}\n(.*?)(?=\n\n【|\n\n你是|\n\n### 使用者偏好|$)",
     re.DOTALL,
 )
 
