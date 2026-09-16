@@ -116,6 +116,22 @@ describe("dispatchSseEvent", () => {
     expect(onMeta).toHaveBeenCalledWith({ trace_id: "abc" });
   });
 
+  it("routes anila.compact to onCompact", () => {
+    const onCompact = vi.fn();
+    const payload = {
+      summary: "舊回合摘要",
+      kept_from_index: 4,
+      method: "summary",
+      tokens_before: 100,
+      tokens_after: 20,
+    };
+    dispatchSseEvent(
+      { event: "anila.compact", data: JSON.stringify(payload), raw: "" },
+      { onCompact, accumulator: makeAccumulator() },
+    );
+    expect(onCompact).toHaveBeenCalledWith(payload);
+  });
+
   it("extracts the delta string for anila.reasoning", () => {
     const onReasoning = vi.fn();
     dispatchSseEvent(

@@ -6,6 +6,8 @@
 // takes `multipartRequest(path, formData)` instead because the browser must
 // set the multipart boundary itself.
 
+import { config, joinUrl, readCsrfCookie } from "./api.js";
+
 // Origin tag for this frontend. Migration 0023 added the
 // `conversations.origin` column so multiple SPAs (ANILA UI + ANILALM
 // + future bots) can co-exist on the same backend without bleeding
@@ -527,4 +529,53 @@ export function getMyUsage(authRequest, range) {
 
 export function getConversationUsage(authRequest, convId) {
   return authRequest(`/api/conversations/${convId}/usage`, { method: "GET" });
+}
+
+export function setConversationCompact(authRequest, convId, { summary, boundaryMessageId } = {}) {
+  return authRequest(`/api/conversations/${convId}/compact`, {
+    method: "PUT",
+    body: JSON.stringify({
+      summary,
+      boundary_message_id: boundaryMessageId,
+    }),
+  });
+}
+
+export function clearConversationCompact(authRequest, convId) {
+  return authRequest(`/api/conversations/${convId}/compact`, { method: "DELETE" });
+}
+
+/**
+ * Router 手動整理。路徑走 Router（不是 CSP `/api`），但簽章仍收 authRequest
+ * 以便呼叫端與其他 conversations helper 一致；實際送出與串流同一套 cookie + CSRF。
+ */
+export async function requestConversationCompact(authRequest, { messages, routerModel, convId } = {}) {
+  void authRequest;
+  const headers = { "Content-Type": "application/json" };
+  const csrf = readCsrfCookie();
+  if (csrf) headers["X-CSRF-Token"] = csrf;
+  if (typeof convId === "number") {
+    headers["X-ANILA-Conversation-Id"] = String(convId);
+  }
+  const body = { messages: Array.isArray(messages) ? messages : [] };
+  if (routerModel) body.router_model = routerModel;
+  const response = await fetch(joinUrl(config.routerBaseUrl, "/v1/conversations/compact"), {
+    method: "POST",
+    credentials: "include",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    let detail = `整理對話失敗（HTTP ${response.status}）`;
+    try {
+      const data = await response.json();
+      if (typeof data?.detail === "string" && data.detail.trim()) detail = data.detail;
+    } catch {
+      // keep status fallback
+    }
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
 }

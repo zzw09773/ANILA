@@ -95,6 +95,11 @@ export function metaFrame(meta) {
   return `event: anila.meta\ndata: ${JSON.stringify(meta)}\n\n`;
 }
 
+/** `anila.compact` — Router 自動摘要後回報邊界。 */
+export function compactFrame(payload) {
+  return `event: anila.compact\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
 /** `anila.error` — 串流中途的終止錯誤。 */
 export function errorFrame(payload) {
   return `event: anila.error\ndata: ${JSON.stringify(payload)}\n\n`;
@@ -143,9 +148,10 @@ export function defaultMeta(overrides = {}) {
  * orchestrator 測試裡都沒被執行過 —— 那是假後端往「比真後端寬鬆」的
  * 方向漂移,會讓 meta 相關的壞掉完全測不到。
  */
-export function scriptAnswer(text, { meta = null, chunks = null } = {}) {
+export function scriptAnswer(text, { meta = null, chunks = null, compact = null } = {}) {
   const parts = Array.isArray(chunks) ? chunks : [text];
   const frames = parts.map((p) => deltaFrame(p));
+  if (compact) frames.push(compactFrame(compact));
   frames.push(metaFrame(defaultMeta(meta || {})));
   frames.push(doneFrame());
   return frames;
@@ -387,11 +393,28 @@ export function createFakeBackend(options = {}) {
   let nextAttSeq = 0;
   const attachmentsByRef = new Map();
 
-  for (const row of initialConversations) {
-    convs.set(row.id, { ...row });
-    msgsByConv.set(row.id, []);
-    activeLeafByConv.set(row.id, null);
+  function withCompactFields(row) {
+    return {
+      compact_summary: row?.compact_summary ?? null,
+      compact_boundary_message_id: row?.compact_boundary_message_id ?? null,
+      compact_updated_at: row?.compact_updated_at ?? null,
+      ...row,
+    };
   }
+
+  for (const row of initialConversations) {
+    convs.set(row.id, withCompactFields(row));
+    msgsByConv.set(row.id, []);
+    activeLeafByConv.set(row.id, row.active_leaf_message_id ?? null);
+    if (typeof row.id === "number" && row.id > nextConvId) nextConvId = row.id;
+  }
+
+  /** Router 手動整理的請求與回覆佇列。 */
+  const routerCompactPayloads = [];
+  const compactQueue = [];
+  /** 為 true 時 POST /turn 等到測試呼叫 resolveTurnPersist 才回。 */
+  let deferTurnPersist = false;
+  const turnResolvers = [];
 
   /** 排隊的串流腳本;每次 chat 呼叫取一份。用完回落到 `defaultAnswer`。 */
   const streamQueue = [];
@@ -543,7 +566,7 @@ export function createFakeBackend(options = {}) {
   }
 
   // 預設路由表。回傳 undefined = 沒接住。
-  function defaultRoute({ method, path, query, body, init }) {
+  async function defaultRoute({ method, path, query, body, init }) {
     // ---- 認證 ----
     if (path === "/api/auth/me") return jsonResponse(user);
     if (path === "/api/auth/refresh") return jsonResponse({ ok: true });
@@ -634,6 +657,9 @@ export function createFakeBackend(options = {}) {
         router_selection_version: 1,
         // 建立端點沒有 thinking_tier；即使客戶端誤帶也忽略。
         thinking_tier: null,
+        compact_summary: null,
+        compact_boundary_message_id: null,
+        compact_updated_at: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -663,6 +689,61 @@ export function createFakeBackend(options = {}) {
       if (!convs.has(convId)) return errorResponse(404, "找不到對話");
       return jsonResponse(conversationUsageById.get(convId) || emptyConversationUsage(convId));
     }
+    if (path.endsWith("/v1/conversations/compact") && method === "POST") {
+      routerCompactPayloads.push({
+        body,
+        convId: headerValue(init, "X-ANILA-Conversation-Id"),
+        routerModel: body?.router_model ?? null,
+      });
+      if (compactQueue.length > 0) {
+        return jsonResponse(compactQueue.shift());
+      }
+      const msgs = Array.isArray(body?.messages) ? body.messages : [];
+      if (msgs.length < 4) {
+        return jsonResponse({
+          summary: null,
+          kept_from_index: 0,
+          method: "none",
+          tokens_before: 0,
+          tokens_after: 0,
+        });
+      }
+      return jsonResponse({
+        summary: "假摘要",
+        kept_from_index: Math.max(0, msgs.length - 2),
+        method: "summary",
+        tokens_before: 120,
+        tokens_after: 40,
+      });
+    }
+
+    const compactMatch = path.match(/^\/api\/conversations\/(\d+)\/compact$/);
+    if (compactMatch) {
+      const convId = Number(compactMatch[1]);
+      const row = convs.get(convId);
+      if (!row) return errorResponse(404, "找不到對話");
+      if (method === "PUT") {
+        const updated = {
+          ...row,
+          compact_summary: body?.summary ?? null,
+          compact_boundary_message_id: body?.boundary_message_id ?? null,
+          compact_updated_at: new Date().toISOString(),
+        };
+        convs.set(convId, updated);
+        return jsonResponse(updated);
+      }
+      if (method === "DELETE") {
+        const updated = {
+          ...row,
+          compact_summary: null,
+          compact_boundary_message_id: null,
+          compact_updated_at: null,
+        };
+        convs.set(convId, updated);
+        return jsonResponse(updated);
+      }
+    }
+
     if (path.includes("/thinking") && method === "PUT") {
       const convId = Number(path.split("/")[3]);
       const row = convs.get(convId);
@@ -726,6 +807,17 @@ export function createFakeBackend(options = {}) {
       const convId = Number(turnMatch[1]);
       if (!convs.has(convId)) return errorResponse(404, "找不到對話");
       if (!body?.stream_writer) return errorResponse(400, "缺少串流寫入者權杖");
+      if (deferTurnPersist) {
+        const decision = await new Promise((resolve) => {
+          turnResolvers.push(resolve);
+        });
+        if (decision && decision.ok === false) {
+          return errorResponse(
+            decision.status || 500,
+            decision.error || "這一輪沒有順利送出",
+          );
+        }
+      }
       const filler = closeUnansweredLeaf(convId);
       const parentId = filler ? filler.id : activeLeafByConv.get(convId) ?? null;
       const userRow = makeMessage(
@@ -965,7 +1057,7 @@ export function createFakeBackend(options = {}) {
       if (res !== undefined) return res;
     }
 
-    const res = defaultRoute(record);
+    const res = await defaultRoute(record);
     if (res !== undefined) return res;
     // 沒接住的端點一律 404 而不是丟例外 — 真後端也是這樣,
     // 而測試想驗的是 app.jsx 對 404 的反應,不是 harness 的反應。
@@ -977,6 +1069,7 @@ export function createFakeBackend(options = {}) {
     requests,
     chatPayloads,
     appendedMessages,
+    routerCompactPayloads,
 
     /** 目前排隊中的可控串流(manual 模式下用來逐格 push)。 */
     get stream() {
@@ -1061,6 +1154,53 @@ export function createFakeBackend(options = {}) {
     storedConversation(convId) {
       const row = convs.get(convId);
       return row ? { ...row } : null;
+    },
+
+    /** 種一條 active path，讓 GET /conversations/{id} 回得了既有訊息。 */
+    seedMessages(convId, rows) {
+      const list = [];
+      let parentId = null;
+      for (const raw of rows || []) {
+        const id = typeof raw.id === "number" ? raw.id : ++nextMsgId;
+        if (id > nextMsgId) nextMsgId = id;
+        const row = {
+          id,
+          role: raw.role,
+          content: raw.content ?? "",
+          parent_id: raw.parent_id !== undefined ? raw.parent_id : parentId,
+          metadata: raw.metadata || null,
+          trace_id: raw.trace_id || null,
+          latency_ms: raw.latency_ms ?? null,
+          agent_name: raw.agent_name || null,
+          tool_call_id: raw.tool_call_id ?? raw.metadata?.tool_call_id ?? null,
+          rating: null,
+          rating_score: null,
+          attachments: [],
+          created_at: raw.created_at || new Date().toISOString(),
+        };
+        list.push(row);
+        parentId = id;
+      }
+      msgsByConv.set(convId, list);
+      if (list.length) activeLeafByConv.set(convId, list[list.length - 1].id);
+      return list;
+    },
+
+    enqueueCompactResult(result) {
+      compactQueue.push(result);
+      return this;
+    },
+
+    get deferTurnPersist() {
+      return deferTurnPersist;
+    },
+    set deferTurnPersist(value) {
+      deferTurnPersist = Boolean(value);
+    },
+    resolveTurnPersist(decision = { ok: true }) {
+      const pending = turnResolvers.splice(0);
+      pending.forEach((resolve) => resolve(decision));
+      return pending.length;
     },
   };
 }

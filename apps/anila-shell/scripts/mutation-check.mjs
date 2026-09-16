@@ -152,8 +152,8 @@ const MUTATIONS = [
     // 缺陷本身完全沒有消失:歷史照樣可能送成空的。新錨點釘在**送給模型的
     // payload 那一行** —— 不管歷史怎麼組、組在哪裡,它都得從這個交界出去,
     // 下一次重寫搬得動組裝方式,搬不掉這一行。
-    find: "        messages: buildMessageHistory(priorForHistory, text, attachments),",
-    replace: "        messages: buildMessageHistory(priorForHistory && [], text, attachments),",
+    find: "        messages: buildMessageHistory(priorForHistory, text, attachments, historyOptions(convId, userMsg)),",
+    replace: "        messages: buildMessageHistory(priorForHistory && [], text, attachments, historyOptions(convId, userMsg)),",
   },
   {
     id: "history-loop-skipped",
@@ -298,9 +298,9 @@ const MUTATIONS = [
     shape: "取錯索引",
     intent: "重新產生時把要重問的那一題也塞進歷史",
     find:
-      "      messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || []),",
+      "      messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || [], historyOptions(convId, prevUser)),",
     replace:
-      "      messages: buildMessageHistory(msgs.slice(0, idx), steeredUserText, prevUser.attachments || []),",
+      "      messages: buildMessageHistory(msgs.slice(0, idx), steeredUserText, prevUser.attachments || [], historyOptions(convId, prevUser)),",
   },
   {
     id: "focus-refresh-throttle-removed",

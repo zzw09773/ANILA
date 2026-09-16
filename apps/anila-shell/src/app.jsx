@@ -81,7 +81,23 @@ import {
   searchConversations,
   listActiveBanners as apiListActiveBanners,
   getConversationUsage as apiGetConversationUsage,
+  setConversationCompact as apiSetConversationCompact,
+  clearConversationCompact as apiClearConversationCompact,
+  requestConversationCompact as apiRequestConversationCompact,
 } from "./runtime/conversations.js";
+import {
+  COMPACT_SUMMARY_PREFIX,
+  compactBoundaryOnPath,
+  compactFieldsFromServer,
+  compactPutFailureState,
+  compactStateFromConv,
+  keptMessageCount,
+  readPendingCompact,
+  resolveBoundaryDbId,
+  resolveKeptBoundary,
+  writePendingCompact,
+} from "./runtime/compact.js";
+import { CompactBoundaryBanner } from "./compactBoundary.jsx";
 import { CONV_USAGE_DEBOUNCE_MS } from "./runtime/usageDisplay.js";
 import { ConversationUsageChip, UsagePage } from "./usage.jsx";
 import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
@@ -237,17 +253,67 @@ function outgoingUserText(payload) {
   return "";
 }
 
-function buildMessageHistory(priorMsgs, currentText, currentAttachments) {
+/**
+ * 組出送給 Router 的 OpenAI messages。
+ *
+ * 刻意不走這函式（不帶對話歷史）的呼叫端：
+ * 1. generateConversationTitle — 標題產生器，自帶 system＋單則 Q&A
+ * 2. buildDeclarativeActionMessages / runActionInvokeFillback — 宣告式 custom action，只有渲染後的 prompt
+ * 3. sendCompare — 比較／direct 並排，每欄只送當則 user
+ *
+ * CSP `POST /api/conversations/{id}/messages`（append_message）的 role pattern
+ * 含 tool，且會原樣持久化。這裡把 persisted `role:"tool"` 轉成帶
+ * `tool_result` block 的 user 訊息；Router `_split_turns` 會把它併進前一回合，
+ * 不新開回合、不影響 `kept_from_index`。
+ */
+function buildMessageHistory(priorMsgs, currentText, currentAttachments, options = null) {
   const out = [];
+  const sources = [];
   for (const m of priorMsgs || []) {
     if (!m || m.streaming) continue;
     if (m.role === "user") {
       out.push({ role: "user", content: buildUserContent(m.text || "", m.attachments || []) });
+      sources.push(m);
     } else if (m.role === "assistant" && m.text) {
       out.push({ role: "assistant", content: m.text });
+      sources.push(m);
+    } else if (m.role === "tool") {
+      const toolUseId = m.toolCallId || m.tool_call_id || (
+        typeof m.dbId === "number" ? String(m.dbId) : String(m.id ?? "")
+      );
+      out.push({
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: m.text || "",
+        }],
+      });
+      sources.push(m);
     }
   }
-  out.push({ role: "user", content: buildUserContent(currentText, currentAttachments) });
+  if (currentText !== null && currentText !== undefined) {
+    out.push({ role: "user", content: buildUserContent(currentText, currentAttachments) });
+    sources.push(options?.currentUserMsg || null);
+  }
+  const compact = options?.compact;
+  const boundaryId = compact?.boundaryMessageId;
+  if (
+    compact?.summary
+    && boundaryId != null
+    && sources.some((m) => m && m.dbId === boundaryId)
+  ) {
+    const idx = sources.findIndex((m) => m && m.dbId === boundaryId);
+    const kept = out.slice(idx);
+    const keptSources = sources.slice(idx);
+    const messages = [
+      { role: "system", content: `${COMPACT_SUMMARY_PREFIX}${compact.summary}` },
+      ...kept,
+    ];
+    options?.onBuilt?.({ messages, sources: keptSources });
+    return messages;
+  }
+  options?.onBuilt?.({ messages: out, sources });
   return out;
 }
 
@@ -480,6 +546,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 而 442 個測試沒有一個抓得到。鏡像寫在 updater 裡面(不是 useEffect),
   // 所以它與 state 完全同步,不會落後一個 commit。
   const messagesRef = useRef({});
+  const conversationsRef = useRef([]);
+  conversationsRef.current = conversations;
+  const lastHistoryRef = useRef(new Map());
+  const pendingCompactRef = useRef(new Map());
+  const compactAppliedRef = useRef(new Set());
+  const compactPersistInFlightRef = useRef(new Map());
+  const [compacting, setCompacting] = useState(false);
   const messagesByConv = messagesByConvState;
   const setMessagesByConv = useCallback((update) => {
     setMessagesByConvState((prev) => {
@@ -758,16 +831,34 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
     const controller = new AbortController();
     streamAbortRef.current.set(convId, controller);
+    let compactChain = Promise.resolve();
+    const queueCompact = (payload) => {
+      compactChain = compactChain.then(() => handleIncomingCompact(convId, payload, opts.payload));
+    };
     try {
-      return await streamChatCompletion({
+      const result = await streamChatCompletion({
         // 對話已綁 Task 時所有後續 chat 呼叫(送出/編輯/重試)自動帶上;
         // 呼叫端可用 opts.taskId 覆寫(sendMessage 首回合的 state 尚未落地)。
         taskId: taskIdForConv(convId),
         ...opts,
         signal: controller.signal,
+        onCompact: (payload) => {
+          queueCompact(payload);
+          opts.onCompact?.(payload);
+        },
+        onMeta: (meta) => {
+          if (meta?.compact) queueCompact(meta.compact);
+          opts.onMeta?.(meta);
+        },
       });
+      return result;
     } finally {
-      streamAbortRef.current.delete(convId);
+      // error／abort 也要等已入列的 compact 寫完，不能只在成功路徑 await。
+      try {
+        await compactChain;
+      } finally {
+        streamAbortRef.current.delete(convId);
+      }
     }
   }
   // 使用者主動按停止 vs 串流自己出錯 —— 落庫的狀態不同(stopped / failed),
@@ -1058,6 +1149,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       routerModelName: serverRow.router_model_name ?? null,
       routerSelectionVersion: serverRow.router_selection_version ?? 0,
       thinkingTier: normalizeThinkingTier(serverRow.thinking_tier),
+      ...compactFieldsFromServer({
+        compact_summary: serverRow.compact_summary ?? null,
+        compact_boundary_message_id: serverRow.compact_boundary_message_id ?? null,
+        compact_updated_at: serverRow.compact_updated_at ?? null,
+      }),
     };
   }
 
@@ -1068,6 +1164,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       dbId: msg.id,
       role: msg.role,
       text: msg.content || "",
+      toolCallId: msg.tool_call_id || meta.tool_call_id || null,
       // OW-1 tree nav fields (MessageOut).
       parentId: msg.parent_id ?? null,
       siblingIndex: typeof msg.sibling_index === "number" ? msg.sibling_index : 0,
@@ -1122,13 +1219,23 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       ...mapServerMessage(m),
       conversationId: convId,
     }));
-    setMessagesByConv((prev) => ({
-      ...prev,
-      [convId]: applyServerPath(prev[convId] || [], mapped, convId),
-    }));
+    let nextPath = applyServerPath(messagesRef.current[convId] || [], mapped, convId);
+    setMessagesByConv((prev) => {
+      nextPath = applyServerPath(prev[convId] || [], mapped, convId);
+      return {
+        ...prev,
+        [convId]: nextPath,
+      };
+    });
     if (detail.active_leaf_message_id !== undefined) {
-      updateConv(convId, { activeLeafMessageId: detail.active_leaf_message_id });
+      updateConv(convId, {
+        activeLeafMessageId: detail.active_leaf_message_id,
+        ...compactFieldsFromServer(detail),
+      });
+    } else {
+      updateConv(convId, compactFieldsFromServer(detail));
     }
+    await flushPendingCompact(convId, nextPath);
   }
 
   // Fetch the user's conversations on login and whenever JWT changes. Messages
@@ -1226,7 +1333,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         if (detail.active_leaf_message_id !== undefined) {
           updateConv(selectedConvId, {
             activeLeafMessageId: detail.active_leaf_message_id,
+            ...compactFieldsFromServer(detail),
           });
+        } else {
+          updateConv(selectedConvId, compactFieldsFromServer(detail));
         }
       } catch (error) {
         if (active) {
@@ -1321,6 +1431,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             routerModelName: serverRow?.router_model_name ?? selectedRouterModelName ?? null,
             routerSelectionVersion: serverRow?.router_selection_version ?? 0,
             thinkingTier: normalizeThinkingTier(serverRow?.thinking_tier ?? thinkingTier),
+            ...compactFieldsFromServer(serverRow),
           },
           ...prev,
         ]);
@@ -1362,6 +1473,164 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     setConversations((cs) =>
       cs.map((c) => (c.id === id ? { ...c, ...patch } : c)),
     );
+  }
+
+  function historyOptions(convId, currentUserMsg) {
+    const conv = conversationsRef.current.find((c) => c.id === convId);
+    return {
+      compact: compactStateFromConv(conv),
+      currentUserMsg,
+      onBuilt: (built) => {
+        if (convId != null) lastHistoryRef.current.set(convId, built);
+      },
+    };
+  }
+
+  async function persistConversationCompact(convId, summary, boundaryMsg, pathOverride) {
+    const existing = compactPersistInFlightRef.current.get(convId);
+    if (existing) return existing;
+    const work = persistConversationCompactOnce(convId, summary, boundaryMsg, pathOverride)
+      .finally(() => {
+        if (compactPersistInFlightRef.current.get(convId) === work) {
+          compactPersistInFlightRef.current.delete(convId);
+        }
+      });
+    compactPersistInFlightRef.current.set(convId, work);
+    return work;
+  }
+
+  async function persistConversationCompactOnce(convId, summary, boundaryMsg, pathOverride) {
+    if (typeof convId !== "number" || !summary) return false;
+    const path = Array.isArray(pathOverride) ? pathOverride : (messagesRef.current[convId] || []);
+    const dbId = resolveBoundaryDbId(boundaryMsg, path);
+    if (typeof dbId !== "number") {
+      writePendingCompact(pendingCompactRef.current, convId, {
+        summary,
+        clientId: boundaryMsg?.id ?? null,
+      });
+      return false;
+    }
+    const pending = readPendingCompact(pendingCompactRef.current, convId);
+    if (pendingCompactRef.current.has(convId) && !pending) {
+      console.warn("[compact] pending convId 與要寫的對話不一致", convId);
+      return false;
+    }
+    try {
+      const saved = await apiSetConversationCompact(authRequest, convId, {
+        summary,
+        boundaryMessageId: dbId,
+      });
+      pendingCompactRef.current.delete(convId);
+      updateConv(convId, compactFieldsFromServer(saved));
+      return true;
+    } catch (err) {
+      const failure = compactPutFailureState(pending, convId, summary, boundaryMsg?.id);
+      if (failure.abandoned) {
+        pendingCompactRef.current.delete(convId);
+        console.warn("[compact] 放棄寫回摘要", convId, err);
+        return false;
+      }
+      writePendingCompact(pendingCompactRef.current, convId, failure.pending);
+      return false;
+    }
+  }
+
+  async function flushPendingCompact(convId, pathOverride, options) {
+    const pending = readPendingCompact(pendingCompactRef.current, convId);
+    if (!pending) {
+      if (pendingCompactRef.current.has(convId)) {
+        console.warn("[compact] flush convId 與 pending 不一致，略過", convId);
+      }
+      return false;
+    }
+    const path = Array.isArray(pathOverride) ? pathOverride : (messagesRef.current[convId] || []);
+    const fromHistory = pending.clientId
+      ? lastHistoryRef.current.get(convId)?.sources?.find((s) => s && s.id === pending.clientId)
+      : null;
+    const hinted = fromHistory
+      || (pending.clientId ? path.find((m) => m.id === pending.clientId) : null);
+    const dbId = resolveBoundaryDbId(hinted, path, options);
+    if (typeof dbId !== "number") return false;
+    return persistConversationCompact(
+      convId,
+      pending.summary,
+      { dbId, id: pending.clientId },
+      path,
+    );
+  }
+
+  function handleIncomingCompact(convId, compact, fallbackPayload) {
+    if (!compact || compact.method !== "summary" || !compact.summary) return;
+    const key = `${convId}:${compact.kept_from_index}:${compact.summary}`;
+    if (compactAppliedRef.current.has(key)) return;
+    compactAppliedRef.current.add(key);
+    const stored = lastHistoryRef.current.get(convId);
+    const payloadMessages = stored?.messages || fallbackPayload?.messages || [];
+    const sources = stored?.sources || [];
+    const boundaryMsg = resolveKeptBoundary(
+      payloadMessages,
+      compact.kept_from_index,
+      sources,
+    );
+    return persistConversationCompact(
+      convId,
+      compact.summary,
+      boundaryMsg,
+      messagesRef.current[convId] || [],
+    );
+  }
+
+  async function restoreFullContext() {
+    if (typeof selectedConvId !== "number") return;
+    const ok = await confirm({
+      title: "還原完整上下文",
+      message: "之後送出會把整段對話再給模型看，不再只用摘要。確定還原？",
+      confirmText: "還原",
+    });
+    if (!ok) return;
+    try {
+      const saved = await apiClearConversationCompact(authRequest, selectedConvId);
+      updateConv(selectedConvId, compactFieldsFromServer({
+        compact_summary: saved?.compact_summary ?? null,
+        compact_boundary_message_id: saved?.compact_boundary_message_id ?? null,
+        compact_updated_at: saved?.compact_updated_at ?? null,
+      }));
+    } catch (err) {
+      setRuntimeError(err?.message || "無法還原完整上下文");
+    }
+  }
+
+  async function handleCompactConversation() {
+    if (typeof selectedConvId !== "number") return;
+    const liveMsgs = messagesRef.current[selectedConvId] || currentMsgs;
+    if (liveMsgs.some((m) => m.streaming) || compacting) return;
+    setCompacting(true);
+    try {
+      const messages = buildMessageHistory(
+        liveMsgs,
+        null,
+        [],
+        historyOptions(selectedConvId, null),
+      );
+      const result = await apiRequestConversationCompact(authRequest, {
+        messages,
+        routerModel: selectedAgentId === ROUTER_AGENT.id ? selectedRouterModelName : undefined,
+        convId: selectedConvId,
+      });
+      if (result?.method === "none") {
+        toast("對話還不夠長，不需要整理");
+        return;
+      }
+      if (result?.method === "summary") {
+        await handleIncomingCompact(selectedConvId, result, { messages });
+        const n = keptMessageCount(messages.length, result.kept_from_index);
+        toast(`已整理，模型現在只看摘要與最近 ${n} 則`);
+      }
+    } catch (err) {
+      setRuntimeError(err?.message || "整理對話失敗");
+    } finally {
+      setCompacting(false);
+    }
   }
 
   // Persist star / folder / user-tags (same optimistic+rollback pattern as rename).
@@ -1605,7 +1874,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const payload = {
       model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
-      messages: buildMessageHistory(historyPrior, trimmed, userMsg.attachments || []),
+      messages: buildMessageHistory(historyPrior, trimmed, userMsg.attachments || [], historyOptions(convId, newUserMsg)),
     };
 
     await chainTurnStream(convId, async () => {
@@ -1762,6 +2031,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }
 
   function updateMsg(convId, msgId, patch) {
+    const current = messagesRef.current[convId] || [];
+    messagesRef.current = {
+      ...messagesRef.current,
+      [convId]: current.map((m) => (m.id === msgId ? { ...m, ...patch } : m)),
+    };
     setMessagesByConv((prev) => {
       const list = prev[convId] || [];
       return {
@@ -1838,7 +2112,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }
 
   function applySelectionFromServer(convId, serverRow) {
-    const patch = conversationSelectionFromServer(serverRow);
+    const patch = {
+      ...conversationSelectionFromServer(serverRow),
+      ...compactFieldsFromServer(serverRow),
+    };
     setConversations((prev) => prev.map((row) => (
       row.id === convId ? { ...row, ...patch } : row
     )));
@@ -1989,39 +2266,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // Enter 的先落庫);樹的形狀則由伺服器的單一交易保證。這一段刻意
     // 不等前一輪的串流:按下 Enter 的當下文字就要到伺服器上。
     let head = null;
-    if (persistable) {
-      head = await chainTurnHead(convId, text, () =>
-        persistTurnHead({
-          startTurn: apiStartTurn,
-          authRequest,
-          convId,
-          content: text,
-          agentName: effectiveTarget,
-          writer,
-        }),
-      );
-      // 閘門擋下來的不是故障,toast 已經說明了 —— 不要再蓋一條錯誤橫幅上去。
-      if (head.blockedByRedaction) return;
-      if (!head.ok) {
-        setRuntimeError(head.error?.message || "這一輪沒有順利送出");
-        // head 是一個交易 —— 兩列同進同退,所以兩顆氣泡講同一句話。
-        // ⚠ 那句話不斷言「沒有存進去」,見 reservedTurn.js 的 TURN_FAILURE_NOTICE。
-        updateMsg(convId, userMsg.id, { persistError: head.notice });
-        updateMsg(convId, assistantId, {
-          streaming: false,
-          persistError: head.notice,
-        });
-        return;
-      }
-      const savedUser = head.userSaved;
-      const reserved = head.assistantSaved;
+    const applyTurnHead = (resolved) => {
+      const savedUser = resolved.userSaved;
+      const reserved = resolved.assistantSaved;
       // 上一則問題從來沒有得到回答時,伺服器會先替它補一列終局的空回答,
       // 這一輪才接在那一列底下(不然就是 user → user,那則問題永遠拿不到
       // 回答)。它是伺服器做的事,使用者當下就該看見 —— 所以插進清單裡,
       // 而不是等下一次重整才冒出來。
-      if (head.unansweredSaved) {
+      if (resolved.unansweredSaved) {
         const filler = {
-          ...mapServerMessage(head.unansweredSaved),
+          ...mapServerMessage(resolved.unansweredSaved),
           conversationId: convId,
         };
         setMessagesByConv((prev) => {
@@ -2035,6 +2289,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           };
         });
       }
+      userMsg.dbId = savedUser.id;
       updateMsg(convId, userMsg.id, {
         dbId: savedUser.id,
         parentId: savedUser.parent_id ?? null,
@@ -2062,13 +2317,48 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // 已經在伺服器上了 —— 這時重整或關視窗,如果沒登記,那一列就會
       // 永遠停在 reserved:誰都寫不進去(沒有權杖),也沒有任何清理程序。
       setRouterPickerLocked(true);
-    inFlightStreamsRef.current.set(assistantId, {
+      inFlightStreamsRef.current.set(assistantId, {
         convId,
         messageId: reserved.id,
         writer,
         text: "",
       });
-    }
+    };
+
+    // POST /turn 立刻發出,但不擋住串流:persist 慢的時候 compact 可能先到,
+    // 那時邊界還沒有 dbId,必須先 pending,等 turn 回來再 refresh／flush。
+    const turnPromise = persistable
+      ? chainTurnHead(convId, text, () =>
+        persistTurnHead({
+          startTurn: apiStartTurn,
+          authRequest,
+          convId,
+          content: text,
+          agentName: effectiveTarget,
+          writer,
+        }),
+      ).then(async (resolved) => {
+        head = resolved;
+        if (resolved.blockedByRedaction) return resolved;
+        if (!resolved.ok) {
+          setRuntimeError(resolved.error?.message || "這一輪沒有順利送出");
+          updateMsg(convId, userMsg.id, { persistError: resolved.notice });
+          updateMsg(convId, assistantId, {
+            streaming: false,
+            persistError: resolved.notice,
+          });
+          await flushPendingCompact(
+            convId,
+            messagesRef.current[convId] || [],
+            { allowLastPersisted: true },
+          );
+          return resolved;
+        }
+        applyTurnHead(resolved);
+        await flushPendingCompact(convId, messagesRef.current[convId] || []);
+        return resolved;
+      })
+      : Promise.resolve(null);
 
     // 排隊登記:在鏈上等著跑的這一輪,「停止產生」按下去時要停得掉。
     const queueRecord = { convId, cancelled: false };
@@ -2078,7 +2368,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // 因為它需要第一輪的答案當上下文。等待期間使用者的文字已經在
     // 伺服器上了,這正是與「把文字留在瀏覽器排隊」的結構差異。
     await chainTurnStream(convId, async () => {
-      const reservedId = head?.assistantSaved?.id ?? null;
       // 保留(M6 裁決):理由同編輯重問那一條 —— 行為等價,但這個 Map 是整個
       // runtime 共用的一份,不清就只增不減。
       queuedTurnsRef.current.delete(assistantId);
@@ -2086,6 +2375,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         // 排隊期間使用者按了「停止產生」。這一輪連串流都不要開始,
         // 但它的預留列已經在伺服器上了 —— 必須誠實收尾成 stopped,
         // 否則它會永遠停在 reserved(誰都寫不進去,也沒有回收程序)。
+        const resolvedHead = persistable ? await turnPromise : null;
+        const reservedId = resolvedHead?.assistantSaved?.id ?? null;
         inFlightStreamsRef.current.delete(assistantId);
         if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
         updateMsg(convId, assistantId, {
@@ -2124,7 +2415,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
         ...(oneShotDeep && effectiveTarget === ROUTER_AGENT.id ? { anila_thinking_tier: "deep" } : {}),
-        messages: buildMessageHistory(priorForHistory, text, attachments),
+        messages: buildMessageHistory(priorForHistory, text, attachments, historyOptions(convId, userMsg)),
       };
 
       // trace / reasoning 用純區域變數累積,不受 React stale-closure 影響。
@@ -2217,7 +2508,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         ...(lengthBudget ? { finishReason: "length" } : {}),
       });
 
-      if (!persistable || reservedId == null) return;
+      if (!persistable) return;
+      const resolvedHead = await turnPromise;
+      if (!resolvedHead?.ok) return;
+      const reservedId = resolvedHead.assistantSaved?.id ?? null;
+      if (reservedId == null) return;
 
       // 內容寫回預留的那一列。狀態必須誠實 —— 半截的答案要標成半截。
       const agentNameForPersist = resolveAgentNameForPersist(
@@ -2246,6 +2541,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         setRuntimeError(persisted.error?.message || "對話訊息儲存失敗");
         updateMsg(convId, assistantId, { persistError: persisted.notice });
       }
+      await flushPendingCompact(convId);
 
       updateConv(convId, { updatedAt: nowIso() });
 
@@ -2439,20 +2735,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         msgs.slice(0, idx + 1),
         "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。",
         [],
+        historyOptions(convId, null),
       ),
     };
     updateMsg(convId, assistantMsg.id, { streaming: true, finishReason: null });
     let appended = "";
     let combined = existing;
     try {
-      const controller = new AbortController();
-      streamAbortRef.current.set(convId, controller);
-      await streamChatCompletion({
+      await streamWithAbort(convId, {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
-        taskId: taskIdForConv(convId),
-        signal: controller.signal,
         onText: (acc) => {
           appended = acc;
           // 接在原文後(若原文未以空白結尾補一個空格,避免黏字)。
@@ -2465,7 +2758,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     } catch (err) {
       setRuntimeError(err?.message || "續寫失敗");
     } finally {
-      streamAbortRef.current.delete(convId);
       updateMsg(convId, assistantMsg.id, { streaming: false });
     }
 
@@ -2550,7 +2842,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const payload = {
       model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
-      messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || []),
+      messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || [], historyOptions(convId, prevUser)),
     };
 
     // Capture pre-regenerate list so a stream failure can restore the
@@ -3255,6 +3547,31 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               {typeof selectedConvId === "number" && convUsage ? (
                 <ConversationUsageChip usage={convUsage} />
               ) : null}
+              <button
+                type="button"
+                aria-label="整理對話"
+                title="整理對話"
+                disabled={
+                  compacting
+                  || typeof selectedConvId !== "number"
+                  || currentMsgs.some((m) => m.streaming)
+                }
+                onClick={handleCompactConversation}
+                style={{
+                  fontSize: 11,
+                  color: "var(--fg-muted)",
+                  background: "var(--bg-elev)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 999,
+                  padding: "3px 9px",
+                  cursor: currentMsgs.some((m) => m.streaming) || compacting
+                    ? "not-allowed"
+                    : "pointer",
+                  opacity: currentMsgs.some((m) => m.streaming) || compacting ? 0.45 : 1,
+                }}
+              >
+                整理對話
+              </button>
               {selectedConv.classified && (
                 <span
                   title="此對話已鎖為列管（由後端依 agent 預設分類等級強制啟用）。"
@@ -3429,25 +3746,34 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                       />
                     ) : (
                       currentMsgs.map((m) => (
-                        <MessageBubble
-                          key={m.id}
-                          msg={m}
-                          agents={agents}
-                          conversationId={selectedConvId}
-                          classified={isClassified}
-                          classificationLevel={selectedConv?.classificationLevel}
-                          onRegenerate={regenerateMessage}
-                          onRate={handleRate}
-                          onEditUser={handleEditUser}
-                          onSwitchBranch={switchBranch}
-                          onDeleteBranch={deleteBranch}
-                          onOpenCitation={onOpenCitation}
-                          onPickFollowUp={(q) => sendMessage(q, [], {})}
-                          messageActions={customActions}
-                          onAction={runMessageAction}
-                          onContinue={continueMessage}
-                          conversationStreaming={currentMsgs.some((x) => x.streaming)}
-                        />
+                        <React.Fragment key={m.id}>
+                          {selectedConv?.compactSummary
+                            && compactBoundaryOnPath(currentMsgs, selectedConv.compactBoundaryMessageId)
+                            && m.dbId === selectedConv.compactBoundaryMessageId ? (
+                            <CompactBoundaryBanner
+                              summary={selectedConv.compactSummary}
+                              onRestore={restoreFullContext}
+                            />
+                          ) : null}
+                          <MessageBubble
+                            msg={m}
+                            agents={agents}
+                            conversationId={selectedConvId}
+                            classified={isClassified}
+                            classificationLevel={selectedConv?.classificationLevel}
+                            onRegenerate={regenerateMessage}
+                            onRate={handleRate}
+                            onEditUser={handleEditUser}
+                            onSwitchBranch={switchBranch}
+                            onDeleteBranch={deleteBranch}
+                            onOpenCitation={onOpenCitation}
+                            onPickFollowUp={(q) => sendMessage(q, [], {})}
+                            messageActions={customActions}
+                            onAction={runMessageAction}
+                            onContinue={continueMessage}
+                            conversationStreaming={currentMsgs.some((x) => x.streaming)}
+                          />
+                        </React.Fragment>
                       ))
                     )}
                   </div>

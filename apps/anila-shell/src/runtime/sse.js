@@ -77,6 +77,9 @@ function statusFallback(label, status) {
  *   onError({ message })                          — terminal mid-stream
  *     failure (anila.error). Already-streamed text stays in the
  *     accumulator; the stream then rejects with that message.
+ *   onCompact({ summary, kept_from_index, method, tokens_before,
+ *     tokens_after })                             — Router auto-compact
+ *     boundary; persist only when method==="summary".
  *
  * All new callbacks are optional; unknown event names fall through
  * to a debug log so future server-side additions surface visibly
@@ -101,6 +104,7 @@ export async function streamChatCompletion({
   onMeta,
   onJson,
   onReasoning,
+  onCompact,
   // Sprint 13 PR B1
   onInterrupt,
   onResumed,
@@ -204,6 +208,7 @@ export async function streamChatCompletion({
         onMeta,
         onJson,
         onReasoning,
+        onCompact,
         onInterrupt,
         onResumed,
         onTodos,
@@ -281,6 +286,10 @@ export function dispatchSseEvent(event, callbacks) {
       },
       "anila.reasoning",
     );
+    return;
+  }
+  if (event.event === "anila.compact") {
+    safeJsonInvoke(event.data, callbacks.onCompact, "anila.compact");
     return;
   }
 
