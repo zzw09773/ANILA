@@ -55,8 +55,11 @@ export function resolveKeptBoundary(payloadMessages, keptFromIndex, sources) {
 /**
  * 邊界訊息若還沒有 dbId（這一輪還在串流／尚未落庫），
  * 取它前一則已 persist 的下一則；都沒有就回 null，呼叫端再等 persist。
+ *
+ * `allowLastPersisted`：persist 已確定失敗、下一則永遠不會有 dbId 時，
+ * 退回前一則已 persist 的 id，避免 pending 永遠卡住。
  */
-export function resolveBoundaryDbId(boundaryMsg, pathMsgs) {
+export function resolveBoundaryDbId(boundaryMsg, pathMsgs, options = {}) {
   if (typeof boundaryMsg?.dbId === "number") return boundaryMsg.dbId;
   const list = Array.isArray(pathMsgs) ? pathMsgs : [];
   const pos = list.findIndex((m) => (
@@ -68,7 +71,11 @@ export function resolveBoundaryDbId(boundaryMsg, pathMsgs) {
     if (typeof list[i]?.dbId === "number") lastPersisted = i;
   }
   const next = list[lastPersisted + 1];
-  return typeof next?.dbId === "number" ? next.dbId : null;
+  if (typeof next?.dbId === "number") return next.dbId;
+  if (options.allowLastPersisted && lastPersisted >= 0) {
+    return list[lastPersisted].dbId;
+  }
+  return null;
 }
 
 export function keptMessageCount(payloadLength, keptFromIndex) {

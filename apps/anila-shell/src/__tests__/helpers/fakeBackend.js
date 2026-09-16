@@ -412,6 +412,9 @@ export function createFakeBackend(options = {}) {
   /** Router 手動整理的請求與回覆佇列。 */
   const routerCompactPayloads = [];
   const compactQueue = [];
+  /** 為 true 時 POST /turn 等到測試呼叫 resolveTurnPersist 才回。 */
+  let deferTurnPersist = false;
+  const turnResolvers = [];
 
   /** 排隊的串流腳本;每次 chat 呼叫取一份。用完回落到 `defaultAnswer`。 */
   const streamQueue = [];
@@ -563,7 +566,7 @@ export function createFakeBackend(options = {}) {
   }
 
   // 預設路由表。回傳 undefined = 沒接住。
-  function defaultRoute({ method, path, query, body, init }) {
+  async function defaultRoute({ method, path, query, body, init }) {
     // ---- 認證 ----
     if (path === "/api/auth/me") return jsonResponse(user);
     if (path === "/api/auth/refresh") return jsonResponse({ ok: true });
@@ -804,6 +807,17 @@ export function createFakeBackend(options = {}) {
       const convId = Number(turnMatch[1]);
       if (!convs.has(convId)) return errorResponse(404, "找不到對話");
       if (!body?.stream_writer) return errorResponse(400, "缺少串流寫入者權杖");
+      if (deferTurnPersist) {
+        const decision = await new Promise((resolve) => {
+          turnResolvers.push(resolve);
+        });
+        if (decision && decision.ok === false) {
+          return errorResponse(
+            decision.status || 500,
+            decision.error || "這一輪沒有順利送出",
+          );
+        }
+      }
       const filler = closeUnansweredLeaf(convId);
       const parentId = filler ? filler.id : activeLeafByConv.get(convId) ?? null;
       const userRow = makeMessage(
@@ -1043,7 +1057,7 @@ export function createFakeBackend(options = {}) {
       if (res !== undefined) return res;
     }
 
-    const res = defaultRoute(record);
+    const res = await defaultRoute(record);
     if (res !== undefined) return res;
     // 沒接住的端點一律 404 而不是丟例外 — 真後端也是這樣,
     // 而測試想驗的是 app.jsx 對 404 的反應,不是 harness 的反應。
@@ -1158,6 +1172,7 @@ export function createFakeBackend(options = {}) {
           trace_id: raw.trace_id || null,
           latency_ms: raw.latency_ms ?? null,
           agent_name: raw.agent_name || null,
+          tool_call_id: raw.tool_call_id ?? raw.metadata?.tool_call_id ?? null,
           rating: null,
           rating_score: null,
           attachments: [],
@@ -1174,6 +1189,18 @@ export function createFakeBackend(options = {}) {
     enqueueCompactResult(result) {
       compactQueue.push(result);
       return this;
+    },
+
+    get deferTurnPersist() {
+      return deferTurnPersist;
+    },
+    set deferTurnPersist(value) {
+      deferTurnPersist = Boolean(value);
+    },
+    resolveTurnPersist(decision = { ok: true }) {
+      const pending = turnResolvers.splice(0);
+      pending.forEach((resolve) => resolve(decision));
+      return pending.length;
     },
   };
 }

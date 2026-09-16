@@ -261,10 +261,10 @@ function outgoingUserText(payload) {
  * 2. buildDeclarativeActionMessages / runActionInvokeFillback — 宣告式 custom action，只有渲染後的 prompt
  * 3. sendCompare — 比較／direct 並排，每欄只送當則 user
  *
- * CSP 對話訊息 API 的寫入路徑（start_turn / branch_turn）只會落 user／assistant。
- * Message 模型註解與 MessageAppend 的 pattern 雖列了 system／tool，但 CSP 沒有任何
- * 寫入端產生 role:"tool"；shell 與假後端的對話 path 同樣只有 user／assistant。
- * 因此這裡只轉那兩種。若日後 CSP 真的回 tool，另開票再折進歷史。
+ * CSP `POST /api/conversations/{id}/messages`（append_message）的 role pattern
+ * 含 tool，且會原樣持久化。這裡把 persisted `role:"tool"` 轉成帶
+ * `tool_result` block 的 user 訊息；Router `_split_turns` 會把它併進前一回合，
+ * 不新開回合、不影響 `kept_from_index`。
  */
 function buildMessageHistory(priorMsgs, currentText, currentAttachments, options = null) {
   const out = [];
@@ -276,6 +276,19 @@ function buildMessageHistory(priorMsgs, currentText, currentAttachments, options
       sources.push(m);
     } else if (m.role === "assistant" && m.text) {
       out.push({ role: "assistant", content: m.text });
+      sources.push(m);
+    } else if (m.role === "tool") {
+      const toolUseId = m.toolCallId || m.tool_call_id || (
+        typeof m.dbId === "number" ? String(m.dbId) : String(m.id ?? "")
+      );
+      out.push({
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: m.text || "",
+        }],
+      });
       sources.push(m);
     }
   }
@@ -838,10 +851,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           opts.onMeta?.(meta);
         },
       });
-      await compactChain;
       return result;
     } finally {
-      streamAbortRef.current.delete(convId);
+      // error／abort 也要等已入列的 compact 寫完，不能只在成功路徑 await。
+      try {
+        await compactChain;
+      } finally {
+        streamAbortRef.current.delete(convId);
+      }
     }
   }
   // 使用者主動按停止 vs 串流自己出錯 —— 落庫的狀態不同(stopped / failed),
@@ -1147,6 +1164,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       dbId: msg.id,
       role: msg.role,
       text: msg.content || "",
+      toolCallId: msg.tool_call_id || meta.tool_call_id || null,
       // OW-1 tree nav fields (MessageOut).
       parentId: msg.parent_id ?? null,
       siblingIndex: typeof msg.sibling_index === "number" ? msg.sibling_index : 0,
@@ -1517,7 +1535,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
   }
 
-  async function flushPendingCompact(convId, pathOverride) {
+  async function flushPendingCompact(convId, pathOverride, options) {
     const pending = readPendingCompact(pendingCompactRef.current, convId);
     if (!pending) {
       if (pendingCompactRef.current.has(convId)) {
@@ -1526,10 +1544,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       return false;
     }
     const path = Array.isArray(pathOverride) ? pathOverride : (messagesRef.current[convId] || []);
-    const hinted = pending.clientId
-      ? path.find((m) => m.id === pending.clientId)
+    const fromHistory = pending.clientId
+      ? lastHistoryRef.current.get(convId)?.sources?.find((s) => s && s.id === pending.clientId)
       : null;
-    const dbId = resolveBoundaryDbId(hinted, path);
+    const hinted = fromHistory
+      || (pending.clientId ? path.find((m) => m.id === pending.clientId) : null);
+    const dbId = resolveBoundaryDbId(hinted, path, options);
     if (typeof dbId !== "number") return false;
     return persistConversationCompact(
       convId,
@@ -2246,39 +2266,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // Enter 的先落庫);樹的形狀則由伺服器的單一交易保證。這一段刻意
     // 不等前一輪的串流:按下 Enter 的當下文字就要到伺服器上。
     let head = null;
-    if (persistable) {
-      head = await chainTurnHead(convId, text, () =>
-        persistTurnHead({
-          startTurn: apiStartTurn,
-          authRequest,
-          convId,
-          content: text,
-          agentName: effectiveTarget,
-          writer,
-        }),
-      );
-      // 閘門擋下來的不是故障,toast 已經說明了 —— 不要再蓋一條錯誤橫幅上去。
-      if (head.blockedByRedaction) return;
-      if (!head.ok) {
-        setRuntimeError(head.error?.message || "這一輪沒有順利送出");
-        // head 是一個交易 —— 兩列同進同退,所以兩顆氣泡講同一句話。
-        // ⚠ 那句話不斷言「沒有存進去」,見 reservedTurn.js 的 TURN_FAILURE_NOTICE。
-        updateMsg(convId, userMsg.id, { persistError: head.notice });
-        updateMsg(convId, assistantId, {
-          streaming: false,
-          persistError: head.notice,
-        });
-        return;
-      }
-      const savedUser = head.userSaved;
-      const reserved = head.assistantSaved;
+    const applyTurnHead = (resolved) => {
+      const savedUser = resolved.userSaved;
+      const reserved = resolved.assistantSaved;
       // 上一則問題從來沒有得到回答時,伺服器會先替它補一列終局的空回答,
       // 這一輪才接在那一列底下(不然就是 user → user,那則問題永遠拿不到
       // 回答)。它是伺服器做的事,使用者當下就該看見 —— 所以插進清單裡,
       // 而不是等下一次重整才冒出來。
-      if (head.unansweredSaved) {
+      if (resolved.unansweredSaved) {
         const filler = {
-          ...mapServerMessage(head.unansweredSaved),
+          ...mapServerMessage(resolved.unansweredSaved),
           conversationId: convId,
         };
         setMessagesByConv((prev) => {
@@ -2320,13 +2317,48 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // 已經在伺服器上了 —— 這時重整或關視窗,如果沒登記,那一列就會
       // 永遠停在 reserved:誰都寫不進去(沒有權杖),也沒有任何清理程序。
       setRouterPickerLocked(true);
-    inFlightStreamsRef.current.set(assistantId, {
+      inFlightStreamsRef.current.set(assistantId, {
         convId,
         messageId: reserved.id,
         writer,
         text: "",
       });
-    }
+    };
+
+    // POST /turn 立刻發出,但不擋住串流:persist 慢的時候 compact 可能先到,
+    // 那時邊界還沒有 dbId,必須先 pending,等 turn 回來再 refresh／flush。
+    const turnPromise = persistable
+      ? chainTurnHead(convId, text, () =>
+        persistTurnHead({
+          startTurn: apiStartTurn,
+          authRequest,
+          convId,
+          content: text,
+          agentName: effectiveTarget,
+          writer,
+        }),
+      ).then(async (resolved) => {
+        head = resolved;
+        if (resolved.blockedByRedaction) return resolved;
+        if (!resolved.ok) {
+          setRuntimeError(resolved.error?.message || "這一輪沒有順利送出");
+          updateMsg(convId, userMsg.id, { persistError: resolved.notice });
+          updateMsg(convId, assistantId, {
+            streaming: false,
+            persistError: resolved.notice,
+          });
+          await flushPendingCompact(
+            convId,
+            messagesRef.current[convId] || [],
+            { allowLastPersisted: true },
+          );
+          return resolved;
+        }
+        applyTurnHead(resolved);
+        await flushPendingCompact(convId, messagesRef.current[convId] || []);
+        return resolved;
+      })
+      : Promise.resolve(null);
 
     // 排隊登記:在鏈上等著跑的這一輪,「停止產生」按下去時要停得掉。
     const queueRecord = { convId, cancelled: false };
@@ -2336,7 +2368,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // 因為它需要第一輪的答案當上下文。等待期間使用者的文字已經在
     // 伺服器上了,這正是與「把文字留在瀏覽器排隊」的結構差異。
     await chainTurnStream(convId, async () => {
-      const reservedId = head?.assistantSaved?.id ?? null;
       // 保留(M6 裁決):理由同編輯重問那一條 —— 行為等價,但這個 Map 是整個
       // runtime 共用的一份,不清就只增不減。
       queuedTurnsRef.current.delete(assistantId);
@@ -2344,6 +2375,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         // 排隊期間使用者按了「停止產生」。這一輪連串流都不要開始,
         // 但它的預留列已經在伺服器上了 —— 必須誠實收尾成 stopped,
         // 否則它會永遠停在 reserved(誰都寫不進去,也沒有回收程序)。
+        const resolvedHead = persistable ? await turnPromise : null;
+        const reservedId = resolvedHead?.assistantSaved?.id ?? null;
         inFlightStreamsRef.current.delete(assistantId);
         if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
         updateMsg(convId, assistantId, {
@@ -2475,7 +2508,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         ...(lengthBudget ? { finishReason: "length" } : {}),
       });
 
-      if (!persistable || reservedId == null) return;
+      if (!persistable) return;
+      const resolvedHead = await turnPromise;
+      if (!resolvedHead?.ok) return;
+      const reservedId = resolvedHead.assistantSaved?.id ?? null;
+      if (reservedId == null) return;
 
       // 內容寫回預留的那一列。狀態必須誠實 —— 半截的答案要標成半截。
       const agentNameForPersist = resolveAgentNameForPersist(

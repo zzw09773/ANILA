@@ -149,6 +149,7 @@ describe("kept_from_index 對映", () => {
       { id: "c", dbId: 13 },
     ];
     expect(resolveBoundaryDbId({ id: "c" }, withNext)).toBe(13);
+    expect(resolveBoundaryDbId({ id: "c" }, path, { allowLastPersisted: true })).toBe(12);
   });
 
   it("flush 必須用剛拿到的 nextPath，不能靠尚未更新的 stale path", () => {
@@ -394,83 +395,52 @@ describe("ChatRuntime compact boundary", () => {
     expect(screen.getByLabelText("整理對話")).not.toBeDisabled();
   });
 
-  it("延遲 persist 後 refresh 只寫一次", async () => {
-    const backend = mountSeeded({
-      compact_summary: "舊摘要全文",
-      compact_boundary_message_id: 11,
-    });
-    backend.route("PUT", /\/compact$/, async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      return undefined;
-    });
-    backend.enqueueAnswer("第三答", {
-      compact: {
-        summary: "新摘要",
-        kept_from_index: 4,
-        method: "summary",
-        tokens_before: 200,
-        tokens_after: 40,
-      },
-    });
-    await mountOrchestrator({ backend });
-    await openSeededConversation(backend);
-    await sendComposer("第三題");
-    await waitForAnswer("第三答");
-    await waitForIdle();
-    await waitFor(() => {
-      expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
-    });
-    backend.enqueueAnswer("延遲後重試");
-    await clickRegenerate();
-    await waitFor(() => {
-      expect(screen.getAllByText("延遲後重試").length).toBeGreaterThan(0);
-    });
-    await waitForIdle();
-    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
-    expect(backend.storedConversation(55).compact_summary).toBe("新摘要");
-  });
-
-  it("fallback 路徑寫入當則使用者的 dbId", async () => {
+  it("無 dbId 時 compact 先 pending，resolve persist 後 refresh 只寫一次", async () => {
     const backend = mountSeeded();
-    backend.enqueueAnswer("第三答", {
-      compact: {
+    backend.deferTurnPersist = true;
+    backend.enqueueManualStream();
+    await mountOrchestrator({ backend });
+    await openSeededConversation(backend);
+    await sendComposer("第三題");
+    await waitFor(() => {
+      expect(backend.stream).toBeTruthy();
+    });
+    backend.stream.pushAll([
+      deltaFrame("第三答"),
+      compactFrame({
         summary: "新摘要",
         kept_from_index: 4,
         method: "summary",
         tokens_before: 200,
         tokens_after: 40,
-      },
-    });
-    await mountOrchestrator({ backend });
-    await openSeededConversation(backend);
-    await sendComposer("第三題");
+      }),
+    ]);
     await waitForAnswer("第三答");
-    await waitForIdle();
+    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(0);
 
-    const userRow = backend.appendedMessages.find(
-      (m) => m.role === "user" && m.content === "第三題",
-    );
-    expect(userRow).toBeTruthy();
+    backend.resolveTurnPersist();
     await waitFor(() => {
       const puts = backend.requestsFor("/compact", "PUT");
       expect(puts).toHaveLength(1);
-      expect(puts[0].body).toEqual({
-        summary: "新摘要",
-        boundary_message_id: userRow.msgId,
-      });
     });
+    const newUser = backend.storedMessages(55).find(
+      (m) => m.role === "user" && m.content === "第三題",
+    );
+    expect(newUser).toBeTruthy();
+    expect(backend.requestsFor("/compact", "PUT")[0].body).toEqual({
+      summary: "新摘要",
+      boundary_message_id: newUser.id,
+    });
+
+    backend.stream.pushAll([metaFrame(defaultMeta()), doneFrame()]);
+    backend.stream.close();
+    await waitForIdle();
+    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
   });
 
-  it("快速切換對話後仍寫原 convId", async () => {
-    const backend = createFakeBackend({
-      conversations: [seededConv(), seededConv({ id: 66, title: "另一個" })],
-    });
-    backend.disableTitleGeneration();
-    backend.seedMessages(55, SEEDED_MSGS);
-    backend.seedMessages(66, [
-      { id: 21, role: "user", content: "別的題" },
-      { id: 22, role: "assistant", content: "別的答" },
-    ]);
+  it("persist 失敗時 fallback 寫前一則已 persist 的邊界", async () => {
+    const backend = mountSeeded();
+    backend.deferTurnPersist = true;
     backend.enqueueManualStream();
     await mountOrchestrator({ backend });
     await openSeededConversation(backend);
@@ -486,19 +456,80 @@ describe("ChatRuntime compact boundary", () => {
         method: "summary",
       }),
     ]);
+    await waitForAnswer("第三答");
+    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(0);
+
+    backend.resolveTurnPersist({ ok: false, error: "這一輪沒有順利送出" });
+    await waitFor(() => {
+      const puts = backend.requestsFor("/compact", "PUT");
+      expect(puts).toHaveLength(1);
+      expect(puts[0].body).toEqual({
+        summary: "新摘要",
+        boundary_message_id: 14,
+      });
+    });
+    expect(backend.storedMessages(55).some((m) => m.content === "第三題")).toBe(false);
+
+    backend.stream.pushAll([metaFrame(defaultMeta()), doneFrame()]);
+    backend.stream.close();
+    await waitForIdle();
+    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
+  });
+
+  it("pending 時切換對話再 resolve，PUT 仍打原 convId", async () => {
+    const backend = createFakeBackend({
+      conversations: [seededConv(), seededConv({ id: 66, title: "另一個" })],
+    });
+    backend.disableTitleGeneration();
+    backend.seedMessages(55, SEEDED_MSGS);
+    backend.seedMessages(66, [
+      { id: 21, role: "user", content: "別的題" },
+      { id: 22, role: "assistant", content: "別的答" },
+    ]);
+    backend.deferTurnPersist = true;
+    backend.enqueueManualStream();
+    await mountOrchestrator({ backend });
+    await openSeededConversation(backend);
+    await sendComposer("第三題");
+    await waitFor(() => {
+      expect(backend.stream).toBeTruthy();
+    });
+    backend.stream.pushAll([
+      deltaFrame("第三答"),
+      compactFrame({
+        summary: "新摘要",
+        kept_from_index: 4,
+        method: "summary",
+      }),
+    ]);
+    await waitForAnswer("第三答");
+    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(0);
+
     await selectConversation("另一個");
     await waitFor(() => {
       expect(screen.getByText("別的答")).toBeTruthy();
     });
-    backend.stream.pushAll([metaFrame(defaultMeta()), doneFrame()]);
-    backend.stream.close();
+    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(0);
+
+    backend.resolveTurnPersist();
     await waitFor(() => {
       const puts = backend.requestsFor("/compact", "PUT");
-      expect(puts.length).toBeGreaterThan(0);
-      expect(puts.every((p) => p.path.includes("/conversations/55/"))).toBe(true);
+      expect(puts).toHaveLength(1);
+      expect(puts[0].path).toContain("/conversations/55/");
     });
-    expect(backend.storedConversation(55).compact_summary).toBe("新摘要");
+    const newUser = backend.storedMessages(55).find(
+      (m) => m.role === "user" && m.content === "第三題",
+    );
+    expect(backend.requestsFor("/compact", "PUT")[0].body).toEqual({
+      summary: "新摘要",
+      boundary_message_id: newUser.id,
+    });
     expect(backend.storedConversation(66).compact_summary).toBeNull();
+
+    backend.stream.pushAll([metaFrame(defaultMeta()), doneFrame()]);
+    backend.stream.close();
+    await waitForIdle();
+    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
   });
 
   it("PUT 失敗保留 pending，之後 flush 再寫一次", async () => {
@@ -506,12 +537,9 @@ describe("ChatRuntime compact boundary", () => {
       compact_summary: "舊摘要全文",
       compact_boundary_message_id: 11,
     });
-    let failLeft = 2;
+    let blockPuts = true;
     backend.route("PUT", /\/compact$/, (_req, { errorResponse }) => {
-      if (failLeft > 0) {
-        failLeft -= 1;
-        return errorResponse(500, "寫入失敗");
-      }
+      if (blockPuts) return errorResponse(500, "寫入失敗");
       return undefined;
     });
     backend.enqueueAnswer("第三答", {
@@ -527,8 +555,9 @@ describe("ChatRuntime compact boundary", () => {
     await waitForAnswer("第三答");
     await waitForIdle();
     expect(backend.storedConversation(55).compact_summary).toBe("舊摘要全文");
-    expect(backend.requestsFor("/compact", "PUT").length).toBeGreaterThanOrEqual(2);
+    expect(backend.requestsFor("/compact", "PUT").length).toBeGreaterThanOrEqual(1);
 
+    blockPuts = false;
     backend.enqueueAnswer("再一答");
     await sendComposer("再問");
     await waitForAnswer("再一答");
@@ -562,10 +591,10 @@ describe("ChatRuntime compact boundary", () => {
     expect(backend.storedConversation(55).compact_summary).toBe("新摘要");
   });
 
-  it("seed 含 tool 時送給 Router 的歷史只有 user／assistant", async () => {
+  it("seed 含 tool 時轉成 tool_result block，回合數不變", async () => {
     const backend = mountSeeded({}, [
       ...SEEDED_MSGS,
-      { id: 15, role: "tool", content: "工具輸出不該進歷史" },
+      { id: 15, role: "tool", content: "工具輸出應進歷史", tool_call_id: "tc-15" },
     ]);
     backend.enqueueAnswer("追問的回答");
     await mountOrchestrator({ backend });
@@ -573,9 +602,60 @@ describe("ChatRuntime compact boundary", () => {
     await sendComposer("追問");
     await waitForAnswer("追問的回答");
     await waitForIdle();
-    const roles = backend.chatPayloads[0].messages.map((m) => m.role);
-    expect(roles.every((r) => r === "user" || r === "assistant")).toBe(true);
-    expect(roles).not.toContain("tool");
-    expect(historyOf(backend, 0).some((line) => line.includes("工具輸出"))).toBe(false);
+    const msgs = backend.chatPayloads[0].messages;
+    expect(msgs.map((m) => m.role)).not.toContain("tool");
+    const toolResult = msgs.find((m) => (
+      Array.isArray(m.content) && m.content.some((b) => b?.type === "tool_result")
+    ));
+    expect(toolResult).toBeTruthy();
+    expect(toolResult.role).toBe("user");
+    expect(toolResult.content).toEqual([{
+      type: "tool_result",
+      tool_use_id: "tc-15",
+      content: "工具輸出應進歷史",
+    }]);
+    const userStarts = msgs.filter((m) => {
+      if (m.role !== "user") return false;
+      const blocks = Array.isArray(m.content) ? m.content : [];
+      return !blocks.some((b) => b?.type === "tool_result");
+    });
+    expect(userStarts).toHaveLength(3);
+  });
+
+  it("串流中途 abort 仍寫回已收到的 compact", async () => {
+    const backend = mountSeeded({
+      compact_summary: "舊摘要全文",
+      compact_boundary_message_id: 11,
+    });
+    backend.enqueueManualStream();
+    await mountOrchestrator({ backend });
+    await openSeededConversation(backend);
+    await sendComposer("第三題");
+    await waitFor(() => {
+      expect(backend.stream).toBeTruthy();
+    });
+    backend.stream.pushAll([
+      deltaFrame("半截"),
+      compactFrame({
+        summary: "新摘要",
+        kept_from_index: 4,
+        method: "summary",
+      }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText("半截")).toBeTruthy();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("停止產生"));
+    });
+    await waitForIdle();
+    await waitFor(() => {
+      const puts = backend.requestsFor("/compact", "PUT");
+      expect(puts).toHaveLength(1);
+      expect(puts[0].body).toEqual({
+        summary: "新摘要",
+        boundary_message_id: 14,
+      });
+    });
   });
 });
