@@ -103,15 +103,19 @@ def _is_tool_result(msg: Mapping[str, Any]) -> bool:
     return any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
 
 
+def _leading_prefix_len(messages: Sequence[Mapping[str, Any]]) -> int:
+    """How many leading system-like rows (system + consecutive history summaries)."""
+    for i, msg in enumerate(messages):
+        if not _is_system_like(msg):
+            return i
+    return len(messages)
+
+
 def _split_turns(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
-    system: list[dict[str, Any]] = []
+    cut = _leading_prefix_len(messages)
+    system = [dict(m) for m in messages[:cut]]
     convo: list[dict[str, Any]] = []
-    leading = True
-    for msg in messages:
-        if leading and _is_system_like(msg):
-            system.append(dict(msg))
-            continue
-        leading = False
+    for msg in messages[cut:]:
         if _is_system(msg):
             system.append(dict(msg))
         else:
@@ -136,23 +140,24 @@ def _flatten_turns(turns: Sequence[Sequence[dict[str, Any]]]) -> list[dict[str, 
     return out
 
 
-def _history_summary_body(messages: Sequence[Mapping[str, Any]]) -> str | None:
-    for msg in messages:
-        text = flatten_openai_content(msg.get("content")).lstrip()
-        if not text.startswith(HISTORY_SUMMARY_PREFIX):
-            continue
-        rest = text[len(HISTORY_SUMMARY_PREFIX):].lstrip("\n").strip()
-        if rest:
-            return rest
-    return None
-
-
 def _recent_count_from_final(messages: Sequence[Mapping[str, Any]]) -> int:
-    """Count outbound rows that are neither system nor a ``[歷史摘要]`` message."""
-    return sum(
-        1
-        for msg in messages
-        if not _is_system(msg) and not _is_history_summary_message(msg)
+    """Count rows after the leading system-like prefix (mid-chat summaries stay)."""
+    return max(0, len(messages) - _leading_prefix_len(messages))
+
+
+def _prefix_keeps_summary(
+    messages: Sequence[Mapping[str, Any]],
+    summary_message: Mapping[str, Any] | None,
+) -> bool:
+    if summary_message is None:
+        return False
+    prefix = messages[:_leading_prefix_len(messages)]
+    expected_role = summary_message.get("role")
+    expected_content = summary_message.get("content")
+    return any(
+        m is summary_message
+        or (m.get("role") == expected_role and m.get("content") == expected_content)
+        for m in prefix
     )
 
 
@@ -161,16 +166,18 @@ def _result_from_outbound(
     *,
     tokens_before: int,
     tokens_after: int,
+    summary_text: str | None = None,
+    summary_message: Mapping[str, Any] | None = None,
 ) -> CompactResult:
     """Bind method/summary/recent_count to the messages actually returned."""
-    summary = _history_summary_body(messages)
+    kept = bool(summary_text) and _prefix_keeps_summary(messages, summary_message)
     return CompactResult(
         messages,
         True,
-        "summary" if summary else "sliding_window",
+        "summary" if kept else "sliding_window",
         tokens_before,
         tokens_after,
-        summary=summary,
+        summary=summary_text if kept else None,
         recent_count=_recent_count_from_final(messages),
     )
 
@@ -329,9 +336,11 @@ async def auto_compact_openai_messages(
             summary = None
         if isinstance(summary, str) and summary.strip():
             summary_text = summary.strip()
-            compacted = system + [
-                {"role": "user", "content": f"{HISTORY_SUMMARY_PREFIX}\n{summary_text}"}
-            ] + recent
+            summary_msg = {
+                "role": "user",
+                "content": f"{HISTORY_SUMMARY_PREFIX}\n{summary_text}",
+            }
+            compacted = system + [summary_msg] + recent
             after = estimate_openai_tokens(compacted)
             if after <= tokens_before:
                 if not force and after > threshold:
@@ -340,7 +349,11 @@ async def auto_compact_openai_messages(
                     )
                     after = estimate_openai_tokens(compacted)
                 return _result_from_outbound(
-                    compacted, tokens_before=tokens_before, tokens_after=after
+                    compacted,
+                    tokens_before=tokens_before,
+                    tokens_after=after,
+                    summary_text=summary_text,
+                    summary_message=summary_msg,
                 )
 
     if force:

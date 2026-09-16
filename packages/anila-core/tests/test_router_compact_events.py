@@ -76,6 +76,22 @@ def _long_messages(turns: int = 8, size: int = 500) -> list[dict]:
     return out
 
 
+def _long_messages_with_mid_history_prefix(turns: int = 8, size: int = 500) -> list[dict]:
+    """Turn 6 (1-based) is a real user line that starts with ``[歷史摘要]``."""
+    out = [{"role": "system", "content": "router"}]
+    for i in range(turns):
+        if i == 5:
+            out.append({
+                "role": "user",
+                "content": f"{HISTORY_SUMMARY_PREFIX} 使用者真的輸入 " + ("問" * size),
+            })
+        else:
+            out.append({"role": "user", "content": f"u{i} " + ("問" * size)})
+        out.append({"role": "assistant", "content": f"a{i} " + ("答" * size)})
+    out.append({"role": "user", "content": "最新一問"})
+    return out
+
+
 def _expected_kept_from_index(inbound: list[dict], keep_recent_turns: int = 4) -> int:
     _, turns = _split_turns([dict(m) for m in inbound])
     keep_n = max(1, keep_recent_turns)
@@ -148,6 +164,17 @@ async def db_path(tmp_path: Path):
 
 async def _no_per_request_model(request, caller_api_key, body):
     return None
+
+
+@pytest.fixture(autouse=True)
+def _stub_router_refresh_hops(monkeypatch):
+    """Lifespan + each chat request call these; a real CSP token would hang."""
+
+    async def _noop_refresh() -> None:
+        return None
+
+    monkeypatch.setattr(rs, "refresh_router_model", _noop_refresh)
+    monkeypatch.setattr(rs, "refresh_router_prompts", _noop_refresh)
 
 
 def _install_empty_registry(monkeypatch):
@@ -379,6 +406,67 @@ def test_prior_summary_extracted_from_plain_assistant_fold():
     assert "你是 ANILA" not in prior
 
 
+def test_prior_summary_stops_before_user_prefs_heading():
+    system = (
+        router_prompts.DEFAULT_PLAIN_ASSISTANT
+        + "\n\n[歷史摘要]\n先前摘要\n\n### 使用者偏好\n喜歡簡短"
+    )
+    prior = rs._extract_prior_history_summary([{"role": "system", "content": system}])
+    assert prior == "先前摘要"
+    assert "使用者偏好" not in prior
+    assert "喜歡簡短" not in prior
+
+
+def test_mid_turn_history_prefix_event_is_sliding_window(monkeypatch):
+    monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
+
+    async def fake_summary(_key, _old, _headers):
+        return None
+
+    monkeypatch.setattr(rs, "_summarize_for_compact", fake_summary)
+    messages = _long_messages_with_mid_history_prefix()
+    _compacted, step, event = asyncio.run(
+        rs._auto_compact_routing_messages(
+            messages,
+            caller_api_key="sk",
+            forwarded_headers=None,
+            inbound_message_count=len(messages),
+        )
+    )
+    assert step is not None
+    assert event is not None
+    assert event["method"] == "sliding_window"
+    assert event["summary"] is None
+    fake_idx = next(
+        i for i, m in enumerate(messages) if "使用者真的輸入" in str(m.get("content"))
+    )
+    assert 0 <= event["kept_from_index"] < fake_idx
+    assert messages[event["kept_from_index"]]["role"] in {"user", "assistant"}
+
+
+def test_mid_turn_history_prefix_does_not_steal_event_summary(monkeypatch):
+    monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
+
+    async def fake_summary(_key, _old, _headers):
+        return "濃縮過的太陽系討論"
+
+    monkeypatch.setattr(rs, "_summarize_for_compact", fake_summary)
+    messages = _long_messages_with_mid_history_prefix()
+    _compacted, step, event = asyncio.run(
+        rs._auto_compact_routing_messages(
+            messages,
+            caller_api_key="sk",
+            forwarded_headers=None,
+            inbound_message_count=len(messages),
+        )
+    )
+    assert step is not None
+    assert event is not None
+    assert event["method"] == "summary"
+    assert event["summary"] == "濃縮過的太陽系討論"
+    assert "使用者真的輸入" not in (event["summary"] or "")
+
+
 def test_oversized_summary_event_kept_from_index_points_at_outbound(monkeypatch):
     monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
 
@@ -399,6 +487,9 @@ def test_oversized_summary_event_kept_from_index_points_at_outbound(monkeypatch)
     assert event is not None
     assert compacted[1]["content"].startswith(HISTORY_SUMMARY_PREFIX)
     assert event["method"] == "summary"
+    summary_prefix = HISTORY_SUMMARY_PREFIX + "\n"
+    assert compacted[1]["content"].startswith(summary_prefix)
+    assert event["summary"] == compacted[1]["content"][len(summary_prefix) :]
     expected_recent = sum(
         1
         for m in compacted

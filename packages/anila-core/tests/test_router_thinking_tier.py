@@ -156,6 +156,17 @@ def _completion(content: str, model: str = "router-llm") -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _stub_router_refresh_hops(monkeypatch):
+    """TestClient lifespan/request refresh would wait on a reachable CSP."""
+
+    async def _noop_refresh() -> None:
+        return None
+
+    monkeypatch.setattr(rs, "refresh_router_model", _noop_refresh)
+    monkeypatch.setattr(rs, "refresh_router_prompts", _noop_refresh)
+
+
 @pytest_asyncio.fixture
 async def db_path(tmp_path: Path):
     db = tmp_path / "router-thinking-tier.db"

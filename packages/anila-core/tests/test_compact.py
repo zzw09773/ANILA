@@ -14,6 +14,7 @@ from anila_core.compact.auto_compact import (
 )
 from anila_core.compact.openai_history import (
     HISTORY_SUMMARY_PREFIX,
+    _leading_prefix_len,
     auto_compact_openai_messages,
     estimate_openai_tokens,
     is_prompt_too_long,
@@ -169,6 +170,21 @@ def _long_chat(turns: int, size: int = 800) -> list[dict]:
     out = [{"role": "system", "content": "you are anila"}]
     for i in range(turns):
         out.append({"role": "user", "content": f"u{i} " + ("問" * size)})
+        out.append({"role": "assistant", "content": f"a{i} " + ("答" * size)})
+    return out
+
+
+def _long_chat_with_mid_history_prefix(turns: int = 8, size: int = 600) -> list[dict]:
+    """Turn 6 (1-based) is a real user line that starts with ``[歷史摘要]``."""
+    out = [{"role": "system", "content": "you are anila"}]
+    for i in range(turns):
+        if i == 5:
+            out.append({
+                "role": "user",
+                "content": f"{HISTORY_SUMMARY_PREFIX} 使用者真的輸入 " + ("問" * size),
+            })
+        else:
+            out.append({"role": "user", "content": f"u{i} " + ("問" * size)})
         out.append({"role": "assistant", "content": f"a{i} " + ("答" * size)})
     return out
 
@@ -373,12 +389,10 @@ class TestOpenaiHistoryCompact:
         assert result.method == "summary"
         assert result.summary
         assert HISTORY_SUMMARY_PREFIX not in result.summary
-        expected_recent = sum(
-            1
-            for m in result.messages
-            if m.get("role") != "system"
-            and not str(m.get("content") or "").lstrip().startswith(HISTORY_SUMMARY_PREFIX)
-        )
+        summary_prefix = HISTORY_SUMMARY_PREFIX + "\n"
+        assert result.messages[1]["content"].startswith(summary_prefix)
+        assert result.summary == result.messages[1]["content"][len(summary_prefix) :]
+        expected_recent = len(result.messages) - _leading_prefix_len(result.messages)
         assert result.recent_count == expected_recent
         assert result.recent_count > 0
         assert not any(
@@ -402,6 +416,49 @@ class TestOpenaiHistoryCompact:
         assert result.method == "sliding_window"
         assert result.summary is None
         assert any(SLIDING_WINDOW_SUMMARY in str(m.get("content")) for m in result.messages)
+
+    @pytest.mark.asyncio
+    async def test_mid_turn_history_prefix_not_summary_when_summarizer_none(self) -> None:
+        messages = _long_chat_with_mid_history_prefix()
+
+        async def summarize(_old):
+            return None
+
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=2_400,
+            max_output_tokens=256,
+            summarizer=summarize,
+            keep_recent_turns=4,
+        )
+        assert result.method == "sliding_window"
+        assert result.summary is None
+        assert any("使用者真的輸入" in str(m.get("content")) for m in result.messages)
+        fake_idx = next(
+            i for i, m in enumerate(messages) if "使用者真的輸入" in str(m.get("content"))
+        )
+        kept_from_index = len(messages) - result.recent_count
+        assert 0 <= kept_from_index < fake_idx
+        assert messages[kept_from_index]["role"] in {"user", "assistant"}
+
+    @pytest.mark.asyncio
+    async def test_mid_turn_history_prefix_does_not_steal_real_summary(self) -> None:
+        messages = _long_chat_with_mid_history_prefix()
+
+        async def summarize(_old):
+            return "濃縮過的太陽系討論"
+
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=2_400,
+            max_output_tokens=256,
+            summarizer=summarize,
+            keep_recent_turns=4,
+        )
+        assert result.method == "summary"
+        assert result.summary == "濃縮過的太陽系討論"
+        assert "使用者真的輸入" not in (result.summary or "")
+        assert any("使用者真的輸入" in str(m.get("content")) for m in result.messages)
 
 
 # ---------------------------------------------------------------------------
