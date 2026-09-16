@@ -484,6 +484,12 @@ describe("CodeBlock preview affordance — 使用者選擇才開", () => {
     expect(pre.style.maxHeight).toMatch(/60vh/);
     expect(pre.style.overflow).toBe("auto");
     expect(pre.style.overscrollBehavior).toBe("contain");
+    // Overlay the actions on the pre. A reserved right gutter
+    // (118px / 56px) emptied the whole block for two small buttons.
+    expect(pre.style.paddingRight).toBe("12px");
+    const actions = screen.getByTestId("md-code-actions");
+    expect(actions.style.position).toBe("absolute");
+    expect(actions.contains(screen.getByTestId("artifact-preview-btn"))).toBe(true);
   });
 
   it("shows 預覽 on a jsx-fenced React component", () => {

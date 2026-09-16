@@ -329,38 +329,50 @@ function CodeBlock({ node, children, ...props }) {
           letterSpacing: 0.4,
         }}>{lang}</span>
       )}
-      {canPreview && (
-        <button
-          type="button"
-          data-testid="artifact-preview-btn"
-          onClick={() => preview.openArtifact({
-            kind: artifactKind,
-            source: source || ref.current?.innerText || "",
-            language: lang,
-          })}
-          style={{
-            position: "absolute",
-            top: 6,
-            right: 64,
-            zIndex: 2,
-            padding: "2px 9px",
-            fontSize: 11,
-            fontFamily: "var(--font-mono)",
-            background: "var(--bg-elev)",
-            border: "1px solid var(--border)",
-            borderRadius: 4,
-            color: "var(--fg-muted)",
-            cursor: "pointer",
-            opacity: 0.75,
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.75"; }}
-          title="在右側預覽"
-        >
-          預覽
-        </button>
-      )}
-      <CopyButton getText={() => ref.current?.innerText || ""} />
+      <div
+        data-testid="md-code-actions"
+        style={{
+          position: "absolute",
+          top: 6,
+          right: 6,
+          zIndex: 2,
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+        }}
+      >
+        {canPreview && (
+          <button
+            type="button"
+            data-testid="artifact-preview-btn"
+            onClick={() => preview.openArtifact({
+              kind: artifactKind,
+              source: source || ref.current?.innerText || "",
+              language: lang,
+            })}
+            style={{
+              padding: "2px 9px",
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              background: "var(--bg-elev)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              color: "var(--fg-muted)",
+              cursor: "pointer",
+              opacity: 0.75,
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.75"; }}
+            title="在右側預覽"
+          >
+            預覽
+          </button>
+        )}
+        <CopyButton
+          getText={() => ref.current?.innerText || ""}
+          style={{ position: "static", top: "auto", right: "auto" }}
+        />
+      </div>
       <pre
         ref={ref}
         data-testid="md-code-pre"
@@ -375,7 +387,6 @@ function CodeBlock({ node, children, ...props }) {
           borderRadius: "var(--radius)",
           padding: "10px 12px",
           paddingTop: lang ? 28 : 10,
-          paddingRight: canPreview ? 118 : 56,
           overflow: "auto",
           maxHeight: "min(60vh, 520px)",
           overscrollBehavior: "contain",
