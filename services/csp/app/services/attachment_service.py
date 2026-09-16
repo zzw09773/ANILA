@@ -389,6 +389,7 @@ def bind_attachments(
     user: User,
     conversation_id: int,
     reference_ids: list[str],
+    message_id: int | None = None,
 ) -> list[Attachment]:
     """Bind the caller's orphan attachments to ``conversation_id``.
 
@@ -399,6 +400,7 @@ def bind_attachments(
     * ``conversation_id IS NULL`` → set to the target
     * already the same conversation → no-op (idempotent)
     * already bound to a *different* conversation → 409
+    * ``message_id`` pins unset rows onto that user message (same conversation)
     """
     seen: set[str] = set()
     ordered: list[str] = []
@@ -436,9 +438,18 @@ def bind_attachments(
             )
         accepted.append(att)
 
+    if message_id is not None:
+        from app.models.message import Message
+
+        msg = db.get(Message, message_id)
+        if msg is None or msg.conversation_id != conversation_id:
+            raise HTTPException(status_code=404, detail="找不到此訊息")
+
     for att in accepted:
         if att.conversation_id is None:
             att.conversation_id = conversation_id
+        if message_id is not None and att.message_id is None:
+            att.message_id = message_id
     db.commit()
     for att in accepted:
         db.refresh(att)

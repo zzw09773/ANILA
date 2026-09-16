@@ -2,6 +2,8 @@
 // Pure / unit-testable — no React, no network. See
 // docs/plans/ow1-message-tree-blueprint.md §1 Q9 / §2 Create / §5 frontend.
 
+import { mergeMessageAttachments } from "./messageAttachments.js";
+
 /**
  * Derive ChatGPT-style pager fields from a client message that already
  * carries siblingIndex / siblingCount / siblingIds (mapped from MessageOut).
@@ -71,8 +73,8 @@ export function hasBranch(msg) {
  * Keeping only dbId-less entries cannot resurrect a deleted message, because
  * anything the server ever stored carries a dbId.
  *
- * Preserves client-only fields (explicitAgents, finishReason, routedAgentId)
- * by dbId.
+ * Preserves client-only fields (explicitAgents, finishReason, routedAgentId,
+ * attachments / image preview bytes) by dbId.
  *
  * `serverMapped` must already be in the client message shape (dbId, role, …);
  * this helper only merges + stamps conversationId.
@@ -96,6 +98,7 @@ export function applyServerPath(prevList, serverMapped, convId) {
         explicitAgents: m.explicitAgents,
         finishReason: m.finishReason,
         routedAgentId: m.routedAgentId,
+        attachments: m.attachments,
       });
     }
   }
@@ -120,6 +123,11 @@ export function applyServerPath(prevList, serverMapped, convId) {
     }
     if (preserved.routedAgentId !== undefined) {
       next.routedAgentId = preserved.routedAgentId;
+    }
+    if (preserved.attachments !== undefined) {
+      next.attachments = mergeMessageAttachments(
+        sm.attachments, preserved.attachments,
+      );
     }
     return next;
   });

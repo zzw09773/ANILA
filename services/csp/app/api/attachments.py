@@ -170,6 +170,7 @@ def bind(
     )
     rows = bind_attachments(
         db, current_user, body.conversation_id, body.reference_ids,
+        message_id=body.message_id,
     )
     capacity = capacity_for_conversation(
         db, body.conversation_id, model_name=model,
@@ -192,10 +193,14 @@ def download(
     current_user: User = Depends(get_current_user),
 ):
     att, path = get_attachment(db, reference_id, current_user)
+    media = att.content_type or "application/octet-stream"
     return FileResponse(
         str(path),
-        media_type=att.content_type,
+        media_type=media,
         filename=att.filename,
+        content_disposition_type=(
+            "inline" if media.startswith("image/") else "attachment"
+        ),
     )
 
 

@@ -336,13 +336,15 @@ export function uploadAttachment(multipartRequest, file, { conversationId, messa
 }
 
 /** POST /api/attachments/bind — attach orphans (or already-this-conv files) to a conversation. */
-export function bindAttachments(authRequest, { conversationId, referenceIds }) {
+export function bindAttachments(authRequest, { conversationId, referenceIds, messageId } = {}) {
+  const body = {
+    conversation_id: conversationId,
+    reference_ids: referenceIds,
+  };
+  if (typeof messageId === "number") body.message_id = messageId;
   return authRequest("/api/attachments/bind", {
     method: "POST",
-    body: JSON.stringify({
-      conversation_id: conversationId,
-      reference_ids: referenceIds,
-    }),
+    body: JSON.stringify(body),
   });
 }
 

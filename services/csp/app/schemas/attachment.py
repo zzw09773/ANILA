@@ -58,6 +58,7 @@ class AttachmentBindRequest(BaseModel):
 
     conversation_id: int = Field(..., gt=0)
     reference_ids: list[str] = Field(..., min_length=1, max_length=100)
+    message_id: Optional[int] = Field(None, gt=0)
 
 
 class AttachmentBindOut(BaseModel):

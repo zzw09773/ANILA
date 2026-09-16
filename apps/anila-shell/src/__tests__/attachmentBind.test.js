@@ -47,4 +47,22 @@ describe("bindAttachments", () => {
       reference_ids: ["abc", "def"],
     });
   });
+
+  it("數字 messageId 會寫進 bind body", async () => {
+    const calls = [];
+    const authRequest = async (path, options) => {
+      calls.push({ path, options });
+      return { conversation_id: 3, attachments: [] };
+    };
+    await bindAttachments(authRequest, {
+      conversationId: 3,
+      referenceIds: ["abc"],
+      messageId: 88,
+    });
+    expect(JSON.parse(calls[0].options.body)).toEqual({
+      conversation_id: 3,
+      reference_ids: ["abc"],
+      message_id: 88,
+    });
+  });
 });

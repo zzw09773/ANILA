@@ -445,7 +445,7 @@ export function fitLightboxBox(nw, nh, vw, vh) {
 
 // Lightbox: full-screen overlay 顯示放大的圖片。點背景 / 按 Esc / 點 ✕ 關閉。
 // 用 createPortal 跳出 markdown 容器,避免父層 transform/overflow 影響 fixed 定位。
-function ImageLightbox({ src, alt, onClose }) {
+export function ImageLightbox({ src, alt, onClose }) {
   const imgRef = useRef(null);
   const [box, setBox] = useState(null);
 

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.models.attachment import Attachment
 from app.models.conversation import Conversation
+from app.models.message import Message
 from tests.conftest import login, make_user
 
 
@@ -174,3 +175,79 @@ def test_bind_missing_reference_is_404(client: TestClient, db):
         },
     )
     assert resp.status_code == 404
+
+
+def test_bind_pins_message_id_when_unset(client: TestClient, db):
+    user = make_user(db, username="bind-pin")
+    conv = _make_conv(db, user)
+    msg = Message(conversation_id=conv.id, role="user", content="知道這是啥嗎")
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+    att = _row(db, user=user, conv=conv)
+
+    resp = client.post(
+        "/api/attachments/bind",
+        headers=_auth(client, "bind-pin"),
+        json={
+            "conversation_id": conv.id,
+            "reference_ids": [att.reference_id],
+            "message_id": msg.id,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    db.refresh(att)
+    assert att.message_id == msg.id
+    assert resp.json()["attachments"][0]["message_id"] == msg.id
+
+
+def test_bind_does_not_steal_existing_message_id(client: TestClient, db):
+    user = make_user(db, username="bind-keep-msg")
+    conv = _make_conv(db, user)
+    first = Message(conversation_id=conv.id, role="user", content="first")
+    second = Message(conversation_id=conv.id, role="user", content="second")
+    db.add_all([first, second])
+    db.commit()
+    db.refresh(first)
+    db.refresh(second)
+    att = _row(db, user=user, conv=conv)
+    att.message_id = first.id
+    db.commit()
+
+    resp = client.post(
+        "/api/attachments/bind",
+        headers=_auth(client, "bind-keep-msg"),
+        json={
+            "conversation_id": conv.id,
+            "reference_ids": [att.reference_id],
+            "message_id": second.id,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    db.refresh(att)
+    assert att.message_id == first.id
+
+
+def test_bind_rejects_message_from_other_conversation(client: TestClient, db):
+    user = make_user(db, username="bind-msg-miss")
+    conv = _make_conv(db, user)
+    other = _make_conv(db, user, title="other")
+    msg = Message(conversation_id=other.id, role="user", content="nope")
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+    att = _row(db, user=user)
+
+    resp = client.post(
+        "/api/attachments/bind",
+        headers=_auth(client, "bind-msg-miss"),
+        json={
+            "conversation_id": conv.id,
+            "reference_ids": [att.reference_id],
+            "message_id": msg.id,
+        },
+    )
+    assert resp.status_code == 404
+    db.refresh(att)
+    assert att.conversation_id is None
+    assert att.message_id is None

@@ -57,7 +57,11 @@ beforeEach(() => {
 });
 
 describe("Composer 自動長高", () => {
-  it("空框與短字都撐在最小行數,跟外層卡片同高", () => {
+  it("空框預設一行，不要先撐成多行卡片", () => {
+    expect(COMPOSER_MIN_ROWS).toBe(1);
+  });
+
+  it("空框與短字都撐在最小行數,多行才長高", () => {
     const { ta } = renderComposer();
     fakeLayout(ta);
 
@@ -65,8 +69,7 @@ describe("Composer 自動長高", () => {
     expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * COMPOSER_MIN_ROWS);
 
     fireEvent.change(ta, { target: { value: "字".repeat(CHARS_PER_LINE * 3) } });
-    // 三行仍低於最小高度,不要縮回去。
-    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * COMPOSER_MIN_ROWS);
+    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * 3);
   });
 
   it("打字超過最小行數,框就跟行數一起長", () => {
@@ -109,7 +112,7 @@ describe("Composer 自動長高", () => {
     fireEvent.click(screen.getByRole("button", { name: /範本/ }));
 
     expect(ta.value).toBe(body);
-    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * COMPOSER_MIN_ROWS);
+    expect(heightPx(ta)).toBe(COMPOSER_LINE_HEIGHT * 3);
   });
 
   it("送出以後縮回最小高度", () => {

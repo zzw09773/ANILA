@@ -1028,6 +1028,9 @@ export function createFakeBackend(options = {}) {
         } else if (row.conversation_id !== convId) {
           return errorResponse(409, "此附件已綁定其他對話");
         }
+        if (typeof body?.message_id === "number" && row.message_id == null) {
+          row.message_id = body.message_id;
+        }
         bound.push({ ...row });
       }
       return jsonResponse({

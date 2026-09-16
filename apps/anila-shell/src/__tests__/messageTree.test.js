@@ -450,6 +450,28 @@ describe("applyServerPath", () => {
     expect(next[0].routedAgentId).toBe("agent-x");
     expect(next[0].text).toBe("answer from server");
   });
+
+  it("keeps local image preview bytes when the server path has no attachments", () => {
+    const prev = [
+      {
+        id: "srv-1",
+        dbId: 1,
+        role: "user",
+        text: "知道這是啥嗎",
+        attachments: [{
+          referenceId: "img-1",
+          name: "貼上.png",
+          kind: "image",
+          dataUrl: "data:image/png;base64,aa",
+        }],
+      },
+    ];
+    const serverMapped = [
+      { id: "srv-1", dbId: 1, role: "user", text: "知道這是啥嗎", attachments: [] },
+    ];
+    const next = applyServerPath(prev, serverMapped, 8);
+    expect(next[0].attachments[0].dataUrl).toBe("data:image/png;base64,aa");
+  });
 });
 
 describe("switchBranch", () => {

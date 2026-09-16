@@ -95,6 +95,7 @@ import { CompactBoundaryBanner } from "./compactBoundary.jsx";
 import { CONV_USAGE_DEBOUNCE_MS } from "./runtime/usageDisplay.js";
 import { ConversationUsageChip, UsagePage } from "./usage.jsx";
 import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
+import { mapServerAttachments } from "./runtime/messageAttachments.js";
 import {
   applyServerPath,
   persistRegeneratedAssistant,
@@ -1198,12 +1199,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         readStreamState(meta), Boolean(msg.content),
       ),
       streaming: false,
-      attachments: (msg.attachments || []).map((a) => ({
-        id: a.reference_id,
-        name: a.filename,
-        contentType: a.content_type,
-        size: a.size_bytes,
-      })),
+      attachments: mapServerAttachments(msg.attachments),
       conversationId: null, // patched by caller
       createdAt: msg.created_at,
     };
@@ -2327,6 +2323,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           : [savedUser.id],
         persistError: null,
       });
+      if (bindIds.length > 0) {
+        apiBindAttachments(authRequest, {
+          conversationId: convId,
+          referenceIds: bindIds,
+          messageId: savedUser.id,
+        }).catch(() => {
+          /* local preview still uses dataUrl; reload chips need this pin */
+        });
+      }
       updateMsg(convId, assistantId, {
         dbId: reserved.id,
         parentId: reserved.parent_id ?? savedUser.id,

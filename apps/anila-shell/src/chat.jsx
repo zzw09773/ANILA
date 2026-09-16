@@ -8,11 +8,16 @@ import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { hasBranch, neighbourId, pagerState } from "./runtime/messageTree.js";
 import { resolveEditResend } from "./runtime/editResend.js";
 import { classifiedCopyDenial } from "./uxCopy.js";
+import { filesFromComposerClipboard } from "./runtime/composerPaste.js";
 import {
   resolveActionIcon,
   splitTemplatePlaceholders,
 } from "./runtime/messageActions.js";
-import { MarkdownView, extractThinkTags } from "./markdown.jsx";
+import { ImageLightbox, MarkdownView, extractThinkTags } from "./markdown.jsx";
+import {
+  attachmentPreviewSrc,
+  isMessageImage,
+} from "./runtime/messageAttachments.js";
 
 import {
   AgentPill,
@@ -523,6 +528,91 @@ export const KbStateBadge = ({ state, hits = [], failedCollections = [] }) => {
 };
 
 // ---- Message Bubble ----
+function MessageAttachmentList({ attachments }) {
+  const [lightbox, setLightbox] = useState(null);
+  if (!Array.isArray(attachments) || attachments.length === 0) return null;
+  const images = [];
+  const files = [];
+  for (const att of attachments) {
+    const src = attachmentPreviewSrc(att);
+    if (isMessageImage(att) && src) images.push({ att, src });
+    else files.push(att);
+  }
+  return (
+    <>
+      {images.length > 0 && (
+        <div
+          data-testid="message-att-images"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            marginBottom: 8,
+          }}
+        >
+          {images.map(({ att, src }, i) => (
+            <button
+              key={att.referenceId || att.id || i}
+              type="button"
+              data-message-image="1"
+              aria-label={att.name ? `預覽 ${att.name}` : "預覽圖片"}
+              onClick={() => setLightbox({ src, alt: att.name || "" })}
+              style={{
+                padding: 0,
+                border: "1px solid var(--border)",
+                borderRadius: 16,
+                overflow: "hidden",
+                background: "var(--bg)",
+                cursor: "zoom-in",
+                maxWidth: "100%",
+              }}
+            >
+              <img
+                src={src}
+                alt={att.name || ""}
+                style={{
+                  display: "block",
+                  maxWidth: "min(100%, 280px)",
+                  maxHeight: 200,
+                  objectFit: "cover",
+                }}
+              />
+            </button>
+          ))}
+        </div>
+      )}
+      {files.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+          {files.map((att, i) => (
+            <div
+              key={att.referenceId || att.id || i}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "3px 8px",
+                background: "var(--bg-elev)",
+                border: "1px solid var(--border)",
+                borderRadius: 999,
+                fontSize: 11, color: "var(--fg-muted)",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {isMessageImage(att) ? <IconImage size={12} /> : <IconFile size={12} />}
+              {att.name}
+            </div>
+          ))}
+        </div>
+      )}
+      {lightbox && (
+        <ImageLightbox
+          src={lightbox.src}
+          alt={lightbox.alt}
+          onClose={() => setLightbox(null)}
+        />
+      )}
+    </>
+  );
+}
+
 export const MessageBubble = ({
   msg,
   agents,
@@ -677,24 +767,7 @@ export const MessageBubble = ({
               <IconPencil size={11} />
             </button>
           )}
-          {msg.attachments && msg.attachments.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-              {msg.attachments.map((a, i) => (
-                <div key={i} style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  padding: "3px 8px",
-                  background: "var(--bg-elev)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 999,
-                  fontSize: 11, color: "var(--fg-muted)",
-                  fontFamily: "var(--font-mono)",
-                }}>
-                  {a.kind === "image" ? <IconImage size={12} /> : <IconFile size={12} />}
-                  {a.name}
-                </div>
-              ))}
-            </div>
-          )}
+          <MessageAttachmentList attachments={msg.attachments} />
           {msg.explicitAgents && msg.explicitAgents.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
               {msg.explicitAgents.map((id) => {
@@ -1671,9 +1744,8 @@ export const AgentSelector = ({ agents, value, onChange }) => {
 // 行高寫成整數像素(不是 1.55 這種倍率):自動長高要落在整行邊界,倍率算出來的
 // 21.7px 會讓每一行都帶零頭,捲到最後又切在字中間。
 export const COMPOSER_LINE_HEIGHT = 22;
-// 空框也要撐滿外層圓角卡片（扣掉底部工具列）。1 行 22px 會讓輸入區只剩頂端一條,
-// 點白框中間對不到 textarea。
-export const COMPOSER_MIN_ROWS = 4;
+// 空框預設 1 行（對齊扁輸入條）。打字或貼圖後再長高；點卡片空白處會聚焦輸入框。
+export const COMPOSER_MIN_ROWS = 1;
 // 超過幾行才開始捲動。用「行」不用像素:8 × 22 = 176px,約等於原本的 200px 上限,
 // 但保證上限剛好切在行與行之間。
 export const COMPOSER_MAX_ROWS = 8;
@@ -1703,6 +1775,30 @@ export const COMPOSER_FILE_ACCEPT = [
 ].join(",");
 
 const EXTRACT_FAIL_STATUSES = new Set(["unsupported", "failed", "too_large"]);
+
+function isComposerImage(att) {
+  return att?.kind === "image" || String(att?.contentType || att?.file?.type || "").startsWith("image/");
+}
+
+function makeImagePreviewUrl(file) {
+  if (!file || !(file.type || "").startsWith("image/")) return null;
+  if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
+  try {
+    return URL.createObjectURL(file);
+  } catch {
+    return null;
+  }
+}
+
+function revokeAttachmentPreview(att) {
+  if (!att?.previewUrl) return;
+  if (typeof URL === "undefined" || typeof URL.revokeObjectURL !== "function") return;
+  try {
+    URL.revokeObjectURL(att.previewUrl);
+  } catch {
+    /* ignore */
+  }
+}
 
 // `onUpload(file) → Promise<AttachmentOut>` is optional. When provided, picked
 // files are uploaded to /api/attachments and the returned reference_id is
@@ -1895,7 +1991,7 @@ export const Composer = ({
     const max = line * COMPOSER_MAX_ROWS;
     el.style.height = "auto";
     // 子像素會讓 scrollHeight 落在兩行之間 —— 進位到整行,否則上限那一行
-    // 還是會被切一半。空框仍撐到最小行數,跟外層卡片同高。
+    // 還是會被切一半。空框停在最小行數,多行才長高。
     const wanted = Math.max(min, Math.ceil(el.scrollHeight / line) * line);
     el.style.height = Math.min(wanted, max) + "px";
     el.style.overflowY = wanted > max ? "auto" : "hidden";
@@ -1960,6 +2056,7 @@ export const Composer = ({
     liveUploadIds.current.clear();
     setAtts([]);
     if (draftKey && typeof sessionStorage !== "undefined") sessionStorage.removeItem(draftKey);
+    atts.forEach(revokeAttachmentPreview);
     // 清空後縮回一行由 text 的 layout effect 負責,不需要再補一次。
   };
 
@@ -2028,6 +2125,7 @@ export const Composer = ({
           name: f.name,
           kind: (f.type || "").startsWith("image/") ? "image" : "file",
           size: f.size,
+          previewUrl: makeImagePreviewUrl(f),
           uploading: Boolean(onUpload),
           extractStatus: null,
           extractPolling: false,
@@ -2061,25 +2159,26 @@ export const Composer = ({
         if (referenceId) liveRefs.current.add(referenceId);
         liveUploadIds.current.delete(uploadId);
         setAtts((list) =>
-          list.map((a) =>
-            a.uploadId === uploadId
-              ? {
-                  uploadId,
-                  name: result.filename || file.name,
-                  kind: (result.content_type || file.type || "").startsWith("image/") ? "image" : "file",
-                  size: result.size_bytes || file.size,
-                  referenceId,
-                  contentType: result.content_type,
-                  dataUrl,
-                  uploading: false,
-                  // Upload returns pending; poll below for the real outcome.
-                  extractStatus: result.extract_status || "pending",
-                  extractPolling: Boolean(onFetchAttachmentMeta && referenceId),
-                  extractUncertain: false,
-                  extractReason: null,
-                }
-              : a,
-          ),
+          list.map((a) => {
+            if (a.uploadId !== uploadId) return a;
+            if (dataUrl && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+            return {
+              uploadId,
+              name: result.filename || file.name,
+              kind: (result.content_type || file.type || "").startsWith("image/") ? "image" : "file",
+              size: result.size_bytes || file.size,
+              referenceId,
+              contentType: result.content_type,
+              dataUrl,
+              previewUrl: dataUrl ? null : a.previewUrl,
+              uploading: false,
+              // Upload returns pending; poll below for the real outcome.
+              extractStatus: result.extract_status || "pending",
+              extractPolling: Boolean(onFetchAttachmentMeta && referenceId),
+              extractUncertain: false,
+              extractReason: null,
+            };
+          }),
         );
 
         if (!onFetchAttachmentMeta || !referenceId) return;
@@ -2141,7 +2240,11 @@ export const Composer = ({
       } catch (error) {
         liveUploadIds.current.delete(uploadId);
         setUploadError(error?.message || `${file.name} 上傳失敗`);
-        setAtts((list) => list.filter((a) => a.uploadId !== uploadId));
+        setAtts((list) => {
+          const doomed = list.find((a) => a.uploadId === uploadId);
+          revokeAttachmentPreview(doomed);
+          return list.filter((a) => a.uploadId !== uploadId);
+        });
       }
     }));
   };
@@ -2160,20 +2263,24 @@ export const Composer = ({
         const files = Array.from(e.dataTransfer?.files || []);
         if (files.length) onFiles(files);
       }}
+      onMouseDown={(e) => {
+        if (e.target.closest("button, input, textarea, a, [role='menu']")) return;
+        taRef.current?.focus();
+      }}
       style={{
         position: "relative",
         display: "flex",
         flexDirection: "column",
         background: "var(--bg-elev)",
         border: "1px solid " + (dragOver ? "var(--accent)" : "var(--border-strong)"),
-        borderRadius: "var(--radius-lg)",
+        borderRadius: 24,
         boxShadow: "0 2px 8px -4px oklch(0.10 0 0 / 0.08)",
       }}>
       {dragOver && (
         <div style={{
           position: "absolute", inset: 0, zIndex: 90,
           display: "flex", alignItems: "center", justifyContent: "center",
-          background: "var(--accent-soft)", borderRadius: "var(--radius-lg)",
+          background: "var(--accent-soft)", borderRadius: 24,
           border: "2px dashed var(--accent)", pointerEvents: "none",
           color: "var(--accent)", fontSize: 14, fontWeight: 600,
         }}>
@@ -2201,7 +2308,7 @@ export const Composer = ({
       )}
 
       {atts.length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "8px 10px 0" }}>
+        <div className="composer-att-row" style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "10px 12px 0" }}>
           {atts.map((a, i) => {
             // Inline images (dataUrl) reach the model via image_url; extraction
             // failure is irrelevant and must not paint a false-accusation chip.
@@ -2209,12 +2316,71 @@ export const Composer = ({
               EXTRACT_FAIL_STATUSES.has(a.extractStatus) && !a.dataUrl;
             const extractPending = Boolean(a.extractPolling);
             const extractUncertain = Boolean(a.extractUncertain);
+            const thumb = a.dataUrl || a.previewUrl;
             let statusLabel;
             if (a.uploading) statusLabel = "上傳中…";
             else if (extractPending) statusLabel = "處理中…";
             else if (extractUncertain) statusLabel = "狀態未知";
             else if (extractFailed && a.extractReason) statusLabel = a.extractReason;
             else statusLabel = `${Math.round(a.size / 1024)} KB`;
+            const removeAtt = () => {
+              if (a.referenceId) liveRefs.current.delete(a.referenceId);
+              if (a.uploadId) liveUploadIds.current.delete(a.uploadId);
+              revokeAttachmentPreview(a);
+              setAtts((list) => list.filter((_, j) => j !== i));
+            };
+            if (isComposerImage(a)) {
+              return (
+                <div
+                  key={i}
+                  className={
+                    "composer-att-chip composer-att-thumb"
+                    + (extractFailed ? " composer-att-chip--extract-failed" : "")
+                  }
+                  data-composer-image="1"
+                  data-extract-status={a.extractStatus || (a.uploading ? "uploading" : "")}
+                  data-extract-failed={extractFailed ? "1" : "0"}
+                  data-extract-uncertain={extractUncertain ? "1" : "0"}
+                  style={{
+                    position: "relative",
+                    width: 72,
+                    height: 72,
+                    borderRadius: 16,
+                    overflow: "hidden",
+                    background: "var(--bg)",
+                    border: extractFailed
+                      ? "1px solid var(--danger)"
+                      : "1px solid var(--border)",
+                    opacity: a.uploading || extractPending || extractUncertain ? 0.7 : 1,
+                  }}
+                >
+                  {thumb ? (
+                    <img src={thumb} alt={a.name} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                  ) : (
+                    <div style={{
+                      width: "100%", height: "100%",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      color: "var(--fg-subtle)",
+                    }}>
+                      <IconImage size={18} />
+                    </div>
+                  )}
+                  <IconButton
+                    aria-label={`移除 ${a.name}`}
+                    title={a.name}
+                    style={{
+                      position: "absolute", top: 4, right: 4,
+                      width: 20, height: 20,
+                      background: "oklch(0.18 0 0 / 0.72)", color: "#fff",
+                    }}
+                    onClick={removeAtt}
+                  >
+                    <IconX size={11} />
+                  </IconButton>
+                  <span className="sr-only">{a.name} {statusLabel}</span>
+                </div>
+              );
+            }
             return (
               <div
                 key={i}
@@ -2240,7 +2406,7 @@ export const Composer = ({
                   opacity: a.uploading || extractPending || extractUncertain ? 0.7 : 1,
                 }}
               >
-                {a.kind === "image" ? <IconImage size={12} /> : <IconFile size={12} />}
+                <IconFile size={12} />
                 {a.name}
                 <span style={{
                   color: extractFailed ? "var(--danger)" : "var(--fg-subtle)",
@@ -2249,11 +2415,7 @@ export const Composer = ({
                 </span>
                 <IconButton
                   style={{ width: 18, height: 18 }}
-                  onClick={() => {
-                    if (a.referenceId) liveRefs.current.delete(a.referenceId);
-                    if (a.uploadId) liveUploadIds.current.delete(a.uploadId);
-                    setAtts((list) => list.filter((_, j) => j !== i));
-                  }}
+                  onClick={removeAtt}
                 >
                   <IconX size={11} />
                 </IconButton>
@@ -2330,74 +2492,6 @@ export const Composer = ({
           </div>
         </div>
       )}
-
-      {/* 垂直內距放在這層,textarea 自己的垂直內距是 0 —— textarea 的內距屬於
-          捲動區,捲到底時上方那條內距會露出上一行的下半截字。移出來以後捲動
-          一定停在行與行之間。 */}
-      <div style={{
-        padding: `12px 0 6px`,
-        flex: 1,
-        display: "flex",
-        minHeight: COMPOSER_MIN_ROWS * COMPOSER_LINE_HEIGHT,
-      }}>
-        <textarea
-          ref={taRef}
-          aria-label="訊息"
-          value={text}
-          onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart || 0); }}
-          onKeyUp={updateCaret}
-          onClick={updateCaret}
-          onSelect={updateCaret}
-          onKeyDown={onKey}
-          // 注音組字中不得 append 定稿 —— hook 會緩衝到 compositionend 再吐。
-          onCompositionStart={asr.onCompositionStart}
-          onCompositionEnd={asr.onCompositionEnd}
-          onPaste={(e) => {
-            const items = e.clipboardData?.items || [];
-            // Some browsers/platforms — notably when copying rendered web
-            // content — populate clipboard with BOTH text/plain (the user's
-            // actual intent) AND image/png (an accessibility fallback
-            // screenshot of the selection). If we only scan for file-kind
-            // items we wrongly convert a text copy into an image upload.
-            // Rule: when any text/* payload exists, prefer text and let
-            // the browser's default paste handle it; treat as file only
-            // when the clipboard carries files and no text.
-            let hasText = false;
-            const files = [];
-            for (const it of items) {
-              if (it.kind === "string" && it.type.startsWith("text/")) {
-                hasText = true;
-              }
-              if (it.kind === "file") {
-                const f = it.getAsFile();
-                if (f) {
-                  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-                  const ext = (f.type.split("/")[1] || "bin").split("+")[0];
-                  const named = f.name && f.name !== "image.png" ? f : new File([f], `貼上-${stamp}.${ext}`, { type: f.type });
-                  files.push(named);
-                }
-              }
-            }
-            if (!hasText && files.length) {
-              e.preventDefault();
-              onFiles(files);
-            }
-          }}
-          placeholder={placeholder || "傳訊息給 ANILA，Shift+Enter 換行"}
-          rows={COMPOSER_MIN_ROWS}
-          style={{
-            width: "100%",
-            flex: 1,
-            minHeight: COMPOSER_MIN_ROWS * COMPOSER_LINE_HEIGHT,
-            background: "transparent", border: "none", outline: "none", resize: "none",
-            padding: "0 14px",
-            fontSize: 14, lineHeight: `${COMPOSER_LINE_HEIGHT}px`, color: "var(--fg)",
-            fontFamily: "inherit",
-            display: "block",
-            boxSizing: "content-box",
-          }}
-        />
-      </div>
 
       {/* 即時預覽。**刻意不進 textarea** —— 原生 textarea 無法混排兩色文字,
           overlay mirror 又會撞到這個元件既有的 mention/貼上/autosize 邏輯。
@@ -2523,11 +2617,47 @@ export const Composer = ({
           </span>
         )}
 
-        <div style={{ flex: 1, fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", paddingLeft: 6 }}>
+        <div style={{ flex: 1, minWidth: 0, padding: "5px 8px 5px 4px" }}>
+          <textarea
+            ref={taRef}
+            aria-label="訊息"
+            value={text}
+            onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart || 0); }}
+            onKeyUp={updateCaret}
+            onClick={updateCaret}
+            onSelect={updateCaret}
+            onKeyDown={onKey}
+            // 注音組字中不得 append 定稿 —— hook 會緩衝到 compositionend 再吐。
+            onCompositionStart={asr.onCompositionStart}
+            onCompositionEnd={asr.onCompositionEnd}
+            onPaste={(e) => {
+              const files = filesFromComposerClipboard(e.clipboardData);
+              if (!files.length) return;
+              e.preventDefault();
+              onFiles(files);
+            }}
+            placeholder={placeholder || "傳訊息給 ANILA，Shift+Enter 換行"}
+            rows={COMPOSER_MIN_ROWS}
+            style={{
+              width: "100%",
+              minHeight: COMPOSER_MIN_ROWS * COMPOSER_LINE_HEIGHT,
+              background: "transparent", border: "none", outline: "none", resize: "none",
+              padding: 0,
+              fontSize: 14, lineHeight: `${COMPOSER_LINE_HEIGHT}px`, color: "var(--fg)",
+              fontFamily: "inherit",
+              display: "block",
+              boxSizing: "content-box",
+            }}
+          />
+        </div>
+
+        {(text.length > 0 || piiHits.length > 0) && (
+        <div style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", paddingLeft: 4, alignSelf: "center" }}>
           {text.length > 0 && `${text.length} 字`}
           {piiHits.length > 0 && <span style={{ color: "var(--warn)", marginLeft: 6 }}>· 可能含個資 × {piiHits.length}</span>}
-          {footer && <span style={{ marginLeft: 6, color: "var(--fg-subtle)" }}>· {footer}</span>}
+          {footer && text.length > 0 && <span style={{ marginLeft: 6, color: "var(--fg-subtle)" }}>· {footer}</span>}
         </div>
+        )}
 
         {(streaming || asr.state === "recording" || asr.state === "listening") && (
         <div className="composer-enter-hint">
