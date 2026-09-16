@@ -8,7 +8,7 @@ const ArtifactPreviewContext = createContext(null);
  *   children: React.ReactNode,
  *   onOpen: (artifact: {kind:string, source:string, language?:string}) => void,
  *   artifact?: {kind:string, source:string, language?:string} | null,
- *   pendingRevision?: {messageId:string, kind:string} | null,
+ *   pendingRevision?: {messageId:string, kind:string, conversationId?: string|number} | null,
  *   onRevisionSettled?: (messageId: string) => void,
  * }} props
  */
@@ -26,6 +26,13 @@ export function ArtifactPreviewProvider({
     const ticket = pendingRef.current;
     if (!ticket?.messageId || !ticket?.kind) return false;
     if (input.messageId !== ticket.messageId || input.kind !== ticket.kind) return false;
+    if (
+      ticket.conversationId != null && ticket.conversationId !== ""
+      && input.conversationId != null && input.conversationId !== ""
+      && String(ticket.conversationId) !== String(input.conversationId)
+    ) {
+      return false;
+    }
     const key = `${ticket.messageId}:${ticket.kind}`;
     const len = String(input.source ?? "").length;
     if (appliedRef.current?.key === key && appliedRef.current.len >= len) return false;

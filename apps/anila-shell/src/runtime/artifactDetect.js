@@ -27,6 +27,17 @@ export function artifactKindFromLang(lang) {
   return null;
 }
 
+/** xml／xhtml are not kinds, but they start the next product (models tag SVG this way). */
+export function isXmlishLang(lang) {
+  const tag = typeof lang === "string" ? lang.trim().toLowerCase() : "";
+  return XMLISH_LANGS.has(tag);
+}
+
+/** Same-or-higher fence that must stop greedy/standard extraction. */
+export function isNextArtifactFenceLang(lang) {
+  return Boolean(artifactKindFromLang(lang) || isXmlishLang(lang));
+}
+
 /**
  * @param {string} [lang] fence 語言標籤（可空）
  * @param {string} [source] 區塊原文

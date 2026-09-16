@@ -630,6 +630,37 @@ describe("ArtifactPanel 改這一段", () => {
     expect(screen.getByTestId("artifact-revise-hint").textContent).toMatch(/選一段/);
     expect(onRevise).not.toHaveBeenCalled();
   });
+
+  it("hints and does not send if the source selection is cleared after the box opens", () => {
+    const onRevise = vi.fn();
+    render(
+      <ArtifactPanel
+        artifact={{ kind: "html", language: "html", source: "<h1>舊</h1>" }}
+        classified={false}
+        onClose={() => {}}
+        onRevise={onRevise}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("artifact-tab-source"));
+    mockSourceSelection(screen.getByTestId("artifact-source"), "<h1>舊</h1>");
+    fireEvent.click(screen.getByTestId("artifact-revise"));
+    expect(screen.getByTestId("artifact-revise-input")).toBeTruthy();
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: true,
+      toString: () => "",
+      anchorNode: null,
+      focusNode: null,
+      rangeCount: 0,
+      getRangeAt: () => ({ commonAncestorContainer: null }),
+    });
+    fireEvent.mouseUp(screen.getByTestId("artifact-source"));
+    fireEvent.change(screen.getByTestId("artifact-revise-input"), {
+      target: { value: "標題改成新" },
+    });
+    fireEvent.click(screen.getByTestId("artifact-revise-send"));
+    expect(screen.getByTestId("artifact-revise-hint").textContent).toMatch(/選一段/);
+    expect(onRevise).not.toHaveBeenCalled();
+  });
 });
 
 describe("產物修訂後預覽跟著換", () => {
@@ -740,5 +771,26 @@ describe("產物修訂後預覽跟著換", () => {
     expect(hit?.source).toContain("```js");
     expect(hit?.source).toContain("alert(1)");
     expect(hit?.source).toContain("# 範例");
+  });
+
+  it("does not replace from a ticket belonging to another conversation", () => {
+    const opened = [];
+    const current = { kind: "html", source: "<h1>舊</h1>" };
+    render(
+      <ArtifactPreviewProvider
+        artifact={current}
+        onOpen={(a) => opened.push(a)}
+        pendingRevision={{ messageId: "a-new", kind: "html", conversationId: 5 }}
+      >
+        <MarkdownView
+          messageId="a-new"
+          conversationId={9}
+          streaming={false}
+          streamState="complete"
+          text={"```html\n<h1>新</h1>\n```"}
+        />
+      </ArtifactPreviewProvider>,
+    );
+    expect(opened.some((a) => a.source.includes("<h1>新</h1>"))).toBe(false);
   });
 });

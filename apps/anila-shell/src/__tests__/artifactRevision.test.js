@@ -98,6 +98,30 @@ describe("shouldApplyArtifactFence", () => {
     })).toEqual({ apply: false, consume: false });
   });
 
+  it("does not consume a replacement when the ticket conversation differs", () => {
+    expect(shouldApplyArtifactFence({
+      ticket: { messageId: "a-new", kind: "html", conversationId: 5 },
+      fenceMessageId: "a-new",
+      conversationId: 9,
+      streaming: false,
+      artifactKind: "html",
+      source: "<h1>新</h1>",
+      current,
+    })).toEqual({ apply: false, consume: false });
+  });
+
+  it("still consumes when both sides share the same conversationId", () => {
+    expect(shouldApplyArtifactFence({
+      ticket: { messageId: "a-new", kind: "html", conversationId: 5 },
+      fenceMessageId: "a-new",
+      conversationId: 5,
+      streaming: false,
+      artifactKind: "html",
+      source: "<h1>新</h1>",
+      current,
+    })).toEqual({ apply: true, consume: true });
+  });
+
   it("does not consume a replacement after stop, failure, or length truncation", () => {
     const partial = {
       ticket,
@@ -214,5 +238,59 @@ describe("extractRevisionCandidate", () => {
     ].join("\n");
     const picked = extractRevisionCandidate(text, "html");
     expect(picked).toBeNull();
+  });
+
+  it("does not swallow a following xml-tagged svg sibling", () => {
+    const closed = [
+      "```html",
+      "<h1>新</h1>",
+      "```",
+      "",
+      "再補一段",
+      "```xml",
+      "<svg xmlns='http://www.w3.org/2000/svg'><circle/></svg>",
+      "```",
+    ].join("\n");
+    expect(extractRevisionCandidate(closed, "html")?.source.trim()).toBe("<h1>新</h1>");
+
+    const unclosed = [
+      "```html",
+      "<h1>新</h1>",
+      "",
+      "再補一段",
+      "```xml",
+      "<svg xmlns='http://www.w3.org/2000/svg'><circle/></svg>",
+      "```",
+    ].join("\n");
+    expect(extractRevisionCandidate(unclosed, "html")).toBeNull();
+  });
+
+  it("extracts untagged outer markdown without truncating nested code", () => {
+    const text = [
+      "```",
+      "# 範例",
+      "",
+      "```js",
+      "alert(1)",
+      "```",
+      "```",
+    ].join("\n");
+    const picked = extractRevisionCandidate(text, "markdown");
+    expect(picked?.source).toContain("```js");
+    expect(picked?.source).toContain("alert(1)");
+    expect(picked?.source).toContain("# 範例");
+  });
+
+  it("returns null for same-level triple-backtick markdown that contains html", () => {
+    const text = [
+      "```markdown",
+      "# 說明",
+      "",
+      "```html",
+      "<h1>另一份</h1>",
+      "```",
+      "```",
+    ].join("\n");
+    expect(extractRevisionCandidate(text, "markdown")).toBeNull();
   });
 });

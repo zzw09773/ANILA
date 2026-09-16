@@ -149,7 +149,7 @@ export function ArtifactPanel({
 
   const captureSelection = useCallback(() => {
     const text = sourceSelectionText(window.getSelection(), sourceRef.current);
-    if (text) setSelection(text);
+    setSelection(text || "");
   }, []);
 
   const openRevise = useCallback(() => {
