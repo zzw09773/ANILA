@@ -483,7 +483,7 @@ def test_mid_turn_history_prefix_event_is_sliding_window(monkeypatch):
 
 
 def test_mid_turn_history_prefix_does_not_steal_event_summary(monkeypatch):
-    monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
+    monkeypatch.setattr(rs, "current_router_context_window", lambda: 5_000)
 
     async def fake_summary(_key, _old, _headers):
         return "濃縮過的太陽系討論"

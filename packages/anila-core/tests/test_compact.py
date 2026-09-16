@@ -275,6 +275,47 @@ class TestOpenaiHistoryCompact:
         ]
         assert estimate_openai_tokens(two) == IMAGE_MIN_TOKENS * 2
 
+    def test_estimate_cjk_is_one_token_per_char(self) -> None:
+        zh = [{"role": "user", "content": "中" * 120}]
+        en = [{"role": "user", "content": "a" * 120}]
+        assert estimate_openai_tokens(zh) == 120
+        assert estimate_openai_tokens(en) == 40
+        inline = [{
+            "role": "user",
+            "content": "看這張" + "data:image/png;base64," + ("Z" * 8000),
+        }]
+        assert estimate_openai_tokens(inline) >= IMAGE_MIN_TOKENS
+        assert estimate_openai_tokens(inline) <= IMAGE_MAX_TOKENS + 10
+
+    @pytest.mark.asyncio
+    async def test_tokens_before_override_trips_threshold(self) -> None:
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "短"},
+            {"role": "assistant", "content": "答"},
+            {"role": "user", "content": "再問"},
+        ]
+
+        async def summarize(_old):
+            return "摘要"
+
+        skipped = await auto_compact_openai_messages(
+            messages,
+            context_window=200_000,
+            max_output_tokens=256,
+            summarizer=summarize,
+        )
+        assert skipped.compacted is False
+        forced = await auto_compact_openai_messages(
+            messages,
+            context_window=200_000,
+            max_output_tokens=256,
+            summarizer=summarize,
+            tokens_before=200_000,
+        )
+        assert forced.compacted is True
+        assert forced.tokens_before == 200_000
+
     @pytest.mark.asyncio
     async def test_auto_compact_strip_images_skips_summarizer(self) -> None:
         big = "E" * 6000
@@ -491,11 +532,13 @@ class TestOpenaiHistoryCompact:
 
         result = await auto_compact_openai_messages(
             messages,
-            context_window=2_400,
+            context_window=5_000,
             max_output_tokens=256,
             summarizer=summarize,
             keep_recent_turns=4,
         )
+        # 中文 1 token/字後 tokens_before≈9k；窗 2400 會在摘要後再硬截。
+        # 5000 讓摘要後仍低於門檻，只驗證「中間那則假裝摘要的 user 不會偷走 summary」。
         # inbound: system + 8*(user,assistant) + 最新一問 = 18；第 6 回合 user 在 11。
         # keep_recent_turns=4 → outbound =
         #   [system, 產生摘要, turn6_user, a5, u6, a6, u7, a7, 最新一問]（9 則）

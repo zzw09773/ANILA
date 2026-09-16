@@ -14,6 +14,7 @@ from __future__ import annotations
 
 
 from ..models.message import AssistantMessage, Message, UserMessage
+from ..text.token_count import count_text_tokens
 
 
 TIME_BASED_MC_CLEARED_MESSAGE = "[Old tool result content cleared]"
@@ -59,8 +60,8 @@ def _collect_compactable_tool_ids(messages: list[Message]) -> list[str]:
 
 
 def _rough_token_count(text: str) -> int:
-    """Very rough estimate: ~4 chars per token."""
-    return max(1, len(text) // 4)
+    """CJK-aware estimate; empty text is 0 tokens saved."""
+    return count_text_tokens(text)
 
 
 def micro_compact_messages(

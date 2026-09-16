@@ -31,12 +31,13 @@ ERROR_THRESHOLD_BUFFER_TOKENS = 20_000
 
 
 def rough_token_count(messages: list[Message]) -> int:
-    """Rough token estimation: text chars/4 plus clamped image tokens.
+    """CJK-aware text tokens plus clamped image tokens.
 
-    Pads text by 4/3 to be conservative. ``data:`` / ``image_url`` parts
-    use the 800–2000 clamp in :mod:`strip_images` so a screenshot cannot
-    be estimated as 0.
+    ``data:`` / ``image_url`` parts use the 800–2000 clamp in
+    :mod:`strip_images` so a screenshot cannot be estimated as 0.
     """
+    from ..text.token_count import count_text_tokens
+
     text_and_images = estimate_message_tokens_with_images(messages)
     extra = 0
     for msg in messages:
@@ -49,12 +50,12 @@ def rough_token_count(messages: list[Message]) -> int:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
             import json
-            extra += len(block.get("name", ""))
+            extra += count_text_tokens(str(block.get("name", "")))
             try:
-                extra += len(json.dumps(block.get("input", {})))
+                extra += count_text_tokens(json.dumps(block.get("input", {})))
             except (TypeError, ValueError):
                 pass
-    return text_and_images + int((extra / 4) * (4 / 3)) if extra else text_and_images
+    return text_and_images + extra
 
 
 def _clamped_reserve_and_buffer(

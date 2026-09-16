@@ -23,6 +23,7 @@ from typing import Any, Callable, Coroutine, Optional
 
 from ..context.agent_context import AgentContext, create_subagent_context
 from ..models.message import AssistantMessage, Message, UserMessage
+from ..text.token_count import count_text_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -82,36 +83,36 @@ def _count_tool_calls_since(
 
 
 def _rough_token_count(messages: list[Message]) -> int:
-    """Rough estimation using total text and tool_result content length / 4."""
+    """CJK-aware estimate of visible text and tool payloads."""
     total = 0
     for msg in messages:
         if isinstance(msg, (UserMessage, AssistantMessage)):
             content = msg.content
             if isinstance(content, str):
-                total += len(content)
+                total += count_text_tokens(content)
             elif isinstance(content, list):
                 for block in content:
                     if not isinstance(block, dict):
                         continue
                     btype = block.get("type", "")
                     if btype == "text":
-                        total += len(block.get("text", ""))
+                        total += count_text_tokens(block.get("text", "") or "")
                     elif btype == "tool_result":
                         c = block.get("content", "")
                         if isinstance(c, str):
-                            total += len(c)
+                            total += count_text_tokens(c)
                         elif isinstance(c, list):
                             for sub in c:
                                 if isinstance(sub, dict) and sub.get("type") == "text":
-                                    total += len(sub.get("text", ""))
+                                    total += count_text_tokens(sub.get("text", "") or "")
                     elif btype == "tool_use":
                         import json
-                        total += len(block.get("name", ""))
+                        total += count_text_tokens(str(block.get("name", "")))
                         try:
-                            total += len(json.dumps(block.get("input", {})))
+                            total += count_text_tokens(json.dumps(block.get("input", {})))
                         except (TypeError, ValueError):
                             pass
-    return max(1, total // 4)
+    return max(1, total)
 
 
 def _has_tool_calls_in_last_assistant_turn(messages: list[Message]) -> bool:
