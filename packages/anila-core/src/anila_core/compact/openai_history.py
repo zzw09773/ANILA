@@ -298,9 +298,16 @@ async def auto_compact_openai_messages(
     summarizer: Summarizer | None = None,
     keep_recent_turns: int = 4,
     force: bool = False,
+    tokens_before: int | None = None,
 ) -> CompactResult:
-    """Strip old images, then summarize or truncate at the compact threshold."""
-    tokens_before = estimate_openai_tokens(messages)
+    """Strip old images, then summarize or truncate at the compact threshold.
+
+    ``tokens_before`` overrides the heuristic when the caller already has a
+    model ``/tokenize`` count (threshold uses that true value).
+    """
+    tokens_before = (
+        tokens_before if tokens_before is not None else estimate_openai_tokens(messages)
+    )
     keep_n = max(1, keep_recent_turns)
     stripped, tokens_saved = strip_images_openai(messages, keep_recent_turns=keep_n)
     tokens_stripped = estimate_openai_tokens(stripped)

@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..models.message import AssistantMessage, Message, UserMessage
+from ..text.token_count import count_text_tokens, flatten_openai_text, prompt_text_for_tokenize
 
 # Align with Claude Code IMAGE_MAX_TOKEN_SIZE: a vision image is never
 # cheaper than a short paragraph, and never counted as the raw base64.
@@ -93,31 +94,71 @@ def measure_openai_content(content: Any) -> tuple[int, int]:
     return chars, images
 
 
-def estimate_openai_tokens_with_images(messages: Sequence[Mapping[str, Any]]) -> int:
-    """Char/4 text estimate plus clamped per-image tokens."""
-    chars = 0
+def _text_without_large_data_urls(text: str) -> str:
+    """Drop bulky ``data:`` payloads so base64 is not counted as Latin."""
+
+    def _repl(match: re.Match[str]) -> str:
+        if _is_large_data_url(match):
+            return ""
+        return match.group(0)
+
+    return _DATA_URL_RE.sub(_repl, text)
+
+
+def visible_text_for_tokens(content: Any) -> str:
+    """Flattened chat text with large inline images removed."""
+    return _text_without_large_data_urls(flatten_openai_text(content))
+
+
+def visible_prompt_for_tokenize(messages: Sequence[Mapping[str, Any]]) -> str:
+    """Join visible chat text for a model ``/tokenize`` call."""
+    return _text_without_large_data_urls(prompt_text_for_tokenize(messages))
+
+
+def estimate_openai_image_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
+    """Clamped vision-token total; text is ignored."""
     images = 0
     for msg in messages:
-        c, i = measure_openai_content(msg.get("content") if isinstance(msg, Mapping) else None)
-        chars += c
-        images += i
+        content = msg.get("content") if isinstance(msg, Mapping) else None
+        _chars, img = measure_openai_content(content)
+        images += img
+    return images
+
+
+def estimate_openai_tokens_with_images(messages: Sequence[Mapping[str, Any]]) -> int:
+    """CJK-aware text tokens plus clamped per-image tokens.
+
+    Compact thresholds use this count. Latin keeps the old 4/3 pad so
+    English estimates stay conservative; CJK is 1 token/char (GLM／Qwen).
+    """
+    tokens = 0
+    images = 0
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, Mapping) else None
+        _chars, img = measure_openai_content(content)
+        tokens += count_text_tokens(visible_text_for_tokens(content))
+        images += img
         if isinstance(msg, Mapping):
             reasoning = msg.get("reasoning") or msg.get("reasoning_content")
             if isinstance(reasoning, str):
-                chars += len(reasoning)
-    return int((chars / 4) * (4 / 3)) + images
+                tokens += count_text_tokens(reasoning)
+    return tokens + images
 
 
 def estimate_message_tokens_with_images(messages: Sequence[Message]) -> int:
-    chars = 0
+    tokens = 0
     images = 0
     for msg in messages:
-        if not isinstance(msg, (UserMessage, AssistantMessage)):
+        content = getattr(msg, "content", None)
+        if content is None:
             continue
-        c, i = measure_openai_content(msg.content)
-        chars += c
-        images += i
-    return int((chars / 4) * (4 / 3)) + images
+        _chars, img = measure_openai_content(content)
+        tokens += count_text_tokens(visible_text_for_tokens(content))
+        images += img
+        reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
+        if isinstance(reasoning, str):
+            tokens += count_text_tokens(reasoning)
+    return tokens + images
 
 
 def strip_images_openai(

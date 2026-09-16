@@ -50,7 +50,12 @@ from ..compact.openai_history import (
     format_transcript,
     is_prompt_too_long,
 )
-from ..compact.strip_images import strip_images_openai
+from ..compact.strip_images import (
+    estimate_openai_image_tokens,
+    strip_images_openai,
+    visible_prompt_for_tokenize,
+)
+from ..text.model_tokenize import tokenize_prompt
 from ..prompts.sampling import get_sampling
 from ..providers.guards import bumped_max_tokens, is_empty_length_failure
 from . import router_prompts
@@ -1055,6 +1060,27 @@ def current_router_context_window() -> int:
     return FALLBACK_CONTEXT_WINDOW
 
 
+async def count_routing_prompt_tokens(
+    messages: list[dict[str, Any]],
+) -> tuple[int, str]:
+    """Compact threshold count: CJK heuristic, or model ``/tokenize`` if opted in.
+
+    Router still never talks to the registry model host. ``ANILA_TOKENIZE_URL``
+    is an operator opt-in (URL guard applies). Fail closed to the heuristic.
+    """
+    heuristic = estimate_openai_tokens(messages)
+    url = os.environ.get("ANILA_TOKENIZE_URL", "").strip()
+    if not url:
+        return heuristic, "heuristic"
+    prompt = visible_prompt_for_tokenize(messages)
+    if not prompt:
+        return heuristic, "heuristic"
+    counted = await tokenize_prompt(get_http_client(), url, prompt)
+    if counted is None:
+        return heuristic, "heuristic"
+    return counted + estimate_openai_image_tokens(messages), "model"
+
+
 def router_model_source() -> str:
     """``"csp_registry"`` or ``"env"`` — where ``current_router_model`` came from."""
     with _router_model_lock:
@@ -1996,7 +2022,7 @@ def create_router_app(
         )
         if compact_event and compact_event.get("method") == "summary":
             return JSONResponse(compact_event)
-        tokens = estimate_openai_tokens(inbound) if inbound else 0
+        tokens, _source = await count_routing_prompt_tokens(inbound) if inbound else (0, "heuristic")
         return JSONResponse(
             {
                 "summary": None,
@@ -2337,6 +2363,7 @@ async def _auto_compact_routing_messages(
         )
 
     use_summarizer = (not force) or summarize_when_forced
+    tokens_before, tokens_source = await count_routing_prompt_tokens(messages)
     result = await auto_compact_openai_messages(
         messages,
         context_window=current_router_context_window(),
@@ -2344,7 +2371,13 @@ async def _auto_compact_routing_messages(
         summarizer=_summarize if use_summarizer else None,
         keep_recent_turns=keep_recent_turns,
         force=force,
+        tokens_before=tokens_before,
     )
+    if tokens_source == "model":
+        logger.info(
+            "Router compact count source=model tokens_before=%s",
+            tokens_before,
+        )
     inbound_count = len(messages) if inbound_message_count is None else inbound_message_count
     compact_event = _compact_client_event(result, inbound_count=inbound_count)
     if not result.compacted:

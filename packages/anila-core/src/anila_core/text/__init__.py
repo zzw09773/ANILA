@@ -6,6 +6,13 @@
 """
 
 from anila_core.text.think_strip import strip_inline_think
+from anila_core.text.token_count import count_text_tokens, is_cjk
 from anila_core.text.zh_normalizer import normalize_report, normalize_zh_tw
 
-__all__ = ["normalize_zh_tw", "normalize_report", "strip_inline_think"]
+__all__ = [
+    "count_text_tokens",
+    "is_cjk",
+    "normalize_zh_tw",
+    "normalize_report",
+    "strip_inline_think",
+]

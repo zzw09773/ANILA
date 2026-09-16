@@ -31,7 +31,7 @@ def sliding_window_compact(
         messages: Full conversation history.
         max_tokens: Maximum token budget for the conversation.
         token_estimator: Callable(list[Message]) -> int. If None, uses
-                         rough char/4 estimate.
+                         the shared CJK-aware estimate.
         keep_recent_turns: Minimum number of user+assistant turn pairs to keep.
 
     Returns:
@@ -136,16 +136,7 @@ def _flatten_turns(turns: list[list[Message]]) -> list[Message]:
 
 
 def _rough_token_count(messages: list[Message]) -> int:
-    """Rough estimate: total chars / 4, padded by 4/3."""
-    total = 0
-    for msg in messages:
-        content = getattr(msg, "content", None)
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict):
-                    text = block.get("text", block.get("content", ""))
-                    if isinstance(text, str):
-                        total += len(text)
-    return int((total / 4) * (4 / 3))
+    """CJK-aware estimate shared with auto-compact."""
+    from .strip_images import estimate_message_tokens_with_images
+
+    return estimate_message_tokens_with_images(messages)
