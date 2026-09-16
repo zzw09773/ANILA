@@ -14,6 +14,8 @@ from anila_core.compact.auto_compact import (
 )
 from anila_core.compact.openai_history import (
     HISTORY_SUMMARY_PREFIX,
+    _new_sliding_marker,
+    _recent_count_from_final,
     auto_compact_openai_messages,
     estimate_openai_tokens,
     is_prompt_too_long,
@@ -170,6 +172,24 @@ def _long_chat(turns: int, size: int = 800) -> list[dict]:
     for i in range(turns):
         out.append({"role": "user", "content": f"u{i} " + ("問" * size)})
         out.append({"role": "assistant", "content": f"a{i} " + ("答" * size)})
+    return out
+
+
+def _long_chat_with_marker_collision(turns: int = 8, size: int = 600) -> list[dict]:
+    """A kept-window user equals ``SLIDING_WINDOW_SUMMARY`` exactly.
+
+    Same 18-row shape as the mid-history fixture. Turn 7 (1-based) is the
+    colliding user so sliding-window still keeps it next to the synthetic
+    marker.
+    """
+    out = [{"role": "system", "content": "you are anila"}]
+    for i in range(turns):
+        if i == 6:
+            out.append({"role": "user", "content": SLIDING_WINDOW_SUMMARY})
+        else:
+            out.append({"role": "user", "content": f"u{i} " + ("問" * size)})
+        out.append({"role": "assistant", "content": f"a{i} " + ("答" * size)})
+    out.append({"role": "user", "content": "最新一問"})
     return out
 
 
@@ -494,6 +514,66 @@ class TestOpenaiHistoryCompact:
             m.get("content") == messages[kept_from_index]["content"]
             for m in result.messages
         )
+
+    @pytest.mark.asyncio
+    async def test_real_user_marker_text_does_not_shift_kept_from_index(self) -> None:
+        messages = _long_chat_with_marker_collision()
+
+        async def summarize(_old):
+            return None
+
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=2_400,
+            max_output_tokens=256,
+            summarizer=summarize,
+            keep_recent_turns=4,
+        )
+        assert result.method == "sliding_window"
+        assert result.summary is None
+        same_text = [
+            m
+            for m in result.messages
+            if m.get("content") == SLIDING_WINDOW_SUMMARY
+        ]
+        assert len(same_text) == 2
+        seen_marker = False
+        first_kept = None
+        for msg in result.messages:
+            if msg.get("role") == "system":
+                continue
+            if not seen_marker and msg.get("content") == SLIDING_WINDOW_SUMMARY:
+                seen_marker = True
+                continue
+            first_kept = msg
+            break
+        assert first_kept is not None
+        expected_idx = next(
+            i
+            for i, inbound in enumerate(messages)
+            if inbound.get("role") == first_kept.get("role")
+            and inbound.get("content") == first_kept.get("content")
+        )
+        assert len(messages) - result.recent_count == expected_idx
+        content_based = (
+            len(result.messages)
+            - 1
+            - len(same_text)
+        )
+        assert result.recent_count == content_based + 1
+
+    def test_recent_count_counts_only_identity_marker(self) -> None:
+        marker = _new_sliding_marker()
+        real = {"role": "user", "content": SLIDING_WINDOW_SUMMARY}
+        outbound = [
+            {"role": "system", "content": "sys"},
+            marker,
+            {"role": "user", "content": "u4 kept"},
+            {"role": "assistant", "content": "a4"},
+            real,
+        ]
+        assert _recent_count_from_final(outbound, marker_message=marker) == 3
+        assert _recent_count_from_final(outbound) == 4
 
     def test_sliding_window_keeps_protected_summary_identity(self) -> None:
         summary = {"role": "user", "content": f"{HISTORY_SUMMARY_PREFIX}\nkeep-me"}

@@ -77,6 +77,19 @@ def _long_messages(turns: int = 8, size: int = 500) -> list[dict]:
     return out
 
 
+def _long_messages_with_marker_collision(turns: int = 8, size: int = 500) -> list[dict]:
+    """Turn 7 (1-based) user content equals the synthetic sliding marker."""
+    out = [{"role": "system", "content": "router"}]
+    for i in range(turns):
+        if i == 6:
+            out.append({"role": "user", "content": SLIDING_WINDOW_SUMMARY})
+        else:
+            out.append({"role": "user", "content": f"u{i} " + ("問" * size)})
+        out.append({"role": "assistant", "content": f"a{i} " + ("答" * size)})
+    out.append({"role": "user", "content": "最新一問"})
+    return out
+
+
 def _long_messages_with_mid_history_prefix(turns: int = 8, size: int = 500) -> list[dict]:
     """Turn 6 (1-based) is a real user line that starts with ``[歷史摘要]``."""
     out = [{"role": "system", "content": "router"}]
@@ -503,6 +516,52 @@ def test_mid_turn_history_prefix_does_not_steal_event_summary(monkeypatch):
     assert compacted[1]["content"].startswith(HISTORY_SUMMARY_PREFIX)
     assert "濃縮過的太陽系討論" in compacted[1]["content"]
     assert "使用者真的輸入" in str(compacted[2].get("content"))
+
+
+def test_real_user_marker_text_does_not_shift_event_index(monkeypatch):
+    monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
+
+    async def fake_summary(_key, _old, _headers):
+        return None
+
+    monkeypatch.setattr(rs, "_summarize_for_compact", fake_summary)
+    messages = _long_messages_with_marker_collision()
+    compacted, step, event = asyncio.run(
+        rs._auto_compact_routing_messages(
+            messages,
+            caller_api_key="sk",
+            forwarded_headers=None,
+            inbound_message_count=len(messages),
+        )
+    )
+    assert step is not None
+    assert event is not None
+    assert event["method"] == "sliding_window"
+    assert event["summary"] is None
+    same_text = [
+        m for m in compacted if m.get("content") == SLIDING_WINDOW_SUMMARY
+    ]
+    assert len(same_text) == 2
+    seen_marker = False
+    first_kept = None
+    for msg in compacted:
+        if msg.get("role") == "system":
+            continue
+        if not seen_marker and msg.get("content") == SLIDING_WINDOW_SUMMARY:
+            seen_marker = True
+            continue
+        first_kept = msg
+        break
+    assert first_kept is not None
+    expected_idx = next(
+        i
+        for i, inbound in enumerate(messages)
+        if inbound.get("role") == first_kept.get("role")
+        and inbound.get("content") == first_kept.get("content")
+    )
+    assert event["kept_from_index"] == expected_idx
+    content_based = len(compacted) - 1 - len(same_text)
+    assert (len(messages) - content_based) == expected_idx + 1
 
 
 def test_oversized_summary_event_kept_from_index_points_at_outbound(monkeypatch):
