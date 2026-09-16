@@ -53,7 +53,7 @@
 | 右側預覽、可切原始碼、可複製 | 有 | — | ✅ |
 | 產物版本歷史（v1/v2 切換） | PLAN 已併入 D3，隨 Studio 延後 | 維持延後 | 🔵 |
 | 下載成檔（.html/.svg/.md） | 只有複製 | 一顆按鈕，`Blob` 下載；密等對話沿用 copy 拒絕規則 | ❌ |
-| 「改這一段」局部修訂 | 只能整段重生 | 選取→送修訂提示→回填為新版本；依賴版本歷史 | 🔵 |
+| 「改這一段」局部修訂 | 原始碼選字→可見新 turn→同 kind 完整回覆換右側；無 v1／v2 | — | ✅ |
 | React／JSX 產物 | 只認 HTML／SVG／Markdown | 內網要先擺 React UMD＋Babel standalone vendor，和 Three.js 同一套路 | 🔵 |
 
 ### 1.4 附件與檢索
@@ -179,7 +179,7 @@ model_registry.thinking_user_selectable   BOOLEAN NOT NULL DEFAULT TRUE
 | **E** | 產物下載成檔；React/JSX 產物 vendor（React UMD＋Babel standalone 放 `public/vendor/`，`artifactVendor.js` 加改寫規則） | — | 1–2 天 |
 | **F** | 使用者可寫的「回覆偏好」頁＋「我的記憶」管理頁（列、刪、來源對話）；活體驗每輪萃取有沒有跑 | 先驗現況 | 3 天 |
 | **G** | 精準計數：模型端 `/tokenize` 或 tiktoken 近似；compact 門檻改用真值 | — | 1 天 |
-| 🔵 | Projects、產物版本歷史、局部修訂 | 擁有者拍板 | 另開藍圖 |
+| 🔵 | Projects、產物版本歷史（v1／v2） | 擁有者拍板 | 另開藍圖 |
 
 建議順序 **A → B → C → D**，因為 A 是使用者點名要的，B 讓 A 的效果看得見，C／D 是這週 compact 的收尾。E 便宜可插隊。
 
