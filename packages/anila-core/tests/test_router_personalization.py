@@ -22,7 +22,7 @@ def test_template_has_personalization_directive_excluding_dispatch():
 def test_recompose_applied(monkeypatch):
     cap = {}
 
-    async def fake(api_key, messages, *, forwarded_headers=None):
+    async def fake(api_key, messages, *, forwarded_headers=None, **_kwargs):
         cap["m"] = messages
         return {"content": "個人化後", "error": None}
 
@@ -35,7 +35,7 @@ def test_recompose_applied(monkeypatch):
 
 
 def test_recompose_fallback_on_error(monkeypatch):
-    async def fake(api_key, messages, *, forwarded_headers=None):
+    async def fake(api_key, messages, *, forwarded_headers=None, **_kwargs):
         return {"content": "", "error": "boom"}
 
     monkeypatch.setattr(rs, "_call_llm_non_stream", fake)
@@ -46,7 +46,7 @@ def test_recompose_fallback_on_error(monkeypatch):
 
 
 def test_recompose_fallback_on_timeout(monkeypatch):
-    async def slow(api_key, messages, *, forwarded_headers=None):
+    async def slow(api_key, messages, *, forwarded_headers=None, **_kwargs):
         await asyncio.sleep(9999)
 
     monkeypatch.setattr(rs, "_call_llm_non_stream", slow)
@@ -60,7 +60,7 @@ def test_recompose_fallback_on_timeout(monkeypatch):
 def test_recompose_strips_agent_reply_sentinel(monkeypatch):
     cap = {}
 
-    async def fake(api_key, messages, *, forwarded_headers=None):
+    async def fake(api_key, messages, *, forwarded_headers=None, **_kwargs):
         cap["m"] = messages
         return {"content": "ok", "error": None}
 

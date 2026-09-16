@@ -125,7 +125,7 @@ def _install_fake_llm(monkeypatch, replies, captured):
     """Replace the routing LLM call; record the messages it was handed."""
     it = iter(replies)
 
-    async def fake(api_key, messages, *, forwarded_headers=None):
+    async def fake(api_key, messages, *, forwarded_headers=None, **_kwargs):
         captured.append(messages)
         return {
             "content": next(it),
@@ -401,7 +401,7 @@ def test_dispatch_mentioned_only_while_reasoning_does_not_dispatch(db_path, monk
     """gpt-oss quotes the routing rules while thinking. Thinking != deciding."""
     _install_registry(monkeypatch, [[_manifest()]])
 
-    async def fake_llm(api_key, messages, *, forwarded_headers=None):
+    async def fake_llm(api_key, messages, *, forwarded_headers=None, **_kwargs):
         return {
             "content": "這題我直接回答就好。",
             # The exact shape the old salvage matched: a query-less header.

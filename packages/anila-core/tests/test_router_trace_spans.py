@@ -105,7 +105,7 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
     _patch_registry(monkeypatch)
     exporter = _install_fake_session(monkeypatch)
 
-    async def fake_stream_llm(api_key, messages, *, forwarded_headers=None):
+    async def fake_stream_llm(api_key, messages, *, forwarded_headers=None, **_kwargs):
         yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
         yield {"type": "done"}
 
@@ -163,7 +163,7 @@ def test_streaming_dispatch_emits_no_spans_when_unconfigured(
     # No exporter configured → ensure the real gate returns None.
     monkeypatch.delenv("ANILA_TRACE_ENDPOINT", raising=False)
 
-    async def fake_stream_llm(api_key, messages, *, forwarded_headers=None):
+    async def fake_stream_llm(api_key, messages, *, forwarded_headers=None, **_kwargs):
         yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
         yield {"type": "done"}
 
@@ -203,7 +203,7 @@ def test_non_streaming_dispatch_records_spans_when_configured(
     _patch_registry(monkeypatch)
     exporter = _install_fake_session(monkeypatch)
 
-    async def fake_call_llm(api_key, messages, *, forwarded_headers=None):
+    async def fake_call_llm(api_key, messages, *, forwarded_headers=None, **_kwargs):
         return {"content": "DISPATCH:agent-a:hello", "reasoning": None,
                 "anila_meta": None, "raw": None, "error": None}
 
@@ -245,7 +245,7 @@ def test_non_streaming_dispatch_no_spans_when_unconfigured(
     _patch_registry(monkeypatch)
     monkeypatch.delenv("ANILA_TRACE_ENDPOINT", raising=False)
 
-    async def fake_call_llm(api_key, messages, *, forwarded_headers=None):
+    async def fake_call_llm(api_key, messages, *, forwarded_headers=None, **_kwargs):
         return {"content": "DISPATCH:agent-a:hello", "reasoning": None,
                 "anila_meta": None, "raw": None, "error": None}
 

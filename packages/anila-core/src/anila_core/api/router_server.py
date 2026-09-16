@@ -1510,6 +1510,7 @@ def create_router_app(
             caller_api_key,
             routing_messages,
             forwarded_headers=router_llm_headers,
+            apply_thinking_tier=True,
         )
         if llm_response["error"]:
             length_budget = _is_length_budget_error(llm_response["error"])
@@ -2529,7 +2530,10 @@ async def _router_streaming_multi_turn(
     # they have never run — out of scope for this change, recorded so the gap is
     # not mistaken for a side effect of it.
     llm_response = await _call_llm_non_stream(
-        caller_api_key, routing_messages, forwarded_headers=router_llm_headers
+        caller_api_key,
+        routing_messages,
+        forwarded_headers=router_llm_headers,
+        apply_thinking_tier=True,
     )
     if llm_response["error"]:
         length_budget = _is_length_budget_error(llm_response["error"])
@@ -2842,7 +2846,10 @@ async def _multi_turn_dispatch(
         # dispatches again instead of synthesising, the retrieval CSP ran for
         # it is discarded.
         next_llm = await _call_llm_non_stream(
-            caller_api_key, convo, forwarded_headers=router_llm_headers
+            caller_api_key,
+            convo,
+            forwarded_headers=router_llm_headers,
+            apply_thinking_tier=True,
         )
         if next_llm["error"]:
             base_trace.append(
@@ -3006,26 +3013,22 @@ async def _recompose_reply(
         {"role": "system", "content": _RECOMPOSE_SYSTEM_PROMPT},
         {"role": "user", "content": wrapped},
     ]
-    # Recompose is a style rewrite, not the user's turn. Clear the per-turn
-    # thinking override so ``_call_llm_non_stream`` / ``_sampling_payload``
-    # cannot leak ``anila_thinking_tier`` onto this call.
-    token = REQUEST_THINKING_TIER.set(None)
+    # Recompose is a style rewrite. ``_call_llm_non_stream`` defaults to
+    # ``apply_thinking_tier=False``, so the user's one-turn override cannot
+    # leak onto this call without a new caller opting in.
     try:
-        try:
-            result = await asyncio.wait_for(
-                _call_llm_non_stream(
-                    caller_api_key, messages, forwarded_headers=forwarded_headers
-                ),
-                timeout=RECOMPOSE_TIMEOUT_S,
-            )
-        except Exception:  # noqa: BLE001 — fail-safe to original on timeout / any failure
-            logger.exception("recompose: LLM call failed; returning original reply")
-            return agent_reply, "fallback"
-        if result.get("error") or not (result.get("content") or "").strip():
-            return agent_reply, "fallback"
-        return result["content"], "applied"
-    finally:
-        REQUEST_THINKING_TIER.reset(token)
+        result = await asyncio.wait_for(
+            _call_llm_non_stream(
+                caller_api_key, messages, forwarded_headers=forwarded_headers
+            ),
+            timeout=RECOMPOSE_TIMEOUT_S,
+        )
+    except Exception:  # noqa: BLE001 — fail-safe to original on timeout / any failure
+        logger.exception("recompose: LLM call failed; returning original reply")
+        return agent_reply, "fallback"
+    if result.get("error") or not (result.get("content") or "").strip():
+        return agent_reply, "fallback"
+    return result["content"], "applied"
 
 
 # ---------------------------------------------------------------------------
@@ -3106,7 +3109,11 @@ def thinking_tier_from_body(body: Mapping[str, Any]) -> str | None:
 SAMPLING_DEFAULTS_MARKER = "anila_sampling_defaults"
 
 
-def _sampling_payload(*, max_tokens_override: int | None = None) -> dict[str, Any]:
+def _sampling_payload(
+    *,
+    max_tokens_override: int | None = None,
+    apply_thinking_tier: bool = False,
+) -> dict[str, Any]:
     base = get_sampling("router")
     params: dict[str, Any] = {"temperature": base.temperature, "max_tokens": base.max_tokens}
     caller = REQUEST_SAMPLING.get() or {}
@@ -3118,10 +3125,12 @@ def _sampling_payload(*, max_tokens_override: int | None = None) -> dict[str, An
         defaults = [k for k in defaults if k != "max_tokens"]
     if defaults:
         params[SAMPLING_DEFAULTS_MARKER] = defaults
-    # Not a sampling default: CSP maps this one-turn override and pops it.
-    tier = REQUEST_THINKING_TIER.get()
-    if isinstance(tier, str) and tier in THINKING_TIERS:
-        params["anila_thinking_tier"] = tier
+    # Opt-in: only the user's primary-model turn carries the override.
+    # Compact / recompose / any new ``_call_llm_non_stream`` caller stay off.
+    if apply_thinking_tier:
+        tier = REQUEST_THINKING_TIER.get()
+        if isinstance(tier, str) and tier in THINKING_TIERS:
+            params["anila_thinking_tier"] = tier
     return params
 
 
@@ -3130,6 +3139,7 @@ async def _call_llm_non_stream(
     messages: list[dict],
     *,
     forwarded_headers: dict[str, str] | None = None,
+    apply_thinking_tier: bool = False,
     _retry_max_tokens: int | None = None,
     _auto_continue_left: int | None = None,
     _compact_retry: int | bool = 0,
@@ -3152,7 +3162,10 @@ async def _call_llm_non_stream(
         "model": current_router_model(),
         "messages": messages,
         "stream": False,
-        **_sampling_payload(max_tokens_override=_retry_max_tokens),
+        **_sampling_payload(
+            max_tokens_override=_retry_max_tokens,
+            apply_thinking_tier=apply_thinking_tier,
+        ),
     }
     headers = {
         "Authorization": f"Bearer {caller_api_key}",
@@ -3187,6 +3200,7 @@ async def _call_llm_non_stream(
                     caller_api_key,
                     messages,
                     forwarded_headers=forwarded_headers,
+                    apply_thinking_tier=apply_thinking_tier,
                     _retry_max_tokens=bumped_max_tokens(int(payload["max_tokens"])),
                 )
             return {"content": "", "reasoning": None, "anila_meta": data.get("anila_meta"), "raw": data, "error": _EMPTY_LENGTH_ERROR}
@@ -3233,6 +3247,7 @@ async def _call_llm_non_stream(
                     {"role": "user", "content": _CONTINUE_PROMPT},
                 ],
                 forwarded_headers=forwarded_headers,
+                apply_thinking_tier=apply_thinking_tier,
                 _auto_continue_left=remaining - 1,
             )
             extra = (more.get("content") or "").strip()
@@ -3260,6 +3275,7 @@ async def _call_llm_non_stream(
                 caller_api_key,
                 retried,
                 forwarded_headers=forwarded_headers,
+                apply_thinking_tier=apply_thinking_tier,
                 _retry_max_tokens=_retry_max_tokens,
                 _auto_continue_left=_auto_continue_left,
                 _compact_retry=stage + 1,
@@ -3346,6 +3362,7 @@ async def _auto_continue_stream(
     saw_content: bool,
     accumulated: list[str],
     remaining: int,
+    apply_thinking_tier: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """Resume a partial ``length`` stream, or emit the terminal done event."""
     if finish_reason == "length" and saw_content and remaining > 0:
@@ -3359,6 +3376,7 @@ async def _auto_continue_stream(
                 {"role": "user", "content": _CONTINUE_PROMPT},
             ],
             forwarded_headers=forwarded_headers,
+            apply_thinking_tier=apply_thinking_tier,
             _auto_continue_left=remaining - 1,
         ):
             yield ev
@@ -3371,6 +3389,7 @@ async def _stream_llm_sse(
     messages: list[dict],
     *,
     forwarded_headers: dict[str, str] | None = None,
+    apply_thinking_tier: bool = False,
     _retry_max_tokens: int | None = None,
     _auto_continue_left: int | None = None,
     _compact_retry: int | bool = 0,
@@ -3401,7 +3420,10 @@ async def _stream_llm_sse(
         "model": current_router_model(),
         "messages": messages,
         "stream": True,
-        **_sampling_payload(max_tokens_override=_retry_max_tokens),
+        **_sampling_payload(
+            max_tokens_override=_retry_max_tokens,
+            apply_thinking_tier=apply_thinking_tier,
+        ),
     }
     headers = {
         "Authorization": f"Bearer {caller_api_key}",
@@ -3435,6 +3457,7 @@ async def _stream_llm_sse(
                         caller_api_key,
                         retried,
                         forwarded_headers=forwarded_headers,
+                        apply_thinking_tier=apply_thinking_tier,
                         _retry_max_tokens=_retry_max_tokens,
                         _auto_continue_left=_auto_continue_left,
                         _compact_retry=stage + 1,
@@ -3477,6 +3500,7 @@ async def _stream_llm_sse(
                                 caller_api_key,
                                 messages,
                                 forwarded_headers=forwarded_headers,
+                                apply_thinking_tier=apply_thinking_tier,
                                 _retry_max_tokens=bumped_max_tokens(int(payload["max_tokens"])),
                             ):
                                 yield ev
@@ -3491,6 +3515,7 @@ async def _stream_llm_sse(
                         saw_content=saw_content,
                         accumulated=accumulated,
                         remaining=remaining,
+                        apply_thinking_tier=apply_thinking_tier,
                     ):
                         yield ev
                     return
@@ -3532,6 +3557,7 @@ async def _stream_llm_sse(
                         caller_api_key,
                         messages,
                         forwarded_headers=forwarded_headers,
+                        apply_thinking_tier=apply_thinking_tier,
                         _retry_max_tokens=bumped_max_tokens(int(payload["max_tokens"])),
                     ):
                         yield ev
@@ -3546,6 +3572,7 @@ async def _stream_llm_sse(
                 saw_content=saw_content,
                 accumulated=accumulated,
                 remaining=remaining,
+                apply_thinking_tier=apply_thinking_tier,
             ):
                 yield ev
     except httpx.RequestError as exc:
@@ -3912,6 +3939,7 @@ async def _router_streaming(
         forwarded_headers=(
             router_llm_headers if router_llm_headers is not None else forwarded_headers
         ),
+        apply_thinking_tier=True,
     ):
         kind = ev.get("type")
         if kind == "error":

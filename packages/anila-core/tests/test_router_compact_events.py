@@ -207,7 +207,7 @@ def _install_empty_registry(monkeypatch):
 
 
 def _install_direct_llm(monkeypatch):
-    async def fake_llm(api_key, messages, *, forwarded_headers=None):
+    async def fake_llm(api_key, messages, *, forwarded_headers=None, **_kwargs):
         return {
             "content": "好",
             "reasoning": None,

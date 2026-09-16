@@ -127,6 +127,7 @@ import {
   normalizeThinkingTier,
   persistThinkingTierPreference,
   readStoredThinkingTier,
+  shouldReplayOneShotDeep,
 } from "./runtime/thinkingTier.js";
 import {
   AgentSelector,
@@ -481,12 +482,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [conversations, setConversations] = useState([]);
   const [selectedConvId, setSelectedConvId] = useState(null);
 
+  const authRequestRef = useRef(authRequest);
+  authRequestRef.current = authRequest;
+
   useEffect(() => {
     if (!isAuthenticated) return undefined;
     let cancelled = false;
     (async () => {
       try {
-        const data = await apiListRouterModels(authRequest);
+        const data = await apiListRouterModels(authRequestRef.current);
         if (cancelled) return;
         const models = data?.models || [];
         setRouterModels(models);
@@ -501,7 +505,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       }
     })();
     return () => { cancelled = true; };
-  }, [isAuthenticated, authRequest]);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (!selectedConvId) {
@@ -512,7 +516,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     if (!conv) return;
     if (typeof conv.routerModelId === "number") {
       setSelectedRouterModelId(conv.routerModelId);
-      setRouterModelError("");
     }
     setThinkingTier(normalizeThinkingTier(conv.thinkingTier));
   }, [selectedConvId, conversations]);
@@ -2069,7 +2072,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       classified: meta.classified,
       reasoning: meta.reasoning || null,
       thinkingLocked: meta.thinking_locked === true,
-      thinkingApplied: meta.thinking_applied || null,
+      ...(meta.thinking_applied ? { thinkingApplied: meta.thinking_applied } : {}),
       // Display-only, but it was showing the wrong agent name on every
       // routed answer: BOTH ends of handoff_chain read "anila-router" on the
       // router path, so `.at(-1)` never named the agent that answered.
@@ -2124,7 +2127,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       if (typeof patch.routerModelId === "number") {
         setSelectedRouterModelId(patch.routerModelId);
       }
-      setThinkingTier(patch.thinkingTier);
+      if (patch.thinkingTier !== undefined) {
+        setThinkingTier(patch.thinkingTier);
+      }
     }
   }
 
@@ -2160,6 +2165,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const next = Boolean(value);
     deepThinkNextRef.current = next;
     setDeepThinkNext(next);
+  }
+
+  function consumeOneShotDeep() {
+    if (!deepThinkNextRef.current) return false;
+    deepThinkNextRef.current = false;
+    setDeepThinkNext(false);
+    return true;
   }
 
   // ---- send single ----
@@ -2223,6 +2235,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       }
     }
 
+    const oneShotDeep = consumeOneShotDeep();
     const userMsg = {
       id: makeId("u"),
       role: "user",
@@ -2245,6 +2258,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       conversationId: convId,
       createdAt: nowIso(),
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+      thinkingApplied: oneShotDeep ? { tier: "deep", source: "turn" } : null,
     };
     setMessagesByConv((prev) => ({
       ...prev,
@@ -2419,11 +2433,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         messagesRef.current[convId] || [],
         userMsg.id,
       );
-      const oneShotDeep = deepThinkNextRef.current;
-      if (oneShotDeep) {
-        deepThinkNextRef.current = false;
-        setDeepThinkNext(false);
-      }
       const payload = {
         model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
@@ -2859,9 +2868,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const steeredUserText = steer
       ? `${prevUser.text}\n\n（重新回答時請依此調整：${steer}）`
       : prevUser.text;
+    const oneShotDeep = consumeOneShotDeep() || shouldReplayOneShotDeep(assistantMsg.thinkingApplied);
     const payload = {
       model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
+      ...(oneShotDeep && effectiveTarget === ROUTER_AGENT.id ? { anila_thinking_tier: "deep" } : {}),
       messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || [], historyOptions(convId, prevUser)),
     };
 
@@ -2888,6 +2899,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           conversationId: convId,
           createdAt: nowIso(),
           timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+          thinkingApplied: oneShotDeep ? { tier: "deep", source: "turn" } : null,
         },
       ],
     }));
@@ -3537,6 +3549,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 models={routerModels}
                 selectedId={selectedRouterModelId}
                 defaultModelId={routerDefaultId}
+                fallbackName={selectedConv?.routerModelName || ""}
                 error={routerModelError}
                 disabled={routerPickerLocked}
                 onChange={async (id) => {
@@ -3851,6 +3864,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 models={routerModels}
                 selectedId={selectedRouterModelId}
                 defaultModelId={routerDefaultId}
+                fallbackName={selectedConv?.routerModelName || ""}
                 error={routerModelError}
                 disabled={routerPickerLocked}
                 onChange={async (id) => {
