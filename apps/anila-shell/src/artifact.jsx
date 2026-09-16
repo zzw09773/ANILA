@@ -15,6 +15,7 @@ import {
   isIncompleteArtifactHtml,
 } from "./runtime/artifactDetect.js";
 import { downloadArtifactSource } from "./runtime/artifactDownload.js";
+import { buildArtifactRevisePrompt, sourceSelectionText } from "./runtime/artifactRevise.js";
 import { artifactStillNeedsCdn, localizeArtifactHtml } from "./runtime/artifactVendor.js";
 import { ClassificationWatermark, watermarkLevel } from "./trust.jsx";
 import { classifiedCopyDenial } from "./uxCopy.js";
@@ -54,6 +55,7 @@ const KIND_LABEL = {
  *   classified?: boolean,
  *   classificationLevel?: string,
  *   onClose: () => void,
+ *   onRevise?: (prompt: string) => void,
  * }} props
  */
 export function ArtifactPanel({
@@ -61,18 +63,28 @@ export function ArtifactPanel({
   classified = false,
   classificationLevel,
   onClose,
+  onRevise,
 }) {
   const [mode, setMode] = useState("preview"); // 'preview' | 'source'
   const [copied, setCopied] = useState(false);
   const [width, setWidth] = useState(readPanelWidth);
   const [frameSource, setFrameSource] = useState(artifact?.source ?? "");
+  const [selection, setSelection] = useState("");
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const [instruction, setInstruction] = useState("");
+  const [reviseHint, setReviseHint] = useState("");
   const widthRef = useRef(width);
   const draggingRef = useRef(false);
+  const sourceRef = useRef(null);
   widthRef.current = width;
 
   useEffect(() => {
     setMode("preview");
     setCopied(false);
+    setSelection("");
+    setReviseOpen(false);
+    setInstruction("");
+    setReviseHint("");
   }, [artifact?.kind]);
 
   useEffect(() => {
@@ -80,6 +92,13 @@ export function ArtifactPanel({
     const t = setTimeout(() => setFrameSource(src), frameSource ? 400 : 0);
     return () => clearTimeout(t);
   }, [artifact?.source]); // eslint-disable-line react-hooks/exhaustive-deps — debounce only
+
+  useEffect(() => {
+    setSelection("");
+    setReviseOpen(false);
+    setInstruction("");
+    setReviseHint("");
+  }, [artifact?.source]);
 
   const persistWidth = useCallback(() => {
     try {
@@ -127,6 +146,42 @@ export function ArtifactPanel({
     if (!canCopy) return;
     void downloadArtifactSource(source, kind);
   }, [canCopy, source, kind]);
+
+  const captureSelection = useCallback(() => {
+    const text = sourceSelectionText(window.getSelection(), sourceRef.current);
+    if (text) setSelection(text);
+  }, []);
+
+  const openRevise = useCallback(() => {
+    if (!canCopy) return;
+    if (mode !== "source") setMode("source");
+    if (!selection.trim()) {
+      setReviseOpen(false);
+      setReviseHint("請先在原始碼選一段");
+      return;
+    }
+    setReviseHint("");
+    setReviseOpen(true);
+  }, [canCopy, mode, selection]);
+
+  const sendRevise = useCallback(() => {
+    if (!canCopy) return;
+    const prompt = buildArtifactRevisePrompt({
+      kind,
+      language: artifact?.language,
+      source,
+      selected: selection,
+      instruction,
+    });
+    if (!prompt) {
+      setReviseHint("請先在原始碼選一段，並寫下要怎麼改");
+      return;
+    }
+    onRevise?.(prompt, { kind });
+    setReviseOpen(false);
+    setInstruction("");
+    setReviseHint("");
+  }, [artifact?.language, canCopy, instruction, kind, onRevise, selection, source]);
 
   const copySource = useCallback(() => {
     if (!canCopy) return;
@@ -268,6 +323,15 @@ export function ArtifactPanel({
             >
               {copied ? "已複製" : "複製"}
             </button>
+            <button
+              type="button"
+              data-testid="artifact-revise"
+              onClick={openRevise}
+              title="在原始碼選一段後改寫"
+              style={tabBtnStyle(false)}
+            >
+              改這一段
+            </button>
           </>
         ) : (
           <>
@@ -289,14 +353,85 @@ export function ArtifactPanel({
             >
               複製
             </button>
+            <button
+              type="button"
+              data-testid="artifact-revise-denied"
+              disabled
+              title={classifiedCopyDenial(classificationLevel)}
+              style={{ ...tabBtnStyle(false), opacity: 0.4, cursor: "not-allowed" }}
+            >
+              改這一段
+            </button>
           </>
         )}
       </div>
+      {reviseHint ? (
+        <div
+          data-testid="artifact-revise-hint"
+          style={{
+            padding: "6px 12px",
+            fontSize: 12,
+            color: "var(--fg-muted)",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
+          {reviseHint}
+        </div>
+      ) : null}
+      {reviseOpen ? (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderBottom: "1px solid var(--border)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+          }}
+        >
+          <textarea
+            data-testid="artifact-revise-input"
+            value={instruction}
+            onChange={(e) => setInstruction(e.target.value)}
+            placeholder="要怎麼改這一段？"
+            rows={2}
+            style={{
+              width: "100%",
+              resize: "vertical",
+              fontSize: 12.5,
+              fontFamily: "inherit",
+              padding: 8,
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              background: "var(--bg)",
+              color: "var(--fg)",
+            }}
+          />
+          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={() => { setReviseOpen(false); setInstruction(""); }}
+              style={tabBtnStyle(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              data-testid="artifact-revise-send"
+              onClick={sendRevise}
+              style={tabBtnStyle(true)}
+            >
+              送出
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", position: "relative" }}>
         {mode === "source" ? (
           <pre
+            ref={sourceRef}
             data-testid="artifact-source"
+            onMouseUp={captureSelection}
             style={{
               margin: 0,
               padding: 14,

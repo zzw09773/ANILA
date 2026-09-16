@@ -1,5 +1,5 @@
 // 右側靜態產物預覽：偵測（含 xml 標成 SVG）、sandbox 隔離、密等繼承、預覽／原始碼切換。
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import React from "react";
 
@@ -507,5 +507,238 @@ describe("CodeBlock preview affordance — 使用者選擇才開", () => {
       </ArtifactPreviewProvider>,
     );
     expect(screen.queryByTestId("artifact-preview-btn")).toBeNull();
+  });
+});
+
+describe("ArtifactPanel 改這一段", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function mockSourceSelection(pre, text) {
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      toString: () => text,
+      anchorNode: pre,
+      focusNode: pre,
+      rangeCount: 1,
+      getRangeAt: () => ({ commonAncestorContainer: pre }),
+    });
+    fireEvent.mouseUp(pre);
+  }
+
+  it("denies revise on classified chats with the same copy as copy", () => {
+    render(
+      <ArtifactPanel
+        artifact={{ kind: "svg", source: DONUT_SVG }}
+        classified={true}
+        classificationLevel="密"
+        onClose={() => {}}
+      />,
+    );
+    const denied = screen.getByTestId("artifact-revise-denied");
+    expect(denied).toBeDisabled();
+    expect(denied.getAttribute("title")).toBe(classifiedCopyDenial("密"));
+    expect(screen.queryByTestId("artifact-revise")).toBeNull();
+  });
+
+  it("does not send when nothing is selected", () => {
+    const onRevise = vi.fn();
+    render(
+      <ArtifactPanel
+        artifact={{ kind: "markdown", source: "# hi" }}
+        classified={false}
+        onClose={() => {}}
+        onRevise={onRevise}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("artifact-tab-source"));
+    fireEvent.click(screen.getByTestId("artifact-revise"));
+    expect(screen.getByTestId("artifact-revise-hint").textContent).toMatch(/選一段/);
+    expect(onRevise).not.toHaveBeenCalled();
+  });
+
+  it("sends a revise prompt after selection and instruction", () => {
+    const onRevise = vi.fn();
+    render(
+      <ArtifactPanel
+        artifact={{ kind: "html", language: "html", source: "<h1>舊</h1>" }}
+        classified={false}
+        onClose={() => {}}
+        onRevise={onRevise}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("artifact-tab-source"));
+    mockSourceSelection(screen.getByTestId("artifact-source"), "<h1>舊</h1>");
+    fireEvent.click(screen.getByTestId("artifact-revise"));
+    fireEvent.change(screen.getByTestId("artifact-revise-input"), {
+      target: { value: "標題改成新" },
+    });
+    fireEvent.click(screen.getByTestId("artifact-revise-send"));
+    expect(onRevise).toHaveBeenCalledTimes(1);
+    const prompt = onRevise.mock.calls[0][0];
+    expect(prompt).toContain("標題改成新");
+    expect(prompt).toContain("<h1>舊</h1>");
+    expect(onRevise.mock.calls[0][1]).toEqual({ kind: "html" });
+  });
+
+  it("keeps indentation when the source selection has leading spaces", () => {
+    const onRevise = vi.fn();
+    const source = "<div>\n  <p>x</p>\n</div>";
+    render(
+      <ArtifactPanel
+        artifact={{ kind: "html", language: "html", source }}
+        classified={false}
+        onClose={() => {}}
+        onRevise={onRevise}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("artifact-tab-source"));
+    mockSourceSelection(screen.getByTestId("artifact-source"), "  <p>x</p>");
+    fireEvent.click(screen.getByTestId("artifact-revise"));
+    fireEvent.change(screen.getByTestId("artifact-revise-input"), {
+      target: { value: "改成 y" },
+    });
+    fireEvent.click(screen.getByTestId("artifact-revise-send"));
+    expect(onRevise.mock.calls[0][0]).toContain("  <p>x</p>");
+  });
+
+  it("does not capture a selection that crosses outside the source pre", () => {
+    const onRevise = vi.fn();
+    render(
+      <ArtifactPanel
+        artifact={{ kind: "html", language: "html", source: "<h1>舊</h1>" }}
+        classified={false}
+        onClose={() => {}}
+        onRevise={onRevise}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("artifact-tab-source"));
+    const pre = screen.getByTestId("artifact-source");
+    const outside = document.createElement("span");
+    outside.textContent = "OUT";
+    pre.parentElement.appendChild(outside);
+    const range = document.createRange();
+    const preText = pre.firstChild;
+    range.setStart(preText, 0);
+    range.setEnd(outside.firstChild, 3);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    fireEvent.mouseUp(pre);
+    fireEvent.click(screen.getByTestId("artifact-revise"));
+    expect(screen.getByTestId("artifact-revise-hint").textContent).toMatch(/選一段/);
+    expect(onRevise).not.toHaveBeenCalled();
+  });
+});
+
+describe("產物修訂後預覽跟著換", () => {
+  it("replaces the open artifact from the ticket message when the new fence is not a prefix", () => {
+    const opened = [];
+    const current = { kind: "html", source: "<h1>舊</h1>" };
+    render(
+      <ArtifactPreviewProvider
+        artifact={current}
+        onOpen={(a) => opened.push(a)}
+        pendingRevision={{ messageId: "a-new", kind: "html" }}
+      >
+        <MarkdownView
+          messageId="a-new"
+          streaming={false}
+          text={"```html\n<h1>新</h1>\n```"}
+        />
+      </ArtifactPreviewProvider>,
+    );
+    expect(opened.some((a) => a.source.includes("<h1>新</h1>"))).toBe(true);
+  });
+
+  it("does not replace from a historical fence while a ticket is pending", () => {
+    const opened = [];
+    const current = { kind: "html", source: "<h1>舊</h1>" };
+    render(
+      <ArtifactPreviewProvider
+        artifact={current}
+        onOpen={(a) => opened.push(a)}
+        pendingRevision={{ messageId: "a-new", kind: "html" }}
+      >
+        <MarkdownView
+          messageId="a-old"
+          streaming={false}
+          text={"```html\n<h1>歷史</h1>\n```"}
+        />
+      </ArtifactPreviewProvider>,
+    );
+    expect(opened.some((a) => a.source.includes("歷史"))).toBe(false);
+  });
+
+  it("prefers the longer same-kind fence on the ticket message", () => {
+    const opened = [];
+    const current = { kind: "html", source: "<h1>舊</h1>" };
+    render(
+      <ArtifactPreviewProvider
+        artifact={current}
+        onOpen={(a) => opened.push(a)}
+        pendingRevision={{ messageId: "a-new", kind: "html" }}
+      >
+        <MarkdownView
+          messageId="a-new"
+          streaming={false}
+          text={"```html\n<p>短</p>\n```\n\n```html\n<h1>完整新產物</h1>\n```"}
+        />
+      </ArtifactPreviewProvider>,
+    );
+    expect(opened.some((a) => a.source.includes("完整新產物"))).toBe(true);
+  });
+
+  it("does not replace the open artifact when the ticket turn was stopped", () => {
+    const opened = [];
+    const current = { kind: "html", source: "<h1>舊</h1>" };
+    render(
+      <ArtifactPreviewProvider
+        artifact={current}
+        onOpen={(a) => opened.push(a)}
+        pendingRevision={{ messageId: "a-new", kind: "html" }}
+      >
+        <MarkdownView
+          messageId="a-new"
+          streaming={false}
+          streamState="stopped"
+          text={"```html\n<h1>半截</h1>\n```"}
+        />
+      </ArtifactPreviewProvider>,
+    );
+    expect(opened.some((a) => a.source.includes("半截"))).toBe(false);
+  });
+
+  it("replaces markdown from the raw reply so nested ``` is not truncated", () => {
+    const opened = [];
+    const current = { kind: "markdown", source: "# 舊" };
+    const text = [
+      "```markdown",
+      "# 範例",
+      "",
+      "```js",
+      "alert(1)",
+      "```",
+      "```",
+    ].join("\n");
+    render(
+      <ArtifactPreviewProvider
+        artifact={current}
+        onOpen={(a) => opened.push(a)}
+        pendingRevision={{ messageId: "a-new", kind: "markdown" }}
+      >
+        <MarkdownView
+          messageId="a-new"
+          streaming={false}
+          streamState="complete"
+          text={text}
+        />
+      </ArtifactPreviewProvider>,
+    );
+    const hit = opened.find((a) => a.kind === "markdown");
+    expect(hit?.source).toContain("```js");
+    expect(hit?.source).toContain("alert(1)");
+    expect(hit?.source).toContain("# 範例");
   });
 });

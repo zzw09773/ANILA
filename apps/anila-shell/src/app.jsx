@@ -574,6 +574,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [activeCitationId, setActiveCitationId] = useState(null);
   // 右側靜態產物預覽（md／html／svg）；僅使用者按「預覽」才開，不自動彈出。
   const [artifact, setArtifact] = useState(null);
+  const [pendingArtifactRevision, setPendingArtifactRevision] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState("general");
   const [shareOpen, setShareOpen] = useState(false);
@@ -1952,6 +1953,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
       const lengthBudget = streamState === STREAM_STATE.FAILED && isLengthBudgetError(streamError);
       if (lengthBudget) streamState = STREAM_STATE.COMPLETE;
+      if (
+        lengthBudget
+        || streamState === STREAM_STATE.STOPPED
+        || streamState === STREAM_STATE.FAILED
+      ) {
+        clearPendingArtifactRevision(assistantId);
+      }
       updateMsg(convId, assistantId, {
         streaming: false,
         streamState,
@@ -2243,6 +2251,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       [convId]: [...(prev[convId] || []), userMsg, assistantMsg],
     }));
 
+    const revisionKind = meta?.artifactRevision?.kind
+      ? String(meta.artifactRevision.kind)
+      : "";
+    if (revisionKind) {
+      setPendingArtifactRevision({
+        messageId: assistantId,
+        kind: revisionKind,
+        conversationId: convId,
+      });
+    }
+
     // 先落庫再串流(runtime/reservedTurn.js)。使用者訊息立刻上伺服器,
     // 助理訊息「在串流開始之前」先預留一列 —— active leaf 因此不會在串流
     // 期間停在使用者訊息上,串流中途送出的下一則訊息會正確掛在它底下。
@@ -2372,6 +2391,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         const reservedId = resolvedHead?.assistantSaved?.id ?? null;
         inFlightStreamsRef.current.delete(assistantId);
         if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
+        clearPendingArtifactRevision(assistantId);
         updateMsg(convId, assistantId, {
           streaming: false,
           streamState: STREAM_STATE.STOPPED,
@@ -2490,6 +2510,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const notice = lengthBudget
         ? "輸出額度不足，思考或正文被截斷。已產生的內容保留。"
         : streamStateNotice(streamState, Boolean(finalText));
+      if (
+        lengthBudget
+        || streamState === STREAM_STATE.STOPPED
+        || streamState === STREAM_STATE.FAILED
+      ) {
+        clearPendingArtifactRevision(assistantId);
+      }
       updateMsg(convId, assistantId, {
         streaming: false,
         streamState,
@@ -3312,6 +3339,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     setSelectedConvId(null);
     setCitationsOpen(false);
     setArtifact(null);
+    setPendingArtifactRevision(null);
     setCompareMode(false);
     setShareOpen(false);
   }
@@ -3332,10 +3360,30 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     setCitationsOpen(true);
   }
 
+  function clearPendingArtifactRevision(messageId) {
+    setPendingArtifactRevision((cur) => {
+      if (!cur) return null;
+      if (messageId != null && cur.messageId !== messageId) return cur;
+      return null;
+    });
+  }
+
+  function onRevisionSettled(messageId) {
+    clearPendingArtifactRevision(messageId);
+  }
+
   function onOpenArtifact(next) {
     if (!next?.kind || typeof next.source !== "string") return;
     setCitationsOpen(false);
     setArtifact(next);
+  }
+
+  function onReviseArtifact(prompt, info) {
+    if (isClassified) return;
+    if (!prompt || typeof prompt !== "string") return;
+    const kind = info?.kind || artifact?.kind;
+    if (!kind) return;
+    void sendMessage(prompt, [], { artifactRevision: { kind } });
   }
 
   function handoffToAgent(newAgentId) {
@@ -3381,7 +3429,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   // ---- render: classified watermark + top bar + messages + composer ----
   return (
-    <ArtifactPreviewProvider artifact={artifact} onOpen={onOpenArtifact}>
+    <ArtifactPreviewProvider
+      artifact={artifact}
+      onOpen={onOpenArtifact}
+      pendingRevision={pendingArtifactRevision}
+      onRevisionSettled={onRevisionSettled}
+    >
     <div style={{ display: "flex", height: "100dvh", background: "var(--bg)", position: "relative" }}>
       <a className="skip-link" href="#shell-main">跳到主要內容</a>
       {showForensicWatermark && (
@@ -3418,6 +3471,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           setSelectedConvId(id);
           setCitationsOpen(false);
           setArtifact(null);
+          setPendingArtifactRevision(null);
           setCompareMode(false);
         }}
         onNewChat={newChat}
@@ -3935,6 +3989,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               classified={isClassified}
               classificationLevel={selectedConv?.classificationLevel}
               onClose={() => setArtifact(null)}
+              onRevise={onReviseArtifact}
             />
           )}
         </div>
@@ -3954,6 +4009,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           if (id == null) return;
           setSettingsOpen(false);
           setSelectedConvId(id);
+          setPendingArtifactRevision(null);
         }}
       />
 

@@ -968,6 +968,10 @@ export const MessageBubble = ({
                   text={displayBody}
                   citations={msg.citations}
                   onOpenCitation={onOpenCitation}
+                  messageId={msg.id}
+                  streaming={Boolean(msg.streaming)}
+                  streamState={msg.streamState ?? null}
+                  finishReason={msg.finishReason ?? null}
                 />
               ) : null}
               {msg.streaming && msg.text && (
