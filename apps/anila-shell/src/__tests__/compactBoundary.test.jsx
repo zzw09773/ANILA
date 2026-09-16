@@ -9,6 +9,10 @@ import {
   resolveKeptBoundary,
   resolveBoundaryDbId,
   COMPACT_SUMMARY_PREFIX,
+  readPendingCompact,
+  writePendingCompact,
+  compactPutFailureState,
+  COMPACT_PUT_MAX_ATTEMPTS,
 } from "../runtime/compact.js";
 import {
   mountOrchestrator,
@@ -23,7 +27,14 @@ import {
   fireEvent,
   act,
 } from "./helpers/orchestrator.jsx";
-import { scriptAnswer } from "./helpers/fakeBackend.js";
+import {
+  scriptAnswer,
+  compactFrame,
+  metaFrame,
+  defaultMeta,
+  doneFrame,
+  deltaFrame,
+} from "./helpers/fakeBackend.js";
 
 const SEEDED_MSGS = [
   { id: 11, role: "user", content: "第一題" },
@@ -139,6 +150,30 @@ describe("kept_from_index 對映", () => {
     ];
     expect(resolveBoundaryDbId({ id: "c" }, withNext)).toBe(13);
   });
+
+  it("flush 必須用剛拿到的 nextPath，不能靠尚未更新的 stale path", () => {
+    const stale = [{ id: "u1" }, { id: "a1" }];
+    const nextPath = [{ id: "u1", dbId: 1001 }, { id: "a1", dbId: 1002 }];
+    expect(resolveBoundaryDbId({ id: "u1" }, stale)).toBeNull();
+    expect(resolveBoundaryDbId({ id: "u1" }, nextPath)).toBe(1001);
+  });
+
+  it("pending.convId 對不上要寫的對話時不准讀出", () => {
+    const store = new Map();
+    writePendingCompact(store, 55, { summary: "S", clientId: "u1" });
+    expect(readPendingCompact(store, 55).convId).toBe(55);
+    store.set(55, { convId: 66, summary: "S", clientId: "u1", attempts: 0 });
+    expect(readPendingCompact(store, 55)).toBeNull();
+  });
+
+  it("PUT 失敗累計 attempts，滿 3 次才放棄", () => {
+    const first = compactPutFailureState(null, 55, "S", "u1");
+    expect(first.abandoned).toBe(false);
+    expect(first.pending.attempts).toBe(1);
+    const last = compactPutFailureState({ attempts: COMPACT_PUT_MAX_ATTEMPTS - 1 }, 55, "S", "u1");
+    expect(last.abandoned).toBe(true);
+    expect(last.pending.attempts).toBe(COMPACT_PUT_MAX_ATTEMPTS);
+  });
 });
 
 describe("compact API 包裝", () => {
@@ -218,7 +253,9 @@ describe("ChatRuntime compact boundary", () => {
     await mountOrchestrator({ backend });
     await openSeededConversation(backend);
     await clickRegenerate();
-    await waitForAnswer("重試的回答");
+    await waitFor(() => {
+      expect(screen.getAllByText("重試的回答").length).toBeGreaterThan(0);
+    });
     await waitForIdle();
 
     expect(historyOf(backend, 0)).toEqual([
@@ -355,5 +392,190 @@ describe("ChatRuntime compact boundary", () => {
     backend.stream.close();
     await waitForIdle();
     expect(screen.getByLabelText("整理對話")).not.toBeDisabled();
+  });
+
+  it("延遲 persist 後 refresh 只寫一次", async () => {
+    const backend = mountSeeded({
+      compact_summary: "舊摘要全文",
+      compact_boundary_message_id: 11,
+    });
+    backend.route("PUT", /\/compact$/, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return undefined;
+    });
+    backend.enqueueAnswer("第三答", {
+      compact: {
+        summary: "新摘要",
+        kept_from_index: 4,
+        method: "summary",
+        tokens_before: 200,
+        tokens_after: 40,
+      },
+    });
+    await mountOrchestrator({ backend });
+    await openSeededConversation(backend);
+    await sendComposer("第三題");
+    await waitForAnswer("第三答");
+    await waitForIdle();
+    await waitFor(() => {
+      expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
+    });
+    backend.enqueueAnswer("延遲後重試");
+    await clickRegenerate();
+    await waitFor(() => {
+      expect(screen.getAllByText("延遲後重試").length).toBeGreaterThan(0);
+    });
+    await waitForIdle();
+    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
+    expect(backend.storedConversation(55).compact_summary).toBe("新摘要");
+  });
+
+  it("fallback 路徑寫入當則使用者的 dbId", async () => {
+    const backend = mountSeeded();
+    backend.enqueueAnswer("第三答", {
+      compact: {
+        summary: "新摘要",
+        kept_from_index: 4,
+        method: "summary",
+        tokens_before: 200,
+        tokens_after: 40,
+      },
+    });
+    await mountOrchestrator({ backend });
+    await openSeededConversation(backend);
+    await sendComposer("第三題");
+    await waitForAnswer("第三答");
+    await waitForIdle();
+
+    const userRow = backend.appendedMessages.find(
+      (m) => m.role === "user" && m.content === "第三題",
+    );
+    expect(userRow).toBeTruthy();
+    await waitFor(() => {
+      const puts = backend.requestsFor("/compact", "PUT");
+      expect(puts).toHaveLength(1);
+      expect(puts[0].body).toEqual({
+        summary: "新摘要",
+        boundary_message_id: userRow.msgId,
+      });
+    });
+  });
+
+  it("快速切換對話後仍寫原 convId", async () => {
+    const backend = createFakeBackend({
+      conversations: [seededConv(), seededConv({ id: 66, title: "另一個" })],
+    });
+    backend.disableTitleGeneration();
+    backend.seedMessages(55, SEEDED_MSGS);
+    backend.seedMessages(66, [
+      { id: 21, role: "user", content: "別的題" },
+      { id: 22, role: "assistant", content: "別的答" },
+    ]);
+    backend.enqueueManualStream();
+    await mountOrchestrator({ backend });
+    await openSeededConversation(backend);
+    await sendComposer("第三題");
+    await waitFor(() => {
+      expect(backend.stream).toBeTruthy();
+    });
+    backend.stream.pushAll([
+      deltaFrame("第三答"),
+      compactFrame({
+        summary: "新摘要",
+        kept_from_index: 4,
+        method: "summary",
+      }),
+    ]);
+    await selectConversation("另一個");
+    await waitFor(() => {
+      expect(screen.getByText("別的答")).toBeTruthy();
+    });
+    backend.stream.pushAll([metaFrame(defaultMeta()), doneFrame()]);
+    backend.stream.close();
+    await waitFor(() => {
+      const puts = backend.requestsFor("/compact", "PUT");
+      expect(puts.length).toBeGreaterThan(0);
+      expect(puts.every((p) => p.path.includes("/conversations/55/"))).toBe(true);
+    });
+    expect(backend.storedConversation(55).compact_summary).toBe("新摘要");
+    expect(backend.storedConversation(66).compact_summary).toBeNull();
+  });
+
+  it("PUT 失敗保留 pending，之後 flush 再寫一次", async () => {
+    const backend = mountSeeded({
+      compact_summary: "舊摘要全文",
+      compact_boundary_message_id: 11,
+    });
+    let failLeft = 2;
+    backend.route("PUT", /\/compact$/, (_req, { errorResponse }) => {
+      if (failLeft > 0) {
+        failLeft -= 1;
+        return errorResponse(500, "寫入失敗");
+      }
+      return undefined;
+    });
+    backend.enqueueAnswer("第三答", {
+      compact: {
+        summary: "新摘要",
+        kept_from_index: 4,
+        method: "summary",
+      },
+    });
+    await mountOrchestrator({ backend });
+    await openSeededConversation(backend);
+    await sendComposer("第三題");
+    await waitForAnswer("第三答");
+    await waitForIdle();
+    expect(backend.storedConversation(55).compact_summary).toBe("舊摘要全文");
+    expect(backend.requestsFor("/compact", "PUT").length).toBeGreaterThanOrEqual(2);
+
+    backend.enqueueAnswer("再一答");
+    await sendComposer("再問");
+    await waitForAnswer("再一答");
+    await waitForIdle();
+    await waitFor(() => {
+      expect(backend.storedConversation(55).compact_summary).toBe("新摘要");
+    });
+  });
+
+  it("串流 anila.compact 與最終 anila.meta.compact 只寫一次", async () => {
+    const backend = mountSeeded({
+      compact_summary: "舊摘要全文",
+      compact_boundary_message_id: 11,
+    });
+    const compact = {
+      summary: "新摘要",
+      kept_from_index: 4,
+      method: "summary",
+      tokens_before: 200,
+      tokens_after: 40,
+    };
+    backend.enqueueAnswer("第三答", { compact, meta: { compact } });
+    await mountOrchestrator({ backend });
+    await openSeededConversation(backend);
+    await sendComposer("第三題");
+    await waitForAnswer("第三答");
+    await waitForIdle();
+    await waitFor(() => {
+      expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
+    });
+    expect(backend.storedConversation(55).compact_summary).toBe("新摘要");
+  });
+
+  it("seed 含 tool 時送給 Router 的歷史只有 user／assistant", async () => {
+    const backend = mountSeeded({}, [
+      ...SEEDED_MSGS,
+      { id: 15, role: "tool", content: "工具輸出不該進歷史" },
+    ]);
+    backend.enqueueAnswer("追問的回答");
+    await mountOrchestrator({ backend });
+    await openSeededConversation(backend);
+    await sendComposer("追問");
+    await waitForAnswer("追問的回答");
+    await waitForIdle();
+    const roles = backend.chatPayloads[0].messages.map((m) => m.role);
+    expect(roles.every((r) => r === "user" || r === "assistant")).toBe(true);
+    expect(roles).not.toContain("tool");
+    expect(historyOf(backend, 0).some((line) => line.includes("工具輸出"))).toBe(false);
   });
 });

@@ -89,10 +89,13 @@ import {
   COMPACT_SUMMARY_PREFIX,
   compactBoundaryOnPath,
   compactFieldsFromServer,
+  compactPutFailureState,
   compactStateFromConv,
   keptMessageCount,
+  readPendingCompact,
   resolveBoundaryDbId,
   resolveKeptBoundary,
+  writePendingCompact,
 } from "./runtime/compact.js";
 import { CompactBoundaryBanner } from "./compactBoundary.jsx";
 import { CONV_USAGE_DEBOUNCE_MS } from "./runtime/usageDisplay.js";
@@ -250,6 +253,19 @@ function outgoingUserText(payload) {
   return "";
 }
 
+/**
+ * 組出送給 Router 的 OpenAI messages。
+ *
+ * 刻意不走這函式（不帶對話歷史）的呼叫端：
+ * 1. generateConversationTitle — 標題產生器，自帶 system＋單則 Q&A
+ * 2. buildDeclarativeActionMessages / runActionInvokeFillback — 宣告式 custom action，只有渲染後的 prompt
+ * 3. sendCompare — 比較／direct 並排，每欄只送當則 user
+ *
+ * CSP 對話訊息 API 的寫入路徑（start_turn / branch_turn）只會落 user／assistant。
+ * Message 模型註解與 MessageAppend 的 pattern 雖列了 system／tool，但 CSP 沒有任何
+ * 寫入端產生 role:"tool"；shell 與假後端的對話 path 同樣只有 user／assistant。
+ * 因此這裡只轉那兩種。若日後 CSP 真的回 tool，另開票再折進歷史。
+ */
 function buildMessageHistory(priorMsgs, currentText, currentAttachments, options = null) {
   const out = [];
   const sources = [];
@@ -522,6 +538,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const lastHistoryRef = useRef(new Map());
   const pendingCompactRef = useRef(new Map());
   const compactAppliedRef = useRef(new Set());
+  const compactPersistInFlightRef = useRef(new Map());
   const [compacting, setCompacting] = useState(false);
   const messagesByConv = messagesByConvState;
   const setMessagesByConv = useCallback((update) => {
@@ -801,22 +818,28 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
     const controller = new AbortController();
     streamAbortRef.current.set(convId, controller);
+    let compactChain = Promise.resolve();
+    const queueCompact = (payload) => {
+      compactChain = compactChain.then(() => handleIncomingCompact(convId, payload, opts.payload));
+    };
     try {
-      return await streamChatCompletion({
+      const result = await streamChatCompletion({
         // 對話已綁 Task 時所有後續 chat 呼叫(送出/編輯/重試)自動帶上;
         // 呼叫端可用 opts.taskId 覆寫(sendMessage 首回合的 state 尚未落地)。
         taskId: taskIdForConv(convId),
         ...opts,
         signal: controller.signal,
         onCompact: (payload) => {
-          handleIncomingCompact(convId, payload, opts.payload);
+          queueCompact(payload);
           opts.onCompact?.(payload);
         },
         onMeta: (meta) => {
-          if (meta?.compact) handleIncomingCompact(convId, meta.compact, opts.payload);
+          if (meta?.compact) queueCompact(meta.compact);
           opts.onMeta?.(meta);
         },
       });
+      await compactChain;
+      return result;
     } finally {
       streamAbortRef.current.delete(convId);
     }
@@ -1178,10 +1201,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       ...mapServerMessage(m),
       conversationId: convId,
     }));
-    setMessagesByConv((prev) => ({
-      ...prev,
-      [convId]: applyServerPath(prev[convId] || [], mapped, convId),
-    }));
+    let nextPath = applyServerPath(messagesRef.current[convId] || [], mapped, convId);
+    setMessagesByConv((prev) => {
+      nextPath = applyServerPath(prev[convId] || [], mapped, convId);
+      return {
+        ...prev,
+        [convId]: nextPath,
+      };
+    });
     if (detail.active_leaf_message_id !== undefined) {
       updateConv(convId, {
         activeLeafMessageId: detail.active_leaf_message_id,
@@ -1190,7 +1217,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     } else {
       updateConv(convId, compactFieldsFromServer(detail));
     }
-    flushPendingCompact(convId);
+    await flushPendingCompact(convId, nextPath);
   }
 
   // Fetch the user's conversations on login and whenever JWT changes. Messages
@@ -1441,40 +1468,75 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     };
   }
 
-  async function persistConversationCompact(convId, summary, boundaryMsg) {
-    if (typeof convId !== "number" || !summary) return;
-    const path = messagesRef.current[convId] || [];
+  async function persistConversationCompact(convId, summary, boundaryMsg, pathOverride) {
+    const existing = compactPersistInFlightRef.current.get(convId);
+    if (existing) return existing;
+    const work = persistConversationCompactOnce(convId, summary, boundaryMsg, pathOverride)
+      .finally(() => {
+        if (compactPersistInFlightRef.current.get(convId) === work) {
+          compactPersistInFlightRef.current.delete(convId);
+        }
+      });
+    compactPersistInFlightRef.current.set(convId, work);
+    return work;
+  }
+
+  async function persistConversationCompactOnce(convId, summary, boundaryMsg, pathOverride) {
+    if (typeof convId !== "number" || !summary) return false;
+    const path = Array.isArray(pathOverride) ? pathOverride : (messagesRef.current[convId] || []);
     const dbId = resolveBoundaryDbId(boundaryMsg, path);
     if (typeof dbId !== "number") {
-      pendingCompactRef.current.set(convId, {
+      writePendingCompact(pendingCompactRef.current, convId, {
         summary,
         clientId: boundaryMsg?.id ?? null,
       });
-      return;
+      return false;
     }
-    pendingCompactRef.current.delete(convId);
+    const pending = readPendingCompact(pendingCompactRef.current, convId);
+    if (pendingCompactRef.current.has(convId) && !pending) {
+      console.warn("[compact] pending convId 與要寫的對話不一致", convId);
+      return false;
+    }
     try {
       const saved = await apiSetConversationCompact(authRequest, convId, {
         summary,
         boundaryMessageId: dbId,
       });
+      pendingCompactRef.current.delete(convId);
       updateConv(convId, compactFieldsFromServer(saved));
+      return true;
     } catch (err) {
-      setRuntimeError(err?.message || "無法保存對話摘要");
+      const failure = compactPutFailureState(pending, convId, summary, boundaryMsg?.id);
+      if (failure.abandoned) {
+        pendingCompactRef.current.delete(convId);
+        console.warn("[compact] 放棄寫回摘要", convId, err);
+        return false;
+      }
+      writePendingCompact(pendingCompactRef.current, convId, failure.pending);
+      return false;
     }
   }
 
-  function flushPendingCompact(convId) {
-    const pending = pendingCompactRef.current.get(convId);
-    if (!pending) return;
-    const path = messagesRef.current[convId] || [];
+  async function flushPendingCompact(convId, pathOverride) {
+    const pending = readPendingCompact(pendingCompactRef.current, convId);
+    if (!pending) {
+      if (pendingCompactRef.current.has(convId)) {
+        console.warn("[compact] flush convId 與 pending 不一致，略過", convId);
+      }
+      return false;
+    }
+    const path = Array.isArray(pathOverride) ? pathOverride : (messagesRef.current[convId] || []);
     const hinted = pending.clientId
       ? path.find((m) => m.id === pending.clientId)
       : null;
     const dbId = resolveBoundaryDbId(hinted, path);
-    if (typeof dbId !== "number") return;
-    pendingCompactRef.current.delete(convId);
-    persistConversationCompact(convId, pending.summary, { dbId, id: pending.clientId });
+    if (typeof dbId !== "number") return false;
+    return persistConversationCompact(
+      convId,
+      pending.summary,
+      { dbId, id: pending.clientId },
+      path,
+    );
   }
 
   function handleIncomingCompact(convId, compact, fallbackPayload) {
@@ -1490,7 +1552,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       compact.kept_from_index,
       sources,
     );
-    return persistConversationCompact(convId, compact.summary, boundaryMsg);
+    return persistConversationCompact(
+      convId,
+      compact.summary,
+      boundaryMsg,
+      messagesRef.current[convId] || [],
+    );
   }
 
   async function restoreFullContext() {
@@ -1944,6 +2011,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }
 
   function updateMsg(convId, msgId, patch) {
+    const current = messagesRef.current[convId] || [];
+    messagesRef.current = {
+      ...messagesRef.current,
+      [convId]: current.map((m) => (m.id === msgId ? { ...m, ...patch } : m)),
+    };
     setMessagesByConv((prev) => {
       const list = prev[convId] || [];
       return {
@@ -2220,6 +2292,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           };
         });
       }
+      userMsg.dbId = savedUser.id;
       updateMsg(convId, userMsg.id, {
         dbId: savedUser.id,
         parentId: savedUser.parent_id ?? null,
@@ -2431,7 +2504,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         setRuntimeError(persisted.error?.message || "對話訊息儲存失敗");
         updateMsg(convId, assistantId, { persistError: persisted.notice });
       }
-      flushPendingCompact(convId);
+      await flushPendingCompact(convId);
 
       updateConv(convId, { updatedAt: nowIso() });
 

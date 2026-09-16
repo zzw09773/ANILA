@@ -76,3 +76,36 @@ export function keptMessageCount(payloadLength, keptFromIndex) {
   if (!Number.isFinite(kept)) return 0;
   return Math.max(0, Number(payloadLength) - kept);
 }
+
+export const COMPACT_PUT_MAX_ATTEMPTS = 3;
+
+/** pending 以 convId 為 key；值內再存 convId，flush 時必須對得上才准寫。 */
+export function readPendingCompact(store, convId) {
+  const pending = store.get(convId);
+  if (!pending) return null;
+  if (pending.convId !== convId) return null;
+  return pending;
+}
+
+export function writePendingCompact(store, convId, { summary, clientId, attempts } = {}) {
+  const prev = store.get(convId);
+  store.set(convId, {
+    convId,
+    summary: summary ?? prev?.summary,
+    clientId: clientId !== undefined ? clientId : (prev?.clientId ?? null),
+    attempts: attempts ?? prev?.attempts ?? 0,
+  });
+}
+
+export function compactPutFailureState(pending, convId, summary, clientId) {
+  const attempts = (pending?.attempts ?? 0) + 1;
+  return {
+    abandoned: attempts >= COMPACT_PUT_MAX_ATTEMPTS,
+    pending: {
+      convId,
+      summary,
+      clientId: clientId ?? pending?.clientId ?? null,
+      attempts,
+    },
+  };
+}
