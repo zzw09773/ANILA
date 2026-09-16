@@ -102,3 +102,96 @@ export function localizeArtifactHtml(html, opts = {}) {
 export function artifactStillNeedsCdn(html) {
   return typeof html === "string" && ARTIFACT_CDN_HOST_RE.test(html);
 }
+
+const VENDOR_SRC_RE = /\/vendor\/(?:three|react|babel)\//;
+const SCRIPT_TAG_RE = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+const SCRIPT_SRC_RE = /\bsrc\s*=\s*(["'])([^"']+)\1/i;
+
+export function resolveVendorSrc(src, origin) {
+  const trimmed = String(src || "").trim();
+  if (!trimmed) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("//")) return `https:${trimmed}`;
+  if (!origin) return trimmed;
+  try {
+    return new URL(trimmed, origin.endsWith("/") ? origin : `${origin}/`).href;
+  } catch {
+    return trimmed;
+  }
+}
+
+function safeInlineScript(text) {
+  return String(text)
+    .replace(/\/\/[#@]\s*sourceMappingURL=.*$/gm, "")
+    .replace(/<\/script/gi, "<\\/script");
+}
+
+function attrsWithoutSrc(attrs) {
+  return String(attrs || "")
+    .replace(SCRIPT_SRC_RE, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * 把同源 vendor 的 &lt;script src&gt; 內嵌進 HTML，讓 file:// 雙擊開檔不必再找相對路徑。
+ * 抓不到檔時改寫成絕對 URL（仍可連本院時載入）。
+ *
+ * @param {string} html
+ * @param {{ origin?: string, fetchImpl?: typeof fetch }} [opts]
+ * @returns {Promise<string>}
+ */
+export async function inlineVendorScripts(html, opts = {}) {
+  if (typeof html !== "string" || !html) return html;
+  const origin = opts.origin ?? (typeof window !== "undefined" ? window.location.origin : "");
+  const fetchFn =
+    opts.fetchImpl ?? (typeof fetch === "function" ? fetch.bind(globalThis) : null);
+  const cache = new Map();
+
+  const load = (src) => {
+    const url = resolveVendorSrc(src, origin);
+    if (cache.has(url)) return cache.get(url);
+    const pending = (async () => {
+      if (!fetchFn) return { ok: false, url };
+      try {
+        const res = await fetchFn(url);
+        if (!res || !res.ok) return { ok: false, url };
+        const text = await res.text();
+        return { ok: true, url, text: safeInlineScript(text) };
+      } catch {
+        return { ok: false, url };
+      }
+    })();
+    cache.set(url, pending);
+    return pending;
+  };
+
+  const tags = [];
+  SCRIPT_TAG_RE.lastIndex = 0;
+  let match = SCRIPT_TAG_RE.exec(html);
+  while (match) {
+    const srcMatch = match[1].match(SCRIPT_SRC_RE);
+    const src = srcMatch ? srcMatch[2].trim() : "";
+    if (src && VENDOR_SRC_RE.test(src)) {
+      tags.push({ full: match[0], attrs: match[1], src, index: match.index });
+    }
+    match = SCRIPT_TAG_RE.exec(html);
+  }
+  if (!tags.length) return html;
+
+  const loaded = await Promise.all(tags.map((tag) => load(tag.src)));
+  let out = html;
+  for (let i = tags.length - 1; i >= 0; i -= 1) {
+    const tag = tags[i];
+    const result = loaded[i];
+    let replacement;
+    if (result.ok) {
+      const rest = attrsWithoutSrc(tag.attrs);
+      replacement = `${rest ? `<script ${rest}>` : "<script>"}\n${result.text}\n</script>`;
+    } else {
+      replacement = tag.full.replace(SCRIPT_SRC_RE, `src="${result.url}"`);
+    }
+    out = out.slice(0, tag.index) + replacement + out.slice(tag.index + tag.full.length);
+  }
+  return out;
+}

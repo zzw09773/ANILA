@@ -125,7 +125,7 @@ export function ArtifactPanel({
 
   const downloadSource = useCallback(() => {
     if (!canCopy) return;
-    downloadArtifactSource(source, kind);
+    void downloadArtifactSource(source, kind);
   }, [canCopy, source, kind]);
 
   const copySource = useCallback(() => {

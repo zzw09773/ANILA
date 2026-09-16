@@ -17,8 +17,14 @@ import {
   artifactDownloadFilename,
   artifactDownloadSpec,
   downloadArtifactSource,
+  prepareArtifactDownload,
 } from "../runtime/artifactDownload.js";
-import { artifactStillNeedsCdn, localizeArtifactHtml } from "../runtime/artifactVendor.js";
+import {
+  artifactStillNeedsCdn,
+  inlineVendorScripts,
+  localizeArtifactHtml,
+  resolveVendorSrc,
+} from "../runtime/artifactVendor.js";
 import { ArtifactPanel, clampPanelWidth } from "../artifact.jsx";
 import { ArtifactPreviewProvider } from "../artifactContext.jsx";
 import { MarkdownView } from "../markdown.jsx";
@@ -184,8 +190,76 @@ describe("artifact download spec", () => {
     expect(artifactDownloadSpec("html")).toEqual({ ext: "html", mime: "text/html" });
     expect(artifactDownloadSpec("svg")).toEqual({ ext: "svg", mime: "image/svg+xml" });
     expect(artifactDownloadSpec("markdown")).toEqual({ ext: "md", mime: "text/markdown" });
-    expect(artifactDownloadSpec("jsx")).toEqual({ ext: "jsx", mime: "text/javascript" });
+    expect(artifactDownloadSpec("jsx")).toEqual({ ext: "html", mime: "text/html" });
     expect(artifactDownloadFilename("svg")).toBe("anila-artifact.svg");
+    expect(artifactDownloadFilename("jsx")).toBe("anila-artifact.html");
+  });
+});
+
+describe("artifact download — file:// 可開", () => {
+  it("resolves vendor paths against the page origin", () => {
+    expect(resolveVendorSrc("/anila/vendor/three/r128/three.min.js", "https://anila.test")).toBe(
+      "https://anila.test/anila/vendor/three/r128/three.min.js",
+    );
+    expect(resolveVendorSrc("https://anila.test/anila/vendor/three/r128/three.min.js", "https://other")).toBe(
+      "https://anila.test/anila/vendor/three/r128/three.min.js",
+    );
+  });
+
+  it("inlines Three.js vendor scripts so a downloaded file does not need three.min.js beside it", async () => {
+    const fetched = [];
+    const fetchImpl = async (url) => {
+      fetched.push(url);
+      const body = url.includes("OrbitControls")
+        ? "window.OrbitControls = function () {};"
+        : "window.THREE = { Scene: function () {} }; //# sourceMappingURL=three.min.js.map";
+      return { ok: true, text: async () => body };
+    };
+    const html = `<!DOCTYPE html><html><head></head><body>
+<script src="three.min.js"></script>
+<script src="./OrbitControls.js"></script>
+<script>new THREE.Scene();</script>
+</body></html>`;
+    const { content, filename, mime } = await prepareArtifactDownload(html, "html", {
+      baseUrl: "/anila/",
+      origin: "https://anila.test",
+      fetchImpl,
+    });
+    expect(filename).toBe("anila-artifact.html");
+    expect(mime).toBe("text/html");
+    expect(fetched).toContain("https://anila.test/anila/vendor/three/r128/three.min.js");
+    expect(fetched).toContain("https://anila.test/anila/vendor/three/r128/OrbitControls.js");
+    expect(content).toContain("window.THREE = { Scene: function () {} };");
+    expect(content).toContain("window.OrbitControls = function () {};");
+    expect(content).not.toMatch(/sourceMappingURL/);
+    expect(content).not.toMatch(/\bsrc=["'][^"']*three\.min\.js/);
+    expect(content).not.toMatch(/\bsrc=["'][^"']*OrbitControls/);
+    expect(content).toContain("new THREE.Scene();");
+  });
+
+  it("falls back to an absolute vendor URL when the script cannot be fetched", async () => {
+    const html = `<script src="/anila/vendor/three/r128/three.min.js"></script>`;
+    const out = await inlineVendorScripts(html, {
+      origin: "https://anila.test",
+      fetchImpl: async () => {
+        throw new Error("offline");
+      },
+    });
+    expect(out).toContain('src="https://anila.test/anila/vendor/three/r128/three.min.js"');
+  });
+
+  it("wraps JSX downloads into a self-contained HTML shell", async () => {
+    const fetchImpl = async () => ({ ok: true, text: async () => "/* vendor */" });
+    const { content, filename } = await prepareArtifactDownload(
+      "function App() { return <h1>太陽系</h1>; }",
+      "jsx",
+      { baseUrl: "/anila/", origin: "https://anila.test", fetchImpl },
+    );
+    expect(filename).toBe("anila-artifact.html");
+    expect(content).toContain("function App()");
+    expect(content).toContain("/* vendor */");
+    expect(content).toContain('data-presets="react,typescript"');
+    expect(content).not.toMatch(/\bsrc=["'][^"']*react\.production/);
   });
 });
 

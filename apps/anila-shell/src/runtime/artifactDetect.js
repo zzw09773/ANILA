@@ -111,13 +111,14 @@ if (typeof App !== "undefined") {
  *
  * @param {'svg'|'html'|'jsx'} kind
  * @param {string} source
+ * @param {{ baseUrl?: string }} [opts]
  * @returns {string}
  */
-export function buildArtifactSrcDoc(kind, source) {
+export function buildArtifactSrcDoc(kind, source, opts = {}) {
   const body = typeof source === "string" ? source : "";
   if (kind === "jsx") {
-    if (looksLikeHtmlDocument(body)) return localizeArtifactHtml(body);
-    return localizeArtifactHtml(wrapJsxAsHtml(body));
+    if (looksLikeHtmlDocument(body)) return localizeArtifactHtml(body, opts);
+    return localizeArtifactHtml(wrapJsxAsHtml(body, opts), opts);
   }
   if (kind === "svg") {
     return (
@@ -136,7 +137,7 @@ export function buildArtifactSrcDoc(kind, source) {
       : "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>" +
         body +
         "</body></html>";
-  return localizeArtifactHtml(raw);
+  return localizeArtifactHtml(raw, opts);
 }
 
 /**
