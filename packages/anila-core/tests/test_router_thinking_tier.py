@@ -156,6 +156,17 @@ def _completion(content: str, model: str = "router-llm") -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _stub_router_refresh_hops(monkeypatch):
+    """TestClient lifespan/request refresh would wait on a reachable CSP."""
+
+    async def _noop_refresh() -> None:
+        return None
+
+    monkeypatch.setattr(rs, "refresh_router_model", _noop_refresh)
+    monkeypatch.setattr(rs, "refresh_router_prompts", _noop_refresh)
+
+
 @pytest_asyncio.fixture
 async def db_path(tmp_path: Path):
     db = tmp_path / "router-thinking-tier.db"
@@ -279,7 +290,7 @@ def test_compact_summary_payload_omits_thinking_tier(monkeypatch):
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
     token = _with_tier("deep")
     try:
-        compacted, step = asyncio.run(
+        compacted, step, _event = asyncio.run(
             rs._auto_compact_routing_messages(
                 _long_messages(),
                 caller_api_key="sk",

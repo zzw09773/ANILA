@@ -43,7 +43,10 @@ from ..models.message import UserMessage
 from ..prompts import COMMON_PREAMBLE, IDENTITY
 from ..compact.auto_compact import FALLBACK_CONTEXT_WINDOW
 from ..compact.openai_history import (
+    HISTORY_SUMMARY_PREFIX,
+    CompactResult,
     auto_compact_openai_messages,
+    estimate_openai_tokens,
     format_transcript,
     is_prompt_too_long,
 )
@@ -705,6 +708,53 @@ def _merge_anila_meta(
     return merged
 
 
+def _attach_compact_event(
+    meta: dict[str, Any],
+    compact_event: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if compact_event:
+        meta["compact"] = compact_event
+    return meta
+
+
+_PRIOR_HISTORY_SUMMARY_RE = re.compile(
+    rf"{re.escape(HISTORY_SUMMARY_PREFIX)}\n(.*?)(?=\n\n【|\n\n你是|\n\n### 使用者偏好|$)",
+    re.DOTALL,
+)
+
+
+def _extract_prior_history_summary(messages: list[dict[str, Any]]) -> str | None:
+    """Pull a previously folded ``[歷史摘要]`` block out of routing system text."""
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "system":
+            continue
+        text = _flatten_openai_content(msg.get("content"))
+        matches = list(_PRIOR_HISTORY_SUMMARY_RE.finditer(text))
+        if not matches:
+            continue
+        prior = matches[-1].group(1).strip()
+        if prior:
+            return prior
+    return None
+
+
+def _compact_client_event(
+    result: CompactResult,
+    *,
+    inbound_count: int,
+) -> dict[str, Any] | None:
+    """SSE / ``anila_meta.compact`` payload. ``strip_images`` has no boundary."""
+    if not result.compacted or result.method not in ("summary", "sliding_window"):
+        return None
+    return {
+        "summary": result.summary if result.method == "summary" else None,
+        "kept_from_index": max(0, inbound_count - result.recent_count),
+        "method": result.method,
+        "tokens_before": result.tokens_before,
+        "tokens_after": result.tokens_after,
+    }
+
+
 def _normalize_clarify_bullets(text: str) -> str:
     """Defense in depth against inline-bullet clarify replies.
 
@@ -1345,10 +1395,12 @@ def create_router_app(
                 status="error" if registry_error else "ok",
             ),
         ]
-        routing_messages, compact_step = await _auto_compact_routing_messages(
+        inbound_count = len(messages) if isinstance(messages, list) else 0
+        routing_messages, compact_step, compact_event = await _auto_compact_routing_messages(
             routing_messages,
             caller_api_key=caller_api_key,
             forwarded_headers=router_llm_headers,
+            inbound_message_count=inbound_count,
         )
         if compact_step:
             base_trace.append(compact_step)
@@ -1389,6 +1441,7 @@ def create_router_app(
                         session_id=session_id,
                         max_iterations=max_iterations,
                         pin_owner=_pin_owner_cb,
+                        compact_event=compact_event,
                     ),
                     media_type="text/event-stream",
                     headers={
@@ -1415,6 +1468,7 @@ def create_router_app(
                     router_llm_headers=router_llm_headers,
                     route_signal=route_signal,
                     trace_session=trace_session,
+                    compact_event=compact_event,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -1450,7 +1504,13 @@ def create_router_app(
                 latency_ms=int((time.time() - started_at) * 1000),
                 route={"decision": "llm_error", "error": llm_response["error"]},
             )
-            return _respond(fallback_content, anila_meta, stream, session_id=session_id)
+            return _respond(
+                fallback_content,
+                anila_meta,
+                stream,
+                session_id=session_id,
+                compact_event=compact_event,
+            )
 
         llm_text = llm_response["content"]
         dispatch = _parse_dispatch_unless_forced(llm_text, route_signal)
@@ -1483,6 +1543,7 @@ def create_router_app(
                 anila_meta,
                 stream,
                 session_id=session_id,
+                compact_event=compact_event,
             )
 
         agent_id, query, dispatch_start, _dispatch_end = dispatch
@@ -1538,7 +1599,13 @@ def create_router_app(
                 "但該 agent 尚未於 CSP 註冊。請聯絡管理員在 CSP 後台加入此 agent，"
                 "或改問其他已註冊 agent 能處理的問題。）"
             )
-            return _respond(fallback, anila_meta, stream, session_id=session_id)
+            return _respond(
+                fallback,
+                anila_meta,
+                stream,
+                session_id=session_id,
+                compact_event=compact_event,
+            )
 
         logger.info("Router: dispatching to agent '%s' (stream=%s)", agent_id, stream)
         base_trace.append(
@@ -1779,6 +1846,7 @@ def create_router_app(
                     anila_meta,
                     stream=False,
                     session_id=session_id,
+                    compact_event=compact_event,
                 )
 
         # Personalize the dispatched reply with the user's memory (CSP injects it
@@ -1828,7 +1896,13 @@ def create_router_app(
         )
         if router_reasoning:
             anila_meta["reasoning"] = router_reasoning
-        return _respond(agent_response["content"], anila_meta, stream=False, session_id=session_id)
+        return _respond(
+            agent_response["content"],
+            anila_meta,
+            stream=False,
+            session_id=session_id,
+            compact_event=compact_event,
+        )
 
     def _respond(
         content: str,
@@ -1836,6 +1910,7 @@ def create_router_app(
         stream: bool,
         *,
         session_id: str = "",
+        compact_event: dict[str, Any] | None = None,
     ) -> StreamingResponse | JSONResponse:
         """Shared response builder for the non-streaming-dispatch paths.
 
@@ -1843,10 +1918,13 @@ def create_router_app(
         helper handles Router-direct answers and degraded fallbacks, which emit
         the full content as a single chunk.
         """
+        anila_meta = _attach_compact_event(anila_meta, compact_event)
         if stream:
             async def _event_stream() -> AsyncIterator[str]:
                 for step in anila_meta["trace"]:
                     yield _make_event("anila.trace", step)
+                if compact_event:
+                    yield _make_event("anila.compact", compact_event)
 
                 # Upstream gave us the full content synchronously (Router must
                 # see the whole answer to decide on DISPATCH). We still want
@@ -1890,6 +1968,43 @@ def create_router_app(
         return JSONResponse(
             _make_full_response(content, "anila-router", anila_meta=anila_meta),
             headers=json_headers,
+        )
+
+    @app.post("/v1/conversations/compact")
+    async def compact_conversation(request: Request) -> JSONResponse:
+        caller_api_key = _extract_bearer_api_key(request)
+        body: dict = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        selected_model = await _csp_resolve_router_model(request, caller_api_key, body)
+        REQUEST_ROUTER_MODEL.set(selected_model)
+        inbound = body.get("messages") if isinstance(body.get("messages"), list) else []
+        anila_headers = {
+            k: v for k, v in request.headers.items()
+            if k.lower().startswith("x-anila-")
+            and k.lower() != _ROUTE_HEADER.lower()
+        }
+        routing_messages = _merge_routing_messages(_build_system_prompt([]), inbound)
+        _compacted, _step, compact_event = await _auto_compact_routing_messages(
+            routing_messages,
+            caller_api_key=caller_api_key,
+            forwarded_headers=anila_headers,
+            force=True,
+            keep_recent_turns=2,
+            summarize_when_forced=True,
+            inbound_message_count=len(inbound),
+        )
+        if compact_event and compact_event.get("method") == "summary":
+            return JSONResponse(compact_event)
+        tokens = estimate_openai_tokens(inbound) if inbound else 0
+        return JSONResponse(
+            {
+                "summary": None,
+                "kept_from_index": len(inbound),
+                "method": "none",
+                "tokens_before": tokens,
+                "tokens_after": tokens,
+            }
         )
 
     @app.get("/v1/sessions/{session_id}/state")
@@ -2155,7 +2270,15 @@ async def _summarize_for_compact(
     old_messages: list[dict[str, Any]],
     forwarded_headers: dict[str, str] | None,
 ) -> str | None:
-    transcript = format_transcript(old_messages)
+    prior = _extract_prior_history_summary(old_messages)
+    convo = [
+        m
+        for m in old_messages
+        if not (isinstance(m, dict) and m.get("role") == "system")
+    ]
+    transcript = format_transcript(convo)
+    if prior:
+        transcript = f"先前摘要：{prior}\n\n{transcript}"
     if not transcript.strip():
         return None
     payload = {
@@ -2203,20 +2326,29 @@ async def _auto_compact_routing_messages(
     forwarded_headers: dict[str, str] | None,
     force: bool = False,
     keep_recent_turns: int = 4,
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    async def _summarize(old: list[dict[str, Any]]) -> str | None:
-        return await _summarize_for_compact(caller_api_key, old, forwarded_headers)
+    summarize_when_forced: bool = False,
+    inbound_message_count: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
+    system_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") == "system"]
 
+    async def _summarize(old: list[dict[str, Any]]) -> str | None:
+        return await _summarize_for_compact(
+            caller_api_key, [*system_msgs, *old], forwarded_headers
+        )
+
+    use_summarizer = (not force) or summarize_when_forced
     result = await auto_compact_openai_messages(
         messages,
         context_window=current_router_context_window(),
         max_output_tokens=get_sampling("router").max_tokens,
-        summarizer=None if force else _summarize,
+        summarizer=_summarize if use_summarizer else None,
         keep_recent_turns=keep_recent_turns,
         force=force,
     )
+    inbound_count = len(messages) if inbound_message_count is None else inbound_message_count
+    compact_event = _compact_client_event(result, inbound_count=inbound_count)
     if not result.compacted:
-        return messages, None
+        return messages, None, None
     logger.info(
         "Router auto-compact %s %s→%s tokens",
         result.method,
@@ -2224,10 +2356,14 @@ async def _auto_compact_routing_messages(
         result.tokens_after,
     )
     label = "已省略較早的圖片" if result.method == "strip_images" else "對話已自動摘要"
-    return result.messages, _make_trace_step(
-        "compact",
-        label,
-        f"{result.method} {result.tokens_before}→{result.tokens_after} tokens",
+    return (
+        result.messages,
+        _make_trace_step(
+            "compact",
+            label,
+            f"{result.method} {result.tokens_before}→{result.tokens_after} tokens",
+        ),
+        compact_event,
     )
 
 
@@ -2329,6 +2465,7 @@ async def _router_streaming_multi_turn(
     session_id: str,
     max_iterations: int,
     pin_owner: PinOwnerFn = None,
+    compact_event: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Sprint 11 PR 4 — Streaming multi-turn Router.
 
@@ -2348,6 +2485,8 @@ async def _router_streaming_multi_turn(
     # immediately alongside the loading affordance.
     for step in base_trace:
         yield _make_event("anila.trace", step)
+    if compact_event:
+        yield _make_event("anila.compact", compact_event)
 
     # First router LLM call. ``router_llm_headers`` carries the answer-channel
     # marker; ``forwarded_headers`` stays reserved for the recompose call below.
@@ -3686,6 +3825,7 @@ async def _router_streaming(
     # the retry button stops suppressing dispatch for everyone, with no error.
     route_signal: str,
     trace_session: Any = None,
+    compact_event: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Router's streaming endpoint (plan C).
 
@@ -3708,6 +3848,8 @@ async def _router_streaming(
     """
     for step in base_trace:
         yield _make_event("anila.trace", step)
+    if compact_event:
+        yield _make_event("anila.compact", compact_event)
 
     buf = ""
     upstream_reasoning = ""
