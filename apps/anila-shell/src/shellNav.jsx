@@ -1,6 +1,6 @@
 // ANILA Shell 主導覽（Slice 9a）— doc 00 §2 唯一產品入口 + doc 10 §11 Shell IA。
 //
-// 一般使用者只看到 ANILA 的三個入口：對話 / 我的知識庫 / 專案入口。
+// 一般使用者只看到 ANILA 的入口：對話 / 我的知識庫 / 專案入口 / 用量 / 記憶。
 // （原本另有「產出中心」，但它與「我的知識庫」是同一個 /anilalm 連結，
 //   兩個標籤指同一頁只會讓人以為點錯；產出中心這個產品概念仍在 anilalm 裡。）
 // 治理中心（CSP 控制面）不是一般使用者的日常入口，只對 owner / admin /
@@ -22,6 +22,7 @@ import {
   IconBook,
   IconGauge,
   IconGrid,
+  IconHistory,
   IconMessage,
   IconShield,
   IconSpark,
@@ -56,9 +57,9 @@ export function originHref(path) {
 
 /**
  * 使用者入口（doc 00 §2 / doc 10 §11 順序）。
- * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void, onOpenUsage?: () => void, currentId?: string }} handlers
+ * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void, onOpenUsage?: () => void, onOpenMemory?: () => void, currentId?: string }} handlers
  */
-export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, currentId = "tasks" } = {}) {
+export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, currentId = "tasks" } = {}) {
   const knowledge = ANILA_LM_ENTRY_ENABLED
     ? { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: originHref("/anilalm") }
     : {
@@ -78,6 +79,7 @@ export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, c
     // 專案入口 = ServicesPanel（Registry 服務卡片）。
     { id: "projects", label: "專案入口", Icon: IconGrid, current: currentId === "projects", onClick: onOpenServices },
     { id: "usage", label: "用量", Icon: IconGauge, current: currentId === "usage", onClick: onOpenUsage },
+    { id: "memory", label: "記憶", Icon: IconHistory, current: currentId === "memory", onClick: onOpenMemory },
   ];
 }
 
@@ -213,10 +215,11 @@ function NavRow({ entry, collapsed }) {
  *   onTaskCenter?: () => void,
  *   onOpenServices?: () => void,
  *   onOpenUsage?: () => void,
+ *   onOpenMemory?: () => void,
  *   currentId?: string,
  * }} props
  */
-export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices, onOpenUsage, currentId = "tasks" }) {
+export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, currentId = "tasks" }) {
   const [open, setOpen] = useState(false);
   const closeThen = (fn) => () => {
     setOpen(false);
@@ -226,6 +229,7 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
     onTaskCenter: closeThen(onTaskCenter),
     onOpenServices: closeThen(onOpenServices),
     onOpenUsage: closeThen(onOpenUsage),
+    onOpenMemory: closeThen(onOpenMemory),
     currentId,
   });
   if (canSeeGovernance(user)) {

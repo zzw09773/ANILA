@@ -20,11 +20,12 @@ the DB directly.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -32,6 +33,7 @@ from app.models.user import User
 from app.models.user_memory import ConversationMemoryChunk, UserFact
 from app.services.auth_service import get_current_user
 from app.schemas.base import ApiResponseModel
+from app.services.memory_service import REPLY_STYLE_KEY, REPLY_STYLE_MAX_CHARS
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
@@ -92,6 +94,78 @@ class DeleteResponse(BaseModel):
     deleted: int
 
 
+class PreferenceBody(BaseModel):
+    text: str = ""
+
+
+class PreferenceResponse(BaseModel):
+    text: str
+    updated_at: Optional[datetime] = None
+
+
+def _preference_row(db: Session, user_id: int) -> Optional[UserFact]:
+    return (
+        db.query(UserFact)
+        .filter(UserFact.user_id == user_id, UserFact.key == REPLY_STYLE_KEY)
+        .first()
+    )
+
+
+@router.get("/preference", response_model=PreferenceResponse)
+def get_preference(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """User-authored reply style. Empty string when the user has not set one."""
+    row = _preference_row(db, current_user.id)
+    if not row:
+        return PreferenceResponse(text="")
+    return PreferenceResponse(text=row.value, updated_at=row.updated_at)
+
+
+@router.put("/preference", response_model=PreferenceResponse)
+def put_preference(
+    body: PreferenceBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Write or clear the reply-style fact. Blank text deletes the row."""
+    text = (body.text or "").strip()
+    if len(text) > REPLY_STYLE_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"回覆偏好最長 {REPLY_STYLE_MAX_CHARS} 字",
+        )
+    if not text:
+        row = _preference_row(db, current_user.id)
+        if row:
+            db.delete(row)
+            db.commit()
+        return PreferenceResponse(text="")
+    row = _preference_row(db, current_user.id)
+    if row:
+        row.value = text
+        row.confidence = 1.0
+        row.source_conversation_id = None
+        row.source_message_id = None
+        row.updated_at = datetime.now(timezone.utc)
+    else:
+        fields = {
+            "user_id": current_user.id,
+            "key": REPLY_STYLE_KEY,
+            "value": text,
+            "confidence": 1.0,
+        }
+        # SQLite 測試庫的 BigInteger PK 不會自動加號；Postgres 走 identity。
+        if db.get_bind().dialect.name == "sqlite":
+            fields["id"] = int(db.query(func.max(UserFact.id)).scalar() or 0) + 1
+        row = UserFact(**fields)
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return PreferenceResponse(text=row.value, updated_at=row.updated_at)
+
+
 # ── Facts ─────────────────────────────────────────────────────────────────────
 
 
@@ -147,10 +221,13 @@ def clear_facts(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Wipe every fact for the current user. Irreversible."""
+    """Wipe extracted facts. The user-authored reply style is kept."""
     deleted = (
         db.query(UserFact)
-        .filter(UserFact.user_id == current_user.id)
+        .filter(
+            UserFact.user_id == current_user.id,
+            UserFact.key != REPLY_STYLE_KEY,
+        )
         .delete(synchronize_session=False)
     )
     db.commit()

@@ -635,6 +635,29 @@ export function createFakeBackend(options = {}) {
       const range = new URLSearchParams(query).get("range") || "7d";
       return jsonResponse(myUsageByRange[range] || emptyMyUsage(range));
     }
+    if (path === "/api/memory/preference" && method === "GET") {
+      return jsonResponse({ text: "" });
+    }
+    if (path === "/api/memory/preference" && method === "PUT") {
+      return jsonResponse({ text: String(body?.text || "").trim() });
+    }
+    if (path === "/api/memory/facts" && method === "GET") {
+      return jsonResponse({ total: 0, facts: [] });
+    }
+    if (path === "/api/memory/facts" && method === "DELETE") {
+      return jsonResponse({ deleted: 0 });
+    }
+    if (path.startsWith("/api/memory/chunks") && method === "GET") {
+      return jsonResponse({
+        total: 0,
+        encrypted_total: 0,
+        distinct_conversations: 0,
+        items: [],
+      });
+    }
+    if (path === "/api/memory/chunks" && method === "DELETE") {
+      return jsonResponse({ deleted: 0 });
+    }
 
     if (path === "/api/conversations" && method === "GET") {
       return jsonResponse([...convs.values()]);

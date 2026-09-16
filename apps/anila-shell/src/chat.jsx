@@ -2674,6 +2674,7 @@ export const Sidebar = ({
   agents,
   onOpenServices,
   onOpenUsage,
+  onOpenMemory,
   currentNavId,
   onTaskCenter,
   user,
@@ -2767,7 +2768,7 @@ export const Sidebar = ({
         <IconButton onClick={onToggleCollapsed} title="展開側邊" style={railBtn}><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話" style={railBtn}><IconPlus /></IconButton>
         <div style={{ width: 20, height: 1, background: "var(--border)", margin: "4px 0" }} />
-        <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} currentId={currentNavId} />
+        <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} onOpenMemory={onOpenMemory} currentId={currentNavId} />
         <div style={{ flex: 1 }} />
         <IconButton onClick={onOpenSettings} title="設定" style={railBtn}><IconSettings /></IconButton>
       </div>
@@ -2812,7 +2813,7 @@ export const Sidebar = ({
 
       {/* ANILA Shell 主導覽：對話 / 我的知識庫 / 專案入口
           （+ admin 才顯示的 治理中心）。doc 00 §2 唯一產品入口 / doc 10 §11。 */}
-      <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} currentId={currentNavId} />
+      <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} onOpenMemory={onOpenMemory} currentId={currentNavId} />
       <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />
 
       <div style={{
