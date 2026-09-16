@@ -1,11 +1,11 @@
 """Conversation management endpoints (JWT auth)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import update
 from sqlalchemy.orm import Session, object_session
 
@@ -159,6 +159,9 @@ class ConversationOut(ApiResponseModel):
     router_model_name: Optional[str] = None
     router_selection_version: int = 0
     thinking_tier: Optional[str] = None
+    compact_summary: Optional[str] = None
+    compact_boundary_message_id: Optional[int] = None
+    compact_updated_at: Optional[datetime] = None
     classified: bool
     classified_at: Optional[datetime]
     # P3: TRUE when ``classified`` was set by the platform's memory
@@ -365,6 +368,11 @@ def _enrich_out(
     data["router_model_name"] = getattr(model, "name", None) if model is not None else None
     data["router_selection_version"] = int(getattr(conv, "router_selection_version", 0) or 0)
     data["thinking_tier"] = getattr(conv, "thinking_tier", None)
+    data["compact_summary"] = getattr(conv, "compact_summary", None)
+    data["compact_boundary_message_id"] = getattr(
+        conv, "compact_boundary_message_id", None,
+    )
+    data["compact_updated_at"] = getattr(conv, "compact_updated_at", None)
     return data
 
 
@@ -590,6 +598,70 @@ def set_conversation_thinking(
         raise HTTPException(status_code=409, detail="思考檔位版本衝突，請重新整理")
     db.commit()
     conv = db.get(Conversation, conv_id)
+    return _conversation_out(db, current_user, conv)
+
+
+_COMPACT_SUMMARY_MAX = 20_000
+
+
+class ConversationCompactIn(BaseModel):
+    summary: str = Field(..., min_length=1, max_length=_COMPACT_SUMMARY_MAX)
+    boundary_message_id: int = Field(..., ge=1)
+
+    @field_validator("summary")
+    @classmethod
+    def summary_must_be_nonempty_after_strip(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("摘要不得為空")
+        if len(stripped) > _COMPACT_SUMMARY_MAX:
+            raise ValueError("摘要超過上限")
+        return stripped
+
+
+@router.put("/{conv_id}/compact", response_model=ConversationOut)
+def set_conversation_compact(
+    conv_id: int,
+    body: ConversationCompactIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Store the latest compact snapshot. Last writer wins; no CAS."""
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="對話不存在")
+    boundary = (
+        db.query(Message)
+        .filter(
+            Message.id == body.boundary_message_id,
+            Message.conversation_id == conv.id,
+        )
+        .first()
+    )
+    if boundary is None:
+        raise HTTPException(status_code=422, detail="邊界訊息不屬於此對話")
+    conv.compact_summary = body.summary
+    conv.compact_boundary_message_id = body.boundary_message_id
+    conv.compact_updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(conv)
+    return _conversation_out(db, current_user, conv)
+
+
+@router.delete("/{conv_id}/compact", response_model=ConversationOut)
+def clear_conversation_compact(
+    conv_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="對話不存在")
+    conv.compact_summary = None
+    conv.compact_boundary_message_id = None
+    conv.compact_updated_at = None
+    db.commit()
+    db.refresh(conv)
     return _conversation_out(db, current_user, conv)
 
 

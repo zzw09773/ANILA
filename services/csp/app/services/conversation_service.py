@@ -1277,6 +1277,13 @@ def delete_message_branch(
         )
 
     deleted_ids = sorted(subtree)
+    # FK ondelete=SET NULL only clears compact_boundary_message_id. The
+    # summary is derived from that boundary — drop it in the same write.
+    if getattr(conv, "compact_boundary_message_id", None) in subtree:
+        conv.compact_summary = None
+        conv.compact_boundary_message_id = None
+        conv.compact_updated_at = None
+        db.flush()
     (
         db.query(Attachment)
         .filter(Attachment.message_id.in_(deleted_ids))
