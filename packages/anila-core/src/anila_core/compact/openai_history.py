@@ -80,6 +80,22 @@ def _is_system(msg: Mapping[str, Any]) -> bool:
     return msg.get("role") == "system"
 
 
+def _is_history_summary_message(msg: Mapping[str, Any]) -> bool:
+    text = flatten_openai_content(msg.get("content")).lstrip()
+    return text.startswith(HISTORY_SUMMARY_PREFIX)
+
+
+def _is_system_like(msg: Mapping[str, Any]) -> bool:
+    """Keep real system prompts and leading ``[歷史摘要]`` user rows.
+
+    Aligns with ``sliding_window._is_system_like``: a user message whose
+    content starts with ``[歷史摘要]`` is prefix, not a droppable turn.
+    """
+    if _is_system(msg):
+        return True
+    return msg.get("role") == "user" and _is_history_summary_message(msg)
+
+
 def _is_tool_result(msg: Mapping[str, Any]) -> bool:
     content = msg.get("content")
     if not isinstance(content, list):
@@ -90,7 +106,12 @@ def _is_tool_result(msg: Mapping[str, Any]) -> bool:
 def _split_turns(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
     system: list[dict[str, Any]] = []
     convo: list[dict[str, Any]] = []
+    leading = True
     for msg in messages:
+        if leading and _is_system_like(msg):
+            system.append(dict(msg))
+            continue
+        leading = False
         if _is_system(msg):
             system.append(dict(msg))
         else:
@@ -115,19 +136,43 @@ def _flatten_turns(turns: Sequence[Sequence[dict[str, Any]]]) -> list[dict[str, 
     return out
 
 
-def _is_compact_placeholder(msg: Mapping[str, Any]) -> bool:
-    text = flatten_openai_content(msg.get("content")).lstrip()
-    return text.startswith(HISTORY_SUMMARY_PREFIX) or text.startswith(SLIDING_WINDOW_SUMMARY)
+def _history_summary_body(messages: Sequence[Mapping[str, Any]]) -> str | None:
+    for msg in messages:
+        text = flatten_openai_content(msg.get("content")).lstrip()
+        if not text.startswith(HISTORY_SUMMARY_PREFIX):
+            continue
+        rest = text[len(HISTORY_SUMMARY_PREFIX):].lstrip("\n").strip()
+        if rest:
+            return rest
+    return None
 
 
-def _recent_count_from_compacted(
-    compacted: Sequence[Mapping[str, Any]],
-    system_len: int,
-) -> int:
-    tail = list(compacted[system_len:])
-    if tail and _is_compact_placeholder(tail[0]):
-        return max(0, len(tail) - 1)
-    return len(tail)
+def _recent_count_from_final(messages: Sequence[Mapping[str, Any]]) -> int:
+    """Count outbound rows that are neither system nor a ``[歷史摘要]`` message."""
+    return sum(
+        1
+        for msg in messages
+        if not _is_system(msg) and not _is_history_summary_message(msg)
+    )
+
+
+def _result_from_outbound(
+    messages: list[dict[str, Any]],
+    *,
+    tokens_before: int,
+    tokens_after: int,
+) -> CompactResult:
+    """Bind method/summary/recent_count to the messages actually returned."""
+    summary = _history_summary_body(messages)
+    return CompactResult(
+        messages,
+        True,
+        "summary" if summary else "sliding_window",
+        tokens_before,
+        tokens_after,
+        summary=summary,
+        recent_count=_recent_count_from_final(messages),
+    )
 
 
 def sliding_window_openai(
@@ -160,6 +205,9 @@ def sliding_window_openai(
     kept_messages = _flatten_turns(kept)
     dropped = len(_flatten_turns(turns)) - len(kept_messages)
     if dropped <= 0:
+        result = system + kept_messages
+    elif any(_is_history_summary_message(m) for m in system):
+        # A real summary is already in the prefix; don't insert a second marker.
         result = system + kept_messages
     else:
         result = system + [{"role": "user", "content": SLIDING_WINDOW_SUMMARY}] + kept_messages
@@ -205,29 +253,74 @@ async def auto_compact_openai_messages(
     tokens_stripped = estimate_openai_tokens(stripped)
 
     if not force and not should_compact(context_window, tokens_before, max_output_tokens=max_output_tokens):
-        return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
+        outbound = list(messages)
+        return CompactResult(
+            outbound,
+            False,
+            "none",
+            tokens_before,
+            tokens_before,
+            recent_count=_recent_count_from_final(outbound),
+        )
 
     if (
         tokens_saved > 0
         and not force
         and not should_compact(context_window, tokens_stripped, max_output_tokens=max_output_tokens)
     ):
-        return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
+        return CompactResult(
+            stripped,
+            True,
+            "strip_images",
+            tokens_before,
+            tokens_stripped,
+            recent_count=_recent_count_from_final(stripped),
+        )
 
     working = stripped if tokens_saved > 0 else [dict(m) for m in messages]
     threshold = get_auto_compact_threshold(context_window, max_output_tokens)
     system, turns = _split_turns(working)
     if len(turns) <= 1:
         if tokens_saved > 0:
-            return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
-        return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
+            return CompactResult(
+                stripped,
+                True,
+                "strip_images",
+                tokens_before,
+                tokens_stripped,
+                recent_count=_recent_count_from_final(stripped),
+            )
+        outbound = list(messages)
+        return CompactResult(
+            outbound,
+            False,
+            "none",
+            tokens_before,
+            tokens_before,
+            recent_count=_recent_count_from_final(outbound),
+        )
 
     recent = _flatten_turns(turns[-keep_n:]) if len(turns) > keep_n else _flatten_turns(turns[-1:])
     old = _flatten_turns(turns[:-keep_n] if len(turns) > keep_n else turns[:-1])
     if not old:
         if tokens_saved > 0:
-            return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
-        return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
+            return CompactResult(
+                stripped,
+                True,
+                "strip_images",
+                tokens_before,
+                tokens_stripped,
+                recent_count=_recent_count_from_final(stripped),
+            )
+        outbound = list(messages)
+        return CompactResult(
+            outbound,
+            False,
+            "none",
+            tokens_before,
+            tokens_before,
+            recent_count=_recent_count_from_final(outbound),
+        )
 
     if summarizer is not None:
         try:
@@ -246,39 +339,38 @@ async def auto_compact_openai_messages(
                         compacted, threshold, keep_recent_turns=max(1, keep_recent_turns - 1)
                     )
                     after = estimate_openai_tokens(compacted)
-                return CompactResult(
-                    compacted,
-                    True,
-                    "summary",
-                    tokens_before,
-                    after,
-                    summary=summary_text,
-                    recent_count=len(recent),
+                return _result_from_outbound(
+                    compacted, tokens_before=tokens_before, tokens_after=after
                 )
 
     if force:
         compacted = system + [{"role": "user", "content": SLIDING_WINDOW_SUMMARY}] + recent
         after = estimate_openai_tokens(compacted)
-        return CompactResult(
-            compacted,
-            True,
-            "sliding_window",
-            tokens_before,
-            after,
-            recent_count=len(recent),
+        return _result_from_outbound(
+            compacted, tokens_before=tokens_before, tokens_after=after
         )
 
     compacted, _ = sliding_window_openai(working, threshold, keep_recent_turns=keep_n)
     after = estimate_openai_tokens(compacted)
     if after >= tokens_before:
         if tokens_saved > 0:
-            return CompactResult(stripped, True, "strip_images", tokens_before, tokens_stripped)
-        return CompactResult(list(messages), False, "none", tokens_before, tokens_before)
-    return CompactResult(
-        compacted,
-        True,
-        "sliding_window",
-        tokens_before,
-        after,
-        recent_count=_recent_count_from_compacted(compacted, len(system)),
+            return CompactResult(
+                stripped,
+                True,
+                "strip_images",
+                tokens_before,
+                tokens_stripped,
+                recent_count=_recent_count_from_final(stripped),
+            )
+        outbound = list(messages)
+        return CompactResult(
+            outbound,
+            False,
+            "none",
+            tokens_before,
+            tokens_before,
+            recent_count=_recent_count_from_final(outbound),
+        )
+    return _result_from_outbound(
+        compacted, tokens_before=tokens_before, tokens_after=after
     )

@@ -351,7 +351,57 @@ class TestOpenaiHistoryCompact:
         )
         assert result.compacted
         assert result.method == "sliding_window"
+        assert result.summary is None
         assert not any(str(m.get("content", "")).startswith("u0") for m in result.messages)
+
+    @pytest.mark.asyncio
+    async def test_oversized_summary_kept_when_window_cuts_again(self) -> None:
+        messages = _long_chat(8, size=600)
+
+        async def summarize(old):
+            assert any("u0" in str(m.get("content")) for m in old)
+            return "摘" * 5_000
+
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=2_400,
+            max_output_tokens=256,
+            summarizer=summarize,
+            keep_recent_turns=2,
+        )
+        assert result.messages[1]["content"].startswith(HISTORY_SUMMARY_PREFIX)
+        assert result.method == "summary"
+        assert result.summary
+        assert HISTORY_SUMMARY_PREFIX not in result.summary
+        expected_recent = sum(
+            1
+            for m in result.messages
+            if m.get("role") != "system"
+            and not str(m.get("content") or "").lstrip().startswith(HISTORY_SUMMARY_PREFIX)
+        )
+        assert result.recent_count == expected_recent
+        assert result.recent_count > 0
+        assert not any(
+            SLIDING_WINDOW_SUMMARY in str(m.get("content")) for m in result.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_summarizer_returning_none_is_sliding_window(self) -> None:
+        messages = _long_chat(8, size=600)
+
+        async def summarize(_old):
+            return None
+
+        result = await auto_compact_openai_messages(
+            messages,
+            context_window=2_400,
+            max_output_tokens=256,
+            summarizer=summarize,
+            keep_recent_turns=2,
+        )
+        assert result.method == "sliding_window"
+        assert result.summary is None
+        assert any(SLIDING_WINDOW_SUMMARY in str(m.get("content")) for m in result.messages)
 
 
 # ---------------------------------------------------------------------------

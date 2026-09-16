@@ -12,6 +12,7 @@ import pytest_asyncio
 import respx
 from fastapi.testclient import TestClient
 
+from anila_core.api import router_prompts
 from anila_core.api import router_server as rs
 from anila_core.api.router_server import create_router_app
 from anila_core.compact.openai_history import (
@@ -117,11 +118,24 @@ def _parse_named_events(body: str, name: str) -> list[dict]:
     return events
 
 
-def _assert_compact_payload(payload: dict, messages: list[dict], *, keep_recent_turns: int = 4) -> None:
+def _assert_compact_payload(
+    payload: dict,
+    messages: list[dict],
+    *,
+    keep_recent_turns: int = 4,
+    expect_keep_n: bool = False,
+) -> None:
     assert payload["method"] == "summary"
     assert payload["summary"]
     assert HISTORY_SUMMARY_PREFIX not in payload["summary"]
-    assert payload["kept_from_index"] == _expected_kept_from_index(messages, keep_recent_turns)
+    idx = payload["kept_from_index"]
+    assert 0 <= idx < len(messages)
+    if expect_keep_n:
+        assert idx == _expected_kept_from_index(messages, keep_recent_turns)
+    else:
+        # Auto-compact may sliding-window the tail after a long summary;
+        # kept_from_index must still land on a real inbound turn.
+        assert messages[idx]["role"] in {"user", "assistant"}
     assert payload["tokens_before"] > payload["tokens_after"]
 
 
@@ -295,7 +309,7 @@ def test_manual_compact_summarizes_long_conversation(db_path):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    _assert_compact_payload(body, messages, keep_recent_turns=2)
+    _assert_compact_payload(body, messages, keep_recent_turns=2, expect_keep_n=True)
     assert body["method"] == "summary"
 
 
@@ -354,3 +368,46 @@ async def test_force_summary_is_not_cut_again_by_sliding_window():
         for m in result.messages
     )
     assert result.recent_count > 0
+
+
+def test_prior_summary_extracted_from_plain_assistant_fold():
+    system = router_prompts.DEFAULT_PLAIN_ASSISTANT + "\n\n[歷史摘要]\n先前談過太陽系"
+    prior = rs._extract_prior_history_summary([{"role": "system", "content": system}])
+    assert prior == "先前談過太陽系"
+    assert "平台身分" not in prior
+    assert "【" not in prior
+    assert "你是 ANILA" not in prior
+
+
+def test_oversized_summary_event_kept_from_index_points_at_outbound(monkeypatch):
+    monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
+
+    async def fake_summary(key, old, headers):
+        return "摘" * 5_000
+
+    monkeypatch.setattr(rs, "_summarize_for_compact", fake_summary)
+    messages = _long_messages()
+    compacted, step, event = asyncio.run(
+        rs._auto_compact_routing_messages(
+            messages,
+            caller_api_key="sk",
+            forwarded_headers=None,
+            inbound_message_count=len(messages),
+        )
+    )
+    assert step is not None
+    assert event is not None
+    assert compacted[1]["content"].startswith(HISTORY_SUMMARY_PREFIX)
+    assert event["method"] == "summary"
+    expected_recent = sum(
+        1
+        for m in compacted
+        if m.get("role") != "system"
+        and not str(m.get("content") or "").lstrip().startswith(HISTORY_SUMMARY_PREFIX)
+    )
+    assert event["kept_from_index"] == len(messages) - expected_recent
+    kept = messages[event["kept_from_index"]]
+    assert any(
+        m.get("role") == kept.get("role") and m.get("content") == kept.get("content")
+        for m in compacted
+    )

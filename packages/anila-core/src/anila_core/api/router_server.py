@@ -729,10 +729,10 @@ def _extract_prior_history_summary(messages: list[dict[str, Any]]) -> str | None
         if not isinstance(msg, dict) or msg.get("role") != "system":
             continue
         text = _flatten_openai_content(msg.get("content"))
-        match = _PRIOR_HISTORY_SUMMARY_RE.search(text)
-        if not match:
+        matches = list(_PRIOR_HISTORY_SUMMARY_RE.finditer(text))
+        if not matches:
             continue
-        prior = match.group(1).strip()
+        prior = matches[-1].group(1).strip()
         if prior:
             return prior
     return None
