@@ -162,6 +162,8 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         ),
         generic_ddl="ALTER TABLE conversations ADD COLUMN thinking_tier VARCHAR(16)",
     )
+    # Compact 三欄：FK 由 Alembic r1_0042 負責（ondelete=SET NULL）；
+    # startup 只是欄位後援，已有欄就不重複加、也不補 FK。
     _ensure_column(
         bind, "conversations", "compact_summary",
         postgres_ddl=(

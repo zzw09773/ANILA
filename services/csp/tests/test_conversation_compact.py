@@ -268,6 +268,42 @@ def test_delete_boundary_subtree_clears_summary(client, db):
     assert boundary_id not in remaining
 
 
+def test_delete_ancestor_clears_compact_when_boundary_is_descendant(client, db):
+    """Boundary is a descendant of the deleted root, not the root itself."""
+    make_user(db, username="compact-prune-desc")
+    headers = _headers(client, "compact-prune-desc")
+    created = _open_conversation(client, headers)
+    cid = created["id"]
+    q1 = _append(client, headers, cid, "user", "Q1")
+    a1 = _append(client, headers, cid, "assistant", "A1")
+    q2 = _append(client, headers, cid, "user", "Q2")
+    a2 = _append(client, headers, cid, "assistant", "A2")
+    written = _put_compact(client, headers, cid, "邊界在孫節點", a2["id"])
+    assert written.status_code == 200, written.text
+    assert written.json()["compact_boundary_message_id"] == a2["id"]
+    assert a2["id"] != a1["id"]
+
+    deleted = client.delete(
+        f"/api/conversations/{cid}/messages/{a1['id']}",
+        headers=headers,
+    )
+    assert deleted.status_code == 200, deleted.text
+
+    row = db.get(Conversation, cid)
+    assert row.compact_summary is None
+    assert row.compact_boundary_message_id is None
+    assert row.compact_updated_at is None
+    got = client.get(f"/api/conversations/{cid}", headers=headers)
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["compact_summary"] is None
+    assert body["compact_boundary_message_id"] is None
+    assert body["compact_updated_at"] is None
+    remaining = {m["id"] for m in body["messages"]}
+    assert q1["id"] in remaining
+    assert {a1["id"], q2["id"], a2["id"]}.isdisjoint(remaining)
+
+
 # ── 列表帶新欄 ───────────────────────────────────────────────────────────────
 
 
@@ -341,3 +377,43 @@ def test_startup_migrations_add_compact_columns_idempotently():
     assert "compact_summary" in cols
     assert "compact_boundary_message_id" in cols
     assert "compact_updated_at" in cols
+
+
+def test_startup_migrations_skips_existing_compact_columns_without_adding_fk():
+    src = inspect.getsource(_ensure_schema_backfills)
+    assert "FK 由 Alembic r1_0042 負責" in src
+    assert "startup 只是欄位後援" in src
+
+    eng = create_engine("sqlite:///:memory:")
+    with eng.begin() as conn:
+        conn.execute(text("CREATE TABLE messages (id INTEGER PRIMARY KEY)"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE conversations (
+                    id INTEGER PRIMARY KEY,
+                    title VARCHAR(255) NOT NULL,
+                    compact_summary TEXT,
+                    compact_boundary_message_id INTEGER,
+                    compact_updated_at TIMESTAMP
+                )
+                """
+            )
+        )
+
+    before = sa_inspect(eng).get_columns("conversations")
+    before_names = [c["name"] for c in before]
+    assert before_names.count("compact_summary") == 1
+    assert before_names.count("compact_boundary_message_id") == 1
+    assert before_names.count("compact_updated_at") == 1
+
+    _ensure_schema_backfills(eng)
+
+    after = sa_inspect(eng).get_columns("conversations")
+    after_names = [c["name"] for c in after]
+    assert after_names.count("compact_summary") == 1
+    assert after_names.count("compact_boundary_message_id") == 1
+    assert after_names.count("compact_updated_at") == 1
+    with eng.connect() as conn:
+        fks = conn.execute(text("PRAGMA foreign_key_list('conversations')")).fetchall()
+    assert fks == []
