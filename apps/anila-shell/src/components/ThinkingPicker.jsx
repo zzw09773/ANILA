@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { IconChevDown, IconCheck } from "../icons.jsx";
 import {
+  GLM_OFF_REASON,
+  isGlmFamily,
   isThinkingOptionActive,
   thinkingPickerOptions,
   thinkingTriggerLabel,
@@ -16,8 +18,8 @@ export default function ThinkingPicker({
   const levelsSupported = model == null ? null : model.thinking_levels_supported;
   const adminLocked = model?.thinking_user_selectable === false;
   const locked = disabled || adminLocked;
-  const options = thinkingPickerOptions(levelsSupported);
-  const selectedLabel = thinkingTriggerLabel(value, levelsSupported);
+  const options = thinkingPickerOptions(levelsSupported, model);
+  const selectedLabel = thinkingTriggerLabel(value, levelsSupported, model);
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
 
@@ -141,6 +143,11 @@ export default function ThinkingPicker({
       {value === "deep" ? (
         <span className="thinking-picker__hint" style={{ display: "block", marginTop: 4, fontSize: 11, color: "var(--fg-subtle)" }}>
           思考會用掉較多時間與額度
+        </span>
+      ) : null}
+      {value === "off" && isGlmFamily(model) ? (
+        <span className="thinking-picker__hint" style={{ display: "block", marginTop: 4, fontSize: 11, color: "var(--fg-subtle)" }}>
+          {GLM_OFF_REASON}
         </span>
       ) : null}
       {error ? (

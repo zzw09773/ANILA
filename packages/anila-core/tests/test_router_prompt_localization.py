@@ -53,6 +53,10 @@ def test_router_templates_format_safe_and_localized():
     assert "①" in recompose and "②" in recompose and "③" in recompose
     # 舊句「維持原回覆語言，除非…」已由階梯取代，不得殘留。
     assert "維持原回覆語言，除非" not in recompose
+    assert "預設以繁體中文" in router
+    assert "使用者明確指定語言時依其指定" in router
+    assert "一律以繁體中文" not in router
+    assert "一律以繁體中文" not in plain
 
 
 def test_direct_answer_rule_forbids_agent_scope_bleed_and_states_positive_range():

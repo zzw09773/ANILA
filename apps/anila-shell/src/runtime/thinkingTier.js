@@ -4,10 +4,34 @@
 export const THINKING_TIERS = ["default", "off", "standard", "deep"];
 export const THINKING_TIER_STORAGE_KEY = "anila.thinkingTier";
 export const UNPROBED_REASON = "此模型尚未探測思考等級";
+export const GLM_OFF_LABEL = "關閉（不顯示思考）";
+export const GLM_OFF_REASON = "不顯示思考過程；模型仍可能消耗思考 tokens";
 
 export function normalizeThinkingTier(value) {
   if (value == null || value === "") return "default";
   return THINKING_TIERS.includes(value) ? value : "default";
+}
+
+/** Registry name leaf starts with glm — not display_name. */
+export function isGlmFamily(modelOrName) {
+  const raw = typeof modelOrName === "string"
+    ? modelOrName
+    : String(modelOrName?.name || "");
+  const leaf = raw.trim().toLowerCase().split("/").pop() || "";
+  return leaf.startsWith("glm");
+}
+
+/** This reply asked to hide thinking. Do not read the conversation row. */
+export function isThinkingDisplayOff(applied) {
+  return normalizeThinkingTier(applied?.tier) === "off";
+}
+
+/** Stamp the display setting for the reply being sent, before meta arrives. */
+export function outgoingThinkingApplied({ oneShotDeep, thinkingTier } = {}) {
+  if (oneShotDeep) return { tier: "deep", source: "turn" };
+  const normalized = normalizeThinkingTier(thinkingTier);
+  if (normalized === "default") return null;
+  return { tier: normalized, source: "conversation" };
 }
 
 /** unprobed | binary（預設／關閉／開啟）| graded（四檔） */
@@ -19,12 +43,29 @@ export function thinkingPickerMode(levelsSupported) {
   return nonNone.length <= 1 ? "binary" : "graded";
 }
 
-export function thinkingPickerOptions(levelsSupported) {
+function offOption({ enabled, model }) {
+  if (isGlmFamily(model)) {
+    return {
+      tier: "off",
+      label: GLM_OFF_LABEL,
+      enabled,
+      reason: enabled ? GLM_OFF_REASON : UNPROBED_REASON,
+    };
+  }
+  return {
+    tier: "off",
+    label: "關閉",
+    enabled,
+    ...(enabled ? {} : { reason: UNPROBED_REASON }),
+  };
+}
+
+export function thinkingPickerOptions(levelsSupported, model = null) {
   const mode = thinkingPickerMode(levelsSupported);
   if (mode === "unprobed") {
     return [
       { tier: "default", label: "依模型預設", enabled: true },
-      { tier: "off", label: "關閉", enabled: false, reason: UNPROBED_REASON },
+      offOption({ enabled: false, model }),
       { tier: "standard", label: "標準", enabled: false, reason: UNPROBED_REASON },
       { tier: "deep", label: "深入", enabled: false, reason: UNPROBED_REASON },
     ];
@@ -32,13 +73,13 @@ export function thinkingPickerOptions(levelsSupported) {
   if (mode === "binary") {
     return [
       { tier: "default", label: "依模型預設", enabled: true },
-      { tier: "off", label: "關閉", enabled: true },
+      offOption({ enabled: true, model }),
       { tier: "standard", label: "開啟", enabled: true },
     ];
   }
   return [
     { tier: "default", label: "依模型預設", enabled: true },
-    { tier: "off", label: "關閉", enabled: true },
+    offOption({ enabled: true, model }),
     { tier: "standard", label: "標準", enabled: true },
     { tier: "deep", label: "深入", enabled: true },
   ];
@@ -49,17 +90,17 @@ export function shouldReplayOneShotDeep(thinkingApplied) {
   return thinkingApplied?.source === "turn" && thinkingApplied?.tier === "deep";
 }
 
-/** 回覆列檔位文案：關閉／標準／深入。default 不標。 */
-export function thinkingAppliedTierLabel(tier) {
+/** 回覆列檔位文案：關閉／標準／深入。default 不標。off 折疊本身會被藏。 */
+export function thinkingAppliedTierLabel(tier, model = null) {
   const normalized = normalizeThinkingTier(tier);
   if (normalized === "default") return null;
-  const match = thinkingPickerOptions(["none", "low", "medium", "xhigh"]).find(
+  const match = thinkingPickerOptions(["none", "low", "medium", "xhigh"], model).find(
     (opt) => opt.tier === normalized,
   );
   return match?.label || null;
 }
 
-export function thinkingTriggerLabel(tier, levelsSupported) {
+export function thinkingTriggerLabel(tier, levelsSupported, model = null) {
   const normalized = normalizeThinkingTier(tier);
   if (
     thinkingPickerMode(levelsSupported) === "binary"
@@ -67,7 +108,7 @@ export function thinkingTriggerLabel(tier, levelsSupported) {
   ) {
     return "開啟";
   }
-  const match = thinkingPickerOptions(levelsSupported).find((opt) => opt.tier === normalized);
+  const match = thinkingPickerOptions(levelsSupported, model).find((opt) => opt.tier === normalized);
   return match?.label || "依模型預設";
 }
 

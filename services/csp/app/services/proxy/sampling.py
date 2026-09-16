@@ -17,15 +17,24 @@ different ones (2026-09-03, measured against the live endpoints):
 So a level sets ``enable_thinking=true`` AND sends the level verbatim as
 ``reasoning_effort``. Two rules follow from the measurements above: the
 level is never remapped (an earlier version clamped xhigh/max to ``high``,
-which is precisely the value Qwen rejects), and the model NAME is never
-consulted (it cannot tell these two backends apart — the old o1/o3/gpt-5
-sniff meant Qwen silently ran at its xhigh default no matter what the
-console showed). Which levels an endpoint actually accepts is settled by
-the save-time probe in ``app/services/thinking_probe.py``.
+which is precisely the value Qwen rejects), and the generic table does
+not sniff the model name (the old o1/o3/gpt-5 sniff meant Qwen silently
+ran at its xhigh default no matter what the console showed). Which
+levels an endpoint actually accepts is settled by the save-time probe
+in ``app/services/thinking_probe.py``.
 
-``none`` / ``off`` sets ``enable_thinking=false`` and sends NO
-``reasoning_effort``: gemma ignores it anyway, and Qwen is already
-silenced by the chat-template kwarg.
+``none`` / ``off`` on the generic path sets ``enable_thinking=false``
+and sends NO ``reasoning_effort``: gemma ignores it anyway, and Qwen is
+already silenced by the chat-template kwarg.
+
+GLM is the documented exception. Closing its reasoning channel makes it
+write analysis into ``content``. When a user/conversation tier of
+``off`` has control, ``adapt_thinking_level_for_model`` remaps generic
+off onto ``(reasoning_effort="low", enable_thinking=True)`` — hide
+thinking in the UI, keep a channel. That pair is a verification
+contract, not a measured GLM guarantee. Caller-supplied knobs and a
+locked model still skip the adapter. Model-row ``thinking_effort`` is
+not rewritten.
 
 We do not invent a top-level ``enable_thinking`` key — the kwargs form is
 what ``infra/models/docker-compose.yml`` documents
@@ -62,6 +71,12 @@ _STANDARD_PREFERENCE = ("medium", "low", "high")
 _DEEP_PREFERENCE = ("max", "xhigh", "high", "medium", "low")
 
 _SKIP_MODEL_TYPES = frozenset({"agent", "embedding", "image", "asr"})
+
+# GLM display-off: lowest non-none level from the known list. Unverified
+# vendor behaviour — do not treat this as "thinking is disabled".
+GLM_DISPLAY_OFF_LEVEL = "low"
+GLM_DISPLAY_OFF_ADAPTER = "glm-display-off"
+GLM_DISPLAY_OFF_REASON = "關閉＝不顯示思考；GLM 保留最低檔 reasoning 通道"
 
 
 def _normalize_thinking_tier(tier: Any) -> str | None:
@@ -122,6 +137,38 @@ def resolve_thinking_level(
         return (None, True)
 
     return (None, False)
+
+
+def _is_glm_family(model: Any) -> bool:
+    """Match registry names such as ``glm-5.3-flash`` or ``litellm/glm-…``.
+
+    Uses the name leaf only. Display names and unrelated models that
+    merely mention GLM in a description must not trip this.
+    """
+    name = str(getattr(model, "name", "") or "").strip().lower()
+    if not name:
+        return False
+    leaf = name.rsplit("/", 1)[-1]
+    return leaf.startswith("glm")
+
+
+def adapt_thinking_level_for_model(
+    level: str | None,
+    enable: bool,
+    *,
+    tier: Any,
+    model: Any,
+) -> tuple[str | None, bool]:
+    """GLM-only remap after the generic ``resolve_thinking_level`` table.
+
+    ``resolve_thinking_level`` stays model-agnostic. This helper runs only
+    on the path where a user/conversation tier already has control.
+    """
+    if not _is_glm_family(model):
+        return (level, enable)
+    if _normalize_thinking_tier(tier) != "off":
+        return (level, enable)
+    return (GLM_DISPLAY_OFF_LEVEL, True)
 
 
 def is_thinking_locked(model: Any) -> bool:
@@ -229,6 +276,37 @@ def _thinking_level_from_body(body: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _enable_thinking_from_body(body: Mapping[str, Any]) -> bool | None:
+    kwargs = body.get("chat_template_kwargs")
+    if isinstance(kwargs, dict) and "enable_thinking" in kwargs:
+        return bool(kwargs.get("enable_thinking"))
+    if "reasoning_effort" in body:
+        return True
+    return None
+
+
+def _thinking_adapter_meta(
+    request_body: Mapping[str, Any],
+    model: Any,
+    thinking_tier: Any,
+    applied: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not _is_glm_family(model):
+        return {}
+    if _caller_supplied_thinking(request_body) or is_thinking_locked(model):
+        return {}
+    if _thinking_applied_tier(request_body, model, thinking_tier) != "off":
+        return {}
+    if applied.get("reasoning_effort") != GLM_DISPLAY_OFF_LEVEL:
+        return {}
+    if _enable_thinking_from_body(applied) is not True:
+        return {}
+    return {
+        "adapter": GLM_DISPLAY_OFF_ADAPTER,
+        "adapter_reason": GLM_DISPLAY_OFF_REASON,
+    }
+
+
 def describe_thinking_applied(
     request_body: Mapping[str, Any],
     model: Any,
@@ -239,16 +317,22 @@ def describe_thinking_applied(
 
     Sister of ``apply_model_sampling_overrides``: same inputs, no mutation of
     ``request_body``, and the apply function's return value stays a body dict.
-    ``level`` is read from the body apply would send upstream.
+    ``tier`` is the requested picker value; ``level`` / ``enable_thinking``
+    are what apply would send upstream.
     """
     applied = apply_model_sampling_overrides(
         request_body, model, thinking_tier=thinking_tier
     )
-    return {
+    desc: dict[str, Any] = {
         "tier": _thinking_applied_tier(request_body, model, thinking_tier),
         "level": _thinking_level_from_body(applied),
         "source": _thinking_applied_source(request_body, model, thinking_tier),
     }
+    enable = _enable_thinking_from_body(applied)
+    if enable is not None:
+        desc["enable_thinking"] = enable
+    desc.update(_thinking_adapter_meta(request_body, model, thinking_tier, applied))
+    return desc
 
 
 def apply_model_sampling_overrides(
@@ -304,6 +388,9 @@ def apply_model_sampling_overrides(
             effective,
             getattr(model, "thinking_levels_supported", None),
             getattr(model, "thinking_effort", None),
+        )
+        level, enable = adapt_thinking_level_for_model(
+            level, enable, tier=effective, model=model
         )
         _set_chat_template_thinking(body, enable)
         if level is not None:

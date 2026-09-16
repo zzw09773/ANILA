@@ -125,6 +125,7 @@ import ThinkingPicker from "./components/ThinkingPicker.jsx";
 import {
   conversationSelectionFromServer,
   normalizeThinkingTier,
+  outgoingThinkingApplied,
   persistThinkingTierPreference,
   readStoredThinkingTier,
   shouldReplayOneShotDeep,
@@ -2258,7 +2259,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       conversationId: convId,
       createdAt: nowIso(),
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
-      thinkingApplied: oneShotDeep ? { tier: "deep", source: "turn" } : null,
+      thinkingApplied: outgoingThinkingApplied({ oneShotDeep, thinkingTier }),
     };
     setMessagesByConv((prev) => ({
       ...prev,
@@ -2899,7 +2900,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           conversationId: convId,
           createdAt: nowIso(),
           timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
-          thinkingApplied: oneShotDeep ? { tier: "deep", source: "turn" } : null,
+          thinkingApplied: outgoingThinkingApplied({ oneShotDeep, thinkingTier }),
         },
       ],
     }));

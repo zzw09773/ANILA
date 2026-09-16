@@ -166,6 +166,21 @@ describe("回覆列思考 tokens", () => {
     expect(screen.queryByText(/tokens/)).toBeNull();
   });
 
+  it("reasoning_tokens=0 不當思考用量，也不跟關閉拼在一起", () => {
+    const { container } = render(
+      <ReasoningSummary
+        trace={[]}
+        reasoning=""
+        streaming={false}
+        usage={{ reasoning_tokens: 0, reasoning_tokens_source: "reported" }}
+        thinkingApplied={{ tier: "off", level: "low", source: "conversation" }}
+      />,
+    );
+    expect(container.querySelector(".anila-reasoning")).toBeNull();
+    expect(screen.queryByText(/0 tokens/)).toBeNull();
+    expect(screen.queryByText(/關閉/)).toBeNull();
+  });
+
   it("沒有 reasoning_tokens 時退回字數", () => {
     render(
       <ReasoningSummary

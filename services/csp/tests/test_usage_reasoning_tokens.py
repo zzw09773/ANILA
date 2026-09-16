@@ -313,7 +313,10 @@ def test_thinking_applied_conversation_deep(client, db, db_engine, monkeypatch):
     resp = _chat(client, headers, model=model.name, conv_id=conv["id"], stream=False)
     assert resp.status_code == 200, resp.text
     applied = resp.json()["anila_meta"]["thinking_applied"]
-    assert applied == {"tier": "deep", "level": "xhigh", "source": "conversation"}
+    assert applied["tier"] == "deep"
+    assert applied["level"] == "xhigh"
+    assert applied["source"] == "conversation"
+    assert applied["enable_thinking"] is True
     outbound = _CapturingUpstream.last_body
     assert outbound["reasoning_effort"] == "xhigh"
     assert ANILA_THINKING_TIER_KEY not in outbound
@@ -383,7 +386,10 @@ def test_describe_thinking_applied_does_not_change_apply_body():
     body = {"messages": []}
     applied = describe_thinking_applied(body, model, thinking_tier="deep")
     out = apply_model_sampling_overrides(body, model, thinking_tier="deep")
-    assert applied == {"tier": "deep", "level": "xhigh", "source": "conversation"}
+    assert applied["tier"] == "deep"
+    assert applied["level"] == "xhigh"
+    assert applied["source"] == "conversation"
+    assert applied["enable_thinking"] is True
     assert out["reasoning_effort"] == "xhigh"
     assert ANILA_THINKING_TIER_KEY not in out
     assert "messages" in out

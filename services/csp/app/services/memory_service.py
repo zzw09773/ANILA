@@ -514,9 +514,14 @@ def _format_block(
     # kept ahead of regular facts, then higher-similarity chunks are considered.
     # Each candidate is admitted only as a whole rendered item; a rejected item
     # is skipped so a later smaller item can still fit without truncation.
+    def _preference_line(fact: UserFact) -> str:
+        if fact.key == REPLY_STYLE_KEY:
+            return f"- 回覆偏好（使用者明確指定的語言與風格，依此為準）：{fact.value}"
+        return f"- **{fact.key}**: {fact.value}"
+
     for source, selected in (
         (
-            (f"- **{f.key}**: {f.value}" for f in prefs),
+            (_preference_line(f) for f in prefs),
             selected_prefs,
         ),
         (

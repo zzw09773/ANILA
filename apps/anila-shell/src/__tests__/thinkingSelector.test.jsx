@@ -1,9 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import ThinkingPicker from "../components/ThinkingPicker.jsx";
-import { ReasoningSummary } from "../chat.jsx";
+import { MessageBubble, ReasoningSummary } from "../chat.jsx";
 import {
+  GLM_OFF_LABEL,
+  GLM_OFF_REASON,
   conversationSelectionFromServer,
+  isGlmFamily,
+  isThinkingDisplayOff,
+  outgoingThinkingApplied,
   shouldReplayOneShotDeep,
   thinkingPickerMode,
   thinkingPickerOptions,
@@ -87,6 +92,34 @@ describe("thinkingPicker 檔位對映", () => {
     ]);
     expect(thinkingTriggerLabel("deep", ["none", "xhigh"])).toBe("開啟");
   });
+
+  it("GLM 關閉標成不顯示思考，Qwen 仍是關閉", () => {
+    expect(isGlmFamily({ name: "glm-5.3-flash" })).toBe(true);
+    expect(isGlmFamily("litellm/glm-5.3-flash")).toBe(true);
+    expect(isGlmFamily({ name: "qwen38-flash-next", display_name: "GLM" })).toBe(false);
+    const glmOff = thinkingPickerOptions(["none", "low", "medium", "xhigh"], { name: "glm-5.3-flash" })
+      .find((opt) => opt.tier === "off");
+    expect(glmOff.label).toBe(GLM_OFF_LABEL);
+    expect(glmOff.reason).toBe(GLM_OFF_REASON);
+    expect(thinkingTriggerLabel("off", ["none", "low", "medium", "xhigh"], { name: "glm-5.3-flash" }))
+      .toBe(GLM_OFF_LABEL);
+    expect(thinkingPickerOptions(["none", "low", "medium", "xhigh"], { name: "qwen38-flash-next" })
+      .find((opt) => opt.tier === "off").label).toBe("關閉");
+  });
+
+  it("outgoingThinkingApplied 依這一則送出的檔位，不讀日後對話列", () => {
+    expect(outgoingThinkingApplied({ oneShotDeep: true, thinkingTier: "off" })).toEqual({
+      tier: "deep",
+      source: "turn",
+    });
+    expect(outgoingThinkingApplied({ thinkingTier: "off" })).toEqual({
+      tier: "off",
+      source: "conversation",
+    });
+    expect(outgoingThinkingApplied({ thinkingTier: "default" })).toBeNull();
+    expect(isThinkingDisplayOff({ tier: "off", level: "low" })).toBe(true);
+    expect(isThinkingDisplayOff({ tier: "deep" })).toBe(false);
+  });
 });
 
 describe("conversationSelectionFromServer", () => {
@@ -155,6 +188,88 @@ describe("ThinkingPicker", () => {
   it("選深入時顯示額度提示", () => {
     render(<ThinkingPicker value="deep" model={GRADED_MODEL} onChange={() => {}} />);
     expect(screen.getByText("思考會用掉較多時間與額度")).toBeTruthy();
+  });
+
+  it("GLM 關閉顯示不顯示思考與 tokens 說明", () => {
+    render(<ThinkingPicker value="off" model={GRADED_MODEL} onChange={() => {}} />);
+    fireEvent.click(screen.getByLabelText("思考"));
+    expect(screen.getAllByText(GLM_OFF_LABEL).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(GLM_OFF_REASON).length).toBeGreaterThan(0);
+  });
+});
+
+describe("off 隱藏思考折疊", () => {
+  it("這一則 applied.tier=off 時整段折疊不出現，即使有 reasoning 與 0 tokens", () => {
+    const { container } = render(
+      <ReasoningSummary
+        trace={[{ at: 1, label: "分析" }]}
+        reasoning={"The user asks: water formula"}
+        streaming={false}
+        usage={{ reasoning_tokens: 0, reasoning_tokens_source: "reported" }}
+        thinkingApplied={{ tier: "off", level: "low", source: "conversation", enable_thinking: true }}
+      />,
+    );
+    expect(container.querySelector(".anila-reasoning")).toBeNull();
+    expect(screen.queryByText(/關閉/)).toBeNull();
+    expect(screen.queryByText(/0 tokens/)).toBeNull();
+    expect(screen.queryByText(/The user asks/)).toBeNull();
+  });
+
+  it("串流中 off 也不攤開時間軸", () => {
+    const { container } = render(
+      <ReasoningSummary
+        trace={[{ at: 1, label: "分析" }]}
+        reasoning={"hidden"}
+        streaming
+        thinkingApplied={{ tier: "off", source: "conversation" }}
+      />,
+    );
+    expect(container.querySelector(".anila-reasoning")).toBeNull();
+  });
+
+  it("答案區只渲染 content，reasoning 與 think 標籤不回填", () => {
+    render(
+      <MessageBubble
+        msg={{
+          id: "a1",
+          role: "assistant",
+          text: "<think>The user asks: water formula</think>水的化學式是 H₂O。",
+          reasoning: "The user asks: water formula",
+          thinkingApplied: { tier: "off", level: "low", source: "conversation" },
+          streaming: false,
+          siblingIndex: 0,
+          siblingCount: 1,
+          siblingIds: [1],
+        }}
+        agents={[]}
+        conversationId={1}
+      />,
+    );
+    expect(screen.getByText(/水的化學式是/)).toBeTruthy();
+    expect(screen.queryByText(/The user asks/)).toBeNull();
+    expect(document.querySelector(".anila-reasoning")).toBeNull();
+  });
+
+  it("合法引用 The user asks: 留在答案，不因 off 被截掉", () => {
+    render(
+      <MessageBubble
+        msg={{
+          id: "a2",
+          role: "assistant",
+          text: '英文裡常見的轉述是 “The user asks: …”。',
+          reasoning: "internal only",
+          thinkingApplied: { tier: "off", level: "low", source: "conversation" },
+          streaming: false,
+          siblingIndex: 0,
+          siblingCount: 1,
+          siblingIds: [2],
+        }}
+        agents={[]}
+        conversationId={1}
+      />,
+    );
+    expect(screen.getByText(/The user asks/)).toBeTruthy();
+    expect(document.querySelector(".anila-reasoning")).toBeNull();
   });
 });
 

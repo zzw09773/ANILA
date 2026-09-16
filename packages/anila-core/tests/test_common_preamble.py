@@ -86,6 +86,13 @@ def test_current_facts_no_simplified_characters():
     assert not hits, f"要職段含簡體字：{hits}"
 
 
+def test_language_rules_default_unless_user_specifies():
+    assert "預設使用繁體中文" in LANGUAGE_RULES
+    assert "明確指定語言時依其指定" in LANGUAGE_RULES
+    assert "一律以繁體中文" not in LANGUAGE_RULES
+    assert "請一律以繁體中文" not in COMMON_PREAMBLE
+
+
 def test_compose_strips_and_joins():
     assert compose(" a ", "", "b") == "a\n\nb"
 

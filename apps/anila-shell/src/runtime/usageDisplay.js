@@ -10,9 +10,9 @@ export function normalizeUsageRange(range) {
   return USAGE_RANGES.includes(range) ? range : DEFAULT_USAGE_RANGE;
 }
 
-/** 有 reasoning_tokens 用 tokens；否則退回「N 字思考」。 */
+/** 有 reasoning_tokens 用 tokens；否則退回「N 字思考」。0 不當作用量。 */
 export function reasoningFoldLabel(usage, reasoning) {
-  if (typeof usage?.reasoning_tokens === "number") {
+  if (typeof usage?.reasoning_tokens === "number" && usage.reasoning_tokens > 0) {
     const approx = usage.reasoning_tokens_source === "estimated" ? "約" : "";
     return `思考${approx} ${usage.reasoning_tokens} tokens`;
   }

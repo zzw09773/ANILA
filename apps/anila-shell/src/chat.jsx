@@ -79,6 +79,7 @@ import {
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
 import { ShellNav } from "./shellNav.jsx";
+import { isThinkingDisplayOff } from "./runtime/thinkingTier.js";
 import {
   reasoningFoldLabel,
   thinkingAppliedFoldSuffix,
@@ -248,11 +249,13 @@ export const ReasoningSummary = ({
   thinkingApplied = null,
 }) => {
   const [open, setOpen] = useState(false);
+  const hideThinking = isThinkingDisplayOff(thinkingApplied);
   const hasTrace = Array.isArray(trace) && trace.length > 0;
   const hasReasoning = typeof reasoning === "string" && reasoning.length > 0;
   const tokenLabel = reasoningFoldLabel(usage, reasoning);
-  const appliedLabel = thinkingAppliedFoldSuffix(thinkingApplied);
-  const hasUsageReasoning = typeof usage?.reasoning_tokens === "number";
+  const appliedLabel = hideThinking ? null : thinkingAppliedFoldSuffix(thinkingApplied);
+  const hasUsageReasoning = typeof usage?.reasoning_tokens === "number" && usage.reasoning_tokens > 0;
+  if (hideThinking) return null;
   if (!streaming && !hasTrace && !hasReasoning && !thinkingLocked && !hasUsageReasoning && !appliedLabel) return null;
   if (!streaming && !hasTrace && !hasReasoning && thinkingLocked && !hasUsageReasoning && !appliedLabel) {
     return (
@@ -933,10 +936,13 @@ export const MessageBubble = ({
       {(() => {
         // Combine reasoning from two channels so gpt-oss-20b (native field) and
         // models that inline <think>...</think> both fold correctly.
+        const hideThinking = isThinkingDisplayOff(msg.thinkingApplied);
         const { thinking: inlineThinking, body: cleanBody } = extractThinkTags(msg.text);
-        const combinedReasoning = [msg.reasoning, inlineThinking]
-          .filter((s) => typeof s === "string" && s.trim().length > 0)
-          .join("\n\n");
+        const combinedReasoning = hideThinking
+          ? ""
+          : [msg.reasoning, inlineThinking]
+            .filter((s) => typeof s === "string" && s.trim().length > 0)
+            .join("\n\n");
         const displayBody = inlineThinking ? cleanBody : msg.text;
 
         return (

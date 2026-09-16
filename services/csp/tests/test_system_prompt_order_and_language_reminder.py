@@ -62,3 +62,6 @@ def test_regulation_block_without_a_callers_system_message_creates_one():
 def test_language_reminder_is_one_line_in_zh_tw():
     assert "\n" not in LANG.strip()
     assert "繁體中文" in LANG and "台灣" in LANG
+    assert "預設" in LANG
+    assert "明確指定" in LANG
+    assert "一律" not in LANG

@@ -22,7 +22,11 @@ from app.services import thinking_probe
 from app.services.proxy import service as proxy_impl
 from app.services.proxy.sampling import (
     ANILA_THINKING_TIER_KEY,
+    GLM_DISPLAY_OFF_ADAPTER,
+    GLM_DISPLAY_OFF_LEVEL,
+    adapt_thinking_level_for_model,
     apply_model_sampling_overrides,
+    describe_thinking_applied,
     is_thinking_locked,
     resolve_thinking_level,
     stamp_thinking_locked,
@@ -176,6 +180,138 @@ def test_off_sends_enable_thinking_false_without_reasoning_effort():
     )
     assert out["chat_template_kwargs"] == {"enable_thinking": False}
     assert "reasoning_effort" not in out
+
+
+def test_glm_off_keeps_reasoning_channel_at_low():
+    """Display-off on GLM is (low, True). Generic resolve stays (None, False)."""
+    glm = _model(
+        name="glm-5.3-flash",
+        thinking_effort="max",
+        thinking_levels_supported=GEMMA_ALL,
+    )
+    assert resolve_thinking_level("off", GEMMA_ALL, "max") == (None, False)
+    assert adapt_thinking_level_for_model(
+        None, False, tier="off", model=glm
+    ) == (GLM_DISPLAY_OFF_LEVEL, True)
+    out = apply_model_sampling_overrides({}, glm, thinking_tier="off")
+    assert out["reasoning_effort"] == "low"
+    assert out["chat_template_kwargs"] == {"enable_thinking": True}
+    applied = describe_thinking_applied({}, glm, thinking_tier="off")
+    assert applied["tier"] == "off"
+    assert applied["level"] == "low"
+    assert applied["enable_thinking"] is True
+    assert applied["source"] == "conversation"
+    assert applied["adapter"] == GLM_DISPLAY_OFF_ADAPTER
+    assert "不顯示思考" in applied["adapter_reason"]
+
+
+def test_glm_off_prefixed_name_still_adapts():
+    out = apply_model_sampling_overrides(
+        {},
+        _model(name="litellm/glm-5.3-flash", thinking_levels_supported=GEMMA_ALL),
+        thinking_tier="off",
+    )
+    assert out["reasoning_effort"] == "low"
+    assert out["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_qwen_off_is_not_glm_adapted():
+    out = apply_model_sampling_overrides(
+        {},
+        _model(name="qwen38-flash-next", thinking_levels_supported=QWEN_LIKE),
+        thinking_tier="off",
+    )
+    assert out["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in out
+    applied = describe_thinking_applied(
+        {},
+        _model(name="qwen38-flash-next", thinking_levels_supported=QWEN_LIKE),
+        thinking_tier="off",
+    )
+    assert applied["tier"] == "off"
+    assert applied["level"] == "none"
+    assert applied["enable_thinking"] is False
+    assert "adapter" not in applied
+
+
+def test_glm_off_caller_reasoning_effort_still_wins():
+    glm = _model(
+        name="glm-5.3-flash",
+        thinking_effort="max",
+        thinking_levels_supported=GEMMA_ALL,
+    )
+    out = apply_model_sampling_overrides(
+        {"reasoning_effort": "medium", ANILA_THINKING_TIER_KEY: "off"},
+        glm,
+        thinking_tier="off",
+    )
+    assert out["reasoning_effort"] == "medium"
+    assert ANILA_THINKING_TIER_KEY not in out
+    applied = describe_thinking_applied(
+        {"reasoning_effort": "medium", ANILA_THINKING_TIER_KEY: "off"},
+        glm,
+        thinking_tier="off",
+    )
+    assert applied["source"] == "caller"
+    assert applied["tier"] == "default"
+    assert applied["level"] == "medium"
+    assert "adapter" not in applied
+
+
+def test_glm_off_caller_enable_thinking_false_still_wins():
+    glm = _model(name="glm-5.3-flash", thinking_levels_supported=GEMMA_ALL)
+    out = apply_model_sampling_overrides(
+        {"chat_template_kwargs": {"enable_thinking": False}},
+        glm,
+        thinking_tier="off",
+    )
+    assert out["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in out
+    applied = describe_thinking_applied(
+        {"chat_template_kwargs": {"enable_thinking": False}},
+        glm,
+        thinking_tier="off",
+    )
+    assert applied["source"] == "caller"
+    assert applied["level"] == "none"
+    assert applied["enable_thinking"] is False
+    assert "adapter" not in applied
+
+
+def test_glm_other_tiers_and_model_max_unchanged():
+    glm = _model(
+        name="glm-5.3-flash",
+        thinking_effort="max",
+        thinking_levels_supported=GEMMA_ALL,
+    )
+    standard = apply_model_sampling_overrides({}, glm, thinking_tier="standard")
+    assert standard["reasoning_effort"] == "medium"
+    assert standard["chat_template_kwargs"] == {"enable_thinking": True}
+    deep = apply_model_sampling_overrides({}, glm, thinking_tier="deep")
+    assert deep["reasoning_effort"] == "max"
+    default = apply_model_sampling_overrides({}, glm, thinking_tier="default")
+    assert default["reasoning_effort"] == "max"
+    assert default["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_glm_locked_ignores_off_adapter():
+    glm = _model(
+        name="glm-5.3-flash",
+        thinking_effort="max",
+        thinking_levels_supported=GEMMA_ALL,
+        thinking_user_selectable=False,
+    )
+    out = apply_model_sampling_overrides(
+        {ANILA_THINKING_TIER_KEY: "off"},
+        glm,
+        thinking_tier="off",
+    )
+    assert out["reasoning_effort"] == "max"
+    applied = describe_thinking_applied(
+        {ANILA_THINKING_TIER_KEY: "off"}, glm, thinking_tier="off"
+    )
+    assert applied["source"] == "model"
+    assert "adapter" not in applied
 
 
 def test_standard_with_null_supported_only_enables_thinking():
@@ -658,7 +794,9 @@ def _wire_proxy_to_test_db(monkeypatch, db_engine) -> None:
     monkeypatch.setattr(proxy_api, "_schedule_memory_write", lambda **kwargs: None)
 
 
-def _open_deep_conversation(client, db, username: str, *, model_name: str, **fields):
+def _open_tier_conversation(
+    client, db, username: str, *, model_name: str, thinking_tier: str, **fields
+):
     make_user(db, username=username)
     model = _open_router_llm(db, model_name, primary=True, **fields)
     token = login(client, username)
@@ -674,12 +812,18 @@ def _open_deep_conversation(client, db, username: str, *, model_name: str, **fie
         f"/api/conversations/{conv['id']}/thinking",
         headers=headers,
         json={
-            "thinking_tier": "deep",
+            "thinking_tier": thinking_tier,
             "expected_version": conv["router_selection_version"],
         },
     )
     assert put.status_code == 200, put.text
     return model, headers, put.json()
+
+
+def _open_deep_conversation(client, db, username: str, *, model_name: str, **fields):
+    return _open_tier_conversation(
+        client, db, username, model_name=model_name, thinking_tier="deep", **fields
+    )
 
 
 def _chat(client, headers, *, model: str, conv_id, stream: bool = False, **extra):
@@ -794,6 +938,104 @@ def test_header_conversation_foreign_owner_ignored(client, db, db_engine, monkey
     assert outbound is not None
     assert outbound.get("reasoning_effort") != "xhigh"
     assert "reasoning_effort" not in outbound
+
+
+def test_header_conversation_off_qwen_stays_generic(client, db, db_engine, monkeypatch):
+    _wire_proxy_to_test_db(monkeypatch, db_engine)
+    model, headers, conv = _open_tier_conversation(
+        client,
+        db,
+        "think-e2e-qwen-off",
+        model_name="qwen38-flash-next",
+        thinking_tier="off",
+        thinking_levels_supported=QWEN_LIKE,
+        thinking_effort="xhigh",
+    )
+    resp = _chat(client, headers, model=model.name, conv_id=conv["id"], stream=False)
+    assert resp.status_code == 200, resp.text
+    outbound = _CapturingUpstream.last_body
+    assert outbound is not None
+    assert "reasoning_effort" not in outbound
+    assert outbound.get("chat_template_kwargs", {}).get("enable_thinking") is False
+    assert ANILA_THINKING_TIER_KEY not in outbound
+    applied = resp.json()["anila_meta"]["thinking_applied"]
+    assert applied["tier"] == "off"
+    assert applied["level"] == "none"
+    assert applied["enable_thinking"] is False
+    assert "adapter" not in applied
+
+
+def test_header_conversation_off_glm_sends_low_true(client, db, db_engine, monkeypatch):
+    _wire_proxy_to_test_db(monkeypatch, db_engine)
+    model, headers, conv = _open_tier_conversation(
+        client,
+        db,
+        "think-e2e-glm-off",
+        model_name="glm-5.3-flash",
+        thinking_tier="off",
+        thinking_levels_supported=GEMMA_ALL,
+        thinking_effort="max",
+    )
+    resp = _chat(client, headers, model=model.name, conv_id=conv["id"], stream=False)
+    assert resp.status_code == 200, resp.text
+    outbound = _CapturingUpstream.last_body
+    assert outbound is not None
+    assert outbound["reasoning_effort"] == "low"
+    assert outbound.get("chat_template_kwargs", {}).get("enable_thinking") is True
+    assert ANILA_THINKING_TIER_KEY not in outbound
+    applied = resp.json()["anila_meta"]["thinking_applied"]
+    assert applied["tier"] == "off"
+    assert applied["level"] == "low"
+    assert applied["enable_thinking"] is True
+    assert applied["source"] == "conversation"
+    assert applied["adapter"] == GLM_DISPLAY_OFF_ADAPTER
+
+
+def test_header_conversation_off_glm_stream_same_body(client, db, db_engine, monkeypatch):
+    _wire_proxy_to_test_db(monkeypatch, db_engine)
+    model, headers, conv = _open_tier_conversation(
+        client,
+        db,
+        "think-e2e-glm-off-stream",
+        model_name="glm-5.3-flash-stream",
+        thinking_tier="off",
+        thinking_levels_supported=GEMMA_ALL,
+        thinking_effort="max",
+    )
+    resp = _chat(client, headers, model=model.name, conv_id=conv["id"], stream=True)
+    assert resp.status_code == 200, resp.text
+    outbound = _CapturingUpstream.last_body
+    assert outbound is not None
+    assert outbound["reasoning_effort"] == "low"
+    assert outbound.get("chat_template_kwargs", {}).get("enable_thinking") is True
+
+
+def test_header_conversation_off_glm_turn_override_standard(client, db, db_engine, monkeypatch):
+    _wire_proxy_to_test_db(monkeypatch, db_engine)
+    model, headers, conv = _open_tier_conversation(
+        client,
+        db,
+        "think-e2e-glm-off-turn",
+        model_name="glm-5.3-flash-turn",
+        thinking_tier="off",
+        thinking_levels_supported=GEMMA_ALL,
+        thinking_effort="max",
+    )
+    resp = _chat(
+        client,
+        headers,
+        model=model.name,
+        conv_id=conv["id"],
+        stream=False,
+        anila_thinking_tier="standard",
+    )
+    assert resp.status_code == 200, resp.text
+    outbound = _CapturingUpstream.last_body
+    assert outbound["reasoning_effort"] == "medium"
+    applied = resp.json()["anila_meta"]["thinking_applied"]
+    assert applied["tier"] == "standard"
+    assert applied["source"] == "turn"
+    assert "adapter" not in applied
 
 
 # ── POST /api/models/{id}/probe-thinking ────────────────────────────────────
