@@ -5,8 +5,21 @@
 // admin override path; an admin who needs to inspect another user's
 // memory hits the DB directly with audit trail.
 
+export const REPLY_STYLE_KEY = "preference.reply_style";
+
 export function listFacts(authRequest) {
   return authRequest("/api/memory/facts", { method: "GET" });
+}
+
+export function getPreference(authRequest) {
+  return authRequest("/api/memory/preference", { method: "GET" });
+}
+
+export function putPreference(authRequest, text) {
+  return authRequest("/api/memory/preference", {
+    method: "PUT",
+    body: JSON.stringify({ text }),
+  });
 }
 
 export function deleteFact(authRequest, factId) {

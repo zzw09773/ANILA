@@ -45,7 +45,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from typing import Any, Iterable, Optional
+from typing import Any, Optional, Iterable, Optional
 
 import httpx
 from sqlalchemy import text
@@ -116,6 +116,16 @@ _MEMORY_BLOCK_MAX_CHARS = 4_000
 # short text but spending a round-trip to confirm "[]" on every "yes"
 # / "ok" reply doubles per-turn cost without value.
 _EXTRACT_MIN_CHARS = 8
+
+# 使用者自己寫的回覆風格。萃取不可覆寫，否則設定頁存的字會被下一輪對話洗掉。
+REPLY_STYLE_KEY = "preference.reply_style"
+USER_AUTHORED_FACT_KEYS = frozenset({REPLY_STYLE_KEY})
+REPLY_STYLE_MAX_CHARS = 2000
+
+
+def facts_safe_for_extraction(facts: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Drop keys the user owns so persist_turn cannot clobber them."""
+    return [f for f in (facts or []) if f.get("key") not in USER_AUTHORED_FACT_KEYS]
 
 
 # ── Endpoint discovery ────────────────────────────────────────────────────────
@@ -853,7 +863,7 @@ async def persist_turn(
             transcript = format_transcript_for_extraction(
                 user_message, assistant_message
             )
-            facts = await _extract_facts(db, transcript)
+            facts = facts_safe_for_extraction(await _extract_facts(db, transcript))
             if facts:
                 _upsert_facts(
                     db,
