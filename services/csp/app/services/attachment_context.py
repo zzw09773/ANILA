@@ -166,13 +166,18 @@ def fits(cost: int, usage: dict[str, Any]) -> bool:
 
 # Status labels for the prompt notice line (zh-TW).
 # Budget exclusion is NOT a stored status — see build_attachment_prompt_block.
+# Conversation attachments that do not fit are omitted, not chunk-retrieved.
+# Copy must not claim retrieval. Keep in lockstep with shell
+# ATTACHMENT_OVERFLOW_NOTICE.
+_ATTACHMENT_OVERFLOW_NOTICE = "這份太大，沒辦法整份放進這次回答，可能會漏"
+
 _STATUS_REASON = {
     "failed": "解析失敗",
     "unsupported": "不支援的檔案格式",
-    "too_large": "抽取文字超過儲存上限",
+    "too_large": _ATTACHMENT_OVERFLOW_NOTICE,
 }
 
-_BUDGET_EXCLUDED_REASON = "超出附件 token 預算"
+_BUDGET_EXCLUDED_REASON = _ATTACHMENT_OVERFLOW_NOTICE
 
 
 class AttachmentPromptView(Protocol):

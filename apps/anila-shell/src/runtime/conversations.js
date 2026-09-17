@@ -7,6 +7,7 @@
 // set the multipart boundary itself.
 
 import { config, joinUrl, readCsrfCookie } from "./api.js";
+import { ATTACHMENT_OVERFLOW_NOTICE } from "./messageAttachments.js";
 
 // Origin tag for this frontend. Migration 0023 added the
 // `conversations.origin` column so multiple SPAs (ANILA UI + ANILALM
@@ -368,20 +369,22 @@ export const EXTRACT_TERMINAL_STATUSES = new Set([
 export const EXTRACT_STATUS_REASONS = {
   unsupported: "不支援的檔案格式",
   failed: "解析失敗",
-  too_large: "抽取文字超過儲存上限",
+  too_large: ATTACHMENT_OVERFLOW_NOTICE,
 };
+
+export { ATTACHMENT_OVERFLOW_NOTICE };
 
 export function extractStatusReason(status, extractError) {
   if (!EXTRACT_STATUS_REASONS[status]) return null;
   // Per-status policy for extract_error (not a blanket rule):
-  // - `failed`: always the fixed zh-TW label. Backend exception text may
-  //   contain filesystem paths or module names and must never reach the UI.
-  // - `unsupported` / `too_large`: surface the backend's user-facing message
-  //   when present (fixed actionable set / storage-cap wording). Fall back
-  //   to the generic label when absent or blank.
+  // - `failed` / `too_large`: always the fixed zh-TW label. Backend
+  //   extract_error may be a token-count line or a path/module dump.
+  // - `unsupported`: surface the backend's user-facing message when present
+  //   (fixed actionable set). Fall back to the generic label when absent.
   if (status === "failed") return EXTRACT_STATUS_REASONS.failed;
+  if (status === "too_large") return EXTRACT_STATUS_REASONS.too_large;
   if (
-    (status === "unsupported" || status === "too_large")
+    status === "unsupported"
     && typeof extractError === "string"
     && extractError.trim()
   ) {
@@ -412,6 +415,9 @@ export async function pollAttachmentExtractStatus(
         return {
           status,
           extractError: meta?.extract_error ?? null,
+          budgetAdmitted: typeof meta?.budget_admitted === "boolean"
+            ? meta.budget_admitted
+            : null,
           timedOut: false,
         };
       }
@@ -419,7 +425,12 @@ export async function pollAttachmentExtractStatus(
       // Stay quiet — a blip must not become a false failure banner.
     }
     if (i >= delaysMs.length) {
-      return { status: "pending", extractError: null, timedOut: true };
+      return {
+        status: "pending",
+        extractError: null,
+        budgetAdmitted: null,
+        timedOut: true,
+      };
     }
     await sleep(delaysMs[i]);
   }

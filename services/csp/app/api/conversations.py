@@ -62,6 +62,10 @@ class AttachmentOut(BaseModel):
     filename: str
     content_type: str
     size_bytes: int
+    # Extraction outcome so reload can still show the overflow notice.
+    # Do not add budget_admitted here: default False would lie on every file.
+    # Do not add extract_error: failed rows may store path/module dumps.
+    extract_status: Optional[str] = None
     model_config = {"from_attributes": True}
 
 

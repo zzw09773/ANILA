@@ -230,7 +230,8 @@ def test_small_ok_large_excluded_injection(db, storage_root, monkeypatch):
     assert small_text[:40] in sys_content
     assert large_text[:40] not in sys_content
     assert "large-500p.txt" in sys_content
-    assert "超出附件 token 預算" in sys_content
+    assert "這份太大，沒辦法整份放進這次回答，可能會漏" in sys_content
+    assert "檢索" not in sys_content
 
 
 # ── b. Budget accumulation oldest-first ───────────────────────────────────
@@ -320,7 +321,7 @@ def test_delete_promotes_without_recheck(db, storage_root, monkeypatch):
     content = body["messages"][0]["content"]
     assert "free1.txt" in content
     assert "free2.txt" in content
-    assert "超出附件 token 預算" not in content
+    assert "這份太大，沒辦法整份放進這次回答，可能會漏" not in content
 
     for a in (atts[1], atts[2]):
         db.refresh(a)
@@ -897,7 +898,8 @@ def test_admission_uses_model_context_window(db, storage_root, monkeypatch):
     _inject_attachments(db, conv.id, chat_body, "tiny-ctx")
     assert body_text[:30] not in chat_body["messages"][0]["content"]
     assert "mid.txt" in chat_body["messages"][0]["content"]
-    assert "超出附件 token 預算" in chat_body["messages"][0]["content"]
+    assert "這份太大，沒辦法整份放進這次回答，可能會漏" in chat_body["messages"][0]["content"]
+    assert "檢索" not in chat_body["messages"][0]["content"]
     db.refresh(att)
     assert att.extract_status == "ok"
 
@@ -986,7 +988,8 @@ def test_storage_ratio_cap_withholds_text_as_too_large(
     _inject_attachments(db, conv.id, body, None)
     sys_content = body["messages"][0]["content"]
     assert "huge.txt" in sys_content
-    assert "抽取文字超過儲存上限" in sys_content
+    assert "這份太大，沒辦法整份放進這次回答，可能會漏" in sys_content
+    assert "檢索" not in sys_content
 
 
 def test_inject_does_not_commit_or_mutate_status(db, storage_root, monkeypatch):

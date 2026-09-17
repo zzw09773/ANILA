@@ -2,6 +2,24 @@
 
 const IMAGE_NAME = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 
+/** Honest overflow copy. Conversation attachments are omitted, not retrieved. */
+export const ATTACHMENT_OVERFLOW_NOTICE =
+  "這份太大，沒辦法整份放進這次回答，可能會漏";
+
+/**
+ * User-visible notice when this file will not be fully in the model context.
+ * Inline images (`dataUrl`) go via image_url and must not be accused.
+ * `budget_admitted === false` is explicit only — missing/unknown is not overflow.
+ */
+export function attachmentOverflowNotice(att) {
+  if (!att || att.dataUrl) return null;
+  const status = att.extractStatus || att.extract_status || "";
+  if (status === "too_large") return ATTACHMENT_OVERFLOW_NOTICE;
+  const admitted = att.budgetAdmitted ?? att.budget_admitted;
+  if (status === "ok" && admitted === false) return ATTACHMENT_OVERFLOW_NOTICE;
+  return null;
+}
+
 export function isMessageImage(att) {
   if (!att) return false;
   if (att.kind === "image") return true;
@@ -39,6 +57,11 @@ export function mapServerAttachments(rows) {
       contentType: a.content_type,
       name: a.filename,
     }) ? "image" : "file",
+    extractStatus: a.extract_status || a.extractStatus || null,
+    extractError: a.extract_error ?? a.extractError ?? null,
+    budgetAdmitted: typeof a.budget_admitted === "boolean"
+      ? a.budget_admitted
+      : (typeof a.budgetAdmitted === "boolean" ? a.budgetAdmitted : null),
   }));
 }
 
@@ -69,6 +92,9 @@ export function mergeMessageAttachments(serverList, clientList) {
       kind: item.kind || local.kind,
       dataUrl: local.dataUrl || item.dataUrl,
       previewUrl: local.previewUrl || item.previewUrl,
+      extractStatus: item.extractStatus || local.extractStatus,
+      extractError: item.extractError || local.extractError,
+      budgetAdmitted: item.budgetAdmitted ?? local.budgetAdmitted,
     };
   });
 }

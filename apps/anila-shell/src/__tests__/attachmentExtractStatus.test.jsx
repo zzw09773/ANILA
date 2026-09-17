@@ -18,6 +18,7 @@ import {
   extractStatusReason,
   pollAttachmentExtractStatus,
 } from "../runtime/conversations.js";
+import { ATTACHMENT_OVERFLOW_NOTICE } from "../runtime/messageAttachments.js";
 
 const AGENTS = [{ id: "anila-router", name: "ANILA 自動選助手", short: "auto" }];
 
@@ -73,7 +74,8 @@ describe("extractStatusReason / accept 清單", () => {
   it("終態失敗理由是繁中台灣用語", () => {
     expect(EXTRACT_STATUS_REASONS.unsupported).toBe("不支援的檔案格式");
     expect(EXTRACT_STATUS_REASONS.failed).toBe("解析失敗");
-    expect(EXTRACT_STATUS_REASONS.too_large).toBe("抽取文字超過儲存上限");
+    expect(EXTRACT_STATUS_REASONS.too_large).toBe(ATTACHMENT_OVERFLOW_NOTICE);
+    expect(EXTRACT_STATUS_REASONS.too_large).not.toMatch(/檢索/);
     expect(extractStatusReason("unsupported")).toBe("不支援的檔案格式");
     // 簡體對照字不得出現
     expect(EXTRACT_STATUS_REASONS.unsupported).not.toMatch(/文件|格式不支持/);
@@ -87,6 +89,14 @@ describe("extractStatusReason / accept 清單", () => {
     expect(extractStatusReason("unsupported", null)).toBe("不支援的檔案格式");
     expect(extractStatusReason("unsupported", "")).toBe("不支援的檔案格式");
     expect(extractStatusReason("unsupported", "   ")).toBe("不支援的檔案格式");
+  });
+
+  it("too_large 固定用溢出句，不把 token 計數當 UI 文案", () => {
+    expect(
+      extractStatusReason("too_large", "抽取約 900000 tokens，超過單份附件儲存上限"),
+    ).toBe(ATTACHMENT_OVERFLOW_NOTICE);
+    expect(extractStatusReason("too_large")).toBe(ATTACHMENT_OVERFLOW_NOTICE);
+    expect(extractStatusReason("too_large")).not.toMatch(/檢索/);
   });
 
   it("failed 不回傳後端 extract_error（路徑／模組名）", () => {
@@ -122,6 +132,7 @@ describe("pollAttachmentExtractStatus", () => {
     expect(out).toEqual({
       status: "unsupported",
       extractError: null,
+      budgetAdmitted: null,
       timedOut: false,
     });
   });
@@ -131,6 +142,22 @@ describe("pollAttachmentExtractStatus", () => {
     const out = await pollAttachmentExtractStatus(fetchMeta, "ref-1", INSTANT_POLL);
     expect(out.timedOut).toBe(true);
     expect(out.status).toBe("pending");
+    expect(out.budgetAdmitted).toBeNull();
+  });
+
+  it("終態 ok 帶出 budget_admitted", async () => {
+    const fetchMeta = vi.fn().mockResolvedValue({
+      extract_status: "ok",
+      extract_error: null,
+      budget_admitted: false,
+    });
+    const out = await pollAttachmentExtractStatus(fetchMeta, "ref-big", INSTANT_POLL);
+    expect(out).toEqual({
+      status: "ok",
+      extractError: null,
+      budgetAdmitted: false,
+      timedOut: false,
+    });
   });
 
   it("網路錯誤不立刻當失敗", async () => {
@@ -139,7 +166,12 @@ describe("pollAttachmentExtractStatus", () => {
       .mockRejectedValueOnce(new Error("network"))
       .mockResolvedValueOnce({ extract_status: "ok", extract_error: null });
     const out = await pollAttachmentExtractStatus(fetchMeta, "ref-1", INSTANT_POLL);
-    expect(out).toEqual({ status: "ok", extractError: null, timedOut: false });
+    expect(out).toEqual({
+      status: "ok",
+      extractError: null,
+      budgetAdmitted: null,
+      timedOut: false,
+    });
   });
 });
 
@@ -368,7 +400,7 @@ describe("Composer — 抽取終態必須可見", () => {
       // 禁止假失敗宣稱；逾時後必須仍可見地不確定（不可掉成純 KB＝confirmed-ok）。
       expect(chip.textContent).not.toContain("不支援的檔案格式");
       expect(chip.textContent).not.toContain("解析失敗");
-      expect(chip.textContent).not.toContain("抽取文字超過儲存上限");
+      expect(chip.textContent).not.toContain(ATTACHMENT_OVERFLOW_NOTICE);
       expect(chip.textContent).toContain("狀態未知");
       expect(chip.textContent).not.toMatch(/\d+\s*KB/);
       expect(chip.getAttribute("data-extract-uncertain")).toBe("1");
@@ -561,7 +593,7 @@ describe("Composer — 抽取終態必須可見", () => {
   it("failed／too_large 也走警告 chip + banner", async () => {
     for (const [status, reason] of [
       ["failed", "解析失敗"],
-      ["too_large", "抽取文字超過儲存上限"],
+      ["too_large", ATTACHMENT_OVERFLOW_NOTICE],
     ]) {
       cleanup();
       const onFetchAttachmentMeta = vi.fn().mockResolvedValue({
@@ -612,5 +644,38 @@ describe("Composer — 抽取終態必須可見", () => {
     expect(removeBtn).not.toBeNull();
     fireEvent.click(removeBtn);
     expect(container.querySelector('[data-extract-failed="1"]')).toBeNull();
+  });
+
+  it("extract ok 但 budget 未納入：警告 chip + 溢出句，不當抽取失敗", async () => {
+    const onFetchAttachmentMeta = vi.fn().mockResolvedValue({
+      extract_status: "ok",
+      extract_error: null,
+      budget_admitted: false,
+    });
+    const onUpload = vi.fn().mockResolvedValue({
+      filename: "huge.pdf",
+      reference_id: "ref-budget",
+      content_type: "application/pdf",
+      size_bytes: 4096,
+      extract_status: "pending",
+    });
+    const { container } = renderComposer({ onUpload, onFetchAttachmentMeta });
+    await pickFile(
+      container,
+      new File(["%PDF-1.4"], "huge.pdf", { type: "application/pdf" }),
+    );
+    await waitFor(() => {
+      const chip = container.querySelector('[data-extract-status="ok"]');
+      expect(chip).not.toBeNull();
+      expect(chip.getAttribute("data-extract-failed")).toBe("0");
+      expect(chip.getAttribute("data-extract-overflow")).toBe("1");
+      expect(chip.classList.contains("composer-att-chip--overflow")).toBe(true);
+      expect(chip.textContent).toContain(ATTACHMENT_OVERFLOW_NOTICE);
+      expect(chip.textContent).not.toMatch(/檢索/);
+    });
+    const banner = await screen.findByRole("alert");
+    expect(banner.textContent).toContain("huge.pdf");
+    expect(banner.textContent).toContain(ATTACHMENT_OVERFLOW_NOTICE);
+    expect(banner.getAttribute("data-testid")).toBe("attachment-overflow-notice");
   });
 });

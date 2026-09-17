@@ -4,6 +4,8 @@ import { cleanup, render } from "@testing-library/react";
 
 import { MessageBubble } from "../chat.jsx";
 import {
+  ATTACHMENT_OVERFLOW_NOTICE,
+  attachmentOverflowNotice,
   attachmentPreviewSrc,
   mapServerAttachments,
   mergeMessageAttachments,
@@ -49,6 +51,27 @@ describe("attachmentPreviewSrc", () => {
   });
 });
 
+describe("attachmentOverflowNotice", () => {
+  it("names too_large and explicit budget exclusion; never claims retrieval", () => {
+    expect(attachmentOverflowNotice({ extractStatus: "too_large" }))
+      .toBe(ATTACHMENT_OVERFLOW_NOTICE);
+    expect(attachmentOverflowNotice({
+      extractStatus: "ok",
+      budgetAdmitted: false,
+    })).toBe(ATTACHMENT_OVERFLOW_NOTICE);
+    expect(attachmentOverflowNotice({
+      extractStatus: "ok",
+      budgetAdmitted: true,
+    })).toBeNull();
+    expect(attachmentOverflowNotice({ extractStatus: "ok" })).toBeNull();
+    expect(attachmentOverflowNotice({
+      extractStatus: "too_large",
+      dataUrl: "data:image/png;base64,aa",
+    })).toBeNull();
+    expect(ATTACHMENT_OVERFLOW_NOTICE).not.toMatch(/檢索/);
+  });
+});
+
 describe("mapServerAttachments / merge", () => {
   it("marks image/* as image so the bubble can fetch /api/attachments", () => {
     const mapped = mapServerAttachments([
@@ -61,6 +84,20 @@ describe("mapServerAttachments / merge", () => {
     ]);
     expect(mapped[0].kind).toBe("image");
     expect(attachmentPreviewSrc(mapped[0])).toBe("/api/attachments/img-1");
+  });
+
+  it("carries extract_status so reload can still show overflow", () => {
+    const mapped = mapServerAttachments([
+      {
+        reference_id: "doc-1",
+        filename: "huge.pdf",
+        content_type: "application/pdf",
+        size_bytes: 99,
+        extract_status: "too_large",
+      },
+    ]);
+    expect(mapped[0].extractStatus).toBe("too_large");
+    expect(attachmentOverflowNotice(mapped[0])).toBe(ATTACHMENT_OVERFLOW_NOTICE);
   });
 
   it("keeps local dataUrl when the server snapshot has no bytes", () => {
@@ -98,6 +135,28 @@ describe("sent user bubble shows an image preview", () => {
     expect(img.getAttribute("src")).toBe("data:image/png;base64,aaaa");
     expect(container.textContent).toContain("知道這是啥嗎");
     expect(container.querySelector("[data-testid='message-att-images']")).not.toBeNull();
+  });
+
+  it("shows the overflow notice on a too-large document", () => {
+    const { container } = render(
+      <MessageBubble
+        msg={userMsg({
+          attachments: [{
+            name: "huge.pdf",
+            kind: "file",
+            contentType: "application/pdf",
+            referenceId: "doc-huge",
+            extractStatus: "too_large",
+          }],
+        })}
+        agents={[]}
+      />,
+    );
+    const notice = container.querySelector("[data-testid='attachment-overflow-notice']");
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain("huge.pdf");
+    expect(notice.textContent).toContain(ATTACHMENT_OVERFLOW_NOTICE);
+    expect(notice.textContent).not.toMatch(/檢索/);
   });
 
   it("keeps documents as a filename chip", () => {

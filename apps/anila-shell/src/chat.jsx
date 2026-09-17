@@ -15,6 +15,8 @@ import {
 } from "./runtime/messageActions.js";
 import { ImageLightbox, MarkdownView, extractThinkTags } from "./markdown.jsx";
 import {
+  ATTACHMENT_OVERFLOW_NOTICE,
+  attachmentOverflowNotice,
   attachmentPreviewSrc,
   isMessageImage,
 } from "./runtime/messageAttachments.js";
@@ -533,10 +535,13 @@ function MessageAttachmentList({ attachments }) {
   if (!Array.isArray(attachments) || attachments.length === 0) return null;
   const images = [];
   const files = [];
+  const overflowItems = [];
   for (const att of attachments) {
     const src = attachmentPreviewSrc(att);
     if (isMessageImage(att) && src) images.push({ att, src });
     else files.push(att);
+    const overflow = attachmentOverflowNotice(att);
+    if (overflow) overflowItems.push({ att, overflow });
   }
   return (
     <>
@@ -583,21 +588,48 @@ function MessageAttachmentList({ attachments }) {
       )}
       {files.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-          {files.map((att, i) => (
+          {files.map((att, i) => {
+            const overflow = attachmentOverflowNotice(att);
+            return (
             <div
               key={att.referenceId || att.id || i}
+              data-extract-overflow={overflow ? "1" : "0"}
               style={{
                 display: "flex", alignItems: "center", gap: 6,
                 padding: "3px 8px",
-                background: "var(--bg-elev)",
-                border: "1px solid var(--border)",
+                background: overflow
+                  ? "oklch(0.95 0.06 85 / 0.55)"
+                  : "var(--bg-elev)",
+                border: overflow
+                  ? "1px solid var(--warn)"
+                  : "1px solid var(--border)",
                 borderRadius: 999,
-                fontSize: 11, color: "var(--fg-muted)",
+                fontSize: 11,
+                color: overflow ? "var(--warn)" : "var(--fg-muted)",
                 fontFamily: "var(--font-mono)",
               }}
             >
               {isMessageImage(att) ? <IconImage size={12} /> : <IconFile size={12} />}
               {att.name}
+            </div>
+            );
+          })}
+        </div>
+      )}
+      {overflowItems.length > 0 && (
+        <div
+          role="status"
+          data-testid="attachment-overflow-notice"
+          style={{
+            marginBottom: 8,
+            fontSize: 11,
+            color: "var(--warn)",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          {overflowItems.map(({ att, overflow }) => (
+            <div key={att.referenceId || att.id || att.name}>
+              {att.name}：{overflow}
             </div>
           ))}
         </div>
@@ -2131,6 +2163,7 @@ export const Composer = ({
           extractPolling: false,
           extractUncertain: false,
           extractReason: null,
+          budgetAdmitted: null,
         },
       };
     });
@@ -2177,6 +2210,9 @@ export const Composer = ({
               extractPolling: Boolean(onFetchAttachmentMeta && referenceId),
               extractUncertain: false,
               extractReason: null,
+              budgetAdmitted: typeof result.budget_admitted === "boolean"
+                ? result.budget_admitted
+                : null,
             };
           }),
         );
@@ -2211,6 +2247,11 @@ export const Composer = ({
           outcome.status,
           outcome.extractError,
         );
+        const overflow = attachmentOverflowNotice({
+          extractStatus: outcome.status,
+          budgetAdmitted: outcome.budgetAdmitted,
+          dataUrl,
+        });
         // Gate on the sync Set — never read liveness out of a setAtts updater.
         if (!liveRefs.current.has(referenceId)) return;
         setAtts((list) =>
@@ -2222,6 +2263,7 @@ export const Composer = ({
                   extractPolling: false,
                   extractUncertain: false,
                   extractReason: reason,
+                  budgetAdmitted: outcome.budgetAdmitted,
                 }
               : a,
           ),
@@ -2229,13 +2271,16 @@ export const Composer = ({
         // Banner only if this attachment is still live (not removed / sent).
         // Inline image path (dataUrl) delivers the file to the model regardless
         // of extract_status — never accuse those of failure.
-        if (
+        const filename = result.filename || file.name;
+        if (liveRefs.current.has(referenceId) && !dataUrl && overflow) {
+          setUploadError(`${filename}：${overflow}`);
+        } else if (
           liveRefs.current.has(referenceId)
           && !dataUrl
           && EXTRACT_FAIL_STATUSES.has(outcome.status)
           && reason
         ) {
-          setUploadError(`${result.filename || file.name}：${reason}`);
+          setUploadError(`${filename}：${reason}`);
         }
       } catch (error) {
         liveUploadIds.current.delete(uploadId);
@@ -2314,6 +2359,8 @@ export const Composer = ({
             // failure is irrelevant and must not paint a false-accusation chip.
             const extractFailed =
               EXTRACT_FAIL_STATUSES.has(a.extractStatus) && !a.dataUrl;
+            const overflowNotice = attachmentOverflowNotice(a);
+            const extractOverflow = Boolean(overflowNotice) && !extractFailed;
             const extractPending = Boolean(a.extractPolling);
             const extractUncertain = Boolean(a.extractUncertain);
             const thumb = a.dataUrl || a.previewUrl;
@@ -2321,6 +2368,7 @@ export const Composer = ({
             if (a.uploading) statusLabel = "上傳中…";
             else if (extractPending) statusLabel = "處理中…";
             else if (extractUncertain) statusLabel = "狀態未知";
+            else if (overflowNotice) statusLabel = overflowNotice;
             else if (extractFailed && a.extractReason) statusLabel = a.extractReason;
             else statusLabel = `${Math.round(a.size / 1024)} KB`;
             const removeAtt = () => {
@@ -2336,10 +2384,12 @@ export const Composer = ({
                   className={
                     "composer-att-chip composer-att-thumb"
                     + (extractFailed ? " composer-att-chip--extract-failed" : "")
+                    + (extractOverflow ? " composer-att-chip--overflow" : "")
                   }
                   data-composer-image="1"
                   data-extract-status={a.extractStatus || (a.uploading ? "uploading" : "")}
                   data-extract-failed={extractFailed ? "1" : "0"}
+                  data-extract-overflow={overflowNotice ? "1" : "0"}
                   data-extract-uncertain={extractUncertain ? "1" : "0"}
                   style={{
                     position: "relative",
@@ -2350,7 +2400,9 @@ export const Composer = ({
                     background: "var(--bg)",
                     border: extractFailed
                       ? "1px solid var(--danger)"
-                      : "1px solid var(--border)",
+                      : extractOverflow
+                        ? "1px solid var(--warn)"
+                        : "1px solid var(--border)",
                     opacity: a.uploading || extractPending || extractUncertain ? 0.7 : 1,
                   }}
                 >
@@ -2387,29 +2439,43 @@ export const Composer = ({
                 className={
                   "composer-att-chip"
                   + (extractFailed ? " composer-att-chip--extract-failed" : "")
+                  + (extractOverflow ? " composer-att-chip--overflow" : "")
                 }
                 data-extract-status={a.extractStatus || (a.uploading ? "uploading" : "")}
                 data-extract-failed={extractFailed ? "1" : "0"}
+                data-extract-overflow={overflowNotice ? "1" : "0"}
                 data-extract-uncertain={extractUncertain ? "1" : "0"}
                 style={{
                   display: "flex", alignItems: "center", gap: 6,
                   padding: "4px 6px 4px 10px",
                   background: extractFailed
                     ? "oklch(0.95 0.04 25 / 0.55)"
-                    : "var(--bg-subtle)",
+                    : extractOverflow
+                      ? "oklch(0.95 0.06 85 / 0.55)"
+                      : "var(--bg-subtle)",
                   border: extractFailed
                     ? "1px solid var(--danger)"
-                    : "1px solid var(--border)",
+                    : extractOverflow
+                      ? "1px solid var(--warn)"
+                      : "1px solid var(--border)",
                   borderRadius: 999,
                   fontSize: 11, fontFamily: "var(--font-mono)",
-                  color: extractFailed ? "var(--danger)" : "var(--fg)",
+                  color: extractFailed
+                    ? "var(--danger)"
+                    : extractOverflow
+                      ? "var(--warn)"
+                      : "var(--fg)",
                   opacity: a.uploading || extractPending || extractUncertain ? 0.7 : 1,
                 }}
               >
                 <IconFile size={12} />
                 {a.name}
                 <span style={{
-                  color: extractFailed ? "var(--danger)" : "var(--fg-subtle)",
+                  color: extractFailed
+                    ? "var(--danger)"
+                    : extractOverflow
+                      ? "var(--warn)"
+                      : "var(--fg-subtle)",
                 }}>
                   {statusLabel}
                 </span>
@@ -2428,9 +2494,17 @@ export const Composer = ({
       {uploadError && (
         <div
           role="alert"
+          data-testid={
+            uploadError.includes(ATTACHMENT_OVERFLOW_NOTICE)
+              ? "attachment-overflow-notice"
+              : undefined
+          }
           style={{
             padding: "4px 10px",
-            fontSize: 11, color: "var(--danger)",
+            fontSize: 11,
+            color: uploadError.includes(ATTACHMENT_OVERFLOW_NOTICE)
+              ? "var(--warn)"
+              : "var(--danger)",
             fontFamily: "var(--font-mono)",
           }}
         >
