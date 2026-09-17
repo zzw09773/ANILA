@@ -110,6 +110,8 @@ describe("改用院內規章重查 — 標頭真的送出去了", () => {
     });
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText(RETRY_LABEL)).toBeTruthy();
+    // 自製 absolute 往上開會蓋住氣泡正文（空回覆那句會從「自訂調整」兩側露出來）。
+    expect(menu.parentElement?.style?.position).toBe("fixed");
   });
 
   it("按下去的那一次重送帶著 X-ANILA-Route: forced", async () => {

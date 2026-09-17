@@ -109,7 +109,7 @@ export const Divider = ({ vertical, style = {} }) => (
 // was clipping the tag/actions popup on conversation cards). Caller
 // passes a preferred `align` ("left" | "right"); we keep that hint but
 // always clamp the resulting rect into the viewport with an 8px inset.
-export const Dropdown = ({ trigger, children, align = "left", width = 280, maxHeight = 360 }) => {
+export const Dropdown = ({ trigger, children, align = "left", width = 280, maxHeight = 360, placement = "auto" }) => {
   const [open, setOpen] = useState(false);
   const [panelStyle, setPanelStyle] = useState(null);
   const ref = useRef(null);
@@ -132,7 +132,8 @@ export const Dropdown = ({ trigger, children, align = "left", width = 280, maxHe
       // the trigger when the menu actually has only a couple of items.
       const spaceBelow = vh - rect.bottom;
       const spaceAbove = rect.top;
-      const useTop = spaceBelow < maxHeight && spaceAbove > spaceBelow;
+      const useTop = placement === "above"
+        || (placement !== "below" && spaceBelow < maxHeight && spaceAbove > spaceBelow);
 
       // Horizontal: start from the preferred edge, then clamp so the
       // whole panel always sits inside [margin, vw - margin].
@@ -178,7 +179,7 @@ export const Dropdown = ({ trigger, children, align = "left", width = 280, maxHe
       window.removeEventListener("resize", computePosition);
       window.removeEventListener("scroll", computePosition, true);
     };
-  }, [open, maxHeight, align, width]);
+  }, [open, maxHeight, align, width, placement]);
 
   return (
     <div ref={ref} style={{ display: "inline-block" }}>

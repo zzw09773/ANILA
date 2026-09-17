@@ -356,8 +356,10 @@ def test_router_streaming_empty_length_is_truncation_not_outage(monkeypatch):
 
     body = _collect_router_stream(monkeypatch, fake_stream_llm)
     assert "暫時無法回應" not in body
-    assert "思考用完" in body or "截斷" in body
-    assert '"finish_reason": "length"' in body
+    assert "思考用完" in body or "沒有留下正文" in body
+    assert "繼續產生" not in body
+    assert '"finish_reason": "length"' not in body
+    assert '"finish_reason": "stop"' in body
 
 
 def test_router_streaming_empty_stop_is_not_outage(monkeypatch):
@@ -371,6 +373,9 @@ def test_router_streaming_empty_stop_is_not_outage(monkeypatch):
     body = _collect_router_stream(monkeypatch, fake_stream_llm)
     assert "暫時無法回應" not in body
     assert "沒有留下正文" in body
+    assert "繼續產生" not in body
+    assert '"finish_reason": "length"' not in body
+    assert '"finish_reason": "stop"' in body
 
 
 def test_router_streaming_keeps_partial_content_on_timeout(monkeypatch):

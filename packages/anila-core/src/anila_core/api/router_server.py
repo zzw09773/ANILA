@@ -2550,7 +2550,7 @@ async def _router_streaming_multi_turn(
             latency_ms=int((time.time() - started_at) * 1000),
         )
         yield _make_event("anila.meta", {**anila_meta, "trace": []})
-        yield _make_chunk("", "anila-router", finish="length" if length_budget else "stop")
+        yield _make_chunk("", "anila-router", finish="stop")
         yield "data: [DONE]\n\n"
         return
 
@@ -3046,8 +3046,8 @@ _EMPTY_LENGTH_ERROR = "LLM 回覆為空（finish_reason=length：輸出額度被
 _EMPTY_REPLY_ERROR = "LLM 回覆為空（沒有留下正文）"
 _OUTAGE_FALLBACK = "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）"
 _LENGTH_FALLBACK = "（輸出額度不足，思考或正文被截斷。已產生的內容保留；可按「繼續產生」。）"
-_EMPTY_LENGTH_FALLBACK = "（輸出額度被思考用完，沒有留下正文。可把思考調低再問，或按「繼續產生」。）"
-_EMPTY_REPLY_FALLBACK = "（模型沒有留下正文。可按「繼續產生」或再問一次。）"
+_EMPTY_LENGTH_FALLBACK = "（輸出額度被思考用完，沒有留下正文。可把思考調低再問。）"
+_EMPTY_REPLY_FALLBACK = "（模型沒有留下正文。可把思考調低再問，或再問一次。）"
 # After a partial ``length`` reply, keep writing in the same turn instead of
 # asking the user to click Continue. Empty-content length stops immediately
 # and tells the user — do not silently double ``max_tokens`` and wait again.
@@ -3980,7 +3980,9 @@ async def _router_streaming(
                 if upstream_reasoning:
                     anila_meta["reasoning"] = upstream_reasoning
                 yield _make_event("anila.meta", {**anila_meta, "trace": []})
-                yield _make_chunk("", "anila-router", finish="length")
+                # Empty harness notices are not truncations. Offering
+                # Continue here appends the same sentence on every click.
+                yield _make_chunk("", "anila-router", finish="length" if already else "stop")
                 yield "data: [DONE]\n\n"
                 return
             yield _make_event(

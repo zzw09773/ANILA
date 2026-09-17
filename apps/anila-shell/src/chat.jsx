@@ -20,6 +20,7 @@ import {
   attachmentPreviewSrc,
   isMessageImage,
 } from "./runtime/messageAttachments.js";
+import { canContinueLengthReply } from "./runtime/reservedTurn.js";
 
 import {
   AgentPill,
@@ -667,8 +668,6 @@ export const MessageBubble = ({
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(msg.text || "");
-  // Guided regenerate 的自管小選單狀態。
-  const [regenOpen, setRegenOpen] = useState(false);
   const [steerText, setSteerText] = useState("");
   // OW-3 action picker (clone of regenerate popover idiom).
   const [openActionId, setOpenActionId] = useState(null);
@@ -684,15 +683,6 @@ export const MessageBubble = ({
   // 真分類浮水印:優先讀對話 classificationLevel,缺欄位時以 boolean classified
   // 回退 floor「密」。仍維持「classified 或級別≥密」才顯示的既有 gating。
   const watermark = watermarkLevel({ classificationLevel, classified });
-
-  // 點選單外部即關閉 guided regenerate(自管選單沒有 Dropdown 的內建處理)。
-  useEffect(() => {
-    if (!regenOpen) return;
-    const close = () => setRegenOpen(false);
-    // 延後一個 tick 再掛,避免開啟的那一次點擊立刻關掉。
-    const t = setTimeout(() => document.addEventListener("click", close), 0);
-    return () => { clearTimeout(t); document.removeEventListener("click", close); };
-  }, [regenOpen]);
 
   // OW-3: outside-click closes the action choice picker.
   useEffect(() => {
@@ -1181,7 +1171,7 @@ export const MessageBubble = ({
 
       {/* Continue Response:回應被 max_tokens 截斷時(finishReason==='length')顯示
           「繼續」鈕,點擊接續往下寫。長 context 是 ANILA 賣點,長答案易撞上限。 */}
-      {!msg.streaming && msg.finishReason === "length" && typeof onContinue === "function" && (
+      {!msg.streaming && canContinueLengthReply(msg) && typeof onContinue === "function" && (
         <button
           onClick={() => onContinue(msg)}
           style={{
@@ -1258,88 +1248,87 @@ export const MessageBubble = ({
               於是選單開得起來、四個選項點下去全部沒事——使用者會反覆點。
               把判斷放在這裡而不是叫每個呼叫端加旗標,是為了讓這一類問題
               不可能再出現:忘了接的人自然就沒有按鈕。 */}
-          {onRegenerate && <span style={{ position: "relative", display: "inline-flex" }}>
+          {onRegenerate && (isStreaming ? (
             <IconButton
-              title={isStreaming ? "回應產生中…" : "重新產生（可選調整方向）"}
-              onClick={(e) => { e?.stopPropagation?.(); if (!isStreaming) setRegenOpen((o) => !o); }}
-              disabled={isStreaming}
-              active={regenOpen}
-              style={isStreaming ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
+              title="回應產生中…"
+              disabled
+              style={{ opacity: 0.4, cursor: "not-allowed" }}
             >
               <IconRefresh />
             </IconButton>
-            {regenOpen && !isStreaming && (
-              <div
-                role="menu"
-                onClick={(e) => e.stopPropagation()}
-                style={{
-                  position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 50,
-                  width: 220, background: "var(--bg-elev)", border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
-                  padding: 4, display: "flex", flexDirection: "column", gap: 2,
-                }}
+          ) : (
+            <Dropdown align="left" width={220} placement="below" trigger={(open) => (
+              <IconButton
+                title="重新產生（可選調整方向）"
+                active={open}
               >
-                {[
-                  { label: "重試（不調整）", steer: "" },
-                  { label: "更詳細", steer: "更詳細、補充更多說明與例子" },
-                  { label: "更簡潔", steer: "更簡潔、只保留重點" },
-                  { label: "換個說法", steer: "換一種說法重新表達" },
-                ].map((opt) => (
-                  <button
-                    key={opt.label}
-                    onClick={() => { setRegenOpen(false); onRegenerate?.(msg, opt.steer); }}
-                    style={{
-                      textAlign: "left", padding: "6px 8px", fontSize: 13, color: "var(--fg)",
-                      background: "transparent", border: "none", borderRadius: 4, cursor: "pointer",
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                  >{opt.label}</button>
-                ))}
-                {/* 「改用院內規章重查」——設計 §8 的事後自救。Router 判錯
-                    (該查院內規章而沒查)時畫面上什麼標記都不會有,使用者是
-                    看到答案才知道自己需要這一顆的,所以它出現在這裡而不是
-                    輸入框旁邊。
+                <IconRefresh />
+              </IconButton>
+            )}>
+              {(close) => (
+                <div role="menu" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {[
+                    { label: "重試（不調整）", steer: "" },
+                    { label: "更詳細", steer: "更詳細、補充更多說明與例子" },
+                    { label: "更簡潔", steer: "更簡潔、只保留重點" },
+                    { label: "換個說法", steer: "換一種說法重新表達" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.label}
+                      onClick={() => { close(); onRegenerate?.(msg, opt.steer); }}
+                      style={{
+                        textAlign: "left", padding: "6px 8px", fontSize: 13, color: "var(--fg)",
+                        background: "transparent", border: "none", borderRadius: 4, cursor: "pointer",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >{opt.label}</button>
+                  ))}
+                  {/* 「改用院內規章重查」——設計 §8 的事後自救。Router 判錯
+                      (該查院內規章而沒查)時畫面上什麼標記都不會有,使用者是
+                      看到答案才知道自己需要這一顆的,所以它出現在這裡而不是
+                      輸入框旁邊。
 
-                    ⚠ 刻意**不在上面那個陣列裡**。那四個選項的通道是 steer
-                    ——把一句話串進使用者訊息;重查要的是改變後端行為,走
-                    steer 只會改寫問句而 CSP 什麼也收不到。它傳的是第三個
-                    參數,而且 steer 一律留空:同一個問句原樣重問。 */}
-                <div style={{ borderTop: "1px solid var(--border)", marginTop: 2, paddingTop: 2 }}>
-                  <button
-                    onClick={() => { setRegenOpen(false); onRegenerate?.(msg, "", { forceKbSearch: true }); }}
-                    title="用同一個問句重問一次，這次一定會查院內規章"
-                    style={{
-                      width: "100%", textAlign: "left", padding: "6px 8px", fontSize: 13,
-                      color: "var(--fg)", background: "transparent", border: "none",
-                      borderRadius: 4, cursor: "pointer",
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                  >改用院內規章重查</button>
+                      ⚠ 刻意**不在上面那個陣列裡**。那四個選項的通道是 steer
+                      ——把一句話串進使用者訊息;重查要的是改變後端行為,走
+                      steer 只會改寫問句而 CSP 什麼也收不到。它傳的是第三個
+                      參數,而且 steer 一律留空:同一個問句原樣重問。 */}
+                  <div style={{ borderTop: "1px solid var(--border)", marginTop: 2, paddingTop: 2 }}>
+                    <button
+                      onClick={() => { close(); onRegenerate?.(msg, "", { forceKbSearch: true }); }}
+                      title="用同一個問句重問一次，這次一定會查院內規章"
+                      style={{
+                        width: "100%", textAlign: "left", padding: "6px 8px", fontSize: 13,
+                        color: "var(--fg)", background: "transparent", border: "none",
+                        borderRadius: 4, cursor: "pointer",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >改用院內規章重查</button>
+                  </div>
+                  <div style={{ display: "flex", gap: 4, padding: "4px 4px 2px", borderTop: "1px solid var(--border)" }}>
+                    <input
+                      value={steerText}
+                      onChange={(e) => setSteerText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.nativeEvent?.isComposing && steerText.trim()) {
+                          const s = steerText.trim();
+                          setSteerText("");
+                          close();
+                          onRegenerate?.(msg, s);
+                        }
+                      }}
+                      placeholder="自訂調整…"
+                      style={{
+                        flex: 1, minWidth: 0, fontSize: 12, padding: "4px 6px", color: "var(--fg)",
+                        background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4,
+                      }}
+                    />
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: 4, padding: "4px 4px 2px", borderTop: "1px solid var(--border)" }}>
-                  <input
-                    value={steerText}
-                    onChange={(e) => setSteerText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.nativeEvent?.isComposing && steerText.trim()) {
-                        setRegenOpen(false);
-                        const s = steerText.trim();
-                        setSteerText("");
-                        onRegenerate?.(msg, s);
-                      }
-                    }}
-                    placeholder="自訂調整…"
-                    style={{
-                      flex: 1, fontSize: 12, padding: "4px 6px", color: "var(--fg)",
-                      background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4,
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-          </span>}
+              )}
+            </Dropdown>
+          ))}
           <IconButton
             title={rating === "up" ? "取消標記" : "標記為有用"}
             onClick={() => onRate?.(msg, rating === "up" ? null : "up")}

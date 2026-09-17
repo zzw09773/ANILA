@@ -119,6 +119,7 @@ import {
   readStreamState,
   streamStateNotice,
   isLengthBudgetError,
+  isHarnessEmptyNotice,
   lengthBudgetNotice,
 } from "./runtime/reservedTurn.js";
 
@@ -1971,7 +1972,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           !lengthBudget && streamState === STREAM_STATE.FAILED
             ? streamError?.message || "產生回應時發生錯誤，請稍後再試。"
             : null,
-        ...(lengthBudget ? { finishReason: "length" } : {}),
+        ...(lengthBudget && finalText ? { finishReason: "length" } : {}),
       });
 
       // 內容寫回預留的那一列(不是 append 一則新的)。狀態必須誠實。
@@ -2541,7 +2542,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           !lengthBudget && streamState === STREAM_STATE.FAILED
             ? streamError?.message || "產生回應時發生錯誤，請稍後再試。"
             : null,
-        ...(lengthBudget ? { finishReason: "length" } : {}),
+        ...(lengthBudget && finalText ? { finishReason: "length" } : {}),
       });
 
       if (!persistable) return;
@@ -2760,6 +2761,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
     if (idx < 0) return;
     const existing = assistantMsg.text || "";
+    if (isHarnessEmptyNotice(existing)) {
+      updateMsg(convId, assistantMsg.id, { streaming: false, finishReason: null });
+      return;
+    }
     const effectiveTarget = assistantMsg.routedAgentId || selectedAgentId;
     const baseUrl = effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
     // history 含截斷的這則 assistant + 一句續寫指示。buildMessageHistory 會把
@@ -2783,6 +2788,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
         onText: (acc) => {
+          if (isHarnessEmptyNotice(acc)) {
+            appended = "";
+            combined = existing;
+            return;
+          }
           appended = acc;
           // 接在原文後(若原文未以空白結尾補一個空格,避免黏字)。
           const joiner = existing && !/\s$/.test(existing) ? " " : "";

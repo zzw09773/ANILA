@@ -63,6 +63,23 @@ export function lengthBudgetNotice(hasContent = true) {
     : "輸出額度被思考用完，沒有留下正文。可把思考調低再問。";
 }
 
+const HARNESS_EMPTY_NOTICE = /（(?:模型沒有留下正文|輸出額度被思考用完，沒有留下正文)[^）]*）/g;
+
+/** True when the bubble is only the empty-reply harness sentence (possibly repeated). */
+export function isHarnessEmptyNotice(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return t.replace(HARNESS_EMPTY_NOTICE, "").replace(/\s+/g, "").length === 0;
+}
+
+/** Continue is for a half-written answer, not a blank that we already explained. */
+export function canContinueLengthReply(msg) {
+  if (msg?.finishReason !== "length") return false;
+  const text = msg.text || msg.content || "";
+  if (isHarnessEmptyNotice(text)) return false;
+  return Boolean(String(text).trim());
+}
+
 export function streamStateNotice(state, hasContent = true) {
   if (state === null || state === undefined) return null;
   switch (state) {
