@@ -133,6 +133,7 @@ import {
   readStoredThinkingTier,
   shouldReplayOneShotDeep,
 } from "./runtime/thinkingTier.js";
+import { persistFieldsFromSaved } from "./runtime/reasoningPersist.js";
 import {
   AgentSelector,
   Composer,
@@ -1186,6 +1187,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       rating: msg.rating || null,
       ratingScore: typeof msg.rating_score === "number" ? msg.rating_score : null,
       reasoning: meta.reasoning || null,
+      reasoningPersist: meta.reasoning_persist || null,
       thinkingLocked: meta.thinking_locked === true,
       usage: meta.usage || null,
       thinkingApplied: meta.thinking_applied || null,
@@ -2003,6 +2005,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         updateMsg(convId, assistantId, { persistError: persisted.notice });
         return;
       }
+      const persistPatch = persistFieldsFromSaved(persisted.saved);
+      if (persistPatch) updateMsg(convId, assistantId, persistPatch);
       await refreshActivePath(convId);
     });
   }
@@ -2577,6 +2581,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       if (!persisted.ok) {
         setRuntimeError(persisted.error?.message || "對話訊息儲存失敗");
         updateMsg(convId, assistantId, { persistError: persisted.notice });
+      } else {
+        const persistPatch = persistFieldsFromSaved(persisted.saved);
+        if (persistPatch) updateMsg(convId, assistantId, persistPatch);
       }
       await flushPendingCompact(convId);
 

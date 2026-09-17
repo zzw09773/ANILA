@@ -1,7 +1,6 @@
 """Conversation persistence and named-share service."""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -20,13 +19,7 @@ from app.services.auth_service import is_admin_tier
 from app.services import message_tree as mtree
 from app.services import zh_normalize_service
 from app.services.usage_service import _department_scope_ids
-
-
-# Client-supplied message metadata is an opaque dict persisted verbatim
-# (trace_id, latency, model/agent name, structured feedback). Cap its
-# serialized size so an authenticated insider can't bloat a row; 64KB is far
-# above any legitimate metadata payload.
-_MAX_METADATA_BYTES = 64 * 1024
+from app.services.message_metadata import prepare_message_metadata
 
 # start_turn 的 compare-and-swap 重試上限。每次重試都代表另一個 client 在
 # 同一瞬間推進了同一個對話的 leaf；連續撞這麼多次已經不是「兩個分頁」，
@@ -130,17 +123,13 @@ def _active_stream_writer(metadata: Optional[dict]) -> Optional[str]:
     return writer if isinstance(writer, str) and writer else None
 
 
-def _check_metadata_size(metadata: Optional[dict]) -> None:
-    if metadata is None:
-        return
-    try:
-        size = len(json.dumps(metadata, ensure_ascii=False).encode("utf-8"))
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=400, detail="metadata 不是合法的 JSON 物件"
-        ) from exc
-    if size > _MAX_METADATA_BYTES:
-        raise HTTPException(status_code=413, detail="metadata 過大")
+def _check_metadata_size(metadata: Optional[dict]) -> Optional[dict]:
+    """Fit legal long reasoning, then enforce the 64KB envelope.
+
+    Returns the (possibly degraded) dict so callers persist the fitted
+    copy, including ``reasoning_persist``. Other-field overflow still 413s.
+    """
+    return prepare_message_metadata(metadata)
 
 
 def _max_siblings(db: Session) -> int:
@@ -403,7 +392,6 @@ def adopt_compare_answer(
     — the same path ordinary chat takes via the proxy. Does not re-call the
     model.
     """
-    _check_metadata_size(assistant_metadata)
     agent = _resolve_agent_for_adopt(
         db, user, agent_id=agent_id, agent_name=agent_name,
     )
@@ -772,7 +760,6 @@ def append_message(
     (ANILALM branching is rejected). Omitted/null parent defaults to the
     current ``active_leaf_message_id``.
     """
-    _check_metadata_size(metadata)
     conv = get_conversation(db, conv_id, user)
     # Serialize concurrent appends so sibling cap / parent resolve cannot race.
     conv = _lock_conversation(db, conv.id)
@@ -787,6 +774,7 @@ def append_message(
     # §6-3：assistant 落庫前靜默 s2twp＋域內用語；user 原文不動（fail-open）
     content, zh_changed = zh_normalize_service.prepare_message_content(db, role, content)
     metadata = _with_refusal_flag(role, content, metadata)
+    metadata = _check_metadata_size(metadata)
     msg = Message(
         conversation_id=conv.id,
         parent_id=resolved_parent,
@@ -861,8 +849,7 @@ def reserve_assistant_reply(
             status_code=409,
             detail="這則使用者訊息已經有回覆，無法重複預留",
         )
-    metadata = _reserved_metadata(writer)
-    _check_metadata_size(metadata)
+    metadata = _check_metadata_size(_reserved_metadata(writer))
     msg = Message(
         conversation_id=conv.id,
         parent_id=parent.id,
@@ -974,8 +961,7 @@ def start_turn(
         raise HTTPException(status_code=400, detail="缺少串流寫入者權杖")
     conv = get_conversation(db, conv_id, user)
     conv_pk = conv.id
-    metadata = _reserved_metadata(writer)
-    _check_metadata_size(metadata)
+    metadata = _check_metadata_size(_reserved_metadata(writer))
     # §6-3：user 原文不動（fail-open），與 append_message 同一條正規化邊界。
     user_content, zh_changed = zh_normalize_service.prepare_message_content(
         db, "user", content,
@@ -1095,8 +1081,7 @@ def branch_turn(
         )
     parent_id = target.parent_id
     _enforce_sibling_cap(db, conv.id, parent_id)
-    metadata = _reserved_metadata(writer)
-    _check_metadata_size(metadata)
+    metadata = _check_metadata_size(_reserved_metadata(writer))
     # §6-3：與 branch_message 同一條正規化邊界。
     user_content, zh_changed = zh_normalize_service.prepare_message_content(
         db, "user", content,
@@ -1149,7 +1134,6 @@ def branch_message(
     Server sets ``parent_id = target.parent_id``. Role must match the target.
     docs/plans/ow1-message-tree-blueprint.md Q2/Q3/Q5.
     """
-    _check_metadata_size(metadata)
     conv = get_conversation(db, conv_id, user)
     # Serialize concurrent branches so sibling cap / pointer cannot race.
     conv = _lock_conversation(db, conv.id)
@@ -1175,6 +1159,7 @@ def branch_message(
     _enforce_sibling_cap(db, conv.id, parent)
     # §6-3：與 append_message 同一落庫邊界（regenerate / edit-re-ask）
     content, zh_changed = zh_normalize_service.prepare_message_content(db, role, content)
+    metadata = _check_metadata_size(metadata)
     msg = Message(
         conversation_id=conv.id,
         parent_id=parent,
@@ -1358,6 +1343,15 @@ def update_message_content(
         content, zh_changed = zh_normalize_service.prepare_message_content(
             db, msg.role, content,
         )
+    fitted_metadata = None
+    if metadata is not None:
+        fitted_metadata = _normalize_stream_envelope(metadata, msg.metadata_)
+        if content is not None:
+            fitted_metadata = _with_refusal_flag(msg.role, content, fitted_metadata)
+        # Fit legal long reasoning, then 413 other-field overflow — before
+        # mutating the row so body and persist status commit together.
+        fitted_metadata = _check_metadata_size(fitted_metadata)
+    if content is not None:
         msg.content = content
     if trace_id is not None:
         msg.trace_id = trace_id
@@ -1367,10 +1361,9 @@ def update_message_content(
         msg.model_name = model_name
     if agent_name is not None:
         msg.agent_name = agent_name
-    if metadata is not None:
-        _check_metadata_size(metadata)
-        msg.metadata_ = _normalize_stream_envelope(metadata, msg.metadata_)
-    if content is not None:
+    if fitted_metadata is not None:
+        msg.metadata_ = fitted_metadata
+    elif content is not None:
         # 串流完成後的 finalize 走這裡：內容定稿才知道像不像拒答。
         msg.metadata_ = _with_refusal_flag(msg.role, content, msg.metadata_)
     conv.updated_at = datetime.now(timezone.utc)

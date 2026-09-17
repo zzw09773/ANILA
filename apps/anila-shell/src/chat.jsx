@@ -92,6 +92,7 @@ import {
   reasoningFoldLabel,
   thinkingAppliedFoldSuffix,
 } from "./runtime/usageDisplay.js";
+import { reasoningPersistNotice } from "./runtime/reasoningPersist.js";
 
 // ---- Trace Row + Routing Trace ----
 export const TraceRow = ({ event, active, done }) => (
@@ -255,6 +256,7 @@ export const ReasoningSummary = ({
   thinkingLocked = false,
   usage = null,
   thinkingApplied = null,
+  reasoningPersist = null,
 }) => {
   const [open, setOpen] = useState(false);
   const hideThinking = isThinkingDisplayOff(thinkingApplied);
@@ -263,7 +265,20 @@ export const ReasoningSummary = ({
   const tokenLabel = reasoningFoldLabel(usage, reasoning);
   const appliedLabel = hideThinking ? null : thinkingAppliedFoldSuffix(thinkingApplied);
   const hasUsageReasoning = typeof usage?.reasoning_tokens === "number" && usage.reasoning_tokens > 0;
+  const persistNotice = streaming ? null : reasoningPersistNotice(reasoningPersist, reasoning);
+  const persistWithoutBody =
+    persistNotice
+    && !hasReasoning
+    && !hasTrace
+    && (reasoningPersist?.status === "omitted" || reasoningPersist?.status === "truncated");
   if (hideThinking) return null;
+  if (persistWithoutBody) {
+    return (
+      <div className="anila-reasoning" style={{ marginBottom: 10, fontSize: 12, color: "var(--fg-subtle)" }}>
+        {persistNotice}
+      </div>
+    );
+  }
   if (!streaming && !hasTrace && !hasReasoning && !thinkingLocked && !hasUsageReasoning && !appliedLabel) return null;
   if (!streaming && !hasTrace && !hasReasoning && thinkingLocked && !hasUsageReasoning && !appliedLabel) {
     return (
@@ -297,6 +312,11 @@ export const ReasoningSummary = ({
 
   return (
     <div className="anila-reasoning" style={{ marginBottom: 10 }}>
+      {persistNotice && (
+        <div style={{ fontSize: 12, color: "var(--fg-subtle)", marginBottom: 4 }}>
+          {persistNotice}
+        </div>
+      )}
       <button
         onClick={() => setOpen((o) => !o)}
         className="anila-reasoning-toggle"
@@ -1052,6 +1072,7 @@ export const MessageBubble = ({
               thinkingLocked={msg.thinkingLocked}
               usage={msg.usage}
               thinkingApplied={msg.thinkingApplied}
+              reasoningPersist={msg.reasoningPersist}
             />
             <div
               className="anila-msg-body"

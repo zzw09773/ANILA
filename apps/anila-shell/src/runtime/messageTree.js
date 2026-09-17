@@ -3,6 +3,7 @@
 // docs/plans/ow1-message-tree-blueprint.md §1 Q9 / §2 Create / §5 frontend.
 
 import { mergeMessageAttachments } from "./messageAttachments.js";
+import { shouldKeepLiveReasoning } from "./reasoningPersist.js";
 
 /**
  * Derive ChatGPT-style pager fields from a client message that already
@@ -99,6 +100,8 @@ export function applyServerPath(prevList, serverMapped, convId) {
         finishReason: m.finishReason,
         routedAgentId: m.routedAgentId,
         attachments: m.attachments,
+        reasoning: m.reasoning,
+        reasoningPersist: m.reasoningPersist,
       });
     }
   }
@@ -128,6 +131,16 @@ export function applyServerPath(prevList, serverMapped, convId) {
       next.attachments = mergeMessageAttachments(
         sm.attachments, preserved.attachments,
       );
+    }
+    if (shouldKeepLiveReasoning(
+      sm.reasoningPersist,
+      preserved.reasoning,
+      sm.reasoning,
+    )) {
+      next.reasoning = preserved.reasoning;
+    }
+    if (sm.reasoningPersist) {
+      next.reasoningPersist = sm.reasoningPersist;
     }
     return next;
   });
@@ -229,6 +242,9 @@ export function reconcilePersistedAssistant(saved, fallbackParentId = null) {
           ? saved.sibling_ids
           : [saved.id],
         persistError: null,
+        ...(saved.metadata?.reasoning_persist
+          ? { reasoningPersist: saved.metadata.reasoning_persist }
+          : {}),
       },
       activeLeafMessageId: saved.id,
       error: null,
