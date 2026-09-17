@@ -119,6 +119,7 @@ import {
   readStreamState,
   streamStateNotice,
   isLengthBudgetError,
+  lengthBudgetNotice,
 } from "./runtime/reservedTurn.js";
 
 import RouterModelPicker from "./components/RouterModelPicker.jsx";
@@ -1964,7 +1965,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         streaming: false,
         streamState,
         incompleteNotice: lengthBudget
-          ? "輸出額度不足，思考或正文被截斷。已產生的內容保留。"
+          ? lengthBudgetNotice(Boolean(finalText))
           : streamStateNotice(streamState, Boolean(finalText)),
         error:
           !lengthBudget && streamState === STREAM_STATE.FAILED
@@ -2523,7 +2524,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const lengthBudget = streamState === STREAM_STATE.FAILED && isLengthBudgetError(streamError);
       if (lengthBudget) streamState = STREAM_STATE.COMPLETE;
       const notice = lengthBudget
-        ? "輸出額度不足，思考或正文被截斷。已產生的內容保留。"
+        ? lengthBudgetNotice(Boolean(finalText))
         : streamStateNotice(streamState, Boolean(finalText));
       if (
         lengthBudget

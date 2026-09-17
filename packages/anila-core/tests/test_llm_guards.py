@@ -8,7 +8,11 @@ import pytest
 
 from anila_core.models.message import AssistantMessage, UserMessage
 from anila_core.prompts.sampling import TASK_SAMPLING, get_sampling
-from anila_core.providers.guards import bumped_max_tokens, is_empty_length_failure
+from anila_core.providers.guards import (
+    bumped_max_tokens,
+    is_empty_length_failure,
+    is_empty_reply,
+)
 from anila_core.providers.mock import MockProvider, ScriptedResponse
 
 
@@ -36,6 +40,20 @@ def test_is_empty_length_failure_truth_table(
     finish_reason: str | None, content: str | None, expected: bool
 ) -> None:
     assert is_empty_length_failure(finish_reason, content) is expected
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("", True),
+        (None, True),
+        ("   \n\t  ", True),
+        ("有內容", False),
+        ("0", False),
+    ],
+)
+def test_is_empty_reply_truth_table(content: str | None, expected: bool) -> None:
+    assert is_empty_reply(content) is expected
 
 
 # ---------------------------------------------------------------------------

@@ -8,17 +8,22 @@
 from __future__ import annotations
 
 
+def is_empty_reply(content: str | None) -> bool:
+    """True when the model left no visible answer text."""
+    return not (content or "").strip()
+
+
 def is_empty_length_failure(
     finish_reason: str | None, content: str | None
 ) -> bool:
     """True when finish is ``length`` and content is empty/whitespace."""
     if finish_reason != "length":
         return False
-    return not (content or "").strip()
+    return is_empty_reply(content)
 
 
-# Thinking models + a long HTML/code page routinely exceed 8k. The empty-length
-# retry used to clamp here and then tell the UI the LLM was down.
+# Thinking models + a long HTML/code page routinely exceed 8k. Partial-content
+# auto-continue still uses this cap; empty-content length no longer retries.
 LENGTH_RETRY_CAP = 32768
 
 

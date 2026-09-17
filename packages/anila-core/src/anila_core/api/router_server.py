@@ -57,7 +57,7 @@ from ..compact.strip_images import (
 )
 from ..text.model_tokenize import tokenize_prompt
 from ..prompts.sampling import get_sampling
-from ..providers.guards import bumped_max_tokens, is_empty_length_failure
+from ..providers.guards import is_empty_reply
 from . import router_prompts
 from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
 from ..tools.dispatch_tool import dispatch_to_agent_response
@@ -1522,9 +1522,7 @@ def create_router_app(
                     status="error",
                 )
             )
-            fallback_content = (
-                _LENGTH_FALLBACK if length_budget else _OUTAGE_FALLBACK
-            )
+            fallback_content = _visible_llm_fallback(llm_response["error"])
             anila_meta = _merge_anila_meta(
                 base_trace,
                 None,
@@ -2544,11 +2542,7 @@ async def _router_streaming_multi_turn(
             status="error",
         )
         yield _make_event("anila.trace", err_step)
-        fallback = (
-            _LENGTH_FALLBACK
-            if length_budget
-            else "（LLM 暫時無法回應，請稍後再試。）"
-        )
+        fallback = _visible_llm_fallback(llm_response["error"])
         async for chunk in _emit_soft_chunks(fallback):
             yield chunk
         anila_meta = _merge_anila_meta(
@@ -3048,18 +3042,39 @@ REQUEST_THINKING_TIER: contextvars.ContextVar[str | None] = contextvars.ContextV
     "anila_router_request_thinking_tier", default=None
 )
 THINKING_TIERS = frozenset({"default", "off", "standard", "deep"})
-_EMPTY_LENGTH_ERROR = "LLM 回覆為空（finish_reason=length：輸出額度被思考用完，已重試一次）"
+_EMPTY_LENGTH_ERROR = "LLM 回覆為空（finish_reason=length：輸出額度被思考用完）"
+_EMPTY_REPLY_ERROR = "LLM 回覆為空（沒有留下正文）"
 _OUTAGE_FALLBACK = "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）"
 _LENGTH_FALLBACK = "（輸出額度不足，思考或正文被截斷。已產生的內容保留；可按「繼續產生」。）"
+_EMPTY_LENGTH_FALLBACK = "（輸出額度被思考用完，沒有留下正文。可把思考調低再問，或按「繼續產生」。）"
+_EMPTY_REPLY_FALLBACK = "（模型沒有留下正文。可按「繼續產生」或再問一次。）"
 # After a partial ``length`` reply, keep writing in the same turn instead of
-# asking the user to click Continue. Empty-content length still uses the
-# doubled-max_tokens retry above — that is a different failure.
+# asking the user to click Continue. Empty-content length stops immediately
+# and tells the user — do not silently double ``max_tokens`` and wait again.
 LENGTH_AUTO_CONTINUE_ROUNDS = 3
 _CONTINUE_PROMPT = "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。"
 
 
 def _is_length_budget_error(err: object) -> bool:
     return isinstance(err, str) and "finish_reason=length" in err
+
+
+def _is_empty_reply_error(err: object) -> bool:
+    return isinstance(err, str) and "回覆為空" in err
+
+
+def _empty_reply_error(finish_reason: object) -> str:
+    if finish_reason == "length":
+        return _EMPTY_LENGTH_ERROR
+    return _EMPTY_REPLY_ERROR
+
+
+def _visible_llm_fallback(err: object) -> str:
+    if _is_length_budget_error(err):
+        return _EMPTY_LENGTH_FALLBACK
+    if _is_empty_reply_error(err):
+        return _EMPTY_REPLY_FALLBACK
+    return _OUTAGE_FALLBACK
 
 
 def sampling_overrides_from_body(body: Mapping[str, Any]) -> dict[str, Any]:
@@ -3190,20 +3205,21 @@ async def _call_llm_non_stream(
         data = response.json()
         choice = data["choices"][0]
         message = choice["message"]
-        # Empty-reply rule (§9b-2): the budget went to reasoning and nothing
-        # reached the answer. Retry once with a doubled budget; a second blank
-        # is an error, never a silent "".
-        if is_empty_length_failure(choice.get("finish_reason"), message.get("content")):
-            if _retry_max_tokens is None:
-                logger.warning("LLM reply empty with finish_reason=length; retrying with doubled max_tokens")
-                return await _call_llm_non_stream(
-                    caller_api_key,
-                    messages,
-                    forwarded_headers=forwarded_headers,
-                    apply_thinking_tier=apply_thinking_tier,
-                    _retry_max_tokens=bumped_max_tokens(int(payload["max_tokens"])),
-                )
-            return {"content": "", "reasoning": None, "anila_meta": data.get("anila_meta"), "raw": data, "error": _EMPTY_LENGTH_ERROR}
+        # Empty-reply rule: no visible answer is an error, never a silent
+        # "" and never a second upstream call while the UI sits on 「思考中」.
+        if is_empty_reply(message.get("content")):
+            finish_reason = choice.get("finish_reason")
+            logger.warning(
+                "LLM reply empty (finish_reason=%s); not retrying",
+                finish_reason,
+            )
+            return {
+                "content": "",
+                "reasoning": None,
+                "anila_meta": data.get("anila_meta"),
+                "raw": data,
+                "error": _empty_reply_error(finish_reason),
+            }
         # Reasoning models (TensorRT-LLM / vLLM / Ollama with gpt-oss, Qwen-R,
         # DeepSeek-R1, ...) surface chain-of-thought as a separate field so the
         # final ``content`` stays clean. Normalize the two common spellings
@@ -3490,22 +3506,16 @@ async def _stream_llm_sse(
                     continue
                 data_str = line[6:]
                 if data_str == "[DONE]":
-                    # Empty-reply rule (§9b-2), streaming flavour: nothing reached
-                    # the answer and the stream was cut by the budget → retry once
-                    # with a doubled budget; a second blank is an error event.
-                    if is_empty_length_failure(finish_reason, "x" if saw_content else ""):
-                        if _retry_max_tokens is None:
-                            logger.warning("LLM stream empty with finish_reason=length; retrying with doubled max_tokens")
-                            async for ev in _stream_llm_sse(
-                                caller_api_key,
-                                messages,
-                                forwarded_headers=forwarded_headers,
-                                apply_thinking_tier=apply_thinking_tier,
-                                _retry_max_tokens=bumped_max_tokens(int(payload["max_tokens"])),
-                            ):
-                                yield ev
-                            return
-                        yield {"type": "error", "error": _EMPTY_LENGTH_ERROR, "detail": "finish_reason=length, empty content"}
+                    if not saw_content:
+                        logger.warning(
+                            "LLM stream empty (finish_reason=%s); not retrying",
+                            finish_reason,
+                        )
+                        yield {
+                            "type": "error",
+                            "error": _empty_reply_error(finish_reason),
+                            "detail": f"finish_reason={finish_reason or 'unknown'}, empty content",
+                        }
                         return
                     async for ev in _auto_continue_stream(
                         caller_api_key,
@@ -3549,20 +3559,16 @@ async def _stream_llm_sse(
                     saw_content = True
                     accumulated.append(content_piece)
                     yield {"type": "delta", "content": content_piece}
-            # Upstream closed the SSE without a [DONE] frame.
-            if is_empty_length_failure(finish_reason, "x" if saw_content else ""):
-                if _retry_max_tokens is None:
-                    logger.warning("LLM stream empty with finish_reason=length; retrying with doubled max_tokens")
-                    async for ev in _stream_llm_sse(
-                        caller_api_key,
-                        messages,
-                        forwarded_headers=forwarded_headers,
-                        apply_thinking_tier=apply_thinking_tier,
-                        _retry_max_tokens=bumped_max_tokens(int(payload["max_tokens"])),
-                    ):
-                        yield ev
-                    return
-                yield {"type": "error", "error": _EMPTY_LENGTH_ERROR, "detail": "finish_reason=length, empty content"}
+            if not saw_content:
+                logger.warning(
+                    "LLM stream empty (finish_reason=%s); not retrying",
+                    finish_reason,
+                )
+                yield {
+                    "type": "error",
+                    "error": _empty_reply_error(finish_reason),
+                    "detail": f"finish_reason={finish_reason or 'unknown'}, empty content",
+                }
                 return
             async for ev in _auto_continue_stream(
                 caller_api_key,
@@ -3945,26 +3951,27 @@ async def _router_streaming(
         if kind == "error":
             err = ev.get("error", "LLM error")
             length_budget = _is_length_budget_error(err)
+            empty_reply = _is_empty_reply_error(err)
             if state == "detecting" and buf.strip() and not _THOUGHT_PREFIX_RE.match(buf):
                 yield _make_chunk(buf, "anila-router")
                 answer_emitted_up_to = len(buf)
                 state = "answering"
             already = answer_emitted_up_to > 0
-            if already or length_budget:
-                # Token budget / mid-stream drop: the model is fine. Keep
-                # whatever already reached the caller and offer Continue.
-                # Never append the outage sentence onto a half-written page.
+            if already or length_budget or empty_reply:
+                # Token budget / empty answer / mid-stream drop: keep whatever
+                # already reached the caller. Never append the outage sentence
+                # onto a half-written page, and never pretend a blank is fine.
                 yield _make_event(
                     "anila.trace",
                     _make_trace_step(
                         "direct",
-                        "輸出被截斷" if length_budget else "輸出未完成",
+                        "輸出被截斷" if length_budget else ("沒有正文" if empty_reply else "輸出未完成"),
                         err,
                         status="error",
                     ),
                 )
                 if not already:
-                    yield _make_chunk(_LENGTH_FALLBACK, "anila-router")
+                    yield _make_chunk(_visible_llm_fallback(err), "anila-router")
                 anila_meta = _merge_anila_meta(
                     base_trace,
                     downstream_meta,

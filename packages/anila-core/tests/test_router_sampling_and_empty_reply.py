@@ -11,9 +11,9 @@ Invariants:
      ``router`` row of the sampling table;
   2. a caller-supplied ``temperature`` / ``max_tokens`` on the inbound request
      wins over the table;
-  3. non-stream: ``finish_reason=length`` with empty content → one retry with a
-     doubled ``max_tokens``; still empty → ``error`` set (never a silent "");
-  4. stream: same rule — an empty ``length``-terminated stream is retried once;
+  3. non-stream: empty content (any finish_reason) → stop and set ``error``
+     (never a silent "" and never a second upstream call);
+  4. stream: same rule — an empty stream errors once;
   5. whichever of those two the Router filled in from the table is listed in
      ``anila_sampling_defaults`` so the CSP proxy can let the per-model
      governance knobs override them (a caller value is never listed).
@@ -30,7 +30,6 @@ import pytest
 
 from anila_core.api import router_server as rs
 from anila_core.prompts.sampling import get_sampling
-from anila_core.providers.guards import bumped_max_tokens
 
 ROUTER = get_sampling("router")
 
@@ -200,36 +199,36 @@ def test_length_retry_bump_is_not_a_router_default():
     assert params[rs.SAMPLING_DEFAULTS_MARKER] == ["temperature"]
 
 
-def test_non_stream_empty_length_reply_is_retried_with_doubled_budget(monkeypatch):
+def test_non_stream_empty_length_reply_stops_without_retry(monkeypatch):
     client = _Client(answers=[_reply("", "length"), _reply("這次有內容")])
-    monkeypatch.setattr(rs, "get_http_client", lambda: client)
-    result = asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
-    assert result["content"] == "這次有內容"
-    assert result["error"] is None
-    assert len(client.posts) == 2
-    assert client.posts[1]["max_tokens"] == bumped_max_tokens(client.posts[0]["max_tokens"])
-
-
-def test_non_stream_empty_twice_is_an_error_not_a_blank_answer(monkeypatch):
-    client = _Client(answers=[_reply("", "length"), _reply("", "length")])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
     result = asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
     assert result["content"] == ""
     assert result["error"] and "length" in result["error"]
-    assert len(client.posts) == 2
-
-
-def test_non_stream_empty_stop_reply_is_not_retried(monkeypatch):
-    """Only the length-terminated blank is the failure mode; a genuine empty
-    'stop' answer is returned as-is (no retry loop)."""
-    client = _Client(answers=[_reply("", "stop")])
-    monkeypatch.setattr(rs, "get_http_client", lambda: client)
-    result = asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
-    assert result["content"] == "" and result["error"] is None
+    assert "已重試" not in result["error"]
     assert len(client.posts) == 1
 
 
-def test_stream_empty_length_reply_is_retried_once(monkeypatch):
+def test_non_stream_empty_length_is_an_error_not_a_blank_answer(monkeypatch):
+    client = _Client(answers=[_reply("", "length")])
+    monkeypatch.setattr(rs, "get_http_client", lambda: client)
+    result = asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
+    assert result["content"] == ""
+    assert result["error"] and "length" in result["error"]
+    assert len(client.posts) == 1
+
+
+def test_non_stream_empty_stop_reply_is_an_error_not_retried(monkeypatch):
+    client = _Client(answers=[_reply("", "stop"), _reply("不該再打")])
+    monkeypatch.setattr(rs, "get_http_client", lambda: client)
+    result = asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
+    assert result["content"] == ""
+    assert result["error"] and "回覆為空" in result["error"]
+    assert "已重試" not in result["error"]
+    assert len(client.posts) == 1
+
+
+def test_stream_empty_length_reply_stops_without_retry(monkeypatch):
     client = _Client(streams=[_stream_lines("", "length"), _stream_lines("補上的內容")])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
 
@@ -237,11 +236,10 @@ def test_stream_empty_length_reply_is_retried_once(monkeypatch):
         return [ev async for ev in rs._stream_llm_sse("sk", [{"role": "user", "content": "q"}])]
 
     events = asyncio.run(run())
-    assert [ev["content"] for ev in events if ev.get("type") == "delta"] == ["補上的內容"]
-    assert events[-1]["type"] == "done"
-    assert events[-1].get("finish_reason") == "stop"
-    assert len(client.streams) == 2
-    assert client.streams[1]["max_tokens"] == bumped_max_tokens(client.streams[0]["max_tokens"])
+    assert [ev["content"] for ev in events if ev.get("type") == "delta"] == []
+    assert events[-1]["type"] == "error" and "length" in events[-1]["error"]
+    assert "已重試" not in events[-1]["error"]
+    assert len(client.streams) == 1
 
 
 def test_stream_length_with_content_auto_continues_until_stop(monkeypatch):
@@ -334,6 +332,20 @@ def test_router_streaming_preserves_length_finish_reason(monkeypatch):
     assert '"finish_reason": "length"' in body
 
 
+def test_stream_empty_stop_reply_stops_without_retry(monkeypatch):
+    client = _Client(streams=[_stream_lines("", "stop"), _stream_lines("不該再打")])
+    monkeypatch.setattr(rs, "get_http_client", lambda: client)
+
+    async def run():
+        return [ev async for ev in rs._stream_llm_sse("sk", [{"role": "user", "content": "q"}])]
+
+    events = asyncio.run(run())
+    assert [ev["content"] for ev in events if ev.get("type") == "delta"] == []
+    assert events[-1]["type"] == "error" and "回覆為空" in events[-1]["error"]
+    assert "已重試" not in events[-1]["error"]
+    assert len(client.streams) == 1
+
+
 def test_router_streaming_empty_length_is_truncation_not_outage(monkeypatch):
     async def fake_stream_llm(*_args, **_kwargs):
         yield {
@@ -344,8 +356,21 @@ def test_router_streaming_empty_length_is_truncation_not_outage(monkeypatch):
 
     body = _collect_router_stream(monkeypatch, fake_stream_llm)
     assert "暫時無法回應" not in body
-    assert "截斷" in body
+    assert "思考用完" in body or "截斷" in body
     assert '"finish_reason": "length"' in body
+
+
+def test_router_streaming_empty_stop_is_not_outage(monkeypatch):
+    async def fake_stream_llm(*_args, **_kwargs):
+        yield {
+            "type": "error",
+            "error": rs._EMPTY_REPLY_ERROR,
+            "detail": "finish_reason=stop, empty content",
+        }
+
+    body = _collect_router_stream(monkeypatch, fake_stream_llm)
+    assert "暫時無法回應" not in body
+    assert "沒有留下正文" in body
 
 
 def test_router_streaming_keeps_partial_content_on_timeout(monkeypatch):
@@ -359,7 +384,7 @@ def test_router_streaming_keeps_partial_content_on_timeout(monkeypatch):
     assert '"finish_reason": "length"' in body
 
 
-def test_stream_empty_twice_yields_an_error_event(monkeypatch):
+def test_stream_empty_length_yields_an_error_event(monkeypatch):
     client = _Client(streams=[_stream_lines("", "length"), _stream_lines("", "length")])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
 
@@ -368,4 +393,4 @@ def test_stream_empty_twice_yields_an_error_event(monkeypatch):
 
     events = asyncio.run(run())
     assert events[-1]["type"] == "error" and "length" in events[-1]["error"]
-    assert len(client.streams) == 2
+    assert len(client.streams) == 1

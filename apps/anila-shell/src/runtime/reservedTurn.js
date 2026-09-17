@@ -57,11 +57,17 @@ export function isLengthBudgetError(error) {
   return msg.includes("finish_reason=length") || msg.includes("輸出額度被思考用完");
 }
 
+export function lengthBudgetNotice(hasContent = true) {
+  return hasContent
+    ? "輸出額度不足，思考或正文被截斷。已產生的內容保留。"
+    : "輸出額度被思考用完，沒有留下正文。可把思考調低再問。";
+}
+
 export function streamStateNotice(state, hasContent = true) {
   if (state === null || state === undefined) return null;
   switch (state) {
     case STREAM_STATE.COMPLETE:
-      return null;
+      return hasContent ? null : "模型沒有留下正文。";
     case STREAM_STATE.STOPPED:
       return hasContent
         ? "已停止產生，以下是中斷前的內容。"
