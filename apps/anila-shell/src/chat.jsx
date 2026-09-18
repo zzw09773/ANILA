@@ -2873,7 +2873,7 @@ export const Composer = ({
         <div style={{ flex: 1, minWidth: 0, padding: "5px 8px 5px 4px" }}>
           <textarea
             ref={taRef}
-            aria-label="訊息"
+            aria-label="傳訊息給 ANILA"
             value={text}
             onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart || 0); }}
             onKeyUp={updateCaret}

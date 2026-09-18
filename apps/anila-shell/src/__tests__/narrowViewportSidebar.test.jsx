@@ -30,7 +30,7 @@ describe("窄視窗時側欄自動收合", () => {
   it("≤900px：一開始就是收合（工具列顯示「展開側邊」）", async () => {
     stubMatchMedia(true);
     await mountOrchestrator();
-    expect(screen.getByTitle("展開側邊")).toBeTruthy();
+    expect(screen.getAllByTitle("展開側邊").length).toBeGreaterThan(0);
     expect(screen.queryByTitle("收合側邊")).toBeNull();
   });
 
@@ -46,7 +46,7 @@ describe("窄視窗時側欄自動收合", () => {
     expect(screen.getByTitle("收合側邊")).toBeTruthy();
     const { act } = await import("@testing-library/react");
     await act(async () => { mql._fire(true); });
-    expect(screen.getByTitle("展開側邊")).toBeTruthy();
+    expect(screen.getAllByTitle("展開側邊").length).toBeGreaterThan(0);
     await act(async () => { mql._fire(false); });
     expect(screen.getByTitle("收合側邊")).toBeTruthy();
   });

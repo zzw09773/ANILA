@@ -31,7 +31,7 @@ describe("block 模式擋下送出時,要說清楚是誰擋的、擋的是什麼
         <Composer onSend={onSend} agents={[]} redactionMode="block" />
       </ConfirmProvider>,
     );
-    const box = screen.getByPlaceholderText(/問 ANILA 任何事情/);
+    const box = screen.getByRole("textbox", { name: "傳訊息給 ANILA" });
     await act(async () => {
       fireEvent.change(box, { target: { value: `我的身分證是 ${ID_NUMBER}` } });
     });

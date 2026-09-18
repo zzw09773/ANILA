@@ -88,7 +88,7 @@ describe("敏感資訊閘門:每一條送出路徑都要過", () => {
     //
     // 現在把範本內容放回輸入框,提示列連同 warn/block 按鈕就都出現了,
     // 「清掉再送」也才成立。
-    const box = rtlScreen.getByPlaceholderText(/問 ANILA 任何事情/);
+    const box = rtlScreen.getByRole("textbox", { name: "傳訊息給 ANILA" });
     expect(box.value).toContain(ID_NUMBER);
     expect(rtlScreen.getByText(/這則草稿裡/)).toBeTruthy();
     for (const m of ["warn", "block"]) {
@@ -140,7 +140,7 @@ describe("敏感資訊閘門:每一條送出路徑都要過", () => {
       fireEvent.click(compareBtn);
     });
 
-    const box = await screen.findByPlaceholderText(/問 ANILA 任何事情/);
+    const box = await screen.findByRole("textbox", { name: "傳訊息給 ANILA" });
     await act(async () => {
       fireEvent.change(box, { target: { value: DRAFT } });
     });
@@ -173,7 +173,7 @@ describe("敏感資訊閘門:每一條送出路徑都要過", () => {
       fireEvent.click(compareBtn);
     });
 
-    const box = await screen.findByPlaceholderText(/問 ANILA 任何事情/);
+    const box = await screen.findByRole("textbox", { name: "傳訊息給 ANILA" });
     await act(async () => {
       fireEvent.change(box, { target: { value: DRAFT } });
     });

@@ -8,6 +8,12 @@ ANILA 是一套部署於**中科院內網（air-gapped，機房無外網）** �
 
 ---
 
+
+## 現在怎麼跑
+
+看 [`docs/CURRENT-STATUS.md`](docs/CURRENT-STATUS.md)：開發線 `main`、測試入口、尚未上線項目。
+下面「唯一產品入口／七態 Agent 審批／Launch Token」有一部分是 redesign 期的產品語彙或已收斂的舊架構，**不要當成 2026-09 的實作清單**。
+
 ## 唯一產品入口
 
 正式使用者只看到 **ANILA**，四個一級入口（產品語彙見 [憲法 §4](./docs/anila-redesign-docs/00-product-constitution.md)）：

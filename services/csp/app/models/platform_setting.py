@@ -63,6 +63,8 @@ class PlatformSetting(Base):
 # ── 院內規章檢索的分數門檻 ──────────────────────────────────────────────────
 
 KB_THRESHOLD_KEY = "institutional_kb.score_threshold"
+KB_THRESHOLD_EMBEDDING_KEY = "institutional_kb.score_threshold_embedding_model"
+KB_THRESHOLD_CALIBRATED_AT_KEY = "institutional_kb.score_threshold_calibrated_at"
 
 # ⚠ **這個 0.3 是未校準的猜測。** 它是拿替代嵌入模型量出來的（PLAN.md:77），
 # 真正上線的是 nv-embed，分數分布不一樣。所以 ``GET /threshold`` 會把
@@ -78,6 +80,8 @@ KB_THRESHOLD_DEFAULT = 0.3
 KB_THRESHOLD_MIN = 0.0
 KB_THRESHOLD_MAX = 1.0
 
+_OMIT_EMBEDDING = object()
+
 
 def _is_usable_kb_threshold(value: float) -> bool:
     """收得下來的值域判準。**寫入與讀取共用這一個函式，不可以各寫一份。**
@@ -91,7 +95,9 @@ def _is_usable_kb_threshold(value: float) -> bool:
     return KB_THRESHOLD_MIN <= value <= KB_THRESHOLD_MAX
 
 
-def resolve_kb_threshold(db: Session) -> tuple[float, bool]:
+def resolve_kb_threshold(
+    db: Session, *, embedding_model: str | None | object = _OMIT_EMBEDDING
+) -> tuple[float, bool]:
     """一次解出「實際生效的門檻」與「有沒有人真的量過」。
 
     ⚠ **這兩個答案一定要出自同一次解析。** 拆成兩份各自讀 DB 的邏輯，就會有
@@ -125,6 +131,15 @@ def resolve_kb_threshold(db: Session) -> tuple[float, bool]:
             KB_THRESHOLD_DEFAULT,
         )
         return KB_THRESHOLD_DEFAULT, False
+    if embedding_model is _OMIT_EMBEDDING:
+        return value, True
+    stamp = db.get(PlatformSetting, KB_THRESHOLD_EMBEDDING_KEY)
+    stamped = (stamp.value or "").strip() if stamp is not None else ""
+    current = (embedding_model or "").strip()
+    if not current:
+        return value, True
+    if not stamped or stamped != current:
+        return value, False
     return value, True
 
 
@@ -158,7 +173,24 @@ def is_kb_threshold_calibrated(db: Session) -> bool:
     return resolve_kb_threshold(db)[1]
 
 
-def set_kb_threshold(db: Session, value: float, *, actor: User | None = None) -> None:
+def _upsert_kb_meta(db: Session, key: str, value: str, actor: User | None) -> None:
+    row = db.get(PlatformSetting, key)
+    if row is None:
+        row = PlatformSetting(key=key, value=value)
+        db.add(row)
+    else:
+        row.value = value
+        row.updated_at = _utcnow()
+    row.updated_by_user_id = actor.id if actor is not None else None
+
+
+def set_kb_threshold(
+    db: Session,
+    value: float,
+    *,
+    actor: User | None = None,
+    embedding_model: str | None = None,
+) -> None:
     """寫入分數門檻。範圍由呼叫端先擋，這裡再擋一次（值域是這個設定的定義）。
 
     ⚠ 值域判準走 ``_is_usable_kb_threshold`` —— 與解析端**同一個函式**。收得下來
@@ -180,6 +212,8 @@ def set_kb_threshold(db: Session, value: float, *, actor: User | None = None) ->
         row.value = str(float(value))
         row.updated_at = _utcnow()
     row.updated_by_user_id = actor.id if actor is not None else None
+    _upsert_kb_meta(db, KB_THRESHOLD_EMBEDDING_KEY, (embedding_model or "").strip(), actor)
+    _upsert_kb_meta(db, KB_THRESHOLD_CALIBRATED_AT_KEY, _utcnow().isoformat(), actor)
     db.flush()
 
 

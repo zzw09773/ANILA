@@ -42,10 +42,17 @@ resolve_container() {
     return
   fi
   # 常見：anila-restart-csp-db-1 / anila-platform-csp-db-1
-  local found
-  found="$(docker ps --format '{{.Names}}' | grep -E 'csp-db' | head -n1 || true)"
-  [[ -n "$found" ]] || fail "找不到執行中的 csp-db 容器；請設 ANILA_DB_CONTAINER"
-  printf '%s\n' "$found"
+  local matches match count
+  matches="$(docker ps --format '{{.Names}}' | grep -E 'csp-db' || true)"
+  if [[ -z "$matches" ]]; then
+    fail "找不到執行中的 csp-db 容器；請設 ANILA_DB_CONTAINER"
+  fi
+  count=$(printf "%s\n" "$matches" | grep -c .)
+  if [[ "$count" -gt 1 ]]; then
+    fail "找到多個 csp-db 容器。dev／prod 同機時請設 ANILA_DB_CONTAINER，不要猜第一個"
+  fi
+  match=$(printf "%s\n" "$matches" | head -n1)
+  printf "%s\n" "$match"
 }
 
 CONTAINER="$(resolve_container)"

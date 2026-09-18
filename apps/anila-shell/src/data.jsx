@@ -1,7 +1,6 @@
 // Default folder seed + PII helpers — real agents load dynamically from CSP.
 
-// Seed list. Users can add/remove folders at runtime (persisted in localStorage
-// under "anila-folders"). `all` and `starred` are protected because the
+// Seed list. Users can add/remove folders at runtime (persisted per-user (`anila-folders:<userId>`; see runtime/folderSettings.js)). `all` and `starred` are protected because the
 // sidebar filter logic treats them specially (no-filter / starred-only).
 //
 // No demo folders are seeded beyond the two built-ins — a fresh account

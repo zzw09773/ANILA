@@ -17,9 +17,10 @@ describe("AuditWatermark 窄視窗", () => {
         usage={{ total_tokens: 2024, prompt_tokens: 100, completion_tokens: 1924 }}
       />,
     );
-    const btn = screen.getByTitle("點擊複製完整 audit 資訊");
+    const btn = screen.getByTitle("複製追蹤資訊");
     expect(btn.className).toContain("anila-audit-watermark");
-    expect(btn.style.flexWrap).toBe("wrap");
-    expect(btn.style.maxWidth).toBe("100%");
+    const style = btn.getAttribute("style") || "";
+    expect(style).toMatch(/flex-wrap:\s*wrap/i);
+    expect(style).toMatch(/max-width:\s*100%/i);
   });
 });

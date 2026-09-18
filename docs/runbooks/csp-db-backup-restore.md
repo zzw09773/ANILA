@@ -214,3 +214,25 @@ docker volume rm anila-ops-restore-data
 
 - **一般使用者、開發者日常操作零新增步驟。** 這是維運主機上的 cron＋腳本，不會進產品權限模型、不會多一道登入閘。
 - 應用程式碼、API、前端都不依賴這套備份。
+
+---
+
+## 4. 完整服務復原（不只 DB dump）
+
+`backup-csp-db.sh` 只備份 PostgreSQL。對話附件與匯入原檔在 bind mount，不在 dump 裡。事故後要當服務回來，至少核這四樣：
+
+| 要帶回什麼 | 常見位置 | 備註 |
+|---|---|---|
+| CSP 資料庫 | `~/anila-backups/daily/csp-*.dump` | 本 runbook §2 |
+| 對話附件 | `share/attachments/` | 與 DB 同一個時間點 |
+| 匯入原檔 | `share/uploads/ingestion/` | 搜尋既有文件靠它 |
+| 必要設定與金鑰 | `.env`、`secrets/`（受控備份，不進 git） | JWT、卡登 CA、router key |
+
+乾淨環境驗收（還原後必做，不是容器 healthy 就算）：
+
+1. 登入（帳密或卡登）
+2. 打開一則還原前就存在的舊對話
+3. 下載該則對話裡的舊附件
+4. 搜尋還原前就索引過的文件
+
+dev／prod 同機時**必須**設 `ANILA_DB_CONTAINER`。未指定且偵測到多個 `csp-db` 容器時，腳本會失敗而不是備錯庫。

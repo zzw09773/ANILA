@@ -46,6 +46,7 @@ import {
   listModelAccessGroups,
   replaceModelAccessGroupMembers,
 } from '../api/models'
+import { extractError } from '../api/errors'
 
 const groups = ref([])
 const name = ref('')
@@ -76,7 +77,7 @@ async function createGroup() {
     name.value = ''
     await refresh()
   } catch (e) {
-    error.value = e?.response?.data?.detail || '新增失敗'
+    error.value = extractError(e, '新增失敗')
   }
 }
 
@@ -92,7 +93,7 @@ async function addMember(group, user) {
   try {
     await persistMembers(group, [...current, user])
   } catch (e) {
-    error.value = e?.response?.data?.detail || '加入失敗'
+    error.value = extractError(e, '加入失敗')
   }
 }
 
@@ -102,7 +103,7 @@ async function removeMember(group, userId) {
   try {
     await persistMembers(group, current)
   } catch (e) {
-    error.value = e?.response?.data?.detail || '移除失敗'
+    error.value = extractError(e, '移除失敗')
   }
 }
 
@@ -112,7 +113,7 @@ async function removeGroup(group) {
     await deleteModelAccessGroup(group.id)
     await refresh()
   } catch (e) {
-    error.value = e?.response?.data?.detail || '刪除失敗'
+    error.value = extractError(e, '刪除失敗')
   }
 }
 </script>
@@ -138,4 +139,3 @@ async function removeGroup(group) {
 }
 .chip__x { border: 0; background: transparent; cursor: pointer; color: var(--c-fg-2); }
 </style>
-

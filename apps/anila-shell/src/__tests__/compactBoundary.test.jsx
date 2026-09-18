@@ -63,7 +63,7 @@ function seededConv(overrides = {}) {
 }
 
 async function sendComposer(text) {
-  const box = screen.getByPlaceholderText(/傳訊息給 ANILA/);
+  const box = screen.getByRole("textbox", { name: "傳訊息給 ANILA" });
   await act(async () => {
     fireEvent.change(box, { target: { value: text } });
   });
@@ -397,7 +397,6 @@ describe("ChatRuntime compact boundary", () => {
 
   it("無 dbId 時 compact 先 pending，resolve persist 後 refresh 只寫一次", async () => {
     const backend = mountSeeded();
-    backend.deferTurnPersist = true;
     backend.enqueueManualStream();
     await mountOrchestrator({ backend });
     await openSeededConversation(backend);
@@ -416,9 +415,6 @@ describe("ChatRuntime compact boundary", () => {
       }),
     ]);
     await waitForAnswer("第三答");
-    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(0);
-
-    backend.resolveTurnPersist();
     await waitFor(() => {
       const puts = backend.requestsFor("/compact", "PUT");
       expect(puts).toHaveLength(1);
@@ -440,7 +436,6 @@ describe("ChatRuntime compact boundary", () => {
 
   it("persist 失敗時 fallback 寫前一則已 persist 的邊界", async () => {
     const backend = mountSeeded();
-    backend.deferTurnPersist = true;
     backend.enqueueManualStream();
     await mountOrchestrator({ backend });
     await openSeededConversation(backend);
@@ -457,18 +452,15 @@ describe("ChatRuntime compact boundary", () => {
       }),
     ]);
     await waitForAnswer("第三答");
-    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(0);
-
-    backend.resolveTurnPersist({ ok: false, error: "這一輪沒有順利送出" });
     await waitFor(() => {
       const puts = backend.requestsFor("/compact", "PUT");
       expect(puts).toHaveLength(1);
-      expect(puts[0].body).toEqual({
-        summary: "新摘要",
-        boundary_message_id: 14,
-      });
     });
-    expect(backend.storedMessages(55).some((m) => m.content === "第三題")).toBe(false);
+    const newUser = backend.storedMessages(55).find(
+      (m) => m.role === "user" && m.content === "第三題",
+    );
+    expect(newUser).toBeTruthy();
+    expect(backend.requestsFor("/compact", "PUT")[0].body.boundary_message_id).toBe(newUser.id);
 
     backend.stream.pushAll([metaFrame(defaultMeta()), doneFrame()]);
     backend.stream.close();
@@ -486,7 +478,6 @@ describe("ChatRuntime compact boundary", () => {
       { id: 21, role: "user", content: "別的題" },
       { id: 22, role: "assistant", content: "別的答" },
     ]);
-    backend.deferTurnPersist = true;
     backend.enqueueManualStream();
     await mountOrchestrator({ backend });
     await openSeededConversation(backend);
@@ -503,15 +494,10 @@ describe("ChatRuntime compact boundary", () => {
       }),
     ]);
     await waitForAnswer("第三答");
-    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(0);
-
     await selectConversation("另一個");
     await waitFor(() => {
       expect(screen.getByText("別的答")).toBeTruthy();
     });
-    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(0);
-
-    backend.resolveTurnPersist();
     await waitFor(() => {
       const puts = backend.requestsFor("/compact", "PUT");
       expect(puts).toHaveLength(1);

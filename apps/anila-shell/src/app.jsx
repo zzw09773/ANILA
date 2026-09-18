@@ -173,6 +173,11 @@ import {
 } from "./icons.jsx";
 import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS, blockingHits, detectPII, summarizePIIHits } from "./data.jsx";
 import {
+  readFoldersCache,
+  resolveFoldersFromServer,
+  writeFoldersCache,
+} from "./runtime/folderSettings.js";
+import {
   CitationsDrawer,
   ConfidentialWatermark,
   ClassificationLevelBadge,
@@ -662,32 +667,25 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   // folders: persisted locally. Users can add/delete; built-ins (all, starred)
   // are guarded because the sidebar filter logic treats them specially.
-  const [folders, setFolders] = useState(() => {
-    if (typeof window === "undefined") return DEFAULT_FOLDERS;
-    try {
-      const raw = window.localStorage.getItem("anila-folders");
-      if (!raw) return DEFAULT_FOLDERS;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_FOLDERS;
-      return parsed.filter((f) => f && typeof f.id === "string" && typeof f.name === "string");
-    } catch {
-      return DEFAULT_FOLDERS;
-    }
-  });
+  const [folders, setFolders] = useState(DEFAULT_FOLDERS);
 
   // Server-synced settings:後端是 source of truth(共用工作站下使用者的資料夾
   // 不會殘留在瀏覽器給下一個人看到)。掛載時抓後端覆寫;之後變動 debounce 存回。
-  // localStorage 仍寫(離線/載入前的暫存),但後端值優先。
+  // localStorage 只當這位使用者的離線暫存，key 帶 user id；未區分帳號的舊 key 會被清掉。
   const uiSettingsLoadedRef = useRef(false);
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) {
+      uiSettingsLoadedRef.current = false;
+      setFolders(DEFAULT_FOLDERS);
+      return undefined;
+    }
+    uiSettingsLoadedRef.current = false;
+    setFolders(readFoldersCache(window.localStorage, user?.id));
     let alive = true;
     getUiSettings(authRequest)
       .then((res) => {
         const s = res?.ui_settings || {};
-        if (alive && Array.isArray(s.folders) && s.folders.length > 0) {
-          setFolders(s.folders.filter((f) => f && typeof f.id === "string" && typeof f.name === "string"));
-        }
+        if (alive) setFolders(resolveFoldersFromServer(s.folders));
         // 白名單驗證:blob 是使用者可寫的,不明值一律退回預設,不要拿它去比對模式。
         //
         // ⚠ 這裡也是**舊值的退場口**。曾經有第三個模式,使用者的 blob 裡可能還
@@ -698,18 +696,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           setRedactionMode(s.redactionMode);
         }
       })
-      .catch(() => { /* 後端無設定 → 維持 localStorage 值 */ })
+      .catch(() => {
+        if (alive) setFolders(readFoldersCache(window.localStorage, user?.id));
+      })
       .finally(() => { uiSettingsLoadedRef.current = true; });
     return () => { alive = false; };
-  }, [isAuthenticated, authRequest]);
+  }, [isAuthenticated, authRequest, user?.id]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem("anila-folders", JSON.stringify(folders));
-    } catch {
-      /* quota / private mode — fall back silently */
-    }
+    writeFoldersCache(window.localStorage, user?.id, folders);
     // 載入後才回存後端(避免用初始 localStorage 值蓋掉後端真值)。debounce。
     if (!uiSettingsLoadedRef.current || !isAuthenticated) return;
     // ⚠ PUT 是整包覆寫,所以每一次都要把 blob 的每個 key 都帶上。少帶一個,
@@ -718,7 +714,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       putUiSettings(authRequest, { folders, redactionMode }).catch(() => { /* best-effort */ });
     }, 600);
     return () => clearTimeout(t);
-  }, [folders, redactionMode, isAuthenticated, authRequest]);
+  }, [folders, redactionMode, isAuthenticated, authRequest, user?.id]);
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
   // OW-1: hydration/list already hold the server active path, so export
@@ -2515,6 +2511,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           }
         }
         return;
+      }
+      if (persistable) {
+        const reservedHead = await turnPromise;
+        if (!reservedHead?.ok) return;
       }
       // 上下文取即時清單、並且切在這一輪的使用者訊息之前 —— 排在後面
       // 等著跑的那幾輪,它們的訊息已經在清單裡了。

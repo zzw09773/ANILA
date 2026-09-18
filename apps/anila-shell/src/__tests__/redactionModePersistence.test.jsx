@@ -38,7 +38,7 @@ describe("敏感資訊模式:使用者選的保護不會被重新整理吃掉", 
   });
 
   const typeDraft = async (text = DRAFT) => {
-    const box = screen.getByPlaceholderText(/問 ANILA 任何事情/);
+    const box = screen.getByRole("textbox", { name: "傳訊息給 ANILA" });
     await act(async () => {
       fireEvent.change(box, { target: { value: text } });
     });
@@ -72,7 +72,9 @@ describe("敏感資訊模式:使用者選的保護不會被重新整理吃掉", 
    * 所以用這個屬性把兩者分開 —— 我們要問的是「畫面認為現在是哪一個模式」。
    */
   const settingsModeButton = (m) =>
-    screen.getAllByText(m).find((el) => el.getAttribute("aria-pressed") !== null);
+    screen
+      .getAllByText(m === "warn" ? "偵測個資時提醒" : "偵測個資時阻止送出")
+      .find((el) => el.tagName === "BUTTON" && el.getAttribute("aria-pressed") !== null);
 
   /** 等到偏好真的寫回後端為止。 */
   const lastSavedSettings = async (backend) => {

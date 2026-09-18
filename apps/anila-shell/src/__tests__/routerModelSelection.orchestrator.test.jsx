@@ -11,7 +11,7 @@ import {
 } from "./helpers/orchestrator.jsx";
 
 async function sendText(text) {
-  const box = screen.getByPlaceholderText(/傳訊息給 ANILA/);
+  const box = screen.getByRole("textbox", { name: "傳訊息給 ANILA" });
   await act(async () => {
     fireEvent.change(box, { target: { value: text } });
   });

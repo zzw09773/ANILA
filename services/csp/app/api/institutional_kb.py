@@ -47,12 +47,23 @@ from app.models.platform_setting import (
     resolve_kb_threshold,
     set_kb_threshold,
 )
+from app.models.platform_setting import (
+    KB_THRESHOLD_CALIBRATED_AT_KEY,
+    KB_THRESHOLD_EMBEDDING_KEY,
+)
 from app.models.user import User
 from app.schemas.base import ApiResponseModel
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import require_admin
 from app.services.institutional_kb import retrieve_institutional
 from app.utils.client_ip import client_ip as _client_ip
+
+
+def _current_embedding_name(db: Session) -> str | None:
+    from app.services.platform_embedding import resolve_platform_embedding
+
+    resolved = resolve_platform_embedding(db)
+    return resolved.name if resolved is not None else None
 
 # 整個 router 都是 admin 限定：門檻決定全院檢索的鬆緊（密等相鄰），而 preview
 # 會把院規內容整段回出來。讀與寫同一道門。
@@ -77,6 +88,9 @@ class ThresholdResponse(ApiResponseModel):
     default: float
     updated_at: Optional[datetime] = None
     updated_by: Optional[str] = None
+    embedding_model: Optional[str] = None
+    calibrated_with_embedding_model: Optional[str] = None
+    calibrated_at: Optional[str] = None
 
 
 class PreviewRequest(BaseModel):
@@ -108,18 +122,26 @@ def _threshold_payload(db: Session) -> ThresholdResponse:
     # 呼叫今天是等價的（同一列、同一個 identity map），但那等於把「顯示的值」
     # 與「顯示的校準狀態」放回兩條可以各自漂的路上，而這個模組的存在理由就是
     # 讓那種漂移不可能發生。
-    value, calibrated = resolve_kb_threshold(db)
+    current_embedding = _current_embedding_name(db)
+    value, calibrated = resolve_kb_threshold(db, embedding_model=current_embedding)
     row = db.get(PlatformSetting, KB_THRESHOLD_KEY)
     updated_by = None
     if row is not None and row.updated_by_user_id is not None:
         actor = db.get(User, row.updated_by_user_id)
         updated_by = actor.username if actor is not None else None
+    stamp = db.get(PlatformSetting, KB_THRESHOLD_EMBEDDING_KEY)
+    cal_at = db.get(PlatformSetting, KB_THRESHOLD_CALIBRATED_AT_KEY)
     return ThresholdResponse(
         value=value,
         calibrated=calibrated,
         default=KB_THRESHOLD_DEFAULT,
         updated_at=row.updated_at if row is not None else None,
         updated_by=updated_by,
+        embedding_model=current_embedding,
+        calibrated_with_embedding_model=(
+            stamp.value.strip() if stamp is not None and stamp.value else None
+        ),
+        calibrated_at=(cal_at.value if cal_at is not None else None),
     )
 
 
@@ -137,9 +159,12 @@ def update_threshold(
     current_user: User = Depends(require_admin),
 ) -> ThresholdResponse:
     """改門檻。下一次檢索就會用新值——不需要重啟，也沒有生效延遲。"""
-    previous, was_calibrated = resolve_kb_threshold(db)
+    current_embedding = _current_embedding_name(db)
+    previous, was_calibrated = resolve_kb_threshold(db, embedding_model=current_embedding)
     try:
-        set_kb_threshold(db, payload.value, actor=current_user)
+        set_kb_threshold(
+            db, payload.value, actor=current_user, embedding_model=current_embedding
+        )
     except ValueError:
         # 相似度分數的定義域是 [0, 1];界外值不是「比較嚴格」,是壞掉。
         # 訊息要帶合法範圍與怎麼決定這個數字,不是只說不行。

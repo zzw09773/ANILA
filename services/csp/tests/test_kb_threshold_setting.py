@@ -516,3 +516,45 @@ def test_preview_says_not_searched_when_no_library_is_marked(client, admin_token
     assert r.json()["state"] == "not_searched"
     assert r.json()["hits"] == []
     assert backend.constructed == []
+
+
+def test_calibrated_is_false_after_embedding_model_changes(client, admin_token, db):
+    """門檻是跟著當時的嵌入模型量的。換模型之後不可以還說已校準。"""
+    from app.models.model_registry import ModelRegistry
+
+    first = ModelRegistry(
+        name="emb-a",
+        display_name="emb-a",
+        model_type="embedding",
+        endpoint_url="http://embed.test/v1",
+        is_active=True,
+        is_platform_embedding=True,
+        embedding_native_dim=8,
+    )
+    db.add(first)
+    db.commit()
+
+    put = client.put(_THRESHOLD_URL, json={"value": 0.4}, headers=_auth(admin_token))
+    assert put.status_code == 200, put.text
+    body = put.json()
+    assert body["calibrated"] is True
+    assert body["calibrated_with_embedding_model"] == "emb-a"
+
+    first.is_platform_embedding = False
+    second = ModelRegistry(
+        name="emb-b",
+        display_name="emb-b",
+        model_type="embedding",
+        endpoint_url="http://embed.test/v1",
+        is_active=True,
+        is_platform_embedding=True,
+        embedding_native_dim=8,
+    )
+    db.add(second)
+    db.commit()
+
+    body = client.get(_THRESHOLD_URL, headers=_auth(admin_token)).json()
+    assert body["value"] == 0.4
+    assert body["embedding_model"] == "emb-b"
+    assert body["calibrated_with_embedding_model"] == "emb-a"
+    assert body["calibrated"] is False

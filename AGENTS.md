@@ -1,8 +1,11 @@
 # ANILA 專案級 Codex 指示
 
+> **現行入口：[`docs/CURRENT-STATUS.md`](docs/CURRENT-STATUS.md)。**
+> 開發線是單一 `main`。`CLAUDE.md` 不存在。下文「架構／七分支」已過時，只保留工作慣例（怎麼讀碼、怎麼驗證、不要擅自 commit）。
+
 > 🔴 **2026-08-17 盤點：本檔的「架構描述」已大幅過時，不可照著辦事。**
 > 下文的**工作慣例**（怎麼讀碼、怎麼驗證、不要擅自 commit）仍然有用；
-> 但凡是描述「這個 repo 長什麼樣」的段落，一律以 `CLAUDE.md` 與 `PLAN.md` 為準。
+> 但凡是描述「這個 repo 長什麼樣」的段落，一律以 `docs/CURRENT-STATUS.md` 與 `PLAN.md` 為準（`CLAUDE.md` 不存在）。
 >
 > **最明顯的例子就是 §3 分支模型**：本檔寫的是 **`main` 為 SSOT 的七分支模型**
 > （`main` / `dev-public` / `prod-public-passwd` / `dev-military` / `prod-military-passwd` /
@@ -10,7 +13,7 @@
 > 2026-07-28 重啟之後，專案是**單一開發線 `restart/from-redesign`**（工作 worktree 分支除外），
 > 舊的多分支模型已進 attic。跟著 §3 走的 `docs/branch-sync-backlog.md` 同樣已失效。
 >
-> **現行狀態看這兩份**：環境事實與陷阱＝`CLAUDE.md`；現況與執行順序＝`PLAN.md`（專案權威）；
+> **現行狀態看這兩份**：環境事實與陷阱＝`docs/CURRENT-STATUS.md`；現況與執行順序＝`PLAN.md`（專案權威）；
 > 規格＝`SYSTEM-MAP.md`；重啟歷史＝`RESTART-FROM-REDESIGN.md`。
 >
 > ⚠ 另注意：檔頭自稱「最後更新 2026-06-22」，但內文已引用 07-31 之後的產物（如 `r1_0027`）——
