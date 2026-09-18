@@ -18,6 +18,8 @@ import {
   createFakeBackend,
   screen,
   waitFor,
+  act,
+  fireEvent,
 } from "./helpers/orchestrator.jsx";
 import { deltaFrame, errorFrame } from "./helpers/fakeBackend.js";
 import { ANSWER_PERSIST_FAILURE_NOTICE } from "../runtime/reservedTurn.js";
@@ -153,6 +155,26 @@ describe("orchestrator — 儲存失敗必須可見", () => {
       expect(alerts.some((a) => /失敗/.test(a.textContent))).toBe(true);
     });
     // 串流根本不該發生
+    expect(backend.chatPayloads).toHaveLength(0);
+    expect(screen.queryByText("不該出現的回答")).toBeNull();
+  });
+
+  it("等待 /turn 時按停止，放行後不呼叫模型", async () => {
+    const backend = createFakeBackend();
+    backend.disableTitleGeneration();
+    backend.deferTurnPersist = true;
+    backend.enqueueAnswer("不該出現的回答");
+    await mountOrchestrator({ backend });
+    await sendText("先問再說");
+    await waitFor(() => {
+      expect(backend.requestsFor("/turn", "POST").length).toBeGreaterThan(0);
+    });
+    expect(backend.chatPayloads).toHaveLength(0);
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("停止產生"));
+    });
+    backend.resolveTurnPersist();
+    await waitForIdle();
     expect(backend.chatPayloads).toHaveLength(0);
     expect(screen.queryByText("不該出現的回答")).toBeNull();
   });

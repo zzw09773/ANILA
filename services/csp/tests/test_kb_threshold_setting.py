@@ -38,9 +38,13 @@ import app.services.institutional_kb as kb_mod
 from anila_core.storage.adapters.pgvector_store import SourceModelCoverage
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.platform_setting import (
+    KB_THRESHOLD_CALIBRATED_AT_KEY,
     KB_THRESHOLD_DEFAULT,
+    KB_THRESHOLD_EMBEDDING_KEY,
     KB_THRESHOLD_KEY,
     PlatformSetting,
+    set_kb_threshold,
+    set_setting,
 )
 from app.models.user import User
 from app.schemas.contracts.classification import ClassificationLevel
@@ -558,3 +562,33 @@ def test_calibrated_is_false_after_embedding_model_changes(client, admin_token, 
     assert body["embedding_model"] == "emb-b"
     assert body["calibrated_with_embedding_model"] == "emb-a"
     assert body["calibrated"] is False
+
+
+def test_generic_settings_write_refreshes_calibration_stamp(db):
+    """設定頁走 set_setting 時，不可以沿用舊校準時間替新數字背書。"""
+    from app.models.model_registry import ModelRegistry
+
+    emb = ModelRegistry(
+        name="emb-a",
+        display_name="emb-a",
+        model_type="embedding",
+        endpoint_url="http://embed.test/v1",
+        is_active=True,
+        is_platform_embedding=True,
+        embedding_native_dim=8,
+    )
+    db.add(emb)
+    db.flush()
+    set_kb_threshold(db, 0.4, embedding_model="emb-a")
+    stamp = db.get(PlatformSetting, KB_THRESHOLD_CALIBRATED_AT_KEY)
+    assert stamp is not None
+    stamp.value = "2020-01-01T00:00:00+00:00"
+    db.flush()
+
+    set_setting(db, KB_THRESHOLD_KEY, 0.9)
+    db.flush()
+    db.expire_all()
+    row = db.get(PlatformSetting, KB_THRESHOLD_KEY)
+    assert row is not None and float(row.value) == 0.9
+    assert db.get(PlatformSetting, KB_THRESHOLD_EMBEDDING_KEY).value == "emb-a"
+    assert db.get(PlatformSetting, KB_THRESHOLD_CALIBRATED_AT_KEY).value != "2020-01-01T00:00:00+00:00"

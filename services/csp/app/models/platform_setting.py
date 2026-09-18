@@ -409,6 +409,20 @@ def set_setting(db: Session, key: str, value: Any, *, actor: User | None = None)
     if not spec.domain_fn(parsed):
         raise ValueError(f"{key}：{spec.description} 收到的是 {value!r}")
 
+    if key == KB_THRESHOLD_KEY:
+        # 設定頁與專用 threshold API 必須走同一支寫入。只改門檻那一列
+        # 會留下舊的 embedding／calibrated_at，等於用上次校準時間替新數字背書。
+        from app.services.platform_embedding import resolve_platform_embedding
+
+        resolved = resolve_platform_embedding(db)
+        set_kb_threshold(
+            db,
+            float(parsed),
+            actor=actor,
+            embedding_model=resolved.name if resolved is not None else None,
+        )
+        return
+
     rendered = spec.value_type.format(parsed)
     row = db.get(PlatformSetting, key)
     if row is None:

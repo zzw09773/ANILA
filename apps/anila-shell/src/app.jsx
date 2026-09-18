@@ -672,42 +672,45 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // Server-synced settings:後端是 source of truth(共用工作站下使用者的資料夾
   // 不會殘留在瀏覽器給下一個人看到)。掛載時抓後端覆寫;之後變動 debounce 存回。
   // localStorage 只當這位使用者的離線暫存，key 帶 user id；未區分帳號的舊 key 會被清掉。
-  const uiSettingsLoadedRef = useRef(false);
+  const uiSettingsHydratedRef = useRef(false);
   useEffect(() => {
     if (!isAuthenticated) {
-      uiSettingsLoadedRef.current = false;
+      uiSettingsHydratedRef.current = false;
       setFolders(DEFAULT_FOLDERS);
+      setRedactionMode(REDACTION_MODE_DEFAULT);
       return undefined;
     }
-    uiSettingsLoadedRef.current = false;
+    uiSettingsHydratedRef.current = false;
     setFolders(readFoldersCache(window.localStorage, user?.id));
+    // 讀取成功前先回到預設畫面；這不會打開回存，因為 hydrated 仍是 false。
+    setRedactionMode(REDACTION_MODE_DEFAULT);
     let alive = true;
     getUiSettings(authRequest)
       .then((res) => {
+        if (!alive) return;
         const s = res?.ui_settings || {};
-        if (alive) setFolders(resolveFoldersFromServer(s.folders));
+        setFolders(resolveFoldersFromServer(s.folders));
         // 白名單驗證:blob 是使用者可寫的,不明值一律退回預設,不要拿它去比對模式。
         //
         // ⚠ 這裡也是**舊值的退場口**。曾經有第三個模式,使用者的 blob 裡可能還
         // 存著它。那不是錯誤、不是壞資料,是我們自己把選項拿掉了 —— 所以它就
         // 安安靜靜地落在預設(warn)上:不 throw、不 toast、也不 console.warn。
         // 對使用者噴一條看起來像 bug 的警告,只會讓他以為自己的帳號壞了。
-        if (alive && REDACTION_MODES.includes(s.redactionMode)) {
+        if (REDACTION_MODES.includes(s.redactionMode)) {
           setRedactionMode(s.redactionMode);
         }
+        uiSettingsHydratedRef.current = true;
       })
       .catch(() => {
-        if (alive) setFolders(readFoldersCache(window.localStorage, user?.id));
-      })
-      .finally(() => { uiSettingsLoadedRef.current = true; });
+        // 讀取失敗：維持這位使用者的快取畫面，不准打開回存開關去 PUT 預設值。
+      });
     return () => { alive = false; };
   }, [isAuthenticated, authRequest, user?.id]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined") return undefined;
+    if (!isAuthenticated || !uiSettingsHydratedRef.current) return undefined;
     writeFoldersCache(window.localStorage, user?.id, folders);
-    // 載入後才回存後端(避免用初始 localStorage 值蓋掉後端真值)。debounce。
-    if (!uiSettingsLoadedRef.current || !isAuthenticated) return;
     // ⚠ PUT 是整包覆寫,所以每一次都要把 blob 的每個 key 都帶上。少帶一個,
     // 另一個設定就會被這次的寫入洗掉。
     const t = setTimeout(() => {
@@ -837,6 +840,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
     const controller = new AbortController();
     streamAbortRef.current.set(convId, controller);
+    // 等待 /turn 期間按停止時，AbortController 可能才剛掛上。若排隊紀錄
+    // 已經標 cancelled，這裡直接中止、不要發出模型請求。
+    if ([...queuedTurnsRef.current.values()].some((r) => r.convId === convId && r.cancelled)) {
+      userStoppedRef.current.add(convId);
+      controller.abort();
+      streamAbortRef.current.delete(convId);
+      return null;
+    }
     let compactChain = Promise.resolve();
     const queueCompact = (payload) => {
       compactChain = compactChain.then(() => handleIncomingCompact(convId, payload, opts.payload));
@@ -2481,40 +2492,51 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     await chainTurnStream(convId, async () => {
       // 保留(M6 裁決):理由同編輯重問那一條 —— 行為等價,但這個 Map 是整個
       // runtime 共用的一份,不清就只增不減。
-      queuedTurnsRef.current.delete(assistantId);
-      if (queueRecord.cancelled) {
-        // 排隊期間使用者按了「停止產生」。這一輪連串流都不要開始,
-        // 但它的預留列已經在伺服器上了 —— 必須誠實收尾成 stopped,
-        // 否則它會永遠停在 reserved(誰都寫不進去,也沒有回收程序)。
-        const resolvedHead = persistable ? await turnPromise : null;
-        const reservedId = resolvedHead?.assistantSaved?.id ?? null;
-        inFlightStreamsRef.current.delete(assistantId);
-        if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
-        clearPendingArtifactRevision(assistantId);
-        updateMsg(convId, assistantId, {
-          streaming: false,
-          streamState: STREAM_STATE.STOPPED,
-          incompleteNotice: streamStateNotice(STREAM_STATE.STOPPED, false),
-        });
-        if (persistable && reservedId != null) {
-          const cancelled = await finalizeStreamedAssistant({
-            updateMessage: apiUpdateMessage,
-            authRequest,
-            convId,
-            messageId: reservedId,
-            writer,
-            state: STREAM_STATE.STOPPED,
-            content: "",
-          });
-          if (!cancelled.ok) {
-            updateMsg(convId, assistantId, { persistError: cancelled.notice });
-          }
-        }
-        return;
-      }
+      // 等待 /turn 期間仍留在 queuedTurnsRef，否則「停止產生」找不到對象。
       if (persistable) {
         const reservedHead = await turnPromise;
-        if (!reservedHead?.ok) return;
+        if (queueRecord.cancelled) {
+          const reservedId = reservedHead?.ok ? reservedHead.assistantSaved?.id ?? null : null;
+          queuedTurnsRef.current.delete(assistantId);
+          inFlightStreamsRef.current.delete(assistantId);
+          if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
+          clearPendingArtifactRevision(assistantId);
+          updateMsg(convId, assistantId, {
+            streaming: false,
+            streamState: STREAM_STATE.STOPPED,
+            incompleteNotice: streamStateNotice(STREAM_STATE.STOPPED, false),
+          });
+          if (reservedId != null) {
+            const cancelled = await finalizeStreamedAssistant({
+              updateMessage: apiUpdateMessage,
+              authRequest,
+              convId,
+              messageId: reservedId,
+              writer,
+              state: STREAM_STATE.STOPPED,
+              content: "",
+            });
+            if (!cancelled.ok) {
+              updateMsg(convId, assistantId, { persistError: cancelled.notice });
+            }
+          }
+          return;
+        }
+        if (!reservedHead?.ok) {
+          queuedTurnsRef.current.delete(assistantId);
+          return;
+        }
+      } else if (queueRecord.cancelled) {
+          queuedTurnsRef.current.delete(assistantId);
+          inFlightStreamsRef.current.delete(assistantId);
+          if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);
+          clearPendingArtifactRevision(assistantId);
+          updateMsg(convId, assistantId, {
+            streaming: false,
+            streamState: STREAM_STATE.STOPPED,
+            incompleteNotice: streamStateNotice(STREAM_STATE.STOPPED, false),
+          });
+          return;
       }
       // 上下文取即時清單、並且切在這一輪的使用者訊息之前 —— 排在後面
       // 等著跑的那幾輪,它們的訊息已經在清單裡了。
@@ -2594,16 +2616,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         // (runtime/sse.js:153 吞掉 AbortError 以保留已累積的文字)。只靠
         // catch 判斷的話,被中斷的半截答案會被寫成 complete —— 半截答案
         // 偽裝成完整答案,正是本專案第四條教訓要擋的事。
-        if (userStoppedRef.current.has(convId)) {
+        if (userStoppedRef.current.has(convId) || queueRecord.cancelled) {
           streamState = STREAM_STATE.STOPPED;
         }
       } catch (error) {
         streamError = error;
         // 按停止 vs 真的出錯 —— 使用者看到的說明不同,落庫的狀態也不同。
-        streamState = userStoppedRef.current.has(convId)
+        streamState = (userStoppedRef.current.has(convId) || queueRecord.cancelled)
           ? STREAM_STATE.STOPPED
           : STREAM_STATE.FAILED;
       } finally {
+        queuedTurnsRef.current.delete(assistantId);
         userStoppedRef.current.delete(convId);
         inFlightStreamsRef.current.delete(assistantId);
         if (inFlightStreamsRef.current.size === 0) setRouterPickerLocked(false);

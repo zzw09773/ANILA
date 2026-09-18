@@ -395,7 +395,7 @@ describe("ChatRuntime compact boundary", () => {
     expect(screen.getByLabelText("整理對話")).not.toBeDisabled();
   });
 
-  it("無 dbId 時 compact 先 pending，resolve persist 後 refresh 只寫一次", async () => {
+  it("預留成功後 compact 寫這一輪使用者訊息 dbId，且只寫一次", async () => {
     const backend = mountSeeded();
     backend.enqueueManualStream();
     await mountOrchestrator({ backend });
@@ -434,38 +434,29 @@ describe("ChatRuntime compact boundary", () => {
     expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
   });
 
-  it("persist 失敗時 fallback 寫前一則已 persist 的邊界", async () => {
+  it("預留失敗不呼叫模型、也不寫 compact", async () => {
     const backend = mountSeeded();
-    backend.enqueueManualStream();
+    backend.enqueueAnswer("不該出現的回答", {
+      compact: {
+        summary: "新摘要",
+        kept_from_index: 4,
+        method: "summary",
+      },
+    });
+    backend.route("POST", /\/turn$/, (_req, { errorResponse }) =>
+      errorResponse(500, "預留失敗"),
+    );
     await mountOrchestrator({ backend });
     await openSeededConversation(backend);
     await sendComposer("第三題");
     await waitFor(() => {
-      expect(backend.stream).toBeTruthy();
+      const alerts = screen.getAllByRole("alert");
+      expect(alerts.some((a) => /失敗/.test(a.textContent))).toBe(true);
     });
-    backend.stream.pushAll([
-      deltaFrame("第三答"),
-      compactFrame({
-        summary: "新摘要",
-        kept_from_index: 4,
-        method: "summary",
-      }),
-    ]);
-    await waitForAnswer("第三答");
-    await waitFor(() => {
-      const puts = backend.requestsFor("/compact", "PUT");
-      expect(puts).toHaveLength(1);
-    });
-    const newUser = backend.storedMessages(55).find(
-      (m) => m.role === "user" && m.content === "第三題",
-    );
-    expect(newUser).toBeTruthy();
-    expect(backend.requestsFor("/compact", "PUT")[0].body.boundary_message_id).toBe(newUser.id);
-
-    backend.stream.pushAll([metaFrame(defaultMeta()), doneFrame()]);
-    backend.stream.close();
     await waitForIdle();
-    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(1);
+    expect(backend.chatPayloads).toHaveLength(0);
+    expect(backend.requestsFor("/compact", "PUT")).toHaveLength(0);
+    expect(screen.queryByText("不該出現的回答")).toBeNull();
   });
 
   it("pending 時切換對話再 resolve，PUT 仍打原 convId", async () => {
